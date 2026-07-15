@@ -19,11 +19,10 @@ void printHelp() {
   llvm::outs() << "usage: wafer-compile --input-program-dir <dir> "
                   "--output-program-dir <dir> --execution-ranks <1|16> "
                   "--target-profile <registered-id> "
-                  "[--reference-input <index>=<npy>] "
-                  "[--reference-expected <index>=<npy>] "
-                  "[--reference-atol <value>] [--reference-rtol <value>] "
                   "[--target-model "
-                  "--target-model-oracle <reference|external> "
+                  "--model-input <index>=<npy> "
+                  "--model-expected <index>=<npy> "
+                  "[--model-atol <value>] [--model-rtol <value>] "
                   "--target-model-max-scalar-evaluations <count> "
                   "--target-model-max-fused-multiply-adds <count> "
                   "--target-model-max-movement-bytes <bytes> "
@@ -166,13 +165,6 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       continue;
     }
-    if (arg == "--target-model-oracle" ||
-        arg.starts_with("--target-model-oracle=")) {
-      if (parseValueOption(argc, argv, index, arg, "--target-model-oracle",
-                           options.targetModelOracle))
-        return false;
-      continue;
-    }
     if (arg == "--target-model-bulk-record" ||
         arg.starts_with("--target-model-bulk-record=")) {
       if (parseRepeatedValueOption(argc, argv, index, arg,
@@ -205,29 +197,27 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       continue;
     }
-    if (arg == "--reference-input" || arg.starts_with("--reference-input=")) {
-      if (parseRepeatedValueOption(argc, argv, index, arg, "--reference-input",
-                                   options.referenceInputs))
+    if (arg == "--model-input" || arg.starts_with("--model-input=")) {
+      if (parseRepeatedValueOption(argc, argv, index, arg, "--model-input",
+                                   options.modelInputs))
         return false;
       continue;
     }
-    if (arg == "--reference-expected" ||
-        arg.starts_with("--reference-expected=")) {
-      if (parseRepeatedValueOption(argc, argv, index, arg,
-                                   "--reference-expected",
-                                   options.referenceExpected))
+    if (arg == "--model-expected" || arg.starts_with("--model-expected=")) {
+      if (parseRepeatedValueOption(argc, argv, index, arg, "--model-expected",
+                                   options.modelExpected))
         return false;
       continue;
     }
-    if (arg == "--reference-atol" || arg.starts_with("--reference-atol=")) {
-      if (parseValueOption(argc, argv, index, arg, "--reference-atol",
-                           options.referenceAtol))
+    if (arg == "--model-atol" || arg.starts_with("--model-atol=")) {
+      if (parseValueOption(argc, argv, index, arg, "--model-atol",
+                           options.modelAtol))
         return false;
       continue;
     }
-    if (arg == "--reference-rtol" || arg.starts_with("--reference-rtol=")) {
-      if (parseValueOption(argc, argv, index, arg, "--reference-rtol",
-                           options.referenceRtol))
+    if (arg == "--model-rtol" || arg.starts_with("--model-rtol=")) {
+      if (parseValueOption(argc, argv, index, arg, "--model-rtol",
+                           options.modelRtol))
         return false;
       continue;
     }

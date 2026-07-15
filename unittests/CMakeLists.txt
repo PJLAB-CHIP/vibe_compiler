@@ -3,7 +3,7 @@ wafer_require_gtest()
 add_executable(WaferUnitTests
   Compiler/CompilationTest.cpp
   Compiler/DirectDTETransportTest.cpp
-  Compiler/ReferenceExecutorTest.cpp
+  Compiler/TargetABIPreparationTest.cpp
   Compiler/TargetArtifactTest.cpp
   Compiler/TargetCallFrontendTest.cpp
   Compiler/TargetProfileTest.cpp

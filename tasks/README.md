@@ -26,7 +26,7 @@
 | 13 | `tasks/13-communication.md` | 当前collective到Direct DTE和completion边界；segmented/multi-card延后 |
 | 14 | `tasks/14-target-llvm-golden-packet.md` | shared logical/target-format registry、structure-preserving target LLVM、CRT ABI和atomic staged target module |
 | 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest、canonical JSON、no-card RuntimeSession和board adapter边界 |
-| 16 | `tasks/16-verification-plan.md` | target correctness、1/16-rank bundle、reference、target-model、no-card和board分层gate |
+| 16 | `tasks/16-verification-plan.md` | target correctness、1/16-rank bundle、CPU oracle、target-model、no-card和board分层gate |
 | 17 | `tasks/17-target-execution-model.md` | multi-dtype numeric、oneDNN bulk、owner-backed target LLVM bundle、repo-owned target-call/SystemC untimed CModel、optional CRT/packet provenance、Q22.C板端numeric correlation、Q22.E exact-module和deferred Q22.P timing边界 |
 | 18 | `tasks/18-source-organization.md` | 跨pipeline的源码ownership、translation unit、内部接口、构建依赖和测试镜像组织合同；不改变IR/artifact语义 |
 
@@ -53,7 +53,8 @@
 
 ## 实施计划导航
 
-当前没有active实施计划。Q26 memory lifetime analysis已归档为`tasks/archive/memory-lifetime-analysis.md`，
+当前无active实施计划。Q27 reference executor退役已归档为`tasks/archive/reference-executor-retirement.md`，
+Q26 memory lifetime analysis已归档为`tasks/archive/memory-lifetime-analysis.md`，
 Q25剩余聚合边界模块化已归档为`tasks/archive/residual-source-modularity.md`，Q24剩余热点模块化已归档为
 `tasks/archive/remaining-source-modularity.md`，Q23首轮源码组织重构已归档为
 `tasks/archive/source-organization-refactor.md`；
@@ -74,6 +75,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/reference-executor-retirement.md` | 已完成Q27的accepted-IR第二套解释器、oracle分支和旧CLI退役，以及CPU-expected到target CModel纵向gate收敛记录 |
 | `tasks/archive/memory-lifetime-analysis.md` | 已完成Q26的共享structured lifetime/packing core、DDR issue-to-fence completion、两侧scope/provenance/原子commit和双配置gate记录 |
 | `tasks/archive/residual-source-modularity.md` | 已完成Q25的reference/model、numeric/bulk、compiler/artifact/package与frontend bridge共11个聚合实现模块化和双配置gate记录 |
 | `tasks/archive/remaining-source-modularity.md` | 已完成Q24的group/candidate、target LLVM、numeric conformance、frontend program与compiler driver模块化和双配置gate记录 |

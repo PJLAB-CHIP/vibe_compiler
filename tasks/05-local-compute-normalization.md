@@ -179,5 +179,5 @@ directory orchestration由`wafer-compile`负责，用户不选择该stage或手�
 - `wafer-compile`从真实post-SPMD program继续形成并重新verify logical groups。
 
 显式IR FileCheck证明local conversion；只有Q15 unified driver消费真实program directory/helper output并发布verified
-grouped program，才能证明本stage接入主线。Q16/Q19/Q20/Q21分别拥有candidate bundle、reference numeric和纵向
+grouped program，才能证明本stage接入主线。Q16拥有candidate bundle，Q20/Q21拥有固定CPU expected corpus和纵向
 workload completion，不能由本stage测试代替。

@@ -23,13 +23,10 @@
 # RUN: not wafer-compile --xla-spmd-partitioner-helper=%t.helper 2>&1 | FileCheck %s --check-prefix=OLD-HELPER
 # RUN: not wafer-compile --default-tile-count=16 2>&1 | FileCheck %s --check-prefix=OLD-TILE-COUNT
 # RUN: not wafer-compile --partition-stablehlo-program 2>&1 | FileCheck %s --check-prefix=OLD-PARTITION
-# RUN: rm -rf %t.reference-missing %t.reference-duplicate %t.reference-tolerance
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.reference-missing --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --reference-input 0=%t.input.npy 2>&1 | FileCheck %s --check-prefix=REFERENCE-MISSING
-# RUN: test ! -e %t.reference-missing
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.reference-duplicate --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --reference-input 0=%t.input.npy --reference-input 0=%t.other.npy --reference-expected 0=%t.expected.npy 2>&1 | FileCheck %s --check-prefix=REFERENCE-DUPLICATE
-# RUN: test ! -e %t.reference-duplicate
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.reference-tolerance --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --reference-input 0=%t.input.npy --reference-expected 0=%t.expected.npy --reference-atol=-1 2>&1 | FileCheck %s --check-prefix=REFERENCE-TOLERANCE
-# RUN: test ! -e %t.reference-tolerance
+# RUN: not wafer-compile --reference-input 0=%t.input.npy 2>&1 | FileCheck %s --check-prefix=OLD-REFERENCE-INPUT
+# RUN: not wafer-compile --target-model-oracle=reference 2>&1 | FileCheck %s --check-prefix=OLD-MODEL-ORACLE
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.model-without-target --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --model-input 0=%t.input.npy --model-expected 0=%t.expected.npy 2>&1 | FileCheck %s --check-prefix=MODEL-WITHOUT-TARGET
+# RUN: test ! -e %t.model-without-target
 
 # MISSING-INPUT: wafer-compile: missing required --input-program-dir
 # MISSING-OUTPUT: wafer-compile: missing required --output-program-dir
@@ -49,6 +46,6 @@
 # OLD-HELPER: wafer-compile: unknown argument: --xla-spmd-partitioner-helper={{.*}}
 # OLD-TILE-COUNT: wafer-compile: unknown argument: --default-tile-count=16
 # OLD-PARTITION: wafer-compile: unknown argument: --partition-stablehlo-program
-# REFERENCE-MISSING: wafer-compile: reference execution requires both --reference-input and --reference-expected
-# REFERENCE-DUPLICATE: wafer-compile: duplicate --reference-input index: 0
-# REFERENCE-TOLERANCE: wafer-compile: invalid --reference-atol value: -1
+# OLD-REFERENCE-INPUT: wafer-compile: unknown argument: --reference-input
+# OLD-MODEL-ORACLE: wafer-compile: unknown argument: --target-model-oracle=reference
+# MODEL-WITHOUT-TARGET: wafer-compile: model input/expected options require --target-model

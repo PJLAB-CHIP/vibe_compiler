@@ -325,7 +325,7 @@ board gate另行证明：
 - copyback和完整输出比较；
 - timeout/device error/cleanup。
 
-没有configured board时board任务保持later/blocked。no-card、fake provider、reference executor或target model均不能
+没有configured board时board任务保持later/blocked。no-card、fake provider或target model均不能
 标记board完成。
 
 ## 10. Verification

@@ -21,19 +21,6 @@ add_mlir_library(WaferCompiler
   Package.cpp
   ProgramDirectoryTransaction.cpp
   ProgramInvocation.cpp
-  ReferenceExecutor.cpp
-  ReferenceExecutorNumeric.cpp
-  ReferenceProgramControlMemory.cpp
-  ReferenceProgramDTETransport.cpp
-  ReferenceProgramExecution.cpp
-  ReferenceProgramInterpreter.cpp
-  ReferenceProgramMovement.cpp
-  ReferenceProgramNumeric.cpp
-  ReferenceProgramProjection.cpp
-  ReferenceProgramProjectionDTE.cpp
-  ReferenceProgramProjectionMemrefControl.cpp
-  ReferenceProgramProjectionMovement.cpp
-  ReferenceProgramProjectionNumeric.cpp
   SpmdCompilationBridge.cpp
   TargetABIPreparation.cpp
   TargetArtifact.cpp

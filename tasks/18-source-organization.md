@@ -10,7 +10,7 @@ Pipeline position:
 - Upstream artifact / IR: 当前已验证的 frontend program、Wafer IR 各层、accepted executable、target LLVM、package 和 model invocation；以及构造这些 artifact 的现有 CMake target。
 - Current stage responsibility: 仅重组源码 ownership、translation unit、内部 helper 和 build target/source list，使每个实现单元只负责一个稳定语义边界，并保持依赖单向。
 - Output artifact / IR: 与重构前语义和公共 API 等价的库、工具、测试二进制及其原有 IR/artifact 输出。
-- Downstream consumer: Wafer named pipelines、wafer-opt、wafer-compile、wafer-run、reference executor、target model、runtime 和板端后续 gate。
+- Downstream consumer: Wafer named pipelines、wafer-opt、wafer-compile、wafer-run、target model、runtime 和板端后续 gate。
 - User-level driver / named pipeline: 现有全部公开 driver mode 和 named pipeline；本任务不新增用户入口。
 - Explicit non-goals: 不改变 IR schema/verifier 语义、pass/pipeline/CLI 名称、target call/CRT ABI、package schema、数值 capability、SystemC 行为或 third-party 版本。
 - Completion gate: 模块 ownership 与 CMake 依赖可检查；选定聚合实现已按职责拆分且无旁路事实源；公共接口与输出不变；feature-on/off 的相关 build、unit、lit、CTest 和组织检查通过。
@@ -95,7 +95,7 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
   identity和 public validation orchestration 分离；digest、path、ELF/runtime事实仍由一个 typed record 串联。
 - frontend program：function-boundary verification、program metadata parsing、NPY payload codec、distributed
   shard/boundary validation和 directory orchestration 分离；public result 和 program-directory schema 不变。
-- compiler driver：CLI parsing、reference comparison、target-model comparison和 top-level compile/publication
+- compiler driver：CLI parsing、target-model comparison和 top-level compile/publication
   orchestration 分离；driver helper 不成为新的用户 API，production/test executable 保持相同参数与 feature 组合。
 
 ## 当前实现映射
@@ -116,7 +116,7 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
   public facade；secure readback、canonical digest、首错误顺序及 execution identity 合同不变。
 - frontend program 已分为 function boundary、metadata、NPY、distributed support、boundary、parameter shards 和
   directory facade；`ProgramInternal.h` 只暴露同 library 跨 TU 所需的 typed helper。
-- `wafer-compile` 已分为 CLI、reference gate、target-model gate 和 main compile/publication orchestration；production
+- `wafer-compile` 已分为 CLI、target-model gate 和 main compile/publication orchestration；production
   与 test executable 使用同一 source set，但保留各自 feature/test compile definitions。
 - `tools/check_source_organization.py` 检查 owner、私有头、CMake source list、旧聚合文件移除和 library 配置顺序；
   根 `check-wafer` 按实际存在的 feature target 聚合 lit、unit、numeric、bulk 和 SystemC gate。
@@ -135,10 +135,6 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
 
 剩余聚合实现已沿四条artifact vertical收口，拆分没有改变01-17拥有的语义合同：
 
-- reference interpreter由唯一`ProgramInterpreter` context拥有arena、SSA value和执行状态；control/memory、movement、
-  numeric、Direct DTE transport及multi-rank execution分别独立编译，公共入口只构造context并提交完整结果。
-- reference projection由唯一`ProgramProjector`拥有value/block/function map；memref/control-flow、movement、numeric、
-  DTE/sync分别投影，facade只负责call closure、block dispatch、CFG和binding完整性。
 - target-model kernel按transaction schema、movement、tensor numeric、control/DTE与公共dispatch拆分；完整effect仍先构造，
   memory bytes与numeric flags只在统一commit入口原子发布。
 - formal numeric按support、resolved-command validation、convert、elementwise和GEMM family拆分；public numeric合同、

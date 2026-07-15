@@ -1,6 +1,6 @@
 # Wafer AI Compiler Architecture
 
-状态：2026-07-14按当前实现事实和untimed SystemC数值模型分支更新。本文固定近期单tile/单卡16-tile纵向合同和长期扩展边界；
+状态：2026-07-15按当前实现事实、CPU oracle和untimed SystemC数值模型分支更新。本文固定近期单tile/单卡16-tile纵向合同和长期扩展边界；
 实现状态只看`tasks/progress.md`，专题细节由第9节编号文档拥有。
 
 本文使用 **Wafer** 作为目标硬件和软件栈名称。TX8/TX81只在引用底层依赖、公开ABI或反向工程事实时
@@ -9,8 +9,9 @@
 ## 1. 目标和事实基线
 
 Wafer compiler/runtime的近期目标是让真实framework/exporter产生的program通过单一用户入口，分别在
-rank-count=1和单卡16-tile环境生成完整、可验证、原子发布的target bundle，并由typed manifest、no-card
-runtime和reference executor直接消费。tiny Llama decoder block是linear/MLP闭环后的第二级gate。
+rank-count=1和单卡16-tile环境生成完整、可验证、原子发布的target bundle。typed manifest/no-card runtime消费
+package分支，target CModel经同次lowering的owner-backed target LLVM路径验证完整数值输出。tiny Llama decoder
+block是linear/MLP闭环后的第二级gate。
 
 当前已经存在的主干能力：
 
@@ -25,10 +26,10 @@ runtime和reference executor直接消费。tiny Llama decoder block是linear/MLP
   functional-event模型、13-format formal numeric和受资格约束的oneDNN大GEMM backend。
 
 当前统一`wafer-compile` driver、显式per-rank `ExecutableBundle`、原子`TargetArtifactBundle`、单一typed
-manifest/no-card RuntimeSession和single/multi-rank ReferenceExecutor已经存在，并由Q15-Q21的source-backed gate
-闭合。Q22 model-only纵向链已经由同一`wafer-compile`生产事务、完整source output differential和SystemC真实执行闭合。
+manifest/no-card RuntimeSession已经存在，Q15-Q21的source-backed gate固定了独立CPU expected输出。
+Q22 model-only纵向链由同一`wafer-compile`生产事务、完整CPU output differential和SystemC真实执行闭合。
 当前尚不存在真实`RuntimeProvider`/board execution、board-correlated numeric profile或经板端校准的timing model；
-这些能力不能由reference、model-only结果、symbol closure或no-card plan冒充。
+这些能力不能由model-only结果、symbol closure或no-card plan冒充。
 
 2026-07-10设计中的`wafer.model.*`、`wafer.distributed.*`、`wafer.parallel.*`、
 `wafer.executable.*`、WCRE、global registry、hybrid rank class、Protobuf admission和capability lease均未
@@ -49,7 +50,7 @@ Pipeline position:
   `RankExecutable[]`、atomic `ExecutableBundle`、verified target modules、typed C++ `PackageManifest`及
   canonical JSON delivery form。
 - Downstream consumer:
-  no-card RuntimeSession、reference executor、target execution model、后续board runtime adapter和长期多卡扩展。
+  no-card RuntimeSession、target execution model、后续board runtime adapter和长期多卡扩展。
 - User-level driver / named pipeline:
   `wafer-compile`是稳定用户入口；`wafer-opt`和named MLIR pipelines只用于IR-local开发、调试和测试。
 - Explicit non-goals:
@@ -57,7 +58,7 @@ Pipeline position:
   近期不实现跨卡/MPMD/hybrid rank-class、Protobuf/WCRE、state migration或cost calibration。
 - Completion gate:
   真实linear/MLP分别以rank-count=1和16只经`wafer-compile`产生完整bundle/manifest/runtime trace，
-  reference executor与CPU输出一致；随后tiny Llama通过同一16-rank路径。任何失败不发布partial output。
+  target CModel完整输出与固定CPU expected一致；随后tiny Llama通过同一16-rank路径。任何失败不发布partial output。
 ```
 
 ## 3. IR 和 Artifact 分层
@@ -220,7 +221,7 @@ final `.so`、partial bundle或覆盖旧版本。
 近期不引入WCRE、ELF ABI-note、双fingerprint registry或完整`TargetArtifactSet`对象。若后续cache/loader需要
 更强identity，必须从真实module/ABI consumer反推最小字段。
 
-## 8. Typed Manifest、Runtime 和 Reference Executor
+## 8. Typed Manifest、Runtime 和 Target CModel
 
 近期package的唯一semantic owner是C++ typed model。canonical JSON只是它的delivery form，不定义第二套
 legality。最小manifest包含：
@@ -239,22 +240,13 @@ no-card RuntimeSession只做manifest admission、invocation binding、module/ent
 不把打印plan或`dlopen/dlsym`称为执行完成。真实board adapter必须另行证明allocation/import、copy、load、
 submit、wait/status、copyback、cleanup和错误抑制。
 
-reference executor直接消费accepted instruction/memory facts：
-
-- 第一阶段覆盖linear/MLP所需RDMA/WDMA、GEMM、elementwise和offset；
-- 第二阶段覆盖DTE send/recv/wait及tiny Llama所需子集；
-- 多rank执行检测peer mismatch、missing send/recv和deadlock；
-- 输出和独立CPU reference比较。
-
-reference executor不是cycle/packet simulator，不证明CRT wrapper、真实transport、completion或性能。
-
-target execution model是与reference并列的下游consumer：近期从tasks/14 full conversion形成的owner-backed、
+target execution model从tasks/14 full conversion形成的owner-backed、
 不可序列化target LLVM bundle执行same typed target-call ABI。shared typed call registry和per-rank exact-signature bridge把
 实际动态call形成invocation-local transaction并进入SystemC；不编译repo CRT、不构造Tsm packet。Q22已经先闭合13种logical
 storage codec、有证据的target-profile×engine×format encoding、当前七种compute/convert format、
 `(ModelProfileId, NumericCommandKey) -> NumericSemanticsProfile`唯一映射和formal numeric backend；oneDNN只处理target codec解包后的dense
 tensor，并按完整profile进入bit-exact、profile-bounded或rejected admission。formal backend只在checked work budget内执行，
-大command无admitted bulk时fail fast，不隐式逐MAC回退。SystemC只消费该基础层；formal backend逐family通过独立Q19/CPU
+大command无admitted bulk时fail fast，不隐式逐MAC回退。SystemC只消费该基础层；formal backend逐family通过固定CPU
 differential或显式trusted-TCB conformance，SoftFloat/TestFloat或production MPFR不自计双oracle。format codec存在不扩大compiler legality，
 外部CPU库默认行为也不构成hardware policy。
 positive closure已经使用Q20 f32的formal/admitted双路径、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama和超过
@@ -269,16 +261,16 @@ exact package/RISC-V ELF是更高、互不冒充的证据入口。只有exact mo
 
 ## 9. Pipeline 分支和 Owner 索引
 
-compiler/reference主干按以下依赖闭合：
+compiler/source-verification主干按以下依赖闭合：
 
 1. target correctness：完整traversalcontainment、control-flow fail-closed/正式conversion、geometry、completion；
 2. typed compile request、显式rank clones和atomic executable bundle；
 3. staged target modules和atomic publication；
 4. typed manifest/canonical JSON和no-card runtime；
-5. single-rank/multi-rank reference executor；
-6. rank-count=1 linear/MLP；
-7. rank-count=16 linear/MLP；
-8. rank-count=16 tiny Llama。
+5. 固定CPU expected corpus；
+6. rank-count=1 linear/MLP的CModel完整输出差分；
+7. rank-count=16 linear/MLP的CModel完整输出差分；
+8. rank-count=16 tiny Llama的CModel完整输出差分。
 
 此后repo-owned target-call/SystemC untimed functional-numeric model、configured board和exact-module provider按分层
 证据管理。Q22不以board或packet capture为完成前置；Q6.B先闭合真实board execution，Q22.C再消费Q22 model result与
@@ -300,7 +292,7 @@ package execution；Q22.P timing calibration保持deferred，
 | Direct DTE和completion | 13 |
 | target conversion、CRT、device link/publication | 14 |
 | typed manifest、runtime | 15 |
-| all stage gates、reference、target-model和board证据 | 16 |
+| all stage gates、CPU oracle、target-model和board证据 | 16 |
 | target execution model、multi-dtype numeric/bulk、target LLVM bundle、SystemC主架构边界、板端numeric correlation和deferred timing | 17 |
 
 Q0.L、Q22.N、Q22.L、Q22.B、Q22.H、Q22.S和Q22.V已经完成，实施计划分别归档为`tasks/archive/target-command-legality-closure.md`、

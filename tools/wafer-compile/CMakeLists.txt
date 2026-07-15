@@ -1,6 +1,5 @@
 set(_wafer_compile_sources
   DriverOptions.cpp
-  ReferenceGate.cpp
   TargetModelGate.cpp
   wafer-compile.cpp
 )

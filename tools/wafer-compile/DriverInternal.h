@@ -24,17 +24,16 @@ struct CommandLineOptions {
   std::optional<std::string> outputProgramDirectory;
   std::optional<std::string> executionRanks;
   std::optional<std::string> targetProfile;
-  std::vector<std::string> referenceInputs;
-  std::vector<std::string> referenceExpected;
-  std::optional<std::string> referenceAtol;
-  std::optional<std::string> referenceRtol;
+  std::vector<std::string> modelInputs;
+  std::vector<std::string> modelExpected;
+  std::optional<std::string> modelAtol;
+  std::optional<std::string> modelRtol;
   bool targetModel = false;
   std::optional<std::string> targetModelMaximumScalarEvaluations;
   std::optional<std::string> targetModelMaximumFusedMultiplyAdds;
   std::optional<std::string> targetModelMaximumMovementBytes;
   std::optional<std::string> targetModelMaximumMovementSegments;
   std::optional<std::string> targetModelGemmBackend;
-  std::optional<std::string> targetModelOracle;
   std::vector<std::string> targetModelBulkRecords;
   std::optional<std::string> targetModelMaximumBulkTotalBytes;
   std::optional<std::string> targetModelMaximumBulkScratchpadBytes;
@@ -59,12 +58,6 @@ std::optional<double> parseTolerance(const std::optional<std::string> &value,
 std::optional<uint64_t>
 parsePositiveCount(const std::optional<std::string> &value,
                    llvm::StringRef option);
-
-bool runReferenceGate(const CommandLineOptions &options,
-                      const wafer::compiler::ExecutableBundle &bundle,
-                      llvm::ArrayRef<IndexedPath> inputPaths,
-                      llvm::ArrayRef<IndexedPath> expectedPaths, double atol,
-                      double rtol);
 
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 bool runTargetModelGate(

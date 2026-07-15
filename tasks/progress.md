@@ -6,7 +6,8 @@
 长期架构与pipeline contract以编号设计文档为准，详细完成证据与实施记录位于`tasks/archive/`，完整导航见
 `tasks/README.md`；历史变化由Git保留。
 
-当前发布基线：Q22 repo-owned target-call/SystemC model-only untimed functional-numeric链已经完成；
+当前发布基线：Q22 repo-owned target-call/SystemC model-only untimed functional-numeric链已经完成，数值纵向
+验证直接比较固定source CPU expected，不再维护accepted-IR第二套解释器；
 SystemC受管依赖统一位于`third_party/systemc-model`。板端执行、板端数值相关、exact package执行、packet provenance
 和timing仍是独立later/external gate。
 
@@ -21,11 +22,10 @@ SystemC受管依赖统一位于`third_party/systemc-model`。板端执行、板�
 ## 当前执行图
 
 ```text
-已完成compiler/reference/model主线：
+已完成compiler/source-oracle/model主线：
 Q14
 Q0 -> Q15 -> Q16 -> Q17 -> Q18 -> Q16.T
-Q16 -> Q19 -> Q19.M
-Q5.C + Q19.M -> Q20 -> Q21 -> Q22.R
+Q5.C + Q16.T -> Q20 -> Q21 -> Q22.R
 Q22.R -> Q0.L
   -> Q22.N -> Q22.B
   -> Q22.L -> Q22.H
@@ -34,6 +34,9 @@ Q22.B + Q22.S + Q20 + Q21 -> Q22.V -> Q22
 
 源码模块化：
 Q23 -> Q24 -> Q25 -> Q26
+
+验证consumer收敛：
+Q22 -> Q27
 
 later/external：
 Q0.L + Q21 + configured board -> Q6.B -> Q9
@@ -45,7 +48,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 
 ## 当前实施队列
 
-当前无`doing`或`next`的仓库内实施任务；外部环境相关工作只在下表gate满足后恢复。
+当前无执行中任务。
 
 ## Later / External Gates
 
@@ -71,16 +74,14 @@ Q22 + owner-approved packet evidence -> Q22.K
 | --- | --- | --- | --- | --- |
 | Q14 | `architecture-baseline` | `done` | 当前单卡纵向架构、事实优先级和历史计划边界已重基线。 | 01、14、15、16；`tasks/archive/12-architecture-evidence-reset.md` |
 | Q0 | `target-correctness` | `done` | target conversion、结构保持、physical legality和原子失败窄边界闭合。 | 06、07、09、11、14、16 |
-| Q5.C | `workload-corpus` | `done` | 固定PyTorch/XLA source/config/payload/reference corpus及独立CPU oracle。 | 02、16 |
+| Q5.C | `workload-corpus` | `done` | 固定PyTorch/XLA source/config/payload/expected corpus及独立CPU oracle。 | 02、16 |
 | Q15 | `compiler-driver` | `done` | source到verified grouped program directory及原子发布闭合。 | 01-06、16 |
 | Q16 | `executable-bundle` | `done` | all-and-only rank executable与move-only bundle闭合。 | 03、04、06、09、12、13、16 |
 | Q17 | `target-artifact-bundle` | `done` | single-lowering target module、device link及原子artifact发布闭合。 | 14、16 |
 | Q18 | `manifest-runtime` | `done` | typed manifest、package readback和no-card preflight闭合。 | 15、16 |
 | Q16.T | `direct-dte-transport-activation` | `done` | Direct DTE binding、completion、target activation和package投影闭合。 | 13-16 |
-| Q19 | `reference-executor-core` | `done` | accepted-IR single-rank reference core和unsupported preflight闭合。 | 10、11、16 |
-| Q19.M | `reference-multirank` | `done` | accepted Direct DTE的deterministic multi-rank reference闭合。 | 13、16 |
-| Q20 | `single-card-linear-mlp` | `done` | linear/residual MLP的1/16-rank source/reference/package纵向链闭合。 | 01、05、06、10-13、15、16 |
-| Q21 | `single-card-tiny-llama` | `done` | 16-rank tiny Llama完整source/reference/package纵向链闭合。 | 01、05、06、10-13、15、16 |
+| Q20 | `single-card-linear-mlp` | `done` | linear/residual MLP的1/16-rank source/CPU-expected/package纵向链闭合。 | 01、05、06、10-13、15、16 |
+| Q21 | `single-card-tiny-llama` | `done` | 16-rank tiny Llama完整source/CPU-expected/package纵向链闭合。 | 01、05、06、10-13、15、16 |
 | Q22.R | `target-model-readiness` | `done` | Q21资源与numeric/bulk/SystemC/host seam readiness完成分级。 | 01、10、11、14-17；`tasks/archive/target-model-readiness.md` |
 | Q0.L | `target-command-legality-closure` | `done` | typed target profile、format legality、map/reduce lowering和fresh source replay闭合。 | 01、03、04、06、08、10、11、14-16；`tasks/archive/target-command-legality-closure.md` |
 | Q22.N | `target-numeric-foundation` | `done` | multi-dtype codec、formal numeric policy/kernel和受管oracle依赖闭合。 | 16、17；`tasks/archive/target-numeric-foundation.md` |
@@ -94,6 +95,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 | Q24 | `remaining-source-modularity` | `done` | group/candidate、target LLVM、numeric conformance、frontend program与compiler driver按稳定职责拆分，双配置gate闭合且公共合同不变。 | 18；`tasks/archive/remaining-source-modularity.md` |
 | Q25 | `residual-source-modularity` | `done` | reference/model、numeric/bulk、compiler/artifact/package和frontend bridge共11个聚合实现按稳定职责拆分，双配置及真实外部helper gate闭合且公共合同不变。 | 18；`tasks/archive/residual-source-modularity.md` |
 | Q26 | `memory-lifetime-analysis` | `done` | instruction loop backedge completion、共享path-sensitive lifetime/packing core、DDR issue-to-fence lifetime及两侧原子offset commit闭合，SPM/DDR各自memory-space、DTE、descriptor和resource合同保持。 | 09、11、12、18；`tasks/archive/memory-lifetime-analysis.md` |
+| Q27 | `reference-executor-retirement` | `done` | accepted-IR第二套解释器、oracle分支和旧CLI退役；CPU expected、typed invocation及target CModel/board differential边界保留。 | 01、16-18；`tasks/archive/reference-executor-retirement.md` |
 | Q1 | `crt-surface-audit` | `done` | compiler-emitted production CRT symbol/prototype surface审计完成。 | 11、14、16及对应archive |
 | Q2-Q3 | `crt-device-symbol-closure` | `done` | production CRT symbol和device-link closure闭合。 | 11、14、16及对应archive |
 | Q3.5 | `crt-extended-evidence` | `done` | 扩展CRT surface evidence已分级。 | 11、14、16及对应archive |

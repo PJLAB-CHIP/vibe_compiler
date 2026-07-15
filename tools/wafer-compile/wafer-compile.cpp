@@ -52,15 +52,15 @@ int main(int argc, char **argv) {
       !requireOption(options.targetProfile, "--target-profile"))
     return 1;
 
-  bool referenceRequested = !options.referenceInputs.empty() ||
-                            !options.referenceExpected.empty() ||
-                            options.referenceAtol || options.referenceRtol;
+  bool modelInvocationRequested = !options.modelInputs.empty() ||
+                                  !options.modelExpected.empty() ||
+                                  options.modelAtol || options.modelRtol;
   const bool targetModelOptionsProvided =
       options.targetModelMaximumScalarEvaluations ||
       options.targetModelMaximumFusedMultiplyAdds ||
       options.targetModelMaximumMovementBytes ||
       options.targetModelMaximumMovementSegments ||
-      options.targetModelGemmBackend || options.targetModelOracle ||
+      options.targetModelGemmBackend ||
       !options.targetModelBulkRecords.empty() ||
       options.targetModelMaximumBulkTotalBytes ||
       options.targetModelMaximumBulkScratchpadBytes ||
@@ -70,22 +70,14 @@ int main(int argc, char **argv) {
                     "--target-model\n";
     return 1;
   }
-  if (options.targetModel && !referenceRequested) {
+  if (options.targetModel && !modelInvocationRequested) {
     llvm::errs() << "wafer-compile: target model execution requires complete "
-                    "--reference-input and --reference-expected bindings\n";
+                    "--model-input and --model-expected bindings\n";
     return 1;
   }
-  llvm::StringRef targetModelOracle =
-      options.targetModelOracle ? llvm::StringRef(*options.targetModelOracle)
-                                : llvm::StringRef("reference");
-  if (options.targetModelOracle && !options.targetModel) {
-    llvm::errs() << "wafer-compile: --target-model-oracle requires "
+  if (modelInvocationRequested && !options.targetModel) {
+    llvm::errs() << "wafer-compile: model input/expected options require "
                     "--target-model\n";
-    return 1;
-  }
-  if (targetModelOracle != "reference" && targetModelOracle != "external") {
-    llvm::errs() << "wafer-compile: invalid --target-model-oracle value: "
-                 << targetModelOracle << "\n";
     return 1;
   }
 #ifndef WAFER_ENABLE_SYSTEMC_MODEL
@@ -94,23 +86,22 @@ int main(int argc, char **argv) {
     return 1;
   }
 #endif
-  if (referenceRequested &&
-      (options.referenceInputs.empty() || options.referenceExpected.empty())) {
-    llvm::errs() << "wafer-compile: reference execution requires both "
-                    "--reference-input and --reference-expected\n";
+  if (modelInvocationRequested &&
+      (options.modelInputs.empty() || options.modelExpected.empty())) {
+    llvm::errs() << "wafer-compile: target model execution requires both "
+                    "--model-input and --model-expected\n";
     return 1;
   }
-  std::optional<double> referenceAtol =
-      parseTolerance(options.referenceAtol, "--reference-atol", 0.0);
-  std::optional<double> referenceRtol =
-      parseTolerance(options.referenceRtol, "--reference-rtol", 0.0);
-  if (!referenceAtol || !referenceRtol)
+  std::optional<double> modelAtol =
+      parseTolerance(options.modelAtol, "--model-atol", 0.0);
+  std::optional<double> modelRtol =
+      parseTolerance(options.modelRtol, "--model-rtol", 0.0);
+  if (!modelAtol || !modelRtol)
     return 1;
-  auto referenceInputs =
-      parseIndexedPaths(options.referenceInputs, "--reference-input");
-  auto referenceExpected =
-      parseIndexedPaths(options.referenceExpected, "--reference-expected");
-  if (!referenceInputs || !referenceExpected)
+  auto modelInputs = parseIndexedPaths(options.modelInputs, "--model-input");
+  auto modelExpected =
+      parseIndexedPaths(options.modelExpected, "--model-expected");
+  if (!modelInputs || !modelExpected)
     return 1;
 
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
@@ -330,29 +321,6 @@ int main(int argc, char **argv) {
   llvm::outs() << "wafer-compile: published verified package with "
                   "execution-ranks="
                << rankCount << ": " << *options.outputProgramDirectory << "\n";
-  const bool executeReferenceGate =
-      referenceRequested &&
-      (!options.targetModel || targetModelOracle == "reference");
-  if (executeReferenceGate) {
-    // The package boundary is complete before the downstream numeric gate.
-    // Keep mixed stdout/stderr diagnostics in that semantic order as well.
-    llvm::outs().flush();
-    const wafer::compiler::ExecutableBundle *referenceBundle =
-        executableBundle
-            ? &*executableBundle
-            : (targetCompilationProduct
-                   ? &targetCompilationProduct->getExecutableBundle()
-                   : nullptr);
-    if (!referenceBundle) {
-      llvm::errs() << "wafer-compile: reference execution cannot be combined "
-                      "with test-only compilation failure injection\n";
-      return 1;
-    }
-    if (runReferenceGate(options, *referenceBundle, *referenceInputs,
-                         *referenceExpected, *referenceAtol, *referenceRtol))
-      return 1;
-    llvm::outs() << "wafer-compile: reference outputs matched\n";
-  }
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
   if (options.targetModel) {
     llvm::outs().flush();
@@ -362,8 +330,8 @@ int main(int argc, char **argv) {
                       "budget is missing\n";
       return 1;
     }
-    if (runTargetModelGate(options, *targetCompilationProduct, *referenceInputs,
-                           *referenceExpected, *referenceAtol, *referenceRtol,
+    if (runTargetModelGate(options, *targetCompilationProduct, *modelInputs,
+                           *modelExpected, *modelAtol, *modelRtol,
                            *targetModelBudget, *targetModelExecutionPolicy))
       return 1;
   }

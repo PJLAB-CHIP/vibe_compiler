@@ -165,7 +165,7 @@ row，也不包含UINT、BOOL、64-bit或same-format copy。
    absolute device address。
 
 这些事实闭合Q0的formal/atomic conversion边界；Q17的all-rank staging/publication已由下文typed bundle闭合，
-仍不证明Q19 reference numeric。
+仍不证明CModel或board numeric；数值正确性由tasks/16的CPU-expected differential及后续board correlation分别拥有。
 
 ## 4. Structure-Preserving Conversion
 

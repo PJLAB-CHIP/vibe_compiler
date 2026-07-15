@@ -1,56 +1,16 @@
-## Accepted executable的reference测试
+## 数值验证consumer
 
-- reference数值测试应从group/tensor IR调用Q16 `buildExecutableBundle`，让candidate selection、bufferization、
-  instruction lowering和memory planning真实执行；手写selected instruction IR只适合负例补充。
-- executor可以在单次invocation内把accepted IR构造成immutable execution projection，但必须all-and-only逐op/
-  control-edge投影、执行前完成capability preflight、不序列化、不进入bundle/package，也不复制candidate、memory或
-  collective schedule；否则会退化成长期shadow plan。
-- prepared reference program用独立value id和复制后的typed command field执行；只保留shared MLIRContext为不可变
-  `MemRefType`/layout保活，不保留`Operation`或`Value`。测试应在prepare后修改source op并确认prepared结果不变，
-  同时确认重新prepare能看到mutation；unsupported capability必须先于input import和arena allocation失败。
-- accepted executable不能用“module里只有一个func.func”代替entry合同。共享closure检查应从结构选择唯一public entry
-  （仅sole private function作兼容），要求其余helper已定义、private、从entry可达、direct且non-recursive；Q17的program
-  output/workspace ABI只改entry。当前target arena base不跨helper隐式传播，所以private helper不能拥有compiler-managed
-  DDR root，只能通过DDR memref参数消费entry-owned storage。
-- exporter source里的private helper可能被pinned XLA/SPMD helper内联，因此“source里写了`func.call`且完整driver成功”
-  不能证明Q16/Q17接收了call closure。direct-call artifact gate必须检查post-helper/accepted rank仍含call，或像reference
-  integration test一样从真实group lowering构造保留helper的`ExecutableBundle`；target conversion另用callee-only instruction
-  和alias forwarding fixture证明lowering关系。
+- source workload corpus固定typed input/parameter和独立CPU expected；CModel与后续board consumer都比较同一expected，
+  但各自独立实现compute、numeric、memory和transport，不能共享结果生成器。
+- 不长期维护accepted instruction IR的第二套解释器。它与target CModel复述同一执行语义，却绕过target LLVM/ABI/SystemC，
+  增加重复事实源和维护面；compiler correctness继续由verifier、conversion legality和named pipeline gate证明。
 - 数值differential的非零payload本身不足以证明覆盖。MLP这类组合case应在独立CPU loop oracle之外增加敏感性检查：逐个
-  屏蔽hidden channel、逐层清零bias都必须改变完整expected output；否则零bias、零权重或只连接部分channel会让executor
-  漏算仍然通过。固定payload使用测试侧明确的整数PRNG和可精确表示的缩放，避免host distribution差异。
-- `ReferenceTensor`是compact row-major program-boundary payload，executor内部用shared DDR/SPM arena和accepted offset
-  表达physical storage，再通过`computeWaferPhysicalElementByteOffset`访问logical element。descriptor movement必须先
-  完整读取payload再写回，才能在source/dest alias时保持确定语义。
-- production physical-layout helper保持唯一实现事实源；独立slow coordinate mapper只放测试中作property/differential
-  oracle，不得复用production `WaferPhysicalTensorInfo`或offset helper，也不被production代码或artifact消费。矩阵应逐
-  logical坐标比较footprint/offset/唯一性/in-range，并覆盖compact stride、Cx/NCx、dtype/rank、tail对齐台阶、channel
-  block边界和每一维negative/one-past；这样既能发现同源bug，也不形成第二协议。
-- instruction kind决定的type pair和parameter policy属于IR语义，应由dialect typed helper唯一拥有，verifier、projector
-  和其它需要该关系的consumer共同消费；executor只从type派生自己的numeric representation。完整enum capability gate
-  可遍历TableGen生成的`symbolize*` domain并实际prepare/execute，不能再抄一份kind字符串或case表作为expected能力。
-- 硬件wrapper的参数名、函数签名和packet字段写入只能证明编码路径，不能自动证明数值公式。reference语义审计要继续检查
-  direct source、object disassembly、public header/register和state入口。zero-point只有`src1`而没有公式时，对全部typed kind
-  执行前fail closed。stochastic只有mode枚举而没有hardware seed/state合同时，若产品明确需要common reference policy，必须
-  把它和硬件等价性分开：显式execution seed、固定PRNG算法、明确逐dynamic element推进规则和相邻值距离概率，并穷举所有
-  rounding kind；未来硬件证据不能静默改写该可重放policy。
-- reference executor增长后按`immutable program definition <- projection`和`numeric/storage <- interpreter`拆内部文件，
-  public translation unit只保留rank选择、owner lifetime和prepare/execute orchestration。projection是唯一允许读取accepted
-  MLIR的模块，interpreter只能消费immutable graph；这种源码拆分不能新增serializable plan、第二份schedule或公共artifact。
-- 若reference multi-rank需要的DTE被当前ExecutableBundle fail closed，先补memory-planning后的physical transport
-  acceptance和target consumer，再解锁multi-rank executor；不能用手写DTE module绕过bundle gate。
-- internal bundle builder把shared MLIR context转移给返回bundle；测试要在bundle存活期间销毁source module。
-- source-backed纵向reference应作为同一production driver发布package后的下游gate：重新读取package中的grouped
-  artifact构造accepted bundle，用frontend唯一NPY parser加载typed global input和package-relative parameter/constant，
-  再按`RankProgramBinding`的global/local shape与slice构造rank invocation。reference mismatch返回非零但不删除已经
-  验证的package；CLI的index/tolerance语法错误则必须在编译和发布前拒绝。
-- source-backed implementation-readiness census必须先新鲜执行formal `wafer-compile` gate，再从该次正式producer的
-  grouped/accepted artifact派生all-rank IR-local replay；手写fixture只能补负例，debug dump也不能冒充package成员。
-  规模估算要逐rank记录真实op kind/init/dim/shape/layout/extent，并把compile expansion budget和SPM high-water分别用
-  checked arithmetic核算，避免用一个代表rank或理论shape替代实际corpus。
-- multi-rank是执行域，不等于transport种类。bundle-level executor先证明all-rank transport合同同质；`None`在每rank
-  独立arena执行并用typed output slice重组，`DirectDTE`才使用deterministic event scheduler。replicated output还必须
-  跨rank byte-identical，不能为了复用DTE路径而伪造通信。
+  屏蔽hidden channel、逐层清零bias都必须改变完整expected output。固定payload使用明确整数PRNG和二进制可精确表示缩放，
+  避免host distribution差异。
+- source invocation装配只共享typed compact tensor、accepted rank slice和已验证payload loading。CModel随后按exact Kernel
+  ABI slot编码physical bytes并从slot解码完整output；板端路径也必须独立copyback后比较完整输出。
+- target-model mismatch返回非零但不删除已经原子发布的verified package；model CLI的index/tolerance语法错误必须在编译和
+  发布前拒绝。
 
 ## Wafer compiler local build harness
 
@@ -504,20 +464,6 @@
   typed payload构造canonical program digest做重复export证明。CPU-only入口是
   `wafer_pytorch_xla_capture.py --emit-cpu-reference`，真实admission入口是`--emit-workload-corpus
   --verify-corpus-reproducibility`；两者都只证明corpus/frontend admission，不证明compiler、runtime或board。
-- reference executor的dtype convert不能依赖C++ cast或host rounding environment。projection从typed
-  `InstrConvertKind`复制source/destination format和verified parameter policy，把RND_MODE 0..3显式映射到APFloat
-  rounding；执行先为全部logical element生成APInt bits，全部成功后再写destination。浮点到整数的NaN/Inf/越界是
-  hard failure。mode4 common reference policy要求显式seed，以固定SplitMix64逐dynamic convert element推进并按上下相邻
-  可表示值距离概率选择；它不代表hardware RNG。zero-point数学公式缺少证据时仍必须在input import/storage allocation前
-  拒绝。
-- reference control-flow projection不能依赖MLIR block存储顺序或隐式fallthrough。先为entry CFG全部block argument和
-  顶层SSA result分配value-id，再逐block复制terminator successor/operand；执行branch时先snapshot incoming runtime
-  values，再绑定successor arguments。结构化loop保留lb/ub/step、IV和iter_args/yield backedge；当前无环CFG在preflight
-  做cycle check，循环继续由`scf.for`表达，避免执行后才发现无法证明终止的CFG cycle。
-- reference multi-rank Direct DTE不需要host thread或wall-clock timeout。先投影all-rank immutable programs，再按
-  logical rank顺序从inputs重放到未完成wait；send snapshot和matched recv payload由typed message + structured
-  control instance索引，下轮重放时注入新建rank-local arena。这保留现有recursive SCF/CFG/call interpreter，
-  同时让每轮no-progress直接变成可重放的deadlock诊断；禁止用op访问次序充当dynamic message identity。
 - target LLVM module必须与拥有它的`LLVMContext`一起作为move-only artifact跨stage传递；device linker和后续host
   model都直接消费同一份verified module，不能把module隐藏在print/link helper中，也不能为不同消费者重复lowering。
   owner成员声明顺序应确保module先于context析构；模块级schema metadata应在producer返回前typed readback验证。
@@ -525,17 +471,16 @@
   注册Builtin和LLVM dialect translation interface。production driver与unit-test context都要遵守，否则测试会在
   LLVM IR translation边界失败，而不是在dialect parse/load阶段暴露。
 - 多个独立执行consumer需要同一source invocation时，只共享typed compact tensor、accepted rank slice和已验证payload
-  loading；不要共享reference/model compute、numeric或transport scheduler。target model在共享装配之后，必须再按exact
+  loading；不要共享CModel/board compute、numeric或transport实现。target model在共享装配之后，必须再按exact
   Kernel ABI slot的shape/dtype/layout编码target physical bytes，并从slot反向解码output。这样source输入只有一个事实源，
-  reference和target model仍是独立实现。
+  CModel和board仍是独立实现。
 - 需要证明“同一次lowering”时，用factory-only move-owned compilation product同时交付accepted executable和实际生成target
   artifacts的owner-backed LLVM bundle；不要让下游公开构造这个关系，也不要从已发布package或accepted IR重新lower。
 - source-backed bulk qualification不能只绑定shape、seed或NPY路径。offline source-spec应嵌入并canonicalize exact target
   physical operand/destination-template bytes，runtime再对command、payload、environment和预期backend output exact-match。
   超过formal budget且无admission时稳定失败；formal fallback只能在checked budget内发生。
-- `wafer-compile --target-model`的独立oracle边界是显式的：`reference`真实执行Q19，`external`只消费固定source CPU expected。
-  不允许在Q19 dtype unsupported后自动切换。当前f32按case显式atol/rtol，非f32 destination按raw bytes exact；两种失败都
-  保留已经原子发布的verified package供审计。
+- `wafer-compile --target-model`只消费显式`--model-input`和固定source CPU `--model-expected`。当前f32按case显式
+  atol/rtol，非f32 destination按raw bytes exact；两种失败都保留已经原子发布的verified package供审计。
 - target-call decoder closure不能只断言109项都能形成正确variant family。为每个descriptor生成ABI位置互异的sentinel，
   再逐字段比较typed payload中的地址、count、shape/stride、optional parameter、format和static kind；这样字段交换或漏消费
   才会失败。host native frontend的control value也要显式限制为integer/void，LLVM的pointer PHI/select/icmp本身合法，不能
@@ -545,7 +490,7 @@
   “record看似闭合、执行未消费”的重复事实源；negative应分别篡改implementation和descriptor且保持canonical record可解析。
 - 当前SystemC model入口是一driver进程一次initial-elaboration invocation；`sc_start()`运行到quiescent后返回，不声明同进程
   reset/repeat。需要证明source late-rank原子性时，只在test driver中注入terminal rank failure，仍重放同一package publication、
-  reference comparison、target-call和SystemC链，并断言稳定stage/rank、无matched model result及已发布package保留。
+  target-call和SystemC链，并断言稳定stage/rank、无matched model result及已发布package保留。
 - 正式受管依赖统一位于`third_party/<lane>`；`build/<configuration>`只保存consumer生成物和canonical snapshot。切换managed
   package root时，CMake的`find_package(... PATHS ... NO_DEFAULT_PATH)`仍可能优先复用已有`<Package>_DIR` cache，因此validator
   读出的config目录必须在`find_package`前以`CACHE ... FORCE`刷新。配置gate应预置一份valid-looking stale package cache，

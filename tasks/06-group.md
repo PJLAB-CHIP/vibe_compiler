@@ -22,7 +22,7 @@ Pipeline position:
   completion program，并由typed `RankExecutable[]`和完整`ExecutionConfig`组成atomic、profile-bearing
   `ExecutableBundle`。
 - Downstream consumer:
-  Q0.L/tasks14 target preflight与Q17 target conversion/device link；Q19 reference executor。它们只消费accepted rank
+  Q0.L/tasks14 target preflight、Q17 target conversion/device link和Q22 target CModel。它们只消费accepted rank
   executable及bundle-owned typed config，不读取
   rejected candidate、group search trace或debug dump。
 - User-level driver / named pipeline:

@@ -32,9 +32,9 @@ Pipeline position:
   各owner独立验收：Q0闭合既有conversion/legality/formal traversal/completion/atomic negative；Q0.L另闭合typed target
   profile、engine×format legality及reduce/indexing-map无丢义；Q15闭合typed
   request到verified grouped program；Q16闭合all-rank static executable bundle；Q17闭合all-rank target
-  staging/publication；Q18闭合typed manifest/package/no-card runtime；Q19闭合immutable single-rank reference core；
-  Q16.T闭合Direct DTE transport activation；Q19.M闭合deterministic multi-rank reference；Q20/Q21依次闭合
-  rank-count=1/16 linear/MLP和16-rank tiny Llama纵向链。后续gate不能反向成为Q0前置，board未执行时保持明确
+  staging/publication；Q18闭合typed manifest/package/no-card runtime；Q16.T闭合Direct DTE transport activation；
+  Q20/Q21固定rank-count=1/16 linear/MLP和16-rank tiny Llama的source CPU corpus及compiler/package纵向链，
+  Q22.V再闭合target-model完整数值执行。后续gate不能反向成为Q0前置，board未执行时保持明确
   external gate。Q0.L、Q22.N/L/B/H/S/V及Q22汇总已经完成；Q22.N单独解锁Q22.B，Q22.L直接解锁Q22.H
   repo-owned target-call frontend，Q22.N+Q22.H+既有Q16.T再解锁Q22.S，Q22.B+Q22.S+既有Q20/Q21最终由Q22.V
   闭合完整输出。Q22只汇总该传递证据，不另建pipeline。
@@ -131,9 +131,9 @@ performance；board单case不是scale或全输入域完成。
   unrolled实现的编译时间/内存，不是硬件容量、IR语义、
   workload legality或16-tile topology限制；长期用compact loop表示替代静态展开后移除该预算依赖。
 
-Q0正式completion由all-and-only traversal relation、accepted IR replay和atomic failure证明，不以reference
-numeric为前置；Q19拥有single-rank component differential，真实source-backed完整输出与独立CPU oracle比较属于
-Q20/Q21。subview数量/FileCheck仍只能作局部覆盖。
+Q0正式completion由all-and-only traversal relation、accepted IR replay和atomic failure证明，不以数值执行
+为前置；真实source-backed完整输出与独立CPU oracle比较由Q22.V target-model vertical拥有。subview数量/FileCheck
+仍只能作局部覆盖。
 
 ### 4.2 Structure-Preserving Conversion
 
@@ -337,201 +337,31 @@ set-device/context
 每一步注入失败；未满足依赖的descendant不调用；已经获取的资源逆序cleanup；typed error保留stage/rank/entry。
 wait timeout/error使dependent runtime state poison，禁止后续copyback/publication并进入同一cleanup合同。
 
-## 9. Q19 / Q19.M Reference Executor Gates
+## 9. Source CPU Oracle 与 Target Consumer Gates
 
-executor输入必须是accepted rank instruction/memory facts，不得读取planner trace或重新选择candidate。
+accepted instruction IR不再拥有第二套projection/interpreter consumer。正确性证据按实际pipeline边界分成三层：
+
+- source corpus用独立NumPy/framework CPU实现固定typed input、parameter和完整expected；它不读取compiler IR、
+  target model结果或board结果，是数值语义的外部oracle；
+- compiler以verifier、conversion legality、named pipeline、artifact readback和正负IR gate证明每层变换合同，不通过
+  重放accepted IR数值来制造第二套target语义；
+- target CModel消费同次production lowering形成的TargetLLVMModuleBundle、typed ABI slots和ProgramInvocation，
+  执行完整target-call/SystemC链并与固定CPU expected比较；后续board消费相同source invocation和expected。
+
+这条收敛删除了已完成Q19/Q19.M后形成的长期重复consumer。它牺牲“accepted IR单独执行”的一层定位，但不减少最终
+source-to-target或source-to-board数值证据；失败继续按compiler legality、target-call、memory、numeric、event和board
+lifecycle的typed diagnostic定位，不能由CModel反向修改compiler accepted facts。
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
-  Q16 move-only ExecutableBundle中的all-and-only RankExecutable；每rank module已经覆盖完整static traversal，
-  带typed program bindings、Wafer DDR/SPM memref、accepted offsets、descriptor attrs、structured control flow、
-  instruction ops和terminal completion facts。调用方另提供按ProgramResourceRole/index精确绑定的local tensors。
-- Current stage responsibility:
-  Q19先把一个accepted rank逐op投影成validated immutable `ReferenceProgram`，再执行其memref SSA/view、
-  instruction和structured control-flow semantics；投影不改变op顺序/control edge，不携带candidate、memory或
-  transport planner事实。bundle-level执行要求all-rank transport合同同质：`None`逐rank独立执行并重组，
-  `DirectDTE`则只在Q16.T形成accepted contract后由Q19.M deterministic event scheduler推进all-rank
-  send/recv/wait。任何unsupported op/dtype/rounding/transport在分配执行storage前整体失败。
-- Output artifact / IR:
-  `ReferenceProgram`只是单次invocation内owner-backed、不可序列化的consumer projection，不进入bundle/package或
-  下游compiler pipeline。执行产出owner-backed `ReferenceExecutionResult`，包含按output role/index标识的完整
-  local tensor bytes；多rank执行另产生all-and-only rank results和可重组global output。整数/bitwise结果exact，
-  浮点比较使用调用方显式tolerance。
-- Downstream consumer:
-  Q20 rank-count=1/16 linear-residual MLP完整输出比较，随后Q21 tiny Llama和board结果诊断；reference结果不进入
-  package、target module或runtime launch。
-- User-level driver / named pipeline:
-  Q19提供只接受ExecutableBundle的typed C++ API和single-rank unit/differential gate；Q19.M扩成all-rank API，但
-  Direct DTE调度仍只消费Q16.T accepted bundle；同一all-rank API也接受Q16已验证的同质transport-free bundle，
-  并且不生成通信事件。Q20由同一wafer-compile纵向入口把真实exported workload的accepted bundle、source-backed
-  invocation payload和CPU expected接到该API。wafer-opt dump和手写IR只补op-level negative coverage，不是纵向
-  完成入口。
-- Explicit non-goals:
-  不模拟target packet、queue timing、hardware rounding bug、provider lifecycle或board completion；不从文件名、
-  symbol、buffer名、module打印文本或planner trace恢复resource/shape/offset；不接受未通过Q16 gate的module冒充
-  committed rank artifact。
-- Completion gate:
-  Q19：projection对accepted op/control edge all-and-only，RDMA/WDMA、layout movement、GEMM、elementwise/fill/
-  convert、view/control flow和offset/descriptor/dtype/capability negatives闭合；固定seed非平凡lowered-group与独立
-  CPU loop oracle比较完整输出，layout helper通过独立slow coordinate property oracle。Q19.M：16-rank独立memory及
-  DTE send/recv/wait的peer/bytes/token/progress/deadlock gate闭合。真实source-backed rank-count=1/16 linear与CPU
-  global output比较只由Q20拥有。
+- Upstream artifact / IR: fixed source corpus及production compilation transaction形成的ExecutableBundle、TargetLLVMModuleBundle和verified package。
+- Current stage responsibility: compiler结构/合法性gate闭合accepted IR；target model执行同次target LLVM/SystemC链并将完整输出直接与独立CPU expected比较。
+- Output artifact / IR: verified package及invocation-local model result/diagnostic；不存在ReferenceProgram或ReferenceExecutionResult。
+- Downstream consumer: Q22.C board numeric correlation、Q22.E exact package execution和Q6.B board runtime。
+- User-level driver / named pipeline: wafer-compile --target-model --model-input ... --model-expected ... [--model-atol ... --model-rtol ...]。
+- Explicit non-goals: 不删除CPU corpus、ProgramInvocation、formal numeric conformance或target model；不把model-only结果称为board证据。
+- Completion gate: standalone reference API/CLI/source/test无残留；source formal/bulk/multi-rank vertical继续与同一CPU expected比较，feature-on/off gate通过。
 ```
-
-### 9.1 Q19 Immutable Single-Rank Core
-
-`ReferenceProgram`是executor内部执行对象，不是新的compiler IR层或跨stage artifact。它必须满足：
-
-- 从一个`RankExecutable`一次构造；每个可执行op、block argument、result、terminator和control edge恰好投影一次，
-  任何未支持项在执行前返回typed capability failure；
-- command只复制执行该op所需的typed immutable fields并保持原block/control relation；不保存candidate、tile proposal、
-  memory plan、transport plan或第二份collective schedule，不序列化、不进入manifest；
-- buffer/view引用来自SSA和accepted memref type/offset，不能从名字、文本或遍历序号恢复角色；
-- projection构造成功后执行阶段不再读取mutable MLIR，也不允许中途发现unsupported op后留下partial result。
-
-control-flow projection使用immutable function/block graph，不把region或CFG线性展开：
-
-- 每个function block、block argument、branch successor和successor operand各投影一次；`cf.br` / `cf.cond_br`执行时
-  按显式edge把runtime value绑定到successor block argument，不能按block存储顺序猜fallthrough；
-- 当前accepted stage保留SCF，因此CFG子集先闭合无环branch/merge；projection对所有block做cycle check，CFG cycle
-  在input import前拒绝，循环必须继续用可验证lb/ub/step和backedge的`scf.for`表达；
-- single-block `scf.if`保留then/else及yield/result关系，single-block `scf.for`保留lb/ub/step、induction variable、
-  iter_args/yield/result backedge；0/1/2 trip和false/true branch必须产生各自可观察结果；
-- condition、bound和induction variable走同一个typed scalar value-id通道，不能把常量文本或host loop counter作为
-  旁路协议；unsupported scalar producer在projection阶段整体拒绝；
-- Q16从module结构选择唯一externally-visible typed entry（仅单函数module允许private singleton兼容），并要求其余
-  function都是已定义、从entry可达、private、direct且non-recursive的all-and-only closure；external、indirect/
-  unknown、recursive及unreachable helper在bundle形成前失败。accepted function边界只传Wafer DDR memref，private
-  helper不得拥有compiler-managed DDR root，必须由entry沿call传入；因此Q17只给entry追加program output/workspace ABI，
-  不把helper误当用户入口或为其复制arena slot。Q19把同一closure投影为function/block/value-id graph，`func.call`只保存
-  callee id和SSA operand/result关系，执行期不回读module或按符号名特判。
-
-single-rank semantic engine最低子集：
-
-- DDR/SPM typed buffers和accepted offsets；
-- memref alias/view、structured branch/loop/call forwarding；
-- RDMA/WDMA descriptor semantics；
-- GEMM；
-- linear/MLP所需elementwise/fill/convert；
-- deterministic dtype/rounding policy。
-
-numeric backend要求：
-
-- integer/bitwise和convert使用`APInt`/`APFloat`或等价显式bit semantics，rounding/saturation/zero-point必须来自
-  instruction kind和verified attrs，禁止依赖host cast默认行为；
-- 基本算术明确中间精度与写回点；transcendental按dtype/op记录tolerance和host-independent special-value gate；
-- capability table从projection builder实际支持的op/type/profile生成测试矩阵，不另维护一份声称支持的字符串列表。
-
-convert子边界按instruction kind直接投影source/destination format和参数形态，执行期不再解释op或依赖host cast：
-
-- `RND_MODE=0/1/2/3`分别映射为nearest-even、toward-zero、toward-positive、toward-negative；每个element先以
-  `APInt`/`APFloat`完成转换，整条convert全部成功后才commit destination，NaN/Inf到integer或越界不允许靠
-  host undefined/implementation-defined cast决定结果；
-- `RND_MODE=4`采用明确的reference-only通用随机舍入：调用方必须提供execution seed，invocation-local SplitMix64按
-  dynamic execution中的每个convert logical element推进一次（包括exact conversion），并按source到上下相邻可表示值的
-  距离比例选择结果；同program/input/seed必须byte-identical。该政策用于确定性语义测试，不声称复刻硬件随机源；
-- INT8到floating的`zero_point` wrapper目前只证明了字段和调用形态，尚无足以区分subtract/add/raw reinterpret的
-  数学公式证据，因此保持typed capability failure，不能用常见量化公式猜测；这四个kind是evidence-dependent
-  capability extension，不属于当前Q19 accepted core；
-- 支持矩阵由typed `InstrConvertKind`到format/parameter policy的同一projection dispatch形成；完整矩阵测试必须遍历
-  该dispatch实际接受的组合，不维护第二份字符串能力表。当前gate执行全部非zero-point kind的RND_MODE 0..4，对全部
-  zero-point kind在input import/arena allocation前逐项证明fail closed，并证明stochastic缺少显式seed时先于input import
-  失败。
-
-2026-07-13完成的证据审计进一步固定了上述边界：旧TX81 direct wrapper只把`zp`转发给`TsmConvert`，repo-local
-`libinstr_tx81.a`的四个`__convert_int8_*`实现把该值原样写入`CT_Param.param.src1`，没有软件算术；public header、旧
-Tx81 dialect和register资料只命名该参数为zero point，没有给出subtract/add、signed interpretation或结果scale合同。
-同一资料只把`RND_MODE=4`写入`CT_Param.ctrl.rnd_mode`；静态库及public API没有seed、PRNG state、counter、推进粒度或
-重置入口。独立`RandGen` peripheral的若干地址operand不构成convert stochastic state合同。因此common stochastic实现
-必须作为Wafer reference policy显式定义，并由execution option提供seed，不能冒充hardware-equivalent oracle；未来若取得
-版本化硬件随机合同和numeric differential，应新增target-correlated profile，而不是静默改变当前可重放政策。zero-point
-仍不能从字段名或常见量化公式制造数值语义；当前linear/MLP必需子集不消费它，穷举preflight rejection是Q19 core的终态
-能力边界。
-
-验证分三类：
-
-- fixed-seed nontrivial lowered-group differential：非零bias、所有hidden channel参与输出，覆盖alias/reuse和完整tensor；
-- test-only independent slow coordinate mapper跨`C0-1/C0/C0+1`、tail、rank和layout组合检查production physical layout
-  helper；该oracle不进入production协议，因此不形成第二事实源；
-- descriptor、view、extent、dtype、rounding、unsupported capability和执行前atomic failure负例。
-
-### 9.2 Q19.M Deterministic Multi-Rank Execution
-
-Q19.M的直接前置是Q19和Q16.T；不能从当前`TransportContract::None` bundle或手写DTE module启动。最低子集：
-
-- 每rank独立memory和explicit rank；
-- 只消费Q16.T accepted DTE binding，按`(source rank, destination rank, DTEMessageAttr, dynamic control instance)`
-  匹配，再核对payload bytes、receiver range和token/wait；control instance来自structured loop/branch语义，
-  不能使用scheduler visitation ordinal；
-- deterministic event scheduler每轮按canonical logical-rank/block order推进ready command，payload先完整读取再commit；
-- unmatched peer/token、duplicate recv和deadlock negative；
-- tiny Llama当前实际需要的collective schedule。
-
-当一整轮没有command推进且仍有未完成rank时，必须输出包含blocked rank、command kind、peer/token和等待原因的
-structured no-progress/deadlock failure；不能靠timeout、线程调度或map迭代顺序决定结果。
-
-比较完整输出tensor，不只比较shape/digest。tolerance按dtype/op定义并记录；整数/bitwise要求exact。
-
-Q19.M已按该合同闭合：public bundle-level API先将全部rank投影为immutable program，然后才校验/导入
-invocation tensors。scheduler每轮按logical rank顺序从当前inputs确定性重放到第一个未完成wait；
-send对当时payload做snapshot，recv在typed message、peer、bytes、accepted remote offset和structured dynamic
-control instance一致后于下轮注入重建的rank-local SPM。replay还会核对已见send/recv的payload和address，
-因此未引入可序列化schedule、thread timing或影子memory。global output只从`RankProgramBinding` typed distribution/
-slice重组；partitioned必须all-and-only覆盖global coordinates。transport-free replicated执行相同program/input，
-仍必须byte-identical；Direct DTE浮点collective允许accepted rank-specific reduction order产生roundoff，result同时保留
-全部rank output并用rank 0形成canonical global view，vertical driver必须把每个replicated rank分别按同一显式
-`atol/rtol`与CPU oracle比较。整数/bitwise replicated output仍要求byte-exact，不能只抽查rank 0。
-
-主线component gate由真实group-to-bundle pipeline生成16个accepted rank，在同一`scf.for`两次动态执行pairwise
-collective-permute；两轮后完整64-element partitioned global f32 tensor按typed slices恢复，输入invocation顺序不影响
-canonical result。负例覆盖invocation domain重复、bytes mismatch、unmatched endpoint/token、duplicate recv和包含
-rank/token/message/control/pending endpoint的no-progress/deadlock诊断。source-backed linear/MLP的rank-count=1/16
-global CPU differential仍只由Q20拥有。
-
-Q20新增的transport-free分支仍先投影all-and-only rank domain，但不会伪造DTE事件；每rank在独立arena上完成，
-随后复用同一typed distribution/slice重组规则。真实16-rank linear/MLP是replicated boundary，所有local output
-必须byte-identical。该分支证明“multi-rank execution domain”和“需要Direct DTE transport”是两个独立事实；
-其exact结果不能反向要求含浮点collective的Q21也逐bit一致。
-
-当前单rankcheckpoint已经建立`ExecutableBundle + logicalRank + typed role/index tensors`入口。实现按accepted
-DDR/SPM offset建立独立arena，按descriptor执行alias-safe movement，并复用Wafer physical layout helper完成logical
-element访问；group经过production selection/lowering后形成的residual MLP已覆盖RDMA、WDMA、tensor/Cx movement、
-两次GEMM、bias broadcast、tanh、residual add和完整f32输出比较；当前fixed-seed payload进一步保证所有hidden
-channel和两层非零bias均影响结果，expected由测试侧显式CPU loop独立计算，并用逐hidden屏蔽及逐层清零bias的敏感性
-检查防止退化case通过。descriptor byte count、缺失accepted offset及boundary dtype不一致均为hard failure。
-当前进一步增加owner-backed immutable `ReferenceProgram`：projection复制
-当前supported op的typed fields、memref type/static view delta和SSA value-id relation，执行阶段不再访问MLIR
-`Operation`/`Value`；完整projection在input import/arena allocation前完成。测试已证明projection后篡改原RDMA descriptor
-不改变prepared program，而convenience入口重新preflight会拒绝；unsupported op优先于缺失input失败，full static
-subview也经projection执行。进一步的convert checkpoint从typed
-`InstrConvertKind`投影非zero-point dtype pair，以APInt/APFloat执行integer/floating和floating/floating转换，
-RND_MODE 0..3的tie/方向case和mode4的float-to-int、float-to-float、int-to-float fixed-seed case均通过；浮点到integer
-的NaN/Inf/越界显式失败，destination只在整条convert成功后写入。prepared program不受源op后续rounding mutation影响；
-stochastic缺少显式execution seed时在input import前失败，缺少数学公式证据的INT8 zero-point在projection阶段返回
-capability failure。control-flow checkpoint进一步把entry投影成显式immutable block graph：single-block
-`scf.if`/`scf.for`保留yield/result和iter_args backedge，acyclic `cf.br`/`cf.cond_br`按successor operands绑定block
-arguments；测试覆盖true/false、0/1/2 trip、loop-carried memref、CFG forwarding及projection后condition/bound mutation
-隔离，cyclic CFG在缺失input前失败。direct-call checkpoint进一步让真实group输入携带private tensor helper，经Q16
-lowering形成唯一public entry加private DDR-memref closure；Q17只改写entry ABI，reference program则投影完整function
-graph并按callee id执行参数/结果forwarding。测试在prepare后篡改helper return，证明prepared program不变而重新prepare
-观察到新语义；同一accepted multi-function rank的owned clone还重放Q17 entry-only output/workspace ABI、完整target
-lowering及lowered entry ABI验证。recursive、unresolved、unreachable helper和private helper自建DDR root均先于缺失
-input失败。physical layout checkpoint以test-only independent slow mapper逐坐标对照compact/Cx/NCx的footprint和
-offset，覆盖f16/f32/i8、rank 0/2/3/4、strided view、4/8/16/32/64 tail对齐台阶、channel block及retained/folded
-tail边界；同时证明合法坐标映射唯一且位于physical range，负数、one-past和rank mismatch在所有layout统一失败。
-convert capability checkpoint将kind到source/destination type pair及None/RoundingMode/ZeroPoint policy收敛为Wafer IR
-typed helper，verifier和reference projector共同消费；测试通过TableGen生成的symbolizer遍历每个declared kind，实际执行
-全部非zero-point组合及每个rounding kind的mode4 profile，并证明全部zero-point组合先于input import/arena allocation
-失败，不复制字符串能力表。非零
-FP32→TF32→FP32 roundtrip同时证明APFloat 19-bit TF32语义位与hardware 4-byte storage的显式pack/unpack边界。
-structural checkpoint把原单文件executor拆为内部immutable program定义、accepted-IR projection、numeric/storage、
-immutable interpreter和薄public orchestration；projection是唯一读取accepted MLIR的模块，interpreter只依赖投影和
-numeric/storage API，内部对象仍不序列化、不进入bundle/package。Q19 core已按上述accepted capability完成；
-DTE multi-rank已拆给Q19.M；Q16.T accepted transport、target CRT/status和runtime requirement前置已闭合。
-当前transcendental仍使用host实现，也不属于已闭合的host-independent numeric gate。
-本批`check-wafer`新鲜执行42个C++ unit和235个lit（234 pass、1个feature-inverse unsupported），CTest 3/3通过；
-unsupported项仍是禁用importer feature的反向gate，不覆盖Q19 mandatory path。
 
 ## 10. Q20/Q21 Vertical Workload Gates
 
@@ -561,113 +391,31 @@ CPU oracle是独立NumPy运算实现，先独立重建payload/output，
 lit分别证明CPU-only reference逐文件byte-identical、真实exporter两次canonical-equivalent和五个program通过
 frontend verifier。前两个历史case闭合Q5.C；新增三项是Q22.V source vertical的固定输入，不把case shape提升为协议。
 
-### 10.2 Q20 Gate A: Single-Tile Linear/MLP
+### 10.2 Q20 Single-Tile / Single-Card Linear-MLP Corpus Gate
 
-真实exported linear-residual/MLP只经
-`wafer-compile --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1`产生：
-
-- accepted complete traversal；
-- rank executable和target module；
-- verified manifest/canonical JSON；
-- no-card/fake-provider plan；
-- reference output与CPU一致。
-
-Q20的user-level gate仍是同一`wafer-compile`调用。generic `--reference-input <index>=<npy>`和
-`--reference-expected <index>=<npy>`只表达typed program-boundary invocation，不包含case/shape/op名；compiler在
-package发布后把本次target artifact与manifest已经消费过的同一owner-backed accepted bundle直接交给reference
-gate，不从已发布package重跑candidate/lowering，也不建立第二条semantic pipeline。reference invocation仍从
-package-relative typed payload path加载parameter/constant NPY，对user input按accepted replicated/partitioned slice
-形成rank invocation。user input的program-boundary position和accepted entry argument index是两个typed field；CLI只
-消费前者，reference import和target ABI消费后者，parameter插入、SPMD重排或lowering不能泄漏为用户index。结果按
-output index与expected NPY比较；f32使用显式`atol/rtol`，其它dtype byte-exact。不传reference选项时
-production compile/package行为不变。reference mismatch不能伪造compile failure后的partial package：它是已验证
-package的downstream correctness gate，返回非零但保留可审计package。
+Q20固定rank-count=1/16 linear-residual MLP的真实source、typed payload、CPU expected和可重放program directory。
+compiler gate证明两种rank domain都产生all-and-only executable、target artifact、verified manifest及no-card plan；
+不再在feature-off compiler内执行accepted IR。数值纵向执行由11.6的target model gate直接消费同次lowering产物并与
+Q20 CPU expected比较，formal与admitted GEMM必须得到同一profile允许的结果。
 
 Pipeline position:
-- Upstream artifact / IR: 本轮production transaction形成、并已被target artifact和package assembly消费的atomic `ExecutableBundle`。
-- Current stage responsibility: package原子发布后保留该bundle的owner lifetime，导入typed reference inputs并执行数值gate。
-- Output artifact / IR: 已发布verified package，以及仅作为本次验证结果的global reference outputs/diagnostic。
-- Downstream consumer: Q20/Q21 CPU differential gate；package仍由`wafer-run`消费。
-- User-level driver / named pipeline: `wafer-compile --reference-input ... --reference-expected ...`。
-- Explicit non-goals: 不从package重编译accepted bundle，不序列化reference program，不把reference结果写入manifest，不冒充target或board执行。
-- Completion gate: 同一次driver invocation只构造一次accepted rank domain；package先发布，随后reference成功或明确失败，失败时package保持可审计。
+- Upstream artifact / IR: Q20 fixed source corpus及production compilation transaction。
+- Current stage responsibility: compiler/package验证rank-count=1/16 artifact；target-model配置执行完整数值consumer。
+- Output artifact / IR: verified package、model result和CPU differential diagnostic。
+- Downstream consumer: Q22.V source vertical与Q22.C board correlation。
+- User-level driver / named pipeline: wafer-compile；数值入口显式使用--target-model和--model-input/--model-expected。
+- Explicit non-goals: feature-off compiler不内置第二套数值解释器；CPU expected不进入package。
+- Completion gate: 1/16-rank package结构gate与target-model formal/admitted完整输出gate均实际执行。
 
-### 10.3 Q20 Gate B: Single-Card 16-Rank Linear/MLP
+### 10.3 Q21 Single-Card Tiny Llama Corpus Gate
 
-同类模型只经
-`wafer-compile --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1`，增加：
+Q21固定16-rank tiny Llama decoder的source/config/payload和独立CPU expected，并继续作为attention、MLP、
+residual、reduce、exp/rsqrt、i1/select及Direct DTE的完整压力case。compiler结构gate证明all-and-only rank、transport、
+completion和package关系；Q22.V通过target LLVM、typed target-call、SystemC和Direct DTE执行全部rank，再按显式
+atol/rtol与同一CPU expected比较完整输出。model late-rank失败必须保留已原子发布package且不得发布partial result。
 
-- all-and-only 16 rank artifacts；
-- rank-specific shard/peer/entry；
-- coherent resource/transport/completion relation；
-- 多rankreference与CPU global output一致。
-
-Gate A/B已完成：`wafer-compile-linear-reference.test`由真实PyTorch/XLA exporter生成linear-residual MLP，随后只经
-`wafer-compile`分别以rank-count=1/16发布verified package并打印`reference outputs matched`。测试检查1/16个
-all-and-only ELF module、manifest module/entry/completion rank domain，逐一执行1+16个`wafer-run --no-card`
-entry，并以source-backed input/expected NPY比较完整`2x16xf32`输出。错误expected负例在element 0产生数值诊断、
-返回非零，同时manifest和rank-0 ELF保持可审计；CLI缺失配对参数、重复index和负tolerance均在编译副作用前拒绝。
-本批`check-wafer`新鲜执行43个C++ unit和236个lit（235 pass、1个feature-inverse unsupported），新增纵向test实际
-执行而非unsupported；显式`--show-unsupported`确认唯一unsupported为enabled build下的
-`wafer-compile-stablehlo-disabled.test`。CTest 3/3通过。
-
-### 10.4 Q21 Gate C: Single-Card Tiny Llama
-
-现有tiny-random Llama config的decoder block经同一16-rank path。必须经过mandatory candidate/commit，不能用
-手工group/instr或绕过selector的pass chain。完整attention/MLP/residual输出与独立CPU reference比较。
-
-失败若来自尚未支持op/geometry/transport，必须定位到IR/verifier事实并保持bundle未发布。
-
-真实source gate经过official normalization、group formation和16-rank candidate selection复现。首个
-`powf exponent 2`失败的根因是candidate standalone clone把external `arith.constant`改成无定义的
-function argument，使得合法性检查丢失constant provenance；shared clone helper改为在保持调试ABI的同时
-将该常量clone入standalone body，正常与parallel candidate路径共用。随后暴露的两类
-`memref.global`也在各自语义层消解：post-SPMD静态索引常量view链由05层精确折叠，splat compute常量由07层
-materialize为局部fill/immediate而不形成冗余DDR boundary；14层没有增加generic global fallback。target full
-conversion只为One-Shot Bufferize留下的static compact `memref.collapse_shape`接受经证明的零位移、同element
-count和tensor-layout alias，不把任意reshape视为同地址。
-
-该target alias闭合并发布真实16-rank package后，历史Q21 reference实现曾直接从accepted
-`wafer.instr.reduce`的`init_value`/scalar init投影局部reduce command；本轮已确认target CRT不消费该字段，因此这只保留为
-Q0.L前历史证据，不能证明新合同。Q0.L fresh重放中ReferenceExecutor消费init-first fill、canonical-order slice movement和
-map-free elementwise ping-pong形成的普通terminal instruction序列，并与独立logical row-major reduce oracle比较；任何残留
-Instr init在projection前即illegal。当前可精确映射的combiner只有f32 sum、IEEE maximum和IEEE minimum；avg及无法表示的
-dynamic init继续在effect前fail closed。测试覆盖非尾维/尾维、非零init、rounding-sensitive顺序、NaN/signed-zero、
-maximum/minimum和aligned Cx/NCx physical layout；tiny Llama只是随后重放的source-backed consumer，不定义reduce协议。
-
-dynamic causal select的accepted composite不是generic elementwise select，而是typed i1 tensor fill、`bit2fp`和
-`mask_move`；严格private use-def证明的constant predicate则在tile→instruction前改写为selected arm的fresh copy，不发
-BOOL fill/mask command。reference storage按Tensor-layout logical stride计算bit index，并以每8个i1占1 byte的
-little-bit-order访问；`bit2fp`逐logical coordinate产生同shape f32 0/1 mask，`mask_move`仅在mask非零时
-把source写入已有dest。projector必须同时验证静态shape、SPM memory、dtype和physical geometry；不把
-bitpacked i1伪装成普通1-byte integer，也不新增sidecar predicate数组。
-
-reference GEMM不得继续把所有accepted buffer强制成rank-2。rank-2仍直接使用`m/k/n`；batched form
-必须消费Instr verifier已经接受的`batch_count`和lhs/rhs/result batch、M/K/N dimension attrs，并按每个
-logical batch coordinate执行同一矩阵乘。当前target legality要求canonical leading batch dimensions和
-trailing matrix dimensions，reference按该合同投影，不另做flatten、head-name恢复或隐式broadcast。
-
-真实16-rank重放进一步暴露DDR lifetime dataflow只传播tile-region block argument、没有把
-`wafer.tile.yield` root relation映射到对应region result；这会把跨group仍存活的workspace错误截断在region出口，
-使多个live allocation复用offset 0。Q12 planner现已按SSA result relation传播root，回归证明两个随后共同消费的
-tile-region result必须获得不同arena range。修复后完整Tiny Llama输出最大绝对误差约`3.06e-4`；该误差形态与16路
-局部f32 GEMM/collective reduction相对独立NumPy全局matmul的运算重关联、host transcendental差异及其继续经过
-softmax、SiLU和residual传播的形态一致。因此本case按实测全rank上界固定`atol=5e-4, rtol=1e-4`，而不是沿用仅
-覆盖framework/NumPy单进程交叉检查的原`1e-5` absolute tolerance；driver仍逐元素检查canonical output和全部
-16个replicated rank，不接受shape/digest替代。该容差是reference differential合同，不代表板端精度校准。
-
-Gate C的source-backed lit只生成该pinned corpus case，经同一
-`wafer-compile --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1`入口，以user
-input position 0完成mandatory candidate、bundle、all-and-only ELF/manifest、完整CPU differential，并逐一对16个
-entry执行`wafer-run --no-card`。Direct DTE capability/status ABI/host watchdog均由命令显式声明；缺失声明的负例保持
-fail closed。no-card只形成typed plan，不表示provider或transport已执行。这些证据闭合compiler/reference/no-card
-gate，不改变Q6.B board状态。
-
-本批`check-wafer`新鲜执行43个C++ unit和237个lit（236 pass、1个feature-inverse unsupported）；新增Tiny
-Llama vertical test实际执行而非unsupported。`--show-unsupported`确认唯一unsupported仍为enabled build下的
-`wafer-compile-stablehlo-disabled.test`。CTest 3/3通过。Q21 compiler/reference/no-card边界完成；真实board
-allocation、launch、transport、completion和copyback仍只由Q6.B拥有。
-
+移除accepted-IR reference scheduler后，Direct DTE correctness仍由compiler binding/completion verifier、target-model
+event正负gate和后续board result共同证明；不使用另一个logical scheduler复制通信事实。
 ## 11. Q22 Target Execution Model Gates
 
 具体模型边界、SystemC主架构、exact ELF缺口和板端numeric corpus由tasks/17拥有。本节只定义证据口径。Q0.L已经闭合
@@ -688,14 +436,14 @@ owner-backed target LLVM bundle和oneDNN bulk qualification；以下各gate仍�
   INT8-source zero-point route必须有命名model candidate及区分向量，但没有target RNG/公式证据时不能标hardware row；
   float/int route还覆盖NaN/Inf/overflow result、sNaN/payload/sign、tininess和status候选；
 - integer codec/convert、BOOL logic和floating compare按raw exact。正式基础算术/convert使用当前受管LLVM中的APFloat/APInt，
-  但不得调用Q19 helper；
-  FP16/FP32与独立SoftFloat adapter交叉，并由`testsoftfloat`的slowfloat路径验证SoftFloat自身。Q19同样使用APFloat，故只能作
-  integration cross-check，不能计第二oracle。BF16/TF32与MPFR高精度结果及独立test-only raw-bit rounder交叉；production
+  且不得调用另一套compiler-side numeric helper；
+  FP16/FP32与独立SoftFloat adapter交叉，并由`testsoftfloat`的slowfloat路径验证SoftFloat自身。同一APFloat实现不能
+  自计第二oracle。BF16/TF32与MPFR高精度结果及独立test-only raw-bit rounder交叉；production
   MPFR transcendental以version/digest/
   self-test、known-point/metamorphic和wrapper验证闭合trusted-TCB gate。self-test绑定exact MPFR/GMP source/build digest与
   configure options，在clean dependency build分别运行上游`make check`，归档command/exit/version/config summary/test-suite
   logs，再运行project wrapper tests；它只声明trusted MPFR semantics，不算第二oracle。第二实现或board为
-  升级证据，同一MPFR wrapper不算独立oracle；production target model不得调用Q19 helper；
+  升级证据，同一MPFR wrapper不算独立oracle；production target model不得调用已退役accepted-IR interpreter；
 - GEMM测试完整operand/product/accumulator/intermediate/destination tuple、逐步rounding/overflow、FMA、reduction
   order和store conversion；首个published row只有f16/bf16/f32同dtype输入输出、F32 fused accumulator、+0初值、K递增和
   destination RNE。narrow/unfused、TF32-to-f32和i8-to-s32只保留typed区分candidate；16条native reduce selector因
@@ -807,7 +555,7 @@ Q22.H只消费Q22.L，不以Q22.N、Q22.B、SystemC或vendor授权为前置：
 - 全部rank先materialize/preflight并向sink交付完整ordered typed slot metadata/value bindings；rank使用not-started/running/terminal防止yield
   期间重入，transaction sink提供begin/issue/terminal/prepare-commit/infallible-commit/abort；missing/wrong signature、
   wrong slot、native-illegal、reentry、callback、destruction和late-rank failure均无partial executable/result；
-- host path不得调用Q19 numeric/interpreter或DTE scheduler，也不得编译repo CRT、实现Tsm operator或构造packet。
+- host path不得调用另一套accepted-IR numeric/interpreter或DTE scheduler，也不得编译repo CRT、实现Tsm operator或构造packet。
 
 完成证据是同一Q22.L all-rank bundle实际执行并形成typed transaction，symbol/signature/context/sink closure完整且late
 failure无partial host result；component-only fixture、RISC-V archive、include-only target或SystemC component不能替代。
@@ -849,7 +597,7 @@ Pipeline position:
   SystemC process阻塞wait必须yield，rank identity不得仅由TLS或OS thread恢复；
 - 16-rank Direct DTE component覆盖receiver-ready、source lifetime至send completion、send/recv/wait/release、receiver
   completion后的destination visibility、duplicate/missing/mismatch和deterministic no-progress诊断；source读取时刻只属于
-  model profile，不能复制Q19 snapshot policy或读取Q19 logical message schedule；
+  model profile，不能复制已退役reference scheduler的snapshot policy或logical message schedule；
 - static capability在input/model mutation前preflight，computed address、dynamic descriptor和numeric tuple在对应effect前
   验证；model/core error在copyback前失败，component result/status原子形成。
 
@@ -884,7 +632,7 @@ Q22.V只在Q22.B和Q22.S完成后消费既有Q20/Q21 source producer，负责把
   exact/bounded policy比较，证明backend选择不改变target semantics；
 - 另有deterministic source-backed large GEMM超过formal work budget并自动命中Q22.B冻结的admitted oneDNN row，缺失
   admission或隐式scalar fallback立即失败，SystemC event/transaction数量不得随M×N×K按per-MAC增长；完整输出与独立
-  Q19/CPU oracle按逐op/dtype profile policy比较；
+  source CPU oracle按逐op/dtype profile policy比较；
 - symbol/signature/ABI/static profile、address plan和endpoint在input import/model mutation前preflight；运行时transaction、computed
   address和dynamic descriptor在对应effect前验证；任一rank late failure无partial model result；
 - SystemC-enabled tests必须真实执行，generated large component corpus不能替代source-backed expected。
@@ -894,20 +642,19 @@ expected和digest前只算结构覆盖。4096可作为nightly/stress参数；man
 
 Q22.V实现按上述边界闭合：production编译返回factory-only、move-only的`TargetCompilationProduct`，同时拥有
 `ExecutableBundle`和已经直接用于Q17 artifact publication的同一`TargetLLVMModuleBundle`，model不重复lower。
-共享`ProgramTensor`装配只负责typed input slice及package-relative parameter/constant payload；Q19和model继续各自拥有
+共享`ProgramTensor`装配只负责typed input slice及package-relative parameter/constant payload；target model独立拥有
 compute、numeric和multi-rank scheduler。model invocation把compact program tensor按每个ordered ABI slot的shape/dtype/layout
 编码为exact target physical bytes，在显式非重叠DDR地址域内建立all-rank private invocation并逐rank取回完整output。
 
-driver提供两种明确oracle：`reference`先运行Q19再运行model，适用于当前Q19 f32 surface；`external`只消费固定source corpus的
-独立CPU expected，适用于f16、bf16和large GEMM，不能把shape/digest冒充expected。f32按case显式atol/rtol比较；其它当前
-destination按raw bytes exact比较。Q19不支持f16时稳定preflight失败且保留package，未被隐式转成external oracle。
+driver只消费固定source corpus的独立CPU expected，不能把shape/digest冒充expected。f32按case显式atol/rtol比较；
+其它当前destination按raw bytes exact比较。model input/expected必须完整显式提供，不存在失败后的隐式oracle切换。
 
 Q20的同一source payload分别在formal-only和prefer-admitted策略下通过，admitted路径为5个formal command加1个bulk GEMM；
 64³ source case含262144个FMA，正式formal FMA budget固定10000，仍只产生8个target transaction、1个bulk MatMul和0个bulk
 formal FMA。qualification schema v2直接嵌入canonical target physical lhs/rhs/destination-template bytes；runtime按command、
 payload、destination、semantic、environment和预期backend output exact-match。用Q20 record运行large case返回稳定
 `bulk-backend-unavailable`，不存在scalar fallback。f16/bf16各以formal GEMM通过；Q21以16 ranks、17个SystemC thread process
-及完整Direct DTE路径通过。output mismatch、Q19 dtype unsupported和bulk record mismatch都返回非零并保留已验证manifest/module。
+及完整Direct DTE路径通过。output mismatch和bulk record mismatch都返回非零并保留已验证manifest/module。
 
 这组结果签发的仍只是`target-call/SystemC model-only functional-numeric`：不执行repo CRT、Tsm packet或RISC-V ELF，不证明
 board numeric、vendor等价、性能或cycle accuracy。最终fresh suite数量记录在`tasks/progress.md`对应done row。
@@ -947,7 +694,7 @@ vendor builder若可得，只作为额外packet/MMIO provenance；缺失不阻�
 - loader ABI、SPM alias、MMIO/custom instruction、Direct DTE/FSM和host watchdog有typed capability；
 - 每阶段failure injection保证descendant不调用、wait/status失败禁止copyback、已获取资源逆序cleanup；
 - 同一Q20/Q21 package不增加model instruction sidecar、不替换host module、不重做planning；
-- 完整output/status与Q19/CPU比较。通过只称package target-model execution，不称board。
+- 完整output/status与source CPU expected比较。通过只称package target-model execution，不称board。
 
 通用RISC-V ISS但缺TX81 MMIO/accelerator/loader/completion仍不满足该gate。target-call/SystemC模式
 也不能以结果相同冒充exact module执行。

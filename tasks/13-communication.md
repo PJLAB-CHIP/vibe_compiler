@@ -396,8 +396,8 @@ materialization，缺上游`channel_id`时fail closed。post-memory acceptance�
 bytes、planned SPM range、same-block wait、normal sender profile和receiver FSM allocation，并原子补
 `DirectDTEBindingAttr`；target CRT event/status ABI现已直接消费binding，缺binding、remote offset不一致或缺
 status slot均target-illegal，局部instruction tests不能冒充Q16.T完成。
-同一accepted binding现也由Q19.M reference consumer直接投影：它按logical source/destination、`DTEMessageAttr`和
-structured loop/branch control instance配对，不从scheduler visitation ordinal或buffer名恢复message身份。
+同一accepted binding由target LLVM/SystemC consumer按logical source/destination、`DTEMessageAttr`和structured
+loop/branch control instance建立event/transaction，不从scheduler visitation ordinal或buffer名恢复message身份。
 
 Q16.T已按以下合同闭合该边界：
 

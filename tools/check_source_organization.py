@@ -92,24 +92,29 @@ FRONTEND_PROGRAM_SOURCES = (
 )
 WAFER_COMPILE_SOURCES = (
     "DriverOptions.cpp",
-    "ReferenceGate.cpp",
     "TargetModelGate.cpp",
     "wafer-compile.cpp",
 )
-REFERENCE_INTERPRETER_SOURCES = (
-    "ReferenceProgramControlMemory.cpp",
-    "ReferenceProgramDTETransport.cpp",
-    "ReferenceProgramExecution.cpp",
-    "ReferenceProgramInterpreter.cpp",
-    "ReferenceProgramMovement.cpp",
-    "ReferenceProgramNumeric.cpp",
-)
-REFERENCE_PROJECTION_SOURCES = (
-    "ReferenceProgramProjection.cpp",
-    "ReferenceProgramProjectionDTE.cpp",
-    "ReferenceProgramProjectionMemrefControl.cpp",
-    "ReferenceProgramProjectionMovement.cpp",
-    "ReferenceProgramProjectionNumeric.cpp",
+REFERENCE_EXECUTOR_LEGACY_PATHS = (
+    "include/Wafer/Compiler/ReferenceExecutor.h",
+    "lib/Wafer/Compiler/ReferenceExecutor.cpp",
+    "lib/Wafer/Compiler/ReferenceExecutorInternal.h",
+    "lib/Wafer/Compiler/ReferenceExecutorNumeric.cpp",
+    "lib/Wafer/Compiler/ReferenceProgramControlMemory.cpp",
+    "lib/Wafer/Compiler/ReferenceProgramDTETransport.cpp",
+    "lib/Wafer/Compiler/ReferenceProgramExecution.cpp",
+    "lib/Wafer/Compiler/ReferenceProgramInterpreter.cpp",
+    "lib/Wafer/Compiler/ReferenceProgramInterpreterInternal.h",
+    "lib/Wafer/Compiler/ReferenceProgramMovement.cpp",
+    "lib/Wafer/Compiler/ReferenceProgramNumeric.cpp",
+    "lib/Wafer/Compiler/ReferenceProgramProjection.cpp",
+    "lib/Wafer/Compiler/ReferenceProgramProjectionDTE.cpp",
+    "lib/Wafer/Compiler/ReferenceProgramProjectionInternal.h",
+    "lib/Wafer/Compiler/ReferenceProgramProjectionMemrefControl.cpp",
+    "lib/Wafer/Compiler/ReferenceProgramProjectionMovement.cpp",
+    "lib/Wafer/Compiler/ReferenceProgramProjectionNumeric.cpp",
+    "tools/wafer-compile/ReferenceGate.cpp",
+    "unittests/Compiler/ReferenceExecutorTest.cpp",
 )
 TARGET_MODEL_KERNEL_SOURCES = (
     "TargetModelControl.cpp",
@@ -998,7 +1003,6 @@ def check_wafer_compile_owners(root: Path, errors: list[str]) -> None:
     facade = read_required(source_root / "wafer-compile.cpp", errors)
     for implementation in (
         "bool parseCommandLine(",
-        "bool runReferenceGate(",
         "bool runTargetModelGate(",
     ):
         if implementation in facade:
@@ -1194,75 +1198,42 @@ def check_xla_helper_source_manifest(
         )
 
 
-def check_reference_model_owners(root: Path, errors: list[str]) -> None:
-    compiler_root = root / "lib/Wafer/Compiler"
-    compiler_cmake = compiler_root / "CMakeLists.txt"
-    compiler_text = read_required(compiler_cmake, errors)
-    compiler_sources = (*REFERENCE_INTERPRETER_SOURCES, *REFERENCE_PROJECTION_SOURCES)
-    check_required_sources(compiler_root, compiler_sources, "reference program", errors)
-    check_private_header(
-        compiler_root / "ReferenceProgramInterpreterInternal.h",
-        root / "include/Wafer/Compiler/ReferenceProgramInterpreterInternal.h",
-        "reference interpreter internal",
-        errors,
-    )
-    check_private_header(
-        compiler_root / "ReferenceProgramProjectionInternal.h",
-        root / "include/Wafer/Compiler/ReferenceProgramProjectionInternal.h",
-        "reference projection internal",
-        errors,
-    )
-    compiler_body = cmake_target_body(
-        compiler_text, "add_mlir_library", "WaferCompiler", compiler_cmake, errors
-    )
-    check_cmake_sources(
-        body=compiler_body,
-        required=compiler_sources,
-        cmake_path=compiler_cmake,
-        target="WaferCompiler",
-        errors=errors,
-    )
-    check_cmake_source_ownership(
-        text=compiler_text,
-        required=compiler_sources,
-        cmake_path=compiler_cmake,
-        target="WaferCompiler",
-        errors=errors,
-    )
-    interpreter_facade = read_required(
-        compiler_root / "ReferenceProgramInterpreter.cpp", errors
-    )
-    interpreter_facade_code = cpp_code(interpreter_facade)
-    for implementation in (
-        "case CommandKind::",
-        "DeterministicTransportCoordinator",
-        "descriptorOffsets(",
-        "executeGemm(",
-    ):
-        if implementation in interpreter_facade_code:
-            fail(
-                errors,
-                "reference interpreter facade still owns command execution: "
-                + implementation,
-            )
-    projection_facade = read_required(
-        compiler_root / "ReferenceProgramProjection.cpp", errors
-    )
-    projection_facade_code = cpp_code(projection_facade)
-    for implementation in (
-        "dyn_cast<mlir::memref::",
-        "dyn_cast<wafer::Instr",
-        "projectMovementOperands(",
-        "projectDTEIssue(",
-        "projectStaticView(",
-    ):
-        if implementation in projection_facade_code:
-            fail(
-                errors,
-                "reference projection facade still owns op-family projection: "
-                + implementation,
-            )
+def check_reference_executor_retired(root: Path, errors: list[str]) -> None:
+    for relative in REFERENCE_EXECUTOR_LEGACY_PATHS:
+        path = root / relative
+        if path.exists():
+            fail(errors, f"retired reference executor path still exists: {path}")
 
+    production_files = [root / "unittests/CMakeLists.txt"]
+    for production_root in (
+        root / "include",
+        root / "lib",
+        root / "tools/wafer-compile",
+    ):
+        production_files.extend(
+            path
+            for path in production_root.rglob("*")
+            if path.is_file()
+            and (path.suffix in {".h", ".cpp", ".td", ".inc"}
+                 or path.name == "CMakeLists.txt")
+        )
+    for path in production_files:
+        text = read_required(path, errors)
+        for marker in (
+            "ReferenceExecutor",
+            "ReferenceProgram",
+            "ReferenceExecutionResult",
+            "ReferenceGate",
+            "runReferenceGate",
+            "--reference-input",
+            "--reference-expected",
+            "--target-model-oracle",
+        ):
+            if marker in text:
+                fail(errors, f"{path}: retired reference marker remains: {marker}")
+
+
+def check_target_model_owners(root: Path, errors: list[str]) -> None:
     model_root = root / "lib/Wafer/Model"
     model_cmake = model_root / "CMakeLists.txt"
     model_text = read_required(model_cmake, errors)
@@ -1308,14 +1279,9 @@ def check_reference_model_owners(root: Path, errors: list[str]) -> None:
             fail(errors, f"target-model kernel facade still owns {implementation}")
 
     check_no_textual_source_includes(
-        [compiler_root / name for name in compiler_sources]
-        + [
-            compiler_root / "ReferenceProgramInterpreterInternal.h",
-            compiler_root / "ReferenceProgramProjectionInternal.h",
-        ]
-        + [model_root / name for name in TARGET_MODEL_KERNEL_SOURCES]
+        [model_root / name for name in TARGET_MODEL_KERNEL_SOURCES]
         + [model_root / "TargetModelKernelInternal.h"],
-        "reference/model",
+        "target model",
         errors,
     )
 
@@ -1675,7 +1641,8 @@ def main() -> int:
     check_numeric_dependency_owners(root, errors)
     check_frontend_program_owners(root, errors)
     check_wafer_compile_owners(root, errors)
-    check_reference_model_owners(root, errors)
+    check_reference_executor_retired(root, errors)
+    check_target_model_owners(root, errors)
     check_numeric_bulk_owners(root, errors)
     check_compiler_artifact_package_owners(root, errors)
     check_frontend_bridge_owners(root, errors)

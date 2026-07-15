@@ -25,7 +25,7 @@ computeProgramTensorByteCount(llvm::StringRef dtype,
                               llvm::ArrayRef<int64_t> shape);
 
 /// Owner-backed compact row-major tensor at a typed program boundary. This is
-/// source invocation data, not a reference-executor result or device storage.
+/// source invocation data, not an execution result or device storage.
 class ProgramTensor {
 public:
   static llvm::Expected<ProgramTensor> create(llvm::StringRef dtype,
