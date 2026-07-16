@@ -170,11 +170,17 @@ readNpyPayloadMetadata(llvm::StringRef path, llvm::StringRef displayName,
 
 std::optional<std::pair<llvm::StringRef, uint64_t>>
 decodeNpyDescr(llvm::StringRef descr) {
-  if (descr == "<f4" || descr == "=f4")
+  // ProgramTensor owns canonical little-endian compact bytes. NumPy '=' means
+  // native endian, so it is equivalent to '<' only on a little-endian host;
+  // rejecting it elsewhere prevents downstream numeric consumers from
+  // interpreting native big-endian payload bytes as little-endian values.
+  const bool nativeIsLittle =
+      llvm::endianness::native == llvm::endianness::little;
+  if (descr == "<f4" || (nativeIsLittle && descr == "=f4"))
     return std::pair<llvm::StringRef, uint64_t>{"f32", 4};
-  if (descr == "<f8" || descr == "=f8")
+  if (descr == "<f8" || (nativeIsLittle && descr == "=f8"))
     return std::pair<llvm::StringRef, uint64_t>{"f64", 8};
-  if (descr == "<f2" || descr == "=f2")
+  if (descr == "<f2" || (nativeIsLittle && descr == "=f2"))
     return std::pair<llvm::StringRef, uint64_t>{"f16", 2};
   if (descr == "|V2")
     return std::pair<llvm::StringRef, uint64_t>{"bf16", 2};
@@ -182,11 +188,11 @@ decodeNpyDescr(llvm::StringRef descr) {
     return std::pair<llvm::StringRef, uint64_t>{"i1", 1};
   if (descr == "|i1")
     return std::pair<llvm::StringRef, uint64_t>{"i8", 1};
-  if (descr == "<i2" || descr == "=i2")
+  if (descr == "<i2" || (nativeIsLittle && descr == "=i2"))
     return std::pair<llvm::StringRef, uint64_t>{"i16", 2};
-  if (descr == "<i4" || descr == "=i4")
+  if (descr == "<i4" || (nativeIsLittle && descr == "=i4"))
     return std::pair<llvm::StringRef, uint64_t>{"i32", 4};
-  if (descr == "<i8" || descr == "=i8")
+  if (descr == "<i8" || (nativeIsLittle && descr == "=i8"))
     return std::pair<llvm::StringRef, uint64_t>{"i64", 8};
   return std::nullopt;
 }

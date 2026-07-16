@@ -55,6 +55,13 @@ HF_LLAMA_REPLICATED_VECTOR_NAMES = frozenset(
         "post_attention_layernorm.weight",
     }
 )
+LLAMA_SCALE_PAYLOAD_ALGORITHM = (
+    "wafer-exact-f16-splitmix64-counter-byte-scaled-v3"
+)
+_UINT64_MASK = (1 << 64) - 1
+_SPLITMIX64_STREAM_DOMAIN = 0xD1B54A32D192ED03
+_SPLITMIX64_MULTIPLIER_0 = 0xBF58476D1CE4E5B9
+_SPLITMIX64_MULTIPLIER_1 = 0x94D049BB133111EB
 
 
 def _import_numpy() -> Any:
@@ -105,6 +112,35 @@ def _canonical_array_bytes(
     return len(header).to_bytes(8, "little") + header + little_endian.tobytes()
 
 
+def _canonical_little_endian_array(numpy_module: Any, value: Any) -> Any:
+    """Materialize one public NPY payload in canonical little-endian order."""
+    array = numpy_module.asarray(value)
+    if array.dtype.hasobject:
+        raise RuntimeError("workload corpus does not admit object array payloads")
+    if array.dtype.kind == "V":
+        # BF16 uses |V2 because NumPy has no portable public BF16 dtype. Its
+        # producer already stores the raw 16-bit encoding little-endian.
+        if array.dtype.itemsize != 2:
+            raise RuntimeError(
+                "workload corpus only admits two-byte opaque BF16 payloads"
+            )
+        return numpy_module.ascontiguousarray(array)
+    canonical_dtype = array.dtype.newbyteorder("<")
+    return numpy_module.ascontiguousarray(
+        array.astype(canonical_dtype, copy=False)
+    )
+
+
+def _save_workload_array(
+    numpy_module: Any, destination: pathlib.Path, value: Any
+) -> None:
+    numpy_module.save(
+        destination,
+        _canonical_little_endian_array(numpy_module, value),
+        allow_pickle=False,
+    )
+
+
 def _array_digest(
     numpy_module: Any, value: Any, *, require_float32: bool = True
 ) -> str:
@@ -141,6 +177,139 @@ def _quantized_array_digest(
         numpy_module.asarray(value, dtype=numpy_module.float32), decimals=decimals
     ).astype(numpy_module.float32)
     return _array_digest(numpy_module, quantized)
+
+
+def _verify_finite_workload_array(
+    numpy_module: Any,
+    value: Any,
+    *,
+    case_id: str,
+    artifact_name: str,
+) -> None:
+    array = numpy_module.asarray(value)
+    is_bfloat16_storage = array.dtype.kind == "V" and array.dtype.itemsize == 2
+    if not is_bfloat16_storage and array.dtype.kind not in {"f", "c"}:
+        return
+
+    flat = array.reshape(-1)
+    chunk_elements = 1 << 20
+    nonfinite_count = 0
+    first_flat_index = None
+    first_value = None
+    for begin in range(0, int(flat.size), chunk_elements):
+        chunk = flat[begin : begin + chunk_elements]
+        finite_values = (
+            _bfloat16_storage_to_float32(numpy_module, chunk)
+            if is_bfloat16_storage
+            else chunk
+        )
+        finite = numpy_module.isfinite(finite_values)
+        chunk_nonfinite = int(numpy_module.count_nonzero(~finite))
+        if chunk_nonfinite == 0:
+            continue
+        nonfinite_count += chunk_nonfinite
+        if first_flat_index is None:
+            first_in_chunk = int(numpy_module.flatnonzero(~finite)[0])
+            first_flat_index = begin + first_in_chunk
+            first_value = finite_values.reshape(-1)[first_in_chunk]
+    if first_flat_index is None:
+        return
+    first_index = tuple(
+        int(index)
+        for index in numpy_module.unravel_index(first_flat_index, array.shape)
+    )
+    raise RuntimeError(
+        f"workload case {case_id!r} {artifact_name} contains "
+        f"{nonfinite_count} non-finite value(s); first_index={first_index}, "
+        f"first_value={first_value!r}"
+    )
+
+
+def _verify_workload_payload_finite(
+    numpy_module: Any,
+    *,
+    case_id: str,
+    input_array: Any,
+    extra_inputs: dict[int, Any],
+    parameters: dict[str, Any],
+    expected: Any,
+) -> None:
+    _verify_finite_workload_array(
+        numpy_module,
+        input_array,
+        case_id=case_id,
+        artifact_name="input 0",
+    )
+    for index, value in sorted(extra_inputs.items()):
+        _verify_finite_workload_array(
+            numpy_module,
+            value,
+            case_id=case_id,
+            artifact_name=f"input {index}",
+        )
+    for name, value in sorted(parameters.items()):
+        _verify_finite_workload_array(
+            numpy_module,
+            value,
+            case_id=case_id,
+            artifact_name=f"parameter {name!r}",
+        )
+    _verify_finite_workload_array(
+        numpy_module,
+        expected,
+        case_id=case_id,
+        artifact_name="expected output 0",
+    )
+
+
+def _load_llama_scale_payload_config(
+    case_id: str, config: dict[str, Any]
+) -> tuple[int, int, int]:
+    payload = config.get("payload")
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"workload case {case_id!r} requires explicit config.payload"
+        )
+    required_fields = {
+        "algorithm",
+        "input_denominator",
+        "projection_denominator",
+        "normalization_delta_denominator",
+    }
+    actual_fields = set(payload)
+    if actual_fields != required_fields:
+        missing = sorted(required_fields - actual_fields)
+        extra = sorted(actual_fields - required_fields)
+        raise RuntimeError(
+            f"workload case {case_id!r} config.payload fields mismatch: "
+            f"missing={missing}, extra={extra}"
+        )
+    if payload["algorithm"] != LLAMA_SCALE_PAYLOAD_ALGORITHM:
+        raise RuntimeError(
+            f"workload case {case_id!r} has unsupported payload algorithm "
+            f"{payload['algorithm']!r}; expected "
+            f"{LLAMA_SCALE_PAYLOAD_ALGORITHM!r}"
+        )
+
+    denominators = []
+    for field in (
+        "input_denominator",
+        "projection_denominator",
+        "normalization_delta_denominator",
+    ):
+        value = payload[field]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value <= 0
+            or value & (value - 1)
+        ):
+            raise RuntimeError(
+                f"workload case {case_id!r} config.payload.{field} must be "
+                "a positive power-of-two integer"
+            )
+        denominators.append(value)
+    return tuple(denominators)
 
 
 def _verify_framework_cpu_output(
@@ -225,18 +394,98 @@ def _deterministic_float_storage_array(
     return result.reshape(shape)
 
 
+def _splitmix64_final_scalar(value: int) -> int:
+    value &= _UINT64_MASK
+    value = (
+        (value ^ (value >> 30)) * _SPLITMIX64_MULTIPLIER_0
+    ) & _UINT64_MASK
+    value = (
+        (value ^ (value >> 27)) * _SPLITMIX64_MULTIPLIER_1
+    ) & _UINT64_MASK
+    return (value ^ (value >> 31)) & _UINT64_MASK
+
+
+def _deterministic_counter_float16_array(
+    numpy_module: Any,
+    shape: tuple[int, ...],
+    *,
+    seed: int,
+    stream: int,
+    denominator: int,
+    chunk_elements: int = 1 << 20,
+) -> Any:
+    if (
+        isinstance(seed, bool)
+        or not isinstance(seed, int)
+        or seed < 0
+        or seed > _UINT64_MASK
+    ):
+        raise RuntimeError("deterministic payload seed must fit uint64")
+    if (
+        isinstance(stream, bool)
+        or not isinstance(stream, int)
+        or stream < 0
+        or stream >= _UINT64_MASK
+    ):
+        raise RuntimeError("deterministic payload stream must fit uint64 - 1")
+    if (
+        isinstance(denominator, bool)
+        or not isinstance(denominator, int)
+        or denominator <= 0
+        or denominator & (denominator - 1)
+        or denominator > (1 << 24)
+    ):
+        raise RuntimeError(
+            "exact FP16 counter payload denominator must be a power of two "
+            "not exceeding 2^24"
+        )
+    if (
+        isinstance(chunk_elements, bool)
+        or not isinstance(chunk_elements, int)
+        or chunk_elements <= 0
+    ):
+        raise RuntimeError("deterministic payload chunk size must be positive")
+
+    count = math.prod(shape)
+    if count < 0 or count > _UINT64_MASK:
+        raise RuntimeError("deterministic payload element count exceeds uint64")
+    result = numpy_module.empty(count, dtype=numpy_module.float16)
+    domain = ((stream + 1) * _SPLITMIX64_STREAM_DOMAIN) & _UINT64_MASK
+    key = numpy_module.uint64(_splitmix64_final_scalar(seed ^ domain))
+    multiplier_0 = numpy_module.uint64(_SPLITMIX64_MULTIPLIER_0)
+    multiplier_1 = numpy_module.uint64(_SPLITMIX64_MULTIPLIER_1)
+    for begin in range(0, count, chunk_elements):
+        end = min(begin + chunk_elements, count)
+        mixed = numpy_module.arange(begin, end, dtype=numpy_module.uint64) ^ key
+        mixed ^= mixed >> numpy_module.uint64(30)
+        mixed *= multiplier_0
+        mixed ^= mixed >> numpy_module.uint64(27)
+        mixed *= multiplier_1
+        mixed ^= mixed >> numpy_module.uint64(31)
+        code = (mixed >> numpy_module.uint64(56)).astype(numpy_module.int16)
+        signed = code - numpy_module.int16(128)
+        result[begin:end] = (
+            signed.astype(numpy_module.float32)
+            / numpy_module.float32(denominator)
+        ).astype(numpy_module.float16)
+    return result.reshape(shape)
+
+
 def _float32_to_bfloat16_storage(numpy_module: Any, value: Any) -> Any:
-    bits = numpy_module.asarray(value, dtype=numpy_module.float32).view(
-        numpy_module.uint32
-    )
+    bits = numpy_module.ascontiguousarray(
+        numpy_module.asarray(value, dtype=numpy_module.dtype("<f4"))
+    ).view(numpy_module.dtype("<u4"))
     rounding = numpy_module.uint32(0x7FFF) + ((bits >> 16) & 1)
-    rounded = ((bits + rounding) >> 16).astype(numpy_module.uint16)
+    rounded = ((bits + rounding) >> 16).astype(numpy_module.dtype("<u2"))
     return numpy_module.ascontiguousarray(rounded).view(numpy_module.dtype("|V2"))
 
 
 def _bfloat16_storage_to_float32(numpy_module: Any, value: Any) -> Any:
-    bits = numpy_module.ascontiguousarray(value).view(numpy_module.uint16)
-    return (bits.astype(numpy_module.uint32) << 16).view(numpy_module.float32)
+    bits = numpy_module.ascontiguousarray(value).view(numpy_module.dtype("<u2"))
+    widened = (bits.astype(numpy_module.dtype("<u4")) << 16).astype(
+        numpy_module.dtype("<u4"), copy=False
+    )
+    return numpy_module.ascontiguousarray(widened).view(numpy_module.dtype("<f4"))
 
 
 def _cast_gemm_storage(numpy_module: Any, value: Any, dtype: str) -> Any:
@@ -624,7 +873,12 @@ def _torch_from_workload_storage(
     torch_module: Any, numpy_module: Any, value: Any, dtype: str
 ) -> Any:
     if dtype == "bfloat16":
-        raw = numpy_module.ascontiguousarray(value).view(numpy_module.uint16)
+        raw = numpy_module.ascontiguousarray(value).view(
+            numpy_module.dtype("<u2")
+        )
+        raw = numpy_module.ascontiguousarray(
+            raw.astype(numpy_module.dtype("=u2"), copy=False)
+        )
         return torch_module.from_numpy(raw.copy()).view(torch_module.bfloat16)
     return torch_module.from_numpy(numpy_module.ascontiguousarray(value).copy())
 
@@ -634,9 +888,12 @@ def _torch_to_workload_storage(
 ) -> Any:
     cpu = value.detach().cpu()
     if dtype == "bfloat16":
-        return numpy_module.ascontiguousarray(
+        raw = numpy_module.ascontiguousarray(
             cpu.view(torch_module.uint16).numpy()
-        ).view(numpy_module.dtype("|V2"))
+        ).astype(numpy_module.dtype("<u2"), copy=False)
+        return numpy_module.ascontiguousarray(raw).view(
+            numpy_module.dtype("|V2")
+        )
     return cpu.numpy()
 
 
@@ -1119,34 +1376,60 @@ def _build_workload_case_payload(
                 "Llama workload dtype must match hf_config torch_dtype: "
                 f"case={storage_dtype!r}, config={config_storage_dtype!r}"
             )
-        input_array = _deterministic_float_storage_array(
+        if kind == "llama_decoder_block":
+            (
+                input_denominator,
+                projection_denominator,
+                normalization_delta_denominator,
+            ) = _load_llama_scale_payload_config(case["id"], config)
+        else:
+            # The frozen tiny diagnostic corpus predates the scale-payload
+            # schema. Its existing source digest and values remain unchanged.
+            input_denominator = 128
+            projection_denominator = 4096
+            normalization_delta_denominator = 4096
+        if kind == "llama_decoder_block" and storage_dtype != "float16":
+            raise RuntimeError(
+                "the versioned Llama scale payload requires float16 storage"
+            )
+        payload_array = (
+            _deterministic_counter_float16_array
+            if kind == "llama_decoder_block"
+            else functools.partial(
+                _deterministic_float_storage_array, dtype=storage_dtype
+            )
+        )
+        input_array = payload_array(
             numpy_module,
             (batch_size, sequence_length, hidden_size),
             seed=seed,
             stream=0,
-            denominator=128,
-            dtype=storage_dtype,
+            denominator=input_denominator,
         )
-        parameter_shapes = {
-            "input_layernorm.weight": (hidden_size,),
-            "post_attention_layernorm.weight": (hidden_size,),
-            "q_proj.weight": (hidden_size, hidden_size),
-            "k_proj.weight": (hidden_size, hidden_size),
-            "v_proj.weight": (hidden_size, hidden_size),
-            "o_proj.weight": (hidden_size, hidden_size),
-            "gate_proj.weight": (intermediate_size, hidden_size),
-            "up_proj.weight": (intermediate_size, hidden_size),
-            "down_proj.weight": (hidden_size, intermediate_size),
-        }
+        parameter_specs = (
+            (1, "input_layernorm.weight", (hidden_size,)),
+            (2, "post_attention_layernorm.weight", (hidden_size,)),
+            (3, "q_proj.weight", (hidden_size, hidden_size)),
+            (4, "k_proj.weight", (hidden_size, hidden_size)),
+            (5, "v_proj.weight", (hidden_size, hidden_size)),
+            (6, "o_proj.weight", (hidden_size, hidden_size)),
+            (7, "gate_proj.weight", (intermediate_size, hidden_size)),
+            (8, "up_proj.weight", (intermediate_size, hidden_size)),
+            (9, "down_proj.weight", (hidden_size, intermediate_size)),
+        )
         parameters = {}
-        for stream, (name, shape) in enumerate(parameter_shapes.items(), start=1):
-            value = _deterministic_float_storage_array(
+        for stream, name, shape in parameter_specs:
+            denominator = (
+                normalization_delta_denominator
+                if name.endswith("layernorm.weight")
+                else projection_denominator
+            )
+            value = payload_array(
                 numpy_module,
                 shape,
                 seed=seed,
                 stream=stream,
-                denominator=4096,
-                dtype=storage_dtype,
+                denominator=denominator,
             )
             if name.endswith("layernorm.weight"):
                 value = (
@@ -1179,6 +1462,18 @@ def _build_workload_case_payload(
         raise RuntimeError(
             f"workload case {case['id']} has unsupported kind {kind!r}"
         )
+
+    # These checks precede both canonical digest construction and every NPY /
+    # StableHLO artifact write. In particular, an all-NaN eager oracle must
+    # never become a fixed digest that can compare equal to itself later.
+    _verify_workload_payload_finite(
+        numpy_module,
+        case_id=case["id"],
+        input_array=input_array,
+        extra_inputs=extra_inputs,
+        parameters=parameters,
+        expected=expected,
+    )
 
     if kind == "simple_gemm":
         input_digest = _named_array_digest(
@@ -1264,18 +1559,22 @@ def emit_workload_cpu_reference(
         shutil.rmtree(output_dir)
     parameter_dir = output_dir / "parameters"
     parameter_dir.mkdir(parents=True)
-    numpy_module.save(output_dir / "input.npy", payload["input"], allow_pickle=False)
+    _save_workload_array(
+        numpy_module, output_dir / "input.npy", payload["input"]
+    )
     for index, value in sorted(payload["extra_inputs"].items()):
-        numpy_module.save(
-            output_dir / f"input-{index}.npy", value, allow_pickle=False
+        _save_workload_array(
+            numpy_module, output_dir / f"input-{index}.npy", value
         )
-    numpy_module.save(
-        output_dir / "expected.npy", payload["expected"], allow_pickle=False
+    _save_workload_array(
+        numpy_module, output_dir / "expected.npy", payload["expected"]
     )
     for name, value in payload["parameters"].items():
         if pathlib.PurePath(name).name != name:
             raise RuntimeError(f"invalid workload parameter name {name!r}")
-        numpy_module.save(parameter_dir / f"{name}.npy", value, allow_pickle=False)
+        _save_workload_array(
+            numpy_module, parameter_dir / f"{name}.npy", value
+        )
 
     bulk_qualification = case.get("bulk_qualification")
     if bulk_qualification is not None:
@@ -1301,15 +1600,15 @@ def emit_workload_cpu_reference(
             ),
             case["dtype"],
         )
-        numpy_module.save(
+        _save_workload_array(
+            numpy_module,
             qualification_dir / "calibration-lhs.npy",
             calibration_lhs,
-            allow_pickle=False,
         )
-        numpy_module.save(
+        _save_workload_array(
+            numpy_module,
             qualification_dir / "calibration-rhs.npy",
             calibration_rhs,
-            allow_pickle=False,
         )
         (qualification_dir / "qualification.json").write_text(
             json.dumps(bulk_qualification, indent=2, sort_keys=True) + "\n",

@@ -8,6 +8,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -137,14 +138,22 @@ private:
   friend class InvocationMemoryRegistry;
 };
 
-/// One byte write proposed by a plain transaction kernel. The address space
-/// and alignment obligation are explicit and remain part of effect legality.
+/// One compact byte payload proposed by a plain transaction kernel. A strided
+/// layout maps consecutive payload segments to destination addresses without
+/// expanding the command effect. Address space and alignment remain explicit.
+struct TargetModelStridedByteLayout {
+  uint32_t innerBytes = 0;
+  std::array<uint32_t, 3> strides{};
+  std::array<uint32_t, 3> iterations{};
+};
+
 struct TargetModelByteWrite {
   int64_t logicalRank = -1;
   TargetModelAddressSpace addressSpace = TargetModelAddressSpace::RankSPM;
   uint64_t address = 0;
   uint64_t requiredAlignment = 1;
   std::vector<uint8_t> bytes;
+  std::optional<TargetModelStridedByteLayout> stridedLayout;
 };
 
 /// Invocation-private bytes. No mutation API exposes a backing pointer;
@@ -166,6 +175,14 @@ public:
   readSnapshot(int64_t logicalRank, TargetModelAddressSpace addressSpace,
                uint64_t address, uint64_t byteCount,
                uint64_t requiredAlignment) const;
+
+  /// Returns one compact payload in descriptor iteration order. Repeated or
+  /// overlapping source segments are legal and are snapshotted independently.
+  llvm::Expected<std::vector<uint8_t>>
+  readStridedSnapshot(int64_t logicalRank, TargetModelAddressSpace addressSpace,
+                      uint64_t address,
+                      const TargetModelStridedByteLayout &layout,
+                      uint64_t requiredAlignment) const;
 
   llvm::Error
   applyAtomically(llvm::ArrayRef<TargetModelByteWrite> pendingWrites);

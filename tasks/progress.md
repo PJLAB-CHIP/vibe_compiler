@@ -6,8 +6,8 @@
 长期架构与pipeline contract以编号设计文档为准，详细完成证据与实施记录位于`tasks/archive/`，完整导航见
 `tasks/README.md`；历史变化由Git保留。
 
-当前发布基线：Q22 repo-owned target-call/SystemC model-only untimed functional-numeric链已经完成，数值纵向
-验证直接比较固定source CPU expected，不再维护accepted-IR第二套解释器；
+当前发布基线：Q22 repo-owned target-call/SystemC model-only untimed functional-numeric链及Q28标准Llama-2 7B单block
+TP16 scale vertical已经完成，数值纵向直接比较固定source CPU expected，不再维护accepted-IR第二套解释器；
 SystemC受管依赖统一位于`third_party/systemc-model`。板端执行、板端数值相关、exact package执行、packet provenance
 和timing仍是独立later/external gate。
 
@@ -51,9 +51,8 @@ Q22 + owner-approved packet evidence -> Q22.K
 
 ## 当前实施队列
 
-| Tracking ID | Semantic key | 状态 | 前置 | 当前边界 | 设计 / 计划 |
-| --- | --- | --- | --- | --- | --- |
-| Q28 | `llama-7b-block-vertical` | `doing` | Q29 tile-dataflow scheduling及7B TP16 compile-only resource/package gate完成；Q22 CModel、Q27 consumer收敛及既有TP16 source/corpus前置保持 | 从已验证的新task-dataflow package继续标准Llama-2 7B单block managed-reference完整CModel执行与PyTorch eager expected全张量差分；保留已闭合的空间/时间切分、resource、all-rank package及no-card事实，不把compile-only结果冒充数值完成。 | 02、03、06、09、12、16、17；`tasks/plans/llama-7b-block-vertical.md` |
+当前没有`doing`或`next` implementation row。下列later/external gate不会因队列空闲自动进入主线；开始新任务前必须先更新
+对应编号设计、pipeline contract和实施计划。
 
 ## Later / External Gates
 
@@ -102,6 +101,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 | Q26 | `memory-lifetime-analysis` | `done` | instruction loop backedge completion、共享path-sensitive lifetime/packing core、DDR issue-to-fence lifetime及两侧原子offset commit闭合，SPM/DDR各自memory-space、DTE、descriptor和resource合同保持。 | 09、11、12、18；`tasks/archive/memory-lifetime-analysis.md` |
 | Q27 | `reference-executor-retirement` | `done` | accepted-IR第二套解释器、oracle分支和旧CLI退役；CPU expected、typed invocation及target CModel/board differential边界保留。 | 01、16-18；`tasks/archive/reference-executor-retirement.md` |
 | Q29 | `tile-dataflow-scheduling` | `done` | structured tensor program直达bounded rank-local task/dataflow candidate、完整traversal、跨region SPM、whole-rank/whole-variant resource gate、旧group executable surface退役及TP16 7B compile-only all-rank package闭合。 | 01、06-13、16；`tasks/archive/tile-dataflow-scheduling.md` |
+| Q28 | `llama-7b-block-vertical` | `done` | 标准Llama-2 7B单block TP16从真实source、task-dataflow package到repo-owned SystemC managed-reference执行及完整PyTorch eager output differential闭合；不包含board、exact ELF、性能或timing。 | 02、03、06、09、11、12、16、17；`tasks/archive/llama-7b-block-vertical.md` |
 | Q1 | `crt-surface-audit` | `done` | compiler-emitted production CRT symbol/prototype surface审计完成。 | 11、14、16及对应archive |
 | Q2-Q3 | `crt-device-symbol-closure` | `done` | production CRT symbol和device-link closure闭合。 | 11、14、16及对应archive |
 | Q3.5 | `crt-extended-evidence` | `done` | 扩展CRT surface evidence已分级。 | 11、14、16及对应archive |
@@ -111,7 +111,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 
 ## 实施计划入口
 
-- Active：`tasks/plans/llama-7b-block-vertical.md`。
-- Next：无；先完成当前Q28。
+- Active：无。
+- Next：无；later/external gate需满足各自外部前置后另行排队。
 - 新实施计划：`tasks/plans/`。
 - 已完成计划和历史证据：`tasks/README.md`的“实施计划导航”和“归档文档”。

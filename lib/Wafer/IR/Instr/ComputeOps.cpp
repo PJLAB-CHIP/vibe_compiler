@@ -170,19 +170,27 @@ static mlir::LogicalResult verifyUnpoolShapeRelation(
   return mlir::success();
 }
 
-static bool isAlignedGemmLayout(MemLayout layout) {
-  return layout == MemLayout::Cx || layout == MemLayout::NCx;
-}
-
 static mlir::LogicalResult verifyAlignedSPMGemmMemRef(mlir::Operation *op,
                                                       mlir::Type type,
                                                       llvm::StringRef role) {
   if (mlir::failed(verifySPMMemRef(op, type, role)))
     return mlir::failure();
+  std::optional<mlir::RankedTensorType> tensor = getLogicalTensorType(type);
+  if (!tensor)
+    return op->emitOpError() << role << " must be a ranked Wafer memref";
+  const MemLayout expectedLayout =
+      tensor->getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
   std::optional<MemLayout> layout = getWaferLayout(type);
-  if (!layout || !isAlignedGemmLayout(*layout))
-    return op->emitOpError("lhs, rhs and dest must use aligned SPM layouts");
+  if (!layout || *layout != expectedLayout)
+    return op->emitOpError()
+           << role
+           << (tensor->getRank() > 2 ? " rank > 2 must use ncx layout"
+                                     : " rank <= 2 must use cx layout");
   return mlir::success();
+}
+
+static bool isAlignedGemmLayout(MemLayout layout) {
+  return layout == MemLayout::Cx || layout == MemLayout::NCx;
 }
 
 static mlir::LogicalResult verifyAlignedSPMMemRef(mlir::Operation *op,

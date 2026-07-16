@@ -53,8 +53,8 @@ Pipeline position:
   SPM buffer跨task传递且不会被tile-region container边界强制写回DDR；layout、DMA、collective、event和buffer
   lifetime均可从accepted IR重算。7B compile gate证明Q/K/V/O/gate/up/down的完整weight-layout DDR临时值消失、
   gate/up共享activation不随每个N tile重复RDMA、collective结果在wait后直接进入residual；全部rank通过
-  SPM/DDR/transport/ABI和complete-coverage gate，任一candidate/rank失败不形成partial bundle。Q28继续拥有
-  7B完整CModel数值差分和性能观察，不由Q29文档完成替代。
+  SPM/DDR/transport/ABI和complete-coverage gate，任一candidate/rank失败不形成partial bundle。Q28作为独立下游gate
+  已完成7B完整CModel/PyTorch数值差分，但不反向替代Q29的结构、资源或调度证据。
 ```
 
 ## 2. 核心结论和稳定术语
@@ -475,8 +475,8 @@ schema-v3 package；manifest含`rank_count=16`，以及各16个modules、entries
 16个module均为328,456-byte RISC-V ELF64 DYN，SHA-256逐项readback且因rank-specific DTE metadata保持digest互异；
 历史pre-SPM-root module为332,552 bytes。`wafer-run --no-card`逐一对同一package的entry 0..15、Direct DTE status ABI和host-watchdog
 requirement做了exact preflight，16项全部通过且均报告`board_execution: false`。这只是compiler、resource、transport、
-ABI、package和no-card结构证据；本轮未运行7B target
-CModel，也未把output与PyTorch `expected.npy`比较，完整数值gate仍由Q28拥有。
+ABI、package和no-card结构证据；Q29该轮未运行7B target CModel，也未把output与PyTorch `expected.npy`比较。
+后续Q28已从同一source/config独立完成该数值gate，不能改写成Q29当时已经执行。
 
 ## 9. `wafer.group`退役
 
@@ -491,8 +491,8 @@ Q29不保留group compatibility layer。退役后的终态遵循：
 4. source/IR组织检查继续禁止旧目录、注册和consumer回归；negative tombstone不是可执行compatibility路径。
    `tasks/06-group.md`文件名只因编号导航暂不改，不代表IR/API继续存在。
 
-当前Q28工作树中的真实7B corpus、numeric/backend和nested-capture修复必须保留。Q29先替换execution scheduling
-边界，Q28随后从同一source/config重新运行完整CModel差分；不得用旧53-group accepted IR冒充新task-dataflow gate。
+Q29实施时保留了当时Q28工作树中的真实7B corpus、numeric/backend和nested-capture修复，先替换execution scheduling
+边界；随后Q28已从同一source/config重新运行完整CModel差分。旧53-group accepted IR从未被当作新task-dataflow gate。
 
 ## 10. Verification and Completion
 
@@ -531,4 +531,4 @@ Q29只有在以下条件同时满足时才能标记完成：
 base/numeric/bulk/SystemC unit分别235/235、48/48、18/18、5/5，CTest 22/22；development配置的lit为
 220 pass、3个明确feature unsupported，base unit 235/235，CTest 12/12。dependency、109项CRT symbol、
 CRT conformance、IR/source organization与diff检查均通过。详细unsupported清单、CRT计数和纵向transaction证据由
-`tasks/16-verification-plan.md`及归档实施记录拥有；Q29据此完成，Q28继续7B完整CModel/PyTorch数值差分。
+`tasks/16-verification-plan.md`及归档实施记录拥有；Q29据此完成，Q28随后也已独立闭合7B完整CModel/PyTorch数值差分。

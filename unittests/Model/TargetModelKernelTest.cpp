@@ -314,6 +314,8 @@ TEST(TargetModelKernelTest, StridedRDMAAndWDMACommitOnlyCompleteEffects) {
                                                      LogicalFormat::F32}};
   TargetModelCommandEffect readEffect =
       llvm::cantFail(executeTargetModelCommand(rdma, memory, makeBudget()));
+  ASSERT_EQ(readEffect.pendingWrites.size(), 1u);
+  EXPECT_FALSE(readEffect.pendingWrites.front().stridedLayout.has_value());
   EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
                 0, TargetModelAddressSpace::RankSPM, spm, 8, 1)),
             std::vector<uint8_t>(8, 0));
@@ -335,6 +337,10 @@ TEST(TargetModelKernelTest, StridedRDMAAndWDMACommitOnlyCompleteEffects) {
                                   LogicalFormat::F32}};
   TargetModelCommandEffect writeEffect =
       llvm::cantFail(executeTargetModelCommand(wdma, memory, makeBudget()));
+  ASSERT_EQ(writeEffect.pendingWrites.size(), 1u);
+  ASSERT_TRUE(writeEffect.pendingWrites.front().stridedLayout.has_value());
+  EXPECT_EQ(writeEffect.pendingWrites.front().stridedLayout->iterations,
+            (std::array<uint32_t, 3>{2, 1, 1}));
   llvm::cantFail(
       commitTargetModelCommandEffect(memory, context, std::move(writeEffect)));
   std::vector<uint8_t> output = llvm::cantFail(memory.readSlotSnapshot(0, 1));
@@ -342,6 +348,205 @@ TEST(TargetModelKernelTest, StridedRDMAAndWDMACommitOnlyCompleteEffects) {
             (std::vector<uint8_t>{0, 1, 2, 3}));
   EXPECT_EQ(std::vector<uint8_t>(output.begin() + 8, output.begin() + 12),
             (std::vector<uint8_t>{8, 9, 10, 11}));
+}
+
+TEST(TargetModelKernelTest,
+     GatherScatterSnapshotsOverlappingSourceBeforeCompactWrite) {
+  InvocationMemoryRegistry memory = makeRegistry();
+  FormalNumericExecutionContext context;
+  const uint64_t spm = memory.getAddressPlan().getSPMBase();
+  llvm::cantFail(memory.applyAtomically(
+      {TargetModelByteWrite{0,
+                            TargetModelAddressSpace::RankSPM,
+                            spm,
+                            1,
+                            {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}}}));
+  TargetTransaction gather{
+      0, 0,
+      TargetGatherScatterTransaction{
+          spm, spm + 2, 8, 2, {2, 0, 0}, {4, 1, 1}, {2, 0, 0}, {4, 1, 1}}};
+  TargetModelCommandEffect effect =
+      llvm::cantFail(executeTargetModelCommand(gather, memory, makeBudget()));
+  ASSERT_EQ(effect.pendingWrites.size(), 1u);
+  ASSERT_TRUE(effect.pendingWrites.front().stridedLayout.has_value());
+  EXPECT_EQ(effect.pendingWrites.front().bytes,
+            (std::vector<uint8_t>{0, 1, 2, 3, 4, 5, 6, 7}));
+  EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
+                0, TargetModelAddressSpace::RankSPM, spm, 10, 1)),
+            (std::vector<uint8_t>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}));
+  llvm::cantFail(
+      commitTargetModelCommandEffect(memory, context, std::move(effect)));
+  EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
+                0, TargetModelAddressSpace::RankSPM, spm, 10, 1)),
+            (std::vector<uint8_t>{0, 1, 0, 1, 2, 3, 4, 5, 6, 7}));
+}
+
+TEST(TargetModelKernelTest, GatherScatterAllowsRepeatedSourceSegments) {
+  InvocationMemoryRegistry memory = makeRegistry();
+  FormalNumericExecutionContext context;
+  const uint64_t spm = memory.getAddressPlan().getSPMBase();
+  llvm::cantFail(memory.applyAtomically({TargetModelByteWrite{
+      0, TargetModelAddressSpace::RankSPM, spm, 1, {7, 9}}}));
+  const uint64_t destination = spm + UINT64_C(0x100);
+  TargetTransaction gather{
+      0, 0,
+      TargetGatherScatterTransaction{
+          spm, destination, 4, 2, {0, 0, 0}, {2, 1, 1}, {2, 0, 0}, {2, 1, 1}}};
+  TargetModelCommandEffect effect =
+      llvm::cantFail(executeTargetModelCommand(gather, memory, makeBudget()));
+  ASSERT_EQ(effect.pendingWrites.size(), 1u);
+  EXPECT_EQ(effect.pendingWrites.front().bytes,
+            (std::vector<uint8_t>{7, 9, 7, 9}));
+  llvm::cantFail(
+      commitTargetModelCommandEffect(memory, context, std::move(effect)));
+  EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
+                0, TargetModelAddressSpace::RankSPM, destination, 4, 1)),
+            (std::vector<uint8_t>{7, 9, 7, 9}));
+}
+
+TEST(TargetModelKernelTest,
+     OverlappingGatherDestinationFailsWithoutPartialPublication) {
+  InvocationMemoryRegistry memory = makeRegistry();
+  FormalNumericExecutionContext context;
+  const uint64_t spm = memory.getAddressPlan().getSPMBase();
+  llvm::cantFail(memory.applyAtomically({TargetModelByteWrite{
+      0, TargetModelAddressSpace::RankSPM, spm, 1, {1, 2, 3, 4}}}));
+  const uint64_t destination = spm + UINT64_C(0x100);
+  TargetTransaction gather{
+      0, 0,
+      TargetGatherScatterTransaction{
+          spm, destination, 4, 2, {2, 0, 0}, {2, 1, 1}, {0, 0, 0}, {2, 1, 1}}};
+  TargetModelCommandEffect effect =
+      llvm::cantFail(executeTargetModelCommand(gather, memory, makeBudget()));
+  ASSERT_EQ(effect.pendingWrites.size(), 1u);
+  std::string error = expectError(
+      commitTargetModelCommandEffect(memory, context, std::move(effect)));
+  EXPECT_NE(error.find("pending writes overlap"), std::string::npos);
+  EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
+                0, TargetModelAddressSpace::RankSPM, destination, 4, 1)),
+            std::vector<uint8_t>(4, 0));
+  EXPECT_FALSE(context.getAggregateFlags().any());
+}
+
+TEST(TargetModelKernelTest,
+     NonCanonicalMovementUsesLinearFallbackWithoutChangingDescriptorOrder) {
+  InvocationMemoryRegistry memory = makeRegistry();
+  FormalNumericExecutionContext context;
+  const uint64_t spm = memory.getAddressPlan().getSPMBase();
+  TargetTransaction rdma{0, 0,
+                         TargetStridedDMATransaction{TargetDMADirection::Read,
+                                                     kDDRBase,
+                                                     spm,
+                                                     12,
+                                                     2,
+                                                     {4, 6, 0},
+                                                     {3, 2, 1},
+                                                     LogicalFormat::F16}};
+  TargetModelCommandEffect readEffect =
+      llvm::cantFail(executeTargetModelCommand(rdma, memory, makeBudget()));
+  llvm::cantFail(
+      commitTargetModelCommandEffect(memory, context, std::move(readEffect)));
+  EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
+                0, TargetModelAddressSpace::RankSPM, spm, 12, 1)),
+            (std::vector<uint8_t>{0, 1, 4, 5, 8, 9, 6, 7, 10, 11, 14, 15}));
+
+  TargetTransaction wdma{
+      0, 1,
+      TargetStridedDMATransaction{TargetDMADirection::Write,
+                                  spm,
+                                  kDDRBase + UINT64_C(0x1000),
+                                  12,
+                                  2,
+                                  {4, 6, 0},
+                                  {3, 2, 1},
+                                  LogicalFormat::F16}};
+  TargetModelCommandEffect writeEffect =
+      llvm::cantFail(executeTargetModelCommand(wdma, memory, makeBudget()));
+  ASSERT_EQ(writeEffect.pendingWrites.size(), 1u);
+  llvm::cantFail(
+      commitTargetModelCommandEffect(memory, context, std::move(writeEffect)));
+  std::vector<uint8_t> output = llvm::cantFail(memory.readSlotSnapshot(0, 1));
+  EXPECT_EQ(std::vector<uint8_t>(output.begin(), output.begin() + 16),
+            (std::vector<uint8_t>{0, 1, 0, 0, 4, 5, 6, 7, 8, 9, 10, 11, 0, 0,
+                                  14, 15}));
+}
+
+TEST(TargetModelKernelTest,
+     LargeTransposeMovementKeepsOneEffectFor352256Segments) {
+  constexpr uint32_t kColumns = 688;
+  constexpr uint32_t kRows = 512;
+  constexpr uint32_t kSegmentCount = kColumns * kRows;
+  constexpr uint32_t kInnerBytes = 2;
+  constexpr uint32_t kPayloadBytes = kSegmentCount * kInnerBytes;
+  InvocationMemoryRegistry memory = makeRegistry();
+  FormalNumericExecutionContext context;
+  const uint64_t spm = memory.getAddressPlan().getSPMBase();
+  const uint64_t transposed = spm + UINT64_C(0x100000);
+  const uint64_t roundTrip = spm + UINT64_C(0x200000);
+  std::vector<uint8_t> payload(kPayloadBytes);
+  for (uint64_t segment = 0; segment < kSegmentCount; ++segment) {
+    payload[segment * 2] = static_cast<uint8_t>(segment);
+    payload[segment * 2 + 1] = static_cast<uint8_t>(segment >> 8);
+  }
+  llvm::cantFail(memory.applyAtomically({TargetModelByteWrite{
+      0, TargetModelAddressSpace::RankSPM, spm, 1, payload}}));
+
+  TargetModelKernelBudget largeBudget = TargetModelKernelBudget::create(
+      FormalNumericWorkBudget::create(/*maximumScalarEvaluations=*/1,
+                                      /*maximumFusedMultiplyAdds=*/1),
+      kPayloadBytes, kSegmentCount);
+  TargetTransaction transpose{
+      0, 0,
+      TargetGatherScatterTransaction{spm,
+                                     transposed,
+                                     kPayloadBytes,
+                                     kInnerBytes,
+                                     {kInnerBytes, kColumns * kInnerBytes, 0},
+                                     {kColumns, kRows, 1},
+                                     {kRows * kInnerBytes, kInnerBytes, 0},
+                                     {kColumns, kRows, 1}}};
+  TargetModelCommandEffect effect =
+      llvm::cantFail(executeTargetModelCommand(transpose, memory, largeBudget));
+  ASSERT_EQ(effect.pendingWrites.size(), 1u);
+  ASSERT_TRUE(effect.pendingWrites.front().stridedLayout.has_value());
+  EXPECT_EQ(effect.pendingWrites.front().bytes.size(), kPayloadBytes);
+  EXPECT_EQ(effect.pendingWrites.front().stridedLayout->strides,
+            (std::array<uint32_t, 3>{kRows * kInnerBytes, kInnerBytes, 0}));
+  llvm::cantFail(
+      commitTargetModelCommandEffect(memory, context, std::move(effect)));
+  std::vector<uint8_t> output = llvm::cantFail(memory.readSnapshot(
+      0, TargetModelAddressSpace::RankSPM, transposed, kPayloadBytes, 1));
+  auto expectTransposedSegment = [&](uint32_t column, uint32_t row) {
+    const uint64_t sourceSegment = row * kColumns + column;
+    const uint64_t destinationOffset = (column * kRows + row) * kInnerBytes;
+    EXPECT_EQ(output[destinationOffset], payload[sourceSegment * 2]);
+    EXPECT_EQ(output[destinationOffset + 1], payload[sourceSegment * 2 + 1]);
+  };
+  expectTransposedSegment(0, 0);
+  expectTransposedSegment(1, 0);
+  expectTransposedSegment(0, 1);
+  expectTransposedSegment(kColumns / 2, kRows / 2);
+  expectTransposedSegment(kColumns - 1, kRows - 1);
+
+  TargetTransaction reverse{
+      0, 1,
+      TargetGatherScatterTransaction{transposed,
+                                     roundTrip,
+                                     kPayloadBytes,
+                                     kInnerBytes,
+                                     {kRows * kInnerBytes, kInnerBytes, 0},
+                                     {kColumns, kRows, 1},
+                                     {kInnerBytes, kColumns * kInnerBytes, 0},
+                                     {kColumns, kRows, 1}}};
+  TargetModelCommandEffect reverseEffect =
+      llvm::cantFail(executeTargetModelCommand(reverse, memory, largeBudget));
+  ASSERT_EQ(reverseEffect.pendingWrites.size(), 1u);
+  llvm::cantFail(commitTargetModelCommandEffect(memory, context,
+                                                std::move(reverseEffect)));
+  EXPECT_EQ(
+      llvm::cantFail(memory.readSnapshot(0, TargetModelAddressSpace::RankSPM,
+                                         roundTrip, kPayloadBytes, 1)),
+      payload);
 }
 
 TEST(TargetModelKernelTest, ElementwiseUsesPhysicalCodecAndFormalNumeric) {
@@ -469,6 +674,50 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
   EXPECT_EQ(product[1].bits, UINT64_C(0x4200));
   EXPECT_EQ(product[2].bits, UINT64_C(0x4400));
   EXPECT_EQ(product[3].bits, UINT64_C(0x4500));
+}
+
+TEST(TargetModelKernelTest, BatchedGemmUsesImplicitNCxStorageContract) {
+  InvocationMemoryRegistry memory = makeRegistry();
+  FormalNumericExecutionContext context;
+  const uint64_t spm = memory.getAddressPlan().getSPMBase();
+  NumericTensorKey batchMatrices =
+      makeTensor(LogicalFormat::F32, NumericTensorLayout::NCx, {2, 2, 2});
+  writeTensor(memory, 0, spm, batchMatrices,
+              {{LogicalFormat::F32, UINT64_C(0x3f800000)},
+               {LogicalFormat::F32, UINT64_C(0x40000000)},
+               {LogicalFormat::F32, UINT64_C(0x40400000)},
+               {LogicalFormat::F32, UINT64_C(0x40800000)},
+               {LogicalFormat::F32, UINT64_C(0x40a00000)},
+               {LogicalFormat::F32, UINT64_C(0x40c00000)},
+               {LogicalFormat::F32, UINT64_C(0x40e00000)},
+               {LogicalFormat::F32, UINT64_C(0x41000000)}});
+  writeTensor(memory, 0, spm + UINT64_C(0x1000), batchMatrices,
+              {{LogicalFormat::F32, UINT64_C(0x3f800000)},
+               {LogicalFormat::F32, UINT64_C(0)},
+               {LogicalFormat::F32, UINT64_C(0)},
+               {LogicalFormat::F32, UINT64_C(0x3f800000)},
+               {LogicalFormat::F32, UINT64_C(0x40000000)},
+               {LogicalFormat::F32, UINT64_C(0x3f800000)},
+               {LogicalFormat::F32, UINT64_C(0x3f800000)},
+               {LogicalFormat::F32, UINT64_C(0x40000000)}});
+  TargetTransaction gemm{0, 0,
+                         TargetGemmTransaction{spm, spm + UINT64_C(0x1000),
+                                               spm + UINT64_C(0x2000), 2, 2, 2,
+                                               2, LogicalFormat::F32}};
+  TargetModelCommandEffect effect =
+      llvm::cantFail(executeTargetModelCommand(gemm, memory, makeBudget()));
+  llvm::cantFail(
+      commitTargetModelCommandEffect(memory, context, std::move(effect)));
+
+  std::vector<RawLogicalValue> product =
+      readTensor(memory, 0, spm + UINT64_C(0x2000), batchMatrices);
+  ASSERT_EQ(product.size(), 8u);
+  const std::vector<uint64_t> expected{
+      UINT64_C(0x3f800000), UINT64_C(0x40000000), UINT64_C(0x40400000),
+      UINT64_C(0x40800000), UINT64_C(0x41800000), UINT64_C(0x41880000),
+      UINT64_C(0x41b00000), UINT64_C(0x41b80000)};
+  for (auto [value, expectedBits] : llvm::zip_equal(product, expected))
+    EXPECT_EQ(value.bits, expectedBits);
 }
 
 TEST(TargetModelKernelTest,

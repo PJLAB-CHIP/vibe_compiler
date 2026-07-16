@@ -288,6 +288,55 @@ TEST(WaferDialectTest, ComputesCxAndNCxBlockMajorOffsetsForLargeC) {
   EXPECT_EQ(*ncxOffset, 6784);
 }
 
+TEST(WaferDialectTest, SingleBatchNCxIsPhysicallyEquivalentToCx) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+
+  auto cxMemory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                         wafer::MemLayout::Cx);
+  auto ncxMemory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                          wafer::MemLayout::NCx);
+  mlir::Type f16 = mlir::Float16Type::get(&context);
+
+  // C=129 exercises two complete 64-lane blocks and a retained C0 tail.
+  constexpr int64_t m = 3;
+  constexpr int64_t c = 129;
+  auto cxType = mlir::MemRefType::get(
+      {m, c}, f16, mlir::MemRefLayoutAttrInterface{}, cxMemory);
+  auto singleBatchNCxType = mlir::MemRefType::get(
+      {1, m, c}, f16, mlir::MemRefLayoutAttrInterface{}, ncxMemory);
+  std::optional<wafer::WaferPhysicalTensorInfo> cxInfo =
+      wafer::computeWaferPhysicalTensorInfo(cxType);
+  std::optional<wafer::WaferPhysicalTensorInfo> ncxInfo =
+      wafer::computeWaferPhysicalTensorInfo(singleBatchNCxType);
+  ASSERT_TRUE(cxInfo);
+  ASSERT_TRUE(ncxInfo);
+  ASSERT_EQ(cxInfo->cxBlocks, 2);
+  ASSERT_EQ(cxInfo->c0, 4);
+  EXPECT_EQ(ncxInfo->cxBlocks, cxInfo->cxBlocks);
+  EXPECT_EQ(ncxInfo->c0, cxInfo->c0);
+  EXPECT_EQ(ncxInfo->physicalElements, cxInfo->physicalElements);
+  EXPECT_EQ(ncxInfo->physicalBytes, cxInfo->physicalBytes);
+
+  for (int64_t row = 0; row < m; ++row) {
+    for (int64_t channel = 0; channel < c; ++channel) {
+      SCOPED_TRACE(testing::Message()
+                   << "row=" << row << " channel=" << channel);
+      std::optional<int64_t> cxOffset =
+          wafer::computeWaferPhysicalElementByteOffset(cxType, {row, channel});
+      std::optional<int64_t> ncxOffset =
+          wafer::computeWaferPhysicalElementByteOffset(singleBatchNCxType,
+                                                       {0, row, channel});
+      ASSERT_TRUE(cxOffset);
+      ASSERT_TRUE(ncxOffset);
+      EXPECT_EQ(*ncxOffset, *cxOffset);
+    }
+  }
+}
+
 TEST(WaferDialectTest, PhysicalLayoutMatchesIndependentSlowCoordinateOracle) {
   mlir::DialectRegistry registry;
   wafer::registerAllDialects(registry);

@@ -441,64 +441,6 @@ llvm::Expected<std::vector<uint8_t>> InvocationMemoryRegistry::readSnapshot(
                               bytes->begin() + begin + size);
 }
 
-llvm::Error InvocationMemoryRegistry::applyAtomically(
-    llvm::ArrayRef<TargetModelByteWrite> pendingWrites) {
-  std::vector<TargetModelResolvedRange> resolvedWrites;
-  resolvedWrites.reserve(pendingWrites.size());
-  for (const TargetModelByteWrite &write : pendingWrites) {
-    if (write.bytes.empty())
-      return memoryError(TargetModelMemoryErrorCode::InvalidEffect,
-                         "pending write has no bytes");
-    llvm::Expected<TargetModelResolvedRange> resolved = plan.resolve(
-        write.logicalRank, write.addressSpace, TargetModelAccess::Write,
-        write.address, write.bytes.size(), write.requiredAlignment);
-    if (!resolved)
-      return resolved.takeError();
-    resolvedWrites.push_back(*resolved);
-  }
-
-  for (size_t lhs = 0; lhs < resolvedWrites.size(); ++lhs) {
-    uint64_t lhsEnd = 0;
-    (void)checkedAdd(resolvedWrites[lhs].regionOffset,
-                     resolvedWrites[lhs].byteCount, lhsEnd);
-    for (size_t rhs = lhs + 1; rhs < resolvedWrites.size(); ++rhs) {
-      if (resolvedWrites[lhs].logicalRank != resolvedWrites[rhs].logicalRank ||
-          resolvedWrites[lhs].addressSpace !=
-              resolvedWrites[rhs].addressSpace ||
-          resolvedWrites[lhs].slotOrdinal != resolvedWrites[rhs].slotOrdinal)
-        continue;
-      uint64_t rhsEnd = 0;
-      (void)checkedAdd(resolvedWrites[rhs].regionOffset,
-                       resolvedWrites[rhs].byteCount, rhsEnd);
-      if (resolvedWrites[lhs].regionOffset < rhsEnd &&
-          resolvedWrites[rhs].regionOffset < lhsEnd)
-        return memoryError(TargetModelMemoryErrorCode::InvalidEffect,
-                           "pending writes overlap one private resource");
-    }
-  }
-
-  for (size_t index = 0; index < pendingWrites.size(); ++index) {
-    const TargetModelByteWrite &write = pendingWrites[index];
-    const TargetModelResolvedRange &resolved = resolvedWrites[index];
-    std::vector<uint8_t> *bytes = nullptr;
-    if (resolved.addressSpace == TargetModelAddressSpace::RankSPM) {
-      RankSPMStorage *storage = findSPM(resolved.logicalRank);
-      if (storage)
-        bytes = &storage->bytes;
-    } else if (resolved.slotOrdinal) {
-      SlotStorage *storage =
-          findSlot(resolved.logicalRank, *resolved.slotOrdinal);
-      if (storage)
-        bytes = &storage->bytes;
-    }
-    if (!bytes)
-      llvm_unreachable("validated model resource must have private storage");
-    std::copy(write.bytes.begin(), write.bytes.end(),
-              bytes->begin() + static_cast<size_t>(resolved.regionOffset));
-  }
-  return llvm::Error::success();
-}
-
 llvm::Expected<std::vector<uint8_t>>
 InvocationMemoryRegistry::readSlotSnapshot(int64_t logicalRank,
                                            int64_t slotOrdinal) const {

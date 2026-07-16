@@ -1,6 +1,6 @@
 # Wafer Target Execution Model（CModel）
 
-状态：2026-07-14已完成Q22.N/L/B/H/S/V并汇总发布Q22 model-only functional-numeric profile；封闭vendor
+状态：2026-07-16已完成Q22.N/L/B/H/S/V、Q22 model-only functional-numeric profile及Q28标准7B单block scale vertical；封闭vendor
 Host-CRT/packet/DWFC seam不作为数值CModel依赖。本文固定以数值正确性为
 近期目标的untimed target execution model、SystemC/TLM边界、实现分层和板端numeric correlation计划；timing calibration
 仅作为deferred extension。任务状态看
@@ -80,7 +80,8 @@ Pipeline position:
   profile和model consumer，且不存在target profile默认值；`--model-input`和`--model-expected`只使用调用者提供的
   固定source corpus payload/expected。wafer-compile在Q17/Q18原子发布后、同一invocation仍持有target LLVM bundle时
   执行host target LLVM，exact-signature bridge再向SystemC model发typed transaction/event。GEMM policy显式选择
-  `formal`或`prefer-admitted`，后者只能消费verified bulk qualification record。
+  `formal`、`prefer-admitted`或`managed-reference`：`prefer-admitted`只能消费verified bulk qualification record；
+  `managed-reference`只用于受管环境下的scale functional-reference gate，不签发Q22.B exact admission，也不改变target capability registry。
   wafer-opt/pass chain和component fixture只补局部测试。只有exact package/ELF执行闭合后，wafer-run才通过typed
   RuntimeProvider选择target model并消费verified package，不能用host-only模式冒充该入口。
 - Explicit non-goals:
@@ -97,6 +98,8 @@ Pipeline position:
   不回滚已验证Q17/Q18 artifacts。Q22只汇总model-only untimed functional-numeric profile；board numeric、exact
   package/ELF和timing accuracy分别由Q22.C、Q22.E和deferred Q22.P保持为更高独立gate。缺许可兼容vendor host seam或
   独立packet/MMIO事实源只阻塞可选packet provenance升级，不阻塞Q22数值功能模型，并禁止CRT/packet/vendor-exact claim。
+  Q28在同一production入口上进一步闭合标准7B单block TP16、managed-reference bulk/tensor lane和完整PyTorch eager
+  output differential；它是Q22之后的scale consumer，不扩大Q22 capability claim，且不证明board、exact package/ELF、性能或timing。
 ```
 
 ## 3. 当前事实基线
@@ -755,8 +758,9 @@ board capture或versioned vendor builder逐字段相关后才增加packet proven
 不读取已发布package、不执行RISC-V ELF/vendor archive，不能使用`wafer-run`的provider语义。
 
 当前driver只有一条数值比较边界：调用者通过`--model-input`/`--model-expected`提供固定source corpus payload和独立
-CPU expected。不存在accepted-IR reference oracle或失败后的隐式切换；f32比较使用case显式atol/rtol，其它当前
-destination raw exact。model成功诊断同时发布
+CPU expected。不存在accepted-IR reference oracle或失败后的隐式切换；F16/BF16/F32 finite output使用case显式
+`atol + rtol * abs(expected)`，整数、布尔和其它非浮点destination raw exact，NaN/Inf在当前source vertical gate拒绝。
+model成功诊断同时发布
 ranks、target transaction、SystemC thread/delta、formal/bulk command、MatMul/reorder/formal-FMA计数及每个bulk admission
 record digest，便于CI证明large GEMM没有按MAC形成event或scalar fallback。这些provenance不进入package。
 
@@ -1428,6 +1432,17 @@ F16/BF16输入到oneDNN F32 descriptor的widening是精确bit mapping，不调�
 finalize语义舍入。当前受管artifact固定`DNNL_CPU_RUNTIME=SEQ`且关闭primitive cache，因此Q28 Release耗时是功能慢测
 基线，不代表多核性能；未来threaded artifact必须作为新的受管依赖/环境身份闭合，不能只继承ambient线程设置。
 
+plain target GEMM只接受exact rank-2 `Cx`；batched form只接受exact rank-3、single-leading-batch、canonical
+`[B,M,K] x [B,K,N] -> [B,M,N]`的`NCx`。target call不携带自由rank/layout/dimension-map字段，因此rank >= 4或
+permuted batch axis会丢失physical bank boundary，必须在target ABI前显式canonicalize，否则verifier拒绝。
+`B=1`时`NCx[1,M,C]`和`Cx[M,C]`的footprint/offset完全相同，已由跨两个channel block和`C0` tail的property
+回归证明，所以CModel按target call的`batch_count`选择layout不会在该特例产生byte歧义。
+
+Q28的movement功能执行保留descriptor本身，而不是把descriptor提前展开成per-segment effect。规则nested stride先以
+checked span、单resource resolve和non-overlap stride合同完成快速验证，再从一份source snapshot提交strided destination；
+其它ABI合法排列允许线性枚举并按区间排序验证。两条路径都必须在任一写入前完成全部range/resource/overlap检查，保持
+gather/scatter source-before-write及命令级atomic effect；不能用性能优化放宽descriptor预算或静默接受重叠destination。
+
 同一显式policy还拥有非GEMM的tensor functional lane，但不扩大target capability registry：只消费已经resolve的F16/F32
 elementwise、F16/F32 nearest-even convert和native F32 sum reduce，在command级检查arity、shape/layout、non-NaN值域及
 scalar/byte budget后使用host native tensor kernel批量执行；attention causal mask所需有符号infinity按IEEE运算保留，
@@ -1436,6 +1451,16 @@ GEMM仍保持finite-only。`formal`继续作为小规模raw-exact scalar oracle�
 dtype/op/rounding或该non-NaN值域外输入输出必须在effect前失败，不能静默回退formal。SystemC仍只调度transaction/event，
 functional kernel不把逐元素操作建成SystemC event。结果分别记录formal、managed-reference tensor和bulk command数量，
 完整PyTorch tolerance comparison是该lane的必要下游consumer，不把它解释为raw-exact或硬件相关证据。
+
+固定source corpus在artifact/digest publication前必须拒绝任一nonfinite input、parameter或expected。F16全张量comparison
+按解码后的finite数值应用显式atol/rtol，不得沿非F32分支退化为raw bytes；raw-exact仍只属于非浮点storage和另行冻结的
+bit-exact capability row。
+
+该scale consumer已经实际完成：16-rank production target LLVM形成19,696个typed transaction并由17个SystemC thread
+执行；managed tensor/bulk分别为2,032/672条command，672条bulk均实际调用MatMul，formal command/FMA为零。完整
+65,536-element F16 output通过固定PyTorch eager tolerance；错误expected和scalar budget负例都在不回滚已发布package的
+同时拒绝matched model result。这里的计数用于证明没有scalar fallback，不是性能或cycle模型；完整corpus、负例和suite
+证据由tasks/16及归档实施记录拥有。
 
 完成边界和负例由tasks/16的Q28 gate拥有；完整32层、KV/autoregressive、board correlation和timing仍分别后续闭合。
 

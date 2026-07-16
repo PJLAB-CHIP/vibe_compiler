@@ -2,44 +2,29 @@
 
 #include "TargetModelKernelInternal.h"
 
-#include "llvm/ADT/STLExtras.h"
-
 #include <array>
-#include <limits>
 #include <utility>
 #include <vector>
 
 namespace wafer::model::kernel_detail {
 namespace {
 
-llvm::Expected<std::vector<uint64_t>> getSegmentAddresses(
-    uint64_t base, uint32_t innerBytes, const std::array<uint32_t, 3> &strides,
-    const std::array<uint32_t, 3> &iterations, TargetModelKernelBudget budget) {
+llvm::Error
+checkMovementSegmentBudget(const std::array<uint32_t, 3> &iterations,
+                           TargetModelKernelBudget budget) {
   llvm::Expected<uint64_t> count = getDescriptorSegmentCount(iterations);
   if (!count)
     return count.takeError();
   if (*count > budget.getMaximumMovementSegments())
     return kernelError(TargetModelKernelErrorCode::WorkBudgetExceeded,
                        "movement segment count exceeds the explicit budget");
-  std::vector<uint64_t> addresses;
-  addresses.reserve(static_cast<size_t>(*count));
-  for (uint64_t outer = 0; outer < iterations[2]; ++outer)
-    for (uint64_t middle = 0; middle < iterations[1]; ++middle)
-      for (uint64_t inner = 0; inner < iterations[0]; ++inner) {
-        uint64_t address = base;
-        for (auto [index, coordinate] :
-             llvm::enumerate(std::array<uint64_t, 3>{inner, middle, outer})) {
-          uint64_t delta = 0;
-          if (!checkedMultiply(coordinate, strides[index], delta) ||
-              !checkedAdd(address, delta, address) ||
-              !checkedAdd(address, innerBytes, delta))
-            return kernelError(
-                TargetModelKernelErrorCode::InvalidTransactionField,
-                "movement segment address overflows");
-        }
-        addresses.push_back(address);
-      }
-  return addresses;
+  return llvm::Error::success();
+}
+
+TargetModelStridedByteLayout
+makeLayout(uint32_t innerBytes, const std::array<uint32_t, 3> &strides,
+           const std::array<uint32_t, 3> &iterations) {
+  return TargetModelStridedByteLayout{innerBytes, strides, iterations};
 }
 
 } // namespace
@@ -64,28 +49,22 @@ executeMovement(const compiler::TargetTransaction &transaction,
   if (value.byteCount > budget.getMaximumMovementBytes())
     return kernelError(TargetModelKernelErrorCode::WorkBudgetExceeded,
                        "DMA byte_count exceeds the explicit budget");
-  llvm::Expected<std::vector<uint64_t>> addresses = getSegmentAddresses(
-      value.direction == compiler::TargetDMADirection::Read ? value.source
-                                                            : value.destination,
-      value.innerBytes, value.strides, value.iterations, budget);
-  if (!addresses)
-    return addresses.takeError();
+  if (llvm::Error error = checkMovementSegmentBudget(value.iterations, budget))
+    return std::move(error);
+  TargetModelStridedByteLayout layout =
+      makeLayout(value.innerBytes, value.strides, value.iterations);
 
   if (value.direction == compiler::TargetDMADirection::Read) {
-    std::vector<uint8_t> payload;
-    payload.reserve(value.byteCount);
-    for (uint64_t address : *addresses) {
-      llvm::Expected<std::vector<uint8_t>> segment = readSnapshot(
-          memory, transaction.logicalRank, TargetModelAddressSpace::CardDDR,
-          address, value.innerBytes);
-      if (!segment)
-        return segment.takeError();
-      payload.insert(payload.end(), segment->begin(), segment->end());
-    }
+    llvm::Expected<std::vector<uint8_t>> payload = memory.readStridedSnapshot(
+        transaction.logicalRank, TargetModelAddressSpace::CardDDR, value.source,
+        layout, 1);
+    if (!payload)
+      return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
+                         llvm::toString(payload.takeError()));
     return TargetModelCommandEffect{
         {TargetModelByteWrite{transaction.logicalRank,
                               TargetModelAddressSpace::RankSPM,
-                              value.destination, 1, std::move(payload)}},
+                              value.destination, 1, std::move(*payload)}},
         {},
         TargetModelControlAction::None};
   }
@@ -95,17 +74,12 @@ executeMovement(const compiler::TargetTransaction &transaction,
       value.source, value.byteCount);
   if (!payload)
     return payload.takeError();
-  std::vector<TargetModelByteWrite> writes;
-  writes.reserve(addresses->size());
-  for (auto [index, address] : llvm::enumerate(*addresses)) {
-    const size_t begin = index * value.innerBytes;
-    writes.push_back(TargetModelByteWrite{
-        transaction.logicalRank, TargetModelAddressSpace::CardDDR, address, 1,
-        std::vector<uint8_t>(payload->begin() + begin,
-                             payload->begin() + begin + value.innerBytes)});
-  }
   return TargetModelCommandEffect{
-      std::move(writes), {}, TargetModelControlAction::None};
+      {TargetModelByteWrite{transaction.logicalRank,
+                            TargetModelAddressSpace::CardDDR, value.destination,
+                            1, std::move(*payload), layout}},
+      {},
+      TargetModelControlAction::None};
 }
 
 llvm::Expected<TargetModelCommandEffect>
@@ -116,38 +90,40 @@ executeGatherScatter(const compiler::TargetTransaction &transaction,
   if (value.byteCount > budget.getMaximumMovementBytes())
     return kernelError(TargetModelKernelErrorCode::WorkBudgetExceeded,
                        "gather/scatter byte_count exceeds explicit budget");
-  llvm::Expected<std::vector<uint64_t>> sourceAddresses =
-      getSegmentAddresses(value.source, value.innerBytes, value.sourceStrides,
-                          value.sourceIterations, budget);
-  if (!sourceAddresses)
-    return sourceAddresses.takeError();
-  llvm::Expected<std::vector<uint64_t>> destinationAddresses =
-      getSegmentAddresses(value.destination, value.innerBytes,
-                          value.destinationStrides, value.destinationIterations,
-                          budget);
-  if (!destinationAddresses)
-    return destinationAddresses.takeError();
-  if (sourceAddresses->size() != destinationAddresses->size())
+  if (llvm::Error error =
+          checkMovementSegmentBudget(value.sourceIterations, budget))
+    return std::move(error);
+  if (llvm::Error error =
+          checkMovementSegmentBudget(value.destinationIterations, budget))
+    return std::move(error);
+  llvm::Expected<uint64_t> sourceSegments =
+      getDescriptorSegmentCount(value.sourceIterations);
+  if (!sourceSegments)
+    return sourceSegments.takeError();
+  llvm::Expected<uint64_t> destinationSegments =
+      getDescriptorSegmentCount(value.destinationIterations);
+  if (!destinationSegments)
+    return destinationSegments.takeError();
+  if (*sourceSegments != *destinationSegments)
     return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
                        "gather/scatter source and destination segment counts "
                        "differ");
-  std::vector<std::vector<uint8_t>> snapshots;
-  snapshots.reserve(sourceAddresses->size());
-  for (uint64_t address : *sourceAddresses) {
-    llvm::Expected<std::vector<uint8_t>> segment = readSnapshot(
-        memory, transaction.logicalRank, TargetModelAddressSpace::RankSPM,
-        address, value.innerBytes);
-    if (!segment)
-      return segment.takeError();
-    snapshots.push_back(std::move(*segment));
-  }
-  std::vector<TargetModelByteWrite> writes;
-  writes.reserve(destinationAddresses->size());
-  for (auto [index, address] : llvm::enumerate(*destinationAddresses))
-    writes.push_back({transaction.logicalRank, TargetModelAddressSpace::RankSPM,
-                      address, 1, std::move(snapshots[index])});
+  TargetModelStridedByteLayout sourceLayout =
+      makeLayout(value.innerBytes, value.sourceStrides, value.sourceIterations);
+  TargetModelStridedByteLayout destinationLayout = makeLayout(
+      value.innerBytes, value.destinationStrides, value.destinationIterations);
+  llvm::Expected<std::vector<uint8_t>> snapshot = memory.readStridedSnapshot(
+      transaction.logicalRank, TargetModelAddressSpace::RankSPM, value.source,
+      sourceLayout, 1);
+  if (!snapshot)
+    return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
+                       llvm::toString(snapshot.takeError()));
   return TargetModelCommandEffect{
-      std::move(writes), {}, TargetModelControlAction::None};
+      {TargetModelByteWrite{transaction.logicalRank,
+                            TargetModelAddressSpace::RankSPM, value.destination,
+                            1, std::move(*snapshot), destinationLayout}},
+      {},
+      TargetModelControlAction::None};
 }
 
 } // namespace wafer::model::kernel_detail

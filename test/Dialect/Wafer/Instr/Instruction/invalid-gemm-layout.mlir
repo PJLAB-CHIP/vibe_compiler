@@ -14,4 +14,4 @@ module {
     into memref<4x16xf16, #wafer.memory<spm, cx>>
 }
 
-// CHECK: error: 'wafer.instr.gemm' op lhs, rhs and dest must use aligned SPM layouts
+// CHECK: error: 'wafer.instr.gemm' op lhs rank <= 2 must use cx layout

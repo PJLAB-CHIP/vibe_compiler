@@ -409,9 +409,9 @@ TileRegionBodyEmitter::convertBatchMatmul(mlir::linalg::LinalgOp op,
     return mlir::failure();
 
   mlir::FailureOr<mlir::Value> lhs =
-      getOrMaterialize(op.getDpsInputs()[0], MemLayout::Cx, builder);
+      getOrMaterialize(op.getDpsInputs()[0], MemLayout::NCx, builder);
   mlir::FailureOr<mlir::Value> rhs =
-      getOrMaterialize(op.getDpsInputs()[1], MemLayout::Cx, builder);
+      getOrMaterialize(op.getDpsInputs()[1], MemLayout::NCx, builder);
   if (mlir::failed(lhs) || mlir::failed(rhs))
     return mlir::failure();
 
@@ -425,7 +425,7 @@ TileRegionBodyEmitter::convertBatchMatmul(mlir::linalg::LinalgOp op,
     return fail("unsupported batch matmul indexing");
 
   auto gemm = builder.create<ComputeGemmOp>(
-      op->getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Cx), *lhs,
+      op->getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::NCx), *lhs,
       *rhs);
   gemm->setAttr("batch_count", builder.getI64IntegerAttr(attrs->batchCount));
   gemm->setAttr("lhs_batch_dims",
@@ -451,7 +451,7 @@ TileRegionBodyEmitter::convertBatchMatmul(mlir::linalg::LinalgOp op,
     record(op->getResult(0), MemLayout::Tensor, *combined);
     return mlir::success();
   }
-  record(op->getResult(0), MemLayout::Cx, gemm.getResult());
+  record(op->getResult(0), MemLayout::NCx, gemm.getResult());
   return mlir::success();
 }
 

@@ -103,8 +103,8 @@ verified static rank structured tensor-program clone
   address/range/descriptor；后续typed C++ bundle承接这些事实，package不重新决定candidate是否可行，也不复制
   placed/access descriptor中间协议。当前rank-local selected-candidate、tile-region、instruction、whole-function
   SPM和whole-variant coordinator的本地路径已闭合。TP16 7B compile-only及rank-count=1/16结构证据由
-  `tasks/06-group.md`和`tasks/16-verification-plan.md`记录；双配置full gate和组织检查也已闭合，Q29完成状态及
-  当前Q28执行状态只看`tasks/progress.md`。
+  `tasks/06-group.md`和`tasks/16-verification-plan.md`记录；双配置full gate和组织检查也已闭合，Q29和Q28的
+  完成状态只看`tasks/progress.md`。
 
 production driver在进入本文前为每个logical rank建立isolated module clone，并把rank作为显式typed C++调用参数传给
 tile-dataflow/tile-region lowering。当前没有executable dialect、candidate rank op或代表rank归并协议；rank identity不能从

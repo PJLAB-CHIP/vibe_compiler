@@ -487,6 +487,8 @@ executeGemm(const compiler::TargetTransaction &transaction,
             const InvocationMemoryRegistry &memory,
             TargetModelKernelBudget budget, TargetModelExecutionPolicy policy) {
   const bool batched = value.batchCount > 1;
+  // The target call has no free layout field. Its storage contract is Cx for
+  // rank-2 GEMM and NCx (including per-batch bank alignment) for batched GEMM.
   const NumericTensorLayout layout =
       batched ? NumericTensorLayout::NCx : NumericTensorLayout::Cx;
   std::vector<uint64_t> lhsShape =

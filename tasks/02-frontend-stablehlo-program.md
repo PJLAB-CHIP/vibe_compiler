@@ -1,7 +1,7 @@
 # Wafer Frontend 与 StableHLO Program Directory 设计
 
-状态：2026-07-16按Q29 structured-program handoff同步。本文只拥有StableHLO program directory、metadata/payload和frontend
-admission合同；typed model/state/resource graph是后续扩展，不是当前pipeline事实。实现状态看
+状态：2026-07-16按Q29 structured-program handoff及已完成Q28 scale corpus/frontend边界同步。本文只拥有StableHLO
+program directory、metadata/payload和frontend admission合同；typed model/state/resource graph是后续扩展，不是当前pipeline事实。实现状态看
 `tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -103,6 +103,11 @@ pre-SPMD parameter来自`data/<parameter>`，captured constant来自`constants/<
 - payload至少包含由checked element-count和element width推导的完整raw bytes；
 - unsupported dtype、overflow或truncated payload fail closed。
 
+`ProgramTensor`边界的多字节element统一使用canonical little-endian storage。NPY `<f2`可直接进入F16 payload，`=f2`
+只在little-endian host上与该合同等价，`>f2`必须拒绝；BF16使用NumPy `|V2`承载已经canonicalize的little-endian raw
+16-bit encoding，producer必须显式写little-endian bytes，consumer不能按host-native `uint16`重新解释。该规则只固定
+public payload bytes，不把NumPy dtype或host endianness提升为target physical layout。
+
 普通tensor constant最终由StableHLO-to-Linalg路径转换成`arith.constant`或其它`ConstantLike`结构。frontend
 不引入`wafer.constant`，也不决定weight packing、physical layout、DDR residency或runtime binding。
 
@@ -178,8 +183,11 @@ task/instruction fixture。
 Q28另以`test/Tools/Inputs/workloads/llama-2-7b-block-v1.json`固定标准Llama-2 7B单block配置：H=4096、
 I=11008、32 heads、head dimension 128、FP16、batch 1、sequence 16。generator直接分块填充最终FP16 parameter
 allocation，避免为90M-element projection额外建立全尺寸临时数组；最终`expected.npy`必须由同一parameter/input的
-PyTorch eager CPU完整block执行产生，手写NumPy路径只作诊断。该case的shape、seed和payload算法是corpus参数，
-不进入frontend artifact协议。
+PyTorch eager CPU完整block执行产生，手写NumPy路径只作诊断。scale payload使用versioned SplitMix64 counter映射：
+global row-major index、固定seed和彼此独立的parameter stream共同形成长周期、FP16-exact值，避免matrix axis短周期重复及
+跨projection系统性相关；input、全部parameter和expected在digest及artifact publication前逐项检查finite。重复export必须
+得到canonical-equivalent program和固定digest，既有tiny corpus保持冻结而不随scale算法迁移。该case的shape、seed和
+payload算法是corpus参数，不进入frontend artifact协议。
 
 ## 5. Sharding Handoff
 
@@ -218,7 +226,8 @@ frontend mandatory coverage包括：
 - 真实PyTorch/XLA capture → program directory → verifier；
 - graph break/eager fallback、metadata length/shape/dtype mismatch；
 - program-directory static boundary；IR-only bounded dynamic及unbounded/invalid bound负例；
-- parameter/constant NPY shape/dtype/order/truncation与unsafe path负例；
+- parameter/constant NPY shape/dtype/order/truncation与unsafe path负例；F16 `<f2`、host-compatible `=f2`、BF16 `|V2`
+  canonical bytes正例及`>f2`拒绝；
 - `input_arg` position唯一连续；
 - schema-v3 replicated/partitioned rank coverage、gap/overlap、payload一致性和mesh mismatch；
 - schema-v1 distributed input/result identity、global/local shape、dtype、rank/replica domain及data/column真实策略；

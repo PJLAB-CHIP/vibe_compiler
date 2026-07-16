@@ -125,13 +125,23 @@ mlir::LogicalResult ComputeGemmOp::verify() {
   if (!lhsTensor || !rhsTensor || !resultTensor)
     return emitOpError("expects Wafer buffer operands and result");
 
-  for (mlir::Type type :
-       {getLhs().getType(), getRhs().getType(), getResult().getType()}) {
+  auto verifyStorage =
+      [&](mlir::Type type,
+          mlir::RankedTensorType tensor) -> mlir::LogicalResult {
     if (!hasWaferMemorySpace(type, MemorySpace::SPM))
       return emitOpError("gemm storage values must use SPM memory space");
-    if (!hasWaferLayout(type, MemLayout::Cx))
-      return emitOpError("gemm storage values must use cx layout");
-  }
+    const MemLayout expectedLayout =
+        tensor.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
+    if (!hasWaferLayout(type, expectedLayout))
+      return emitOpError(tensor.getRank() > 2
+                             ? "batched gemm storage values must use ncx layout"
+                             : "rank-2 gemm storage values must use cx layout");
+    return mlir::success();
+  };
+  if (mlir::failed(verifyStorage(getLhs().getType(), *lhsTensor)) ||
+      mlir::failed(verifyStorage(getRhs().getType(), *rhsTensor)) ||
+      mlir::failed(verifyStorage(getResult().getType(), *resultTensor)))
+    return mlir::failure();
 
   if (lhsTensor->getElementType() != rhsTensor->getElementType() ||
       lhsTensor->getElementType() != resultTensor->getElementType())

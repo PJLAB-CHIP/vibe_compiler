@@ -74,7 +74,8 @@ struct FrontendProgramVerificationResult {
 };
 
 /// Owner-backed row-major tensor payload decoded by the same NPY parser used
-/// by program-directory verification.
+/// by program-directory verification. Multi-byte elements use canonical
+/// little-endian storage, independent of the host byte order.
 struct NpyTensorPayload {
   std::string dtype;
   std::vector<int64_t> shape;

@@ -507,8 +507,9 @@
 - source-backed bulk qualification不能只绑定shape、seed或NPY路径。offline source-spec应嵌入并canonicalize exact target
   physical operand/destination-template bytes，runtime再对command、payload、environment和预期backend output exact-match。
   超过formal budget且无admission时稳定失败；formal fallback只能在checked budget内发生。
-- `wafer-compile --target-model`只消费显式`--model-input`和固定source CPU `--model-expected`。当前f32按case显式
-  atol/rtol，非f32 destination按raw bytes exact；两种失败都保留已经原子发布的verified package供审计。
+- `wafer-compile --target-model`只消费显式`--model-input`和固定source CPU `--model-expected`。已发布的
+  F16/BF16/F32 finite output按case显式atol/rtol逐元素比较；整数、布尔和其它非浮点storage raw exact；TF32/F64等
+  尚无source-output policy的浮点格式fail closed，NaN/Inf拒绝。比较失败仍保留已经原子发布的verified package供审计。
 - target-call decoder closure不能只断言109项都能形成正确variant family。为每个descriptor生成ABI位置互异的sentinel，
   再逐字段比较typed payload中的地址、count、shape/stride、optional parameter、format和static kind；这样字段交换或漏消费
   才会失败。host native frontend的control value也要显式限制为integer/void，LLVM的pointer PHI/select/icmp本身合法，不能
@@ -591,6 +592,12 @@
   H=4096、I=11008、32 heads、FP16、batch 1、sequence 16。最终`expected.npy`必须由同一确定性input/parameter payload的
   PyTorch eager CPU完整block输出产生；手写NumPy仅用于定位误差。production完成入口仍是一次`wafer-compile
   --target-model`的TP16 package与全局output comparison，不把临时corpus目录或生成package写成长期路径。
+- scale corpus不能使用会沿matrix axis重复的短周期序列，也不能让不同parameter stream保持系统性相关。按global
+  row-major counter、固定seed和显式独立stream生成versioned长周期payload，并在digest/artifact publication前检查
+  input、全部parameter和expected均finite；public NPY多字节payload统一canonical little-endian。
+- target-facing GEMM只接受rank-2 `Cx` plain form或rank-3 single-leading-batch canonical `NCx` form；target call没有
+  rank/layout/dimension map，rank >= 4或permuted batch axis必须在ABI前显式canonicalize，否则拒绝。`B=1`的Cx/NCx
+  物理等价只能用于解释ABI rank擦除，不能放宽source verifier。
 - 大矩阵payload生成应直接分块填充最终FP16 allocation，避免同时保留全尺寸uint64/int32/f32临时数组。大GEMM可走显式
   `managed-reference` oneDNN lane以完成model-reference scale gate，但该environment provenance不能冒充exact qualification
   admission或board-correlated arithmetic。
@@ -603,3 +610,6 @@
 - dtype adapter是scale profile的一部分：F16/BF16到oneDNN F32输入采用精确bit widening，不能为无损转换逐元素构造
   APFloat。当前canonical bulk artifact是SEQ且cache关闭，Release 7B gate仍属慢测；若引入OMP/threadpool或descriptor/
   packed-weight cache，必须更新受管依赖record、environment digest和资格/数值回归，不能继承ambient线程数。
+- CModel strided movement保留一份source snapshot和compact descriptor；规则nested stride用span/non-overlap证明，fallback
+  线性枚举后排序验证。不要按segment构造独立payload/pending-write对象；所有range、resource、overflow、alignment和
+  destination overlap必须在任一write前完成验证，保持source-before-write与命令级原子性。

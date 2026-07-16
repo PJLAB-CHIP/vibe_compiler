@@ -2,6 +2,7 @@ add_mlir_library(WaferTargetModelCore
   PARTIAL_SOURCES_INTENDED
   TargetModelInvocation.cpp
   TargetModelMemory.cpp
+  TargetModelStridedMemory.cpp
 
   LINK_LIBS PUBLIC
   WaferCompiler

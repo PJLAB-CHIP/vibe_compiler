@@ -7,6 +7,8 @@ import tempfile
 import types
 import unittest
 
+import numpy
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 TOOL_PATH = (
@@ -357,6 +359,263 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             )
             for digest in case["digests"].values():
                 self.assertRegex(digest, r"^sha256:[0-9a-f]{64}$")
+
+    def test_llama_scale_payload_is_explicit_and_versioned(self):
+        spec_path = (
+            REPO_ROOT
+            / "test"
+            / "Tools"
+            / "Inputs"
+            / "workloads"
+            / "llama-2-7b-block-v1.json"
+        )
+        spec = self.tool.load_workload_corpus_spec(spec_path)
+        case = spec["cases"][0]
+
+        self.assertEqual(
+            case["config"]["payload"],
+            {
+                "algorithm": (
+                    "wafer-exact-f16-splitmix64-counter-byte-scaled-v3"
+                ),
+                "input_denominator": 128,
+                "normalization_delta_denominator": 4096,
+                "projection_denominator": 8192,
+            },
+        )
+        self.assertNotIn("payload_algorithm", spec["source"])
+        self.assertEqual(
+            self.tool._load_llama_scale_payload_config(
+                case["id"], case["config"]
+            ),
+            (128, 8192, 4096),
+        )
+
+    def test_llama_scale_payload_rejects_implicit_or_unversioned_scale(self):
+        with self.assertRaisesRegex(
+            RuntimeError, "requires explicit config.payload"
+        ):
+            self.tool._load_llama_scale_payload_config("scale-case", {})
+        with self.assertRaisesRegex(
+            RuntimeError, "unsupported payload algorithm"
+        ):
+            self.tool._load_llama_scale_payload_config(
+                "scale-case",
+                {
+                    "payload": {
+                        "algorithm": "unversioned",
+                        "input_denominator": 128,
+                        "projection_denominator": 8192,
+                        "normalization_delta_denominator": 4096,
+                    }
+                },
+            )
+
+    def test_llama_scale_counter_payload_is_exact_and_chunk_independent(self):
+        expected_bits = numpy.array(
+            [
+                46656,
+                46464,
+                46848,
+                14480,
+                12800,
+                14752,
+                47792,
+                14208,
+                14736,
+                14848,
+                46208,
+                45824,
+                47952,
+                47936,
+                46464,
+                43776,
+            ],
+            dtype=numpy.dtype("<u2"),
+        )
+        payloads = [
+            self.tool._deterministic_counter_float16_array(
+                numpy,
+                (2, 8),
+                seed=0,
+                stream=0,
+                denominator=128,
+                chunk_elements=chunk_elements,
+            )
+            for chunk_elements in (1, 5, 1 << 20)
+        ]
+        for payload in payloads:
+            self.assertEqual(payload.dtype, numpy.dtype("float16"))
+            numpy.testing.assert_array_equal(
+                payload.reshape(-1).view(numpy.dtype("<u2")), expected_bits
+            )
+        numpy.testing.assert_array_equal(payloads[0], payloads[1])
+        numpy.testing.assert_array_equal(payloads[1], payloads[2])
+
+    def test_llama_scale_counter_payload_separates_streams_and_lag257(self):
+        first = self.tool._deterministic_counter_float16_array(
+            numpy, (8192,), seed=20260715, stream=3, denominator=8192
+        )
+        second = self.tool._deterministic_counter_float16_array(
+            numpy, (8192,), seed=20260715, stream=4, denominator=8192
+        )
+        self.assertFalse(numpy.array_equal(first, second))
+        self.assertFalse(numpy.array_equal(first[:-257], first[257:]))
+        self.assertLess(
+            int(numpy.count_nonzero(first[:-257] == first[257:])),
+            first.size // 16,
+        )
+
+    def test_llama_scale_counter_payload_rejects_invalid_domain(self):
+        invalid = (
+            ({"seed": -1, "stream": 0, "denominator": 128}, "seed"),
+            (
+                {"seed": 0, "stream": 1 << 64, "denominator": 128},
+                "stream",
+            ),
+            ({"seed": 0, "stream": 0, "denominator": True}, "denominator"),
+            ({"seed": 0, "stream": 0, "denominator": "128"}, "denominator"),
+            ({"seed": 0, "stream": 0, "denominator": 3}, "denominator"),
+            (
+                {"seed": 0, "stream": 0, "denominator": 1 << 25},
+                "denominator",
+            ),
+        )
+        for arguments, message in invalid:
+            with self.subTest(arguments=arguments):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    self.tool._deterministic_counter_float16_array(
+                        numpy, (2,), **arguments
+                    )
+        with self.assertRaisesRegex(RuntimeError, "chunk size"):
+            self.tool._deterministic_counter_float16_array(
+                numpy,
+                (2,),
+                seed=0,
+                stream=0,
+                denominator=128,
+                chunk_elements=0,
+            )
+
+    def test_nonfinite_payload_is_rejected_with_artifact_name(self):
+        finite = numpy.zeros((2,), dtype=numpy.float16)
+        cases = (
+            (
+                "input 0",
+                {"input_array": numpy.array([0.0, numpy.nan], dtype=numpy.float16)},
+            ),
+            (
+                "parameter 'q_proj.weight'",
+                {
+                    "parameters": {
+                        "q_proj.weight": numpy.array(
+                            [0.0, numpy.inf], dtype=numpy.float16
+                        )
+                    }
+                },
+            ),
+            (
+                "expected output 0",
+                {"expected": numpy.array([0.0, -numpy.inf], dtype=numpy.float16)},
+            ),
+        )
+        for artifact_name, override in cases:
+            arguments = {
+                "case_id": "scale-case",
+                "input_array": finite,
+                "extra_inputs": {},
+                "parameters": {},
+                "expected": finite,
+                **override,
+            }
+            with self.subTest(artifact_name=artifact_name):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    rf"workload case 'scale-case' {artifact_name} contains 1 "
+                    r"non-finite value",
+                ):
+                    self.tool._verify_workload_payload_finite(
+                        numpy, **arguments
+                    )
+
+    def test_finite_validation_covers_chunks_bfloat16_and_empty(self):
+        chunk_elements = 1 << 20
+        across_chunks = numpy.zeros((1, chunk_elements + 8), dtype=numpy.float16)
+        across_chunks[0, chunk_elements + 3] = numpy.nan
+        across_chunks[0, chunk_elements + 7] = numpy.inf
+        with self.assertRaises(RuntimeError) as failure:
+            self.tool._verify_finite_workload_array(
+                numpy,
+                across_chunks,
+                case_id="chunk-case",
+                artifact_name="parameter 'large.weight'",
+            )
+        self.assertIn("contains 2 non-finite value(s)", str(failure.exception))
+        self.assertIn(
+            f"first_index=(0, {chunk_elements + 3})", str(failure.exception)
+        )
+
+        bfloat16_nonfinite = self.tool._float32_to_bfloat16_storage(
+            numpy, numpy.array([0.0, -numpy.inf], dtype=numpy.float32)
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, r"contains 1 non-finite value.*first_index=\(1,\)"
+        ):
+            self.tool._verify_finite_workload_array(
+                numpy,
+                bfloat16_nonfinite,
+                case_id="bf16-case",
+                artifact_name="expected output 0",
+            )
+
+        for empty in (
+            numpy.empty((0, 3), dtype=numpy.float16),
+            self.tool._float32_to_bfloat16_storage(
+                numpy, numpy.empty((0,), dtype=numpy.float32)
+            ),
+        ):
+            self.tool._verify_finite_workload_array(
+                numpy,
+                empty,
+                case_id="empty-case",
+                artifact_name="input 0",
+            )
+
+    def test_bfloat16_storage_is_canonical_little_endian(self):
+        values = numpy.array([1.0, -2.0, 0.5], dtype=numpy.float32)
+        storage = self.tool._float32_to_bfloat16_storage(numpy, values)
+        self.assertEqual(storage.tobytes(), b"\x80\x3f\x00\xc0\x00\x3f")
+        numpy.testing.assert_array_equal(
+            self.tool._bfloat16_storage_to_float32(numpy, storage), values
+        )
+
+    def test_public_npy_payloads_are_canonical_little_endian(self):
+        big_endian_f16 = numpy.array(
+            [1.0, -2.0], dtype=numpy.dtype(">f2")
+        )
+        canonical_f16 = self.tool._canonical_little_endian_array(
+            numpy, big_endian_f16
+        )
+        self.assertEqual(canonical_f16.dtype, numpy.dtype("<f2"))
+        self.assertEqual(canonical_f16.tobytes(), b"\x00\x3c\x00\xc0")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = pathlib.Path(tmp) / "payload.npy"
+            self.tool._save_workload_array(
+                numpy, destination, big_endian_f16
+            )
+            saved = numpy.load(destination, allow_pickle=False)
+        self.assertEqual(saved.dtype, numpy.dtype("<f2"))
+        self.assertEqual(saved.tobytes(), b"\x00\x3c\x00\xc0")
+
+        opaque_bf16 = numpy.array(
+            [b"\x80\x3f", b"\x00\xc0"], dtype=numpy.dtype("|V2")
+        )
+        canonical_bf16 = self.tool._canonical_little_endian_array(
+            numpy, opaque_bf16
+        )
+        self.assertEqual(canonical_bf16.dtype, numpy.dtype("|V2"))
+        self.assertEqual(canonical_bf16.tobytes(), b"\x80\x3f\x00\xc0")
 
     def test_cpu_reference_is_independent_and_byte_reproducible(self):
         with tempfile.TemporaryDirectory() as tmp:

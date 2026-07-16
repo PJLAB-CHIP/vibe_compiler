@@ -33,6 +33,30 @@ std::optional<int64_t> elementCount(llvm::ArrayRef<int64_t> shape) {
   return count;
 }
 
+struct ProgramTensorDTypeInfo {
+  int64_t elementBytes = 0;
+  bool floating = false;
+};
+
+std::optional<ProgramTensorDTypeInfo>
+getProgramTensorDTypeInfo(llvm::StringRef dtype) {
+  if (dtype == "i8" || dtype == "ui8")
+    return ProgramTensorDTypeInfo{1, false};
+  if (dtype == "i16" || dtype == "ui16")
+    return ProgramTensorDTypeInfo{2, false};
+  if (dtype == "f16" || dtype == "bf16")
+    return ProgramTensorDTypeInfo{2, true};
+  if (dtype == "i32" || dtype == "ui32")
+    return ProgramTensorDTypeInfo{4, false};
+  if (dtype == "f32" || dtype == "tf32")
+    return ProgramTensorDTypeInfo{4, true};
+  if (dtype == "i64" || dtype == "ui64")
+    return ProgramTensorDTypeInfo{8, false};
+  if (dtype == "f64")
+    return ProgramTensorDTypeInfo{8, true};
+  return std::nullopt;
+}
+
 bool isSafeRelativePath(llvm::StringRef path) {
   if (path.empty() || llvm::sys::path::is_absolute(path) || path.contains('\\'))
     return false;
@@ -110,19 +134,10 @@ sliceProgramTensor(const ProgramTensor &global,
 std::optional<int64_t>
 computeProgramTensorByteCount(llvm::StringRef dtype,
                               llvm::ArrayRef<int64_t> shape) {
-  int64_t elementBytes = 0;
-  if (dtype == "i8" || dtype == "ui8")
-    elementBytes = 1;
-  else if (dtype == "i16" || dtype == "ui16" || dtype == "f16" ||
-           dtype == "bf16")
-    elementBytes = 2;
-  else if (dtype == "i32" || dtype == "ui32" || dtype == "f32" ||
-           dtype == "tf32")
-    elementBytes = 4;
-  else if (dtype == "i64" || dtype == "ui64" || dtype == "f64")
-    elementBytes = 8;
-  else
+  std::optional<ProgramTensorDTypeInfo> info = getProgramTensorDTypeInfo(dtype);
+  if (!info)
     return std::nullopt;
+  int64_t elementBytes = info->elementBytes;
   int64_t bytes = elementBytes;
   for (int64_t dim : shape) {
     if (dim < 0 ||
@@ -131,6 +146,11 @@ computeProgramTensorByteCount(llvm::StringRef dtype,
     bytes *= dim;
   }
   return bytes;
+}
+
+bool isFloatingProgramTensorDType(llvm::StringRef dtype) {
+  std::optional<ProgramTensorDTypeInfo> info = getProgramTensorDTypeInfo(dtype);
+  return info && info->floating;
 }
 
 llvm::Expected<ProgramTensor>

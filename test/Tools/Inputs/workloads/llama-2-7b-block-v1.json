@@ -13,14 +13,13 @@
       "git_repository": "https://github.com/pytorch/xla.git",
       "git_revision": "396608c7105b3763874fe3800dfabdfa2b38a28a"
     },
-    "model_source": "repository-owned Llama-2 7B decoder block config and deterministic payload",
-    "payload_algorithm": "wafer-exact-f16-lcg-mod257-v1"
+    "model_source": "repository-owned Llama-2 7B decoder block config and deterministic payload"
   },
   "cases": [
     {
       "id": "llama-2-7b-block-f16",
       "kind": "llama_decoder_block",
-      "source_revision": "sha256:2269a0e3efb53f0b37dd951a7087ed2da2a533b00743d771b81309b1f8bf80af",
+      "source_revision": "sha256:5c6336f815efe1a2cd5787bd3028c7df53ea4d8c84c36684d03ae350123de13a",
       "seed": 20260715,
       "dtype": "float16",
       "config": {
@@ -28,6 +27,12 @@
         "batch_size": 1,
         "sequence_length": 16,
         "causal_attention": true,
+        "payload": {
+          "algorithm": "wafer-exact-f16-splitmix64-counter-byte-scaled-v3",
+          "input_denominator": 128,
+          "normalization_delta_denominator": 4096,
+          "projection_denominator": 8192
+        },
         "execution_mesh_shape": [
           16
         ],
@@ -36,12 +41,12 @@
         ]
       },
       "digests": {
-        "source_config": "sha256:2269a0e3efb53f0b37dd951a7087ed2da2a533b00743d771b81309b1f8bf80af",
-        "input": "sha256:ada631bd04500f2eebb98bfd2bd8d3951ef4ad4403e1f3d449e2c08dde395077",
-        "parameters": "sha256:cb23b3a67d8423183b9ff679bf41b37763e85ce9af4dc9e345803344d0986719",
-        "reference_output": "sha256:0b8bc7522aff6fa32757943f911ada1fbd7e761b1b8014d6d05e308a44b030f3",
-        "reference_output_quantized": "sha256:7af21e8428c68228dc9d8e402d6ac7784baa31e1d49e2bcbf2f31e8111054baf",
-        "exported_program": "sha256:7e1677a6d768da5becce742d83a32e6dda806a2c220098c381023e3ac265201d"
+        "source_config": "sha256:5c6336f815efe1a2cd5787bd3028c7df53ea4d8c84c36684d03ae350123de13a",
+        "input": "sha256:670af394751491cc639d59f4411eb6a00f876106bfa9a25116cd1b3056c63d24",
+        "parameters": "sha256:dca3c064f2d0b228385df06b5b0906b152c4569c88902c7e97dfccf73f0ea5c2",
+        "reference_output": "sha256:6071569cde4caf5e8b9bdfd4736fe8ad741094f7b7a7b466cc41d8fa09ec2fa0",
+        "reference_output_quantized": "sha256:2f4814b38713f79cf30a6800f644b06a392099b0366db291a4fee5d52e54f197",
+        "exported_program": "sha256:d136e6690ef95632b262e83849a029fd5be36523c59f4c31992d99fdd861f90c"
       },
       "reference": {
         "implementation": "PyTorch eager CPU complete Llama decoder block",

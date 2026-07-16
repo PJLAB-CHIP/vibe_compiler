@@ -24,8 +24,14 @@ std::optional<int64_t>
 computeProgramTensorByteCount(llvm::StringRef dtype,
                               llvm::ArrayRef<int64_t> shape);
 
-/// Owner-backed compact row-major tensor at a typed program boundary. This is
-/// source invocation data, not an execution result or device storage.
+/// Returns whether one admitted ProgramTensor dtype has floating-point
+/// semantics. Keeping this classification with byte geometry prevents output
+/// consumers from silently treating a newly admitted float as raw storage.
+bool isFloatingProgramTensorDType(llvm::StringRef dtype);
+
+/// Owner-backed compact row-major tensor at a typed program boundary.
+/// Multi-byte elements use canonical little-endian storage. This is source
+/// invocation data, not an execution result or device storage.
 class ProgramTensor {
 public:
   static llvm::Expected<ProgramTensor> create(llvm::StringRef dtype,

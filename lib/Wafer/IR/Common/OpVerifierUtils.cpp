@@ -442,13 +442,24 @@ mlir::LogicalResult verifyBatchedGemmTileContract(
     return mlir::failure();
 
   int64_t rank = lhsTensor.getRank();
-  if (rank < 3 || rhsTensor.getRank() != rank || resultTensor.getRank() != rank)
+  if (rank != 3 || rhsTensor.getRank() != rank ||
+      resultTensor.getRank() != rank)
     return op->emitOpError(
-        "GEMM batched form expects operands and result to have the same rank "
-        "of at least 3");
+        "GEMM batched form expects operands and result to have rank exactly "
+        "3");
   if (!lhsTensor.hasStaticShape() || !rhsTensor.hasStaticShape() ||
       !resultTensor.hasStaticShape())
     return op->emitOpError("GEMM batched form requires static tensor shapes");
+
+  if (attrs.lhsBatchDims.size() != 1 || attrs.lhsBatchDims.front() != 0 ||
+      attrs.rhsBatchDims.size() != 1 || attrs.rhsBatchDims.front() != 0 ||
+      attrs.resultBatchDims.size() != 1 || attrs.resultBatchDims.front() != 0 ||
+      attrs.lhsMDim != 1 || attrs.lhsContractingDim != 2 ||
+      attrs.rhsContractingDim != 1 || attrs.rhsNDim != 2 ||
+      attrs.resultMDim != 1 || attrs.resultNDim != 2)
+    return op->emitOpError(
+        "GEMM batched form requires canonical [B,M,K] x [B,K,N] -> "
+        "[B,M,N] dimension attrs");
 
   if (attrs.batchCount <= 0)
     return op->emitOpError("GEMM batch_count attr must be positive");

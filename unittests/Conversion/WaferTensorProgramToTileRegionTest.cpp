@@ -209,6 +209,72 @@ module {
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
+     BatchedMatmulMaterializesImplicitNCxGemmStorage) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @batch_matmul(%lhs: tensor<2x16x128xf16>,
+                          %rhs: tensor<2x128x16xf16>,
+                          %out: tensor<2x16x16xf16>)
+      -> tensor<2x16x16xf16> {
+    %zero = arith.constant 0.0 : f16
+    %init = linalg.fill ins(%zero : f16)
+        outs(%out : tensor<2x16x16xf16>) -> tensor<2x16x16xf16>
+    %result = linalg.batch_matmul
+        ins(%lhs, %rhs : tensor<2x16x128xf16>, tensor<2x128x16xf16>)
+        outs(%init : tensor<2x16x16xf16>) -> tensor<2x16x16xf16>
+    return %result : tensor<2x16x16xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  ASSERT_TRUE(function);
+
+  mlir::OwningOpRef<mlir::ModuleOp> lowered;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToTileRegionModule(
+      function, lowered, &failureReason, /*currentLogicalRank=*/0)))
+      << failureReason;
+  ASSERT_TRUE(lowered);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+
+  llvm::SmallVector<wafer::ComputeGemmOp, 1> gemms;
+  lowered->walk([&](wafer::ComputeGemmOp op) { gemms.push_back(op); });
+  ASSERT_EQ(gemms.size(), 1u);
+  auto batchCount =
+      gemms.front()->getAttrOfType<mlir::IntegerAttr>("batch_count");
+  ASSERT_TRUE(batchCount);
+  EXPECT_EQ(batchCount.getInt(), 2);
+  for (mlir::Type type :
+       {gemms.front().getLhs().getType(), gemms.front().getRhs().getType(),
+        gemms.front().getResult().getType()}) {
+    auto memref = mlir::cast<mlir::MemRefType>(type);
+    EXPECT_EQ(wafer::getWaferMemoryAttr(memref).getLayout(),
+              wafer::MemLayout::NCx);
+  }
+
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*lowered, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+  llvm::SmallVector<wafer::InstrGemmOp, 1> instructions;
+  lowered->walk([&](wafer::InstrGemmOp op) { instructions.push_back(op); });
+  ASSERT_EQ(instructions.size(), 1u);
+  EXPECT_EQ(
+      wafer::getWaferMemoryAttr(
+          mlir::cast<mlir::MemRefType>(instructions.front().getLhs().getType()))
+          .getLayout(),
+      wafer::MemLayout::NCx);
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
      MaterializesCompleteTwoByTwoTailTraversal) {
   mlir::DialectRegistry registry;
   registerConversionDialects(registry);

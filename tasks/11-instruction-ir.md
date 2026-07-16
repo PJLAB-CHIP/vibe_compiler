@@ -1,6 +1,6 @@
 # Wafer Instruction IR Design
 
-状态：2026-07-14按Q16.T事实和Q22 target numeric consumer review更新；当前合同覆盖instruction-level hardware invocation IR、
+状态：2026-07-16按Q16.T、Q22 target numeric consumer和Q28 batched GEMM ABI/layout closure更新；当前合同覆盖instruction-level hardware invocation IR、
 memref buffer和shared physical geometry/ABI legality。shared verifier 已闭合当前支持子集的静态 DMA descriptor payload/range/
 element-width relation、fill/elementwise/reduce/convert/GEMM element/shape relation、ordinary conv、pool/
 unpool、TDMA pad/img2col和peripheral kind-specific capacity，并在target字段写入前检查ABI narrowing。
@@ -615,9 +615,17 @@ wafer.instr.gemm lhs, rhs into dest attr-dict
 | --- | --- | --- | --- |
 | `wafer.instr.gemm` | `lhs: SPM memref`, `rhs: SPM memref`, `dest: SPM memref` | none | `m`, `k`, `n`; optional batched GEMM attrs copied from `wafer.tile.gemm` |
 
-V0 要求三个 SPM memref operand 都使用 aligned layout marker：rank <= 2 使用
-`#wafer.memory<spm, cx>`，rank > 2 使用 `#wafer.memory<spm, ncx>`。Fused bias、activation、
-quant、psum accumulation policy 和 sparse / INT8 variants 不属于 R3.2d V0。
+V0 target-facing GEMM只有两个结构化形态：plain form的lhs/rhs/dest都必须恰好rank 2、使用
+`#wafer.memory<spm, cx>`且不得携带batched attrs；batched form都必须恰好rank 3、只有一个canonical leading batch
+dimension、使用`#wafer.memory<spm, ncx>`，并以`[B,M,K] x [B,K,N] -> [B,M,N]`携带完整batched dimension attrs，
+`batch_count`必须等于该batch维。
+rank 1和rank >= 4均结构化拒绝。target call只携带`batch_count/M/K/N`而没有自由rank/layout字段；若把多个batch维的
+rank-4 tensor直接flatten，调用边界会丢失NCx per-batch bank boundary，因此不能由CModel猜测或静默压平。上游若未来
+需要多batch维，必须先以显式reshape/layout movement canonicalize为单batch维并重新验证physical bytes。
+
+当canonical rank-3 form的`batch_count=1`时，`NCx[1,M,C]`与plain `Cx[M,C]`的footprint及全部logical-element offset
+相同；回归覆盖两个完整channel block与`C0` tail。因此当前target call在`batch_count=1`处擦除source rank不会产生
+byte-order歧义。Fused bias、activation、quant、psum accumulation policy 和 sparse / INT8 variants 不属于 R3.2d V0。
 
 V0 plain GEMM还只要求lhs/rhs/dest element type相同，target CRT call只传一个format；IR没有product、accumulator、
 逐MAC rounding、FMA或reduction-order字段。若这些行为是program-selectable，必须先扩typed tile/instruction op及CRT ABI；

@@ -600,3 +600,50 @@
   finalized frontier。
 - 防复发：单测用一个确定SPM overflow项加一个合法项，断言只保留合法项且cost不是输入的stale值；另测全部失败才返回
   failure，并要求两类路径都保留结构化capacity diagnostic。
+
+## 2026-07-16 source expected comparator不能按“只有F32是浮点”分流
+
+- 现象：F16 target-model output与PyTorch expected数值落在容差内，但driver仍按raw bytes判失败；反过来，新增浮点dtype若
+  未显式登记policy，也可能被误当作普通storage。
+- 根因：比较器把`dtype != f32`等同于非浮点，dtype分类、element width和source-output policy分散在consumer内。
+- 修复模式：ProgramTensor owner统一dtype/width/floating分类；F16/BF16/F32从canonical little-endian bytes解码finite值并
+  应用`atol + rtol*abs(expected)`，非浮点raw exact，未发布policy的其它浮点fail closed。回归分别覆盖容差边界、shape/dtype、
+  signed zero、subnormal、NaN/Inf和whole-tensor mismatch summary。
+
+## 2026-07-16 scale corpus的短周期和跨stream相关会伪造数值误差
+
+- 现象：7B TP16结果与eager差异异常大，看起来像time tiling或SPM错误；旧payload沿matrix axis每257项重复，不同projection
+  还只是同一序列的相移。
+- 根因：用于小case的mod-257生成器被直接放大到大矩阵，reduction rounding误差被周期性、相关输入系统放大，无法区分
+  compiler bug和病态corpus。
+- 修复模式：scale corpus使用versioned counter-hash：global row-major index、固定seed和独立parameter stream形成长周期、
+  FP16-exact值；publication前逐项finite并做lag/stream separation、repeat-export canonical equivalence和固定digest检查。
+  冻结小corpus不随scale算法迁移。
+
+## 2026-07-16 batched GEMM必须在compiler和CModel共享唯一NCx合同
+
+- 现象：compiler为rank-3 batch matmul物化`Cx`，target call只携带batch count，而CModel按batched `NCx`解包；batch=1因
+  Cx与NCx物理等价掩盖问题，batch=2跨64-channel block时才混合两个batch。旧失败output可由该错误布局逐bit重放。
+- 根因：plain target call没有自由layout字段，但source lowering、Tile/Instr verifier和CModel分别猜layout，缺少跨完整链的
+  batch>1数值回归。
+- 修复模式：plain rank-2固定Cx；batched固定rank-3、single-leading-batch、canonical
+  `[B,M,K] x [B,K,N] -> [B,M,N]`和NCx。source→target-call→SystemC回归使用batch=2、C=128并核对两个batch结果；
+  shared verifier与Instr geometry必须对同一RHS K/N次序给出一致合同。
+
+## 2026-07-16 target GEMM ABI不能压平多batch维或permuted axis
+
+- 现象：rank-4或batch axis不在leading position的GEMM能在上层携带dimension attrs，但target call只保留
+  `batch_count/M/K/N`；CModel重建shape后已无法恢复原NCx bank boundary。
+- 根因：把batch维乘积等于batch count误当成完整physical mapping，忽略target ABI没有rank/layout/dimension-map字段。
+- 修复模式：target-facing Tile/Instr只接受上述canonical rank-2/rank-3形态；rank>=4和permuted axis在显式
+  reshape/layout movement canonicalization落地前结构化拒绝。property test只证明`NCx[1,M,C]`与`Cx[M,C]`等价，不能据此
+  放宽多batch维。
+
+## 2026-07-16 CModel不能把strided descriptor展开成海量effect对象
+
+- 现象：7B movement对每个segment分别建立address、payload和pending-write，segment数量上升时内存与对象管理成本远高于
+  实际byte copy。
+- 根因：在command effect边界过早展开descriptor，把ABI已表达的规则映射复制成长期per-segment表示。
+- 修复模式：effect保留一份compact payload和strided descriptor；规则布局先以checked bounding span、alignment和
+  stride non-overlap证明走快路，其它合法布局线性枚举并排序检查。range/resource/overflow/destination overlap全部在write
+  前验证，source snapshot先于任何write；public allocation还要在构造vector前检查host capacity。

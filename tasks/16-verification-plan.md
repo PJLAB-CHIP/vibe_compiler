@@ -1,7 +1,7 @@
 # Wafer Compiler Verification Plan
 
-状态：2026-07-16按已完成Q29 structured tile-dataflow主线同步；保留已完成Q22.N/B/L/H/S/V及Q22
-model-only汇总、后续Q22.C板端numeric correlation等独立gate。
+状态：2026-07-16按已完成Q29 structured tile-dataflow主线和Q28标准7B单block scale vertical同步；保留已完成
+Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate。
 本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
 
@@ -39,6 +39,8 @@ Pipeline position:
   external gate。Q0.L、Q22.N/L/B/H/S/V及Q22汇总已经完成；Q22.N单独解锁Q22.B，Q22.L直接解锁Q22.H
   repo-owned target-call frontend，Q22.N+Q22.H+既有Q16.T再解锁Q22.S，Q22.B+Q22.S+既有Q20/Q21最终由Q22.V
   闭合完整输出。Q22只汇总该传递证据，不另建pipeline。
+  Q29随后闭合rank-local tile-dataflow scheduling、complete traversal和TP16 7B compile/package结构gate；Q28再从同一
+  production source入口闭合标准7B单block managed-reference SystemC执行及完整PyTorch eager output differential。
   Q22.C消费Q22和Q6.B结果闭合板端numeric correlation；
   vendor-exact packet只在有独立packet/MMIO
   evidence时增加provenance claim。exact package provider和deferred timing calibration保持独立更高gate。
@@ -68,8 +70,9 @@ runtime可以从不同上游并行取得，只有明确列出的consumer才能�
    invocation-local typed transaction。它不调用repo CRT或构造Tsm packet。
 10. **SystemC model-only functional event（Q22.S）**：Q22.H transaction进入untimed SystemC rank/tile memory、conservative
    issue event、completion和Direct DTE/FSM，numeric effect只消费Q22.N，不执行RISC-V archive，也不证明CRT/packet或package module。
-11. **Source-backed functional-numeric vertical（Q22.V）**：同一source producer重放Q20、f16/bf16、Q21和超过formal budget的
-   large GEMM，后者必须命中Q22.B，完整输出与独立oracle比较并闭合all-rank atomicity。
+11. **Source-backed functional-numeric vertical（Q22.V / Q28）**：同一source producer先重放Q20、f16/bf16、Q21和超过
+   formal budget的large GEMM，后者必须命中Q22.B；Q28再以独立managed-reference policy执行标准7B单block TP16，
+   大GEMM和已发布tensor functional row均不得formal fallback，完整输出与PyTorch eager oracle比较并闭合all-rank atomicity。
 12. **Optional authorized CRT/packet/MMIO conformance（Q22.K）**：owner-approved host package、exact module register trace、
    board capture或versioned vendor builder逐字段比较decode、address、engine和register effect；缺失只限制CRT/packet provenance。
 13. **No-card runtime**：verified package、binding和launch/completion plan通过，无真实device side effect。
@@ -276,7 +279,7 @@ Q29以`tasks/06-group.md`的终态合同为owner，本文只固定跨stage证据
   该alternative，每个survivor从final instruction IR fresh recost，仅finalized frontier为空时rank失败。覆盖必须同时
   包含“一个失败、另一个存活”和“全部失败”两类原子性；
 - 独立rank-count=1/16 integrated gate和TP16 7B compile-only结构gate要证明complete traversal、跨task SPM edge、layout临时DDR
-  消除、activation reuse和collective/residual completion；数值CModel/PyTorch差分仍由Q28完成；
+  消除、activation reuse和collective/residual completion；数值CModel/PyTorch差分已由后续Q28独立完成；
 - 已退役调度surface和consumer保持清零，并由source/IR组织检查及negative tombstone防止回归。
   generic per-edge residency、task-order/layout-cut和double-buffer/ping-pong是延期性能扩展，不是Q29正确性缺口。
 
@@ -310,7 +313,7 @@ organization和diff检查全部通过。
 
 target-model配置还实际重放了已有source numeric vertical，transaction计数为linear 24、f16/bf16 10、large 10、
 tiny Llama TP16 12,656；这证明Q20/Q21 consumer没有因调度迁移回退，不是标准7B block的CModel或PyTorch差分。
-Q29据此完成，Q28开始执行完整7B managed-reference CModel/PyTorch gate。
+Q29据此完成；后续Q28已从同一source/config独立执行并完成7B managed-reference CModel/PyTorch gate。
 
 ## 7. Q17 Baseline And Q16.T Direct DTE Activation Gates
 
@@ -713,8 +716,9 @@ Q22.V实现按上述边界闭合：production编译返回factory-only、move-onl
 compute、numeric和multi-rank scheduler。model invocation把compact program tensor按每个ordered ABI slot的shape/dtype/layout
 编码为exact target physical bytes，在显式非重叠DDR地址域内建立all-rank private invocation并逐rank取回完整output。
 
-driver只消费固定source corpus的独立CPU expected，不能把shape/digest冒充expected。f32按case显式atol/rtol比较；
-其它当前destination按raw bytes exact比较。model input/expected必须完整显式提供，不存在失败后的隐式oracle切换。
+driver只消费固定source corpus的独立CPU expected，不能把shape/digest冒充expected。F16/BF16/F32 finite output按case
+显式`atol + rtol * abs(expected)`逐元素比较；整数、布尔和其它非浮点destination按raw bytes exact比较。NaN/Inf不进入
+当前source vertical tolerance gate。model input/expected必须完整显式提供，不存在失败后的隐式oracle切换。
 
 Q20的同一source payload分别在formal-only和prefer-admitted策略下通过，admitted路径为5个formal command加1个bulk GEMM；
 64³ source case含262144个FMA，正式formal FMA budget固定10000，仍只产生8个target transaction、1个bulk MatMul和0个bulk
@@ -735,15 +739,28 @@ activation、attention和MLP shape必须保持7B尺寸；`num_hidden_layers=32`�
 完成证据必须同时包含：
 
 - 真实PyTorch/XLA source/config/payload和TP16 column/row-parallel weight marks；同一确定性模块、权重与输入
-  先在PyTorch eager CPU上执行，其完整Block输出直接形成`expected.npy`；
+  先在PyTorch eager CPU上执行，其完整Block输出直接形成`expected.npy`；生成阶段在digest/artifact publication前
+  证明input、全部parameter及expected逐项finite。标准7B payload按全局row-major counter、seed和显式stream使用
+  长周期FP16-exact映射；短周期axis重复和跨parameter系统性相关不属于有效scale corpus。payload算法或幅度变化必须
+  更新算法revision、StableHLO和全部digest；冻结tiny corpus不随该算法迁移；
 - 16 rank parameter slice对global weight all-and-only覆盖，row/column parallel形成预期collective；
 - 至少一个Q/K/V/O或gate/up/down GEMM因3 MiB SPM与target geometry形成多时间tile；accepted IR必须显式
   all-and-only表达这些tile，并使用当前compact `scf.for`主traversal加static tail合同，不能退回只提交first tile或
   eager展开全部output coordinates；
 - 每rank SPM peak、DDR resident parameter slice、movement range、fence/wait和terminal completion可重算并通过；
+- CModel movement对规则strided descriptor保留单份连续snapshot和compact destination descriptor，不按segment建立
+  address/payload/write对象；range、overflow、resource和destination overlap仍在任一写入前完整验证，source/destination
+  overlap继续遵守source-before-write snapshot。非规则descriptor的fallback不得恢复二次复杂度；
 - 全部大GEMM命中managed-reference bulk backend，formal FMA保持零；每条command仍核对semantic、shape/layout、
   managed environment、finite value-domain和byte budget，该backend provenance不得标作Q22.B exact qualification record；完整CModel output重组后与
-  PyTorch eager `expected.npy`做全张量比较，手写NumPy参考只允许用于诊断，不是Q28真值oracle；
+  PyTorch eager `expected.npy`按F16 dtype逐元素做显式atol/rtol全张量比较，不能byte-exact代替；手写NumPy参考只允许
+  用于诊断，不是Q28真值oracle；
+- plain target GEMM的隐式storage合同必须端到端唯一：plain form恰好rank 2并使用`Cx`；batched form恰好rank 3、
+  single-leading-batch、canonical `[B,M,K] x [B,K,N] -> [B,M,N]`并使用`NCx`。rank >= 4和permuted batch axis在
+  target ABI前没有显式canonicalization时必须拒绝；`batch_count=1`的rank-3 NCx和rank-2 Cx footprint/offset等价由
+  full blocks及`C0` tail property覆盖。batch=2且channel block为128的
+  compiler→tile/instruction→target-call→CModel数值回归必须区分两个batch和两个64-channel block；仅有batch=1 tiny
+  case或分别测试Cx/NCx codec不能证明该合同；
 - F16/BF16 GEMM输入进入oneDNN F32 descriptor前采用位级无损widening，并以F16/BF16/F32 bulk资格回归保护；不能让
   大weight payload重新进入逐元素APFloat对象路径。当前SEQ oneDNN的慢测耗时只作功能基线，不构成性能完成；未来
   threaded artifact必须重做managed dependency identity、worker环境和完整数值gate；
@@ -753,6 +770,14 @@ activation、attention和MLP shape必须保持7B尺寸；`num_hidden_layers=32`�
   dtype/op/rounding/value-domain在effect前失败且无formal fallback。
   单元测试用formal exact覆盖普通值和edge vector，scale完成证明仍以完整PyTorch eager expected tolerance为准；
 - managed-reference准入失败、错误expected、资源超限和late-rank failure均不发布partial result。
+
+2026-07-16完成事实：versioned scale corpus通过全payload finite audit、重复export canonical-equivalence和固定digest检查，
+冻结tiny corpus未漂移；production TP16链实际执行16 rank、19,696个target transaction和17个SystemC thread，2,032条
+managed tensor command及672条bulk GEMM均完成，formal command/FMA为零。最终65,536个F16 output element全部通过
+`atol=0.02, rtol=0.01`的PyTorch eager comparison。错误expected负例报告59,745/65,536 mismatch；scalar budget负例在
+numeric effect中止；二者都保留已原子发布package且不发布matched model result。late-rank和unsupported managed row继续由
+同一driver/component合同的小型fixture覆盖atomicity，不冒充又跑了一次完整7B。该结论仍不包含board、exact package/ELF、
+hardware numeric、性能或timing claim；详细命令、digest、wall time和full-suite证据由归档实施记录拥有。
 
 4096 cap只约束仍被显式物化的ordered reduction chunk和terminal op，不约束compact output traversal，也不是硬件、
 shape或workload限制。若合法reduction/terminal实例超过预算，应继续改进compact表示/consumer，不能调大常量、

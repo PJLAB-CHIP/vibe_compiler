@@ -21,6 +21,7 @@ add_mlir_library(WaferCompiler
   Package.cpp
   ProgramDirectoryTransaction.cpp
   ProgramInvocation.cpp
+  ProgramTensorComparison.cpp
   ScheduledRankFinalization.cpp
   SpmdCompilationBridge.cpp
   TargetABIPreparation.cpp

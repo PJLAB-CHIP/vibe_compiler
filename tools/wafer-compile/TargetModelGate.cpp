@@ -5,6 +5,7 @@
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 
 #include "Wafer/Compiler/ProgramInvocation.h"
+#include "Wafer/Compiler/ProgramTensorComparison.h"
 #include "Wafer/Model/SystemCTargetModel.h"
 #include "Wafer/Model/TargetModelInvocation.h"
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
@@ -15,60 +16,12 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <cmath>
 #include <cstdlib>
-#include <cstring>
 #include <set>
 #include <utility>
 #include <vector>
 
 namespace wafer::compile_driver {
-namespace {
-
-bool compareModelTensor(const wafer::compiler::ProgramTensor &actual,
-                        const wafer::compiler::ProgramTensor &expected,
-                        int64_t programIndex, int64_t logicalRank, double atol,
-                        double rtol) {
-  if (actual.getDType() != expected.getDType() ||
-      actual.getShape() != expected.getShape() ||
-      actual.getBytes().size() != expected.getBytes().size()) {
-    llvm::errs() << "wafer-compile: target model output type mismatch at index "
-                 << programIndex << " rank " << logicalRank << "\n";
-    return true;
-  }
-  if (actual.getDType() != "f32") {
-    if (actual.getBytes() == expected.getBytes())
-      return false;
-    llvm::errs() << "wafer-compile: target model output differs at index "
-                 << programIndex << " rank " << logicalRank << "\n";
-    return true;
-  }
-  llvm::ArrayRef<uint8_t> actualBytes = actual.getBytes();
-  llvm::ArrayRef<uint8_t> expectedBytes = expected.getBytes();
-  for (size_t offset = 0; offset < actualBytes.size(); offset += 4) {
-    float actualValue = 0.0f;
-    float expectedValue = 0.0f;
-    std::memcpy(&actualValue, actualBytes.data() + offset, 4);
-    std::memcpy(&expectedValue, expectedBytes.data() + offset, 4);
-    const double absoluteError =
-        std::abs(static_cast<double>(actualValue) - expectedValue);
-    const double tolerance = atol + rtol * std::abs(expectedValue);
-    if (!std::isfinite(actualValue) || !std::isfinite(expectedValue) ||
-        absoluteError > tolerance) {
-      llvm::errs() << "wafer-compile: target model output mismatch at index "
-                   << programIndex << " rank " << logicalRank << " element "
-                   << offset / 4 << ": actual=" << actualValue
-                   << " expected=" << expectedValue
-                   << " abs_error=" << absoluteError
-                   << " tolerance=" << tolerance << "\n";
-      return true;
-    }
-  }
-  return false;
-}
-
-} // namespace
-
 bool runTargetModelGate(
     const CommandLineOptions &options,
     const wafer::compiler::TargetCompilationProduct &product,
@@ -213,9 +166,14 @@ bool runTargetModelGate(
                    << "\n";
       return true;
     }
-    if (compareModelTensor(*actual, *expected, binding->programIndex,
-                           output.logicalRank, atol, rtol))
+    if (llvm::Error comparison =
+            wafer::compiler::compareProgramTensorExpectedOutput(
+                *actual, *expected, atol, rtol)) {
+      llvm::errs() << "wafer-compile: target model output differs at index "
+                   << binding->programIndex << " rank " << output.logicalRank
+                   << ": " << llvm::toString(std::move(comparison)) << "\n";
       return true;
+    }
   }
   llvm::outs() << "wafer-compile: target model outputs matched; ranks="
                << result->completedRankCount
