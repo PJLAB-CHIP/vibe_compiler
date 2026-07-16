@@ -29,6 +29,7 @@ endif()
 if(WAFER_ENABLE_BULK_MODEL_DEPS)
   add_mlir_library(WaferTargetBulkModel
     PARTIAL_SOURCES_INTENDED
+    ManagedReferenceTargetModel.cpp
     TargetBulkModel.cpp
 
     LINK_LIBS PUBLIC

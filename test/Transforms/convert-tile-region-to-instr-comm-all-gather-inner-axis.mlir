@@ -69,6 +69,7 @@ module {
 // CHECK: wafer.instr.gather_scatter %[[RECV_BUF]] to %[[PEER_SLOT]]
 // CHECK-SAME: dst_strides = array<i64: 256, 0, 0>
 // CHECK-SAME: inner_bytes = 16 : i64
+// CHECK: wafer.instr.local_fence
 // CHECK-NOT: wafer.tile.all_gather
 
 // SPM-LABEL: func.func @all_gather_ring_inner_axis

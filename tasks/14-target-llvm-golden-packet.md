@@ -59,12 +59,10 @@ Pipeline position:
   仍只通过Q18 verified package消费modules。
 - User-level driver / named pipeline:
   production由显式`--target-profile=<registered-id>`的同一wafer-compile在Q16完成all-rank bundle后自动进入Q17；
-  `wafer-lower-groups-to-target-llvm`只作显式rank-0的debug replay，要求pipeline option
-  `target-profile=<registered-id>`；pipeline construction立即用tasks/14同一closed registry解析成`TargetProfileId`并构造
-  conversion-local typed `TargetConversionRequest`，缺失/unknown拒绝，不把spelling写入module attr或使用default。它固定执行
-  完整candidate selection/commit、function-boundary bufferization，再消费accepted instruction artifact进入target conversion。
-  standalone target-conversion pass同样必须由显式typed request构造；单pass和direct
-  group-to-instr named pipelines只用于局部测试，不能组成绕过selector的平行target主线。
+  不提供从中间调度IR直达target LLVM的named compatibility pipeline。focused C++ tests通过tasks/14同一closed
+  registry解析`TargetProfileId`并构造conversion-local typed `TargetConversionRequest`；缺失/unknown拒绝，
+  不把spelling写入module attr或使用default。target conversion只消费已经完成candidate selection/commit与
+  function-boundary bufferization的accepted instruction artifact。
 - Explicit non-goals:
   不重新做candidate/memory/transport；不在target conversion补做movement/reduce decomposition；不发布partial module；
   不把target text、文件名、私有C++类名或自由字符串作为profile/package事实源。
@@ -85,7 +83,7 @@ Pipeline position:
 
 selector提交时已经完成tile-region/instruction materialization以及SPM/DDR planning；target入口只在其后补齐
 函数边界bufferization，消除tensor signature和`bufferization.to_memref/to_tensor` wrapper，然后运行target
-conversion。它不得再次执行direct group-to-tile/instr或memory planning。
+conversion。它不得再次执行task scheduling、tile/instruction materialization或memory planning。
 
 ### 2.1 Q0.L 首个 closed profile
 
@@ -285,7 +283,7 @@ commit的前置。
 staging/debug object。显式请求的object/CRT object在成功路径上各自atomic replace，但它们还不是all-rank
 artifact bundle。Q17外层transaction现已把每个link输出重定向到自己的`work/`和`modules/`，逐rank进行entry、
 format、fixed ABI和digest readback；rank-count=1/16全域通过后才no-replace发布目录。production transaction再把
-已验证`modules/`与Q15 grouped checkpoint放进同一不可见root后一次发布，不扫描目录恢复typed成员。Q18随后把
+已验证`modules/`与Q15 structured tensor program放进同一不可见root后一次发布，不扫描目录恢复typed成员。Q18随后把
 已验证Q17 bundle作为整体输入，不补救缺rank或未验证module。
 
 失败规则：

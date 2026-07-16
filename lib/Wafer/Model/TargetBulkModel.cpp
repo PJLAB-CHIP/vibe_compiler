@@ -38,10 +38,10 @@ QualifiedTargetModelBulkBackend::create(llvm::ArrayRef<std::string> recordPaths,
 
 llvm::Expected<std::optional<TargetModelBulkResult>>
 QualifiedTargetModelBulkBackend::tryExecute(
-    const TargetModelBulkRequest &request) const {
+    const TargetModelNumericRequest &request) const {
   std::vector<BulkTensorStorage> inputs;
   inputs.reserve(request.inputs.size());
-  for (const TargetModelBulkTensor &input : request.inputs) {
+  for (const TargetModelNumericTensor &input : request.inputs) {
     llvm::Expected<BulkTensorStorage> storage =
         BulkTensorStorage::create(input.key, input.storage);
     if (!storage)
@@ -75,10 +75,55 @@ QualifiedTargetModelBulkBackend::tryExecute(
         {result->evidence.matmulInvocations,
          result->evidence.reorderInvocations,
          result->evidence.formalFusedMultiplyAdds,
+         TargetModelBulkProvenanceKind::ExactQualificationRecord,
          admission->getRecordDigest().str(), result->evidence.implementation}};
     return std::optional<TargetModelBulkResult>(std::move(modelResult));
   }
   return std::optional<TargetModelBulkResult>();
+}
+
+llvm::Expected<std::unique_ptr<ManagedReferenceTargetModelBackend>>
+ManagedReferenceTargetModelBackend::create(BulkNumericWorkBudget budget) {
+  llvm::Expected<BulkExecutionEnvironment> environment =
+      createManagedBulkExecutionEnvironment();
+  if (!environment)
+    return environment.takeError();
+  return std::unique_ptr<ManagedReferenceTargetModelBackend>(
+      new ManagedReferenceTargetModelBackend(std::move(*environment), budget));
+}
+
+llvm::Expected<std::optional<TargetModelBulkResult>>
+ManagedReferenceTargetModelBackend::tryExecute(
+    const TargetModelNumericRequest &request) const {
+  std::vector<BulkTensorStorage> inputs;
+  inputs.reserve(request.inputs.size());
+  for (const TargetModelNumericTensor &input : request.inputs) {
+    llvm::Expected<BulkTensorStorage> storage =
+        BulkTensorStorage::create(input.key, input.storage);
+    if (!storage)
+      return storage.takeError();
+    inputs.push_back(std::move(*storage));
+  }
+  llvm::Expected<BulkTensorStorage> destinationTemplate =
+      BulkTensorStorage::create(request.destinationTemplate.key,
+                                request.destinationTemplate.storage);
+  if (!destinationTemplate)
+    return destinationTemplate.takeError();
+  llvm::Expected<BulkTensorNumericResult> result =
+      executeManagedReferenceBulkTensorNumeric(
+          environment, request.command, inputs, *destinationTemplate, budget);
+  if (!result)
+    return result.takeError();
+  TargetModelBulkResult modelResult{
+      {result->destination.getKey(),
+       std::vector<uint8_t>(result->destination.getStorage().begin(),
+                            result->destination.getStorage().end())},
+      result->flags,
+      {result->evidence.matmulInvocations, result->evidence.reorderInvocations,
+       result->evidence.formalFusedMultiplyAdds,
+       TargetModelBulkProvenanceKind::ManagedReferenceEnvironment,
+       environment.getDigest().str(), result->evidence.implementation}};
+  return std::optional<TargetModelBulkResult>(std::move(modelResult));
 }
 
 } // namespace wafer::model

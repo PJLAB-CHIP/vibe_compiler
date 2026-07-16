@@ -117,9 +117,20 @@ preflightCommand(const ResolvedNumericCommand &command,
                          "overflows uint64_t");
     break;
   }
-  case NumericCommandFamily::NativeCTReduce:
-    return tensorError(FormalTensorNumericErrorCode::UnsupportedResolvedCommand,
-                       "native CT reduction has no published formal policy");
+  case NumericCommandFamily::NativeCTReduce: {
+    const NumericNativeCTReduceCommand *reduce =
+        command.getCommandKey().getNativeCTReduce();
+    if (!reduce || command.getFormalKernelKind() != FormalKernelKind::Reduce ||
+        command.getFormalBackendKind() !=
+            FormalNumericBackendKind::LLVMAPFloatAPInt)
+      return tensorError(
+          FormalTensorNumericErrorCode::UnsupportedResolvedCommand,
+          "the resolved native reduction lost its formal kernel identity");
+    result.inputKeys.push_back(&reduce->input);
+    result.destinationKey = &reduce->destination;
+    result.scalarEvaluations = reduce->input.getElementCount();
+    break;
+  }
   }
 
   if (!result.destinationKey)
@@ -322,6 +333,56 @@ executeGemm(const ResolvedNumericCommand &command,
   return result;
 }
 
+llvm::Expected<FormalTensorNumericResult>
+executeReduce(const ResolvedNumericCommand &command,
+              llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+              const NumericNativeCTReduceCommand &reduce) {
+  const llvm::ArrayRef<uint64_t> inputShape = reduce.input.getShape();
+  const std::vector<size_t> reducedDimensions =
+      getNativeCTReduceLogicalDimensions(reduce.dimension, inputShape.size());
+  if (reducedDimensions.empty())
+    return tensorError(FormalTensorNumericErrorCode::ResultInvariantViolation,
+                       "native reduction has no logical dimensions");
+
+  const uint64_t outputCount = reduce.destination.getElementCount();
+  FormalTensorNumericResult result;
+  result.values.assign(static_cast<size_t>(outputCount),
+                       RawLogicalValue{LogicalFormat::F32, UINT64_C(0)});
+  llvm::SmallVector<bool, 4> reduced(inputShape.size(), false);
+  for (size_t dimension : reducedDimensions)
+    reduced[dimension] = true;
+
+  for (uint64_t inputIndex = 0; inputIndex < inputs.front().size();
+       ++inputIndex) {
+    uint64_t remaining = inputIndex;
+    llvm::SmallVector<uint64_t, 4> coordinates(inputShape.size(), 0);
+    for (size_t reverse = inputShape.size(); reverse > 0; --reverse) {
+      const size_t dimension = reverse - 1;
+      coordinates[dimension] = remaining % inputShape[dimension];
+      remaining /= inputShape[dimension];
+    }
+    uint64_t destinationIndex = 0;
+    for (size_t dimension = 0; dimension < inputShape.size(); ++dimension) {
+      if (reduced[dimension])
+        continue;
+      destinationIndex =
+          destinationIndex * inputShape[dimension] + coordinates[dimension];
+    }
+    if (destinationIndex >= outputCount)
+      return tensorError(
+          FormalTensorNumericErrorCode::ResultInvariantViolation,
+          "native reduction mapped an input outside the destination tensor");
+    llvm::Expected<FormalNumericResult> step = evaluateFormalReduceStep(
+        command, result.values[static_cast<size_t>(destinationIndex)],
+        inputs.front()[static_cast<size_t>(inputIndex)]);
+    if (!step)
+      return step.takeError();
+    result.values[static_cast<size_t>(destinationIndex)] = step->value;
+    mergeFlags(result.flags, step->flags);
+  }
+  return result;
+}
+
 } // namespace
 
 llvm::StringRef
@@ -387,9 +448,8 @@ llvm::Expected<FormalTensorNumericResult> executeFormalTensorNumeric(
     case NumericCommandFamily::NEGemm:
       return executeGemm(command, inputs, *command.getCommandKey().getNEGemm());
     case NumericCommandFamily::NativeCTReduce:
-      return tensorError(
-          FormalTensorNumericErrorCode::UnsupportedResolvedCommand,
-          "native CT reduction has no published formal policy");
+      return executeReduce(command, inputs,
+                           *command.getCommandKey().getNativeCTReduce());
     }
     llvm_unreachable("numeric command family is not registered");
   }();

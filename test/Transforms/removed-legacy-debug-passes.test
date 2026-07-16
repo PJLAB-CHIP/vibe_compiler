@@ -10,6 +10,19 @@
 # RUN: not wafer-opt --wafer-lower-ring-all-gather %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-RING-ALL-GATHER
 # RUN: not wafer-opt --wafer-lower-ring-reduce-collectives %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-RING-REDUCE
 # RUN: not wafer-opt --wafer-lower-tile-region-to-c-abi %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-TILE-CABI
+# RUN: not wafer-opt --wafer-form-logical-groups %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-FORM-LOGICAL-GROUPS
+# RUN: not wafer-opt --wafer-dump-group-tiling-demand %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-DUMP-GROUP-TILING
+# RUN: not wafer-opt --wafer-dump-group-layout-plan %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-DUMP-GROUP-LAYOUT
+# RUN: not wafer-opt --wafer-dump-group-to-tile-region %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-DUMP-GROUP-LOWERING
+# RUN: not wafer-opt --wafer-dump-candidate-ddr-tile-views %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-DUMP-GROUP-DDR-VIEWS
+# RUN: not wafer-opt --wafer-select-group-tile %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-SELECT-GROUP-TILE
+# RUN: not wafer-opt --wafer-convert-group-to-tile-region %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-CONVERT-GROUP
+# RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-tile-region)' %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-GROUP-TO-TILE-PIPELINE
+# RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-instr)' %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-GROUP-TO-INSTR-PIPELINE
+# RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-memory-planned-instr)' %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-GROUP-SPM-PIPELINE
+# RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-ddr-memory-planned-instr)' %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-GROUP-DDR-PIPELINE
+# RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-target-llvm)' %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-GROUP-TARGET-PIPELINE
+# RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-selected-instr)' %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-GROUP-SELECTED-PIPELINE
 
 # NO-ROOT-TILE: Unknown command line argument '--wafer-check-root-tile-candidates'
 # NO-MULTI-NOCOMM: Unknown command line argument '--wafer-materialize-multi-tile-no-comm'
@@ -22,3 +35,16 @@
 # NO-RING-ALL-GATHER: Unknown command line argument '--wafer-lower-ring-all-gather'
 # NO-RING-REDUCE: Unknown command line argument '--wafer-lower-ring-reduce-collectives'
 # NO-TILE-CABI: Unknown command line argument '--wafer-lower-tile-region-to-c-abi'
+# NO-FORM-LOGICAL-GROUPS: Unknown command line argument '--wafer-form-logical-groups'
+# NO-DUMP-GROUP-TILING: Unknown command line argument '--wafer-dump-group-tiling-demand'
+# NO-DUMP-GROUP-LAYOUT: Unknown command line argument '--wafer-dump-group-layout-plan'
+# NO-DUMP-GROUP-LOWERING: Unknown command line argument '--wafer-dump-group-to-tile-region'
+# NO-DUMP-GROUP-DDR-VIEWS: Unknown command line argument '--wafer-dump-candidate-ddr-tile-views'
+# NO-SELECT-GROUP-TILE: Unknown command line argument '--wafer-select-group-tile'
+# NO-CONVERT-GROUP: Unknown command line argument '--wafer-convert-group-to-tile-region'
+# NO-GROUP-TO-TILE-PIPELINE: 'wafer-lower-groups-to-tile-region' does not refer to a registered pass or pass pipeline
+# NO-GROUP-TO-INSTR-PIPELINE: 'wafer-lower-groups-to-instr' does not refer to a registered pass or pass pipeline
+# NO-GROUP-SPM-PIPELINE: 'wafer-lower-groups-to-memory-planned-instr' does not refer to a registered pass or pass pipeline
+# NO-GROUP-DDR-PIPELINE: 'wafer-lower-groups-to-ddr-memory-planned-instr' does not refer to a registered pass or pass pipeline
+# NO-GROUP-TARGET-PIPELINE: 'wafer-lower-groups-to-target-llvm' does not refer to a registered pass or pass pipeline
+# NO-GROUP-SELECTED-PIPELINE: 'wafer-lower-groups-to-selected-instr' does not refer to a registered pass or pass pipeline

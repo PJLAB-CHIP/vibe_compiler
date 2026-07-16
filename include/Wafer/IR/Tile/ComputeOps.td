@@ -23,6 +23,28 @@ def Wafer_ComputeFillOp : Wafer_Op<"tile.fill", [
       "$dest `,` $value attr-dict `:` type($dest) `,` type($value)";
 }
 
+def Wafer_ComputeConvertOp : Wafer_Op<"tile.compute.convert", [
+    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
+  ]> {
+  let summary = "target-abstract tile element-type conversion";
+  let description = [{
+    `wafer.tile.compute.convert` changes the element type of one tile-local SPM
+    tensor while preserving its logical shape and tensor layout.  It records
+    the numeric cast before instruction lowering selects a target conversion
+    route and any route-specific parameter.
+  }];
+
+  let arguments = (ins Wafer_AnySPMMemRef:$source);
+  let results = (outs Wafer_AnySPMMemRef:$result);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$source attr-dict `:` type($source) `to` type($result)";
+}
+
 def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
     DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,

@@ -223,6 +223,10 @@ bool runTargetModelGate(
                << " systemc_threads=" << result->systemCThreadProcessCount
                << " final_delta=" << result->finalDeltaCount
                << " formal_commands=" << result->formalNumericCommandCount
+               << " managed_reference_commands="
+               << result->managedReferenceNumericCommandCount
+               << " managed_reference_scalars="
+               << result->managedReferenceScalarEvaluationCount
                << " bulk_commands=" << result->bulkNumericCommandCount
                << " bulk_matmuls=" << result->bulkMatmulInvocationCount
                << " bulk_reorders=" << result->bulkReorderInvocationCount
@@ -232,6 +236,19 @@ bool runTargetModelGate(
   for (llvm::StringRef digest : result->bulkAdmissionRecordDigests)
     llvm::outs() << "wafer-compile: target model bulk admission=" << digest
                  << "\n";
+  for (llvm::StringRef digest : result->bulkManagedReferenceEnvironmentDigests)
+    llvm::outs() << "wafer-compile: target model managed-reference environment="
+                 << digest << "\n";
+  for (llvm::StringRef digest :
+       result->managedReferenceTensorEnvironmentDigests)
+    llvm::outs()
+        << "wafer-compile: target model managed-reference tensor environment="
+        << digest << "\n";
+  for (llvm::StringRef implementation :
+       result->managedReferenceTensorImplementations)
+    llvm::outs() << "wafer-compile: target model managed-reference tensor "
+                    "implementation="
+                 << implementation << "\n";
   return false;
 }
 

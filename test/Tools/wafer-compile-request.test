@@ -17,8 +17,6 @@
 # RUN: mkdir -p %t.input
 # RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER= %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.no-helper-output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=NO-HELPER
 # RUN: test ! -e %t.no-helper-output
-# RUN: not wafer-compile --program-pipeline=stablehlo-spmd-to-group 2>&1 | FileCheck %s --check-prefix=OLD-PROGRAM-PIPELINE
-# RUN: not wafer-compile --stop-stage=group 2>&1 | FileCheck %s --check-prefix=OLD-STOP-STAGE
 # RUN: not wafer-compile --execution-mesh-ranks=16 2>&1 | FileCheck %s --check-prefix=OLD-MESH-RANKS
 # RUN: not wafer-compile --xla-spmd-partitioner-helper=%t.helper 2>&1 | FileCheck %s --check-prefix=OLD-HELPER
 # RUN: not wafer-compile --default-tile-count=16 2>&1 | FileCheck %s --check-prefix=OLD-TILE-COUNT
@@ -40,8 +38,6 @@
 # UNKNOWN-PROFILE: wafer-compile: unknown target profile 'not-a-registered-profile'
 # DUPLICATE-PROFILE: wafer-compile: duplicate option: --target-profile
 # NO-HELPER: wafer-compile: no XLA SPMD partitioner helper configured
-# OLD-PROGRAM-PIPELINE: wafer-compile: unknown argument: --program-pipeline=stablehlo-spmd-to-group
-# OLD-STOP-STAGE: wafer-compile: unknown argument: --stop-stage=group
 # OLD-MESH-RANKS: wafer-compile: unknown argument: --execution-mesh-ranks=16
 # OLD-HELPER: wafer-compile: unknown argument: --xla-spmd-partitioner-helper={{.*}}
 # OLD-TILE-COUNT: wafer-compile: unknown argument: --default-tile-count=16

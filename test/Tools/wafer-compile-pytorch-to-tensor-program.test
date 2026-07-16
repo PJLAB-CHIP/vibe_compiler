@@ -1,0 +1,18 @@
+# REQUIRES: stablehlo, shardy, pytorch-xla-importer, xla-spmd-helper
+
+# RUN: rm -rf %t.input.program %t.package
+# RUN: printf '%b' 'import pathlib\nimport sys\nimport torch\nsys.path.insert(0, "%wafer_src_root/test/Tools/Inputs")\nimport wafer_pytorch_xla_capture as capture\nclass AddModel(torch.nn.Module):\n  def forward(self, x):\n    return x + x\ncapture.emit_reference_stablehlo_program(pathlib.Path("%t.input.program"), reference_module_factory=AddModel, size=32)\n' > %t.capture.py
+# RUN: %importer_python %t.capture.py
+# RUN: wafer-compile \
+# RUN:   --input-program-dir %t.input.program \
+# RUN:   --output-program-dir %t.package \
+# RUN:   --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 | FileCheck %s --check-prefix=PIPELINE
+# RUN: FileCheck %s --input-file=%t.package/functions/forward.mlir --check-prefix=STRUCTURED
+
+# PIPELINE: wafer-compile: published verified package with execution-ranks=16:
+
+# STRUCTURED: mhlo.spmd_parameters_shardings
+# STRUCTURED: func.func @main
+# STRUCTURED: tensor.empty
+# STRUCTURED: linalg.generic
+# STRUCTURED: arith.addf

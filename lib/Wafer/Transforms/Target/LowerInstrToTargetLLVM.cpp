@@ -6,6 +6,7 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/Support/Error.h"
@@ -52,7 +53,8 @@ struct LowerInstrToTargetLLVMPass
       }
       resolvedProfile = *parsed;
     }
-    if (mlir::failed(target_llvm_detail::preflightTargetFormats(
+    if (mlir::failed(target_llvm_detail::preflightTargetAddresses(moduleOp)) ||
+        mlir::failed(target_llvm_detail::preflightTargetFormats(
             moduleOp, *resolvedProfile))) {
       signalPassFailure();
       return;

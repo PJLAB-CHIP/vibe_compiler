@@ -40,11 +40,12 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.addDynamicallyLegalOp<InstrTDMADataMoveOp>([](InstrTDMADataMoveOp op) {
     return !requiresGatherScatterMaterialization(op.getKindAttr().getValue());
   });
-  target.addIllegalOp<
-      StorageLoadOp, StorageStoreOp, LayoutMaterializeOp, ComputeFillOp,
-      ComputeGemmOp, ComputeElementwiseOp, ComputeReduceOp, MoveCopyOp,
-      MoveExtractSliceOp, MoveInsertSliceOp, MoveTransposeOp, MoveBroadcastOp,
-      ViewReshapeOp, CommAllGatherOp, CommReduceScatterOp, CommAllReduceOp>();
+  target.addIllegalOp<StorageLoadOp, StorageStoreOp, LayoutMaterializeOp,
+                      ComputeFillOp, ComputeConvertOp, ComputeGemmOp,
+                      ComputeElementwiseOp, ComputeReduceOp, MoveCopyOp,
+                      MoveExtractSliceOp, MoveInsertSliceOp, MoveTransposeOp,
+                      MoveBroadcastOp, ViewReshapeOp, CommAllGatherOp,
+                      CommReduceScatterOp, CommAllReduceOp>();
   target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });
 }
 
@@ -57,6 +58,30 @@ populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
   populateViewReshapeLoweringPattern(patterns, failureReason);
   populateFillLoweringPattern(patterns);
   populateCollectiveLoweringPatterns(patterns, options, failureReason);
+}
+
+/// Remove a private fill whose destination has no reader.  Constant folding
+/// of tensor-level select expressions can make the predicate buffer dead
+/// after the tile body has already materialized its splat.  Keeping that
+/// write would turn a dead i1 value into a real target TDMA command, where the
+/// hardware profile correctly rejects the unproven BOOL encoding.
+static void eraseDeadPrivateFills(mlir::ModuleOp module) {
+  llvm::SmallVector<InstrFillOp, 4> deadFills;
+  module.walk([&](InstrFillOp fill) {
+    mlir::Value dest = fill.getDest();
+    if (dest.hasOneUse() && dest.getDefiningOp<mlir::memref::AllocOp>())
+      deadFills.push_back(fill);
+  });
+  for (InstrFillOp fill : deadFills) {
+    mlir::Value dest = fill.getDest();
+    mlir::Value scalar = fill.getValue();
+    auto alloc = dest.getDefiningOp<mlir::memref::AllocOp>();
+    fill->erase();
+    alloc->erase();
+    if (auto constant = scalar.getDefiningOp<mlir::arith::ConstantOp>();
+        constant && constant->use_empty())
+      constant->erase();
+  }
 }
 
 static mlir::LogicalResult parseTileRegionToInstrOptions(
@@ -255,5 +280,6 @@ wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
                        "tile-region to instruction conversion failed");
     return mlir::failure();
   }
+  eraseDeadPrivateFills(module);
   return materializeStructuredLocalFences(module);
 }

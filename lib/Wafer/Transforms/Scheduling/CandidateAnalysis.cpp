@@ -1,0 +1,745 @@
+//===- CandidateAnalysis.cpp - Tile candidate implementation
+//-----------------===//
+
+#include "Scheduling/ScheduleTensorProgramInternal.h"
+
+namespace wafer::tensor_program_scheduling {
+
+std::string getNearestSymbolName(mlir::Operation *op) {
+  for (mlir::Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (auto name = parent->getAttrOfType<mlir::StringAttr>("sym_name"))
+      return ("@" + name.getValue()).str();
+  }
+  return "@unknown";
+}
+
+void printI64List(llvm::ArrayRef<int64_t> values, llvm::raw_ostream &os) {
+  os << "[";
+  for (auto [index, value] : llvm::enumerate(values)) {
+    if (index != 0)
+      os << ",";
+    os << value;
+  }
+  os << "]";
+}
+
+mlir::FailureOr<llvm::SmallVector<int64_t, 8>>
+parseI64List(llvm::StringRef text, llvm::StringRef optionName,
+             mlir::Operation *anchor) {
+  llvm::SmallVector<int64_t, 8> values;
+  llvm::SmallVector<llvm::StringRef, 8> parts;
+  llvm::SplitString(text, parts, ",");
+  for (llvm::StringRef part : parts) {
+    part = part.trim();
+    if (part.empty())
+      continue;
+    int64_t value = 0;
+    if (part.getAsInteger(10, value) || value <= 0) {
+      anchor->emitError() << "invalid positive integer in " << optionName
+                          << ": " << part;
+      return mlir::failure();
+    }
+    values.push_back(value);
+  }
+  return values;
+}
+
+mlir::FailureOr<TileSearchMode> parseTileSearchMode(llvm::StringRef text,
+                                                    mlir::Operation *anchor) {
+  if (text == "first-legal")
+    return TileSearchMode::FirstLegal;
+  if (text == "min-estimated-time")
+    return TileSearchMode::MinEstimatedTime;
+  anchor->emitError()
+      << "invalid_tile_search: expected first-legal or min-estimated-time";
+  return mlir::failure();
+}
+
+mlir::FailureOr<TileSearchEffort>
+parseTileSearchEffort(llvm::StringRef text, mlir::Operation *anchor) {
+  if (text == "quick")
+    return TileSearchEffort::Quick;
+  if (text == "default")
+    return TileSearchEffort::Default;
+  if (text == "deep")
+    return TileSearchEffort::Deep;
+  anchor->emitError()
+      << "invalid_tile_search_effort: expected quick, default or deep";
+  return mlir::failure();
+}
+
+static bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
+  if (lhs < 0 || rhs < 0)
+    return false;
+  if (rhs > std::numeric_limits<int64_t>::max() - lhs)
+    return false;
+  result = lhs + rhs;
+  return true;
+}
+
+int64_t saturatingAdd(int64_t lhs, int64_t rhs) {
+  int64_t result = 0;
+  if (!checkedAdd(lhs, rhs, result))
+    return std::numeric_limits<int64_t>::max();
+  return result;
+}
+
+int64_t saturatingMul(int64_t lhs, int64_t rhs) {
+  if (lhs < 0 || rhs < 0)
+    return std::numeric_limits<int64_t>::max();
+  if (lhs != 0 && rhs > std::numeric_limits<int64_t>::max() / lhs)
+    return std::numeric_limits<int64_t>::max();
+  return lhs * rhs;
+}
+
+int64_t ceilDiv(int64_t numerator, int64_t denominator) {
+  if (numerator <= 0)
+    return 0;
+  if (denominator <= 0)
+    return std::numeric_limits<int64_t>::max();
+  return (numerator + denominator - 1) / denominator;
+}
+
+static int64_t getStaticMemRefElementCount(mlir::Value value) {
+  auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+  if (!type || !type.hasStaticShape())
+    return 0;
+  int64_t count = 1;
+  for (int64_t dim : type.getShape())
+    count = saturatingMul(count, dim);
+  return count;
+}
+
+static int64_t getOptionalBatchCount(InstrGemmOp op) {
+  if (auto attr = op.getBatchCountAttr())
+    return attr.getInt();
+  return 1;
+}
+
+CandidateStats estimateStats(mlir::ModuleOp module) {
+  CandidateStats stats;
+  stats.program = analysis::analyzeInstructionProgramCost(
+      module.getOperation(),
+      analysis::getTargetScheduleCostPolicy(
+          TargetProfileId::waferTx81SingleCardKernelV1()));
+  return stats;
+}
+
+static mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
+getStaticTraversalShapeFromTypes(mlir::TypeRange resultTypes);
+
+static mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
+getStaticTraversalShapeFromTypes(mlir::TypeRange resultTypes) {
+  if (resultTypes.empty())
+    return mlir::failure();
+
+  auto firstType = mlir::dyn_cast<mlir::RankedTensorType>(resultTypes.front());
+  if (!firstType || !firstType.hasStaticShape())
+    return mlir::failure();
+  llvm::SmallVector<int64_t, 4> shape(firstType.getShape().begin(),
+                                      firstType.getShape().end());
+
+  for (mlir::Type type : resultTypes.drop_front()) {
+    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(type);
+    if (!resultType || !resultType.hasStaticShape())
+      return mlir::failure();
+    if (!std::equal(shape.begin(), shape.end(), resultType.getShape().begin(),
+                    resultType.getShape().end()))
+      return mlir::failure();
+  }
+  return shape;
+}
+
+mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
+getStaticTraversalShape(mlir::func::FuncOp task) {
+  return getStaticTraversalShapeFromTypes(task.getResultTypes());
+}
+
+std::optional<int64_t> getElementByteWidth(mlir::Type type) {
+  if (auto shaped = mlir::dyn_cast<mlir::ShapedType>(type))
+    type = shaped.getElementType();
+  if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type))
+    return std::max<int64_t>(1, floatType.getWidth() / 8);
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
+    return std::max<int64_t>(1, (intType.getWidth() + 7) / 8);
+  return std::nullopt;
+}
+
+std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>>
+getYieldedRootLinalgOps(mlir::func::FuncOp task) {
+  if (!task.getBody().hasOneBlock())
+    return std::nullopt;
+  auto returnOp = mlir::dyn_cast<mlir::func::ReturnOp>(
+      task.getBody().front().getTerminator());
+  if (!returnOp || returnOp.getOperands().empty())
+    return std::nullopt;
+  llvm::SmallVector<mlir::linalg::LinalgOp, 4> roots;
+  for (mlir::Value value : returnOp.getOperands()) {
+    auto root =
+        mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(value.getDefiningOp());
+    if (!root)
+      return std::nullopt;
+    roots.push_back(root);
+  }
+  return roots;
+}
+
+CandidateTraversalRootCapability
+getTaskTraversalRootCapability(mlir::func::FuncOp task) {
+  if (!task || !task.getBody().hasOneBlock())
+    return CandidateTraversalRootCapability::Unsupported;
+  auto returnOp = mlir::dyn_cast<mlir::func::ReturnOp>(
+      task.getBody().front().getTerminator());
+  if (!returnOp || returnOp.getOperands().empty())
+    return CandidateTraversalRootCapability::Unsupported;
+
+  CandidateTraversalRootCapability taskCapability =
+      CandidateTraversalRootCapability::Tiled;
+  for (mlir::Value value : returnOp.getOperands()) {
+    CandidateTraversalRootCapability rootCapability =
+        classifyCandidateTraversalRoot(value.getDefiningOp());
+    if (rootCapability == CandidateTraversalRootCapability::Unsupported)
+      return rootCapability;
+    if (rootCapability == CandidateTraversalRootCapability::FullTraversalOnly)
+      taskCapability = rootCapability;
+  }
+  return taskCapability;
+}
+
+std::string getStandaloneTaskModuleText(mlir::func::FuncOp task) {
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  task->getParentOfType<mlir::ModuleOp>().print(os);
+  return os.str();
+}
+
+mlir::func::FuncOp findSingleSelectionTask(mlir::ModuleOp module) {
+  return structured_scheduler::findSingleTaskFunction(module);
+}
+
+static bool hasReductionIterator(mlir::linalg::LinalgOp op) {
+  for (mlir::utils::IteratorType iteratorType : op.getIteratorTypesArray()) {
+    if (iteratorType == mlir::utils::IteratorType::reduction)
+      return true;
+  }
+  return false;
+}
+
+static mlir::FailureOr<llvm::SmallVector<int64_t, 2>>
+getStaticRootReductionRangesImpl(
+    std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots) {
+  if (!roots)
+    return llvm::SmallVector<int64_t, 2>{};
+
+  std::optional<llvm::SmallVector<int64_t, 2>> commonReductionRanges;
+  for (mlir::linalg::LinalgOp root : *roots) {
+    if (!mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::BatchMatmulOp,
+                   mlir::linalg::GenericOp>(root.getOperation()) ||
+        !hasReductionIterator(root))
+      continue;
+
+    llvm::SmallVector<int64_t, 4> loopRanges = root.getStaticLoopRanges();
+    if (llvm::any_of(loopRanges, [](int64_t range) {
+          return mlir::ShapedType::isDynamic(range);
+        }))
+      return mlir::failure();
+
+    llvm::SmallVector<int64_t, 2> reductionRanges;
+    for (auto [index, iteratorType] :
+         llvm::enumerate(root.getIteratorTypesArray())) {
+      if (iteratorType == mlir::utils::IteratorType::reduction)
+        reductionRanges.push_back(loopRanges[index]);
+    }
+    if (reductionRanges.empty())
+      continue;
+    if (!commonReductionRanges) {
+      commonReductionRanges = reductionRanges;
+      continue;
+    }
+    if (*commonReductionRanges != reductionRanges)
+      return llvm::SmallVector<int64_t, 2>{};
+  }
+  if (!commonReductionRanges)
+    return llvm::SmallVector<int64_t, 2>{};
+  return *commonReductionRanges;
+}
+
+mlir::FailureOr<llvm::SmallVector<int64_t, 2>>
+getStaticRootReductionRanges(mlir::func::FuncOp task) {
+  return getStaticRootReductionRangesImpl(getYieldedRootLinalgOps(task));
+}
+
+std::optional<std::string>
+getReductionSplitLegalityFailure(mlir::func::FuncOp task) {
+  std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
+      getYieldedRootLinalgOps(task);
+  if (!roots)
+    return std::nullopt;
+
+  for (mlir::linalg::LinalgOp root : *roots) {
+    if (!hasReductionIterator(root))
+      continue;
+    std::string failureReason;
+    if (mlir::failed(verifyCandidateReductionSplitNumericLegality(
+            root, &failureReason))) {
+      if (failureReason.empty())
+        return "candidate reduction split failed numeric legality";
+      return failureReason;
+    }
+  }
+  return std::nullopt;
+}
+
+static std::optional<int64_t>
+estimateRootMinimumSPMBytes(mlir::linalg::LinalgOp root,
+                            const CandidateSpec &candidate) {
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
+  if (!resultType || !resultType.hasStaticShape())
+    return std::nullopt;
+  std::optional<int64_t> elementBytes = getElementByteWidth(resultType);
+  if (!elementBytes)
+    return std::nullopt;
+
+  if (mlir::isa<mlir::linalg::MatmulOp>(root.getOperation()) &&
+      candidate.tileSizes.size() == 2 && root.getNumDpsInputs() == 2) {
+    auto lhsType = mlir::dyn_cast<mlir::RankedTensorType>(
+        root.getDpsInputOperand(0)->get().getType());
+    auto rhsType = mlir::dyn_cast<mlir::RankedTensorType>(
+        root.getDpsInputOperand(1)->get().getType());
+    if (!lhsType || !rhsType || lhsType.getRank() != 2 ||
+        rhsType.getRank() != 2 || !lhsType.hasStaticShape() ||
+        !rhsType.hasStaticShape())
+      return std::nullopt;
+    int64_t m = candidate.tileSizes[0];
+    int64_t n = candidate.tileSizes[1];
+    int64_t k = lhsType.getDimSize(1);
+    if (!candidate.reductionSplitSizes.empty())
+      k = candidate.reductionSplitSizes.front();
+    int64_t elements = saturatingAdd(saturatingMul(m, k), saturatingMul(k, n));
+    elements = saturatingAdd(elements, saturatingMul(m, n));
+    return saturatingMul(elements, *elementBytes);
+  }
+
+  int64_t tileElements = 1;
+  for (int64_t size : candidate.tileSizes)
+    tileElements = saturatingMul(tileElements, size);
+  return saturatingMul(tileElements, *elementBytes);
+}
+
+static std::optional<int64_t> estimateRequiredSPMLowerBoundBytes(
+    std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots,
+    const CandidateSpec &candidate) {
+  if (!roots)
+    return std::nullopt;
+
+  int64_t required = 0;
+  for (mlir::linalg::LinalgOp root : *roots) {
+    std::optional<int64_t> rootBytes =
+        estimateRootMinimumSPMBytes(root, candidate);
+    if (!rootBytes)
+      return std::nullopt;
+    required = std::max(required, *rootBytes);
+  }
+  return required;
+}
+
+bool failsCheapSPMBound(mlir::func::FuncOp task, const CandidateSpec &candidate,
+                        int64_t spmBase, int64_t spmLimit) {
+  std::optional<int64_t> lowerBoundBytes = estimateRequiredSPMLowerBoundBytes(
+      getYieldedRootLinalgOps(task), candidate);
+  if (!lowerBoundBytes || spmLimit <= spmBase)
+    return false;
+  return *lowerBoundBytes > (spmLimit - spmBase);
+}
+
+static std::optional<int64_t>
+getAlignedPhysicalSPMBytes(llvm::ArrayRef<int64_t> shape,
+                           mlir::Type elementType, MemLayout layout,
+                           int64_t spmAlignment) {
+  if (spmAlignment <= 0 ||
+      llvm::any_of(shape, [](int64_t size) { return size <= 0; }))
+    return std::nullopt;
+  auto memory =
+      MemoryAttr::get(elementType.getContext(), MemorySpace::SPM, layout);
+  auto type = mlir::MemRefType::get(shape, elementType,
+                                    mlir::MemRefLayoutAttrInterface{}, memory);
+  std::optional<WaferPhysicalTensorInfo> physical =
+      computeWaferPhysicalTensorInfo(type);
+  if (!physical || physical->physicalBytes < 0 ||
+      physical->physicalBytes >
+          std::numeric_limits<int64_t>::max() - (spmAlignment - 1))
+    return std::nullopt;
+  return ((physical->physicalBytes + spmAlignment - 1) / spmAlignment) *
+         spmAlignment;
+}
+
+static bool isDirectTaskArgument(mlir::func::FuncOp task, mlir::Value value) {
+  auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
+  return argument && argument.getOwner() == &task.getBody().front();
+}
+
+/// Recognizes the exact rank-2 passthrough transpose producer generated by the
+/// structured frontend for a transposed GEMM weight. The returned type is the
+/// direct task-boundary tensor; the generic result is the matmul RHS.
+static mlir::RankedTensorType
+getDirectPassthroughTransposeInputType(mlir::func::FuncOp task,
+                                       mlir::linalg::MatmulOp matmul) {
+  auto transpose =
+      matmul.getInputs()[1].getDefiningOp<mlir::linalg::GenericOp>();
+  if (!transpose || transpose.getNumDpsInputs() != 1 ||
+      transpose.getNumDpsInits() != 1 || transpose->getNumResults() != 1 ||
+      !transpose.getRegion().hasOneBlock() ||
+      !llvm::all_of(transpose.getIteratorTypesArray(), [](auto iteratorType) {
+        return iteratorType == mlir::utils::IteratorType::parallel;
+      }))
+    return {};
+
+  mlir::Value input = transpose.getDpsInputs().front();
+  if (!isDirectTaskArgument(task, input) ||
+      !transpose.getDpsInits().front().getDefiningOp<mlir::tensor::EmptyOp>() ||
+      !transpose->getResult(0).hasOneUse() ||
+      *transpose->getResult(0).getUsers().begin() != matmul.getOperation())
+    return {};
+
+  auto inputType = mlir::dyn_cast<mlir::RankedTensorType>(input.getType());
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(transpose->getResult(0).getType());
+  if (!inputType || !resultType || inputType.getRank() != 2 ||
+      resultType.getRank() != 2 || !inputType.hasStaticShape() ||
+      !resultType.hasStaticShape() ||
+      inputType.getElementType() != resultType.getElementType() ||
+      inputType.getDimSize(0) != resultType.getDimSize(1) ||
+      inputType.getDimSize(1) != resultType.getDimSize(0))
+    return {};
+
+  llvm::SmallVector<mlir::AffineMap, 2> maps = transpose.getIndexingMapsArray();
+  if (maps.size() != 2 || !maps[1].isIdentity() || maps[0].getNumDims() != 2 ||
+      maps[0].getNumResults() != 2)
+    return {};
+  auto first = mlir::dyn_cast<mlir::AffineDimExpr>(maps[0].getResult(0));
+  auto second = mlir::dyn_cast<mlir::AffineDimExpr>(maps[0].getResult(1));
+  if (!first || !second || first.getPosition() != 1 ||
+      second.getPosition() != 0)
+    return {};
+
+  mlir::Block &body = transpose.getRegion().front();
+  auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(body.getTerminator());
+  if (!body.without_terminator().empty() || !yield ||
+      yield.getValues().size() != 1 ||
+      yield.getValues().front() != body.getArgument(0))
+    return {};
+  return inputType;
+}
+
+static std::optional<int64_t> estimateTargetSPMWorkingSetBytesImpl(
+    mlir::func::FuncOp task, const CandidateSpec &candidate,
+    int64_t spmAlignment, bool includeFusedTransposeSource) {
+  // The named matmul lowering has a closed target-layout contract when the LHS
+  // is a direct task boundary and the RHS is either direct or produced by one
+  // exact rank-2 passthrough transpose. Direct operands contribute Tensor and
+  // Cx roots, while the result contributes Cx and output Tensor roots. For a
+  // fused transpose, conservatively count both its direct source Tensor and
+  // its Tensor result in addition to the RHS Cx root. This is a safe upper
+  // bound even when lifetime packing aliases the two Tensor roots.
+  //
+  // Other producer chains can introduce unmodeled materialized views, so
+  // decline to estimate them rather than understate their demand.
+  std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
+      getYieldedRootLinalgOps(task);
+  if (!roots || roots->size() != 1 || candidate.tileSizes.size() != 2 ||
+      !candidate.reductionSplitSizes.empty() || !task.getBody().hasOneBlock())
+    return std::nullopt;
+  auto matmul =
+      mlir::dyn_cast<mlir::linalg::MatmulOp>(roots->front().getOperation());
+  if (!matmul)
+    return std::nullopt;
+
+  if (!isDirectTaskArgument(task, matmul.getInputs()[0]))
+    return std::nullopt;
+
+  auto lhsType =
+      mlir::dyn_cast<mlir::RankedTensorType>(matmul.getInputs()[0].getType());
+  auto rhsType =
+      mlir::dyn_cast<mlir::RankedTensorType>(matmul.getInputs()[1].getType());
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(matmul.getResult(0).getType());
+  if (!lhsType || !rhsType || !resultType || lhsType.getRank() != 2 ||
+      rhsType.getRank() != 2 || resultType.getRank() != 2 ||
+      !lhsType.hasStaticShape() || !rhsType.hasStaticShape() ||
+      !resultType.hasStaticShape() ||
+      lhsType.getDimSize(0) != resultType.getDimSize(0) ||
+      lhsType.getDimSize(1) != rhsType.getDimSize(0) ||
+      rhsType.getDimSize(1) != resultType.getDimSize(1))
+    return std::nullopt;
+
+  int64_t m = candidate.tileSizes[0];
+  int64_t n = candidate.tileSizes[1];
+  int64_t k = lhsType.getDimSize(1);
+  if (m <= 0 || n <= 0 || k <= 0 || m > resultType.getDimSize(0) ||
+      n > resultType.getDimSize(1))
+    return std::nullopt;
+
+  mlir::RankedTensorType transposeInputType;
+  bool directRhs = isDirectTaskArgument(task, matmul.getInputs()[1]);
+  if (!directRhs) {
+    transposeInputType = getDirectPassthroughTransposeInputType(task, matmul);
+    if (!transposeInputType)
+      return std::nullopt;
+  }
+
+  struct BufferShape {
+    llvm::SmallVector<int64_t, 2> shape;
+    mlir::Type elementType;
+    MemLayout layout;
+  };
+  llvm::SmallVector<BufferShape, 8> buffers = {
+      {{m, k}, lhsType.getElementType(), MemLayout::Tensor},
+      {{m, k}, lhsType.getElementType(), MemLayout::Cx},
+  };
+  if (directRhs) {
+    buffers.push_back({{k, n}, rhsType.getElementType(), MemLayout::Tensor});
+  } else {
+    if (includeFusedTransposeSource)
+      buffers.push_back(
+          {{n, k}, transposeInputType.getElementType(), MemLayout::Tensor});
+    buffers.push_back({{k, n}, rhsType.getElementType(), MemLayout::Tensor});
+  }
+  buffers.push_back({{k, n}, rhsType.getElementType(), MemLayout::Cx});
+  buffers.push_back({{m, n}, resultType.getElementType(), MemLayout::Cx});
+  buffers.push_back({{m, n}, resultType.getElementType(), MemLayout::Tensor});
+
+  int64_t workingSetBytes = 0;
+  for (const BufferShape &buffer : buffers) {
+    std::optional<int64_t> bytes = getAlignedPhysicalSPMBytes(
+        buffer.shape, buffer.elementType, buffer.layout, spmAlignment);
+    if (!bytes ||
+        *bytes > std::numeric_limits<int64_t>::max() - workingSetBytes)
+      return std::nullopt;
+    workingSetBytes += *bytes;
+  }
+  return workingSetBytes;
+}
+
+std::optional<int64_t>
+estimateTargetSPMWorkingSetBytes(mlir::func::FuncOp task,
+                                 const CandidateSpec &candidate,
+                                 int64_t spmAlignment) {
+  // Include all seven roots for the fused-transpose case. This conservative
+  // inventory is suitable for directing search even if lifetime packing can
+  // alias the source Tensor after the transpose completes.
+  return estimateTargetSPMWorkingSetBytesImpl(
+      task, candidate, spmAlignment,
+      /*includeFusedTransposeSource=*/true);
+}
+
+std::optional<int64_t>
+estimateTargetSPMRequiredLiveBytes(mlir::func::FuncOp task,
+                                   const CandidateSpec &candidate,
+                                   int64_t spmAlignment) {
+  // The source Tensor of a fused transpose need not overlap the later matmul
+  // phase. The remaining six Tensor/Cx roots do: the transposed Tensor and Cx
+  // RHS replace the direct RHS pair, and local issue completion keeps them
+  // live with the LHS and result pairs. This is therefore a required-live
+  // bound that may reject an impossible candidate before materialization.
+  return estimateTargetSPMWorkingSetBytesImpl(
+      task, candidate, spmAlignment,
+      /*includeFusedTransposeSource=*/false);
+}
+
+static std::optional<std::string> getCheapTargetGeometryFailureImpl(
+    std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots,
+    const CandidateSpec &candidate, llvm::ArrayRef<int64_t> reductionRanges) {
+  if (!roots)
+    return std::nullopt;
+
+  constexpr int64_t maxTargetDimension = std::numeric_limits<uint16_t>::max();
+  auto exceedsTargetDimension = [&](llvm::ArrayRef<int64_t> dimensions) {
+    return llvm::any_of(dimensions, [&](int64_t dimension) {
+      return dimension > maxTargetDimension;
+    });
+  };
+
+  for (mlir::linalg::LinalgOp root : *roots) {
+    bool isGemm =
+        mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::BatchMatmulOp>(
+            root.getOperation());
+    bool isReduction = hasReductionIterator(root);
+    if (!isGemm && !isReduction)
+      continue;
+
+    if (exceedsTargetDimension(candidate.tileSizes))
+      return "target_abi_narrowing: candidate traversal dimension must fit "
+             "uint16_t";
+
+    llvm::ArrayRef<int64_t> reductionSizes =
+        candidate.reductionSplitSizes.empty()
+            ? reductionRanges
+            : llvm::ArrayRef<int64_t>(candidate.reductionSplitSizes);
+    if (exceedsTargetDimension(reductionSizes))
+      return "target_abi_narrowing: candidate reduction dimension must fit "
+             "uint16_t";
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string>
+getCheapTargetGeometryFailure(mlir::func::FuncOp task,
+                              const CandidateSpec &candidate,
+                              llvm::ArrayRef<int64_t> reductionRanges) {
+  return getCheapTargetGeometryFailureImpl(getYieldedRootLinalgOps(task),
+                                           candidate, reductionRanges);
+}
+
+static void addUnique(llvm::SmallVectorImpl<int64_t> &values, int64_t value,
+                      int64_t dim) {
+  if (value <= 0 || value > dim)
+    return;
+  if (!llvm::is_contained(values, value))
+    values.push_back(value);
+}
+
+static int64_t absDiff(int64_t lhs, int64_t rhs) {
+  return lhs > rhs ? lhs - rhs : rhs - lhs;
+}
+
+static int64_t chooseNextRefinementSize(int64_t dim, int64_t current,
+                                        llvm::ArrayRef<int64_t> preferred) {
+  if (current <= 1)
+    return current;
+
+  int64_t target = std::max<int64_t>(1, ceilDiv(current, 2));
+  llvm::SmallVector<int64_t, 16> candidates;
+  addUnique(candidates, target, dim);
+
+  for (int64_t divisor = 2; divisor * divisor <= dim; ++divisor) {
+    if (dim % divisor != 0)
+      continue;
+    addUnique(candidates, dim / divisor, dim);
+    addUnique(candidates, divisor, dim);
+  }
+
+  for (int64_t value : preferred)
+    addUnique(candidates, value, dim);
+  addUnique(candidates, 1, dim);
+
+  int64_t best = current;
+  bool found = false;
+  for (int64_t candidate : candidates) {
+    if (candidate >= current)
+      continue;
+    if (!found) {
+      best = candidate;
+      found = true;
+      continue;
+    }
+
+    int64_t candidateScore = absDiff(candidate, target);
+    int64_t bestScore = absDiff(best, target);
+    bool candidateDividesDim = dim % candidate == 0;
+    bool bestDividesDim = dim % best == 0;
+    if (candidateScore < bestScore ||
+        (candidateScore == bestScore && candidateDividesDim &&
+         !bestDividesDim) ||
+        (candidateScore == bestScore && candidateDividesDim == bestDividesDim &&
+         candidate > best))
+      best = candidate;
+  }
+
+  return found ? best : current;
+}
+
+static llvm::SmallVector<int64_t, 8>
+buildDimTileSizes(int64_t dim, llvm::ArrayRef<int64_t> preferred,
+                  int64_t maxCandidatesPerDim) {
+  llvm::SmallVector<int64_t, 8> values;
+  addUnique(values, dim, dim);
+
+  int64_t current = dim;
+  while (maxCandidatesPerDim <= 0 ||
+         static_cast<int64_t>(values.size()) < maxCandidatesPerDim) {
+    int64_t next = chooseNextRefinementSize(dim, current, preferred);
+    if (next >= current)
+      break;
+    addUnique(values, next, dim);
+    current = next;
+  }
+  return values;
+}
+
+TileSizeOptions buildTileSizeOptions(llvm::ArrayRef<int64_t> traversalShape,
+                                     llvm::ArrayRef<int64_t> reductionRanges,
+                                     llvm::ArrayRef<int64_t> preferred,
+                                     int64_t maxCandidatesPerDim,
+                                     bool allowReductionSplits) {
+  TileSizeOptions options;
+  for (int64_t dim : traversalShape)
+    options.traversal.push_back(
+        buildDimTileSizes(dim, preferred, maxCandidatesPerDim));
+  // Ordered reduction splitting is deliberately narrow: the conversion
+  // proves one exact accumulator chain, while the same per-dimension menu and
+  // global search budget keep the refinement finite.  Multi-axis reductions
+  // remain fail-closed in materialization and are not advertised here.
+  if (allowReductionSplits && reductionRanges.size() == 1)
+    options.reduction.push_back(buildDimTileSizes(
+        reductionRanges.front(), preferred, maxCandidatesPerDim));
+  return options;
+}
+
+bool isFullFirstTile(llvm::ArrayRef<int64_t> traversalShape,
+                     const TileInstance &tile) {
+  if (tile.offsets.size() != traversalShape.size() ||
+      tile.sizes.size() != traversalShape.size())
+    return false;
+  for (auto [shapeDim, values] :
+       llvm::zip(traversalShape, llvm::zip(tile.offsets, tile.sizes))) {
+    if (std::get<0>(values) != 0 || std::get<1>(values) != shapeDim)
+      return false;
+  }
+  return true;
+}
+
+llvm::SmallVector<TileInstance, 8>
+buildRepresentativeTiles(llvm::ArrayRef<int64_t> traversalShape,
+                         llvm::ArrayRef<int64_t> tileSizes) {
+  llvm::SmallVector<llvm::SmallVector<std::pair<int64_t, int64_t>, 2>, 4>
+      perDim;
+  for (auto [dim, tileSize] : llvm::zip(traversalShape, tileSizes)) {
+    llvm::SmallVector<std::pair<int64_t, int64_t>, 2> reps;
+    reps.push_back({0, std::min(dim, tileSize)});
+    if (dim > tileSize) {
+      int64_t tail = dim % tileSize;
+      if (tail == 0)
+        reps.push_back({dim - tileSize, tileSize});
+      else
+        reps.push_back({dim - tail, tail});
+    }
+    perDim.push_back(reps);
+  }
+
+  llvm::SmallVector<TileInstance, 8> tiles;
+  llvm::SmallVector<int64_t, 4> offsets;
+  llvm::SmallVector<int64_t, 4> sizes;
+  std::function<void(unsigned)> build = [&](unsigned dim) {
+    if (dim == perDim.size()) {
+      for (const TileInstance &tile : tiles)
+        if (tile.offsets == offsets && tile.sizes == sizes)
+          return;
+      tiles.push_back(TileInstance{llvm::SmallVector<int64_t, 4>(offsets),
+                                   llvm::SmallVector<int64_t, 4>(sizes)});
+      return;
+    }
+    for (auto [offset, size] : perDim[dim]) {
+      offsets.push_back(offset);
+      sizes.push_back(size);
+      build(dim + 1);
+      offsets.pop_back();
+      sizes.pop_back();
+    }
+  };
+  build(0);
+  return tiles;
+}
+
+} // namespace wafer::tensor_program_scheduling

@@ -33,7 +33,7 @@ struct CommandLineOptions {
   std::optional<std::string> targetModelMaximumFusedMultiplyAdds;
   std::optional<std::string> targetModelMaximumMovementBytes;
   std::optional<std::string> targetModelMaximumMovementSegments;
-  std::optional<std::string> targetModelGemmBackend;
+  std::optional<std::string> targetModelNumericPolicy;
   std::vector<std::string> targetModelBulkRecords;
   std::optional<std::string> targetModelMaximumBulkTotalBytes;
   std::optional<std::string> targetModelMaximumBulkScratchpadBytes;

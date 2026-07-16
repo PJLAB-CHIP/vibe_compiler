@@ -179,6 +179,52 @@ def _deterministic_float32_array(
     ).reshape(shape)
 
 
+def _deterministic_float_storage_array(
+    numpy_module: Any,
+    shape: tuple[int, ...],
+    *,
+    seed: int,
+    stream: int,
+    denominator: int,
+    dtype: str,
+) -> Any:
+    if dtype == "float32":
+        return _deterministic_float32_array(
+            numpy_module,
+            shape,
+            seed=seed,
+            stream=stream,
+            denominator=denominator,
+        )
+    if dtype != "float16":
+        raise RuntimeError(
+            f"deterministic Llama payload does not support dtype {dtype!r}"
+        )
+    if denominator <= 0 or denominator & (denominator - 1):
+        raise RuntimeError("deterministic payload denominator must be a power of two")
+
+    # A standard 7B block contains 90M-element projection matrices.  Fill the
+    # final FP16 allocation in bounded chunks instead of constructing several
+    # full-size uint64/int32/float32 temporaries alongside it.
+    count = math.prod(shape)
+    result = numpy_module.empty(count, dtype=numpy_module.float16)
+    chunk_elements = 1 << 20
+    for begin in range(0, count, chunk_elements):
+        end = min(begin + chunk_elements, count)
+        indices = numpy_module.arange(begin, end, dtype=numpy_module.uint64)
+        raw = (
+            indices * numpy_module.uint64(1103515245)
+            + numpy_module.uint64(seed) * numpy_module.uint64(2654435761)
+            + numpy_module.uint64(stream) * numpy_module.uint64(2246822519)
+        ) % numpy_module.uint64(257)
+        signed = raw.astype(numpy_module.int32) - numpy_module.int32(128)
+        result[begin:end] = (
+            signed.astype(numpy_module.float32)
+            / numpy_module.float32(denominator)
+        ).astype(numpy_module.float16)
+    return result.reshape(shape)
+
+
 def _float32_to_bfloat16_storage(numpy_module: Any, value: Any) -> Any:
     bits = numpy_module.asarray(value, dtype=numpy_module.float32).view(
         numpy_module.uint32
@@ -673,6 +719,16 @@ def _make_hf_llama_decoder_block_module(
     rms_norm_eps = float(config["rms_norm_eps"])
     rope_theta = float(config.get("rope_theta", 10000.0))
     initializer_range = float(config.get("initializer_range", 0.02))
+    storage_dtype_name = str(config.get("torch_dtype", "float32"))
+    if storage_dtype_name in {"float16", "torch.float16"}:
+        storage_dtype = torch_module.float16
+    elif storage_dtype_name in {"float32", "torch.float32"}:
+        storage_dtype = torch_module.float32
+    else:
+        raise RuntimeError(
+            "Llama decoder block test emitter supports torch_dtype float16 "
+            f"or float32, got {storage_dtype_name!r}"
+        )
 
     if sequence_length <= 0:
         raise RuntimeError("--sequence-length must be positive")
@@ -681,20 +737,22 @@ def _make_hf_llama_decoder_block_module(
         def __init__(self):
             super().__init__()
             self.weight = torch_module.nn.Parameter(
-                torch_module.empty(hidden_size, dtype=torch_module.float32)
+                torch_module.empty(hidden_size, dtype=storage_dtype)
             )
 
         def forward(self, x):
-            variance = x.pow(2).mean(-1, keepdim=True)
-            x = x * torch_module.rsqrt(variance + rms_norm_eps)
-            return x * self.weight
+            input_dtype = x.dtype
+            x_f32 = x.to(torch_module.float32)
+            variance = x_f32.pow(2).mean(-1, keepdim=True)
+            normalized = x_f32 * torch_module.rsqrt(variance + rms_norm_eps)
+            return normalized.to(input_dtype) * self.weight
 
     class WaferLinearNoBias(torch_module.nn.Module):
         def __init__(self, out_features: int, in_features: int):
             super().__init__()
             self.weight = torch_module.nn.Parameter(
                 torch_module.empty(
-                    out_features, in_features, dtype=torch_module.float32
+                    out_features, in_features, dtype=storage_dtype
                 )
             )
 
@@ -776,6 +834,8 @@ def _make_hf_llama_decoder_block_module(
             seq = query.shape[-2]
             cos = self.cos_cached[:, :, :seq, :]
             sin = self.sin_cached[:, :, :seq, :]
+            cos = cos.to(query.dtype)
+            sin = sin.to(query.dtype)
             query = (query * cos) + (self._rotate_half(query) * sin)
             key = (key * cos) + (self._rotate_half(key) * sin)
             return query, key
@@ -791,8 +851,12 @@ def _make_hf_llama_decoder_block_module(
                 query, key.transpose(-2, -1)
             ) * (1.0 / math.sqrt(head_dim))
             seq = attn_scores.shape[-1]
-            attn_scores = attn_scores + self.causal_mask[:seq, :seq]
-            attn_weights = torch_module.softmax(attn_scores, dim=-1)
+            attn_scores = attn_scores + self.causal_mask[:seq, :seq].to(
+                attn_scores.dtype
+            )
+            attn_weights = torch_module.softmax(
+                attn_scores, dim=-1, dtype=torch_module.float32
+            ).to(attn_scores.dtype)
             attn_output = torch_module.matmul(attn_weights, value)
             batch, _, seq, _ = attn_output.shape
             attn_output = (
@@ -1029,13 +1093,13 @@ def _build_workload_case_payload(
         expected = _linear_residual_mlp_cpu_reference(
             numpy_module, input_array, parameters
         )
-    elif kind == "tiny_llama_decoder_block":
+    elif kind in {"tiny_llama_decoder_block", "llama_decoder_block"}:
         config_path_value = config.get("hf_config")
         if not isinstance(config_path_value, str):
-            raise RuntimeError("tiny Llama workload requires config.hf_config")
+            raise RuntimeError("Llama workload requires config.hf_config")
         config_path = (spec_path.parent / config_path_value).resolve()
         if config.get("causal_attention") is not True:
-            raise RuntimeError("tiny Llama decoder workload requires causal attention")
+            raise RuntimeError("Llama decoder workload requires causal attention")
         hf_config = load_hf_transformer_config(config_path)
         source_config = {
             "hf_config": hf_config,
@@ -1047,13 +1111,21 @@ def _build_workload_case_payload(
         hidden_size = int(hf_config["hidden_size"])
         intermediate_size = int(hf_config["intermediate_size"])
         if batch_size <= 0 or sequence_length <= 0:
-            raise RuntimeError("tiny Llama batch and sequence dimensions must be positive")
-        input_array = _deterministic_float32_array(
+            raise RuntimeError("Llama batch and sequence dimensions must be positive")
+        storage_dtype = str(case["dtype"])
+        config_storage_dtype = str(hf_config.get("torch_dtype", "float32"))
+        if config_storage_dtype != storage_dtype:
+            raise RuntimeError(
+                "Llama workload dtype must match hf_config torch_dtype: "
+                f"case={storage_dtype!r}, config={config_storage_dtype!r}"
+            )
+        input_array = _deterministic_float_storage_array(
             numpy_module,
             (batch_size, sequence_length, hidden_size),
             seed=seed,
             stream=0,
             denominator=128,
+            dtype=storage_dtype,
         )
         parameter_shapes = {
             "input_layernorm.weight": (hidden_size,),
@@ -1068,21 +1140,41 @@ def _build_workload_case_payload(
         }
         parameters = {}
         for stream, (name, shape) in enumerate(parameter_shapes.items(), start=1):
-            value = _deterministic_float32_array(
+            value = _deterministic_float_storage_array(
                 numpy_module,
                 shape,
                 seed=seed,
                 stream=stream,
                 denominator=4096,
+                dtype=storage_dtype,
             )
             if name.endswith("layernorm.weight"):
-                value = (numpy_module.float32(1.0) + value).astype(
-                    numpy_module.float32
-                )
+                value = (
+                    numpy_module.asarray(1.0, dtype=value.dtype) + value
+                ).astype(value.dtype)
             parameters[name] = value
-        expected = _llama_decoder_block_cpu_reference(
-            numpy_module, input_array, parameters, hf_config
-        )
+        if kind == "llama_decoder_block":
+            # The scale corpus deliberately uses the complete PyTorch eager
+            # block output as the external truth.  The hand-written NumPy
+            # implementation stays available for the tiny diagnostic case but
+            # cannot generate this scale gate's expected.npy.
+            torch_module, _ = _import_runtime_modules()
+            reference_module = _make_hf_llama_decoder_block_module(
+                torch_module,
+                hf_config,
+                sequence_length,
+                parameter_arrays=parameters,
+            )
+            reference_module.eval()
+            with torch_module.no_grad():
+                expected_tensor = reference_module(
+                    torch_module.from_numpy(input_array.copy())
+                )
+            expected = expected_tensor.detach().cpu().numpy().copy()
+        else:
+            expected = _llama_decoder_block_cpu_reference(
+                numpy_module, input_array, parameters, hf_config
+            )
     else:
         raise RuntimeError(
             f"workload case {case['id']} has unsupported kind {kind!r}"
@@ -1101,6 +1193,21 @@ def _build_workload_case_payload(
             numpy_module, expected, require_float32=False
         )
         quantized_output_digest = output_digest
+    elif kind == "llama_decoder_block":
+        input_digest = _array_digest(
+            numpy_module, input_array, require_float32=False
+        )
+        parameters_digest = _named_array_digest(
+            numpy_module, parameters, require_float32=False
+        )
+        output_digest = _array_digest(
+            numpy_module, expected, require_float32=False
+        )
+        quantized_output_digest = _quantized_array_digest(
+            numpy_module,
+            expected,
+            int(case["reference"]["digest_quantization_decimals"]),
+        )
     else:
         input_digest = _array_digest(numpy_module, input_array)
         parameters_digest = _named_array_digest(numpy_module, parameters)
@@ -1605,7 +1712,7 @@ def _emit_workload_program(
         )
         return
 
-    if case["kind"] == "tiny_llama_decoder_block":
+    if case["kind"] in {"tiny_llama_decoder_block", "llama_decoder_block"}:
         modules = runtime_modules.get("spmd")
         if modules is None:
             modules = _import_spmd_runtime_modules()
@@ -1942,11 +2049,12 @@ def emit_hf_megatron_transformer_block_program(
     device = xla_model_module.xla_device()
     reference_module = _move_to_device(reference_module, device)
     if input_array is None:
+        input_dtype = next(reference_module.parameters()).dtype
         input_tensor = torch_module.empty(
             batch_size,
             sequence_length,
             int(config["hidden_size"]),
-            dtype=torch_module.float32,
+            dtype=input_dtype,
         )
     else:
         input_tensor = torch_module.from_numpy(input_array.copy())

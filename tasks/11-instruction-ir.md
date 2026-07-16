@@ -34,7 +34,7 @@ tile-level IR，并在tile→instruction阶段完成movement/materialization、�
   layout slot 仍只用于 MLIR 能按 affine / strided 语义解释的普通 layout。
 - 不引入 `wafer.physical_view`、`!wafer.physical_memref`、side descriptor value、SPM offset、DDR
   DDR planning result、raw packet 或 target CRT call。
-- committed instruction artifact 不是单个 `wafer.tile.region`、group、tile 或 representative sample，
+- committed instruction artifact 不是单个 `wafer.tile.region`、task、tile 或 representative sample，
   而是每个 logical rank 一份覆盖完整 static traversal 的 structured instruction program；这些 rank
   programs 只能作为完整 variant set 原子提交。
 
@@ -75,7 +75,7 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 f
   instruction lowering 必须基于该 unplaced Wafer-tagged memref graph 做转换，不能再引入
   storage/buffer IR 层。
 - RDMA/WDMA lowering 可以消费 DDR `memref.subview` / strided memref view，但不会从
-  group tiling plan 自己生成这些 view。closed-loop planner 后续产生的 candidate tile 仍必须先由
+  IR 外的调度计划自行恢复这些 view。closed-loop scheduler 产生的 candidate tile 必须先由
   candidate/accepted materialization 显式变成 DDR subview。
 - tile-region 已支持 `scf.if` / `scf.for` 作为 tile-region 内 structured control-flow。instruction lowering 必须递归
   legalize 这些 region body 内的 executable target-abstract op，并保留 `scf` container；是否选择
@@ -117,33 +117,33 @@ Pipeline position:
   candidate clone 中每个 static rank 一份完整 instruction-level structured program：
   control flow + tile-local `wafer.tile.region` scopes + memref values with
   `#wafer.memory<space, layout>` + `wafer.instr.*` + explicit token/wait/fence；或结构化
-  legalization failure reason。单个 scope/group/tile 不是可提交 artifact。
+  legalization failure reason。单个 task/traversal fragment/tile 不是可提交 artifact。
 - Downstream consumer:
-  per-isolated-region SPM planning、whole-entry DDR planning、event/physical-transport/all-rank transport/
+  whole-rank SPM/DDR planning、event/physical-transport/all-rank transport/
   target-entry verification 和
   closed-loop whole-variant candidate driver；atomic commit 后才由 target LLVM、package 和 runtime 消费。
 - User-level driver / named pipeline:
   Q16以后由同一
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
   内的closed-loop
-  planner调用。当前Q15只产出verified grouped program directory，不执行instruction lowering；
+  planner调用。当前Q15只产出verified structured tensor program directory，不执行instruction lowering；
   `wafer-opt`只处理显式IR，局部bring-up / candidate evaluation入口是
-  `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
+  `wafer-lower-tile-region-to-instr` named pipeline。
   candidate evaluation 调用 instruction lowering 时，tiled DDR load/store operand 必须已经由 candidate 或 accepted
   materialization 表达成 tile view；如果仍是 whole-boundary memref，instruction lowering 只能生成 whole-boundary
   descriptor。
   `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。这些局部/direct入口都不是用户
   stop-stage，也不能把
-  `DirectFullShape`、单 group 或单 tile-region 结果直接送入 committed target/package flow；用户级
+  `DirectFullShape`、单 task 或单 tile-region 结果直接送入 committed target/package flow；用户级
   completion 必须经过 whole-variant candidate-selection/commit pipeline。
-  `wafer-lower-groups-to-memory-planned-instr`继续作为同一producer加SPM gate的IR-local replay：pre-existing
-  identity-preserving recurrence是安全正例，loop body fresh allocation作为recurrence result是必须失败的反例。
+  instruction lowering与`wafer-plan-spm-memory`的focused tests继续覆盖pre-existing
+  identity-preserving recurrence安全正例，以及loop body fresh allocation作为recurrence result的失败反例。
 - Explicit non-goals:
-  不新增第二套 storage/buffer IR，不决定 group boundary、tile shape、layout assignment、SPM offset、
+  不新增第二套 storage/buffer IR，不决定 scheduling boundary、tile shape、layout assignment、SPM offset、
   DDR planning result、raw register packet field、DTE/FSM resource id、Tsm wrapper call、target CRT
   symbol 或 launch ABI。SCALAR 仍是 reserved/stub；CSR helper/sync 若进入主线，必须作为明确
   instruction/sync family 另行定义，不能混入 CT/NE/RDMA/WDMA/TDMA 或 DTE op。
-  本层也不按 group/rank 部分提交，不允许 `DirectFullShape` 或 representative tile 绕过完整 gates，
+  本层也不按 task/rank 部分提交，不允许 `DirectFullShape` 或 representative tile 绕过完整 gates，
   不把 hardware `busytable` 解释为 completion event，也不依据presumed rank equivalence省略或合并
   显式rank records。
 - Completion gate:
@@ -156,7 +156,7 @@ Pipeline position:
   分别验证，每条 exit path terminal drain 后均为空；variant-set gate
   还要证明所有 transport 匹配和 shared physical geometry/range/narrowing contract。production elementwise必须
   不携带map且same-shape；reduce init必须在tile→instruction阶段显式分解或拒绝，terminal instruction op不携带init。
-  target-profile×engine×format row必须由tasks/14 typed registry准入。任一 rank/group
+  target-profile×engine×format row必须由tasks/14 typed registry准入。任一 rank/task/traversal scope
   失败都丢弃整个 clone。
 ```
 
@@ -470,9 +470,9 @@ completion proof不替代SPM owner的DTE origin/exact-wait proof；SPM当前保�
 `busytable` 只能作为 target capability /
 legality / cost input，不能替代 token、wait/fence、effects 或 terminal drain。每条当前
 `wafer.tile.region` exit path 都必须证明没有未消费 DTE token、pending local compute/movement
-issue及其 SPM read/write、generic async task，也没有未完成 recv。IR禁止SPM buffer跨region边界，SPM planner
-同时拒绝nested tile-region scope，二者共同形成当前correctness scope；whole-entry allocator只作为后续
-peak/fragmentation优化。
+issue及其 SPM read/write、generic async task，也没有未完成 recv。跨tile-region的SPM buffer、alias和event
+必须由显式SSA/control-flow表达并纳入whole-rank plan；SPM planner仍拒绝nested tile-region scope，且不会为
+各region独立分配物理arena。
 
 R3.2d 不建模 worker id。`TsmExecute` 的 worker bits、register window 和 packet field 属于
 committed instruction 后的 target LLVM call emission。
@@ -793,7 +793,7 @@ scoping rules, but it does not lower them to hardware branch/loop instructions.
 
 R3.2d failure is a legalization result, not an IR artifact. A rejected legalization attempt may carry
 diagnostics to the closed-loop planner or debug pass, but rejected instruction IR is discarded。任一 rank、
-group、traversal scope 或后续 whole-entry gate 失败时，complete variant clone 整体丢弃；不能提交已
+task、traversal scope 或后续 whole-rank gate 失败时，complete variant clone 整体丢弃；不能提交已
 legalize 的其它 instruction fragments。
 
 必须结构化失败的情况：
@@ -1010,7 +1010,7 @@ wafer.tile.region ... {
 ## 12. Implementation Work
 
 本节“已完成”只记录 op-local ODS、conversion 和局部 pipeline coverage，不是 committed executable
-completion proof。完整traversal、per-region SPM/whole-entry DDR、terminal event closure、transport/target binding、
+completion proof。完整traversal、whole-rank SPM/DDR、terminal event closure、transport/target binding、
 all-rank typed bundle和whole-variant atomic commit仍必须按第1、9、10节合同统一验收。
 
 R3.2c 已完成的前置：
@@ -1065,17 +1065,15 @@ R3.2d.2 已完成：
    或 exact DTE wait 才能 drain。可能零次执行的loop并非整体非法：pre-loop pending state不能只由body fence
    完成，body issue必须在backedge前完成；SPM则保守拒绝所有loop-carried async token。
 
-R3.2d.3 已完成：
+R3.2d.3 当前边界：
 
-10. 增加 `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline，
-   复用同一 `WaferTileRegionToInstr` conversion implementation。它们是 bring-up / explicit-view
-   lowering 入口；R3.2e 已支持当前 IR 中 explicit static boundary slice 到 DDR tile view，也提供
-   candidate output tile offsets/sizes 的 evaluation materialization。R3.2d 仍只消费 DDR view，不负责
-   搜索 traversal / tile shape。
-11. pipeline tests 覆盖多 group、structured `scf.if` / `scf.for`、tile communication
-   structured failure，以及转换后不能残留 executable target-abstract op 的 pipeline-level gate；
-   memory-planned named pipeline另证明携带pre-existing root的安全loop在backedge fence后通过，而loop body创建
-   fresh allocation并作为recurrence result携带时以`unsupported_lifetime_alias`拒绝。
+10. `wafer-lower-tile-region-to-instr`复用`WaferTileRegionToInstr` conversion implementation，
+    只作为bring-up / explicit-view lowering入口；它消费candidate已物化的DDR tile view，不负责搜索
+    traversal / tile shape。
+11. pipeline tests覆盖多region、structured `scf.if` / `scf.for`、tile communication
+    structured failure，以及转换后不能残留executable target-abstract op的pipeline-level gate；
+    focused memory-planning tests证明携带pre-existing root的安全loop在backedge fence后通过，而loop body创建
+    fresh allocation并作为recurrence result携带时以`unsupported_lifetime_alias`拒绝。
 
 R3.2d.4 已完成：
 

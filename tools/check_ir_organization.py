@@ -17,13 +17,6 @@ OP_FAMILIES = {
         "mnemonics": ["target.topology"],
         "tests": "Target/Topology",
     },
-    "Group": {
-        "layer": "Tensor",
-        "td": "GroupOps.td",
-        "cpp": "GroupOps.cpp",
-        "mnemonics": ["group", "group.yield"],
-        "tests": "Tensor/Group",
-    },
     "TileRegion": {
         "layer": "Tile",
         "td": "TileRegionOps.td",
@@ -125,9 +118,9 @@ IR_LAYERS = {
     "Common",
 }
 CONVERSION_LIBRARIES = {
-    "WaferGroupToTileRegion": {
-        "include": "include/Wafer/Conversion/WaferGroupToTileRegion/WaferGroupToTileRegion.h",
-        "lib": "lib/Wafer/Conversion/WaferGroupToTileRegion/WaferGroupToTileRegion.cpp",
+    "WaferTensorProgramToTileRegion": {
+        "include": "include/Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h",
+        "lib": "lib/Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.cpp",
     },
     "WaferTileRegionToInstr": {
         "include": "include/Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h",
@@ -138,11 +131,11 @@ STABLEHLO_CONVERSION_SOURCES = [
     "lib/Wafer/Conversion/StableHLOToLinalg/LegalizeStablehloToLinalg.cpp",
     "lib/Wafer/Conversion/StableHLOToLinalg/NormalizeStablehloCollectives.cpp",
 ]
-GROUP_ANALYSIS_FILES = [
-    "include/Wafer/Analysis/Group/LayoutPlanningAnalysis.h",
-    "include/Wafer/Analysis/Group/TilingDemandAnalysis.h",
-    "lib/Wafer/Analysis/Group/LayoutPlanningAnalysis.cpp",
-    "lib/Wafer/Analysis/Group/TilingDemandAnalysis.cpp",
+SCHEDULING_ANALYSIS_FILES = [
+    "include/Wafer/Analysis/Scheduling/LayoutPlanningAnalysis.h",
+    "include/Wafer/Analysis/Scheduling/TilingDemandAnalysis.h",
+    "lib/Wafer/Analysis/Scheduling/LayoutPlanningAnalysis.cpp",
+    "lib/Wafer/Analysis/Scheduling/TilingDemandAnalysis.cpp",
 ]
 FORBIDDEN_IR_STRINGS = (
     "wafer.abi.",
@@ -161,7 +154,6 @@ FORBIDDEN_IR_STRINGS = (
     "wafer.linalg_ext_collective",
     "wafer.tile_region",
     "wafer.tile_yield",
-    "wafer.group_yield",
     "WAFER_INSTR_CT_",
     "WAFER_INSTR_NE_",
     "WAFER_INSTR_TDMA_",
@@ -175,6 +167,22 @@ FORBIDDEN_IR_STRINGS = (
 )
 ALLOWED_IR_SPECIALIZATIONS = (
     "wafer.ddr.offset",
+)
+LEGACY_GROUP_IR_PATHS = (
+    "include/Wafer/IR/Tensor/GroupOps.td",
+    "lib/Wafer/IR/Tensor/GroupOps.cpp",
+    "test/Dialect/Wafer/Tensor/Group",
+)
+LEGACY_GROUP_IR_PATTERNS = (
+    (re.compile(r"(?<![A-Za-z0-9_])wafer\.group\b"), "wafer.group mnemonic"),
+    (
+        re.compile(r"\b(?:Wafer_)?Group(?:Yield)?Op\b"),
+        "wafer.group ODS/C++ op API",
+    ),
+    (
+        re.compile(r"(?<![A-Za-z0-9_])(?:Tensor/)?GroupOps\.(?:td|cpp)\b"),
+        "wafer.group ODS/source include",
+    ),
 )
 
 
@@ -262,6 +270,11 @@ def check_tests(root: Path, errors: list[str]) -> None:
 
 
 def check_forbidden_ir_specializations(root: Path, errors: list[str]) -> None:
+    for relative in LEGACY_GROUP_IR_PATHS:
+        path = root / relative
+        if path.exists():
+            fail(errors, f"retired wafer.group IR path must not exist: {path}")
+
     scan_roots = [
         root / "include/Wafer/IR",
         root / "lib/Wafer/IR",
@@ -277,9 +290,15 @@ def check_forbidden_ir_specializations(root: Path, errors: list[str]) -> None:
                 continue
             if "__pycache__" in path.parts:
                 continue
-            if path.name == "check_ir_organization.py":
+            if path.name in {
+                "check_ir_organization.py",
+                "check_source_organization.py",
+            }:
                 continue
             text = path.read_text(errors="ignore")
+            for pattern, label in LEGACY_GROUP_IR_PATTERNS:
+                if pattern.search(text):
+                    fail(errors, f"{path} contains retired {label}")
             for forbidden in FORBIDDEN_IR_STRINGS:
                 scan_text = text
                 for allowed in ALLOWED_IR_SPECIALIZATIONS:
@@ -315,6 +334,8 @@ def check_conversion_organization(root: Path, errors: list[str]) -> None:
     for old_conversion in [
         root / "include/Wafer/Conversion/TileRegionCandidate",
         root / "lib/Wafer/Conversion/TileRegionCandidate",
+        root / "include/Wafer/Conversion/WaferGroupToTileRegion",
+        root / "lib/Wafer/Conversion/WaferGroupToTileRegion",
     ]:
         if old_conversion.exists():
             fail(errors, f"old artifact-named conversion directory must be removed: {old_conversion}")
@@ -328,12 +349,24 @@ def check_analysis_organization(root: Path, errors: list[str]) -> None:
     if "add_subdirectory(Analysis)" not in lib_cmake:
         fail(errors, "lib/Wafer/CMakeLists.txt must add_subdirectory(Analysis)")
     if "add_mlir_library(WaferAnalysis" not in analysis_cmake:
-        fail(errors, "group analysis must be owned by WaferAnalysis")
-    for relative in GROUP_ANALYSIS_FILES:
+        fail(errors, "scheduling analysis must be owned by WaferAnalysis")
+    for relative in SCHEDULING_ANALYSIS_FILES:
         check_file(root / relative, errors)
-    for source in ["Group/LayoutPlanningAnalysis.cpp", "Group/TilingDemandAnalysis.cpp"]:
+    for source in [
+        "Scheduling/LayoutPlanningAnalysis.cpp",
+        "Scheduling/TilingDemandAnalysis.cpp",
+    ]:
         if source in transforms_cmake:
-            fail(errors, f"WaferTransforms must not compile group analysis source {source}")
+            fail(
+                errors,
+                f"WaferTransforms must not compile scheduling analysis source {source}",
+            )
+    for legacy_root in (
+        root / "include/Wafer/Analysis/Group",
+        root / "lib/Wafer/Analysis/Group",
+    ):
+        if legacy_root.exists():
+            fail(errors, f"legacy group analysis directory must be removed: {legacy_root}")
     old_include = root / "include/Wafer/Transforms/Group"
     if old_include.exists():
         fail(errors, f"old transform-owned analysis include directory must be removed: {old_include}")

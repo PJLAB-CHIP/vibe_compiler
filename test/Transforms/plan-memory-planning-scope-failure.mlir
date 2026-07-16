@@ -17,9 +17,9 @@
 // RUN: not wafer-opt --wafer-plan-spm-memory %t/spm-indirect-region.mlir 2>&1 | FileCheck --check-prefix=SPM-INDIRECT %s
 // RUN: not wafer-opt --wafer-plan-spm-memory %t/spm-outside-region.mlir 2>&1 | FileCheck --check-prefix=SPM-OUTSIDE %s
 
-// Per-function DDR and per-region SPM placement are sound only when the
-// accepted execution scope cannot dynamically overlap another independently
-// planned scope. Interprocedural/concurrent arena summaries are not yet an IR
+// Whole-function/rank DDR and SPM placement is sound only when the accepted
+// execution scope cannot dynamically overlap another independently planned
+// rank arena. Interprocedural/concurrent arena summaries are not yet an IR
 // artifact, so these cases fail closed.
 
 //--- ddr-call.mlir
@@ -202,7 +202,7 @@ func.func @ddr_async_descriptor() {
 // DDR-ASYNC-DESCRIPTOR-SAME: call-aware descriptor and bandwidth summary
 
 //--- ddr-async-global.mlir
-memref.global "private" constant @hidden_ddr
+memref.global "private" @hidden_ddr
     : memref<128xf16, #wafer.memory<ddr, tensor>> = dense<1.0>
 
 async.func @read_hidden_ddr() -> !async.token {
@@ -239,8 +239,7 @@ func.func @spm_tensor_cannot_escape(
   return
 }
 
-// SPM-YIELD: unsupported_lifetime_alias
-// SPM-YIELD-SAME: operation wafer.tile.yield
+// SPM-YIELD: result at index 0 cannot erase SPM storage provenance across the wafer.tile.region boundary
 
 //--- spm-async-region.mlir
 async.func @async_owned_region(

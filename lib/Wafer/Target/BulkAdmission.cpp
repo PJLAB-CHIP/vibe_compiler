@@ -51,4 +51,45 @@ executeAdmittedBulkTensorNumeric(const BulkExecutionEnvironment &environment,
                                  std::move(result->evidence)};
 }
 
+llvm::Expected<BulkTensorNumericResult>
+executeManagedReferenceBulkTensorNumeric(
+    const BulkExecutionEnvironment &environment,
+    const ResolvedNumericCommand &command,
+    llvm::ArrayRef<BulkTensorStorage> inputs,
+    const BulkTensorStorage &destinationTemplate,
+    BulkNumericWorkBudget budget) {
+  if (!command.isSupported() ||
+      command.getFamily() != NumericCommandFamily::NEGemm ||
+      !command.getSemantics())
+    return bulkError(BulkTensorNumericErrorCode::UnsupportedResolvedCommand,
+                     "managed-reference bulk execution requires a supported "
+                     "NE GEMM semantic identity");
+  for (const BulkTensorStorage &input : inputs) {
+    llvm::Expected<std::vector<RawLogicalValue>> values =
+        unpackBulkTensorLogicalValues(input);
+    if (!values)
+      return values.takeError();
+    for (RawLogicalValue value : *values) {
+      llvm::Expected<LogicalValueClassification> classification =
+          classifyRawLogicalValue(value, NonCanonicalEncodingPolicy::Reject);
+      if (!classification)
+        return bulkError(BulkTensorNumericErrorCode::InvalidInputEncoding,
+                         llvm::toString(classification.takeError()));
+      if (classification->valueClass == LogicalValueClass::Infinity ||
+          classification->valueClass == LogicalValueClass::QuietNaN ||
+          classification->valueClass == LogicalValueClass::SignalingNaN)
+        return bulkError(
+            BulkTensorNumericErrorCode::InvalidInputEncoding,
+            "managed-reference bulk execution admits only finite inputs");
+    }
+  }
+  llvm::Expected<detail::UnqualifiedBulkExecutionResult> result =
+      detail::executeBulkTensorForQualification(environment, command, inputs,
+                                                destinationTemplate, budget);
+  if (!result)
+    return result.takeError();
+  return BulkTensorNumericResult{
+      std::move(result->destination), {}, std::move(result->evidence)};
+}
+
 } // namespace wafer

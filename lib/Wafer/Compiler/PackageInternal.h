@@ -10,7 +10,7 @@
 namespace wafer::compiler::detail {
 
 llvm::Expected<PackageBundle>
-assemblePackageBundleImpl(llvm::StringRef groupedProgramDirectory,
+assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
                           const ExecutableBundle &executableBundle,
                           const TargetArtifactBundle &targetArtifacts,
                           llvm::StringRef outputDirectory,

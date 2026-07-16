@@ -3,6 +3,7 @@
 #ifndef WAFER_COMPILER_TESTING_H
 #define WAFER_COMPILER_TESTING_H
 
+#include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/Compiler/Compilation.h"
 #include "Wafer/Compiler/TargetArtifact.h"
 
@@ -15,6 +16,13 @@ namespace wafer::compiler::testing {
 /// issue unbound.
 mlir::FailureOr<TransportContract>
 acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> rankModules);
+
+/// Test-only entry to the production whole-variant resource gate. The summary
+/// is recomputed from the supplied accepted rank IR and is not persisted as a
+/// second scheduling representation.
+mlir::FailureOr<analysis::WholeCardInstructionProgramCost>
+acceptWholeVariantResources(llvm::ArrayRef<mlir::ModuleOp> rankModules,
+                            const ExecutionConfig &executionConfig);
 
 /// Runs the production transaction while injecting a failure only after the
 /// selected logical rank has completed lowering and verification. This API is

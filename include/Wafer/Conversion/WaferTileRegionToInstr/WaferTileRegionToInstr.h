@@ -18,7 +18,7 @@ namespace detail {
 /// Maximum number of statically materialized terminal instruction issues and
 /// explicit local completions accepted for one logical rank.  This is an
 /// independent target-program bound, not the candidate traversal expansion
-/// budget used by group tiling.
+/// budget used by structured tensor scheduling.
 inline constexpr uint64_t kStaticTerminalOperationBudget = 4096;
 
 enum class StaticTerminalOperationBudgetStatus {

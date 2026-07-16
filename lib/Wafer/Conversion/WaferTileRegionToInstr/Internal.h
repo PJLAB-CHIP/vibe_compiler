@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace wafer::tile_region_to_instr {
 
@@ -30,6 +31,26 @@ struct LogicalMovementSegment {
   int64_t sourceOffset = 0;
   int64_t destOffset = 0;
   int64_t bytes = 0;
+};
+
+class StaticPhysicalOffsetCalculator {
+public:
+  static std::optional<StaticPhysicalOffsetCalculator>
+  create(mlir::MemRefType type);
+
+  const WaferPhysicalTensorInfo &getInfo() const { return info; }
+  std::optional<int64_t>
+  getByteOffset(llvm::ArrayRef<int64_t> logicalIndices) const;
+
+private:
+  StaticPhysicalOffsetCalculator(mlir::MemRefType type,
+                                 WaferPhysicalTensorInfo info,
+                                 llvm::SmallVector<int64_t, 4> strides)
+      : type(type), info(std::move(info)), strides(std::move(strides)) {}
+
+  mlir::MemRefType type;
+  WaferPhysicalTensorInfo info;
+  llvm::SmallVector<int64_t, 4> strides;
 };
 
 std::optional<int64_t>
@@ -77,7 +98,8 @@ void createGatherScatter(mlir::PatternRewriter &rewriter, mlir::Location loc,
                          const MovementDescriptor &destDescriptor);
 void createGatherScatterSegments(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
-    mlir::Value dest, llvm::ArrayRef<LogicalMovementSegment> segments);
+    mlir::Value dest, llvm::ArrayRef<LogicalMovementSegment> segments,
+    bool mayReorderDisjointSegments = false);
 
 mlir::FailureOr<uint64_t> preflightPackedMovementCommands(
     mlir::PatternRewriter &rewriter, mlir::Operation *op,
@@ -113,20 +135,23 @@ getStaticMappedMovementSegments(
     llvm::ArrayRef<int64_t> iterationShape, SourceIndexFn sourceIndexFn,
     DestIndexFn destIndexFn, std::string *failureReason,
     llvm::StringRef opLabel) {
-  std::optional<WaferPhysicalTensorInfo> sourceInfo =
-      wafer::computeWaferPhysicalTensorInfo(sourceType);
-  std::optional<WaferPhysicalTensorInfo> destInfo =
-      wafer::computeWaferPhysicalTensorInfo(destType);
-  if (!sourceInfo || !destInfo || sourceInfo->physicalBytes <= 0 ||
-      destInfo->physicalBytes <= 0)
+  std::optional<StaticPhysicalOffsetCalculator> sourceOffsets =
+      StaticPhysicalOffsetCalculator::create(sourceType);
+  std::optional<StaticPhysicalOffsetCalculator> destOffsets =
+      StaticPhysicalOffsetCalculator::create(destType);
+  if (!sourceOffsets || !destOffsets ||
+      sourceOffsets->getInfo().physicalBytes <= 0 ||
+      destOffsets->getInfo().physicalBytes <= 0)
     return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
         rewriter, op, failureReason,
         llvm::Twine(opLabel)
             .concat(" requires static positive physical byte sizes")
             .str());
-  if (sourceInfo->elementBytes <= 0 ||
-      sourceInfo->elementBytes != destInfo->elementBytes ||
-      sourceInfo->bitPackedElement || destInfo->bitPackedElement)
+  const WaferPhysicalTensorInfo &sourceInfo = sourceOffsets->getInfo();
+  const WaferPhysicalTensorInfo &destInfo = destOffsets->getInfo();
+  if (sourceInfo.elementBytes <= 0 ||
+      sourceInfo.elementBytes != destInfo.elementBytes ||
+      sourceInfo.bitPackedElement || destInfo.bitPackedElement)
     return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
         rewriter, op, failureReason,
         llvm::Twine(opLabel)
@@ -142,7 +167,7 @@ getStaticMappedMovementSegments(
             .concat(" requires static positive iteration shape")
             .str());
 
-  int64_t elementBytes = sourceInfo->elementBytes;
+  int64_t elementBytes = sourceInfo.elementBytes;
   llvm::SmallVector<LogicalMovementSegment> segments;
   for (int64_t linearIndex = 0; linearIndex < *elementCount; ++linearIndex) {
     mlir::FailureOr<llvm::SmallVector<int64_t>> iterationIndices =
@@ -159,18 +184,17 @@ getStaticMappedMovementSegments(
       return mlir::failure();
 
     std::optional<int64_t> sourceOffset =
-        wafer::computeWaferPhysicalElementByteOffset(sourceType,
-                                                     *sourceIndices);
+        sourceOffsets->getByteOffset(*sourceIndices);
     std::optional<int64_t> destOffset =
-        wafer::computeWaferPhysicalElementByteOffset(destType, *destIndices);
+        destOffsets->getByteOffset(*destIndices);
     if (!sourceOffset || !destOffset)
       return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
           rewriter, op, failureReason,
           llvm::Twine(opLabel)
               .concat(" cannot compute physical element offset")
               .str());
-    if (*sourceOffset + elementBytes > sourceInfo->physicalBytes ||
-        *destOffset + elementBytes > destInfo->physicalBytes)
+    if (*sourceOffset + elementBytes > sourceInfo.physicalBytes ||
+        *destOffset + elementBytes > destInfo.physicalBytes)
       return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
           rewriter, op, failureReason,
           llvm::Twine(opLabel)

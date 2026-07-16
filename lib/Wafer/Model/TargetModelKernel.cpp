@@ -35,10 +35,15 @@ executeTargetModelCommand(const compiler::TargetTransaction &transaction,
   if (const auto *value = std::get_if<compiler::TargetElementwiseTransaction>(
           &transaction.payload))
     return kernel_detail::executeElementwise(transaction, *value, memory,
-                                             budget);
+                                             budget, policy);
   if (const auto *value =
           std::get_if<compiler::TargetConvertTransaction>(&transaction.payload))
-    return kernel_detail::executeConvert(transaction, *value, memory, budget);
+    return kernel_detail::executeConvert(transaction, *value, memory, budget,
+                                         policy);
+  if (const auto *value =
+          std::get_if<compiler::TargetReduceTransaction>(&transaction.payload))
+    return kernel_detail::executeReduce(transaction, *value, memory, budget,
+                                        policy);
   if (const auto *value =
           std::get_if<compiler::TargetGemmTransaction>(&transaction.payload))
     return kernel_detail::executeGemm(transaction, *value, memory, budget,

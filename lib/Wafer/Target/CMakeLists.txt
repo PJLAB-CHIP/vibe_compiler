@@ -3,6 +3,7 @@ add_mlir_library(WaferTarget
   FormalNumericConvert.cpp
   FormalNumericElementwise.cpp
   FormalNumericGemm.cpp
+  FormalNumericReduce.cpp
   FormalNumericSupport.cpp
   FormalNumericValidation.cpp
   NumericCapability.cpp

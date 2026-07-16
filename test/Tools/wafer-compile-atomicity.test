@@ -1,6 +1,6 @@
 # REQUIRES: stablehlo, shardy, xla-spmd-helper
 
-# RUN: rm -rf %t.input %t.input.before %t.outputs %t.final.before %t.rank1-input %t.mismatch %t.duplicate %t.duplicate-mesh %t.bad-topology %t.alias-parent %t.symlink-input %t.stage-group %t.stage-instr %t.source-sdy-string %t.nested-facts %t.helper-called %t.fail-helper %t.bad-helper %t.marker-dir-helper %t.symlink-helper %t.unexpected-helper %t.mock-helper
+# RUN: rm -rf %t.input %t.input.before %t.outputs %t.final.before %t.rank1-input %t.mismatch %t.duplicate %t.duplicate-mesh %t.bad-topology %t.alias-parent %t.symlink-input %t.stage-instr %t.source-sdy-string %t.nested-facts %t.helper-called %t.fail-helper %t.bad-helper %t.marker-dir-helper %t.symlink-helper %t.unexpected-helper %t.mock-helper
 # RUN: mkdir -p %t.input/functions %t.outputs
 # RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%c = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    %%0 = stablehlo.add %%arg0, %%c : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.input/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
@@ -46,7 +46,7 @@
 # RUN: test ! -e %t.outputs/bad-metadata
 
 # A marker alone cannot establish the typed user-input/result distribution
-# contract that the grouped program hands to rank bundle materialization.
+# contract that the tensor program hands to rank bundle materialization.
 # RUN: not env HELPER_MODE=no-boundary WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/missing-boundary --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=NO-BOUNDARY
 # RUN: test ! -e %t.outputs/missing-boundary
 
@@ -67,7 +67,7 @@
 # RUN: test ! -e %t.outputs/helper-root-symlink
 # RUN: test ! -L %t.outputs/helper-root-symlink
 
-# An existing final directory is never replaced by grouped-program publication.
+# An existing final directory is never replaced by package publication.
 # RUN: mkdir -p %t.outputs/final/nested && printf old > %t.outputs/final/nested/sentinel
 # RUN: cp -R %t.outputs/final %t.final.before
 # RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/final --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=EXISTING
@@ -100,13 +100,8 @@
 # RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.symlink-input --output-program-dir %t.outputs/symlink-output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=SOURCE-SYMLINK
 # RUN: test ! -e %t.outputs/symlink-output
 
-# Grouped and lower-level instruction IR are already beyond the admitted
-# exporter stage. Both are rejected before the external helper can run.
-# RUN: cp -R %t.input %t.stage-group
-# RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%c = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    %%0 = wafer.group ins(%%arg0 : tensor<16xf32>) outs(%%c : tensor<16xf32>) {\n    ^bb0(%%input: tensor<16xf32>, %%out: tensor<16xf32>):\n      wafer.group.yield %%input : tensor<16xf32>\n    } : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.stage-group/functions/forward.mlir
-# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.stage-group --output-program-dir %t.outputs/stage-group --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=STAGE-GROUP
-# RUN: test ! -e %t.outputs/stage-group
-# RUN: test ! -e %t.helper-called
+# Lower-level instruction IR is already beyond the admitted exporter stage and
+# is rejected before the external helper can run.
 # RUN: cp -R %t.input %t.stage-instr
 # RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%c = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    wafer.instr.local_fence\n    %%0 = stablehlo.add %%arg0, %%c : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.stage-instr/functions/forward.mlir
 # RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.stage-instr --output-program-dir %t.outputs/stage-instr --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=STAGE-INSTR
@@ -184,7 +179,6 @@
 # ALIASED-OUTPUT: wafer-compile: output program directory must not equal or be nested under the source program directory
 # DEEP-SOURCE-OUTPUT: wafer-compile: output program directory must not equal or be nested under the source program directory
 # SOURCE-SYMLINK: wafer-compile: program directory contains unsupported symbolic link
-# STAGE-GROUP: 'wafer.group.yield' op is not legal in an exporter or post-SPMD StableHLO program
 # STAGE-INSTR: 'wafer.instr.local_fence' op is not legal in an exporter or post-SPMD StableHLO program
 # SOURCE-SDY-STRING: wafer-compile: source program contains Shardy semantics that the external XLA SPMD helper boundary cannot consume
 # NESTED-FACTS: target topology and execution mesh must be direct module members
@@ -196,7 +190,8 @@
 # RANK1-IR-SAME: endpoints = array<i64: 0, 0, 0, 0>
 # RANK1-IR-SAME: policy = "explicit"
 # RANK1-IR-SAME: shape = array<i64: 1>
-# RANK1-IR: wafer.group
+# RANK1-IR: tensor.empty
+# RANK1-IR: linalg.generic
 # RANK1-SHARDS: "logical_rank_count": 1
 # RANK1-SHARDS: "name": "weight"
 # MISMATCH: execution mesh does not exactly match the requested execution-ranks

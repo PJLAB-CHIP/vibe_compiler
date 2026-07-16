@@ -831,8 +831,9 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 | storage / physical codec | 13种logical raw codec；compact、Cx、NCx及bitpacked BOOL的shared physical geometry/roundtrip；typed ABI slot显式携带layout | program-boundary compact BOOL NPY尚无bitpacked source合同；codec存在不开放无target encoding的engine row |
 | formal convert | 101条确定性typed convert policy，四种确定性rounding及完整raw/special/status政策 | 4条INT8-source zero-point公式和stochastic state未证，保持命名candidate/rejected；f64不在target profile |
 | formal elementwise | 88条selector（84条floating和4条BOOL logic）；f16/bf16/f32的已注册算术、关系、基础/MPFR transcendental按唯一profile执行 | integer elementwise、`exp_lp`/`sat_relu`/`leaky_relu`未闭合参数政策；未知selector无fallback |
-| formal GEMM / reduce | f16、bf16、f32同dtypeGEMM，F32 fused accumulator、+0 init、K递增、destination RNE；source reduce按Q0.L展开后的movement/elementwise composite执行 | I8 accumulator政策、TF32 generic GEMM、16条native reduce selector均拒绝；不从dtype猜窄/宽accumulator |
+| formal GEMM / reduce | f16、bf16、f32同dtypeGEMM，F32 fused accumulator、+0 init、K递增、destination RNE；native F32 sum reduce按+0 accumulator、logical row-major input递增和逐step RNE执行 | I8 accumulator政策、TF32 generic GEMM、其余15条native reduce selector拒绝；不从dtype猜窄/宽accumulator |
 | admitted bulk GEMM | component资格覆盖f16/bf16/f32同dtype、rank 2/3、Cx/NCx；Q22 source发布的admitted完整case为Q20首个f32 GEMM和64³ f32 GEMM | 无exact command/payload/destination/environment/expected-output record即no admission；超过formal budget时绝不scalar fallback；不外推连续输入域bit-exact |
+| managed-reference bulk GEMM | Q28 scale gate逐command验证supported GEMM semantic、shape/layout、受管environment、finite inputs及byte budget，并强制完整PyTorch expected tolerance comparison | 不产生exact qualification record，不声明raw-exact target arithmetic、hardware correlation或未检查value-domain；provenance与exact admission分字段 |
 | functional transaction / event | checked RDMA/WDMA、gather/scatter、memset、elementwise、convert、GEMM、local fence及当前single-destination Direct DTE control；all-rank private SPM/DDR和atomic output | field-valid但无kernel的conv/pool/unpool等family、未知地址/layout/endpoint；无worker/queue容量、packet或timing claim |
 | source vertical | Q20 formal/admitted、f16/bf16 formal、64³ f32 admitted、Q21 16-rank Direct DTE；全部直接比较固定source CPU expected | 未固定expected的shape stress不算numeric evidence |
 
@@ -1080,15 +1081,18 @@ Pipeline position:
 #### 10.0.1 Q21 source-backed reduce census
 
 fresh 16-rank formal replay由固定tiny-Llama source/config/payload通过同一`wafer-compile`完成，reference完整输出匹配；verified
-package含16个rank module、entry、completion和ELF。随后只从该正式producer的grouped artifact为每个logical rank派生
-accepted debug replay；不是手写fixture，也没有把debug dump当作published package成员。16个rank的`@main`均有相同四项：
+package含16个rank module、entry、completion和ELF。以下数据来自Q29之前的legacy scheduling debug
+replay：它从当时正式producer为每个logical rank派生，不是手写fixture，也没有把debug dump当作
+published package成员。其group ordinal/group-boundary只是历史census标签，不是当前production
+artifact或调度合同；Q29/Q28必须从structured task/dataflow主线重放结论。当时16个rank的
+`@main`均有相同四项：
 
-| group ordinal | kind / init | source dims | input -> result | tile layout | extent |
+| legacy group ordinal | kind / init | source dims | input -> result | tile layout | extent |
 | --- | --- | --- | --- | --- | --- |
-| `#0` | sum；group-boundary scalar最终为f32 `+0` | `[2]` | `1x4x16xf32 -> 1x4xf32` | `NCx -> Cx` | 16 |
+| `#0` | sum；legacy group-boundary scalar最终为f32 `+0` | `[2]` | `1x4x16xf32 -> 1x4xf32` | `NCx -> Cx` | 16 |
 | `#20` | IEEE maximum；local f32 `-Inf` | `[3]` | `1x1x4x4xf32 -> 1x1x4xf32` | `NCx -> NCx` | 4 |
-| `#21` | sum；group-boundary scalar最终为f32 `+0` | `[3]` | `1x1x4x4xf32 -> 1x1x4xf32` | `NCx -> NCx` | 4 |
-| `#28` | sum；group-boundary scalar最终为f32 `+0` | `[2]` | `1x4x16xf32 -> 1x4xf32` | `NCx -> Cx` | 16 |
+| `#21` | sum；legacy group-boundary scalar最终为f32 `+0` | `[3]` | `1x1x4x4xf32 -> 1x1x4xf32` | `NCx -> NCx` | 4 |
+| `#28` | sum；legacy group-boundary scalar最终为f32 `+0` | `[2]` | `1x4x16xf32 -> 1x4xf32` | `NCx -> Cx` | 16 |
 
 这些tail-dimension physical mappings中，每个fixed reduction tuple都可由一条`gather_scatter`把slice materialize为4个连续
 f32；sum/max均有exact map-free elementwise combiner。令extent为`R`，correctness-first基线有`1 fill + R slice
@@ -1102,7 +1106,7 @@ movement + R elementwise + 1 final movement = 2R+2`条engine command，并在每
 
 该结论最初只证明Q0.L可实施；当前正式lowering已经改为init-first canonical-order composite，并按每rank独立4096
 terminal-op cap在selector和最终target边界重算。它仍需本轮fresh source-backed gate作为完成证据；Q21本身没有覆盖
-dynamic init、所有非tail/multi-dim reduction、avg及完整target special-value政策。tasks/06 candidate materialization
+dynamic init、所有非tail/multi-dim reduction、avg及完整target special-value政策。tasks/06 tile-dataflow candidate materialization
 counter与terminal command counter语义不同，不能共用。
 
 #### 10.0.2 Numeric和SystemC依赖实证
@@ -1135,10 +1139,9 @@ host operator、Direct-DTE/SPM provider或可加载vendor CModel closure；不�
 repo-owned transaction冒充CRT/packet evidence。vendor交付和授权属于external，但不阻塞已经闭合的Q22.H typed
 target-call frontend和Q22.S functional-event model；Q22.K才等待合法vendor seam。
 
-readiness replay还发现`wafer-convert-group-to-tile-region`会创建`async.token`却没有声明Async dependent dialect，导致只跑
-`wafer-lower-groups-to-tile-region`的Q21 artifact abort。本轮已补dependent dialect和all-to-all named-pipeline回归；修复后
-同一Q21 grouped artifact可产生36个tile region及2个DTE endpoint。这个修复只恢复debug replay，不改变production artifact
-语义或替代Q0.L。
+历史readiness replay曾暴露旧materializer创建`async.token`却未声明Async dependent dialect的问题；
+修复模式已经沉淀到`memory/bugs.md`。该旧debug结果不能代替当前structured task/dataflow或Q0.L/Q28证据，
+退役入口也不作为compatibility replay保留。
 
 #### 10.0.4 Readiness决议
 
@@ -1227,8 +1230,8 @@ Pipeline position:
   production不得调用已退役accepted-IR helper。独立SoftFloat adapter交叉FP16/FP32，TestFloat的slowfloat路径验证SoftFloat自身；
   MPFR-backed formal path完成sqrt/tanh/exp/rsqrt等高精度结果并为BF16/TF32提供高精度differential；
 - 一次闭合36条convert route、101条四种确定性rounding/plain执行row、88条elementwise（84条floating加4条BOOL logic）和
-  F16/BF16/F32三条GEMM formal row；zero-point和stochastic保留命名candidate policy及区分向量。source reduce只消费
-  Q0.L已materialize的普通composite，16条native reduce selector因init/identity/order未闭合全部静态拒绝；
+  F16/BF16/F32三条GEMM formal row；zero-point和stochastic保留命名candidate policy及区分向量。native F32 sum
+  reduce闭合+0 accumulator、logical row-major input递增和逐step RNE formal row，其余15条native selector保持拒绝；
 - `FormalNumericExecutionContext`只聚合invocation-owned model status，effect-free scalar/tensor evaluator在完整成功后原子commit；
   APFloat每次调用显式传入rounding，首个profile固定gradual、no-DAZ、no-FTZ。MPFR wrapper与SoftFloat oracle adapter各自
   保存/恢复完整环境；component tests覆盖immediate caller ambient scope嵌套LIFO、normal/early/error return和双OS-thread
@@ -1271,7 +1274,7 @@ base/numeric分别164/164、47/47，lit为250 pass/2个预期feature-inverse uns
   每次FMA写点RNE，destination按RNE写回原format。narrow-fused、narrow-unfused、wide-unfused、TF32-to-F32和I8-to-S32
   只作为不同显式candidate/profile的component区分语义；当前NE×TF32及same-type I8 destination合同不允许它们冒充command
   capability；
-- source reduce只消费Q0.L已经materialize的init-first、有序fill/movement/map-free elementwise sequence；native reduce因
+- native F32 sum reduce按init-first +0、logical row-major input递增和逐step RNE执行；其它kind/format因
   init/identity/order未闭合而拒绝。`exp_lp`、`satrelu`、`leakyrelu`以及conv/pool/unpool/rand/LUT/argmax等缺少参数、
   tie、coordinate、RNG或accumulator政策的family同样静态拒绝，不能由wrapper存在推导支持。
 
@@ -1287,9 +1290,10 @@ exact `NumericCommandKey`，不会被折叠进selector或由名字恢复：
 | CT convert | 128 | 101（9条plain RNE + 23条rounding route × 4种确定性mode） | 23条stochastic mode、4条zero-point route |
 | CT elementwise | 128 | 88（51条F16/BF16/F32 APFloat、33条F16/BF16/F32 MPFR、4条BOOL logic） | 31条integer policy、9条缺参数policy的op |
 | NE GEMM | 4 | F16、BF16、F32共3条 | I8 destination/accumulator policy未闭合 |
-| native CT reduce | 16 | 0 | 4种op × 4种已编码format全部因init/identity/order未闭合拒绝 |
+| native CT reduce | 16 | F32 sum共1条 | 其余15条kind/format因init/identity/order未闭合拒绝 |
 
-因此registry总计276个不重叠selector。formal tensor executor只消费已resolve且supported的convert、elementwise和GEMM；它在
+因此registry总计276个不重叠selector。formal tensor executor只消费已resolve且supported的convert、elementwise、GEMM和
+F32 sum reduce；它在
 output分配前完成profile/command、arity/count、canonical encoding及caller-owned scalar/FMA双预算preflight，整张tensor
 成功后才一次commit aggregate model flags。MPFR的Sqrt/Rsqrt/Log2/Ln/Pow2/Exp/Sin/Cos/Tanh/Sigmoid/Softplus
 published row只接受F16/BF16/F32同格式RNE；TF32和directed direct-op路径只作component evidence，不能扩大compiler surface。
@@ -1397,12 +1401,43 @@ bulk 14/14回归通过。该证据不要求完整source workload，
   必须实际执行，unavailable/skipped或unsupported-reason closure不算通过。
 
 完成：Q20 formal/admitted双路径、f16/bf16 formal、deterministic 64³ admitted large GEMM和Q21完整输出已经通过；bulk
-自动dispatch、错误record/no-scalar-fallback、output mismatch、DTE no-progress及all-rank atomic result已有覆盖。large case
-只形成8个target transaction、一次MatMul和零bulk formal FMA；Q21形成11984个transaction、17个SystemC thread process。
+自动dispatch、错误record/no-scalar-fallback、output mismatch、DTE no-progress及all-rank atomic result已有覆盖。在Q29
+structured scheduling / SPM residency接入后的当前主线中，large case形成10个target transaction、一次MatMul和零bulk
+formal FMA；Q21形成12656个transaction、17个SystemC thread process。计数变化来自显式tile-region fence和以SPM gather
+替代部分DDR movement，数值输出仍按同一source/reference合同匹配；因此这里记录当前确定性target-call拓扑，不把历史调度
+的事务数当作长期协议。
 Q21同一source/driver链还在已发布package与reference comparison之后于logical rank 15 terminal注入失败；该test-only seam
 只存在于`wafer-compile-test`，验证稳定stage/rank诊断、无matched model result及manifest/rank module保留。
 Q22据此只发布`target-call/SystemC model-only functional-numeric`，仍不称repo CRT、packet、hardware numeric、exact
-package/ELF、性能或timing model。最终fresh suite数量记录在`tasks/progress.md`。
+package/ELF、性能或timing model。最终fresh suite数量保留在对应归档证据，不复制到任务队列。
+
+### 10.7.1 Q28 Llama-2 7B 单 Block Scale Vertical
+
+Q28把source vertical从语义最小case提升到标准Llama-2 7B单层shape：H=4096、I=11008、32 heads、
+head_dim=128、FP16、batch=1、sequence=16、TP16。硬件单卡64/128 GB DDR足以容纳7B级resident weight，
+而每tile 3 MiB SPM要求projection、attention和MLP用显式DDR slice与时间tile执行；因此该case用于验证空间切分、
+时间分块、memory planning、instruction/completion、target LLVM和CModel组合，不以整体weight放入SPM。
+
+大GEMM不得走formal逐MAC路径。Q28增加独立`managed-reference`执行政策：逐command核对已发布GEMM semantic、
+shape/layout、受管oneDNN environment、finite value-domain和显式byte budget，再由完整PyTorch expected tolerance约束
+最终结果。它不签发Q22.B exact qualification record，也不声明raw-exact target arithmetic或hardware correlation；结果中
+必须分别记录managed environment digest和exact admission digest。不能把任意oneDNN支持、host dtype或未检查payload
+当作target能力。accepted time tiling必须由structured IR和SSA completion表达，不在CModel内重建compiler schedule，
+也不通过提高4096 eager常量伪造规模支持；本固定case若实际展开低于预算，无需为形式上的scale预先引入loop。
+F16/BF16输入到oneDNN F32 descriptor的widening是精确bit mapping，不调用逐元素APFloat；输出仍按已解析target
+finalize语义舍入。当前受管artifact固定`DNNL_CPU_RUNTIME=SEQ`且关闭primitive cache，因此Q28 Release耗时是功能慢测
+基线，不代表多核性能；未来threaded artifact必须作为新的受管依赖/环境身份闭合，不能只继承ambient线程设置。
+
+同一显式policy还拥有非GEMM的tensor functional lane，但不扩大target capability registry：只消费已经resolve的F16/F32
+elementwise、F16/F32 nearest-even convert和native F32 sum reduce，在command级检查arity、shape/layout、non-NaN值域及
+scalar/byte budget后使用host native tensor kernel批量执行；attention causal mask所需有符号infinity按IEEE运算保留，
+GEMM仍保持finite-only。`formal`继续作为小规模raw-exact scalar oracle，
+`prefer-admitted`继续只允许exact-record GEMM，二者的非GEMM均不得进入该lane；`managed-reference`遇到不支持的
+dtype/op/rounding或该non-NaN值域外输入输出必须在effect前失败，不能静默回退formal。SystemC仍只调度transaction/event，
+functional kernel不把逐元素操作建成SystemC event。结果分别记录formal、managed-reference tensor和bulk command数量，
+完整PyTorch tolerance comparison是该lane的必要下游consumer，不把它解释为raw-exact或硬件相关证据。
+
+完成边界和负例由tasks/16的Q28 gate拥有；完整32层、KV/autoregressive、board correlation和timing仍分别后续闭合。
 
 ### 10.8 Q22.C Board numeric correlation
 

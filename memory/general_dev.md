@@ -87,8 +87,8 @@
   主链路跑通时，先跑`cmake --build build/wafer-dev --target check-wafer-lit -- -j128`；需要审计
   unsupported清单时，使用`build/wafer-dev/CMakeCache.txt`中配置的`LLVM_EXTERNAL_LIT`执行
   `-sv --show-unsupported build/wafer-dev/test`，不要硬编码开发机Python路径。
-  grouped-program production gate必须执行统一`wafer-compile`到verified grouped program；沿用历史文件名的
-  `wafer-opt-spmd-partition.test`和`wafer-opt-spmd-to-group.test`已经改为调用该driver，必须在配置了
+  structured-program production gate必须执行统一`wafer-compile`到verified structured tensor program；
+  `wafer-compile-spmd-partition.test`和`wafer-compile-structured-tensor-program.test`必须在配置了
   `WAFER_XLA_SPMD_PARTITIONER_HELPER`后实际执行，不能只用`ctest passed`宣称完成。
 - 不要并发运行两个会写同一个lit output tree的验证命令，例如同时跑`ctest --test-dir
   build/wafer-dev`和configured lit的`... build/wafer-dev/test`。部分`test/Tools`用固定
@@ -120,8 +120,8 @@
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
   在 Wafer compiler
   层接管 target/mesh，并由pinned helper内部完成Shardy/XLA SPMD partition，再执行local normalization
-  和 logical group formation。当前typed grouped-program driver的输出只到重新读取并验证过的
-  grouped program directory；不公开
+  和structured tensor program legality。当前typed compiler driver的Q15输出是重新读取并验证过的
+  structured tensor program directory；不公开
   program stage selector 或 stop-stage。旧的私有 sharding attr
   emitter、sidecar JSON、单独旧 SPMD verify flag 和 Python post-SPMD
   路线已移除；不要恢复只生成私有 attrs/sidecar、只跑 SDY propagation 冒充完成，或把 Python
@@ -141,7 +141,7 @@
   production `wafer-compile` 不接收 helper 路径；driver 从 build-time
   `WAFER_XLA_SPMD_PARTITIONER_HELPER` 解析 helper。`wafer-opt` 只处理显式 MLIR 的IR-local debug/test，
   不拥有 program-directory orchestration。`cmake --build
-  build/wafer-dev --target check-wafer-lit`会运行真实SPMD-to-group driver gate；没有配置
+  build/wafer-dev --target check-wafer-lit`会运行真实SPMD partition和structured-program driver gate；没有配置
   helper 时该 gate 通过 `REQUIRES: xla-spmd-helper` 自动 unsupported。只有启用unit tests的build可用显式
   `WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER`做failure-injection override；production binary忽略该环境变量，
   不能把ambient runtime environment变成helper选择协议。
@@ -156,8 +156,8 @@
 - PyTorch/XLA transformer / RoPE 这类真实图会把 scalar 或 tensor captured constants 放进
   StableHLO function arguments，并在 metadata 中标成 `input_locations` 的 `type_ = "constant"`、
   payload `constants/<position>`。Wafer frontend verifier 要校验这些 NPY payload；pinned-XLA
-  helper 输出 post-SPMD program 时也必须复制 constants 目录，否则 `stablehlo-spmd-to-group`
-  会在 program directory verifier 阶段被正确拒绝。
+  helper 输出 post-SPMD program 时也必须复制 constants 目录，否则统一`wafer-compile` structured-program
+  verification会在program-directory边界正确拒绝。
 - Wafer-owned Shardy / SPMD 源码放在 `lib/Wafer/Transforms/SPMD/`。只依赖 MLIR / StableHLO /
   Shardy CMake target 的 pass 编进 `WaferTransforms`；需要直接依赖 XLA HLO service /
   `spmd_partitioner` / generated proto / TSL 的入口也放在同一 Wafer 源码目录，但通过
@@ -170,9 +170,10 @@
   或 Wafer 私有 high-level op。`check-wafer` 的大量 lit case 主要来自 Dialect/Transforms/Frontend/
   Pipelines/Integration/Tools，不代表旧 Python post-SPMD helper 仍存在。
 - post-SPMD collective 先进入 Wafer LinalgExt-style tensor collective handoff，和 `linalg` 一起进入
-  group/tiling；`wafer.tile.*` communication 只能在 `wafer.tile.region` / SPM storage values / endpoint resource facts 明确后
+  structured scheduling/tiling；`wafer.tile.*` communication只能在`wafer.tile.region` / SPM storage values /
+  endpoint resource facts明确后
   materialize。StableHLO collective 直降 `wafer.tile.*` communication 且靠 `unrealized_conversion_cast` 桥 tensor
-  和 storage 的 pass/test 已移除；不要在 group 输入侧恢复这种入口。
+  和 storage 的 pass/test 已移除；不要在structured source输入侧恢复这种入口。
 - linalg extension collective handoff的主线验证入口是同一个`wafer-compile` driver：它必须从真实
   PyTorch/XLA sharded program 产出含 `wafer.linalg_ext.collective.*` 的 `functions/forward.mlir`，并保留
   `forward.parameter_shards.json` 与 rank-local NPY payload。局部 `test/Frontend` fixture 可以覆盖
@@ -182,25 +183,24 @@
   `wafer-normalize-constants` 窄子集；这些旧 pass 入口已经删除。`wafer-lower-stablehlo-to-linalg`
   的主线 body 先运行 Wafer collective handoff，再调用当前 StableHLO pin 的官方
   `stablehlo-legalize-to-linalg`；Wafer collective handoff 不能证明时要 `signalPassFailure`，
-  不能静默把raw StableHLO留给logical group formation。
+  不能静默把raw StableHLO留给structured scheduler。
 - XLA SPMD partitioner 输出的 rank/mask helper 可能以 residual `stablehlo.partition_id` /
   `stablehlo.replica_id`、静态 tensor view 常量链和 all-constant integer `linalg.generic`
   形式出现。local compute cleanup的职责是在official StableHLO-to-Linalg前后把这类可静态证明的常量
-  折掉，确保 group 输入没有 raw StableHLO residual；不要把这扩成运行时 shape 计算或 Wafer 私有
+  折掉，确保structured scheduler输入没有raw StableHLO residual；不要把这扩成运行时 shape 计算或 Wafer 私有
   compute lowering。
 - `wafer.linalg_ext.collective.*`不是只靠op名字或pass switch的skeleton；五类collective
   必须实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和
   `WaferLinalgExtCollectiveOpInterface`。slot-crossing 或动态不可证明的 collective-axis tile 应由
-  `TilingInterface`返回failure，等待group planner拆slot-aligned tile或tile communication materialization。
+  `TilingInterface`返回failure，等待structured scheduler拆slot-aligned tile或tile communication materialization。
 - StableHLO `replica_groups` 有多个 row 时不要压成一个 `rank_group`。`wafer.linalg_ext.collective.*`
   现在用互斥的 `rank_group` / `rank_groups` 表达单组或多组 logical ranks；rank-specialized
   tile-region materialization 按当前 logical rank 选择所在 row。这里仍然只保存 logical rank，不保存
   physical endpoint 或 communication algorithm。
-- group tiling-demand和layout-plan是analysis-only边界：`GroupTilingDemand`和`GroupLayoutPlan`可以用
-  `--wafer-dump-group-tiling-demand` / `--wafer-dump-group-layout-plan` dump，但不能把 tile demand、
-  layout assignment 或 materialization cut 写成 `wafer.group` attr，也不能在这两步生成
-  `wafer.tile.region`。per-rank bundle integrated gate要从typed driver产生并重新验证的grouped program输入
-  重放这些analysis。
+- tiling-demand和layout-plan是analysis-only边界：`StructuredSchedulingTilingDemand`和
+  `StructuredSchedulingLayoutPlan`从当前structured tensor IR重算，不能把tile demand、layout assignment
+  或materialization cut写成持久IR attr，也不能在analysis步骤生成`wafer.tile.region`。per-rank bundle
+  integrated gate要从typed driver产生并重新验证的structured tensor program输入重放这些analysis。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查固定版本、importer registration hook、
   public source submodule checkout HEAD、importer Python package pin 和 core/frontend/runtime/test
   tool dependency layering。
@@ -248,8 +248,8 @@
 - `wafer-opt` 需要显式注册要暴露的 MLIR pass families；如果显式IR debug/test依赖 canonicalizer/CSE
   这类标准 pass，注册 `mlir::registerTransformsPasses()` 并链接 `MLIRTransforms`，不要假设
   `MlirOptMain` 会自动注册。
-- 历史 stage-connection 测试和 `tools/check_stage_connection_tests.py` 已删除；后续 group/tile/storage
-  连接必须由真实frontend/SPMD program chain和当前group/tile/storage编号合同恢复，不能重建手写fixture链来冒充主线。
+- 历史 stage-connection 测试和 `tools/check_stage_connection_tests.py` 已删除；后续tile-dataflow/tile/storage
+  连接必须由真实frontend/SPMD program chain和当前编号合同恢复，不能重建手写fixture链来冒充主线。
 - 任务支持范围按硬件能力、runtime/ABI 证据和当前 IR contract 判断，不能按“当前下游 pass 尚未
   实现”反向裁剪上游语义。若 frontend/SPMD/planner 产出合法且硬件可表达的事实，而 IR/lowering
   还没覆盖，应补 IR contract、verifier 或下游恢复任务；不能把实现缺口写成上游不支持。
@@ -291,26 +291,24 @@
   tile offsets/sizes candidate evaluation lowering 的 DDR `memref.subview` producer；instruction lowering
   仍不能根据 whole-boundary shape 自己恢复 subview，closed-loop traversal / tile-shape search 归
   candidate-selection。
-- SPM/DDR accepted offsets不属于layout本身。`wafer.tile.region`是`IsolatedFromAbove`且verifier禁止SPM
-  buffer跨边界；SPM planner还须在提交offset前拒绝nested tile-region，防止inner/outer从同一physical arena base
-  独立规划。因此当前SPM correctness是逐non-nested region从IR重算alias、branch、loop-carried和async completion
-  lifetime，并在每条region exit证明pending set为空；whole-variant clone只汇总all-and-only regions并保证
-  atomic acceptance。跨sibling region whole-entry allocator是peak/fragmentation优化，不是当前correctness缺口；若未来
-  允许SPM跨边界或nested scope，必须先扩IR/SSA/verifier及arena partition合同。DDR `wafer.ddr.offset`始终是arena-relative fact，没有typed
+- SPM/DDR accepted offsets不属于layout本身。同一rank function内的non-nested sibling `wafer.tile.region`通过
+  显式operand/result或受支持的view/select/SCF SSA edge传递SPM value，并由一个whole-function timeline/demand set
+  联合packing；每条region exit仍独立证明pending set为空。nested/async/parallel scope、raw escape和无法解析的
+  provenance失败；没有SPM arena/effect的closed scalar direct callee可穿过live resident，可能执行tile-region的
+  callee、external/unresolved或indirect call在缺少arena/resource summary时fail closed。DDR `wafer.ddr.offset`始终是arena-relative fact，没有typed
   arena base binding时target不得把它当absolute address。physical size、alignment和bank span统一从shared
   geometry helper推导；runtime object、physical address和packet字段不得写回planning IR。
 - reduction语义恢复不能只看yielded op class。使用`mlir::matchReduction`或等价结构匹配，证明单一combiner
-  的operands精确连接reduced value与accumulator。显式reduction op本身允许implementation-defined binary
-  tree，因此floating add不额外要求`fastmath<reassoc>`；但当前kind不能保真的`maxnum/minnum` NaN语义、
-  unsigned min/max和integer overflow flags仍必须fail closed。
+  的operands精确连接reduced value与accumulator。未拆分source reduction保持原合同；candidate把一个reduction
+  regroup成多个partial时，generic floating必须显式有`fastmath<reassoc,nnan,ninf,nsz>`，named floating matmul
+  没有该typed事实所以K不拆。integer split只覆盖无overflow flag的modular add和signed min/max；unsigned min/max、
+  overflow-qualified add及`maxnum/minnum`仍fail closed。
 - whole-op fast path必须证明整个payload可被删除：passthrough/concat/reduction以及named
   fill/matmul/batch_matmul都要检查exact SSA wiring、允许op集合和effect；只匹配yield、shape或op class会
-  静默擦除side effect或改写数值语义。Group verifier应递归检查nested body dialect/type。
+  静默擦除side effect或改写数值语义。structured materializer/verifier应递归检查nested body dialect/type。
 - destination-style tensor仍遵守functional SSA：fill写fresh result而不覆盖旧init；insert_slice在旧dest仍有
   observable use时构造fresh result并延后boundary store。只有旧dest其余use都被证明是unread DPS-init时才可
   direct tile store。`ins + outs` exact SSA必须唯一；不同SSA的physical no-alias由后续typed driver/ABI闭合。
-- variadic custom assembly要覆盖空列表round-trip。`wafer.group`允许零个`ins`，assembly中的operand/type组必须
-  optional并有parse→print→reparse gate；不能让printer生成`ins( : )`。
 - async completion按path、task identity和engine分别建模：generic async handle的root provenance与task identity分开，
   只有覆盖同一路径的terminal await完成task；local compute/movement的全部SPM read/write只由local fence收口，
   DTE send/recv只由matching token/wait收口，三者不能互相消费。zero-trip loop、分支join和loop-carried handle没有
@@ -333,14 +331,41 @@
   traversal和legality，rejected clone整体丢弃；debug replay消费同一accepted artifact，不重新运行另一套
   direct lowering。target conversion同样在module clone上运行，full success才替换source；多rank staging由
   外层transaction一次发布，单module成功不等于bundle原子性。
-- 完整traversal的静态展开必须用checked ceil-div/product并设置显式编译资源预算。当前4096个
-  output-tile/reduction-chunk materialization实例上限只防止
-  unrolled IR导致编译时间/内存失控，不能写成硬件容量、IR/workload legality或16-tile topology限制；长期应
-  用compact loop表示替代静态materialization，而不是把预算扩成架构常量。
+- 完整output traversal使用compact `scf.for`并显式覆盖static tail；ordered reduction chunk/terminal op仍用
+  checked ceil-div/product和4096个host materialization预算。该上限只防止编译时间/内存失控，不能写成硬件容量、
+  IR/workload legality或16-tile topology限制。
+- positive `maxSearchCandidates`是每次scope candidate search的无条件hard cap，first-legal、min-cost、all-fail和
+  parallel batch都不能越过；parallel batch只能消费剩余预算。当前每rank按shared-input prefix、terminal recovery和
+  conservative partition最多形成六个distinct alternatives；whole-variant coordinator最多访问64个best-first组合，
+  再尝试至多六个共同policy和一个tail，去重后不超过71次exact gate。
+- capacity-directed seed必须区分“用于排队的保守inventory”和“可用于拒绝的required-live bound”。当前direct
+  rank-2 matmul精确建模Tensor/Cx六个root；exact passthrough transpose+matmul为seed额外计入原始source Tensor，
+  共七个root，而early reject只使用后续matmul phase必然同时存活的六个root。seed应先于已知高压full candidate
+  消费hard-cap slot，但任何accepted candidate仍须走完整instruction/SPM/DDR gate。其它producer chain无法形成
+  安全边界时返回unknown，不从名字或诊断字符串猜测。
+- terminal `FullTraversalOnly`yield scope若同时包含Tiled producer且full candidate失败，shared-input peer prefix只会
+  增加独立root，不能改变direct dataflow closure的traversal capability；可立即尝试原有唯一terminal-cut recovery。
+  这是六policy frontier内的短路重排，不得再与peer prefix组合或增加alternative。
+- 当前scope-prefix是粗粒度residency选择：共享external DPS input的peer按benefit density稳定排序并枚举
+  `0/1/2/all`，同scope的短edge直接保持SPM SSA。generic per-edge residency、task-order/layout-cut和
+  double-buffer/ping-pong尚未实现，是延期性能扩展而不是正确性fallback。
+- 粗scalar cost可能因未校准compute class而饱和，不能据此把明确减少movement的alternative判成等价。仅在complete
+  current IR的compute-class、DDR、SPM、NoC、instruction和event count全部known，candidate无一dimension变差且
+  至少一项严格降低时，才可用strict dominance补充scalar排序；unknown或tradeoff必须回到保守选择。这是exact count
+  比较，不是board-time claim。
+- scheduler frontier之后的function-boundary bufferization和physical-memory replanning可能改变movement、offset和issue
+  count。应逐alternative独立finalize，只过滤later gate失败的alternative，并从final instruction IR fresh recost；
+  一个alternative失败不能拒绝仍有survivor的rank，只有finalized frontier为空才失败。
+- structured lifetime path condition必须用sparse sorted decision set；固定宽度bitmask会把超过64个branch/loop的
+  合法程序误判unsupported。decision id仍要checked分配，标识域或编译资源耗尽时结构化失败。
+- clone/rewire/erase operation后，不得继续使用从旧IR缓存的`mlir::Value`、boundary或root列表；应从当前clone重新
+  walk并构造消费集合，避免悬空Value参与provenance/lifetime或后续erase。
+- 非splat tensor constant应materialize为typed DDR `memref.global`/`memref.get_global` root并保留payload provenance；
+  splat才可用exact typed scalar在SPM local fill。不能用无owner的generic `to_memref`伪造constant storage。
 - executable/resource handoff必须来自accepted IR和typed C++ bundle，不从raw instruction文本、文件名或参数名
   重建。当前没有executable dialect或独立resource-view协议；resource/entry/completion事实必须从accepted IR
   use-def、type、effect和offset直接校验后进入bundle，不能成为side table或package旁路。
-- group-to-tile-region 的buffer-level collective materialization必须从enclosing typed distributed
+- tensor-program-to-tile-region的buffer-level collective materialization必须从enclosing typed distributed
   instance/candidate entry取得partition和replica coordinates。局部pass选项只可用于明确的replay测试，
   production driver不得使用default rank 0或CLI option承载rank语义。这个边界仍只产生logical buffer
   schedule；每个send/recv的跨rank静态匹配身份必须由protocol phase和logical payload slice显式进入typed IR，
@@ -350,15 +375,15 @@
 - Direct DTE public helper的`direct_sync_wait`、`direct_fsm_monitor_receive`与`direct_dte_wait_done`都是无timeout参数的
   blocking wait；后者可报告本地DTE错误。compiler/CRT不能伪造device timeout能力：本地status由target ABI写回，
   timeout必须由launch watchdog观察，跨rank peer failure由runtime completion DAG合成。
-- selected instruction handoff固定先由selector在tensor函数clone中完成完整traversal、instruction和SPM/DDR
-  planning，再复用同一份function-boundary OneShot Bufferization配置消除tensor signature与
-  `bufferization.to_memref/to_tensor` wrapper。target named replay直接消费该bufferized accepted artifact；
-  不得重新串direct group-to-tile/instr或memory planning。所有C++ builder和group-to-tile public API都显式
-  接收logical rank；只有标明debug的named replay可在注册处显式构造rank 0。
-- group formation 在 `outs` 固定后会吸收 group 内部 static support producers：`arith.constant`、
+- selected instruction handoff固定先由selector在tensor函数clone中完成完整traversal、instruction和candidate-local
+  SPM/DDR planning；随后每个rank frontier alternative复用同一份function-boundary OneShot Bufferization配置消除tensor
+  signature与`bufferization.to_memref/to_tensor` wrapper，并在final artifact上重跑whole-rank SPM/DDR planning与cost。
+  target conversion只消费通过该finalization的accepted artifact，不重新执行task scheduling或tile/instruction
+  materialization。所有typed materializer API都显式接收logical rank；IR-local replay也必须显式提供rank。
+- structured materializer在DPS `outs`固定后会吸收task内部pure static support producers：`arith.constant`、
   `tensor.empty`、static `tensor.extract_slice` / `tensor.insert_slice`、`tensor.expand_shape` 和
   `tensor.collapse_shape`。这用于避免 XLA/HF 产生的 static `insert_slice` collective input 被错误
-  作为 group 外部 DDR boundary；不能因此跨 side-effect、memref/runtime 或 raw StableHLO op。
+  作为外部DDR boundary；不能因此跨side-effect、memref/runtime或raw StableHLO op。
 - floating `arith.select` 在 tile-region-to-instr 中不能继续生成 `wafer.instr.elementwise <select>`；
   现在会 lower 成 false-copy `gather_scatter` + `wafer.instr.bit2fp` + `wafer.instr.mask_move`。
   这条序列按 Triton/TX81 的 `bit2fp` / `mask_move` 证据对齐 target wrapper 粒度；integer/select
@@ -376,18 +401,21 @@
 - tile-region-to-instr 的 V0 all-gather lowering 从 `wafer.tile.all_gather` 的 compact `tensor/ntensor`
   local/gather SPM buffer shape 推导唯一 gather axis。`ring` 先把 local chunk 写入本 rank slot，
   插入 `wafer.instr.local_fence` 后沿 ring forward slot view；`direct` 每个 phase 发送 local slot
-  给 `(rank+d)`，同时接收 `(rank-d)` 的 chunk 到对应 slot。DTE peer 仍是 logical rank，SPM offset、
+  给 `(rank+d)`，同时接收 `(rank-d)` 的 chunk 到contiguous staging并复制到对应result slot。全部received-slot
+  copy后必须再有final local fence；DTE wait不完成后续movement engine。DTE peer 仍是 logical rank，SPM offset、
   physical endpoint、DTE id 和 packet field 留给后续 planning / ABI 边界。
 - tile-region-to-instr 的 V0 all-reduce lowering 支持 full-buffer ring reduce 和 binomial tree。
   `ring` 先把 input copy 到 accumulator 和 forward staging buffer，`local_fence` 后每步 DTE send
   forward buffer、recv 到 staging buffer、wait token，再用 `wafer.instr.elementwise` 做 sum/max/min
-  accumulation；下一步 forward 的是刚收到的 partial，不是 accumulator。`tree` 先 reduce 到
-  group-local root 0，再 reverse broadcast final accumulator；accumulator 被 DTE 读取前需要 local fence。
+  accumulation；最终accumulation在resident consumer读取前也必须有local fence。下一步 forward 的是刚收到的
+  partial，不是 accumulator。`tree` 先 reduce 到group-local root 0，再 reverse broadcast final accumulator；
+  本地accumulation和accumulator被DTE读取前需要local fence，纯receive由matching DTE wait完成。
 - tile-region-to-instr 的 V0 reduce-scatter lowering 使用 full input + local slot result 表示：
-  group-to-tile-region 不再预切当前 rank slot，`wafer.tile.reduce_scatter` 显式携带 scatter `axis`，
+  structured task materializer不预切当前rank slot，`wafer.tile.reduce_scatter`显式携带scatter `axis`，
   instruction lowering 从 full input 派生 per-target slot `memref.subview`，按 phase-ordered
   all-to-owner unicast 生成 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`，wait 后用
-  `wafer.instr.elementwise` 把 recv contribution 累计到 local accumulator。
+  `wafer.instr.elementwise` 把 recv contribution 累计到 local accumulator；每次累计后都要local fence，包括
+  交给resident consumer前的最后一次。
 - 通用 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。裸的 `tx8` / `tx81` 不能作为 dialect、pipeline、pass、fixture 或可推断字段的
   主线命名；硬件/依赖逆向事实和tasks/14 closed registry中的opaque canonical profile key例外。例如
@@ -401,8 +429,8 @@
   里手动拼 pass 串。当前 frontend verifier 入口是
   `wafer-compile-stablehlo --verify-stablehlo-program`；production compile入口统一为
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`。
-  typed grouped-program boundary从frontend admission推进到重新读取并验证过的grouped program directory；
-  同一production transaction随后把frontend verifier返回的typed boundary/shard facts和grouped module直接交给
+  typed structured-program boundary从frontend admission推进到重新读取并验证过的structured tensor program directory；
+  同一production transaction随后把frontend verifier返回的typed boundary/shard facts和structured module直接交给
   per-rank bundle boundary，不暴露stop-stage。
   `wafer-compile-stablehlo --propagate-stablehlo-sharding`、
   `wafer-compile-stablehlo --partition-stablehlo-program` 已删除，因为 Shardy/SPMD 不属于 frontend
@@ -410,7 +438,7 @@
   用于IR-local debug/regression，不拥有program-directory I/O，也不构成用户可选stage。当前bundle boundary对
   rank-count 1/16实际创建all-and-only isolated clones，经selector、function bufferization、whole-rank SPM/DDR和
   terminal legality后形成move-only `RankExecutable[]`/context-owning `ExecutableBundle`；rank-15 late failure仍在
-  同一transaction内，因此不会先发布grouped checkpoint。无DTE时transport contract为`None`；Q16.T已在完整rank
+  同一transaction内，因此不会先发布中间调度checkpoint。无DTE时transport contract为`None`；Q16.T已在完整rank
   domain的post-memory acceptance后形成`DirectDTE`；rank module分拆使sender无法本地重算remote receiver offset，
   因而该cross-rank accepted start必须进入typed binding，不能假设各rank allocation同址。target把async token降成
   CRT返回的opaque i64 event；recv issue先初始化FSM并post ready，send实际attach/send延迟到wait，避免所有rank
@@ -418,7 +446,7 @@
   manifest声明的host watchdog负责，peer failure由runtime合成。
   旧显式 target CRT issue-op、ring collective、SPM/DDR debug path 和 single-tile
   materialization pass 链已删除；不要恢复成用户级 compile flow。当前HF/Llama-style真实program可重放到
-  verified logical group staging；HF compute coverage、Direct DTE target/status ABI、runtime、board execution和
+  verified structured tensor program staging；HF compute coverage、Direct DTE target/status ABI、runtime、board execution和
   数值correctness仍是后续独立gate。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
@@ -437,7 +465,7 @@
 - 不要恢复 `wafer-check-softmax-schedule`、`wafer-check-norm-schedule`、
   `wafer-check-linear-residual-schedule` 或 `wafer-check-mlp-schedule` 这类 case-specific
   transformer acceptance pass。StableHLO->Linalg 只证明 structured tensor lowering；softmax/norm/MLP
-  的真实完成证明应来自通用 group formation、tile/materialization、resource verifier 和下游消费。
+  的真实完成证明应来自通用structured scheduling、tile/materialization、resource verifier和下游消费。
 - 不要恢复 `tools/wafer_package_metadata.py --emit-*` 这类fixed package emitter，也不要把
   `wafer-compile-stablehlo --emit-static-reference-program` 这类 synthetic program emitter 作为 importer
   或package主线。主线typed manifest必须只由accepted executable bundle和verified target modules构造，
@@ -536,8 +564,12 @@
   loop动态task加入captured group、SelectLike distinct task和non-identity-preserving loop recurrence拒绝；if result只完成
   origin存在于对应branch path的task。未await task与unsupported identity flow必须用不同failure class。
 - loop body allocation或task一旦通过memref/async handle跨backedge携带，就不是单个静态instance；没有显式
-  multi-instance/ping-pong placement时fail closed。nested tile-region即使禁止SPM value跨boundary，仍可能独立分配同一
-  physical arena并覆盖outer live buffer，因此SPM当前只规划non-nested sibling scopes且保守拒绝全部loop-carried async token。
+  multi-instance/ping-pong placement时fail closed。non-nested sibling tile-region允许通过显式operand/result共享SPM root，
+  并在同一whole-function timeline中规划；nested tile-region仍可能在同一physical arena覆盖outer live buffer，因而当前
+  结构化拒绝，同时保守拒绝全部loop-carried async token。
+- whole-rank SPM high-water必须从全部accepted allocation的`offset + physicalBytes`相对arena base重算，不能求和或取
+  per-region局部peak。provenance closure要沿`wafer.tile.yield -> region result -> sibling operand`延长同一root；否则
+  resident handoff会在region出口被错误截断，high-water与reuse结论都会失真。
 - DDR module同时含function planning scopes和function外compiler-managed allocation时没有单一timeline；必须拒绝mixed scope，
   不能因发现func.func就静默跳过top-level allocation。
 - static memory-space type不是storage provenance。`to_memref`、memory-space cast、ViewLike/control-flow result及
@@ -550,3 +582,24 @@
   tile-region的direct/indirect/external call，module有tile-region时external async call全局拒绝。
 - packing helper返回以原demand index标识的纯placement结果，不写IR。owner应先完成completion、descriptor/range和resource
   validation，再统一提交offset；这样失败candidate不会留下半份accepted plan，也能直接单测NoFit时IR完全未变。
+
+## 大规模rank编译与Llama数值纵向
+
+- all-rank lowering的外层并行单位是logical rank：每个worker使用独立、完整注册且关闭内部多线程的MLIR context；结果按rank
+  顺序重新导入owner context后再进入跨rank acceptance。不要在共享context上并发运行会安装diagnostic handler的pass。
+- 标准Llama-2 7B单block scale corpus由`test/Tools/Inputs/workloads/llama-2-7b-block-v1.json`和对应HF config固定
+  H=4096、I=11008、32 heads、FP16、batch 1、sequence 16。最终`expected.npy`必须由同一确定性input/parameter payload的
+  PyTorch eager CPU完整block输出产生；手写NumPy仅用于定位误差。production完成入口仍是一次`wafer-compile
+  --target-model`的TP16 package与全局output comparison，不把临时corpus目录或生成package写成长期路径。
+- 大矩阵payload生成应直接分块填充最终FP16 allocation，避免同时保留全尺寸uint64/int32/f32临时数组。大GEMM可走显式
+  `managed-reference` oneDNN lane以完成model-reference scale gate，但该environment provenance不能冒充exact qualification
+  admission或board-correlated arithmetic。
+- scale CModel重放使用Release构建；高并发构建和rank lowering可按机器容量提高`-j`，但这不会并行化当前SystemC保守
+  single-issue下的formal APFloat/MPFR命令执行。标准全量gate应作为显式长任务，日常`check-wafer`继续用同合同的小case覆盖
+  positive、negative和atomicity，不能把debug构建耗时误判为compiler并发不足。
+- scale执行显式使用`--target-model-numeric-policy=managed-reference`；`formal`用于小规模raw-exact，
+  `prefer-admitted`只允许exact-record GEMM。managed结果必须同时检查formal command/FMA为零、tensor/bulk command计数、
+  environment/implementation evidence和完整PyTorch expected，不能只看命令成功返回。
+- dtype adapter是scale profile的一部分：F16/BF16到oneDNN F32输入采用精确bit widening，不能为无损转换逐元素构造
+  APFloat。当前canonical bulk artifact是SEQ且cache关闭，Release 7B gate仍属慢测；若引入OMP/threadpool或descriptor/
+  packed-weight cache，必须更新受管依赖record、environment digest和资格/数值回归，不能继承ambient线程数。

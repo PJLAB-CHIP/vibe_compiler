@@ -11,6 +11,8 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -51,17 +53,6 @@ static mlir::scf::YieldOp getSingleBlockYield(mlir::Region &region) {
   return mlir::dyn_cast<mlir::scf::YieldOp>(region.front().getTerminator());
 }
 
-static bool belongsToTileRegion(TileRegionOp tileRegion, mlir::Operation *op) {
-  for (mlir::Operation *parent = op->getParentOp(); parent;
-       parent = parent->getParentOp()) {
-    if (parent == tileRegion.getOperation())
-      return true;
-    if (mlir::isa<TileRegionOp>(parent))
-      return false;
-  }
-  return false;
-}
-
 static mlir::LogicalResult verifyCompletionControlFlow(mlir::Operation *scope) {
   mlir::WalkResult result = scope->walk([&](mlir::scf::ForOp forOp) {
     bool carriesToken = llvm::any_of(forOp.getInitArgs(), hasAsyncTokenType) ||
@@ -79,6 +70,7 @@ static mlir::LogicalResult verifyCompletionControlFlow(mlir::Operation *scope) {
 static mlir::LogicalResult
 verifySPMRegionExecutionScopes(mlir::ModuleOp moduleOp) {
   mlir::WalkResult result = moduleOp.walk([&](TileRegionOp tileRegion) {
+    bool hasFunctionOwner = false;
     for (mlir::Operation *parent = tileRegion->getParentOp(); parent;
          parent = parent->getParentOp()) {
       if (mlir::isa<mlir::ModuleOp>(parent))
@@ -90,13 +82,22 @@ verifySPMRegionExecutionScopes(mlir::ModuleOp moduleOp) {
                "arena";
         return mlir::WalkResult::interrupt();
       }
-      if (mlir::isa<mlir::func::FuncOp, mlir::scf::IfOp, mlir::scf::ForOp>(
-              parent))
+      if (mlir::isa<mlir::func::FuncOp>(parent)) {
+        hasFunctionOwner = true;
+        continue;
+      }
+      if (mlir::isa<mlir::scf::IfOp, mlir::scf::ForOp>(parent))
         continue;
       tileRegion.emitError()
           << "unsupported_spm_planning_scope: wafer.tile.region must be "
              "owned only by sequential func.func/scf.if/scf.for "
              "execution scopes";
+      return mlir::WalkResult::interrupt();
+    }
+    if (!hasFunctionOwner) {
+      tileRegion.emitError()
+          << "unsupported_spm_planning_scope: wafer.tile.region requires a "
+             "func.func owner for whole-function SPM planning";
       return mlir::WalkResult::interrupt();
     }
     return mlir::WalkResult::advance();
@@ -132,10 +133,19 @@ static mlir::LogicalResult verifySPMValueScopes(mlir::ModuleOp moduleOp) {
                        });
     if (!hasSPMValue)
       return mlir::WalkResult::advance();
+
+    bool isSupportedSSAEdge =
+        mlir::isa<TileRegionOp, mlir::scf::IfOp, mlir::scf::ForOp,
+                  mlir::scf::YieldOp>(op) ||
+        mlir::isa<mlir::ViewLikeOpInterface, mlir::SelectLikeOpInterface>(op);
+    if (isSupportedSSAEdge)
+      return mlir::WalkResult::advance();
     op->emitError()
-        << "unsupported_spm_planning_scope: SPM values and uses must be "
-           "contained by wafer.tile.region (async.func formals are checked "
-           "at their tile-local call sites)";
+        << "unsupported_spm_planning_scope: SPM values outside "
+           "wafer.tile.region may only flow through explicit tile-region "
+           "operands/results or supported structured alias/control-flow SSA "
+           "edges (async.func formals are checked at their tile-local call "
+           "sites)";
     return mlir::WalkResult::interrupt();
   });
   return result.wasInterrupted() ? mlir::failure() : mlir::success();
@@ -153,18 +163,25 @@ static bool isPotentiallyOverlappingSPMCall(mlir::Operation *call) {
   return true;
 }
 
-static mlir::LogicalResult verifySPMCallScopes(mlir::ModuleOp moduleOp) {
-  llvm::DenseSet<mlir::Operation *> mayExecuteTileRegion;
-  bool moduleHasTileRegion = false;
+static llvm::DenseSet<mlir::Operation *>
+collectFunctionsThatMayClobberSPMArena(mlir::ModuleOp moduleOp) {
+  llvm::DenseSet<mlir::Operation *> mayClobberFunctions;
   moduleOp.walk([&](TileRegionOp tileRegion) {
-    moduleHasTileRegion = true;
     if (mlir::func::FuncOp owner =
             tileRegion->getParentOfType<mlir::func::FuncOp>())
-      mayExecuteTileRegion.insert(owner.getOperation());
+      mayClobberFunctions.insert(owner.getOperation());
   });
   moduleOp.walk([&](mlir::func::CallIndirectOp call) {
     if (mlir::func::FuncOp owner = call->getParentOfType<mlir::func::FuncOp>())
-      mayExecuteTileRegion.insert(owner.getOperation());
+      mayClobberFunctions.insert(owner.getOperation());
+  });
+  moduleOp.walk([&](mlir::func::CallOp call) {
+    mlir::func::FuncOp caller = call->getParentOfType<mlir::func::FuncOp>();
+    mlir::func::FuncOp callee =
+        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::func::FuncOp>(
+            call, call.getCalleeAttr());
+    if (caller && (!callee || callee.isExternal()))
+      mayClobberFunctions.insert(caller.getOperation());
   });
 
   bool changed = true;
@@ -176,27 +193,42 @@ static mlir::LogicalResult verifySPMCallScopes(mlir::ModuleOp moduleOp) {
           mlir::SymbolTable::lookupNearestSymbolFrom<mlir::func::FuncOp>(
               call, call.getCalleeAttr());
       if (caller && callee &&
-          mayExecuteTileRegion.contains(callee.getOperation()) &&
-          mayExecuteTileRegion.insert(caller.getOperation()).second)
+          mayClobberFunctions.contains(callee.getOperation()) &&
+          mayClobberFunctions.insert(caller.getOperation()).second)
         changed = true;
     });
   }
+  return mayClobberFunctions;
+}
+
+static bool mayClobberSPMArena(
+    mlir::func::CallOp call,
+    const llvm::DenseSet<mlir::Operation *> &mayClobberFunctions) {
+  mlir::func::FuncOp callee =
+      mlir::SymbolTable::lookupNearestSymbolFrom<mlir::func::FuncOp>(
+          call, call.getCalleeAttr());
+  return !callee || callee.isExternal() ||
+         mayClobberFunctions.contains(callee.getOperation());
+}
+
+static mlir::LogicalResult verifySPMCallScopes(
+    mlir::ModuleOp moduleOp,
+    const llvm::DenseSet<mlir::Operation *> &mayClobberFunctions) {
+  bool moduleHasTileRegion = false;
+  moduleOp.walk([&](TileRegionOp) { moduleHasTileRegion = true; });
 
   mlir::WalkResult result =
       moduleOp.walk(
           [&](mlir::func::CallOp call) {
-            mlir::func::FuncOp callee =
-                mlir::SymbolTable::lookupNearestSymbolFrom<mlir::func::FuncOp>(
-                    call, call.getCalleeAttr());
             if (!isPotentiallyOverlappingSPMCall(call.getOperation()))
               return mlir::WalkResult::advance();
-            if (callee && !callee.isExternal() &&
-                !mayExecuteTileRegion.contains(callee.getOperation()))
+            if (!mayClobberSPMArena(call, mayClobberFunctions))
               return mlir::WalkResult::advance();
             call.emitError()
                 << "unsupported_spm_planning_scope: a call from an active or "
                    "asynchronous SPM scope may dynamically execute another "
-                   "wafer.tile.region";
+                   "wafer.tile.region or otherwise clobber the independently "
+                   "planned physical SPM arena";
             return mlir::WalkResult::interrupt();
           });
   if (result.wasInterrupted())
@@ -230,6 +262,53 @@ static mlir::LogicalResult verifySPMCallScopes(mlir::ModuleOp moduleOp) {
   return result.wasInterrupted() ? mlir::failure() : mlir::success();
 }
 
+static bool
+hasLiveSPMStorageAcrossCall(mlir::Operation *call,
+                            const mp::StructuredTimeline &timeline,
+                            llvm::ArrayRef<mp::LifetimeDemand> demands) {
+  std::optional<mp::ProgramPoint> callPoint = timeline.lookup(call);
+  std::optional<int64_t> callEnd = timeline.lookupSubtreeEnd(call);
+  if (!callPoint || !callEnd)
+    return false;
+
+  // Opposite branches inside a loop may be selected in different dynamic
+  // iterations, so use the same repeatable-path compatibility as packing.
+  return llvm::any_of(demands, [&](const mp::LifetimeDemand &demand) {
+    return llvm::any_of(demand.segments, [&](const mp::LiveSegment &segment) {
+      return segment.beginEvent < callPoint->event &&
+             segment.endEvent > *callEnd &&
+             segment.path.compatibleForPacking(callPoint->path);
+    });
+  });
+}
+
+static mlir::LogicalResult verifyLiveSPMAcrossCalls(
+    mlir::func::FuncOp funcOp, const mp::StructuredTimeline &timeline,
+    llvm::ArrayRef<mp::LifetimeDemand> demands,
+    const llvm::DenseSet<mlir::Operation *> &mayClobberFunctions) {
+  mlir::WalkResult result = funcOp.walk([&](mlir::Operation *op) {
+    if (!mlir::isa<mlir::func::CallOp, mlir::func::CallIndirectOp>(op))
+      return mlir::WalkResult::advance();
+    if (isPotentiallyOverlappingSPMCall(op) ||
+        !hasLiveSPMStorageAcrossCall(op, timeline, demands))
+      return mlir::WalkResult::advance();
+
+    if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op)) {
+      if (!mayClobberSPMArena(call, mayClobberFunctions))
+        return mlir::WalkResult::advance();
+    } else if (!mlir::isa<mlir::func::CallIndirectOp>(op)) {
+      return mlir::WalkResult::advance();
+    }
+
+    op->emitError()
+        << "unsupported_spm_planning_scope: live SPM storage crosses a call "
+           "that may clobber the independently planned physical SPM arena; "
+           "interprocedural arena/resource summaries are not available";
+    return mlir::WalkResult::interrupt();
+  });
+  return result.wasInterrupted() ? mlir::failure() : mlir::success();
+}
+
 class DTECompletionTracker {
 public:
   explicit DTECompletionTracker(const mp::StructuredTimeline &timeline)
@@ -247,8 +326,9 @@ public:
     mlir::InFlightDiagnostic diagnostic =
         (origin ? origin : scope)->emitError()
         << "missing_dte_completion: DTE token has a reachable path to ";
-    diagnostic << (mlir::isa<TileRegionOp>(scope) ? "wafer.tile.region exit"
-                                                  : "async function exit")
+    diagnostic << (mlir::isa<mlir::async::FuncOp>(scope)
+                       ? "async function exit"
+                       : "wafer.tile.region exit")
                << " without wafer.instr.dte_wait";
     return mlir::failure();
   }
@@ -336,6 +416,42 @@ private:
     }
   }
 
+  void mapTileRegionBlockArgs(TileRegionOp tileRegion) {
+    std::optional<mp::ProgramPoint> point = timeline.lookup(tileRegion);
+    if (!point || tileRegion.getBody().empty())
+      return;
+    for (auto [input, blockArg] :
+         llvm::zip(tileRegion.getInputs(),
+                   tileRegion.getBody().front().getArguments())) {
+      if (!hasAsyncTokenType(input))
+        continue;
+      llvm::SmallVector<DTECompletionRef, 2> refs =
+          completionsAt(input, point->path);
+      if (!refs.empty())
+        completionRefs[blockArg] = std::move(refs);
+    }
+  }
+
+  void mapTileRegionResults(TileRegionOp tileRegion) {
+    if (tileRegion.getBody().empty())
+      return;
+    auto yield = mlir::dyn_cast<TileYieldOp>(
+        tileRegion.getBody().front().getTerminator());
+    std::optional<mp::ProgramPoint> point =
+        yield ? timeline.lookup(yield.getOperation()) : std::nullopt;
+    if (!yield || !point)
+      return;
+    for (auto [yielded, result] :
+         llvm::zip(yield.getValues(), tileRegion.getResults())) {
+      if (!hasAsyncTokenType(result))
+        continue;
+      llvm::SmallVector<DTECompletionRef, 2> refs =
+          completionsAt(yielded, point->path);
+      if (!refs.empty())
+        completionRefs[result] = std::move(refs);
+    }
+  }
+
   mlir::LogicalResult processRegion(mlir::Region &region) {
     for (mlir::Block &block : region)
       if (mlir::failed(processBlock(block)))
@@ -355,6 +471,11 @@ private:
             mlir::failed(processRegion(ifOp.getElseRegion())))
           return mlir::failure();
         mapIfResults(ifOp);
+      } else if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(op)) {
+        mapTileRegionBlockArgs(tileRegion);
+        if (mlir::failed(processRegion(tileRegion.getBody())))
+          return mlir::failure();
+        mapTileRegionResults(tileRegion);
       } else {
         for (mlir::Region &region : op.getRegions())
           if (mlir::failed(processRegion(region)))
@@ -372,12 +493,15 @@ private:
 };
 
 static mlir::LogicalResult
-initializeSPMDemands(TileRegionOp tileRegion, int64_t defaultAlignment,
+initializeSPMDemands(mlir::func::FuncOp funcOp, int64_t defaultAlignment,
                      llvm::SmallVectorImpl<mp::LifetimeDemand> &demands) {
   mlir::LogicalResult result = mlir::success();
-  tileRegion.walk([&](mlir::memref::AllocOp alloc) {
-    if (mlir::failed(result) ||
-        !belongsToTileRegion(tileRegion, alloc.getOperation()))
+  funcOp.walk([&](mlir::memref::AllocOp alloc) {
+    if (mlir::failed(result))
+      return;
+    TileRegionOp tileRegion = alloc->getParentOfType<TileRegionOp>();
+    if (!tileRegion ||
+        tileRegion->getParentOfType<mlir::func::FuncOp>() != funcOp)
       return;
 
     mlir::MemRefType memrefType = alloc.getType();
@@ -435,10 +559,10 @@ initializeSPMDemands(TileRegionOp tileRegion, int64_t defaultAlignment,
 }
 
 static mlir::LogicalResult
-emitLifetimeFailure(TileRegionOp tileRegion,
+emitLifetimeFailure(mlir::func::FuncOp funcOp,
                     const mp::LifetimeFailure &failure) {
   mlir::Operation *origin =
-      failure.origin ? failure.origin : tileRegion.getOperation();
+      failure.origin ? failure.origin : funcOp.getOperation();
   switch (failure.kind) {
   case mp::LifetimeFailureKind::MissingAllocationEvent:
     return origin->emitError()
@@ -477,7 +601,7 @@ emitLifetimeFailure(TileRegionOp tileRegion,
            << "missing_local_completion: local Compute/Movement issue has a "
               "reachable loop backedge without wafer.instr.local_fence";
   case mp::LifetimeFailureKind::InconsistentCompletionState:
-    return tileRegion.emitError()
+    return funcOp.emitError()
            << "completion_proof_failure: local issue lifetime state remains "
               "after all local issues were fenced";
   }
@@ -561,9 +685,7 @@ verifySPMAsyncFunctionClosures(mlir::ModuleOp moduleOp) {
 }
 
 static mlir::LogicalResult
-planRegion(TileRegionOp tileRegion, int64_t spmBase, int64_t spmLimit,
-           int64_t spmAlignment,
-           llvm::SmallVectorImpl<PendingSPMPlacement> &pendingPlacements) {
+verifyTileRegionCompletion(TileRegionOp tileRegion, mlir::func::FuncOp funcOp) {
   if (mlir::failed(verifyCompletionControlFlow(tileRegion.getOperation())))
     return mlir::failure();
 
@@ -575,24 +697,80 @@ planRegion(TileRegionOp tileRegion, int64_t spmBase, int64_t spmLimit,
     mlir::Operation *origin = timelineFailure.origin
                                   ? timelineFailure.origin
                                   : tileRegion.getOperation();
-    if (timelineFailure.kind == mp::TimelineFailureKind::TooManyDecisions)
+    return origin->emitError()
+           << "unsupported_lifetime_control_flow: tile-region terminal "
+              "completion proof requires single-block scf.if/scf.for "
+              "structured control flow";
+  }
+
+  DTECompletionTracker dteCompletion(*timeline);
+  if (mlir::failed(dteCompletion.run(tileRegion.getOperation())))
+    return mlir::failure();
+
+  llvm::SmallVector<mp::LifetimeDemand, 0> noPlacementDemands;
+  mp::LocalCompletionTracker localCompletion(WaferResourceKind::SPM);
+  mp::LifetimeDataflow dataflow(
+      *timeline, noPlacementDemands,
+      [](mlir::Type type) { return isWaferSPMMemRefType(type); });
+  mp::LifetimeFailure lifetimeFailure;
+  if (mlir::failed(dataflow.run(tileRegion.getOperation(), &localCompletion,
+                                &lifetimeFailure)))
+    return emitLifetimeFailure(funcOp, lifetimeFailure);
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
+             int64_t spmAlignment,
+             const llvm::DenseSet<mlir::Operation *> &mayClobberFunctions,
+             llvm::SmallVectorImpl<PendingSPMPlacement> &pendingPlacements) {
+  bool hasTileRegion = false;
+  funcOp.walk([&](TileRegionOp) { hasTileRegion = true; });
+  if (!hasTileRegion)
+    return mlir::success();
+
+  mlir::LogicalResult completionResult = mlir::success();
+  funcOp.walk([&](TileRegionOp tileRegion) {
+    if (mlir::failed(completionResult))
+      return;
+    completionResult = verifyTileRegionCompletion(tileRegion, funcOp);
+  });
+  if (mlir::failed(completionResult))
+    return completionResult;
+
+  if (mlir::failed(verifyCompletionControlFlow(funcOp.getOperation())))
+    return mlir::failure();
+
+  mp::TimelineFailure timelineFailure;
+  mlir::FailureOr<mp::StructuredTimeline> timeline =
+      mp::StructuredTimeline::build(funcOp.getOperation(), &timelineFailure);
+  if (mlir::failed(timeline)) {
+    mlir::Operation *origin =
+        timelineFailure.origin ? timelineFailure.origin : funcOp.getOperation();
+    if (timelineFailure.kind ==
+        mp::TimelineFailureKind::DecisionDomainExhausted)
       return origin->emitError()
-             << "lifetime_overlap_conflict: SPM memory planning supports at "
-                "most 64 control-flow decision points";
+             << "lifetime_analysis_resource_exhausted: SPM structured "
+                "decision identifier domain exhausted";
+    if (timelineFailure.kind ==
+        mp::TimelineFailureKind::InconsistentPathCondition)
+      return origin->emitError()
+             << "lifetime_overlap_conflict: SPM memory planning could not "
+                "construct a consistent structured path condition";
     return origin->emitError()
            << "unsupported_lifetime_control_flow: SPM memory planning only "
-              "supports single-block wafer.tile.region, scf.if and scf.for "
-              "structured regions";
+              "supports single-block func.func, non-nested "
+              "wafer.tile.region, scf.if and scf.for structured regions";
   }
 
   llvm::SmallVector<mp::LifetimeDemand, 8> demands;
-  if (mlir::failed(initializeSPMDemands(tileRegion, spmAlignment, demands)))
+  if (mlir::failed(initializeSPMDemands(funcOp, spmAlignment, demands)))
     return mlir::failure();
 
   // Preserve the owner-specific DTE completion contract and diagnostic before
   // the shared generic async terminal proof handles other async producers.
   DTECompletionTracker dteCompletion(*timeline);
-  if (mlir::failed(dteCompletion.run(tileRegion.getOperation())))
+  if (mlir::failed(dteCompletion.run(funcOp.getOperation())))
     return mlir::failure();
 
   mp::LocalCompletionTracker localCompletion(WaferResourceKind::SPM);
@@ -600,31 +778,19 @@ planRegion(TileRegionOp tileRegion, int64_t spmBase, int64_t spmLimit,
     return isWaferSPMMemRefType(type);
   });
   mp::LifetimeFailure lifetimeFailure;
-  if (mlir::failed(dataflow.run(tileRegion.getOperation(), &localCompletion,
+  if (mlir::failed(dataflow.run(funcOp.getOperation(), &localCompletion,
                                 &lifetimeFailure)))
-    return emitLifetimeFailure(tileRegion, lifetimeFailure);
-
-  auto tileYield =
-      mlir::dyn_cast<TileYieldOp>(tileRegion.getBody().front().getTerminator());
-  std::optional<mp::ProgramPoint> yieldPoint =
-      tileYield ? timeline->lookup(tileYield.getOperation()) : std::nullopt;
-  if (tileYield && yieldPoint) {
-    for (mlir::Value value : tileYield.getOperands()) {
-      if (dataflow.rootsAt(value, yieldPoint->path).empty())
-        continue;
-      mp::LifetimeFailure escape{
-          mp::LifetimeFailureKind::UnsupportedTrackedValueEscape,
-          tileYield.getOperation()};
-      return emitLifetimeFailure(tileRegion, escape);
-    }
-  }
+    return emitLifetimeFailure(funcOp, lifetimeFailure);
+  if (mlir::failed(verifyLiveSPMAcrossCalls(funcOp, *timeline, demands,
+                                            mayClobberFunctions)))
+    return mlir::failure();
 
   mp::PackingResult packing =
       mp::packFirstFit(demands, mp::ArenaRange{spmBase, spmLimit});
   if (!packing.succeeded()) {
     const mp::PackingFailure &failure = *packing.failure;
     if (failure.demandIndex >= demands.size())
-      return tileRegion.emitError()
+      return funcOp.emitError()
              << "capacity_overflow: SPM planning failed without a demand";
     mp::LifetimeDemand &demand = demands[failure.demandIndex];
     return demand.allocation.emitError()
@@ -665,21 +831,25 @@ mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
           });
   if (escapedAllocation.wasInterrupted())
     return mlir::failure();
+  llvm::DenseSet<mlir::Operation *> mayClobberFunctions =
+      collectFunctionsThatMayClobberSPMArena(moduleOp);
   if (mlir::failed(verifySPMRegionExecutionScopes(moduleOp)) ||
       mlir::failed(verifySPMValueScopes(moduleOp)) ||
-      mlir::failed(verifySPMCallScopes(moduleOp)))
+      mlir::failed(verifySPMCallScopes(moduleOp, mayClobberFunctions)))
     return mlir::failure();
   if (mlir::failed(verifySPMAsyncFunctionClosures(moduleOp)))
     return mlir::failure();
 
   mlir::LogicalResult result = mlir::success();
   llvm::SmallVector<PendingSPMPlacement, 16> pendingPlacements;
-  moduleOp.walk([&](TileRegionOp tileRegion) {
+  for (mlir::func::FuncOp funcOp : moduleOp.getOps<mlir::func::FuncOp>()) {
     if (mlir::failed(result))
-      return;
-    result = planRegion(tileRegion, spmBase, spmLimit, spmAlignment,
-                        pendingPlacements);
-  });
+      break;
+    if (funcOp.isExternal())
+      continue;
+    result = planFunction(funcOp, spmBase, spmLimit, spmAlignment,
+                          mayClobberFunctions, pendingPlacements);
+  }
   if (mlir::failed(result))
     return result;
 

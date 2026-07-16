@@ -30,25 +30,25 @@ NUMERIC_SEMANTICS_SOURCES = (
     "NumericProfiles.cpp",
     "NumericSemanticsInternal.cpp",
 )
-GROUP_TO_TILE_REGION_SOURCES = (
+TENSOR_PROGRAM_TO_TILE_REGION_SOURCES = (
     "BodyEmitter.cpp",
     "CandidateMaterialization.cpp",
     "CandidateSupport.cpp",
     "CollectiveLowering.cpp",
     "CompleteTraversal.cpp",
     "GenericLowering.cpp",
-    "GroupLowering.cpp",
     "NamedComputeLowering.cpp",
     "TensorControlFlowLowering.cpp",
     "TileMaterialization.cpp",
-    "WaferGroupToTileRegion.cpp",
+    "WaferTensorProgramToTileRegion.cpp",
 )
 CANDIDATE_SELECTION_SOURCES = (
     "CandidateAnalysis.cpp",
     "CandidateCommit.cpp",
     "CandidateEvaluation.cpp",
     "CandidateSelection.cpp",
-    "SelectGroupTile.cpp",
+    "ScheduleTensorProgram.cpp",
+    "StructuredSchedulingScope.cpp",
 )
 MEMORY_PLANNING_SOURCES = (
     "LifetimeAnalysis.cpp",
@@ -150,7 +150,7 @@ COMPILATION_SOURCES = (
     "Compilation.cpp",
     "CompilationOrchestration.cpp",
     "CompilationStages.cpp",
-    "GroupedProgramCompilation.cpp",
+    "TensorProgramCompilation.cpp",
     "ProgramDirectoryTransaction.cpp",
     "SpmdCompilationBridge.cpp",
     "TargetPackagePublication.cpp",
@@ -202,10 +202,135 @@ LIB_WAFER_SUBDIRECTORY_ORDER = (
     "Compiler",
     "Model",
 )
+LEGACY_GROUP_PATHS = (
+    "include/Wafer/IR/Tensor/GroupOps.td",
+    "lib/Wafer/IR/Tensor/GroupOps.cpp",
+    "test/Dialect/Wafer/Tensor/Group",
+    "include/Wafer/Analysis/Group",
+    "lib/Wafer/Analysis/Group",
+    "include/Wafer/Conversion/WaferGroupToTileRegion",
+    "lib/Wafer/Conversion/WaferGroupToTileRegion",
+    "lib/Wafer/Transforms/Group",
+    "lib/Wafer/Compiler/GroupedProgramCompilation.cpp",
+    "tools/run_heavy_candidate_selection_tests.py",
+    "unittests/Conversion/WaferGroupToTileRegionTest.cpp",
+)
+LEGACY_GROUP_API_PATTERNS = (
+    (re.compile(r"(?<![A-Za-z0-9_])wafer\.group\b"), "wafer.group mnemonic"),
+    (
+        re.compile(r"\b(?:Wafer_)?Group(?:Yield)?Op\b"),
+        "wafer.group ODS/C++ op API",
+    ),
+    (
+        re.compile(r"(?<![A-Za-z0-9_])(?:Tensor/)?GroupOps\.(?:td|cpp)\b"),
+        "wafer.group ODS/source include",
+    ),
+    (
+        re.compile(
+            r"\b(?:GroupLayoutPlan|GroupTilingDemand|collectGroupLayoutPlan|"
+            r"dumpGroupLayoutPlan|collectGroupTilingDemand|dumpGroupTilingDemand)\b"
+        ),
+        "retired group analysis API",
+    ),
+    (
+        re.compile(
+            r"\b(?:cloneGroupToStandaloneModule|lowerGroupToTileRegionModule|"
+            r"lowerCandidateGroupToTileRegionModule|"
+            r"lowerCompleteCandidateGroupToTileRegionModule|"
+            r"dumpGroupToTileRegionModule)\b"
+        ),
+        "retired group-to-tile-region API",
+    ),
+    (
+        re.compile(r"\bcompileGroupedProgramToExecutableBundle(?:Impl)?\b"),
+        "retired grouped-program compiler API",
+    ),
+    (
+        re.compile(
+            r"\bcreate(?:FormLogicalGroups|DumpGroupTilingDemand|"
+            r"DumpGroupLayoutPlan|DumpGroupToTileRegion|"
+            r"DumpCandidateDdrTileViews|SelectGroupTile|"
+            r"ConvertGroupToTileRegion)Pass\b"
+        ),
+        "retired group pass API",
+    ),
+    (
+        re.compile(
+            r"\bbuild(?:FormLogicalGroups|LowerGroupsToTileRegion|"
+            r"LowerGroupsToInstr|LowerGroupsToMemoryPlannedInstr|"
+            r"LowerGroupsToDDRMemoryPlannedInstr|LowerGroupsToTargetLLVM|"
+            r"LowerGroupsToSelectedInstr)Pipeline\b"
+        ),
+        "retired group pipeline API",
+    ),
+)
+LEGACY_GROUP_CLI_NAMES = (
+    "wafer-form-logical-groups",
+    "wafer-dump-group-tiling-demand",
+    "wafer-dump-group-layout-plan",
+    "wafer-dump-group-to-tile-region",
+    "wafer-dump-candidate-ddr-tile-views",
+    "wafer-select-group-tile",
+    "wafer-convert-group-to-tile-region",
+    "wafer-lower-groups-to-tile-region",
+    "wafer-lower-groups-to-instr",
+    "wafer-lower-groups-to-memory-planned-instr",
+    "wafer-lower-groups-to-ddr-memory-planned-instr",
+    "wafer-lower-groups-to-target-llvm",
+    "wafer-lower-groups-to-selected-instr",
+)
 
 
 def fail(errors: list[str], message: str) -> None:
     errors.append(message)
+
+
+def check_legacy_group_surfaces_retired(root: Path, errors: list[str]) -> None:
+    for relative in LEGACY_GROUP_PATHS:
+        path = root / relative
+        if path.exists():
+            fail(errors, f"retired wafer.group path must not exist: {path}")
+
+    scan_roots = (
+        root / "include/Wafer",
+        root / "lib/Wafer",
+        root / "tools",
+        root / "unittests",
+        root / "cmake",
+    )
+    source_suffixes = {
+        ".h",
+        ".hpp",
+        ".cpp",
+        ".cc",
+        ".td",
+        ".inc",
+        ".cmake",
+        ".py",
+    }
+    paths = [root / "CMakeLists.txt"]
+    for scan_root in scan_roots:
+        if not scan_root.exists():
+            continue
+        paths.extend(path for path in scan_root.rglob("*") if path.is_file())
+
+    for path in paths:
+        if "__pycache__" in path.parts:
+            continue
+        if path.name in {
+            "check_ir_organization.py",
+            "check_source_organization.py",
+        }:
+            continue
+        if path.name != "CMakeLists.txt" and path.suffix not in source_suffixes:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for pattern, label in LEGACY_GROUP_API_PATTERNS:
+            if pattern.search(text):
+                fail(errors, f"{path} contains {label}")
+        for cli_name in LEGACY_GROUP_CLI_NAMES:
+            if cli_name in text:
+                fail(errors, f"{path} contains retired group CLI/pipeline {cli_name}")
 
 
 def read_required(path: Path, errors: list[str]) -> str:
@@ -647,54 +772,76 @@ def check_numeric_semantics_owners(root: Path, errors: list[str]) -> None:
     )
 
 
-def check_group_to_tile_region_owners(root: Path, errors: list[str]) -> None:
-    source_root = root / "lib/Wafer/Conversion/WaferGroupToTileRegion"
+def check_tensor_program_to_tile_region_owners(
+    root: Path, errors: list[str]
+) -> None:
+    source_root = root / "lib/Wafer/Conversion/WaferTensorProgramToTileRegion"
     cmake_path = root / "lib/Wafer/Conversion/CMakeLists.txt"
     cmake_text = read_required(cmake_path, errors)
 
     check_exact_sources(
-        source_root, GROUP_TO_TILE_REGION_SOURCES, "group-to-tile-region", errors
+        source_root,
+        TENSOR_PROGRAM_TO_TILE_REGION_SOURCES,
+        "tensor-program-to-tile-region",
+        errors,
     )
     check_private_header(
         source_root / "Internal.h",
-        root / "include/Wafer/Conversion/WaferGroupToTileRegion/Internal.h",
-        "group-to-tile-region internal",
+        root
+        / "include/Wafer/Conversion/WaferTensorProgramToTileRegion/Internal.h",
+        "tensor-program-to-tile-region internal",
         errors,
     )
     target_body = cmake_target_body(
         cmake_text,
         "add_mlir_conversion_library",
-        "WaferGroupToTileRegion",
+        "WaferTensorProgramToTileRegion",
         cmake_path,
         errors,
     )
     check_cmake_sources(
         body=target_body,
-        required=GROUP_TO_TILE_REGION_SOURCES,
-        prefix="WaferGroupToTileRegion/",
+        required=TENSOR_PROGRAM_TO_TILE_REGION_SOURCES,
+        prefix="WaferTensorProgramToTileRegion/",
         cmake_path=cmake_path,
-        target="WaferGroupToTileRegion",
+        target="WaferTensorProgramToTileRegion",
         errors=errors,
     )
-    facade = read_required(source_root / "WaferGroupToTileRegion.cpp", errors)
+    facade = read_required(
+        source_root / "WaferTensorProgramToTileRegion.cpp", errors
+    )
     if "OpRewritePattern" in facade or "OpConversionPattern" in facade:
         fail(
             errors,
-            "group-to-tile-region facade must not own concrete rewrite patterns",
+            "tensor-program-to-tile-region facade must not own concrete "
+            "rewrite patterns",
         )
+
+    for legacy_root in (
+        root / "include/Wafer/Conversion/WaferGroupToTileRegion",
+        root / "lib/Wafer/Conversion/WaferGroupToTileRegion",
+    ):
+        if legacy_root.exists():
+            fail(errors, f"legacy group conversion directory must be removed: {legacy_root}")
 
 
 def check_candidate_selection_owners(root: Path, errors: list[str]) -> None:
-    source_root = root / "lib/Wafer/Transforms/Group"
+    source_root = root / "lib/Wafer/Transforms/Scheduling"
     cmake_path = root / "lib/Wafer/Transforms/CMakeLists.txt"
     cmake_text = read_required(cmake_path, errors)
 
     for filename in CANDIDATE_SELECTION_SOURCES:
         read_required(source_root / filename, errors)
     check_private_header(
-        source_root / "SelectGroupTileInternal.h",
-        root / "include/Wafer/Transforms/Group/SelectGroupTileInternal.h",
+        source_root / "ScheduleTensorProgramInternal.h",
+        root / "include/Wafer/Transforms/Scheduling/ScheduleTensorProgramInternal.h",
         "candidate-selection internal",
+        errors,
+    )
+    check_private_header(
+        source_root / "StructuredSchedulingScope.h",
+        root / "include/Wafer/Transforms/Scheduling/StructuredSchedulingScope.h",
+        "structured scheduling scope",
         errors,
     )
     target_body = cmake_target_body(
@@ -703,12 +850,12 @@ def check_candidate_selection_owners(root: Path, errors: list[str]) -> None:
     check_cmake_sources(
         body=target_body,
         required=CANDIDATE_SELECTION_SOURCES,
-        prefix="Group/",
+        prefix="Scheduling/",
         cmake_path=cmake_path,
         target="WaferTransforms",
         errors=errors,
     )
-    facade = read_required(source_root / "SelectGroupTile.cpp", errors)
+    facade = read_required(source_root / "ScheduleTensorProgram.cpp", errors)
     for implementation in (
         "struct CandidateRecord",
         "struct CandidateCost",
@@ -716,6 +863,10 @@ def check_candidate_selection_owners(root: Path, errors: list[str]) -> None:
     ):
         if implementation in facade:
             fail(errors, f"candidate-selection facade still owns {implementation}")
+
+    legacy_root = root / "lib/Wafer/Transforms/Group"
+    if legacy_root.exists():
+        fail(errors, f"legacy group transform directory must be removed: {legacy_root}")
 
 
 def check_memory_planning_owners(root: Path, errors: list[str]) -> None:
@@ -1631,10 +1782,11 @@ def main() -> int:
 
     root = args.root.resolve()
     errors: list[str] = []
+    check_legacy_group_surfaces_retired(root, errors)
     check_instruction_owners(root, errors)
     check_tile_region_to_instr_owners(root, errors)
     check_numeric_semantics_owners(root, errors)
-    check_group_to_tile_region_owners(root, errors)
+    check_tensor_program_to_tile_region_owners(root, errors)
     check_candidate_selection_owners(root, errors)
     check_memory_planning_owners(root, errors)
     check_target_llvm_owners(root, errors)

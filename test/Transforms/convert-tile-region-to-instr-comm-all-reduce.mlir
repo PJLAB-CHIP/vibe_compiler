@@ -74,6 +74,7 @@ module {
 // CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND2]], %[[RECV2]]
 // CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]
+// CHECK-NEXT: wafer.instr.local_fence
 // CHECK-NOT: wafer.tile.all_reduce
 
 // SPM-LABEL: func.func @all_reduce_ring

@@ -3,8 +3,6 @@
 #include "BulkTensorNumericInternal.h"
 
 #include "oneapi/dnnl/dnnl.hpp"
-#include "llvm/ADT/APFloat.h"
-#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/raw_ostream.h"
@@ -59,6 +57,40 @@ uint64_t getElementBytes(LogicalFormat format) {
   return descriptor && !descriptor->bitpacked ? descriptor->storageBits / 8 : 0;
 }
 
+uint32_t widenF16ToF32Bits(uint16_t bits) {
+  const uint32_t sign = static_cast<uint32_t>(bits & UINT16_C(0x8000)) << 16;
+  uint32_t exponent = (bits >> 10) & UINT16_C(0x1f);
+  uint32_t fraction = bits & UINT16_C(0x03ff);
+  if (exponent == 0) {
+    if (fraction == 0)
+      return sign;
+    int32_t unbiasedExponent = -14;
+    while ((fraction & UINT32_C(0x0400)) == 0) {
+      fraction <<= 1;
+      --unbiasedExponent;
+    }
+    return sign | (static_cast<uint32_t>(unbiasedExponent + 127) << 23) |
+           ((fraction & UINT32_C(0x03ff)) << 13);
+  }
+  if (exponent == UINT32_C(0x1f))
+    return sign | UINT32_C(0x7f800000) | (fraction << 13);
+  exponent = exponent - 15 + 127;
+  return sign | (exponent << 23) | (fraction << 13);
+}
+
+uint32_t widenToF32Bits(LogicalFormat format, uint64_t bits) {
+  switch (format) {
+  case LogicalFormat::F16:
+    return widenF16ToF32Bits(static_cast<uint16_t>(bits));
+  case LogicalFormat::BF16:
+    return static_cast<uint32_t>(bits) << 16;
+  case LogicalFormat::F32:
+    return static_cast<uint32_t>(bits);
+  default:
+    llvm_unreachable("unsupported oneDNN dense adapter format");
+  }
+}
+
 llvm::Expected<std::vector<uint8_t>>
 makeF32DenseBytes(llvm::ArrayRef<RawLogicalValue> values,
                   LogicalFormat format) {
@@ -73,20 +105,10 @@ makeF32DenseBytes(llvm::ArrayRef<RawLogicalValue> values,
     if (values[index].format != format)
       return bulkError(BulkTensorNumericErrorCode::InvalidInputEncoding,
                        "dense adapter saw a mixed logical format");
-    const llvm::fltSemantics *semantics = nullptr;
-    unsigned storageBits = 0;
     switch (format) {
     case LogicalFormat::F16:
-      semantics = &llvm::APFloat::IEEEhalf();
-      storageBits = 16;
-      break;
     case LogicalFormat::BF16:
-      semantics = &llvm::APFloat::BFloat();
-      storageBits = 16;
-      break;
     case LogicalFormat::F32:
-      semantics = &llvm::APFloat::IEEEsingle();
-      storageBits = 32;
       break;
     default:
       return bulkError(BulkTensorNumericErrorCode::UnsupportedFormat,
@@ -97,19 +119,7 @@ makeF32DenseBytes(llvm::ArrayRef<RawLogicalValue> values,
     if (!canonical)
       return bulkError(BulkTensorNumericErrorCode::InvalidInputEncoding,
                        llvm::toString(canonical.takeError()));
-    llvm::APFloat floating(*semantics, llvm::APInt(storageBits, canonical->bits,
-                                                   /*isSigned=*/false));
-    bool losesInfo = false;
-    llvm::APFloat::opStatus status =
-        floating.convert(llvm::APFloat::IEEEsingle(),
-                         llvm::APFloat::rmNearestTiesToEven, &losesInfo);
-    if ((status & (llvm::APFloat::opOverflow | llvm::APFloat::opUnderflow)) !=
-            0 ||
-        losesInfo)
-      return bulkError(BulkTensorNumericErrorCode::InvalidInputEncoding,
-                       "f16/bf16 input did not widen exactly to f32");
-    const uint32_t f32Bits =
-        static_cast<uint32_t>(floating.bitcastToAPInt().getZExtValue());
+    const uint32_t f32Bits = widenToF32Bits(format, canonical->bits);
     for (uint64_t byte = 0; byte < elementBytes; ++byte)
       bytes[index * elementBytes + byte] =
           static_cast<uint8_t>(f32Bits >> (8 * byte));

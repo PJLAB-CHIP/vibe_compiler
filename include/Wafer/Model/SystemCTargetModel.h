@@ -62,11 +62,16 @@ struct TargetModelResult {
   uint64_t finalDeltaCount = 0;
   FormalNumericExceptionFlags numericFlags;
   uint64_t formalNumericCommandCount = 0;
+  uint64_t managedReferenceNumericCommandCount = 0;
+  uint64_t managedReferenceScalarEvaluationCount = 0;
   uint64_t bulkNumericCommandCount = 0;
   uint64_t bulkMatmulInvocationCount = 0;
   uint64_t bulkReorderInvocationCount = 0;
   uint64_t bulkFormalFusedMultiplyAddCount = 0;
   std::vector<std::string> bulkAdmissionRecordDigests;
+  std::vector<std::string> bulkManagedReferenceEnvironmentDigests;
+  std::vector<std::string> managedReferenceTensorEnvironmentDigests;
+  std::vector<std::string> managedReferenceTensorImplementations;
   std::string systemCVersion;
   std::string schedulerIdentity;
   std::vector<TargetModelOutput> outputs;

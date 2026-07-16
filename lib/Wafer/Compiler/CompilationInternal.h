@@ -59,7 +59,7 @@ bool hasPostSpmdMarker(mlir::ModuleOp module, llvm::StringRef programDirectory);
 bool containsDialectSemantics(mlir::ModuleOp module,
                               llvm::StringRef dialectNamespace);
 mlir::LogicalResult verifyStablehloStageOperations(mlir::ModuleOp module);
-mlir::LogicalResult verifyGroupedStageOperations(mlir::ModuleOp module);
+mlir::LogicalResult verifyTensorProgramStageOperations(mlir::ModuleOp module);
 mlir::LogicalResult
 verifyExactExecutionConfigInternal(mlir::ModuleOp module,
                                    const ExecutionConfig &config);
@@ -77,13 +77,13 @@ bool runSpmdHelper(llvm::StringRef helper,
                    const ExecutionConfig &config,
                    llvm::raw_ostream &diagnostics);
 
-llvm::Expected<ExecutableBundle> compileGroupedProgramToExecutableBundleImpl(
-    llvm::StringRef groupedProgramDirectory, ExecutionConfig executionConfig,
+llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
+    llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLogicalRank);
 
 mlir::LogicalResult stageTargetPackage(
-    llvm::StringRef groupedProgramDirectory, llvm::StringRef transactionRoot,
+    llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
     const ExecutionConfig &executionConfig,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLogicalRank,

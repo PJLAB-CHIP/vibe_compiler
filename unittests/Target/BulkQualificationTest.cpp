@@ -321,6 +321,39 @@ TEST(BulkQualificationTest,
             qualified.admission.getExpectedBackendOutputDigest());
 }
 
+TEST(BulkQualificationTest,
+     ManagedReferenceAdmitsFiniteShapeIndependentRowsAndRejectsInfinity) {
+  BulkExecutionEnvironment environment =
+      llvm::cantFail(createManagedBulkExecutionEnvironment());
+  BulkQualificationSpec spec = llvm::cantFail(BulkQualificationSpec::create(
+      LogicalFormat::F32, 16, 128, 32, 1, NumericTensorLayout::Cx,
+      NumericTensorLayout::Cx, NumericTensorLayout::Cx, /*seed=*/41));
+  BulkQualificationCase row = llvm::cantFail(
+      materializeBulkQualificationCase(std::move(spec), kBulkBudget));
+  llvm::Expected<BulkTensorNumericResult> result =
+      executeManagedReferenceBulkTensorNumeric(
+          environment, row.getCommand(), row.getInputs(),
+          row.getDestinationTemplate(), kBulkBudget);
+  ASSERT_TRUE(static_cast<bool>(result))
+      << (result ? std::string() : llvm::toString(result.takeError()));
+  EXPECT_EQ(result->evidence.matmulInvocations, 1u);
+  EXPECT_EQ(result->evidence.formalFusedMultiplyAdds, 0u);
+  EXPECT_FALSE(result->evidence.implementation.empty());
+
+  std::vector<BulkTensorStorage> nonfiniteInputs(row.getInputs().begin(),
+                                                 row.getInputs().end());
+  std::vector<RawLogicalValue> lhs =
+      llvm::cantFail(unpackBulkTensorLogicalValues(nonfiniteInputs.front()));
+  lhs.front().bits = UINT64_C(0x7f800000);
+  nonfiniteInputs.front() = llvm::cantFail(packBulkTensorLogicalValues(
+      nonfiniteInputs.front().getKey(), lhs, UINT8_C(0)));
+  EXPECT_NE(expectError(executeManagedReferenceBulkTensorNumeric(
+                            environment, row.getCommand(), nonfiniteInputs,
+                            row.getDestinationTemplate(), kBulkBudget))
+                .find("admits only finite inputs"),
+            std::string::npos);
+}
+
 TEST(BulkQualificationTest, BatchedNCxRowUsesOneMatmulAndPreservesAdmission) {
   TemporaryDirectory files;
   BulkExecutionEnvironment environment =

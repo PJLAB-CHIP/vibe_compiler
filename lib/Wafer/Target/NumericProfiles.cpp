@@ -80,10 +80,13 @@ std::string makeSemanticsDigest(
     NumericGemmAccumulatorPolicy gemmAccumulatorPolicy,
     NumericGemmAccumulatorInitializationPolicy
         gemmAccumulatorInitializationPolicy,
-    NumericGemmReductionOrderPolicy gemmReductionOrderPolicy) {
+    NumericGemmReductionOrderPolicy gemmReductionOrderPolicy,
+    NumericReductionAccumulatorInitializationPolicy
+        reductionAccumulatorInitializationPolicy,
+    NumericReductionOrderPolicy reductionOrderPolicy) {
   std::string canonical;
   llvm::raw_string_ostream stream(canonical);
-  stream << "wafer-numeric-semantics-v3\n"
+  stream << "wafer-numeric-semantics-v4\n"
          << "model-policy-digest=" << model.policyDigest << '\n';
   std::visit(
       [&](const auto &typedIdentity) {
@@ -119,6 +122,15 @@ std::string makeSemanticsDigest(
                                             NumericNEGemmSemanticsIdentity>) {
           stream << "format="
                  << stringifyLogicalFormat(typedIdentity.getFormat()) << '\n';
+        } else if constexpr (std::is_same_v<
+                                 Identity,
+                                 NumericNativeCTReduceSemanticsIdentity>) {
+          stream << "operation="
+                 << stringifyNumericReduceOperation(
+                        typedIdentity.getOperation())
+                 << '\n'
+                 << "format="
+                 << stringifyLogicalFormat(typedIdentity.getFormat()) << '\n';
         }
       },
       identity);
@@ -151,7 +163,12 @@ std::string makeSemanticsDigest(
          << "gemm-accumulator-initialization="
          << static_cast<unsigned>(gemmAccumulatorInitializationPolicy) << '\n'
          << "gemm-reduction-order="
-         << static_cast<unsigned>(gemmReductionOrderPolicy) << '\n';
+         << static_cast<unsigned>(gemmReductionOrderPolicy) << '\n'
+         << "reduction-accumulator-initialization="
+         << static_cast<unsigned>(reductionAccumulatorInitializationPolicy)
+         << '\n'
+         << "reduction-order=" << static_cast<unsigned>(reductionOrderPolicy)
+         << '\n';
   stream.flush();
   return digestCanonical(canonical);
 }
@@ -211,6 +228,8 @@ llvm::StringRef stringifyFormalKernelKind(FormalKernelKind kind) {
     return "elementwise";
   case FormalKernelKind::Gemm:
     return "gemm";
+  case FormalKernelKind::Reduce:
+    return "reduce";
   }
   llvm_unreachable("formal kernel kind is not registered");
 }
@@ -254,6 +273,11 @@ NumericSemanticsProfile::getCTElementwiseIdentity() const {
 const NumericNEGemmSemanticsIdentity *
 NumericSemanticsProfile::getNEGemmIdentity() const {
   return std::get_if<NumericNEGemmSemanticsIdentity>(&identity);
+}
+
+const NumericNativeCTReduceSemanticsIdentity *
+NumericSemanticsProfile::getNativeCTReduceIdentity() const {
+  return std::get_if<NumericNativeCTReduceSemanticsIdentity>(&identity);
 }
 
 const NumericRoutePolicyIdentity &
@@ -345,7 +369,9 @@ getRegisteredNumericSemanticsProfiles() {
             NumericTranscendentalEvaluationPolicy::NotApplicable,
             NumericGemmAccumulatorPolicy::NotApplicable,
             NumericGemmAccumulatorInitializationPolicy::NotApplicable,
-            NumericGemmReductionOrderPolicy::NotApplicable);
+            NumericGemmReductionOrderPolicy::NotApplicable,
+            NumericReductionAccumulatorInitializationPolicy::NotApplicable,
+            NumericReductionOrderPolicy::NotApplicable);
         result.push_back(NumericSemanticsProfile(
             kFormalDeterministicV1, std::move(identity), mode,
             NumericRoundingPointPolicy::ConversionResult, floatToIntegerPolicy,
@@ -364,7 +390,9 @@ getRegisteredNumericSemanticsProfiles() {
             NumericTranscendentalEvaluationPolicy::NotApplicable,
             NumericGemmAccumulatorPolicy::NotApplicable,
             NumericGemmAccumulatorInitializationPolicy::NotApplicable,
-            NumericGemmReductionOrderPolicy::NotApplicable, std::move(digest)));
+            NumericGemmReductionOrderPolicy::NotApplicable,
+            NumericReductionAccumulatorInitializationPolicy::NotApplicable,
+            NumericReductionOrderPolicy::NotApplicable, std::move(digest)));
       }
     }
     if (zeroPointRouteCount != 4 || parameterlessRouteCount != 9 ||
@@ -467,7 +495,9 @@ getRegisteredNumericCTElementwiseSemanticsProfiles() {
           transcendentalEvaluationPolicy,
           NumericGemmAccumulatorPolicy::NotApplicable,
           NumericGemmAccumulatorInitializationPolicy::NotApplicable,
-          NumericGemmReductionOrderPolicy::NotApplicable);
+          NumericGemmReductionOrderPolicy::NotApplicable,
+          NumericReductionAccumulatorInitializationPolicy::NotApplicable,
+          NumericReductionOrderPolicy::NotApplicable);
       result.push_back(NumericSemanticsProfile(
           kFormalDeterministicV1, std::move(identity), roundingMode,
           roundingPointPolicy, FloatToIntegerPolicy::NotApplicable,
@@ -478,7 +508,9 @@ getRegisteredNumericCTElementwiseSemanticsProfiles() {
           transcendentalEvaluationPolicy,
           NumericGemmAccumulatorPolicy::NotApplicable,
           NumericGemmAccumulatorInitializationPolicy::NotApplicable,
-          NumericGemmReductionOrderPolicy::NotApplicable, std::move(digest)));
+          NumericGemmReductionOrderPolicy::NotApplicable,
+          NumericReductionAccumulatorInitializationPolicy::NotApplicable,
+          NumericReductionOrderPolicy::NotApplicable, std::move(digest)));
     };
 
     for (NumericElementwiseOperation operation :
@@ -547,7 +579,9 @@ getRegisteredNumericNEGemmSemanticsProfiles() {
           NumericTranscendentalEvaluationPolicy::NotApplicable,
           NumericGemmAccumulatorPolicy::F32FusedMultiplyAdd,
           NumericGemmAccumulatorInitializationPolicy::PositiveZero,
-          NumericGemmReductionOrderPolicy::IncreasingK);
+          NumericGemmReductionOrderPolicy::IncreasingK,
+          NumericReductionAccumulatorInitializationPolicy::NotApplicable,
+          NumericReductionOrderPolicy::NotApplicable);
       result.push_back(NumericSemanticsProfile(
           kFormalDeterministicV1, std::move(identity),
           NumericRoundingMode::NearestEven,
@@ -565,7 +599,9 @@ getRegisteredNumericNEGemmSemanticsProfiles() {
           NumericTranscendentalEvaluationPolicy::NotApplicable,
           NumericGemmAccumulatorPolicy::F32FusedMultiplyAdd,
           NumericGemmAccumulatorInitializationPolicy::PositiveZero,
-          NumericGemmReductionOrderPolicy::IncreasingK, std::move(digest)));
+          NumericGemmReductionOrderPolicy::IncreasingK,
+          NumericReductionAccumulatorInitializationPolicy::NotApplicable,
+          NumericReductionOrderPolicy::NotApplicable, std::move(digest)));
     }
     if (result.size() != 3)
       llvm::report_fatal_error(
@@ -584,6 +620,61 @@ getRegisteredNumericNEGemmSemanticsProfiles() {
               "GEMM numeric semantics registry has a duplicate digest");
       }
     }
+    return result;
+  }();
+  return profiles;
+}
+
+llvm::ArrayRef<NumericSemanticsProfile>
+getRegisteredNumericNativeCTReduceSemanticsProfiles() {
+  static const std::vector<NumericSemanticsProfile> profiles = [] {
+    const ModelProfileRecord &model =
+        getModelProfileRecord(kFormalDeterministicV1);
+    NumericSemanticsIdentity identity = NumericNativeCTReduceSemanticsIdentity(
+        kTargetProfile, NumericReduceOperation::Sum, LogicalFormat::F32);
+    std::string digest = makeSemanticsDigest(
+        model, identity, NumericRoundingMode::NearestEven,
+        NumericRoundingPointPolicy::ReductionStep,
+        FloatToIntegerPolicy::NotApplicable,
+        FloatingNaNPolicy::CanonicalPositiveQuietNaN,
+        FloatingSignedZeroPolicy::ReductionPositiveZeroAccumulatorThenIEEE754,
+        FloatingSubnormalPolicy::Gradual, FloatingTininessPolicy::AfterRounding,
+        NumericExceptionFlagPolicy::ModelOnly,
+        FloatingNaNSignalingPolicy::SignalingRaisesInvalidQuietDoesNot,
+        FloatingDenormalModePolicy::GradualNoDAZNoFTZ,
+        FloatingOverflowPolicy::IEEE754AccordingToRoundingMode,
+        NumericSaturationPolicy::Disabled,
+        NumericTranscendentalEvaluationPolicy::NotApplicable,
+        NumericGemmAccumulatorPolicy::NotApplicable,
+        NumericGemmAccumulatorInitializationPolicy::NotApplicable,
+        NumericGemmReductionOrderPolicy::NotApplicable,
+        NumericReductionAccumulatorInitializationPolicy::PositiveZero,
+        NumericReductionOrderPolicy::IncreasingLogicalRowMajorInputIndex);
+    std::vector<NumericSemanticsProfile> result;
+    result.push_back(NumericSemanticsProfile(
+        kFormalDeterministicV1, std::move(identity),
+        NumericRoundingMode::NearestEven,
+        NumericRoundingPointPolicy::ReductionStep,
+        FloatToIntegerPolicy::NotApplicable,
+        FloatingNaNPolicy::CanonicalPositiveQuietNaN,
+        FloatingSignedZeroPolicy::ReductionPositiveZeroAccumulatorThenIEEE754,
+        FloatingSubnormalPolicy::Gradual, FloatingTininessPolicy::AfterRounding,
+        NumericExceptionFlagPolicy::ModelOnly,
+        FloatingNaNSignalingPolicy::SignalingRaisesInvalidQuietDoesNot,
+        FloatingDenormalModePolicy::GradualNoDAZNoFTZ,
+        FloatingOverflowPolicy::IEEE754AccordingToRoundingMode,
+        NumericSaturationPolicy::Disabled,
+        NumericTranscendentalEvaluationPolicy::NotApplicable,
+        NumericGemmAccumulatorPolicy::NotApplicable,
+        NumericGemmAccumulatorInitializationPolicy::NotApplicable,
+        NumericGemmReductionOrderPolicy::NotApplicable,
+        NumericReductionAccumulatorInitializationPolicy::PositiveZero,
+        NumericReductionOrderPolicy::IncreasingLogicalRowMajorInputIndex,
+        std::move(digest)));
+    if (!isValidDigest(result.front().getDigest()) ||
+        result.front().getFamily() != NumericCommandFamily::NativeCTReduce)
+      llvm::report_fatal_error(
+          "native CT reduction numeric semantics registry has an invalid row");
     return result;
   }();
   return profiles;

@@ -5,25 +5,167 @@
 
 #include "OpVerifierUtils.h"
 
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 using namespace wafer;
 using namespace wafer::detail;
 
-mlir::LogicalResult TileRegionOp::verify() {
-  for (mlir::Type resultType : getResultTypes()) {
-    if (isSPMBuffer(resultType))
-      return emitOpError(
-          "SPM buffer values cannot cross wafer.tile.region boundaries");
+namespace {
+
+struct StorageTrace {
+  bool valid = true;
+  bool hasSPMRoot = false;
+};
+
+static mlir::scf::YieldOp getSingleBlockYield(mlir::Region &region) {
+  if (region.empty() || !region.hasOneBlock())
+    return {};
+  return mlir::dyn_cast<mlir::scf::YieldOp>(region.front().getTerminator());
+}
+
+static bool isAllocationOwnedBy(mlir::memref::AllocOp allocation,
+                                TileRegionOp owner) {
+  for (mlir::Operation *parent = allocation->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (parent == owner.getOperation())
+      return true;
+    if (mlir::isa<TileRegionOp>(parent))
+      return false;
   }
-  for (auto input : getInputs()) {
-    if (isSPMBuffer(input.getType()))
-      return emitOpError(
-          "SPM buffer values cannot cross wafer.tile.region boundaries");
+  return false;
+}
+
+static void mergeTrace(StorageTrace &destination, StorageTrace source) {
+  destination.valid &= source.valid;
+  destination.hasSPMRoot |= source.hasSPMRoot;
+}
+
+/// Proves storage provenance for a value crossing a tile-region boundary.
+/// Unknown shaped producers are traversed only to detect an erased SPM
+/// dependency; they are never accepted as an alias producer for an SPM result.
+static StorageTrace traceSPMStorage(mlir::Value value, TileRegionOp owner,
+                                    llvm::DenseSet<mlir::Value> &active) {
+  StorageTrace trace;
+  if (!value || !active.insert(value).second)
+    return trace;
+
+  auto finish = [&](StorageTrace result) {
+    active.erase(value);
+    return result;
+  };
+  auto traceValue = [&](mlir::Value source) {
+    return traceSPMStorage(source, owner, active);
+  };
+
+  if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+    if (blockArg.getOwner() == &owner.getBody().front()) {
+      unsigned index = blockArg.getArgNumber();
+      trace.valid = index < owner.getInputs().size() &&
+                    owner.getInputs()[index].getType() == blockArg.getType();
+      trace.hasSPMRoot = trace.valid && isSPMBuffer(blockArg.getType());
+      return finish(trace);
+    }
+
+    auto forOp = mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+        blockArg.getOwner() ? blockArg.getOwner()->getParentOp() : nullptr);
+    if (forOp && blockArg.getOwner() == forOp.getBody() &&
+        blockArg.getArgNumber() > 0) {
+      unsigned index = blockArg.getArgNumber() - 1;
+      if (index >= forOp.getInitArgs().size())
+        return finish(StorageTrace{/*valid=*/false, /*hasSPMRoot=*/false});
+      mergeTrace(trace, traceValue(forOp.getInitArgs()[index]));
+      mlir::scf::YieldOp yield =
+          mlir::dyn_cast<mlir::scf::YieldOp>(forOp.getBody()->getTerminator());
+      if (!yield || index >= yield.getResults().size())
+        trace.valid = false;
+      else
+        mergeTrace(trace, traceValue(yield.getResults()[index]));
+      return finish(trace);
+    }
+
+    trace.valid = !isSPMBuffer(blockArg.getType());
+    return finish(trace);
   }
 
-  return mlir::success();
+  auto result = mlir::dyn_cast<mlir::OpResult>(value);
+  if (!result)
+    return finish(StorageTrace{/*valid=*/!isSPMBuffer(value.getType()),
+                               /*hasSPMRoot=*/false});
+  mlir::Operation *producer = result.getOwner();
+
+  if (auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(producer)) {
+    trace.hasSPMRoot = isSPMBuffer(allocation.getType());
+    trace.valid = !trace.hasSPMRoot || isAllocationOwnedBy(allocation, owner);
+    return finish(trace);
+  }
+  if (auto toTensor = mlir::dyn_cast<mlir::bufferization::ToTensorOp>(producer))
+    return finish(traceValue(toTensor.getMemref()));
+  if (auto toMemref = mlir::dyn_cast<mlir::bufferization::ToMemrefOp>(producer))
+    return finish(traceValue(toMemref.getTensor()));
+  if (auto reshape = mlir::dyn_cast<ViewReshapeOp>(producer))
+    return finish(traceValue(reshape.getSource()));
+  if (auto viewLike = mlir::dyn_cast<mlir::ViewLikeOpInterface>(producer))
+    return finish(traceValue(viewLike.getViewSource()));
+  if (auto select = mlir::dyn_cast<mlir::SelectLikeOpInterface>(producer)) {
+    mergeTrace(trace, traceValue(select.getTrueValue()));
+    mergeTrace(trace, traceValue(select.getFalseValue()));
+    return finish(trace);
+  }
+  if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(producer)) {
+    unsigned index = result.getResultNumber();
+    for (mlir::scf::YieldOp yield :
+         {getSingleBlockYield(ifOp.getThenRegion()),
+          getSingleBlockYield(ifOp.getElseRegion())}) {
+      if (!yield || index >= yield.getResults().size()) {
+        trace.valid = false;
+        continue;
+      }
+      mergeTrace(trace, traceValue(yield.getResults()[index]));
+    }
+    return finish(trace);
+  }
+  if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(producer)) {
+    unsigned index = result.getResultNumber();
+    if (index >= forOp.getInitArgs().size())
+      trace.valid = false;
+    else
+      mergeTrace(trace, traceValue(forOp.getInitArgs()[index]));
+    mlir::scf::YieldOp yield =
+        mlir::dyn_cast<mlir::scf::YieldOp>(forOp.getBody()->getTerminator());
+    if (!yield || index >= yield.getResults().size())
+      trace.valid = false;
+    else
+      mergeTrace(trace, traceValue(yield.getResults()[index]));
+    return finish(trace);
+  }
+
+  // A shaped result of an unknown producer cannot establish SPM aliasing.
+  // Still inspect its shaped operands so an erased SPM dependency cannot be
+  // smuggled through a tensor/generic-memref result.
+  if (mlir::isa<mlir::ShapedType>(value.getType())) {
+    for (mlir::Value operand : producer->getOperands()) {
+      if (!mlir::isa<mlir::ShapedType>(operand.getType()))
+        continue;
+      StorageTrace operandTrace = traceValue(operand);
+      if (operandTrace.hasSPMRoot)
+        trace.valid = false;
+      trace.hasSPMRoot |= operandTrace.hasSPMRoot;
+    }
+  }
+  if (isSPMBuffer(value.getType()))
+    trace.valid = false;
+  return finish(trace);
 }
+
+} // namespace
+
+mlir::LogicalResult TileRegionOp::verify() { return mlir::success(); }
 
 mlir::LogicalResult TileRegionOp::verifyRegions() {
   if (getBody().empty())
@@ -44,9 +186,6 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
       return emitOpError("body block argument type ")
              << blockArgType << " does not match input type " << inputType
              << " at index " << index;
-    if (isSPMBuffer(blockArgType))
-      return emitOpError(
-          "SPM buffer values cannot cross wafer.tile.region boundaries");
   }
 
   auto yield = mlir::dyn_cast<TileYieldOp>(block.getTerminator());
@@ -61,15 +200,31 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
 
   for (auto [index, yieldedAndResult] :
        llvm::enumerate(llvm::zip(yield.getValues(), getResults()))) {
-    mlir::Type yieldedType = std::get<0>(yieldedAndResult).getType();
+    mlir::Value yielded = std::get<0>(yieldedAndResult);
+    mlir::Type yieldedType = yielded.getType();
     mlir::Type resultType = std::get<1>(yieldedAndResult).getType();
-    if (isSPMBuffer(yieldedType))
-      return emitOpError(
-          "SPM buffer values cannot cross wafer.tile.region boundaries");
     if (yieldedType != resultType)
       return emitOpError("tile.yield type ")
              << yieldedType << " does not match wafer.tile.region result type "
              << resultType << " at index " << index;
+
+    llvm::DenseSet<mlir::Value> active;
+    StorageTrace trace = traceSPMStorage(yielded, *this, active);
+    if (!trace.valid)
+      return emitOpError("result at index ")
+             << index
+             << " has unsupported SPM storage provenance; SPM results must "
+                "alias a matching region input or a region-owned memref.alloc";
+    if (isSPMBuffer(resultType) && !trace.hasSPMRoot)
+      return emitOpError("SPM result at index ")
+             << index
+             << " must alias a matching region input or a region-owned "
+                "memref.alloc";
+    if (!isSPMBuffer(resultType) && trace.hasSPMRoot)
+      return emitOpError("result at index ")
+             << index
+             << " cannot erase SPM storage provenance across the "
+                "wafer.tile.region boundary";
   }
 
   for (mlir::NamedAttribute attr : getOperation()->getAttrs())

@@ -54,6 +54,8 @@ bool isTinyAfterRNE(const ExactDyadic &exact,
 llvm::Error
 validateElementwiseResolvedCommand(const ResolvedNumericCommand &command);
 llvm::Error validateGemmResolvedCommand(const ResolvedNumericCommand &command);
+llvm::Error
+validateReduceResolvedCommand(const ResolvedNumericCommand &command);
 
 } // namespace wafer::formal_detail
 

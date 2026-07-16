@@ -76,6 +76,23 @@ func.func @sorted_multidim_lexicographic(
 // CHECK-NEXT: wafer.instr.local_fence
 // CHECK: return
 
+func.func @large_identity_sum_uses_native_reduce(
+    %input: memref<1024x1xf32, #wafer.memory<spm, cx>>)
+    -> memref<1xf32, #wafer.memory<spm, cx>> {
+  %result = wafer.tile.reduce #wafer.reduce_kind<sum> %input
+      {dimensions = array<i64: 0>, init_value = 0.000000e+00 : f32}
+      : (memref<1024x1xf32, #wafer.memory<spm, cx>>)
+     -> memref<1xf32, #wafer.memory<spm, cx>>
+  return %result : memref<1xf32, #wafer.memory<spm, cx>>
+}
+
+// CHECK-LABEL: func.func @large_identity_sum_uses_native_reduce
+// CHECK-NOT: wafer.instr.fill
+// CHECK: wafer.instr.reduce <sum>
+// CHECK-SAME: dim = 1 : i64
+// CHECK-NEXT: wafer.instr.local_fence
+// CHECK: return
+
 func.func @ordered_max(
     %input: memref<2x2xf16, #wafer.memory<spm, cx>>)
     -> memref<2xf16, #wafer.memory<spm, cx>> {

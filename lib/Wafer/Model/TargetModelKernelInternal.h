@@ -42,13 +42,22 @@ llvm::Expected<TargetModelCommandEffect>
 executeElementwise(const compiler::TargetTransaction &transaction,
                    const compiler::TargetElementwiseTransaction &value,
                    const InvocationMemoryRegistry &memory,
-                   TargetModelKernelBudget budget);
+                   TargetModelKernelBudget budget,
+                   TargetModelExecutionPolicy policy);
 
 llvm::Expected<TargetModelCommandEffect>
 executeConvert(const compiler::TargetTransaction &transaction,
                const compiler::TargetConvertTransaction &value,
                const InvocationMemoryRegistry &memory,
-               TargetModelKernelBudget budget);
+               TargetModelKernelBudget budget,
+               TargetModelExecutionPolicy policy);
+
+llvm::Expected<TargetModelCommandEffect>
+executeReduce(const compiler::TargetTransaction &transaction,
+              const compiler::TargetReduceTransaction &value,
+              const InvocationMemoryRegistry &memory,
+              TargetModelKernelBudget budget,
+              TargetModelExecutionPolicy policy);
 
 llvm::Expected<TargetModelCommandEffect>
 executeGemm(const compiler::TargetTransaction &transaction,

@@ -16,8 +16,8 @@
 | 03 | `tasks/03-shardy-spmd.md` | 当前Shardy/XLA SPMD artifact、显式rank identity；MPMD/rank class延后 |
 | 04 | `tasks/04-topology-execution-mesh.md` | 当前topology/execution mesh；Q0.L typed target-profile仅随ExecutionConfig透传，不进入mesh IR |
 | 05 | `tasks/05-local-compute-normalization.md` | rank-local structured compute和tensor collective handoff |
-| 06 | `tasks/06-group.md` | logical group、candidate proposal、完整traversal和bundle commit边界 |
-| 07 | `tasks/07-tile-region.md` | complete traversal 内 candidate tile-local execution scope |
+| 06 | `tasks/06-group.md` | rank-local tile-dataflow scheduling、bounded candidate selection、完整traversal和atomic commit；文件名仅保留历史编号导航 |
+| 07 | `tasks/07-tile-region.md` | complete traversal中的typed task/traversal fragment；不是per-group SPM/DDR边界 |
 | 08 | `tasks/08-layout-materialization.md` | layout proposal、accepted assignment和storage materialization |
 | 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/completion planning和accepted offsets |
 | 10 | `tasks/10-compute-movement.md` | target-abstract compute/movement、resource effects 和 issue/token/fence/wait |
@@ -40,11 +40,11 @@
 | pre-SPMD topology和execution mesh | 04 |
 | Shardy/SPMD output和显式rank identity | 03 |
 | component/rank-local compute normalization | 05 |
-| candidate group、tile traversal和layout assignment | 06、07、08 |
+| rank-local tiled task/dataflow candidate、完整traversal和layout assignment | 06、07、08 |
 | target-abstract compute/movement和instruction legality | 10、11 |
 | accepted SPM/DDR allocation、lifetime和offset | 09、12；shared lifetime analysis的源码ownership和测试镜像由18约束 |
 | Direct DTE logical schedule/completion与post-memory transport activation | 13；target/package/verification consumer由14、15、16约束 |
-| per-rank candidate commit和typed executable bundle | 06；资源/lifetime边界由09、12、13共同约束 |
+| whole-rank/whole-variant candidate commit和typed executable bundle | 06；资源/lifetime边界由09、12、13共同约束 |
 | target LLVM、CRT/device link和staged target module | 14 |
 | typed manifest、launch和RuntimeSession | 15 |
 | 横跨上述边界的completion evidence | 16 |
@@ -53,7 +53,8 @@
 
 ## 实施计划导航
 
-当前无active实施计划。Q27 reference executor退役已归档为`tasks/archive/reference-executor-retirement.md`，
+当前active实施计划为`tasks/plans/llama-7b-block-vertical.md`；已完成Q29 tile-dataflow scheduling归档为
+`tasks/archive/tile-dataflow-scheduling.md`。Q27 reference executor退役已归档为`tasks/archive/reference-executor-retirement.md`，
 Q26 memory lifetime analysis已归档为`tasks/archive/memory-lifetime-analysis.md`，
 Q25剩余聚合边界模块化已归档为`tasks/archive/residual-source-modularity.md`，Q24剩余热点模块化已归档为
 `tasks/archive/remaining-source-modularity.md`，Q23首轮源码组织重构已归档为
@@ -75,6 +76,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/tile-dataflow-scheduling.md` | 已完成Q29的structured tensor program直达bounded task/dataflow scheduling、跨region SPM、whole-variant commit、旧group executable surface退役及7B TP16 compile-only gate记录 |
 | `tasks/archive/reference-executor-retirement.md` | 已完成Q27的accepted-IR第二套解释器、oracle分支和旧CLI退役，以及CPU-expected到target CModel纵向gate收敛记录 |
 | `tasks/archive/memory-lifetime-analysis.md` | 已完成Q26的共享structured lifetime/packing core、DDR issue-to-fence completion、两侧scope/provenance/原子commit和双配置gate记录 |
 | `tasks/archive/residual-source-modularity.md` | 已完成Q25的reference/model、numeric/bulk、compiler/artifact/package与frontend bridge共11个聚合实现模块化和双配置gate记录 |

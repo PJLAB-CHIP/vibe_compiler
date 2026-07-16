@@ -91,36 +91,30 @@ std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
 llvm::Expected<TargetLLVMModuleBundle>
 buildElementwiseTargetBundle(std::string &diagnosticText) {
   auto context = createCompilerContext();
-  auto grouped = mlir::parseSourceString<mlir::ModuleOp>(
+  auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
   wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64>, policy = "all_available", shape = array<i64: 16>, topology = @default}
   func.func @main(%lhs: tensor<8xf32>, %rhs: tensor<8xf32>) -> tensor<8xf32> {
     %out = tensor.empty() : tensor<8xf32>
-    %group = wafer.group ins(%lhs, %rhs : tensor<8xf32>, tensor<8xf32>)
+    %sum = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%lhs, %rhs : tensor<8xf32>, tensor<8xf32>)
         outs(%out : tensor<8xf32>) {
-    ^bb0(%lhs_arg: tensor<8xf32>, %rhs_arg: tensor<8xf32>,
-         %out_arg: tensor<8xf32>):
-      %sum = linalg.generic {
-          indexing_maps = [affine_map<(d0) -> (d0)>,
-                           affine_map<(d0) -> (d0)>,
-                           affine_map<(d0) -> (d0)>],
-          iterator_types = ["parallel"]
-        } ins(%lhs_arg, %rhs_arg : tensor<8xf32>, tensor<8xf32>)
-          outs(%out_arg : tensor<8xf32>) {
-        ^bb0(%a: f32, %b: f32, %old: f32):
-          %value = arith.addf %a, %b : f32
-          linalg.yield %value : f32
-        } -> tensor<8xf32>
-      wafer.group.yield %sum : tensor<8xf32>
-    } : tensor<8xf32>
-    return %group : tensor<8xf32>
+      ^bb0(%a: f32, %b: f32, %old: f32):
+        %value = arith.addf %a, %b : f32
+        linalg.yield %value : f32
+    } -> tensor<8xf32>
+    return %sum : tensor<8xf32>
   }
 }
 )mlir",
       mlir::ParserConfig(context.get()));
-  if (!grouped)
+  if (!tensorProgram)
     return llvm::createStringError("failed to parse SystemC model module");
 
   frontend::FrontendProgramVerificationResult program;
@@ -135,11 +129,11 @@ module {
   llvm::raw_string_ostream diagnostics(diagnosticText);
   llvm::Expected<ExecutableBundle> executable =
       wafer::compiler::detail::buildExecutableBundle(
-          context, *grouped, std::move(program), *config, diagnostics,
+          context, *tensorProgram, std::move(program), *config, diagnostics,
           std::nullopt);
   if (!executable)
     return executable.takeError();
-  grouped = nullptr;
+  tensorProgram = nullptr;
   return compileExecutableBundleToTargetLLVMModules(*executable, diagnostics);
 }
 

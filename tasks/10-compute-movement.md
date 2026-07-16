@@ -1,11 +1,11 @@
 # Wafer Compute and Movement Dialect Design
 
-状态：2026-07-14按Q22数值语义owner review更新；当前合同覆盖target-abstract compute/movement IR、layout/resource
+状态：2026-07-16按Q29 tile-dataflow handoff同步；当前合同覆盖target-abstract compute/movement IR、layout/resource
 interface、instruction legality，以及GEMM numeric policy、elementwise indexing map和reduce init不得在target边界丢失的
 约束；实现状态以`tasks/progress.md`为准。
 
 本文定义 Wafer 后端中 target-abstract compute / movement IR 的边界。它连接
-`wafer.group` candidate/template 产生的完整 traversal 内 tile-local tensor scopes、layout
+rank-local task/dataflow candidate产生的完整traversal内tile-local tensor scopes、layout
 materialization / whole-entry SPM/DDR planning，以及后续 complete static rank instruction program /
 target CRT lowering。
 
@@ -18,7 +18,7 @@ instruction-level IR 的具体 op/type/interface 合同见
 `tasks/11-instruction-ir.md`；本文不重复维护 `wafer.instr` op 列表。
 
 本文只负责 target-abstract compute/movement op 的语义、interface、effect、issue/fence/wait 和
-lowering legality。它不重新做 group formation、tile search、layout assignment、SPM/DDR
+lowering legality。它不重新做task/dataflow formation、tile search、layout assignment、SPM/DDR
 allocation、communication collective lowering 或 launch/package emission。
 
 ## 1. 设计目标
@@ -37,11 +37,11 @@ allocation、communication collective lowering 或 launch/package emission。
 
 非目标：
 
-- 不重新做 group formation、fusion、traversal schedule 或 tile shape search。
+- 不重新做task/dataflow formation、residency/fusion、traversal schedule或tile shape search。
 - 不把 `linalg` op 名字、某个 workload、某个 internal split 或某个 target CRT helper 固化成架构边界。
 - 不在本层表达 Direct DTE / collective；跨 tile data plane 属于 `wafer.tile.*` communication。
 - 不直接生成裸寄存器 packet；raw packet/debug dialect 只属于更低层验证或调试路径。
-- 不把单个 group、单个 tile-region 或 representative first/tail tile 的 instruction lowering
+- 不把单亪task、单亪tile-region或representative first/tail tile的instruction lowering
   当作 committed program；不为 `DirectFullShape` 设置 bypass/fallback 语义。
 
 ## 2. IR 生命周期
@@ -50,7 +50,7 @@ allocation、communication collective lowering 或 launch/package emission。
 之前进入 IR，然后随类型和 storage 表示逐步 lower：
 
 ```text
-whole-variant candidate clone with scheduled wafer.group templates
+whole-variant clone with scheduled rank-local task/dataflow candidates
   -> complete rank traversal with tile-local tile_region IR and wafer.tile.* compute / movement ops
   -> layout materialization and Wafer-tagged memref values
   -> candidate DDR tile-view materialization
@@ -71,7 +71,7 @@ whole-variant candidate clone with scheduled wafer.group templates
 | target-abstract compute | `wafer.tile.*` compute ops 和 target-abstract movement op | tensor SSA value 或 Wafer-tagged memref | 选择目标实现族，提供 layout/resource/lowering interface，不绑定具体 storage allocation |
 | layout-materialized | 同一类 compute/movement op | `memref<..., #wafer.memory<space, layout>>` | 验证 address space 和 physical layout marker，显式插入 `wafer.tile.materialize_layout` |
 | instruction-level rank program | structured control flow 中的 `wafer.instr.*` | unplaced Wafer-tagged memref SSA value | 覆盖完整 rank traversal，选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging、alias、effect、token/completion 和 descriptor attrs，不含 SPM offset；DTE 由 communication lowering 物化 |
-| DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、compiler-managed/resident/inter-group planned ranges、lifetime/reuse、declared arena/placement-domain capacity/largest-contiguous/bandwidth 已通过 DDR memory planning |
+| DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、compiler-managed/resident/explicit-spill planned ranges、lifetime/reuse、declared arena/placement-domain capacity/largest-contiguous/bandwidth 已通过 DDR memory planning |
 | target-codegen derived form | 同一 `wafer.instr.*` 或 conversion-local value | concrete target call arg / packet field | 从 committed instruction IR、typed executable bindings、accepted SPM/DDR offset facts、memref view 和 layout helper 派生 address/range/stride 参数；不作为新的主线 IR 层 |
 | target code emission | LLVM / target CRT call | concrete target call arg | 调用target CRT并生成Q17验证的typed ABI摘要/function boundary；不作为上层IR层 |
 | package emission | Q16 `ExecutableBundle` + Q17 verified `TargetArtifactBundle` | validated Q18 typed manifest | 序列化typed resources/entry/module/ABI facts；不读取target call arg、raw instruction IR或lowering metadata |
@@ -107,12 +107,12 @@ Pipeline position:
   Q16以后由同一
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
   的whole-variant
-  candidate-selection/commit flow物化完整rank programs。当前Q15只产出verified grouped program directory，
+  candidate-selection/commit flow物化完整rank programs。Q15产出verified structured tensor program directory，
   不执行instruction legalization；`wafer-opt`和instruction lowering的局部dump/lit/named pipeline只处理
   显式IR，用于验证本stage，不能成为用户stop-stage或completion flow。
 - Explicit non-goals:
-  不决定 group boundary、tile shape、layout assignment、SPM offset、DDR memory planning、ABI call
-  symbol 或 packet field；不按 tile/group 部分提交，不把 hardware `busytable` 当作 IR completion，
+  不决定task/dataflow boundary、tile shape、layout assignment、SPM offset、DDR memory planning、ABI call
+  symbol或packet field；不按tile/task部分提交，不把hardware `busytable`当作IR completion，
   不从 representative tile/rank 或presumed rank equivalence推断完整rank program合法，也不在
   instruction selection stage省略或合并显式rank records。
 - Completion gate:
@@ -122,7 +122,7 @@ Pipeline position:
   unsupported hardware instruction form 必须结构化失败，不能让 SPM memory planning 从 target-abstract op
   猜memref demand。当前没有typed low-precision capability/ops，相关candidate必须fail closed；未来放开时才要求
   显式materialize native quant或decode/scratch/completion路径。elementwise map必须在本stage materialize movement并从
-  instruction op删除；reduce init必须显式分解或拒绝，不能生成当前target ABI无法消费的instruction。任一rank/group失败都
+  instruction op删除；reduce init必须显式分解或拒绝，不能生成当前target ABI无法消费的instruction。任一rank/task失败都
   丢弃整个clone，不能形成部分committed program；Q16
   只有在所有rank programs/gates通过后才能构造all-and-only typed C++ bundle。
 ```
@@ -150,8 +150,8 @@ verifier 和 lowering contract 一致即可。
 
 ### 3.1 GEMM
 
-`wafer.tile.gemm` 表达本 tile 内的矩阵乘或批量矩阵乘。它不表达 group 的 internal reduction
-split 决策；内部 reduction 是否需要进一步切分是 op tiling / SPM allocation search 的结果，
+`wafer.tile.gemm`表达本tile内的矩阵乘或批量矩阵乘。它不表达task graph的internal reduction
+split决策；内部reduction是否需要进一步切分是op tiling / SPM allocation search的结果，
 不能写成固定架构规则。
 
 最小合同：
@@ -174,6 +174,12 @@ reduction order、overflow和destination conversion若是program-selectable，�
 `NumericSemanticsProfile`。当前instruction/CRT plain GEMM只传一个format且要求lhs/rhs/dst同element type，没有
 accumulator/product/FMA字段；在板端证据使固定映射唯一前，f16/bf16 narrow/wide、TF32 product及integer accumulator只能
 是显式verification candidate，不能成为production side table或按dtype猜测。
+
+K split会把一个contraction改写为多个neutral-init partial GEMM和显式partial-result add；即使chunks按K升序提交，
+它也改变FMA链、rounding点、NaN/infinity传播和signed-zero选择。named浮点`linalg.matmul`当前没有typed字段表达
+reassociation许可，因此candidate materialization必须拒绝其K split，scheduler只枚举完整K；完整K无法通过target
+geometry或capacity时应返回结构化no-candidate。integer matmul只有在source op的modular算术语义和exact payload均可证明
+时才可拆分；target capability与SPM/ABI legality仍是独立的后续gate，不能由数值许可替代。
 
 #### 3.1.1 Low-Precision Compute
 
@@ -262,7 +268,7 @@ recv chunk 与 accumulator 的本地累计步骤；`wafer.tile.reduce` 仍只表
   这来自硬件指令集的 Reduce operand/result physical layout 约束，不是 planner 偏好。
 - output dtype、init value 和 NaN/overflow 等细节如果会影响语义，应保留在 op contract 中，而不是
   留给 wrapper 默认值。当前 tile-region IR lowering 从 scalar-constant `linalg.fill` out
-  恢复 `init_value` attr；若 init 是 group boundary scalar，则作为 `wafer.tile.reduce` 的
+  恢复 `init_value` attr；若init是task-fragment external scalar，则作为`wafer.tile.reduce`的
   scalar init operand 保留 SSA 关系。当前target LLVM/CRT reduce ABI不传该值，不能在R3.2d/target conversion中丢失语义。
 
 `wafer.tile.reduce`继续显式拥有SSA `init`或`init_value`，两者互斥且类型与input element type一致；但当前target LLVM/CRT
@@ -288,6 +294,14 @@ terminal指令都不携带reduce init；Q0.L的source-produced reduce基线也�
 compiler-owned、硬件证据支持的target policy能对完整value domain证明native identity、combiner、order和special-value
 行为与该有序语义等价时，才允许把composite优化成native reduce；Q22 model candidate、host library默认值或有限板端样本
 不能充当该证明。CModel不得重新读取上游init并“修复”已经丢失的target command。
+
+time-tiling中的reduction split是另一层变换合同：第一个chunk继承source init，后续chunk形成neutral-init partial，再把
+partial与运行中accumulator combine，因此“最终按升序combine”不等于“保持逐元素source order”。直接candidate API和
+scheduler都必须在物化多于一个chunk前检查current structured IR：integer只接受exact modular add（无overflow flags）
+和signed min/max；floating
+`linalg.generic`除exact single-combiner外还必须显式携带`fastmath<reassoc,nnan,ninf,nsz>`。缺少该事实的普通未拆分
+reduction继续走ordered baseline，只有在target geometry迫使拆分时才形成明确no-candidate；不能用target library、CModel或
+有限输入样本补写许可。多轴split、unsigned min/max、overflow-qualified add、`maxnumf/minnumf`和额外payload仍不在当前合同内。
 
 ### 3.4 Movement Ops
 
@@ -429,8 +443,8 @@ Instruction/runtime verifier：
 | layout materialization | target-abstract Wafer op | layout-materialized Wafer-tagged memref + materialization edge | 基于 op interface 做 layout assignment 和真实 movement cut |
 | candidate DDR tile-view materialization | candidate target-abstract tile-region IR + explicit static boundary slice fact 或 candidate output tile offsets/sizes | same candidate evaluation tile-region IR with DDR `memref.subview` tile operands | 覆盖 external boundary extract、direct output insert storeback，以及单结果 destination-style linalg root 的 candidate tile offsets/sizes 到 boundary slice proposal；closed-loop traversal / tile-shape search 仍由 planner 后续产生 facts；不从名字或 whole-boundary shape 猜 DMA |
 | instruction legalization / selection | complete rank traversal with layout-materialized tile-local scopes | complete static rank instruction program over unplaced Wafer-tagged memref | 将所有 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 或 Direct DTE/FSM instruction op，列出 queue/family、effects、temp/psum/staging、alias、descriptor 和 completion relation；DTE 不走普通 `TsmExecute` dispatch path |
-| SPM memory planning | complete rank instruction programs with unplaced Wafer-tagged memref | same programs with whole-entry planned SPM offset facts | 从完整 structured control flow、跨 group memref use-def、instruction effects/tokens 收集 demand/liveness，分配 offset/range/bank并验证 terminal completion |
-| DDR memory planning | whole-entry SPM-planned instruction programs with actual DDR tile views/descriptors/allocs | same complete variant with accepted DDR offset facts，或结构化失败 | 在 variant-set lifetime 下重算 DDR demand；验证 external demand，为 compiler-managed/resident/inter-group demand 规划 accepted offset；跨 group lifetime 是 mandatory gate |
+| SPM memory planning | complete rank instruction programs with unplaced Wafer-tagged memref | same programs with whole-entry planned SPM offset facts | 从完整structured control flow、跨task/region memref use-def、instruction effects/tokens收集demand/liveness，分配offset/range/bank并验证terminal completion |
+| DDR memory planning | whole-entry SPM-planned instruction programs with actual DDR tile views/descriptors/allocs | same complete variant with accepted DDR offset facts，或结构化失败 | 在variant-set lifetime下重算DDR demand；验证external demand，为compiler-managed/resident/explicit-spill demand规划accepted offset；producer-to-last-consumer lifetime是mandatory gate |
 | Q16 rank-record validation | candidate instruction IR + accepted SPM/DDR offsets + accepted transport binding | 从当前IR use-def/type/effect/offset直接重算resource/entry/completion facts，验证后materialize typed C++ rank record，或结构化失败 | 不新造IR dialect/side table/policy，不重新决定layout/SPM/DDR，不allocate/import/query runtime object |
 | target instruction LLVM call emission | committed instruction IR + typed executable resources/entry bindings + accepted offsets + committed transport binding | LLVM dialect call / target CRT call / packet builder input | 只派生target address/range/descriptor参数，不恢复resource role/scope/alias/lifetime，不回头修改schedule/layout；CRT symbol closure属于device-code gate |
 
@@ -453,7 +467,7 @@ V0 模型：
 - local fence 是显式 sync op，例如 `wafer.instr.local_fence` 或等价 IR；它不是 compute op 的默认后缀。
 - DTE wait、stream wait、group barrier 属于 `wafer.tile.*` communication / `wafer.instr.local_fence` 和后续 sync boundary 的完成边界，不能用 local
   NCC wait 代替。
-- `wafer.tile.region`、原 group boundary 和 loop iteration 不自动完成 pending issue；每条 static rank
+- `wafer.tile.region`、task/phase boundary和loop iteration不自动完成pending issue；每条static rank
   function exit path 必须有 terminal drain/wait/fence，verifier 要求 pending set 为空。
 - `busytable` 是 target capability：用于限制 queue/in-flight concurrency、判定某些 overlap 是否可行并
   参与 cost model。它不是 IR event、wait 或 lifetime proof，不能替代 token/effect/fence contract。
@@ -482,8 +496,8 @@ materialize 为带显式 `batch_count`、batch/head/m/k/n 维度 attrs 的 `wafe
 `wafer.instr.gemm`。target LLVM call emission 已能把 batched GEMM instr 降到 `wafer_tx81_gemm`
 call 形态；后续 CRT/golden packet 仍需按 batch physical byte offset 固定 wrapper/packet 映射，
 device-code required-symbol gate 仍需证明该 Wafer-owned symbol 被 repo-local CRT 或合法外部依赖解析。
-历史transformer fixed package测试输入已删除。当前HF/Llama-style真实program gate只覆盖PyTorch/XLA capture、
-SPMD helper和logical group handoff；per-rank selected candidate、memory-planned instruction、target LLVM、package、
+历史transformer fixed package测试输入已删除。HF/Llama-style真实program gate先覆盖PyTorch/XLA capture、
+SPMD helper和structured tensor program handoff；per-rank selected task/dataflow candidate、memory-planned instruction、target LLVM、package、
 runtime、board binding和数值correctness均尚未由该纵向链证明。当前局部IR覆盖仍不是通用elementwise/reduce/GEMM
 coverage；更复杂 broadcast、relation/logic、convert、多输入/非 constant-init reduce 和 mask/select
 泛化仍按后续 gate 推进。basic `arith.select` 已在 instruction lowering 中改写成 false-copy
@@ -504,9 +518,9 @@ V1 或后续扩展：
 
 ### 8.1 Transformer Block Minimum Coverage
 
-不能只因为GEMM、一个elementwise和一个reduce的局部IR测试能跑，就声称transformer block支持完成。当前
-HF/Llama-style program gate只到verified logical groups；本节列出的compute/movement family仍需由Q16
-per-rank closed-loop直接消费该grouped artifact后才能形成纵向证据。target LLVM、package、board execution、
+不能只因为GEMM、一个elementwise和一个reduce的局部IR测试能跑，就声称transformer block支持完成。
+HF/Llama-style program gate先到verified structured tensor program；本节列出的compute/movement family仍需
+由Q29 per-rank closed-loop直接消费该artifact后才能形成纵向证据。target LLVM、package、board execution、
 数值correctness、dynamic/KV/mask/select泛化仍是后续gate。compute/movement层的最小覆盖包括：
 
 - `wafer.tile.gemm` 的 batch/head 维和 transpose relation，用于 QKV linear matmul、QK^T、
@@ -521,7 +535,7 @@ per-rank closed-loop直接消费该grouped artifact后才能形成纵向证据�
 - load/store 对 sin/cos RoPE table、norm scale/bias、linear weights 和 MLP weights 的
   constant slice 关系。
 
-仍不在当前HF/Llama-style grouped-program gate内：
+仍不在当前HF/Llama-style structured-program gate内：
 
 - dropout/random mask。
 - dynamic sequence length 的通用 runtime specialization。
@@ -596,6 +610,6 @@ Accepted layout 后：
 ## 10. 与其它文档的关系
 
 全局文档边界见 `tasks/01-architecture.md` 第 8 节。本文只维护
-target-abstract compute/movement op 的语义、interface 和 lowering legality；group formation、
+target-abstract compute/movement op 的语义、interface 和 lowering legality；task/dataflow scheduling、
 layout assignment、SPM/DDR allocation、communication 和 launch/runtime 不在本文重复定义。
 register-level wrapper / packet 约束只在 launch/resource、target LLVM 或 runtime adapter 边界中消费。

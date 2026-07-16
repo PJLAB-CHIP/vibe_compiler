@@ -12,4 +12,4 @@ module {
   }
 }
 
-// CHECK: SPM buffer values cannot cross wafer.tile.region boundaries
+// CHECK: result at index 0 has unsupported SPM storage provenance

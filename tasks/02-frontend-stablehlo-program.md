@@ -1,6 +1,6 @@
 # Wafer Frontend 与 StableHLO Program Directory 设计
 
-状态：2026-07-12按当前实现重基线。本文只拥有StableHLO program directory、metadata/payload和frontend
+状态：2026-07-16按Q29 structured-program handoff同步。本文只拥有StableHLO program directory、metadata/payload和frontend
 admission合同；typed model/state/resource graph是后续扩展，不是当前pipeline事实。实现状态看
 `tasks/progress.md`。
 
@@ -22,7 +22,8 @@ Pipeline position:
   ExecutableBundle、target module或runtime package。
 - Downstream consumer:
   Q15 typed compiler driver在transaction-owned snapshot上建立exact topology/execution mesh，调用pinned
-  XLA SPMD helper，然后做local compute normalization和logical group formation。
+  XLA SPMD helper，然后做local compute normalization并发布verified rank-local structured tensor
+  program；Q29 tile-dataflow scheduler直接消费该artifact。
 - User-level driver / named pipeline:
   `wafer-compile-stablehlo --verify-stablehlo-program`只做frontend admission；继续编译只经
   `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`；
@@ -67,7 +68,7 @@ arg/result数量或role不一致都使整个program非法。bytecode和其它非
 
 `input_arg.position`必须非负、唯一并从0连续；parameter locator必须是program内安全的单路径组件，不能使用
 absolute path、`..`或路径分隔符逃逸program root。name/path只负责在当前container内定位payload和形成诊断，
-不能成为group、sharding、rank、resource或lowering分支条件。
+不能成为candidate/schedule、sharding、rank、resource或lowering分支条件。
 
 post-SPMD时同一份canonical metadata还包含`distributed_boundary`；这是function boundary由global tensor变成
 per-rank local tensor的typed artifact合同，不是planner sidecar。若未来需要typed mutable state、alias/mutation、
@@ -172,7 +173,13 @@ Q5.C的source-backed corpus由
 linear-residual MLP与tiny Llama decoder block；spec记录source revision、config、seed、dtype、shape和payload/
 reference digest。独立NumPy oracle、framework CPU交叉检查与重复export canonical-equivalence只证明source
 admission，不证明compiler、runtime或board完成。Q20/Q21必须直接消费这些admitted program，不能换成手写
-group/instruction fixture。
+task/instruction fixture。
+
+Q28另以`test/Tools/Inputs/workloads/llama-2-7b-block-v1.json`固定标准Llama-2 7B单block配置：H=4096、
+I=11008、32 heads、head dimension 128、FP16、batch 1、sequence 16。generator直接分块填充最终FP16 parameter
+allocation，避免为90M-element projection额外建立全尺寸临时数组；最终`expected.npy`必须由同一parameter/input的
+PyTorch eager CPU完整block执行产生，手写NumPy路径只作诊断。该case的shape、seed和payload算法是corpus参数，
+不进入frontend artifact协议。
 
 ## 5. Sharding Handoff
 
@@ -186,8 +193,8 @@ driver。
 
 helper输出必须重新走本文件的metadata/payload verifier，包含上述distributed boundary，并与
 `ExecutionConfig`建立的execution mesh逐项一致。
-Q15随后才做StableHLO-to-Linalg与logical group formation。frontend verifier本身不执行helper、不形成group，也
-不公开SPMD stop-stage。
+Q15随后做StableHLO-to-Linalg/collective normalization，再发布verified rank-local structured
+tensor program。frontend verifier本身不执行helper、不形成调度单元，也不公开SPMD stop-stage。
 
 ## 6. Ownership 与失败语义
 
@@ -197,7 +204,9 @@ target context或publication authority。
 
 production driver在parse前把source directory完整复制到transaction-owned snapshot；后续frontend verify、helper
 和IR transforms只读/改写staging内成员。source不得被原地补metadata、topology或shards。Q15最终发布的是重新
-parse/verify过的grouped program directory；Q16才从它构造全部per-rank clones和ExecutableBundle。
+parse/verify过的rank-local structured tensor program directory；Q29 scheduler从该artifact构造全部
+per-rank task/dataflow candidates，全rank验证后再构造ExecutableBundle。structured tensor program是调度
+唯一输入artifact；已删除的`wafer.group` formation/selector没有兼容、debug或发布旁路。
 
 这种最小owner边界有意不保留历史讨论中的复合frontend/executable owner和model-interface registry链。若未来
 确需跨stage不可重算的owner，必须由真实consumer和lifetime bug证明后再引入，不能把未实现对象写成当前架构。
@@ -216,4 +225,5 @@ frontend mandatory coverage包括：
 - pre-exported StableHLO parse/printer及显式IR-local lowering补充测试。
 
 完成记录必须区分真实exporter gate、program verifier和下游Q15 gate。FileCheck、手写MLIR或CPU oracle单独通过
-都不能证明grouped program、ExecutableBundle、target artifact、runtime或board正确。
+都不能证明structured tensor program的task/dataflow scheduling、ExecutableBundle、target artifact、runtime
+或board正确。

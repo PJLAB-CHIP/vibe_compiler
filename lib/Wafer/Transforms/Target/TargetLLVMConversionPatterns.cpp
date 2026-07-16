@@ -285,13 +285,48 @@ struct TargetSubViewOpLowering
       return subviewOp.emitError()
              << "unsupported_target_address: subview must preserve a Wafer "
                 "i64 address";
-    mlir::FailureOr<int64_t> delta =
-        getStaticViewDeltaBytes(subviewOp, sourceType, resultType);
-    if (mlir::failed(delta))
+    if (subviewOp.getOffsets().empty()) {
+      mlir::FailureOr<int64_t> delta =
+          getStaticViewDeltaBytes(subviewOp, sourceType, resultType);
+      if (mlir::failed(delta))
+        return mlir::failure();
+      rewriter.replaceOp(subviewOp,
+                         applyStaticAddressDelta(rewriter, subviewOp.getLoc(),
+                                                 adaptor.getSource(), *delta));
+      return mlir::success();
+    }
+
+    mlir::FailureOr<DynamicSubviewAddressPlan> plan =
+        analyzeDynamicDDRSubviewAddressing(subviewOp);
+    if (mlir::failed(plan))
       return mlir::failure();
-    rewriter.replaceOp(subviewOp,
-                       applyStaticAddressDelta(rewriter, subviewOp.getLoc(),
-                                               adaptor.getSource(), *delta));
+    if (adaptor.getOffsets().size() != plan->dynamicByteStrides.size())
+      return subviewOp.emitError()
+             << "unsupported_target_address: converted dynamic DDR tensor "
+                "subview offset count changed during lowering";
+
+    mlir::Value address =
+        applyStaticAddressDelta(rewriter, subviewOp.getLoc(),
+                                adaptor.getSource(), plan->staticByteOffset);
+    mlir::Type i64Type = rewriter.getI64Type();
+    for (auto [offset, byteStride] :
+         llvm::zip_equal(adaptor.getOffsets(), plan->dynamicByteStrides)) {
+      auto offsetType = mlir::dyn_cast<mlir::IntegerType>(offset.getType());
+      if (!offsetType || offsetType.getWidth() != 64)
+        return subviewOp.emitError()
+               << "unsupported_target_address: dynamic DDR tensor subview "
+                  "offset must lower to i64";
+      mlir::Value dynamicBytes = offset;
+      if (byteStride != 1) {
+        mlir::Value stride = rewriter.create<mlir::LLVM::ConstantOp>(
+            subviewOp.getLoc(), i64Type, byteStride);
+        dynamicBytes = rewriter.create<mlir::LLVM::MulOp>(subviewOp.getLoc(),
+                                                          offset, stride);
+      }
+      address = rewriter.create<mlir::LLVM::AddOp>(subviewOp.getLoc(), address,
+                                                   dynamicBytes);
+    }
+    rewriter.replaceOp(subviewOp, address);
     return mlir::success();
   }
 };
@@ -378,6 +413,61 @@ struct TargetCollapseShapeOpLowering
   }
 };
 
+struct TargetExpandShapeOpLowering
+    : public mlir::OpConversionPattern<mlir::memref::ExpandShapeOp> {
+  using mlir::OpConversionPattern<
+      mlir::memref::ExpandShapeOp>::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::memref::ExpandShapeOp expandOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(expandOp.getSrc().getType());
+    auto resultType = mlir::dyn_cast<mlir::MemRefType>(expandOp.getType());
+    if (!sourceType || !resultType || !isWaferMemRefType(sourceType) ||
+        !isWaferMemRefType(resultType))
+      return expandOp.emitError()
+             << "unsupported_target_address: expand_shape must preserve "
+                "Wafer memory";
+
+    MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
+    MemoryAttr resultMemory = getWaferMemoryAttr(resultType);
+    if (sourceMemory.getSpace() != resultMemory.getSpace() ||
+        sourceMemory.getLayout() != MemLayout::Tensor ||
+        resultMemory.getLayout() != MemLayout::Tensor ||
+        sourceType.getElementType() != resultType.getElementType())
+      return expandOp.emitError()
+             << "unsupported_target_address: expand_shape requires matching "
+                "Wafer tensor-layout memory and element types";
+
+    mlir::FailureOr<int64_t> sourceElements =
+        getStaticElementCount(expandOp, sourceType, "expand source");
+    mlir::FailureOr<int64_t> resultElements =
+        getStaticElementCount(expandOp, resultType, "expand result");
+    std::optional<WaferPhysicalTensorInfo> sourceInfo =
+        computeWaferPhysicalTensorInfo(sourceType);
+    std::optional<WaferPhysicalTensorInfo> resultInfo =
+        computeWaferPhysicalTensorInfo(resultType);
+    if (mlir::failed(sourceElements) || mlir::failed(resultElements))
+      return mlir::failure();
+    if (*sourceElements != *resultElements || !sourceInfo || !resultInfo ||
+        sourceInfo->compactBytes != resultInfo->compactBytes ||
+        sourceInfo->physicalBytes != resultInfo->physicalBytes)
+      return expandOp.emitError()
+             << "unsupported_target_address: expand_shape must preserve "
+                "element count and physical footprint";
+
+    mlir::FailureOr<int64_t> delta =
+        getStaticViewDeltaBytes(expandOp, sourceType, resultType);
+    if (mlir::failed(delta))
+      return mlir::failure();
+    rewriter.replaceOp(expandOp,
+                       applyStaticAddressDelta(rewriter, expandOp.getLoc(),
+                                               adaptor.getSrc(), *delta));
+    return mlir::success();
+  }
+};
+
 struct TargetMemRefCastOpLowering
     : public mlir::OpConversionPattern<mlir::memref::CastOp> {
   using mlir::OpConversionPattern<mlir::memref::CastOp>::OpConversionPattern;
@@ -416,6 +506,7 @@ void populateTargetLLVMStructureConversionPatterns(
   patterns.add<TargetFuncOpLowering, TargetCallOpLowering,
                TargetReturnOpLowering, TargetSubViewOpLowering,
                TargetReinterpretCastOpLowering, TargetCollapseShapeOpLowering,
+               TargetExpandShapeOpLowering,
                TargetMemRefCastOpLowering, TargetDeallocOpLowering>(
       converter, &converter.getContext());
   patterns.add<TargetAllocOpLowering>(converter, &converter.getContext(),

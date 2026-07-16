@@ -14,23 +14,22 @@ class OpPassManager;
 namespace wafer {
 
 void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm);
-void buildFormLogicalGroupsPipeline(mlir::OpPassManager &pm);
-void buildLowerGroupsToTileRegionPipeline(mlir::OpPassManager &pm,
-                                          int64_t logicalRank);
+/// Schedules a verified per-rank structured tensor program and commits the
+/// accepted, memory-planned instruction program.  The input contract is
+/// Linalg/Tensor/SCF SSA dataflow; callers do not form or serialize scheduling
+/// boundaries.
+void buildScheduleTensorProgramToSelectedInstrPipeline(mlir::OpPassManager &pm,
+                                                       int64_t logicalRank);
+
+/// Finalizes one independently scheduled rank candidate.  The input already
+/// contains explicit tiled task/instruction dataflow; this pipeline closes
+/// function-boundary bufferization and recomputes rank-wide SPM/DDR offsets.
+/// It does not perform candidate selection or cross-rank acceptance.
+void buildFinalizeScheduledTensorProgramPipeline(mlir::OpPassManager &pm);
+
 void buildLowerTileRegionToInstrPipeline(mlir::OpPassManager &pm);
-void buildLowerGroupsToInstrPipeline(mlir::OpPassManager &pm,
-                                     int64_t logicalRank);
 void buildPlanSPMMemoryPipeline(mlir::OpPassManager &pm);
 void buildPlanDDRMemoryPipeline(mlir::OpPassManager &pm);
-void buildLowerGroupsToMemoryPlannedInstrPipeline(mlir::OpPassManager &pm,
-                                                  int64_t logicalRank);
-void buildLowerGroupsToDDRMemoryPlannedInstrPipeline(mlir::OpPassManager &pm,
-                                                     int64_t logicalRank);
-void buildLowerGroupsToTargetLLVMPipeline(mlir::OpPassManager &pm,
-                                          int64_t logicalRank,
-                                          TargetProfileId targetProfile);
-void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm,
-                                             int64_t logicalRank);
 
 #ifdef WAFER_ENABLE_SHARDY
 void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm);

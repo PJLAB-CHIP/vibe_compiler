@@ -70,7 +70,7 @@ llvm::Error copyDirectory(llvm::StringRef sourceDirectory,
                           llvm::StringRef destinationDirectory) {
   if (!isDirectory(sourceDirectory))
     return llvm::createStringError(llvm::errc::invalid_argument,
-                                   "grouped program is not a directory");
+                                   "tensor program is not a directory");
   if (llvm::Error error = createDirectory(destinationDirectory))
     return error;
 
@@ -80,7 +80,7 @@ llvm::Error copyDirectory(llvm::StringRef sourceDirectory,
        end;
        iterator != end; iterator.increment(error)) {
     if (error)
-      return llvm::createStringError(error, "failed to walk grouped program");
+      return llvm::createStringError(error, "failed to walk tensor program");
     llvm::StringRef source = iterator->path();
     llvm::StringRef relative = source;
     if (!relative.consume_front(sourceDirectory))
@@ -100,7 +100,7 @@ llvm::Error copyDirectory(llvm::StringRef sourceDirectory,
     if (type != llvm::sys::fs::file_type::regular_file)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "grouped program contains a non-regular package member");
+          "tensor program contains a non-regular package member");
     llvm::SmallString<256> parent(destination);
     llvm::sys::path::remove_filename(parent);
     if (llvm::Error directoryError = createDirectory(parent))
@@ -108,10 +108,10 @@ llvm::Error copyDirectory(llvm::StringRef sourceDirectory,
     if (std::error_code copyError =
             llvm::sys::fs::copy_file(source, destination))
       return llvm::createStringError(copyError,
-                                     "failed to copy grouped program member");
+                                     "failed to copy tensor program member");
   }
   if (error)
-    return llvm::createStringError(error, "failed to walk grouped program");
+    return llvm::createStringError(error, "failed to walk tensor program");
   return llvm::Error::success();
 }
 
@@ -445,28 +445,27 @@ bool publishDirectoryNoReplace(llvm::StringRef source,
 } // namespace
 
 llvm::Expected<PackageBundle>
-detail::assemblePackageBundleImpl(llvm::StringRef groupedProgramDirectory,
+detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
                                   const ExecutableBundle &executableBundle,
                                   const TargetArtifactBundle &targetArtifacts,
                                   llvm::StringRef outputDirectory,
                                   llvm::raw_ostream &diagnostics,
                                   std::optional<int64_t> failAfterLogicalRank) {
-  if (groupedProgramDirectory.empty() || outputDirectory.empty())
+  if (tensorProgramDirectory.empty() || outputDirectory.empty())
     return fail(diagnostics,
                 "package input/output directory must not be empty");
-  if (!isDirectory(groupedProgramDirectory))
-    return fail(diagnostics,
-                "package grouped-program input is not a directory");
+  if (!isDirectory(tensorProgramDirectory))
+    return fail(diagnostics, "package tensor-program input is not a directory");
   if (pathEntryExists(outputDirectory))
     return fail(diagnostics, "refusing to replace existing package directory");
   for (llvm::StringRef reserved :
        {llvm::StringRef("modules"),
         llvm::StringRef(runtime::kPackageManifestFileName)}) {
-    llvm::SmallString<256> path(groupedProgramDirectory);
+    llvm::SmallString<256> path(tensorProgramDirectory);
     llvm::sys::path::append(path, reserved);
     if (pathEntryExists(path))
       return fail(diagnostics,
-                  "grouped program contains reserved package member '" +
+                  "tensor program contains reserved package member '" +
                       reserved.str() + "'");
   }
 
@@ -486,7 +485,7 @@ detail::assemblePackageBundleImpl(llvm::StringRef groupedProgramDirectory,
   auto cleanup = llvm::make_scope_exit(
       [&] { llvm::sys::fs::remove_directories(stagingRoot); });
 
-  if (llvm::Error error = copyDirectory(groupedProgramDirectory, stagingRoot))
+  if (llvm::Error error = copyDirectory(tensorProgramDirectory, stagingRoot))
     return fail(diagnostics, llvm::toString(std::move(error)));
   if (llvm::Error error = copyTargetModules(targetArtifacts, stagingRoot,
                                             diagnostics, failAfterLogicalRank))
@@ -538,13 +537,13 @@ detail::assemblePackageBundleImpl(llvm::StringRef groupedProgramDirectory,
 }
 
 llvm::Expected<PackageBundle>
-assemblePackageBundle(llvm::StringRef groupedProgramDirectory,
+assemblePackageBundle(llvm::StringRef tensorProgramDirectory,
                       const ExecutableBundle &executableBundle,
                       const TargetArtifactBundle &targetArtifacts,
                       llvm::StringRef outputDirectory,
                       llvm::raw_ostream &diagnostics) {
   return detail::assemblePackageBundleImpl(
-      groupedProgramDirectory, executableBundle, targetArtifacts,
+      tensorProgramDirectory, executableBundle, targetArtifacts,
       outputDirectory, diagnostics, std::nullopt);
 }
 

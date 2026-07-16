@@ -269,6 +269,10 @@ public:
           return mlir::failure();
       }
 
+      // DTE wait completes each receive, but the following local copy into the
+      // gathered result is a separate movement-engine issue.  Complete all
+      // such providers before a resident consumer can read gatherBuffer.
+      rewriter.create<SyncLocalFenceOp>(op.getLoc());
       rewriter.eraseOp(op);
       return mlir::success();
     }
@@ -311,6 +315,7 @@ public:
       sendSlot = recvCommSlot.getResult();
     }
 
+    rewriter.create<SyncLocalFenceOp>(op.getLoc());
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -467,6 +472,9 @@ public:
                                                op.getRecvBuffer()};
       rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
                                           inputs, *accumulator);
+      // Reduction order is an execution dependency, not just block order.
+      // This also completes the final accumulator before a resident consumer.
+      rewriter.create<SyncLocalFenceOp>(op.getLoc());
     }
 
     rewriter.replaceOp(op, *accumulator);
@@ -662,6 +670,14 @@ public:
         return mlir::failure();
       rewriter.create<SyncLocalFenceOp>(op.getLoc());
     }
+
+    // The final reduction writes the value returned by the collective.  A
+    // following resident consumer (for example the tensor-parallel residual
+    // add) may read that same accumulator immediately, so the last local
+    // elementwise issue needs an explicit completion boundary just like the
+    // intermediate rounds.  DTE wait only completes the send/recv tokens; it
+    // does not complete the local reduction engine.
+    rewriter.create<SyncLocalFenceOp>(op.getLoc());
 
     rewriter.replaceOp(op, *accumulator);
     return mlir::success();

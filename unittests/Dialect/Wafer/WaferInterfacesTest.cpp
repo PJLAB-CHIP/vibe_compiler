@@ -383,69 +383,6 @@ module {
       wafer::WaferResourceAccess::Wait, wafer::WaferValueRole::Operand, 0, -1));
 }
 
-TEST(WaferInterfacesTest, TilingAndTileLoadContractsAreQueryable) {
-  mlir::DialectRegistry registry;
-  wafer::registerAllDialects(registry);
-
-  mlir::MLIRContext context(registry);
-  context.loadDialect<wafer::WaferDialect>();
-
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(
-      R"mlir(
-module {
-  %source = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
-  %dest = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
-  %source_memref = "builtin.unrealized_conversion_cast"()
-      : () -> memref<4xf32, #wafer.memory<ddr, tensor>>
-  %loaded = wafer.tile.load %source_memref
-      : memref<4xf32, #wafer.memory<ddr, tensor>>
-     -> memref<4xf32, #wafer.memory<spm, tensor>>
-  %0 = wafer.group ins(%source : tensor<4xf32>)
-                    outs(%dest : tensor<4xf32>) {
-  ^bb0(%in: tensor<4xf32>, %out: tensor<4xf32>):
-    wafer.group.yield %in : tensor<4xf32>
-  } : tensor<4xf32>
-}
-)mlir",
-      mlir::ParserConfig(&context));
-  ASSERT_TRUE(module);
-
-  auto group = findSingleOp<wafer::GroupOp>(*module);
-  ASSERT_TRUE(group);
-  auto tiling =
-      mlir::dyn_cast<wafer::WaferTilingInterface>(group.getOperation());
-  ASSERT_TRUE(tiling);
-  llvm::SmallVector<wafer::WaferTilingDemand, 4> demands;
-  tiling.collectWaferTilingDemand(demands);
-  EXPECT_TRUE(llvm::any_of(demands, [](const wafer::WaferTilingDemand &demand) {
-    return demand.kind == wafer::WaferTilingDemandKind::Input &&
-           demand.index == 0;
-  }));
-  EXPECT_TRUE(llvm::any_of(demands, [](const wafer::WaferTilingDemand &demand) {
-    return demand.kind == wafer::WaferTilingDemandKind::Output &&
-           demand.index == 0;
-  }));
-  EXPECT_TRUE(llvm::any_of(demands, [](const wafer::WaferTilingDemand &demand) {
-    return demand.kind == wafer::WaferTilingDemandKind::Result &&
-           demand.index == 0;
-  }));
-  EXPECT_TRUE(mlir::succeeded(tiling.verifyWaferTilingContract()));
-
-  auto load = findSingleOp<wafer::StorageLoadOp>(*module);
-  ASSERT_TRUE(load);
-  auto loadResources =
-      mlir::dyn_cast<wafer::WaferResourceEffectInterface>(load.getOperation());
-  ASSERT_TRUE(loadResources);
-  llvm::SmallVector<wafer::WaferResourceEffect, 4> effects;
-  loadResources.collectWaferResourceEffects(effects);
-  EXPECT_TRUE(hasResourceEffect(effects, wafer::WaferResourceKind::DDR,
-                                wafer::WaferResourceAccess::Read,
-                                wafer::WaferValueRole::Operand, 0, 16));
-  EXPECT_TRUE(hasResourceEffect(effects, wafer::WaferResourceKind::SPM,
-                                wafer::WaferResourceAccess::Write,
-                                wafer::WaferValueRole::Result, 0, 16));
-}
-
 TEST(WaferInterfacesTest, InstructionInterfacesExposeFamilyAndEffects) {
   mlir::DialectRegistry registry;
   wafer::registerAllDialects(registry);

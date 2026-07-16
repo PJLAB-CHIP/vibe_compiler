@@ -147,6 +147,17 @@ func.func @constant_false_select_to_fresh_copy(
 // CHECK-NOT: wafer.instr.bit2fp
 // CHECK-NOT: wafer.instr.mask_move
 
+func.func @dead_private_bool_fill_is_removed() {
+  %true = arith.constant true
+  %predicate = memref.alloc() : memref<2x3xi1, #wafer.memory<spm, tensor>>
+  wafer.tile.fill %predicate, %true
+      : memref<2x3xi1, #wafer.memory<spm, tensor>>, i1
+  return
+}
+
+// CHECK-LABEL: func.func @dead_private_bool_fill_is_removed
+// CHECK-NEXT: return
+
 func.func @shared_constant_predicate_stays_dynamic() {
   %true = arith.constant true
   %predicate = memref.alloc() : memref<2x3xi1, #wafer.memory<spm, tensor>>

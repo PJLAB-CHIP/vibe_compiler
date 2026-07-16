@@ -1,6 +1,5 @@
 # RUN: printf '%b' 'module {\n  func.func @main() -> i32 {\n    %%c0 = arith.constant 0 : i32\n    return %%c0 : i32\n  }\n}\n' > %t.mlir
 # RUN: wafer-opt --pass-pipeline='builtin.module(canonicalize)' %t.mlir | FileCheck %s --check-prefix=IR
-# RUN: not wafer-opt --program-pipeline=stablehlo-spmd-to-group %t.mlir 2>&1 | FileCheck %s --check-prefix=OLD-PROGRAM-PIPELINE
 # RUN: not wafer-opt --input-program-dir=%t.input %t.mlir 2>&1 | FileCheck %s --check-prefix=OLD-INPUT-DIR
 # RUN: not wafer-opt --output-program-dir=%t.output %t.mlir 2>&1 | FileCheck %s --check-prefix=OLD-OUTPUT-DIR
 # RUN: not wafer-opt --execution-ranks=16 %t.mlir 2>&1 | FileCheck %s --check-prefix=COMPILE-RANKS
@@ -14,7 +13,6 @@
 # IR: %[[C0:.+]] = arith.constant 0 : i32
 # IR: return %[[C0]] : i32
 
-# OLD-PROGRAM-PIPELINE: Unknown command line argument '--program-pipeline=stablehlo-spmd-to-group'
 # OLD-INPUT-DIR: Unknown command line argument '--input-program-dir={{.*}}'
 # OLD-OUTPUT-DIR: Unknown command line argument '--output-program-dir={{.*}}'
 # COMPILE-RANKS: Unknown command line argument '--execution-ranks=16'

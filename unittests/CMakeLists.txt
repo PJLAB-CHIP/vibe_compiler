@@ -1,16 +1,21 @@
 wafer_require_gtest()
 
 add_executable(WaferUnitTests
+  Analysis/ScheduleCostAnalysisTest.cpp
   Compiler/CompilationTest.cpp
   Compiler/DirectDTETransportTest.cpp
+  Compiler/ScheduledRankFinalizationTest.cpp
   Compiler/TargetABIPreparationTest.cpp
   Compiler/TargetArtifactTest.cpp
   Compiler/TargetCallFrontendTest.cpp
   Compiler/TargetProfileTest.cpp
-  Conversion/WaferGroupToTileRegionTest.cpp
+  Compiler/WholeVariantCoordinatorTest.cpp
+  Compiler/WholeVariantResourceAcceptanceTest.cpp
+  Conversion/WaferTensorProgramToTileRegionTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
   Model/TargetModelMemoryTest.cpp
+  Pipelines/PipelinesTest.cpp
   Runtime/PackageManifestTest.cpp
   Target/FormalNumericTest.cpp
   Target/NumericCodecTest.cpp
@@ -20,6 +25,9 @@ add_executable(WaferUnitTests
   Target/PhysicalTensorCodecTest.cpp
   Target/TargetFormatTest.cpp
   Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp
+  Transforms/Scheduling/CandidateSelectionTest.cpp
+  Transforms/Scheduling/FullBufferHandoffTest.cpp
+  Transforms/Scheduling/StructuredSchedulingScopeTest.cpp
   Transforms/Target/LowerInstrToTargetLLVMTest.cpp
 )
 llvm_update_compile_flags(WaferUnitTests)
@@ -36,11 +44,13 @@ target_compile_definitions(WaferUnitTests PRIVATE
 )
 target_link_libraries(WaferUnitTests
   PRIVATE
+  WaferAnalysis
   WaferCompiler
   WaferIR
   WaferTargetModelCore
   WaferRuntime
   WaferPipelines
+  WaferTensorProgramToTileRegion
   WaferTransforms
   MLIRAsyncDialect
   MLIRArithDialect
@@ -48,6 +58,7 @@ target_link_libraries(WaferUnitTests
   MLIRIR
   MLIRLinalgDialect
   MLIRMathDialect
+  MLIRMemRefDialect
   MLIRParser
   MLIRPass
   MLIRSCFDialect
@@ -175,12 +186,14 @@ endif()
 
 if(WAFER_ENABLE_BULK_MODEL_DEPS)
   add_executable(WaferBulkModelUnitTests
+    Model/ManagedReferenceTargetModelTest.cpp
     Target/BulkQualificationTest.cpp
   )
   llvm_update_compile_flags(WaferBulkModelUnitTests)
   target_link_libraries(WaferBulkModelUnitTests
     PRIVATE
     WaferBulkModel
+    WaferTargetBulkModel
     GTest::gtest_main
   )
   add_test(NAME WaferBulkModelUnitTests COMMAND WaferBulkModelUnitTests)

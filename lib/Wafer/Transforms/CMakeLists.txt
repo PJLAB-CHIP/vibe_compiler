@@ -1,14 +1,11 @@
 add_mlir_library(WaferTransforms
-  Group/CandidateAnalysis.cpp
-  Group/CandidateCommit.cpp
-  Group/CandidateEvaluation.cpp
-  Group/CandidateSelection.cpp
-  Group/DumpCandidateDdrTileViews.cpp
-  Group/DumpLayoutPlan.cpp
-  Group/DumpTilingDemand.cpp
-  Group/DumpGroupToTileRegion.cpp
-  Group/FormLogicalGroups.cpp
-  Group/SelectGroupTile.cpp
+  Scheduling/CandidateAnalysis.cpp
+  Scheduling/CandidateCommit.cpp
+  Scheduling/CandidateEvaluation.cpp
+  Scheduling/CandidateSelection.cpp
+  Scheduling/FullBufferHandoff.cpp
+  Scheduling/ScheduleTensorProgram.cpp
+  Scheduling/StructuredSchedulingScope.cpp
   DDR/PlanDDRMemory.cpp
   MemoryPlanning/LifetimeAnalysis.cpp
   SPM/PlanSPMMemory.cpp
@@ -35,7 +32,7 @@ add_mlir_library(WaferTransforms
 
   LINK_LIBS PUBLIC
   WaferAnalysis
-  WaferGroupToTileRegion
+  WaferTensorProgramToTileRegion
   WaferIR
   WaferStableHLOToLinalg
   WaferTarget
@@ -49,6 +46,7 @@ add_mlir_library(WaferTransforms
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
+  MLIRLinalgTransforms
   MLIRLLVMCommonConversion
   MLIRLLVMDialect
   MLIRMathDialect

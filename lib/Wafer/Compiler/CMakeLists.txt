@@ -17,10 +17,11 @@ add_mlir_library(WaferCompiler
   CompilationStages.cpp
   DirectDTETransport.cpp
   ExecutableBundle.cpp
-  GroupedProgramCompilation.cpp
+  TensorProgramCompilation.cpp
   Package.cpp
   ProgramDirectoryTransaction.cpp
   ProgramInvocation.cpp
+  ScheduledRankFinalization.cpp
   SpmdCompilationBridge.cpp
   TargetABIPreparation.cpp
   TargetArtifact.cpp
@@ -31,6 +32,8 @@ add_mlir_library(WaferCompiler
   TargetPackagePublication.cpp
   TargetRankPreflight.cpp
   TargetCallFrontend.cpp
+  WholeVariantCoordinator.cpp
+  WholeVariantResourceAcceptance.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport
@@ -43,6 +46,7 @@ add_mlir_library(WaferCompiler
   LLVMOrcJIT
   LLVMRuntimeDyld
   WaferFrontend
+  WaferAnalysis
   WaferIR
   WaferPipelines
   WaferRuntime

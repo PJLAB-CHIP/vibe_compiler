@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "corpus_id": "wafer-llama-2-7b-block-v1",
+  "source": {
+    "framework": {
+      "name": "PyTorch",
+      "version": "2.5.0+cpu",
+      "git_revision": "32f585d9346e316e554c8d9bf7548af9f62141fc"
+    },
+    "exporter": {
+      "name": "PyTorch/XLA StableHLO",
+      "version": "2.5.0",
+      "git_repository": "https://github.com/pytorch/xla.git",
+      "git_revision": "396608c7105b3763874fe3800dfabdfa2b38a28a"
+    },
+    "model_source": "repository-owned Llama-2 7B decoder block config and deterministic payload",
+    "payload_algorithm": "wafer-exact-f16-lcg-mod257-v1"
+  },
+  "cases": [
+    {
+      "id": "llama-2-7b-block-f16",
+      "kind": "llama_decoder_block",
+      "source_revision": "sha256:2269a0e3efb53f0b37dd951a7087ed2da2a533b00743d771b81309b1f8bf80af",
+      "seed": 20260715,
+      "dtype": "float16",
+      "config": {
+        "hf_config": "../hf/llama-2-7b-block-config.json",
+        "batch_size": 1,
+        "sequence_length": 16,
+        "causal_attention": true,
+        "execution_mesh_shape": [
+          16
+        ],
+        "execution_mesh_axis_names": [
+          "tensor"
+        ]
+      },
+      "digests": {
+        "source_config": "sha256:2269a0e3efb53f0b37dd951a7087ed2da2a533b00743d771b81309b1f8bf80af",
+        "input": "sha256:ada631bd04500f2eebb98bfd2bd8d3951ef4ad4403e1f3d449e2c08dde395077",
+        "parameters": "sha256:cb23b3a67d8423183b9ff679bf41b37763e85ce9af4dc9e345803344d0986719",
+        "reference_output": "sha256:0b8bc7522aff6fa32757943f911ada1fbd7e761b1b8014d6d05e308a44b030f3",
+        "reference_output_quantized": "sha256:7af21e8428c68228dc9d8e402d6ac7784baa31e1d49e2bcbf2f31e8111054baf",
+        "exported_program": "sha256:7e1677a6d768da5becce742d83a32e6dda806a2c220098c381023e3ac265201d"
+      },
+      "reference": {
+        "implementation": "PyTorch eager CPU complete Llama decoder block",
+        "atol": 0.02,
+        "rtol": 0.01,
+        "digest_quantization_decimals": 3
+      }
+    }
+  ]
+}

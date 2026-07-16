@@ -317,7 +317,7 @@ TEST(FormalTensorNumericTest,
 }
 
 TEST(FormalTensorNumericTest,
-     InvalidTF32AndUnsupportedNativeReduceFailBeforePublication) {
+     InvalidTF32FailsAndNativeF32SumPublishesOnlyCompleteResult) {
   FormalNumericExecutionContext context;
   ResolvedNumericCommand convert =
       makePlainConvert(LogicalFormat::TF32, LogicalFormat::F32, {1});
@@ -354,16 +354,24 @@ TEST(FormalTensorNumericTest,
       resolve(llvm::cantFail(NumericCommandKey::createNativeCTReduce(
           kTargetProfile, NumericReduceOperation::Sum, std::move(reduceInput),
           std::move(reduceDestination), NativeCTReduceDimension::Trailing0)));
-  std::array<RawLogicalValue, 4> values{};
-  for (RawLogicalValue &value : values)
-    value = {LogicalFormat::F32, 0};
+  std::array<RawLogicalValue, 4> values{
+      RawLogicalValue{LogicalFormat::F32, UINT64_C(0x3f800000)},
+      RawLogicalValue{LogicalFormat::F32, UINT64_C(0x40000000)},
+      RawLogicalValue{LogicalFormat::F32, UINT64_C(0x40400000)},
+      RawLogicalValue{LogicalFormat::F32, UINT64_C(0x40800000)}};
   std::array<llvm::ArrayRef<RawLogicalValue>, 1> reduceInputs{
       llvm::ArrayRef<RawLogicalValue>(values)};
-  error = expectError(executeFormalTensorNumeric(
-      context, reduce, reduceInputs,
-      FormalNumericWorkBudget::create(/*maximumScalarEvaluations=*/4,
-                                      /*maximumFusedMultiplyAdds=*/0)));
-  EXPECT_NE(error.find("unsupported-resolved-command"), std::string::npos);
+  llvm::Expected<FormalTensorNumericResult> reduceResult =
+      executeFormalTensorNumeric(
+          context, reduce, reduceInputs,
+          FormalNumericWorkBudget::create(/*maximumScalarEvaluations=*/4,
+                                          /*maximumFusedMultiplyAdds=*/0));
+  ASSERT_TRUE(static_cast<bool>(reduceResult))
+      << (reduceResult ? std::string()
+                       : llvm::toString(reduceResult.takeError()));
+  ASSERT_EQ(reduceResult->values.size(), 2u);
+  EXPECT_EQ(reduceResult->values[0].bits, UINT64_C(0x40400000));
+  EXPECT_EQ(reduceResult->values[1].bits, UINT64_C(0x40e00000));
   EXPECT_FALSE(context.getAggregateFlags().any());
 }
 

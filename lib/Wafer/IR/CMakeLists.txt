@@ -11,7 +11,6 @@ add_mlir_dialect_library(WaferIR
   LinalgExt/CollectiveOps.cpp
   Resource/SPMOps.cpp
   Target/TopologyOps.cpp
-  Tensor/GroupOps.cpp
   Tile/CommOps.cpp
   Tile/ComputeOps.cpp
   Tile/LayoutOps.cpp
@@ -28,15 +27,19 @@ add_mlir_dialect_library(WaferIR
   LINK_LIBS PUBLIC
   MLIRArithDialect
   MLIRAsyncDialect
+  MLIRBufferizationDialect
   MLIRBytecodeOpInterface
   MLIRControlFlowInterfaces
   MLIRDestinationStyleOpInterface
   MLIRFuncDialect
   MLIRIR
+  MLIRMemRefDialect
+  MLIRSCFDialect
   MLIRSideEffectInterfaces
   MLIRSupport
   MLIRTensorDialect
   MLIRTilingInterface
+  MLIRViewLikeInterface
 )
 
 target_include_directories(WaferIR PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Common)

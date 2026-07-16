@@ -149,6 +149,14 @@ llvm::Expected<FormalNumericResult>
 evaluateFormalGemmFinalize(const ResolvedNumericCommand &command,
                            RawLogicalValue accumulator);
 
+/// Effect-free single addition for the supported native F32 sum reduction.
+/// Both operands and the returned accumulator are canonical F32. Each step is
+/// rounded to nearest-even; tensor traversal order belongs to the tensor
+/// dispatcher and is part of the resolved reduction policy.
+llvm::Expected<FormalNumericResult>
+evaluateFormalReduceStep(const ResolvedNumericCommand &command,
+                         RawLogicalValue accumulator, RawLogicalValue input);
+
 /// Raw-exact comparator selected by the first model profile. Both the logical
 /// format/bits and the per-operation model flags participate in equality. Both
 /// operands are validated as canonical before equality is evaluated.

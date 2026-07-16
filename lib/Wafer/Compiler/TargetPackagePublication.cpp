@@ -15,7 +15,7 @@
 namespace wafer::compiler::detail {
 
 mlir::LogicalResult stageTargetPackage(
-    llvm::StringRef groupedProgramDirectory, llvm::StringRef transactionRoot,
+    llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
     const ExecutionConfig &executionConfig,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLogicalRank,
@@ -24,9 +24,9 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<ExecutableBundle> &executableBundle,
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle) {
   llvm::Expected<ExecutableBundle> compiledExecutableBundle =
-      compileGroupedProgramToExecutableBundleImpl(groupedProgramDirectory,
-                                                  executionConfig, diagnostics,
-                                                  failAfterLogicalRank);
+      compileTensorProgramToExecutableBundleImpl(tensorProgramDirectory,
+                                                 executionConfig, diagnostics,
+                                                 failAfterLogicalRank);
   if (!compiledExecutableBundle) {
     llvm::consumeError(compiledExecutableBundle.takeError());
     return mlir::failure();
@@ -53,7 +53,7 @@ mlir::LogicalResult stageTargetPackage(
   llvm::SmallString<256> stagedPackage(transactionRoot);
   llvm::sys::path::append(stagedPackage, "package");
   llvm::Expected<PackageBundle> package = assemblePackageBundleImpl(
-      groupedProgramDirectory, *compiledExecutableBundle, *targetArtifacts,
+      tensorProgramDirectory, *compiledExecutableBundle, *targetArtifacts,
       stagedPackage, diagnostics, failAfterPackageLogicalRank);
   if (!package) {
     llvm::consumeError(package.takeError());

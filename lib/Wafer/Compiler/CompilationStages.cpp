@@ -19,12 +19,14 @@
 #include "mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
@@ -225,16 +227,15 @@ mlir::LogicalResult verifyStablehloStageOperations(mlir::ModuleOp module) {
 
 namespace {
 
-bool isGroupedStageWaferOperation(mlir::Operation *operation) {
+bool isTensorProgramStageWaferOperation(mlir::Operation *operation) {
   return mlir::isa<wafer::TargetTopologyOp, wafer::ExecutionMeshOp,
-                   wafer::GroupOp, wafer::GroupYieldOp,
                    wafer::LinalgExtCollectiveYieldOp>(operation) ||
          mlir::isa<wafer::WaferLinalgExtCollectiveOpInterface>(operation);
 }
 
 } // namespace
 
-mlir::LogicalResult verifyGroupedStageOperations(mlir::ModuleOp module) {
+mlir::LogicalResult verifyTensorProgramStageOperations(mlir::ModuleOp module) {
   mlir::Operation *illegal = nullptr;
   module.walk([&](mlir::Operation *operation) {
     llvm::StringRef dialect = operation->getName().getDialectNamespace();
@@ -242,18 +243,8 @@ mlir::LogicalResult verifyGroupedStageOperations(mlir::ModuleOp module) {
         dialect == "builtin" || dialect == "func" || dialect == "arith" ||
         dialect == "math" || dialect == "tensor" || dialect == "linalg" ||
         dialect == "scf" || dialect == "cf" ||
-        (dialect == "wafer" && isGroupedStageWaferOperation(operation));
+        (dialect == "wafer" && isTensorProgramStageWaferOperation(operation));
     if (!allowed) {
-      illegal = operation;
-      return mlir::WalkResult::interrupt();
-    }
-
-    bool ungroupedRoot =
-        ((mlir::isa<mlir::linalg::LinalgOp>(operation) &&
-          !mlir::isa<mlir::linalg::FillOp>(operation)) ||
-         mlir::isa<wafer::WaferLinalgExtCollectiveOpInterface>(operation)) &&
-        !operation->getParentOfType<wafer::GroupOp>();
-    if (ungroupedRoot) {
       illegal = operation;
       return mlir::WalkResult::interrupt();
     }
@@ -262,7 +253,7 @@ mlir::LogicalResult verifyGroupedStageOperations(mlir::ModuleOp module) {
   if (!illegal)
     return mlir::success();
   return illegal->emitOpError(
-      "is not legal in a verified grouped-program artifact");
+      "is not legal in a verified structured tensor-program artifact");
 }
 
 namespace {
@@ -418,8 +409,10 @@ void registerCompilationDialects(mlir::DialectRegistry &registry) {
   mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
       registry);
   mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
   mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
   mlir::func::registerInlinerExtension(registry);
   mlir::LLVM::registerInlinerInterface(registry);
 }

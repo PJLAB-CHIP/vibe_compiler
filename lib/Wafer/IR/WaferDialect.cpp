@@ -379,7 +379,15 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
     mlir::MemRefType type, llvm::ArrayRef<int64_t> logicalIndices) {
   std::optional<WaferPhysicalTensorInfo> info =
       computeWaferPhysicalTensorInfo(type);
-  if (!info || info->elementBytes <= 0 || info->bitPackedElement)
+  if (!info)
+    return std::nullopt;
+  return computeWaferPhysicalElementByteOffset(type, *info, logicalIndices);
+}
+
+std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
+    mlir::MemRefType type, const WaferPhysicalTensorInfo &info,
+    llvm::ArrayRef<int64_t> logicalIndices) {
+  if (info.elementBytes <= 0 || info.bitPackedElement)
     return std::nullopt;
   if (type.getRank() != static_cast<int64_t>(logicalIndices.size()))
     return std::nullopt;
@@ -389,7 +397,7 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
       return std::nullopt;
   }
 
-  if (info->layout != MemLayout::Cx && info->layout != MemLayout::NCx) {
+  if (info.layout != MemLayout::Cx && info.layout != MemLayout::NCx) {
     llvm::SmallVector<int64_t> strides;
     int64_t offset = 0;
     if (mlir::failed(mlir::getStridesAndOffset(type, strides, offset)) ||
@@ -407,7 +415,7 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
     }
 
     int64_t byteOffset = 0;
-    if (!checkedMul(linear, info->elementBytes, byteOffset))
+    if (!checkedMul(linear, info.elementBytes, byteOffset))
       return std::nullopt;
     return byteOffset;
   }
@@ -416,10 +424,10 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
     return std::nullopt;
   int64_t logicalC = logicalIndices.back();
   int64_t fullC = 0;
-  if (!checkedMul(info->cxBlocks, info->cBlock, fullC))
+  if (!checkedMul(info.cxBlocks, info.cBlock, fullC))
     return std::nullopt;
   int64_t physicalElementOffset = 0;
-  if (info->layout == MemLayout::NCx) {
+  if (info.layout == MemLayout::NCx) {
     int64_t n = type.getRank() > 1 ? logicalIndices.front() : 0;
     llvm::ArrayRef<int64_t> hwShape;
     llvm::ArrayRef<int64_t> hwIndices;
@@ -431,34 +439,34 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
     if (!hwIndex)
       return std::nullopt;
     int64_t batchBase = 0;
-    if (!checkedMul(n, info->batchElements, batchBase))
+    if (!checkedMul(n, info.batchElements, batchBase))
       return std::nullopt;
     if (logicalC < fullC) {
-      int64_t cb = logicalC / info->cBlock;
-      int64_t lane = logicalC % info->cBlock;
+      int64_t cb = logicalC / info.cBlock;
+      int64_t lane = logicalC % info.cBlock;
       int64_t blockOffset = 0;
       int64_t blockStride = 0;
-      if (!checkedMul(info->hwElements, info->cBlock, blockStride) ||
+      if (!checkedMul(info.hwElements, info.cBlock, blockStride) ||
           !checkedMul(cb, blockStride, blockOffset))
         return std::nullopt;
       int64_t hwOffset = 0;
-      if (!checkedMul(*hwIndex, info->cBlock, hwOffset))
+      if (!checkedMul(*hwIndex, info.cBlock, hwOffset))
         return std::nullopt;
       if (!checkedAdd(batchBase, blockOffset, physicalElementOffset) ||
           !checkedAdd(physicalElementOffset, hwOffset, physicalElementOffset) ||
           !checkedAdd(physicalElementOffset, lane, physicalElementOffset))
         return std::nullopt;
     } else {
-      if (info->c0 <= 0)
+      if (info.c0 <= 0)
         return std::nullopt;
       int64_t tailLane = logicalC - fullC;
       int64_t fullBlockElements = 0;
       int64_t fullBlockStride = 0;
-      if (!checkedMul(info->hwElements, info->cBlock, fullBlockStride) ||
-          !checkedMul(info->cxBlocks, fullBlockStride, fullBlockElements))
+      if (!checkedMul(info.hwElements, info.cBlock, fullBlockStride) ||
+          !checkedMul(info.cxBlocks, fullBlockStride, fullBlockElements))
         return std::nullopt;
       int64_t hwOffset = 0;
-      if (!checkedMul(*hwIndex, info->c0, hwOffset))
+      if (!checkedMul(*hwIndex, info.c0, hwOffset))
         return std::nullopt;
       if (!checkedAdd(batchBase, fullBlockElements, physicalElementOffset) ||
           !checkedAdd(physicalElementOffset, hwOffset, physicalElementOffset) ||
@@ -473,30 +481,30 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
     if (!outerIndex)
       return std::nullopt;
     if (logicalC < fullC) {
-      int64_t cb = logicalC / info->cBlock;
-      int64_t lane = logicalC % info->cBlock;
+      int64_t cb = logicalC / info.cBlock;
+      int64_t lane = logicalC % info.cBlock;
       int64_t blockOffset = 0;
       int64_t blockStride = 0;
-      if (!checkedMul(info->outerElements, info->cBlock, blockStride) ||
+      if (!checkedMul(info.outerElements, info.cBlock, blockStride) ||
           !checkedMul(cb, blockStride, blockOffset))
         return std::nullopt;
       int64_t outerOffset = 0;
-      if (!checkedMul(*outerIndex, info->cBlock, outerOffset))
+      if (!checkedMul(*outerIndex, info.cBlock, outerOffset))
         return std::nullopt;
       if (!checkedAdd(blockOffset, outerOffset, physicalElementOffset) ||
           !checkedAdd(physicalElementOffset, lane, physicalElementOffset))
         return std::nullopt;
     } else {
-      if (info->c0 <= 0)
+      if (info.c0 <= 0)
         return std::nullopt;
       int64_t tailLane = logicalC - fullC;
       int64_t fullBlockElements = 0;
       int64_t fullBlockStride = 0;
-      if (!checkedMul(info->outerElements, info->cBlock, fullBlockStride) ||
-          !checkedMul(info->cxBlocks, fullBlockStride, fullBlockElements))
+      if (!checkedMul(info.outerElements, info.cBlock, fullBlockStride) ||
+          !checkedMul(info.cxBlocks, fullBlockStride, fullBlockElements))
         return std::nullopt;
       int64_t outerOffset = 0;
-      if (!checkedMul(*outerIndex, info->c0, outerOffset))
+      if (!checkedMul(*outerIndex, info.c0, outerOffset))
         return std::nullopt;
       if (!checkedAdd(fullBlockElements, outerOffset, physicalElementOffset) ||
           !checkedAdd(physicalElementOffset, tailLane, physicalElementOffset))
@@ -505,7 +513,7 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
   }
 
   int64_t byteOffset = 0;
-  if (!checkedMul(physicalElementOffset, info->elementBytes, byteOffset))
+  if (!checkedMul(physicalElementOffset, info.elementBytes, byteOffset))
     return std::nullopt;
   return byteOffset;
 }

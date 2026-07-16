@@ -19,6 +19,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/CallInterfaces.h"
@@ -191,6 +192,212 @@ mlir::FailureOr<int64_t> getStaticViewOffsetBytes(mlir::Operation *op,
                            << " byte offset overflows int64";
   return offsetBytes;
 }
+
+mlir::FailureOr<DynamicSubviewAddressPlan>
+analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
+  mlir::MemRefType sourceType = subviewOp.getSourceType();
+  mlir::MemRefType resultType = subviewOp.getType();
+  MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
+  MemoryAttr resultMemory = getWaferMemoryAttr(resultType);
+  if (!sourceMemory || !resultMemory ||
+      sourceMemory.getSpace() != MemorySpace::DDR ||
+      resultMemory.getSpace() != MemorySpace::DDR ||
+      sourceMemory.getLayout() != MemLayout::Tensor ||
+      resultMemory.getLayout() != MemLayout::Tensor)
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic subview requires matching "
+              "#wafer.memory<ddr, tensor> source and result types";
+  if (sourceType.getElementType() != resultType.getElementType())
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview must "
+              "preserve the element type";
+  if (!sourceType.hasStaticShape() || !resultType.hasStaticShape())
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview "
+              "requires static source and result shapes";
+
+  llvm::ArrayRef<int64_t> staticOffsets = subviewOp.getStaticOffsets();
+  llvm::ArrayRef<int64_t> staticSizes = subviewOp.getStaticSizes();
+  llvm::ArrayRef<int64_t> staticStrides = subviewOp.getStaticStrides();
+  if (staticOffsets.size() != static_cast<size_t>(sourceType.getRank()) ||
+      staticSizes.size() != staticOffsets.size() ||
+      staticStrides.size() != staticOffsets.size())
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview rank "
+              "does not match its offset/size/stride lists";
+  if (llvm::any_of(staticSizes,
+                   [](int64_t value) {
+                     return mlir::ShapedType::isDynamic(value) || value < 0;
+                   }) ||
+      llvm::any_of(staticStrides, [](int64_t value) {
+        return mlir::ShapedType::isDynamic(value) || value <= 0;
+      }))
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview "
+              "requires static non-negative sizes and positive strides";
+
+  llvm::SmallVector<int64_t, 4> sourceStrides;
+  int64_t sourceOffset = 0;
+  if (mlir::failed(
+          mlir::getStridesAndOffset(sourceType, sourceStrides, sourceOffset)) ||
+      sourceStrides.size() != staticOffsets.size() ||
+      llvm::any_of(sourceStrides, [](int64_t value) {
+        return mlir::ShapedType::isDynamic(value) || value < 0;
+      }))
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview source "
+              "requires static non-negative memref strides";
+
+  std::optional<WaferPhysicalTensorInfo> sourceInfo =
+      computeWaferPhysicalTensorInfo(sourceType);
+  if (!sourceInfo || sourceInfo->bitPackedElement ||
+      sourceInfo->elementBytes <= 0)
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview "
+              "requires a byte-addressable element type";
+
+  DynamicSubviewAddressPlan plan;
+  for (auto [offset, sourceStride] :
+       llvm::zip_equal(staticOffsets, sourceStrides)) {
+    int64_t byteStride = 0;
+    if (!checkedMul(sourceStride, sourceInfo->elementBytes, byteStride))
+      return subviewOp.emitError()
+             << "target_address_overflow: dynamic DDR tensor subview byte "
+                "stride overflows int64";
+    if (mlir::ShapedType::isDynamic(offset)) {
+      plan.dynamicByteStrides.push_back(byteStride);
+      continue;
+    }
+    int64_t byteOffset = 0;
+    if (!checkedMul(offset, byteStride, byteOffset) ||
+        !checkedAdd(plan.staticByteOffset, byteOffset, plan.staticByteOffset))
+      return subviewOp.emitError()
+             << "target_address_overflow: dynamic DDR tensor subview static "
+                "byte offset overflows int64";
+  }
+  if (plan.dynamicByteStrides.empty())
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview "
+              "addressing requires at least one dynamic offset";
+  if (plan.dynamicByteStrides.size() != subviewOp.getOffsets().size())
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview offset "
+              "operand count does not match its layout";
+  return plan;
+}
+
+namespace {
+struct StaticForIVRange {
+  int64_t minimum = 0;
+  int64_t maximum = 0;
+  bool empty = false;
+};
+
+static mlir::FailureOr<StaticForIVRange>
+getStaticForIVRange(mlir::memref::SubViewOp subviewOp,
+                    mlir::Value dynamicOffset, unsigned dynamicIndex) {
+  auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(dynamicOffset);
+  auto forOp = blockArg && blockArg.getOwner()
+                   ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+                         blockArg.getOwner()->getParentOp())
+                   : mlir::scf::ForOp{};
+  if (!forOp || dynamicOffset != forOp.getInductionVar())
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview offset #"
+           << dynamicIndex
+           << " must be the direct induction variable of scf.for";
+
+  std::optional<int64_t> lower =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(forOp.getLowerBound()));
+  std::optional<int64_t> upper =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(forOp.getUpperBound()));
+  std::optional<int64_t> step =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(forOp.getStep()));
+  if (!lower || !upper || !step || *lower < 0 || *upper < 0 || *step <= 0)
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview offset #"
+           << dynamicIndex
+           << " requires constant non-negative scf.for bounds and a positive "
+              "constant step";
+  if (*upper <= *lower)
+    return StaticForIVRange{*lower, *lower, /*empty=*/true};
+
+  int64_t distance = *upper - 1 - *lower;
+  int64_t lastStep = 0;
+  int64_t maximum = 0;
+  if (!checkedMul(distance / *step, *step, lastStep) ||
+      !checkedAdd(*lower, lastStep, maximum))
+    return subviewOp.emitError()
+           << "target_address_overflow: dynamic DDR tensor subview scf.for "
+              "range overflows int64";
+  return StaticForIVRange{*lower, maximum, /*empty=*/false};
+}
+
+static mlir::LogicalResult
+preflightDynamicDDRSubview(mlir::memref::SubViewOp subviewOp) {
+  mlir::FailureOr<DynamicSubviewAddressPlan> plan =
+      analyzeDynamicDDRSubviewAddressing(subviewOp);
+  if (mlir::failed(plan))
+    return mlir::failure();
+
+  llvm::ArrayRef<int64_t> sourceShape = subviewOp.getSourceType().getShape();
+  llvm::ArrayRef<int64_t> offsets = subviewOp.getStaticOffsets();
+  llvm::ArrayRef<int64_t> sizes = subviewOp.getStaticSizes();
+  llvm::ArrayRef<int64_t> strides = subviewOp.getStaticStrides();
+  mlir::ValueRange dynamicOffsets = subviewOp.getOffsets();
+  llvm::SmallVector<StaticForIVRange, 4> dynamicRanges;
+  dynamicRanges.reserve(dynamicOffsets.size());
+  bool unreachable = false;
+  for (auto [index, offset] : llvm::enumerate(dynamicOffsets)) {
+    mlir::FailureOr<StaticForIVRange> range =
+        getStaticForIVRange(subviewOp, offset, index);
+    if (mlir::failed(range))
+      return mlir::failure();
+    unreachable |= range->empty;
+    dynamicRanges.push_back(*range);
+  }
+  if (unreachable)
+    return mlir::success();
+
+  unsigned dynamicIndex = 0;
+  int64_t maximumDynamicByteOffset = plan->staticByteOffset;
+  for (unsigned dim = 0; dim < offsets.size(); ++dim) {
+    int64_t minimum = offsets[dim];
+    int64_t maximum = offsets[dim];
+    if (mlir::ShapedType::isDynamic(offsets[dim])) {
+      minimum = dynamicRanges[dynamicIndex].minimum;
+      maximum = dynamicRanges[dynamicIndex].maximum;
+      int64_t dynamicByteOffset = 0;
+      if (!checkedMul(maximum, plan->dynamicByteStrides[dynamicIndex],
+                      dynamicByteOffset) ||
+          !checkedAdd(maximumDynamicByteOffset, dynamicByteOffset,
+                      maximumDynamicByteOffset))
+        return subviewOp.emitError()
+               << "target_address_overflow: dynamic DDR tensor subview "
+                  "maximum byte offset overflows int64";
+      ++dynamicIndex;
+    }
+
+    if (sizes[dim] == 0)
+      continue;
+    int64_t span = 0;
+    int64_t last = 0;
+    if (!checkedMul(sizes[dim] - 1, strides[dim], span) ||
+        !checkedAdd(maximum, span, last))
+      return subviewOp.emitError()
+             << "target_address_overflow: dynamic DDR tensor subview source "
+                "coordinate overflows int64";
+    if (minimum < 0 || last >= sourceShape[dim])
+      return subviewOp.emitError()
+             << "target_geometry_mismatch: dynamic DDR tensor subview "
+                "dimension #"
+             << dim << " may access source coordinate " << last
+             << " outside static extent " << sourceShape[dim];
+  }
+  (void)maximumDynamicByteOffset;
+  return mlir::success();
+}
+} // namespace
 
 mlir::FailureOr<int64_t> getStaticUInt32MaskAddress(mlir::Operation *op,
                                                     mlir::Value value) {
@@ -686,6 +893,18 @@ mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp,
     return mlir::WalkResult::advance();
   });
   return failed ? mlir::failure() : mlir::success();
+}
+
+mlir::LogicalResult preflightTargetAddresses(mlir::ModuleOp moduleOp) {
+  mlir::WalkResult result =
+      moduleOp.walk([&](mlir::memref::SubViewOp subviewOp) {
+        if (subviewOp.getOffsets().empty())
+          return mlir::WalkResult::advance();
+        if (mlir::failed(preflightDynamicDDRSubview(subviewOp)))
+          return mlir::WalkResult::interrupt();
+        return mlir::WalkResult::advance();
+      });
+  return result.wasInterrupted() ? mlir::failure() : mlir::success();
 }
 
 } // namespace wafer::target_llvm_detail

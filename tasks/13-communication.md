@@ -1,6 +1,7 @@
 # Wafer Communication Dialect Design
 
-状态：2026-07-13更新；当前合同覆盖buffer-level collective到instruction-level Direct DTE p2p和明确
+状态：2026-07-16按Q29 collective/resident completion更新；当前合同覆盖buffer-level collective到
+instruction-level Direct DTE p2p和明确
 completion；Q16.T已闭合post-memory all-rank matching、typed physical binding和bundle transport summary，
 target CRT opaque event/status ABI、真实RISC-V module lowering与runtime requirement也已闭合。segmented/MoE、
 multi-card route和真实board execution延后；不引入physical
@@ -43,7 +44,7 @@ transport contract 补充，不能把通用 `async.token` 等同于设备成功�
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  `wafer.linalg_ext.collective.*` 经 group/tile-region lowering 后形成的未放置 SPM storage values、
+  `wafer.linalg_ext.collective.*`经rank-local task/dataflow materialization后形成的未放置SPM storage values、
   local-rank facts、rank group，以及exact target topology / execution mesh legality facts。
 - Current stage responsibility:
   把 buffer-level collective materialize 为 verifier-legal `wafer.tile.*` collective，并在可支持子集上
@@ -59,7 +60,7 @@ Pipeline position:
   Q16以后由同一
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
   在完整variant
-  clone中执行。当前Q15只产出verified grouped program directory，不执行communication materialization；
+  clone中执行。Q15只产出verified structured tensor program directory，不执行communication materialization；
   `wafer-opt`和communication-specific named pipelines只处理显式IR，用于IR-local debug/verifier覆盖，
   不提供用户stop-stage。
 - Explicit non-goals:
@@ -67,9 +68,10 @@ Pipeline position:
   physical transport allocation、host runtime D2D/P2P fallback、raw non-unicast DTE ABI 或 provider handle
   分配；不把 endpoint/channel/FSM/receiver address 反写到 logical collective。
 - Completion gate:
-  top-level `all_gather`、`reduce_scatter`、`all_reduce` 和可表达的 p2p/all-to-all case 能从真实
-  group/tile-region path 形成 verifier-legal p2p IR；其 staging demand、async lifetime 和 byte range 被
-  whole-entry memory/event planning直接消费，send/recv可用显式message identity跨rank唯一配对。segmented/MoE
+  top-level `all_gather`、`reduce_scatter`、`all_reduce`和可表达的p2p/all-to-all case能从真实
+  structured task/tile-region path形成verifier-legal p2p IR；其staging demand、async lifetime和byte range被
+  whole-entry memory/event planning直接消费，send/recv可用显式message identity跨rank唯一配对，且DTE wait之后的
+  received-slot copy或local accumulation由独立local fence完成后才能交给resident consumer。segmented/MoE
   仍是deferred extension，不能靠手写offset fixture或本节讨论冒充当前完成。
 ```
 
@@ -139,7 +141,7 @@ transport requirement。真实16-rank row-sharded program已重放该链路，�
 ```text
 partitioned StableHLO + collectives
   -> `wafer.linalg_ext.collective.*` normalization
-  -> wafer.group tiling / scheduled tensor collective
+  -> rank-local tiled task/dataflow scheduling
   -> wafer.tile.region + unplaced SPM storage values + topology/execution mesh
   -> target-abstract `wafer.tile.*` buffer-level collective, or direct p2p body when no extra collective op is needed
   -> explicit `wafer.instr.dte_*` point-to-point steps
@@ -155,7 +157,7 @@ partitioned StableHLO + collectives
 | --- | --- | --- |
 | StableHLO / Shardy | `all_gather`、`reduce_scatter`、`all_reduce`、`all_to_all`、`collective_permute` | global tensor 和 logical mesh 语义 |
 | Tensor collective handoff | `wafer.linalg_ext.collective.*` ops | DPS/tensor-level collective、tiling/fusion、logical rank group / source-target pairs、axis/combiner verifier |
-| Scheduled group / tile_region | tiled tensor collective + storage values | tile slice、SPM buffer、layout/materialization、communication staging demand |
+| Scheduled task / tile_region | tiled tensor collective + storage values | tile slice、SPM buffer、layout/materialization、communication staging demand |
 | Topology / execution mesh | logical rank 到 encoded physical endpoint 的 derived / explicit view | availability、connectivity、rank order、physical peer |
 | buffer-level comm | `wafer.tile.*` collective op, when the collective semantic needs a separate buffer-level stage | 保留 tile-local communication semantic、logical group / byte/effect 边界；physical endpoint 从 topology/execution mesh 派生，不选择 raw DTE register |
 | p2p schedule | `wafer.instr.dte_send`、`dte_recv`、`dte_wait`、local compute step | 显式 ring/tree step、logical message identity、buffer slice、byte count、token/effect |
@@ -200,8 +202,8 @@ completion。当前V0实现缺失不等于允许丢失该IR语义。
 - SPM physical offset。
 - ring/tree step 列表的影子副本。
 
-`collective_permute` 和当前 V0 equal-split `all_to_all` 没有额外 buffer-level collective op：它们在
-group-to-tile-region materialization 中直接展开成 local movement + `wafer.instr.dte_*` body。后续如果
+`collective_permute`和当前V0 equal-split `all_to_all`没有额外buffer-level collective op：它们在
+structured task-to-tile-region materialization中直接展开成local movement + `wafer.instr.dte_*` body。后续如果
 需要 ring/blocked equal-split all-to-all、跨卡 route 或 non-contiguous descriptor，可以再引入
 `wafer.tile.all_to_all` buffer-level op；ragged语义始终使用上述segmented op，不能复用静态slot attr猜测。
 
@@ -369,8 +371,8 @@ route / Direct DTE protocol legality 仍由后续 `wafer.execution.mesh` /
 旧 tile-region-to-C-ABI debug pass 已删除；fixed-size unicast p2p 必须先形成 candidate Direct DTE
 issue/wait form，再经 whole-entry memory planning 和 physical transport acceptance，最后随整个 variant
 commit；target LLVM emission 只消费 committed instruction-level IR、topology/execution-mesh contract 和
-Q16.T committed binding中由accepted IR验证的resource/entry/transport facts。当前Q16遇到collective在
-rank构造前整体拒绝；这一层仍不应 materialize raw
+Q16.T committed binding中由accepted IR验证的resource/entry/transport facts。早期Q16在rank构造前
+整体拒绝collective的限制已被Q16.T的typed Direct DTE路径取代；这一层仍不应materialize raw
 non-unicast register 字段，也不把 DTE id、runtime physical address 或 wrapper packet bitfield
 暴露成上层 communication IR 语义。
 
@@ -379,8 +381,8 @@ collective-level `wafer.tile.all_gather` 接收 local chunk、gather buffer、`l
 和 gather buffer 总 byte size。旧 ring-all-gather debug pass 和 tile-region-to-C-ABI debug
 pass 链已删除。后续 lowering 仍应把 accepted schedule rewrite 成显式 `wafer.instr.dte_*`
 body，并保留 destination slot 供地址 offset / packet 参数 lowering 使用。
-早期 StableHLO logical collective 直接 normalize 到 `wafer.tile.*` op 的路线已移除；不能作为
-group/tiling 前的主线输入，也不应恢复。后续应实现三层：
+早期StableHLO logical collective直接normalize到`wafer.tile.*` op的路线已移除；不能作为
+structured scheduling前的主线输入，也不应恢复。后续应实现三层：
 
 ```text
 StableHLO collective -> `wafer.linalg_ext.collective.*`
@@ -454,7 +456,7 @@ planning事实。
 - send/recv byte count 与 slice shape 一致。
 - receiver buffer 在 wait 前不被 compute 读取。
 
-当前 V0 已在 rank-specialized group-to-tile-region materialization 中覆盖 top-level single-result
+当前V0功能已在rank-specialized structured task materializer中覆盖top-level single-result
 `wafer.linalg_ext.collective.collective_permute`。materialization 根据当前 logical rank 查找
 `source_target_pairs`：当前 rank 是 source 时生成 `wafer.instr.dte_send`，当前 rank 是 target
 时生成 `wafer.instr.dte_recv` + `wafer.instr.dte_wait`，self pair 使用本地 copy；不参与该 pair
@@ -493,13 +495,15 @@ IR 中应能看到每个 step 的 `wafer.instr.dte_send` / `dte_recv` / `dte_wai
 V0 ring order 来自 collective `rank_group` 顺序，并由 execution mesh / topology 后续验证 peer
 endpoint 可用；cost model 可以选择不同 order，但接受后要 rewrite 成 explicit body。
 
-当前已经能在 rank-specialized group-to-tile-region materialization 中把 top-level single-result
+当前功能已在rank-specialized structured task materializer中把top-level single-result
 `wafer.linalg_ext.collective.all_gather` 转成 `wafer.tile.all_gather`，并在 tile-region-to-instr
 lowering 中将 compact `tensor/ntensor` SPM local/gather buffer 按 selector 展开为 fixed-size
 unicast schedule。默认 ring 先把 local chunk 复制到本 rank gather slot，插入
 `wafer.instr.local_fence` 使 DTE 读取本地 movement 结果前有明确可见性边界，再按 `rank_group`
 的邻接顺序转发 slot view；direct schedule 则把 local slot 直接发送给每个 peer，并把收到的 peer
-chunk 写入对应 result slot `memref.subview`。该 IR 仍只保存 logical peer 和 buffer view，不写
+chunk从contiguous receive staging复制到对应result slot `memref.subview`。全部received-slot local copy之后再插入
+最终`wafer.instr.local_fence`，使紧随collective的resident consumer只能读取已完成的gather result。DTE wait只完成
+receive token和staging visibility，不完成后续movement-engine copy。该 IR 仍只保存 logical peer 和 buffer view，不写
 physical endpoint、DTE id、SPM offset 或 packet field。V0 correctness path 仍不使用 raw DTE
 non-unicast gather。
 该 lowering 发生在 SPM offset assignment 前，使 in-flight recv slot、wait token 和 buffer reuse fence
@@ -517,14 +521,15 @@ reduce-scatter + all-gather、recursive doubling 或其它算法，但 accepted 
 - 每个 communication step 是 unicast p2p。
 - local reduce 与 recv buffer 的 use-def / wait 顺序明确。
 
-当前已经能在 rank-specialized group-to-tile-region materialization 中把 top-level single-result
+当前功能已在rank-specialized structured task materializer中把top-level single-result
 `wafer.linalg_ext.collective.reduce_scatter` / `all_reduce` 转成 `wafer.tile.reduce_scatter` /
 `wafer.tile.all_reduce`。`wafer.tile.all_reduce` 已能在 tile-region-to-instr lowering 中按 selector
 展开成 fixed-size unicast schedule。默认 ring 先把 input 复制到 accumulator 和 forward staging buffer，
 插入 `wafer.instr.local_fence`，之后每步 `wafer.instr.dte_send` forward buffer、`dte_recv` 到 recv
 buffer、`dte_wait` completion token，再用 `wafer.instr.elementwise` 对 accumulator 和 recv staging
-buffer 做 sum/max/min 本地累计。下一步发送的不是 accumulator，而是刚收到的 partial；否则 ring 会
-重复累加已经 accumulated 的 contribution。该 IR 仍只保存 logical peer、buffer view、local fence
+buffer 做 sum/max/min 本地累计。每个中间round在forward copy后有local fence，最终round也在返回accumulator前
+显式local fence；DTE wait不能证明本地elementwise engine已经完成。下一步发送的不是 accumulator，而是刚收到的
+partial；否则 ring 会重复累加已经 accumulated 的 contribution。该 IR 仍只保存 logical peer、buffer view、local fence
 和 token/wait，不写 physical endpoint、DTE id、SPM offset 或 packet field。
 
 `all_reduce` 的 `tree` schedule 使用 group-local root 0 的 binomial reduce + reverse broadcast。reduce
@@ -534,17 +539,18 @@ wait token 后用 `wafer.instr.elementwise` 累计，并在 accumulator 后续�
 把 final result recv 到自己的 accumulator。tree schedule 仍只 materialize explicit
 `wafer.instr.dte_send` / `dte_recv` / `dte_wait` 和 local compute，不保存 algorithm attr。
 
-`wafer.tile.reduce_scatter` 使用 full input + local slot result 表示。group-to-tile-region materialization
+`wafer.tile.reduce_scatter`使用full input + local slot result表示。structured task materialization
 保留 full input SPM buffer，并让 tile collective 显式携带 scatter `axis`；recv/result buffer 是当前
 rank 的 local slot shape。V0 schedule selector 支持 `auto|direct`，默认 `auto=direct`。`direct`
 instruction lowering 使用 phase-ordered all-to-owner unicast schedule：
 phase `d` 中，rank `r` 从 full input 取 slot `(r + d) mod group_size` 发送给该 slot owner，同时从
 rank `(r - d) mod group_size` 接收本 rank local slot 的 contribution，wait 后用
-`wafer.instr.elementwise` 累计到 local accumulator。该 schedule 不把 reduction 藏进 DTE side effect，
+`wafer.instr.elementwise` 累计到 local accumulator，并在每次累计后插入local fence；因此最后一次累计也在
+result交给resident consumer前完成。该 schedule 不把 reduction 藏进 DTE side effect，
 也不保存全局 plan attr；每个 source slot、peer、recv buffer、wait token 和 accumulation 都在 IR body 中。
 P6.6 的早期 StableHLO normalization pass 会把 single-result StableHLO `all_reduce` /
 `reduce_scatter` 直接降到这些 collective-level op；该路径和 all-gather 一样已经退出主线，
-不应作为 tensor group/tiling 输入。主线恢复后，应先由 `wafer.linalg_ext.collective.*`
+不应作为structured task/tiling输入。主线应先由`wafer.linalg_ext.collective.*`
 保留 combiner region 和 tile 语义，再在 tile_region / SPM
 materialization 之后生成 `wafer.tile.reduce_scatter` / `wafer.tile.all_reduce`。当前 materialization
 只覆盖 sum/max/min reduction body；如果 SPMD 产出其它硬件可表达 reduction kind，应补充 tensor collective、
@@ -563,7 +569,7 @@ non-unicast helper，它也可以由 execution mesh endpoint view 上的一组 `
 - token/wait 和 buffer lifetime。
 
 当前 V0 已覆盖 top-level single-result `wafer.linalg_ext.collective.all_to_all` 的 direct p2p
-materialization。rank-specialized group-to-tile-region 要求 `split_count == rank_group.size()`；
+materialization。rank-specialized structured task materializer要求`split_count == rank_group.size()`；
 当前 rank 的每个 split slot 先用 local movement materialize 成连续 SPM comm buffer，DTE 只发送
 连续 buffer。self slot 用 local insert 写入 result；remote source rank 的 contribution 先
 `dte_recv` 到连续 recv buffer，`dte_wait` 后再 local insert 到 concat result slot。该路径直接生成
@@ -607,12 +613,12 @@ bounded count/control、offset/type/capacity和completion relation。communicati
 
 关键规则：
 
-- group output / group input 的 boundary layout co-planning 可以减少 repeated materialization，但
+- producer/consumer task edge的boundary layout co-planning可以减少repeated materialization，但
   选择结果必须通过 accepted tile-local IR 表达，不能由 `wafer.tile.*` communication 保存 side plan。
-- 如果 producer group 以 `Cx` 输出，而 consumer group 也能接受 `Cx`，comm 可以直接传输该 physical
+- 如果producer task以`Cx`输出，而consumer task也能接受`Cx`，comm可以直接传输该physical
   layout；如果 consumer 需要 compact，layout materialization op 应在明确 cut edge 上出现。
 - communication staging buffer、double buffer、in-flight recv slot 都进入 SPM allocation 的 demand 和
-  liveness。没有合法 SPM allocation 时，planner 必须回到 group boundary、tile shape、layout 或
+  liveness。没有合法SPM allocation时，planner必须回到task-dataflow cut/residency、tile shape、layout或
   communication schedule 搜索，而不是生成等待下游修复的 comm IR。
 - 如果 selected protocol 使用 DDR-backed staging、host/runtime D2D/P2P path 或 DDR2DDR helper，
   对应 source/destination 必须作为 `#wafer.memory<ddr, *>` demand 进入 DDR memory planner。`wafer.tile.*` collective 不保存
@@ -660,7 +666,7 @@ runtime boundary 上显式选择，不能把它混入 compiler inline Direct DTE
 
 ## 9. Verifier and Diagnostics
 
-Tensor-collective verifier 属于 local compute normalization / group handoff 层；它检查 tensor
+Tensor-collective verifier属于local compute normalization / structured-program handoff层；它检查tensor
 shape、axis、logical rank group / source-target pairs、mesh rank-domain、slot mapping 和 combiner
 legality。tile-local communication verifier 继续检查 SPM buffer、byte count、logical peer/group
 和 token/effect 边界。
@@ -730,26 +736,28 @@ wafer.instr.dte_wait %send1, %recv1
 
 - dialect / verifier 层已有 `wafer.tile.all_gather`、`wafer.tile.reduce_scatter` 和
   `wafer.tile.all_reduce` buffer-level collective 原型。
-- group-to-tile-region 已能把 top-level single-result `wafer.linalg_ext.collective.all_gather`、
+- structured task materializer已能把top-level single-result `wafer.linalg_ext.collective.all_gather`、
   `reduce_scatter` 和 `all_reduce` materialize 成上述 `wafer.tile.*` collective；`logical-rank`
   materialization context 只用于计算 `rank_group` 内的 group-local `local_rank`。
 - tile-region-to-instr 已能把 compact `tensor/ntensor` SPM `wafer.tile.all_gather` 展开成 explicit fixed-size
   ring 或 phase-ordered direct
   `wafer.instr.local_fence` + `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
-  `wafer.instr.dte_wait`，并通过 named pipeline + SPM planning lit 覆盖 token/lifetime 消费。
+  `wafer.instr.dte_wait`；收到的contiguous staging复制到result slot后还有最终local fence，并通过
+  structured scheduling + SPM planning lit覆盖token/lifetime和resident consumer可见性。
 - tile-region-to-instr 已能把 `tensor` SPM `wafer.tile.all_reduce` 展开成 explicit fixed-size ring 或
   binomial-tree reduce + reverse broadcast
   `wafer.instr.local_fence` + `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
   `wafer.instr.dte_wait` + `wafer.instr.elementwise` accumulation，并通过 named pipeline +
-  SPM planning lit 覆盖 token/lifetime 消费。
+  SPM planning lit 覆盖 token/lifetime 消费；ring最终accumulation在返回resident result前有独立local fence，
+  tree本地accumulation同样逐次fence，纯DTE receive只由matching wait完成。
 - tile-region-to-instr 使用 full input + local slot `wafer.tile.reduce_scatter` 表示生成 explicit
   phase-ordered all-to-owner unicast `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
   `wafer.instr.dte_wait` + `wafer.instr.elementwise` accumulation，并通过 named pipeline + SPM
-  planning lit 覆盖 token/lifetime 消费。
-- group-to-tile-region 已能把 top-level single-result `wafer.linalg_ext.collective.collective_permute`
+  planning lit 覆盖 token/lifetime 消费；每次本地accumulation后都有local fence，包括最终result。
+- structured task materializer已能把top-level single-result `wafer.linalg_ext.collective.collective_permute`
   materialize 成 direct `wafer.instr.dte_send` / `dte_recv` / `dte_wait` 或本地 copy/zero-fill
   body；该路径不保存 algorithm attr，也不提前写 physical endpoint。
-- group-to-tile-region 已能把 top-level single-result `wafer.linalg_ext.collective.all_to_all`
+- structured task materializer已能把top-level single-result `wafer.linalg_ext.collective.all_to_all`
   materialize 成 static split/exchange/concat direct p2p body：split slot extract 到连续 SPM comm
   buffer，remote slot 经 DTE send/recv/wait，recv 后 insert 到 concat result slot。
 - `wafer.linalg_ext.collective.segmented_all_to_all` / `wafer.tile.segmented_all_to_all`、count exchange和
@@ -765,6 +773,11 @@ wafer.instr.dte_wait %send1, %recv1
   emission均从committed instruction IR和accepted endpoint/resource facts建立。
 - accepted physical transport、typed message/binding attrs、receiver-ready/status ABI以及runtime-observable
   transport requirement已在主线materialize；真实board timeout/error/completion仍只由Q6.B证明。
+- TP16 `[16,4096]` all-reduce→residual结构回归证明15次DTE wait之后存在最终local fence，residual直接消费同一
+  accumulator且没有中间DDR round-trip；这证明的是IR completion/residency合同，不替代Q28数值或板端gate。
+
+上述collective数学、p2p、token和transport能力由直接消费rank-local structured task/dataflow的materializer
+单一拥有；本节的“已能”描述当前typed implementation，不定义额外artifact或compatibility入口。
 
 后续进入条件：
 
@@ -779,6 +792,6 @@ wafer.instr.dte_wait %send1, %recv1
 
 全局文档边界见 `tasks/01-architecture.md` 第 8 节。本文只维护
 device-side communication IR、token/effect、Direct DTE V0、accepted physical transport 和
-sync/error boundary；group search、
+sync/error boundary；tile-dataflow candidate search、
 layout assignment、SPM/DDR allocation、compute op legality 和 host runtime D2D/P2P ABI 不在本文
 重复定义。Direct DTE / FSM / wrapper 的 register-level 事实只作为 lower-level lowering 约束。

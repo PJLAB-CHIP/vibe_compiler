@@ -10,10 +10,15 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Matchers.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -42,7 +47,8 @@ struct DDRView {
   mlir::Value root;
   mlir::MemRefType rootType;
   mlir::MemRefType viewType;
-  int64_t viewOffsetBytes = 0;
+  int64_t minViewOffsetBytes = 0;
+  int64_t maxViewOffsetBytes = 0;
   int64_t viewSpanBytes = 0;
   int64_t rootBytes = 0;
 };
@@ -113,6 +119,16 @@ static mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
 
 static bool isExplicitDDRRoot(mlir::Value value) {
   mlir::Operation *def = value.getDefiningOp();
+  if (auto getGlobal = mlir::dyn_cast_or_null<mlir::memref::GetGlobalOp>(def)) {
+    auto global =
+        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::memref::GlobalOp>(
+            getGlobal, getGlobal.getNameAttr());
+    auto resultType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+    return global && resultType && isWaferDDRMemRefType(resultType) &&
+           resultType.hasStaticShape() && global.getType() == resultType &&
+           static_cast<bool>(global.getConstantInitValue());
+  }
+
   auto toMemref = mlir::dyn_cast_or_null<mlir::bufferization::ToMemrefOp>(def);
   if (!toMemref)
     return false;
@@ -282,7 +298,9 @@ static bool isCompilerManagedDDRRoot(mlir::Value root) {
 static mlir::LogicalResult
 getStaticMemrefViewInfo(mlir::Operation *op, mlir::MemRefType type,
                         llvm::SmallVectorImpl<int64_t> &strides,
-                        int64_t &offset, llvm::StringRef role) {
+                        int64_t &offset, llvm::StringRef role,
+                        bool allowDynamicOffset = false,
+                        bool *hadDynamicOffset = nullptr) {
   if (!type.hasStaticShape())
     return op->emitError() << "unsupported_ddr_view: " << role
                            << " DDR view must have static shape";
@@ -290,7 +308,11 @@ getStaticMemrefViewInfo(mlir::Operation *op, mlir::MemRefType type,
       strides.size() != static_cast<size_t>(type.getRank()))
     return op->emitError() << "unsupported_ddr_view: " << role
                            << " DDR view must have static strided layout";
-  if (offset == mlir::ShapedType::kDynamic || offset < 0)
+  if (hadDynamicOffset)
+    *hadDynamicOffset = offset == mlir::ShapedType::kDynamic;
+  if (offset == mlir::ShapedType::kDynamic && allowDynamicOffset)
+    offset = 0;
+  else if (offset == mlir::ShapedType::kDynamic || offset < 0)
     return op->emitError() << "unsupported_ddr_view: " << role
                            << " DDR view must have static non-negative offset";
   for (int64_t stride : strides) {
@@ -300,6 +322,167 @@ getStaticMemrefViewInfo(mlir::Operation *op, mlir::MemRefType type,
              << " DDR view must have static non-negative strides";
   }
   return mlir::success();
+}
+
+struct StaticIndexRange {
+  int64_t min = 0;
+  int64_t max = 0;
+};
+
+static mlir::FailureOr<int64_t> getConstantIndex(mlir::Operation *anchor,
+                                                 mlir::Value value,
+                                                 llvm::StringRef role) {
+  std::optional<int64_t> matched = mlir::getConstantIntValue(value);
+  if (!matched)
+    return anchor->emitError()
+           << "unsupported_ddr_view: " << role
+           << " dynamic offset requires constant scf.for bounds and step";
+  return *matched;
+}
+
+static mlir::FailureOr<StaticIndexRange>
+getStaticIndexRange(mlir::Operation *anchor, mlir::OpFoldResult offset,
+                    llvm::StringRef role) {
+  if (mlir::Attribute attribute = offset.dyn_cast<mlir::Attribute>()) {
+    auto attr = mlir::dyn_cast<mlir::IntegerAttr>(attribute);
+    if (!attr)
+      return anchor->emitError() << "unsupported_ddr_view: " << role
+                                 << " static offset is not an integer";
+    int64_t value = attr.getInt();
+    if (value < 0)
+      return anchor->emitError() << "unsupported_ddr_view: " << role
+                                 << " offset must be non-negative";
+    return StaticIndexRange{value, value};
+  }
+
+  mlir::Value value = mlir::cast<mlir::Value>(offset);
+  auto iv = mlir::dyn_cast<mlir::BlockArgument>(value);
+  auto forOp = iv && iv.getArgNumber() == 0
+                   ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+                         iv.getOwner()->getParentOp())
+                   : mlir::scf::ForOp{};
+  if (!forOp || iv != forOp.getInductionVar())
+    return anchor->emitError()
+           << "unsupported_ddr_view: " << role
+           << " dynamic offset must be a direct scf.for induction variable";
+
+  mlir::FailureOr<int64_t> lower =
+      getConstantIndex(anchor, forOp.getLowerBound(), role);
+  mlir::FailureOr<int64_t> upper =
+      getConstantIndex(anchor, forOp.getUpperBound(), role);
+  mlir::FailureOr<int64_t> step =
+      getConstantIndex(anchor, forOp.getStep(), role);
+  if (mlir::failed(lower) || mlir::failed(upper) || mlir::failed(step))
+    return mlir::failure();
+  if (*lower < 0 || *upper <= *lower || *step <= 0)
+    return anchor->emitError()
+           << "unsupported_ddr_view: " << role
+           << " scf.for offset range must be non-empty and non-negative";
+
+  int64_t distance = *upper - *lower - 1;
+  int64_t iterationsFromLower = distance / *step;
+  int64_t max = 0;
+  int64_t delta = 0;
+  if (!checkedMul(iterationsFromLower, *step, delta) ||
+      !checkedAdd(*lower, delta, max))
+    return anchor->emitError()
+           << "range_end_overflow: dynamic DDR view offset overflows int64";
+  return StaticIndexRange{*lower, max};
+}
+
+static mlir::Value resolveCarriedViewValue(mlir::Value value) {
+  while (true) {
+    mlir::Value resolved = resolveTileRegionBoundaryValue(value);
+    if (resolved != value) {
+      value = resolved;
+      continue;
+    }
+    if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+      auto forOp = mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+          blockArg.getOwner()->getParentOp());
+      if (forOp && blockArg.getArgNumber() > 0 &&
+          blockArg.getArgNumber() - 1 < forOp.getInitArgs().size()) {
+        value = forOp.getInitArgs()[blockArg.getArgNumber() - 1];
+        continue;
+      }
+    }
+    if (auto result = mlir::dyn_cast<mlir::OpResult>(value)) {
+      if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(result.getOwner())) {
+        if (result.getResultNumber() < forOp.getInitArgs().size()) {
+          value = forOp.getInitArgs()[result.getResultNumber()];
+          continue;
+        }
+      }
+    }
+    return value;
+  }
+}
+
+static mlir::FailureOr<StaticIndexRange>
+getViewElementOffsetRange(mlir::Operation *anchor, mlir::Value view,
+                          mlir::Value expectedRoot, llvm::StringRef role) {
+  StaticIndexRange total;
+  llvm::DenseSet<mlir::Value> visited;
+  while (true) {
+    view = resolveCarriedViewValue(view);
+    expectedRoot = resolveCarriedViewValue(expectedRoot);
+    if (view == expectedRoot)
+      return total;
+    if (!visited.insert(view).second)
+      return anchor->emitError()
+             << "unsupported_ddr_view: cyclic DDR view provenance";
+
+    if (auto collapse = view.getDefiningOp<mlir::memref::CollapseShapeOp>()) {
+      view = collapse.getSrc();
+      continue;
+    }
+    if (auto expand = view.getDefiningOp<mlir::memref::ExpandShapeOp>()) {
+      view = expand.getSrc();
+      continue;
+    }
+    if (auto cast = view.getDefiningOp<mlir::memref::CastOp>()) {
+      // memref.cast only weakens static type information.  It preserves the
+      // underlying address, so it contributes no element offset to the DDR
+      // range proof.
+      view = cast.getSource();
+      continue;
+    }
+
+    auto subview = view.getDefiningOp<mlir::memref::SubViewOp>();
+    if (!subview)
+      return anchor->emitError()
+             << "unsupported_ddr_view: cannot prove " << role
+             << " dynamic view offset to its DDR root";
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(subview.getSource().getType());
+    llvm::SmallVector<int64_t, 4> sourceStrides;
+    int64_t sourceOffset = 0;
+    if (!sourceType ||
+        mlir::failed(getStaticMemrefViewInfo(anchor, sourceType, sourceStrides,
+                                             sourceOffset, role,
+                                             /*allowDynamicOffset=*/true)))
+      return mlir::failure();
+    if (sourceStrides.size() != subview.getMixedOffsets().size())
+      return anchor->emitError()
+             << "unsupported_ddr_view: dynamic subview rank mismatch";
+
+    for (auto [offset, stride] :
+         llvm::zip(subview.getMixedOffsets(), sourceStrides)) {
+      mlir::FailureOr<StaticIndexRange> range =
+          getStaticIndexRange(anchor, offset, role);
+      if (mlir::failed(range))
+        return mlir::failure();
+      int64_t minContribution = 0;
+      int64_t maxContribution = 0;
+      if (!checkedMul(range->min, stride, minContribution) ||
+          !checkedMul(range->max, stride, maxContribution) ||
+          !checkedAdd(total.min, minContribution, total.min) ||
+          !checkedAdd(total.max, maxContribution, total.max))
+        return anchor->emitError()
+               << "range_end_overflow: DDR view offset range overflows int64";
+    }
+    view = subview.getSource();
+  }
 }
 
 static mlir::FailureOr<int64_t>
@@ -384,8 +567,10 @@ resolveDDRViews(mlir::Operation *op, mlir::Value ddrValue,
 
   llvm::SmallVector<int64_t, 4> viewStrides;
   int64_t viewOffsetElements = 0;
+  bool hasDynamicViewOffset = false;
   if (mlir::failed(getStaticMemrefViewInfo(
-          op, viewType, viewStrides, viewOffsetElements, descriptor.role)))
+          op, viewType, viewStrides, viewOffsetElements, descriptor.role,
+          /*allowDynamicOffset=*/true, &hasDynamicViewOffset)))
     return mlir::failure();
 
   std::optional<WaferPhysicalTensorInfo> viewInfo =
@@ -425,12 +610,22 @@ resolveDDRViews(mlir::Operation *op, mlir::Value ddrValue,
       return op->emitError() << "unsupported_ddr_view: cannot compute "
                              << descriptor.role << " DDR root physical bytes";
 
-    int64_t viewOffsetBytes = 0;
+    StaticIndexRange staticOffsetRange{viewOffsetElements, viewOffsetElements};
+    mlir::FailureOr<StaticIndexRange> dynamicOffsetRange = staticOffsetRange;
+    if (hasDynamicViewOffset)
+      dynamicOffsetRange =
+          getViewElementOffsetRange(op, ddrValue, root, descriptor.role);
+    if (mlir::failed(dynamicOffsetRange))
+      return mlir::failure();
+    const StaticIndexRange &viewOffsetElementsRange = *dynamicOffsetRange;
+
+    int64_t minViewOffsetBytes = 0;
+    int64_t maxViewOffsetBytes = 0;
     if (viewInfo->bitPackedElement || rootInfo->bitPackedElement) {
       if (!viewInfo->bitPackedElement || !rootInfo->bitPackedElement)
         return op->emitError()
                << "unsupported_ddr_view: DDR view and root bitpacking differ";
-      if (viewOffsetElements != 0)
+      if (viewOffsetElementsRange.min != 0 || viewOffsetElementsRange.max != 0)
         return op->emitError()
                << "unsupported_ddr_view: bitpacked DDR view must have zero "
                   "element offset";
@@ -439,16 +634,19 @@ resolveDDRViews(mlir::Operation *op, mlir::Value ddrValue,
         return op->emitError()
                << "unsupported_ddr_view: DDR view and root element byte sizes "
                   "differ";
-      if (!checkedMul(viewOffsetElements, viewInfo->elementBytes,
-                      viewOffsetBytes))
+      if (!checkedMul(viewOffsetElementsRange.min, viewInfo->elementBytes,
+                      minViewOffsetBytes) ||
+          !checkedMul(viewOffsetElementsRange.max, viewInfo->elementBytes,
+                      maxViewOffsetBytes))
         return op->emitError()
                << "range_end_overflow: DDR view byte offset overflows int64";
     }
 
     if (mlir::failed(verifyDDRRoot(op, root, defaultAlignment, offsets)))
       return mlir::failure();
-    views.push_back(DDRView{root, rootType, viewType, viewOffsetBytes,
-                            viewInfo->physicalBytes, rootInfo->physicalBytes});
+    views.push_back(DDRView{root, rootType, viewType, minViewOffsetBytes,
+                            maxViewOffsetBytes, viewInfo->physicalBytes,
+                            rootInfo->physicalBytes});
   }
   return views;
 }
@@ -486,7 +684,7 @@ collectDDRDescriptorDemand(mlir::Operation *op, mlir::Value ddrValue,
                              << " exceeds DDR view span " << view.viewSpanBytes;
 
     int64_t absoluteEnd = 0;
-    if (!checkedAdd(view.viewOffsetBytes, *localEnd, absoluteEnd))
+    if (!checkedAdd(view.maxViewOffsetBytes, *localEnd, absoluteEnd))
       return op->emitError()
              << "range_end_overflow: DDR access end overflows int64";
     if (absoluteEnd > view.rootBytes)
@@ -517,11 +715,28 @@ emitLifetimeFailure(mlir::Operation *scope,
   case memory_planning::LifetimeFailureKind::MissingAllocationEvent:
     return origin->emitError()
            << "lifetime_overlap_conflict: missing event for DDR allocation";
-  case memory_planning::LifetimeFailureKind::UnsupportedTrackedValueProducer:
-    return origin->emitError()
-           << "unsupported_lifetime_alias: DDR memref producers must be "
-              "memref.alloc or implement a supported alias/control-flow "
-              "interface";
+  case memory_planning::LifetimeFailureKind::UnsupportedTrackedValueProducer: {
+    mlir::InFlightDiagnostic diagnostic =
+        origin->emitError()
+        << "unsupported_lifetime_alias: DDR memref producers must be "
+           "memref.alloc or implement a supported alias/control-flow "
+           "interface (operation "
+        << origin->getName();
+    if (auto toMemref =
+            mlir::dyn_cast<mlir::bufferization::ToMemrefOp>(origin)) {
+      mlir::Value tensor = toMemref.getTensor();
+      if (mlir::Operation *producer = tensor.getDefiningOp())
+        diagnostic << ", tensor producer " << producer->getName();
+      else if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(tensor)) {
+        mlir::Operation *parent = argument.getOwner()->getParentOp();
+        diagnostic << ", tensor block argument parent "
+                   << (parent ? parent->getName().getStringRef()
+                              : llvm::StringRef("<none>"));
+      }
+    }
+    diagnostic << ")";
+    return mlir::failure();
+  }
   case memory_planning::LifetimeFailureKind::UnsupportedTrackedValueEscape:
     return origin->emitError()
            << "unsupported_lifetime_alias: tracked DDR storage cannot escape "
@@ -817,10 +1032,15 @@ static mlir::LogicalResult planScopeDDRMemory(
     mlir::Operation *origin =
         timelineFailure.origin ? timelineFailure.origin : scope;
     if (timelineFailure.kind ==
-        memory_planning::TimelineFailureKind::TooManyDecisions)
+        memory_planning::TimelineFailureKind::DecisionDomainExhausted)
       return origin->emitError()
-             << "lifetime_overlap_conflict: DDR memory planning supports at "
-                "most 64 structured branch/loop decision points";
+             << "lifetime_analysis_resource_exhausted: DDR structured "
+                "decision identifier domain exhausted";
+    if (timelineFailure.kind ==
+        memory_planning::TimelineFailureKind::InconsistentPathCondition)
+      return origin->emitError()
+             << "lifetime_overlap_conflict: DDR memory planning could not "
+                "construct a consistent structured path condition";
     return origin->emitError()
            << "unsupported_lifetime_control_flow: DDR memory planning only "
               "supports single-block wafer.tile.region, scf.if and scf.for "

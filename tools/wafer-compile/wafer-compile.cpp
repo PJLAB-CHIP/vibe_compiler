@@ -60,7 +60,7 @@ int main(int argc, char **argv) {
       options.targetModelMaximumFusedMultiplyAdds ||
       options.targetModelMaximumMovementBytes ||
       options.targetModelMaximumMovementSegments ||
-      options.targetModelGemmBackend ||
+      options.targetModelNumericPolicy ||
       !options.targetModelBulkRecords.empty() ||
       options.targetModelMaximumBulkTotalBytes ||
       options.targetModelMaximumBulkScratchpadBytes ||
@@ -109,8 +109,9 @@ int main(int argc, char **argv) {
   std::optional<wafer::model::TargetModelExecutionPolicy>
       targetModelExecutionPolicy;
 #ifdef WAFER_ENABLE_TARGET_BULK_MODEL
-  std::unique_ptr<wafer::model::QualifiedTargetModelBulkBackend>
-      targetModelBulkBackend;
+  std::unique_ptr<wafer::model::TargetModelBulkBackend> targetModelBulkBackend;
+  std::unique_ptr<wafer::model::ManagedReferenceTargetModelBackend>
+      targetModelManagedReferenceBackend;
 #endif
   if (options.targetModel) {
     auto scalar =
@@ -131,28 +132,37 @@ int main(int argc, char **argv) {
         wafer::FormalNumericWorkBudget::create(*scalar, *fusedMultiplyAdds),
         *movementBytes, *movementSegments));
 
-    llvm::StringRef gemmBackend =
-        options.targetModelGemmBackend
-            ? llvm::StringRef(*options.targetModelGemmBackend)
+    llvm::StringRef numericPolicy =
+        options.targetModelNumericPolicy
+            ? llvm::StringRef(*options.targetModelNumericPolicy)
             : llvm::StringRef("formal");
     const bool hasBulkConfiguration =
         !options.targetModelBulkRecords.empty() ||
         options.targetModelMaximumBulkTotalBytes ||
         options.targetModelMaximumBulkScratchpadBytes ||
         options.targetModelMaximumBulkReorderBytes;
-    if (gemmBackend == "formal") {
+    if (numericPolicy == "formal") {
       if (hasBulkConfiguration) {
         llvm::errs() << "wafer-compile: bulk model options require "
-                        "--target-model-gemm-backend=prefer-admitted\n";
+                        "--target-model-numeric-policy=prefer-admitted or "
+                        "managed-reference\n";
         return 1;
       }
       targetModelExecutionPolicy.emplace(
           wafer::model::TargetModelExecutionPolicy::formalOnly());
-    } else if (gemmBackend == "prefer-admitted") {
+    } else if (numericPolicy == "prefer-admitted" ||
+               numericPolicy == "managed-reference") {
 #ifdef WAFER_ENABLE_TARGET_BULK_MODEL
-      if (options.targetModelBulkRecords.empty()) {
+      if (numericPolicy == "prefer-admitted" &&
+          options.targetModelBulkRecords.empty()) {
         llvm::errs() << "wafer-compile: prefer-admitted GEMM requires at "
                         "least one --target-model-bulk-record\n";
+        return 1;
+      }
+      if (numericPolicy == "managed-reference" &&
+          !options.targetModelBulkRecords.empty()) {
+        llvm::errs() << "wafer-compile: managed-reference GEMM does not "
+                        "consume exact --target-model-bulk-record entries\n";
         return 1;
       }
       auto maximumTotalBytes =
@@ -166,29 +176,45 @@ int main(int argc, char **argv) {
                              "--target-model-max-bulk-reorder-bytes");
       if (!maximumTotalBytes || !maximumScratchpadBytes || !maximumReorderBytes)
         return 1;
-      auto backend = wafer::model::QualifiedTargetModelBulkBackend::create(
-          options.targetModelBulkRecords,
+      const wafer::BulkNumericWorkBudget bulkBudget =
           wafer::BulkNumericWorkBudget::create(*maximumTotalBytes,
                                                *maximumScratchpadBytes,
-                                               *maximumReorderBytes));
-      if (!backend) {
-        llvm::errs() << "wafer-compile: " << llvm::toString(backend.takeError())
-                     << "\n";
-        return 1;
+                                               *maximumReorderBytes);
+      if (numericPolicy == "prefer-admitted") {
+        auto qualified = wafer::model::QualifiedTargetModelBulkBackend::create(
+            options.targetModelBulkRecords, bulkBudget);
+        if (!qualified) {
+          llvm::errs() << "wafer-compile: "
+                       << llvm::toString(qualified.takeError()) << "\n";
+          return 1;
+        }
+        targetModelBulkBackend = std::move(*qualified);
+        targetModelExecutionPolicy.emplace(
+            wafer::model::TargetModelExecutionPolicy::preferAdmitted(
+                *targetModelBulkBackend));
+      } else {
+        auto managed = wafer::model::ManagedReferenceTargetModelBackend::create(
+            bulkBudget);
+        if (!managed) {
+          llvm::errs() << "wafer-compile: "
+                       << llvm::toString(managed.takeError()) << "\n";
+          return 1;
+        }
+        targetModelManagedReferenceBackend = std::move(*managed);
+        targetModelExecutionPolicy.emplace(
+            wafer::model::TargetModelExecutionPolicy::managedReference(
+                *targetModelManagedReferenceBackend,
+                *targetModelManagedReferenceBackend));
       }
-      targetModelBulkBackend = std::move(*backend);
-      targetModelExecutionPolicy.emplace(
-          wafer::model::TargetModelExecutionPolicy::preferAdmitted(
-              *targetModelBulkBackend));
 #else
-      llvm::errs() << "wafer-compile: qualified bulk model support is not "
+      llvm::errs() << "wafer-compile: bulk model support is not "
                       "configured\n";
       return 1;
 #endif
     } else {
       llvm::errs() << "wafer-compile: invalid "
-                      "--target-model-gemm-backend value: "
-                   << gemmBackend << "\n";
+                      "--target-model-numeric-policy value: "
+                   << numericPolicy << "\n";
       return 1;
     }
   }

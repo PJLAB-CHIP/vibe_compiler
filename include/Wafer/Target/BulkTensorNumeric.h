@@ -314,6 +314,19 @@ executeAdmittedBulkTensorNumeric(const BulkExecutionEnvironment &environment,
                                  const BulkTensorStorage &destinationTemplate,
                                  BulkNumericWorkBudget budget);
 
+/// Executes one deterministic managed-reference MatMul for a structurally
+/// supported f16/bf16/f32 command whose physical inputs contain only finite
+/// values. Unlike exact qualification-record admission, this scalable path is
+/// a model-reference acceleration policy: it is not a claim of raw-exact
+/// target arithmetic or hardware correlation. The caller must validate the
+/// final model output against its external oracle with an explicit tolerance.
+llvm::Expected<BulkTensorNumericResult>
+executeManagedReferenceBulkTensorNumeric(
+    const BulkExecutionEnvironment &environment,
+    const ResolvedNumericCommand &command,
+    llvm::ArrayRef<BulkTensorStorage> inputs,
+    const BulkTensorStorage &destinationTemplate, BulkNumericWorkBudget budget);
+
 } // namespace wafer
 
 #endif // WAFER_TARGET_BULKTENSORNUMERIC_H

@@ -1,8 +1,8 @@
 # Wafer Shardy / SPMD 设计
 
-状态：2026-07-14按Q0.L target-profile carry-through边界同步。本文拥有frontend sharding到post-SPMD local program的合同；
-Q15形成verified grouped program，Q16直接消费frontend verifier返回的typed boundary/shard result形成显式
-per-rank executable。实现状态看`tasks/progress.md`。
+状态：2026-07-16按Q29 structured-program handoff同步。本文拥有frontend sharding到post-SPMD local program的合同；
+Q15形成verified rank-local structured tensor program，Q29直接消费frontend verifier返回的typed
+boundary/shard result形成显式per-rank task/dataflow executable。实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
 
@@ -15,13 +15,14 @@ Pipeline position:
   在transaction-owned source snapshot上建立exact wafer.target.topology/wafer.execution.mesh，把pre-SPMD
   StableHLO和frontend sharding交给pinned XLA helper，由helper内部完成Shardy propagation与XLA SPMD；
   重新读取并验证local signature、typed distributed input/result boundary、logical parameter shards和
-  post-SPMD marker，再进入local normalization/group。
+  post-SPMD marker，再进入local normalization。
 - Output artifact / IR:
   post-SPMD StableHLO local program、logical collective、parameter shard payload/metadata，以及Q15最终的
-  verified grouped program directory。当前不是多component program、代表rank去重集合或ExecutableBundle。
+  verified rank-local structured tensor program directory。当前不是多component program、代表rank去重集合或
+  ExecutableBundle。
 - Downstream consumer:
-  StableHLO-to-Linalg、tensor collective normalization、logical group；Q16在该grouped program上按
-  logical rank创建isolated static clones。
+  StableHLO-to-Linalg和tensor collective normalization；Q29 scheduler在该structured program上按logical rank
+  创建isolated static candidate clones。
 - User-level driver / named pipeline:
   正式入口为
   `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`；
@@ -31,9 +32,9 @@ Pipeline position:
   不实现MPMD、代表rank去重、dp/tp/pp/ep私有协议、distributed/parallel dialect、physical endpoint/DTE、
   SPM/DDR、target ABI或runtime launch；不从strategy名、parameter名、文件名或side JSON恢复语义。
 - Completion gate:
-  data、column、row三种真实PyTorch/XLA mark_sharding program经同一driver和真实helper到verified group staging；
-  rank-count与mesh、post-SPMD distributed boundary/parameter shard logical_rank_count及coverage一致；Q16当前只对
-  无collective的data/column形成bundle，row在`TransportContract::None`边界明确拒绝且不发布partial output。
+  data、column、row三种真实PyTorch/XLA mark_sharding program经同一driver和真实helper到verified
+  structured-program staging；rank-count与mesh、post-SPMD distributed boundary/parameter shard
+  logical_rank_count叉coverage一致。本stage不以后续task scheduling/transport是否通过替代SPMD验收。
 ```
 
 ## 2. 稳定边界
@@ -124,7 +125,8 @@ shard metadata；
 ### 2.3 Post-SPMD handoff
 
 post-SPMD program仍是target-independent tensor program。StableHLO logical collective先进入
-`wafer.linalg_ext.collective.*` tensor handoff，与local Linalg/Tensor/Arith一起形成`wafer.group`。它不携带：
+`wafer.linalg_ext.collective.*` tensor handoff，与local Linalg/Tensor/Arith一起组成完整rank-local
+structured tensor program。它不携带：
 
 - physical peer或route；
 - DTE engine/slot/token；
@@ -132,16 +134,16 @@ post-SPMD program仍是target-independent tensor program。StableHLO logical col
 - target packet/CRT调用；
 - runtime resource handle。
 
-Q15只发布重新读取并验证的grouped program directory。Q16从同一个typed request的execution rank domain派生
-`logicalRank=0..N-1`，每rank在isolated clone上调用显式rank lowering API；registered rank-0 named pipeline仍只
-是debug replay，不能替代all-rank coverage。
+Q15只发布重新读取并验证的structured tensor program directory。Q29从同一个typed request的
+execution rank domain派生`logicalRank=0..N-1`，每rank在isolated clone上调用显式rank scheduling/
+lowering API。production不形成中间调度容器，也没有rank-0 compatibility replay。
 
 ## 3. 当前示例验证矩阵
 
 当前真实framework/exporter测试矩阵列出六种示例mark形态，用于显示证据覆盖而不是定义固定协议或封闭策略枚举；
 新增合法sharding形态应由同一typed boundary合同接纳，不需要先把名称加入compiler协议。
 
-| Strategy | Frontend mark/export | Q15 helper→group | 当前结论 |
+| Strategy | Frontend mark/export | Q15 helper→structured program | 当前结论 |
 | --- | --- | --- | --- |
 | data / batch | 已验证 | 已验证 | production supported |
 | column parallel | 已验证 | 已验证 | production supported |
@@ -153,6 +155,11 @@ Q15只发布重新读取并验证的grouped program directory。Q16从同一个t
 2D output当前helper会在非iota tile assignment上失败；partial replication也没有进入完整shard verifier合同。
 这些缺口应作为后续SPMD扩展处理，不能通过缩小测试、手写post-SPMD IR或名字匹配伪造完成。
 
+Q28标准7B单block只组合本表已经支持的column-parallel和row/contracting mark：TP16后每个projection parameter的
+rank slice必须按typed offsets/sizes/strides对global tensor all-and-only覆盖，row-parallel输出由现有logical
+collective闭合。H=4096、I=11008和sequence=16只是该验证case参数；SPMD协议仍由sharding metadata和distributed
+boundary relation定义，不按模型名或weight名分支。
+
 当前Q15是单program/single-component边界。MPMD、pipeline parallel、MoE component graph、代表rank去重和
 多卡coordinate都不在active DAG；恢复时必须先有真实upstream representation和downstream consumer，再设计最小
 op/type/attr/verifier，不能把旧讨论中的`wafer.parallel.program`或私有distributed side table直接复活。
@@ -160,17 +167,17 @@ op/type/attr/verifier，不能把旧讨论中的`wafer.parallel.program`或私�
 ## 4. 原子性与失败语义
 
 `wafer-compile`先把source program完整复制到transaction-owned snapshot。parser、frontend verifier和helper只读
-snapshot；原source不被原地补topology、改MLIR或写shards。helper、local normalization和group formation都发生在
-唯一staging root内。
+snapshot；原source不被原地补topology、改MLIR或写shards。helper和local normalization都发生在唯一
+staging root内。
 
-只有下列检查全部成功后，Q15 grouped directory才通过同filesystem rename变为可见：
+只有下列检查全部成功后，Q15 structured-program directory才通过同filesystem rename变为可见：
 
 1. source IR/program admission；
 2. exact topology/mesh；
 3. helper exit status；
 4. post-SPMD marker、零SDY op、metadata/payload relation；
 5. StableHLO-to-Linalg和collective normalization；
-6. logical group formation；
+6. structured tensor program legality；
 7. final parse/verify/readback。
 
 任一失败都删除staging；新output不存在，既有output和source byte-identical。Q15当前拒绝覆盖已存在output；Q16的
@@ -186,23 +193,25 @@ snapshot；原source不被原地补topology、改MLIR或写shards。helper、loc
 - pinned helper build：`tools/build_xla_spmd_partitioner_helper.py`；
 - real program generator：`test/Tools/Inputs/wafer_pytorch_xla_capture.py`。
 
-实现入口不是长期artifact名。特别是历史测试文件名中的`wafer-opt-spmd-*`只是索引；其RUN行必须调用当前统一
-driver，不能据文件名恢复旧program mode。
+实现入口不是长期artifact名。program-directory integration tests以`wafer-compile-*`命名并调用统一driver；
+不能据测试文件名恢复额外program mode。
 
 ## 6. 验证
 
 Mandatory Q15 coverage：
 
-- `test/Tools/wafer-opt-spmd-partition.test`：真实data/column/row exporter→helper→group，发布后重新运行
+- `test/Tools/wafer-compile-spmd-partition.test`：真实data/column/row exporter→helper→structured program，发布后重新运行
   program-directory verifier，并检查data/column distributed boundary和parameter shard payload；
-- `test/Tools/wafer-opt-spmd-to-group.test`：collective/local compute进入logical groups；
-- `test/Tools/wafer-opt-hf-megatron-transformer-block.test`：真实Llama-style constants、collectives和shards到group；
+- `test/Tools/wafer-compile-structured-tensor-program.test`：collective/local compute进入structured tensor program；
+- `test/Tools/wafer-compile-hf-megatron-transformer-block.test`：真实Llama-style constants、collectives和shards到
+  structured tensor program；
 - `test/Tools/wafer-compile-atomicity.test`：rank=1、mesh mismatch、duplicate topology、helper late failure、
   missing marker、source/final/staging原子性；
 - `test/Tools/wafer-compile-request.test`：显式rank、非法/重复/旧CLI rejection；
 - `test/Tools/wafer-opt-ir-only.test`：旧program-directory参数被wafer-opt拒绝。
 
-局部`test/Spmd`和Shardy named-pipeline tests只证明IR parse/propagation，不证明helper、program payload或group handoff。
+局部`test/Spmd`和Shardy named-pipeline tests只证明IR parse/propagation，不证明helper、program payload或
+structured-program handoff。
 frontend示例矩阵的export test只证明mark admission，不证明后三种示例已完成SPMD partition，也不把六种名称
 固定成compiler协议。
 

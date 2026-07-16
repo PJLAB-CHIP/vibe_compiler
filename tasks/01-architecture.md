@@ -1,6 +1,6 @@
 # Wafer AI Compiler Architecture
 
-状态：2026-07-15按当前实现事实、CPU oracle和untimed SystemC数值模型分支更新。本文固定近期单tile/单卡16-tile纵向合同和长期扩展边界；
+状态：2026-07-16按Q29 rank-local tile-dataflow scheduling终态更新。本文固定近期单tile/单卡16-tile纵向合同和长期扩展边界；
 实现状态只看`tasks/progress.md`，专题细节由第9节编号文档拥有。
 
 本文使用 **Wafer** 作为目标硬件和软件栈名称。TX8/TX81只在引用底层依赖、公开ABI或反向工程事实时
@@ -18,7 +18,8 @@ block是linear/MLP闭环后的第二级gate。
 - StableHLO program directory和parameter payload/shard metadata验证；
 - target topology、execution mesh、Shardy propagation和外部XLA SPMD helper；
 - StableHLO到Linalg/Tensor/SCF以及tensor collective normalization；
-- `wafer.group`、`wafer.tile.region`、target-abstract tile compute/movement；
+- production已经发布verified rank-local structured tensor program，rank-local scheduler直接从
+  structured SSA/indexing maps构造candidate并materialize target-abstract tile compute/movement；
 - instruction IR、Direct DTE/local fence、SPM/DDR planning；
 - target LLVM CRT calls、repo-local CRT和device link；
 - typed manifest、canonical JSON和no-card RuntimeSession。
@@ -43,9 +44,9 @@ Pipeline position:
   framework/exporter产生的program directory或pre-exported StableHLO，包含可验证model inputs/outputs、
   immutable parameter payload/shard metadata、bounded shape和可选sharding seed；以及明确target topology。
 - Current stage responsibility:
-  验证program，形成SPMD/local tensor program，在显式rank clone上完成group/candidate、完整traversal、layout、
-  instruction、SPM/DDR/completion和target legality；所有rank成功后原子形成executable bundle，再生成target
-  modules和typed manifest。
+  验证program，形成SPMD/local tensor program，在显式rank clone上从Linalg indexing maps生成完整tiled task
+  traversal，联合选择有限tile、layout、SPM residency/spill、task order和event；完成instruction、whole-rank
+  SPM/DDR/completion和target legality后，所有rank原子形成executable bundle，再生成target modules和typed manifest。
 - Output artifact / IR:
   `RankExecutable[]`、atomic `ExecutableBundle`、verified target modules、typed C++ `PackageManifest`及
   canonical JSON delivery form。
@@ -54,7 +55,7 @@ Pipeline position:
 - User-level driver / named pipeline:
   `wafer-compile`是稳定用户入口；`wafer-opt`和named MLIR pipelines只用于IR-local开发、调试和测试。
 - Explicit non-goals:
-  runtime不重新做sharding/candidate/layout/memory/transport planning；package不复制instruction schedule；
+  runtime不重新做sharding/candidate/layout/memory/transport planning；package不复制task/instruction schedule；
   近期不实现跨卡/MPMD/hybrid rank-class、Protobuf/WCRE、state migration或cost calibration。
 - Completion gate:
   真实linear/MLP分别以rank-count=1和16只经`wafer-compile`产生完整bundle/manifest/runtime trace，
@@ -73,11 +74,13 @@ Pipeline position:
 - Current stage responsibility:
   用typed CompilationRequest接管program orchestration；先在transaction-owned输入快照上完成frontend admission，
   再建立与ExecutionConfig完全一致的topology/mesh，把pre-SPMD StableHLO和显式frontend sharding交给
-  pinned XLA helper，由helper内部完成Shardy propagation/XLA SPMD；随后执行StableHLO-to-Linalg和
-  logical group formation。wafer-opt只保留IR-local parse/pass/pipeline调试。
+  pinned XLA helper，由helper内部完成Shardy propagation/XLA SPMD；随后执行StableHLO-to-Linalg并形成、序列化
+  verified rank-local structured tensor program。Q29 scheduler直接从SSA/indexing maps构造task dataflow，不构造
+  额外的调度边界artifact。wafer-opt只保留与当前IR合同一致的IR-local parse/pass/pipeline调试。
 - Output artifact / IR:
-  Q15阶段输出经重新读取和验证的grouped program directory；它是Q16 per-rank clone的直接上游，
-  不是ExecutableBundle、package或完成的target artifact。
+  Q15阶段输出经重新读取和验证的rank-local structured tensor program directory，不包含grouped compatibility
+  serialization。它是后续per-rank task scheduler的直接
+  上游，不是ExecutableBundle、package或完成的target artifact。
 - Downstream consumer:
   Q16在同一用户driver内对全部logical rank建立isolated clone并形成RankExecutable[]。
 - User-level driver / named pipeline:
@@ -99,8 +102,9 @@ Pipeline position:
 也不能从已有IR“取第一个”恢复。`CompilationRequest`是move-only C++ value，只持有source program locator和validated
 `ExecutionConfig`；config同时拥有rank-count与target profile，后端不得从CLI自由字符串、host环境或CModel补建identity。
 compiler在读取前把source复制到transaction-owned snapshot，后续parser、verifier和XLA helper都只消费该snapshot。
-output root和build-time helper属于orchestration，不属于program语义；Q16接入后，Q15的grouped directory将留在同一
-bundle transaction内，不形成第二条production pipeline。
+output root和build-time helper属于orchestration，不属于program语义；structured directory留在同一bundle
+transaction内，不形成第二条production pipeline。已退役的调度边界没有serialization、pass或
+named-pipeline compatibility surface。
 
 当前pinned XLA helper自身拥有StableHLO→Shardy→XLA SPMD的可接受输入/输出边界；compiler不得先把
 `sdy.constant`、`sdy.reshard`或其它SDY中间op写给只接受StableHLO的helper。Wafer的Shardy named pipeline继续用于
@@ -112,8 +116,8 @@ partition；默认性能切分policy必须等有可验证的StableHLO↔SDY expo
 | Verified program | StableHLO、func、tensor、program directory metadata/payload | model语义、shape/dtype、输入输出、parameter shard admission | rank placement、SPM/DDR offset、runtime handle |
 | Target/mesh | `wafer.target.topology`、`wafer.execution.mesh` | 单卡physical endpoints、logical rank domain、unavailable endpoint | tensor sharding、candidate、packet |
 | SPMD/local tensor | StableHLO/Shardy output、Linalg/Tensor/SCF、LinalgExt collective | rank-local compute和logical collective | physical peer/channel、SPM、target ABI |
-| Candidate group | `wafer.group`和pass-local candidate specification | fusion boundary、完整traversal需求、bounded proposal | accepted executable事实、package字段 |
-| Tile execution | `wafer.tile.region`、Wafer memref、`wafer.tile.*` | tile-local buffer、layout materialization、movement/compute/sync body | global search trace、runtime launch |
+| Tile-dataflow candidate | rank-local Linalg/indexing-map analysis和transformation-local candidate clone | 完整task traversal、有限tile/order/layout/residency/spill proposal | accepted executable事实、package字段、shadow schedule |
+| Tile execution | rank function、`wafer.tile.region` task/traversal fragment、Wafer memref、`wafer.tile.*` | typed task buffer/data/event edge、layout、movement/compute/collective；region不拥有独立arena | rejected search trace、runtime launch |
 | Instruction | `wafer.instr.*`、Direct DTE、completion op | target-abstract invocation、physical geometry、resource effect | raw runtime handle、package shadow schedule |
 | Memory/completion | SSA use-def、effect、accepted SPM/DDR offset、token/fence | complete rank-entry lifetime、range、reuse和completion legality | planner trace、physical host allocation |
 | Executable bundle | typed C++ `RankExecutable[]`/`ExecutableBundle` | explicit rank、entry、accepted module/resource/completion、atomic all-rank result | rejected candidates、runtime object |
@@ -142,37 +146,40 @@ weight/state/rank语义。
 单卡target topology是1 card × 4×4 tiles。`execution.mesh`为rank-count=1或16提供logical rank domain。
 topology不做tensor sharding；Shardy/XLA SPMD消费rank domain并输出local program/collective。
 
-近期使用per-rank static specialization：每个rank clone都有显式rank coordinate，group/collective lowering不得
+近期使用per-rank static specialization：每个rank clone都有显式rank coordinate，task/collective lowering不得
 使用默认0、文件名或pass-only hidden option。rank-count=1只是同一接口的单成员情况。
 
 保留的长期扩展点只有：execution config可扩展mesh coordinates，resource/completion identity不依赖单卡路径，
 bundle可包含更多rank。`dp/tp/pp/ep` typed component、MPMD和rank-class dedup等对象等真实consumer出现后再设计。
 
-## 5. Group、Candidate 和完整 Traversal
+## 5. Tile-Dataflow Scheduling、Candidate 和完整 Traversal
 
-`wafer.group`表达logical fusion/scheduling unit，其body保持tensor SSA和structured control flow。analysis从当前
-group重算tiling/layout需求；search trace、estimate和rejected candidate不进入IR。
+rank-local structured program是source语义owner。scheduler从Linalg iterator/indexing maps、SSA use-def、shape、
+dtype、effect和collective interface构造typed tiled task DAG；每个movement、layout、compute和collective仍是独立
+task。producer/consumer是否避免DDR只由accepted IR决定：共享SPM memref/version表示resident edge，显式
+store/load表示spill。`wafer.group`不再表达融合、residency、DDR切边、SPM arena或提交单元。
 
 candidate流程必须拆成五个责任：
 
-1. generation：从shape/indexing/reduction关系生成bounded candidate specs；
-2. materialization：只在isolated clone中构造candidate IR；
-3. legality：运行tile/instruction/SPM/DDR/geometry/completion gates；
-4. ranking：只在合法candidate间比较cost；
-5. commit：把覆盖完整traversal的accepted result写入rank clone。
+1. generation：按tile-domain class从shape/indexing/reduction和capacity threshold生成bounded tile、layout、
+   residency和task-order proposals；
+2. materialization：只在whole-rank/whole-variant clone中构造完整task/dataflow IR；
+3. legality：运行instruction、whole-rank SPM、DDR、event、transport、geometry和ABI gates；
+4. ranking：只在完整passing candidates间比较显式DDR/SPM/compute/issue/communication cost；
+5. commit：重新验证winning clone并一次提交全部rank programs。
 
 representative tile可以用于便宜的早期拒绝，不能作为accepted artifact。commit必须覆盖完整静态traversal，
-包括非整除tail，并证明每个result element all-and-only一次覆盖。当前selector已对支持的equal-shape、
-independent Linalg roots静态枚举全部output tiles/reduction chunks，accepted artifact和commit都会重放该
-complete-traversal API；因此tiled candidate不再因representative通过而提交，也不再被临时限制为full shape。
-当前静态展开和producer-chain fail-closed仍只是bounded correctness基线，scalable traversal loop、不同
-output domain和producer-chain tile-and-fuse由06的后续边界负责。
+包括非整除tail和ordered reduction contribution，并证明每个result element all-and-only一次。SPM lifetime从完整
+rank task/event graph重算；`wafer.tile.region`可以是task/traversal fragment，但不能形成独立memory plan或强制
+intermediate DDR。
 
-V0 correctness-first策略允许未找到可行candidate时直接失败，不要求搜索完备或全局最优。Direct full shape是
-普通candidate policy，不是绕过legality的平行pipeline。
+搜索不枚举source op任意partition、所有topological orders、所有buffer subsets或tile-size Cartesian product。
+tile-domain menu、optional residency frontier和reuse-aware order都有compiler-private bound；未找到candidate可以
+fail request，但搜索不完备不能误报workload语义非法。Direct full shape只是普通proposal，不是绕过legality的
+fallback。
 
-多个groups和所有ranks先在clone中完成验证；只有整个request成功才形成`ExecutableBundle`。单个group通过、
-representative通过或某个rank通过都不能部分发布。
+全部rank在clone中完成验证后才能形成`ExecutableBundle`。单task、单region、旧group、representative或某个rank
+通过都不能部分发布。详细终态由06拥有。
 
 ## 6. Tile、Instruction、Memory 和 Completion
 
@@ -205,11 +212,13 @@ issue顺序和地址相同不等于完成。无token/fence/engine completion pro
 target conversion必须在原SCF/CF/function位置lower instruction leaf，不能递归walk后线性发call。正式实现采用
 MLIR dialect conversion和明确legality target。
 
-在正式结构保持conversion完成前，旧lowering必须在任何mutation前拒绝：
+target conversion消费已经提交的structured rank instruction program，必须保持task/event/SCF控制流位置，不能
+递归walk后线性发call。尚未有明确instruction/event lowering合同的结构在任何mutation前拒绝：
 
 - multi-block function/region；
 - `func.call`或其它callable relation；
-- 除single-block `wafer.tile.region`外包含instruction的nested region；
+- 无法由当前event/effect和target branch/loop合同解释的nested region；legacy single-block
+  `wafer.tile.region`限制只属于Q29删除前的旧实现，不是长期架构要求；
 - 无法由当前ABI证明的geometry/narrowing。
 
 转换在module clone上执行；失败时source module byte-identical。成功输出不残留非法Wafer/memref/func op。
@@ -285,7 +294,7 @@ package execution；Q22.P timing calibration保持deferred，
 | Shardy/XLA SPMD output和rank specialization | 03 |
 | topology/execution mesh | 04 |
 | local structured compute | 05 |
-| group/candidate/complete traversal | 06、07 |
+| tile-dataflow scheduling/candidate/complete traversal | 06、07 |
 | layout materialization | 08 |
 | SPM/DDR lifetime和accepted offsets | 09、12 |
 | target-abstract compute/movement和instruction geometry | 10、11 |

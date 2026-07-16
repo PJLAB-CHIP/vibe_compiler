@@ -13,6 +13,56 @@
 
 namespace wafer::tile_region_to_instr {
 
+std::optional<StaticPhysicalOffsetCalculator>
+StaticPhysicalOffsetCalculator::create(mlir::MemRefType type) {
+  std::optional<WaferPhysicalTensorInfo> info =
+      wafer::computeWaferPhysicalTensorInfo(type);
+  if (!info || info->physicalBytes <= 0)
+    return std::nullopt;
+
+  llvm::SmallVector<int64_t, 4> strides;
+  if (info->layout != MemLayout::Cx && info->layout != MemLayout::NCx) {
+    int64_t offset = 0;
+    if (mlir::failed(mlir::getStridesAndOffset(type, strides, offset)) ||
+        strides.size() != static_cast<size_t>(type.getRank()))
+      return std::nullopt;
+    for (int64_t stride : strides) {
+      if (stride == mlir::ShapedType::kDynamic || stride < 0)
+        return std::nullopt;
+    }
+  }
+  return StaticPhysicalOffsetCalculator(type, std::move(*info),
+                                        std::move(strides));
+}
+
+std::optional<int64_t> StaticPhysicalOffsetCalculator::getByteOffset(
+    llvm::ArrayRef<int64_t> logicalIndices) const {
+  if (info.elementBytes <= 0 || info.bitPackedElement)
+    return std::nullopt;
+  if (type.getRank() != static_cast<int64_t>(logicalIndices.size()))
+    return std::nullopt;
+  for (auto [dim, index] : llvm::zip_equal(type.getShape(), logicalIndices)) {
+    if (dim == mlir::ShapedType::kDynamic || dim < 0 || index < 0 ||
+        index >= dim)
+      return std::nullopt;
+  }
+
+  if (info.layout == MemLayout::Cx || info.layout == MemLayout::NCx)
+    return wafer::computeWaferPhysicalElementByteOffset(type, info,
+                                                        logicalIndices);
+
+  int64_t linear = 0;
+  for (auto [index, stride] : llvm::zip_equal(logicalIndices, strides)) {
+    std::optional<int64_t> scaled = checkedMulI64(index, stride);
+    if (!scaled)
+      return std::nullopt;
+    if (*scaled > std::numeric_limits<int64_t>::max() - linear)
+      return std::nullopt;
+    linear += *scaled;
+  }
+  return checkedMulI64(linear, info.elementBytes);
+}
+
 namespace {
 
 struct PackedMovementDescriptor {
@@ -309,55 +359,6 @@ void createGatherScatter(mlir::PatternRewriter &rewriter, mlir::Location loc,
 
 namespace {
 
-bool matchesPackedDescriptor(llvm::ArrayRef<LogicalMovementSegment> segments,
-                             size_t start,
-                             llvm::ArrayRef<int64_t> sourceStrides,
-                             llvm::ArrayRef<int64_t> destStrides,
-                             llvm::ArrayRef<int64_t> iterations) {
-  if (sourceStrides.size() != 3 || destStrides.size() != 3 ||
-      iterations.size() != 3 || start >= segments.size())
-    return false;
-
-  std::optional<int64_t> totalSegments =
-      computeDescriptorPayloadBytes(/*innerBytes=*/1, iterations);
-  if (!totalSegments)
-    return false;
-  if (*totalSegments <= 0 ||
-      start + static_cast<size_t>(*totalSegments) > segments.size())
-    return false;
-
-  const LogicalMovementSegment &base = segments[start];
-  for (int64_t linear = 0; linear < *totalSegments; ++linear) {
-    const LogicalMovementSegment &segment = segments[start + linear];
-    if (segment.bytes != base.bytes)
-      return false;
-
-    int64_t i0 = linear % iterations[0];
-    int64_t i1 = (linear / iterations[0]) % iterations[1];
-    int64_t i2 = linear / (iterations[0] * iterations[1]);
-
-    std::optional<int64_t> expectedSource =
-        checkedAddScaledI64(base.sourceOffset, sourceStrides[0], i0);
-    std::optional<int64_t> expectedDest =
-        checkedAddScaledI64(base.destOffset, destStrides[0], i0);
-    if (!expectedSource || !expectedDest)
-      return false;
-    expectedSource = checkedAddScaledI64(*expectedSource, sourceStrides[1], i1);
-    expectedDest = checkedAddScaledI64(*expectedDest, destStrides[1], i1);
-    if (!expectedSource || !expectedDest)
-      return false;
-    expectedSource = checkedAddScaledI64(*expectedSource, sourceStrides[2], i2);
-    expectedDest = checkedAddScaledI64(*expectedDest, destStrides[2], i2);
-    if (!expectedSource || !expectedDest)
-      return false;
-
-    if (segment.sourceOffset != *expectedSource ||
-        segment.destOffset != *expectedDest)
-      return false;
-  }
-  return true;
-}
-
 int64_t inferPackedIteration(llvm::ArrayRef<LogicalMovementSegment> segments,
                              size_t start, int64_t blockSize,
                              llvm::SmallVectorImpl<int64_t> &sourceStrides,
@@ -382,11 +383,33 @@ int64_t inferPackedIteration(llvm::ArrayRef<LogicalMovementSegment> segments,
 
   int64_t inferred = 1;
   while (true) {
-    llvm::SmallVector<int64_t, 3> candidateIterations(iterations.begin(),
-                                                      iterations.end());
-    candidateIterations[dim] = inferred + 1;
-    if (!matchesPackedDescriptor(segments, start, sourceStrides, destStrides,
-                                 candidateIterations))
+    int64_t repetition = inferred;
+    std::optional<int64_t> repeatedBlock = checkedMulI64(blockSize, repetition);
+    if (!repeatedBlock)
+      break;
+    size_t blockStart = start + static_cast<size_t>(*repeatedBlock);
+    if (blockStart >= segments.size() ||
+        static_cast<size_t>(blockSize) > segments.size() - blockStart)
+      break;
+
+    bool matches = true;
+    for (int64_t withinBlock = 0; withinBlock < blockSize; ++withinBlock) {
+      const LogicalMovementSegment &first =
+          segments[start + static_cast<size_t>(withinBlock)];
+      const LogicalMovementSegment &candidate =
+          segments[blockStart + static_cast<size_t>(withinBlock)];
+      std::optional<int64_t> expectedSource = checkedAddScaledI64(
+          first.sourceOffset, sourceStrides[dim], repetition);
+      std::optional<int64_t> expectedDest =
+          checkedAddScaledI64(first.destOffset, destStrides[dim], repetition);
+      if (!expectedSource || !expectedDest || candidate.bytes != first.bytes ||
+          candidate.sourceOffset != *expectedSource ||
+          candidate.destOffset != *expectedDest) {
+        matches = false;
+        break;
+      }
+    }
+    if (!matches)
       break;
     iterations[dim] = inferred + 1;
     ++inferred;
@@ -449,9 +472,58 @@ packMovementDescriptor(llvm::ArrayRef<LogicalMovementSegment> segments,
 
 void createGatherScatterSegments(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
-    mlir::Value dest, llvm::ArrayRef<LogicalMovementSegment> segments) {
-  for (size_t index = 0; index < segments.size();) {
-    PackedMovementDescriptor packed = packMovementDescriptor(segments, index);
+    mlir::Value dest, llvm::ArrayRef<LogicalMovementSegment> segments,
+    bool mayReorderDisjointSegments) {
+  auto countCommands = [](llvm::ArrayRef<LogicalMovementSegment> ordered) {
+    uint64_t count = 0;
+    for (size_t index = 0; index < ordered.size();) {
+      PackedMovementDescriptor packed = packMovementDescriptor(ordered, index);
+      std::optional<int64_t> descriptorSegments = computeDescriptorPayloadBytes(
+          /*innerBytes=*/1, packed.source.iterations);
+      if (!descriptorSegments || *descriptorSegments <= 0)
+        descriptorSegments = 1;
+      index += static_cast<size_t>(*descriptorSegments);
+      ++count;
+    }
+    return count;
+  };
+
+  llvm::SmallVector<LogicalMovementSegment> sourceOrdered;
+  llvm::SmallVector<LogicalMovementSegment> destOrdered;
+  llvm::ArrayRef<LogicalMovementSegment> selected = segments;
+  uint64_t selectedCount = countCommands(selected);
+  if (mayReorderDisjointSegments && segments.size() > 1) {
+    sourceOrdered.assign(segments.begin(), segments.end());
+    llvm::sort(sourceOrdered, [](const LogicalMovementSegment &lhs,
+                                 const LogicalMovementSegment &rhs) {
+      if (lhs.sourceOffset != rhs.sourceOffset)
+        return lhs.sourceOffset < rhs.sourceOffset;
+      if (lhs.destOffset != rhs.destOffset)
+        return lhs.destOffset < rhs.destOffset;
+      return lhs.bytes < rhs.bytes;
+    });
+    uint64_t sourceCount = countCommands(sourceOrdered);
+    if (sourceCount < selectedCount) {
+      selected = sourceOrdered;
+      selectedCount = sourceCount;
+    }
+
+    destOrdered.assign(segments.begin(), segments.end());
+    llvm::sort(destOrdered, [](const LogicalMovementSegment &lhs,
+                               const LogicalMovementSegment &rhs) {
+      if (lhs.destOffset != rhs.destOffset)
+        return lhs.destOffset < rhs.destOffset;
+      if (lhs.sourceOffset != rhs.sourceOffset)
+        return lhs.sourceOffset < rhs.sourceOffset;
+      return lhs.bytes < rhs.bytes;
+    });
+    uint64_t destCount = countCommands(destOrdered);
+    if (destCount < selectedCount)
+      selected = destOrdered;
+  }
+
+  for (size_t index = 0; index < selected.size();) {
+    PackedMovementDescriptor packed = packMovementDescriptor(selected, index);
     createGatherScatter(rewriter, loc, source, dest, packed.source,
                         packed.dest);
 
@@ -644,36 +716,59 @@ getStaticLogicalMovementSegments(mlir::PatternRewriter &rewriter,
                                  mlir::MemRefType destType,
                                  std::string *failureReason,
                                  llvm::StringRef opLabel) {
-  std::optional<WaferPhysicalTensorInfo> sourceInfo =
-      wafer::computeWaferPhysicalTensorInfo(sourceType);
-  std::optional<WaferPhysicalTensorInfo> destInfo =
-      wafer::computeWaferPhysicalTensorInfo(destType);
-  if (!sourceInfo || !destInfo || sourceInfo->compactBytes <= 0 ||
-      destInfo->compactBytes <= 0 || sourceInfo->physicalBytes <= 0 ||
-      destInfo->physicalBytes <= 0)
+  std::optional<StaticPhysicalOffsetCalculator> sourceOffsets =
+      StaticPhysicalOffsetCalculator::create(sourceType);
+  std::optional<StaticPhysicalOffsetCalculator> destOffsets =
+      StaticPhysicalOffsetCalculator::create(destType);
+  if (!sourceOffsets || !destOffsets)
     return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
         rewriter, op, failureReason,
         llvm::Twine(opLabel)
             .concat(" requires static positive byte sizes")
             .str());
-  if (sourceInfo->compactBytes != destInfo->compactBytes)
+  const WaferPhysicalTensorInfo &sourceInfo = sourceOffsets->getInfo();
+  const WaferPhysicalTensorInfo &destInfo = destOffsets->getInfo();
+  if (sourceInfo.compactBytes <= 0 || destInfo.compactBytes <= 0 ||
+      sourceInfo.physicalBytes <= 0 || destInfo.physicalBytes <= 0)
+    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" requires static positive byte sizes")
+            .str());
+  if (sourceInfo.compactBytes != destInfo.compactBytes)
     return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
         rewriter, op, failureReason,
         llvm::Twine(opLabel)
             .concat(" requires equal static compact byte counts")
             .str());
-  if (sourceInfo->elementBytes <= 0 ||
-      sourceInfo->elementBytes != destInfo->elementBytes ||
-      sourceInfo->bitPackedElement || destInfo->bitPackedElement ||
-      sourceInfo->compactBytes % sourceInfo->elementBytes != 0)
+  if (sourceInfo.elementBytes <= 0 ||
+      sourceInfo.elementBytes != destInfo.elementBytes ||
+      sourceInfo.bitPackedElement || destInfo.bitPackedElement ||
+      sourceInfo.compactBytes % sourceInfo.elementBytes != 0)
     return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
         rewriter, op, failureReason,
         llvm::Twine(opLabel)
             .concat(" requires byte-addressable elements")
             .str());
 
-  int64_t elementBytes = sourceInfo->elementBytes;
-  int64_t elementCount = sourceInfo->compactBytes / elementBytes;
+  // Equal physical geometry can be copied as one segment, including layout
+  // padding.  A reshape between compact Tensor/NTensor layouts also preserves
+  // physical linear order and therefore needs no per-element enumeration.
+  if (sourceInfo.layout == destInfo.layout &&
+      sourceType.getShape() == destType.getShape() &&
+      sourceType.getElementType() == destType.getElementType() &&
+      sourceInfo.physicalBytes == destInfo.physicalBytes)
+    return llvm::SmallVector<LogicalMovementSegment>{
+        {0, 0, sourceInfo.physicalBytes}};
+  if (isStandardViewCompatibleLayout(sourceInfo.layout) &&
+      isStandardViewCompatibleLayout(destInfo.layout) &&
+      sourceInfo.physicalBytes == sourceInfo.compactBytes &&
+      destInfo.physicalBytes == destInfo.compactBytes)
+    return llvm::SmallVector<LogicalMovementSegment>{
+        {0, 0, sourceInfo.compactBytes}};
+
+  int64_t elementBytes = sourceInfo.elementBytes;
+  int64_t elementCount = sourceInfo.compactBytes / elementBytes;
 
   // Reshape preserves canonical logical linear order, not per-dimension index
   // equality.  Delinearize the same logical element number through the source
@@ -690,18 +785,17 @@ getStaticLogicalMovementSegments(mlir::PatternRewriter &rewriter,
       return mlir::failure();
 
     std::optional<int64_t> sourceOffset =
-        wafer::computeWaferPhysicalElementByteOffset(sourceType,
-                                                     *sourceIndices);
+        sourceOffsets->getByteOffset(*sourceIndices);
     std::optional<int64_t> destOffset =
-        wafer::computeWaferPhysicalElementByteOffset(destType, *destIndices);
+        destOffsets->getByteOffset(*destIndices);
     if (!sourceOffset || !destOffset)
       return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
           rewriter, op, failureReason,
           llvm::Twine(opLabel)
               .concat(" cannot compute physical element offset")
               .str());
-    if (*sourceOffset + elementBytes > sourceInfo->physicalBytes ||
-        *destOffset + elementBytes > destInfo->physicalBytes)
+    if (*sourceOffset + elementBytes > sourceInfo.physicalBytes ||
+        *destOffset + elementBytes > destInfo.physicalBytes)
       return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
           rewriter, op, failureReason,
           llvm::Twine(opLabel)

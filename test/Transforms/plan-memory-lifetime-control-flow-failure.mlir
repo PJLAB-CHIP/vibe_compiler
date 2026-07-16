@@ -110,7 +110,7 @@ func.func @unsupported_parallel_spm(
   ^bb0(%arg0: memref<128xf16, #wafer.memory<ddr, tensor>>):
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    // expected-error @below {{unsupported_lifetime_control_flow: SPM memory planning only supports single-block wafer.tile.region, scf.if and scf.for structured regions}}
+    // expected-error @below {{unsupported_lifetime_control_flow: tile-region terminal completion proof requires single-block scf.if/scf.for structured control flow}}
     scf.parallel (%index) = (%c0) to (%c1) step (%c1) {
       scf.reduce
     }

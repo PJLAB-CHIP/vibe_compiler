@@ -81,12 +81,12 @@ Compiler / target-model core <- functional model <- bulk/SystemC adapters
 3. target numeric 的 command/schema、semantics profile、capability registry 与 resolution；
 4. 对应 CMake source list、组织检查和测试镜像。
 
-group 到 tile-region 的 body emitter、candidate traversal，instruction 到 target LLVM，frontend program、
+tensor program到tile-region的body emitter、candidate traversal，instruction到target LLVM，frontend program、
 dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内部边界如下；拆分只能沿这些合同进行，
 不能按行数或语法位置机械切开：
 
-- group 到 tile-region：候选遍历/合法性、tile-local body materialization、op-family lowering 和公共原子
-  orchestration 分离；body builder 只消费当前 candidate/group IR 与显式选项，不持有跨 pass shadow plan。
+- tensor program到tile-region：候选遍历/合法性、tile-local body materialization、op-family lowering和公共原子
+  orchestration分离；body builder只消费当前candidate structured IR与显式选项，不持有跨pass shadow plan。
 - candidate selection：候选枚举/analysis、cost comparison、selected-candidate commit 和 pass orchestration 分离；
   analysis 可从当前 IR 重算，只有 accepted selection 进入 IR，不能保留旁路候选表。
 - instruction 到 target LLVM：typed target-call schema/preflight、movement/compute/communication lowering、结构化
@@ -106,8 +106,9 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
   support/lowering、compute lowering、collective lowering 通过同一 conversion library 的私有接口协作。
 - target numeric 已按 command/schema、profile registry、capability/resolution 和 internal canonical helper 独立编译；
   `include/Wafer/Target/NumericSemantics.h` 的公共合同保持不变。
-- group 到 tile-region 已分为 candidate support、单 tile materialization、complete traversal、body emitter、group
-  conversion pattern 和 op-family lowering；public module/pass facade 共用同一原子 conversion orchestration。
+- structured tensor program 到 tile-region 已分为 candidate support、单 tile materialization、complete traversal、
+  body emitter、structured scope conversion 和 op-family lowering；public module/pass facade 共用同一原子
+  conversion orchestration。
 - candidate selection 已分为 analysis、evaluation、selection、commit 与 pass facade；只有完整 accepted candidate
   才通过 staged clone 提交，candidate queue 和 cost tie-break 仍由同一私有 typed contract 串联。
 - instruction 到 target LLVM 已分为 target-call preflight/support、movement/compute/Direct DTE/peripheral/sync family、
@@ -143,7 +144,8 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
   environment identity cache保持单一owner。bulk qualification另按canonical spec、case、comparison、calibration、policy和
   validation/record admission拆分，三阶段producer和canonical digest不变。
 - compilation facade只保留公共request/config/API；program-directory transaction、stage verification、SPMD bridge、
-  grouped bundle、target/package staging及顶层orchestration通过`CompilationInternal.h`的typed状态协作。
+  tensor-program scheduling、whole-variant bundle、target/package staging及顶层orchestration通过
+  `CompilationInternal.h`的typed状态协作。
 - target artifact facade只保留公共move-only对象与入口；ABI preparation、all-rank preflight、target LLVM translation、
   device link、ELF readback和atomic publication分别独立编译，共用owner-private prepared-rank合同。
 - package manifest按schema/stringification、JSON parsing、semantic verification、canonical serialization、filesystem readback和
@@ -158,7 +160,8 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
 
 本次审计同时确认instruction compute、LinalgExt collective、numeric capability/command、DDR planner与SPM planner仍是合理的
 单一family或单一planner，不因文件规模继续拆分。DDR/SPM的可重算lifetime mechanics已经收敛为同一typed analysis；
-SPM的non-nested isolated region/DTE/base-limit合同与DDR的whole-entry/external-root/descriptor/resource-limit合同仍由各自planner拥有，
+SPM的whole-rank structured lifetime/non-nested region/DTE/base-limit合同与DDR的whole-rank
+external-root/descriptor/resource-limit合同仍由各自planner拥有，
 没有把arena、diagnostic policy或accepted offset schema机械合并。组织检查器同时禁止两个planner重新引入timeline、root、
 priority或first-fit的第二事实源。
 

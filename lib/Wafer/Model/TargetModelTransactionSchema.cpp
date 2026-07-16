@@ -525,6 +525,10 @@ stringifyTargetModelKernelErrorCode(TargetModelKernelErrorCode code) {
     return "numeric-resolution-failure";
   case TargetModelKernelErrorCode::PhysicalCodecFailure:
     return "physical-codec-failure";
+  case TargetModelKernelErrorCode::ManagedReferenceBackendUnavailable:
+    return "managed-reference-backend-unavailable";
+  case TargetModelKernelErrorCode::ManagedReferenceBackendFailure:
+    return "managed-reference-backend-failure";
   case TargetModelKernelErrorCode::BulkBackendUnavailable:
     return "bulk-backend-unavailable";
   case TargetModelKernelErrorCode::BulkBackendFailure:

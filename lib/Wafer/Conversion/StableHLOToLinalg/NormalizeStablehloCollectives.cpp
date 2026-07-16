@@ -506,7 +506,7 @@ struct NormalizeStablehloCollectivesPass
 
       if (!lowered) {
         op->emitError("failed to normalize residual StableHLO op before "
-                      "Wafer group lowering");
+                      "Wafer structured tensor-program scheduling");
         signalPassFailure();
         return;
       }

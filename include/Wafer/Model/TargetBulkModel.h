@@ -30,7 +30,7 @@ public:
   create(llvm::ArrayRef<std::string> recordPaths, BulkNumericWorkBudget budget);
 
   llvm::Expected<std::optional<TargetModelBulkResult>>
-  tryExecute(const TargetModelBulkRequest &request) const override;
+  tryExecute(const TargetModelNumericRequest &request) const override;
 
 private:
   QualifiedTargetModelBulkBackend(
@@ -42,6 +42,39 @@ private:
 
   BulkExecutionEnvironment environment;
   std::vector<VerifiedBulkQualificationRecord> records;
+  BulkNumericWorkBudget budget;
+};
+
+/// Scalable deterministic oneDNN path for end-to-end model-reference gates.
+/// Admission is structural (supported GEMM semantics, managed environment,
+/// finite inputs and explicit byte budgets), not exact payload qualification.
+/// It therefore requires a final external-oracle tolerance check and must not
+/// be reported as hardware-correlated or raw-exact target arithmetic.
+class ManagedReferenceTargetModelBackend final
+    : public TargetModelBulkBackend,
+      public TargetModelManagedReferenceBackend {
+public:
+  ManagedReferenceTargetModelBackend(
+      const ManagedReferenceTargetModelBackend &) = delete;
+  ManagedReferenceTargetModelBackend &
+  operator=(const ManagedReferenceTargetModelBackend &) = delete;
+
+  static llvm::Expected<std::unique_ptr<ManagedReferenceTargetModelBackend>>
+  create(BulkNumericWorkBudget budget);
+
+  llvm::Expected<std::optional<TargetModelBulkResult>>
+  tryExecute(const TargetModelNumericRequest &request) const override;
+
+  llvm::Expected<TargetModelManagedReferenceResult>
+  execute(const TargetModelNumericRequest &request,
+          FormalNumericWorkBudget scalarBudget) const override;
+
+private:
+  ManagedReferenceTargetModelBackend(BulkExecutionEnvironment environment,
+                                     BulkNumericWorkBudget budget)
+      : environment(std::move(environment)), budget(budget) {}
+
+  BulkExecutionEnvironment environment;
   BulkNumericWorkBudget budget;
 };
 

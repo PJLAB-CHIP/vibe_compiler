@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/CallInterfaces.h"
@@ -341,51 +342,156 @@ bool isSupportedDirectAliasCall(mlir::func::CallOp call,
   return true;
 }
 
-bool PathCondition::compatibleWith(PathCondition other) const {
-  return (trueDecisions & other.falseDecisions) == 0 &&
-         (falseDecisions & other.trueDecisions) == 0;
+static bool containsDecision(llvm::ArrayRef<uint64_t> decisions,
+                             uint64_t decision) {
+  return std::binary_search(decisions.begin(), decisions.end(), decision);
 }
 
-bool PathCondition::compatibleForPacking(PathCondition other) const {
-  uint64_t conflictingDecisions = (trueDecisions & other.falseDecisions) |
-                                  (falseDecisions & other.trueDecisions);
-  uint64_t repeatable = repeatableDecisions | other.repeatableDecisions;
-  return (conflictingDecisions & ~repeatable) == 0;
+static void insertDecision(llvm::SmallVectorImpl<uint64_t> &decisions,
+                           uint64_t decision) {
+  auto position =
+      std::lower_bound(decisions.begin(), decisions.end(), decision);
+  if (position == decisions.end() || *position != decision)
+    decisions.insert(position, decision);
+}
+
+static llvm::SmallVector<uint64_t, 4>
+unionDecisions(llvm::ArrayRef<uint64_t> lhs, llvm::ArrayRef<uint64_t> rhs) {
+  llvm::SmallVector<uint64_t, 4> result;
+  result.reserve(lhs.size() + rhs.size());
+  size_t lhsIndex = 0;
+  size_t rhsIndex = 0;
+  while (lhsIndex < lhs.size() || rhsIndex < rhs.size()) {
+    if (rhsIndex == rhs.size() ||
+        (lhsIndex < lhs.size() && lhs[lhsIndex] < rhs[rhsIndex])) {
+      result.push_back(lhs[lhsIndex++]);
+      continue;
+    }
+    if (lhsIndex == lhs.size() || rhs[rhsIndex] < lhs[lhsIndex]) {
+      result.push_back(rhs[rhsIndex++]);
+      continue;
+    }
+    result.push_back(lhs[lhsIndex]);
+    ++lhsIndex;
+    ++rhsIndex;
+  }
+  return result;
+}
+
+static llvm::SmallVector<uint64_t, 4>
+subtractDecisions(llvm::ArrayRef<uint64_t> decisions,
+                  llvm::ArrayRef<uint64_t> removed) {
+  llvm::SmallVector<uint64_t, 4> result;
+  result.reserve(decisions.size());
+  for (uint64_t decision : decisions)
+    if (!containsDecision(removed, decision))
+      result.push_back(decision);
+  return result;
+}
+
+static bool decisionsIntersect(llvm::ArrayRef<uint64_t> lhs,
+                               llvm::ArrayRef<uint64_t> rhs) {
+  size_t lhsIndex = 0;
+  size_t rhsIndex = 0;
+  while (lhsIndex < lhs.size() && rhsIndex < rhs.size()) {
+    if (lhs[lhsIndex] == rhs[rhsIndex])
+      return true;
+    if (lhs[lhsIndex] < rhs[rhsIndex])
+      ++lhsIndex;
+    else
+      ++rhsIndex;
+  }
+  return false;
+}
+
+static bool
+hasNonRepeatableConflict(llvm::ArrayRef<uint64_t> selected,
+                         llvm::ArrayRef<uint64_t> otherRejected,
+                         llvm::ArrayRef<uint64_t> selectedRepeatable,
+                         llvm::ArrayRef<uint64_t> otherRepeatable) {
+  size_t selectedIndex = 0;
+  size_t rejectedIndex = 0;
+  while (selectedIndex < selected.size() &&
+         rejectedIndex < otherRejected.size()) {
+    uint64_t selectedDecision = selected[selectedIndex];
+    uint64_t rejectedDecision = otherRejected[rejectedIndex];
+    if (selectedDecision < rejectedDecision) {
+      ++selectedIndex;
+      continue;
+    }
+    if (rejectedDecision < selectedDecision) {
+      ++rejectedIndex;
+      continue;
+    }
+    if (!containsDecision(selectedRepeatable, selectedDecision) &&
+        !containsDecision(otherRepeatable, selectedDecision))
+      return true;
+    ++selectedIndex;
+    ++rejectedIndex;
+  }
+  return false;
+}
+
+static bool isDecisionSubset(llvm::ArrayRef<uint64_t> subset,
+                             llvm::ArrayRef<uint64_t> superset) {
+  return llvm::all_of(subset, [&](uint64_t decision) {
+    return containsDecision(superset, decision);
+  });
+}
+
+bool PathCondition::compatibleWith(const PathCondition &other) const {
+  return !decisionsIntersect(trueDecisions, other.falseDecisions) &&
+         !decisionsIntersect(falseDecisions, other.trueDecisions);
+}
+
+bool PathCondition::compatibleForPacking(const PathCondition &other) const {
+  return !hasNonRepeatableConflict(trueDecisions, other.falseDecisions,
+                                   repeatableDecisions,
+                                   other.repeatableDecisions) &&
+         !hasNonRepeatableConflict(falseDecisions, other.trueDecisions,
+                                   repeatableDecisions,
+                                   other.repeatableDecisions);
 }
 
 PathCondition PathCondition::withoutRepeatableDecisions() const {
-  return PathCondition{trueDecisions & ~repeatableDecisions,
-                       falseDecisions & ~repeatableDecisions, 0};
+  return PathCondition{subtractDecisions(trueDecisions, repeatableDecisions),
+                       subtractDecisions(falseDecisions, repeatableDecisions),
+                       DecisionSet{}};
 }
 
 std::optional<PathCondition>
-PathCondition::intersect(PathCondition other) const {
+PathCondition::intersect(const PathCondition &other) const {
   if (!compatibleWith(other))
     return std::nullopt;
-  return PathCondition{trueDecisions | other.trueDecisions,
-                       falseDecisions | other.falseDecisions,
-                       repeatableDecisions | other.repeatableDecisions};
+  return PathCondition{
+      unionDecisions(trueDecisions, other.trueDecisions),
+      unionDecisions(falseDecisions, other.falseDecisions),
+      unionDecisions(repeatableDecisions, other.repeatableDecisions)};
 }
 
-bool PathCondition::implies(PathCondition other) const {
-  return (other.trueDecisions & ~trueDecisions) == 0 &&
-         (other.falseDecisions & ~falseDecisions) == 0;
+bool PathCondition::implies(const PathCondition &other) const {
+  return isDecisionSubset(other.trueDecisions, trueDecisions) &&
+         isDecisionSubset(other.falseDecisions, falseDecisions);
 }
 
 std::optional<PathCondition>
-PathCondition::withDecision(unsigned decision, bool selected,
+PathCondition::withDecision(uint64_t decision, bool selected,
                             bool repeatable) const {
-  if (decision >= 64)
+  PathCondition result = *this;
+  DecisionSet &selectedDecisions =
+      selected ? result.trueDecisions : result.falseDecisions;
+  const DecisionSet &rejectedDecisions =
+      selected ? result.falseDecisions : result.trueDecisions;
+  if (containsDecision(rejectedDecisions, decision))
     return std::nullopt;
-  uint64_t bit = uint64_t{1} << decision;
-  PathCondition decisionCondition =
-      selected ? PathCondition{bit, 0, repeatable ? bit : 0}
-               : PathCondition{0, bit, repeatable ? bit : 0};
-  return intersect(decisionCondition);
+  insertDecision(selectedDecisions, decision);
+  if (repeatable)
+    insertDecision(result.repeatableDecisions, decision);
+  return result;
 }
 
 void PathCondition::subtract(
-    PathCondition covered,
+    const PathCondition &covered,
     llvm::SmallVectorImpl<PathCondition> &remaining) const {
   if (!compatibleWith(covered)) {
     remaining.push_back(*this);
@@ -395,9 +501,8 @@ void PathCondition::subtract(
     return;
 
   PathCondition prefix = *this;
-  auto splitDecision = [&](unsigned decision, bool coveredSelected) {
-    bool repeatable =
-        (covered.repeatableDecisions & (uint64_t{1} << decision)) != 0;
+  auto splitDecision = [&](uint64_t decision, bool coveredSelected) {
+    bool repeatable = containsDecision(covered.repeatableDecisions, decision);
     if (std::optional<PathCondition> outside =
             prefix.withDecision(decision, !coveredSelected, repeatable))
       remaining.push_back(*outside);
@@ -406,15 +511,13 @@ void PathCondition::subtract(
       prefix = *inside;
   };
 
-  for (unsigned decision = 0; decision < 64; ++decision) {
-    uint64_t bit = uint64_t{1} << decision;
-    if ((covered.trueDecisions & bit) == 0 || (trueDecisions & bit) != 0)
+  for (uint64_t decision : covered.trueDecisions) {
+    if (containsDecision(trueDecisions, decision))
       continue;
     splitDecision(decision, /*coveredSelected=*/true);
   }
-  for (unsigned decision = 0; decision < 64; ++decision) {
-    uint64_t bit = uint64_t{1} << decision;
-    if ((covered.falseDecisions & bit) == 0 || (falseDecisions & bit) != 0)
+  for (uint64_t decision : covered.falseDecisions) {
+    if (containsDecision(falseDecisions, decision))
       continue;
     splitDecision(decision, /*coveredSelected=*/false);
   }
@@ -427,8 +530,19 @@ StructuredTimeline::build(mlir::Operation *scope, TimelineFailure *failure) {
 
   StructuredTimeline timeline;
   int64_t nextEvent = 0;
-  unsigned nextDecision = 0;
+  std::optional<uint64_t> nextDecision = 0;
   bool failed = false;
+
+  auto takeDecision = [&]() -> std::optional<uint64_t> {
+    if (!nextDecision)
+      return std::nullopt;
+    uint64_t decision = *nextDecision;
+    if (decision == std::numeric_limits<uint64_t>::max())
+      nextDecision.reset();
+    else
+      ++*nextDecision;
+    return decision;
+  };
 
   std::function<void(mlir::Region &, PathCondition, unsigned)> assignRegion;
   std::function<void(mlir::Block &, PathCondition, unsigned)> assignBlock;
@@ -450,29 +564,42 @@ StructuredTimeline::build(mlir::Operation *scope, TimelineFailure *failure) {
       }
 
       if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(op)) {
-        unsigned decision = nextDecision++;
+        std::optional<uint64_t> decision = takeDecision();
+        if (!decision) {
+          failed = true;
+          setTimelineFailure(failure,
+                             TimelineFailureKind::DecisionDomainExhausted, &op);
+          return;
+        }
         std::optional<PathCondition> thenPath =
-            path.withDecision(decision, /*selected=*/true,
+            path.withDecision(*decision, /*selected=*/true,
                               /*repeatable=*/loopDepth != 0);
         std::optional<PathCondition> elsePath =
-            path.withDecision(decision, /*selected=*/false,
+            path.withDecision(*decision, /*selected=*/false,
                               /*repeatable=*/loopDepth != 0);
         if (!thenPath || !elsePath) {
           failed = true;
-          setTimelineFailure(failure, TimelineFailureKind::TooManyDecisions,
-                             &op);
+          setTimelineFailure(
+              failure, TimelineFailureKind::InconsistentPathCondition, &op);
           return;
         }
         assignRegion(ifOp.getThenRegion(), *thenPath, loopDepth);
         assignRegion(ifOp.getElseRegion(), *elsePath, loopDepth);
       } else if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
-        unsigned decision = nextDecision++;
+        std::optional<uint64_t> decision = takeDecision();
+        if (!decision) {
+          failed = true;
+          setTimelineFailure(failure,
+                             TimelineFailureKind::DecisionDomainExhausted, &op);
+          return;
+        }
         std::optional<PathCondition> bodyPath =
-            path.withDecision(decision, /*selected=*/true);
+            path.withDecision(*decision, /*selected=*/true,
+                              /*repeatable=*/loopDepth != 0);
         if (!bodyPath) {
           failed = true;
-          setTimelineFailure(failure, TimelineFailureKind::TooManyDecisions,
-                             &op);
+          setTimelineFailure(
+              failure, TimelineFailureKind::InconsistentPathCondition, &op);
           return;
         }
         assignRegion(forOp.getRegion(), *bodyPath, loopDepth + 1);
@@ -626,6 +753,17 @@ LifetimeDataflow::rootsAt(mlir::Value value, PathCondition usePath) const {
             forOp.getBody()->getTerminator());
         if (yield && index < yield.getResults().size())
           appendAt(yield.getResults()[index], timeline.lookup(yield));
+      } else if (auto tileRegion = mlir::dyn_cast_or_null<TileRegionOp>(
+                     blockArg.getOwner() ? blockArg.getOwner()->getParentOp()
+                                         : nullptr)) {
+        unsigned index = blockArg.getArgNumber();
+        if (blockArg.getOwner() == &tileRegion.getBody().front() &&
+            index < tileRegion.getInputs().size()) {
+          if (std::optional<ProgramPoint> point = timeline.lookup(tileRegion))
+            appendAt(tileRegion.getInputs()[index], point);
+          else
+            appendValue(tileRegion.getInputs()[index], queryPath);
+        }
       }
     } else if (auto result = mlir::dyn_cast<mlir::OpResult>(current)) {
       mlir::Operation *def = result.getOwner();
@@ -635,6 +773,8 @@ LifetimeDataflow::rootsAt(mlir::Value value, PathCondition usePath) const {
       } else if (auto toTensor =
                      mlir::dyn_cast<mlir::bufferization::ToTensorOp>(def)) {
         appendAt(toTensor.getMemref(), timeline.lookup(def));
+      } else if (auto reshape = mlir::dyn_cast<ViewReshapeOp>(def)) {
+        appendAt(reshape.getSource(), timeline.lookup(def));
       } else if (auto viewLike =
                      mlir::dyn_cast<mlir::ViewLikeOpInterface>(def)) {
         appendAt(viewLike.getViewSource(), timeline.lookup(def));
@@ -657,6 +797,12 @@ LifetimeDataflow::rootsAt(mlir::Value value, PathCondition usePath) const {
             forOp.getBody()->getTerminator());
         if (yield && index < yield.getResults().size())
           appendAt(yield.getResults()[index], timeline.lookup(yield));
+      } else if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(def)) {
+        unsigned index = result.getResultNumber();
+        auto yield = mlir::dyn_cast<TileYieldOp>(
+            tileRegion.getBody().front().getTerminator());
+        if (yield && index < yield.getValues().size())
+          appendAt(yield.getValues()[index], timeline.lookup(yield));
       }
     }
 
@@ -716,6 +862,18 @@ LifetimeDataflow::originsAt(mlir::Value value, PathCondition usePath) const {
             forOp.getBody()->getTerminator());
         if (yield && index < yield.getResults().size())
           appendAt(yield.getResults()[index], timeline.lookup(yield));
+      } else if (auto tileRegion = mlir::dyn_cast_or_null<TileRegionOp>(
+                     blockArg.getOwner() ? blockArg.getOwner()->getParentOp()
+                                         : nullptr)) {
+        hasAliasSemantics = true;
+        unsigned index = blockArg.getArgNumber();
+        if (blockArg.getOwner() == &tileRegion.getBody().front() &&
+            index < tileRegion.getInputs().size()) {
+          if (std::optional<ProgramPoint> point = timeline.lookup(tileRegion))
+            appendAt(tileRegion.getInputs()[index], point);
+          else
+            appendValue(tileRegion.getInputs()[index], queryPath);
+        }
       }
     } else if (auto result = mlir::dyn_cast<mlir::OpResult>(current)) {
       mlir::Operation *def = result.getOwner();
@@ -730,6 +888,9 @@ LifetimeDataflow::originsAt(mlir::Value value, PathCondition usePath) const {
                      mlir::dyn_cast<mlir::bufferization::ToTensorOp>(def)) {
         hasAliasSemantics = true;
         appendAt(toTensor.getMemref(), timeline.lookup(def));
+      } else if (auto reshape = mlir::dyn_cast<ViewReshapeOp>(def)) {
+        hasAliasSemantics = true;
+        appendAt(reshape.getSource(), timeline.lookup(def));
       } else if (auto viewLike =
                      mlir::dyn_cast<mlir::ViewLikeOpInterface>(def)) {
         hasAliasSemantics = true;
@@ -756,6 +917,15 @@ LifetimeDataflow::originsAt(mlir::Value value, PathCondition usePath) const {
             forOp.getBody()->getTerminator());
         if (yield && index < yield.getResults().size())
           appendAt(yield.getResults()[index], timeline.lookup(yield));
+      } else if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(def)) {
+        unsigned index = result.getResultNumber();
+        auto yield = mlir::dyn_cast<TileYieldOp>(
+            tileRegion.getBody().front().getTerminator());
+        std::optional<ProgramPoint> point =
+            yield ? timeline.lookup(yield.getOperation()) : std::nullopt;
+        hasAliasSemantics = point.has_value();
+        if (yield && point && index < yield.getValues().size())
+          appendAt(yield.getValues()[index], point);
       }
     }
 
@@ -849,6 +1019,17 @@ void LifetimeDataflow::recordUse(RootRef ref, int64_t event) {
   LifetimeDemand &demand = demands[ref.demandIndex];
   if (event < demand.allocationPoint.event)
     return;
+  // Every segment for an allocation starts at the same allocation event.
+  // Repeated instruction uses on the same structured path therefore only
+  // extend that path's live interval; retaining one segment per use makes
+  // packing quadratic in the instruction count without adding information.
+  for (LiveSegment &segment : demand.segments) {
+    if (segment.beginEvent != demand.allocationPoint.event ||
+        segment.path != ref.path)
+      continue;
+    segment.endEvent = std::max(segment.endEvent, event);
+    return;
+  }
   demand.segments.push_back(
       LiveSegment{demand.allocationPoint.event, event, ref.path});
 }
@@ -876,12 +1057,17 @@ void LifetimeDataflow::recordOperands(mlir::Operation *op) {
 void LifetimeDataflow::mapViewLikeResults(mlir::Operation *op) {
   auto viewLike = mlir::dyn_cast<mlir::ViewLikeOpInterface>(op);
   std::optional<ProgramPoint> point = timeline.lookup(op);
-  if (!viewLike || !point)
+  if (!point)
     return;
-  llvm::SmallVector<RootRef, 2> refs =
-      rootsAt(viewLike.getViewSource(), point->path);
-  llvm::SmallVector<ValueOriginRef, 2> origins =
-      originsAt(viewLike.getViewSource(), point->path);
+  mlir::Value source;
+  if (viewLike)
+    source = viewLike.getViewSource();
+  else if (auto reshape = mlir::dyn_cast<ViewReshapeOp>(op))
+    source = reshape.getSource();
+  if (!source)
+    return;
+  llvm::SmallVector<RootRef, 2> refs = rootsAt(source, point->path);
+  llvm::SmallVector<ValueOriginRef, 2> origins = originsAt(source, point->path);
   for (mlir::Value result : op->getResults()) {
     if (!refs.empty())
       valueRefs[normalize(result)] = refs;
@@ -992,7 +1178,7 @@ LifetimeDataflow::mapAsyncDependencyResults(mlir::Operation *op,
   std::optional<ProgramPoint> point = timeline.lookup(op);
   if (!point)
     return mlir::success();
-  if (mlir::isa<mlir::scf::IfOp, mlir::scf::ForOp>(op) ||
+  if (mlir::isa<mlir::scf::IfOp, mlir::scf::ForOp, TileRegionOp>(op) ||
       mlir::isa<mlir::SelectLikeOpInterface>(op))
     return mlir::success();
 
@@ -1249,6 +1435,70 @@ void LifetimeDataflow::mapForRegionIterArgs(mlir::Operation *op) {
   }
 }
 
+void LifetimeDataflow::mapTileRegionBlockArgs(mlir::Operation *op) {
+  auto tileRegion = mlir::cast<TileRegionOp>(op);
+  std::optional<ProgramPoint> point = timeline.lookup(op);
+  if (!point || tileRegion.getBody().empty())
+    return;
+
+  for (auto [input, blockArg] :
+       llvm::zip(tileRegion.getInputs(),
+                 tileRegion.getBody().front().getArguments())) {
+    if (hasAsyncDependencyType(input)) {
+      llvm::SmallVector<RootRef, 2> roots = asyncRootsAt(input, point->path);
+      if (!roots.empty())
+        asyncRefs[blockArg] = std::move(roots);
+      llvm::SmallVector<AsyncTaskRef, 2> tasks =
+          asyncTasksAt(input, point->path);
+      if (!tasks.empty())
+        asyncTaskRefs[blockArg] = std::move(tasks);
+      continue;
+    }
+
+    llvm::SmallVector<RootRef, 2> roots = rootsAt(input, point->path);
+    if (!roots.empty())
+      valueRefs[normalize(blockArg)] = std::move(roots);
+    llvm::SmallVector<ValueOriginRef, 2> origins =
+        originsAt(input, point->path);
+    if (!origins.empty())
+      valueOrigins[normalize(blockArg)] = std::move(origins);
+  }
+}
+
+void LifetimeDataflow::mapTileRegionResults(mlir::Operation *op) {
+  auto tileRegion = mlir::cast<TileRegionOp>(op);
+  if (tileRegion.getBody().empty())
+    return;
+  auto yield =
+      mlir::dyn_cast<TileYieldOp>(tileRegion.getBody().front().getTerminator());
+  std::optional<ProgramPoint> point =
+      yield ? timeline.lookup(yield.getOperation()) : std::nullopt;
+  if (!yield || !point)
+    return;
+
+  for (auto [yielded, result] :
+       llvm::zip(yield.getValues(), tileRegion.getResults())) {
+    if (hasAsyncDependencyType(result)) {
+      llvm::SmallVector<RootRef, 2> roots = asyncRootsAt(yielded, point->path);
+      if (!roots.empty())
+        asyncRefs[result] = std::move(roots);
+      llvm::SmallVector<AsyncTaskRef, 2> tasks =
+          asyncTasksAt(yielded, point->path);
+      if (!tasks.empty())
+        asyncTaskRefs[result] = std::move(tasks);
+      continue;
+    }
+
+    llvm::SmallVector<RootRef, 2> roots = rootsAt(yielded, point->path);
+    if (!roots.empty())
+      valueRefs[normalize(result)] = std::move(roots);
+    llvm::SmallVector<ValueOriginRef, 2> origins =
+        originsAt(yielded, point->path);
+    if (!origins.empty())
+      valueOrigins[normalize(result)] = std::move(origins);
+  }
+}
+
 mlir::LogicalResult
 LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
                                            LifetimeFailure *failure) {
@@ -1458,6 +1708,12 @@ LifetimeDataflow::processBlock(mlir::Block &block,
               processRegion(ifOp.getElseRegion(), localCompletion, failure)))
         return mlir::failure();
       mapIfResults(&op);
+    } else if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(op)) {
+      mapTileRegionBlockArgs(&op);
+      if (mlir::failed(
+              processRegion(tileRegion.getBody(), localCompletion, failure)))
+        return mlir::failure();
+      mapTileRegionResults(&op);
     } else {
       for (mlir::Region &region : op.getRegions())
         if (mlir::failed(processRegion(region, localCompletion, failure)))
@@ -1488,6 +1744,7 @@ LifetimeDataflow::processBlock(mlir::Block &block,
             mlir::scf::IfOp, mlir::scf::ForOp, TileRegionOp>(op) ||
         mlir::isa<mlir::ViewLikeOpInterface, mlir::SelectLikeOpInterface,
                   WaferResourceEffectInterface>(op) ||
+        mlir::isa<ViewReshapeOp>(op) ||
         op.hasTrait<mlir::OpTrait::IsTerminator>();
     if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op))
       hasSupportedTrackedUse = hasSupportedTrackedUse ||
@@ -1526,7 +1783,7 @@ LifetimeDataflow::processBlock(mlir::Block &block,
     bool hasKnownTrackedSemantics = mlir::isa<mlir::memref::AllocOp>(op);
     bool hasAliasProducerSemantics =
         mlir::isa<mlir::scf::IfOp, mlir::scf::ForOp, TileRegionOp,
-                  mlir::bufferization::ToMemrefOp>(op) ||
+                  mlir::bufferization::ToMemrefOp, ViewReshapeOp>(op) ||
         mlir::isa<mlir::ViewLikeOpInterface, mlir::SelectLikeOpInterface>(op);
     if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op))
       hasAliasProducerSemantics =
@@ -1541,7 +1798,12 @@ LifetimeDataflow::processBlock(mlir::Block &block,
             return !rootsAt(result, point->path).empty() ||
                    !originsAt(result, point->path).empty();
           });
-    if (!hasKnownTrackedSemantics && hasTrackedResult && isExplicitRoot)
+    // An explicit-root predicate is an owner-supplied proof for a supported
+    // root form, not a generic escape hatch for arbitrary tracked producers.
+    // Function-entry adapters are handled by their ToMemref alias semantics;
+    // the only otherwise-unknown producer admitted here is memref.get_global.
+    if (!hasKnownTrackedSemantics && hasTrackedResult && isExplicitRoot &&
+        mlir::isa<mlir::memref::GetGlobalOp>(op))
       hasKnownTrackedSemantics =
           llvm::all_of(op.getResults(), [&](mlir::Value result) {
             return !isTrackedType(result.getType()) || isExplicitRoot(result);

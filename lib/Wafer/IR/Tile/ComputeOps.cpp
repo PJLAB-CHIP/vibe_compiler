@@ -53,6 +53,68 @@ mlir::LogicalResult ComputeFillOp::verifyWaferResourceEffectContract() {
   return verifyResourceEffects(getOperation(), effects);
 }
 
+mlir::LogicalResult ComputeConvertOp::verify() {
+  std::optional<mlir::RankedTensorType> sourceTensor =
+      getLogicalTensorType(getSource().getType());
+  std::optional<mlir::RankedTensorType> resultTensor =
+      getLogicalTensorType(getResult().getType());
+  if (!sourceTensor || !resultTensor)
+    return emitOpError("expects Wafer buffer source and result");
+  for (mlir::Type type : {getSource().getType(), getResult().getType()}) {
+    if (!hasWaferMemorySpace(type, MemorySpace::SPM))
+      return emitOpError("convert storage values must use SPM memory space");
+    if (!hasWaferLayout(type, MemLayout::Tensor))
+      return emitOpError("convert storage values must use tensor layout");
+  }
+  if (sourceTensor->getShape() != resultTensor->getShape())
+    return emitOpError("convert source and result shapes must match");
+  mlir::Type sourceElement = sourceTensor->getElementType();
+  mlir::Type resultElement = resultTensor->getElementType();
+  if (sourceElement == resultElement)
+    return emitOpError("convert source and result element types must differ");
+  auto isSupportedFloat = [](mlir::Type type) {
+    return mlir::isa<mlir::Float16Type, mlir::BFloat16Type, mlir::Float32Type>(
+        type);
+  };
+  if (!isSupportedFloat(sourceElement) || !isSupportedFloat(resultElement))
+    return emitOpError("convert currently requires f16, bf16 or f32 element "
+                       "types");
+  return mlir::success();
+}
+
+void ComputeConvertOp::collectWaferLayoutRequirements(
+    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
+  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                          getSource().getType());
+  appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
+                          getResult().getType());
+}
+
+mlir::LogicalResult ComputeConvertOp::verifyWaferLayoutContract() {
+  llvm::SmallVector<WaferLayoutRequirement, 2> requirements;
+  collectWaferLayoutRequirements(requirements);
+  return verifyLayoutRequirements(getOperation(), requirements);
+}
+
+void ComputeConvertOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       getCompactByteSizeOrUnknown(getSource().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+  appendResourceEffect(effects, WaferResourceKind::Compute,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+}
+
+mlir::LogicalResult ComputeConvertOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 3> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
 mlir::LogicalResult ComputeGemmOp::verify() {
   std::optional<mlir::RankedTensorType> lhsTensor =
       getLogicalTensorType(getLhs().getType());
@@ -78,8 +140,8 @@ mlir::LogicalResult ComputeGemmOp::verify() {
   if (lhsTensor->getRank() != 2 || rhsTensor->getRank() != 2 ||
       resultTensor->getRank() != 2) {
     BatchedGemmDimAttrs attrs;
-    return verifyBatchedGemmTileContract(getOperation(), *lhsTensor,
-                                         *rhsTensor, *resultTensor, attrs);
+    return verifyBatchedGemmTileContract(getOperation(), *lhsTensor, *rhsTensor,
+                                         *resultTensor, attrs);
   }
 
   if (hasAnyBatchedGemmAttrs(getOperation()))
@@ -89,8 +151,7 @@ mlir::LogicalResult ComputeGemmOp::verify() {
     return emitOpError("gemm lhs K dimension must match rhs K dimension");
   if (hasStaticMismatch(lhsTensor->getDimSize(0),
                         resultTensor->getDimSize(0)) ||
-      hasStaticMismatch(rhsTensor->getDimSize(1),
-                        resultTensor->getDimSize(1)))
+      hasStaticMismatch(rhsTensor->getDimSize(1), resultTensor->getDimSize(1)))
     return emitOpError("gemm result shape must be lhs M by rhs N");
 
   return mlir::success();

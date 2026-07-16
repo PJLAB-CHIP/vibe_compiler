@@ -1,6 +1,7 @@
 # Wafer Compiler Verification Plan
 
-状态：2026-07-14按已完成Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate更新。
+状态：2026-07-16按已完成Q29 structured tile-dataflow主线同步；保留已完成Q22.N/B/L/H/S/V及Q22
+model-only汇总、后续Q22.C板端numeric correlation等独立gate。
 本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
 
@@ -31,7 +32,7 @@ Pipeline position:
 - Completion gate:
   各owner独立验收：Q0闭合既有conversion/legality/formal traversal/completion/atomic negative；Q0.L另闭合typed target
   profile、engine×format legality及reduce/indexing-map无丢义；Q15闭合typed
-  request到verified grouped program；Q16闭合all-rank static executable bundle；Q17闭合all-rank target
+  request到verified rank-local structured tensor program；Q16闭合all-rank static executable bundle；Q17闭合all-rank target
   staging/publication；Q18闭合typed manifest/package/no-card runtime；Q16.T闭合Direct DTE transport activation；
   Q20/Q21固定rank-count=1/16 linear/MLP和16-rank tiny Llama的source CPU corpus及compiler/package纵向链，
   Q22.V再闭合target-model完整数值执行。后续gate不能反向成为Q0前置，board未执行时保持明确
@@ -122,14 +123,16 @@ performance；board单case不是scale或全输入域完成。
 ### 4.1 Complete Traversal
 
 - static elementwise/GEMM覆盖一个tile、多个整tile和非整除tail；
-- multi-output和reduction split；
+- multi-output和受数值合法性约束的single-axis reduction split：generic floating需要exact single combiner及
+  `fastmath<reassoc,nnan,ninf,nsz>`，named floating matmul保持完整K，integer只覆盖已证明的modular add和
+  signed min/max；
 - 每个output element all-and-only一次，无gap/overlap；
 - candidate representative只作筛选，accepted IR包含全部traversal；
 - 放大shape不能只提交first tile。
-- 当前完整静态materialization使用checked ceil-div/product，并对output-tile/reduction-chunk展开设置4096个
-  materialization实例的编译资源预算；乘法overflow或预算超限在commit前fail closed。4096只保护当前
-  unrolled实现的编译时间/内存，不是硬件容量、IR语义、
-  workload legality或16-tile topology限制；长期用compact loop表示替代静态展开后移除该预算依赖。
+- 当前主output traversal使用compact `scf.for`并显式覆盖static tail；ordered reduction chunk和terminal-op的
+  host materialization使用checked ceil-div/product及4096个实例的编译资源预算。乘法overflow或预算超限在
+  commit前fail closed。4096只保护仍需静态物化部分的编译时间/内存，不是硬件容量、IR语义、workload legality
+  或16-tile topology限制。
 
 Q0正式completion由all-and-only traversal relation、accepted IR replay和atomic failure证明，不以数值执行
 为前置；真实source-backed完整输出与独立CPU oracle比较由Q22.V target-model vertical拥有。subview数量/FileCheck
@@ -166,8 +169,11 @@ transport/address/shape和任何late failure都必须保持source byte-identical
 - WDMA source在completion前不可复用，fence后可以；
 - RDMA destination、compute operands/results、DTE send/recv staging同理；
 - branch mutually-exclusive reuse与join后lifetime；
-- isolated `wafer.tile.region`内loop-carried lifetime、path-specific terminal completion，以及SPM value跨
-  region边界的verifier negative；whole-entry cross-region reuse不是当前correctness前置；
+- isolated `wafer.tile.region`内loop-carried lifetime和path-specific terminal completion；跨non-nested sibling
+  regions的显式SPM operand/result正例必须进入同一whole-function lifetime/packing，重叠需求产生容量失败，
+  non-overlap需求证明offset reuse；raw escape、无法解析provenance、nested/async/parallel scope为negative；
+- resident SPM跨closed scalar direct callee可通过；可能执行tile-region的defined callee、external/unresolved和
+  indirect call在缺少interprocedural arena/resource summary时fail closed；
 - missing/wrong-engine fence不能释放resource；
 - terminal pending event或无法证明的loop-carried token使candidate clone失败且不产生accepted target IR。
 
@@ -180,9 +186,9 @@ Q0历史完成结果不覆盖本轮review发现的target profile、engine×forma
   target conversion、transaction-local prepared target LLVM/ABI artifact、`TargetArtifactBundle`和PackageManifest，逐层
   positive/readback。缺失、冲突、自由字符串保存、default以及late-rank不一致均在publication前失败且无partial output；
   tasks/14 profile到typed `TargetIdentityId`/`KernelRuntimeABIId`的唯一映射和Q18 full-config join同样全枚举；Q22后续
-  target LLVM bundle消费该proof，不是本gate提前创建的artifact。debug `wafer-lower-groups-to-target-llvm`的required
-  `target-profile=<registered-id>` option必须在pipeline construction经同一registry立即解析为typed
-  `TargetConversionRequest`；missing/unknown negative失败，不写module attr、不保留自由字符串、不提供default；
+  target LLVM bundle消费该proof，不是本gate提前创建的artifact。focused target-conversion tests必须经同一registry
+  立即解析typed `TargetConversionRequest`；missing/unknown negative失败，不写module attr、不保留自由字符串、
+  不提供default；
 - tasks/14 registry全枚举每个target-profile×engine×logical-format row，和tasks/08 layout profile、target verifier、format
   encoder及CRT参数逐项conformance；无证据UINT/64-bit/TF32 format-bearing row为negative，现有i64 positive相应修正；
 - elementwise identity/permutation/broadcast都在tile→instruction物化或strip；terminal instruction positive无map且same-shape，
@@ -202,7 +208,7 @@ unsupported），configured `--show-unsupported`确认唯一unsupported为`wafer
 通过。Q20 rank1/rank16、Q21 rank16/HF、CRT conformance、真实RISC-V64 ELF readback、schema-v3 package/no-card以及rank-15
 target/package late failure均在同一完整suite中实际执行；板端、vendor-exact packet和timing仍不属于本gate。
 
-## 5. Q15 Typed Driver And Grouped Program Gates
+## 5. Q15 Typed Driver And Structured Program Gates
 
 Request/API：
 
@@ -219,10 +225,13 @@ Artifact chain：
 - pinned helper真实执行，非零exit、missing/非regular marker、no-op/partial output、residual SDY op/type/attr拒绝；
 - helper必须产出`forward.mlir`/`forward.meta`和post-SPMD marker；原program非IR成员在无typed rewrite时原字节保留；
 - post-SPMD metadata的logical rank、replicated/partitioned coverage和NPY payload重新验证；
-- StableHLO-to-Linalg与logical group formation后写出、重新parse并verify，最终无raw StableHLO/SDY；
-- 只发布verified grouped program directory；它不是RankExecutable、ExecutableBundle或target artifact。
+- StableHLO-to-Linalg/collective normalization后写出、重新parse并verify，最终无raw
+  StableHLO/SDY；
+- 只发布verified rank-local structured tensor program directory；它不是RankExecutable、ExecutableBundle
+  或target artifact。
 
-Atomicity：helper、metadata、normalization、group、write/readback或publication任一late failure都清理唯一staging；
+Atomicity：helper、metadata、normalization、structured-program legality、write/readback或publication任一
+late failure都清理唯一staging；
 source与既有final byte-identical。marker目录、helper-output symlink和publication race必须fail closed，不能只靠
 先exists-check再覆盖rename。
 
@@ -231,20 +240,77 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 
 ## 6. Q16 Per-Rank Executable Bundle Gates
 
-- 直接消费Q15重新读取验证过的grouped program，不另造手写group主线；
+- 直接消费Q15重新读取验证过的structured tensor program，不另造手写task/group主线；
 - frontend verifier一次返回typed input/output/parameter/constant和每rank slice，Compiler不二次解析JSON或文件名；
 - rank-count=1创建exact一个rank clone；rank-count=16创建logicalRank 0..15 all-and-only clones；
 - 每rankcompile在isolated module clone，显式传rank，不使用默认0、filename或rank-0 named pipeline；
 - rank 0/1 local slice、payload、entry/resource/completion事实可区分；replicated module byte-identical仍保留独立rank；
 - direct full-shape和tiled candidate经过相同generation/materialization/legality/ranking/complete-commit；
-- accepted rank artifact覆盖完整traversal，且无`wafer.group`残留；
+- accepted rank artifact覆盖完整traversal，且无legacy `wafer.group`残留；
 - 任一rank/candidate/SPM/DDR/geometry/completion failure不形成`RankExecutable[]`或partial bundle；
 - all-and-only rank/resource/completion验证后才构造atomic `ExecutableBundle`，failed rebuild保持旧final不变；
-- 当前bundle合同为`TransportContract::None`；含logical collective/DTE需求的program明确
-  `unsupported_transport`且无partial bundle，peer-positive gate属于Q16.T；
-- function-boundary bufferization后的完整rank重新执行SPM/DDR planning，终态无Tensor/Bufferization/Linalg/Group、
+- bundle根据accepted IR只能形成`TransportContract::None`或Q16.T已验证的
+  `TransportContract::DirectDTE`；logical collective/DTE必须通过all-rank message/resource/wait匹配，
+  不能以`unsupported_transport`默认切断主线；
+- function-boundary bufferization后的完整rank重新执行SPM/DDR planning，终态无
+  Tensor/Bufferization/Linalg/legacy `wafer.group`、
   untagged memref或缺失的compiler-managed offset；
-- debug FileCheck、手写group、single rank pass或某rank成功不构成Q16 completion。
+- debug FileCheck、手写task/group fixture、single rank pass或某rank成功不构成Q16 completion。
+
+### 6.1 Q29 Tile-Dataflow Scheduling Migration Gate
+
+Q29以`tasks/06-group.md`的终态合同为owner，本文只固定跨stage证据口径：
+
+- production从Q15 verified structured tensor program直接建立rank-local task/dataflow candidates，不发布或
+  重新读取额外的调度artifact；
+- accepted IR用buffer SSA、movement和event显式区分resident edge和spill，并以whole-rank SPM/
+  DDR lifetime与whole-variant transport/ABI gate原子提交；
+- spill/resident storage alternatives各自从complete current IR重算compute-class、DDR、SPM、NoC、instruction和event
+  count。scalar time严格更小可选resident；scalar estimate相等或饱和时，仅允许全部known dimension无一变差且
+  至少一项严格降低的strict execution-cost dominance，不能把unknown或tradeoff伪装成收益；
+- candidate搜索只枚举bounded traversal/reduction和六个scope policies；positive `maxSearchCandidates`对
+  first-legal、min-cost、all-fail及parallel batch所有退出路径都是hard cap。每rank至多六个distinct
+  alternative；whole-variant coordinator最多访问64个best-first组合，再尝试至多六个共同policy和一个tail，
+  去重后总计不超过71次exact gate；rejected clone不改写source或accepted module；
+- function-boundary bufferization和physical-memory replanning逐rank alternative独立执行；later gate失败只过滤
+  该alternative，每个survivor从final instruction IR fresh recost，仅finalized frontier为空时rank失败。覆盖必须同时
+  包含“一个失败、另一个存活”和“全部失败”两类原子性；
+- 独立rank-count=1/16 integrated gate和TP16 7B compile-only结构gate要证明complete traversal、跨task SPM edge、layout临时DDR
+  消除、activation reuse和collective/residual completion；数值CModel/PyTorch差分仍由Q28完成；
+- 已退役调度surface和consumer保持清零，并由source/IR组织检查及negative tombstone防止回归。
+  generic per-edge residency、task-order/layout-cut和double-buffer/ping-pong是延期性能扩展，不是Q29正确性缺口。
+
+2026-07-16的rank-0 7B compile-only重放选择26条full-buffer SPM handoff；显式DDR movement由8,798,792 bytes降为
+5,100,424 bytes，其中RDMA 4,892,168、WDMA 208,256。终态包含36个tile regions；反汇编全部16个
+current-binary modules后，每rank target call inventory均为gather/RDMA/WDMA/GEMM/local-fence=
+`362/30/10/9/220`，rank-0 pre-SPM-root历史对照为`341/94/59/13/277`，证明resident candidate进入最终module。
+whole-rank planner沿tile-region yield/result/operand SSA
+传播allocation root，SPM high-water为2,725,568 / 3,014,656 bytes，即90.411%。
+
+最终TP16 production用520.346秒wall、12,543.822秒user、15.246秒system time发布schema-v3 package；manifest
+为`rank_count=16`，modules/entries/completions各16个、resources 288个。16个module均为328,456-byte RISC-V
+ELF64 DYN，SHA-256逐项readback且因rank-specific DTE metadata保持digest互异；pre-SPM-root历史module为
+332,552 bytes。对entry 0..15逐一运行
+`wafer-run --no-card`并显式提供Direct DTE status ABI与host-watchdog capability，16项exact preflight全部通过且均
+报告`board_execution: false`。rank-count=1/16 focused integrated gate也都经同一scheduler/finalization路径验证
+all-and-only artifact；no-card结果不属于board execution。
+
+上述证据不隐藏剩余spill：gate/up tiled outputs仍在SiLU/gate前落DDR，tiled projection result成为collective input前
+仍落DDR，因为当前producer没有暴露一个完整resident root；post-SiLU到down和collective result到residual已保持SPM。
+这属于延期的tiled-producer residency性能项。该轮没有运行7B target CModel，也没有与PyTorch `expected.npy`比较；
+不得把compile/package结构证据写成Q28数值完成。
+
+Q29 fresh full gate已完成：target-model配置223项lit中221 pass、2 unsupported，分别为
+`wafer-compile-stablehlo-disabled.test`和`wafer-compile-target-model-disabled.test`；base/numeric/bulk/SystemC
+unit分别235/235、48/48、18/18、5/5，CTest 22/22。development配置223项lit中220 pass、3 unsupported，分别为
+`wafer-compile-stablehlo-disabled.test`、`wafer-compile-target-model-bulk.test`和
+`wafer-compile-target-model-source.test`；base unit 235/235，CTest 12/12。dependency checker、109项CRT symbol
+closure、CRT conformance（formats/encoding rows/convert routes=`13/65/36`，convert groups=`4/23/9`）、IR/source
+organization和diff检查全部通过。
+
+target-model配置还实际重放了已有source numeric vertical，transaction计数为linear 24、f16/bf16 10、large 10、
+tiny Llama TP16 12,656；这证明Q20/Q21 consumer没有因调度迁移回退，不是标准7B block的CModel或PyTorch差分。
+Q29据此完成，Q28开始执行完整7B managed-reference CModel/PyTorch gate。
 
 ## 7. Q17 Baseline And Q16.T Direct DTE Activation Gates
 
@@ -375,7 +441,7 @@ Pipeline position:
 - expected CPU reference生成方式；
 - 重复export byte-identical或canonical-equivalent证明。
 
-手写Wafer/group/instr IR不属于纵向corpus。
+手写Wafer task/group/instr IR不属于纵向corpus。
 
 当前`wafer-single-card-vertical-v1` corpus admission已经固定五个case：`2x16 -> 2x32 -> 2x16`
 f32 linear-residual MLP，`4x16 · 16x16`的f16/bf16 simple GEMM，`64x64 · 64x64`的f32 large GEMM，以及
@@ -446,8 +512,9 @@ owner-backed target LLVM bundle和oneDNN bulk qualification；以下各gate仍�
   升级证据，同一MPFR wrapper不算独立oracle；production target model不得调用已退役accepted-IR interpreter；
 - GEMM测试完整operand/product/accumulator/intermediate/destination tuple、逐步rounding/overflow、FMA、reduction
   order和store conversion；首个published row只有f16/bf16/f32同dtype输入输出、F32 fused accumulator、+0初值、K递增和
-  destination RNE。narrow/unfused、TF32-to-f32和i8-to-s32只保留typed区分candidate；16条native reduce selector因
-  init/identity/order未闭合全部静态拒绝，source reduce只重放Q0.L普通composite，不另建旁路reduce loop；
+  destination RNE。narrow/unfused、TF32-to-f32和i8-to-s32只保留typed区分candidate；native F32 sum reduce发布
+  +0 accumulator、logical row-major input递增、逐step RNE的唯一formal row，其余15条selector因
+  init/identity/order未闭合静态拒绝；
 - 从current accepted surface生成closure：每个published `(ModelProfileId, NumericCommandKey)`恰好映射一个
   `NumericSemanticsProfile`/kernel/comparator或静态unsupported reason；多个model candidate使用不同显式ModelProfileId，
   不能成为compiler legality或隐式default；
@@ -657,7 +724,39 @@ payload、destination、semantic、environment和预期backend output exact-matc
 及完整Direct DTE路径通过。output mismatch和bulk record mismatch都返回非零并保留已验证manifest/module。
 
 这组结果签发的仍只是`target-call/SystemC model-only functional-numeric`：不执行repo CRT、Tsm packet或RISC-V ELF，不证明
-board numeric、vendor等价、性能或cycle accuracy。最终fresh suite数量记录在`tasks/progress.md`对应done row。
+board numeric、vendor等价、性能或cycle accuracy。最终fresh suite数量保留在对应归档证据，不复制到任务队列。
+
+### 11.6.1 Q28 Llama-2 7B 单 Block Scale Gate
+
+Q28不以tiny block通过推导规模可行性，而固定标准Llama-2 7B单层的4096 hidden、11008 intermediate、
+32 heads/head dimension 128、FP16，batch 1、sequence 16。source exporter仍只构造一个decoder block，但parameter、
+activation、attention和MLP shape必须保持7B尺寸；`num_hidden_layers=32`只作模型配置归属，不复制32层。
+
+完成证据必须同时包含：
+
+- 真实PyTorch/XLA source/config/payload和TP16 column/row-parallel weight marks；同一确定性模块、权重与输入
+  先在PyTorch eager CPU上执行，其完整Block输出直接形成`expected.npy`；
+- 16 rank parameter slice对global weight all-and-only覆盖，row/column parallel形成预期collective；
+- 至少一个Q/K/V/O或gate/up/down GEMM因3 MiB SPM与target geometry形成多时间tile；accepted IR必须显式
+  all-and-only表达这些tile，并使用当前compact `scf.for`主traversal加static tail合同，不能退回只提交first tile或
+  eager展开全部output coordinates；
+- 每rank SPM peak、DDR resident parameter slice、movement range、fence/wait和terminal completion可重算并通过；
+- 全部大GEMM命中managed-reference bulk backend，formal FMA保持零；每条command仍核对semantic、shape/layout、
+  managed environment、finite value-domain和byte budget，该backend provenance不得标作Q22.B exact qualification record；完整CModel output重组后与
+  PyTorch eager `expected.npy`做全张量比较，手写NumPy参考只允许用于诊断，不是Q28真值oracle；
+- F16/BF16 GEMM输入进入oneDNN F32 descriptor前采用位级无损widening，并以F16/BF16/F32 bulk资格回归保护；不能让
+  大weight payload重新进入逐元素APFloat对象路径。当前SEQ oneDNN的慢测耗时只作功能基线，不构成性能完成；未来
+  threaded artifact必须重做managed dependency identity、worker环境和完整数值gate；
+- 全部已发布F16/F32 elementwise、F16/F32 nearest-even convert和native F32 sum reduce命中managed-reference tensor
+  functional lane，formal command保持零；该lane逐command检查resolved semantics、arity、shape/layout、non-NaN
+  input/output及scalar/byte budget，按IEEE支持attention mask的有符号infinity；unsupported
+  dtype/op/rounding/value-domain在effect前失败且无formal fallback。
+  单元测试用formal exact覆盖普通值和edge vector，scale完成证明仍以完整PyTorch eager expected tolerance为准；
+- managed-reference准入失败、错误expected、资源超限和late-rank failure均不发布partial result。
+
+4096 cap只约束仍被显式物化的ordered reduction chunk和terminal op，不约束compact output traversal，也不是硬件、
+shape或workload限制。若合法reduction/terminal实例超过预算，应继续改进compact表示/consumer，不能调大常量、
+缩小case或漏实例。该gate仍不证明32层整网、KV cache、board或timing。
 
 ### 11.7 Q22.C Board Numeric Correlation Gate
 

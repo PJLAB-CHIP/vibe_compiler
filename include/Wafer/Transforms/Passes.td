@@ -69,7 +69,8 @@ def LowerInstrToTargetLLVMPass
     : Pass<"wafer-lower-instr-to-target-llvm", "mlir::ModuleOp"> {
   let summary =
       "Lower memory-planned wafer.instr ops to target LLVM CRT calls";
-  let dependentDialects = ["mlir::LLVM::LLVMDialect",
+  let dependentDialects = ["mlir::cf::ControlFlowDialect",
+                           "mlir::LLVM::LLVMDialect",
                            "wafer::WaferDialect"];
   let options = [
     Option<"targetProfile", "target-profile", "std::string",
@@ -89,81 +90,9 @@ def LowerInstrToTargetLLVMPass
   ];
 }
 
-def FormLogicalGroupsPass
-    : Pass<"wafer-form-logical-groups", "mlir::ModuleOp"> {
-  let summary = "Form root-seeded tensor-level logical wafer.group ops";
-  let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::linalg::LinalgDialect",
-                           "mlir::math::MathDialect", "mlir::scf::SCFDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
-  ];
-}
-
-def DumpGroupTilingDemandPass
-    : Pass<"wafer-dump-group-tiling-demand", "mlir::ModuleOp"> {
-  let summary = "Dump wafer.group tiling demand analysis";
-  let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::linalg::LinalgDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
-  ];
-}
-
-def DumpGroupLayoutPlanPass
-    : Pass<"wafer-dump-group-layout-plan", "mlir::ModuleOp"> {
-  let summary = "Dump wafer.group layout planning analysis";
-  let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::linalg::LinalgDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
-  ];
-}
-
-def DumpGroupToTileRegionPass
-    : Pass<"wafer-dump-group-to-tile-region", "mlir::ModuleOp"> {
-  let summary = "Dump wafer.group to wafer.tile.region lowering IR";
-  let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::async::AsyncDialect",
-                           "mlir::bufferization::BufferizationDialect",
-                           "mlir::func::FuncDialect",
-                           "mlir::linalg::LinalgDialect",
-                           "mlir::memref::MemRefDialect",
-                           "mlir::scf::SCFDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
-  ];
-  let options = [
-    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"-1",
-           "Explicit logical execution rank used to materialize group-local "
-           "communication rank facts; required for modules containing groups">
-  ];
-}
-
-def DumpCandidateDdrTileViewsPass
-    : Pass<"wafer-dump-candidate-ddr-tile-views", "mlir::ModuleOp"> {
-  let summary = "Dump candidate DDR tile-view evaluation IR";
-  let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::bufferization::BufferizationDialect",
-                           "mlir::func::FuncDialect",
-                           "mlir::linalg::LinalgDialect",
-                           "mlir::math::MathDialect",
-                           "mlir::memref::MemRefDialect",
-                           "mlir::scf::SCFDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
-  ];
-  let options = [
-    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"-1",
-           "Explicit logical execution rank used to materialize candidate "
-           "communication facts; required for modules containing groups">,
-    Option<"candidateTileOffsets", "candidate-tile-offsets", "std::string",
-           /*default=*/"\"\"",
-           "Comma-separated candidate output tile offsets">,
-    Option<"candidateTileSizes", "candidate-tile-sizes", "std::string",
-           /*default=*/"\"\"",
-           "Comma-separated candidate output tile sizes">
-  ];
-}
-
-def SelectGroupTilePass
-    : Pass<"wafer-select-group-tile", "mlir::ModuleOp"> {
-  let summary = "Run closed-loop group tile selection and commit selected lowering";
+def ScheduleTensorProgramPass
+    : Pass<"wafer-schedule-tensor-program", "mlir::ModuleOp"> {
+  let summary = "Schedule structured tensor tasks and commit selected lowering";
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::async::AsyncDialect",
                            "mlir::bufferization::BufferizationDialect",
@@ -176,11 +105,12 @@ def SelectGroupTilePass
   ];
   let options = [
     Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"-1",
-           "Explicit logical execution rank used to materialize group-local "
-           "communication facts; required for modules containing groups">,
+           "Explicit logical execution rank used to materialize task-local "
+           "communication facts">,
     Option<"tileSearch", "tile-search", "std::string",
-           /*default=*/"\"first-legal\"",
-           "Tile candidate search mode: first-legal or min-estimated-time">,
+           /*default=*/"\"min-estimated-time\"",
+           "Tile candidate search mode: min-estimated-time, or explicit "
+           "debug-only first-legal">,
     Option<"tileSearchEffort", "tile-search-effort", "std::string",
            /*default=*/"\"default\"",
            "Tile candidate search effort: quick, default or deep">,
@@ -195,9 +125,9 @@ def SelectGroupTilePass
            "empty uses tile-search-effort policy">,
     Option<"maxSearchCandidates", "max-search-candidates", "int64_t",
            /*default=*/"-1",
-           "Soft total candidate-visit cap, enforced only after a passing "
-           "candidate exists; -1 uses tile-search-effort policy and 0 stops "
-           "optimization after the first passing candidate">,
+           "Positive hard total candidate-visit cap, enforced whether or not "
+           "a passing candidate exists; -1 uses tile-search-effort policy "
+           "and 0 disables the cap">,
     Option<"searchBeamWidth", "search-beam-width", "int64_t",
            /*default=*/"-1",
            "Maximum refinement neighbors enqueued after the first passing "
@@ -209,7 +139,8 @@ def SelectGroupTilePass
            "min-estimated-time; ignored by first-legal">,
     Option<"printCandidateSummary", "print-candidate-summary", "bool",
            /*default=*/"false",
-           "Print selected candidate summaries to stderr">
+           "Print discovered scopes, rejected candidates and selected "
+           "candidate summaries to stderr">
   ];
 }
 
@@ -219,26 +150,6 @@ def NormalizeStablehloCollectivesPass
       "Normalize post-SPMD StableHLO collectives to Wafer linalg extension collectives";
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect"
-  ];
-}
-
-def ConvertGroupToTileRegionPass
-    : Pass<"wafer-convert-group-to-tile-region", "mlir::ModuleOp"> {
-  let summary = "Convert logical wafer.group ops to wafer.tile.region IR";
-  let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::async::AsyncDialect",
-                           "mlir::bufferization::BufferizationDialect",
-                           "mlir::func::FuncDialect",
-                           "mlir::linalg::LinalgDialect",
-                           "mlir::math::MathDialect",
-                           "mlir::memref::MemRefDialect",
-                           "mlir::scf::SCFDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
-  ];
-  let options = [
-    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"-1",
-           "Explicit logical execution rank used to materialize group-local "
-           "communication rank facts; required for modules containing groups">
   ];
 }
 

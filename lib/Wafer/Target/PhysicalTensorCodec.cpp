@@ -137,11 +137,31 @@ getPhysicalBitOffsets(const NumericTensorKey &key,
                       "tensor element count exceeds host size_t");
   std::vector<uint64_t> offsets;
   offsets.reserve(static_cast<size_t>(key.getElementCount()));
+  if (!layout.info.bitPackedElement &&
+      (layout.info.layout == MemLayout::Tensor ||
+       layout.info.layout == MemLayout::NTensor) &&
+      layout.info.compactBytes == layout.info.physicalBytes) {
+    const uint64_t elementBits =
+        static_cast<uint64_t>(layout.info.elementBytes) * UINT64_C(8);
+    for (uint64_t index = 0; index < key.getElementCount(); ++index)
+      offsets.push_back(index * elementBits);
+    return offsets;
+  }
   if (llvm::Error error = forEachCoordinate(
           key.getShape(),
           [&](llvm::ArrayRef<int64_t> coordinate) -> llvm::Error {
-            std::optional<int64_t> bitOffset =
-                computeWaferPhysicalElementBitOffset(layout.type, coordinate);
+            std::optional<int64_t> bitOffset;
+            if (layout.info.bitPackedElement) {
+              bitOffset =
+                  computeWaferPhysicalElementBitOffset(layout.type, coordinate);
+            } else {
+              std::optional<int64_t> byteOffset =
+                  computeWaferPhysicalElementByteOffset(
+                      layout.type, layout.info, coordinate);
+              if (byteOffset &&
+                  *byteOffset <= std::numeric_limits<int64_t>::max() / 8)
+                bitOffset = *byteOffset * 8;
+            }
             if (!bitOffset || *bitOffset < 0)
               return codecError(
                   PhysicalTensorCodecErrorCode::InvalidLayout,

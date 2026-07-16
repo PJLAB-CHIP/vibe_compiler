@@ -1,7 +1,7 @@
 # Wafer StableHLO 到 Local Structured Tensor IR 设计
 
-状态：2026-07-12按当前实现重基线。本文拥有post-SPMD StableHLO local compute与logical collective到
-structured tensor IR的normalization合同；不拥有SPMD、group candidate、memory、target或runtime。实现状态看
+状态：2026-07-16按Q29 structured-program handoff同步。本文拥有post-SPMD StableHLO local compute与logical collective到
+structured tensor IR的normalization合同；不拥有SPMD、task/dataflow candidate、memory、target或runtime。实现状态看
 `tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -19,16 +19,18 @@ Pipeline position:
   target-independent structured tensor program，包含local compute、ConstantLike values和logical collective；
   不残留raw StableHLO或SDY语义。
 - Downstream consumer:
-  Q15 logical group formation；Q16 tiling-demand/candidate materialization。
+  Q29 rank-local tile-dataflow analysis、candidate materialization与whole-variant commit。
 - User-level driver / named pipeline:
-  production只经`wafer-compile`并继续到verified grouped program。`wafer-lower-stablehlo-to-linalg`是显式IR
+  production只经`wafer-compile`并继续到verified rank-local structured tensor program。
+  `wafer-lower-stablehlo-to-linalg`是显式IR
   debug/test pipeline，不是program-directory入口或用户stop-stage。
 - Explicit non-goals:
-  不运行Shardy/XLA SPMD，不写parameter shard metadata，不决定group/tile、logical rank specialization、
+  不运行Shardy/XLA SPMD，不写parameter shard metadata，不决定task/tile、logical rank specialization、
   physical layout、SPM/DDR、DTE、target CRT、manifest或runtime binding。
 - Completion gate:
   Q15真实helper输出经同一normalization后不残留StableHLO/SDY，supported collectives成为verifier-legal
-  LinalgExt ops，随后能直接形成logical groups；unsupported semantic fail closed而不是留给下游猜测。
+  LinalgExt ops，随后能直接进入structured task/dataflow scheduler；unsupported semantic fail closed
+  而不是留给下游猜测。
 ```
 
 ## 2. 稳定边界
@@ -72,7 +74,7 @@ indexing maps推出。
 
 softmax、RMSNorm、LayerNorm和RoPE在当前input中是fine-grained StableHLO graph。长期不引入
 `wafer.softmax`、`wafer.norm`或`wafer.rope`来隐藏数学语义。若其multi-stage schedule需要额外temporary或
-DDR/SPM residency，由group/candidate与memory层通过显式IR建立。
+DDR/SPM residency，由tile-dataflow candidate与memory层通过显式IR建立。
 
 ## 4. Logical Collective Handoff
 
@@ -96,9 +98,9 @@ interface。它们保留：
 verifier用execution mesh检查logical ranks范围，并用selected rank-group size检查gather/scatter/all-to-all shape
 relation。rank group只含logical rank，不含physical endpoint、DTE channel、route、SPM buffer或runtime resource。
 
-collective进入`wafer.group`后仍是tensor semantics；Q16 tile materialization才产生buffer-level
-`wafer.tile.*` collective，后续communication/instruction阶段再选择transport。normalization不得直接跳到DTE或
-把algorithm/peer assignment塞进LinalgExt attrs。
+collective在rank-local structured tensor program中仍是tensor semantics；Q29 task materialization才产生
+buffer-level `wafer.tile.*` collective，后续communication/instruction阶段再选择transport。normalization不得
+直接跳到DTE或把algorithm/peer assignment塞进LinalgExt attrs。
 
 当前没有`segmented_all_to_all`、MPMD component edge或MoE count/capacity合同；这些需要真实frontend表示与下游
 consumer后另行设计，不能作为当前completion gate。
@@ -134,7 +136,7 @@ SDY op/type/attr不属于post-SPMD local program。Q15在normalization前已有�
 - elementwise、broadcast、static shape views与concatenate；
 - basic reductions及staged softmax/norm/RoPE/MLP graphs；
 -上述五类StableHLO logical collective；
-- real PyTorch/XLA data/column/row sharding helper输出进入group。
+- real PyTorch/XLA data/column/row sharding helper输出进入structured tensor program。
 
 这些证据只证明local structured IR和logical collective handoff，不证明：
 
@@ -160,7 +162,7 @@ buildStablehloToLinalgPipeline
 ```
 
 registered `wafer-lower-stablehlo-to-linalg`只为显式MLIR replay和unit tests提供相同body。helper与program
-directory orchestration由`wafer-compile`负责，用户不选择该stage或手工续接group passes。
+directory orchestration由`wafer-compile`负责，用户不选择该stage或手工续接调度passes。
 
 实现入口可以拆pattern/pass，但长期合同是输入/输出IR与legality，不是pass名。创建
 `wafer.linalg_ext.collective.*`的pass必须声明dependent dialect；official conversion pin变化时要重跑coverage，
@@ -176,8 +178,9 @@ directory orchestration由`wafer-compile`负责，用户不选择该stage或手�
 - 五类collective的shape、axis、DPS ties、rank group/rank groups与combiner verifier；
 - logical rank越mesh范围、invalid replica groups、shape mismatch与unsupported collective fail closed；
 - output不含SDY、physical layout/memory、DTE、packet或runtime facts；
-- `wafer-compile`从真实post-SPMD program继续形成并重新verify logical groups。
+- `wafer-compile`从真实post-SPMD program继续形成并重新verify structured tensor program。
 
 显式IR FileCheck证明local conversion；只有Q15 unified driver消费真实program directory/helper output并发布verified
-grouped program，才能证明本stage接入主线。Q16拥有candidate bundle，Q20/Q21拥有固定CPU expected corpus和纵向
+structured tensor program，才能证明本stage接入主线。Q29拥有candidate/bundle scheduling，Q20/Q21拥有固定
+CPU expected corpus和纵向
 workload completion，不能由本stage测试代替。

@@ -84,6 +84,10 @@ computeWaferPhysicalTensorInfo(mlir::MemRefType type);
 std::optional<int64_t>
 computeWaferPhysicalElementByteOffset(mlir::MemRefType type,
                                       llvm::ArrayRef<int64_t> logicalIndices);
+std::optional<int64_t>
+computeWaferPhysicalElementByteOffset(mlir::MemRefType type,
+                                      const WaferPhysicalTensorInfo &info,
+                                      llvm::ArrayRef<int64_t> logicalIndices);
 
 /// Returns the physical bit ordinal of one logical element relative to the
 /// memref view base. Byte-addressable elements reuse the byte-offset helper;

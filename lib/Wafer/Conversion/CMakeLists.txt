@@ -1,21 +1,17 @@
-add_mlir_conversion_library(WaferGroupToTileRegion
-  WaferGroupToTileRegion/BodyEmitter.cpp
-  WaferGroupToTileRegion/CandidateMaterialization.cpp
-  WaferGroupToTileRegion/CandidateSupport.cpp
-  WaferGroupToTileRegion/CollectiveLowering.cpp
-  WaferGroupToTileRegion/CompleteTraversal.cpp
-  WaferGroupToTileRegion/GenericLowering.cpp
-  WaferGroupToTileRegion/GroupLowering.cpp
-  WaferGroupToTileRegion/NamedComputeLowering.cpp
-  WaferGroupToTileRegion/TensorControlFlowLowering.cpp
-  WaferGroupToTileRegion/TileMaterialization.cpp
-  WaferGroupToTileRegion/WaferGroupToTileRegion.cpp
+add_mlir_conversion_library(WaferTensorProgramToTileRegion
+  WaferTensorProgramToTileRegion/BodyEmitter.cpp
+  WaferTensorProgramToTileRegion/CandidateMaterialization.cpp
+  WaferTensorProgramToTileRegion/CandidateSupport.cpp
+  WaferTensorProgramToTileRegion/CollectiveLowering.cpp
+  WaferTensorProgramToTileRegion/CompleteTraversal.cpp
+  WaferTensorProgramToTileRegion/GenericLowering.cpp
+  WaferTensorProgramToTileRegion/NamedComputeLowering.cpp
+  WaferTensorProgramToTileRegion/TensorControlFlowLowering.cpp
+  WaferTensorProgramToTileRegion/TileMaterialization.cpp
+  WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.cpp
 
   ADDITIONAL_HEADER_DIRS
-  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferGroupToTileRegion
-
-  DEPENDS
-  WaferPassesIncGen
+  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferTensorProgramToTileRegion
 
   LINK_LIBS PUBLIC
   WaferAnalysis
@@ -30,6 +26,7 @@ add_mlir_conversion_library(WaferGroupToTileRegion
   MLIRMathDialect
   MLIRMemRefDialect
   MLIRSCFDialect
+  MLIRSCFTransforms
   MLIRSupport
   MLIRTensorDialect
   MLIRTransforms

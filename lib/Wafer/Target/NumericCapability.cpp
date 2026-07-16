@@ -206,6 +206,27 @@ findNEGemmSemantics(ModelProfileId modelProfile, TargetProfileId targetProfile,
   return match;
 }
 
+const NumericSemanticsProfile *findNativeCTReduceSemantics(
+    ModelProfileId modelProfile, TargetProfileId targetProfile,
+    NumericReduceOperation operation, LogicalFormat format) {
+  const NumericSemanticsProfile *match = nullptr;
+  for (const NumericSemanticsProfile &profile :
+       getRegisteredNumericNativeCTReduceSemanticsProfiles()) {
+    const NumericNativeCTReduceSemanticsIdentity *identity =
+        profile.getNativeCTReduceIdentity();
+    if (identity && profile.getModelProfile() == modelProfile &&
+        identity->getTargetProfile() == targetProfile &&
+        identity->getOperation() == operation &&
+        identity->getFormat() == format) {
+      if (match)
+        llvm::report_fatal_error(
+            "duplicate reusable native reduction semantics identity");
+      match = &profile;
+    }
+  }
+  return match;
+}
+
 bool selectorsOverlap(const NumericCapabilityPattern &lhs,
                       const NumericCapabilityPattern &rhs) {
   if (lhs.getModelProfile() != rhs.getModelProfile() ||
@@ -241,6 +262,7 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
   size_t gemmSupported = 0;
   size_t gemmInteger = 0;
   size_t reduce = 0;
+  size_t reduceSupported = 0;
   std::set<std::string> digests;
   std::set<std::string> elementwiseSelectors;
   std::set<std::string> gemmSelectors;
@@ -397,7 +419,13 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
             pattern.getSemantics()->getGemmAccumulatorInitializationPolicy() !=
                 NumericGemmAccumulatorInitializationPolicy::NotApplicable ||
             pattern.getSemantics()->getGemmReductionOrderPolicy() !=
-                NumericGemmReductionOrderPolicy::NotApplicable)
+                NumericGemmReductionOrderPolicy::NotApplicable ||
+            pattern.getSemantics()
+                    ->getReductionAccumulatorInitializationPolicy() !=
+                NumericReductionAccumulatorInitializationPolicy::
+                    NotApplicable ||
+            pattern.getSemantics()->getReductionOrderPolicy() !=
+                NumericReductionOrderPolicy::NotApplicable)
           return llvm::createStringError(
               llvm::errc::invalid_argument,
               "supported convert semantics has an incomplete numeric policy");
@@ -548,7 +576,12 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
           pattern.getSemantics()->getGemmAccumulatorInitializationPolicy() !=
               NumericGemmAccumulatorInitializationPolicy::NotApplicable ||
           pattern.getSemantics()->getGemmReductionOrderPolicy() !=
-              NumericGemmReductionOrderPolicy::NotApplicable)
+              NumericGemmReductionOrderPolicy::NotApplicable ||
+          pattern.getSemantics()
+                  ->getReductionAccumulatorInitializationPolicy() !=
+              NumericReductionAccumulatorInitializationPolicy::NotApplicable ||
+          pattern.getSemantics()->getReductionOrderPolicy() !=
+              NumericReductionOrderPolicy::NotApplicable)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
             "supported elementwise semantics has an incomplete numeric "
@@ -610,7 +643,12 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
           pattern.getSemantics()->getSaturationPolicy() !=
               NumericSaturationPolicy::Disabled ||
           pattern.getSemantics()->getTranscendentalEvaluationPolicy() !=
-              NumericTranscendentalEvaluationPolicy::NotApplicable)
+              NumericTranscendentalEvaluationPolicy::NotApplicable ||
+          pattern.getSemantics()
+                  ->getReductionAccumulatorInitializationPolicy() !=
+              NumericReductionAccumulatorInitializationPolicy::NotApplicable ||
+          pattern.getSemantics()->getReductionOrderPolicy() !=
+              NumericReductionOrderPolicy::NotApplicable)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
             "supported GEMM selector does not match its typed semantics");
@@ -622,10 +660,71 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
         return llvm::createStringError(
             llvm::errc::invalid_argument,
             "native reduction selector has the wrong family");
-      if (llvm::Error error = requireUnsupported(
-              pattern,
-              NumericModelImplementationReason::NativeReductionPolicyUnproven))
-        return error;
+      const bool supported =
+          selector->operation == NumericReduceOperation::Sum &&
+          selector->format == LogicalFormat::F32;
+      if (!supported) {
+        if (llvm::Error error =
+                requireUnsupported(pattern, NumericModelImplementationReason::
+                                                NativeReductionPolicyUnproven))
+          return error;
+      } else {
+        ++reduceSupported;
+        if (llvm::Error error = requireSupportedExecution(
+                pattern, NumericCommandFamily::NativeCTReduce,
+                FormalKernelKind::Reduce,
+                FormalNumericBackendKind::LLVMAPFloatAPInt))
+          return error;
+        const NumericNativeCTReduceSemanticsIdentity *identity =
+            pattern.getSemantics()->getNativeCTReduceIdentity();
+        if (!identity || identity->getTargetProfile() != kTargetProfile ||
+            identity->getOperation() != NumericReduceOperation::Sum ||
+            identity->getFormat() != LogicalFormat::F32 ||
+            pattern.getSemantics()->getRoundingModePolicy() !=
+                NumericRoundingMode::NearestEven ||
+            pattern.getSemantics()->getRoundingPointPolicy() !=
+                NumericRoundingPointPolicy::ReductionStep ||
+            pattern.getSemantics()->getFloatingNaNPolicy() !=
+                FloatingNaNPolicy::CanonicalPositiveQuietNaN ||
+            pattern.getSemantics()->getFloatingSignedZeroPolicy() !=
+                FloatingSignedZeroPolicy::
+                    ReductionPositiveZeroAccumulatorThenIEEE754 ||
+            pattern.getSemantics()->getFloatToIntegerPolicy() !=
+                FloatToIntegerPolicy::NotApplicable ||
+            pattern.getSemantics()->getFloatingSubnormalPolicy() !=
+                FloatingSubnormalPolicy::Gradual ||
+            pattern.getSemantics()->getFloatingTininessPolicy() !=
+                FloatingTininessPolicy::AfterRounding ||
+            pattern.getSemantics()->getExceptionFlagPolicy() !=
+                NumericExceptionFlagPolicy::ModelOnly ||
+            pattern.getSemantics()->getFloatingNaNSignalingPolicy() !=
+                FloatingNaNSignalingPolicy::
+                    SignalingRaisesInvalidQuietDoesNot ||
+            pattern.getSemantics()->getFloatingDenormalModePolicy() !=
+                FloatingDenormalModePolicy::GradualNoDAZNoFTZ ||
+            pattern.getSemantics()->getFloatingOverflowPolicy() !=
+                FloatingOverflowPolicy::IEEE754AccordingToRoundingMode ||
+            pattern.getSemantics()->getSaturationPolicy() !=
+                NumericSaturationPolicy::Disabled ||
+            pattern.getSemantics()->getTranscendentalEvaluationPolicy() !=
+                NumericTranscendentalEvaluationPolicy::NotApplicable ||
+            pattern.getSemantics()->getGemmAccumulatorPolicy() !=
+                NumericGemmAccumulatorPolicy::NotApplicable ||
+            pattern.getSemantics()->getGemmAccumulatorInitializationPolicy() !=
+                NumericGemmAccumulatorInitializationPolicy::NotApplicable ||
+            pattern.getSemantics()->getGemmReductionOrderPolicy() !=
+                NumericGemmReductionOrderPolicy::NotApplicable ||
+            pattern.getSemantics()
+                    ->getReductionAccumulatorInitializationPolicy() !=
+                NumericReductionAccumulatorInitializationPolicy::PositiveZero ||
+            pattern.getSemantics()->getReductionOrderPolicy() !=
+                NumericReductionOrderPolicy::
+                    IncreasingLogicalRowMajorInputIndex)
+          return llvm::createStringError(
+              llvm::errc::invalid_argument,
+              "supported native reduction selector does not match its typed "
+              "semantics");
+      }
       reduceSelectors.insert(
           (llvm::Twine(stringifyNumericReduceOperation(selector->operation)) +
            ":" + stringifyLogicalFormat(selector->format))
@@ -670,7 +769,7 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
       elementwiseSupported != 88 || elementwiseInteger != 31 ||
       elementwiseExpLp != 3 || elementwiseSatRelu != 3 ||
       elementwiseLeakyRelu != 3 || gemm != 4 || gemmSupported != 3 ||
-      gemmInteger != 1 || reduce != 16 ||
+      gemmInteger != 1 || reduce != 16 || reduceSupported != 1 ||
       elementwiseSelectors != expectedElementwise ||
       gemmSelectors != expectedGemm || reduceSelectors != expectedReduce)
     return llvm::createStringError(llvm::errc::invalid_argument,
@@ -693,7 +792,8 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
   if (getRegisteredNumericSemanticsProfiles().size() != 101 ||
       getRegisteredNumericCTElementwiseSemanticsProfiles().size() != 88 ||
       getRegisteredNumericNEGemmSemanticsProfiles().size() != 3 ||
-      referencedSemantics.size() != 192)
+      getRegisteredNumericNativeCTReduceSemanticsProfiles().size() != 1 ||
+      referencedSemantics.size() != 193)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "numeric semantics registry is missing or has an extra supported row");
@@ -708,6 +808,10 @@ validatePatterns(llvm::ArrayRef<NumericCapabilityPattern> patterns) {
   if (llvm::Error error = requireCompleteSemanticsRegistry(
           getRegisteredNumericNEGemmSemanticsProfiles(),
           NumericCommandFamily::NEGemm))
+    return error;
+  if (llvm::Error error = requireCompleteSemanticsRegistry(
+          getRegisteredNumericNativeCTReduceSemanticsProfiles(),
+          NumericCommandFamily::NativeCTReduce))
     return error;
   return llvm::Error::success();
 }
@@ -983,13 +1087,30 @@ getRegisteredNumericCapabilityPatterns() {
     }
     for (NumericReduceOperation operation : getNumericReduceOperations())
       for (LogicalFormat format :
-           getCompilerNumericFormats(TargetFormatEngine::CT))
-        appendPattern(
-            NumericCommandFamily::NativeCTReduce,
-            NumericNativeCTReducePatternSelector{operation, format},
-            {NumericModelImplementationStatus::Absent,
-             NumericModelImplementationReason::NativeReductionPolicyUnproven},
-            nullptr, std::nullopt, std::nullopt);
+           getCompilerNumericFormats(TargetFormatEngine::CT)) {
+        const bool supported = operation == NumericReduceOperation::Sum &&
+                               format == LogicalFormat::F32;
+        if (!supported) {
+          appendPattern(
+              NumericCommandFamily::NativeCTReduce,
+              NumericNativeCTReducePatternSelector{operation, format},
+              {NumericModelImplementationStatus::Absent,
+               NumericModelImplementationReason::NativeReductionPolicyUnproven},
+              nullptr, std::nullopt, std::nullopt);
+          continue;
+        }
+        const NumericSemanticsProfile *semantics = findNativeCTReduceSemantics(
+            kFormalDeterministicV1, kTargetProfile, operation, format);
+        if (!semantics)
+          llvm::report_fatal_error(
+              "native reduction capability pattern has no reusable semantics");
+        appendPattern(NumericCommandFamily::NativeCTReduce,
+                      NumericNativeCTReducePatternSelector{operation, format},
+                      {NumericModelImplementationStatus::Implemented,
+                       NumericModelImplementationReason::None},
+                      semantics, FormalKernelKind::Reduce,
+                      FormalNumericBackendKind::LLVMAPFloatAPInt);
+      }
 
     if (llvm::Error error = validatePatterns(result)) {
       std::string message = llvm::toString(std::move(error));

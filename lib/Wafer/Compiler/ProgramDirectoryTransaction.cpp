@@ -319,7 +319,7 @@ bool publishDirectoryNoReplace(llvm::StringRef source,
                   "refusing to replace it");
   return reject(
       diagnostics,
-      "failed to atomically publish grouped program directory "
+      "failed to atomically publish output program directory "
       "without replacement: " +
           std::error_code(errorNumber, std::generic_category()).message());
 #else

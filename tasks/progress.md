@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-15
+更新时间：2026-07-16
 
 本文件只记录当前调度状态、前置关系和紧凑完成索引，不保存逐轮测试数字、实现复盘或历史工作日志。
 长期架构与pipeline contract以编号设计文档为准，详细完成证据与实施记录位于`tasks/archive/`，完整导航见
@@ -38,6 +38,9 @@ Q23 -> Q24 -> Q25 -> Q26
 验证consumer收敛：
 Q22 -> Q27
 
+tile-dataflow scheduling与7B级单block纵向：
+Q22 + Q27 -> Q29 -> Q28
+
 later/external：
 Q0.L + Q21 + configured board -> Q6.B -> Q9
 Q22 + Q6.B + configured numeric corpus -> Q22.C
@@ -48,7 +51,9 @@ Q22 + owner-approved packet evidence -> Q22.K
 
 ## 当前实施队列
 
-当前无执行中任务。
+| Tracking ID | Semantic key | 状态 | 前置 | 当前边界 | 设计 / 计划 |
+| --- | --- | --- | --- | --- | --- |
+| Q28 | `llama-7b-block-vertical` | `doing` | Q29 tile-dataflow scheduling及7B TP16 compile-only resource/package gate完成；Q22 CModel、Q27 consumer收敛及既有TP16 source/corpus前置保持 | 从已验证的新task-dataflow package继续标准Llama-2 7B单block managed-reference完整CModel执行与PyTorch eager expected全张量差分；保留已闭合的空间/时间切分、resource、all-rank package及no-card事实，不把compile-only结果冒充数值完成。 | 02、03、06、09、12、16、17；`tasks/plans/llama-7b-block-vertical.md` |
 
 ## Later / External Gates
 
@@ -75,7 +80,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 | Q14 | `architecture-baseline` | `done` | 当前单卡纵向架构、事实优先级和历史计划边界已重基线。 | 01、14、15、16；`tasks/archive/12-architecture-evidence-reset.md` |
 | Q0 | `target-correctness` | `done` | target conversion、结构保持、physical legality和原子失败窄边界闭合。 | 06、07、09、11、14、16 |
 | Q5.C | `workload-corpus` | `done` | 固定PyTorch/XLA source/config/payload/expected corpus及独立CPU oracle。 | 02、16 |
-| Q15 | `compiler-driver` | `done` | source到verified grouped program directory及原子发布闭合。 | 01-06、16 |
+| Q15 | `compiler-driver` | `done` | source到verified rank-local structured tensor program directory及原子发布闭合。 | 01-06、16 |
 | Q16 | `executable-bundle` | `done` | all-and-only rank executable与move-only bundle闭合。 | 03、04、06、09、12、13、16 |
 | Q17 | `target-artifact-bundle` | `done` | single-lowering target module、device link及原子artifact发布闭合。 | 14、16 |
 | Q18 | `manifest-runtime` | `done` | typed manifest、package readback和no-card preflight闭合。 | 15、16 |
@@ -96,6 +101,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 | Q25 | `residual-source-modularity` | `done` | reference/model、numeric/bulk、compiler/artifact/package和frontend bridge共11个聚合实现按稳定职责拆分，双配置及真实外部helper gate闭合且公共合同不变。 | 18；`tasks/archive/residual-source-modularity.md` |
 | Q26 | `memory-lifetime-analysis` | `done` | instruction loop backedge completion、共享path-sensitive lifetime/packing core、DDR issue-to-fence lifetime及两侧原子offset commit闭合，SPM/DDR各自memory-space、DTE、descriptor和resource合同保持。 | 09、11、12、18；`tasks/archive/memory-lifetime-analysis.md` |
 | Q27 | `reference-executor-retirement` | `done` | accepted-IR第二套解释器、oracle分支和旧CLI退役；CPU expected、typed invocation及target CModel/board differential边界保留。 | 01、16-18；`tasks/archive/reference-executor-retirement.md` |
+| Q29 | `tile-dataflow-scheduling` | `done` | structured tensor program直达bounded rank-local task/dataflow candidate、完整traversal、跨region SPM、whole-rank/whole-variant resource gate、旧group executable surface退役及TP16 7B compile-only all-rank package闭合。 | 01、06-13、16；`tasks/archive/tile-dataflow-scheduling.md` |
 | Q1 | `crt-surface-audit` | `done` | compiler-emitted production CRT symbol/prototype surface审计完成。 | 11、14、16及对应archive |
 | Q2-Q3 | `crt-device-symbol-closure` | `done` | production CRT symbol和device-link closure闭合。 | 11、14、16及对应archive |
 | Q3.5 | `crt-extended-evidence` | `done` | 扩展CRT surface evidence已分级。 | 11、14、16及对应archive |
@@ -105,6 +111,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 
 ## 实施计划入口
 
-- Active：无。
+- Active：`tasks/plans/llama-7b-block-vertical.md`。
+- Next：无；先完成当前Q28。
 - 新实施计划：`tasks/plans/`。
 - 已完成计划和历史证据：`tasks/README.md`的“实施计划导航”和“归档文档”。

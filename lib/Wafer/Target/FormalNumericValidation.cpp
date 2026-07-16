@@ -235,4 +235,65 @@ llvm::Error validateGemmResolvedCommand(const ResolvedNumericCommand &command) {
   return llvm::Error::success();
 }
 
+llvm::Error
+validateReduceResolvedCommand(const ResolvedNumericCommand &command) {
+  if (llvm::Error error = validateResolvedExecution(
+          command, NumericCommandFamily::NativeCTReduce,
+          FormalKernelKind::Reduce, FormalNumericBackendKind::LLVMAPFloatAPInt))
+    return error;
+  const NumericNativeCTReduceCommand *reduce =
+      command.getCommandKey().getNativeCTReduce();
+  const NumericSemanticsProfile &semantics = *command.getSemantics();
+  const NumericNativeCTReduceSemanticsIdentity *identity =
+      semantics.getNativeCTReduceIdentity();
+  if (!reduce || !identity ||
+      semantics.getModelProfile() != command.getPattern().getModelProfile() ||
+      identity->getTargetProfile() !=
+          command.getCommandKey().getTargetProfile() ||
+      identity->getOperation() != NumericReduceOperation::Sum ||
+      reduce->operation != identity->getOperation() ||
+      identity->getFormat() != LogicalFormat::F32 ||
+      reduce->input.getFormat() != identity->getFormat() ||
+      reduce->destination.getFormat() != identity->getFormat() ||
+      semantics.getRoundingModePolicy() != NumericRoundingMode::NearestEven ||
+      semantics.getRoundingPointPolicy() !=
+          NumericRoundingPointPolicy::ReductionStep ||
+      semantics.getFloatToIntegerPolicy() !=
+          FloatToIntegerPolicy::NotApplicable ||
+      semantics.getFloatingNaNPolicy() !=
+          FloatingNaNPolicy::CanonicalPositiveQuietNaN ||
+      semantics.getFloatingSignedZeroPolicy() !=
+          FloatingSignedZeroPolicy::
+              ReductionPositiveZeroAccumulatorThenIEEE754 ||
+      semantics.getFloatingSubnormalPolicy() !=
+          FloatingSubnormalPolicy::Gradual ||
+      semantics.getFloatingTininessPolicy() !=
+          FloatingTininessPolicy::AfterRounding ||
+      semantics.getExceptionFlagPolicy() !=
+          NumericExceptionFlagPolicy::ModelOnly ||
+      semantics.getFloatingNaNSignalingPolicy() !=
+          FloatingNaNSignalingPolicy::SignalingRaisesInvalidQuietDoesNot ||
+      semantics.getFloatingDenormalModePolicy() !=
+          FloatingDenormalModePolicy::GradualNoDAZNoFTZ ||
+      semantics.getFloatingOverflowPolicy() !=
+          FloatingOverflowPolicy::IEEE754AccordingToRoundingMode ||
+      semantics.getSaturationPolicy() != NumericSaturationPolicy::Disabled ||
+      semantics.getTranscendentalEvaluationPolicy() !=
+          NumericTranscendentalEvaluationPolicy::NotApplicable ||
+      semantics.getGemmAccumulatorPolicy() !=
+          NumericGemmAccumulatorPolicy::NotApplicable ||
+      semantics.getGemmAccumulatorInitializationPolicy() !=
+          NumericGemmAccumulatorInitializationPolicy::NotApplicable ||
+      semantics.getGemmReductionOrderPolicy() !=
+          NumericGemmReductionOrderPolicy::NotApplicable ||
+      semantics.getReductionAccumulatorInitializationPolicy() !=
+          NumericReductionAccumulatorInitializationPolicy::PositiveZero ||
+      semantics.getReductionOrderPolicy() !=
+          NumericReductionOrderPolicy::IncreasingLogicalRowMajorInputIndex)
+    return formalError(FormalNumericErrorCode::UnsupportedResolvedCommand,
+                       "resolved native reduction semantics and exact key "
+                       "disagree");
+  return llvm::Error::success();
+}
+
 } // namespace wafer::formal_detail

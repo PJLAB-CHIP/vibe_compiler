@@ -251,8 +251,8 @@ llvm::Error requireEngineFormat(TargetProfileId targetProfile,
   return llvm::Error::success();
 }
 
-std::vector<size_t> getReducedDimensions(NativeCTReduceDimension dimension,
-                                         size_t rank) {
+std::vector<size_t> getReducedDimensionsImpl(NativeCTReduceDimension dimension,
+                                             size_t rank) {
   auto trailing = [&](size_t index) -> std::optional<size_t> {
     if (index >= rank)
       return std::nullopt;
@@ -296,6 +296,12 @@ std::vector<size_t> getReducedDimensions(NativeCTReduceDimension dimension,
 }
 
 } // namespace
+
+std::vector<size_t>
+getNativeCTReduceLogicalDimensions(NativeCTReduceDimension dimension,
+                                   size_t rank) {
+  return getReducedDimensionsImpl(dimension, rank);
+}
 
 llvm::StringRef stringifyNumericTensorLayout(NumericTensorLayout layout) {
   switch (layout) {
@@ -905,7 +911,8 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createNativeCTReduce(
           llvm::errc::invalid_argument,
           "native CT reduce input dimensions must be positive uint16 values");
 
-  std::vector<size_t> reduced = getReducedDimensions(dimension, rank);
+  std::vector<size_t> reduced =
+      getNativeCTReduceLogicalDimensions(dimension, rank);
   if (reduced.empty())
     return llvm::createStringError(
         llvm::errc::invalid_argument,

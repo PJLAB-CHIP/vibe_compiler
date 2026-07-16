@@ -10,6 +10,7 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -38,6 +39,11 @@ struct DirectDTEEndpointDomain {
   llvm::SmallVector<int64_t, 16> rankToTile;
 };
 
+struct DynamicSubviewAddressPlan {
+  int64_t staticByteOffset = 0;
+  llvm::SmallVector<int64_t, 4> dynamicByteStrides;
+};
+
 bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result);
 bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result);
 bool isWaferInstruction(mlir::Operation *op);
@@ -51,6 +57,8 @@ mlir::FailureOr<int64_t> getStaticElementCount(mlir::Operation *op,
 mlir::FailureOr<int64_t> getStaticViewOffsetBytes(mlir::Operation *op,
                                                   mlir::MemRefType viewType,
                                                   llvm::StringRef role);
+mlir::FailureOr<DynamicSubviewAddressPlan>
+analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp);
 mlir::FailureOr<int64_t> getStaticUInt32MaskAddress(mlir::Operation *op,
                                                     mlir::Value value);
 mlir::FailureOr<int64_t> getStaticSPMAddress(mlir::Operation *op,
@@ -67,6 +75,7 @@ mlir::FailureOr<int64_t> getDataFormatCode(mlir::Operation *op,
                                            TargetProfileId targetProfile);
 mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp,
                                            TargetProfileId targetProfile);
+mlir::LogicalResult preflightTargetAddresses(mlir::ModuleOp moduleOp);
 
 mlir::FailureOr<DirectDTEEndpointDomain>
 resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp, int64_t logicalRank);

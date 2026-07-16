@@ -179,6 +179,8 @@ public:
     case TargetModelControlAction::None: {
       const TargetModelNumericBackend numericBackend = effect->numericBackend;
       TargetModelBulkDispatchEvidence bulkEvidence = effect->bulkEvidence;
+      TargetModelManagedReferenceEvidence managedReferenceEvidence =
+          effect->managedReferenceEvidence;
       if (llvm::Error error = commitTargetModelCommandEffect(
               memory, numericContext, std::move(*effect))) {
         latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
@@ -189,13 +191,35 @@ public:
       }
       if (numericBackend == TargetModelNumericBackend::Formal)
         ++formalNumericCommandCount;
+      if (numericBackend == TargetModelNumericBackend::ManagedReference) {
+        ++managedReferenceNumericCommandCount;
+        managedReferenceScalarEvaluationCount +=
+            managedReferenceEvidence.scalarEvaluations;
+        if (!llvm::is_contained(managedReferenceTensorEnvironmentDigests,
+                                managedReferenceEvidence.environmentDigest))
+          managedReferenceTensorEnvironmentDigests.push_back(
+              std::move(managedReferenceEvidence.environmentDigest));
+        if (!llvm::is_contained(managedReferenceTensorImplementations,
+                                managedReferenceEvidence.implementation))
+          managedReferenceTensorImplementations.push_back(
+              std::move(managedReferenceEvidence.implementation));
+      }
       if (numericBackend == TargetModelNumericBackend::Bulk) {
         ++bulkNumericCommandCount;
         bulkMatmulInvocationCount += bulkEvidence.matmulInvocations;
         bulkReorderInvocationCount += bulkEvidence.reorderInvocations;
         bulkFormalFusedMultiplyAddCount += bulkEvidence.formalFusedMultiplyAdds;
-        bulkAdmissionRecordDigests.push_back(
-            std::move(bulkEvidence.admissionRecordDigest));
+        if (bulkEvidence.provenanceKind ==
+            TargetModelBulkProvenanceKind::ExactQualificationRecord)
+          bulkAdmissionRecordDigests.push_back(
+              std::move(bulkEvidence.provenanceDigest));
+        else if (bulkEvidence.provenanceKind ==
+                 TargetModelBulkProvenanceKind::ManagedReferenceEnvironment) {
+          if (!llvm::is_contained(bulkManagedReferenceEnvironmentDigests,
+                                  bulkEvidence.provenanceDigest))
+            bulkManagedReferenceEnvironmentDigests.push_back(
+                std::move(bulkEvidence.provenanceDigest));
+        }
       }
       markOrdinalComplete(transaction.logicalRank, transaction.issueOrdinal);
       return UINT64_C(0);
@@ -266,17 +290,28 @@ public:
       outputs.push_back({slot.logicalRank, slot.slotOrdinal, slot.resourceIndex,
                          std::move(*bytes)});
     }
-    stagedResult.emplace(TargetModelResult{
-        memory.getAddressPlan().getTargetProfile(),
-        ModelProfileId::formalDeterministicV1(),
-        static_cast<int64_t>(terminalRanks.size()), issuedTransactionCount,
-        detail::getSystemCThreadProcessCount(runner),
-        detail::getSystemCDeltaCount(), numericContext.getAggregateFlags(),
-        formalNumericCommandCount, bulkNumericCommandCount,
-        bulkMatmulInvocationCount, bulkReorderInvocationCount,
-        bulkFormalFusedMultiplyAddCount, std::move(bulkAdmissionRecordDigests),
-        detail::getSystemCVersion(), "untimed-delta-single-issue-domain-v1",
-        std::move(outputs)});
+    stagedResult.emplace(
+        TargetModelResult{memory.getAddressPlan().getTargetProfile(),
+                          ModelProfileId::formalDeterministicV1(),
+                          static_cast<int64_t>(terminalRanks.size()),
+                          issuedTransactionCount,
+                          detail::getSystemCThreadProcessCount(runner),
+                          detail::getSystemCDeltaCount(),
+                          numericContext.getAggregateFlags(),
+                          formalNumericCommandCount,
+                          managedReferenceNumericCommandCount,
+                          managedReferenceScalarEvaluationCount,
+                          bulkNumericCommandCount,
+                          bulkMatmulInvocationCount,
+                          bulkReorderInvocationCount,
+                          bulkFormalFusedMultiplyAddCount,
+                          std::move(bulkAdmissionRecordDigests),
+                          std::move(bulkManagedReferenceEnvironmentDigests),
+                          std::move(managedReferenceTensorEnvironmentDigests),
+                          std::move(managedReferenceTensorImplementations),
+                          detail::getSystemCVersion(),
+                          "untimed-delta-single-issue-domain-v1",
+                          std::move(outputs)});
     return llvm::Error::success();
   }
 
@@ -729,11 +764,16 @@ private:
   uint64_t nextEvent = 1;
   uint64_t issuedTransactionCount = 0;
   uint64_t formalNumericCommandCount = 0;
+  uint64_t managedReferenceNumericCommandCount = 0;
+  uint64_t managedReferenceScalarEvaluationCount = 0;
   uint64_t bulkNumericCommandCount = 0;
   uint64_t bulkMatmulInvocationCount = 0;
   uint64_t bulkReorderInvocationCount = 0;
   uint64_t bulkFormalFusedMultiplyAddCount = 0;
   std::vector<std::string> bulkAdmissionRecordDigests;
+  std::vector<std::string> bulkManagedReferenceEnvironmentDigests;
+  std::vector<std::string> managedReferenceTensorEnvironmentDigests;
+  std::vector<std::string> managedReferenceTensorImplementations;
   bool begun = false;
 };
 

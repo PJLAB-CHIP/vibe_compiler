@@ -61,6 +61,7 @@ module {
 // CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND0]], %[[RECV0]]
 // CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]
+// CHECK-NEXT: wafer.instr.local_fence
 // CHECK: %[[SLOT3:.+]] = memref.subview %[[INPUT]][12] [4] [1]
 // CHECK: %[[SEND1:.+]] = wafer.instr.dte_send %[[SLOT3]]
 // CHECK-SAME: peer = 3 : i64
@@ -68,6 +69,7 @@ module {
 // CHECK-SAME: peer = 3 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND1]], %[[RECV1]]
 // CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]
+// CHECK-NEXT: wafer.instr.local_fence
 // CHECK: %[[SLOT0:.+]] = memref.subview %[[INPUT]][0] [4] [1]
 // CHECK: %[[SEND2:.+]] = wafer.instr.dte_send %[[SLOT0]]
 // CHECK-SAME: peer = 0 : i64
@@ -75,6 +77,7 @@ module {
 // CHECK-SAME: peer = 2 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND2]], %[[RECV2]]
 // CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]
+// CHECK-NEXT: wafer.instr.local_fence
 // CHECK-NOT: wafer.tile.reduce_scatter
 
 // SPM-LABEL: func.func @reduce_scatter_phases

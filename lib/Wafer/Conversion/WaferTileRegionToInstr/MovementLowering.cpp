@@ -106,7 +106,8 @@ public:
       return mlir::failure();
 
     createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(), *dest,
-                                *segments);
+                                *segments,
+                                /*mayReorderDisjointSegments=*/true);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }

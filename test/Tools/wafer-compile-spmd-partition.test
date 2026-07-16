@@ -1,0 +1,98 @@
+# REQUIRES: stablehlo, shardy, pytorch-xla-importer, xla-spmd-helper
+
+# RUN: rm -rf %t.input.program %t.outputs %t.matrix
+# RUN: mkdir -p %t.outputs
+# RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy column --size 32 --output-program-dir %t.input.program
+# RUN: printf 'bytecode sentinel from exporter program\n' > %t.input.program/functions/forward.bytecode
+# RUN: printf 'auxiliary data sentinel from exporter program\n' > %t.input.program/data/aux.payload
+# RUN: wafer-compile --input-program-dir %t.input.program --output-program-dir %t.outputs/package --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 | FileCheck %s --check-prefix=PIPELINE
+# RUN: FileCheck %s --input-file=%t.outputs/package/functions/forward.mlir --check-prefix=MLIR
+# RUN: FileCheck %s --input-file=%t.outputs/package/functions/forward.mlir --check-prefix=NO-BOUNDARY-IR
+# RUN: FileCheck %s --input-file=%t.outputs/package/functions/forward.mlir --check-prefix=NO-UNLOWERED-IR
+# RUN: FileCheck %s --input-file=%t.outputs/package/functions/forward.parameter_shards.json --check-prefix=SHARDS
+# RUN: test -f %t.outputs/package/parameter_shards/weight/rank_00000.npy
+# RUN: test -f %t.outputs/package/parameter_shards/bias/rank_00000.npy
+# RUN: cmp %t.input.program/functions/forward.bytecode %t.outputs/package/functions/forward.bytecode
+# RUN: cmp %t.input.program/data/aux.payload %t.outputs/package/data/aux.payload
+# RUN: %python -c 'import numpy as np; from pathlib import Path; p = Path("%t.outputs/package/parameter_shards/weight/rank_00000.npy"); assert p.read_bytes().startswith(b"\x93NUMPY"); a = np.load(p, allow_pickle=True); assert a.shape == (32, 2) and a.dtype == np.float32'
+# RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
+# RUN: %python -c 'from pathlib import Path; modules=sorted(Path("%t.outputs/package/modules").glob("rank_*.so")); assert [p.name for p in modules]==[f"rank_{rank:05d}.so" for rank in range(16)]; assert all(p.read_bytes().startswith(b"\x7fELF") for p in modules)'
+# RUN: %python -c 'import json, pathlib; m=json.loads(pathlib.Path("%t.outputs/package/manifest.json").read_text()); assert m["schema_version"]==3 and m["target"]["profile"]=="wafer-tx81-single-card-kernel-v1" and m["rank_count"]==16; assert [x["rank"] for x in m["modules"]]==list(range(16)); assert [x["rank"] for x in m["entries"]]==list(range(16)); assert [x["rank"] for x in m["completions"]]==list(range(16)); assert "instructions" not in m'
+# RUN: not env WAFER_TEST_FAIL_AFTER_LOGICAL_RANK=15 %wafer_compile_test --input-program-dir %t.input.program --output-program-dir %t.outputs/late-rank.package --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=LATE-RANK
+# RUN: test ! -e %t.outputs/late-rank.package
+# RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
+# RUN: not env WAFER_TEST_FAIL_AFTER_TARGET_LOGICAL_RANK=15 %wafer_compile_test --input-program-dir %t.input.program --output-program-dir %t.outputs/late-target-rank.package --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=LATE-TARGET-RANK
+# RUN: test ! -e %t.outputs/late-target-rank.package
+# RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 \( -name ".wafer-compile-staging-*" -o -name ".wafer-target-artifacts-staging-*" \) -print -quit)"'
+# RUN: not env WAFER_TEST_FAIL_AFTER_PACKAGE_LOGICAL_RANK=15 %wafer_compile_test --input-program-dir %t.input.program --output-program-dir %t.outputs/late-package-rank.package --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=LATE-PACKAGE-RANK
+# RUN: test ! -e %t.outputs/late-package-rank.package
+# RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 \( -name ".wafer-compile-staging-*" -o -name ".wafer-target-artifacts-staging-*" -o -name ".wafer-package-staging-*" \) -print -quit)"'
+# RUN: bash -c 'for strategy in data column; do \
+# RUN:   env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy ${strategy} --size 32 --output-program-dir %t.matrix/${strategy}.input || exit 1; \
+# RUN:   wafer-compile --input-program-dir %t.matrix/${strategy}.input --output-program-dir %t.matrix/${strategy}.package --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 > /dev/null || exit 1; \
+# RUN:   wafer-compile-stablehlo --verify-stablehlo-program %t.matrix/${strategy}.package | FileCheck %s --check-prefix=VERIFY || exit 1; \
+# RUN:   wafer-opt %t.matrix/${strategy}.package/functions/forward.mlir -o /dev/null || exit 1; \
+# RUN:   FileCheck %s --input-file=%t.matrix/${strategy}.package/functions/forward.mlir --check-prefix=MATRIX-MLIR || exit 1; \
+# RUN:   FileCheck %s --input-file=%t.matrix/${strategy}.package/functions/forward.mlir --check-prefix=NO-UNLOWERED-IR || exit 1; \
+# RUN:   test -s %t.matrix/${strategy}.package/functions/forward.parameter_shards.json || exit 1; \
+# RUN: done'
+# RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy row --size 32 --output-program-dir %t.matrix/row.input
+# RUN: wafer-compile --input-program-dir %t.matrix/row.input --output-program-dir %t.matrix/row.package --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 | FileCheck %s --check-prefix=DIRECT-DTE
+# RUN: %python -c 'import json, pathlib; p=pathlib.Path("%t.matrix/row.package"); m=json.loads((p/"manifest.json").read_text()); assert [e["transport"]["kind"] for e in m["entries"]]==["direct_dte"]*16; assert all(e["transport"]["status_abi"]=="wafer-direct-dte-status-v1" and e["transport"]["host_watchdog_required"] for e in m["entries"]); assert [r["rank"] for r in m["resources"] if r["role"]=="transport_status"]==list(range(16)); assert all((p/x["path"]).read_bytes().startswith(b"\x7fELF") for x in m["modules"])'
+# RUN: not env WAFER_TEST_FAIL_AFTER_TARGET_LOGICAL_RANK=15 %wafer_compile_test --input-program-dir %t.matrix/row.input --output-program-dir %t.matrix/row.late-target --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=LATE-TARGET-RANK
+# RUN: test ! -e %t.matrix/row.late-target
+# RUN: not env WAFER_TEST_FAIL_AFTER_PACKAGE_LOGICAL_RANK=15 %wafer_compile_test --input-program-dir %t.matrix/row.input --output-program-dir %t.matrix/row.late-package --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=LATE-PACKAGE-RANK
+# RUN: test ! -e %t.matrix/row.late-package
+# RUN: bash -c 'test -z "$(find "%t.matrix" -maxdepth 1 \( -name ".wafer-target-artifacts-staging-*" -o -name ".wafer-package-staging-*" \) -print -quit)"'
+# RUN: %python -c 'import json, pathlib; b=json.loads((pathlib.Path("%t.matrix/data.package/functions/forward.meta")).read_text())["distributed_boundary"]; i=b["inputs"][0]; o=b["outputs"][0]; assert b["version"]==1 and b["logical_rank_count"]==16; assert i["argument_index"]==2 and i["distribution"]=="partitioned" and i["global_shape"]==[32,32] and i["local_shape"]==[2,32]; assert o["result_index"]==0 and o["distribution"]=="partitioned" and o["global_shape"]==[32,32] and o["local_shape"]==[2,32]; assert [r["rank"] for r in i["ranks"]]==list(range(16))'
+# RUN: %python -c 'import json, pathlib; b=json.loads((pathlib.Path("%t.matrix/column.package/functions/forward.meta")).read_text())["distributed_boundary"]; i=b["inputs"][0]; o=b["outputs"][0]; assert i["argument_index"]==2 and i["distribution"]=="replicated" and i["global_shape"]==[32,32] and i["local_shape"]==[32,32]; assert o["result_index"]==0 and o["distribution"]=="partitioned" and o["global_shape"]==[32,32] and o["local_shape"]==[32,2]; assert {r["replica_id"] for r in i["ranks"]}==set(range(16))'
+# RUN: bash -c 'test -z "$(find "%t.matrix" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
+
+# PIPELINE: wafer-compile: published verified package with execution-ranks=16:
+
+# DIRECT-DTE: wafer-compile: published verified package with execution-ranks=16:
+# LATE-RANK: wafer-compile: test-only injected failure after logical rank 15
+# LATE-TARGET-RANK: wafer-compile: test-only injected target failure after logical rank 15
+# LATE-PACKAGE-RANK: wafer-compile: test-only injected package failure after logical rank 15
+
+# VERIFY: wafer-compile-stablehlo: verified StableHLO program directory parameters: 2
+# VERIFY: wafer-compile-stablehlo: verified StableHLO program directory parameter shards: 2
+# VERIFY: wafer-compile-stablehlo: verified StableHLO program
+
+# MLIR: mhlo.spmd_parameters_shardings
+# MLIR: wafer.target.topology @default
+# MLIR: wafer.execution.mesh @default_mesh
+# MLIR-SAME: policy = "all_available"
+# MLIR-SAME: shape = array<i64: 16>
+# MLIR: func.func @main
+# MLIR-SAME: tensor<2xf32>
+# MLIR-SAME: tensor<32x2xf32>
+# MLIR-NOT: stablehlo.all_gather
+# MLIR-NOT: wafer.tile.
+# MLIR-NOT: stablehlo.
+# MLIR: tensor.empty
+# MLIR: linalg.matmul
+# MLIR: linalg.generic
+# MLIR: arith.addf
+
+# NO-BOUNDARY-IR: module
+# NO-BOUNDARY-IR-NOT: wafer.boundary_shards
+# NO-BOUNDARY-IR-NOT: wafer.boundary.shards
+
+# NO-UNLOWERED-IR: module
+# NO-UNLOWERED-IR-NOT: stablehlo.
+# NO-UNLOWERED-IR-NOT: wafer.tile.
+
+# SHARDS: "logical_rank_count": 16
+# SHARDS: "parameter_shards_version": 3
+# SHARDS: "distribution":
+# SHARDS: "name": "bias"
+# SHARDS: "name": "weight"
+
+# MATRIX-MLIR: mhlo.spmd_parameters_shardings
+# MATRIX-MLIR: wafer.target.topology @default
+# MATRIX-MLIR: wafer.execution.mesh @default_mesh
+# MATRIX-MLIR: func.func @main
+# MATRIX-MLIR: linalg.
+# MATRIX-MLIR-NOT: wafer.boundary_shards
+# MATRIX-MLIR-NOT: wafer.boundary.shards

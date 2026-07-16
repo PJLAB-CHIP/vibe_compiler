@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <utility>
 
 namespace wafer::memory_planning::detail {
 
@@ -24,38 +25,44 @@ namespace wafer::memory_planning::detail {
 /// live segments overlap.
 class PathCondition {
 public:
-  static PathCondition root() { return PathCondition{0, 0, 0}; }
+  static PathCondition root() { return PathCondition{}; }
 
-  bool compatibleWith(PathCondition other) const;
+  bool compatibleWith(const PathCondition &other) const;
   /// Packing compatibility is deliberately weaker than execution-path
   /// compatibility: branch decisions nested in a loop may be selected again
   /// on every dynamic iteration and therefore cannot prove that two static
   /// buffers are globally exclusive.
-  bool compatibleForPacking(PathCondition other) const;
+  bool compatibleForPacking(const PathCondition &other) const;
   PathCondition withoutRepeatableDecisions() const;
-  std::optional<PathCondition> intersect(PathCondition other) const;
-  bool implies(PathCondition other) const;
-  std::optional<PathCondition> withDecision(unsigned decision, bool selected,
+  std::optional<PathCondition> intersect(const PathCondition &other) const;
+  bool implies(const PathCondition &other) const;
+  std::optional<PathCondition> withDecision(uint64_t decision, bool selected,
                                             bool repeatable = false) const;
-  void subtract(PathCondition covered,
+  void subtract(const PathCondition &covered,
                 llvm::SmallVectorImpl<PathCondition> &remaining) const;
 
-  bool operator==(PathCondition other) const {
+  bool operator==(const PathCondition &other) const {
     return trueDecisions == other.trueDecisions &&
            falseDecisions == other.falseDecisions &&
            repeatableDecisions == other.repeatableDecisions;
   }
-  bool operator!=(PathCondition other) const { return !(*this == other); }
+  bool operator!=(const PathCondition &other) const {
+    return !(*this == other);
+  }
 
 private:
-  PathCondition(uint64_t trueDecisions, uint64_t falseDecisions,
-                uint64_t repeatableDecisions)
-      : trueDecisions(trueDecisions), falseDecisions(falseDecisions),
-        repeatableDecisions(repeatableDecisions) {}
+  using DecisionSet = llvm::SmallVector<uint64_t, 4>;
 
-  uint64_t trueDecisions = 0;
-  uint64_t falseDecisions = 0;
-  uint64_t repeatableDecisions = 0;
+  PathCondition() = default;
+  PathCondition(DecisionSet trueDecisions, DecisionSet falseDecisions,
+                DecisionSet repeatableDecisions)
+      : trueDecisions(std::move(trueDecisions)),
+        falseDecisions(std::move(falseDecisions)),
+        repeatableDecisions(std::move(repeatableDecisions)) {}
+
+  DecisionSet trueDecisions;
+  DecisionSet falseDecisions;
+  DecisionSet repeatableDecisions;
 };
 
 struct ProgramPoint {
@@ -64,20 +71,22 @@ struct ProgramPoint {
 };
 
 enum class TimelineFailureKind {
-  TooManyDecisions,
+  DecisionDomainExhausted,
+  InconsistentPathCondition,
   UnsupportedRegionControlFlow,
 };
 
 struct TimelineFailure {
-  TimelineFailureKind kind = TimelineFailureKind::TooManyDecisions;
+  TimelineFailureKind kind = TimelineFailureKind::UnsupportedRegionControlFlow;
   mlir::Operation *origin = nullptr;
 };
 
 /// A deterministic preorder timeline for structured IR. `scf.if` successors
 /// are mutually exclusive for one execution of their parent region and every
 /// `scf.for` body is modeled as an optional path because the loop may execute
-/// zero times. Decisions inside a loop are marked repeatable so packing does
-/// not mistake per-iteration exclusivity for whole-execution exclusivity.
+/// zero times. Decision conditions use a sparse identifier set rather than a
+/// machine-word mask. Decisions inside a loop are marked repeatable so packing
+/// does not mistake per-iteration exclusivity for whole-execution exclusivity.
 class StructuredTimeline {
 public:
   static mlir::FailureOr<StructuredTimeline>
@@ -206,6 +215,8 @@ private:
   void mapForRegionIterArgs(mlir::Operation *op);
   mlir::LogicalResult mapForResultsAndBackedge(mlir::Operation *op,
                                                LifetimeFailure *failure);
+  void mapTileRegionBlockArgs(mlir::Operation *op);
+  void mapTileRegionResults(mlir::Operation *op);
   mlir::Value normalize(mlir::Value value) const;
   void recordUse(RootRef ref, int64_t event);
   llvm::SmallVector<AsyncTaskRef, 2> asyncTasksAt(mlir::Value handle,

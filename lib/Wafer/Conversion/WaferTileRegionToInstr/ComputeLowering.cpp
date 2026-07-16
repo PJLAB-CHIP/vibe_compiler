@@ -87,6 +87,74 @@ public:
   }
 };
 
+static std::optional<InstrConvertKind>
+resolveInstrConvertKind(mlir::Type sourceType, mlir::Type resultType) {
+  for (uint32_t raw = 0; raw <= getMaxEnumValForInstrConvertKind(); ++raw) {
+    std::optional<InstrConvertKind> kind = symbolizeInstrConvertKind(raw);
+    if (!kind)
+      continue;
+    auto [expectedSource, expectedResult] =
+        getInstrConvertTypePair(sourceType.getContext(), *kind);
+    if (sourceType == expectedSource && resultType == expectedResult)
+      return kind;
+  }
+  return std::nullopt;
+}
+
+class ConvertLowering : public mlir::OpRewritePattern<ComputeConvertOp> {
+public:
+  ConvertLowering(mlir::MLIRContext *context, std::string *failureReason)
+      : mlir::OpRewritePattern<ComputeConvertOp>(context),
+        failureReason(failureReason) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(ComputeConvertOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
+    auto resultType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    if (!sourceType || !resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.compute.convert requires memref storage");
+    std::optional<InstrConvertKind> kind = resolveInstrConvertKind(
+        sourceType.getElementType(), resultType.getElementType());
+    if (!kind)
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.compute.convert has no target instruction route");
+
+    mlir::IntegerAttr zeroPoint;
+    mlir::IntegerAttr roundingMode;
+    switch (getInstrConvertParameterKind(*kind)) {
+    case InstrConvertParameterKind::None:
+      break;
+    case InstrConvertParameterKind::RoundingMode:
+      // Target rounding mode zero is the canonical nearest-mode route used by
+      // framework floating truncation until board calibration proves a more
+      // specific source-level rounding contract is required.
+      roundingMode = rewriter.getI64IntegerAttr(0);
+      break;
+    case InstrConvertParameterKind::ZeroPoint:
+      return failPattern(rewriter, op, failureReason,
+                         "tile.compute.convert floating route unexpectedly "
+                         "requires zero_point");
+    }
+
+    mlir::Value dest =
+        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
+            .getResult();
+    rewriter.create<InstrConvertOp>(
+        op.getLoc(), InstrConvertKindAttr::get(rewriter.getContext(), *kind),
+        op.getSource(), dest, zeroPoint, roundingMode);
+    rewriter.replaceOp(op, dest);
+    return mlir::success();
+  }
+
+private:
+  std::string *failureReason;
+};
+
 // A select fed by a private, constant-filled predicate does not require a
 // target boolean fill or mask operation.  Canonicalize that exact tile-level
 // dataflow to an explicit fresh copy before conversion patterns can lower the
@@ -470,17 +538,18 @@ public:
       return failPattern(
           rewriter, op, failureReason,
           "tile.reduce lowering requires exactly one constant init source");
+    mlir::TypedAttr typedInit;
     if (initValue) {
-      auto typedInit = mlir::dyn_cast<mlir::TypedAttr>(initValue);
+      typedInit = mlir::dyn_cast<mlir::TypedAttr>(initValue);
       if (!typedInit || typedInit.getType() != elementType)
         return failPattern(
             rewriter, op, failureReason,
             "tile.reduce init_value type must match input element type");
     } else {
       auto constant = op.getInit().getDefiningOp<mlir::arith::ConstantOp>();
-      auto typedInit =
-          constant ? mlir::dyn_cast<mlir::TypedAttr>(constant.getValue())
-                   : mlir::TypedAttr{};
+      typedInit = constant
+                      ? mlir::dyn_cast<mlir::TypedAttr>(constant.getValue())
+                      : mlir::TypedAttr{};
       if (!constant || !typedInit || typedInit.getType() != elementType)
         return failPattern(
             rewriter, op, failureReason,
@@ -534,11 +603,58 @@ public:
           rewriter, op, failureReason,
           "tile.reduce reduction tuple count overflows or is not positive");
     constexpr uint64_t budget = wafer::detail::kStaticTerminalOperationBudget;
-    if (static_cast<uint64_t>(*reductionTupleCount) > (budget - 4) / 4)
+    if (static_cast<uint64_t>(*reductionTupleCount) > (budget - 4) / 4) {
+      // The terminal CT reduction encodes a complete logical reduction rather
+      // than one scalar tuple at a time.  Select it only when the source init
+      // is the exact identity, the logical dimensions have one typed target
+      // selector, and both layouts already satisfy that instruction's rank
+      // contract.  Small reductions deliberately retain the ordered baseline
+      // below so this scale path cannot silently change existing semantics.
+      std::optional<int64_t> targetDim;
+      for (int64_t candidate = 0; candidate <= 5; ++candidate) {
+        llvm::SmallVector<int64_t, 3> candidateDims =
+            wafer::getInstrReduceLogicalDims(candidate, inputType.getRank());
+        llvm::sort(candidateDims);
+        if (candidateDims == reducedDims) {
+          targetDim = candidate;
+          break;
+        }
+      }
+      bool isPositiveZeroIdentity = false;
+      if (auto floatInit = mlir::dyn_cast<mlir::FloatAttr>(typedInit))
+        isPositiveZeroIdentity =
+            floatInit.getValue().isZero() && !floatInit.getValue().isNegative();
+      else if (auto integerInit = mlir::dyn_cast<mlir::IntegerAttr>(typedInit))
+        isPositiveZeroIdentity = integerInit.getValue().isZero();
+
+      MemLayout expectedInputLayout =
+          inputType.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
+      MemLayout expectedResultLayout =
+          resultType.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
+      MemoryAttr inputMemory = wafer::getWaferMemoryAttr(inputType);
+      MemoryAttr resultMemory = wafer::getWaferMemoryAttr(resultType);
+      if (op.getKind() == ComputeReduceKind::Sum &&
+          mlir::isa<mlir::Float32Type>(elementType) && isPositiveZeroIdentity &&
+          targetDim && inputMemory &&
+          inputMemory.getLayout() == expectedInputLayout && resultMemory &&
+          resultMemory.getLayout() == expectedResultLayout) {
+        mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+            op.getLoc(), resultType, rewriter, op, failureReason);
+        if (mlir::failed(dest))
+          return mlir::failure();
+        auto kind = InstrReduceKindAttr::get(rewriter.getContext(),
+                                             InstrReduceKind::Sum);
+        rewriter.create<InstrReduceOp>(op.getLoc(), kind, op.getInput(), *dest,
+                                       getI64Attr(rewriter, *targetDim));
+        rewriter.create<SyncLocalFenceOp>(op.getLoc());
+        rewriter.replaceOp(op, *dest);
+        return mlir::success();
+      }
       return failPattern(
           rewriter, op, failureReason,
           "static_terminal_budget_exceeded: ordered tile.reduce minimum "
           "terminal operation count exceeds 4096");
+    }
 
     auto tensorType = mlir::MemRefType::get(
         resultType.getShape(), elementType, mlir::MemRefLayoutAttrInterface{},
@@ -815,8 +931,9 @@ wafer::tile_region_to_instr::getAccumulationElementwiseKind(
 void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
     mlir::RewritePatternSet &patterns, std::string *failureReason) {
   mlir::MLIRContext *context = patterns.getContext();
-  patterns.add<ElementwiseLowering, ReduceLowering, GemmLowering>(
-      context, failureReason);
+  patterns
+      .add<ConvertLowering, ElementwiseLowering, ReduceLowering, GemmLowering>(
+          context, failureReason);
 }
 
 void wafer::tile_region_to_instr::populateFillLoweringPattern(

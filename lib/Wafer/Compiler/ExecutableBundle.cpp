@@ -2,22 +2,22 @@
 
 #include "ExecutableBundleInternal.h"
 
-#include "AcceptedCallClosure.h"
-#include "DirectDTETransport.h"
+#include "CompilationInternal.h"
+#include "ScheduledRankFinalization.h"
+#include "WholeVariantCoordinator.h"
 
-#include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Pipelines/Pipelines.h"
+#include "Wafer/Transforms/TensorProgramScheduling.h"
 
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/Verifier.h"
-#include "mlir/Pass/PassManager.h"
+#include "mlir/IR/Diagnostics.h"
+#include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/Parallel.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -25,195 +25,8 @@
 
 namespace wafer::compiler {
 
-struct ExecutableBundleBuilder {
-  static RankExecutable
-  makeRank(int64_t logicalRank, mlir::OwningOpRef<mlir::ModuleOp> module,
-           llvm::StringRef entrySymbol,
-           std::vector<RankProgramBinding> programBindings,
-           TransportContract transportContract) {
-    return RankExecutable(logicalRank, std::move(module), entrySymbol,
-                          std::move(programBindings), transportContract);
-  }
-
-  static ExecutableBundle makeBundle(ExecutionConfig executionConfig,
-                                     std::shared_ptr<mlir::MLIRContext> context,
-                                     std::vector<RankExecutable> ranks) {
-    return ExecutableBundle(executionConfig, std::move(context),
-                            std::move(ranks));
-  }
-};
-
-namespace {
-
-mlir::LogicalResult verifyAcceptedRankModule(mlir::ModuleOp module,
-                                             const ExecutionConfig &config,
-                                             int64_t logicalRank,
-                                             TransportContract transport) {
-  if (logicalRank < 0 || logicalRank >= config.getRankCount())
-    return module.emitOpError("logical rank is outside ExecutionConfig");
-  if (mlir::failed(detail::verifyExactExecutionConfig(module, config)) ||
-      mlir::failed(mlir::verify(module)))
-    return mlir::failure();
-
-  mlir::Operation *illegal = nullptr;
-  module.walk([&](mlir::Operation *operation) {
-    llvm::StringRef dialect = operation->getName().getDialectNamespace();
-    llvm::StringRef name = operation->getName().getStringRef();
-    bool allowed = dialect == "builtin" || dialect == "func" ||
-                   dialect == "arith" || dialect == "math" ||
-                   dialect == "memref" || dialect == "scf" || dialect == "cf";
-    if (dialect == "wafer")
-      allowed = mlir::isa<wafer::TargetTopologyOp, wafer::ExecutionMeshOp,
-                          wafer::TileRegionOp, wafer::TileYieldOp>(operation) ||
-                name.starts_with("wafer.instr.");
-    if (!allowed || mlir::isa<wafer::GroupOp, wafer::GroupYieldOp>(operation)) {
-      illegal = operation;
-      return mlir::WalkResult::interrupt();
-    }
-    if (auto send = mlir::dyn_cast<wafer::InstrDTESendOp>(operation)) {
-      if (transport != TransportContract::DirectDTE || !send.getBinding()) {
-        illegal = operation;
-        return mlir::WalkResult::interrupt();
-      }
-    }
-    if (auto recv = mlir::dyn_cast<wafer::InstrDTERecvOp>(operation)) {
-      if (transport != TransportContract::DirectDTE || !recv.getBinding()) {
-        illegal = operation;
-        return mlir::WalkResult::interrupt();
-      }
-    }
-    if (mlir::isa<wafer::InstrDTEWaitOp>(operation) &&
-        transport != TransportContract::DirectDTE) {
-      illegal = operation;
-      return mlir::WalkResult::interrupt();
-    }
-
-    auto verifyType = [](mlir::Type type) {
-      return !mlir::isa<mlir::BaseMemRefType>(type) ||
-             wafer::isWaferMemRefType(type);
-    };
-    if (!llvm::all_of(operation->getOperandTypes(), verifyType) ||
-        !llvm::all_of(operation->getResultTypes(), verifyType)) {
-      illegal = operation;
-      return mlir::WalkResult::interrupt();
-    }
-    for (mlir::Region &region : operation->getRegions())
-      for (mlir::Block &block : region)
-        if (!llvm::all_of(block.getArgumentTypes(), verifyType)) {
-          illegal = operation;
-          return mlir::WalkResult::interrupt();
-        }
-
-    if (auto alloc = mlir::dyn_cast<mlir::memref::AllocOp>(operation)) {
-      auto memory = wafer::getWaferMemoryAttr(alloc.getType());
-      if (!memory ||
-          (memory.getSpace() == wafer::MemorySpace::SPM &&
-           !alloc->getAttrOfType<wafer::SPMOffsetAttr>(
-               wafer::kWaferSPMOffsetAttrName)) ||
-          (memory.getSpace() == wafer::MemorySpace::DDR &&
-           !alloc->getAttrOfType<wafer::DDROffsetAttr>(
-               wafer::kWaferDDROffsetAttrName))) {
-        illegal = operation;
-        return mlir::WalkResult::interrupt();
-      }
-    }
-    return mlir::WalkResult::advance();
-  });
-  if (!illegal)
-    return mlir::success();
-  if (mlir::isa<wafer::InstrDTESendOp, wafer::InstrDTERecvOp,
-                wafer::InstrDTEWaitOp>(illegal))
-    return illegal->emitOpError(
-        "does not satisfy the accepted executable transport contract");
-  return illegal->emitOpError(
-      "is not legal in an accepted static-rank executable");
-}
-
-std::optional<frontend::ProgramRankSlice>
-findRankSlice(llvm::ArrayRef<frontend::ProgramRankSlice> slices,
-              int64_t logicalRank) {
-  const frontend::ProgramRankSlice *match = nullptr;
-  for (const frontend::ProgramRankSlice &slice : slices) {
-    if (slice.logicalRank != logicalRank)
-      continue;
-    if (match)
-      return std::nullopt;
-    match = &slice;
-  }
-  if (!match)
-    return std::nullopt;
-  return *match;
-}
-
-mlir::FailureOr<std::vector<RankProgramBinding>> buildRankProgramBindings(
-    const frontend::FrontendProgramVerificationResult &program,
-    int64_t logicalRank, mlir::ModuleOp diagnosticAnchor) {
-  std::vector<RankProgramBinding> bindings;
-  auto appendBoundary = [&](const frontend::ProgramBoundaryBinding &binding,
-                            ProgramResourceRole role) -> mlir::LogicalResult {
-    std::optional<frontend::ProgramRankSlice> slice =
-        findRankSlice(binding.rankSlices, logicalRank);
-    if (!slice)
-      return diagnosticAnchor.emitOpError(
-          "typed program boundary does not contain exactly one rank slice");
-    bindings.push_back({role,
-                        binding.index,
-                        binding.programIndex,
-                        {},
-                        binding.dtype,
-                        binding.distribution,
-                        binding.globalShape,
-                        binding.localShape,
-                        std::move(*slice)});
-    return mlir::success();
-  };
-  for (const frontend::ProgramBoundaryBinding &binding :
-       program.distributedInputs)
-    if (mlir::failed(appendBoundary(binding, ProgramResourceRole::UserInput)))
-      return mlir::failure();
-  for (const frontend::ProgramParameterBinding &parameter :
-       program.parameters) {
-    std::optional<frontend::ProgramRankSlice> slice =
-        findRankSlice(parameter.rankSlices, logicalRank);
-    if (!slice) {
-      diagnosticAnchor.emitOpError(
-          "typed parameter metadata does not contain exactly one rank slice");
-      return mlir::failure();
-    }
-    bindings.push_back({ProgramResourceRole::Parameter, parameter.argumentIndex,
-                        -1, parameter.name, parameter.dtype,
-                        parameter.distribution, parameter.globalShape,
-                        parameter.localShape, std::move(*slice)});
-  }
-  for (const frontend::ProgramConstantBinding &constant : program.constants) {
-    frontend::ProgramRankSlice slice;
-    slice.logicalRank = logicalRank;
-    slice.replicaId = logicalRank;
-    slice.offsets.assign(constant.shape.size(), 0);
-    slice.sizes = constant.shape;
-    slice.strides.assign(constant.shape.size(), 1);
-    slice.payloadPath = constant.payloadPath;
-    bindings.push_back({ProgramResourceRole::Constant,
-                        constant.argumentIndex,
-                        constant.position,
-                        {},
-                        constant.dtype,
-                        frontend::ProgramDistributionKind::Replicated,
-                        constant.shape,
-                        constant.shape,
-                        std::move(slice)});
-  }
-  for (const frontend::ProgramBoundaryBinding &binding :
-       program.distributedOutputs)
-    if (mlir::failed(appendBoundary(binding, ProgramResourceRole::Output)))
-      return mlir::failure();
-  return bindings;
-}
-
-} // namespace
-
 llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
-    std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp groupedModule,
+    std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLogicalRank) {
@@ -223,66 +36,117 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
                                    message.str().c_str());
   };
 
-  struct CandidateRank {
+  struct RankLoweringResult {
+    struct SerializedCandidate {
+      std::string moduleText;
+      int64_t estimatedTimePs = 0;
+      int64_t discoveryOrder = 0;
+    };
+
     int64_t logicalRank;
-    mlir::OwningOpRef<mlir::ModuleOp> module;
+    bool succeeded = false;
+    std::vector<SerializedCandidate> candidates;
+    std::string diagnostics;
   };
-  std::vector<CandidateRank> candidates;
-  candidates.reserve(executionConfig.getRankCount());
+
+  std::string tensorModuleText;
+  llvm::raw_string_ostream tensorModuleStream(tensorModuleText);
+  tensorModule.print(tensorModuleStream);
+  tensorModuleStream.flush();
+
+  std::vector<RankLoweringResult> loweringResults;
+  loweringResults.reserve(executionConfig.getRankCount());
   for (int64_t logicalRank = 0; logicalRank < executionConfig.getRankCount();
-       ++logicalRank) {
-    mlir::OwningOpRef<mlir::ModuleOp> rankModule = groupedModule.clone();
-    mlir::PassManager manager(context.get());
-    wafer::buildLowerGroupsToSelectedInstrPipeline(manager, logicalRank);
-    if (mlir::failed(manager.run(*rankModule)))
+       ++logicalRank)
+    loweringResults.push_back({logicalRank});
+
+  // Candidate evaluation installs diagnostic handlers and creates transient
+  // IR. Give each concurrent rank its own context, then parse successful
+  // results back into the bundle-owner context in canonical rank order before
+  // cross-rank transport acceptance.
+  llvm::parallelFor(0, loweringResults.size(), [&](size_t index) {
+    RankLoweringResult &result = loweringResults[index];
+    mlir::DialectRegistry registry;
+    detail::registerCompilationDialects(registry);
+    mlir::MLIRContext rankContext(registry);
+    // Rank pipelines are already the unit of parallelism. Avoid creating a
+    // nested context thread pool for each of the 16 concurrent workers.
+    rankContext.disableMultithreading();
+    rankContext.loadAllAvailableDialects();
+    mlir::ScopedDiagnosticHandler diagnosticHandler(
+        &rankContext, [&](mlir::Diagnostic &diagnostic) {
+          llvm::raw_string_ostream os(result.diagnostics);
+          diagnostic.print(os);
+          os << "\n";
+          return mlir::success();
+        });
+
+    mlir::OwningOpRef<mlir::ModuleOp> sourceModule =
+        mlir::parseSourceString<mlir::ModuleOp>(tensorModuleText, &rankContext);
+    if (!sourceModule)
+      return;
+    wafer::TensorProgramSchedulingConfig schedulingConfig;
+    schedulingConfig.logicalRank = result.logicalRank;
+    schedulingConfig.candidateParallelism = 4;
+    mlir::FailureOr<std::vector<wafer::ScheduledRankCandidate>> frontier =
+        wafer::buildScheduledRankCandidateFrontier(*sourceModule,
+                                                   schedulingConfig);
+    if (mlir::failed(frontier) || frontier->empty())
+      return;
+
+    mlir::FailureOr<std::vector<detail::FinalizedRankCandidate>> finalized =
+        detail::finalizeScheduledRankCandidateFrontier(std::move(*frontier));
+    if (mlir::failed(finalized))
+      return;
+
+    result.candidates.reserve(finalized->size());
+    for (detail::FinalizedRankCandidate &candidate : *finalized) {
+      RankLoweringResult::SerializedCandidate serialized;
+      serialized.estimatedTimePs = candidate.estimatedTimePs;
+      serialized.discoveryOrder = candidate.discoveryOrder;
+      llvm::raw_string_ostream moduleStream(serialized.moduleText);
+      candidate.module->print(moduleStream);
+      moduleStream.flush();
+      result.candidates.push_back(std::move(serialized));
+    }
+    result.succeeded = true;
+  });
+
+  std::vector<detail::RankVariantFrontier> frontiers;
+  frontiers.reserve(loweringResults.size());
+  for (RankLoweringResult &result : loweringResults) {
+    const int64_t logicalRank = result.logicalRank;
+    if (!result.succeeded || result.candidates.empty()) {
+      diagnostics << result.diagnostics;
       return fail("rank lowering failed for logical rank " +
                   std::to_string(logicalRank));
+    }
     if (failAfterLogicalRank && logicalRank == *failAfterLogicalRank)
       return fail("test-only injected failure after logical rank " +
                   std::to_string(logicalRank));
-    candidates.push_back({logicalRank, std::move(rankModule)});
+    detail::RankVariantFrontier imported;
+    imported.reserve(result.candidates.size());
+    for (RankLoweringResult::SerializedCandidate &candidate :
+         result.candidates) {
+      mlir::OwningOpRef<mlir::ModuleOp> module =
+          mlir::parseSourceString<mlir::ModuleOp>(candidate.moduleText,
+                                                  context.get());
+      if (!module)
+        return fail("failed to import a lowered scheduling candidate for "
+                    "logical rank " +
+                    std::to_string(logicalRank));
+      imported.push_back({std::move(module), candidate.estimatedTimePs,
+                          candidate.discoveryOrder});
+    }
+    frontiers.push_back(std::move(imported));
   }
 
-  llvm::SmallVector<mlir::ModuleOp, 16> candidateModules;
-  candidateModules.reserve(candidates.size());
-  for (CandidateRank &candidate : candidates) {
-    if (mlir::failed(detail::verifyExactExecutionConfig(*candidate.module,
-                                                        executionConfig)) ||
-        mlir::failed(mlir::verify(*candidate.module)))
-      return fail("pre-transport rank verification failed for logical rank " +
-                  std::to_string(candidate.logicalRank));
-    candidateModules.push_back(*candidate.module);
-  }
-  mlir::FailureOr<TransportContract> transport =
-      detail::acceptDirectDTETransport(candidateModules);
-  if (mlir::failed(transport))
-    return fail("physical Direct DTE transport acceptance failed");
-
-  std::vector<RankExecutable> ranks;
-  ranks.reserve(candidates.size());
-  for (CandidateRank &candidate : candidates) {
-    const int64_t logicalRank = candidate.logicalRank;
-    mlir::ModuleOp rankModule = *candidate.module;
-    if (mlir::failed(verifyAcceptedRankModule(rankModule, executionConfig,
-                                              logicalRank, *transport)))
-      return fail("accepted-rank verification failed for logical rank " +
-                  std::to_string(logicalRank));
-    llvm::Expected<detail::AcceptedCallClosure> closure =
-        detail::analyzeAcceptedCallClosure(rankModule);
-    if (!closure)
-      return fail("accepted-rank call closure failed for logical rank " +
-                  std::to_string(logicalRank) + ": " +
-                  llvm::toString(closure.takeError()));
-    mlir::FailureOr<std::vector<RankProgramBinding>> bindings =
-        buildRankProgramBindings(program, logicalRank, rankModule);
-    if (mlir::failed(bindings))
-      return fail("typed rank resource projection failed for logical rank " +
-                  std::to_string(logicalRank));
-    std::string entrySymbol = closure->entry.getSymName().str();
-    ranks.push_back(ExecutableBundleBuilder::makeRank(
-        logicalRank, std::move(candidate.module), entrySymbol,
-        std::move(*bindings), *transport));
-  }
+  mlir::FailureOr<detail::AcceptedWholeVariant> accepted =
+      detail::selectAcceptedWholeVariant(frontiers, program, executionConfig,
+                                         diagnostics);
+  if (mlir::failed(accepted))
+    return fail("whole-variant coordination failed");
+  std::vector<RankExecutable> ranks = std::move(accepted->ranks);
   if (ranks.size() != static_cast<size_t>(executionConfig.getRankCount()))
     return fail("executable bundle rank domain is incomplete");
   for (auto [expectedRank, rank] : llvm::enumerate(ranks))

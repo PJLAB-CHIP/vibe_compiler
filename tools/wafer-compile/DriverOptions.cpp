@@ -27,8 +27,9 @@ void printHelp() {
                   "--target-model-max-fused-multiply-adds <count> "
                   "--target-model-max-movement-bytes <bytes> "
                   "--target-model-max-movement-segments <count> "
-                  "[--target-model-gemm-backend <formal|prefer-admitted> "
-                  "--target-model-bulk-record <record> "
+                  "[--target-model-numeric-policy "
+                  "<formal|prefer-admitted|managed-reference> "
+                  "[--target-model-bulk-record <record>] "
                   "--target-model-max-bulk-total-bytes <bytes> "
                   "--target-model-max-bulk-scratchpad-bytes <bytes> "
                   "--target-model-max-bulk-reorder-bytes <bytes>]]\n";
@@ -157,11 +158,11 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       continue;
     }
-    if (arg == "--target-model-gemm-backend" ||
-        arg.starts_with("--target-model-gemm-backend=")) {
+    if (arg == "--target-model-numeric-policy" ||
+        arg.starts_with("--target-model-numeric-policy=")) {
       if (parseValueOption(argc, argv, index, arg,
-                           "--target-model-gemm-backend",
-                           options.targetModelGemmBackend))
+                           "--target-model-numeric-policy",
+                           options.targetModelNumericPolicy))
         return false;
       continue;
     }

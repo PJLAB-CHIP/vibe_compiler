@@ -192,18 +192,18 @@ mlir::LogicalResult runCompilationTransaction(
   if (writeProgramModule(*helperModule, propagatedProgram, diagnostics))
     return mlir::failure();
 
-  llvm::SmallString<256> groupedProgram(transactionRoot);
-  llvm::sys::path::append(groupedProgram, "grouped");
-  if (runSpmdHelper(xlaSpmdPartitionerHelper, propagatedProgram, groupedProgram,
+  llvm::SmallString<256> tensorProgram(transactionRoot);
+  llvm::sys::path::append(tensorProgram, "tensor-program");
+  if (runSpmdHelper(xlaSpmdPartitionerHelper, propagatedProgram, tensorProgram,
                     request.getExecutionConfig(), diagnostics))
     return mlir::failure();
 
-  if (validateRegularDirectoryTree(groupedProgram, diagnostics))
+  if (validateRegularDirectoryTree(tensorProgram, diagnostics))
     return mlir::failure();
   for (llvm::StringRef requiredMember :
        {llvm::StringRef("forward.mlir"), llvm::StringRef("forward.meta")}) {
     if (!isRegularFile(programFile(
-            groupedProgram, {llvm::StringRef("functions"), requiredMember}))) {
+            tensorProgram, {llvm::StringRef("functions"), requiredMember}))) {
       reject(diagnostics,
              "XLA SPMD partitioner output is missing required regular member "
              "'functions/" +
@@ -212,80 +212,79 @@ mlir::LogicalResult runCompilationTransaction(
     }
   }
   if (!isRegularFile(
-          programFile(groupedProgram,
+          programFile(tensorProgram,
                       {llvm::StringRef("functions"),
                        llvm::StringRef("forward.parameter_shards.json")}))) {
     reject(diagnostics,
            "XLA SPMD partitioner output is missing its partition marker");
     return mlir::failure();
   }
-  if (mergeMissingProgramMembers(sourceSnapshot, groupedProgram, diagnostics) ||
-      validateRegularDirectoryTree(groupedProgram, diagnostics))
+  if (mergeMissingProgramMembers(sourceSnapshot, tensorProgram, diagnostics) ||
+      validateRegularDirectoryTree(tensorProgram, diagnostics))
     return mlir::failure();
 
-  mlir::OwningOpRef<mlir::ModuleOp> groupedModule =
-      parseProgramDirectoryModule(groupedProgram, context);
-  if (!groupedModule)
+  mlir::OwningOpRef<mlir::ModuleOp> tensorModule =
+      parseProgramDirectoryModule(tensorProgram, context);
+  if (!tensorModule)
     return mlir::failure();
   if (mlir::failed(materializeOrVerifyExactExecutionConfig(
-          *groupedModule, request.getExecutionConfig())))
+          *tensorModule, request.getExecutionConfig())))
     return mlir::failure();
-  if (!hasPostSpmdMarker(*groupedModule, groupedProgram)) {
+  if (!hasPostSpmdMarker(*tensorModule, tensorProgram)) {
     reject(diagnostics,
            "XLA SPMD partitioner output is missing its partition marker");
     return mlir::failure();
   }
-  if (containsDialectSemantics(*groupedModule, "sdy")) {
+  if (containsDialectSemantics(*tensorModule, "sdy")) {
     reject(diagnostics,
            "XLA SPMD partitioner output still contains Shardy semantics");
     return mlir::failure();
   }
-  if (mlir::failed(verifyStablehloStageOperations(*groupedModule)))
+  if (mlir::failed(verifyStablehloStageOperations(*tensorModule)))
     return mlir::failure();
-  if (mlir::failed(verifyProgramDirectoryMetadata(*groupedModule,
-                                                  groupedProgram, diagnostics)))
+  if (mlir::failed(verifyProgramDirectoryMetadata(*tensorModule,
+                                                  tensorProgram, diagnostics)))
     return mlir::failure();
-  if (runPassPipeline(*groupedModule, wafer::buildStablehloToLinalgPipeline) ||
-      runPassPipeline(*groupedModule, wafer::buildFormLogicalGroupsPipeline))
+  if (runPassPipeline(*tensorModule, wafer::buildStablehloToLinalgPipeline))
     return mlir::failure();
-  if (containsDialectSemantics(*groupedModule, "stablehlo") ||
-      containsDialectSemantics(*groupedModule, "sdy")) {
+  if (containsDialectSemantics(*tensorModule, "stablehlo") ||
+      containsDialectSemantics(*tensorModule, "sdy")) {
     reject(diagnostics,
-           "grouped program still contains frontend or sharding operations");
+           "tensor program still contains frontend or sharding operations");
     return mlir::failure();
   }
-  if (mlir::failed(verifyGroupedStageOperations(*groupedModule)))
+  if (mlir::failed(verifyTensorProgramStageOperations(*tensorModule)))
     return mlir::failure();
-  if (writeProgramModule(*groupedModule, groupedProgram, diagnostics))
+  if (writeProgramModule(*tensorModule, tensorProgram, diagnostics))
     return mlir::failure();
 
-  mlir::OwningOpRef<mlir::ModuleOp> verifiedGroupedModule =
-      parseProgramDirectoryModule(groupedProgram, context);
-  if (!verifiedGroupedModule)
+  mlir::OwningOpRef<mlir::ModuleOp> verifiedTensorModule =
+      parseProgramDirectoryModule(tensorProgram, context);
+  if (!verifiedTensorModule)
     return mlir::failure();
   if (mlir::failed(verifyExactExecutionConfigInternal(
-          *verifiedGroupedModule, request.getExecutionConfig())))
+          *verifiedTensorModule, request.getExecutionConfig())))
     return mlir::failure();
-  if (!hasPostSpmdMarker(*verifiedGroupedModule, groupedProgram)) {
+  if (!hasPostSpmdMarker(*verifiedTensorModule, tensorProgram)) {
     reject(diagnostics,
-           "grouped-program readback is missing its partition marker");
+           "tensor-program readback is missing its partition marker");
     return mlir::failure();
   }
-  if (containsDialectSemantics(*verifiedGroupedModule, "stablehlo") ||
-      containsDialectSemantics(*verifiedGroupedModule, "sdy")) {
+  if (containsDialectSemantics(*verifiedTensorModule, "stablehlo") ||
+      containsDialectSemantics(*verifiedTensorModule, "sdy")) {
     reject(diagnostics,
-           "grouped-program readback contains frontend or sharding semantics");
+           "tensor-program readback contains frontend or sharding semantics");
     return mlir::failure();
   }
-  if (mlir::failed(verifyGroupedStageOperations(*verifiedGroupedModule)) ||
-      mlir::failed(verifyProgramDirectoryMetadata(*verifiedGroupedModule,
-                                                  groupedProgram, diagnostics)))
+  if (mlir::failed(verifyTensorProgramStageOperations(*verifiedTensorModule)) ||
+      mlir::failed(verifyProgramDirectoryMetadata(*verifiedTensorModule,
+                                                  tensorProgram, diagnostics)))
     return mlir::failure();
 
   std::optional<ExecutableBundle> executableBundle;
   std::optional<TargetLLVMModuleBundle> targetLLVMModules;
   if (mlir::failed(stageTargetPackage(
-          groupedProgram, transactionRoot, request.getExecutionConfig(),
+          tensorProgram, transactionRoot, request.getExecutionConfig(),
           targetToolchain, diagnostics, failAfterLogicalRank,
           failAfterTargetLogicalRank, failAfterPackageLogicalRank,
           executableBundle, targetLLVMModules)))

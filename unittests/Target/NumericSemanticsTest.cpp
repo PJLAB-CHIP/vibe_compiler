@@ -671,6 +671,7 @@ TEST(NumericSemanticsTest, PatternRegistryClosesExactly276TypedSelectors) {
   size_t gemmSupported = 0;
   size_t gemmInteger = 0;
   size_t reduce = 0;
+  size_t reduceSupported = 0;
   std::set<std::string> digests;
   std::set<const wafer::NumericSemanticsProfile *> semantics;
 
@@ -786,15 +787,34 @@ TEST(NumericSemanticsTest, PatternRegistryClosesExactly276TypedSelectors) {
     ASSERT_NE(pattern.getNativeCTReduceSelector(), nullptr);
     ++reduce;
     EXPECT_EQ(pattern.getFamily(), NumericCommandFamily::NativeCTReduce);
-    EXPECT_FALSE(pattern.isSupported());
-    EXPECT_EQ(pattern.getModelCapability().status,
-              NumericModelImplementationStatus::Absent);
-    EXPECT_EQ(pattern.getModelCapability().reason,
-              NumericModelImplementationReason::NativeReductionPolicyUnproven);
-    EXPECT_EQ(pattern.getSemantics(), nullptr);
-    EXPECT_FALSE(pattern.getFormalKernelKind());
-    EXPECT_FALSE(pattern.getComparatorKind());
-    EXPECT_FALSE(pattern.getFormalBackendKind());
+    const auto *selector = pattern.getNativeCTReduceSelector();
+    if (selector->operation == NumericReduceOperation::Sum &&
+        selector->format == wafer::LogicalFormat::F32) {
+      ++reduceSupported;
+      EXPECT_TRUE(pattern.isSupported());
+      ASSERT_NE(pattern.getSemantics(), nullptr);
+      EXPECT_TRUE(semantics.insert(pattern.getSemantics()).second);
+      EXPECT_EQ(pattern.getFormalKernelKind(), FormalKernelKind::Reduce);
+      EXPECT_EQ(pattern.getComparatorKind(), NumericComparatorKind::RawExact);
+      EXPECT_EQ(pattern.getFormalBackendKind(),
+                FormalNumericBackendKind::LLVMAPFloatAPInt);
+      const auto *identity =
+          pattern.getSemantics()->getNativeCTReduceIdentity();
+      ASSERT_NE(identity, nullptr);
+      EXPECT_EQ(identity->getOperation(), NumericReduceOperation::Sum);
+      EXPECT_EQ(identity->getFormat(), wafer::LogicalFormat::F32);
+    } else {
+      EXPECT_FALSE(pattern.isSupported());
+      EXPECT_EQ(pattern.getModelCapability().status,
+                NumericModelImplementationStatus::Absent);
+      EXPECT_EQ(
+          pattern.getModelCapability().reason,
+          NumericModelImplementationReason::NativeReductionPolicyUnproven);
+      EXPECT_EQ(pattern.getSemantics(), nullptr);
+      EXPECT_FALSE(pattern.getFormalKernelKind());
+      EXPECT_FALSE(pattern.getComparatorKind());
+      EXPECT_FALSE(pattern.getFormalBackendKind());
+    }
   }
   EXPECT_EQ(convertSupported, 101u);
   EXPECT_EQ(convertStochastic, 23u);
@@ -807,8 +827,9 @@ TEST(NumericSemanticsTest, PatternRegistryClosesExactly276TypedSelectors) {
   EXPECT_EQ(gemmSupported, 3u);
   EXPECT_EQ(gemmInteger, 1u);
   EXPECT_EQ(reduce, 16u);
+  EXPECT_EQ(reduceSupported, 1u);
   EXPECT_EQ(digests.size(), 276u);
-  EXPECT_EQ(semantics.size(), 192u);
+  EXPECT_EQ(semantics.size(), 193u);
 }
 
 TEST(NumericSemanticsTest, RegistryValidatorDetectsMissingAndOverlap) {
@@ -1300,10 +1321,13 @@ TEST(NumericSemanticsTest, ReduceClosesFourKindsByFourLegalFormats) {
       ASSERT_TRUE(static_cast<bool>(resolution))
           << (resolution ? std::string()
                          : llvm::toString(resolution.takeError()));
-      EXPECT_FALSE(resolution->isSupported());
-      EXPECT_EQ(
-          resolution->getPattern().getModelCapability().reason,
-          NumericModelImplementationReason::NativeReductionPolicyUnproven);
+      const bool supported = operation == NumericReduceOperation::Sum &&
+                             format == wafer::LogicalFormat::F32;
+      EXPECT_EQ(resolution->isSupported(), supported);
+      EXPECT_EQ(resolution->getPattern().getModelCapability().reason,
+                supported ? NumericModelImplementationReason::None
+                          : NumericModelImplementationReason::
+                                NativeReductionPolicyUnproven);
       patterns.insert(&resolution->getPattern());
       ++commands;
     }

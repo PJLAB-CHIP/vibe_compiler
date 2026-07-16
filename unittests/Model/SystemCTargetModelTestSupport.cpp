@@ -98,31 +98,26 @@ std::vector<RawLogicalValue> makeRankValues(int64_t logicalRank) {
 llvm::Expected<compiler::TargetLLVMModuleBundle>
 buildDirectDTETargetBundle(std::string &diagnosticText) {
   auto context = createCompilerContext();
-  auto grouped = mlir::parseSourceString<mlir::ModuleOp>(
+  auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
   wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64>, policy = "all_available", shape = array<i64: 16>, topology = @default}
   func.func @main(%input: tensor<4xf32>) -> tensor<4xf32> {
     %out = tensor.empty() : tensor<4xf32>
-    %group = wafer.group ins(%input : tensor<4xf32>)
-        outs(%out : tensor<4xf32>) {
-    ^bb0(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>):
-      %permuted = wafer.linalg_ext.collective.collective_permute
-          ins(%arg0 : tensor<4xf32>) outs(%arg1 : tensor<4xf32>)
-          {source_target_pairs = array<i64: 0, 1, 1, 0, 2, 3, 3, 2,
-                                            4, 5, 5, 4, 6, 7, 7, 6,
-                                            8, 9, 9, 8, 10, 11, 11, 10,
-                                            12, 13, 13, 12, 14, 15, 15, 14>,
-           channel_id = 91 : i64} -> tensor<4xf32>
-      wafer.group.yield %permuted : tensor<4xf32>
-    } : tensor<4xf32>
-    return %group : tensor<4xf32>
+    %permuted = wafer.linalg_ext.collective.collective_permute
+        ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>)
+        {source_target_pairs = array<i64: 0, 1, 1, 0, 2, 3, 3, 2,
+                                          4, 5, 5, 4, 6, 7, 7, 6,
+                                          8, 9, 9, 8, 10, 11, 11, 10,
+                                          12, 13, 13, 12, 14, 15, 15, 14>,
+         channel_id = 91 : i64} -> tensor<4xf32>
+    return %permuted : tensor<4xf32>
   }
 }
 )mlir",
       mlir::ParserConfig(context.get()));
-  if (!grouped)
+  if (!tensorProgram)
     return llvm::createStringError("failed to parse Direct-DTE model module");
 
   frontend::FrontendProgramVerificationResult program;
@@ -137,12 +132,12 @@ module {
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
   llvm::Expected<compiler::ExecutableBundle> executable =
-      compiler::detail::buildExecutableBundle(context, *grouped,
+      compiler::detail::buildExecutableBundle(context, *tensorProgram,
                                               std::move(program), *config,
                                               diagnostics, std::nullopt);
   if (!executable)
     return executable.takeError();
-  grouped = nullptr;
+  tensorProgram = nullptr;
   return compiler::compileExecutableBundleToTargetLLVMModules(*executable,
                                                               diagnostics);
 }

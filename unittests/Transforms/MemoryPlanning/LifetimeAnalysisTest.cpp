@@ -84,6 +84,120 @@ TEST(PathConditionTest, RepeatableDecisionCannotProvePackingExclusion) {
   EXPECT_EQ(elsePath->withoutRepeatableDecisions(), root);
 }
 
+TEST(PathConditionTest, DecisionDomainScalesPastMachineWordWidth) {
+  PathCondition root = PathCondition::root();
+  std::optional<PathCondition> selected = root.withDecision(130, true);
+  std::optional<PathCondition> rejected = root.withDecision(130, false);
+  ASSERT_TRUE(selected);
+  ASSERT_TRUE(rejected);
+  EXPECT_FALSE(selected->compatibleWith(*rejected));
+  EXPECT_FALSE(selected->compatibleForPacking(*rejected));
+
+  llvm::SmallVector<PathCondition, 2> remaining;
+  root.subtract(*selected, remaining);
+  ASSERT_EQ(remaining.size(), 1u);
+  EXPECT_EQ(remaining.front(), *rejected);
+
+  std::optional<PathCondition> repeatableSelected =
+      root.withDecision(1024, true, /*repeatable=*/true);
+  std::optional<PathCondition> repeatableRejected =
+      root.withDecision(1024, false, /*repeatable=*/true);
+  ASSERT_TRUE(repeatableSelected);
+  ASSERT_TRUE(repeatableRejected);
+  EXPECT_FALSE(repeatableSelected->compatibleWith(*repeatableRejected));
+  EXPECT_TRUE(repeatableSelected->compatibleForPacking(*repeatableRejected));
+  EXPECT_EQ(repeatableSelected->withoutRepeatableDecisions(), root);
+  EXPECT_EQ(repeatableRejected->withoutRepeatableDecisions(), root);
+}
+
+TEST(PathConditionTest, DenseDecisionConjunctionRemainsExactPastWordWidth) {
+  PathCondition root = PathCondition::root();
+  PathCondition prefix = root;
+  PathCondition suffix = root;
+  PathCondition complete = root;
+  for (uint64_t decision = 0; decision < 130; ++decision) {
+    bool selected = (decision % 3) != 0;
+    std::optional<PathCondition> next =
+        complete.withDecision(decision, selected);
+    ASSERT_TRUE(next);
+    complete = *next;
+    if (decision < 65) {
+      next = prefix.withDecision(decision, selected);
+      ASSERT_TRUE(next);
+      prefix = *next;
+    } else {
+      next = suffix.withDecision(decision, selected);
+      ASSERT_TRUE(next);
+      suffix = *next;
+    }
+  }
+
+  std::optional<PathCondition> rebuilt = prefix.intersect(suffix);
+  ASSERT_TRUE(rebuilt);
+  EXPECT_EQ(*rebuilt, complete);
+  EXPECT_TRUE(complete.implies(prefix));
+  EXPECT_TRUE(complete.implies(suffix));
+  EXPECT_FALSE(prefix.implies(complete));
+
+  std::optional<PathCondition> conflicting =
+      complete.withDecision(97, /*selected=*/false);
+  EXPECT_FALSE(conflicting);
+
+  llvm::SmallVector<PathCondition, 4> remaining;
+  root.subtract(complete, remaining);
+  ASSERT_EQ(remaining.size(), 130u);
+  EXPECT_TRUE(llvm::all_of(remaining, [&](const PathCondition &path) {
+    return !path.compatibleWith(complete);
+  }));
+}
+
+TEST_F(LifetimeAnalysisTest, TimelinePreservesHighDecisionBranchExclusivity) {
+  std::string source = R"mlir(
+module {
+  func.func @many_branches(%condition: i1) {
+)mlir";
+  for (unsigned index = 0; index < 96; ++index) {
+    source += R"mlir(
+    scf.if %condition {
+      scf.yield
+    } else {
+      scf.yield
+    }
+)mlir";
+  }
+  source += R"mlir(
+    return
+  }
+}
+)mlir";
+
+  auto module = parse(source);
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  llvm::SmallVector<mlir::scf::IfOp, 96> branches;
+  function.walk([&](mlir::scf::IfOp op) { branches.push_back(op); });
+  ASSERT_EQ(branches.size(), 96u);
+
+  TimelineFailure failure;
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function, &failure);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+
+  auto branchPoint = [&](mlir::scf::IfOp branch, bool thenBranch) {
+    mlir::Region &region =
+        thenBranch ? branch.getThenRegion() : branch.getElseRegion();
+    return timeline->lookup(region.front().getTerminator());
+  };
+  std::optional<ProgramPoint> firstThen = branchPoint(branches.front(), true);
+  std::optional<ProgramPoint> highThen = branchPoint(branches[80], true);
+  std::optional<ProgramPoint> highElse = branchPoint(branches[80], false);
+  ASSERT_TRUE(firstThen);
+  ASSERT_TRUE(highThen);
+  ASSERT_TRUE(highElse);
+  EXPECT_FALSE(highThen->path.compatibleWith(highElse->path));
+  EXPECT_TRUE(firstThen->path.compatibleWith(highThen->path));
+}
+
 TEST_F(LifetimeAnalysisTest, TimelineModelsIfAndZeroTripLoopPaths) {
   auto module = parse(R"mlir(
 module {
@@ -138,6 +252,49 @@ module {
   loopPoint->path.subtract(bodyPoint->path, zeroTripPaths);
   ASSERT_EQ(zeroTripPaths.size(), 1u);
   EXPECT_FALSE(zeroTripPaths.front().compatibleWith(bodyPoint->path));
+}
+
+TEST_F(LifetimeAnalysisTest,
+       NestedLoopDecisionCannotProvePackingExclusionAcrossOuterIterations) {
+  auto module = parse(R"mlir(
+module {
+  func.func @nested_loops(%outerUpper: index, %innerUpper: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    scf.for %outer = %c0 to %outerUpper step %c1 {
+      scf.for %inner = %c0 to %innerUpper step %c1 {
+        %value = arith.constant 1 : i32
+      }
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::scf::ForOp innerLoop;
+  function.walk([&](mlir::scf::ForOp op) {
+    if (op->getParentOfType<mlir::scf::ForOp>())
+      innerLoop = op;
+  });
+  ASSERT_TRUE(innerLoop);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  std::optional<ProgramPoint> innerLoopPoint = timeline->lookup(innerLoop);
+  std::optional<ProgramPoint> innerBodyPoint =
+      timeline->lookup(&innerLoop.getBody()->front());
+  ASSERT_TRUE(innerLoopPoint);
+  ASSERT_TRUE(innerBodyPoint);
+
+  llvm::SmallVector<PathCondition, 2> zeroTripPaths;
+  innerLoopPoint->path.subtract(innerBodyPoint->path, zeroTripPaths);
+  ASSERT_EQ(zeroTripPaths.size(), 1u);
+  EXPECT_FALSE(zeroTripPaths.front().compatibleWith(innerBodyPoint->path));
+  EXPECT_TRUE(zeroTripPaths.front().compatibleForPacking(innerBodyPoint->path));
+  EXPECT_EQ(innerBodyPoint->path.withoutRepeatableDecisions(),
+            innerLoopPoint->path);
 }
 
 TEST_F(LifetimeAnalysisTest, TimelineRejectsMultiBlockControlFlow) {
@@ -395,13 +552,119 @@ module {
       StructuredTimeline::build(function);
   ASSERT_TRUE(mlir::succeeded(timeline));
   llvm::SmallVector<LifetimeDemand, 0> demands;
-  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
-    return mlir::isa<mlir::MemRefType>(type);
-  });
+  LifetimeDataflow dataflow(
+      *timeline, demands,
+      [](mlir::Type type) { return mlir::isa<mlir::MemRefType>(type); },
+      /*resolveValue=*/{},
+      /*isExplicitRoot=*/[](mlir::Value) { return true; });
   LifetimeFailure failure;
   EXPECT_TRUE(mlir::failed(dataflow.run(function, nullptr, &failure)));
   EXPECT_EQ(failure.kind, LifetimeFailureKind::UnsupportedTrackedValueProducer);
   EXPECT_EQ(failure.origin, alloca.getOperation());
+}
+
+TEST_F(LifetimeAnalysisTest, DataflowAcceptsPredicateApprovedGlobalRoot) {
+  auto module = parse(R"mlir(
+module {
+  memref.global "private" constant @weights : memref<16xi8> = dense<1>
+  func.func @read_global() {
+    %c0 = arith.constant 0 : index
+    %weights = memref.get_global @weights : memref<16xi8>
+    %unused = memref.load %weights[%c0] : memref<16xi8>
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::GetGlobalOp getGlobal;
+  mlir::memref::LoadOp load;
+  function.walk([&](mlir::memref::GetGlobalOp op) { getGlobal = op; });
+  function.walk([&](mlir::memref::LoadOp op) { load = op; });
+  ASSERT_TRUE(getGlobal);
+  ASSERT_TRUE(load);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 0> demands;
+  LifetimeDataflow dataflow(
+      *timeline, demands,
+      [](mlir::Type type) { return mlir::isa<mlir::MemRefType>(type); },
+      /*resolveValue=*/{},
+      [&](mlir::Value value) { return value == getGlobal.getResult(); });
+  LifetimeFailure failure;
+  ASSERT_TRUE(mlir::succeeded(dataflow.run(function, nullptr, &failure)));
+
+  std::optional<ProgramPoint> usePoint = timeline->lookup(load);
+  ASSERT_TRUE(usePoint);
+  llvm::SmallVector<ValueOriginRef, 2> origins =
+      dataflow.originsAt(getGlobal.getResult(), usePoint->path);
+  ASSERT_EQ(origins.size(), 1u);
+  EXPECT_EQ(origins.front().root, getGlobal.getResult());
+}
+
+TEST_F(LifetimeAnalysisTest,
+       DataflowPropagatesRootAcrossSiblingTileRegionBoundary) {
+  auto module = parse(R"mlir(
+module {
+  func.func @sibling_regions() {
+    %zero = arith.constant 0 : i8
+    %resident = wafer.tile.region(%zero : i8) ->
+        (memref<16xi8, #wafer.memory<spm, tensor>>) {
+    ^bb0(%unused: i8):
+      %allocation = memref.alloc()
+          : memref<16xi8, #wafer.memory<spm, tensor>>
+      wafer.tile.yield %allocation
+          : memref<16xi8, #wafer.memory<spm, tensor>>
+    }
+    %forwarded = wafer.tile.region(%resident
+        : memref<16xi8, #wafer.memory<spm, tensor>>) ->
+        (memref<16xi8, #wafer.memory<spm, tensor>>) {
+    ^bb0(%input: memref<16xi8, #wafer.memory<spm, tensor>>):
+      %c0 = arith.constant 0 : index
+      %unused = memref.load %input[%c0]
+          : memref<16xi8, #wafer.memory<spm, tensor>>
+      wafer.tile.yield %input
+          : memref<16xi8, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp allocation;
+  mlir::memref::LoadOp load;
+  function.walk([&](mlir::memref::AllocOp op) { allocation = op; });
+  function.walk([&](mlir::memref::LoadOp op) { load = op; });
+  ASSERT_TRUE(allocation);
+  ASSERT_TRUE(load);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{allocation, 16, 16, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LifetimeFailure failure;
+  ASSERT_TRUE(mlir::succeeded(dataflow.run(function, nullptr, &failure)));
+
+  std::optional<ProgramPoint> loadPoint = timeline->lookup(load);
+  ASSERT_TRUE(loadPoint);
+  llvm::SmallVector<RootRef, 2> roots =
+      dataflow.rootsAt(load.getMemRef(), loadPoint->path);
+  ASSERT_EQ(roots.size(), 1u);
+  EXPECT_EQ(roots.front().demandIndex, 0u);
+  EXPECT_TRUE(
+      llvm::any_of(demands.front().segments, [&](const LiveSegment &segment) {
+        // The consumer region also forwards the same alias through its result,
+        // so the root must reach at least the load and may remain live through
+        // the later tile.yield.
+        return segment.endEvent >= loadPoint->event;
+      }));
 }
 
 TEST_F(LifetimeAnalysisTest, DDRLocalFenceExtendsManagedRootLifetime) {
@@ -513,6 +776,70 @@ module {
   }
 }
 )mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp ddrAllocation;
+  wafer::InstrWDMAOp issue;
+  function.walk([&](mlir::memref::AllocOp op) {
+    if (wafer::isWaferDDRMemRefType(op.getType()))
+      ddrAllocation = op;
+  });
+  function.walk([&](wafer::InstrWDMAOp op) { issue = op; });
+  ASSERT_TRUE(ddrAllocation);
+  ASSERT_TRUE(issue);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{ddrAllocation, 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferDDRMemRefType(type);
+  });
+  LocalCompletionTracker completion(wafer::WaferResourceKind::DDR);
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
+  EXPECT_EQ(failure.kind, LifetimeFailureKind::LoopBackedgeCompletion);
+  EXPECT_EQ(failure.origin, issue.getOperation());
+}
+
+TEST_F(LifetimeAnalysisTest,
+       HighDecisionLoopBodyIssueStillFailsClosedAtBackedge) {
+  std::string source = R"mlir(
+module {
+  func.func @main(%condition: i1) {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+)mlir";
+  for (unsigned index = 0; index < 80; ++index) {
+    source += R"mlir(
+    scf.if %condition {
+      scf.yield
+    } else {
+      scf.yield
+    }
+)mlir";
+  }
+  source += R"mlir(
+    %ddr = memref.alloc()
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+    %spm = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      wafer.instr.wdma %spm to %ddr
+          {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+         to memref<128xf16, #wafer.memory<ddr, tensor>>
+    }
+    wafer.instr.local_fence
+    return
+  }
+}
+)mlir";
+
+  auto module = parse(source);
   ASSERT_TRUE(module);
   mlir::func::FuncOp function = getOnlyFunction(*module);
   mlir::memref::AllocOp ddrAllocation;
@@ -664,8 +991,8 @@ module {
   EXPECT_EQ(placementFor(1).offsetBytes, 256);
   EXPECT_EQ(placementFor(2).offsetBytes, 256);
 
-  std::optional<PathCondition> thenPath = root.withDecision(0, true);
-  std::optional<PathCondition> elsePath = root.withDecision(0, false);
+  std::optional<PathCondition> thenPath = root.withDecision(130, true);
+  std::optional<PathCondition> elsePath = root.withDecision(130, false);
   ASSERT_TRUE(thenPath);
   ASSERT_TRUE(elsePath);
   demands[0].segments = {LiveSegment{0, 10, *thenPath}};
@@ -676,6 +1003,19 @@ module {
   ASSERT_EQ(packing.placements.size(), 2u);
   EXPECT_EQ(packing.placements[0].offsetBytes, 0);
   EXPECT_EQ(packing.placements[1].offsetBytes, 0);
+
+  std::optional<PathCondition> repeatableThen =
+      root.withDecision(1024, true, /*repeatable=*/true);
+  std::optional<PathCondition> repeatableElse =
+      root.withDecision(1024, false, /*repeatable=*/true);
+  ASSERT_TRUE(repeatableThen);
+  ASSERT_TRUE(repeatableElse);
+  demands[0].segments = {LiveSegment{0, 10, *repeatableThen}};
+  demands[1].segments = {LiveSegment{0, 10, *repeatableElse}};
+  packing = packFirstFit(demands, ArenaRange{0, 256});
+  ASSERT_FALSE(packing.succeeded());
+  ASSERT_TRUE(packing.failure);
+  EXPECT_EQ(packing.failure->kind, PackingFailureKind::NoFit);
 }
 
 TEST_F(LifetimeAnalysisTest, FirstFitReportsNoFitWithoutWritingIR) {

@@ -64,7 +64,7 @@ llvm::StringRef stringifyModelProfileId(ModelProfileId id);
 
 /// Stable target-independent marker for the four layouts carried by numeric
 /// command identities. This marker deliberately does not copy physical layout
-/// geometry. Callers must first discharge the tasks/08 layout-materialization
+/// geometry. Callers must first discharge the layout-materialization
 /// offset and footprint contract; the numeric model consumes that fact as a
 /// precondition.
 enum class NumericTensorLayout : uint8_t { Tensor, NTensor, Cx, NCx };
@@ -233,6 +233,9 @@ enum class NativeCTReduceDimension : uint8_t {
 
 llvm::StringRef
 stringifyNativeCTReduceDimension(NativeCTReduceDimension dimension);
+std::vector<size_t>
+getNativeCTReduceLogicalDimensions(NativeCTReduceDimension dimension,
+                                   size_t rank);
 
 enum class NumericCommandFamily : uint8_t {
   CTConvert,
@@ -391,7 +394,7 @@ private:
 };
 
 enum class NumericComparatorKind : uint8_t { RawExact };
-enum class FormalKernelKind : uint8_t { Convert, Elementwise, Gemm };
+enum class FormalKernelKind : uint8_t { Convert, Elementwise, Gemm, Reduce };
 enum class FormalNumericBackendKind : uint8_t { LLVMAPFloatAPInt, MPFR };
 
 llvm::StringRef stringifyFormalKernelKind(FormalKernelKind kind);
@@ -435,6 +438,7 @@ enum class NumericRoundingPointPolicy : uint8_t {
   ConversionResult,
   ElementwiseResult,
   GemmFusedMultiplyAddAndDestination,
+  ReductionStep,
 };
 enum class FloatingSignedZeroPolicy : uint8_t {
   NotApplicable,
@@ -444,6 +448,7 @@ enum class FloatingSignedZeroPolicy : uint8_t {
   MinimumNegativeUnlessBothPositive,
   PredicateOnly,
   GemmPositiveZeroAccumulatorThenIEEE754,
+  ReductionPositiveZeroAccumulatorThenIEEE754,
 };
 enum class NumericGemmAccumulatorPolicy : uint8_t {
   NotApplicable,
@@ -456,6 +461,14 @@ enum class NumericGemmAccumulatorInitializationPolicy : uint8_t {
 enum class NumericGemmReductionOrderPolicy : uint8_t {
   NotApplicable,
   IncreasingK,
+};
+enum class NumericReductionAccumulatorInitializationPolicy : uint8_t {
+  NotApplicable,
+  PositiveZero,
+};
+enum class NumericReductionOrderPolicy : uint8_t {
+  NotApplicable,
+  IncreasingLogicalRowMajorInputIndex,
 };
 
 /// Finite reusable identity for one CT convert route and effective policy. It
@@ -551,10 +564,36 @@ private:
   LogicalFormat format;
 };
 
-using NumericSemanticsIdentity =
-    std::variant<NumericCTConvertSemanticsIdentity,
-                 NumericCTElementwiseSemanticsIdentity,
-                 NumericNEGemmSemanticsIdentity>;
+class NumericNativeCTReduceSemanticsIdentity {
+public:
+  NumericNativeCTReduceSemanticsIdentity() = delete;
+  NumericNativeCTReduceSemanticsIdentity(TargetProfileId targetProfile,
+                                         NumericReduceOperation operation,
+                                         LogicalFormat format)
+      : targetProfile(targetProfile), operation(operation), format(format) {}
+
+  TargetProfileId getTargetProfile() const { return targetProfile; }
+  NumericCommandFamily getFamily() const {
+    return NumericCommandFamily::NativeCTReduce;
+  }
+  NumericReduceOperation getOperation() const { return operation; }
+  LogicalFormat getFormat() const { return format; }
+
+  friend bool operator==(const NumericNativeCTReduceSemanticsIdentity &lhs,
+                         const NumericNativeCTReduceSemanticsIdentity &rhs) {
+    return lhs.targetProfile == rhs.targetProfile &&
+           lhs.operation == rhs.operation && lhs.format == rhs.format;
+  }
+
+private:
+  TargetProfileId targetProfile;
+  NumericReduceOperation operation;
+  LogicalFormat format;
+};
+
+using NumericSemanticsIdentity = std::variant<
+    NumericCTConvertSemanticsIdentity, NumericCTElementwiseSemanticsIdentity,
+    NumericNEGemmSemanticsIdentity, NumericNativeCTReduceSemanticsIdentity>;
 
 /// Immutable reusable family-typed numeric semantics. Tensor shape/layout and
 /// exact command parameters remain in NumericCommandKey.
@@ -568,6 +607,8 @@ public:
   const NumericCTConvertSemanticsIdentity *getCTConvertIdentity() const;
   const NumericCTElementwiseSemanticsIdentity *getCTElementwiseIdentity() const;
   const NumericNEGemmSemanticsIdentity *getNEGemmIdentity() const;
+  const NumericNativeCTReduceSemanticsIdentity *
+  getNativeCTReduceIdentity() const;
   const NumericRoutePolicyIdentity &getRoutePolicyIdentity() const;
   NumericRoundingMode getRoundingMode() const;
   std::optional<NumericRoundingMode> getRoundingModePolicy() const {
@@ -618,6 +659,13 @@ public:
   NumericGemmReductionOrderPolicy getGemmReductionOrderPolicy() const {
     return gemmReductionOrderPolicy;
   }
+  NumericReductionAccumulatorInitializationPolicy
+  getReductionAccumulatorInitializationPolicy() const {
+    return reductionAccumulatorInitializationPolicy;
+  }
+  NumericReductionOrderPolicy getReductionOrderPolicy() const {
+    return reductionOrderPolicy;
+  }
   llvm::StringRef getDigest() const { return semanticDigest; }
 
 private:
@@ -640,6 +688,9 @@ private:
       NumericGemmAccumulatorInitializationPolicy
           gemmAccumulatorInitializationPolicy,
       NumericGemmReductionOrderPolicy gemmReductionOrderPolicy,
+      NumericReductionAccumulatorInitializationPolicy
+          reductionAccumulatorInitializationPolicy,
+      NumericReductionOrderPolicy reductionOrderPolicy,
       std::string semanticDigest)
       : modelProfile(modelProfile), identity(std::move(identity)),
         roundingMode(roundingMode), roundingPointPolicy(roundingPointPolicy),
@@ -658,6 +709,9 @@ private:
         gemmAccumulatorInitializationPolicy(
             gemmAccumulatorInitializationPolicy),
         gemmReductionOrderPolicy(gemmReductionOrderPolicy),
+        reductionAccumulatorInitializationPolicy(
+            reductionAccumulatorInitializationPolicy),
+        reductionOrderPolicy(reductionOrderPolicy),
         semanticDigest(std::move(semanticDigest)) {}
 
   ModelProfileId modelProfile;
@@ -679,6 +733,9 @@ private:
   NumericGemmAccumulatorInitializationPolicy
       gemmAccumulatorInitializationPolicy;
   NumericGemmReductionOrderPolicy gemmReductionOrderPolicy;
+  NumericReductionAccumulatorInitializationPolicy
+      reductionAccumulatorInitializationPolicy;
+  NumericReductionOrderPolicy reductionOrderPolicy;
   std::string semanticDigest;
 
   friend llvm::ArrayRef<NumericSemanticsProfile>
@@ -687,6 +744,8 @@ private:
   getRegisteredNumericCTElementwiseSemanticsProfiles();
   friend llvm::ArrayRef<NumericSemanticsProfile>
   getRegisteredNumericNEGemmSemanticsProfiles();
+  friend llvm::ArrayRef<NumericSemanticsProfile>
+  getRegisteredNumericNativeCTReduceSemanticsProfiles();
 };
 
 /// Compatibility entry point for the 101 CT-convert semantics consumed by the
@@ -696,6 +755,8 @@ llvm::ArrayRef<NumericSemanticsProfile>
 getRegisteredNumericCTElementwiseSemanticsProfiles();
 llvm::ArrayRef<NumericSemanticsProfile>
 getRegisteredNumericNEGemmSemanticsProfiles();
+llvm::ArrayRef<NumericSemanticsProfile>
+getRegisteredNumericNativeCTReduceSemanticsProfiles();
 
 enum class NumericCapabilitySupport : uint8_t { Unsupported, Supported };
 enum class NumericModelImplementationStatus : uint8_t { Absent, Implemented };

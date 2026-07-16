@@ -36,11 +36,11 @@ CompilationRequest::create(llvm::StringRef sourceProgramDirectory,
 }
 
 llvm::Expected<ExecutableBundle>
-compileGroupedProgramToExecutableBundle(llvm::StringRef groupedProgramDirectory,
-                                        ExecutionConfig executionConfig,
-                                        llvm::raw_ostream &diagnostics) {
-  return detail::compileGroupedProgramToExecutableBundleImpl(
-      groupedProgramDirectory, executionConfig, diagnostics, std::nullopt);
+compileTensorProgramToExecutableBundle(llvm::StringRef tensorProgramDirectory,
+                                       ExecutionConfig executionConfig,
+                                       llvm::raw_ostream &diagnostics) {
+  return detail::compileTensorProgramToExecutableBundleImpl(
+      tensorProgramDirectory, executionConfig, diagnostics, std::nullopt);
 }
 
 mlir::FailureOr<ExecutableBundle> compileProgram(

@@ -142,14 +142,15 @@ public:
   explicit FakeBulkBackend(bool admit) : admit(admit) {}
 
   llvm::Expected<std::optional<TargetModelBulkResult>>
-  tryExecute(const TargetModelBulkRequest &request) const override {
+  tryExecute(const TargetModelNumericRequest &request) const override {
     ++invocations;
     if (!admit)
       return std::optional<TargetModelBulkResult>();
     TargetModelBulkResult result{
         request.destinationTemplate,
         {},
-        {1, 1, 0, "sha256:fake-admission", "fake-bulk"}};
+        {1, 1, 0, TargetModelBulkProvenanceKind::ExactQualificationRecord,
+         "sha256:fake-admission", "fake-bulk"}};
     return std::optional<TargetModelBulkResult>(std::move(result));
   }
 
@@ -380,6 +381,40 @@ TEST(TargetModelKernelTest, ElementwiseUsesPhysicalCodecAndFormalNumeric) {
   EXPECT_FALSE(context.getAggregateFlags().any());
 }
 
+TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {
+  InvocationMemoryRegistry memory = makeRegistry();
+  FormalNumericExecutionContext context;
+  const uint64_t spm = memory.getAddressPlan().getSPMBase();
+  NumericTensorKey input =
+      makeTensor(LogicalFormat::F32, NumericTensorLayout::NCx, {1, 1, 2, 2});
+  NumericTensorKey destination =
+      makeTensor(LogicalFormat::F32, NumericTensorLayout::NCx, {1, 1, 2});
+  writeTensor(memory, 0, spm, input,
+              {{LogicalFormat::F32, UINT64_C(0x3f800000)},
+               {LogicalFormat::F32, UINT64_C(0x40000000)},
+               {LogicalFormat::F32, UINT64_C(0x40400000)},
+               {LogicalFormat::F32, UINT64_C(0x40800000)}});
+  TargetTransaction reduce{
+      0, 0,
+      TargetReduceTransaction{
+          InstrReduceKind::Sum,
+          spm,
+          spm + UINT64_C(0x1000),
+          static_cast<uint32_t>(NativeCTReduceDimension::Trailing0),
+          {1, 1, 2, 2},
+          LogicalFormat::F32}};
+  TargetModelCommandEffect effect =
+      llvm::cantFail(executeTargetModelCommand(reduce, memory, makeBudget()));
+  llvm::cantFail(
+      commitTargetModelCommandEffect(memory, context, std::move(effect)));
+  std::vector<RawLogicalValue> result =
+      readTensor(memory, 0, spm + UINT64_C(0x1000), destination);
+  ASSERT_EQ(result.size(), 2u);
+  EXPECT_EQ(result[0].bits, UINT64_C(0x40400000));
+  EXPECT_EQ(result[1].bits, UINT64_C(0x40e00000));
+  EXPECT_FALSE(context.getAggregateFlags().any());
+}
+
 TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext context;
@@ -470,7 +505,9 @@ TEST(TargetModelKernelTest,
   EXPECT_EQ(effect.numericBackend, TargetModelNumericBackend::Bulk);
   EXPECT_EQ(effect.bulkEvidence.matmulInvocations, 1u);
   EXPECT_EQ(effect.bulkEvidence.formalFusedMultiplyAdds, 0u);
-  EXPECT_EQ(effect.bulkEvidence.admissionRecordDigest, "sha256:fake-admission");
+  EXPECT_EQ(effect.bulkEvidence.provenanceKind,
+            TargetModelBulkProvenanceKind::ExactQualificationRecord);
+  EXPECT_EQ(effect.bulkEvidence.provenanceDigest, "sha256:fake-admission");
   EXPECT_EQ(admitted.invocations, 1u);
 }
 

@@ -21,6 +21,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
@@ -44,6 +45,29 @@
 namespace wafer::target_llvm_detail {
 
 namespace {
+static void eraseUnusedPrivateConstantGlobals(mlir::ModuleOp moduleOp) {
+  llvm::SmallVector<mlir::memref::GetGlobalOp, 4> deadGets;
+  moduleOp.walk([&](mlir::memref::GetGlobalOp getGlobal) {
+    if (getGlobal.getResult().use_empty())
+      deadGets.push_back(getGlobal);
+  });
+  for (mlir::memref::GetGlobalOp getGlobal : deadGets)
+    getGlobal->erase();
+
+  llvm::SmallVector<mlir::memref::GlobalOp, 4> deadGlobals;
+  for (mlir::memref::GlobalOp global :
+       moduleOp.getOps<mlir::memref::GlobalOp>()) {
+    if (!global.getConstantInitValue() ||
+        mlir::SymbolTable::getSymbolVisibility(global) !=
+            mlir::SymbolTable::Visibility::Private ||
+        !mlir::SymbolTable::symbolKnownUseEmpty(global, moduleOp))
+      continue;
+    deadGlobals.push_back(global);
+  }
+  for (mlir::memref::GlobalOp global : deadGlobals)
+    global->erase();
+}
+
 static mlir::LogicalResult
 declareCallees(mlir::ModuleOp moduleOp,
                const llvm::StringMap<CalleeSignature> &callees) {
@@ -132,6 +156,12 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
     return mlir::failure();
   dropRootAliasResults(moduleOp, callGraph);
   eraseTargetMetadata(moduleOp);
+  // Tensor bufferization may temporarily outline a splat constant as a
+  // private memref.global.  If tile lowering folded every use to an immediate
+  // or local fill, the symbol is no longer a runtime resource and must not
+  // leak into the closed target dialect.  A still-used global remains illegal
+  // and therefore cannot become an implicit constant-address ABI channel.
+  eraseUnusedPrivateConstantGlobals(moduleOp);
 
   mlir::LLVMTypeConverter converter(moduleOp.getContext());
   converter.addConversion(

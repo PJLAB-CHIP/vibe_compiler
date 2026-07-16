@@ -35,7 +35,7 @@ Pipeline position:
   `TargetProfileId` registry。
 - Completion gate:
   rank-count=1/16均得到exact topology/mesh，已有不匹配、重复或nested事实fail closed；post-SPMD metadata中的
-  logical_rank_count与mesh一致；Q15最终grouped program重新parse后仍通过同一exact-config gate。Q0.L另要求registered
+  logical_rank_count与mesh一致；Q15最终structured tensor program重新parse后仍通过同一exact-config gate。Q0.L另要求registered
   target profile从CLI/request/config到accepted bundle和target preparation逐层相同，缺失/冲突/default fail closed。
 ```
 
@@ -128,15 +128,15 @@ Q15遵循以下顺序：
 5. 复制出helper input，并从该副本移除Wafer topology/mesh，因为pinned XLA helper不消费Wafer dialect；
 6. helper返回post-SPMD program后补回同一exact topology/mesh；
 7. 在mesh存在时校验parameter shard `logical_rank_count`、rank domain和payload；
-8. local normalization/group formation结束后，写出、重新parse并再次执行exact-config与program verification；
-9. 全部通过才发布Q15 grouped program directory。
+8. local normalization和structured tensor program legality通过后，写出、重新parse并再次执行exact-config与program verification；
+9. 全部通过才发布Q15 structured tensor program directory。
 
 因此topology/mesh既不是传给helper的opaque sidecar，也不是helper必须保留的unknown op。它们由typed driver拥有，
 在helper边界两侧分别materialize并验证。helper path、output path和pass名不进入`ExecutionConfig`或IR。
 
 ## 5. Q16 与后续阶段边界
 
-Q15到此只形成verified grouped program。Q16直接从`ExecutionConfig.rankCount`/mesh shape派生完整rank domain，
+Q15到此只形成verified structured tensor program。Q16直接从`ExecutionConfig.rankCount`/mesh shape派生完整rank domain，
 对每个`logicalRank`建立isolated module clone并执行candidate、tile/instruction/memory/completion gates。禁止：
 
 - 只编rank 0；
@@ -166,7 +166,7 @@ consumer时仍需扩展对应owner。不得把历史environment fingerprint、pr
 - source中duplicate topology、duplicate mesh、mesh-before-topology、nested topology/mesh；
 - topology任一field、mesh symbol/ref/axis/shape/policy/endpoint与`ExecutionConfig`不符；
 - post-SPMD shard logical rank count与mesh不符；
-- final grouped program readback仍满足exact config。
+- final structured tensor program readback仍满足exact config。
 
 任一失败发生在transaction staging内，source和已存在final output保持byte-identical。IR-local pass success只证明
-op合同；只有统一driver从真实program重放helper、metadata、group和final readback才能完成Q15 gate。
+op合同；只有统一driver从真实program重放helper、metadata、structured program和final readback才能完成Q15 gate。

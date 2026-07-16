@@ -183,17 +183,18 @@ private:
   std::vector<RankExecutable> rankExecutables;
 };
 
-/// Reopens and verifies a grouped-program artifact, compiles every configured
-/// logical rank in an isolated clone, and returns the bundle only after the
-/// all-and-only rank domain has passed terminal legality.
+/// Reopens and verifies a structured tensor-program artifact, schedules every
+/// configured logical rank in an isolated clone, and returns the bundle only
+/// after the all-and-only rank domain has passed terminal legality.
 llvm::Expected<ExecutableBundle>
-compileGroupedProgramToExecutableBundle(llvm::StringRef groupedProgramDirectory,
-                                        ExecutionConfig executionConfig,
-                                        llvm::raw_ostream &diagnostics);
+compileTensorProgramToExecutableBundle(llvm::StringRef tensorProgramDirectory,
+                                       ExecutionConfig executionConfig,
+                                       llvm::raw_ostream &diagnostics);
 
 /// Runs the production transaction through executable, target-artifact and
 /// typed package bundles. The final root becomes visible only after canonical
-/// manifest readback verifies every grouped-program and target module member.
+/// manifest readback verifies every source tensor-program and target module
+/// member.
 /// The returned bundle is the same owner-backed accepted rank domain consumed
 /// by target-artifact and package assembly; downstream gates must not rebuild
 /// it from the published package.

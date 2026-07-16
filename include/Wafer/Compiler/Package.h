@@ -45,11 +45,12 @@ private:
   runtime::VerifiedPackageManifest manifest;
 };
 
-/// Copies the verified grouped checkpoint and target modules into a private
-/// transaction, constructs and readbacks the canonical typed manifest, and
-/// publishes the complete package only after all members pass verification.
+/// Copies the verified source tensor-program checkpoint and target modules
+/// into a private transaction, constructs and reads back the canonical typed
+/// manifest, and publishes the complete package only after all members pass
+/// verification.
 llvm::Expected<PackageBundle>
-assemblePackageBundle(llvm::StringRef groupedProgramDirectory,
+assemblePackageBundle(llvm::StringRef tensorProgramDirectory,
                       const ExecutableBundle &executableBundle,
                       const TargetArtifactBundle &targetArtifacts,
                       llvm::StringRef outputDirectory,

@@ -77,6 +77,7 @@ module {
 // CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND2]], %[[RECV2]]
 // CHECK: wafer.instr.gather_scatter %[[RECV2_BUF]] to %[[SLOT2]]
+// CHECK-NEXT: wafer.instr.local_fence
 // CHECK-NOT: wafer.tile.all_gather
 
 // SPM-LABEL: func.func @all_gather_ring

@@ -24,7 +24,7 @@
 
 ## 2026-07-13 ExecutableBundle测试中的MLIR context析构顺序
 
-- 现象：测试直接调用internal bundle builder成功后，在测试退出销毁原始grouped `OwningOpRef`时于
+- 现象：测试直接调用internal bundle builder成功后，在测试退出销毁原始source `OwningOpRef`时于
   `mlir::Operation::~Operation`段错误。
 - 根因：builder把传入的shared context移动给返回的`ExecutableBundle`；若原始module比bundle活得更久，bundle先
   析构context，随后原始module在失效context上析构。
@@ -81,12 +81,12 @@
 
 ## 2026-06-10 Boundary slice 被 eager whole-load 遮蔽
 
-- 现象：group-to-tile-region 先把每个 tensor boundary 整块 `wafer.tile.load` 到 SPM，随后
+- 现象：structured tensor-to-tile materialization先把每个tensor boundary整块`wafer.tile.load`到SPM，随后
   `tensor.extract_slice` 只能 lower 成 SPM 内 `wafer.tile.extract_slice` / `gather_scatter`；后续
   tile-region-to-instruction lowering 看不到 DDR `memref.subview`，最终仍生成 whole-boundary RDMA/WDMA。
-- 修复模式：group boundary 只登记 DDR memref handle；full tensor use 才 lazy load。external
+- 修复模式：structured candidate boundary只登记DDR memref handle；full tensor use才lazy load。external
   boundary 上的 static `tensor.extract_slice` 直接生成 DDR `memref.subview` + tile load；direct
-  output `tensor.insert_slice` storeback 只在写 `outs` 且直接作为同 index group yield 时生成 DDR
+  output `tensor.insert_slice` storeback只在写`outs`且直接作为同index candidate result时生成DDR
   `memref.subview` + tile store，避免误写 read-only input 或破坏 updated-dest tensor 语义。
   Candidate tile offsets/sizes 也必须先在 planner candidate evaluation 中生成同类 tensor slice proposal，
   再进入 DDR `memref.subview` producer；不能让 tile-region-to-instruction lowering 从 full boundary
@@ -152,10 +152,10 @@
 
 ## 2026-07-13 candidate-local memory gate 不能覆盖最终 function bufferization
 
-- 现象：真实grouped program通过selector内的SPM/DDR planning，但selected pipeline最后的whole-function
+- 现象：真实structured program通过candidate-local SPM/DDR planning，但完整rank pipeline最后的whole-function
   One-Shot Bufferize又产生untagged DDR `memref.alloc`及`bufferization.to_tensor/to_memref` bridge；candidate
   成功并不代表完整rank artifact已经memory-planned。
-- 根因：candidate legality发生在standalone group materialization内，function-boundary bufferization位于其后；
+- 根因：candidate legality发生在局部materialization内，function-boundary bufferization位于其后；
   后续transformation新建的buffer不可能被更早的planner覆盖。
 - 修复模式：所有unknown/default tensor buffer显式转换为Wafer DDR memref；bufferization后canonicalize并在完整
   rank module上重跑SPM/DDR planning，最终用accepted-rank legality拒绝高层dialect、untagged memref和缺失offset。
@@ -236,16 +236,14 @@
 - 防复发：任何会消费token、推进completion或改变同步状态的op不能只用read effect表达；带canonicalizer的
   production pipeline必须有对应liveness测试，不能只测无canonicalizer的局部lowering输出。
 
-## 2026-07-14 standalone group-to-tile replay缺少Async dialect
+## 2026-07-14 创建Async type的IR-local lowering缺少dependent dialect
 
-- 现象：Q21正式producer派生的grouped artifact只运行`wafer-lower-groups-to-tile-region`时，在all-to-all
-  materialization创建`async.token`处abort，提示type storage uniquer未初始化；更长的组合pipeline却可能正常运行。
-- 根因：`ConvertGroupToTileRegionPass`会创建Async dialect type，但`Passes.td`没有把
-  `mlir::async::AsyncDialect`声明为dependent dialect；后置pass的声明偶然掩盖了缺口。
-- 修复模式：在创建该type的pass自身声明Async dependent dialect，并让all-to-all named-pipeline回归直接检查token和
-  wait边界；再用同一source-backed Q21 artifact重放确认不是fixture特例。
-- 防复发：dependent dialect归创建者拥有，不能依赖driver全量注册或其它pass的加载副作用；每个公开named pipeline至少有
-  一项standalone执行测试。
+- 现象：IR-local collective materialization创建`async.token`时abort，提示type storage uniquer未初始化；更长的
+  production pipeline因后置pass加载Async dialect而可能偶然通过。
+- 根因：创建Async type的pass没有自行声明`mlir::async::AsyncDialect`为dependent dialect。
+- 修复模式：dependent dialect由创建该type/op的pass自身声明，并由直接IR-local pass测试检查token/wait边界；再用
+  source-backed structured program重放确认不是fixture特例。
+- 防复发：不能依赖driver全量注册、已退役stop-stage named pipeline或其它pass的加载副作用。
 
 ## 2026-07-14 terminal lowering不能静默丢弃上层仍可观察语义
 
@@ -269,10 +267,10 @@
 ## 2026-07-14 terminal operation预算必须在最终target边界重新核对
 
 - 现象：candidate selector能够估算静态展开预算，但后续lowering会新增movement/completion，或某些直接instruction输入根本不
-  经过group selector；只依赖上游计数会让超预算IR进入target effect。
-- 根因：把可失效的candidate analysis当成跨阶段事实，并假定所有入口都经过同一group materialization路径。
+  经过structured scheduler；只依赖上游计数会让超预算IR进入target effect。
+- 根因：把可失效的candidate analysis当成跨阶段事实，并假定所有入口都经过同一materialization路径。
 - 修复模式：共享计数合同，但从每个阶段的当前IR重算。selector在candidate effect前检查其实际materialization，最终target
-  conversion对每个rank完整terminal instruction和completion重新检查，包括没有任何group的直接输入；边界值和上溢负例同时覆盖。
+  conversion对每个rank完整terminal instruction和completion重新检查，包括直接instruction输入；边界值和上溢负例同时覆盖。
 
 ## 2026-07-14 host `std::max/min`不能代替MLIR maximum/minimum语义
 
@@ -470,3 +468,135 @@
 - 防复发：正例同时覆盖tracked→generic与memref→tensor→memref provenance；反例覆盖generic→tracked、unknown
   `to_memref`、type-erased store/dealloc、mixed select result、external sync/async和parallel/indirect scope。不能只测
   最终offset存在，必须用容量冲突证明late use仍保持原root live。
+
+## 2026-07-15 并行rank lowering不能共享MLIRContext诊断状态
+
+- 现象：16个rank外层并行后，某个rank在整包编译中偶发candidate failure，但同一rank单独运行稳定通过；失败rank和诊断内容
+  会随运行变化。
+- 根因：多个PassManager共享同一`MLIRContext`，而candidate evaluation会安装`ScopedDiagnosticHandler`并创建临时IR；并发
+  handler/context mutation没有独立owner，形成数据竞争和错误诊断归属。
+- 修复模式：先把上游module序列化为稳定文本，每个rank worker创建完整注册但独立的`MLIRContext`、关闭其内部嵌套线程池并
+  使用私有diagnostic sink；成功结果按logical rank顺序解析回bundle owner context，再做跨rank Direct DTE acceptance。
+  并行门禁必须同时重放all-rank和单rank，不能把单rank可复现性当作共享context并发安全证明。
+
+## 2026-07-15 structured scheduling scope必须追踪region内capture
+
+- 现象：selected `linalg.generic`在region body内捕获顶层`tensor.extract_slice`，scope discovery只扫描selected op的顶层
+  operands，slice未进入candidate；bufferization后target边界遗留DDR `memref.copy`，直到Target LLVM才失败。
+- 根因：把region-owning op的顶层operand列表误当成完整SSA依赖闭包，也只用直接owner判断use是否在selected operation内。
+- 修复模式：selected operation的nested walk也要检查operand producer；use legality沿parent chain判断是否位于selected
+  ancestor内。静态slice/reshape这类internal support producer纳入同一structured scope后，下游直接形成typed tile movement。
+  regression应让producer只被region body capture，确保不靠额外顶层operand偶然通过。
+
+## 2026-07-15 语义digest的producer与consumer必须同批重建
+
+- 现象：只重链`wafer-compile`后，集成测试新生成的bulk qualification record无法命中exact admission；command input和
+  destination digest一致，只有resolution digest不同。
+- 根因：record producer `wafer-cmodel-qualify-bulk`仍是旧二进制，而runtime consumer已使用新版numeric semantics schema；
+  增量测试把两个不同版本的canonical identity放进同一条链。
+- 修复模式：凡是修改semantic/profile/adapter digest，构建依赖必须同时覆盖artifact producer和最终consumer；集成门禁从
+  clean或完整target closure生成record并立即消费。排查exact admission时分别比较environment、command、input payload和
+  destination digest，不能把版本漂移误判成数值或payload错误。
+
+## 2026-07-16 scale CModel不能把tensor命令拆成formal标量对象
+
+- 现象：Llama-2 7B单block在SystemC single-issue路径产生约五千三百万次non-GEMM scalar evaluation；每个元素都构造、
+  分类和舍入APFloat/MPFR对象，运行数小时仍无法完成完整PyTorch differential。
+- 根因：transaction/event粒度与numeric kernel粒度被混为一谈。SystemC只需要保持command顺序和effect原子性，不要求
+  elementwise、convert和reduce把每个元素建成event或formal invocation；同时physical codec在逐元素offset路径重复计算
+  layout事实，进一步放大host开销。
+- 修复模式：增加显式`managed-reference`policy，在command级验证resolved semantics、arity、shape/layout、值域和预算后，
+  用tensor级native F16/F32 kernel一次提交完整结果；attention mask保留有符号infinity但拒绝NaN，unsupported row不回退
+  formal。physical codec复用一次生成的layout info，compact Tensor/NTensor直接生成线性offset。结果分别计数formal、
+  managed tensor和bulk command，确保scale运行可证明formal command为零。
+- 防复发：formal policy继续承担小向量raw-exact oracle；scale gate必须同时检查完整PyTorch expected、无fallback计数和
+  negative atomicity，不能用“输出大致相近”掩盖某条命令重新落回scalar formal路径。
+
+## 2026-07-16 oneDNN adapter的dtype适配也可能隐藏海量APFloat
+
+- 现象：non-GEMM改成native tensor lane后，7B慢测仍在GEMM输入准备阶段长时间单核运行；oneDNN调用本身已存在，表面上
+  看不出仍有逐元素formal对象。
+- 根因：F16/BF16 weight在进入oneDNN F32 descriptor前由`makeF32DenseBytes`逐元素构造APFloat做无损widening；单block
+  约两亿weight元素。受管oneDNN又固定为`DNNL_CPU_RUNTIME=SEQ`且关闭primitive cache，代码适配和依赖并行性是两个
+  相互独立的瓶颈。
+- 修复模式：F16、BF16到F32使用可按bit domain验证的精确widening，F32直接保留raw bits；target舍入只留在输出finalize
+  边界。threaded oneDNN不能靠环境变量临时打开，必须建立新的受管artifact、依赖record、worker control identity和资格
+  重放；在此之前将7B标为Release发布级慢测，不作为日常快速回归。
+
+## 2026-07-16 candidate排序不能读取representative tile统计
+
+- 现象：完整tensor traversal已经物化为静态`scf.for`后，`min-estimated-time`仍偏向`1x1` tile；summary中的DDR、
+  compute和时间只相当于一次tile执行，而不是整个loop traversal。
+- 根因：representative first/tail tile用于快速legality检查时顺手写入candidate stats；随后虽生成并验证了complete
+  traversal artifact，却只保留该artifact用于commit，没有用它重算并覆盖ranking stats。loop-aware cost analysis本身
+  正确，但调用边界喂给排序器的是representative artifact。
+- 修复模式：representative tile只回答候选局部形状是否可lower；candidate通过complete artifact gate后，ranking stats
+  必须无条件来自将被commit的完整traversal IR。回归同时锁定完整shape覆盖、loop multiplicity、summary cost字段和
+  deterministic tie-break，不能仅证明单tile cost analysis单测通过。
+
+## 2026-07-16 reduction切chunk必须重新证明数值合法性
+
+- 现象：tile搜索把一个浮点reduction拆成多个neutral-init partial再combine，结构和shape都合法，却改变了原程序的
+  grouping、NaN/Inf和signed-zero行为；named matmul也可能被误认为天然允许K split。
+- 根因：把“source reduction可由实现选择内部tree”和“compiler额外建立多个可观察partial”混成同一合同。
+- 修复模式：selector与直接materializer共用current-IR numeric gate。generic floating只在exact single combiner且
+  `fastmath<reassoc,nnan,ninf,nsz>`时拆分；named floating matmul保持完整K；integer只放行无overflow flag的
+  modular add和signed min/max。未拆分source reduction不因缺少reassociation事实被拒绝。
+
+## 2026-07-16 DTE wait不能完成collective后的本地provider
+
+- 现象：all-gather收到chunk后又执行slot copy，或all-reduce/reduce-scatter在wait后执行最终elementwise accumulation；
+  若直接把result交给resident consumer，SPM lifetime看似闭合但本地movement/compute仍可能未完成。
+- 根因：DTE wait只完成send/recv token，不能消费local movement/compute engine的pending issue。
+- 修复模式：all-gather全部received-slot copy后插入final local fence；reduce-scatter每次accumulation后fence；ring/tree
+  all-reduce的本地accumulation同样在后续DTE read或resident consumer前fence。回归必须检查collective→consumer使用
+  同一SPM accumulator且无DDR round-trip，不能只数DTE wait。
+
+## 2026-07-16 无loop的producer fusion worklist必须有严格上游度量
+
+- 现象：direct single-tile candidate融合一个transpose producer后，进程持续克隆`linalg.generic`，数量可快速
+  超过十万；CPU和RSS持续增长，与shape大小无关。
+- 根因：有structured loop时，tiled clone位于嵌套block，不会被误当成原source producer；direct API没有
+  loop block，新生成的producer/result slice留在同一scope block，worklist便可重新融合刚创建的clone。
+- 修复模式：融合前冻结有限source-producer集合，跳过无数据依赖的`tensor.empty`；只有generated
+  slice的source在同block中严格位于当前producer上游时才重新入队。无loop的图改写worklist都必须
+  具有类似的well-founded顺序；小shape回归应同时锁定融合结果和毫秒级终止。
+
+## 2026-07-16 one-trip traversal loop不能在candidate materialization前消除
+
+- 现象：static trip count为一的`scf.for`看似只是可折叠wrapper，但它在candidate traversal materialization和
+  selection期间仍界定一次traversal instance的multiplicity、coordinate及generated/source operation边界；提前
+  canonicalize会改变resource summary、cost和selection语义，而不只是让最终IR更简洁。
+- 根因：把最终committed IR上的canonical form要求错误前移到candidate construction阶段，并假设one-trip loop在所有
+  pipeline位置都语义透明。candidate尚未完整物化时，loop structure仍是analysis和改写worklist的输入事实。
+- 修复模式：保留one-trip traversal wrapper直到rank内全部selected task candidates写入同一个完整
+  transformation-local clone；随后只运行一次post-commit canonicalization，再从同一canonical committed rank派生
+  spill baseline和deterministic maximal full-buffer-resident alternatives。两个alternatives不得各自在不同wrapper形态上
+  重做canonicalization；SPM、DDR、verifier和cost analysis必须在派生后分别从各自当前IR独立重算。
+- 防复发：ordering regression必须锁定candidate traversal materialization先于one-trip folding，并同时比较完整traversal
+  multiplicity、resource/cost summary和deterministic selection；只检查最终shape、op数量或canonical IR文本不能证明
+  candidate语义未被改变。
+
+## 2026-07-16 粗scalar cost饱和不能遮蔽exact execution-cost dominance
+
+- 现象：resident alternative明确删除DDR movement，完整IR的其它compute/event计数不增加，但某个未校准vector compute
+  class让spill与resident的scalar estimate都饱和到最大值，selector因此错误保留spill。
+- 根因：把coarse、saturating的时间投影当成唯一序关系；它丢失了原始cost vector上“所有dimension不更差且至少一项
+  更低”的信息。直接调小常量或忽略未校准class又会制造没有hardware依据的timing claim。
+- 修复模式：保留scalar estimate作为普通排序；只在complete current IR重算的NPU/vector compute classes、DDR read/write、
+  SPM movement、NoC transmit/receive、instruction和event全部known时，允许strict Pareto dominance补充选择。
+  任一dimension变差或unknown都返回false，不能用部分计数猜收益。
+- 防复发：回归同时覆盖scalar饱和但strict dominance成立、反向比较、真实tradeoff和unknown metric；不能只测常规
+  unsaturated时间大小。
+
+## 2026-07-16 rank frontier finalization不能因一个alternative失败而整体终止
+
+- 现象：scheduler已经返回多个rank alternatives；function-boundary bufferization和replanning后，frontier中的首项发生
+  SPM overflow，compiler立即拒绝整个rank，即使后续alternative合法。合法项还沿用bufferization前的estimated time，
+  movement或issue发生变化时whole-variant排序会读取stale cost。
+- 根因：把候选frontier错误实现成“任一项失败即rank失败”的线性pipeline，并假设后续bufferization/replanning不改变cost。
+- 修复模式：逐alternative独立运行finalization；失败项只从frontier过滤，每个survivor从final instruction IR重新计算
+  scalar cost，只有没有survivor时才拒绝rank。discovery order随survivor保留，后续whole-variant coordinator只消费
+  finalized frontier。
+- 防复发：单测用一个确定SPM overflow项加一个合法项，断言只保留合法项且cost不是输入的stale值；另测全部失败才返回
+  failure，并要求两类路径都保留结构化capacity diagnostic。
