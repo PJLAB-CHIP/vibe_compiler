@@ -1,11 +1,13 @@
 # Wafer SPM Memory Planning Design
 
-状态：2026-07-16按已完成Q29 whole-rank task/dataflow实现同步。本合同覆盖instruction IR上的SPM
+状态：2026-07-17在已完成Q29 whole-rank task/dataflow实现上同步联合physical-dataflow planner终态。本合同覆盖instruction IR上的SPM
 lifetime/range planning；async issue的全部read/write resource必须活到可信completion。当前实现对同一
 rank function中的non-nested sibling `wafer.tile.region`建立统一timeline/demand set并联合packing；每个region
 仍独立执行terminal completion proof。nested/async/parallel scope和缺少arena/resource summary的调用保持
 fail closed。实现状态以`tasks/progress.md`为准。accepted fact 为
 offset-only `wafer.spm.offset`，size / bank span / alignment 由 memref type、layout 和 target policy 重算。
+当前coordinator仍产生spill baseline与deterministic maximal full-buffer-resident两类alternative；它是已实现搜索策略，
+不是allocator输入协议。终态allocator对联合planner提交的任意有界、完整候选使用同一exact gate。
 
 本文定义Wafer SPM bufferization、rank-local allocation和storage verification。它服务于whole-rank
 task/dataflow candidate的合法性搜索，并在完整static rank entry上统一验证所有`wafer.tile.region`、
@@ -38,7 +40,7 @@ rejected/candidate offset 都是 analysis，不写进长期 IR。
 SPM planning 不能只做 byte-size estimate。候选 tile plan 是否合法，必须跑与下游一致的：
 
 ```text
-layout materialization
+selected physical encoding / transfer materialization
   -> candidate DDR tile-view materialization
   -> instruction legalization / selection
   -> instruction-level IR with unplaced Wafer-tagged memref values
@@ -50,8 +52,8 @@ layout materialization
 ```
 
 如果没有合法allocation，不能生成一个等待下游修复的scheduled task program，也不能保留
-已通过的local placement。planner应丢弃整个variant clone，再回到tile shape、internal split、
-layout assignment、output coverage或residency/spill cut继续搜索。
+已通过的local placement。planner应丢弃整个variant clone，再回到implementation、tile/internal split、
+physical encoding、transfer route、output coverage或residency/spill cut继续搜索。
 
 ### 1.1 Pipeline Contract
 
@@ -60,17 +62,17 @@ Pipeline position:
 - Upstream artifact / IR:
   whole-variant evaluation clone 中所有 static rank entries 的完整 instruction-level
   `wafer.instr.*` structured program，已经完成 candidate DDR tile-view materialization 和 instruction
-  legalization；全部selected task fragments已进入完整rank clone并完成一次post-commit canonicalization，SPM planner
-  分别接收从同一canonical committed rank派生的spill baseline或deterministic maximal full-buffer-resident
-  whole-rank alternative。task/region/loop间的SPM value和event已由显式SSA/control-flow连接，包含actual DDR
-  tile views、unplaced `memref<..., #wafer.memory<spm, layout>>` values，以及accepted layout
-  assignment、materialization cut、effect/order 和 target SPM policy。
+  legalization；全部selected task fragments已进入完整rank clone并完成一次candidate-local canonicalization。SPM planner
+  每次只接收联合planner已经显式物化的一份完整whole-rank candidate；candidate可以来自当前spill/resident基线，也可以
+  来自终态bounded implementation/physical-version/transfer/residency frontier。task/region/loop间的SPM value和event已由显式SSA/control-flow连接，包含actual DDR
+  tile views、unplaced `memref<..., #wafer.memory<spm, layout>>` values，以及selected physical encodings、
+  explicit materialization、effect/order 和 target SPM policy。
 - Current stage responsibility:
   在每个complete rank entry上对`#wafer.memory<spm, layout>` memref做SPM memory planning，
   计算 offset/end/bank span、alignment、lifetime/reuse、must-alias/must-not-alias、reserved range
   和 range-end verification；用显式generic async wait、DTE exact token/wait、local fence和terminal drain证明
-  该rank所有issue completion，并在variant-set gate汇总所有rank的通过结果。两个storage alternatives独立规划、
-  独立失败，任何一侧的offset、alias或completion fact都不能成为另一侧的输入或fallback事实。
+  该rank所有issue completion，并在variant-set gate汇总所有rank的通过结果。每个candidate clone独立规划、
+  独立失败，任何候选的offset、alias或completion fact都不能成为其它候选的输入或fallback事实。
 - Output artifact / IR:
   仅存在于 complete passing variant clone 中的 same instruction-level IR with offset-only
   `wafer.spm.offset` planning facts on SPM memref definitions，或结构化 allocation failure reason；
@@ -83,30 +85,31 @@ Pipeline position:
   whole-entry DDR memory planning、physical transport acceptance、all-rank transport verification和closed-loop
   whole-variant candidate driver及Q16 typed rank-record validation；atomic commit后target LLVM消费
   committed IR/resource bindings，package只消费committed executable + Q17 verified staged target module
-  records，runtime只消费validated manifest。Q16对rank frontier逐alternative完成function-boundary bufferization后
-  再调用同一个whole-rank planner；该later gate失败只过滤对应alternative，survivor必须从final instruction IR
+  records，runtime只消费validated manifest。Q16对rank frontier逐candidate完成function-boundary bufferization后
+  再调用同一个whole-rank planner；该later gate失败只过滤对应candidate，survivor必须从final instruction IR
   fresh recost，只有没有survivor时rank才失败。
 - User-level driver / named pipeline:
   Q16以后由同一
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=<registered-id>`
   的whole-variant
-  candidate loop调用本stage。Q15只产出verified structured tensor program directory，不执行SPM planning；
+  candidate loop调用本stage；当前baseline显式选择closed v1，Q32 v2无默认转换。Q15只产出verified structured tensor program directory，不执行SPM planning；
   `wafer-opt`和`wafer-plan-spm-memory`只处理显式IR，用于instruction-level replay/lit/debug，不能成为
   用户stop-stage，也不能把full-shape initial candidate或单task结果直接提交；不提供从已退役调度边界直达
   memory-planned instruction的compatibility pipeline。
 - Explicit non-goals:
-  不选择 instruction form、不改变 layout assignment、不分配 DDR allocation、不生成 target CRT call 或 packet；
+  不选择 instruction form、不改变selected implementation/encoding/transfer realization、不分配 DDR allocation、
+  不生成 target CRT call 或 packet；
   不把任一region/task的offset独立提交，也不把hardware `busytable`当作completion/lifetime语义；
   full-shape initial candidate与其它tiled candidates运行同一whole-rank planning和whole-variant gate，不设bypass；
-  不依据presumed rank equivalence复用或跳过任何rank plan；allocator不决定哪些handoff应resident，不生成generic
-  per-edge frontier，也不把某个unsafe consumer拆成partial promotion。
+  不依据presumed rank equivalence复用或跳过任何rank plan；allocator不决定哪些handoff应resident，不生成
+  implementation/transfer/physical-version/per-edge frontier，也不把某个unsafe consumer拆成partial promotion。
 - Completion gate:
   对每个合法complete rank program给出 deterministic memory plan；planned storage的size、alignment、
   range/end、lifetime和alias relation能由rank-local IR/effect/verifier重算；generic `async.call`
   token/value由identity-preserving handle flow上的`async.await`或direct group的`async.await_all`收口，DTE由
   exact token/`wafer.instr.dte_wait`收口，本地issue由local fence收口，且每条rank function exit没有pending event。
   safe pre-existing loop recurrence可规划，loop-body allocation/task的动态实例或无法证明的async handle flow结构化拒绝。
-  任一task/rank失败都使该storage alternative所属的
+  任一task/rank失败都使该candidate所属的
   整个 variant clone 不可提交。即使 distributed 层认为 ranks 等价，也必须验证每个 static rank entry
   中的全部 region。
 ```
@@ -167,7 +170,7 @@ live segment，不靠symbol名字判断callee行为，也不形成跨过程summa
   SPM memory planning 不直接消费
   target-abstract tile-region IR，而消费 R3.2d 生成的 instruction-level IR with unplaced
   Wafer-tagged memref values。
-- layout planner 产生的 physical layout assignment 和 materialization demand。
+- 联合planner在该candidate中显式物化的implementation、physical version、transfer、residency、layout和movement demand。
 - instruction legalization / selection 产生的 concrete memref value、operand/result/temp/workspace/
   accumulator/psum/staging 分类、instruction family、effect event 和 async policy。
 - `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
@@ -314,7 +317,7 @@ reuse 分类：
 
 ## 6. Allocation Contract
 
-SPM allocation的职责是在一个complete static rank variant、指定final candidate layout assignment和
+SPM allocation的职责是在一个complete static rank variant、指定final candidate physical-dataflow realization和
 selected instruction lowering下，对全部task/region的`#wafer.memory<spm, *>` memref做whole-rank放置。
 它不负责全局寻找最佳task/dataflow schedule，不选择compute/movement instruction form，也不把失败方案materialize
 到主 IR。
@@ -322,7 +325,7 @@ selected instruction lowering下，对全部task/region的`#wafer.memory<spm, *>
 输入必须足够接近真实 lowering：
 
 - tiled control-flow / event order。
-- layout assignment 和 selected materialization / compute / movement instruction form。
+- selected implementation、physical version、transfer/layout materialization和compute/movement instruction form。
 - instruction-derived `BufferDemand`。
 - effect / async issue / fence / wait / barrier。
 - target range、reserved range、alignment、range-end policy。
@@ -474,34 +477,32 @@ reserved-range/materialization/coloring policy真正进入当前planner后才成
 - request internal split for a specific op/axis。
 - choose another implemented scope partition。
 
-future layout cut、layout assignment、generic per-edge residency/spill和double-buffer policy落地后可沿同一
-failure-feedback边界加入，当前allocator不假设这些候选存在。
+联合planner可以沿同一failure-feedback边界尝试其它layout/implementation/transfer、per-edge residency/spill、tile或
+double-buffer proposal；这些都是allocator的上游候选维度。当前实现尚只产生有限scope与两类storage alternative，
+allocator不得据此把两类写成长期输入枚举。
 
-allocator不做无限repair；它只对收到的whole-rank alternative返回结构化失败。deterministic maximal resident的
-SPM allocation失败时，coordinator可以继续使用独立规划且完整通过的spill baseline；allocator本身不修改resident cut，
-也不把resident侧的partial offsets复制到spill侧。
+allocator不做无限repair；它只对收到的whole-rank candidate返回结构化失败。某个candidate的SPM allocation失败时，
+coordinator可以继续评估其它独立候选；allocator本身不修改implementation、transfer或resident cut，也不把失败clone的
+partial offsets复制到其它clone。
 
 ## 10. Whole-Variant Commit Model
 
-V0 使用 `plan complete static rank programs before atomic commit`：
+终态使用 `plan complete static rank programs before atomic commit`；当前两类alternative只是该流程的已实现候选源：
 
 ```text
-complete static rank variant clone + task/tile/layout proposals
-  -> materialize complete rank traversal and its wafer.tile.region task fragments
+complete static rank structured program + bounded task/tile/implementation/transfer proposals
+  -> generate a capability-filtered bounded per-rank proposal frontier
+  -> for each proposal, materialize complete rank traversal and its wafer.tile.region task fragments
      (target-abstract compute/comm/load-store/layout/sync/storage/effect)
   -> materialize candidate DDR tile views as memref.subview operands
   -> legalize/select instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
-  -> commit all selected task fragments into one complete rank candidate clone
-  -> run one post-commit canonicalization of static one-trip wrappers and equivalent full views
-  -> derive two bounded whole-rank alternatives from the same canonical rank:
-       spill baseline
-       deterministic maximal full-buffer-resident
-  -> for each alternative, collect BufferDemand + whole-rank liveness/effect
-  -> independently run whole-rank SPM planning + terminal completion verification for all ranks
-  -> independently run DDR/verifier/transport/target gates and recompute complete cost
-  -> choose a complete alternative or return failure feedback
-  -> atomically commit all rank programs with no legacy wafer.group, or commit nothing
-  -> validate candidate IR-derived resources/completion and materialize typed C++ rank records
+  -> candidate-local function-boundary bufferization/canonicalization; source IR remains unchanged
+  -> collect BufferDemand + whole-rank liveness/effect and run per-rank SPM/local-completion gates
+  -> fresh recost and bucket surviving rank candidates by all-rank compatibility signature
+  -> baseline-first lazy/factorized all-rank join; no eager rank-frontier Cartesian product
+  -> per-complete-variant DDR/package-eligibility/transport/target ABI preflight and fresh exact vector
+  -> transaction-local construction/validation of all RankExecutable records and ExecutableBundle
+  -> atomically commit all rank programs plus validated bundle, or commit nothing
   -> target codegen derives address-range parameters from committed IR + executable bindings
   -> package/runtime consume committed executable/manifest only
 ```
@@ -514,26 +515,23 @@ selection 和 SPM memory planning 都应在 transformation-local whole-variant c
 whole-rank instruction-level memref / lifetime / effect / token事实源，而不是target-abstract op的粗粒度
 effect；planner不另造影子whole-entry plan。
 
-两个alternatives不是generic per-edge frontier：spill baseline保留原typed DDR WDMA/RDMA；resident alternative按稳定
-IR顺序原子提升全部已完成full-buffer closure证明的handoff，不枚举任意promotion subset。resident侧的SPM、DDR或
-verifier gate失败，或者其有效cost不优于有效spill时，保留spill；spill无效而resident有效时可选择resident；两侧都
-无效才拒绝基础rank candidate。失败的allocation、offset search trace、cost breakdown都不进入accepted IR；任一侧
-失败时，其offset facts与该alternative clone一起丢弃，不污染另一侧。
+当前spill baseline与maximal resident仍是迁移实现的deterministic proposals；Q32 production切换后删除其decision-owner旁路，
+不把它们升级成candidate schema或silent fallback。
+每个候选必须先把resident edge、spill、physical version、mapped/staged transfer和instruction sequence显式物化；SPM
+allocator只从该IR重算demand。任何gate失败时，其allocation、offset search trace和cost breakdown与clone一起丢弃。
+ranking属于联合planner：从完整IR重算06统一定义的SPM、DDR/SPM movement、transport bytes/message、compute、descriptor/
+inner-span、engine issue/event和padding exact static vector。只在相同all-rank compatibility signature内做strict dominance，
+再用stable profile policy确定性tie-break；unknown或tradeoff不得伪装成收益，未校准结果不得称为硬件时间。
 
-“有效cost更优”包括两条保守路径：scalar estimate严格更小，或在两边scalar estimate饱和/相等时，resident从完整IR
-重算的compute-class、DDR、SPM、NoC、instruction和event exact count vector对spill形成strict dominance。后者要求
-全部dimension known、无一变差且至少一项严格降低；unknown或tradeoff不能靠该规则选择resident。它只是未校准标量
-排序的确定性补充，不是timing claim。
-
-rank frontier离开scheduler后，function-boundary bufferization可能新增或删除buffer/movement。Q16因此对每个alternative
-独立重新运行SPM/DDR planning并从final instruction IR fresh recost；失败alternative从frontier移除，不会让同rank的
-其它合法alternative一起失败。只有finalized frontier为空时才拒绝该rank，这保证post-scheduling gate不会把一项局部
+rank frontier离开scheduler后，function-boundary bufferization可能新增或删除buffer/movement。Q16因此对每个candidate
+独立重新运行SPM/DDR planning并从final instruction IR fresh recost；失败candidate从frontier移除，不会让同rank的
+其它合法candidate一起失败。只有finalized frontier为空时才拒绝该rank，这保证post-scheduling gate不会把一项局部
 失败错误升级成whole-rank failure，也不会沿用变换前的stale cost。
 
 ## 11. Runtime / ABI Handoff
 
-Wafer-tagged memref 是 layout / SPM planning 阶段的 tile-local buffer value。SPM bufferization
-接受 layout assignment 和 allocation 后，不再新增独立 placed memref / explicit descriptor IR 层。
+Wafer-tagged memref是physical-dataflow/SPM planning阶段的tile-local buffer value。SPM bufferization
+接受selected realization和allocation后，不再新增独立placed memref/explicit descriptor IR层。
 Q16 commit前的rank-record validation从instruction IR中的memref use-def、view relation、
 `wafer.spm.offset`、`wafer.ddr.offset`、arena/placement和
 `computeWaferPhysicalTensorInfo(memrefType)`重算resource role/range/scope/alias与entry slot需求，
@@ -687,29 +685,31 @@ SPM / tile-region verifier 至少检查：
   的 address/range/stride 参数必须由 `computeWaferPhysicalTensorInfo`、accepted offset facts、
   allocation range 和 op verifier 一致推出。
 
-## 14. 与 Layout / Task Scheduler 的关系
+## 14. 与 Physical-Dataflow Planner 的关系
 
 全局文档边界见 `tasks/01-architecture.md` 第 8 节。SPM allocation 回答完整 static rank entry 中
 完整rank task program的`#wafer.memory<spm, *>` allocation是否可行，并把whole-rank失败返回
-whole-variant task/layout planner。
+whole-variant physical-dataflow planner。
 闭环顺序：
 
 ```text
 whole-variant candidate plan
-  -> final candidate layout assignment in the clone
-  -> complete rank traversal with wafer.tile.region scopes
-  -> candidate DDR tile-view materialization
-  -> instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
-  -> commit selected task fragments and canonicalize the complete rank once
-  -> spill baseline + deterministic maximal full-buffer-resident whole-rank alternatives
-  -> per-alternative instruction storage / effect demand
-  -> independent whole-rank SPM memory planning and terminal completion verification
-  -> target-codegen address-range derivation from committed bindings and accepted facts
-  -> complete variant accepted or failure feedback; no partial commit
+  -> capability-filtered bounded proposal/frontier generation
+  -> for each proposal, isolated complete-rank clone materialization
+  -> selected implementation / physical-version / transfer / residency realization in that clone
+  -> complete rank traversal, DDR tile views and wafer.instr.* over unplaced Wafer-tagged memrefs
+  -> candidate-local canonicalization; source IR remains unchanged
+  -> per-candidate instruction storage/effect demand and independent whole-rank SPM planning
+  -> per-rank instruction/descriptor/SPM/local-completion gates and compatibility bucketing
+  -> baseline-first lazy all-rank join
+  -> per-complete-variant DDR/package-eligibility/transport/geometry/ABI preflight and fresh recost
+  -> transaction-local RankExecutable/ExecutableBundle construction and validation
+  -> winning variant plus validated bundle atomic commit, then target-codegen from committed bindings/accepted facts
+  -> failure feedback with no partial commit when no complete variant survives
 ```
 
-layout planner先尝试移动materialization cut或换flexible layout；SPM仍失败时，task scheduler
-再缩tile、请求internal split或改变residency/spill cut。SPM allocation消费instruction-level IR暴露的demand
+联合planner可以换implementation/physical encoding/transfer family、移动materialization cut、缩tile、请求合法internal
+split或改变residency/spill cut。SPM allocation只消费instruction-level IR暴露的demand
 和 effect；compute implementation 和 communication algorithm 的选择属于 instruction selection /
 closed-loop planner，不在 allocator 内部用名字或 case 猜测。
 - local fence、comm wait、group barrier 是不同 sync event。SPM lifetime 可以把它们都建成 event，

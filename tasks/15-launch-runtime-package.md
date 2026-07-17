@@ -1,7 +1,8 @@
 # Wafer Typed Manifest、RuntimeSession 和 Launch Boundary
 
-状态：2026-07-14已完成Q18及Q16.T的Direct DTE runtime requirement扩展，并按Q0.L typed target-profile和untimed
-SystemC数值模型补充后续consumer边界。近期wire form为schema v3、唯一typed C++ model的canonical JSON，不是
+状态：2026-07-17在已完成Q18/Q16.T基础上同步versioned GEMM orientation ABI和board preflight所需
+`RequiredCapabilitySet`边界。当前wire form是schema v3；Q32 production cutover迁移到schema v4，仍是唯一typed C++ model的
+canonical JSON，不是
 Protobuf；provider/board execution仍是后续独立gate。实现状态看`tasks/progress.md`。
 
 ## 1. 目标和非目标
@@ -30,27 +31,34 @@ Pipeline position:
 - Upstream artifact / IR:
   Q16 atomic、profile-bearing ExecutableBundle中的typed resources、ABI slots、terminal completion和完整
   `ExecutionConfig`；Q17 atomic TargetArtifactBundle中的逐字段相同config、all-and-only rank modules、entry
-  symbol/content digest和ABI摘要。
+  symbol/content digest和ABI摘要。Q32 target的这两个bundle再携带从final instruction rows派生的canonical
+  `RequiredCapabilitySet`及digest、rank-local capability readback和相同all-rank set/digest。
 - Current stage responsibility:
   先逐字段核对Q16/Q17 config，再由tasks/14 registry把`TargetProfileId`唯一映射为typed `TargetIdentityId`和
-  `KernelRuntimeABIId`并构造schema-v3 PackageManifest；manifest target object显式序列化canonical
+  `KernelRuntimeABIId`并构造typed PackageManifest；当前v3 manifest target object显式序列化canonical
   `profile`，然后逐字段验证该profile唯一映射出的identity/runtime ABI/module format；执行唯一C++semantic verification，序列化canonical JSON；
-  在Q18 staging内复制/附着并复核package members后原子发布；runtime解析并验证同一model，结合invocation
+  Q32 schema-v4再从Q16/Q17逐字段join canonical `RequiredCapabilitySet`及digest。在Q18 staging内复制/附着并复核package
+  members后原子发布；当前v1和目标oriented-GEMM v2必须解析为不同
+  `KernelRuntimeABIId`且all-rank module/config一致。runtime解析并验证同一model，结合invocation
   bindings/runtime environment形成side-effect-free RuntimeSession plan。
 - Output artifact / IR:
-  VerifiedPackageManifest、canonical package JSON、no-card RuntimeSessionPlan。
+  VerifiedPackageManifest、canonical package JSON、no-card RuntimeSessionPlan；Q32 production output为schema v4并携带
+  canonical required-capability keys/digest，不包含command list。
 - Downstream consumer:
   wafer-run/no-card inspection、target execution model/board integration、target module loader和invocation API。
 - User-level driver / named pipeline:
   Q18接入后由wafer-compile自动生成manifest和package；wafer-run只消费已验证package，不接受raw compiler IR。
   当前Q15/Q16/Q17不能以手写manifest或独立package tool冒充Q18完成。
 - Explicit non-goals:
-  不复制instruction schedule，不解析printer text，不允许Python/C++双validator，不在runtime重新planning。
+  不复制per-command instruction schedule/orientation/movement descriptor；仅序列化去重的`RequiredCapabilitySet`，不解析
+  printer text，不允许Python/C++双validator，不在runtime重新planning或按module contents猜ABI revision。
 - Completion gate:
   manifest all-and-only覆盖bundle ranks/modules/entries/resources/slots；canonical roundtrip稳定；invalid package在
   load/allocate前失败；任一manifest/package publication late failure不发布partial Q18 package，且不改变已验证
   Q17 target artifact bundle。Q0.L另要求profile/config逐字段join、registered target/runtime-ABI映射和readback正反例；
-  当前宽泛常量不能绕过该映射。
+  当前宽泛常量不能绕过该映射。该句记录已完成schema-v3边界；Q32 extension还要求v4 required-capability set/digest在
+  Q16/Q17/module/manifest全相等，model provider以显式`ModelProfileId`、board provider以显式environment逐key preflight，
+  v3在cutover后拒绝，任一late-rank/key failure无partial publication/effect。
 ```
 
 ## 3. 已删除的 Prototype
@@ -113,8 +121,7 @@ struct RankEntrypoint {
   CompletionId terminalCompletion;
 };
 
-struct PackageManifest {
-  uint32_t schemaVersion;
+struct PackageManifestCommon {
   ProgramId program;
   TargetProfileId targetProfile;
   TargetIdentityId targetIdentity;
@@ -126,6 +133,18 @@ struct PackageManifest {
   std::vector<RankEntrypoint> entries;
   std::vector<TerminalCompletion> completions;
 };
+
+struct PackageManifestV3 {
+  PackageManifestCommon common;
+};
+
+struct PackageManifestV4 {
+  PackageManifestCommon common;
+  RequiredCapabilitySet requiredCapabilities; // owns canonical keys + digest
+};
+
+using ParsedPackageManifest =
+    std::variant<PackageManifestV3, PackageManifestV4>;
 ```
 
 strong IDs可以先用不可隐式互转的小型C++ wrapper，不要求新增MLIR type。program/resource/module/entry等ID由当前bundle
@@ -133,11 +152,33 @@ strong IDs可以先用不可隐式互转的小型C++ wrapper，不要求新增ML
 JSON中的canonical spelling是typed value的delivery form，不是自由字符串或第二registry；文件路径、symbol文本和vector
 index不承担semantic identity。
 
+schema version在parse入口先选择上述closed typed alternative，不能先填一个宽泛struct再靠optional/default恢复语义。
 Q0.L把manifest wire schema提升为v3：现有`target`object新增必填`profile`字段，值必须是tasks/14 registry的canonical
 spelling。parse/verify先解析typed profile，再要求`identity`、`runtime_abi`和`module_format`逐项等于该record的映射，不能只
 验证每个字符串分别属于某个supported set。`RuntimeEnvironment`携带同一typed profile并在任何provider effect前完成四项
 exact-match。schema-v2继续被明确拒绝而非静默补profile；未来silicon revision只有取得事实后才通过新profile/schema表达，
 当前不得写`unknown`占位字段。
+
+新增oriented-GEMM ABI identity本身不要求command flags，但board/runtime现在有真实逐row preflight consumer，因此Q32明确
+选择schema v4：在v3字段外新增必填canonical `required_capabilities`和`required_capabilities_digest`，其typed key/digest由
+tasks/14定义。tasks/14 registry新增closed v2 record后，Q18必须逐rank
+readback module metadata并证明all-and-only modules、entries和RuntimeEnvironment都选择同一profile/ABI；v1 manifest中
+出现oriented target call、v2 module伪装成v1、不同rank混用revision或environment只支持另一revision都在load/provider
+effect前失败。Q32 compiler对v1/v2都只生产v4，v3在cutover后明确拒绝而非静默推导capability set；迁移前v3 parser只能
+产生`PackageManifestV3`并走当前已完成no-card合同，绝不能进入v4 provider path。package仍不复制instruction、address、
+descriptor、per-command orientation或multiplicity；只有final TargetCall/ABI可观察的orientation/mask/segment等字段能经
+tasks/14规范投影为去重row key，implementation/encoding/route/invalid-lane state本身不能进入manifest。
+
+能打包/加载v2只证明typed ABI identity，不等于能上板。`RuntimeEnvironment`还区分model与board provider：model-only执行
+必须显式携带`ModelProfileId`，对manifest每个required key要求compiler-emittable且
+`modelQualified(key, ModelProfileId)`；board provider必须在任何allocation/import/submit effect前，以environment identity
+查询独立`board-supported` capability allowlist并逐key匹配。model qualification与board
+allowlist互不推导，缺board row不能由package profile exact-match绕过。
+
+目标mapped RDMA/WDMA lowering将在checked range/narrowing之后把buffer-local offset折入最终address，既不新增manifest
+field也不改变DMA ABI；在Instr/target lowering尚未落地前，该row不是current compiler-emittable capability。
+RuntimeSession只验证typed resource slot、base/alignment/capacity和selected target profile，不重放descriptor-cover或
+physical-dataflow planning。
 
 当前Kernel ABI摘要就是Q17导出的完整ordered typed slots；Q18逐slot与Q16 resource核对并原样序列化，不再增加一份
 可与slot列表分叉的ABI digest。无通信entry的transport contract为`None`；Direct DTE entry额外携带唯一
@@ -253,12 +294,14 @@ package；可选packet/MMIO correlation同样只增加packet provenance claim。
 
 ### 8.1 Deferred All-Rank Provider Session Contract
 
-该合同只在Q22.E进入实现时materialize；当前Q18完成状态仍止于per-entry pure no-card plan。
+该合同只在Q22.E进入实现时materialize；Q22.E消费Q32 integrated audit冻结的schema-v4 package，Q22.V schema-v3 package
+只保留为历史证据。当前Q18完成状态仍止于per-entry pure no-card plan。
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  Q18 VerifiedPackageManifest及其all-and-only entries/modules/resources/completions/transport requirements；调用方提供
+  Q32 integrated audit冻结的Q18 schema-v4 VerifiedPackageManifest及其canonical `RequiredCapabilitySet`、all-and-only
+  entries/modules/resources/completions/transport requirements；调用方提供
   按ResourceId和global/local slice闭合的all-rank invocation bindings，以及已验证的typed provider environment。
 - Current stage responsibility:
   先对完整rank domain做side-effect-free capability/binding preflight，再建立provider-owned context、allocation/import、
@@ -341,6 +384,10 @@ board gate另行证明：
 - canonical byte-identical roundtrip和parse limits；
 - transaction中compile/link/manifest/write/fsync/rename每个late failure；
 - single-tile和16-rank真实compiler bundle直接进入manifest/runtime。
+- v1 canonical与目标v2 oriented-GEMM package分别readback exact profile/Kernel Runtime ABI；wrong revision、
+  mixed-rank revision、module metadata/profile冲突和runtime environment capability mismatch均在provider effect前拒绝；
+  schema-v4还覆盖required key missing/extra/tamper/digest、late-rank union和model/board allowlist mismatch；manifest中不存在
+  per-command orientation、mapped-transfer descriptor或schedule副本，只存在canonical dedup capability requirements。
 
 Q16.T启用`DirectDTE`分支时还必须覆盖：typed union canonical roundtrip、unsupported environment在任何provider
 副作用前拒绝、status/error/completion ABI requirement核对，以及manifest中不存在p2p body、message/binding attr或

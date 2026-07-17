@@ -1,6 +1,7 @@
 # Wafer Target Conversion、CRT 和 Module Publication
 
-状态：2026-07-14按Q17完成证据、Q16.T激活、Q22.L owner-backed target LLVM bundle和untimed SystemC数值模型的后续consumer边界更新。本文拥有
+状态：2026-07-17在Q17完成证据、Q16.T激活、Q22.L owner-backed target LLVM bundle基础上补充联合planner所需的
+mapped-transfer address closure和versioned GEMM orientation ABI终态。本文拥有
 instruction-to-target conversion、Wafer CRT ABI、device link和近期staged target module合同。实现状态看
 `tasks/progress.md`。
 
@@ -36,23 +37,29 @@ Pipeline position:
 - Upstream artifact / IR:
   Q16 atomic、profile-bearing `ExecutableBundle`中的显式rank static entries和完整`ExecutionConfig`；memory-planned、
   已在tile→instruction边界消除unconsumed init/indexing-map语义的wafer.instr/SCF/CF/func IR；accepted SPM/DDR offsets、
-  verified physical geometry和completion relation。DDR函数边界来自typed external binding；仅有
+  verified physical geometry和completion relation。Q32 target bundle另携带从各rank最终instruction rows经tasks/14
+  registry投影、canonical union得到的`RequiredCapabilitySet`。DDR函数边界来自typed external binding；仅有
   arena-relative `wafer.ddr.offset`但没有explicit arena base的compiler-managed allocation不构成target address。
 - Current stage responsibility:
   Q0负责既有geometry/control-flow legality；Q0.L从`ExecutionConfig`取得tasks/14 registry拥有的`TargetProfileId`，按共享
   `LogicalFormatDescriptor`和target-profile×engine×format `TargetFormatEncodingRecord` preflight每个command，并拒绝任何
   残留init/indexing-map或无证据encoding row。在原控制流位置lower instruction leaf到typed LLVM CRT calls，并以module
-  clone + full conversion保证失败无source mutation。Q22.L在所有rank完成ABI preparation/full conversion后各翻译一次，
-  由每rank独立`LLVMContext`拥有fully legal `llvm::Module`，通过module-owned typed metadata readback logical rank、entry、
-  target profile/identity、Kernel Runtime ABI和ordered slots后原子形成`TargetLLVMModuleBundle`。Q17 device linker直接消费
+  clone + full conversion保证失败无source mutation。已完成Q22.L在所有rank完成ABI preparation/full conversion后各翻译一次，
+  由每rank独立`LLVMContext`拥有fully legal `llvm::Module`并readback现有identity/ABI metadata。Q32 target extension再从实际
+  发射的typed target-call rows重算rank-local capability keys，把rank-local digest写入module-owned typed metadata并与Q16同rank
+  投影逐项核对；全部rank的canonical union必须与Q16 bundle-level `RequiredCapabilitySet`及digest相等。candidate exact gate只
+  调用同一registry做pure projection/preflight，不把set放入search state，也不生成module/artifact。目标oriented GEMM还要求
+  selected profile唯一准入typed lhs/rhs orientation并选择versioned target-call signature；mapped RDMA/WDMA的SPM-local
+  offset在shared range gate后折入最终地址。Q17 device linker直接消费
   该bundle，不再读取`ExecutableBundle`或重复lowering；随后验证symbol、entry、format、digest及all-and-only rank coverage
   并发布target artifact bundle。
 - Output artifact / IR:
-  Q22.L输出move-only、不可序列化的`TargetLLVMModuleBundle`：exact `ExecutionConfig`及all-and-only rank entry，每个entry
+  已完成Q22.L输出move-only、不可序列化的`TargetLLVMModuleBundle`：exact `ExecutionConfig`及all-and-only rank entry，每个entry
   拥有独立LLVM context/module、ordered typed ABI slots、module identifier/closed RISC-V triple、`TargetProfileId`及由registry
-  解析并从module metadata readback的target/runtime-ABI identity。它不是packet、磁盘sidecar或package成员。Q17输出每rank一个verified staged target module：
+  解析并从module metadata readback的target/runtime-ABI identity。Q32 target bundle增加bundle-level canonical
+  `RequiredCapabilitySet`和每entry rank-local metadata digest。它不是packet或磁盘sidecar。已完成Q17输出每rank一个verified staged target module：
   rank、entry symbol、relative delivery path、content digest和必要ABI摘要；all-rank typed records与逐字段相同的
-  `ExecutionConfig`组成atomic `TargetArtifactBundle`。
+  `ExecutionConfig`组成atomic `TargetArtifactBundle`；Q32 target artifact再携带canonical set及digest。
 - Downstream consumer:
   现有Q17 RISC-V device link和Q22.H repo-owned target-call frontend直接消费同一`TargetLLVMModuleBundle`；Q18 typed
   PackageManifest/package transaction按同一registry映射并readback exact target/runtime-ABI identity。runtime module loader
@@ -69,10 +76,14 @@ Pipeline position:
 - Completion gate:
   Q0：control-flow/direct-call语义保持，全部当前production family geometry/narrowing通过，unsupported
   transport/address/shape fail closed，full conversion后无illegal op，任一失败source module byte-identical。
-  Q0.L：typed target profile从profile-bearing `ExecutableBundle`进入transaction-local prepared target LLVM/ABI artifact和
+  Q0.L当前v1：typed target profile从profile-bearing `ExecutableBundle`进入transaction-local prepared target LLVM/ABI artifact和
   `TargetArtifactBundle`并逐字段readback；tasks/14 registry对logical format及target-profile×engine×format编码fail closed；
-  instruction输入已无elementwise map/reduce init，任何残留在call emission前拒绝；production driver是完成证明，debug named
+  instruction输入已无elementwise map/reduce init，v1 compact DMA与normal/normal GEMM闭合；production driver是完成证明，debug named
   pipeline只验证同一registry/request/conversion局部正反例，二者均无profile default；CRT conformance通过。
+  Q32 extension：mapped DMA local offset和v2 GEMM orientation必须被selected profile/ABI完整消费，任何残留、v1/v2
+  混用或unsupported tuple在call emission前拒绝；Q16/Q17/module metadata的canonical RequiredCapabilitySet keys/digest
+  all-and-only readback，并重放上述同一formal/atomic/conformance gate；该目标合同不反向改变
+  已完成v1 gate。
   Q17：真实program的all-and-only rank modules在同一transaction验证后形成并发布target artifact bundle；
   late failure无final output，device link required/allowed symbol gate通过。Q17不要求manifest或runtime，Q0也不以
   all-rank publication或reference numeric为完成前置。
@@ -81,9 +92,9 @@ Pipeline position:
   failure无bundle、ELF或package；现有Q17/Q18 producer直接消费该bundle并保持source vertical通过。
 ```
 
-selector提交时已经完成tile-region/instruction materialization以及SPM/DDR planning；target入口只在其后补齐
-函数边界bufferization，消除tensor signature和`bufferization.to_memref/to_tensor` wrapper，然后运行target
-conversion。它不得再次执行task scheduling、tile/instruction materialization或memory planning。
+每个candidate在选择/提交前已经完成function-boundary bufferization、tile/instruction materialization、SPM/DDR重规划、
+fresh recost和typed rank-record/bundle验证；accepted artifact不再残留Tensor/Bufferization wrapper。target入口只消费该
+finalized artifact并运行target conversion，不得再次改变buffer形态、执行task scheduling、materialization或memory planning。
 
 ### 2.1 Q0.L 首个 closed profile
 
@@ -96,6 +107,70 @@ conversion。它不得再次执行task scheduling、tile/instruction materializa
 registry必须由该typed profile唯一解析到typed target identity和Kernel Runtime ABI，再映射到delivery spelling。
 不存在`unknown`revision占位、默认profile或字符串fallback；未来取得SKU/revision证据时新增closed profile record并同步
 manifest schema，而不是改变当前key含义。
+
+### 2.2 Oriented GEMM 的版本化 profile 终态
+
+当前唯一registered `wafer-tx81-single-card-kernel-v1`及`wafer-tx81-kernel-v1`保持原义：plain GEMM只有
+normal/normal canonical relation，现有109-symbol closure和exact-signature record不变。不能在同一ABI identity下给
+`wafer_tx81_gemm`追加参数、改变既有signature或让CRT从shape猜transpose。
+
+实现typed orientation时新增closed Kernel Runtime ABI `wafer-tx81-kernel-v2`和对应target profile
+`wafer-tx81-single-card-kernel-v2`，canonical spelling由registry唯一拥有。该revision新增
+`wafer_tx81_gemm_v2` parameterized target call，在v1参数之后接收两个checked `uint32_t` orientation enum值，
+不为NN/NT/TN/TT建立四个symbol。registry record明确保存signature、normal/transpose enum mapping、允许的
+target-profile×format×rank/layout×orientation tuple和evidence状态。v2沿用v1全部非GEMM signature，但在required
+surface中以`wafer_tx81_gemm_v2`替换`wafer_tx81_gemm`；NN/NT/TN/TT均走新call。旧v1 symbol只服务v1
+normal/normal package；v2 module不得混用旧GEMM symbol，也不得用同名C symbol的可选/default参数伪造兼容性。
+
+每个row显式分别记录四个predicate而不是单个线性enum：静态register/wrapper资料只建立`statically-representable`
+candidate和golden field mapping；
+`compiler-emittable`要求Instr verifier、TargetCall registry/decoder、LLVM call、CRT header/source、conformance checker和
+device link闭合；`model-qualified`要求exact command key、formal/managed-reference numeric及SystemC source vertical闭合；
+`board-supported(environment)`需要tasks/16/17在对应board environment的独立逐orientation资格，后两者互不推导。
+model-only admission要求compiler-emittable与model-qualified的conjunction；board publication另要求匹配environment的board
+row。四个predicate不得压成一个supported布尔值。
+
+`RequiredCapabilitySet`是下游board/model provider确有consumer的最小typed requirement，不是shadow command list。它严格从
+最终instruction经registry lowering后会发射的TargetCall/ABI capability rows投影：
+
+```text
+TargetCapabilityRowKey {
+  target_profile, kernel_runtime_abi,
+  target_call_family_and_revision,
+  operand_result_format_tuple,
+  operation_accumulator_rounding_contract,
+  rank_layout_geometry_boundary_class,
+  abi_visible_typed_optional_fields
+}
+RequiredCapabilitySet = canonical sorted unique TargetCapabilityRowKey[] + digest
+```
+
+key只包含最终Instr/TargetCall可见且capability predicate实际读取的semantic/numeric字段；这里的numeric contract是dtype、
+accumulator、rounding等target-call事实，不是tasks/17拥有的`ModelProfileId`或`NumericSemanticsProfile`。若qualification依赖
+parameter/boundary class，该class必须由registry从typed target-call字段确定性分类后进入key。orientation、真实mask/segment等
+mode只有已成为typed Instr/TargetCall字段时才可进入；composite route只贡献其实际发射command rows的union。若某route依赖新
+硬件mode，必须先把该mode闭合为typed Instr/TargetCall字段和registry row，不能把route名直接写进key。
+
+set不包含implementation/encoding/route/residency名字、invalid-lane analysis state、local offset、address、buffer identity、
+task/rank order、descriptor payload或command multiplicity。physical fill、mapped movement和oriented GEMM只通过实际发射的fill/
+movement/GEMM call rows及ABI-visible fields进入set。Q16从winner的每rank final instruction IR派生rank-local keys并形成all-rank
+canonical union；14逐key验证、在target conversion中从实际target calls重算rank-local投影并readback metadata digest；Q17
+artifact携带相同global set。Q18只能join/readback，不从symbol、profile名或planner trace猜测。
+
+canonical bytes和digest是tasks/14 registry拥有的版本化协议，不依赖host对象布局或JSON：
+
+1. `TargetCapabilityRowKey` v1按固定field number顺序编码；每个field使用`u16be(field-id) + u8(type-tag) +
+   u32be(payload-size) + payload`。允许的leaf type只有bool（单byte 0/1）、closed enum/u64（固定8-byte big-endian）、
+   i64（固定8-byte two's-complement big-endian）和typed identifier（canonical UTF-8 spelling）；tuple按相同
+   length-delimited规则递归编码。缺省字段不得省略或补默认，新增field/type必须提升key encoding version；
+2. 对完整key bytes做lexicographic sort并按byte equality去重；registration、rank、command和并行完成顺序不参与排序；
+3. digest固定为`SHA-256("wafer.required-capabilities\0" || u16be(1) || u32be(key-count) ||
+   concat_i(u32be(key-size_i) || key-bytes_i))`；字符串中的NUL是一个实际domain-separator byte；
+4. module metadata和schema-v4 JSON只是该typed set的投影。parse/readback必须重新编码并重算digest，禁止hash C++ struct bytes、
+   printer text、registration ordinal或JSON object order。
+
+model provider以`modelQualified(key, explicit ModelProfileId)`查询；board provider以
+`boardSupported(key, explicit RuntimeEnvironment)`查询。两者都逐key fail closed，互不推导，也不把model profile倒灌target artifact。
 
 `LogicalFormatDescriptor`只拥有target-independent的canonical spelling、storage/semantic bit width、encoding category、
 floating exponent/precision、canonical storage mask、special-value能力和bitpacked事实；byte order、TF32 noncanonical输入政策及
@@ -194,10 +269,12 @@ offset和instruction attrs推导：
 
 最低production规则：
 
-- RDMA/WDMA/gather-scatter：descriptor数组长度/正值、payload等式、DDR/SPM两端range；
+- RDMA/WDMA/gather-scatter：descriptor数组长度/正值、payload等式、DDR/SPM两端range；RDMA仅允许DDR source
+  strides加optional SPM destination-local offset，WDMA严格反向；local offset必须纳入SPM range；
 - fill/elementwise/bit2fp/mask/convert：所有buffer的logical element关系和physical capacity；
 - reduce：dim和input/output shape；terminal op不携带init，source init必须已lower为有序composite；
-- GEMM：M/K/N/batch与operand/result mapping一致；CRT未编码非canonical mapping时必须拒绝；
+- GEMM：typed lhs/rhs orientation、M/K/N/batch与stored operand/result mapping一致；v1只接受normal/normal，
+  oriented tuple必须由versioned ABI/profile显式编码；CRT未编码的mapping必须拒绝；
 - ordinary conv、pool/unpool、TDMA pad/img2col和supported peripheral：shape attrs与memref及精确算子/
   capacity关系一致；depthwise/backward conv等未定义shape profile必须target-illegal；
 - DTE：instruction-level bytes/range先验证；当前single-card fixed-size unicast只在Q16.T已提交peer/endpoint、
@@ -208,6 +285,11 @@ offset和instruction attrs推导：
 所有传入CRT的字段必须在lowering前证明：地址/offset使用uint64；普通count/stride/iteration/enum和
 `mask_move` mask使用uint32；传入`Data_Shape`的维度还必须适配底层uint16。`-1` sentinel只能出现在
 明确ABI字段，不能依赖i64到i32截断产生。
+
+Instr RDMA `dst_offset`和WDMA `src_offset`是buffer-local address derivation fact，不是新的CRT descriptor字段。
+target lowering先以shared checked arithmetic把它加到accepted SPM base，再把最终uint64地址传入现有DMA target call；
+因此mapped transfer不改变v1 DMA signature。offset溢出、超出operand/root range或出现RDMA destination stride/
+WDMA source stride必须在生成call前失败，CModel和CRT不得再次解释planner的index relation。
 
 ## 6. Kernel ABI
 
@@ -246,12 +328,20 @@ CRT wrapper只把verified fields传给public Tsm/instruction adapter；不重新
 - post-link扫描对全部undefined symbol应用代码中`tx8-kcore-loader-v1`精确allowlist，非Wafer未知
   symbol也以`target_symbol_not_allowed`拒绝。allowlist成员的事实源是link工具和定向测试，不在本文复制。
 
+这份窄边界不包含oriented GEMM。目标v2 oriented call的typed语义字段固定为
+`lhs_orientation`、`rhs_orientation`，CRT只做checked enum到public wrapper `SetTransflag`的映射，不从stored shape、
+layout、symbol后缀或payload推断。TargetCall transaction/decoder必须保留两个字段；LLVM exact signature、header/source、
+conformance checker和required/allowed symbol closure必须由同一registry record生成或逐字段核对。旧
+`wafer_tx81_gemm`继续只代表v1 normal/normal；v2的normal/normal也必须调用`wafer_tx81_gemm_v2`，不允许用
+optional/default参数形成同名不兼容ABI或在一个module内混用两个GEMM symbol。
+
 这些不证明：
 
 - 每个shape/descriptor packet合法；
 - wrapper success return代表hardware完成；
 - Direct DTE endpoint/channel/completion已经可用；
 - 非Wafer undefined symbol属于允许loader ABI。
+- 任一transpose组合已经通过板端数值或oneDNN bulk qualification。
 
 allowlist通过只证明symbol属于当前loader ABI，不证明真实loader版本、board transport或completion与当前环境匹配；
 这些仍由package/runtime/board gate证明。
@@ -308,11 +398,13 @@ diagnostic按稳定语义分类：
 
 1. op/verifier negative：OOB、payload、shape relation、narrowing；
 2. conversion：结构保持、typed call、full legality；
-3. CRT：header/source/signature/wrapper family；
+3. CRT：header/source/signature/wrapper family；v1 canonical与v2 oriented profile正反例分别闭合，禁止跨ABI混用；
 4. device link：positive compiler-generated input、required/allowed undefined negative；
 5. atomicity：late failure后无final/partial artifacts；
 6. Q17 publication：真实program的all-and-only rank modules由同一transaction发布；
 7. Q20/Q21 vertical：rank-count=1/16 program bundle直接消费Q17 staged modules。
+8. mapped/oriented extension：RDMA destination-local/WDMA source-local offset折入最终地址的exact-end、overflow、canary；
+   GEMM四种orientation逐字段TargetCall decode及stored-shape negative。板端数值资格仍由tasks/16/17独立拥有。
 
 手写LLVM、symbol-only fixture和dry-run只补覆盖，不能替代真实compiler-generated module。
 

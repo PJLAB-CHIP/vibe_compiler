@@ -1,6 +1,7 @@
 # Wafer Compiler Verification Plan
 
-状态：2026-07-17按Q31标准7B单block多seed数值表征和source/model gate收紧同步；保留已完成
+状态：2026-07-17按Q31标准7B单block多seed数值表征和source/model gate收紧同步，并补充联合physical-dataflow planner、
+mapped transfer与versioned GEMM orientation的目标验证合同；保留已完成
 Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate。
 本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
@@ -41,7 +42,7 @@ Pipeline position:
   闭合完整输出。Q22只汇总该传递证据，不另建pipeline。
   Q29随后闭合rank-local tile-dataflow scheduling、complete traversal和TP16 7B compile/package结构gate；Q28再从同一
   production source入口闭合标准7B单block managed-reference SystemC执行及完整PyTorch eager output differential。
-  Q22.C消费Q22和Q6.B结果闭合板端numeric correlation；
+  Q22.C消费Q22、Q32 schema-v4 RequiredCapabilitySet和Q6.B结果闭合板端numeric correlation；
   vendor-exact packet只在有独立packet/MMIO
   evidence时增加provenance claim。exact package provider和deferred timing calibration保持独立更高gate。
 ```
@@ -156,14 +157,23 @@ transport/address/shape和任何late failure都必须保持source byte-identical
 
 ### 4.3 Geometry And ABI
 
-- RDMA/WDMA/gather descriptor payload mismatch、stride range、两端OOB；
+已完成Q0/Q0.L证据固定v1 compact DMA和normal/normal GEMM。下列mapped local-offset、invalid-lane和oriented v2项是
+Q32 extension gate：实现时重放同一formal/atomic/conformance suite，但不反向把已完成v1标成未完成或伪装v2已证。
+
+- RDMA/WDMA/gather descriptor payload mismatch、stride range、两端OOB；mapped RDMA destination-local offset、
+  mapped WDMA source-local offset的exact-end/overflow/all-and-only coverage，以及非法双侧stride negative；
 - DTE instruction bytes OOB，以及在physical peer/slot/CRT未闭合时production target整体拒绝；
 - convert source/dest count mismatch；
-- GEMM M/K/N/batch/mapping mismatch；
+- GEMM typed lhs/rhs orientation、M/K/N/batch/stored-shape mapping mismatch；v1 normal/normal与versioned oriented ABI
+  exact-signature/profile混用negative；
 - conv/pool/unpool/TDMA/peripheral shape relation；
 - unsupported depthwise/backward conv等未定义shape profile在production target fail closed；
 - int64 overflow、uint32 max+1、Data_Shape uint16 max+1；
 - bitpacked/Cx/NCx physical bytes和view offset限制。
+- invalid-lane state从fill/segment/mask/typed execution domain重建；mapped valid-only write后padding unknown、required-neutral
+  未初始化、full-physical错误读取、Cx retained-tail和bitpacked tail-bit均有negative；physical-footprint fill的checked
+  elem-count、canonical raw scalar mapping和fill→segmented不可观察ordering闭合到TargetCall/SystemC。当前v1 Tensor logical-fill
+  与Q32 Cx/NCx/BOOL physical-fill资格分开记录。
 
 同一negative必须在最早能解释它的verifier失败，不能等CRT截断或board fault。
 
@@ -252,6 +262,10 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 - accepted rank artifact覆盖完整traversal，且无legacy `wafer.group`残留；
 - 任一rank/candidate/SPM/DDR/geometry/completion failure不形成`RankExecutable[]`或partial bundle；
 - all-and-only rank/resource/completion验证后才构造atomic `ExecutableBundle`，failed rebuild保持旧final不变；
+- Q32 pure target-eligibility preflight从每rank selected instruction经tasks/14 registry派生canonical
+  `TargetCapabilityRowKey`，验证missing/unknown/extra key后形成sorted unique all-rank `RequiredCapabilitySet`及digest；它不含
+  planner choice或command顺序/地址/次数。preflight结果不进入search state；只从fresh winner final instruction rows重算的
+  set与RankExecutable[]一起提交，late-rank union/digest失败不形成bundle；
 - bundle根据accepted IR只能形成`TransportContract::None`或Q16.T已验证的
   `TransportContract::DirectDTE`；logical collective/DTE必须通过all-rank message/resource/wait匹配，
   不能以`unsupported_transport`默认切断主线；
@@ -260,28 +274,54 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
   untagged memref或缺失的compiler-managed offset；
 - debug FileCheck、手写task/group fixture、single rank pass或某rank成功不构成Q16 completion。
 
-### 6.1 Q29 Tile-Dataflow Scheduling Migration Gate
+### 6.1 Physical-Dataflow Synthesis Gate
 
-Q29以`tasks/06-group.md`的终态合同为owner，本文只固定跨stage证据口径：
+`tasks/06-group.md`拥有终态联合planner合同；本文固定跨stage证据口径。Q29数字只作为已实现迁移baseline：
 
 - production从Q15 verified structured tensor program直接建立rank-local task/dataflow candidates，不发布或
   重新读取额外的调度artifact；
 - accepted IR用buffer SSA、movement和event显式区分resident edge和spill，并以whole-rank SPM/
   DDR lifetime与whole-variant transport/ABI gate原子提交；
-- spill/resident storage alternatives各自从complete current IR重算compute-class、DDR、SPM、NoC、instruction和event
-  count。scalar time严格更小可选resident；scalar estimate相等或饱和时，仅允许全部known dimension无一变差且
-  至少一项严格降低的strict execution-cost dominance，不能把unknown或tradeoff伪装成收益；
-- candidate搜索只枚举bounded traversal/reduction和六个scope policies；positive `maxSearchCandidates`对
-  first-legal、min-cost、all-fail及parallel batch所有退出路径都是hard cap。每rank至多六个distinct
-  alternative；whole-variant coordinator最多访问64个best-first组合，再尝试至多六个共同policy和一个tail，
-  去重后总计不超过71次exact gate；rejected clone不改写source或accepted module；
-- function-boundary bufferization和physical-memory replanning逐rank alternative独立执行；later gate失败只过滤
-  该alternative，每个survivor从final instruction IR fresh recost，仅finalized frontier为空时rank失败。覆盖必须同时
+- 联合planner按parameterized capability生成bounded tile/traversal、`ImplementationFamily`、physical version、
+  `TransferRouteFamily`、resident/spill、reuse-aware order和event候选；测试不得按Llama、op名或shape whitelist驱动选择。
+  accepted clone必须把这些选择物化为typed memref/view/compute/movement/orientation/event，且无shadow plan；
+- semantic/general topology corpus至少覆盖chain、diamond、fanout/fanin、shared-input contraction、reshape、transpose、
+  broadcast、reduce、residual和collective，交叉多个dtype、整tile/non-divisible tail及合法/非法numeric reassociation；
+  等价view/index rewrite应byte/bit exact，floating reassociation只有source policy明确允许时才进入候选；
+- search bound对first-legal、min-cost、all-fail、parallel batch及fallback所有退出路径生效，并稳定记录
+  generated、constraint-pruned、dominance-pruned、exact-lowered、frontier peak、exact-gate次数、wall/resource budget和
+  fallback reason。测试使用adversarial高fanout/多encoding graph证明不枚举Cartesian product；超限时确定性停止新增
+  optimized state，baseline合法则返回baseline并记录budget diagnostic，只有baseline exact-illegal才返回真实legality
+  failure；baseline proof超过其独立hard allowance返回compiler resource exhaustion。生产选择由deterministic work/fuel caps
+  决定；外部wall cancellation无条件回baseline。未触发取消时同输入、不同线程数稳定选择；具体cap数值是implementation
+  resource policy，不写成workload或IR语义；
+- 在同一机器、Release build和冻结7B corpus上，以Checkpoint A fresh Q30数据为baseline记录完整source-to-bundle wall、
+  planner各phase wall/work、exact-materialized/top-K/frontier peak和cap命中；重复运行不得出现无界candidate/work增长，
+  外部deadline必须返回reserved baseline。相对阈值、work/fuel和wall guard只属于profile/resource policy与实施证据，
+  不写成架构常量、workload whitelist或hardware performance claim；
+- 每个rank candidate独立运行instruction/descriptor、whole-rank SPM/local completion及per-rank range gate；按normalized
+  all-rank compatibility signature分桶后baseline-first lazy join，完整variant再运行DDR/package eligibility、transport和14
+  registry/versioned-signature artifact-eligibility preflight；preflight纯candidate-local且不生成module/artifact，Q16 commit后14
+  只正式conversion/publication一次。
+  SPM/DDR allocator不得生成、排序或修改implementation/transfer/residency。passing variant从complete current IR fresh重算06
+  统一exact static vector；只在同compatibility signature内dominance，再用stable profile policy tie-break，unknown/tradeoff
+  不得伪装成收益，也不得把未校准vector/scalar称为硬件时间；
+- mapped transfer positive必须证明RDMA仅DDR source strided+sequential SPM destination/local offset、WDMA严格反向，
+  descriptor序列all-and-only覆盖logical relation并检查tail/canary；不能覆盖时由planner显式选择staged+GS alternative或
+  其它已注册route，selected lowering不得静默换route或使用双侧stride；
+- function-boundary bufferization和physical-memory replanning逐rank candidate独立执行；later gate失败只过滤
+  该candidate，每个survivor从final instruction IR fresh recost，仅finalized frontier为空时rank失败。覆盖必须同时
   包含“一个失败、另一个存活”和“全部失败”两类原子性；
-- 独立rank-count=1/16 integrated gate和TP16 7B compile-only结构gate要证明complete traversal、跨task SPM edge、layout临时DDR
-  消除、activation reuse和collective/residual completion；数值CModel/PyTorch差分已由后续Q28独立完成；
+- Q29历史数字只证明当时rank-count=1/16与TP16 7B compile-only结构，Q28/Q31历史证据分别证明旧planner fixed-seed与
+  held-out multi-seed数值。Q32 cutover先用显式v1重放旧profile，再用显式v2重放rank-count=1/16与mapped/oriented通用source
+  vertical；v2的Q28 fixed seed + Q31 held-out multi-seed完整7B source→package→SystemC→PyTorch differential必须实际选择
+  新family才作为scale evidence。未被7B触发的capability用独立通用source case补，不加入Llama matcher；历史结果不能替代
+  fresh执行，也不改变admission；
 - 已退役调度surface和consumer保持清零，并由source/IR组织检查及negative tombstone防止回归。
-  generic per-edge residency、task-order/layout-cut和double-buffer/ping-pong是延期性能扩展，不是Q29正确性缺口。
+
+Q29已完成时采用六个scope policies、每rank最多六个alternative和whole-variant最多71次exact gate；以下2026-07-16
+数字只证明该历史实现基线。它们不是联合planner的终态candidate schema、固定cap或性能目标；新增planner必须保留
+Q29纵向证据并通过上述通用/有界搜索gate后，才可替代当前迁移实现。
 
 2026-07-16的rank-0 7B compile-only重放选择26条full-buffer SPM handoff；显式DDR movement由8,798,792 bytes降为
 5,100,424 bytes，其中RDMA 4,892,168、WDMA 208,256。终态包含36个tile regions；反汇编全部16个
@@ -365,6 +405,8 @@ Q29据此完成；后续Q28已从同一source/config独立执行并完成7B mana
 
 ### 8.1 Typed Manifest
 
+当前Q18 schema-v3 gate保持已完成；Q32 cutover新增closed schema-v4并迁移v1/v2 production output，v3不被静默补set：
+
 - canonical serialize/parse byte-identical；
 - unknown/deprecated field、wrong schema version、bad numeric/path/limits；
 - duplicate/missing ResourceId/ModuleId/EntryId；
@@ -374,6 +416,10 @@ Q29据此完成；后续Q28已从同一source/config独立执行并完成7B mana
 - missing/extra payload和digest mismatch；
 - completion missing、rank mismatch或unsupported terminal；
 - production JSON含`instructions`直接拒绝。
+- schema-v4 `required_capabilities` canonical sorted unique keys及digest必须与Q16 bundle、Q17 module metadata/
+  TargetArtifactBundle all-and-only一致；missing/extra/reordered-uncanonical/tampered key、wrong digest、late-rank union mismatch均
+  在publication前失败。key与digest按tasks/14 versioned length-delimited canonical encoding/SHA-256重算；key只表达最终
+  TargetCall/ABI可观察的去重capability requirement，不得包含planner choice或command address/order/multiplicity。
 
 Python wrapper和C++必须走同一verifier；不能再有不同acceptance。
 
@@ -382,6 +428,9 @@ Python wrapper和C++必须走同一verifier；不能再有不同acceptance。
 - entry selection和invocation binding all-and-only；
 - module/resource/completion resolution确定性；
 - insufficient capability在任何side effect前失败；
+- model provider以显式`ModelProfileId`逐required key验证`compiler-emittable && modelQualified(key, ModelProfileId)`；
+  board provider逐key匹配environment-owned
+  board-supported allowlist。只匹配profile、漏key或用model row冒充board row均失败；
 - repeated preflight相同输入产生相同plan；
 - metadata buffer释放后verified typed value仍可安全使用；
 - no-card输出明确标记未执行board。
@@ -670,6 +719,9 @@ Pipeline position:
   model profile，不能复制已退役reference scheduler的snapshot policy或logical message schedule；
 - static capability在input/model mutation前preflight，computed address、dynamic descriptor和numeric tuple在对应effect前
   验证；model/core error在copyback前失败，component result/status原子形成。
+- CModel只消费exact-signature bridge形成的最终TargetTransaction。mapped transfer只能表现为已经折入local offset的最终
+  address加RDMA/WDMA descriptor；oriented GEMM只能表现为versioned TargetCall携带的typed fields。测试注入相同最终
+  TargetCall但不同planner trace时结果必须不变，缺字段时必须fail closed，禁止从Instr/layout/workload重建选择。
 
 component gate必须实际运行唯一`sc_main`，至少两个`SC_THREAD`跨delta执行issue/visibility/completion、failure/no-progress
 wakeup及invocation-owned numeric status聚合；immediate caller ambient环境的嵌套LIFO、normal/early/error return与双OS-thread
@@ -735,6 +787,8 @@ board numeric、vendor等价、性能或cycle accuracy。最终fresh suite数量
 Q28不以tiny block通过推导规模可行性，而固定标准Llama-2 7B单层的4096 hidden、11008 intermediate、
 32 heads/head dimension 128、FP16，batch 1、sequence 16。source exporter仍只构造一个decoder block，但parameter、
 activation、attention和MLP shape必须保持7B尺寸；`num_hidden_layers=32`只作模型配置归属，不复制32层。
+该case只证明规模、TP16、时间/空间切分、完整数值和host执行预算，不签发planner算法通用性；通用性必须由6.1的
+拓扑/dtype/tail corpus独立证明。禁止把7B op序列、参数名、固定shape或transaction inventory写进candidate规则。
 
 完成证据必须同时包含：
 
@@ -755,12 +809,16 @@ activation、attention和MLP shape必须保持7B尺寸；`num_hidden_layers=32`�
   managed environment、finite value-domain和byte budget，该backend provenance不得标作Q22.B exact qualification record；完整CModel output重组后与
   PyTorch eager `expected.npy`按F16 dtype逐元素做显式atol/rtol全张量比较，不能byte-exact代替；手写NumPy参考只允许
   用于诊断，不是Q28真值oracle；
-- plain target GEMM的隐式storage合同必须端到端唯一：plain form恰好rank 2并使用`Cx`；batched form恰好rank 3、
+- 当前v1 plain target GEMM的implicit normal/normal storage合同必须端到端唯一：plain form恰好rank 2并使用`Cx`；batched form恰好rank 3、
   single-leading-batch、canonical `[B,M,K] x [B,K,N] -> [B,M,N]`并使用`NCx`。rank >= 4和permuted batch axis在
   target ABI前没有显式canonicalization时必须拒绝；`batch_count=1`的rank-3 NCx和rank-2 Cx footprint/offset等价由
   full blocks及`C0` tail property覆盖。batch=2且channel block为128的
   compiler→tile/instruction→target-call→CModel数值回归必须区分两个batch和两个64-channel block；仅有batch=1 tiny
   case或分别测试Cx/NCx codec不能证明该合同；
+- 目标v2 oriented GEMM另以NN/NT/TN/TT参数化矩阵覆盖compiler→Instr→TargetCall→CRT conformance/CModel；每种组合
+  使用非方阵、非对称payload和stored-shape negative区分真实orientation。只有tasks/14 versioned ABI已闭合且对应
+  NumericCommandKey、formal/managed bulk model资格闭合后，才能进入model-qualified 7B planner candidate；
+  board-supported profile仍需独立board capability row。v1 Q28通过不能替代任一orientation gate；
 - F16/BF16 GEMM输入进入oneDNN F32 descriptor前采用位级无损widening，并以F16/BF16/F32 bulk资格回归保护；不能让
   大weight payload重新进入逐元素APFloat对象路径。当前SEQ oneDNN的慢测耗时只作功能基线，不构成性能完成；未来
   threaded artifact必须重做managed dependency identity、worker环境和完整数值gate；
@@ -826,7 +884,9 @@ policy由本节和tasks/17共同拥有。
 
 ### 11.7 Q22.C Board Numeric Correlation Gate
 
-Q22.C在Q22和Q6.B完成且配置board numeric corpus后执行，不要求PMU、packet capture或exact-module provider。Q6.B先证明
+Q22.C在Q22、Q32和Q6.B完成且配置board numeric corpus后执行，不要求PMU、packet capture或exact-module provider。
+Q32先冻结schema-v4 all-and-only `RequiredCapabilitySet`；Q22.C必须用该同一v4 package/profile在board上fresh重放Q6.B
+lifecycle，并在任何effect前逐key匹配environment allowlist，不能复用只执行过历史v3 package的Q6.B结果。Q6.B再证明
 provider lifecycle、watchdog/reset、trusted completion、完整copyback和重复invocation；无效sample不能进入numeric profile。
 
 - 同一op/dtype/accumulator/rounding/optional-field row运行预先设计的rounding tie、NaN/Inf/signed-zero、subnormal、
@@ -851,8 +911,8 @@ vendor builder若可得，只作为额外packet/MMIO provenance；缺失不阻�
 
 ### 11.8 Q22.E Exact-Module Provider Gate
 
-只有Q22.V source vertical记录的fresh、Q0.L profile-bearing Q18 verified package identity中的exact all-and-only RISC-V ELF，
-经vendor simulator或RV64 ISS原样执行，才满足此gate；Q0.L前历史package不能冒充：
+只有Q32 integrated audit冻结的fresh schema-v4 Q18 verified package identity中的exact all-and-only RISC-V ELF，
+经vendor simulator或RV64 ISS原样执行，才满足此gate；Q22.V schema-v3和Q0.L前package只作历史证据，不能冒充：
 
 - package semantic verification、typed invocation和environment compatibility先于任何provider side effect；
 - allocation/import、H2D、module load/entry resolve、all-rank submit、wait/status、D2H、cleanup均实际执行；
@@ -889,8 +949,15 @@ configured board suite只消费Q0.L完成后fresh replay形成的Gate C同一ver
 - copyback和完整输出CPU comparison；
 - cleanup和重复invocation。
 
+联合planner新能力在进入真实workload前先跑隔离资格：mapped RDMA/WDMA分别覆盖非零local offset、多descriptor、
+full/C0 tail、pre/post canary、exact bytes和非法双侧stride；oriented GEMM按NN/NT/TN/TT逐tuple使用非方阵、非对称
+payload比较CPU oracle并记录raw input/output/status、target/CRT/ABI revision和device identity。representation/lowering gate
+通过只允许model/experimental profile发射；board profile只有对应tuple通过校准与held-out后才标supported。任何timing/PMU
+结果只用于后续cost calibration，不参与这些semantic/legality gate。
+
 board不可用、test unsupported/skipped或只到symbol discovery时，Q6.B保持later/blocked。任何no-card、reference、
-fake provider或target model结果都不能改变该状态。Q6.B只证明board execution；Q22.C再消费Q6.B和Q22结果做model/board
+fake provider或target model结果都不能改变该状态。Q6.B只证明board execution；Q22.C再消费Q6.B、Q22和Q32 schema-v4
+required-set结果做model/board
 numeric correlation，不能反向替代Q6.B。
 
 ## 13. CI And Reproducibility

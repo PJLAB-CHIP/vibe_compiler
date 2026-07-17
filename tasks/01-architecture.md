@@ -1,7 +1,8 @@
 # Wafer AI Compiler Architecture
 
-状态：2026-07-16按Q29 rank-local tile-dataflow scheduling终态更新。本文固定近期单tile/单卡16-tile纵向合同和长期扩展边界；
-实现状态只看`tasks/progress.md`，专题细节由第9节编号文档拥有。
+状态：2026-07-17在Q29已实现基线上补充联合physical-dataflow planner终态合同。本文固定近期单tile/单卡16-tile纵向合同和长期扩展边界；
+当前代码仍只实现Q29记录的有限scope/residency策略，新增`ImplementationFamily`/`TransferRouteFamily`、mapped transfer和
+GEMM orientation属于目标合同，不能从本文反推为已落地。实现状态只看`tasks/progress.md`，专题细节由第9节编号文档拥有。
 
 本文使用 **Wafer** 作为目标硬件和软件栈名称。TX8/TX81只在引用底层依赖、公开ABI或反向工程事实时
 保留，不提升为上层IR术语。
@@ -45,11 +46,13 @@ Pipeline position:
   immutable parameter payload/shard metadata、bounded shape和可选sharding seed；以及明确target topology。
 - Current stage responsibility:
   验证program，形成SPMD/local tensor program，在显式rank clone上从Linalg indexing maps生成完整tiled task
-  traversal，联合选择有限tile、layout、SPM residency/spill、task order和event；完成instruction、whole-rank
+  traversal，联合选择有限tile、parameterized compute implementation、physical value version、transfer realization、
+  SPM residency/spill、task order和event；完成instruction、whole-rank
   SPM/DDR/completion和target legality后，所有rank原子形成executable bundle，再生成target modules和typed manifest。
 - Output artifact / IR:
-  `RankExecutable[]`、atomic `ExecutableBundle`、verified target modules、typed C++ `PackageManifest`及
-  canonical JSON delivery form。
+  `RankExecutable[]`和atomic `ExecutableBundle`、verified target modules，以及typed C++ `PackageManifest`/canonical JSON
+  delivery form；Q32 target bundle再携带canonical `RequiredCapabilitySet`，target modules readback rank-local capability digest，
+  cutover后的v1/v2 production output统一为携带required keys/digest的schema-v4。当前已完成wire仍是v3。
 - Downstream consumer:
   no-card RuntimeSession、target execution model、后续board runtime adapter和长期多卡扩展。
 - User-level driver / named pipeline:
@@ -58,8 +61,11 @@ Pipeline position:
   runtime不重新做sharding/candidate/layout/memory/transport planning；package不复制task/instruction schedule；
   近期不实现跨卡/MPMD/hybrid rank-class、Protobuf/WCRE、state migration或cost calibration。
 - Completion gate:
-  真实linear/MLP分别以rank-count=1和16只经`wafer-compile`产生完整bundle/manifest/runtime trace，
-  target CModel完整输出与固定CPU expected一致；随后tiny Llama通过同一16-rank路径。任何失败不发布partial output。
+  当前Q22/Q29/Q28/Q31 baseline已闭合rank-count=1/16、task-dataflow、target CModel、7B fixed-seed与held-out
+  multi-seed数值证据。Q32完成还要求新planner成为唯一production decision owner、旧scope/layout/residency旁路删除，并在
+  新路径显式v1重放旧profile，并显式v2重放rank-count=1/16、通用mapped/oriented source及实际命中新family的7B Q28
+  fixed seed/Q31 held-out multi-seed完整PyTorch/SystemC differential；未被7B触发的能力用通用source case补。任何失败不
+  发布partial output，board/timing仍是独立later gate。
 ```
 
 ## 3. IR 和 Artifact 分层
@@ -85,8 +91,9 @@ Pipeline position:
   Q16在同一用户driver内对全部logical rank建立isolated clone并形成RankExecutable[]。
 - User-level driver / named pipeline:
   正式入口为
-  `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`；
-  不暴露pass名称或stop-stage，target profile无默认值。
+  `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --target-profile=<registered-id>`；
+  当前completed baseline显式选择closed v1，Q32 oriented request必须显式选择closed v2；不暴露pass名称或stop-stage，
+  target profile无默认值。
 - Explicit non-goals:
   Q15不定义per-rank executable、manifest、runtime binding或board执行，也不把helper路径、输出路径、
   pipeline名称、logical rank和pass option写入CompilationRequest。
@@ -116,13 +123,13 @@ partition；默认性能切分policy必须等有可验证的StableHLO↔SDY expo
 | Verified program | StableHLO、func、tensor、program directory metadata/payload | model语义、shape/dtype、输入输出、parameter shard admission | rank placement、SPM/DDR offset、runtime handle |
 | Target/mesh | `wafer.target.topology`、`wafer.execution.mesh` | 单卡physical endpoints、logical rank domain、unavailable endpoint | tensor sharding、candidate、packet |
 | SPMD/local tensor | StableHLO/Shardy output、Linalg/Tensor/SCF、LinalgExt collective | rank-local compute和logical collective | physical peer/channel、SPM、target ABI |
-| Tile-dataflow candidate | rank-local Linalg/indexing-map analysis和transformation-local candidate clone | 完整task traversal、有限tile/order/layout/residency/spill proposal | accepted executable事实、package字段、shadow schedule |
+| Tile-dataflow candidate | rank-local Linalg/indexing-map analysis、target capability和transformation-local candidate clone | 完整task traversal、有限tile/order/implementation/physical-version/transfer/residency/spill proposal | accepted executable事实、package字段、shadow schedule |
 | Tile execution | rank function、`wafer.tile.region` task/traversal fragment、Wafer memref、`wafer.tile.*` | typed task buffer/data/event edge、layout、movement/compute/collective；region不拥有独立arena | rejected search trace、runtime launch |
 | Instruction | `wafer.instr.*`、Direct DTE、completion op | target-abstract invocation、physical geometry、resource effect | raw runtime handle、package shadow schedule |
 | Memory/completion | SSA use-def、effect、accepted SPM/DDR offset、token/fence | complete rank-entry lifetime、range、reuse和completion legality | planner trace、physical host allocation |
-| Executable bundle | typed C++ `RankExecutable[]`/`ExecutableBundle` | explicit rank、entry、accepted module/resource/completion、atomic all-rank result | rejected candidates、runtime object |
-| Target module | LLVM dialect/IR、CRT call、device object/kcore module、digest | static rank program和target ABI | sharding/search/package planning |
-| Package/runtime | typed C++ manifest + canonical JSON、RuntimeSession | module/rank/entry/resource slot绑定和launch preflight | instruction schedule、重新规划 |
+| Executable bundle | typed C++ `RankExecutable[]`/`ExecutableBundle` | explicit rank、entry、accepted module/resource/completion、atomic all-rank result；Q32 target再携带从final instruction rows派生的canonical `RequiredCapabilitySet` | rejected candidates、runtime object、planner choice |
+| Target module | LLVM dialect/IR、CRT call、device object/kcore module、digest | static rank program和target ABI；Q32 target从实际TargetCall rows重算并readback rank-local capability digest，bundle验证all-rank union | sharding/search/package planning |
+| Package/runtime | typed C++ manifest + canonical JSON、RuntimeSession | module/rank/entry/resource slot绑定和launch preflight；当前v3已完成，Q32 schema-v4携带required keys/digest供model/board逐key预检 | instruction/per-command schedule、重新规划 |
 | Target verification/runtime consumer | owner-backed fully legal target LLVM或未来verified package/exact module；invocation-local model state | repo-owned target-call/SystemC untimed functional-numeric、Q22.C board-correlated numeric profile、optional CRT/packet provenance、exact-module和deferred timing evidence | compiler planning、package字段、board完成 |
 
 Dialect边界不等于artifact边界。近期继续使用一个Wafer dialect并按op family组织源码；只有独立registration、
@@ -152,20 +159,39 @@ topology不做tensor sharding；Shardy/XLA SPMD消费rank domain并输出local p
 保留的长期扩展点只有：execution config可扩展mesh coordinates，resource/completion identity不依赖单卡路径，
 bundle可包含更多rank。`dp/tp/pp/ep` typed component、MPMD和rank-class dedup等对象等真实consumer出现后再设计。
 
-## 5. Tile-Dataflow Scheduling、Candidate 和完整 Traversal
+## 5. Physical-Dataflow Synthesis、Candidate 和完整 Traversal
 
 rank-local structured program是source语义owner。scheduler从Linalg iterator/indexing maps、SSA use-def、shape、
-dtype、effect和collective interface构造typed tiled task DAG；每个movement、layout、compute和collective仍是独立
-task。producer/consumer是否避免DDR只由accepted IR决定：共享SPM memref/version表示resident edge，显式
-store/load表示spill。`wafer.group`不再表达融合、residency、DDR切边、SPM arena或提交单元。
+dtype、effect和collective interface构造typed tiled task DAG。终态候选不是“先定layout、再补copy”的单向流水，
+而是同一bounded search node中的联合physical-dataflow realization：tile/domain traversal、compute
+`ImplementationFamily`、每条value的physical version、producer/consumer encoding、`TransferRouteFamily`、resident/spill、
+reuse-aware task order和event一起决定。每个被选择的movement、compute和collective最终仍以独立op/effect进入IR；
+“融合”只表示accepted dataflow通过共享SPM SSA version避免中间DDR或显式movement，不产生opaque fused group。
+producer/consumer是否避免DDR只由accepted IR决定：共享SPM memref/version表示resident edge，显式store/load表示spill。
+`wafer.group`不再表达融合、residency、DDR切边、SPM arena或提交单元。
+
+Implementation和transfer能力是parameterized target capability，不按workload、op名字或shape case枚举：
+
+- `ImplementationFamily`给出一个数学op在指定target/profile、dtype、tile shape、operand/result encoding和typed
+  optional fields下可选择的CT/NE/TDMA/composite实现；GEMM orientation是该tuple中的显式typed字段，不是从shape猜出的特例；
+- `TransferRouteFamily`给出logical index relation在指定两端address space/physical encoding下可由view/alias、direct
+  RDMA/WDMA mapped transfer、SPM GatherScatter/TDMA或staged组合实现的有限家族；
+- direct mapped RDMA只允许DDR source用descriptor stride、SPM destination按连续物理段写入并使用可选buffer-local
+  destination offset；WDMA严格反向。不能覆盖该复合映射时必须选择显式staging/GatherScatter或拒绝，不能把硬件
+  descriptor扩写成双侧任意stride；
+- capability query只产生候选和legality/cost输入。winning realization必须物化为typed memref、view、compute/movement
+  op、orientation和event，不能把implementation/transfer choice保存成accepted IR之外的shadow plan。
 
 candidate流程必须拆成五个责任：
 
-1. generation：按tile-domain class从shape/indexing/reduction和capacity threshold生成bounded tile、layout、
-   residency和task-order proposals；
-2. materialization：只在whole-rank/whole-variant clone中构造完整task/dataflow IR；
-3. legality：运行instruction、whole-rank SPM、DDR、event、transport、geometry和ABI gates；
-4. ranking：只在完整passing candidates间比较显式DDR/SPM/compute/issue/communication cost；
+1. generation：按tile-domain class和typed target capability从shape/indexing/reduction生成bounded tile、
+   implementation、physical-version、transfer、residency和task-order proposals；
+2. materialization：只在whole-rank/whole-variant clone中构造完整task/dataflow IR，并把selected realization变成
+   显式memref/view/compute/movement/orientation/event；
+3. legality：运行instruction descriptor closure、whole-rank SPM、DDR、event、transport、geometry和versioned ABI exact gates；
+   09/12 allocator只回答当前完整候选是否合法，不生成或修改候选；
+4. ranking：只在完整passing candidates间比较从当前IR重算的DDR/SPM/compute/issue/communication cost；未板端校准的
+   estimate只能排序合法候选，不能扩大legality；
 5. commit：重新验证winning clone并一次提交全部rank programs。
 
 representative tile可以用于便宜的早期拒绝，不能作为accepted artifact。commit必须覆盖完整静态traversal，
@@ -173,10 +199,12 @@ representative tile可以用于便宜的早期拒绝，不能作为accepted arti
 rank task/event graph重算；`wafer.tile.region`可以是task/traversal fragment，但不能形成独立memory plan或强制
 intermediate DDR。
 
-搜索不枚举source op任意partition、所有topological orders、所有buffer subsets或tile-size Cartesian product。
-tile-domain menu、optional residency frontier和reuse-aware order都有compiler-private bound；未找到candidate可以
-fail request，但搜索不完备不能误报workload语义非法。Direct full shape只是普通proposal，不是绕过legality的
-fallback。
+搜索不枚举source op任意partition、所有topological orders、所有buffer subsets、implementation/encoding/transfer的
+Cartesian product。tile-domain menu、capability-filtered family、physical-version frontier、residency frontier和
+reuse-aware order都有显式compiler resource bound，并记录generated、constraint-pruned、dominance-pruned、exact-gated、
+frontier peak和fallback reason。保守baseline本身非法时才返回legality failure；预算耗尽或搜索不完备且baseline合法时
+必须返回baseline和结构化budget diagnostic。Direct full shape和当前Q29 fixed scope策略在迁移期只可作为普通、
+确定性proposal；Q32切换production后删除，不能成为silent fallback、终态协议或绕过legality的路径。
 
 全部rank在clone中完成验证后才能形成`ExecutableBundle`。单task、单region、旧group、representative或某个rank
 通过都不能部分发布。详细终态由06拥有。
@@ -197,10 +225,10 @@ memref<64x256xf16, #wafer.memory<ddr, tensor>>
 instruction verifier、memory planner和target preflight共用一份physical geometry定义：
 
 - 从memref shape/dtype/layout推导physical bytes和合法interval；
-- descriptor `byte_count/inner_bytes/stride/iteration`关系闭合；
+- descriptor `byte_count/inner_bytes/stride/iteration`和direction-specific buffer-local offset关系闭合；
 - source和destination range都不越界；
 - convert source/dest element count一致；
-- GEMM/conv/pool/unpool attrs与operand/result shape一致；
+- GEMM的typed lhs/rhs orientation、M/K/N/batch与stored operand/result shape一致；conv/pool/unpool attrs与shape一致；
 - 所有传入CRT的uint32/uint16字段在lowering前证明可表示。
 
 analysis只从当前rank-entry IR派生lifetime。async issue的全部read/write resource必须活到明确completion；
@@ -213,12 +241,12 @@ target conversion必须在原SCF/CF/function位置lower instruction leaf，不�
 MLIR dialect conversion和明确legality target。
 
 target conversion消费已经提交的structured rank instruction program，必须保持task/event/SCF控制流位置，不能
-递归walk后线性发call。尚未有明确instruction/event lowering合同的结构在任何mutation前拒绝：
+递归walk后线性发call。当前已经支持SCF→CF后的multi-block CFG、direct non-recursive `func.call`和callee-only
+instruction，并保持原控制流/调用关系；以下结构在任何mutation前拒绝：
 
-- multi-block function/region；
-- `func.call`或其它callable relation；
-- 无法由当前event/effect和target branch/loop合同解释的nested region；legacy single-block
-  `wafer.tile.region`限制只属于Q29删除前的旧实现，不是长期架构要求；
+- external、indirect/unknown或recursive callable relation；
+- 无法由当前event/effect和target branch/loop合同证明的CFG、nested region或call effect；legacy single-block
+  `wafer.tile.region`限制只属于已删除的旧实现，不是长期架构要求；
 - 无法由当前ABI证明的geometry/narrowing。
 
 转换在module clone上执行；失败时source module byte-identical。成功输出不残留非法Wafer/memref/func op。
@@ -261,7 +289,7 @@ differential或显式trusted-TCB conformance，SoftFloat/TestFloat或production 
 positive closure已经使用Q20 f32的formal/admitted双路径、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama和超过
 formal budget的deterministic source-backed 64³ GEMM；后者只在exact source payload/environment qualification命中时执行
 一次oneDNN MatMul，否则稳定fail closed且不逐MAC回退。unsupported reason或generated shape-only case不能替代这些完整consumer。
-Q22.C再消费Q22 model result和Q6.B board result，按逐op/dtype profile发布tested domain内的board-output-correlated
+Q22.C再消费Q22 model result、Q32 schema-v4 RequiredCapabilitySet和Q6.B board result，按逐op/dtype profile发布tested domain内的board-output-correlated
 numeric evidence；独立packet/MMIO trace闭合后才增加hardware-correlated-numeric和packet provenance，不是Q22.C前置。
 exact package/RISC-V ELF是更高、互不冒充的证据入口。只有exact module通过tasks/15
 `RuntimeProvider`消费verified package时，才可称package-facing model execution。SystemC是target-model feature内部的
@@ -282,10 +310,10 @@ compiler/source-verification主干按以下依赖闭合：
 8. rank-count=16 tiny Llama的CModel完整输出差分。
 
 此后repo-owned target-call/SystemC untimed functional-numeric model、configured board和exact-module provider按分层
-证据管理。Q22不以board或packet capture为完成前置；Q6.B先闭合真实board execution，Q22.C再消费Q22 model result与
-Q6.B board result形成board-output-correlated numeric profile；独立packet/MMIO trace闭合后才升级packet/opcode
+证据管理。Q22不以board或packet capture为完成前置；Q6.B先闭合真实board execution，Q22.C再消费Q22 model result、
+Q32 schema-v4 RequiredCapabilitySet与Q6.B board result形成board-output-correlated numeric profile；独立packet/MMIO trace闭合后才升级packet/opcode
 provenance和hardware-correlated-numeric标签，不是Q22.C前置。Q22.E在configured simulator/ISS可用后闭合exact
-package execution；Q22.P timing calibration保持deferred，
+package execution，但只消费Q32 integrated audit冻结的schema-v4 package，Q22.V v3 package仅作历史证据；Q22.P timing calibration保持deferred，
 不能阻塞任何correctness gate。分支关系只看`tasks/progress.md`，不能从本节列表顺序恢复。
 
 | Boundary | Owner |
@@ -294,8 +322,9 @@ package execution；Q22.P timing calibration保持deferred，
 | Shardy/XLA SPMD output和rank specialization | 03 |
 | topology/execution mesh | 04 |
 | local structured compute | 05 |
-| tile-dataflow scheduling/candidate/complete traversal | 06、07 |
-| layout materialization | 08 |
+| rank-local physical-dataflow synthesis、bounded candidate selection和all-rank atomic commit | 06 |
+| selected tile-dataflow/traversal IR materialization | 07 |
+| physical encoding、view/TransferRouteFamily、descriptor cover和selected materialization | 08 |
 | SPM/DDR lifetime和accepted offsets | 09、12 |
 | target-abstract compute/movement和instruction geometry | 10、11 |
 | Direct DTE和completion | 13 |
@@ -303,6 +332,7 @@ package execution；Q22.P timing calibration保持deferred，
 | typed manifest、runtime | 15 |
 | all stage gates、CPU oracle、target-model和board证据 | 16 |
 | target execution model、multi-dtype numeric/bulk、target LLVM bundle、SystemC主架构边界、板端numeric correlation和deferred timing | 17 |
+| cross-pipeline source/build/test organization | 18 |
 
 Q0.L、Q22.N、Q22.L、Q22.B、Q22.H、Q22.S和Q22.V已经完成，实施计划分别归档为`tasks/archive/target-command-legality-closure.md`、
 `tasks/archive/target-numeric-foundation.md`、`tasks/archive/target-llvm-module-bundle.md`与

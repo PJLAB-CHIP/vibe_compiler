@@ -16,16 +16,16 @@
 | 03 | `tasks/03-shardy-spmd.md` | 当前Shardy/XLA SPMD artifact、显式rank identity；MPMD/rank class延后 |
 | 04 | `tasks/04-topology-execution-mesh.md` | 当前topology/execution mesh；Q0.L typed target-profile仅随ExecutionConfig透传，不进入mesh IR |
 | 05 | `tasks/05-local-compute-normalization.md` | rank-local structured compute和tensor collective handoff |
-| 06 | `tasks/06-group.md` | rank-local tile-dataflow scheduling、bounded candidate selection、完整traversal和atomic commit；文件名仅保留历史编号导航 |
-| 07 | `tasks/07-tile-region.md` | complete traversal中的typed task/traversal fragment；不是per-group SPM/DDR边界 |
-| 08 | `tasks/08-layout-materialization.md` | layout proposal、accepted assignment和storage materialization |
+| 06 | `tasks/06-group.md` | rank-local physical-dataflow synthesis：等价关系、implementation/tile/encoding/storage/residency/order的有界联合选择与atomic commit；文件名仅保留历史编号导航 |
+| 07 | `tasks/07-tile-region.md` | selected proposal的typed task/traversal IR物化与完整coverage；不是planner或per-group SPM/DDR边界 |
+| 08 | `tasks/08-layout-materialization.md` | physical encoding、valid domain、view/transfer route、descriptor cover和selected storage materialization；不维护独立layout planner |
 | 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/completion planning和accepted offsets |
-| 10 | `tasks/10-compute-movement.md` | target-abstract compute/movement、resource effects 和 issue/token/fence/wait |
-| 11 | `tasks/11-instruction-ir.md` | complete static rank instruction program、geometry/range/narrowing legality |
+| 10 | `tasks/10-compute-movement.md` | SemanticOpDescriptor/TargetImplementationProvider、parameterized implementation family、selected target-abstract compute/movement、resource effects和issue/token/fence/wait |
+| 11 | `tasks/11-instruction-ir.md` | complete static rank instruction program、typed orientation/descriptor、geometry/range/narrowing legality |
 | 12 | `tasks/12-ddr-memory-planning.md` | 当前DDR demand/accepted offsets；multi-arena/state/streaming延后 |
-| 13 | `tasks/13-communication.md` | 当前collective到Direct DTE和completion边界；segmented/multi-card延后 |
-| 14 | `tasks/14-target-llvm-golden-packet.md` | shared logical/target-format registry、structure-preserving target LLVM、CRT ABI和atomic staged target module |
-| 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest、canonical JSON、no-card RuntimeSession和board adapter边界 |
+| 13 | `tasks/13-communication.md` | CommunicationScheduleFamily、selected collective到Direct DTE、all-rank compatibility/transport metrics和completion；segmented/multi-card延后 |
+| 14 | `tasks/14-target-llvm-golden-packet.md` | shared logical/target-format/capability registry、versioned RequiredCapabilitySet、structure-preserving target LLVM、CRT ABI和atomic staged target module |
+| 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest、当前schema-v3与Q32 schema-v4 cutover、canonical JSON、no-card RuntimeSession和board adapter边界 |
 | 16 | `tasks/16-verification-plan.md` | target correctness、1/16-rank bundle、CPU oracle、target-model、7B managed-reference scale、no-card和board分层gate |
 | 17 | `tasks/17-target-execution-model.md` | multi-dtype numeric、oneDNN bulk、owner-backed target LLVM bundle、repo-owned target-call/SystemC untimed CModel、7B managed-reference scale、optional CRT/packet provenance、Q22.C板端numeric correlation、Q22.E exact-module和deferred Q22.P timing边界 |
 | 18 | `tasks/18-source-organization.md` | 跨pipeline的源码ownership、translation unit、内部接口、构建依赖和测试镜像组织合同；不改变IR/artifact语义 |
@@ -40,10 +40,10 @@
 | pre-SPMD topology和execution mesh | 04 |
 | Shardy/SPMD output和显式rank identity | 03 |
 | component/rank-local compute normalization | 05 |
-| rank-local tiled task/dataflow candidate、完整traversal和layout assignment | 06、07、08 |
-| target-abstract compute/movement和instruction legality | 10、11 |
+| rank-local physical-dataflow candidate联合选择、selected tile/dataflow materialization和physical encoding/route | 06、07、08；implementation capability由10提供，instruction legality由11提供，exact resource/transport gate由09、12、13提供 |
+| parameterized target implementation family、target-abstract compute/movement和instruction legality | 10、11；TransferRouteFamily/descriptor cover只由08拥有 |
 | accepted SPM/DDR allocation、lifetime和offset | 09、12；shared lifetime analysis的源码ownership和测试镜像由18约束 |
-| Direct DTE logical schedule/completion与post-memory transport activation | 13；target/package/verification consumer由14、15、16约束 |
+| communication schedule-family capability、Direct DTE logical schedule/completion、all-rank compatibility与post-memory transport activation | 13；target/package/verification consumer由14、15、16约束 |
 | whole-rank/whole-variant candidate commit和typed executable bundle | 06；资源/lifetime边界由09、12、13共同约束 |
 | target LLVM、CRT/device link和staged target module | 14 |
 | typed manifest、launch和RuntimeSession | 15 |
@@ -53,7 +53,11 @@
 
 ## 实施计划导航
 
-当前没有active实施计划。已完成Q31标准7B单block多seed数值表征和source/model gate收紧归档为
+当前无`doing` row；active umbrella plan为Q32通用physical-dataflow synthesis，首个可执行row是Q32.I。实施计划为
+`tasks/plans/physical-dataflow-synthesis.md`。该计划只拆施工checkpoint和验证/删除门槛；动态blocked-by只看progress，
+算法与IR合同仍由06-18编号设计文档拥有。
+
+已完成Q31标准7B单block多seed数值表征和source/model gate收紧归档为
 `tasks/archive/llama-block-numeric-characterization.md`；Q30标准7B单block production vertical性能收口归档为
 `tasks/archive/llama-block-production-performance.md`，Q28 Llama-2 7B单block纵向归档为
 `tasks/archive/llama-7b-block-vertical.md`，Q29

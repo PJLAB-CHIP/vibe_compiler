@@ -1,6 +1,6 @@
 # Wafer Communication Dialect Design
 
-状态：2026-07-16按Q29 collective/resident completion更新；当前合同覆盖buffer-level collective到
+状态：2026-07-17按联合physical-dataflow终态补充communication capability、all-rank compatibility和transport exact gate；当前合同覆盖buffer-level collective到
 instruction-level Direct DTE p2p和明确
 completion；Q16.T已闭合post-memory all-rank matching、typed physical binding和bundle transport summary，
 target CRT opaque event/status ABI、真实RISC-V module lowering与runtime requirement也已闭合。segmented/MoE、
@@ -30,6 +30,30 @@ Direct DTE的instruction IR schedule、lifetime与单卡static target data plane
 logical collective IR的支持范围不能由当前某个ring lowering pass
 的覆盖范围反向决定；只要硬件通信能力可组合表达，IR 就应保留对应语义事实。
 
+本文向06提供parameterized communication-family capability：从collective semantics、rank group、topology、dtype/combiner和
+logical slice惰性返回ring/tree/direct等有证据的schedule domain、message/resource/completion约束及transport bytes/message
+metrics；不选择physical encoding/TransferRouteFamily，也不建立op-name case表。06选择family，07/本文只物化selected schedule。
+
+稳定查询对象命名为`CommunicationScheduleFamily`：
+
+```text
+CommunicationScheduleFamily {
+  semantic_and_combiner_preconditions
+  rank_group_and_topology_domain
+  algorithm_parameter_domain
+  staging_resource_completion_formula
+  message_identity_schema
+  all_rank_compatibility_signature(query)
+  transport_metric_vector(query)
+  materialize(selected_parameters)
+  exact_acceptance_hook
+}
+```
+
+family参数按canonical semantic signature稳定排序并惰性实例化；algorithm parameter、message segmentation和family instance均受
+06 hard cap，不展开rank/op/shape笛卡尔积。selected algorithm/phase/peer/message identity必须物化为typed op/SSA/effect，不能只
+保留`ring/tree/direct`字符串或opaque schedule id。
+
 本文的 token/value 生命周期遵循 MLIR Async dialect 的显式依赖方向：
 <https://mlir.llvm.org/docs/Dialects/AsyncDialect/>。硬件 completion/status 仍由本文的 target-specific
 transport contract 补充，不能把通用 `async.token` 等同于设备成功状态。
@@ -47,20 +71,21 @@ Pipeline position:
   `wafer.linalg_ext.collective.*`经rank-local task/dataflow materialization后形成的未放置SPM storage values、
   local-rank facts、rank group，以及exact target topology / execution mesh legality facts。
 - Current stage responsibility:
-  把 buffer-level collective materialize 为 verifier-legal `wafer.tile.*` collective，并在可支持子集上
+  按candidate已选communication family把buffer-level collective materialize为verifier-legal `wafer.tile.*` collective，并
   展开成 explicit `wafer.instr.dte_send` / `dte_recv` / `dte_wait` p2p body、token/effect、sync boundary 和
   communication-staging `BufferDemand`；每个send/recv同时获得从collective/p2p语义派生的typed logical
   message identity；不选择 physical endpoint/channel/FSM，也不要求已有 SPM offset。
 - Output artifact / IR:
   instruction-level communication IR over unplaced Wafer-tagged SPM memrefs；peer/message identity/order/byte
-  range、buffer slice、outstanding lifetime 和 wait 由 IR/effect 表达，不保存重复 communication plan attr。
+  range、buffer slice、outstanding lifetime 和 wait 由 IR/effect 表达，不保存重复 communication plan attr；另从该IR重算
+  canonical all-rank compatibility signature与transport bytes/message counts供06分桶/排序，它们不是accepted attr。
 - Downstream consumer:
   instruction legality、layout materialization、whole-entry SPM/DDR planning 和 event-liveness verifier。
 - User-level driver / named pipeline:
   Q16以后由同一
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=<registered-id>`
   在完整variant
-  clone中执行。Q15只产出verified structured tensor program directory，不执行communication materialization；
+  clone中执行；当前baseline为closed v1，Q32 v2必须显式选择且无profile default。Q15只产出verified structured tensor program directory，不执行communication materialization；
   `wafer-opt`和communication-specific named pipelines只处理显式IR，用于IR-local debug/verifier覆盖，
   不提供用户stop-stage。
 - Explicit non-goals:
@@ -87,7 +112,8 @@ Pipeline position:
   SPM/DDR offsets，以及exact target topology/execution mesh。
 - Current stage responsibility:
   从当前IR与topology重算endpoint、DTE allocation profile/FSM、receiver range、completion/status/error和release legality，
-  并按source rank、destination rank和logical message identity做cross-rank send/recv matching，再核对bytes/range。
+  并按source rank、destination rank和logical message identity做cross-rank send/recv matching，再核对bytes/range；该gate只在
+  complete all-rank variant上运行，不接受单rank“代表性通过”。
 - Output artifact / IR:
   原logical p2p body保持唯一schedule source；acceptance只在每个`wafer.instr.dte_send/recv`上补一个typed
   `DirectDTEBindingAttr`，记录有限DTE allocation/FSM/completion profile，以及rank module分拆后发送端无法
@@ -792,6 +818,6 @@ wafer.instr.dte_wait %send1, %recv1
 
 全局文档边界见 `tasks/01-architecture.md` 第 8 节。本文只维护
 device-side communication IR、token/effect、Direct DTE V0、accepted physical transport 和
-sync/error boundary；tile-dataflow candidate search、
-layout assignment、SPM/DDR allocation、compute op legality 和 host runtime D2D/P2P ABI 不在本文
+sync/error boundary，并向06提供communication family与all-rank compatibility/transport metrics。tile-dataflow candidate search、
+physical encoding/TransferRouteFamily、SPM/DDR allocation、compute op legality 和 host runtime D2D/P2P ABI 不在本文
 重复定义。Direct DTE / FSM / wrapper 的 register-level 事实只作为 lower-level lowering 约束。

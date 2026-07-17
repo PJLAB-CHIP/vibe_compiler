@@ -1,16 +1,20 @@
 # Wafer Compute and Movement Dialect Design
 
-状态：2026-07-16按Q29 tile-dataflow handoff同步；当前合同覆盖target-abstract compute/movement IR、layout/resource
-interface、instruction legality，以及GEMM numeric policy、elementwise indexing map和reduce init不得在target边界丢失的
-约束；实现状态以`tasks/progress.md`为准。
+状态：2026-07-17按联合physical-dataflow终态拆开planning capability与accepted op合同；本文覆盖
+`SemanticOpDescriptor`到parameterized `ImplementationFamily`的target capability provider、selected
+target-abstract compute/movement IR、resource interface和instruction legality。当前实现仍是accepted-layout op、显式
+Tensor↔Cx/NCx materialization、canonical GEMM和compact-boundary RDMA/WDMA；mapped transfer由08拥有，typed GEMM
+orientation是Q32 target合同，实现状态以`tasks/progress.md`为准。
 
 本文定义 Wafer 后端中 target-abstract compute / movement IR 的边界。它连接
 rank-local task/dataflow candidate产生的完整traversal内tile-local tensor scopes、layout
 materialization / whole-entry SPM/DDR planning，以及后续 complete static rank instruction program /
 target CRT lowering。
 
-本文中的 `wafer.tile.*` compute 是正式 IR contract。它表达“这个 tile-local op 已经选择了某类
-Wafer 目标实现族，并能提供 layout、effect 和 instruction family legality”。它仍然不表达 raw packet
+本文中的 `wafer.tile.*` compute 是正式 accepted IR contract。它只在candidate已选择implementation后由07
+`CandidateMaterializer`创建，表达tile-local数学语义和精确typed实现事实，并提供layout、effect和instruction legality。
+pre-selection不创建未定实现的`wafer.tile.*`，而是由normalized structured op的`SemanticOpDescriptor`查询独立
+`TargetImplementationProvider`。它仍然不表达 raw packet
 bitfield、SPM physical offset、worker window、runtime launch 或 host ABI。最终 SPM memref demand
 不是 target-abstract op 自身的属性，而是 instruction lowering 产出的 instruction-level
 `wafer.instr.*` over unplaced Wafer-tagged memref IR 的结果。
@@ -18,15 +22,16 @@ instruction-level IR 的具体 op/type/interface 合同见
 `tasks/11-instruction-ir.md`；本文不重复维护 `wafer.instr` op 列表。
 
 本文只负责 target-abstract compute/movement op 的语义、interface、effect、issue/fence/wait 和
-lowering legality。它不重新做task/dataflow formation、tile search、layout assignment、SPM/DDR
+lowering legality。它不重新做task/dataflow formation、tile search、joint implementation/encoding/transfer selection、SPM/DDR
 allocation、communication collective lowering 或 launch/package emission。
 
 ## 1. 设计目标
 
 目标：
 
-- 给 layout planner 一个稳定查询入口：每个 op 明确 operand/result 允许的 physical layout、
-  preferred layout、materialization cost 和组合合法性。
+- 给联合planner一个稳定查询入口：从structured semantics、indexing maps、numeric/effect policy归一出
+  `SemanticOpDescriptor`，再按target/profile与约束域惰性查询有限`ImplementationFamily`；family声明
+  operand/result encoding约束、数值/shape约束和instruction family，但transfer route/domain由08独立provider拥有。
 - 给 instruction legalization / selection 一个稳定入口：每个 op 能提供可验证的 CT/NE/TDMA/RDMA/WDMA
   instruction family legality；R3.2d 再生成 instruction-level IR，并显式报告
   input/output/temp/workspace/accumulator/psum memref demand，以及 effect / async lifetime 对 buffer reuse
@@ -41,18 +46,19 @@ allocation、communication collective lowering 或 launch/package emission。
 - 不把 `linalg` op 名字、某个 workload、某个 internal split 或某个 target CRT helper 固化成架构边界。
 - 不在本层表达 Direct DTE / collective；跨 tile data plane 属于 `wafer.tile.*` communication。
 - 不直接生成裸寄存器 packet；raw packet/debug dialect 只属于更低层验证或调试路径。
-- 不把单亪task、单亪tile-region或representative first/tail tile的instruction lowering
+- 不把单个task、单个tile-region或representative first/tail tile的instruction lowering
   当作 committed program；不为 `DirectFullShape` 设置 bypass/fallback 语义。
 
 ## 2. IR 生命周期
 
-`wafer.tile.*` compute op 不是 pipeline 末端才突然出现的 target CRT call。它应在 layout materialization
-之前进入 IR，然后随类型和 storage 表示逐步 lower：
+`wafer.tile.*` compute op不是pipeline末端才突然出现的target CRT call，也不是pre-selection占位符。它由joint
+physical-dataflow planner选出family后在candidate clone中创建，然后随storage表示逐步lower：
 
 ```text
-whole-variant clone with scheduled rank-local task/dataflow candidates
-  -> complete rank traversal with tile-local tile_region IR and wafer.tile.* compute / movement ops
-  -> layout materialization and Wafer-tagged memref values
+normalized rank-local structured semantics + SemanticOpDescriptor
+  -> joint implementation / tile / physical-version / transfer / residency proposal
+  -> whole-variant candidate clone with complete traversal
+  -> selected wafer.tile.* compute/movement, Wafer-tagged memrefs, views and explicit movement
   -> candidate DDR tile-view materialization
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> same instruction-level IR after SPM memory planning
@@ -67,9 +73,8 @@ whole-variant clone with scheduled rank-local task/dataflow candidates
 
 | 层次 | op 形态 | value 形态 | 责任 |
 | --- | --- | --- | --- |
-| scheduled candidate/template | `linalg.*` / `tensor.*` / `scf.*` | tensor SSA value | 在 evaluation clone 中表达数学语义、完整 traversal 和 tile-local dataflow，不选硬件实现，不进入 committed executable |
-| target-abstract compute | `wafer.tile.*` compute ops 和 target-abstract movement op | tensor SSA value 或 Wafer-tagged memref | 选择目标实现族，提供 layout/resource/lowering interface，不绑定具体 storage allocation |
-| layout-materialized | 同一类 compute/movement op | `memref<..., #wafer.memory<space, layout>>` | 验证 address space 和 physical layout marker，显式插入 `wafer.tile.materialize_layout` |
+| normalized planning input | `linalg.*` / `tensor.*` / `scf.*`及可重算`SemanticOpDescriptor` | tensor SSA value | 表达数学语义、index relation、numeric/effect policy和约束域，不选硬件实现，不进入committed executable |
+| physical-dataflow realized | selected `wafer.tile.*` compute/movement、view和materialization | `memref<..., #wafer.memory<space, layout>>` | 07在candidate clone中按selected implementation/physical version/route/residency创建精确typed op；只在确有数据移动时插入movement |
 | instruction-level rank program | structured control flow 中的 `wafer.instr.*` | unplaced Wafer-tagged memref SSA value | 覆盖完整 rank traversal，选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging、alias、effect、token/completion 和 descriptor attrs，不含 SPM offset；DTE 由 communication lowering 物化 |
 | DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、compiler-managed/resident/explicit-spill planned ranges、lifetime/reuse、declared arena/placement-domain capacity/largest-contiguous/bandwidth 已通过 DDR memory planning |
 | target-codegen derived form | 同一 `wafer.instr.*` 或 conversion-local value | concrete target call arg / packet field | 从 committed instruction IR、typed executable bindings、accepted SPM/DDR offset facts、memref view 和 layout helper 派生 address/range/stride 参数；不作为新的主线 IR 层 |
@@ -81,19 +86,42 @@ whole-variant clone with scheduled rank-local task/dataflow candidates
 的信息无法由当前 IR、type、interface 或 verifier 推出，应扩 op/type/interface，而不是在 pass
 side table 中保留影子计划。
 
-### 2.1 Pipeline Contract
+### 2.1 Target Implementation Capability Provider
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  rank-local normalized structured tensor IR，以及从其op semantics、indexing maps、shape/dtype、numeric/effect policy和
+  target profile重算的SemanticOpDescriptor；不含wafer.tile占位op、模型角色或serialized plan。
+- Current stage responsibility:
+  惰性返回parameterized ImplementationFamily、约束公式、instruction/resource需求、capability qualification状态和
+  static metric lower bounds；family输出按稳定semantic signature排序，不依赖pointer、registration、DenseMap或并行完成顺序。
+- Output artifact / IR:
+  transformation-local family domains与结构化infeasible原因；不是IR、attr、side table、Transform handle或package字段。
+- Downstream consumer:
+  tasks/06 constraint propagation和bounded candidate generation；tasks/08另行提供PhysicalEncoding/TransferRouteFamily。
+- User-level driver / named pipeline:
+  wafer-compile source-to-bundle named production pipeline内部调用；可选Transform入口调用同一C++ provider。
+- Explicit non-goals:
+  不创建wafer.tile op，不选择唯一family/tile/encoding/route，不分配memory，不计算packet，不返回单一scalar time。
+- Completion gate:
+  每个family、有限enum组合、约束边界类与property-generated shapes都验证domain、numeric、geometry、resource和
+  qualification；unknown capability fail closed，同query在不同线程数和registration顺序下返回同一canonical signature。
+```
+
+### 2.2 Selected Target-Abstract to Instruction Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
   whole-variant evaluation clone 中每个 static rank entry 的完整 traversal；其中局部
-  `wafer.tile.region` IR 包含 layout-materialized
-  Wafer-tagged memref、`wafer.tile.*` compute ops、`wafer.tile.*` movement ops、`wafer.tile.materialize_layout`、
+  `wafer.tile.region` IR 包含联合planner选中并显式物化的
+  Wafer-tagged memref、typed implementation fields、`wafer.tile.*` compute/movement ops、必要的`wafer.tile.materialize_layout`、
   load/store boundary 和 view/alias relation。
 - Current stage responsibility:
   在所有 rank entries 的完整 structured control flow 上，对 target-abstract
   compute/movement/layout/load/store op 做 Wafer instruction legalization /
-  selection，改写或构造 instruction-level `wafer.instr.*`，复用现有 Wafer-tagged memref
+  selection，验证selected `ImplementationFamily`/`TransferRouteFamily`并改写或构造 instruction-level `wafer.instr.*`，复用现有 Wafer-tagged memref
   SSA graph，并显式生成 queue/effect、temp/psum/staging、alias/view、async token/completion relation 和
   descriptor attrs。
 - Output artifact / IR:
@@ -105,13 +133,14 @@ Pipeline position:
   tiled DDR load/store view 必须已经由 candidate materialization 或 accepted materialization 显式提供。
 - User-level driver / named pipeline:
   Q16以后由同一
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=<registered-id>`
   的whole-variant
-  candidate-selection/commit flow物化完整rank programs。Q15产出verified structured tensor program directory，
+  candidate-selection/commit flow物化完整rank programs；当前baseline显式选择closed v1，Q32 oriented request必须显式
+  选择closed v2且无default。Q15产出verified structured tensor program directory，
   不执行instruction legalization；`wafer-opt`和instruction lowering的局部dump/lit/named pipeline只处理
   显式IR，用于验证本stage，不能成为用户stop-stage或completion flow。
 - Explicit non-goals:
-  不决定task/dataflow boundary、tile shape、layout assignment、SPM offset、DDR memory planning、ABI call
+  不决定task/dataflow boundary、tile shape、implementation/layout/transfer/residency proposal、SPM offset、DDR memory planning、ABI call
   symbol或packet field；不按tile/task部分提交，不把hardware `busytable`当作IR completion，
   不从 representative tile/rank 或presumed rank equivalence推断完整rank program合法，也不在
   instruction selection stage省略或合并显式rank records。
@@ -165,10 +194,20 @@ split决策；内部reduction是否需要进一步切分是op tiling / SPM alloc
   descriptor 参数由 `computeWaferPhysicalTensorInfo`、SPM memory planning facts 和 ABI/codegen
   emission 派生。
 
+终态plain GEMM使用两个`#wafer.gemm_orientation<normal|transpose>` typed字段，而不是按QK^T、projection或shape写
+专门case。对每个batch slice，
+`lhs_orientation=normal`时stored lhs为`[M,K]`，`transpose`时为`[K,M]`；`rhs_orientation=normal`时stored rhs为
+`[K,N]`，`transpose`时为`[N,K]`；stored destination始终为`[M,N]`。orientation只改变数学坐标到stored
+coordinate的关系，不授权重解释错误的physical bytes。Implementation capability以
+`(target profile, family, dtype, rank/batch, tile shape, lhs/rhs orientation, operand/result encoding)`为参数化tuple，
+只返回有静态ABI/geometry证据的组合；板端资格状态另由tasks/16/17收窄。当前Tile/Instr/CRT实现没有orientation字段，
+只实现implicit normal/normal canonical relation，不能在目标字段落地前把transpose候选标为production-emittable。
+
 plain `wafer.tile.gemm`不把bias、scale、sparse、quant或fused activation作为隐式合同。low-precision路径使用
 下面的专门typed ops；不能给plain GEMM翻一个flag或复用convert zero-point attr。
 
-plain GEMM的数值政策也不能由CModel或host library补齐。operand compute type、product、accumulator、FMA/逐步rounding、
+plain GEMM的数值政策也不能由CModel或host library补齐。orientation只选择显式数学访问关系，不改变numeric profile；
+operand compute type、product、accumulator、FMA/逐步rounding、
 reduction order、overflow和destination conversion若是program-selectable，必须成为typed operand/type/attr及下游CRT ABI；
 若是target revision固定的implicit behavior，则完整typed command tuple在target capability中必须唯一映射到一个
 `NumericSemanticsProfile`。当前instruction/CRT plain GEMM只传一个format且要求lhs/rhs/dst同element type，没有
@@ -322,6 +361,9 @@ movement op 的合同：
   不依赖旁路 metadata 或名字约定。
 - scalar/splat/small constants 可以在 op lowering 中变成 immediate、attribute 或 fill pattern；
   只有需要作为 tensor tile data 读取的 constant 才生成 `wafer.tile.load` 和 DDR demand。
+- selected `wafer.tile.fill`必须携带与11共用的closed `#wafer.fill_domain<logical_valid|physical_footprint>`；
+  CandidateMaterializer决定并物化该domain，instruction lowering只无损传递，不能从consumer或layout猜测。physical-footprint
+  row还必须由qualified scalar→canonical-raw semantics和checked target count支持。
 - `wafer.tile.materialize_layout` 是真实 data movement，不是 cast。它由 layout 文档定义，compute/movement
   lowering 负责把它展开成可执行的 GatherScatter、TDMA 或其它 path。
 - `wafer.tile.extract_slice` / `wafer.tile.insert_slice` 表达 static offsets/sizes/strides 的
@@ -340,24 +382,32 @@ movement op 的合同：
 - stride 和 byte count 的单位在 `wafer.instr.*` descriptor attrs 和 ABI/packet emission 参数中必须明确。
   上层 tensor stride 是 element stride，lower 到 DMA/TDMA/DTE descriptor 前必须转换成 byte stride。
 
+`TransferRouteFamily`、physical realizability和descriptor-cover oracle完全由08拥有。本文只验证并lower已经selected的
+target-abstract movement：RDMA是DDR source strided、SPM destination sequential/local-offset，WDMA严格反向，GS可表达
+双侧映射；不满足selected route合同就结构化失败，不能临时换route。selected movement必须携带08要求的typed relation、
+segment/local-offset和invalid-lane effect，使instruction lowering能重建exact descriptor，而不是只在cost中标“已融合”。
+
 ## 4. Interfaces
 
 长期合同应通过 MLIR op interface、type、effect 和 verifier 表达，而不是 pass 间 side table。
 
 ### 4.1 `WaferComputeOpInterface`
 
-建议每个 `wafer.tile.*` compute ops 实现：
+每个selected `wafer.tile.*` compute op的accepted精确查询边界为：
 
 ```text
 getComputeKind()
 verifySemanticOperandsAndResults()
-getLoweringFamilies(target)
-getInstructionFamilies(tileShape, layoutAssignment, target)
-verifyInstructionLegality(instructionFamily, operands, results, target)
+getSelectedImplementation()
+verifySelectedImplementation(operands, results, target)
+getInstructionFamily()
+verifyInstructionLegality(operands, results, target)
 getAsyncLoweringPolicy(target)
 ```
 
-它回答“这个 op 作为 tile-local compute 是什么，以及有哪些可验证硬件 instruction family”。它不回答
+它回答“这个selected op作为tile-local compute是什么，以及其已选family/typed fields是否精确合法”。family domain、
+parameter narrowing和lower-bound metrics只由2.1的`TargetImplementationProvider`从`SemanticOpDescriptor`查询；accepted
+interface不得返回备选family、preferred encoding或search cost。它不回答
 “最终 packet 每个 bit 怎么写”，也不直接替 SPM allocator 给出唯一 memref demand；memref demand
 属于 R3.2d 生成的 instruction-level IR。
 
@@ -368,17 +418,16 @@ getAsyncLoweringPolicy(target)
 并通过 `verifyWaferLayoutContract` 做 verifier 可调用检查。R3.2c 已把同一接口迁移到
 `memref<..., #wafer.memory<space, layout>>`；旧 storage / split memory attr 路径不再是主线 IR
 合同。
-pre-assignment planner 需要的 allowed/preferred layout domain 仍是同一接口边界上的后续扩展：
 
-```text
-getAllowedLayouts(operand_or_result, tileShape, dtype, target)
-getPreferredLayouts(operand_or_result, tileShape, dtype, target)
-verifyLayoutCombination(operands, results)
-getMaterializationCost(srcLayout, dstLayout, shape, dtype, target)
-```
+该interface只验证已经selected的encoding combination和当前op精确layout要求，不提供allowed/preferred domain、
+`TransferRouteFamily`、descriptor cover或realization cost。planning-only边界明确拆分为：本文2.1的
+`TargetImplementationProvider`返回`ImplementationFamily`和static metrics vector；08的
+`PhysicalEncodingFamily`/`TransferRouteFamily`返回physical realizability、descriptor-cover proof和route metrics；06只组合
+这些provider。accepted verifier与planning domain因此不存在阶段相关语义或循环依赖。
 
-NE GEMM、native reduce、pool/unpool 是 aligned-only；多数 CT elementwise、DMA/TDMA movement 是
-flexible，但仍可因 dtype、stride、range 或 bitpack 约束拒绝某些组合。
+NE GEMM、native reduce、pool/unpool通常要求aligned encoding；其它family是否flexible只由qualified provider row决定。
+当前v1 CT elementwise仍是Tensor-only；新增Cx/NCx CT row必须先闭合segmented/full-physical valid-lane、tail和TargetCall/
+SystemC纵向，不能从“elementwise通常flexible”推断能力。
 
 ### 4.3 Effects and Resources
 
@@ -439,10 +488,10 @@ Instruction/runtime verifier：
 
 | 阶段 | 输入 | 输出 | 责任 |
 | --- | --- | --- | --- |
-| select Wafer compute implementation | tiled `linalg` / tensor / SCF | target-abstract `wafer.tile.*` compute / movement op | 选择本 tile 实现族，保留数学语义，建立 layout/resource interface |
-| layout materialization | target-abstract Wafer op | layout-materialized Wafer-tagged memref + materialization edge | 基于 op interface 做 layout assignment 和真实 movement cut |
+| planning capability query | normalized structured IR + `SemanticOpDescriptor` | transformation-local parameterized `ImplementationFamily` domain | 独立provider返回constraint/qualification/static metrics，不创建未选target op |
+| joint physical-dataflow realization | structured semantic DAG + implementation/encoding/route providers | selected `wafer.tile.*`、Wafer-tagged physical versions、view/resident edge和显式movement | 06选择，07按selected tuple物化；只有真实movement才创建edge，不形成shadow plan |
 | candidate DDR tile-view materialization | candidate target-abstract tile-region IR + explicit static boundary slice fact 或 candidate output tile offsets/sizes | same candidate evaluation tile-region IR with DDR `memref.subview` tile operands | 覆盖 external boundary extract、direct output insert storeback，以及单结果 destination-style linalg root 的 candidate tile offsets/sizes 到 boundary slice proposal；closed-loop traversal / tile-shape search 仍由 planner 后续产生 facts；不从名字或 whole-boundary shape 猜 DMA |
-| instruction legalization / selection | complete rank traversal with layout-materialized tile-local scopes | complete static rank instruction program over unplaced Wafer-tagged memref | 将所有 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 或 Direct DTE/FSM instruction op，列出 queue/family、effects、temp/psum/staging、alias、descriptor 和 completion relation；DTE 不走普通 `TsmExecute` dispatch path |
+| instruction legalization / selection | complete rank traversal with physical-dataflow-realized tile-local scopes | complete static rank instruction program over unplaced Wafer-tagged memref | 验证selected family并改写成CT/NE/TDMA/RDMA/WDMA或Direct DTE/FSM instruction op，显式携带orientation、direction-specific local offset、queue/effects/temp/alias/descriptor/completion；DTE不走普通`TsmExecute` path |
 | SPM memory planning | complete rank instruction programs with unplaced Wafer-tagged memref | same programs with whole-entry planned SPM offset facts | 从完整structured control flow、跨task/region memref use-def、instruction effects/tokens收集demand/liveness，分配offset/range/bank并验证terminal completion |
 | DDR memory planning | whole-entry SPM-planned instruction programs with actual DDR tile views/descriptors/allocs | same complete variant with accepted DDR offset facts，或结构化失败 | 在variant-set lifetime下重算DDR demand；验证external demand，为compiler-managed/resident/explicit-spill demand规划accepted offset；producer-to-last-consumer lifetime是mandatory gate |
 | Q16 rank-record validation | candidate instruction IR + accepted SPM/DDR offsets + accepted transport binding | 从当前IR use-def/type/effect/offset直接重算resource/entry/completion facts，验证后materialize typed C++ rank record，或结构化失败 | 不新造IR dialect/side table/policy，不重新决定layout/SPM/DDR，不allocate/import/query runtime object |
@@ -475,53 +524,28 @@ V0 模型：
 这样做允许 tile-local compute scope 先走 correctness-first 同步路径，也允许后续逐步打开 overlap，
 而不改变上层 compute op 语义；无论选择哪种 overlap，提交门槛仍是完整 rank program 的 terminal completion。
 
-## 8. V0 Coverage
+## 8. Current Coverage 与 Q32 Target
 
-V0 推荐实现顺序：
+当前v1 production已经覆盖accepted-layout GEMM、elementwise/relation/select、convert、reduce、load/store、
+Tensor↔Cx/NCx GatherScatter、compact RDMA/WDMA、Direct DTE及完整instruction/target LLVM/package/SystemC链；Q29、Q17/Q18、
+Q22、Q28、Q30和Q31分别闭合task-dataflow、artifact/package、target CModel、7B数值、host性能和多seed表征。v1 GEMM
+仍是implicit normal/normal的`wafer_tx81_gemm`，boundary movement仍以compact DMA加显式local materialization为保守路径。
 
-1. `wafer.tile.elementwise`：覆盖一个 unary、一个 binary、一个 convert 或 relation。
-2. target-abstract load/store 和 RDMA/WDMA contiguous movement。
-3. `wafer.tile.gemm`：覆盖基础 NE GEMM，不带 fused bias/activation/quant。
-4. `wafer.tile.reduce`：覆盖 `sum/max/min/avg` 中至少一个。
-5. `wafer.tile.materialize_layout` 到 GatherScatter / TDMA 的最小闭环。
+Q32在不回退上述纵向的前提下补齐：
 
-当前旧原型已经先覆盖了 accepted-layout `wafer.tile.gemm`、load/store、layout materialize，
-并补入 same-shape identity 与 permutation-only limited broadcast elementwise 到
-`wafer.tile.elementwise` 的 target-abstract path；随后补入 sum/max/min
-local reduce 到 `wafer.tile.reduce` 的 path，保留 reduce dimensions
-和 scalar init value。attention QK^T / AV 的 rank-4 contraction physical slice 以及
-`linalg.batch_matmul` 路径已经补入 batched GEMM lowering：只接受可由 structured indexing maps、
-parallel/reduction iterator types、mul-add body 和静态 shape relation 验证的 batch/head 形态，
-materialize 为带显式 `batch_count`、batch/head/m/k/n 维度 attrs 的 `wafer.tile.gemm` /
-`wafer.instr.gemm`。target LLVM call emission 已能把 batched GEMM instr 降到 `wafer_tx81_gemm`
-call 形态；后续 CRT/golden packet 仍需按 batch physical byte offset 固定 wrapper/packet 映射，
-device-code required-symbol gate 仍需证明该 Wafer-owned symbol 被 repo-local CRT 或合法外部依赖解析。
-历史transformer fixed package测试输入已删除。HF/Llama-style真实program gate先覆盖PyTorch/XLA capture、
-SPMD helper和structured tensor program handoff；per-rank selected task/dataflow candidate、memory-planned instruction、target LLVM、package、
-runtime、board binding和数值correctness均尚未由该纵向链证明。当前局部IR覆盖仍不是通用elementwise/reduce/GEMM
-coverage；更复杂 broadcast、relation/logic、convert、多输入/非 constant-init reduce 和 mask/select
-泛化仍按后续 gate 推进。basic `arith.select` 已在 instruction lowering 中改写成 false-copy
-`gather_scatter` + `bit2fp` + `mask_move`，不进入 `wafer.instr.elementwise` target kind；真实板端
-wrapper、dynamic mask 和 fused mask-add 优化仍不属于当前
-完成项。当前 coverage 不能被解释成 Wafer compute 语义上不支持这些结构；只要硬件
-wrapper / structured lowering 能表达，就应补 compute op、verifier、instruction lowering、target LLVM
-lowering 或 memory planning gate。
+- 从normalized structured semantics查询的独立`TargetImplementationProvider`，以及selected后才创建的accepted op；
+- parameterized orientation、encoding和invalid-lane pre/post condition；mapped route、descriptor cover和local offset由08提供；
+- versioned v2 GEMM/target-call/SystemC纵向，以及按capability区分的model-only与board eligibility；
+- 通用topology/property覆盖，而不是按transformer角色、固定shape或参数顺序注册case。
 
-V1 或后续扩展：
-
-- conv / pool / unpool 的完整 semantic layout 和 verifier。
-- fused GEMM / conv epilogue。
-- 更复杂 broadcast、masked op、dynamic shape。
-- raw packet builder 和 wrapper-golden 双路径测试。
-- PMU/cost-model 驱动的 issue overlap。
-- typed affine INT8 native GEMM与block-scaled FP8 explicit decode按3.1.1实施；它们不是fused epilogue捷径。
+conv/pool/unpool、fused epilogue、更复杂dynamic broadcast/mask、dynamic shape、paged KV/serving、native affine INT8、
+block-scaled FP8和PMU overlap仍是有独立typed producer/target evidence后才启用的扩展；它们不是Q32 baseline前置。
 
 ### 8.1 Transformer Block Minimum Coverage
 
-不能只因为GEMM、一个elementwise和一个reduce的局部IR测试能跑，就声称transformer block支持完成。
-HF/Llama-style program gate先到verified structured tensor program；本节列出的compute/movement family仍需
-由Q29 per-rank closed-loop直接消费该artifact后才能形成纵向证据。target LLVM、package、board execution、
-数值correctness、dynamic/KV/mask/select泛化仍是后续gate。compute/movement层的最小覆盖包括：
+当前HF/Llama-style 7B单block已经由Q29→Q28的per-rank closed loop、target LLVM/package/SystemC和PyTorch expected
+differential闭合；它证明现有保守v1路径，不把该case升级为planner协议。Q32必须原样重放这个scale gate，并用下列
+semantic family构造通用property/topology corpus：
 
 - `wafer.tile.gemm` 的 batch/head 维和 transpose relation，用于 QKV linear matmul、QK^T、
   attention value、output linear matmul 和 MLP。
@@ -535,7 +559,7 @@ HF/Llama-style program gate先到verified structured tensor program；本节列�
 - load/store 对 sin/cos RoPE table、norm scale/bias、linear weights 和 MLP weights 的
   constant slice 关系。
 
-仍不在当前HF/Llama-style structured-program gate内：
+仍不在当前7B/Q32完成边界内：
 
 - dropout/random mask。
 - dynamic sequence length 的通用 runtime specialization。
@@ -544,8 +568,10 @@ HF/Llama-style program gate先到verified structured tensor program；本节列�
 
 ## 9. Case Fragment
 
-下面的 case 只展示 IR 如何流经 compute 层，不定义架构边界。tile shape、layout choice 和 op
-implementation 都是 planner 的候选结果。
+下面的case只展示当前保守`normal/normal + compact boundary + SPM GatherScatter` realization如何流经compute层，
+不定义架构边界。tile shape、implementation、physical version和transfer family都是planner的候选结果；若
+descriptor-cover oracle证明direct mapped RDMA/WDMA或consumer可直接接受producer encoding，终态候选可以删除相应
+Tensor staging/materialize op，但必须在accepted IR中出现等价的view或typed movement。
 
 Target-abstract tile-region：
 
@@ -602,14 +628,14 @@ Accepted layout 后：
    -> memref<64xf16, #wafer.memory<spm, cx>>
 ```
 
-这个例子里 `wafer.tile.gemm` 需要 aligned layout，elementwise 继承 producer layout，reduce
+这个例子里 `wafer.tile.gemm` 使用当前canonical aligned implementation，elementwise继承producer layout，reduce
 根据自己的 implementation 给出 hard constraint。是否把某个 internal reduction dimension 再切分、
-是否 materialize output 为 compact、是否启用 double buffer，都由 layout/SPM/scheduler analysis
+是否materialize output为compact、是否用mapped boundary transfer或启用double buffer，都由联合planner及SPM/DDR exact gate
 闭环决定，不是 `wafer.tile.*` compute op 自己保存的计划。
 
 ## 10. 与其它文档的关系
 
 全局文档边界见 `tasks/01-architecture.md` 第 8 节。本文只维护
 target-abstract compute/movement op 的语义、interface 和 lowering legality；task/dataflow scheduling、
-layout assignment、SPM/DDR allocation、communication 和 launch/runtime 不在本文重复定义。
+joint implementation/encoding/transfer selection、SPM/DDR allocation、communication 和 launch/runtime 不在本文重复定义。
 register-level wrapper / packet 约束只在 launch/resource、target LLVM 或 runtime adapter 边界中消费。
