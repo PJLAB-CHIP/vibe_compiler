@@ -346,9 +346,8 @@ public:
       plan.materializedType = mlir::MemRefType::get(
           resultType.getShape(), sourceType.getElementType(),
           resultType.getLayout(), resultType.getMemorySpace());
-      auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices)
-          -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-        llvm::SmallVector<int64_t> sourceIndices;
+      auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices,
+                               llvm::SmallVectorImpl<int64_t> &sourceIndices) {
         sourceIndices.reserve(inputMap.getNumResults());
         for (mlir::AffineExpr expr : inputMap.getResults()) {
           auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
@@ -356,12 +355,12 @@ public:
             return mlir::failure();
           sourceIndices.push_back(resultIndices[dimExpr.getPosition()]);
         }
-        return sourceIndices;
+        return mlir::success();
       };
-      auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices)
-          -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-        return llvm::SmallVector<int64_t>(resultIndices.begin(),
-                                          resultIndices.end());
+      auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices,
+                            llvm::SmallVectorImpl<int64_t> &destIndices) {
+        destIndices.assign(resultIndices.begin(), resultIndices.end());
+        return mlir::success();
       };
       mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
           getStaticMappedMovementSegments(
@@ -676,9 +675,9 @@ public:
       if (mlir::failed(tuple))
         return mlir::failure();
 
-      auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices)
-          -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-        llvm::SmallVector<int64_t> sourceIndices(inputType.getRank(), 0);
+      auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices,
+                               llvm::SmallVectorImpl<int64_t> &sourceIndices) {
+        sourceIndices.resize(inputType.getRank(), 0);
         size_t reducedIndex = 0;
         size_t resultIndex = 0;
         for (int64_t inputDim = 0; inputDim < inputType.getRank(); ++inputDim) {
@@ -687,12 +686,12 @@ public:
           else
             sourceIndices[inputDim] = resultIndices[resultIndex++];
         }
-        return sourceIndices;
+        return mlir::success();
       };
-      auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices)
-          -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-        return llvm::SmallVector<int64_t>(resultIndices.begin(),
-                                          resultIndices.end());
+      auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices,
+                            llvm::SmallVectorImpl<int64_t> &destIndices) {
+        destIndices.assign(resultIndices.begin(), resultIndices.end());
+        return mlir::success();
       };
 
       mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =

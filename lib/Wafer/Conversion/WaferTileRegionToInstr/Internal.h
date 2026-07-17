@@ -33,25 +33,8 @@ struct LogicalMovementSegment {
   int64_t bytes = 0;
 };
 
-class StaticPhysicalOffsetCalculator {
-public:
-  static std::optional<StaticPhysicalOffsetCalculator>
-  create(mlir::MemRefType type);
-
-  const WaferPhysicalTensorInfo &getInfo() const { return info; }
-  std::optional<int64_t>
-  getByteOffset(llvm::ArrayRef<int64_t> logicalIndices) const;
-
-private:
-  StaticPhysicalOffsetCalculator(mlir::MemRefType type,
-                                 WaferPhysicalTensorInfo info,
-                                 llvm::SmallVector<int64_t, 4> strides)
-      : type(type), info(std::move(info)), strides(std::move(strides)) {}
-
-  mlir::MemRefType type;
-  WaferPhysicalTensorInfo info;
-  llvm::SmallVector<int64_t, 4> strides;
-};
+using StaticPhysicalOffsetCalculator =
+    wafer::WaferStaticPhysicalOffsetCalculator;
 
 std::optional<int64_t>
 getStaticPositiveElementCount(llvm::ArrayRef<int64_t> shape);
@@ -135,20 +118,20 @@ getStaticMappedMovementSegments(
     llvm::ArrayRef<int64_t> iterationShape, SourceIndexFn sourceIndexFn,
     DestIndexFn destIndexFn, std::string *failureReason,
     llvm::StringRef opLabel) {
-  std::optional<StaticPhysicalOffsetCalculator> sourceOffsets =
-      StaticPhysicalOffsetCalculator::create(sourceType);
-  std::optional<StaticPhysicalOffsetCalculator> destOffsets =
-      StaticPhysicalOffsetCalculator::create(destType);
-  if (!sourceOffsets || !destOffsets ||
-      sourceOffsets->getInfo().physicalBytes <= 0 ||
-      destOffsets->getInfo().physicalBytes <= 0)
+  std::optional<WaferPhysicalTensorInfo> sourceInfoStorage =
+      computeWaferPhysicalTensorInfo(sourceType);
+  std::optional<WaferPhysicalTensorInfo> destInfoStorage =
+      computeWaferPhysicalTensorInfo(destType);
+  if (!sourceInfoStorage || !destInfoStorage ||
+      sourceInfoStorage->physicalBytes <= 0 ||
+      destInfoStorage->physicalBytes <= 0)
     return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
         rewriter, op, failureReason,
         llvm::Twine(opLabel)
             .concat(" requires static positive physical byte sizes")
             .str());
-  const WaferPhysicalTensorInfo &sourceInfo = sourceOffsets->getInfo();
-  const WaferPhysicalTensorInfo &destInfo = destOffsets->getInfo();
+  const WaferPhysicalTensorInfo &sourceInfo = *sourceInfoStorage;
+  const WaferPhysicalTensorInfo &destInfo = *destInfoStorage;
   if (sourceInfo.elementBytes <= 0 ||
       sourceInfo.elementBytes != destInfo.elementBytes ||
       sourceInfo.bitPackedElement || destInfo.bitPackedElement)
@@ -156,6 +139,17 @@ getStaticMappedMovementSegments(
         rewriter, op, failureReason,
         llvm::Twine(opLabel)
             .concat(" requires byte-addressable elements")
+            .str());
+
+  std::optional<StaticPhysicalOffsetCalculator> sourceOffsets =
+      StaticPhysicalOffsetCalculator::create(sourceType);
+  std::optional<StaticPhysicalOffsetCalculator> destOffsets =
+      StaticPhysicalOffsetCalculator::create(destType);
+  if (!sourceOffsets || !destOffsets)
+    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" requires static positive physical byte sizes")
             .str());
 
   std::optional<int64_t> elementCount =
@@ -169,47 +163,60 @@ getStaticMappedMovementSegments(
 
   int64_t elementBytes = sourceInfo.elementBytes;
   llvm::SmallVector<LogicalMovementSegment> segments;
+  llvm::SmallVector<int64_t, 4> iterationIndices(iterationShape.size(), 0);
+  llvm::SmallVector<int64_t, 4> sourceIndices;
+  llvm::SmallVector<int64_t, 4> destIndices;
+  sourceIndices.reserve(sourceType.getRank());
+  destIndices.reserve(destType.getRank());
   for (int64_t linearIndex = 0; linearIndex < *elementCount; ++linearIndex) {
-    mlir::FailureOr<llvm::SmallVector<int64_t>> iterationIndices =
-        delinearizeIndex(rewriter, op, iterationShape, linearIndex,
-                         failureReason, opLabel);
-    if (mlir::failed(iterationIndices))
+    sourceIndices.clear();
+    destIndices.clear();
+    if (mlir::failed(sourceIndexFn(iterationIndices, sourceIndices)) ||
+        mlir::failed(destIndexFn(iterationIndices, destIndices)))
       return mlir::failure();
 
-    mlir::FailureOr<llvm::SmallVector<int64_t>> sourceIndices =
-        sourceIndexFn(*iterationIndices);
-    mlir::FailureOr<llvm::SmallVector<int64_t>> destIndices =
-        destIndexFn(*iterationIndices);
-    if (mlir::failed(sourceIndices) || mlir::failed(destIndices))
-      return mlir::failure();
-
-    std::optional<int64_t> sourceOffset =
-        sourceOffsets->getByteOffset(*sourceIndices);
-    std::optional<int64_t> destOffset =
-        destOffsets->getByteOffset(*destIndices);
-    if (!sourceOffset || !destOffset)
+    if (sourceIndices.size() != static_cast<size_t>(sourceType.getRank()) ||
+        destIndices.size() != static_cast<size_t>(destType.getRank()))
       return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
           rewriter, op, failureReason,
           llvm::Twine(opLabel)
               .concat(" cannot compute physical element offset")
               .str());
-    if (*sourceOffset + elementBytes > sourceInfo.physicalBytes ||
-        *destOffset + elementBytes > destInfo.physicalBytes)
+    int64_t sourceOffset =
+        sourceOffsets->getByteOffsetForValidIndices(sourceIndices);
+    int64_t destOffset = destOffsets->getByteOffsetForValidIndices(destIndices);
+    if (sourceOffset < 0 || destOffset < 0 ||
+        sourceOffset > sourceInfo.physicalBytes - elementBytes ||
+        destOffset > destInfo.physicalBytes - elementBytes)
       return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
           rewriter, op, failureReason,
           llvm::Twine(opLabel)
               .concat(" segment exceeds static physical byte range")
               .str());
 
+    bool coalesced = false;
     if (!segments.empty()) {
       LogicalMovementSegment &last = segments.back();
-      if (last.sourceOffset + last.bytes == *sourceOffset &&
-          last.destOffset + last.bytes == *destOffset) {
+      if (last.sourceOffset + last.bytes == sourceOffset &&
+          last.destOffset + last.bytes == destOffset) {
         last.bytes += elementBytes;
-        continue;
+        coalesced = true;
       }
     }
-    segments.push_back({*sourceOffset, *destOffset, elementBytes});
+    if (!coalesced)
+      segments.push_back({sourceOffset, destOffset, elementBytes});
+
+    // The domain was validated once above.  Maintain its canonical
+    // lexicographic multi-index incrementally instead of re-delinearizing the
+    // linear ordinal (and allocating new index vectors) for every element.
+    if (linearIndex + 1 != *elementCount) {
+      for (int64_t dim = static_cast<int64_t>(iterationShape.size()) - 1;
+           dim >= 0; --dim) {
+        if (++iterationIndices[dim] < iterationShape[dim])
+          break;
+        iterationIndices[dim] = 0;
+      }
+    }
   }
 
   return segments;

@@ -13,56 +13,6 @@
 
 namespace wafer::tile_region_to_instr {
 
-std::optional<StaticPhysicalOffsetCalculator>
-StaticPhysicalOffsetCalculator::create(mlir::MemRefType type) {
-  std::optional<WaferPhysicalTensorInfo> info =
-      wafer::computeWaferPhysicalTensorInfo(type);
-  if (!info || info->physicalBytes <= 0)
-    return std::nullopt;
-
-  llvm::SmallVector<int64_t, 4> strides;
-  if (info->layout != MemLayout::Cx && info->layout != MemLayout::NCx) {
-    int64_t offset = 0;
-    if (mlir::failed(mlir::getStridesAndOffset(type, strides, offset)) ||
-        strides.size() != static_cast<size_t>(type.getRank()))
-      return std::nullopt;
-    for (int64_t stride : strides) {
-      if (stride == mlir::ShapedType::kDynamic || stride < 0)
-        return std::nullopt;
-    }
-  }
-  return StaticPhysicalOffsetCalculator(type, std::move(*info),
-                                        std::move(strides));
-}
-
-std::optional<int64_t> StaticPhysicalOffsetCalculator::getByteOffset(
-    llvm::ArrayRef<int64_t> logicalIndices) const {
-  if (info.elementBytes <= 0 || info.bitPackedElement)
-    return std::nullopt;
-  if (type.getRank() != static_cast<int64_t>(logicalIndices.size()))
-    return std::nullopt;
-  for (auto [dim, index] : llvm::zip_equal(type.getShape(), logicalIndices)) {
-    if (dim == mlir::ShapedType::kDynamic || dim < 0 || index < 0 ||
-        index >= dim)
-      return std::nullopt;
-  }
-
-  if (info.layout == MemLayout::Cx || info.layout == MemLayout::NCx)
-    return wafer::computeWaferPhysicalElementByteOffset(type, info,
-                                                        logicalIndices);
-
-  int64_t linear = 0;
-  for (auto [index, stride] : llvm::zip_equal(logicalIndices, strides)) {
-    std::optional<int64_t> scaled = checkedMulI64(index, stride);
-    if (!scaled)
-      return std::nullopt;
-    if (*scaled > std::numeric_limits<int64_t>::max() - linear)
-      return std::nullopt;
-    linear += *scaled;
-  }
-  return checkedMulI64(linear, info.elementBytes);
-}
-
 namespace {
 
 struct PackedMovementDescriptor {
@@ -716,18 +666,18 @@ getStaticLogicalMovementSegments(mlir::PatternRewriter &rewriter,
                                  mlir::MemRefType destType,
                                  std::string *failureReason,
                                  llvm::StringRef opLabel) {
-  std::optional<StaticPhysicalOffsetCalculator> sourceOffsets =
-      StaticPhysicalOffsetCalculator::create(sourceType);
-  std::optional<StaticPhysicalOffsetCalculator> destOffsets =
-      StaticPhysicalOffsetCalculator::create(destType);
-  if (!sourceOffsets || !destOffsets)
+  std::optional<WaferPhysicalTensorInfo> sourceInfoStorage =
+      computeWaferPhysicalTensorInfo(sourceType);
+  std::optional<WaferPhysicalTensorInfo> destInfoStorage =
+      computeWaferPhysicalTensorInfo(destType);
+  if (!sourceInfoStorage || !destInfoStorage)
     return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
         rewriter, op, failureReason,
         llvm::Twine(opLabel)
             .concat(" requires static positive byte sizes")
             .str());
-  const WaferPhysicalTensorInfo &sourceInfo = sourceOffsets->getInfo();
-  const WaferPhysicalTensorInfo &destInfo = destOffsets->getInfo();
+  const WaferPhysicalTensorInfo &sourceInfo = *sourceInfoStorage;
+  const WaferPhysicalTensorInfo &destInfo = *destInfoStorage;
   if (sourceInfo.compactBytes <= 0 || destInfo.compactBytes <= 0 ||
       sourceInfo.physicalBytes <= 0 || destInfo.physicalBytes <= 0)
     return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
@@ -767,50 +717,68 @@ getStaticLogicalMovementSegments(mlir::PatternRewriter &rewriter,
     return llvm::SmallVector<LogicalMovementSegment>{
         {0, 0, sourceInfo.compactBytes}};
 
+  std::optional<StaticPhysicalOffsetCalculator> sourceOffsets =
+      StaticPhysicalOffsetCalculator::create(sourceType);
+  std::optional<StaticPhysicalOffsetCalculator> destOffsets =
+      StaticPhysicalOffsetCalculator::create(destType);
+  if (!sourceOffsets || !destOffsets)
+    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" requires static positive byte sizes")
+            .str());
+
   int64_t elementBytes = sourceInfo.elementBytes;
   int64_t elementCount = sourceInfo.compactBytes / elementBytes;
 
   // Reshape preserves canonical logical linear order, not per-dimension index
-  // equality.  Delinearize the same logical element number through the source
-  // and destination shapes, then ask the physical layout helper where that
+  // equality.  Traverse the source and destination canonical shapes with two
+  // incremental odometers, then ask the physical layout helper where the same
   // logical element lives in each buffer.
+  llvm::ArrayRef<int64_t> sourceShape = sourceType.getShape();
+  llvm::ArrayRef<int64_t> destShape = destType.getShape();
+  llvm::SmallVector<int64_t, 4> sourceIndices(sourceShape.size(), 0);
+  llvm::SmallVector<int64_t, 4> destIndices(destShape.size(), 0);
   llvm::SmallVector<LogicalMovementSegment> segments;
   for (int64_t linearIndex = 0; linearIndex < elementCount; ++linearIndex) {
-    mlir::FailureOr<llvm::SmallVector<int64_t>> sourceIndices =
-        delinearizeIndex(rewriter, op, sourceType.getShape(), linearIndex,
-                         failureReason, opLabel);
-    mlir::FailureOr<llvm::SmallVector<int64_t>> destIndices = delinearizeIndex(
-        rewriter, op, destType.getShape(), linearIndex, failureReason, opLabel);
-    if (mlir::failed(sourceIndices) || mlir::failed(destIndices))
-      return mlir::failure();
-
-    std::optional<int64_t> sourceOffset =
-        sourceOffsets->getByteOffset(*sourceIndices);
-    std::optional<int64_t> destOffset =
-        destOffsets->getByteOffset(*destIndices);
-    if (!sourceOffset || !destOffset)
-      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel)
-              .concat(" cannot compute physical element offset")
-              .str());
-    if (*sourceOffset + elementBytes > sourceInfo.physicalBytes ||
-        *destOffset + elementBytes > destInfo.physicalBytes)
+    int64_t sourceOffset =
+        sourceOffsets->getByteOffsetForValidIndices(sourceIndices);
+    int64_t destOffset = destOffsets->getByteOffsetForValidIndices(destIndices);
+    if (sourceOffset < 0 || destOffset < 0 ||
+        sourceOffset > sourceInfo.physicalBytes - elementBytes ||
+        destOffset > destInfo.physicalBytes - elementBytes)
       return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
           rewriter, op, failureReason,
           llvm::Twine(opLabel)
               .concat(" segment exceeds static physical byte range")
               .str());
 
+    bool coalesced = false;
     if (!segments.empty()) {
       LogicalMovementSegment &last = segments.back();
-      if (last.sourceOffset + last.bytes == *sourceOffset &&
-          last.destOffset + last.bytes == *destOffset) {
+      if (last.sourceOffset + last.bytes == sourceOffset &&
+          last.destOffset + last.bytes == destOffset) {
         last.bytes += elementBytes;
-        continue;
+        coalesced = true;
       }
     }
-    segments.push_back({*sourceOffset, *destOffset, elementBytes});
+    if (!coalesced)
+      segments.push_back({sourceOffset, destOffset, elementBytes});
+
+    if (linearIndex + 1 != elementCount) {
+      for (int64_t dim = static_cast<int64_t>(sourceShape.size()) - 1; dim >= 0;
+           --dim) {
+        if (++sourceIndices[dim] < sourceShape[dim])
+          break;
+        sourceIndices[dim] = 0;
+      }
+      for (int64_t dim = static_cast<int64_t>(destShape.size()) - 1; dim >= 0;
+           --dim) {
+        if (++destIndices[dim] < destShape[dim])
+          break;
+        destIndices[dim] = 0;
+      }
+    }
   }
 
   return segments;
@@ -889,16 +857,17 @@ getPermutationDataMoveSegments(mlir::PatternRewriter &rewriter,
               .str());
   }
 
-  auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> destIndices)
-      -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-    llvm::SmallVector<int64_t> sourceIndices(sourceType.getRank(), 0);
+  auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> destIndices,
+                           llvm::SmallVectorImpl<int64_t> &sourceIndices) {
+    sourceIndices.resize(sourceType.getRank(), 0);
     for (auto [destDim, sourceDim] : llvm::enumerate(permutation))
       sourceIndices[sourceDim] = destIndices[destDim];
-    return sourceIndices;
+    return mlir::success();
   };
-  auto destIndexFn = [](llvm::ArrayRef<int64_t> destIndices)
-      -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-    return llvm::SmallVector<int64_t>(destIndices.begin(), destIndices.end());
+  auto destIndexFn = [](llvm::ArrayRef<int64_t> destIndices,
+                        llvm::SmallVectorImpl<int64_t> &result) {
+    result.assign(destIndices.begin(), destIndices.end());
+    return mlir::success();
   };
 
   return getStaticMappedMovementSegments(rewriter, op, sourceType, destType,
@@ -932,17 +901,17 @@ getMirrorDataMoveSegments(mlir::PatternRewriter &rewriter,
 
   llvm::SmallDenseSet<int64_t, 4> mirroredAxes;
   mirroredAxes.insert(axes.begin(), axes.end());
-  auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> destIndices)
-      -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-    llvm::SmallVector<int64_t> sourceIndices(destIndices.begin(),
-                                             destIndices.end());
+  auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> destIndices,
+                           llvm::SmallVectorImpl<int64_t> &sourceIndices) {
+    sourceIndices.assign(destIndices.begin(), destIndices.end());
     for (int64_t axis : mirroredAxes)
       sourceIndices[axis] = sourceType.getDimSize(axis) - 1 - destIndices[axis];
-    return sourceIndices;
+    return mlir::success();
   };
-  auto destIndexFn = [](llvm::ArrayRef<int64_t> destIndices)
-      -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-    return llvm::SmallVector<int64_t>(destIndices.begin(), destIndices.end());
+  auto destIndexFn = [](llvm::ArrayRef<int64_t> destIndices,
+                        llvm::SmallVectorImpl<int64_t> &result) {
+    result.assign(destIndices.begin(), destIndices.end());
+    return mlir::success();
   };
 
   return getStaticMappedMovementSegments(rewriter, op, sourceType, destType,
@@ -1000,10 +969,9 @@ getRotateDataMoveSegments(mlir::PatternRewriter &rewriter,
             .str());
   }
 
-  auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> destIndices)
-      -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-    llvm::SmallVector<int64_t> sourceIndices(destIndices.begin(),
-                                             destIndices.end());
+  auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> destIndices,
+                           llvm::SmallVectorImpl<int64_t> &sourceIndices) {
+    sourceIndices.assign(destIndices.begin(), destIndices.end());
     switch (kind) {
     case InstrDataMoveKind::Rotate90:
       sourceIndices[axis0] = sourceAxis0Size - 1 - destIndices[axis1];
@@ -1020,11 +988,12 @@ getRotateDataMoveSegments(mlir::PatternRewriter &rewriter,
     default:
       llvm_unreachable("expected rotate data_move kind");
     }
-    return sourceIndices;
+    return mlir::success();
   };
-  auto destIndexFn = [](llvm::ArrayRef<int64_t> destIndices)
-      -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-    return llvm::SmallVector<int64_t>(destIndices.begin(), destIndices.end());
+  auto destIndexFn = [](llvm::ArrayRef<int64_t> destIndices,
+                        llvm::SmallVectorImpl<int64_t> &result) {
+    result.assign(destIndices.begin(), destIndices.end());
+    return mlir::success();
   };
 
   return getStaticMappedMovementSegments(rewriter, op, sourceType, destType,

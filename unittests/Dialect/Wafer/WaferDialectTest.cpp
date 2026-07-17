@@ -611,6 +611,10 @@ TEST(WaferDialectTest, PhysicalLayoutMatchesIndependentSlowCoordinateOracle) {
       EXPECT_EQ(actualLayout->batchElements, expectedLayout.batchElements);
     }
 
+    std::optional<wafer::WaferStaticPhysicalOffsetCalculator> calculator =
+        wafer::WaferStaticPhysicalOffsetCalculator::create(type);
+    ASSERT_TRUE(calculator);
+
     std::set<int64_t> occupiedOffsets;
     forEachCoordinate(testCase.shape, [&](llvm::ArrayRef<int64_t> indices) {
       std::optional<int64_t> actual =
@@ -620,6 +624,10 @@ TEST(WaferDialectTest, PhysicalLayoutMatchesIndependentSlowCoordinateOracle) {
           slowPhysicalElementOffset(testCase, expectedLayout, indices) *
           testCase.elementBytes;
       EXPECT_EQ(*actual, expected);
+      if (calculator) {
+        EXPECT_EQ(calculator->getByteOffset(indices), expected);
+        EXPECT_EQ(calculator->getByteOffsetForValidIndices(indices), expected);
+      }
       EXPECT_GE(*actual, 0);
       EXPECT_LE(*actual + testCase.elementBytes, actualLayout->physicalBytes);
       EXPECT_TRUE(occupiedOffsets.insert(*actual).second);
@@ -648,6 +656,7 @@ TEST(WaferDialectTest, ComputesBitpackedOffsetsWithoutGuessingBitOrder) {
   mlir::Type i1 = mlir::IntegerType::get(&context, 1);
   auto contiguous = mlir::MemRefType::get(
       {2, 9}, i1, mlir::MemRefLayoutAttrInterface{}, tensorMemory);
+  EXPECT_FALSE(wafer::WaferStaticPhysicalOffsetCalculator::create(contiguous));
   std::optional<wafer::WaferPhysicalTensorInfo> contiguousInfo =
       wafer::computeWaferPhysicalTensorInfo(contiguous);
   ASSERT_TRUE(contiguousInfo);

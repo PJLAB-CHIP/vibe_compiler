@@ -14,8 +14,10 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cassert>
 #include <cstdint>
 #include <optional>
 #include <utility>
@@ -73,6 +75,80 @@ struct WaferPhysicalTensorInfo {
   int64_t batchElements = -1;
   int64_t bankAlignElements = -1;
   bool bitPackedElement = false;
+};
+
+/// Reusable static logical-coordinate to physical-byte calculator.  Creation
+/// validates the memref geometry once and precomputes byte/blocked-layout
+/// strides; repeated lowering and codec traversals can then reuse the same
+/// physical mapping without rebuilding MLIR layout state per element.
+class WaferStaticPhysicalOffsetCalculator {
+public:
+  static std::optional<WaferStaticPhysicalOffsetCalculator>
+  create(mlir::MemRefType type);
+
+  const WaferPhysicalTensorInfo &getInfo() const { return info; }
+
+  /// Checked entry point for an arbitrary logical coordinate.
+  std::optional<int64_t>
+  getByteOffset(llvm::ArrayRef<int64_t> logicalIndices) const;
+
+  /// Fast entry point for a coordinate already proven in-bounds by a static
+  /// lexicographic traversal or verified op index relation.
+  int64_t
+  getByteOffsetForValidIndices(llvm::ArrayRef<int64_t> logicalIndices) const {
+    assert(shape.size() == logicalIndices.size());
+#ifndef NDEBUG
+    for (auto [dim, index] : llvm::zip_equal(shape, logicalIndices))
+      assert(index >= 0 && index < dim);
+#endif
+    int64_t byteOffset = 0;
+    if (info.layout != MemLayout::Cx && info.layout != MemLayout::NCx) {
+      for (auto [index, byteStride] :
+           llvm::zip_equal(logicalIndices, byteStrides))
+        byteOffset += index * byteStride;
+      return byteOffset;
+    }
+
+    int64_t logicalC = logicalIndices.back();
+    int64_t outerIndex = 0;
+    int64_t firstOuterDim = info.layout == MemLayout::NCx ? 1 : 0;
+    for (int64_t dim = firstOuterDim;
+         dim < static_cast<int64_t>(logicalIndices.size()) - 1; ++dim)
+      outerIndex += logicalIndices[dim] * linearStrides[dim];
+
+    if (info.layout == MemLayout::NCx)
+      byteOffset =
+          logicalIndices.front() * info.batchElements * info.elementBytes;
+    if (logicalC < fullC) {
+      byteOffset += (logicalC / info.cBlock) * blockStrideBytes;
+      byteOffset += (outerIndex * info.cBlock + logicalC % info.cBlock) *
+                    info.elementBytes;
+    } else {
+      byteOffset += fullBlockBytes;
+      byteOffset +=
+          (outerIndex * info.c0 + logicalC - fullC) * info.elementBytes;
+    }
+    return byteOffset;
+  }
+
+private:
+  WaferStaticPhysicalOffsetCalculator(
+      WaferPhysicalTensorInfo info, llvm::SmallVector<int64_t, 4> shape,
+      llvm::SmallVector<int64_t, 4> byteStrides,
+      llvm::SmallVector<int64_t, 4> linearStrides, int64_t fullC,
+      int64_t blockStrideBytes, int64_t fullBlockBytes)
+      : info(std::move(info)), shape(std::move(shape)),
+        byteStrides(std::move(byteStrides)),
+        linearStrides(std::move(linearStrides)), fullC(fullC),
+        blockStrideBytes(blockStrideBytes), fullBlockBytes(fullBlockBytes) {}
+
+  WaferPhysicalTensorInfo info;
+  llvm::SmallVector<int64_t, 4> shape;
+  llvm::SmallVector<int64_t, 4> byteStrides;
+  llvm::SmallVector<int64_t, 4> linearStrides;
+  int64_t fullC = 0;
+  int64_t blockStrideBytes = 0;
+  int64_t fullBlockBytes = 0;
 };
 
 bool isWaferMemRefType(mlir::Type type);

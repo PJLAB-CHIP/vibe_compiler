@@ -1,6 +1,6 @@
 # Wafer Layout Materialization Design
 
-状态：2026-07-16按Q29 tile-dataflow终态同步；当前合同覆盖Wafer memory/layout attr、
+状态：2026-07-17按shared static physical-offset calculator同步；当前合同覆盖Wafer memory/layout attr、
 candidate-local proposal和真实storage materialization。实现状态以`tasks/progress.md`为准。
 
 本文定义 Wafer 后端的 physical layout planning 和 layout materialization 边界。它服务于
@@ -492,10 +492,17 @@ model profile拥有；在Cx/NCx bitpacked block/tail事实尚未固定时，bit 
 线性化猜测。禁止每个pass或numeric consumer自己根据字符串、局部约定或复制几何解释
 `cx/ncx`、tail或BOOL bit offset。
 
+`WaferStaticPhysicalOffsetCalculator`是同一事实源的可重算静态执行形态：它从memref type一次性验证并缓存
+byte stride、去除logical C后的linear stride以及Cx/NCx full/tail block byte常量，checked入口用于任意坐标，
+fast入口只接受已由静态lexicographic traversal或verified op index relation证明in-bounds的坐标。该对象不进入IR、attr、
+package或全局cache；compiler movement lowering和target codec复用同一实现，必须以公共逐坐标helper及独立慢oracle做
+differential。dynamic、bitpacked byte offset、overflow和非法坐标仍拒绝。
+
 target-owned `PhysicalTensorCodec`现作为numeric/bulk/SystemC plain kernel的共享consumer，只调用上述info/bit-offset helper把
 exact physical bytes与logical row-major `RawLogicalValue`互转；pack保留不属于logical element的template padding，BOOL Cx/NCx
-仍按helper结论拒绝。bulk adapter已删除原有重复geometry。该codec不是新layout owner，不缓存或回写layout plan，也不允许
-consumer绕过committed shape/layout/type自行推断physical storage。
+仍按helper结论拒绝。byte-addressable遍历直接流式消费shared calculator，不先物化与element count等长的offset side table；
+bulk adapter已删除原有重复geometry。该codec不是新layout owner，不缓存或回写layout plan，也不允许consumer绕过committed
+shape/layout/type自行推断physical storage。
 
 Wafer-tagged memref 在target-codegen派生之前仍是logical-shape memref：shape是logical
 shape，element type 是 logical dtype；它不能被 generic memref-to-LLVM lowering 当成

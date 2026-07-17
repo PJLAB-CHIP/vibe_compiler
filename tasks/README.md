@@ -53,7 +53,9 @@
 
 ## 实施计划导航
 
-当前没有active实施计划。已完成Q28 Llama-2 7B单block纵向归档为`tasks/archive/llama-7b-block-vertical.md`，Q29
+当前无active实施计划。已完成Q30标准7B单block production vertical性能收口归档为
+`tasks/archive/llama-block-production-performance.md`，Q28 Llama-2 7B单block纵向归档为
+`tasks/archive/llama-7b-block-vertical.md`，Q29
 tile-dataflow scheduling归档为`tasks/archive/tile-dataflow-scheduling.md`。Q27 reference executor退役已归档为`tasks/archive/reference-executor-retirement.md`，
 Q26 memory lifetime analysis已归档为`tasks/archive/memory-lifetime-analysis.md`，
 Q25剩余聚合边界模块化已归档为`tasks/archive/residual-source-modularity.md`，Q24剩余热点模块化已归档为
@@ -76,6 +78,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/llama-block-production-performance.md` | 已完成Q30的static movement/physical codec host性能收口、package等价性和完整7B双replay记录 |
 | `tasks/archive/llama-7b-block-vertical.md` | 已完成Q28的标准Llama-2 7B单block TP16 source/package、repo-owned SystemC managed-reference和完整PyTorch eager output differential记录 |
 | `tasks/archive/tile-dataflow-scheduling.md` | 已完成Q29的structured tensor program直达bounded task/dataflow scheduling、跨region SPM、whole-variant commit、旧group executable surface退役及7B TP16 compile-only gate记录 |
 | `tasks/archive/reference-executor-retirement.md` | 已完成Q27的accepted-IR第二套解释器、oracle分支和旧CLI退役，以及CPU-expected到target CModel纵向gate收敛记录 |

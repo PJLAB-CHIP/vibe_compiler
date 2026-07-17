@@ -1,6 +1,6 @@
 # Wafer Instruction IR Design
 
-状态：2026-07-16按Q16.T、Q22 target numeric consumer和Q28 batched GEMM ABI/layout closure更新；当前合同覆盖instruction-level hardware invocation IR、
+状态：2026-07-17按Q30 movement descriptor构造性能边界更新；当前合同覆盖instruction-level hardware invocation IR、
 memref buffer和shared physical geometry/ABI legality。shared verifier 已闭合当前支持子集的静态 DMA descriptor payload/range/
 element-width relation、fill/elementwise/reduce/convert/GEMM element/shape relation、ordinary conv、pool/
 unpool、TDMA pad/img2col和peripheral kind-specific capacity，并在target字段写入前检查ABI narrowing。
@@ -774,6 +774,19 @@ R3.2d.4 已覆盖 static movement descriptor splitting / packing：
   规则 segment block；不能被单个 descriptor 表达的剩余段继续拆成后续 `wafer.instr.gather_scatter`。
   dynamic shape、bit-packed element、超过三层或 helper 无法证明真实 physical offset 的情况仍
   structured failure。
+
+R3.2d.5 static movement plan的host构造复杂度不属于IR协议，但必须保持可扩展且与统一physical mapping等价：
+
+- 静态logical domain按canonical lexicographic次序遍历；实现可以用一次校验后的odometer增量维护multi-index，不能要求
+  每个element重新用除法/取模从linear index反线性化。source/result index relation和segment顺序不变。
+- lowering复用tasks/08拥有的`WaferStaticPhysicalOffsetCalculator`，在构造时缓存从memref type和
+  `computeWaferPhysicalTensorInfo`派生的shape stride、Cx/NCx full/tail block常量，用于同一conversion内的hot loop；
+  `computeWaferPhysicalElementByteOffset`仍是规范physical mapping，focused differential必须覆盖Tensor/NTensor、Cx/NCx、
+  C0 tail和越界拒绝。缓存只是可重算analysis，不进入IR、attr、package或全局side table。
+- per-element index scratch由当前lowering invocation拥有并复用；不能让buffer名、地址或workload shape成为fast-path语义。
+  任一overflow、dynamic/invalid shape或无法证明的layout继续structured failure，不允许为了性能跳过range/verifier检查。
+- 性能优化完成证明必须比较优化前后packed source/dest descriptor和最终target command，而不仅是wall time；7B scale gate还要
+  保持all-rank package、transaction/SystemC delta、numeric counters和完整PyTorch differential。
 
 R3.2d V0 communication coverage：
 

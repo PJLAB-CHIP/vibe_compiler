@@ -168,24 +168,24 @@ public:
     llvm::ArrayRef<int64_t> strides = op.getStrides();
     llvm::ArrayRef<int64_t> resultShape = resultType.getShape();
 
-    auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices)
-        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+    auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices,
+                             llvm::SmallVectorImpl<int64_t> &sourceIndices) {
       mlir::FailureOr<llvm::SmallVector<int64_t>> fullSliceIndices =
           expandRankReducedSliceIndices(rewriter, op, sizes, resultShape,
                                         resultIndices, failureReason,
                                         "tile.extract_slice lowering");
       if (mlir::failed(fullSliceIndices))
         return mlir::failure();
-      llvm::SmallVector<int64_t> sourceIndices(sizes.size(), 0);
+      sourceIndices.resize(sizes.size(), 0);
       for (size_t dim = 0; dim < sizes.size(); ++dim)
         sourceIndices[dim] =
             offsets[dim] + (*fullSliceIndices)[dim] * strides[dim];
-      return sourceIndices;
+      return mlir::success();
     };
-    auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices)
-        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-      return llvm::SmallVector<int64_t>(resultIndices.begin(),
-                                        resultIndices.end());
+    auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices,
+                          llvm::SmallVectorImpl<int64_t> &destIndices) {
+      destIndices.assign(resultIndices.begin(), resultIndices.end());
+      return mlir::success();
     };
 
     mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
@@ -230,9 +230,10 @@ public:
       return failPattern(rewriter, op, failureReason,
                          "tile.insert_slice lowering requires memref types");
 
-    auto identityIndexFn = [](llvm::ArrayRef<int64_t> indices)
-        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-      return llvm::SmallVector<int64_t>(indices.begin(), indices.end());
+    auto identityIndexFn = [](llvm::ArrayRef<int64_t> indices,
+                              llvm::SmallVectorImpl<int64_t> &result) {
+      result.assign(indices.begin(), indices.end());
+      return mlir::success();
     };
 
     mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> copySegments =
@@ -248,24 +249,24 @@ public:
     llvm::ArrayRef<int64_t> strides = op.getStrides();
     llvm::ArrayRef<int64_t> sourceShape = sourceType.getShape();
 
-    auto sourceIndexFn = [](llvm::ArrayRef<int64_t> sourceIndices)
-        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-      return llvm::SmallVector<int64_t>(sourceIndices.begin(),
-                                        sourceIndices.end());
+    auto sourceIndexFn = [](llvm::ArrayRef<int64_t> sourceIndices,
+                            llvm::SmallVectorImpl<int64_t> &result) {
+      result.assign(sourceIndices.begin(), sourceIndices.end());
+      return mlir::success();
     };
-    auto destIndexFn = [&](llvm::ArrayRef<int64_t> sourceIndices)
-        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+    auto destIndexFn = [&](llvm::ArrayRef<int64_t> sourceIndices,
+                           llvm::SmallVectorImpl<int64_t> &destIndices) {
       mlir::FailureOr<llvm::SmallVector<int64_t>> fullSliceIndices =
           expandRankReducedSliceIndices(rewriter, op, sizes, sourceShape,
                                         sourceIndices, failureReason,
                                         "tile.insert_slice lowering");
       if (mlir::failed(fullSliceIndices))
         return mlir::failure();
-      llvm::SmallVector<int64_t> destIndices(sizes.size(), 0);
+      destIndices.resize(sizes.size(), 0);
       for (size_t dim = 0; dim < sizes.size(); ++dim)
         destIndices[dim] =
             offsets[dim] + (*fullSliceIndices)[dim] * strides[dim];
-      return destIndices;
+      return mlir::success();
     };
 
     mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> insertSegments =
@@ -310,17 +311,17 @@ public:
                          "tile.transpose lowering requires memref types");
 
     llvm::ArrayRef<int64_t> permutation = op.getPermutation();
-    auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices)
-        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-      llvm::SmallVector<int64_t> sourceIndices(sourceType.getRank(), 0);
+    auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices,
+                             llvm::SmallVectorImpl<int64_t> &sourceIndices) {
+      sourceIndices.resize(sourceType.getRank(), 0);
       for (auto [resultDim, sourceDim] : llvm::enumerate(permutation))
         sourceIndices[sourceDim] = resultIndices[resultDim];
-      return sourceIndices;
+      return mlir::success();
     };
-    auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices)
-        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-      return llvm::SmallVector<int64_t>(resultIndices.begin(),
-                                        resultIndices.end());
+    auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices,
+                          llvm::SmallVectorImpl<int64_t> &destIndices) {
+      destIndices.assign(resultIndices.begin(), resultIndices.end());
+      return mlir::success();
     };
 
     mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
@@ -465,17 +466,17 @@ public:
                          "tile.broadcast lowering requires memref types");
 
     llvm::ArrayRef<int64_t> dimensions = op.getDimensions();
-    auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices)
-        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-      llvm::SmallVector<int64_t> sourceIndices(sourceType.getRank(), 0);
+    auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices,
+                             llvm::SmallVectorImpl<int64_t> &sourceIndices) {
+      sourceIndices.resize(sourceType.getRank(), 0);
       for (auto [sourceDim, resultDim] : llvm::enumerate(dimensions))
         sourceIndices[sourceDim] = resultIndices[resultDim];
-      return sourceIndices;
+      return mlir::success();
     };
-    auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices)
-        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-      return llvm::SmallVector<int64_t>(resultIndices.begin(),
-                                        resultIndices.end());
+    auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices,
+                          llvm::SmallVectorImpl<int64_t> &destIndices) {
+      destIndices.assign(resultIndices.begin(), resultIndices.end());
+      return mlir::success();
     };
 
     mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =

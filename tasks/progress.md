@@ -1,15 +1,15 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-16
+更新时间：2026-07-17
 
 本文件只记录当前调度状态、前置关系和紧凑完成索引，不保存逐轮测试数字、实现复盘或历史工作日志。
 长期架构与pipeline contract以编号设计文档为准，详细完成证据与实施记录位于`tasks/archive/`，完整导航见
 `tasks/README.md`；历史变化由Git保留。
 
-当前发布基线：Q22 repo-owned target-call/SystemC model-only untimed functional-numeric链及Q28标准Llama-2 7B单block
-TP16 scale vertical已经完成，数值纵向直接比较固定source CPU expected，不再维护accepted-IR第二套解释器；
-SystemC受管依赖统一位于`third_party/systemc-model`。板端执行、板端数值相关、exact package执行、packet provenance
-和timing仍是独立later/external gate。
+当前发布基线：Q22 repo-owned target-call/SystemC model-only untimed functional-numeric链、Q28标准Llama-2 7B单block
+TP16 scale vertical及Q30 production vertical host性能收口已经完成；数值纵向直接比较固定source CPU expected，不再维护
+accepted-IR第二套解释器。SystemC受管依赖统一位于`third_party/systemc-model`。板端执行、板端数值相关、exact package执行、
+packet provenance和timing仍是独立later/external gate。
 
 ## 队列规则
 
@@ -39,7 +39,7 @@ Q23 -> Q24 -> Q25 -> Q26
 Q22 -> Q27
 
 tile-dataflow scheduling与7B级单block纵向：
-Q22 + Q27 -> Q29 -> Q28
+Q22 + Q27 -> Q29 -> Q28 -> Q30
 
 later/external：
 Q0.L + Q21 + configured board -> Q6.B -> Q9
@@ -51,8 +51,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 
 ## 当前实施队列
 
-当前没有`doing`或`next` implementation row。下列later/external gate不会因队列空闲自动进入主线；开始新任务前必须先更新
-对应编号设计、pipeline contract和实施计划。
+当前没有active或next编码任务。下列later/external gate不会因Q30完成自动进入主线。
 
 ## Later / External Gates
 
@@ -102,6 +101,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 | Q27 | `reference-executor-retirement` | `done` | accepted-IR第二套解释器、oracle分支和旧CLI退役；CPU expected、typed invocation及target CModel/board differential边界保留。 | 01、16-18；`tasks/archive/reference-executor-retirement.md` |
 | Q29 | `tile-dataflow-scheduling` | `done` | structured tensor program直达bounded rank-local task/dataflow candidate、完整traversal、跨region SPM、whole-rank/whole-variant resource gate、旧group executable surface退役及TP16 7B compile-only all-rank package闭合。 | 01、06-13、16；`tasks/archive/tile-dataflow-scheduling.md` |
 | Q28 | `llama-7b-block-vertical` | `done` | 标准Llama-2 7B单block TP16从真实source、task-dataflow package到repo-owned SystemC managed-reference执行及完整PyTorch eager output differential闭合；不包含board、exact ELF、性能或timing。 | 02、03、06、09、11、12、16、17；`tasks/archive/llama-7b-block-vertical.md` |
+| Q30 | `llama-block-production-performance` | `done` | 保持accepted IR、all-rank package、target command、SystemC行为和完整PyTorch differential不变，收口static movement构造及physical codec重复遍历；7B Release wall time稳定下降。 | 08、10、11、16-18；`tasks/archive/llama-block-production-performance.md` |
 | Q1 | `crt-surface-audit` | `done` | compiler-emitted production CRT symbol/prototype surface审计完成。 | 11、14、16及对应archive |
 | Q2-Q3 | `crt-device-symbol-closure` | `done` | production CRT symbol和device-link closure闭合。 | 11、14、16及对应archive |
 | Q3.5 | `crt-extended-evidence` | `done` | 扩展CRT surface evidence已分级。 | 11、14、16及对应archive |

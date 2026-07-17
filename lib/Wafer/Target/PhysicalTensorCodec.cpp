@@ -70,6 +70,7 @@ struct OwnedPhysicalLayout {
   std::unique_ptr<mlir::MLIRContext> context;
   mlir::MemRefType type;
   WaferPhysicalTensorInfo info;
+  std::optional<WaferStaticPhysicalOffsetCalculator> byteOffsets;
 };
 
 llvm::Expected<OwnedPhysicalLayout>
@@ -101,8 +102,15 @@ makePhysicalLayout(const NumericTensorKey &key) {
   if (!info || info->physicalBytes < 0)
     return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
                       "shared layout helper rejected the static tensor");
+  std::optional<WaferStaticPhysicalOffsetCalculator> byteOffsets;
+  if (!info->bitPackedElement) {
+    byteOffsets = WaferStaticPhysicalOffsetCalculator::create(type);
+    if (!byteOffsets)
+      return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
+                        "static byte-offset calculator rejected the tensor");
+  }
   return OwnedPhysicalLayout{std::move(registry), std::move(context), type,
-                             std::move(*info)};
+                             std::move(*info), std::move(byteOffsets)};
 }
 
 template <typename Callback>
@@ -129,14 +137,10 @@ llvm::Error forEachCoordinate(llvm::ArrayRef<uint64_t> shape,
   }
 }
 
-llvm::Expected<std::vector<uint64_t>>
-getPhysicalBitOffsets(const NumericTensorKey &key,
-                      const OwnedPhysicalLayout &layout) {
-  if (key.getElementCount() > std::numeric_limits<size_t>::max())
-    return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
-                      "tensor element count exceeds host size_t");
-  std::vector<uint64_t> offsets;
-  offsets.reserve(static_cast<size_t>(key.getElementCount()));
+template <typename Callback>
+llvm::Error forEachPhysicalBitOffset(const NumericTensorKey &key,
+                                     const OwnedPhysicalLayout &layout,
+                                     Callback callback) {
   if (!layout.info.bitPackedElement &&
       (layout.info.layout == MemLayout::Tensor ||
        layout.info.layout == MemLayout::NTensor) &&
@@ -144,33 +148,33 @@ getPhysicalBitOffsets(const NumericTensorKey &key,
     const uint64_t elementBits =
         static_cast<uint64_t>(layout.info.elementBytes) * UINT64_C(8);
     for (uint64_t index = 0; index < key.getElementCount(); ++index)
-      offsets.push_back(index * elementBits);
-    return offsets;
+      if (llvm::Error error = callback(index * elementBits))
+        return error;
+    return llvm::Error::success();
   }
-  if (llvm::Error error = forEachCoordinate(
-          key.getShape(),
-          [&](llvm::ArrayRef<int64_t> coordinate) -> llvm::Error {
-            std::optional<int64_t> bitOffset;
-            if (layout.info.bitPackedElement) {
-              bitOffset =
-                  computeWaferPhysicalElementBitOffset(layout.type, coordinate);
-            } else {
-              std::optional<int64_t> byteOffset =
-                  computeWaferPhysicalElementByteOffset(
-                      layout.type, layout.info, coordinate);
-              if (byteOffset &&
-                  *byteOffset <= std::numeric_limits<int64_t>::max() / 8)
-                bitOffset = *byteOffset * 8;
-            }
-            if (!bitOffset || *bitOffset < 0)
-              return codecError(
-                  PhysicalTensorCodecErrorCode::InvalidLayout,
-                  "shared layout helper could not map a logical coordinate");
-            offsets.push_back(static_cast<uint64_t>(*bitOffset));
-            return llvm::Error::success();
-          }))
-    return std::move(error);
-  return offsets;
+  return forEachCoordinate(
+      key.getShape(), [&](llvm::ArrayRef<int64_t> coordinate) -> llvm::Error {
+        int64_t bitOffset = -1;
+        if (layout.info.bitPackedElement) {
+          std::optional<int64_t> mapped =
+              computeWaferPhysicalElementBitOffset(layout.type, coordinate);
+          if (mapped)
+            bitOffset = *mapped;
+        } else if (layout.byteOffsets) {
+          int64_t byteOffset =
+              layout.byteOffsets->getByteOffsetForValidIndices(coordinate);
+          if (byteOffset >= 0 &&
+              byteOffset <=
+                  layout.info.physicalBytes - layout.info.elementBytes &&
+              byteOffset <= std::numeric_limits<int64_t>::max() / 8)
+            bitOffset = byteOffset * 8;
+        }
+        if (bitOffset < 0)
+          return codecError(
+              PhysicalTensorCodecErrorCode::InvalidLayout,
+              "shared layout helper could not map a logical coordinate");
+        return callback(static_cast<uint64_t>(bitOffset));
+      });
 }
 
 } // namespace
@@ -221,23 +225,26 @@ unpackPhysicalTensorLogicalValues(const NumericTensorKey &key,
                           llvm::Twine(layout->info.physicalBytes) +
                           " physical bytes, got " +
                           llvm::Twine(storage.size()));
-  llvm::Expected<std::vector<uint64_t>> offsets =
-      getPhysicalBitOffsets(key, *layout);
-  if (!offsets)
-    return offsets.takeError();
+  if (key.getElementCount() > std::numeric_limits<size_t>::max())
+    return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
+                      "tensor element count exceeds host size_t");
   const LogicalScalarCodecPolicy policy =
       getModelProfileRecord(ModelProfileId::formalDeterministicV1())
           .numericDecodePolicy;
   std::vector<RawLogicalValue> result;
-  result.reserve(offsets->size());
-  for (uint64_t offset : *offsets) {
-    llvm::Expected<RawLogicalValue> value =
-        readRawLogicalValue(key.getFormat(), storage, offset, policy);
-    if (!value)
-      return codecError(PhysicalTensorCodecErrorCode::InvalidLogicalEncoding,
-                        llvm::toString(value.takeError()));
-    result.push_back(*value);
-  }
+  result.reserve(static_cast<size_t>(key.getElementCount()));
+  if (llvm::Error error = forEachPhysicalBitOffset(
+          key, *layout, [&](uint64_t offset) -> llvm::Error {
+            llvm::Expected<RawLogicalValue> value =
+                readRawLogicalValue(key.getFormat(), storage, offset, policy);
+            if (!value)
+              return codecError(
+                  PhysicalTensorCodecErrorCode::InvalidLogicalEncoding,
+                  llvm::toString(value.takeError()));
+            result.push_back(*value);
+            return llvm::Error::success();
+          }))
+    return std::move(error);
   return result;
 }
 
@@ -258,22 +265,26 @@ packPhysicalTensorLogicalValues(const NumericTensorKey &key,
   if (values.size() != key.getElementCount())
     return codecError(PhysicalTensorCodecErrorCode::InvalidLogicalValueCount,
                       "logical value count does not match the tensor key");
-  llvm::Expected<std::vector<uint64_t>> offsets =
-      getPhysicalBitOffsets(key, *layout);
-  if (!offsets)
-    return offsets.takeError();
   const LogicalScalarCodecPolicy policy =
       getModelProfileRecord(ModelProfileId::formalDeterministicV1())
           .numericEncodePolicy;
   std::vector<uint8_t> result(storageTemplate.begin(), storageTemplate.end());
-  for (auto [value, offset] : llvm::zip_equal(values, *offsets)) {
-    if (value.format != key.getFormat())
-      return codecError(PhysicalTensorCodecErrorCode::InvalidLogicalEncoding,
-                        "logical value format does not match the tensor key");
-    if (llvm::Error error = writeRawLogicalValue(value, result, offset, policy))
-      return codecError(PhysicalTensorCodecErrorCode::InvalidLogicalEncoding,
-                        llvm::toString(std::move(error)));
-  }
+  size_t valueIndex = 0;
+  if (llvm::Error error = forEachPhysicalBitOffset(
+          key, *layout, [&](uint64_t offset) -> llvm::Error {
+            RawLogicalValue value = values[valueIndex++];
+            if (value.format != key.getFormat())
+              return codecError(
+                  PhysicalTensorCodecErrorCode::InvalidLogicalEncoding,
+                  "logical value format does not match the tensor key");
+            if (llvm::Error writeError =
+                    writeRawLogicalValue(value, result, offset, policy))
+              return codecError(
+                  PhysicalTensorCodecErrorCode::InvalidLogicalEncoding,
+                  llvm::toString(std::move(writeError)));
+            return llvm::Error::success();
+          }))
+    return std::move(error);
   return result;
 }
 

@@ -1,6 +1,6 @@
 # Wafer Compiler Verification Plan
 
-状态：2026-07-16按已完成Q29 structured tile-dataflow主线和Q28标准7B单block scale vertical同步；保留已完成
+状态：2026-07-17按Q30标准7B单block production vertical性能gate同步；保留已完成
 Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate。
 本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
@@ -782,6 +782,26 @@ hardware numeric、性能或timing claim；详细命令、digest、wall time和f
 4096 cap只约束仍被显式物化的ordered reduction chunk和terminal op，不约束compact output traversal，也不是硬件、
 shape或workload限制。若合法reduction/terminal实例超过预算，应继续改进compact表示/consumer，不能调大常量、
 缩小case或漏实例。该gate仍不证明32层整网、KV cache、board或timing。
+
+### 11.6.2 Q30 Production Vertical 性能 Gate
+
+Q30只优化Q28同一production source→all-rank package→repo-owned SystemC→PyTorch comparator链的host实现成本，不形成新的
+timing model。完成证据必须满足：
+
+- 同一机器、Release build、冻结corpus和显式budget记录fresh baseline；profile分开量化source-to-package、静态movement
+  descriptor构造、ProgramTensor physical encoding、SystemC execute和output comparison，不凭算子类别猜热点；
+- compiler fast path前后的`forward.mlir`、manifest、all-rank target command和完整package identity一致；target model的
+  ranks/transactions/thread/delta、formal/managed/bulk计数、environment digest和完整PyTorch output differential一致；
+- static physical-offset calculator以独立慢oracle逐坐标覆盖Tensor/NTensor、Cx/NCx、full/C0 tail、strided view和非法坐标，
+  codec roundtrip另覆盖padding-preserving与bitpacked路径；movement golden/negative证明odometer和scratch reuse没有改变segment
+  顺序、packed descriptor、range或structured failure；
+- 完整7B candidate至少重复两次并相对fresh baseline稳定下降；小型case、累计CPU profile或单stage microbenchmark不能替代
+  production wall-time gate。性能证据记录环境和波动，但不得写成硬件吞吐、cycle或板端校准结论；
+- oneDNN worker/runtime、primitive policy或受管dependency identity只有在分项计时证明backend compute是主要剩余瓶颈时才能
+  修改，并需重放qualification、link closure和完整数值。若主要成本是target-owned codec/adapter，应先共享typed physical
+  plan、合并重复validation/traversal，不能用全局mutable cache或跳过value-domain/budget/failure atomicity。
+
+详细baseline、分项profile、candidate数字和suite证据只进入Q30归档实施记录；`tasks/progress.md`只保留完成索引。
 
 ### 11.7 Q22.C Board Numeric Correlation Gate
 

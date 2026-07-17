@@ -647,3 +647,17 @@
 - 修复模式：effect保留一份compact payload和strided descriptor；规则布局先以checked bounding span、alignment和
   stride non-overlap证明走快路，其它合法布局线性枚举并排序检查。range/resource/overflow/destination overlap全部在write
   前验证，source snapshot先于任何write；public allocation还要在构造vector前检查host capacity。
+
+## 2026-07-17 静态movement与physical codec不能逐元素重建layout事实
+
+- 现象：标准Llama-2 7B单block已经走managed-reference和oneDNN，Release整条纵向仍需约81秒；直觉上继续增加oneDNN线程，
+  但profile显示movement lowering累计CPU占比约57%，后续bulk lane中实际matmul远小于physical unpack和adapter。
+- 根因：static movement对每个element重复linear-index反解、临时index vector和Cx/NCx geometry计算；target codec又先建立
+  element-count大小的physical offset side table，bulk adapter还对strict decoder已canonicalize的raw value重复校验。
+  transaction、layout validation和逐元素遍历三个粒度没有分开。
+- 修复模式：用共享static physical-offset calculator一次验证/预计算byte stride和blocked full/tail常量；verified domain用
+  lexicographic odometer和复用scratch，codec流式消费offset，adapter只删除有明确上游合同保证的重复canonicalization。
+  bitpacked、dynamic、overflow、value-domain、budget和atomic failure仍在原层级拒绝。
+- 防复发：先区分累计CPU与wall并继续分解adapter；fast calculator必须对独立慢oracle覆盖Tensor/NTensor、Cx/NCx、tail和
+  strided case，movement negative锁定诊断层级；scale gate比较优化前后完整package、计数/environment及PyTorch expected。
+  不因“GEMM很大”就修改受管thread runtime。

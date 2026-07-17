@@ -114,12 +114,10 @@ makeF32DenseBytes(llvm::ArrayRef<RawLogicalValue> values,
       return bulkError(BulkTensorNumericErrorCode::UnsupportedFormat,
                        "F32 dense adapter received an unsupported format");
     }
-    llvm::Expected<RawLogicalValue> canonical = makeRawLogicalValue(
-        format, values[index].bits, NonCanonicalEncodingPolicy::Reject);
-    if (!canonical)
-      return bulkError(BulkTensorNumericErrorCode::InvalidInputEncoding,
-                       llvm::toString(canonical.takeError()));
-    const uint32_t f32Bits = widenToF32Bits(format, canonical->bits);
+    // The physical codec produced these values with the selected strict
+    // decode policy, so repeating scalar canonicalization here would only
+    // revalidate the same bits before widening them to the backend format.
+    const uint32_t f32Bits = widenToF32Bits(format, values[index].bits);
     for (uint64_t byte = 0; byte < elementBytes; ++byte)
       bytes[index * elementBytes + byte] =
           static_cast<uint8_t>(f32Bits >> (8 * byte));

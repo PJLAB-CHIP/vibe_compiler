@@ -1464,6 +1464,30 @@ bit-exact capability row。
 
 完成边界和负例由tasks/16的Q28 gate拥有；完整32层、KV/autoregressive、board correlation和timing仍分别后续闭合。
 
+### 10.7.2 Production vertical性能边界
+
+Q30优化Q28已经发布的完整host production vertical，不预设瓶颈位于compiler还是functional-reference backend。
+2026-07-17 fresh profile先定位tile-region到instruction的静态movement descriptor构造；收口该热点后的stage timer又定位
+ProgramTensor physical encoding和bulk/tensor command中的重复physical codec traversal。oneDNN实际MatMul/reorder不是主要成本，
+因此不修改thread runtime或受管dependency identity。本节规定跨stage不变量，shared geometry由tasks/08、instruction lowering
+由tasks/11拥有。
+
+任何性能修改都必须保持formal/tensor/bulk计数、exception/evidence、SystemC delta、DTE/completion、pending effect原子提交、
+完整output bytes和PyTorch expected differential。若后续profile显示physical layout、logical value、finite/non-NaN检查、
+dense adapter或oneDNN descriptor在一个command中成为主要重复工作，应由command-local typed plan合并；跨command reuse只能由
+backend/invocation拥有，并以environment、resolved command、tensor key和immutable payload identity构成完整key及显式容量
+预算。进程全局cache、buffer地址、slot名和ambient线程变量都不能成为正确性或reuse协议。
+
+ProgramTensor invocation encoding、managed tensor lane和bulk GEMM adapter统一消费tasks/08的
+`WaferStaticPhysicalOffsetCalculator`；byte-addressable physical traversal流式读写logical values，不建立element-count大小的
+offset side table。bulk F16/BF16/F32输入经strict physical decode后可以直接做位级F32 widening，不得在adapter中对同一
+`RawLogicalValue`再跑一遍canonicalization；noncanonical/value-domain拒绝仍由decode和managed admission在backend effect前
+完成。该共享只覆盖layout/codec事实，不共享PyTorch expected、compute result或command effect。
+
+threaded oneDNN属于受管依赖身份变化，只有在fresh测量证明SEQ compute是主要剩余瓶颈后才能引入，并需固定worker政策、
+link closure和environment digest，重新通过qualification及完整7B数值。Q30实施与完成证据归档于
+`tasks/archive/llama-block-production-performance.md`。
+
 ### 10.8 Q22.C Board numeric correlation
 
 - Q6.B先闭合board provider correctness、watchdog/reset和重复invocation；

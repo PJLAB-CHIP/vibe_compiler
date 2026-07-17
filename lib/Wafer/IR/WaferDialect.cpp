@@ -384,6 +384,103 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
   return computeWaferPhysicalElementByteOffset(type, *info, logicalIndices);
 }
 
+std::optional<WaferStaticPhysicalOffsetCalculator>
+WaferStaticPhysicalOffsetCalculator::create(mlir::MemRefType type) {
+  std::optional<WaferPhysicalTensorInfo> info =
+      computeWaferPhysicalTensorInfo(type);
+  if (!info || info->physicalBytes <= 0 || info->elementBytes <= 0 ||
+      info->bitPackedElement)
+    return std::nullopt;
+
+  llvm::SmallVector<int64_t, 4> shape(type.getShape());
+  if (llvm::any_of(shape, [](int64_t dim) {
+        return dim == mlir::ShapedType::kDynamic || dim <= 0;
+      }))
+    return std::nullopt;
+
+  auto multiply = [](int64_t lhs, int64_t rhs) -> std::optional<int64_t> {
+    int64_t result = 0;
+    if (!checkedMul(lhs, rhs, result))
+      return std::nullopt;
+    return result;
+  };
+
+  llvm::SmallVector<int64_t, 4> byteStrides;
+  llvm::SmallVector<int64_t, 4> linearStrides;
+  int64_t fullC = 0;
+  int64_t blockStrideBytes = 0;
+  int64_t fullBlockBytes = 0;
+  if (info->layout != MemLayout::Cx && info->layout != MemLayout::NCx) {
+    llvm::SmallVector<int64_t, 4> elementStrides;
+    int64_t offset = 0;
+    if (mlir::failed(mlir::getStridesAndOffset(type, elementStrides, offset)) ||
+        elementStrides.size() != static_cast<size_t>(type.getRank()))
+      return std::nullopt;
+    byteStrides.reserve(elementStrides.size());
+    for (int64_t stride : elementStrides) {
+      if (stride == mlir::ShapedType::kDynamic || stride < 0)
+        return std::nullopt;
+      std::optional<int64_t> byteStride = multiply(stride, info->elementBytes);
+      if (!byteStride)
+        return std::nullopt;
+      byteStrides.push_back(*byteStride);
+    }
+  } else {
+    if (shape.empty() || info->cBlock <= 0 || info->cxBlocks < 0 ||
+        info->outerElements <= 0 || info->c0 < 0)
+      return std::nullopt;
+
+    linearStrides.resize(shape.size() - 1, 1);
+    int64_t linearStride = 1;
+    for (int64_t dim = static_cast<int64_t>(linearStrides.size()) - 1; dim >= 0;
+         --dim) {
+      linearStrides[dim] = linearStride;
+      std::optional<int64_t> next = multiply(linearStride, shape[dim]);
+      if (!next)
+        return std::nullopt;
+      linearStride = *next;
+    }
+
+    std::optional<int64_t> computedFullC =
+        multiply(info->cxBlocks, info->cBlock);
+    int64_t blockOuterElements =
+        info->layout == MemLayout::NCx ? info->hwElements : info->outerElements;
+    std::optional<int64_t> blockStrideElements =
+        multiply(blockOuterElements, info->cBlock);
+    if (!computedFullC || !blockStrideElements)
+      return std::nullopt;
+    std::optional<int64_t> computedBlockStrideBytes =
+        multiply(*blockStrideElements, info->elementBytes);
+    std::optional<int64_t> fullBlockElements =
+        multiply(info->cxBlocks, *blockStrideElements);
+    if (!computedBlockStrideBytes || !fullBlockElements)
+      return std::nullopt;
+    std::optional<int64_t> computedFullBlockBytes =
+        multiply(*fullBlockElements, info->elementBytes);
+    if (!computedFullBlockBytes)
+      return std::nullopt;
+    fullC = *computedFullC;
+    blockStrideBytes = *computedBlockStrideBytes;
+    fullBlockBytes = *computedFullBlockBytes;
+  }
+  return WaferStaticPhysicalOffsetCalculator(
+      std::move(*info), std::move(shape), std::move(byteStrides),
+      std::move(linearStrides), fullC, blockStrideBytes, fullBlockBytes);
+}
+
+std::optional<int64_t> WaferStaticPhysicalOffsetCalculator::getByteOffset(
+    llvm::ArrayRef<int64_t> logicalIndices) const {
+  if (shape.size() != logicalIndices.size())
+    return std::nullopt;
+  for (auto [dim, index] : llvm::zip_equal(shape, logicalIndices))
+    if (index < 0 || index >= dim)
+      return std::nullopt;
+  int64_t byteOffset = getByteOffsetForValidIndices(logicalIndices);
+  if (byteOffset < 0 || byteOffset > info.physicalBytes - info.elementBytes)
+    return std::nullopt;
+  return byteOffset;
+}
+
 std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
     mlir::MemRefType type, const WaferPhysicalTensorInfo &info,
     llvm::ArrayRef<int64_t> logicalIndices) {

@@ -613,3 +613,9 @@
 - CModel strided movement保留一份source snapshot和compact descriptor；规则nested stride用span/non-overlap证明，fallback
   线性枚举后排序验证。不要按segment构造独立payload/pending-write对象；所有range、resource、overflow、alignment和
   destination overlap必须在任一write前完成验证，保持source-before-write与命令级原子性。
+- 大规模production vertical先用Release fresh baseline和累计CPU profile定位阶段，再对热点做局部wall-time分解；16-rank
+  编译的累计CPU百分比不能直接当wall百分比，SystemC command时间也要继续拆成physical unpack、adapter、backend compute和
+  finalize。只有实际backend compute成为主要成本时才值得修改oneDNN thread runtime或受管依赖身份。
+- 静态layout hot loop应把`memref type -> physical geometry`构造成command/conversion-local可重算calculator，并用已验证
+  lexicographic odometer流式遍历；不要为每个element重复反线性化、重建MLIR layout事实或物化等长offset side table。
+  性能收口必须同时比较完整package目录、target-model计数/environment和独立expected，不能只依赖wall time或同实现oracle。
