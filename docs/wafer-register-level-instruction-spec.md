@@ -1305,7 +1305,7 @@ typedef struct D_DynTLV {
 
 本表只按wrapper/register/board证据成熟度分类，不声明production lowering surface，也不跟踪实现状态。
 当前instruction family、command ABI、CRT closure和完成gate分别见
-[tasks/11](../tasks/11-instruction-ir.md)、[tasks/14](../tasks/14-target-llvm-golden-packet.md)与
+[tasks/11](../tasks/11-instruction-ir.md)、[tasks/14](../tasks/14-target-conversion-module-publication.md)与
 [tasks/progress.md](../tasks/progress.md)。
 
 | 证据层 | 静态可见能力 | 不能推出的结论 |
@@ -1330,7 +1330,7 @@ typedef struct D_DynTLV {
 | wrapper 调用样例 | `TsmConv` | Tx81 CRT有Conv wrapper组合样例；`__Conv`的psum format和activation默认行为不可靠 | 只作调用反例；production Conv profile见`tasks/11`/`tasks/14` |
 | native wrapper | `TsmPool`、`TsmUnPool` | pool/unpool wrapper header存在 | 只证明wrapper存在；当前closure和gate状态看[tasks/progress.md](../tasks/progress.md) |
 | native wrapper | `TsmDataMove::{Mirror, Transpose, Rotate90/180/270, Nchw2nhwc, Nhwc2nchw, Pad, Img2col, TensorNom}` | public wrapper/header暴露能力，CRT只有少量样例 | 不等于 production 合法；具体 materialization/diagnostic 见 `tasks/08`/`tasks/11`/`tasks/14` |
-| native wrapper | `TsmPeripheral::{Count, ArgMax, ArgMin, Bilinear, Lut16, Lut32, RandGen, Factorize, ElemMask}` | public wrapper/header暴露能力，CRT只有少量样例 | 只列证据面；production instruction/closure状态见[tasks/11](../tasks/11-instruction-ir.md)、[tasks/14](../tasks/14-target-llvm-golden-packet.md)与[tasks/progress.md](../tasks/progress.md) |
+| native wrapper | `TsmPeripheral::{Count, ArgMax, ArgMin, Bilinear, Lut16, Lut32, RandGen, Factorize, ElemMask}` | public wrapper/header暴露能力，CRT只有少量样例 | 只列证据面；production instruction/closure状态见[tasks/11](../tasks/11-instruction-ir.md)、[tasks/14](../tasks/14-target-conversion-module-publication.md)与[tasks/progress.md](../tasks/progress.md) |
 | transport evidence gap | Direct DTE / raw DTE non-unicast | Tx81 CRT只展示unicast；public `DirectDTESendInfo`没有`dst[32]`、`user_id[32]`、`dest_num` | 不能证明runtime可配置non-unicast新协议；transport binding与command ABI只看`tasks/13`/`tasks/14` |
 | legacy helper evidence | `TsmStream::{OnlineStream, OfflineStream, WaitStream, ReqStream, PushStream, PopStream, wait_finish}` | CRT send路径存在stream对象 | 只证明该snapshot存在stream helper，不决定Wafer production transport或长期采用方式 |
 

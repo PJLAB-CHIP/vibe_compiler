@@ -101,7 +101,7 @@
   `tasks/README.md`、`tasks/progress.md` 任务队列和当前 target LLVM / launch-runtime 编号设计
   文档的 pipeline contract。
 - 修复模式：`tasks/progress.md` 只作为任务队列；当前架构合同以编号设计文档为准。遇到 target CRT /
-  device-code gate 时，先按 target LLVM / golden-packet 编号设计核对 Wafer-owned `wafer_tx81_*` surface、
+  device-code gate 时，先按 target conversion / module publication 编号设计核对 Wafer-owned `wafer_tx81_*` surface、
   repo-local Wafer CRT source/object 和 required-symbol closure；不要从 `libvr.a`、TX81 `__*` symbol、
   手写 LLVM input 或 package fixture 反推 production compiler boundary。发现 memory 与编号设计文档
   冲突时，必须在同一批改动里修正 memory。

@@ -1,8 +1,7 @@
 # Wafer Physical-Dataflow Synthesis 与 Candidate Selection
 
-状态：2026-07-17 已收敛终态设计；实现由 `tasks/progress.md` 中的
-`physical-dataflow-synthesis` 任务跟踪。文件名 `06-group.md` 只保留编号导航兼容，本文不再定义或恢复
-`wafer.group`。
+状态：2026-07-17已收敛终态设计；实现由`tasks/progress.md`中的
+`physical-dataflow-synthesis`任务跟踪。本文不定义或恢复`wafer.group`。
 
 本文是 rank-local **physical-dataflow synthesis** 的唯一设计 owner。它联合选择等价计算形式、target
 implementation、tile、physical encoding、storage realization、residency、buffering 和合法执行顺序，再把唯一选中方案

@@ -901,13 +901,13 @@ hardware/reverse 文档维护；对应唯一 owner 如下：
 
 | 设计边界 | 唯一编号 owner |
 | --- | --- |
-| layout / physical organization | `tasks/08-layout-materialization.md` |
+| layout / physical organization | `tasks/08-physical-realization.md` |
 | SPM reservation / allocation | `tasks/09-spm-memory-planning.md` |
 | instruction IR / geometry / legality | `tasks/11-instruction-ir.md` |
 | physical transport / communication completion | `tasks/13-communication.md` |
-| target command / CRT / artifact ABI | `tasks/14-target-llvm-golden-packet.md` |
+| target command / CRT / artifact ABI | `tasks/14-target-conversion-module-publication.md` |
 | package / provider / runtime completion | `tasks/15-launch-runtime-package.md` |
-| board / profile / conformance gates | `tasks/16-verification-plan.md` |
+| board / profile / conformance gates | `tasks/16-verification-contract.md` |
 
 两份 root hardware/register 文档和本目录其它文档均只作 evidence summary/ledger，
 不能替代上表合同。需要追溯事实时继续看本文后续的源文件映射和函数/API 级索引。

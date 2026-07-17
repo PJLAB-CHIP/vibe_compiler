@@ -1,10 +1,10 @@
-# Wafer Physical Encoding、Transfer Route 与 Materialization
+# Wafer Physical Realization：Encoding、Transfer Route 与 Materialization
 
 状态：本文按 physical-dataflow synthesis 终态边界定义 target physical encoding、transfer route、descriptor
 cover、immutable storage encoding 和 explicit materialization provider。实现状态只看 `tasks/progress.md`。
 
 本文不再定义一套独立 layout planner。implementation、tile、physical version、residency、spill、task order和
-layout/transfer cut的联合选择统一归 `tasks/06-group.md`；selected candidate 如何成为显式tile-dataflow IR归
+layout/transfer cut的联合选择统一归 `tasks/06-physical-dataflow-synthesis.md`；selected candidate 如何成为显式tile-dataflow IR归
 `tasks/07-tile-region.md`。本文回答三个更窄的问题：
 
 1. 一个logical value在目标硬件上有哪些参数化physical encodings，它们的footprint、valid domain和offset map是什么；

@@ -1,4 +1,4 @@
-# Wafer Target Conversion、CRT 和 Module Publication
+# Wafer Target Conversion、CRT 与 Module Publication
 
 状态：2026-07-17在Q17完成证据、Q16.T激活、Q22.L owner-backed target LLVM bundle基础上补充联合planner所需的
 mapped-transfer address closure和versioned GEMM orientation ABI终态。本文拥有

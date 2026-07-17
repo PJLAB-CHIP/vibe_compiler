@@ -9,8 +9,9 @@ program directory、metadata/payload和frontend admission合同；typed model/st
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  framework/exporter生成的StableHLO program directory，或带有等价function boundary事实的pre-exported
-  StableHLO module；可包含frontend `mhlo.sharding`。
+  production只接受framework/exporter生成的StableHLO program directory，其中`functions/forward.mlir`可来自
+  pre-exported StableHLO且可包含frontend `mhlo.sharding`。显式module只进入IR-local frontend verifier，
+  不是`wafer-compile`的第二种production输入。
 - Current stage responsibility:
   parse并verify StableHLO module；校验单entry function与`forward.meta`的shape/dtype/arg-role关系；校验
   parameter/constant NPY payload；对post-SPMD program校验canonical `forward.meta.distributed_boundary`、
@@ -33,7 +34,7 @@ Pipeline position:
   不定义typed model/state ABI、MPMD member graph、physical endpoint、layout、SPM/DDR allocation、DTE、
   target ABI、manifest或runtime handle；不从parameter/function/file名恢复后端语义。
 - Completion gate:
-  真实PyTorch/XLA exporter产物及pre-exported fixtures通过同一program verifier；metadata、payload、static
+  真实PyTorch/XLA exporter产物及封装为program directory的pre-exported fixtures通过同一program verifier；metadata、payload、static
   boundary和post-SPMD shard负例在进入下游前fail closed；Q15直接消费该verified artifact，而不是重建第二份
   frontend对象模型。
 ```

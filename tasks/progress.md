@@ -66,7 +66,7 @@ gate也不会自动进入主线。
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q32.I | `target-implementation-foundation` | `next` | Q29、Q28、Q30、Q31 | 冻结fresh baseline/consumer矩阵，建立从SemanticOpDescriptor查询current-v1 ImplementationFamily及canonical baseline的独立provider；accepted op interface只验证selected合同。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` A/B1 |
+| Q32.I | `target-implementation-foundation` | `next` | Q29、Q28、Q30、Q31 | 先冻结活跃owner命名、当前/目标主架构和fresh baseline/consumer矩阵，再建立从SemanticOpDescriptor查询current-v1 ImplementationFamily及canonical baseline的独立provider；accepted op interface只验证selected合同。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` A/B1 |
 | Q32.R | `physical-relation-route-proof` | `blocked` | Q32.I | 建立IndexRelation、PhysicalEncoding/view proof、08唯一TransferRouteFamily、descriptor cover、InvalidLaneState和完整query signature/fuel gate。 | 06-08、10、11、16、18；同计划C |
 | Q32.B | `physical-dataflow-baseline-vertical` | `blocked` | Q32.R | 用新provider/materializer和canonical family encoding构造reserved conservative baseline，完成per-rank与all-rank exact eligibility并原子形成bundle，不调用旧decision owner。 | 01、06-18；同计划D |
 | Q32.V | `physical-capability-vertical` | `blocked` | Q32.B | 闭合mapped local-offset、invalid-lane fill/segment、versioned oriented GEMM到TargetCall/SystemC的model-qualified纵向，以及Q16/Q17/Q18 schema-v4 RequiredCapabilitySet与model/board逐key preflight；board数值predicate仍独立。 | 06、08、10、11、14-18；同计划V |

@@ -1,4 +1,4 @@
-# Wafer Compute and Movement Dialect Design
+# Wafer Target Implementation 与 Compute/Movement IR
 
 状态：2026-07-17按联合physical-dataflow终态拆开planning capability与accepted op合同；本文覆盖
 `SemanticOpDescriptor`到parameterized `ImplementationFamily`的target capability provider、selected
@@ -635,7 +635,8 @@ Accepted layout 后：
 
 ## 10. 与其它文档的关系
 
-全局文档边界见 `tasks/01-architecture.md` 第 8 节。本文只维护
+全局pipeline/artifact边界见`tasks/01-architecture.md`；physical-dataflow decision owner见
+`tasks/06-physical-dataflow-synthesis.md`。本文只维护
 target-abstract compute/movement op 的语义、interface 和 lowering legality；task/dataflow scheduling、
 joint implementation/encoding/transfer selection、SPM/DDR allocation、communication 和 launch/runtime 不在本文重复定义。
 register-level wrapper / packet 约束只在 launch/resource、target LLVM 或 runtime adapter 边界中消费。

@@ -66,6 +66,9 @@ Pipeline position:
 
 施工：
 
+- 将活跃编号文档的历史错位文件名收敛到稳定semantic owner，重写01为当前pipeline/artifact spine；旧basename、错误章节号
+  交叉引用和“文件名仅作兼容”话术在current docs中清零；archive保留当时basename/line-range快照，并由README明确其
+  non-current-path语义；
 - 对06-18与live code做字段/consumer矩阵，确认每个selected decision最终落到哪个typed op/type/attr；
 - 固定现有rank-count=1/16 corpus、7B source/config/expected、package readback和unsupported feature清单；
 - 为planner telemetry定义结构化但非artifact的schema：generated、constraint-pruned、canonical-merged、
@@ -74,8 +77,9 @@ Pipeline position:
 
 产出：可复现的source-to-bundle/CModel baseline与consumer矩阵。
 
-Gate：development和target-model两种配置均有fresh build/lit/unit/CTest、完整unsupported审计、rank-count=1/16与7B
-结果；本checkpoint不以历史数字代替重放。
+Gate：active owner导航与本地引用无断链、旧basename零残留、01当前/目标事实与live public artifact types一致；development和
+target-model两种配置均有fresh build/lit/unit/CTest、完整unsupported审计、rank-count=1/16与7B结果；本checkpoint不以
+历史数字代替重放。
 
 不算完成：只保存IR dump、只跑单rank或只统计layout op数量。
 

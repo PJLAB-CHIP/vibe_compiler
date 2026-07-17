@@ -11,8 +11,8 @@ SPM arena、DDR 切边、candidate、executable 或提交单元。跨 region 的
 
 本文依赖：
 
-- `tasks/06-group.md`：physical-dataflow synthesis、candidate state、搜索、排序和 atomic commit 的唯一 owner。
-- `tasks/08-layout-materialization.md`：physical encoding、transfer route、descriptor cover、immutable storage 和
+- `tasks/06-physical-dataflow-synthesis.md`：physical-dataflow synthesis、candidate state、搜索、排序和 atomic commit 的唯一 owner。
+- `tasks/08-physical-realization.md`：physical encoding、transfer route、descriptor cover、immutable storage 和
   layout materialization provider。
 - `tasks/09-spm-memory-planning.md`、`tasks/12-ddr-memory-planning.md`：完整 rank 上的 lifetime、容量和 offset gate。
 - `tasks/10-compute-movement.md`、`tasks/11-instruction-ir.md`：target implementation family、instruction legality

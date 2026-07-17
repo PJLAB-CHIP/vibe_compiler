@@ -356,8 +356,9 @@ full-physical TargetCall/SystemC纵向。
 
 这里的 `V0 production target op` 只说明 instruction IR / verifier / target LLVM call-emission 层必须识别
 该 op，并生成 Wafer-owned `wafer_tx81_*` call 或结构化失败。它不说明 repo-local Wafer CRT wrapper
-已经定义该 symbol，也不说明 register packet golden、device-code required-symbol gate 或板端执行已经通过；
-这些分别属于 `tasks/14` 的 CRT/golden boundary 和 `tasks/15` 的 device-code/package boundary。
+已经定义该 symbol，也不说明 packet/register provenance、device-code required-symbol gate 或板端执行已经通过；
+CRT、device link、required-symbol和module publication属于`tasks/14`，manifest/package/runtime boundary属于`tasks/15`，
+packet/register与板端证据另由`tasks/16` gate。
 
 | 硬件 / wrapper 能力 | 当前 `wafer.instr` 表示 | coverage tier | 处理规则 |
 | --- | --- | --- | --- |
@@ -720,7 +721,7 @@ completion前不可复用。TX81首发只允许profile证明的32-value block/so
 结构化失败。
 
 两种op都不得保存wrapper symbol或旧`__*` helper名。target LLVM只按typed profile选择Wafer-owned fixed ABI；在
-profile、geometry、SPM range、CRT conformance、golden packet/device-link任一gate完成前，这些op可以用于
+profile、geometry、SPM range、TargetCall/CRT conformance、device-link任一gate完成前，这些op可以用于
 parser/verifier negative/plan测试，但必须在production target legality中失败。
 
 ### 7.6 Conv / Pool / UnPool

@@ -687,7 +687,8 @@ SPM / tile-region verifier 至少检查：
 
 ## 14. 与 Physical-Dataflow Planner 的关系
 
-全局文档边界见 `tasks/01-architecture.md` 第 8 节。SPM allocation 回答完整 static rank entry 中
+全局artifact DAG与decision/gate分层见`tasks/01-architecture.md`，联合搜索合同见
+`tasks/06-physical-dataflow-synthesis.md`。SPM allocation回答完整static rank entry中
 完整rank task program的`#wafer.memory<spm, *>` allocation是否可行，并把whole-rank失败返回
 whole-variant physical-dataflow planner。
 闭环顺序：

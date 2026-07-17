@@ -2,7 +2,7 @@
 
 本文把旧DLCompiler TX81 CRT source audit与repo-local Wafer CRT实现做静态对照。它只记录
 source-backed evidence，不拥有production membership、prototype/signature、IR、ABI、lowering或
-runtime policy。当前IR / ABI和production closure合同查看`tasks/14-target-llvm-golden-packet.md`，
+runtime policy。当前IR / ABI和production closure合同查看`tasks/14-target-conversion-module-publication.md`，
 prototype与repo-local实现分别查看`runtime/wafer_crt/include/wafer_tx81_crt.h`和
 `runtime/wafer_crt/src/wafer_tx81_crt.c`；闭合状态查看`tools/check_target_crt_symbols.py`与
 `tasks/progress.md`。

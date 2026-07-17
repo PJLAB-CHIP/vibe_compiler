@@ -1,9 +1,9 @@
-# Wafer Compiler Verification Plan
+# Wafer Compiler Verification Contract
 
 状态：2026-07-17按Q31标准7B单block多seed数值表征和source/model gate收紧同步，并补充联合physical-dataflow planner、
 mapped transfer与versioned GEMM orientation的目标验证合同；保留已完成
 Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate。
-本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
+本文是跨stage稳定验证合同，不是`tasks/plans/`中的动态实施计划。它拥有完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -276,7 +276,7 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 
 ### 6.1 Physical-Dataflow Synthesis Gate
 
-`tasks/06-group.md`拥有终态联合planner合同；本文固定跨stage证据口径。Q29数字只作为已实现迁移baseline：
+`tasks/06-physical-dataflow-synthesis.md`拥有终态联合planner合同；本文固定跨stage证据口径。Q29数字只作为已实现迁移baseline：
 
 - production从Q15 verified structured tensor program直接建立rank-local task/dataflow candidates，不发布或
   重新读取额外的调度artifact；

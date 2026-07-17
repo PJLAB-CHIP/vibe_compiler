@@ -42,8 +42,9 @@ Pipeline position:
   `KernelRuntimeABIId`且all-rank module/config一致。runtime解析并验证同一model，结合invocation
   bindings/runtime environment形成side-effect-free RuntimeSession plan。
 - Output artifact / IR:
-  VerifiedPackageManifest、canonical package JSON、no-card RuntimeSessionPlan；Q32 production output为schema v4并携带
-  canonical required-capability keys/digest，不包含command list。
+  move-only `PackageBundle(package root, ExecutionConfig, VerifiedPackageManifest)`、canonical package JSON/published directory和
+  no-card `RuntimeSessionPlan`；Q32 production output为schema v4并携带canonical required-capability keys/digest，
+  不包含command list。`PackageBundle`只拥有已验证root/config/manifest的lifetime，不复制program或形成package外sidecar。
 - Downstream consumer:
   wafer-run/no-card inspection、target execution model/board integration、target module loader和invocation API。
 - User-level driver / named pipeline:

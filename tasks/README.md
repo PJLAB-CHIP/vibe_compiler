@@ -11,23 +11,23 @@
 
 | 编号 | 文档 | 范围 |
 | --- | --- | --- |
-| 01 | `tasks/01-architecture.md` | 当前真实pipeline、近期per-rank static executable bundle和长期扩展边界 |
+| 01 | `tasks/01-architecture.md` | compiler stack主架构：production pipeline、IR/artifact DAG、跨层不变量、consumer分支和owner索引 |
 | 02 | `tasks/02-frontend-stablehlo-program.md` | 当前StableHLO program directory与frontend验证；typed state是后续扩展 |
 | 03 | `tasks/03-shardy-spmd.md` | 当前Shardy/XLA SPMD artifact、显式rank identity；MPMD/rank class延后 |
 | 04 | `tasks/04-topology-execution-mesh.md` | 当前topology/execution mesh；Q0.L typed target-profile仅随ExecutionConfig透传，不进入mesh IR |
 | 05 | `tasks/05-local-compute-normalization.md` | rank-local structured compute和tensor collective handoff |
-| 06 | `tasks/06-group.md` | rank-local physical-dataflow synthesis：等价关系、implementation/tile/encoding/storage/residency/order的有界联合选择与atomic commit；文件名仅保留历史编号导航 |
+| 06 | `tasks/06-physical-dataflow-synthesis.md` | rank-local physical-dataflow synthesis：等价关系、implementation/tile/encoding/storage/residency/order的有界联合选择与atomic commit |
 | 07 | `tasks/07-tile-region.md` | selected proposal的typed task/traversal IR物化与完整coverage；不是planner或per-group SPM/DDR边界 |
-| 08 | `tasks/08-layout-materialization.md` | physical encoding、valid domain、view/transfer route、descriptor cover和selected storage materialization；不维护独立layout planner |
+| 08 | `tasks/08-physical-realization.md` | physical encoding、valid domain、view/TransferRouteFamily、descriptor cover和selected physical realization；不维护独立layout planner |
 | 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/completion planning和accepted offsets |
 | 10 | `tasks/10-compute-movement.md` | SemanticOpDescriptor/TargetImplementationProvider、parameterized implementation family、selected target-abstract compute/movement、resource effects和issue/token/fence/wait |
 | 11 | `tasks/11-instruction-ir.md` | complete static rank instruction program、typed orientation/descriptor、geometry/range/narrowing legality |
 | 12 | `tasks/12-ddr-memory-planning.md` | 当前DDR demand/accepted offsets；multi-arena/state/streaming延后 |
 | 13 | `tasks/13-communication.md` | CommunicationScheduleFamily、selected collective到Direct DTE、all-rank compatibility/transport metrics和completion；segmented/multi-card延后 |
-| 14 | `tasks/14-target-llvm-golden-packet.md` | shared logical/target-format/capability registry、versioned RequiredCapabilitySet、structure-preserving target LLVM、CRT ABI和atomic staged target module |
-| 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest、当前schema-v3与Q32 schema-v4 cutover、canonical JSON、no-card RuntimeSession和board adapter边界 |
-| 16 | `tasks/16-verification-plan.md` | target correctness、1/16-rank bundle、CPU oracle、target-model、7B managed-reference scale、no-card和board分层gate |
-| 17 | `tasks/17-target-execution-model.md` | multi-dtype numeric、oneDNN bulk、owner-backed target LLVM bundle、repo-owned target-call/SystemC untimed CModel、7B managed-reference scale、optional CRT/packet provenance、Q22.C板端numeric correlation、Q22.E exact-module和deferred Q22.P timing边界 |
+| 14 | `tasks/14-target-conversion-module-publication.md` | shared logical/target-format/capability registry、versioned RequiredCapabilitySet、structure-preserving target conversion、CRT ABI和atomic module publication |
+| 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest/PackageBundle、当前schema-v3与Q32 schema-v4 cutover、canonical JSON、no-card RuntimeSession和board adapter边界 |
+| 16 | `tasks/16-verification-contract.md` | 跨stage verification contract：target correctness、1/16-rank bundle、CPU oracle、target-model、scale、no-card和board分层gate |
+| 17 | `tasks/17-target-execution-model.md` | multi-dtype numeric、oneDNN bulk、same-lowering target LLVM bundle消费、repo-owned target-call/SystemC untimed CModel、7B managed-reference scale、optional CRT/packet provenance、Q22.C板端numeric correlation、Q22.E exact-module和deferred Q22.P timing边界 |
 | 18 | `tasks/18-source-organization.md` | 跨pipeline的源码ownership、translation unit、内部接口、构建依赖和测试镜像组织合同；不改变IR/artifact语义 |
 
 ### Pipeline Owner 索引
@@ -48,7 +48,7 @@
 | target LLVM、CRT/device link和staged target module | 14 |
 | typed manifest、launch和RuntimeSession | 15 |
 | 横跨上述边界的completion evidence | 16 |
-| target execution model、multi-dtype numeric/bulk、target LLVM bundle、SystemC/CModel capability、板端numeric correlation和deferred timing | 17；target/runtime/verification consumer由14、15、16约束 |
+| target execution model、multi-dtype numeric/bulk、same-lowering bundle消费、SystemC/CModel capability、板端numeric correlation和deferred timing | 17；`TargetLLVMModuleBundle`的形成与publication合同由14拥有，target/runtime/verification consumer由14、15、16约束 |
 | 跨上述边界的源码与构建模块化 | 18；各IR/artifact语义仍由01-17拥有 |
 
 ## 实施计划导航
@@ -80,6 +80,9 @@ Q22.N+Q22.H已经在Q22.S SystemC event model汇合，Q22.B与Q22.S再由Q22.V s
 `tasks/archive/` 只保存历史 gap review、recovery、audit 和已收口的任务级记录。归档文档可以作为
 实现背景或复盘材料，但不作为当前主线架构合同；如果归档内容和 numbered docs 冲突，以当前 numbered
 docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
+
+归档正文中的编号文档basename、章节号、line range和命令按当时提交快照解释，不保证仍是当前可解析路径；当前owner路径
+只从上面的“当前设计文档”表读取。重命名current owner时不机械改写archive，以免篡改历史审计证据。
 
 | 文档 | 原性质 |
 | --- | --- |

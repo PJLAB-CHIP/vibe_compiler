@@ -1,4 +1,4 @@
-# Wafer Communication Dialect Design
+# Wafer Communication Scheduling 与 Transport IR
 
 状态：2026-07-17按联合physical-dataflow终态补充communication capability、all-rank compatibility和transport exact gate；当前合同覆盖buffer-level collective到
 instruction-level Direct DTE p2p和明确
@@ -816,7 +816,8 @@ wafer.instr.dte_wait %send1, %recv1
 
 ## 12. 与其它文档的关系
 
-全局文档边界见 `tasks/01-architecture.md` 第 8 节。本文只维护
+全局pipeline、artifact与consumer分支见`tasks/01-architecture.md`；joint decision owner见
+`tasks/06-physical-dataflow-synthesis.md`。本文只维护
 device-side communication IR、token/effect、Direct DTE V0、accepted physical transport 和
 sync/error boundary，并向06提供communication family与all-rank compatibility/transport metrics。tile-dataflow candidate search、
 physical encoding/TransferRouteFamily、SPM/DDR allocation、compute op legality 和 host runtime D2D/P2P ABI 不在本文
