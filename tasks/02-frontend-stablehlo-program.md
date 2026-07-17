@@ -24,7 +24,7 @@ Pipeline position:
 - Downstream consumer:
   Q15 typed compiler driver在transaction-owned snapshot上建立exact topology/execution mesh，调用pinned
   XLA SPMD helper，然后做local compute normalization并发布verified rank-local structured tensor
-  program；Q29 tile-dataflow scheduler直接消费该artifact。
+  program；05 structured optimization继续在同一IR上建立optimizer-ready handoff，physical-dataflow synthesis直接消费。
 - User-level driver / named pipeline:
   `wafer-compile-stablehlo --verify-stablehlo-program`只做frontend admission；继续编译只经
   `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`；
@@ -221,7 +221,7 @@ target context或publication authority。
 
 production driver在parse前把source directory完整复制到transaction-owned snapshot；后续frontend verify、helper
 和IR transforms只读/改写staging内成员。source不得被原地补metadata、topology或shards。Q15最终发布的是重新
-parse/verify过的rank-local structured tensor program directory；Q29 scheduler从该artifact构造全部
+parse/verify过的rank-local structured tensor program directory；fixed structured optimization完成后，physical-dataflow synthesis从该artifact构造全部
 per-rank task/dataflow candidates，全rank验证后再构造ExecutableBundle。structured tensor program是调度
 唯一输入artifact；已删除的`wafer.group` formation/selector没有兼容、debug或发布旁路。
 

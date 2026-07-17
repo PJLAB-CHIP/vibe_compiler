@@ -1,8 +1,13 @@
-# Wafer StableHLO 到 Local Structured Tensor IR 设计
+# Wafer Local Structured Tensor Normalization 与 Optimization 设计
 
-状态：2026-07-16按Q29 structured-program handoff同步。本文拥有post-SPMD StableHLO local compute与logical collective到
-structured tensor IR的normalization合同；不拥有SPMD、task/dataflow candidate、memory、target或runtime。实现状态看
+状态：2026-07-17按structured optimization基础边界同步。本文拥有post-SPMD StableHLO local compute与logical collective到
+optimizer-ready structured tensor IR的normalization、required normal form和target-independent固定优化合同；不拥有SPMD、
+task/dataflow candidate、target-aware choice、memory、target或runtime。实现状态看
 `tasks/progress.md`。
+
+本文定义收敛后的稳定边界。当前production仍只有collective/residual normalization、official legalization和best-effort
+canonicalization；explicit required normal form、Equivalent-IR Stability与qualified fixed optimization由Q33实施，不能把下述
+目标pipeline误写成live code事实。
 
 ## 1. Pipeline Contract
 
@@ -14,23 +19,27 @@ Pipeline position:
 - Current stage responsibility:
   将StableHLO compute/data movement/constants通过pinned官方StableHLO-to-Linalg conversion规整成
   `linalg`/`tensor`/`scf`/`arith`/`math`；先把supported StableHLO collectives转换为
-  `wafer.linalg_ext.collective.*`destination-style tensor ops；清理可静态证明的SPMD residual。
+  `wafer.linalg_ext.collective.*`destination-style tensor ops；清理可静态证明的SPMD residual；以显式、
+  可验证的rewrite建立required structured normal form，并运行已资格化且对所有输入固定启用的target-independent优化。
 - Output artifact / IR:
-  target-independent structured tensor program，包含local compute、ConstantLike values和logical collective；
-  不残留raw StableHLO或SDY语义。
+  optimizer-ready target-independent structured tensor program，包含local compute、ConstantLike values和logical collective；
+  不残留raw StableHLO或SDY语义，也不要求下游依赖某个偶然producer形状或generic canonicalizer收敛结果。
 - Downstream consumer:
-  Q29 rank-local tile-dataflow analysis、candidate materialization与whole-variant commit。
+  physical-dataflow synthesis从该artifact建立rank-local semantic descriptor、candidate与whole-variant commit；当前Q29 scheduler
+  是迁移baseline，不是长期consumer合同。
 - User-level driver / named pipeline:
   production只经`wafer-compile`并继续到verified rank-local structured tensor program。
   `wafer-lower-stablehlo-to-linalg`是显式IR
   debug/test pipeline，不是program-directory入口或用户stop-stage。
 - Explicit non-goals:
   不运行Shardy/XLA SPMD，不写parameter shard metadata，不决定task/tile、logical rank specialization、
-  physical layout、SPM/DDR、DTE、target CRT、manifest或runtime binding。
+  physical layout、SPM/DDR、DTE、target CRT、manifest或runtime binding；不在固定pipeline中做target-aware fusion、
+  implementation/layout/residency/search，也不把任意pass顺序开放成production tuning surface。
 - Completion gate:
   Q15真实helper输出经同一normalization后不残留StableHLO/SDY，supported collectives成为verifier-legal
-  LinalgExt ops，随后能直接进入structured task/dataflow scheduler；unsupported semantic fail closed
-  而不是留给下游猜测。
+  LinalgExt ops；required normal form不依赖best-effort canonicalization；baseline及经CSE、standard view/DPS等价改写的
+  结构都能被同一下游直接消费。每个宣称采用的upstream机制必须在production或candidate调用点发生真实改写，并通过
+  semantic、alias/effect、memory、target与数值gate；unsupported semantic fail closed而不是留给下游猜测。
 ```
 
 ## 2. 稳定边界
@@ -123,12 +132,47 @@ pipeline fail closed。
 `tensor.extract_slice`，以及静态元素数保持的
 collapse/expand-shape，并按canonical row-major element order计算唯一标量结果。任一dynamic
 index/shape/offset/stride无法由常量链证明、越界或非常量来源都保留原IR交给后续legality gate；本步不物化
-shaped result，不保存旁路常量表。折叠后由canonicalization清理无用的view/constant链。
+shaped result，不保存旁路常量表。折叠pattern本身负责建立正确result/use关系；无用view/constant链可以再由
+best-effort canonicalization清理，但下游legality和正确性不能依赖该清理是否发生。
 
 SDY op/type/attr不属于post-SPMD local program。Q15在normalization前已有零SDY gate，本stage不能把residual SDY
 静默当unknown dialect保留。
 
-## 6. 当前支持面与限制
+## 6. Structured Optimization 与 Upstream Adoption
+
+本stage把“优化”分为三个边界，避免把固定hygiene、搜索choice和target lowering混成任意pass串：
+
+1. **required normalization**：为下游接口建立确定语义形态的显式rewrite/verifier，例如DPS init、view/reshape relation和
+   reduction source的稳定恢复。它是correctness合同，不能委托给generic canonicalizer的greedy收敛。
+2. **fixed target-independent optimization**：对所有输入采用同一已资格化policy，只允许保持source numeric/effect/alias语义的
+   upstream pass或pattern。只消除scalar/shape/identity scaffolding且不改变tensor sharing/lifetime的窄CSE subset可以评估为
+   fixed；whole-tensor CSE不能默认进入本层。无实际改写或无consumer收益的pass不因“常用”而加入production。
+3. **candidate-local mechanism**：tiling、producer fusion、whole-tensor CSE、unit-dim/view propagation、empty-tensor elimination和
+   loop hoist等会改变tile、sharing、lifetime、residency或target机会的mechanism由06在隔离candidate clone中选择；05只提供
+   共享typed utility，不在固定pipeline提前决定physical dataflow。
+
+以下表只表示从可用到有证据的工作流成熟度；16另以availability、adoption mode和qualification三列正交记录每项机制：
+
+| 状态 | 含义 | 能否宣称已采用 |
+| --- | --- | --- |
+| linked | build中可链接相关MLIR library | 否 |
+| registered | debug driver可解析对应pass | 否 |
+| replayable | 显式IR可独立重放 | 否 |
+| production-consumed | named production pipeline或candidate library有真实调用点 | 仍需效果证据 |
+| qualified | 有发生改写、等价IR、下游exact gate、数值与资源/性能非回退证据 | 是 |
+
+`wafer-opt`应注册用于诊断的Linalg、Tensor、SCF、Bufferization和generic Transform pass families，但注册只扩大debug
+replay能力，不改变production policy。固定pipeline只列入qualified机制；candidate-local调用必须复用upstream interface/
+pattern utility并叠加Wafer precondition和exact gates，不复制op-pair matcher。SCCP、LICM或其它pass若在当前artifact上无改写，
+保留为debug能力即可。
+
+generic CSE可以合法地共享`tensor.empty`、fill、DPS init或常量producer，也可能延长whole-tensor lifetime并改变SPM/spill
+选择；因此它当前首先是等价IR压力与candidate-local share-vs-recompute mechanism，不预设为fixed whole pass。下游semantic recovery、bufferization与SPM/DDR
+lifetime必须从type、DPS tie、SSA use-def、ViewLike/structured semantics重算，不能要求“init恰好由某个直接fill producer定义”。
+standard fold/specialization产生的新合法structured form若尚无consumer，应由required normalizer转回受支持的语义形态或在
+adoption gate明确拒绝该pass；不能静默依赖原始producer拓扑。
+
+## 7. 当前支持面与限制
 
 当前evidence覆盖：
 
@@ -149,26 +193,44 @@ SDY op/type/attr不属于post-SPMD local program。Q15在normalization前已有�
 遇到硬件/ABI本可表达但当前official conversion或Wafer interface缺失的semantic，应扩本stage表示与verifier或记录
 后续任务，不能把下游缺口反写成frontend长期不支持。
 
-## 7. 实现与调试入口
+## 8. 实现与调试入口
 
-production driver内部直接调用：
+当前production driver实际调用：
 
 ```text
 buildStablehloToLinalgPipeline
   = StableHLO collective normalization
   + static residual cleanup
   + official StableHLO legalize-to-Linalg
-  + cleanup/canonicalization/final legality
+  + best-effort cleanup/canonicalization
+  + final legality
+```
+
+Q33完成后的同一builder目标为：
+
+```text
+buildStablehloToLinalgPipeline
+  = StableHLO collective normalization
+  + static residual cleanup
+  + official StableHLO legalize-to-Linalg
+  + explicit required structured normalization
+  + qualified fixed target-independent optimization
+  + best-effort cleanup/canonicalization
+  + final legality
 ```
 
 registered `wafer-lower-stablehlo-to-linalg`只为显式MLIR replay和unit tests提供相同body。helper与program
 directory orchestration由`wafer-compile`负责，用户不选择该stage或手工续接调度passes。
 
+production与debug入口必须调用同一pipeline builder；debug driver额外注册的upstream pass families不能被用户拼成第二条
+production pipeline。新增fixed pass前要先补全其producer/alias/effect等价合同和纵向gate；新增candidate mechanism则进入
+06共享utility/provider，不塞入本pipeline尾部。
+
 实现入口可以拆pattern/pass，但长期合同是输入/输出IR与legality，不是pass名。创建
 `wafer.linalg_ext.collective.*`的pass必须声明dependent dialect；official conversion pin变化时要重跑coverage，
 不能依赖进程中偶然注册的dialect。
 
-## 8. 验证
+## 9. 验证
 
 必须覆盖：
 
@@ -179,8 +241,20 @@ directory orchestration由`wafer-compile`负责，用户不选择该stage或手�
 - logical rank越mesh范围、invalid replica groups、shape mismatch与unsupported collective fail closed；
 - output不含SDY、physical layout/memory、DTE、packet或runtime facts；
 - `wafer-compile`从真实post-SPMD program继续形成并重新verify structured tensor program。
+- metamorphic equivalent-IR corpus至少覆盖共享/非共享`tensor.empty`与fill、DPS init、named/generic structured op、
+  collapse/expand/transpose/extract-slice view链及合法specialization；各形态进入下游后语义、alias/effect和完整输出一致；
+- 每个qualified upstream mechanism都必须证明pass实际执行且至少一个case发生预期改写；只注册、只统计op数量或只有
+  isolated FileCheck不算production采用；
+- fixed pipeline改动必须重放rank-count=1/16通用source和7B source-to-package/SystemC/PyTorch gate，并报告编译资源/性能
+  非回退；candidate-local机制的scale gate由06/16拥有。
 
 显式IR FileCheck证明local conversion；只有Q15 unified driver消费真实program directory/helper output并发布verified
-structured tensor program，才能证明本stage接入主线。Q29拥有candidate/bundle scheduling，Q20/Q21拥有固定
+structured tensor program，才能证明本stage接入主线。06拥有终态candidate/bundle scheduling，当前Q29只作迁移baseline；Q20/Q21拥有固定
 CPU expected corpus和纵向
 workload completion，不能由本stage测试代替。
+
+## 10. 参考材料
+
+- MLIR Canonicalization：<https://mlir.llvm.org/docs/Canonicalization/>；canonicalizer是best-effort，pipeline不能依赖它保证正确性。
+- MLIR Linalg Dialect：<https://mlir.llvm.org/docs/Dialects/Linalg/>；structured interface支持参数化tiling与producer-consumer fusion。
+- MLIR Transform Dialect：<https://mlir.llvm.org/docs/Dialects/Transform/>；用于细粒度编排，不替代pass/pattern infrastructure。

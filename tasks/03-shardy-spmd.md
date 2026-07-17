@@ -1,7 +1,7 @@
 # Wafer Shardy / SPMD 设计
 
-状态：2026-07-16按Q29 structured-program handoff同步。本文拥有frontend sharding到post-SPMD local program的合同；
-Q15形成verified rank-local structured tensor program，Q29直接消费frontend verifier返回的typed
+状态：2026-07-17按optimizer-ready structured-program handoff同步。本文拥有frontend sharding到post-SPMD local program的合同；
+Q15形成verified rank-local structured tensor program，05 fixed structured optimization和physical-dataflow synthesis消费frontend verifier返回的typed
 boundary/shard result形成显式per-rank task/dataflow executable。实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -21,8 +21,8 @@ Pipeline position:
   verified rank-local structured tensor program directory。当前不是多component program、代表rank去重集合或
   ExecutableBundle。
 - Downstream consumer:
-  StableHLO-to-Linalg和tensor collective normalization；Q29 scheduler在该structured program上按logical rank
-  创建isolated static candidate clones。
+  StableHLO-to-Linalg、tensor collective normalization与fixed target-independent structured optimization；随后
+  physical-dataflow synthesis在optimizer-ready structured program上按logical rank创建isolated static candidate clones。
 - User-level driver / named pipeline:
   正式入口为
   `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`；
@@ -134,7 +134,8 @@ structured tensor program。它不携带：
 - target packet/CRT调用；
 - runtime resource handle。
 
-Q15只发布重新读取并验证的structured tensor program directory。Q29从同一个typed request的
+Q15只发布重新读取并验证的structured tensor program directory。fixed structured optimization不改变typed request；
+physical-dataflow synthesis从同一个request的
 execution rank domain派生`logicalRank=0..N-1`，每rank在isolated clone上调用显式rank scheduling/
 lowering API。production不形成中间调度容器，也没有rank-0 compatibility replay。
 

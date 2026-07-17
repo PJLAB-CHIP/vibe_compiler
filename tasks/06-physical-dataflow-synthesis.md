@@ -41,18 +41,22 @@ rank-local structured semantics
    跨 stage 只保留选中方案的 typed compute、view、movement、buffer、event 和 offset。
 6. **Transform Dialect 只作可选控制面。** production named pipeline 与可选 transform extension 调用同一 C++ planner/
    materializer；Transform IR 不承载 solver 内部状态，也不成为执行 artifact。
+7. **机制先于策略。** relation normalization、tiling、producer fusion、view/subset folding、implementation absorption、
+   physical-version reuse和movement elimination先作为带precondition/proof的typed atomic mechanisms独立验证；搜索只组合、
+   排序和接受这些机制，不能在policy分支中临时发明rewrite。
 
 ## 2. Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  Shardy/XLA SPMD 之后、按 logical rank 静态 specialize 的 verified Linalg/Tensor/SCF/Arith/Math
-  structured tensor program；logical collective 已由 typed interface 表达。输入同时携带 validated
+  Shardy/XLA SPMD 之后、按 logical rank 静态 specialize 且已经过05 required normalization与qualified fixed
+  target-independent optimization的verified Linalg/Tensor/SCF/Arith/Math structured tensor program；logical collective
+  已由 typed interface 表达。输入同时携带 validated
   ExecutionConfig、TargetProfileId、numeric policy 和可查询的 target capability provider。
 - Current stage responsibility:
   从 structured iterator/indexing map、SSA use-def、shape/dtype、view relation、effect、control flow 和
-  numeric policy 构造有限 semantic islands；按可证明等价规则和 target implementation family 惰性地产生
+  numeric policy 构造有限 semantic islands；通过已独立验证的policy-free typed mechanisms和target implementation family惰性地产生
   decision domains，联合选择 implementation、tile、physical encoding、storage realization、residency、
   buffering 和 DAG-legal issue order；在 transformation-local complete rank clones 上物化候选并运行 exact
   instruction、SPM、DDR、completion、transport、geometry和14 registry/versioned-signature artifact-eligibility
@@ -80,7 +84,8 @@ Pipeline position:
 - Completion gate:
   production planner 只消费 structured semantics/effect/numeric policy 和 target provider；parameterized family
   惰性实例化、constraint propagation、state canonicalization、hard budgets、baseline fallback 与 candidate-growth
-  telemetry 均实际生效；selected proposal 只以 typed payload IR 跨阶段，旧 scope-prefix/layout-planner/
+  telemetry 均实际生效；每个候选rewrite来自已注册atomic mechanism并在改写后fresh重算relation/effect/alias/resource；
+  selected proposal 只以 typed payload IR 跨阶段，旧 scope-prefix/layout-planner/
   maximal-resident 决策旁路清零。property、拓扑、多 dtype、多 workload、rank-count=1/16、7B scale、完整
   PyTorch/SystemC numerical、exact SPM/DDR/event/transport/ABI 和 atomic commit gates 全部通过。
 ```
@@ -200,25 +205,35 @@ candidate 是一个 transformation-local complete proposal，至少包含：
 
 candidate ID、score、beam parent 和 search trace 不写入 payload IR。accepted IR 是唯一事实源。
 
-## 4. 等价变换合同
+## 4. Typed Transformation Mechanism 合同
 
-planner 只使用注册的、带 precondition 和 proof obligation 的通用规则。规则按强度分层：
+机制库位于固定structured optimization与search policy之间。它可以复用MLIR upstream的`TilingInterface`、destination-style
+helpers、tensor subset/view folding、Linalg tiling/fusion和canonicalization patterns，但必须用Wafer typed precondition约束
+适用域，并返回`applied / not-applicable / proof-failed`及改写后的实际IR。linked、registered或能在`wafer-opt`里手工运行不算
+planner采用；只有候选生成代码真实调用、至少一个测试发生改写且完整exact gates接受，才可进入choice domain。
 
-### E0：bitwise index/view normalization
+每个mechanism是policy-free原子操作：不读取model name、candidate score、beam width或全局搜索历史，不自行选择另一个
+implementation/route，也不在失败时串接fallback。应用发生在isolated complete-rank clone上；任何use-def、alias、effect、
+lifetime或allocation root变化都使旧analysis失效，必须从改写后的IR fresh重建semantic descriptor、IndexRelation、SPM/DDR
+lifetime、completion和cost。greedy convergence、pattern application order及generic canonicalizer结果都不能成为正确性前提。
+
+机制按以下语义类别组织；类别不是固定执行阶段，也不是op-pair case表：
+
+### Bitwise index/view normalization
 
 - identity view、连续 reshape reassociation、互逆 transpose/permutation、full static slice 等可证明关系的组合和消除；
 - 不改变 logical iteration、运算次序、dtype 或 storage value；
 - 只canonicalize logical relation；已物化storage间的movement仍须由08证明physical-isomorphism后才能删除；
 - 使用唯一normal form和单调下降measure，无法证明下降时消耗明确rewrite fuel后停止，避免循环或无界表达式增长。
 
-### E1：pointwise relation propagation
+### Pointwise relation propagation
 
 - pure pointwise op 可把同一 bijective relation 推过 result；
 - 所有非 scalar operands 必须在 logical index 上一致，broadcast 必须显式证明；
 - scalar body、rounding、NaN/Inf 和 conversion 顺序保持不变；
 - padding lane 不属于 logical domain，除非 08/10 共同证明 selected implementation 的 padding invariant。
 
-### E2：target-qualified implementation absorption
+### Target-qualified implementation absorption
 
 - transpose、orientation、vector packing 或 boundary mapping 只有在 family 明确提供参数并由 instruction/CRT/CModel 纵向
   资格化时才可吸收；
@@ -226,14 +241,14 @@ planner 只使用注册的、带 precondition 和 proof obligation 的通用规�
   capability 闭环支持；
 - 吸收后的 logical result 和 numeric contract 必须与 source op 相同。
 
-### E3：multi-root shared-input hyperedge
+### Multi-root shared-input physical-version reuse
 
 - 多个独立 contraction/compute roots 若共享相同 input region、numeric/effect 独立、tile domains 相容，可形成一个
   shared-load hyperedge；
 - 该规则只共享 physical version、movement 和局部调度，不合并数学 result，也不要求固定 root 数量；
 - fanout、不同 result shape 和不同 implementation family 通过 relation/constraint 处理，不匹配 QKV 或 gate/up 名称。
 
-### E4：受 numeric policy 控制的代数变换
+### Numeric-policy-gated algebraic transformation
 
 - reassociation、distribution、reduction tree、online reduction 或 FMA contraction 默认关闭；
 - 只有 source IR 明确给出足够的 fast-math/overflow/identity 事实，且 target family 和 numerical verification 支持时才可
@@ -308,7 +323,8 @@ IR 证明，planner 保留 single-buffer baseline 或 fail closed。不得以全
 
 对每个 rank：
 
-1. **Normalize**：执行 E0 canonicalization，建立 structured semantic graph、IndexRelation 和 effect/numeric barrier。
+1. **Normalize relations**：只调用有fuel和单调measure的bitwise IndexRelation normalizer，建立structured semantic graph、
+   IndexRelation和effect/numeric barrier；这不是运行generic MLIR canonicalizer。
 2. **Island formation**：建立最大有界 semantic islands；超限沿合法 boundary 切分。
 3. **Capability query**：按 semantic root 查询 parameterized implementation、transfer route和communication schedule
    families，不展开组合；provider
@@ -474,25 +490,33 @@ descriptor、capacity 或 ABI legality。
 - CModel wall time：host functional execution 性能，不代表板端；
 - 板端实测：仅在配置、版本、PMU 和统计方法完整时报告。
 
-## 8. Transform Dialect 的定位
+## 8. Transform Dialect 与 Compiler-Wide Control Plane
 
-MLIR Transform Dialect 对本设计有帮助，但它只解决 orchestration、匹配和可复现控制，不替代联合 solver。
+MLIR Transform Dialect 对本设计有帮助，但它只解决 orchestration、匹配、参数传递和可复现控制，不替代atomic mechanism、
+联合solver或exact gate。全compiler按四层组织：
+
+1. production default policy：固定named pipeline，只调用已资格化的required/fixed机制；
+2. atomic typed mechanisms：普通C++ utility/pattern/interface，独立声明precondition、effect和proof obligation；
+3. candidate-local policy/search：在隔离clone中组合mechanisms和target choices，失败不污染主IR；
+4. optional Transform/外部tuner：在稳定handle、param和diagnostic边界上编排同一机制或调用粗粒度solver。
 
 推荐结构：
 
 ```text
-production named pipeline ─┐
-                           ├─> shared C++ physical-dataflow planner/materializer
-optional Transform op  ────┘                 |
-                                             v
-                                  typed payload IR + diagnostics
+production named pipeline ─────────────┐
+optional Transform / external tuner ───┼─> shared typed mechanisms
+                                       │          |
+                                       └─> physical-dataflow policy/search
+                                                  |
+                                                  v
+                                      typed payload IR + exact gates
 ```
 
-可选扩展可以提供一个 coarse-grained `transform.wafer.synthesize_physical_dataflow`，对完整 rank-local static root 调用同一
-library；也可提供只读 collect/report helper。它适合：
+可选扩展可以为跨pipeline稳定机制提供少量coarse-grained typed ops，并提供一个对完整rank-local static root调用同一
+physical-dataflow library的synthesis op；也可提供只读collect/report helper。它适合：
 
 - 在测试/调优中选择 payload scope；
-- 组合 standard canonicalization、bufferization 和 verification；
+- 组合已资格化的structured optimization、bufferization、candidate synthesis和verification；
 - 重放 profile、budget 和 deterministic policy version；
 - 让研究性 pipeline 用同一终态 materializer 比较结果。
 
@@ -503,6 +527,10 @@ library；也可提供只读 collect/report helper。它适合：
 - 用 `transform.alternatives` 代替 top-K/Pareto 搜索——它是 first-success，不是 cost selector；
 - 把 TransformState 或 transform module 保存为 package/accepted artifact；
 - production 与 Transform extension 各维护一套 matcher、legality 或 materializer。
+
+Transform op的粒度按稳定compiler capability划分，而不是按每个upstream pass、dtype、layout或workload展开。payload IR必须
+始终是唯一事实源；handle失效、silenceable/definite failure和effect声明遵循upstream Transform Dialect合同。若未来autotuner
+产生schedule，只能选择这些显式机制和参数，不能绕过numeric/effect/resource gate或保存shadow candidate plan。
 
 Transform extension 只有在核心 planner、typed IR 和 named production pipeline 已稳定后实施；它不是主线完成的前置。
 
@@ -597,14 +625,16 @@ expected 与 SystemC/CModel 比较数值。
 
 实施计划位于 `tasks/plans/physical-dataflow-synthesis.md`。施工必须纵向推进，而不是先造一个脱离 accepted IR 的 solver：
 
-1. 先冻结 shared capability/typed IR 合同和 fresh baseline；
-2. 补齐 implementation/transfer family 到 Instr/CRT/SystemC 的最小纵向能力；
-3. 实现 IndexRelation、PhysicalEncoding、valid-domain 和 descriptor-cover property core；
-4. 让保守 baseline 经新 family/provider 物化并通过全部 exact gates；
-5. 加入惰性 domain、constraint propagation、canonical frontier、Pareto beam、hard budget 和 telemetry；
-6. 逐层启用 E0-E3 通用规则，E4 只在 numeric policy 完整时启用；
-7. 切换 production，并删除旧 layout planner、implicit per-use materialization、scope-prefix/maximal-resident 决策旁路；
-8. 可选地接入 Transform control plane，共用同一 C++ implementation。
+1. 先由05/16闭合required normal form、Equivalent-IR Stability、upstream adoption inventory和post-adoption baseline；
+2. 冻结shared capability/typed IR合同，建立canonical semantic descriptor与current-v1 provider；
+3. 实现IndexRelation、PhysicalEncoding、valid-domain和descriptor-cover property core；
+4. 让保守baseline经新family/provider物化并通过全部exact gates；
+5. 补齐implementation/transfer family到Instr/CRT/SystemC的最小纵向能力；
+6. 独立实现并验证policy-free bitwise relation、pointwise propagation、implementation absorption、shared-input reuse和
+   其它qualified upstream mechanisms；代数变换只在numeric policy完整时注册；
+7. search只组合上述mechanisms，加入惰性domain、constraint propagation、canonical frontier、Pareto beam、hard budget和telemetry；
+8. 切换production，并删除旧layout planner、implicit per-use materialization、scope-prefix/maximal-resident决策旁路；
+9. 可选地接入compiler-wide Transform control plane，共用同一C++ implementation。
 
 完成必须同时满足：
 
@@ -626,6 +656,9 @@ expected 与 SystemC/CModel 比较数值。
 
 以下工作只提供算法启发，不改变本文的 Wafer IR/target 合同：
 
+- MLIR Canonicalization是best-effort且不能承担pipeline correctness；Linalg参数化tiling/fusion建立在structured interfaces上。
+  <https://mlir.llvm.org/docs/Canonicalization/>
+  <https://mlir.llvm.org/docs/Dialects/Linalg/>
 - VTC：在fusion后graph上用virtual tensor/index mapping消除kernel间显式data movement，并全局选择virtual-tensor
   creation strategy；它明确与layout optimization/operator fusion互补。本文借鉴“跨kernel物理关系联合选择”，不复制其IR。
   <https://www.usenix.org/conference/osdi26/presentation/hu-muyan>

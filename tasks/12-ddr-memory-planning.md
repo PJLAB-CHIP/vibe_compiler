@@ -511,6 +511,8 @@ Expected coverage:
 - lit positive: ViewLike/SelectLike/if/for query-time origin closure保留managed和external roots；same external root按
   identity去重。generic async token/value活到`async.await`，direct create/add/await-all group活到`async.await_all`，
   branch-local task可由path-correct `scf.if` result await完成。
+- metamorphic positive: CSE共享或拆分DPS init/fill、standard collapse/expand/extract-slice view链及等价
+  bufferization alias形态都从当前IR得到相同root/range/lifetime结论；任一上游改写后不得复用旧analysis cache。
 - lit positive: private pure alias helper的DDR memref result及DDR→tensor→generic memref type-erased result都保留
   caller-owned root lifetime；第二个重叠allocation不能复用其offset。
 - lit negative: unawaited generic task、SelectLike distinct tasks、pre-issued if tasks、non-identity-preserving loop、

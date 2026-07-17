@@ -1,6 +1,6 @@
 # Wafer Compiler Stack Architecture
 
-状态：2026-07-17按当前production public artifacts和physical-dataflow synthesis目标重写。本文是compiler、target artifact、
+状态：2026-07-17按当前production public artifacts、structured optimization和physical-dataflow synthesis目标重写。本文是compiler、target artifact、
 package/runtime与target-model分支的主架构入口，只拥有稳定pipeline spine、artifact DAG、跨层不变量和owner索引。动态状态、
 blocked-by与完成记录只看`tasks/progress.md`；专题IR、ABI、算法和验证细节由对应编号文档拥有。
 
@@ -24,6 +24,9 @@ blocked-by与完成记录只看`tasks/progress.md`；专题IR、ABI、算法和�
    untimed functional-event容器，不能自动证明vendor packet、hardware numeric、性能或cycle accuracy。
 8. **扩展先有consumer。** 当前IR能重算的事实不新增attr/sidecar；新op、type、attr或artifact字段必须有明确creator、
    verifier、lowering和downstream consumer。
+9. **上游机制采用必须有实效。** linked、registered或debug可调用不等于production采用；固定优化必须在named pipeline中
+   发生可观察改写并通过等价IR、下游exact gate和数值验证。候选改写必须调用同一typed mechanism，在隔离clone中接受或拒绝，
+   不能复制成另一套matcher。
 
 ## 2. End-to-End Pipeline Contract
 
@@ -35,7 +38,8 @@ Pipeline position:
   ExecutionConfig(rank-count={1|16}, registered TargetProfileId)。target topology不是用户输入，由compiler内部materialize/verify。
 - Current stage responsibility:
   在transaction-owned source snapshot上完成frontend admission；调用pinned XLA helper完成Shardy/XLA SPMD并重新验证输出；
-  normalization到rank-local Linalg/Tensor/SCF structured program；为每rank在隔离clone中选择并物化完整task/dataflow与
+  normalization到rank-local Linalg/Tensor/SCF structured program，并形成经过显式required normalization与已资格化
+  target-independent固定优化的optimizer-ready structured IR；为每rank在隔离clone中选择并物化完整task/dataflow与
   instruction program，闭合SPM/DDR/completion/transport/target legality并原子形成ExecutableBundle；从同一bundle只做一次
   target conversion形成TargetLLVMModuleBundle，分支给repo-owned CModel与device link；device-linked artifacts再与
   ExecutableBundle一起形成typed manifest/package并原子发布。
@@ -71,7 +75,7 @@ CompilationRequest
 verified source snapshot
         |
         v
-Shardy/XLA SPMD -> verified rank-local structured tensor program
+Shardy/XLA SPMD -> verified rank-local optimizer-ready structured tensor program
         |
         v
 physical-dataflow candidate clones
@@ -107,7 +111,7 @@ manifest的move-only lifetime/container artifact，不是另一份program或pack
 | Verified program | StableHLO、function boundary metadata、NPY payload/shards | model语义、static shape/dtype、resource role与payload admission | rank placement、tile、physical layout、runtime handle |
 | Execution configuration | factory-only `ExecutionConfig` | 显式1/16 rank domain与registered `TargetProfileId` | tensor sharding、topology IR、planner policy |
 | Topology/SPMD | `wafer.target.topology`、`wafer.execution.mesh`、post-SPMD StableHLO | compiler内部single-card endpoint与logical rank domain、rank-local partition | candidate、SPM/DDR、physical transport |
-| Structured tensor program | Linalg/Tensor/SCF/Arith/Math与typed logical collective | rank-local数学语义、iterator/indexing relation、effect/control/numeric policy | target implementation、physical encoding、offset |
+| Structured tensor program | Linalg/Tensor/SCF/Arith/Math与typed logical collective | rank-local数学语义、显式required normal form、已资格化target-independent固定优化、iterator/indexing relation、effect/control/numeric policy | target implementation、physical encoding、offset |
 | Candidate analysis | transformation-local semantic islands、domains、frontier与complete clones | bounded implementation/tile/encoding/route/residency/order proposals | accepted事实、package字段、长期side table |
 | Selected tile/dataflow IR | `wafer.tile.region` fragments、Wafer memref/view、typed compute/movement/collective/event | 完整static traversal、selected implementation与physical versions | rejected candidates、独立arena、runtime launch |
 | Instruction/memory program | `wafer.instr.*`、accepted SPM/DDR offsets、completion/Direct DTE | target-abstract invocation、physical geometry、range/lifetime/effect | raw host handle、package schedule |
@@ -123,7 +127,10 @@ Instr/TargetCall rows投影的canonical `RequiredCapabilitySet`及相应readback
 
 ## 5. Physical-Dataflow Synthesis 边界
 
-rank-local structured tensor program是planner的语义输入。唯一solver联合处理：
+rank-local optimizer-ready structured tensor program是planner的语义输入。进入planner前的required normalization与固定
+target-independent优化由05拥有；它们不能依赖generic canonicalizer碰巧收敛，也不能作target choice。planner内只在隔离
+candidate clone上调用带proof obligation的可选语义机制，并把target implementation、physical realization与资源gate联合考虑。
+唯一solver联合处理：
 
 - `SemanticOpDescriptor -> ImplementationFamily`；
 - iterator/indexing map -> `IndexRelation`与dependent tile regions；
@@ -215,6 +222,7 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | 维度 | 当前production事实 | physical-dataflow目标合同 |
 | --- | --- | --- |
 | source boundary | static-ranked StableHLO program directory；rank-count显式1/16 | 保持同一用户边界；dynamic/MPMD另行设计 |
+| structured optimization | official legalization、窄residual cleanup和best-effort canonicalization；部分上游tiling/fusion utility已被当前scheduler直接复用 | 显式required normal form；固定pipeline与candidate-local utility分层；每项upstream adoption有production改写与等价IR/downstream证据 |
 | decision owner | bounded task/dataflow scheduler，有限scope/residency alternatives | 唯一联合planner选择implementation/tile/encoding/route/residency/order |
 | physical realization | canonical Tensor/Cx/NCx与显式materialization；compact DMA | parameterized encoding/route、mapped DMA、exact invalid-lane/fill contract |
 | GEMM ABI | closed v1、implicit normal/normal | versioned v2 typed orientation；v1含义不变 |
@@ -232,7 +240,7 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | frontend program directory与admission | 02 |
 | Shardy/XLA SPMD与rank specialization | 03 |
 | topology/execution mesh | 04 |
-| local structured tensor normalization | 05 |
+| local structured tensor normalization、required normal form与target-independent固定优化 | 05 |
 | physical-dataflow synthesis、bounded candidate selection与all-rank commit | 06 |
 | selected tile-region/task/dataflow IR materialization | 07 |
 | physical encoding、view、TransferRouteFamily与descriptor cover | 08 |

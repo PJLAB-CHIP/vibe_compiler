@@ -62,7 +62,8 @@ Pipeline position:
 - Upstream artifact / IR:
   whole-variant evaluation clone 中所有 static rank entries 的完整 instruction-level
   `wafer.instr.*` structured program，已经完成 candidate DDR tile-view materialization 和 instruction
-  legalization；全部selected task fragments已进入完整rank clone并完成一次candidate-local canonicalization。SPM planner
+  legalization；全部selected task fragments已进入完整rank clone并完成candidate-local proof-preserving mechanisms，相关
+  alias/effect/lifetime analysis已从改写后的当前IR失效重算。SPM planner
   每次只接收联合planner已经显式物化的一份完整whole-rank candidate；candidate可以来自当前spill/resident基线，也可以
   来自终态bounded implementation/physical-version/transfer/residency frontier。task/region/loop间的SPM value和event已由显式SSA/control-flow连接，包含actual DDR
   tile views、unplaced `memref<..., #wafer.memory<spm, layout>>` values，以及selected physical encodings、
@@ -496,7 +497,7 @@ complete static rank structured program + bounded task/tile/implementation/trans
      (target-abstract compute/comm/load-store/layout/sync/storage/effect)
   -> materialize candidate DDR tile views as memref.subview operands
   -> legalize/select instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
-  -> candidate-local function-boundary bufferization/canonicalization; source IR remains unchanged
+  -> candidate-local function-boundary bufferization/proof-preserving rewrites; fresh analysis; source IR remains unchanged
   -> collect BufferDemand + whole-rank liveness/effect and run per-rank SPM/local-completion gates
   -> fresh recost and bucket surviving rank candidates by all-rank compatibility signature
   -> baseline-first lazy/factorized all-rank join; no eager rank-frontier Cartesian product
@@ -699,7 +700,7 @@ whole-variant candidate plan
   -> for each proposal, isolated complete-rank clone materialization
   -> selected implementation / physical-version / transfer / residency realization in that clone
   -> complete rank traversal, DDR tile views and wafer.instr.* over unplaced Wafer-tagged memrefs
-  -> candidate-local canonicalization; source IR remains unchanged
+  -> candidate-local proof-preserving rewrites; invalidate and fresh-recompute alias/effect/lifetime; source IR remains unchanged
   -> per-candidate instruction storage/effect demand and independent whole-rank SPM planning
   -> per-rank instruction/descriptor/SPM/local-completion gates and compatibility bucketing
   -> baseline-first lazy all-rank join

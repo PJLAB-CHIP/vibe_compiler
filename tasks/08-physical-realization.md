@@ -442,12 +442,13 @@ implementation/encoding或插movement，不能在SystemC lane里遮蔽padding错
 
 ## 13. Materialization Cleanup
 
-cleanup只是普通IR canonicalization，不是第二个layout optimizer。可以无条件执行：
+cleanup使用显式注册、带physical-isomorphism/effect/lifetime precondition的typed mechanisms，不是第二个layout optimizer，
+也不依赖generic canonicalizer的greedy收敛。以下改写只有在各自proof成立时才可执行：
 
 - physical map完全相同的no-op materialization删除；
 - dead materialization删除；
 - `A -> B -> A`且B无其它use、effects/completion可消除时回到A；
-- 同source、同destination map、同logical domain的重复materialization在不延长lifetime时CSE。
+- 同source、同destination map、同logical domain的重复materialization在不延长lifetime且不改变completion时显式deduplicate。
 
 下列动作属于tasks/06的candidate生成/搜索，不能由cleanup临时决定：
 
@@ -457,7 +458,7 @@ cleanup只是普通IR canonicalization，不是第二个layout optimizer。可�
 - 新增/删除physical version；
 - 改变residency、spill、buffering或task order。
 
-如果canonicalization会改变allocation root、lifetime、descriptor cover或event，它必须作为新的candidate rewrite并重新通过
+如果cleanup会改变allocation root、lifetime、descriptor cover或event，它必须作为新的candidate rewrite并重新通过
 完整exact gates，不能在accepted candidate后静默应用。
 
 ## 14. Cost 和 Calibration Handoff
@@ -486,12 +487,14 @@ queue overlap只有在selected IR/event和validated target profile都证明时�
 
 ## 15. Transform Dialect 边界
 
-本文provider和materializer都是共享C++ library，不把family domain、descriptor frontier或physical-version graph编码为
-Transform handle/param。Transform Dialect extension可以通过tasks/06的粗粒度synthesis op调用同一provider，也可以在开发期
-打印selected route report；不能为Tensor-to-Cx、dtype、GEMM orientation或每种DMA route新增transform case。
+本文provider、proof mechanisms和materializer都是共享C++ library，不把family domain、descriptor frontier或physical-version
+graph编码为Transform handle/param。Transform Dialect extension可以在candidate形成前调用同一typed view/route mechanism，
+也可以通过tasks/06的粗粒度synthesis op调用同一provider或打印selected route report；不能为Tensor-to-Cx、dtype、GEMM
+orientation或每种DMA route新增transform case。
 
-selected route物化后，Transform脚本只能编排确定性canonicalization/verifier。Transform IR不是accepted execution artifact，
-下游只消费普通Wafer/memref/instruction IR。
+selected route物化后，只能编排不改变selected choice的proof-preserving cleanup/verifier；会改变root/lifetime/route的mechanism
+必须回到isolated candidate并重跑exact gates。Transform IR不是accepted execution artifact，下游只消费普通Wafer/memref/
+instruction IR。
 
 ## 16. Verifier 与测试
 

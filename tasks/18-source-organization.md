@@ -39,6 +39,9 @@ Pipeline position:
   lowering、compute lowering、communication lowering、pass orchestration 或 shared geometry validation。
 - pass orchestration 文件只负责 legality、pattern population、option parsing、原子应用和 diagnostics；
   具体 op family rewrite 不继续内嵌在 pass 文件。
+- fixed pipeline policy、candidate search policy和atomic mechanism实现分别组织：`Pipelines`只组合已资格化fixed policy，
+  `Transforms`/owner-private libraries提供不读取search history的typed mechanism，planner只组合这些机制；Transform extension
+  也只能调用同一实现，不能复制matcher或legality。
 - 多个 op family 共享的实现必须是可命名、可验证的 typed helper。不能为了缩短文件复制 validator、
   selector、field table、numeric policy 或 target encoding，形成第二事实源。
 - internal header 只声明同一 library 内的协作接口，不导出可序列化 sidecar、shadow plan 或新的长期语义
@@ -62,6 +65,9 @@ Compiler / target-model core <- functional model <- bulk/SystemC adapters
 - CMake source list按上述职责分组；若拆出新 target，必须有独立依赖收益，不能建立只转发同一组依赖的
   空壳 library。
 - 公共 umbrella target 可以保持兼容，但底层实现 target 不得形成环，也不得依赖 tools 或 tests。
+- MLIR upstream library已链接、pass family已注册或`wafer-opt`可解析，只说明build/debug可用；production adoption必须由
+  named pipeline或shared candidate mechanism的实际调用、发生改写和纵向gate证明。CMake/source organization检查不得把
+  registration数量当优化覆盖率。
 
 ### 测试组织
 

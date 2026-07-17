@@ -12,9 +12,10 @@ expected，不再维护
 accepted-IR第二套解释器。SystemC受管依赖统一位于`third_party/systemc-model`。板端执行、板端数值相关、exact package执行、
 packet provenance和timing仍是独立later/external gate。
 
-下一项compiler实施是通用physical-dataflow synthesis：在不改变上述source oracle、target CModel和资源正确性基线的前提下，
-把implementation、tile、physical encoding、storage realization、residency和有界局部顺序纳入同一个solver，并退役旧的
-scope-prefix、独立layout planner和maximal-resident决策旁路。
+下一项compiler实施先闭合全pipeline upstream optimization adoption和Equivalent-IR稳定性：把required normalization从
+generic canonicalizer正确性依赖中分离，修复DPS init/view/alias/effect对偶然producer形态的依赖，并只将真实发生改写且通过
+纵向gate的fixed机制接入production。随后通用physical-dataflow synthesis先建立policy-free mechanisms，再由唯一solver联合
+选择implementation、tile、physical encoding、storage realization、residency和有界局部顺序，并退役旧decision旁路。
 
 ## 队列规则
 
@@ -47,7 +48,7 @@ tile-dataflow scheduling与7B级单block纵向：
 Q22 + Q27 -> Q29 -> Q28 -> Q30 -> Q31
 
 联合physical-dataflow synthesis：
-Q29 + Q28 + Q30 + Q31 -> Q32.I -> Q32.R -> Q32.B -> Q32.V -> Q32.S -> Q32.G -> Q32
+Q29 + Q28 + Q30 + Q31 -> Q33 -> Q32.I -> Q32.R -> Q32.B -> Q32.V -> Q32.M -> Q32.S -> Q32.G -> Q32
 
 later/external：
 Q0.L + Q21 + configured board -> Q6.B
@@ -56,25 +57,27 @@ Q22 + Q32 + Q6.B + configured numeric corpus -> Q22.C
 Q18 + Q22 + Q32 + configured simulator/ISS -> Q22.E
 Q32 + Q22.C + validated PMU/timing environment -> Q22.P
 Q22 + owner-approved packet evidence -> Q22.K
-Q32 -> Q32.T (optional control plane)
+Q33 + Q32 -> Q32.T (optional compiler control plane)
 ```
 
 ## 当前实施队列
 
-当前没有`doing`任务；Q32.I为唯一前置已满足的`next` row。Q32 umbrella不会让后续row自动进入执行，later/external
+当前没有`doing`任务；Q33为唯一前置已满足的`next` row。Q32 umbrella不会让后续row自动进入执行，later/external
 gate也不会自动进入主线。
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q32.I | `target-implementation-foundation` | `next` | Q29、Q28、Q30、Q31 | 先冻结活跃owner命名、当前/目标主架构和fresh baseline/consumer矩阵，再建立从SemanticOpDescriptor查询current-v1 ImplementationFamily及canonical baseline的独立provider；accepted op interface只验证selected合同。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` A/B1 |
+| Q33 | `compiler-optimization-adoption` | `next` | Q29、Q28、Q30、Q31 | 审计全pipeline upstream pass/utility实际采用状态；修复Equivalent-IR、DPS init/view/alias/effect与canonicalizer正确性债务；资格化并接入有真实改写和纵向收益的fixed hygiene，冻结post-adoption baseline。 | 01、05-12、16、18；`tasks/plans/compiler-optimization-adoption.md` |
+| Q32.I | `target-implementation-foundation` | `blocked` | Q33 | 冻结post-adoption fresh baseline/consumer矩阵，建立从canonical SemanticOpDescriptor查询current-v1 ImplementationFamily及canonical baseline的独立provider；accepted op interface只验证selected合同。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` A/B |
 | Q32.R | `physical-relation-route-proof` | `blocked` | Q32.I | 建立IndexRelation、PhysicalEncoding/view proof、08唯一TransferRouteFamily、descriptor cover、InvalidLaneState和完整query signature/fuel gate。 | 06-08、10、11、16、18；同计划C |
 | Q32.B | `physical-dataflow-baseline-vertical` | `blocked` | Q32.R | 用新provider/materializer和canonical family encoding构造reserved conservative baseline，完成per-rank与all-rank exact eligibility并原子形成bundle，不调用旧decision owner。 | 01、06-18；同计划D |
-| Q32.V | `physical-capability-vertical` | `blocked` | Q32.B | 闭合mapped local-offset、invalid-lane fill/segment、versioned oriented GEMM到TargetCall/SystemC的model-qualified纵向，以及Q16/Q17/Q18 schema-v4 RequiredCapabilitySet与model/board逐key preflight；board数值predicate仍独立。 | 06、08、10、11、14-18；同计划V |
-| Q32.S | `bounded-physical-dataflow-synthesis` | `blocked` | Q32.V | 实现bounded/canonical/compatibility-aware search、lazy all-rank join、E0-E4通用规则和resident dataflow；reserved baseline与deterministic telemetry闭合。 | 06-13、16、18；同计划E/F |
-| Q32.G | `physical-dataflow-production-cutover` | `blocked` | Q32.S | production只调用新planner，删除scope-prefix、独立layout assignment、implicit per-use materialization、maximal-resident及旧公开入口/重复facts。 | 01、06-18；同计划G |
+| Q32.V | `physical-capability-vertical` | `blocked` | Q32.B | 闭合mapped local-offset、invalid-lane fill/segment、versioned oriented GEMM到TargetCall/SystemC的model-qualified纵向，以及Q16/Q17/Q18 schema-v4 RequiredCapabilitySet与model/board逐key preflight；board数值predicate仍独立。 | 06、08、10、11、14-18；同计划E |
+| Q32.M | `physical-dataflow-rewrite-mechanisms` | `blocked` | Q32.V | 先独立实现和资格化policy-free typed mechanisms：upstream tiling/fusion/view utility、relation propagation、implementation absorption、shared physical version、movement elimination及受控CSE/loop机制；改写后fresh重算全部analysis/gates。 | 05-13、16、18；同计划F |
+| Q32.S | `bounded-physical-dataflow-synthesis` | `blocked` | Q32.M | 只组合已资格化mechanisms，实现bounded/canonical/compatibility-aware search、resident dataflow policy和lazy all-rank join；reserved baseline与deterministic telemetry闭合。 | 06-13、16、18；同计划G |
+| Q32.G | `physical-dataflow-production-cutover` | `blocked` | Q32.S | production只调用新planner，删除scope-prefix、独立layout assignment、implicit per-use materialization、maximal-resident及旧公开入口/重复facts。 | 01、06-18；同计划H |
 | Q32 | `physical-dataflow-synthesis` | `blocked` | Q32.G | 显式v1重放旧profile；显式v2重放rank-count=1/16、mapped/oriented通用source vertical及实际选择新family的Q28 fixed-seed/Q31 held-out 7B PyTorch/SystemC scale gate；再闭合全部SPM/DDR/event/transport/instruction/ABI eligibility/atomic audit。不含board性能或timing。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` completion audit |
 
-下列later/external gate不会因Q32.I进入`next`自动进入主线。
+下列later/external gate不会因Q33进入`next`自动进入主线。
 
 ## Later / External Gates
 
@@ -86,7 +89,7 @@ gate也不会自动进入主线。
 | Q22.E | `target-model-package-execution` | `later` | Q18、Q22、Q32 + configured simulator/ISS | 原样执行Q32 integrated audit冻结的schema-v4 verified package及all-and-only RISC-V ELF；Q22.V v3只作历史证据。 | 15、16、17 |
 | Q22.K | `target-model-packet-provenance` | `later` | Q22 + owner-approved vendor package或独立公开规范 | 可选关联repo CRT/packet/MMIO；缺失不阻塞数值CModel。 | 14、16、17 |
 | Q22.P | `target-model-timing-calibration` | `later` | Q32、Q22.C + validated PMU/timing environment | deferred LT/AT校准；没有RTL/vendor cycle证据不声明cycle accuracy。 | 16、17 |
-| Q32.T | `physical-dataflow-transform-control` | `later` | Q32 | 可选coarse Transform Dialect控制面，只调用同一C++ planner/materializer；不承载solver state且不影响Q32完成。 | 06-08、10、18 |
+| Q32.T | `compiler-transform-control` | `later` | Q33、Q32 | 可选compiler-wide coarse Transform Dialect控制面，编排同一qualified fixed/candidate mechanisms并调用同一planner/materializer；不承载solver state且不影响Q32完成。 | 01、05-08、10、16、18 |
 | Q3.6 | `crt-writeback-scalar` | `later` | Q0、Q17 + 明确result/ABI | 恢复count writeback前先闭合typed result合同。 | 11、14 |
 
 新model/distributed/executable dialect、MPMD/rank class、跨卡coherent variant、WCRE/global registry、capability lease、
@@ -136,7 +139,7 @@ gate也不会自动进入主线。
 
 ## 实施计划入口
 
-- Active umbrella：Q32 `physical-dataflow-synthesis`；当前无`doing` row。
-- Next：Q32.I `target-implementation-foundation`，计划见`tasks/plans/physical-dataflow-synthesis.md` A/B1。
+- Active task：Q33 `compiler-optimization-adoption`；Q32 `physical-dataflow-synthesis` queued；当前无`doing` row。
+- Next：Q33 `compiler-optimization-adoption`，计划见`tasks/plans/compiler-optimization-adoption.md`；Q32 queued。
 - 新实施计划：`tasks/plans/`。
 - 已完成计划和历史证据：`tasks/README.md`的“实施计划导航”和“归档文档”。

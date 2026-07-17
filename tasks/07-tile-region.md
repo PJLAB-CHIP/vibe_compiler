@@ -218,8 +218,9 @@ target op family由tasks/10拥有。本文不为每种dtype、layout、shape或�
    fill/segment/mask/provider effect使selected invalid-lane proof可从IR重建。
 6. **物化edge realization**：按第6节生成mapped transfer、local/staged movement、resident SSA或spill/reload。
 7. **连接completion**：显式建立provider completion、multi-input join、last-consumer/reuse、collective wait和terminal drain。
-8. **局部canonicalization**：只删除semantics/physical storage/effect均等价的no-op view或dead operation；不得重新决定
-   implementation、encoding、cut、residency或order。
+8. **局部proof-preserving cleanup**：只调用已注册、能证明semantics/physical storage/effect等价的no-op view或dead-op
+   mechanism；generic greedy canonicalizer不是正确性前提。若改写allocation root、alias、lifetime或event，全部analysis与
+   exact gates必须fresh重算；不得重新决定implementation、encoding、cut、residency或order。
 9. **验证并返回clone**：任一引用失效、unsupported materializer、relation不一致或verifier failure使整个clone失败。
 
 候选物化后，whole-rank SPM/DDR/event/transport/ABI exact gates仍可能拒绝它。失败反馈给tasks/06的bounded search选择
@@ -264,24 +265,28 @@ compact loop表达，不能通过只物化representative iteration规避coverage
 
 ## 11. Transform Dialect 控制面
 
-Transform Dialect只承担选择payload scope、调用共享utility、编排确定性cleanup/verifier和复现diagnostic的控制面职责。
-production named pipeline和可选Transform extension必须调用同一组：
+Transform Dialect只承担选择payload scope、调用共享utility、编排已资格化mechanism/verifier和复现diagnostic的控制面职责。
+production named pipeline、candidate search和可选Transform extension必须调用同一组稳定库：
 
 ```text
+StructuredOptimizationMechanisms
+PhysicalDataflowMechanisms
 PhysicalDataflowPlanner
 CandidateMaterializer
 ExactCandidateGates
 ```
 
-Transform op可以接收isolated rank root、target profile和search budget，并返回更新后的root handle或结构化failure；它不能：
+Transform op可以在selected candidate形成前调用typed atomic mechanism，或接收isolated rank root、target profile和search
+budget调用粗粒度planner，并返回更新后的root handle或结构化failure；每个改写仍须遵守handle invalidation/effects并重跑
+所需analysis/gates。它不能：
 
 - 为每种op/dtype/layout/tile定义一个transform op；
 - 用`transform.alternatives`展开beam frontier；
 - 把physical-version graph、SPM live set、cost vector或selected candidate长期存入TransformState；
 - 让Transform script成为package、bundle或accepted IR的必要解释器。
 
-`CandidateMaterializer`必须是独立C++ utility。production pass/driver和Transform extension只是调用方，不能各维护一套
-rewrite或fallback。
+atomic mechanisms和`CandidateMaterializer`必须是独立C++ utility。production pass/driver、planner和Transform extension只是
+调用方，不能各维护一套rewrite或fallback。
 
 ## 12. Verifier
 

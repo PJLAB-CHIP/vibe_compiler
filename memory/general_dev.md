@@ -248,6 +248,9 @@
 - `wafer-opt` 需要显式注册要暴露的 MLIR pass families；如果显式IR debug/test依赖 canonicalizer/CSE
   这类标准 pass，注册 `mlir::registerTransformsPasses()` 并链接 `MLIRTransforms`，不要假设
   `MlirOptMain` 会自动注册。
+- upstream pass/library的linked、registered、debug-replayable、production-consumed和qualified是不同状态。只有named
+  production pipeline或shared candidate utility真实调用、至少一个case发生改写，并通过等价IR、下游exact gate、数值和
+  资源/性能非回退，才能声明采用；generic canonicalizer不能承担required normalization correctness。
 - 历史 stage-connection 测试和 `tools/check_stage_connection_tests.py` 已删除；后续tile-dataflow/tile/storage
   连接必须由真实frontend/SPMD program chain和当前编号合同恢复，不能重建手写fixture链来冒充主线。
 - 任务支持范围按硬件能力、runtime/ABI 证据和当前 IR contract 判断，不能按“当前下游 pass 尚未

@@ -42,6 +42,7 @@ Pipeline position:
   闭合完整输出。Q22只汇总该传递证据，不另建pipeline。
   Q29随后闭合rank-local tile-dataflow scheduling、complete traversal和TP16 7B compile/package结构gate；Q28再从同一
   production source入口闭合标准7B单block managed-reference SystemC执行及完整PyTorch eager output differential。
+  Q33在Q32前闭合upstream adoption、required normal form和Equivalent-IR Stability，并冻结post-adoption baseline；
   Q22.C消费Q22、Q32 schema-v4 RequiredCapabilitySet和Q6.B结果闭合板端numeric correlation；
   vendor-exact packet只在有独立packet/MMIO
   evidence时增加provenance claim。exact package provider和deferred timing calibration保持独立更高gate。
@@ -251,9 +252,31 @@ source与既有final byte-identical。marker目录、helper-output symlink和pub
 Q15 mandatory cases必须使用真实configured helper；mock helper只补failure injection。缺helper时相关test可以
 unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执行。
 
+### 5.1 Structured Optimization 与 Equivalent-IR Gate
+
+05拥有required normal form和fixed target-independent optimization；本文固定“上游机制已采用”的证据口径：
+
+- adoption record正交记录availability（absent/vendored/linked/debug-replayable/library-integrated）、adoption mode
+  （none/fixed-hygiene/candidate-local/target-specific/target-backend）和qualification
+  （unassessed/no-op-observed/downstream-blocked/qualified/rejected）；只有真实调用且qualified才能宣称已采用；
+- required normalization必须用显式rewrite/verifier建立下游合同，关闭generic canonicalizer不应改变correctness；
+- metamorphic corpus覆盖共享/非共享`tensor.empty`、fill和DPS init，named/generic structured form，
+  collapse/expand/transpose/extract-slice，unit-extent/scalar capture，以及bufferization前后可追溯ViewLike alias；
+- 每个等价形态都必须继续通过canonical semantic descriptor、complete traversal、SPM/DDR alias/lifetime、completion、target
+  ABI和atomic bundle gate；只比较op count、只跑isolated FileCheck或在下游结构化拒绝不算等价稳定；
+- source numeric policy不许可reassociation时要求完整output保持bit/byte exact；其它变换按source comparator验证，不能用
+  “优化通常等价”放宽NaN、rounding、overflow或reduction order；
+- 每个qualified mechanism必须证明production或candidate调用点实际执行，mandatory corpus至少一个case发生预期改写；fixed
+  adoption还要重放rank-count=1/16通用source和冻结7B source-to-bundle/SystemC/PyTorch vertical，记录unsupported/skipped、
+  compile resource和host wall；无改写或无收益的pass保留debug能力，不为凑覆盖进入默认pipeline；
+- candidate-local CSE/fusion/view/loop机制允许形成不同sharing/cost机会，但两种等价IR都必须有合法reserved baseline，且每个
+  survivor从改写后IR fresh重算analysis与exact cost。DMA issue、provider completion、wait/fence、collective和observable store
+  不能被CSE/DCE/LICM删除或跨越。
+
 ## 6. Q16 Per-Rank Executable Bundle Gates
 
-- 直接消费Q15重新读取验证过的structured tensor program，不另造手写task/group主线；
+- 直接消费Q15重新读取验证并经05 qualified fixed optimization形成的optimizer-ready structured tensor program，不另造
+  手写task/group主线；
 - frontend verifier一次返回typed input/output/parameter/constant和每rank slice，Compiler不二次解析JSON或文件名；
 - rank-count=1创建exact一个rank clone；rank-count=16创建logicalRank 0..15 all-and-only clones；
 - 每rankcompile在isolated module clone，显式传rank，不使用默认0、filename或rank-0 named pipeline；
@@ -278,7 +301,8 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 
 `tasks/06-physical-dataflow-synthesis.md`拥有终态联合planner合同；本文固定跨stage证据口径。Q29数字只作为已实现迁移baseline：
 
-- production从Q15 verified structured tensor program直接建立rank-local task/dataflow candidates，不发布或
+- production从Q15 verified program经05 required normal form与qualified fixed optimization后的同一structured tensor IR
+  直接建立rank-local task/dataflow candidates，不发布或
   重新读取额外的调度artifact；
 - accepted IR用buffer SSA、movement和event显式区分resident edge和spill，并以whole-rank SPM/
   DDR lifetime与whole-variant transport/ABI gate原子提交；
