@@ -5,12 +5,15 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace wafer::compiler {
 namespace {
@@ -102,6 +105,42 @@ bool isPublishedToleranceDType(llvm::StringRef dtype) {
   return dtype == "f16" || dtype == "bf16" || dtype == "f32";
 }
 
+uint32_t readFloatBitsAt(llvm::StringRef dtype, llvm::ArrayRef<uint8_t> bytes,
+                         size_t offset) {
+  if (dtype == "f16" || dtype == "bf16")
+    return readLittleEndian16(bytes.data() + offset);
+  if (dtype == "f32")
+    return readLittleEndian32(bytes.data() + offset);
+  llvm_unreachable("unpublished floating dtype reached raw bit decoder");
+}
+
+uint64_t getUlpOrderKey(uint32_t bits, unsigned width) {
+  const uint64_t signMask = uint64_t{1} << (width - 1);
+  const uint64_t magnitude = static_cast<uint64_t>(bits) & (signMask - 1);
+  return (static_cast<uint64_t>(bits) & signMask) != 0 ? signMask - magnitude
+                                                       : signMask + magnitude;
+}
+
+uint64_t getUlpDistance(llvm::StringRef dtype, uint32_t actualBits,
+                        uint32_t expectedBits, double actual, double expected) {
+  if (actual == expected)
+    return 0;
+  const unsigned width = dtype == "f32" ? 32 : 16;
+  const uint64_t actualKey = getUlpOrderKey(actualBits, width);
+  const uint64_t expectedKey = getUlpOrderKey(expectedBits, width);
+  return actualKey >= expectedKey ? actualKey - expectedKey
+                                  : expectedKey - actualKey;
+}
+
+template <typename T>
+T getNearestRankQuantile(const std::vector<T> &sorted, double quantile) {
+  assert(!sorted.empty());
+  size_t rank = static_cast<size_t>(
+      std::ceil(quantile * static_cast<double>(sorted.size())));
+  rank = std::max<size_t>(1, std::min(rank, sorted.size()));
+  return sorted[rank - 1];
+}
+
 std::string numericDetail(size_t elementIndex, double actual, double expected,
                           double absoluteError, double tolerance) {
   std::string result;
@@ -161,6 +200,8 @@ llvm::StringRef stringifyProgramTensorComparisonErrorCode(
     return "byte-size-mismatch";
   case ProgramTensorComparisonErrorCode::UnsupportedFloatingDType:
     return "unsupported-floating-dtype";
+  case ProgramTensorComparisonErrorCode::UnsupportedStatisticsDType:
+    return "unsupported-statistics-dtype";
   case ProgramTensorComparisonErrorCode::ActualNonFinite:
     return "actual-nonfinite";
   case ProgramTensorComparisonErrorCode::ExpectedNonFinite:
@@ -293,6 +334,93 @@ llvm::Error compareProgramTensorExpectedOutput(const ProgramTensor &actual,
         numericMismatchSummary(mismatchCount, elementCount, *firstMismatch,
                                *maximumAbsoluteError, *maximumToleranceRatio));
   return llvm::Error::success();
+}
+
+llvm::Expected<ProgramTensorComparisonStatistics>
+computeProgramTensorComparisonStatistics(const ProgramTensor &actual,
+                                         const ProgramTensor &expected) {
+  if (actual.getDType() != expected.getDType())
+    return comparisonError(ProgramTensorComparisonErrorCode::DTypeMismatch,
+                           "actual=" + actual.getDType().str() +
+                               " expected=" + expected.getDType().str());
+  if (actual.getShape() != expected.getShape())
+    return comparisonError(ProgramTensorComparisonErrorCode::ShapeMismatch,
+                           "actual=" + formatShape(actual.getShape()) +
+                               " expected=" + formatShape(expected.getShape()));
+  if (actual.getBytes().size() != expected.getBytes().size()) {
+    std::string detail;
+    llvm::raw_string_ostream stream(detail);
+    stream << "actual=" << actual.getBytes().size()
+           << " expected=" << expected.getBytes().size();
+    return comparisonError(ProgramTensorComparisonErrorCode::ByteSizeMismatch,
+                           detail);
+  }
+
+  const llvm::StringRef dtype = actual.getDType();
+  if (!isPublishedToleranceDType(dtype))
+    return comparisonError(
+        ProgramTensorComparisonErrorCode::UnsupportedStatisticsDType,
+        "dtype=" + dtype.str() +
+            " has no published source/model numeric statistics policy");
+
+  const size_t elementBytes = getElementByteWidth(dtype);
+  const llvm::ArrayRef<uint8_t> actualBytes = actual.getBytes();
+  const llvm::ArrayRef<uint8_t> expectedBytes = expected.getBytes();
+  const size_t elementCount = actualBytes.size() / elementBytes;
+  if (elementCount == 0)
+    return comparisonError(
+        ProgramTensorComparisonErrorCode::UnsupportedStatisticsDType,
+        "numeric statistics require a non-empty tensor");
+
+  ProgramTensorComparisonStatistics result;
+  result.elementCount = elementCount;
+  long double absoluteErrorSum = 0.0;
+  long double ulpDistanceSum = 0.0;
+  std::vector<double> absoluteErrors;
+  std::vector<uint64_t> ulpDistances;
+  absoluteErrors.reserve(elementCount);
+  ulpDistances.reserve(elementCount);
+  for (size_t offset = 0; offset < actualBytes.size(); offset += elementBytes) {
+    const size_t elementIndex = offset / elementBytes;
+    const DecodedFloat actualValue = decodeFloatAt(dtype, actualBytes, offset);
+    const DecodedFloat expectedValue =
+        decodeFloatAt(dtype, expectedBytes, offset);
+    if (!actualValue.finite)
+      return comparisonError(ProgramTensorComparisonErrorCode::ActualNonFinite,
+                             "element=" + std::to_string(elementIndex));
+    if (!expectedValue.finite)
+      return comparisonError(
+          ProgramTensorComparisonErrorCode::ExpectedNonFinite,
+          "element=" + std::to_string(elementIndex));
+
+    const double absoluteError =
+        std::abs(actualValue.value - expectedValue.value);
+    const uint64_t ulpDistance =
+        getUlpDistance(dtype, readFloatBitsAt(dtype, actualBytes, offset),
+                       readFloatBitsAt(dtype, expectedBytes, offset),
+                       actualValue.value, expectedValue.value);
+    if (absoluteError == 0.0)
+      ++result.exactElementCount;
+    absoluteErrorSum += absoluteError;
+    ulpDistanceSum += ulpDistance;
+    absoluteErrors.push_back(absoluteError);
+    ulpDistances.push_back(ulpDistance);
+  }
+
+  std::sort(absoluteErrors.begin(), absoluteErrors.end());
+  std::sort(ulpDistances.begin(), ulpDistances.end());
+  result.exactFraction = static_cast<double>(result.exactElementCount) /
+                         static_cast<double>(elementCount);
+  result.meanAbsoluteError =
+      static_cast<double>(absoluteErrorSum / elementCount);
+  result.p99AbsoluteError = getNearestRankQuantile(absoluteErrors, 0.99);
+  result.p999AbsoluteError = getNearestRankQuantile(absoluteErrors, 0.999);
+  result.maximumAbsoluteError = absoluteErrors.back();
+  result.meanUlpDistance = static_cast<double>(ulpDistanceSum / elementCount);
+  result.p99UlpDistance = getNearestRankQuantile(ulpDistances, 0.99);
+  result.p999UlpDistance = getNearestRankQuantile(ulpDistances, 0.999);
+  result.maximumUlpDistance = ulpDistances.back();
+  return result;
 }
 
 } // namespace wafer::compiler

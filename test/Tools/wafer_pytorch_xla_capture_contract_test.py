@@ -390,6 +390,8 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             ),
             (128, 8192, 4096),
         )
+        self.assertEqual(case["reference"]["atol"], 0.004)
+        self.assertEqual(case["reference"]["rtol"], 0.002)
 
     def test_llama_scale_payload_rejects_implicit_or_unversioned_scale(self):
         with self.assertRaisesRegex(
@@ -410,6 +412,36 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
                     }
                 },
             )
+
+    def test_diagnostic_variant_is_disjoint_from_fixed_corpus_admission(self):
+        spec_path = (
+            REPO_ROOT
+            / "test"
+            / "Tools"
+            / "Inputs"
+            / "workloads"
+            / "llama-2-7b-block-v1.json"
+        )
+        spec = self.tool.load_workload_corpus_spec(spec_path)
+        base = spec["cases"][0]
+        fixed_seed = base["seed"]
+        fixed_digests = dict(base["digests"])
+        variant = self.tool._make_diagnostic_variant_case(base, 20260729)
+
+        self.assertEqual(base["seed"], fixed_seed)
+        self.assertEqual(base["digests"], fixed_digests)
+        self.assertEqual(variant["diagnostic_base_case_id"], base["id"])
+        self.assertEqual(variant["seed"], 20260729)
+        self.assertNotIn("digests", variant)
+        self.assertIn("diagnostic-seed-20260729", variant["id"])
+
+        with self.assertRaisesRegex(RuntimeError, "Llama scale base case"):
+            self.tool._make_diagnostic_variant_case(
+                {"id": "not-scale", "kind": "simple_gemm"}, 1
+            )
+        for invalid in (-1, 1 << 64, True, "1"):
+            with self.assertRaisesRegex(RuntimeError, "fit uint64"):
+                self.tool._make_diagnostic_variant_case(base, invalid)
 
     def test_llama_scale_counter_payload_is_exact_and_chunk_independent(self):
         expected_bits = numpy.array(

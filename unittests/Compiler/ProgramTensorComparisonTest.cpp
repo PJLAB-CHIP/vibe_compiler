@@ -10,6 +10,7 @@
 #include <initializer_list>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -181,6 +182,82 @@ TEST(ProgramTensorComparisonTest, DTypeClassificationCoversAdmittedSurface) {
   }
   EXPECT_FALSE(wafer::compiler::computeProgramTensorByteCount("unknown", {1}));
   EXPECT_FALSE(wafer::compiler::isFloatingProgramTensorDType("unknown"));
+}
+
+TEST(ProgramTensorComparisonTest,
+     StatisticsUseNearestRankAndSignAwareF16UlpDistance) {
+  constexpr uint16_t one = UINT16_C(0x3c00);
+  std::vector<uint8_t> expectedBytes(2000);
+  std::vector<uint8_t> actualBytes(2000);
+  for (size_t index = 0; index < 1000; ++index) {
+    expectedBytes[index * 2] = static_cast<uint8_t>(one);
+    expectedBytes[index * 2 + 1] = static_cast<uint8_t>(one >> 8);
+    uint16_t actual = one;
+    if (index >= 989)
+      actual += index == 999 ? 2 : 1;
+    actualBytes[index * 2] = static_cast<uint8_t>(actual);
+    actualBytes[index * 2 + 1] = static_cast<uint8_t>(actual >> 8);
+  }
+  ProgramTensor expected =
+      llvm::cantFail(ProgramTensor::create("f16", {1000}, expectedBytes));
+  ProgramTensor actual =
+      llvm::cantFail(ProgramTensor::create("f16", {1000}, actualBytes));
+  auto statistics = wafer::compiler::computeProgramTensorComparisonStatistics(
+      actual, expected);
+  ASSERT_TRUE(static_cast<bool>(statistics));
+  EXPECT_EQ(statistics->elementCount, 1000u);
+  EXPECT_EQ(statistics->exactElementCount, 989u);
+  EXPECT_DOUBLE_EQ(statistics->exactFraction, 0.989);
+  EXPECT_DOUBLE_EQ(statistics->meanAbsoluteError, 12.0 / 1024.0 / 1000.0);
+  EXPECT_DOUBLE_EQ(statistics->p99AbsoluteError, 1.0 / 1024.0);
+  EXPECT_DOUBLE_EQ(statistics->p999AbsoluteError, 1.0 / 1024.0);
+  EXPECT_DOUBLE_EQ(statistics->maximumAbsoluteError, 2.0 / 1024.0);
+  EXPECT_DOUBLE_EQ(statistics->meanUlpDistance, 12.0 / 1000.0);
+  EXPECT_EQ(statistics->p99UlpDistance, 1u);
+  EXPECT_EQ(statistics->p999UlpDistance, 1u);
+  EXPECT_EQ(statistics->maximumUlpDistance, 2u);
+
+  ProgramTensor positiveZero = makeTensor("f16", {1}, {0x00, 0x00});
+  ProgramTensor negativeZero = makeTensor("f16", {1}, {0x00, 0x80});
+  auto zeroStatistics =
+      wafer::compiler::computeProgramTensorComparisonStatistics(negativeZero,
+                                                                positiveZero);
+  ASSERT_TRUE(static_cast<bool>(zeroStatistics));
+  EXPECT_EQ(zeroStatistics->exactElementCount, 1u);
+  EXPECT_EQ(zeroStatistics->maximumUlpDistance, 0u);
+}
+
+TEST(ProgramTensorComparisonTest, StatisticsCoverBF16AndF32UlpDomains) {
+  ProgramTensor bf16Expected = makeTensor("bf16", {1}, {0x00, 0x3f});
+  ProgramTensor bf16Actual = makeTensor("bf16", {1}, {0x01, 0x3f});
+  auto bf16 = wafer::compiler::computeProgramTensorComparisonStatistics(
+      bf16Actual, bf16Expected);
+  ASSERT_TRUE(static_cast<bool>(bf16));
+  EXPECT_DOUBLE_EQ(bf16->maximumAbsoluteError, 1.0 / 256.0);
+  EXPECT_EQ(bf16->maximumUlpDistance, 1u);
+
+  ProgramTensor f32Expected = makeTensor("f32", {1}, {0x00, 0x00, 0x80, 0x3f});
+  ProgramTensor f32Actual = makeTensor("f32", {1}, {0x01, 0x00, 0x80, 0x3f});
+  auto f32 = wafer::compiler::computeProgramTensorComparisonStatistics(
+      f32Actual, f32Expected);
+  ASSERT_TRUE(static_cast<bool>(f32));
+  EXPECT_DOUBLE_EQ(f32->maximumAbsoluteError, 0x1p-23);
+  EXPECT_EQ(f32->maximumUlpDistance, 1u);
+}
+
+TEST(ProgramTensorComparisonTest, StatisticsRejectUnsupportedAndNonFinite) {
+  ProgramTensor integer = makeTensor("i16", {1}, {0x00, 0x00});
+  EXPECT_EQ(takeCode(wafer::compiler::computeProgramTensorComparisonStatistics(
+                         integer, integer)
+                         .takeError()),
+            ProgramTensorComparisonErrorCode::UnsupportedStatisticsDType);
+
+  ProgramTensor finite = makeTensor("f16", {1}, {0x00, 0x3c});
+  ProgramTensor infinity = makeTensor("f16", {1}, {0x00, 0x7c});
+  EXPECT_EQ(takeCode(wafer::compiler::computeProgramTensorComparisonStatistics(
+                         infinity, finite)
+                         .takeError()),
+            ProgramTensorComparisonErrorCode::ActualNonFinite);
 }
 
 } // namespace

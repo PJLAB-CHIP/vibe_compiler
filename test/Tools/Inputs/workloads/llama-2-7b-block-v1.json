@@ -50,8 +50,8 @@
       },
       "reference": {
         "implementation": "PyTorch eager CPU complete Llama decoder block",
-        "atol": 0.02,
-        "rtol": 0.01,
+        "atol": 0.004,
+        "rtol": 0.002,
         "digest_quantization_decimals": 3
       }
     }

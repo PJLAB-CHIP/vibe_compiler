@@ -14,6 +14,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
@@ -165,6 +166,34 @@ bool runTargetModelGate(
       llvm::errs() << "wafer-compile: " << llvm::toString(std::move(errors))
                    << "\n";
       return true;
+    }
+    if (options.modelReportNumericStatistics) {
+      auto statistics =
+          wafer::compiler::computeProgramTensorComparisonStatistics(*actual,
+                                                                    *expected);
+      if (!statistics) {
+        llvm::errs() << "wafer-compile: target model numeric statistics "
+                        "failed at index "
+                     << binding->programIndex << " rank " << output.logicalRank
+                     << ": " << llvm::toString(statistics.takeError()) << "\n";
+        return true;
+      }
+      llvm::outs()
+          << "wafer-compile: target model numeric statistics index="
+          << binding->programIndex << " rank=" << output.logicalRank
+          << " dtype=" << actual->getDType()
+          << " elements=" << statistics->elementCount
+          << " exact=" << statistics->exactElementCount << " exact_fraction="
+          << llvm::format("%.17g", statistics->exactFraction) << " mean_abs="
+          << llvm::format("%.17g", statistics->meanAbsoluteError)
+          << " p99_abs=" << llvm::format("%.17g", statistics->p99AbsoluteError)
+          << " p999_abs="
+          << llvm::format("%.17g", statistics->p999AbsoluteError) << " max_abs="
+          << llvm::format("%.17g", statistics->maximumAbsoluteError)
+          << " mean_ulp=" << llvm::format("%.17g", statistics->meanUlpDistance)
+          << " p99_ulp=" << statistics->p99UlpDistance
+          << " p999_ulp=" << statistics->p999UlpDistance
+          << " max_ulp=" << statistics->maximumUlpDistance << "\n";
     }
     if (llvm::Error comparison =
             wafer::compiler::compareProgramTensorExpectedOutput(

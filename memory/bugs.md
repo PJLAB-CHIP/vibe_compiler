@@ -661,3 +661,13 @@
 - 防复发：先区分累计CPU与wall并继续分解adapter；fast calculator必须对独立慢oracle覆盖Tensor/NTensor、Cx/NCx、tail和
   strided case，movement negative锁定诊断层级；scale gate比较优化前后完整package、计数/environment及PyTorch expected。
   不因“GEMM很大”就修改受管thread runtime。
+
+## 2026-07-17 fail-fast output comparison低估replicated全卡误差
+
+- 现象：标准7B block用零tolerance诊断时在rank 0首个失败即返回，看到该rank的`max_abs=0.001953125`后容易误报为
+  全卡最大误差；显式逐rankstatistics显示其它rank可达到`0.0029296875`。
+- 根因：把comparison的失败诊断当成完整表征。production comparator为保持失败路径简洁会在首个失败binding停止，而
+  replicated TP16 output有16份独立rank result，数值路径和归约顺序可产生不同误差分布。
+- 修复模式：comparison继续负责pass/fail，独立只读statistics在比较前报告每个rank的exact/abs/ULP完整分布；制定gate时
+  聚合全部seed和rank，不从首个失败外推全局最大值。
+- 防复发：数值表征报告必须记录rank覆盖、元素数和quantile定义；fail-fast负例只证明拒绝与atomicity，不充当分布证据。

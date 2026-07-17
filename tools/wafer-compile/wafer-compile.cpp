@@ -60,6 +60,7 @@ int main(int argc, char **argv) {
       options.targetModelMaximumFusedMultiplyAdds ||
       options.targetModelMaximumMovementBytes ||
       options.targetModelMaximumMovementSegments ||
+      options.modelReportNumericStatistics ||
       options.targetModelNumericPolicy ||
       !options.targetModelBulkRecords.empty() ||
       options.targetModelMaximumBulkTotalBytes ||

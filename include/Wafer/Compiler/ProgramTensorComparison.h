@@ -8,6 +8,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <system_error>
@@ -22,10 +23,30 @@ enum class ProgramTensorComparisonErrorCode : uint8_t {
   ShapeMismatch,
   ByteSizeMismatch,
   UnsupportedFloatingDType,
+  UnsupportedStatisticsDType,
   ActualNonFinite,
   ExpectedNonFinite,
   NumericMismatch,
   RawMismatch,
+};
+
+/// Complete finite floating-point error distribution for one source/model
+/// tensor pair. Quantiles use the nearest-rank definition over all elements,
+/// including exact matches. ULP distances use the destination dtype's
+/// sign-aware monotonic encoding; numerically equal signed zeros have distance
+/// zero, matching the source/model comparator policy.
+struct ProgramTensorComparisonStatistics {
+  size_t elementCount = 0;
+  size_t exactElementCount = 0;
+  double exactFraction = 0.0;
+  double meanAbsoluteError = 0.0;
+  double p99AbsoluteError = 0.0;
+  double p999AbsoluteError = 0.0;
+  double maximumAbsoluteError = 0.0;
+  double meanUlpDistance = 0.0;
+  uint64_t p99UlpDistance = 0;
+  uint64_t p999UlpDistance = 0;
+  uint64_t maximumUlpDistance = 0;
 };
 
 llvm::StringRef stringifyProgramTensorComparisonErrorCode(
@@ -61,6 +82,14 @@ private:
 llvm::Error compareProgramTensorExpectedOutput(const ProgramTensor &actual,
                                                const ProgramTensor &expected,
                                                double atol, double rtol);
+
+/// Computes a read-only error distribution for finite F16, BF16, or F32
+/// tensors after applying the same metadata and decoding policy as the
+/// source/model comparator. This analysis does not apply or select a
+/// tolerance and cannot change comparison success.
+llvm::Expected<ProgramTensorComparisonStatistics>
+computeProgramTensorComparisonStatistics(const ProgramTensor &actual,
+                                         const ProgramTensor &expected);
 
 } // namespace wafer::compiler
 

@@ -28,6 +28,7 @@ struct CommandLineOptions {
   std::vector<std::string> modelExpected;
   std::optional<std::string> modelAtol;
   std::optional<std::string> modelRtol;
+  bool modelReportNumericStatistics = false;
   bool targetModel = false;
   std::optional<std::string> targetModelMaximumScalarEvaluations;
   std::optional<std::string> targetModelMaximumFusedMultiplyAdds;

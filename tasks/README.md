@@ -53,7 +53,8 @@
 
 ## 实施计划导航
 
-当前无active实施计划。已完成Q30标准7B单block production vertical性能收口归档为
+当前没有active实施计划。已完成Q31标准7B单block多seed数值表征和source/model gate收紧归档为
+`tasks/archive/llama-block-numeric-characterization.md`；Q30标准7B单block production vertical性能收口归档为
 `tasks/archive/llama-block-production-performance.md`，Q28 Llama-2 7B单block纵向归档为
 `tasks/archive/llama-7b-block-vertical.md`，Q29
 tile-dataflow scheduling归档为`tasks/archive/tile-dataflow-scheduling.md`。Q27 reference executor退役已归档为`tasks/archive/reference-executor-retirement.md`，
@@ -78,6 +79,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/llama-block-numeric-characterization.md` | 已完成Q31的ProgramTensor逐rank abs/ULP统计、非admission多seed 7B重放及source/model comparator gate收紧记录 |
 | `tasks/archive/llama-block-production-performance.md` | 已完成Q30的static movement/physical codec host性能收口、package等价性和完整7B双replay记录 |
 | `tasks/archive/llama-7b-block-vertical.md` | 已完成Q28的标准Llama-2 7B单block TP16 source/package、repo-owned SystemC managed-reference和完整PyTorch eager output differential记录 |
 | `tasks/archive/tile-dataflow-scheduling.md` | 已完成Q29的structured tensor program直达bounded task/dataflow scheduling、跨region SPM、whole-variant commit、旧group executable surface退役及7B TP16 compile-only gate记录 |

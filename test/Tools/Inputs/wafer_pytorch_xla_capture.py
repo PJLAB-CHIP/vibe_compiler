@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import dataclasses
 import functools
 import hashlib
@@ -1261,6 +1262,8 @@ def _build_workload_case_payload(
     spec_path: pathlib.Path,
     case: dict[str, Any],
     numpy_module: Any,
+    *,
+    verify_fixed_digests: bool = True,
 ) -> dict[str, Any]:
     if case.get("dtype") not in {"float16", "bfloat16", "float32"}:
         raise RuntimeError(
@@ -1519,16 +1522,19 @@ def _build_workload_case_payload(
         "reference_output": output_digest,
         "reference_output_quantized": quantized_output_digest,
     }
-    expected_digests = case.get("digests")
-    if not isinstance(expected_digests, dict):
-        raise RuntimeError(f"workload case {case['id']} is missing fixed digests")
-    for name, digest in digests.items():
-        expected_digest = expected_digests.get(name)
-        if expected_digest != digest:
+    if verify_fixed_digests:
+        expected_digests = case.get("digests")
+        if not isinstance(expected_digests, dict):
             raise RuntimeError(
-                f"workload case {case['id']} {name} digest mismatch: "
-                f"expected {expected_digest!r}, got {digest!r}"
+                f"workload case {case['id']} is missing fixed digests"
             )
+        for name, digest in digests.items():
+            expected_digest = expected_digests.get(name)
+            if expected_digest != digest:
+                raise RuntimeError(
+                    f"workload case {case['id']} {name} digest mismatch: "
+                    f"expected {expected_digest!r}, got {digest!r}"
+                )
     if case.get("source_revision") != digests["source_config"]:
         raise RuntimeError(
             f"workload case {case['id']} source_revision must equal its "
@@ -2177,6 +2183,117 @@ def emit_workload_corpus(
     )
 
 
+def _make_diagnostic_variant_case(
+    base_case: dict[str, Any], seed: int
+) -> dict[str, Any]:
+    if base_case.get("kind") != "llama_decoder_block":
+        raise RuntimeError(
+            "diagnostic workload variants require a Llama scale base case"
+        )
+    if (
+        isinstance(seed, bool)
+        or not isinstance(seed, int)
+        or seed < 0
+        or seed > _UINT64_MASK
+    ):
+        raise RuntimeError("diagnostic workload variant seed must fit uint64")
+    variant = copy.deepcopy(base_case)
+    base_case_id = str(base_case["id"])
+    variant["id"] = f"{base_case_id}-diagnostic-seed-{seed}"
+    variant["seed"] = seed
+    variant.pop("digests", None)
+    variant["diagnostic_base_case_id"] = base_case_id
+    return variant
+
+
+def emit_workload_variant(
+    spec_path: pathlib.Path,
+    base_case_id: str,
+    seed: int,
+    output_dir: pathlib.Path,
+) -> None:
+    """Emits one explicitly non-admitted seed variant for characterization."""
+    numpy_module = _import_numpy()
+    spec = load_workload_corpus_spec(spec_path)
+    base_case = _find_workload_case(spec, base_case_id)
+    variant = _make_diagnostic_variant_case(base_case, seed)
+
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    reference_dir = output_dir / "reference"
+    parameter_dir = reference_dir / "parameters"
+    parameter_dir.mkdir(parents=True)
+
+    spmd_modules = _import_spmd_runtime_modules()
+    spmd_modules[2].use_spmd()
+    torch_xla_module = sys.modules.get("torch_xla")
+    if torch_xla_module is None:
+        raise RuntimeError("PyTorch/XLA importer did not load torch_xla")
+    _verify_workload_runtime_provenance(spec, spmd_modules[0], torch_xla_module)
+    runtime_modules = {
+        "spmd": spmd_modules,
+        "torch": spmd_modules[0],
+        "stablehlo": spmd_modules[1],
+    }
+    payload = _build_workload_case_payload(
+        spec_path, variant, numpy_module, verify_fixed_digests=False
+    )
+    if payload["extra_inputs"]:
+        raise RuntimeError("Llama diagnostic variant has unexpected extra inputs")
+
+    _save_workload_array(
+        numpy_module, reference_dir / "input.npy", payload["input"]
+    )
+    _save_workload_array(
+        numpy_module, reference_dir / "expected.npy", payload["expected"]
+    )
+    for name, value in payload["parameters"].items():
+        if pathlib.PurePath(name).name != name:
+            raise RuntimeError(f"invalid workload parameter name {name!r}")
+        _save_workload_array(
+            numpy_module, parameter_dir / f"{name}.npy", value
+        )
+
+    program_dir = output_dir / "program"
+    _emit_workload_program(
+        spec_path=spec_path,
+        payload=payload,
+        program_dir=program_dir,
+        runtime_modules=runtime_modules,
+    )
+    _verify_exported_parameter_payloads(
+        program_dir, payload["parameters"], numpy_module
+    )
+    program_digest = _canonical_program_digest(program_dir, numpy_module)
+    record = {
+        "schema_version": WORKLOAD_CORPUS_SCHEMA_VERSION,
+        "admission": False,
+        "variant_kind": "diagnostic-seed",
+        "base_corpus_id": spec["corpus_id"],
+        "base_case_id": base_case_id,
+        "case_id": variant["id"],
+        "source": spec["source"],
+        "source_revision": base_case["source_revision"],
+        "seed": seed,
+        "dtype": variant["dtype"],
+        "config": variant["config"],
+        "reference": variant["reference"],
+        "digests": {
+            **payload["digests"],
+            "exported_program": program_digest,
+        },
+        "reference_paths": {
+            "input": "reference/input.npy",
+            "expected": "reference/expected.npy",
+            "parameters": "reference/parameters",
+        },
+        "program_path": "program",
+    }
+    (output_dir / "variant.json").write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
 def emit_sharded_stablehlo_program(
     program_dir: pathlib.Path,
     strategy_name: str,
@@ -2423,6 +2540,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="emit one deterministic NumPy CPU reference without importing PyTorch/XLA",
     )
     parser.add_argument(
+        "--emit-workload-variant",
+        action="store_true",
+        help="emit one explicitly non-admitted workload seed variant for numeric characterization",
+    )
+    parser.add_argument(
         "--sharding-strategy",
         choices=SHARDING_STRATEGY_NAMES,
         help="user sharding strategy",
@@ -2462,6 +2584,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="workload corpus case id; repeat to select multiple cases (default: all)",
     )
     parser.add_argument(
+        "--payload-seed",
+        type=int,
+        help="explicit uint64 payload seed for --emit-workload-variant",
+    )
+    parser.add_argument(
         "--verify-corpus-reproducibility",
         action="store_true",
         help="repeat each real exporter invocation and require canonical-equivalent output",
@@ -2469,6 +2596,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output-program-dir", type=pathlib.Path)
     parser.add_argument("--output-corpus-dir", type=pathlib.Path)
     parser.add_argument("--output-reference-dir", type=pathlib.Path)
+    parser.add_argument("--output-variant-dir", type=pathlib.Path)
     return parser.parse_args(argv)
 
 
@@ -2482,10 +2610,28 @@ def main(argv: list[str]) -> int:
             args.emit_hf_megatron_transformer_block,
             args.emit_workload_corpus,
             args.emit_cpu_reference,
+            args.emit_workload_variant,
         )
     )
     if selected_actions != 1:
         raise RuntimeError("select exactly one emit action")
+
+    if args.emit_workload_variant:
+        if args.output_variant_dir is None:
+            raise RuntimeError("missing --output-variant-dir")
+        if args.corpus_case is None or len(args.corpus_case) != 1:
+            raise RuntimeError(
+                "--emit-workload-variant requires exactly one --corpus-case"
+            )
+        if args.payload_seed is None:
+            raise RuntimeError("missing --payload-seed")
+        emit_workload_variant(
+            args.workload_corpus_spec,
+            args.corpus_case[0],
+            args.payload_seed,
+            args.output_variant_dir,
+        )
+        return 0
 
     if args.emit_cpu_reference:
         if args.output_reference_dir is None:

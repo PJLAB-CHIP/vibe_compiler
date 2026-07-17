@@ -1,6 +1,6 @@
 # Wafer Compiler Verification Plan
 
-状态：2026-07-17按Q30标准7B单block production vertical性能gate同步；保留已完成
+状态：2026-07-17按Q31标准7B单block多seed数值表征和source/model gate收紧同步；保留已完成
 Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate。
 本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
@@ -773,8 +773,9 @@ activation、attention和MLP shape必须保持7B尺寸；`num_hidden_layers=32`�
 
 2026-07-16完成事实：versioned scale corpus通过全payload finite audit、重复export canonical-equivalence和固定digest检查，
 冻结tiny corpus未漂移；production TP16链实际执行16 rank、19,696个target transaction和17个SystemC thread，2,032条
-managed tensor command及672条bulk GEMM均完成，formal command/FMA为零。最终65,536个F16 output element全部通过
-`atol=0.02, rtol=0.01`的PyTorch eager comparison。错误expected负例报告59,745/65,536 mismatch；scalar budget负例在
+managed tensor command及672条bulk GEMM均完成，formal command/FMA为零。最终65,536个F16 output element当时以
+`atol=0.02, rtol=0.01`完成首轮PyTorch eager comparison；Q31随后按本节11.6.3的独立多seed gate收紧当前policy。
+错误expected负例报告59,745/65,536 mismatch；scalar budget负例在
 numeric effect中止；二者都保留已原子发布package且不发布matched model result。late-rank和unsupported managed row继续由
 同一driver/component合同的小型fixture覆盖atomicity，不冒充又跑了一次完整7B。该结论仍不包含board、exact package/ELF、
 hardware numeric、性能或timing claim；详细命令、digest、wall time和full-suite证据由归档实施记录拥有。
@@ -802,6 +803,26 @@ timing model。完成证据必须满足：
   plan、合并重复validation/traversal，不能用全局mutable cache或跳过value-domain/budget/failure atomicity。
 
 详细baseline、分项profile、candidate数字和suite证据只进入Q30归档实施记录；`tasks/progress.md`只保留完成索引。
+
+### 11.6.3 Q31 多seed数值表征与收紧Gate
+
+Q31已在最终ProgramTensor source/model comparison边界增加只读statistics，并以两个非admission held-out seed补充Q28固定seed。
+statistics不得改变comparison、backend或effect；完整gate仍要求同一source→TP16 package→SystemC→PyTorch链。完成证据要求：
+
+- F16/BF16/F32已知bit vector独立验证numeric-exact、mean/p99/p999/max absolute error和sign-aware ULP；quantile使用包含零值的
+  nearest-rank，`+0/-0`延续当前numeric equality并计0 ULP，nonfinite及metadata mismatch继续fail closed；
+- diagnostic variant只能复用固定source/config/payload算法并显式替换seed，记录dynamic digests和`admission=false`；不得修改
+  Q28 seed/digest或把variant升级成固定corpus admission；
+- seeds在held-out执行前固定为`20260715`、`20260729`、`20260812`。三者都必须以Release TP16完成全部rank、transaction、
+  managed/bulk/no-formal计数和PyTorch comparison，并通过预冻结`atol=0.004, rtol=0.002`；任一失败则旧policy保持不变；
+- 报告保存每个seed的完整statistics和environment identity。该有限表征只支持source/model regression policy，不能外推为
+  bit-exact、连续输入域上界、整网accuracy/perplexity或board/hardware numeric profile。
+
+完成事实：三个预冻结seed的16个replicated rank output均完成比较；每rank 65,536个F16元素的`p99_abs`均为
+`0.0009765625`，跨全部seed/rank的最坏`max_abs`为`0.0029296875`。因此当前scale source/model policy从
+`atol=0.02, rtol=0.01`收紧为预冻结的`atol=0.004, rtol=0.002`。近零值使observed `max_ulp`达到数千，ULP只保留为
+诊断分布，不作为本gate硬阈值。详细结果进入`tasks/archive/llama-block-numeric-characterization.md`；长期source/model
+policy由本节和tasks/17共同拥有。
 
 ### 11.7 Q22.C Board Numeric Correlation Gate
 

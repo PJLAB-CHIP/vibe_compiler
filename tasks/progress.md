@@ -7,7 +7,8 @@
 `tasks/README.md`；历史变化由Git保留。
 
 当前发布基线：Q22 repo-owned target-call/SystemC model-only untimed functional-numeric链、Q28标准Llama-2 7B单block
-TP16 scale vertical及Q30 production vertical host性能收口已经完成；数值纵向直接比较固定source CPU expected，不再维护
+TP16 scale vertical、Q30 production vertical host性能收口及Q31多seed数值表征已经完成；数值纵向直接比较固定source CPU
+expected，不再维护
 accepted-IR第二套解释器。SystemC受管依赖统一位于`third_party/systemc-model`。板端执行、板端数值相关、exact package执行、
 packet provenance和timing仍是独立later/external gate。
 
@@ -39,7 +40,7 @@ Q23 -> Q24 -> Q25 -> Q26
 Q22 -> Q27
 
 tile-dataflow scheduling与7B级单block纵向：
-Q22 + Q27 -> Q29 -> Q28 -> Q30
+Q22 + Q27 -> Q29 -> Q28 -> Q30 -> Q31
 
 later/external：
 Q0.L + Q21 + configured board -> Q6.B -> Q9
@@ -51,7 +52,9 @@ Q22 + owner-approved packet evidence -> Q22.K
 
 ## 当前实施队列
 
-当前没有active或next编码任务。下列later/external gate不会因Q30完成自动进入主线。
+当前没有active compiler实施任务；later/external gate不会自动进入主线。
+
+下列later/external gate不会因Q31完成自动进入主线。
 
 ## Later / External Gates
 
@@ -102,6 +105,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 | Q29 | `tile-dataflow-scheduling` | `done` | structured tensor program直达bounded rank-local task/dataflow candidate、完整traversal、跨region SPM、whole-rank/whole-variant resource gate、旧group executable surface退役及TP16 7B compile-only all-rank package闭合。 | 01、06-13、16；`tasks/archive/tile-dataflow-scheduling.md` |
 | Q28 | `llama-7b-block-vertical` | `done` | 标准Llama-2 7B单block TP16从真实source、task-dataflow package到repo-owned SystemC managed-reference执行及完整PyTorch eager output differential闭合；不包含board、exact ELF、性能或timing。 | 02、03、06、09、11、12、16、17；`tasks/archive/llama-7b-block-vertical.md` |
 | Q30 | `llama-block-production-performance` | `done` | 保持accepted IR、all-rank package、target command、SystemC行为和完整PyTorch differential不变，收口static movement构造及physical codec重复遍历；7B Release wall time稳定下降。 | 08、10、11、16-18；`tasks/archive/llama-block-production-performance.md` |
+| Q31 | `llama-block-numeric-characterization` | `done` | 最终ProgramTensor边界的逐rank abs/ULP统计、非admission多seed 7B重放及预冻结source/model gate收紧闭合；不改变arithmetic、corpus admission或板端policy。 | 02、16-18；`tasks/archive/llama-block-numeric-characterization.md` |
 | Q1 | `crt-surface-audit` | `done` | compiler-emitted production CRT symbol/prototype surface审计完成。 | 11、14、16及对应archive |
 | Q2-Q3 | `crt-device-symbol-closure` | `done` | production CRT symbol和device-link closure闭合。 | 11、14、16及对应archive |
 | Q3.5 | `crt-extended-evidence` | `done` | 扩展CRT surface evidence已分级。 | 11、14、16及对应archive |

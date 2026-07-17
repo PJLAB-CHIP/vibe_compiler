@@ -189,6 +189,14 @@ global row-major index、固定seed和彼此独立的parameter stream共同形�
 得到canonical-equivalent program和固定digest，既有tiny corpus保持冻结而不随scale算法迁移。该case的shape、seed和
 payload算法是corpus参数，不进入frontend artifact协议。
 
+Q31 numeric characterization没有修改上述冻结case的seed、digest或admission。repository test-input generator可以从一个
+固定base case显式生成不同seed的diagnostic variant，但必须记录base case、实际seed、动态input/parameter/expected/program
+digest和`admission=false`；variant不能写回workload spec、复用固定digest字段或被`--emit-workload-corpus`当作正式case。
+variant仍由同一PyTorch eager block产生expected、由同一真实exporter产生program，并进入同一production compiler pipeline；
+因此它只扩充有限tested payload domain，不改变frontend program directory、dtype、shape、sharding或参数绑定协议。Q31的两个
+variant seed和原固定seed全部通过后，scale case只把source/model comparator policy收紧为`atol=0.004, rtol=0.002`；该字段
+不进入source/config/payload/program digest，也不把variant提升为corpus admission。
+
 ## 5. Sharding Handoff
 
 frontend只保存exporter能解释的`mhlo.sharding`等输入事实。没有用户sharding仍是合法StableHLO program；

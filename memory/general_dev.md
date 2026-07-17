@@ -607,6 +607,9 @@
 - scale执行显式使用`--target-model-numeric-policy=managed-reference`；`formal`用于小规模raw-exact，
   `prefer-admitted`只允许exact-record GEMM。managed结果必须同时检查formal command/FMA为零、tensor/bulk command计数、
   environment/implementation evidence和完整PyTorch expected，不能只看命令成功返回。
+- scale source/model误差表征使用显式`--model-report-numeric-statistics`，并读取全部rank报告；replicated output的首个rank
+  fail-fast diagnostic不代表全卡最坏值。absolute-error quantile适合有限corpus gate，destination-format ULP用于定位舍入差异，
+  但near-zero会把很小的绝对误差放大为数千ULP，不能在没有独立语义依据时直接设成硬阈值。
 - dtype adapter是scale profile的一部分：F16/BF16到oneDNN F32输入采用精确bit widening，不能为无损转换逐元素构造
   APFloat。当前canonical bulk artifact是SEQ且cache关闭，Release 7B gate仍属慢测；若引入OMP/threadpool或descriptor/
   packed-weight cache，必须更新受管依赖record、environment digest和资格/数值回归，不能继承ambient线程数。

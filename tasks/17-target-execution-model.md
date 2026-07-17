@@ -1,6 +1,7 @@
 # Wafer Target Execution Model（CModel）
 
-状态：2026-07-16已完成Q22.N/L/B/H/S/V、Q22 model-only functional-numeric profile及Q28标准7B单block scale vertical；封闭vendor
+状态：2026-07-17已完成Q22.N/L/B/H/S/V、Q22 model-only functional-numeric profile、Q28标准7B单block scale vertical及
+Q31多seed数值表征；封闭vendor
 Host-CRT/packet/DWFC seam不作为数值CModel依赖。本文固定以数值正确性为
 近期目标的untimed target execution model、SystemC/TLM边界、实现分层和板端numeric correlation计划；timing calibration
 仅作为deferred extension。任务状态看
@@ -1487,6 +1488,21 @@ offset side table。bulk F16/BF16/F32输入经strict physical decode后可以直
 threaded oneDNN属于受管依赖身份变化，只有在fresh测量证明SEQ compute是主要剩余瓶颈后才能引入，并需固定worker政策、
 link closure和environment digest，重新通过qualification及完整7B数值。Q30实施与完成证据归档于
 `tasks/archive/llama-block-production-performance.md`。
+
+### 10.7.3 Source/model numeric statistics
+
+最终ProgramTensor comparator可以在调用者显式请求时报告decoded finite output相对同一source expected的
+numeric-exact、absolute-error和destination-format ULP分布。statistics是只读验证artifact：不参与tolerance结果、backend
+admission、SystemC调度、effect提交、package或environment identity。absolute quantile和ULP quantile均包含exact元素并使用
+nearest-rank；ULP从F16/BF16/F32 canonical raw encoding构造sign-aware monotonic key，当前numeric comparator视为相等的
+`+0/-0`距离为0。NaN/Inf和未发布floating dtype仍在统计发布前fail closed。
+
+Q31用Q28固定seed和两个预先冻结、明确`admission=false`的diagnostic seed验证了更严格的source/model tolerance。三个seed
+的全部rank均通过`atol=0.004, rtol=0.002`，该值现为scale case的source/model comparator policy；逐rank完整统计中的共同
+`p99_abs`为`0.0009765625`，跨seed/rank最坏`max_abs`为`0.0029296875`。ULP在near-zero处会放大，继续只作diagnostic。
+该结果只收缩同shape/dtype/payload算法的有限empirical regression policy；不能改写formal/managed semantics、Q22.B exact admission，
+也不能提前成为Q22.C board profile。具体seed、阈值和完成证据由tasks/16及
+`tasks/archive/llama-block-numeric-characterization.md`拥有。
 
 ### 10.8 Q22.C Board numeric correlation
 

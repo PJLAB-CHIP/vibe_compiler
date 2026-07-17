@@ -23,6 +23,7 @@ void printHelp() {
                   "--model-input <index>=<npy> "
                   "--model-expected <index>=<npy> "
                   "[--model-atol <value>] [--model-rtol <value>] "
+                  "[--model-report-numeric-statistics] "
                   "--target-model-max-scalar-evaluations <count> "
                   "--target-model-max-fused-multiply-adds <count> "
                   "--target-model-max-movement-bytes <bytes> "
@@ -124,6 +125,15 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       }
       options.targetModel = true;
+      continue;
+    }
+    if (arg == "--model-report-numeric-statistics") {
+      if (options.modelReportNumericStatistics) {
+        llvm::errs() << "wafer-compile: duplicate option: "
+                        "--model-report-numeric-statistics\n";
+        return false;
+      }
+      options.modelReportNumericStatistics = true;
       continue;
     }
     if (arg == "--target-model-max-scalar-evaluations" ||
