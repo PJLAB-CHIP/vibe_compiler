@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "MemoryPlanning/LifetimeAnalysis.h"
+#include "MemoryPlanning/StaticMemoryPacking.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -786,17 +787,45 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
     return mlir::failure();
 
   mp::PackingResult packing =
-      mp::packFirstFit(demands, mp::ArenaRange{spmBase, spmLimit});
+      mp::packStaticMemory(demands, mp::ArenaRange{spmBase, spmLimit});
   if (!packing.succeeded()) {
-    const mp::PackingFailure &failure = *packing.failure;
-    if (failure.demandIndex >= demands.size())
-      return funcOp.emitError()
-             << "capacity_overflow: SPM planning failed without a demand";
-    mp::LifetimeDemand &demand = demands[failure.demandIndex];
-    return demand.allocation.emitError()
-           << "capacity_overflow: SPM planning range [" << spmBase << ", "
-           << spmLimit << ") cannot fit " << demand.sizeBytes
-           << " byte buffer with IR-derived lifetime";
+    mlir::Operation *origin = funcOp.getOperation();
+    mp::LifetimeDemand *demand = nullptr;
+    if (packing.demandIndex && *packing.demandIndex < demands.size()) {
+      demand = &demands[*packing.demandIndex];
+      origin = demand->allocation.getOperation();
+    }
+    switch (packing.status) {
+    case mp::PackingStatus::ProvenInfeasible:
+      return origin->emitError()
+             << "capacity_overflow: SPM planning range [" << spmBase << ", "
+             << spmLimit << ") has no valid static placement"
+             << (demand ? " for an IR-derived lifetime demand" : "");
+    case mp::PackingStatus::ResourceExhausted:
+      return origin->emitError()
+             << "packing_search_exhausted: MiniMalloc consumed "
+             << packing.searchNodes
+             << " deterministic search nodes and the first-fit safety "
+                "fallback could not produce a verified SPM placement";
+    case mp::PackingStatus::ArithmeticOverflow:
+      return origin->emitError()
+             << "range_end_overflow: SPM static packing address arithmetic "
+                "overflowed int64";
+    case mp::PackingStatus::InvalidProblem:
+      return origin->emitError()
+             << "invalid_packing_result: SPM static packing input is invalid";
+    case mp::PackingStatus::InvalidSolverResult:
+      return origin->emitError()
+             << "invalid_packing_result: MiniMalloc returned an invalid SPM "
+                "placement";
+    case mp::PackingStatus::HeuristicNoFit:
+      return origin->emitError()
+             << "invalid_packing_result: first-fit NoFit escaped the shared "
+                "packing policy";
+    case mp::PackingStatus::Feasible:
+      break;
+    }
+    llvm_unreachable("successful SPM packing entered failure handling");
   }
 
   for (const mp::Placement &placement : packing.placements) {

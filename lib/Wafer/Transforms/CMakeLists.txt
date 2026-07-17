@@ -8,6 +8,8 @@ add_mlir_library(WaferTransforms
   Scheduling/StructuredSchedulingScope.cpp
   DDR/PlanDDRMemory.cpp
   MemoryPlanning/LifetimeAnalysis.cpp
+  MemoryPlanning/MiniMallocPacking.cpp
+  MemoryPlanning/StaticMemoryPacking.cpp
   SPM/PlanSPMMemory.cpp
   SPMD/ApplyDefaultSpmdSharding.cpp
   Target/MaterializeExecutionMesh.cpp
@@ -61,6 +63,9 @@ add_mlir_library(WaferTransforms
 
 target_include_directories(obj.WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_link_libraries(obj.WaferTransforms PRIVATE WaferThirdPartyMiniMalloc)
+target_link_libraries(WaferTransforms PRIVATE WaferThirdPartyMiniMalloc)
 
 if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
   target_compile_definitions(obj.WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)

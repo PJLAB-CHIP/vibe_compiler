@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import re
@@ -41,6 +42,8 @@ REQUIRED_KEYS = [
     "WAFER_TORCH_XLA_PYTHON_VERSION",
     "WAFER_PYTORCH_XLA_COMMIT",
     "WAFER_PYTHON_LIT_VERSION",
+    "WAFER_MINIMALLOC_COMMIT",
+    "WAFER_MINIMALLOC_REPOSITORY",
     "WAFER_SOFTFLOAT_VERSION",
     "WAFER_SOFTFLOAT_URL",
     "WAFER_SOFTFLOAT_SHA256",
@@ -214,6 +217,7 @@ def check_cmake_target_visibility() -> None:
         "WAFER_LLVM_SOURCE_DIR",
         "WAFER_LLVM_INSTALL_DIR",
         "WAFER_LLVM_BUILD_DIR",
+        "WAFER_MINIMALLOC_SOURCE_DIR",
         "WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS",
         "WAFER_ENABLE_SPMD_PARTITIONER_DEPS",
         '${WAFER_DEPS_ROOT}/llvm-project',
@@ -247,6 +251,16 @@ def check_cmake_target_visibility() -> None:
         REPO_ROOT / "CMakeLists.txt",
         "add_dependencies(check-wafer wafer-shardy-cmake-gate)",
     )
+    check_text_contains(REPO_ROOT / "CMakeLists.txt", "wafer_add_minimalloc()")
+    for needle in [
+        "function(wafer_add_minimalloc)",
+        "WaferThirdPartyMiniMalloc",
+        'add_subdirectory(\n    "${WAFER_MINIMALLOC_SOURCE_DIR}"',
+    ]:
+        check_text_contains(
+            REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
+            needle,
+        )
     shardy_cmake_path = REPO_ROOT / "cmake" / "third_party" / "WaferShardyCMake.cmake"
     for needle in [
         "llvm_update_compile_flags(${target})",
@@ -572,6 +586,248 @@ def check_dependency_layering() -> None:
     check_cmake_target_visibility()
 
 
+def check_minimalloc_snapshot(versions: dict[str, str]) -> None:
+    root = DEPS_ROOT / "minimalloc"
+    expected_files = {
+        "CMakeLists.txt",
+        "LICENSE",
+        "PROVENANCE.json",
+        "README.wafer.md",
+        "include/wafer_third_party/minimalloc/minimalloc.h",
+        "src/minimalloc.cc",
+        "src/minimalloc_internal.h",
+        "src/solver.cc",
+        "src/sweeper.cc",
+        "src/sweeper.h",
+        "tests/minimalloc_test.cc",
+    }
+    actual_files = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    if actual_files != expected_files:
+        missing = sorted(expected_files - actual_files)
+        unexpected = sorted(actual_files - expected_files)
+        raise RuntimeError(
+            "curated MiniMalloc source closure changed: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+
+    readme = read_text(root / "README.wafer.md")
+    commit = versions["WAFER_MINIMALLOC_COMMIT"]
+    repository = versions["WAFER_MINIMALLOC_REPOSITORY"]
+    if commit not in readme or repository.removesuffix(".git") not in readme:
+        raise RuntimeError(
+            "curated MiniMalloc provenance does not match dependency pins"
+        )
+    license_text = read_text(root / "LICENSE")
+    if "Apache License" not in license_text or "Version 2.0" not in license_text:
+        raise RuntimeError("curated MiniMalloc Apache-2.0 license is missing")
+
+    provenance_path = root / "PROVENANCE.json"
+    try:
+        provenance = json.loads(read_text(provenance_path))
+    except (json.JSONDecodeError, OSError) as error:
+        raise RuntimeError(
+            f"invalid curated MiniMalloc provenance manifest: {error}"
+        ) from error
+    if set(provenance) != {
+        "schema_version",
+        "upstream",
+        "curated",
+        "semantic_deltas",
+    } or provenance["schema_version"] != 1:
+        raise RuntimeError("curated MiniMalloc provenance schema changed")
+
+    upstream = provenance["upstream"]
+    if set(upstream) != {
+        "repository",
+        "commit",
+        "git_tree",
+        "retained_files",
+        "verification_files",
+    }:
+        raise RuntimeError("curated MiniMalloc upstream provenance fields changed")
+    if (
+        upstream["repository"] != repository
+        or upstream["commit"] != commit
+        or upstream["git_tree"] != "221e93c24ae6c5b76458932fd3928bae71a4dffc"
+    ):
+        raise RuntimeError("curated MiniMalloc upstream identity changed")
+
+    expected_upstream_hashes = {
+        "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "src/minimalloc.cc": "451c83f22f5e87ef4221c203a13bc3ba23ea31c7eef6f6625f23f2a5749a6f60",
+        "src/minimalloc.h": "d888510cd97294bcde359fd7702ea3edd93291e2b5ae02d6db156db62ff17bc0",
+        "src/solver.cc": "a693ed4b02bc5542c7a03a8d8de76395abeee51a62183b2b7b2c587b653a9a1c",
+        "src/solver.h": "67b608c5d019978dc9fcd781adfc6c508a74bb146ccaae00479fa077d5658da7",
+        "src/sweeper.cc": "24c026e90371ccb9c01faf647bf166b28eedb1bad1628f17a5cfdad52d63d0cd",
+        "src/sweeper.h": "e786ef19007a267ed897e695cc2d979085c43a0c6274cf57d04521eb980c2cc7",
+    }
+    expected_upstream_mappings = {
+        "LICENSE": ["LICENSE"],
+        "src/minimalloc.cc": ["src/minimalloc.cc"],
+        "src/minimalloc.h": [
+            "include/wafer_third_party/minimalloc/minimalloc.h",
+            "src/minimalloc_internal.h",
+        ],
+        "src/solver.cc": ["src/solver.cc"],
+        "src/solver.h": [
+            "include/wafer_third_party/minimalloc/minimalloc.h",
+            "src/solver.cc",
+        ],
+        "src/sweeper.cc": ["src/sweeper.cc"],
+        "src/sweeper.h": ["src/sweeper.h"],
+    }
+    retained = upstream["retained_files"]
+    if not isinstance(retained, list) or {
+        entry.get("path"): entry.get("sha256") for entry in retained
+    } != expected_upstream_hashes:
+        raise RuntimeError("curated MiniMalloc retained upstream source map changed")
+    for entry in retained:
+        if set(entry) != {"path", "sha256", "maps_to", "role"}:
+            raise RuntimeError(
+                "curated MiniMalloc retained source-map fields changed"
+            )
+        if not isinstance(entry["maps_to"], list) or not entry["maps_to"]:
+            raise RuntimeError(
+                "curated MiniMalloc retained source mapping is incomplete"
+            )
+        if entry["maps_to"] != expected_upstream_mappings[entry["path"]]:
+            raise RuntimeError(
+                "curated MiniMalloc retained source mapping changed for "
+                f"{entry['path']}"
+            )
+        if not isinstance(entry["role"], str) or not entry["role"]:
+            raise RuntimeError(
+                "curated MiniMalloc retained source-map role is missing"
+            )
+
+    expected_verification_hashes = {
+        "tests/minimalloc_test.cc": "9aae27768fb894a36ab056de1f6a0364aa11563ee79839c6de1c162c2db3b3b8",
+        "tests/solver_test.cc": "a51fac06d32c367d9a640682a29828f96a2cffdb9e376a9c1ee83b238c54abf5",
+        "tests/sweeper_test.cc": "ad182d0e0c49a94808a1b0b69a01286ea678d8240c8dd613efcc2d3dfa6d80ac",
+    }
+    verification = upstream["verification_files"]
+    if not isinstance(verification, list) or any(
+        set(entry) != {"path", "sha256"} for entry in verification
+    ) or {
+        entry.get("path"): entry.get("sha256") for entry in verification
+    } != expected_verification_hashes:
+        raise RuntimeError(
+            "curated MiniMalloc upstream verification source map changed"
+        )
+
+    curated = provenance["curated"]
+    expected_algorithm_files = sorted(
+        {
+            "include/wafer_third_party/minimalloc/minimalloc.h",
+            "src/minimalloc.cc",
+            "src/minimalloc_internal.h",
+            "src/solver.cc",
+            "src/sweeper.cc",
+            "src/sweeper.h",
+        }
+    )
+    expected_distribution_files = sorted(
+        expected_files - {"PROVENANCE.json"}
+    )
+    digest_algorithm = (
+        "sha256 over each UTF-8 path, NUL, decimal byte length, NUL, raw "
+        "bytes, NUL; paths sorted lexicographically"
+    )
+    if set(curated) != {
+        "digest_algorithm",
+        "algorithm_files",
+        "algorithm_digest",
+        "distribution_files",
+        "distribution_digest",
+    } or curated["digest_algorithm"] != digest_algorithm:
+        raise RuntimeError("curated MiniMalloc digest contract changed")
+    if curated["algorithm_files"] != expected_algorithm_files:
+        raise RuntimeError("curated MiniMalloc algorithm source set changed")
+    if curated["distribution_files"] != expected_distribution_files:
+        raise RuntimeError("curated MiniMalloc distribution source set changed")
+
+    mapped_algorithm_files = {
+        target
+        for entry in retained
+        if entry["path"] != "LICENSE"
+        for target in entry["maps_to"]
+    }
+    if mapped_algorithm_files != set(expected_algorithm_files):
+        raise RuntimeError(
+            "curated MiniMalloc upstream mapping does not cover the algorithm set"
+        )
+
+    def canonical_digest(relative_paths: list[str]) -> str:
+        digest = hashlib.sha256()
+        for relative in sorted(relative_paths):
+            data = (root / relative).read_bytes()
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(str(len(data)).encode("ascii"))
+            digest.update(b"\0")
+            digest.update(data)
+            digest.update(b"\0")
+        return "sha256:" + digest.hexdigest()
+
+    if curated["algorithm_digest"] != canonical_digest(
+        expected_algorithm_files
+    ):
+        raise RuntimeError("curated MiniMalloc algorithm digest mismatch")
+    if curated["distribution_digest"] != canonical_digest(
+        expected_distribution_files
+    ):
+        raise RuntimeError("curated MiniMalloc distribution digest mismatch")
+    if sha256_file(root / "LICENSE") != expected_upstream_hashes["LICENSE"]:
+        raise RuntimeError("curated MiniMalloc license is not upstream-exact")
+
+    semantic_deltas = provenance["semantic_deltas"]
+    if not isinstance(semantic_deltas, list) or not semantic_deltas or any(
+        set(entry) != {"id", "description"}
+        or not entry["id"]
+        or not entry["description"]
+        for entry in semantic_deltas
+    ):
+        raise RuntimeError("curated MiniMalloc semantic delta record is invalid")
+
+    source_paths = [
+        root / relative
+        for relative in expected_files
+        if pathlib.Path(relative).suffix in {".cc", ".h"}
+    ]
+    for path in source_paths:
+        text = read_text(path)
+        if "Copyright 2023 Google LLC" not in text:
+            raise RuntimeError(f"{rel(path)} lost the upstream copyright notice")
+        if "Modified by the Wafer project" not in text:
+            raise RuntimeError(f"{rel(path)} lacks a prominent modification notice")
+        for forbidden in ["absl/", "absl::", ".contains(", "std::span"]:
+            if forbidden in text:
+                raise RuntimeError(
+                    f"{rel(path)} reintroduced unsupported dependency {forbidden!r}"
+                )
+
+    cmake = read_text(root / "CMakeLists.txt")
+    for required in [
+        "add_library(WaferThirdPartyMiniMalloc STATIC",
+        "CXX_VISIBILITY_PRESET hidden",
+        "-fno-exceptions",
+        "cxx_std_17",
+    ]:
+        if required not in cmake:
+            raise RuntimeError(
+                f"curated MiniMalloc CMake lacks required boundary {required!r}"
+            )
+    for forbidden in ["FetchContent", "abseil", "pybind", "src/main.cc"]:
+        if forbidden in cmake:
+            raise RuntimeError(
+                f"curated MiniMalloc CMake must remain self-contained: {forbidden!r}"
+            )
+
+
 def check_openxla_stack_pins(versions: dict[str, str]) -> None:
     xla_root = DEPS_ROOT / "xla"
     shardy_root = DEPS_ROOT / "shardy"
@@ -807,6 +1063,7 @@ def main() -> int:
         REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
         "WAFER_ENABLE_IMPORTER_DEPS",
     )
+    check_minimalloc_snapshot(versions)
     check_dependency_layering()
     check_openxla_stack_pins(versions)
     check_framework_source_alignment(versions)

@@ -553,8 +553,11 @@
 
 - SPM/DDR可共享的是从当前structured IR重算的path condition、operation timeline、query-time
   ViewLike/SelectLike/scf.if/scf.for provenance closure、generic async task completion、live-segment overlap、local
-  issue/fence completion和deterministic first-fit；arena、resource limit、descriptor、DTE和accepted offset schema仍由
-  各自planner拥有。共享header保持owner library私有，不形成跨pass side table或新IR attr。
+  issue/fence completion和typed static packing；arena、resource limit、descriptor、DTE和accepted offset schema仍由
+  各自planner拥有。默认packing先运行受管MiniMalloc fixed-capacity search，使用宽松且确定的全局node fuel，
+  不使用短wall-clock timeout；只在`ResourceExhausted`时运行deterministic first-fit安全fallback。完整求解的
+  `ProvenInfeasible`才能映射capacity failure，first-fit NoFit不是不可行证明。共享header保持owner library私有，
+  不形成跨pass side table或新IR attr。
 - compiler-managed allocation `RootRef`、caller-owned/external `ValueOriginRef`和async task identity是三类不同事实。
   async handle的root union只能延长lifetime；不能证明某个task已完成。external origin在最终semantic root上去重，未知
   tracked producer不得退化成external root。
@@ -584,8 +587,15 @@
 - 缺少arena/resource summary的调用按动态执行scope fail closed：DDR module有demand时拒绝external/unresolved
   sync/async及indirect call（defined private pure alias helper除外）；SPM active/async/parallel scope拒绝可能重入
   tile-region的direct/indirect/external call，module有tile-region时external async call全局拒绝。
-- packing helper返回以原demand index标识的纯placement结果，不写IR。owner应先完成completion、descriptor/range和resource
-  validation，再统一提交offset；这样失败candidate不会留下半份accepted plan，也能直接单测NoFit时IR完全未变。
+- packing helper返回以原demand index标识的纯placement结果，不写IR。只有`ProvenInfeasible`可映射
+  capacity failure；`ResourceExhausted`才触发first-fit，fallback无解仍保持`ResourceExhausted`，不能升级成
+  不可行证明。所有accepted placement先经owner-independent validator复验，owner再完成completion、
+  descriptor/range和resource validation并统一提交offset；失败candidate不会留下半份accepted plan。
+- 对只接受lifespan/gap的solver精确表达任意pairwise conflict graph时，可对每个connected component
+  构造确定性edge-clique activity slots：每个slot必须是原图clique，每条原edge必须被覆盖，non-edge
+  不得共slot，并在适配后fail closed复验。这能保留pairwise语义并暴露clique capacity lower bound，但
+  triangle-free worst case仍可退化为一edge一slot，不应求解最优clique cover。nonzero arena base用每component
+  一个仅覆盖其连续slot区间的fixed prefix表达，避免全局prefix破坏solver的独立分量分解。
 
 ## 大规模rank编译与Llama数值纵向
 

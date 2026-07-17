@@ -27,6 +27,8 @@ add_executable(WaferUnitTests
   Target/PhysicalTensorCodecTest.cpp
   Target/TargetFormatTest.cpp
   Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp
+  Transforms/MemoryPlanning/MiniMallocPackingTest.cpp
+  Transforms/MemoryPlanning/StaticMemoryPackingTest.cpp
   Transforms/Scheduling/CandidateSelectionTest.cpp
   Transforms/Scheduling/FullBufferHandoffTest.cpp
   Transforms/Scheduling/StructuredSchedulingScopeTest.cpp

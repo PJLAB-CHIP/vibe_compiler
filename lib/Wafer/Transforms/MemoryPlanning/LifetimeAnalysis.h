@@ -278,42 +278,6 @@ private:
   llvm::SmallVector<PendingAccess, 8> pendingAccesses;
 };
 
-struct ArenaRange {
-  int64_t begin = 0;
-  int64_t end = 0;
-};
-
-struct Placement {
-  unsigned demandIndex = 0;
-  int64_t offsetBytes = 0;
-  int64_t endBytes = 0;
-};
-
-enum class PackingFailureKind {
-  InvalidArena,
-  InvalidDemand,
-  RangeOverflow,
-  NoFit,
-};
-
-struct PackingFailure {
-  PackingFailureKind kind = PackingFailureKind::InvalidArena;
-  unsigned demandIndex = 0;
-};
-
-struct PackingResult {
-  llvm::SmallVector<Placement, 8> placements;
-  std::optional<PackingFailure> failure;
-
-  bool succeeded() const { return !failure.has_value(); }
-};
-
-/// Deterministic weighted first-fit. Priority is size, conflicting bytes,
-/// lifetime span, allocation event, then stable ordinal. This function is pure
-/// with respect to IR.
-PackingResult packFirstFit(llvm::ArrayRef<LifetimeDemand> demands,
-                           ArenaRange arena);
-
 /// Combines two independent byte-alignment divisibility requirements.
 /// Returns nullopt for non-positive inputs or int64 overflow.
 std::optional<int64_t> combineAlignmentRequirements(int64_t lhs, int64_t rhs);

@@ -54,10 +54,11 @@
 
 ## 实施计划导航
 
-当前无`doing` row；唯一`next`是Q33 compiler optimization adoption，实施计划为
-`tasks/plans/compiler-optimization-adoption.md`。Q32通用physical-dataflow synthesis queued在Q33之后，实施计划为
-`tasks/plans/physical-dataflow-synthesis.md`。两份计划只拆施工checkpoint和验证/删除门槛；动态blocked-by只看progress，
-算法与IR合同仍由01、05、06-18编号设计文档拥有。
+当前无`doing`；唯一`next`是Q33 compiler optimization adoption，实施计划为
+`tasks/plans/compiler-optimization-adoption.md`。Q34 static memory packing已完成并归档为
+`tasks/archive/static-memory-packing.md`。Q32通用
+physical-dataflow synthesis queued在Q33之后，实施计划为`tasks/plans/physical-dataflow-synthesis.md`。这些计划只拆
+施工checkpoint和验证/删除门槛；动态blocked-by只看progress，算法与IR合同仍由01、05、06-18编号设计文档拥有。
 
 已完成Q31标准7B单block多seed数值表征和source/model gate收紧归档为
 `tasks/archive/llama-block-numeric-characterization.md`；Q30标准7B单block production vertical性能收口归档为
@@ -88,6 +89,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/static-memory-packing.md` | 已完成Q34的MiniMalloc默认fixed-capacity packing、精确conflict适配、宽松确定性work budget、typed outcome/fallback和SPM/DDR/7B纵向gate记录 |
 | `tasks/archive/llama-block-numeric-characterization.md` | 已完成Q31的ProgramTensor逐rank abs/ULP统计、非admission多seed 7B重放及source/model comparator gate收紧记录 |
 | `tasks/archive/llama-block-production-performance.md` | 已完成Q30的static movement/physical codec host性能收口、package等价性和完整7B双replay记录 |
 | `tasks/archive/llama-7b-block-vertical.md` | 已完成Q28的标准Llama-2 7B单block TP16 source/package、repo-owned SystemC managed-reference和完整PyTorch eager output differential记录 |

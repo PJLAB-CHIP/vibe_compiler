@@ -79,7 +79,7 @@ func.func @share_across_sibling_regions(
 // SHARED: wafer.instr.wdma %[[INPUT]]
 // SHARED: %[[REUSABLE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
 
-// OVERLAP: capacity_overflow: SPM planning range [65536, 65792) cannot fit 256 byte buffer with IR-derived lifetime
+// OVERLAP: capacity_overflow: SPM planning range [65536, 65792) has no valid static placement
 
 //--- escape.mlir
 func.func @escape_spm_ssa(

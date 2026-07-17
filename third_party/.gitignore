@@ -8,5 +8,7 @@
 !xla
 !xla/
 !googletest/
+!minimalloc/
+!minimalloc/**
 !tx8_deps/
 !tx8_deps/**

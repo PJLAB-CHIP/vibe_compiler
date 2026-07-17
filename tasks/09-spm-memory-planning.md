@@ -119,7 +119,7 @@ Pipeline position:
 
 SPM与DDR可以共享的不是arena或resource语义，而是从当前structured IR重算的analysis mechanics：path condition、
 operation timeline、query-time provenance closure、live segment overlap、generic async completion identity、local
-issue/fence completion、weighted conflict priority和deterministic first-fit。compiler-managed allocation由
+issue/fence completion，以及由精确pairwise conflict relation驱动的static packing。compiler-managed allocation由
 `RootRef`指向packing demand；caller-owned/external memref由path-qualified `ValueOriginRef`表达，两者都与
 `async.call`等producer创建的task identity分离。`rootsAt`/`originsAt`在查询点沿`ViewLikeOpInterface`、
 `SelectLikeOpInterface`、`scf.if` yield和`scf.for` init/iter-arg/backedge/result递归闭包，因而loop body中较早
@@ -158,7 +158,9 @@ live segment，不靠symbol名字判断callee行为，也不形成跨过程summa
 - MLIR Bufferization：从 tensor SSA/effect analysis 改写到 tile-local storage，再把可表达的 storage
   降到 `memref` / LLVM conversion 能消费的 IR。
 - XLA BufferAssignment：executable 需要明确 buffer size、reuse、parameter/output/temp 关系。
-- TVM USMP / TFLM arena planner：静态 memory planning 可以用 deterministic first-fit 方案先落地。
+- TVM USMP / TFLM arena planner：静态memory planning应保持离线、确定、offset-only的consumer合同。
+- Google MiniMalloc：对固定容量的ML静态buffer使用canonical search、section inference和dominance pruning；Wafer只吸收
+  fixed-capacity feasibility core，并在adapter外保留自己的path/lifetime语义、typed outcome和placement validator。
 - register allocation：lifetime 不重叠才可复用，但 Wafer 还要处理 size、alignment、range 和 wait。
 
 ## 3. 输入输出
@@ -399,13 +401,14 @@ V0 对 coloring 的处理：
 - 只有当 scheduler 明确启用 parallel issue 且 target policy 要求隔离时，color conflict 才升级为
   hard legality。
 
-## 8. V0 Allocation Algorithm
+## 8. Static Allocation Algorithm
 
-V0 只采用一个 deterministic greedy arena allocator。
+默认allocator使用受管MiniMalloc的fixed-capacity canonical search。它只消费本stage从当前IR重算出的demand、
+absolute alignment、arena range和pairwise may-overlap relation，不读取op名、workload、tile shape或旧candidate历史。
 
 1. 从 instruction-level IR with unplaced Wafer-tagged memref values 收集 `BufferDemand`。
 
-2. 生成 interval：
+2. 生成path-qualified lifetime segments并通过`lifetimesOverlap`建立精确conflict relation：
 
 ```text
 Interval {
@@ -420,40 +423,58 @@ Interval {
 }
 ```
 
-3. 合并 must-alias group。
+3. 用synthetic half-open activity slots把任意conflict graph无损编码给MiniMalloc。adapter先按
+   `stableOrdinal`规范化正size demand，再对每个conflict connected component构造确定性greedy
+   edge-clique cover：每个slot的成员必须两两冲突，每条原conflict edge必须被至少一个slot覆盖，
+   non-edge绝不得共享slot。构造后独立fail-closed验证这三项，因此clique合并不会改变原pairwise
+   may-overlap语义，同时能让solver直接看到clique capacity lower bound。triangle-free graph的worst case仍可能需要
+   一edge一slot；adapter不求解NP-hard的最优clique cover，也不按workload/op/shape特化。同一demand的一条连续
+   地址区间覆盖其全部activity slots，中间非活动slot是MiniMalloc gap。不能把multi-segment/path relation
+   压成convex hull；无segment且无conflict的demand仍需offset，但使用component-local private slot。zero-byte
+   demand不占地址范围，由adapter按absolute alignment直接安置；受管core保持正高度buffer前提，
+   两类边界都不向core传empty lifespan/rectangle。
 
-4. 固定 reserved/fixed range。
+4. 以absolute address求解：nonzero SPM base由fixed prefix range表达，不能先求相对offset再无条件加
+   base，否则会破坏absolute alignment。每个conflict component使用一个offset=0、仅覆盖该component
+   连续slot区间的prefix；不同prefix在activity time上不相交，因而既约束所有有效placement大于等于
+   arena base，又不把本可独立求解的component错误连成一个partition。reserved/fixed range在真正进入target
+   policy后以同类显式约束表达。
 
-5. intervals / lifetime segments 排序：
+5. 使用稳定、有限且宽松的全局search work budget。production默认值为
+   `min(2^24, 2^21 + 64 * demand_count + 16 * conflict_count)`；budget只按确定性search node消耗并跨
+   partition/preordering共享，不以短wall-clock timeout决定语义。显式budget override只是owner-private
+   offline/test control，不是用户级pass选项或IR fact。
 
-- fixed range 优先。
-- size 大优先。
-- conflict pressure 高优先，即与其它 live demand overlap 的 physical bytes 多优先。
-- lifetime span 长优先。
-- materialization temp 靠后，方便失败时移动 cut。
+6. typed outcome只允许：
 
-6. lowest-gap allocation：
+- `Feasible`：MiniMalloc返回完整placement且通过Wafer独立validator；直接采用，不调用first-fit。
+- `ProvenInfeasible`：在给定node budget内完成完整搜索并证明无解；只有该状态可映射
+  `capacity_overflow`。
+- `ResourceExhausted`：全局work budget耗尽；此时才运行保留的deterministic first-fit安全fallback。fallback成功并复验后可
+  继续，fallback失败仍是资源耗尽，不得误报capacity。
+- invalid input、checked arithmetic overflow或第三方invalid placement是typed contract/internal error，不运行fallback。
 
-- 找满足 alignment 的最低可用 offset。
-- 不能与 lifetime overlap 的已放置 interval 重叠。
-- 不能碰 reserved/forbidden range。
-- 若 color policy 不满足，V0 先计入 penalty；hard policy 下返回失败。
+7. 对MiniMalloc或fallback的每个结果独立验证：placement coverage/唯一性、absolute alignment、checked end/range、
+   conflict pair不得byte overlap。
 
-7. range/end verification：
+8. owner继续执行range/end verification：
 
 - 检查 `base + allocated_size`。
 - 检查 wrapper begin/end range。
 - 检查 bool bitpack、stride byte count、Cx/NCx padding。
 
-8. 返回 result。
+9. 只返回typed result；search trace、work count、conflict encoding和fallback状态都是可重算telemetry，不写IR。
 
-这个算法不保证全局最优，但deterministic、可诊断、足够服务task scheduler的闭环搜索。
+本stage求解的是固定硬件容量下的feasibility，不调用MiniMalloc的minimum-height模式。它不承诺最小high-water；若以后需要
+高度优化，由上层cost/planner在同一validator和有界capacity query上组合，不能把优化超时混成legality失败。
 
 ## 9. Failure Feedback
 
 Current structured failure reasons：
 
 - `capacity_overflow`
+- `packing_search_exhausted`
+- `invalid_packing_result`
 - `invalid_spm_range`
 - `alignment_unsatisfied`
 - `unsupported_layout_conversion`
@@ -640,23 +661,24 @@ instruction-level async token use。path condition使用按`uint64_t` decision i
 未结构化/多block CFG、decision id域或编译资源耗尽，以及未来显式must-alias group仍需结构化失败，不能靠
 线性op顺序、名字或旁路协议恢复。
 
-R3.2f SPM memory planning 使用经典静态 memory planning / interval allocation 的保守 baseline，而不是把
-alloc event 顺序直接当作 allocation 顺序。算法分两层：
+R3.2f SPM memory planning使用经典静态memory planning的离线模型，而不是把alloc event顺序直接当作allocation
+顺序。算法分两层：
 
 - lifetime analysis 仍由当前 IR 的 SSA、region、path condition 和 async token use 重算，得到可同时
   发生的 lifetime segments。
-- allocation order 使用 pressure-weighted offline packing：优先放置 physical size 大、与其它 live
-  demand 冲突压力高、lifetime span 长的 demand，再按 alloc event / ordinal 稳定打破平局。
+- packing默认由受管MiniMalloc fixed-capacity canonical search完成；path-qualified lifetime先转换成无损pairwise
+  conflict relation，再由经fail-closed验证的deterministic edge-clique cover和component-local nonzero-base
+  prefix适配给solver。deterministic first-fit只保留为solver全局work budget耗尽时的安全fallback，不能再作为
+  capacity不可行证明。
 
-这样可以避免小 buffer 先占低地址造成 arena fragmentation，导致后续大 buffer 在总容量可行时失败。
-offset 选择仍保持 deterministic bounded search：只在当前 assigned intervals 形成的合法 gap 中选最低
-可行 offset；rejected/candidate offset、candidate 排序权重和搜索 trace 都保持为 analysis，不写入
-`wafer.spm.offset`。后续若要引入 graph coloring、ILP、schedule-aware double buffering 或
-bank-aware coloring，必须继续保持 same input/output IR contract，只改变 analysis / search。
+solver和fallback的accepted placement均由Wafer独立validator复验。rejected/candidate offset、search work、fallback状态和
+conflict encoding都保持为analysis/telemetry，不写入`wafer.spm.offset`。后续若引入graph coloring、ILP、
+schedule-aware double buffering或bank-aware coloring，必须保持same input/output IR contract和三态结果，只改变
+analysis/search；color/bank hard constraint必须先成为显式可验证输入。
 
 `wafer.spm.offset` 只保存 accepted offset，不保存 size、alignment、bank span、lifetime 或搜索 trace。
 失败原因仍通过 pass diagnostic 返回，
-不写进 IR；rejected/candidate offset、lowest-gap 探索过程和 repair suggestion 都保持为 analysis。
+不写进IR；rejected/candidate offset、canonical search/fallback过程和repair suggestion都保持为analysis。
 
 ## 13. Verifier
 

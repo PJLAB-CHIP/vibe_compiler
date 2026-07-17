@@ -128,14 +128,21 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
 - `tools/check_source_organization.py` 检查 owner、私有头、CMake source list、旧聚合文件移除和 library 配置顺序；
   根 `check-wafer` 按实际存在的 feature target 聚合 lit、unit、numeric、bulk 和 SystemC gate。
 - SPM/DDR planner共用的structured timeline、path condition、query-time ViewLike/SelectLike/scf.if/scf.for
-  provenance closure、generic async task completion、local issue/fence completion和weighted first-fit由
-  `lib/Wafer/Transforms/MemoryPlanning/`唯一拥有。该typed core把compiler-managed `RootRef`、external
+  provenance closure、generic async task completion、local issue/fence completion和static packing由
+  `lib/Wafer/Transforms/MemoryPlanning/`唯一拥有。`LifetimeAnalysis`只负责从当前IR重算timeline/path/root/task/lifetime；
+  `StaticMemoryPacking`只负责typed result、default/fallback policy和独立validator；`MiniMallocPacking`只负责把精确
+  conflict relation规范化为经验证的deterministic edge-clique activity slots，以component-local prefix表达nonzero
+  arena base，并适配到受管third-party core。任何third-party类型不得进入Wafer header。该typed core把compiler-managed `RootRef`、external
   `ValueOriginRef`和async task identity分开；该header与
   `wafer::memory_planning::detail`符号保持`WaferTransforms`私有，
   两个planner只保留各自memory-space legality、resource limit、SPM non-nested scope/DTE或DDR
   descriptor/planning-scope语义和offset commit。
-- C++ unit test按production boundary镜像：memory-planning shared core由
-  `unittests/Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp`直接测试，target LLVM conversion测试位于
+- `third_party/minimalloc`是从固定upstream commit源生的curated C++17 port，不是配置期下载或导出的
+  公共依赖。upstream pin由`WaferDependencyVersions.cmake`单点拥有；`PROVENANCE.json`记录逐upstream
+  file精确映射、algorithm/distribution digest和semantic delta，`check_deps.py`离线验证source closure、映射、
+  hash、license和schema。production adapter仍留在`lib/Wafer`消费边界，third-party tree不反向包含Wafer IR/policy。
+- C++ unit test按production boundary镜像：lifetime analysis、static packing policy和MiniMalloc adapter使用独立test
+  translation unit，不继续把backend/policy覆盖塞入`LifetimeAnalysisTest.cpp`；target LLVM conversion测试位于
   `unittests/Transforms/Target/`；source checkout 不再保留已确认无 owner/consumer 的空目录。
 
 ## 已审计职责实现映射
@@ -169,7 +176,7 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
 SPM的whole-rank structured lifetime/non-nested region/DTE/base-limit合同与DDR的whole-rank
 external-root/descriptor/resource-limit合同仍由各自planner拥有，
 没有把arena、diagnostic policy或accepted offset schema机械合并。组织检查器同时禁止两个planner重新引入timeline、root、
-priority或first-fit的第二事实源。
+conflict encoding、packing policy或first-fit的第二事实源。
 
 ## 完成判定
 
@@ -178,7 +185,7 @@ priority或first-fit的第二事实源。
 - CMake 与组织检查器从多源文件事实推导，不再强制“一个 conversion library 只有一个实现文件”。
 - 受影响的 verifier、conversion、numeric registry 单测和完整 source-backed pipeline 均通过。
 - memory-planning shared core在production CMake中只有一个owner，私有header/detail符号不泄漏公共API，
-  SPM/DDR planner不再拥有重复timeline/root/priority/first-fit实现；镜像unit、两侧planner lit和
+  SPM/DDR planner不再拥有重复timeline/root/packing policy/first-fit实现；镜像unit、两侧planner lit和
   memory-planned/selected named pipeline均实际执行。named pipeline既覆盖pre-existing root的safe loop正例，
   也覆盖loop body fresh allocation recurrence的结构化失败；generic async正负合同由两侧planner直接消费同一core。
 - feature-off link closure 与 feature-on numeric/bulk/SystemC 测试证明 optional dependency 没有泄漏。

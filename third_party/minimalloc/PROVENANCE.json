@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "repository": "https://github.com/google/minimalloc.git",
+    "commit": "9f5cf810fec4494df473c23cffd0567989e81b69",
+    "git_tree": "221e93c24ae6c5b76458932fd3928bae71a4dffc",
+    "retained_files": [
+      {
+        "path": "LICENSE",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "maps_to": ["LICENSE"],
+        "role": "license"
+      },
+      {
+        "path": "src/minimalloc.cc",
+        "sha256": "451c83f22f5e87ef4221c203a13bc3ba23ea31c7eef6f6625f23f2a5749a6f60",
+        "maps_to": ["src/minimalloc.cc"],
+        "role": "buffer model and validation"
+      },
+      {
+        "path": "src/minimalloc.h",
+        "sha256": "d888510cd97294bcde359fd7702ea3edd93291e2b5ae02d6db156db62ff17bc0",
+        "maps_to": [
+          "include/wafer_third_party/minimalloc/minimalloc.h",
+          "src/minimalloc_internal.h"
+        ],
+        "role": "buffer model and shared declarations"
+      },
+      {
+        "path": "src/solver.cc",
+        "sha256": "a693ed4b02bc5542c7a03a8d8de76395abeee51a62183b2b7b2c587b653a9a1c",
+        "maps_to": ["src/solver.cc"],
+        "role": "canonical fixed-capacity search"
+      },
+      {
+        "path": "src/solver.h",
+        "sha256": "67b608c5d019978dc9fcd781adfc6c508a74bb146ccaae00479fa077d5658da7",
+        "maps_to": [
+          "include/wafer_third_party/minimalloc/minimalloc.h",
+          "src/solver.cc"
+        ],
+        "role": "solver API and internal search types"
+      },
+      {
+        "path": "src/sweeper.cc",
+        "sha256": "24c026e90371ccb9c01faf647bf166b28eedb1bad1628f17a5cfdad52d63d0cd",
+        "maps_to": ["src/sweeper.cc"],
+        "role": "lifespan sweep and partition construction"
+      },
+      {
+        "path": "src/sweeper.h",
+        "sha256": "e786ef19007a267ed897e695cc2d979085c43a0c6274cf57d04521eb980c2cc7",
+        "maps_to": ["src/sweeper.h"],
+        "role": "sweep data structures"
+      }
+    ],
+    "verification_files": [
+      {
+        "path": "tests/minimalloc_test.cc",
+        "sha256": "9aae27768fb894a36ab056de1f6a0364aa11563ee79839c6de1c162c2db3b3b8"
+      },
+      {
+        "path": "tests/solver_test.cc",
+        "sha256": "a51fac06d32c367d9a640682a29828f96a2cffdb9e376a9c1ee83b238c54abf5"
+      },
+      {
+        "path": "tests/sweeper_test.cc",
+        "sha256": "ad182d0e0c49a94808a1b0b69a01286ea678d8240c8dd613efcc2d3dfa6d80ac"
+      }
+    ]
+  },
+  "curated": {
+    "digest_algorithm": "sha256 over each UTF-8 path, NUL, decimal byte length, NUL, raw bytes, NUL; paths sorted lexicographically",
+    "algorithm_files": [
+      "include/wafer_third_party/minimalloc/minimalloc.h",
+      "src/minimalloc.cc",
+      "src/minimalloc_internal.h",
+      "src/solver.cc",
+      "src/sweeper.cc",
+      "src/sweeper.h"
+    ],
+    "algorithm_digest": "sha256:9381709197da1d7fd90c8fa068b10ae585f9c5579b742ff613d9972935600de2",
+    "distribution_files": [
+      "CMakeLists.txt",
+      "LICENSE",
+      "README.wafer.md",
+      "include/wafer_third_party/minimalloc/minimalloc.h",
+      "src/minimalloc.cc",
+      "src/minimalloc_internal.h",
+      "src/solver.cc",
+      "src/sweeper.cc",
+      "src/sweeper.h",
+      "tests/minimalloc_test.cc"
+    ],
+    "distribution_digest": "sha256:e3002ee10c13e1ea2a53af85daabd02d202dd6fc545cf79167f2a1102ed4299b"
+  },
+  "semantic_deltas": [
+    {
+      "id": "cxx17-stdlib-port",
+      "description": "Replace C++20 and Abseil infrastructure with C++17 standard-library types, private namespace, and a non-throwing typed API."
+    },
+    {
+      "id": "fixed-capacity-only",
+      "description": "Retain fixed-capacity feasibility search; omit capacity minimization, IIS, CLI, converters, Python, and logging."
+    },
+    {
+      "id": "deterministic-global-fuel",
+      "description": "Use one DFS-node budget across partitions, preorder heuristics, and round-robin attempts, with a distinct resource-exhausted result."
+    },
+    {
+      "id": "checked-boundary",
+      "description": "Validate retained inputs and legality arithmetic; saturate heuristic-only area overflow without changing feasibility."
+    },
+    {
+      "id": "strict-gap-subset",
+      "description": "Accept only sorted, non-adjacent, non-empty gaps strictly inside a lifespan, matching the Wafer conflict-graph adapter."
+    },
+    {
+      "id": "positive-buffer-core",
+      "description": "Preserve positive-height canonical-search assumptions; the Wafer adapter handles zero-byte demands before this core."
+    }
+  ]
+}

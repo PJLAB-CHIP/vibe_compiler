@@ -38,9 +38,9 @@ func.func @place_instruction_spm(%input: memref<2x3xf16, #wafer.memory<ddr, tens
 }
 
 // CHECK-LABEL: func.func @place_instruction_spm
-// CHECK: %[[LOADED:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[LOADED:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.rdma {{.*}} to %[[LOADED]]
-// CHECK: %[[ELEMENTWISE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[ELEMENTWISE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.elementwise <add> %[[LOADED]], %[[LOADED]] into %[[ELEMENTWISE]]
 // CHECK: %[[CX:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<4x8xf16, #wafer.memory<spm, cx>>
 // CHECK: wafer.instr.wdma %[[ELEMENTWISE]]

@@ -939,70 +939,24 @@ module {
   EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
 }
 
-TEST_F(LifetimeAnalysisTest, WeightedFirstFitUsesPathAwareConflicts) {
-  auto module = parse(R"mlir(
-module {
-  func.func @main() {
-    %a = memref.alloc() : memref<256xi8>
-    %b = memref.alloc() : memref<256xi8>
-    %c = memref.alloc() : memref<256xi8>
-    return
-  }
-}
-)mlir");
-  ASSERT_TRUE(module);
-  llvm::SmallVector<mlir::memref::AllocOp, 3> allocations;
-  module->walk([&](mlir::memref::AllocOp op) { allocations.push_back(op); });
-  ASSERT_EQ(allocations.size(), 3u);
-
+TEST(LifetimeAnalysisUtilitiesTest,
+     LifetimeOverlapHonorsPathAndRepeatableDecisions) {
   PathCondition root = PathCondition::root();
-  llvm::SmallVector<LifetimeDemand, 3> demands{
-      LifetimeDemand{allocations[0],
-                     256,
-                     256,
-                     0,
-                     ProgramPoint{0, root},
-                     {LiveSegment{0, 10, root}}},
-      LifetimeDemand{allocations[1],
-                     256,
-                     256,
-                     1,
-                     ProgramPoint{1, root},
-                     {LiveSegment{0, 5, root}}},
-      LifetimeDemand{allocations[2],
-                     256,
-                     256,
-                     2,
-                     ProgramPoint{2, root},
-                     {LiveSegment{6, 10, root}}},
-  };
-
-  PackingResult packing = packFirstFit(demands, ArenaRange{0, 512});
-  ASSERT_TRUE(packing.succeeded());
-  ASSERT_EQ(packing.placements.size(), 3u);
-  EXPECT_EQ(packing.placements.front().demandIndex, 0u);
-  EXPECT_EQ(packing.placements.front().offsetBytes, 0);
-
-  auto placementFor = [&](unsigned demandIndex) -> const Placement & {
-    return *llvm::find_if(packing.placements, [&](const Placement &placement) {
-      return placement.demandIndex == demandIndex;
-    });
-  };
-  EXPECT_EQ(placementFor(1).offsetBytes, 256);
-  EXPECT_EQ(placementFor(2).offsetBytes, 256);
+  LifetimeDemand lhs;
+  LifetimeDemand rhs;
+  lhs.segments = {LiveSegment{0, 5, root}, LiveSegment{10, 15, root}};
+  rhs.segments = {LiveSegment{6, 9, root}};
+  EXPECT_FALSE(lifetimesOverlap(lhs, rhs));
+  rhs.segments = {LiveSegment{4, 7, root}};
+  EXPECT_TRUE(lifetimesOverlap(lhs, rhs));
 
   std::optional<PathCondition> thenPath = root.withDecision(130, true);
   std::optional<PathCondition> elsePath = root.withDecision(130, false);
   ASSERT_TRUE(thenPath);
   ASSERT_TRUE(elsePath);
-  demands[0].segments = {LiveSegment{0, 10, *thenPath}};
-  demands[1].segments = {LiveSegment{0, 10, *elsePath}};
-  demands.resize(2);
-  packing = packFirstFit(demands, ArenaRange{0, 256});
-  ASSERT_TRUE(packing.succeeded());
-  ASSERT_EQ(packing.placements.size(), 2u);
-  EXPECT_EQ(packing.placements[0].offsetBytes, 0);
-  EXPECT_EQ(packing.placements[1].offsetBytes, 0);
+  lhs.segments = {LiveSegment{0, 10, *thenPath}};
+  rhs.segments = {LiveSegment{0, 10, *elsePath}};
+  EXPECT_FALSE(lifetimesOverlap(lhs, rhs));
 
   std::optional<PathCondition> repeatableThen =
       root.withDecision(1024, true, /*repeatable=*/true);
@@ -1010,55 +964,9 @@ module {
       root.withDecision(1024, false, /*repeatable=*/true);
   ASSERT_TRUE(repeatableThen);
   ASSERT_TRUE(repeatableElse);
-  demands[0].segments = {LiveSegment{0, 10, *repeatableThen}};
-  demands[1].segments = {LiveSegment{0, 10, *repeatableElse}};
-  packing = packFirstFit(demands, ArenaRange{0, 256});
-  ASSERT_FALSE(packing.succeeded());
-  ASSERT_TRUE(packing.failure);
-  EXPECT_EQ(packing.failure->kind, PackingFailureKind::NoFit);
-}
-
-TEST_F(LifetimeAnalysisTest, FirstFitReportsNoFitWithoutWritingIR) {
-  auto module = parse(R"mlir(
-module {
-  func.func @main() {
-    %a = memref.alloc() : memref<256xi8>
-    %b = memref.alloc() : memref<256xi8>
-    return
-  }
-}
-)mlir");
-  ASSERT_TRUE(module);
-  llvm::SmallVector<mlir::memref::AllocOp, 2> allocations;
-  module->walk([&](mlir::memref::AllocOp op) { allocations.push_back(op); });
-  ASSERT_EQ(allocations.size(), 2u);
-  llvm::SmallVector<mlir::DictionaryAttr, 2> attributesBefore;
-  llvm::transform(allocations, std::back_inserter(attributesBefore),
-                  [](mlir::memref::AllocOp allocation) {
-                    return allocation->getAttrDictionary();
-                  });
-
-  PathCondition root = PathCondition::root();
-  llvm::SmallVector<LifetimeDemand, 2> demands{
-      LifetimeDemand{allocations[0],
-                     256,
-                     256,
-                     0,
-                     ProgramPoint{0, root},
-                     {LiveSegment{0, 10, root}}},
-      LifetimeDemand{allocations[1],
-                     256,
-                     256,
-                     1,
-                     ProgramPoint{1, root},
-                     {LiveSegment{0, 10, root}}},
-  };
-  PackingResult packing = packFirstFit(demands, ArenaRange{0, 256});
-  ASSERT_FALSE(packing.succeeded());
-  ASSERT_TRUE(packing.failure);
-  EXPECT_EQ(packing.failure->kind, PackingFailureKind::NoFit);
-  for (auto [allocation, attributes] : llvm::zip(allocations, attributesBefore))
-    EXPECT_EQ(allocation->getAttrDictionary(), attributes);
+  lhs.segments = {LiveSegment{0, 10, *repeatableThen}};
+  rhs.segments = {LiveSegment{0, 10, *repeatableElse}};
+  EXPECT_TRUE(lifetimesOverlap(lhs, rhs));
 }
 
 TEST(LifetimeAnalysisUtilitiesTest,

@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "MemoryPlanning/LifetimeAnalysis.h"
+#include "MemoryPlanning/StaticMemoryPacking.h"
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -902,36 +903,45 @@ static mlir::LogicalResult planManagedDDROffsets(
              << largestContiguousBytes;
   }
 
-  memory_planning::PackingResult packing = memory_planning::packFirstFit(
+  memory_planning::PackingResult packing = memory_planning::packStaticMemory(
       demands, memory_planning::ArenaRange{0, capacityBytes});
   if (!packing.succeeded()) {
-    const memory_planning::PackingFailure &failure = *packing.failure;
     mlir::Operation *origin = scope;
     memory_planning::LifetimeDemand *demand = nullptr;
-    if (failure.demandIndex < demands.size()) {
-      demand = &demands[failure.demandIndex];
+    if (packing.demandIndex && *packing.demandIndex < demands.size()) {
+      demand = &demands[*packing.demandIndex];
       origin = demand->allocation.getOperation();
     }
-    switch (failure.kind) {
-    case memory_planning::PackingFailureKind::InvalidArena:
+    switch (packing.status) {
+    case memory_planning::PackingStatus::InvalidProblem:
       return origin->emitError()
-             << "memory_capacity_overflow: DDR planning capacity range is "
-                "invalid";
-    case memory_planning::PackingFailureKind::InvalidDemand:
-      return origin->emitError()
-             << "ddr_alignment_failure: DDR planning demand has invalid size "
-                "or alignment";
-    case memory_planning::PackingFailureKind::RangeOverflow:
+             << "invalid_packing_result: DDR static packing input is invalid";
+    case memory_planning::PackingStatus::ArithmeticOverflow:
       return origin->emitError()
              << "range_end_overflow: DDR planning end address overflows int64";
-    case memory_planning::PackingFailureKind::NoFit:
+    case memory_planning::PackingStatus::ProvenInfeasible:
       return origin->emitError()
              << "memory_capacity_overflow: DDR planning capacity "
-             << capacityBytes << " cannot fit "
-             << (demand ? demand->sizeBytes : 0)
-             << " byte buffer with IR-derived lifetime";
+             << capacityBytes << " has no valid static placement"
+             << (demand ? " for an IR-derived lifetime demand" : "");
+    case memory_planning::PackingStatus::ResourceExhausted:
+      return origin->emitError()
+             << "packing_search_exhausted: MiniMalloc consumed "
+             << packing.searchNodes
+             << " deterministic search nodes and the first-fit safety "
+                "fallback could not produce a verified DDR placement";
+    case memory_planning::PackingStatus::InvalidSolverResult:
+      return origin->emitError()
+             << "invalid_packing_result: MiniMalloc returned an invalid DDR "
+                "placement";
+    case memory_planning::PackingStatus::HeuristicNoFit:
+      return origin->emitError()
+             << "invalid_packing_result: first-fit NoFit escaped the shared "
+                "packing policy";
+    case memory_planning::PackingStatus::Feasible:
+      break;
     }
-    llvm_unreachable("unknown DDR packing failure");
+    llvm_unreachable("successful DDR packing entered failure handling");
   }
 
   plannedHighWaterBytes = 0;

@@ -9,6 +9,8 @@ set(WAFER_LLVM_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/llvm-install/${WAFER
 string(SUBSTRING "${WAFER_LLVM_COMMIT}" 0 4 _wafer_llvm_commit_short)
 set(WAFER_LLVM_BUILD_DIR "${CMAKE_SOURCE_DIR}/build/third_party/llvm-project-${_wafer_llvm_commit_short}" CACHE PATH
   "Build directory for the pinned LLVM/MLIR source tree, used for tools not installed by LLVM")
+set(WAFER_MINIMALLOC_SOURCE_DIR "${WAFER_DEPS_ROOT}/minimalloc" CACHE PATH
+  "Wafer-curated MiniMalloc fixed-capacity solver source")
 option(WAFER_ALLOW_UNPINNED_LLVM
   "Allow an LLVM/MLIR package with the right major version but not the exact pinned package version" OFF)
 option(WAFER_ENABLE_IMPORTER_DEPS
@@ -277,4 +279,24 @@ function(wafer_require_gtest)
   )
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
+endfunction()
+
+function(wafer_add_minimalloc)
+  if(TARGET WaferThirdPartyMiniMalloc)
+    return()
+  endif()
+  if(NOT EXISTS "${WAFER_MINIMALLOC_SOURCE_DIR}/CMakeLists.txt" OR
+     NOT EXISTS "${WAFER_MINIMALLOC_SOURCE_DIR}/LICENSE" OR
+     NOT EXISTS "${WAFER_MINIMALLOC_SOURCE_DIR}/README.wafer.md")
+    message(FATAL_ERROR
+      "The curated MiniMalloc core is incomplete at "
+      "${WAFER_MINIMALLOC_SOURCE_DIR}")
+  endif()
+  set(WAFER_MINIMALLOC_BUILD_TESTS OFF CACHE BOOL
+    "Do not duplicate curated MiniMalloc standalone tests in the Wafer build"
+    FORCE)
+  add_subdirectory(
+    "${WAFER_MINIMALLOC_SOURCE_DIR}"
+    "${CMAKE_BINARY_DIR}/third_party/minimalloc"
+    EXCLUDE_FROM_ALL)
 endfunction()

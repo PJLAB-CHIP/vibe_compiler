@@ -109,8 +109,11 @@ Pipeline position:
 ### 2.1 Shared Recomputable Analysis Boundary
 
 DDR与SPM共用从当前structured IR重算的path condition、operation timeline、query-time provenance closure、generic
-async task identity/completion、live segment overlap、local issue/fence completion、weighted conflict priority和
-deterministic first-fit。compiler-managed allocation使用指向packing demand的`RootRef`；caller-owned/external memref
+async task identity/completion、live segment overlap、local issue/fence completion，以及默认MiniMalloc fixed-capacity
+canonical search。精确pairwise conflict graph通过已验证的deterministic edge-clique cover适配，nonzero base使用
+component-local fixed prefix；共享policy使用宽松确定的全局node budget且不设wall-clock timeout，只在
+`ResourceExhausted`时允许first-fit fallback。typed outcome和独立placement validator也由该共享边界拥有。
+compiler-managed allocation使用指向packing demand的`RootRef`；caller-owned/external memref
 使用path-qualified `ValueOriginRef`；async handle另携带所访问root与独立task identity，三者不能互相替代。
 `rootsAt`/`originsAt`在查询点沿`ViewLikeOpInterface`、`SelectLikeOpInterface`、`scf.if` yield和`scf.for`
 init/iter-arg/backedge/result递归闭包；loop fixed-point发布时去掉repeatable branch decision，防止一次前向映射遗漏
@@ -327,8 +330,9 @@ DDR memory planning is an analysis + transformation pair:
    terminal drain。generic async handle同时传播root和独立task identity；`async.await`/direct-group
    `async.await_all`只完成其path实际覆盖的task，local fence仍只完成local engine issue。
 7. Build conflict edges for intervals that may overlap in time and require distinct DDR bytes.
-8. 在当前rank的default arena内用deterministic interval packing规划offset；只有lifetime analysis证明不重叠时
-   才复用range。
+8. 在当前rank的default arena内用共享static packing规划offset；只有lifetime analysis证明不重叠时才复用range。
+   `Feasible`直接消费；只有完整搜索的`ProvenInfeasible`映射capacity；`ResourceExhausted`才允许first-fit fallback，
+   且fallback失败仍报告search exhaustion。
 9. Validate each descriptor/view range against either the external root byte size or the planned allocation range.
 10. Validate capacity, largest contiguous range, alignment and bandwidth.
 11. Materialize accepted offset facts only after every function/scope, descriptor and resource-limit check succeeds；
@@ -396,6 +400,8 @@ Required failure classes:
 - `range_end_overflow`
 - `ddr_range_overflow`
 - `memory_capacity_overflow`
+- `packing_search_exhausted`
+- `invalid_packing_result`
 - `largest_contiguous_range_too_small`
 - `bandwidth_pressure_too_high`
 - `invalid_ddr_resource_limit`

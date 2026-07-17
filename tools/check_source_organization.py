@@ -52,9 +52,18 @@ CANDIDATE_SELECTION_SOURCES = (
 )
 MEMORY_PLANNING_SOURCES = (
     "LifetimeAnalysis.cpp",
+    "MiniMallocPacking.cpp",
+    "StaticMemoryPacking.cpp",
+)
+MEMORY_PLANNING_HEADERS = (
+    "LifetimeAnalysis.h",
+    "MiniMallocPacking.h",
+    "StaticMemoryPacking.h",
 )
 MEMORY_PLANNING_TEST_SOURCES = (
     "LifetimeAnalysisTest.cpp",
+    "MiniMallocPackingTest.cpp",
+    "StaticMemoryPackingTest.cpp",
 )
 TARGET_LLVM_SOURCES = (
     "ComputeTargetCallLowering.cpp",
@@ -879,25 +888,26 @@ def check_memory_planning_owners(root: Path, errors: list[str]) -> None:
     unit_cmake_text = read_required(unit_cmake_path, errors)
 
     check_exact_sources(
-        source_root, MEMORY_PLANNING_SOURCES, "memory-planning analysis", errors
+        source_root, MEMORY_PLANNING_SOURCES, "memory-planning core", errors
     )
-    private_header = source_root / "LifetimeAnalysis.h"
-    analysis_source = source_root / "LifetimeAnalysis.cpp"
+    private_headers = [source_root / header for header in MEMORY_PLANNING_HEADERS]
     actual_headers = {
         path.name for path in source_root.glob("*.h") if path.is_file()
     }
-    if actual_headers != {private_header.name}:
+    if actual_headers != set(MEMORY_PLANNING_HEADERS):
         fail(
             errors,
-            "memory-planning analysis headers must be exactly "
-            f"{private_header.name}; found {', '.join(sorted(actual_headers)) or 'none'}",
+            "memory-planning headers must be exactly "
+            f"{', '.join(MEMORY_PLANNING_HEADERS)}; found "
+            f"{', '.join(sorted(actual_headers)) or 'none'}",
         )
-    check_private_header(
-        private_header,
-        root / "include/Wafer/Transforms/MemoryPlanning/LifetimeAnalysis.h",
-        "memory-planning lifetime analysis",
-        errors,
-    )
+    for private_header in private_headers:
+        check_private_header(
+            private_header,
+            root / "include/Wafer/Transforms/MemoryPlanning" / private_header.name,
+            "memory-planning internal",
+            errors,
+        )
     target_body = cmake_target_body(
         cmake_text, "add_mlir_library", "WaferTransforms", cmake_path, errors
     )
@@ -917,13 +927,14 @@ def check_memory_planning_owners(root: Path, errors: list[str]) -> None:
         target="WaferTransforms",
         errors=errors,
     )
-    check_project_cmake_source_ownership(
-        root=root,
-        source="LifetimeAnalysis.cpp",
-        expected_cmake_path=cmake_path,
-        label="memory-planning analysis",
-        errors=errors,
-    )
+    for source in MEMORY_PLANNING_SOURCES:
+        check_project_cmake_source_ownership(
+            root=root,
+            source=source,
+            expected_cmake_path=cmake_path,
+            label="memory-planning core",
+            errors=errors,
+        )
 
     detail_namespace = re.compile(
         r"\bnamespace\s+wafer::memory_planning::detail\s*\{"
@@ -931,7 +942,9 @@ def check_memory_planning_owners(root: Path, errors: list[str]) -> None:
     legacy_namespace = re.compile(
         r"\bnamespace\s+wafer::memory_planning\s*\{"
     )
-    for detail_path in (private_header, analysis_source):
+    for detail_path in private_headers + [
+        source_root / source for source in MEMORY_PLANNING_SOURCES
+    ]:
         detail_code = cpp_code(read_required(detail_path, errors))
         if not detail_namespace.search(detail_code):
             fail(
@@ -967,21 +980,29 @@ def check_memory_planning_owners(root: Path, errors: list[str]) -> None:
         target="WaferUnitTests",
         errors=errors,
     )
-    check_project_cmake_source_ownership(
-        root=root,
-        source="LifetimeAnalysisTest.cpp",
-        expected_cmake_path=unit_cmake_path,
-        label="memory-planning unit mirror",
-        errors=errors,
-    )
-    unit_test_path = unit_root / "LifetimeAnalysisTest.cpp"
-    unit_test_text = read_required(unit_test_path, errors)
-    shared_include = "MemoryPlanning/LifetimeAnalysis.h"
-    if source_includes(unit_test_text).count(shared_include) != 1:
-        fail(
-            errors,
-            f"{unit_test_path} must include {shared_include} exactly once",
+    expected_test_include = {
+        "LifetimeAnalysisTest.cpp": "MemoryPlanning/LifetimeAnalysis.h",
+        "MiniMallocPackingTest.cpp": "MemoryPlanning/MiniMallocPacking.h",
+        "StaticMemoryPackingTest.cpp": "MemoryPlanning/StaticMemoryPacking.h",
+    }
+    unit_test_paths = []
+    for source in MEMORY_PLANNING_TEST_SOURCES:
+        check_project_cmake_source_ownership(
+            root=root,
+            source=source,
+            expected_cmake_path=unit_cmake_path,
+            label="memory-planning unit mirror",
+            errors=errors,
         )
+        unit_test_path = unit_root / source
+        unit_test_paths.append(unit_test_path)
+        unit_test_text = read_required(unit_test_path, errors)
+        shared_include = expected_test_include[source]
+        if source_includes(unit_test_text).count(shared_include) != 1:
+            fail(
+                errors,
+                f"{unit_test_path} must include {shared_include} exactly once",
+            )
 
     owner_paths = (
         transforms_root / "DDR/PlanDDRMemory.cpp",
@@ -1020,14 +1041,18 @@ def check_memory_planning_owners(root: Path, errors: list[str]) -> None:
         "computePlanningPriorities",
         "conflictBytes",
         "alignUp(",
+        "packFirstFit(",
     )
+    lifetime_include = "MemoryPlanning/LifetimeAnalysis.h"
+    packing_include = "MemoryPlanning/StaticMemoryPacking.h"
     for owner_path in owner_paths:
         owner_text = read_required(owner_path, errors)
-        if source_includes(owner_text).count(shared_include) != 1:
-            fail(
-                errors,
-                f"{owner_path} must include {shared_include} exactly once",
-            )
+        for shared_include in (lifetime_include, packing_include):
+            if source_includes(owner_text).count(shared_include) != 1:
+                fail(
+                    errors,
+                    f"{owner_path} must include {shared_include} exactly once",
+                )
         owner_code = cpp_code(owner_text)
         for marker in forbidden_markers:
             if marker in owner_code:
@@ -1038,8 +1063,10 @@ def check_memory_planning_owners(root: Path, errors: list[str]) -> None:
 
     check_no_textual_source_includes(
         [source_root / source for source in MEMORY_PLANNING_SOURCES]
-        + [private_header, unit_test_path, *owner_paths],
-        "memory-planning analysis",
+        + private_headers
+        + unit_test_paths
+        + list(owner_paths),
+        "memory-planning core",
         errors,
     )
 

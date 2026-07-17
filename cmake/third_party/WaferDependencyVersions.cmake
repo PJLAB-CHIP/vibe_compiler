@@ -27,6 +27,11 @@ set(WAFER_PYTORCH_XLA_REPOSITORY "https://github.com/pytorch/xla.git")
 
 set(WAFER_PYTHON_LIT_VERSION "18.1.8")
 
+# Static memory packing dependency. Wafer checks in an audited, source-derived
+# C++17 core port from this exact upstream commit; CMake never fetches it.
+set(WAFER_MINIMALLOC_COMMIT "9f5cf810fec4494df473c23cffd0567989e81b69")
+set(WAFER_MINIMALLOC_REPOSITORY "https://github.com/google/minimalloc.git")
+
 # Functional-numeric model dependencies.  These are source archive pins rather
 # than host package/SONAME requirements.  CMake never downloads these archives;
 # tools/bootstrap_deps.py is the only supported fetch/build entry point.

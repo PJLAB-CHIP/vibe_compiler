@@ -12,10 +12,11 @@ expected，不再维护
 accepted-IR第二套解释器。SystemC受管依赖统一位于`third_party/systemc-model`。板端执行、板端数值相关、exact package执行、
 packet provenance和timing仍是独立later/external gate。
 
-下一项compiler实施先闭合全pipeline upstream optimization adoption和Equivalent-IR稳定性：把required normalization从
-generic canonicalizer正确性依赖中分离，修复DPS init/view/alias/effect对偶然producer形态的依赖，并只将真实发生改写且通过
-纵向gate的fixed机制接入production。随后通用physical-dataflow synthesis先建立policy-free mechanisms，再由唯一solver联合
-选择implementation、tile、physical encoding、storage realization、residency和有界局部顺序，并退役旧decision旁路。
+共享SPM/DDR static memory packing已从保守greedy升级为默认MiniMalloc fixed-capacity canonical search，并用
+确定性宽松work budget、三态结果、独立placement validator和仅限资源耗尽的first-fit fallback闭合编译
+资源边界。当前继续全pipeline upstream optimization adoption和Equivalent-IR稳定性，再进入通用
+physical-dataflow synthesis；后者先建立policy-free mechanisms，再由唯一solver联合选择implementation、tile、physical
+encoding、storage realization、residency和有界局部顺序，并退役旧decision旁路。
 
 ## 队列规则
 
@@ -41,6 +42,9 @@ Q22.B + Q22.S + Q20 + Q21 -> Q22.V -> Q22
 源码模块化：
 Q23 -> Q24 -> Q25 -> Q26
 
+static memory packing：
+Q26 -> Q34 -> Q32.B
+
 验证consumer收敛：
 Q22 -> Q27
 
@@ -62,15 +66,15 @@ Q33 + Q32 -> Q32.T (optional compiler control plane)
 
 ## 当前实施队列
 
-当前没有`doing`任务；Q33为唯一前置已满足的`next` row。Q32 umbrella不会让后续row自动进入执行，later/external
-gate也不会自动进入主线。
+当前无`doing`；Q33是唯一`next` row。Q32 umbrella不会让后续row自动进入执行，later/external gate也不会
+自动进入主线。
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q33 | `compiler-optimization-adoption` | `next` | Q29、Q28、Q30、Q31 | 审计全pipeline upstream pass/utility实际采用状态；修复Equivalent-IR、DPS init/view/alias/effect与canonicalizer正确性债务；资格化并接入有真实改写和纵向收益的fixed hygiene，冻结post-adoption baseline。 | 01、05-12、16、18；`tasks/plans/compiler-optimization-adoption.md` |
 | Q32.I | `target-implementation-foundation` | `blocked` | Q33 | 冻结post-adoption fresh baseline/consumer矩阵，建立从canonical SemanticOpDescriptor查询current-v1 ImplementationFamily及canonical baseline的独立provider；accepted op interface只验证selected合同。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` A/B |
 | Q32.R | `physical-relation-route-proof` | `blocked` | Q32.I | 建立IndexRelation、PhysicalEncoding/view proof、08唯一TransferRouteFamily、descriptor cover、InvalidLaneState和完整query signature/fuel gate。 | 06-08、10、11、16、18；同计划C |
-| Q32.B | `physical-dataflow-baseline-vertical` | `blocked` | Q32.R | 用新provider/materializer和canonical family encoding构造reserved conservative baseline，完成per-rank与all-rank exact eligibility并原子形成bundle，不调用旧decision owner。 | 01、06-18；同计划D |
+| Q32.B | `physical-dataflow-baseline-vertical` | `blocked` | Q32.R、Q34 | 用新provider/materializer和canonical family encoding构造reserved conservative baseline，完成per-rank与all-rank exact eligibility并原子形成bundle，不调用旧decision owner。 | 01、06-18；同计划D |
 | Q32.V | `physical-capability-vertical` | `blocked` | Q32.B | 闭合mapped local-offset、invalid-lane fill/segment、versioned oriented GEMM到TargetCall/SystemC的model-qualified纵向，以及Q16/Q17/Q18 schema-v4 RequiredCapabilitySet与model/board逐key preflight；board数值predicate仍独立。 | 06、08、10、11、14-18；同计划E |
 | Q32.M | `physical-dataflow-rewrite-mechanisms` | `blocked` | Q32.V | 先独立实现和资格化policy-free typed mechanisms：upstream tiling/fusion/view utility、relation propagation、implementation absorption、shared physical version、movement elimination及受控CSE/loop机制；改写后fresh重算全部analysis/gates。 | 05-13、16、18；同计划F |
 | Q32.S | `bounded-physical-dataflow-synthesis` | `blocked` | Q32.M | 只组合已资格化mechanisms，实现bounded/canonical/compatibility-aware search、resident dataflow policy和lazy all-rank join；reserved baseline与deterministic telemetry闭合。 | 06-13、16、18；同计划G |
@@ -125,6 +129,7 @@ gate也不会自动进入主线。
 | Q24 | `remaining-source-modularity` | `done` | group/candidate、target LLVM、numeric conformance、frontend program与compiler driver按稳定职责拆分，双配置gate闭合且公共合同不变。 | 18；`tasks/archive/remaining-source-modularity.md` |
 | Q25 | `residual-source-modularity` | `done` | reference/model、numeric/bulk、compiler/artifact/package和frontend bridge共11个聚合实现按稳定职责拆分，双配置及真实外部helper gate闭合且公共合同不变。 | 18；`tasks/archive/residual-source-modularity.md` |
 | Q26 | `memory-lifetime-analysis` | `done` | instruction loop backedge completion、共享path-sensitive lifetime/packing core、DDR issue-to-fence lifetime及两侧原子offset commit闭合，SPM/DDR各自memory-space、DTE、descriptor和resource合同保持。 | 09、11、12、18；`tasks/archive/memory-lifetime-analysis.md` |
+| Q34 | `static-memory-packing` | `done` | SPM/DDR共享packing默认使用受管MiniMalloc fixed-capacity canonical search；精确edge-clique conflict适配、确定性宽松全局work budget、三态result、独立validator和仅限`ResourceExhausted`的first-fit fallback已闭合。 | 09、12、18；`tasks/archive/static-memory-packing.md` |
 | Q27 | `reference-executor-retirement` | `done` | accepted-IR第二套解释器、oracle分支和旧CLI退役；CPU expected、typed invocation及target CModel/board differential边界保留。 | 01、16-18；`tasks/archive/reference-executor-retirement.md` |
 | Q29 | `tile-dataflow-scheduling` | `done` | structured tensor program直达bounded rank-local task/dataflow candidate、完整traversal、跨region SPM、whole-rank/whole-variant resource gate、旧group executable surface退役及TP16 7B compile-only all-rank package闭合。 | 01、06-13、16；`tasks/archive/tile-dataflow-scheduling.md` |
 | Q28 | `llama-7b-block-vertical` | `done` | 标准Llama-2 7B单block TP16从真实source、task-dataflow package到repo-owned SystemC managed-reference执行及完整PyTorch eager output differential闭合；不包含board、exact ELF、性能或timing。 | 02、03、06、09、11、12、16、17；`tasks/archive/llama-7b-block-vertical.md` |
@@ -139,7 +144,8 @@ gate也不会自动进入主线。
 
 ## 实施计划入口
 
-- Active task：Q33 `compiler-optimization-adoption`；Q32 `physical-dataflow-synthesis` queued；当前无`doing` row。
-- Next：Q33 `compiler-optimization-adoption`，计划见`tasks/plans/compiler-optimization-adoption.md`；Q32 queued。
+- Active task：无。
+- Next：Q33 `compiler-optimization-adoption`，计划见`tasks/plans/compiler-optimization-adoption.md`；Q32 queued。Q34证据已归档于
+  `tasks/archive/static-memory-packing.md`。
 - 新实施计划：`tasks/plans/`。
 - 已完成计划和历史证据：`tasks/README.md`的“实施计划导航”和“归档文档”。

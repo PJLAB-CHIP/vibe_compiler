@@ -671,3 +671,18 @@
 - 修复模式：comparison继续负责pass/fail，独立只读statistics在比较前报告每个rank的exact/abs/ULP完整分布；制定gate时
   聚合全部seed和rank，不从首个失败外推全局最大值。
 - 防复发：数值表征报告必须记录rank覆盖、元素数和quantile定义；fail-fast负例只证明拒绝与atomicity，不充当分布证据。
+
+## 2026-07-17 一conflict edge一activity slot会隐藏packing的clique不可行证书
+
+- 现象：任意pairwise conflict graph用“每条edge一个synthetic slot”精确适配到lifespan/gap solver后，
+  标准7B单block的若干rejected packing candidate每个消耗约210万search nodes才转入fallback；这些
+  candidate实际存在总size超过arena的conflict clique，可以零搜索证明不可行。
+- 根因：一edge一slot虽不丢pairwise约束，却把同时clique切成大量短lifespan/gap，让solver的high-water
+  lower bound看不到完整clique；单个全局nonzero-base prefix还会把原本独立的conflict component连成
+  同一partition。单纯降低超时或提高budget都没有修复表示问题。
+- 修复模式：按stable ordinal和conflict connected component构造确定性greedy edge-clique cover，使每个
+  slot只含原图clique并覆盖全部原edge；适配后fail closed检查clique/cover/non-edge条件。nonzero base
+  使用component-local fixed prefix，保留solver decomposition。triangle-free graph仍可一edge一slot，不引入最优
+  clique-cover指数搜索。
+- 防复发：用clique零budget不可行证明、stable ordinal交错多component/nonzero-base reuse、任意小图独立
+  穷举oracle和scale workload的search-node/fallback telemetry共同锁定；不用wall-clock timeout作为求解语义。
