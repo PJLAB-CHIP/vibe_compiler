@@ -1,6 +1,6 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-07-17按Q31标准7B单block多seed数值表征和source/model gate收紧同步，并补充联合physical-dataflow planner、
+状态：2026-07-18按Q31标准7B单block多seed数值表征和source/model gate收紧同步，并补充联合physical-dataflow planner、
 mapped transfer与versioned GEMM orientation的目标验证合同；保留已完成
 Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate。
 本文是跨stage稳定验证合同，不是`tasks/plans/`中的动态实施计划。它拥有完成证据和测试口径；具体IR/ABI规则由
@@ -330,6 +330,14 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
   SPM/DDR allocator不得生成、排序或修改implementation/transfer/residency。passing variant从complete current IR fresh重算06
   统一exact static vector；只在同compatibility signature内dominance，再用stable profile policy tie-break，unknown/tradeoff
   不得伪装成收益，也不得把未校准vector/scalar称为硬件时间；
+- static-packing capacity analysis必须把完整arena hardware feasibility与minimum-high-water objective分开验证：小图穷举
+  minimum height、empty/zero-byte、nonzero base/alignment/disconnected component/first-fit反例、trivial-zero/single-demand/
+  clique proof validator、cache stale
+  digest和interval dominance均覆盖；`ResourceExhausted`不推进bound，有validated incumbent时objective耗尽仍保留合法
+  candidate。shared query fuel按canonical work order消费，不同输入排列/线程数的selected signature稳定；7B fresh gate同时
+  报告full-capacity solve、objective query/node/cache、lower/high-water/gap和offset-derived final peak。回归必须让objective
+  选择不同于full-arena初始placement，并证明range/descriptor/address/narrowing、DTE local-offset、compatibility signature和cost
+  均从新offset fresh重跑。capacity-cut proof由completed typed solve加prepared digest验证，不虚构独立IIS/unsat-core object；
 - mapped transfer positive必须证明RDMA仅DDR source strided+sequential SPM destination/local offset、WDMA严格反向，
   descriptor序列all-and-only覆盖logical relation并检查tail/canary；不能覆盖时由planner显式选择staged+GS alternative或
   其它已注册route，selected lowering不得静默换route或使用双侧stride；

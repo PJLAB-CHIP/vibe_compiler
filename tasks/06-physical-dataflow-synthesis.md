@@ -1,6 +1,6 @@
 # Wafer Physical-Dataflow Synthesis 与 Candidate Selection
 
-状态：2026-07-17已收敛终态设计；实现由`tasks/progress.md`中的
+状态：2026-07-18已收敛终态设计；实现由`tasks/progress.md`中的
 `physical-dataflow-synthesis`任务跟踪。本文不定义或恢复`wafer.group`。
 
 本文是 rank-local **physical-dataflow synthesis** 的唯一设计 owner。它联合选择等价计算形式、target
@@ -44,6 +44,10 @@ rank-local structured semantics
 7. **机制先于策略。** relation normalization、tiling、producer fusion、view/subset folding、implementation absorption、
    physical-version reuse和movement elimination先作为带precondition/proof的typed atomic mechanisms独立验证；搜索只组合、
    排序和接受这些机制，不能在policy分支中临时发明rewrite。
+8. **packing既是exact gate，也是候选质量oracle。** materialization前只用可证明的SPM lower bound做安全剪枝；完整
+   instruction candidate形成后，由shared `MemoryPlanning` fixed-capacity packing primitive先证明硬件容量合法性，再由本stage对
+   selection-sensitive shortlist组合有界capacity queries，得到最小high-water的可证明上下界。优化预算耗尽只留下
+   bounded quality gap，不得改写成capacity failure，也不得让allocator自行改变tile、residency或执行顺序。
 
 ## 2. Pipeline Contract
 
@@ -60,7 +64,8 @@ Pipeline position:
   decision domains，联合选择 implementation、tile、physical encoding、storage realization、residency、
   buffering 和 DAG-legal issue order；在 transformation-local complete rank clones 上物化候选并运行 exact
   instruction、SPM、DDR、completion、transport、geometry和14 registry/versioned-signature artifact-eligibility
-  preflight（纯函数、不生成module/artifact）；对surviving candidates做有界
+  preflight（纯函数、不生成module/artifact）；对selection-sensitive survivors组合shared static-packing fixed-capacity
+  queries，得到validated placement与high-water上下界；对surviving candidates做有界
   Pareto selection，并原子提交一个 all-rank variant。
 - Output artifact / IR:
   每个 rank 覆盖完整静态 traversal 的 accepted target-abstract tile/dataflow program；其中只含 typed
@@ -85,6 +90,7 @@ Pipeline position:
   production planner 只消费 structured semantics/effect/numeric policy 和 target provider；parameterized family
   惰性实例化、constraint propagation、state canonicalization、hard budgets、baseline fallback 与 candidate-growth
   telemetry 均实际生效；每个候选rewrite来自已注册atomic mechanism并在改写后fresh重算relation/effect/alias/resource；
+  hardware-capacity legality与packing objective budget正交，interval-aware dominance和deterministic shared query fuel实际生效；
   selected proposal 只以 typed payload IR 跨阶段，旧 scope-prefix/layout-planner/
   maximal-resident 决策旁路清零。property、拓扑、多 dtype、多 workload、rank-count=1/16、7B scale、完整
   PyTorch/SystemC numerical、exact SPM/DDR/event/transport/ABI 和 atomic commit gates 全部通过。
@@ -331,7 +337,7 @@ IR 证明，planner 保留 single-buffer baseline 或 fail closed。不得以全
    按canonical semantic signature排序，禁止依赖pointer、registration、DenseMap或parallel completion顺序。
 4. **Backward region propagation**：从 outputs/roots 向 inputs 传播 dependent tile region，合并 shared-input constraints。
 5. **Constraint propagation**：反复收紧 tile、family params、encoding、route、valid-domain 和 resource lower-bound domains；
-   空 domain 立即剪枝。
+   只有能从当前frontier facts证明的bound才可因超过硬容量剪枝，unknown或启发式estimate只能影响访问顺序。空domain立即剪枝。
 6. **Reserved baseline**：每个production semantic family必须提供一个可判定的baseline implementation、canonical accepted
    encoding和由target geometry/capacity公式驱动的有界legality-directed safe-tile refinement；若provider没有baseline，该语义
    就不在该profile的production支持面，optimized family不得成为唯一正确性路径。为每rank baseline和all-rank baseline bundle
@@ -339,8 +345,12 @@ IR 证明，planner 保留 single-buffer baseline 或 fail closed。不得以全
    canonical encoding（如NE GEMM的Cx/NCx）、显式Tensor↔Cx/NCx materialization/spill的baseline，再完成分层exact gate。
 7. **Pareto beam exploration**：baseline通过后，只对能消除movement、降低live bytes或启用合法implementation的frontier
    decision惰性分裂。
-8. **Per-rank materialization/gates**：将bounded proposals写入隔离complete-rank clones，运行instruction/descriptor、SPM、
-   local completion和per-rank可独立证明的DDR view/range gate，fresh recost后按all-rank compatibility signature分桶。
+8. **Per-rank materialization/gates**：将bounded proposals写入隔离complete-rank clones，先完成offset-independent
+   instruction/encoding/effect/completion legality，再从unplaced current IR纯evaluate SPM full-arena feasibility并保留
+   validated incumbent；只有仍可能改变Pareto/最终选择的shortlist再共享optimization fuel收紧packing lower/upper。
+   选定best placement后只apply一次offset，并从该placed current IR重跑SPM owner range/resource、descriptor/address/narrowing、
+   DTE receiver/local-offset、per-rank DDR view/range、compatibility signature和全部offset-dependent verifier/gate，再fresh recost/
+   分桶。旧placement对应的gate或signature一律失效。
 9. **Lazy variant coordination**：先传播shared transport variables，再baseline-first、best-first/factorized地惰性join各rank桶；
    不预先形成`K^R`。每个完整variant再运行whole-variant DDR/package eligibility、all-rank transport和14 registry/
    versioned-signature artifact-eligibility preflight；该pure preflight可临时投影prospective capability keys，但不进入frontier、
@@ -357,13 +367,14 @@ graph frontier
 + live physical versions:
     (storage root, tile region, encoding, valid domain, invalid-lane state)
 + constrained implementation/tile/route domains
-+ SPM live signature and lower bound
++ SPM live signature and sound lower bound or unknown
 + engine/effect/completion frontier
 + all-rank compatibility signature
 + static resource/cost vector
 ```
 
-已经完成且不再影响 future liveness/constraints 的历史决策不进入 key。等价状态按 relation、domain 和 live signature
+这里的frontier lower bound只来自尚未物化阶段可证明的physical-version size、同时存活和target geometry事实；不能把
+representative tile estimate伪装成exact packing结果。已经完成且不再影响 future liveness/constraints 的历史决策不进入 key。等价状态按 relation、domain 和 live signature
 canonicalize 后合并。cache使用完整规范化query signature：semantic/index relation、shape/dtype、tile/valid domain、source/
 destination memory space与view offset、normalized alias/effect signature（same-root relative overlap、proven-disjoint或
 unknown/may-alias）、family/route/encoding参数、按全部读写operand角色记录的incoming source/destination invalid-lane states
@@ -390,7 +401,121 @@ planner 不枚举所有 fusion partitions、resident subsets、tile integers、p
 task scheduling 使用 deterministic resource-aware list scheduling。默认 tie-break 来自稳定 IR order；只有 ready set 中
 resource/reuse signature 不同且仍有预算时，才分裂有限 alternative。绝不枚举 `N!` topological orders。
 
-### 6.4 Hard legality gates
+### 6.4 两级 static-memory packing oracle
+
+packing oracle服务两个不同抽象层，二者不能混用：
+
+1. **frontier bound**：在instruction IR尚未完整物化时，从live physical version、tile domain、encoding extent、
+   required temporary和已证明的同时存活关系计算`SoundLowerBound | Unknown`。只有sound bound超过可用arena时才能剪枝；
+   sound partial bound即使尚未包含未来positive temporary仍可安全剪枝，因为它只会低估；只有size/必然存在/同时存活关系
+   未证明的representative或heuristic estimate才只能排序。
+2. **materialized packing envelope**：完整rank candidate已经lower成unplaced instruction memref后，从当前clone重算
+   `LifetimeDemand`、pairwise conflict和absolute alignment，形成shared `MemoryPlanning`的owner-independent static packing problem。
+   fixed-capacity primitive仍是唯一capacity legality owner；本stage只组合它的typed query结果，不能直接调用third-party类型，
+   也不能从semantic/op名称补demand。
+
+materialized query返回纯analysis结果，概念合同为：
+
+```text
+PackingEnvelope {
+  legality: Feasible | ProvenInfeasible | ResourceExhausted | Invalid
+  optimality: NotRun | ProvenOptimal | Bounded
+  lower_bound_bytes?
+  upper_bound_bytes?          // validated best placement相对arena.begin的high-water
+  best_placements?            // 返回前已从canonical identity remap为当前call的demand index
+  optimality_gap_bytes?
+  lower_bound_proof?          // tagged trivial-zero、individual、clique或fixed-capacity cut
+  fixed_capacity_queries
+  search_nodes
+  budget_reason?
+}
+```
+
+`legality`和`optimality`正交：完整硬件arena上的`ProvenInfeasible`才拒绝candidate；若搜索已有一份通过独立validator的
+placement，则minimum-height refinement耗尽只能得到`Feasible + Bounded`，不能变成`packing_search_exhausted`。
+`ResourceExhausted`且没有任何合法placement时才是compiler resource failure。`Invalid`继续fail closed。上下界统一使用
+`max(offset + size) - arena.begin`的byte span；absolute alignment仍在每次fixed-capacity query中以absolute address验证。
+
+typed result只允许以下组合，不能用默认0补不存在的事实：
+
+- `Invalid`：`NotRun`，lower/upper/placement/gap/proof等可选facts均为空；
+- full-arena `ProvenInfeasible`或无incumbent的`ResourceExhausted`：`NotRun`，upper/placement/gap为空；只有确有
+  proof时lower可存在；
+- `Feasible + NotRun`：validated incumbent与upper必有，lower可选，gap为空；
+- `Feasible + Bounded`：validated incumbent、lower、upper、gap和stop reason必有，且
+  `0 <= lower <= upper`、`gap = upper - lower`；
+- `Feasible + ProvenOptimal`：validated incumbent、lower和upper必有且相等，gap为0。
+
+任何存在的lower都必须有bound相等的tagged proof，不能让数值与proof分别更新。任一非空placement都必须通过同一validator。
+empty-demand problem不是zero-byte demand：它的empty placement天然合法；若只跑
+legality则返回`Feasible + NotRun`及upper 0，若请求objective则返回`Feasible + ProvenOptimal`、lower/upper/gap均为0，且不发起
+追加capacity query；lower由`TrivialZero` proof支持。
+
+lower bound按由弱到强、始终可验证的方式建立：
+
+- 每个demand从`arena.begin`出发的最早absolute-aligned end；
+- adapter已验证activity clique中`sum(size)`的最大值；任何`ConflictClique` proof成员必须在原conflict graph中两两有edge；
+- fixed-capacity query在某个span完整证明不可行后，最小可行span的lower bound提升到该span的下一byte。
+
+多个proof给出同一bound时按tag和stable identities的固定总序选择primary proof，不能依赖container或并行发现顺序。
+
+`LowerBoundProof`是唯一proof事实，不另存一份可能失配的witness：`TrivialZero`支持empty或通用非负下界；
+`SingleDemand`和`ConflictClique`携带stable demand
+identity及各自`witness_bound_bytes`，可由06按需投影为pressure view；`ProvenInfeasibleCut`只携带problem digest和完整证明的
+capacity cut，不伪造demand集合。这不是IIS接口；若capacity cut把全局lower bound推得高于clique bound，clique proof仍只
+声明自己的bound，不能冒充最终lower bound的完整解释；返回的primary proof切换为capacity cut且pressure view为空，
+不用朴素逐buffer重求解minimal unsat core。
+首版也不另求NP-hard最优edge-clique cover或maximum-weight clique；更强lower-bound实现只有保持同一proof validator、
+三态capacity语义和global optimization budget时才可替换当前bound producer。
+
+minimum-height refinement不恢复MiniMalloc的一体化minimize模式，而是组合同一三态fixed-capacity primitive：
+
+1. 先在完整硬件arena运行现有legality query，取得`ProvenInfeasible`，或取得一份validated incumbent并以实际high-water
+   建立upper bound；first-fit fallback若成功只提供合法upper bound，不提供不可行证明。
+2. 若lower bound等于upper bound，直接以`lower-bound proof + validated placement`证明最优，不再调用solver。
+3. 否则在整数byte span区间`[lower, upper)`内按稳定policy选择midpoint做byte-capacity binary refinement；不默认先查询通常最难的lower-bound
+   tight point。`Feasible`用返回placement的实际high-water降低upper bound，
+   `ProvenInfeasible`用checked `probe + 1`提高lower bound，`ResourceExhausted`不移动任何bound。对同一probe可按几何增长的node slice重试，
+   但所有retry和candidate共享本轮optimization fuel。
+4. 上下界相等时返回`ProvenOptimal`；query/node/candidate预算结束时返回`Bounded`和当前最优validated placement。
+   每个结果离开oracle前仍运行shared `MemoryPlanning` placement validator，随后由09/12运行owner-specific range/resource gate。
+
+搜索质量预算与capacity legality预算分开。baseline及每个已进入exact gate的candidate先获得完整arena legality allowance；
+minimum-height只消费candidate-selection独立的global deterministic node/query fuel，不设置会改变选择语义的短
+wall-clock timeout。共享fuel按canonical shortlist signature、probe span和retry level形成稳定round-robin work order，
+不能按并行future完成顺序先到先得；相同signature先canonical dedup，仍需保留的同key query在调度前coalesce成一个有稳定epoch的
+work item。外部取消按6.6统一丢弃optimized states并返回reserved baseline。
+
+prepared problem digest绑定完整硬件arena begin/end、每个canonical demand的stable identity/size/alignment、规范化conflict、
+fixed/reserved constraints和adapter/policy version；probe span不改prepared digest，只作为query key第二部分。同一次transformation
+可按`(prepared problem digest, queried span)`缓存validated feasible placement和完整证明的infeasible cut；placement在cache中
+只按stable/canonical identity保存，命中后remap到当前demand index并重新validate。`ResourceExhausted`只能累计telemetry，不能
+缓存为query truth。每次实际solver invocation（包括同span retry）计一次query并累计全部重复DFS nodes；cache hit不消耗solver
+query/node但单独计数。cache不跨pass、不写IR，且final winner必须从当前IR重建
+digest并重新验证placement。首版不依赖solver warm-start hint；validated incumbent只作为upper bound，因为当前受管core
+没有消费hint的合同。
+
+不是所有passing candidate都做高度二分。完整arena gate后先用其它exact cost维度和packing interval维持Pareto frontier；
+只有bound overlap仍可能改变dominance或最终tie-break的shortlist进入refinement。对SPM维度，只有
+`A.upper_bound <= B.lower_bound`时才能仅凭packing证明A不差于B；区间重叠时保持二者，或继续查询。全rank SPM envelope按
+`max(per-rank bound)`聚合。预算结束仍有重叠时，winner用其实际validated upper bound进入06 cost vector，再按稳定policy/
+signature确定性选择，并把optimality gap作为telemetry而非artifact事实。
+
+shared capacity primitive对owner-independent problem通用，但Q32.S首版objective只激活这里定义的per-rank SPM维度；DDR保持
+whole-variant full-arena legality与accepted high-water。启用DDR refinement前必须先在本设计增加明确cost维度、all-rank聚合/
+shortlist位置、budget和verification合同，不能由12或shared API自行扩展。
+
+`LowerBoundProof`的可选pressure view只给上游搜索排序，不是allocator repair命令。planner通过当前clone的demand `RootRef`映射回
+`PhysicalVersion`和已有tile/residency/buffering/order decision，优先探索能减小proof内demand size或缩短其conflict的已资格化
+mechanism；它不能按buffer名识别模型角色、临时发明rewrite或直接修改已提交IR。降低SPM同时增加DDR movement的方案仍保留
+为普通Pareto tradeoff，不把“更低high-water”硬编码成无条件更优。
+
+该`RootRef -> PhysicalVersion/decision`关系只来自本次candidate materializer的invocation-local `IRMapping`和canonical
+decision key；不得以`Value*`/`Operation*`或raw demand index缓存，不得跨clone、rewrite或analysis invalidation继续使用，也不
+进入下游gate/artifact。任一neighbor materialize后从新current IR和其本次mapping重建关系；无法稳定映射时proof仍可用于
+capacity诊断，但不产生candidate priority。
+
+### 6.5 Hard legality gates
 
 cheap constraints 只能提前剪枝，不能替代 materialized exact gate。per-rank gate为：
 
@@ -409,8 +534,10 @@ cheap constraints 只能提前剪枝，不能替代 materialized exact gate。pe
 
 任何未知能力或不完整 proof 均拒绝该优化 choice，而不是降低 verifier。baseline 若也失败，才报告 workload/target
 不支持，并给出最早失败的 typed diagnostic。
+capacity refinement只替换placement也会使所有读取offset/address/range、receiver local offset或compatibility signature的
+旧结果失效；final gate必须在best placement apply后从current clone重跑，不能把“storage graph未变”当作复用理由。
 
-### 6.5 Hard budgets 和 fallback
+### 6.6 Hard budgets 和 fallback
 
 所有预算来自 compiler option/profile policy，但不进入 bundle identity 或 IR：
 
@@ -419,6 +546,8 @@ cheap constraints 只能提前剪枝，不能替代 materialized exact gate。pe
 - IndexRelation compose/normal-form rewrite fuel、piecewise image/preimage box和dependent-region fragment上限；
 - descriptor segment split/fuel上限，以及shared-input hyperedge conflict split上限；
 - tile refinement、ready-set alternative、beam width 和 exact top-K 上限；
+- 完整arena packing legality的reserved allowance，以及shortlist共享的capacity-query count、MiniMalloc node和
+  packing-result cache memory上限；optimization allowance不能挪用legality allowance；
 - 每 rank 与 all-rank combination 的 candidate 上限；
 - deterministic work/fuel/candidate caps、analysis cache memory上限，以及独立外部wall-time cancellation。
 
@@ -436,9 +565,10 @@ optimization预算耗尽时：
 - 若 baseline 不合法则返回真实 legality failure，不伪装成 timeout。
 
 telemetry 至少记录每阶段 input states、domain reductions、deduplicated/pruned/materialized/passing counts、peak beam、
-budget reason 和 baseline/selected cost vector。它是诊断输出，不是下游协议。
+budget reason、packing query/cache-hit/node数、selected lower/upper/gap/stop reason 和 baseline/selected cost vector。
+它是诊断输出，不是下游协议。
 
-### 6.6 原子提交
+### 6.7 原子提交
 
 candidate materialization、canonicalization、bufferization、physical-memory replanning 和 recost 全部在隔离 clone 上进行。
 一个rank可按compatibility signature保留有限surviving frontier；all-rank coordinator先传播shared constraints，再用
@@ -447,6 +577,10 @@ transport/resource/ABI gate。只有winning variant的全部ranks同时通过后
 rows派生canonical `RequiredCapabilitySet`、验证all-and-only union/digest，并与source program替换及ExecutableBundle一起原子提交。
 Q22.L target conversion从实际发射的TargetCall rows重算rank-local投影，Q17 readback并携带global set，Q18 schema-v4只序列化该set；
 这些不是planner choice，也不能反向参与搜索。
+
+winning rank clone提交前必须从其final instruction IR fresh重建packing problem。若此后IR未变化且规范化problem digest与
+oracle输入完全一致，可以复用best placement，但仍须再次运行owner-independent validator和09/12 owner range/resource gate；
+digest不一致则必须重新运行完整arena legality query，不能沿用stale incumbent。只有这一步接受的offset进入IR。
 
 局部 tile、单 op、单 rank、代表 rank 或部分 offsets 永不提交。rejected clone 不得泄漏 memref type、offset、event 或
 resource mutation。
@@ -479,6 +613,11 @@ legality 与 cost 完全分离。板端校准前使用可从 selected IR 精确�
 temporary、engine command和event metrics按上述同名维度聚合，09/12返回peak与DDR/SPM事实，13返回transport
 bytes/message事实。unknown dimension 不得伪造为 0。先做 Pareto dominance，再用稳定 profile policy 作 deterministic
 beam/tie-break；文档和diagnostic必须同时保留向量，不能把未校准 scalar estimate 宣称为硬件时间。
+
+`peak_spm_bytes`永远是winner当前validated placement的实际high-water，不是lower bound或二分probe容量。packing
+lower/upper/gap只在candidate-local interval dominance、追加查询优先级和telemetry中存在；gap未闭合不把该维度伪造为
+unknown或0。更低SPM但更多DDR/SPM movement、descriptor或issue的方案仍是普通tradeoff，只有完整vector满足严格关系时才做
+dominance。
 
 只有 IR/event 能证明 overlap，且对应 engine/queue/resource 能力已资格化时，resource DAG scheduler 才允许重叠；否则
 保守串行。板端 Q9 只用 PMU/带宽/latency 数据校准合法候选的排序权重和 overlap 模型，不改变 semantic、numeric、
@@ -632,7 +771,8 @@ expected 与 SystemC/CModel 比较数值。
 5. 补齐implementation/transfer family到Instr/CRT/SystemC的最小纵向能力；
 6. 独立实现并验证policy-free bitwise relation、pointwise propagation、implementation absorption、shared-input reuse和
    其它qualified upstream mechanisms；代数变换只在numeric policy完整时注册；
-7. search只组合上述mechanisms，加入惰性domain、constraint propagation、canonical frontier、Pareto beam、hard budget和telemetry；
+7. search只组合上述mechanisms，加入惰性domain、constraint propagation、canonical frontier、Pareto beam、两级
+   static-memory oracle、interval-aware dominance、hard budget和telemetry；
 8. 切换production，并删除旧layout planner、implicit per-use materialization、scope-prefix/maximal-resident决策旁路；
 9. 可选地接入compiler-wide Transform control plane，共用同一C++ implementation。
 
@@ -648,6 +788,12 @@ expected 与 SystemC/CModel 比较数值。
 7. exact SPM/DDR/event/transport/instruction/ABI 和 atomic candidate/rank commit 不回退；
 8. 预算耗尽仍返回合法 baseline 与结构化 diagnostic；
 9. 板端 performance/calibration 仍由 later gate 拥有，不成为本任务虚假完成证据。
+
+其中memory-oracle完成还要求：已知packing最优值、alignment hole、disconnected component、zero-byte和first-fit反例均能
+闭合lower/upper；`ResourceExhausted`不推进bound且有incumbent时保持candidate合法；selection-sensitive shortlist才发生
+追加capacity query；相同deterministic policy下query/node/selected signature可复现。7B迁移case必须报告当前selected
+high-water、proof/gap和查询增量；若仍达到既有clique lower bound，应明确证明“零gap但未降低”，不能把算法接入本身
+宣传成SPM容量收益。
 
 局部 FileCheck、只生成候选、只减少 layout op、只在 7B case 生效、单 rank 通过或旧 planner 与新 planner 并存，都不构成
 完成。
@@ -683,3 +829,13 @@ expected 与 SystemC/CModel 比较数值。
 - MLIR Transform Dialect：作为 transformation orchestration/control plane，而不是 solver state 或执行 artifact。
   <https://mlir.llvm.org/docs/Dialects/Transform/>
   <https://mlir.llvm.org/docs/Tutorials/transform/Ch4/>
+- Google MiniMalloc提供fixed-capacity canonical search、section inference和dominance pruning；Wafer保留其固定容量核心，
+  minimum-height由本stage用三态capacity query和独立validator组合，避免把solver exhaustion当成不可行。
+  <https://research.google/pubs/minimalloc-a-lightweight-memory-allocator-for-hardware-accelerated-machine-learning/>
+  <https://github.com/google/minimalloc/blob/9f5cf810fec4494df473c23cffd0567989e81b69/src/solver.cc>
+- Bounded Memory Scheduling使用heuristic feasible solution与lower bound共同缩小exact search；本文只借鉴
+  incumbent/lower-bound envelope，不复制其schedule表示或全局求解器。
+  <https://www.cs.rice.edu/~zoran/Publications_files/PACT2014-BMS.pdf>
+- OR-Tools CP-SAT区分feasible、infeasible、optimal和unknown；本文同样保持legality、objective gap与resource exhaustion
+  正交，但不引入CP-SAT作为compiler依赖。
+  <https://developers.google.com/optimization/cp/cp_solver>

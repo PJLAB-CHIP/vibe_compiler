@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-17
+更新时间：2026-07-18
 
 本文件只记录当前调度状态、前置关系和紧凑完成索引，不保存逐轮测试数字、实现复盘或历史工作日志。
 长期架构与pipeline contract以编号设计文档为准，详细完成证据与实施记录位于`tasks/archive/`，完整导航见
@@ -77,7 +77,7 @@ Q33 + Q32 -> Q32.T (optional compiler control plane)
 | Q32.B | `physical-dataflow-baseline-vertical` | `blocked` | Q32.R、Q34 | 用新provider/materializer和canonical family encoding构造reserved conservative baseline，完成per-rank与all-rank exact eligibility并原子形成bundle，不调用旧decision owner。 | 01、06-18；同计划D |
 | Q32.V | `physical-capability-vertical` | `blocked` | Q32.B | 闭合mapped local-offset、invalid-lane fill/segment、versioned oriented GEMM到TargetCall/SystemC的model-qualified纵向，以及Q16/Q17/Q18 schema-v4 RequiredCapabilitySet与model/board逐key preflight；board数值predicate仍独立。 | 06、08、10、11、14-18；同计划E |
 | Q32.M | `physical-dataflow-rewrite-mechanisms` | `blocked` | Q32.V | 先独立实现和资格化policy-free typed mechanisms：upstream tiling/fusion/view utility、relation propagation、implementation absorption、shared physical version、movement elimination及受控CSE/loop机制；改写后fresh重算全部analysis/gates。 | 05-13、16、18；同计划F |
-| Q32.S | `bounded-physical-dataflow-synthesis` | `blocked` | Q32.M | 只组合已资格化mechanisms，实现bounded/canonical/compatibility-aware search、resident dataflow policy和lazy all-rank join；reserved baseline与deterministic telemetry闭合。 | 06-13、16、18；同计划G |
+| Q32.S | `bounded-physical-dataflow-synthesis` | `blocked` | Q32.M | 只组合已资格化mechanisms，实现bounded/canonical/compatibility-aware search、resident dataflow policy和lazy all-rank join；建立shared static-packing capacity analysis，对materialized SPM shortlist用validated incumbent、proof-backed lower bound和三态fixed-capacity queries做interval-aware selection；reserved baseline与deterministic budget/telemetry闭合。 | 06-13、16、18；同计划G |
 | Q32.G | `physical-dataflow-production-cutover` | `blocked` | Q32.S | production只调用新planner，删除scope-prefix、独立layout assignment、implicit per-use materialization、maximal-resident及旧公开入口/重复facts。 | 01、06-18；同计划H |
 | Q32 | `physical-dataflow-synthesis` | `blocked` | Q32.G | 显式v1重放旧profile；显式v2重放rank-count=1/16、mapped/oriented通用source vertical及实际选择新family的Q28 fixed-seed/Q31 held-out 7B PyTorch/SystemC scale gate；再闭合全部SPM/DDR/event/transport/instruction/ABI eligibility/atomic audit。不含board性能或timing。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` completion audit |
 

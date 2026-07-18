@@ -137,6 +137,15 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
   `wafer::memory_planning::detail`符号保持`WaferTransforms`私有，
   两个planner只保留各自memory-space legality、resource limit、SPM non-nested scope/DTE或DDR
   descriptor/planning-scope语义和offset commit。
+- Q32终态的capacity objective继续留在同一`MemoryPlanning` owner-private library，但与fixed-capacity default/fallback
+  policy、MiniMalloc adapter和SPM IR owner分层：prepared static problem唯一拥有canonical demand/conflict/component/
+  activity-clique和problem digest；capacity analysis只组合三态fixed queries、validator、bound与incumbent；SPM owner按
+  `current IR analysis -> typed evaluation -> atomic offset apply`拆分。06只拥有shortlist、deterministic budget、interval
+  dominance和proof-guided candidate priority，不得反向包含memory-planning实现或复制clique/lifetime逻辑。cache中的placement
+  只使用prepared problem的stable/canonical identity，current owner负责remap到本次demand index并复验；raw MLIR pointer/
+  demand index、RootRef映射和并行完成顺序不得成为跨prepared-instance cache identity。proof到physical decision的映射属于
+  candidate materializer invocation-local `IRMapping`，任何clone/rewrite/analysis invalidation后销毁并从current IR重建，不形成
+  MemoryPlanning反向依赖Scheduling的接口或下游side table。
 - `third_party/minimalloc`是从固定upstream commit源生的curated C++17 port，不是配置期下载或导出的
   公共依赖。upstream pin由`WaferDependencyVersions.cmake`单点拥有；`PROVENANCE.json`记录逐upstream
   file精确映射、algorithm/distribution digest和semantic delta，`check_deps.py`离线验证source closure、映射、

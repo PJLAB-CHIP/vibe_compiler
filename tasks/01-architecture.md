@@ -1,6 +1,6 @@
 # Wafer Compiler Stack Architecture
 
-状态：2026-07-17按当前production public artifacts、structured optimization和physical-dataflow synthesis目标重写。本文是compiler、target artifact、
+状态：2026-07-18按当前production public artifacts、structured optimization和physical-dataflow synthesis目标重写。本文是compiler、target artifact、
 package/runtime与target-model分支的主架构入口，只拥有稳定pipeline spine、artifact DAG、跨层不变量和owner索引。动态状态、
 blocked-by与完成记录只看`tasks/progress.md`；专题IR、ABI、算法和验证细节由对应编号文档拥有。
 
@@ -112,7 +112,7 @@ manifest的move-only lifetime/container artifact，不是另一份program或pack
 | Execution configuration | factory-only `ExecutionConfig` | 显式1/16 rank domain与registered `TargetProfileId` | tensor sharding、topology IR、planner policy |
 | Topology/SPMD | `wafer.target.topology`、`wafer.execution.mesh`、post-SPMD StableHLO | compiler内部single-card endpoint与logical rank domain、rank-local partition | candidate、SPM/DDR、physical transport |
 | Structured tensor program | Linalg/Tensor/SCF/Arith/Math与typed logical collective | rank-local数学语义、显式required normal form、已资格化target-independent固定优化、iterator/indexing relation、effect/control/numeric policy | target implementation、physical encoding、offset |
-| Candidate analysis | transformation-local semantic islands、domains、frontier与complete clones | bounded implementation/tile/encoding/route/residency/order proposals | accepted事实、package字段、长期side table |
+| Candidate analysis | transformation-local semantic islands、domains、frontier、complete clones与static-packing bounds | bounded implementation/tile/encoding/route/residency/order proposals及validated packing incumbent | accepted事实、package字段、长期side table |
 | Selected tile/dataflow IR | `wafer.tile.region` fragments、Wafer memref/view、typed compute/movement/collective/event | 完整static traversal、selected implementation与physical versions | rejected candidates、独立arena、runtime launch |
 | Instruction/memory program | `wafer.instr.*`、accepted SPM/DDR offsets、completion/Direct DTE | target-abstract invocation、physical geometry、range/lifetime/effect | raw host handle、package schedule |
 | Executable bundle | move-only `RankExecutable[]`/`ExecutableBundle` | all-and-only rank modules、entry、program bindings、completion、transport、atomic acceptance | target object、runtime session、rejected choice |
@@ -144,7 +144,8 @@ candidate clone上调用带proof obligation的可选语义机制，并把target 
 1. provider只声明参数化能力、precondition、resource metrics和proof obligation；
 2. planner在有硬上界的domain中产生、约束和排序完整proposal；
 3. materializer把一个selected proposal写成typed payload IR；
-4. SPM/DDR/instruction/completion/transport/ABI gate从完整当前IR重算并接受或拒绝；
+4. SPM/DDR/instruction/completion/transport/ABI gate从完整当前IR重算并接受或拒绝；对selection-sensitive passing
+   candidate，shared static-packing capacity analysis可返回validated incumbent与high-water上下界，06只用它优化选择；
 5. coordinator只在all-and-only ranks通过后提交bundle。
 
 搜索不得枚举任意fusion partition、tile整数笛卡尔积、所有resident subset、全部topological order或`K^R` rank组合。
@@ -159,8 +160,9 @@ candidate clone上调用带proof obligation的可选语义机制，并把target 
 - `#wafer.memory<space, layout>`只表达address space与physical encoding marker；offset不是layout字段。
 - physical encoding拥有logical-to-physical bit map、footprint、valid/padding domain和view compatibility；selected transfer route
   必须有exact descriptor/address coverage，不能在lowering失败时静默换route。
-- SPM和DDR planner分别从完整rank/current variant IR重算lifetime、alignment、range和accepted offset；allocator不产生、
-  排序或修改implementation/residency choice。
+- SPM和DDR planner分别从完整rank/current variant IR重算lifetime、alignment、range和accepted offset；完整arena
+  fixed-capacity result决定legality，bounded capacity objective只为06提供candidate-local high-water interval/lower-bound proof。
+  allocator不产生、排序或修改implementation/residency choice，objective事实不进入accepted IR。
 - async read/write resource必须活到typed completion；source order、同地址或local fence不能替代未证明的engine/DTE completion。
 - logical collective先保留数学/mesh语义；Direct DTE只有all-rank peer/message/resource/receiver-offset/status合同闭合后才进入
   accepted instruction program。

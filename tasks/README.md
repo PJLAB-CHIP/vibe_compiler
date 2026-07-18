@@ -16,10 +16,10 @@
 | 03 | `tasks/03-shardy-spmd.md` | 当前Shardy/XLA SPMD artifact、显式rank identity；MPMD/rank class延后 |
 | 04 | `tasks/04-topology-execution-mesh.md` | 当前topology/execution mesh；Q0.L typed target-profile仅随ExecutionConfig透传，不进入mesh IR |
 | 05 | `tasks/05-local-compute-normalization.md` | rank-local structured compute/tensor collective handoff、required normal form与target-independent fixed optimization |
-| 06 | `tasks/06-physical-dataflow-synthesis.md` | rank-local physical-dataflow synthesis：等价关系、implementation/tile/encoding/storage/residency/order的有界联合选择与atomic commit |
+| 06 | `tasks/06-physical-dataflow-synthesis.md` | rank-local physical-dataflow synthesis：等价关系、implementation/tile/encoding/storage/residency/order的有界联合选择、interval-aware packing quality与atomic commit |
 | 07 | `tasks/07-tile-region.md` | selected proposal的typed task/traversal IR物化与完整coverage；不是planner或per-group SPM/DDR边界 |
 | 08 | `tasks/08-physical-realization.md` | physical encoding、valid domain、view/TransferRouteFamily、descriptor cover和selected physical realization；不维护独立layout planner |
-| 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/completion planning和accepted offsets |
+| 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/completion、fixed-capacity legality、bounded capacity analysis和accepted offsets |
 | 10 | `tasks/10-compute-movement.md` | SemanticOpDescriptor/TargetImplementationProvider、parameterized implementation family、selected target-abstract compute/movement、resource effects和issue/token/fence/wait |
 | 11 | `tasks/11-instruction-ir.md` | complete static rank instruction program、typed orientation/descriptor、geometry/range/narrowing legality |
 | 12 | `tasks/12-ddr-memory-planning.md` | 当前DDR demand/accepted offsets；multi-arena/state/streaming延后 |

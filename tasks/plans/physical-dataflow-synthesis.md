@@ -226,15 +226,39 @@ work/fuel有界。按Llama role、参数顺序、固定root数或固定shape注�
 
 施工：
 
+- 在`MemoryPlanning` owner-private层建立prepared static problem和capacity analysis：canonical demand/conflict/component/
+  activity-clique/digest只构造一次；复用现有三态fixed-capacity MiniMalloc、first-fit资源耗尽fallback和独立validator，返回
+  hardware feasibility、validated incumbent、lower/high-water、objective state、tagged lower-bound proof和work summary；不修改
+  third-party API，不恢复其minimum-capacity/IIS路径；
+- 将SPM owner从“分析、求解、直接写offset”的单体入口拆成`current IR -> planning problem`、`problem -> typed evaluation`、
+  `validated placement -> atomic apply`。现有IR replay/named pipeline默认仍只运行完整arena legality，保持用户入口和
+  accepted `wafer.spm.offset` schema不变；
 - 实现backward dependent-region propagation、shared tile-domain约束和domain narrowing；
 - 实现canonical frontier state：graph frontier、带InvalidLaneState的live physical versions、constrained domains、SPM
-  lower bound、engine/effect frontier、all-rank compatibility signature和06统一cost vector；
+  sound lower bound或unknown、engine/effect frontier、all-rank compatibility signature和06统一cost vector；partial
+  frontier的estimate只有可证明时才能按capacity剪枝；
 - 只组合Q32.M已资格化mechanisms，惰性实例化family/tile/route/residency/buffering choice；只在同compatibility signature内
   canonical merge，并只对componentwise-monotone exact dimensions做local Pareto dominance；
 - 使用deterministic resource-aware list scheduler，仅对ready-set中reuse/resource signature不同的少量choice分裂；
 - shared-input使用deterministic maximal hyperedge和hard-capped conflict split，不枚举`2^fanout`；
 - 对island/relation pieces、mechanism applications、family instantiation、tile refinement、ready alternatives、beam、top-K、cache
   和rank frontier设置deterministic hard caps；wall clock只作外部取消，触发时丢弃optimized states并返回reserved baseline；
+- 每个materialized candidate先获得独立reserved full-arena legality allowance；忽略SPM interval后仍可能改变Pareto/最终选择的
+  canonical shortlist才进入capacity refinement。用single-demand absolute-alignment与validated activity-clique建立lower，
+  用best placement实际high-water建立upper，在global node/query fuel下二分fixed-capacity；Feasible降低upper、
+  ProvenInfeasible提高lower、ResourceExhausted不移动bound；
+- shared objective fuel按`candidate signature / probe / retry level`稳定round-robin分配，不依赖并行完成顺序；cache只保存
+  validated feasible placement和proved-infeasible cut。区间重叠不按SPM维度剪枝，只有`A.upper <= B.lower`才可证明A在该维
+  不差于B；预算结束以实际validated upper进入cost，gap/stop reason只作telemetry；
+- lower-bound proof只允许empty/nonnegative的trivial-zero、single demand、经原conflict graph复验的clique或不带demand集合的
+  capacity cut；single/clique可投影
+  pressure view，06只用它排序已有tile/encoding/residency/order/buffering neighbor。每个neighbor重新materialize和fresh
+  planning，allocator不返回repair recipe，也不另存一份witness；proof到decision的映射只使用本次materializer
+  invocation-local `IRMapping`/canonical decision key，clone或rewrite后重建；
+- best incumbent apply后，旧offset-dependent range/descriptor/address/narrowing、DTE local-offset、compatibility signature和cost
+  全部失效并从placed current clone重跑；不能只fresh recost，也不能沿用full-arena初始placement的gate结果；
+- capacity interval只接入新canonical frontier，不给Q29旧matmul/scope pressure heuristic继续增加shape/op case；旧排序与
+  spill-vs-maximal-resident decision owner在Checkpoint H一并删除；
 - rank proposals只跑per-rank exact gates并按compatibility分桶；coordinator先传播shared transport constraints，再baseline-first
   best-first/factorized lazy join，不构造`K^R`；完整variant才跑DDR/package/transport/ABI eligibility gate；
 - selected physical versions和explicit cuts自然导出resident dataflow，不产生fused-kernel/group协议。
@@ -248,6 +272,11 @@ corpus相对Checkpoint A post-adoption baseline记录完整source-to-bundle wall
 frontier peak与cap命中；rank-count=1/16、7B完整source/SystemC differential、通用topology和多dtype/tail全部通过。重复运行不得
 出现无界增长，外部deadline必须返回reserved baseline。阈值与budget只属于profile/resource policy和实施证据，不写成架构
 常量或workload legality。
+
+packing专项还须以独立小图穷举minimum height对照覆盖empty/zero-byte、nonzero base、absolute alignment、disconnected component、
+path conflict和first-fit反例；验证lower/high-water收敛、`ResourceExhausted`不推进bound、有incumbent时objective耗尽仍合法、
+输入排列/线程数不改变结果。通用chain/diamond/fanout/branch/loop case至少有一例因capacity interval改变候选选择；7B记录
+full-arena solve、objective query/node/cache、lower/high-water/gap及最终offset-derived peak，不能只打印solver调用成功。
 
 不算完成：在search policy里临时实现rewrite、只限制最终top-K而允许前面无界生成，或用全局mutable side table保存跨pass决策。
 

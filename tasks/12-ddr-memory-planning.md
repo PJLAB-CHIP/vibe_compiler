@@ -1,6 +1,6 @@
 # Wafer DDR Memory Planning Design
 
-状态：2026-07-17同步联合physical-dataflow planner终态；当前合同覆盖default-arena
+状态：2026-07-18同步联合physical-dataflow planner终态；当前合同覆盖default-arena
 DDR demand/range validation、local issue completion和accepted offsets。
 multi-arena、state/streaming weight和provider allocation model延后。实现状态以`tasks/progress.md`为准。
 它不能只是 DDR access validation；凡是会影响 candidate 是否成立的 DDR
@@ -113,6 +113,10 @@ async task identity/completion、live segment overlap、local issue/fence comple
 canonical search。精确pairwise conflict graph通过已验证的deterministic edge-clique cover适配，nonzero base使用
 component-local fixed prefix；共享policy使用宽松确定的全局node budget且不设wall-clock timeout，只在
 `ResourceExhausted`时允许first-fit fallback。typed outcome和独立placement validator也由该共享边界拥有。
+shared `MemoryPlanning` capacity primitive在类型上可复用同一owner-independent DDR problem，且不认识SPM/DDR、workload或
+op名；但Q32.S首版objective只激活per-rank SPM。DDR在whole-variant后置stage继续只要求完整arena legality并提交其实际
+accepted high-water/`wafer.ddr.offset`，不运行minimum-high-water refinement。若以后启用DDR objective，必须先在06增加明确的
+whole-variant cost维度、聚合/shortlist位置、budget和verification合同，再更新progress；不能因shared API存在就隐式扩scope。
 compiler-managed allocation使用指向packing demand的`RootRef`；caller-owned/external memref
 使用path-qualified `ValueOriginRef`；async handle另携带所访问root与独立task identity，三者不能互相替代。
 `rootsAt`/`originsAt`在查询点沿`ViewLikeOpInterface`、`SelectLikeOpInterface`、`scf.if` yield和`scf.for`
@@ -417,6 +421,10 @@ Required failure classes:
 - `unsupported_ddr_planning_scope`
 - `missing_local_completion`
 - `completion_proof_failure`
+
+`packing_search_exhausted`在本stage只表示完整DDR arena的fixed-capacity solve耗尽资源，且安全fallback也
+没有产生validated incumbent；Q32.S首版不在DDR上运行capacity objective，因此不存在objective budget stop到该
+failure class的映射。
 
 Diagnostics should describe compiler-visible failure classes. They must not mention runtime allocation category
 names as if those were compiler IR concepts.
