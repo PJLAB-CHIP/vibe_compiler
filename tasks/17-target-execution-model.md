@@ -349,7 +349,7 @@ hook直接合成高层command绕过packet证据。
 | 对象 | 必须拥有 | 禁止拥有 |
 | --- | --- | --- |
 | same-lowering compilation product | factory-only ownership relation，原子持有accepted executable及直接生成Q17 artifacts的同一target LLVM bundle | 从package/readback重建bundle、公开构造伪造同源关系或第二次lowering |
-| `TargetLLVMModuleBundle` | canonical all-rank domain、每rank独立LLVM context owner、logical rank/entry/fully legal module、ordered ABI slots、`ExecutionConfig`（内含唯一`TargetProfileId`）、bundle-level canonical required set，以及由module metadata经closed registry解析/readback的target identity/kernel ABI和rank-local capability digest | packet list、schedule、model state、默认补出的revision或任何可序列化sidecar |
+| `TargetLLVMModuleBundle` | canonical all-rank domain、每rank独立LLVM context owner、logical rank/entry/fully legal module、ordered ABI slots、`ExecutionConfig`（内含唯一`TargetProfileId`）、每rankcanonical required keys+digest、bundle-level canonical union/set+digest，以及由module metadata经closed registry解析/readback的target identity/kernel ABI和同rank capability digest；metadata只保存digest，typed keys由owner-backed module value携带 | packet list、schedule、model state、从symbol/metadata digest反推keys、默认补出的revision或任何可序列化sidecar |
 | `RequiredCapabilitySet` | 从final instruction/TargetCall rows经tasks/14 registry派生的canonical sorted unique row keys及digest；model provider以显式`ModelProfileId`、board provider以显式environment在effect前逐key匹配 | command地址/顺序/次数、implementation/route/invalid-lane planner choice、capability lease、由profile名猜出的隐式全集 |
 | compact program invocation | typed `ProgramTensor`、完整logical user input、accepted per-rank slice和已验证package-relative parameter/constant payload | reference compute、model compute、target physical address、从文件名恢复resource role |
 | `ModelProfileId` | 显式选择的一组确定性model-only semantics identity；Q22.C可另发布绑定target/environment的hardware-correlated profile | compiler legality、隐式default、hardware等价声明 |
@@ -422,10 +422,163 @@ resolve必须显式携带logical rank、address space和read/write role；返回
 terminal success后才extract/copy output。
 
 mapped transfer在模型中没有独立“layout conversion”分支。RDMA transaction仍只执行strided DDR source到从最终
-destination address开始的sequential SPM bytes，WDMA严格反向；Instr buffer-local offset已经体现在该最终address中。
+destination address开始的sequential SPM bytes，WDMA严格反向；Instr两端root-relative offset均已由target lowering折入最终
+source/destination address。
 plain kernel按descriptor检查payload、source/destination end、overlap、snapshot和canary，不接收logical index map。
 若compiler错误地把需要双侧strided的关系编码成DMA，target-call/memory oracle必须暴露byte差异或range错误，不能用planner
 relation修正结果。
+
+v3 model executable preflight对manifest每个required key查询fresh `(v3 key, ModelProfileId)` record；v2 record即使除profile/ABI外
+字段相同也不匹配。14的byte-identical format/signature proof只允许重跑后签发新v3 observation，不能直接继承model bool；任何
+missing non-Count v3 row都在memory import/effect前拒绝，board row完全独立。
+
+v3 Count exact-signature bridge只形成14唯一拥有的`TargetPeripheralCountTransactionV1`；17不重列它的fields、
+default或codec，也不把ABI sentinel、raw `wb_data0` register或planner事实带入model。single-element i32/
+compact memref shape由11 verifier证明，14 lowering/readback把call family固定为raw4 result；这些上层type facts到此已擦除，17不能
+从u64地址恢复。transaction只验证source/destination属于当前rank SPM binding、source的checked contiguous byte range和自然
+alignment、destination 4-byte range/alignment、两range proven-disjoint及closed
+`positive_u32 = [1, UINT32_MAX]` boundary；exact/partial overlap、unknown alias和range overflow在memory effect前拒绝。
+destination按`WritebackRawU32V1` little-endian bit-preserving四bytes提交，它不是`LogicalFormat::U32`，也不查询`CT x U32`
+encoding。input format只接受v3机械allowlist`{I8, F16, BF16, F32}`；其它format在transaction/memory effect前拒绝。
+
+functional event把一次Count视为不可跨越的synchronous-writeback barrier：原子read→pending write→completion后destination
+才可见，任何可能受local completion影响的compute/movement issue不得跨它重排，失败不产生partial destination effect。
+由于当前证据没有定义Count predicate/format/special-value语义，registry必须将上述四个Count numeric key全部解析为
+`model_implemented=absent / model_qualified=false`并在任何memory effect前拒绝；不得猜成count-nonzero。以后
+`CountSemanticProfileV1`及其qualified record闭合时只新增parameterized numeric pattern/kernel，不改变transaction、IR、
+ABI或barrier合同。
+
+Count predicate、golden和board observation仍是外部事实，但接收这些事实的typed容器、presence与admission
+由17唯一拥有，不等到外部证据到达后再设计：
+
+```text
+CountExternalArtifactKindV1 = PredicateDefinition | FormatSemanticsDefinition |
+                              ModelKernel | IndependentOracle |
+                              QualificationEvidenceBundle
+CountSemanticQualificationStatusV1 = Qualified | Rejected
+CountSemanticRejectionReasonV1 = PredicateMismatch | FormatSemanticsMismatch |
+                                 SpecialValueMismatch | BoundaryMismatch |
+                                 IndependentOracleMismatch |
+                                 FormalSystemCDifferentialMismatch | EvidenceInvalid
+
+CountEvidenceAuthorityArtifactV1 {
+  artifact_kind: CountExternalArtifactKindV1
+  artifact_id: TypedId
+  artifact_revision: U16
+  content_sha256: Digest32
+}
+
+CountEvidenceAuthorityRegistryV1 {
+  schema_version: U16 = 1
+  authority_id: TypedId
+  registry_revision: U16
+  artifacts: SortedSet<Record(CountEvidenceAuthorityArtifactV1)>
+}
+
+CountExternalArtifactRefV1 {
+  artifact_kind: CountExternalArtifactKindV1
+  authority_id: TypedId
+  authority_registry_revision: U16
+  authority_registry_definition_digest: Digest32
+  artifact_id: TypedId
+  artifact_revision: U16
+  content_sha256: Digest32
+}
+
+CountLogicalFormatSemanticRowV1 {
+  logical_format_id: TypedId
+  logical_format_descriptor_digest: Digest32
+  format_semantics_definition: Record(CountExternalArtifactRefV1)
+}
+
+CountSemanticProfileV1 {
+  schema_version: U16 = 1
+  profile_id: TypedId
+  profile_revision: U16
+  predicate_definition: Record(CountExternalArtifactRefV1)
+  format_rows: SortedSet<Record(CountLogicalFormatSemanticRowV1)>
+  result_store_contract_definition_digest: Digest32
+}
+
+CountSemanticQualificationRecordV1 {
+  schema_version: U16 = 1
+  record_revision: U16
+  target_capability_key: Record(TargetCapabilityRowKeyV1)
+  model_profile_id: TypedId
+  count_semantic_profile_id: TypedId
+  count_semantic_profile_revision: U16
+  count_semantic_profile_definition_digest: Digest32
+  model_kernel: Record(CountExternalArtifactRefV1)
+  independent_oracle: Record(CountExternalArtifactRefV1)
+  evidence_bundle: Record(CountExternalArtifactRefV1)
+  status: CountSemanticQualificationStatusV1
+  rejection_reason: Optional<ClosedEnum(CountSemanticRejectionReasonV1)>
+}
+```
+
+上述record复用14第2节的primitive type tag、field TLV、`TypedId`、`Record/SortedSet/Optional`和strict parser
+规则，但不复用target capability的semantic owner或digest domain。field id按声明顺序从1开始，非Optional field
+全部required；三个closed enum按声明从左到右冻结0-based ordinal。`rejection_reason`的field type-tag是
+`Optional=0x0d`，inner type-tag固定为`ClosedEnum=0x06`；`Qualified`编码`0x00`，`Rejected`编码
+`0x01 || 0x06 || u32be(4) || u32be(reason-ordinal)`，本schema无其它Optional field。`profile_revision`/
+`record_revision`、authority/artifact revision都只允许positive U16；任一semantic field变化必须提升profile revision，
+任一evidence/outcome变化必须提升record revision，authority artifact set变化必须提升registry revision，
+不得就地改写旧definition。
+
+authority registry、profile body和qualification record的definition digest分别精确为
+`SHA-256("wafer.count-evidence-authority-registry\0" || u16be(1) || u32be(body-size) || body)`、
+`SHA-256("wafer.count-semantic-profile\0" || u16be(1) || u32be(body-size) || body)`和
+`SHA-256("wafer.count-semantic-qualification\0" || u16be(1) || u32be(body-size) || body)`。digest不是record field，由registry
+在parse/publish/readback时fresh重编码计算。`target_capability_key`是14-owned typed nested record，不是opaque Bytes；
+parser必须验证它是v3 Count compiler-emittable row，并对nested record fresh re-encode byte-identical，不得只比较
+digest或在17内定义第二key parser。
+
+external artifact ref只能由exact `(authority_id, authority_registry_revision,
+authority_registry_definition_digest)`解析；authority registry的artifact rows按完整canonical bytes严格递增且
+`(artifact_kind, artifact_id, artifact_revision)`唯一，ref必须all-and-only命中同一row并匹配content digest。解析后还必须
+由owner-approved typed adapter验证该artifact的canonical bytes；path、URL、symbol名或一串opaque prose不能作
+definition。`predicate_definition`的kind必须是`PredicateDefinition`，
+format row的kind必须是`FormatSemanticsDefinition`，qualification中三个ref必须分别是`ModelKernel`/
+`IndependentOracle`/`QualificationEvidenceBundle`。format rows按完整canonical row bytes严格递增、
+set不得为空且`logical_format_id`不重复，ID/digest必须匹配14的logical-format descriptor；result-store digest必须精确匹配14
+`WritebackRawU32V1`。这些验证只闭合容器和关系，不定义或猜测predicate内容。
+
+registry lookup对完整`(TargetCapabilityRowKeyV1 canonical bytes, ModelProfileId)`的结果只有三种：没有record即
+`Absent`，present `Rejected`，present `Qualified`；wire不编码`Pending/Unknown`占位。`Qualified`要求
+`rejection_reason` absent，`Rejected`要求它present；两者都要求profile、kernel、oracle、evidence refs全部
+可解析且digest匹配，其中profile id/revision/definition digest必须解析到恰一个已验证
+`CountSemanticProfileV1`。每个registry revision中同一lookup key只允许一条active record；duplicate、冲突、
+malformed或unresolved ref使整个registry load失败，不部分发布。model admission只接受`Qualified`，并要求
+target key的input format命中profile唯一format row、profile/result-store匹配且已通过owner verifier的independent-oracle +
+formal/SystemC evidence；`Absent`/`Rejected`均在memory effect前fail closed。source lowering还必须有显式source semantic
+到同一predicate-definition digest的mapping，容器present本身不开放source op。board-supported继续只由独立
+environment-owned board record决定，不从`Qualified`推导。
+这些record只存在owner-approved model qualification registry/archive并在model preflight被读取，不进入compiler IR、
+`ExecutableBundle`、`TargetArtifactBundle`或package，也不得成为planner的长期side channel。
+
+当前authority registry中没有Count predicate/format semantics definition，因此也不存在可验证的
+`CountSemanticProfileV1`或qualification record；这是外部证据absence，不是内部容器设计缺口。
+
+Q3.6的机械event正路径使用未注册、test-only的`RawWritebackMechanicalTestAdapter`，避免把上述production preflight负路径
+误当writeback验证。adapter只能由compiler-owned complete v3 instruction→TargetCall→
+`TargetPeripheralCountTransactionV1` fixture注入一个opaque `uint32_t raw_value`；它不读取/解释source元素、不计算predicate、
+不创建`ModelProfileId`/numeric key/qualification record，也不进入production factory或fallback。它在同一SystemC event core中
+执行validated source/destination range snapshot → pending little-endian raw-u32 destination write → synchronous
+completion/visibility，并覆盖四个14 distinguishing patterns、exact/partial/unknown alias拒绝、misalignment/range/canary/
+late-failure无partial write、前后local Compute/Movement ordering和consumer read-after-completion。test adapter结果只能
+签发`count_raw_writeback_mechanical` gate，不能形成model output、source vertical、package admission或board claim。production
+Count transaction仍按上一段在任何memory effect前拒绝，直到完整key存在通过上述条件的
+`CountSemanticQualificationRecordV1{status=Qualified}`。
+
+repo-local CRT已确认ArgMax/ArgMin的shared helper在writeback destination store前执行`TsmWaitfinish()`。
+因此model transaction从target-call/capability registry的typed `PeripheralCompletionClassV1`读取
+`SynchronousWriteback`，对ArgMax、ArgMin和Count均建模为issue→local-worker drain→destination writes→return-visible
+的不可跨越barrier；model import先验证capability key中14的`execution_contract_digest`与registry definition
+完整匹配，禁止用kind/symbol名matcher恢复或接受signature相同但execution digest漂移的row。三者只共享
+completion class：ArgMax/ArgMin保留
+其typed value/index transaction与独立numeric admission，未存在qualified kernel时仍必须pre-effect fail closed；
+Count仍仅消费`WritebackRawU32V1`机械transaction，不因该类别共享
+format、numeric或qualification结论。
 
 oriented GEMM formal kernel按stored shape和typed fields取数：transpose lhs使用`stored[k,m]`，transpose rhs使用
 `stored[n,k]`，destination仍写`stored[m,n]`；batch leading dimension保持显式。oneDNN adapter可以用logical strides/view
@@ -868,7 +1021,7 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 | formal GEMM / reduce | 当前v1 normal/normal f16、bf16、f32同dtypeGEMM，F32 fused accumulator、+0 init、K递增、destination RNE；native F32 sum reduce按+0 accumulator、logical row-major input递增和逐step RNE执行 | oriented GEMM的model-qualified row需v2 TargetCall/key/formal/bulk资格，board-supported另需board row；I8 accumulator政策、TF32 generic GEMM、其余15条native reduce selector拒绝；不从dtype猜窄/宽accumulator |
 | admitted bulk GEMM | 当前component资格覆盖v1 normal/normal f16/bf16/f32同dtype、rank 2/3、Cx/NCx；Q22 source发布的admitted完整case为Q20首个f32 GEMM和64³ f32 GEMM | orientation是exact identity；无exact command/payload/destination/environment/expected-output record即no admission；超过formal budget时绝不scalar fallback；不外推连续输入域bit-exact |
 | managed-reference bulk GEMM | Q28 scale gate逐command验证supported GEMM semantic、shape/layout、受管environment、finite inputs及byte budget，并强制完整PyTorch expected tolerance comparison | 不产生exact qualification record，不声明raw-exact target arithmetic、hardware correlation或未检查value-domain；provenance与exact admission分字段 |
-| functional transaction / event | checked RDMA/WDMA、gather/scatter、memset、elementwise、convert、当前v1 GEMM、local fence及当前single-destination Direct DTE control；all-rank private SPM/DDR和atomic output | mapped DMA无需新model family但Instr/local-address gate尚未落地；oriented GEMM需v2；field-valid但无kernel的conv/pool/unpool等family、未知地址/layout/endpoint；无worker/queue容量、packet或timing claim |
+| functional transaction / event | checked RDMA/WDMA、gather/scatter、memset、elementwise、convert、当前v1 GEMM、local fence及当前single-destination Direct DTE control；all-rank private SPM/DDR和atomic output | mapped DMA无需新model family但Instr/local-address gate尚未落地；oriented GEMM需v2；Count transaction schema已设计但predicate/profile未资格化，必须pre-effect拒绝；field-valid但无kernel的conv/pool/unpool等family、未知地址/layout/endpoint；无worker/queue容量、packet或timing claim |
 | source vertical | Q20 formal/admitted、f16/bf16 formal、64³ f32 admitted、Q21 16-rank Direct DTE；全部直接比较固定source CPU expected | 未固定expected的shape stress不算numeric evidence |
 
 这张矩阵说明“支持多数据类型”由storage、engine legality、numeric selector、functional kernel和source evidence分层；不能把

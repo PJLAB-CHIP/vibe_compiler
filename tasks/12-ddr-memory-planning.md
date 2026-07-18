@@ -4,8 +4,9 @@
 DDR demand/range validation、local issue completion和accepted offsets。
 multi-arena、state/streaming weight和provider allocation model延后。实现状态以`tasks/progress.md`为准。
 它不能只是 DDR access validation；凡是会影响 candidate 是否成立的 DDR
-byte footprint、lifetime、capacity、largest-contiguous 和 bandwidth 约束，都必须在 DDR offset
-assignment / candidate-selection gate 内决定或拒绝。
+byte footprint、lifetime、capacity和largest-contiguous约束，都必须在DDR offset
+assignment / candidate-selection gate内决定或拒绝。DDR movement bytes按current descriptors精确统计并交给06排序；未经Q9
+校准的“bandwidth pressure”不是硬件legality。
 Q16只能从accepted DDR facts和当前IR demand重算launch-facing requirements，并在bundle commit时形成typed
 C++ resource/entry bindings；当前没有独立resource-view协议或executable dialect。
 post-commit target只派生address/range，package/runtime不重新恢复role/
@@ -28,7 +29,7 @@ compiler IR 合同。
 
 - 从 whole-variant clone 中所有 static rank entries 的完整 instruction-level programs 重算 DDR
   access demand 和 compiler-managed DDR allocation demand。
-- 对 external input/output DDR view 做 descriptor、view/root byte range、capacity 和 bandwidth validation。
+- 对 external input/output DDR view 做 descriptor、view/root byte range和capacity validation，并输出exact movement bytes。
 - 对当前rank clone内compiler-managed workspace、resident constant、显式spill DDR temporary等non-external
   allocation，在default arena中规划symbolic range/offset/size/alignment，并用跨task、完整rank-entry
   lifetime/reuse证明互不冲突。
@@ -65,11 +66,12 @@ Pipeline position:
   表达external view与当前rank default-arena compiler-managed/resident/explicit-spill demand；selected
   implementation/physical version、mapped或staged transfer、resident/spill均已成为显式memref/view/instruction事实。
 - Current stage responsibility:
-  从完整variant clone重算DDR access demand、compiler-managed allocation demand和跨task/rank lifetime；
+  从完整variant clone逐rank重算DDR access demand、compiler-managed allocation demand和该rank完整entry内跨task lifetime；
   验证external DDR descriptor与view/root range；为compiler-managed/resident/explicit-spill allocation在当前rank
-  default arena内规划symbolic offset；验证range overlap、capacity、largest-contiguous、alignment、bandwidth
+  default arena内规划symbolic offset；验证range overlap、capacity、largest-contiguous和alignment
   和descriptor对planned allocation的覆盖；分别证明generic async task terminal wait和DDR local issue/fence completion。
-  streaming/state/multi-arena demand及无法形成单一timeline的mixed planning scope当前fail closed。
+  whole-variant只做all-and-only rank计划汇总与原子接受，不构造cross-rank shared arena/lifetime；streaming/state/multi-arena、
+  cross-rank shared demand及无法形成单一timeline的mixed planning scope当前fail closed。
 - Output artifact / IR:
   只存在于 complete passing clone 中的同一 instruction-level variant artifact，compiler-managed
   DDR `memref.alloc` 带 offset-only
@@ -101,7 +103,7 @@ Pipeline position:
   default arena获得可验证planned offset；producer-to-last-consumer lifetime、
   async task identity/completion、local issue/fence、descriptor/root range 和 shared physical
   geometry/range/narrowing contract 全部通过。
-  非法 dynamic view、payload/range、overlap/capacity/largest-contiguous/bandwidth/alignment failure 能结构化
+  非法 dynamic view、payload/range、overlap/capacity/largest-contiguous/alignment failure 能结构化
   拒绝，任一失败时整个 clone 不提交。DDR facts 只为 whole-variant commit 决定最终 executable rank
   class 提供输入；每个 rank entry 都必须实际进入 variant-set resource gate。
 ```
@@ -135,7 +137,7 @@ terminal仍有pending task以`missing_async_completion`拒绝。`scf.if`只有ta
 result await才覆盖该task；分支前已发起的不同task不能靠选择其中一个handle完成另一个。
 
 DDR owner仍独占tile-region boundary/root解析、external root与descriptor range、default-arena capacity、
-largest-contiguous、high-water和bandwidth验证，以及`wafer.ddr.offset`提交。任何带DDR read/write effect的异步local
+largest-contiguous、high-water和exact movement-byte统计，以及`wafer.ddr.offset`提交。任何带DDR read/write effect的异步local
 issue都必须在共享path/root analysis上把compiler-managed root lifetime延长到path-covering `wafer.instr.local_fence`；
 即使root由runtime外部绑定，也必须证明所有可达路径terminal前完成。DDR不能依赖SPM pass已运行来间接获得这项证明。
 共享root/task dataflow不拥有SPM DTE token/wait legality；DDR function scope可接受identity-preserving generic async
@@ -147,7 +149,7 @@ call result在caller timeline中保留原RootRef/ValueOriginRef；不能把calle
 root。其它DDR-relevant direct call、module含DDR demand时的external/unresolved direct/async call，以及任何indirect call
 均因缺少interprocedural arena/resource summary而fail closed。defined `async.func`可以通过显式handle传播caller-owned
 root，但其body须独立通过completion proof；带Wafer DDR descriptor/resource effect的async callee在没有call-aware
-descriptor/bandwidth summary时拒绝。
+descriptor/resource summary时拒绝。
 
 ## 3. Core Model
 
@@ -181,7 +183,7 @@ DDR `memref.alloc` 不需要额外 requirement attr 才能参与 planning。alig
 
 当前IR只有单个可推导的compiler-managed DDR offset domain，没有已实现的target-environment op、arena ID或
 placement-domain协议。因此planner只在当前rank clone的default arena内检查capacity、largest-contiguous、
-alignment、bandwidth和range/lifetime overlap；`wafer.ddr.offset`只是该domain中的arena-relative offset，
+alignment和range/lifetime overlap；`wafer.ddr.offset`只是该domain中的arena-relative offset，
 不是physical address或runtime allocation handle。
 
 multi-arena、跨rank共享weight/state和host-visible/control arena必须等真实target/package/runtime consumer出现后，
@@ -222,7 +224,7 @@ map、名字或测试输入。
 
 External input/output、runtime-imported immutable parameter和persistent-state root不由DDR memory planning
 分配offset，也不写external access summary attr。DDR memory planning只在当前candidate中验证
-descriptor/view/root byte range、capacity、access/alias/update和bandwidth；ABI/package/runtime若需要
+descriptor/view/root byte range、capacity和access/alias/update，并把exact descriptor movement bytes交给06 cost vector；ABI/package/runtime若需要
 launch-facing binding，Q16必须把上述验证结果与frontend parameter boundary、accepted transport binding及
 当前IR use-def交叉验证，再写入typed C++ rank record。atomic commit后的typed record是唯一owner；ABI/package/runtime
 不得扫描instruction IR、offset attr、parameter-shard sidecar或薄launch binding在使用点重算role/range/scope。
@@ -253,7 +255,7 @@ future extension约束，不是当前planner或Q16 typed fields。
 
 streaming是whole-variant resource/lifetime候选，不是package读取优化。planner只消费当前IR中已显式存在的immutable
 logical slice reads；它先按source `ResourceId`、artifact byte/chunk coverage、logical slice、storage encoding和
-consumer `EntryId/SlotId`形成window proposals，再在arena capacity、alignment、bandwidth和completion lifetime下选择
+consumer `EntryId/SlotId`形成window proposals，再在arena capacity、alignment和completion lifetime下选择
 有限staging lanes。每个accepted window必须：
 
 - 用nonzero scoped `StreamWindowId`记录exact source range/chunk coverage和logical slice，packed/noncontiguous
@@ -263,7 +265,8 @@ consumer `EntryId/SlotId`形成window proposals，再在arena capacity、alignme
 - materialize `resource_copy_issue/resource_copy_complete` node，copy complete支配全部consumer issue；最后一个
   consumer terminal支配同一lane的下一window copy，从而用普通DAG表达single/double/multi-buffer；
 - 对所有consumer reads形成exact coverage，无hole/overlap歧义；同时live destination ranges之和不超过declared
-  staging capacity，所有copy/source/destination range满足target alignment、address width和bandwidth gate。
+  staging capacity，所有copy/source/destination range满足target alignment和address width；movement bytes作为exact cost，只有
+  Q9取得校准事实后才映射为带宽/时间排序。
 
 planner不能为形成window而隐式切分一个尚需完整weight的kernel。若source slice需要新的K/internal reduction、expert
 partition或partial-sum combine，必须先由task scheduler/op tiling和instruction IR显式表达数学等价、scratch和completion，之后
@@ -285,9 +288,12 @@ DdrAccessDemand:
   role: read | write
   descriptor_byte_count
   descriptor_inner_bytes
-  descriptor_local_offset
-  descriptor_strides
-  descriptor_iterations
+  descriptor_src_root_offset_bytes
+  descriptor_dst_root_offset_bytes
+  descriptor_src_strides
+  descriptor_src_iterations
+  descriptor_dst_strides
+  descriptor_dst_iterations
 ```
 
 Demand recovery从当前candidate的memref SSA use-def、view relation和instruction effects推导role。external IO与
@@ -298,9 +304,13 @@ workspace/resident backing才获得accepted offset。persistent state或其它�
 Rules:
 
 - RDMA source must be `#wafer.memory<ddr, *>`; destination must be `#wafer.memory<spm, *>`。DDR source
-  descriptor可以strided，SPM destination只能sequential并可带buffer-local destination offset。
+  descriptor可以strided，SPM destination只能sequential；`src_offset`和`dst_offset`都必须显式存在，即使为0，且都相对各自
+  allocation root。
 - WDMA source must be `#wafer.memory<spm, *>`; destination must be `#wafer.memory<ddr, *>`。SPM source
-  只能sequential并可带buffer-local source offset，DDR destination descriptor可以strided。
+  只能sequential，DDR destination descriptor可以strided；两端root-relative offset同样都必须显式存在。
+- view offset是从SSA view链重算的proof input；instruction offset已经是最终root-relative descriptor起点。recovery必须验证
+  `descriptor_*_root_offset = view_root_offset + segment_relative_offset`，range公式只使用descriptor root offset一次，不能再把
+  view offset重复相加。
 - tile-region block arguments are resolved back to the corresponding region operands.
 - tile-region results inherit the root relation of the corresponding `wafer.tile.yield` value；result的后续SSA
   consumer必须把compiler-managed root lifetime延长到region之外，不能因isolated boundary截断。
@@ -338,7 +348,7 @@ DDR memory planning is an analysis + transformation pair:
    `Feasible`直接消费；只有完整搜索的`ProvenInfeasible`映射capacity；`ResourceExhausted`才允许first-fit fallback，
    且fallback失败仍报告search exhaustion。
 9. Validate each descriptor/view range against either the external root byte size or the planned allocation range.
-10. Validate capacity, largest contiguous range, alignment and bandwidth.
+10. Validate capacity, largest contiguous range and alignment；同时输出exact DDR read/write bytes而不设未校准bandwidth gate。
 11. Materialize accepted offset facts only after every function/scope, descriptor and resource-limit check succeeds；
     any failure discards the provisional map without changing allocation attrs. Facts become main-IR state only with
     whole-variant atomic commit。
@@ -351,10 +361,10 @@ cross-stage fact and must be explicit.
 DDR memory planning verifies:
 
 - descriptor payload: `byte_count == inner_bytes * iterations[0] * iterations[1] * iterations[2]`。
-- DDR strided range end：`inner_bytes + sum(stride_i * (iteration_i - 1))`不得overflow，且
-  `ddr_view_offset_bytes + strided_end`必须落在external root或planned DDR allocation range内。
-- SPM sequential range end：`buffer_local_offset + byte_count`不得overflow，且必须落在对应SPM physical version的
-  accepted allocation size内；RDMA的local offset只作用于SPM destination，WDMA只作用于SPM source。
+- DDR strided range end：`ddr_descriptor_root_offset + inner_bytes + sum(stride_i * (iteration_i - 1))`不得overflow，且必须
+  落在external root或planned DDR allocation range内；不得再叠加`ddr_view_offset_bytes`。
+- SPM sequential range end：`spm_descriptor_root_offset + byte_count`不得overflow，且必须落在对应SPM allocation root的
+  physical bytes/accepted range内。RDMA使用destination root offset，WDMA使用source root offset；即使offset为0也验证字段存在。
 - `byte_count == inner_bytes * product(iterations)`与上述两个方向性range必须由同一descriptor事实同时满足；不能把
   DDR stride公式误用于SPM sequential side，也不能用logical tensor bytes替代physical segment bytes。
 - each planned offset respects required alignment。
@@ -362,8 +372,8 @@ DDR memory planning verifies:
 - planned allocation ranges with overlapping lifetimes do not overlap in bytes。
 - each planned allocation range fits within `largest_contiguous_bytes`。
 - total live/planned DDR bytes fit within `capacity_bytes` under the selected arena model。
-- total RDMA/WDMA DDR movement bytes按显式descriptor `byte_count`求和，并fit within
-  `bandwidth_limit_bytes` for the candidate window；不能按logical tensor bytes漏算多命令或重复staging。
+- total RDMA/WDMA DDR movement bytes按显式descriptor `byte_count` checked求和并进入06 exact cost vector；不能按logical tensor
+  bytes漏算多命令或重复staging，也不能把总bytes与未定义time window拼成hard bandwidth failure。
 - streaming/state demand在当前实现中必须结构化拒绝。
 - pass option resource limits are non-negative。
 - unsupported dynamic DDR alloc/view or uncomputable physical size is rejected。
@@ -376,7 +386,7 @@ DDR memory planning verifies:
   structured timeline，以`unsupported_ddr_planning_scope`拒绝而不是跳过top-level allocation。
 - 只有上述private pure alias helper可以跨同步`func.call`保留caller ownership。DDR-relevant defined callee、
   external/unresolved direct/async call和indirect call没有可验证arena/resource summary时拒绝；async callee内Wafer
-  DDR resource effect没有call-aware descriptor/bandwidth summary时拒绝。
+  DDR resource effect没有call-aware descriptor/resource summary时拒绝。
 - 每个tracked alias/control-flow result必须有可解析RootRef或ValueOriginRef；只有DDR function-entry tensor adapter
   是显式external-root例外。不能按结果静态memory-space、`to_memref`自身或generic-to-DDR cast自封external root。
 - structured lifetime analysis只接受single-block function/tile-region与`scf.if` / `scf.for`；path condition
@@ -407,7 +417,6 @@ Required failure classes:
 - `packing_search_exhausted`
 - `invalid_packing_result`
 - `largest_contiguous_range_too_small`
-- `bandwidth_pressure_too_high`
 - `invalid_ddr_resource_limit`
 - `unsupported_compiler_managed_ddr`
 - `ddr_range_overlap`
@@ -453,8 +462,8 @@ per-rank gate；lazy join后的每个complete variant再独立重跑whole-varian
 first/tail representative tiles只允许便宜地拒绝candidate，不能证明traversal coverage、descriptor closure、lifetime、
 capacity或completion。DDR planning拒绝candidate时不写主IR、不改变transfer/residency choice，并丢弃完整clone；
 其它frontier candidate继续独立评估。当前代码尚未实现完整联合维度，仍按Q29历史策略产生候选。
-SPM/DDR arena and bandwidth limits are inputs to
-their planning gates, not candidate fields.
+SPM/DDR arena constraints是各自planning gate输入；DDR exact movement bytes是06 cost输入，不是candidate field或未校准
+bandwidth legality。
 
 ### 9.4 Q16 Typed Rank-Record Handoff
 
@@ -489,6 +498,7 @@ External view validation:
 
 wafer.instr.rdma %input_tile to %spm
   {byte_count = 12 : i64, inner_bytes = 6 : i64,
+   src_offset = 20 : i64, dst_offset = 0 : i64,
    src_iterations = array<i64: 2, 1, 1>,
    src_strides = array<i64: 16, 0, 0>}
   : memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
@@ -515,6 +525,8 @@ accepted fact:
 Expected coverage:
 
 - lit positive: explicit static external DDR subview passes descriptor/view/root validation。
+- lit positive: RDMA与WDMA都覆盖两端显式root-relative offset；分别包含source/destination为0与nonzero的组合，view-derived
+  root offset和segment-relative offset只相加一次。
 - lit positive: compiler-managed DDR `memref.alloc` receives accepted offset and descriptor uses it。
 - lit positive: non-overlapping lifetimes reuse DDR range; overlapping lifetimes do not；non-repeatable `scf.if`
   mutually exclusive branches reuse；loop-local repeatable branches不能证明全执行期packing互斥；`scf.for`
@@ -540,15 +552,17 @@ Expected coverage:
   async descriptor callee，以及source无origin的`to_memref`/generic-to-DDR cast分别fail closed。
 - unit/API atomicity: a later scope/descriptor/resource failure leaves every provisional DDR placement uncommitted；
   pure first-fit failure alone does not substitute for this owner-level proof。
-- lit negative: descriptor payload mismatch、descriptor/view/root range overflow、dynamic unsupported view。
-- lit negative: capacity overflow、largest contiguous failure、bandwidth failure、alignment failure。
+- lit negative: descriptor payload mismatch、任一侧offset缺失/负数/OOB、descriptor root offset与view+segment proof不一致、
+  view offset double-add、descriptor/view/root range overflow及dynamic unsupported view。
+- lit negative: capacity overflow、largest contiguous failure和alignment failure；另验证exact movement-byte checked sum，
+  但不期待未校准bandwidth failure。
 - text consistency: task/docs must not describe runtime allocation categories as DDR memory planning compiler IR attrs。
 - build: TableGen and `wafer-opt` rebuild after IR/interface changes。
 
 ## 12. Deferred Work
 
 - Additional arena classes and placement policies beyond the required typed arena/placement identity。
-- 通用interprocedural arena/resource/descriptor/bandwidth summary；此前除private pure alias helper外的DDR-relevant
+- 通用interprocedural arena/resource/descriptor summary；此前除private pure alias helper外的DDR-relevant
   sync/async/indirect call保持fail closed。
 - Board-validated runtime allocation failure mapping and recovery policy。
 - PMU-calibrated DDR bandwidth model。

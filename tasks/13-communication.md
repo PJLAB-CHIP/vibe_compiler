@@ -1,6 +1,6 @@
 # Wafer Communication Scheduling 与 Transport IR
 
-状态：2026-07-17按联合physical-dataflow终态补充communication capability、all-rank compatibility和transport exact gate；当前合同覆盖buffer-level collective到
+状态：2026-07-18按联合physical-dataflow和Q33 effect分层终态同步communication capability、all-rank compatibility与transport exact gate；当前合同覆盖buffer-level collective到
 instruction-level Direct DTE p2p和明确
 completion；Q16.T已闭合post-memory all-rank matching、typed physical binding和bundle transport summary，
 target CRT opaque event/status ABI、真实RISC-V module lowering与runtime requirement也已闭合。segmented/MoE、
@@ -34,18 +34,24 @@ logical collective IR的支持范围不能由当前某个ring lowering pass
 logical slice惰性返回ring/tree/direct等有证据的schedule domain、message/resource/completion约束及transport bytes/message
 metrics；不选择physical encoding/TransferRouteFamily，也不建立op-name case表。06选择family，07/本文只物化selected schedule。
 
+Q33 effect收口前，live tensor-level LinalgExt collective只有collective-info中手工设置的
+`hasCommunicationEffect`布尔量，尚无generic pass可见的standard Communication effect，也没有standard/detailed
+coverage verifier。下文4.4是Q33必须落地的目标合同，不是当前live code事实。
+
 稳定查询对象命名为`CommunicationScheduleFamily`：
 
 ```text
 CommunicationScheduleFamily {
+  family_key
   semantic_and_combiner_preconditions
   rank_group_and_topology_domain
   algorithm_parameter_domain
   staging_resource_completion_formula
   message_identity_schema
-  all_rank_compatibility_signature(query)
+  compatibility_constraint_key_formula(query)
+  logical_schedule_skeleton(selected_parameters)
   transport_metric_vector(query)
-  materialize(selected_parameters)
+  materialize(resolved_schedule)
   exact_acceptance_hook
 }
 ```
@@ -53,6 +59,175 @@ CommunicationScheduleFamily {
 family参数按canonical semantic signature稳定排序并惰性实例化；algorithm parameter、message segmentation和family instance均受
 06 hard cap，不展开rank/op/shape笛卡尔积。selected algorithm/phase/peer/message identity必须物化为typed op/SSA/effect，不能只
 保留`ring/tree/direct`字符串或opaque schedule id。
+
+communication provider与implementation/route provider复用06唯一四态协议，不另造selector result：
+
+```text
+CommunicationScheduleQuery {
+  collective_semantics_and_logical_slice
+  dtype_and_combiner_numeric_contract
+  rank_group_and_local_rank
+  topology_and_execution_mesh
+  available_transport_compute_resource_domains
+  schedule_parameter_constraints
+  staging_resource_bounds
+  target_capability_context
+  deterministic_work_policy
+}
+
+CommunicationScheduleQueryKey {
+  collective_semantic_slice_digest
+  dtype_combiner_numeric_digest
+  rank_group_local_rank_topology_mesh_digest
+  available_resource_domain_digest
+  schedule_parameter_constraints_digest
+  staging_resource_bounds_digest
+  target_capability_context_digest
+  deterministic_work_policy_digest
+  communication_provider_schema_version
+  communication_registry_digest
+}
+
+CommunicationScheduleQueryResult {
+  status: ProviderQueryStatus  // Available | Unsupported | ResourceExhausted | Invalid
+  unsupported_reason?: ProviderUnsupportedReason
+  canonical_query_key
+  family_domains[]
+  canonical_baseline?
+  failure_reason?
+  work_summary
+}
+
+CommunicationScheduleFamilyDomain {
+  family_key
+  algorithm_parameter_domain
+  message_identity_and_segmentation_schema
+  staging_resource_completion_formula
+  compatibility_constraint_key_formula
+  logical_schedule_skeleton_key
+  transport_metric_formula
+  materializer_key
+  exact_acceptance_key
+}
+
+CanonicalCommunicationBaselineRecipe {
+  family_key
+  canonical_parameter_point
+  bounded_materialization_rule_key
+}
+
+CommunicationScheduleSkeletonV1 {
+  schema_version: U16 = 1
+  collective_instance: Record(CollectiveSemanticIdentityV1)
+  rank_group: Record(CanonicalRankGroupV1)
+  nodes: Sequence<Record(CommunicationSkeletonNodeV1)>
+  edges: Sequence<Record(CommunicationSkeletonEdgeV1)>
+  resource_constraints: Sequence<Record(TypedResourceConstraintV1)>
+  message_constraints: Sequence<Record(TypedMessageConstraintV1)>
+}
+
+CommunicationSkeletonNodeKindV1 = ExistingEndpoint | StagingBuffer | LocalSemanticCompute
+
+CommunicationSkeletonNodeV1 {
+  ordinal: U32
+  kind: ClosedEnum(CommunicationSkeletonNodeKindV1)
+  existing_endpoint: Optional<Record(ExistingEndpointDemandV1)>
+  staging_buffer: Optional<Record(StagingBufferDemandV1)>
+  local_semantic_compute: Optional<Record(LocalSemanticComputeDemandV1)>
+  ports: Sequence<Record(CommunicationPortV1)>
+  encoding_requirements: Sequence<Record(PhysicalEncodingRequirementV1)>
+}
+
+ExistingEndpointDemandV1 {
+  endpoint_role: ClosedEnum(CollectiveEndpointRoleV1)
+  logical_slice: Record(CanonicalLogicalSliceV1)
+  access: ClosedEnum(CommunicationAccessV1)
+}
+
+CommunicationAccessV1 = Read | Write | ReadWrite
+
+StagingBufferDemandV1 {
+  element_type: Record(CanonicalElementTypeV1)
+  logical_shape_and_valid_domain: Record(CanonicalLogicalDomainV1)
+  access_and_lifetime_role: ClosedEnum(StagingLifetimeRoleV1)
+  memory_space_domain: Record(TypedMemorySpaceDomainV1)
+}
+
+LocalSemanticComputeDemandV1 {
+  semantic_key: Record(StructuredSemanticKeyV1)
+  operand_result_domains: Sequence<Record(CanonicalLogicalDomainV1)>
+  numeric_contract: Record(NumericContractV1)
+  effects: Sequence<Record(TypedEffectV1)>
+}
+
+CommunicationSkeletonEdgeV1 {
+  ordinal: U32
+  source: Record(CommunicationPortRefV1)
+  destination: Record(CommunicationPortRefV1)
+  dataflow: Optional<Record(CommunicationDataflowConstraintV1)>
+  completion_constraint: Record(TypedCompletionConstraintV1)
+  resource_constraint_refs: Sequence<U32>
+}
+
+CommunicationDataflowConstraintV1 {
+  logical_index_relation: Record(IndexRelation)
+  valid_domain: Record(CanonicalLogicalDomainV1)
+  message_constraint_refs: Sequence<U32>
+}
+
+CommunicationPortRefV1 { node_ordinal: U32, port_ordinal: U32 }
+
+ResolvedCommunicationScheduleV1 {
+  schema_version: U16 = 1
+  skeleton: Record(CommunicationScheduleSkeletonV1)
+  node_bindings: Sequence<Record(ResolvedSkeletonNodeBindingV1)>
+  port_bindings: Sequence<Record(ResolvedSkeletonPortBindingV1)>
+  edge_bindings: Sequence<Record(ResolvedSkeletonEdgeBindingV1)>
+}
+
+ResolvedSkeletonNodeBindingV1 {
+  node_ordinal: U32
+  implementation: Optional<Record(SelectedImplementationFamilyInstanceV1)>
+}
+
+ResolvedSkeletonPortBindingV1 {
+  port: Record(CommunicationPortRefV1)
+  physical_encoding: Record(SelectedPhysicalEncodingV1)
+}
+
+ResolvedSkeletonEdgeBindingV1 {
+  edge_ordinal: U32
+  transfer_route: Optional<Record(SelectedTransferRouteV1)>
+}
+```
+
+所有sequence按ordinal或其owner registry canonical key排序，ordinal从0连续且每个ref必须in-range。node的三个demand optional
+按`kind`恰有一个present，其余必须absent；`implementation`只允许
+`LocalSemanticComputeDemandV1`且此时必须present，其余node必须absent。每个node及port恰有一个binding；
+dataflow present的edge恰有一个route binding，completion-only edge的route必须absent。selected point必须属于原domain并满足全部
+relation、encoding、resource、message和completion constraint。
+canonical bytes复用06 §6.2统一codec及其exact inner type-tag，按声明顺序length-prefix编码；schema、enum、field/presence或排序规则变化必须升级版本。existing endpoint只用
+`collective_instance + endpoint_role + logical_slice`映射到当前clone SSA value，任何record都不得保存Value*/Operation*、符号展示名、
+发现顺序或materializer side table。
+
+上面字段all-and-only覆盖query每项；不得把available resources、schedule constraints或staging bounds合成可省略的模糊
+“constraints”digest。`target_capability_context`及其digest直接使用06唯一typed/resolved schema，不能只含target profile；key不含op/value
+pointer、名字、registration/discovery/thread completion order。`Available`的domain按family key排序且恰有一个属于domain的
+canonical baseline；约束域为空返回`Unsupported(InfeasibleConstraints)`，表示/能力缺失分别返回06的其它typed unsupported
+reason。`ResourceExhausted`不返回partial domain/baseline且不能缓存为capability truth。formula只生成06的search-time
+`CompatibilityConstraintKeyV1`/domain；各rank所选shared family/parameters必须满足同一组typed约束，但包含local-rank视图的
+query/key bytes不要求相等。它不能预先冒充placed instruction事实。
+
+provider只能返回bounded、typed **logical schedule skeleton**，不能在`materialize`中自行选择GS、elementwise/reduce
+implementation、physical encoding、SPM slot或transfer route。skeleton新增的staging/local-compute node与edge由06重新送入同一
+implementation→encoding→route constraint propagation；每插入一个node/edge都分别在发生前消费06
+`communication_skeleton_nodes_cap`/`communication_skeleton_edges_cap`及provider/constraint work，任一耗尽返回
+`ResourceExhausted`且不保留partial skeleton。node不得递归产生新collective，所以`unresolved_skeleton_nodes`严格下降。
+selected candidate只有构成verifier-legal `ResolvedCommunicationScheduleV1`后才交给07/本文展开；materializer只能消费该resolved
+record和当前clone，在同一candidate transaction内把它完全展开成typed op/SSA/effect，不能重新query、选择或把record写入IR。
+同一collective在不同encoding/slot-contiguity条件下可以命中相同logical skeleton cache，但后续08/10 query key和可行结果必须
+不同；若某communication family本身读取这类条件，就必须把typed constraint加入本query及key。cache differential同时覆盖这两条
+合法路径，禁止materializer按外部side state隐藏reselection。
 
 本文的 token/value 生命周期遵循 MLIR Async dialect 的显式依赖方向：
 <https://mlir.llvm.org/docs/Dialects/AsyncDialect/>。硬件 completion/status 仍由本文的 target-specific
@@ -69,7 +244,8 @@ transport contract 补充，不能把通用 `async.token` 等同于设备成功�
 Pipeline position:
 - Upstream artifact / IR:
   `wafer.linalg_ext.collective.*`经rank-local task/dataflow materialization后形成的未放置SPM storage values、
-  local-rank facts、rank group，以及exact target topology / execution mesh legality facts。
+  local-rank facts、rank group、exact target topology / execution mesh legality facts，以及06已闭合全部node/edge
+  implementation/encoding/route选择的transaction-local `ResolvedCommunicationScheduleV1`。
 - Current stage responsibility:
   按candidate已选communication family把buffer-level collective materialize为verifier-legal `wafer.tile.*` collective，并
   展开成 explicit `wafer.instr.dte_send` / `dte_recv` / `dte_wait` p2p body、token/effect、sync boundary 和
@@ -77,8 +253,12 @@ Pipeline position:
   message identity；不选择 physical endpoint/channel/FSM，也不要求已有 SPM offset。
 - Output artifact / IR:
   instruction-level communication IR over unplaced Wafer-tagged SPM memrefs；peer/message identity/order/byte
-  range、buffer slice、outstanding lifetime 和 wait 由 IR/effect 表达，不保存重复 communication plan attr；另从该IR重算
-  canonical all-rank compatibility signature与transport bytes/message counts供06分桶/排序，它们不是accepted attr。
+  range、buffer slice、outstanding lifetime 和 wait 由 IR/effect 表达，不保存重复 communication plan attr，也不含未解析
+  collective/skeleton node或schedule record；该unplaced IR只能重算search constraint与transport bytes/message counts。
+  SPM placement后，06从每rank current instruction IR fresh构造
+  `PlacedRankCompatibilityClaimsV1`；本文的all-rank physical transport acceptance按sender/receiver complementary claims分配并
+  写入typed binding，随后06从bound all-rank IR形成`AcceptedVariantTransportSignatureV1`。三种对象都不是accepted attr，
+  actual binding IR才是下游事实。
 - Downstream consumer:
   instruction legality、layout materialization、whole-entry SPM/DDR planning 和 event-liveness verifier。
 - User-level driver / named pipeline:
@@ -359,10 +539,31 @@ collectCommunicationBufferDemand(target)
 - layout relation：p2p byte movement preserve physical layout；collective result layout 由 input
   layout、consumer constraint 和 layout materialization/co-planning 决定，不由 DTE 协议隐式改变。
 
-`wafer.tile.*` collective 和 `wafer.instr.dte_*` 都应通过 `WaferResourceEffectInterface`
-暴露 SPM read/write、communication issue/wait 和 byte count；p2p/collective op 同时有 Wafer
-communication resource 的 MLIR memory effect。具体 DTE/FSM/packet/stream id 仍只在
+`wafer.tile.*` collective 和 `wafer.instr.dte_*` 通过 `WaferResourceEffectInterface`暴露 SPM
+read/write、communication issue/wait lifecycle marker和 byte count；p2p/collective op 同时有 Wafer communication
+resource 的 MLIR memory effect。detailed effect不包含task/token identity，因此不能单独证明completion；完成关系从
+SSA token operand/result、explicit wait/fence、path和all-rank message verifier推导。具体 DTE/FSM/packet/stream id 仍只在
 accepted-offsets 后的 Direct DTE resource stage 出现，不回写到 collective-level op。
+
+tensor-level `wafer.linalg_ext.collective.*`尚未issue硬件命令，但必须通过standard
+`MemoryEffectOpInterface`投影Communication `Write` barrier，使generic CSE/DCE/LICM不能删除、复制或跨越；它不伪造
+Wafer issue bytes，也不实现`WaferResourceEffectInterface`。终态删除
+`WaferLinalgExtCollectiveInfo::hasCommunicationEffect`；collective-info consumer直接查询standard effect，不再手工维护
+第三份effect事实。
+
+standard/detailed coverage verifier按下列规则固定：
+
+- logical collective必须有standard Communication `Write`，且不得伪造detailed issue；
+- tile/instruction的每个SPM/DDR read/write、Compute/Movement/Communication issue和Communication wait detailed
+  effect都必须有同resource的standard `Read`/`Write`覆盖；standard可以额外保守报告；
+- Communication wait投影Communication `Read + Write`，与issue `Write`冲突；
+- local compute/movement fence投影Sync `Write`以及它所排序的每个Compute/Movement resource `Write`；它不能完成
+  Direct DTE，因此不得伪造Communication coverage；
+- `RecursiveMemoryEffects` container递归检查body，不强迫container伪造detailed effect；unknown/external call
+  保持conservative barrier。
+
+collective、issue、wait、fence和observable store均必须使`mlir::isSpeculatable(op)==false`。standard effect只约束
+generic rewrite，completion仍由token/wait/fence和all-rank verifier拥有。
 
 通信 staging buffer 是 SPM allocation 的 `BufferDemand(kind = communication_staging)`，不是
 `wafer.tile.*` collective 或 `wafer.instr.dte_*` 的私有内存计划。
@@ -472,6 +673,17 @@ planning事实。
 当前 collective correctness path 不依赖 raw DTE non-unicast，而是由 unicast p2p step 组合。算法
 覆盖不足是 lowering 恢复任务，不是上游 SPMD / tensor collective IR 的不支持理由。
 
+终态算法选择只来自06查询的`CommunicationScheduleFamily` provider。每个family返回typed parameter domain、numeric/effect/
+resource约束、exact legality/metrics hook与唯一canonical baseline；planner选择后，family materializer在SPM planning前把
+collective完整展开成direction-specific `wafer.instr.dte_send`、`wafer.instr.dte_recv`、`dte_wait`、local movement/compute和
+fence body。accepted IR不保存algorithm attr，explicit body是唯一schedule事实；generic tile-region-to-instr lowering遇到
+未展开collective必须拒绝，不能默认ring/direct/tree。`dte_send`和`dte_recv`固定保持两个direction-specific op，不再保留
+“合并或拆分均可”的设计分支。
+
+当前`TileRegionToInstrOptions`及`all-gather-schedule`、`all-reduce-schedule`、`reduce-scatter-schedule`只是Q29迁移实现；
+Q32.G删除这些enum/parse/default/CLI选项与绕过provider的hard-coded selector，现有ring/direct/tree实现迁入family
+materializer。post-memory `DirectDTETransport`只绑定已展开body的physical endpoint/resource，不是算法selector，因此保留。
+
 ### 6.1 Collective Permute
 
 `collective_permute` 可以直接 lower 成若干 `wafer.instr.dte_send` /
@@ -493,9 +705,8 @@ topology/execution-mesh、ABI/runtime 边界派生。
 
 ### 6.2 All-Gather
 
-V0 schedule selector 支持 `auto|ring|direct`，默认 `auto=ring`。schedule 选择是
-tile-region-to-instr rewrite policy，不进入长期 IR；被接受的结果必须完全展开成 explicit
-`wafer.instr.dte_*` body。
+当前迁移selector支持`auto|ring|direct`且`auto=ring`；终态将ring/direct注册为provider family，选中结果仍必须完全展开成
+explicit `wafer.instr.dte_*` body。
 
 `ring` all-gather：
 
@@ -540,7 +751,7 @@ non-unicast gather。
 `reduce_scatter` 由 communication step 和 local reduce step 组合。local reduce 使用
 `wafer.tile.reduce` 或其它明确 compute op，不能把 reduction 藏在 DTE protocol 中。
 
-`all_reduce` V0 schedule selector 支持 `auto|ring|tree`，默认 `auto=ring`。后续仍可以引入
+当前迁移实现的`all_reduce` selector支持`auto|ring|tree`且`auto=ring`；终态ring/tree都是provider family。后续仍可以引入
 reduce-scatter + all-gather、recursive doubling 或其它算法，但 accepted schedule 必须满足：
 
 - reduction kind、dtype、init/accumulate 语义可验证。
@@ -567,7 +778,7 @@ wait token 后用 `wafer.instr.elementwise` 累计，并在 accumulator 后续�
 
 `wafer.tile.reduce_scatter`使用full input + local slot result表示。structured task materialization
 保留 full input SPM buffer，并让 tile collective 显式携带 scatter `axis`；recv/result buffer 是当前
-rank 的 local slot shape。V0 schedule selector 支持 `auto|direct`，默认 `auto=direct`。`direct`
+rank 的 local slot shape。当前迁移selector支持`auto|direct`且`auto=direct`；终态direct是canonical baseline family。`direct`
 instruction lowering 使用 phase-ordered all-to-owner unicast schedule：
 phase `d` 中，rank `r` 从 full input 取 slot `(r + d) mod group_size` 发送给该 slot owner，同时从
 rank `(r - d) mod group_size` 接收本 rank local slot 的 contribution，wait 后用
@@ -603,7 +814,7 @@ materialization。rank-specialized structured task materializer要求`split_coun
 `wafer.instr.dte_wait`，不额外引入 `wafer.tile.all_to_all`，也不保存 algorithm attr。
 
 后续若需要 ring/blocked all-to-all、跨卡 route、non-contiguous DTE descriptor 或更复杂 split/concat
-layout，可以再引入 `wafer.tile.all_to_all` buffer-level op 或 schedule selector。当前 V0 correctness
+layout，可以再引入 `wafer.tile.all_to_all` buffer-level op 或新的schedule family。当前 V0 correctness
 path 只承诺静态 shape、单 input/out、rank group row 可选中、slot 与 rank order 一一对应的 direct
 unicast schedule。
 
@@ -640,7 +851,8 @@ bounded count/control、offset/type/capacity和completion relation。communicati
 关键规则：
 
 - producer/consumer task edge的boundary layout co-planning可以减少repeated materialization，但
-  选择结果必须通过 accepted tile-local IR 表达，不能由 `wafer.tile.*` communication 保存 side plan。
+  selected schedule必须在SPM planning前展开为final rank instruction program中的显式movement/compute/staging SSA、
+  effect与token，不能由`wafer.tile.*`communication保存side plan或把tile-local中间IR当成accepted output。
 - 如果producer task以`Cx`输出，而consumer task也能接受`Cx`，comm可以直接传输该physical
   layout；如果 consumer 需要 compact，layout materialization op 应在明确 cut edge 上出现。
 - communication staging buffer、double buffer、in-flight recv slot 都进入 SPM allocation 的 demand 和
@@ -789,10 +1001,10 @@ wafer.instr.dte_wait %send1, %recv1
 - `wafer.linalg_ext.collective.segmented_all_to_all` / `wafer.tile.segmented_all_to_all`、count exchange和
   `padded_fixed_capacity` lowering尚未实现；它们是EP/MoE长期gate的明确实现缺口，不能用当前equal-split
   all-to-all覆盖结果冒充。
-- tile-region-to-instr 的 pass option 提供 schedule selector：
+- tile-region-to-instr 当前pass option仍提供迁移selector：
   `all-gather-schedule=auto|ring|direct`、`all-reduce-schedule=auto|ring|tree` 和
-  `reduce-scatter-schedule=auto|direct`。这些 option 只选择 rewrite policy，展开后的 IR 不保存
-  algorithm name。
+  `reduce-scatter-schedule=auto|direct`；展开后的IR不保存algorithm name。它们不是终态public policy，Q32.G必须在
+  provider materializer接管后删除enum、option、parse/default、hard-coded selector及只服务这些入口的测试。
 - `all_to_all` 当前没有 ring/blocked schedule selector，也没有 raw non-unicast DTE path；这些仍是后续
   性能/板端扩展。
 - Direct DTE send/recv/wait的历史bring-up证据不再作为主线合同；当前issue/wait、resource allocation、target LLVM

@@ -1,3 +1,40 @@
+## 2026-07-18 qualification evidence与production publication必须分层
+
+- 现象：若一个qualification run同时携带通用observation、fixed/cleanup proposal、active-set CAS基线和publication outcome，
+  backend/candidate-local等通用机制会被hygiene发布协议绑死；Completed terminal若不封存结果集合，seal后仍可能追加terminal或
+  observation，archive无法唯一重放。
+- 根因：把“采集并封存证据”和“把一份qualified set切换成production active set”合并成同一状态机，也没有为run input/result
+  建立all-and-only canonical manifest。
+- 修复模式：使用独立的typed qualification input、run、result manifest和run terminal；Completed terminal引用result manifest并
+  原子seal scope。只有fixed/cleanup run再建立publication attempt/terminal和expected-active CAS，active ref只引用完整
+  CompletedEvidence→QualifiedPublished链。
+- 防复发：observation identity/policy/case必须与run input逐字段相同；失败run不得发布result manifest；NoOp结论不能回写immutable
+  spec的adoption mode，只能由qualification status、exposure和是否进入active qualified set派生。
+
+## 2026-07-18 provider expansion必须重新进入统一能力闭包
+
+- 现象：communication family在route已选后新增staging、copy或local-reduce node；若materializer直接为这些node挑指令，
+  implementation/encoding/route provider、搜索预算和canonical baseline都会被绕过。
+- 根因：把provider返回值误当成可直接lower的最终schedule，而不是仍需解析的typed schedule skeleton。
+- 修复模式：communication provider只返回有node/edge cap的typed skeleton；每个新增semantic node/edge重新进入同一
+  implementation→encoding→route约束传播，全部形成resolved schedule后才能展开为payload IR。rank-local inspection另用
+  placed-unbound signature/metric，不能复用all-rank binding后的final candidate signature或whole-variant DDR标量。
+- 防复发：provider closure测试必须覆盖新增node/edge、budget耗尽、唯一baseline、tile变化后的cache失效，以及materializer中无
+  hidden family selection；rank-local unavailable/unverified事实必须typed表达，不能用0或final signature冒充。
+
+## 2026-07-18 capability key不能只绑定call ABI
+
+- 现象：target call的C/LLVM signature没变，但completion可从queue-issued变成wait-before-store；如果
+  `RequiredCapabilitySet`只保存signature digest，compiler effect、model transaction和board admission可在同一key下
+  解释出不同execution semantics。
+- 根因：把ABI shape误当成完整target execution contract，漏掉了会被effect/path/model consumer读取的
+  completion、resource ordering和destination visibility。
+- 修复模式：capability family key同时绑定`exact_signature_digest`和versioned
+  `execution_contract_digest`；后者覆盖issue resource、typed completion class/property、standard/detailed effect、
+  visibility和result-store contract reference。改变任一字段都提升family revision、形成新key并重放qualification。
+- 防复发：registry/property/effect篡改负例必须在capability projection、model import和任何memory effect前拒绝；
+  禁止通过op/symbol名matcher恢复execution contract。
+
 ## 2026-07-13 multi-rank reference不能硬编码为Direct DTE
 
 - 现象：真实PyTorch/XLA linear-residual MLP以16 rank经过production driver后形成完整replicated rank domain，

@@ -26,7 +26,8 @@ MLIR：
 
 - 按 selected tile domain 生成 all-and-only static traversal、tail 和合法 reduction step。
 - 应用 candidate 已选定且 proof guard 已通过的等价 rewrite；不在物化时重新搜索等价图。
-- 把 selected implementation family instance 物化成 target-abstract compute/movement/communication op。
+- 把 selected implementation family instance 物化成target-abstract compute/movement；通信只消费13的typed
+  `ResolvedCommunicationScheduleV1`，并在返回前完全展开成显式staging/local-compute/movement/DTE/wait body。
 - 为每个 selected physical version 建立 Wafer-tagged memref、view、valid logical domain 和 SSA use-def。
 - 把 resident、view、compute-absorbed、boundary transfer、local movement、staged movement、spill/reload 和
   immutable encoded resource 选择物化成显式 IR。
@@ -54,16 +55,20 @@ Pipeline position:
   buffering 和 dependency/order；它不是可序列化 artifact 或跨 pass side table。
 - Current stage responsibility:
   在隔离的 complete-rank clone 中应用 selected semantic rewrites和tile traversal，物化 typed
-  target-abstract compute/movement/communication task、Wafer-tagged memref physical versions、metadata view、
+  target-abstract compute/movement task、Wafer-tagged memref physical versions、metadata view、
   mapped boundary transfer、local/staged movement、explicit spill/reload、immutable encoded resource use 和
-  completion；保证 selected candidate 的全部决定都能由输出 IR 的 op/type/SSA/effect 直接验证。
+  completion；消费并完全展开candidate中已闭合的`ResolvedCommunicationScheduleV1`；保证 selected candidate 的全部决定都能由
+  输出 IR 的 op/type/SSA/effect 直接验证。
 - Output artifact / IR:
-  覆盖完整 rank traversal 的 verifier-legal selected tile-dataflow candidate IR，或者结构化 failure。
-  输出只包含正式 typed IR，不包含 planner frontier、Transform handle、候选评分或 opaque implementation id。
-  通过 whole-rank/whole-variant exact gates并 atomic commit 后，该 IR 才成为 accepted execution fact。
+  transaction-local、覆盖完整rank traversal的verifier-legal selected tile-dataflow candidate IR，或者结构化failure。
+  输出只包含typed IR，不含未解析collective、communication skeleton/schedule record、planner frontier、Transform handle、候选评分
+  或opaque implementation id；但它仍只是06 stage内部
+  intermediate。即使本层及局部exact gates通过，也必须继续lower成final placed/bound instruction program并由06 all-rank atomic
+  commit；tile-dataflow IR自身不作为accepted execution artifact或与ExecutableBundle并列发布。
 - Downstream consumer:
-  target-abstract compute/movement legalization、instruction lowering、whole-rank SPM planning、whole-variant
-  DDR planning、event/transport/ABI verification、target-call/CRT/SystemC lowering 和 executable bundle commit。
+  target-abstract compute/movement legalization、complete instruction lowering、whole-rank
+  SPM planning、whole-variant DDR planning、post-memory transport binding、ABI/artifact-eligibility pure preflight与
+  ExecutableBundle commit；commit成功后才由14 target conversion及CRT/SystemC消费。
 - User-level driver / named pipeline:
   production 只由 source-to-bundle named pipeline 调用共享 C++ planner/materializer utility；可选
   Transform Dialect extension 只提供同一 utility 的开发期编排、复现和诊断入口，不能形成第二条
@@ -85,10 +90,14 @@ Pipeline position:
 rank-local structured tensor IR
   + transformation-local selected candidate
     -> CandidateMaterializer on an isolated clone
-    -> explicit target-abstract tile-dataflow IR
-    -> per-rank instruction/descriptor/SPM/local-completion gates
-    -> compatibility-bucketed bounded rank frontier
-    -> lazy all-rank variant join + DDR/transport/ABI/artifact-eligibility preflight
+    -> explicit target-abstract tile-dataflow IR with selected communication fully expanded
+    -> complete instruction lowering
+    -> per-rank descriptor/SPM/local-completion gates
+    -> PlacedRankCompatibilityClaimsV1-bucketed bounded rank frontier
+    -> lazy all-rank variant join
+    -> whole-variant DDR planning
+    -> post-memory transport binding + AcceptedVariantTransportSignatureV1
+    -> ABI/artifact-eligibility preflight
     -> atomic commit of one complete variant
 ```
 
@@ -181,6 +190,19 @@ pointwise/reduce/convert/movement task时必须把证明落实为下列正式IR�
 | `SpillReload` | typed DDR allocation/view、store、completion、load全部显式，consumer不能从名字恢复spill binding |
 | `ImmutablePrepackedResource` | load引用typed immutable source relation和selected storage encoding；package只实现已选事实，不重选packing |
 
+`BoundaryTransfer`终态不新增`mapped_transfer` op，而把现有load/store固定为destination-style：
+
+```text
+wafer.tile.load  %ddr_view into %spm_view
+wafer.tile.store %spm_view into %ddr_view
+```
+
+二者无隐式allocation和result；physical version由显式`memref.alloc`/view拥有，因此fill后分段写、多个piece写同一version及
+staged temporary都能由SSA/lifetime直接看到。source/destination logical tensor type必须相同；DDR端是typed compact view，
+SPM端可使用任一当前profile qualified encoding；load/store本身恒为logical-coordinate identity。permutation、slice、reshape
+和concat先物化为standard typed view与hard-capped pieces；不能化成同shape identity pieces时，direct mapped route不进入
+domain，必须使用显式staged movement。op不携带IndexRelation attr、descriptor list或route id sidecar。
+
 `ComputeAbsorbed`不意味着删除数学语义。比如permutation被contraction orientation吸收时，selected GEMM op必须
 以typed `transA/transB`或等价稳定字段表达；不能依赖前序transpose op名字、buffer名或planner记录。类似地，producer
 直接生成consumer encoding时，producer result type和implementation contract必须明确支持该encoding。
@@ -212,16 +234,36 @@ target op family由tasks/10拥有。本文不为每种dtype、layout、shape或�
    relation，不重新枚举alternative。
 3. **物化traversal**：按selected tile domain生成compact `scf.for`、static tail和合法reduction sequence；all-and-only
    coverage在clone中可验证。
-4. **物化implementation**：调用family materializer生成typed target-abstract compute/communication op，保存所有下游
-   legality需要的参数。
+4. **物化implementation/communication**：调用family materializer生成typed target-abstract compute/movement op；对每个collective
+   消费已验证的`ResolvedCommunicationScheduleV1`并展开全部staging/local-compute/movement/DTE/wait body，保存所有下游legality
+   需要的参数。任一node/edge缺binding或展开失败都丢弃clone，成功返回不得残留collective或schedule对象。
 5. **建立physical versions**：创建allocation root、metadata view、typed physical encoding和valid domain；用显式
    fill/segment/mask/provider effect使selected invalid-lane proof可从IR重建。
 6. **物化edge realization**：按第6节生成mapped transfer、local/staged movement、resident SSA或spill/reload。
-7. **连接completion**：显式建立provider completion、multi-input join、last-consumer/reuse、collective wait和terminal drain。
-8. **局部proof-preserving cleanup**：只调用已注册、能证明semantics/physical storage/effect等价的no-op view或dead-op
+7. **展开communication并连接completion**：在SPM planning前按selected `CommunicationScheduleFamily`的typed family/
+   parameter/message schema调用13同一materializer，把collective展开成explicit `wafer.instr.dte_send/dte_recv/dte_wait`或已选
+   compute/staging body、`DTEMessageAttr`、token/effect和wait；不得让candidate销毁后只剩family side object。随后显式建立
+   provider completion、multi-input join、last-consumer/reuse、collective wait和terminal drain。physical binding仍由post-memory
+   all-rank acceptance完成。
+8. **selected-payload required normalization**：调用本层独立的physical-payload normalizer，显式折叠one-trip traversal与真正
+   identity的`memref.subview`，并用本层独立postcondition verifier检查view/allocation-root/layout/effect/completion和完整
+   traversal；它与05的tensor normalizer只共享`proveIdentityView`、static integer proof和transaction/fuel基础设施，不共享
+   postcondition，也不把05的pure tensor DPS规则套到physical memref payload。该步骤始终开启、确定性、幂等且bounded，失败
+   clone保持byte-identical。它拥有stage-specific outcome type，status vocabulary为
+   `Success{changed}/UnsupportedSemantic/InvalidIR/ResourceExhausted/InternalInvariant`，diagnostic固定为
+   `family/reason/canonical_operation_path`；只与05共享closed vocabulary、`CanonicalIRSnapshotV1`和同一variant invariant，不共享
+   outcome type或postcondition。`Success`的changed由SemanticStructure snapshot决定，non-success用MutationGuard证明source
+   byte-identical且不返回partial clone。
+9. **局部proof-preserving cleanup**：只调用已资格化、能证明semantics/physical storage/effect等价的no-op view或dead-op
    mechanism；generic greedy canonicalizer不是正确性前提。若改写allocation root、alias、lifetime或event，全部analysis与
    exact gates必须fresh重算；不得重新决定implementation、encoding、cut、residency或order。
-9. **验证并返回clone**：任一引用失效、unsupported materializer、relation不一致或verifier failure使整个clone失败。
+10. **验证并返回clone**：任一引用失效、unsupported materializer、relation不一致或verifier failure使整个clone失败。
+
+`SelectedPayloadNormalizationWorkPolicyV1`只按进入第8步前的current clone计数：op数`O`、operand与
+successor-operand边数`E`、nested region数`R`、memref view/root-chain节点数`V`和standard+detailed effect entry数`F`；固定
+`fuel = 1024 + 32*O + 8*E + 16*R + 8*V + 4*F`。op/region visit、rewrite attempt、committed rewrite、new op和proof-node
+分别消耗`1/2/8/8/2`单位，所有加乘checked overflow；耗尽返回`ResourceExhausted`并丢弃clone。系数变化必须新增policy
+version并重跑16的qualification，不允许按wall time或workload名动态扩容。
 
 候选物化后，whole-rank SPM/DDR/event/transport/ABI exact gates仍可能拒绝它。失败反馈给tasks/06的bounded search选择
 下一个candidate；本层不得就地修补已经失败的候选。
@@ -239,7 +281,7 @@ target op family由tasks/10拥有。本文不为每种dtype、layout、shape或�
 | broadcast/slice/concat | indexing relation、static/piecewise domain和coverage | view、mapped transfer、local movement或structured failure |
 | immutable tensor source | ConstantLike value、logical slice和selected encoding | immediate/fill或typed immutable resource load |
 | structured control flow | block arguments、yields、loop-carried values和effects | 保留`scf`结构并显式传递memref/event |
-| collective | rank group、local rank、shape/bytes、combiner和completion | target-abstract collective或selected Direct DTE task graph |
+| collective | 06已闭合的typed communication skeleton、rank group、local rank、shape/bytes、combiner和completion | skeleton只可在transaction内暂存；成功输出必须已展开为selected Direct DTE或显式compute/staging/movement/wait body，不能残留target-abstract collective或family side object |
 
 新增source op优先通过现有MLIR structured interfaces归一到这些family；只有新数学语义无法稳定表达时才扩interface/op。
 不得为模型角色、算子名字、固定shape或参数顺序增加materializer分支。unsupported语义必须结构化失败，不留下半转换IR。
@@ -276,13 +318,21 @@ CandidateMaterializer
 ExactCandidateGates
 ```
 
-Transform op可以在selected candidate形成前调用typed atomic mechanism，或接收isolated rank root、target profile和search
-budget调用粗粒度planner，并返回更新后的root handle或结构化failure；每个改写仍须遵守handle invalidation/effects并重跑
-所需analysis/gates。它不能：
+Q32.T的structured optimization可接收singleton isolated rank module；candidate materialization只接受closed target profile、
+显式logical rank、`RankLocalCandidateOrderV1`和映射到production `RankPlanningRequest::deterministic_work_policy`的versioned
+budget。它调用同一rank-frontier producer、finalizer、materializer与全部payload可重算的per-rank exact gates；依赖frontend
+binding的gate不伪造输入而保持unverified。它只返回明确标记
+`all_rank_and_binding_unverified`与`model_and_board_qualification_unverified`的研究/调试candidate；local order是确定性的nonproduction policy，既不调用all-rank
+coordinator，也不与production winner比较。inspect op只从fresh IR重算payload signature与静态metrics，不能恢复search
+telemetry。每次改写仍须遵守upstream handle invalidation/effects并重跑所需analysis/gates。普通Transform payload不能代表
+all-rank bundle。它不能：
 
 - 为每种op/dtype/layout/tile定义一个transform op；
 - 用`transform.alternatives`展开beam frontier；
 - 把physical-version graph、SPM live set、cost vector或selected candidate长期存入TransformState；
+- 接收rank module vector、frontend program metadata或execution bundle来绕开production coordinator；
+- 从一个rank的frontier自行选出whole-variant winner、证明frontend binding/all-rank compatibility，或从candidate IR恢复search
+  stop telemetry；
 - 让Transform script成为package、bundle或accepted IR的必要解释器。
 
 atomic mechanisms和`CandidateMaterializer`必须是独立C++ utility。production pass/driver、planner和Transform extension只是

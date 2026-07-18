@@ -1,6 +1,6 @@
 # Wafer Typed Manifest、RuntimeSession 和 Launch Boundary
 
-状态：2026-07-17在已完成Q18/Q16.T基础上同步versioned GEMM orientation ABI和board preflight所需
+状态：2026-07-18在已完成Q18/Q16.T基础上同步versioned GEMM orientation、Count writeback ABI和board preflight所需
 `RequiredCapabilitySet`边界。当前wire form是schema v3；Q32 production cutover迁移到schema v4，仍是唯一typed C++ model的
 canonical JSON，不是
 Protobuf；provider/board execution仍是后续独立gate。实现状态看`tasks/progress.md`。
@@ -32,13 +32,14 @@ Pipeline position:
   Q16 atomic、profile-bearing ExecutableBundle中的typed resources、ABI slots、terminal completion和完整
   `ExecutionConfig`；Q17 atomic TargetArtifactBundle中的逐字段相同config、all-and-only rank modules、entry
   symbol/content digest和ABI摘要。Q32 target的这两个bundle再携带从final instruction rows派生的canonical
-  `RequiredCapabilitySet`及digest、rank-local capability readback和相同all-rank set/digest。
+  `RequiredCapabilitySet`及digest、rank-local typed keys+digest和LLVM module metadata digest readback、以及相同all-rank
+  set/digest。
 - Current stage responsibility:
   先逐字段核对Q16/Q17 config，再由tasks/14 registry把`TargetProfileId`唯一映射为typed `TargetIdentityId`和
   `KernelRuntimeABIId`并构造typed PackageManifest；当前v3 manifest target object显式序列化canonical
   `profile`，然后逐字段验证该profile唯一映射出的identity/runtime ABI/module format；执行唯一C++semantic verification，序列化canonical JSON；
   Q32 schema-v4再从Q16/Q17逐字段join canonical `RequiredCapabilitySet`及digest。在Q18 staging内复制/附着并复核package
-  members后原子发布；当前v1和目标oriented-GEMM v2必须解析为不同
+  members后原子发布；当前v1、目标oriented-GEMM v2与Q3.6 Count writeback v3必须解析为不同
   `KernelRuntimeABIId`且all-rank module/config一致。runtime解析并验证同一model，结合invocation
   bindings/runtime environment形成side-effect-free RuntimeSession plan。
 - Output artifact / IR:
@@ -57,7 +58,7 @@ Pipeline position:
   manifest all-and-only覆盖bundle ranks/modules/entries/resources/slots；canonical roundtrip稳定；invalid package在
   load/allocate前失败；任一manifest/package publication late failure不发布partial Q18 package，且不改变已验证
   Q17 target artifact bundle。Q0.L另要求profile/config逐字段join、registered target/runtime-ABI映射和readback正反例；
-  当前宽泛常量不能绕过该映射。该句记录已完成schema-v3边界；Q32 extension还要求v4 required-capability set/digest在
+  当前宽泛常量不能绕过该映射。该句记录已完成schema-v3边界；Q32/Q3.6 extension还要求v4 required-capability set/digest在
   Q16/Q17/module/manifest全相等，model provider以显式`ModelProfileId`、board provider以显式environment逐key preflight，
   v3在cutover后拒绝，任一late-rank/key failure无partial publication/effect。
 ```
@@ -162,13 +163,45 @@ exact-match。schema-v2继续被明确拒绝而非静默补profile；未来silic
 
 新增oriented-GEMM ABI identity本身不要求command flags，但board/runtime现在有真实逐row preflight consumer，因此Q32明确
 选择schema v4：在v3字段外新增必填canonical `required_capabilities`和`required_capabilities_digest`，其typed key/digest由
-tasks/14定义。tasks/14 registry新增closed v2 record后，Q18必须逐rank
-readback module metadata并证明all-and-only modules、entries和RuntimeEnvironment都选择同一profile/ABI；v1 manifest中
+tasks/14定义。tasks/14 registry新增closed v2 record后，Q18必须逐rank join Q17 typed
+rank-local keys+digest与LLVM module metadata readback digest，并证明all-and-only modules、entries和RuntimeEnvironment都选择同一
+profile/ABI；v1 manifest中
 出现oriented target call、v2 module伪装成v1、不同rank混用revision或environment只支持另一revision都在load/provider
 effect前失败。Q32 compiler对v1/v2都只生产v4，v3在cutover后明确拒绝而非静默推导capability set；迁移前v3 parser只能
 产生`PackageManifestV3`并走当前已完成no-card合同，绝不能进入v4 provider path。package仍不复制instruction、address、
 descriptor、per-command orientation或multiplicity；只有final TargetCall/ABI可观察的orientation/mask/segment等字段能经
 tasks/14规范投影为去重row key，implementation/encoding/route/invalid-lane state本身不能进入manifest。
+
+schema-v4不把`TargetCapabilityRowKeyV1`拆成第二份nested JSON。wire form精确固定为：
+
+```text
+"required_capabilities": [ "<lowercase-hex complete canonical key bytes>", ... ],
+"required_capabilities_digest": "<64 lowercase hex characters>"
+```
+
+array按**decoded key bytes** lexicographic严格递增且不得重复；每个string长度必须为偶数、只含`[0-9a-f]`，decode后由tasks/14
+唯一key parser验证field/type/registry并fresh re-encode为byte-identical，禁止base64、`0x`、大写、padding或alternate JSON object form。
+digest string恰好decode为32 bytes，parser按tasks/14公式对decoded ordered keys重算并比较。v4 limits冻结为
+`key_count <= 4096`、`single_key_bytes <= 65536`、`total_key_bytes <= 16 MiB`；checked decode在allocation前先验证manifest/string/
+count上界，超界、odd hex、noncanonical key或digest mismatch均在package/provider effect前拒绝。这些limits是wire safety而非
+capability支持面；未来确需扩大只能提升manifest schema/versioned parse limits，不能在不同consumer使用不同default。
+
+Q3.6注册`wafer-tx81-single-card-kernel-v3 -> wafer-tx81-kernel-v3`后，compiler同样只生产schema-v4 package。
+v3沿用v2 identity fields并以独立`KernelRuntimeABIId`增加Count symbol；manifest/profile/module metadata/
+RuntimeEnvironment和all-rank `RequiredCapabilitySet`必须全部为v3且逐字段readback。包含Count target call的v1/v2 package、
+v3 module伪装成v2、任一rank混用v2/v3、Count capability key缺失/多余/tamper、v3 CRT/conformance symbol projection不等于
+110 rows或shared registry的111-symbol canonical union不一致，均在
+provider effect前拒绝。package只记录Count的canonical deduplicated capability key（input format、`positive_u32` boundary、
+`writeback_raw_u32` result contract和target-call revision），不复制predicate、register值、sentinel或command instance。
+manifest `RequiredCapabilitySet`仍只含winner实际可达TargetCall rows的all-and-only projection，没有固定110/111基数；110/111只
+属于CRT/conformance symbol surface与shared registry union。
+v3 package可完成compiler-emittable机械readback；由于当前不存在17定义的exact-key
+`CountSemanticQualificationRecordV1{status=Qualified}`，Count row仍`model_qualified=false/board_supported=false`，model/board
+RuntimeSession必须在allocation/import/submit前拒绝实际Count requirement，不能把成功打包当数值资格。
+v3 non-Count capability key也因profile/runtime-ABI字段变化而是新key：package可在14逐row重新签发compiler-emittable后发布，
+但model provider必须对manifest **每个**required v3 key取得对应`ModelProfileId`的fresh v3 qualification observation；不能拿v2
+bool补缺。board row同样只能按v3/environment独立存在。测试分别覆盖不含Count的v3 package、含Count的v3 mechanical package：
+前者缺任一non-Count fresh model row即pre-effect拒绝，后者还必须因Count row未资格拒绝；这不影响两者的typed package readback。
 
 能打包/加载v2只证明typed ABI identity，不等于能上板。`RuntimeEnvironment`还区分model与board provider：model-only执行
 必须显式携带`ModelProfileId`，对manifest每个required key要求compiler-emittable且
@@ -233,6 +266,7 @@ JSON由同一C++ library parse/serialize。canonical规则：
 - integer只用JSON integer且在目标C++范围内；不接受NaN/Infinity或数字字符串；
 - unknown、duplicate和deprecated fields拒绝；
 - relative path使用`/`且不得包含empty/`.`/`..`组件；
+- schema-v4 capability keys/digest严格使用§4的lowercase-hex delivery及4096/64-KiB/16-MiB三层limit；
 - serializer(parse(serialize(x))) byte-identical；
 - parser有总bytes、records、string length、nesting等显式limits。
 
@@ -385,10 +419,14 @@ board gate另行证明：
 - canonical byte-identical roundtrip和parse limits；
 - transaction中compile/link/manifest/write/fsync/rename每个late failure；
 - single-tile和16-rank真实compiler bundle直接进入manifest/runtime。
-- v1 canonical与目标v2 oriented-GEMM package分别readback exact profile/Kernel Runtime ABI；wrong revision、
+- v1 canonical、目标v2 oriented-GEMM和Q3.6 v3 Count package分别readback exact profile/Kernel Runtime ABI；wrong revision、
   mixed-rank revision、module metadata/profile冲突和runtime environment capability mismatch均在provider effect前拒绝；
   schema-v4还覆盖required key missing/extra/tamper/digest、late-rank union和model/board allowlist mismatch；manifest中不存在
   per-command orientation、mapped-transfer descriptor或schedule副本，只存在canonical dedup capability requirements。
+- v3专项覆盖I8/F16/BF16/F32 Count capability key、`positive_u32`边界与`writeback_raw_u32` capability-contract/package metadata
+  readback（不把invocation raw value放进package），v1/v2含Count、v2/v3
+  mixed-rank、wrong ABI/profile及model/board未资格Count均在provider effect前拒绝；I16/I32/TF32/BOOL/U*/64-bit Count不能打包为
+  compiler-emittable requirement。
 
 Q16.T启用`DirectDTE`分支时还必须覆盖：typed union canonical roundtrip、unsupported environment在任何provider
 副作用前拒绝、status/error/completion ABI requirement核对，以及manifest中不存在p2p body、message/binding attr或

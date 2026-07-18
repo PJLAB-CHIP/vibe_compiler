@@ -76,7 +76,7 @@ normalized rank-local structured semantics + SemanticOpDescriptor
 | normalized planning input | `linalg.*` / `tensor.*` / `scf.*`及可重算`SemanticOpDescriptor` | tensor SSA value | 表达数学语义、index relation、numeric/effect policy和约束域，不选硬件实现，不进入committed executable |
 | physical-dataflow realized | selected `wafer.tile.*` compute/movement、view和materialization | `memref<..., #wafer.memory<space, layout>>` | 07在candidate clone中按selected implementation/physical version/route/residency创建精确typed op；只在确有数据移动时插入movement |
 | instruction-level rank program | structured control flow 中的 `wafer.instr.*` | unplaced Wafer-tagged memref SSA value | 覆盖完整 rank traversal，选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging、alias、effect、token/completion 和 descriptor attrs，不含 SPM offset；DTE 由 communication lowering 物化 |
-| DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、compiler-managed/resident/explicit-spill planned ranges、lifetime/reuse、declared arena/placement-domain capacity/largest-contiguous/bandwidth 已通过 DDR memory planning |
+| DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、compiler-managed/resident/explicit-spill planned ranges、lifetime/reuse、declared arena/placement-domain capacity、largest-contiguous和alignment已通过 DDR memory planning；exact bytes/pressure进入cost，未校准bandwidth不是legality fact |
 | target-codegen derived form | 同一 `wafer.instr.*` 或 conversion-local value | concrete target call arg / packet field | 从 committed instruction IR、typed executable bindings、accepted SPM/DDR offset facts、memref view 和 layout helper 派生 address/range/stride 参数；不作为新的主线 IR 层 |
 | target code emission | LLVM / target CRT call | concrete target call arg | 调用target CRT并生成Q17验证的typed ABI摘要/function boundary；不作为上层IR层 |
 | package emission | Q16 `ExecutableBundle` + Q17 verified `TargetArtifactBundle` | validated Q18 typed manifest | 序列化typed resources/entry/module/ABI facts；不读取target call arg、raw instruction IR或lowering metadata |
@@ -97,7 +97,8 @@ Pipeline position:
   惰性返回parameterized ImplementationFamily、约束公式、instruction/resource需求、capability qualification状态和
   static metric lower bounds；family输出按稳定semantic signature排序，不依赖pointer、registration、DenseMap或并行完成顺序。
 - Output artifact / IR:
-  transformation-local family domains与结构化infeasible原因；不是IR、attr、side table、Transform handle或package字段。
+  transformation-local family domains与06统一的typed provider outcome/reason；不是IR、attr、side table、Transform handle或
+  package字段。
 - Downstream consumer:
   tasks/06 constraint propagation和bounded candidate generation；tasks/08另行提供PhysicalEncoding/TransferRouteFamily。
 - User-level driver / named pipeline:
@@ -108,6 +109,122 @@ Pipeline position:
   每个family、有限enum组合、约束边界类与property-generated shapes都验证domain、numeric、geometry、resource和
   qualification；unknown capability fail closed，同query在不同线程数和registration顺序下返回同一canonical signature。
 ```
+
+#### 2.1.1 Canonical semantic descriptor
+
+provider只接受下面的owner-private analysis value与invocation-local binding；它们不是IR、attr或cache sidecar：
+
+```text
+SemanticOpDescriptor {
+  descriptor_version
+  semantic_kind
+  static_iteration_domain
+  iterator_kinds[]
+  semantic_values[]
+  scalar_program
+  numeric_contract
+  effect_contract
+}
+
+SemanticValueDescriptor {
+  semantic_value_id
+  role: Input | Init | Result
+  logical_type
+  iteration_to_value: IndexRelation
+  access: Read | Write | ReadWrite
+  tied_init_id?
+}
+
+SemanticOpBinding {
+  semantic_value_id -> current IR Value
+  source_anchor
+}
+
+SemanticDescriptorBuildResult {
+  status: Ready | Unsupported | ResourceExhausted | Invalid
+  descriptor?
+  binding?
+  failure_reason?
+  work_summary
+}
+```
+
+`semantic_kind`是contraction、pointwise、reduction、convert、fill、copy等closed stable分类，由iterator、indexing relation、
+DPS tie、scalar body和effect推出，不从op名、buffer名或raw operand position猜。`semantic_value_id`按typed role及其canonical
+ordinal分配：先由structured interface、indexing relation、DPS tie和scalar-region argument binding证明role，再按该role的
+canonical semantic slot顺序编号；ordinal只区分已经证明的同role multiplicity，不能反过来推断role。相同canonical semantic
+structure必须得到相同ID和descriptor bytes。`SemanticOpBinding`只服务本次rewrite，改写后销毁重建且不进入digest。
+
+`scalar_program`按SSA evaluation order形成closed typed DAG，节点只含registered scalar opcode和typed raw constant；浮点
+commutative operand不得为构造key而交换，numeric policy、rounding、NaN/Inf和overflow合同均进入descriptor。dynamic domain、
+unknown effect或未注册scalar opcode返回`Unsupported`；analysis fuel耗尽返回`ResourceExhausted`，malformed structured/DPS/registry
+关系返回`Invalid`。三种失败都不返回partial descriptor/binding，`ResourceExhausted`不缓存为semantic/capability truth。
+
+#### 2.1.2 Provider query/result/key
+
+```text
+ImplementationQuery {
+  semantic_descriptor
+  target_capability_context
+  deterministic_work_policy
+  tile_domain_constraints
+  encoding_domains_by_semantic_value
+  family_parameter_constraints
+  incoming_invalid_lane_states
+  resource_bounds
+}
+
+ImplementationQueryKey {
+  descriptor_digest
+  normalized_query_constraints
+  target_capability_context_digest
+  deterministic_work_policy_digest
+  provider_schema_version
+  registry_digest
+}
+
+ImplementationQueryResult {
+  status: ProviderQueryStatus  // Available | Unsupported | ResourceExhausted | Invalid
+  canonical_query_key
+  family_domains[]
+  canonical_baseline?
+  unsupported_reason?: ProviderUnsupportedReason
+  failure_reason?
+  work_summary
+}
+
+ImplementationFamilyDomain {
+  family_key
+  parameter_domain
+  numeric_profile
+  encoding_requirements_by_role
+  geometry_tail_constraints
+  invalid_lane_predicates_and_transfer
+  resource_effect_formula
+  exact_static_metric_lower_bounds
+  materializer_key
+  exact_legality_key
+}
+
+CanonicalBaselineRecipe {
+  family_key
+  canonical_parameter_point
+  canonical_encoding_constraints_by_role
+  bounded_safe_tile_rule_key
+}
+```
+
+`canonical_encoding_constraints_by_role`只收窄08 encoding query的role domain，不选择encoding family或parameter point；
+实际canonical encoding只能由08 `CanonicalEncodingBaselineRecipe`拥有并由06 baseline composer顺序实例化。两者不兼容时baseline
+按06 typed status失败，本文不得内置第二个encoding tuple。
+
+`ProviderQueryStatus`和`ProviderUnsupportedReason`由06统一定义。`Available`要求非空、按canonical family key排序且恰有一个属于
+domain的baseline；同key不同合同是registry error。`Unsupported`不携带partial family/baseline且必须区分
+`UnsupportedRepresentation`、`UnsupportedCapability`或`InfeasibleConstraints`；`ResourceExhausted`只表示本次查询未完成，不缓存为
+capability truth；`Invalid`表示descriptor/query/registry不一致并fail closed。result与key不包含op/value pointer、名字、registration/discovery order、
+thread completion order或scalar time estimate。`normalized_query_constraints`必须all-and-only编码query中未单列的tile、encoding、
+family parameter、invalid-lane和resource字段；`target_capability_context`及其digest直接使用06唯一typed/resolved schema，
+不能只用target profile代替qualification环境，也不能由本文重建另一份context。
 
 ### 2.2 Selected Target-Abstract to Instruction Pipeline Contract
 
@@ -121,9 +238,10 @@ Pipeline position:
 - Current stage responsibility:
   在所有 rank entries 的完整 structured control flow 上，对 target-abstract
   compute/movement/layout/load/store op 做 Wafer instruction legalization /
-  selection，验证selected `ImplementationFamily`/`TransferRouteFamily`并改写或构造 instruction-level `wafer.instr.*`，复用现有 Wafer-tagged memref
-  SSA graph，并显式生成 queue/effect、temp/psum/staging、alias/view、async token/completion relation 和
-  descriptor attrs。
+  selection，验证selected `ImplementationFamily`已经物化的typed字段；direct boundary route只能表现为destination-style
+  load/store及其typed views，staged route只能表现为显式temp/DMA/GS/event graph。本stage从这些IR事实和target capability context重算08唯一
+  canonical direct cover，不消费`TransferRouteFamily` side object，并改写或构造instruction-level `wafer.instr.*`，复用现有
+  Wafer-tagged memref SSA graph，显式生成queue/effect、temp/psum/staging、alias/view、async token/completion relation和descriptor attrs。
 - Output artifact / IR:
   只存在于 candidate clone 中、覆盖每个 static rank 完整 traversal 的 instruction-level Wafer
   structured programs over unplaced Wafer-tagged memref，或结构化 failure reason。
@@ -356,6 +474,9 @@ movement op 的合同：
   compact；constant source 由 `ConstantLike` value、constant storage transform 和 load op contract 表达，
   DDR external view/descriptor validation、compiler-managed DDR `memref.alloc` 和 memory planning gate
   由 DDR memory planning 文档定义。
+- 终态`wafer.tile.load/store`是无result、无隐式allocation的destination-style op；source/destination logical shape和dtype相同，
+  coordinate relation恒为identity。permutation/slice/reshape/concat必须先成为standard typed view与有限identity pieces；op不携带
+  route id、IndexRelation或descriptor sidecar。
 - 当 `wafer.tile.load` 的 source 是 `ConstantLike` 时，load op 仍必须表达 logical slice / index
   operands。Weight chunking 是 storage/lowering 策略；compute op 只消费 load 后的 storage，
   不依赖旁路 metadata 或名字约定。
@@ -382,10 +503,11 @@ movement op 的合同：
 - stride 和 byte count 的单位在 `wafer.instr.*` descriptor attrs 和 ABI/packet emission 参数中必须明确。
   上层 tensor stride 是 element stride，lower 到 DMA/TDMA/DTE descriptor 前必须转换成 byte stride。
 
-`TransferRouteFamily`、physical realizability和descriptor-cover oracle完全由08拥有。本文只验证并lower已经selected的
-target-abstract movement：RDMA是DDR source strided、SPM destination sequential/local-offset，WDMA严格反向，GS可表达
-双侧映射；不满足selected route合同就结构化失败，不能临时换route。selected movement必须携带08要求的typed relation、
-segment/local-offset和invalid-lane effect，使instruction lowering能重建exact descriptor，而不是只在cost中标“已融合”。
+`TransferRouteFamily`、physical realizability和descriptor-cover oracle完全由08拥有。route choice在进入本文前必须已经消解为
+正式IR：direct/multi-command boundary route是destination-style load/store，local route是typed movement，staged route是显式
+temp、DMA、GS和event。本文只消费这些IR；对load/store从两端root/view/encoding/valid-domain/invalid-lane事实重算唯一canonical
+cover，RDMA固定DDR source strided、SPM destination sequential/local-offset，WDMA严格反向，GS才可表达双侧映射。proof失败就
+结构化拒绝当前clone，不能读取planner trace、临时换route或把route只记在cost中。
 
 ## 4. Interfaces
 
@@ -431,19 +553,39 @@ SystemC纵向，不能从“elementwise通常flexible”推断能力。
 
 ### 4.3 Effects and Resources
 
-compute/movement op 应实现或组合 MLIR memory effect / resource effect：
+effect合同由两个互补接口拥有，不能互相替代：
+
+- MLIR `MemoryEffectOpInterface`是CSE、DCE、LICM等generic transformation可见的保守正确性投影；
+- `WaferResourceEffectInterface`通过`collectWaferResourceEffects`和
+  `verifyWaferResourceEffectContract`表达bytes、value role、issue/wait/fence和completion proof所需的resource lifecycle marker；
+  marker本身不是completion proof。
+
+每个detailed Wafer effect必须被standard effect覆盖；standard effect允许更保守，但不能漏报。固定投影为：
+
+| Wafer detailed effect | standard MLIR effect |
+| --- | --- |
+| SPM/DDR read | 对对应Wafer memory resource的`Read` |
+| SPM/DDR write | 对对应Wafer memory resource的`Write` |
+| Compute/Movement/Communication issue | 对对应singleton invocation resource的`Write` |
+| Communication wait | 对Communication resource的`Read + Write` |
+| local fence | 对Sync resource的`Write`，并对其typed coverage中实际排序的每个local Compute/Movement engine resource分别投影`Write`；Direct DTE Communication只能由matching token/wait/path闭合 |
+
+logical LinalgExt collective只投影Communication `Write` barrier；它尚未成为target issue，不能提前伪造engine effect。
+standard effect只约束generic rewrite；detailed Wafer resource effect也只提供lifecycle marker与验证输入，二者都不单独证明
+provider completion或buffer可复用。completion必须由SSA token的issue→exact wait use-def、local fence的typed pending-engine
+coverage、每条control-flow path的pending-set closure和tasks/12 verifier共同证明。local fence若只投影Sync而漏掉它实际排序的
+engine resource，会允许generic变换跨越该engine issue，属于非法effect合同。
+
+compute/movement op 至少表达：
 
 - read effects：input storage、constant load source、DDR source。
 - write effects：output storage、store destination、temporary/workspace。
 - resource effects：CT/NE/RDMA/WDMA/TDMA instruction family、worker resource、SPM bank/page/color class。
 - async policy：op 是否可 lower 成 issue-only，以及哪些 buffer lifetime 必须延伸到 fence/wait。
 
-这些 effect 用于 liveness、SPM reuse、scheduler 和 verifier。它们不等于保存一份全局 issue plan。
-
-R1.2 的具体接口是 `collectWaferResourceEffects` / `verifyWaferResourceEffectContract`。它返回结构化
-`WaferResourceEffect`，区分 SPM、DDR、movement、compute、communication 和 sync，以及 read/write/
-issue/fence/wait。关键 movement/compute/comm op 同时接入 MLIR `MemoryEffectOpInterface` 的
-Wafer resource，供通用 effect 分析查询。
+这些 effect 用于 liveness、SPM reuse、scheduler 和 verifier，不保存全局issue plan。所有issue、wait、fence、target
+compute/movement/communication、logical collective和observable store均必须是non-speculatable；统一verifier除检查effect
+覆盖外还检查`!mlir::isSpeculatable(op)`。只有同时无memory/resource effect且不会触发UB的纯结构op才能声明`Pure`。
 
 ## 5. Verifier and Legality
 
@@ -471,9 +613,9 @@ Instruction/runtime verifier：
   WDMA source 是 SPM、destination 是 DDR。
 - memory-space verifier 必须用统一的 `#wafer.memory<space, layout>` 检查这些 address domains；不能把
   external boundary、DDR descriptor 和 SPM storage 当成几套不相干的空间语义。
-- DDR compiler-managed/resident planned range、external allocation、capacity 和 bandwidth 不是本层
-  op attr；本层只通过 memory effects、range、byte count 和 direction contract 把需求暴露给
-  DDR memory planner。
+- DDR compiler-managed/resident planned range、external allocation、capacity和alignment不是本层op attr；本层只通过
+  memory effects、range、byte count和direction contract把需求暴露给DDR memory planner。未校准bandwidth不是hard
+  legality输入；exact bytes进入06 static cost，Q9 PMU数据以后只能重排已通过gate的候选。
 - stride、iteration、byte count、range end、bool bitpack 和 alignment 规则已完成转换和检查。
 - logical shape 到 physical footprint、view/root/descriptor range、offset arithmetic 和 target ABI field
   narrowing 必须通过 shared physical geometry/range/narrowing verifier；所有 consumer 复用同一 helper，
@@ -593,16 +735,20 @@ Target-abstract tile-region：
 Accepted layout 后：
 
 ```mlir
-%a_spm = wafer.tile.load %a_tile
+%a_spm = memref.alloc()
+    : memref<64x256xf16, #wafer.memory<spm, tensor>>
+wafer.tile.load %a_tile into %a_spm
     : memref<64x256xf16, #wafer.memory<ddr, tensor>>
-   -> memref<64x256xf16, #wafer.memory<spm, tensor>>
+   into memref<64x256xf16, #wafer.memory<spm, tensor>>
 %a_cx = wafer.tile.materialize_layout %a_spm
     : memref<64x256xf16, #wafer.memory<spm, tensor>>
    -> memref<64x256xf16, #wafer.memory<spm, cx>>
 
-%b_spm = wafer.tile.load %b_tile
+%b_spm = memref.alloc()
+    : memref<256x64xf16, #wafer.memory<spm, tensor>>
+wafer.tile.load %b_tile into %b_spm
     : memref<256x64xf16, #wafer.memory<ddr, tensor>>
-   -> memref<256x64xf16, #wafer.memory<spm, tensor>>
+   into memref<256x64xf16, #wafer.memory<spm, tensor>>
 %b_cx = wafer.tile.materialize_layout %b_spm
     : memref<256x64xf16, #wafer.memory<spm, tensor>>
    -> memref<256x64xf16, #wafer.memory<spm, cx>>

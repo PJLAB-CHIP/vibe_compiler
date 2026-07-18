@@ -48,7 +48,9 @@ oracle，但都不拥有全局candidate选择。
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  verifier-legal rank-local structured tensor IR、normalized IndexRelation、shape/dtype/numeric policy、target profile，
+  verifier-legal rank-local structured tensor IR、normalized IndexRelation、shape/dtype/numeric policy及完整
+  `target_capability_context`（target/profile/ABI、model provider/profile或board environment/allowlist identity、revision、
+  qualification floor），
   以及tasks/10参数化implementation family提出的operand/result encoding requirements。输入来自当前IR和同次
   transformation中的可重算analysis，不包含模型角色、固定shape matcher或已序列化layout plan。
 - Current stage responsibility:
@@ -79,18 +81,23 @@ Pipeline position:
 Pipeline position:
 - Upstream artifact / IR:
   complete-rank candidate clone，以及同一次transformation内由tasks/06选中的implementation、physical versions、
-  edge realizations和immutable storage choices。每项选择都引用当前IR可重算的IndexRelation和provider alternative。
+  edge realizations、immutable storage choices，以及13 `ResolvedCommunicationScheduleV1`中每条edge的selected route binding。
+  每项选择都引用当前IR可重算的IndexRelation和provider alternative。
 - Current stage responsibility:
   通过tasks/07 CandidateMaterializer创建Wafer-tagged memref、metadata view、typed boundary transfer、local/staged
   movement、explicit spill/reload和immutable encoded resource use；把selected route的必要relation/segment/effect
-  物化为下游可验证IR，并附带可由统一oracle重算的descriptor-cover与invalid-lane proof inputs；不生成instruction IR。
+  物化为下游可验证IR，并附带可由统一oracle重算的descriptor-cover与invalid-lane proof inputs；本provider materializer不生成
+  compute/movement instruction IR，communication DTE/wait则由07在同一transaction中调用13的resolved-schedule expander生成。
 - Output artifact / IR:
   candidate clone中的typed physical encodings、view、mapped/local/staged movement及其relation/segment/effect；10/11再从
   这些事实生成`wafer.instr.*`和exact descriptors。只有完整
   whole-rank/whole-variant gates通过并atomic commit后才成为accepted事实。失败不修改source或其它candidate。
 - Downstream consumer:
-  tasks/09和12 memory planning、tasks/10和11 instruction lowering/legality、tasks/13 event/transport、target ABI、
-  CRT/SystemC和executable bundle commit。
+  tasks/07/13先把selected communication完全展开且不得残留collective/schedule record，tasks/10和11再完成其余complete
+  instruction lowering/legality，tasks/09随后做whole-rank SPM planning，tasks/12做
+  whole-variant DDR planning，tasks/13做post-memory event/transport binding，随后是ABI/artifact-eligibility pure
+  preflight与ExecutableBundle atomic commit；commit成功后14才正式target conversion并分支给device CRT与
+  TargetCall/SystemC。
 - User-level driver / named pipeline:
   与planning provider相同，由production named pipeline或可选Transform控制面调用共享C++ materialization utility；
   不提供独立用户stop-stage或runtime layout selection。
@@ -99,8 +106,11 @@ Pipeline position:
   不让package按source path或parameter name重新packing，不把descriptor list反写成上层semantic attr。
 - Completion gate:
   所有当前profile已注册的selected view/direct DMA/multi-DMA/GS/staged/spill routes逐项物化并通过exact coverage、physical range、
-  SPM/DDR lifetime、event和instruction verifier；rejected clone无残留；若实现Transform入口，它与production产生
-  等价payload IR；target CModel能按committed encoding和movement解释完整logical output。
+  SPM/DDR lifetime、event和instruction verifier；含communication edge的case验证route binding逐条消费且candidate返回时无
+  unresolved collective/skeleton；rejected clone无残留；若实现Transform入口，它与共享rank-local library在
+  `RankLocalCandidateOrderV1`下产生相同`RankLocalPlacedPayloadSignatureV1`，并显式保持
+  all-rank/binding unverified；target CModel
+  只按committed production encoding和movement解释完整logical output。
 ```
 
 ## 3. 参数化 Capability Families
@@ -109,13 +119,67 @@ Pipeline position:
 
 ### 3.1 `PhysicalEncodingFamily`
 
-概念接口：
+encoding与route同样是受预算、可缓存的typed provider，不允许只暴露一个按target profile裸枚举的
+`parameter_domain`。完整合同为：
 
 ```text
+PhysicalEncodingQuery {
+  logical_type_and_value_role
+  normalized_index_and_implementation_access_relations
+  logical_tile_and_valid_domain
+  incoming_invalid_lane_state
+  candidate_memory_space_domain
+  implementation_encoding_requirements
+  encoding_parameter_constraints
+  target_capability_context
+  deterministic_work_policy
+}
+
+PhysicalEncodingQueryKey {
+  logical_type_role_digest
+  index_and_access_relation_digest
+  logical_tile_valid_domain_digest
+  invalid_lane_state_digest
+  memory_space_domain_digest
+  implementation_requirement_digest
+  normalized_parameter_constraint_digest
+  target_capability_context_digest
+  deterministic_work_policy_digest
+  encoding_provider_schema_version
+  encoding_registry_digest
+}
+
+PhysicalEncodingQueryResult {
+  status: ProviderQueryStatus  // Available | Unsupported | ResourceExhausted | Invalid
+  canonical_query_key
+  family_domains[]
+  canonical_baseline?
+  unsupported_reason?: ProviderUnsupportedReason
+  failure_reason?
+  work_summary
+}
+
+PhysicalEncodingFamilyDomain {
+  family_key
+  parameter_domain
+  memory_space_and_role_domain
+  footprint_and_alignment_formula_key
+  valid_domain_and_invalid_lane_transfer_key
+  logical_to_physical_map_key
+  view_compatibility_key
+  metric_vector_key
+  materializer_key
+}
+
+CanonicalEncodingBaselineRecipe {
+  family_key
+  canonical_parameter_point
+  bounded_materialization_rule_key
+}
+
 PhysicalEncodingFamily {
   family_key
-  parameter_domain(query, target_profile)
-  constraints(parameters, logical_type, target_profile)
+  constraints(parameters, query)
   physical_footprint(parameters, logical_type)
   valid_logical_domain(parameters, logical_type)
   logical_index_to_physical_bit_offset(parameters, logical_index)
@@ -125,6 +189,15 @@ PhysicalEncodingFamily {
 }
 ```
 
+`ProviderQueryStatus`和`ProviderUnsupportedReason`严格复用06四态合同。query key使用normalized typed bytes和06唯一
+`TargetCapabilityContext`/work-policy digest，不含`Value*`、名字、registration order或thread完成顺序。`Available`要求非空、
+按family key排序且恰有一个属于domain的canonical baseline；其它status不返回partial domain/baseline。
+`UnsupportedRepresentation`表示logical/access relation或lane state超出closed encoding algebra，
+`UnsupportedCapability`表示target/context没有资格row，`InfeasibleConstraints`只表示能力与表示均支持但domain交集为空；
+`ResourceExhausted`不缓存为capability truth。成功/unsupported/invalid cache都必须绑定完整canonical key、provider schema和registry
+digest。06的`CanonicalBaselineComposerV1`先消费implementation baseline requirement，再消费这里的encoding baseline；二者不兼容
+时整个semantic/profile baseline为Unsupported，不能按名字挑另一个encoding。
+
 `parameters`可以包含target encoding kind、block geometry和由target profile选择的版本，但能从dtype/shape/profile推出的
 字段不写进IR。`view_compatibility`返回physical-isomorphism/alias/relative-offset/range proof及view后的有限
 InvalidLaneState；当新view把旧valid区域重分类为padding且无法证明内容时返回Unknown。planner只在implementation或edge需求
@@ -133,24 +206,105 @@ InvalidLaneState；当新view把旧valid区域重分类为padding且无法证明
 ### 3.2 `TransferRouteFamily`
 
 ```text
+TransferRouteQuery {
+  normalized_source_root_view
+  normalized_destination_root_view
+  normalized_alias_effect_signature
+  source_encoding
+  destination_encoding
+  logical_tile_and_valid_domain
+  index_relation
+  dtype
+  incoming_source_invalid_lane_state
+  incoming_destination_invalid_lane_state
+  available_engine_domain
+  route_parameter_constraints
+  resource_bounds
+  target_capability_context
+  deterministic_work_policy
+}
+
+TransferRouteQueryKey {
+  source_destination_view_digest
+  alias_effect_digest
+  source_destination_encoding_digest
+  logical_tile_valid_domain_digest
+  index_relation_digest
+  dtype_digest
+  incoming_invalid_lane_state_digest
+  engine_domain_digest
+  normalized_route_constraints_digest
+  resource_bounds_digest
+  target_capability_context_digest
+  deterministic_work_policy_digest
+  route_provider_schema_version
+  route_registry_digest
+}
+
+TransferRouteQueryResult {
+  status: ProviderQueryStatus  // Available | Unsupported | ResourceExhausted | Invalid
+  canonical_query_key
+  family_domains[]
+  canonical_baseline?
+  unsupported_reason?: ProviderUnsupportedReason
+  failure_reason?
+  work_summary
+}
+
+TransferRouteFamilyDomain {
+  family_key
+  parameter_domain
+  descriptor_model_key
+  relation_and_encoding_constraints
+  temporary_and_event_formula
+  invalid_lane_state_transfer_key
+  exact_cover_key
+  metric_vector_key
+  materializer_key
+}
+
+CanonicalTransferBaselineRecipe {
+  family_key
+  canonical_parameter_point
+  bounded_materialization_rule_key
+}
+
 TransferRouteFamily {
-  route_kind
+  family_key
   supported_memory_spaces
   relation_constraints
   descriptor_model
   temporary_and_event_formula
   invalid_lane_state_transfer(query, source_state, destination_state)
-  exact_cover(query)
+  exact_cover(selected_query_and_parameters) -> TransferProofOutcome<DescriptorCoverResult>
   metric_vector(query, cover)
   materialize(selected_alternative)
 }
+
+TransferProofOutcome<T> {
+  status: ProviderQueryStatus  // Available | Unsupported | ResourceExhausted | Invalid
+  value?
+  unsupported_reason?: ProviderUnsupportedReason
+  failure_reason?
+  work_summary
+}
 ```
 
-`query`至少包含source/destination root和view/offset、normalized alias/effect signature（same-root relative overlap、
-proven-disjoint或unknown/may-alias）、source/destination encoding、logical tile/valid domain、IndexRelation、dtype、incoming
-source/destination InvalidLaneState、target profile以及可用engine。route family返回约束收窄后的惰性
-alternative，不枚举所有segment组合；partial valid-only write的post-state必须保留existing destination padding事实，full copy
-的post-state来自source state，不能凭route名字猜zero。
+root/view字段使用canonical geometry与same-root relative relation，不把`Value*`、地址或buffer名写入key；
+`target_capability_context`及其digest直接使用06唯一typed/resolved schema；本文不得从profile/environment重建另一份。
+`ProviderQueryStatus`和`ProviderUnsupportedReason`由06统一定义。`Available`要求非空、按`family_key`排序且恰有一个属于domain的
+canonical baseline。`Unsupported`必须携带typed reason：
+relation/encoding超出closed representation domain用`UnsupportedRepresentation`，target/environment资格行缺失用
+`UnsupportedCapability`，表示和capability均受支持但normalized constraints/domain或selected exact-cover参数无解时用
+`InfeasibleConstraints`。`Invalid`表示query或registry合同错误。除`Available`外均不返回partial family domain/baseline；
+`TransferProofOutcome`也只有`Available`可携带value，`unsupported_reason`只在`Unsupported`时存在。
+`ResourceExhausted`只表示本次domain/cover证明未完成，不推进任何`Unsupported` reason结论，也不缓存为capability truth；其它可缓存
+结果必须使用完整canonical key。query和proof共用这套四态与reason enum，调用方不得再分叉第五套“infeasible”状态机。
+
+route family返回约束收窄后的惰性alternative，不枚举所有segment组合；只有selected parameter point才运行exact cover。
+partial valid-only write的post-state必须保留existing destination padding事实，full copy的post-state来自source state，不能凭route
+名字猜zero。direct family proof失败只使该family不可选；staged family是provider返回并由planner显式选择的另一alternative，不是
+`exact_cover`或lowering内部fallback。
 
 ### 3.3 与 Compute Implementation Family 的边界
 
@@ -283,9 +437,9 @@ TX81 provider至少支持以下参数化route。列表是family，不是op-pair 
 | route family | target能力和约束 | selected IR形态 |
 | --- | --- | --- |
 | metadata alias/view | physical-isomorphic、合法alias和range | standard memref view或typed Wafer view；无movement |
-| direct mapped RDMA | DDR source按descriptor stride读取，SPM destination按selected physical order连续写入 | typed boundary load/mapped transfer，lower为一条RDMA |
-| multi-command mapped RDMA | 单descriptor不足但能被有限exact cover | 显式或可验证分段transfer，lower为多条RDMA和必要completion |
-| direct/multi mapped WDMA | SPM source按selected order读取，DDR destination按descriptor stride写入 | typed boundary store/mapped transfer，lower为一条或多条WDMA |
+| direct mapped RDMA | DDR source按descriptor stride读取，SPM destination按selected physical order连续写入 | destination-style `wafer.tile.load`，lower为一条RDMA |
+| multi-command mapped RDMA | 单descriptor不足但能被有限exact cover | destination-style `wafer.tile.load`，由唯一cover lower为多条RDMA和必要completion |
+| direct/multi mapped WDMA | SPM source按selected order读取，DDR destination按descriptor stride写入 | destination-style `wafer.tile.store`，lower为一条或多条WDMA |
 | local GatherScatter | source和destination各自满足GS descriptor model | `wafer.tile.materialize_layout`或typed local movement |
 | staged transfer | direct route不可表示，DMA与GS分阶段完成 | explicit temp、DMA、GS和event |
 | immutable prepack | source为compiler-owned immutable value且typed storage owner可发布selected encoding | typed encoded resource和对应load |
@@ -312,9 +466,15 @@ descriptor cover按destination physical traversal构造，不逐tensor元素建�
    invalid-lane postcondition一致。source按`R`读取，可因broadcast重复；再验证两侧range、effect、alias，以及独立fill在
    logical writes之前且其中间值不可观察。
 
+返回前按destination logical half-open box、source box和descriptor canonical bytes排序；同一typed input/profile只能得到唯一
+顺序。lowering逐条无损发射，不能再次coalesce、重排或选择另一cover。
+
 production cover必须在normalized affine/piecewise domain和block/tail segments上符号化工作；复杂度取决于rank、relation
 piece数量和descriptor边界，不取决于tensor element count。逐元素遍历只允许作为测试慢oracle。segment/descriptor数量受
-target policy硬上限约束，超过上限时该route返回infeasible或产生有界staged alternative，不能无界展开。
+target policy硬上限约束；证明某个direct family必须超过硬件descriptor上限时，该family返回
+`Unsupported(InfeasibleConstraints)`。planner随后可以
+选择provider已注册的staged family；direct cover自身不产生staged alternative。若只是proof work/fuel耗尽，返回
+`ResourceExhausted`且不缓存为`InfeasibleConstraints`。
 
 概念结果：
 
@@ -336,23 +496,33 @@ DescriptorCoverResult {
 planner需要区分“descriptor数量少但每次inner span极小”和“稍多descriptor但长连续burst”。因此provider返回exact metrics
 vector，不只返回conversion bytes或单一cost。
 
-如果exact cover失败，provider可以惰性返回另一个family，例如staged DMA+GS；它不能在selected candidate lowering阶段
-自动换route。所有route都失败时返回结构化infeasible，让tasks/06考虑别的implementation、tile、encoding或cut。
+provider可以在同一query的canonical result中同时惰性暴露direct与staged family domain；planner显式选择其中一个。selected
+direct exact cover失败只拒绝该alternative，不能在candidate materialization或instruction lowering阶段自动换route。所有family
+都返回`Unsupported`时，tasks/06按其typed reason再考虑别的implementation、tile、encoding或cut；任一必要proof为
+`ResourceExhausted`时不能把该query记成“所有route失败”。
 
 ## 9. Boundary Transfer
 
 host-visible dynamic input/output仍保持compact external ABI；该约束固定的是DDR storage，不固定device-side中间版本。
 
-`wafer.tile.load/store`或后续typed boundary op必须能表达：
+唯一IR固定为07的destination-style `wafer.tile.load/store`，不再保留“扩load/store或新增mapped transfer”的二选一：
 
-- source/destination memory root和static/piecewise tile view；
-- logical IndexRelation或可由typed view/op语义重算的relation；
-- selected SPM physical version和valid logical domain；
-- read/write effect、range和completion。
+```text
+wafer.tile.load  %ddr_view into %spm_view
+wafer.tile.store %spm_view into %ddr_view
+```
 
-如果现有load/store op不能稳定表达mapped relation，应扩展typed affine/piecewise relation或引入职责单一的mapped transfer op；
-不能把relation藏入descriptor list、buffer名或planner side table。instruction lowering再从这些事实和provider重建exact
-descriptor cover。
+op恒表示相同logical tensor type上的coordinate identity，并显式读取/写入已有allocation/view；它不创建result或隐式storage。
+DDR compact root、static/piecewise typed view、selected SPM encoding/version、valid domain、effect、range和completion均由operand
+type、view、SSA和op合同重算。非identity permutation/slice/reshape/concat先规范成standard typed DDR view与hard-capped
+identity pieces；无法形成exact direct cover时，direct family返回typed`Unsupported`，由06另行选择并物化显式staged movement；
+其中已支持域内约束无解必须表达为`Unsupported(InfeasibleConstraints)`。不得添加IndexRelation attr、descriptor list、route id、
+buffer名约定或planner side table。
+
+给定两端typed view/encoding与target capability context时，direct descriptor cover必须canonical唯一。route choice在accepted
+IR中只表现为两种互斥形态：direct是上述destination-style load/store，staged是显式temp、DMA、GS和event graph。instruction
+lowering只从当前IR重证并发射direct cover，不能消费selected-family side object或planner trace重新选择。若未来同一typed direct
+IR确有多个下游必须区分的真实route choice，必须新增由verifier和下游逐字段消费的typed IR事实。
 
 因此合法主路径可以是：
 
@@ -383,13 +553,16 @@ compact DDR -> SPM Tensor -> transpose -> Tensor -> GS -> Cx
 Verifier至少检查：
 
 - source/result logical shape、element type和valid domain一致；
-- memory spaces和encoding combination属于selected local route family；
+- memory spaces和encoding combination属于registered canonical local route domain；若存在多个下游必须区分的local route，必须由
+  route-specific typed op/field消歧；
 - source/result physical maps不同；same-map materialization应被canonicalize；
 - exact descriptor cover、temporary、range和completion可lower；
 - read source/write result effects完整。
 
-该op不保存cost、失败原因、planner选择理由、备选route或model role。lowering按selected route生成GS/TDMA/其它typed
-movement和fence/wait；不能重新移动cut、换encoding或改做prepack。
+该op不保存cost、失败原因、planner选择理由、备选route或model role。当前generic op的两端typed encoding与target capability
+context必须唯一决定canonical local cover/engine，lowering只重证并无损生成相应movement和fence/wait；若provider选择另一种真实
+local route，materializer必须先改写成route-specific typed op/field。lowering不能消费selected-family side object、重新移动cut、
+换encoding或改做prepack。
 
 ## 11. Immutable Storage Encoding
 
@@ -488,13 +661,17 @@ queue overlap只有在selected IR/event和validated target profile都证明时�
 ## 15. Transform Dialect 边界
 
 本文provider、proof mechanisms和materializer都是共享C++ library，不把family domain、descriptor frontier或physical-version
-graph编码为Transform handle/param。Transform Dialect extension可以在candidate形成前调用同一typed view/route mechanism，
-也可以通过tasks/06的粗粒度synthesis op调用同一provider或打印selected route report；不能为Tensor-to-Cx、dtype、GEMM
-orientation或每种DMA route新增transform case。
+graph编码为Transform handle/param。Q32.T只能对singleton rank-local module调用06固定的三个coarse ops：rank-local structured
+optimization、按`RankLocalCandidateOrderV1`显式物化一个**nonproduction rank-local candidate**，以及只读candidate inspection。
+它不调用或伪造one-rank/all-rank coordinator，不证明cross-rank transport、physical binding、package/ABI eligibility，也不能把
+candidate称为production winner或与production winner比较。report必须保留`all_rank_and_binding_unverified`。
+Q32.T只用06固定的`CompilerEmission + CompilerEmittable` context，report还必须保留
+`model_and_board_qualification_unverified`，不能从profile spelling扩大资格。
 
-selected route物化后，只能编排不改变selected choice的proof-preserving cleanup/verifier；会改变root/lifetime/route的mechanism
-必须回到isolated candidate并重跑exact gates。Transform IR不是accepted execution artifact，下游只消费普通Wafer/memref/
-instruction IR。
+route alternative在candidate中必须已经物化：direct是destination-style load/store，staged是显式temp、DMA、GS和event graph。
+之后只能编排不改变该IR choice的proof-preserving cleanup/verifier；会改变root/lifetime/route的mechanism必须回到isolated
+candidate并重跑全部payload可重算的per-rank exact gates；依赖frontend binding的gate保持unverified。TransformState不保存selected family side object，Transform IR/candidate也不是accepted
+execution artifact；下游只消费普通Wafer/memref/instruction IR。
 
 ## 16. Verifier 与测试
 

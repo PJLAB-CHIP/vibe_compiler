@@ -34,8 +34,8 @@ Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op
   恢复resource semantics。
 
 本文不分配DDR，不选择physical layout，不决定task/dataflow cut，不选择compute/communication
-instruction selection，也不生成 runtime package。DDR source/destination range 和 bandwidth 可以作为
-legality 或 cost input；DDR declared arena/placement-domain resource 的主设计见
+instruction selection，也不生成 runtime package。DDR source/destination range、capacity、largest-contiguous和alignment是
+hard legality；exact transferred bytes/pressure只进入cost，未校准bandwidth不构成legality fact；DDR declared arena/placement-domain resource 的主设计见
 `tasks/12-ddr-memory-planning.md`。SPM allocation 的失败 trace、搜索顺序和
 rejected/candidate offset 都是 analysis，不写进长期 IR。
 
@@ -211,8 +211,8 @@ program或legacy `wafer.group`；
 offset facts 只有作为 complete passing variant 的一部分才能进入主 IR。
 其中 allocation summary 只覆盖 `#wafer.memory<spm, *>`；DDR 的 external view/descriptor validation、
 constant residency/storage、compiler-managed DDR `memref.alloc`、全局容量、largest contiguous range
-和 bandwidth 属于 DDR memory planning，但 movement/scheduler 仍要把 DDR byte footprint 和
-bandwidth 作为 cost/legality input。
+属于 DDR memory planning；movement/scheduler把 exact DDR byte footprint作为cost input。带宽只有Q9 PMU校准后才能参与
+合法候选排序，不能反向改变range/capacity legality。
 
 ## 4. Instruction Storage Requirements
 
@@ -284,7 +284,7 @@ tile-region IR 而没有 R3.2e candidate DDR tile views 和 R3.2d instruction-le
 
 `BufferDemand` 的 `wafer_memory_attr`、`physical_layout` 和 `storage_size` 适用于所有 memory space；
 但本文 allocator 只为 `#wafer.memory<spm, *>` demand 放置 offset。`#wafer.memory<ddr, *>` demand 不进入 SPM memory planning，只进入 movement legality、
-range/bandwidth cost、host-visible lifetime 和 DDR memory ownership 检查。
+range/capacity/alignment gate、exact byte cost、host-visible lifetime 和 DDR memory ownership 检查。
 
 ## 5. Lifetime and Effects
 
@@ -553,12 +553,12 @@ capacity objective算法为：
    `ResourceExhausted`不移动任何bound。
 4. 对同一probe允许node slice几何增长，但当前MiniMalloc不能resume；每次solver invocation（含retry）都计一次query，重复DFS
    work全部计入总nodes和retry telemetry，cache hit不计solver query/node但单独计数。
-   所有候选/probe/retry按canonical candidate signature、probe和retry level形成确定性work order，不能按并行future完成顺序
+   所有候选/probe/retry按06的`CanonicalShortlistWorkKey`、probe和retry level形成确定性work order，不能按并行future完成顺序
    消耗共享fuel。query或node budget结束时，只要已有incumbent就返回`Feasible + Bounded`。
 5. 每个新incumbent立即通过共享validator；winner在offset apply前从final IR重建problem。problem未变可再次复验incumbent，
    任一root/alias/lifetime/effect/materialization变化都必须重新evaluate。best placement apply后，任何读取offset/address/range、
-   descriptor/local-offset/narrowing或compatibility signature的旧结果全部失效，必须从placed current IR fresh重跑后才能分桶/
-   commit。
+   descriptor/local-offset/narrowing、`PlacedRankCompatibilityClaimsV1`或`RankLocalPlacedPayloadSignatureV1`的旧结果
+   全部失效，必须从placed current IR fresh重跑后才能分桶/比较。
 
 受管core当前没有消费preferred-offset hint的合同；`Buffer.offset`是hard fixed placement，不能冒充warm start。首版只复用
 prepared problem、capacity-query cache、bound和validated incumbent，不修改third-party API。analysis result、cache、probe和
@@ -619,17 +619,22 @@ partial offsets复制到其它clone。
 complete static rank structured program + bounded task/tile/implementation/transfer proposals
   -> generate a capability-filtered bounded per-rank proposal frontier
   -> for each proposal, materialize complete rank traversal and its wafer.tile.region task fragments
-     (target-abstract compute/comm/load-store/layout/sync/storage/effect)
+     (target-abstract compute/movement/load-store/layout/sync/storage/effect plus resolved communication schedule)
+  -> expand every selected communication skeleton into explicit staging/local-compute/movement/DTE/wait body;
+     no unresolved collective or schedule record may survive
   -> materialize candidate DDR tile views as memref.subview operands
   -> legalize/select instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
   -> candidate-local function-boundary bufferization/proof-preserving rewrites; fresh analysis; source IR remains unchanged
   -> collect BufferDemand + whole-rank liveness/effect and pure-evaluate per-rank full-arena SPM feasibility
   -> for selection-sensitive survivors, bounded capacity analysis refines lower/high-water interval under shared optimization fuel
   -> apply only the best validated placement
-  -> fresh rerun SPM range/resource, descriptor/address/narrowing, DTE local-offset, compatibility and other offset-dependent gates
-  -> fresh recost and bucket surviving rank candidates by compatibility signature
+  -> fresh rerun SPM range/resource, descriptor/address/narrowing, DTE local-offset and other offset-dependent gates
+  -> fresh PlacedRankCompatibilityClaimsV1 + RankLocalPlacedPayloadSignatureV1
+  -> fresh recost and bucket surviving rank candidates by PlacedRankCompatibilityClaimsV1 bytes
   -> baseline-first lazy/factorized all-rank join; no eager rank-frontier Cartesian product
-  -> per-complete-variant DDR/package-eligibility/transport/target ABI preflight and fresh exact vector
+  -> per-complete-variant whole-variant DDR planning
+  -> post-memory physical transport binding + AcceptedVariantTransportSignatureV1
+  -> package/target ABI pure preflight and fresh final-bound exact vector/candidate signature
   -> transaction-local construction/validation of all RankExecutable records and ExecutableBundle
   -> atomically commit all rank programs plus validated bundle, or commit nothing
   -> target codegen derives address-range parameters from committed IR + executable bindings
@@ -649,8 +654,10 @@ effect；planner不另造影子whole-entry plan。
 每个候选必须先把resident edge、spill、physical version、mapped/staged transfer和instruction sequence显式物化；SPM
 allocator只从该IR重算demand。任何gate失败时，其allocation、offset search trace和cost breakdown与clone一起丢弃。
 ranking属于联合planner：从完整IR重算06统一定义的SPM、DDR/SPM movement、transport bytes/message、compute、descriptor/
-inner-span、engine issue/event和padding exact static vector。只在相同all-rank compatibility signature内做strict dominance，
-再用stable profile policy确定性tie-break；unknown或tradeoff不得伪装成收益，未校准结果不得称为硬件时间。
+inner-span、engine issue/event和padding exact static vector。rank-local strict dominance只在相同
+`PlacedRankCompatibilityClaimsV1` bytes内进行；complete variants完成DDR和binding后再从final bound IR生成
+`AcceptedVariantTransportSignatureV1`、whole-variant vector与candidate signature，并用stable profile policy确定性
+tie-break。unknown或tradeoff不得伪装成收益，未校准结果不得称为硬件时间。
 SPM interval只用于安全dominance和追加query优先级，最终`peak_spm_bytes`取实际best placement；gap/proof不进入accepted
 cost artifact。
 
@@ -834,9 +841,12 @@ whole-variant candidate plan
   -> candidate-local proof-preserving rewrites; invalidate and fresh-recompute alias/effect/lifetime; source IR remains unchanged
   -> per-candidate instruction storage/effect demand and independent whole-rank full-arena SPM feasibility evaluation
   -> selection-sensitive capacity analysis and best validated placement apply
-  -> fresh per-rank instruction/descriptor/SPM/range/local-offset/completion gates, recost and compatibility bucketing
+  -> fresh per-rank instruction/descriptor/SPM/range/local-offset/completion gates
+  -> fresh PlacedRankCompatibilityClaimsV1 + RankLocalPlacedPayloadSignatureV1, recost and claims bucketing
   -> baseline-first lazy all-rank join
-  -> per-complete-variant DDR/package-eligibility/transport/geometry/ABI preflight and fresh recost
+  -> per-complete-variant whole-variant DDR planning
+  -> post-memory transport binding + AcceptedVariantTransportSignatureV1
+  -> package/geometry/ABI pure preflight and fresh final-bound recost/candidate signature
   -> transaction-local RankExecutable/ExecutableBundle construction and validation
   -> winning variant plus validated bundle atomic commit, then target-codegen from committed bindings/accepted facts
   -> failure feedback with no partial commit when no complete variant survives
