@@ -10,6 +10,7 @@
 #include "Wafer/Support/OptimizationQualificationArchive.h"
 #include "Wafer/Support/OptimizationQualificationArchiveStore.h"
 #include "Wafer/Support/OptimizationQualificationEvidence.h"
+#include "Wafer/Support/OptimizationQualificationExecution.h"
 #include "Wafer/Transforms/StructuredOptimization.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -265,6 +266,67 @@ TEST(OptimizationQualificationDriverTest,
   EXPECT_FALSE(wafer::lookupMechanismDescriptor(wafer::MechanismKey{0}));
   EXPECT_FALSE(
       wafer::lookupMechanismDescriptor(wafer::MechanismKey{previous + 1}));
+}
+
+TEST(OptimizationQualificationDriverTest,
+     IsolatedExecutionResultIsCanonicalAndCorruptionClosed) {
+  wafer::OptimizationQualificationExecutionResultV1 result;
+  result.qualificationRunDigest = filledDigest(41);
+  result.inputSnapshotDigest = filledDigest(42);
+  result.caseKey = wafer::getCurrentMandatoryQualificationCasesV1().front();
+  result.configuration = evidenceAllOnConfiguration();
+  result.outputArtifactDigest = filledDigest(43);
+  result.staticMetrics = makeStaticVector(100);
+  result.targetModelEvidenceDigest = filledDigest(44);
+
+  wafer::AdoptionSpec spec =
+      *wafer::lookupAdoptionSpec(wafer::mechanism::RequiredTensorNormalization);
+  wafer::InvocationTelemetryV1 terminal;
+  terminal.identity.scopeKind = wafer::InvocationScopeKindV1::QualificationRun;
+  terminal.identity.scopeDigest = result.qualificationRunDigest;
+  terminal.identity.mechanismKey = spec.mechanismKey;
+  terminal.identity.invocationSite =
+      *wafer::lookupOptimizationInvocationSiteV1(spec.mechanismKey);
+  terminal.identity.cutPoint = spec.cutPoint;
+  terminal.qualificationCase = result.caseKey;
+  terminal.specDigest = wafer::digestAdoptionSpecV1(spec);
+  terminal.inputSnapshotDigest = filledDigest(45);
+  terminal.outcome = wafer::InvocationOutcome::Applied;
+  terminal.rewriteCount = 1;
+  terminal.workSummary.workPolicyDigest =
+      wafer::digestAdoptionWorkPolicyV1(spec.workPolicyKind);
+  terminal.workSummary.orderedCounters = {{1, 1}};
+  result.invocationTerminals.push_back(std::move(terminal));
+
+  std::vector<uint8_t> bytes =
+      wafer::encodeOptimizationQualificationExecutionResultV1(result);
+  ASSERT_FALSE(bytes.empty());
+  wafer::OptimizationQualificationExecutionResultV1 decoded;
+  std::string diagnostic;
+  ASSERT_TRUE(wafer::decodeCanonicalOptimizationQualificationExecutionResultV1(
+      bytes, decoded, &diagnostic))
+      << diagnostic;
+  EXPECT_EQ(wafer::encodeOptimizationQualificationExecutionResultV1(decoded),
+            bytes);
+  bytes.back() ^= 1;
+  EXPECT_FALSE(wafer::decodeCanonicalOptimizationQualificationExecutionResultV1(
+      bytes, decoded, &diagnostic));
+}
+
+TEST(OptimizationQualificationDriverTest,
+     ArchiveAllocatesPersistentRunSeriesOrdinals) {
+  llvm::SmallString<256> archiveRoot;
+  ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory(
+      "/tmp/wafer-qualification-run-series", archiveRoot));
+  auto cleanup = llvm::make_scope_exit(
+      [&] { llvm::sys::fs::remove_directories(archiveRoot); });
+  wafer::OptimizationQualificationArchiveStoreV1 store(archiveRoot.str().str());
+  std::string diagnostic;
+  EXPECT_EQ(store.allocateRunSeriesOrdinal(&diagnostic), 1u) << diagnostic;
+  EXPECT_EQ(store.allocateRunSeriesOrdinal(&diagnostic), 2u) << diagnostic;
+  wafer::OptimizationQualificationArchiveStoreV1 reopened(
+      archiveRoot.str().str());
+  EXPECT_EQ(reopened.allocateRunSeriesOrdinal(&diagnostic), 3u) << diagnostic;
 }
 
 TEST(OptimizationQualificationDriverTest,
@@ -1370,6 +1432,14 @@ TEST(OptimizationQualificationDriverTest,
       << diagnostic;
   EXPECT_EQ(selection.activeRef.setDigest,
             wafer::digestQualifiedOptimizationSetV1(candidateSet));
+  wafer::ActiveQualifiedOptimizationPolicySelectionV1 productionSelection;
+  ASSERT_TRUE(store.loadActiveQualifiedOptimizationPolicy(productionSelection,
+                                                          &diagnostic))
+      << diagnostic;
+  EXPECT_EQ(productionSelection.activeRef.setDigest,
+            wafer::digestQualifiedOptimizationSetV1(candidateSet));
+  EXPECT_EQ(productionSelection.qualifiedSet.batchObservationDigest,
+            candidateSet.batchObservationDigest);
   EXPECT_FALSE(store.publishOptimizationSet(runDigest, candidateSet,
                                             publication, &diagnostic));
   EXPECT_NE(diagnostic.find("attempt is already permanently sealed"),

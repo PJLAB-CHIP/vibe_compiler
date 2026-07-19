@@ -7,6 +7,7 @@ add_mlir_library(WaferSupport
   OptimizationQualificationEvidence.cpp
   OptimizationQualificationArchive.cpp
   OptimizationQualificationArchiveStore.cpp
+  OptimizationQualificationExecution.cpp
   CanonicalIRSnapshot.cpp
 
   LINK_LIBS PUBLIC

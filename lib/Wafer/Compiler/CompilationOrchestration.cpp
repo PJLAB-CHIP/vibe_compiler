@@ -305,7 +305,8 @@ mlir::LogicalResult runCompilationTransaction(
   if (!wafer::qualification_internal::buildStablehloToLinalgPipeline(
           tensorPipeline, optimizationPolicy.proposal,
           optimizationPolicy.optimizationConfiguration, &optimizationDiagnostic,
-          optimizationPolicy.inputVariant)) {
+          optimizationPolicy.inputVariant,
+          optimizationPolicy.requiredTensorNormalizationRepetitions)) {
     reject(diagnostics,
            "invalid compile optimization policy: " + optimizationDiagnostic);
     return mlir::failure();

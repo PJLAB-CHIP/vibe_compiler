@@ -24,6 +24,7 @@ struct CompilationOptimizationPolicyV1 {
   OptimizationQualificationProposal proposal;
   OptimizationConfiguration optimizationConfiguration;
   EquivalentInputVariantV1 inputVariant = EquivalentInputVariantV1::Original;
+  uint32_t requiredTensorNormalizationRepetitions = 1;
 };
 
 bool reject(llvm::raw_ostream &diagnostics, llvm::StringRef message);

@@ -14,8 +14,8 @@ packet provenance和timing仍是独立later/external gate。
 
 共享SPM/DDR static memory packing已从保守greedy升级为默认MiniMalloc fixed-capacity canonical search，并用
 确定性宽松work budget、三态结果、独立placement validator和仅限资源耗尽的first-fit fallback闭合编译
-资源边界。当前继续全pipeline upstream optimization adoption和Equivalent-IR稳定性，再进入通用
-physical-dataflow synthesis；后者先建立policy-free mechanisms，再由唯一solver联合选择implementation、tile、physical
+资源边界。全pipeline upstream optimization adoption和Equivalent-IR稳定性已完成，当前进入通用
+physical-dataflow synthesis的target implementation foundation；后续先建立policy-free mechanisms，再由唯一solver联合选择implementation、tile、physical
 encoding、storage realization、residency和有界局部顺序，并退役旧decision旁路。
 
 ## 队列规则
@@ -67,8 +67,8 @@ Q32.V -> Q3.6 (Count typed writeback/ABI mechanical closure)
 
 ## 当前实施队列
 
-Q33是当前唯一`doing` row。Q32 umbrella不会让后续row自动进入执行，later/external gate也不会
-自动进入主线。
+Q33已完成并冻结post-adoption baseline；Q32.I是当前唯一`next` row。Q32 umbrella不会让更后续row自动进入执行，
+later/external gate也不会自动进入主线。
 
 设计就绪边界：Q33、Q32.I/R/B/V/M/S/G及Q32 integrated audit、可选Q32.T和Q3.6的**内部**pipeline、typed schema、
 provider/search/resource、failure/atomicity与验证合同已经闭合；下表状态仍表示实现/验证调度，不表示这些实现已经完成。
@@ -76,8 +76,8 @@ board、hardware numeric、simulator/ISS、packet provenance和timing所需外�
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q33 | `compiler-optimization-adoption` | `doing` | Q29、Q28、Q30、Q31 | 以typed audit spec逐cut point闭合live invocation；用stage-specific bounded normalizer/verifier闭合DPS init/view/control/effect required form，按global batch + per-key marginal证据原子资格化fixed/cleanup set并冻结baseline；不提前依赖Q32 descriptor。 | 01、05-18；`tasks/plans/compiler-optimization-adoption.md` |
-| Q32.I | `target-implementation-foundation` | `blocked` | Q33 | 冻结fresh baseline，建立versioned SemanticOpDescriptor/scalar DAG、canonical provider query/result/key及current-v1唯一baseline；accepted interface只验证selected合同。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` A/B |
+| Q33 | `compiler-optimization-adoption` | `done` | Q29、Q28、Q30、Q31 | typed inventory、required normalizer、隔离资格化、immutable set发布、active production消费及rank1/rank16/7B SystemC/PyTorch post-adoption baseline已闭合。 | 01、05-18；`tasks/archive/compiler-optimization-adoption.md` |
+| Q32.I | `target-implementation-foundation` | `next` | Q33 | 冻结fresh baseline，建立versioned SemanticOpDescriptor/scalar DAG、canonical provider query/result/key及current-v1唯一baseline；accepted interface只验证selected合同。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` A/B |
 | Q32.R | `physical-relation-route-proof` | `blocked` | Q32.I | 建立closed piecewise quasi-affine IndexRelation、typed outcome/exact-vs-sound/fuel，PhysicalEncoding/view proof、唯一TransferRouteFamily、descriptor cover、InvalidLaneState和完整query key。 | 06-08、10、11、16、18；同计划C |
 | Q32.B | `physical-dataflow-baseline-vertical` | `blocked` | Q32.R、Q34 | 通过transaction-local RankFrontierProducer test seam让新provider baseline走同一finalization/all-rank/package/SystemC纵向；reserved baseline原子形成bundle且不调用旧decision owner。 | 01、06-18；同计划D |
 | Q32.V | `physical-capability-vertical` | `blocked` | Q32.B | 固定destination-style load/store、两端root-relative DMA offset和staged fallback；闭合invalid-lane、versioned oriented GEMM及schema-v4 RequiredCapabilitySet到model preflight，board数值predicate独立。 | 06、08、10、11、14-18；同计划E |
@@ -149,8 +149,9 @@ board、hardware numeric、simulator/ISS、packet provenance和timing所需外�
 
 ## 实施计划入口
 
-- Active task：Q33 `compiler-optimization-adoption`，计划见`tasks/plans/compiler-optimization-adoption.md`。
-- Next：Q32 queued，Q33完成前Q32.I保持blocked。Q34证据已归档于
+- Next executable task：Q32.I `target-implementation-foundation`，计划见
+  `tasks/plans/physical-dataflow-synthesis.md` A/B。
+- Q33已完成并归档；Q32.R及之后的row继续按显式blocked-by关系等待。Q34证据已归档于
   `tasks/archive/static-memory-packing.md`。
 - 新实施计划：`tasks/plans/`。
 - 已完成计划和历史证据：`tasks/README.md`的“实施计划导航”和“归档文档”。

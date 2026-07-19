@@ -734,3 +734,20 @@
 - 修复模式：用旧/新named pipeline对同一真实post-SPMD输入比较canonical IR，定位第一个分叉cut；把决定legality的两个位置分别
   登记为AlwaysOn required mechanism，保持原顺序并由gateway审计。optional proposal仍可为空，且关闭optional cleanup的完整
   rank-count=1/16与HF纵向必须通过；不要用放宽alias、提前lowering或target fallback掩盖上游artifact差异。
+
+## 2026-07-19 invocation terminal逐文件归档会造成小文件爆炸
+
+- 现象：scale资格化约数十万条terminal，每条写一个digest命名文件后，逻辑数据只有数百MiB，文件系统却消耗约2GiB并使
+  staging walk、fsync和readback极慢。
+- 根因：把manifest中的逐terminal逻辑binding直接等同于逐terminal物理文件；sub-page metadata和inode成本随invocation数量放大。
+- 修复模式：manifest仍逐项绑定invocation ID/terminal digest，实体按canonical顺序写入单个长度前缀pack并做deterministic zstd；
+  readback必须解压、逐项canonical decode/digest比对，再重编码重压确认byte-identical。生产policy loader只读发布capsule，完整pack
+  仅由publication/audit路径消费。
+
+## 2026-07-19 共享model gate不能丢失test binary的failure seam
+
+- 现象：source/model逻辑从CLI抽到共享库后，production数值路径通过，但专用test binary设置terminal-rank failure后仍成功，
+  late-rank atomic negative失去覆盖。
+- 根因：failure-injection宏只定义在test executable的adapter translation unit；执行分支迁入普通共享库后，编译期宏不再可见。
+- 修复模式：共享库提供显式`testing` namespace失败执行入口，只有test adapter在自己的编译宏下解析环境并调用它；production和
+  资格化worker继续调用无注入入口。抽取共享consumer后必须同时重放production positive和原有failure-injection negative。

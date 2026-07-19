@@ -1,15 +1,14 @@
 # Wafer Local Structured Tensor Normalization 与 Optimization 设计
 
-状态：2026-07-19按Q33 required tensor normalization、adoption与qualification实现同步。本文拥有post-SPMD StableHLO local compute与logical collective到
+状态：2026-07-19按已完成Q33 required tensor normalization、adoption与qualification实现同步。本文拥有post-SPMD StableHLO local compute与logical collective到
 optimizer-ready structured tensor IR的normalization、required normal form和target-independent固定优化合同；不拥有SPMD、
 task/dataflow candidate、target-aware choice、memory、target或runtime。实现状态看
 `tasks/progress.md`。
 
 本文定义收敛后的稳定边界。当前production在collective/residual normalization与official legalization之间保留两个按cut point
 登记的required canonicalization，再运行explicit required normal form；探索性机制已关闭为空proposal，不额外启用optional generic
-cleanup。Equivalent-IR构造与typed
-qualification/archive基础设施已实现，完整隔离runner、active-ref production消费和mandatory vertical仍由Q33收口，不能把下述
-completion gate误写成已完成事实。
+cleanup。Equivalent-IR构造、typed qualification/archive、完整隔离runner、active-ref production消费和mandatory vertical均已闭合；
+当前active set及完成证据见§8。不能把schema或局部测试单独解释为未来机制已经资格化。
 
 ## 1. Pipeline Contract
 
@@ -982,10 +981,13 @@ terminal同时可达；CAS不匹配时隐藏terminal和prepared ref均不可达�
 改变spec或把row在fixed/cleanup间移动都会产生新set digest并要求整批重放，不能在一次失败后静默删掉该key继续沿用其它旧
 observation。
 
-active ref永远只指向已发布且readback通过的immutable set。crash发生在CAS前时active ref仍指向旧set，startup按run journal清理
-不可达staging；CAS原子替换成功后set已完整存在，startup必须重读ref、set及全部referenced bytes/digest后才允许production消费。
-production一次读取完整ref并打开其immutable digest路径；发现ref/set mismatch、缺member或digest错误立即fail closed，不扫描目录
-寻找“最新”set。旧generation只有不再被任一active reader引用后才可best-effort GC，GC失败不影响active语义。
+active ref永远只指向已发布且full readback通过的immutable set。crash发生在CAS前时active ref仍指向旧set，startup按run journal清理
+不可达staging；CAS原子替换成功后set已完整存在。publication和audit路径必须重读全部spec、observation、manifest binding与terminal pack。
+production路径读取完整ref、small run ownership records，以及set目录内由digest闭合的proposal/batch/publication terminal和proposal
+成员spec/observation；其工作量只随active proposal大小增长，不随历史invocation terminal数量增长。terminal pack不携带production
+membership，且在CAS前已经full readback，因此不进入每个compiler进程的policy selection。任一operational member缺失、stale、非Qualified
+或digest不匹配立即fail closed，也不扫描目录寻找“最新”set。旧generation只有不再被任一active reader引用后才可best-effort GC，
+GC失败不影响active语义。
 
 ## 7. 当前支持面与限制
 
@@ -1026,8 +1028,11 @@ buildStablehloToLinalgPipeline
 
 两个canonicalization分别绑定`PostLegalizationCanonicalization`和`StructuredTensorCanonicalization`，属于required invocation
 全集而不是best-effort cleanup。当前qualified optional proposal为空，因此builder不会追加`StablehloCleanup`或
-`StructuredTensorCleanup`；Q33剩余工作是隔离runner、active-ref消费和mandatory vertical等资格化闭环，不再以另一份目标
-pass序列替代当前pipeline合同。
+`StructuredTensorCleanup`。production从`qualification/optimization-adoption/active-ref.bin`选择generation 1的immutable set；
+最终run digest为`d09b6c3cc9631b7ca1abdfa0bbe9f7e787b631ff65c5dd22fdc2cf8e100d0e88`，set digest为
+`161242b7ce46a3590122fb067c3bc3cfd3ea0bfefa8577c591b6d23f26befde2`。该run以21个隔离子进程覆盖source rank1/rank16和冻结7B
+rank16的Equivalent-IR 2×2、normalizer once/twice及production-AllOn，共聚合745141个canonical terminal；source输出exact，7B
+16-rank PyTorch differential最大绝对误差`0.0029296875`，且SystemC执行19696个target transaction。完整archive readback通过后才发布active ref。
 
 registered `wafer-lower-stablehlo-to-linalg`只为显式MLIR replay和unit tests提供相同body。helper与program
 directory orchestration由`wafer-compile`负责，用户不选择该stage或手工续接调度passes。

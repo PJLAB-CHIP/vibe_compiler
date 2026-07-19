@@ -22,7 +22,8 @@ bool buildStablehloToLinalgPipeline(
     mlir::OpPassManager &pm, const OptimizationQualificationProposal &proposal,
     const OptimizationConfiguration &configuration,
     std::string *diagnostic = nullptr,
-    EquivalentInputVariantV1 inputVariant = EquivalentInputVariantV1::Original);
+    EquivalentInputVariantV1 inputVariant = EquivalentInputVariantV1::Original,
+    uint32_t requiredTensorNormalizationRepetitions = 1);
 
 bool buildScheduleTensorProgramToSelectedInstrPipeline(
     mlir::OpPassManager &pm, int64_t logicalRank,

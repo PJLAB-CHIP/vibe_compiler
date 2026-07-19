@@ -33,7 +33,8 @@ static void
 addStablehloToLinalgBody(mlir::OpPassManager &pm,
                          const OptimizationQualificationProposal &proposal,
                          const OptimizationConfiguration &configuration,
-                         EquivalentInputVariantV1 inputVariant) {
+                         EquivalentInputVariantV1 inputVariant,
+                         uint32_t requiredTensorNormalizationRepetitions) {
   pm.addPass(createOptimizationInvocationPass(
       mechanism::StablehloCollectiveNormalization,
       OptimizationCutPoint::PostSPMDStableHLOModule,
@@ -64,10 +65,12 @@ addStablehloToLinalgBody(mlir::OpPassManager &pm,
   if (inputVariant == EquivalentInputVariantV1::Metamorphic)
     pm.addPass(
         qualification_internal::createEquivalentInputVariantPass(inputVariant));
-  pm.addPass(createOptimizationInvocationPass(
-      mechanism::RequiredTensorNormalization,
-      OptimizationCutPoint::StructuredTensorModule,
-      [] { return createRequiredTensorNormalizationPass(); }));
+  for (uint32_t repetition = 0;
+       repetition < requiredTensorNormalizationRepetitions; ++repetition)
+    pm.addPass(createOptimizationInvocationPass(
+        mechanism::RequiredTensorNormalization,
+        OptimizationCutPoint::StructuredTensorModule,
+        [] { return createRequiredTensorNormalizationPass(); }, repetition));
   if (optimizationEnabled(proposal, configuration, mechanism::StablehloCleanup,
                           nullptr))
     pm.addPass(createOptimizationInvocationPass(
@@ -97,7 +100,8 @@ void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
   OptimizationQualificationProposal proposal =
       getCurrentOptimizationQualificationProposal();
   addStablehloToLinalgBody(pm, proposal, getAllOnOptimizationConfiguration(),
-                           EquivalentInputVariantV1::Original);
+                           EquivalentInputVariantV1::Original,
+                           /*requiredTensorNormalizationRepetitions=*/1);
 }
 
 void buildScheduleTensorProgramToSelectedInstrPipeline(mlir::OpPassManager &pm,
@@ -181,7 +185,8 @@ namespace qualification_internal {
 bool buildStablehloToLinalgPipeline(
     mlir::OpPassManager &pm, const OptimizationQualificationProposal &proposal,
     const OptimizationConfiguration &configuration, std::string *diagnostic,
-    EquivalentInputVariantV1 inputVariant) {
+    EquivalentInputVariantV1 inputVariant,
+    uint32_t requiredTensorNormalizationRepetitions) {
   if (!validateOptimizationConfiguration(proposal, configuration, diagnostic))
     return false;
   if (inputVariant != EquivalentInputVariantV1::Original &&
@@ -190,7 +195,15 @@ bool buildStablehloToLinalgPipeline(
       *diagnostic = "unknown equivalent input variant";
     return false;
   }
-  addStablehloToLinalgBody(pm, proposal, configuration, inputVariant);
+  if (requiredTensorNormalizationRepetitions == 0 ||
+      requiredTensorNormalizationRepetitions > 2) {
+    if (diagnostic)
+      *diagnostic = "required tensor normalization repetitions must be one or "
+                    "two";
+    return false;
+  }
+  addStablehloToLinalgBody(pm, proposal, configuration, inputVariant,
+                           requiredTensorNormalizationRepetitions);
   return true;
 }
 

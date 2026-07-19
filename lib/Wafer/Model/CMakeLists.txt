@@ -62,6 +62,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   add_mlir_library(WaferSystemCModel
     PARTIAL_SOURCES_INTENDED
     SystemCTargetModel.cpp
+    TargetModelExpectedOutputGate.cpp
 
     LINK_LIBS PUBLIC
     WaferCompiler

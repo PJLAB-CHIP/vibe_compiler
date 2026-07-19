@@ -1,6 +1,6 @@
 # Physical-Dataflow Synthesis 实施计划
 
-状态：queued umbrella plan。Q33完成前首个Q32 row Q32.I保持`blocked`；Q32.I/R/B/V/M/S/G及最终Q32 completion的
+状态：current umbrella plan。Q33已完成，首个Q32 row Q32.I为`next`；Q32.I/R/B/V/M/S/G及最终Q32 completion的
 blocked-by关系只看`tasks/progress.md`，不能从本计划checkpoint标题推断动态状态。
 
 本计划只拆施工顺序、artifact checkpoint、删除门槛和验证范围，不复制总体设计。长期合同由：
@@ -63,16 +63,16 @@ Pipeline position:
 
 ## 3. 外部前置：Q33 Compiler Optimization Adoption
 
-Q32不再承担generic canonicalizer正确性债务、direct producer形态恢复或上游pass inventory。开工前必须由
-`tasks/plans/compiler-optimization-adoption.md`闭合：
+Q32不再承担generic canonicalizer正确性债务、direct producer形态恢复或上游pass inventory。已归档的
+`tasks/archive/compiler-optimization-adoption.md`闭合了：
 
 - explicit required normalization和Equivalent-IR Stability；
 - fixed optimization、candidate-local和target-specific三层边界；
 - upstream mechanism的availability/adoption/qualification records；
 - post-adoption rank-count=1/16与7B source/model/resource baseline。
 
-Q33未完成时不得先构造依赖direct fill、named-op形态或canonicalizer worklist的SemanticOpDescriptor/ImplementationFamily，
-否则会把已知表示债务固化进provider。
+后续不得构造依赖direct fill、named-op形态或canonicalizer worklist的SemanticOpDescriptor/ImplementationFamily，
+否则会把已消除的表示债务重新固化进provider。
 
 ## 4. Checkpoints
 

@@ -80,7 +80,9 @@ compileProgramWithOptimizationConfiguration(
     const TargetToolchain &targetToolchain,
     const OptimizationQualificationProposal &proposal,
     const OptimizationConfiguration &optimizationConfiguration,
-    EquivalentInputVariantV1 inputVariant, llvm::raw_ostream &diagnostics) {
+    EquivalentInputVariantV1 inputVariant,
+    uint32_t requiredTensorNormalizationRepetitions,
+    llvm::raw_ostream &diagnostics) {
   std::string policyDiagnostic;
   if (!validateOptimizationQualificationProposal(proposal, &policyDiagnostic) ||
       !validateOptimizationConfiguration(proposal, optimizationConfiguration,
@@ -95,8 +97,16 @@ compileProgramWithOptimizationConfiguration(
     detail::reject(diagnostics, "unknown equivalent input variant");
     return mlir::failure();
   }
+  if (requiredTensorNormalizationRepetitions == 0 ||
+      requiredTensorNormalizationRepetitions > 2) {
+    detail::reject(diagnostics,
+                   "required tensor normalization repetitions must be one or "
+                   "two");
+    return mlir::failure();
+  }
   detail::CompilationOptimizationPolicyV1 policy{
-      proposal, optimizationConfiguration, inputVariant};
+      proposal, optimizationConfiguration, inputVariant,
+      requiredTensorNormalizationRepetitions};
   std::optional<ExecutableBundle> retained;
   std::optional<TargetLLVMModuleBundle> retainedTargetLLVM;
   if (mlir::failed(detail::runCompilationTransaction(

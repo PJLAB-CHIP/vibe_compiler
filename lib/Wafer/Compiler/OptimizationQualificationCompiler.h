@@ -27,7 +27,9 @@ compileProgramWithOptimizationConfiguration(
     const TargetToolchain &targetToolchain,
     const OptimizationQualificationProposal &proposal,
     const OptimizationConfiguration &optimizationConfiguration,
-    EquivalentInputVariantV1 inputVariant, llvm::raw_ostream &diagnostics);
+    EquivalentInputVariantV1 inputVariant,
+    uint32_t requiredTensorNormalizationRepetitions,
+    llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler::qualification_internal
 

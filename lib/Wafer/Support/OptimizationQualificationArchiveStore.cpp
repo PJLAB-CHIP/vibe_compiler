@@ -4,6 +4,9 @@
 
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Compression.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -176,14 +179,175 @@ static bool publishNoReplace(llvm::StringRef source,
 #endif
 }
 
+static void appendU32BE(std::vector<uint8_t> &bytes, uint32_t value) {
+  for (int shift = 24; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<uint8_t>(value >> shift));
+}
+
+static void appendU64BE(std::vector<uint8_t> &bytes, uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<uint8_t>(value >> shift));
+}
+
+static uint32_t readU32BE(llvm::ArrayRef<uint8_t> bytes) {
+  uint32_t value = 0;
+  for (uint8_t byte : bytes.take_front(4))
+    value = (value << 8) | byte;
+  return value;
+}
+
+static uint16_t readU16BE(llvm::ArrayRef<uint8_t> bytes) {
+  return static_cast<uint16_t>((static_cast<uint16_t>(bytes[0]) << 8) |
+                               bytes[1]);
+}
+
+static uint64_t readU64BE(llvm::ArrayRef<uint8_t> bytes) {
+  uint64_t value = 0;
+  for (uint8_t byte : bytes.take_front(8))
+    value = (value << 8) | byte;
+  return value;
+}
+
+/// The manifest continues to bind every invocation ID and terminal digest,
+/// while one canonical pack avoids turning a large rank qualification into
+/// hundreds of thousands of sub-page filesystem objects.
+static std::vector<uint8_t>
+encodeInvocationTerminalPack(llvm::ArrayRef<InvocationTelemetryV1> terminals) {
+  constexpr char packDomain[] = "wafer.optimization-invocation-terminal-pack";
+  if (terminals.size() > std::numeric_limits<uint32_t>::max())
+    return {};
+  std::vector<uint8_t> body;
+  appendU32BE(body, static_cast<uint32_t>(terminals.size()));
+  for (const InvocationTelemetryV1 &terminal : terminals) {
+    std::vector<uint8_t> bytes = encodeInvocationTelemetryV1(terminal);
+    if (bytes.empty() || bytes.size() > std::numeric_limits<uint32_t>::max())
+      return {};
+    appendU32BE(body, static_cast<uint32_t>(bytes.size()));
+    body.insert(body.end(), bytes.begin(), bytes.end());
+  }
+  std::vector<uint8_t> bytes(std::begin(packDomain), std::end(packDomain));
+  bytes.push_back(0);
+  bytes.push_back(1);
+  appendU64BE(bytes, body.size());
+  bytes.insert(bytes.end(), body.begin(), body.end());
+  return bytes;
+}
+
+static bool decodeInvocationTerminalPack(
+    const std::vector<uint8_t> &bytes,
+    llvm::ArrayRef<InvocationTerminalBindingV1> bindings,
+    std::vector<InvocationTelemetryV1> &terminals, std::string *diagnostic) {
+  constexpr char packDomain[] = "wafer.optimization-invocation-terminal-pack";
+  constexpr size_t envelopeSize = sizeof(packDomain) + 2 + 8;
+  if (bytes.size() < envelopeSize ||
+      !std::equal(std::begin(packDomain), std::end(packDomain),
+                  bytes.begin()) ||
+      bytes[sizeof(packDomain) - 1] != 0 ||
+      readU16BE(llvm::ArrayRef<uint8_t>(bytes).slice(sizeof(packDomain), 2)) !=
+          1 ||
+      readU64BE(llvm::ArrayRef<uint8_t>(bytes).slice(
+          sizeof(packDomain) + 2, 8)) != bytes.size() - envelopeSize)
+    return fail(diagnostic, "invocation terminal pack envelope is invalid");
+  llvm::ArrayRef<uint8_t> input(bytes);
+  input = input.drop_front(envelopeSize);
+  if (input.size() < 4)
+    return fail(diagnostic, "invocation terminal pack count is truncated");
+  uint32_t count = readU32BE(input.take_front(4));
+  input = input.drop_front(4);
+  if (count != bindings.size())
+    return fail(diagnostic,
+                "invocation terminal pack count disagrees with manifest");
+  terminals.clear();
+  terminals.reserve(count);
+  for (uint32_t index = 0; index < count; ++index) {
+    if (input.size() < 4)
+      return fail(diagnostic, "invocation terminal pack entry is truncated");
+    uint32_t size = readU32BE(input.take_front(4));
+    input = input.drop_front(4);
+    if (size > input.size())
+      return fail(diagnostic, "invocation terminal pack payload is truncated");
+    std::vector<uint8_t> terminalBytes(input.begin(), input.begin() + size);
+    input = input.drop_front(size);
+    InvocationTelemetryV1 terminal;
+    if (!decodeCanonicalInvocationTelemetryV1(terminalBytes, terminal,
+                                              diagnostic) ||
+        digestInvocationIdentityV1(terminal.identity) !=
+            bindings[index].invocationId ||
+        digestInvocationTelemetryV1(terminal) != bindings[index].terminalDigest)
+      return fail(diagnostic,
+                  "packed invocation terminal disagrees with manifest");
+    terminals.push_back(std::move(terminal));
+  }
+  if (!input.empty() || encodeInvocationTerminalPack(terminals) != bytes)
+    return fail(diagnostic,
+                "invocation terminal pack is not canonical all-and-only");
+  return true;
+}
+
+static std::vector<uint8_t> encodeCompressedInvocationTerminalPack(
+    llvm::ArrayRef<InvocationTelemetryV1> terminals) {
+  constexpr char compressedDomain[] =
+      "wafer.optimization-invocation-terminal-pack-zstd";
+  std::vector<uint8_t> raw = encodeInvocationTerminalPack(terminals);
+  if (raw.empty() || !llvm::compression::zstd::isAvailable())
+    return {};
+  llvm::SmallVector<uint8_t, 0> compressed;
+  llvm::compression::zstd::compress(
+      raw, compressed, llvm::compression::zstd::BestSizeCompression);
+  std::vector<uint8_t> bytes(std::begin(compressedDomain),
+                             std::end(compressedDomain));
+  bytes.push_back(0);
+  bytes.push_back(1);
+  appendU64BE(bytes, raw.size());
+  appendU64BE(bytes, compressed.size());
+  bytes.insert(bytes.end(), compressed.begin(), compressed.end());
+  return bytes;
+}
+
+static bool decodeCompressedInvocationTerminalPack(
+    const std::vector<uint8_t> &bytes,
+    llvm::ArrayRef<InvocationTerminalBindingV1> bindings,
+    std::vector<InvocationTelemetryV1> &terminals, std::string *diagnostic) {
+  constexpr char compressedDomain[] =
+      "wafer.optimization-invocation-terminal-pack-zstd";
+  constexpr size_t envelopeSize = sizeof(compressedDomain) + 2 + 8 + 8;
+  if (bytes.size() < envelopeSize ||
+      !std::equal(std::begin(compressedDomain), std::end(compressedDomain),
+                  bytes.begin()) ||
+      readU16BE(llvm::ArrayRef<uint8_t>(bytes).slice(sizeof(compressedDomain),
+                                                     2)) != 1)
+    return fail(diagnostic,
+                "compressed invocation terminal pack envelope is invalid");
+  uint64_t rawSize = readU64BE(
+      llvm::ArrayRef<uint8_t>(bytes).slice(sizeof(compressedDomain) + 2, 8));
+  uint64_t compressedSize = readU64BE(
+      llvm::ArrayRef<uint8_t>(bytes).slice(sizeof(compressedDomain) + 10, 8));
+  if (compressedSize != bytes.size() - envelopeSize ||
+      rawSize > std::numeric_limits<size_t>::max() ||
+      !llvm::compression::zstd::isAvailable())
+    return fail(diagnostic,
+                "compressed invocation terminal pack size/backend is invalid");
+  llvm::SmallVector<uint8_t, 0> raw;
+  if (llvm::Error error = llvm::compression::zstd::decompress(
+          llvm::ArrayRef<uint8_t>(bytes).drop_front(envelopeSize), raw,
+          static_cast<size_t>(rawSize)))
+    return fail(diagnostic, "cannot decompress invocation terminal pack: " +
+                                llvm::toString(std::move(error)));
+  std::vector<uint8_t> rawBytes(raw.begin(), raw.end());
+  if (!decodeInvocationTerminalPack(rawBytes, bindings, terminals,
+                                    diagnostic) ||
+      encodeCompressedInvocationTerminalPack(terminals) != bytes)
+    return fail(diagnostic,
+                "compressed invocation terminal pack is not canonical");
+  return true;
+}
+
 static bool writeCompletedTree(llvm::StringRef directory,
                                const CompletedQualificationEvidenceV1 &value,
                                std::string *diagnostic) {
   llvm::SmallString<256> specs = child(directory, "specs");
-  llvm::SmallString<256> invocations = child(directory, "invocations");
   llvm::SmallString<256> observations = child(directory, "observations");
   if (!createDirectory(specs, diagnostic) ||
-      !createDirectory(invocations, diagnostic) ||
       !createDirectory(observations, diagnostic))
     return false;
 
@@ -198,7 +362,11 @@ static bool writeCompletedTree(llvm::StringRef directory,
           diagnostic) ||
       !writeBytes(child(directory, "run-terminal.bin"),
                   encodeAdoptionQualificationRunTerminalV1(value.runTerminal),
-                  diagnostic))
+                  diagnostic) ||
+      !writeBytes(
+          child(directory, "invocation-terminals.zst"),
+          encodeCompressedInvocationTerminalPack(value.invocationTerminals),
+          diagnostic))
     return false;
   if (value.publicationAttempt &&
       !writeBytes(
@@ -220,12 +388,6 @@ static bool writeCompletedTree(llvm::StringRef directory,
                     encodeAdoptionSpecV1(*spec), diagnostic))
       return false;
   }
-  for (const InvocationTelemetryV1 &terminal : value.invocationTerminals) {
-    AdoptionDigest id = digestInvocationIdentityV1(terminal.identity);
-    if (!writeBytes(child(invocations, digestFileName(id)),
-                    encodeInvocationTelemetryV1(terminal), diagnostic))
-      return false;
-  }
   for (const QualificationObservationV1 &observation : value.observations)
     if (!writeBytes(
             child(observations, mechanismFileName(observation.mechanismKey)),
@@ -237,19 +399,16 @@ static bool writeCompletedTree(llvm::StringRef directory,
 static bool validateTreeMembers(llvm::StringRef directory,
                                 const CompletedQualificationEvidenceV1 &value,
                                 std::string *diagnostic) {
-  std::set<std::string> expectedDirectories = {"specs", "invocations",
-                                               "observations"};
+  std::set<std::string> expectedDirectories = {"specs", "observations"};
   std::set<std::string> expectedFiles = {
-      "input.bin", "run.bin", "result-manifest.bin", "run-terminal.bin"};
+      "input.bin", "run.bin", "result-manifest.bin", "run-terminal.bin",
+      "invocation-terminals.zst"};
   if (value.publicationAttempt)
     expectedFiles.insert("publication-attempt.bin");
   if (value.optimizationBatch)
     expectedFiles.insert("optimization-batch.bin");
   for (const MechanismSpecBinding &binding : value.input.specBindings)
     expectedFiles.insert("specs/" + mechanismFileName(binding.mechanismKey));
-  for (const InvocationTerminalBindingV1 &binding :
-       value.resultManifest.invocationTerminals)
-    expectedFiles.insert("invocations/" + digestFileName(binding.invocationId));
   for (const MechanismObservationBindingV1 &binding :
        value.resultManifest.observationBindings)
     expectedFiles.insert("observations/" +
@@ -340,19 +499,12 @@ static bool readCompletedTree(llvm::StringRef directory,
       return fail(diagnostic, "archived adoption spec readback mismatch");
   }
 
-  llvm::SmallString<256> invocations = child(directory, "invocations");
-  for (const InvocationTerminalBindingV1 &binding :
-       parsed.resultManifest.invocationTerminals) {
-    if (!readBytes(child(invocations, digestFileName(binding.invocationId)),
-                   bytes, diagnostic))
-      return false;
-    InvocationTelemetryV1 terminal;
-    if (!decodeCanonicalInvocationTelemetryV1(bytes, terminal, diagnostic) ||
-        digestInvocationIdentityV1(terminal.identity) != binding.invocationId ||
-        digestInvocationTelemetryV1(terminal) != binding.terminalDigest)
-      return fail(diagnostic, "archived invocation terminal readback mismatch");
-    parsed.invocationTerminals.push_back(std::move(terminal));
-  }
+  if (!readBytes(child(directory, "invocation-terminals.zst"), bytes,
+                 diagnostic) ||
+      !decodeCompressedInvocationTerminalPack(
+          bytes, parsed.resultManifest.invocationTerminals,
+          parsed.invocationTerminals, diagnostic))
+    return false;
 
   llvm::SmallString<256> observations = child(directory, "observations");
   for (const MechanismObservationBindingV1 &binding :
@@ -496,8 +648,9 @@ static bool writeSetTree(llvm::StringRef directory,
                          std::string *diagnostic) {
   llvm::SmallString<256> specs = child(directory, "specs");
   llvm::SmallString<256> observations = child(directory, "observations");
-  if (!createDirectory(specs, diagnostic) ||
-      !createDirectory(observations, diagnostic) ||
+  bool hasMembers = !candidate.observationBindings.empty();
+  if ((hasMembers && (!createDirectory(specs, diagnostic) ||
+                      !createDirectory(observations, diagnostic))) ||
       !writeBytes(child(directory, "qualified-set.bin"),
                   encodeQualifiedOptimizationSetV1(candidate), diagnostic) ||
       !writeBytes(child(directory, "proposal.bin"),
@@ -533,7 +686,9 @@ static bool writeSetTree(llvm::StringRef directory,
 static bool validateSetTreeMembers(llvm::StringRef directory,
                                    const QualifiedOptimizationSetV1 &candidate,
                                    std::string *diagnostic) {
-  std::set<std::string> expectedDirectories = {"specs", "observations"};
+  std::set<std::string> expectedDirectories;
+  if (!candidate.observationBindings.empty())
+    expectedDirectories = {"specs", "observations"};
   std::set<std::string> expectedFiles = {"qualified-set.bin", "proposal.bin",
                                          "optimization-batch.bin",
                                          "publication-terminal.bin"};
@@ -628,6 +783,88 @@ static bool readSetTree(llvm::StringRef directory,
   return true;
 }
 
+/// Reads the bounded publication capsule copied into an immutable set. This
+/// path intentionally does not reopen the result manifest or terminal pack;
+/// those are validated by readCompletedRun for audit and at publication time.
+static bool
+readProductionSetTree(llvm::StringRef directory,
+                      const ActiveQualifiedOptimizationSetRefV1 &active,
+                      QualifiedOptimizationSetV1 &candidate,
+                      std::string *diagnostic) {
+  std::vector<uint8_t> bytes;
+  if (!readBytes(child(directory, "qualified-set.bin"), bytes, diagnostic) ||
+      !decodeCanonicalQualifiedOptimizationSetV1(bytes, candidate,
+                                                 diagnostic) ||
+      digestQualifiedOptimizationSetV1(candidate) != active.setDigest ||
+      !readBytes(child(directory, "proposal.bin"), bytes, diagnostic) ||
+      !validateCanonicalOptimizationQualificationProposalV1(bytes,
+                                                            diagnostic) ||
+      bytes != encodeOptimizationQualificationProposalV1(
+                   getCurrentOptimizationQualificationProposal()) ||
+      !readBytes(child(directory, "optimization-batch.bin"), bytes, diagnostic))
+    return false;
+
+  OptimizationBatchObservationV1 batch;
+  if (!decodeCanonicalOptimizationBatchObservationV1(bytes, batch,
+                                                     diagnostic) ||
+      batch.batchStatus != OptimizationBatchStatusV1::Qualified ||
+      batch.proposalDigest != candidate.proposalDigest ||
+      batch.qualificationRunDigest != active.qualificationRunDigest ||
+      batch.optimizationPublicationAttemptDigest !=
+          active.optimizationPublicationAttemptDigest ||
+      digestOptimizationBatchObservationV1(batch) !=
+          candidate.batchObservationDigest ||
+      !readBytes(child(directory, "publication-terminal.bin"), bytes,
+                 diagnostic))
+    return fail(diagnostic,
+                "active production batch does not bind its qualified set");
+
+  OptimizationSetPublicationTerminalV1 terminal;
+  if (!decodeCanonicalOptimizationSetPublicationTerminalV1(bytes, terminal,
+                                                           diagnostic) ||
+      terminal.outcome !=
+          OptimizationSetPublicationOutcomeV1::QualifiedPublished ||
+      terminal.optimizationPublicationAttemptDigest !=
+          active.optimizationPublicationAttemptDigest ||
+      terminal.batchObservationDigest != candidate.batchObservationDigest ||
+      !terminal.candidateSetDigest ||
+      *terminal.candidateSetDigest != active.setDigest ||
+      digestOptimizationSetPublicationTerminalV1(terminal) !=
+          active.optimizationPublicationTerminalDigest)
+    return fail(diagnostic, "active production publication terminal is broken");
+
+  llvm::SmallString<256> specs = child(directory, "specs");
+  llvm::SmallString<256> observations = child(directory, "observations");
+  for (const MechanismObservationBindingV1 &binding :
+       candidate.observationBindings) {
+    if (!readBytes(child(specs, mechanismFileName(binding.mechanismKey)), bytes,
+                   diagnostic) ||
+        !validateCanonicalAdoptionSpecV1(bytes, diagnostic))
+      return false;
+    std::optional<AdoptionSpec> spec = lookupAdoptionSpec(binding.mechanismKey);
+    if (!spec || encodeAdoptionSpecV1(*spec) != bytes ||
+        !readBytes(child(observations, mechanismFileName(binding.mechanismKey)),
+                   bytes, diagnostic))
+      return fail(diagnostic,
+                  "active production mechanism spec is stale or absent");
+    QualificationObservationV1 observation;
+    if (!decodeCanonicalQualificationObservationV1(bytes, observation,
+                                                   diagnostic) ||
+        observation.mechanismKey != binding.mechanismKey ||
+        observation.specDigest != digestAdoptionSpecV1(*spec) ||
+        observation.qualificationStatus != QualificationStatusV1::Qualified ||
+        observation.optimizationProposalDigest != candidate.proposalDigest ||
+        observation.qualificationRunDigest != active.qualificationRunDigest ||
+        observation.optimizationPublicationAttemptDigest !=
+            active.optimizationPublicationAttemptDigest ||
+        digestQualificationObservationV1(observation) !=
+            binding.observationDigest)
+      return fail(diagnostic,
+                  "active production observation is not exact and Qualified");
+  }
+  return validateSetTreeMembers(directory, candidate, diagnostic);
+}
+
 static bool
 persistPublicationTerminal(llvm::StringRef root,
                            const OptimizationSetPublicationTerminalV1 &terminal,
@@ -662,6 +899,73 @@ readActiveRef(llvm::StringRef root, std::string *diagnostic, bool &valid) {
 }
 
 } // namespace
+
+std::optional<uint64_t>
+OptimizationQualificationArchiveStoreV1::allocateRunSeriesOrdinal(
+    std::string *diagnostic) const {
+  if (rootDirectory_.empty()) {
+    fail(diagnostic, "qualification archive root is empty");
+    return std::nullopt;
+  }
+  if (!createDirectory(rootDirectory_, diagnostic))
+    return std::nullopt;
+  ArchiveLock lock;
+  if (!lock.acquire(child(rootDirectory_, "run-series.lock"), diagnostic))
+    return std::nullopt;
+  llvm::SmallString<256> counterPath =
+      child(rootDirectory_, "run-series-counter.bin");
+  uint64_t current = 0;
+  if (pathExists(counterPath)) {
+    std::vector<uint8_t> bytes;
+    if (!readBytes(counterPath, bytes, diagnostic) || bytes.size() != 8) {
+      fail(diagnostic, "qualification run-series counter is invalid");
+      return std::nullopt;
+    }
+    for (uint8_t byte : bytes)
+      current = (current << 8) | byte;
+  }
+  if (current == std::numeric_limits<uint64_t>::max()) {
+    fail(diagnostic, "qualification run-series counter is exhausted");
+    return std::nullopt;
+  }
+  uint64_t next = current + 1;
+  std::vector<uint8_t> bytes;
+  for (int shift = 56; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<uint8_t>(next >> shift));
+  llvm::SmallString<256> stagingDirectory = child(rootDirectory_, ".staging");
+  if (!createDirectory(stagingDirectory, diagnostic))
+    return std::nullopt;
+  llvm::SmallString<256> stagingPrefix = child(stagingDirectory, "run-series");
+  llvm::SmallString<256> temporary;
+  if (std::error_code error = llvm::sys::fs::createUniqueFile(
+          stagingPrefix + "-%%%%%%.bin", temporary)) {
+    fail(diagnostic,
+         "failed to create run-series staging file: " + error.message());
+    return std::nullopt;
+  }
+  auto cleanup =
+      llvm::make_scope_exit([&] { llvm::sys::fs::remove(temporary); });
+  if (!writeBytes(temporary, bytes, diagnostic) ||
+      !fsyncPath(temporary, false, diagnostic))
+    return std::nullopt;
+#ifdef __linux__
+  std::string source = temporary.str().str();
+  std::string destination = counterPath.str().str();
+  if (::rename(source.c_str(), destination.c_str()) != 0) {
+    fail(diagnostic,
+         "failed to atomically replace run-series counter: " +
+             std::error_code(errno, std::generic_category()).message());
+    return std::nullopt;
+  }
+#else
+  fail(diagnostic, "atomic run-series allocation is unsupported");
+  return std::nullopt;
+#endif
+  cleanup.release();
+  if (!fsyncPath(rootDirectory_, true, diagnostic))
+    return std::nullopt;
+  return next;
+}
 
 bool OptimizationQualificationArchiveStoreV1::publishCompletedRun(
     const CompletedQualificationEvidenceV1 &value,
@@ -941,6 +1245,61 @@ bool OptimizationQualificationArchiveStoreV1::
     return fail(diagnostic, "active qualified set readback chain is broken");
   selection = {*active, std::move(candidate), std::move(terminal),
                std::move(chain)};
+  return true;
+}
+
+bool OptimizationQualificationArchiveStoreV1::
+    loadActiveQualifiedOptimizationPolicy(
+        ActiveQualifiedOptimizationPolicySelectionV1 &selection,
+        std::string *diagnostic) const {
+  bool activeValid = false;
+  std::optional<ActiveQualifiedOptimizationSetRefV1> active =
+      readActiveRef(rootDirectory_, diagnostic, activeValid);
+  if (!activeValid || !active)
+    return fail(diagnostic,
+                "no valid active qualified optimization ref exists");
+
+  llvm::SmallString<256> runDirectory = child(
+      child(rootDirectory_, "runs"), toHex(active->qualificationRunDigest));
+  std::vector<uint8_t> bytes;
+  AdoptionQualificationInputV1 input;
+  AdoptionQualificationRunV1 run;
+  OptimizationSetPublicationAttemptV1 attempt;
+  AdoptionQualificationRunTerminalV1 runTerminal;
+  if (!readBytes(child(runDirectory, "input.bin"), bytes, diagnostic) ||
+      !decodeCanonicalAdoptionQualificationInputV1(bytes, input, diagnostic) ||
+      !readBytes(child(runDirectory, "run.bin"), bytes, diagnostic) ||
+      !decodeCanonicalAdoptionQualificationRunV1(bytes, run, diagnostic) ||
+      !readBytes(child(runDirectory, "publication-attempt.bin"), bytes,
+                 diagnostic) ||
+      !decodeCanonicalOptimizationSetPublicationAttemptV1(bytes, attempt,
+                                                          diagnostic) ||
+      !readBytes(child(runDirectory, "run-terminal.bin"), bytes, diagnostic) ||
+      !decodeCanonicalAdoptionQualificationRunTerminalV1(bytes, runTerminal,
+                                                         diagnostic))
+    return false;
+  if (digestAdoptionQualificationRunV1(run) != active->qualificationRunDigest ||
+      run.qualificationInputDigest !=
+          digestAdoptionQualificationInputV1(input) ||
+      !input.optimizationProposalDigest ||
+      attempt.qualificationRunDigest != active->qualificationRunDigest ||
+      attempt.proposalDigest != *input.optimizationProposalDigest ||
+      digestOptimizationSetPublicationAttemptV1(attempt) !=
+          active->optimizationPublicationAttemptDigest ||
+      runTerminal.qualificationRunDigest != active->qualificationRunDigest ||
+      runTerminal.outcome !=
+          AdoptionQualificationRunOutcomeV1::CompletedEvidence ||
+      digestAdoptionQualificationRunTerminalV1(runTerminal) !=
+          active->adoptionQualificationRunTerminalDigest)
+    return fail(diagnostic, "active production run ownership chain is broken");
+
+  llvm::SmallString<256> setDirectory =
+      child(child(rootDirectory_, "sets"), toHex(active->setDigest));
+  QualifiedOptimizationSetV1 candidate;
+  if (!readProductionSetTree(setDirectory, *active, candidate, diagnostic) ||
+      candidate.proposalDigest != *input.optimizationProposalDigest)
+    return fail(diagnostic, "active production qualified-set chain is broken");
+  selection = {*active, std::move(candidate)};
   return true;
 }
 

@@ -51,7 +51,7 @@ struct OptimizationConfiguration {
   OptimizationGroupSelection cleanup;
 };
 
-/// Constructs the immutable Q33 proposal from the typed adoption registry.
+/// Constructs the immutable current proposal from the typed adoption registry.
 /// It snapshots exact spec digests rather than interpreting future registry
 /// additions as members of an already-running AllOn configuration.
 OptimizationQualificationProposal getCurrentOptimizationQualificationProposal();
