@@ -1,7 +1,6 @@
 // RUN: split-file %s %t
 // RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/positive.mlir | FileCheck %s --check-prefix=POS
 // RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/positive.mlir | mlir-translate --mlir-to-llvmir | FileCheck %s --check-prefix=LLVMIR
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/clamped.mlir | FileCheck %s --check-prefix=CLAMP
 // RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/derived-offset.mlir 2>&1 | FileCheck %s --check-prefix=DERIVED
 // RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/dynamic-bound.mlir 2>&1 | FileCheck %s --check-prefix=BOUND
 // RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/out-of-range.mlir 2>&1 | FileCheck %s --check-prefix=RANGE
@@ -71,39 +70,6 @@ func.func @bounded_dynamic_ddr_subview(
 // LLVMIR: call void @wafer_tx81_rdma(i64 %[[INPUT_ADDR]],
 // LLVMIR: call void @wafer_tx81_wdma({{.*}}i64 %[[OUTPUT_ADDR]],
 
-//--- clamped.mlir
-
-func.func @bounded_clamped_dynamic_ddr_subview(
-    %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>) {
-  %c0 = arith.constant 0 : index
-  %c1 = arith.constant 1 : index
-  %c3 = arith.constant 3 : index
-  %c4 = arith.constant 4 : index
-  %c0_i64 = arith.constant 0 : i64
-  scf.for %row = %c0 to %c4 step %c1 {
-    %clamped_high = arith.minsi %row, %c3 : index
-    %clamped_i64 = arith.index_cast %clamped_high : index to i64
-    %nonnegative = arith.maxsi %clamped_i64, %c0_i64 : i64
-    %clamped = arith.index_castui %nonnegative : i64 to index
-    %input_tile = memref.subview %input[%clamped, 2] [1, 3] [1, 1]
-        : memref<4x8xf16, #wafer.memory<ddr, tensor>>
-       to memref<1x3xf16, strided<[8, 1], offset: ?>, #wafer.memory<ddr, tensor>>
-    %spm = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<1x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.rdma %input_tile to %spm
-        {byte_count = 6 : i64, inner_bytes = 6 : i64,
-         src_strides = array<i64: 0, 0, 0>,
-         src_iterations = array<i64: 1, 1, 1>}
-        : memref<1x3xf16, strided<[8, 1], offset: ?>, #wafer.memory<ddr, tensor>>
-       to memref<1x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.local_fence
-  }
-  return
-}
-
-// CLAMP-LABEL: llvm.func @bounded_clamped_dynamic_ddr_subview(
-// CLAMP-NOT: memref.subview
-
 //--- derived-offset.mlir
 
 func.func @reject_derived_dynamic_offset(
@@ -120,7 +86,7 @@ func.func @reject_derived_dynamic_offset(
   return
 }
 
-// DERIVED: unsupported_target_address: dynamic DDR tensor subview offset #0 must be constant or the direct induction variable of scf.for
+// DERIVED: unsupported_target_address: dynamic DDR tensor subview offset #0 must be the direct induction variable of scf.for
 
 //--- dynamic-bound.mlir
 

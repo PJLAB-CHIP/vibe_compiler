@@ -90,11 +90,57 @@ static bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
 }
 
 static mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
-  return memory_planning::resolveTileRegionBoundaryValue(value);
+  while (true) {
+    if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+      mlir::Block *owner = blockArg.getOwner();
+      auto tileRegion =
+          owner ? mlir::dyn_cast_or_null<TileRegionOp>(owner->getParentOp())
+                : TileRegionOp{};
+      if (!tileRegion || tileRegion.getBody().empty() ||
+          owner != &tileRegion.getBody().front() ||
+          blockArg.getArgNumber() >= tileRegion.getInputs().size())
+        return value;
+      value = tileRegion.getInputs()[blockArg.getArgNumber()];
+      continue;
+    }
+
+    auto result = mlir::dyn_cast<mlir::OpResult>(value);
+    auto tileRegion =
+        result ? mlir::dyn_cast_or_null<TileRegionOp>(result.getOwner())
+               : TileRegionOp{};
+    if (!tileRegion || tileRegion.getBody().empty())
+      return value;
+    auto yield = mlir::dyn_cast<TileYieldOp>(
+        tileRegion.getBody().front().getTerminator());
+    if (!yield || result.getResultNumber() >= yield.getValues().size())
+      return value;
+    value = yield.getValues()[result.getResultNumber()];
+  }
 }
 
 static bool isExplicitDDRRoot(mlir::Value value) {
-  return memory_planning::isExplicitDDRRoot(value);
+  mlir::Operation *def = value.getDefiningOp();
+  if (auto getGlobal = mlir::dyn_cast_or_null<mlir::memref::GetGlobalOp>(def)) {
+    auto global =
+        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::memref::GlobalOp>(
+            getGlobal, getGlobal.getNameAttr());
+    auto resultType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+    return global && resultType && isWaferDDRMemRefType(resultType) &&
+           resultType.hasStaticShape() && global.getType() == resultType &&
+           static_cast<bool>(global.getConstantInitValue());
+  }
+
+  auto toMemref = mlir::dyn_cast_or_null<mlir::bufferization::ToMemrefOp>(def);
+  if (!toMemref)
+    return false;
+  auto source = mlir::dyn_cast<mlir::BlockArgument>(toMemref.getTensor());
+  if (!source || !source.getOwner())
+    return false;
+  mlir::Operation *parent = source.getOwner()->getParentOp();
+  if (!parent || !mlir::isa<mlir::func::FuncOp, mlir::async::FuncOp>(parent) ||
+      parent->getNumRegions() != 1 || parent->getRegion(0).empty())
+    return false;
+  return source.getOwner() == &parent->getRegion(0).front();
 }
 
 static bool operationTouchesDDR(mlir::Operation *op) {
@@ -311,12 +357,6 @@ getStaticIndexRange(mlir::Operation *anchor, mlir::OpFoldResult offset,
   }
 
   mlir::Value value = mlir::cast<mlir::Value>(offset);
-  if (std::optional<int64_t> constant = mlir::getConstantIntValue(value)) {
-    if (*constant < 0)
-      return anchor->emitError() << "unsupported_ddr_view: " << role
-                                 << " offset must be non-negative";
-    return StaticIndexRange{*constant, *constant};
-  }
   auto iv = mlir::dyn_cast<mlir::BlockArgument>(value);
   auto forOp = iv && iv.getArgNumber() == 0
                    ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(

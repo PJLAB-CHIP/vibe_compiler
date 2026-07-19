@@ -55,8 +55,8 @@ rank-local structured semantics
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  Shardy/XLA SPMD 之后、按 logical rank 静态 specialize 且已经过05 required normalization与qualified fixed
-  target-independent optimization的verified Linalg/Tensor/SCF/Arith/Math structured tensor program；logical collective
+  Shardy/XLA SPMD 之后、按 logical rank 静态 specialize并通过当前verifier的
+  Linalg/Tensor/SCF/Arith/Math structured tensor program；logical collective
   已由 typed interface 表达。输入同时携带 validated
   ExecutionConfig、TargetProfileId、numeric policy 和可查询的 target capability provider。
 - Current stage responsibility:
@@ -630,7 +630,7 @@ verifier和fresh recost都只在seam之后执行。因此seed不得携带`Placed
 accepted transport/final candidate signature还必须等待all-rank binding后从bound IR fresh构造。`canonical_seed_order_key`
 只决定finalization的确定性访问顺序，不能跨finalization充当candidate signature或semantic fact。
 
-`Success`要求非空seed且恰有一个reserved baseline。optimization budget或baseline-ready后才configuration的optimization deadline耗尽时仍返回
+`Success`要求非空seed且恰有一个reserved baseline。optimization budget或baseline-ready后才arm的optimization deadline耗尽时仍返回
 `Success`和baseline，并在telemetry记录原因；只有baseline seed/proof在其reserved allowance内也无法完成时返回
 `ResourceExhausted`。`Unsupported`表示target/workload没有canonical baseline，`Invalid`表示request、registry或内部合同错误；
 `Cancelled`只表示driver/process在任意时点显式取消整次transaction；四种非success状态都不返回partial seed或artifact。
@@ -1164,7 +1164,7 @@ baseline先于optimized exploration执行并使用上述独立materialization/ga
 它，但baseline allowance本身也有确定性硬上界。若连baseline proof都在该allowance内无法完成，返回明确
 `compiler_resource_exhausted`，不能标成target/workload illegal。baseline gate完成后，独立optimization预算无条件生效，
 包括“已有候选仍在并行评估”的情况。生产可复现选择只由这些deterministic caps决定。policy外的wall机制分为两种且都不进入
-digest或candidate访问顺序：optimization deadline只能在baseline完成全部reserved exact gates后configuration；触发时丢弃所有optimized
+digest或candidate访问顺序：optimization deadline只能在baseline完成全部reserved exact gates后arm；触发时丢弃所有optimized
 survivor、返回reserved baseline并报告`optimization_deadline_exceeded`，不按恰好完成的并行任务选择。driver/process
 cancellation可以在任意时点触发，必须abort整个clone/bundle transaction并返回`Cancelled`、无artifact，不能伪造尚未完成的
 baseline。跨线程determinism只在相同policy且两类外部信号均未触发时验证。
@@ -1504,7 +1504,7 @@ descriptor、capacity 或 ABI legality。
 ```text
 Pipeline position:
 - Upstream artifact / IR: explicit rank-local post-legalization structured module or materialized rank-local candidate handle.
-- Current stage responsibility: adapt Transform handles/params to the same Q33/Q32 rank-frontier/mechanism/materializer libraries and fresh diagnostics.
+- Current stage responsibility: adapt Transform handles/params to the same Q32 rank-frontier/mechanism/materializer libraries and fresh diagnostics.
 - Output artifact / IR: modified structured IR, one explicitly nonproduction rank-local candidate, or ephemeral Transform params; never an accepted execution artifact.
 - Downstream consumer: wafer-opt research/debug composition, then all per-rank exact gates derivable from payload IR; binding-dependent and all-rank gates remain explicitly unverified.
 - User-level driver / named pipeline: wafer-opt Transform interpreter only; wafer-compile production remains the named pipeline.
@@ -1537,9 +1537,9 @@ facts与execution config。因此Q32.T只能是**rank-local、可选、非produc
 不得通过TransformState side table、wrapper IR或外部metadata伪造whole-card synthesis。最小op集合固定为：
 
 1. `transform.wafer.optimize_structured`：消费singleton post-legalization、pre-physical-planning rank-local `builtin.module`
-   handle及singleton `StructuredOptimizationPolicyV1` param，调用05/Q33同一required/fixed utility并返回fresh root handle与
+   handle及singleton `StructuredOptimizationPolicyV1` param，调用显式rank-local rewrite utility并返回fresh root handle与
    singleton `MechanismReportV1`；
-2. `transform.wafer.materialize_physical_dataflow_candidate`：消费singleton post-Q33/pre-scheduling rank module，在clone上调用
+2. `transform.wafer.materialize_physical_dataflow_candidate`：消费singleton pre-scheduling rank module，在clone上调用
    Q32同一rank frontier producer、materializer与payload可重算的per-rank exact gates，再用singleton required
    `TargetProfileId`、logical-rank、`RankLocalCandidateOrderV1`及`DeterministicWorkPolicyV1` params物化一个研究/调试candidate，
    返回fresh handle与singleton `CandidateRunReportV1`；
@@ -1572,17 +1572,13 @@ structured policy唯一schema为：
 ```text
 StructuredOptimizationPolicyV1 {
   schema_version: U16 = 1
-  qualified_optimization_set_digest: Digest32
-  fixed_control: ClosedEnum(OptimizationGroupSelectionV1)
-  fixed_disabled_key: Optional<Record(MechanismKeyV1)>
-  cleanup_control: ClosedEnum(OptimizationGroupSelectionV1)
-  cleanup_disabled_key: Optional<Record(MechanismKeyV1)>
+  enabled_mechanism_keys: Sequence<Record(MechanismKeyV1)>
 }
 ```
 
-presence/member/wrong-group规则严格复用05；required normalization不可关闭。canonical bytes固定为domain
-`"wafer.structured-optimization-policy\0"`、u16 schema、Digest32、两个u32 enum及各自`u8 presence + optional
-MechanismKeyV1 bytes`，无extension私有default。三个result param的exact record由06唯一冻结：
+mechanism keys必须sorted unique且适用于当前IR cut；unknown、duplicate或wrong-cut在mutation前拒绝。canonical bytes固定为domain
+`"wafer.structured-optimization-policy\0"`、u16 schema和length-prefixed key sequence，无extension私有default。
+三个result param的exact record由06唯一冻结：
 
 ```text
 MechanismOutcomeCountV1 {
@@ -1600,7 +1596,6 @@ MechanismReportEntryV1 {
 
 MechanismReportV1 {
   schema_version: U16 = 1
-  qualified_optimization_set_digest: Digest32
   structured_optimization_policy_digest: Digest32
   entries: Sequence<Record(MechanismReportEntryV1)>
 }
@@ -1670,9 +1665,9 @@ payload不得进入package/RuntimeSession；不能与production winner比较或�
 candidate IR猜search telemetry。
 
 cut verifier只读payload IR，不靠marker attr：`optimize_structured`输入必须是singleton rank-local `builtin.module`的05
-`StructuredTensorModule` envelope，含typed rank entry且无Wafer physical memref、tile/instr op、accepted offset或transport binding；
-它先运行05 required normalizer，输出必须通过required-form verifier。`materialize_physical_dataflow_candidate`输入还必须已经通过
-该normal form，携带exact topology/execution mesh，显式logical rank属于mesh，且零physical/instruction residue；输出必须无
+structured tensor envelope，含typed rank entry且无Wafer physical memref、tile/instr op、accepted offset或transport binding；
+输出必须通过当前structured IR verifier。`materialize_physical_dataflow_candidate`输入还必须携带exact topology/execution mesh，
+显式logical rank属于mesh，且零physical/instruction residue；输出必须无
 Tensor/Linalg/search residue，是finalized、SPM-placed但unbound的rank instruction payload，并通过全部从payload可重算的per-rank
 instruction/descriptor/SPM/local-completion/range gates。`inspect`只接受这份`PlacedRankUnbound` output cut；它不得把缺失的
 whole-variant DDR plan或transport binding补成known。
@@ -1680,8 +1675,8 @@ whole-variant DDR plan或transport binding补成known。
 failure映射冻结为：empty/multi-target、wrong cut、owner `UnsupportedSemantic/UnsupportedRepresentation/UnsupportedCapability`
 或无合法rank-local candidate在clone mutation前返回silenceable failure；invalid IR/profile/policy/topology/rank、registry合同错误、
 `InternalInvariant`和reserved baseline `ResourceExhausted`返回definite failure。optimized budget耗尽且baseline已通过则success并
-返回baseline/report；driver cancellation按§6.6 definite abort且无result mapping。所有silenceable/definite failure用05
-`CanonicalIRSnapshotV1(MutationGuard)`证明payload byte-identical。
+返回baseline/report；driver cancellation按§6.6 definite abort且无result mapping。所有silenceable/definite failure必须证明
+transaction clone未提交且payload byte-identical。
 
 两个mutating op使用upstream operation handle的consume-old/produce-new形式：对target调用`consumesHandle + modifiesPayload`，
 只读policy/profile/rank/budget param，并对fresh handle/report调用`producesHandle`；inspect对target调用`onlyReadsHandle`、只产生
@@ -1827,16 +1822,15 @@ expected 与 SystemC/CModel 比较数值。
 
 实施计划位于 `tasks/plans/physical-dataflow-synthesis.md`。施工必须纵向推进，而不是先造一个脱离 accepted IR 的 solver：
 
-1. 先由05/16闭合required normal form、Equivalent-IR Stability、upstream adoption inventory和post-adoption baseline；
-2. 冻结shared capability/typed IR合同，建立canonical semantic descriptor与current-v1 provider；
-3. 实现IndexRelation、PhysicalEncoding、valid-domain和descriptor-cover property core；
-4. 让保守baseline经新family/provider物化并通过全部exact gates；
-5. 补齐implementation/transfer family到Instr/CRT/SystemC的最小纵向能力；
-6. 独立实现并验证policy-free bitwise relation、pointwise propagation、implementation absorption、shared-input reuse和
-   其它qualified upstream mechanisms；代数变换只在numeric policy完整时注册；
-7. search只组合上述mechanisms，加入惰性domain、constraint propagation、canonical frontier、Pareto beam、两级
+1. 冻结当前production structured IR、shared capability与typed IR合同，建立canonical semantic descriptor与current-v1 provider；
+2. 实现IndexRelation、PhysicalEncoding、valid-domain和descriptor-cover property core；
+3. 让保守baseline经新family/provider物化并通过全部exact gates；
+4. 补齐implementation/transfer family到Instr/CRT/SystemC的最小纵向能力；
+5. 独立实现并验证policy-free bitwise relation、pointwise propagation、implementation absorption和shared-input reuse；
+   代数变换只在numeric policy完整且有直接correctness测试时注册；
+6. search只组合上述mechanisms，加入惰性domain、constraint propagation、canonical frontier、Pareto beam、两级
    static-memory oracle、interval-aware dominance、hard budget和telemetry；
-8. 切换production，并删除旧layout planner、implicit per-use materialization、scope-prefix/maximal-resident决策旁路、
+7. 切换production，并删除旧layout planner、implicit per-use materialization、scope-prefix/maximal-resident决策旁路、
    `estimatedTimePs`/`estimateScheduledRankProgramTimePs`/scalar-combination ranking/discovery-order fallback，以及13列出的
    collective schedule enums/options/default selector；
 9. 可选地接入compiler-wide Transform control plane，共用同一C++ implementation。

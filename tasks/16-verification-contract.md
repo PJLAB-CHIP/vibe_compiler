@@ -1,6 +1,6 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-07-19同步Q33 adoption/Equivalent-IR、Q32联合physical-dataflow/Q32.T rank-local Transform和
+状态：2026-07-19同步Q32联合physical-dataflow/Q32.T rank-local Transform和
 Q3.6 Count的内部可闭合目标验证合同；保留Q31标准7B单block多seed数值证据、mapped transfer、
 versioned GEMM orientation及已完成
 Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate。
@@ -43,8 +43,7 @@ Pipeline position:
   闭合完整输出。Q22只汇总该传递证据，不另建pipeline。
   Q29随后闭合rank-local tile-dataflow scheduling、complete traversal和TP16 7B compile/package结构gate；Q28再从同一
   production source入口闭合标准7B单block managed-reference SystemC执行及完整PyTorch eager output differential。
-  Q33在Q32前闭合upstream adoption、required normal form和Equivalent-IR Stability，并冻结post-adoption baseline；
-  Q32再闭合四provider联合搜索、reserved baseline、SPM→DDR→post-memory transport→ABI的all-rank
+  Q32闭合四provider联合搜索、reserved baseline、SPM→DDR→post-memory transport→ABI的all-rank
   atomic bundle gate；Q32.T只闭合可选rank-local Transform adapter，不代替Q32 production coordinator。Q3.6闭合
   Count的11/14-17 mechanical writeback/ABI/event合同，17-owned `CountSemanticProfileV1`/qualification容器设计已闭合，
   但能使其present/qualified的predicate、golden与evidence仍依赖独立外部语义证据；
@@ -258,128 +257,10 @@ source与既有final byte-identical。marker目录、helper-output symlink和pub
 Q15 mandatory cases必须使用真实configured helper；mock helper只补failure injection。缺helper时相关test可以
 unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执行。
 
-### 5.1 Structured Optimization 与 Equivalent-IR Gate
-
-05拥有required normal form和fixed target-independent optimization；本文固定“上游机制已采用”的证据口径：
-
-`AdoptionSpec`、`QualificationObservation`、`OptimizationQualificationProposalV1`、`OptimizationBatchObservationV1`、
-`QualifiedOptimizationSetV1`、`AdoptionQualificationInputV1`、`AdoptionQualificationRunV1`/terminal、
-`AdoptionQualificationResultManifestV1`、`OptimizationSetPublicationAttemptV1`/terminal及
-`ActiveQualifiedOptimizationSetRefV1`的all-and-only字段、五轴enum、work-policy binding和canonical serialization由05
-§6.2唯一拥有；本文只定义gate关系，不复制schema子集。schema validator必须拒绝缺字段、未知字段、
-spec/observation `MechanismKeyV1`、proposal/batch/set digest或work-policy id不匹配，以及qualified set未all-and-only
-覆盖proposal成员。
-
-typed registry是唯一**audit spec/index**，不是production实现事实的替代品。qualification harness按`MechanismKeyV1`生成canonical
-sorted observation，并做双向闭合：production/debug telemetry出现的每个key都有spec；每个active spec都有其唯一
-`OptimizationCutPointV1`上的一个或多个live invocation observation，或按05闭合为
-`Rejected/DownstreamBlocked + ClosedReasonV1`；不存在第三种口头`Unavailable`状态。registry中每个key只能有一个spec，
-不同调用点按canonical invocation identity聚合而不复制spec；backend row记录实际执行的完整argv、tool identity和environment
-digest，而不是抄写预期flags。record不被production读取，不进入IR、bundle、manifest或package；canonical observation作为
-不可变CI artifact保存；Q33归档小型canonical observation本体及其content digest、schema/policy version和重放命令，大型原始
-附件可只保存不可变CI artifact引用与digest。
-
-provider origin、availability、exposure set、adoption mode与qualification status五轴及其值域严格复用05唯一schema；本文不
-再定义别名enum。05的maturity表只能从这些字段派生，不能成为第二套状态机；CMake linked、debug可重放或library可调用均不
-证明production采用，只有真实调用且qualified才能宣称已采用。
-
-- required tensor normalizer与postcondition verifier必须用显式rewrite/check建立05的pure-tensor合同；07的selected physical
-  payload另有独立normalizer/verifier，只共享identity-view/static-integer proof与transaction/fuel基础设施。关闭generic
-  canonicalizer不得改变两层correctness；
-- 05 tensor与07 selected-payload各自拥有stage-specific outcome type；两者只共享closed status vocabulary
-  `Success{changed} | UnsupportedSemantic | InvalidIR | ResourceExhausted | InternalInvariant`和diagnostic vocabulary
-  `family/reason/canonical_operation_path`，不形成跨stage common normalizer type。按canonical source order选择第一个error；只有
-  通过各自独立postcondition verifier的`Success`提交clone，`changed=false`表示已经满足该层normal form，其余状态均保持输入
-  canonical bytes不变；
-- metamorphic corpus覆盖共享/非共享`tensor.empty`、fill和DPS init，named/generic structured form，
-  collapse/expand/transpose/`tensor.extract_slice`，unit-extent/scalar capture；另用post-bufferization corpus覆盖
-  `memref.subview`、allocation root、layout和可追溯ViewLike alias，但不混用两层postcondition；
-- Q33只要求等价形态通过当前IR可直接验证的DPS/indexing/scalar/numeric/effect postcondition、complete traversal、SPM/DDR
-  alias/lifetime、completion、target ABI和atomic bundle gate。canonical `SemanticOpDescriptor`与family-domain invariance属于后续
-  Q32.I gate；Q33不得为此先造临时descriptor或形成依赖环；
-- source numeric policy不许可reassociation时要求完整output保持bit/byte exact；其它变换按source comparator验证，不能用
-  “优化通常等价”放宽NaN、rounding、overflow或reduction order；
-- 每个status都先通过05统一EvidenceKind结构validator，拒绝Rewrite携带backend action、BackendAction携带rewrite或
-  InvocationOnly携带rewrite/action/Applied；每个qualified mechanism还必须证明production或candidate调用点实际执行，并按
-  spec的`EvidenceKindV1`分别证明mandatory corpus
-  中的非零rewrite、backend-action的零rewrite与非零成功action/output，或invocation-only的零rewrite/空action；
-  fixed/cleanup adoption还要重放rank-count=1/16通用source和冻结7B source-to-bundle/SystemC/PyTorch vertical，记录unsupported/skipped、
-  compile resource和host wall；无改写或无收益的pass保留debug能力，不为凑覆盖进入默认pipeline；
-- candidate-local CSE/fusion/view/loop机制允许形成不同sharing/cost机会，但两种等价IR都必须有合法reserved baseline，且每个
-  survivor从改写后IR fresh重算analysis与exact cost。DMA issue、provider completion、wait/fence、collective和observable store
-  不能被CSE/DCE/LICM删除或跨越。
-
-effect coverage verifier按schedulable root的nested region与`RecursiveMemoryEffects`容器递归遍历，并固定四类规则：只有standard
-Communication effect的logical collective仍是barrier；同时有standard+detailed effect的tile/instr op必须逐operand/resource
-投影一致；unknown effect或external call形成保守全资源barrier；local fence除`Sync Write`外还对其排序的每个local
-Compute/Movement engine resource投影`Write`，Direct DTE Communication只由matching token/wait/path闭合。detailed lifecycle
-marker只提供completion proof的资源边界，真正完成仍由SSA token、wait/fence与path verifier
-共同证明，不能从effect本身推断。任何独立`hasCommunicationEffect`布尔值必须删除或从standard effect派生。
-
-inventory closure必须逐调用点覆盖production pass/utility、debug pass-family registration、official
-StableHLO-to-Linalg、OneShotBufferize、`TilingInterface`、`linalg::makeTiledShapes`、
-`scf::tileAndFuseProducerOfSlice`、CSE/SCCP、Linalg/Tensor/SCF/Bufferization/Arith families、当前全部六个
-canonicalizer cut point、instruction/target conversion，以及device publication中的clang `-O2`、CRT GCC `-O2`与
-`--gc-sections`。数量属于本次active inventory observation；稳定合同要求“全部审计发现的调用点”，不硬编码未来恒为六个。
-同一provider utility在不同cut point必须有不同`MechanismKeyV1`和spec；不能只登记一个“canonicalizer已采用”。required normalization、拟进入production
-fixed/cleanup subset及其它mandatory qualification row任一为unassessed/unsupported/skipped都使closure失败；明确属于nonproduction且以
-closed reason标为`Rejected`或`DownstreamBlocked`的row可以完成inventory，但不能宣称采用。当前production
-canonicalizer callsite均归`BestEffortCleanup`组且每个cut用独立key；实际数量只是observation，不进schema。
-
-production/debug mechanism的所有执行必须经`OptimizationInvocationGatewayV1`校验registered key、typed cut/root和
-policy ref，再调用owner adapter并按05的canonical invocation identity exactly-once提交唯一terminal outcome/work/action telemetry；
-backend launcher/argv也只能在gateway
-adapter内启动。build-time checker从同一registry生成known upstream pass factory/utility/backend launcher与唯一allowed
-adapter symbol set，对production/debug translation unit的AST/call graph和link dependency做零绕过审计：adapter外direct call、
-adapter缺key、live gateway key无spec或active spec无invocation site均fail。static direct-call closure与runtime
-spec↔invocation telemetry双向闭合必须同时通过，不得互相代替。
-
-production先冻结`OptimizationQualificationProposalV1`：fixed与cleanup两组成员互斥，每个`MechanismKeyV1`绑定完整spec
-digest，且分别必须是`AdoptionMode=FixedOptimization`和`AdoptionMode=BestEffortCleanup`。内部qualification seam只接受：
-
-```text
-RequiredNormalization = AlwaysOn
-FixedOptimization = AllOn | AllOff | DisableOne(FixedMechanismKey)
-BestEffortCleanup = AllOn | AllOff | DisableOne(CleanupMechanismKey)
-```
-
-wrong-group、nonmember或同时disable两个key均在运行前拒绝。Equivalent-IR 2×2的两轴固定为
-`EquivalentInput={Original, Metamorphic}` × `BestEffortCleanup={AllOff, AllOn}`；四路都使用
-`RequiredNormalization=AlwaysOn`且`FixedOptimization=AllOff`，cleanup只能在required-form verifier通过后运行。另做
-normalizer once/twice canonical bytes相同和失败clone byte-identical gate。proposal union非空时，rank-count=1/16与冻结7B corpus的
-全局比较固定为`B=(Fixed AllOn, Cleanup AllOn)`对`A=(Fixed AllOff, Cleanup AllOff)`；union为空时两者语义相同，global
-static/ABBA comparison domain固定为空，但Equivalent-IR、normalizer幂等和production gate不省略。每个key的marginal comparison只在
-所属组使用`DisableOne(key)`，另一组保持AllOn。最终production还必须独立重放两组AllOn的完整下游gate，
-不得用2×2或AllOff路径代替。
-
-`PostLegalizationCanonicalization`与`StructuredTensorCanonicalization`属于上述AlwaysOn required集合：前者位于第二次
-post-legalization collective normalization之后，后者位于第三次normalization之后，随后才进入required tensor normalizer。
-两者的顺序由HF/rank-mask静态offset主线锁定；optional cleanup全关时仍必须产生与既有required pipeline相同的structured tensor
-artifact并通过完整下游gate。
-
-非空proposal的global AllOn/AllOff static/ABBA、Equivalent-IR 2×2和production-AllOn结果只进入唯一
-`OptimizationBatchObservationV1`；每个`QualificationObservation`只保存该key的invocation/rewrite、`DisableOne`边际
-static/ABBA和per-key gate。只有`OptimizationBatchStatusV1=Qualified`且`closed_reason` optional absent的batch可被qualified set引用；
-`Rejected`必须携带typed non-None reason且不得被引用。每个key必须有非零invocation；并按05 spec中的typed
-`EvidenceKindV1`分别证明非零rewrite、backend-action的零rewrite与非零成功action/output，或invocation-only的零rewrite/空action；exact static
-DDR/SPM/movement/command vector逐分量不恶化；tensor与selected payload work分别严格使用05的
-`RequiredTensorNormalizationWorkPolicyV1`和07的`SelectedPayloadNormalizationWorkPolicyV1`，计数均在rewrite前按canonical
-traversal取得，checked overflow或fuel耗尽返回`ResourceExhausted`。wall/peak RSS的A/B含义、warmup、固定五个
-ABBA block、median/MAD、`MAD=0`处理、host收益和回退方向全部严格复用05的
-`OptimizationSetQualificationPolicyV1`，harness不得复制或在看到样本后修改公式。机制只在有确定性下游收益或
-显著host收益且两个资源均不触发回退时qualified；否则固定为`QualificationStatus=NoOpObserved`并以
-`DebugRegistered ∈ ExposureSet`且不属于active qualified set表达derived debug-only；被评估spec的AdoptionMode/ExposureSet保持
-immutable，任何mandatory sample
-skipped/unsupported直接fail而非从统计中删除。只有完成上述batch、all-and-only key observation和mandatory
-vertical后才按05的`AdoptionQualificationInputV1`、`AdoptionQualificationRunV1`、
-`AdoptionQualificationResultManifestV1`与run terminal、optimization publication attempt/terminal、host 环境失效重试总budget及staging全量readback
-形成`QualifiedOptimizationSetV1`，再以expected-active digest做单次CAS发布新的`ActiveQualifiedOptimizationSetRefV1`；production只消费active
-ref指向的set。取消、host 环境失效、资源耗尽、CAS conflict或任一失败保持上一份active ref/set byte-identical，不得删掉失败key后沿用其它旧
-observation。
 
 ## 6. Q16 Per-Rank Executable Bundle Gates
 
-- 直接消费Q15重新读取验证并经05 qualified fixed optimization形成的optimizer-ready structured tensor program，不另造
+- 直接消费Q15重新读取验证的structured tensor program，不另造
   手写task/group主线；
 - frontend verifier一次返回typed input/output/parameter/constant和每rank slice，Compiler不二次解析JSON或文件名；
 - rank-count=1创建exact一个rank clone；rank-count=16创建logicalRank 0..15 all-and-only clones；
@@ -405,7 +286,7 @@ observation。
 
 `tasks/06-physical-dataflow-synthesis.md`拥有终态联合planner合同；本文固定跨stage证据口径。Q29数字只作为已实现迁移baseline：
 
-- production从Q15 verified program经05 required normal form与qualified fixed optimization后的同一structured tensor IR
+- production从Q15 verified program的同一structured tensor IR
   直接建立rank-local task/dataflow candidates，不发布或
   重新读取额外的调度artifact；
 - accepted IR用buffer SSA、movement和event显式区分resident edge和spill，并以whole-rank SPM/
@@ -449,7 +330,7 @@ observation。
   `PhysicalDataflowTelemetryV1`记录phase、counter、work、packing与stop reason。测试使用adversarial高fanout/多encoding graph证明不枚举Cartesian product；超限时确定性停止新增
   optimized state，baseline合法则返回baseline并记录budget diagnostic，只有baseline exact-illegal才返回真实legality
   failure；baseline proof超过其独立hard allowance返回compiler resource exhaustion。生产选择由deterministic work/fuel caps
-  决定；只有baseline已完成后才configuration的optimization deadline或optimized budget耗尽会以`Success`返回reserved baseline并记录
+  决定；只有baseline已完成后才arm的optimization deadline或optimized budget耗尽会以`Success`返回reserved baseline并记录
   stop reason。driver/process在任意时点显式取消则返回`Cancelled`，无partial seed/candidate/artifact，不得伪装成
   baseline fallback。未取消时同输入、不同线程数稳定选择；具体cap数值是implementation resource policy，不写成workload
   或IR语义；
@@ -566,11 +447,10 @@ Q32.T不阻塞Q32，只验证06限定的rank-local adapter：
   generic dictionary/string/fallback均拒绝。profile固定构造06的`CompilerEmission + CompilerEmittable` context；budget
   每字段一对一映射`RankPlanningRequest::deterministic_work_policy`，禁止extension私有default/schema或model/board
   context param；
-- `StructuredOptimizationPolicyV1` exact schema必须携带`qualified_optimization_set_digest`和fixed/cleanup两组
-  `AllOn | AllOff | DisableOne`控制及typed optional key，presence/member/wrong-group复用05同一verifier；required
-  normalization不可关闭，Transform不得绕过`QualifiedOptimizationSetV1`或建立第二份policy schema；
-- `MechanismReportV1`对每个实际调用key按05 `MechanismInvocationOutcomeV1` ordinal保存all-and-only七行，覆盖
-  missing/duplicate/extra outcome及checked count/rewrite不一致negative；candidate report覆盖
+- `StructuredOptimizationPolicyV1`只携带显式、sorted unique的rank-local rewrite key；unknown、duplicate或不适用于当前
+  IR cut的key在mutation前拒绝，不绑定production policy文件或外部归档；
+- `MechanismReportV1`对每个实际调用key保存all-and-only outcome，覆盖missing/duplicate/extra outcome及checked
+  count/rewrite不一致negative；candidate report覆盖
   `Completed | OptimizationBudgetFallback | UncalibratedIncomparable`，后两者都必须选择reserved baseline；
 - candidate op调用共享rank-frontier producer/materializer、全部payload可重算的per-rank exact gates与
   `RankLocalCandidateOrderV1`；依赖frontend binding的gate保持unverified，不伪造输入。它不调用all-rank coordinator、不消费
@@ -588,7 +468,7 @@ Q32.T不阻塞Q32，只验证06限定的rank-local adapter：
   另保存本次library invocation的work summary、budget stop和packing status/lower/upper/gap；inspect只能输出
   fresh IR-derived evidence，不能恢复search telemetry；
 - cut verifier只读payload：`optimize_structured`只接受singleton rank-local、post-legalization/pre-physical-planning
-  `StructuredTensorModule`，无physical memref、tile/instr、offset或binding；`materialize`input还必须通过Q33 normal form、
+  `StructuredTensorModule`，无physical memref、tile/instr、offset或binding；`materialize`input还必须通过当前structured IR verifier、
   携带exact topology/mesh且logical rank属于mesh，output必须是finalized、SPM-placed但unbound的rank instruction
   payload，并通过payload可重算的instruction/descriptor/SPM/local-completion/range gates；`inspect`只接受该
   `PlacedRankUnbound` cut，不得补写whole-variant DDR或binding事实；
@@ -599,8 +479,8 @@ Q32.T不阻塞Q32，只验证06限定的rank-local adapter：
 - empty/multi-target、wrong cut、owner typed unsupported或无合法rank-local candidate在mutation前返回silenceable failure；
   invalid IR/profile/policy/topology/rank、registry contract、internal invariant和baseline `ResourceExhausted`返回definite failure。
   optimized budget耗尽且baseline已通过则success返回baseline/report；driver cancellation definite abort且无result
-  mapping。所有失败使用05 `CanonicalIRSnapshotV1(MutationGuard)`证明payload byte-identical；
-- 与upstream Linalg/Tensor/SCF Transform ops组合后重新通过Q33 required normal form与per-rank exact gates；
+  mapping。所有失败必须证明transaction clone未提交且payload byte-identical；
+- 与upstream Linalg/Tensor/SCF Transform ops组合后重新通过当前structured IR verifier与per-rank exact gates；
 - Transform dialect op/attr/param、script和solver state均不进入accepted module、ExecutableBundle、target artifact或package；
 - `WaferTransformDialectExtension`只依赖MLIR Transform dialect/interfaces及WaferTransforms/Target libraries，声明可能创建的
   Wafer（含DTE）、func、linalg、tensor、scf、memref、bufferization、async、arith与math payload dialect；在只注册

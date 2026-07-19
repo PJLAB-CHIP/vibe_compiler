@@ -1,7 +1,6 @@
 //===- NamedComputeLowering.cpp - Named compute lowering ------------===//
 
 #include "Internal.h"
-#include "Wafer/Analysis/DPSInitAnalysis.h"
 
 using namespace wafer;
 
@@ -46,12 +45,12 @@ TileRegionBodyEmitter::verifyExactFillPayload(mlir::linalg::FillOp fill) {
 
 mlir::LogicalResult
 TileRegionBodyEmitter::verifyExactGemmPayload(mlir::linalg::LinalgOp op,
-                                              llvm::StringRef role) {
+                                              llvm::StringRef subject) {
   if (op->getNumRegions() != 1 || op->getRegion(0).empty() ||
       op.getRegionInputArgs().size() != 2 ||
       op.getRegionOutputArgs().size() != 1)
     return fail(
-        (role + " requires an exact multiply-accumulate payload").str());
+        (subject + " requires an exact multiply-accumulate payload").str());
 
   mlir::Block &body = op->getRegion(0).front();
   auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(body.getTerminator());
@@ -60,7 +59,7 @@ TileRegionBodyEmitter::verifyExactGemmPayload(mlir::linalg::LinalgOp op,
     payloadOps.push_back(&payloadOp);
   if (!yield || yield.getValues().size() != 1 || payloadOps.size() != 2)
     return fail(
-        (role + " requires an exact multiply-accumulate payload").str());
+        (subject + " requires an exact multiply-accumulate payload").str());
 
   mlir::Value lhs = op.getRegionInputArgs()[0];
   mlir::Value rhs = op.getRegionInputArgs()[1];
@@ -79,7 +78,7 @@ TileRegionBodyEmitter::verifyExactGemmPayload(mlir::linalg::LinalgOp op,
         !matchesPair(mul.getLhs(), mul.getRhs(), lhs, rhs) ||
         !matchesPair(add.getLhs(), add.getRhs(), mul.getResult(), accumulator))
       return fail(
-          (role + " requires an exact multiply-accumulate payload").str());
+          (subject + " requires an exact multiply-accumulate payload").str());
     sum = add.getResult();
   } else if (auto mul = mlir::dyn_cast<mlir::arith::MulIOp>(payloadOps[0])) {
     auto add = mlir::dyn_cast<mlir::arith::AddIOp>(payloadOps[1]);
@@ -89,15 +88,15 @@ TileRegionBodyEmitter::verifyExactGemmPayload(mlir::linalg::LinalgOp op,
         !matchesPair(mul.getLhs(), mul.getRhs(), lhs, rhs) ||
         !matchesPair(add.getLhs(), add.getRhs(), mul.getResult(), accumulator))
       return fail(
-          (role + " requires an exact multiply-accumulate payload").str());
+          (subject + " requires an exact multiply-accumulate payload").str());
     sum = add.getResult();
   } else {
     return fail(
-        (role + " requires an exact multiply-accumulate payload").str());
+        (subject + " requires an exact multiply-accumulate payload").str());
   }
   if (yield.getValues().front() != sum)
     return fail(
-        (role + " requires an exact multiply-accumulate payload").str());
+        (subject + " requires an exact multiply-accumulate payload").str());
   return mlir::success();
 }
 
@@ -139,9 +138,9 @@ TileRegionBodyEmitter::convertFill(mlir::linalg::FillOp fill,
 
 mlir::LogicalResult
 TileRegionBodyEmitter::requireZeroFilledGemmInit(mlir::linalg::LinalgOp op,
-                                                 llvm::StringRef role) {
+                                                 llvm::StringRef subject) {
   if (op.getNumDpsInits() != 1)
-    return fail((role + " requires exactly one DPS init").str());
+    return fail((subject + " requires exactly one DPS init").str());
 
   auto isPositiveZero = [](mlir::Attribute attr) {
     if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr)) {
@@ -163,10 +162,9 @@ TileRegionBodyEmitter::requireZeroFilledGemmInit(mlir::linalg::LinalgOp op,
     return false;
   };
 
-  DPSInitFacts initFacts = analyzeDPSInit(op, /*initIndex=*/0);
-  if (!initFacts.exactSplatValue ||
-      !isPositiveZero(initFacts.exactSplatValue)) {
-    return fail((role + " requires a provable zero-filled DPS init because "
+  auto attrIt = fillInitAttrs.find(op.getDpsInits().front());
+  if (attrIt == fillInitAttrs.end() || !isPositiveZero(attrIt->second)) {
+    return fail((subject + " requires a provable zero-filled DPS init because "
                            "wafer.tile.gemm has overwrite semantics")
                     .str());
   }
@@ -179,10 +177,9 @@ bool TileRegionBodyEmitter::hasOrderedGemmChunkInit(
     return false;
 
   mlir::Value init = op.getDpsInits().front();
-  DPSInitFacts facts = analyzeDPSInit(op, /*initIndex=*/0);
-  mlir::Operation *producer = facts.sourceRoot.getDefiningOp();
+  mlir::Operation *producer = init.getDefiningOp();
   if (!producer || producer->getNumResults() != 1 ||
-      producer->getResult(0) != facts.sourceRoot ||
+      producer->getResult(0) != init ||
       init.getType() != op->getResult(0).getType())
     return false;
 
@@ -713,9 +710,12 @@ TileRegionBodyEmitter::convertReduceGeneric(mlir::linalg::GenericOp generic,
       return mlir::failure();
     initAttr = *neutral;
   } else {
-    DPSInitFacts initFacts = analyzeDPSInit(generic, /*initIndex=*/0);
-    initAttr = initFacts.exactSplatValue;
-    initScalar = initFacts.splatScalar;
+    if (auto attrIt = fillInitAttrs.find(initTensor);
+        attrIt != fillInitAttrs.end())
+      initAttr = attrIt->second;
+    if (auto scalarIt = fillInitScalars.find(initTensor);
+        scalarIt != fillInitScalars.end())
+      initScalar = scalarIt->second;
     if (initAttr)
       initScalar = {};
     if (!initAttr && !initScalar)

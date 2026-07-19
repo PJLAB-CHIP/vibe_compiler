@@ -48,11 +48,11 @@ mlir::FailureOr<std::optional<int64_t>>
 getOptionalExecutionMeshRankCount(mlir::Operation *op);
 mlir::LogicalResult
 verifyLogicalRankWithinExecutionMesh(mlir::Operation *op, int64_t rank,
-                                     llvm::StringRef role);
+                                     llvm::StringRef subject);
 mlir::LogicalResult
 verifyLogicalRanksWithinExecutionMesh(mlir::Operation *op,
                                       llvm::ArrayRef<int64_t> ranks,
-                                      llvm::StringRef role);
+                                      llvm::StringRef subject);
 
 mlir::LogicalResult verifyDTEP2P(mlir::Operation *op, mlir::Value buffer,
                                  mlir::IntegerAttr peer,

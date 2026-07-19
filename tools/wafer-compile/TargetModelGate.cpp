@@ -4,16 +4,25 @@
 
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 
-#include "Wafer/Model/TargetModelExpectedOutputGate.h"
+#include "Wafer/Compiler/ProgramInvocation.h"
+#include "Wafer/Compiler/ProgramTensorComparison.h"
+#include "Wafer/Model/SystemCTargetModel.h"
+#include "Wafer/Model/TargetModelInvocation.h"
+#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
+#include "Wafer/Model/Testing.h"
+#endif
 
-#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <set>
+#include <utility>
+#include <vector>
 
 namespace wafer::compile_driver {
-
 bool runTargetModelGate(
     const CommandLineOptions &options,
     const wafer::compiler::TargetCompilationProduct &product,
@@ -21,13 +30,45 @@ bool runTargetModelGate(
     llvm::ArrayRef<IndexedPath> expectedPaths, double atol, double rtol,
     wafer::model::TargetModelKernelBudget budget,
     wafer::model::TargetModelExecutionPolicy executionPolicy) {
-  std::vector<wafer::model::TargetModelTensorFileBinding> inputs;
-  std::vector<wafer::model::TargetModelTensorFileBinding> expected;
-  for (const IndexedPath &binding : inputPaths)
-    inputs.push_back({binding.index, binding.path});
-  for (const IndexedPath &binding : expectedPaths)
-    expected.push_back({binding.index, binding.path});
-  llvm::Expected<wafer::model::TargetModelResult> result = [&] {
+  std::vector<wafer::compiler::ProgramGlobalInputBinding> globalInputs;
+  for (const IndexedPath &inputPath : inputPaths) {
+    auto tensor = wafer::compiler::ProgramTensor::loadNpy(inputPath.path);
+    if (!tensor) {
+      llvm::errs() << "wafer-compile: " << llvm::toString(tensor.takeError())
+                   << "\n";
+      return true;
+    }
+    globalInputs.push_back({inputPath.index, std::move(*tensor)});
+  }
+  std::vector<std::pair<int64_t, wafer::compiler::ProgramTensor>>
+      expectedTensors;
+  for (const IndexedPath &expectedPath : expectedPaths) {
+    auto tensor = wafer::compiler::ProgramTensor::loadNpy(expectedPath.path);
+    if (!tensor) {
+      llvm::errs() << "wafer-compile: " << llvm::toString(tensor.takeError())
+                   << "\n";
+      return true;
+    }
+    expectedTensors.emplace_back(expectedPath.index, std::move(*tensor));
+  }
+
+  auto programInvocations = wafer::compiler::prepareProgramInvocations(
+      product.getExecutableBundle(), *options.outputProgramDirectory,
+      globalInputs);
+  if (!programInvocations) {
+    llvm::errs() << "wafer-compile: "
+                 << llvm::toString(programInvocations.takeError()) << "\n";
+    return true;
+  }
+  auto invocation = wafer::model::prepareTargetModelInvocation(
+      product.getExecutableBundle(), product.getTargetLLVMModuleBundle(),
+      *programInvocations);
+  if (!invocation) {
+    llvm::errs() << "wafer-compile: " << llvm::toString(invocation.takeError())
+                 << "\n";
+    return true;
+  }
+  llvm::Expected<wafer::model::TargetModelResult> result = [&]() {
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
     if (const char *failureRank =
             std::getenv("WAFER_TEST_FAIL_TARGET_MODEL_TERMINAL_RANK")) {
@@ -37,24 +78,131 @@ bool runTargetModelGate(
             llvm::createStringError(
                 "invalid test-only target model terminal failure rank"));
       return wafer::model::testing::
-          executeAndCompareTargetModelExpectedOutputsWithTerminalFailure(
-              product.getExecutableBundle(),
-              product.getTargetLLVMModuleBundle(),
-              *options.outputProgramDirectory, inputs, expected, atol, rtol,
-              budget, executionPolicy, parsedFailureRank,
-              options.modelReportNumericStatistics ? &llvm::outs() : nullptr);
+          executeSystemCTargetModelWithTerminalFailure(
+              std::move(invocation->getExecutable()),
+              invocation->getInputBindings(), budget, executionPolicy,
+              parsedFailureRank);
     }
 #endif
-    return wafer::model::executeAndCompareTargetModelExpectedOutputs(
-        product.getExecutableBundle(), product.getTargetLLVMModuleBundle(),
-        *options.outputProgramDirectory, inputs, expected, atol, rtol, budget,
-        executionPolicy,
-        options.modelReportNumericStatistics ? &llvm::outs() : nullptr);
+    return wafer::model::executeSystemCTargetModel(
+        std::move(invocation->getExecutable()), invocation->getInputBindings(),
+        budget, executionPolicy);
   }();
   if (!result) {
     llvm::errs() << "wafer-compile: " << llvm::toString(result.takeError())
                  << "\n";
     return true;
+  }
+
+  const auto &rankExecutables =
+      product.getExecutableBundle().getRankExecutables();
+  const auto &targetModules = product.getTargetLLVMModuleBundle().getModules();
+  size_t expectedOutputCount = 0;
+  for (const auto &module : targetModules)
+    expectedOutputCount +=
+        llvm::count_if(module.getKernelABISlots(), [](const auto &slot) {
+          return slot.role == wafer::compiler::KernelABISlotRole::Output;
+        });
+  if (result->completedRankCount !=
+          static_cast<int64_t>(rankExecutables.size()) ||
+      result->outputs.size() != expectedOutputCount) {
+    llvm::errs() << "wafer-compile: target model output rank/domain is "
+                    "incomplete\n";
+    return true;
+  }
+
+  std::set<std::pair<int64_t, int64_t>> seenOutputs;
+  for (const wafer::model::TargetModelOutput &output : result->outputs) {
+    if (output.logicalRank < 0 ||
+        static_cast<size_t>(output.logicalRank) >= targetModules.size()) {
+      llvm::errs() << "wafer-compile: target model output rank is invalid\n";
+      return true;
+    }
+    if (!seenOutputs.emplace(output.logicalRank, output.slotOrdinal).second) {
+      llvm::errs() << "wafer-compile: target model output is duplicated\n";
+      return true;
+    }
+    const auto &module = targetModules[static_cast<size_t>(output.logicalRank)];
+    const wafer::compiler::KernelABISlot *slot = nullptr;
+    for (const auto &candidate : module.getKernelABISlots())
+      if (candidate.ordinal == output.slotOrdinal)
+        slot = &candidate;
+    if (!slot || slot->role != wafer::compiler::KernelABISlotRole::Output ||
+        slot->resourceIndex != output.resourceIndex) {
+      llvm::errs() << "wafer-compile: target model output disagrees with the "
+                      "Kernel ABI\n";
+      return true;
+    }
+    const auto &rank = rankExecutables[static_cast<size_t>(output.logicalRank)];
+    const wafer::compiler::RankProgramBinding *binding = nullptr;
+    for (const auto &candidate : rank.getProgramBindings())
+      if (candidate.role == wafer::compiler::ProgramResourceRole::Output &&
+          candidate.index == slot->resourceIndex)
+        binding = &candidate;
+    if (!binding) {
+      llvm::errs() << "wafer-compile: target model output has no typed program "
+                      "binding\n";
+      return true;
+    }
+    const wafer::compiler::ProgramTensor *globalExpected = nullptr;
+    for (const auto &candidate : expectedTensors)
+      if (candidate.first == binding->programIndex)
+        globalExpected = &candidate.second;
+    if (!globalExpected) {
+      llvm::errs() << "wafer-compile: missing target model expected output "
+                   << binding->programIndex << "\n";
+      return true;
+    }
+    auto expected = wafer::compiler::sliceProgramTensorForBinding(
+        *globalExpected, *binding);
+    auto actual =
+        wafer::model::decodeTargetModelProgramTensor(*slot, output.bytes);
+    if (!expected || !actual) {
+      llvm::Error errors = llvm::Error::success();
+      if (!expected)
+        errors = llvm::joinErrors(std::move(errors), expected.takeError());
+      if (!actual)
+        errors = llvm::joinErrors(std::move(errors), actual.takeError());
+      llvm::errs() << "wafer-compile: " << llvm::toString(std::move(errors))
+                   << "\n";
+      return true;
+    }
+    if (options.modelReportNumericStatistics) {
+      auto statistics =
+          wafer::compiler::computeProgramTensorComparisonStatistics(*actual,
+                                                                    *expected);
+      if (!statistics) {
+        llvm::errs() << "wafer-compile: target model numeric statistics "
+                        "failed at index "
+                     << binding->programIndex << " rank " << output.logicalRank
+                     << ": " << llvm::toString(statistics.takeError()) << "\n";
+        return true;
+      }
+      llvm::outs()
+          << "wafer-compile: target model numeric statistics index="
+          << binding->programIndex << " rank=" << output.logicalRank
+          << " dtype=" << actual->getDType()
+          << " elements=" << statistics->elementCount
+          << " exact=" << statistics->exactElementCount << " exact_fraction="
+          << llvm::format("%.17g", statistics->exactFraction) << " mean_abs="
+          << llvm::format("%.17g", statistics->meanAbsoluteError)
+          << " p99_abs=" << llvm::format("%.17g", statistics->p99AbsoluteError)
+          << " p999_abs="
+          << llvm::format("%.17g", statistics->p999AbsoluteError) << " max_abs="
+          << llvm::format("%.17g", statistics->maximumAbsoluteError)
+          << " mean_ulp=" << llvm::format("%.17g", statistics->meanUlpDistance)
+          << " p99_ulp=" << statistics->p99UlpDistance
+          << " p999_ulp=" << statistics->p999UlpDistance
+          << " max_ulp=" << statistics->maximumUlpDistance << "\n";
+    }
+    if (llvm::Error comparison =
+            wafer::compiler::compareProgramTensorExpectedOutput(
+                *actual, *expected, atol, rtol)) {
+      llvm::errs() << "wafer-compile: target model output differs at index "
+                   << binding->programIndex << " rank " << output.logicalRank
+                   << ": " << llvm::toString(std::move(comparison)) << "\n";
+      return true;
+    }
   }
   llvm::outs() << "wafer-compile: target model outputs matched; ranks="
                << result->completedRankCount
@@ -80,9 +228,9 @@ bool runTargetModelGate(
                  << digest << "\n";
   for (llvm::StringRef digest :
        result->managedReferenceTensorEnvironmentDigests)
-    llvm::outs() << "wafer-compile: target model managed-reference tensor "
-                    "environment="
-                 << digest << "\n";
+    llvm::outs()
+        << "wafer-compile: target model managed-reference tensor environment="
+        << digest << "\n";
   for (llvm::StringRef implementation :
        result->managedReferenceTensorImplementations)
     llvm::outs() << "wafer-compile: target model managed-reference tensor "

@@ -3,7 +3,6 @@
 #include "Wafer/Compiler/Compilation.h"
 #include "Wafer/Compiler/TargetArtifact.h"
 #include "Wafer/Compiler/Testing.h"
-#include "Wafer/Support/OptimizationQualificationArchiveStore.h"
 
 #include "CompilationInternal.h"
 
@@ -11,53 +10,10 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <mutex>
 #include <optional>
 #include <utility>
 
-#ifndef WAFER_OPTIMIZATION_QUALIFICATION_ARCHIVE_ROOT
-#define WAFER_OPTIMIZATION_QUALIFICATION_ARCHIVE_ROOT ""
-#endif
-
 namespace wafer::compiler {
-namespace {
-
-std::optional<detail::CompilationOptimizationPolicyV1>
-getActiveProductionPolicy(llvm::raw_ostream &diagnostics) {
-  static std::once_flag once;
-  static std::optional<detail::CompilationOptimizationPolicyV1> policy;
-  static std::string failure;
-  std::call_once(once, [] {
-    OptimizationQualificationArchiveStoreV1 store(
-        WAFER_OPTIMIZATION_QUALIFICATION_ARCHIVE_ROOT);
-    ActiveQualifiedOptimizationPolicySelectionV1 selection;
-    if (!store.loadActiveQualifiedOptimizationPolicy(selection, &failure))
-      return;
-    OptimizationQualificationProposal proposal =
-        getCurrentOptimizationQualificationProposal();
-    if (!validateOptimizationQualificationProposal(proposal, &failure))
-      return;
-    if (selection.qualifiedSet.proposalDigest !=
-        digestOptimizationQualificationProposalV1(proposal)) {
-      failure =
-          "active qualified optimization set does not bind current proposal";
-      return;
-    }
-    policy = detail::CompilationOptimizationPolicyV1{
-        std::move(proposal), getAllOnOptimizationConfiguration(),
-        EquivalentInputVariantV1::Original,
-        /*requiredTensorNormalizationRepetitions=*/1};
-  });
-  if (!policy) {
-    detail::reject(diagnostics,
-                   "active optimization qualification is unavailable: " +
-                       failure);
-    return std::nullopt;
-  }
-  return policy;
-}
-
-} // namespace
 
 llvm::Expected<ExecutionConfig>
 ExecutionConfig::createForSingleCard(int64_t executionRankCount,
@@ -83,28 +39,19 @@ llvm::Expected<ExecutableBundle>
 compileTensorProgramToExecutableBundle(llvm::StringRef tensorProgramDirectory,
                                        ExecutionConfig executionConfig,
                                        llvm::raw_ostream &diagnostics) {
-  auto policy = getActiveProductionPolicy(diagnostics);
-  if (!policy)
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "active optimization qualification is unavailable");
   return detail::compileTensorProgramToExecutableBundleImpl(
-      tensorProgramDirectory, executionConfig, diagnostics, std::nullopt,
-      *policy);
+      tensorProgramDirectory, executionConfig, diagnostics, std::nullopt);
 }
 
 mlir::FailureOr<ExecutableBundle> compileProgram(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
-  auto policy = getActiveProductionPolicy(diagnostics);
-  if (!policy)
-    return mlir::failure();
   std::optional<ExecutableBundle> retainedExecutableBundle;
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics, std::nullopt, std::nullopt,
-          std::nullopt, &retainedExecutableBundle, nullptr, *policy)))
+          std::nullopt, &retainedExecutableBundle, nullptr)))
     return mlir::failure();
   if (!retainedExecutableBundle) {
     detail::reject(
@@ -119,16 +66,13 @@ mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
-  auto policy = getActiveProductionPolicy(diagnostics);
-  if (!policy)
-    return mlir::failure();
   std::optional<ExecutableBundle> retainedExecutableBundle;
   std::optional<TargetLLVMModuleBundle> retainedTargetLLVMModuleBundle;
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics, std::nullopt, std::nullopt,
           std::nullopt, &retainedExecutableBundle,
-          &retainedTargetLLVMModuleBundle, *policy)))
+          &retainedTargetLLVMModuleBundle)))
     return mlir::failure();
   if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle) {
     detail::reject(diagnostics,
@@ -151,13 +95,10 @@ mlir::LogicalResult testing::compileProgramWithRankFailure(
                    "test-only failure rank is outside ExecutionConfig");
     return mlir::failure();
   }
-  auto policy = getActiveProductionPolicy(diagnostics);
-  if (!policy)
-    return mlir::failure();
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics, failAfterLogicalRank, std::nullopt,
-      std::nullopt, nullptr, nullptr, *policy);
+      std::nullopt, nullptr, nullptr);
 }
 
 mlir::LogicalResult testing::compileProgramWithTargetRankFailure(
@@ -171,13 +112,10 @@ mlir::LogicalResult testing::compileProgramWithTargetRankFailure(
                    "test-only target failure rank is outside ExecutionConfig");
     return mlir::failure();
   }
-  auto policy = getActiveProductionPolicy(diagnostics);
-  if (!policy)
-    return mlir::failure();
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics, std::nullopt, failAfterLogicalRank,
-      std::nullopt, nullptr, nullptr, *policy);
+      std::nullopt, nullptr, nullptr);
 }
 
 mlir::LogicalResult testing::compileProgramWithPackageRankFailure(
@@ -191,13 +129,10 @@ mlir::LogicalResult testing::compileProgramWithPackageRankFailure(
                    "test-only package failure rank is outside ExecutionConfig");
     return mlir::failure();
   }
-  auto policy = getActiveProductionPolicy(diagnostics);
-  if (!policy)
-    return mlir::failure();
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics, std::nullopt, std::nullopt,
-      failAfterLogicalRank, nullptr, nullptr, *policy);
+      failAfterLogicalRank, nullptr, nullptr);
 }
 
 } // namespace wafer::compiler

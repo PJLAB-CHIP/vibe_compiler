@@ -163,8 +163,7 @@ compileTargetLLVMModuleBundleToTargetArtifacts(
       return detail::fail(diagnostics, "target_module_verification_failed: " +
                                            llvm::toString(std::move(error)));
     if (llvm::Error error = detail::runDeviceLink(
-            toolchain, llvmIRPath, modulePath, objectPath, crtObjectPath,
-            targetLLVMModule.getLogicalRank()))
+            toolchain, llvmIRPath, modulePath, objectPath, crtObjectPath))
       return detail::fail(diagnostics, "target_module_verification_failed: " +
                                            llvm::toString(std::move(error)));
     llvm::Expected<detail::TargetModuleReadback> moduleReadback =

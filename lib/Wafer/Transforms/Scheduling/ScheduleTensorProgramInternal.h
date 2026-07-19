@@ -65,16 +65,6 @@ enum class CandidateArtifactSource {
   FullTraversalFallback,
 };
 
-/// Distinguishes instruction-lowering invocations that validate an ephemeral
-/// parallel-search artifact from the invocation that materializes the artifact
-/// retained by candidate selection.  The distinction is part of invocation
-/// identity, not a scheduling or cost-model choice.
-enum class CandidateEvaluationAttempt : uint64_t {
-  Screening = 0,
-  RetainedArtifact = 1,
-  CommitProof = 2,
-};
-
 inline bool isCompleteArtifactSource(CandidateArtifactSource source) {
   return source != CandidateArtifactSource::RepresentativeTile;
 }
@@ -97,8 +87,6 @@ struct SelectedCandidate {
   int64_t candidateCount = 0;
   int64_t rejectedCount = 0;
   int64_t representativeCount = 0;
-  uint64_t scopeOrdinal = 0;
-  uint64_t candidateOrdinal = 0;
   mlir::OwningOpRef<mlir::ModuleOp> module;
   CandidateArtifactSource artifactSource =
       CandidateArtifactSource::RepresentativeTile;
@@ -129,10 +117,6 @@ struct SelectionConfig {
   int64_t searchBeamWidth = 0;
   int64_t candidateParallelism = 1;
   bool printCandidateSummary = false;
-  bool enableCandidateCommitCleanup = true;
-  uint64_t rankVariantOrdinal = 0;
-  uint64_t scopeOrdinal = 0;
-  uint64_t candidateOrdinal = 0;
   int64_t spmBase = 0;
   int64_t spmLimit = 0;
   int64_t spmAlignment = 0;
@@ -147,7 +131,6 @@ struct CandidateCheckResult {
   CandidateStats stats;
   std::string failureReason;
   int64_t representativeCount = 0;
-  uint64_t candidateOrdinal = 0;
   mlir::OwningOpRef<mlir::ModuleOp> module;
   CandidateArtifactSource artifactSource =
       CandidateArtifactSource::RepresentativeTile;
@@ -253,8 +236,7 @@ buildRepresentativeTiles(llvm::ArrayRef<int64_t> traversalShape,
 
 CandidateEvaluation evaluateCompleteCandidate(
     mlir::func::FuncOp task, llvm::ArrayRef<int64_t> traversalShape,
-    const CandidateSpec &candidate, const SelectionConfig &config,
-    CandidateEvaluationAttempt attempt);
+    const CandidateSpec &candidate, const SelectionConfig &config);
 
 CandidateCheckResult evaluateCandidateOnOriginalTask(
     mlir::func::FuncOp task, llvm::ArrayRef<int64_t> traversalShape,

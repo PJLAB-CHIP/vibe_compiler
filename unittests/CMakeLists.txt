@@ -3,7 +3,6 @@ wafer_require_gtest()
 add_executable(WaferUnitTests
   Analysis/ScheduleCostAnalysisTest.cpp
   Compiler/CompilationTest.cpp
-  Compiler/OptimizationQualificationDriver.cpp
   Compiler/DirectDTETransportTest.cpp
   Compiler/ProgramTensorComparisonTest.cpp
   Compiler/ScheduledRankFinalizationTest.cpp
@@ -37,7 +36,6 @@ add_executable(WaferUnitTests
 )
 llvm_update_compile_flags(WaferUnitTests)
 target_include_directories(WaferUnitTests PRIVATE
-  ${CMAKE_SOURCE_DIR}/lib/Wafer
   ${CMAKE_SOURCE_DIR}/lib/Wafer/Transforms
 )
 find_program(WAFER_TEST_LLVM_CLANGXX NAMES clang++ REQUIRED)

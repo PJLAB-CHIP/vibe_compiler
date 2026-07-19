@@ -33,8 +33,6 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
-
-#include <algorithm>
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -256,8 +254,7 @@ analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
       sourceInfo->elementBytes <= 0)
     return subviewOp.emitError()
            << "unsupported_target_address: dynamic DDR tensor subview "
-              "requires a byte-addressable element type; source is "
-           << sourceType << " and result is " << resultType;
+              "requires a byte-addressable element type";
 
   DynamicSubviewAddressPlan plan;
   for (auto [offset, sourceStride] :
@@ -298,132 +295,17 @@ struct StaticForIVRange {
 
 static mlir::FailureOr<StaticForIVRange>
 getStaticForIVRange(mlir::memref::SubViewOp subviewOp,
-                    mlir::Value dynamicOffset, unsigned dynamicIndex,
-                    unsigned depth = 0) {
-  if (depth > 16)
-    return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview offset #"
-           << dynamicIndex << " range proof exceeds the expression limit";
-  if (std::optional<int64_t> constant =
-          mlir::getConstantIntValue(dynamicOffset)) {
-    if (*constant < 0)
-      return subviewOp.emitError()
-             << "unsupported_target_address: dynamic DDR tensor subview "
-                "offset #"
-             << dynamicIndex << " must be non-negative";
-    return StaticForIVRange{*constant, *constant, /*empty=*/false};
-  }
-  auto scalarBitWidth = [](mlir::Type type) -> std::optional<unsigned> {
-    if (mlir::isa<mlir::IndexType>(type))
-      return 64;
-    auto integer = mlir::dyn_cast<mlir::IntegerType>(type);
-    if (!integer || integer.getWidth() > 64)
-      return std::nullopt;
-    return integer.getWidth();
-  };
-  auto preservesInt64Range = [&](mlir::Type input,
-                                 mlir::Type output) -> bool {
-    std::optional<unsigned> inputWidth = scalarBitWidth(input);
-    std::optional<unsigned> outputWidth = scalarBitWidth(output);
-    return inputWidth && outputWidth && *outputWidth >= *inputWidth;
-  };
-  if (auto cast = dynamicOffset.getDefiningOp<mlir::arith::IndexCastOp>()) {
-    if (!preservesInt64Range(cast.getIn().getType(),
-                             cast.getOut().getType()))
-      return subviewOp.emitError()
-             << "unsupported_target_address: dynamic DDR tensor subview "
-                "signed index cast may narrow offset #"
-             << dynamicIndex;
-    return getStaticForIVRange(subviewOp, cast.getIn(), dynamicIndex,
-                               depth + 1);
-  }
-  if (auto cast = dynamicOffset.getDefiningOp<mlir::arith::IndexCastUIOp>()) {
-    if (!preservesInt64Range(cast.getIn().getType(),
-                             cast.getOut().getType()))
-      return subviewOp.emitError()
-             << "unsupported_target_address: dynamic DDR tensor subview "
-                "unsigned index cast may narrow offset #"
-             << dynamicIndex;
-    mlir::FailureOr<StaticForIVRange> input = getStaticForIVRange(
-        subviewOp, cast.getIn(), dynamicIndex, depth + 1);
-    if (mlir::failed(input))
-      return mlir::failure();
-    if (input->minimum < 0)
-      return subviewOp.emitError()
-             << "unsupported_target_address: dynamic DDR tensor subview "
-                "unsigned index cast may reinterpret a negative offset #"
-             << dynamicIndex;
-    return *input;
-  }
-  auto getClampRange = [&](mlir::arith::MaxSIOp maximum)
-      -> std::optional<StaticForIVRange> {
-    auto match = [&](mlir::Value lowerValue,
-                     mlir::Value cappedValue)
-        -> std::optional<StaticForIVRange> {
-      std::optional<int64_t> lower = mlir::getConstantIntValue(lowerValue);
-      auto minimum = cappedValue.getDefiningOp<mlir::arith::MinSIOp>();
-      if (!lower || !minimum)
-        return std::nullopt;
-      std::optional<int64_t> upper =
-          mlir::getConstantIntValue(minimum.getLhs());
-      if (!upper)
-        upper = mlir::getConstantIntValue(minimum.getRhs());
-      if (!upper)
-        return std::nullopt;
-      return StaticForIVRange{*lower, std::max(*lower, *upper),
-                              /*empty=*/false};
-    };
-    if (std::optional<StaticForIVRange> range =
-            match(maximum.getLhs(), maximum.getRhs()))
-      return range;
-    return match(maximum.getRhs(), maximum.getLhs());
-  };
-  if (auto minimum = dynamicOffset.getDefiningOp<mlir::arith::MinSIOp>()) {
-    mlir::FailureOr<StaticForIVRange> lhs = getStaticForIVRange(
-        subviewOp, minimum.getLhs(), dynamicIndex, depth + 1);
-    mlir::FailureOr<StaticForIVRange> rhs = getStaticForIVRange(
-        subviewOp, minimum.getRhs(), dynamicIndex, depth + 1);
-    if (mlir::failed(lhs) || mlir::failed(rhs))
-      return mlir::failure();
-    return StaticForIVRange{std::min(lhs->minimum, rhs->minimum),
-                            std::min(lhs->maximum, rhs->maximum),
-                            lhs->empty || rhs->empty};
-  }
-  if (auto maximum = dynamicOffset.getDefiningOp<mlir::arith::MaxSIOp>()) {
-    if (std::optional<StaticForIVRange> clamp = getClampRange(maximum))
-      return *clamp;
-    mlir::FailureOr<StaticForIVRange> lhs = getStaticForIVRange(
-        subviewOp, maximum.getLhs(), dynamicIndex, depth + 1);
-    mlir::FailureOr<StaticForIVRange> rhs = getStaticForIVRange(
-        subviewOp, maximum.getRhs(), dynamicIndex, depth + 1);
-    if (mlir::failed(lhs) || mlir::failed(rhs))
-      return mlir::failure();
-    return StaticForIVRange{std::max(lhs->minimum, rhs->minimum),
-                            std::max(lhs->maximum, rhs->maximum),
-                            lhs->empty || rhs->empty};
-  }
+                    mlir::Value dynamicOffset, unsigned dynamicIndex) {
   auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(dynamicOffset);
   auto forOp = blockArg && blockArg.getOwner()
                    ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(
                          blockArg.getOwner()->getParentOp())
                    : mlir::scf::ForOp{};
-  if (!forOp || dynamicOffset != forOp.getInductionVar()) {
-    mlir::InFlightDiagnostic diagnostic = subviewOp.emitError()
-        << "unsupported_target_address: dynamic DDR tensor subview offset #"
-        << dynamicIndex
-        << " must be constant or the direct induction variable of scf.for";
-    if (mlir::Operation *producer = dynamicOffset.getDefiningOp())
-      diagnostic << " (producer " << producer->getName();
-    if (auto load = dynamicOffset.getDefiningOp<mlir::memref::LoadOp>()) {
-      if (mlir::Operation *source = load.getMemRef().getDefiningOp())
-        diagnostic << " from " << source->getName();
-      else
-        diagnostic << " from block argument";
-    }
-    if (dynamicOffset.getDefiningOp())
-      diagnostic << ")";
-    return mlir::failure();
-  }
+  if (!forOp || dynamicOffset != forOp.getInductionVar())
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview offset #"
+           << dynamicIndex
+           << " must be the direct induction variable of scf.for";
 
   std::optional<int64_t> lower =
       mlir::getConstantIntValue(mlir::getAsOpFoldResult(forOp.getLowerBound()));

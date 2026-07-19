@@ -49,59 +49,6 @@ Pipeline position:
 - 仅做物理拆文件但仍通过 textual include 拼成一个聚合 translation unit，不算完成；拆分后的源文件必须
   由 CMake 独立编译并通过明确的 internal API 协作。
 
-structured optimization/adoption按IR cut point和审计职责组织，不与physical-dataflow planner共用一个
-normal-form entry point：
-
-```text
-include/Wafer/Support/
-  OptimizationMechanism.h
-include/Wafer/Analysis/
-  IdentityViewProof.h
-include/Wafer/Transforms/
-  StructuredOptimization.h
-  SelectedPayloadNormalization.h
-lib/Wafer/Analysis/StructuredNormalization/
-  IdentityViewProof.cpp
-  StaticTripCountProof.cpp
-lib/Wafer/Transforms/StructuredOptimization/
-  RequiredTensorNormalization.cpp
-  TensorNormalFormVerifier.cpp
-  FixedOptimization.cpp
-  QualificationTelemetry.cpp
-lib/Wafer/Transforms/Scheduling/
-  SelectedPayloadNormalization.cpp
-  SelectedPayloadNormalFormVerifier.cpp
-lib/Wafer/IR/Common/
-  EffectCoverage.cpp
-lib/Wafer/Compiler/OptimizationAdoption/
-  AdoptionSpecRegistry.cpp
-  QualificationObservation.cpp
-  QualificationArchive.cpp
-  OptimizationSetPublication.cpp
-unittests/Compiler/
-  OptimizationQualificationDriver.cpp
-```
-
-`OptimizationMechanism.h`只定义stable `MechanismKey`和audit telemetry共享value type，不保存IR语义或选择
-policy。tensor与selected-payload的typed outcome分别定义在各自Transforms header，不上提成通用cross-stage
-normal-form状态。`IdentityViewProof`/`StaticTripCountProof`是可从当前IR重算的纯读analysis；05 tensor
-normalizer与07 selected-payload normalizer只共享这些proof helper，各自拥有entry point、postcondition、fuel和
-diagnostic。
-`EffectCoverage.cpp`只验证standard/detailed effect投影、recursive container和speculatability，completion identity仍由
-instruction/memory/communication owner的SSA/path verifier拥有。
-
-`AdoptionSpecRegistry` 是audit spec/index，production pipeline不读取registry row；live call point只共用单点
-`MechanismKey`并发出telemetry。`QualificationObservation`只从sealed invocation terminals聚合canonical observation；
-`QualificationArchive`拥有typed input/run/result manifest/terminal codec、scope seal与readback，`OptimizationSetPublication`只拥有
-proposal/set staging、publication terminal和active-ref CAS，二者不能共享一个可变状态record。
-`OptimizationQualificationDriver` 只构建为未安装的test executable，从compiler library注入05定义的
-internal all-on/all-off/disable-one/cleanup config，再走与production相同的source-to-bundle/SystemC/PyTorch consumer。
-`wafer-compile`只能构建production default，不新增CLI、pass option、environment switch或第二条named pipeline。
-
-source/build organization check双向对照spec key与live telemetry，并从device publication实际argv生成backend
-observation；不通过扫描文档或在registry中复制flag恢复采用事实。canonical observation默认写build
-tree的test output，Q33收尾再将小型canonical record、digest和replay command移入`tasks/archive/`；它不进入
-production artifact或memory。
 
 physical-dataflow synthesis按稳定职责组织，不按checkpoint编号建目录：
 

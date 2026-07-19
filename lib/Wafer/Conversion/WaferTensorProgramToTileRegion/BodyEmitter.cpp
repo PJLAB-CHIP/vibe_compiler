@@ -14,14 +14,14 @@ void setFailureReason(std::string *failureReason, llvm::StringRef reason) {
 std::optional<ComputeReduceKind>
 matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
                         unsigned redPos, mlir::Value expectedReducedValue,
-                        llvm::StringRef role, std::string *failureReason) {
+                        llvm::StringRef subject, std::string *failureReason) {
   llvm::SmallVector<mlir::Operation *, 1> combinerOps;
   mlir::Value reducedValue =
       mlir::matchReduction(iterCarriedArgs, redPos, combinerOps);
   if (!reducedValue || reducedValue != expectedReducedValue ||
       combinerOps.size() != 1) {
     setFailureReason(failureReason,
-                     (role +
+                     (subject +
                       " requires one exact combiner wired to the reduced value "
                       "and accumulator")
                          .str());
@@ -35,7 +35,7 @@ matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
                     [&](mlir::Operation &op) { return &op == combiner; })) {
     setFailureReason(
         failureReason,
-        (role + " cannot erase additional reduction payload operations")
+        (subject + " cannot erase additional reduction payload operations")
             .str());
     return std::nullopt;
   }
@@ -48,7 +48,7 @@ matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
     if (addi.getOverflowFlags() != mlir::arith::IntegerOverflowFlags::none) {
       setFailureReason(
           failureReason,
-          (role + " cannot preserve integer overflow flags").str());
+          (subject + " cannot preserve integer overflow flags").str());
       return std::nullopt;
     }
     return ComputeReduceKind::Sum;
@@ -60,7 +60,7 @@ matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
 
   if (mlir::isa<mlir::arith::MaxNumFOp, mlir::arith::MinNumFOp>(combiner)) {
     setFailureReason(failureReason,
-                     (role +
+                     (subject +
                       " cannot preserve maxnum/minnum NaN semantics with the "
                       "current reduce kind")
                          .str());
@@ -68,7 +68,7 @@ matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
   }
   if (mlir::isa<mlir::arith::MaxUIOp, mlir::arith::MinUIOp>(combiner)) {
     setFailureReason(failureReason,
-                     (role +
+                     (subject +
                       " cannot preserve unsigned min/max semantics with the "
                       "current reduce kind")
                          .str());
@@ -76,7 +76,7 @@ matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
   }
 
   setFailureReason(failureReason,
-                   (role + " requires an exact sum, signed min/max, or IEEE "
+                   (subject + " requires an exact sum, signed min/max, or IEEE "
                               "minimum/maximum combiner")
                        .str());
   return std::nullopt;

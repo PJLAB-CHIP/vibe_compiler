@@ -215,6 +215,7 @@ module {
     return
   }
 }
+
 )mlir");
   ASSERT_TRUE(module);
   mlir::func::FuncOp function = getOnlyFunction(*module);
@@ -362,7 +363,6 @@ module {
     return
   }
 }
-
 )mlir");
   ASSERT_TRUE(module);
   mlir::func::FuncOp function = getOnlyFunction(*module);

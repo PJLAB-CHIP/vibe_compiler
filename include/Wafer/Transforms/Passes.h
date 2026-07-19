@@ -20,16 +20,6 @@ namespace wafer {
 #include "Wafer/Transforms/WaferPasses.h.inc"
 
 std::unique_ptr<mlir::Pass> createLegalizeStablehloToLinalgPass();
-/// Creates the required whole-module bufferization boundary shared by
-/// candidate finalization and the named selected-instruction pipeline.
-std::unique_ptr<mlir::Pass> createFunctionBoundaryBufferizationPass();
-/// Internal qualification constructor for the same schedule pass body.  This
-/// flag is not registered as a pass option and cannot be selected through a
-/// production/debug CLI pipeline.
-std::unique_ptr<mlir::Pass>
-createScheduleTensorProgramPassForOptimizationQualification(
-    const ScheduleTensorProgramPassOptions &options,
-    bool enableCandidateCommitCleanup);
 mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t spmBase, int64_t spmLimit,
                                         int64_t spmAlignment);

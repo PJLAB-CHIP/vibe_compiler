@@ -149,9 +149,6 @@ using TrackedTypePredicate = std::function<bool(mlir::Type)>;
 using ValueResolver = std::function<mlir::Value(mlir::Value)>;
 using ExplicitRootPredicate = std::function<bool(mlir::Value)>;
 
-mlir::Value resolveTileRegionBoundaryValue(mlir::Value value);
-bool isExplicitDDRRoot(mlir::Value value);
-
 /// Returns true when a direct call is a closed, side-effect-free alias helper.
 /// Every tensor/memref result must resolve through supported alias/control-flow
 /// operations to one or more statically tracked caller operands. Operations

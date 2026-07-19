@@ -13,13 +13,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(WAFER_ENABLE_UNIT_TESTS "Build Wafer C++ unit tests" ON)
 set(WAFER_XLA_SPMD_PARTITIONER_HELPER "" CACHE FILEPATH
   "Path to the pinned-XLA SPMD partitioner helper used by wafer-compile")
-set(WAFER_OPTIMIZATION_QUALIFICATION_ARCHIVE_ROOT
-  "${CMAKE_SOURCE_DIR}/qualification/optimization-adoption" CACHE PATH
-  "Immutable optimization qualification archive consumed by production")
-if(NOT IS_ABSOLUTE "${WAFER_OPTIMIZATION_QUALIFICATION_ARCHIVE_ROOT}")
-  message(FATAL_ERROR
-    "WAFER_OPTIMIZATION_QUALIFICATION_ARCHIVE_ROOT must be an absolute path")
-endif()
 if(WAFER_XLA_SPMD_PARTITIONER_HELPER)
   if(NOT IS_ABSOLUTE "${WAFER_XLA_SPMD_PARTITIONER_HELPER}")
     message(FATAL_ERROR
@@ -61,7 +54,6 @@ add_subdirectory(include/Wafer/Transforms)
 add_subdirectory(lib/Wafer)
 add_subdirectory(tools/wafer-opt)
 add_subdirectory(tools/wafer-compile)
-add_subdirectory(tools/wafer-qualify-optimizations)
 add_subdirectory(tools/wafer-compile-stablehlo)
 add_subdirectory(tools/wafer-run)
 if(WAFER_ENABLE_BULK_MODEL_DEPS)

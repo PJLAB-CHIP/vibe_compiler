@@ -63,7 +63,7 @@ mlir::LogicalResult lowerCandidateTensorProgramToTileRegionModule(
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank, uint64_t invocationOrdinalBase = 0);
+    int64_t currentLogicalRank);
 
 /// Materializes a compact structured traversal of a standalone tensor
 /// program and lowers it to tile-region IR.
@@ -71,7 +71,7 @@ mlir::LogicalResult lowerCompleteCandidateTensorProgramToTileRegionModule(
     mlir::func::FuncOp function, llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank, uint64_t invocationOrdinalBase = 0);
+    int64_t currentLogicalRank);
 
 } // namespace wafer
 

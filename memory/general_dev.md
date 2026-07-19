@@ -14,14 +14,6 @@
 
 ## Wafer compiler local build harness
 
-- 优化资格化命名直接描述工程对象：机制类别使用`FixedOptimization`/`BestEffortCleanup`，一次开关组合使用
-  `OptimizationConfiguration`，发布对象使用`QualifiedOptimizationSet`。不要重新引入`hygiene`、`control arm`、
-  `treatment`或“环境污染”等实验室隐喻；host事实变化导致证据作废时使用`HostEnvironmentInvalidated`。
-- 优化资格化的正式入口使用同一binary的coordinator/hidden worker模式：每个mandatory case/configuration在新子进程中运行，
-  worker只返回canonical typed result，coordinator不从stdout恢复证据。run archive的manifest继续逐项绑定invocation ID和terminal
-  digest，但terminal实体写成单个deterministic zstd canonical pack，避免大量小文件。publication/audit必须完整解码重编码；
-  production policy selection只读取active ref、small run ownership和immutable set内的publication capsule，启动工作量只随active
-  proposal大小增长。任何proposal/spec/build/corpus/feature identity变化都要求重新执行正式run，不能沿用旧active set冒充fresh baseline。
 - `tasks/progress.md` 是任务队列，不是设计合同。确定下一步时先定位队列项，再读该项指向的编号
   设计文档；不要从旧 progress 叙事、单个工具现状或历史 memory 反推出当前架构边界。若
   `memory/` 与编号设计文档或任务队列冲突，同步修 memory。

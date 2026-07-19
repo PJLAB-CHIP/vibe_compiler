@@ -22,7 +22,6 @@ add_mlir_library(WaferCompiler
   ProgramDirectoryTransaction.cpp
   ProgramInvocation.cpp
   ProgramTensorComparison.cpp
-  OptimizationQualificationCompiler.cpp
   ScheduledRankFinalization.cpp
   SpmdCompilationBridge.cpp
   TargetABIPreparation.cpp
@@ -52,7 +51,6 @@ add_mlir_library(WaferCompiler
   WaferIR
   WaferPipelines
   WaferRuntime
-  WaferSupport
   WaferTarget
   WaferTransforms
   MLIRArithDialect
@@ -84,11 +82,6 @@ add_mlir_library(WaferCompiler
   LLVMTargetParser
   ${WAFER_NATIVE_JIT_LIBS}
 )
-
-target_compile_definitions(obj.WaferCompiler PRIVATE
-  WAFER_OPTIMIZATION_QUALIFICATION_ARCHIVE_ROOT="${WAFER_OPTIMIZATION_QUALIFICATION_ARCHIVE_ROOT}")
-target_compile_definitions(WaferCompiler PRIVATE
-  WAFER_OPTIMIZATION_QUALIFICATION_ARCHIVE_ROOT="${WAFER_OPTIMIZATION_QUALIFICATION_ARCHIVE_ROOT}")
 
 if(WAFER_ENABLE_IMPORTER_DEPS)
   target_compile_definitions(obj.WaferCompiler PRIVATE WAFER_ENABLE_STABLEHLO=1)

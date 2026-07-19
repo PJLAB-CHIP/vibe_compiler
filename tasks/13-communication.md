@@ -1,6 +1,6 @@
 # Wafer Communication Scheduling 与 Transport IR
 
-状态：2026-07-18按联合physical-dataflow和Q33 effect分层终态同步communication capability、all-rank compatibility与transport exact gate；当前合同覆盖buffer-level collective到
+状态：2026-07-19按联合physical-dataflow同步communication capability、all-rank compatibility与transport exact gate；当前合同覆盖buffer-level collective到
 instruction-level Direct DTE p2p和明确
 completion；Q16.T已闭合post-memory all-rank matching、typed physical binding和bundle transport summary，
 target CRT opaque event/status ABI、真实RISC-V module lowering与runtime requirement也已闭合。segmented/MoE、
@@ -34,9 +34,9 @@ logical collective IR的支持范围不能由当前某个ring lowering pass
 logical slice惰性返回ring/tree/direct等有证据的schedule domain、message/resource/completion约束及transport bytes/message
 metrics；不选择physical encoding/TransferRouteFamily，也不建立op-name case表。06选择family，07/本文只物化selected schedule。
 
-Q33 effect收口前，live tensor-level LinalgExt collective只有collective-info中手工设置的
+当前live tensor-level LinalgExt collective只有collective-info中手工设置的
 `hasCommunicationEffect`布尔量，尚无generic pass可见的standard Communication effect，也没有standard/detailed
-coverage verifier。下文4.4是Q33必须落地的目标合同，不是当前live code事实。
+coverage verifier。下文4.4是后续communication/effect实现必须满足的目标合同，不是当前live code事实。
 
 稳定查询对象命名为`CommunicationScheduleFamily`：
 

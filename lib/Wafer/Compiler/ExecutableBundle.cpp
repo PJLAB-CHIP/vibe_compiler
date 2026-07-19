@@ -29,8 +29,7 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank,
-    const CompilationOptimizationPolicyV1 &optimizationPolicy) {
+    std::optional<int64_t> failAfterLogicalRank) {
   auto fail = [&](llvm::StringRef message) -> llvm::Error {
     diagnostics << "wafer-compile: " << message << "\n";
     return llvm::createStringError(llvm::errc::invalid_argument, "%s",
@@ -89,15 +88,6 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
     wafer::TensorProgramSchedulingConfig schedulingConfig;
     schedulingConfig.logicalRank = result.logicalRank;
     schedulingConfig.candidateParallelism = 4;
-    std::optional<bool> candidateCleanup = isOptimizationMechanismEnabled(
-        optimizationPolicy.proposal,
-        optimizationPolicy.optimizationConfiguration,
-        mechanism::CandidateCommitCleanup, nullptr);
-    // An optional mechanism omitted from the immutable proposal is disabled.
-    // The finalization pipeline still validates the complete typed proposal
-    // and configuration before consuming the scheduled candidate.
-    schedulingConfig.enableCandidateCommitCleanup =
-        candidateCleanup.value_or(false);
     mlir::FailureOr<std::vector<wafer::ScheduledRankCandidate>> frontier =
         wafer::buildScheduledRankCandidateFrontier(*sourceModule,
                                                    schedulingConfig);
@@ -105,10 +95,7 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
       return;
 
     mlir::FailureOr<std::vector<detail::FinalizedRankCandidate>> finalized =
-        detail::finalizeScheduledRankCandidateFrontier(
-            std::move(*frontier), result.logicalRank,
-            optimizationPolicy.proposal,
-            optimizationPolicy.optimizationConfiguration);
+        detail::finalizeScheduledRankCandidateFrontier(std::move(*frontier));
     if (mlir::failed(finalized))
       return;
 

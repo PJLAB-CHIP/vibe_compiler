@@ -5,7 +5,6 @@
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/TargetConversion.h"
-#include "Wafer/Transforms/StructuredOptimization.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Pass/Pass.h"
@@ -356,40 +355,7 @@ verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
   return verifyTargetLLVMSlotMetadata(module, expectedSlots);
 }
 
-mlir::LogicalResult
-lowerToTargetLLVM(PreparedTargetRank &prepared,
-                  TargetLLVMLoweringInvocation invocation) {
-  constexpr uint64_t rankCountLimit = 16;
-  constexpr uint64_t candidateProofAttemptLimit = 72;
-  if (prepared.logicalRank < 0 ||
-      static_cast<uint64_t>(prepared.logicalRank) >= rankCountLimit)
-    return prepared.module->emitError(
-        "target LLVM invocation logical rank is out of range");
-
-  uint64_t purposeOrdinal = 0;
-  switch (invocation.purpose) {
-  case TargetLLVMLoweringPurpose::WholeVariantCandidateProof:
-    if (invocation.attemptOrdinal >= candidateProofAttemptLimit)
-      return prepared.module->emitError(
-          "target LLVM candidate-proof attempt is out of range");
-    purposeOrdinal = invocation.attemptOrdinal;
-    break;
-  case TargetLLVMLoweringPurpose::PublishedArtifact:
-    if (invocation.attemptOrdinal != 0)
-      return prepared.module->emitError(
-          "published target LLVM invocation cannot carry an attempt ordinal");
-    purposeOrdinal = candidateProofAttemptLimit;
-    break;
-  case TargetLLVMLoweringPurpose::Testing:
-    if (invocation.attemptOrdinal != 0)
-      return prepared.module->emitError(
-          "test target LLVM invocation cannot carry an attempt ordinal");
-    purposeOrdinal = candidateProofAttemptLimit + 1;
-    break;
-  }
-  uint64_t invocationOrdinal =
-      purposeOrdinal * rankCountLimit +
-      static_cast<uint64_t>(prepared.logicalRank);
+mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared) {
   TargetConversionRequest request{
       prepared.targetProfile,
       prepared.defaultDDRArenaArgumentIndex,
@@ -397,11 +363,7 @@ lowerToTargetLLVM(PreparedTargetRank &prepared,
       prepared.transportStatusArgumentIndex,
   };
   mlir::PassManager manager(prepared.module->getContext());
-  manager.addPass(createOptimizationInvocationPass(
-      mechanism::TargetLLVMConversion,
-      OptimizationCutPoint::FinalInstructionModule,
-      [request] { return createLowerInstrToTargetLLVMPass(request); },
-      invocationOrdinal));
+  manager.addPass(createLowerInstrToTargetLLVMPass(request));
   return manager.run(*prepared.module);
 }
 

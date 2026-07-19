@@ -1,72 +1,14 @@
 //===- TileMaterialization.cpp - Candidate root tile materialization -===//
 
 #include "Internal.h"
-#include "Wafer/Analysis/DPSInitAnalysis.h"
-
-#include "Wafer/Support/CanonicalIRSnapshot.h"
-#include "Wafer/Support/OptimizationMechanism.h"
 
 #include "mlir/IR/PatternMatch.h"
 
 #include <deque>
-#include <limits>
 
 using namespace wafer;
 
 namespace wafer::tensor_program_to_tile_region {
-
-static mlir::LogicalResult beginCandidateRewriteInvocation(
-    TensorProgramScope scope, MechanismKey key, uint64_t &nextOrdinal,
-    uint64_t rangeEnd,
-    OptimizationInvocationTokenV1 &token, OptimizationDigest &inputDigest,
-    uint64_t &ordinal, std::string *failureReason) {
-  if (nextOrdinal >= rangeEnd) {
-    setFailureReason(failureReason,
-                     "candidate invocation ordinal range exhausted");
-    return mlir::failure();
-  }
-  CanonicalIRSnapshotV1 snapshot;
-  std::string diagnostic;
-  if (!createCanonicalIRSnapshotV1(
-          scope.getFunction(), CanonicalIRSnapshotMode::SemanticStructure,
-          snapshot, &diagnostic)) {
-    setFailureReason(failureReason,
-                     "cannot snapshot candidate optimization input: " +
-                         diagnostic);
-    return mlir::failure();
-  }
-  ordinal = nextOrdinal++;
-  inputDigest = snapshot.sha256Digest;
-  if (beginOptimizationInvocationV1(
-          key, OptimizationCutPoint::StructuredTensorModule, ordinal,
-          inputDigest, token, &diagnostic))
-    return mlir::success();
-  setFailureReason(failureReason,
-                   "cannot begin candidate optimization invocation: " +
-                       diagnostic);
-  return mlir::failure();
-}
-
-static mlir::LogicalResult commitCandidateRewriteInvocation(
-    OptimizationInvocationTokenV1 &token, MechanismKey key,
-    InvocationOutcome outcome, uint64_t rewriteCount, uint64_t workUnits,
-    uint64_t ordinal, const OptimizationDigest &inputDigest,
-    std::string *failureReason) {
-  OptimizationInvocationTelemetry telemetry;
-  telemetry.key = key;
-  telemetry.cutPoint = OptimizationCutPoint::StructuredTensorModule;
-  telemetry.outcome = outcome;
-  telemetry.rewriteCount = rewriteCount;
-  telemetry.workUnits = workUnits;
-  telemetry.invocationOrdinal = ordinal;
-  telemetry.inputSnapshotDigest = inputDigest;
-  std::string diagnostic;
-  if (commitOptimizationInvocationV1(token, telemetry, &diagnostic))
-    return mlir::success();
-  setFailureReason(failureReason,
-                   "invalid candidate optimization telemetry: " + diagnostic);
-  return mlir::failure();
-}
 
 static std::optional<ComputeReduceKind>
 inferCandidateReduceKind(mlir::linalg::GenericOp generic,
@@ -108,7 +50,6 @@ getCandidateCombineKind(mlir::linalg::LinalgOp root,
 static mlir::LogicalResult fuseCandidateProducerSlices(
     mlir::Operation *tiledConsumer, TensorProgramScope scope,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
-    CandidateInvocationOrdinals &invocationOrdinals,
     std::string *failureReason) {
   // With a structured loop nest, a fused tile is created in a nested block and
   // therefore cannot be mistaken for another untiled scope producer.  The
@@ -169,23 +110,8 @@ static mlir::LogicalResult fuseCandidateProducerSlices(
     if (!mlir::isa<mlir::TilingInterface>(producerResult.getOwner()))
       continue;
 
-    OptimizationInvocationTokenV1 invocationToken;
-    OptimizationDigest inputDigest{};
-    uint64_t invocationOrdinal = 0;
-    if (mlir::failed(beginCandidateRewriteInvocation(
-            scope, mechanism::ProducerSliceFusion,
-            invocationOrdinals.producerSliceFusion,
-            invocationOrdinals.rangeEnd, invocationToken,
-            inputDigest, invocationOrdinal, failureReason)))
-      return mlir::failure();
     std::optional<mlir::scf::SCFFuseProducerOfSliceResult> fused =
         mlir::scf::tileAndFuseProducerOfSlice(rewriter, slice, loops);
-    if (mlir::failed(commitCandidateRewriteInvocation(
-            invocationToken, mechanism::ProducerSliceFusion,
-            fused ? InvocationOutcome::Applied : InvocationOutcome::Invalid,
-            /*rewriteCount=*/fused ? 1 : 0, /*workUnits=*/1,
-            invocationOrdinal, inputDigest, failureReason)))
-      return mlir::failure();
     if (!fused) {
       setFailureReason(failureReason, "candidate producer tile fusion failed");
       return mlir::failure();
@@ -221,7 +147,6 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    CandidateInvocationOrdinals &invocationOrdinals,
     std::string *failureReason) {
   if (root->getNumResults() != 1) {
     setFailureReason(failureReason,
@@ -247,7 +172,7 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
   llvm::SmallVector<mlir::LoopLikeOpInterface, 0> loops;
   return materializeCandidateRootTileValue(
       builder, scope, root, outputIndex, mixedOffsets, candidateTileSizes,
-      candidateReductionTileSizes, loops, invocationOrdinals, failureReason);
+      candidateReductionTileSizes, loops, failureReason);
 }
 
 mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
@@ -257,7 +182,6 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
-    CandidateInvocationOrdinals &invocationOrdinals,
     std::string *failureReason) {
   if (root.getNumDpsInits() != 1 || root->getNumResults() != 1) {
     setFailureReason(failureReason,
@@ -347,45 +271,11 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
             chunk.sizes, loopTile, failureReason)))
       return mlir::failure();
 
-    OptimizationInvocationTokenV1 tilingToken;
-    OptimizationInvocationTokenV1 shapeToken;
-    OptimizationDigest tilingInput{};
-    OptimizationDigest shapeInput{};
-    uint64_t tilingOrdinal = 0;
-    uint64_t shapeOrdinal = 0;
-    if (mlir::failed(beginCandidateRewriteInvocation(
-            scope, mechanism::StructuredTilingInterface,
-            invocationOrdinals.structuredTiling, invocationOrdinals.rangeEnd,
-            tilingToken, tilingInput,
-            tilingOrdinal, failureReason)))
-      return mlir::failure();
-    if (mlir::failed(beginCandidateRewriteInvocation(
-            scope, mechanism::TiledShapeConstruction,
-            invocationOrdinals.tiledShapeConstruction,
-            invocationOrdinals.rangeEnd, shapeToken,
-            shapeInput, shapeOrdinal, failureReason))) {
-      (void)commitCandidateRewriteInvocation(
-          tilingToken, mechanism::StructuredTilingInterface,
-          InvocationOutcome::Cancelled, /*rewriteCount=*/0,
-          /*workUnits=*/0, tilingOrdinal, tilingInput, failureReason);
-      return mlir::failure();
-    }
     llvm::SmallVector<mlir::Value, 4> tiledOperands =
         mlir::linalg::makeTiledShapes(builder, root.getLoc(), root,
                                       valuesToTile, loopTile.ivs,
                                       loopTile.tileSizes, loopTile.sizeBounds,
                                       /*omitPartialTileCheck=*/true);
-    uint64_t tilingWork = static_cast<uint64_t>(valuesToTile.size());
-    mlir::LogicalResult tilingTerminal = commitCandidateRewriteInvocation(
-        tilingToken, mechanism::StructuredTilingInterface,
-        InvocationOutcome::Applied, /*rewriteCount=*/1, tilingWork,
-        tilingOrdinal, tilingInput, failureReason);
-    mlir::LogicalResult shapeTerminal = commitCandidateRewriteInvocation(
-        shapeToken, mechanism::TiledShapeConstruction,
-        InvocationOutcome::Applied, /*rewriteCount=*/1, tilingWork,
-        shapeOrdinal, shapeInput, failureReason);
-    if (mlir::failed(tilingTerminal) || mlir::failed(shapeTerminal))
-      return mlir::failure();
     if (accumulator && initOperandIndex < tiledOperands.size()) {
       mlir::Operation *unusedInitSlice =
           tiledOperands[initOperandIndex].getDefiningOp();
@@ -413,8 +303,8 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     auto tiledLinalg = mlir::cast<mlir::linalg::LinalgOp>(tiled);
     mlir::linalg::offsetIndices(builder, tiledLinalg, loopTile.loopOffsets);
 
-    if (mlir::failed(fuseCandidateProducerSlices(
-            tiled, scope, loops, invocationOrdinals, failureReason)))
+    if (mlir::failed(
+            fuseCandidateProducerSlices(tiled, scope, loops, failureReason)))
       return mlir::failure();
 
     builder.setInsertionPointAfter(tiled);
@@ -580,9 +470,8 @@ collectCandidateRoots(TensorProgramScope scope, bool rejectProducerChains,
       bool hasDirectOutputInit = isTensorProgramOutputBoundary(
           scope, init, static_cast<unsigned>(index));
       bool hasReduction = !getReductionLoopDims(root).empty();
-      DPSInitFacts initFacts = analyzeDPSInit(root, /*initIndex=*/0);
       if (!hasDirectOutputInit &&
-          (!hasReduction || initFacts.origin != InitOrigin::ExactSplat)) {
+          (!hasReduction || !init.getDefiningOp<mlir::linalg::FillOp>())) {
         setFailureReason(
             failureReason,
             "complete candidate traversal does not support output producer "
@@ -600,7 +489,6 @@ mlir::LogicalResult materializeCandidateTileSlices(
     TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    CandidateInvocationOrdinals &invocationOrdinals,
     std::string *failureReason) {
   mlir::FailureOr<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
       collectCandidateRoots(scope, /*rejectProducerChains=*/false,
@@ -624,8 +512,7 @@ mlir::LogicalResult materializeCandidateTileSlices(
   for (auto [index, root] : llvm::enumerate(*roots)) {
     mlir::FailureOr<mlir::Value> tileValue = materializeCandidateRootTileValue(
         scope, root, static_cast<unsigned>(index), candidateTileOffsets,
-        candidateTileSizes, candidateReductionTileSizes, invocationOrdinals,
-        failureReason);
+        candidateTileSizes, candidateReductionTileSizes, failureReason);
     mlir::FailureOr<mlir::Value> outputBoundary = getCandidateOutputBoundary(
         scope, static_cast<unsigned>(index), failureReason);
     if (mlir::failed(tileValue) || mlir::failed(outputBoundary))

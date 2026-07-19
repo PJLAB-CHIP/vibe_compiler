@@ -1,5 +1,4 @@
 add_subdirectory(IR)
-add_subdirectory(Support)
 add_subdirectory(Target)
 add_subdirectory(Frontend)
 add_subdirectory(Analysis)

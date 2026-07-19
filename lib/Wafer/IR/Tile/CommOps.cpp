@@ -161,10 +161,10 @@ static mlir::LogicalResult verifyCommReduceCollective(
       return op->emitOpError(collectiveName)
              << " rank_group entries must be unique";
   }
-  std::string rankGroupRole =
+  std::string rankGroupSubject =
       llvm::Twine(collectiveName).concat(" rank_group").str();
   if (mlir::failed(verifyLogicalRanksWithinExecutionMesh(op, rankGroup,
-                                                         rankGroupRole)))
+                                                         rankGroupSubject)))
     return mlir::failure();
   int64_t bytes = bytesAttr.getInt();
   if (bytes <= 0)

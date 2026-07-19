@@ -15,7 +15,7 @@
 | 02 | `tasks/02-frontend-stablehlo-program.md` | 当前StableHLO program directory与frontend验证；typed state是后续扩展 |
 | 03 | `tasks/03-shardy-spmd.md` | 当前Shardy/XLA SPMD artifact、显式rank identity；MPMD/rank class延后 |
 | 04 | `tasks/04-topology-execution-mesh.md` | 当前topology/execution mesh；Q0.L typed target-profile仅随ExecutionConfig透传，不进入mesh IR |
-| 05 | `tasks/05-local-compute-normalization.md` | rank-local structured compute/tensor collective handoff、required normal form与target-independent fixed optimization |
+| 05 | `tasks/05-local-compute-normalization.md` | rank-local structured compute normalization与tensor collective handoff |
 | 06 | `tasks/06-physical-dataflow-synthesis.md` | rank-local physical-dataflow synthesis：等价关系、implementation/tile/encoding/storage/residency/order的有界联合选择、interval-aware packing quality与atomic commit |
 | 07 | `tasks/07-tile-region.md` | selected proposal的typed task/traversal IR物化与完整coverage；不是planner或per-group SPM/DDR边界 |
 | 08 | `tasks/08-physical-realization.md` | physical encoding、valid domain、view/TransferRouteFamily、descriptor cover和selected physical realization；不维护独立layout planner |
@@ -39,7 +39,7 @@
 | verified frontend program和当前program directory | 02 |
 | pre-SPMD topology和execution mesh | 04 |
 | Shardy/SPMD output和显式rank identity | 03 |
-| component/rank-local compute normalization、required normal form与fixed structured optimization | 05；upstream adoption证据由16约束 |
+| component/rank-local compute normalization与collective handoff | 05；跨stage正确性证据由16约束 |
 | rank-local physical-dataflow candidate联合选择、selected tile/dataflow materialization和physical encoding/route | 06、07、08；implementation capability由10提供，instruction legality由11提供，exact resource/transport gate由09、12、13提供 |
 | policy-free physical-dataflow rewrite mechanisms | 06、07、08；upstream structured utility由05提供，target implementation由10提供，源码ownership由18约束 |
 | parameterized target implementation family、target-abstract compute/movement和instruction legality | 10、11；TransferRouteFamily/descriptor cover只由08拥有 |
@@ -54,9 +54,8 @@
 
 ## 实施计划导航
 
-Q33 compiler optimization adoption已完成并归档为
-`tasks/archive/compiler-optimization-adoption.md`；Q32.I target implementation foundation是当前唯一`next`边界，
-实施计划为`tasks/plans/physical-dataflow-synthesis.md` A/B。Q34 static memory packing已完成并归档为
+当前无`doing`；唯一`next`是Q32.I target implementation foundation，Q32通用
+physical-dataflow synthesis实施计划为`tasks/plans/physical-dataflow-synthesis.md`。Q34 static memory packing已完成并归档为
 `tasks/archive/static-memory-packing.md`。这些计划只拆
 施工checkpoint和验证/删除门槛；动态blocked-by只看progress，算法与IR合同仍由01、05、06-18编号设计文档拥有。
 
@@ -89,7 +88,6 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
-| `tasks/archive/compiler-optimization-adoption.md` | 已完成Q33的typed adoption inventory、required normalizer、隔离资格化、immutable qualified set发布、active production消费和rank1/rank16/7B post-adoption baseline记录 |
 | `tasks/archive/static-memory-packing.md` | 已完成Q34的MiniMalloc默认fixed-capacity packing、精确conflict适配、宽松确定性work budget、typed outcome/fallback和SPM/DDR/7B纵向gate记录 |
 | `tasks/archive/llama-block-numeric-characterization.md` | 已完成Q31的ProgramTensor逐rank abs/ULP统计、非admission多seed 7B重放及source/model comparator gate收紧记录 |
 | `tasks/archive/llama-block-production-performance.md` | 已完成Q30的static movement/physical codec host性能收口、package等价性和完整7B双replay记录 |

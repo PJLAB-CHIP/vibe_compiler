@@ -183,9 +183,8 @@ module {
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
 
   EXPECT_TRUE(mlir::failed(manager.run(*source)));
-  EXPECT_NE(diagnostics.find("dynamic DDR tensor subview offset #0 must be "
-                             "constant or the direct induction variable of "
-                             "scf.for"),
+  EXPECT_NE(diagnostics.find("dynamic DDR tensor subview offset #0 must be the "
+                             "direct induction variable of scf.for"),
             std::string::npos)
       << diagnostics;
   EXPECT_EQ(countOps<mlir::memref::SubViewOp>(*source), 1u);

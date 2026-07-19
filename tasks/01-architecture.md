@@ -113,7 +113,7 @@ manifest的move-only lifetime/container artifact，不是另一份program或pack
 | Verified program | StableHLO、function boundary metadata、NPY payload/shards | model语义、static shape/dtype、resource role与payload admission | rank placement、tile、physical layout、runtime handle |
 | Execution configuration | factory-only `ExecutionConfig` | 显式1/16 rank domain与registered `TargetProfileId` | tensor sharding、topology IR、planner policy |
 | Topology/SPMD | `wafer.target.topology`、`wafer.execution.mesh`、post-SPMD StableHLO | compiler内部single-card endpoint与logical rank domain、rank-local partition | candidate、SPM/DDR、physical transport |
-| Structured tensor program | Linalg/Tensor/SCF/Arith/Math与typed logical collective | rank-local数学语义、显式required normal form、已资格化target-independent fixed/cleanup set、iterator/indexing relation、effect/control/numeric policy | target implementation、physical encoding、offset |
+| Structured tensor program | Linalg/Tensor/SCF/Arith/Math与typed logical collective | rank-local数学语义、iterator/indexing relation、effect/control/numeric policy | target implementation、physical encoding、offset |
 | Candidate analysis | transformation-local semantic islands、domains、frontier、complete clones与static-packing bounds | bounded implementation/tile/encoding/route/residency/order proposals及validated packing incumbent | accepted事实、package字段、长期side table |
 | Selected tile/dataflow IR（stage-internal） | `wafer.tile.region` fragments、Wafer memref/view、typed compute/movement/collective/event | 完整static traversal、selected implementation与physical versions；必须继续lower，不是accepted artifact | rejected candidates、独立arena、runtime launch |
 | Instruction/memory program | `wafer.instr.*`、accepted SPM/DDR offsets、completion/Direct DTE | target-abstract invocation、physical geometry、range/lifetime/effect | raw host handle、package schedule |
@@ -229,7 +229,7 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | 维度 | 当前production事实 | physical-dataflow目标合同 |
 | --- | --- | --- |
 | source boundary | static-ranked StableHLO program directory；rank-count显式1/16 | 保持同一用户边界；dynamic/MPMD另行设计 |
-| structured optimization | official legalization、窄residual cleanup和best-effort canonicalization；部分上游tiling/fusion utility已被当前scheduler直接复用 | 显式required normal form；固定pipeline与candidate-local utility分层；每项upstream adoption有production改写与等价IR/downstream证据 |
+| structured optimization | official legalization、窄residual cleanup和best-effort canonicalization；部分上游tiling/fusion utility已被当前scheduler直接复用 | Q32只在candidate clone中加入有直接correctness gate的rewrite，不建立独立production优化审批层 |
 | decision owner | bounded task/dataflow scheduler，有限scope/residency alternatives | 唯一联合planner选择implementation/tile/encoding/route/residency/order |
 | physical realization | canonical Tensor/Cx/NCx与显式materialization；compact DMA | parameterized encoding/route、mapped DMA、exact invalid-lane/fill contract |
 | GEMM ABI | closed v1、implicit normal/normal | versioned v2 typed orientation；v1含义不变 |
@@ -247,7 +247,7 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | frontend program directory与admission | 02 |
 | Shardy/XLA SPMD与rank specialization | 03 |
 | topology/execution mesh | 04 |
-| local structured tensor normalization、required normal form与target-independent fixed/cleanup qualification | 05 |
+| local structured tensor normalization与collective handoff | 05 |
 | physical-dataflow synthesis、bounded candidate selection与all-rank commit | 06 |
 | selected tile-region/task/dataflow IR materialization | 07 |
 | physical encoding、view、TransferRouteFamily与descriptor cover | 08 |

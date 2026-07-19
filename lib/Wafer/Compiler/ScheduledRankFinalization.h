@@ -3,7 +3,6 @@
 #ifndef WAFER_COMPILER_SCHEDULEDRANKFINALIZATION_H
 #define WAFER_COMPILER_SCHEDULEDRANKFINALIZATION_H
 
-#include "Wafer/Support/OptimizationQualification.h"
 #include "Wafer/Transforms/TensorProgramScheduling.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -36,9 +35,7 @@ struct FinalizedRankCandidate {
 
 mlir::FailureOr<std::vector<FinalizedRankCandidate>>
 finalizeScheduledRankCandidateFrontier(
-    std::vector<wafer::ScheduledRankCandidate> frontier, int64_t logicalRank,
-    const OptimizationQualificationProposal &proposal,
-    const OptimizationConfiguration &optimizationConfiguration);
+    std::vector<wafer::ScheduledRankCandidate> frontier);
 
 } // namespace wafer::compiler::detail
 

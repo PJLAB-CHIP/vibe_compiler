@@ -231,7 +231,6 @@ module {
     return %result : tensor<2x16x16xf16>
   }
 }
-
 )mlir",
       mlir::ParserConfig(&context));
   ASSERT_TRUE(source);
@@ -273,49 +272,6 @@ module {
           mlir::cast<mlir::MemRefType>(instructions.front().getLhs().getType()))
           .getLayout(),
       wafer::MemLayout::NCx);
-}
-
-TEST(WaferTensorProgramToTileRegionTest,
-     RecoversZeroDpsInitThroughStaticViewChain) {
-  mlir::DialectRegistry registry;
-  registerConversionDialects(registry);
-  mlir::MLIRContext context(registry);
-  context.loadAllAvailableDialects();
-
-  auto source = mlir::parseSourceString<mlir::ModuleOp>(
-      R"mlir(
-module {
-  func.func @candidate(%lhs: tensor<5x6xf16>, %rhs: tensor<6x7xf16>,
-                       %out: tensor<5x7xf16>) -> tensor<5x7xf16> {
-    %zero = arith.constant 0.0 : f16
-    %init = linalg.fill ins(%zero : f16)
-        outs(%out : tensor<5x7xf16>) -> tensor<5x7xf16>
-    %expanded = tensor.expand_shape %init [[0, 1], [2]]
-        output_shape [1, 5, 7]
-        : tensor<5x7xf16> into tensor<1x5x7xf16>
-    %view = tensor.collapse_shape %expanded [[0, 1], [2]]
-        : tensor<1x5x7xf16> into tensor<5x7xf16>
-    %result = linalg.matmul
-        ins(%lhs, %rhs : tensor<5x6xf16>, tensor<6x7xf16>)
-        outs(%view : tensor<5x7xf16>) -> tensor<5x7xf16>
-    return %result : tensor<5x7xf16>
-  }
-}
-)mlir",
-      mlir::ParserConfig(&context));
-  ASSERT_TRUE(source);
-  mlir::func::FuncOp function = findSingleTensorProgram(*source);
-  ASSERT_TRUE(function);
-
-  mlir::OwningOpRef<mlir::ModuleOp> lowered;
-  std::string failureReason;
-  ASSERT_TRUE(mlir::succeeded(
-      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
-          function, /*candidateTileSizes=*/{3, 4},
-          /*candidateReductionTileSizes=*/{}, lowered, &failureReason,
-          /*currentLogicalRank=*/0)))
-      << failureReason;
-  EXPECT_EQ(countOps<wafer::ComputeGemmOp>(*lowered), 4u);
 }
 
 TEST(WaferTensorProgramToTileRegionTest,

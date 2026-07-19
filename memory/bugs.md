@@ -1,16 +1,3 @@
-## 2026-07-18 qualification evidence与production publication必须分层
-
-- 现象：若一个qualification run同时携带通用observation、fixed/cleanup proposal、active-set CAS基线和publication outcome，
-  backend/candidate-local等通用机制会被optimization发布协议绑死；Completed terminal若不封存结果集合，seal后仍可能追加terminal或
-  observation，archive无法唯一重放。
-- 根因：把“采集并封存证据”和“把一份qualified set切换成production active set”合并成同一状态机，也没有为run input/result
-  建立all-and-only canonical manifest。
-- 修复模式：使用独立的typed qualification input、run、result manifest和run terminal；Completed terminal引用result manifest并
-  原子seal scope。只有fixed/cleanup run再建立publication attempt/terminal和expected-active CAS，active ref只引用完整
-  CompletedEvidence→QualifiedPublished链。
-- 防复发：observation identity/policy/case必须与run input逐字段相同；失败run不得发布result manifest；NoOp结论不能回写immutable
-  spec的adoption mode，只能由qualification status、exposure和是否进入active qualified set派生。
-
 ## 2026-07-18 provider expansion必须重新进入统一能力闭包
 
 - 现象：communication family在route已选后新增staging、copy或local-reduce node；若materializer直接为这些node挑指令，
@@ -325,7 +312,7 @@
 - 根因：常量事实停留在`arith.constant -> tile.fill -> private alloc -> select`数据流中，普通conversion按root独立lower fill，
   在select被处理前丢失了可证明的整张量常量关系。
 - 修复模式：在full conversion前运行typed prepass；仅当private alloc恰有一个前置同block fill-dest use和当前select predicate
-  use、fill scalar直接来自i1 constant、chosen/result类型及map均为identity时，把select替换为所选configuration的fresh copy并删除dead
+  use、fill scalar直接来自i1 constant、chosen/result类型及map均为identity时，把select替换为所选arm的fresh copy并删除dead
   fill/alloc。shared/额外use或非identity map保持动态路径并按现有legality处理；不得用该source优化扩大engine format矩阵。
 
 ## 2026-07-14 APFloat/MPFR原始status不能替代profile的最终tininess语义
@@ -723,31 +710,3 @@
   clique-cover指数搜索。
 - 防复发：用clique零budget不可行证明、stable ordinal交错多component/nonzero-base reuse、任意小图独立
   穷举oracle和scale workload的search-node/fallback telemetry共同锁定；不用wall-clock timeout作为求解语义。
-
-## 2026-07-19 canonicalization的cut顺序属于required artifact合同
-
-- 现象：把两次历史canonicalizer统一挪到required tensor normalizer之后，并把optional cleanup全关后，HF静态rank/mask helper
-  残留为动态`tensor.extract_slice`与clamp链；scheduler随后在`to_memref`边界失败。单独补lifetime alias或提前bufferize会把问题
-  推迟成target无法表达的runtime scalar address，并未恢复原artifact。
-- 根因：canonicalization是否语义保持不等于它在pipeline中可任意换位。post-legalization常量折叠必须发生在后续required rewrite
-  改变helper形态之前；把required cut误记成optional cleanup会让AllOff配置改变legality。
-- 修复模式：用旧/新named pipeline对同一真实post-SPMD输入比较canonical IR，定位第一个分叉cut；把决定legality的两个位置分别
-  登记为AlwaysOn required mechanism，保持原顺序并由gateway审计。optional proposal仍可为空，且关闭optional cleanup的完整
-  rank-count=1/16与HF纵向必须通过；不要用放宽alias、提前lowering或target fallback掩盖上游artifact差异。
-
-## 2026-07-19 invocation terminal逐文件归档会造成小文件爆炸
-
-- 现象：scale资格化约数十万条terminal，每条写一个digest命名文件后，逻辑数据只有数百MiB，文件系统却消耗约2GiB并使
-  staging walk、fsync和readback极慢。
-- 根因：把manifest中的逐terminal逻辑binding直接等同于逐terminal物理文件；sub-page metadata和inode成本随invocation数量放大。
-- 修复模式：manifest仍逐项绑定invocation ID/terminal digest，实体按canonical顺序写入单个长度前缀pack并做deterministic zstd；
-  readback必须解压、逐项canonical decode/digest比对，再重编码重压确认byte-identical。生产policy loader只读发布capsule，完整pack
-  仅由publication/audit路径消费。
-
-## 2026-07-19 共享model gate不能丢失test binary的failure seam
-
-- 现象：source/model逻辑从CLI抽到共享库后，production数值路径通过，但专用test binary设置terminal-rank failure后仍成功，
-  late-rank atomic negative失去覆盖。
-- 根因：failure-injection宏只定义在test executable的adapter translation unit；执行分支迁入普通共享库后，编译期宏不再可见。
-- 修复模式：共享库提供显式`testing` namespace失败执行入口，只有test adapter在自己的编译宏下解析环境并调用它；production和
-  资格化worker继续调用无注入入口。抽取共享consumer后必须同时重放production positive和原有failure-injection negative。

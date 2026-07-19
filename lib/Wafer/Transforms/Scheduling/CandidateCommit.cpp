@@ -70,12 +70,8 @@ mlir::LogicalResult commitSelectedTaskCandidate(
         "selected task commit has no static traversal shape");
     return mlir::failure();
   }
-  SelectionConfig commitProofConfig = config;
-  commitProofConfig.scopeOrdinal = selected.scopeOrdinal;
-  commitProofConfig.candidateOrdinal = selected.candidateOrdinal;
   CandidateEvaluation commitProof = evaluateCompleteCandidate(
-      selected.sourceTask, *traversalShape, selected.spec, commitProofConfig,
-      CandidateEvaluationAttempt::CommitProof);
+      selected.sourceTask, *traversalShape, selected.spec, config);
   if (!commitProof.failureReason.empty() || !commitProof.module ||
       !isCompleteArtifactSource(commitProof.artifactSource)) {
     anchor->emitError()

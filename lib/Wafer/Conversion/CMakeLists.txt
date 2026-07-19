@@ -16,7 +16,6 @@ add_mlir_conversion_library(WaferTensorProgramToTileRegion
   LINK_LIBS PUBLIC
   WaferAnalysis
   WaferIR
-  WaferSupport
   MLIRAnalysis
   MLIRArithDialect
   MLIRBufferizationDialect

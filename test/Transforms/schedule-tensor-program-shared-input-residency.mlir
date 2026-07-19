@@ -42,13 +42,17 @@ func.func @shared_activation_matmuls(
 
 // CHECK-LABEL: func.func @shared_activation_matmuls
 // CHECK-COUNT-1: wafer.tile.region
-// One full static tile has no time-domain loop. Shared-input scope discovery
-// and materialization are required dataflow semantics, so the activation has
-// one SPM tensor/Cx realization even when optional cleanup is disabled.
+// One full static tile has no time-domain loop.  The direct region body still
+// proves that all three roots share the activation's one RDMA/SPM layout.
 // CHECK-NOT: scf.for
-// CHECK-COUNT-1: memref.alloc() {{.*}} : memref<4x8xf16, #wafer.memory<spm, tensor>>
-// CHECK-COUNT-1: memref.alloc() {{.*}} : memref<4x8xf16, #wafer.memory<spm, cx>>
-// CHECK-COUNT-3: wafer.instr.gemm
+// CHECK: %[[ACT:.+]] = memref.alloc() {{.*}} : memref<4x8xf16, #wafer.memory<spm, tensor>>
+// CHECK-NEXT: wafer.instr.rdma {{%.*}} to %[[ACT]]
+// CHECK: wafer.instr.rdma
+// CHECK: %[[ACT_CX:.+]] = memref.alloc() {{.*}} : memref<4x8xf16, #wafer.memory<spm, cx>>
+// CHECK-NEXT: wafer.instr.gather_scatter %[[ACT]] to %[[ACT_CX]]
+// CHECK: wafer.instr.gemm %[[ACT_CX]],
+// CHECK: wafer.instr.gemm %[[ACT_CX]],
+// CHECK: wafer.instr.gemm %[[ACT_CX]],
 // CHECK-NOT: scf.for
 // CHECK: wafer.tile.yield
 // CHECK-NOT: wafer.tile.region

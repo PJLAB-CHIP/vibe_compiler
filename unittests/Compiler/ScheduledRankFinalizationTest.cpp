@@ -80,9 +80,7 @@ TEST_F(ScheduledRankFinalizationTest,
   mlir::FailureOr<std::vector<wafer::compiler::detail::FinalizedRankCandidate>>
       finalized =
           wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-              std::move(frontier), /*logicalRank=*/0,
-              wafer::getCurrentOptimizationQualificationProposal(),
-              wafer::getAllOnOptimizationConfiguration());
+              std::move(frontier));
 
   ASSERT_TRUE(mlir::succeeded(finalized)) << diagnostics;
   ASSERT_EQ(finalized->size(), 1u);
@@ -112,9 +110,7 @@ TEST_F(ScheduledRankFinalizationTest, FailsOnlyWhenNoAlternativeSurvives) {
 
   EXPECT_TRUE(mlir::failed(
       wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-          std::move(frontier), /*logicalRank=*/0,
-          wafer::getCurrentOptimizationQualificationProposal(),
-          wafer::getAllOnOptimizationConfiguration())));
+          std::move(frontier))));
   EXPECT_NE(diagnostics.find("capacity_overflow"), std::string::npos)
       << diagnostics;
 }

@@ -100,7 +100,6 @@ materializeLoopedRootsTraversal(
     llvm::SmallVectorImpl<mlir::OpFoldResult> &offsets,
     llvm::SmallVectorImpl<int64_t> &sizes,
     llvm::SmallVectorImpl<mlir::LoopLikeOpInterface> &loops,
-    CandidateInvocationOrdinals &invocationOrdinals,
     std::string *failureReason) {
   if (roots.size() != outputs.size()) {
     setFailureReason(failureReason,
@@ -113,7 +112,7 @@ materializeLoopedRootsTraversal(
     for (auto [index, root, output] : llvm::enumerate(roots, outputs)) {
       mlir::FailureOr<mlir::Value> tile = materializeCandidateRootTileValue(
           builder, scope, root, static_cast<unsigned>(index), offsets, sizes,
-          reductionTileSizes, loops, invocationOrdinals, failureReason);
+          reductionTileSizes, loops, failureReason);
       if (mlir::failed(tile))
         return mlir::failure();
       nextOutputs.push_back(insertCandidateRootTile(
@@ -146,8 +145,7 @@ materializeLoopedRootsTraversal(
         materializeLoopedRootsTraversal(bodyBuilder, scope, roots, shape,
                                         tileSizes, reductionTileSizes, dim + 1,
                                         loop.getRegionIterArgs(), offsets,
-                                        sizes, loops, invocationOrdinals,
-                                        failureReason);
+                                        sizes, loops, failureReason);
     loops.pop_back();
     sizes.pop_back();
     offsets.pop_back();
@@ -165,8 +163,7 @@ materializeLoopedRootsTraversal(
     mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>> tail =
         materializeLoopedRootsTraversal(
             builder, scope, roots, shape, tileSizes, reductionTileSizes,
-            dim + 1, currentOutputs, offsets, sizes, loops,
-            invocationOrdinals, failureReason);
+            dim + 1, currentOutputs, offsets, sizes, loops, failureReason);
     sizes.pop_back();
     offsets.pop_back();
     if (mlir::failed(tail))
@@ -179,7 +176,6 @@ materializeLoopedRootsTraversal(
 mlir::LogicalResult materializeCompleteCandidateTraversal(
     TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    CandidateInvocationOrdinals &invocationOrdinals,
     std::string *failureReason) {
   mlir::FailureOr<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
       collectCandidateRoots(scope, /*rejectProducerChains=*/false,
@@ -238,8 +234,7 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
       materializeLoopedRootsTraversal(
           builder, scope, *roots, firstResultType.getShape(),
           candidateTileSizes, candidateReductionTileSizes, /*dim=*/0,
-          outputBoundaries, offsets, sizes, loops, invocationOrdinals,
-          failureReason);
+          outputBoundaries, offsets, sizes, loops, failureReason);
   if (mlir::failed(completeOutputs))
     return mlir::failure();
 

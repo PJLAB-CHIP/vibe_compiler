@@ -1,12 +1,12 @@
 # Physical-Dataflow Synthesis 实施计划
 
-状态：current umbrella plan。Q33已完成，首个Q32 row Q32.I为`next`；Q32.I/R/B/V/M/S/G及最终Q32 completion的
+状态：current umbrella plan。Q32.I是当前`next` row；Q32.I/R/B/V/M/S/G及最终Q32 completion的
 blocked-by关系只看`tasks/progress.md`，不能从本计划checkpoint标题推断动态状态。
 
 本计划只拆施工顺序、artifact checkpoint、删除门槛和验证范围，不复制总体设计。长期合同由：
 
 - 01：production pipeline 与 artifact 总览；
-- 05：optimizer-ready structured IR、required normal form与fixed/candidate optimization分界；
+- 05：post-SPMD StableHLO到structured tensor IR的normalization合同；
 - 06：联合 synthesis、搜索、排序和 atomic commit；
 - 07：selected tile-dataflow IR 物化；
 - 08：physical encoding、valid domain、view/route/descriptor cover；
@@ -24,9 +24,8 @@ blocked-by关系只看`tasks/progress.md`，不能从本计划checkpoint标题�
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  Q33完成后产出required normal form、Equivalent-IR Stability、qualified fixed/cleanup set和optimizer-ready
-  rank-local structured tensor program，以及重新冻结的rank-count=1/16、7B数值与host性能baseline；
-  另消费既有numeric/effect policy、ExecutionConfig、TargetProfileId和typed target capability providers。
+  当前production生成并验证的rank-local structured tensor program，以及既有rank-count=1/16、7B数值baseline、
+  numeric/effect policy、ExecutionConfig、TargetProfileId和typed target capability providers。
 - Current stage responsibility:
   实现06定义的有界physical-dataflow synthesis并补齐target capability纵向；把唯一selected proposal物化并
   展开communication skeleton为complete rank instruction program，依次完成exact SPM planning、whole-variant DDR
@@ -61,24 +60,11 @@ Pipeline position:
 5. 先保正确性与有界性，再比较静态cost；没有板端校准时不发布时间收益。
 6. 切换production时删除旧decision owner，不能长期双轨运行。
 
-## 3. 外部前置：Q33 Compiler Optimization Adoption
+## 3. Checkpoints
 
-Q32不再承担generic canonicalizer正确性债务、direct producer形态恢复或上游pass inventory。已归档的
-`tasks/archive/compiler-optimization-adoption.md`闭合了：
+### Checkpoint A（Q32.I）：当前合同冻结和 fresh baseline
 
-- explicit required normalization和Equivalent-IR Stability；
-- fixed optimization、candidate-local和target-specific三层边界；
-- upstream mechanism的availability/adoption/qualification records；
-- post-adoption rank-count=1/16与7B source/model/resource baseline。
-
-后续不得构造依赖direct fill、named-op形态或canonicalizer worklist的SemanticOpDescriptor/ImplementationFamily，
-否则会把已消除的表示债务重新固化进provider。
-
-## 4. Checkpoints
-
-### Checkpoint A（Q32.I）：post-adoption合同冻结和 fresh baseline
-
-输入：Q33 optimizer-ready structured IR和post-adoption baseline；当前Q29 scheduler仍只作迁移实现对照。
+输入：当前production structured tensor IR和Q29 scheduler baseline。
 
 施工：
 
@@ -86,8 +72,8 @@ Q32不再承担generic canonicalizer正确性债务、direct producer形态恢�
   交叉引用和“文件名仅作兼容”话术在current docs中清零；archive保留当时basename/line-range快照，并由README明确其
   non-current-path语义；
 - 对06-18与live code做字段/consumer矩阵，确认每个selected decision最终落到哪个typed op/type/attr；
-- 固定post-adoption rank-count=1/16 corpus、7B source/config/expected、package readback和unsupported feature清单；
-- 冻结并消费06唯一`PhysicalDataflowTelemetryV1`；checkpoint/qualification不得另列一套counter或phase名；
+- 固定rank-count=1/16 corpus、7B source/config/expected、package readback和unsupported feature清单；
+- 冻结并消费06唯一`PhysicalDataflowTelemetryV1`；checkpoint不得另列一套counter或phase名；
 - 锁定旧planner/layout/movement决策入口和删除清单。
 
 产出：可复现的source-to-bundle/CModel baseline与consumer矩阵。
@@ -231,7 +217,7 @@ late-rank union均在effect前失败。板端数值资格仍是later row，但bo
 
 ### Checkpoint F（Q32.M）：policy-free physical-dataflow mechanisms
 
-输入：Q33的typed upstream mechanism边界、Checkpoint C relation/proof core、Checkpoint D baseline和Checkpoint E已资格化target
+输入：Checkpoint C relation/proof core、Checkpoint D baseline和Checkpoint E已验证target
 capabilities。此checkpoint不依赖beam、score或candidate ranking。
 
 施工：
@@ -285,7 +271,7 @@ work/fuel有界。按Llama role、参数顺序、固定root数或固定shape注�
 - 使用deterministic resource-aware list scheduler，仅对ready-set中reuse/resource signature不同的少量choice分裂；
 - shared-input使用deterministic maximal hyperedge和hard-capped conflict split，不枚举`2^fanout`；
 - 对island/relation pieces、mechanism applications、family instantiation、communication skeleton node/edge、safe-tile
-  solver/proof、tile refinement、ready alternatives、beam、top-K、cache和rank frontier设置deterministic hard caps；optimization deadline只在reserved baseline完成后configuration，触发时
+  solver/proof、tile refinement、ready alternatives、beam、top-K、cache和rank frontier设置deterministic hard caps；optimization deadline只在reserved baseline完成后arm，触发时
   丢弃optimized states并返回reserved baseline；driver/process cancellation在任意时点返回`Cancelled`且无artifact；
 - 每个materialized candidate先获得独立reserved full-arena legality allowance；忽略SPM interval后仍可能改变Pareto/最终选择的
   canonical shortlist才进入capacity refinement。用single-demand absolute-alignment与validated activity-clique建立lower，
@@ -317,9 +303,9 @@ work/fuel有界。按Llama role、参数顺序、固定root数或固定shape注�
 
 Gate：构造会触发partition `2^N`、tile Cartesian product、rank `K^R`和task `N!`风险的压力图，证明访问数不越cap；
 固定work policy且无driver/process cancellation时不同线程数/重复运行selected signature一致；optimization
-预算或baseline-ready后configuration的optimization deadline返回baseline，driver/process cancellation返回`Cancelled`且无artifact，
+预算或baseline-ready后arm的optimization deadline返回baseline，driver/process cancellation返回`Cancelled`且无artifact，
 baseline allowance耗尽返回compiler-resource-exhausted；任一rejected clone不污染accepted IR。同一机器、Release build和冻结7B
-corpus相对Checkpoint A post-adoption baseline记录完整source-to-bundle wall与06 `PhysicalDataflowTelemetryV1`；
+corpus相对Checkpoint A fresh baseline记录完整source-to-bundle wall与06 `PhysicalDataflowTelemetryV1`；
 rank-count=1/16、7B完整source/SystemC differential、通用topology和多dtype/tail全部通过。重复运行不得
 出现无界增长，optimization deadline必须返回reserved baseline。阈值与budget只属于profile/resource policy和实施证据，不写成架构
 常量或workload legality。
@@ -356,9 +342,9 @@ Q28 fixed seed/Q31 held-out multi-seed source-package-SystemC-PyTorch，未由7B
 
 不算完成：新旧planner由flag长期并存、旧planner作为silent fallback、或只从默认pipeline移除但仍保留公开入口。
 
-## 5. 未排期可选后续：Compiler Transform control plane（Q32.T）
+## 4. 未排期可选后续：Compiler Transform control plane（Q32.T）
 
-该项不是Q32 checkpoint，Q32 completion audit不检查其实现；只有Q33 fixed pipeline与Q32 atomic mechanisms、planner/
+该项不是Q32 checkpoint，Q32 completion audit不检查其实现；只有Q32 atomic mechanisms、planner/
 materializer、production named pipeline和diagnostic均稳定时才实施：
 
 - 只提供rank-local、可选、非production control plane；普通Transform payload不能代表production的rank-module vector、frontend
@@ -386,11 +372,11 @@ materializer、production named pipeline和diagnostic均稳定时才实施：
   RankLocalCandidateOrderV1, DeterministicWorkPolicyV1) -> (fresh_target, CandidateRunReportV1)`；
   `inspect_physical_dataflow_candidate(target) -> CandidateInspectionV1`。operand/result param **SSA type**实现
   `TransformParamTypeInterface`并只接受06声明的exact versioned mapped attr，attr本身不冒充interface；
-  `StructuredOptimizationPolicyV1`绑定05的qualified optimization set digest及fixed/cleanup两组typed control。profile
+  `StructuredOptimizationPolicyV1`只描述当前调用的显式rank-local rewrite选择。profile
   required canonical attr唯一映射`TargetProfileId`；budget逐字段映射
   `RankPlanningRequest::deterministic_work_policy`，不得定义extension私有default/schema；report/inspection按06的
   exact scope、presence和canonical bytes合同验证；
-- 三个op的cut verifier只从payload结构验证05 structured input、post-Q33/pre-scheduling input或
+- 三个op的cut verifier只从payload结构验证05 structured input、pre-scheduling input或
   `PlacedRankUnbound` inspection input；materialize output必须是SPM-placed/unbound final rank instruction payload并通过
   payload可重算的per-rank gate。empty/multi-target/wrong cut/owner Unsupported在mutation前为silenceable；invalid
   config/IR/registry/invariant或reserved-baseline resource exhaustion为definite；driver cancellation definite abort且无result mapping；
@@ -407,7 +393,7 @@ materializer、production named pipeline和diagnostic均稳定时才实施：
 
 若不实施，Q32以06中的optional-control-plane non-goal收口，不留第二条未完成主线。
 
-## 6. Integrated Completion Audit（Q32）
+## 5. Integrated Completion Audit（Q32）
 
 标记Q32完成前逐项确认：
 
@@ -416,8 +402,8 @@ materializer、production named pipeline和diagnostic均稳定时才实施：
 - Q32.M mechanisms先于Q32.S policy实现；planner和later Transform只调用同一typed implementation，不在policy中复制rewrite；
 - hard caps覆盖生成过程而非只覆盖结果，包括communication skeleton node/edge与baseline safe-tile solver/proof；baseline
   fallback和telemetry有fresh测试；
-- 同机Release/frozen 7B相对Checkpoint A post-adoption baseline有source-to-bundle与planner phase wall/work记录，
-  exact-materialized/top-K/frontier不越policy cap，重复运行无无界增长；baseline-ready后configuration的
+- 同机Release/frozen 7B相对Checkpoint A fresh baseline有source-to-bundle与planner phase wall/work记录，
+  exact-materialized/top-K/frontier不越policy cap，重复运行无无界增长；baseline-ready后arm的
   optimization deadline返回baseline，driver/process cancellation返回`Cancelled`且无artifact；
 - selected proposal只以typed payload IR跨stage，search state、shadow plan、重复layout assignment不存在；
 - old decision paths和兼容入口已删除，不能以“默认不用”代替清理；

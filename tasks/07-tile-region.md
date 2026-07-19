@@ -245,25 +245,10 @@ target op family由tasks/10拥有。本文不为每种dtype、layout、shape或�
    compute/staging body、`DTEMessageAttr`、token/effect和wait；不得让candidate销毁后只剩family side object。随后显式建立
    provider completion、multi-input join、last-consumer/reuse、collective wait和terminal drain。physical binding仍由post-memory
    all-rank acceptance完成。
-8. **selected-payload required normalization**：调用本层独立的physical-payload normalizer，显式折叠one-trip traversal与真正
-   identity的`memref.subview`，并用本层独立postcondition verifier检查view/allocation-root/layout/effect/completion和完整
-   traversal；它与05的tensor normalizer只共享`proveIdentityView`、static integer proof和transaction/fuel基础设施，不共享
-   postcondition，也不把05的pure tensor DPS规则套到physical memref payload。该步骤始终开启、确定性、幂等且bounded，失败
-   clone保持byte-identical。它拥有stage-specific outcome type，status vocabulary为
-   `Success{changed}/UnsupportedSemantic/InvalidIR/ResourceExhausted/InternalInvariant`，diagnostic固定为
-   `family/reason/canonical_operation_path`；只与05共享closed vocabulary、`CanonicalIRSnapshotV1`和同一variant invariant，不共享
-   outcome type或postcondition。`Success`的changed由SemanticStructure snapshot决定，non-success用MutationGuard证明source
-   byte-identical且不返回partial clone。
-9. **局部proof-preserving cleanup**：只调用已资格化、能证明semantics/physical storage/effect等价的no-op view或dead-op
-   mechanism；generic greedy canonicalizer不是正确性前提。若改写allocation root、alias、lifetime或event，全部analysis与
-   exact gates必须fresh重算；不得重新决定implementation、encoding、cut、residency或order。
-10. **验证并返回clone**：任一引用失效、unsupported materializer、relation不一致或verifier failure使整个clone失败。
-
-`SelectedPayloadNormalizationWorkPolicyV1`只按进入第8步前的current clone计数：op数`O`、operand与
-successor-operand边数`E`、nested region数`R`、memref view/root-chain节点数`V`和standard+detailed effect entry数`F`；固定
-`fuel = 1024 + 32*O + 8*E + 16*R + 8*V + 4*F`。op/region visit、rewrite attempt、committed rewrite、new op和proof-node
-分别消耗`1/2/8/8/2`单位，所有加乘checked overflow；耗尽返回`ResourceExhausted`并丢弃clone。系数变化必须新增policy
-version并重跑16的qualification，不允许按wall time或workload名动态扩容。
+8. **局部canonicalization**：只删除semantics、physical storage和effect均等价的no-op view或dead operation；若改写
+   allocation root、alias、lifetime或event，全部analysis与exact gates必须fresh重算；不得重新决定implementation、encoding、
+   cut、residency或order。
+9. **验证并返回clone**：任一引用失效、unsupported materializer、relation不一致或verifier failure使整个clone失败。
 
 候选物化后，whole-rank SPM/DDR/event/transport/ABI exact gates仍可能拒绝它。失败反馈给tasks/06的bounded search选择
 下一个candidate；本层不得就地修补已经失败的候选。
@@ -307,11 +292,10 @@ compact loop表达，不能通过只物化representative iteration规避coverage
 
 ## 11. Transform Dialect 控制面
 
-Transform Dialect只承担选择payload scope、调用共享utility、编排已资格化mechanism/verifier和复现diagnostic的控制面职责。
+Transform Dialect只承担选择payload scope、调用共享utility和复现diagnostic的控制面职责。
 production named pipeline、candidate search和可选Transform extension必须调用同一组稳定库：
 
 ```text
-StructuredOptimizationMechanisms
 PhysicalDataflowMechanisms
 PhysicalDataflowPlanner
 CandidateMaterializer
