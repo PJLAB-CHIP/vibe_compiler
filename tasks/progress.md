@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-18
+更新时间：2026-07-19
 
 本文件只记录当前调度状态、前置关系和紧凑完成索引，不保存逐轮测试数字、实现复盘或历史工作日志。
 长期架构与pipeline contract以编号设计文档为准，详细完成证据与实施记录位于`tasks/archive/`，完整导航见
@@ -67,7 +67,7 @@ Q32.V -> Q3.6 (Count typed writeback/ABI mechanical closure)
 
 ## 当前实施队列
 
-当前无`doing`；Q33是唯一`next` row。Q32 umbrella不会让后续row自动进入执行，later/external gate也不会
+Q33是当前唯一`doing` row。Q32 umbrella不会让后续row自动进入执行，later/external gate也不会
 自动进入主线。
 
 设计就绪边界：Q33、Q32.I/R/B/V/M/S/G及Q32 integrated audit、可选Q32.T和Q3.6的**内部**pipeline、typed schema、
@@ -76,7 +76,7 @@ board、hardware numeric、simulator/ISS、packet provenance和timing所需外�
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q33 | `compiler-optimization-adoption` | `next` | Q29、Q28、Q30、Q31 | 以typed audit spec逐cut point闭合live invocation；用stage-specific bounded normalizer/verifier闭合DPS init/view/control/effect required form，按global batch + per-key marginal证据原子资格化fixed/cleanup set并冻结baseline；不提前依赖Q32 descriptor。 | 01、05-18；`tasks/plans/compiler-optimization-adoption.md` |
+| Q33 | `compiler-optimization-adoption` | `doing` | Q29、Q28、Q30、Q31 | 以typed audit spec逐cut point闭合live invocation；用stage-specific bounded normalizer/verifier闭合DPS init/view/control/effect required form，按global batch + per-key marginal证据原子资格化fixed/cleanup set并冻结baseline；不提前依赖Q32 descriptor。 | 01、05-18；`tasks/plans/compiler-optimization-adoption.md` |
 | Q32.I | `target-implementation-foundation` | `blocked` | Q33 | 冻结fresh baseline，建立versioned SemanticOpDescriptor/scalar DAG、canonical provider query/result/key及current-v1唯一baseline；accepted interface只验证selected合同。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` A/B |
 | Q32.R | `physical-relation-route-proof` | `blocked` | Q32.I | 建立closed piecewise quasi-affine IndexRelation、typed outcome/exact-vs-sound/fuel，PhysicalEncoding/view proof、唯一TransferRouteFamily、descriptor cover、InvalidLaneState和完整query key。 | 06-08、10、11、16、18；同计划C |
 | Q32.B | `physical-dataflow-baseline-vertical` | `blocked` | Q32.R、Q34 | 通过transaction-local RankFrontierProducer test seam让新provider baseline走同一finalization/all-rank/package/SystemC纵向；reserved baseline原子形成bundle且不调用旧decision owner。 | 01、06-18；同计划D |
@@ -149,8 +149,8 @@ board、hardware numeric、simulator/ISS、packet provenance和timing所需外�
 
 ## 实施计划入口
 
-- Active task：无。
-- Next：Q33 `compiler-optimization-adoption`，计划见`tasks/plans/compiler-optimization-adoption.md`；Q32 queued。Q34证据已归档于
+- Active task：Q33 `compiler-optimization-adoption`，计划见`tasks/plans/compiler-optimization-adoption.md`。
+- Next：Q32 queued，Q33完成前Q32.I保持blocked。Q34证据已归档于
   `tasks/archive/static-memory-packing.md`。
 - 新实施计划：`tasks/plans/`。
 - 已完成计划和历史证据：`tasks/README.md`的“实施计划导航”和“归档文档”。

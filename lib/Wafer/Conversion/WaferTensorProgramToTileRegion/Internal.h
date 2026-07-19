@@ -67,6 +67,15 @@ struct BufferVersions {
   mlir::Value nCx;
 };
 
+/// Deterministic ordinal ranges are reserved by logical rank before candidate
+/// traversal. Each mechanism has its own monotonically increasing range.
+struct CandidateInvocationOrdinals {
+  uint64_t structuredTiling = 0;
+  uint64_t tiledShapeConstruction = 0;
+  uint64_t producerSliceFusion = 0;
+  uint64_t rangeEnd = 0;
+};
+
 struct BatchedGemmAttrs {
   int64_t batchCount = 0;
   llvm::SmallVector<int64_t, 4> lhsBatchDims;
@@ -154,6 +163,7 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    CandidateInvocationOrdinals &invocationOrdinals,
     std::string *failureReason);
 
 mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
@@ -163,6 +173,7 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    CandidateInvocationOrdinals &invocationOrdinals,
     std::string *failureReason);
 
 mlir::FailureOr<mlir::Value>
@@ -189,6 +200,7 @@ mlir::LogicalResult materializeCandidateTileSlices(
     TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    CandidateInvocationOrdinals &invocationOrdinals,
     std::string *failureReason);
 
 /// Erases only the dead pure tensor producer/view closure left after candidate
@@ -199,6 +211,7 @@ void eraseDeadCandidateSupportClosure(TensorProgramScope scope);
 mlir::LogicalResult materializeCompleteCandidateTraversal(
     TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    CandidateInvocationOrdinals &invocationOrdinals,
     std::string *failureReason);
 
 void setFailureReason(std::string *failureReason, llvm::StringRef reason);
@@ -206,7 +219,7 @@ void setFailureReason(std::string *failureReason, llvm::StringRef reason);
 std::optional<ComputeReduceKind>
 matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
                         unsigned redPos, mlir::Value expectedReducedValue,
-                        llvm::StringRef subject, std::string *failureReason);
+                        llvm::StringRef role, std::string *failureReason);
 
 class TileRegionBodyEmitter {
 public:
@@ -296,11 +309,11 @@ private:
                                                 mlir::OpBuilder &builder);
 
   mlir::FailureOr<int64_t> getCompactByteSize(mlir::Value buffer,
-                                              llvm::StringRef subject);
+                                              llvm::StringRef role);
 
   mlir::FailureOr<int64_t>
   getCommunicationId(const WaferLinalgExtCollectiveInfo &info,
-                     llvm::StringRef subject);
+                     llvm::StringRef role);
 
   mlir::FailureOr<SelectedCollectiveRankGroup>
   getCollectiveRankGroup(const WaferLinalgExtCollectiveInfo &info);
@@ -417,13 +430,13 @@ private:
   mlir::LogicalResult verifyExactFillPayload(mlir::linalg::FillOp fill);
 
   mlir::LogicalResult verifyExactGemmPayload(mlir::linalg::LinalgOp op,
-                                             llvm::StringRef subject);
+                                             llvm::StringRef role);
 
   mlir::LogicalResult convertFill(mlir::linalg::FillOp fill,
                                   mlir::OpBuilder &builder);
 
   mlir::LogicalResult requireZeroFilledGemmInit(mlir::linalg::LinalgOp op,
-                                                llvm::StringRef subject);
+                                                llvm::StringRef role);
 
   bool hasOrderedGemmChunkInit(mlir::linalg::LinalgOp op) const;
 

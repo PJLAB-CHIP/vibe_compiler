@@ -630,7 +630,7 @@ verifier和fresh recost都只在seam之后执行。因此seed不得携带`Placed
 accepted transport/final candidate signature还必须等待all-rank binding后从bound IR fresh构造。`canonical_seed_order_key`
 只决定finalization的确定性访问顺序，不能跨finalization充当candidate signature或semantic fact。
 
-`Success`要求非空seed且恰有一个reserved baseline。optimization budget或baseline-ready后才arm的optimization deadline耗尽时仍返回
+`Success`要求非空seed且恰有一个reserved baseline。optimization budget或baseline-ready后才configuration的optimization deadline耗尽时仍返回
 `Success`和baseline，并在telemetry记录原因；只有baseline seed/proof在其reserved allowance内也无法完成时返回
 `ResourceExhausted`。`Unsupported`表示target/workload没有canonical baseline，`Invalid`表示request、registry或内部合同错误；
 `Cancelled`只表示driver/process在任意时点显式取消整次transaction；四种非success状态都不返回partial seed或artifact。
@@ -1164,7 +1164,7 @@ baseline先于optimized exploration执行并使用上述独立materialization/ga
 它，但baseline allowance本身也有确定性硬上界。若连baseline proof都在该allowance内无法完成，返回明确
 `compiler_resource_exhausted`，不能标成target/workload illegal。baseline gate完成后，独立optimization预算无条件生效，
 包括“已有候选仍在并行评估”的情况。生产可复现选择只由这些deterministic caps决定。policy外的wall机制分为两种且都不进入
-digest或candidate访问顺序：optimization deadline只能在baseline完成全部reserved exact gates后arm；触发时丢弃所有optimized
+digest或candidate访问顺序：optimization deadline只能在baseline完成全部reserved exact gates后configuration；触发时丢弃所有optimized
 survivor、返回reserved baseline并报告`optimization_deadline_exceeded`，不按恰好完成的并行任务选择。driver/process
 cancellation可以在任意时点触发，必须abort整个clone/bundle transaction并返回`Cancelled`、无artifact，不能伪造尚未完成的
 baseline。跨线程determinism只在相同policy且两类外部信号均未触发时验证。
@@ -1572,10 +1572,10 @@ structured policy唯一schema为：
 ```text
 StructuredOptimizationPolicyV1 {
   schema_version: U16 = 1
-  qualified_hygiene_set_digest: Digest32
-  fixed_control: ClosedEnum(HygieneGroupControlV1)
+  qualified_optimization_set_digest: Digest32
+  fixed_control: ClosedEnum(OptimizationGroupSelectionV1)
   fixed_disabled_key: Optional<Record(MechanismKeyV1)>
-  cleanup_control: ClosedEnum(HygieneGroupControlV1)
+  cleanup_control: ClosedEnum(OptimizationGroupSelectionV1)
   cleanup_disabled_key: Optional<Record(MechanismKeyV1)>
 }
 ```
@@ -1600,7 +1600,7 @@ MechanismReportEntryV1 {
 
 MechanismReportV1 {
   schema_version: U16 = 1
-  qualified_hygiene_set_digest: Digest32
+  qualified_optimization_set_digest: Digest32
   structured_optimization_policy_digest: Digest32
   entries: Sequence<Record(MechanismReportEntryV1)>
 }

@@ -525,6 +525,8 @@ mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
     selected.candidateCount = currentVisited;
     selected.rejectedCount = rejectedCount;
     selected.representativeCount = check.representativeCount;
+    selected.scopeOrdinal = config.scopeOrdinal;
+    selected.candidateOrdinal = check.candidateOrdinal;
     selected.module = std::move(check.module);
     selected.artifactSource = check.artifactSource;
     return selected;
@@ -575,8 +577,12 @@ mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
     SelectedCandidate selected = buildSelected(check, visitedCount);
     if (isBetterCandidate(selected, best ? &*best : nullptr)) {
       if (!selected.module) {
+        SelectionConfig materializationConfig = config;
+        materializationConfig.candidateOrdinal = selected.candidateOrdinal;
         CandidateEvaluation accepted =
-            evaluateCompleteCandidate(task, *shape, selected.spec, config);
+            evaluateCompleteCandidate(
+                task, *shape, selected.spec, materializationConfig,
+                CandidateEvaluationAttempt::RetainedArtifact);
         if (!accepted.failureReason.empty()) {
           rejectCandidate(selected.spec, accepted.failureReason);
           return;
@@ -615,6 +621,9 @@ mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
       std::vector<std::future<CandidateCheckResult>> futures;
       for (size_t batchOffset = 0; batchOffset < batchSize; ++batchOffset) {
         CandidateSpec candidate = queue[queueIndex + batchOffset].spec;
+        SelectionConfig candidateConfig = config;
+        candidateConfig.candidateOrdinal =
+            static_cast<uint64_t>(visitedCount);
         ++visitedCount;
         if (std::optional<std::string> failure = getCheapTargetGeometryFailure(
                 task, candidate, *reductionRanges)) {
@@ -643,9 +652,11 @@ mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
         futureSlots.push_back(static_cast<unsigned>(batchOffset));
         futures.push_back(std::async(
             std::launch::async,
-            [&standaloneTaskModuleText, shape = *shape, candidate, config]() {
+            [&standaloneTaskModuleText, shape = *shape, candidate,
+             candidateConfig]() {
               return evaluateCandidateOnStandaloneTaskText(
-                  standaloneTaskModuleText, shape, candidate, config);
+                  standaloneTaskModuleText, shape, candidate,
+                  candidateConfig);
             }));
       }
       for (auto [futureIndex, slot] : llvm::enumerate(futureSlots))
@@ -657,6 +668,9 @@ mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
     }
 
     CandidateSpec candidate = queue[queueIndex++].spec;
+    SelectionConfig candidateConfig = config;
+    candidateConfig.candidateOrdinal =
+        static_cast<uint64_t>(visitedCount);
     ++visitedCount;
     if (std::optional<std::string> failure =
             getCheapTargetGeometryFailure(task, candidate, *reductionRanges)) {
@@ -678,7 +692,8 @@ mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
       continue;
     }
     CandidateCheckResult check =
-        evaluateCandidateOnOriginalTask(task, *shape, candidate, config);
+        evaluateCandidateOnOriginalTask(task, *shape, candidate,
+                                        candidateConfig);
     if (!check.failureReason.empty()) {
       rejectCandidate(candidate, check.failureReason);
       continue;
@@ -710,8 +725,12 @@ mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
     best->candidateCount = visitedCount;
     best->rejectedCount = rejectedCount;
     if (!best->module || !isCompleteArtifactSource(best->artifactSource)) {
+      SelectionConfig materializationConfig = config;
+      materializationConfig.candidateOrdinal = best->candidateOrdinal;
       CandidateEvaluation accepted =
-          evaluateCompleteCandidate(task, *shape, best->spec, config);
+          evaluateCompleteCandidate(
+              task, *shape, best->spec, materializationConfig,
+              CandidateEvaluationAttempt::RetainedArtifact);
       if (!accepted.failureReason.empty()) {
         anchor->emitError()
             << "selected task candidate complete artifact failed: "

@@ -22,6 +22,7 @@ add_mlir_library(WaferCompiler
   ProgramDirectoryTransaction.cpp
   ProgramInvocation.cpp
   ProgramTensorComparison.cpp
+  OptimizationQualificationCompiler.cpp
   ScheduledRankFinalization.cpp
   SpmdCompilationBridge.cpp
   TargetABIPreparation.cpp
@@ -51,6 +52,7 @@ add_mlir_library(WaferCompiler
   WaferIR
   WaferPipelines
   WaferRuntime
+  WaferSupport
   WaferTarget
   WaferTransforms
   MLIRArithDialect

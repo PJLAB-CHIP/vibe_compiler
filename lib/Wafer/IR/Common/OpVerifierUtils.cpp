@@ -115,7 +115,7 @@ getOptionalExecutionMeshRankCount(mlir::Operation *op) {
 
 mlir::LogicalResult
 verifyLogicalRankWithinExecutionMesh(mlir::Operation *op, int64_t rank,
-                                     llvm::StringRef subject) {
+                                     llvm::StringRef role) {
   mlir::FailureOr<std::optional<int64_t>> rankCount =
       getOptionalExecutionMeshRankCount(op);
   if (mlir::failed(rankCount))
@@ -124,14 +124,14 @@ verifyLogicalRankWithinExecutionMesh(mlir::Operation *op, int64_t rank,
     return mlir::success();
   if (rank < 0 || rank >= **rankCount)
     return op->emitOpError()
-           << subject << " must be within execution mesh rank count";
+           << role << " must be within execution mesh rank count";
   return mlir::success();
 }
 
 mlir::LogicalResult
 verifyLogicalRanksWithinExecutionMesh(mlir::Operation *op,
                                       llvm::ArrayRef<int64_t> ranks,
-                                      llvm::StringRef subject) {
+                                      llvm::StringRef role) {
   mlir::FailureOr<std::optional<int64_t>> rankCount =
       getOptionalExecutionMeshRankCount(op);
   if (mlir::failed(rankCount))
@@ -141,7 +141,7 @@ verifyLogicalRanksWithinExecutionMesh(mlir::Operation *op,
   for (int64_t rank : ranks) {
     if (rank < 0 || rank >= **rankCount)
       return op->emitOpError()
-             << subject
+             << role
              << " logical ranks must be within execution mesh rank count";
   }
   return mlir::success();

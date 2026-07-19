@@ -75,6 +75,17 @@ struct PreparedTargetRank {
   int64_t transportStatusArgumentIndex = -1;
 };
 
+enum class TargetLLVMLoweringPurpose : uint8_t {
+  WholeVariantCandidateProof,
+  PublishedArtifact,
+  Testing,
+};
+
+struct TargetLLVMLoweringInvocation {
+  TargetLLVMLoweringPurpose purpose;
+  uint64_t attemptOrdinal = 0;
+};
+
 struct TargetModuleReadback {
   std::string contentDigest;
   std::string moduleFormat;
@@ -86,7 +97,9 @@ bool isRegularTargetFile(llvm::StringRef path);
 mlir::FailureOr<PreparedTargetRank>
 prepareTargetABI(const RankExecutable &rankExecutable,
                  const ExecutionConfig &executionConfig);
-mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared);
+mlir::LogicalResult
+lowerToTargetLLVM(PreparedTargetRank &prepared,
+                  TargetLLVMLoweringInvocation invocation);
 mlir::LogicalResult verifyLoweredKernelABI(PreparedTargetRank &prepared,
                                            llvm::StringRef entrySymbol);
 llvm::Expected<TargetLLVMModule>
@@ -104,7 +117,8 @@ llvm::Error verifyTargetLLVMModule(const llvm::Module &module,
 llvm::Error writeLLVMIR(const llvm::Module &module, llvm::StringRef path);
 llvm::Error runDeviceLink(const TargetToolchain &toolchain,
                           llvm::StringRef llvmIR, llvm::StringRef module,
-                          llvm::StringRef object, llvm::StringRef crtObject);
+                          llvm::StringRef object, llvm::StringRef crtObject,
+                          int64_t logicalRank);
 llvm::Expected<TargetModuleReadback>
 verifyTargetModule(llvm::StringRef path, llvm::StringRef entrySymbol,
                    TargetProfileId expectedProfile);

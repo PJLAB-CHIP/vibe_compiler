@@ -1,7 +1,11 @@
 //===- ScheduleTensorProgram.cpp - Closed-loop task scheduling ------------===//
 
 #include "Scheduling/ScheduleTensorProgramInternal.h"
+#include "StructuredOptimization/StructuredOptimizationInternal.h"
+#include "Wafer/Support/CanonicalIRSnapshot.h"
+#include "Wafer/Support/OptimizationMechanism.h"
 #include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/StructuredOptimization.h"
 #include "Wafer/Transforms/TensorProgramScheduling.h"
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -650,7 +654,7 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   taskModules.reserve(scopes.size());
   evaluation.selectedCandidates.reserve(scopes.size());
   llvm::DenseMap<mlir::Operation *, unsigned> taskOrdinals;
-  for (const auto &scope : scopes) {
+  for (auto [scopeOrdinal, scope] : llvm::enumerate(scopes)) {
     mlir::OwningOpRef<mlir::ModuleOp> taskModule =
         structured_scheduler::cloneScopeToStandaloneModule(scope);
     if (!taskModule)
@@ -690,8 +694,10 @@ static mlir::LogicalResult evaluateRankVariantImpl(
       llvm::errs() << "]\n";
     }
     taskModules.push_back(std::move(taskModule));
+    SelectionConfig scopeConfig = config;
+    scopeConfig.scopeOrdinal = scopeOrdinal;
     mlir::FailureOr<SelectedCandidate> selected =
-        selectCandidateForScope(scope, task, labelOs.str(), config);
+        selectCandidateForScope(scope, task, labelOs.str(), scopeConfig);
     if (mlir::failed(selected)) {
       // A full-traversal-only yielded root fixes this entire scope at its full
       // shape. Shared-input peer prefixes can only add independent roots;
@@ -727,14 +733,35 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   }
   foldCommittedBufferizationRoundTrips(*evaluation.module);
 
-  // Normalize the committed rank once before deriving either final artifact.
-  // In particular, static one-trip traversal recurrences and full subviews
-  // must be folded here: otherwise equivalent full-buffer edges would be
-  // accepted or rejected based on incidental candidate-emission wrappers.
-  mlir::PassManager canonicalization(evaluation.module->getContext());
-  canonicalization.addPass(mlir::createCanonicalizerPass());
-  if (mlir::failed(canonicalization.run(*evaluation.module)))
-    return failRankVariant(evaluation, "committed-canonicalization");
+  // Candidate emission introduces traversal and view forms after the tensor
+  // normal-form cut. Establish the structural subset needed by the internal
+  // planners without claiming post-bufferization allocation/lifetime closure.
+  // The named finalization pipeline owns that physical selected-payload gate.
+  SelectedPayloadNormalizationOutcome requiredNormalization =
+      structured_optimization::detail::
+          normalizeSelectedPayloadStructureForPlanning(*evaluation.module);
+  if (requiredNormalization.status !=
+      SelectedPayloadNormalizationStatus::Success) {
+    llvm::StringRef detail = requiredNormalization.diagnostic
+                                 ? requiredNormalization.diagnostic->reason
+                                 : llvm::StringRef{};
+    return failRankVariant(evaluation, "required-payload-normalization",
+                           detail);
+  }
+
+  // Optional canonical cleanup is evaluated only after the required form is
+  // established, so disabling it cannot change legality.
+  if (config.enableCandidateCommitCleanup) {
+    mlir::PassManager canonicalization(evaluation.module->getContext());
+    canonicalization.addPass(createOptimizationInvocationPass(
+        mechanism::CandidateCommitCleanup,
+        OptimizationCutPoint::SelectedPhysicalPayloadModule,
+        [] { return mlir::createCanonicalizerPass(); },
+        static_cast<uint64_t>(config.logicalRank) * 6 +
+            config.rankVariantOrdinal));
+    if (mlir::failed(canonicalization.run(*evaluation.module)))
+      return failRankVariant(evaluation, "committed-canonicalization");
+  }
 
   uint64_t committedTerminalOperationCount = 0;
   detail::StaticTerminalOperationBudgetStatus committedBudgetStatus =
@@ -851,6 +878,11 @@ struct ScheduleTensorProgramPass
   using impl::ScheduleTensorProgramPassBase<
       ScheduleTensorProgramPass>::ScheduleTensorProgramPassBase;
 
+  ScheduleTensorProgramPass(const ScheduleTensorProgramPassOptions &options,
+                            bool enableCandidateCommitCleanup)
+      : impl::ScheduleTensorProgramPassBase<ScheduleTensorProgramPass>(options),
+        enableCandidateCommitCleanup_(enableCandidateCommitCleanup) {}
+
   void runOnOperation() final {
     mlir::FailureOr<TileSearchMode> parsedMode =
         parseTileSearchMode(tileSearch, getOperation());
@@ -910,6 +942,7 @@ struct ScheduleTensorProgramPass
     if (config.mode == TileSearchMode::MinEstimatedTime)
       config.candidateParallelism = candidateParallelism;
     config.printCandidateSummary = printCandidateSummary;
+    config.enableCandidateCommitCleanup = enableCandidateCommitCleanup_;
 
     // Partition alternatives are bounded prefixes of the deterministic
     // shared-input reuse order.  Each alternative is independently cloned,
@@ -942,9 +975,11 @@ struct ScheduleTensorProgramPass
                                               : evaluation.failureReason);
       failures.push_back(std::move(failure));
     };
-    for (const auto &policy : aggressivePolicies) {
-      RankVariantEvaluation evaluation =
-          evaluateRankVariant(getOperation(), config, policy, seenPartitions);
+    for (auto [policyOrdinal, policy] : llvm::enumerate(aggressivePolicies)) {
+      SelectionConfig variantConfig = config;
+      variantConfig.rankVariantOrdinal = policyOrdinal;
+      RankVariantEvaluation evaluation = evaluateRankVariant(
+          getOperation(), variantConfig, policy, seenPartitions);
       if (evaluation.noScopes) {
         markAllAnalysesPreserved();
         return;
@@ -962,8 +997,10 @@ struct ScheduleTensorProgramPass
           // existing frontier; it neither adds a policy nor crosses recovery
           // with peer choices.
           recoveryAttempted = true;
+          SelectionConfig recoveryConfig = config;
+          recoveryConfig.rankVariantOrdinal = 4;
           RankVariantEvaluation recovery = evaluateRankVariant(
-              getOperation(), config, recoveryPolicy, seenPartitions);
+              getOperation(), recoveryConfig, recoveryPolicy, seenPartitions);
           if (recovery.noScopes) {
             markAllAnalysesPreserved();
             return;
@@ -988,8 +1025,10 @@ struct ScheduleTensorProgramPass
     // the recovery policy at its original bounded fallback position.
     if (!best && !recoveryAttempted) {
       recoveryAttempted = true;
+      SelectionConfig recoveryConfig = config;
+      recoveryConfig.rankVariantOrdinal = 4;
       RankVariantEvaluation evaluation = evaluateRankVariant(
-          getOperation(), config, recoveryPolicy, seenPartitions);
+          getOperation(), recoveryConfig, recoveryPolicy, seenPartitions);
       if (evaluation.noScopes) {
         markAllAnalysesPreserved();
         return;
@@ -1008,8 +1047,10 @@ struct ScheduleTensorProgramPass
           /*maxSharedInputPeers=*/0,
           /*allowCrossShapeDataflow=*/false,
           /*cutTerminalFullTraversalOnlyRoots=*/false};
+      SelectionConfig fallbackConfig = config;
+      fallbackConfig.rankVariantOrdinal = 5;
       RankVariantEvaluation evaluation = evaluateRankVariant(
-          getOperation(), config, fallbackPolicy, seenPartitions);
+          getOperation(), fallbackConfig, fallbackPolicy, seenPartitions);
       if (evaluation.noScopes) {
         markAllAnalysesPreserved();
         return;
@@ -1037,12 +1078,23 @@ struct ScheduleTensorProgramPass
     getOperation().getBodyRegion().takeBody(best->module->getBodyRegion());
     return;
   }
+
+private:
+  bool enableCandidateCommitCleanup_ = true;
 };
 
 } // namespace
 
-mlir::FailureOr<std::vector<ScheduledRankCandidate>>
-buildScheduledRankCandidateFrontier(
+std::unique_ptr<mlir::Pass>
+createScheduleTensorProgramPassForOptimizationQualification(
+    const ScheduleTensorProgramPassOptions &options,
+    bool enableCandidateCommitCleanup) {
+  return std::make_unique<ScheduleTensorProgramPass>(
+      options, enableCandidateCommitCleanup);
+}
+
+static mlir::FailureOr<std::vector<ScheduledRankCandidate>>
+buildScheduledRankCandidateFrontierImpl(
     mlir::ModuleOp sourceModule,
     const TensorProgramSchedulingConfig &frontierConfig) {
   if (!sourceModule) {
@@ -1066,6 +1118,8 @@ buildScheduledRankCandidateFrontier(
   config.mode = TileSearchMode::MinEstimatedTime;
   config.logicalRank = frontierConfig.logicalRank;
   config.candidateParallelism = frontierConfig.candidateParallelism;
+  config.enableCandidateCommitCleanup =
+      frontierConfig.enableCandidateCommitCleanup;
 
   // Discovery order is a stable compiler-private correspondence key across
   // ranks.  Every distinct partition is independently materialized and
@@ -1101,8 +1155,10 @@ buildScheduledRankCandidateFrontier(
         discoveryOrder == conservativeDiscoveryOrder
             ? conservativeSeenPartitions
             : seenPartitions;
-    RankVariantEvaluation evaluation =
-        evaluateRankVariant(sourceModule, config, policy, policySeenPartitions);
+    SelectionConfig variantConfig = config;
+    variantConfig.rankVariantOrdinal = discoveryOrder;
+    RankVariantEvaluation evaluation = evaluateRankVariant(
+        sourceModule, variantConfig, policy, policySeenPartitions);
     if (evaluation.noScopes) {
       // A rank without schedulable structured work is still a complete local
       // alternative.  Finalization and whole-card acceptance remain shared
@@ -1137,6 +1193,57 @@ buildScheduledRankCandidateFrontier(
   for (const std::string &failure : failures)
     diagnostic << "\n  - " << failure;
   return mlir::failure();
+}
+
+mlir::FailureOr<std::vector<ScheduledRankCandidate>>
+buildScheduledRankCandidateFrontier(
+    mlir::ModuleOp sourceModule,
+    const TensorProgramSchedulingConfig &frontierConfig) {
+  if (!sourceModule)
+    return mlir::failure();
+  CanonicalIRSnapshotV1 inputSnapshot;
+  std::string diagnostic;
+  if (!createCanonicalIRSnapshotV1(sourceModule,
+                                   CanonicalIRSnapshotMode::SemanticStructure,
+                                   inputSnapshot, &diagnostic)) {
+    sourceModule.emitError()
+        << "cannot snapshot tile-dataflow materialization input: "
+        << diagnostic;
+    return mlir::failure();
+  }
+  if (frontierConfig.logicalRank < 0)
+    return buildScheduledRankCandidateFrontierImpl(sourceModule,
+                                                   frontierConfig);
+  OptimizationInvocationTokenV1 invocationToken;
+  if (!beginOptimizationInvocationV1(
+          mechanism::TileDataflowMaterialization,
+          OptimizationCutPoint::StructuredTensorModule,
+          static_cast<uint64_t>(frontierConfig.logicalRank),
+          inputSnapshot.sha256Digest, invocationToken, &diagnostic)) {
+    sourceModule.emitError()
+        << "cannot begin tile-dataflow materialization invocation: "
+        << diagnostic;
+    return mlir::failure();
+  }
+  mlir::FailureOr<std::vector<ScheduledRankCandidate>> result =
+      buildScheduledRankCandidateFrontierImpl(sourceModule, frontierConfig);
+  OptimizationInvocationTelemetry telemetry;
+  telemetry.key = mechanism::TileDataflowMaterialization;
+  telemetry.cutPoint = OptimizationCutPoint::StructuredTensorModule;
+  telemetry.invocationOrdinal =
+      static_cast<uint64_t>(frontierConfig.logicalRank);
+  telemetry.inputSnapshotDigest = inputSnapshot.sha256Digest;
+  telemetry.outcome = mlir::failed(result) ? InvocationOutcome::Invalid
+                                           : InvocationOutcome::Applied;
+  telemetry.rewriteCount = mlir::failed(result) ? 0 : result->size();
+  telemetry.workUnits = telemetry.rewriteCount;
+  if (!commitOptimizationInvocationV1(invocationToken, telemetry,
+                                      &diagnostic)) {
+    sourceModule.emitError()
+        << "invalid tile-dataflow materialization terminal: " << diagnostic;
+    return mlir::failure();
+  }
+  return result;
 }
 
 mlir::FailureOr<int64_t>

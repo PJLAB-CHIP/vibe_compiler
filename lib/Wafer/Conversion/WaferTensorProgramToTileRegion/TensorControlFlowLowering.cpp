@@ -666,6 +666,19 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorReshape(
   if (!resultTensorType)
     return fail("tensor reshape result is not a ranked tensor");
 
+  bool carriesFillInit = fillInitAttrs.contains(sourceValue) ||
+                         fillInitScalars.contains(sourceValue);
+  if (carriesFillInit) {
+    if (auto attr = fillInitAttrs.find(sourceValue);
+        attr != fillInitAttrs.end())
+      fillInitAttrs[resultValue] = attr->second;
+    if (auto scalar = fillInitScalars.find(sourceValue);
+        scalar != fillInitScalars.end())
+      fillInitScalars[resultValue] = scalar->second;
+    if (onlyFeedsGemmOverwriteInit(resultValue))
+      return mlir::success();
+  }
+
   if (auto external = externalBuffers.find(sourceValue);
       external != externalBuffers.end()) {
     mlir::Value view;
@@ -773,9 +786,25 @@ bool TileRegionBodyEmitter::onlyFeedsGemmOverwriteInit(
       return false;
     }
 
-    auto extractSlice = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(owner);
-    if (!extractSlice || extractSlice.getSource() != value ||
-        !onlyFeedsGemmOverwriteInit(extractSlice.getResult(), visited))
+    mlir::Value viewResult;
+    if (auto extractSlice =
+            mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(owner)) {
+      if (extractSlice.getSource() == value)
+        viewResult = extractSlice.getResult();
+    } else if (auto expand =
+                   mlir::dyn_cast<mlir::tensor::ExpandShapeOp>(owner)) {
+      if (expand.getSrc() == value)
+        viewResult = expand.getResult();
+    } else if (auto collapse =
+                   mlir::dyn_cast<mlir::tensor::CollapseShapeOp>(owner)) {
+      if (collapse.getSrc() == value)
+        viewResult = collapse.getResult();
+    } else if (auto cast = mlir::dyn_cast<mlir::tensor::CastOp>(owner)) {
+      if (cast.getSource() == value)
+        viewResult = cast.getResult();
+    }
+    if (!viewResult ||
+        !onlyFeedsGemmOverwriteInit(viewResult, visited))
       return false;
   }
   return true;

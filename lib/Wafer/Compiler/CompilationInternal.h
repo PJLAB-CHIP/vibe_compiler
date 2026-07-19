@@ -6,6 +6,7 @@
 #include "Wafer/Compiler/Compilation.h"
 #include "Wafer/Compiler/TargetArtifact.h"
 #include "Wafer/Frontend/Program.h"
+#include "Wafer/Support/OptimizationQualification.h"
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Pass/PassManager.h"
@@ -18,6 +19,12 @@
 #include <string>
 
 namespace wafer::compiler::detail {
+
+struct CompilationOptimizationPolicyV1 {
+  OptimizationQualificationProposal proposal;
+  OptimizationConfiguration optimizationConfiguration;
+  EquivalentInputVariantV1 inputVariant = EquivalentInputVariantV1::Original;
+};
 
 bool reject(llvm::raw_ostream &diagnostics, llvm::StringRef message);
 
@@ -79,8 +86,8 @@ bool runSpmdHelper(llvm::StringRef helper,
 
 llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
-    llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank);
+    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLogicalRank,
+    const CompilationOptimizationPolicyV1 &optimizationPolicy);
 
 mlir::LogicalResult stageTargetPackage(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -90,7 +97,8 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<int64_t> failAfterTargetLogicalRank,
     std::optional<int64_t> failAfterPackageLogicalRank,
     std::optional<ExecutableBundle> &executableBundle,
-    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle);
+    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle,
+    const CompilationOptimizationPolicyV1 &optimizationPolicy);
 
 mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
@@ -100,7 +108,8 @@ mlir::LogicalResult runCompilationTransaction(
     std::optional<int64_t> failAfterTargetLogicalRank,
     std::optional<int64_t> failAfterPackageLogicalRank,
     std::optional<ExecutableBundle> *retainedExecutableBundle,
-    std::optional<TargetLLVMModuleBundle> *retainedTargetLLVMModuleBundle);
+    std::optional<TargetLLVMModuleBundle> *retainedTargetLLVMModuleBundle,
+    const CompilationOptimizationPolicyV1 &optimizationPolicy);
 
 } // namespace wafer::compiler::detail
 

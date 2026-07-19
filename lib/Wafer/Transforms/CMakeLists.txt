@@ -6,6 +6,11 @@ add_mlir_library(WaferTransforms
   Scheduling/FullBufferHandoff.cpp
   Scheduling/ScheduleTensorProgram.cpp
   Scheduling/StructuredSchedulingScope.cpp
+  StructuredOptimization/QualificationTelemetry.cpp
+  StructuredOptimization/DebugQualificationInstrumentation.cpp
+  StructuredOptimization/RequiredTensorNormalization.cpp
+  StructuredOptimization/TensorNormalFormVerifier.cpp
+  StructuredOptimization/SelectedPayloadNormalization.cpp
   DDR/PlanDDRMemory.cpp
   MemoryPlanning/LifetimeAnalysis.cpp
   MemoryPlanning/MiniMallocPacking.cpp
@@ -34,6 +39,7 @@ add_mlir_library(WaferTransforms
 
   LINK_LIBS PUBLIC
   WaferAnalysis
+  WaferSupport
   WaferTensorProgramToTileRegion
   WaferIR
   WaferStableHLOToLinalg

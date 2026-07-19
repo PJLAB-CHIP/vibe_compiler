@@ -14,6 +14,15 @@
 #include <utility>
 
 namespace wafer::compiler {
+namespace {
+
+detail::CompilationOptimizationPolicyV1 getCurrentAllOnPolicy() {
+  return {getCurrentOptimizationQualificationProposal(),
+          getAllOnOptimizationConfiguration(),
+          EquivalentInputVariantV1::Original};
+}
+
+} // namespace
 
 llvm::Expected<ExecutionConfig>
 ExecutionConfig::createForSingleCard(int64_t executionRankCount,
@@ -40,7 +49,8 @@ compileTensorProgramToExecutableBundle(llvm::StringRef tensorProgramDirectory,
                                        ExecutionConfig executionConfig,
                                        llvm::raw_ostream &diagnostics) {
   return detail::compileTensorProgramToExecutableBundleImpl(
-      tensorProgramDirectory, executionConfig, diagnostics, std::nullopt);
+      tensorProgramDirectory, executionConfig, diagnostics, std::nullopt,
+      getCurrentAllOnPolicy());
 }
 
 mlir::FailureOr<ExecutableBundle> compileProgram(
@@ -51,7 +61,8 @@ mlir::FailureOr<ExecutableBundle> compileProgram(
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics, std::nullopt, std::nullopt,
-          std::nullopt, &retainedExecutableBundle, nullptr)))
+          std::nullopt, &retainedExecutableBundle, nullptr,
+          getCurrentAllOnPolicy())))
     return mlir::failure();
   if (!retainedExecutableBundle) {
     detail::reject(
@@ -72,7 +83,7 @@ mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics, std::nullopt, std::nullopt,
           std::nullopt, &retainedExecutableBundle,
-          &retainedTargetLLVMModuleBundle)))
+          &retainedTargetLLVMModuleBundle, getCurrentAllOnPolicy())))
     return mlir::failure();
   if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle) {
     detail::reject(diagnostics,
@@ -98,7 +109,7 @@ mlir::LogicalResult testing::compileProgramWithRankFailure(
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics, failAfterLogicalRank, std::nullopt,
-      std::nullopt, nullptr, nullptr);
+      std::nullopt, nullptr, nullptr, getCurrentAllOnPolicy());
 }
 
 mlir::LogicalResult testing::compileProgramWithTargetRankFailure(
@@ -115,7 +126,7 @@ mlir::LogicalResult testing::compileProgramWithTargetRankFailure(
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics, std::nullopt, failAfterLogicalRank,
-      std::nullopt, nullptr, nullptr);
+      std::nullopt, nullptr, nullptr, getCurrentAllOnPolicy());
 }
 
 mlir::LogicalResult testing::compileProgramWithPackageRankFailure(
@@ -132,7 +143,7 @@ mlir::LogicalResult testing::compileProgramWithPackageRankFailure(
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics, std::nullopt, std::nullopt,
-      failAfterLogicalRank, nullptr, nullptr);
+      failAfterLogicalRank, nullptr, nullptr, getCurrentAllOnPolicy());
 }
 
 } // namespace wafer::compiler

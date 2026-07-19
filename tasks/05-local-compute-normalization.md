@@ -1,13 +1,15 @@
 # Wafer Local Structured Tensor Normalization 与 Optimization 设计
 
-状态：2026-07-18按Q33 required tensor normalization、adoption与qualification终态同步。本文拥有post-SPMD StableHLO local compute与logical collective到
+状态：2026-07-19按Q33 required tensor normalization、adoption与qualification实现同步。本文拥有post-SPMD StableHLO local compute与logical collective到
 optimizer-ready structured tensor IR的normalization、required normal form和target-independent固定优化合同；不拥有SPMD、
 task/dataflow candidate、target-aware choice、memory、target或runtime。实现状态看
 `tasks/progress.md`。
 
-本文定义收敛后的稳定边界。当前production仍只有collective/residual normalization、official legalization和best-effort
-canonicalization；explicit required normal form、Equivalent-IR Stability与qualified fixed optimization由Q33实施，不能把下述
-目标pipeline误写成live code事实。
+本文定义收敛后的稳定边界。当前production在collective/residual normalization与official legalization之间保留两个按cut point
+登记的required canonicalization，再运行explicit required normal form；探索性机制已关闭为空proposal，不额外启用optional generic
+cleanup。Equivalent-IR构造与typed
+qualification/archive基础设施已实现，完整隔离runner、active-ref production消费和mandatory vertical仍由Q33收口，不能把下述
+completion gate误写成已完成事实。
 
 ## 1. Pipeline Contract
 
@@ -23,7 +25,7 @@ Pipeline position:
   可验证的rewrite建立required structured normal form，并运行已资格化且对所有输入固定启用的target-independent优化。
 - Output artifact / IR:
   optimizer-ready target-independent structured tensor program，包含local compute、ConstantLike values和logical collective；
-  不残留raw StableHLO或SDY语义，也不要求下游依赖某个偶然producer形状或generic canonicalizer收敛结果。
+  不残留raw StableHLO或SDY语义，也不要求下游依赖某个偶然producer形状或optional generic cleanup的worklist收敛结果。
 - Downstream consumer:
   physical-dataflow synthesis从该artifact建立rank-local semantic descriptor、candidate与whole-variant commit；当前Q29 scheduler
   是迁移baseline，不是长期consumer合同。
@@ -127,6 +129,11 @@ cleanup只在DenseElementsAttr、static type/offset/shape和op semantics能完�
 StableHLO lowering，也不能扩成运行时shape evaluator或按rank名字matcher。最终raw StableHLO residual仍存在时
 pipeline fail closed。
 
+其中post-legalization与structured-tensor两个位置的canonicalization是required form的一部分，分别以
+`PostLegalizationCanonicalization`和`StructuredTensorCanonicalization`进入invocation inventory。它们保持既有顺序，负责把
+静态rank/mask helper化成下游可验证的常量offset；任一位置关闭都会改变scheduler legality，因此不属于可资格化的optional
+cleanup。proposal中的`StablehloCleanup`/`StructuredTensorCleanup`只表示required form之后的额外尝试，当前空proposal不会启用。
+
 具体实现中，post-legalization cleanup从标量`tensor.extract`反向证明常量来源：只跟踪
 `arith.constant` DenseElementsAttr、offset/stride为字面量或可由常量整数SSA链精确证明的
 `tensor.extract_slice`，以及静态元素数保持的
@@ -140,10 +147,10 @@ SDY op/type/attr不属于post-SPMD local program。Q15在normalization前已有�
 
 ## 6. Structured Optimization 与 Upstream Adoption
 
-本stage把“优化”分为三个边界，避免把固定hygiene、搜索choice和target lowering混成任意pass串：
+本stage把“优化”分为三个边界，避免把固定optimization、搜索choice和target lowering混成任意pass串：
 
 1. **required normalization**：为下游接口建立确定语义形态的显式rewrite/verifier，例如DPS init、view/reshape relation和
-   reduction source的稳定恢复。它是correctness合同，不能委托给generic canonicalizer的greedy收敛。
+   reduction source的稳定恢复。它是correctness合同，不能委托给optional generic cleanup的greedy收敛。
 2. **fixed target-independent optimization**：对所有输入采用同一已资格化policy，只允许保持source numeric/effect/alias语义的
    upstream pass或pattern。只消除scalar/shape/identity scaffolding且不改变tensor sharing/lifetime的窄CSE subset可以评估为
    fixed；whole-tensor CSE不能默认进入本层。无实际改写或无consumer收益的pass不因“常用”而加入production。
@@ -158,7 +165,8 @@ verifier是两个独立入口：normalizer只做建立合同所必需的确定�
 结果，不以“再跑一次canonicalizer”修复输入。transaction root固定为拥有rank entry及其private callee的rank-local
 `builtin.module`：先clone整module，在clone上运行normalizer，通过纯读verifier后才以整module原子替换；任何non-success均使
 原module byte-identical，不能只clone entry func而修改共享callee。normalizer必须幂等并按canonical region/block/op order消费versioned work policy。normal form不写
-marker attr、side table、descriptor或producer名字；打开或关闭generic canonicalizer不得改变同一IR的支持性。
+marker attr、side table、descriptor或producer名字；打开或关闭optional generic cleanup不得改变同一IR的支持性。两个位置固定的
+required canonicalization另按各自cut point和顺序接受完整主线验证，不能与optional cleanup混为同一开关。
 
 入口返回typed outcome，不将unsupported、非法IR与resource exhaustion折叠成一个`failure()`：
 
@@ -260,11 +268,11 @@ normal-form合同。
 ProviderOrigin = Internal | Upstream | Vendored | Toolchain
 Availability = Absent | PresentUnresolved | Resolved
 ExposureSet ⊆ {DebugRegistered, LibraryCallable, BackendExecutable}
-AdoptionMode = None | RequiredNormalization | FixedHygiene | BestEffortCleanup |
+AdoptionMode = None | RequiredNormalization | FixedOptimization | BestEffortCleanup |
                CandidateLocal | TargetSpecific | TargetBackend
 EvidenceKindV1 = Rewrite | BackendAction | InvocationOnly
 QualificationStatus = Unassessed | NoOpObserved | DownstreamBlocked | Qualified | Rejected
-HygieneBatchStatusV1 = Qualified | Rejected
+OptimizationBatchStatusV1 = Qualified | Rejected
 ```
 
 上述closed enum以及本节后续在同一代码块中以`A | B | ...`声明的closed enum，wire ordinal均按从左到右从0开始冻结；
@@ -380,12 +388,12 @@ QualificationObservation {
   ordered_abba_wall_rss_samples
   qualification_status
   closed_reason
-  hygiene_proposal_digest
+  optimization_proposal_digest
   qualification_run_digest
-  hygiene_publication_attempt_digest
+  optimization_publication_attempt_digest
 }
 
-HygieneBatchObservationV1 {
+OptimizationBatchObservationV1 {
   schema_version
   proposal_digest
   qualification_identity
@@ -397,7 +405,7 @@ HygieneBatchObservationV1 {
   batch_status
   closed_reason
   qualification_run_digest
-  hygiene_publication_attempt_digest
+  optimization_publication_attempt_digest
 }
 ```
 
@@ -436,11 +444,11 @@ HygieneBatchObservationV1 {
 | 11 `ordered_abba_wall_rss_samples` | `Sequence<ABBASampleV1>` |
 | 12 `qualification_status` | `ClosedEnum` |
 | 13 `closed_reason` | `Optional<Record(ClosedReasonV1)>` |
-| 14 `hygiene_proposal_digest` | `Optional<Digest32>` |
+| 14 `optimization_proposal_digest` | `Optional<Digest32>` |
 | 15 `qualification_run_digest` | `Digest32` |
-| 16 `hygiene_publication_attempt_digest` | `Optional<Digest32>` |
+| 16 `optimization_publication_attempt_digest` | `Optional<Digest32>` |
 
-`HygieneBatchObservationV1`使用同一TLV/type-tag规则，field number按上面声明顺序1..12；字段类型依次为`U16、Digest32、
+`OptimizationBatchObservationV1`使用同一TLV/type-tag规则，field number按上面声明顺序1..12；字段类型依次为`U16、Digest32、
 Record(QualificationIdentityV1)、Record(QualificationPolicyRefV1)、Sequence<StaticComparisonEvidenceV1>、
 Sequence<ABBASampleV1>、Record(GateEvidenceBundleV1)、Record(GateEvidenceBundleV1)、ClosedEnum、
 Optional<Record(ClosedReasonV1)>、Digest32、Digest32`，unknown/missing/extra同样拒绝。
@@ -450,7 +458,7 @@ absent：
 
 ```text
 EquivalentInputVariantV1 = Original | Metamorphic
-HygieneComparisonKindV1 = GlobalAllOffVsAllOn | FixedDisableOneVsAllOn |
+OptimizationComparisonKindV1 = GlobalAllOffVsAllOn | FixedDisableOneVsAllOn |
                            CleanupDisableOneVsAllOn
 StaticComparisonResultV1 = BStrictlyBetter | BEqual | BRegressed | IncomparableUnknown
 GateStatusV1 = Passed | Failed | Skipped | Unsupported | Timeout | Cancelled
@@ -459,7 +467,7 @@ ProcessStatusV1 = Success
 BackendActionStatusV1 = Success | Failed | Timeout | Cancelled
 MechanismInvocationOutcomeV1 = Applied | NoChange | NotApplicable | Unsupported |
                                ResourceExhausted | Invalid | Cancelled
-HygieneGroupControlV1 = AllOn | AllOff | DisableOne
+OptimizationGroupSelectionV1 = AllOn | AllOff | DisableOne
 
 ProviderIdentityV1 { provider_id: TypedId, revision: Bytes, content_digest: Optional<Digest32> }
 ContractRefV1 { contract_kind: ClosedEnum, contract_id: U32, contract_schema: U16,
@@ -482,12 +490,12 @@ InvocationEvidenceV1 { invocation_site: RegistryRefV1, cut_point: ClosedEnum(Opt
                        backend_actions: Sequence<BackendActionEvidenceV1> }
 QualificationCaseKeyV1 { corpus: RegistryRefV1, rank_count: U32,
                          input_variant: EquivalentInputVariantV1 }
-HygieneComparisonKeyV1 { case_key: QualificationCaseKeyV1,
-                         comparison_kind: HygieneComparisonKindV1,
-                         subject_key: Optional<Record(MechanismKeyV1)>,
-                         arm_a: HygieneControlArmV1, arm_b: HygieneControlArmV1 }
+OptimizationComparisonKeyV1 { case_key: QualificationCaseKeyV1,
+                         comparison_kind: OptimizationComparisonKindV1,
+                         disabled_mechanism_key: Optional<Record(MechanismKeyV1)>,
+                         configuration_a: OptimizationConfigurationV1, configuration_b: OptimizationConfigurationV1 }
 GateEvidenceV1 { gate: RegistryRefV1, case_key: QualificationCaseKeyV1,
-                 control_arm: HygieneControlArmV1, status: GateStatusV1,
+                 configuration: OptimizationConfigurationV1, status: GateStatusV1,
                  evidence_digest: Digest32,
                  terminal_reason: Optional<Record(ClosedReasonV1)> }
 GateEvidenceBundleV1 { ordered_gate_results: Sequence<GateEvidenceV1> }
@@ -496,15 +504,15 @@ WorkSummaryV1 { work_policy_digest: Digest32, ordered_counters: Sequence<WorkCou
 MetricEvidenceV1 { metric_id: U32, value: Optional<U64> }
 ExactStaticVectorEvidenceV1 { registry_schema: U16, registry_digest: Digest32,
                               ordered_metrics: Sequence<MetricEvidenceV1> }
-HygieneControlArmV1 { fixed_control: HygieneGroupControlV1,
+OptimizationConfigurationV1 { fixed_selection: OptimizationGroupSelectionV1,
                       fixed_disabled_key: Optional<Record(MechanismKeyV1)>,
-                      cleanup_control: HygieneGroupControlV1,
+                      cleanup_selection: OptimizationGroupSelectionV1,
                       cleanup_disabled_key: Optional<Record(MechanismKeyV1)> }
-StaticComparisonEvidenceV1 { proposal_digest: Digest32, comparison_key: HygieneComparisonKeyV1,
+StaticComparisonEvidenceV1 { proposal_digest: Digest32, comparison_key: OptimizationComparisonKeyV1,
                              vector_a: ExactStaticVectorEvidenceV1,
                              vector_b: ExactStaticVectorEvidenceV1,
                              comparison_result: StaticComparisonResultV1 }
-ABBASampleV1 { proposal_digest: Digest32, comparison_key: HygieneComparisonKeyV1,
+ABBASampleV1 { proposal_digest: Digest32, comparison_key: OptimizationComparisonKeyV1,
                block_index: U32, sequence_position: ABBASamplePositionV1,
                wall_ns: U64, peak_rss_bytes: U64,
                process_status: ProcessStatusV1 }
@@ -525,8 +533,8 @@ u32be(inner-size) || inner-payload`，禁止其它presence值、nested optional�
 不能同时携带value或用0冒充known zero。record字段仍使用下述TLV；nested field unknown/missing/type mismatch同样拒绝。
 
 `work_policy_id`绑定normalizer/fixed mechanism实际使用的versioned fuel；改变系数而不改变policy id是schema violation。
-`AdoptionMode=FixedHygiene|BestEffortCleanup`的observation要求field 14、16均present，分别等于本批
-`FixedHygieneProposalV1`和下述`HygienePublicationAttemptV1` digest；其它mode两字段必须absent。field 15对所有mode都required，
+`AdoptionMode=FixedOptimization|BestEffortCleanup`的observation要求field 14、16均present，分别等于本批
+`OptimizationQualificationProposalV1`和下述`OptimizationSetPublicationAttemptV1` digest；其它mode两字段必须absent。field 15对所有mode都required，
 引用独立的`AdoptionQualificationRunV1`。static comparison和ABBA每条内嵌digest必须与field 14相同。
 `OutcomeCountV1`的`Applied/NoChange/NotApplicable`要求reason absent；`Unsupported/ResourceExhausted/Invalid/Cancelled`
 要求reason恰好present，同一outcome+reason只能一行。gate的evidence digest始终required并绑定完整terminal gate record：
@@ -539,32 +547,32 @@ Passed。`BackendActionEvidenceV1`按`(invocation_id, action_ordinal)`排序；i
 可以没有Qualified所需的nonzero/success证据，但不能违反kind结构或混入另一kind evidence。ExposureSet只表示可调用性，不参与
 选择这三种evidence invariant。
 
-`HygieneControlArmV1`中AllOn/AllOff要求所属disabled key absent，DisableOne要求key present且属于proposal对应group；wrong-group、
+`OptimizationConfigurationV1`中AllOn/AllOff要求所属disabled key absent，DisableOne要求key present且属于proposal对应group；wrong-group、
 nonmember、同key双disable或其它presence组合拒绝。qualification evidence只接受本文定义的global
 `B=(AllOn,AllOn)`/`A=(AllOff,AllOff)`，或恰一所属组DisableOne且另一组AllOn的单key边际pair；global pair只允许出现在
-`HygieneBatchObservationV1`，fixed/cleanup per-key observation只允许其自身key的marginal pair。2×2与production-AllOn gate也只
-属于batch；RequiredNormalization/其它mode则按其spec声明的key-local gate解释field 8。任意其它arm pair只能作为debug sample，
+`OptimizationBatchObservationV1`，fixed/cleanup per-key observation只允许其自身key的marginal pair。2×2与production-AllOn gate也只
+属于batch；RequiredNormalization/其它mode则按其spec声明的key-local gate解释field 8。任意其它configuration pair只能作为debug sample，
 不能进入`Qualified` evidence。
 
 `QualificationCaseKeyV1.rank_count`只接受qualification policy声明的closed rank domain且非零。global comparison固定
-`comparison_kind=GlobalAllOffVsAllOn`、subject absent、A=两组AllOff、B=两组AllOn；fixed marginal固定
-`FixedDisableOneVsAllOn`、subject为fixed member、A仅fixed DisableOne(subject)且cleanup AllOn、B两组AllOn；cleanup marginal对称。
-其它kind/subject/arm presence拒绝。`StaticComparisonResultV1`精确表示逐component比较B相对A：全部known且至少一项更小为
+`comparison_kind=GlobalAllOffVsAllOn`、disabled mechanism absent、A=两组AllOff、B=两组AllOn；fixed marginal固定
+`FixedDisableOneVsAllOn`、disabled mechanism为fixed member、A仅fixed DisableOne(key)且cleanup AllOn、B两组AllOn；cleanup marginal对称。
+其它kind/disabled-mechanism/configuration presence拒绝。`StaticComparisonResultV1`精确表示逐component比较B相对A：全部known且至少一项更小为
 `BStrictlyBetter`，全部known且全等为`BEqual`，任一known component更大为`BRegressed`，无回退但存在unknown为
 `IncomparableUnknown`；validator必须从同registry的vector fresh重算，Qualified只接受前两者。
 
 map-like sequence的canonical key固定为：outcome count按`(outcome, reason optional bytes)`，invocation evidence按
 `(invocation-site RegistryRef bytes, cut-point bytes, QualificationCaseKeyV1 bytes)`，work counter按counter registry ordinal，static
-comparison按`(proposal digest, HygieneComparisonKeyV1 bytes)`，gate按`(gate RegistryRef bytes, case key bytes, control arm bytes)`；
+comparison按`(proposal digest, OptimizationComparisonKeyV1 bytes)`，gate按`(gate RegistryRef bytes, case key bytes, configuration bytes)`；
 这些sequence按key排序且重复key拒绝。backend action与ABBA sample是真sequence，分别保留canonical invocation/action和执行顺序。
-validator从`QualificationPolicyRefV1`绑定的mandatory corpus×rank domain fresh生成expected rows：batch对每个
-`(corpus, rank, Original)`恰一global static/ABBA pair；每个proposal key的observation对每个相同case恰一自身marginal pair，
-all-and-only无缺失/多余。Equivalent-IR gate另对`Original/Metamorphic × cleanup AllOff/AllOn`四个case/arm生成expected gate key，
+validator从`QualificationPolicyRefV1`绑定的mandatory corpus×rank domain fresh生成expected rows：proposal union非空时，batch对每个
+`(corpus, rank, Original)`恰一global static/ABBA pair；union为空时该domain为空。每个proposal key的observation对每个相同case恰一自身marginal pair，
+all-and-only无缺失/多余。Equivalent-IR gate另对`Original/Metamorphic × cleanup AllOff/AllOn`四个case/configuration生成expected gate key，
 fixed恒AllOff；production gate对mandatory original case生成两组AllOn key。gate registry/policy还可声明required-normalizer的
 key-local expected rows，但不能用自由附加row补缺。
 
 每个proposal/corpus/rank/comparison的ABBA evidence恰含block index 0..4；每block严格按sequence
-`ALeft, BLeft, BRight, ARight`四条，同一`HygieneComparisonKeyV1`决定A/B arm，sample不得再复制arm；
+`ALeft, BLeft, BRight, ARight`四条，同一`OptimizationComparisonKeyV1`决定A/B configuration，sample不得再复制configuration；
 `process_status=Success`。A/B warmup另存runner附件但不进入sample sequence；missing/duplicate/wrong position或多余sample使
 evidence invalid；子进程失败/timeout/cancel不进入`ABBASampleV1`，而是直接形成带reason的generic run
 `Invalid`/`ResourceExhausted`/`Cancelled` terminal并禁止发布observation。batch proposal/identity/policy必须与全部per-key
@@ -574,10 +582,10 @@ terminal status invariant固定为：`Qualified`要求`closed_reason` optional a
 complete passing evidence但既无strict downstream benefit也无显著host benefit；`DownstreamBlocked`要求明确非本mechanism语义失败的
 downstream gate及evidence digest；`Rejected`要求terminal semantic/resource/host/contract failure；`Unassessed`只允许尚未形成
 terminal evidence且会阻塞Q33 closure。status/reason不匹配、Qualified带reason或非Qualified缺typed reason均拒绝。
-`HygieneBatchStatusV1=Qualified`要求`closed_reason` optional absent，且global static/ABBA、Equivalent-IR 2×2与
+`OptimizationBatchStatusV1=Qualified`要求`closed_reason` optional absent，且global static/ABBA、Equivalent-IR 2×2与
 production-AllOn证据按qualification policy的mandatory corpus/rank domain all-and-only完整、全部通过；
 `Rejected`要求optional present且含一个typed terminal reason与对应evidence digest，不得被
-`QualifiedFixedHygieneSetV1`引用。
+`QualifiedOptimizationSetV1`引用。
 batch status/reason的其它组合、或把per-key marginal evidence写入batch，均是schema validation failure。
 `qualification_status`只存在于observation，spec不能预填decision。observation按`MechanismKey` canonical排序且保存实际backend
 argv/tool identity。canonical encoding固定为`u16be(field-number) + u8(type-tag) + u32be(payload-size) + payload`，field按number
@@ -596,8 +604,8 @@ observation_digest = SHA-256(
   "wafer.optimization-qualification-observation\0" || u16be(schema_version) ||
   u32be(observation_bytes.size) || observation_bytes)
 
-hygiene_batch_digest = SHA-256(
-  "wafer.hygiene-batch-observation\0" || u16be(schema_version) ||
+optimization_batch_digest = SHA-256(
+  "wafer.optimization-batch-observation\0" || u16be(schema_version) ||
   u32be(batch_bytes.size) || batch_bytes)
 ```
 
@@ -714,13 +722,13 @@ MechanismObservationBindingV1 {
   observation_digest: Digest32
 }
 
-FixedHygieneProposalV1 {
+OptimizationQualificationProposalV1 {
   schema_version: U16 = 1
   fixed_bindings: SortedSet<Record(MechanismSpecBindingV1)>
   cleanup_bindings: SortedSet<Record(MechanismSpecBindingV1)>
 }
 
-QualifiedFixedHygieneSetV1 {
+QualifiedOptimizationSetV1 {
   schema_version: U16 = 1
   proposal_digest: Digest32
   batch_observation_digest: Digest32
@@ -729,33 +737,34 @@ QualifiedFixedHygieneSetV1 {
 ```
 
 四个record的field number均按声明顺序从1连续编号，并使用本节同一TLV/type-tag/Optional/SortedSet规则；binding record所有字段
-required，binding set按完整`MechanismKeyV1` owner bytes排序且重复key拒绝。proposal两组各自可空但union必须非空、两组key互斥；
-前者每row的spec必须`AdoptionMode=FixedHygiene`，后者必须`AdoptionMode=BestEffortCleanup`。每个spec digest必须从同一archive
+required，binding set按完整`MechanismKeyV1` owner bytes排序且重复key拒绝。proposal两组各自可空，union也可空，且两组key互斥；
+空union表示探索性证据已在发布前关闭全部可选机制，是合法且唯一的空proposal编码。
+前者每row的spec必须`AdoptionMode=FixedOptimization`，后者必须`AdoptionMode=BestEffortCleanup`。每个spec digest必须从同一archive
 canonical spec bytes fresh重算，不能只信binding。
 
 proposal canonical body是三个field的TLV bytes，standalone bytes固定为
-`"wafer.fixed-hygiene-proposal\0" || u16be(1) || u32be(body-size) || body`；proposal digest是该standalone bytes的SHA-256。
+`"wafer.optimization-qualification-proposal\0" || u16be(1) || u32be(body-size) || body`；proposal digest是该standalone bytes的SHA-256。
 qualified set body同理，standalone bytes固定为
-`"wafer.qualified-fixed-hygiene-set\0" || u16be(1) || u32be(body-size) || body`并取SHA-256。SortedSet payload统一为
+`"wafer.qualified-optimization-set\0" || u16be(1) || u32be(body-size) || body`并取SHA-256。SortedSet payload统一为
 `u32be(count)`后逐项连接`u32be(record-size) || record-canonical-bytes`，不使用host tuple layout；empty set只能编码count=0。
 
 qualified set的observation bindings必须all-and-only覆盖proposal两个group的canonical union，每个observation都绑定同一proposal
 digest、qualification run和publication attempt并通过完整`Qualified` invariant；batch observation唯一且也绑定同一
 proposal/run/attempt。production policy、
-telemetry和qualification control均携带相应digest，production只能消费已由下述active reference原子选择的qualified set。
-当前inventory发现的production canonicalizer callsite属于cleanup组（当前数量只写入
-observation，不是schema常量），每个cut point使用独立key/spec；它们不与
-fixed组或required normalizer重复计数。
+telemetry和qualification configuration均携带相应digest，production只能消费已由下述active reference原子选择的qualified set。
+当前inventory中的canonicalizer callsite按真实责任分组：为静态offset legality建立required form的两个固定cut属于
+`RequiredNormalization=AlwaysOn`，required form之后的额外尝试才属于cleanup组（当前数量只写入observation，不是schema常量）。
+每个cut point使用独立key/spec，不与fixed组或其它required normalizer重复计数。
 
-qualification只允许内部构建器使用下面的正交控制，不形成CLI、公开pass option或第二条production pipeline：
+qualification只允许内部构建器使用下面的正交配置，不形成CLI、公开pass option或第二条production pipeline：
 
 ```text
 RequiredNormalization = AlwaysOn
-FixedHygiene = AllOn | AllOff | DisableOne(FixedMechanismKey)
+FixedOptimization = AllOn | AllOff | DisableOne(FixedMechanismKey)
 BestEffortCleanup = AllOn | AllOff | DisableOne(CleanupMechanismKey)
 ```
 
-通用qualification run、只属于fixed/cleanup hygiene的publication attempt，以及production active ref分别由以下typed records
+通用qualification run、只属于fixed/cleanup optimization的publication attempt，以及production active ref分别由以下typed records
 唯一表达。通用run不携带proposal或active-set CAS事实，因此RequiredNormalization、CandidateLocal、TargetBackend和inventory
 observation可以独立重放；只有fixed/cleanup batch才建立publication attempt：
 
@@ -774,7 +783,7 @@ AdoptionQualificationInputV1 {
   schema_version: U16 = 1
   spec_bindings: SortedSet<Record(MechanismSpecBindingV1)>
   qualification_cases: SortedSet<Record(QualificationInputCaseV1)>
-  hygiene_proposal_digest: Optional<Digest32>
+  optimization_proposal_digest: Optional<Digest32>
 }
 
 AdoptionQualificationRunV1 {
@@ -787,7 +796,7 @@ AdoptionQualificationRunV1 {
 }
 
 AdoptionQualificationRunOutcomeV1 = CompletedEvidence | Cancelled |
-                                    ContaminatedEnvironment | ResourceExhausted | Invalid
+                                    HostEnvironmentInvalidated | ResourceExhausted | Invalid
 
 AdoptionQualificationRunTerminalV1 {
   schema_version: U16 = 1
@@ -802,50 +811,50 @@ AdoptionQualificationResultManifestV1 {
   qualification_run_digest: Digest32
   invocation_terminals: SortedSet<Record(InvocationTerminalBindingV1)>
   observation_bindings: SortedSet<Record(MechanismObservationBindingV1)>
-  hygiene_batch_observation_digest: Optional<Digest32>
+  optimization_batch_observation_digest: Optional<Digest32>
 }
 
-HygienePublicationAttemptV1 {
+OptimizationSetPublicationAttemptV1 {
   schema_version: U16 = 1
   qualification_run_digest: Digest32
   proposal_digest: Digest32
   expected_active_ref_digest: Optional<Digest32>
 }
 
-HygienePublicationOutcomeV1 = QualifiedPublished | RejectedEvidence | PublicationConflict |
+OptimizationSetPublicationOutcomeV1 = QualifiedPublished | RejectedEvidence | PublicationConflict |
                               PublicationFailed
 
-HygienePublicationTerminalV1 {
+OptimizationSetPublicationTerminalV1 {
   schema_version: U16 = 1
-  hygiene_publication_attempt_digest: Digest32
-  outcome: HygienePublicationOutcomeV1
+  optimization_publication_attempt_digest: Digest32
+  outcome: OptimizationSetPublicationOutcomeV1
   batch_observation_digest: Optional<Digest32>
   candidate_set_digest: Optional<Digest32>
   closed_reason: Optional<Record(ClosedReasonV1)>
 }
 
-ActiveQualifiedHygieneSetRefV1 {
+ActiveQualifiedOptimizationSetRefV1 {
   schema_version: U16 = 1
   generation: U64
   parent_set_digest: Optional<Digest32>
   set_digest: Digest32
   qualification_run_digest: Digest32
   adoption_qualification_run_terminal_digest: Digest32
-  hygiene_publication_attempt_digest: Digest32
-  hygiene_publication_terminal_digest: Digest32
+  optimization_publication_attempt_digest: Digest32
+  optimization_publication_terminal_digest: Digest32
 }
 ```
 
 record按声明顺序使用本节TLV规则。七类standalone domain分别为
 `wafer.adoption-qualification-input\0`、`wafer.adoption-qualification-run\0`、
 `wafer.adoption-qualification-run-terminal\0`、`wafer.adoption-qualification-result-manifest\0`、
-`wafer.hygiene-publication-attempt\0`、`wafer.hygiene-publication-terminal\0`和
-`wafer.active-qualified-hygiene-set-ref\0`；canonical bytes统一为
+`wafer.optimization-publication-attempt\0`、`wafer.optimization-publication-terminal\0`和
+`wafer.active-qualified-optimization-set-ref\0`；canonical bytes统一为
 `domain || u16be(1) || u32be(body-size) || body`，digest均为这些完整bytes的SHA-256。
 input的spec/case set均非空，分别按完整mechanism key与case key bytes排序且重复拒绝；每个case的`input_snapshot_digest`绑定
 该case all-and-only typed inputs/payload/config，不能用路径或case名恢复。spec bindings必须all-and-only覆盖该run按named
 qualification pipeline实际会调用的全部mechanism，包括always-on RequiredNormalization、下游gate/backend及受控fixed/cleanup。
-hygiene proposal absent表示通用独立run；present时proposal union必须恰等于input中`AdoptionMode=FixedHygiene |
+optimization proposal absent表示通用独立run；present时proposal union必须恰等于input中`AdoptionMode=FixedOptimization |
 BestEffortCleanup`的subset并逐spec digest相同，input中的required/其它mode bindings仍保留且不进入proposal/qualified set。
 qualification cases必须恰为policy mandatory corpus×rank×input-variant域。`qualification_input_digest`只等于这份完整input
 standalone bytes的SHA-256，不等于proposal digest。
@@ -853,29 +862,29 @@ standalone bytes的SHA-256，不等于proposal digest。
 每个`QualificationObservation.qualification_run_digest`和batch field 11必须引用对应run；observation field 4/5及batch field 3/4
 必须分别与run的qualification identity/policy逐字段相同，observation case/invocation/static/ABBA rows必须all-and-only来自input
 cases。fixed/cleanup observation的field 14必须等于input的present proposal digest，field 16及batch field 12还必须引用同一
-publication attempt；attempt的run/proposal也必须逐项相同。同一hygiene run中的其它adoption mode observation field 14/16必须
+publication attempt；attempt的run/proposal也必须逐项相同。同一optimization run中的其它adoption mode observation field 14/16必须
 absent，即使input自身含proposal；它们仍通过同一run/result manifest封存，不进入proposal或qualified set。只有input proposal
 absent的通用run才完全不创建publication attempt。
 
 journal对同一input/identity/policy以原子checked counter分配从0连续递增的`run_series_ordinal`；同一
-series内首次attempt为0，只有污染重试递增`attempt_ordinal`。因此显式重放得到新series，污染重试仍可被budget精确计数，二者不会
+series内首次attempt为0，只有host 环境失效重试递增`attempt_ordinal`。因此显式重放得到新series，host 环境失效重试仍可被budget精确计数，二者不会
 产生run ID碰撞；不得按wall clock、PID或随机nonce恢复身份。result manifest的invocation bindings按invocation ID排序唯一，
 terminal digest必须fresh匹配对应`InvocationTelemetryV1`；observation bindings按mechanism key排序唯一并all-and-only覆盖input
 spec bindings；每个terminal的qualification case必须命中input唯一case且`input_snapshot_digest`相同，observation digest必须fresh
-匹配同run/identity/policy。hygiene input要求batch digest present且匹配同run/attempt，
-非hygiene input要求absent。expected invocation identity由input/policy生成，manifest必须all-and-only覆盖，不能删掉失败terminal。
+匹配同run/identity/policy。optimization input要求batch digest present且匹配同run/attempt，
+非optimization input要求absent。expected invocation identity由input/policy生成，manifest必须all-and-only覆盖，不能删掉失败terminal。
 
 每个run恰有一个可达terminal：`CompletedEvidence`要求result manifest present、reason absent；
-`Cancelled/ContaminatedEnvironment/ResourceExhausted/Invalid`要求manifest absent、reason present且不得产生observation、batch、
+`Cancelled/HostEnvironmentInvalidated/ResourceExhausted/Invalid`要求manifest absent、reason present且不得产生observation、batch、
 candidate或publication terminal。run terminal与result manifest在同一archive transaction提交并永久seal该run scope；seal后任何
 invocation terminal、observation、batch或第二个run terminal append一律拒绝。只有`CompletedEvidence` run可以继续publication，
-并且hygiene input必须恰有一个同run/proposal的publication attempt。publication attempt bytes/digest可以在runner内预计算供
+并且optimization input必须恰有一个同run/proposal的publication attempt。publication attempt bytes/digest可以在runner内预计算供
 observation引用，但仅随CompletedEvidence archive transaction变为可达；失败run不会留下一个无terminal的可达publication attempt。
 
 active generation从1开始；generation=1要求parent absent，generation>1要求parent present且等于CAS前active ref中的set digest。
 初次publication attempt要求expected active ref absent；已有active时该field required并等于其完整ref standalone bytes digest。
 `QualifiedPublished`要求batch/candidate present、reason absent，batch status Qualified且candidate digest指向完整验证的
-`QualifiedFixedHygieneSetV1`；`RejectedEvidence`要求batch present、candidate absent、reason present且batch status Rejected；
+`QualifiedOptimizationSetV1`；`RejectedEvidence`要求batch present、candidate absent、reason present且batch status Rejected；
 `PublicationConflict`要求已完成的Qualified batch与candidate digest均present且reason present；`PublicationFailed`要求batch
 present、reason present，且candidate仅在batch Qualified时present。每个可达publication attempt恰有一个可达terminal，同attempt
 第二个terminal或terminal缺失均使archive无效。其它presence组合拒绝。active ref的
@@ -884,18 +893,20 @@ present、reason present，且candidate仅在batch Qualified时present。每个�
 production固定`RequiredNormalization=AlwaysOn`、两组`AllOn`；cleanup只能改变非必要清理结果。
 Equivalent-IR 2×2的两轴固定为`EquivalentInput={Original, Metamorphic}` ×
 `BestEffortCleanup={AllOff, AllOn}`，
-四条路径固定`FixedHygiene=AllOff`，都先运行required normalizer及其postcondition verifier，cleanup只能在该verifier通过后运行，
+四条路径固定`FixedOptimization=AllOff`，都先运行required normalizer及其postcondition verifier，cleanup只能在该verifier通过后运行，
 不得修复或掩盖required-form缺口；另比较normalizer运行一次与两次后的canonical bytes、outcome和work
 summary：两次后canonical bytes必须相同，第二次必须是`Success(changed=false)`，两次各自的work
-summary在重放时确定，但不要求第一/二次计数相等。rank-count=1/16和冻结7B corpus单独比较两组同时AllOn与同时AllOff；
-逐mechanism边际对照只在其所属组使用`DisableOne(k)`，另一组保持AllOn；最终production set还需以两组AllOn重放完整downstream
+summary在重放时确定，但不要求第一/二次计数相等。proposal union非空时，rank-count=1/16和冻结7B corpus
+单独比较两组同时AllOn与同时AllOff；union为空时两种configuration语义相同，global static/ABBA comparison
+domain固定为空，禁止为identity comparison制造样本；Equivalent-IR 2×2、normalizer once/twice和最终production gate仍完整执行。
+逐mechanism marginal comparison只在其所属组使用`DisableOne(k)`，另一组保持AllOn；最终production set还需以两组AllOn重放完整downstream
 gates，不能用2×2替代production组合验证。
 
 `QualificationPolicyRefV1`所绑定的首个fixed/cleanup policy definition至少冻结下列字段；数值cap属于canonical policy bytes，
 不由runner补default，当前implementation row在注册时选择宽松但有限的checked值：
 
 ```text
-FixedHygieneQualificationPolicyV1 {
+OptimizationSetQualificationPolicyV1 {
   schema_version: U16 = 1
   mandatory_corpus_registry: Record(RegistryRefV1)
   mandatory_rank_counts: SortedSet<U32>
@@ -904,27 +915,28 @@ FixedHygieneQualificationPolicyV1 {
   wall_guard_fraction_numerator: U32 = 1
   wall_guard_fraction_denominator: U32 = 20
   mad_multiplier: U32 = 3
-  contamination_retry_cap: U32
+  host_environment_retry_cap: U32
   total_process_launch_cap: U64
   total_gateway_invocation_cap: U64
 }
 ```
 
-rank set非空且值非零，fraction denominator非零，两个total cap必须足以覆盖无污染mandatory run并使用checked算术验证；否则
-policy registry拒绝。contamination retry cap计**首次attempt之后**允许的新attempt数，所有attempt的process launch/gateway
+rank set非空且值非零，fraction denominator非零，两个total cap必须足以覆盖host 环境稳定时的 mandatory run并使用checked算术验证；否则
+policy registry拒绝。host environment retry cap计**首次attempt之后**允许的新attempt数，所有attempt的process launch/gateway
 invocation共同消费两个total cap，不能每次污染后重置。改变corpus/rank/metric registry、sample数、阈值或任一cap都产生新policy
 digest。definition按声明顺序使用本节TLV规则，standalone bytes为
-`"wafer.fixed-hygiene-qualification-policy\0" || u16be(1) || u32be(body-size) || body`；
+`"wafer.optimization-set-qualification-policy\0" || u16be(1) || u32be(body-size) || body`；
 `QualificationPolicyRefV1.canonical_policy_digest`必须对这些bytes取SHA-256并readback一致。
 
-`FixedHygieneQualificationPolicyV1`以`B=(Fixed AllOn, Cleanup AllOn)`、全局对照
-`A=(Fixed AllOff, Cleanup AllOff)`，机制`k`的边际对照为只在所属组`DisableOne(k)`。Release样本要求同机、同compiler/toolchain identity、build/config/corpus和thread count；runner记录
+proposal union非空时，`OptimizationSetQualificationPolicyV1`以`B=(Fixed AllOn, Cleanup AllOn)`、全局比较
+`A=(Fixed AllOff, Cleanup AllOff)`；union为空时没有global comparison。机制`k`的marginal comparison只在所属组
+`DisableOne(k)`。Release样本要求同机、同compiler/toolchain identity、build/config/corpus和thread count；runner记录
 host/toolchain/kernel、实际CPU affinity、governor可观察状态及并发负载检测结果并纳入observation identity，但qualification
 不要求管理员权限去修改governor、取得独占机器或预先存在专用runner。A/B block期间任一identity事实改变、affinity漂移或检测到
 其它compiler/model竞争负载时，runner为当前run原子写入
-`AdoptionQualificationRunTerminalV1(ContaminatedEnvironment)`并整组重跑，
+`AdoptionQualificationRunTerminalV1(HostEnvironmentInvalidated)`并整组重跑，
 不形成result manifest/`QualificationObservation`/batch/candidate set，不能删除单点或扩大guard。每次重跑使用递增attempt ordinal并保持其它run
-字段不变，并fresh读取active ref形成新的publication attempt；超过contamination retry或任一total work cap时写入
+字段不变，并fresh读取active ref形成新的publication attempt；超过 host environment retry cap或任一total work cap时写入
 `AdoptionQualificationRunTerminalV1(ResourceExhausted)`并停止，active set保持byte-identical。
 driver cancellation写入Cancelled且不自动重试；同一稳定状态下的
 普通非特权runner即可形成有效内部证据。每个样本用新子进程执行；
@@ -949,20 +961,20 @@ production required及proposal内全部fixed/cleanup rows的mandatory纵向任�
 `DownstreamBlocked`的非production row可以保留closed reason并完成inventory，但不能宣称采用。没有确定性下游
 收益且没有上述显著host
 收益的机制固定记录为`QualificationStatus=NoOpObserved`；被评估spec仍保留原`AdoptionMode`和完整正交ExposureSet，不回写
-immutable spec digest。`DebugRegistered ∈ ExposureSet`且该spec/key不属于任何active `QualifiedFixedHygieneSetV1`共同形成
+immutable spec digest。`DebugRegistered ∈ ExposureSet`且该spec/key不属于任何active `QualifiedOptimizationSetV1`共同形成
 derived debug-only maturity；LibraryCallable/BackendExecutable等真实exposure不能为此删除。它不进入production set。
 
-资格发布是set级原子transaction：先冻结`FixedHygieneProposalV1`及全部spec digest，并读取当前
-`ActiveQualifiedHygieneSetRefV1`（首次为absent），构造含proposal、proposal fixed/cleanup subset、named qualification pipeline
+资格发布是set级原子transaction：先冻结`OptimizationQualificationProposalV1`及全部spec digest，并读取当前
+`ActiveQualifiedOptimizationSetRefV1`（首次为absent），构造含proposal、proposal fixed/cleanup subset、named qualification pipeline
 会调用的其它all-and-only spec bindings及mandatory case/input snapshots的`AdoptionQualificationInputV1`，再以其digest构造通用run及引用该run/proposal/expected-active基线的publication
 attempt。global AllOn/AllOff、Equivalent-IR 2×2和
-最终production-AllOn gates只写入唯一`HygieneBatchObservationV1`；每个key的`QualificationObservation`只保存该key invocation、
+最终production-AllOn gates只写入唯一`OptimizationBatchObservationV1`；每个key的`QualificationObservation`只保存该key invocation、
 DisableOne marginal static/ABBA和per-key gate，不能复制或任选一个key承载global证据。完成batch、逐key和mandatory vertical后，
 先原子发布all-and-only result manifest与`AdoptionQualificationRunTerminalV1(CompletedEvidence)`并seal run；batch Rejected时只发布
-`HygienePublicationTerminalV1(RejectedEvidence)`，不得构造candidate或执行CAS。batch Qualified时，在不可见staging中写入并
-重新parse/canonicalize全部spec、terminal invocation records、observations、batch及候选`QualifiedFixedHygieneSetV1`，逐digest/
+`OptimizationSetPublicationTerminalV1(RejectedEvidence)`，不得构造candidate或执行CAS。batch Qualified时，在不可见staging中写入并
+重新parse/canonicalize全部spec、terminal invocation records、observations、batch及候选`QualifiedOptimizationSetV1`，逐digest/
 all-and-only readback后发布immutable set directory；随后在同一no-replace/CAS transaction中准备
-`HygienePublicationTerminalV1(QualifiedPublished)`和同时引用run/run-terminal/attempt/set/publication-terminal digest的
+`OptimizationSetPublicationTerminalV1(QualifiedPublished)`和同时引用run/run-terminal/attempt/set/publication-terminal digest的
 generation+1 active ref，对attempt绑定的expected active-ref digest做单次CAS。该一次active-ref替换使set与QualifiedPublished
 terminal同时可达；CAS不匹配时隐藏terminal和prepared ref均不可达并被丢弃，只发布恰一个`PublicationConflict` terminal，保留
 当前active ref，不得覆盖另一并发run。batch完成后的验证/写入失败形成恰一个`PublicationFailed` terminal；run未形成完整batch前
@@ -1002,25 +1014,20 @@ production一次读取完整ref并打开其immutable digest路径；发现ref/se
 
 ```text
 buildStablehloToLinalgPipeline
-  = StableHLO collective normalization
-  + static residual cleanup
+  = StableHLO collective normalization [0]
   + official StableHLO legalize-to-Linalg
-  + best-effort cleanup/canonicalization
-  + final legality
-```
-
-Q33完成后的同一builder目标为：
-
-```text
-buildStablehloToLinalgPipeline
-  = StableHLO collective normalization
-  + static residual cleanup
-  + official StableHLO legalize-to-Linalg
+  + StableHLO collective normalization [1]
+  + required post-legalization canonicalization
+  + StableHLO collective normalization [2]
+  + required structured-tensor canonicalization
   + explicit required structured normalization
   + qualified fixed target-independent optimization
-  + best-effort cleanup/canonicalization
-  + final legality
 ```
+
+两个canonicalization分别绑定`PostLegalizationCanonicalization`和`StructuredTensorCanonicalization`，属于required invocation
+全集而不是best-effort cleanup。当前qualified optional proposal为空，因此builder不会追加`StablehloCleanup`或
+`StructuredTensorCleanup`；Q33剩余工作是隔离runner、active-ref消费和mandatory vertical等资格化闭环，不再以另一份目标
+pass序列替代当前pipeline合同。
 
 registered `wafer-lower-stablehlo-to-linalg`只为显式MLIR replay和unit tests提供相同body。helper与program
 directory orchestration由`wafer-compile`负责，用户不选择该stage或手工续接调度passes。
@@ -1047,7 +1054,7 @@ production pipeline。新增fixed pass前要先补全其producer/alias/effect等
 - metamorphic equivalent-IR corpus至少覆盖共享/非共享`tensor.empty`与fill、DPS init、named/generic structured op、
   collapse/expand/transpose/extract-slice view链及合法specialization；各形态进入下游后语义、alias/effect和完整输出一致；
 - 每对equivalent input都按`Original/Metamorphic × BestEffortCleanup AllOff/AllOn`四路重放，
-  `FixedHygiene=AllOff`且required normalizer始终开启；global、per-key与production-AllOn证据分别只进入
+  `FixedOptimization=AllOff`且required normalizer始终开启；global、per-key与production-AllOn证据分别只进入
   batch/per-key observation规定的owner；
   once/twice后canonical bytes相同，第二次`Success(changed=false)`，每次work summary重放稳定；
 - `UnsupportedSemantic`、`InvalidIR`、`ResourceExhausted`和`InternalInvariant`按canonical first diagnostic分类，
@@ -1055,7 +1062,7 @@ production pipeline。新增fixed pass前要先补全其producer/alias/effect等
 - 每个qualified upstream mechanism都必须证明pass实际执行且至少一个case发生预期改写；只注册、只统计op数量或只有
   isolated FileCheck不算production采用；
 - fixed pipeline改动必须重放rank-count=1/16通用source和7B source-to-package/SystemC/PyTorch gate，并报告编译资源/性能
-  按`FixedHygieneQualificationPolicyV1`非回退；production subset的mandatory case不允许
+  按`OptimizationSetQualificationPolicyV1`非回退；production subset的mandatory case不允许
   unsupported/skipped/timeout/缺样本。
   candidate-local机制的scale gate由06/16拥有。
 

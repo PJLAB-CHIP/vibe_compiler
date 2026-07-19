@@ -2,12 +2,52 @@
 //-----------------===//
 
 #include "Scheduling/ScheduleTensorProgramInternal.h"
+#include "Wafer/Support/CanonicalIRSnapshot.h"
+#include "Wafer/Support/OptimizationMechanism.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
+#include "mlir/IR/OperationSupport.h"
+
+#include <limits>
 
 namespace wafer::tensor_program_scheduling {
+
+static mlir::FailureOr<uint64_t>
+getCandidateInvocationOrdinalBase(const SelectionConfig &config) {
+  constexpr uint64_t rankCountLimit = 16;
+  constexpr uint64_t rankVariantCount = 6;
+  constexpr uint64_t scopeCountLimit = 4096;
+  constexpr uint64_t candidateCountLimit = 64;
+  // Each candidate owns four materialization subranges.  Three are currently
+  // assigned to screening, retained-artifact materialization and commit proof;
+  // the fourth remains reserved so adding a bounded typed attempt does not
+  // renumber later candidates.
+  constexpr uint64_t invocationRangeSize = uint64_t{1} << 14;
+  if (config.logicalRank < 0 ||
+      static_cast<uint64_t>(config.logicalRank) >= rankCountLimit ||
+      config.rankVariantOrdinal >= rankVariantCount ||
+      config.scopeOrdinal >= scopeCountLimit ||
+      config.candidateOrdinal >= candidateCountLimit)
+    return mlir::failure();
+  uint64_t range = static_cast<uint64_t>(config.logicalRank);
+  range = range * rankVariantCount + config.rankVariantOrdinal;
+  range = range * scopeCountLimit + config.scopeOrdinal;
+  range = range * candidateCountLimit + config.candidateOrdinal;
+  return range * invocationRangeSize;
+}
+
+static mlir::FailureOr<uint64_t> getCandidateAttemptInvocationOrdinalBase(
+    const SelectionConfig &config, CandidateEvaluationAttempt attempt) {
+  constexpr uint64_t attemptRangeSize = uint64_t{1} << 12;
+  mlir::FailureOr<uint64_t> candidateBase =
+      getCandidateInvocationOrdinalBase(config);
+  if (mlir::failed(candidateBase) ||
+      static_cast<uint64_t>(attempt) >= 4)
+    return mlir::failure();
+  return *candidateBase + static_cast<uint64_t>(attempt) * attemptRangeSize;
+}
 
 static std::string
 takeDiagnostics(mlir::MLIRContext *context,
@@ -52,10 +92,39 @@ static std::string joinInstructionFailure(llvm::StringRef gate,
 
 static CandidateEvaluation
 finishCandidateEvaluation(CandidateEvaluation evaluation,
-                          const SelectionConfig &config) {
+                          const SelectionConfig &config,
+                          CandidateEvaluationAttempt attempt) {
   mlir::MLIRContext *context = evaluation.module->getContext();
   std::string failureReason;
   mlir::LogicalResult result = mlir::success();
+  mlir::FailureOr<uint64_t> invocationOrdinal =
+      getCandidateAttemptInvocationOrdinalBase(config, attempt);
+  if (mlir::failed(invocationOrdinal)) {
+    evaluation.failureReason =
+        "instr-lowering: invocation identity is out of range";
+    return evaluation;
+  }
+  CanonicalIRSnapshotV1 inputSnapshot;
+  if (!createCanonicalIRSnapshotV1(
+          *evaluation.module, CanonicalIRSnapshotMode::SemanticStructure,
+          inputSnapshot, &failureReason)) {
+    evaluation.failureReason =
+        joinInstructionFailure("instr-lowering-snapshot", failureReason, "");
+    return evaluation;
+  }
+  OptimizationInvocationTokenV1 invocationToken;
+  if (!beginOptimizationInvocationV1(
+          mechanism::InstructionLowering,
+          OptimizationCutPoint::SelectedPhysicalPayloadModule,
+          *invocationOrdinal, inputSnapshot.sha256Digest, invocationToken,
+          &failureReason)) {
+    evaluation.failureReason =
+        joinInstructionFailure("instr-lowering-begin", failureReason, "");
+    return evaluation;
+  }
+  mlir::OperationFingerPrint before(*evaluation.module);
+  uint64_t beforeWork = 0;
+  evaluation.module->walk([&](mlir::Operation *) { ++beforeWork; });
   failureReason.clear();
   std::string diagnostics = takeDiagnostics(
       context,
@@ -64,6 +133,30 @@ finishCandidateEvaluation(CandidateEvaluation evaluation,
                                               &failureReason);
       },
       result);
+  mlir::OperationFingerPrint after(*evaluation.module);
+  uint64_t afterWork = 0;
+  evaluation.module->walk([&](mlir::Operation *) { ++afterWork; });
+  OptimizationInvocationTelemetry telemetry;
+  telemetry.key = mechanism::InstructionLowering;
+  telemetry.cutPoint = OptimizationCutPoint::SelectedPhysicalPayloadModule;
+  telemetry.invocationOrdinal = *invocationOrdinal;
+  telemetry.inputSnapshotDigest = inputSnapshot.sha256Digest;
+  telemetry.workUnits =
+      std::numeric_limits<uint64_t>::max() - beforeWork < afterWork
+          ? std::numeric_limits<uint64_t>::max()
+          : beforeWork + afterWork;
+  telemetry.outcome = mlir::failed(result)
+                          ? InvocationOutcome::Invalid
+                          : (before == after ? InvocationOutcome::NoChange
+                                             : InvocationOutcome::Applied);
+  telemetry.rewriteCount = telemetry.outcome == InvocationOutcome::Applied;
+  std::string telemetryDiagnostic;
+  if (!commitOptimizationInvocationV1(invocationToken, telemetry,
+                                      &telemetryDiagnostic)) {
+    evaluation.failureReason = joinInstructionFailure(
+        "instr-lowering-terminal", telemetryDiagnostic, "");
+    return evaluation;
+  }
   if (mlir::failed(result)) {
     evaluation.failureReason =
         joinInstructionFailure("instr-lowering", failureReason, diagnostics);
@@ -119,8 +212,16 @@ static bool canUseFullTraversalFallback(
 
 CandidateEvaluation evaluateCompleteCandidate(
     mlir::func::FuncOp task, llvm::ArrayRef<int64_t> traversalShape,
-    const CandidateSpec &candidate, const SelectionConfig &config) {
+    const CandidateSpec &candidate, const SelectionConfig &config,
+    CandidateEvaluationAttempt attempt) {
   CandidateEvaluation evaluation;
+  mlir::FailureOr<uint64_t> invocationOrdinalBase =
+      getCandidateAttemptInvocationOrdinalBase(config, attempt);
+  if (mlir::failed(invocationOrdinalBase)) {
+    evaluation.failureReason =
+        "invocation-identity: candidate ordinal reservation is out of range";
+    return evaluation;
+  }
   std::string failureReason;
   mlir::LogicalResult result = mlir::success();
   std::string diagnostics = takeDiagnostics(
@@ -128,7 +229,8 @@ CandidateEvaluation evaluateCompleteCandidate(
       [&]() {
         return lowerCompleteCandidateTensorProgramToTileRegionModule(
             task, candidate.tileSizes, candidate.reductionSplitSizes,
-            evaluation.module, &failureReason, config.logicalRank);
+            evaluation.module, &failureReason, config.logicalRank,
+            *invocationOrdinalBase);
       },
       result);
   evaluation.artifactSource = CandidateArtifactSource::CompleteTraversalAPI;
@@ -151,7 +253,7 @@ CandidateEvaluation evaluateCompleteCandidate(
         joinFailure("complete-tile-region", failureReason, diagnostics);
     return evaluation;
   }
-  return finishCandidateEvaluation(std::move(evaluation), config);
+  return finishCandidateEvaluation(std::move(evaluation), config, attempt);
 }
 
 static void
@@ -193,6 +295,7 @@ static CandidateCheckResult evaluateTaskCandidate(
     bool retainAcceptedModule) {
   CandidateCheckResult result;
   result.spec = candidate;
+  result.candidateOrdinal = config.candidateOrdinal;
   llvm::SmallVector<TileInstance, 8> reps =
       buildRepresentativeTiles(traversalShape, candidate.tileSizes);
   result.representativeCount = static_cast<int64_t>(reps.size());
@@ -207,7 +310,10 @@ static CandidateCheckResult evaluateTaskCandidate(
   // instruction, SPM, DDR and cost gates exactly once on the all-and-only
   // complete artifact.
   CandidateEvaluation acceptedEvaluation =
-      evaluateCompleteCandidate(task, traversalShape, candidate, config);
+      evaluateCompleteCandidate(
+          task, traversalShape, candidate, config,
+          retainAcceptedModule ? CandidateEvaluationAttempt::RetainedArtifact
+                               : CandidateEvaluationAttempt::Screening);
   if (!acceptedEvaluation.failureReason.empty()) {
     result.failureReason = acceptedEvaluation.failureReason;
     return result;
@@ -238,6 +344,7 @@ CandidateCheckResult evaluateCandidateOnStandaloneTaskText(
     const SelectionConfig &config) {
   CandidateCheckResult result;
   result.spec = candidate;
+  result.candidateOrdinal = config.candidateOrdinal;
   mlir::DialectRegistry registry;
   registerSelectionEvaluationDialects(registry);
   mlir::MLIRContext context(registry);

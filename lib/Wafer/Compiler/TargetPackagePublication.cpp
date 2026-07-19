@@ -22,11 +22,13 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<int64_t> failAfterTargetLogicalRank,
     std::optional<int64_t> failAfterPackageLogicalRank,
     std::optional<ExecutableBundle> &executableBundle,
-    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle) {
+    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle,
+    const CompilationOptimizationPolicyV1 &optimizationPolicy) {
   llvm::Expected<ExecutableBundle> compiledExecutableBundle =
       compileTensorProgramToExecutableBundleImpl(tensorProgramDirectory,
                                                  executionConfig, diagnostics,
-                                                 failAfterLogicalRank);
+                                                 failAfterLogicalRank,
+                                                 optimizationPolicy);
   if (!compiledExecutableBundle) {
     llvm::consumeError(compiledExecutableBundle.takeError());
     return mlir::failure();

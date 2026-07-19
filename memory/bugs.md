@@ -1,7 +1,7 @@
 ## 2026-07-18 qualification evidence与production publication必须分层
 
 - 现象：若一个qualification run同时携带通用observation、fixed/cleanup proposal、active-set CAS基线和publication outcome，
-  backend/candidate-local等通用机制会被hygiene发布协议绑死；Completed terminal若不封存结果集合，seal后仍可能追加terminal或
+  backend/candidate-local等通用机制会被optimization发布协议绑死；Completed terminal若不封存结果集合，seal后仍可能追加terminal或
   observation，archive无法唯一重放。
 - 根因：把“采集并封存证据”和“把一份qualified set切换成production active set”合并成同一状态机，也没有为run input/result
   建立all-and-only canonical manifest。
@@ -325,7 +325,7 @@
 - 根因：常量事实停留在`arith.constant -> tile.fill -> private alloc -> select`数据流中，普通conversion按root独立lower fill，
   在select被处理前丢失了可证明的整张量常量关系。
 - 修复模式：在full conversion前运行typed prepass；仅当private alloc恰有一个前置同block fill-dest use和当前select predicate
-  use、fill scalar直接来自i1 constant、chosen/result类型及map均为identity时，把select替换为所选arm的fresh copy并删除dead
+  use、fill scalar直接来自i1 constant、chosen/result类型及map均为identity时，把select替换为所选configuration的fresh copy并删除dead
   fill/alloc。shared/额外use或非identity map保持动态路径并按现有legality处理；不得用该source优化扩大engine format矩阵。
 
 ## 2026-07-14 APFloat/MPFR原始status不能替代profile的最终tininess语义
@@ -723,3 +723,14 @@
   clique-cover指数搜索。
 - 防复发：用clique零budget不可行证明、stable ordinal交错多component/nonzero-base reuse、任意小图独立
   穷举oracle和scale workload的search-node/fallback telemetry共同锁定；不用wall-clock timeout作为求解语义。
+
+## 2026-07-19 canonicalization的cut顺序属于required artifact合同
+
+- 现象：把两次历史canonicalizer统一挪到required tensor normalizer之后，并把optional cleanup全关后，HF静态rank/mask helper
+  残留为动态`tensor.extract_slice`与clamp链；scheduler随后在`to_memref`边界失败。单独补lifetime alias或提前bufferize会把问题
+  推迟成target无法表达的runtime scalar address，并未恢复原artifact。
+- 根因：canonicalization是否语义保持不等于它在pipeline中可任意换位。post-legalization常量折叠必须发生在后续required rewrite
+  改变helper形态之前；把required cut误记成optional cleanup会让AllOff配置改变legality。
+- 修复模式：用旧/新named pipeline对同一真实post-SPMD输入比较canonical IR，定位第一个分叉cut；把决定legality的两个位置分别
+  登记为AlwaysOn required mechanism，保持原顺序并由gateway审计。optional proposal仍可为空，且关闭optional cleanup的完整
+  rank-count=1/16与HF纵向必须通过；不要用放宽alias、提前lowering或target fallback掩盖上游artifact差异。

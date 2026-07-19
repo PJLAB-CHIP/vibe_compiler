@@ -269,6 +269,7 @@ tryCombination(llvm::ArrayRef<size_t> candidateIndices,
                const std::vector<RankVariantFrontier> &frontiers,
                const frontend::FrontendProgramVerificationResult &program,
                const ExecutionConfig &executionConfig,
+               uint64_t attemptOrdinal,
                std::string &failureGate) {
   std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modules;
   llvm::SmallVector<mlir::ModuleOp, 16> moduleViews;
@@ -339,7 +340,10 @@ tryCombination(llvm::ArrayRef<size_t> candidateIndices,
       failureGate = "target-abi-preparation";
       return mlir::failure();
     }
-    if (mlir::failed(lowerToTargetLLVM(*prepared)) ||
+    if (mlir::failed(lowerToTargetLLVM(
+            *prepared,
+            {TargetLLVMLoweringPurpose::WholeVariantCandidateProof,
+             attemptOrdinal})) ||
         mlir::failed(
             verifyLoweredKernelABI(*prepared, rank.getEntrySymbol()))) {
       failureGate = "target-abi-lowering";
@@ -422,6 +426,7 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
       -> mlir::FailureOr<AcceptedWholeVariant> {
     if (!attemptedCandidateIndices.insert(candidateIndices).second)
       return mlir::failure();
+    uint64_t attemptOrdinal = attemptedCandidateIndices.size() - 1;
     std::string capturedDiagnostics;
     std::string failureGate = "unknown";
     mlir::FailureOr<AcceptedWholeVariant> result = mlir::failure();
@@ -434,7 +439,7 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
             return mlir::success();
           });
       result = tryCombination(candidateIndices, frontiers, program,
-                              executionConfig, failureGate);
+                              executionConfig, attemptOrdinal, failureGate);
     }
     if (mlir::succeeded(result))
       return result;

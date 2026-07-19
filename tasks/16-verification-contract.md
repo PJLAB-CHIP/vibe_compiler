@@ -1,6 +1,6 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-07-18同步Q33 adoption/Equivalent-IR、Q32联合physical-dataflow/Q32.T rank-local Transform和
+状态：2026-07-19同步Q33 adoption/Equivalent-IR、Q32联合physical-dataflow/Q32.T rank-local Transform和
 Q3.6 Count的内部可闭合目标验证合同；保留Q31标准7B单block多seed数值证据、mapped transfer、
 versioned GEMM orientation及已完成
 Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate。
@@ -262,10 +262,10 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 
 05拥有required normal form和fixed target-independent optimization；本文固定“上游机制已采用”的证据口径：
 
-`AdoptionSpec`、`QualificationObservation`、`FixedHygieneProposalV1`、`HygieneBatchObservationV1`、
-`QualifiedFixedHygieneSetV1`、`AdoptionQualificationInputV1`、`AdoptionQualificationRunV1`/terminal、
-`AdoptionQualificationResultManifestV1`、`HygienePublicationAttemptV1`/terminal及
-`ActiveQualifiedHygieneSetRefV1`的all-and-only字段、五轴enum、work-policy binding和canonical serialization由05
+`AdoptionSpec`、`QualificationObservation`、`OptimizationQualificationProposalV1`、`OptimizationBatchObservationV1`、
+`QualifiedOptimizationSetV1`、`AdoptionQualificationInputV1`、`AdoptionQualificationRunV1`/terminal、
+`AdoptionQualificationResultManifestV1`、`OptimizationSetPublicationAttemptV1`/terminal及
+`ActiveQualifiedOptimizationSetRefV1`的all-and-only字段、五轴enum、work-policy binding和canonical serialization由05
 §6.2唯一拥有；本文只定义gate关系，不复制schema子集。schema validator必须拒绝缺字段、未知字段、
 spec/observation `MechanismKeyV1`、proposal/batch/set digest或work-policy id不匹配，以及qualified set未all-and-only
 覆盖proposal成员。
@@ -334,41 +334,47 @@ adapter symbol set，对production/debug translation unit的AST/call graph和lin
 adapter缺key、live gateway key无spec或active spec无invocation site均fail。static direct-call closure与runtime
 spec↔invocation telemetry双向闭合必须同时通过，不得互相代替。
 
-production先冻结`FixedHygieneProposalV1`：fixed与cleanup两组成员互斥，每个`MechanismKeyV1`绑定完整spec
-digest，且分别必须是`AdoptionMode=FixedHygiene`和`AdoptionMode=BestEffortCleanup`。内部qualification seam只接受：
+production先冻结`OptimizationQualificationProposalV1`：fixed与cleanup两组成员互斥，每个`MechanismKeyV1`绑定完整spec
+digest，且分别必须是`AdoptionMode=FixedOptimization`和`AdoptionMode=BestEffortCleanup`。内部qualification seam只接受：
 
 ```text
 RequiredNormalization = AlwaysOn
-FixedHygiene = AllOn | AllOff | DisableOne(FixedMechanismKey)
+FixedOptimization = AllOn | AllOff | DisableOne(FixedMechanismKey)
 BestEffortCleanup = AllOn | AllOff | DisableOne(CleanupMechanismKey)
 ```
 
 wrong-group、nonmember或同时disable两个key均在运行前拒绝。Equivalent-IR 2×2的两轴固定为
 `EquivalentInput={Original, Metamorphic}` × `BestEffortCleanup={AllOff, AllOn}`；四路都使用
-`RequiredNormalization=AlwaysOn`且`FixedHygiene=AllOff`，cleanup只能在required-form verifier通过后运行。另做
-normalizer once/twice canonical bytes相同和失败clone byte-identical gate。rank-count=1/16与冻结7B corpus的全局
-对照固定为`B=(Fixed AllOn, Cleanup AllOn)`对`A=(Fixed AllOff, Cleanup AllOff)`；每个key的边际对照只在
+`RequiredNormalization=AlwaysOn`且`FixedOptimization=AllOff`，cleanup只能在required-form verifier通过后运行。另做
+normalizer once/twice canonical bytes相同和失败clone byte-identical gate。proposal union非空时，rank-count=1/16与冻结7B corpus的
+全局比较固定为`B=(Fixed AllOn, Cleanup AllOn)`对`A=(Fixed AllOff, Cleanup AllOff)`；union为空时两者语义相同，global
+static/ABBA comparison domain固定为空，但Equivalent-IR、normalizer幂等和production gate不省略。每个key的marginal comparison只在
 所属组使用`DisableOne(key)`，另一组保持AllOn。最终production还必须独立重放两组AllOn的完整下游gate，
 不得用2×2或AllOff路径代替。
 
-global AllOn/AllOff static/ABBA、Equivalent-IR 2×2和production-AllOn结果只进入唯一
-`HygieneBatchObservationV1`；每个`QualificationObservation`只保存该key的invocation/rewrite、`DisableOne`边际
-static/ABBA和per-key gate。只有`HygieneBatchStatusV1=Qualified`且`closed_reason` optional absent的batch可被qualified set引用；
+`PostLegalizationCanonicalization`与`StructuredTensorCanonicalization`属于上述AlwaysOn required集合：前者位于第二次
+post-legalization collective normalization之后，后者位于第三次normalization之后，随后才进入required tensor normalizer。
+两者的顺序由HF/rank-mask静态offset主线锁定；optional cleanup全关时仍必须产生与既有required pipeline相同的structured tensor
+artifact并通过完整下游gate。
+
+非空proposal的global AllOn/AllOff static/ABBA、Equivalent-IR 2×2和production-AllOn结果只进入唯一
+`OptimizationBatchObservationV1`；每个`QualificationObservation`只保存该key的invocation/rewrite、`DisableOne`边际
+static/ABBA和per-key gate。只有`OptimizationBatchStatusV1=Qualified`且`closed_reason` optional absent的batch可被qualified set引用；
 `Rejected`必须携带typed non-None reason且不得被引用。每个key必须有非零invocation；并按05 spec中的typed
 `EvidenceKindV1`分别证明非零rewrite、backend-action的零rewrite与非零成功action/output，或invocation-only的零rewrite/空action；exact static
 DDR/SPM/movement/command vector逐分量不恶化；tensor与selected payload work分别严格使用05的
 `RequiredTensorNormalizationWorkPolicyV1`和07的`SelectedPayloadNormalizationWorkPolicyV1`，计数均在rewrite前按canonical
 traversal取得，checked overflow或fuel耗尽返回`ResourceExhausted`。wall/peak RSS的A/B含义、warmup、固定五个
 ABBA block、median/MAD、`MAD=0`处理、host收益和回退方向全部严格复用05的
-`FixedHygieneQualificationPolicyV1`，harness不得复制或在看到样本后修改公式。机制只在有确定性下游收益或
+`OptimizationSetQualificationPolicyV1`，harness不得复制或在看到样本后修改公式。机制只在有确定性下游收益或
 显著host收益且两个资源均不触发回退时qualified；否则固定为`QualificationStatus=NoOpObserved`并以
 `DebugRegistered ∈ ExposureSet`且不属于active qualified set表达derived debug-only；被评估spec的AdoptionMode/ExposureSet保持
 immutable，任何mandatory sample
 skipped/unsupported直接fail而非从统计中删除。只有完成上述batch、all-and-only key observation和mandatory
 vertical后才按05的`AdoptionQualificationInputV1`、`AdoptionQualificationRunV1`、
-`AdoptionQualificationResultManifestV1`与run terminal、hygiene publication attempt/terminal、污染重试总budget及staging全量readback
-形成`QualifiedFixedHygieneSetV1`，再以expected-active digest做单次CAS发布新的`ActiveQualifiedHygieneSetRefV1`；production只消费active
-ref指向的set。取消、污染、资源耗尽、CAS conflict或任一失败保持上一份active ref/set byte-identical，不得删掉失败key后沿用其它旧
+`AdoptionQualificationResultManifestV1`与run terminal、optimization publication attempt/terminal、host 环境失效重试总budget及staging全量readback
+形成`QualifiedOptimizationSetV1`，再以expected-active digest做单次CAS发布新的`ActiveQualifiedOptimizationSetRefV1`；production只消费active
+ref指向的set。取消、host 环境失效、资源耗尽、CAS conflict或任一失败保持上一份active ref/set byte-identical，不得删掉失败key后沿用其它旧
 observation。
 
 ## 6. Q16 Per-Rank Executable Bundle Gates
@@ -443,7 +449,7 @@ observation。
   `PhysicalDataflowTelemetryV1`记录phase、counter、work、packing与stop reason。测试使用adversarial高fanout/多encoding graph证明不枚举Cartesian product；超限时确定性停止新增
   optimized state，baseline合法则返回baseline并记录budget diagnostic，只有baseline exact-illegal才返回真实legality
   failure；baseline proof超过其独立hard allowance返回compiler resource exhaustion。生产选择由deterministic work/fuel caps
-  决定；只有baseline已完成后才arm的optimization deadline或optimized budget耗尽会以`Success`返回reserved baseline并记录
+  决定；只有baseline已完成后才configuration的optimization deadline或optimized budget耗尽会以`Success`返回reserved baseline并记录
   stop reason。driver/process在任意时点显式取消则返回`Cancelled`，无partial seed/candidate/artifact，不得伪装成
   baseline fallback。未取消时同输入、不同线程数稳定选择；具体cap数值是implementation resource policy，不写成workload
   或IR语义；
@@ -560,9 +566,9 @@ Q32.T不阻塞Q32，只验证06限定的rank-local adapter：
   generic dictionary/string/fallback均拒绝。profile固定构造06的`CompilerEmission + CompilerEmittable` context；budget
   每字段一对一映射`RankPlanningRequest::deterministic_work_policy`，禁止extension私有default/schema或model/board
   context param；
-- `StructuredOptimizationPolicyV1` exact schema必须携带`qualified_hygiene_set_digest`和fixed/cleanup两组
+- `StructuredOptimizationPolicyV1` exact schema必须携带`qualified_optimization_set_digest`和fixed/cleanup两组
   `AllOn | AllOff | DisableOne`控制及typed optional key，presence/member/wrong-group复用05同一verifier；required
-  normalization不可关闭，Transform不得绕过`QualifiedFixedHygieneSetV1`或建立第二份policy schema；
+  normalization不可关闭，Transform不得绕过`QualifiedOptimizationSetV1`或建立第二份policy schema；
 - `MechanismReportV1`对每个实际调用key按05 `MechanismInvocationOutcomeV1` ordinal保存all-and-only七行，覆盖
   missing/duplicate/extra outcome及checked count/rewrite不一致negative；candidate report覆盖
   `Completed | OptimizationBudgetFallback | UncalibratedIncomparable`，后两者都必须选择reserved baseline；

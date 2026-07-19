@@ -2,10 +2,35 @@
 
 #include "Internal.h"
 
+#include <limits>
+
 using namespace wafer;
 using namespace wafer::tensor_program_to_tile_region;
 
 namespace {
+
+static mlir::FailureOr<CandidateInvocationOrdinals>
+reserveCandidateInvocationOrdinals(int64_t currentLogicalRank,
+                                   uint64_t invocationOrdinalBase,
+                                   std::string *failureReason) {
+  constexpr uint64_t invocationRangeSize = uint64_t{1} << 12;
+  if (currentLogicalRank < 0 || currentLogicalRank > 0xffff) {
+    setFailureReason(failureReason,
+                     "candidate invocation ordinal rank is outside u16");
+    return mlir::failure();
+  }
+  if (invocationOrdinalBase >
+      std::numeric_limits<uint64_t>::max() - invocationRangeSize) {
+    setFailureReason(failureReason,
+                     "candidate invocation ordinal range is out of bounds");
+    return mlir::failure();
+  }
+  return CandidateInvocationOrdinals{invocationOrdinalBase,
+                                     invocationOrdinalBase,
+                                     invocationOrdinalBase,
+                                     invocationOrdinalBase +
+                                         invocationRangeSize};
+}
 
 static mlir::FailureOr<mlir::func::FuncOp>
 cloneVerifiedTensorProgram(mlir::func::FuncOp function,
@@ -31,7 +56,7 @@ mlir::LogicalResult wafer::lowerCandidateTensorProgramToTileRegionModule(
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank) {
+    int64_t currentLogicalRank, uint64_t invocationOrdinalBase) {
   if (failureReason)
     failureReason->clear();
 
@@ -40,9 +65,15 @@ mlir::LogicalResult wafer::lowerCandidateTensorProgramToTileRegionModule(
   if (mlir::failed(cloned))
     return mlir::failure();
   TensorProgramScope scope(*cloned);
+  mlir::FailureOr<CandidateInvocationOrdinals> invocationOrdinals =
+      reserveCandidateInvocationOrdinals(currentLogicalRank,
+                                         invocationOrdinalBase,
+                                         failureReason);
+  if (mlir::failed(invocationOrdinals))
+    return mlir::failure();
   if (mlir::failed(materializeCandidateTileSlices(
           scope, candidateTileOffsets, candidateTileSizes,
-          candidateReductionTileSizes, failureReason)))
+          candidateReductionTileSizes, *invocationOrdinals, failureReason)))
     return mlir::failure();
   return convertTensorProgramToTileRegionModuleInPlace(
       *module, function.getContext(), currentLogicalRank, failureReason);
@@ -53,7 +84,7 @@ wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
     mlir::func::FuncOp function, llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank) {
+    int64_t currentLogicalRank, uint64_t invocationOrdinalBase) {
   if (failureReason)
     failureReason->clear();
 
@@ -63,9 +94,15 @@ wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
   if (mlir::failed(cloned))
     return mlir::failure();
   TensorProgramScope scope(*cloned);
+  mlir::FailureOr<CandidateInvocationOrdinals> invocationOrdinals =
+      reserveCandidateInvocationOrdinals(currentLogicalRank,
+                                         invocationOrdinalBase,
+                                         failureReason);
+  if (mlir::failed(invocationOrdinals))
+    return mlir::failure();
   if (mlir::failed(materializeCompleteCandidateTraversal(
           scope, candidateTileSizes, candidateReductionTileSizes,
-          failureReason)))
+          *invocationOrdinals, failureReason)))
     return mlir::failure();
   if (mlir::failed(convertTensorProgramToTileRegionModuleInPlace(
           *candidateModule, function.getContext(), currentLogicalRank,

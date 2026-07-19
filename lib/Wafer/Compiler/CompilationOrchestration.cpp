@@ -1,8 +1,12 @@
 //===- CompilationOrchestration.cpp - Compiler transaction orchestration ===//
 
+#include "../Pipelines/QualificationInternal.h"
 #include "CompilationInternal.h"
 
 #include "Wafer/Pipelines/Pipelines.h"
+#include "Wafer/Support/OptimizationArtifactDigest.h"
+#include "Wafer/Support/OptimizationMechanism.h"
+#include "Wafer/Target/TargetProfile.h"
 
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
@@ -19,8 +23,28 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace wafer::compiler::detail {
+
+static std::optional<OptimizationDigest>
+digestFrontendImportInput(llvm::StringRef sourceProgramDirectory,
+                          const ExecutionConfig &config) {
+  std::optional<OptimizationDigest> directory =
+      digestOptimizationArtifactDirectoryV1(
+          sourceProgramDirectory, "wafer.frontend-import-program-directory-v1");
+  if (!directory)
+    return std::nullopt;
+  std::vector<uint8_t> bytes(directory->begin(), directory->end());
+  uint64_t rankCount = config.getRankCount();
+  for (int shift = 56; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<uint8_t>(rankCount >> shift));
+  llvm::StringRef profile =
+      stringifyTargetProfileId(config.getTargetProfileId());
+  bytes.insert(bytes.end(), profile.bytes_begin(), profile.bytes_end());
+  return digestOptimizationBytesV1("wafer.frontend-import-input-snapshot-v1",
+                                   bytes);
+}
 
 mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
@@ -30,7 +54,8 @@ mlir::LogicalResult runCompilationTransaction(
     std::optional<int64_t> failAfterTargetLogicalRank,
     std::optional<int64_t> failAfterPackageLogicalRank,
     std::optional<ExecutableBundle> *retainedExecutableBundle,
-    std::optional<TargetLLVMModuleBundle> *retainedTargetLLVMModuleBundle) {
+    std::optional<TargetLLVMModuleBundle> *retainedTargetLLVMModuleBundle,
+    const CompilationOptimizationPolicyV1 &optimizationPolicy) {
 #if !defined(WAFER_ENABLE_STABLEHLO) || !defined(WAFER_ENABLE_SHARDY)
   (void)request;
   (void)outputProgramDirectory;
@@ -156,8 +181,40 @@ mlir::LogicalResult runCompilationTransaction(
         return mlir::success();
       });
 
+  std::optional<OptimizationDigest> frontendInput =
+      digestFrontendImportInput(sourceSnapshot, request.getExecutionConfig());
+  if (!frontendInput) {
+    reject(diagnostics, "cannot establish frontend import input digest");
+    return mlir::failure();
+  }
+  OptimizationInvocationTokenV1 frontendImportToken;
+  std::string frontendTelemetryDiagnostic;
+  if (!beginOptimizationInvocationV1(
+          mechanism::FrontendProgramImport,
+          OptimizationCutPoint::FrontendProgramImport,
+          /*invocationOrdinal=*/0, *frontendInput, frontendImportToken,
+          &frontendTelemetryDiagnostic)) {
+    reject(diagnostics, "cannot begin frontend import invocation: " +
+                            frontendTelemetryDiagnostic);
+    return mlir::failure();
+  }
   mlir::OwningOpRef<mlir::ModuleOp> sourceModule =
       parseProgramDirectoryModule(sourceSnapshot, context);
+  OptimizationInvocationTelemetry frontendTelemetry;
+  frontendTelemetry.key = mechanism::FrontendProgramImport;
+  frontendTelemetry.cutPoint = OptimizationCutPoint::FrontendProgramImport;
+  frontendTelemetry.outcome =
+      sourceModule ? InvocationOutcome::NoChange : InvocationOutcome::Invalid;
+  frontendTelemetry.inputSnapshotDigest = *frontendInput;
+  if (sourceModule)
+    sourceModule->walk(
+        [&](mlir::Operation *) { ++frontendTelemetry.workUnits; });
+  if (!commitOptimizationInvocationV1(frontendImportToken, frontendTelemetry,
+                                      &frontendTelemetryDiagnostic)) {
+    reject(diagnostics, "invalid frontend import invocation terminal: " +
+                            frontendTelemetryDiagnostic);
+    return mlir::failure();
+  }
   if (!sourceModule)
     return mlir::failure();
   if (hasPostSpmdMarker(*sourceModule, sourceSnapshot)) {
@@ -180,7 +237,6 @@ mlir::LogicalResult runCompilationTransaction(
   if (mlir::failed(verifyProgramDirectoryMetadata(*sourceModule, sourceSnapshot,
                                                   diagnostics)))
     return mlir::failure();
-
   llvm::SmallString<256> propagatedProgram(transactionRoot);
   llvm::sys::path::append(propagatedProgram, "propagated");
   if (copyDirectory(sourceSnapshot, propagatedProgram, diagnostics))
@@ -211,10 +267,9 @@ mlir::LogicalResult runCompilationTransaction(
       return mlir::failure();
     }
   }
-  if (!isRegularFile(
-          programFile(tensorProgram,
-                      {llvm::StringRef("functions"),
-                       llvm::StringRef("forward.parameter_shards.json")}))) {
+  if (!isRegularFile(programFile(
+          tensorProgram, {llvm::StringRef("functions"),
+                          llvm::StringRef("forward.parameter_shards.json")}))) {
     reject(diagnostics,
            "XLA SPMD partitioner output is missing its partition marker");
     return mlir::failure();
@@ -242,10 +297,20 @@ mlir::LogicalResult runCompilationTransaction(
   }
   if (mlir::failed(verifyStablehloStageOperations(*tensorModule)))
     return mlir::failure();
-  if (mlir::failed(verifyProgramDirectoryMetadata(*tensorModule,
-                                                  tensorProgram, diagnostics)))
+  if (mlir::failed(verifyProgramDirectoryMetadata(*tensorModule, tensorProgram,
+                                                  diagnostics)))
     return mlir::failure();
-  if (runPassPipeline(*tensorModule, wafer::buildStablehloToLinalgPipeline))
+  mlir::PassManager tensorPipeline(tensorModule->getContext());
+  std::string optimizationDiagnostic;
+  if (!wafer::qualification_internal::buildStablehloToLinalgPipeline(
+          tensorPipeline, optimizationPolicy.proposal,
+          optimizationPolicy.optimizationConfiguration, &optimizationDiagnostic,
+          optimizationPolicy.inputVariant)) {
+    reject(diagnostics,
+           "invalid compile optimization policy: " + optimizationDiagnostic);
+    return mlir::failure();
+  }
+  if (mlir::failed(tensorPipeline.run(*tensorModule)))
     return mlir::failure();
   if (containsDialectSemantics(*tensorModule, "stablehlo") ||
       containsDialectSemantics(*tensorModule, "sdy")) {
@@ -287,7 +352,7 @@ mlir::LogicalResult runCompilationTransaction(
           tensorProgram, transactionRoot, request.getExecutionConfig(),
           targetToolchain, diagnostics, failAfterLogicalRank,
           failAfterTargetLogicalRank, failAfterPackageLogicalRank,
-          executableBundle, targetLLVMModules)))
+          executableBundle, targetLLVMModules, optimizationPolicy)))
     return mlir::failure();
 
   llvm::SmallString<256> stagedPackage(transactionRoot);

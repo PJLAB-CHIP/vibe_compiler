@@ -1,6 +1,6 @@
 # Compiler Optimization Adoption 实施计划
 
-状态：current implementation plan；Q33 `compiler-optimization-adoption`是当前唯一`next` row，尚未进入`doing`。
+状态：current implementation plan；Q33 `compiler-optimization-adoption`是当前唯一`doing` row。
 本文只拆施工checkpoint、验证和退出门槛；
 长期pipeline/优化分层由01、05-13、16和18拥有，动态状态只看`tasks/progress.md`。
 
@@ -13,7 +13,7 @@ Pipeline position:
   以及现有candidate/finalization、target backend和rank-count=1/16 source/model baselines。
 - Current stage responsibility:
   建立全compiler upstream pass/utility adoption inventory；修复structured semantic recovery、DPS init、view/alias/effect/
-  lifetime对偶然producer拓扑和generic canonicalizer的正确性依赖；资格化required normal form、fixed target-independent
+  lifetime对偶然producer拓扑和optional generic cleanup的正确性依赖；资格化required normal form、fixed target-independent
   optimization和candidate-local mechanism边界，并把通过验证的fixed subset接入现有named production pipeline。
 - Output artifact / IR:
   optimizer-ready rank-local structured tensor program、显式required-normalization postcondition、可重放的adoption records，
@@ -29,7 +29,7 @@ Pipeline position:
   loop scheduling无条件放入fixed pipeline，不改变physical layout/implementation/residency，不实现Transform control plane，
   不因upstream存在某个pass就承诺采用。
 - Completion gate:
-  adoption inventory覆盖全部compile cut points；required normalization不依赖generic canonicalizer；mandatory equivalent-IR
+  adoption inventory覆盖全部compile cut points；required tensor normalizer的支持性不依赖optional generic cleanup；mandatory equivalent-IR
   families进入同一production consumer并通过complete rank/all-rank、SPM/DDR/completion/ABI及source-to-SystemC/PyTorch gate；
   每个qualified fixed mechanism在真实corpus按typed EvidenceKind产生所需rewrite/action/invocation证据且资源/host性能不回退。
   无效、no-op、blocked或rejected机制有
@@ -41,7 +41,8 @@ Pipeline position:
 1. 优化单位是IR cut point、pre/postcondition和consumer gate，不是pass名字。
 2. provider origin、availability、exposure、adoption mode和qualification按05的五轴正交记录；
    resolved/registered/debug-replayable/library-callable/backend-executable都不等于production采用。
-3. required normalization用确定性rewrite与postcondition verifier拥有正确性；generic canonicalizer只做best-effort cleanup。
+3. required tensor normalizer用确定性rewrite与postcondition verifier拥有自身正确性；两个位置固定的canonicalization分别登记为
+   required mechanism，其余generic canonicalizer调用只能作为optional cleanup。
 4. whole pass只有全部rewrite都满足fixed合同才可进入默认pipeline；否则抽取安全pattern subset，或作为candidate-local mechanism。
 5. 任何改变SSA sharing、alias、effect、allocation root或lifetime的改写都使旧analysis失效，并从当前IR fresh重算。
 6. 每个机制先证明实际发生调用；按spec的`EvidenceKindV1`分别证明非零改写、零rewrite且非零成功backend action/output，或
@@ -88,7 +89,8 @@ canonical observation本身、spec/build/corpus digest和replay command；不只
 registry生成的AST/call-graph/link checker必须拒绝adapter外直接调用known upstream pass factory/utility或
 backend launcher、adapter缺key及active spec无invocation site。registration不能成为绕过telemetry的入口。
 
-Gate：从现有named production入口fresh记录rank-count=1/16与冻结7B source-to-bundle/SystemC/PyTorch、unsupported/skipped、
+Gate：从现有named production入口fresh记录source vertical的rank-count=1/16，以及冻结TP16 7B的
+source-to-bundle/SystemC/PyTorch、unsupported/skipped、
 compile work和host wall；inventory能通过正交exposure/adoption/qualification区分library-callable、production-consumed、
 derived debug-only（`DebugRegistered ∈ ExposureSet`且exact spec不被active production policy选中；spec可以本来就是Mode None，
 也可以是评估后未进入active set的fixed/cleanup）以及`NoOpObserved`、`DownstreamBlocked`、`Rejected`
@@ -104,7 +106,7 @@ bypass checker同时通过。
   unit-extent等价形态；Q32.I才建立的`SemanticOpDescriptor`/family domain不是Q33 completion前置；
 - standard collapse/expand/transpose/extract-slice、`to_tensor`/`to_memref` alias由ViewLike、type、reassociation和SSA重算；
 - 分别把tensor one-trip/full-slice与selected-payload one-trip/full-subview所必需的折叠改成各自显式bounded
-  rewrite与postcondition verifier；generic canonicalizer开关或worklist顺序不改变支持性；
+  rewrite与postcondition verifier；optional generic cleanup开关或worklist顺序不改变支持性；
 - 审计Wafer op memory effects、completion和observable store，确保DCE/CSE/LICM不能删除或越过issue/wait/fence/collective；
 - 每次改写后fresh重跑semantic、alias/effect、SPM/DDR lifetime和exact cost，不复用旧analysis。
 
@@ -124,7 +126,7 @@ Gate：所有等价形态都有合法reserved baseline；05逐family postconditi
 canonical bytes相同，第二次是`Success(changed=false)`且work summary可重现；typed failure不改变source transaction
 root。complete rank/all-rank gates和完整source expected differential通过。
 
-### Checkpoint C：fixed hygiene qualification 与 post-adoption baseline
+### Checkpoint C：fixed optimization qualification 与 post-adoption baseline
 
 按05合同逐项判定：
 
@@ -134,36 +136,54 @@ root。complete rank/all-rank gates和完整source expected differential通过�
 - pack/vector/convert-to-loops等会抢占physical owner或销毁structured semantics的pass保持rejected/deferred；
 - mandatory corpus零改写或无下游收益的SCCP等机制记录`QualificationStatus=NoOpObserved`，不象征性加入production；
 - qualified fixed/cleanup set接入05同一pipeline builder，debug和production复用body；每项按typed `EvidenceKindV1`产生对应
-  rewrite、backend action/output或invocation-only telemetry，且每项都有关闭对照。
+  rewrite、backend action/output或invocation-only telemetry，且每项都有关闭配置比较。
 
 Gate：两组AllOn/AllOff都通过Equivalent-IR和完整纵向；AllOn成员按typed `EvidenceKindV1`满足rewrite、backend action/output或
 invocation-only invariant；compile work/static movement/
 host wall无不可解释回退。重新冻结post-adoption rank-count=1/16与7B baseline，作为Q32.I及后续physical-dataflow比较起点。
 
-内部qualification seam先冻结`FixedHygieneProposalV1`的fixed/cleanup两个互斥key set及spec digests；
-required normalization永远开启，`FixedHygiene`和`BestEffortCleanup`各自只允许
+内部qualification seam先冻结`OptimizationQualificationProposalV1`的fixed/cleanup两个互斥key set及spec digests；
+required normalization永远开启，`FixedOptimization`和`BestEffortCleanup`各自只允许
 `AllOn | AllOff | DisableOne(own-group key)`。production无CLI/pass option并固定两组AllOn。Equivalent-IR按05固定的
-`Original/Metamorphic × BestEffortCleanup AllOff/AllOn` 2×2，四路的`FixedHygiene=AllOff`，required
-normalizer均开启，并另做once/twice幂等。scale corpus以两组同时`AllOn`对同时`AllOff`，
-每个key的marginal对照只在所属组`DisableOne(k)`、另一组AllOn；每项按其typed `EvidenceKindV1`满足rewrite、backend action或
+`Original/Metamorphic × BestEffortCleanup AllOff/AllOn` 2×2，四路的`FixedOptimization=AllOff`，required
+normalizer均开启，并另做once/twice幂等。mandatory case domain显式固定为source vertical × rank1、source vertical ×
+rank16、冻结7B × rank16；冻结7B source config的execution mesh是16，不能与rank集合做笛卡尔积或伪造7B × rank1。
+proposal union非空时，scale corpus以两组同时`AllOn`对同时`AllOff`；当前空proposal不生成语义相同configuration之间的
+global static/ABBA样本，但仍完整执行Equivalent-IR 2×2、normalizer幂等和production gate。
+每个key的marginal comparison只在所属组`DisableOne(k)`、另一组AllOn；每项按其typed `EvidenceKindV1`满足rewrite、backend action或
 invocation-only invariant，static vector逐分量不恶化且work在
-声明fuel内。wall/peak RSS严格使用05的`FixedHygieneQualificationPolicyV1` ABBA/median/MAD公式，不得
+声明fuel内。wall/peak RSS严格使用05的`OptimizationSetQualificationPolicyV1` ABBA/median/MAD公式，不得
 在看到样本后调整guard。required normalizer和proposal内拟`Qualified`的全部fixed/cleanup rows在declared domain的mandatory corpus
 任一unsupported/skipped/timeout/缺样本都使qualification失败；production required及完整proposal的mandatory纵向
 任一上述结果使Q33 closure失败。非production row可以closed `Rejected/DownstreamBlocked` reason完成inventory，
 但不能宣称采用。超界拒绝；无确定性下游收益且无显著host收益时固定为`QualificationStatus=NoOpObserved`；被评估spec保持
 immutable，以`DebugRegistered ∈ ExposureSet`且不属于active qualified set表达derived debug-only。global
-AllOn/AllOff、2×2和production-AllOn只进入唯一`HygieneBatchObservationV1`，per-key observation只保存
+AllOn/AllOff、2×2和production-AllOn只进入唯一`OptimizationBatchObservationV1`，per-key observation只保存
 它自身marginal证据；全部all-and-only通过后才原子发布绑定proposal、batch及全部key observation digest的
-`QualifiedFixedHygieneSetV1`。实现还必须按05唯一`AdoptionQualificationInputV1`、通用
-`AdoptionQualificationRunV1`、`AdoptionQualificationResultManifestV1`与run terminal，以及hygiene-only
-`HygienePublicationAttemptV1`/terminal、污染重试总budget和`ActiveQualifiedHygieneSetRefV1` staging-readback-CAS合同发布；
+`QualifiedOptimizationSetV1`。实现还必须按05唯一`AdoptionQualificationInputV1`、通用
+`AdoptionQualificationRunV1`、`AdoptionQualificationResultManifestV1`与run terminal，以及optimization-only
+`OptimizationSetPublicationAttemptV1`/terminal、host 环境失效重试总budget和`ActiveQualifiedOptimizationSetRefV1` staging-readback-CAS合同发布；
 production只消费active ref指向的immutable qualified set。
+
+mandatory original case的探索性运行最初观察到`StablehloCleanup`与`CandidateCommitCleanup`发生改写，但进一步隔离表明
+这些改写掩盖了required-form缺口：scalar/shape scaffolding已收归required tensor normalization，one-trip view与常量offset
+已收归selected-payload normalization及对应legality。post-legalization与structured-tensor两个历史canonicalization cut会把
+静态rank/mask索引链恢复成下游可验证的常量offset；禁用任一位置都会改变legality，因此现分别登记为
+`PostLegalizationCanonicalization`与`StructuredTensorCanonicalization` required mechanism，并保持原pipeline顺序。
+修正required边界后，optional `StablehloCleanup`无独立下游收益，以`NoOpObserved`关闭；`CandidateCommitCleanup`增加static
+movement与instruction count，以`Rejected`关闭；其余四个optional cleanup只有`NoChange`，同样以`NoOpObserved`关闭。
+因此当前冻结proposal是合法空集，production不启用optional generic cleanup；required canonicalization仍经过gateway并属于
+required invocation全集。
+该判定绑定上述mandatory case domain，不把单个workload现象提升成canonicalizer的一般能力结论。
+
+当前static metric registry四维的精确定义依次为：全部rank已接受DDR allocation end的最大值、单rank SPM high-water的
+最大值、全部rank SPM movement bytes总和、全部rank instruction command count总和。四项都从本次纵向已经接受且将被
+下游直接消费的`ExecutableBundle`计算，不另跑pipeline，也不从日志或名称恢复。
 
 ## 4. Completion Audit
 
 - 01/05-13/16/18、README和progress与live调用点一致；
-- current correctness不再依赖generic canonicalizer或direct producer形态；
+- current correctness不再依赖optional generic cleanup或direct producer形态；两个required canonicalization的cut顺序由主线gate锁定；
 - adoption records覆盖已链接/注册/实际调用的上游机制，并记录qualified/no-op/blocked/rejected结论；
 - fixed pipeline只含qualified target-independent机制，candidate-only清单直接交给Q32.M；
 - 双配置build、lit/unit/CTest、dependency/organization checks和mandatory source/model vertical有fresh结果；

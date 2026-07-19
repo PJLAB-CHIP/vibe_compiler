@@ -8,27 +8,27 @@ namespace wafer::tensor_program_to_tile_region {
 
 mlir::FailureOr<int64_t>
 TileRegionBodyEmitter::getCompactByteSize(mlir::Value buffer,
-                                          llvm::StringRef subject) {
+                                          llvm::StringRef role) {
   auto memrefType = mlir::dyn_cast<mlir::MemRefType>(buffer.getType());
   if (!memrefType) {
-    std::string reason = subject.str() + " buffer is not a memref";
+    std::string reason = role.str() + " buffer is not a memref";
     return failI64(reason);
   }
   std::optional<WaferPhysicalTensorInfo> physicalInfo =
       computeWaferPhysicalTensorInfo(memrefType);
   if (!physicalInfo || physicalInfo->compactBytes <= 0) {
     std::string reason =
-        subject.str() + " compact byte size is not representable";
+        role.str() + " compact byte size is not representable";
     return failI64(reason);
   }
   return physicalInfo->compactBytes;
 }
 
 mlir::FailureOr<int64_t> TileRegionBodyEmitter::getCommunicationId(
-    const WaferLinalgExtCollectiveInfo &info, llvm::StringRef subject) {
+    const WaferLinalgExtCollectiveInfo &info, llvm::StringRef role) {
   if (!info.hasChannelId) {
     std::string reason =
-        subject.str() +
+        role.str() +
         " materialization requires channel_id for stable DTE identity";
     return failI64(reason);
   }

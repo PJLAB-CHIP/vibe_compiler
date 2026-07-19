@@ -34,6 +34,7 @@ struct ScheduledRankCandidate {
 struct TensorProgramSchedulingConfig {
   int64_t logicalRank = -1;
   int64_t candidateParallelism = 1;
+  bool enableCandidateCommitCleanup = true;
 };
 
 /// Builds a bounded frontier of complete rank alternatives in independent

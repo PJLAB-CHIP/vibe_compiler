@@ -67,7 +67,7 @@ Q32不再承担generic canonicalizer正确性债务、direct producer形态恢�
 `tasks/plans/compiler-optimization-adoption.md`闭合：
 
 - explicit required normalization和Equivalent-IR Stability；
-- fixed hygiene、candidate-local和target-specific三层边界；
+- fixed optimization、candidate-local和target-specific三层边界；
 - upstream mechanism的availability/adoption/qualification records；
 - post-adoption rank-count=1/16与7B source/model/resource baseline。
 
@@ -285,7 +285,7 @@ work/fuel有界。按Llama role、参数顺序、固定root数或固定shape注�
 - 使用deterministic resource-aware list scheduler，仅对ready-set中reuse/resource signature不同的少量choice分裂；
 - shared-input使用deterministic maximal hyperedge和hard-capped conflict split，不枚举`2^fanout`；
 - 对island/relation pieces、mechanism applications、family instantiation、communication skeleton node/edge、safe-tile
-  solver/proof、tile refinement、ready alternatives、beam、top-K、cache和rank frontier设置deterministic hard caps；optimization deadline只在reserved baseline完成后arm，触发时
+  solver/proof、tile refinement、ready alternatives、beam、top-K、cache和rank frontier设置deterministic hard caps；optimization deadline只在reserved baseline完成后configuration，触发时
   丢弃optimized states并返回reserved baseline；driver/process cancellation在任意时点返回`Cancelled`且无artifact；
 - 每个materialized candidate先获得独立reserved full-arena legality allowance；忽略SPM interval后仍可能改变Pareto/最终选择的
   canonical shortlist才进入capacity refinement。用single-demand absolute-alignment与validated activity-clique建立lower，
@@ -317,7 +317,7 @@ work/fuel有界。按Llama role、参数顺序、固定root数或固定shape注�
 
 Gate：构造会触发partition `2^N`、tile Cartesian product、rank `K^R`和task `N!`风险的压力图，证明访问数不越cap；
 固定work policy且无driver/process cancellation时不同线程数/重复运行selected signature一致；optimization
-预算或baseline-ready后arm的optimization deadline返回baseline，driver/process cancellation返回`Cancelled`且无artifact，
+预算或baseline-ready后configuration的optimization deadline返回baseline，driver/process cancellation返回`Cancelled`且无artifact，
 baseline allowance耗尽返回compiler-resource-exhausted；任一rejected clone不污染accepted IR。同一机器、Release build和冻结7B
 corpus相对Checkpoint A post-adoption baseline记录完整source-to-bundle wall与06 `PhysicalDataflowTelemetryV1`；
 rank-count=1/16、7B完整source/SystemC differential、通用topology和多dtype/tail全部通过。重复运行不得
@@ -386,7 +386,7 @@ materializer、production named pipeline和diagnostic均稳定时才实施：
   RankLocalCandidateOrderV1, DeterministicWorkPolicyV1) -> (fresh_target, CandidateRunReportV1)`；
   `inspect_physical_dataflow_candidate(target) -> CandidateInspectionV1`。operand/result param **SSA type**实现
   `TransformParamTypeInterface`并只接受06声明的exact versioned mapped attr，attr本身不冒充interface；
-  `StructuredOptimizationPolicyV1`绑定05的qualified hygiene set digest及fixed/cleanup两组typed control。profile
+  `StructuredOptimizationPolicyV1`绑定05的qualified optimization set digest及fixed/cleanup两组typed control。profile
   required canonical attr唯一映射`TargetProfileId`；budget逐字段映射
   `RankPlanningRequest::deterministic_work_policy`，不得定义extension私有default/schema；report/inspection按06的
   exact scope、presence和canonical bytes合同验证；
@@ -417,7 +417,7 @@ materializer、production named pipeline和diagnostic均稳定时才实施：
 - hard caps覆盖生成过程而非只覆盖结果，包括communication skeleton node/edge与baseline safe-tile solver/proof；baseline
   fallback和telemetry有fresh测试；
 - 同机Release/frozen 7B相对Checkpoint A post-adoption baseline有source-to-bundle与planner phase wall/work记录，
-  exact-materialized/top-K/frontier不越policy cap，重复运行无无界增长；baseline-ready后arm的
+  exact-materialized/top-K/frontier不越policy cap，重复运行无无界增长；baseline-ready后configuration的
   optimization deadline返回baseline，driver/process cancellation返回`Cancelled`且无artifact；
 - selected proposal只以typed payload IR跨stage，search state、shadow plan、重复layout assignment不存在；
 - old decision paths和兼容入口已删除，不能以“默认不用”代替清理；

@@ -38,7 +38,10 @@ compileExecutableBundleToTargetLLVMModulesImpl(
       return fail(diagnostics,
                   "target ABI preparation failed for logical rank " +
                       std::to_string(expectedRank));
-    if (mlir::failed(lowerToTargetLLVM(*prepared)))
+    if (mlir::failed(lowerToTargetLLVM(
+            *prepared,
+            {TargetLLVMLoweringPurpose::PublishedArtifact,
+             /*attemptOrdinal=*/0})))
       return fail(diagnostics, "target lowering failed for logical rank " +
                                    std::to_string(expectedRank));
     if (mlir::failed(verifyLoweredKernelABI(*prepared, rank.getEntrySymbol())))
@@ -83,7 +86,10 @@ lowerTargetABIForTesting(const RankExecutable &rankExecutable,
                          const ExecutionConfig &executionConfig) {
   mlir::FailureOr<PreparedTargetRank> prepared =
       prepareTargetABI(rankExecutable, executionConfig);
-  if (mlir::failed(prepared) || mlir::failed(lowerToTargetLLVM(*prepared)))
+  if (mlir::failed(prepared) ||
+      mlir::failed(lowerToTargetLLVM(
+          *prepared,
+          {TargetLLVMLoweringPurpose::Testing, /*attemptOrdinal=*/0})))
     return mlir::failure();
   return verifyLoweredKernelABI(*prepared, rankExecutable.getEntrySymbol());
 }

@@ -14,6 +14,9 @@
 
 ## Wafer compiler local build harness
 
+- 优化资格化命名直接描述工程对象：机制类别使用`FixedOptimization`/`BestEffortCleanup`，一次开关组合使用
+  `OptimizationConfiguration`，发布对象使用`QualifiedOptimizationSet`。不要重新引入`hygiene`、`control arm`、
+  `treatment`或“环境污染”等实验室隐喻；host事实变化导致证据作废时使用`HostEnvironmentInvalidated`。
 - `tasks/progress.md` 是任务队列，不是设计合同。确定下一步时先定位队列项，再读该项指向的编号
   设计文档；不要从旧 progress 叙事、单个工具现状或历史 memory 反推出当前架构边界。若
   `memory/` 与编号设计文档或任务队列冲突，同步修 memory。

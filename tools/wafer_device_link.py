@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import pathlib
 import shlex
@@ -376,6 +378,114 @@ def run_command(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+def sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def resolve_executed_tool(command: list[str]) -> pathlib.Path:
+    candidate = pathlib.Path(command[0])
+    if candidate.is_absolute() or candidate.parent != pathlib.Path("."):
+        return candidate.resolve(strict=True)
+    resolved = shutil.which(command[0])
+    if resolved is None:
+        fail(f"executed optimization tool cannot be resolved: {command[0]}")
+    return pathlib.Path(resolved).resolve(strict=True)
+
+
+def command_output_path(command: list[str]) -> pathlib.Path:
+    positions = [index for index, argument in enumerate(command) if argument == "-o"]
+    if len(positions) != 1 or positions[0] + 1 >= len(command):
+        fail("observed backend action must carry exactly one '-o <output>'")
+    return pathlib.Path(command[positions[0] + 1])
+
+
+def action_input_snapshot_digest(command: list[str]) -> str:
+    """Hash argv plus content of every regular-file input visible pre-launch."""
+    digest = hashlib.sha256()
+    digest.update(b"wafer.backend-action-input-snapshot\0")
+    digest.update((1).to_bytes(2, "big"))
+    for argument in command:
+        encoded = os.fsencode(argument)
+        digest.update(len(encoded).to_bytes(4, "big"))
+        digest.update(encoded)
+        path = pathlib.Path(argument)
+        if path.is_file():
+            digest.update(b"\x01")
+            digest.update(bytes.fromhex(sha256_file(path)))
+        else:
+            digest.update(b"\x00")
+    return digest.hexdigest()
+
+
+def write_optimization_observations(
+    output: pathlib.Path | None, observations: list[dict[str, object]]
+) -> None:
+    if output is None:
+        return
+    output.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.staging-", dir=output.parent
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(observations, stream, sort_keys=True, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, output)
+    finally:
+        pathlib.Path(temporary_name).unlink(missing_ok=True)
+
+
+def planned_optimization_observation(
+    command: list[str], action_kind: str
+) -> dict[str, object]:
+    return {
+        "action_kind": action_kind,
+        "argv": command,
+        "input_snapshot_digest": action_input_snapshot_digest(command),
+        "output_digest": hashlib.sha256(b"").hexdigest(),
+        "succeeded": False,
+        "tool_digest": sha256_file(resolve_executed_tool(command)),
+    }
+
+
+def run_observed_command(
+    command: list[str],
+    action_kind: str,
+    output: pathlib.Path | None,
+    observations: list[dict[str, object]],
+) -> None:
+    tool_digest = sha256_file(resolve_executed_tool(command))
+    input_snapshot_digest = action_input_snapshot_digest(command)
+    action_output = command_output_path(command)
+    succeeded = False
+    try:
+        subprocess.run(command, check=True)
+        succeeded = True
+    finally:
+        output_digest = (
+            sha256_file(action_output)
+            if action_output.is_file()
+            else hashlib.sha256(b"").hexdigest()
+        )
+        observations.append(
+            {
+                "action_kind": action_kind,
+                "argv": command,
+                "input_snapshot_digest": input_snapshot_digest,
+                "output_digest": output_digest,
+                "succeeded": succeeded,
+                "tool_digest": tool_digest,
+            }
+        )
+        write_optimization_observations(output, observations)
+
+
 def run_required_symbol_scan(command: list[str], loader_abi: str) -> None:
     completed = subprocess.run(
         command,
@@ -451,13 +561,34 @@ def execute_staged_link(args: argparse.Namespace) -> None:
             required_symbol_scan_cmd,
         ) = build_commands(staged_args)
 
-        run_command(compile_cmd)
+        observation_output = (
+            pathlib.Path(args.optimization_observation_output)
+            if args.optimization_observation_output
+            else None
+        )
+        observations: list[dict[str, object]] = []
+        run_observed_command(
+            compile_cmd,
+            "device-object-compilation",
+            observation_output,
+            observations,
+        )
         for normalize_cmd in normalize_cmds:
             run_command(normalize_cmd)
-        run_command(compile_crt_cmd)
+        run_observed_command(
+            compile_crt_cmd,
+            "device-runtime-compilation",
+            observation_output,
+            observations,
+        )
         for normalize_cmd in normalize_crt_cmds:
             run_command(normalize_cmd)
-        run_command(link_cmd)
+        run_observed_command(
+            link_cmd,
+            "device-garbage-collection-link",
+            observation_output,
+            observations,
+        )
         run_required_symbol_scan(required_symbol_scan_cmd, args.loader_abi)
 
         publish_intermediate(pathlib.Path(staged_args.object_output), object_output)
@@ -465,6 +596,65 @@ def execute_staged_link(args: argparse.Namespace) -> None:
             pathlib.Path(staged_args.crt_object_output), crt_object_output
         )
         os.replace(pathlib.Path(staged_args.output), output)
+
+
+def run_backend_action_protocol(args: argparse.Namespace) -> None:
+    """Plan or execute exactly one backend action in a stable staging tree."""
+    if args.execution_staging_directory is None:
+        fail("backend action protocol requires an execution staging directory")
+    staging_dir = pathlib.Path(args.execution_staging_directory)
+    if not staging_dir.is_dir():
+        fail("backend action staging directory does not exist")
+
+    staged_args = argparse.Namespace(**vars(args))
+    staged_args.output = str(staging_dir / "linked.so")
+    staged_args.object_output = str(staging_dir / "input.o")
+    staged_args.crt_object_output = str(staging_dir / "wafer_crt.o")
+    (
+        compile_cmd,
+        normalize_cmds,
+        compile_crt_cmd,
+        normalize_crt_cmds,
+        link_cmd,
+        required_symbol_scan_cmd,
+    ) = build_commands(staged_args)
+    actions = (
+        ("device-object-compilation", compile_cmd, normalize_cmds),
+        ("device-runtime-compilation", compile_crt_cmd, normalize_crt_cmds),
+        ("device-garbage-collection-link", link_cmd, []),
+    )
+    action_kind, command, normalization_commands = actions[
+        args.backend_action_index
+    ]
+
+    if args.backend_action_plan_output:
+        write_optimization_observations(
+            pathlib.Path(args.backend_action_plan_output),
+            [planned_optimization_observation(command, action_kind)],
+        )
+        return
+
+    observation_output = (
+        pathlib.Path(args.optimization_observation_output)
+        if args.optimization_observation_output
+        else None
+    )
+    observations: list[dict[str, object]] = []
+    run_observed_command(command, action_kind, observation_output, observations)
+    for normalization_command in normalization_commands:
+        run_command(normalization_command)
+    if args.backend_action_index == 2:
+        run_required_symbol_scan(required_symbol_scan_cmd, args.loader_abi)
+        publish_intermediate(
+            pathlib.Path(staged_args.object_output),
+            pathlib.Path(args.object_output),
+        )
+        publish_intermediate(
+            pathlib.Path(staged_args.crt_object_output),
+            pathlib.Path(args.crt_object_output),
+        )
+        pathlib.Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        os.replace(pathlib.Path(staged_args.output), pathlib.Path(args.output))
 
 
 def main() -> int:
@@ -506,6 +696,24 @@ def main() -> int:
     )
     parser.add_argument("--crt-object-output")
     parser.add_argument(
+        "--optimization-observation-output",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--backend-action-plan-output",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--backend-action-index",
+        type=int,
+        choices=(0, 1, 2),
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--execution-staging-directory",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--keep-riscv-attributes",
         action="store_true",
         help=(
@@ -525,6 +733,16 @@ def main() -> int:
         help="print the compile and link commands without executing them",
     )
     args = parser.parse_args()
+
+    action_protocol = args.backend_action_index is not None
+    if action_protocol != bool(args.execution_staging_directory):
+        fail(
+            "backend action index and execution staging directory must appear together"
+        )
+    if args.backend_action_plan_output and not action_protocol:
+        fail("backend action plan output requires the action protocol")
+    if args.backend_action_plan_output and args.optimization_observation_output:
+        fail("backend action plan and terminal outputs are mutually exclusive")
 
     (
         compile_cmd,
@@ -554,6 +772,9 @@ def main() -> int:
         link_cmd,
         required_symbol_scan_cmd,
     )
+    if action_protocol:
+        run_backend_action_protocol(args)
+        return 0
     execute_staged_link(args)
     return 0
 

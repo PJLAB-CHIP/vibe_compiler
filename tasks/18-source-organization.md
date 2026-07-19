@@ -66,7 +66,7 @@ lib/Wafer/Analysis/StructuredNormalization/
 lib/Wafer/Transforms/StructuredOptimization/
   RequiredTensorNormalization.cpp
   TensorNormalFormVerifier.cpp
-  FixedHygiene.cpp
+  FixedOptimization.cpp
   QualificationTelemetry.cpp
 lib/Wafer/Transforms/Scheduling/
   SelectedPayloadNormalization.cpp
@@ -77,7 +77,7 @@ lib/Wafer/Compiler/OptimizationAdoption/
   AdoptionSpecRegistry.cpp
   QualificationObservation.cpp
   QualificationArchive.cpp
-  HygienePublication.cpp
+  OptimizationSetPublication.cpp
 unittests/Compiler/
   OptimizationQualificationDriver.cpp
 ```
@@ -92,7 +92,7 @@ instruction/memory/communication owner的SSA/path verifier拥有。
 
 `AdoptionSpecRegistry` 是audit spec/index，production pipeline不读取registry row；live call point只共用单点
 `MechanismKey`并发出telemetry。`QualificationObservation`只从sealed invocation terminals聚合canonical observation；
-`QualificationArchive`拥有typed input/run/result manifest/terminal codec、scope seal与readback，`HygienePublication`只拥有
+`QualificationArchive`拥有typed input/run/result manifest/terminal codec、scope seal与readback，`OptimizationSetPublication`只拥有
 proposal/set staging、publication terminal和active-ref CAS，二者不能共享一个可变状态record。
 `OptimizationQualificationDriver` 只构建为未安装的test executable，从compiler library注入05定义的
 internal all-on/all-off/disable-one/cleanup config，再走与production相同的source-to-bundle/SystemC/PyTorch consumer。

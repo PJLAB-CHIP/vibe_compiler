@@ -3,6 +3,8 @@
 #include "../../lib/Wafer/Compiler/TargetArtifactInternal.h"
 
 #include "Wafer/Target/TargetProfile.h"
+#include "Wafer/Support/OptimizationInvocation.h"
+#include "Wafer/Support/OptimizationMechanism.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
@@ -15,8 +17,11 @@
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <string>
 #include <type_traits>
+#include <mutex>
+#include <vector>
 
 #ifndef WAFER_TEST_PYTHON_EXECUTABLE
 #error "WAFER_TEST_PYTHON_EXECUTABLE must name the configured Python"
@@ -32,6 +37,36 @@
 #endif
 
 namespace {
+
+class BackendInvocationRecorder final
+    : public wafer::OptimizationInvocationRecorder {
+public:
+  bool beginInvocation(const wafer::InvocationPreparationV1 &preparation,
+                       std::string *diagnostic = nullptr) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    return journal.beginInvocation(preparation, diagnostic);
+  }
+  bool recordInvocationTerminal(
+      const wafer::InvocationTelemetryV1 &telemetry,
+      std::string *diagnostic = nullptr) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    return journal.recordInvocationTerminal(telemetry, diagnostic);
+  }
+  std::vector<wafer::InvocationTelemetryV1> records() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return journal.committedTerminals();
+  }
+
+  std::mutex mutex;
+  wafer::OptimizationInvocationJournalV1 journal;
+};
+
+static wafer::OptimizationInvocationScopeContextV1 backendRecordingScope() {
+  wafer::OptimizationInvocationScopeContextV1 scope;
+  scope.scopeKind = wafer::InvocationScopeKindV1::ProductionCompile;
+  scope.scopeDigest.fill(0x2a);
+  return scope;
+}
 
 constexpr wafer::TargetProfileId kProfile =
     wafer::TargetProfileId::waferTx81SingleCardKernelV1();
@@ -146,6 +181,82 @@ TEST(TargetArtifactTest, ReadbackRejectsNonELFAndWrongArchitecture) {
   EXPECT_NE(llvm::toString(wrongArchitecture.takeError())
                 .find("target module is not RISC-V 64-bit ELF"),
             std::string::npos);
+}
+
+TEST(TargetArtifactTest, DeviceBackendTelemetryUsesActualExecutedArgv) {
+  llvm::SmallString<256> temporaryDirectory;
+  std::error_code error = llvm::sys::fs::createUniqueDirectory(
+      "wafer-target-action-observation", temporaryDirectory);
+  ASSERT_FALSE(error) << error.message();
+  auto cleanup = llvm::make_scope_exit([&]() {
+    (void)llvm::sys::fs::remove_directories(temporaryDirectory);
+  });
+
+  llvm::Expected<wafer::compiler::TargetToolchain> toolchain =
+      wafer::compiler::TargetToolchain::create(
+          WAFER_TEST_PYTHON_EXECUTABLE, WAFER_TEST_DEVICE_LINKER_SCRIPT);
+  ASSERT_TRUE(static_cast<bool>(toolchain))
+      << llvm::toString(toolchain.takeError());
+  auto recorder = std::make_shared<BackendInvocationRecorder>();
+  wafer::ScopedOptimizationInvocationRecorder scoped(recorder,
+                                                       backendRecordingScope());
+  ASSERT_TRUE(scoped.installed());
+
+  llvm::SmallString<256> modulePath =
+      pathInDirectory(temporaryDirectory, "kernel.so");
+  llvm::SmallString<256> objectPath =
+      pathInDirectory(temporaryDirectory, "kernel.o");
+  llvm::SmallString<256> crtPath =
+      pathInDirectory(temporaryDirectory, "wafer_crt.o");
+  llvm::Error linkError = wafer::compiler::detail::runDeviceLink(
+      *toolchain, WAFER_TEST_TARGET_DATA_ENTRY_LLVM_IR, modulePath, objectPath,
+      crtPath, /*logicalRank=*/0);
+  ASSERT_FALSE(static_cast<bool>(linkError)) << llvm::toString(std::move(linkError));
+
+  llvm::SmallString<256> rankOneModulePath =
+      pathInDirectory(temporaryDirectory, "kernel-rank-one.so");
+  llvm::SmallString<256> rankOneObjectPath =
+      pathInDirectory(temporaryDirectory, "kernel-rank-one.o");
+  llvm::SmallString<256> rankOneCRTPath =
+      pathInDirectory(temporaryDirectory, "wafer-crt-rank-one.o");
+  linkError = wafer::compiler::detail::runDeviceLink(
+      *toolchain, WAFER_TEST_TARGET_DATA_ENTRY_LLVM_IR, rankOneModulePath,
+      rankOneObjectPath, rankOneCRTPath, /*logicalRank=*/1);
+  ASSERT_FALSE(static_cast<bool>(linkError))
+      << llvm::toString(std::move(linkError));
+
+  std::vector<wafer::InvocationTelemetryV1> records = recorder->records();
+  ASSERT_EQ(records.size(), 6u);
+  std::sort(records.begin(), records.end(), [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.identity.mechanismKey,
+                    lhs.identity.invocationOrdinal) <
+           std::tie(rhs.identity.mechanismKey,
+                    rhs.identity.invocationOrdinal);
+  });
+  EXPECT_EQ(records[0].identity.mechanismKey,
+            wafer::mechanism::DeviceObjectCompilation);
+  EXPECT_EQ(records[2].identity.mechanismKey,
+            wafer::mechanism::DeviceRuntimeCompilation);
+  EXPECT_EQ(records[4].identity.mechanismKey,
+            wafer::mechanism::DeviceGarbageCollectionLink);
+  for (auto [index, record] : llvm::enumerate(records)) {
+    EXPECT_EQ(record.identity.invocationOrdinal, index % 2);
+    EXPECT_EQ(record.outcome, wafer::InvocationOutcome::Applied);
+    ASSERT_EQ(record.backendActions.size(), 1u);
+    EXPECT_EQ(record.backendActions.front().terminalStatus,
+              wafer::BackendActionStatusV1::Success);
+    ASSERT_FALSE(record.backendActions.front().argv.empty());
+  }
+  EXPECT_NE(std::find(records[0].backendActions[0].argv.begin(),
+                      records[0].backendActions[0].argv.end(), "-O2"),
+            records[0].backendActions[0].argv.end());
+  EXPECT_NE(std::find(records[2].backendActions[0].argv.begin(),
+                      records[2].backendActions[0].argv.end(), "-O2"),
+            records[2].backendActions[0].argv.end());
+  EXPECT_NE(std::find(records[4].backendActions[0].argv.begin(),
+                      records[4].backendActions[0].argv.end(),
+                      "-Wl,--gc-sections"),
+            records[4].backendActions[0].argv.end());
 }
 
 } // namespace

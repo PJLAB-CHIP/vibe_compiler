@@ -1,8 +1,10 @@
 add_mlir_library(WaferPipelines
+  EquivalentInputVariant.cpp
   Pipelines.cpp
 
   LINK_LIBS PUBLIC
   WaferIR
+  WaferSupport
   WaferTarget
   WaferTransforms
   MLIRArithToLLVM
@@ -19,6 +21,7 @@ add_mlir_library(WaferPipelines
   MLIRReconcileUnrealizedCasts
   MLIRSCFToControlFlow
   MLIRSupport
+  MLIRTensorDialect
 )
 
 if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)

@@ -2,12 +2,12 @@
 
 #include "Wafer/Pipelines/Pipelines.h"
 
-#include "Wafer/IR/WaferDialect.h"
+#include "EquivalentInputVariantInternal.h"
+#include "QualificationInternal.h"
+
+#include "Wafer/Support/OptimizationQualification.h"
 #include "Wafer/Transforms/Passes.h"
-#include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
-#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
-#include "mlir/Dialect/Bufferization/Transforms/Passes.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "Wafer/Transforms/StructuredOptimization.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -20,71 +20,99 @@
 namespace wafer {
 namespace {
 
-static void addStablehloToLinalgBody(mlir::OpPassManager &pm) {
-  pm.addPass(createNormalizeStablehloCollectivesPass());
-  pm.addPass(createLegalizeStablehloToLinalgPass());
-  pm.addPass(createNormalizeStablehloCollectivesPass());
-  pm.addPass(mlir::createCanonicalizerPass());
-  pm.addPass(createNormalizeStablehloCollectivesPass());
-  pm.addPass(mlir::createCanonicalizerPass());
+static bool
+optimizationEnabled(const OptimizationQualificationProposal &proposal,
+                    const OptimizationConfiguration &configuration,
+                    MechanismKey key, std::string *diagnostic) {
+  std::optional<bool> enabled =
+      isOptimizationMechanismEnabled(proposal, configuration, key, diagnostic);
+  return enabled.value_or(false);
 }
 
-static mlir::bufferization::OneShotBufferizationOptions
-getFunctionBoundaryBufferizationOptions() {
-  mlir::bufferization::OneShotBufferizationOptions options;
-  options.bufferizeFunctionBoundaries = true;
-  options.allowReturnAllocsFromLoops = true;
-  options.inferFunctionResultLayout = true;
-  options.bufferAlignment = 64;
-  options.defaultMemorySpaceFn =
-      [](mlir::TensorType tensorType) -> std::optional<mlir::Attribute> {
-    return MemoryAttr::get(tensorType.getContext(), MemorySpace::DDR,
-                           MemLayout::Tensor);
-  };
-  options.unknownTypeConverterFn =
-      [](mlir::Value value, mlir::Attribute memorySpace,
-         const mlir::bufferization::BufferizationOptions &options)
-      -> mlir::BaseMemRefType {
-    (void)options;
-    return mlir::bufferization::getMemRefTypeWithStaticIdentityLayout(
-        mlir::cast<mlir::TensorType>(value.getType()), memorySpace);
-  };
-  options.functionArgTypeConverterFn =
-      [](mlir::TensorType tensorType, mlir::Attribute memorySpace,
-         mlir::func::FuncOp funcOp,
-         const mlir::bufferization::BufferizationOptions &options)
-      -> mlir::BaseMemRefType {
-    (void)memorySpace;
-    (void)funcOp;
-    (void)options;
-    if (auto ranked = mlir::dyn_cast<mlir::RankedTensorType>(tensorType)) {
-      return mlir::MemRefType::get(ranked.getShape(), ranked.getElementType(),
-                                   mlir::MemRefLayoutAttrInterface{},
-                                   MemoryAttr::get(ranked.getContext(),
-                                                   MemorySpace::DDR,
-                                                   MemLayout::Tensor));
-    }
-    return mlir::UnrankedMemRefType::get(
-        tensorType.getElementType(),
-        MemoryAttr::get(tensorType.getContext(), MemorySpace::DDR,
-                        MemLayout::Tensor));
-  };
-  return options;
+static void
+addStablehloToLinalgBody(mlir::OpPassManager &pm,
+                         const OptimizationQualificationProposal &proposal,
+                         const OptimizationConfiguration &configuration,
+                         EquivalentInputVariantV1 inputVariant) {
+  pm.addPass(createOptimizationInvocationPass(
+      mechanism::StablehloCollectiveNormalization,
+      OptimizationCutPoint::PostSPMDStableHLOModule,
+      [] { return createNormalizeStablehloCollectivesPass(); },
+      /*invocationOrdinal=*/0));
+  pm.addPass(createOptimizationInvocationPass(
+      mechanism::StablehloStructuredLegalization,
+      OptimizationCutPoint::PostSPMDStableHLOModule,
+      [] { return createLegalizeStablehloToLinalgPass(); }));
+  pm.addPass(createOptimizationInvocationPass(
+      mechanism::StablehloCollectiveNormalization,
+      OptimizationCutPoint::PostSPMDStableHLOModule,
+      [] { return createNormalizeStablehloCollectivesPass(); },
+      /*invocationOrdinal=*/1));
+  pm.addPass(createOptimizationInvocationPass(
+      mechanism::PostLegalizationCanonicalization,
+      OptimizationCutPoint::StructuredTensorModule,
+      [] { return mlir::createCanonicalizerPass(); }));
+  pm.addPass(createOptimizationInvocationPass(
+      mechanism::StablehloCollectiveNormalization,
+      OptimizationCutPoint::PostSPMDStableHLOModule,
+      [] { return createNormalizeStablehloCollectivesPass(); },
+      /*invocationOrdinal=*/2));
+  pm.addPass(createOptimizationInvocationPass(
+      mechanism::StructuredTensorCanonicalization,
+      OptimizationCutPoint::StructuredTensorModule,
+      [] { return mlir::createCanonicalizerPass(); }));
+  if (inputVariant == EquivalentInputVariantV1::Metamorphic)
+    pm.addPass(
+        qualification_internal::createEquivalentInputVariantPass(inputVariant));
+  pm.addPass(createOptimizationInvocationPass(
+      mechanism::RequiredTensorNormalization,
+      OptimizationCutPoint::StructuredTensorModule,
+      [] { return createRequiredTensorNormalizationPass(); }));
+  if (optimizationEnabled(proposal, configuration, mechanism::StablehloCleanup,
+                          nullptr))
+    pm.addPass(createOptimizationInvocationPass(
+        mechanism::StablehloCleanup,
+        OptimizationCutPoint::StructuredTensorModule,
+        [] { return mlir::createCanonicalizerPass(); }));
+  if (optimizationEnabled(proposal, configuration,
+                          mechanism::StructuredTensorCleanup, nullptr))
+    pm.addPass(createOptimizationInvocationPass(
+        mechanism::StructuredTensorCleanup,
+        OptimizationCutPoint::StructuredTensorModule,
+        [] { return mlir::createCanonicalizerPass(); }));
 }
 
-static void addFunctionBoundaryBufferization(mlir::OpPassManager &pm) {
-  pm.addPass(mlir::bufferization::createOneShotBufferizePass(
-      getFunctionBoundaryBufferizationOptions()));
+static void addFunctionBoundaryBufferization(mlir::OpPassManager &pm,
+                                             uint64_t invocationOrdinal) {
+  pm.addPass(createOptimizationInvocationPass(
+      mechanism::FunctionBoundaryBufferization,
+      OptimizationCutPoint::SelectedPhysicalPayloadModule,
+      [] { return createFunctionBoundaryBufferizationPass(); },
+      invocationOrdinal));
 }
 
 } // namespace
 
 void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
-  addStablehloToLinalgBody(pm);
+  OptimizationQualificationProposal proposal =
+      getCurrentOptimizationQualificationProposal();
+  addStablehloToLinalgBody(pm, proposal, getAllOnOptimizationConfiguration(),
+                           EquivalentInputVariantV1::Original);
 }
 
 void buildScheduleTensorProgramToSelectedInstrPipeline(mlir::OpPassManager &pm,
                                                        int64_t logicalRank) {
+  OptimizationQualificationProposal proposal =
+      getCurrentOptimizationQualificationProposal();
+  (void)
+      qualification_internal::buildScheduleTensorProgramToSelectedInstrPipeline(
+          pm, logicalRank, proposal, getAllOnOptimizationConfiguration());
+}
+
+static void addScheduleTensorProgramToSelectedInstrBody(
+    mlir::OpPassManager &pm, int64_t logicalRank,
+    const OptimizationQualificationProposal &proposal,
+    const OptimizationConfiguration &configuration) {
   // Candidate scopes are compiler-private SSA/dataflow views over the
   // structured tensor program.  The scheduling pipeline does not materialize
   // a wrapper operation or a second tensor-program artifact.
@@ -96,21 +124,105 @@ void buildScheduleTensorProgramToSelectedInstrPipeline(mlir::OpPassManager &pm,
   // creating the unbounded rank x candidate fanout that hardware-sized
   // workloads would otherwise invite.
   options.candidateParallelism = 4;
-  pm.addPass(createScheduleTensorProgramPass(options));
-  buildFinalizeScheduledTensorProgramPipeline(pm);
+  bool candidateCleanup = optimizationEnabled(
+      proposal, configuration, mechanism::CandidateCommitCleanup, nullptr);
+  pm.addPass(createOptimizationInvocationPass(
+      mechanism::TileDataflowMaterialization,
+      OptimizationCutPoint::StructuredTensorModule,
+      [options, candidateCleanup] {
+        return createScheduleTensorProgramPassForOptimizationQualification(
+            options, candidateCleanup);
+      }));
+  (void)qualification_internal::buildFinalizeScheduledTensorProgramPipeline(
+      pm, proposal, configuration);
 }
 
 void buildFinalizeScheduledTensorProgramPipeline(mlir::OpPassManager &pm) {
-  pm.addPass(mlir::createCanonicalizerPass());
-  addFunctionBoundaryBufferization(pm);
-  pm.addPass(mlir::createCanonicalizerPass());
-  buildPlanSPMMemoryPipeline(pm);
-  buildPlanDDRMemoryPipeline(pm);
-  pm.addPass(mlir::createCanonicalizerPass());
+  OptimizationQualificationProposal proposal =
+      getCurrentOptimizationQualificationProposal();
+  (void)qualification_internal::buildFinalizeScheduledTensorProgramPipeline(
+      pm, proposal, getAllOnOptimizationConfiguration());
 }
 
+static void addFinalizeScheduledTensorProgramBody(
+    mlir::OpPassManager &pm, const OptimizationQualificationProposal &proposal,
+    const OptimizationConfiguration &configuration,
+    uint64_t invocationOrdinal) {
+  if (optimizationEnabled(proposal, configuration,
+                          mechanism::PreBufferizationCleanup, nullptr))
+    pm.addPass(createOptimizationInvocationPass(
+        mechanism::PreBufferizationCleanup,
+        OptimizationCutPoint::SelectedPhysicalPayloadModule,
+        [] { return mlir::createCanonicalizerPass(); }, invocationOrdinal));
+  addFunctionBoundaryBufferization(pm, invocationOrdinal);
+  pm.addPass(createOptimizationInvocationPass(
+      mechanism::SelectedPayloadNormalization,
+      OptimizationCutPoint::SelectedPhysicalPayloadModule,
+      [] { return createSelectedPayloadNormalizationPass(); },
+      invocationOrdinal));
+  if (optimizationEnabled(proposal, configuration,
+                          mechanism::PostBufferizationCleanup, nullptr))
+    pm.addPass(createOptimizationInvocationPass(
+        mechanism::PostBufferizationCleanup,
+        OptimizationCutPoint::SelectedPhysicalPayloadModule,
+        [] { return mlir::createCanonicalizerPass(); }, invocationOrdinal));
+  buildPlanSPMMemoryPipeline(pm);
+  buildPlanDDRMemoryPipeline(pm);
+  if (optimizationEnabled(proposal, configuration,
+                          mechanism::PostMemoryPlanningCleanup, nullptr))
+    pm.addPass(createOptimizationInvocationPass(
+        mechanism::PostMemoryPlanningCleanup,
+        OptimizationCutPoint::FinalInstructionModule,
+        [] { return mlir::createCanonicalizerPass(); }, invocationOrdinal));
+}
+
+namespace qualification_internal {
+
+bool buildStablehloToLinalgPipeline(
+    mlir::OpPassManager &pm, const OptimizationQualificationProposal &proposal,
+    const OptimizationConfiguration &configuration, std::string *diagnostic,
+    EquivalentInputVariantV1 inputVariant) {
+  if (!validateOptimizationConfiguration(proposal, configuration, diagnostic))
+    return false;
+  if (inputVariant != EquivalentInputVariantV1::Original &&
+      inputVariant != EquivalentInputVariantV1::Metamorphic) {
+    if (diagnostic)
+      *diagnostic = "unknown equivalent input variant";
+    return false;
+  }
+  addStablehloToLinalgBody(pm, proposal, configuration, inputVariant);
+  return true;
+}
+
+bool buildScheduleTensorProgramToSelectedInstrPipeline(
+    mlir::OpPassManager &pm, int64_t logicalRank,
+    const OptimizationQualificationProposal &proposal,
+    const OptimizationConfiguration &configuration, std::string *diagnostic) {
+  if (!validateOptimizationConfiguration(proposal, configuration, diagnostic))
+    return false;
+  addScheduleTensorProgramToSelectedInstrBody(pm, logicalRank, proposal,
+                                              configuration);
+  return true;
+}
+
+bool buildFinalizeScheduledTensorProgramPipeline(
+    mlir::OpPassManager &pm, const OptimizationQualificationProposal &proposal,
+    const OptimizationConfiguration &configuration, std::string *diagnostic,
+    uint64_t invocationOrdinal) {
+  if (!validateOptimizationConfiguration(proposal, configuration, diagnostic))
+    return false;
+  addFinalizeScheduledTensorProgramBody(pm, proposal, configuration,
+                                        invocationOrdinal);
+  return true;
+}
+
+} // namespace qualification_internal
+
 void buildLowerTileRegionToInstrPipeline(mlir::OpPassManager &pm) {
-  pm.addPass(createConvertTileRegionToInstrPass());
+  pm.addPass(createOptimizationInvocationPass(
+      mechanism::InstructionLowering,
+      OptimizationCutPoint::SelectedPhysicalPayloadModule,
+      [] { return createConvertTileRegionToInstrPass(); }));
 }
 
 void buildPlanSPMMemoryPipeline(mlir::OpPassManager &pm) {

@@ -228,6 +228,58 @@ forgetRepeatableDecisions(llvm::SmallVectorImpl<ValueOriginRef> &refs) {
 
 } // namespace
 
+mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
+  while (true) {
+    if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+      mlir::Block *owner = blockArg.getOwner();
+      auto tileRegion =
+          owner ? mlir::dyn_cast_or_null<TileRegionOp>(owner->getParentOp())
+                : TileRegionOp{};
+      if (!tileRegion || tileRegion.getBody().empty() ||
+          owner != &tileRegion.getBody().front() ||
+          blockArg.getArgNumber() >= tileRegion.getInputs().size())
+        return value;
+      value = tileRegion.getInputs()[blockArg.getArgNumber()];
+      continue;
+    }
+    auto result = mlir::dyn_cast<mlir::OpResult>(value);
+    auto tileRegion =
+        result ? mlir::dyn_cast_or_null<TileRegionOp>(result.getOwner())
+               : TileRegionOp{};
+    if (!tileRegion || tileRegion.getBody().empty())
+      return value;
+    auto yield = mlir::dyn_cast<TileYieldOp>(
+        tileRegion.getBody().front().getTerminator());
+    if (!yield || result.getResultNumber() >= yield.getValues().size())
+      return value;
+    value = yield.getValues()[result.getResultNumber()];
+  }
+}
+
+bool isExplicitDDRRoot(mlir::Value value) {
+  mlir::Operation *def = value.getDefiningOp();
+  if (auto getGlobal = mlir::dyn_cast_or_null<mlir::memref::GetGlobalOp>(def)) {
+    auto global =
+        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::memref::GlobalOp>(
+            getGlobal, getGlobal.getNameAttr());
+    auto resultType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+    return global && resultType && isWaferDDRMemRefType(resultType) &&
+           resultType.hasStaticShape() && global.getType() == resultType &&
+           static_cast<bool>(global.getConstantInitValue());
+  }
+  auto toMemref = mlir::dyn_cast_or_null<mlir::bufferization::ToMemrefOp>(def);
+  if (!toMemref)
+    return false;
+  auto source = mlir::dyn_cast<mlir::BlockArgument>(toMemref.getTensor());
+  if (!source || !source.getOwner())
+    return false;
+  mlir::Operation *parent = source.getOwner()->getParentOp();
+  if (!parent || !mlir::isa<mlir::func::FuncOp, mlir::async::FuncOp>(parent) ||
+      parent->getNumRegions() != 1 || parent->getRegion(0).empty())
+    return false;
+  return source.getOwner() == &parent->getRegion(0).front();
+}
+
 bool isSupportedDirectAliasCall(mlir::func::CallOp call,
                                 const TrackedTypePredicate &isTrackedType) {
   if (!call || !isTrackedType)

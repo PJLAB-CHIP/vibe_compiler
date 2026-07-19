@@ -4,6 +4,7 @@
 #ifndef WAFER_COMPILER_EXECUTABLEBUNDLEINTERNAL_H
 #define WAFER_COMPILER_EXECUTABLEBUNDLEINTERNAL_H
 
+#include "CompilationInternal.h"
 #include "Wafer/Compiler/Compilation.h"
 
 #include <optional>
@@ -41,7 +42,12 @@ llvm::Expected<ExecutableBundle> buildExecutableBundle(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank);
+    std::optional<int64_t> failAfterLogicalRank,
+    const CompilationOptimizationPolicyV1 &optimizationPolicy =
+        CompilationOptimizationPolicyV1{
+            getCurrentOptimizationQualificationProposal(),
+            getAllOnOptimizationConfiguration(),
+            EquivalentInputVariantV1::Original});
 
 } // namespace detail
 } // namespace wafer::compiler

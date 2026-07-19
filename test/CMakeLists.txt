@@ -103,6 +103,20 @@ add_test(NAME wafer-systemc-dependency-record-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_SOURCE_DIR}/tools/test_systemc_deps.py
 )
+
+find_program(WAFER_CLANG_QUERY_EXECUTABLE
+  NAMES clang-query-${LLVM_VERSION_MAJOR} clang-query-21 clang-query
+  REQUIRED)
+add_test(NAME wafer-optimization-gateway-closure
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/check_optimization_gateway.py
+    --repo-root ${CMAKE_SOURCE_DIR}
+    --compile-commands ${CMAKE_BINARY_DIR}/compile_commands.json
+    --clang-query ${WAFER_CLANG_QUERY_EXECUTABLE}
+)
+set_tests_properties(wafer-optimization-gateway-closure PROPERTIES
+  LABELS "compiler;optimization-adoption;source-closure"
+)
 set_tests_properties(wafer-systemc-dependency-record-python PROPERTIES
   LABELS "systemc-model;managed-dependencies"
 )

@@ -18,7 +18,8 @@ namespace wafer::compiler::detail {
 llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank) {
+    std::optional<int64_t> failAfterLogicalRank,
+    const CompilationOptimizationPolicyV1 &optimizationPolicy) {
   auto fail = [&](llvm::StringRef message) -> llvm::Error {
     reject(diagnostics, message);
     return llvm::createStringError(llvm::errc::invalid_argument, "%s",
@@ -70,7 +71,8 @@ llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
 
   return detail::buildExecutableBundle(context, *tensorModule,
                                        std::move(program), executionConfig,
-                                       diagnostics, failAfterLogicalRank);
+                                       diagnostics, failAfterLogicalRank,
+                                       optimizationPolicy);
 }
 
 } // namespace wafer::compiler::detail

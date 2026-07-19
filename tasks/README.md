@@ -54,7 +54,7 @@
 
 ## 实施计划导航
 
-当前无`doing`；唯一`next`是Q33 compiler optimization adoption，实施计划为
+当前唯一`doing`是Q33 compiler optimization adoption，实施计划为
 `tasks/plans/compiler-optimization-adoption.md`。Q34 static memory packing已完成并归档为
 `tasks/archive/static-memory-packing.md`。Q32通用
 physical-dataflow synthesis queued在Q33之后，实施计划为`tasks/plans/physical-dataflow-synthesis.md`。这些计划只拆

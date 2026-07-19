@@ -1,21 +1,36 @@
 //===- PipelinesTest.cpp - Production pipeline contracts ----------------===//
 
 #include "Wafer/Pipelines/Pipelines.h"
+#include "Pipelines/EquivalentInputVariantInternal.h"
+#include "Pipelines/QualificationInternal.h"
 #include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Transforms/StructuredOptimization.h"
 
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
 #include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "gtest/gtest.h"
 
 #include <memory>
+#include <set>
 
 namespace {
+
+static std::set<uint32_t> gatewayKeys(const mlir::PassManager &manager) {
+  std::set<uint32_t> keys;
+  for (const mlir::Pass &pass : manager.getPasses())
+    if (auto description = wafer::describeOptimizationInvocationPass(pass))
+      keys.insert(description->key.semanticId);
+  return keys;
+}
 
 template <typename OpT> unsigned countOps(mlir::ModuleOp module) {
   unsigned count = 0;
@@ -51,9 +66,12 @@ TEST(PipelinesTest, ClosedLoopRankSchedulerUsesEstimatedTimeRanking) {
                                                            /*logicalRank=*/7);
 
   std::string pipeline;
-  llvm::raw_string_ostream os(pipeline);
-  manager.printAsTextualPipeline(os);
-  os.flush();
+  for (mlir::Pass &pass : manager.getPasses()) {
+    auto description = wafer::describeOptimizationInvocationPass(pass);
+    if (description &&
+        description->key == wafer::mechanism::TileDataflowMaterialization)
+      pipeline = description->ownerTextualPipeline;
+  }
 
   EXPECT_NE(pipeline.find("wafer-schedule-tensor-program"), std::string::npos)
       << pipeline;
@@ -72,9 +90,16 @@ TEST(PipelinesTest, ScheduledRankFinalizationDoesNotSelectAnotherCandidate) {
   wafer::buildFinalizeScheduledTensorProgramPipeline(manager);
 
   std::string pipeline;
-  llvm::raw_string_ostream os(pipeline);
-  manager.printAsTextualPipeline(os);
-  os.flush();
+  for (mlir::Pass &pass : manager.getPasses()) {
+    if (auto description = wafer::describeOptimizationInvocationPass(pass)) {
+      pipeline += description->ownerTextualPipeline;
+      pipeline += ',';
+    } else {
+      llvm::raw_string_ostream os(pipeline);
+      pass.printAsTextualPipeline(os);
+      os << ',';
+    }
+  }
 
   EXPECT_EQ(pipeline.find("wafer-schedule-tensor-program"), std::string::npos)
       << pipeline;
@@ -86,7 +111,117 @@ TEST(PipelinesTest, ScheduledRankFinalizationDoesNotSelectAnotherCandidate) {
 }
 
 TEST(PipelinesTest,
-     StructuredProgramSelectsResidentHandoffAndLowersTheSameArtifactToTarget) {
+     EmptyProposalKeepsRequiredPipelineAndDisablesOptionalOptimizations) {
+  mlir::MLIRContext context;
+  wafer::OptimizationQualificationProposal proposal =
+      wafer::getCurrentOptimizationQualificationProposal();
+  std::string diagnostic;
+
+  mlir::PassManager stableAllOff(&context);
+  ASSERT_TRUE(wafer::qualification_internal::buildStablehloToLinalgPipeline(
+      stableAllOff, proposal, wafer::getAllOffOptimizationConfiguration(),
+      &diagnostic))
+      << diagnostic;
+  std::set<uint32_t> stableOffKeys = gatewayKeys(stableAllOff);
+  EXPECT_EQ(stableOffKeys.count(
+                wafer::mechanism::RequiredTensorNormalization.semanticId),
+            1u);
+  EXPECT_EQ(stableOffKeys.count(
+                wafer::mechanism::PostLegalizationCanonicalization.semanticId),
+            1u);
+  EXPECT_EQ(stableOffKeys.count(
+                wafer::mechanism::StructuredTensorCanonicalization.semanticId),
+            1u);
+  EXPECT_FALSE(
+      stableOffKeys.count(wafer::mechanism::StablehloCleanup.semanticId));
+  EXPECT_FALSE(stableOffKeys.count(
+      wafer::mechanism::StructuredTensorCleanup.semanticId));
+
+  ASSERT_TRUE(proposal.fixedBindings.empty());
+  ASSERT_TRUE(proposal.cleanupBindings.empty());
+
+  mlir::PassManager stableAllOn(&context);
+  ASSERT_TRUE(wafer::qualification_internal::buildStablehloToLinalgPipeline(
+      stableAllOn, proposal, wafer::getAllOnOptimizationConfiguration(),
+      &diagnostic))
+      << diagnostic;
+  std::set<uint32_t> stableOnKeys = gatewayKeys(stableAllOn);
+  EXPECT_EQ(stableOnKeys, stableOffKeys);
+  EXPECT_FALSE(
+      stableOnKeys.count(wafer::mechanism::StablehloCleanup.semanticId));
+  EXPECT_FALSE(
+      stableOnKeys.count(wafer::mechanism::StructuredTensorCleanup.semanticId));
+
+  mlir::PassManager finalizeAllOff(&context);
+  ASSERT_TRUE(wafer::qualification_internal::
+                  buildFinalizeScheduledTensorProgramPipeline(
+                      finalizeAllOff, proposal,
+                      wafer::getAllOffOptimizationConfiguration(), &diagnostic))
+      << diagnostic;
+  std::set<uint32_t> finalizeOffKeys = gatewayKeys(finalizeAllOff);
+  EXPECT_EQ(finalizeOffKeys.count(
+                wafer::mechanism::SelectedPayloadNormalization.semanticId),
+            1u);
+  EXPECT_EQ(finalizeOffKeys.count(
+                wafer::mechanism::FunctionBoundaryBufferization.semanticId),
+            1u);
+  EXPECT_FALSE(finalizeOffKeys.count(
+      wafer::mechanism::PreBufferizationCleanup.semanticId));
+  EXPECT_FALSE(finalizeOffKeys.count(
+      wafer::mechanism::PostBufferizationCleanup.semanticId));
+  EXPECT_FALSE(finalizeOffKeys.count(
+      wafer::mechanism::PostMemoryPlanningCleanup.semanticId));
+
+  mlir::PassManager production(&context);
+  wafer::buildFinalizeScheduledTensorProgramPipeline(production);
+  std::set<uint32_t> productionKeys = gatewayKeys(production);
+  EXPECT_EQ(productionKeys.count(
+                wafer::mechanism::SelectedPayloadNormalization.semanticId),
+            1u);
+  EXPECT_EQ(productionKeys.count(
+                wafer::mechanism::FunctionBoundaryBufferization.semanticId),
+            1u);
+  EXPECT_FALSE(productionKeys.count(
+      wafer::mechanism::PreBufferizationCleanup.semanticId));
+  EXPECT_FALSE(productionKeys.count(
+      wafer::mechanism::PostBufferizationCleanup.semanticId));
+  EXPECT_FALSE(productionKeys.count(
+      wafer::mechanism::PostMemoryPlanningCleanup.semanticId));
+}
+
+TEST(PipelinesTest,
+     MetamorphicInputConstructsEquivalentSSAConsumedByRequiredNormalization) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::func::FuncDialect, mlir::tensor::TensorDialect>();
+  mlir::MLIRContext context(registry);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @entry(%arg: tensor<2x4xf32>) -> tensor<2x4xf32> {
+    return %arg : tensor<2x4xf32>
+  }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(module);
+
+  mlir::PassManager constructor(&context);
+  constructor.addPass(
+      wafer::qualification_internal::createEquivalentInputVariantPass(
+          wafer::EquivalentInputVariantV1::Metamorphic));
+  ASSERT_TRUE(mlir::succeeded(constructor.run(*module)));
+  EXPECT_EQ(countOps<mlir::tensor::ExtractSliceOp>(*module), 1u);
+
+  wafer::TensorNormalizationOutcome normalized =
+      wafer::normalizeRequiredTensorModule(*module);
+  ASSERT_EQ(normalized.status, wafer::TensorNormalizationStatus::Success);
+  EXPECT_TRUE(normalized.changed);
+  EXPECT_EQ(countOps<mlir::tensor::ExtractSliceOp>(*module), 0u);
+  EXPECT_EQ(wafer::verifyRequiredTensorNormalForm(*module).status,
+            wafer::TensorNormalizationStatus::Success);
+}
+
+TEST(PipelinesTest,
+     StructuredProgramWithoutOptionalCleanupLowersAcceptedArtifactToTarget) {
   mlir::DialectRegistry registry;
   wafer::compiler::detail::registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
@@ -182,6 +317,9 @@ module {
     for (mlir::Value operand : region.getOperands())
       hasSPMOperand |= wafer::isWaferSPMMemRefType(operand.getType());
   }
+  // CandidateCommitCleanup is not a member of the qualified proposal. The
+  // required pipeline still proves and selects this resident handoff without
+  // relying on optional canonicalization for legality.
   EXPECT_TRUE(hasSPMResult);
   EXPECT_TRUE(hasSPMOperand);
   EXPECT_EQ(countOps<wafer::InstrRDMAOp>(scheduled), 1u);
