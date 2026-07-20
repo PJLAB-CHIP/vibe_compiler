@@ -31,6 +31,8 @@ struct IndexRelationLimits {
 };
 
 struct IndexRelationResult;
+struct IndexSetResult;
+struct IndexRelationQueryResult;
 
 /// A transformation-local adapter over MLIR Presburger relations. Domain
 /// variables are destination logical indexes and range variables are source
@@ -85,9 +87,55 @@ public:
                 llvm::ArrayRef<int64_t> sourceShape,
                 const IndexRelationLimits &limits = IndexRelationLimits());
 
+  /// Build one exact destination-to-source piece of a logical concat. The
+  /// source coordinate on `axis` starts at zero while the corresponding
+  /// destination interval starts at `destinationOffset`.
+  static IndexRelationResult
+  staticConcatPiece(llvm::ArrayRef<int64_t> destinationShape,
+                    llvm::ArrayRef<int64_t> sourceShape, unsigned axis,
+                    int64_t destinationOffset,
+                    const IndexRelationLimits &limits = IndexRelationLimits());
+
+  /// Build a static rectangular index domain.
+  static IndexSetResult
+  staticDomain(llvm::ArrayRef<int64_t> shape,
+               const IndexRelationLimits &limits = IndexRelationLimits());
+
   /// Compose this A->B relation with next B->C and return A->C.
   IndexRelationResult
   compose(const IndexRelation &next,
+          const IndexRelationLimits &limits = IndexRelationLimits()) const;
+
+  IndexRelationResult
+  inverse(const IndexRelationLimits &limits = IndexRelationLimits()) const;
+
+  IndexRelationResult intersectDestinationDomain(
+      const mlir::presburger::PresburgerSet &domain,
+      const IndexRelationLimits &limits = IndexRelationLimits()) const;
+
+  IndexRelationResult intersectSourceDomain(
+      const mlir::presburger::PresburgerSet &domain,
+      const IndexRelationLimits &limits = IndexRelationLimits()) const;
+
+  IndexSetResult
+  image(const mlir::presburger::PresburgerSet &destinationDomain,
+        const IndexRelationLimits &limits = IndexRelationLimits()) const;
+
+  IndexSetResult
+  preimage(const mlir::presburger::PresburgerSet &sourceDomain,
+           const IndexRelationLimits &limits = IndexRelationLimits()) const;
+
+  IndexRelationQueryResult
+  isFunctional(const IndexRelationLimits &limits = IndexRelationLimits()) const;
+  IndexRelationQueryResult
+  isInjective(const IndexRelationLimits &limits = IndexRelationLimits()) const;
+  IndexRelationQueryResult
+  isBijective(const IndexRelationLimits &limits = IndexRelationLimits()) const;
+  IndexRelationQueryResult isEquivalentTo(
+      const IndexRelation &other,
+      const IndexRelationLimits &limits = IndexRelationLimits()) const;
+  IndexRelationQueryResult
+  implies(const IndexRelation &other,
           const IndexRelationLimits &limits = IndexRelationLimits()) const;
 
 private:
@@ -108,6 +156,31 @@ struct IndexRelationResult {
 
   const IndexRelation *get() const { return relation ? &*relation : nullptr; }
   IndexRelation *get() { return relation ? &*relation : nullptr; }
+};
+
+struct IndexSetResult {
+  IndexRelationStatus status = IndexRelationStatus::Invalid;
+  std::optional<mlir::presburger::PresburgerSet> set;
+  std::string reason;
+
+  bool isExact() const {
+    return status == IndexRelationStatus::Exact && set.has_value();
+  }
+
+  bool contains(llvm::ArrayRef<int64_t> point) const {
+    return set && set->getSpace().getNumSetDimVars() == point.size() &&
+           set->containsPoint(point);
+  }
+};
+
+struct IndexRelationQueryResult {
+  IndexRelationStatus status = IndexRelationStatus::Invalid;
+  std::optional<bool> value;
+  std::string reason;
+
+  bool isProvenTrue() const {
+    return status == IndexRelationStatus::Exact && value.value_or(false);
+  }
 };
 
 } // namespace wafer::analysis

@@ -54,7 +54,8 @@
 
 ## 实施计划导航
 
-当前`doing`是Q32.R relation/physical realization；Q32.I MLIR-native implementation/relation foundation已归档为
+当前`doing`是Q32.B production-shaped candidate/all-rank vertical；Q32.R relation/physical realization已归档为
+`tasks/archive/physical-relation-realization.md`，Q32.I MLIR-native implementation/relation foundation已归档为
 `tasks/archive/mlir-native-implementation-relation-foundation.md`。Q32通用
 physical-dataflow synthesis实施计划为`tasks/plans/physical-dataflow-synthesis.md`。Q34 static memory packing已完成并归档为
 `tasks/archive/static-memory-packing.md`。这些计划只拆
@@ -89,6 +90,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/physical-relation-realization.md` | 已完成Q32.R的rich IndexRelation、physical encoding interface、TransferRealizability、destination-style load、relation-backed resident handoff和fresh 7B TP16数值纵向记录 |
 | `tasks/archive/mlir-native-implementation-relation-foundation.md` | 已完成Q32.I的fresh baseline、source implementation external model、真实reciprocal/division actual-clone纵向、MLIR-backed IndexRelation foundation和custom interface盘点/首轮删除记录 |
 | `tasks/archive/static-memory-packing.md` | 已完成Q34的MiniMalloc默认fixed-capacity packing、精确conflict适配、宽松确定性work budget、typed outcome/fallback和SPM/DDR/7B纵向gate记录 |
 | `tasks/archive/llama-block-numeric-characterization.md` | 已完成Q31的ProgramTensor逐rank abs/ULP统计、非admission多seed 7B重放及source/model comparator gate收紧记录 |

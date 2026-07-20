@@ -1,6 +1,6 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-07-20同步MLIR-native Q32 physical-dataflow验证边界。Q32.V已排期独立闭合mapped transfer、physical-footprint fill和
+状态：2026-07-20同步Q32.R rich relation/current physical realization与完整7B gate。Q32.V已排期独立闭合mapped transfer、physical-footprint fill和
 versioned GEMM orientation；RequiredCapabilitySet/schema升级仅在真实package/runtime consumer需要时从winner派生；Q32.T、Q32.N与Q3.6 Count保持later独立合同。保留Q31标准7B单block
 多seed数值证据及已完成
 Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate。
@@ -309,6 +309,11 @@ Q29数字保留为历史实现基线，不能替代Q32 fresh gate。
   Q32 completion必须证明tiling、view normalization、pointwise propagation、transfer cover和multi-use reuse均为真实consumer。
   它不复制source scalar semantics，也不跨IR mutation持久化。小shape property tests逐点验证domain、image/preimage、
   functional/injective/bijective、composition和exact cover；无法精确表示时拒绝对应rewrite；
+- Q32.R已闭合static domain交、image/preimage、inverse、concat piece、functional/injective/bijective、
+  equivalence/implication查询，以及current metadata view、compact DMA、GS/staged movement proof；canonical大shape
+  identity/reshape使用代数证明，不能因逐元素proof预算把合法7B route误判失败。relation-backed resident handoff在
+  production-shaped source中删除真实中间WDMA/RDMA，标准7B source选择26条handoff并fresh通过TP16
+  package/SystemC/PyTorch differential；详细证据见`tasks/archive/physical-relation-realization.md`；
 - 每个rank先构造一个走完整合法化链的reserved baseline clone，再按稳定IR/typed-interface顺序有界组合implementation、tile、
   encoding/view、storage/route、residency、buffering/order和collective expansion alternatives。不展开全Cartesian product，
   但不能只固定产生两条rewrite。baseline与alternative经过完全相同的materialization、conversion和exact gates；同一输入在

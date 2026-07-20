@@ -15,12 +15,14 @@ module {
   ^bb0(%arg0: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
        %arg1: memref<8x16xf16, #wafer.memory<ddr, tensor>>,
        %arg2: memref<4x16xf16, #wafer.memory<ddr, tensor>>):
-    %a_t = wafer.tile.load %arg0
+    %a_t = memref.alloc() : memref<4x8xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %arg0 into %a_t
         : memref<4x8xf16, #wafer.memory<ddr, tensor>>
-       -> memref<4x8xf16, #wafer.memory<spm, tensor>>
-    %b_t = wafer.tile.load %arg1
+      into memref<4x8xf16, #wafer.memory<spm, tensor>>
+    %b_t = memref.alloc() : memref<8x16xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %arg1 into %b_t
         : memref<8x16xf16, #wafer.memory<ddr, tensor>>
-       -> memref<8x16xf16, #wafer.memory<spm, tensor>>
+      into memref<8x16xf16, #wafer.memory<spm, tensor>>
     %a_cx = wafer.tile.materialize_layout %a_t
         : memref<4x8xf16, #wafer.memory<spm, tensor>>
        -> memref<4x8xf16, #wafer.memory<spm, cx>>

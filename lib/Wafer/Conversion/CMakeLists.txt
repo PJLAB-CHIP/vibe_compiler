@@ -47,6 +47,7 @@ add_mlir_conversion_library(WaferTileRegionToInstr
   WaferPassesIncGen
 
   LINK_LIBS PUBLIC
+  WaferAnalysis
   WaferIR
   MLIRArithDialect
   MLIRAsyncDialect

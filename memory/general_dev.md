@@ -609,6 +609,9 @@
   H=4096、I=11008、32 heads、FP16、batch 1、sequence 16。最终`expected.npy`必须由同一确定性input/parameter payload的
   PyTorch eager CPU完整block输出产生；手写NumPy仅用于定位误差。production完成入口仍是一次`wafer-compile
   --target-model`的TP16 package与全局output comparison，不把临时corpus目录或生成package写成长期路径。
+- scale重放必须从同一次corpus publication取得program data、input、全部parameters、expected和reference metadata，并核对
+  同源identity/finite contract；函数MLIR或canonical program digest相同只证明结构等价，不能证明payload代次相同。
+  出现数值域失败时先核对完整corpus identity和final typed IR，不从历史目录混配reference，也不靠放宽容差定位。
 - TP16 exporter在CPU PJRT上需要显式提供16个logical devices；运行repository workload exporter时设置
   `CPU_NUM_DEVICES=16`，否则XLA会在需要16 devices而只发现默认1 device时结构化拒绝。这只影响本地source
   corpus生成环境，不是compiler、IR、package或runtime协议。

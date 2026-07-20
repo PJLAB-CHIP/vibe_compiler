@@ -1,8 +1,8 @@
 # Wafer Compute、Movement 与 Target Implementation IR
 
 状态：本文定义 MLIR-native 的 source structured op 实现枚举、selected target-abstract
-compute/movement IR、instruction legality、effect 与 completion 合同。实现状态只看
-tasks/progress.md。
+compute/movement IR、instruction legality、effect 与 completion 合同。Q32.R已完成destination-style load及
+current route proof接入；其余实现状态只看tasks/progress.md。
 
 本文连接 rank-local normalized structured tensor IR、physical-dataflow synthesis 以及完整
 rank instruction program。source op 的数学语义始终由当前 MLIR operation、region、SSA、type、
@@ -340,10 +340,10 @@ Cx/NCx physical version，本层保持该typed memref operand，并允许另一�
 pack/unpack movement。packing由profile+dtype+encoding+shape/tail唯一推出，不进入`TargetImplementationCandidate::typed_parameters`
 或新Instr attr；instruction lowering只验证compute family确实接受该encoding及其valid-lane contract。
 
-当前代码中的`StorageLoadOp`仍只有source operand并隐式产生SPM result；这是Q29迁移事实，不是终态合同。
-Q32.R把它改为显式source+destination、无隐式allocation/result。materializer先创建SPM allocation/view，再
-构造destination-style load；conversion只消费这两个typed operands。不能用layout interface返回值继续模拟
-缺失的destination。
+当前`StorageLoadOp`已是显式source+destination、无隐式allocation/result的DestinationStyleOpInterface实现。
+materializer先创建SPM allocation/view，再构造load；conversion从source descriptor向该destination发射RDMA并删除load op。
+compact DMA、layout GS和reshape metadata/movement分支在lowering前消费同一invocation-local
+`TransferRealizability` proof，无法exact证明时结构化拒绝，不从layout interface返回值模拟destination或route。
 
 RDMA固定DDR source到SPM destination，WDMA固定SPM source到DDR destination；TDMA/GS只在verifier
 允许的local address domain工作。element stride在instruction lowering前checked转换为byte stride。

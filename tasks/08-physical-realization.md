@@ -1,6 +1,7 @@
 # Wafer Physical Realization：MLIR-native Encoding、Relation 与 Transfer
 
-状态：本文定义 physical realization 的终态边界。实现状态只看 `tasks/progress.md`。
+状态：本文定义 physical realization 的终态边界；Q32.R已落地current encoding interface、relation/transfer
+proof和resident纵向，Q32.V继续扩mapped target能力。实现状态只看`tasks/progress.md`。
 
 本文不建立独立 layout planner，也不建立 encoding/route 查询层。implementation、tile、physical
 version、residency、spill 和执行顺序的联合选择归 `tasks/06-physical-dataflow-synthesis.md`；accepted
@@ -207,6 +208,11 @@ getPhysicalSegments(logicalType, logicalDomain, targetProfile)
 dynamic shape 返回 failure。新增 encoding 通过新的 typed attr/type 及其 interface implementation 扩展，不修改
 中央 op-pair matcher。
 
+Q32.R的current static实现以memref shape作为唯一logical valid domain，encoding interface返回valid/padding
+cardinality、physical footprint、natural alignment和逐valid logical index的physical bit segment；
+`TransferRealizability`据此证明current compact/GS/staged路线。它不定义padding内容，也不提前物化Q32.V的
+mapped descriptor或physical-fill domain；后者仍按typed target纵向扩展本接口的真实consumer。
+
 ### 5.2 Compact `Tensor/NTensor`
 
 compact encoding 保持 canonical logical linear order。static subview、collapse/expand 和 strided view 只有在
@@ -327,9 +333,9 @@ planner 尝试一种 route 的方式是：clone 当前 IR，运行对应 proof �
 | spill/reload | explicit storage root、store/load 和 completion |
 | immutable encoded storage | typed resource/member、typed encoding 和对应 load |
 
-当前实现的`StorageLoadOp`仍以source→result隐式创建SPM value；Q32.R必须迁移为source+explicit destination、
-无result的destination-style op，并同步builder、parser/printer、verifier、conversion和tests。allocation identity
-由显式`memref.alloc`/view拥有，不能让load op或layout interface暗含。
+Q32.R后`StorageLoadOp`已经使用source+explicit destination、无result的destination-style合同；builder、
+parser/printer、verifier、conversion和tests消费同一表示。allocation identity由显式`memref.alloc`/view拥有，
+load lowering先以`TransferRealizability`重证compact DMA，再对已有destination发射RDMA，不创建隐藏storage。
 
 route choice优先由上述 IR 结构推导。如果同样的 operand/type/relation 可能合法 lower 成两种具有不同 effect、
 engine 或 ABI 的真实路线，下游不能自行挑选；必须在 movement op 上增加由 verifier 和 lowering 逐字段消费的

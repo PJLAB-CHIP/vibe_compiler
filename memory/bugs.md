@@ -716,3 +716,27 @@
   fail closed。
 - 修复模式：先显式检查空Attribute/Value/defining op；匹配不完整时只是不枚举alternative，保留baseline，
   不产生诊断或猜测语义。external model matcher必须同时用含非constant operand的完整source回归验证。
+
+## 2026-07-20 canonical大shape transfer proof不能依赖逐元素枚举预算
+
+- 现象：identity/reshape的compact DMA或staged movement在小shape property test中通过，标准7B shape却因
+  `maxEnumeratedElements`耗尽被结构化拒绝；提高budget会把analysis成本绑定tensor元素数。
+- 根因：已经由canonical row-major relation和encoding合同表达的全域性质仍按logical element逐点取
+  Presburger sample、physical span，错误地把测试oracle实现当production proof算法。
+- 修复模式：先证明relation与canonical static reshape/identity等价、两端valid domain exact cover、encoding为
+  canonical compact physical map，再只用checked footprint、element bit width和首尾代表span完成代数证明；只有
+  非canonical/piecewise map才在明确hard cap内枚举，cap耗尽fail closed。
+- 防复发：同一route测试同时覆盖小shape逐点oracle、超过默认cap的大canonical shape和非canonical超预算负例；
+  scale source必须实际经过该proof，不能只跑手写fixture。
+
+## 2026-07-20 scale replay必须绑定同一发布代次的program payload与reference
+
+- 现象：7B target-model重放在managed tensor command报告non-NaN-domain失败；scheduled Instr的op/descriptor序列与
+  已验证基线完全一致，关闭resident handoff也仍在同类command失败。进一步核对发现StableHLO文本digest相同，
+  但所用input/expected来自较早payload代次，与最终long-period finite parameter corpus不配套。
+- 根因：把“函数MLIR结构相同”误当成“完整source corpus identity相同”，没有同时核对program data、input、parameters、
+  expected和reference metadata的同源digest。
+- 修复模式：scale gate只消费一次原子发布的完整corpus目录；重放前核对该代次的source/input/parameter/expected
+  identity与finite contract，禁止从另一个历史目录拼接reference。隔离compiler回归时先比较final typed IR，再比较
+  corpus identity，避免用容差或关闭优化掩盖输入问题。
+- 防复发：归档证据记录稳定corpus算法/identity而非临时路径；相同MLIR digest只证明结构等价，不能替代payload配对证明。

@@ -20,6 +20,16 @@ static IndexRelationResult fail(IndexRelationStatus status,
   return IndexRelationResult{status, std::nullopt, reason.str()};
 }
 
+static IndexSetResult failSet(IndexRelationStatus status,
+                              llvm::StringRef reason) {
+  return IndexSetResult{status, std::nullopt, reason.str()};
+}
+
+static IndexRelationQueryResult failQuery(IndexRelationStatus status,
+                                          llvm::StringRef reason) {
+  return IndexRelationQueryResult{status, std::nullopt, reason.str()};
+}
+
 static bool isShapeValid(llvm::ArrayRef<int64_t> shape) {
   return llvm::all_of(shape, [](int64_t dim) {
     return dim >= 0 || ShapedType::isDynamic(dim);
@@ -40,6 +50,29 @@ static bool exceedsRelationLimits(const PresburgerRelation &relation,
                                   const IndexRelationLimits &limits) {
   return relation.getNumVars() > limits.maxVariables ||
          relation.getNumDisjuncts() > limits.maxDisjuncts;
+}
+
+static bool exceedsSetLimits(const PresburgerSet &set,
+                             const IndexRelationLimits &limits) {
+  return set.getNumVars() > limits.maxVariables ||
+         set.getNumDisjuncts() > limits.maxDisjuncts;
+}
+
+static bool isCompatibleSet(const PresburgerSet &set, unsigned rank) {
+  const PresburgerSpace &space = set.getSpace();
+  return space.getNumDomainVars() == 0 && space.getNumSetDimVars() == rank &&
+         space.getNumSymbolVars() == 0;
+}
+
+static PresburgerRelation getUnboundedIdentityRelation(unsigned rank) {
+  IntegerRelation identity(PresburgerSpace::getRelationSpace(rank, rank));
+  for (unsigned index = 0; index < rank; ++index) {
+    llvm::SmallVector<int64_t, 8> equality(identity.getNumVars() + 1, 0);
+    equality[index] = 1;
+    equality[rank + index] = -1;
+    identity.addEquality(equality);
+  }
+  return PresburgerRelation(identity);
 }
 
 static void addStaticShapeBounds(IntegerRelation &relation,
@@ -276,6 +309,63 @@ IndexRelation::staticReshape(llvm::ArrayRef<int64_t> destinationShape,
 }
 
 IndexRelationResult
+IndexRelation::staticConcatPiece(llvm::ArrayRef<int64_t> destinationShape,
+                                 llvm::ArrayRef<int64_t> sourceShape,
+                                 unsigned axis, int64_t destinationOffset,
+                                 const IndexRelationLimits &limits) {
+  if (destinationShape.size() != sourceShape.size() ||
+      axis >= destinationShape.size() || destinationOffset < 0 ||
+      !isShapeValid(destinationShape) || !isShapeValid(sourceShape) ||
+      hasDynamicDim(destinationShape) || hasDynamicDim(sourceShape))
+    return fail(IndexRelationStatus::Invalid,
+                "concat piece requires equal-rank static shapes, a valid "
+                "axis, and a non-negative destination offset");
+  for (unsigned index = 0; index < destinationShape.size(); ++index) {
+    if (index != axis && destinationShape[index] != sourceShape[index])
+      return fail(IndexRelationStatus::Invalid,
+                  "concat piece non-concat dimensions must match");
+  }
+  int64_t pieceEnd = 0;
+  if (llvm::AddOverflow(destinationOffset, sourceShape[axis], pieceEnd) ||
+      pieceEnd > destinationShape[axis])
+    return fail(IndexRelationStatus::Invalid,
+                "concat piece exceeds destination domain");
+
+  MLIRContext context;
+  llvm::SmallVector<AffineExpr, 4> results;
+  results.reserve(sourceShape.size());
+  for (unsigned index = 0; index < sourceShape.size(); ++index) {
+    AffineExpr expression = getAffineDimExpr(index, &context);
+    if (index == axis)
+      expression = expression - destinationOffset;
+    results.push_back(expression);
+  }
+  return fromAffineMap(
+      AffineMap::get(destinationShape.size(), 0, results, &context),
+      destinationShape, sourceShape, limits);
+}
+
+IndexSetResult IndexRelation::staticDomain(llvm::ArrayRef<int64_t> shape,
+                                           const IndexRelationLimits &limits) {
+  if (!isShapeValid(shape) || hasDynamicDim(shape))
+    return failSet(IndexRelationStatus::Unsupported,
+                   "static index domain requires a static shape");
+  if (shape.size() > limits.maxVariables)
+    return failSet(IndexRelationStatus::ResourceExhausted,
+                   "index domain exceeds variable budget");
+  IntegerPolyhedron domain(PresburgerSpace::getSetSpace(shape.size()));
+  for (auto [index, dim] : llvm::enumerate(shape)) {
+    domain.addBound(BoundType::LB, index, 0);
+    domain.addBound(BoundType::UB, index, dim - 1);
+  }
+  PresburgerSet set(domain);
+  if (exceedsSetLimits(set, limits))
+    return failSet(IndexRelationStatus::ResourceExhausted,
+                   "index domain exceeds variable or disjunct budget");
+  return IndexSetResult{IndexRelationStatus::Exact, std::move(set), {}};
+}
+
+IndexRelationResult
 IndexRelation::compose(const IndexRelation &next,
                        const IndexRelationLimits &limits) const {
   if (getSourceRank() != next.getDestinationRank())
@@ -296,6 +386,156 @@ IndexRelation::compose(const IndexRelation &next,
           : IndexRelationStatus::SoundBound;
   return IndexRelationResult{
       composedStatus, IndexRelation(std::move(composed), composedStatus), {}};
+}
+
+IndexRelationResult
+IndexRelation::inverse(const IndexRelationLimits &limits) const {
+  PresburgerRelation inverted = relation;
+  inverted.inverse();
+  if (exceedsRelationLimits(inverted, limits))
+    return fail(IndexRelationStatus::ResourceExhausted,
+                "inverse index relation exceeds variable or disjunct budget");
+  return IndexRelationResult{
+      status, IndexRelation(std::move(inverted), status), {}};
+}
+
+IndexRelationResult IndexRelation::intersectDestinationDomain(
+    const PresburgerSet &domain, const IndexRelationLimits &limits) const {
+  if (!isCompatibleSet(domain, getDestinationRank()))
+    return fail(IndexRelationStatus::Invalid,
+                "destination domain rank or symbols are incompatible");
+  PresburgerRelation restricted = relation.intersectDomain(domain);
+  if (exceedsRelationLimits(restricted, limits))
+    return fail(IndexRelationStatus::ResourceExhausted,
+                "destination-domain intersection exceeds budget");
+  return IndexRelationResult{
+      status, IndexRelation(std::move(restricted), status), {}};
+}
+
+IndexRelationResult
+IndexRelation::intersectSourceDomain(const PresburgerSet &domain,
+                                     const IndexRelationLimits &limits) const {
+  if (!isCompatibleSet(domain, getSourceRank()))
+    return fail(IndexRelationStatus::Invalid,
+                "source domain rank or symbols are incompatible");
+  PresburgerRelation restricted = relation.intersectRange(domain);
+  if (exceedsRelationLimits(restricted, limits))
+    return fail(IndexRelationStatus::ResourceExhausted,
+                "source-domain intersection exceeds budget");
+  return IndexRelationResult{
+      status, IndexRelation(std::move(restricted), status), {}};
+}
+
+IndexSetResult IndexRelation::image(const PresburgerSet &destinationDomain,
+                                    const IndexRelationLimits &limits) const {
+  IndexRelationResult restricted =
+      intersectDestinationDomain(destinationDomain, limits);
+  if (!restricted.relation)
+    return failSet(restricted.status, restricted.reason);
+  PresburgerSet image = restricted.relation->relation.getRangeSet();
+  if (exceedsSetLimits(image, limits))
+    return failSet(IndexRelationStatus::ResourceExhausted,
+                   "index relation image exceeds budget");
+  return IndexSetResult{restricted.status, std::move(image), {}};
+}
+
+IndexSetResult
+IndexRelation::preimage(const PresburgerSet &sourceDomain,
+                        const IndexRelationLimits &limits) const {
+  IndexRelationResult restricted = intersectSourceDomain(sourceDomain, limits);
+  if (!restricted.relation)
+    return failSet(restricted.status, restricted.reason);
+  PresburgerSet preimage = restricted.relation->relation.getDomainSet();
+  if (exceedsSetLimits(preimage, limits))
+    return failSet(IndexRelationStatus::ResourceExhausted,
+                   "index relation preimage exceeds budget");
+  return IndexSetResult{restricted.status, std::move(preimage), {}};
+}
+
+IndexRelationQueryResult
+IndexRelation::isFunctional(const IndexRelationLimits &limits) const {
+  if (status != IndexRelationStatus::Exact)
+    return failQuery(IndexRelationStatus::SoundBound,
+                     "functionality requires an exact relation");
+  PresburgerRelation sharedDestination = relation;
+  sharedDestination.inverse();
+  sharedDestination.compose(relation);
+  if (exceedsRelationLimits(sharedDestination, limits))
+    return failQuery(IndexRelationStatus::ResourceExhausted,
+                     "functionality proof exceeds budget");
+  return IndexRelationQueryResult{
+      IndexRelationStatus::Exact,
+      sharedDestination.isSubsetOf(
+          getUnboundedIdentityRelation(getSourceRank())),
+      {}};
+}
+
+IndexRelationQueryResult
+IndexRelation::isInjective(const IndexRelationLimits &limits) const {
+  if (status != IndexRelationStatus::Exact)
+    return failQuery(IndexRelationStatus::SoundBound,
+                     "injectivity requires an exact relation");
+  PresburgerRelation inverseRelation = relation;
+  inverseRelation.inverse();
+  PresburgerRelation sharedSource = relation;
+  sharedSource.compose(inverseRelation);
+  if (exceedsRelationLimits(sharedSource, limits))
+    return failQuery(IndexRelationStatus::ResourceExhausted,
+                     "injectivity proof exceeds budget");
+  return IndexRelationQueryResult{
+      IndexRelationStatus::Exact,
+      sharedSource.isSubsetOf(
+          getUnboundedIdentityRelation(getDestinationRank())),
+      {}};
+}
+
+IndexRelationQueryResult
+IndexRelation::isBijective(const IndexRelationLimits &limits) const {
+  IndexRelationQueryResult functional = isFunctional(limits);
+  if (functional.status != IndexRelationStatus::Exact || !functional.value)
+    return functional;
+  IndexRelationQueryResult injective = isInjective(limits);
+  if (injective.status != IndexRelationStatus::Exact || !injective.value)
+    return injective;
+  return IndexRelationQueryResult{IndexRelationStatus::Exact, true, {}};
+}
+
+IndexRelationQueryResult
+IndexRelation::isEquivalentTo(const IndexRelation &other,
+                              const IndexRelationLimits &limits) const {
+  if (getDestinationRank() != other.getDestinationRank() ||
+      getSourceRank() != other.getSourceRank())
+    return failQuery(IndexRelationStatus::Invalid,
+                     "equivalence requires matching relation ranks");
+  if (exceedsRelationLimits(relation, limits) ||
+      exceedsRelationLimits(other.relation, limits))
+    return failQuery(IndexRelationStatus::ResourceExhausted,
+                     "equivalence proof exceeds budget");
+  if (status != IndexRelationStatus::Exact ||
+      other.status != IndexRelationStatus::Exact)
+    return failQuery(IndexRelationStatus::SoundBound,
+                     "equivalence requires exact relations");
+  return IndexRelationQueryResult{
+      IndexRelationStatus::Exact, relation.isEqual(other.relation), {}};
+}
+
+IndexRelationQueryResult
+IndexRelation::implies(const IndexRelation &other,
+                       const IndexRelationLimits &limits) const {
+  if (getDestinationRank() != other.getDestinationRank() ||
+      getSourceRank() != other.getSourceRank())
+    return failQuery(IndexRelationStatus::Invalid,
+                     "implication requires matching relation ranks");
+  if (exceedsRelationLimits(relation, limits) ||
+      exceedsRelationLimits(other.relation, limits))
+    return failQuery(IndexRelationStatus::ResourceExhausted,
+                     "implication proof exceeds budget");
+  if (status != IndexRelationStatus::Exact ||
+      other.status != IndexRelationStatus::Exact)
+    return failQuery(IndexRelationStatus::SoundBound,
+                     "implication requires exact relations");
+  return IndexRelationQueryResult{
+      IndexRelationStatus::Exact, relation.isSubsetOf(other.relation), {}};
 }
 
 } // namespace wafer::analysis

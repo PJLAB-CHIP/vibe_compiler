@@ -11,9 +11,11 @@ func.func @load_compute_store(
   ^bb0(%in: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
        %out: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
        %fill: f16):
-    %loaded = wafer.tile.load %in
+    %loaded = memref.alloc()
+        : memref<4x8xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %in into %loaded
         : memref<4x8xf16, #wafer.memory<ddr, tensor>>
-       -> memref<4x8xf16, #wafer.memory<spm, tensor>>
+      into memref<4x8xf16, #wafer.memory<spm, tensor>>
     wafer.tile.fill %loaded, %fill
         : memref<4x8xf16, #wafer.memory<spm, tensor>>, f16
     %sum = wafer.tile.elementwise #wafer.elementwise_kind<add> %loaded, %loaded
@@ -59,9 +61,11 @@ func.func @strided_ddr_tile_load_store(
       -> (memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>) {
   ^bb0(%in: memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>,
        %out: memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>):
-    %loaded = wafer.tile.load %in
+    %loaded = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %in into %loaded
         : memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
-       -> memref<2x3xf16, #wafer.memory<spm, tensor>>
+      into memref<2x3xf16, #wafer.memory<spm, tensor>>
     wafer.tile.store %loaded, %out
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        -> memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
@@ -104,12 +108,16 @@ func.func @gemm_reduce_and_reshape(
        %rhs_boundary: memref<64x64xf16, #wafer.memory<ddr, tensor>>,
        %out_boundary: memref<64xf16, #wafer.memory<ddr, tensor>>,
        %zero_arg: f16):
-    %lhs_tensor = wafer.tile.load %lhs_boundary
+    %lhs_tensor = memref.alloc()
+        : memref<4x64xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %lhs_boundary into %lhs_tensor
         : memref<4x64xf16, #wafer.memory<ddr, tensor>>
-       -> memref<4x64xf16, #wafer.memory<spm, tensor>>
-    %rhs_tensor = wafer.tile.load %rhs_boundary
+      into memref<4x64xf16, #wafer.memory<spm, tensor>>
+    %rhs_tensor = memref.alloc()
+        : memref<64x64xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %rhs_boundary into %rhs_tensor
         : memref<64x64xf16, #wafer.memory<ddr, tensor>>
-       -> memref<64x64xf16, #wafer.memory<spm, tensor>>
+      into memref<64x64xf16, #wafer.memory<spm, tensor>>
     %lhs_cx = wafer.tile.materialize_layout %lhs_tensor
         : memref<4x64xf16, #wafer.memory<spm, tensor>>
        -> memref<4x64xf16, #wafer.memory<spm, cx>>
@@ -173,9 +181,11 @@ func.func @nested_control_flow(
   ^bb0(%in: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
        %out: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
        %cond_arg: i1):
-    %loaded = wafer.tile.load %in
+    %loaded = memref.alloc()
+        : memref<4x8xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %in into %loaded
         : memref<4x8xf16, #wafer.memory<ddr, tensor>>
-       -> memref<4x8xf16, #wafer.memory<spm, tensor>>
+      into memref<4x8xf16, #wafer.memory<spm, tensor>>
     %selected = scf.if %cond_arg -> (memref<4x8xf16, #wafer.memory<spm, tensor>>) {
       %copy = wafer.tile.copy %loaded
           : memref<4x8xf16, #wafer.memory<spm, tensor>>
@@ -210,9 +220,11 @@ func.func @nested_loop(
        %out: memref<4x8xf16, #wafer.memory<ddr, tensor>>):
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %loaded = wafer.tile.load %in
+    %loaded = memref.alloc()
+        : memref<4x8xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %in into %loaded
         : memref<4x8xf16, #wafer.memory<ddr, tensor>>
-       -> memref<4x8xf16, #wafer.memory<spm, tensor>>
+      into memref<4x8xf16, #wafer.memory<spm, tensor>>
     %looped = scf.for %i = %c0 to %c1 step %c1
         iter_args(%iter = %loaded)
         -> (memref<4x8xf16, #wafer.memory<spm, tensor>>) {
@@ -358,9 +370,11 @@ func.func @reshape_view(
       -> (memref<8x8xf16, #wafer.memory<ddr, tensor>>) {
   ^bb0(%in: memref<4x16xf16, #wafer.memory<ddr, tensor>>,
        %out: memref<8x8xf16, #wafer.memory<ddr, tensor>>):
-    %loaded = wafer.tile.load %in
+    %loaded = memref.alloc()
+        : memref<4x16xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %in into %loaded
         : memref<4x16xf16, #wafer.memory<ddr, tensor>>
-       -> memref<4x16xf16, #wafer.memory<spm, tensor>>
+      into memref<4x16xf16, #wafer.memory<spm, tensor>>
     %view = wafer.tile.reshape %loaded
         : memref<4x16xf16, #wafer.memory<spm, tensor>>
        -> memref<8x8xf16, #wafer.memory<spm, tensor>>

@@ -3,7 +3,10 @@
 #ifndef WAFER_IR_OPS_SPMOPS_TD
 #define WAFER_IR_OPS_SPMOPS_TD
 
+include "mlir/Interfaces/DestinationStyleOpInterface.td"
+
 def Wafer_StorageLoadOp : Wafer_Op<"tile.load", [
+    DestinationStyleOpInterface,
     DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_DDRResource>,
@@ -11,10 +14,15 @@ def Wafer_StorageLoadOp : Wafer_Op<"tile.load", [
                    MemWrite<Wafer_MovementResource>]>
 ]> {
   let summary = "load a DDR boundary buffer into an SPM buffer";
-  let arguments = (ins Wafer_AnyDDRMemRef:$source);
-  let results = (outs Wafer_AnySPMMemRef:$result);
+  let arguments = (ins Wafer_AnyDDRMemRef:$source, Wafer_AnySPMMemRef:$dest);
   let hasVerifier = 1;
-  let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
+  let assemblyFormat =
+      "$source `into` $dest attr-dict `:` type($source) `into` type($dest)";
+  let extraClassDeclaration = [{
+    ::mlir::MutableOperandRange getDpsInitsMutable() {
+      return getDestMutable();
+    }
+  }];
 }
 
 def Wafer_StorageStoreOp : Wafer_Op<"tile.store", [

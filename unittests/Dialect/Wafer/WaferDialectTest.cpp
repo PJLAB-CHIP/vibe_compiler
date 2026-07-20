@@ -241,6 +241,60 @@ TEST(WaferDialectTest, ParsesMemoryAttrAndComputesPhysicalInfo) {
   EXPECT_EQ(info->tailC, 4);
 }
 
+TEST(WaferDialectTest, PhysicalEncodingInterfaceOwnsStaticStorageFacts) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+
+  auto cxMemory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                         wafer::MemLayout::Cx);
+  auto cxEncoding =
+      mlir::dyn_cast<wafer::WaferPhysicalEncodingAttrInterface>(cxMemory);
+  ASSERT_TRUE(cxEncoding);
+  auto cxType =
+      mlir::MemRefType::get({2, 65}, mlir::Float16Type::get(&context),
+                            mlir::MemRefLayoutAttrInterface{}, cxMemory);
+  EXPECT_EQ(*cxEncoding.getPhysicalFootprintBytes(cxType), 512);
+  EXPECT_EQ(*cxEncoding.getMinimumAlignmentBytes(cxType), 256);
+  EXPECT_EQ(*cxEncoding.getValidElementCount(cxType), 130);
+  EXPECT_EQ(*cxEncoding.getPaddingElementCount(cxType), 126);
+  mlir::FailureOr<wafer::WaferPhysicalElementSpan> cxSpan =
+      cxEncoding.getPhysicalElementSpan(cxType, {1, 64});
+  ASSERT_TRUE(mlir::succeeded(cxSpan));
+  EXPECT_EQ(*cxSpan, (wafer::WaferPhysicalElementSpan{/*bitOffset=*/2112,
+                                                      /*bitLength=*/16}));
+
+  auto tensorMemory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::DDR,
+                                             wafer::MemLayout::Tensor);
+  auto tensorEncoding =
+      mlir::dyn_cast<wafer::WaferPhysicalEncodingAttrInterface>(tensorMemory);
+  ASSERT_TRUE(tensorEncoding);
+  auto tensorType =
+      mlir::MemRefType::get({2, 3}, mlir::Float16Type::get(&context),
+                            mlir::MemRefLayoutAttrInterface{}, tensorMemory);
+  EXPECT_EQ(*tensorEncoding.getPhysicalFootprintBytes(tensorType), 12);
+  EXPECT_EQ(*tensorEncoding.getMinimumAlignmentBytes(tensorType), 2);
+  EXPECT_EQ(*tensorEncoding.getValidElementCount(tensorType), 6);
+  EXPECT_EQ(*tensorEncoding.getPaddingElementCount(tensorType), 0);
+
+  auto bitpackedType =
+      mlir::MemRefType::get({2, 9}, mlir::IntegerType::get(&context, 1),
+                            mlir::MemRefLayoutAttrInterface{}, tensorMemory);
+  mlir::FailureOr<wafer::WaferPhysicalElementSpan> bitSpan =
+      tensorEncoding.getPhysicalElementSpan(bitpackedType, {1, 8});
+  ASSERT_TRUE(mlir::succeeded(bitSpan));
+  EXPECT_EQ(*bitSpan, (wafer::WaferPhysicalElementSpan{/*bitOffset=*/17,
+                                                       /*bitLength=*/1}));
+
+  auto dynamicType = mlir::MemRefType::get(
+      {mlir::ShapedType::kDynamic, 3}, mlir::Float16Type::get(&context),
+      mlir::MemRefLayoutAttrInterface{}, tensorMemory);
+  EXPECT_TRUE(
+      mlir::failed(tensorEncoding.getPhysicalFootprintBytes(dynamicType)));
+  EXPECT_TRUE(mlir::failed(cxEncoding.getPhysicalFootprintBytes(tensorType)));
+}
+
 TEST(WaferDialectTest, ComputesCxAndNCxBlockMajorOffsetsForLargeC) {
   mlir::DialectRegistry registry;
   wafer::registerAllDialects(registry);

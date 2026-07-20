@@ -1,7 +1,7 @@
 # Wafer Physical-Dataflow Synthesis 与 Candidate Selection
 
-状态：2026-07-20按 MLIR interface、analysis、rewrite、conversion 和 pass 边界重写。实现状态以
-`tasks/progress.md`为准。
+状态：2026-07-20已同步Q32.R relation/physical realization与首条resident纵向；production-shaped
+candidate seam继续由Q32.B推进。实现状态以`tasks/progress.md`为准。
 
 本文是 rank-local physical-dataflow candidate generation、candidate acceptance 和 all-rank atomic commit 的唯一设计
 owner。它不定义第二套 semantic IR、provider registry、shadow schedule、序列化 frontier 或 qualification 协议。07、08、
@@ -254,9 +254,11 @@ transfer route依赖 source root/view、destination root/view、两端 encoding�
 
 物化后的 IR 是唯一事实源；route proposal随后销毁。不存在 route query schema、route id sidecar或resolved schedule record。
 
-当前`StorageLoadOp`只有DDR source并隐式产生SPM result，与本文destination-style边界不一致。Q32.R必须改为
-显式DDR source + 已创建SPM destination、无隐式allocation/result；candidate materializer先创建allocation/view，
-再发load。该迁移与store形成同一DPS-like movement contract，layout interface不得掩盖此IR错位。
+Q32.R已把`StorageLoadOp`迁移为显式DDR source + 已创建SPM destination、无隐式allocation/result；candidate
+materializer先创建allocation/view再发load，tile-to-instruction conversion直接消费这两个typed operands。
+同批`TransferRealizability`从两端memref、encoding和`IndexRelation`现场证明current metadata view、compact DMA、
+GS与staged route；relation-backed full-buffer rewrite把producer SPM root通过tile-region SSA交给consumer并删除真实
+WDMA/RDMA。它们已贯通非7B source和标准7B exact gate，但尚未替代Q32.B之后的共同candidate owner与frontier。
 
 ### 3.4 Communication planning
 

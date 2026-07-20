@@ -73,10 +73,11 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
     auto ddr = builder.create<mlir::bufferization::ToMemrefOp>(
         constant.getLoc(), makeDDRMemRefType(tensorType), cloned->getResult(0),
         /*read_only=*/true);
-    auto load = builder.create<StorageLoadOp>(
-        constant.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor),
-        ddr.getMemref());
-    record(originalResult, MemLayout::Tensor, load.getResult());
+    auto destination = builder.create<mlir::memref::AllocOp>(
+        constant.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor));
+    builder.create<StorageLoadOp>(constant.getLoc(), ddr.getMemref(),
+                                  destination.getResult());
+    record(originalResult, MemLayout::Tensor, destination.getResult());
     externalBuffers[originalResult] = ddr.getMemref();
     tensorAttrs[originalResult] = constant.getValue();
     return mlir::success();
@@ -534,10 +535,13 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorExtractSlice(
     if (mlir::failed(tileView))
       return mlir::failure();
 
-    auto load = builder.create<StorageLoadOp>(
+    auto destination = builder.create<mlir::memref::AllocOp>(
         extractSlice.getLoc(),
-        makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *tileView);
-    record(extractSlice.getResult(), MemLayout::Tensor, load.getResult());
+        makeSPMMemRefType(resultTensorType, MemLayout::Tensor));
+    builder.create<StorageLoadOp>(extractSlice.getLoc(), *tileView,
+                                  destination.getResult());
+    record(extractSlice.getResult(), MemLayout::Tensor,
+           destination.getResult());
     return mlir::success();
   }
 

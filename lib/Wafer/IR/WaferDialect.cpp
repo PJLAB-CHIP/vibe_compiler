@@ -23,6 +23,7 @@
 using namespace wafer;
 
 #include "Wafer/IR/WaferEnums.cpp.inc"
+#include "Wafer/IR/WaferPhysicalEncodingInterfaces.cpp.inc"
 
 #define GET_ATTRDEF_CLASSES
 #include "Wafer/IR/WaferAttrs.cpp.inc"
@@ -310,6 +311,64 @@ static std::optional<int64_t> linearizeIndex(llvm::ArrayRef<int64_t> shape,
 
 MemoryAttr wafer::getWaferMemoryAttr(mlir::MemRefType type) {
   return mlir::dyn_cast_or_null<MemoryAttr>(type.getMemorySpace());
+}
+
+mlir::FailureOr<int64_t>
+MemoryAttr::getPhysicalFootprintBytes(mlir::MemRefType type) const {
+  if (getWaferMemoryAttr(type) != *this)
+    return mlir::failure();
+  std::optional<WaferPhysicalTensorInfo> info =
+      computeWaferPhysicalTensorInfo(type);
+  if (!info || info->physicalBytes < 0)
+    return mlir::failure();
+  return info->physicalBytes;
+}
+
+mlir::FailureOr<int64_t>
+MemoryAttr::getMinimumAlignmentBytes(mlir::MemRefType type) const {
+  if (getWaferMemoryAttr(type) != *this)
+    return mlir::failure();
+  std::optional<int64_t> elementBytes =
+      getElementStorageBytes(type.getElementType());
+  if (!elementBytes)
+    return mlir::failure();
+  if (getLayout() == MemLayout::Cx || getLayout() == MemLayout::NCx)
+    return kWaferSPMBankLineBytes;
+  return *elementBytes;
+}
+
+mlir::FailureOr<int64_t>
+MemoryAttr::getValidElementCount(mlir::MemRefType type) const {
+  if (getWaferMemoryAttr(type) != *this)
+    return mlir::failure();
+  std::optional<int64_t> elements = getStaticElementCount(type.getShape());
+  if (!elements)
+    return mlir::failure();
+  return *elements;
+}
+
+mlir::FailureOr<int64_t>
+MemoryAttr::getPaddingElementCount(mlir::MemRefType type) const {
+  if (getWaferMemoryAttr(type) != *this)
+    return mlir::failure();
+  std::optional<WaferPhysicalTensorInfo> info =
+      computeWaferPhysicalTensorInfo(type);
+  std::optional<int64_t> valid = getStaticElementCount(type.getShape());
+  if (!info || !valid || info->physicalElements < *valid)
+    return mlir::failure();
+  return info->physicalElements - *valid;
+}
+
+mlir::FailureOr<WaferPhysicalElementSpan> MemoryAttr::getPhysicalElementSpan(
+    mlir::MemRefType type, llvm::ArrayRef<int64_t> logicalIndices) const {
+  if (getWaferMemoryAttr(type) != *this)
+    return mlir::failure();
+  std::optional<int64_t> bitOffset =
+      computeWaferPhysicalElementBitOffset(type, logicalIndices);
+  std::optional<int64_t> bitLength = getElementBitWidth(type.getElementType());
+  if (!bitOffset || !bitLength || *bitLength <= 0)
+    return mlir::failure();
+  return WaferPhysicalElementSpan{*bitOffset, *bitLength};
 }
 
 bool wafer::isWaferMemRefType(mlir::Type type) {

@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -211,16 +212,18 @@ TEST(WaferInterfacesTest, LayoutResourceAndMemoryEffectsAreQueryable) {
   wafer::registerAllDialects(registry);
 
   mlir::MLIRContext context(registry);
-  context.loadDialect<wafer::WaferDialect, mlir::async::AsyncDialect>();
+  context.loadDialect<wafer::WaferDialect, mlir::async::AsyncDialect,
+                      mlir::memref::MemRefDialect>();
 
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
   %arg = "builtin.unrealized_conversion_cast"()
       : () -> memref<4x4xf32, #wafer.memory<ddr, tensor>>
-  %tile = wafer.tile.load %arg
+  %tile = memref.alloc() : memref<4x4xf32, #wafer.memory<spm, tensor>>
+  wafer.tile.load %arg into %tile
       : memref<4x4xf32, #wafer.memory<ddr, tensor>>
-     -> memref<4x4xf32, #wafer.memory<spm, tensor>>
+    into memref<4x4xf32, #wafer.memory<spm, tensor>>
   %cx = wafer.tile.materialize_layout %tile
       : memref<4x4xf32, #wafer.memory<spm, tensor>>
      -> memref<4x4xf32, #wafer.memory<spm, cx>>
@@ -245,8 +248,8 @@ module {
   ASSERT_TRUE(loadLayout);
   llvm::SmallVector<wafer::WaferLayoutRequirement, 4> layoutReqs;
   loadLayout.collectWaferLayoutRequirements(layoutReqs);
-  EXPECT_TRUE(hasLayoutRequirement(layoutReqs, wafer::WaferValueRole::Result, 0,
-                                   wafer::MemLayout::Tensor,
+  EXPECT_TRUE(hasLayoutRequirement(layoutReqs, wafer::WaferValueRole::Operand,
+                                   1, wafer::MemLayout::Tensor,
                                    wafer::MemorySpace::SPM));
   EXPECT_TRUE(mlir::succeeded(loadLayout.verifyWaferLayoutContract()));
 
@@ -260,7 +263,7 @@ module {
                                 wafer::WaferValueRole::Operand, 0, 64));
   EXPECT_TRUE(hasResourceEffect(resourceEffects, wafer::WaferResourceKind::SPM,
                                 wafer::WaferResourceAccess::Write,
-                                wafer::WaferValueRole::Result, 0, 64));
+                                wafer::WaferValueRole::Operand, 1, 64));
   EXPECT_TRUE(
       mlir::succeeded(loadResources.verifyWaferResourceEffectContract()));
 

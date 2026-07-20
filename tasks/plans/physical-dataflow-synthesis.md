@@ -169,6 +169,9 @@ implementation真实进入complete clone；rewrite后旧analysis不可复用。
 
 ### Checkpoint C（Q32.R）：Relation/Physical Realization与首条Resident纵向
 
+状态：已完成。实现与fresh gate见`tasks/archive/physical-relation-realization.md`；后续状态只看
+`tasks/progress.md`。
+
 输入：Checkpoint B和tasks/08 current encoding/view/transfer owners。
 
 施工：

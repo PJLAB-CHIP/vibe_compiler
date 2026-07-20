@@ -1001,19 +1001,4 @@ getRotateDataMoveSegments(mlir::PatternRewriter &rewriter,
                                          destIndexFn, failureReason, opLabel);
 }
 
-bool isMetadataOnlyLogicalMovement(
-    mlir::MemRefType sourceType, mlir::MemRefType destType,
-    llvm::ArrayRef<LogicalMovementSegment> segments) {
-  std::optional<WaferPhysicalTensorInfo> sourceInfo =
-      wafer::computeWaferPhysicalTensorInfo(sourceType);
-  std::optional<WaferPhysicalTensorInfo> destInfo =
-      wafer::computeWaferPhysicalTensorInfo(destType);
-  if (!sourceInfo || !destInfo ||
-      sourceInfo->physicalBytes != destInfo->physicalBytes)
-    return false;
-  return llvm::all_of(segments, [](const LogicalMovementSegment &segment) {
-    return segment.sourceOffset == segment.destOffset;
-  });
-}
-
 } // namespace wafer::tile_region_to_instr

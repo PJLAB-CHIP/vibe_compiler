@@ -955,15 +955,14 @@ module {
   ASSERT_TRUE(lowered);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
 
-  unsigned untiledTransposeBuffers = 0;
+  unsigned untiledTransposeResultBuffers = 0;
   lowered->walk([&](mlir::memref::AllocOp alloc) {
     mlir::MemRefType type = alloc.getType();
-    if (type.getRank() == 2 &&
-        ((type.getDimSize(0) == 8 && type.getDimSize(1) == 16) ||
-         (type.getDimSize(0) == 16 && type.getDimSize(1) == 8)))
-      ++untiledTransposeBuffers;
+    if (type.getRank() == 2 && type.getDimSize(0) == 16 &&
+        type.getDimSize(1) == 8)
+      ++untiledTransposeResultBuffers;
   });
-  EXPECT_EQ(untiledTransposeBuffers, 0u);
+  EXPECT_EQ(untiledTransposeResultBuffers, 0u);
 }
 
 TEST(WaferTensorProgramToTileRegionTest,

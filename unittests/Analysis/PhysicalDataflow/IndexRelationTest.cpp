@@ -1,6 +1,8 @@
 //===- IndexRelationTest.cpp - MLIR-backed index relation tests ----------===//
 
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
+#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
+#include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Builders.h"
@@ -15,8 +17,12 @@ namespace {
 
 using wafer::analysis::IndexRelation;
 using wafer::analysis::IndexRelationLimits;
+using wafer::analysis::IndexRelationQueryResult;
 using wafer::analysis::IndexRelationResult;
 using wafer::analysis::IndexRelationStatus;
+using wafer::analysis::IndexSetResult;
+using wafer::analysis::TransferRealizability;
+using wafer::analysis::TransferRealizabilityLimits;
 
 TEST(IndexRelationTest, RepresentsIdentityPermutationAndBroadcastExactly) {
   IndexRelationResult identity = IndexRelation::identity({2, 3});
@@ -58,6 +64,192 @@ TEST(IndexRelationTest, ComposesSliceAndReshapePointwise) {
   EXPECT_FALSE(composed.get()->contains({1, 1}, {11}));
 }
 
+TEST(IndexRelationTest, ComputesImagePreimageAndDomainIntersections) {
+  IndexRelationResult slice = IndexRelation::staticSlice(
+      /*destinationShape=*/{2, 2}, /*sourceShape=*/{4, 5},
+      /*offsets=*/{1, 2}, /*strides=*/{1, 1});
+  IndexSetResult destinationDomain = IndexRelation::staticDomain({1, 2});
+  IndexSetResult sourceDomain = IndexRelation::staticDomain({3, 4});
+  ASSERT_TRUE(slice.isExact());
+  ASSERT_TRUE(destinationDomain.isExact());
+  ASSERT_TRUE(sourceDomain.isExact());
+
+  IndexSetResult image = slice.get()->image(*destinationDomain.set);
+  ASSERT_TRUE(image.isExact());
+  EXPECT_TRUE(image.contains({1, 2}));
+  EXPECT_TRUE(image.contains({1, 3}));
+  EXPECT_FALSE(image.contains({2, 2}));
+
+  IndexSetResult preimage = slice.get()->preimage(*sourceDomain.set);
+  ASSERT_TRUE(preimage.isExact());
+  EXPECT_TRUE(preimage.contains({0, 0}));
+  EXPECT_TRUE(preimage.contains({1, 1}));
+  EXPECT_FALSE(preimage.contains({0, 2}));
+
+  IndexRelationResult destinationRestricted =
+      slice.get()->intersectDestinationDomain(*destinationDomain.set);
+  ASSERT_TRUE(destinationRestricted.isExact());
+  EXPECT_TRUE(destinationRestricted.get()->contains({0, 1}, {1, 3}));
+  EXPECT_FALSE(destinationRestricted.get()->contains({1, 1}, {2, 3}));
+
+  IndexRelationResult sourceRestricted =
+      slice.get()->intersectSourceDomain(*sourceDomain.set);
+  ASSERT_TRUE(sourceRestricted.isExact());
+  EXPECT_TRUE(sourceRestricted.get()->contains({1, 1}, {2, 3}));
+  EXPECT_FALSE(sourceRestricted.get()->contains({1, 1}, {2, 4}));
+}
+
+TEST(IndexRelationTest, ProvesFunctionalInjectiveBijectiveAndContainment) {
+  mlir::MLIRContext context;
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr d1 = mlir::getAffineDimExpr(1, &context);
+  IndexRelationResult identity = IndexRelation::identity({2, 3});
+  IndexRelationResult permutation = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(2, 0, {d1, d0}, &context), {2, 3}, {3, 2});
+  IndexRelationResult broadcast = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(2, 0, {d1}, &context), {4, 3}, {3});
+  ASSERT_TRUE(identity.isExact());
+  ASSERT_TRUE(permutation.isExact());
+  ASSERT_TRUE(broadcast.isExact());
+
+  EXPECT_TRUE(identity.get()->isFunctional().isProvenTrue());
+  EXPECT_TRUE(identity.get()->isInjective().isProvenTrue());
+  EXPECT_TRUE(identity.get()->isBijective().isProvenTrue());
+  EXPECT_TRUE(permutation.get()->isBijective().isProvenTrue());
+  EXPECT_TRUE(broadcast.get()->isFunctional().isProvenTrue());
+  IndexRelationQueryResult broadcastInjective = broadcast.get()->isInjective();
+  ASSERT_EQ(broadcastInjective.status, IndexRelationStatus::Exact);
+  EXPECT_EQ(broadcastInjective.value, false);
+
+  IndexRelationResult inverseBroadcast = broadcast.get()->inverse();
+  ASSERT_TRUE(inverseBroadcast.isExact());
+  IndexRelationQueryResult inverseFunctional =
+      inverseBroadcast.get()->isFunctional();
+  ASSERT_EQ(inverseFunctional.status, IndexRelationStatus::Exact);
+  EXPECT_EQ(inverseFunctional.value, false);
+
+  IndexRelationResult full = IndexRelation::identity({4});
+  IndexRelationResult prefix = IndexRelation::staticSlice({2}, {4}, {0}, {1});
+  ASSERT_TRUE(full.isExact());
+  ASSERT_TRUE(prefix.isExact());
+  EXPECT_TRUE(full.get()->isEquivalentTo(*full.get()).isProvenTrue());
+  EXPECT_TRUE(prefix.get()->implies(*full.get()).isProvenTrue());
+  IndexRelationQueryResult reverseImplication =
+      full.get()->implies(*prefix.get());
+  ASSERT_EQ(reverseImplication.status, IndexRelationStatus::Exact);
+  EXPECT_EQ(reverseImplication.value, false);
+}
+
+TEST(IndexRelationTest, RepresentsSegmentedConcatPiecesExactly) {
+  IndexRelationResult first = IndexRelation::staticConcatPiece(
+      /*destinationShape=*/{2, 5}, /*sourceShape=*/{2, 2}, /*axis=*/1,
+      /*destinationOffset=*/0);
+  IndexRelationResult second = IndexRelation::staticConcatPiece(
+      /*destinationShape=*/{2, 5}, /*sourceShape=*/{2, 3}, /*axis=*/1,
+      /*destinationOffset=*/2);
+  ASSERT_TRUE(first.isExact());
+  ASSERT_TRUE(second.isExact());
+  EXPECT_TRUE(first.get()->contains({1, 1}, {1, 1}));
+  EXPECT_FALSE(first.get()->contains({1, 2}, {1, 0}));
+  EXPECT_TRUE(second.get()->contains({1, 2}, {1, 0}));
+  EXPECT_TRUE(second.get()->contains({0, 4}, {0, 2}));
+  EXPECT_FALSE(second.get()->contains({0, 1}, {0, 0}));
+
+  EXPECT_EQ(IndexRelation::staticConcatPiece({2, 5}, {2, 3}, 1, 3).status,
+            IndexRelationStatus::Invalid);
+  EXPECT_EQ(IndexRelation::staticConcatPiece({2, 5}, {3, 3}, 1, 2).status,
+            IndexRelationStatus::Invalid);
+}
+
+TEST(IndexRelationTest, ProvesCurrentViewDmaGatherScatterAndStagedRoutes) {
+  mlir::DialectRegistry registry;
+  registry.insert<wafer::WaferDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+  mlir::Type f16 = mlir::Float16Type::get(&context);
+  auto ddrTensor = wafer::MemoryAttr::get(&context, wafer::MemorySpace::DDR,
+                                          wafer::MemLayout::Tensor);
+  auto spmTensor = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                          wafer::MemLayout::Tensor);
+  auto spmCx = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                      wafer::MemLayout::Cx);
+  auto makeType = [&](llvm::ArrayRef<int64_t> shape, wafer::MemoryAttr memory) {
+    return mlir::MemRefType::get(shape, f16, mlir::MemRefLayoutAttrInterface{},
+                                 memory);
+  };
+
+  mlir::MemRefType boundary = makeType({2, 65}, ddrTensor);
+  mlir::MemRefType temporary = makeType({2, 65}, spmTensor);
+  mlir::MemRefType encoded = makeType({2, 65}, spmCx);
+  IndexRelationResult identity = IndexRelation::identity({2, 65});
+  ASSERT_TRUE(identity.isExact());
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveCompactDma(
+      boundary, temporary, *identity.get())));
+  EXPECT_TRUE(mlir::failed(TransferRealizability::proveCompactDma(
+      boundary, encoded, *identity.get())));
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveGatherScatter(
+      temporary, encoded, *identity.get())));
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveStagedMovement(
+      boundary, temporary, encoded, *identity.get(), *identity.get())));
+
+  mlir::MemRefType largeBoundary = makeType({16, 4096}, ddrTensor);
+  mlir::MemRefType largeTemporary = makeType({16, 4096}, spmTensor);
+  mlir::MemRefType largeEncoded = makeType({16, 4096}, spmCx);
+  IndexRelationResult largeIdentity = IndexRelation::identity({16, 4096});
+  ASSERT_TRUE(largeIdentity.isExact());
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveStagedMovement(
+      largeBoundary, largeTemporary, largeEncoded, *largeIdentity.get(),
+      *largeIdentity.get())));
+
+  auto stridedLayout = mlir::StridedLayoutAttr::get(&context, 0, {4096, 1});
+  auto stridedBoundary =
+      mlir::MemRefType::get({16, 2048}, f16, stridedLayout, ddrTensor);
+  mlir::MemRefType tiledTemporary = makeType({16, 2048}, spmTensor);
+  IndexRelationResult tiledIdentity = IndexRelation::identity({16, 2048});
+  ASSERT_TRUE(tiledIdentity.isExact());
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveCompactDma(
+      stridedBoundary, tiledTemporary, *tiledIdentity.get())));
+
+  mlir::MemRefType compactReshape = makeType({5, 26}, spmTensor);
+  mlir::MemRefType encodedReshape = makeType({5, 26}, spmCx);
+  IndexRelationResult reshape = IndexRelation::staticReshape({5, 26}, {2, 65});
+  ASSERT_TRUE(reshape.isExact());
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveMetadataView(
+      temporary, compactReshape, *reshape.get(),
+      /*destinationMayWrite=*/true)));
+  EXPECT_TRUE(mlir::failed(TransferRealizability::proveMetadataView(
+      encoded, encodedReshape, *reshape.get(),
+      /*destinationMayWrite=*/true)));
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveGatherScatter(
+      encoded, encodedReshape, *reshape.get())));
+
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr d1 = mlir::getAffineDimExpr(1, &context);
+  IndexRelationResult permutation = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(2, 0, {d1, d0}, &context), {3, 2}, {2, 3});
+  ASSERT_TRUE(permutation.isExact());
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveGatherScatter(
+      makeType({2, 3}, spmTensor), makeType({3, 2}, spmTensor),
+      *permutation.get())));
+  EXPECT_TRUE(mlir::failed(TransferRealizability::proveMetadataView(
+      makeType({2, 3}, spmTensor), makeType({3, 2}, spmTensor),
+      *permutation.get(), /*destinationMayWrite=*/true)));
+  EXPECT_TRUE(mlir::failed(TransferRealizability::proveGatherScatter(
+      makeType({2, 3}, spmTensor), makeType({3, 2}, spmTensor),
+      *permutation.get(),
+      TransferRealizabilityLimits{/*maxEnumeratedElements=*/3})));
+
+  IndexRelationResult broadcast = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(2, 0, {d1}, &context), {4, 3}, {3});
+  ASSERT_TRUE(broadcast.isExact());
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveGatherScatter(
+      makeType({3}, spmTensor), makeType({4, 3}, spmTensor),
+      *broadcast.get())));
+  EXPECT_TRUE(mlir::failed(TransferRealizability::proveMetadataView(
+      makeType({3}, spmTensor), makeType({4, 3}, spmTensor), *broadcast.get(),
+      /*destinationMayWrite=*/true)));
+}
+
 TEST(IndexRelationTest, ResolvesMixedSliceOperandsWithValueBounds) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect>();
@@ -91,6 +283,8 @@ TEST(IndexRelationTest, DistinguishesBoundUnsupportedInvalidAndBudgetFailure) {
   IndexRelationResult composedBound = bound.get()->compose(*bound.get());
   EXPECT_EQ(composedBound.status, IndexRelationStatus::SoundBound);
   EXPECT_FALSE(composedBound.isExact());
+  EXPECT_EQ(bound.get()->isFunctional().status,
+            IndexRelationStatus::SoundBound);
 
   mlir::AffineExpr symbol = mlir::getAffineSymbolExpr(0, &context);
   IndexRelationResult unsupported = IndexRelation::fromAffineMap(
@@ -110,6 +304,19 @@ TEST(IndexRelationTest, DistinguishesBoundUnsupportedInvalidAndBudgetFailure) {
                                    IndexRelationLimits{/*maxVariables=*/1,
                                                        /*maxDisjuncts=*/1});
   EXPECT_EQ(exhausted.status, IndexRelationStatus::ResourceExhausted);
+
+  IndexSetResult exhaustedDomain = IndexRelation::staticDomain(
+      {4, 4}, IndexRelationLimits{/*maxVariables=*/1, /*maxDisjuncts=*/1});
+  EXPECT_EQ(exhaustedDomain.status, IndexRelationStatus::ResourceExhausted);
+
+  IndexRelationResult exactIdentity = IndexRelation::identity({4});
+  ASSERT_TRUE(exactIdentity.isExact());
+  EXPECT_EQ(exactIdentity.get()
+                ->isEquivalentTo(*exactIdentity.get(),
+                                 IndexRelationLimits{/*maxVariables=*/1,
+                                                     /*maxDisjuncts=*/1})
+                .status,
+            IndexRelationStatus::ResourceExhausted);
 }
 
 } // namespace

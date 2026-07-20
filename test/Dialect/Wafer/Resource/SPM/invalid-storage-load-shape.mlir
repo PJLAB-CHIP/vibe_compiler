@@ -3,9 +3,11 @@
 module {
   %source = "builtin.unrealized_conversion_cast"()
       : () -> memref<4x8xf16, #wafer.memory<ddr, tensor>>
-  %0 = wafer.tile.load %source
+  %dest = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4x16xf16, #wafer.memory<spm, tensor>>
+  wafer.tile.load %source into %dest
       : memref<4x8xf16, #wafer.memory<ddr, tensor>>
-     -> memref<4x16xf16, #wafer.memory<spm, tensor>>
+    into memref<4x16xf16, #wafer.memory<spm, tensor>>
 }
 
-// CHECK: tile.load result tensor type must match source tensor type
+// CHECK: tile.load destination tensor type must match source tensor type

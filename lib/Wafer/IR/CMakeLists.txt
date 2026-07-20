@@ -22,6 +22,7 @@ add_mlir_dialect_library(WaferIR
   WaferAttrsIncGen
   WaferInterfacesIncGen
   WaferOpsIncGen
+  WaferPhysicalEncodingInterfacesIncGen
   WaferTypesIncGen
 
   LINK_LIBS PUBLIC

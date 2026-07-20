@@ -4,6 +4,7 @@
 #define WAFER_IR_WAFERATTRS_TD
 
 include "Wafer/IR/WaferBase.td"
+include "Wafer/IR/WaferPhysicalEncodingInterfaces.td"
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/EnumAttr.td"
 
@@ -43,7 +44,9 @@ def Wafer_MemLayout : I32EnumAttr<"MemLayout", "Wafer physical memory layout fam
   let genSpecializedAttr = 0;
 }
 
-def Wafer_MemoryAttr : AttrDef<Wafer_Dialect, "Memory"> {
+def Wafer_MemoryAttr : AttrDef<Wafer_Dialect, "Memory", [
+    DeclareAttrInterfaceMethods<WaferPhysicalEncodingAttrInterface>
+  ]> {
   let mnemonic = "memory";
   let summary = "Wafer memory-space and physical layout marker";
   let description = [{
@@ -52,7 +55,9 @@ def Wafer_MemoryAttr : AttrDef<Wafer_Dialect, "Memory"> {
     logical tensor view; this attribute records which Wafer addressable memory
     space contains the buffer and which physical layout family the buffer uses.
     It does not encode a physical SPM offset, runtime handle, packet field, or
-    ABI descriptor.
+    ABI descriptor. Its physical encoding interface derives the static
+    footprint, natural alignment, logical valid domain, physical padding, and
+    per-element physical bit segment from the memref type and this attribute.
   }];
 
   let parameters = (ins

@@ -6,9 +6,11 @@ func.func @materialize_padded_layout(
       : memref<4x8xf16, #wafer.memory<ddr, tensor>>)
       -> (memref<4x8xf16, #wafer.memory<ddr, tensor>>) {
   ^bb0(%arg0: memref<4x8xf16, #wafer.memory<ddr, tensor>>):
-    %loaded = wafer.tile.load %arg0
+    %loaded = memref.alloc()
+        : memref<4x8xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %arg0 into %loaded
         : memref<4x8xf16, #wafer.memory<ddr, tensor>>
-       -> memref<4x8xf16, #wafer.memory<spm, tensor>>
+      into memref<4x8xf16, #wafer.memory<spm, tensor>>
     %cx = wafer.tile.materialize_layout %loaded
         : memref<4x8xf16, #wafer.memory<spm, tensor>>
        -> memref<4x8xf16, #wafer.memory<spm, cx>>
@@ -24,9 +26,11 @@ func.func @materialize_retained_tail_layout(
       : memref<4x86xf16, #wafer.memory<ddr, tensor>>)
       -> (memref<4x86xf16, #wafer.memory<ddr, tensor>>) {
   ^bb0(%arg0: memref<4x86xf16, #wafer.memory<ddr, tensor>>):
-    %loaded = wafer.tile.load %arg0
+    %loaded = memref.alloc()
+        : memref<4x86xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.load %arg0 into %loaded
         : memref<4x86xf16, #wafer.memory<ddr, tensor>>
-       -> memref<4x86xf16, #wafer.memory<spm, tensor>>
+      into memref<4x86xf16, #wafer.memory<spm, tensor>>
     %cx = wafer.tile.materialize_layout %loaded
         : memref<4x86xf16, #wafer.memory<spm, tensor>>
        -> memref<4x86xf16, #wafer.memory<spm, cx>>

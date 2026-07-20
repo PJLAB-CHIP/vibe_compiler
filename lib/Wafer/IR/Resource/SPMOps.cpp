@@ -12,22 +12,22 @@ using namespace wafer::detail;
 mlir::LogicalResult StorageLoadOp::verify() {
   std::optional<mlir::RankedTensorType> sourceType =
       getLogicalTensorType(getSource().getType());
-  std::optional<mlir::RankedTensorType> resultTensor =
-      getLogicalTensorType(getResult().getType());
-  if (!sourceType || !resultTensor)
-    return emitOpError("expects DDR memref source and SPM memref result");
+  std::optional<mlir::RankedTensorType> destTensor =
+      getLogicalTensorType(getDest().getType());
+  if (!sourceType || !destTensor)
+    return emitOpError("expects DDR memref source and SPM memref destination");
 
-  if (*resultTensor != sourceType)
+  if (*destTensor != sourceType)
     return emitOpError(
-        "tile.load result tensor type must match source tensor type");
+        "tile.load destination tensor type must match source tensor type");
   if (!hasWaferMemorySpace(getSource().getType(), MemorySpace::DDR))
     return emitOpError("tile.load source must use DDR memory space");
   if (!hasWaferLayout(getSource().getType(), MemLayout::Tensor))
     return emitOpError("tile.load source must use tensor layout");
-  if (!hasWaferMemorySpace(getResult().getType(), MemorySpace::SPM))
-    return emitOpError("tile.load result must use SPM memory space");
-  if (!hasWaferLayout(getResult().getType(), MemLayout::Tensor))
-    return emitOpError("tile.load result must use tensor layout");
+  if (!hasWaferMemorySpace(getDest().getType(), MemorySpace::SPM))
+    return emitOpError("tile.load destination must use SPM memory space");
+  if (!hasWaferLayout(getDest().getType(), MemLayout::Tensor))
+    return emitOpError("tile.load destination must use tensor layout");
 
   return mlir::success();
 }
@@ -36,8 +36,8 @@ void StorageLoadOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
   appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
                           getSource().getType());
-  appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
-                          getResult().getType());
+  appendLayoutRequirement(requirements, WaferValueRole::Operand, 1,
+                          getDest().getType());
 }
 
 mlir::LogicalResult StorageLoadOp::verifyWaferLayoutContract() {
@@ -52,11 +52,11 @@ void StorageLoadOp::collectWaferResourceEffects(
                        WaferResourceAccess::Read, WaferValueRole::Operand, 0,
                        getCompactByteSizeOrUnknown(getSource().getType()));
   appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
-                       getCompactByteSizeOrUnknown(getResult().getType()));
+                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
+                       getCompactByteSizeOrUnknown(getDest().getType()));
   appendResourceEffect(effects, WaferResourceKind::Movement,
                        WaferResourceAccess::Issue, WaferValueRole::None, 0,
-                       getCompactByteSizeOrUnknown(getResult().getType()));
+                       getCompactByteSizeOrUnknown(getDest().getType()));
 }
 
 mlir::LogicalResult StorageLoadOp::verifyWaferResourceEffectContract() {

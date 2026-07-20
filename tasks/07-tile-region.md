@@ -217,9 +217,9 @@ boundary movement的概念形式：
 
 它们是destination-style op，无隐式allocation和result；logical coordinate relation固定为identity。
 
-当前代码中的`StorageLoadOp`仍为source→result，尚未满足该合同。Q32.R必须先创建SPM allocation/view，
-再发explicit source/destination load，并同步所有builder、conversion和tests；不能把旧result builder当作
-destination-style兼容入口。
+Q32.R后`StorageLoadOp`已满足该合同：materializer先创建SPM allocation/view，再发explicit
+source/destination load；所有builder、conversion和tests均不再保留旧result入口。tile-to-instruction lowering对
+已有destination发射RDMA并删除load，allocation identity继续由memref SSA拥有。
 slice、permutation、reshape或concat先成为可验证view，不能化为同shape identity pieces时使用显式local或
 staged movement。op不携带relation副本、descriptor list或lowering-time选择字段。
 

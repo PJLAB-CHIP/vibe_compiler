@@ -2,6 +2,7 @@
 
 #include "Internal.h"
 
+#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -26,18 +27,25 @@ public:
   mlir::LogicalResult
   matchAndRewrite(StorageLoadOp op,
                   mlir::PatternRewriter &rewriter) const final {
-    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
-        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
-    if (mlir::failed(dest))
-      return mlir::failure();
+    auto sourceType = mlir::cast<mlir::MemRefType>(op.getSource().getType());
+    auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
+    analysis::IndexRelationResult relation =
+        analysis::IndexRelation::identity(destType.getShape());
+    if (!relation.isExact() ||
+        mlir::failed(analysis::TransferRealizability::proveCompactDma(
+            sourceType, destType, *relation.get())))
+      return failPattern(rewriter, op, failureReason,
+                         "tile.load compact DMA is not exactly realizable");
+
     mlir::FailureOr<MovementDescriptor> descriptor =
         getStridedTensorDescriptor(rewriter, op, op.getSource().getType(),
                                    failureReason, "tile.load source");
     if (mlir::failed(descriptor))
       return mlir::failure();
 
-    createRDMA(rewriter, op.getLoc(), op.getSource(), *dest, *descriptor);
-    rewriter.replaceOp(op, *dest);
+    createRDMA(rewriter, op.getLoc(), op.getSource(), op.getDest(),
+               *descriptor);
+    rewriter.eraseOp(op);
     return mlir::success();
   }
 
@@ -54,6 +62,16 @@ public:
   mlir::LogicalResult
   matchAndRewrite(StorageStoreOp op,
                   mlir::PatternRewriter &rewriter) const final {
+    auto sourceType = mlir::cast<mlir::MemRefType>(op.getSource().getType());
+    auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
+    analysis::IndexRelationResult relation =
+        analysis::IndexRelation::identity(destType.getShape());
+    if (!relation.isExact() ||
+        mlir::failed(analysis::TransferRealizability::proveCompactDma(
+            sourceType, destType, *relation.get())))
+      return failPattern(rewriter, op, failureReason,
+                         "tile.store compact DMA is not exactly realizable");
+
     mlir::FailureOr<MovementDescriptor> descriptor = getStridedTensorDescriptor(
         rewriter, op, op.getDest().getType(), failureReason, "tile.store dest");
     if (mlir::failed(descriptor))
@@ -92,6 +110,15 @@ public:
     if (!sourceType || !resultType)
       return failPattern(rewriter, op, failureReason,
                          "layout materialize lowering requires memref types");
+
+    analysis::IndexRelationResult relation =
+        analysis::IndexRelation::identity(resultType.getShape());
+    if (!relation.isExact() ||
+        mlir::failed(analysis::TransferRealizability::proveGatherScatter(
+            sourceType, resultType, *relation.get())))
+      return failPattern(
+          rewriter, op, failureReason,
+          "layout materialization gather/scatter is not exactly realizable");
 
     mlir::FailureOr<mlir::Value> dest = createDestAlloc(
         op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
@@ -532,21 +559,15 @@ public:
       return failPattern(rewriter, op, failureReason,
                          "tile.reshape lowering requires Wafer memref types");
 
-    if (isStandardViewCompatibleLayout(sourceMemory.getLayout()) &&
-        isStandardViewCompatibleLayout(resultMemory.getLayout())) {
-      mlir::FailureOr<int64_t> sourceBytes =
-          getStaticPhysicalBytes(rewriter, op, op.getSource().getType(),
-                                 failureReason, "tile.reshape source");
-      mlir::FailureOr<int64_t> resultBytes =
-          getStaticPhysicalBytes(rewriter, op, op.getResult().getType(),
-                                 failureReason, "tile.reshape result");
-      if (mlir::failed(sourceBytes) || mlir::failed(resultBytes))
-        return mlir::failure();
-      if (*sourceBytes != *resultBytes)
-        return failPattern(rewriter, op, failureReason,
-                           "tile.reshape standard view lowering requires "
-                           "equal static physical byte counts");
-
+    analysis::IndexRelationResult relation =
+        analysis::IndexRelation::staticReshape(resultType.getShape(),
+                                               sourceType.getShape());
+    if (!relation.isExact())
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reshape requires an exact index relation");
+    if (mlir::succeeded(analysis::TransferRealizability::proveMetadataView(
+            sourceType, resultType, *relation.get(),
+            /*destinationMayWrite=*/true))) {
       llvm::SmallVector<int64_t> sizes(resultType.getShape().begin(),
                                        resultType.getShape().end());
       mlir::FailureOr<llvm::SmallVector<int64_t>> strides =
@@ -560,6 +581,11 @@ public:
       rewriter.replaceOp(op, view.getResult());
       return mlir::success();
     }
+
+    if (mlir::failed(analysis::TransferRealizability::proveGatherScatter(
+            sourceType, resultType, *relation.get())))
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reshape movement is not exactly realizable");
 
     mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
         getStaticLogicalMovementSegments(rewriter, op, sourceType, resultType,
@@ -567,21 +593,6 @@ public:
                                          "tile.reshape lowering");
     if (mlir::failed(segments))
       return mlir::failure();
-
-    if (isMetadataOnlyLogicalMovement(sourceType, resultType, *segments)) {
-      llvm::SmallVector<int64_t> sizes(resultType.getShape().begin(),
-                                       resultType.getShape().end());
-      mlir::FailureOr<llvm::SmallVector<int64_t>> strides =
-          getStaticCompactStrides(rewriter, op, resultType, failureReason);
-      if (mlir::failed(strides))
-        return mlir::failure();
-
-      auto view = rewriter.create<mlir::memref::ReinterpretCastOp>(
-          op.getLoc(), resultType, op.getSource(), /*offset=*/0, sizes,
-          *strides);
-      rewriter.replaceOp(op, view.getResult());
-      return mlir::success();
-    }
 
     mlir::FailureOr<mlir::Value> dest = createDestAlloc(
         op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);

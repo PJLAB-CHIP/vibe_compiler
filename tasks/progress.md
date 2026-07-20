@@ -69,7 +69,7 @@ explicit Count semantic/target/model evidence -> Q3.6 (independent typed writeba
 
 ## 当前实施队列
 
-Q32.R是当前唯一`doing` row。Q32 umbrella不会让后续row自动进入执行，later/external gate也不会
+Q32.B是当前唯一`doing` row。Q32 umbrella不会让后续row自动进入执行，later/external gate也不会
 自动进入主线。
 
 设计就绪边界：Q32.I/R/B/V/M/S/G采用MLIR interface、可重算analysis、actual-clone rewrite、DialectConversion、现有exact
@@ -81,8 +81,8 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q32.I | `mlir-native-implementation-relation-foundation` | `done` | Q29、Q28、Q30、Q31 | source OpInterface/external models已让reciprocal-via-division真实进入complete clone；MLIR Affine/Presburger/ValueBounds IndexRelation foundation与precision/failure/property gate闭合；重复DPS/Tiling语义的WaferTilingInterface已删除。证据见`tasks/archive/mlir-native-implementation-relation-foundation.md`。 | 01、06、08、10、13、16、18；`tasks/plans/physical-dataflow-synthesis.md` A/B |
-| Q32.R | `physical-relation-realization` | `doing` | Q32.I | 补齐tiling/view/propagation/transfer/reuse需要的relation操作；把StorageLoad迁移为explicit source+destination、无隐式allocation/result；current encoding/view、zero-copy/DMA/GS/staged route实际物化不同clone；dependent-tiling/resident handoff删除真实movement；current invalid-lane、descriptor、geometry与fresh exact gates不回退。 | 06-11、16、18；同计划C |
-| Q32.B | `physical-dataflow-test-seam-vertical` | `blocked` | Q32.R、Q34 | 在compiler-private production-shaped seam把baseline和optimized actual clones接入现有rank frontier/finalization/all-rank coordinator；1/16-rank source-to-bundle/package/SystemC/PyTorch实际选择优化candidate，重放resource/cost/atomic gate。此row不切换默认producer。 | 01、06-18；同计划D |
+| Q32.R | `physical-relation-realization` | `done` | Q32.I | rich IndexRelation查询、physical encoding attr interface、TransferRealizability、destination-style StorageLoad和relation-backed resident handoff已闭合；非7B source删除真实中间WDMA/RDMA，标准7B source选择26条handoff并通过fresh TP16 package/SystemC/PyTorch gate。证据见`tasks/archive/physical-relation-realization.md`。 | 06-11、16、18；同计划C |
+| Q32.B | `physical-dataflow-test-seam-vertical` | `doing` | Q32.R、Q34 | 在compiler-private production-shaped seam把baseline和optimized actual clones接入现有rank frontier/finalization/all-rank coordinator；1/16-rank source-to-bundle/package/SystemC/PyTorch实际选择优化candidate，重放resource/cost/atomic gate。此row不切换默认producer。 | 01、06-18；同计划D |
 | Q32.V | `typed-target-capability-vertical` | `blocked` | Q32.B | 闭合mapped DMA/WDMA两端offset/descriptor、physical-footprint fill的padding/tail/bitpacked domain以及oriented GEMM的typed Tile/Instr/TargetCall、必要ABI与repo-owned SystemC/formal纵向；winner capability projection/package revision仅由真实consumer驱动，且永不进入planner输入。 | 06、08、10、11、14-18；同计划E |
 | Q32.M | `physical-mechanism-choice-closure` | `blocked` | Q32.V | 完成relation/view normalization、tiling/fusion、pointwise propagation、implementation absorption、encoding/view/route及current GEMM/batched-GEMM fixed Cx/NCx absorption、partial fanout与immutable-input reuse、movement/resident-cut elimination、whole-tensor share-vs-recompute、static loop-invariant hoist、current buffering/resource-aware ready-order、direct/ring/tree communication以及integer-domain exact/modular reassociation/tree/distribution/factorization各自proof-gated rewrite接入；每类由shared candidate owner调用、立即改actual IR、fresh重算并形成完整exact-gate passing candidate和negative baseline。把layout/resource consumer迁到typed op、value-associated standard effects、custom resources和SSA token/fence，保住lifetime root/pending completion、DDR detection、cost bytes与local-fence语义后删除重复layout/resource接口；删除aggregate collective info而保留有generic consumer的最小Wafer-specific collective查询；删除无consumer的verifyInstructionContract boilerplate，只保留instruction family marker。 | 05-13、16、18；同计划F |
 | Q32.S | `bounded-joint-physical-dataflow-selection` | `blocked` | Q32.M | 有界组合Q32.M全部choice producers，使implementation、tiling/fusion、propagation、encoding/route/fixed-Cx-NCx absorption、reuse/movement、share/recompute、hoist、各current numeric variant、buffering/ready-order、communication和resource-aware邻居都进入同一rank/whole-variant frontier且各有winner case；generation worklist保留无owner-produced offset/binding的actual clones，evaluation另行clone；all-baseline tuple以reserved allowance先完成全部variant gates；selection只消费Q34 validated placement/high-water和final movement/transport/compute/instruction/event facts，probe placement只有apply并重跑offset-dependent gates后才是actual cost；按完整producer增长决定fixed-capacity candidate vector/frontier/beam，无shadow state或版本化统计协议。 | 06-13、16、18；同计划G |
@@ -153,8 +153,9 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 ## 实施计划入口
 
-- Active task：Q32.R `physical-relation-realization`，计划见`tasks/plans/physical-dataflow-synthesis.md`。
-- Next：Q32.B `physical-dataflow-test-seam-vertical`（待Q32.R完成后解锁）。Q34证据已归档于
+- Active task：Q32.B `physical-dataflow-test-seam-vertical`，计划见`tasks/plans/physical-dataflow-synthesis.md`。
+- Completed predecessor：Q32.R `physical-relation-realization`，证据见
+  `tasks/archive/physical-relation-realization.md`。Q34证据已归档于
   `tasks/archive/static-memory-packing.md`。
 - 新实施计划：`tasks/plans/`。
 - 已完成计划和历史证据：`tasks/README.md`的“实施计划导航”和“归档文档”。

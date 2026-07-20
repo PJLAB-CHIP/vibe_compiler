@@ -1,6 +1,7 @@
 //===- BodyEmitter.cpp - Tensor program body lowering orchestration --===//
 
 #include "Internal.h"
+#include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 
 using namespace wafer;
 
@@ -423,6 +424,7 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::getOrMaterialize(
 
   MemLayout sourceLayout = MemLayout::Tensor;
   mlir::Value source = lookupAny(original, sourceLayout);
+  mlir::MemRefType stagedBoundarySourceType;
   if (!source) {
     if (auto attrIt = tensorAttrs.find(original); attrIt != tensorAttrs.end()) {
       mlir::FailureOr<mlir::Value> constant = materializeTensorConstant(
@@ -440,11 +442,14 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::getOrMaterialize(
     if (!tensorType)
       return failValue("cannot materialize non-ranked-tensor value");
 
-    auto load = builder.create<StorageLoadOp>(
-        original.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor),
-        externalIt->second);
-    record(original, MemLayout::Tensor, load.getResult());
-    source = load.getResult();
+    auto destination = builder.create<mlir::memref::AllocOp>(
+        original.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor));
+    builder.create<StorageLoadOp>(original.getLoc(), externalIt->second,
+                                  destination.getResult());
+    stagedBoundarySourceType =
+        mlir::dyn_cast<mlir::MemRefType>(externalIt->second.getType());
+    record(original, MemLayout::Tensor, destination.getResult());
+    source = destination.getResult();
     sourceLayout = MemLayout::Tensor;
   }
   if (sourceLayout == targetLayout)
@@ -455,6 +460,17 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::getOrMaterialize(
     return failValue("cannot materialize non-ranked-tensor value");
 
   mlir::Type resultType = makeSPMMemRefType(tensorType, targetLayout);
+  if (stagedBoundarySourceType) {
+    auto temporaryType = mlir::cast<mlir::MemRefType>(source.getType());
+    auto stagedDestType = mlir::cast<mlir::MemRefType>(resultType);
+    analysis::IndexRelationResult identity =
+        analysis::IndexRelation::identity(tensorType.getShape());
+    if (!identity.isExact() ||
+        mlir::failed(analysis::TransferRealizability::proveStagedMovement(
+            stagedBoundarySourceType, temporaryType, stagedDestType,
+            *identity.get(), *identity.get())))
+      return failValue("boundary staged movement is not exactly realizable");
+  }
   auto materialize = builder.create<LayoutMaterializeOp>(original.getLoc(),
                                                          resultType, source);
   record(original, targetLayout, materialize.getResult());

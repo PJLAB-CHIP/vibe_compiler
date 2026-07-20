@@ -2,6 +2,7 @@
 
 #include "Scheduling/ScheduleTensorProgramInternal.h"
 
+#include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -32,11 +33,28 @@ static std::optional<int64_t> getPhysicalBytes(mlir::Type type) {
   auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
   if (!memrefType || !memrefType.hasStaticShape())
     return std::nullopt;
-  std::optional<WaferPhysicalTensorInfo> info =
-      computeWaferPhysicalTensorInfo(memrefType);
-  if (!info || info->physicalBytes <= 0)
+  auto encoding = mlir::dyn_cast_or_null<WaferPhysicalEncodingAttrInterface>(
+      memrefType.getMemorySpace());
+  if (!encoding)
     return std::nullopt;
-  return info->physicalBytes;
+  mlir::FailureOr<int64_t> bytes =
+      encoding.getPhysicalFootprintBytes(memrefType);
+  if (mlir::failed(bytes) || *bytes <= 0)
+    return std::nullopt;
+  return *bytes;
+}
+
+static std::optional<int64_t> getValidElements(mlir::Type type) {
+  auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
+  if (!memrefType || !memrefType.hasStaticShape())
+    return std::nullopt;
+  auto encoding = mlir::dyn_cast_or_null<WaferPhysicalEncodingAttrInterface>(
+      memrefType.getMemorySpace());
+  if (!encoding)
+    return std::nullopt;
+  mlir::FailureOr<int64_t> elements = encoding.getValidElementCount(memrefType);
+  return mlir::succeeded(elements) ? std::optional<int64_t>(*elements)
+                                   : std::nullopt;
 }
 
 static bool isUnitDescriptor(llvm::ArrayRef<int64_t> strides,
@@ -86,19 +104,90 @@ static bool hasEquivalentStaticStorage(mlir::Type source, mlir::Type result) {
       resultType ? getWaferMemoryAttr(resultType) : MemoryAttr{};
   std::optional<int64_t> sourceBytes = getPhysicalBytes(source);
   std::optional<int64_t> resultBytes = getPhysicalBytes(result);
+  std::optional<int64_t> sourceElements = getValidElements(source);
+  std::optional<int64_t> resultElements = getValidElements(result);
   return sourceType && resultType && sourceType.hasStaticShape() &&
          resultType.hasStaticShape() && sourceMemory && resultMemory &&
          sourceMemory.getLayout() == MemLayout::Tensor &&
          resultMemory.getLayout() == MemLayout::Tensor &&
          sourceType.getElementType() == resultType.getElementType() &&
-         sourceBytes && resultBytes && *sourceBytes == *resultBytes;
+         sourceBytes && resultBytes && *sourceBytes == *resultBytes &&
+         sourceElements && resultElements && *sourceElements == *resultElements;
+}
+
+static analysis::IndexRelationResult
+getStaticViewRelation(mlir::Operation *operation, mlir::Value source) {
+  auto sourceType = mlir::dyn_cast<mlir::MemRefType>(source.getType());
+  auto resultType =
+      operation && operation->getNumResults() == 1
+          ? mlir::dyn_cast<mlir::MemRefType>(operation->getResult(0).getType())
+          : mlir::MemRefType{};
+  if (!sourceType || !resultType || !sourceType.hasStaticShape() ||
+      !resultType.hasStaticShape())
+    return {analysis::IndexRelationStatus::Unsupported, std::nullopt,
+            "static view relation requires static memrefs"};
+
+  if (auto collapse =
+          mlir::dyn_cast<mlir::memref::CollapseShapeOp>(operation)) {
+    if (collapse.getSrc() != source)
+      return {analysis::IndexRelationStatus::Invalid, std::nullopt,
+              "collapse source mismatch"};
+    return analysis::IndexRelation::staticReshape(resultType.getShape(),
+                                                  sourceType.getShape());
+  }
+  if (auto expand = mlir::dyn_cast<mlir::memref::ExpandShapeOp>(operation)) {
+    if (expand.getSrc() != source || !expand.getOutputShape().empty())
+      return {analysis::IndexRelationStatus::Unsupported, std::nullopt,
+              "dynamic expand shape is unsupported"};
+    return analysis::IndexRelation::staticReshape(resultType.getShape(),
+                                                  sourceType.getShape());
+  }
+  if (auto cast = mlir::dyn_cast<mlir::memref::CastOp>(operation)) {
+    if (cast.getSource() != source)
+      return {analysis::IndexRelationStatus::Invalid, std::nullopt,
+              "cast source mismatch"};
+    return analysis::IndexRelation::staticReshape(resultType.getShape(),
+                                                  sourceType.getShape());
+  }
+  if (auto subview = mlir::dyn_cast<mlir::memref::SubViewOp>(operation)) {
+    if (subview.getSource() != source ||
+        sourceType.getRank() != resultType.getRank())
+      return {analysis::IndexRelationStatus::Unsupported, std::nullopt,
+              "rank-reducing subview is unsupported"};
+    return analysis::IndexRelation::staticSlice(
+        resultType.getShape(), sourceType.getShape(),
+        subview.getStaticOffsets(), subview.getStaticStrides());
+  }
+  return {analysis::IndexRelationStatus::Unsupported, std::nullopt,
+          "operation has no supported static view relation"};
+}
+
+static bool provesCompleteStaticView(mlir::Operation *operation,
+                                     mlir::Value source) {
+  if (!operation || operation->getNumResults() != 1 ||
+      !hasEquivalentStaticStorage(source.getType(),
+                                  operation->getResult(0).getType()))
+    return false;
+  auto sourceType = mlir::cast<mlir::MemRefType>(source.getType());
+  auto resultType =
+      mlir::cast<mlir::MemRefType>(operation->getResult(0).getType());
+  analysis::IndexRelationResult relation =
+      getStaticViewRelation(operation, source);
+  analysis::IndexSetResult destinationDomain =
+      analysis::IndexRelation::staticDomain(resultType.getShape());
+  analysis::IndexSetResult sourceDomain =
+      analysis::IndexRelation::staticDomain(sourceType.getShape());
+  if (!relation.isExact() || !destinationDomain.isExact() ||
+      !sourceDomain.isExact() || !relation.get()->isBijective().isProvenTrue())
+    return false;
+  analysis::IndexSetResult image =
+      relation.get()->image(*destinationDomain.set);
+  return image.isExact() && image.set->isEqual(*sourceDomain.set);
 }
 
 static bool isStaticExternalView(mlir::Operation *operation,
                                  mlir::Value source) {
-  if (!operation || operation->getNumResults() != 1 ||
-      !hasEquivalentStaticStorage(source.getType(),
-                                  operation->getResult(0).getType()))
+  if (!provesCompleteStaticView(operation, source))
     return false;
   if (auto collapse = mlir::dyn_cast<mlir::memref::CollapseShapeOp>(operation))
     return collapse.getSrc() == source;
@@ -159,17 +248,7 @@ static bool collectExternalConsumers(
 
 static bool isStaticFullSubview(mlir::memref::SubViewOp subview,
                                 mlir::Value source) {
-  auto sourceType = mlir::dyn_cast<mlir::MemRefType>(source.getType());
-  if (!sourceType || subview.getSource() != source ||
-      !hasEquivalentStaticStorage(source.getType(), subview.getType()) ||
-      subview.getStaticOffsets().size() !=
-          static_cast<size_t>(sourceType.getRank()))
-    return false;
-  return llvm::all_of(subview.getStaticOffsets(),
-                      [](int64_t value) { return value == 0; }) &&
-         llvm::equal(subview.getStaticSizes(), sourceType.getShape()) &&
-         llvm::all_of(subview.getStaticStrides(),
-                      [](int64_t value) { return value == 1; });
+  return provesCompleteStaticView(subview, source);
 }
 
 static bool

@@ -259,9 +259,6 @@ getRotateDataMoveSegments(mlir::PatternRewriter &rewriter,
                           mlir::MemRefType destType, InstrDataMoveKind kind,
                           llvm::ArrayRef<int64_t> axes,
                           std::string *failureReason, llvm::StringRef opLabel);
-bool isMetadataOnlyLogicalMovement(
-    mlir::MemRefType sourceType, mlir::MemRefType destType,
-    llvm::ArrayRef<LogicalMovementSegment> segments);
 
 mlir::FailureOr<InstrElementwiseKindAttr> getAccumulationElementwiseKind(
     mlir::PatternRewriter &rewriter, mlir::Operation *op,
