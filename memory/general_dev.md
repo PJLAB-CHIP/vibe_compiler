@@ -383,8 +383,9 @@
   blocking wait；后者可报告本地DTE错误。compiler/CRT不能伪造device timeout能力：本地status由target ABI写回，
   timeout必须由launch watchdog观察，跨rank peer failure由runtime completion DAG合成。
 - selected instruction handoff固定先由selector在tensor函数clone中完成完整traversal、instruction和candidate-local
-  SPM/DDR planning；随后每个rank frontier alternative复用同一份function-boundary OneShot Bufferization配置消除tensor
-  signature与`bufferization.to_memref/to_tensor` wrapper，并在final artifact上重跑whole-rank SPM/DDR planning与cost。
+  SPM/DDR planning；task commit后要从generation parent清除这些evaluation offset。随后每个rank frontier alternative复用同一份
+  function-boundary OneShot Bufferization配置消除tensor signature与`bufferization.to_memref/to_tensor` wrapper，并在final rank
+  evaluation clone上重跑whole-rank SPM planning与cost；DDR只在all-rank coordinator的disposable complete tuple上重跑并应用。
   target conversion只消费通过该finalization的accepted artifact，不重新执行task scheduling或tile/instruction
   materialization。所有typed materializer API都显式接收logical rank；IR-local replay也必须显式提供rank。
 - structured materializer在DPS `outs`固定后会吸收task内部pure static support producers：`arith.constant`、
@@ -443,7 +444,7 @@
   `wafer-compile-stablehlo --partition-stablehlo-program` 已删除，因为 Shardy/SPMD 不属于 frontend
   verifier tool；旧 C ABI compile 入口也已删除。`wafer-opt`和现有named MLIR pipelines只处理显式IR，
   用于IR-local debug/regression，不拥有program-directory I/O，也不构成用户可选stage。当前bundle boundary对
-  rank-count 1/16实际创建all-and-only isolated clones，经selector、function bufferization、whole-rank SPM/DDR和
+  rank-count 1/16实际创建all-and-only isolated clones，经selector、function bufferization、whole-rank SPM及whole-variant DDR和
   terminal legality后形成move-only `RankExecutable[]`/context-owning `ExecutableBundle`；rank-15 late failure仍在
   同一transaction内，因此不会先发布中间调度checkpoint。无DTE时transport contract为`None`；Q16.T已在完整rank
   domain的post-memory acceptance后形成`DirectDTE`；rank module分拆使sender无法本地重算remote receiver offset，

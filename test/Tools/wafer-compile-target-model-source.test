@@ -28,7 +28,7 @@
 # MODEL-DUPLICATE: wafer-compile: duplicate --model-input index: 0
 # MODEL-TOLERANCE: wafer-compile: invalid --model-atol value: -1
 # LLAMA: wafer-compile: published verified package with execution-ranks=16:
-# LLAMA: target model outputs matched; ranks=16 transactions=12656 systemc_threads=17
+# LLAMA: target model outputs matched; ranks=16 transactions=13184 systemc_threads=17
 # LATE-MODEL: wafer-compile: published verified package with execution-ranks=16:
 # LATE-MODEL: SystemC target model invocation-failure: stage=injected-terminal-failure rank=15: test-only terminal failure injection
 # LATE-MODEL-NOT: target model outputs matched

@@ -101,11 +101,16 @@ void buildScheduleTensorProgramToSelectedInstrPipeline(mlir::OpPassManager &pm,
 }
 
 void buildFinalizeScheduledTensorProgramPipeline(mlir::OpPassManager &pm) {
+  buildFinalizeScheduledRankCandidatePipeline(pm);
+  buildPlanDDRMemoryPipeline(pm);
+  pm.addPass(mlir::createCanonicalizerPass());
+}
+
+void buildFinalizeScheduledRankCandidatePipeline(mlir::OpPassManager &pm) {
   pm.addPass(mlir::createCanonicalizerPass());
   addFunctionBoundaryBufferization(pm);
   pm.addPass(mlir::createCanonicalizerPass());
   buildPlanSPMMemoryPipeline(pm);
-  buildPlanDDRMemoryPipeline(pm);
   pm.addPass(mlir::createCanonicalizerPass());
 }
 

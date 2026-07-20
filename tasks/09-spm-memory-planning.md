@@ -543,8 +543,9 @@ allocator schema。candidate必须先把resident edge、spill、encoding、trans
 IR重算demand。rewrite或bufferization改变root、alias、effect或lifetime后必须重新planning，旧offset和cost不得复用。
 
 rank frontier离开scheduler后，function-boundary bufferization可能新增或删除buffer/movement，因此每个candidate都独立重新运行
-SPM/DDR planning并从final instruction IR fresh recost。失败candidate从frontier移除；只有某rank无合法survivor时才拒绝该rank。
-all-rank coordinator只从current placed/bound IR重算transport/resource事实，不消费SPM-side compatibility signature。
+SPM planning并从final instruction IR fresh recost。失败candidate从frontier移除；reserved baseline失败时直接拒绝该rank，
+其它alternative失败只过滤该项。DDR placement不写入rank frontier；all-rank coordinator在每个disposable complete tuple上重跑
+whole-variant DDR，再从current placed/bound IR重算transport/resource事实，不消费SPM-side compatibility signature。
 
 
 ## 11. Runtime / ABI Handoff

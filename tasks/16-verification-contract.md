@@ -1,6 +1,6 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-07-20同步Q32.R rich relation/current physical realization与完整7B gate。Q32.V已排期独立闭合mapped transfer、physical-footprint fill和
+状态：2026-07-20同步Q32.B production-shaped candidate/all-rank seam与完整7B gate。Q32.V正在独立闭合mapped transfer、physical-footprint fill和
 versioned GEMM orientation；RequiredCapabilitySet/schema升级仅在真实package/runtime consumer需要时从winner派生；Q32.T、Q32.N与Q3.6 Count保持later独立合同。保留Q31标准7B单block
 多seed数值证据及已完成
 Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate。
@@ -285,7 +285,7 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 - bundle根据accepted IR只能形成`TransportContract::None`或Q16.T已验证的
   `TransportContract::DirectDTE`；logical collective/DTE必须通过all-rank message/resource/wait匹配，
   不能以`unsupported_transport`默认切断主线；
-- function-boundary bufferization后的完整rank重新执行SPM/DDR planning，终态无
+- function-boundary bufferization后的完整rank重新执行SPM planning；whole-variant disposable tuple再执行DDR planning，终态无
   Tensor/Bufferization/Linalg/legacy `wafer.group`、
   untagged memref或缺失的compiler-managed offset；
 - debug FileCheck、手写task/group fixture、single rank pass或某rank成功不构成Q16 completion。
@@ -364,6 +364,12 @@ Q29数字保留为历史实现基线，不能替代Q32 fresh gate。
 - per-rank survivor只是未提交clone。coordinator只能对all-and-only logical ranks组成的完整variant执行whole-variant gates，
   并在全部rank的instruction、SPM/DDR、completion、communication、transport和ABI都通过后一次提交
   `ExecutableBundle`。任一late-rank或late-gate失败不发布partial rank、module、artifact或package；
+- Q32.B的bring-up seam要求每rank frontier恰有一个compiler-private reserved baseline entry；它是conservative scope policy在清除
+  task-local placement后的spill generation parent所产生的独立evaluation clone。resident evaluation clone不得覆盖或替换它。
+  coordinator必须先在optimization visit limit之外完整评估all-baseline tuple；baseline任一DDR、transport、resource、ABI gate失败时
+  整体失败，不得用optimized tuple掩盖。baseline ready后optimized tuple仍从各自disposable clones重跑whole-variant DDR和所有late gate，
+  strict execution-cost Pareto/static-policy不能读取producer预选结果；validated SPM high-water是capacity事实，在target提供显式排序
+  policy前不能按“越低越快”参与performance winner比较；
 - 通用source corpus覆盖chain、diamond、partial-fanout/fanin、shared-input contraction、reshape、transpose、broadcast、reduce、
   residual和collective，并交叉多个dtype、整tile、tail以及允许和禁止reassociation的情况。每种声称启用的优化必须至少有
   一个真实source触发非零`PatternRewriter` mutation、进入whole-variant selection并在对应case成为committed winner；required

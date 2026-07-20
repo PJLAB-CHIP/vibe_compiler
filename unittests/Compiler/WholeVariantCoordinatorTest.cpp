@@ -46,12 +46,12 @@ protected:
 
   wafer::compiler::detail::RankVariantCandidate
   candidate(llvm::StringRef body, int64_t rankCount, int64_t cost,
-            int64_t discoveryOrder) {
+            int64_t discoveryOrder, bool reservedBaseline = false) {
     std::string source = moduleWithBody(body, rankCount);
     auto module = mlir::parseSourceString<mlir::ModuleOp>(
         source, mlir::ParserConfig(context.get()));
     EXPECT_TRUE(module);
-    return {std::move(module), cost, discoveryOrder};
+    return {std::move(module), cost, discoveryOrder, reservedBaseline};
   }
 
   static constexpr llvm::StringLiteral kSendMismatched = R"mlir(
@@ -90,16 +90,16 @@ TEST_F(WholeVariantCoordinatorTest,
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   frontiers[0].push_back(candidate(kSendMismatched, 16, 0, 0));
-  frontiers[0].push_back(candidate(kSendMatched, 16, 100, 5));
+  frontiers[0].push_back(candidate(kSendMatched, 16, 100, 5, true));
   frontiers[1].push_back(candidate(kRecvMismatched, 16, 0, 0));
-  frontiers[1].push_back(candidate(kRecvMatched, 16, 100, 5));
+  frontiers[1].push_back(candidate(kRecvMatched, 16, 100, 5, true));
   for (int rank = 2; rank < 15; ++rank) {
     frontiers[rank].push_back(candidate("", 16, 0, 0));
-    frontiers[rank].push_back(candidate("", 16, 100, 5));
+    frontiers[rank].push_back(candidate("", 16, 100, 5, true));
   }
   // This rank models signature deduplication: its conservative partition is
   // already represented by an earlier discovery order.
-  frontiers[15].push_back(candidate("", 16, 0, 2));
+  frontiers[15].push_back(candidate("", 16, 0, 2, true));
 
   wafer::frontend::FrontendProgramVerificationResult program;
   program.logicalRankCount = 16;
@@ -134,10 +134,10 @@ TEST_F(WholeVariantCoordinatorTest,
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
-  frontiers[0].push_back(candidate(kSendMismatched, 16, 0, 0));
-  frontiers[1].push_back(candidate(kRecvMismatched, 16, 0, 0));
+  frontiers[0].push_back(candidate(kSendMismatched, 16, 0, 0, true));
+  frontiers[1].push_back(candidate(kRecvMismatched, 16, 0, 0, true));
   for (int rank = 2; rank < 16; ++rank)
-    frontiers[rank].push_back(candidate("", 16, 0, 0));
+    frontiers[rank].push_back(candidate("", 16, 0, 0, true));
 
   wafer::frontend::FrontendProgramVerificationResult program;
   program.logicalRankCount = 16;
@@ -146,7 +146,7 @@ TEST_F(WholeVariantCoordinatorTest,
   auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
       frontiers, program, *config, diagnostics);
   EXPECT_TRUE(mlir::failed(accepted));
-  EXPECT_NE(diagnosticText.find("no complete whole-rank scheduling variant"),
+  EXPECT_NE(diagnosticText.find("reserved all-baseline variant failed"),
             std::string::npos)
       << diagnosticText;
   frontiers[0][0].module->walk([](wafer::InstrDTESendOp operation) {
@@ -157,13 +157,12 @@ TEST_F(WholeVariantCoordinatorTest,
   });
 }
 
-TEST_F(WholeVariantCoordinatorTest,
-       BreaksEqualCostRankCandidateTiesByDiscoveryOrder) {
+TEST_F(WholeVariantCoordinatorTest, RetainsBaselineWhenExactCostsAreEqual) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
-  frontiers[0].push_back(candidate("", 1, 0, 3));
+  frontiers[0].push_back(candidate("", 1, 0, 3, true));
   frontiers[0].push_back(candidate("", 1, 0, 1));
 
   wafer::frontend::FrontendProgramVerificationResult program;
@@ -174,7 +173,56 @@ TEST_F(WholeVariantCoordinatorTest,
       frontiers, program, *config, diagnostics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_EQ(accepted->selectedDiscoveryOrders.size(), 1u);
-  EXPECT_EQ(accepted->selectedDiscoveryOrders.front(), 1);
+  EXPECT_EQ(accepted->selectedDiscoveryOrders.front(), 3);
+  ASSERT_EQ(accepted->selectedReservedBaselines.size(), 1u);
+  EXPECT_TRUE(accepted->selectedReservedBaselines.front());
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsStrictlyDominatingAlternativeAfterBaselineAcceptance) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(
+      candidate("    wafer.instr.local_fence", 1, 100, 5, true));
+  frontiers[0].push_back(candidate("", 1, 0, 0));
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_EQ(accepted->selectedDiscoveryOrders.size(), 1u);
+  EXPECT_EQ(accepted->selectedDiscoveryOrders.front(), 0);
+  ASSERT_EQ(accepted->selectedReservedBaselines.size(), 1u);
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       DoesNotUseAlternativeToMaskReservedBaselineFailure) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  constexpr llvm::StringLiteral oversizedSPM = R"mlir(
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<1000000xf32, #wafer.memory<spm, tensor>>
+)mlir";
+  frontiers[0].push_back(candidate(oversizedSPM, 1, 100, 5, true));
+  frontiers[0].push_back(candidate("", 1, 0, 0));
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics);
+  EXPECT_TRUE(mlir::failed(accepted));
+  EXPECT_NE(diagnosticText.find("reserved all-baseline variant failed"),
+            std::string::npos)
+      << diagnosticText;
 }
 
 } // namespace

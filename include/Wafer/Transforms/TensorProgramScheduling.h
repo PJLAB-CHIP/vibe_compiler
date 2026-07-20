@@ -17,9 +17,10 @@ namespace wafer {
 /// nor the estimated cost is persisted in accepted IR.
 struct ScheduledRankCandidate {
   ScheduledRankCandidate(mlir::OwningOpRef<mlir::ModuleOp> module,
-                         int64_t estimatedTimePs, int64_t discoveryOrder)
+                         int64_t estimatedTimePs, int64_t discoveryOrder,
+                         bool reservedBaseline = false)
       : module(std::move(module)), estimatedTimePs(estimatedTimePs),
-        discoveryOrder(discoveryOrder) {}
+        discoveryOrder(discoveryOrder), reservedBaseline(reservedBaseline) {}
 
   ScheduledRankCandidate(ScheduledRankCandidate &&) = default;
   ScheduledRankCandidate &operator=(ScheduledRankCandidate &&) = default;
@@ -29,6 +30,9 @@ struct ScheduledRankCandidate {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   int64_t estimatedTimePs;
   int64_t discoveryOrder;
+  /// Compiler-private allowance marker. Exactly one finalized candidate per
+  /// rank carries it; it is never persisted in accepted IR or artifacts.
+  bool reservedBaseline;
 };
 
 struct TensorProgramSchedulingConfig {
@@ -38,9 +42,9 @@ struct TensorProgramSchedulingConfig {
 
 /// Builds a bounded frontier of complete rank alternatives in independent
 /// clones.  Every returned module has passed task commit, whole-rank SPM/DDR
-/// planning, verification, and ranking-cost closure.  The source module is
-/// never modified.  Cross-rank transport, card resources, and target ABI are
-/// deliberately deferred to the executable-bundle coordinator.
+/// SPM planning, verification, and ranking-cost closure. The source module is
+/// never modified. DDR placement, cross-rank transport, card resources, and
+/// target ABI are deliberately deferred to the executable-bundle coordinator.
 mlir::FailureOr<std::vector<ScheduledRankCandidate>>
 buildScheduledRankCandidateFrontier(
     mlir::ModuleOp sourceModule, const TensorProgramSchedulingConfig &config);

@@ -54,7 +54,8 @@
 
 ## 实施计划导航
 
-当前`doing`是Q32.B production-shaped candidate/all-rank vertical；Q32.R relation/physical realization已归档为
+当前`doing`是Q32.V typed target-capability vertical；Q32.B production-shaped candidate/all-rank vertical已归档为
+`tasks/archive/physical-dataflow-test-seam-vertical.md`，Q32.R relation/physical realization已归档为
 `tasks/archive/physical-relation-realization.md`，Q32.I MLIR-native implementation/relation foundation已归档为
 `tasks/archive/mlir-native-implementation-relation-foundation.md`。Q32通用
 physical-dataflow synthesis实施计划为`tasks/plans/physical-dataflow-synthesis.md`。Q34 static memory packing已完成并归档为

@@ -41,6 +41,7 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
       std::string moduleText;
       int64_t estimatedTimePs = 0;
       int64_t discoveryOrder = 0;
+      bool reservedBaseline = false;
     };
 
     int64_t logicalRank;
@@ -104,6 +105,7 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
       RankLoweringResult::SerializedCandidate serialized;
       serialized.estimatedTimePs = candidate.estimatedTimePs;
       serialized.discoveryOrder = candidate.discoveryOrder;
+      serialized.reservedBaseline = candidate.reservedBaseline;
       llvm::raw_string_ostream moduleStream(serialized.moduleText);
       candidate.module->print(moduleStream);
       moduleStream.flush();
@@ -136,7 +138,8 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
                     "logical rank " +
                     std::to_string(logicalRank));
       imported.push_back({std::move(module), candidate.estimatedTimePs,
-                          candidate.discoveryOrder});
+                          candidate.discoveryOrder,
+                          candidate.reservedBaseline});
     }
     frontiers.push_back(std::move(imported));
   }

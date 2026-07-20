@@ -205,9 +205,9 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
 
 - Q32.I/R已新增`Analysis/PhysicalDataflow/IndexRelation`与`TransferRealizability`独立source，并由WaferAnalysis
   编译；source implementation external model留在Transforms，destination-style load与route materialization仍由两个
-  Conversion libraries消费。首条resident rewrite暂由现有Scheduling owner调用并复用candidate finalization；Q32.B/M按上文
-  稳定职责拆出更多concrete rewrite时，不复制`ScheduledRankFinalization`、`WholeVariantCoordinator`或physical-dataflow
-  专用facade。
+  Conversion libraries消费。Q32.B已由现有Scheduling owner把spill/resident actual clones接入rank frontier，并由Compiler
+  owner分离rank SPM finalization与disposable all-rank tuple DDR/late gate；Q32.M按上文稳定职责拆出更多concrete rewrite时，
+  不复制`ScheduledRankFinalization`、`WholeVariantCoordinator`或physical-dataflow专用facade。
 - instruction IR已按movement、compute、peripheral、DTE、sync family独立编译；共享op verifier和
   standard MemoryEffect/custom SideEffects::Resource helper留在`lib/Wafer/IR/Instr/`。Q32.M删除
   WaferResourceEffect record/interface helper及其boilerplate，不提升为公共头文件。

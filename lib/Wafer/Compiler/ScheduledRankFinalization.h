@@ -14,14 +14,15 @@
 
 namespace wafer::compiler::detail {
 
-/// A rank candidate after function-boundary bufferization, physical-memory
-/// replanning, and cost recomputation.  Failed alternatives are absent from
-/// the finalized frontier; the frontier itself fails only when none survive.
+/// A rank candidate after function-boundary bufferization, SPM replanning, and
+/// cost recomputation. The reserved baseline must survive; failures of other
+/// alternatives only prune the finalized frontier.
 struct FinalizedRankCandidate {
   FinalizedRankCandidate(mlir::OwningOpRef<mlir::ModuleOp> module,
-                         int64_t estimatedTimePs, int64_t discoveryOrder)
+                         int64_t estimatedTimePs, int64_t discoveryOrder,
+                         bool reservedBaseline)
       : module(std::move(module)), estimatedTimePs(estimatedTimePs),
-        discoveryOrder(discoveryOrder) {}
+        discoveryOrder(discoveryOrder), reservedBaseline(reservedBaseline) {}
 
   FinalizedRankCandidate(FinalizedRankCandidate &&) = default;
   FinalizedRankCandidate &operator=(FinalizedRankCandidate &&) = default;
@@ -31,6 +32,7 @@ struct FinalizedRankCandidate {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   int64_t estimatedTimePs;
   int64_t discoveryOrder;
+  bool reservedBaseline;
 };
 
 mlir::FailureOr<std::vector<FinalizedRankCandidate>>

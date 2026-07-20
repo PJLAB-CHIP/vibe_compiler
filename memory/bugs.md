@@ -158,8 +158,9 @@
 - 根因：candidate legality发生在局部materialization内，function-boundary bufferization位于其后；
   后续transformation新建的buffer不可能被更早的planner覆盖。
 - 修复模式：所有unknown/default tensor buffer显式转换为Wafer DDR memref；bufferization后canonicalize并在完整
-  rank module上重跑SPM/DDR planning，最终用accepted-rank legality拒绝高层dialect、untagged memref和缺失offset。
-  candidate-local gate仍保留用于搜索拒绝，不能用debug direct pipeline替代selector。
+  rank evaluation clone上重跑SPM planning，whole-variant disposable tuple再重跑DDR planning，最终用accepted-rank legality拒绝
+  高层dialect、untagged memref和缺失offset。task/candidate-local SPM/DDR gate仍保留用于搜索拒绝，但其offset必须在commit后从
+  generation parent清除，不能用debug direct pipeline替代selector或把早期placement带进frontier。
 
 ## 2026-07-13 MLIR module 的失败路径必须由显式 context lifetime 覆盖
 

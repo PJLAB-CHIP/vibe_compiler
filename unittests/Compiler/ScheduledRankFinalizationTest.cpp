@@ -50,6 +50,19 @@ protected:
     return mlir::parseSourceString<mlir::ModuleOp>(source, context.get());
   }
 
+  mlir::OwningOpRef<mlir::ModuleOp> candidateWithDDRPlacement() {
+    return mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main() {
+    %buffer = memref.alloc() {wafer.ddr.offset = #wafer.ddr_offset<0>}
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+    return
+  }
+}
+)mlir",
+                                                   context.get());
+  }
+
   mlir::DialectRegistry registry;
   std::unique_ptr<mlir::MLIRContext> context;
 };
@@ -74,9 +87,11 @@ TEST_F(ScheduledRankFinalizationTest,
 
   std::vector<wafer::ScheduledRankCandidate> frontier;
   frontier.emplace_back(std::move(overflow), /*estimatedTimePs=*/111,
-                        /*discoveryOrder=*/3);
+                        /*discoveryOrder=*/3,
+                        /*reservedBaseline=*/false);
   frontier.emplace_back(std::move(valid), /*estimatedTimePs=*/999,
-                        /*discoveryOrder=*/4);
+                        /*discoveryOrder=*/4,
+                        /*reservedBaseline=*/true);
   mlir::FailureOr<std::vector<wafer::compiler::detail::FinalizedRankCandidate>>
       finalized =
           wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
@@ -85,6 +100,7 @@ TEST_F(ScheduledRankFinalizationTest,
   ASSERT_TRUE(mlir::succeeded(finalized)) << diagnostics;
   ASSERT_EQ(finalized->size(), 1u);
   EXPECT_EQ(finalized->front().discoveryOrder, 4);
+  EXPECT_TRUE(finalized->front().reservedBaseline);
   EXPECT_NE(finalized->front().estimatedTimePs, 999);
   EXPECT_GT(finalized->front().estimatedTimePs, 0);
   EXPECT_NE(diagnostics.find("capacity_overflow"), std::string::npos)
@@ -106,12 +122,39 @@ TEST_F(ScheduledRankFinalizationTest, FailsOnlyWhenNoAlternativeSurvives) {
       });
   std::vector<wafer::ScheduledRankCandidate> frontier;
   frontier.emplace_back(std::move(overflow), /*estimatedTimePs=*/111,
-                        /*discoveryOrder=*/3);
+                        /*discoveryOrder=*/3,
+                        /*reservedBaseline=*/true);
 
   EXPECT_TRUE(mlir::failed(
       wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
           std::move(frontier))));
   EXPECT_NE(diagnostics.find("capacity_overflow"), std::string::npos)
+      << diagnostics;
+}
+
+TEST_F(ScheduledRankFinalizationTest,
+       RejectsWholeVariantPlacementBeforeRankFinalization) {
+  mlir::OwningOpRef<mlir::ModuleOp> placed = candidateWithDDRPlacement();
+  ASSERT_TRUE(placed);
+
+  std::string diagnostics;
+  mlir::ScopedDiagnosticHandler handler(
+      context.get(), [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream os(diagnostics);
+        diagnostic.print(os);
+        os << "\n";
+        return mlir::success();
+      });
+  std::vector<wafer::ScheduledRankCandidate> frontier;
+  frontier.emplace_back(std::move(placed), /*estimatedTimePs=*/0,
+                        /*discoveryOrder=*/5,
+                        /*reservedBaseline=*/true);
+
+  EXPECT_TRUE(mlir::failed(
+      wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
+          std::move(frontier))));
+  EXPECT_NE(diagnostics.find("rank_frontier_contains_whole_variant_facts"),
+            std::string::npos)
       << diagnostics;
 }
 

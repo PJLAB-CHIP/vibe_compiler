@@ -1,7 +1,7 @@
 # Wafer Physical-Dataflow Synthesis 与 Candidate Selection
 
-状态：2026-07-20已同步Q32.R relation/physical realization与首条resident纵向；production-shaped
-candidate seam继续由Q32.B推进。实现状态以`tasks/progress.md`为准。
+状态：2026-07-20已同步Q32.B production-shaped candidate/all-rank seam；typed target-capability
+vertical继续由Q32.V推进。实现状态以`tasks/progress.md`为准。
 
 本文是 rank-local physical-dataflow candidate generation、candidate acceptance 和 all-rank atomic commit 的唯一设计
 owner。它不定义第二套 semantic IR、provider registry、shadow schedule、序列化 frontier 或 qualification 协议。07、08、
@@ -418,6 +418,22 @@ Q32不实现独立约束语言或一次性巨型solver，但必须有界组合�
 
 条件性producer产生passing clone后仍必须进入相同rank frontier和whole-variant selection；producer内部不得自行把它标成accepted，
 也不得因为局部cost看似更好而绕过baseline、exact Pareto或typed static policy。
+
+Q32.B按上述边界收口首条production-shaped seam：每个scope policy完成task commit和canonicalization后，先删除task-local
+evaluation留下的SPM/DDR placement，得到不带owner-produced offset/binding的generation parent；spill与full-buffer-resident分别从
+该parent独立clone并重跑rank-local verifier、SPM placement、descriptor/completion和fresh cost。只有conservative policy的spill
+artifact标记为invocation-local reserved baseline，且每rank必须恰有一个；该标记只在Scheduling→Compiler私有move-only结构间传递，
+不进入IR、序列化artifact或public driver mode。resident与spill都作为actual placed IR进入rank frontier，不再由producer局部二选一。
+
+Compiler finalization在function-boundary bufferization后再次从每个candidate的current IR重跑SPM并fresh recost，但不提前写DDR；
+all-rank coordinator先在独立allowance内clone并评估唯一all-baseline tuple，然后才消费optimized visit budget。每次tuple evaluation在
+disposable clones上运行whole-variant DDR placement、Direct DTE、all-rank resource/message/completion和target ABI gate；baseline失败是
+pipeline failure，optimized late failure只丢弃该tuple。winner比较先用全部Known的whole-card exact dimensions做strict Pareto，tradeoff
+再用既有typed target static cost；缺失、相等或不能证明更优时保留baseline。validated SPM high-water参与capacity gate和后续
+resource-aware expansion，但当前target没有“地址高水位越低性能越好”的typed policy，因此不把它伪装成performance Pareto轴。
+Q32.B已开放这条compiler-private seam与resident bring-up alternative，并由默认`wafer-compile`调用现有Scheduling/
+Compiler owner完成纵向取证；它不新增public mode，也不把后续Q32.M producers或Q32.S完整joint search切换为默认
+production owner。实现与fresh gate归档在`tasks/archive/physical-dataflow-test-seam-vertical.md`。
 
 施工最先打通dependent tiling + resident handoff，随后补relation/view、fanout reuse、movement elimination、implementation、
 encoding/route、buffering/order和current communication alternatives。前两条rewrite只是bring-up checkpoint；只有§1.1和§4.1

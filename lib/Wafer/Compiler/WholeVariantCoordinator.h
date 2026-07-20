@@ -22,6 +22,7 @@ struct RankVariantCandidate {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   int64_t estimatedTimePs = 0;
   int64_t discoveryOrder = 0;
+  bool reservedBaseline = false;
 };
 
 using RankVariantFrontier = std::vector<RankVariantCandidate>;
@@ -30,6 +31,8 @@ struct AcceptedWholeVariant {
   std::vector<RankExecutable> ranks;
   analysis::WholeCardInstructionProgramCost resourceCost;
   std::vector<int64_t> selectedDiscoveryOrders;
+  std::vector<bool> selectedReservedBaselines;
+  int64_t estimatedTimePs = 0;
 };
 
 /// Selects a complete rank-domain combination from independently planned

@@ -9,6 +9,8 @@
 #include "WholeVariantResourceAcceptance.h"
 
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -218,6 +220,26 @@ struct WorseCombination {
 
 using CandidateOrder = std::vector<std::vector<size_t>>;
 
+static mlir::FailureOr<std::vector<size_t>>
+getReservedBaselineIndices(const std::vector<RankVariantFrontier> &frontiers) {
+  std::vector<size_t> indices;
+  indices.reserve(frontiers.size());
+  for (const RankVariantFrontier &frontier : frontiers) {
+    std::optional<size_t> baseline;
+    for (auto [index, candidate] : llvm::enumerate(frontier)) {
+      if (!candidate.reservedBaseline)
+        continue;
+      if (baseline)
+        return mlir::failure();
+      baseline = index;
+    }
+    if (!baseline)
+      return mlir::failure();
+    indices.push_back(*baseline);
+  }
+  return indices;
+}
+
 static mlir::FailureOr<CandidateOrder>
 buildCandidateOrder(const std::vector<RankVariantFrontier> &frontiers,
                     const ExecutionConfig &executionConfig) {
@@ -287,6 +309,21 @@ tryCombination(llvm::ArrayRef<size_t> candidateIndices,
     moduleViews.push_back(module);
   }
 
+  // DDR placement is intentionally absent from rank-frontier entries. Apply
+  // it only to this disposable complete tuple so a failed late gate cannot
+  // leak offsets into another combination or back into candidate generation.
+  const TargetMemoryPolicy memory =
+      getDefaultWaferTargetPolicy(TileSearchEffort::Default).memory;
+  for (mlir::ModuleOp module : moduleViews) {
+    if (mlir::failed(planDDRMemoryModule(
+            module, memory.ddrAlignmentBytes, memory.ddrCapacityBytes,
+            memory.ddrLargestContiguousBytes, memory.ddrBandwidthLimitBytes)) ||
+        mlir::failed(mlir::verify(module))) {
+      failureGate = "whole-variant-ddr";
+      return mlir::failure();
+    }
+  }
+
   mlir::FailureOr<TransportContract> transport =
       acceptDirectDTETransport(moduleViews);
   if (mlir::failed(transport)) {
@@ -351,10 +388,82 @@ tryCombination(llvm::ArrayRef<size_t> candidateIndices,
   accepted.ranks = std::move(ranks);
   accepted.resourceCost = std::move(*resourceCost);
   accepted.selectedDiscoveryOrders.reserve(candidateIndices.size());
-  for (auto [rank, candidateIndex] : llvm::enumerate(candidateIndices))
+  accepted.selectedReservedBaselines.reserve(candidateIndices.size());
+  for (auto [rank, candidateIndex] : llvm::enumerate(candidateIndices)) {
     accepted.selectedDiscoveryOrders.push_back(
         frontiers[rank][candidateIndex].discoveryOrder);
+    accepted.selectedReservedBaselines.push_back(
+        frontiers[rank][candidateIndex].reservedBaseline);
+    accepted.estimatedTimePs =
+        saturatingAddCost(accepted.estimatedTimePs,
+                          frontiers[rank][candidateIndex].estimatedTimePs);
+  }
   return accepted;
+}
+
+enum class ParetoOrder {
+  Equivalent,
+  LeftDominates,
+  RightDominates,
+  Incomparable,
+  Unknown,
+};
+
+static ParetoOrder compareExactWholeVariantCost(
+    const analysis::WholeCardInstructionProgramCost &left,
+    const analysis::WholeCardInstructionProgramCost &right) {
+  struct MetricPair {
+    const analysis::ScheduleCostMetric *left;
+    const analysis::ScheduleCostMetric *right;
+  };
+  const MetricPair dimensions[] = {
+      {&left.aggregateCompute.npuF16Bf16LogicalOps,
+       &right.aggregateCompute.npuF16Bf16LogicalOps},
+      {&left.aggregateCompute.npuOtherLogicalOps,
+       &right.aggregateCompute.npuOtherLogicalOps},
+      {&left.aggregateCompute.vectorF16Bf16LogicalOps,
+       &right.aggregateCompute.vectorF16Bf16LogicalOps},
+      {&left.aggregateCompute.vectorF32LogicalOps,
+       &right.aggregateCompute.vectorF32LogicalOps},
+      {&left.aggregateCompute.vectorOtherLogicalOps,
+       &right.aggregateCompute.vectorOtherLogicalOps},
+      {&left.aggregateDDRReadBytes, &right.aggregateDDRReadBytes},
+      {&left.aggregateDDRWriteBytes, &right.aggregateDDRWriteBytes},
+      {&left.aggregateSPMMovementBytes, &right.aggregateSPMMovementBytes},
+      {&left.aggregateNoC.aggregateTransmitBytes,
+       &right.aggregateNoC.aggregateTransmitBytes},
+      {&left.aggregateNoC.aggregateReceiveBytes,
+       &right.aggregateNoC.aggregateReceiveBytes},
+      {&left.aggregateInstructionCount, &right.aggregateInstructionCount},
+      {&left.aggregateEventCount, &right.aggregateEventCount},
+  };
+
+  bool leftLower = false;
+  bool rightLower = false;
+  for (const MetricPair &dimension : dimensions) {
+    if (!dimension.left->isKnown() || !dimension.right->isKnown())
+      return ParetoOrder::Unknown;
+    leftLower |= dimension.left->value < dimension.right->value;
+    rightLower |= dimension.right->value < dimension.left->value;
+  }
+  if (!leftLower && !rightLower)
+    return ParetoOrder::Equivalent;
+  if (leftLower && !rightLower)
+    return ParetoOrder::LeftDominates;
+  if (!leftLower && rightLower)
+    return ParetoOrder::RightDominates;
+  return ParetoOrder::Incomparable;
+}
+
+static bool isPreferredOver(const AcceptedWholeVariant &candidate,
+                            const AcceptedWholeVariant &baseline) {
+  ParetoOrder order = compareExactWholeVariantCost(candidate.resourceCost,
+                                                   baseline.resourceCost);
+  if (order == ParetoOrder::LeftDominates)
+    return true;
+  if (order != ParetoOrder::Incomparable)
+    return false;
+  return candidate.estimatedTimePs < baseline.estimatedTimePs;
 }
 
 static std::string summarizeAttemptFailure(llvm::ArrayRef<size_t> indices,
@@ -408,6 +517,14 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
         return mlir::failure();
       }
 
+  mlir::FailureOr<std::vector<size_t>> reservedBaselineIndices =
+      getReservedBaselineIndices(frontiers);
+  if (mlir::failed(reservedBaselineIndices)) {
+    diagnostics << "wafer-compile: every rank frontier must contain exactly "
+                   "one reserved baseline candidate\n";
+    return mlir::failure();
+  }
+
   std::set<std::vector<size_t>> enqueuedPositions;
   std::set<std::vector<size_t>> attemptedCandidateIndices;
   std::priority_queue<Combination, std::vector<Combination>, WorseCombination>
@@ -438,14 +555,27 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
     }
     if (mlir::succeeded(result))
       return result;
-    std::string summary = summarizeAttemptFailure(
-        candidateIndices, failureGate, capturedDiagnostics);
+    std::string summary = summarizeAttemptFailure(candidateIndices, failureGate,
+                                                  capturedDiagnostics);
     if (failures.size() < kReportedAttemptLimit)
       failures.push_back(std::move(summary));
     else
       failures.back() = std::move(summary);
     return mlir::failure();
   };
+
+  // The reserved baseline has its own allowance and must pass every late gate
+  // before any optimization budget is consumed. Keep the accepted baseline as
+  // the conservative fallback while alternatives are evaluated.
+  mlir::FailureOr<AcceptedWholeVariant> baseline =
+      attempt(*reservedBaselineIndices);
+  if (mlir::failed(baseline)) {
+    diagnostics << "wafer-compile: reserved all-baseline variant failed "
+                   "whole-variant acceptance\n";
+    for (const std::string &failure : failures)
+      diagnostics << "  - " << failure << "\n";
+    return mlir::failure();
+  }
 
   size_t visited = 0;
   while (!queue.empty() && visited < kWholeVariantVisitLimit) {
@@ -455,7 +585,7 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
     std::vector<size_t> candidateIndices =
         getCandidateIndices(combination.positions, *candidateOrder);
     mlir::FailureOr<AcceptedWholeVariant> accepted = attempt(candidateIndices);
-    if (mlir::succeeded(accepted))
+    if (mlir::succeeded(accepted) && isPreferredOver(*accepted, *baseline))
       return accepted;
 
     for (size_t rank = 0; rank < combination.positions.size(); ++rank) {
@@ -499,7 +629,7 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
     if (!complete || attemptedCandidateIndices.count(candidateIndices))
       continue;
     mlir::FailureOr<AcceptedWholeVariant> accepted = attempt(candidateIndices);
-    if (mlir::succeeded(accepted))
+    if (mlir::succeeded(accepted) && isPreferredOver(*accepted, *baseline))
       return accepted;
   }
 
@@ -525,16 +655,11 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
   }
   if (!attemptedCandidateIndices.count(policyTail)) {
     mlir::FailureOr<AcceptedWholeVariant> accepted = attempt(policyTail);
-    if (mlir::succeeded(accepted))
+    if (mlir::succeeded(accepted) && isPreferredOver(*accepted, *baseline))
       return accepted;
   }
 
-  diagnostics << "wafer-compile: no complete whole-rank scheduling variant "
-                 "passed transport, resource, and target ABI gates after "
-              << attemptedCandidateIndices.size() << " bounded attempts\n";
-  for (const std::string &failure : failures)
-    diagnostics << "  - " << failure << "\n";
-  return mlir::failure();
+  return std::move(*baseline);
 }
 
 } // namespace wafer::compiler::detail

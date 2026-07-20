@@ -27,6 +27,11 @@ void buildScheduleTensorProgramToSelectedInstrPipeline(mlir::OpPassManager &pm,
 /// It does not perform candidate selection or cross-rank acceptance.
 void buildFinalizeScheduledTensorProgramPipeline(mlir::OpPassManager &pm);
 
+/// Finalizes a rank-frontier evaluation clone through function-boundary
+/// bufferization and SPM placement. DDR placement remains absent so the
+/// all-rank coordinator can recompute it on a disposable whole-variant clone.
+void buildFinalizeScheduledRankCandidatePipeline(mlir::OpPassManager &pm);
+
 void buildLowerTileRegionToInstrPipeline(mlir::OpPassManager &pm);
 void buildPlanSPMMemoryPipeline(mlir::OpPassManager &pm);
 void buildPlanDDRMemoryPipeline(mlir::OpPassManager &pm);

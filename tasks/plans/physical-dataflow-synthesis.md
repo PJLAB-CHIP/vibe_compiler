@@ -195,12 +195,17 @@ positive/negative；至少一个非7B真实source和7B source实际命中，fina
 
 ### Checkpoint D（Q32.B）：Production-Shaped Candidate/All-Rank Vertical
 
+状态：已完成。实现与fresh gate见`tasks/archive/physical-dataflow-test-seam-vertical.md`；后续状态只看
+`tasks/progress.md`。
+
 输入：Checkpoint C、Q34 fixed-capacity packing、baseline与optimized complete-rank clones，以及existing rank
 frontier/finalization/all-rank coordinator。
 
 施工：
 
 - 在compiler-private production-shaped seam接入actual clones；不新增长期public driver mode；
+- current bring-up中以conservative spill作为每rank唯一reserved baseline；其它spill/resident artifact仍是actual alternatives，
+  baseline标记只存在于invocation-local move-only frontier entry，不写IR或artifact；
 - worklist保留无owner-produced offset/binding的actual generation clone；每次rank evaluation从parent另建clone，
   经过同一tile/instruction conversion、whole-rank SPM、descriptor/geometry和rank-local event/completion gate后，
   evaluation clone才进入bounded rank frontier且不再接受rewrite；

@@ -91,9 +91,10 @@ module {
 
 // CHECK-LABEL: func.func @control_flow_roots_do_not_share_scope
 // CHECK: %[[GATE_EMPTY:[0-9A-Za-z_]+]] = tensor.empty
-// CHECK-NEXT: %[[GATE_DDR:[0-9A-Za-z_]+]] = memref.alloc() {{.*}} : memref<4x16xf16, #wafer.memory<ddr, tensor>>
+// CHECK-NEXT: %[[GATE_DDR:[0-9A-Za-z_]+]] = memref.alloc() : memref<4x16xf16, #wafer.memory<ddr, tensor>>
 // CHECK: %[[UP_EMPTY:[0-9A-Za-z_]+]] = tensor.empty
-// CHECK-NEXT: %[[UP_DDR:[0-9A-Za-z_]+]] = memref.alloc() {{.*}} : memref<4x16xf16, #wafer.memory<ddr, tensor>>
+// CHECK-NEXT: %[[UP_DDR:[0-9A-Za-z_]+]] = memref.alloc() : memref<4x16xf16, #wafer.memory<ddr, tensor>>
+// CHECK-NOT: wafer.ddr.offset
 // CHECK: scf.for {{.*}} iter_args({{.*}} = %[[GATE_EMPTY]], {{.*}} = %[[UP_EMPTY]])
 // CHECK: wafer.tile.region({{.*}}, %[[GATE_DDR]]
 // CHECK: %[[GATE_TENSOR:[0-9A-Za-z_]+]] = bufferization.to_tensor
