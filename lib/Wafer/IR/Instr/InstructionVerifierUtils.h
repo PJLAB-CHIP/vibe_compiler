@@ -53,10 +53,6 @@ mlir::LogicalResult verifyOptionalUInt32Attr(mlir::Operation *op,
 mlir::LogicalResult verifyOptionalRoundingMode(mlir::Operation *op,
                                                mlir::IntegerAttr attr,
                                                llvm::StringRef name);
-void appendInstructionIssueEffect(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects,
-    WaferResourceKind resource, int64_t bytes);
-
 } // namespace wafer::instr_detail
 
 #endif // WAFER_LIB_IR_INSTR_INSTRUCTIONVERIFIERUTILS_H

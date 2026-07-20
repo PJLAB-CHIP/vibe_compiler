@@ -402,10 +402,10 @@
   `split_count == rank_group.size()`，把每个 split slot 先 extract 成连续 SPM comm buffer，DTE 只收发
   连续 buffer，recv 后再 insert 到 concat result slot；当前没有 ring/blocked schedule selector、
   raw non-unicast DTE 或 cross-card route binding。
-- tile-region-to-instr 的 communication schedule selector 是 pass-level rewrite policy，不进入 IR：
-  `all-gather-schedule=auto|ring|direct` 默认 `auto=ring`，`all-reduce-schedule=auto|ring|tree`
-  默认 `auto=ring`，`reduce-scatter-schedule=auto|direct` 默认 `auto=direct`。展开后只保留
-  `wafer.instr.dte_*` / local compute body，不保存 algorithm attr。
+- communication schedule不是public pass option或IR attr。production candidate owner从同一tile-region parent
+  独立clone并用typed conversion参数物化ring/direct all-gather和ring/tree all-reduce；每个clone都要重新执行
+  instruction、SPM/DDR、verifier与cost gate。IR-local replay可以显式传typed参数，但不能恢复用户selector。
+  展开后只保留`wafer.instr.dte_*`/local compute body，不保存algorithm attr。
 - tile-region-to-instr 的 V0 all-gather lowering 从 `wafer.tile.all_gather` 的 compact `tensor/ntensor`
   local/gather SPM buffer shape 推导唯一 gather axis。`ring` 先把 local chunk 写入本 rank slot，
   插入 `wafer.instr.local_fence` 后沿 ring forward slot view；`direct` 每个 phase 发送 local slot

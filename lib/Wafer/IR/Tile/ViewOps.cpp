@@ -50,20 +50,6 @@ mlir::LogicalResult ViewReshapeOp::verify() {
   return mlir::success();
 }
 
-void ViewReshapeOp::collectWaferLayoutRequirements(
-    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                          getSource().getType());
-  appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
-                          getResult().getType());
-}
-
-mlir::LogicalResult ViewReshapeOp::verifyWaferLayoutContract() {
-  llvm::SmallVector<WaferLayoutRequirement, 2> requirements;
-  collectWaferLayoutRequirements(requirements);
-  return verifyLayoutRequirements(getOperation(), requirements);
-}
-
 mlir::OpFoldResult ViewReshapeOp::fold(FoldAdaptor adaptor) {
   if (getSource().getType() == getResult().getType())
     return getSource();

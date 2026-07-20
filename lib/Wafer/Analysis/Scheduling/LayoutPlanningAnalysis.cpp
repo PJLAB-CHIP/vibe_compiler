@@ -175,7 +175,6 @@ private:
     opPlan.op = opDemand.op;
     opPlan.opIndex = opDemand.opIndex;
     opPlan.accumulators = opDemand.accumulators;
-    opPlan.collectiveInfo = opDemand.collectiveInfo;
     opPlan.failureReason = opDemand.failureReason;
 
     if (opDemand.kind == OpTilingDemandKind::Failure) {

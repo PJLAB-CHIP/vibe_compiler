@@ -252,6 +252,9 @@ SystemC/formal正负例及current v1非回退通过。
 
 ### Checkpoint F（Q32.M）：Mandatory Mechanism与Choice-Producer Closure
 
+状态：已完成。实现与fresh gate见`tasks/archive/physical-mechanism-choice-closure.md`；后续状态只看
+`tasks/progress.md`。
+
 输入：Checkpoints B-E及tasks/06 §4.1 matrix。
 
 施工：

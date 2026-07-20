@@ -448,8 +448,9 @@ source op verifier 重算。
 
 ## 6. Common Instruction Contract
 
-当前代码仍包含`verifyInstructionContract`和`WaferResourceEffectInterface`相关声明/boilerplate；Q32.M按
-`tasks/progress.md`迁移真实consumer并删除这些重复合同。下述内容是迁移后的终态，不表示该清理已经实现。
+Q32.M已把instruction/resource consumer迁到typed op、value-associated standard effects和custom
+`SideEffects::Resource`，并删除`verifyInstructionContract`及Wafer resource-effect interface/record的重复合同。
+下述内容是当前实现合同。
 
 instruction结构合同由typed op、ODS/op verifier和标准effect组成：
 
@@ -905,9 +906,10 @@ R3.2d 应实现为 MLIR DialectConversion：
 
 当前V0与终态扩展的mapping边界：
 
-下表collective三行中的`auto/ring/direct/tree`仅记录current migration实现，不是终态instruction contract。Q32.G由13的
-topology-aware rewrite直接在complete-rank clone中产生explicit DTE/compute/wait/fence body，并同批删除本pass的schedule
-enum/option/parse/default/hard-coded selector；instruction lowering只合法化该body，不再选择collective算法。
+下表collective三行只记录当前可物化的ring/direct/tree语义，不构成instruction层的算法选择合同。Q32.M已删除
+public pass schedule option/parser；production candidate owner从同一tile-region parent建立ring/ring、direct/ring和
+ring/tree完整clone并分别执行instruction/SPM/DDR/verifier/cost gate。IR-local conversion入口使用显式typed options
+重放单个参数点，不保存selector或algorithm attr。
 
 | target-abstract op | instruction-level lowering |
 | --- | --- |
@@ -956,22 +958,19 @@ R3.2d.5 static movement plan的host构造复杂度不属于IR协议，但必须�
 
 R3.2d V0 communication coverage：
 
-本段所有pass option/default均是待Q32.G删除的current事实；保留它们是为了实现迁移审计，不授权兼容入口或terminal fallback。
-
 - `wafer.tile.all_gather` 已能在 `rank_group`、group-local `local_rank`、`group_size`、`bytes`
   和静态 compact `tensor/ntensor` SPM buffer shape 均可验证时 materialize fixed-size unicast schedule。
-  pass option `all-gather-schedule=auto|ring|direct` 只选择 rewrite policy；accepted result 仍是
-  explicit `wafer.instr.dte_*` body，不保存 schedule attr。`auto` 默认 `ring`。
+  typed conversion参数可物化ring或direct；accepted result始终是explicit `wafer.instr.dte_*` body，
+  不保存schedule attr。production candidate owner独立建立两种actual clone。
 - `wafer.tile.all_reduce` 已能在 `rank_group`、group-local `local_rank`、`group_size`、`bytes`、
   `tensor` SPM buffer type 和 sum/max/min reduce kind 均可验证时 materialize fixed-size unicast schedule。
-  pass option `all-reduce-schedule=auto|ring|tree` 只选择 rewrite policy；`auto` 默认 `ring`。
+  typed conversion参数可物化ring或tree；production candidate owner独立建立两种actual clone。
   `tree` 使用 group-local root 0 的 binomial reduce + reverse broadcast。reduction 不藏进 DTE side
   effect；每个 reduce step 都先 wait DTE token，再用 `wafer.instr.elementwise` 做本地累计。
 - `wafer.tile.reduce_scatter` 使用 full input + local slot result 表示。tile-region lowering 不再预先把
   input 截成当前 rank 的 slot；instruction lowering 从 full input 的 per-target slot `memref.subview`
   直接派生 p2p send source，并在 wait 后显式累计 recv contribution。该 V0 是 phase-ordered
-  all-to-owner unicast schedule。pass option `reduce-scatter-schedule=auto|direct` 只选择 rewrite policy；
-  `auto` 默认 `direct`，不保存全局 plan attr。
+  all-to-owner unicast schedule。当前只有direct typed参数，不保存全局plan attr。
 
 R3.2d may generate multiple instruction ops for a single target-abstract movement op, but it must not write a
 global schedule attr. The instruction sequence is the region body itself.

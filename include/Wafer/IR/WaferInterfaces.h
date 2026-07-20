@@ -61,72 +61,12 @@ public:
       mlir::OpBuilder &builder) = 0;
 };
 
-enum class WaferValueRole {
-  None,
-  Operand,
-  Result,
-};
-
 enum class WaferLinalgExtCollectiveKind {
   AllGather,
   ReduceScatter,
   AllReduce,
   AllToAll,
   CollectivePermute,
-};
-
-struct WaferLinalgExtCollectiveInfo {
-  WaferLinalgExtCollectiveKind kind;
-  llvm::SmallVector<int64_t, 8> rankGroup;
-  llvm::SmallVector<int64_t, 8> rankGroups;
-  llvm::SmallVector<int64_t, 8> sourceTargetPairs;
-  int64_t axis = -1;
-  int64_t splitAxis = -1;
-  int64_t concatAxis = -1;
-  int64_t splitCount = -1;
-  int64_t rankGroupSize = -1;
-  int64_t channelId = -1;
-  bool hasAxis = false;
-  bool hasSplitAxis = false;
-  bool hasConcatAxis = false;
-  bool hasSplitCount = false;
-  bool hasRankGroups = false;
-  bool hasChannelId = false;
-  bool useGlobalDeviceIds = false;
-  bool hasCombiner = false;
-  bool hasCommunicationEffect = false;
-};
-
-struct WaferLayoutRequirement {
-  WaferValueRole role;
-  unsigned index;
-  MemLayout layout;
-  MemorySpace memorySpace;
-};
-
-enum class WaferResourceKind {
-  SPM,
-  DDR,
-  Movement,
-  Compute,
-  Communication,
-  Sync,
-};
-
-enum class WaferResourceAccess {
-  Read,
-  Write,
-  Issue,
-  Wait,
-  Fence,
-};
-
-struct WaferResourceEffect {
-  WaferResourceKind resource;
-  WaferResourceAccess access;
-  WaferValueRole role;
-  unsigned index;
-  int64_t bytes;
 };
 
 struct WaferSPMResource

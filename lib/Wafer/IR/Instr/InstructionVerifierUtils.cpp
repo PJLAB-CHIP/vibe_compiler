@@ -188,11 +188,4 @@ mlir::LogicalResult verifyOptionalRoundingMode(mlir::Operation *op,
   return mlir::success();
 }
 
-void appendInstructionIssueEffect(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects,
-    WaferResourceKind resource, int64_t bytes) {
-  appendResourceEffect(effects, resource, WaferResourceAccess::Issue,
-                       WaferValueRole::None, 0, bytes);
-}
-
 } // namespace wafer::instr_detail

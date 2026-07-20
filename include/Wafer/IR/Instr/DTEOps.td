@@ -5,12 +5,9 @@
 
 include "mlir/Dialect/Async/IR/AsyncTypes.td"
 
-class Wafer_InstrDTEP2POp<string mnemonic> : Wafer_InstrOp<mnemonic, [
-    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
-    MemoryEffects<[MemRead<Wafer_SPMResource>,
-                   MemWrite<Wafer_SPMResource>,
-                   MemWrite<Wafer_CommunicationResource>]>
-  ]> {
+class Wafer_InstrDTEP2POp<string mnemonic, list<Trait> resourceEffects,
+                          list<SideEffect> bufferEffects>
+    : Wafer_InstrOp<mnemonic, resourceEffects> {
   let description = [{
     Fixed-size unicast Direct DTE instruction. `peer` is a logical
     execution-rank id in the current `wafer.execution.mesh`, not an encoded
@@ -20,7 +17,7 @@ class Wafer_InstrDTEP2POp<string mnemonic> : Wafer_InstrOp<mnemonic, [
     by protocol materialization; it is not a physical channel or packet id.
   }];
   let arguments = (ins
-    Wafer_AnySPMMemRef:$buffer,
+    Arg<Wafer_AnySPMMemRef, "", bufferEffects>:$buffer,
     I64Attr:$peer,
     I64Attr:$bytes,
     Wafer_DTEMessageAttr:$message,
@@ -32,11 +29,19 @@ class Wafer_InstrDTEP2POp<string mnemonic> : Wafer_InstrOp<mnemonic, [
       "$buffer attr-dict `:` type($buffer) `->` type($token)";
 }
 
-def Wafer_InstrDTESendOp : Wafer_InstrDTEP2POp<"instr.dte_send"> {
+def Wafer_InstrDTESendOp
+    : Wafer_InstrDTEP2POp<"instr.dte_send",
+        [MemoryEffects<[MemRead<Wafer_SPMResource>,
+                        MemWrite<Wafer_CommunicationResource>]>],
+        [MemRead]> {
   let summary = "instruction-level Direct DTE fixed-size unicast send";
 }
 
-def Wafer_InstrDTERecvOp : Wafer_InstrDTEP2POp<"instr.dte_recv"> {
+def Wafer_InstrDTERecvOp
+    : Wafer_InstrDTEP2POp<"instr.dte_recv",
+        [MemoryEffects<[MemWrite<Wafer_SPMResource>,
+                        MemWrite<Wafer_CommunicationResource>]>],
+        [MemWrite]> {
   let summary = "instruction-level Direct DTE fixed-size unicast receive";
 }
 

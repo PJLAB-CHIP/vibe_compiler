@@ -303,12 +303,12 @@ private:
   mlir::FailureOr<int64_t> getCompactByteSize(mlir::Value buffer,
                                               llvm::StringRef subject);
 
-  mlir::FailureOr<int64_t>
-  getCommunicationId(const WaferLinalgExtCollectiveInfo &info,
-                     llvm::StringRef subject);
+  mlir::FailureOr<int64_t> getCommunicationId(mlir::IntegerAttr channelId,
+                                              llvm::StringRef subject);
 
   mlir::FailureOr<SelectedCollectiveRankGroup>
-  getCollectiveRankGroup(const WaferLinalgExtCollectiveInfo &info);
+  getCollectiveRankGroup(mlir::DenseI64ArrayAttr rankGroup,
+                         mlir::DenseIntElementsAttr rankGroups);
 
   std::optional<ComputeReduceKind>
   inferCollectiveReduceKind(mlir::Region &combiner);
@@ -316,31 +316,24 @@ private:
   mlir::LogicalResult requireSingleTensorCollective(mlir::Operation *op);
 
   mlir::LogicalResult convertAllGather(LinalgExtCollectiveAllGatherOp op,
-                                       const WaferLinalgExtCollectiveInfo &info,
                                        mlir::OpBuilder &builder);
 
   mlir::LogicalResult
   convertReduceScatter(LinalgExtCollectiveReduceScatterOp op,
-                       const WaferLinalgExtCollectiveInfo &info,
                        mlir::OpBuilder &builder);
 
   mlir::LogicalResult convertAllReduce(LinalgExtCollectiveAllReduceOp op,
-                                       const WaferLinalgExtCollectiveInfo &info,
                                        mlir::OpBuilder &builder);
 
   mlir::LogicalResult convertAllToAll(LinalgExtCollectiveAllToAllOp op,
-                                      const WaferLinalgExtCollectiveInfo &info,
                                       mlir::OpBuilder &builder);
 
   mlir::LogicalResult
   convertCollectivePermute(LinalgExtCollectiveCollectivePermuteOp op,
-                           const WaferLinalgExtCollectiveInfo &info,
                            mlir::OpBuilder &builder);
 
-  mlir::LogicalResult
-  convertLinalgExtCollective(mlir::Operation *op,
-                             const WaferLinalgExtCollectiveInfo &info,
-                             mlir::OpBuilder &builder);
+  mlir::LogicalResult convertLinalgExtCollective(mlir::Operation *op,
+                                                 mlir::OpBuilder &builder);
 
   mlir::LogicalResult initializeBoundary(TensorProgramScope scope,
                                          TileRegionOp tileRegion,

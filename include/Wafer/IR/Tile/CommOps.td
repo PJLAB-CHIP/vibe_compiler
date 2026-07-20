@@ -4,8 +4,6 @@
 #define WAFER_IR_OPS_COMMOPS_TD
 
 def Wafer_CommAllGatherOp : Wafer_Op<"tile.all_gather", [
-    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
-    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_CommunicationResource>]>
@@ -23,8 +21,8 @@ def Wafer_CommAllGatherOp : Wafer_Op<"tile.all_gather", [
   }];
 
   let arguments = (ins
-    Wafer_AnySPMMemRef:$local_chunk,
-    Wafer_AnySPMMemRef:$gather_buffer,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$local_chunk,
+    Arg<Wafer_AnySPMMemRef, "", [MemWrite]>:$gather_buffer,
     I64Attr:$local_rank,
     I64Attr:$group_size,
     DenseI64ArrayAttr:$rank_group,
@@ -37,8 +35,6 @@ def Wafer_CommAllGatherOp : Wafer_Op<"tile.all_gather", [
 }
 
 class Wafer_CommReduceCollectiveOp<string mnemonic> : Wafer_Op<mnemonic, [
-    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
-    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>,
@@ -46,8 +42,8 @@ class Wafer_CommReduceCollectiveOp<string mnemonic> : Wafer_Op<mnemonic, [
   ]> {
   let arguments = (ins
     Wafer_ComputeReduceKindAttr:$kind,
-    Wafer_AnySPMMemRef:$input,
-    Wafer_AnySPMMemRef:$recv_buffer,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$input,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead, MemWrite]>:$recv_buffer,
     I64Attr:$local_rank,
     I64Attr:$group_size,
     DenseI64ArrayAttr:$rank_group,
@@ -61,8 +57,6 @@ class Wafer_CommReduceCollectiveOp<string mnemonic> : Wafer_Op<mnemonic, [
 }
 
 def Wafer_CommReduceScatterOp : Wafer_Op<"tile.reduce_scatter", [
-    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
-    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>,
@@ -81,8 +75,8 @@ def Wafer_CommReduceScatterOp : Wafer_Op<"tile.reduce_scatter", [
   }];
   let arguments = (ins
     Wafer_ComputeReduceKindAttr:$kind,
-    Wafer_AnySPMMemRef:$input,
-    Wafer_AnySPMMemRef:$recv_buffer,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$input,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead, MemWrite]>:$recv_buffer,
     I64Attr:$axis,
     I64Attr:$local_rank,
     I64Attr:$group_size,

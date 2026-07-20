@@ -4,8 +4,6 @@
 #define WAFER_IR_OPS_LAYOUTOPS_TD
 
 def Wafer_LayoutMaterializeOp : Wafer_Op<"tile.materialize_layout", [
-    DeclareOpInterfaceMethods<WaferLayoutMaterializationOpInterface>,
-    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_MovementResource>]>
@@ -19,7 +17,7 @@ def Wafer_LayoutMaterializeOp : Wafer_Op<"tile.materialize_layout", [
     rejects it instead of relying on canonicalization for legality.
   }];
 
-  let arguments = (ins Wafer_AnySPMMemRef:$source);
+  let arguments = (ins Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source);
   let results = (outs Wafer_AnySPMMemRef:$result);
 
   let hasVerifier = 1;

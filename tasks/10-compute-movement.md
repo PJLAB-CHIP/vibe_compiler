@@ -404,8 +404,8 @@ logical-index-to-physical-offset由tasks/08的Wafer-specific attr/type interface
 的行为，不是每个consumer op重复发布的layout requirement。
 
 metadata-only relation优先使用合法标准view/subset op；真实reorder/materialization使用显式Wafer movement op。
-op verifier直接比较operand/result types、encoding和relation。现有WaferLayoutOpInterface与
-WaferLayoutMaterializationOpInterface若只重复这些事实，Q32.I/M迁移consumer后删除。
+op verifier直接比较operand/result types、encoding和relation。Q32.M已把layout consumer迁到上述typed
+事实，并删除只重复这些事实的Wafer layout op/materialization interfaces。
 
 ### 6.4 Memory、Resource 与 Completion
 
@@ -421,8 +421,8 @@ Communication和Sync可以继续作为MLIR SideEffects::Resource；Read/Write/Al
 | wait/fence | 对被排序resource的conservative Read/Write，加显式token/wait/fence use-def |
 
 bytes、descriptor数量和physical footprint由analysis从typed value/op fields重算，不塞进第二个effect payload。
-现有WaferResourceEffectInterface若只复制resource/access/value ordinal/bytes，Q32.I/M迁移SPM/DDR/lifetime/
-cost consumer到标准effect与typed analysis后删除。迁移不能只把resource kind改名：lifetime必须通过
+Q32.M已删除复制resource/access/value ordinal/bytes的Wafer resource-effect interface/record，并把
+SPM/DDR/lifetime/cost consumer迁到标准effect与typed analysis。迁移不能只把resource kind改名：lifetime必须通过
 value-associated EffectInstance或typed operand提取找到actual SSA allocation/root，issue产生的token及typed
 wait/fence必须继续表达pending access；DDR planner读取standard DDR effect，cost从descriptor/type/encoding
 重算bytes，local fence按typed op/token语义识别。completion必须从SSA token、wait/fence、path和terminal drain
@@ -437,9 +437,9 @@ UB的结构op。
 lowering归typed conversion patterns。instruction family若仍有多个真实generic consumer，可保留一个只返回
 family的最小marker/interface；`verifyInstructionContract`不能与op verifier形成第二份合同。
 
-Q32.I/M必须审计现有WaferInstructionOpInterface：保留的method要列出generic consumer；其余迁入op verifier、
-typed helper或conversion pattern。target LLVM conversion只消费current instruction op、typed target profile、
-accepted offsets和transport binding。
+Q32.M审计后只保留`WaferInstructionOpInterface::getInstructionFamily()`供generic instruction traversal和
+cost/order consumer使用；重复调用op verifier的`verifyInstructionContract`已删除。target LLVM conversion只消费
+current instruction op、typed target profile、accepted offsets和transport binding。
 
 ## 7. Lowering、Verifier 与 Completion
 

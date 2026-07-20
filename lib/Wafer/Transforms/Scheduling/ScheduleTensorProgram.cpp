@@ -481,6 +481,7 @@ struct RankArtifactAlternative {
   CandidateStats stats;
   int64_t estimatedTimePs = std::numeric_limits<int64_t>::max();
   unsigned promotedHandoffs = 0;
+  bool readyReordered = false;
 };
 
 struct RankVariantEvaluation {
@@ -783,6 +784,26 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   if (promotedHandoffs != 0)
     residentModule = mlir::cast<mlir::ModuleOp>((*residentGeneration)->clone());
 
+  // Ready-order variants are actual independently owned instruction modules.
+  // The rewrite changes operation order in SSA while preserving value hazards
+  // and fences; placement and cost are therefore recomputed from scratch.
+  mlir::OwningOpRef<mlir::ModuleOp> spillReadyModule;
+  {
+    mlir::OwningOpRef<mlir::ModuleOp> candidate =
+        mlir::cast<mlir::ModuleOp>((*evaluation.module)->clone());
+    if (scheduleIndependentInstructionsByReadyOrder(
+            candidate->getOperation()) != 0)
+      spillReadyModule = std::move(candidate);
+  }
+  mlir::OwningOpRef<mlir::ModuleOp> residentReadyModule;
+  if (promotedHandoffs != 0) {
+    mlir::OwningOpRef<mlir::ModuleOp> candidate =
+        mlir::cast<mlir::ModuleOp>((*residentGeneration)->clone());
+    if (scheduleIndependentInstructionsByReadyOrder(
+            candidate->getOperation()) != 0)
+      residentReadyModule = std::move(candidate);
+  }
+
   FinalizedRankMetrics spillMetrics;
   std::optional<std::string> spillFailure =
       finalizeRankArtifact(*spillModule, config, spillMetrics);
@@ -792,6 +813,16 @@ static mlir::LogicalResult evaluateRankVariantImpl(
     residentFailure =
         finalizeRankArtifact(*residentModule, config, residentMetrics);
   }
+  FinalizedRankMetrics spillReadyMetrics;
+  std::optional<std::string> spillReadyFailure;
+  if (spillReadyModule)
+    spillReadyFailure =
+        finalizeRankArtifact(*spillReadyModule, config, spillReadyMetrics);
+  FinalizedRankMetrics residentReadyMetrics;
+  std::optional<std::string> residentReadyFailure;
+  if (residentReadyModule)
+    residentReadyFailure = finalizeRankArtifact(*residentReadyModule, config,
+                                                residentReadyMetrics);
 
   if (spillFailure && (promotedHandoffs == 0 || residentFailure)) {
     std::string detail;
@@ -805,11 +836,23 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   if (!spillFailure)
     evaluation.alternatives.push_back(
         {std::move(spillModule), spillMetrics.stats,
-         spillMetrics.estimatedTimePs, /*promotedHandoffs=*/0});
+         spillMetrics.estimatedTimePs, /*promotedHandoffs=*/0,
+         /*readyReordered=*/false});
+  if (spillReadyModule && !spillReadyFailure)
+    evaluation.alternatives.push_back(
+        {std::move(spillReadyModule), spillReadyMetrics.stats,
+         spillReadyMetrics.estimatedTimePs, /*promotedHandoffs=*/0,
+         /*readyReordered=*/true});
   if (promotedHandoffs != 0 && !residentFailure)
     evaluation.alternatives.push_back(
         {std::move(residentModule), residentMetrics.stats,
-         residentMetrics.estimatedTimePs, promotedHandoffs});
+         residentMetrics.estimatedTimePs, promotedHandoffs,
+         /*readyReordered=*/false});
+  if (residentReadyModule && !residentReadyFailure)
+    evaluation.alternatives.push_back(
+        {std::move(residentReadyModule), residentReadyMetrics.stats,
+         residentReadyMetrics.estimatedTimePs, promotedHandoffs,
+         /*readyReordered=*/true});
 
   bool selectResident =
       promotedHandoffs != 0 && !residentFailure &&
@@ -1137,61 +1180,83 @@ buildScheduledRankCandidateFrontier(
 
   constexpr int64_t conservativeDiscoveryOrder = 5;
 
-  llvm::StringSet<> seenPartitions;
-  // Preserve the conservative policy as a common cross-rank recovery key
-  // even when its partition happens to be structurally identical to one of
-  // the aggressive prefixes on this rank.
-  llvm::StringSet<> conservativeSeenPartitions;
+  // The generation inputs are actual, unplaced complete-rank source clones.
+  // The baseline is borrowed; a LICM alternative is retained only when the
+  // LoopLike/effect/speculation proof moved real operations and the resulting
+  // module verifies. No hoist decision is copied into attrs or side records.
+  llvm::SmallVector<mlir::ModuleOp, 2> generationSources{sourceModule};
+  mlir::OwningOpRef<mlir::ModuleOp> hoistedSource =
+      mlir::cast<mlir::ModuleOp>(sourceModule->clone());
+  unsigned hoistedOperations = 0;
+  hoistedSource->walk([&](mlir::func::FuncOp function) {
+    hoistedOperations += hoistStaticLoopInvariantOperations(function);
+  });
+  if (hoistedOperations != 0 && mlir::succeeded(mlir::verify(*hoistedSource)))
+    generationSources.push_back(*hoistedSource);
+
   llvm::SmallVector<std::string, 6> failures;
   std::vector<ScheduledRankCandidate> frontier;
-  frontier.reserve(std::size(policies) * 2);
+  frontier.reserve(generationSources.size() * std::size(policies) * 4);
   unsigned reservedBaselineCount = 0;
-  for (auto [discoveryOrder, policy] : llvm::enumerate(policies)) {
-    llvm::StringSet<> &policySeenPartitions =
-        discoveryOrder == conservativeDiscoveryOrder
-            ? conservativeSeenPartitions
-            : seenPartitions;
-    RankVariantEvaluation evaluation =
-        evaluateRankVariant(sourceModule, config, policy, policySeenPartitions,
-                            /*preservePhysicalAlternatives=*/true);
-    if (evaluation.noScopes) {
-      // A rank without schedulable structured work is still a complete local
-      // alternative.  Finalization and whole-card acceptance remain shared
-      // with non-empty ranks.
-      clearCandidateEvaluationFacts(*evaluation.module);
-      frontier.emplace_back(std::move(evaluation.module), /*cost=*/0,
-                            /*discoveryOrder=*/conservativeDiscoveryOrder,
-                            /*reservedBaseline=*/true);
-      return frontier;
-    }
-    if (evaluation.duplicate)
-      continue;
-    if (evaluation.accepted) {
-      bool hasPolicySpill = false;
-      for (RankArtifactAlternative &alternative : evaluation.alternatives) {
-        bool isSpill = alternative.promotedHandoffs == 0;
-        bool reserved = discoveryOrder == conservativeDiscoveryOrder && isSpill;
-        hasPolicySpill |= isSpill;
-        reservedBaselineCount += reserved;
-        frontier.emplace_back(std::move(alternative.module),
-                              alternative.estimatedTimePs,
-                              static_cast<int64_t>(discoveryOrder), reserved);
+  for (auto [sourceIndex, generationSource] :
+       llvm::enumerate(generationSources)) {
+    llvm::StringSet<> seenPartitions;
+    // Preserve the baseline conservative policy as the common cross-rank
+    // recovery key even when it is structurally identical to an aggressive
+    // prefix. Optimized sources never claim this reserved allowance.
+    llvm::StringSet<> conservativeSeenPartitions;
+    for (auto [policyIndex, policy] : llvm::enumerate(policies)) {
+      int64_t discoveryOrder =
+          static_cast<int64_t>(sourceIndex * std::size(policies) + policyIndex);
+      bool isReservedPolicy =
+          sourceIndex == 0 && policyIndex == conservativeDiscoveryOrder;
+      llvm::StringSet<> &policySeenPartitions =
+          isReservedPolicy ? conservativeSeenPartitions : seenPartitions;
+      RankVariantEvaluation evaluation = evaluateRankVariant(
+          generationSource, config, policy, policySeenPartitions,
+          /*preservePhysicalAlternatives=*/true);
+      if (evaluation.noScopes) {
+        if (sourceIndex != 0)
+          continue;
+        // A baseline rank without schedulable structured work is still a
+        // complete local alternative. Finalization and whole-card acceptance
+        // remain shared with non-empty ranks.
+        clearCandidateEvaluationFacts(*evaluation.module);
+        frontier.emplace_back(std::move(evaluation.module), /*cost=*/0,
+                              /*discoveryOrder=*/conservativeDiscoveryOrder,
+                              /*reservedBaseline=*/true);
+        return frontier;
       }
-      if (discoveryOrder == conservativeDiscoveryOrder && !hasPolicySpill) {
-        sourceModule.emitError()
-            << "reserved_baseline_unavailable: conservative spill artifact "
-               "did not pass rank-local exact gates";
-        return mlir::failure();
+      if (evaluation.duplicate)
+        continue;
+      if (evaluation.accepted) {
+        bool hasPolicySpill = false;
+        for (RankArtifactAlternative &alternative : evaluation.alternatives) {
+          bool isSpill = alternative.promotedHandoffs == 0;
+          bool isBaselineSpill = isSpill && !alternative.readyReordered;
+          bool reserved = isReservedPolicy && isBaselineSpill;
+          hasPolicySpill |= isBaselineSpill;
+          reservedBaselineCount += reserved;
+          frontier.emplace_back(std::move(alternative.module),
+                                alternative.estimatedTimePs, discoveryOrder,
+                                reserved);
+        }
+        if (isReservedPolicy && !hasPolicySpill) {
+          sourceModule.emitError()
+              << "reserved_baseline_unavailable: conservative spill artifact "
+                 "did not pass rank-local exact gates";
+          return mlir::failure();
+        }
+        continue;
       }
-      continue;
-    }
 
-    std::string failure;
-    llvm::raw_string_ostream os(failure);
-    os << evaluation.label << ": "
-       << (evaluation.failureReason.empty() ? "failed"
-                                            : evaluation.failureReason);
-    failures.push_back(std::move(failure));
+      std::string failure;
+      llvm::raw_string_ostream os(failure);
+      os << evaluation.label << ": "
+         << (evaluation.failureReason.empty() ? "failed"
+                                              : evaluation.failureReason);
+      failures.push_back(std::move(failure));
+    }
   }
 
   if (!frontier.empty() && reservedBaselineCount == 1)

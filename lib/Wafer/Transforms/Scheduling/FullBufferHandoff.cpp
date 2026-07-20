@@ -397,6 +397,33 @@ static void eraseDeadViews(llvm::ArrayRef<mlir::Operation *> views) {
   }
 }
 
+/// Add one explicit resident result while retaining the original spill result.
+/// This is used for the single stable maximal-compatible fanout subset: users
+/// whose exact transfer proof succeeds take the new SPM SSA edge, while every
+/// incompatible user continues to consume the unchanged DDR spill.
+static TileRegionOp appendResidentResult(TileRegionOp producer,
+                                         TileYieldOp yield,
+                                         mlir::Value resident) {
+  llvm::SmallVector<mlir::Type, 4> resultTypes(producer.getResultTypes());
+  resultTypes.push_back(resident.getType());
+  yield.getValuesMutable().append(resident);
+
+  mlir::OpBuilder builder(producer);
+  mlir::OperationState state(producer.getLoc(),
+                             TileRegionOp::getOperationName());
+  state.addOperands(producer.getInputs());
+  state.addTypes(resultTypes);
+  state.addAttributes(producer->getAttrs());
+  state.addRegion();
+  auto replacement = mlir::cast<TileRegionOp>(builder.create(state));
+  replacement.getBody().takeBody(producer.getBody());
+  for (auto [oldResult, newResult] :
+       llvm::zip(producer.getResults(), replacement.getResults()))
+    oldResult.replaceAllUsesWith(newResult);
+  producer.erase();
+  return replacement;
+}
+
 static bool tryPromoteResult(TileRegionOp producer, unsigned resultIndex) {
   if (producer.getBody().empty() || resultIndex >= producer.getNumResults())
     return false;
@@ -487,27 +514,36 @@ static bool tryPromoteResult(TileRegionOp producer, unsigned resultIndex) {
         path.consumer.getBody().empty() ||
         path.operandIndex >= path.consumer.getInputs().size() ||
         path.consumer.getInputs()[path.operandIndex] != path.terminalValue)
-      return false;
+      continue;
     mlir::BlockArgument argument =
         path.consumer.getBody().front().getArgument(path.operandIndex);
     std::optional<int64_t> terminalBytes = getPhysicalBytes(argument.getType());
     if (!terminalBytes || *terminalBytes != *resultBytes)
-      return false;
+      continue;
     ConsumerRewrite rewrite{path, argument};
     llvm::DenseSet<mlir::Value> activeConsumer;
     if (!collectConsumerRDMAs(argument, *resultBytes, {}, rewrite.rdmas,
                               rewrite.localViews, activeConsumer) ||
         rewrite.rdmas.empty())
-      return false;
+      continue;
     rewrites.push_back(std::move(rewrite));
   }
+  if (rewrites.empty())
+    return false;
 
-  mlir::OpResult producerResult =
-      mlir::cast<mlir::OpResult>(producer.getResult(resultIndex));
-  producerResult.setType(residentType);
-  yield->setOperand(resultIndex, producerWDMA.getSource());
-  producerWDMA.erase();
-  eraseDeadViews(producerDestinationViews);
+  bool promotesEveryConsumer = rewrites.size() == paths.size();
+  mlir::Value producerResult;
+  if (promotesEveryConsumer) {
+    auto result = mlir::cast<mlir::OpResult>(producer.getResult(resultIndex));
+    result.setType(residentType);
+    yield->setOperand(resultIndex, producerWDMA.getSource());
+    producerWDMA.erase();
+    eraseDeadViews(producerDestinationViews);
+    producerResult = result;
+  } else {
+    producer = appendResidentResult(producer, yield, producerWDMA.getSource());
+    producerResult = producer.getResults().back();
+  }
 
   llvm::SmallVector<mlir::Operation *, 8> localViews;
   for (ConsumerRewrite &rewrite : rewrites) {
@@ -537,16 +573,18 @@ static bool tryPromoteResult(TileRegionOp producer, unsigned resultIndex) {
   }
   eraseDeadViews(localViews);
 
-  llvm::SmallVector<mlir::Operation *, 8> externalViews(externalViewSet.begin(),
-                                                        externalViewSet.end());
-  eraseDeadViews(externalViews);
+  if (promotesEveryConsumer) {
+    llvm::SmallVector<mlir::Operation *, 8> externalViews(
+        externalViewSet.begin(), externalViewSet.end());
+    eraseDeadViews(externalViews);
+  }
 
-  if (outputArgument.use_empty()) {
+  if (promotesEveryConsumer && outputArgument.use_empty()) {
     producer.getInputsMutable().erase(outputArgumentIndex);
     producer.getBody().front().eraseArgument(outputArgumentIndex);
   }
 
-  if (oldOutputAllocation->use_empty())
+  if (promotesEveryConsumer && oldOutputAllocation->use_empty())
     oldOutputAllocation.erase();
   return true;
 }

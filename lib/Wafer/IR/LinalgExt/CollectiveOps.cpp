@@ -358,95 +358,6 @@ verifySourceTargetPairs(mlir::Operation *op,
                                                "source_target_pairs");
 }
 
-void assignDenseI64Array(mlir::DenseI64ArrayAttr attr,
-                         llvm::SmallVectorImpl<int64_t> &values) {
-  values.clear();
-  values.append(attr.asArrayRef().begin(), attr.asArrayRef().end());
-}
-
-void collectChannelInfo(mlir::IntegerAttr channelIdAttr,
-                        std::optional<bool> useGlobalDeviceIds,
-                        WaferLinalgExtCollectiveInfo &info) {
-  if (channelIdAttr) {
-    info.hasChannelId = true;
-    info.channelId = channelIdAttr.getInt();
-  }
-  info.useGlobalDeviceIds = useGlobalDeviceIds.value_or(false);
-}
-
-void collectRankGroupInfo(mlir::DenseI64ArrayAttr rankGroupAttr,
-                          mlir::DenseIntElementsAttr rankGroupsAttr,
-                          mlir::IntegerAttr channelIdAttr,
-                          std::optional<bool> useGlobalDeviceIds,
-                          WaferLinalgExtCollectiveInfo &info) {
-  if (rankGroupAttr) {
-    assignDenseI64Array(rankGroupAttr, info.rankGroup);
-    info.rankGroupSize = static_cast<int64_t>(info.rankGroup.size());
-  }
-  if (rankGroupsAttr) {
-    info.hasRankGroups = true;
-    auto groupsType =
-        mlir::cast<mlir::RankedTensorType>(rankGroupsAttr.getType());
-    info.rankGroupSize = groupsType.getDimSize(1);
-    info.rankGroups.clear();
-    for (llvm::APInt value : rankGroupsAttr.getValues<llvm::APInt>())
-      info.rankGroups.push_back(value.getSExtValue());
-  }
-  collectChannelInfo(channelIdAttr, useGlobalDeviceIds, info);
-  info.hasCommunicationEffect = true;
-}
-
-mlir::LogicalResult verifyLinalgExtCollectiveInfoContract(
-    mlir::Operation *op, const WaferLinalgExtCollectiveInfo &info) {
-  if (!info.hasCommunicationEffect)
-    return op->emitOpError(
-        "linalg-ext collective interface must expose communication effect");
-  if (info.hasChannelId && info.channelId < 0)
-    return op->emitOpError(
-        "linalg-ext collective interface exposed negative channel_id");
-  if (info.useGlobalDeviceIds && (!info.hasChannelId || info.channelId <= 0))
-    return op->emitOpError(
-        "global device ids require a positive channel_id in collective info");
-
-  switch (info.kind) {
-  case WaferLinalgExtCollectiveKind::AllGather:
-  case WaferLinalgExtCollectiveKind::ReduceScatter:
-    if (!info.hasAxis || info.axis < 0)
-      return op->emitOpError(
-          "rank-group collective interface must expose a non-negative axis");
-    [[fallthrough]];
-  case WaferLinalgExtCollectiveKind::AllReduce:
-    if (info.rankGroup.empty() && !info.hasRankGroups)
-      return op->emitOpError("rank-group collective interface must expose "
-                             "rank_group or rank_groups");
-    if (info.hasRankGroups &&
-        (info.rankGroupSize <= 0 ||
-         info.rankGroups.size() % static_cast<size_t>(info.rankGroupSize) != 0))
-      return op->emitOpError(
-          "rank-group collective interface exposed malformed rank_groups");
-    if ((info.kind == WaferLinalgExtCollectiveKind::AllReduce ||
-         info.kind == WaferLinalgExtCollectiveKind::ReduceScatter) &&
-        !info.hasCombiner)
-      return op->emitOpError(
-          "reduction collective interface must expose combiner presence");
-    return mlir::success();
-  case WaferLinalgExtCollectiveKind::AllToAll:
-    if ((info.rankGroup.empty() && !info.hasRankGroups) || !info.hasSplitAxis ||
-        !info.hasConcatAxis || !info.hasSplitCount || info.splitAxis < 0 ||
-        info.concatAxis < 0 || info.splitCount <= 0)
-      return op->emitOpError(
-          "all_to_all interface must expose rank groups and split/concat axes");
-    return mlir::success();
-  case WaferLinalgExtCollectiveKind::CollectivePermute:
-    if (info.sourceTargetPairs.empty())
-      return op->emitOpError(
-          "collective_permute interface must expose source_target_pairs");
-    return mlir::success();
-  }
-
-  llvm_unreachable("unknown Wafer linalg-ext collective kind");
-}
-
 mlir::OpFoldResult getTensorDim(mlir::OpBuilder &builder, mlir::Location loc,
                                 mlir::Value tensor, int64_t dim) {
   auto tensorType = mlir::cast<mlir::RankedTensorType>(tensor.getType());
@@ -760,21 +671,9 @@ mlir::LogicalResult LinalgExtCollectiveAllGatherOp::verify() {
       getCollectiveRankGroupSize(getRankGroupAttr(), getRankGroupsAttr()));
 }
 
-void LinalgExtCollectiveAllGatherOp::collectWaferLinalgExtCollectiveInfo(
-    WaferLinalgExtCollectiveInfo &info) {
-  info = {};
-  info.kind = WaferLinalgExtCollectiveKind::AllGather;
-  info.hasAxis = true;
-  info.axis = static_cast<int64_t>(getAxis());
-  collectRankGroupInfo(getRankGroupAttr(), getRankGroupsAttr(),
-                       getChannelIdAttr(), getUseGlobalDeviceIds(), info);
-}
-
-mlir::LogicalResult
-LinalgExtCollectiveAllGatherOp::verifyWaferLinalgExtCollectiveContract() {
-  WaferLinalgExtCollectiveInfo info;
-  collectWaferLinalgExtCollectiveInfo(info);
-  return verifyLinalgExtCollectiveInfoContract(getOperation(), info);
+WaferLinalgExtCollectiveKind
+LinalgExtCollectiveAllGatherOp::getCollectiveKind() {
+  return WaferLinalgExtCollectiveKind::AllGather;
 }
 
 llvm::SmallVector<mlir::utils::IteratorType>
@@ -834,22 +733,9 @@ mlir::LogicalResult LinalgExtCollectiveReduceScatterOp::verifyRegions() {
                               getResults());
 }
 
-void LinalgExtCollectiveReduceScatterOp::collectWaferLinalgExtCollectiveInfo(
-    WaferLinalgExtCollectiveInfo &info) {
-  info = {};
-  info.kind = WaferLinalgExtCollectiveKind::ReduceScatter;
-  info.hasAxis = true;
-  info.axis = static_cast<int64_t>(getAxis());
-  info.hasCombiner = true;
-  collectRankGroupInfo(getRankGroupAttr(), getRankGroupsAttr(),
-                       getChannelIdAttr(), getUseGlobalDeviceIds(), info);
-}
-
-mlir::LogicalResult
-LinalgExtCollectiveReduceScatterOp::verifyWaferLinalgExtCollectiveContract() {
-  WaferLinalgExtCollectiveInfo info;
-  collectWaferLinalgExtCollectiveInfo(info);
-  return verifyLinalgExtCollectiveInfoContract(getOperation(), info);
+WaferLinalgExtCollectiveKind
+LinalgExtCollectiveReduceScatterOp::getCollectiveKind() {
+  return WaferLinalgExtCollectiveKind::ReduceScatter;
 }
 
 llvm::SmallVector<mlir::utils::IteratorType>
@@ -908,20 +794,9 @@ mlir::LogicalResult LinalgExtCollectiveAllReduceOp::verifyRegions() {
                               getResults());
 }
 
-void LinalgExtCollectiveAllReduceOp::collectWaferLinalgExtCollectiveInfo(
-    WaferLinalgExtCollectiveInfo &info) {
-  info = {};
-  info.kind = WaferLinalgExtCollectiveKind::AllReduce;
-  info.hasCombiner = true;
-  collectRankGroupInfo(getRankGroupAttr(), getRankGroupsAttr(),
-                       getChannelIdAttr(), getUseGlobalDeviceIds(), info);
-}
-
-mlir::LogicalResult
-LinalgExtCollectiveAllReduceOp::verifyWaferLinalgExtCollectiveContract() {
-  WaferLinalgExtCollectiveInfo info;
-  collectWaferLinalgExtCollectiveInfo(info);
-  return verifyLinalgExtCollectiveInfoContract(getOperation(), info);
+WaferLinalgExtCollectiveKind
+LinalgExtCollectiveAllReduceOp::getCollectiveKind() {
+  return WaferLinalgExtCollectiveKind::AllReduce;
 }
 
 llvm::SmallVector<mlir::utils::IteratorType>
@@ -975,25 +850,9 @@ mlir::LogicalResult LinalgExtCollectiveAllToAllOp::verify() {
                              getSplitCountAttr().getInt());
 }
 
-void LinalgExtCollectiveAllToAllOp::collectWaferLinalgExtCollectiveInfo(
-    WaferLinalgExtCollectiveInfo &info) {
-  info = {};
-  info.kind = WaferLinalgExtCollectiveKind::AllToAll;
-  info.hasSplitAxis = true;
-  info.splitAxis = static_cast<int64_t>(getSplitAxis());
-  info.hasConcatAxis = true;
-  info.concatAxis = static_cast<int64_t>(getConcatAxis());
-  info.hasSplitCount = true;
-  info.splitCount = static_cast<int64_t>(getSplitCount());
-  collectRankGroupInfo(getRankGroupAttr(), getRankGroupsAttr(),
-                       getChannelIdAttr(), getUseGlobalDeviceIds(), info);
-}
-
-mlir::LogicalResult
-LinalgExtCollectiveAllToAllOp::verifyWaferLinalgExtCollectiveContract() {
-  WaferLinalgExtCollectiveInfo info;
-  collectWaferLinalgExtCollectiveInfo(info);
-  return verifyLinalgExtCollectiveInfoContract(getOperation(), info);
+WaferLinalgExtCollectiveKind
+LinalgExtCollectiveAllToAllOp::getCollectiveKind() {
+  return WaferLinalgExtCollectiveKind::AllToAll;
 }
 
 llvm::SmallVector<mlir::utils::IteratorType>
@@ -1050,20 +909,9 @@ mlir::LogicalResult LinalgExtCollectiveCollectivePermuteOp::verify() {
                                       getResults());
 }
 
-void LinalgExtCollectiveCollectivePermuteOp::
-    collectWaferLinalgExtCollectiveInfo(WaferLinalgExtCollectiveInfo &info) {
-  info = {};
-  info.kind = WaferLinalgExtCollectiveKind::CollectivePermute;
-  assignDenseI64Array(getSourceTargetPairsAttr(), info.sourceTargetPairs);
-  collectChannelInfo(getChannelIdAttr(), std::nullopt, info);
-  info.hasCommunicationEffect = true;
-}
-
-mlir::LogicalResult LinalgExtCollectiveCollectivePermuteOp::
-    verifyWaferLinalgExtCollectiveContract() {
-  WaferLinalgExtCollectiveInfo info;
-  collectWaferLinalgExtCollectiveInfo(info);
-  return verifyLinalgExtCollectiveInfoContract(getOperation(), info);
+WaferLinalgExtCollectiveKind
+LinalgExtCollectiveCollectivePermuteOp::getCollectiveKind() {
+  return WaferLinalgExtCollectiveKind::CollectivePermute;
 }
 
 llvm::SmallVector<mlir::utils::IteratorType>

@@ -58,7 +58,6 @@ struct OpTilingDemand {
   llvm::SmallVector<mlir::utils::IteratorType, 4> iteratorTypes;
   llvm::SmallVector<TilingDemandValue, 4> values;
   llvm::SmallVector<TilingDemandAccumulator, 2> accumulators;
-  WaferLinalgExtCollectiveInfo collectiveInfo;
   std::string failureReason;
 };
 

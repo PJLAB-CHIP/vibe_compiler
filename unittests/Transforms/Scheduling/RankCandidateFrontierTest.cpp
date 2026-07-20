@@ -129,4 +129,66 @@ module {
   EXPECT_FALSE(sourceContainsTileRegion);
 }
 
+TEST(RankCandidateFrontierTest,
+     SendsLoopInvariantActualSourceCloneThroughRankExactGates) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                  wafer::WaferDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  wafer::registerTargetImplementationExternalModels(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(%input: tensor<4xf32>, %initial: tensor<4xf32>)
+      -> tensor<4xf32> {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %result = scf.for %iv = %c0 to %c2 step %c1
+        iter_args(%iter = %initial) -> tensor<4xf32> {
+      %empty = tensor.empty() : tensor<4xf32>
+      %invariant = linalg.generic {
+          indexing_maps = [affine_map<(d0) -> (d0)>,
+                           affine_map<(d0) -> (d0)>],
+          iterator_types = ["parallel"]}
+        ins(%input : tensor<4xf32>) outs(%empty : tensor<4xf32>) {
+      ^bb0(%value: f32, %unused: f32):
+        linalg.yield %value : f32
+      } -> tensor<4xf32>
+      scf.yield %invariant : tensor<4xf32>
+    }
+    return %result : tensor<4xf32>
+  }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(source);
+
+  wafer::TensorProgramSchedulingConfig config;
+  config.logicalRank = 0;
+  config.candidateParallelism = 1;
+  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  ASSERT_TRUE(mlir::succeeded(frontier));
+  EXPECT_EQ(llvm::count_if(*frontier,
+                           [](const auto &candidate) {
+                             return candidate.reservedBaseline;
+                           }),
+            1u);
+  EXPECT_TRUE(llvm::any_of(*frontier, [](const auto &candidate) {
+    return candidate.discoveryOrder >= 6;
+  }));
+
+  // Both generation paths are isolated from the shared source.
+  bool sourceContainsTileRegion = false;
+  source->walk([&](wafer::TileRegionOp) { sourceContainsTileRegion = true; });
+  EXPECT_FALSE(sourceContainsTileRegion);
+}
+
 } // namespace

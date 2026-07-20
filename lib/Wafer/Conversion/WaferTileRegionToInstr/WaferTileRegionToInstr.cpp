@@ -84,47 +84,6 @@ static void eraseDeadPrivateFills(mlir::ModuleOp module) {
   }
 }
 
-static mlir::LogicalResult parseTileRegionToInstrOptions(
-    llvm::StringRef allGatherSchedule, llvm::StringRef allReduceSchedule,
-    llvm::StringRef reduceScatterSchedule, TileRegionToInstrOptions &options,
-    std::string *failureReason) {
-  if (allGatherSchedule == "auto" || allGatherSchedule == "ring") {
-    options.allGatherSchedule = AllGatherSchedule::Ring;
-  } else if (allGatherSchedule == "direct") {
-    options.allGatherSchedule = AllGatherSchedule::Direct;
-  } else {
-    setFailureReason(failureReason,
-                     llvm::Twine("unsupported all_gather schedule: ")
-                         .concat(allGatherSchedule)
-                         .str());
-    return mlir::failure();
-  }
-
-  if (allReduceSchedule == "auto" || allReduceSchedule == "ring") {
-    options.allReduceSchedule = AllReduceSchedule::Ring;
-  } else if (allReduceSchedule == "tree") {
-    options.allReduceSchedule = AllReduceSchedule::Tree;
-  } else {
-    setFailureReason(failureReason,
-                     llvm::Twine("unsupported all_reduce schedule: ")
-                         .concat(allReduceSchedule)
-                         .str());
-    return mlir::failure();
-  }
-
-  if (reduceScatterSchedule == "auto" || reduceScatterSchedule == "direct") {
-    options.reduceScatterSchedule = ReduceScatterSchedule::Direct;
-  } else {
-    setFailureReason(failureReason,
-                     llvm::Twine("unsupported reduce_scatter schedule: ")
-                         .concat(reduceScatterSchedule)
-                         .str());
-    return mlir::failure();
-  }
-
-  return mlir::success();
-}
-
 static mlir::LogicalResult
 materializeStructuredLocalFences(mlir::ModuleOp module) {
   mlir::WalkResult result = module.walk([&](TileRegionOp tileRegion) {
@@ -178,17 +137,8 @@ struct ConvertTileRegionToInstrPass
 
   void runOnOperation() final {
     std::string failureReason;
-    TileRegionToInstrOptions options;
-    if (mlir::failed(parseTileRegionToInstrOptions(
-            allGatherSchedule, allReduceSchedule, reduceScatterSchedule,
-            options, &failureReason))) {
-      getOperation().emitError(failureReason);
-      signalPassFailure();
-      return;
-    }
-
-    if (mlir::succeeded(wafer::convertTileRegionToInstrModule(
-            getOperation(), options, &failureReason)))
+    if (mlir::succeeded(wafer::convertTileRegionToInstrModule(getOperation(),
+                                                              &failureReason)))
       return;
 
     if (!failureReason.empty())

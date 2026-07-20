@@ -130,31 +130,43 @@ static void markDirectionalNoCUnknown(InstructionProgramCost &cost) {
 static void collectResourceCost(mlir::Operation *op,
                                 InstructionProgramCost &cost,
                                 Quantity multiplicity) {
-  auto interface = mlir::dyn_cast<WaferResourceEffectInterface>(op);
-  if (!interface)
-    return;
-  llvm::SmallVector<WaferResourceEffect, 8> effects;
-  interface.collectWaferResourceEffects(effects);
-  for (const WaferResourceEffect &effect : effects) {
-    ScheduleCostMetric *metric = nullptr;
-    if (effect.resource == WaferResourceKind::DDR &&
-        effect.access == WaferResourceAccess::Read)
-      metric = &cost.ddrReadBytes;
-    else if (effect.resource == WaferResourceKind::DDR &&
-             effect.access == WaferResourceAccess::Write)
-      metric = &cost.ddrWriteBytes;
-    else if (effect.resource == WaferResourceKind::Movement &&
-             effect.access == WaferResourceAccess::Issue)
-      metric = &cost.spmMovementBytes;
-    if (!metric)
-      continue;
-    if (effect.bytes < 0) {
-      degrade(*metric, ScheduleCostKnowledge::Unknown,
+  auto addBytes = [&](ScheduleCostMetric &metric, int64_t bytes) {
+    if (bytes < 0) {
+      degrade(metric, ScheduleCostKnowledge::Unknown,
               ScheduleCostReason::UnknownResourceBytes);
-      continue;
+      return;
     }
-    add(*metric,
-        multiply(Quantity{static_cast<uint64_t>(effect.bytes)}, multiplicity));
+    add(metric, multiply(Quantity{static_cast<uint64_t>(bytes)}, multiplicity));
+  };
+  auto physicalBytes = [](mlir::Value value) -> int64_t {
+    auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+    if (!type)
+      return -1;
+    std::optional<WaferPhysicalTensorInfo> info =
+        computeWaferPhysicalTensorInfo(type);
+    return info ? info->physicalBytes : -1;
+  };
+
+  if (auto rdma = mlir::dyn_cast<InstrRDMAOp>(op)) {
+    addBytes(cost.ddrReadBytes, rdma.getByteCount());
+    addBytes(cost.spmMovementBytes, rdma.getByteCount());
+    return;
+  }
+  if (auto wdma = mlir::dyn_cast<InstrWDMAOp>(op)) {
+    addBytes(cost.ddrWriteBytes, wdma.getByteCount());
+    addBytes(cost.spmMovementBytes, wdma.getByteCount());
+    return;
+  }
+  if (auto gatherScatter = mlir::dyn_cast<InstrGatherScatterOp>(op)) {
+    addBytes(cost.spmMovementBytes, gatherScatter.getByteCount());
+    return;
+  }
+  if (auto dataMove = mlir::dyn_cast<InstrTDMADataMoveOp>(op)) {
+    addBytes(cost.spmMovementBytes, physicalBytes(dataMove.getDest()));
+    return;
+  }
+  if (auto maskMove = mlir::dyn_cast<InstrMaskMoveOp>(op)) {
+    addBytes(cost.spmMovementBytes, physicalBytes(maskMove.getDest()));
   }
 }
 

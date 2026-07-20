@@ -213,30 +213,3 @@ mlir::LogicalResult InstrPeripheralOp::verify() {
 InstrFamily InstrPeripheralOp::getInstructionFamily() {
   return InstrFamily::CT;
 }
-
-mlir::LogicalResult InstrPeripheralOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrPeripheralOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  for (auto [index, input] : llvm::enumerate(getInputs())) {
-    appendResourceEffect(effects, WaferResourceKind::SPM,
-                         WaferResourceAccess::Read, WaferValueRole::Operand,
-                         index, getCompactByteSizeOrUnknown(input.getType()));
-  }
-  for (auto [index, dest] : llvm::enumerate(getDests())) {
-    appendResourceEffect(effects, WaferResourceKind::SPM,
-                         WaferResourceAccess::Write, WaferValueRole::Operand,
-                         getInputs().size() + index,
-                         getCompactByteSizeOrUnknown(dest.getType()));
-  }
-  appendInstructionIssueEffect(effects, WaferResourceKind::Compute,
-                               getElemCountAttr().getInt());
-}
-
-mlir::LogicalResult InstrPeripheralOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 8> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}

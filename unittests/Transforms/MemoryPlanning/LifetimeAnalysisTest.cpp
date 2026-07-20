@@ -705,7 +705,7 @@ module {
   LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
     return wafer::isWaferDDRMemRefType(type);
   });
-  LocalCompletionTracker completion(wafer::WaferResourceKind::DDR);
+  LocalCompletionTracker completion;
   LifetimeFailure failure;
   ASSERT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
 
@@ -746,7 +746,7 @@ module {
   LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
     return wafer::isWaferDDRMemRefType(type);
   });
-  LocalCompletionTracker completion(wafer::WaferResourceKind::DDR);
+  LocalCompletionTracker completion;
   LifetimeFailure failure;
   EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
   EXPECT_EQ(failure.kind, LifetimeFailureKind::MissingLocalCompletion);
@@ -796,7 +796,7 @@ module {
   LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
     return wafer::isWaferDDRMemRefType(type);
   });
-  LocalCompletionTracker completion(wafer::WaferResourceKind::DDR);
+  LocalCompletionTracker completion;
   LifetimeFailure failure;
   EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
   EXPECT_EQ(failure.kind, LifetimeFailureKind::LoopBackedgeCompletion);
@@ -860,7 +860,7 @@ module {
   LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
     return wafer::isWaferDDRMemRefType(type);
   });
-  LocalCompletionTracker completion(wafer::WaferResourceKind::DDR);
+  LocalCompletionTracker completion;
   LifetimeFailure failure;
   EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
   EXPECT_EQ(failure.kind, LifetimeFailureKind::LoopBackedgeCompletion);
@@ -906,7 +906,7 @@ module {
   LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
     return wafer::isWaferDDRMemRefType(type);
   });
-  LocalCompletionTracker completion(wafer::WaferResourceKind::DDR);
+  LocalCompletionTracker completion;
   LifetimeFailure failure;
   EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
   EXPECT_EQ(failure.kind, LifetimeFailureKind::MissingLocalCompletion);
@@ -934,7 +934,7 @@ module {
   LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
     return wafer::isWaferDDRMemRefType(type);
   });
-  LocalCompletionTracker completion(wafer::WaferResourceKind::DDR);
+  LocalCompletionTracker completion;
   LifetimeFailure failure;
   EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
 }

@@ -730,26 +730,6 @@ mlir::LogicalResult InstrFillOp::verify() {
 
 InstrFamily InstrFillOp::getInstructionFamily() { return InstrFamily::TDMA; }
 
-mlir::LogicalResult InstrFillOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrFillOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-  appendInstructionIssueEffect(
-      effects, WaferResourceKind::Compute,
-      getCompactByteSizeOrUnknown(getDest().getType()));
-}
-
-mlir::LogicalResult InstrFillOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 2> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
-
 mlir::LogicalResult InstrElementwiseOp::verify() {
   if ((*this)->hasAttr("indexing_maps"))
     return emitOpError(
@@ -784,32 +764,6 @@ InstrFamily InstrElementwiseOp::getInstructionFamily() {
   return InstrFamily::CT;
 }
 
-mlir::LogicalResult InstrElementwiseOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrElementwiseOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  for (auto [index, input] : llvm::enumerate(getInputs())) {
-    appendResourceEffect(effects, WaferResourceKind::SPM,
-                         WaferResourceAccess::Read, WaferValueRole::Operand,
-                         index, getCompactByteSizeOrUnknown(input.getType()));
-  }
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand,
-                       getInputs().size(),
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-  appendInstructionIssueEffect(
-      effects, WaferResourceKind::Compute,
-      getCompactByteSizeOrUnknown(getDest().getType()));
-}
-
-mlir::LogicalResult InstrElementwiseOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 8> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
-
 mlir::LogicalResult InstrBit2FpOp::verify() {
   if (mlir::failed(
           verifySPMMemRef(getOperation(), getSource().getType(), "source")) ||
@@ -835,29 +789,6 @@ mlir::LogicalResult InstrBit2FpOp::verify() {
 }
 
 InstrFamily InstrBit2FpOp::getInstructionFamily() { return InstrFamily::CT; }
-
-mlir::LogicalResult InstrBit2FpOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrBit2FpOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(getSource().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-  appendInstructionIssueEffect(
-      effects, WaferResourceKind::Compute,
-      getCompactByteSizeOrUnknown(getDest().getType()));
-}
-
-mlir::LogicalResult InstrBit2FpOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 3> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
 
 mlir::LogicalResult InstrMaskMoveOp::verify() {
   if (mlir::failed(
@@ -898,32 +829,6 @@ mlir::LogicalResult InstrMaskMoveOp::verify() {
 
 InstrFamily InstrMaskMoveOp::getInstructionFamily() { return InstrFamily::CT; }
 
-mlir::LogicalResult InstrMaskMoveOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrMaskMoveOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(getSource().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 1,
-                       getCompactByteSizeOrUnknown(getMask().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 2,
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-  appendInstructionIssueEffect(
-      effects, WaferResourceKind::Movement,
-      getCompactByteSizeOrUnknown(getDest().getType()));
-}
-
-mlir::LogicalResult InstrMaskMoveOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 4> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
-
 mlir::LogicalResult InstrReduceOp::verify() {
   if ((*this)->hasAttr("init_value") || (*this)->hasAttr("init"))
     return emitOpError(
@@ -941,29 +846,6 @@ mlir::LogicalResult InstrReduceOp::verify() {
 }
 
 InstrFamily InstrReduceOp::getInstructionFamily() { return InstrFamily::CT; }
-
-mlir::LogicalResult InstrReduceOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrReduceOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(getInput().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-  appendInstructionIssueEffect(
-      effects, WaferResourceKind::Compute,
-      getCompactByteSizeOrUnknown(getDest().getType()));
-}
-
-mlir::LogicalResult InstrReduceOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 4> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
 
 mlir::LogicalResult InstrConvertOp::verify() {
   if (mlir::failed(
@@ -1020,29 +902,6 @@ mlir::LogicalResult InstrConvertOp::verify() {
 }
 
 InstrFamily InstrConvertOp::getInstructionFamily() { return InstrFamily::CT; }
-
-mlir::LogicalResult InstrConvertOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrConvertOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(getSource().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-  appendInstructionIssueEffect(
-      effects, WaferResourceKind::Compute,
-      getCompactByteSizeOrUnknown(getDest().getType()));
-}
-
-mlir::LogicalResult InstrConvertOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 4> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
 
 mlir::LogicalResult InstrGemmOp::verify() {
   if (mlir::failed(verifyAlignedSPMGemmMemRef(getOperation(),
@@ -1160,32 +1019,6 @@ mlir::LogicalResult InstrGemmOp::verify() {
 
 InstrFamily InstrGemmOp::getInstructionFamily() { return InstrFamily::NE; }
 
-mlir::LogicalResult InstrGemmOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrGemmOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(getLhs().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 1,
-                       getCompactByteSizeOrUnknown(getRhs().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 2,
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-  appendInstructionIssueEffect(
-      effects, WaferResourceKind::Compute,
-      getCompactByteSizeOrUnknown(getDest().getType()));
-}
-
-mlir::LogicalResult InstrGemmOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 8> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
-
 mlir::LogicalResult InstrConvOp::verify() {
   if (mlir::failed(verifyAlignedSPMMemRef(getOperation(), getInput().getType(),
                                           "input")) ||
@@ -1249,32 +1082,6 @@ mlir::LogicalResult InstrConvOp::verify() {
 
 InstrFamily InstrConvOp::getInstructionFamily() { return InstrFamily::NE; }
 
-mlir::LogicalResult InstrConvOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrConvOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(getInput().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 1,
-                       getCompactByteSizeOrUnknown(getWeight().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 2,
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-  appendInstructionIssueEffect(
-      effects, WaferResourceKind::Compute,
-      getCompactByteSizeOrUnknown(getDest().getType()));
-}
-
-mlir::LogicalResult InstrConvOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 8> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
-
 static bool isIndexedPoolKind(InstrPoolKind kind) {
   return kind == InstrPoolKind::IndexedMax || kind == InstrPoolKind::IndexedMin;
 }
@@ -1335,32 +1142,6 @@ mlir::LogicalResult InstrPoolOp::verify() {
 
 InstrFamily InstrPoolOp::getInstructionFamily() { return InstrFamily::CT; }
 
-mlir::LogicalResult InstrPoolOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrPoolOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(getInput().getType()));
-  for (auto [index, dest] : llvm::enumerate(getDests())) {
-    appendResourceEffect(effects, WaferResourceKind::SPM,
-                         WaferResourceAccess::Write, WaferValueRole::Operand,
-                         index + 1,
-                         getCompactByteSizeOrUnknown(dest.getType()));
-  }
-  appendInstructionIssueEffect(
-      effects, WaferResourceKind::Compute,
-      getCompactByteSizeOrUnknown(getDests().front().getType()));
-}
-
-mlir::LogicalResult InstrPoolOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 8> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
-
 mlir::LogicalResult InstrUnpoolOp::verify() {
   if (mlir::failed(verifyAlignedSPMMemRef(getOperation(), getInput().getType(),
                                           "input")) ||
@@ -1410,26 +1191,3 @@ mlir::LogicalResult InstrUnpoolOp::verify() {
 }
 
 InstrFamily InstrUnpoolOp::getInstructionFamily() { return InstrFamily::CT; }
-
-mlir::LogicalResult InstrUnpoolOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrUnpoolOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(getInput().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-  appendInstructionIssueEffect(
-      effects, WaferResourceKind::Compute,
-      getCompactByteSizeOrUnknown(getDest().getType()));
-}
-
-mlir::LogicalResult InstrUnpoolOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 8> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}

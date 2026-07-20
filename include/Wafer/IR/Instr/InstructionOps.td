@@ -5,8 +5,7 @@
 
 class Wafer_InstrOp<string mnemonic, list<Trait> traits>
     : Wafer_Op<mnemonic, traits # [
-        DeclareOpInterfaceMethods<WaferInstructionOpInterface>,
-        DeclareOpInterfaceMethods<WaferResourceEffectInterface>
+        DeclareOpInterfaceMethods<WaferInstructionOpInterface>
       ]>;
 
 class Wafer_InstrDMAOp<string mnemonic, list<Trait> traits>
@@ -21,8 +20,8 @@ def Wafer_InstrRDMAOp : Wafer_InstrDMAOp<"instr.rdma", [
   ]> {
   let summary = "instruction-level DDR to SPM RDMA movement";
   let arguments = (ins
-    AnyMemRef:$source,
-    AnyMemRef:$dest,
+    Arg<AnyMemRef, "", [MemRead]>:$source,
+    Arg<AnyMemRef, "", [MemWrite]>:$dest,
     I64Attr:$byte_count,
     I64Attr:$inner_bytes,
     OptionalAttr<I64Attr>:$src_offset,
@@ -41,8 +40,8 @@ def Wafer_InstrWDMAOp : Wafer_InstrDMAOp<"instr.wdma", [
   ]> {
   let summary = "instruction-level SPM to DDR WDMA movement";
   let arguments = (ins
-    AnyMemRef:$source,
-    AnyMemRef:$dest,
+    Arg<AnyMemRef, "", [MemRead]>:$source,
+    Arg<AnyMemRef, "", [MemWrite]>:$dest,
     I64Attr:$byte_count,
     I64Attr:$inner_bytes,
     OptionalAttr<I64Attr>:$src_offset,
@@ -66,8 +65,8 @@ def Wafer_InstrGatherScatterOp : Wafer_InstrDMAOp<"instr.gather_scatter", [
     SPM memory planning still owns the final buffer base/range.
   }];
   let arguments = (ins
-    AnyMemRef:$source,
-    AnyMemRef:$dest,
+    Arg<AnyMemRef, "", [MemRead]>:$source,
+    Arg<AnyMemRef, "", [MemWrite]>:$dest,
     I64Attr:$byte_count,
     I64Attr:$inner_bytes,
     OptionalAttr<I64Attr>:$src_offset,
@@ -87,7 +86,7 @@ def Wafer_InstrFillOp : Wafer_InstrOp<"instr.fill", [
   ]> {
   let summary = "instruction-level CT scalar fill";
   let arguments = (ins
-    AnyMemRef:$dest,
+    Arg<AnyMemRef, "", [MemWrite]>:$dest,
     AnyType:$value,
     OptionalAttr<Wafer_FillDomainAttr>:$fill_domain
   );
@@ -104,8 +103,8 @@ def Wafer_InstrElementwiseOp : Wafer_InstrOp<"instr.elementwise", [
   let summary = "instruction-level CT elementwise compute";
   let arguments = (ins
     Wafer_InstrElementwiseKindAttr:$kind,
-    Variadic<AnyMemRef>:$inputs,
-    AnyMemRef:$dest
+    Arg<Variadic<AnyMemRef>, "", [MemRead]>:$inputs,
+    Arg<AnyMemRef, "", [MemWrite]>:$dest
   );
   let hasVerifier = 1;
   let assemblyFormat =
@@ -119,8 +118,8 @@ def Wafer_InstrBit2FpOp : Wafer_InstrOp<"instr.bit2fp", [
   ]> {
   let summary = "instruction-level CT bit-mask to floating mask conversion";
   let arguments = (ins
-    AnyMemRef:$source,
-    AnyMemRef:$dest
+    Arg<AnyMemRef, "", [MemRead]>:$source,
+    Arg<AnyMemRef, "", [MemWrite]>:$dest
   );
   let hasVerifier = 1;
   let assemblyFormat =
@@ -140,9 +139,9 @@ def Wafer_InstrMaskMoveOp : Wafer_InstrOp<"instr.mask_move", [
     and is not a generic ternary select instruction.
   }];
   let arguments = (ins
-    AnyMemRef:$source,
-    AnyMemRef:$mask,
-    AnyMemRef:$dest
+    Arg<AnyMemRef, "", [MemRead]>:$source,
+    Arg<AnyMemRef, "", [MemRead]>:$mask,
+    Arg<AnyMemRef, "", [MemWrite]>:$dest
   );
   let hasVerifier = 1;
   let assemblyFormat =
@@ -157,8 +156,8 @@ def Wafer_InstrReduceOp : Wafer_InstrOp<"instr.reduce", [
   let summary = "instruction-level CT local reduce";
   let arguments = (ins
     Wafer_InstrReduceKindAttr:$kind,
-    AnyMemRef:$input,
-    AnyMemRef:$dest,
+    Arg<AnyMemRef, "", [MemRead]>:$input,
+    Arg<AnyMemRef, "", [MemWrite]>:$dest,
     I64Attr:$dim
   );
   let hasVerifier = 1;
@@ -174,8 +173,8 @@ def Wafer_InstrConvertOp : Wafer_InstrOp<"instr.convert", [
   let summary = "instruction-level CT dtype conversion";
   let arguments = (ins
     Wafer_InstrConvertKindAttr:$kind,
-    AnyMemRef:$source,
-    AnyMemRef:$dest,
+    Arg<AnyMemRef, "", [MemRead]>:$source,
+    Arg<AnyMemRef, "", [MemWrite]>:$dest,
     OptionalAttr<I64Attr>:$zero_point,
     OptionalAttr<I64Attr>:$rounding_mode
   );
@@ -191,9 +190,9 @@ def Wafer_InstrGemmOp : Wafer_InstrOp<"instr.gemm", [
   ]> {
   let summary = "instruction-level NE GEMM";
   let arguments = (ins
-    AnyMemRef:$lhs,
-    AnyMemRef:$rhs,
-    AnyMemRef:$dest,
+    Arg<AnyMemRef, "", [MemRead]>:$lhs,
+    Arg<AnyMemRef, "", [MemRead]>:$rhs,
+    Arg<AnyMemRef, "", [MemWrite]>:$dest,
     I64Attr:$m,
     I64Attr:$k,
     I64Attr:$n,
@@ -223,9 +222,9 @@ def Wafer_InstrConvOp : Wafer_InstrOp<"instr.conv", [
   let summary = "instruction-level NE convolution";
   let arguments = (ins
     Wafer_InstrConvKindAttr:$kind,
-    AnyMemRef:$input,
-    AnyMemRef:$weight,
-    AnyMemRef:$dest,
+    Arg<AnyMemRef, "", [MemRead]>:$input,
+    Arg<AnyMemRef, "", [MemRead]>:$weight,
+    Arg<AnyMemRef, "", [MemWrite]>:$dest,
     DenseI64ArrayAttr:$input_shape,
     DenseI64ArrayAttr:$weight_shape,
     DenseI64ArrayAttr:$output_shape,
@@ -247,8 +246,8 @@ def Wafer_InstrPoolOp : Wafer_InstrOp<"instr.pool", [
   let summary = "instruction-level CT pool";
   let arguments = (ins
     Wafer_InstrPoolKindAttr:$kind,
-    AnyMemRef:$input,
-    Variadic<AnyMemRef>:$dests,
+    Arg<AnyMemRef, "", [MemRead]>:$input,
+    Arg<Variadic<AnyMemRef>, "", [MemWrite]>:$dests,
     DenseI64ArrayAttr:$source_shape,
     DenseI64ArrayAttr:$dest_shape,
     DenseI64ArrayAttr:$pads,
@@ -267,8 +266,8 @@ def Wafer_InstrUnpoolOp : Wafer_InstrOp<"instr.unpool", [
   let summary = "instruction-level CT unpool";
   let arguments = (ins
     Wafer_InstrUnpoolKindAttr:$kind,
-    AnyMemRef:$input,
-    AnyMemRef:$dest,
+    Arg<AnyMemRef, "", [MemRead]>:$input,
+    Arg<AnyMemRef, "", [MemWrite]>:$dest,
     OptionalAttr<I64Attr>:$index,
     DenseI64ArrayAttr:$source_shape,
     DenseI64ArrayAttr:$dest_shape,
@@ -287,8 +286,8 @@ def Wafer_InstrTDMADataMoveOp : Wafer_InstrOp<"instr.tdma_data_move", [
   let summary = "instruction-level TDMA structured data movement";
   let arguments = (ins
     Wafer_InstrDataMoveKindAttr:$kind,
-    AnyMemRef:$source,
-    AnyMemRef:$dest,
+    Arg<AnyMemRef, "", [MemRead]>:$source,
+    Arg<AnyMemRef, "", [MemWrite]>:$dest,
     DenseI64ArrayAttr:$source_shape,
     DenseI64ArrayAttr:$dest_shape,
     OptionalAttr<DenseI64ArrayAttr>:$permutation,
@@ -310,8 +309,8 @@ def Wafer_InstrPeripheralOp : Wafer_InstrOp<"instr.peripheral", [
   let summary = "instruction-level CT peripheral operation";
   let arguments = (ins
     Wafer_InstrPeripheralKindAttr:$kind,
-    Variadic<AnyMemRef>:$inputs,
-    Variadic<AnyMemRef>:$dests,
+    Arg<Variadic<AnyMemRef>, "", [MemRead]>:$inputs,
+    Arg<Variadic<AnyMemRef>, "", [MemWrite]>:$dests,
     I64Attr:$elem_count,
     OptionalAttr<DenseI64ArrayAttr>:$source_shape,
     OptionalAttr<DenseI64ArrayAttr>:$dest_shape,

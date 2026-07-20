@@ -4,8 +4,6 @@
 #define WAFER_IR_OPS_COMPUTEOPS_TD
 
 def Wafer_ComputeFillOp : Wafer_Op<"tile.fill", [
-    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
-    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
@@ -18,7 +16,7 @@ def Wafer_ComputeFillOp : Wafer_Op<"tile.fill", [
   }];
 
   let arguments = (ins
-    Wafer_AnySPMMemRef:$dest,
+    Arg<Wafer_AnySPMMemRef, "", [MemWrite]>:$dest,
     AnyType:$value,
     OptionalAttr<Wafer_FillDomainAttr>:$fill_domain
   );
@@ -28,8 +26,6 @@ def Wafer_ComputeFillOp : Wafer_Op<"tile.fill", [
 }
 
 def Wafer_ComputeConvertOp : Wafer_Op<"tile.compute.convert", [
-    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
-    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -42,7 +38,7 @@ def Wafer_ComputeConvertOp : Wafer_Op<"tile.compute.convert", [
     route and any route-specific parameter.
   }];
 
-  let arguments = (ins Wafer_AnySPMMemRef:$source);
+  let arguments = (ins Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source);
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
   let assemblyFormat =
@@ -50,16 +46,14 @@ def Wafer_ComputeConvertOp : Wafer_Op<"tile.compute.convert", [
 }
 
 def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
-    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
-    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
   let summary = "target-abstract tile GEMM";
   let arguments = (ins
-    Wafer_AnySPMMemRef:$lhs,
-    Wafer_AnySPMMemRef:$rhs,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$lhs,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$rhs,
     OptionalAttr<Wafer_GemmOrientationAttr>:$lhs_orientation,
     OptionalAttr<Wafer_GemmOrientationAttr>:$rhs_orientation
   );
@@ -70,8 +64,6 @@ def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
 }
 
 def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
-    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
-    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -89,7 +81,7 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
 
   let arguments = (ins
     Wafer_ComputeElementwiseKindAttr:$kind,
-    Variadic<Wafer_AnySPMMemRef>:$inputs
+    Arg<Variadic<Wafer_AnySPMMemRef>, "", [MemRead]>:$inputs
   );
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
@@ -98,8 +90,6 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
 }
 
 def Wafer_ComputeReduceOp : Wafer_Op<"tile.reduce", [
-    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
-    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -116,7 +106,7 @@ def Wafer_ComputeReduceOp : Wafer_Op<"tile.reduce", [
 
   let arguments = (ins
     Wafer_ComputeReduceKindAttr:$kind,
-    Wafer_AnySPMMemRef:$input,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$input,
     Optional<AnyType>:$init
   );
   let results = (outs Wafer_AnySPMMemRef:$result);

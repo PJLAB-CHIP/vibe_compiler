@@ -247,11 +247,10 @@ private:
 
 /// Extends tracked local-engine accesses through path-covering fences. An
 /// issue is tracked only when the same operation has both a Compute/Movement
-/// Issue effect and a read/write effect for `trackedMemory`.
+/// effect and a value-associated read/write effect on a tracked root.
 class LocalCompletionTracker {
 public:
-  explicit LocalCompletionTracker(WaferResourceKind trackedMemory)
-      : trackedMemory(trackedMemory) {}
+  LocalCompletionTracker() = default;
 
   mlir::LogicalResult observe(mlir::Operation *op, LifetimeDataflow &dataflow,
                               LifetimeFailure *failure = nullptr);
@@ -273,7 +272,6 @@ private:
 
   void processFence(ProgramPoint fencePoint, LifetimeDataflow &dataflow);
 
-  WaferResourceKind trackedMemory;
   llvm::SmallVector<PendingIssue, 8> pendingIssues;
   llvm::SmallVector<PendingAccess, 8> pendingAccesses;
 };

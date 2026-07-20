@@ -689,11 +689,11 @@ send/recv、wait和insert；self slot只有local movement。任一slot的bytes�
 
 ## 13. 当前实现索引与剩余收口
 
-当前仓库已有以下主线能力；其中重复MLIR语义的custom interface是迁移债务，不是终态合同：
+当前仓库已有以下主线能力：
 
-- all-gather、reduce-scatter、all-reduce、all-to-all、collective-permute logical ops及现有
-  `WaferLinalgExtCollectiveOpInterface`；Q32.I/M需把consumer迁到typed ops和standard interfaces，删除
-  只复制op fields的`WaferLinalgExtCollectiveInfo`路径；
+- all-gather、reduce-scatter、all-reduce、all-to-all、collective-permute logical ops，以及只保留
+  collective family动态查询的最小`WaferLinalgExtCollectiveOpInterface`；generic consumer直接typed dispatch，
+  聚合`WaferLinalgExtCollectiveInfo`路径已删除；
 - `wafer.tile.all_gather`、`wafer.tile.reduce_scatter`、`wafer.tile.all_reduce`及对应verifier；
 - all-gather ring/direct、all-reduce ring/tree、reduce-scatter direct的explicit instruction lowering；
 - collective-permute与equal-split all-to-all的direct p2p/local movement lowering；
@@ -701,15 +701,16 @@ send/recv、wait和insert；self slot只有local movement。任一slot的bytes�
 - 从planned SPM range和current instruction IR执行的all-rank Direct DTE acceptance；
 - target CRT/status、target model、package requirement与runtime preflight consumer。
 
-Q32.M/S必须沿上述边界完成接入，而不是把现有算法当作不受candidate owner管理的旁路：
+Q32.M已沿上述边界完成producer接入，Q32.S继续负责bounded joint composition：
 
-1. 用无状态typed topology helper和complete-rank clone rewrite替换现有public schedule option与hard-coded
-   selector；
+1. public schedule option与hard-coded selector已删除；shared candidate owner从同一parent建立complete-rank
+   ring/ring、direct/ring和ring/tree actual clones；
 2. 每个参数点直接复用现有collective lowering pattern，不新增平行communication表示；
-3. logical/tile/instruction effect逐层由标准MemoryEffectOpInterface、SideEffects::Resource和SSA completion闭合，
-   删除`WaferTilingInterface`、重复collective-info和`WaferResourceEffect`事实；
-4. candidate selection只比较实际clone的fresh exact metrics，并复用现有memory、all-rank、target与atomic gates；
-5. 删除旧selector及只为手动拼算法服务的CLI/test入口，保留IR-local conversion测试和production集成测试。
+3. logical/tile/instruction effect逐层由标准MemoryEffectOpInterface、SideEffects::Resource和SSA completion闭合；
+   `WaferTilingInterface`、重复collective-info和Wafer resource-effect事实均已删除；
+4. 每个producer clone已经独立重算memory/verifier/cost；Q32.S只比较进入共同rank/whole-variant frontier后的
+   final exact metrics，并复用all-rank、target与atomic gates；
+5. 只保留typed IR-local conversion测试和production-shaped candidate集成测试，不恢复手动算法CLI入口。
 
 后续独立扩展包括segmented peer exchange、cross-card collective、raw non-unicast DTE和经硬件证据校准的
 compute/communication overlap cost。它们必须通过新的typed IR、verifier、lowering和consumer进入，不得修改

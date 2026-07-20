@@ -397,28 +397,6 @@ mlir::LogicalResult InstrRDMAOp::verify() {
 
 InstrFamily InstrRDMAOp::getInstructionFamily() { return InstrFamily::RDMA; }
 
-mlir::LogicalResult InstrRDMAOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrRDMAOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::DDR,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getByteCountAttr().getInt());
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
-                       getByteCountAttr().getInt());
-  appendInstructionIssueEffect(effects, WaferResourceKind::Movement,
-                               getByteCountAttr().getInt());
-}
-
-mlir::LogicalResult InstrRDMAOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 3> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
-
 mlir::LogicalResult InstrWDMAOp::verify() {
   if ((*this)->hasAttr("src_strides") || (*this)->hasAttr("src_iterations"))
     return emitOpError(
@@ -459,28 +437,6 @@ mlir::LogicalResult InstrWDMAOp::verify() {
 
 InstrFamily InstrWDMAOp::getInstructionFamily() { return InstrFamily::WDMA; }
 
-mlir::LogicalResult InstrWDMAOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrWDMAOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getByteCountAttr().getInt());
-  appendResourceEffect(effects, WaferResourceKind::DDR,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
-                       getByteCountAttr().getInt());
-  appendInstructionIssueEffect(effects, WaferResourceKind::Movement,
-                               getByteCountAttr().getInt());
-}
-
-mlir::LogicalResult InstrWDMAOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 3> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
-
 mlir::LogicalResult InstrGatherScatterOp::verify() {
   if (mlir::failed(
           verifySPMMemRef(getOperation(), getSource().getType(), "source")) ||
@@ -518,28 +474,6 @@ mlir::LogicalResult InstrGatherScatterOp::verify() {
 
 InstrFamily InstrGatherScatterOp::getInstructionFamily() {
   return InstrFamily::TDMA;
-}
-
-mlir::LogicalResult InstrGatherScatterOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrGatherScatterOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getByteCountAttr().getInt());
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
-                       getByteCountAttr().getInt());
-  appendInstructionIssueEffect(effects, WaferResourceKind::Movement,
-                               getByteCountAttr().getInt());
-}
-
-mlir::LogicalResult InstrGatherScatterOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 3> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
 }
 
 mlir::LogicalResult InstrTDMADataMoveOp::verify() {
@@ -682,27 +616,4 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
 
 InstrFamily InstrTDMADataMoveOp::getInstructionFamily() {
   return InstrFamily::TDMA;
-}
-
-mlir::LogicalResult InstrTDMADataMoveOp::verifyInstructionContract() {
-  return verify();
-}
-
-void InstrTDMADataMoveOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(getSource().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-  appendInstructionIssueEffect(
-      effects, WaferResourceKind::Movement,
-      getCompactByteSizeOrUnknown(getDest().getType()));
-}
-
-mlir::LogicalResult InstrTDMADataMoveOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 4> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
 }

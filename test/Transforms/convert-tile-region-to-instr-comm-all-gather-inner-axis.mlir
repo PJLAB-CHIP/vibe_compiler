@@ -1,5 +1,5 @@
-// RUN: wafer-opt --wafer-convert-tile-region-to-instr='all-gather-schedule=ring' %s | FileCheck %s
-// RUN: wafer-opt --wafer-convert-tile-region-to-instr='all-gather-schedule=ring' %s \
+// RUN: wafer-opt --wafer-convert-tile-region-to-instr %s | FileCheck %s
+// RUN: wafer-opt --wafer-convert-tile-region-to-instr %s \
 // RUN:   | wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=74752' \
 // RUN:   | FileCheck --check-prefix=SPM %s
 

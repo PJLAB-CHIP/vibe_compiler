@@ -52,7 +52,8 @@ static std::string joinInstructionFailure(llvm::StringRef gate,
 
 static CandidateEvaluation
 finishCandidateEvaluation(CandidateEvaluation evaluation,
-                          const SelectionConfig &config) {
+                          const SelectionConfig &config,
+                          const TileRegionToInstrOptions &options) {
   mlir::MLIRContext *context = evaluation.module->getContext();
   std::string failureReason;
   mlir::LogicalResult result = mlir::success();
@@ -60,7 +61,7 @@ finishCandidateEvaluation(CandidateEvaluation evaluation,
   std::string diagnostics = takeDiagnostics(
       context,
       [&]() {
-        return convertTileRegionToInstrModule(*evaluation.module,
+        return convertTileRegionToInstrModule(*evaluation.module, options,
                                               &failureReason);
       },
       result);
@@ -108,6 +109,37 @@ finishCandidateEvaluation(CandidateEvaluation evaluation,
   return evaluation;
 }
 
+static CandidateEvaluation
+finishCandidateAlternatives(CandidateEvaluation tileEvaluation,
+                            const SelectionConfig &config) {
+  const TileRegionToInstrOptions alternatives[] = {
+      {},
+      {/*allGatherSchedule=*/AllGatherSchedule::Direct,
+       /*allReduceSchedule=*/AllReduceSchedule::Ring,
+       /*reduceScatterSchedule=*/ReduceScatterSchedule::Direct},
+      {/*allGatherSchedule=*/AllGatherSchedule::Ring,
+       /*allReduceSchedule=*/AllReduceSchedule::Tree,
+       /*reduceScatterSchedule=*/ReduceScatterSchedule::Direct},
+  };
+
+  CandidateEvaluation baseline;
+  for (auto [index, options] : llvm::enumerate(alternatives)) {
+    CandidateEvaluation branch;
+    branch.artifactSource = tileEvaluation.artifactSource;
+    branch.module =
+        mlir::cast<mlir::ModuleOp>((*tileEvaluation.module)->clone());
+    branch = finishCandidateEvaluation(std::move(branch), config, options);
+    // Q32.M closes each producer and sends every actual clone through the
+    // complete local gates, but does not prune alternatives before the shared
+    // rank/whole-variant frontier. Until Q32.S carries this branch dimension
+    // through that frontier, preserve the pre-existing ring/ring result even
+    // when another independently accepted branch has a lower local estimate.
+    if (index == 0)
+      baseline = std::move(branch);
+  }
+  return baseline;
+}
+
 static bool
 canUseFullTraversalFallback(const CandidateSpec &candidate,
                             llvm::ArrayRef<int64_t> traversalShape) {
@@ -153,7 +185,7 @@ CandidateEvaluation evaluateCompleteCandidate(
         joinFailure("complete-tile-region", failureReason, diagnostics);
     return evaluation;
   }
-  return finishCandidateEvaluation(std::move(evaluation), config);
+  return finishCandidateAlternatives(std::move(evaluation), config);
 }
 
 static void

@@ -40,6 +40,11 @@ template <typename OpT> OpT findSingleOp(mlir::ModuleOp module) {
   return found;
 }
 
+wafer::MemLayout getMemoryLayout(mlir::Value value) {
+  auto type = mlir::cast<mlir::MemRefType>(value.getType());
+  return wafer::getWaferMemoryAttr(type).getLayout();
+}
+
 template <typename EffectT, typename ResourceT>
 bool hasMemoryEffect(
     llvm::ArrayRef<
@@ -51,25 +56,14 @@ bool hasMemoryEffect(
   });
 }
 
-bool hasLayoutRequirement(llvm::ArrayRef<wafer::WaferLayoutRequirement> reqs,
-                          wafer::WaferValueRole role, unsigned index,
-                          wafer::MemLayout layout,
-                          wafer::MemorySpace memorySpace) {
-  return llvm::any_of(reqs, [&](const wafer::WaferLayoutRequirement &req) {
-    return req.role == role && req.index == index && req.layout == layout &&
-           req.memorySpace == memorySpace;
-  });
-}
-
-bool hasResourceEffect(llvm::ArrayRef<wafer::WaferResourceEffect> effects,
-                       wafer::WaferResourceKind resource,
-                       wafer::WaferResourceAccess access,
-                       wafer::WaferValueRole role, unsigned index,
-                       int64_t bytes) {
-  return llvm::any_of(effects, [&](const wafer::WaferResourceEffect &effect) {
-    return effect.resource == resource && effect.access == access &&
-           effect.role == role && effect.index == index &&
-           effect.bytes == bytes;
+template <typename EffectT>
+bool hasValueMemoryEffect(
+    llvm::ArrayRef<
+        mlir::SideEffects::EffectInstance<mlir::MemoryEffects::Effect>>
+        effects,
+    mlir::Value value) {
+  return llvm::any_of(effects, [&](const auto &effect) {
+    return llvm::isa<EffectT>(effect.getEffect()) && effect.getValue() == value;
   });
 }
 
@@ -118,8 +112,6 @@ template <typename OpT> void expectLinalgExtCollectiveInterfaces(OpT op) {
   auto collective = mlir::dyn_cast<wafer::WaferLinalgExtCollectiveOpInterface>(
       op.getOperation());
   ASSERT_TRUE(collective);
-  EXPECT_TRUE(
-      mlir::succeeded(collective.verifyWaferLinalgExtCollectiveContract()));
 
   auto tiling = mlir::dyn_cast<mlir::TilingInterface>(op.getOperation());
   ASSERT_TRUE(tiling);
@@ -243,30 +235,6 @@ module {
   auto load = findSingleOp<wafer::StorageLoadOp>(*module);
   ASSERT_TRUE(load);
 
-  auto loadLayout =
-      mlir::dyn_cast<wafer::WaferLayoutOpInterface>(load.getOperation());
-  ASSERT_TRUE(loadLayout);
-  llvm::SmallVector<wafer::WaferLayoutRequirement, 4> layoutReqs;
-  loadLayout.collectWaferLayoutRequirements(layoutReqs);
-  EXPECT_TRUE(hasLayoutRequirement(layoutReqs, wafer::WaferValueRole::Operand,
-                                   1, wafer::MemLayout::Tensor,
-                                   wafer::MemorySpace::SPM));
-  EXPECT_TRUE(mlir::succeeded(loadLayout.verifyWaferLayoutContract()));
-
-  auto loadResources =
-      mlir::dyn_cast<wafer::WaferResourceEffectInterface>(load.getOperation());
-  ASSERT_TRUE(loadResources);
-  llvm::SmallVector<wafer::WaferResourceEffect, 4> resourceEffects;
-  loadResources.collectWaferResourceEffects(resourceEffects);
-  EXPECT_TRUE(hasResourceEffect(resourceEffects, wafer::WaferResourceKind::DDR,
-                                wafer::WaferResourceAccess::Read,
-                                wafer::WaferValueRole::Operand, 0, 64));
-  EXPECT_TRUE(hasResourceEffect(resourceEffects, wafer::WaferResourceKind::SPM,
-                                wafer::WaferResourceAccess::Write,
-                                wafer::WaferValueRole::Operand, 1, 64));
-  EXPECT_TRUE(
-      mlir::succeeded(loadResources.verifyWaferResourceEffectContract()));
-
   auto memoryEffects =
       mlir::dyn_cast<mlir::MemoryEffectOpInterface>(load.getOperation());
   ASSERT_TRUE(memoryEffects);
@@ -280,82 +248,49 @@ module {
   EXPECT_TRUE(
       (hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferSPMResource>(
           mlirEffects)));
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Read>(
+      mlirEffects, load.getSource()));
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Write>(mlirEffects,
+                                                               load.getDest()));
 
   auto materialize = findSingleOp<wafer::LayoutMaterializeOp>(*module);
   ASSERT_TRUE(materialize);
-  EXPECT_FALSE(
-      mlir::isa<wafer::WaferLayoutOpInterface>(materialize.getOperation()));
-  auto materialization =
-      mlir::dyn_cast<wafer::WaferLayoutMaterializationOpInterface>(
-          materialize.getOperation());
-  ASSERT_TRUE(materialization);
-  llvm::SmallVector<wafer::WaferLayoutRequirement, 4> materializationReqs;
-  materialization.collectWaferMaterializationLayouts(materializationReqs);
-  EXPECT_TRUE(hasLayoutRequirement(
-      materializationReqs, wafer::WaferValueRole::Operand, 0,
-      wafer::MemLayout::Tensor, wafer::MemorySpace::SPM));
-  EXPECT_TRUE(
-      hasLayoutRequirement(materializationReqs, wafer::WaferValueRole::Result,
-                           0, wafer::MemLayout::Cx, wafer::MemorySpace::SPM));
+  EXPECT_EQ(getMemoryLayout(materialize.getSource()), wafer::MemLayout::Tensor);
+  EXPECT_EQ(getMemoryLayout(materialize.getResult()), wafer::MemLayout::Cx);
 
   auto gemm = findSingleOp<wafer::ComputeGemmOp>(*module);
   ASSERT_TRUE(gemm);
-  auto gemmLayout =
-      mlir::dyn_cast<wafer::WaferLayoutOpInterface>(gemm.getOperation());
-  ASSERT_TRUE(gemmLayout);
-  layoutReqs.clear();
-  gemmLayout.collectWaferLayoutRequirements(layoutReqs);
-  EXPECT_TRUE(hasLayoutRequirement(layoutReqs, wafer::WaferValueRole::Operand,
-                                   0, wafer::MemLayout::Cx,
-                                   wafer::MemorySpace::SPM));
-  EXPECT_TRUE(hasLayoutRequirement(layoutReqs, wafer::WaferValueRole::Operand,
-                                   1, wafer::MemLayout::Cx,
-                                   wafer::MemorySpace::SPM));
-  EXPECT_TRUE(hasLayoutRequirement(layoutReqs, wafer::WaferValueRole::Result, 0,
-                                   wafer::MemLayout::Cx,
-                                   wafer::MemorySpace::SPM));
+  EXPECT_EQ(getMemoryLayout(gemm.getLhs()), wafer::MemLayout::Cx);
+  EXPECT_EQ(getMemoryLayout(gemm.getRhs()), wafer::MemLayout::Cx);
+  EXPECT_EQ(getMemoryLayout(gemm.getResult()), wafer::MemLayout::Cx);
 
   auto send = findSingleOp<wafer::InstrDTESendOp>(*module);
   ASSERT_TRUE(send);
-  auto sendLayout =
-      mlir::dyn_cast<wafer::WaferLayoutOpInterface>(send.getOperation());
-  ASSERT_TRUE(sendLayout);
-  layoutReqs.clear();
-  sendLayout.collectWaferLayoutRequirements(layoutReqs);
-  EXPECT_TRUE(hasLayoutRequirement(layoutReqs, wafer::WaferValueRole::Operand,
-                                   0, wafer::MemLayout::Tensor,
-                                   wafer::MemorySpace::SPM));
-
-  auto sendResources =
-      mlir::dyn_cast<wafer::WaferResourceEffectInterface>(send.getOperation());
-  ASSERT_TRUE(sendResources);
   auto sendInstruction =
       mlir::dyn_cast<wafer::WaferInstructionOpInterface>(send.getOperation());
   ASSERT_TRUE(sendInstruction);
   EXPECT_EQ(sendInstruction.getInstructionFamily(), wafer::InstrFamily::DTE);
-  resourceEffects.clear();
-  sendResources.collectWaferResourceEffects(resourceEffects);
-  EXPECT_TRUE(hasResourceEffect(resourceEffects, wafer::WaferResourceKind::SPM,
-                                wafer::WaferResourceAccess::Read,
-                                wafer::WaferValueRole::Operand, 0, 64));
-  EXPECT_TRUE(hasResourceEffect(
-      resourceEffects, wafer::WaferResourceKind::Communication,
-      wafer::WaferResourceAccess::Issue, wafer::WaferValueRole::None, 0, 64));
+  mlirEffects.clear();
+  mlir::cast<mlir::MemoryEffectOpInterface>(send.getOperation())
+      .getEffects(mlirEffects);
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Read>(
+      mlirEffects, send.getBuffer()));
+  EXPECT_TRUE(
+      (hasMemoryEffect<mlir::MemoryEffects::Write,
+                       wafer::WaferCommunicationResource>(mlirEffects)));
 
   auto wait = findSingleOp<wafer::InstrDTEWaitOp>(*module);
   ASSERT_TRUE(wait);
-  auto waitResources =
-      mlir::dyn_cast<wafer::WaferResourceEffectInterface>(wait.getOperation());
-  ASSERT_TRUE(waitResources);
   auto waitInstruction =
       mlir::dyn_cast<wafer::WaferInstructionOpInterface>(wait.getOperation());
   ASSERT_TRUE(waitInstruction);
   EXPECT_EQ(waitInstruction.getInstructionFamily(), wafer::InstrFamily::DTE);
-  resourceEffects.clear();
-  waitResources.collectWaferResourceEffects(resourceEffects);
-  EXPECT_TRUE(hasResourceEffect(
-      resourceEffects, wafer::WaferResourceKind::Communication,
-      wafer::WaferResourceAccess::Wait, wafer::WaferValueRole::Operand, 0, -1));
+  mlirEffects.clear();
+  mlir::cast<mlir::MemoryEffectOpInterface>(wait.getOperation())
+      .getEffects(mlirEffects);
+  EXPECT_TRUE(
+      (hasMemoryEffect<mlir::MemoryEffects::Read,
+                       wafer::WaferCommunicationResource>(mlirEffects)));
 }
 
 TEST(WaferInterfacesTest, InstructionInterfacesExposeFamilyAndEffects) {
@@ -442,22 +377,25 @@ module {
       mlir::dyn_cast<wafer::WaferInstructionOpInterface>(rdma.getOperation());
   ASSERT_TRUE(rdmaInstruction);
   EXPECT_EQ(rdmaInstruction.getInstructionFamily(), wafer::InstrFamily::RDMA);
-  EXPECT_TRUE(mlir::succeeded(rdmaInstruction.verifyInstructionContract()));
+  EXPECT_EQ(rdmaInstruction.getInstructionFamily(), wafer::InstrFamily::RDMA);
 
-  auto rdmaResources =
-      mlir::dyn_cast<wafer::WaferResourceEffectInterface>(rdma.getOperation());
-  ASSERT_TRUE(rdmaResources);
-  llvm::SmallVector<wafer::WaferResourceEffect, 4> effects;
-  rdmaResources.collectWaferResourceEffects(effects);
-  EXPECT_TRUE(hasResourceEffect(effects, wafer::WaferResourceKind::DDR,
-                                wafer::WaferResourceAccess::Read,
-                                wafer::WaferValueRole::Operand, 0, 64));
-  EXPECT_TRUE(hasResourceEffect(effects, wafer::WaferResourceKind::SPM,
-                                wafer::WaferResourceAccess::Write,
-                                wafer::WaferValueRole::Operand, 1, 64));
-  EXPECT_TRUE(hasResourceEffect(effects, wafer::WaferResourceKind::Movement,
-                                wafer::WaferResourceAccess::Issue,
-                                wafer::WaferValueRole::None, 0, 64));
+  auto rdmaEffects =
+      mlir::cast<mlir::MemoryEffectOpInterface>(rdma.getOperation());
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
+  rdmaEffects.getEffects(effects);
+  EXPECT_TRUE(
+      (hasMemoryEffect<mlir::MemoryEffects::Read, wafer::WaferDDRResource>(
+          effects)));
+  EXPECT_TRUE(
+      (hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferSPMResource>(
+          effects)));
+  EXPECT_TRUE((
+      hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferMovementResource>(
+          effects)));
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Read>(
+      effects, rdma.getSource()));
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Write>(effects,
+                                                               rdma.getDest()));
 
   auto gather = findSingleOp<wafer::InstrGatherScatterOp>(*module);
   ASSERT_TRUE(gather);
@@ -573,16 +511,12 @@ module {
   auto collective = mlir::dyn_cast<wafer::WaferLinalgExtCollectiveOpInterface>(
       allReduce.getOperation());
   ASSERT_TRUE(collective);
-  wafer::WaferLinalgExtCollectiveInfo info;
-  collective.collectWaferLinalgExtCollectiveInfo(info);
-  EXPECT_EQ(info.kind, wafer::WaferLinalgExtCollectiveKind::AllReduce);
-  EXPECT_TRUE(info.hasCombiner);
-  EXPECT_TRUE(info.hasCommunicationEffect);
-  EXPECT_TRUE(info.hasChannelId);
-  EXPECT_EQ(info.channelId, 7);
-  EXPECT_EQ(info.rankGroup, llvm::SmallVector<int64_t>({0, 1}));
-  EXPECT_TRUE(
-      mlir::succeeded(collective.verifyWaferLinalgExtCollectiveContract()));
+  EXPECT_EQ(collective.getCollectiveKind(),
+            wafer::WaferLinalgExtCollectiveKind::AllReduce);
+  EXPECT_EQ(allReduce.getChannelId(), 7);
+  EXPECT_TRUE(llvm::equal(allReduce.getRankGroupAttr().asArrayRef(),
+                          llvm::ArrayRef<int64_t>({0, 1})));
+  EXPECT_FALSE(allReduce.getCombiner().empty());
 
   auto tiling = mlir::dyn_cast<mlir::TilingInterface>(allReduce.getOperation());
   ASSERT_TRUE(tiling);
@@ -610,13 +544,12 @@ module {
       mlir::dyn_cast<wafer::WaferLinalgExtCollectiveOpInterface>(
           allGather.getOperation());
   ASSERT_TRUE(gatherCollective);
-  info = {};
-  gatherCollective.collectWaferLinalgExtCollectiveInfo(info);
-  EXPECT_EQ(info.kind, wafer::WaferLinalgExtCollectiveKind::AllGather);
-  EXPECT_TRUE(info.hasAxis);
-  EXPECT_EQ(info.axis, 0);
-  EXPECT_EQ(info.channelId, 9);
-  EXPECT_EQ(info.rankGroup, llvm::SmallVector<int64_t>({0, 1}));
+  EXPECT_EQ(gatherCollective.getCollectiveKind(),
+            wafer::WaferLinalgExtCollectiveKind::AllGather);
+  EXPECT_EQ(allGather.getAxis(), 0);
+  EXPECT_EQ(allGather.getChannelId(), 9);
+  EXPECT_TRUE(llvm::equal(allGather.getRankGroupAttr().asArrayRef(),
+                          llvm::ArrayRef<int64_t>({0, 1})));
   expectTiledImplementation(
       allGather, context, llvm::SmallVector<int64_t>{0},
       llvm::SmallVector<int64_t>{8}, llvm::SmallVector<int64_t>{8},
@@ -644,16 +577,13 @@ module {
       mlir::dyn_cast<wafer::WaferLinalgExtCollectiveOpInterface>(
           reduceScatter.getOperation());
   ASSERT_TRUE(reduceScatterCollective);
-  info = {};
-  reduceScatterCollective.collectWaferLinalgExtCollectiveInfo(info);
-  EXPECT_EQ(info.kind, wafer::WaferLinalgExtCollectiveKind::ReduceScatter);
-  EXPECT_TRUE(info.hasAxis);
-  EXPECT_TRUE(info.hasCombiner);
-  EXPECT_EQ(info.axis, 0);
-  EXPECT_EQ(info.channelId, 10);
-  EXPECT_EQ(info.rankGroup, llvm::SmallVector<int64_t>({0, 1}));
-  EXPECT_TRUE(mlir::succeeded(
-      reduceScatterCollective.verifyWaferLinalgExtCollectiveContract()));
+  EXPECT_EQ(reduceScatterCollective.getCollectiveKind(),
+            wafer::WaferLinalgExtCollectiveKind::ReduceScatter);
+  EXPECT_EQ(reduceScatter.getAxis(), 0);
+  EXPECT_EQ(reduceScatter.getChannelId(), 10);
+  EXPECT_TRUE(llvm::equal(reduceScatter.getRankGroupAttr().asArrayRef(),
+                          llvm::ArrayRef<int64_t>({0, 1})));
+  EXPECT_FALSE(reduceScatter.getCombiner().empty());
   EXPECT_TRUE(mlir::isa<mlir::TilingInterface>(reduceScatter.getOperation()));
   expectTiledImplementation(
       reduceScatter, context, llvm::SmallVector<int64_t>{0},
@@ -672,19 +602,14 @@ module {
       mlir::dyn_cast<wafer::WaferLinalgExtCollectiveOpInterface>(
           allToAll.getOperation());
   ASSERT_TRUE(allToAllCollective);
-  info = {};
-  allToAllCollective.collectWaferLinalgExtCollectiveInfo(info);
-  EXPECT_EQ(info.kind, wafer::WaferLinalgExtCollectiveKind::AllToAll);
-  EXPECT_TRUE(info.hasSplitAxis);
-  EXPECT_TRUE(info.hasConcatAxis);
-  EXPECT_TRUE(info.hasSplitCount);
-  EXPECT_EQ(info.splitAxis, 0);
-  EXPECT_EQ(info.concatAxis, 1);
-  EXPECT_EQ(info.splitCount, 2);
-  EXPECT_EQ(info.channelId, 11);
-  EXPECT_EQ(info.rankGroup, llvm::SmallVector<int64_t>({0, 1}));
-  EXPECT_TRUE(mlir::succeeded(
-      allToAllCollective.verifyWaferLinalgExtCollectiveContract()));
+  EXPECT_EQ(allToAllCollective.getCollectiveKind(),
+            wafer::WaferLinalgExtCollectiveKind::AllToAll);
+  EXPECT_EQ(allToAll.getSplitAxis(), 0);
+  EXPECT_EQ(allToAll.getConcatAxis(), 1);
+  EXPECT_EQ(allToAll.getSplitCount(), 2);
+  EXPECT_EQ(allToAll.getChannelId(), 11);
+  EXPECT_TRUE(llvm::equal(allToAll.getRankGroupAttr().asArrayRef(),
+                          llvm::ArrayRef<int64_t>({0, 1})));
   EXPECT_TRUE(mlir::isa<mlir::TilingInterface>(allToAll.getOperation()));
   expectTiledImplementation(
       allToAll, context, llvm::SmallVector<int64_t>{0, 0},
@@ -704,14 +629,11 @@ module {
       mlir::dyn_cast<wafer::WaferLinalgExtCollectiveOpInterface>(
           permute.getOperation());
   ASSERT_TRUE(permuteCollective);
-  info = {};
-  permuteCollective.collectWaferLinalgExtCollectiveInfo(info);
-  EXPECT_EQ(info.kind, wafer::WaferLinalgExtCollectiveKind::CollectivePermute);
-  EXPECT_TRUE(info.hasCommunicationEffect);
-  EXPECT_EQ(info.channelId, 12);
-  EXPECT_EQ(info.sourceTargetPairs, llvm::SmallVector<int64_t>({0, 1, 1, 0}));
-  EXPECT_TRUE(mlir::succeeded(
-      permuteCollective.verifyWaferLinalgExtCollectiveContract()));
+  EXPECT_EQ(permuteCollective.getCollectiveKind(),
+            wafer::WaferLinalgExtCollectiveKind::CollectivePermute);
+  EXPECT_EQ(permute.getChannelId(), 12);
+  EXPECT_TRUE(llvm::equal(permute.getSourceTargetPairsAttr().asArrayRef(),
+                          llvm::ArrayRef<int64_t>({0, 1, 1, 0})));
   EXPECT_TRUE(mlir::isa<mlir::TilingInterface>(permute.getOperation()));
   expectTiledImplementation(
       permute, context, llvm::SmallVector<int64_t>{1},
@@ -962,13 +884,12 @@ module {
   auto collective = mlir::dyn_cast<wafer::WaferLinalgExtCollectiveOpInterface>(
       allGather.getOperation());
   ASSERT_TRUE(collective);
-  wafer::WaferLinalgExtCollectiveInfo info;
-  collective.collectWaferLinalgExtCollectiveInfo(info);
-  EXPECT_EQ(info.kind, wafer::WaferLinalgExtCollectiveKind::AllGather);
-  EXPECT_EQ(info.axis, 1);
-  EXPECT_EQ(info.channelId, 41);
-  EXPECT_EQ(info.rankGroup,
-            llvm::SmallVector<int64_t>({0, 1, 2, 3, 4, 5, 6, 7}));
+  EXPECT_EQ(collective.getCollectiveKind(),
+            wafer::WaferLinalgExtCollectiveKind::AllGather);
+  EXPECT_EQ(allGather.getAxis(), 1);
+  EXPECT_EQ(allGather.getChannelId(), 41);
+  EXPECT_TRUE(llvm::equal(allGather.getRankGroupAttr().asArrayRef(),
+                          llvm::ArrayRef<int64_t>({0, 1, 2, 3, 4, 5, 6, 7})));
   expectTiledImplementation(
       allGather, context, llvm::SmallVector<int64_t>{16, 0},
       llvm::SmallVector<int64_t>{8, 4096}, llvm::SmallVector<int64_t>{8, 4096},

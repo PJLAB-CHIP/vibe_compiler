@@ -472,7 +472,7 @@ findCapacityDirectedSeed(mlir::func::FuncOp task, const CandidateSpec &initial,
   }
 }
 
-mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
+static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
     const structured_scheduler::StructuredSchedulingScope &scope,
     mlir::func::FuncOp task, llvm::StringRef label,
     const SelectionConfig &config) {
@@ -766,6 +766,57 @@ mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
     diagnostic << "; reduction refinement unavailable: "
                << *reductionSplitLegalityFailure;
   return mlir::failure();
+}
+
+mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
+    const structured_scheduler::StructuredSchedulingScope &scope,
+    mlir::func::FuncOp task, llvm::StringRef label,
+    const SelectionConfig &config) {
+  mlir::FailureOr<SelectedCandidate> baseline =
+      selectCandidateForTask(scope, task, label, config);
+  if (mlir::failed(baseline) || config.mode == TileSearchMode::FirstLegal)
+    return baseline;
+
+  SelectedCandidate best = std::move(*baseline);
+  using Producer = unsigned (*)(mlir::func::FuncOp);
+  // These are concrete rewrite entry points, not a mechanism registry. Each
+  // call starts from the same verified baseline task, mutates an actual source
+  // clone immediately, and sends that clone through the ordinary complete
+  // tile/instruction/SPM/DDR/verifier/cost gates below.
+  const Producer producers[] = {
+      materializeConsumerLocalTensorRecomputation,
+      reassociateIntegerElementwiseExpressions,
+      balanceIntegerElementwiseReductionTrees,
+      distributeIntegerElementwiseExpressions,
+      factorIntegerElementwiseExpressions,
+  };
+
+  for (Producer producer : producers) {
+    mlir::OwningOpRef<mlir::ModuleOp> source =
+        detail::cloneTensorProgramToStandaloneModule(task);
+    mlir::func::FuncOp alternativeTask = findSingleSelectionTask(*source);
+    if (!alternativeTask || producer(alternativeTask) == 0 ||
+        mlir::failed(mlir::verify(*source)))
+      continue;
+
+    mlir::FailureOr<SelectedCandidate> alternative;
+    {
+      // A producer is conditional. Failure of its independently materialized
+      // clone rejects only that optimized path; the already accepted baseline
+      // remains authoritative and diagnostics must not escape as pass errors.
+      mlir::ScopedDiagnosticHandler handler(
+          task.getContext(),
+          [](mlir::Diagnostic &) { return mlir::success(); });
+      alternative =
+          selectCandidateForTask(scope, alternativeTask, label, config);
+    }
+    if (mlir::failed(alternative))
+      continue;
+    alternative->sourceModule = std::move(source);
+    if (isBetterCandidate(*alternative, &best))
+      best = std::move(*alternative);
+  }
+  return best;
 }
 
 } // namespace wafer::tensor_program_scheduling

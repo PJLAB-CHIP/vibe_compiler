@@ -24,20 +24,21 @@ TileRegionBodyEmitter::getCompactByteSize(mlir::Value buffer,
   return physicalInfo->compactBytes;
 }
 
-mlir::FailureOr<int64_t> TileRegionBodyEmitter::getCommunicationId(
-    const WaferLinalgExtCollectiveInfo &info, llvm::StringRef subject) {
-  if (!info.hasChannelId) {
+mlir::FailureOr<int64_t>
+TileRegionBodyEmitter::getCommunicationId(mlir::IntegerAttr channelId,
+                                          llvm::StringRef subject) {
+  if (!channelId) {
     std::string reason =
         subject.str() +
         " materialization requires channel_id for stable DTE identity";
     return failI64(reason);
   }
-  return info.channelId;
+  return channelId.getInt();
 }
 
 mlir::FailureOr<SelectedCollectiveRankGroup>
 TileRegionBodyEmitter::getCollectiveRankGroup(
-    const WaferLinalgExtCollectiveInfo &info) {
+    mlir::DenseI64ArrayAttr rankGroup, mlir::DenseIntElementsAttr rankGroups) {
   auto findLocalRank = [&](llvm::ArrayRef<int64_t> ranks)
       -> std::optional<SelectedCollectiveRankGroup> {
     for (auto [index, logicalRank] : llvm::enumerate(ranks)) {
@@ -51,27 +52,36 @@ TileRegionBodyEmitter::getCollectiveRankGroup(
     return std::nullopt;
   };
 
-  if (!info.rankGroup.empty()) {
+  if (rankGroup) {
     if (std::optional<SelectedCollectiveRankGroup> selected =
-            findLocalRank(info.rankGroup))
+            findLocalRank(rankGroup.asArrayRef()))
       return *selected;
     return failSelectedCollectiveRankGroup(
         "logical-rank is not a member of collective rank_group");
   }
 
-  if (!info.hasRankGroups || info.rankGroupSize <= 0)
+  if (!rankGroups)
     return failSelectedCollectiveRankGroup(
         "collective materialization requires rank_group or rank_groups");
-  if (info.rankGroups.size() % static_cast<size_t>(info.rankGroupSize) != 0)
+  auto groupsType =
+      mlir::dyn_cast<mlir::RankedTensorType>(rankGroups.getType());
+  if (!groupsType || groupsType.getRank() != 2 || groupsType.getDimSize(1) <= 0)
+    return failSelectedCollectiveRankGroup(
+        "collective rank_groups are malformed");
+  int64_t rankGroupSize = groupsType.getDimSize(1);
+  llvm::SmallVector<int64_t, 8> ranks;
+  for (llvm::APInt value : rankGroups.getValues<llvm::APInt>())
+    ranks.push_back(value.getSExtValue());
+  if (ranks.size() % static_cast<size_t>(rankGroupSize) != 0)
     return failSelectedCollectiveRankGroup(
         "collective rank_groups are malformed");
 
-  for (size_t offset = 0; offset < info.rankGroups.size();
-       offset += static_cast<size_t>(info.rankGroupSize)) {
-    llvm::ArrayRef<int64_t> ranks(info.rankGroups.data() + offset,
-                                  static_cast<size_t>(info.rankGroupSize));
+  for (size_t offset = 0; offset < ranks.size();
+       offset += static_cast<size_t>(rankGroupSize)) {
+    llvm::ArrayRef<int64_t> group(ranks.data() + offset,
+                                  static_cast<size_t>(rankGroupSize));
     if (std::optional<SelectedCollectiveRankGroup> selected =
-            findLocalRank(ranks))
+            findLocalRank(group))
       return *selected;
   }
   return failSelectedCollectiveRankGroup(
@@ -105,15 +115,15 @@ TileRegionBodyEmitter::requireSingleTensorCollective(mlir::Operation *op) {
   return mlir::success();
 }
 
-mlir::LogicalResult TileRegionBodyEmitter::convertAllGather(
-    LinalgExtCollectiveAllGatherOp op, const WaferLinalgExtCollectiveInfo &info,
-    mlir::OpBuilder &builder) {
+mlir::LogicalResult
+TileRegionBodyEmitter::convertAllGather(LinalgExtCollectiveAllGatherOp op,
+                                        mlir::OpBuilder &builder) {
   if (mlir::failed(requireSingleTensorCollective(op.getOperation())))
     return mlir::failure();
   if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
     return fail("all_gather materialization supports one input and one out");
   mlir::FailureOr<int64_t> communicationId =
-      getCommunicationId(info, "all_gather");
+      getCommunicationId(op.getChannelIdAttr(), "all_gather");
   if (mlir::failed(communicationId))
     return mlir::failure();
 
@@ -132,7 +142,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertAllGather(
   mlir::FailureOr<int64_t> bytes =
       getCompactByteSize(*localChunk, "all_gather local chunk");
   mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
-      getCollectiveRankGroup(info);
+      getCollectiveRankGroup(op.getRankGroupAttr(), op.getRankGroupsAttr());
   if (mlir::failed(bytes) || mlir::failed(rankGroup))
     return mlir::failure();
 
@@ -149,15 +159,14 @@ mlir::LogicalResult TileRegionBodyEmitter::convertAllGather(
 }
 
 mlir::LogicalResult TileRegionBodyEmitter::convertReduceScatter(
-    LinalgExtCollectiveReduceScatterOp op,
-    const WaferLinalgExtCollectiveInfo &info, mlir::OpBuilder &builder) {
+    LinalgExtCollectiveReduceScatterOp op, mlir::OpBuilder &builder) {
   if (mlir::failed(requireSingleTensorCollective(op.getOperation())))
     return mlir::failure();
   if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
     return fail(
         "reduce_scatter materialization supports one input and one out");
   mlir::FailureOr<int64_t> communicationId =
-      getCommunicationId(info, "reduce_scatter");
+      getCommunicationId(op.getChannelIdAttr(), "reduce_scatter");
   if (mlir::failed(communicationId))
     return mlir::failure();
   std::optional<ComputeReduceKind> kind =
@@ -168,12 +177,9 @@ mlir::LogicalResult TileRegionBodyEmitter::convertReduceScatter(
   mlir::FailureOr<mlir::Value> input =
       getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
   mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
-      getCollectiveRankGroup(info);
+      getCollectiveRankGroup(op.getRankGroupAttr(), op.getRankGroupsAttr());
   if (mlir::failed(input) || mlir::failed(rankGroup))
     return mlir::failure();
-  if (!info.hasAxis)
-    return fail("reduce_scatter materialization requires an axis");
-
   auto resultTensorType =
       mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
   if (!resultTensorType)
@@ -189,8 +195,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertReduceScatter(
   auto kindAttr = ComputeReduceKindAttr::get(builder.getContext(), *kind);
   auto result = builder.create<CommReduceScatterOp>(
       op.getLoc(), slotType, kindAttr, *input, recvBuffer.getResult(),
-      builder.getI64IntegerAttr(info.axis),
-      builder.getI64IntegerAttr(rankGroup->localRank),
+      op.getAxisAttr(), builder.getI64IntegerAttr(rankGroup->localRank),
       builder.getI64IntegerAttr(static_cast<int64_t>(rankGroup->ranks.size())),
       mlir::DenseI64ArrayAttr::get(builder.getContext(), rankGroup->ranks),
       builder.getI64IntegerAttr(*bytes),
@@ -199,15 +204,15 @@ mlir::LogicalResult TileRegionBodyEmitter::convertReduceScatter(
   return mlir::success();
 }
 
-mlir::LogicalResult TileRegionBodyEmitter::convertAllReduce(
-    LinalgExtCollectiveAllReduceOp op, const WaferLinalgExtCollectiveInfo &info,
-    mlir::OpBuilder &builder) {
+mlir::LogicalResult
+TileRegionBodyEmitter::convertAllReduce(LinalgExtCollectiveAllReduceOp op,
+                                        mlir::OpBuilder &builder) {
   if (mlir::failed(requireSingleTensorCollective(op.getOperation())))
     return mlir::failure();
   if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
     return fail("all_reduce materialization supports one input and one out");
   mlir::FailureOr<int64_t> communicationId =
-      getCommunicationId(info, "all_reduce");
+      getCommunicationId(op.getChannelIdAttr(), "all_reduce");
   if (mlir::failed(communicationId))
     return mlir::failure();
   std::optional<ComputeReduceKind> kind =
@@ -218,7 +223,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertAllReduce(
   mlir::FailureOr<mlir::Value> input =
       getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
   mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
-      getCollectiveRankGroup(info);
+      getCollectiveRankGroup(op.getRankGroupAttr(), op.getRankGroupsAttr());
   if (mlir::failed(input) || mlir::failed(rankGroup))
     return mlir::failure();
 
@@ -244,32 +249,28 @@ mlir::LogicalResult TileRegionBodyEmitter::convertAllReduce(
 
 mlir::LogicalResult
 TileRegionBodyEmitter::convertAllToAll(LinalgExtCollectiveAllToAllOp op,
-                                       const WaferLinalgExtCollectiveInfo &info,
                                        mlir::OpBuilder &builder) {
   if (mlir::failed(requireSingleTensorCollective(op.getOperation())))
     return mlir::failure();
   if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
     return fail("all_to_all materialization supports one input and one out");
   mlir::FailureOr<int64_t> communicationId =
-      getCommunicationId(info, "all_to_all");
+      getCommunicationId(op.getChannelIdAttr(), "all_to_all");
   if (mlir::failed(communicationId))
     return mlir::failure();
 
   mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
-      getCollectiveRankGroup(info);
+      getCollectiveRankGroup(op.getRankGroupAttr(), op.getRankGroupsAttr());
   mlir::FailureOr<mlir::Value> input =
       getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
   if (mlir::failed(rankGroup) || mlir::failed(input))
     return mlir::failure();
 
   int64_t groupSize = static_cast<int64_t>(rankGroup->ranks.size());
-  if (groupSize <= 0 || info.splitCount != groupSize)
+  if (groupSize <= 0 || op.getSplitCount() != groupSize)
     return fail(
         "all_to_all materialization requires split_count to match rank_group "
         "size");
-  if (!info.hasSplitAxis || !info.hasConcatAxis)
-    return fail("all_to_all materialization requires split and concat axes");
-
   auto inputTensorType =
       mlir::dyn_cast<mlir::RankedTensorType>(op.getInputs().front().getType());
   auto resultTensorType =
@@ -280,8 +281,8 @@ TileRegionBodyEmitter::convertAllToAll(LinalgExtCollectiveAllToAllOp op,
     return fail("all_to_all materialization requires static shapes");
 
   int64_t rank = inputTensorType.getRank();
-  int64_t splitAxis = info.splitAxis;
-  int64_t concatAxis = info.concatAxis;
+  int64_t splitAxis = op.getSplitAxis();
+  int64_t concatAxis = op.getConcatAxis();
   if (splitAxis < 0 || splitAxis >= rank || concatAxis < 0 ||
       concatAxis >= rank || resultTensorType.getRank() != rank)
     return fail("all_to_all materialization has invalid axes");
@@ -424,18 +425,19 @@ TileRegionBodyEmitter::convertAllToAll(LinalgExtCollectiveAllToAllOp op,
 }
 
 mlir::LogicalResult TileRegionBodyEmitter::convertCollectivePermute(
-    LinalgExtCollectiveCollectivePermuteOp op,
-    const WaferLinalgExtCollectiveInfo &info, mlir::OpBuilder &builder) {
+    LinalgExtCollectiveCollectivePermuteOp op, mlir::OpBuilder &builder) {
   if (mlir::failed(requireSingleTensorCollective(op.getOperation())))
     return mlir::failure();
   if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
     return fail(
         "collective_permute materialization supports one input and one out");
   mlir::FailureOr<int64_t> communicationId =
-      getCommunicationId(info, "collective_permute");
+      getCommunicationId(op.getChannelIdAttr(), "collective_permute");
   if (mlir::failed(communicationId))
     return mlir::failure();
-  if (info.sourceTargetPairs.empty() || info.sourceTargetPairs.size() % 2)
+  llvm::ArrayRef<int64_t> sourceTargetPairs =
+      op.getSourceTargetPairsAttr().asArrayRef();
+  if (sourceTargetPairs.empty() || sourceTargetPairs.size() % 2)
     return fail("collective_permute materialization requires source/target "
                 "pairs");
 
@@ -455,9 +457,9 @@ mlir::LogicalResult TileRegionBodyEmitter::convertCollectivePermute(
   std::optional<int64_t> sendPayloadSlice;
   std::optional<int64_t> recvPayloadSlice;
   bool localCopy = false;
-  for (size_t index = 0; index < info.sourceTargetPairs.size(); index += 2) {
-    int64_t source = info.sourceTargetPairs[index];
-    int64_t target = info.sourceTargetPairs[index + 1];
+  for (size_t index = 0; index < sourceTargetPairs.size(); index += 2) {
+    int64_t source = sourceTargetPairs[index];
+    int64_t target = sourceTargetPairs[index + 1];
     if (source == currentLogicalRank) {
       if (target == currentLogicalRank)
         localCopy = true;
@@ -520,27 +522,22 @@ mlir::LogicalResult TileRegionBodyEmitter::convertCollectivePermute(
   return mlir::success();
 }
 
-mlir::LogicalResult TileRegionBodyEmitter::convertLinalgExtCollective(
-    mlir::Operation *op, const WaferLinalgExtCollectiveInfo &info,
-    mlir::OpBuilder &builder) {
-  switch (info.kind) {
-  case WaferLinalgExtCollectiveKind::AllGather:
-    return convertAllGather(mlir::cast<LinalgExtCollectiveAllGatherOp>(op),
-                            info, builder);
-  case WaferLinalgExtCollectiveKind::ReduceScatter:
-    return convertReduceScatter(
-        mlir::cast<LinalgExtCollectiveReduceScatterOp>(op), info, builder);
-  case WaferLinalgExtCollectiveKind::AllReduce:
-    return convertAllReduce(mlir::cast<LinalgExtCollectiveAllReduceOp>(op),
-                            info, builder);
-  case WaferLinalgExtCollectiveKind::AllToAll:
-    return convertAllToAll(mlir::cast<LinalgExtCollectiveAllToAllOp>(op), info,
-                           builder);
-  case WaferLinalgExtCollectiveKind::CollectivePermute:
-    return convertCollectivePermute(
-        mlir::cast<LinalgExtCollectiveCollectivePermuteOp>(op), info, builder);
-  }
-  llvm_unreachable("unknown linalg-ext collective kind");
+mlir::LogicalResult
+TileRegionBodyEmitter::convertLinalgExtCollective(mlir::Operation *op,
+                                                  mlir::OpBuilder &builder) {
+  if (auto allGather = mlir::dyn_cast<LinalgExtCollectiveAllGatherOp>(op))
+    return convertAllGather(allGather, builder);
+  if (auto reduceScatter =
+          mlir::dyn_cast<LinalgExtCollectiveReduceScatterOp>(op))
+    return convertReduceScatter(reduceScatter, builder);
+  if (auto allReduce = mlir::dyn_cast<LinalgExtCollectiveAllReduceOp>(op))
+    return convertAllReduce(allReduce, builder);
+  if (auto allToAll = mlir::dyn_cast<LinalgExtCollectiveAllToAllOp>(op))
+    return convertAllToAll(allToAll, builder);
+  if (auto permute = mlir::dyn_cast<LinalgExtCollectiveCollectivePermuteOp>(op))
+    return convertCollectivePermute(permute, builder);
+  return fail("unsupported linalg-ext collective " +
+              op->getName().getStringRef().str());
 }
 
 } // namespace wafer::tensor_program_to_tile_region

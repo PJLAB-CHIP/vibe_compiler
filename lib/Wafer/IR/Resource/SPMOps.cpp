@@ -35,39 +35,6 @@ mlir::LogicalResult StorageLoadOp::verify() {
   return mlir::success();
 }
 
-void StorageLoadOp::collectWaferLayoutRequirements(
-    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                          getSource().getType());
-  appendLayoutRequirement(requirements, WaferValueRole::Operand, 1,
-                          getDest().getType());
-}
-
-mlir::LogicalResult StorageLoadOp::verifyWaferLayoutContract() {
-  llvm::SmallVector<WaferLayoutRequirement, 4> requirements;
-  collectWaferLayoutRequirements(requirements);
-  return verifyLayoutRequirements(getOperation(), requirements);
-}
-
-void StorageLoadOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::DDR,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(getSource().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-  appendResourceEffect(effects, WaferResourceKind::Movement,
-                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-}
-
-mlir::LogicalResult StorageLoadOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 4> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
-
 mlir::LogicalResult StorageStoreOp::verify() {
   std::optional<mlir::RankedTensorType> sourceTensor =
       getLogicalTensorType(getSource().getType());
@@ -94,37 +61,4 @@ mlir::LogicalResult StorageStoreOp::verify() {
     return emitOpError("tile.store dest must use tensor layout");
 
   return mlir::success();
-}
-
-void StorageStoreOp::collectWaferLayoutRequirements(
-    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                          getSource().getType());
-  appendLayoutRequirement(requirements, WaferValueRole::Operand, 1,
-                          getDest().getType());
-}
-
-mlir::LogicalResult StorageStoreOp::verifyWaferLayoutContract() {
-  llvm::SmallVector<WaferLayoutRequirement, 4> requirements;
-  collectWaferLayoutRequirements(requirements);
-  return verifyLayoutRequirements(getOperation(), requirements);
-}
-
-void StorageStoreOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(getSource().getType()));
-  appendResourceEffect(effects, WaferResourceKind::DDR,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-  appendResourceEffect(effects, WaferResourceKind::Movement,
-                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
-                       getCompactByteSizeOrUnknown(getSource().getType()));
-}
-
-mlir::LogicalResult StorageStoreOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 4> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
 }

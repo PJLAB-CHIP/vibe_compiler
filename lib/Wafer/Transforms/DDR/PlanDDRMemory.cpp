@@ -151,15 +151,24 @@ static bool operationTouchesDDR(mlir::Operation *op) {
       llvm::any_of(op->getResultTypes(),
                    [](mlir::Type type) { return isWaferDDRMemRefType(type); }))
     return true;
-  auto effects = mlir::dyn_cast<WaferResourceEffectInterface>(op);
+  auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
   if (!effects)
     return false;
-  llvm::SmallVector<WaferResourceEffect, 8> resources;
-  effects.collectWaferResourceEffects(resources);
-  return llvm::any_of(resources, [](const WaferResourceEffect &effect) {
-    return effect.resource == WaferResourceKind::DDR &&
-           (effect.access == WaferResourceAccess::Read ||
-            effect.access == WaferResourceAccess::Write);
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> resources;
+  effects.getEffects(resources);
+  return llvm::any_of(resources, [](const auto &effect) {
+    return llvm::isa<WaferDDRResource>(effect.getResource());
+  });
+}
+
+static bool hasExplicitDDRResourceEffect(mlir::Operation *op) {
+  auto interface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
+  if (!interface)
+    return false;
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
+  interface.getEffects(effects);
+  return llvm::any_of(effects, [](const auto &effect) {
+    return llvm::isa<WaferDDRResource>(effect.getResource());
   });
 }
 
@@ -183,15 +192,9 @@ static bool isSupportedDDRAliasCall(mlir::func::CallOp call) {
     return false;
   bool hasDDRResourceEffect = false;
   callee.walk([&](mlir::Operation *op) {
-    auto interface = mlir::dyn_cast<WaferResourceEffectInterface>(op);
-    if (!interface || hasDDRResourceEffect)
+    if (hasDDRResourceEffect)
       return;
-    llvm::SmallVector<WaferResourceEffect, 8> effects;
-    interface.collectWaferResourceEffects(effects);
-    hasDDRResourceEffect =
-        llvm::any_of(effects, [](const WaferResourceEffect &effect) {
-          return effect.resource == WaferResourceKind::DDR;
-        });
+    hasDDRResourceEffect = hasExplicitDDRResourceEffect(op);
   });
   return !hasDDRResourceEffect;
 }
@@ -801,8 +804,7 @@ verifyDDRAsyncFunctionClosures(mlir::ModuleOp moduleOp) {
     }
 
     llvm::SmallVector<memory_planning::LifetimeDemand, 0> demands;
-    memory_planning::LocalCompletionTracker localCompletion(
-        WaferResourceKind::DDR);
+    memory_planning::LocalCompletionTracker localCompletion;
     memory_planning::LifetimeDataflow dataflow(
         *timeline, demands,
         [](mlir::Type type) { return isWaferDDRMemRefType(type); });
@@ -816,7 +818,7 @@ verifyDDRAsyncFunctionClosures(mlir::ModuleOp moduleOp) {
     mlir::Operation *unsupportedDescriptor = nullptr;
     funcOp.walk([&](mlir::Operation *op) {
       if (!unsupportedDescriptor && operationTouchesDDR(op) &&
-          mlir::isa<WaferResourceEffectInterface>(op))
+          hasExplicitDDRResourceEffect(op))
         unsupportedDescriptor = op;
     });
     if (unsupportedDescriptor)
@@ -1074,8 +1076,7 @@ static mlir::LogicalResult planScopeDDRMemory(
           collectDDRDemands(scope, defaultAlignment, *timeline, demands)))
     return mlir::failure();
 
-  memory_planning::LocalCompletionTracker localCompletion(
-      WaferResourceKind::DDR);
+  memory_planning::LocalCompletionTracker localCompletion;
   memory_planning::LifetimeDataflow dataflow(
       *timeline, demands,
       [](mlir::Type type) { return isWaferDDRMemRefType(type); },

@@ -82,6 +82,10 @@ struct CandidateEvaluation {
 struct SelectedCandidate {
   std::string label;
   structured_scheduler::StructuredSchedulingScope scope;
+  /// Owns a producer-mutated structured source when this selection did not
+  /// originate from the baseline task. The source task handle below always
+  /// points either into this module or into the caller-owned baseline module.
+  mlir::OwningOpRef<mlir::ModuleOp> sourceModule;
   mlir::func::FuncOp sourceTask;
   CandidateSpec spec;
   CandidateStats stats;

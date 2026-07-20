@@ -188,10 +188,11 @@ typed op/attrs、ODS verifier、适用的标准MLIR interface和conversion legal
 Q32.I已完成首轮native-interface reuse audit：只重新枚举DPS inputs/outs/results的
 `WaferTilingInterface`已迁移到`TilingInterface`、`DestinationStyleOpInterface`和typed operands/results后删除；
 实现与consumer盘点证据见`tasks/archive/mlir-native-implementation-relation-foundation.md`。
-`WaferLayoutOpInterface`、`WaferLayoutMaterializationOpInterface`与`WaferResourceEffectInterface`不能自动成为
-Q32合同：layout requirement优先由typed memref encoding、标准view/subset语义和op verifier表达，effect优先由
-`MemoryEffectOpInterface`及MLIR `SideEffects::Resource`表达，bytes/footprint从current IR重算。Q32.M迁移真实consumer
-后删除只复制这些事实的接口。
+Q32.M已完成后续native-interface reuse closure：layout requirement由typed memref encoding、标准view/subset
+语义和op verifier表达，effect由`MemoryEffectOpInterface`及MLIR `SideEffects::Resource`表达，bytes/footprint
+从current IR重算；原`WaferLayoutOpInterface`、`WaferLayoutMaterializationOpInterface`与
+`WaferResourceEffectInterface`及其重复record已删除。证据见
+`tasks/archive/physical-mechanism-choice-closure.md`。
 
 `WaferTargetImplementationOpInterface`已由Q32.I用真实reciprocal/division actual-clone贯通；之所以允许保留，
 是因为标准MLIR interface不表达Wafer target implementation

@@ -673,7 +673,7 @@ verifySPMAsyncFunctionClosures(mlir::ModuleOp moduleOp) {
     }
 
     llvm::SmallVector<mp::LifetimeDemand, 0> demands;
-    mp::LocalCompletionTracker localCompletion(WaferResourceKind::SPM);
+    mp::LocalCompletionTracker localCompletion;
     mp::LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
       return isWaferSPMMemRefType(type);
     });
@@ -709,7 +709,7 @@ verifyTileRegionCompletion(TileRegionOp tileRegion, mlir::func::FuncOp funcOp) {
     return mlir::failure();
 
   llvm::SmallVector<mp::LifetimeDemand, 0> noPlacementDemands;
-  mp::LocalCompletionTracker localCompletion(WaferResourceKind::SPM);
+  mp::LocalCompletionTracker localCompletion;
   mp::LifetimeDataflow dataflow(
       *timeline, noPlacementDemands,
       [](mlir::Type type) { return isWaferSPMMemRefType(type); });
@@ -774,7 +774,7 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
   if (mlir::failed(dteCompletion.run(funcOp.getOperation())))
     return mlir::failure();
 
-  mp::LocalCompletionTracker localCompletion(WaferResourceKind::SPM);
+  mp::LocalCompletionTracker localCompletion;
   mp::LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
     return isWaferSPMMemRefType(type);
   });

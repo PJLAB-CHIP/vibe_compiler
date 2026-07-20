@@ -541,7 +541,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(const OpLayoutPlan &opPlan,
   if (opPlan.kind == OpTilingDemandKind::Support)
     return convertSupportOp(op, builder);
   if (opPlan.kind == OpTilingDemandKind::LinalgExtCollective)
-    return convertLinalgExtCollective(op, opPlan.collectiveInfo, builder);
+    return convertLinalgExtCollective(op, builder);
 
   if (mlir::isa<mlir::linalg::LinalgOp>(op))
     return materializeSourceImplementation(op, builder);

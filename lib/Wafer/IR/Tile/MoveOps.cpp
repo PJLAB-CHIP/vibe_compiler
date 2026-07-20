@@ -13,8 +13,7 @@ using namespace wafer::detail;
 namespace {
 
 static mlir::LogicalResult
-getSPMBufferTensor(mlir::Operation *op, mlir::Type type,
-                   llvm::StringRef role,
+getSPMBufferTensor(mlir::Operation *op, mlir::Type type, llvm::StringRef role,
                    mlir::RankedTensorType &tensorType) {
   std::optional<mlir::RankedTensorType> logicalTensor =
       getLogicalTensorType(type);
@@ -26,12 +25,10 @@ getSPMBufferTensor(mlir::Operation *op, mlir::Type type,
   return mlir::success();
 }
 
-static mlir::LogicalResult
-verifySameElementLayoutAndSpace(mlir::Operation *op, mlir::Type lhsType,
-                                mlir::RankedTensorType lhsTensor,
-                                mlir::Type rhsType,
-                                mlir::RankedTensorType rhsTensor,
-                                llvm::StringRef messagePrefix) {
+static mlir::LogicalResult verifySameElementLayoutAndSpace(
+    mlir::Operation *op, mlir::Type lhsType, mlir::RankedTensorType lhsTensor,
+    mlir::Type rhsType, mlir::RankedTensorType rhsTensor,
+    llvm::StringRef messagePrefix) {
   if (lhsTensor.getElementType() != rhsTensor.getElementType())
     return op->emitOpError() << messagePrefix << " element types must match";
   if (getWaferLayout(lhsType) != getWaferLayout(rhsType))
@@ -78,20 +75,6 @@ static mlir::LogicalResult verifySliceAttrs(mlir::Operation *op,
   return mlir::success();
 }
 
-static void
-appendMoveResourceEffects(mlir::Type readType, mlir::Type writeType,
-                          llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(readType));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
-                       getCompactByteSizeOrUnknown(writeType));
-  appendResourceEffect(effects, WaferResourceKind::Movement,
-                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
-                       getCompactByteSizeOrUnknown(writeType));
-}
-
 static mlir::LogicalResult verifyPermutation(mlir::Operation *op,
                                              llvm::ArrayRef<int64_t> values,
                                              int64_t rank) {
@@ -127,32 +110,6 @@ mlir::LogicalResult MoveExtractSliceOp::verify() {
       getSizesAttr().asArrayRef(), getStridesAttr().asArrayRef());
 }
 
-void MoveExtractSliceOp::collectWaferLayoutRequirements(
-    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                          getSource().getType());
-  appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
-                          getResult().getType());
-}
-
-mlir::LogicalResult MoveExtractSliceOp::verifyWaferLayoutContract() {
-  llvm::SmallVector<WaferLayoutRequirement, 2> requirements;
-  collectWaferLayoutRequirements(requirements);
-  return verifyLayoutRequirements(getOperation(), requirements);
-}
-
-void MoveExtractSliceOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendMoveResourceEffects(getSource().getType(), getResult().getType(),
-                            effects);
-}
-
-mlir::LogicalResult MoveExtractSliceOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 3> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
-
 mlir::LogicalResult MoveInsertSliceOp::verify() {
   mlir::RankedTensorType sourceTensor;
   mlir::RankedTensorType destTensor;
@@ -175,44 +132,6 @@ mlir::LogicalResult MoveInsertSliceOp::verify() {
       getSizesAttr().asArrayRef(), getStridesAttr().asArrayRef());
 }
 
-void MoveInsertSliceOp::collectWaferLayoutRequirements(
-    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                          getSource().getType());
-  appendLayoutRequirement(requirements, WaferValueRole::Operand, 1,
-                          getDest().getType());
-  appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
-                          getResult().getType());
-}
-
-mlir::LogicalResult MoveInsertSliceOp::verifyWaferLayoutContract() {
-  llvm::SmallVector<WaferLayoutRequirement, 3> requirements;
-  collectWaferLayoutRequirements(requirements);
-  return verifyLayoutRequirements(getOperation(), requirements);
-}
-
-void MoveInsertSliceOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
-                       getCompactByteSizeOrUnknown(getSource().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 1,
-                       getCompactByteSizeOrUnknown(getDest().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
-                       getCompactByteSizeOrUnknown(getResult().getType()));
-  appendResourceEffect(effects, WaferResourceKind::Movement,
-                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
-                       getCompactByteSizeOrUnknown(getResult().getType()));
-}
-
-mlir::LogicalResult MoveInsertSliceOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 4> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
-}
-
 mlir::LogicalResult MoveCopyOp::verify() {
   mlir::RankedTensorType sourceTensor;
   mlir::RankedTensorType resultTensor;
@@ -224,32 +143,6 @@ mlir::LogicalResult MoveCopyOp::verify() {
   if (getSource().getType() != getResult().getType())
     return emitOpError("copy source and result types must match");
   return mlir::success();
-}
-
-void MoveCopyOp::collectWaferLayoutRequirements(
-    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                          getSource().getType());
-  appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
-                          getResult().getType());
-}
-
-mlir::LogicalResult MoveCopyOp::verifyWaferLayoutContract() {
-  llvm::SmallVector<WaferLayoutRequirement, 2> requirements;
-  collectWaferLayoutRequirements(requirements);
-  return verifyLayoutRequirements(getOperation(), requirements);
-}
-
-void MoveCopyOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendMoveResourceEffects(getSource().getType(), getResult().getType(),
-                            effects);
-}
-
-mlir::LogicalResult MoveCopyOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 3> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
 }
 
 mlir::LogicalResult MoveTransposeOp::verify() {
@@ -278,32 +171,6 @@ mlir::LogicalResult MoveTransposeOp::verify() {
       return emitOpError("transpose result shape must match permutation");
   }
   return mlir::success();
-}
-
-void MoveTransposeOp::collectWaferLayoutRequirements(
-    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                          getSource().getType());
-  appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
-                          getResult().getType());
-}
-
-mlir::LogicalResult MoveTransposeOp::verifyWaferLayoutContract() {
-  llvm::SmallVector<WaferLayoutRequirement, 2> requirements;
-  collectWaferLayoutRequirements(requirements);
-  return verifyLayoutRequirements(getOperation(), requirements);
-}
-
-void MoveTransposeOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendMoveResourceEffects(getSource().getType(), getResult().getType(),
-                            effects);
-}
-
-mlir::LogicalResult MoveTransposeOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 3> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
 }
 
 mlir::LogicalResult MoveBroadcastOp::verify() {
@@ -335,30 +202,4 @@ mlir::LogicalResult MoveBroadcastOp::verify() {
           "broadcast source shape must match mapped result dims");
   }
   return mlir::success();
-}
-
-void MoveBroadcastOp::collectWaferLayoutRequirements(
-    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                          getSource().getType());
-  appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
-                          getResult().getType());
-}
-
-mlir::LogicalResult MoveBroadcastOp::verifyWaferLayoutContract() {
-  llvm::SmallVector<WaferLayoutRequirement, 2> requirements;
-  collectWaferLayoutRequirements(requirements);
-  return verifyLayoutRequirements(getOperation(), requirements);
-}
-
-void MoveBroadcastOp::collectWaferResourceEffects(
-    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  appendMoveResourceEffects(getSource().getType(), getResult().getType(),
-                            effects);
-}
-
-mlir::LogicalResult MoveBroadcastOp::verifyWaferResourceEffectContract() {
-  llvm::SmallVector<WaferResourceEffect, 3> effects;
-  collectWaferResourceEffects(effects);
-  return verifyResourceEffects(getOperation(), effects);
 }

@@ -74,23 +74,6 @@ static bool isNestedIn(mlir::Operation *operation, mlir::Operation *ancestor) {
   return false;
 }
 
-static mlir::Value getEffectValue(mlir::Operation *op,
-                                  const WaferResourceEffect &effect) {
-  switch (effect.role) {
-  case WaferValueRole::Operand:
-    if (effect.index < op->getNumOperands())
-      return op->getOperand(effect.index);
-    return {};
-  case WaferValueRole::Result:
-    if (effect.index < op->getNumResults())
-      return op->getResult(effect.index);
-    return {};
-  case WaferValueRole::None:
-    return {};
-  }
-  llvm_unreachable("unknown Wafer value role");
-}
-
 static bool
 collectCalleeFormalAliases(mlir::Value value, mlir::func::FuncOp callee,
                            llvm::SmallVectorImpl<unsigned> &formalIndices,
@@ -1695,7 +1678,7 @@ LifetimeDataflow::processBlock(mlir::Block &block,
             mlir::bufferization::ToMemrefOp, mlir::bufferization::ToTensorOp,
             mlir::scf::IfOp, mlir::scf::ForOp, TileRegionOp>(op) ||
         mlir::isa<mlir::ViewLikeOpInterface, mlir::SelectLikeOpInterface,
-                  WaferResourceEffectInterface>(op) ||
+                  mlir::MemoryEffectOpInterface>(op) ||
         mlir::isa<ViewReshapeOp>(op) ||
         op.hasTrait<mlir::OpTrait::IsTerminator>();
     if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op))
@@ -1828,44 +1811,44 @@ void LocalCompletionTracker::processFence(ProgramPoint fencePoint,
 mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
                                                     LifetimeDataflow &dataflow,
                                                     LifetimeFailure *failure) {
-  auto effectInterface = mlir::dyn_cast<WaferResourceEffectInterface>(op);
+  auto effectInterface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
   std::optional<ProgramPoint> point = dataflow.timeline.lookup(op);
   if (!effectInterface || !point)
     return mlir::success();
 
-  llvm::SmallVector<WaferResourceEffect, 8> effects;
-  effectInterface.collectWaferResourceEffects(effects);
-  bool hasFence = llvm::any_of(effects, [](const WaferResourceEffect &effect) {
-    return effect.resource == WaferResourceKind::Sync &&
-           effect.access == WaferResourceAccess::Fence;
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
+  effectInterface.getEffects(effects);
+  bool hasFence = llvm::any_of(effects, [](const auto &effect) {
+    return llvm::isa<WaferSyncResource>(effect.getResource()) &&
+           llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect());
   });
   if (hasFence)
     processFence(*point, dataflow);
 
-  bool hasLocalIssue =
-      llvm::any_of(effects, [](const WaferResourceEffect &effect) {
-        return effect.access == WaferResourceAccess::Issue &&
-               (effect.resource == WaferResourceKind::Compute ||
-                effect.resource == WaferResourceKind::Movement);
-      });
+  bool hasLocalIssue = llvm::any_of(effects, [](const auto &effect) {
+    return llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect()) &&
+           llvm::isa<WaferComputeResource, WaferMovementResource>(
+               effect.getResource());
+  });
   if (!hasLocalIssue)
     return mlir::success();
 
-  llvm::SmallVector<WaferResourceEffect, 4> trackedEffects;
-  llvm::copy_if(effects, std::back_inserter(trackedEffects),
-                [&](const WaferResourceEffect &effect) {
-                  return effect.resource == trackedMemory &&
-                         (effect.access == WaferResourceAccess::Read ||
-                          effect.access == WaferResourceAccess::Write);
-                });
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> trackedEffects;
+  llvm::copy_if(
+      effects, std::back_inserter(trackedEffects), [&](const auto &effect) {
+        mlir::Value value = effect.getValue();
+        return value &&
+               (llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect()) ||
+                llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect())) &&
+               dataflow.isTrackedType &&
+               dataflow.isTrackedType(value.getType());
+      });
   if (trackedEffects.empty())
     return mlir::success();
 
   pendingIssues.push_back(PendingIssue{op, point->path});
-  for (const WaferResourceEffect &effect : trackedEffects) {
-    mlir::Value value = getEffectValue(op, effect);
-    if (!value)
-      continue;
+  for (const auto &effect : trackedEffects) {
+    mlir::Value value = effect.getValue();
     for (RootRef root : dataflow.rootsAt(value, point->path))
       pendingAccesses.push_back(PendingAccess{op, root});
   }

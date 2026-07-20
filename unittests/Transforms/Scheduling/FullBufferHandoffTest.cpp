@@ -328,7 +328,7 @@ TEST_F(FullBufferHandoffTest,
 }
 
 TEST_F(FullBufferHandoffTest,
-       LeavesEntireEdgeUnmodifiedWhenOneConsumerRDMAIsPartial) {
+       PromotesMaximalCompatibleSubsetWhenOneConsumerRDMAIsPartial) {
   mlir::OwningOpRef<mlir::ModuleOp> module = parseHandoffModule();
   ASSERT_TRUE(module);
   llvm::SmallVector<wafer::InstrRDMAOp, 4> rdmas =
@@ -348,24 +348,28 @@ TEST_F(FullBufferHandoffTest,
   mlir::Value externalReshape = reshapes.front().getResult();
 
   EXPECT_EQ(
-      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 0u);
+      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 1u);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
 
+  regions = collectOps<wafer::TileRegionOp>(*module);
+  ASSERT_EQ(regions.size(), 3u);
   EXPECT_TRUE(wafer::isWaferDDRMemRefType(regions[0].getResult(0).getType()));
   EXPECT_EQ(regions[0].getInputs().size(), 1u);
   EXPECT_EQ(regions[0].getBody().front().getNumArguments(), 1u);
-  for (unsigned index = 1; index < regions.size(); ++index) {
-    EXPECT_EQ(regions[index].getInputs()[0], externalReshape);
-    EXPECT_TRUE(wafer::isWaferDDRMemRefType(
-        regions[index].getBody().front().getArgument(0).getType()));
-  }
+  ASSERT_EQ(regions[0].getNumResults(), 2u);
+  EXPECT_TRUE(wafer::isWaferSPMMemRefType(regions[0].getResult(1).getType()));
+  EXPECT_EQ(regions[1].getInputs()[0], regions[0].getResult(1));
+  EXPECT_TRUE(wafer::isWaferSPMMemRefType(
+      regions[1].getBody().front().getArgument(0).getType()));
+  EXPECT_EQ(regions[2].getInputs()[0], externalReshape);
+  EXPECT_TRUE(wafer::isWaferDDRMemRefType(
+      regions[2].getBody().front().getArgument(0).getType()));
   ASSERT_EQ(collectOps<wafer::InstrWDMAOp>(*module).size(), 1u);
   rdmas = collectOps<wafer::InstrRDMAOp>(*module);
-  ASSERT_EQ(rdmas.size(), 2u);
-  EXPECT_EQ(rdmas.front().getByteCountAttr().getInt(), 8);
-  EXPECT_EQ(rdmas.back().getByteCountAttr().getInt(), 4);
-  EXPECT_TRUE(collectOps<wafer::InstrGatherScatterOp>(*module).empty());
-  EXPECT_EQ(collectOps<mlir::memref::CollapseShapeOp>(*module).size(), 1u);
+  ASSERT_EQ(rdmas.size(), 1u);
+  EXPECT_EQ(rdmas.front().getByteCountAttr().getInt(), 4);
+  EXPECT_EQ(collectOps<wafer::InstrGatherScatterOp>(*module).size(), 1u);
+  EXPECT_EQ(collectOps<mlir::memref::CollapseShapeOp>(*module).size(), 2u);
 }
 
 TEST_F(FullBufferHandoffTest,

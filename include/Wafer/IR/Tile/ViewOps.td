@@ -3,9 +3,7 @@
 #ifndef WAFER_IR_OPS_VIEWOPS_TD
 #define WAFER_IR_OPS_VIEWOPS_TD
 
-def Wafer_ViewReshapeOp : Wafer_Op<"tile.reshape", [
-    DeclareOpInterfaceMethods<WaferLayoutOpInterface>
-  ]> {
+def Wafer_ViewReshapeOp : Wafer_Op<"tile.reshape", []> {
   let summary = "tile-local logical reshape";
   let description = [{
     `wafer.tile.reshape` changes the logical tensor shape attached to storage
@@ -18,7 +16,7 @@ def Wafer_ViewReshapeOp : Wafer_Op<"tile.reshape", [
     target physical interpretation requires data rearrangement.
   }];
 
-  let arguments = (ins Wafer_AnySPMMemRef:$source);
+  let arguments = (ins Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source);
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
   let hasFolder = 1;

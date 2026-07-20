@@ -54,7 +54,8 @@
 
 ## 实施计划导航
 
-当前`doing`是Q32.M mandatory mechanism与choice-producer closure；Q32.V typed target-capability vertical已归档为
+当前`doing`是Q32.S bounded joint composition与resource-aware selection；Q32.M mandatory mechanism与
+choice-producer closure已归档为`tasks/archive/physical-mechanism-choice-closure.md`，Q32.V typed target-capability vertical已归档为
 `tasks/archive/typed-target-capability-vertical.md`，Q32.B production-shaped candidate/all-rank vertical已归档为
 `tasks/archive/physical-dataflow-test-seam-vertical.md`，Q32.R relation/physical realization已归档为
 `tasks/archive/physical-relation-realization.md`，Q32.I MLIR-native implementation/relation foundation已归档为
@@ -92,6 +93,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/physical-mechanism-choice-closure.md` | 已完成Q32.M的actual-clone recompute/LICM/integer algebra、partial fanout、spill/resident/ready-order、communication alternatives及重复layout/resource/collective/instruction合同删除记录 |
 | `tasks/archive/physical-relation-realization.md` | 已完成Q32.R的rich IndexRelation、physical encoding interface、TransferRealizability、destination-style load、relation-backed resident handoff和fresh 7B TP16数值纵向记录 |
 | `tasks/archive/typed-target-capability-vertical.md` | 已完成Q32.V的mapped DMA双端offset、physical-footprint fill、source/Tile/Instr/v2 oriented GEMM及formal/SystemC fresh纵向记录 |
 | `tasks/archive/mlir-native-implementation-relation-foundation.md` | 已完成Q32.I的fresh baseline、source implementation external model、真实reciprocal/division actual-clone纵向、MLIR-backed IndexRelation foundation和custom interface盘点/首轮删除记录 |

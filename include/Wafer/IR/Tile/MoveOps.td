@@ -4,8 +4,6 @@
 #define WAFER_IR_OPS_MOVEOPS_TD
 
 class Wafer_MoveOp<string mnemonic> : Wafer_Op<mnemonic, [
-    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
-    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_MovementResource>]>
@@ -21,7 +19,7 @@ def Wafer_MoveExtractSliceOp : Wafer_MoveOp<"tile.extract_slice"> {
   }];
 
   let arguments = (ins
-    Wafer_AnySPMMemRef:$source,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source,
     DenseI64ArrayAttr:$offsets,
     DenseI64ArrayAttr:$sizes,
     DenseI64ArrayAttr:$strides
@@ -41,8 +39,8 @@ def Wafer_MoveInsertSliceOp : Wafer_MoveOp<"tile.insert_slice"> {
   }];
 
   let arguments = (ins
-    Wafer_AnySPMMemRef:$source,
-    Wafer_AnySPMMemRef:$dest,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source,
+    Arg<Wafer_AnySPMMemRef, "", [MemWrite]>:$dest,
     DenseI64ArrayAttr:$offsets,
     DenseI64ArrayAttr:$sizes,
     DenseI64ArrayAttr:$strides
@@ -55,7 +53,7 @@ def Wafer_MoveInsertSliceOp : Wafer_MoveOp<"tile.insert_slice"> {
 
 def Wafer_MoveCopyOp : Wafer_MoveOp<"tile.copy"> {
   let summary = "tile-local explicit same-shape copy movement";
-  let arguments = (ins Wafer_AnySPMMemRef:$source);
+  let arguments = (ins Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source);
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
@@ -64,7 +62,7 @@ def Wafer_MoveCopyOp : Wafer_MoveOp<"tile.copy"> {
 def Wafer_MoveTransposeOp : Wafer_MoveOp<"tile.transpose"> {
   let summary = "tile-local explicit transpose movement";
   let arguments = (ins
-    Wafer_AnySPMMemRef:$source,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source,
     DenseI64ArrayAttr:$permutation
   );
   let results = (outs Wafer_AnySPMMemRef:$result);
@@ -76,7 +74,7 @@ def Wafer_MoveTransposeOp : Wafer_MoveOp<"tile.transpose"> {
 def Wafer_MoveBroadcastOp : Wafer_MoveOp<"tile.broadcast"> {
   let summary = "tile-local explicit broadcast movement";
   let arguments = (ins
-    Wafer_AnySPMMemRef:$source,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source,
     DenseI64ArrayAttr:$dimensions
   );
   let results = (outs Wafer_AnySPMMemRef:$result);

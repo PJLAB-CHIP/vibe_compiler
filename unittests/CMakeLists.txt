@@ -14,6 +14,7 @@ add_executable(WaferUnitTests
   Compiler/WholeVariantCoordinatorTest.cpp
   Compiler/WholeVariantResourceAcceptanceTest.cpp
   Conversion/WaferTensorProgramToTileRegionTest.cpp
+  Conversion/CommunicationAlternativesTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
   Frontend/NpyPayloadTest.cpp
@@ -30,6 +31,8 @@ add_executable(WaferUnitTests
   Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp
   Transforms/MemoryPlanning/MiniMallocPackingTest.cpp
   Transforms/MemoryPlanning/StaticMemoryPackingTest.cpp
+  Transforms/PhysicalDataflow/CandidateRewritesTest.cpp
+  Transforms/PhysicalDataflow/ReadyOrderTest.cpp
   Transforms/Scheduling/CandidateSelectionTest.cpp
   Transforms/Scheduling/FullBufferHandoffTest.cpp
   Transforms/Scheduling/RankCandidateFrontierTest.cpp

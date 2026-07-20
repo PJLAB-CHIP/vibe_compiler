@@ -31,19 +31,6 @@ std::optional<int64_t>
 getCompactTensorByteSize(mlir::RankedTensorType tensorType);
 std::optional<int64_t> getCompactByteSize(mlir::Type type);
 int64_t getCompactByteSizeOrUnknown(mlir::Type type);
-void appendLayoutRequirement(
-    llvm::SmallVectorImpl<wafer::WaferLayoutRequirement> &requirements,
-    wafer::WaferValueRole role, unsigned index, mlir::Type type);
-void appendResourceEffect(
-    llvm::SmallVectorImpl<wafer::WaferResourceEffect> &effects,
-    wafer::WaferResourceKind resource, wafer::WaferResourceAccess access,
-    wafer::WaferValueRole role, unsigned index, int64_t bytes);
-mlir::LogicalResult verifyLayoutRequirements(
-    mlir::Operation *op,
-    llvm::ArrayRef<wafer::WaferLayoutRequirement> requirements);
-mlir::LogicalResult
-verifyResourceEffects(mlir::Operation *op,
-                      llvm::ArrayRef<wafer::WaferResourceEffect> effects);
 mlir::FailureOr<std::optional<int64_t>>
 getOptionalExecutionMeshRankCount(mlir::Operation *op);
 mlir::LogicalResult
@@ -56,8 +43,7 @@ verifyLogicalRanksWithinExecutionMesh(mlir::Operation *op,
 
 mlir::LogicalResult verifyDTEP2P(mlir::Operation *op, mlir::Value buffer,
                                  mlir::IntegerAttr peer,
-                                 mlir::IntegerAttr bytes,
-                                 mlir::Type tokenType);
+                                 mlir::IntegerAttr bytes, mlir::Type tokenType);
 mlir::LogicalResult verifyDTEWaitTokens(mlir::Operation *op,
                                         mlir::OperandRange tokens);
 

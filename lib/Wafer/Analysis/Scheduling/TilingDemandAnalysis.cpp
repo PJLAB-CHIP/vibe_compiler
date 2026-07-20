@@ -179,8 +179,6 @@ collectCollectiveDemand(WaferLinalgExtCollectiveOpInterface op,
   demand.kind = OpTilingDemandKind::LinalgExtCollective;
   demand.op = op.getOperation();
   demand.opIndex = opIndex;
-  op.collectWaferLinalgExtCollectiveInfo(demand.collectiveInfo);
-
   auto mlirTiling = mlir::dyn_cast<mlir::TilingInterface>(op.getOperation());
   if (!mlirTiling) {
     demand.kind = OpTilingDemandKind::Failure;

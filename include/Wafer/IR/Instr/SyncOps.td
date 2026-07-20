@@ -4,7 +4,6 @@
 #define WAFER_IR_OPS_SYNCOPS_TD
 
 def Wafer_SyncLocalFenceOp : Wafer_Op<"instr.local_fence", [
-    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemWrite<Wafer_SyncResource>]>
   ]> {
   let summary = "local compute/movement visibility fence";
