@@ -296,7 +296,7 @@ communication仍靠旧option/selector；一个不兼容fanout use导致全部reu
   resource neighbor只从对应unplaced parent重clone改写；
 - baseline、每scope/site/root、每mechanism、每rank materialization/frontier、whole-variant和
   resource neighbor均有hard cap；all-baseline tuple另有reserved allowance并先于optimization执行；
-- 根据全部producer的actual growth选择fixed vector、Pareto frontier或beam；不能只依据前两条rewrite；
+- 根据全部producer的actual growth选择fixed-capacity candidate vector、Pareto frontier或beam；不能只依据前两条rewrite；
 - 从current IR的capacity/lifetime/descriptor/event pressure生成有界tile/residency/buffering/order邻居；
 - 每个完整candidate调用Q34 exact placement；validated high-water、movement、transport、compute、
   descriptor/instruction/event进入cost；
@@ -314,7 +314,7 @@ pointwise propagation、encoding/route、physical-version reuse、movement/resid
 variant、buffering/ready-order、communication和resource tradeoff进入同一frontier。每个会产生选择分支的producer至少有一个
 production-shaped source形成passing whole-variant并成为winner；7B compile wall受控。
 
-不算完成：fixed vector只覆盖两个rewrite；只限制top-K而允许前面无界生成；用serialized IR/
+不算完成：fixed-capacity candidate vector只覆盖两个rewrite；只限制top-K而允许前面无界生成；用serialized IR/
 provider cache/shadow state去重；allocator修改candidate。
 
 ### Checkpoint H（Q32.G）：Production Cutover与旧路径删除

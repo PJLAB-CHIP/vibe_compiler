@@ -117,8 +117,7 @@ tasks/13已有direct/ring/tree collective expansion/lowering语义继续位于`W
 pass option选择单一路径。Q32.M先把同一语义暴露为无状态complete-clone producers，再由现有Scheduling candidate owner调用，
 不复制成`PhysicalDataflow`通信图或selector。implementation、encoding/route、share/recompute、loop hoist、current
 integer-domain exact/modular numeric rewrite、buffering/order及resource-aware neighbor producers同样在Scheduling编排已有
-interface/analysis/rewrite，不建立统一
-dispatch registry。
+interface/analysis/rewrite，不建立统一dispatch registry。
 
 ### 构建依赖
 

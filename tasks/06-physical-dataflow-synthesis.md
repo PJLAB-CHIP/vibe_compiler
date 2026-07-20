@@ -614,7 +614,8 @@ IR重新统计，算法接入本身不算性能收益。
    share-vs-recompute、loop-invariant hoist、fixed Cx/NCx absorption、各current numeric variant、buffering/ready-order及direct/ring/tree
    communication alternatives全部接入同一actual-clone路径；
 7. Q32.S有界组合全部producer，逐项证明它们进入共同frontier并有production winner，加入resource-aware neighbors、validated
-   high-water/cost、Pareto/static-policy选择；根据完整producer的actual growth决定fixed vector/frontier/beam，而不是只根据前两条
+   high-water/cost、Pareto/static-policy选择；根据完整producer的actual growth决定fixed-capacity candidate vector/frontier/beam，
+   而不是只根据前两条
    rewrite决定；
 8. Q32.G让默认`wafer-compile`重放逐功能winner/commit证据，并删除旧scope-prefix、layout/materialization、maximal-resident、
    communication selector和scalar-time旁路；
