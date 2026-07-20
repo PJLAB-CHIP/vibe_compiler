@@ -22,9 +22,10 @@ Pipeline position:
 
 - `include/Wafer/<Boundary>/` 只放跨 library/target 消费的公共合同。仅在一个 production library 内复用的
   声明放在对应 `lib/Wafer/<Boundary>/` 下的 internal header，不提升为公共 API。
-- `lib/Wafer/IR` 按 IR family 拥有 parser/printer、verifier、canonicalization 和 interface 实现；
-  `Analysis` 只拥有可从当前 IR 重算的结果；`Conversion` 按 source IR 到 target IR 的合同组织；
-  `Transforms` 只拥有同层变换和 pass 注册；`Pipelines` 只组合 named pipeline。
+- `lib/Wafer/IR` 按 IR family 拥有 parser/printer、verifier、canonicalization、interface 声明和
+  dialect 自身能解释的 interface 实现；`Analysis` 只拥有从当前 IR 派生、可失效、可重算的结果；
+  `Transforms` 拥有挂到 source op 的 external-interface models、同层 rewrite patterns 和 pass 注册；
+  `Conversion` 只拥有 IR 层间 lowering；`Pipelines` 只组合 named pipeline。
 - `Frontend`、`Compiler`、`Target`、`Model`、`Runtime` 延续现有稳定边界。内部继续按 schema/registry、
   projection/interpreter、core/backend/adapter 等真实职责分目录或 translation unit，不能按任务号、case、
   agent 或临时里程碑命名。
@@ -39,13 +40,13 @@ Pipeline position:
   lowering、compute lowering、communication lowering、pass orchestration 或 shared geometry validation。
 - pass orchestration 文件只负责 legality、pattern population、option parsing、原子应用和 diagnostics；
   具体 op family rewrite 不继续内嵌在 pass 文件。
-- fixed pipeline policy、candidate search policy和atomic mechanism实现分别组织：`Pipelines`只组合已资格化fixed policy，
-  `Transforms`/owner-private libraries提供不读取search history的typed mechanism，planner只组合这些机制；Transform extension
-  也只能调用同一实现，不能复制matcher或legality。
+- fixed pipeline composition、candidate coordination 和 concrete rewrite 分别组织：`Pipelines` 只组合
+  named pipeline，`Scheduling` 复用现有 clone/evaluation/selection/commit，`Transforms` 中的 rewrite
+  只读取当前 IR 与本轮新鲜 analysis 并直接改写 isolated clone。
 - 多个 op family 共享的实现必须是可命名、可验证的 typed helper。不能为了缩短文件复制 validator、
   selector、field table、numeric policy 或 target encoding，形成第二事实源。
-- internal header 只声明同一 library 内的协作接口，不导出可序列化 sidecar、shadow plan 或新的长期语义
-  通道。能从 IR/type/registry 派生的信息仍现场派生。
+- internal header 只声明同一 library 内的协作接口，不导出可序列化 sidecar、平行 candidate schema 或新的
+  长期语义通道。能从 IR/type/interface 派生的信息仍从当前 IR 现场派生。
 - 仅做物理拆文件但仍通过 textual include 拼成一个聚合 translation unit，不算完成；拆分后的源文件必须
   由 CMake 独立编译并通过明确的 internal API 协作。
 
@@ -53,54 +54,82 @@ Pipeline position:
 physical-dataflow synthesis按稳定职责组织，不按checkpoint编号建目录：
 
 ```text
-include/Wafer/Analysis/
-  SemanticOpDescriptor.h
+include/Wafer/Analysis/PhysicalDataflow/
   IndexRelation.h
+  TransferPlanning.h
 lib/Wafer/Analysis/PhysicalDataflow/
-  SemanticOpDescriptor.cpp
   IndexRelation.cpp
+  TransferPlanning.cpp
 lib/Wafer/Transforms/PhysicalDataflow/
-  ImplementationProvider.cpp
-  MechanismRegistry.cpp
-  RelationMechanisms.cpp
-  FusionMechanisms.cpp
-  PhysicalVersionMechanisms.cpp
-  CandidateMaterialization.cpp
-  CandidateSelection.cpp
-  StaticCostPolicy.cpp
-  Planner.cpp
+  StructuredOpInterfaceModels.cpp
+  DependentTilingRewrite.cpp
+  ResidentHandoffRewrite.cpp
+  PhysicalVersionReuseRewrite.cpp
+lib/Wafer/Conversion/WaferTensorProgramToTileRegion/
+  ... existing source-to-tile conversion files ...
+lib/Wafer/Conversion/WaferTileRegionToInstr/
+  ... existing tile-to-instruction conversion files ...
+lib/Wafer/Transforms/Scheduling/
+  ... existing candidate analysis/evaluation/selection/commit files ...
 lib/Wafer/Compiler/
-  PhysicalDataflowPlanningTransaction.h/.cpp
+  ScheduledRankFinalization.cpp
+  WholeVariantCoordinator.cpp
 ```
 
-Analysis只从当前IR构造canonical descriptor/relation，不依赖Target。provider、mechanism和rank-local planner属于Transforms，
-可消费Analysis、Target与Conversion共享合同；whole-rank candidate vector、all-rank coordination和原子bundle commit只属于
-Compiler transaction。文件名是建议owner映射，实施时可按实际translation-unit规模合并同一职责，但不得反转依赖或创建
-shadow plan。
+`IndexRelation` 从当前 op、indexing map、view chain、shape bounds 和 SSA def-use 派生；
+`TransferPlanning` 从当前 source/destination、relation、typed physical encoding、alias/effect 和显式 target
+profile 派生 view/transfer realizability、descriptor cover 与资源摘要。这些结果不修改 IR，任何相关 rewrite
+后全部失效，不保存 selected route、physical version 或 candidate。
 
-可选Transform控制面单独形成`WaferTransformDialectExtension`，只适配上述rank-local shared libraries，依赖
-MLIR Transform dialect/interface与WaferTransforms/Target，不依赖WaferPipelines、WaferCompiler或Transform interpreter
-pass library。只有`wafer-opt`额外链接/注册interpreter pass并注册extension；`wafer-compile`不链接interpreter、
-不接受Transform IR。extension不复制mechanism/provider/matcher，也不通过TransformState旁路all-rank coordinator。
+`StructuredOpInterfaceModels.cpp` 只为不能直接修改的上游 structured op 注册 Wafer-owned source interface 的
+external models；Wafer-owned op 自身直接实现该 interface。interface method 返回当前 op 已表达的语义和可应用
+rewrite 所需的 typed facts，不生成 detached semantic descriptor。
+每个具体 rewrite 文件只负责一个同层变换，直接在 isolated clone 中创建/修改 IR，并用 `IRMapping`、
+`PatternRewriter` 和新鲜 analysis 协作。
+
+层间语义变化继续由现有 Conversion libraries 拥有：source-to-tile conversion 消费已经选定且自包含的
+structured clone，tile-to-instruction conversion 消费 typed tile-dataflow IR。Conversion 不重新搜索
+implementation、tile、encoding 或 route。
+
+rank-local candidate 生命周期继续由现有 `lib/Wafer/Transforms/Scheduling/` 的 candidate
+analysis/evaluation/selection/commit 协调；whole-rank finalization、all-rank/whole-variant coordination 和
+原子 bundle commit 继续由现有 Compiler owner 承担。Q32 不新增 planner、transaction、candidate wire
+format或平行 coordinator。上述文件名是 owner 映射；实现时可按 translation-unit 规模合并同一职责，但不能
+跨层合并 analysis、rewrite、conversion 和 coordination。
 
 ### 构建依赖
 
 稳定依赖方向保持为：
 
 ```text
-IR <- Analysis <- Conversion / Transforms <- Pipelines
-IR / Pipelines / Frontend / Target / Runtime <- Compiler <- Model / Drivers
+WaferIR <- WaferAnalysis
+WaferIR / WaferAnalysis <- WaferTensorProgramToTileRegion / WaferTileRegionToInstr
+WaferIR / WaferAnalysis / Conversion / WaferTarget <- WaferTransforms <- WaferPipelines
+WaferIR / WaferAnalysis / Conversion / WaferTransforms / WaferPipelines /
+Frontend / Target / Runtime <- WaferCompiler <- Model / Drivers
 Target core <- managed numeric backend <- qualified bulk backend
 Compiler / target-model core <- functional model <- bulk/SystemC adapters
 ```
 
+- `WaferAnalysis` 中的 physical-dataflow sources 只能链接 `WaferIR`、必要的 MLIR IR/dialect/analysis
+  libraries，以及 `TransferPlanning` 明确消费 typed target-profile API 时的 `WaferTarget`；不得链接
+  Conversion、Transforms、Pipelines 或 Compiler。若 target-independent 与 target-aware analysis 能自然拆开，
+  前者保持在更低依赖层。
+- `WaferTransforms` 的 physical-dataflow sources 链接 `WaferAnalysis`、`WaferIR`、现有 Conversion
+  libraries、`WaferTarget` 及实际使用的 MLIR Linalg/Tensor/Transforms libraries；source external models
+  与 rewrite patterns 必须作为独立 `.cpp` 进入 `WaferTransforms` source list。
+- 两个 Conversion targets 只依赖其 lowering 所需的 WaferIR/Analysis 与 MLIR dialect/conversion
+  libraries，不反向依赖 `WaferTransforms`、Scheduling 或 Compiler。现有 `WaferTransforms -> Conversion`
+  方向保持不变。
+- Scheduling 仍编入 `WaferTransforms`；Compiler 继续消费 `WaferTransforms` 和 `WaferPipelines`。不得为
+  physical-dataflow 再建只转发这些库的 facade target。
 - optional StableHLO/Shardy、numeric、oneDNN、SystemC 依赖只能出现在已经定义的 feature target 内，不能因
   拆文件扩大到 core public link interface。
 - CMake source list按上述职责分组；若拆出新 target，必须有独立依赖收益，不能建立只转发同一组依赖的
   空壳 library。
 - 公共 umbrella target 可以保持兼容，但底层实现 target 不得形成环，也不得依赖 tools 或 tests。
 - MLIR upstream library已链接、pass family已注册或`wafer-opt`可解析，只说明build/debug可用；production adoption必须由
-  named pipeline或shared candidate mechanism的实际调用、发生改写和纵向gate证明。CMake/source organization检查不得把
+  named pipeline调用现有candidate coordinator、实际发生rewrite并通过纵向gate证明。CMake/source organization检查不得把
   registration数量当优化覆盖率。
 
 ### 测试组织
@@ -108,6 +137,16 @@ Compiler / target-model core <- functional model <- bulk/SystemC adapters
 - lit 测试继续按用户级 pipeline 或 IR family 放置；C++ unit test按被测 production boundary 镜像组织。
 - 多个测试二进制共享的构造器放在 `unittests/<Boundary>` 的 test-support library，不进入 production
   include tree。
+- physical-dataflow analysis unit tests 镜像到 `unittests/Analysis/PhysicalDataflow/`，分别覆盖
+  `IndexRelation`、ValueBounds/Presburger 组合、view/transfer realizability、descriptor proof 和 rewrite 后
+  invalidation；不得把 analysis coverage 塞进 Scheduling test。
+- concrete rewrite unit tests 镜像到 `unittests/Transforms/PhysicalDataflow/`，lit 则按实际 IR 边界放在
+  `test/Transforms/`；测试必须检查 isolated clone 中的真实 IR 改写、失败原子性和 analysis 重算。
+- source-to-tile、tile-to-instruction lowering 继续由 `unittests/Conversion/` 与对应 conversion lit
+  覆盖；candidate ranking/commit 继续由 `unittests/Transforms/Scheduling/` 覆盖；all-rank coordination、
+  publication 和 driver vertical 继续由 `unittests/Compiler/`、`test/Pipelines/`、`test/Tools/` 覆盖。
+- 同一个 source case 可以跨层重放，但每层 test 只断言自己的 owner contract；不能用单个 helper test 代替
+  conversion、candidate commit 或 all-rank gate。
 - 结构重构的完成证明必须重放受影响的真实 named pipeline 和 driver vertical；只证明新源文件能编译、
   单个 helper 能调用或 FileCheck 文本未变都不够。
 - 组织检查器验证 owner/source-list/legacy aggregate 约束，但不使用任意行数阈值代替 code review。
@@ -125,10 +164,12 @@ tensor program到tile-region的body emitter、candidate traversal，instruction�
 dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内部边界如下；拆分只能沿这些合同进行，
 不能按行数或语法位置机械切开：
 
-- tensor program到tile-region：候选遍历/合法性、tile-local body materialization、op-family lowering和公共原子
-  orchestration分离；body builder只消费当前candidate structured IR与显式选项，不持有跨pass shadow plan。
-- candidate selection：候选枚举/analysis、cost comparison、selected-candidate commit 和 pass orchestration 分离；
-  analysis 可从当前 IR 重算，只有 accepted selection 进入 IR，不能保留旁路候选表。
+- tensor program到tile-region：同层 physical-dataflow rewrites 必须在进入 conversion 前完成；conversion 内部的
+  候选遍历/合法性、tile-local body lowering、op-family lowering和公共原子 orchestration分离；body builder
+  只消费当前自包含 structured IR 与显式 conversion options。
+- candidate selection：现有 candidate clone/evaluation、cost comparison、selected-candidate commit 和 pass
+  orchestration 分离；每次 rewrite 后 analysis 从当前 clone 重算，只有 accepted clone 进入下游，不能保留
+  与 clone 重复的 implementation/encoding/route/physical-version 表。
 - instruction 到 target LLVM：typed target-call schema/preflight、movement/compute/communication lowering、结构化
   control lowering和 conversion legality/orchestration 分离；所有 lowering 继续消费同一 target registry，不复制 ABI 表。
 - numeric dependency conformance：canonical record parsing、受管 filesystem/provenance closure、loaded-object/runtime
@@ -140,6 +181,10 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
 
 ## 当前实现映射
 
+- Q32 尚未新增 source files；实施时严格按上文 ownership 增加 `Analysis/PhysicalDataflow` 与
+  `Transforms/PhysicalDataflow` sources。现有 Scheduling candidate coordinator、两个 Conversion libraries、
+  `ScheduledRankFinalization` 和 `WholeVariantCoordinator` 是必须复用的 owner，不复制成 physical-dataflow
+  专用 facade。
 - instruction IR 已按 movement、compute、peripheral、DTE、sync family 独立编译；共享 verifier/resource-effect
   helper 留在 `lib/Wafer/IR/Instr/`，没有提升为公共头文件。
 - tile-region 到 instruction 的 facade 只保留 legality、选项、终端 fence 和 conversion orchestration；movement
@@ -171,15 +216,11 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
   `wafer::memory_planning::detail`符号保持`WaferTransforms`私有，
   两个planner只保留各自memory-space legality、resource limit、SPM non-nested scope/DTE或DDR
   descriptor/planning-scope语义和offset commit。
-- Q32终态的capacity objective继续留在同一`MemoryPlanning` owner-private library，但与fixed-capacity default/fallback
-  policy、MiniMalloc adapter和SPM IR owner分层：prepared static problem唯一拥有canonical demand/conflict/component/
-  activity-clique和problem digest；capacity analysis只组合三态fixed queries、validator、bound与incumbent；SPM owner按
-  `current IR analysis -> typed evaluation -> atomic offset apply`拆分。06只拥有shortlist、deterministic budget、interval
-  dominance和proof-guided candidate priority，不得反向包含memory-planning实现或复制clique/lifetime逻辑。cache中的placement
-  只使用prepared problem的stable/canonical identity，current owner负责remap到本次demand index并复验；raw MLIR pointer/
-  demand index、RootRef映射和并行完成顺序不得成为跨prepared-instance cache identity。proof到physical decision的映射属于
-  candidate materializer invocation-local `IRMapping`，任何clone/rewrite/analysis invalidation后销毁并从current IR重建，不形成
-  MemoryPlanning反向依赖Scheduling的接口或下游side table。
+- Q32 不新增 capacity objective、packing schema 或 memory-planning owner。每个 rewritten clone 继续调用同一
+  `LifetimeAnalysis`、`StaticMemoryPacking`、`MiniMallocPacking` 和 SPM/DDR planner；它们只从当前 clone
+  重建 timeline、root、conflict、lifetime 和 placement，随后原子应用 typed offsets。physical-dataflow analysis
+  不复制 clique/lifetime 逻辑，MemoryPlanning 也不反向依赖 Scheduling。rewrite invocation 使用的 `IRMapping`
+  在 clone 修改或 analysis 失效后立即销毁，不能成为下游 side table。
 - `third_party/minimalloc`是从固定upstream commit源生的curated C++17 port，不是配置期下载或导出的
   公共依赖。upstream pin由`WaferDependencyVersions.cmake`单点拥有；`PROVENANCE.json`记录逐upstream
   file精确映射、algorithm/distribution digest和semantic delta，`check_deps.py`离线验证source closure、映射、
@@ -226,6 +267,14 @@ conflict encoding、packing policy或first-fit的第二事实源。
 - 选定的旧聚合 `.cpp` 不再承载多个 op/command family，且不以 `.inc` 方式继续聚合编译。
 - 新 internal API 只在 owner library 内可见；没有新增 public artifact、CLI、pass 或 attr。
 - CMake 与组织检查器从多源文件事实推导，不再强制“一个 conversion library 只有一个实现文件”。
+- physical-dataflow source tree 只有 current-IR-derived Analysis、source external-interface models 和 concrete
+  rewrites；没有 detached semantic descriptor、专用 planner/coordinator、route dispatch table或与 candidate
+  clone 重复的长期数据结构。
+- `WaferAnalysis`、Conversion、`WaferTransforms`、`WaferPipelines`、Compiler 的 CMake link direction 与本文
+  一致；每个新 `.cpp` 被 owner target 独立编译，且没有通过 textual include 重新聚合。
+- Analysis、physical-dataflow rewrite、Conversion、Scheduling 和 Compiler tests 按各自 production boundary
+  镜像；fresh 验证实际执行 rewrite、invalidation、layer lowering、candidate commit、all-rank coordination 和
+  driver vertical。
 - 受影响的 verifier、conversion、numeric registry 单测和完整 source-backed pipeline 均通过。
 - memory-planning shared core在production CMake中只有一个owner，私有header/detail符号不泄漏公共API，
   SPM/DDR planner不再拥有重复timeline/root/packing policy/first-fit实现；镜像unit、两侧planner lit和

@@ -1,27 +1,3 @@
-## 2026-07-18 provider expansion必须重新进入统一能力闭包
-
-- 现象：communication family在route已选后新增staging、copy或local-reduce node；若materializer直接为这些node挑指令，
-  implementation/encoding/route provider、搜索预算和canonical baseline都会被绕过。
-- 根因：把provider返回值误当成可直接lower的最终schedule，而不是仍需解析的typed schedule skeleton。
-- 修复模式：communication provider只返回有node/edge cap的typed skeleton；每个新增semantic node/edge重新进入同一
-  implementation→encoding→route约束传播，全部形成resolved schedule后才能展开为payload IR。rank-local inspection另用
-  placed-unbound signature/metric，不能复用all-rank binding后的final candidate signature或whole-variant DDR标量。
-- 防复发：provider closure测试必须覆盖新增node/edge、budget耗尽、唯一baseline、tile变化后的cache失效，以及materializer中无
-  hidden family selection；rank-local unavailable/unverified事实必须typed表达，不能用0或final signature冒充。
-
-## 2026-07-18 capability key不能只绑定call ABI
-
-- 现象：target call的C/LLVM signature没变，但completion可从queue-issued变成wait-before-store；如果
-  `RequiredCapabilitySet`只保存signature digest，compiler effect、model transaction和board admission可在同一key下
-  解释出不同execution semantics。
-- 根因：把ABI shape误当成完整target execution contract，漏掉了会被effect/path/model consumer读取的
-  completion、resource ordering和destination visibility。
-- 修复模式：capability family key同时绑定`exact_signature_digest`和versioned
-  `execution_contract_digest`；后者覆盖issue resource、typed completion class/property、standard/detailed effect、
-  visibility和result-store contract reference。改变任一字段都提升family revision、形成新key并重放qualification。
-- 防复发：registry/property/effect篡改负例必须在capability projection、model import和任何memory effect前拒绝；
-  禁止通过op/symbol名matcher恢复execution contract。
-
 ## 2026-07-13 multi-rank reference不能硬编码为Direct DTE
 
 - 现象：真实PyTorch/XLA linear-residual MLP以16 rank经过production driver后形成完整replicated rank domain，
@@ -567,7 +543,7 @@
   `fastmath<reassoc,nnan,ninf,nsz>`时拆分；named floating matmul保持完整K；integer只放行无overflow flag的
   modular add和signed min/max。未拆分source reduction不因缺少reassociation事实被拒绝。
 
-## 2026-07-16 DTE wait不能完成collective后的本地provider
+## 2026-07-16 DTE wait不能完成collective后的本地compute/movement effect
 
 - 现象：all-gather收到chunk后又执行slot copy，或all-reduce/reduce-scatter在wait后执行最终elementwise accumulation；
   若直接把result交给resident consumer，SPM lifetime看似闭合但本地movement/compute仍可能未完成。
@@ -709,4 +685,17 @@
   使用component-local fixed prefix，保留solver decomposition。triangle-free graph仍可一edge一slot，不引入最优
   clique-cover指数搜索。
 - 防复发：用clique零budget不可行证明、stable ordinal交错多component/nonzero-base reuse、任意小图独立
-  穷举oracle和scale workload的search-node/fallback telemetry共同锁定；不用wall-clock timeout作为求解语义。
+  穷举oracle和scale workload的search-node/fallback统计共同锁定；不用wall-clock timeout作为求解语义。
+
+## 2026-07-20 先造planner协议会在MLIR旁边形成第二套IR
+
+- 现象：优化尚未产生第一条真实rewrite，设计已经定义完整semantic descriptor、四类provider/query/key、mechanism registry、
+  canonical frontier、transport signature、统一work schema和版本化诊断统计协议；rewrite和下游收益反而排在后期。
+- 根因：把“需要联合评估多个决策”误解为“需要先统一序列化所有语义和搜索状态”，没有按op/type/attr interface、可重算
+  analysis、PatternRewriter、DialectConversion和typed selected IR分别归责；一次transformation内的普通C++对象被错误提升为
+  跨阶段协议。
+- 修复模式：从一条真实source-to-bundle rewrite反推最小抽象。op-local能力用interface/external model，跨value关系从current
+  IR派生，选择立即物化进isolated clone，rewrite后销毁旧analysis，legality/cost只读final clone，并复用现有all-rank atomic
+  transaction。没有profiling和多个真实实现前不加registry、cache、beam或serializer。
+- 防复发：新增planner对象必须回答它删除了哪个matcher/fallback、由哪个真实rewrite消费、为何不能从IR重算，以及selected后
+  如何销毁；任务顺序必须先出现通用rewrite与完整下游gate，再允许从实际candidate增长数据抽象搜索策略。

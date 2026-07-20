@@ -1,8 +1,8 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-07-19同步Q32联合physical-dataflow/Q32.T rank-local Transform和
-Q3.6 Count的内部可闭合目标验证合同；保留Q31标准7B单block多seed数值证据、mapped transfer、
-versioned GEMM orientation及已完成
+状态：2026-07-20同步MLIR-native Q32 physical-dataflow验证边界，并把Q32.T、mapped transfer、
+versioned GEMM orientation、RequiredCapabilitySet/schema升级和Q3.6 Count重分类为later独立合同；保留Q31标准7B单block
+多seed数值证据及已完成
 Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate。
 本文是跨stage稳定验证合同，不是`tasks/plans/`中的动态实施计划。它拥有完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
@@ -43,11 +43,11 @@ Pipeline position:
   闭合完整输出。Q22只汇总该传递证据，不另建pipeline。
   Q29随后闭合rank-local tile-dataflow scheduling、complete traversal和TP16 7B compile/package结构gate；Q28再从同一
   production source入口闭合标准7B单block managed-reference SystemC执行及完整PyTorch eager output differential。
-  Q32闭合四provider联合搜索、reserved baseline、SPM→DDR→post-memory transport→ABI的all-rank
-  atomic bundle gate；Q32.T只闭合可选rank-local Transform adapter，不代替Q32 production coordinator。Q3.6闭合
-  Count的11/14-17 mechanical writeback/ABI/event合同，17-owned `CountSemanticProfileV1`/qualification容器设计已闭合，
-  但能使其present/qualified的predicate、golden与evidence仍依赖独立外部语义证据；
-  Q22.C消费Q22、Q32 schema-v4 RequiredCapabilitySet和Q6.B结果闭合板端numeric correlation；
+  Q32闭合MLIR interface/rewrite驱动的有限candidate evaluation、baseline、SPM→DDR→post-memory transport→ABI的all-rank
+  atomic bundle gate；Q32.T仍是没有冻结schema的可选later控制面。later Q3.6只有在Count predicate、typed
+  Instr/TargetCall、独立golden和实际model consumer存在后，才闭合11/14-17 mechanical writeback/ABI/event及numeric合同；
+  Q22.C消费Q22、Q32 winner的verified package和Q6.B结果闭合板端numeric correlation；若later Q32.V实现
+  winner-derived RequiredCapabilitySet，则同一package还须先通过其独立readback gate；
   vendor-exact packet只在有独立packet/MMIO
   evidence时增加provenance claim。exact package provider和deferred timing calibration保持独立更高gate。
 ```
@@ -163,23 +163,26 @@ transport/address/shape和任何late failure都必须保持source byte-identical
 
 ### 4.3 Geometry And ABI
 
-已完成Q0/Q0.L证据固定v1 compact DMA和normal/normal GEMM。下列mapped local-offset、invalid-lane和oriented v2项是
-Q32 extension gate：实现时重放同一formal/atomic/conformance suite，但不反向把已完成v1标成未完成或伪装v2已证。
+已完成Q0/Q0.L证据固定v1 compact DMA和normal/normal GEMM。Q32 core只重放current v1 geometry并增加其真实
+rewrite所需的invalid-lane、view和staged-movement覆盖；later Q32.V才扩展mapped DMA、physical-footprint fill和
+oriented GEMM ABI。两组必须分开记录，不能反向把已完成v1标成未完成，也不能用Q32 core结果伪装Q32.V已证。
 
-- RDMA/WDMA/gather descriptor payload mismatch、stride range、两端OOB；mapped RDMA/WDMA两端root-relative offset（包括0）的
-  exact-end/overflow/all-and-only coverage，以及非法双侧stride negative；
+- current v1 RDMA/WDMA/gather descriptor payload mismatch、stride range和两端OOB；current GS/staged movement中已经显式
+  物化的local offset、slice和view必须覆盖exact-end/overflow/all-and-only正负例；
 - DTE instruction bytes OOB，以及在physical peer/slot/CRT未闭合时production target整体拒绝；
 - convert source/dest count mismatch；
-- GEMM typed lhs/rhs orientation、M/K/N/batch/stored-shape mapping mismatch；v1 normal/normal与versioned oriented ABI
-  exact-signature/profile混用negative；
+- current v1 GEMM normal/normal的M/K/N/batch/stored-shape mapping mismatch；
 - conv/pool/unpool/TDMA/peripheral shape relation；
 - unsupported depthwise/backward conv等未定义shape profile在production target fail closed；
 - int64 overflow、uint32 max+1、Data_Shape uint16 max+1；
 - bitpacked/Cx/NCx physical bytes和view offset限制。
-- invalid-lane state从fill/segment/mask/typed execution domain重建；mapped valid-only write后padding unknown、required-neutral
-  未初始化、full-physical错误读取、Cx retained-tail和bitpacked tail-bit均有negative；physical-footprint fill的checked
-  elem-count、canonical raw scalar mapping和fill→segmented不可观察ordering闭合到TargetCall/SystemC。当前v1 Tensor logical-fill
-  与Q32 Cx/NCx/BOOL physical-fill资格分开记录。
+- invalid-lane state从current segment/mask/typed execution domain重建；valid-only write后padding unknown、required-neutral
+  未初始化、full-physical错误读取、Cx retained-tail和bitpacked tail-bit均有negative。
+
+later Q32.V另行覆盖：mapped RDMA/WDMA两端root-relative offset（包括0）的exact-end/overflow/all-and-only及非法双侧
+stride；GEMM NN/NT/TN/TT typed orientation与versioned ABI/profile混用negative；physical-footprint fill的checked
+elem-count、canonical raw scalar mapping和fill→segmented不可观察ordering到TargetCall/SystemC的完整纵向。current v1
+Tensor logical-fill不能替代这些扩展gate。
 
 同一negative必须在最早能解释它的verifier失败，不能等CRT截断或board fault。
 
@@ -270,10 +273,9 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 - accepted rank artifact覆盖完整traversal，且无legacy `wafer.group`残留；
 - 任一rank/candidate/SPM/DDR/geometry/completion failure不形成`RankExecutable[]`或partial bundle；
 - all-and-only rank/resource/completion验证后才构造atomic `ExecutableBundle`，failed rebuild保持旧final不变；
-- Q32 pure target-eligibility preflight从每rank selected instruction经tasks/14 registry派生canonical
-  `TargetCapabilityRowKey`，验证missing/unknown/extra key后形成sorted unique all-rank `RequiredCapabilitySet`及digest；它不含
-  planner choice或command顺序/地址/次数。preflight结果不进入search state；只从fresh winner final instruction rows重算的
-  set与RankExecutable[]一起提交，late-rank union/digest失败不形成bundle；
+- Q32核心只对winner current instruction IR运行现有target/profile/ABI/package-eligibility pure gate，不建立planning-side
+  capability set。若later Q32.V实现`RequiredCapabilitySet`，它必须在post-selection阶段从fresh winner Instr/TargetCall rows
+  唯一派生，并由14-17独立验证；不得反向进入candidate generation；
 - bundle根据accepted IR只能形成`TransportContract::None`或Q16.T已验证的
   `TransportContract::DirectDTE`；logical collective/DTE必须通过all-rank message/resource/wait匹配，
   不能以`unsupported_transport`默认切断主线；
@@ -284,115 +286,50 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 
 ### 6.1 Physical-Dataflow Synthesis Gate
 
-`tasks/06-physical-dataflow-synthesis.md`拥有终态联合planner合同；本文固定跨stage证据口径。Q29数字只作为已实现迁移baseline：
+`tasks/06-physical-dataflow-synthesis.md`拥有联合physical-dataflow transformation合同；本文只固定可判定的跨stage证据。
+Q29数字保留为历史实现基线，不能替代Q32 fresh gate。
 
-- production从Q15 verified program的同一structured tensor IR
-  直接建立rank-local task/dataflow candidates，不发布或
-  重新读取额外的调度artifact；
-- accepted IR用buffer SSA、movement和event显式区分resident edge和spill，并以whole-rank SPM/
-  DDR lifetime与whole-variant transport/ABI gate原子提交；
-- `SemanticOpDescriptor`由typed role、iterator/indexing、DPS tie、scalar DAG、numeric/effect构造；unknown/dynamic/unregistered
-  semantic返回typed Unsupported。provider的Available/Unsupported/ResourceExhausted/Invalid状态、唯一canonical baseline、
-  duplicate-key registry error、query key完整性及不同registration/thread order确定性都有正负测试；query key必须覆盖
-  descriptor digest、06完整target capability context（其中唯一包含target/profile/ABI、model-vs-board provider/environment、
-  revision与qualification floor）、numeric/effect policy和全部constraints，不能含pointer、名字或registration order；
-- `IndexRelation`对identity/permutation/broadcast/slice/reshape/concat piece做小shape穷举，验证canonical digest、compose/
-  inverse/property、exact image/preimage与sound cover区分。`UnsupportedRepresentation/ResourceExhausted/InvalidInput`不返回
-  partial relation、不缓存为
-  semantic truth；canonical verifier必须证明canonical pieces互斥且union exact覆盖整个`consumer_domain`；logical relation层只做
-  logical point evaluation，physical bit/byte point由08组合encoding map后验证；rewrite/node/piece/fragment/division-depth fuel逐项覆盖；
-- 联合planner按parameterized capability生成bounded tile/traversal、`ImplementationFamily`、`PhysicalEncoding`、
-  `TransferRouteFamily`、communication skeleton、resident/spill、reuse-aware order和event候选；测试不得按Llama、op名或
-  shape whitelist驱动选择。implementation、physical encoding、transfer route和communication四类provider统一使用
-  `Available | Unsupported | ResourceExhausted | Invalid`的typed query/key/result/status，cache identity是
-  `(ProviderKindV1, full canonical QueryKey bytes)`，digest只作索引。encoding result必须能验证physical bit map、
-  valid/padding domain、extent/alignment/view/descriptor cover；route key覆盖roots/views/relative alias、两端encoding、relation、
-  valid/invalid-lane domain、dtype、engine和06完整target capability context。communication只返回bounded typed schedule
-  skeleton，其新增staging/local-compute node必须重新进入implementation→encoding→route closure，不得在materializer中
-  隐藏选择。每个支持域有唯一canonical baseline；`CanonicalBaselineComposerV1`按implementation→initial tile→
-  encoding→route→communication顺序查询四类provider，skeleton新node重进closure，tile缩小则使所有tile-dependent result
-  失效并重查。provider声称Available却缺失/重复baseline recipe是`Invalid`，domain intersection精确为空是
-  `Unsupported(InfeasibleConstraints)`，baseline allowance耗尽是`ResourceExhausted`；四类status均不伪造partial seed。
-  all-rank reserved baseline按canonical rank order直接组合，必须在optimized counters/deadline之外完成。
-  `ResourceExhausted`不缓存为unsupported truth。accepted clone必须把encoding、route、communication和compute
-  choice全部物化为typed memref/view/direct或显式temporary/movement/compute/orientation/event IR，且无selected-family
-  side object或shadow plan；
-- semantic/general topology corpus至少覆盖chain、diamond、fanout/fanin、shared-input contraction、reshape、transpose、
-  broadcast、reduce、residual和collective，交叉多个dtype、整tile/non-divisible tail及合法/非法numeric reassociation；
-  等价view/index rewrite应byte/bit exact，floating reassociation只有source policy明确允许时才进入候选；
-- Q32.M mandatory matrix每row至少一个通用真实source发生非零改写：relation/view normalization、pure DPS producer
-  tiling/fusion、pointwise propagation、oriented absorption、2+ fanout reuse、mapped boundary folding、movement elimination、
-  resident cut elimination；另按06 `PhysicalMechanismCutPointV1`到05 `OptimizationCutPointV1`的映射，分别验证structured-tensor与
-  selected-payload post-mechanism closure，不能串成
-  一个common normalizer。除Applied外clone byte-identical；Applied后descriptor/relation/
-  alias/effect/SPM/DDR/completion/cost全部fresh重算。capability-conditioned与deferred机制不得冒充mandatory；
-- search bound对first-legal、min-cost、all-fail、parallel batch及fallback所有退出路径生效，并只用06唯一
-  `PhysicalDataflowTelemetryV1`记录phase、counter、work、packing与stop reason。测试使用adversarial高fanout/多encoding graph证明不枚举Cartesian product；超限时确定性停止新增
-  optimized state，baseline合法则返回baseline并记录budget diagnostic，只有baseline exact-illegal才返回真实legality
-  failure；baseline proof超过其独立hard allowance返回compiler resource exhaustion。生产选择由deterministic work/fuel caps
-  决定；只有baseline已完成后才arm的optimization deadline或optimized budget耗尽会以`Success`返回reserved baseline并记录
-  stop reason。driver/process在任意时点显式取消则返回`Cancelled`，无partial seed/candidate/artifact，不得伪装成
-  baseline fallback。未取消时同输入、不同线程数稳定选择；具体cap数值是implementation resource policy，不写成workload
-  或IR语义；
-- 在同一机器、Release build和冻结7B corpus上，以Checkpoint A fresh Q30数据为baseline记录完整source-to-bundle wall与
-  `PhysicalDataflowTelemetryV1`；重复运行不得出现无界candidate/work增长，
-  baseline-ready后的optimization deadline必须返回reserved baseline，driver cancellation则必须保持无artifact。相对阈值、
-  work/fuel和wall guard只属于profile/resource policy与实施证据，
-  不写成架构常量、workload whitelist或hardware performance claim；
-- 三层compatibility证据严格分离：`CompatibilityConstraintKeyV1`只从current semantics/provider domain得到，用于frontier
-  merge、constraint propagation和lazy-join访问顺序，不进入seed或artifact；`PlacedRankCompatibilityClaimsV1`只从
-  finalized、SPM-placed但未做all-rank binding的current instruction IR fresh构造；`AcceptedVariantTransportSignatureV1`
-  只在all-rank coordinator已把actual typed binding写回全部rank clone后，从bound current IR fresh构造。三者比较完整
-  versioned canonical bytes，digest只作index/telemetry；placement变化使placed claims失效，binding/instruction/event变化使
-  accepted signature失效；
-- 每个rank candidate独立运行instruction/descriptor、whole-rank SPM/local completion及per-rank range gate；只有完整
-  `PlacedRankCompatibilityClaimsV1` bytes相同的placed rank candidate才能做local dominance和分桶，随后baseline-first
-  lazy join。每个complete unbound variant先运行whole-variant DDR exact planning/gate，再由13的post-memory physical transport
-  acceptance消费accepted SPM/DDR offsets并把actual typed binding写回所有rank clone，随后fresh构造并验证
-  `AcceptedVariantTransportSignatureV1`，最后运行transport/ABI/package eligibility和14 registry/versioned-signature
-  artifact-eligibility preflight。preflight不生成module/artifact，Q16 commit后14只正式conversion/publication一次。SPM/DDR
-  allocator不得生成、排序或修改implementation/transfer/residency。
-  passing variant从complete current IR fresh重算06统一exact static vector，unknown/tradeoff不得伪装成收益，也不得把
-  未校准vector/scalar称为硬件时间；
-- 板端校准前严格使用`UncalibratedStaticOrderV1`：先exact Pareto，再按06固定tuple；peak取max、additive metric checked sum、
-  histogram canonical sum、immutable payload identity去重。unknown不按0；incomplete optimized candidate不能胜完整baseline，
-  baseline不完整返回baseline+`uncalibrated_incomparable`。selected结果不依赖discovery order且不存在scalar time字段；
-- static-packing capacity analysis必须把完整arena hardware feasibility与minimum-high-water objective分开验证：小图穷举
-  minimum height、empty/zero-byte、nonzero base/alignment/disconnected component/first-fit反例、trivial-zero/single-demand/
-  clique proof validator、cache stale
-  digest和interval dominance均覆盖；`ResourceExhausted`不推进bound，有validated incumbent时objective耗尽仍保留合法
-  candidate。shared query fuel按canonical work order消费，不同输入排列/线程数的selected signature稳定；7B fresh gate同时
-  报告full-capacity solve、objective query/node/cache、lower/high-water/gap和offset-derived final peak。回归必须让objective
-  选择不同于full-arena初始placement，并证明range/descriptor/address/narrowing、DTE local-offset、
-  `PlacedRankCompatibilityClaimsV1`、后续`AcceptedVariantTransportSignatureV1`和cost都从新offset/binding fresh重跑。
-  capacity-cut proof由completed typed solve加prepared digest验证，不虚构独立IIS/unsat-core object；
-- mapped transfer positive必须证明RDMA仅DDR source strided+sequential SPM destination/local offset、WDMA严格反向，
-  descriptor序列all-and-only覆盖logical relation并检查tail/canary；不能覆盖时由planner显式选择staged+GS alternative或
-  其它已注册route，selected lowering不得静默换route或使用双侧stride；
-- mapped boundary只接受destination-style load/store和显式allocation/view；两端root-relative offset包括0都必须存在，direct
-  op恒为logical identity。permutation/slice/reshape/concat先形成typed view/pieces；accepted IR无mapped-transfer替代op、
-  relation/descriptor sidecar或lowering-time route reselection；
-- function-boundary bufferization和physical-memory replanning逐rank candidate独立执行；later gate失败只过滤
-  该candidate，每个survivor从final instruction IR fresh recost，仅finalized frontier为空时rank失败。覆盖必须同时
-  包含“一个失败、另一个存活”和“全部失败”两类原子性；
-- Q29历史数字只证明当时rank-count=1/16与TP16 7B compile-only结构，Q28/Q31历史证据分别证明旧planner fixed-seed与
-  held-out multi-seed数值。Q32 cutover先用显式v1重放旧profile，再用显式v2重放rank-count=1/16与mapped/oriented通用source
-  vertical；v2的Q28 fixed seed + Q31 held-out multi-seed完整7B source→package→SystemC→PyTorch differential必须实际选择
-  新family才作为scale evidence。未被7B触发的capability用独立通用source case补，不加入Llama matcher；历史结果不能替代
-  fresh执行，也不改变admission；
-- 已退役调度surface和consumer保持清零，并由source/IR组织检查及negative tombstone防止回归。
-- Q32.B temporary `RankFrontierProducer` test seam只返回move-only unfinalized proposal modules、producer-local canonical key和
-  reserved-baseline bit；proposal不得携带`CompatibilityConstraintKeyV1`、`PlacedRankCompatibilityClaimsV1`、
-  `AcceptedVariantTransportSignatureV1`、exact cost或candidate signature。新旧producer都在seam之后
-  经过同一normalization、instruction/offset/resource/completion finalization，再形成finalized/placed/unbound rank candidate，并
-  进入同一all-rank/package/TargetCall/SystemC链；proposal-level Unsupported/ResourceExhausted/Invalid/Cancelled不伪造
-  partial candidate。
-  Q32.G后production只有新producer，legacy/test selector、estimated-time/scalar/discovery fallback和collective schedule options均由
-  source/CLI/diagnostic tombstone证明清零。
+- production直接消费Q15 verified program中的同一份rank-local structured tensor IR。每个source compute root必须实现
+  `WaferTargetImplementationOpInterface`；Wafer op直接实现，Linalg op通过Wafer dialect extension挂接external model。
+  interface只读取current operation、region、SSA、type、attribute以及Linalg、DPS、Tiling和MemoryEffect语义，并结合
+  immutable target facts返回少量typed implementation candidates。unsupported source在任何mutation前失败；
+- `IndexRelation`只是当前transformation内部的最小MLIR-backed analysis：从indexing maps、iteration domain、DPS tie、
+  tensor/view/subset op和SSA edge推导当前rewrite需要的identity、permutation、broadcast、slice、reshape或有限piece关系。
+  它不复制source scalar semantics，也不跨IR mutation持久化。小shape property tests必须逐点验证domain、image/preimage、
+  composition和exact cover；无法精确表示时拒绝对应rewrite；
+- 每个rank先构造一个走完整合法化链的baseline clone，再从source interface返回的确定顺序中构造少量alternative clones。
+  数量由compiler resource policy有界，不展开tile、encoding、residency和movement的笛卡尔积。baseline与alternative经过
+  完全相同的materialization、conversion和exact gates；同一输入在不同线程数下产生相同的候选顺序和最终选择；
+- 真正的candidate materialization必须在isolated clone上通过`PatternRewriter`、op builder和
+  `materializeSelectedImplementation`完成。成功rewrite直接改变current MLIR use-def graph，并创建typed
+  `wafer.tile.*`、Wafer-tagged memref/view、显式movement、temporary、effect和token；不能只修改报告或保存另一份计划。
+  pattern未匹配或失败时clone byte-identical，任何成功mutation后旧`IndexRelation`、alias、effect、liveness、resource和
+  cost observation立即失效，后续判断必须从current clone fresh重算；
+- selected tile IR通过MLIR `DialectConversion`和declared legality转换成complete-rank `wafer.instr.*`。
+  conversion必须显式物化instruction parameters、descriptor、temporary、async token与wait/fence；成功后没有被标为illegal的
+  source/tile op，失败时整份clone丢弃，lowering不得暗中改选implementation、layout或movement；
+- 每个clone依次重放现有exact gates：source/selected-op verifier、instruction与descriptor legality、memory/resource effect、
+  local completion、whole-rank SPM planning和range检查。完整all-rank组合随后重放whole-variant DDR planning、communication
+  binding、transport、ABI、target emission eligibility与package readback；所有判断只消费current IR和对应owner的typed
+  target facts；
+- pruning只允许strict dominance。候选A只有在与候选B具有相同可观察语义、都已通过同一组exact gates、A的每个已知
+  IR-derived static measure均不差且至少一项严格更好时，才能淘汰B。unknown、不同tradeoff或尚未执行的downstream gate一律
+  视为incomparable；不得把估计时间、发现顺序或单一内存高水位当作合法性或淘汰依据；
+- per-rank survivor只是未提交clone。coordinator只能对all-and-only logical ranks组成的完整variant执行whole-variant gates，
+  并在全部rank的instruction、SPM/DDR、completion、communication、transport和ABI都通过后一次提交
+  `ExecutableBundle`。任一late-rank或late-gate失败不发布partial rank、module、artifact或package；
+- 通用source corpus覆盖chain、diamond、fanout/fanin、shared-input contraction、reshape、transpose、broadcast、reduce、
+  residual和collective，并交叉多个dtype、整tile、tail以及允许和禁止reassociation的情况。每种声称启用的优化必须至少有
+  一个真实source触发非零`PatternRewriter` mutation，并有不适用、非法relation、late conversion和all-clones-fail negative；
+- fresh completion必须重放rank-count=1和16的source-to-bundle/package numerical cases，并从同一production入口运行冻结7B
+  source到package、SystemC和PyTorch differential。7B gate必须实际经过新的source external interface、至少一个发生真实
+  mutation的selected clone以及完整all-rank atomic path；完整输出按既有numeric contract比较。Q29/Q28/Q31历史结果只能作为
+  回归对照，不能替代本轮fresh数值执行；
+- 已退役的旁路调度表示、旧CLI选择器和旧consumer保持清零，并用source/IR组织检查及negative tombstone防止回归。
 
 Q29已完成时采用六个scope policies、每rank最多六个alternative和whole-variant最多71次exact gate；以下2026-07-16
-数字只证明该历史实现基线。它们不是联合planner的终态candidate schema、固定cap或性能目标；新增planner必须保留
-Q29纵向证据并通过上述通用/有界搜索gate后，才可替代当前迁移实现。
+数字只证明该历史实现基线。它们不是Q32 candidate schema、固定cap或性能目标；新candidate owner必须保留
+Q29纵向证据并通过上述真实rewrite/有限候选gate后，才可替代当前迁移实现。
 
 2026-07-16的rank-0 7B compile-only重放选择26条full-buffer SPM handoff；显式DDR movement由8,798,792 bytes降为
 5,100,424 bytes，其中RDMA 4,892,168、WDMA 208,256。终态包含36个tile regions；反汇编全部16个
@@ -428,65 +365,14 @@ Q29据此完成；后续Q28已从同一source/config独立执行并完成7B mana
 
 ### 6.2 Optional Rank-Local Transform Control-Plane Gate
 
-Q32.T不阻塞Q32，只验证06限定的rank-local adapter：
+Q32.T保持later，不阻塞Q32。当前没有需要rank-local Transform control plane的production或用户级consumer，因此本阶段
+不预先固定Transform op、param type、report attribute、effect组合、interpreter入口或版本化数据格式，也不把可选adapter
+作为Q32完成前置。
 
-- 三个coarse ops的ODS/parser/printer/verifier与exact singleton mapping：
-  `optimize_structured(target, StructuredOptimizationPolicyV1) -> (fresh_target, MechanismReportV1)`，
-  `materialize_physical_dataflow_candidate(target, TargetProfileId, logical_rank, RankLocalCandidateOrderV1,
-  DeterministicWorkPolicyV1) -> (fresh_target, CandidateRunReportV1)`，
-  `inspect_physical_dataflow_candidate(target) -> CandidateInspectionV1`。所有handle和param mapping cardinality均为exact one；
-- `TransformParamTypeInterface`由param SSA **type**实现，不由mapped attr实现。exact type→attr映射固定为
-  `!transform.wafer_structured_policy_v1→StructuredOptimizationPolicyV1Attr`、
-  `!transform.wafer_target_profile_v1→TargetProfileIdAttr`、
-  `!transform.wafer_logical_rank_v1→I64Attr(checked nonnegative)`、
-  `!transform.wafer_rank_local_order_v1→RankLocalCandidateOrderV1Attr`、
-  `!transform.wafer_work_policy_v1→DeterministicWorkPolicyV1Attr`、
-  `!transform.wafer_mechanism_report_v1→MechanismReportV1Attr`、
-  `!transform.wafer_candidate_run_report_v1→CandidateRunReportV1Attr`和
-  `!transform.wafer_candidate_inspection_v1→CandidateInspectionV1Attr`；每次mapping验证exact attr class/version/schema，
-  generic dictionary/string/fallback均拒绝。profile固定构造06的`CompilerEmission + CompilerEmittable` context；budget
-  每字段一对一映射`RankPlanningRequest::deterministic_work_policy`，禁止extension私有default/schema或model/board
-  context param；
-- `StructuredOptimizationPolicyV1`只携带显式、sorted unique的rank-local rewrite key；unknown、duplicate或不适用于当前
-  IR cut的key在mutation前拒绝，不绑定production policy文件或外部归档；
-- `MechanismReportV1`对每个实际调用key保存all-and-only outcome，覆盖missing/duplicate/extra outcome及checked
-  count/rewrite不一致negative；candidate report覆盖
-  `Completed | OptimizationBudgetFallback | UncalibratedIncomparable`，后两者都必须选择reserved baseline；
-- candidate op调用共享rank-frontier producer/materializer、全部payload可重算的per-rank exact gates与
-  `RankLocalCandidateOrderV1`；依赖frontend binding的gate保持unverified，不伪造输入。它不调用all-rank coordinator、不消费
-  frontend binding/program metadata，也不与production winner比较。`CandidateRunReportV1`与
-  `CandidateInspectionV1`均固定`RankLocalVerificationScopeV1=PlacedRankUnbound`，并携带从current placed-unbound IR
-  fresh构造的`RankLocalPlacedPayloadSignatureV1`和`RankLocalStaticMetricEvidenceV1`；placed claims只在signature内嵌一次，
-  run report与inspection都不得另带第二份claims bytes，并都从signature内的typed claims重新验证。它们不得使用
-  `AcceptedVariantTransportSignatureV1`或production final candidate signature/vector，并都必须显式标记
-  `all_rank_and_binding_unverified`和`model_and_board_qualification_unverified`；
-- rank-local metric的`Known | Unknown | Unavailable`及optional value/reason presence必须严格验证。SPM placed high-water
-  可从当前IR重算；run report和inspection都必须有显式`whole_variant_ddr_high_water_bytes:
-  RankLocalScopedScalarEvidenceV1`，并固定为`Unavailable(AllRankDDRPlanningNotRun)`。transport binding和model/board qualification
-  不是metric component，分别使用06的typed `RankLocalVerificationDispositionV1=Unverified`字段；任何一项都不得用0或rank-local
-  heuristic伪装。immutable payload保留identity/bytes set而不在rank-local压成标量。run report
-  另保存本次library invocation的work summary、budget stop和packing status/lower/upper/gap；inspect只能输出
-  fresh IR-derived evidence，不能恢复search telemetry；
-- cut verifier只读payload：`optimize_structured`只接受singleton rank-local、post-legalization/pre-physical-planning
-  `StructuredTensorModule`，无physical memref、tile/instr、offset或binding；`materialize`input还必须通过当前structured IR verifier、
-  携带exact topology/mesh且logical rank属于mesh，output必须是finalized、SPM-placed但unbound的rank instruction
-  payload，并通过payload可重算的instruction/descriptor/SPM/local-completion/range gates；`inspect`只接受该
-  `PlacedRankUnbound` cut，不得补写whole-variant DDR或binding事实；
-- mutating op consume-old/produce-new，expensive invalidation check能拒绝use-after-consume；inspect不消费handle且report与独立
-  fresh analysis一致。effect实现固定使用Transform interface helpers：两个mutating op对target
-  `consumesHandle + modifiesPayload`、对policy/profile/rank/budget param只read、对fresh handle/report `producesHandle`；inspect对
-  target `onlyReadsHandle`、只产生inspection param且无payload write；
-- empty/multi-target、wrong cut、owner typed unsupported或无合法rank-local candidate在mutation前返回silenceable failure；
-  invalid IR/profile/policy/topology/rank、registry contract、internal invariant和baseline `ResourceExhausted`返回definite failure。
-  optimized budget耗尽且baseline已通过则success返回baseline/report；driver cancellation definite abort且无result
-  mapping。所有失败必须证明transaction clone未提交且payload byte-identical；
-- 与upstream Linalg/Tensor/SCF Transform ops组合后重新通过当前structured IR verifier与per-rank exact gates；
-- Transform dialect op/attr/param、script和solver state均不进入accepted module、ExecutableBundle、target artifact或package；
-- `WaferTransformDialectExtension`只依赖MLIR Transform dialect/interfaces及WaferTransforms/Target libraries，声明可能创建的
-  Wafer（含DTE）、func、linalg、tensor、scf、memref、bufferization、async、arith与math payload dialect；在只注册
-  Transform core + Wafer extension的fresh context中必须能解析并应用含async token、bufferization adapter和DTE candidate的
-  sequence。interpreter pass只由`wafer-opt`另行链接/注册；`wafer-opt`做多线程确定性测试，
-  `wafer-compile`无Transform IR入口。
+只有出现明确consumer后才开始设计Q32.T，并先补齐独立Pipeline Contract：consumer提供什么payload cut、Transform op负责哪项
+可观察mutation、产出由谁继续消费、哪些all-rank事实仍不可在rank-local声明，以及怎样重放`6.1`同一
+`PatternRewriter`、`DialectConversion`、fresh analysis和exact gates。未来adapter只能调用production transformation library，
+不能形成第二套planner或accepted artifact；Transform state也不得进入`ExecutableBundle`、target artifact或package。
 
 ## 7. Q17 Baseline And Q16.T Direct DTE Activation Gates
 
@@ -538,7 +424,8 @@ Q32.T不阻塞Q32，只验证06限定的rank-local adapter：
 
 ### 8.1 Typed Manifest
 
-当前Q18 schema-v3 gate保持已完成；Q32 cutover新增closed schema-v4并迁移v1/v2 production output，v3不被静默补set：
+当前Q18 schema-v3 gate保持已完成。Q32核心cutover不改变package schema。若later Q32.V/Q3.6引入新的closed package revision，必须在
+独立target/package任务中增加以下gate，不能给v3静默补set：
 
 - canonical serialize/parse byte-identical；
 - unknown/deprecated field、wrong schema version、bad numeric/path/limits；
@@ -549,11 +436,10 @@ Q32.T不阻塞Q32，只验证06限定的rank-local adapter：
 - missing/extra payload和digest mismatch；
 - completion missing、rank mismatch或unsupported terminal；
 - production JSON含`instructions`直接拒绝。
-- schema-v4 `required_capabilities` canonical sorted unique keys及digest必须与Q16 bundle、Q17 owner-backed
-  `TargetLLVMModule`/`TargetArtifactBundle`的rank-local typed keys+digest、LLVM metadata readback digest及global union all-and-only一致；
-  missing/extra/reordered-uncanonical/tampered key、wrong digest、late-rank union mismatch均
-  在publication前失败。key与digest按tasks/14 versioned length-delimited canonical encoding/SHA-256重算；key只表达最终
-  TargetCall/ABI可观察的去重capability requirement，不得包含planner choice或command address/order/multiplicity。
+- 若later Q32.V的真实consumer确需`required_capabilities`，当批冻结的typed keys/encoding必须与Q16 winner、Q17
+  owner-backed module/artifact和package readback all-and-only一致；missing/extra/noncanonical/tampered或late-rank union
+  mismatch在publication前失败。当前不预设schema编号、digest算法、key数量或wire encoding；requirement只能表达最终
+  TargetCall/ABI可观察事实，不得包含planner choice或command address/order/multiplicity。
 
 Python wrapper和C++必须走同一verifier；不能再有不同acceptance。
 
@@ -561,19 +447,22 @@ Python wrapper和C++必须走同一verifier；不能再有不同acceptance。
 
 - entry selection和invocation binding all-and-only；
 - module/resource/completion resolution确定性；
-- insufficient capability在任何side effect前失败；
-- model provider以显式`ModelProfileId`逐required key验证`compiler-emittable && modelQualified(key, ModelProfileId)`；
-  v3 package的每个non-Count key必须命中fresh `(v3 key, ModelProfileId)` observation，v2 row或只有
-  profile/ABI外字段等价proof均不能继承model qualification；
-  board provider逐key匹配environment-owned
-  board-supported allowlist。只匹配profile、漏key或用model row冒充board row均失败；
+- schema-v3 target profile、runtime ABI、transport requirement和environment compatibility在任何side effect前精确匹配；
 - repeated preflight相同输入产生相同plan；
 - metadata buffer释放后verified typed value仍可安全使用；
 - no-card输出明确标记未执行board。
 
+current no-card不读取`RequiredCapabilitySet`，也不做model/board qualification。若later Q32.V引入capability-bearing package
+projection，其结构和package readback由8.1验证，真正的model/board逐项admission只属于下节provider gate。
+
 ### 8.3 Deferred Provider Gate
 
 以下验证不属于Q18 no-card完成条件；恢复provider/board任务时必须实际执行，而不能用打印trace替代：
+
+若later Q32.V provider执行扩展TargetCall，它必须在任何effect前消费同版本`RequiredCapabilitySet`：model provider以
+显式`ModelProfileId`逐key验证compiler-emittable和model admission，board provider逐key匹配environment-owned
+board-supported allowlist。只匹配profile、漏key、跨版本继承或用model row冒充board row均失败；该结果只决定对应
+execution consumer是否执行已经选定的程序，不返回compiler planner。
 
 实际记录并执行：
 
@@ -816,75 +705,25 @@ Q22.H只消费Q22.L，不以Q22.N、Q22.B、SystemC或vendor授权为前置：
 failure无partial host result；component-only fixture、RISC-V archive、include-only target或SystemC component不能替代。
 该gate不声明repo CRT、Tsm packet、worker字段、vendor-exact、RISC-V ELF、numeric或SystemC event正确性。
 
-#### Q3.6 Count writeback mechanical / semantic gates
+#### Later Q3.6：Count writeback gate
 
-Count分两层验收，不能用机械可发射冒充数值支持：
+Count不属于current Q32/Q22/Q18完成面。恢复Q3.6时，验证只围绕真实typed纵向建立：
 
-1. **typed writeback/ABI gate（内部可闭合）**：`wafer.instr.peripheral<count>`只接受1 source + 1 dest。source
-   必须是static compact-contiguous Tensor SPM view，logical element product精确等于closed
-   `positive_u32=[1, UINT32_MAX]`的`elem_count`，physical span由14 format registry checked派生为
-   `elem_count * storage_bytes(format)`；Cx/NCx、strided/holey/padding-bearing/dynamic view、算术溢出或无法证明的
-   subview在effect前拒绝。dest必须是single-element compact Tensor i32 SPM view，但target result contract是独立
-   `WritebackRawU32V1{storage_bytes=4, alignment=4, LittleEndian, BitPreservingLow32}`，不是
-   `LogicalFormat::U32`，不建立CT×U32 engine row。source exact byte range与dest raw4 range必须完整落在当前rank
-   SPM binding内且proven-disjoint；exact/
-   partial overlap和unknown alias一律pre-effect reject，source必须满足format natural alignment、dest必须4-byte aligned，
-   不以Read/Write排序放宽。
+- `wafer.instr.peripheral<count>`明确1 source + 1 single-element i32 destination，source为static compact view；
+- checked element/byte count、format alignment、destination 4-byte alignment、range和proven-disjoint在target effect前闭合；
+- Instr effect与TargetCall精确表达synchronous writeback，consumer/lifetime不能跨越未完成的local
+  compute/movement；late failure无partial destination write；
+- target conversion、CRT/header/source/symbol/decoder和same-lowering model fixture使用同一typed signature；具体ABI
+  revision、symbol和字段顺序只在实际wrapper/consumer确认后冻结；
+- mechanical fixture覆盖raw u32 little-endian区分向量、canary、misalignment、overlap、range和atomic failure，但不冒充
+  Count predicate或numeric evidence；
+- source admission必须有明确source IR语义、closed format规则、独立golden和实际model kernel；board仍需独立环境证据；
+- 不预先建设独立的versioned completion、capability、qualification或package协议。若真实跨进程consumer以后需要
+  capability projection，按Q32.V单独设计并readback；
+- model/board admission只决定执行consumer是否运行已选程序，永不进入Q32 candidate生成、过滤或排序。
 
-   Count当前只有I8/F16/BF16/F32 source row可进入v3 `compiler_emittable`机械gate，BOOL/I16/I32/TF32、
-   unsigned与64-bit format保持typed not-emittable直到Count专属format证据闭合。target-call/capability registry把
-   Count标记为`PeripheralCompletionClassV1=SynchronousWriteback`：CRT按
-   execute/poll/wait后将`wb_data0` low32逐byte little-endian写回，wrapper返回前dest visible；Sync与typed local
-   Compute/Movement coverage阻止相关local issue跨越，但不完成Direct DTE或全局串行无关resource。terminal fence
-   可保守保留但不替代Count自身的synchronous completion。
-   14的`TargetCallFamilyRevisionV1.execution_contract_digest`必须匹配该typed completion/effect/visibility合同；
-   signature digest不变但execution digest缺失/篡改、QueueIssued↔SynchronousWriteback漂移或family revision未提升均在
-   capability projection/model import/effect前失败。
-
-   v3必须闭合exact `2 x i64 + 7 x i32` call、sentinel/kind decode、110-row per-profile surface、111-symbol
-   union registry/header/source/checker/device-link，以及schema-v4 rank-count=1/16的profile/ABI/module、rank-local/global
-   required-capability set/digest readback和v1/v2 Count、mixed v2/v3拒绝。因v3 profile/ABI进入capability key，所有
-   v3 non-Count `compiler_emittable` row都必须逐row fresh证明；model provider还必须按
-   `(v3 key, explicit ModelProfileId)` fresh重放并签发observation，不得继承v2 bool。missing v3
-   `compiler_emittable` row在call/module emission前fail closed；missing v3 model observation在model memory import/effect前
-   fail closed，board row仍完全独立。
-
-   17未注册的`RawWritebackMechanicalTestAdapter`必须从complete v3 instruction→TargetCall→
-   `TargetPeripheralCountTransactionV1`注入opaque u32，并在同一SystemC event core验证
-   `0x00000000→00 00 00 00`、`0x01234567→67 45 23 01`、`0x80000000→00 00 00 80`和
-   `0xffffffff→ff ff ff ff`四个区分向量，每例检查前后canary、exact-end、misalignment/range/overlap/
-   late-failure无partial write及consumer read-after-completion。adapter不得创建`ModelProfileId`、numeric qualification、
-   production fallback或source/model output。
-
-   repo CRT的`wafer_arg_writeback`和conformance checker已闭合ArgMax/ArgMin的内部审计：两者都在
-   `TsmWaitfinish`后才写value/index。因此Count、ArgMax、ArgMin均由target-call/capability registry的typed
-   `PeripheralCompletionClassV1=SynchronousWriteback`驱动completion/effect/path gate，并验证11拥有的
-   `SynchronousWritebackCompletionV1` exact property：`LocalWorkerDrain`、typed ordered local engine set和
-   `VisibleBeforeWrapperReturn`；缺字段/unknown enum/property-effect mismatch均在target effect前拒绝，禁止按
-   op/symbol名匹配。
-   当前profile的engine set恰好为`{Compute, Movement}`；duplicate/noncanonical、SPM/DDR/Communication/Sync
-   或unknown resource均拒绝。gate必须向`Sync`及这两类local engine resources投影，并在Q3.6同批修复现有
-   `wafer.instr.peripheral` standard/detailed effect缺口。三者result contract保持独立：Count是raw little-endian u32，
-   ArgMax/ArgMin是typed value + i32 index。registry all-and-only enumeration、missing/wrong completion class、effect projection与
-   path ordering均要有正反例；completion class不得外推predicate、numeric semantics或其它capability。
-
-2. **Count semantic evidence gate（容器内部闭合，内容依赖外部证据）**：17唯一定义
-   `CountSemanticProfileV1`、`CountSemanticQualificationRecordV1`、canonical codec/digest、external artifact refs和
-   `Absent | Rejected | Qualified`条件。verification必须覆盖malformed/unknown enum、noncanonical set/Optional、profile/
-   record revision就地漂移、unresolved/wrong-kind ref、profile/result-store/format/key mismatch、duplicate active record、
-   authority-registry revision/digest或all-and-only artifact row mismatch、digest tamper和registry partial-publication拒绝。qualification
-   必须内嵌typed `Record(TargetCapabilityRowKeyV1)`并由14 parser fresh重编码，不接受opaque key bytes。
-   `rejection_reason` Optional的inner tag必须是closed enum；`Qualified`必须rejection reason absent，`Rejected`必须present；
-   无record严格是`Absent`，不从bool/default/`Pending`恢复。
-
-   owner-approved ISA/source/golden或受控wrapper语料仍必须定义exact predicate、closed format rows、`±0`、NaN/Inf、
-   integer extrema、BOOL和最大长度expected；formal/SystemC逐case与independent CPU oracle一致并形成exact-key
-   `Qualified`记录后，才能把对应row设为model-qualified。source/provider选择还要求source semantic显式映射到
-   profile的predicate-definition digest。缺少qualification evidence时record必须absent；如果predicate/format definition已取得，
-   profile可以present但仍不产生admission。transaction在effect前以typed unsupported拒绝；`Rejected`同样不得执行，
-   board-supported仍由独立board gate决定。
-
-机械gate完成不修改Count的unknown numeric meaning，也不允许从`count_nonzero`符号线索、opcode名字或u32 writeback猜语义。
+在上述事实缺失时，Count在source、target model和board effect前保持typed reject；opcode、wrapper或raw writeback线索
+不能恢复其predicate。ArgMax/ArgMin的wait-before-store事实只可复用为同步effect实现证据，不能外推Count语义。
 
 ### 11.5 Q22.S SystemC Functional-Event Gate
 
@@ -1021,10 +860,10 @@ activation、attention和MLP shape必须保持7B尺寸；`num_hidden_layers=32`�
   full blocks及`C0` tail property覆盖。batch=2且channel block为128的
   compiler→tile/instruction→target-call→CModel数值回归必须区分两个batch和两个64-channel block；仅有batch=1 tiny
   case或分别测试Cx/NCx codec不能证明该合同；
-- 目标v2 oriented GEMM另以NN/NT/TN/TT参数化矩阵覆盖compiler→Instr→TargetCall→CRT conformance/CModel；每种组合
-  使用非方阵、非对称payload和stored-shape negative区分真实orientation。只有tasks/14 versioned ABI已闭合且对应
-  NumericCommandKey、formal/managed bulk model资格闭合后，才能进入model-qualified 7B planner candidate；
-  board-supported profile仍需独立board capability row。v1 Q28通过不能替代任一orientation gate；
+- later versioned oriented GEMM另以NN/NT/TN/TT参数化矩阵覆盖compiler→Instr→TargetCall→CRT conformance/CModel；每种组合
+  使用非方阵、非对称payload和stored-shape negative区分真实orientation。tasks/14 versioned typed IR/ABI legality闭合后，
+  compiler才可生成并选择相应candidate；NumericCommandKey、formal/managed bulk model资格和独立board row只决定对应
+  CModel/board consumer能否执行已经选定的程序，不参与candidate生成、过滤或排序。v1 Q28通过不能替代任一orientation gate；
 - F16/BF16 GEMM输入进入oneDNN F32 descriptor前采用位级无损widening，并以F16/BF16/F32 bulk资格回归保护；不能让
   大weight payload重新进入逐元素APFloat对象路径。当前SEQ oneDNN的慢测耗时只作功能基线，不构成性能完成；未来
   threaded artifact必须重做managed dependency identity、worker环境和完整数值gate；
@@ -1091,8 +930,9 @@ policy由本节和tasks/17共同拥有。
 ### 11.7 Q22.C Board Numeric Correlation Gate
 
 Q22.C在Q22、Q32和Q6.B完成且配置board numeric corpus后执行，不要求PMU、packet capture或exact-module provider。
-Q32先冻结schema-v4 all-and-only `RequiredCapabilitySet`；Q22.C必须用该同一v4 package/profile在board上fresh重放Q6.B
-lifecycle，并在任何effect前逐key匹配environment allowlist，不能复用只执行过历史v3 package的Q6.B结果。Q6.B再证明
+Q22.C必须使用Q32 completion audit冻结的同一verified package/profile在board上fresh重放Q6.B lifecycle，不能复用另一份
+历史package的结果。若later Q32.V提供winner-derived required-capability set，还必须在任何effect前逐key匹配environment
+allowlist。Q6.B再证明
 provider lifecycle、watchdog/reset、trusted completion、完整copyback和重复invocation；无效sample不能进入numeric profile。
 
 - 同一op/dtype/accumulator/rounding/optional-field row运行预先设计的rounding tie、NaN/Inf/signed-zero、subnormal、
@@ -1117,8 +957,8 @@ vendor builder若可得，只作为额外packet/MMIO provenance；缺失不阻�
 
 ### 11.8 Q22.E Exact-Module Provider Gate
 
-只有Q32 integrated audit冻结的fresh schema-v4 Q18 verified package identity中的exact all-and-only RISC-V ELF，
-经vendor simulator或RV64 ISS原样执行，才满足此gate；Q22.V schema-v3和Q0.L前package只作历史证据，不能冒充：
+只有Q32 integrated audit冻结的fresh Q18 verified package identity中的exact all-and-only RISC-V ELF，
+经vendor simulator或RV64 ISS原样执行，才满足此gate；Q22.V历史package和Q0.L前package不能冒充：
 
 - package semantic verification、typed invocation和environment compatibility先于任何provider side effect；
 - allocation/import、H2D、module load/entry resolve、all-rank submit、wait/status、D2H、cleanup均实际执行；
@@ -1155,16 +995,15 @@ configured board suite只消费Q0.L完成后fresh replay形成的Gate C同一ver
 - copyback和完整输出CPU comparison；
 - cleanup和重复invocation。
 
-联合planner新能力在进入真实workload前先跑隔离资格：mapped RDMA/WDMA分别覆盖两端零/非零root offset、多descriptor、
+later Q32.V target-capability新能力在进入真实workload前先跑隔离验证：mapped RDMA/WDMA分别覆盖两端零/非零root offset、多descriptor、
 full/C0 tail、pre/post canary、exact bytes和非法双侧stride；oriented GEMM按NN/NT/TN/TT逐tuple使用非方阵、非对称
 payload比较CPU oracle并记录raw input/output/status、target/CRT/ABI revision和device identity。representation/lowering gate
 通过只允许model/experimental profile发射；board profile只有对应tuple通过校准与held-out后才标supported。任何timing/PMU
 结果只用于后续cost calibration，不参与这些semantic/legality gate。
 
 board不可用、test unsupported/skipped或只到symbol discovery时，Q6.B保持later/blocked。任何no-card、reference、
-fake provider或target model结果都不能改变该状态。Q6.B只证明board execution；Q22.C再消费Q6.B、Q22和Q32 schema-v4
-required-set结果做model/board
-numeric correlation，不能反向替代Q6.B。
+fake provider或target model结果都不能改变该状态。Q6.B只证明board execution；Q22.C再消费Q6.B、Q22和Q32 verified
+package结果做model/board numeric correlation；若Q32.V已完成，还须消费其required-set结果。两者都不能反向替代Q6.B。
 
 ## 13. CI And Reproducibility
 

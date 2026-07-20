@@ -1,14 +1,13 @@
 # Wafer SPM Memory Planning Design
 
-状态：2026-07-18在已完成Q29 whole-rank task/dataflow实现上同步联合physical-dataflow planner终态，并补齐Q32.S消费的
-static-packing capacity analysis合同。本合同覆盖instruction IR上的SPM
+状态：2026-07-20同步MLIR-native physical-dataflow candidate边界。本合同覆盖instruction IR上的SPM
 lifetime/range planning；async issue的全部read/write resource必须活到可信completion。当前实现对同一
 rank function中的non-nested sibling `wafer.tile.region`建立统一timeline/demand set并联合packing；每个region
 仍独立执行terminal completion proof。nested/async/parallel scope和缺少arena/resource summary的调用保持
 fail closed。实现状态以`tasks/progress.md`为准。accepted fact 为
 offset-only `wafer.spm.offset`，size / bank span / alignment 由 memref type、layout 和 target policy 重算。
-当前coordinator仍产生spill baseline与deterministic maximal full-buffer-resident两类alternative；它是已实现搜索策略，
-不是allocator输入协议。终态allocator对联合planner提交的任意有界、完整候选使用同一exact gate。
+当前coordinator仍产生spill baseline与deterministic maximal full-buffer-resident两类alternative；它是已实现迁移策略，
+不是allocator输入协议。allocator对candidate generator提交的每个完整clone使用同一exact gate。
 
 本文定义Wafer SPM bufferization、rank-local allocation和storage verification。它服务于whole-rank
 task/dataflow candidate的合法性搜索，并在完整static rank entry上统一验证所有`wafer.tile.region`、
@@ -27,8 +26,7 @@ Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op
 - 对 instruction-level IR 做 SPM memory planning、range/end-address/alignment/bank-span verification 和 failure
   feedback。
 - SPM owner从current IR构造`StaticPackingProblem`并消费shared `MemoryPlanning` owner-private library提供的
-  fixed-capacity query、validated placement和bounded capacity analysis；06决定哪些完整候选获得optimization budget以及
-  如何使用bound，09只负责SPM evaluate/range gate/atomic offset apply，不据此自行改写候选。
+  fixed-capacity query和validated placement；09只负责SPM evaluate/range gate/atomic offset apply，不据此自行改写或排序候选。
 - 为Q16 commit前的typed rank-record validation提供accepted offset fact；range/lifetime/alias在candidate IR中
   重算并参与typed C++ bundle materialization，不作为独立attr。post-commit target/package/runtime不从SPM IR重新
   恢复resource semantics。
@@ -66,19 +64,18 @@ Pipeline position:
 - Upstream artifact / IR:
   whole-variant evaluation clone 中所有 static rank entries 的完整 instruction-level
   `wafer.instr.*` structured program，已经完成 candidate DDR tile-view materialization 和 instruction
-  legalization；全部selected task fragments已进入完整rank clone并完成candidate-local proof-preserving mechanisms，相关
+  legalization；全部selected task fragments已进入完整rank clone并完成candidate-local rewrite，相关
   alias/effect/lifetime analysis已从改写后的当前IR失效重算。SPM planner
-  每次只接收联合planner已经显式物化的一份完整whole-rank candidate；candidate可以来自当前spill/resident基线，也可以
-  来自终态bounded implementation/physical-version/transfer/residency frontier。task/region/loop间的SPM value和event已由显式SSA/control-flow连接，包含actual DDR
+  每次只接收candidate generator已经显式物化的一份完整whole-rank clone；candidate可以来自当前spill/resident基线，也可以
+  来自MLIR-native rewrite产生的少量implementation/physical-version/transfer/residency alternative。task/region/loop间的SPM value和event已由显式SSA/control-flow连接，包含actual DDR
   tile views、unplaced `memref<..., #wafer.memory<spm, layout>>` values，以及selected physical encodings、
   explicit materialization、effect/order 和 target SPM policy。
 - Current stage responsibility:
   在每个complete rank entry上对`#wafer.memory<spm, layout>` memref做SPM memory planning，
   计算 offset/end/bank span、alignment、lifetime/reuse、must-alias/must-not-alias、reserved range
   和 range-end verification；用显式generic async wait、DTE exact token/wait、local fence和terminal drain证明
-  该rank所有issue completion，并在variant-set gate汇总所有rank的通过结果。对完整candidate先运行硬件arena
-  fixed-capacity legality；当06为selection-sensitive candidate请求capacity objective时，调用shared capacity API返回
-  validated incumbent及最小high-water上下界。每个candidate clone独立规划、
+  该rank所有issue completion，并在variant-set gate汇总所有rank的通过结果。对完整candidate运行硬件arena
+  fixed-capacity legality并返回validated placement和实际high-water。每个candidate clone独立规划、
   独立失败，任何候选的offset、alias或completion fact都不能成为其它候选的输入或fallback事实。
 - Output artifact / IR:
   仅存在于 complete passing variant clone 中的 same instruction-level IR with offset-only
@@ -86,8 +83,8 @@ Pipeline position:
   Q16 commit前从该fact、memref use-def、arena/endpoint facts和view relation直接重算并补全resource range，
   验证后写入typed C++ `RankExecutable` record。target LLVM只从committed instruction IR和该record中
   IR-derived entry/resource facts派生ABI address-range参数；package和
-  runtime只消费committed executable/manifest，不直接读raw offset facts。candidate-local lower/upper/gap/proof/
-  query effort只作为可重算analysis返回06，不写IR。本层不新增placed
+  runtime只消费committed executable/manifest，不直接读raw offset facts。solver work和debug统计只作为
+  invocation-local diagnostic，不写IR。本层不新增placed
   memref或影子descriptor中间层。
 - Downstream consumer:
   whole-entry DDR memory planning、physical transport acceptance、all-rank transport verification和closed-loop
@@ -100,7 +97,7 @@ Pipeline position:
   Q16以后由同一
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=<registered-id>`
   的whole-variant
-  candidate loop调用本stage；当前baseline显式选择closed v1，Q32 v2无默认转换。Q15只产出verified structured tensor program directory，不执行SPM planning；
+  candidate loop调用本stage；Q15只产出verified structured tensor program directory，不执行SPM planning；
   `wafer-opt`和`wafer-plan-spm-memory`只处理显式IR，用于instruction-level replay/lit/debug，不能成为
   用户stop-stage，也不能把full-shape initial candidate或单task结果直接提交；不提供从已退役调度边界直达
   memory-planned instruction的compatibility pipeline。
@@ -111,16 +108,15 @@ Pipeline position:
   full-shape initial candidate与其它tiled candidates运行同一whole-rank planning和whole-variant gate，不设bypass；
   不依据presumed rank equivalence复用或跳过任何rank plan；allocator不决定哪些handoff应resident，不生成
   implementation/transfer/physical-version/per-edge frontier，也不把某个unsafe consumer拆成partial promotion；
-  不把minimum-height objective耗尽当作capacity failure，不生成IIS，不让capacity probe、单独pressure witness或solver
-  trace成为accepted attr/side table。
+  不实现minimum-height candidate objective，不生成IIS，不让solver trace或pressure witness成为accepted attr/side table。
 - Completion gate:
   对每个合法complete rank program给出 deterministic memory plan；planned storage的size、alignment、
   range/end、lifetime和alias relation能由rank-local IR/effect/verifier重算；generic `async.call`
   token/value由identity-preserving handle flow上的`async.await`或direct group的`async.await_all`收口，DTE由
   exact token/`wafer.instr.dte_wait`收口，本地issue由local fence收口，且每条rank function exit没有pending event。
   safe pre-existing loop recurrence可规划，loop-body allocation/task的动态实例或无法证明的async handle flow结构化拒绝。
-  capacity analysis在已知最优、alignment hole、disconnected component、empty/zero-byte和first-fit反例上给出可复验
-  lower/upper；objective budget耗尽保留validated incumbent和bounded gap，不改变硬件arena legality。
+  fixed-capacity solver在alignment hole、disconnected component、empty/zero-byte和first-fit反例上保持三态结果与独立
+  placement validator；resource exhaustion只按Q34既有安全fallback合同处理，不改写成capacity事实。
   任一task/rank失败都使该candidate所属的
   整个 variant clone 不可提交。即使 distributed 层认为 ranks 等价，也必须验证每个 static rank entry
   中的全部 region。
@@ -130,9 +126,9 @@ Pipeline position:
 
 SPM与DDR可以共享的不是arena或resource语义，而是从当前structured IR重算的analysis mechanics：path condition、
 operation timeline、query-time provenance closure、live segment overlap、generic async completion identity、local
-issue/fence completion，以及由精确pairwise conflict relation驱动的static packing和bounded capacity analysis。
-fixed-capacity solve、placement validator与capacity objective controller均只消费owner-independent typed problem；两侧
-owner仍分别决定arena/resource语义和offset commit，06拥有shortlist、budget分配和candidate选择。compiler-managed allocation由
+issue/fence completion，以及由精确pairwise conflict relation驱动的static packing。
+fixed-capacity solve和placement validator只消费owner-independent typed problem；两侧owner仍分别决定arena/resource语义和
+offset commit。compiler-managed allocation由
 `RootRef`指向packing demand；caller-owned/external memref由path-qualified `ValueOriginRef`表达，两者都与
 `async.call`等producer创建的task identity分离。`rootsAt`/`originsAt`在查询点沿`ViewLikeOpInterface`、
 `SelectLikeOpInterface`、`scf.if` yield和`scf.for` init/iter-arg/backedge/result递归闭包，因而loop body中较早
@@ -184,9 +180,9 @@ live segment，不靠symbol名字判断callee行为，也不形成跨过程summa
   non-nested sibling `wafer.tile.region`共享一个physical allocation scope，显式SSA boundary value参与统一
   lifetime/packing，rejected clone 必须整体丢弃。
   SPM memory planning 不直接消费
-  target-abstract tile-region IR，而消费 R3.2d 生成的 instruction-level IR with unplaced
+  target-abstract tile-region IR，而消费instruction legalization生成的instruction-level IR with unplaced
   Wafer-tagged memref values。
-- 联合planner在该candidate中显式物化的implementation、physical version、transfer、residency、layout和movement demand。
+- candidate rewrite在该clone中显式物化的implementation、physical version、transfer、residency、layout和movement demand。
 - instruction legalization / selection 产生的 concrete memref value、operand/result/temp/workspace/
   accumulator/psum/staging 分类、instruction family、effect event 和 async policy。
 - `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
@@ -245,7 +241,7 @@ V0 `kind`：
 - communication staging buffer。
 - host-visible writeback staging。
 
-### 4.1 Instruction Storage Providers
+### 4.1 从 Instruction IR 派生 Storage Demand
 
 SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op 当成一条硬件指令。demand
 来源应是 instruction legalization / selection 后的明确 Wafer-tagged memref graph：
@@ -266,10 +262,9 @@ SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op �
 
 如果某个 target-abstract op 无法产出可验证 instruction-level IR，不能让 SPM memory planning 用名字或示例
 shape 猜测；应先扩 op interface / instruction IR，或保持在更高层 IR。
-如果当前只有candidate-local tensor analysis summary，而没有R3.2c
-`wafer.tile.region` IR，SPM memory planning 不能直接运行；如果只有 R3.2c target-abstract
-tile-region IR 而没有 R3.2e candidate DDR tile views 和 R3.2d instruction-level IR，SPM memory planning
-同样不能运行。必须先把 tile load/store 的 DDR operand 降成真实 `memref.subview` view，再降到
+如果当前只有candidate-local tensor analysis summary而没有`wafer.tile.region` IR，SPM memory planning不能直接运行；
+如果只有target-abstract tile-region IR而没有candidate DDR tile views和instruction-level IR，同样不能运行。必须先把
+tile load/store的DDR operand降成真实`memref.subview` view，再降到
 `wafer.instr.*` / Wafer-tagged memref，让 buffer values、lifetime、effect 和 DMA descriptor
 都可由 IR 结构重算。
 
@@ -352,32 +347,18 @@ selected instruction lowering下，对全部task/region的`#wafer.memory<spm, *>
 
 ```text
 SPMOffsetResult {
-  hardware_feasibility
-  capacity_objective: NotRun | ProvenOptimal | Bounded
-  lower_bound_bytes?
-  high_water_bytes?
-  best_validated_placements?  // current call demand indices
-  lower_bound_proof?          // tagged trivial-zero / single demand / conflict clique / proven-infeasible cut
-  optimality_gap_bytes?
-  work_summary
+  status: Feasible | ProvenInfeasible | ResourceExhausted
+  validated_placement?        // present only for Feasible
+  actual_high_water_bytes?    // recomputed from validated placement
   failure_reason?
 }
 ```
 
-该结构是owner-private conceptual result，不新增IR type。`hardware_feasibility`只由完整硬件arena的fixed-capacity gate决定；
-`capacity_objective`只描述同一合法candidate的放置质量。合法组合与06一致：invalid时全部capacity facts为空；full-arena
-infeasible或无incumbent的resource exhaustion只能`NotRun`且无upper/placement；`Feasible + NotRun`必须有validated
-incumbent/upper；`Feasible + Bounded`还必须有lower、gap和stop reason且`gap = upper - lower >= 0`；
-`Feasible + ProvenOptimal`必须`lower == upper`且gap为0。`high_water_bytes`从best placement的
-`max(offset + size) - arena.begin`重算，不能信任未验证的solver summary。
-
-任何存在的lower都必须与同一tagged proof的bound一致。`lower_bound_proof`是唯一proof事实：`TrivialZero`支持empty/nonnegative
-下界；single-demand alignment和validated conflict clique直接带自己的bound及stable demand
-identity，可投影为pressure view；一般`ProvenInfeasible`只形成不带demand集合的capacity-cut proof。allocator不另存一份可能与
-proof失配的witness，也不返回`shrink tile`、`change residency`等repair action，06从proof的可选pressure view和当前candidate
-domain决定是否探索已有typed mechanism。empty-demand与zero-byte不同：empty problem在legality-only时为
-`Feasible + NotRun, upper=0`；请求objective时为`Feasible + ProvenOptimal, lower=upper=gap=0`、`TrivialZero` proof、empty
-placement、零追加query。
+该结构是owner-private conceptual result，不新增IR type或跨pass artifact。`Feasible`必须携带覆盖全部demand且通过独立
+validator的placement；`actual_high_water_bytes`只能从该placement的`max(offset + size) - arena.begin`重算。
+`ProvenInfeasible`只表示fixed-capacity搜索在预算内完成并证明当前arena无解；`ResourceExhausted`只表示搜索资源不足，
+不能伪装成容量失败。allocator不返回lower bound、optimality gap、pressure witness、repair action或candidate建议。
+empty demand返回`Feasible`、empty placement和high-water 0。
 
 V0 event model：
 
@@ -495,176 +476,71 @@ Interval {
 - 检查 wrapper begin/end range。
 - 检查 bool bitpack、stride byte count、Cx/NCx padding。
 
-9. 只返回typed result；search trace、work count、conflict encoding和fallback状态都是可重算telemetry，不写IR。
+9. 只返回typed result；search trace、work count、conflict encoding和fallback状态都是invocation-local diagnostic，不写IR。
 
-固定硬件容量下的feasibility仍是本stage唯一hard legality primitive，不调用MiniMalloc的一体化minimum-height模式。
-最小high-water由下面的owner-private capacity analysis组合相同validator和三态fixed-capacity query；06拥有是否运行、
-shortlist顺序和总optimization budget，不能把objective耗尽混成legality失败。
+固定硬件容量下的feasibility是本stage唯一hard legality primitive，不调用MiniMalloc的一体化minimum-height模式，
+也不运行独立high-water optimization。实际high-water只从已经接受的placement重算，作为IR-derived cost或diagnostic。
 
-### 8.1 Static Packing Capacity Analysis
+### 8.1 Candidate Evaluation Boundary
 
-同一个规范化`StaticPackingProblem`先prepare一次canonical demand/conflict/component/activity-clique和problem digest，再以不同
-checked arena end重复查询。digest绑定完整硬件arena begin/end、canonical stable identity/size/alignment、规范化conflict、
-fixed/reserved constraints及adapter/policy version；probe span不改变prepared digest。fixed adapter与capacity controller必须消费
-同一owner-private prepared representation，不能各自
-复制edge-clique cover；third-party problem仍只在MiniMalloc adapter内部临时构造，不穿过Wafer header。Wafer公开给owner的
-typed结果至少区分：
+Q32第一版不把packing变成candidate objective。每个完整clone只调用一次本节fixed-capacity路径，得到：
 
-```text
-hardware feasibility:
-  Feasible | ProvenInfeasible | ResourceExhausted | Invalid
+- `Feasible`：完整placement经独立validator接受，offset可原子写入该clone；
+- `ProvenInfeasible`：在owner budget内完成搜索并证明硬件arena不可行；
+- `ResourceExhausted`：按Q34既有合同尝试deterministic first-fit安全fallback；fallback失败仍保持资源耗尽；
+- invalid input、overflow或invalid solver result：contract/internal failure。
 
-capacity objective:
-  NotRun | ProvenOptimal | Bounded
+`Feasible` placement的actual high-water从validated offsets重新计算，可作为final IR-derived cost或diagnostic；它不是
+minimum-height proof，也不触发binary refinement、capacity probe、pressure feedback或跨candidate packing cache。Q32若未来有
+真实数据证明packing quality会改变有用candidate选择，必须另立pipeline contract和owner，不能在本allocator内隐式改变tile、
+residency、route或执行顺序。
 
-capacity facts:
-  lower_bound_bytes?
-  high_water_bytes?           // validated incumbent upper bound
-  best_placements?            // remapped to this call's demand indices
-  lower_bound_proof?          // tagged trivial-zero / single demand / conflict clique / proven-infeasible cut
-  optimality_gap_bytes?
-  query_count / search_nodes / stop_reason
-```
+candidate rewrite、bufferization或lifetime/effect变化后，旧placement和所有offset-dependent descriptor/range/cost结果均失效。
+owner必须从final current IR重建`StaticPackingProblem`、重新求解或验证，并只在全部range/alignment/conflict gate通过后提交
+`wafer.spm.offset`。
 
-byte口径统一相对`arena.begin`。对query span `C`，adapter用checked arithmetic构造
-`[arena.begin, arena.begin + C)`，但受管core仍按现有absolute-address/prefix合同求解；结果的high-water必须由Wafer从
-validated placement重算，不能直接信任third-party `Solution.height`。
-状态组合和empty-demand语义严格遵守06 `PackingEnvelope`及第6节`SPMOffsetResult` invariant；generic prepared problem不能用
-默认0补invalid或no-incumbent结果。
-
-初始lower bound取以下可证明值的最大值：每个demand的
-`align_up(arena.begin, alignment) + size - arena.begin`，以及经edge-clique cover validator复验的任一activity clique
-`sum(size)`。最大bound对应的single demand或clique形成唯一tagged lower-bound proof并可投影pressure view；它不是一般
-不可行问题的IIS。首版不求
-最优clique cover、maximum-weight clique或逐buffer重复求解的unsat core。
-若后续fixed-capacity cut得到更强lower bound，returned primary proof切换为capacity cut且不再提供pressure view；不能同时保留
-一份较弱clique作为第二事实源来解释全部gap。
-
-capacity objective算法为：
-
-1. 先以完整硬件arena运行第8节fixed-capacity gate。`ProvenInfeasible`直接形成capacity failure；
-   `ResourceExhausted`且fallback也没有合法placement时形成compiler resource failure；任何validated MiniMalloc或fallback
-   placement都建立feasible upper bound。
-2. 用`max(offset + size) - arena.begin`收紧incumbent high-water。若它等于proof-backed lower bound，零次追加query即可
-   返回`ProvenOptimal`。
-3. 否则在`[lower, upper)`按稳定policy选择midpoint做deterministic byte-capacity binary refinement，不默认先查询通常最难的
-   lower-bound tight point。`Feasible`以返回placement的实际high-water更新upper/incumbent；`ProvenInfeasible(C)`令lower至少为
-   checked `C + 1`；
-   `ResourceExhausted`不移动任何bound。
-4. 对同一probe允许node slice几何增长，但当前MiniMalloc不能resume；每次solver invocation（含retry）都计一次query，重复DFS
-   work全部计入总nodes和retry telemetry，cache hit不计solver query/node但单独计数。
-   所有候选/probe/retry按06的`CanonicalShortlistWorkKey`、probe和retry level形成确定性work order，不能按并行future完成顺序
-   消耗共享fuel。query或node budget结束时，只要已有incumbent就返回`Feasible + Bounded`。
-5. 每个新incumbent立即通过共享validator；winner在offset apply前从final IR重建problem。problem未变可再次复验incumbent，
-   任一root/alias/lifetime/effect/materialization变化都必须重新evaluate。best placement apply后，任何读取offset/address/range、
-   descriptor/local-offset/narrowing、`PlacedRankCompatibilityClaimsV1`或`RankLocalPlacedPayloadSignatureV1`的旧结果
-   全部失效，必须从placed current IR fresh重跑后才能分桶/比较。
-
-受管core当前没有消费preferred-offset hint的合同；`Buffer.offset`是hard fixed placement，不能冒充warm start。首版只复用
-prepared problem、capacity-query cache、bound和validated incumbent，不修改third-party API。analysis result、cache、probe和
-proof都只活在当前transformation，不写入IR。cache只复用经validator确认的feasible placement和完整证明的
-infeasible cut，capacity result key为`(prepared problem digest, queried span)`；cached placement只按stable/canonical identity
-保存，命中后remap到当前demand index并重新validate，不能保存首次call的raw index。相同key在调度前canonical coalesce并以稳定
-epoch发布，不能由并行线程谁先填cache改变fuel或结果；`ResourceExhausted`不是事实，只计telemetry。
-最终仍只有best placement产生既有`wafer.spm.offset`。
 
 ## 9. Failure Feedback
 
-Current structured failure reasons：
+Current structured failure reasons包括：
 
-- `capacity_overflow`
-- `packing_search_exhausted`
-- `invalid_packing_result`
-- `invalid_spm_range`
-- `alignment_unsatisfied`
-- `unsupported_layout_conversion`
-- `lifetime_overlap_conflict`
-- `unsupported_lifetime_control_flow`
-- `unsupported_lifetime_alias`
-- `missing_async_completion`
-- `unsupported_async_completion_flow`
-- `missing_local_completion`
-- `missing_dte_completion`
-- `unsupported_completion_control_flow`
-- `unsupported_spm_scope_nesting`
-- `completion_proof_failure`
+- `capacity_overflow`；
+- `packing_search_exhausted`；
+- `invalid_packing_result`；
+- `invalid_spm_range`；
+- `alignment_unsatisfied`；
+- `unsupported_layout_conversion`；
+- lifetime/alias/control-flow unsupported；
+- missing或unsupported async/local/DTE completion；
+- unsupported SPM scope nesting。
 
-`packing_search_exhausted`只表示完整硬件arena的fixed-capacity solve耗尽资源，且安全fallback也没有产生
-validated incumbent。minimum-height objective已有incumbent时的budget stop只形成`Feasible + Bounded`，不产生该failure。
-
-`reserved_range_conflict`、`range_end_overflow`、`materialization_peak_too_high`和`color_conflict`只在对应
-reserved-range/materialization/coloring policy真正进入当前planner后才成为failure class；不用未实现的诊断名
-冒充当前completion证明。
-
-minimum-height objective的`Bounded`、remaining gap和budget stop reason不是failure reason；candidate已有validated
-placement时继续合法。single-demand/clique lower-bound proof只证明自身bound并可投影pressure view，不能把一般
-`ProvenInfeasible`解释成具体buffer unsat core。
-
-联合planner可把proof的pressure view映射回当前clone的physical versions，并沿同一feedback边界优先尝试已有的
-layout/implementation/transfer、per-edge residency/spill、tile、ready-order或double-buffer proposal；这些都是allocator的
-上游候选维度和06的policy责任。当前实现尚只产生有限scope与两类storage alternative，allocator不得据此把两类写成长期
-输入枚举，也不得返回按op/axis命名的repair recipe。
-该映射不属于09 result：它只由06用本次candidate materializer的IRMapping/canonical decision key重建，clone/rewrite后失效，
-不能保存MLIR pointer、raw demand index或跨pass side table。
-
-allocator不做无限repair；它只对收到的whole-rank candidate返回结构化失败。某个candidate的SPM allocation失败时，
-coordinator可以继续评估其它独立候选；allocator本身不修改implementation、transfer或resident cut，也不把失败clone的
-partial offsets复制到其它clone。
+`capacity_overflow`只来自owner完成fixed-capacity证明后的`ProvenInfeasible`。`packing_search_exhausted`只表示
+MiniMalloc资源耗尽且安全fallback未产生validated placement；它不是capacity事实。allocator只拒绝当前candidate clone，不返回
+tile、layout、route或residency repair recipe，也不把partial offsets复制到其它clone。
 
 ## 10. Whole-Variant Commit Model
 
-终态使用 `plan complete static rank programs before atomic commit`；当前两类alternative只是该流程的已实现候选源：
+SPM stage嵌入现有candidate transaction：
 
 ```text
-complete static rank structured program + bounded task/tile/implementation/transfer proposals
-  -> generate a capability-filtered bounded per-rank proposal frontier
-  -> for each proposal, materialize complete rank traversal and its wafer.tile.region task fragments
-     (target-abstract compute/movement/load-store/layout/sync/storage/effect plus resolved communication schedule)
-  -> expand every selected communication skeleton into explicit staging/local-compute/movement/DTE/wait body;
-     no unresolved collective or schedule record may survive
-  -> materialize candidate DDR tile views as memref.subview operands
-  -> legalize/select instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
-  -> candidate-local function-boundary bufferization/proof-preserving rewrites; fresh analysis; source IR remains unchanged
-  -> collect BufferDemand + whole-rank liveness/effect and pure-evaluate per-rank full-arena SPM feasibility
-  -> for selection-sensitive survivors, bounded capacity analysis refines lower/high-water interval under shared optimization fuel
-  -> apply only the best validated placement
-  -> fresh rerun SPM range/resource, descriptor/address/narrowing, DTE local-offset and other offset-dependent gates
-  -> fresh PlacedRankCompatibilityClaimsV1 + RankLocalPlacedPayloadSignatureV1
-  -> fresh recost and bucket surviving rank candidates by PlacedRankCompatibilityClaimsV1 bytes
-  -> baseline-first lazy/factorized all-rank join; no eager rank-frontier Cartesian product
-  -> per-complete-variant whole-variant DDR planning
-  -> post-memory physical transport binding + AcceptedVariantTransportSignatureV1
-  -> package/target ABI pure preflight and fresh final-bound exact vector/candidate signature
-  -> transaction-local construction/validation of all RankExecutable records and ExecutableBundle
-  -> atomically commit all rank programs plus validated bundle, or commit nothing
-  -> target codegen derives address-range parameters from committed IR + executable bindings
-  -> package/runtime consume committed executable/manifest only
+complete rank candidate clone with selected typed IR
+  -> instruction legalization and function-boundary bufferization
+  -> fresh BufferDemand / lifetime / effect collection
+  -> fixed-capacity SPM solve + independent placement validation
+  -> atomic offset apply to this clone
+  -> fresh range / descriptor / completion / cost gates
+  -> existing all-rank DDR / transport / ABI acceptance
+  -> all RankExecutable records and ExecutableBundle commit, or commit nothing
 ```
 
-原因是layout、SPM、tile shape和target-abstract op selection强耦合。早期如果只看task-local
-summary或裸tensor value，再把真实allocation推到更晚的pass，容易让合法性承诺漂移；
-但把 rejected tile-region IR 直接落入主 IR 再回滚也会污染 IR 边界。因此 instruction legalization /
-selection 和 SPM memory planning 都应在 transformation-local whole-variant clone 上运行；
-`wafer.tile.region`是该clone中的task/traversal fragment，不是SPM arena isolation scope。allocation使用
-whole-rank instruction-level memref / lifetime / effect / token事实源，而不是target-abstract op的粗粒度
-effect；planner不另造影子whole-entry plan。
+当前spill baseline和maximal-resident alternative只是迁移candidate source；Q32切换后删除其decision-owner旁路，不把它们升级为
+allocator schema。candidate必须先把resident edge、spill、encoding、transfer和instruction sequence显式物化；SPM owner只从该
+IR重算demand。rewrite或bufferization改变root、alias、effect或lifetime后必须重新planning，旧offset和cost不得复用。
 
-当前spill baseline与maximal resident仍是迁移实现的deterministic proposals；Q32 production切换后删除其decision-owner旁路，
-不把它们升级成candidate schema或silent fallback。
-每个候选必须先把resident edge、spill、physical version、mapped/staged transfer和instruction sequence显式物化；SPM
-allocator只从该IR重算demand。任何gate失败时，其allocation、offset search trace和cost breakdown与clone一起丢弃。
-ranking属于联合planner：从完整IR重算06统一定义的SPM、DDR/SPM movement、transport bytes/message、compute、descriptor/
-inner-span、engine issue/event和padding exact static vector。rank-local strict dominance只在相同
-`PlacedRankCompatibilityClaimsV1` bytes内进行；complete variants完成DDR和binding后再从final bound IR生成
-`AcceptedVariantTransportSignatureV1`、whole-variant vector与candidate signature，并用stable profile policy确定性
-tie-break。unknown或tradeoff不得伪装成收益，未校准结果不得称为硬件时间。
-SPM interval只用于安全dominance和追加query优先级，最终`peak_spm_bytes`取实际best placement；gap/proof不进入accepted
-cost artifact。
+rank frontier离开scheduler后，function-boundary bufferization可能新增或删除buffer/movement，因此每个candidate都独立重新运行
+SPM/DDR planning并从final instruction IR fresh recost。失败candidate从frontier移除；只有某rank无合法survivor时才拒绝该rank。
+all-rank coordinator只从current placed/bound IR重算transport/resource事实，不消费SPM-side compatibility signature。
 
-rank frontier离开scheduler后，function-boundary bufferization可能新增或删除buffer/movement。Q16因此对每个candidate
-独立重新运行SPM/DDR planning并从final instruction IR fresh recost；失败candidate从frontier移除，不会让同rank的
-其它合法candidate一起失败。只有finalized frontier为空时才拒绝该rank，这保证post-scheduling gate不会把一项局部
-失败错误升级成whole-rank failure，也不会沿用变换前的stale cost。
 
 ## 11. Runtime / ABI Handoff
 
@@ -688,7 +564,7 @@ typed bindings。package/runtime不得再扫描raw memref/offset恢复resource r
   storage bytes 和 begin/end range；这些是 verifier/codegen 派生值，不作为新 IR 事实源。
 - 如果目标 movement/compute instruction 需要 range、logical-to-physical mapping、layout family、
   stride 或 packet field，ABI/packet emission 在 very-late lowering 中从当前 IR 派生对应参数；
-  不能把它们作为 R3.4-style access descriptor 在主线 IR 中传递。
+  不能把它们作为独立access descriptor在主线IR中传递。
 
 这个 handoff 不重新选择 layout，也不重新移动 materialization cut。若某个 Wafer-tagged memref
 无法由 accepted facts 派生合法 address/range 参数，说明前面的 layout/SPM plan 不合法，应返回
@@ -719,7 +595,7 @@ accepted range/arena relation；commit后package/runtime只消费
 
 ### 12.1 Accepted SPM Offset Fact
 
-R3.2f V0 在 instruction-level IR 上使用 `wafer.spm.offset` op attr 表达 SPM memory planning
+当前SPM planning在instruction-level IR上使用`wafer.spm.offset` op attr表达接受的
 接受的 offset/range fact。该 attr 挂在定义 SPM buffer value 的 `memref.alloc` 上，值为
 `#wafer.spm_offset<offset>`：
 
@@ -742,7 +618,7 @@ R3.2f V0 在 instruction-level IR 上使用 `wafer.spm.offset` op attr 表达 SP
 planner沿`wafer.tile.yield -> wafer.tile.region result -> sibling operand`保留resident allocation root和lifetime，
 因此26条selected full-buffer handoff中跨region存活的buffer已经计入同一high-water。
 
-R3.2f V0 的 dataflow 边界：
+当前dataflow边界：
 
 - `memref.alloc`产生SPM demand；compiler-managed demand使用`RootRef`，path-qualified semantic origin使用
   `ValueOriginRef`，它们与async task identity分开。view-like和SelectLike result通过query-time closure关联所有
@@ -771,13 +647,13 @@ R3.2f V0 的 dataflow 边界：
 - rejected/candidate offset、search trace、cost estimate 和 repair suggestion 仍是 analysis，不写入
   IR。
 
-实现边界是 R3.2d 已支持的 structured `scf.if` / `scf.for`、single-block `scf.yield` 和
+实现边界是instruction IR已支持的structured `scf.if` / `scf.for`、single-block `scf.yield`和
 instruction-level async token use。path condition使用按`uint64_t` decision id排序的sparse decision set，
 不再存在64个branch/loop decision point上限；当前回归覆盖96个branch及130个decision的conjunction/subtract。
 未结构化/多block CFG、decision id域或编译资源耗尽，以及未来显式must-alias group仍需结构化失败，不能靠
 线性op顺序、名字或旁路协议恢复。
 
-R3.2f SPM memory planning使用经典静态memory planning的离线模型，而不是把alloc event顺序直接当作allocation
+SPM memory planning使用经典静态memory planning的离线模型，而不是把alloc event顺序直接当作allocation
 顺序。算法分两层：
 
 - lifetime analysis 仍由当前 IR 的 SSA、region、path condition 和 async token use 重算，得到可同时
@@ -788,7 +664,7 @@ R3.2f SPM memory planning使用经典静态memory planning的离线模型，而�
   capacity不可行证明。
 
 solver和fallback的accepted placement均由Wafer独立validator复验。rejected/candidate offset、search work、fallback状态和
-conflict encoding都保持为analysis/telemetry，不写入`wafer.spm.offset`。后续若引入graph coloring、ILP、
+conflict encoding都保持为analysis/debug统计，不写入`wafer.spm.offset`。后续若引入graph coloring、ILP、
 schedule-aware double buffering或bank-aware coloring，必须保持same input/output IR contract和三态结果，只改变
 analysis/search；color/bank hard constraint必须先成为显式可验证输入。
 
@@ -824,40 +700,27 @@ SPM / tile-region verifier 至少检查：
   的 address/range/stride 参数必须由 `computeWaferPhysicalTensorInfo`、accepted offset facts、
   allocation range 和 op verifier 一致推出。
 
-## 14. 与 Physical-Dataflow Planner 的关系
+## 14. 与 Physical-Dataflow Candidate Selection 的关系
 
-全局artifact DAG与decision/gate分层见`tasks/01-architecture.md`，联合搜索合同见
-`tasks/06-physical-dataflow-synthesis.md`。SPM allocation回答完整static rank entry中
-完整rank task program的`#wafer.memory<spm, *>` allocation是否可行，并把whole-rank失败返回
-whole-variant physical-dataflow planner。
-闭环顺序：
+全局artifact DAG见`tasks/01-architecture.md`，candidate合同见
+`tasks/06-physical-dataflow-synthesis.md`。SPM allocation只回答一个完整static rank clone中
+`#wafer.memory<spm, *>` allocation是否合法，并把当前clone的typed结果返回candidate owner：
 
 ```text
-whole-variant candidate plan
-  -> capability-filtered bounded proposal/frontier generation
-  -> for each proposal, isolated complete-rank clone materialization
-  -> selected implementation / physical-version / transfer / residency realization in that clone
-  -> complete rank traversal, DDR tile views and wafer.instr.* over unplaced Wafer-tagged memrefs
-  -> candidate-local proof-preserving rewrites; invalidate and fresh-recompute alias/effect/lifetime; source IR remains unchanged
-  -> per-candidate instruction storage/effect demand and independent whole-rank full-arena SPM feasibility evaluation
-  -> selection-sensitive capacity analysis and best validated placement apply
-  -> fresh per-rank instruction/descriptor/SPM/range/local-offset/completion gates
-  -> fresh PlacedRankCompatibilityClaimsV1 + RankLocalPlacedPayloadSignatureV1, recost and claims bucketing
-  -> baseline-first lazy all-rank join
-  -> per-complete-variant whole-variant DDR planning
-  -> post-memory transport binding + AcceptedVariantTransportSignatureV1
-  -> package/geometry/ABI pure preflight and fresh final-bound recost/candidate signature
-  -> transaction-local RankExecutable/ExecutableBundle construction and validation
-  -> winning variant plus validated bundle atomic commit, then target-codegen from committed bindings/accepted facts
-  -> failure feedback with no partial commit when no complete variant survives
+isolated complete-rank clone
+  -> selected implementation / encoding / transfer / residency already in typed IR
+  -> fresh instruction storage / effect demands
+  -> fixed-capacity SPM evaluation and validated placement
+  -> fresh offset-dependent instruction / descriptor / range / completion gates
+  -> final recost
+  -> existing all-rank DDR / transport / ABI coordinator
+  -> atomic bundle commit, or discard this variant
 ```
 
-联合planner可以换implementation/physical encoding/transfer family、移动materialization cut、缩tile、请求合法internal
-split或改变residency/spill cut。SPM allocation只消费instruction-level IR暴露的demand
-和 effect；compute implementation 和 communication algorithm 的选择属于 instruction selection /
-closed-loop planner，不在 allocator 内部用名字或 case 猜测。
-- local fence、comm wait、group barrier 是不同 sync event。SPM lifetime 可以把它们都建成 event，
-  但不能把 NCC local fence 当成 DTE completion 或 multi-tile barrier。
+candidate owner可以生成另一份clone尝试不同rewrite参数；allocator不修改implementation、encoding、transfer、tile或resident cut，
+也不按名字或case恢复这些选择。local fence、communication wait和DTE completion是不同event，lifetime analysis只能按各自
+typed effect/token合同处理。
+
 
 ## 15. 后续扩展
 
@@ -867,9 +730,9 @@ closed-loop planner，不在 allocator 内部用名字或 case 猜测。
   range 和 lifetime 约束稳定后引入；在此之前用单 pool + reserved range 更容易验证。
 - linear scan allocator：当 `wafer.tile.region` 大多是线性 schedule，且 greedy arena 编译成本或
   fragmentation 成为问题时引入。
-- 其它graph-coloring / interval-coloring backend：只有capacity-analysis telemetry证明当前fixed-capacity core在通用
-  conflict graph上持续留下显著objective gap或不可接受compile work，且新backend保持相同三态、proof和独立validator
-  合同时才评估；不能仅因单个case更紧凑而替换默认路径。
+- 其它graph-coloring / interval-coloring backend：只有invocation-local统计证明当前fixed-capacity core在通用
+  conflict graph上持续产生不可接受compile work或大量资源耗尽，且新backend保持相同三态和独立validator合同时才评估；
+  不能仅因单个case placement更紧凑而替换默认路径。
 - allocator内部repair loop：只允许有限repair；如果repair开始改变tile shape或dataflow cut，
   应交还task scheduler，而不是让allocator变成隐藏scheduler。
 - PMU 驱动 bank conflict model：当 board profiling 能稳定解释 blocking time 和 bank/color 关系后，

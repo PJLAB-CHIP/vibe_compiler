@@ -1,6 +1,6 @@
 # Wafer DDR Memory Planning Design
 
-状态：2026-07-18同步联合physical-dataflow planner终态；当前合同覆盖default-arena
+状态：2026-07-20同步MLIR-native physical-dataflow candidate边界；当前合同覆盖default-arena
 DDR demand/range validation、local issue completion和accepted offsets。
 multi-arena、state/streaming weight和provider allocation model延后。实现状态以`tasks/progress.md`为准。
 它不能只是 DDR access validation；凡是会影响 candidate 是否成立的 DDR
@@ -14,8 +14,8 @@ alias/lifetime；本stage不执行runtime allocation/import/query，也不重新
 compiler-managed DDR allocation 由 DDR `memref.alloc` 本身表达；DDR memory planning 只把 accepted
 offset 写入 IR，size、alignment、lifetime、read/write intent 和 external access-end 都从当前 IR 重算，
 不作为长期 attr 字段保存。
-当前candidate producer仍只实现Q29有限scope/residency策略；终态DDR planner可以接收包含parameterized
-implementation/physical-version/transfer/residency的任意bounded完整候选，但本stage始终只是exact resource gate，
+当前candidate producer仍只实现Q29有限scope/residency策略；DDR planner可以接收MLIR rewrite产生的任意有限完整clone，
+但本stage始终只是exact resource gate，
 不生成、排序或修补这些选择。
 
 本文定义 `#wafer.memory<ddr, layout>` 在 Wafer 编译器中的语义、资源规划、verifier 和
@@ -34,9 +34,9 @@ compiler IR 合同。
   allocation，在default arena中规划symbolic range/offset/size/alignment，并用跨task、完整rank-entry
   lifetime/reuse证明互不冲突。
 - 给 candidate-selection 一个真实 candidate gate：成功表示当前 candidate 的 DDR view、accepted offset fact 和
-  IR-derived demand 都可被下游直接消费；失败只返回typed infeasible reason给06联合planner，planner可重选
+  IR-derived demand 都可被下游直接消费；失败只返回typed infeasible reason给06 candidate owner，后者可用另一clone尝试
   implementation、tile、encoding、route、residency/buffering或order。allocator本身不修补候选，也不内置某个
-  reduction/tile repair策略；numeric policy能否允许split仍由上游semantic/ImplementationFamily合同决定。
+  reduction/tile repair策略；numeric policy能否允许split仍由source op interface和上游rewrite合同决定。
 - 保持 DDR accepted allocation fact 显式：由 SSA use-def、memref type、view、descriptor 和
   offset fact 表达，不能靠名字、测试输入或 pass-local side table 复原。
 - 只在整个static rank variant set通过时原子提交offsets；任一rank/task/transport/event/target
@@ -86,7 +86,7 @@ Pipeline position:
   Q16以后由同一
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=<registered-id>`
   的whole-variant
-  candidate loop调用本stage；当前baseline显式选择closed v1，Q32 v2无default。Q15只产出verified structured tensor program directory，不执行DDR planning；
+  candidate loop调用本stage；Q15只产出verified structured tensor program directory，不执行DDR planning；
   `wafer-opt`、局部`wafer-plan-ddr-memory`和从tile-region/instruction/SPM跑到DDR offset assignment的
   named pipeline只处理显式IR，用于IR-local replay/test，不是用户stop-stage。completion proof必须覆盖
   accepted DDR offset fact 和 descriptor/view/root validation，不接受只验证 external DDR view；该
@@ -115,10 +115,9 @@ async task identity/completion、live segment overlap、local issue/fence comple
 canonical search。精确pairwise conflict graph通过已验证的deterministic edge-clique cover适配，nonzero base使用
 component-local fixed prefix；共享policy使用宽松确定的全局node budget且不设wall-clock timeout，只在
 `ResourceExhausted`时允许first-fit fallback。typed outcome和独立placement validator也由该共享边界拥有。
-shared `MemoryPlanning` capacity primitive在类型上可复用同一owner-independent DDR problem，且不认识SPM/DDR、workload或
-op名；但Q32.S首版objective只激活per-rank SPM。DDR在whole-variant后置stage继续只要求完整arena legality并提交其实际
-accepted high-water/`wafer.ddr.offset`，不运行minimum-high-water refinement。若以后启用DDR objective，必须先在06增加明确的
-whole-variant cost维度、聚合/shortlist位置、budget和verification合同，再更新progress；不能因shared API存在就隐式扩scope。
+shared `MemoryPlanning` fixed-capacity primitive在类型上可复用同一owner-independent DDR problem，且不认识SPM/DDR、workload或
+op名。DDR在whole-variant后置stage只要求完整arena legality并提交实际accepted high-water/`wafer.ddr.offset`，不运行
+minimum-high-water refinement或candidate packing objective。未来若有真实consumer，必须另立设计和验证合同。
 compiler-managed allocation使用指向packing demand的`RootRef`；caller-owned/external memref
 使用path-qualified `ValueOriginRef`；async handle另携带所访问root与独立task identity，三者不能互相替代。
 `rootsAt`/`originsAt`在查询点沿`ViewLikeOpInterface`、`SelectLikeOpInterface`、`scf.if` yield和`scf.for`
@@ -432,8 +431,7 @@ Required failure classes:
 - `completion_proof_failure`
 
 `packing_search_exhausted`在本stage只表示完整DDR arena的fixed-capacity solve耗尽资源，且安全fallback也
-没有产生validated incumbent；Q32.S首版不在DDR上运行capacity objective，因此不存在objective budget stop到该
-failure class的映射。
+没有产生validated placement；它不是capacity证明，也不由candidate optimization limit触发。
 
 Diagnostics should describe compiler-visible failure classes. They must not mention runtime allocation category
 names as if those were compiler IR concepts.
@@ -454,14 +452,14 @@ storage bytes, the corresponding memref type/encoding must make that visible.
 
 ### 9.3 Candidate Selection
 
-终态candidate selection由tasks/06拥有，联合枚举bounded tile/traversal、Implementation Family、physical version、
-`TransferRouteFamily`、resident/spill、reuse-aware order和必要event。full-shape、当前shared-input prefix及spill/max-resident
+candidate selection由tasks/06拥有，通过MLIR interface/rewrite产生baseline和少量完整tile/implementation/physical-version/
+transfer/resident alternatives。full-shape、当前shared-input prefix及spill/max-resident
 策略只是当前迁移producer的deterministic proposals；Q32切换后删除这些decision owner，它们不是DDR输入schema或silent
 fallback。每个rank candidate先把DDR view、mapped/staged movement、explicit spill和instruction descriptor显式物化并过
 per-rank gate；lazy join后的每个complete variant再独立重跑whole-variant DDR exact gate。
 first/tail representative tiles只允许便宜地拒绝candidate，不能证明traversal coverage、descriptor closure、lifetime、
 capacity或completion。DDR planning拒绝candidate时不写主IR、不改变transfer/residency choice，并丢弃完整clone；
-其它frontier candidate继续独立评估。当前代码尚未实现完整联合维度，仍按Q29历史策略产生候选。
+其它candidate clone继续独立评估。当前代码仍按Q29历史策略产生候选。
 SPM/DDR arena constraints是各自planning gate输入；DDR exact movement bytes是06 cost输入，不是candidate field或未校准
 bandwidth legality。
 

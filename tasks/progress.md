@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-19
+更新时间：2026-07-20
 
 本文件只记录当前调度状态、前置关系和紧凑完成索引，不保存逐轮测试数字、实现复盘或历史工作日志。
 长期架构与pipeline contract以编号设计文档为准，详细完成证据与实施记录位于`tasks/archive/`，完整导航见
@@ -14,8 +14,9 @@ packet provenance和timing仍是独立later/external gate。
 
 共享SPM/DDR static memory packing已从保守greedy升级为默认MiniMalloc fixed-capacity canonical search，并用
 确定性宽松work budget、三态结果、独立placement validator和仅限资源耗尽的first-fit fallback闭合编译
-资源边界。当前直接进入通用physical-dataflow synthesis；后者先建立policy-free mechanisms，再由唯一solver联合选择implementation、tile、physical
-encoding、storage realization、residency和有界局部顺序，并退役旧decision旁路。
+资源边界。当前直接进入通用physical-dataflow synthesis；后者先在现有candidate clone和exact gate骨架上完成真实
+dependent-tiling/resident rewrite，再以少量MLIR-native候选联合评估implementation、tile、encoding、movement和residency，
+最后退役旧decision旁路。当前不建设平行provider/query/schema或通用联合求解器。
 
 ## 队列规则
 
@@ -50,8 +51,8 @@ Q22 -> Q27
 tile-dataflow scheduling与7B级单block纵向：
 Q22 + Q27 -> Q29 -> Q28 -> Q30 -> Q31
 
-联合physical-dataflow synthesis：
-Q29 + Q28 + Q30 + Q31 -> Q32.I -> Q32.R -> Q32.B -> Q32.V -> Q32.M -> Q32.S -> Q32.G -> Q32
+MLIR-native physical-dataflow synthesis：
+Q29 + Q28 + Q30 + Q31 -> Q32.I -> Q32.R -> Q32.B -> Q32.M -> Q32.S -> Q32.G -> Q32
 
 later/external：
 Q0.L + Q21 + configured board -> Q6.B
@@ -61,7 +62,8 @@ Q18 + Q22 + Q32 + configured simulator/ISS -> Q22.E
 Q32 + Q22.C + validated PMU/timing environment -> Q22.P
 Q22 + owner-approved packet evidence -> Q22.K
 Q32 -> Q32.T (optional compiler control plane)
-Q32.V -> Q3.6 (Count typed writeback/ABI mechanical closure)
+explicit typed target/ABI/model consumer evidence -> Q32.V (independent target capability extensions)
+explicit Count semantic/target/model evidence -> Q3.6 (independent typed writeback/ABI/numeric closure)
 ```
 
 ## 当前实施队列
@@ -69,20 +71,20 @@ Q32.V -> Q3.6 (Count typed writeback/ABI mechanical closure)
 当前无`doing`；Q32.I是唯一`next` row。Q32 umbrella不会让后续row自动进入执行，later/external gate也不会
 自动进入主线。
 
-设计就绪边界：Q32.I/R/B/V/M/S/G及Q32 integrated audit、可选Q32.T和Q3.6的**内部**pipeline、typed schema、
-provider/search/resource、failure/atomicity与验证合同已经闭合；下表状态仍表示实现/验证调度，不表示这些实现已经完成。
-board、hardware numeric、simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later / External Gates。
+设计就绪边界：Q32.I/R/B/M/S/G采用MLIR interface、可重算analysis、clone rewrite、DialectConversion、现有exact gates和
+atomic commit；不再把provider/query/key、shadow frontier、版本化诊断schema、packing objective或target ABI扩展作为主线前置。
+下表状态表示实现/验证调度，不表示实现已经完成。board、hardware numeric、simulator/ISS、packet provenance和timing所需
+外部事实仍只保留在Later / External Gates。
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q32.I | `target-implementation-foundation` | `next` | Q29、Q28、Q30、Q31 | 从当前production structured tensor pipeline冻结fresh baseline，建立versioned SemanticOpDescriptor/scalar DAG、canonical provider query/result/key及current-v1唯一baseline；accepted interface只验证selected合同。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` A/B |
-| Q32.R | `physical-relation-route-proof` | `blocked` | Q32.I | 建立closed piecewise quasi-affine IndexRelation、typed outcome/exact-vs-sound/fuel，PhysicalEncoding/view proof、唯一TransferRouteFamily、descriptor cover、InvalidLaneState和完整query key。 | 06-08、10、11、16、18；同计划C |
-| Q32.B | `physical-dataflow-baseline-vertical` | `blocked` | Q32.R、Q34 | 通过transaction-local RankFrontierProducer test seam让新provider baseline走同一finalization/all-rank/package/SystemC纵向；reserved baseline原子形成bundle且不调用旧decision owner。 | 01、06-18；同计划D |
-| Q32.V | `physical-capability-vertical` | `blocked` | Q32.B | 固定destination-style load/store、两端root-relative DMA offset和staged fallback；闭合invalid-lane、versioned oriented GEMM及schema-v4 RequiredCapabilitySet到model preflight，board数值predicate独立。 | 06、08、10、11、14-18；同计划E |
-| Q32.M | `physical-dataflow-rewrite-mechanisms` | `blocked` | Q32.V | 完成按typed IR cut分层的mandatory matrix：tensor relation/tiling/fusion/propagation/absorption，physical 2+ fanout reuse、mapped folding、movement/resident-cut elimination；改写后fresh重算全部analysis/gates。 | 05-13、16、18；同计划F |
-| Q32.S | `bounded-physical-dataflow-synthesis` | `blocked` | Q32.M | 只组合通过各自correctness gate的mechanisms，实现bounded/canonical search、resident policy、lazy all-rank join和shared static-packing interval oracle；板端校准前固定UncalibratedStaticOrderV1，reserved baseline与deterministic budget/telemetry闭合。 | 06-13、16、18；同计划G |
-| Q32.G | `physical-dataflow-production-cutover` | `blocked` | Q32.S | production只调用新planner；删除旧producer/test selector、scope/layout/materialization/maximal-resident、estimated scalar/discovery fallback及collective schedule options/hard-coded selector与重复facts。 | 01、06-18；同计划H |
-| Q32 | `physical-dataflow-synthesis` | `blocked` | Q32.G | 显式v1重放旧profile；显式v2重放rank-count=1/16、mapped/oriented通用source vertical及实际选择新family的Q28 fixed-seed/Q31 held-out 7B PyTorch/SystemC scale gate；再闭合全部SPM/DDR/event/transport/instruction/ABI eligibility/atomic audit。不含board性能或timing。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` completion audit |
+| Q32.I | `mlir-native-rewrite-foundation` | `next` | Q29、Q28、Q30、Q31 | fresh重放现有baseline；用source OpInterface/external model和基于MLIR Affine/Presburger/ValueBounds的最小IndexRelation子集，实现第一条dependent-tiling/resident-handoff rewrite；在isolated clone中实际改IR并通过同层verifier。 | 01、06-08、10、16、18；`tasks/plans/physical-dataflow-synthesis.md` A/B |
+| Q32.R | `resident-candidate-integration` | `blocked` | Q32.I | 将baseline和少量optimized clone接入现有rank frontier/finalization；每次rewrite后fresh重算analysis，并复用现有tile/instr conversion、SPM/DDR/event/transport/instruction/ABI gates和strict static dominance。 | 06-13、16、18；同计划C |
+| Q32.B | `physical-dataflow-test-seam-vertical` | `blocked` | Q32.R、Q34 | 在compiler-private、production-shaped test seam让第一条真实rewrite在rank-count=1/16 source-to-bundle纵向被实际选择；重放package/SystemC/PyTorch、resource和atomic failure gate，baseline在budget或tradeoff时保持合法。此row不切换wafer-compile默认producer，production cutover只由Q32.G/计划F完成。 | 01、06-18；同计划C |
+| Q32.M | `physical-rewrite-expansion` | `blocked` | Q32.B | 增加第二条通用shared-input physical-version reuse或projected-view absorption机制；只从SSA/indexing/effect/lifetime识别，候选直接物化typed IR，无机制registry或影子schedule。 | 05-13、16、18；同计划D |
+| Q32.S | `bounded-candidate-scaling` | `blocked` | Q32.M | 基于fresh candidate-count/compile-wall证据选择最简单的有限枚举、small frontier或beam；只保留少量planner limits和baseline slot，不做完整IR序列化、packing objective或版本化诊断协议。 | 06、09、12、16、18；同计划E |
+| Q32.G | `physical-dataflow-production-cutover` | `blocked` | Q32.S | production只保留MLIR-native candidate owner；删除旧scope/layout/materialization/maximal-resident、未校准scalar-time winner和重复decision facts，重放完整all-rank atomic audit。 | 01、06-18；同计划F |
+| Q32 | `physical-dataflow-synthesis` | `blocked` | Q32.G | 至少两类通用rewrite在production winner实际发生；rank-count=1/16、Q28 fixed-seed/Q31 held-out 7B PyTorch/SystemC scale及全部SPM/DDR/event/transport/instruction/ABI/atomic gate fresh通过。不含oriented GEMM、mapped DMA、schema升级、board性能或timing。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` completion audit |
 
 下列later/external gate不会因Q32.I进入`next`自动进入主线。
 
@@ -93,11 +95,12 @@ board、hardware numeric、simulator/ISS、packet provenance和timing所需外�
 | Q6.B | `runtime-board` | `later` | Q0.L、Q21 + configured board | 用fresh verified package实际执行board lifecycle并比较完整输出。 | 15、16 |
 | Q9 | `cost-calibration` | `later` | Q32、Q6.B + profile environment | 只校准Q32合法候选排序，不改变语义合法性。 | 06、16 |
 | Q22.C | `target-model-numeric-correlation` | `later` | Q22、Q32、Q6.B + configured numeric corpus | 按capability row用board区分向量和held-out冻结numeric comparator/profile。 | 16、17 |
-| Q22.E | `target-model-package-execution` | `later` | Q18、Q22、Q32 + configured simulator/ISS | 原样执行Q32 integrated audit冻结的schema-v4 verified package及all-and-only RISC-V ELF；Q22.V v3只作历史证据。 | 15、16、17 |
+| Q22.E | `target-model-package-execution` | `later` | Q18、Q22、Q32 + configured simulator/ISS | 原样执行Q32 integrated audit冻结的verified package及all-and-only RISC-V ELF；任何未来schema升级必须先独立完成再作为该gate输入。 | 15、16、17 |
 | Q22.K | `target-model-packet-provenance` | `later` | Q22 + owner-approved vendor package或独立公开规范 | 可选关联repo CRT/packet/MMIO；缺失不阻塞数值CModel。 | 14、16、17 |
 | Q22.P | `target-model-timing-calibration` | `later` | Q32、Q22.C + validated PMU/timing environment | deferred LT/AT校准；没有RTL/vendor cycle证据不声明cycle accuracy。 | 16、17 |
-| Q32.T | `compiler-transform-control` | `later` | Q32 | 设计已闭合为rank-local structured optimization、显式非production candidate materialization及只读inspection；custom param SSA type实现`TransformParamTypeInterface`并只接收versioned mapped attr。candidate复用rank frontier/materializer和payload可重算的per-rank gates，只发布`RankLocalPlacedPayloadSignatureV1`/rank-local metrics；whole-variant DDR固定`Unavailable(AllRankDDRPlanningNotRun)`，binding与model/board固定`Unverified`。不调用all-rank coordinator、不比较production winner，也不进入wafer-compile或artifact。 | 01、05-08、10、16、18；同计划§5 |
-| Q3.6 | `crt-writeback-scalar` | `later` | Q32.V | 内部机械设计已闭合：static compact-contiguous source、proven-disjoint single-element i32 SPM dest、`positive_u32`、I8/F16/BF16/F32 emittable rows、bit-preserving little-endian raw-u32 writeback、registry-driven `SynchronousWriteback`（含ArgMax/ArgMin现有effect欠账同批修复）、v3 110-row per-profile ABI/CRT、fresh non-Count v3 qualification、schema-v4 package identity/readback及唯一`TargetPeripheralCountTransactionV1`。接收未来外部事实的versioned authority registry、`CountSemanticProfileV1`和qualification/admission record也已闭合；当前predicate/golden/formal-SystemC evidence/board row仍absent，因此source/model/board admission保持关闭。 | 11、14-17 |
+| Q32.V | `target-capability-extensions` | `later` | explicit typed target/ABI/model consumer evidence | 分别评估mapped DMA、oriented GEMM和winner-derived RequiredCapabilitySet；每项必须有typed Instr/TargetCall、conversion、必要ABI/package readback和model consumer。它们独立于Q32调度，不反向创建planner provider协议，也不作为Q32核心优化前置。 | 08、10、11、14-17 |
+| Q32.T | `compiler-transform-control` | `later` | Q32 + explicit external control-plane consumer | 只有出现真实wafer-opt/autotuning consumer后才设计；必须复用同一rewrite/conversion，Transform IR不保存candidate frontier、不替代all-rank coordinator，也不进入wafer-compile或artifact。当前没有冻结param/report schema。 | 01、05-08、10、16、18 |
+| Q3.6 | `crt-writeback-scalar` | `later` | explicit Count predicate + wrapper/target/model consumer evidence | static compact-contiguous source到proven-disjoint single-element i32 SPM destination的Count writeback。必须独立闭合typed instruction、effect/completion、ABI/CRT、model evidence和必要package readback；当前predicate/golden/formal-SystemC evidence/board row absent，source/model/board admission保持关闭。它不依赖Q32/Q32.V planner或capability协议。 | 11、14-17 |
 
 新model/distributed/executable dialect、MPMD/rank class、跨卡coherent variant、WCRE/global registry、capability lease、
 跨model state migration、共享weight cache、segmented MoE和70B/100GB stress当前不在active DAG；恢复时必须先更新
@@ -148,7 +151,7 @@ board、hardware numeric、simulator/ISS、packet provenance和timing所需外�
 ## 实施计划入口
 
 - Active task：无。
-- Next：Q32.I `target-implementation-foundation`，计划见`tasks/plans/physical-dataflow-synthesis.md`。Q34证据已归档于
+- Next：Q32.I `mlir-native-rewrite-foundation`，计划见`tasks/plans/physical-dataflow-synthesis.md`。Q34证据已归档于
   `tasks/archive/static-memory-packing.md`。
 - 新实施计划：`tasks/plans/`。
 - 已完成计划和历史证据：`tasks/README.md`的“实施计划导航”和“归档文档”。
