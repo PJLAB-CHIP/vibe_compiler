@@ -4,10 +4,10 @@
 JSON、atomic package publication和side-effect-free no-card RuntimeSession preflight共同拥有。Q32
 physical-dataflow cutover继续产出并消费schema-v3 package，不要求manifest升级。
 
-`RequiredCapabilitySet`、package schema upgrade和oriented target ABI属于later Q32.V；Count writeback属于独立Q3.6。
-只有对应typed
-Instr/TargetCall、ABI、package readback和runtime/model consumer闭合后才能单独进入。普通runtime provider和board
-execution仍按本文分层推进。实现状态看`tasks/progress.md`。
+Mapped DMA、physical-footprint fill和oriented target ABI属于已排期Q32.V typed target vertical；
+`RequiredCapabilitySet`和package schema upgrade只在这些扩展的真实runtime/model consumer需要逐row preflight时从winner
+Instr/TargetCall派生。Count writeback属于独立Q3.6。普通runtime provider和board execution仍按本文分层推进。
+实现状态看`tasks/progress.md`。
 
 ## 1. 目标和非目标
 
@@ -53,8 +53,8 @@ Pipeline position:
   当前Q15/Q16/Q17不能以手写manifest或独立package tool冒充Q18完成。
 - Explicit non-goals:
   不复制per-command instruction schedule、orientation或movement descriptor；不解析printer text，不允许
-  Python/C++双validator，不在runtime重新planning、恢复planner决策或按module contents猜ABI revision；不把未来
-  capability集合、target ABI revision或wire升级作为Q32 core前置。
+  Python/C++双validator，不在runtime重新planning、恢复planner决策或按module contents猜ABI revision；不把条件性
+  capability集合或package wire升级作为Q32 planner输入或Q32.V无consumer时的完成前置。
 - Completion gate:
   manifest all-and-only覆盖bundle ranks/modules/entries/resources/slots；canonical roundtrip稳定；invalid package在
   load/allocate前失败；任一manifest/package publication late failure不发布partial Q18 package，且不改变已验证
@@ -381,13 +381,13 @@ channel/FSM allocation副本；rank-15 transport requirement assembly/readback�
 consumer，rank-15 package assembly注入失败无final/staging。任何未来target/package扩展必须在自己的任务中新增
 对应positive、negative、roundtrip、late-failure和provider pre-effect gate，不能借用当前schema-v3结果宣称完成。
 
-## 11. Deferred Extensions
+## 11. Q32.V Package Consumer 与 Deferred Extensions
 
-- Q32.V target capability extensions：mapped DMA、oriented GEMM、winner-derived
-  `RequiredCapabilitySet`以及任何capability-bearing package revision均为later独立设计。每一项必须先有真实typed
+- Q32.V target capability extensions：mapped DMA、physical-footprint fill和oriented GEMM是已排期typed纵向。每一项必须先有真实typed
   Instr/TargetCall、target conversion、closed target-profile/Kernel Runtime ABI mapping、module metadata readback、
-  package semantic verifier和runtime/model consumer。若届时确实需要per-row capability集合，再独立确定字段、canonical
-  encoding、limits、migration和provider preflight；当前不预先冻结v4结构，也不因Q32完成而拒绝schema-v3；
+  package semantic verifier所需事实和runtime/model consumer。若consumer确实需要per-row capability集合，再从winner派生
+  `RequiredCapabilitySet`并独立确定字段、canonical encoding、limits、migration和provider preflight；当前不预先冻结新schema
+  结构，也不允许无consumer schema阻塞前三项typed compiler/model纵向；
 - Q3.6 Count writeback：只在明确predicate、wrapper/target/model consumer evidence存在后，另行实现typed instruction、effect/completion、
   ABI/CRT symbol、target model、package readback和provider admission。当前schema-v3不声明Count、不增加Count field或
   capability key，成功完成Q32/Q18也不构成Count语义、model或board证据；

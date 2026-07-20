@@ -49,7 +49,7 @@ Pipeline position:
   def-use、shape/dtype、typed memory space/encoding、effect，以及本次编译解析出的 immutable target profile。
 - Current stage responsibility:
   从当前 IR 派生 IndexRelation、shape bounds、alias/root、valid/padding domain 和 physical map；
-  证明 metadata view、当前GS/staged movement，以及future Q32.V mapped DMA/WDMA参数是否可实现；对已启用的direct
+  证明 metadata view、当前GS/staged movement，以及Q32.V mapped DMA/WDMA参数是否可实现；对已启用的direct
   movement 构造 exact descriptor cover proof；返回局部 proof 或带 location 的失败。
 - Output artifact / IR:
   transformation-local、只读且随 IR rewrite 失效的 analysis values。它们不进入 IR、package、cache
@@ -64,9 +64,9 @@ Pipeline position:
   不选择全局 candidate，不保存 layout/route plan，不改变 compute implementation，不分配最终 SPM/DDR
   offset，不根据成本放宽 legality，不从 value/op 名字恢复语义。
 - Completion gate:
-  Q32核心要求AffineMap/Presburger/ValueBounds relation、view legality、Cx/NCx full/tail physical-map、当前GS/staged
-  movement、invalid-lane和rewrite后analysis失效重建tests通过；one/multi-descriptor mapped DMA/WDMA proof只有Q32.V
-  独立启用该能力时才成为附加gate。
+  Q32完成要求AffineMap/Presburger/ValueBounds relation、view legality、Cx/NCx full/tail physical-map、当前GS/staged
+  movement、invalid-lane和rewrite后analysis失效重建tests通过；one/multi-descriptor mapped DMA/WDMA proof由已排期
+  Q32.V typed target vertical启用，并在Q32.M/S由同一candidate owner消费。
 ```
 
 ### 2.2 Isolated Candidate Physical Materialization
@@ -137,10 +137,12 @@ analysis 按以下优先级构造 relation：
    view/shape op 的语义；
 3. 用 MLIR Presburger `IntegerRelation`/`PresburgerRelation` 表示带约束或 piecewise 的整数关系；
 4. 用 ValueBounds 推导 dynamic offset、size、stride 和 index range；
-5. 只有现有 MLIR 表示确实无法承载且 target lowering 确实需要时，才增加很薄的私有 relation primitive。
+5. 现有MLIR表示无法精确承载时，该rewrite返回unsupported并保留显式movement/baseline；若缺的是source
+   IR语义，先以有真实consumer的typed op/type/attr扩IR，再从该IR派生标准Affine/Presburger relation。
 
-私有 primitive 仍必须能转回 Affine/Presburger 约束或明确返回 unknown；不能形成 parser/printer、stable ID、
-digest、byte serialization 和独立 verifier 齐全的第二套 IR。
+Q32不增加私有relation primitive、node graph或expression language。`IndexRelation`只是对当前epoch中
+MLIR Affine/Presburger/ValueBounds结果和source/destination domain的analysis adapter，不拥有parser/printer、
+stable ID、digest、byte serialization或独立verifier。
 
 ### 4.2 支持的分析操作
 
@@ -317,6 +319,10 @@ planner 尝试一种 route 的方式是：clone 当前 IR，运行对应 proof �
 | staged movement | explicit temporary、DMA、GS、fill/mask 和 event/completion graph |
 | spill/reload | explicit storage root、store/load 和 completion |
 | immutable encoded storage | typed resource/member、typed encoding 和对应 load |
+
+当前实现的`StorageLoadOp`仍以source→result隐式创建SPM value；Q32.R必须迁移为source+explicit destination、
+无result的destination-style op，并同步builder、parser/printer、verifier、conversion和tests。allocation identity
+由显式`memref.alloc`/view拥有，不能让load op或layout interface暗含。
 
 route choice优先由上述 IR 结构推导。如果同样的 operand/type/relation 可能合法 lower 成两种具有不同 effect、
 engine 或 ABI 的真实路线，下游不能自行挑选；必须在 movement op 上增加由 verifier 和 lowering 逐字段消费的
@@ -539,7 +545,7 @@ property tests 使用独立慢 oracle 与 interface/descriptor fast path differe
 
 ## 15. 示例
 
-### 15.1 Compact DDR 直接映射到 Cx SPM（later Q32.V）
+### 15.1 Compact DDR 直接映射到 Cx SPM（Q32.V）
 
 示例输入为 logical `[64, 64]xf16`，DDR root 是 compact，compute operand 要求 Cx：
 
@@ -590,9 +596,11 @@ whole-rank/whole-variant gates；该later工作不属于Q32或本文当前完成
 本文边界完成至少要求：
 
 - 不存在平行查询/schema/cache identity 或 detached route payload；
-- `IndexRelation` 明确从当前 IR 派生并在 rewrite 后重建；
+- `IndexRelation`明确从当前IR派生并在rewrite后重建，identity/permutation/broadcast/slice/reshape/concat及composition
+  被tiling、view、propagation、transfer和reuse真实消费；
 - Cx/NCx/BOOL 等行为只有一个 attr/type-interface 事实源；
-- 每个 accepted route 已在 isolated clone 中成为 typed view/movement/temp/event IR；
+- current zero-copy/compact DMA/GS/staged及Q32.V mapped route alternatives在isolated clones中成为不同typed
+  view/movement/temp/event IR，并进入06同一candidate selection；
 - exact descriptor、invalid-lane、range、lifetime 和 completion 能只从 accepted IR 重建；
 - direct failure 不在 lowering 中隐式 fallback；
 - calculator、relation、descriptor、verifier 和 integrated tests 有本轮真实执行结果；

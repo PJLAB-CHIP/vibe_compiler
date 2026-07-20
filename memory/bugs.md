@@ -416,8 +416,10 @@
 - 现象：两个compiler-managed DDR root在同一个`wafer.instr.local_fence`之前分别被RDMA/WDMA发起时，旧DDR planner只把
   operand在issue op处记为最后use，可能给仍被movement engine访问的root分配同一offset；external DDR issue没有fence也会
   被接受。
-- 根因：planner只做普通SSA/value lifetime，没有消费`WaferResourceEffectInterface`中的DDR read/write、Movement issue和
-  Sync fence关系；同步完成语义又只存在于SPM planner的局部实现，DDR无法复用。
+- 根因：planner只做普通SSA/value lifetime，没有消费current IR通过`MemoryEffectOpInterface`、
+  custom `SideEffects::Resource`和显式issue/token/fence表达的DDR read/write与completion关系；
+  同步完成语义又只存在于SPM planner的局部实现，DDR无法复用。额外复制一份resource-effect record只会增加
+  漂移风险，不能替代标准effect和SSA completion。
 - 修复模式：从当前structured IR重算统一path/root timeline，用memory-space参数化的local completion tracker把tracked root
   lifetime延长到覆盖该path的local fence；即使external root没有allocation ref，也保留pending issue并在entry exit拒绝。
   loop body视为may-zero-trip，body中新issue必须在backedge前完成，loop后的fence不能证明迭代间安全。
@@ -693,9 +695,15 @@
   canonical frontier、transport signature、统一work schema和版本化诊断统计协议；rewrite和下游收益反而排在后期。
 - 根因：把“需要联合评估多个决策”误解为“需要先统一序列化所有语义和搜索状态”，没有按op/type/attr interface、可重算
   analysis、PatternRewriter、DialectConversion和typed selected IR分别归责；一次transformation内的普通C++对象被错误提升为
-  跨阶段协议。
+  跨阶段协议。把现有IR字段重新收集成WaferTilingDemand、collective info、layout requirement或resource-effect
+  record，即使形式上用了OpInterface，也仍是在复制MLIR语义。
 - 修复模式：从一条真实source-to-bundle rewrite反推最小抽象。op-local能力用interface/external model，跨value关系从current
   IR派生，选择立即物化进isolated clone，rewrite后销毁旧analysis，legality/cost只读final clone，并复用现有all-rank atomic
-  transaction。没有profiling和多个真实实现前不加registry、cache、beam或serializer。
+  transaction。没有profiling和多个真实实现前不加registry、cache、beam或serializer；但implementation、encoding、route、
+  residency、buffering/order、communication和resource-aware selection等产品能力仍须逐项映射到actual-IR producer与gate。
+  DPS/Tiling/ViewLike/Subset/MemoryEffect等已有标准接口直接复用；Wafer-specific interface只填补明确target gap，
+  并且不能返回聚合快照重新发布op已有事实。
 - 防复发：新增planner对象必须回答它删除了哪个matcher/fallback、由哪个真实rewrite消费、为何不能从IR重算，以及selected后
-  如何销毁；任务顺序必须先出现通用rewrite与完整下游gate，再允许从实际candidate增长数据抽象搜索策略。
+  如何销毁；删除旧对象时建立“原功能目标→MLIR-native owner→production consumer→completion evidence”矩阵，确认删的是
+  重复表示而不是功能。任务顺序必须先出现通用rewrite与完整下游gate，再允许从全部candidate producer的实际增长数据抽象
+  搜索策略；不能在只打通两条rewrite后把Q32报成完成。

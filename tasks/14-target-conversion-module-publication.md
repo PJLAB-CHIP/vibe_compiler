@@ -1,12 +1,13 @@
 # Wafer Target Conversion、CRT 与 Module Publication
 
 状态：当前 production 合同是已经完成并验证的 TX81 Kernel Runtime ABI v1、owner-backed
-`TargetLLVMModuleBundle`、Q17 staged device link 和 atomic `TargetArtifactBundle` publication。Q32 core
-只改变上游如何得到 selected typed IR，不改变本文件的 v1 conversion、CRT 或 publication 合同。
+`TargetLLVMModuleBundle`、Q17 staged device link 和 atomic `TargetArtifactBundle` publication。Q32.I/R/B
+只改变上游如何得到selected typed IR，不改变本文件的v1 conversion、CRT或publication合同。
 
-Mapped DMA、oriented GEMM、`RequiredCapabilitySet`、package/schema 升级属于 later Q32.V
-target-capability extensions；Count writeback属于独立Q3.6。它们不是Q32 core completion gate，也不能由
-planner 是否能构造某个候选而自动启用。实现状态只看 `tasks/progress.md`。
+Mapped DMA、physical-footprint fill和oriented GEMM属于已排期Q32.V typed target-capability vertical；
+`RequiredCapabilitySet`和package/schema升级只在这些扩展的真实consumer需要逐row preflight时从winner派生。
+Count writeback属于独立Q3.6。任何能力都不能由planner是否能构造某个候选而自动启用。实现状态只看
+`tasks/progress.md`。
 
 底层 register/wrapper 事实见 `docs/wafer-register-level-instruction-spec.md` 和
 `docs/tx8-deps-reverse-engineering/`。production symbol 事实源是当前 instruction lowering、
@@ -30,7 +31,8 @@ planner 是否能构造某个候选而自动启用。实现状态只看 `tasks/p
 - 不把 CRT symbol 存在等同于 packet、numeric、model admission 或 board correctness；
 - 不为 host model 另造一条 target lowering；
 - 不改变已经发布的 v1 symbol signature、target profile 或 package identity；
-- 不在 Q32 core 中加入 mapped DMA、oriented GEMM、capability-set/schema 或 Count；
+- current v1 lowering不提前接受mapped DMA、physical fill、oriented GEMM、capability-set/schema或Count；前三项由
+  Q32.V在独立typed纵向闭合后加入，Count仍由Q3.6拥有；
 - Direct DTE 只有 accepted remote receiver offset、endpoint/slot/completion 合同闭合后才能进入
   production target module；发送端不能假定各 rank 的 SPM allocation 同址。
 
@@ -74,12 +76,18 @@ Pipeline position:
   TargetProfileId从CompilationRequest/ExecutionConfig贯穿ExecutableBundle、TargetLLVMModuleBundle、
   TargetArtifactBundle和package readback且没有default；109-symbol CRT conformance、rank-count=1/16
   owner lifetime、all-and-only module/ABI-slot/digest、late-rank atomic failure和真实production driver通过。
-  later Q32.V/Q3.6各自拥有独立completion gate，不反向扩大或重开本current v1 gate。
+  Q32.V/Q3.6各自拥有独立completion gate，不反向改写本current v1证据；Q32.V完成后新增typed profile/ABI row由
+  Q32.M/S通用candidate owner消费。
 ```
 
 每个 accepted rank 在进入本边界前已经完成 bufferization、typed tile/instruction materialization、SPM/DDR
 planning 和 rank finalization。target conversion 不能再次改变 buffer 形态、执行 task scheduling、插入
 physical movement 或调整 memory placement。
+
+Q32.V bring-up不制造pipeline循环：它在isolated typed module/fixture上复用同一conversion、exact-signature和
+repo-owned SystemC/formal gate，只用于证明新增typed capability可被下游消费，不发布production artifact。
+Q32.M/S随后才把已闭合capability放入candidate selection；production `TargetLLVMModuleBundle`仍只在winner
+commit之后从accepted instruction IR生成。
 
 ## 3. Current Closed Target Profile 与 Format Contract
 
@@ -219,8 +227,8 @@ uint32；`Data_Shape` 维度还必须适配底层 uint16。`-1` sentinel 只能�
 i64→i32 截断产生。
 
 当前 lowering 对已有 typed view/root address 和 GS local offset 做 checked address derivation。这不等于
-mapped DMA 已成为 Q32 core 路线：RDMA/WDMA 的非compact physical mapping、额外 local offset 或 route-specific
-mode若不能由current typed operands唯一重建，必须在later Q32.V先扩 typed Instr/TargetCall，再由本节消费。
+Q32.I/R/B已支持mapped DMA：RDMA/WDMA 的非compact physical mapping、额外 local offset 或 route-specific
+mode若不能由current typed operands唯一重建，必须在Q32.V先扩 typed Instr/TargetCall，再由本节消费。
 target conversion不能读取 planner的 `IndexRelation` 来补字段。
 
 ## 7. Kernel ABI
@@ -396,10 +404,11 @@ current negative还必须证明：
 - mapped DMA不能因planner trace或`IndexRelation`存在而绕过typed IR/geometry gate；
 - hand-written LLVM、symbol-only fixture和dry-run只补覆盖，不替代compiler-generated module。
 
-## 12. Later Target-Capability Extensions
+## 12. Q32.V Typed Target-Capability Vertical 与其它扩展
 
-本节只定义未来扩展的边界和保持不变的typed ABI原则。它们全部是独立任务；没有实现、验证和admission
-consumer前，不进入current profile、CRT surface、artifact fields或Q32 core完成条件。
+本节定义Q32.V已排期能力及其它扩展的边界和保持不变的typed ABI原则。没有实现、验证和execution
+consumer前，不进入current profile、CRT surface或artifact fields；但mapped DMA、physical fill和oriented GEMM不能因删除
+provider/query协议而从任务目标消失。
 
 ### 12.1 Q32.V：Mapped DMA
 
@@ -412,17 +421,27 @@ relation analysis。
 - source/tile rewrite和selected typed IR；
 - direct/multi-descriptor exact coverage；
 - root-relative local offset、overflow、alignment、exact-end和canary；
-- TargetCall decode、target model和package/runtime admission；
+- TargetCall decode及repo-owned formal/SystemC正负例；只有真实package/runtime consumer因ABI或capability row变化
+  需要额外readback/preflight时，才增加对应package/runtime gate；
 - current compact DMA不回归。
 
 若真实route choice影响engine/effect或不能从typed operands唯一重建，必须先增加typed Instr/TargetCall field或
 新call revision，不能借用名字或planner side state。
 
-### 12.2 Q32.V：Oriented GEMM ABI
+### 12.2 Q32.V：Physical-Footprint Fill
 
-v1 profile和`wafer_tx81_gemm`保持normal/normal原义，不能原地改变。未来只有出现真实oriented consumer且
-Instr/TargetCall语义闭合时，才设计新的closed Kernel Runtime ABI/profile revision；symbol、字段宽度、参数顺序和
-revision spelling必须与实际wrapper、loader、model和package consumer同批冻结，本文不预先指定。
+Q32.V为fill增加typed logical-valid / physical-footprint domain或等价closed字段，并从destination encoding、valid/padding
+domain和bitpacked element width checked派生最终count/range。TargetCall必须携带consumer实际需要的domain/count/raw scalar
+事实，CRT/SystemC不能读取planner invalid-lane state补猜。
+
+该能力必须同批闭合Tile/Instr verifier、scalar到canonical raw element语义、Cx/NCx/BOOL full-footprint range、padding与unused
+bit状态、target-call lowering和formal/SystemC正负例。底层memset存在不证明任意dtype/raw scalar/domain均合法。
+
+### 12.3 Q32.V：Oriented GEMM ABI
+
+v1 profile和`wafer_tx81_gemm`保持normal/normal原义，不能原地改变。Q32.V必须建立真实oriented source、
+typed Instr/TargetCall和repo-owned SystemC/formal consumer，并为它设计新的closed Kernel Runtime ABI/profile
+revision；symbol、字段宽度、参数顺序和revision spelling在这些实现与consumer同批确定，本文不预先冻结。
 
 orientation必须是Instr、TargetCall transaction、LLVM call和decoder中逐字段验证的closed enum；CRT只做checked enum到
 wrapper transflag的映射，不从shape、layout、symbol后缀或payload猜测。新revision不能让v1 module或symbol静默获得
@@ -430,9 +449,11 @@ transpose语义，也不能在同一profile下混用不兼容signature。
 
 Q32.V必须同批闭合source interface/rewrite、Instr verifier、TargetCall exact signature、CRT header/source、
 symbol checker、device link、formal/SystemC语义和package identity。compiler能发射只证明typed ABI合法；
-model evidence由tasks/17 admission判断，board/environment由tasks/15 admission判断。
+repo-owned formal/SystemC是Q32.V gate。external model admission只约束相应execution consumer，board/environment
+admission属于tasks/15/17的later/external gate；二者都不阻塞Q32.V或Q32，也不反馈planner。真实consumer若需要
+逐row capability preflight，再按§12.4增加条件性package projection。
 
-### 12.3 Q32.V：Required Capability 与 Schema Upgrade
+### 12.4 Q32.V 条件性 Post-Selection Extension：Required Capability 与 Schema Upgrade
 
 当前 `TargetLLVMModuleBundle`、`VerifiedTargetModule`、`TargetArtifactBundle` 和 package schema都不包含
 `RequiredCapabilitySet`。只有tasks/17或tasks/15出现必须按实际target calls逐项admit的真实consumer时，Q32.V
@@ -456,7 +477,7 @@ stable key encoding、digest、module metadata和package schema revision必须�
 冻结，并由tasks/14 conversion/readback、tasks/15 package/runtime admission和tasks/17 model admission逐字段
 共享。当前不冻结TLV、JSON schema编号、固定key数量或profile-wide隐式全集。
 
-### 12.4 Q3.6：Count Writeback ABI
+### 12.5 Q3.6：Count Writeback ABI
 
 Count不改变current v1 surface。只有source predicate、typed instruction、wrapper语义和实际model/runtime consumer均已
 确认时，Q3.6才增加新的closed target ABI revision；symbol、参数顺序、field width和profile spelling与这些consumer
@@ -471,7 +492,7 @@ effect前拒绝。
 Instr/TargetCall、CRT、decoder、symbol closure、target model和必要package/runtime readback；没有真实consumer时不建立
 任何跨阶段capability、qualification或package协议。
 
-### 12.5 Admission Ownership
+### 12.6 Admission Ownership
 
 普通compiler conversion只回答：“selected typed IR能否按这个`TargetProfileId`无损发射并通过ABI/geometry
 verification”。它不回答某个model或board环境是否允许执行。
@@ -481,7 +502,7 @@ verification”。它不回答某个model或board环境是否允许执行。
 - tasks/14只产生并readback typed target facts，不保存admission结果；
 - planner不得读取admission表来创造未被IR/ABI表达的新route。
 
-### 12.6 其它 deferred 项
+### 12.7 其它 deferred 项
 
 - low-precision/quant ABI；
 - stable cross-process Kernel ABI descriptor；
@@ -491,4 +512,4 @@ verification”。它不回答某个model或board环境是否允许执行。
 - extended CRT surface。
 
 恢复任一项时必须先确认typed consumer、failure gate和版本边界，不能改变current v1 profile含义，也不能把
-later target-capability工作反写成Q32 core planner前置。
+execution admission或package schema反写成Q32 candidate生成输入。

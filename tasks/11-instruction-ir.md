@@ -13,8 +13,9 @@ Q22 review确认现有target lowering不消费reduce init，也不消费elementw
 tile-level IR，并在tile→instruction阶段完成movement/materialization、显式reduce分解或拒绝；terminal instruction op不再
 携带这些字段。该缺口不回滚Q17 artifact publication状态，但CModel不得补偿。
 当前ODS尚未把RDMA/WDMA两端root-relative offset（包括0）设为mandatory，也没有plain GEMM orientation字段；现有lowering只产生
-compact-boundary DMA和implicit normal/normal GEMM。下文明确标注的mapped transfer与versioned oriented GEMM属于later
-Q32.V target-capability合同，不能算作当前实现，也不作为Q32核心rewrite前置。实现状态以`tasks/progress.md`为准。
+compact-boundary DMA和implicit normal/normal GEMM。下文明确标注的mapped transfer、physical-footprint fill与versioned
+oriented GEMM属于已排期Q32.V typed target-capability合同，不能算作当前实现；其ODS/TargetCall/ABI/SystemC纵向闭合后才由
+Q32.M/S通用candidate owner消费，不能由planner提前假设。实现状态以`tasks/progress.md`为准。
 
 本文定义 instruction-level Wafer IR。核心结论：
 
@@ -121,23 +122,23 @@ Pipeline position:
   `wafer.tile.*` collective，生成 explicit
   `wafer.instr.dte_send` / `dte_recv` / `dte_wait` p2p schedule。instruction op 通过
   interface 显式暴露current v1 instruction family、memref read/write、descriptor attrs、issue effect和completion relation；
-  current GS/staged movement还暴露IR中已经物化的local offset/count与valid-lane mode。later Q32.V只有在对应
+  current GS/staged movement还暴露IR中已经物化的local offset/count与valid-lane mode。Q32.V只有在对应
   ODS/TargetCall字段落地后，才附加GEMM orientation、mapped DMA双端root-relative offset和physical-fill mode；
-  Q32 core不得假设这些future字段存在。
+  earlier checkpoints不得假设这些尚未实现字段存在。
 - Output artifact / IR:
   candidate clone 中每个 static rank 一份完整 instruction-level structured program：
   control flow + tile-local `wafer.tile.region` scopes + memref values with
   `#wafer.memory<space, layout>` + `wafer.instr.*` + explicit token/wait/fence；或结构化
   legalization failure reason。单个 task/traversal fragment/tile 不是可提交 artifact。
 - Downstream consumer:
-  whole-rank SPM/DDR planning、event/physical-transport/all-rank transport/
+  whole-rank SPM planning、whole-variant DDR planning、event/physical-transport/all-rank transport/
   target-entry verification 和
   closed-loop whole-variant candidate driver；atomic commit 后才由 target LLVM、package 和 runtime 消费。
 - User-level driver / named pipeline:
   Q16以后由同一
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=<registered-id>`
   内的closed-loop
-  candidate loop调用；当前baseline为closed v1。future oriented Q32.V request必须显式选择其独立profile，且不与v1隐式转换。
+  candidate loop调用；当前baseline为closed v1。Q32.V oriented request必须显式选择其typed profile/ABI revision，且不与v1隐式转换。
   当前Q15只产出verified structured tensor program directory，不执行instruction lowering；
   `wafer-opt`只处理显式IR，局部bring-up / candidate evaluation入口是
   `wafer-lower-tile-region-to-instr` named pipeline。
@@ -168,7 +169,7 @@ Pipeline position:
   分别验证，每条 exit path terminal drain 后均为空；variant-set gate
   还要证明所有 transport 匹配和 shared physical geometry/range/narrowing contract。production elementwise必须
   不携带map且same-shape；reduce init必须在tile→instruction阶段显式分解或拒绝，terminal instruction op不携带init。
-  target-profile×engine×format×selected-fields必须由tasks/14 typed conversion/ABI合同准入。若later Q32.V启用mapped DMA，
+  target-profile×engine×format×selected-fields必须由tasks/14 typed conversion/ABI合同准入。Q32.V启用mapped DMA时，
   必须通过descriptor-cover和两端range closure；若启用oriented GEMM，必须匹配versioned ABI capability。任一 rank/task/traversal scope
   失败都丢弃整个 clone。
 ```
@@ -348,7 +349,7 @@ instruction op不保存planner的`InvalidLaneState`，但必须让该state可从
   `KnownSplat(typed raw value)`；不能假设scalar bits原样复制，NaN、signed zero和format conversion均按profile验证。只写valid
   segments的RDMA/WDMA/GS不改变未覆盖padding，未先fill时仍为Unknown。
 
-later Q32.V若确有多个TargetCall可观察mode，可增加封闭typed
+Q32.V若确有多个TargetCall可观察mode，可增加封闭typed
 `#wafer.valid_lane_mode<logical_segments|full_physical|masked>`核对selected contract，但它不能替代offset/count/mask。
 若现有TargetCall无法从实际字段唯一恢复execution domain，就必须新增versioned ABI字段或拒绝该capability；CModel只消费
 最终TargetCall sequence。当前v1 CT elementwise只接受Tensor/no-invalid-lane row；Cx/NCx CT必须先完成segmented或
@@ -370,7 +371,7 @@ packet/register与板端证据另由`tasks/16` gate。
 | --- | --- | --- | --- |
 | RDMA / WDMA contiguous 和三层 stride descriptor | `wafer.instr.rdma` / `wafer.instr.wdma` | V0 production target op | target LLVM call emission 必须生成 target CRT call；descriptor 保持 byte-level `inner_bytes`、stride 和 iteration |
 | TDMA `TsmDataMove::GatherScatter` | `wafer.instr.gather_scatter` | V0 production target op | layout materialization、SPM copy 和可静态证明的 slice/transpose/broadcast movement 都展开为一条或多条 gather/scatter；无法压成 V0 descriptor 时结构化失败 |
-| `TsmPeripheral::Memset` / scalar fill | `wafer.instr.fill` | V0 production target op | current v1只支持Tensor logical element count。Cx/NCx/BOOL physical-footprint fill及其typed domain属于later Q32.V，纵向闭合前fail closed |
+| `TsmPeripheral::Memset` / scalar fill | `wafer.instr.fill` | V0 production target op | current v1只支持Tensor logical element count。Cx/NCx/BOOL physical-footprint fill及其typed domain由已排期Q32.V闭合，纵向闭合前fail closed |
 | CT arithmetic / relation / logic / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | V0 production target op | 覆盖当前 enum 中的 target kind；tile-level map必须先materialize为movement/同形状operand并strip，terminal op不携带`indexing_maps`；scalar immediate、bitpacked bool loop/VuV和rounding mode需显式target variant后才能开放 |
 | semantic select | 无单条 select op | V0 composite lowering | 必须展开为 false-copy `gather_scatter` + `bit2fp` + `mask_move`；`wafer.instr.elementwise <select>` 非法 |
 | CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` + target `dim` code | target-native leaf；Q0.L source-reduce correctness baseline不直接生成 | terminal op不携带init operand/attr；只有compiler-owned target policy对完整value domain证明native identity/order/special-value等价时才可替换有序composite，不得依赖Q22 candidate profile |
@@ -445,23 +446,28 @@ tile reduce的canonical reduction tuple/slice relation（以及只有native proo
 batched GEMM `batch_count` 和 batch/m/n/k dimension attrs、elementwise kind 等。这些字段能从当前 IR type、attrs 和
 source op verifier 重算。
 
-## 6. Common Instruction Interface
+## 6. Common Instruction Contract
 
-instruction合同由三个正交接口组合，不能把effect伪装成instruction interface的方法：
+当前代码仍包含`verifyInstructionContract`和`WaferResourceEffectInterface`相关声明/boilerplate；Q32.M按
+`tasks/progress.md`迁移真实consumer并删除这些重复合同。下述内容是迁移后的终态，不表示该清理已经实现。
+
+instruction结构合同由typed op、ODS/op verifier和标准effect组成：
 
 ```text
 WaferInstructionOpInterface {
   getInstructionFamily() -> InstrFamily
-  verifyInstructionContract()
 }
 
 MemoryEffectOpInterface
-  -> generic MLIR可见的conservative Read/Write resource projection
-
-WaferResourceEffectInterface
-  -> collectWaferResourceEffects / verifyWaferResourceEffectContract
-  -> buffer role/bytes + issue/wait/fence resource-lifecycle markers
+  -> 对actual SSA value或MLIR SideEffects::Resource的conservative
+     Read/Write/Allocate/Free projection
 ```
+
+`WaferInstructionOpInterface`只保留有多个generic consumer使用的family标记；结构验证直接由op verifier拥有，
+不再通过`verifyInstructionContract`重复调用同一verifier。SPM/DDR/Compute/Movement/Communication/Sync
+resource继续使用MLIR custom `SideEffects::Resource`，但不再复制成`WaferResourceEffect` record。
+buffer role从operand/result和typed op semantics取得，bytes/footprint从type、encoding和descriptor fields重算，
+issue/wait/fence completion从SSA token和显式op推导。
 
 `InstrFamily` 是 Wafer enum/interface fact，V0 至少包含：
 
@@ -474,9 +480,9 @@ WaferResourceEffectInterface
 | `tdma` | TDMA queue |
 | `dte` | Direct DTE / FSM communication invocation |
 
-三个interface都只返回当前op可验证的local facts，不返回planner side table，也不复制全局schedule；detailed Wafer effect必须
-被standard MLIR effect覆盖，而standard effect可以更保守。effect中的completion marker只标识path verifier需要闭合的resource
-lifecycle，不能单独证明task已经完成；真正completion由op semantics、SSA token、wait/fence及path-covering verifier共同证明。对
+family marker只返回当前op可验证的instruction family，不返回planner side table，也不复制全局schedule。
+MemoryEffectOpInterface直接关联actual buffer value或custom SideEffects::Resource；它不携带第二份role/index/bytes
+record。真正completion由op semantics、SSA token、wait/fence及path-covering verifier共同证明。对
 `rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert`、`gemm` 和
 `dte_*` 这类固定 family 的 V0 op，`getInstructionFamily()` 由 op class 静态派生，不要求 IR
 打印 `instruction_family` attr。后续若出现同一个 op contract 下可选择多个 family 的 instruction
@@ -494,8 +500,8 @@ resource effects 至少要表达：
 | DTE | send reads SPM source, recv writes SPM destination, wait consumes async token | Communication/DTE issue or wait |
 
 所有issue、wait、fence、compute/movement/communication instruction和observable write均为non-speculatable。generic
-transformation只能对同时无standard effect、无Wafer detailed effect且不会触发UB的structural op使用`Pure`；standard effect
-不替代下述completion proof。
+transformation只能对没有standard MemoryEffect/custom SideEffects::Resource effect且不会触发UB的structural op使用
+`Pure`；effect不替代下述completion proof。
 
 completion 是 instruction program 的显式数据流合同。generic `async.call`返回的`!async.token`/
 `!async.value`携带所访问buffer root，但task identity是另一项事实；只有path-covering `async.await`，或direct
@@ -533,14 +539,14 @@ physical packet：
 
 | attr | type | meaning |
 | --- | --- | --- |
-| `byte_count` | `I64Attr` | 该 instruction / descriptor实际搬运的payload bytes，用于resource effect；split cover中不是整个logical tensor或整个cover的bytes |
+| `byte_count` | `I64Attr` | 该 instruction / descriptor实际搬运的payload bytes；cost/resource analysis从该typed字段读取，split cover中不是整个logical tensor或整个cover的bytes |
 | `inner_bytes` | `I64Attr` | 最内层 contiguous byte count |
 | `src_strides` | `DenseI64ArrayAttr` | source byte strides，长度为 3 |
 | `src_iterations` | `DenseI64ArrayAttr` | source logical iterations，长度为 3，值为正数 |
 | `dst_strides` | `DenseI64ArrayAttr` | destination byte strides，长度为 3 |
 | `dst_iterations` | `DenseI64ArrayAttr` | destination logical iterations，长度为 3，值为正数 |
-| `src_offset` | `I64Attr` | allocation root内的非负source byte offset；current仅GatherScatter可选携带，later Q32.V mapped DMA启用后RDMA/WDMA必须显式携带（包括0） |
-| `dst_offset` | `I64Attr` | allocation root内的非负destination byte offset；current仅GatherScatter可选携带，later Q32.V mapped DMA启用后RDMA/WDMA必须显式携带（包括0） |
+| `src_offset` | `I64Attr` | allocation root内的非负source byte offset；current仅GatherScatter可选携带，Q32.V mapped DMA启用后RDMA/WDMA必须显式携带（包括0） |
+| `dst_offset` | `I64Attr` | allocation root内的非负destination byte offset；current仅GatherScatter可选携带，Q32.V mapped DMA启用后RDMA/WDMA必须显式携带（包括0） |
 
 contiguous movement 使用 `inner_bytes == byte_count`，stride 全 0，iteration 全 1。byte stride
 必须已经从 element stride 转换完成。硬件 RDMA/WDMA 和 TDMA 都是“最内层连续搬运 +
@@ -551,7 +557,7 @@ resource/legality 合同。bitpacked BOOL按`inner_bytes * 8`恢复logical eleme
 dynamic stride、超过 3 层的静态 stride 或不规则
 非连续访问，R3.2d 必须结构化失败，不能生成名字上合法但下游无法 packetize 的 instruction op。
 current v1的RDMA/WDMA ODS不携带`src_offset`/`dst_offset`；它只接受compact-boundary view并从operand root与accepted
-allocation offset形成地址。current GatherScatter可以携带buffer-local optional offset。later Q32.V启用mapped DMA后，
+allocation offset形成地址。current GatherScatter可以携带buffer-local optional offset。Q32.V启用mapped DMA后，
 directional offset不是allocation placement fact，而是descriptor相对allocation root的access fact；届时必须由typed view和
 exact transfer proof物化并验证，不能由lowering从planner历史补猜。
 
@@ -568,9 +574,11 @@ wafer.instr.wdma source to dest attr-dict : type(source) to type(dest)
 | `wafer.instr.wdma` | `source: MemRef<#wafer.memory<spm, *>>`, `dest: MemRef<#wafer.memory<ddr, *>>` | none | current v1：`byte_count`, `inner_bytes`, `dst_strides`, `dst_iterations` |
 
 当前selected tile lowering的`wafer.tile.load/store`仍要求SPM侧为compact Tensor；consumer需要`Cx/NCx`时使用显式
-`wafer.tile.materialize_layout`/GatherScatter。这是已实现保守路径，不是终态instruction限制。
+`wafer.tile.materialize_layout`/GatherScatter。这是已实现保守路径，不是终态instruction限制。当前
+`StorageLoadOp`还是source→result形态；Q32.R先迁移为explicit source/destination、无result，再由本节按
+destination-style lowering消费。
 
-#### Later Q32.V：Mapped DMA
+#### Q32.V：Mapped DMA
 
 direct mapped RDMA只在DDR logical view到目标SPM physical byte order的复合映射可被一个或多个
 “strided DDR source + sequential SPM destination segment”descriptor精确覆盖时成立；每段显式`src_offset`选择DDR root内
@@ -635,13 +643,13 @@ wafer.instr.convert #wafer.instr_convert_kind<src_dst> source into dest attr-dic
 
 `wafer.instr.fill`的current v1 Tensor行为从logical element count checked派生`elem_count`，ODS不携带domain attr。
 
-later Q32.V若增加typed `#wafer.fill_domain<logical_valid|physical_footprint>`，其中`physical_footprint`表示从dest view base
+Q32.V将增加typed `#wafer.fill_domain<logical_valid|physical_footprint>`，其中`physical_footprint`表示从dest view base
 连续覆盖`computeWaferPhysicalTensorInfo`给出的完整physical bytes：非BOOL要求
 footprint可整除format element bytes并取商，BOOL按`bytes * 8` checked得到bit count；count、range和target field必须可表示。
 它是建立Cx/NCx padding与bitpacked unused bits `KnownSplat`的唯一full-fill路径；若底层Memset不能按该count完整写入则row非法。
 TargetCall仍消费明确`elem_count`，无需读取planner state；formal/SystemC语义必须证明scalar到canonical raw element的
 映射，无法唯一确定的NaN/-0/conversion tuple不得建立KnownSplat。当前Cx/NCx/BOOL physical-fill尚不是v1 capability；
-future Q32.V启用前须闭合Tile/Instr/TargetCall/SystemC正负纵向。
+Q32.V启用前须闭合Tile/Instr/TargetCall/SystemC正负纵向。
 
 `wafer.instr.convert` 作为 instruction op 定义，因为 hardware convert 当前属于 CT instruction family；
 其 `kind` 直接对应 convert wrapper / opcode pair，例如 `fp32_int32`，verifier 从 kind 推导
@@ -698,7 +706,7 @@ wafer.instr.gemm lhs, rhs into dest attr-dict
 current v1 ODS没有orientation attr，只接受canonical normal/normal relation；target call只携带
 `batch_count/M/K/N/format`。stored shapes、M/K/N、batch和physical footprint仍必须精确匹配。
 
-#### Later Q32.V：Oriented GEMM
+#### Q32.V：Oriented GEMM
 
 orientation扩展用与tile层共用的封闭typed enum `#wafer.gemm_orientation<normal|transpose>`，不使用raw packet bool，也不为
 NN/NT/TN/TT建立四个op。对每个batch slice，normal lhs stored shape为`[M,K]`、transpose lhs为`[K,M]`；
@@ -838,7 +846,7 @@ Pipeline position:
   compiler-owned complete instruction/TargetCall transaction test seam，不冒充source-produced vertical。
 - Explicit non-goals: no host scalar return, raw register IR, guessed Count predicate, model fallback or board claim.
 - Completion gate: later Q3.6的11/14-17 mechanical gate及synchronous-writeback effect原子通过；source/model admission
-  另要求明确predicate、closed format语义、独立golden和实际kernel。该gate不属于Q32 core，也不改变current Instr
+  另要求明确predicate、closed format语义、独立golden和实际kernel。该gate独立于Q32/Q32.V，也不改变current Instr
   completion状态。
 ```
 
@@ -890,11 +898,11 @@ enum/option/parse/default/hard-coded selector；instruction lowering只合法化
 
 | target-abstract op | instruction-level lowering |
 | --- | --- |
-| `wafer.tile.load` | consume destination-style source/dest；当前V0只处理compact Tensor。later mapped extension必须从两端typed views/encoding、TargetProfileId和08 exact transfer proof导出direct cover，并发射显式`src_offset`/`dst_offset`的RDMA；若consumer要求known padding，先fill完整destination再发valid segments；staged alternative必须已显式物化为Tensor+GS payload IR |
-| `wafer.tile.store` | consume destination-style source/dest；当前V0从compact Tensor发射WDMA。later mapped extension必须从两端typed views/encoding、TargetProfileId和08 exact transfer proof导出direct cover，并发射显式`src_offset`/`dst_offset`的WDMA；staged alternative必须已显式物化在payload IR，随后用local fence闭合source lifetime |
+| `wafer.tile.load` | Q32.R后consume destination-style source/dest；current capability只处理compact Tensor。Q32.V mapped extension从两端typed views/encoding、TargetProfileId和08 exact transfer proof导出direct cover，并发射显式`src_offset`/`dst_offset`的RDMA；若consumer要求known padding，先fill完整destination再发valid segments；staged alternative必须已显式物化为Tensor+GS payload IR |
+| `wafer.tile.store` | consume destination-style source/dest；current capability从compact Tensor发射WDMA。Q32.V mapped extension从两端typed views/encoding、TargetProfileId和08 exact transfer proof导出direct cover，并发射显式`src_offset`/`dst_offset`的WDMA；staged alternative必须已显式物化在payload IR，随后用local fence闭合source lifetime |
 | `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; compare source/result logical element to physical byte mapping through the unified physical layout calculator; coalesce adjacent byte segments, pack regular segments into up to three stride/iteration levels, and emit one or more `wafer.instr.gather_scatter`; do not require source/result physical byte counts to match; structured failure only when static logical movement cannot be represented by V0 descriptors |
-| `wafer.tile.fill` | current v1只对Tensor logical-valid domain生成无domain attr的`wafer.instr.fill`；padding/physical-footprint初始化属于later Q32.V，须先增加typed Instr/TargetCall字段并通过count/raw-value纵向 |
-| `wafer.tile.gemm` | ensure/create selected aligned SPM physical versions；current v1只在normal/normal relation成立时生成无orientation字段的`wafer.instr.gemm`。later Q32.V才把tile-level typed orientation无损写入versioned Instr op；不能从shape或op名恢复flag |
+| `wafer.tile.fill` | current v1只对Tensor logical-valid domain生成无domain attr的`wafer.instr.fill`；padding/physical-footprint初始化由Q32.V增加typed Instr/TargetCall字段并闭合count/raw-value纵向 |
+| `wafer.tile.gemm` | ensure/create selected aligned SPM physical versions；current v1只在normal/normal relation成立时生成无orientation字段的`wafer.instr.gemm`。Q32.V把tile-level typed orientation无损写入versioned Instr op；不能从shape或op名恢复flag |
 | `wafer.tile.elementwise` | materialize every input indexing map into explicit movement/same-shape operands; strip even identity maps; ensure/create destination; map non-select kind and emit map-free `wafer.instr.elementwise`; semantic select lowers to false-copy `gather_scatter` + `bit2fp` + `mask_move`; reject if a map is unrepresentable |
 | `wafer.tile.reduce` | verify init operand/attr mutual exclusion/type; fill result-shaped accumulator; enumerate reduction tuples in canonical lexicographic order; materialize each non-reduced slice to result shape and map an exact combiner to map-free elementwise ping-pong accumulators with explicit completion; move final accumulator to destination; reject dynamic-init/combiner/budget cases not representable by the typed baseline; do not emit native reduce without a compiler-owned full-domain equivalence proof |
 | `wafer.tile.copy` | ensure / create destination SPM memref; emit one gather_scatter; replace result with dest memref |
@@ -971,7 +979,7 @@ legalize 的其它 instruction fragments。
 - unsupported dtype, including relation/elementwise/convert pairs not mapped to CT V0.
 - movement descriptor cannot be represented with buffer-local offsets, `inner_bytes` and three
   stride/iteration levels.
-- current compact DMA或GatherScatter的typed view/descriptor/range无法证明；若later Q32.V启用mapped DMA，direct cover需要
+- current compact DMA或GatherScatter的typed view/descriptor/range无法证明；若Q32.V启用mapped DMA，direct cover需要
   非顺序SPM侧、两侧strided、coverage有hole/overlap、local offset/range溢出，或descriptor序列不能all-and-only覆盖logical relation。
 - `Cx/NCx` materialization with retained `C0` tail cannot be split into separately representable
   full-block and tail GatherScatter descriptors.
@@ -979,7 +987,7 @@ legalize 的其它 instruction fragments。
   converted into one or more `gather_scatter` descriptors.
 - unsupported control-flow op, multi-block region, or nested region whose executable body cannot be fully
   legalized under the same instruction conversion rules.
-- current NE GEMM dimension/batch attrs不能精确匹配stored operand/result types；若later Q32.V启用orientation，两个typed
+- current NE GEMM dimension/batch attrs不能精确匹配stored operand/result types；若Q32.V启用orientation，两个typed
   orientation attrs还必须匹配stored shapes并命中selected target profile/Kernel Runtime ABI tuple。
 - tile reduce dimensions无法形成static canonical tuple/slice movement、combiner没有exact elementwise mapping、init不被typed
   fill表示或checked expansion budget超限；native optimization另在`dimensions`不能映射target `dim`时拒绝。
@@ -1015,14 +1023,14 @@ R3.2d verifier checks only instruction legality:
   silent i64-to-i32 或 size-to-packet-field truncation 非法。
 - RDMA只允许DDR source stride/iteration，WDMA只允许DDR destination stride/iteration。current v1从compact operand root和
   accepted allocation offset计算SPM sequential range与DDR strided range，不要求ODS中不存在的directional offset字段。
-  later Q32.V mapped DMA才要求`src_offset`/`dst_offset`显式存在（包括0）、分别相对各自root，并证明descriptor序列对logical
+  Q32.V mapped DMA要求`src_offset`/`dst_offset`显式存在（包括0）、分别相对各自root，并证明descriptor序列对logical
   relation的all-and-only coverage；任何版本都不存在双侧任意stride的隐式合法化。
 - logical element type或`Data_Format` enum存在不证明任一engine可编码该dtype。production target verifier必须查询
   target-profile×instruction-family×format `TargetFormatEncodingRecord`并引用tasks/08 layout profile；当前typed convert kind可选择TF32 wrapper与
   RDMA/WDMA/fill/elementwise/reduce/GEMM通用format encoder缺TF32是两个独立legality row。UINT/64-bit direct DMA等
   未有engine encoding证据的row在shared registry闭合前target-illegal。
 - NE GEMM and CT reduce require supported aligned layout marker, dtype and rank. current v1 plain GEMM按implicit
-  normal/normal relation匹配stored shape与M/K/N/batch；later Q32.V oriented tuple只有在typed orientation字段、versioned
+  normal/normal relation匹配stored shape与M/K/N/batch；Q32.V oriented tuple只有在typed orientation字段、versioned
   target ABI和capability row同时匹配时合法。每个command tuple还必须唯一映射numeric semantics profile；terminal CT reduce has no init operand/
   attr，任何残留字段target-illegal；Q0.L source reduce必须更早lower为有序fill/movement/elementwise composite或拒绝，native
   reduce只有compiler-owned full-domain equivalence proof后才可进入production。
@@ -1180,8 +1188,8 @@ wafer.tile.region ... {
 ```
 
 这是当前V0保守路径的形态示例，不固定parser/printer，也不固定planner对physical-dataflow realization的选择。
-例中的GEMM省略orientation和Tensor staging属于当前实现事实。future Q32.V若实现versioned oriented ABI，必须显式
-打印两个typed orientation；future mapped transfer也必须用带local offset的typed RDMA/WDMA表达，不能由lowering猜测。
+例中的GEMM省略orientation和Tensor staging属于当前实现事实。Q32.V实现versioned oriented ABI时，必须显式
+打印两个typed orientation；Q32.V mapped transfer也必须用带local offset的typed RDMA/WDMA表达，不能由lowering猜测。
 例子中 stride 数值只说明 descriptor 字段位置，不作为 Cx padding 或 hardware packet 的规范值；
 真实 padded size、Cx/NCx 对齐、bool bitpack、descriptor stride 和 SPM offset 分别由
 `computeWaferPhysicalTensorInfo`、SPM memory planning 和 later realization 处理。
@@ -1189,7 +1197,7 @@ wafer.tile.region ... {
 ## 12. Implementation Work
 
 本节“已完成”只记录 op-local ODS、conversion 和局部 pipeline coverage，不是 committed executable
-completion proof。完整traversal、whole-rank SPM/DDR、terminal event closure、transport/target binding、
+completion proof。完整traversal、whole-rank SPM、whole-variant DDR、terminal event closure、transport/target binding、
 all-rank typed bundle和whole-variant atomic commit仍必须按第1、9、10节合同统一验收。
 
 R3.2c 已完成的前置：

@@ -9,8 +9,8 @@ completion 仍是独立扩展，不能反向改变本文的 logical collective �
 本文的核心原则只有一条：**通信语义、已展开执行和物理绑定分别由当前层的 typed IR 表达，不在 IR
 外复制另一份计划。**
 
-- logical collective 语义由现有 `WaferLinalgExtCollectiveOpInterface`、op operands/results/regions/attrs
-  和 enclosing execution mesh 表达；
+- logical collective语义由current typed op的operands/results/regions/attrs、DPS/Tiling/MemoryEffect
+  interfaces和enclosing execution mesh表达；MLIR Mesh op能精确承载的部分优先复用Mesh语义；
 - direct/ring/tree 只是一小组 compiler-private typed rewrite 参数；
 - 每个参数点直接改写一个 isolated complete-rank clone，生成真实 p2p、local movement/compute、staging、
   token、wait 和 fence IR；
@@ -35,7 +35,7 @@ Pipeline position:
   `wafer.target.topology`；以及当前rank的isolated complete-rank candidate clone、已选tiling/layout/residency
   与对应未放置SPM storage values。
 - Current stage responsibility:
-  通过`WaferLinalgExtCollectiveOpInterface`读取当前op语义；由一个无状态topology helper枚举固定小集合的
+  typed rewrite pattern直接读取current collective op、DPS/Tiling和execution mesh；由一个无状态topology helper枚举固定小集合的
   typed direct/ring/tree参数；对每个参数点使用PatternRewriter/DialectConversion在complete-rank clone内
   直接展开全部p2p、local movement/compute、communication staging、SSA token、wait和local fence，并在
   rewrite结束后fresh验证IR。不得产生独立于clone的执行图或可序列化候选记录。
@@ -110,8 +110,13 @@ post-SPMD structured collective IR
 
 ### 2.1 唯一 logical owner
 
-`wafer.linalg_ext.collective.*` 是 post-SPMD logical collective 的唯一 owner，现有
-`WaferLinalgExtCollectiveOpInterface`统一暴露从当前 IR 可推导的事实：
+`wafer.linalg_ext.collective.*`是当前post-SPMD logical collective owner。实现前必须逐op核对pinned MLIR
+Mesh dialect：mesh/mesh_axes、tensor axis和reduction等能无损表达的语义直接复用标准op或在handoff时保持其
+标准语义；只有arbitrary rank groups、source-target pairs、channel identity或combiner region等标准op不能
+表达的事实才由Wafer typed op/attr/region承载。
+
+generic consumer直接读取current op及其标准interfaces，不先复制到
+`WaferLinalgExtCollectiveInfo`。需要消费的事实包括：
 
 - inputs、destination operands、results和tile relation；
 - logical rank group或source-target pairs；
@@ -120,9 +125,14 @@ post-SPMD structured collective IR
 - upstream channel identity；
 - enclosing execution mesh中的logical rank domain。
 
-interface 实现只能读取 op 自身及 enclosing typed IR。它不返回算法选择、physical endpoint、staging
-placement、DTE/FSM、预计cost或已经展开的步骤。缺少稳定语义时应补 op/type/attr/region 和 verifier，不能从
-op名、operand位置、buffer名或遍历顺序猜测。
+若多个typed collective family与至少两个generic consumer仍需要统一动态分派，可以把
+`WaferLinalgExtCollectiveOpInterface`缩成逐项读取上述Wafer-specific gap的最小查询；它不得重新发布
+DPS/Tiling facts，不得返回聚合info snapshot，也不得再包装一层重复verifier。concrete rewrite仍由typed
+patterns拥有。
+
+typed pattern/helper只能读取op自身及enclosing typed IR。它不返回算法选择、physical endpoint、staging
+placement、DTE/FSM、预计cost或已经展开的步骤。缺少稳定语义时应补标准/项目typed op、type、attr、region和
+verifier，不能从op名、operand位置、buffer名或遍历顺序猜测。
 
 当前 logical op 集合包括：
 
@@ -165,8 +175,8 @@ combiner region仍按structured region规则验证。generic transform需要的�
 
 ### 3.1 Topology helper
 
-communication只需要一个compiler-private、无状态、可重算的helper。它消费collective interface facts、logical
-rank group、execution mesh和target topology，返回固定小集合的typed参数，例如：
+communication只需要一个compiler-private、无状态、可重算的helper。typed rewrite从current op取出logical
+rank group/mesh axes、execution mesh和target topology后调用helper，返回固定小集合的typed参数，例如：
 
 ```text
 DirectParams {
@@ -244,8 +254,9 @@ instruction IR的真实send/recv/message/range/completion匹配证明。
 - terminal instruction数；
 - event/token live range与resource peak。
 
-这些值是可失效analysis结果，不写入accepted IR。板端cost尚未校准时，优化候选只有在exact静态指标严格支配
-baseline且通过所有all-rank gate时才可胜出；tradeoff或不可比时保留baseline。
+这些值是可失效analysis结果，不写入accepted IR。它们进入tasks/06统一exact Pareto和target static selection policy；
+strict dominance可直接剪枝，tradeoff只有在profile显式policy且所需量全部Known时才排序，否则保留baseline。任何候选都必须
+通过相同all-rank gate；本文不建立communication专用winner规则。
 
 ## 4. Explicit P2P IR
 
@@ -455,8 +466,10 @@ movement。physical transport acceptance必须发生在planning之后，因为re
 | local fence | Sync及所排序local resource effect | 不完成Direct DTE |
 | group barrier | group control effect | 不替代local fence或DTE wait |
 
-`WaferResourceEffectInterface`只暴露当前op能解释的resource/bytes/lifecycle事实。task identity和token关联由SSA
-表达，不塞进effect payload。container用递归effect语义，unknown/external call保持conservative barrier。
+resource access使用标准`MemoryEffectOpInterface`和必要的MLIR custom
+`SideEffects::Resource`；bytes/footprint从typed buffers、descriptor fields和current op重算，不复制成
+`WaferResourceEffect` payload。task identity和token关联由SSA表达。container用递归effect语义，
+unknown/external call保持conservative barrier。
 
 ### 7.2 Completion rules
 
@@ -676,10 +689,11 @@ send/recv、wait和insert；self slot只有local movement。任一slot的bytes�
 
 ## 13. 当前实现索引与剩余收口
 
-当前仓库已有以下主线能力：
+当前仓库已有以下主线能力；其中重复MLIR语义的custom interface是迁移债务，不是终态合同：
 
-- `WaferLinalgExtCollectiveOpInterface`及all-gather、reduce-scatter、all-reduce、all-to-all、
-  collective-permute logical ops；
+- all-gather、reduce-scatter、all-reduce、all-to-all、collective-permute logical ops及现有
+  `WaferLinalgExtCollectiveOpInterface`；Q32.I/M需把consumer迁到typed ops和standard interfaces，删除
+  只复制op fields的`WaferLinalgExtCollectiveInfo`路径；
 - `wafer.tile.all_gather`、`wafer.tile.reduce_scatter`、`wafer.tile.all_reduce`及对应verifier；
 - all-gather ring/direct、all-reduce ring/tree、reduce-scatter direct的explicit instruction lowering；
 - collective-permute与equal-split all-to-all的direct p2p/local movement lowering；
@@ -687,12 +701,13 @@ send/recv、wait和insert；self slot只有local movement。任一slot的bytes�
 - 从planned SPM range和current instruction IR执行的all-rank Direct DTE acceptance；
 - target CRT/status、target model、package requirement与runtime preflight consumer。
 
-终态收口只需要沿上述边界推进：
+Q32.M/S必须沿上述边界完成接入，而不是把现有算法当作不受candidate owner管理的旁路：
 
 1. 用无状态typed topology helper和complete-rank clone rewrite替换现有public schedule option与hard-coded
    selector；
 2. 每个参数点直接复用现有collective lowering pattern，不新增平行communication表示；
-3. logical/tile/instruction effect逐层由标准interface和SSA completion闭合，删除手工重复effect事实；
+3. logical/tile/instruction effect逐层由标准MemoryEffectOpInterface、SideEffects::Resource和SSA completion闭合，
+   删除`WaferTilingInterface`、重复collective-info和`WaferResourceEffect`事实；
 4. candidate selection只比较实际clone的fresh exact metrics，并复用现有memory、all-rank、target与atomic gates；
 5. 删除旧selector及只为手动拼算法服务的CLI/test入口，保留IR-local conversion测试和production集成测试。
 

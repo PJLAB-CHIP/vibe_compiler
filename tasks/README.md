@@ -16,16 +16,16 @@
 | 03 | `tasks/03-shardy-spmd.md` | 当前Shardy/XLA SPMD artifact、显式rank identity；MPMD/rank class延后 |
 | 04 | `tasks/04-topology-execution-mesh.md` | 当前topology/execution mesh；Q0.L typed target-profile仅随ExecutionConfig透传，不进入mesh IR |
 | 05 | `tasks/05-local-compute-normalization.md` | rank-local structured compute normalization与tensor collective handoff |
-| 06 | `tasks/06-physical-dataflow-synthesis.md` | MLIR-native physical-dataflow synthesis：interface、可重算IndexRelation、clone rewrite、有限candidate evaluation与atomic commit |
+| 06 | `tasks/06-physical-dataflow-synthesis.md` | MLIR-native physical-dataflow synthesis：implementation/tile/encoding/route/residency/buffering/order/communication的bounded actual-clone selection与atomic commit |
 | 07 | `tasks/07-tile-region.md` | selected proposal的typed task/traversal IR物化与完整coverage；不是planner或per-group SPM/DDR边界 |
-| 08 | `tasks/08-physical-realization.md` | physical encoding attr/type语义、valid domain、view、transfer planning analysis、descriptor cover和selected physical realization |
-| 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/completion、fixed-capacity legality和accepted offsets |
-| 10 | `tasks/10-compute-movement.md` | source implementation OpInterface/external model、selected target-abstract compute/movement、resource effects和issue/token/fence/wait |
-| 11 | `tasks/11-instruction-ir.md` | complete static rank instruction program、current v1 descriptor/geometry/range/narrowing legality；orientation与mapped-offset字段是later extension |
+| 08 | `tasks/08-physical-realization.md` | physical encoding attr/type语义、valid domain、view、transfer realizability analysis、descriptor cover和selected physical realization |
+| 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/completion、fixed-capacity legality、validated high-water和accepted offsets；candidate choice仍由06拥有 |
+| 10 | `tasks/10-compute-movement.md` | 窄source implementation OpInterface/external model、typed target-abstract compute/movement、standard MLIR effects/interface reuse和issue/token/fence/wait |
+| 11 | `tasks/11-instruction-ir.md` | complete static rank instruction program、current v1 descriptor/geometry/range/narrowing legality及Q32.V mapped/physical-fill/oriented typed extension |
 | 12 | `tasks/12-ddr-memory-planning.md` | 当前DDR demand/accepted offsets；multi-arena/state/streaming延后 |
 | 13 | `tasks/13-communication.md` | logical collective lowering到typed p2p/staging/token/wait IR、Direct DTE all-rank acceptance和completion；segmented/multi-card延后 |
-| 14 | `tasks/14-target-conversion-module-publication.md` | target profile/format registry、structure-preserving target conversion、CRT ABI和atomic module publication；capability projection是独立later扩展 |
-| 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest/PackageBundle、当前schema、canonical JSON、no-card RuntimeSession和board adapter边界；schema升级独立排期 |
+| 14 | `tasks/14-target-conversion-module-publication.md` | target profile/format registry、structure-preserving target conversion、CRT ABI和atomic module publication；Q32.V扩展从typed winner rows派生 |
+| 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest/PackageBundle、当前schema、canonical JSON、no-card RuntimeSession和board adapter边界；Q32.V仅在真实consumer需要时升级schema |
 | 16 | `tasks/16-verification-contract.md` | 跨stage verification contract：target correctness、1/16-rank bundle、CPU oracle、target-model、scale、no-card和board分层gate |
 | 17 | `tasks/17-target-execution-model.md` | multi-dtype numeric、oneDNN bulk、same-lowering target LLVM bundle消费、repo-owned target-call/SystemC untimed CModel、7B managed-reference scale、optional CRT/packet provenance、Q22.C板端numeric correlation、Q22.E exact-module和deferred Q22.P timing边界 |
 | 18 | `tasks/18-source-organization.md` | 跨pipeline的源码ownership、translation unit、内部接口、构建依赖和测试镜像组织合同；不改变IR/artifact语义 |
@@ -40,11 +40,11 @@
 | pre-SPMD topology和execution mesh | 04 |
 | Shardy/SPMD output和显式rank identity | 03 |
 | component/rank-local compute normalization与collective handoff | 05；跨stage正确性证据由16约束 |
-| rank-local physical-dataflow candidate生成/选择、selected tile/dataflow materialization和physical encoding/transfer | 06、07、08；source implementation interface由10提供，instruction legality由11提供，exact resource/transport gate由09、12、13提供 |
+| rank-local physical-dataflow bounded joint candidate生成/选择、selected tile/dataflow materialization和physical encoding/transfer | 06、07、08；source implementation interface由10提供，instruction legality由11提供，exact resource/transport gate由09、12、13提供 |
 | policy-free physical-dataflow rewrites | 06、07、08；upstream structured utility由05提供，source/selected implementation合同由10提供，源码ownership由18约束 |
-| source implementation interface、target-abstract compute/movement和instruction legality | 10、11；transfer planning/descriptor cover只由08拥有 |
+| source implementation interface、target-abstract compute/movement和instruction legality | 10、11；transfer realizability/descriptor cover只由08拥有 |
 | accepted SPM/DDR allocation、lifetime和offset | 09、12；shared lifetime analysis的源码ownership和测试镜像由18约束 |
-| logical collective materialization、Direct DTE completion、all-rank acceptance与post-memory transport activation | 13；target/package/verification consumer由14、15、16约束 |
+| logical collective direct/ring/tree candidate materialization、Direct DTE completion、all-rank acceptance与post-memory transport activation | 13；joint choice由06、target/package/verification consumer由14、15、16约束 |
 | whole-rank/whole-variant candidate commit和typed executable bundle | 06；资源/lifetime边界由09、12、13共同约束 |
 | target LLVM、CRT/device link和staged target module | 14 |
 | typed manifest、launch和RuntimeSession | 15 |
@@ -54,7 +54,7 @@
 
 ## 实施计划导航
 
-当前无`doing`；唯一`next`是Q32.I MLIR-native rewrite foundation，Q32通用
+当前无`doing`；唯一`next`是Q32.I MLIR-native implementation/relation foundation，Q32通用
 physical-dataflow synthesis实施计划为`tasks/plans/physical-dataflow-synthesis.md`。Q34 static memory packing已完成并归档为
 `tasks/archive/static-memory-packing.md`。这些计划只拆
 施工checkpoint和验证/删除门槛；动态blocked-by只看progress，算法与IR合同仍由01、05、06-18编号设计文档拥有。

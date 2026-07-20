@@ -116,8 +116,12 @@ canonical search。精确pairwise conflict graph通过已验证的deterministic 
 component-local fixed prefix；共享policy使用宽松确定的全局node budget且不设wall-clock timeout，只在
 `ResourceExhausted`时允许first-fit fallback。typed outcome和独立placement validator也由该共享边界拥有。
 shared `MemoryPlanning` fixed-capacity primitive在类型上可复用同一owner-independent DDR problem，且不认识SPM/DDR、workload或
-op名。DDR在whole-variant后置stage只要求完整arena legality并提交实际accepted high-water/`wafer.ddr.offset`，不运行
-minimum-high-water refinement或candidate packing objective。未来若有真实consumer，必须另立设计和验证合同。
+op名。DDR在whole-variant后置stage至少证明完整arena legality并提交实际accepted high-water/`wafer.ddr.offset`；该high-water
+必须返回06作为final static cost。Q32.S可在独立hard cap内对selection-sensitive shortlist以不同capacity重复调用同一pure
+primitive收紧candidate-local quality区间；probe placement只有在fresh whole-variant evaluation clone上原子apply，并重新运行
+post-memory transport binding、range/ABI/package等全部offset-dependent gate后，才能成为actual high-water/final cost，否则只作
+safe bound。DDR owner不选择candidate、不返回repair、不发布proof schema或跨candidate cache，已写DDR offset的evaluation
+clone也不返回generation worklist。
 compiler-managed allocation使用指向packing demand的`RootRef`；caller-owned/external memref
 使用path-qualified `ValueOriginRef`；async handle另携带所访问root与独立task identity，三者不能互相替代。
 `rootsAt`/`originsAt`在查询点沿`ViewLikeOpInterface`、`SelectLikeOpInterface`、`scf.if` yield和`scf.for`

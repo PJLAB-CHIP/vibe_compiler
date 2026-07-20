@@ -67,7 +67,7 @@ Pipeline position:
   legalization；全部selected task fragments已进入完整rank clone并完成candidate-local rewrite，相关
   alias/effect/lifetime analysis已从改写后的当前IR失效重算。SPM planner
   每次只接收candidate generator已经显式物化的一份完整whole-rank clone；candidate可以来自当前spill/resident基线，也可以
-  来自MLIR-native rewrite产生的少量implementation/physical-version/transfer/residency alternative。task/region/loop间的SPM value和event已由显式SSA/control-flow连接，包含actual DDR
+  来自MLIR-native rewrite有界组合的implementation/encoding/physical-version/transfer/residency/buffering/order alternative。task/region/loop间的SPM value和event已由显式SSA/control-flow连接，包含actual DDR
   tile views、unplaced `memref<..., #wafer.memory<spm, layout>>` values，以及selected physical encodings、
   explicit materialization、effect/order 和 target SPM policy。
 - Current stage responsibility:
@@ -108,7 +108,9 @@ Pipeline position:
   full-shape initial candidate与其它tiled candidates运行同一whole-rank planning和whole-variant gate，不设bypass；
   不依据presumed rank equivalence复用或跳过任何rank plan；allocator不决定哪些handoff应resident，不生成
   implementation/transfer/physical-version/per-edge frontier，也不把某个unsafe consumer拆成partial promotion；
-  不实现minimum-height candidate objective，不生成IIS，不让solver trace或pressure witness成为accepted attr/side table。
+  allocator本身不拥有candidate objective、不生成IIS，不让solver trace或pressure witness成为accepted attr/side table。
+  Q32.S可以在独立optimization budget内以不同capacity调用同一owner-private pure primitive收紧shortlist quality区间，但
+  选择、邻居生成和stop policy仍由06拥有，09不返回repair或跨candidate state。
 - Completion gate:
   对每个合法complete rank program给出 deterministic memory plan；planned storage的size、alignment、
   range/end、lifetime和alias relation能由rank-local IR/effect/verifier重算；generic `async.call`
@@ -478,26 +480,29 @@ Interval {
 
 9. 只返回typed result；search trace、work count、conflict encoding和fallback状态都是invocation-local diagnostic，不写IR。
 
-固定硬件容量下的feasibility是本stage唯一hard legality primitive，不调用MiniMalloc的一体化minimum-height模式，
-也不运行独立high-water optimization。实际high-water只从已经接受的placement重算，作为IR-derived cost或diagnostic。
+固定硬件容量下的feasibility是本stage唯一hard legality primitive。实际high-water从已经接受的placement重算并返回candidate
+owner，作为IR-derived cost；09自身不运行candidate objective或改变IR。
 
 ### 8.1 Candidate Evaluation Boundary
 
-Q32第一版不把packing变成candidate objective。每个完整clone只调用一次本节fixed-capacity路径，得到：
+每个完整clone至少对硬件arena容量调用一次本节fixed-capacity路径，得到：
 
 - `Feasible`：完整placement经独立validator接受，offset可原子写入该clone；
 - `ProvenInfeasible`：在owner budget内完成搜索并证明硬件arena不可行；
 - `ResourceExhausted`：按Q34既有合同尝试deterministic first-fit安全fallback；fallback失败仍保持资源耗尽；
 - invalid input、overflow或invalid solver result：contract/internal failure。
 
-`Feasible` placement的actual high-water从validated offsets重新计算，可作为final IR-derived cost或diagnostic；它不是
-minimum-height proof，也不触发binary refinement、capacity probe、pressure feedback或跨candidate packing cache。Q32若未来有
-真实数据证明packing quality会改变有用candidate选择，必须另立pipeline contract和owner，不能在本allocator内隐式改变tile、
-residency、route或执行顺序。
+`Feasible` placement的actual high-water从validated offsets重新计算，必须作为final IR-derived cost返回06。Q32.S对
+selection-sensitive shortlist可以在自己的hard cap内重复调用本primitive，以“已知不可行capacity / 已知可行high-water”收紧
+quality；probe placement只有原子apply到fresh rank evaluation clone，并重新运行全部offset-dependent descriptor/range及后续
+variant gate后，才能作为actual high-water/cost；否则只作safe bound。这些结果是candidate-local analysis，不写IR、不跨candidate
+缓存，也不是09发布的proof schema。无论是否probe，09都不能隐式改变implementation、tile、encoding、residency、route、
+buffering或执行顺序。
 
 candidate rewrite、bufferization或lifetime/effect变化后，旧placement和所有offset-dependent descriptor/range/cost结果均失效。
 owner必须从final current IR重建`StaticPackingProblem`、重新求解或验证，并只在全部range/alignment/conflict gate通过后提交
-`wafer.spm.offset`。
+`wafer.spm.offset`。06的generation worklist不接收已写offset的evaluation clone；resource-aware neighbor必须从无placement的
+generation parent重新clone、改写并执行本stage。
 
 
 ## 9. Failure Feedback
@@ -638,8 +643,8 @@ planner沿`wafer.tile.yield -> wafer.tile.region result -> sibling operand`保�
 - DTE send/recv产生的`!async.token`把对应SPM refs延伸到精确的`wafer.instr.dte_wait`；token经
   `scf.if` result合并时保留各自origin和path condition。local fence不能消费该completion；SPM当前在DTE
   owner proof之前保守拒绝所有loop-carried async token。
-- 带`WaferResourceEffectInterface`的本地compute/movement issue进入pending local issue集合，其全部
-  SPM read/write进入pending local access集合；`wafer.instr.local_fence`只在自身path condition覆盖的
+- 通过`MemoryEffectOpInterface`在Compute/Movement custom resource上产生effect的本地issue进入pending
+  local issue集合，其全部SPM read/write effect进入pending local access集合；`wafer.instr.local_fence`只在自身path condition覆盖的
   路径上延伸并清除这些状态。DTE wait不能消费本地状态。
 - 当前每条`wafer.tile.region` exit path执行terminal check；存在未await的generic task、未等待DTE token或未fence的
   本地issue/read/write时规划失败。可能zero-trip的loop内单一completion不能覆盖loop外pending状态；合法loop本身
@@ -717,9 +722,9 @@ isolated complete-rank clone
   -> atomic bundle commit, or discard this variant
 ```
 
-candidate owner可以生成另一份clone尝试不同rewrite参数；allocator不修改implementation、encoding、transfer、tile或resident cut，
-也不按名字或case恢复这些选择。local fence、communication wait和DTE completion是不同event，lifetime analysis只能按各自
-typed effect/token合同处理。
+candidate owner可以根据current IR的capacity/lifetime/descriptor压力生成另一份clone，尝试不同implementation、tile、encoding、
+transfer、resident cut、buffering或order；allocator只评估已物化clone，不建议或修改这些选择，也不按名字或case恢复语义。
+local fence、communication wait和DTE completion是不同event，lifetime analysis只能按各自typed effect/token合同处理。
 
 
 ## 15. 后续扩展

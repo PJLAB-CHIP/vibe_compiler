@@ -56,15 +56,21 @@ physical-dataflow synthesis按稳定职责组织，不按checkpoint编号建目�
 ```text
 include/Wafer/Analysis/PhysicalDataflow/
   IndexRelation.h
-  TransferPlanning.h
+  TransferRealizability.h
 lib/Wafer/Analysis/PhysicalDataflow/
   IndexRelation.cpp
-  TransferPlanning.cpp
+  TransferRealizability.cpp
 lib/Wafer/Transforms/PhysicalDataflow/
   StructuredOpInterfaceModels.cpp
+  RelationViewNormalization.cpp
   DependentTilingRewrite.cpp
+  PointwisePropagationRewrite.cpp
+  ImplementationAbsorptionRewrite.cpp
+  EncodingViewRewrite.cpp
+  MovementEliminationRewrite.cpp
   ResidentHandoffRewrite.cpp
   PhysicalVersionReuseRewrite.cpp
+  StaticBufferingOrderRewrite.cpp
 lib/Wafer/Conversion/WaferTensorProgramToTileRegion/
   ... existing source-to-tile conversion files ...
 lib/Wafer/Conversion/WaferTileRegionToInstr/
@@ -77,7 +83,7 @@ lib/Wafer/Compiler/
 ```
 
 `IndexRelation` 从当前 op、indexing map、view chain、shape bounds 和 SSA def-use 派生；
-`TransferPlanning` 从当前 source/destination、relation、typed physical encoding、alias/effect 和显式 target
+`TransferRealizability` 从当前 source/destination、relation、typed physical encoding、alias/effect 和显式 target
 profile 派生 view/transfer realizability、descriptor cover 与资源摘要。这些结果不修改 IR，任何相关 rewrite
 后全部失效，不保存 selected route、physical version 或 candidate。
 
@@ -86,6 +92,16 @@ external models；Wafer-owned op 自身直接实现该 interface。interface met
 rewrite 所需的 typed facts，不生成 detached semantic descriptor。
 每个具体 rewrite 文件只负责一个同层变换，直接在 isolated clone 中创建/修改 IR，并用 `IRMapping`、
 `PatternRewriter` 和新鲜 analysis 协作。
+
+该文件不注册第二套tiling/layout/effect语义。Q32.I/M把现有`WaferTilingInterface` consumer迁到
+`TilingInterface`+`DestinationStyleOpInterface`，把layout要求迁到typed encoding/view/op verifier，把
+resource事实迁到`MemoryEffectOpInterface`+`SideEffects::Resource`和current-IR analysis；相应只复制字段的
+interface、struct和boilerplate实现删除。Wafer-specific interface只有通过tasks/10 native reuse gate后才能留在
+`WaferInterfaces.td`。
+
+同批迁移`StorageLoadOp`的ODS与所有builder/conversion/test：load使用explicit DDR source和已创建SPM
+destination、无隐式allocation/result。旧`StructuredSchedulingTilingDemand`/
+`StructuredSchedulingLayoutPlan`只允许作为Q29迁移审计输入；Q32.G删除失去consumer的影子结构与源码。
 
 层间语义变化继续由现有 Conversion libraries 拥有：source-to-tile conversion 消费已经选定且自包含的
 structured clone，tile-to-instruction conversion 消费 typed tile-dataflow IR。Conversion 不重新搜索
@@ -96,6 +112,11 @@ analysis/evaluation/selection/commit 协调；whole-rank finalization、all-rank
 原子 bundle commit 继续由现有 Compiler owner 承担。Q32 不新增 planner、transaction、candidate wire
 format或平行 coordinator。上述文件名是 owner 映射；实现时可按 translation-unit 规模合并同一职责，但不能
 跨层合并 analysis、rewrite、conversion 和 coordination。
+
+tasks/13已有direct/ring/tree collective lowering继续位于`WaferTileRegionToInstr`/communication owner；Q32.M只把这些
+actual complete-clone rewrites注册到现有Scheduling candidate producer，不复制成`PhysicalDataflow`通信图或selector。
+implementation、encoding/route、buffering/order及resource-aware neighbor producer同样在Scheduling编排已有interface/analysis/
+rewrite，不建立统一dispatch registry。
 
 ### 构建依赖
 
@@ -112,7 +133,7 @@ Compiler / target-model core <- functional model <- bulk/SystemC adapters
 ```
 
 - `WaferAnalysis` 中的 physical-dataflow sources 只能链接 `WaferIR`、必要的 MLIR IR/dialect/analysis
-  libraries，以及 `TransferPlanning` 明确消费 typed target-profile API 时的 `WaferTarget`；不得链接
+  libraries，以及 `TransferRealizability` 明确消费 typed target-profile API 时的 `WaferTarget`；不得链接
   Conversion、Transforms、Pipelines 或 Compiler。若 target-independent 与 target-aware analysis 能自然拆开，
   前者保持在更低依赖层。
 - `WaferTransforms` 的 physical-dataflow sources 链接 `WaferAnalysis`、`WaferIR`、现有 Conversion
@@ -185,8 +206,9 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
   `Transforms/PhysicalDataflow` sources。现有 Scheduling candidate coordinator、两个 Conversion libraries、
   `ScheduledRankFinalization` 和 `WholeVariantCoordinator` 是必须复用的 owner，不复制成 physical-dataflow
   专用 facade。
-- instruction IR 已按 movement、compute、peripheral、DTE、sync family 独立编译；共享 verifier/resource-effect
-  helper 留在 `lib/Wafer/IR/Instr/`，没有提升为公共头文件。
+- instruction IR已按movement、compute、peripheral、DTE、sync family独立编译；共享op verifier和
+  standard MemoryEffect/custom SideEffects::Resource helper留在`lib/Wafer/IR/Instr/`。Q32.M删除
+  WaferResourceEffect record/interface helper及其boilerplate，不提升为公共头文件。
 - tile-region 到 instruction 的 facade 只保留 legality、选项、终端 fence 和 conversion orchestration；movement
   support/lowering、compute lowering、collective lowering 通过同一 conversion library 的私有接口协作。
 - target numeric 已按 command/schema、profile registry、capability/resolution 和 internal canonical helper 独立编译；
@@ -216,9 +238,11 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
   `wafer::memory_planning::detail`符号保持`WaferTransforms`私有，
   两个planner只保留各自memory-space legality、resource limit、SPM non-nested scope/DTE或DDR
   descriptor/planning-scope语义和offset commit。
-- Q32 不新增 capacity objective、packing schema 或 memory-planning owner。每个 rewritten clone 继续调用同一
+- Q32 不新增packing schema或memory-planning owner。每个rewritten clone继续调用同一
   `LifetimeAnalysis`、`StaticMemoryPacking`、`MiniMallocPacking` 和 SPM/DDR planner；它们只从当前 clone
-  重建 timeline、root、conflict、lifetime 和 placement，随后原子应用 typed offsets。physical-dataflow analysis
+  重建timeline、root、conflict、lifetime和placement，返回validated high-water并原子应用typed offsets。Q32.S的
+  selection-sensitive capacity probes只是Scheduling在本次candidate evaluation内重复调用同一pure owner API，不新增packing
+  implementation、proof/cache schema或repair接口。physical-dataflow analysis
   不复制 clique/lifetime 逻辑，MemoryPlanning 也不反向依赖 Scheduling。rewrite invocation 使用的 `IRMapping`
   在 clone 修改或 analysis 失效后立即销毁，不能成为下游 side table。
 - `third_party/minimalloc`是从固定upstream commit源生的curated C++17 port，不是配置期下载或导出的
@@ -267,14 +291,14 @@ conflict encoding、packing policy或first-fit的第二事实源。
 - 选定的旧聚合 `.cpp` 不再承载多个 op/command family，且不以 `.inc` 方式继续聚合编译。
 - 新 internal API 只在 owner library 内可见；没有新增 public artifact、CLI、pass 或 attr。
 - CMake 与组织检查器从多源文件事实推导，不再强制“一个 conversion library 只有一个实现文件”。
-- physical-dataflow source tree 只有 current-IR-derived Analysis、source external-interface models 和 concrete
+- physical-dataflow source tree只有current-IR-derived Analysis、source external-interface models和cover完整功能矩阵的concrete
   rewrites；没有 detached semantic descriptor、专用 planner/coordinator、route dispatch table或与 candidate
   clone 重复的长期数据结构。
 - `WaferAnalysis`、Conversion、`WaferTransforms`、`WaferPipelines`、Compiler 的 CMake link direction 与本文
   一致；每个新 `.cpp` 被 owner target 独立编译，且没有通过 textual include 重新聚合。
-- Analysis、physical-dataflow rewrite、Conversion、Scheduling 和 Compiler tests 按各自 production boundary
-  镜像；fresh 验证实际执行 rewrite、invalidation、layer lowering、candidate commit、all-rank coordination 和
-  driver vertical。
+- Analysis、physical-dataflow rewrite、Conversion、Scheduling和Compiler tests按各自production boundary
+  镜像；fresh验证implementation、relation/view、encoding/route、residency/movement、buffering/order、communication、
+  resource-aware selection、invalidation、layer lowering、candidate commit、all-rank coordination和driver vertical。
 - 受影响的 verifier、conversion、numeric registry 单测和完整 source-backed pipeline 均通过。
 - memory-planning shared core在production CMake中只有一个owner，私有header/detail符号不泄漏公共API，
   SPM/DDR planner不再拥有重复timeline/root/packing policy/first-fit实现；镜像unit、两侧planner lit和

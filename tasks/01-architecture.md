@@ -13,7 +13,8 @@ blocked-by与完成记录只看`tasks/progress.md`；专题IR、ABI、算法和�
 2. **analysis、choice、selected IR和exact gate分离。** analysis从当前IR与immutable target facts重算；candidate只存在于隔离clone；
    winning choice必须物化为typed IR；SPM、DDR、completion、transport和target ABI只验证完整候选是否合法。
 3. **physical-dataflow synthesis是唯一decision owner。** implementation、tile、physical encoding、storage realization、
-   residency、buffering和有限DAG顺序联合决定；下游不得另做layout assignment、隐式route fallback或residency修复。
+   transfer route、residency、buffering、有限DAG顺序、communication和resource-aware tradeoff联合决定；下游不得另做
+   layout assignment、隐式route fallback、communication reselection或residency修复。
 4. **fusion不是协议对象。** producer/consumer共享显式SPM SSA physical version时形成resident dataflow；store/load表示spill。
    不创建opaque fused group，也不让region边界自动成为DDR或memory-planning边界。
 5. **artifact原子形成。** 单tile、单region、代表rank或未覆盖当前配置all-and-only rank domain的partial rank/module set
@@ -27,6 +28,9 @@ blocked-by与完成记录只看`tasks/progress.md`；专题IR、ABI、算法和�
 9. **rewrite采用必须有实效。** linked、registered或debug可调用不等于production采用；每种候选rewrite必须由named
    pipeline真实调用、在通用source上发生、被下游typed IR直接消费，并通过等价性、exact gate和数值验证。实现复用
    MLIR interface、PatternRewriter和DialectConversion，不建立独立机制审批或registry。
+10. **先复用MLIR语义。** DPS、tiling、view/subset、effect、type inference、rewrite和conversion由标准interface/
+    IR机制拥有；Wafer-specific interface只填补明确target gap，不能把current op已有字段重新收集成Demand、Info、
+    Effect或Plan旁路对象。selected target事实进入typed Wafer IR，派生关系保持局部analysis。
 
 ## 2. End-to-End Pipeline Contract
 
@@ -58,9 +62,11 @@ Pipeline position:
   承诺dynamic-shape/online scheduling、MPMD、多卡、persistent state/KV、streaming weight、vendor-exact packet或cycle accuracy。
 - Completion gate:
   当前v1 production artifacts、rank-count=1/16、atomic publication、typed package/no-card与repo-owned CModel链保持有效；
-  physical-dataflow synthesis目标完成时，至少两类真实rewrite、typed implementation/route、有限candidate selection和完整
-  PyTorch/SystemC/resource/ABI gate全部fresh通过，旧decision owner与公开旁路清零。mapped/oriented、schema升级和
-  RequiredCapabilitySet是独立later target扩展，不是本stage完成前置。
+  physical-dataflow synthesis目标完成时，implementation、tile/relation、encoding/view/route、storage/residency、
+  buffering/order、direct/ring/tree communication、resource-aware bounded selection及Q32.V mapped/physical-fill/oriented
+  typed target纵向均有真实production consumer/winner证据；完整PyTorch/SystemC/resource/ABI/package gate全部fresh通过，
+  旧decision owner与公开旁路清零。winner capability projection只在真实package/runtime consumer需要时派生，model/board
+  admission不参与candidate选择。
 ```
 
 当前production只接受static-ranked program boundary。IR-local bounded/dynamic verifier能力不扩大production source admission；
@@ -134,18 +140,22 @@ OpInterface读取当前IR语义，跨value关系由可失效、可重算的`Inde
 
 责任严格分层：
 
-1. source op interface/external model给出少量typed implementation参数；encoding行为属于attr/type interface；跨两端buffer的
+1. source op interface/external model给出有界typed implementation参数；encoding行为属于attr/type interface；跨两端buffer的
    transfer route属于普通analysis/helper；
-2. PatternRewriter在隔离complete-rank clone中立即应用dependent tiling、fusion、view folding、resident handoff或movement
-   elimination；applied后旧relation/alias/effect/lifetime/cost全部失效；
-3. DialectConversion把selected choice变成typed tile/instruction IR，不从side table读取隐含决策；
-4. 每个完整clone依次从当前IR重算whole-rank SPM、DDR、completion、transport、instruction和ABI gate及final static cost；
-5. existing coordinator只在all-and-only ranks通过后提交bundle。
+2. PatternRewriter在隔离complete-rank clone中立即应用relation/view、dependent tiling/fusion、implementation、encoding/route、
+   physical-version reuse、movement/resident-cut、buffering/order或collective expansion；applied后旧relation/alias/effect/
+   lifetime/resource/cost全部失效；
+3. generation worklist保留无owner-produced offset/binding的actual clone；独立rank evaluation clone通过DialectConversion
+   变成typed tile/instruction IR，不从side table读取隐含决策；
+4. rank evaluation只运行whole-rank SPM、descriptor/geometry和rank-local completion/resource gate；通过后进入rank frontier且
+   不再接受rewrite；
+5. existing coordinator在complete rank tuple的独立variant clone上运行whole-variant DDR、post-memory transport/all-rank
+   resource、ABI/package及final static cost gate，只在all-and-only ranks通过后选择并提交bundle。
 
-第一版只保留baseline和少量真实rewrite产生的候选，不枚举任意fusion partition、tile整数笛卡尔积、所有resident subset、全部
-topological order或`K^R` rank组合。没有candidate增长证据前不建设通用solver、canonical frontier serializer或跨系统query
-protocol。优化limit耗尽或未校准tradeoff返回合法baseline；driver/process cancellation在任意时点终止整个transaction且不发布
-partial artifact。
+候选生成有界组合全部current-target choice producers，但不枚举任意fusion partition、tile整数笛卡尔积、全部resident subset、
+全部topological order或`K^R` rank组合。fixed vector/frontier/beam按完整producer的actual growth选择；不建设独立solver、
+canonical frontier serializer或跨系统query protocol。优化limit耗尽、关键metric Unknown或缺少target static policy时返回合法
+baseline；driver/process cancellation在任意时点终止整个transaction且不发布partial artifact。
 
 详细算法由`tasks/06-physical-dataflow-synthesis.md`拥有；selected tile-region IR、physical realization和target implementation
 分别由tasks/07、tasks/08、tasks/10拥有。
@@ -156,8 +166,9 @@ partial artifact。
 - physical encoding拥有logical-to-physical bit map、footprint、valid/padding domain和view compatibility；selected transfer route
   必须有exact descriptor/address coverage，不能在lowering失败时静默换route。
 - SPM和DDR planner分别从完整rank/current variant IR重算lifetime、alignment、range和accepted offset；完整arena
-  fixed-capacity result决定legality；accepted placement的实际high-water只可作为final static fact。allocator不产生、排序或修改
-  implementation/residency choice，Q32第一版不增加minimum-high-water objective或packing proof协议。
+  fixed-capacity result决定legality；accepted placement的实际high-water必须进入final static cost。06可从current IR的capacity/
+  lifetime/descriptor压力产生有界candidate邻居，并对selection-sensitive shortlist重复同一pure packing query收紧quality区间；
+  allocator不产生、排序或修改implementation/residency choice，也不发布repair/proof协议。
 - async read/write resource必须活到typed completion；source order、同地址或local fence不能替代未证明的engine/DTE completion。
 - logical collective先保留数学/mesh语义；Direct DTE只有all-rank peer/message/resource/receiver-offset/status合同闭合后才进入
   accepted instruction program。
@@ -220,12 +231,12 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | --- | --- | --- |
 | source boundary | static-ranked StableHLO program directory；rank-count显式1/16 | 保持同一用户边界；dynamic/MPMD另行设计 |
 | structured optimization | official legalization、窄residual cleanup和best-effort canonicalization；部分上游tiling/fusion utility已被当前scheduler直接复用 | Q32只在candidate clone中加入有直接correctness gate的rewrite，不建立独立production优化审批层 |
-| decision owner | bounded task/dataflow scheduler，有限scope/residency alternatives | MLIR-native candidate generator在真实clone上联合评估少量implementation/tile/encoding/route/residency alternatives |
-| physical realization | canonical Tensor/Cx/NCx与显式materialization；compact DMA | attr/type interface解释encoding，普通analysis/helper选择transfer，selected choice立即进入typed IR；mapped DMA另行扩展 |
-| GEMM ABI | closed v1、implicit normal/normal | Q32保持现有能力；typed orientation由独立target-capability任务纵向扩展 |
-| package | 当前typed manifest | Q32保持当前schema；winner-derived capability projection只有出现独立consumer时另行扩展 |
+| decision owner | bounded task/dataflow scheduler，有限scope/residency alternatives | MLIR-native candidate generator在真实clone上有界联合评估implementation/tile/encoding/route/residency/buffering/order/communication |
+| physical realization | canonical Tensor/Cx/NCx与显式materialization；compact DMA | attr/type interface解释encoding，analysis/helper选择transfer并立即物化；Q32.V增加typed mapped DMA/physical fill纵向 |
+| GEMM ABI | closed v1、implicit normal/normal | Q32.V以typed Instr/TargetCall/ABI/SystemC纵向增加orientation，完成后由通用candidate owner消费 |
+| package | 当前typed manifest | current schema保持；Q32.V扩展command若真实consumer需要，winner-derived capability requirements由post-selection owner派生 |
 | model | same-lowering TargetCall/SystemC untimed functional-numeric | Q32 candidate复用同一model gate；board predicate独立 |
-| candidate selection | deterministic有限frontier与whole-variant acceptance | baseline加少量真实rewrite clone、strict static dominance和现有all-rank coordinator；按测量决定是否需要small beam |
+| candidate selection | deterministic有限frontier与whole-variant acceptance | actual clones覆盖全部current choice producers；exact Pareto、target static policy、resource-aware metrics和现有all-rank coordinator；按完整增长决定fixed vector/frontier/beam |
 
 本表只用于避免把目标合同误写成已实现事实；任务状态和迁移顺序仍只读`tasks/progress.md`及当前实施计划。
 
@@ -240,7 +251,7 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | local structured tensor normalization与collective handoff | 05 |
 | physical-dataflow synthesis、bounded candidate selection与all-rank commit | 06 |
 | selected tile-region/task/dataflow IR materialization | 07 |
-| physical encoding attr/type语义、view、transfer planning analysis与descriptor cover | 08 |
+| physical encoding attr/type语义、view、transfer realizability analysis与descriptor cover | 08 |
 | SPM lifetime、allocation与accepted offsets | 09 |
 | source implementation OpInterface/external model与selected compute/movement IR | 10 |
 | complete instruction IR、geometry与narrowing legality | 11 |

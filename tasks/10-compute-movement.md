@@ -27,8 +27,8 @@ runtime/package owner 负责。
   target implementation candidates；对 Linalg op 使用 Wafer-owned external models。
 - 让 planner 组合 implementation、tile、encoding、residency 和 movement，但不要求 planner
   认识具体 Linalg op 名或 target CRT symbol。
-- 让每个 selected wafer.tile.* compute/movement op 通过 interface 和 verifier 表达精确实现、
-  layout、numeric、resource、effect 与 completion 要求。
+- 让每个 selected wafer.tile.* compute/movement op 通过typed operands/results/attrs/regions、ODS verifier、
+  standard MLIR interfaces和conversion legality表达精确实现、layout、numeric、resource、effect与completion要求。
 - 从 complete-rank selected tile IR 生成 complete-rank wafer.instr.*，再由 SPM/DDR、event、
   transport、ABI 和 target conversion gate 直接消费。
 - unknown source semantics、unknown target capability 或不能完整物化的 candidate 必须在产生
@@ -62,9 +62,9 @@ runtime/package owner 负责。
       有界的 TargetImplementationCandidate 序列，并为 selected candidate 提供直接
       materialization hook。
     - Output artifact / IR:
-      transformation-local TargetImplementationCandidate 序列。candidate 只含 typed
-      implementation kind/parameters、operand/result encoding constraints、tile/geometry
-      constraints、instruction/resource requirements和确定的static metrics；它不是 IR、
+      transformation-local TargetImplementationCandidate 序列。candidate 只含typed
+      implementation kind/parameters及materialization前确实需要的operand/result encoding、
+      tile/geometry和numeric constraints；它不是IR、
       attribute side channel、package 字段或跨 pass artifact。
     - Downstream consumer:
       tasks/06 的 physical-dataflow candidate owner。它选择具体 candidate、tile、
@@ -90,9 +90,9 @@ runtime/package owner 负责。
       compute/movement、Wafer-tagged memref、typed implementation fields、view、explicit
       movement、storage roots以及必要token/effect；communication schedule已展开为显式IR。
     - Current stage responsibility:
-      通过WaferComputeOpInterface、WaferMovementOpInterface、WaferLayoutOpInterface、
-      WaferResourceEffectInterface、MemoryEffectOpInterface和op verifier检查selected合同，
-      再用DialectConversion/rewrite patterns生成complete-rank wafer.instr.*。lowering必须
+      通过typed op class、ODS/op verifier、DestinationStyle/Tiling/ViewLike或Subset语义、
+      MemoryEffectOpInterface及conversion legality检查selected合同，再用DialectConversion/rewrite
+      patterns生成complete-rank wafer.instr.*。lowering必须
       显式生成instruction kind/parameters、queue/effect、temporary/accumulator/staging、
       descriptor、async token和completion relation。
     - Output artifact / IR:
@@ -170,6 +170,11 @@ Wafer dialect registration统一完成：
 
 漏注册external model必须在pipeline初始化或首次cast时明确失败，不能静默返回默认实现。
 
+这是Q32允许新增或保留的窄Wafer-specific source interface：MLIR标准interface能描述source op的
+structured语义、tiling、DPS和effect，但不描述“当前Wafer target有哪些可物化实现参数点”。
+该interface不得重新暴露iterator、indexing map、operand/result role、tiling demand、layout requirement或
+resource effect；这些继续由current IR和标准interface拥有。若将来MLIR提供等价标准接口，应迁移到标准接口。
+
 ### 3.3 TargetImplementationCandidate
 
 概念字段：
@@ -181,9 +186,6 @@ Wafer dialect registration统一完成：
       result_constraints[]
       tile_geometry_constraints
       numeric_compatibility
-      instruction_family
-      resource_requirements
-      static_metric_vector
     }
 
 约束：
@@ -195,11 +197,10 @@ Wafer dialect registration统一完成：
 - encoding constraint只表达当前implementation接受的memory-space/encoding/valid-lane集合，不选择
   最终physical encoding。
 - tile geometry描述合法域和alignment/tail关系，不展开shape×tile×encoding笛卡尔积。
-- resource requirements只描述implementation自身必需的accumulator、temporary、engine和completion；
-  actual SPM/DDR offset与whole-rank peak由下游从materialized IR计算。
-- static metric只用于候选排序的确定维度，例如确切compute command下界或temporary bytes；未校准
-  latency不能伪装成legality或wall time。
-- candidate顺序由typed implementation kind和parameter tuple固定；registration、DenseMap iteration、
+- accumulator、temporary、engine、instruction family、completion和resource/cost不复制进candidate；
+  materializer把它们写入actual typed op/SSA/effect，随后由下游从完整clone重算。
+- candidate不参与cost ranking；它只按typed implementation kind和parameter tuple提供稳定展开顺序。
+  registration、DenseMap iteration、
   pointer和线程完成顺序不得影响结果。
 
 被选中的真实下游事实必须进入wafer.tile.*：
@@ -329,6 +330,11 @@ load/store的logical coordinate relation固定为identity；slice/permutation/re
 typed view和有限identity pieces。无法形成direct representation时，tasks/08选择并物化显式staged
 movement。load/store不携带隐藏route、descriptor list或未物化relation。
 
+当前代码中的`StorageLoadOp`仍只有source operand并隐式产生SPM result；这是Q29迁移事实，不是终态合同。
+Q32.R把它改为显式source+destination、无隐式allocation/result。materializer先创建SPM allocation/view，再
+构造destination-style load；conversion只消费这两个typed operands。不能用layout interface返回值继续模拟
+缺失的destination。
+
 RDMA固定DDR source到SPM destination，WDMA固定SPM source到DDR destination；TDMA/GS只在verifier
 允许的local address domain工作。element stride在instruction lowering前checked转换为byte stride。
 descriptor cover、range、alignment和root-relative local offset从current IR重算，不能从候选历史读取。
@@ -336,78 +342,80 @@ descriptor cover、range、alignment和root-relative local offset从current IR�
 reshape只有在logical element order和physical alias relation均可证明时作为view；否则必须成为真实movement。
 constant tensor source通过ConstantLike、logical slice和load operand表达，不按weight名字识别。
 
-## 6. Selected Op Interfaces 与 Effects
+## 6. Selected Op Native Contracts 与 Effects
 
-### 6.1 WaferComputeOpInterface
+### 6.1 Native Reuse Gate
 
-每个selected compute op至少提供：
+selected compute/movement/instruction语义首先由下列MLIR对象直接承载：
 
-    getComputeKind()
-    getSelectedImplementationKind()
-    getSelectedImplementationParameters()
-    verifySemanticOperandsAndResults()
-    verifySelectedImplementation(targetCapabilities)
-    getInstructionFamily()
-    verifyInstructionLegality(targetCapabilities)
-    getAsyncLoweringPolicy(targetCapabilities)
+- concrete typed op、operands/results、regions、types和typed attrs；
+- ODS constraint、op verifier和DialectConversion legality；
+- 适用时的DestinationStyleOpInterface、TilingInterface、ViewLike/Subset、InferType及
+  MemoryEffectOpInterface；
+- SSA use-def、token/wait/fence和structured control flow。
 
-它只回答当前op是什么以及当前typed fields是否合法，不返回其它候选，不决定layout/residency，不计算
-planner score。op verifier调用不依赖外部mutable状态的结构检查；target-specific legality pass调用
-带target参数的方法。
+conversion使用typed OpConversionPattern/RewritePattern分派具体op family；按concrete C++ op type写pattern是
+MLIR正常lowering，不是用OperationName字符串恢复语义。不得先为所有compute、movement或layout op发明一层
+WaferComputeOpInterface/WaferMovementOpInterface/WaferLayoutOpInterface，再把op已有字段复制到接口返回结构。
 
-### 6.2 WaferMovementOpInterface
+保留或新增Wafer-specific interface必须同时满足：标准MLIR op/type/attr/interface不能表达该性质；至少两个真实
+op family和两个generic consumer需要动态分派；方法只解释current IR而不复制事实；删除接口后功能无法通过typed
+pattern/helper实现。Q32.I首先审计现有接口并记录每个保留项的缺失标准语义和consumer。
 
-每个selected movement op至少提供：
+### 6.2 Compute 与 Movement
 
-    getMovementKind()
-    getSourceAndDestinationValues()
-    verifyLogicalRelation()
-    verifyPhysicalDirectionAndRange(targetCapabilities)
-    collectDescriptorRequirements()
-    getAsyncLoweringPolicy(targetCapabilities)
+selected compute implementation由具体`wafer.tile.*` op kind和typed fields表达；结构合法性归ODS/op
+verifier，target legality归带明确TargetProfileId的conversion target或preflight。共同的shape/rank/type
+关系复用InferType、DestinationStyle、Tiling和ValueBounds；共同的改写行为放typed pattern/helper，不返回
+另一份compute descriptor。
 
-direct load/store、local GS、layout materialization和staged movement使用各自typed op/field。若两个
-真实路线会生成不同command或completion，下游必须能从IR区分，不能在interface内部重新选择。
+direct load/store、local GS、layout materialization和staged movement使用各自typed op/field。source/destination、
+relation、direction、range和descriptor cover从operands/types/view chain及tasks/08 analysis重算。若两条路线会生成
+不同command或completion，它们必须是不同IR；不通过movement interface在lowering时重新选择。
 
-### 6.3 WaferLayoutOpInterface
+### 6.3 Physical Encoding 与 Layout
 
-WaferLayoutOpInterface只暴露当前selected op对operand/result memory space和encoding的精确要求。
-WaferLayoutMaterializationOpInterface只用于真实layout movement。两者不返回允许集合或偏好，不拥有
-physical encoding选择。
+selected physical encoding由memref memory attribute或encoding type表达。block、tail、padding、footprint和
+logical-index-to-physical-offset由tasks/08的Wafer-specific attr/type interface解释；这是physical encoding自身
+的行为，不是每个consumer op重复发布的layout requirement。
 
-selected physical encoding由memref memory attribute表达。block、tail、padding、footprint和logical
-index到physical offset由tasks/08的统一calculator从type和target facts重算。
+metadata-only relation优先使用合法标准view/subset op；真实reorder/materialization使用显式Wafer movement op。
+op verifier直接比较operand/result types、encoding和relation。现有WaferLayoutOpInterface与
+WaferLayoutMaterializationOpInterface若只重复这些事实，Q32.I/M迁移consumer后删除。
 
-### 6.4 Memory 与 Resource Effects
+### 6.4 Memory、Resource 与 Completion
 
-每个compute/movement op同时实现：
+compute/movement/instruction op实现标准MemoryEffectOpInterface。SPM、DDR、Compute、Movement、
+Communication和Sync可以继续作为MLIR SideEffects::Resource；Read/Write/Allocate/Free effect直接关联
+实际SSA value或singleton resource：
 
-- MemoryEffectOpInterface：供generic CSE、DCE、LICM和speculation判断使用。
-- WaferResourceEffectInterface：表达SPM/DDR bytes、Compute/Movement issue、temporary及wait/fence
-  lifecycle marker。
-
-固定覆盖关系：
-
-| Wafer detailed effect | standard MLIR effect |
+| 语义 | MLIR-native表示 |
 | --- | --- |
-| SPM/DDR read | 对对应memory resource的Read |
-| SPM/DDR write | 对对应memory resource的Write |
-| Compute/Movement issue | 对对应singleton invocation resource的Write |
-| wait/fence | 对被排序resource的Read + Write或更保守Write |
+| SPM/DDR read/write | 对对应value/resource的MemoryEffects::Read/Write |
+| allocation/free | 对allocation result/root的Allocate/Free |
+| Compute/Movement/Communication issue | 对相应custom SideEffects::Resource的Write，并由issue op产生SSA token |
+| wait/fence | 对被排序resource的conservative Read/Write，加显式token/wait/fence use-def |
 
-detailed marker不是completion proof。completion必须从SSA token、wait/fence、path和terminal drain推导。
-所有issue、wait、fence、communication和observable store均non-speculatable；Pure只用于无effect且
-不会产生UB的结构op。
+bytes、descriptor数量和physical footprint由analysis从typed value/op fields重算，不塞进第二个effect payload。
+现有WaferResourceEffectInterface若只复制resource/access/value ordinal/bytes，Q32.I/M迁移SPM/DDR/lifetime/
+cost consumer到标准effect与typed analysis后删除。迁移不能只把resource kind改名：lifetime必须通过
+value-associated EffectInstance或typed operand提取找到actual SSA allocation/root，issue产生的token及typed
+wait/fence必须继续表达pending access；DDR planner读取standard DDR effect，cost从descriptor/type/encoding
+重算bytes，local fence按typed op/token语义识别。completion必须从SSA token、wait/fence、path和terminal drain
+证明；effect本身不充当完成证据。
 
-### 6.5 WaferInstructionOpInterface
+所有issue、wait、fence、communication和observable store均non-speculatable；Pure只用于无effect且不会产生
+UB的结构op。
 
-wafer.instr.*只暴露instruction自身已经携带的事实：
+### 6.5 Instruction Dispatch
 
-    getInstructionFamily()
-    verifyInstructionContract()
+`wafer.instr.*`的结构合同归ODS和op verifier，target/profile合法性归conversion target与preflight，
+lowering归typed conversion patterns。instruction family若仍有多个真实generic consumer，可保留一个只返回
+family的最小marker/interface；`verifyInstructionContract`不能与op verifier形成第二份合同。
 
-instruction interface不接触source op、未选candidate、planner cost或task role。target LLVM conversion
-只消费instruction op、typed target profile、accepted offsets和transport binding。
+Q32.I/M必须审计现有WaferInstructionOpInterface：保留的method要列出generic consumer；其余迁入op verifier、
+typed helper或conversion pattern。target LLVM conversion只消费current instruction op、typed target profile、
+accepted offsets和transport binding。
 
 ## 7. Lowering、Verifier 与 Completion
 
@@ -444,7 +452,8 @@ Instruction gate至少检查：
 - CT/NE/TDMA operands是合法SPM memref；RDMA/WDMA方向和DDR/SPM domain正确。
 - descriptor inner bytes、stride、iterations、root-relative offset、range end和alignment均checked。
 - logical shape到physical footprint使用统一helper；禁止silent integer narrowing。
-- every detailed resource effect有standard effect覆盖。
+- every memory/resource effect直接用standard MemoryEffectOpInterface关联actual value或custom
+  SideEffects::Resource；bytes从typed descriptor/type重算。
 - issue/token/wait/fence use-def闭合，function exit没有pending local effect。
 - unsupported instruction form在effect前失败，不能回头选择另一implementation。
 
@@ -546,8 +555,9 @@ candidate、selected op verifier、IndexRelation和memory/event gates。
    iteration或线程完成顺序。
 4. 每个selected decision都落入wafer.tile.* op form、typed attr、memref encoding、SSA、
    movement、effect或token；candidate销毁后下游不缺事实。
-5. every selected compute/movement op通过ODS verifier、Wafer interfaces和standard effects；
-   every instruction通过WaferInstructionOpInterface和target legality。
+5. every selected compute/movement op通过ODS verifier、适用的standard interfaces/effects和conversion legality；
+   every instruction通过op verifier、typed conversion/preflight和target legality；重复tiling/layout/resource/
+   instruction-verifier接口已经迁移或具有明确native-gap与真实consumer证明。
 6. complete-rank instruction lowering、SPM/DDR planning、event/transport/ABI和atomic commit全部重放；
    rejected clone不污染source或accepted IR。
 7. 通用chain、diamond、fanout/fanin、broadcast、reduce、view/permutation、collective barrier和

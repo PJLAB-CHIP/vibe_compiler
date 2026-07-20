@@ -86,14 +86,19 @@ StableHLO collective在official compute conversion前先进入Wafer-owned tensor
 - `stablehlo.all_to_all` → `wafer.linalg_ext.collective.all_to_all`；
 - `stablehlo.collective_permute` → `wafer.linalg_ext.collective.collective_permute`。
 
-这些ops是destination-style tensor ops，并实现MLIR`TilingInterface`、Wafer tiling interface和collective info
-interface。它们保留：
+这些ops是destination-style tensor ops，并实现MLIR `DestinationStyleOpInterface`、`TilingInterface`和
+`MemoryEffectOpInterface`。Wafer-specific collective interface若保留，只逐项暴露标准接口没有的
+rank-group/channel/combiner事实，不再复制DPS/tiling或返回collective info snapshot。它们保留：
 
 - input/init/result tensor type和DPS tie；
 - collective axis或split/concat dimension；
 - single `rank_group`或同shape的`rank_groups`，二者互斥；
 - all-reduce/reduce-scatter的exact scalar combiner region；
 - collective-permute的logical source-target pairs。
+
+当前代码仍挂有`WaferTilingInterface`和聚合collective-info路径；这是Q29迁移实现，不是本节终态合同。
+Q32.I/M迁移consumer并删除重复语义，同时审计pinned MLIR Mesh op能无损承载的子集；标准Mesh无法表达的
+arbitrary groups/channel/combiner才保留在Wafer typed op中。
 
 verifier用execution mesh检查logical ranks范围，并用selected rank-group size检查gather/scatter/all-to-all shape
 relation。rank group只含logical rank，不含physical endpoint、DTE channel、route、SPM buffer或runtime resource。

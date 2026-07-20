@@ -189,18 +189,20 @@
   形式出现。local compute cleanup的职责是在official StableHLO-to-Linalg前后把这类可静态证明的常量
   折掉，确保structured scheduler输入没有raw StableHLO residual；不要把这扩成运行时 shape 计算或 Wafer 私有
   compute lowering。
-- `wafer.linalg_ext.collective.*`不是只靠op名字或pass switch的skeleton；五类collective
-  必须实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和
-  `WaferLinalgExtCollectiveOpInterface`。slot-crossing 或动态不可证明的 collective-axis tile 应由
-  `TilingInterface`返回failure，等待structured scheduler拆slot-aligned tile或tile communication materialization。
+- `wafer.linalg_ext.collective.*`不是只靠op名字或pass switch的skeleton；五类collective复用
+  `DestinationStyleOpInterface`和MLIR `TilingInterface`表达DPS/iteration/tile semantics。不要再用
+  Wafer-specific tiling interface重新枚举inputs/outs/results；Wafer-specific collective interface若保留，只暴露
+  标准接口没有的rank-group/channel/combiner事实且不返回整份info snapshot。slot-crossing或动态不可证明的
+  collective-axis tile应由`TilingInterface`返回failure，等待structured scheduler拆slot-aligned tile或
+  tile communication materialization。
 - StableHLO `replica_groups` 有多个 row 时不要压成一个 `rank_group`。`wafer.linalg_ext.collective.*`
   现在用互斥的 `rank_group` / `rank_groups` 表达单组或多组 logical ranks；rank-specialized
   tile-region materialization 按当前 logical rank 选择所在 row。这里仍然只保存 logical rank，不保存
   physical endpoint 或 communication algorithm。
-- tiling-demand和layout-plan是analysis-only边界：`StructuredSchedulingTilingDemand`和
-  `StructuredSchedulingLayoutPlan`从当前structured tensor IR重算，不能把tile demand、layout assignment
-  或materialization cut写成持久IR attr，也不能在analysis步骤生成`wafer.tile.region`。per-rank bundle
-  integrated gate要从typed driver产生并重新验证的structured tensor program输入重放这些analysis。
+- tiling demand和layout realizability只能是从current structured tensor IR重算、随mutation失效的局部analysis；
+  不要建立复制DPS/indexing/layout facts的长期Demand/Plan结构，更不能把tile demand、layout assignment或
+  materialization cut写成持久IR attr。analysis步骤不生成`wafer.tile.region`；per-rank bundle integrated gate
+  要从typed driver产生并重新验证的structured tensor program输入重放这些analysis。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查固定版本、importer registration hook、
   public source submodule checkout HEAD、importer Python package pin 和 core/frontend/runtime/test
   tool dependency layering。

@@ -101,7 +101,7 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
 - selected `wafer.tile.*` op form及其typed implementation/numeric fields；
 - `memref<..., #wafer.memory<space, encoding>>`、allocation root和typed view；
 - explicit compute、movement、temporary、accumulator、staging和spill/reload；
-- MemoryEffect、Wafer resource effect、async token、wait/fence和terminal drain；
+- MemoryEffectOpInterface、必要的MLIR custom SideEffects::Resource、async token、wait/fence和terminal drain；
 - 下游规划接受后写入的physical offsets和transport/ABI-owned fields。
 
 如果某个selected decision不能从这些对象解释、验证或lower，必须先扩op、type、attribute或interface。
@@ -174,11 +174,12 @@ movement必须使用本文和tasks/10定义的typed op。
 
 每个selected compute op：
 
-- 实现`WaferComputeOpInterface`并具有typed input/output；
+- 具有typed input/output/attrs，并由concrete op class、ODS verifier、适用的DPS/Tiling/
+  MemoryEffect interfaces和conversion legality解释；
 - 携带lowering必须区分的implementation kind和parameters；
 - 由op kind、region、typed fields和SSA relation完整表达numeric semantics；
 - 显式携带temporary、accumulator或loop-carried state；
-- 实现`MemoryEffectOpInterface`和Wafer resource effects；
+- 实现`MemoryEffectOpInterface`和必要的MLIR custom `SideEffects::Resource` effects；
 - 能在不回看source op或选择过程的情况下验证并lower。
 
 contraction、pointwise/convert和reduce的具体合同由tasks/10拥有。本文只负责把已选合同落入IR，不为
@@ -186,8 +187,8 @@ contraction、pointwise/convert和reduce的具体合同由tasks/10拥有。本�
 
 ### 6.2 Movement
 
-每个selected movement op实现`WaferMovementOpInterface`，并通过typed operands/results、logical
-relation、physical direction、effects和async policy完整解释当前movement；interface不在内部重新选择其它形态。
+每个selected movement op通过concrete typed op、operands/results、logical relation、physical direction、
+MemoryEffect和async token完整解释当前movement；typed conversion pattern直接分派op，lowering时不重新选择其它形态。
 
 每条physical edge在IR中只能采用一种显式形态：
 
@@ -208,6 +209,10 @@ boundary movement的概念形式：
     wafer.tile.store %spm_view into %ddr_view
 
 它们是destination-style op，无隐式allocation和result；logical coordinate relation固定为identity。
+
+当前代码中的`StorageLoadOp`仍为source→result，尚未满足该合同。Q32.R必须先创建SPM allocation/view，
+再发explicit source/destination load，并同步所有builder、conversion和tests；不能把旧result builder当作
+destination-style兼容入口。
 slice、permutation、reshape或concat先成为可验证view，不能化为同shape identity pieces时使用显式local或
 staged movement。op不携带relation副本、descriptor list或lowering-time选择字段。
 
@@ -302,7 +307,7 @@ tile/dataflow verifier至少检查：
 - 每个physical version的memory space、encoding、allocation root、view和valid domain可重算；
 - metadata view保持physical storage同构，不能用reshape逃避真实movement；
 - 每条跨task edge共享同一version或存在显式lowerable movement；
-- detailed resource effects被standard MLIR effects保守覆盖；
+- standard MemoryEffect直接关联实际SSA value或custom resource，bytes/footprint可从typed IR重算；
 - async producer在completion前不能被读取、覆盖或复用；
 - all exits完成terminal drain；
 - traversal、tail和reduction顺序符合source contract；
@@ -325,20 +330,24 @@ tile/dataflow verifier至少检查：
 - 任一rank失败或complete variant的later gate失败，不发布partial rank/module/artifact/package。
 - 失败不得触发本层临时改变implementation、encoding、residency、movement或execution order。
 
-## 11. Later Target Extensions
+## 11. Q32.V Typed Target Extensions 与其它 Later 能力
 
-Q32完成不以前置启用下列target扩展：
+Q32.V已排期闭合并由同一candidate owner消费：
 
-- 非identity、strided或多piece的direct boundary movement；
-- baseline以外的contraction operand arrangement和对应target command form；
+- 非identity、strided或多piece的mapped direct boundary movement；
+- physical-footprint fill及其valid/padding/bitpacked domain；
+- baseline以外的typed contraction operand orientation和对应target command form。
+
+下列能力仍是独立later，不纳入当前Q32完成面：
+
 - immutable prepacked resource publication；
 - dynamic shape、复杂mask、advanced fusion和target-specific composite；
 - 需要新runtime/ABI/SystemC consumer的movement或completion形态。
 
 只有target instruction、ABI和执行consumer具备typed合同后，才能启用其中一项。每项扩展必须同批增加
 source interface candidate、selected op fields、PatternRewriter/DialectConversion materialization、verifier、
-instruction lowering、effects/completion以及真实source正负测试。缺少任一纵向时保持unsupported，不反向成为
-Q32核心完成门。
+instruction lowering、effects/completion以及真实source正负测试。缺少任一纵向时保持unsupported；Q32.V三项是明确
+checkpoint，不得因删除provider协议而消失；其它later能力也不得被Q32/Q32.V completion假装支持。
 
 ## 12. 通用案例
 
@@ -385,8 +394,10 @@ gate拒绝该clone，clone整体丢弃；materializer不就地换实现。
 3. every successful case产生真实MLIR mutation；no-match/failure保持source byte-identical。
 4. every mutation使旧IndexRelation、alias、effect、liveness、completion和resource analysis失效并fresh重算。
 5. complete traversal覆盖chain、diamond、fanout/fanin、multi-root、reduction、view、control flow和communication。
-6. every compute/movement通过op/interface verifier和standard/detailed effects；every async issue都有completion。
+6. every compute/movement通过op verifier、适用的standard interfaces和MemoryEffect/custom resource effects；
+   every async issue都有SSA或typed fence completion。
 7. selected tile IR经tile-to-instruction conversion、SPM/DDR、all-rank communication、transport和ABI gate直接消费。
 8. 任一clone、rank或later exact gate失败都不产生partial accepted IR、bundle、module、artifact或package。
 9. rank-count 1/16和冻结7B source-to-package-to-SystemC/PyTorch fresh数值纵向实际执行；局部fixture不算完成。
-10. `11`中的target扩展保持later，未实现能力结构化拒绝，不扩大Q32核心范围。
+10. Q32.V mapped DMA、physical fill和oriented GEMM通过typed Tile/Instr/TargetCall/ABI/SystemC纵向后由同一
+    materializer消费；其它未实现target能力结构化拒绝。
