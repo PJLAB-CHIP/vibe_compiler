@@ -1,7 +1,7 @@
 # Wafer Compiler Verification Contract
 
 状态：2026-07-20同步MLIR-native Q32 physical-dataflow验证边界。Q32.V已排期独立闭合mapped transfer、physical-footprint fill和
-versioned GEMM orientation；RequiredCapabilitySet/schema升级仅在真实package/runtime consumer需要时从winner派生；Q32.T与Q3.6 Count保持later独立合同。保留Q31标准7B单block
+versioned GEMM orientation；RequiredCapabilitySet/schema升级仅在真实package/runtime consumer需要时从winner派生；Q32.T、Q32.N与Q3.6 Count保持later独立合同。保留Q31标准7B单block
 多seed数值证据及已完成
 Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate。
 本文是跨stage稳定验证合同，不是`tasks/plans/`中的动态实施计划。它拥有完成证据和测试口径；具体IR/ABI规则由
@@ -44,8 +44,11 @@ Pipeline position:
   Q29随后闭合rank-local tile-dataflow scheduling、complete traversal和TP16 7B compile/package结构gate；Q28再从同一
   production source入口闭合标准7B单block managed-reference SystemC执行及完整PyTorch eager output differential。
   Q32闭合MLIR interface/rewrite驱动的bounded joint candidate evaluation：implementation、tile/relation、encoding/view/route、
-  storage/residency、buffering/order、direct/ring/tree communication、resource-aware selection和Q32.V typed target纵向均有
-  真实consumer，并通过baseline、SPM→DDR→post-memory transport→ABI/package的all-rank atomic bundle gate；Q32.T仍是没有
+  storage/residency、share-vs-recompute、static loop-invariant hoist、fixed Cx/NCx encoding absorption、各current numeric variant、
+  buffering/resource-aware ready-order、direct/ring/tree communication、resource-aware selection和Q32.V typed target纵向中，
+  每个choice producer均完成production mutation→exact consumer→common selection→winner/atomic commit，required closure的
+  mutation保留在committed winner，并通过baseline、SPM→DDR→post-memory
+  transport→ABI/package的all-rank atomic bundle gate；Q32.T仍是没有
   冻结schema的可选later控制面。later Q3.6只有在Count predicate、typed
   Instr/TargetCall、独立golden和实际model consumer存在后，才闭合11/14-17 mechanical writeback/ABI/event及numeric合同；
   Q22.C消费Q22、Q32 winner的verified package和Q6.B结果闭合板端numeric correlation；若Q32.V的真实consumer采用
@@ -167,7 +170,8 @@ transport/address/shape和任何late failure都必须保持source byte-identical
 
 已完成Q0/Q0.L证据固定v1 compact DMA和normal/normal GEMM。Q32.I/R/B先重放current v1 geometry并增加真实
 rewrite所需的invalid-lane、view和staged-movement覆盖；已排期Q32.V再扩展mapped DMA、physical-footprint fill和
-oriented GEMM ABI。两组必须分开记录，不能反向把已完成v1标成未完成，也不能用earlier checkpoint结果伪装Q32.V已证。
+oriented GEMM ABI。两组必须分开记录，不能反向把已完成v1标成未完成，也不能用
+earlier checkpoint结果伪装Q32.V已证。
 
 - current v1 RDMA/WDMA/gather descriptor payload mismatch、stride range和两端OOB；current GS/staged movement中已经显式
   物化的local offset、slice和view必须覆盖exact-end/overflow/all-and-only正负例；
@@ -317,8 +321,26 @@ Q29数字保留为历史实现基线，不能替代Q32 fresh gate。
 - mandatory mechanism gate覆盖relation/view normalization、dependent tiling/fusion、pointwise propagation、
   implementation materialization/absorption、encoding/view/materialization、zero-copy/current DMA/GS/staged及Q32.V route、
   partial-compatible fanout与immutable-input reuse、movement/resident-cut elimination、current static
-  buffering/order、direct/ring/tree collective expansion和policy-gated algebraic rewrite。每一row至少有一个
-  通用source发生mutation并通过完整downstream gate；
+  buffering/resource-aware ready-order、direct/ring/tree collective expansion、whole-tensor share-vs-recompute、static
+  loop-invariant hoist、fixed Cx/NCx encoding absorption，以及reassociation、显式reduction tree、algebraic
+  distribution/factorization的integer-domain exact/modular variants各自proof-gated rewrite。每一row至少有一个通用source发生mutation并通过完整downstream gate；
+- 功能采用按三关独立取证：Q32.M要求shared candidate owner在Q32.B production-shaped seam从Q15 source发现机会、修改
+  actual clone并形成exact-gate passing candidate；Q32.S要求该producer进入同一rank frontier和whole-variant selection，并至少有一个
+  non-workload-specialized source成为winner；Q32.G要求默认`wafer-compile`在无隐藏feature flag、无testing-only callback、无手工
+  pass拼装时原子提交该winner。passing但从未进入frontier/winner、只在Q32.B seam或`wafer-opt`调用均不算采用；
+- share-vs-recompute分别覆盖share winner与dependent-region recompute winner，后者增加的logical work和减少的movement/live bytes
+  都从final IR收集；loop hoist覆盖winner中dominant loop-external SSA value及延长lifetime后的placement；fixed Cx/NCx absorption
+  current只覆盖GEMM/batched GEMM，证明其compute/Instr直接消费existing encoding且显式layout/GS movement真实消失；
+  reassociation、显式reduction tree和algebraic distribution/factorization的integer-domain exact/modular variants逐项覆盖有proof的winner及无proof barrier，
+  不能用单个numeric正例合并验收；
+- fixed Cx/NCx absorption differential由本集成gate构造两份分别通过完整downstream gate的artifact：direct winner与显式
+  materialization baseline分别交给tasks/17执行，再比较logical/numeric result及所有consumer-observable defined bytes。两者
+  各自的`InvalidLaneState`只需满足同一最终consumer precondition，无需相同；unobservable padding可以不同，只有consumer要求
+  padding可观察且defined时才逐byte比较，canary始终不变；
+- floating reassociation/tree、generic online reduction、non-GEMM FMA contraction及超出current integer-domain exact/modular子集的algebraic
+  distribution/factorization由Q32.N Later gate拥有。
+  在source predicate、显式selected SSA/SCF或fused op、Tile→Instr→TargetCall/必要ABI→SystemC纵向闭合前，production candidate
+  必须不存在；target固定FMA profile或手写`wafer-opt`正例不能替代该纵向；
 - selected tile IR通过MLIR `DialectConversion`和declared legality转换成complete-rank `wafer.instr.*`。
   conversion必须显式物化instruction parameters、descriptor、temporary、async token与wait/fence；成功后没有被标为illegal的
   source/tile op，失败时整份clone丢弃，lowering不得暗中改选implementation、layout或movement；
@@ -339,7 +361,9 @@ Q29数字保留为历史实现基线，不能替代Q32 fresh gate。
   `ExecutableBundle`。任一late-rank或late-gate失败不发布partial rank、module、artifact或package；
 - 通用source corpus覆盖chain、diamond、partial-fanout/fanin、shared-input contraction、reshape、transpose、broadcast、reduce、
   residual和collective，并交叉多个dtype、整tile、tail以及允许和禁止reassociation的情况。每种声称启用的优化必须至少有
-  一个真实source触发非零`PatternRewriter` mutation，并有不适用、非法relation、late conversion和all-clones-fail negative；
+  一个真实source触发非零`PatternRewriter` mutation、进入whole-variant selection并在对应case成为committed winner；required
+  normalization/closure的mutation效果必须保留在winner。每项另有不适用、非法relation、late conversion和all-clones-fail
+  negative；invocation-local计数只能定位证据，不能代替final IR/bundle readback；
 - fresh completion必须重放rank-count=1和16的source-to-bundle/package numerical cases，并从同一production入口运行冻结7B
   source到package、SystemC和PyTorch differential。7B gate必须实际经过新的source external interface、各功能轴的accepted
   evidence以及完整all-rank atomic path；完整输出按既有numeric contract比较。Q29/Q28/Q31历史结果只能作为

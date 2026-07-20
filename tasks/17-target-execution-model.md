@@ -2,7 +2,8 @@
 
 状态：2026-07-20已完成Q22.N/L/B/H/S/V、Q22 model-only functional-numeric profile、Q28标准7B单block scale vertical及
 Q31多seed数值表征。Q32.I/R/B先重放当前已完成的v1 target-call/SystemC gate；mapped DMA、physical fill和
-versioned GEMM orientation由已排期Q32.V typed target vertical闭合。`RequiredCapabilitySet`/package schema upgrade只在真实
+versioned GEMM orientation由已排期Q32.V typed target vertical闭合。Q32.M的fixed Cx/NCx encoding absorption只消费现有
+profile/encoding/shape/tail事实，不增加可编程vector-width或packing参数。`RequiredCapabilitySet`/package schema upgrade只在真实
 execution consumer需要逐row preflight时从winner派生。model/board admission仍由本文拥有，Q22.C board correlation和
 Q22.E exact-package execution保持独立later gate。封闭vendor Host-CRT/packet/DWFC seam不作为数值CModel依赖。本文固定以数值正确性为
 近期目标的untimed target execution model、SystemC/TLM边界、实现分层和板端numeric correlation计划；timing calibration
@@ -472,6 +473,17 @@ shape/dtype/layout调用shared physical tensor codec，编码compact/Cx/NCx targ
 反向解码，driver按program output binding的global/local slice比较all-and-only rank。program-boundary BOOL的NPY byte表示与
 target bitpacked表示尚未建立无歧义source合同，因此compact BOOL input当前在装配边界fail closed；这不影响target-call内部
 i1临时值、select和bitpacked physical effect已经支持的事实，也不能用内部支持反向宣称BOOL program input已开放。
+
+Q32.M的fixed Cx/NCx encoding absorption不是新的target capability，current只覆盖现有typed contract已接受Cx/NCx的
+GEMM/batched-GEMM。packing identity仍由`TargetProfileId`、dtype、typed
+encoding、shape/tail和physical map唯一确定；Instr、`TargetTransaction`、`NumericCommandKey`、CRT ABI和SystemC均不增加
+`vector_width`、`packing_mode`或planner field。tasks/17每次只执行tasks/16提供的一个accepted TargetCall/transaction artifact，
+分别返回logical output、numeric result、consumer-observable defined bytes、padding/canary和movement event/bytes；它不读取
+nonwinner clone，也不在模型内比较candidate。tasks/16负责把accepted direct-Cx/NCx GEMM/batched-GEMM winner与accepted显式
+materialization baseline的执行结果比较：两者分别满足同一consumer precondition，unobservable padding的`InvalidLaneState`可以
+不同，只有consumer要求padding可观察且defined时才逐byte比较，canary始终不变。tasks/06 Q32.S/G与tasks/16集成gate另从winner
+readback证明相应layout/GS movement和movement event/bytes实际消失。SystemC只消费最终typed transaction与bytes，不能读取
+planner关系来修正结果。
 
 ### 4.4 完整数值类型系统
 
@@ -1010,6 +1022,20 @@ choice前独立闭合：
   late-rank union failure和profile/key mismatch均无partial package/model result；
 - 以显式`ModelProfileId`执行repo-owned TargetCall/SystemC extension gate；若存在external model provider，
   其admission只在effect前检查已经发射的扩展command，不参与physical-dataflow选择。
+
+fixed Cx/NCx encoding absorption不属于Q32.V：它复用当前v1 encoding、codec、TargetCall和SystemC row，Q32.M/S/G分别证明
+actual clone mutation与完整接受、共同frontier winner以及默认`wafer-compile`提交。局部`wafer-opt`改写、隐藏flag、额外
+planner packing参数或只通过但从未胜出的candidate都不能替代该证据。
+
+floating reassociation/tree、generic online reduction、non-GEMM FMA contraction和超出current integer-domain exact/modular子集的algebraic
+distribution/factorization属于Q32.N Later。
+online reduction必须先有source predicate以及显式SSA state/update/finalize与evaluation-order合同；non-GEMM FMA必须先有
+program-selectable fused semantic和Tile→Instr→TargetCall/ABI→SystemC typed纵向。当前固定GEMM FMA numeric profile只解释
+已经发射的GEMM，不能授权source `mul`+`add` contraction，也不能作为production采用证据。上述纵向闭合后，它们仍须经过
+与Q32.M/S/G相同的actual mutation、完整gate、共同frontier winner和默认driver commit。
+
+floating reassociation/tree必须先有production-carried standard permission，再以显式SSA DAG/SCF进入现有typed execution
+consumer；SystemC不读取隐藏order attr或planner decision来恢复数值顺序。
 
 真实board environment admission属于Q6.B/Q22.C external gate，不阻塞Q32.V、Q32.M/S或Q32 umbrella
 completion；它只能在effect前接受或拒绝已经发射的extension row。

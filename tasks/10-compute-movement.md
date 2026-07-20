@@ -54,7 +54,7 @@ runtime/package owner 负责。
       verifier-legal rank-local normalized structured tensor IR；source compute root 通过
       LinalgOp、DestinationStyleOpInterface、TilingInterface、MemoryEffectOpInterface、
       region、type、attribute 与 SSA 完整表达。driver 同时提供 immutable
-      WaferTargetCapabilities 和 numeric policy。
+      WaferTargetCapabilities、native MLIR numeric permissions/semantics和从current IR派生的局部proof。
     - Current stage responsibility:
       对每个实现 WaferTargetImplementationOpInterface 的 source op 调用 interface。
       Wafer-owned source op 直接实现该 interface；Linalg concrete/generic op 由
@@ -196,6 +196,8 @@ resource effect；这些继续由current IR和标准interface拥有。若将来M
 - candidate不复制source shape、dtype、indexing map或scalar body；这些始终从当前op读取。
 - encoding constraint只表达当前implementation接受的memory-space/encoding/valid-lane集合，不选择
   最终physical encoding。
+- current Cx/NCx fixed packing identity只存在于selected memref encoding与target profile派生的physical map；candidate不得复制
+  `vector_width`、packing mode/factor或其它当前target不存在的参数。
 - tile geometry描述合法域和alignment/tail关系，不展开shape×tile×encoding笛卡尔积。
 - accumulator、temporary、engine、instruction family、completion和resource/cost不复制进candidate；
   materializer把它们写入actual typed op/SSA/effect，随后由下游从完整clone重算。
@@ -206,6 +208,8 @@ resource effect；这些继续由current IR和标准interface拥有。若将来M
 被选中的真实下游事实必须进入wafer.tile.*：
 
 - GEMM orientation、batch、accumulator/psum form；
+- operand/result memref type实际携带已选typed Tensor/Cx/NCx encoding；candidate阶段的encoding constraint不复制进selected op，
+  fixed packing本身也不成为implementation parameter；
 - elementwise/convert/reduce kind与numeric parameters；
 - valid-lane执行模式；
 - instruction lowering必须区分的target implementation form；
@@ -219,7 +223,7 @@ driver从ExecutionConfig的TargetProfileId构造一个immutable WaferTargetCapab
 compile中共享。它只包含compiler可发射且verifier可检查的事实：
 
 - instruction kind、typed parameter domain和field width；
-- supported dtype、rank、orientation、geometry、alignment和tail；
+- supported dtype、rank、orientation、geometry、alignment、typed Tensor/Cx/NCx encoding和tail；
 - required encoding、temporary、accumulator、queue和completion约束；
 - movement engine方向、stride/iteration和descriptor限制；
 - numeric semantics identity及其与typed command tuple的唯一对应。
@@ -314,7 +318,7 @@ wafer.tile.reduce只表达tile-local reduction；跨rank reduce-scatter/all-redu
 - 无native等价证明时，使用显式ordered composite：init fill、canonical source-order slice
   materialization、same-shape combine、ping-pong accumulator和final movement。
 - 每个composite step的temporary、effect和completion均显式；不能让CModel读取上游init修复已丢失语义。
-- reduction split与GEMM K split一样受numeric policy约束，不能仅因SPM压力自动启用。
+- current reduction split与GEMM K split只在integer-domain exact/modular proof下启用，不能仅因SPM压力自动开放floating路径。
 
 ### 5.5 Movement
 
@@ -330,6 +334,12 @@ load/store的logical coordinate relation固定为identity；slice/permutation/re
 typed view和有限identity pieces。无法形成direct representation时，tasks/08选择并物化显式staged
 movement。load/store不携带隐藏route、descriptor list或未物化relation。
 
+fixed Cx/NCx encoding absorption不是新instruction family。它只适用于现有typed verifier/target contract已接受Cx/NCx的
+compute family，current限GEMM/batched GEMM；CT elementwise等其它family不会自动获得该能力。若06/08已经证明可直接消费现有
+Cx/NCx physical version，本层保持该typed memref operand，并允许另一个actual clone删除Tensor↔Cx/NCx `materialize_layout`、GS或等价
+pack/unpack movement。packing由profile+dtype+encoding+shape/tail唯一推出，不进入`TargetImplementationCandidate::typed_parameters`
+或新Instr attr；instruction lowering只验证compute family确实接受该encoding及其valid-lane contract。
+
 当前代码中的`StorageLoadOp`仍只有source operand并隐式产生SPM result；这是Q29迁移事实，不是终态合同。
 Q32.R把它改为显式source+destination、无隐式allocation/result。materializer先创建SPM allocation/view，再
 构造destination-style load；conversion只消费这两个typed operands。不能用layout interface返回值继续模拟
@@ -341,6 +351,20 @@ descriptor cover、range、alignment和root-relative local offset从current IR�
 
 reshape只有在logical element order和physical alias relation均可证明时作为view；否则必须成为真实movement。
 constant tensor source通过ConstantLike、logical slice和load operand表达，不按weight名字识别。
+
+### 5.6 Algebraic Rewrite Handoff
+
+Q32 current只接收由current integer IR及overflow/wrap语义的exact/modular proof授权的reassociation、显式reduction tree及algebraic
+distribution/factorization；它们由06在structured actual clone上选择，本文只
+消费改写后的current op DAG：tree顺序由明确SSA combiner DAG/SCF loop-carried state表达，distribution/factorization的新增/删除
+compute也必须是普通typed ops。lowering不读取“已选择numeric mechanism”attr，也不重新选择另一代数形式。
+
+generic online reduction在有明确source pattern、state/update/finalize/finalize-order合同前保持unsupported；non-GEMM FMA
+contraction在有显式fused selected op/field及11/14/17 consumer前保持unsupported。二者由Q32.N Later gate拥有；当前target固定
+GEMM FMA profile和source `contract` fact都不能单独授权source mul+add contraction。
+
+floating reassociation/tree同样由Q32.N拥有：当前production StableHLO source没有标准fast-math permission vertical，IR-local
+手写Linalg flag只能做focused test，不能注册production candidate。
 
 ## 6. Selected Op Native Contracts 与 Effects
 
@@ -531,7 +555,11 @@ candidate、selected op verifier、IndexRelation和memory/event gates。
 - block-scaled FP8/FP4 decode或native low-precision GEMM。
 - fused epilogue、conv/pool/unpool和复杂dynamic broadcast/mask。
 - dynamic shape、paged KV、serving schedule和persistent weight cache。
-- 未经numeric policy许可的reassociation、reduction tree或K split。
+- 无current integer-IR exact/modular proof的reassociation、reduction tree或K split。
+- floating reassociation/tree（含改变reduction order的K split）、generic online reduction、non-GEMM FMA contraction及超出
+  current integer-domain exact/modular proof子集的algebraic
+  distribution/factorization；
+  它们由Q32.N闭合完整source→selected IR→Instr/TargetCall/SystemC纵向后才能启用。
 
 扩展一种实现时必须同时增加：
 
@@ -564,8 +592,10 @@ candidate、selected op verifier、IndexRelation和memory/event gates。
    structured control-flow tests覆盖正负路径。
 8. rank-count 1/16和冻结7B source-to-package-to-SystemC/PyTorch expected gate通过；相关lit/CTest
    实际执行而非unsupported/skipped。
-9. 新实现确实由至少一个真实source选择并产生不同typed IR；只实现interface、打印candidate或通过
-   单op fixture不算完成。
+9. 新实现确实由至少一个真实source选择并产生不同typed IR；本层只保证current GEMM/batched-GEMM fixed Cx/NCx direct
+   consumer和current numeric DAG能
+   合法lower，tasks/06 Q32.S/G与tasks/16集成gate再证明相应winner中前置layout/GS movement消失、显式DAG/order被提交；
+   只实现interface、打印candidate或通过单op fixture不算完成。
 10. 不声称board性能或timing收益；板端与PMU校准属于独立后续gate。
 
 ## 11. 与其它文档的关系

@@ -733,7 +733,21 @@ plain GEMM还只要求lhs/rhs/dest element type相同，target CRT call只传一
 若它们是target revision固定行为，则target revision和完整command tuple必须在execution capability中唯一映射到一个
 `NumericSemanticsProfile`。未校准的f16/bf16 narrow/wide、TF32和integer候选不能由lowering/CModel按dtype猜测。
 
-#### 7.5.1 Low-Precision Instructions
+generic online reduction和non-GEMM FMA contraction因此不属于current Q32 instruction contract。Q32.N必须先增加明确source
+predicate、selected state/fused op、对应Instr/TargetCall/必要ABI和SystemC数值纵向；target固定GEMM FMA profile不能被source
+rewrite当作通用contract许可。
+
+floating reassociation/tree也不通过Instr attr恢复：Q32.N先要求production source无损携带standard permission，再把选择物化为
+显式SSA DAG/SCF；instruction lowering只消费该actual DAG，不读取隐藏order或“已重结合”标志。
+
+#### 7.5.1 Fixed Cx/NCx Encoding Absorption
+
+current target没有独立`vector_width`、packing mode/factor或packing ABI字段。Cx/NCx packing由`TargetProfileId`、dtype、
+typed encoding、shape/tail唯一决定。Q32.M若在actual clone中删除前置Tensor↔Cx/NCx `materialize_layout`/GS，
+`wafer.instr.gemm`直接消费同一Cx/NCx memref；Instr和TargetCall仍只携带既有format/shape字段，不记录“已吸收”标志。
+verifier必须用shared physical geometry核对block、C0 tail、padding、valid lane和footprint，不能从缺失movement反推packing。
+
+#### 7.5.2 Low-Precision Instructions
 
 ```text
 wafer.instr.quantized_gemm lhs, rhs (, scale_p, scale_n)? into dest attr-dict
@@ -902,7 +916,7 @@ enum/option/parse/default/hard-coded selector；instruction lowering只合法化
 | `wafer.tile.store` | consume destination-style source/dest；current capability从compact Tensor发射WDMA。Q32.V mapped extension从两端typed views/encoding、TargetProfileId和08 exact transfer proof导出direct cover，并发射显式`src_offset`/`dst_offset`的WDMA；staged alternative必须已显式物化在payload IR，随后用local fence闭合source lifetime |
 | `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; compare source/result logical element to physical byte mapping through the unified physical layout calculator; coalesce adjacent byte segments, pack regular segments into up to three stride/iteration levels, and emit one or more `wafer.instr.gather_scatter`; do not require source/result physical byte counts to match; structured failure only when static logical movement cannot be represented by V0 descriptors |
 | `wafer.tile.fill` | current v1只对Tensor logical-valid domain生成无domain attr的`wafer.instr.fill`；padding/physical-footprint初始化由Q32.V增加typed Instr/TargetCall字段并闭合count/raw-value纵向 |
-| `wafer.tile.gemm` | ensure/create selected aligned SPM physical versions；current v1只在normal/normal relation成立时生成无orientation字段的`wafer.instr.gemm`。Q32.V把tile-level typed orientation无损写入versioned Instr op；不能从shape或op名恢复flag |
+| `wafer.tile.gemm` | ensure/create selected aligned SPM physical versions；current v1只在normal/normal relation成立时生成无orientation字段的`wafer.instr.gemm`。若operand/result已是合法Cx/NCx，直接消费该encoding且不插入packing字段；本lowering不判断历史上是否删除过layout/GS，tasks/06 Q32.S/G集成证据从winner readback证明absorption。Q32.V把tile-level typed orientation无损写入versioned Instr op；不能从shape或op名恢复flag |
 | `wafer.tile.elementwise` | materialize every input indexing map into explicit movement/same-shape operands; strip even identity maps; ensure/create destination; map non-select kind and emit map-free `wafer.instr.elementwise`; semantic select lowers to false-copy `gather_scatter` + `bit2fp` + `mask_move`; reject if a map is unrepresentable |
 | `wafer.tile.reduce` | verify init operand/attr mutual exclusion/type; fill result-shaped accumulator; enumerate reduction tuples in canonical lexicographic order; materialize each non-reduced slice to result shape and map an exact combiner to map-free elementwise ping-pong accumulators with explicit completion; move final accumulator to destination; reject dynamic-init/combiner/budget cases not representable by the typed baseline; do not emit native reduce without a compiler-owned full-domain equivalence proof |
 | `wafer.tile.copy` | ensure / create destination SPM memref; emit one gather_scatter; replace result with dest memref |
@@ -1034,6 +1048,9 @@ R3.2d verifier checks only instruction legality:
   target ABI和capability row同时匹配时合法。每个command tuple还必须唯一映射numeric semantics profile；terminal CT reduce has no init operand/
   attr，任何残留字段target-illegal；Q0.L source reduce必须更早lower为有序fill/movement/elementwise composite或拒绝，native
   reduce只有compiler-owned full-domain equivalence proof后才可进入production。
+- fixed Cx/NCx absorption不增加Instr字段；verifier只从current Instr/operands证明existing encoding/profile/shape/tail完全决定
+  packing，并核对geometry、valid/padding lane、range、alias、effect和completion。历史movement是否消失及删除前后等价性由
+  tasks/06 Q32.S/G和tasks/16集成gate证明，不由Instr verifier反推。
 - `quantized_gemm`要求exact matched low-precision capability/profile、signed INT8 storage、legal q/zp/scale mode、
   scale operand range和accumulator/saturation proof；plain GEMM不能携带这些fields。
 - `mxfp_decode`要求packed/scale/destination/scratch types与block/element/tail policy一致，packed capacity和scale
@@ -1278,7 +1295,7 @@ R3.2d.4 已完成：
    或等价 source op 出现后再接入 completion gate。
 15. dynamic DDR view、超过三层的 RDMA/WDMA descriptor packing、以及非 tensor-layout DDR 边界等
     source op 出现后再接入；当前不能靠名字或 shape 猜测出缺失的 strided boundary facts。
-16. 按7.5.1实现`wafer.instr.quantized_gemm` ODS/interface/verifier/effects、tile lowering和native capability gate；
+16. 按7.5.2实现`wafer.instr.quantized_gemm` ODS/interface/verifier/effects、tile lowering和native capability gate；
     未完成target CRT/golden/device-link前保持production target-illegal。
 17. 实现`wafer.instr.mxfp_decode`及packed/scale/scratch/completion合同，lower到显式software decode + scale
     composite；不得把legacy helper或普通convert当完成证明。

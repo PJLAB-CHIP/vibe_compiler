@@ -5,7 +5,7 @@
 
 source structured op 的数学语义始终存在于当前 operation、region、SSA、type、attribute 和标准
 MLIR interfaces 中。tasks/06 在 transformation 内选择 implementation、tile、physical encoding、
-residency 和 movement 后，本文负责在 isolated candidate clone 中用 `PatternRewriter` 和
+residency、movement、share-vs-recompute、loop-invariant hoist、current numeric rewrite和ready order 后，本文负责在 isolated candidate clone 中用 `PatternRewriter` 和
 `DialectConversion` 直接物化真实 IR。物化完成后，选择过程中的临时对象可以销毁；下游只读取
 current IR。
 
@@ -30,6 +30,10 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
 
 - 在 isolated complete-rank clone 上应用已经选中的 tiling、fusion、producer propagation 或等价
   indexing rewrite。
+- 物化share-vs-recompute与static loop-invariant hoist：share保持同一producer/physical version的多use；recompute只克隆
+  pure/speculatable producer并形成consumer-local SSA；hoist把真实op移到loop外并让body捕获dominant SSA value。
+- 把integer-domain exact/modular-proof-backed reassociation、显式reduction tree和algebraic distribution/factorization物化为真实op DAG、SCF和
+  loop-carried state；不保存numeric-choice attr。
 - 按 selected tile domain生成 all-and-only traversal、static tail和合法 reduction sequence。
 - 通过`WaferTargetImplementationOpInterface::materializeSelectedImplementation`创建typed
   `wafer.tile.*` compute。
@@ -55,11 +59,12 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
     - Upstream artifact / IR:
       verifier-legal rank-local structured tensor IR，以及同一次 transformation 内由
       WaferTargetImplementationOpInterface枚举并已经选中的TargetImplementationCandidate、
-      tile domain、physical operand/result encoding、residency、
-      movement和execution order。所有选择都引用current op/value并可在mutation前重新验证；
+      tile domain、physical operand/result encoding、residency、movement、share/recompute、hoist、current numeric variant和
+      execution order。所有选择都引用current op/value并可在mutation前重新验证；
       它们不跨pass发布。
     - Current stage responsibility:
-      clone完整rank module；用PatternRewriter应用selected structured rewrites并更新真实use-def；
+      clone完整rank module；用PatternRewriter应用selected structured rewrites、producer clone/共享、loop hoist和显式numeric DAG，
+      并更新真实use-def；
       用source implementation hook、op builders和DialectConversion创建typed region、view、
       compute、movement、event和SSA relation；生成complete traversal；每次mutation后丢弃旧
       IndexRelation、alias、effect、liveness和resource observations并从current clone重算；
@@ -98,6 +103,8 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
 物化后的长期事实只有：
 
 - structured loop、tile offsets/sizes、block arguments、yield和SSA use-def；
+- shared producer/version的普通multi-use、recomputed producer的独立SSA clone、loop外hoisted op与body capture，以及显式
+  combiner tree/state tuple；不存在share/recompute/hoist/tree选择attr；
 - selected `wafer.tile.*` op form及其typed implementation/numeric fields；
 - `memref<..., #wafer.memory<space, encoding>>`、allocation root和typed view；
 - explicit compute、movement、temporary、accumulator、staging和spill/reload；
@@ -264,9 +271,12 @@ ABI全部通过，coordinator才能提交包含全部logical ranks的结果。ma
 
 | semantic family | 从current MLIR读取的事实 | 物化结果 |
 | --- | --- | --- |
-| contraction | iterator types、indexing maps、DPS init、combiner、type和numeric policy | typed GEMM/batch/accumulator chain |
+| contraction | iterator types、indexing maps、DPS init、combiner、type和native numeric semantics/permissions | typed GEMM/batch/accumulator chain |
 | pointwise/relation/select/convert | elementwise iterators、scalar region、dtype和valid domain | typed compute或明确composite |
 | ordered reduction | reduction iterators、init、combiner、source order和reassociation许可 | ordered composite或已证明等价的native op |
+| share-vs-recompute | SSA use-def、exact dependent region、effect/speculation和cost choice | shared multi-use或consumer-local producer SSA clone |
+| loop-invariant hoist | LoopLike、dominance、invariant operands、effect/completion | loop外真实op和body捕获的dominant SSA value |
+| numeric reassociation/tree/distribution | current integer IR、overflow/wrap语义、exact/modular proof和combiner/dataflow | 显式SSA combiner tree或等价rewritten op DAG；floating permission与`contract`不生成current producer，无隐藏order attr |
 | view/reshape/permutation | type、view/subset semantics、index relation和alias proof | metadata view或explicit movement |
 | broadcast/slice/concat | indexing relation、static domain和piece coverage | view、movement或structured failure |
 | constant tensor | ConstantLike value、logical slice和selected destination encoding | typed fill/load |
@@ -274,7 +284,8 @@ ABI全部通过，coordinator才能提交包含全部logical ranks的结果。ma
 | communication | rank-local operands、typed peer/group facts、bytes和completion | explicit movement/event body；无未展开占位 |
 
 通用测试至少覆盖chain、diamond、fanout/fanin、shared-input contraction、multi-root、residual、collective、
-多个dtype、整tile、非整除tail以及允许/禁止floating reassociation。新增source op优先通过现有Linalg、
+多个dtype、整tile、非整除tail以及integer-domain exact/modular proof正负例。IR-local fast-math fixture只验证事实保留，不算production
+floating reassociation/tree证据。新增source op优先通过现有Linalg、
 DPS、Tiling、ViewLike和effect interfaces进入这些family；只有新数学语义不能稳定表达时才扩IR。
 
 每个positive必须从真实source进入production materializer并发生非零IR mutation。negative至少覆盖wrong
@@ -338,11 +349,18 @@ Q32.V已排期闭合并由同一candidate owner消费：
 - physical-footprint fill及其valid/padding/bitpacked domain；
 - baseline以外的typed contraction operand orientation和对应target command form。
 
+fixed Cx/NCx encoding absorption属于current Q32.M而不是Q32.V：只有现有typed verifier/target contract已经接受Cx/NCx的
+compute family才能直接消费相应memref，current限GEMM/batched GEMM。若08的exact physical-map/valid-lane proof允许，前置
+`materialize_layout`/GS movement在本clone中消失；packing identity仍只存在于encoding/profile，不增加vector-width或packing
+side attr。
+
 下列能力仍是独立later，不纳入当前Q32完成面：
 
 - immutable prepacked resource publication；
 - dynamic shape、复杂mask、advanced fusion和target-specific composite；
 - 需要新runtime/ABI/SystemC consumer的movement或completion形态。
+- Q32.N floating reassociation/tree、generic online reduction、non-GEMM FMA contraction及超出current integer-domain
+  exact/modular子集的algebraic distribution/factorization；
 
 只有target instruction、ABI和执行consumer具备typed合同后，才能启用其中一项。每项扩展必须同批增加
 source interface candidate、selected op fields、PatternRewriter/DialectConversion materialization、verifier、
@@ -401,3 +419,7 @@ gate拒绝该clone，clone整体丢弃；materializer不就地换实现。
 9. rank-count 1/16和冻结7B source-to-package-to-SystemC/PyTorch fresh数值纵向实际执行；局部fixture不算完成。
 10. Q32.V mapped DMA、physical fill和oriented GEMM通过typed Tile/Instr/TargetCall/ABI/SystemC纵向后由同一
     materializer消费；其它未实现target能力结构化拒绝。
+11. share/recompute、hoist、fixed Cx/NCx absorption及每个current numeric variant分别有production actual-IR形态和negative；
+    floating reassociation/tree、generic online reduction、non-GEMM FMA及超出current integer-domain exact/modular子集的
+    distribution/factorization在
+    Q32.N前没有producer或伪装attr。

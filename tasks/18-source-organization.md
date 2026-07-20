@@ -113,10 +113,12 @@ analysis/evaluation/selection/commit 协调；whole-rank finalization、all-rank
 format或平行 coordinator。上述文件名是 owner 映射；实现时可按 translation-unit 规模合并同一职责，但不能
 跨层合并 analysis、rewrite、conversion 和 coordination。
 
-tasks/13已有direct/ring/tree collective lowering继续位于`WaferTileRegionToInstr`/communication owner；Q32.M只把这些
-actual complete-clone rewrites注册到现有Scheduling candidate producer，不复制成`PhysicalDataflow`通信图或selector。
-implementation、encoding/route、buffering/order及resource-aware neighbor producer同样在Scheduling编排已有interface/analysis/
-rewrite，不建立统一dispatch registry。
+tasks/13已有direct/ring/tree collective expansion/lowering语义继续位于`WaferTileRegionToInstr`/communication owner；当前实现仍由
+pass option选择单一路径。Q32.M先把同一语义暴露为无状态complete-clone producers，再由现有Scheduling candidate owner调用，
+不复制成`PhysicalDataflow`通信图或selector。implementation、encoding/route、share/recompute、loop hoist、current
+integer-domain exact/modular numeric rewrite、buffering/order及resource-aware neighbor producers同样在Scheduling编排已有
+interface/analysis/rewrite，不建立统一
+dispatch registry。
 
 ### 构建依赖
 

@@ -1,6 +1,6 @@
 # Wafer StableHLO 到 Local Structured Tensor IR 设计
 
-状态：2026-07-16按Q29 structured-program handoff同步。本文拥有post-SPMD StableHLO local compute与logical collective到
+状态：2026-07-20按Q32 native numeric/effect source-fact handoff同步。本文拥有post-SPMD StableHLO local compute与logical collective到
 structured tensor IR的normalization合同；不拥有SPMD、task/dataflow candidate、memory、target或runtime。实现状态看
 `tasks/progress.md`。
 
@@ -14,9 +14,11 @@ Pipeline position:
 - Current stage responsibility:
   将StableHLO compute/data movement/constants通过pinned官方StableHLO-to-Linalg conversion规整成
   `linalg`/`tensor`/`scf`/`arith`/`math`；先把supported StableHLO collectives转换为
-  `wafer.linalg_ext.collective.*`destination-style tensor ops；清理可静态证明的SPMD residual。
+  `wafer.linalg_ext.collective.*`destination-style tensor ops；清理可静态证明的SPMD residual；保留转换结果中
+  current native MLIR fast-math/overflow/rounding/contract事实、evaluation order、SCF/SSA control与effect/speculation语义。
 - Output artifact / IR:
-  target-independent structured tensor program，包含local compute、ConstantLike values和logical collective；
+  target-independent structured tensor program，包含local compute、ConstantLike values、logical collective和下游可直接读取的
+  native numeric/effect/control facts；
   不残留raw StableHLO或SDY语义。
 - Downstream consumer:
   Q29 rank-local tile-dataflow analysis、candidate materialization与whole-variant commit。
@@ -29,8 +31,8 @@ Pipeline position:
   physical layout、SPM/DDR、DTE、target CRT、manifest或runtime binding。
 - Completion gate:
   Q15真实helper输出经同一normalization后不残留StableHLO/SDY，supported collectives成为verifier-legal
-  LinalgExt ops，随后能直接进入structured task/dataflow scheduler；unsupported semantic fail closed
-  而不是留给下游猜测。
+  LinalgExt ops，native numeric/effect/control facts经write/readback保持，随后能直接进入structured task/dataflow scheduler；
+  unsupported semantic fail closed而不是留给下游猜测。
 ```
 
 ## 2. 稳定边界
@@ -45,8 +47,19 @@ func + tensor + linalg + scf + arith + math
   + wafer.linalg_ext.collective.*
 ```
 
-shape、dtype、indexing maps、iterator types、DPS ties、reduction region和SSA use-def必须保持可验证。target facts
+shape、dtype、indexing maps、iterator types、DPS ties、reduction region和SSA use-def必须保持可验证。arith/math/linalg op或
+其scalar region已有的standard fast-math、integer overflow、rounding/contract语义，SCF dominance/loop-carried SSA，以及
+`MemoryEffectOpInterface`/`ConditionallySpeculatable`结论同样必须保留；缺失某项许可时，下游把它当作变换barrier，不能由
+Wafer私有attr、模型名或target性能目标补猜。target facts
 只能在下游作为legality/cost input，不能提前变成layout strings、memory attrs、physical endpoint或packet fields。
+
+standard `contract` fact在本层只是无损handoff，不会自动注册non-GEMM FMA producer。它只有在Q32.N补齐显式fused selected
+op、Instr/TargetCall/必要ABI和SystemC consumer后才能参与相应candidate legality；Q32 current不能从“保留了contract”推导
+source `mul`+`add` contraction。
+
+当前production输入只接受StableHLO program directory，而当前StableHLO→Linalg链没有标准fast-math permission通道。因此本节的
+fast-math保留合同面向未来具备该事实的标准source vertical及IR-local一致性测试，不构成Q32 current floating reassociation/tree
+producer；该功能由Q32.N在production source能无损携带许可后再接入。
 
 当前frontend program没有typed mutable-state/model graph合同；本stage也不虚构state/resource owner。parameter在
 program directory和function argument上的绑定由tasks/02 verifier拥有，normalization只保持IR value/type关系。
@@ -179,6 +192,8 @@ directory orchestration由`wafer-compile`负责，用户不选择该stage或手�
 
 - official conversion后raw StableHLO为零；
 - dot/batch/contracting/indexing、broadcast与reduction关系；
+- native fast-math/overflow/rounding/contract attr、evaluation order、SCF loop-carried SSA和effect/speculation在normalization
+  write/readback前后一致；当前production没有fast-math source channel，floating reassociation/tree保持barrier并归Q32.N；
 - static shape-view与constant residual cleanup positive/negative；
 - 五类collective的shape、axis、DPS ties、rank group/rank groups与combiner verifier；
 - logical rank越mesh范围、invalid replica groups、shape mismatch与unsupported collective fail closed；

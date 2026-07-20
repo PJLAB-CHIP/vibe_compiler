@@ -155,6 +155,11 @@ kind、source/destination type 和 kind-specific zero-point/rounding attr 必须
 Cx/NCx block/tail/footprint、BOOL physical bit packing 和 alignment 归 tasks/08 的 physical encoding
 attr/type interface；target format contract不能复制这些几何公式。
 
+Q32.M fixed Cx/NCx encoding absorption不增加target capability、Instr字段或CRT参数；current只覆盖现有contract已接受Cx/NCx的
+GEMM/batched-GEMM。winner中的compute/instruction已经直接
+引用Cx/NCx typed memref；本层只按现有TargetProfileId×engine×format合同和tasks/08 physical map派生固定packing/footprint，
+不能接收`vector_width`、packing mode或“已吸收”planner标志。显式layout/GS是否消失只能从winner IR readback证明。
+
 ## 4. Current Formal Conversion Facts
 
 当前 `LowerInstrToTargetLLVM` 使用 structure-preserving DialectConversion：
@@ -217,6 +222,8 @@ current v1 最低规则：
 - reduce：dim 和 input/output shape 合法；terminal op 不携带 init，source init 已 lower 为有序 composite。
 - GEMM：v1 只接受 normal/normal canonical mapping；M/K/N/batch、stored operands 和 result mapping一致。
   任何 transpose/oriented tuple 当前 target-illegal。
+- fixed Cx/NCx absorption后的GEMM仍走相同format ABI；typed operand encoding、block/C0 tail/padding和physical range必须一致，
+  不存在额外packing field或lowering-time pack fallback。
 - ordinary conv、pool/unpool、TDMA pad/img2col 和已支持 peripheral：shape attrs 与 memref、算子和
   capacity 一致；未定义 shape profile 的 op fail closed。
 - DTE：bytes/range、peer/endpoint、remote offset、event/status/completion 都来自 typed accepted IR。
@@ -409,6 +416,11 @@ current negative还必须证明：
 本节定义Q32.V已排期能力及其它扩展的边界和保持不变的typed ABI原则。没有实现、验证和execution
 consumer前，不进入current profile、CRT surface或artifact fields；但mapped DMA、physical fill和oriented GEMM不能因删除
 provider/query协议而从任务目标消失。
+
+fixed Cx/NCx encoding absorption不是Q32.V ABI extension：它复用current format/profile和相同TargetCall signature，要求包含
+Q32.M absorption rewrite的Q32.S winner（由Q32.G默认路径提交）在进入本层前已经删除显式layout/GS movement。本层若需要新增
+packing参数才能lower，说明该selected row/program不属于current
+capability，必须在新的typed target vertical闭合前原子fail closed，不能在target conversion中回退或改选。
 
 ### 12.1 Q32.V：Mapped DMA
 

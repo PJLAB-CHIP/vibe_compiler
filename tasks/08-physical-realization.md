@@ -276,6 +276,13 @@ Cx/NCx tail、fold 和 padding 会让一些 logical reshape/transpose 在 compac
 compute absorption 也不是 metadata view。它由 selected compute op/interface 证明 operand access relation 能直接
 消费当前 encoding；若成立，IR 中应由 compute operand/type 表达该事实，不能创建假 view。
 
+current fixed Cx/NCx packing是compute absorption的直接应用：packing identity只由`TargetProfileId`、dtype、typed encoding、
+shape/tail和本节唯一physical map决定，不是可编程`vector_width`或packing mode。只有现有typed verifier/target contract已经
+接受Cx/NCx的compute family才能应用，current限GEMM/batched GEMM；CT elementwise等其它family不会自动获得该能力。若该family
+能直接消费同一Cx/NCx physical version，并且IndexRelation、valid/padding lane、effect和lifetime exact proof成立，另一个clone可以删除前置
+Tensor↔Cx/NCx `materialize_layout`、GS或等价pack/unpack movement。删除后compute operand仍携带原typed encoding，下游从它
+重建geometry；不得把packing复制到implementation parameter、Instr side attr或planner record。
+
 ## 7. Transfer Realizability Helper
 
 transfer helper 的输入是当前 clone 中的真实对象：
@@ -535,10 +542,14 @@ accepted physical-realization IR 至少验证：
 1. **encoding interface tests**：random shape/dtype/index、full/tail、checked arithmetic、Cx/NCx/BOOL；
 2. **relation tests**：identity、permutation、reshape、broadcast、slice、piecewise relation 和 dynamic bounds；
 3. **view tests**：same-root offset equality、negative alias/range、Cx/NCx tail 非 view；
-4. **descriptor tests**：one/multi-command RDMA/WDMA、GS、field overflow、alignment、range、broadcast read；
-5. **invalid-lane tests**：unknown、known splat、fill + segmented write、mask、negative consumer observation；
-6. **IR tests**：clone 内 materialization、DialectConversion legality、canonicalization、atomic rejection；
-7. **integrated tests**：whole-rank SPM、whole-variant DDR、event、instruction 和 SystemC logical round trip。
+4. **fixed-encoding absorption tests**：direct Cx/NCx GEMM/batched-GEMM与显式materialize/GS baseline的logical value、numeric
+   result及所有consumer-observable defined physical bytes一致；两条路径分别满足同一consumer precondition，unobservable padding的
+   `InvalidLaneState`可以不同。只有共同consumer contract要求padding可观察且defined（例如KnownSplat/full-fill）时才逐byte比较，
+   canary始终不变；tasks/06 Q32.S/G与tasks/16集成证据证明winner final IR中对应movement真实消失；
+5. **descriptor tests**：one/multi-command RDMA/WDMA、GS、field overflow、alignment、range、broadcast read；
+6. **invalid-lane tests**：unknown、known splat、fill + segmented write、mask、negative consumer observation；
+7. **IR tests**：clone 内 materialization、DialectConversion legality、canonicalization、atomic rejection；
+8. **integrated tests**：whole-rank SPM、whole-variant DDR、event、instruction 和 SystemC logical round trip。
 
 property tests 使用独立慢 oracle 与 interface/descriptor fast path differential。慢 oracle 可以逐元素；生产
 路径不能。
@@ -599,6 +610,9 @@ whole-rank/whole-variant gates；该later工作不属于Q32或本文当前完成
 - `IndexRelation`明确从当前IR派生并在rewrite后重建，identity/permutation/broadcast/slice/reshape/concat及composition
   被tiling、view、propagation、transfer和reuse真实消费；
 - Cx/NCx/BOOL 等行为只有一个 attr/type-interface 事实源；
+- fixed Cx/NCx absorption由existing encoding/profile唯一解释且current仅适用于GEMM/batched GEMM；本层证明direct consumer的physical/invalid-lane legality，
+  tasks/06 Q32.S/G与tasks/16集成gate再证明至少一个production winner直接消费Cx/NCx并删除显式layout/GS movement；
+  无vector-width/packing side parameter；
 - current zero-copy/compact DMA/GS/staged及Q32.V mapped route alternatives在isolated clones中成为不同typed
   view/movement/temp/event IR，并进入06同一candidate selection；
 - exact descriptor、invalid-lane、range、lifetime 和 completion 能只从 accepted IR 重建；

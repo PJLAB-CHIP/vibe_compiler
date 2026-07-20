@@ -26,8 +26,10 @@ blocked-by与完成记录只看`tasks/progress.md`；专题IR、ABI、算法和�
 8. **扩展先有consumer。** 当前IR能重算的事实不新增attr/sidecar；新op、type、attr或artifact字段必须有明确creator、
    verifier、lowering和downstream consumer。
 9. **rewrite采用必须有实效。** linked、registered或debug可调用不等于production采用；每种候选rewrite必须由named
-   pipeline真实调用、在通用source上发生、被下游typed IR直接消费，并通过等价性、exact gate和数值验证。实现复用
-   MLIR interface、PatternRewriter和DialectConversion，不建立独立机制审批或registry。
+   pipeline真实调用、在通用source的隔离clone上改写actual IR并被下游typed IR直接消费，通过等价性、exact gate和
+   数值验证，进入统一frontier且至少有一个production winner，最后由默认`wafer-compile`原子提交。只存在局部pass、
+   testing seam、隐藏flag或passing但从未胜出的candidate都不算production采用。实现复用MLIR interface、
+   PatternRewriter和DialectConversion，不建立独立机制审批或registry。
 10. **先复用MLIR语义。** DPS、tiling、view/subset、effect、type inference、rewrite和conversion由标准interface/
     IR机制拥有；Wafer-specific interface只填补明确target gap，不能把current op已有字段重新收集成Demand、Info、
     Effect或Plan旁路对象。selected target事实进入typed Wafer IR，派生关系保持局部analysis。
@@ -62,11 +64,14 @@ Pipeline position:
   承诺dynamic-shape/online scheduling、MPMD、多卡、persistent state/KV、streaming weight、vendor-exact packet或cycle accuracy。
 - Completion gate:
   当前v1 production artifacts、rank-count=1/16、atomic publication、typed package/no-card与repo-owned CModel链保持有效；
-  physical-dataflow synthesis目标完成时，implementation、tile/relation、encoding/view/route、storage/residency、
-  buffering/order、direct/ring/tree communication、resource-aware bounded selection及Q32.V mapped/physical-fill/oriented
-  typed target纵向均有真实production consumer/winner证据；完整PyTorch/SystemC/resource/ABI/package gate全部fresh通过，
-  旧decision owner与公开旁路清零。winner capability projection只在真实package/runtime consumer需要时派生，model/board
-  admission不参与candidate选择。
+  physical-dataflow synthesis目标完成时，implementation、tile/relation、encoding/view/route、storage/residency、current
+  GEMM/batched-GEMM fixed-Cx-NCx absorption、share-vs-recompute、static loop-invariant hoist、integer-domain
+  exact/modular-proof-gated actual-DAG rewrite、buffering/order、
+  direct/ring/tree communication、resource-aware bounded selection及Q32.V mapped/physical-fill/oriented typed target纵向中，
+  choice producers均有真实production mutation、完整consumer gate、共同frontier winner及默认driver commit证据，required
+  closure的mutation则保留在committed winner；完整PyTorch/SystemC/resource/ABI/package gate全部fresh通过，旧decision
+  owner与公开旁路清零。winner capability projection只在真实package/runtime
+  consumer需要时派生，model/board admission不参与candidate选择。
 ```
 
 当前production只接受static-ranked program boundary。IR-local bounded/dynamic verifier能力不扩大production source admission；
@@ -118,7 +123,7 @@ manifest的move-only lifetime/container artifact，不是另一份program或pack
 | Verified program | StableHLO、function boundary metadata、NPY payload/shards | model语义、static shape/dtype、resource role与payload admission | rank placement、tile、physical layout、runtime handle |
 | Execution configuration | factory-only `ExecutionConfig` | 显式1/16 rank domain与registered `TargetProfileId` | tensor sharding、topology IR、planner policy |
 | Topology/SPMD | `wafer.target.topology`、`wafer.execution.mesh`、post-SPMD StableHLO | compiler内部single-card endpoint与logical rank domain、rank-local partition | candidate、SPM/DDR、physical transport |
-| Structured tensor program | Linalg/Tensor/SCF/Arith/Math与typed logical collective | rank-local数学语义、iterator/indexing relation、effect/control/numeric policy | target implementation、physical encoding、offset |
+| Structured tensor program | Linalg/Tensor/SCF/Arith/Math与typed logical collective | rank-local数学语义、iterator/indexing relation、effect/control及native numeric semantics/permissions | target implementation、physical encoding、offset |
 | Candidate analysis | transformation-local rewrite scopes、IndexRelation、complete clones与final static cost | 少量implementation/tile/encoding/route/residency alternatives；每个选择立即物化进clone | accepted事实、package字段、shadow schedule、长期side table |
 | Selected tile/dataflow IR（stage-internal） | `wafer.tile.region` fragments、Wafer memref/view、typed compute/movement/collective/event | 完整static traversal、selected implementation与physical versions；必须继续lower，不是accepted artifact | rejected candidates、独立arena、runtime launch |
 | Instruction/memory program | `wafer.instr.*`、accepted SPM/DDR offsets、completion/Direct DTE | target-abstract invocation、physical geometry、range/lifetime/effect | raw host handle、package schedule |
@@ -231,8 +236,8 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | --- | --- | --- |
 | source boundary | static-ranked StableHLO program directory；rank-count显式1/16 | 保持同一用户边界；dynamic/MPMD另行设计 |
 | structured optimization | official legalization、窄residual cleanup和best-effort canonicalization；部分上游tiling/fusion utility已被当前scheduler直接复用 | Q32只在candidate clone中加入有直接correctness gate的rewrite，不建立独立production优化审批层 |
-| decision owner | bounded task/dataflow scheduler，有限scope/residency alternatives | MLIR-native candidate generator在真实clone上有界联合评估implementation/tile/encoding/route/residency/buffering/order/communication |
-| physical realization | canonical Tensor/Cx/NCx与显式materialization；compact DMA | attr/type interface解释encoding，analysis/helper选择transfer并立即物化；Q32.V增加typed mapped DMA/physical fill纵向 |
+| decision owner | bounded task/dataflow scheduler，有限scope/residency alternatives | MLIR-native candidate generator在真实clone上有界联合评估implementation/tile/encoding/route/residency/share-recompute/hoist/numeric DAG/buffering/order/communication；所有current producer进入同一frontier并有production winner |
+| physical realization | canonical Tensor/Cx/NCx与显式materialization；compact DMA | attr/type interface解释encoding，analysis/helper选择transfer并立即物化；Q32.M允许current GEMM/batched-GEMM在exact proof下吸收固定Cx/NCx materialization，Q32.V增加typed mapped DMA/physical fill纵向 |
 | GEMM ABI | closed v1、implicit normal/normal | Q32.V以typed Instr/TargetCall/ABI/SystemC纵向增加orientation，完成后由通用candidate owner消费 |
 | package | 当前typed manifest | current schema保持；Q32.V扩展command若真实consumer需要，winner-derived capability requirements由post-selection owner派生 |
 | model | same-lowering TargetCall/SystemC untimed functional-numeric | Q32 candidate复用同一model gate；board predicate独立 |
