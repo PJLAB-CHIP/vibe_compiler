@@ -43,13 +43,37 @@
 
 namespace wafer::target_llvm_detail {
 
+namespace {
+
+mlir::FailureOr<int64_t> getFillElementCount(InstrFillOp op) {
+  auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
+  if (op.getFillDomain().value_or(FillDomain::LogicalValid) ==
+      FillDomain::LogicalValid)
+    return getStaticElementCount(op, destType, "fill dest");
+
+  std::optional<WaferPhysicalTensorInfo> info =
+      computeWaferPhysicalTensorInfo(destType);
+  if (!info || info->physicalBytes <= 0 || info->physicalElements <= 0)
+    return op.emitError()
+           << "unsupported_target_geometry: physical_footprint fill requires "
+              "a static positive physical destination footprint";
+  if (!info->bitPackedElement)
+    return info->physicalElements;
+  if (static_cast<uint64_t>(info->physicalBytes) >
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) / UINT64_C(8))
+    return op.emitError()
+           << "target_range_overflow: bitpacked physical fill element count "
+              "overflows int64";
+  return info->physicalBytes * INT64_C(8);
+}
+
+} // namespace
+
 mlir::LogicalResult FunctionLowering::lowerFill(InstrFillOp op) {
   llvm::SmallVector<mlir::Value, 5> args;
   mlir::FailureOr<mlir::Value> dest =
       materializeAddress(op, op.getDest(), "fill dest");
-  auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
-  mlir::FailureOr<int64_t> elements =
-      getStaticElementCount(op, destType, "fill dest");
+  mlir::FailureOr<int64_t> elements = getFillElementCount(op);
   mlir::FailureOr<int64_t> scalar = getConstantScalarValue(op, op.getValue());
   mlir::FailureOr<int64_t> fmt =
       getDataFormatCode(op, op.getDest(), "fill dest", targetProfile);
@@ -216,7 +240,20 @@ mlir::LogicalResult FunctionLowering::lowerGemm(InstrGemmOp op) {
   appendI32(op.getLoc(), args,
             getOptionalIntegerAttrValue(op.getBatchCountAttr(), 1));
   appendI32(op.getLoc(), args, *fmt);
-  emitCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::Gemm), args);
+  if (op.getLhsOrientationAttr()) {
+    if (getTargetProfileRecord(targetProfile).kernelRuntimeABI !=
+        KernelRuntimeABIId::waferTx81KernelV2())
+      return op.emitError()
+             << "unsupported_target_abi: explicit GEMM orientations require "
+                "wafer-tx81-kernel-v2";
+    appendI32(op.getLoc(), args, static_cast<int64_t>(*op.getLhsOrientation()));
+    appendI32(op.getLoc(), args, static_cast<int64_t>(*op.getRhsOrientation()));
+    emitCall(op.getLoc(),
+             getTargetCallDescriptor(TargetCallBuiltin::GemmOrientedV2), args);
+  } else {
+    emitCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::Gemm),
+             args);
+  }
   return mlir::success();
 }
 

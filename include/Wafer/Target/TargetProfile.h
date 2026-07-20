@@ -21,6 +21,9 @@ public:
   static constexpr TargetProfileId waferTx81SingleCardKernelV1() {
     return TargetProfileId(Value::WaferTx81SingleCardKernelV1);
   }
+  static constexpr TargetProfileId waferTx81SingleCardKernelV2() {
+    return TargetProfileId(Value::WaferTx81SingleCardKernelV2);
+  }
 
   friend constexpr bool operator==(TargetProfileId lhs, TargetProfileId rhs) {
     return lhs.value == rhs.value;
@@ -30,7 +33,10 @@ public:
   }
 
 private:
-  enum class Value : uint8_t { WaferTx81SingleCardKernelV1 };
+  enum class Value : uint8_t {
+    WaferTx81SingleCardKernelV1,
+    WaferTx81SingleCardKernelV2
+  };
 
   explicit constexpr TargetProfileId(Value value) : value(value) {}
 
@@ -69,6 +75,9 @@ public:
   static constexpr KernelRuntimeABIId waferTx81KernelV1() {
     return KernelRuntimeABIId(Value::WaferTx81KernelV1);
   }
+  static constexpr KernelRuntimeABIId waferTx81KernelV2() {
+    return KernelRuntimeABIId(Value::WaferTx81KernelV2);
+  }
 
   friend constexpr bool operator==(KernelRuntimeABIId lhs,
                                    KernelRuntimeABIId rhs) {
@@ -80,7 +89,7 @@ public:
   }
 
 private:
-  enum class Value : uint8_t { WaferTx81KernelV1 };
+  enum class Value : uint8_t { WaferTx81KernelV1, WaferTx81KernelV2 };
 
   explicit constexpr KernelRuntimeABIId(Value value) : value(value) {}
 
@@ -97,6 +106,11 @@ struct TargetProfileRecord {
   KernelRuntimeABIId kernelRuntimeABI;
   llvm::StringLiteral kernelRuntimeABISpelling;
   llvm::StringLiteral moduleFormat;
+  TargetProfileId formatCompatibilityProfile;
+  /// Numeric arithmetic compatibility identity. ABI-only revisions may
+  /// inherit a proven numeric registry while retaining their distinct target
+  /// profile and kernel ABI identities.
+  TargetProfileId numericCompatibilityProfile;
 };
 
 llvm::ArrayRef<TargetProfileRecord> getRegisteredTargetProfiles();

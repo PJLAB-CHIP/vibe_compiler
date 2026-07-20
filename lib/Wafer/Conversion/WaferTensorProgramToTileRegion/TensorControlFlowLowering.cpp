@@ -764,7 +764,10 @@ bool TileRegionBodyEmitter::onlyFeedsGemmOverwriteInit(
 
   for (mlir::OpOperand &use : value.getUses()) {
     mlir::Operation *owner = use.getOwner();
-    if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::BatchMatmulOp>(owner)) {
+    if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
+                  mlir::linalg::MatmulTransposeBOp, mlir::linalg::BatchMatmulOp,
+                  mlir::linalg::BatchMatmulTransposeAOp,
+                  mlir::linalg::BatchMatmulTransposeBOp>(owner)) {
       auto dpsOp = mlir::cast<mlir::linalg::LinalgOp>(owner);
       if (dpsOp.isDpsInit(&use))
         continue;

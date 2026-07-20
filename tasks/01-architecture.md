@@ -238,7 +238,7 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | structured optimization | official legalization、窄residual cleanup和best-effort canonicalization；部分上游tiling/fusion utility已被当前scheduler直接复用 | Q32只在candidate clone中加入有直接correctness gate的rewrite，不建立独立production优化审批层 |
 | decision owner | bounded task/dataflow scheduler，有限scope/residency alternatives | MLIR-native candidate generator在真实clone上有界联合评估implementation/tile/encoding/route/residency/share-recompute/hoist/numeric DAG/buffering/order/communication；所有current producer进入同一frontier并有production winner |
 | physical realization | canonical Tensor/Cx/NCx与显式materialization；compact DMA | attr/type interface解释encoding，analysis/helper选择transfer并立即物化；Q32.M允许current GEMM/batched-GEMM在exact proof下吸收固定Cx/NCx materialization，Q32.V增加typed mapped DMA/physical fill纵向 |
-| GEMM ABI | closed v1、implicit normal/normal | Q32.V以typed Instr/TargetCall/ABI/SystemC纵向增加orientation，完成后由通用candidate owner消费 |
+| GEMM ABI | closed v1 implicit normal/normal及closed v2 explicit orientation | Q32.V已闭合typed source/Instr/TargetCall/ABI/SystemC纵向，Q32.M起由通用candidate owner消费 |
 | package | 当前typed manifest | current schema保持；Q32.V扩展command若真实consumer需要，winner-derived capability requirements由post-selection owner派生 |
 | model | same-lowering TargetCall/SystemC untimed functional-numeric | Q32 candidate复用同一model gate；board predicate独立 |
 | candidate selection | deterministic有限frontier与whole-variant acceptance | actual clones覆盖全部current choice producers；exact Pareto、target static policy、resource-aware metrics和现有all-rank coordinator；按完整增长决定fixed vector/frontier/beam |

@@ -1,7 +1,8 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-07-20同步Q32.B production-shaped candidate/all-rank seam与完整7B gate。Q32.V正在独立闭合mapped transfer、physical-footprint fill和
-versioned GEMM orientation；RequiredCapabilitySet/schema升级仅在真实package/runtime consumer需要时从winner派生；Q32.T、Q32.N与Q3.6 Count保持later独立合同。保留Q31标准7B单block
+状态：2026-07-20同步Q32.V typed target-capability vertical；mapped transfer、physical-footprint fill和
+versioned GEMM orientation已通过source/ODS/Instr/TargetCall/formal/SystemC gate。RequiredCapabilitySet/schema升级因当前consumer
+无需逐row package preflight而未引入；Q32.T、Q32.N与Q3.6 Count保持later独立合同。保留Q31标准7B单block
 多seed数值证据及已完成
 Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate。
 本文是跨stage稳定验证合同，不是`tasks/plans/`中的动态实施计划。它拥有完成证据和测试口径；具体IR/ABI规则由
@@ -168,10 +169,9 @@ transport/address/shape和任何late failure都必须保持source byte-identical
 
 ### 4.3 Geometry And ABI
 
-已完成Q0/Q0.L证据固定v1 compact DMA和normal/normal GEMM。Q32.I/R/B先重放current v1 geometry并增加真实
-rewrite所需的invalid-lane、view和staged-movement覆盖；已排期Q32.V再扩展mapped DMA、physical-footprint fill和
-oriented GEMM ABI。两组必须分开记录，不能反向把已完成v1标成未完成，也不能用
-earlier checkpoint结果伪装Q32.V已证。
+已完成Q0/Q0.L证据固定v1 compact DMA和normal/normal GEMM。Q32.I/R/B重放current v1 geometry并增加真实
+rewrite所需的invalid-lane、view和staged-movement覆盖；Q32.V另行完成mapped DMA、physical-footprint fill和
+oriented GEMM ABI。两组证据分开记录，v2不反向改变v1合同。
 
 - current v1 RDMA/WDMA/gather descriptor payload mismatch、stride range和两端OOB；current GS/staged movement中已经显式
   物化的local offset、slice和view必须覆盖exact-end/overflow/all-and-only正负例；
@@ -185,7 +185,7 @@ earlier checkpoint结果伪装Q32.V已证。
 - invalid-lane state从current segment/mask/typed execution domain重建；valid-only write后padding unknown、required-neutral
   未初始化、full-physical错误读取、Cx retained-tail和bitpacked tail-bit均有negative。
 
-Q32.V另行覆盖：mapped RDMA/WDMA两端root-relative offset（包括0）的exact-end/overflow/all-and-only及非法双侧
+Q32.V已覆盖：mapped RDMA/WDMA两端root-relative offset（包括0）的exact-end/overflow/all-and-only及非法双侧
 stride；GEMM NN/NT/TN/TT typed orientation与versioned ABI/profile混用negative；physical-footprint fill的checked
 elem-count、canonical raw scalar mapping和fill→segmented不可观察ordering到TargetCall/SystemC的完整纵向。current v1
 Tensor logical-fill不能替代这些扩展gate。
@@ -409,7 +409,7 @@ Q29 fresh full gate已完成：target-model配置223项lit中221 pass、2 unsupp
 `wafer-compile-stablehlo-disabled.test`和`wafer-compile-target-model-disabled.test`；base/numeric/bulk/SystemC
 unit分别235/235、48/48、18/18、5/5，CTest 22/22。development配置223项lit中220 pass、3 unsupported，分别为
 `wafer-compile-stablehlo-disabled.test`、`wafer-compile-target-model-bulk.test`和
-`wafer-compile-target-model-source.test`；base unit 235/235，CTest 12/12。dependency checker、109项CRT symbol
+`wafer-compile-target-model-source.test`；base unit 235/235，CTest 12/12。dependency checker、110项CRT symbol
 closure、CRT conformance（formats/encoding rows/convert routes=`13/65/36`，convert groups=`4/23/9`）、IR/source
 organization和diff检查全部通过。
 
@@ -746,7 +746,7 @@ Q22.H只消费Q22.L，不以Q22.N、Q22.B、SystemC或vendor授权为前置：
 - host clone执行Q22.L同一fully legal target LLVM control-flow/call graph，不接受重新lower或修改bundle；native retarget前
   拒绝target intrinsic、inline asm、未知address space和非registry external call；
 - lowering和frontend消费稳定Target层的同一typed target-call registry；all reachable `wafer_tx81_*` symbol、exact
-  signature、call family和field decoder获得109项all-and-only signature/payload coverage，不在JIT/SystemC/test复制
+  signature、call family和field decoder获得110项all-and-only signature/payload coverage，不在JIT/SystemC/test复制
   字符串表；完整symbol只允许exact ABI-key lookup，不允许前后缀或参数数量启发式恢复；
 - 动态slot entry通过`void(const uint64_t *slots)`fixed thunk调用；每rank exact-signature bridge显式绑定invocation/rank
   context并同步投递typed transaction，禁止variadic cast、TLS/thread/call-order rank recovery；

@@ -3,6 +3,7 @@
 #ifndef WAFER_TARGET_NUMERICSEMANTICS_H
 #define WAFER_TARGET_NUMERICSEMANTICS_H
 
+#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/NumericCodec.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -311,13 +312,17 @@ struct NumericNEGemmCommand {
   uint16_t n;
   uint16_t batchCount;
   NumericGemmAxes axes;
+  GemmOrientation lhsOrientation;
+  GemmOrientation rhsOrientation;
 
   friend bool operator==(const NumericNEGemmCommand &lhs,
                          const NumericNEGemmCommand &rhs) {
     return lhs.lhs == rhs.lhs && lhs.rhs == rhs.rhs &&
            lhs.destination == rhs.destination && lhs.m == rhs.m &&
            lhs.k == rhs.k && lhs.n == rhs.n &&
-           lhs.batchCount == rhs.batchCount && lhs.axes == rhs.axes;
+           lhs.batchCount == rhs.batchCount && lhs.axes == rhs.axes &&
+           lhs.lhsOrientation == rhs.lhsOrientation &&
+           lhs.rhsOrientation == rhs.rhsOrientation;
   }
 };
 
@@ -356,7 +361,9 @@ public:
   createNEGemm(TargetProfileId targetProfile, NumericTensorKey lhs,
                NumericTensorKey rhs, NumericTensorKey destination, uint32_t m,
                uint32_t k, uint32_t n, uint32_t batchCount,
-               NumericGemmAxes axes);
+               NumericGemmAxes axes,
+               GemmOrientation lhsOrientation = GemmOrientation::Normal,
+               GemmOrientation rhsOrientation = GemmOrientation::Normal);
   static llvm::Expected<NumericCommandKey>
   createNativeCTReduce(TargetProfileId targetProfile,
                        NumericReduceOperation operation, NumericTensorKey input,

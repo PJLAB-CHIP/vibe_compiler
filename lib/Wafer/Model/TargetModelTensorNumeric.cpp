@@ -152,6 +152,12 @@ resolveNumeric(NumericCommandKey command) {
   return resolved;
 }
 
+TargetProfileId
+getNumericCompatibilityProfile(const InvocationMemoryRegistry &memory) {
+  return getTargetProfileRecord(memory.getAddressPlan().getTargetProfile())
+      .numericCompatibilityProfile;
+}
+
 struct ManagedReferenceInput {
   uint64_t address;
   const NumericTensorKey *key;
@@ -265,7 +271,7 @@ executeElementwise(const compiler::TargetTransaction &transaction,
     inputKeys.push_back(*inputKey);
   llvm::Expected<NumericCommandKey> command =
       NumericCommandKey::createCTElementwise(
-          memory.getAddressPlan().getTargetProfile(), *operation,
+          getNumericCompatibilityProfile(memory), *operation,
           std::move(inputKeys), *destinationKey);
   if (!command)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
@@ -355,9 +361,9 @@ executeConvert(const compiler::TargetTransaction &transaction,
     parameter = NumericConvertParameter::roundingMode(*mode);
   }
   llvm::Expected<NumericCommandKey> command =
-      NumericCommandKey::createCTConvert(
-          memory.getAddressPlan().getTargetProfile(), opcode, *sourceKey,
-          *destinationKey, parameter);
+      NumericCommandKey::createCTConvert(getNumericCompatibilityProfile(memory),
+                                         opcode, *sourceKey, *destinationKey,
+                                         parameter);
   if (!command)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
                        llvm::toString(command.takeError()));
@@ -438,7 +444,7 @@ executeReduce(const compiler::TargetTransaction &transaction,
   }
   llvm::Expected<NumericCommandKey> command =
       NumericCommandKey::createNativeCTReduce(
-          memory.getAddressPlan().getTargetProfile(), *operation, *inputKey,
+          getNumericCompatibilityProfile(memory), *operation, *inputKey,
           *destinationKey, dimension);
   if (!command)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
@@ -492,11 +498,21 @@ executeGemm(const compiler::TargetTransaction &transaction,
   const NumericTensorLayout layout =
       batched ? NumericTensorLayout::NCx : NumericTensorLayout::Cx;
   std::vector<uint64_t> lhsShape =
-      batched ? std::vector<uint64_t>{value.batchCount, value.m, value.k}
-              : std::vector<uint64_t>{value.m, value.k};
+      batched
+          ? (value.lhsOrientation == GemmOrientation::Normal
+                 ? std::vector<uint64_t>{value.batchCount, value.m, value.k}
+                 : std::vector<uint64_t>{value.batchCount, value.k, value.m})
+          : (value.lhsOrientation == GemmOrientation::Normal
+                 ? std::vector<uint64_t>{value.m, value.k}
+                 : std::vector<uint64_t>{value.k, value.m});
   std::vector<uint64_t> rhsShape =
-      batched ? std::vector<uint64_t>{value.batchCount, value.k, value.n}
-              : std::vector<uint64_t>{value.k, value.n};
+      batched
+          ? (value.rhsOrientation == GemmOrientation::Normal
+                 ? std::vector<uint64_t>{value.batchCount, value.k, value.n}
+                 : std::vector<uint64_t>{value.batchCount, value.n, value.k})
+          : (value.rhsOrientation == GemmOrientation::Normal
+                 ? std::vector<uint64_t>{value.k, value.n}
+                 : std::vector<uint64_t>{value.n, value.k});
   std::vector<uint64_t> destinationShape =
       batched ? std::vector<uint64_t>{value.batchCount, value.m, value.n}
               : std::vector<uint64_t>{value.m, value.n};
@@ -523,8 +539,9 @@ executeGemm(const compiler::TargetTransaction &transaction,
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
                        llvm::toString(axes.takeError()));
   llvm::Expected<NumericCommandKey> command = NumericCommandKey::createNEGemm(
-      memory.getAddressPlan().getTargetProfile(), *lhsKey, *rhsKey,
-      *destinationKey, value.m, value.k, value.n, value.batchCount, *axes);
+      getNumericCompatibilityProfile(memory), *lhsKey, *rhsKey, *destinationKey,
+      value.m, value.k, value.n, value.batchCount, *axes, value.lhsOrientation,
+      value.rhsOrientation);
   if (!command)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
                        llvm::toString(command.takeError()));
@@ -534,7 +551,9 @@ executeGemm(const compiler::TargetTransaction &transaction,
     return resolved.takeError();
 
   if (policy.getGemmDispatchPolicy() ==
-      TargetModelGemmDispatchPolicy::PreferAdmitted) {
+          TargetModelGemmDispatchPolicy::PreferAdmitted &&
+      value.lhsOrientation == GemmOrientation::Normal &&
+      value.rhsOrientation == GemmOrientation::Normal) {
     const TargetModelBulkBackend *backend = policy.getBulkBackend();
     if (!backend)
       return kernelError(TargetModelKernelErrorCode::BulkBackendUnavailable,

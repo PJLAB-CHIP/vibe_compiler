@@ -270,6 +270,7 @@ def check_encoding_matrix_contract(
             if detail and detail not in {
                 "BitpackedLayoutAndCheckedElementCount",
                 "BoolSpecificCTOpKindAndBitpackedLayout",
+                "BitpackedPhysicalFootprintFill",
             }:
                 fail(
                     "target format matrix: supported row has unexpected constraint "
@@ -286,8 +287,8 @@ def check_encoding_matrix_contract(
     }
     if actual_pairs != expected_pairs:
         fail("target format matrix: rows are not the exact engine x logical domain")
-    if supported_count != 29:
-        fail(f"target format matrix: expected 29 supported rows, found {supported_count}")
+    if supported_count != 30:
+        fail(f"target format matrix: expected 30 supported rows, found {supported_count}")
 
     require_pattern(
         target_format_text,
@@ -630,9 +631,7 @@ def check_relation_logic_convert(source_text: str) -> None:
 
 def check_gemm_conv(source_text: str) -> None:
     gemm = function_body(source_text, "wafer_tx81_gemm")
-    require_in_order(
-        gemm,
-        [
+    gemm_sequence = [
             "gemm->AddInput",
             "gemm->ConfigMKN",
             "gemm->ConfigBatch",
@@ -645,8 +644,28 @@ def check_gemm_conv(source_text: str) -> None:
             "gemm->DisableRelu(&instr)",
             "gemm->DisableLeakyRelu(&instr)",
             "gemm->AddOutput",
-        ],
+        ]
+    require_in_order(
+        gemm,
+        gemm_sequence,
         "GEMM wrapper sequence",
+    )
+    require_contains(
+        gemm,
+        "gemm->SetTransflag(&instr, 0, 0);",
+        "v1 GEMM fixed orientation",
+    )
+
+    oriented_gemm = function_body(source_text, "wafer_tx81_gemm_oriented_v2")
+    require_in_order(
+        oriented_gemm,
+        gemm_sequence,
+        "oriented GEMM wrapper sequence",
+    )
+    require_contains(
+        oriented_gemm,
+        "gemm->SetTransflag(&instr, lhs_orientation, rhs_orientation);",
+        "oriented GEMM typed orientation",
     )
 
     conv = require_macro_body(source_text, "WAFER_CONFIGURE_CONV")

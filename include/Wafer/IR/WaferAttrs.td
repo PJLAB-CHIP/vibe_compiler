@@ -44,6 +44,42 @@ def Wafer_MemLayout : I32EnumAttr<"MemLayout", "Wafer physical memory layout fam
   let genSpecializedAttr = 0;
 }
 
+def Wafer_FillDomainLogicalValid
+    : I32EnumAttrCase<"LogicalValid", 0, "logical_valid">;
+def Wafer_FillDomainPhysicalFootprint
+    : I32EnumAttrCase<"PhysicalFootprint", 1, "physical_footprint">;
+def Wafer_FillDomain
+    : I32EnumAttr<"FillDomain", "Wafer fill address domain", [
+  Wafer_FillDomainLogicalValid,
+  Wafer_FillDomainPhysicalFootprint
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_FillDomainAttr
+    : EnumAttr<Wafer_Dialect, Wafer_FillDomain, "fill_domain"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_GemmOrientationNormal
+    : I32EnumAttrCase<"Normal", 0, "normal">;
+def Wafer_GemmOrientationTranspose
+    : I32EnumAttrCase<"Transpose", 1, "transpose">;
+def Wafer_GemmOrientation
+    : I32EnumAttr<"GemmOrientation", "Wafer GEMM stored operand orientation", [
+  Wafer_GemmOrientationNormal,
+  Wafer_GemmOrientationTranspose
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_GemmOrientationAttr
+    : EnumAttr<Wafer_Dialect, Wafer_GemmOrientation, "gemm_orientation"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def Wafer_MemoryAttr : AttrDef<Wafer_Dialect, "Memory", [
     DeclareAttrInterfaceMethods<WaferPhysicalEncodingAttrInterface>
   ]> {

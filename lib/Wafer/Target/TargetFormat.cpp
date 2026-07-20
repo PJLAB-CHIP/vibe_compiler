@@ -140,7 +140,8 @@ constexpr TargetFormatEncodingRecord kTargetFormatEncodings[] = {
     supported(Engine::TDMA, Format::F32),
     unsupported(Engine::TDMA, Format::TF32,
                 Reason::GenericTF32EncodingUnproven),
-    unsupported(Engine::TDMA, Format::Bool, Reason::BoolEncodingUnproven),
+    supported(Engine::TDMA, Format::Bool,
+              Constraint::BitpackedPhysicalFootprintFill),
     unsupported(Engine::TDMA, Format::U8, Reason::UnsignedEncodingUnproven),
     unsupported(Engine::TDMA, Format::U16, Reason::UnsignedEncodingUnproven),
     unsupported(Engine::TDMA, Format::U32, Reason::UnsignedEncodingUnproven),
@@ -437,6 +438,7 @@ llvm::ArrayRef<TargetDataFormatCodeRecord> getTargetDataFormatCodeRecords() {
 
 const TargetDataFormatCodeRecord *
 findTargetDataFormatCode(TargetProfileId profile, LogicalFormat format) {
+  profile = getTargetProfileRecord(profile).formatCompatibilityProfile;
   for (const TargetDataFormatCodeRecord &record : kTargetDataFormatCodes)
     if (record.profile == profile && record.format == format)
       return &record;
@@ -497,6 +499,7 @@ llvm::ArrayRef<TargetFormatEncodingRecord> getTargetFormatEncodingRecords() {
 const TargetFormatEncodingRecord *
 findTargetFormatEncoding(TargetProfileId profile, TargetFormatEngine engine,
                          LogicalFormat format) {
+  profile = getTargetProfileRecord(profile).formatCompatibilityProfile;
   for (const TargetFormatEncodingRecord &record : kTargetFormatEncodings)
     if (record.profile == profile && record.engine == engine &&
         record.format == format)
@@ -507,6 +510,7 @@ findTargetFormatEncoding(TargetProfileId profile, TargetFormatEngine engine,
 llvm::Expected<LogicalFormat> decodeTargetFormat(TargetProfileId profile,
                                                  TargetFormatEngine engine,
                                                  uint32_t dataFormatCode) {
+  profile = getTargetProfileRecord(profile).formatCompatibilityProfile;
   const TargetFormatEncodingRecord *match = nullptr;
   for (const TargetFormatEncodingRecord &record :
        getTargetFormatEncodingRecords()) {
@@ -536,6 +540,8 @@ stringifyTargetFormatConstraint(TargetFormatConstraint constraint) {
     return "bitpacked-layout-and-checked-element-count";
   case Constraint::BoolSpecificCTOpKindAndBitpackedLayout:
     return "bool-specific-ct-op-kind-and-bitpacked-layout";
+  case Constraint::BitpackedPhysicalFootprintFill:
+    return "bitpacked-physical-footprint-fill";
   }
   llvm_unreachable("target format constraint is not registered");
 }
@@ -565,6 +571,7 @@ llvm::ArrayRef<TargetConvertRoute> getTargetConvertRoutes() {
 
 const TargetConvertRoute *findTargetConvertRoute(TargetProfileId profile,
                                                  uint16_t opcode) {
+  profile = getTargetProfileRecord(profile).formatCompatibilityProfile;
   for (const TargetConvertRoute &route : kTargetConvertRoutes)
     if (route.profile == profile && route.opcode == opcode)
       return &route;
@@ -574,6 +581,7 @@ const TargetConvertRoute *findTargetConvertRoute(TargetProfileId profile,
 const TargetConvertRoute *findTargetConvertRoute(TargetProfileId profile,
                                                  LogicalFormat source,
                                                  LogicalFormat destination) {
+  profile = getTargetProfileRecord(profile).formatCompatibilityProfile;
   for (const TargetConvertRoute &route : kTargetConvertRoutes)
     if (route.profile == profile && route.source == source &&
         route.destination == destination)
@@ -584,6 +592,7 @@ const TargetConvertRoute *findTargetConvertRoute(TargetProfileId profile,
 const TargetConvertRoute *
 findTargetConvertRoute(TargetProfileId profile,
                        llvm::StringRef canonicalSpelling) {
+  profile = getTargetProfileRecord(profile).formatCompatibilityProfile;
   for (const TargetConvertRoute &route : kTargetConvertRoutes)
     if (route.profile == profile &&
         route.canonicalSpelling == canonicalSpelling)

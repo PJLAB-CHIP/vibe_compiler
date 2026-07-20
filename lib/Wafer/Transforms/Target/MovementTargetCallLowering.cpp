@@ -45,16 +45,22 @@ namespace wafer::target_llvm_detail {
 
 mlir::LogicalResult FunctionLowering::lowerRDMA(InstrRDMAOp op) {
   llvm::SmallVector<mlir::Value, 12> args;
-  mlir::FailureOr<mlir::Value> source =
-      materializeAddress(op, op.getSource(), "rdma source");
-  mlir::FailureOr<mlir::Value> dest =
-      materializeAddress(op, op.getDest(), "rdma dest");
+  mlir::FailureOr<AddressValue> source =
+      resolveAddress(op, op.getSource(), "rdma source");
+  mlir::FailureOr<AddressValue> dest =
+      resolveAddress(op, op.getDest(), "rdma dest");
+  if (mlir::failed(source) || mlir::failed(dest))
+    return mlir::failure();
+  source = addStaticOffset(
+      op, *source, getOptionalIntegerAttrValue(op.getSrcOffsetAttr(), 0));
+  dest = addStaticOffset(op, *dest,
+                         getOptionalIntegerAttrValue(op.getDstOffsetAttr(), 0));
   mlir::FailureOr<int64_t> fmt =
       getDataFormatCode(op, op.getDest(), "rdma dest", targetProfile);
   if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(fmt))
     return mlir::failure();
-  args.push_back(*source);
-  args.push_back(*dest);
+  args.push_back(materializeAddress(op.getLoc(), *source));
+  args.push_back(materializeAddress(op.getLoc(), *dest));
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getByteCountAttr()));
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getInnerBytesAttr()));
   appendArrayI32(op.getLoc(), args, op.getSrcStrides());
@@ -66,16 +72,22 @@ mlir::LogicalResult FunctionLowering::lowerRDMA(InstrRDMAOp op) {
 
 mlir::LogicalResult FunctionLowering::lowerWDMA(InstrWDMAOp op) {
   llvm::SmallVector<mlir::Value, 12> args;
-  mlir::FailureOr<mlir::Value> source =
-      materializeAddress(op, op.getSource(), "wdma source");
-  mlir::FailureOr<mlir::Value> dest =
-      materializeAddress(op, op.getDest(), "wdma dest");
+  mlir::FailureOr<AddressValue> source =
+      resolveAddress(op, op.getSource(), "wdma source");
+  mlir::FailureOr<AddressValue> dest =
+      resolveAddress(op, op.getDest(), "wdma dest");
+  if (mlir::failed(source) || mlir::failed(dest))
+    return mlir::failure();
+  source = addStaticOffset(
+      op, *source, getOptionalIntegerAttrValue(op.getSrcOffsetAttr(), 0));
+  dest = addStaticOffset(op, *dest,
+                         getOptionalIntegerAttrValue(op.getDstOffsetAttr(), 0));
   mlir::FailureOr<int64_t> fmt =
       getDataFormatCode(op, op.getSource(), "wdma source", targetProfile);
   if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(fmt))
     return mlir::failure();
-  args.push_back(*source);
-  args.push_back(*dest);
+  args.push_back(materializeAddress(op.getLoc(), *source));
+  args.push_back(materializeAddress(op.getLoc(), *dest));
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getByteCountAttr()));
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getInnerBytesAttr()));
   appendArrayI32(op.getLoc(), args, op.getDstStrides());

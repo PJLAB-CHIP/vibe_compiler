@@ -31,20 +31,38 @@ public:
     auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
     analysis::IndexRelationResult relation =
         analysis::IndexRelation::identity(destType.getShape());
-    if (!relation.isExact() ||
-        mlir::failed(analysis::TransferRealizability::proveCompactDma(
+    if (!relation.isExact())
+      return failPattern(rewriter, op, failureReason,
+                         "tile.load identity relation is not exact");
+
+    if (mlir::succeeded(analysis::TransferRealizability::proveCompactDma(
+            sourceType, destType, *relation.get()))) {
+      mlir::FailureOr<MovementDescriptor> descriptor =
+          getStridedTensorDescriptor(rewriter, op, op.getSource().getType(),
+                                     failureReason, "tile.load source");
+      if (mlir::failed(descriptor))
+        return mlir::failure();
+
+      createRDMA(rewriter, op.getLoc(), op.getSource(), op.getDest(),
+                 *descriptor);
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
+
+    if (mlir::failed(analysis::TransferRealizability::proveMappedDma(
             sourceType, destType, *relation.get())))
       return failPattern(rewriter, op, failureReason,
-                         "tile.load compact DMA is not exactly realizable");
-
-    mlir::FailureOr<MovementDescriptor> descriptor =
-        getStridedTensorDescriptor(rewriter, op, op.getSource().getType(),
-                                   failureReason, "tile.load source");
-    if (mlir::failed(descriptor))
+                         "tile.load mapped DMA is not exactly realizable");
+    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
+        getStaticLogicalMovementSegments(rewriter, op, sourceType, destType,
+                                         failureReason, "tile.load");
+    if (mlir::failed(segments) ||
+        mlir::failed(preflightMappedDMASegments(rewriter, op, *segments,
+                                                failureReason, "tile.load")))
       return mlir::failure();
 
-    createRDMA(rewriter, op.getLoc(), op.getSource(), op.getDest(),
-               *descriptor);
+    createMappedRDMASegments(rewriter, op.getLoc(), op.getSource(),
+                             op.getDest(), *segments);
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -66,19 +84,35 @@ public:
     auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
     analysis::IndexRelationResult relation =
         analysis::IndexRelation::identity(destType.getShape());
-    if (!relation.isExact() ||
-        mlir::failed(analysis::TransferRealizability::proveCompactDma(
-            sourceType, destType, *relation.get())))
+    if (!relation.isExact())
       return failPattern(rewriter, op, failureReason,
-                         "tile.store compact DMA is not exactly realizable");
+                         "tile.store identity relation is not exact");
 
-    mlir::FailureOr<MovementDescriptor> descriptor = getStridedTensorDescriptor(
-        rewriter, op, op.getDest().getType(), failureReason, "tile.store dest");
-    if (mlir::failed(descriptor))
-      return mlir::failure();
+    if (mlir::succeeded(analysis::TransferRealizability::proveCompactDma(
+            sourceType, destType, *relation.get()))) {
+      mlir::FailureOr<MovementDescriptor> descriptor =
+          getStridedTensorDescriptor(rewriter, op, op.getDest().getType(),
+                                     failureReason, "tile.store dest");
+      if (mlir::failed(descriptor))
+        return mlir::failure();
+      createWDMA(rewriter, op.getLoc(), op.getSource(), op.getDest(),
+                 *descriptor);
+    } else {
+      if (mlir::failed(analysis::TransferRealizability::proveMappedDma(
+              sourceType, destType, *relation.get())))
+        return failPattern(rewriter, op, failureReason,
+                           "tile.store mapped DMA is not exactly realizable");
+      mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
+          getStaticLogicalMovementSegments(rewriter, op, sourceType, destType,
+                                           failureReason, "tile.store");
+      if (mlir::failed(segments) ||
+          mlir::failed(preflightMappedDMASegments(rewriter, op, *segments,
+                                                  failureReason, "tile.store")))
+        return mlir::failure();
+      createMappedWDMASegments(rewriter, op.getLoc(), op.getSource(),
+                               op.getDest(), *segments);
+    }
 
-    createWDMA(rewriter, op.getLoc(), op.getSource(), op.getDest(),
-               *descriptor);
     // A tile store is the last local-engine use of the tile-local source in
     // the current schedule.  Make that completion boundary explicit so SPM
     // planning can end the source lifetime before the next traversal tile.

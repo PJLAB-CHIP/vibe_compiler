@@ -109,6 +109,28 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
         argument32(arguments, 4), argument32(arguments, 5),
         argument32(arguments, 6), *format}};
   }
+  case TargetCallBuiltin::GemmOrientedV2: {
+    if (getTargetProfileRecord(context.targetProfile).kernelRuntimeABI !=
+        KernelRuntimeABIId::waferTx81KernelV2())
+      return llvm::createStringError(
+          "oriented GEMM target call requires wafer-tx81-kernel-v2 ABI");
+    llvm::Expected<LogicalFormat> format =
+        decodeFormat(context, TargetFormatEngine::NE, arguments[7]);
+    if (!format)
+      return format.takeError();
+    uint32_t lhsOrientation = argument32(arguments, 8);
+    uint32_t rhsOrientation = argument32(arguments, 9);
+    if (lhsOrientation > static_cast<uint32_t>(GemmOrientation::Transpose) ||
+        rhsOrientation > static_cast<uint32_t>(GemmOrientation::Transpose))
+      return llvm::createStringError(
+          "oriented GEMM orientation field is not a closed enum value");
+    return TargetTransactionPayload{TargetGemmTransaction{
+        arguments[0], arguments[1], arguments[2], argument32(arguments, 3),
+        argument32(arguments, 4), argument32(arguments, 5),
+        argument32(arguments, 6), *format,
+        static_cast<GemmOrientation>(lhsOrientation),
+        static_cast<GemmOrientation>(rhsOrientation)}};
+  }
   case TargetCallBuiltin::TDMAPad:
   case TargetCallBuiltin::TDMAImg2Col: {
     bool imageToColumn = builtin == TargetCallBuiltin::TDMAImg2Col;

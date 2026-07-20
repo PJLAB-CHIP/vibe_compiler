@@ -612,6 +612,29 @@ void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t m,
   TsmDeleteGemm(gemm);
 }
 
+void wafer_tx81_gemm_oriented_v2(uint64_t lhs, uint64_t rhs, uint64_t dst,
+                                 uint32_t m, uint32_t k, uint32_t n,
+                                 uint32_t batch_count, uint32_t format,
+                                 uint32_t lhs_orientation,
+                                 uint32_t rhs_orientation) {
+  TsmNeInstr instr = {0};
+  TsmGemm *gemm = TsmNewGemm();
+  gemm->AddInput(&instr, lhs, rhs, wafer_format(format));
+  gemm->ConfigMKN(&instr, m, k, n);
+  gemm->ConfigBatch(&instr, batch_count, batch_count);
+  gemm->SetTransflag(&instr, lhs_orientation, rhs_orientation);
+  gemm->SetPsum(&instr, 0, 0, Fmt_UNUSED);
+  gemm->SetQuant(&instr, 0, 0, 0, 0);
+  gemm->AddBias(&instr, 0, 0);
+  gemm->SetNegativeAxisScale(&instr, 0, 0);
+  gemm->SetPositiveAxisScale(&instr, 0, 0);
+  gemm->DisableRelu(&instr);
+  gemm->DisableLeakyRelu(&instr);
+  gemm->AddOutput(&instr, dst, wafer_format(format));
+  wafer_execute_ne(&instr);
+  TsmDeleteGemm(gemm);
+}
+
 #define WAFER_CONFIGURE_CONV(OP, INSTR)                                       \
   do {                                                                         \
     OP->AddInput(INSTR, input, wafer_shape4(input_n, input_h, input_w, input_c), \

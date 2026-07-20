@@ -200,6 +200,12 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
       arguments[3] = arguments[4] = arguments[5] = arguments[6] = 1;
       arguments[7] = supportedF32Code(TargetFormatEngine::NE);
       break;
+    case TargetCallBuiltin::GemmOrientedV2:
+      arguments[3] = arguments[4] = arguments[5] = arguments[6] = 1;
+      arguments[7] = supportedF32Code(TargetFormatEngine::NE);
+      arguments[8] = 1;
+      arguments[9] = 0;
+      break;
     case TargetCallBuiltin::TDMAPad:
       arguments[14] = supportedF32Code(TargetFormatEngine::TDMA);
       break;
@@ -282,10 +288,14 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
 }
 
 TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
-  TargetCallDecodeContext context{
-      TargetProfileId::waferTx81SingleCardKernelV1(), 16};
   size_t validated = 0;
   for (const TargetCallDescriptor &descriptor : getTargetCallDescriptors()) {
+    const bool oriented = descriptor.semantic ==
+                          TargetCallSemantic(TargetCallBuiltin::GemmOrientedV2);
+    TargetCallDecodeContext context{
+        oriented ? TargetProfileId::waferTx81SingleCardKernelV2()
+                 : TargetProfileId::waferTx81SingleCardKernelV1(),
+        16};
     llvm::Expected<TargetTransactionPayload> payload = decodeTargetCallPayload(
         descriptor, context, makeFieldValidArguments(descriptor));
     ASSERT_TRUE(static_cast<bool>(payload))
@@ -296,7 +306,7 @@ TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
         << descriptor.symbol << ": " << llvm::toString(std::move(error));
     ++validated;
   }
-  EXPECT_EQ(validated, 109u);
+  EXPECT_EQ(validated, 110u);
 }
 
 TEST(TargetModelKernelTest, StridedRDMAAndWDMACommitOnlyCompleteEffects) {
@@ -674,6 +684,48 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
   EXPECT_EQ(product[1].bits, UINT64_C(0x4200));
   EXPECT_EQ(product[2].bits, UINT64_C(0x4400));
   EXPECT_EQ(product[3].bits, UINT64_C(0x4500));
+}
+
+TEST(TargetModelKernelTest,
+     PhysicalFootprintMemsetOverwritesAlignedTailAndUnusedBoolBits) {
+  InvocationMemoryRegistry memory = makeRegistry();
+  FormalNumericExecutionContext context;
+  const uint64_t spm = memory.getAddressPlan().getSPMBase();
+  const uint64_t cxDestination = spm + UINT64_C(0x3000);
+  const uint64_t boolDestination = spm + UINT64_C(0x4000);
+  llvm::cantFail(memory.applyAtomically(
+      {TargetModelByteWrite{0, TargetModelAddressSpace::RankSPM, cxDestination,
+                            1, std::vector<uint8_t>(256, UINT8_C(0xa5))},
+       TargetModelByteWrite{0, TargetModelAddressSpace::RankSPM,
+                            boolDestination, 1,
+                            std::vector<uint8_t>(2, UINT8_C(0xa5))}}));
+
+  TargetTransaction cxFill{
+      0, 0,
+      TargetMemsetTransaction{cxDestination, UINT32_C(0x3555),
+                              /*elementCount=*/128, LogicalFormat::F16}};
+  TargetModelCommandEffect cxEffect =
+      llvm::cantFail(executeTargetModelCommand(cxFill, memory, makeBudget()));
+  llvm::cantFail(
+      commitTargetModelCommandEffect(memory, context, std::move(cxEffect)));
+  std::vector<uint8_t> cxBytes = llvm::cantFail(memory.readSnapshot(
+      0, TargetModelAddressSpace::RankSPM, cxDestination, 256, 1));
+  for (size_t index = 0; index < cxBytes.size(); index += 2) {
+    EXPECT_EQ(cxBytes[index], UINT8_C(0x55));
+    EXPECT_EQ(cxBytes[index + 1], UINT8_C(0x35));
+  }
+
+  TargetTransaction boolFill{
+      0, 1,
+      TargetMemsetTransaction{boolDestination, UINT32_C(1),
+                              /*elementCount=*/16, LogicalFormat::Bool}};
+  TargetModelCommandEffect boolEffect =
+      llvm::cantFail(executeTargetModelCommand(boolFill, memory, makeBudget()));
+  llvm::cantFail(
+      commitTargetModelCommandEffect(memory, context, std::move(boolEffect)));
+  EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
+                0, TargetModelAddressSpace::RankSPM, boolDestination, 2, 1)),
+            (std::vector<uint8_t>{UINT8_C(0xff), UINT8_C(0xff)}));
 }
 
 TEST(TargetModelKernelTest, BatchedGemmUsesImplicitNCxStorageContract) {

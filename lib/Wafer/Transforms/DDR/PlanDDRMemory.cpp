@@ -39,6 +39,7 @@ namespace memory_planning = wafer::memory_planning::detail;
 struct MovementDescriptor {
   int64_t byteCount = 0;
   int64_t innerBytes = 0;
+  int64_t byteOffset = 0;
   mlir::DenseI64ArrayAttr strides;
   mlir::DenseI64ArrayAttr iterations;
   llvm::StringRef role;
@@ -502,7 +503,10 @@ getDescriptorPayloadBytes(mlir::Operation *op,
 static mlir::FailureOr<int64_t>
 getDescriptorLocalEnd(mlir::Operation *op,
                       const MovementDescriptor &descriptor) {
-  int64_t end = descriptor.innerBytes;
+  int64_t end = 0;
+  if (!checkedAdd(descriptor.byteOffset, descriptor.innerBytes, end))
+    return op->emitError() << "range_end_overflow: " << descriptor.role
+                           << " DDR descriptor byte range overflows int64";
   for (auto [stride, iteration] :
        llvm::zip(descriptor.strides.asArrayRef(),
                  descriptor.iterations.asArrayRef())) {
@@ -973,8 +977,12 @@ collectDDRDescriptorDemands(mlir::Operation *scope, int64_t defaultAlignment,
 
     if (auto rdma = mlir::dyn_cast<InstrRDMAOp>(op)) {
       MovementDescriptor descriptor{
-          rdma.getByteCountAttr().getInt(), rdma.getInnerBytesAttr().getInt(),
-          rdma.getSrcStridesAttr(), rdma.getSrcIterationsAttr(), "source"};
+          rdma.getByteCountAttr().getInt(),
+          rdma.getInnerBytesAttr().getInt(),
+          rdma.getSrcOffsetAttr() ? rdma.getSrcOffsetAttr().getInt() : 0,
+          rdma.getSrcStridesAttr(),
+          rdma.getSrcIterationsAttr(),
+          "source"};
       result = collectDDRDescriptorDemand(op, rdma.getSource(), descriptor,
                                           defaultAlignment, plannedOffsets,
                                           timeline, dataflow, summary);
@@ -983,8 +991,12 @@ collectDDRDescriptorDemands(mlir::Operation *scope, int64_t defaultAlignment,
 
     if (auto wdma = mlir::dyn_cast<InstrWDMAOp>(op)) {
       MovementDescriptor descriptor{
-          wdma.getByteCountAttr().getInt(), wdma.getInnerBytesAttr().getInt(),
-          wdma.getDstStridesAttr(), wdma.getDstIterationsAttr(), "dest"};
+          wdma.getByteCountAttr().getInt(),
+          wdma.getInnerBytesAttr().getInt(),
+          wdma.getDstOffsetAttr() ? wdma.getDstOffsetAttr().getInt() : 0,
+          wdma.getDstStridesAttr(),
+          wdma.getDstIterationsAttr(),
+          "dest"};
       result = collectDDRDescriptorDemand(op, wdma.getDest(), descriptor,
                                           defaultAlignment, plannedOffsets,
                                           timeline, dataflow, summary);

@@ -16,8 +16,19 @@ mlir::LogicalResult ComputeFillOp::verify() {
     return emitOpError("expects Wafer buffer destination");
   if (!hasWaferMemorySpace(getDest().getType(), MemorySpace::SPM))
     return emitOpError("fill destination must use SPM memory space");
-  if (!hasWaferLayout(getDest().getType(), MemLayout::Tensor))
-    return emitOpError("fill destination must use tensor layout");
+  FillDomain domain = getFillDomain().value_or(FillDomain::LogicalValid);
+  if (domain == FillDomain::LogicalValid &&
+      !hasWaferLayout(getDest().getType(), MemLayout::Tensor))
+    return emitOpError("logical_valid fill destination must use tensor layout");
+  if (domain == FillDomain::PhysicalFootprint) {
+    auto type = mlir::cast<mlir::MemRefType>(getDest().getType());
+    std::optional<WaferPhysicalTensorInfo> info =
+        computeWaferPhysicalTensorInfo(type);
+    if (!info || info->physicalBytes <= 0)
+      return emitOpError(
+          "physical_footprint fill requires a static positive physical "
+          "destination footprint");
+  }
 
   if (getValue().getType() != destTensor->getElementType())
     return emitOpError(
@@ -147,6 +158,16 @@ mlir::LogicalResult ComputeGemmOp::verify() {
       lhsTensor->getElementType() != resultTensor->getElementType())
     return emitOpError("gemm operand and result element types must match");
 
+  if (static_cast<bool>(getLhsOrientationAttr()) !=
+      static_cast<bool>(getRhsOrientationAttr()))
+    return emitOpError(
+        "lhs_orientation and rhs_orientation must either both be present for "
+        "the oriented GEMM contract or both be absent for the v1 NN contract");
+  GemmOrientation lhsOrientation =
+      getLhsOrientation().value_or(GemmOrientation::Normal);
+  GemmOrientation rhsOrientation =
+      getRhsOrientation().value_or(GemmOrientation::Normal);
+
   if (lhsTensor->getRank() != 2 || rhsTensor->getRank() != 2 ||
       resultTensor->getRank() != 2) {
     BatchedGemmDimAttrs attrs;
@@ -157,11 +178,17 @@ mlir::LogicalResult ComputeGemmOp::verify() {
   if (hasAnyBatchedGemmAttrs(getOperation()))
     return emitOpError("gemm rank-2 form must not carry batched GEMM attrs");
 
-  if (hasStaticMismatch(lhsTensor->getDimSize(1), rhsTensor->getDimSize(0)))
+  int64_t lhsMDim = lhsOrientation == GemmOrientation::Normal ? 0 : 1;
+  int64_t lhsKDim = lhsOrientation == GemmOrientation::Normal ? 1 : 0;
+  int64_t rhsKDim = rhsOrientation == GemmOrientation::Normal ? 0 : 1;
+  int64_t rhsNDim = rhsOrientation == GemmOrientation::Normal ? 1 : 0;
+  if (hasStaticMismatch(lhsTensor->getDimSize(lhsKDim),
+                        rhsTensor->getDimSize(rhsKDim)))
     return emitOpError("gemm lhs K dimension must match rhs K dimension");
-  if (hasStaticMismatch(lhsTensor->getDimSize(0),
+  if (hasStaticMismatch(lhsTensor->getDimSize(lhsMDim),
                         resultTensor->getDimSize(0)) ||
-      hasStaticMismatch(rhsTensor->getDimSize(1), resultTensor->getDimSize(1)))
+      hasStaticMismatch(rhsTensor->getDimSize(rhsNDim),
+                        resultTensor->getDimSize(1)))
     return emitOpError("gemm result shape must be lhs M by rhs N");
 
   return mlir::success();

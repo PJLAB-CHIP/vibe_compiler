@@ -325,6 +325,13 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "GEMM dimensions and batch count must be positive uint16");
+          if ((value.lhsOrientation != GemmOrientation::Normal &&
+               value.lhsOrientation != GemmOrientation::Transpose) ||
+              (value.rhsOrientation != GemmOrientation::Normal &&
+               value.rhsOrientation != GemmOrientation::Transpose))
+            return kernelError(
+                TargetModelKernelErrorCode::InvalidTransactionField,
+                "GEMM orientation is not a closed enum value");
           return requireEngineFormat(value.format, TargetFormatEngine::NE,
                                      "GEMM");
         } else if constexpr (std::is_same_v<

@@ -272,6 +272,30 @@ mlir::LogicalResult TransferRealizability::proveCompactDma(
                                              /*requireInjective=*/true);
 }
 
+mlir::LogicalResult TransferRealizability::proveMappedDma(
+    mlir::MemRefType sourceType, mlir::MemRefType destType,
+    const IndexRelation &relation, const TransferRealizabilityLimits &limits) {
+  MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
+  MemoryAttr destMemory = getWaferMemoryAttr(destType);
+  if (!sourceMemory || !destMemory ||
+      sourceMemory.getSpace() == destMemory.getSpace() ||
+      sourceType.getShape() != destType.getShape())
+    return mlir::failure();
+  bool acceptedDirection = (sourceMemory.getSpace() == MemorySpace::DDR &&
+                            destMemory.getSpace() == MemorySpace::SPM) ||
+                           (sourceMemory.getSpace() == MemorySpace::SPM &&
+                            destMemory.getSpace() == MemorySpace::DDR);
+  if (!acceptedDirection)
+    return mlir::failure();
+  IndexRelationResult identity = IndexRelation::identity(destType.getShape());
+  if (!identity.isExact() ||
+      !relation.isEquivalentTo(*identity.get()).isProvenTrue())
+    return mlir::failure();
+  return proveByteAddressableElementTransfer(sourceType, destType, relation,
+                                             limits,
+                                             /*requireInjective=*/true);
+}
+
 mlir::LogicalResult TransferRealizability::proveGatherScatter(
     mlir::MemRefType sourceType, mlir::MemRefType destType,
     const IndexRelation &relation, const TransferRealizabilityLimits &limits) {

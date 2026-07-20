@@ -17,36 +17,41 @@ TEST(TargetProfileTest, RegistryIsClosedCanonicalAndRoundTrips) {
 
   llvm::ArrayRef<wafer::TargetProfileRecord> profiles =
       wafer::getRegisteredTargetProfiles();
-  ASSERT_EQ(profiles.size(), 1u);
-  const wafer::TargetProfileRecord &profile = profiles.front();
-  EXPECT_EQ(profile.canonicalSpelling, "wafer-tx81-single-card-kernel-v1");
-  EXPECT_EQ(profile.targetIdentitySpelling, "wafer-tx81-single-card");
-  EXPECT_EQ(profile.kernelRuntimeABISpelling, "wafer-tx81-kernel-v1");
-  EXPECT_EQ(profile.moduleFormat, "elf-riscv64");
+  ASSERT_EQ(profiles.size(), 2u);
+  EXPECT_EQ(profiles[0].canonicalSpelling, "wafer-tx81-single-card-kernel-v1");
+  EXPECT_EQ(profiles[0].kernelRuntimeABISpelling, "wafer-tx81-kernel-v1");
+  EXPECT_EQ(profiles[1].canonicalSpelling, "wafer-tx81-single-card-kernel-v2");
+  EXPECT_EQ(profiles[1].kernelRuntimeABISpelling, "wafer-tx81-kernel-v2");
+  for (const wafer::TargetProfileRecord &profile : profiles) {
+    EXPECT_EQ(profile.targetIdentitySpelling, "wafer-tx81-single-card");
+    EXPECT_EQ(profile.moduleFormat, "elf-riscv64");
+    EXPECT_EQ(profile.formatCompatibilityProfile,
+              wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+    EXPECT_EQ(profile.numericCompatibilityProfile,
+              wafer::TargetProfileId::waferTx81SingleCardKernelV1());
 
-  llvm::Expected<wafer::TargetProfileId> parsedProfile =
-      wafer::parseTargetProfileId(profile.canonicalSpelling);
-  ASSERT_TRUE(static_cast<bool>(parsedProfile))
-      << llvm::toString(parsedProfile.takeError());
-  EXPECT_EQ(*parsedProfile, profile.id);
-  EXPECT_EQ(wafer::stringifyTargetProfileId(*parsedProfile),
-            profile.canonicalSpelling);
+    llvm::Expected<wafer::TargetProfileId> parsedProfile =
+        wafer::parseTargetProfileId(profile.canonicalSpelling);
+    ASSERT_TRUE(static_cast<bool>(parsedProfile))
+        << llvm::toString(parsedProfile.takeError());
+    EXPECT_EQ(*parsedProfile, profile.id);
+    EXPECT_EQ(wafer::stringifyTargetProfileId(*parsedProfile),
+              profile.canonicalSpelling);
 
-  llvm::Expected<wafer::TargetIdentityId> parsedIdentity =
-      wafer::parseTargetIdentityId(profile.targetIdentitySpelling);
-  ASSERT_TRUE(static_cast<bool>(parsedIdentity))
-      << llvm::toString(parsedIdentity.takeError());
-  EXPECT_EQ(*parsedIdentity, profile.targetIdentity);
-  EXPECT_EQ(wafer::stringifyTargetIdentityId(*parsedIdentity),
-            profile.targetIdentitySpelling);
+    llvm::Expected<wafer::TargetIdentityId> parsedIdentity =
+        wafer::parseTargetIdentityId(profile.targetIdentitySpelling);
+    ASSERT_TRUE(static_cast<bool>(parsedIdentity))
+        << llvm::toString(parsedIdentity.takeError());
+    EXPECT_EQ(*parsedIdentity, profile.targetIdentity);
 
-  llvm::Expected<wafer::KernelRuntimeABIId> parsedABI =
-      wafer::parseKernelRuntimeABIId(profile.kernelRuntimeABISpelling);
-  ASSERT_TRUE(static_cast<bool>(parsedABI))
-      << llvm::toString(parsedABI.takeError());
-  EXPECT_EQ(*parsedABI, profile.kernelRuntimeABI);
-  EXPECT_EQ(wafer::stringifyKernelRuntimeABIId(*parsedABI),
-            profile.kernelRuntimeABISpelling);
+    llvm::Expected<wafer::KernelRuntimeABIId> parsedABI =
+        wafer::parseKernelRuntimeABIId(profile.kernelRuntimeABISpelling);
+    ASSERT_TRUE(static_cast<bool>(parsedABI))
+        << llvm::toString(parsedABI.takeError());
+    EXPECT_EQ(*parsedABI, profile.kernelRuntimeABI);
+    EXPECT_EQ(wafer::stringifyKernelRuntimeABIId(*parsedABI),
+              profile.kernelRuntimeABISpelling);
+  }
 }
 
 TEST(TargetProfileTest, UnknownAndEmptySpellingsHaveNoFallback) {

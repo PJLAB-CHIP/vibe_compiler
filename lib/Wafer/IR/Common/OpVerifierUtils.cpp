@@ -451,15 +451,27 @@ mlir::LogicalResult verifyBatchedGemmTileContract(
       !resultTensor.hasStaticShape())
     return op->emitOpError("GEMM batched form requires static tensor shapes");
 
+  GemmOrientation lhsOrientation = GemmOrientation::Normal;
+  GemmOrientation rhsOrientation = GemmOrientation::Normal;
+  if (auto attr = op->getAttrOfType<GemmOrientationAttr>("lhs_orientation"))
+    lhsOrientation = attr.getValue();
+  if (auto attr = op->getAttrOfType<GemmOrientationAttr>("rhs_orientation"))
+    rhsOrientation = attr.getValue();
+  int64_t expectedLhsMDim = lhsOrientation == GemmOrientation::Normal ? 1 : 2;
+  int64_t expectedLhsKDim = lhsOrientation == GemmOrientation::Normal ? 2 : 1;
+  int64_t expectedRhsKDim = rhsOrientation == GemmOrientation::Normal ? 1 : 2;
+  int64_t expectedRhsNDim = rhsOrientation == GemmOrientation::Normal ? 2 : 1;
   if (attrs.lhsBatchDims.size() != 1 || attrs.lhsBatchDims.front() != 0 ||
       attrs.rhsBatchDims.size() != 1 || attrs.rhsBatchDims.front() != 0 ||
       attrs.resultBatchDims.size() != 1 || attrs.resultBatchDims.front() != 0 ||
-      attrs.lhsMDim != 1 || attrs.lhsContractingDim != 2 ||
-      attrs.rhsContractingDim != 1 || attrs.rhsNDim != 2 ||
-      attrs.resultMDim != 1 || attrs.resultNDim != 2)
+      attrs.lhsMDim != expectedLhsMDim ||
+      attrs.lhsContractingDim != expectedLhsKDim ||
+      attrs.rhsContractingDim != expectedRhsKDim ||
+      attrs.rhsNDim != expectedRhsNDim || attrs.resultMDim != 1 ||
+      attrs.resultNDim != 2)
     return op->emitOpError(
-        "GEMM batched form requires canonical [B,M,K] x [B,K,N] -> "
-        "[B,M,N] dimension attrs");
+        "GEMM batched form dimension attrs must match the explicit stored "
+        "operand orientations and canonical [B,M,N] result");
 
   if (attrs.batchCount <= 0)
     return op->emitOpError("GEMM batch_count attr must be positive");

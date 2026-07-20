@@ -85,6 +85,33 @@ static bool hasExactPointwiseIndexRelations(mlir::linalg::GenericOp generic) {
   return true;
 }
 
+static bool hasExactRank2GemmIndexingMaps(mlir::linalg::GenericOp generic) {
+  if (generic.getNumDpsInputs() != 2 || generic.getNumDpsInits() != 1 ||
+      generic->getNumResults() != 1)
+    return false;
+  llvm::SmallVector<mlir::utils::IteratorType, 3> iterators =
+      generic.getIteratorTypesArray();
+  if (iterators != llvm::ArrayRef<mlir::utils::IteratorType>{
+                       mlir::utils::IteratorType::parallel,
+                       mlir::utils::IteratorType::parallel,
+                       mlir::utils::IteratorType::reduction})
+    return false;
+  llvm::SmallVector<mlir::AffineMap, 3> maps = generic.getIndexingMapsArray();
+  if (maps.size() != 3)
+    return false;
+  mlir::MLIRContext *context = generic.getContext();
+  auto d0 = mlir::getAffineDimExpr(0, context);
+  auto d1 = mlir::getAffineDimExpr(1, context);
+  auto d2 = mlir::getAffineDimExpr(2, context);
+  auto map = [&](mlir::AffineExpr first, mlir::AffineExpr second) {
+    return mlir::AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0,
+                                {first, second}, context);
+  };
+  bool lhsSupported = maps[0] == map(d0, d2) || maps[0] == map(d2, d0);
+  bool rhsSupported = maps[1] == map(d2, d1) || maps[1] == map(d1, d2);
+  return lhsSupported && rhsSupported && maps[2] == map(d0, d1);
+}
+
 template <typename ConcreteModel>
 static mlir::LogicalResult
 materializeChecked(mlir::Operation *operation,
@@ -131,10 +158,32 @@ struct MatmulTargetImplementationModel
                                       mlir::linalg::MatmulOp,
                                       TargetImplementationKind::Gemm> {};
 
+struct MatmulTransposeATargetImplementationModel
+    : public DefaultStructuredOpModel<MatmulTransposeATargetImplementationModel,
+                                      mlir::linalg::MatmulTransposeAOp,
+                                      TargetImplementationKind::Gemm> {};
+
+struct MatmulTransposeBTargetImplementationModel
+    : public DefaultStructuredOpModel<MatmulTransposeBTargetImplementationModel,
+                                      mlir::linalg::MatmulTransposeBOp,
+                                      TargetImplementationKind::Gemm> {};
+
 struct BatchMatmulTargetImplementationModel
     : public DefaultStructuredOpModel<BatchMatmulTargetImplementationModel,
                                       mlir::linalg::BatchMatmulOp,
                                       TargetImplementationKind::BatchGemm> {};
+
+struct BatchMatmulTransposeATargetImplementationModel
+    : public DefaultStructuredOpModel<
+          BatchMatmulTransposeATargetImplementationModel,
+          mlir::linalg::BatchMatmulTransposeAOp,
+          TargetImplementationKind::BatchGemm> {};
+
+struct BatchMatmulTransposeBTargetImplementationModel
+    : public DefaultStructuredOpModel<
+          BatchMatmulTransposeBTargetImplementationModel,
+          mlir::linalg::BatchMatmulTransposeBOp,
+          TargetImplementationKind::BatchGemm> {};
 
 struct GenericTargetImplementationModel
     : public WaferTargetImplementationOpInterface::ExternalModel<
@@ -143,6 +192,11 @@ struct GenericTargetImplementationModel
       mlir::Operation *operation, const WaferTargetCapabilities &capabilities,
       llvm::SmallVectorImpl<TargetImplementationCandidate> &candidates) const {
     auto generic = mlir::cast<mlir::linalg::GenericOp>(operation);
+    if (hasExactRank2GemmIndexingMaps(generic)) {
+      candidates.push_back(
+          TargetImplementationCandidate{TargetImplementationKind::Gemm});
+      return;
+    }
     candidates.push_back(
         TargetImplementationCandidate{TargetImplementationKind::Generic});
     if (capabilities.supportsElementwiseReciprocal &&
@@ -173,8 +227,16 @@ void registerTargetImplementationExternalModels(
         *context);
     mlir::linalg::MatmulOp::attachInterface<MatmulTargetImplementationModel>(
         *context);
+    mlir::linalg::MatmulTransposeAOp::attachInterface<
+        MatmulTransposeATargetImplementationModel>(*context);
+    mlir::linalg::MatmulTransposeBOp::attachInterface<
+        MatmulTransposeBTargetImplementationModel>(*context);
     mlir::linalg::BatchMatmulOp::attachInterface<
         BatchMatmulTargetImplementationModel>(*context);
+    mlir::linalg::BatchMatmulTransposeAOp::attachInterface<
+        BatchMatmulTransposeATargetImplementationModel>(*context);
+    mlir::linalg::BatchMatmulTransposeBOp::attachInterface<
+        BatchMatmulTransposeBTargetImplementationModel>(*context);
     mlir::linalg::GenericOp::attachInterface<GenericTargetImplementationModel>(
         *context);
   });

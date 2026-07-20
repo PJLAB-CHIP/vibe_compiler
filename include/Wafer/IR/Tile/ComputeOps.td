@@ -17,7 +17,11 @@ def Wafer_ComputeFillOp : Wafer_Op<"tile.fill", [
     assign a physical SPM offset.
   }];
 
-  let arguments = (ins Wafer_AnySPMMemRef:$dest, AnyType:$value);
+  let arguments = (ins
+    Wafer_AnySPMMemRef:$dest,
+    AnyType:$value,
+    OptionalAttr<Wafer_FillDomainAttr>:$fill_domain
+  );
   let hasVerifier = 1;
   let assemblyFormat =
       "$dest `,` $value attr-dict `:` type($dest) `,` type($value)";
@@ -53,7 +57,12 @@ def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
   let summary = "target-abstract tile GEMM";
-  let arguments = (ins Wafer_AnySPMMemRef:$lhs, Wafer_AnySPMMemRef:$rhs);
+  let arguments = (ins
+    Wafer_AnySPMMemRef:$lhs,
+    Wafer_AnySPMMemRef:$rhs,
+    OptionalAttr<Wafer_GemmOrientationAttr>:$lhs_orientation,
+    OptionalAttr<Wafer_GemmOrientationAttr>:$rhs_orientation
+  );
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
   let assemblyFormat =

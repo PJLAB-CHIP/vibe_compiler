@@ -21,8 +21,11 @@ static bool isTensorLike(mlir::Type type) {
 
 static bool isContractionLike(const OpTilingDemand &demand) {
   return !demand.accumulators.empty() ||
-         mlir::isa_and_nonnull<mlir::linalg::MatmulOp,
-                               mlir::linalg::BatchMatmulOp>(demand.op);
+         mlir::isa_and_nonnull<
+             mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
+             mlir::linalg::MatmulTransposeBOp, mlir::linalg::BatchMatmulOp,
+             mlir::linalg::BatchMatmulTransposeAOp,
+             mlir::linalg::BatchMatmulTransposeBOp>(demand.op);
 }
 
 static LayoutPlanRelation relationToResult(const TilingDemandValue &value,

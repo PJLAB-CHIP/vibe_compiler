@@ -32,6 +32,13 @@ public:
                   const IndexRelation &relation,
                   const TransferRealizabilityLimits &limits = {});
 
+  /// Proves an exact cross-space logical transfer whose physical element
+  /// spans can be represented by root-relative mapped RDMA/WDMA descriptors.
+  static mlir::LogicalResult
+  proveMappedDma(mlir::MemRefType sourceType, mlir::MemRefType destType,
+                 const IndexRelation &relation,
+                 const TransferRealizabilityLimits &limits = {});
+
   static mlir::LogicalResult
   proveGatherScatter(mlir::MemRefType sourceType, mlir::MemRefType destType,
                      const IndexRelation &relation,

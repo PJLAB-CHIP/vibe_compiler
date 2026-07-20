@@ -580,8 +580,14 @@ mlir::FailureOr<int64_t> getConstantScalarValue(mlir::Operation *op,
               "scalar operands to be arith.constant";
 
   mlir::Attribute attr = constant.getValue();
-  if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr))
-    return getIntegerAttrValue(intAttr);
+  if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr)) {
+    const llvm::APInt &bits = intAttr.getValue();
+    if (bits.getBitWidth() > 32)
+      return op->emitError()
+             << "unsupported_target_scalar: integer constant is wider than "
+                "the raw 32-bit target scalar field";
+    return bits.getZExtValue();
+  }
   if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr)) {
     llvm::APInt bits = floatAttr.getValue().bitcastToAPInt();
     if (bits.getBitWidth() > 64)
@@ -679,6 +685,15 @@ verifyTargetFormatConstraint(mlir::Operation *op, mlir::Value value,
       return op->emitError()
              << "unsupported_target_format: CT BOOL is restricted to the "
                 "registered relation/logic elementwise kinds";
+    return verifyBitpackedFormatValue(op, value, role);
+  }
+  case TargetFormatConstraint::BitpackedPhysicalFootprintFill: {
+    auto fill = mlir::dyn_cast<InstrFillOp>(op);
+    if (!fill || fill.getFillDomain().value_or(FillDomain::LogicalValid) !=
+                     FillDomain::PhysicalFootprint)
+      return op->emitError()
+             << "unsupported_target_format: TDMA BOOL is restricted to "
+                "physical_footprint fill";
     return verifyBitpackedFormatValue(op, value, role);
   }
   }
@@ -857,8 +872,15 @@ verifyTargetInstructionFormat(mlir::Operation *op,
       .Case<InstrConvertOp>([&](auto typedOp) {
         return verifyTargetConvertRoute(typedOp, targetProfile);
       })
-      .Case<InstrGemmOp>(
-          [&](auto typedOp) { return verify(typedOp.getDest(), "gemm dest"); })
+      .Case<InstrGemmOp>([&](auto typedOp) -> mlir::LogicalResult {
+        if (typedOp.getLhsOrientationAttr() &&
+            getTargetProfileRecord(targetProfile).kernelRuntimeABI !=
+                KernelRuntimeABIId::waferTx81KernelV2())
+          return typedOp.emitError()
+                 << "unsupported_target_abi: explicit GEMM orientations "
+                    "require wafer-tx81-kernel-v2";
+        return verify(typedOp.getDest(), "gemm dest");
+      })
       .Case<InstrConvOp>(
           [&](auto typedOp) { return verify(typedOp.getDest(), "conv dest"); })
       .Case<InstrPoolOp>([&](auto typedOp) {

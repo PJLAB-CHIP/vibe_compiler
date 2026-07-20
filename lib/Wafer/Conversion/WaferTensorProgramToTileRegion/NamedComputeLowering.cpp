@@ -12,11 +12,15 @@ TileRegionBodyEmitter::verifyNamedLinalgPayloads(TensorProgramScope scope) {
     if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(op)) {
       if (mlir::failed(verifyExactFillPayload(fill)))
         return mlir::WalkResult::interrupt();
-    } else if (mlir::isa<mlir::linalg::MatmulOp>(op)) {
+    } else if (mlir::isa<mlir::linalg::MatmulOp,
+                         mlir::linalg::MatmulTransposeAOp,
+                         mlir::linalg::MatmulTransposeBOp>(op)) {
       if (mlir::failed(verifyExactGemmPayload(
               mlir::cast<mlir::linalg::LinalgOp>(op), "matmul")))
         return mlir::WalkResult::interrupt();
-    } else if (mlir::isa<mlir::linalg::BatchMatmulOp>(op)) {
+    } else if (mlir::isa<mlir::linalg::BatchMatmulOp,
+                         mlir::linalg::BatchMatmulTransposeAOp,
+                         mlir::linalg::BatchMatmulTransposeBOp>(op)) {
       if (mlir::failed(verifyExactGemmPayload(
               mlir::cast<mlir::linalg::LinalgOp>(op), "batch matmul")))
         return mlir::WalkResult::interrupt();
@@ -131,7 +135,8 @@ TileRegionBodyEmitter::convertFill(mlir::linalg::FillOp fill,
     return fail("linalg.fill result is not a ranked tensor");
   auto result = builder.create<mlir::memref::AllocOp>(
       fill.getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Tensor));
-  builder.create<ComputeFillOp>(fill.getLoc(), result.getResult(), *value);
+  builder.create<ComputeFillOp>(fill.getLoc(), result.getResult(), *value,
+                                /*fill_domain=*/FillDomainAttr{});
   record(fill.getResult(0), MemLayout::Tensor, result.getResult());
   return mlir::success();
 }
@@ -183,11 +188,42 @@ bool TileRegionBodyEmitter::hasOrderedGemmChunkInit(
       init.getType() != op->getResult(0).getType())
     return false;
 
-  if (mlir::isa<mlir::linalg::MatmulOp>(op.getOperation()))
-    return mlir::isa<mlir::linalg::MatmulOp>(producer);
-  if (mlir::isa<mlir::linalg::BatchMatmulOp>(op.getOperation()))
-    return mlir::isa<mlir::linalg::BatchMatmulOp>(producer);
-  return false;
+  return producer->getName() == op->getName();
+}
+
+mlir::FailureOr<std::pair<GemmOrientation, GemmOrientation>>
+TileRegionBodyEmitter::inferRank2GemmOrientations(mlir::linalg::LinalgOp op) {
+  llvm::SmallVector<mlir::utils::IteratorType, 3> iterators =
+      op.getIteratorTypesArray();
+  if (iterators != llvm::ArrayRef<mlir::utils::IteratorType>{
+                       mlir::utils::IteratorType::parallel,
+                       mlir::utils::IteratorType::parallel,
+                       mlir::utils::IteratorType::reduction})
+    return mlir::failure();
+  llvm::SmallVector<mlir::AffineMap, 3> maps = op.getIndexingMapsArray();
+  if (maps.size() != 3)
+    return mlir::failure();
+  mlir::MLIRContext *context = op.getContext();
+  auto d0 = mlir::getAffineDimExpr(0, context);
+  auto d1 = mlir::getAffineDimExpr(1, context);
+  auto d2 = mlir::getAffineDimExpr(2, context);
+  auto map = [&](mlir::AffineExpr first, mlir::AffineExpr second) {
+    return mlir::AffineMap::get(/*dimCount=*/3, /*symbolCount=*/0,
+                                {first, second}, context);
+  };
+  std::optional<GemmOrientation> lhs;
+  std::optional<GemmOrientation> rhs;
+  if (maps[0] == map(d0, d2))
+    lhs = GemmOrientation::Normal;
+  else if (maps[0] == map(d2, d0))
+    lhs = GemmOrientation::Transpose;
+  if (maps[1] == map(d2, d1))
+    rhs = GemmOrientation::Normal;
+  else if (maps[1] == map(d1, d2))
+    rhs = GemmOrientation::Transpose;
+  if (!lhs || !rhs || maps[2] != map(d0, d1))
+    return mlir::failure();
+  return std::pair{*lhs, *rhs};
 }
 
 mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::createOrderedChunkCombine(
@@ -242,6 +278,10 @@ TileRegionBodyEmitter::convertMatmul(mlir::linalg::LinalgOp op,
     return fail("unsupported matmul arity");
   if (mlir::failed(verifyExactGemmPayload(op, "matmul")))
     return mlir::failure();
+  mlir::FailureOr<std::pair<GemmOrientation, GemmOrientation>> orientations =
+      inferRank2GemmOrientations(op);
+  if (mlir::failed(orientations))
+    return fail("unsupported rank-2 matmul indexing maps");
   bool orderedChunk = hasOrderedGemmChunkInit(op);
   if (!orderedChunk && mlir::failed(requireZeroFilledGemmInit(op, "matmul")))
     return mlir::failure();
@@ -258,9 +298,18 @@ TileRegionBodyEmitter::convertMatmul(mlir::linalg::LinalgOp op,
   if (!resultTensorType)
     return fail("matmul result is not a ranked tensor");
 
+  GemmOrientationAttr lhsOrientation;
+  GemmOrientationAttr rhsOrientation;
+  if (orientations->first != GemmOrientation::Normal ||
+      orientations->second != GemmOrientation::Normal) {
+    lhsOrientation =
+        GemmOrientationAttr::get(builder.getContext(), orientations->first);
+    rhsOrientation =
+        GemmOrientationAttr::get(builder.getContext(), orientations->second);
+  }
   auto gemm = builder.create<ComputeGemmOp>(
       op->getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Cx), *lhs,
-      *rhs);
+      *rhs, lhsOrientation, rhsOrientation);
   if (orderedChunk) {
     mlir::FailureOr<mlir::Value> combined = createOrderedChunkCombine(
         op->getLoc(), ComputeReduceKind::Sum, op.getDpsInits().front(),
@@ -424,9 +473,24 @@ TileRegionBodyEmitter::convertBatchMatmul(mlir::linalg::LinalgOp op,
   if (mlir::failed(attrs))
     return fail("unsupported batch matmul indexing");
 
+  GemmOrientation lhsOrientation = attrs->lhsMDim < attrs->lhsContractingDim
+                                       ? GemmOrientation::Normal
+                                       : GemmOrientation::Transpose;
+  GemmOrientation rhsOrientation = attrs->rhsContractingDim < attrs->rhsNDim
+                                       ? GemmOrientation::Normal
+                                       : GemmOrientation::Transpose;
+  GemmOrientationAttr lhsOrientationAttr;
+  GemmOrientationAttr rhsOrientationAttr;
+  if (lhsOrientation != GemmOrientation::Normal ||
+      rhsOrientation != GemmOrientation::Normal) {
+    lhsOrientationAttr =
+        GemmOrientationAttr::get(builder.getContext(), lhsOrientation);
+    rhsOrientationAttr =
+        GemmOrientationAttr::get(builder.getContext(), rhsOrientation);
+  }
   auto gemm = builder.create<ComputeGemmOp>(
       op->getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::NCx), *lhs,
-      *rhs);
+      *rhs, lhsOrientationAttr, rhsOrientationAttr);
   gemm->setAttr("batch_count", builder.getI64IntegerAttr(attrs->batchCount));
   gemm->setAttr("lhs_batch_dims",
                 builder.getDenseI64ArrayAttr(attrs->lhsBatchDims));

@@ -28,8 +28,10 @@ inferCandidateReduceKind(mlir::linalg::GenericOp generic,
 static mlir::FailureOr<ComputeReduceKind>
 getCandidateCombineKind(mlir::linalg::LinalgOp root,
                         std::string *failureReason) {
-  if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::BatchMatmulOp>(
-          root.getOperation()))
+  if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
+                mlir::linalg::MatmulTransposeBOp, mlir::linalg::BatchMatmulOp,
+                mlir::linalg::BatchMatmulTransposeAOp,
+                mlir::linalg::BatchMatmulTransposeBOp>(root.getOperation()))
     return ComputeReduceKind::Sum;
   if (auto generic =
           mlir::dyn_cast<mlir::linalg::GenericOp>(root.getOperation())) {

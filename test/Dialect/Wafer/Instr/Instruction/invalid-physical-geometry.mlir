@@ -17,6 +17,76 @@ module {
 // -----
 
 module {
+  %src = "builtin.unrealized_conversion_cast"()
+      : () -> memref<8xf16, #wafer.memory<ddr, tensor>>
+  %dst = "builtin.unrealized_conversion_cast"()
+      : () -> memref<8xf16, #wafer.memory<spm, tensor>>
+  // expected-error @below {{src_offset and dst_offset must either both be present}}
+  wafer.instr.rdma %src to %dst
+      {byte_count = 2 : i64, inner_bytes = 2 : i64,
+       src_offset = 0 : i64,
+       src_strides = array<i64: 0, 0, 0>,
+       src_iterations = array<i64: 1, 1, 1>}
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+     to memref<8xf16, #wafer.memory<spm, tensor>>
+}
+
+// -----
+
+module {
+  %src = "builtin.unrealized_conversion_cast"()
+      : () -> memref<8xf16, #wafer.memory<ddr, tensor>>
+  %dst = "builtin.unrealized_conversion_cast"()
+      : () -> memref<8xf16, #wafer.memory<spm, tensor>>
+  // expected-error @below {{source descriptor byte range exceeds physical byte size}}
+  wafer.instr.rdma %src to %dst
+      {byte_count = 2 : i64, inner_bytes = 2 : i64,
+       src_offset = 15 : i64, dst_offset = 0 : i64,
+       src_strides = array<i64: 0, 0, 0>,
+       src_iterations = array<i64: 1, 1, 1>}
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+     to memref<8xf16, #wafer.memory<spm, tensor>>
+}
+
+// -----
+
+module {
+  %src = "builtin.unrealized_conversion_cast"()
+      : () -> memref<8xf16, #wafer.memory<ddr, tensor>>
+  %dst = "builtin.unrealized_conversion_cast"()
+      : () -> memref<8xf16, #wafer.memory<spm, tensor>>
+  // expected-error @below {{source descriptor byte range overflows int64}}
+  wafer.instr.rdma %src to %dst
+      {byte_count = 2 : i64, inner_bytes = 2 : i64,
+       src_offset = 9223372036854775807 : i64, dst_offset = 0 : i64,
+       src_strides = array<i64: 0, 0, 0>,
+       src_iterations = array<i64: 1, 1, 1>}
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+     to memref<8xf16, #wafer.memory<spm, tensor>>
+}
+
+// -----
+
+module {
+  %src = "builtin.unrealized_conversion_cast"()
+      : () -> memref<8xf16, #wafer.memory<ddr, tensor>>
+  %dst = "builtin.unrealized_conversion_cast"()
+      : () -> memref<8xf16, #wafer.memory<spm, tensor>>
+  // expected-error @below {{RDMA destination is sequential and must not carry destination stride fields}}
+  wafer.instr.rdma %src to %dst
+      {byte_count = 2 : i64, inner_bytes = 2 : i64,
+       src_offset = 0 : i64, dst_offset = 0 : i64,
+       src_strides = array<i64: 0, 0, 0>,
+       src_iterations = array<i64: 1, 1, 1>,
+       dst_strides = array<i64: 0, 0, 0>,
+       dst_iterations = array<i64: 1, 1, 1>}
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+     to memref<8xf16, #wafer.memory<spm, tensor>>
+}
+
+// -----
+
+module {
   %input = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
   %weight = "builtin.unrealized_conversion_cast"()

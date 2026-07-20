@@ -107,6 +107,7 @@ enum class TargetFormatConstraint : uint8_t {
   None,
   BitpackedLayoutAndCheckedElementCount,
   BoolSpecificCTOpKindAndBitpackedLayout,
+  BitpackedPhysicalFootprintFill,
 };
 
 /// Stable reason carried by every explicitly unsupported registry row.

@@ -1,7 +1,8 @@
 # Wafer Physical Realization：MLIR-native Encoding、Relation 与 Transfer
 
 状态：本文定义 physical realization 的终态边界；Q32.R已落地current encoding interface、relation/transfer
-proof和resident纵向，Q32.V继续扩mapped target能力。实现状态只看`tasks/progress.md`。
+proof和resident纵向，Q32.V已闭合mapped target纵向，Q32.M继续把这些mechanism接入共同candidate owner。
+实现状态只看`tasks/progress.md`。
 
 本文不建立独立 layout planner，也不建立 encoding/route 查询层。implementation、tile、physical
 version、residency、spill 和执行顺序的联合选择归 `tasks/06-physical-dataflow-synthesis.md`；accepted
@@ -50,7 +51,7 @@ Pipeline position:
   def-use、shape/dtype、typed memory space/encoding、effect，以及本次编译解析出的 immutable target profile。
 - Current stage responsibility:
   从当前 IR 派生 IndexRelation、shape bounds、alias/root、valid/padding domain 和 physical map；
-  证明 metadata view、当前GS/staged movement，以及Q32.V mapped DMA/WDMA参数是否可实现；对已启用的direct
+  证明 metadata view、当前GS/staged movement，以及Q32.V已启用mapped DMA/WDMA参数是否可实现；对已启用的direct
   movement 构造 exact descriptor cover proof；返回局部 proof 或带 location 的失败。
 - Output artifact / IR:
   transformation-local、只读且随 IR rewrite 失效的 analysis values。它们不进入 IR、package、cache
@@ -66,7 +67,7 @@ Pipeline position:
   offset，不根据成本放宽 legality，不从 value/op 名字恢复语义。
 - Completion gate:
   Q32完成要求AffineMap/Presburger/ValueBounds relation、view legality、Cx/NCx full/tail physical-map、当前GS/staged
-  movement、invalid-lane和rewrite后analysis失效重建tests通过；one/multi-descriptor mapped DMA/WDMA proof由已排期
+  movement、invalid-lane和rewrite后analysis失效重建tests通过；one/multi-descriptor mapped DMA/WDMA proof已由
   Q32.V typed target vertical启用，并在Q32.M/S由同一candidate owner消费。
 ```
 

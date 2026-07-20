@@ -220,7 +220,7 @@
   `.ll -> .o -> kcore .so` 不等于主线 gate 完成；required-symbol 检查必须拒绝未解释的
   `wafer_tx81_*` undefined symbol。
 - `tools/check_target_crt_symbols.py`从稳定Target层的typed target-call registry和`WaferAttrs.td` enum
-  spelling推导109项production surface，并确认target lowering只消费该registry，再与CRT header/source和编译对象
+  spelling推导110项production surface，并确认target lowering只消费该registry，再与CRT header/source和编译对象
   `nm`做exact closure；
   `check_target_crt_conformance.py`从instruction verifier、target address lowering和CRT实现交叉证明关系。
   两者都不能解析`tasks/`或supporting Markdown marker作为expected ABI事实源。
@@ -518,7 +518,7 @@
 - `wafer-compile --target-model`只消费显式`--model-input`和固定source CPU `--model-expected`。已发布的
   F16/BF16/F32 finite output按case显式atol/rtol逐元素比较；整数、布尔和其它非浮点storage raw exact；TF32/F64等
   尚无source-output policy的浮点格式fail closed，NaN/Inf拒绝。比较失败仍保留已经原子发布的verified package供审计。
-- target-call decoder closure不能只断言109项都能形成正确variant family。为每个descriptor生成ABI位置互异的sentinel，
+- target-call decoder closure不能只断言110项都能形成正确variant family。为每个descriptor生成ABI位置互异的sentinel，
   再逐字段比较typed payload中的地址、count、shape/stride、optional parameter、format和static kind；这样字段交换或漏消费
   才会失败。host native frontend的control value也要显式限制为integer/void，LLVM的pointer PHI/select/icmp本身合法，不能
   靠IR verifier替代frontend legality。

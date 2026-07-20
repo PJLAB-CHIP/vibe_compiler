@@ -1247,7 +1247,7 @@ TEST(NumericSemanticsTest, GemmValidatesFormatsLayoutsShapesBatchAndAxes) {
   error = expectError(NumericCommandKey::createNEGemm(
       kTargetProfile, lhs3, wrongRhs, destination3, 2, 3, 4, 5,
       canonicalAxes(3)));
-  EXPECT_NE(error.find("canonical trailing"), std::string::npos);
+  EXPECT_NE(error.find("stored operand shapes"), std::string::npos);
 
   NumericTensorKey mismatchedFormat = makeTensor(
       wafer::LogicalFormat::BF16, NumericTensorLayout::NCx, {5, 3, 4});

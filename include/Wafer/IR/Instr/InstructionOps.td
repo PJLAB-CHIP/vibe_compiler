@@ -25,6 +25,8 @@ def Wafer_InstrRDMAOp : Wafer_InstrDMAOp<"instr.rdma", [
     AnyMemRef:$dest,
     I64Attr:$byte_count,
     I64Attr:$inner_bytes,
+    OptionalAttr<I64Attr>:$src_offset,
+    OptionalAttr<I64Attr>:$dst_offset,
     DenseI64ArrayAttr:$src_strides,
     DenseI64ArrayAttr:$src_iterations
   );
@@ -43,6 +45,8 @@ def Wafer_InstrWDMAOp : Wafer_InstrDMAOp<"instr.wdma", [
     AnyMemRef:$dest,
     I64Attr:$byte_count,
     I64Attr:$inner_bytes,
+    OptionalAttr<I64Attr>:$src_offset,
+    OptionalAttr<I64Attr>:$dst_offset,
     DenseI64ArrayAttr:$dst_strides,
     DenseI64ArrayAttr:$dst_iterations
   );
@@ -82,7 +86,11 @@ def Wafer_InstrFillOp : Wafer_InstrOp<"instr.fill", [
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
   let summary = "instruction-level CT scalar fill";
-  let arguments = (ins AnyMemRef:$dest, AnyType:$value);
+  let arguments = (ins
+    AnyMemRef:$dest,
+    AnyType:$value,
+    OptionalAttr<Wafer_FillDomainAttr>:$fill_domain
+  );
   let hasVerifier = 1;
   let assemblyFormat =
       "$dest `,` $value attr-dict `:` type($dest) `,` type($value)";
@@ -189,6 +197,8 @@ def Wafer_InstrGemmOp : Wafer_InstrOp<"instr.gemm", [
     I64Attr:$m,
     I64Attr:$k,
     I64Attr:$n,
+    OptionalAttr<Wafer_GemmOrientationAttr>:$lhs_orientation,
+    OptionalAttr<Wafer_GemmOrientationAttr>:$rhs_orientation,
     OptionalAttr<I64Attr>:$batch_count,
     OptionalAttr<DenseI64ArrayAttr>:$lhs_batch_dims,
     OptionalAttr<I64Attr>:$lhs_m_dim,

@@ -220,6 +220,10 @@ std::string makeCommandKeyDigest(TargetProfileId targetProfile,
           stream << "destination-m-dim=" << command.axes.destinationMDimension
                  << '\n'
                  << "destination-n-dim=" << command.axes.destinationNDimension
+                 << '\n'
+                 << "lhs-orientation=" << stringifyEnum(command.lhsOrientation)
+                 << '\n'
+                 << "rhs-orientation=" << stringifyEnum(command.rhsOrientation)
                  << '\n';
         } else if constexpr (std::is_same_v<Command,
                                             NumericNativeCTReduceCommand>) {
@@ -779,7 +783,8 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createCTElementwise(
 llvm::Expected<NumericCommandKey> NumericCommandKey::createNEGemm(
     TargetProfileId targetProfile, NumericTensorKey lhs, NumericTensorKey rhs,
     NumericTensorKey destination, uint32_t m, uint32_t k, uint32_t n,
-    uint32_t batchCount, NumericGemmAxes axes) {
+    uint32_t batchCount, NumericGemmAxes axes, GemmOrientation lhsOrientation,
+    GemmOrientation rhsOrientation) {
   if (lhs.getFormat() != rhs.getFormat() ||
       lhs.getFormat() != destination.getFormat())
     return llvm::createStringError(
@@ -840,14 +845,22 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createNEGemm(
           llvm::errc::result_out_of_range,
           "NE GEMM canonical batch product must fit uint16_t");
   }
-  if (lhs.getShape()[matrixBase] != m || lhs.getShape()[matrixBase + 1] != k ||
-      rhs.getShape()[matrixBase] != k || rhs.getShape()[matrixBase + 1] != n ||
+  size_t lhsMDim =
+      lhsOrientation == GemmOrientation::Normal ? matrixBase : matrixBase + 1;
+  size_t lhsKDim =
+      lhsOrientation == GemmOrientation::Normal ? matrixBase + 1 : matrixBase;
+  size_t rhsKDim =
+      rhsOrientation == GemmOrientation::Normal ? matrixBase : matrixBase + 1;
+  size_t rhsNDim =
+      rhsOrientation == GemmOrientation::Normal ? matrixBase + 1 : matrixBase;
+  if (lhs.getShape()[lhsMDim] != m || lhs.getShape()[lhsKDim] != k ||
+      rhs.getShape()[rhsKDim] != k || rhs.getShape()[rhsNDim] != n ||
       destination.getShape()[matrixBase] != m ||
       destination.getShape()[matrixBase + 1] != n)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "NE GEMM requires canonical trailing lhs[M,K], rhs[K,N], dest[M,N] "
-        "axes matching m/k/n");
+        "NE GEMM stored operand shapes must match their explicit "
+        "orientations and m/k/n");
   if (inferredBatch != batchCount)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
@@ -861,7 +874,9 @@ llvm::Expected<NumericCommandKey> NumericCommandKey::createNEGemm(
                            static_cast<uint16_t>(k),
                            static_cast<uint16_t>(n),
                            static_cast<uint16_t>(batchCount),
-                           std::move(axes)};
+                           std::move(axes),
+                           lhsOrientation,
+                           rhsOrientation};
   std::string digest = makeCommandKeyDigest(targetProfile, payload);
   return NumericCommandKey(targetProfile, std::move(payload),
                            std::move(digest));

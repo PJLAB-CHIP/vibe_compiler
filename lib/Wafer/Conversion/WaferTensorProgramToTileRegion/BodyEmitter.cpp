@@ -405,7 +405,8 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeTensorConstant(
   auto tensorBuffer = builder.create<mlir::memref::AllocOp>(
       original.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor));
   builder.create<ComputeFillOp>(original.getLoc(), tensorBuffer.getResult(),
-                                scalar.getResult());
+                                scalar.getResult(),
+                                /*fill_domain=*/FillDomainAttr{});
   record(original, MemLayout::Tensor, tensorBuffer.getResult());
   if (targetLayout == MemLayout::Tensor)
     return tensorBuffer.getResult();
@@ -591,11 +592,15 @@ mlir::LogicalResult TileRegionBodyEmitter::materializeTargetImplementation(
       return convertFill(fill, builder);
     break;
   case TargetImplementationKind::Gemm:
-    if (mlir::isa<mlir::linalg::MatmulOp>(source))
+    if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
+                  mlir::linalg::MatmulTransposeBOp, mlir::linalg::GenericOp>(
+            source))
       return convertMatmul(mlir::cast<mlir::linalg::LinalgOp>(source), builder);
     break;
   case TargetImplementationKind::BatchGemm:
-    if (mlir::isa<mlir::linalg::BatchMatmulOp>(source))
+    if (mlir::isa<mlir::linalg::BatchMatmulOp,
+                  mlir::linalg::BatchMatmulTransposeAOp,
+                  mlir::linalg::BatchMatmulTransposeBOp>(source))
       return convertBatchMatmul(mlir::cast<mlir::linalg::LinalgOp>(source),
                                 builder);
     break;

@@ -76,7 +76,7 @@ static llvm::StringRef convStem(InstrConvKind kind) {
 
 static std::vector<TargetCallDescriptor> buildDescriptors() {
   std::vector<TargetCallDescriptor> result;
-  result.reserve(109);
+  result.reserve(110);
 
   auto add = [&](llvm::StringRef stem, Result callResult,
                  std::vector<Scalar> arguments, TargetCallSemantic semantic) {
@@ -97,6 +97,8 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
           {Scalar::I64, Scalar::I32, Scalar::I64, Scalar::I32, Scalar::I32},
           TargetCallBuiltin::MaskMove);
   addVoid("gemm", signature(3, 5), TargetCallBuiltin::Gemm);
+  addVoid("gemm_oriented_v2", signature(3, 7),
+          TargetCallBuiltin::GemmOrientedV2);
   addVoid("tdma_pad", signature(2, 13), TargetCallBuiltin::TDMAPad);
   addVoid("tdma_img2col", signature(2, 17), TargetCallBuiltin::TDMAImg2Col);
   addVoid("local_fence", {}, TargetCallBuiltin::LocalFence);
@@ -172,7 +174,7 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
   addPeripheral(InstrPeripheralKind::RandGen, 5, 7);
   addPeripheral(InstrPeripheralKind::ElemMask, 2, 7);
 
-  assert(result.size() == 109 && "target-call registry must stay closed");
+  assert(result.size() == 110 && "target-call registry must stay closed");
   assert(llvm::all_of(
              result,
              [&](const TargetCallDescriptor &descriptor) {

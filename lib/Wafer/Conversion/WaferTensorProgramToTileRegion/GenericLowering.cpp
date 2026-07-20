@@ -168,7 +168,8 @@ TileRegionBodyEmitter::createElementwiseFillExprValue(
       resultTensorType.getShape(), scalar.getType());
   auto alloc = builder.create<mlir::memref::AllocOp>(
       loc, makeSPMMemRefType(splatTensorType, MemLayout::Tensor));
-  builder.create<ComputeFillOp>(loc, alloc.getResult(), scalar);
+  builder.create<ComputeFillOp>(loc, alloc.getResult(), scalar,
+                                /*fill_domain=*/FillDomainAttr{});
   return ElementwiseExprValue{alloc.getResult(),
                               getIdentityMap(resultTensorType)};
 }
@@ -754,7 +755,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTwoWayConcatGeneric(
       generic.getLoc(), resultTensorType.getElementType(), builder);
   if (!zero)
     return fail("concat generic requires numeric element type");
-  builder.create<ComputeFillOp>(generic.getLoc(), seed.getResult(), zero);
+  builder.create<ComputeFillOp>(generic.getLoc(), seed.getResult(), zero,
+                                /*fill_domain=*/FillDomainAttr{});
 
   auto firstType = mlir::cast<mlir::MemRefType>((*first).getType());
   auto secondType = mlir::cast<mlir::MemRefType>((*second).getType());

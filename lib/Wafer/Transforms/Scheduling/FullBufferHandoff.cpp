@@ -65,7 +65,9 @@ static bool isUnitDescriptor(llvm::ArrayRef<int64_t> strides,
 }
 
 static bool isCompleteWDMA(InstrWDMAOp wdma, int64_t expectedBytes) {
-  return wdma.getByteCountAttr().getInt() == expectedBytes &&
+  return (!wdma.getSrcOffsetAttr() || wdma.getSrcOffsetAttr().getInt() == 0) &&
+         (!wdma.getDstOffsetAttr() || wdma.getDstOffsetAttr().getInt() == 0) &&
+         wdma.getByteCountAttr().getInt() == expectedBytes &&
          wdma.getInnerBytesAttr().getInt() == expectedBytes &&
          isUnitDescriptor(wdma.getDstStrides(), wdma.getDstIterations());
 }
@@ -73,6 +75,8 @@ static bool isCompleteWDMA(InstrWDMAOp wdma, int64_t expectedBytes) {
 static bool isCompleteRDMA(InstrRDMAOp rdma, int64_t expectedBytes) {
   std::optional<int64_t> destBytes = getPhysicalBytes(rdma.getDest().getType());
   return destBytes && *destBytes == expectedBytes &&
+         (!rdma.getSrcOffsetAttr() || rdma.getSrcOffsetAttr().getInt() == 0) &&
+         (!rdma.getDstOffsetAttr() || rdma.getDstOffsetAttr().getInt() == 0) &&
          rdma.getByteCountAttr().getInt() == expectedBytes &&
          rdma.getInnerBytesAttr().getInt() == expectedBytes &&
          isUnitDescriptor(rdma.getSrcStrides(), rdma.getSrcIterations());

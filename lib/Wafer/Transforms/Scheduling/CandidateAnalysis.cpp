@@ -234,8 +234,12 @@ getStaticRootReductionRangesImpl(
 
   std::optional<llvm::SmallVector<int64_t, 2>> commonReductionRanges;
   for (mlir::linalg::LinalgOp root : *roots) {
-    if (!mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::BatchMatmulOp,
-                   mlir::linalg::GenericOp>(root.getOperation()) ||
+    if (!mlir::isa<
+            mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
+            mlir::linalg::MatmulTransposeBOp, mlir::linalg::BatchMatmulOp,
+            mlir::linalg::BatchMatmulTransposeAOp,
+            mlir::linalg::BatchMatmulTransposeBOp, mlir::linalg::GenericOp>(
+            root.getOperation()) ||
         !hasReductionIterator(root))
       continue;
 
@@ -563,8 +567,10 @@ static std::optional<std::string> getCheapTargetGeometryFailureImpl(
 
   for (mlir::linalg::LinalgOp root : *roots) {
     bool isGemm =
-        mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::BatchMatmulOp>(
-            root.getOperation());
+        mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
+                  mlir::linalg::MatmulTransposeBOp, mlir::linalg::BatchMatmulOp,
+                  mlir::linalg::BatchMatmulTransposeAOp,
+                  mlir::linalg::BatchMatmulTransposeBOp>(root.getOperation());
     bool isReduction = hasReductionIterator(root);
     if (!isGemm && !isReduction)
       continue;

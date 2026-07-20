@@ -121,6 +121,25 @@ ResolvedNumericCommand makeGemm(LogicalFormat format, uint32_t batch,
       llvm::cantFail(getCanonicalNumericGemmAxes(/*rank=*/3)))));
 }
 
+ResolvedNumericCommand makeOrientedGemm(LogicalFormat format, uint32_t m,
+                                        uint32_t k, uint32_t n,
+                                        GemmOrientation lhsOrientation,
+                                        GemmOrientation rhsOrientation) {
+  std::vector<uint64_t> lhsShape = lhsOrientation == GemmOrientation::Normal
+                                       ? std::vector<uint64_t>{m, k}
+                                       : std::vector<uint64_t>{k, m};
+  std::vector<uint64_t> rhsShape = rhsOrientation == GemmOrientation::Normal
+                                       ? std::vector<uint64_t>{k, n}
+                                       : std::vector<uint64_t>{n, k};
+  return resolve(llvm::cantFail(NumericCommandKey::createNEGemm(
+      kTargetProfile,
+      makeTensor(format, NumericTensorLayout::Cx, std::move(lhsShape)),
+      makeTensor(format, NumericTensorLayout::Cx, std::move(rhsShape)),
+      makeTensor(format, NumericTensorLayout::Cx, {m, n}), m, k, n,
+      /*batchCount=*/1, llvm::cantFail(getCanonicalNumericGemmAxes(/*rank=*/2)),
+      lhsOrientation, rhsOrientation)));
+}
+
 std::vector<llvm::ArrayRef<RawLogicalValue>>
 views(const std::vector<std::vector<RawLogicalValue>> &storage) {
   std::vector<llvm::ArrayRef<RawLogicalValue>> result;
@@ -281,6 +300,63 @@ TEST(FormalTensorNumericTest,
   for (size_t index = 0; index < result.values.size(); ++index) {
     EXPECT_EQ(result.values[index].format, LogicalFormat::F16);
     EXPECT_EQ(result.values[index].bits, expected[index]);
+  }
+}
+
+TEST(FormalTensorNumericTest,
+     NonSquareGemmExecutesAllTypedOperandOrientations) {
+  const std::vector<RawLogicalValue> normalLhs{
+      {LogicalFormat::F32, UINT64_C(0x3f800000)},
+      {LogicalFormat::F32, UINT64_C(0x40000000)},
+      {LogicalFormat::F32, UINT64_C(0x40400000)},
+      {LogicalFormat::F32, UINT64_C(0x40800000)},
+      {LogicalFormat::F32, UINT64_C(0x40a00000)},
+      {LogicalFormat::F32, UINT64_C(0x40c00000)}};
+  const std::vector<RawLogicalValue> transposedLhs{normalLhs[0], normalLhs[3],
+                                                   normalLhs[1], normalLhs[4],
+                                                   normalLhs[2], normalLhs[5]};
+  const std::vector<RawLogicalValue> normalRhs{
+      {LogicalFormat::F32, UINT64_C(0x3f800000)},
+      {LogicalFormat::F32, UINT64_C(0)},
+      {LogicalFormat::F32, UINT64_C(0)},
+      {LogicalFormat::F32, UINT64_C(0x3f800000)},
+      {LogicalFormat::F32, UINT64_C(0)},
+      {LogicalFormat::F32, UINT64_C(0x3f800000)},
+      {LogicalFormat::F32, UINT64_C(0)},
+      {LogicalFormat::F32, UINT64_C(0x3f800000)},
+      {LogicalFormat::F32, UINT64_C(0)},
+      {LogicalFormat::F32, UINT64_C(0)},
+      {LogicalFormat::F32, UINT64_C(0x3f800000)},
+      {LogicalFormat::F32, UINT64_C(0x3f800000)}};
+  const std::vector<RawLogicalValue> transposedRhs{
+      normalRhs[0],  normalRhs[4], normalRhs[8], normalRhs[1],
+      normalRhs[5],  normalRhs[9], normalRhs[2], normalRhs[6],
+      normalRhs[10], normalRhs[3], normalRhs[7], normalRhs[11]};
+  const std::array<uint64_t, 8> expected{
+      UINT64_C(0x3f800000), UINT64_C(0x40000000), UINT64_C(0x40400000),
+      UINT64_C(0x40c00000), UINT64_C(0x40800000), UINT64_C(0x40a00000),
+      UINT64_C(0x40c00000), UINT64_C(0x41700000)};
+
+  for (GemmOrientation lhsOrientation :
+       {GemmOrientation::Normal, GemmOrientation::Transpose}) {
+    for (GemmOrientation rhsOrientation :
+         {GemmOrientation::Normal, GemmOrientation::Transpose}) {
+      ResolvedNumericCommand command =
+          makeOrientedGemm(LogicalFormat::F32, /*m=*/2, /*k=*/3, /*n=*/4,
+                           lhsOrientation, rhsOrientation);
+      const std::vector<RawLogicalValue> &lhs =
+          lhsOrientation == GemmOrientation::Normal ? normalLhs : transposedLhs;
+      const std::vector<RawLogicalValue> &rhs =
+          rhsOrientation == GemmOrientation::Normal ? normalRhs : transposedRhs;
+      FormalNumericExecutionContext context;
+      FormalTensorNumericResult result = execute(context, command, {lhs, rhs});
+      ASSERT_EQ(result.values.size(), expected.size());
+      for (size_t index = 0; index < expected.size(); ++index)
+        EXPECT_EQ(result.values[index].bits, expected[index])
+            << "lhs_orientation=" << static_cast<int>(lhsOrientation)
+            << " rhs_orientation=" << static_cast<int>(rhsOrientation)
+            << " index=" << index;
+    }
   }
 }
 

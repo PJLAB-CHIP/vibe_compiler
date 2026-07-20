@@ -4,7 +4,7 @@
 JSON、atomic package publication和side-effect-free no-card RuntimeSession preflight共同拥有。Q32
 physical-dataflow cutover继续产出并消费schema-v3 package，不要求manifest升级。
 
-Mapped DMA、physical-footprint fill和oriented target ABI属于已排期Q32.V typed target vertical；
+Mapped DMA、physical-footprint fill和oriented target ABI已由Q32.V闭合typed compiler/formal/SystemC vertical；
 `RequiredCapabilitySet`和package schema upgrade只在这些扩展的真实runtime/model consumer需要逐row preflight时从winner
 Instr/TargetCall派生。Count writeback属于独立Q3.6。普通runtime provider和board execution仍按本文分层推进。
 实现状态看`tasks/progress.md`。
@@ -383,9 +383,9 @@ consumer，rank-15 package assembly注入失败无final/staging。任何未来ta
 
 ## 11. Q32.V Package Consumer 与 Deferred Extensions
 
-- Q32.V target capability extensions：mapped DMA、physical-footprint fill和oriented GEMM是已排期typed纵向。每一项必须先有真实typed
-  Instr/TargetCall、target conversion、closed target-profile/Kernel Runtime ABI mapping、module metadata readback、
-  package semantic verifier所需事实和runtime/model consumer。若consumer确实需要per-row capability集合，再从winner派生
+- Q32.V target capability extensions：mapped DMA、physical-footprint fill和oriented GEMM已有真实typed
+  Instr/TargetCall、target conversion、closed target-profile/Kernel Runtime ABI mapping及repo-owned model consumer。
+  当前consumer直接消费exact TargetCall/profile/ABI，不需要package逐row集合，因此schema保持v3；若后续consumer确实需要，再从winner派生
   `RequiredCapabilitySet`并独立确定字段、canonical encoding、limits、migration和provider preflight；当前不预先冻结新schema
   结构，也不允许无consumer schema阻塞前三项typed compiler/model纵向；
 - Q3.6 Count writeback：只在明确predicate、wrapper/target/model consumer evidence存在后，另行实现typed instruction、effect/completion、

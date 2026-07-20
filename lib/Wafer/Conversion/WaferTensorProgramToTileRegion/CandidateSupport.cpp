@@ -419,8 +419,10 @@ mlir::LogicalResult wafer::verifyCandidateReductionSplitNumericLegality(
   if (failureReason)
     failureReason->clear();
 
-  if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::BatchMatmulOp>(
-          root.getOperation())) {
+  if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
+                mlir::linalg::MatmulTransposeBOp, mlir::linalg::BatchMatmulOp,
+                mlir::linalg::BatchMatmulTransposeAOp,
+                mlir::linalg::BatchMatmulTransposeBOp>(root.getOperation())) {
     if (root->getNumResults() != 1) {
       tensor_program_to_tile_region::setFailureReason(
           failureReason,

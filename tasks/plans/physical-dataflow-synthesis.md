@@ -225,6 +225,9 @@ Gate：Q20/Q21、7B package/SystemC/PyTorch、不同candidate线程数determinis
 
 ### Checkpoint E（Q32.V）：Typed Target-Capability Vertical
 
+状态：已完成。实现与fresh gate见`tasks/archive/typed-target-capability-vertical.md`；后续状态只看
+`tasks/progress.md`。
+
 输入：Q32.B、tasks/08/10/11当前target事实和14-17 target/model consumers。
 
 施工：

@@ -168,7 +168,7 @@ TEST(TargetFormatTest, EncodingMatrixIsExplicitCompleteAndConservative) {
        false, false}, // RDMA
       {true, true, true, true, true, true, false, true, false, false, false,
        false, false}, // WDMA
-      {true, true, true, true, true, true, false, false, false, false, false,
+      {true, true, true, true, true, true, false, true, false, false, false,
        false, false}, // TDMA
       {true, false, true, true, false, true, false, true, false, false, false,
        false, false}, // CT
@@ -225,7 +225,7 @@ TEST(TargetFormatTest, EncodingMatrixIsExplicitCompleteAndConservative) {
     }
   }
   EXPECT_EQ(uniqueRows.size(), 65u);
-  EXPECT_EQ(supportedCount, 29u);
+  EXPECT_EQ(supportedCount, 30u);
 
   auto expectConstraint = [](TargetFormatEngine engine,
                              TargetFormatConstraint constraint) {
@@ -244,6 +244,8 @@ TEST(TargetFormatTest, EncodingMatrixIsExplicitCompleteAndConservative) {
   expectConstraint(
       TargetFormatEngine::CT,
       TargetFormatConstraint::BoolSpecificCTOpKindAndBitpackedLayout);
+  expectConstraint(TargetFormatEngine::TDMA,
+                   TargetFormatConstraint::BitpackedPhysicalFootprintFill);
 
   EXPECT_EQ(wafer::findTargetFormatEncoding(
                 kProfile, static_cast<TargetFormatEngine>(UINT8_MAX),
@@ -274,6 +276,31 @@ TEST(TargetFormatTest, SupportedEngineCodesRoundTripThroughTypedDecoder) {
   ASSERT_FALSE(static_cast<bool>(unsupported));
   EXPECT_NE(llvm::toString(unsupported.takeError()).find("unsupported"),
             std::string::npos);
+}
+
+TEST(TargetFormatTest, VersionedABIProfileInheritsExactFormatContracts) {
+  constexpr wafer::TargetProfileId kVersionedProfile =
+      wafer::TargetProfileId::waferTx81SingleCardKernelV2();
+  for (const wafer::TargetFormatEncodingRecord &record :
+       wafer::getTargetFormatEncodingRecords()) {
+    EXPECT_EQ(wafer::findTargetFormatEncoding(kVersionedProfile, record.engine,
+                                              record.format),
+              &record);
+    const wafer::TargetDataFormatCodeRecord *code =
+        wafer::findTargetDataFormatCode(kVersionedProfile, record.format);
+    ASSERT_NE(code, nullptr);
+    if (!record.isSupported())
+      continue;
+    ASSERT_TRUE(record.dataFormatCode.has_value());
+    llvm::Expected<LogicalFormat> decoded = wafer::decodeTargetFormat(
+        kVersionedProfile, record.engine, *record.dataFormatCode);
+    ASSERT_TRUE(static_cast<bool>(decoded))
+        << llvm::toString(decoded.takeError());
+    EXPECT_EQ(*decoded, record.format);
+  }
+  for (const wafer::TargetConvertRoute &route : wafer::getTargetConvertRoutes())
+    EXPECT_EQ(wafer::findTargetConvertRoute(kVersionedProfile, route.opcode),
+              &route);
 }
 
 struct ExpectedConvertRoute {

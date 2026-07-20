@@ -8,15 +8,20 @@
 namespace wafer {
 namespace {
 
-constexpr TargetProfileRecord kTargetProfiles[] = {{
-    TargetProfileId::waferTx81SingleCardKernelV1(),
-    "wafer-tx81-single-card-kernel-v1",
-    TargetIdentityId::waferTx81SingleCard(),
-    "wafer-tx81-single-card",
-    KernelRuntimeABIId::waferTx81KernelV1(),
-    "wafer-tx81-kernel-v1",
-    "elf-riscv64",
-}};
+constexpr TargetProfileRecord kTargetProfiles[] = {
+    {TargetProfileId::waferTx81SingleCardKernelV1(),
+     "wafer-tx81-single-card-kernel-v1",
+     TargetIdentityId::waferTx81SingleCard(), "wafer-tx81-single-card",
+     KernelRuntimeABIId::waferTx81KernelV1(), "wafer-tx81-kernel-v1",
+     "elf-riscv64", TargetProfileId::waferTx81SingleCardKernelV1(),
+     TargetProfileId::waferTx81SingleCardKernelV1()},
+    {TargetProfileId::waferTx81SingleCardKernelV2(),
+     "wafer-tx81-single-card-kernel-v2",
+     TargetIdentityId::waferTx81SingleCard(), "wafer-tx81-single-card",
+     KernelRuntimeABIId::waferTx81KernelV2(), "wafer-tx81-kernel-v2",
+     "elf-riscv64", TargetProfileId::waferTx81SingleCardKernelV1(),
+     TargetProfileId::waferTx81SingleCardKernelV1()},
+};
 
 template <typename Id, typename GetId, typename GetSpelling>
 llvm::Expected<Id> parseClosedId(llvm::StringRef spelling, llvm::StringRef kind,

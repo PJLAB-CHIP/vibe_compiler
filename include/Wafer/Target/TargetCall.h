@@ -76,6 +76,8 @@ struct TargetGemmTransaction {
   uint32_t n;
   uint32_t batchCount;
   LogicalFormat format;
+  GemmOrientation lhsOrientation = GemmOrientation::Normal;
+  GemmOrientation rhsOrientation = GemmOrientation::Normal;
 };
 
 struct TargetElementwiseTransaction {
@@ -251,6 +253,7 @@ enum class TargetCallBuiltin : uint8_t {
   Bit2FP,
   MaskMove,
   Gemm,
+  GemmOrientedV2,
   TDMAPad,
   TDMAImg2Col,
   LocalFence,
@@ -285,7 +288,7 @@ struct TargetCallDecodeContext {
   int64_t rankCount;
 };
 
-/// Returns the closed 109-call surface emitted by target LLVM lowering.
+/// Returns the closed 110-call surface emitted by target LLVM lowering.
 llvm::ArrayRef<TargetCallDescriptor> getTargetCallDescriptors();
 
 const TargetCallDescriptor *findTargetCallDescriptor(llvm::StringRef symbol);

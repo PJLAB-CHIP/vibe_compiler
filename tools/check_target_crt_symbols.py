@@ -125,9 +125,9 @@ def production_symbols_from_registry(
         fail("target lowering retains the old symbol-construction path")
 
     static_bases = set(STATIC_REGISTRY_STEM_RE.findall(registry_text))
-    if len(static_bases) != 15:
+    if len(static_bases) != 16:
         fail(
-            "target-call registry must contain 15 fixed call stems, found "
+            "target-call registry must contain 16 fixed call stems, found "
             f"{len(static_bases)}"
         )
     symbols = {f"wafer_tx81_{base}" for base in static_bases}
@@ -177,8 +177,8 @@ def production_symbols_from_registry(
         f"wafer_tx81_peripheral_{enum_spellings[kind]}"
         for kind in peripheral_kinds
     )
-    if len(symbols) != 109:
-        fail(f"target-call registry must close 109 symbols, found {len(symbols)}")
+    if len(symbols) != 110:
+        fail(f"target-call registry must close 110 symbols, found {len(symbols)}")
     return symbols
 
 

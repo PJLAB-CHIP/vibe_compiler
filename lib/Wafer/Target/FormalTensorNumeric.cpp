@@ -310,8 +310,14 @@ executeGemm(const ResolvedNumericCommand &command,
       for (uint64_t n = 0; n < gemm.n; ++n) {
         RawLogicalValue accumulator{LogicalFormat::F32, UINT64_C(0)};
         for (uint64_t k = 0; k < gemm.k; ++k) {
-          const uint64_t lhsIndex = lhsBatchBase + m * gemm.k + k;
-          const uint64_t rhsIndex = rhsBatchBase + k * gemm.n + n;
+          const uint64_t lhsIndex =
+              lhsBatchBase + (gemm.lhsOrientation == GemmOrientation::Normal
+                                  ? m * gemm.k + k
+                                  : k * gemm.m + m);
+          const uint64_t rhsIndex =
+              rhsBatchBase + (gemm.rhsOrientation == GemmOrientation::Normal
+                                  ? k * gemm.n + n
+                                  : n * gemm.k + k);
           llvm::Expected<FormalNumericResult> step =
               evaluateFormalGemmFusedMultiplyAdd(
                   command, lhs[static_cast<size_t>(lhsIndex)],

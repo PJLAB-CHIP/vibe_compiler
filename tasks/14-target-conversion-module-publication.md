@@ -1,10 +1,9 @@
 # Wafer Target Conversion、CRT 与 Module Publication
 
-状态：当前 production 合同是已经完成并验证的 TX81 Kernel Runtime ABI v1、owner-backed
-`TargetLLVMModuleBundle`、Q17 staged device link 和 atomic `TargetArtifactBundle` publication。Q32.I/R/B
-只改变上游如何得到selected typed IR，不改变本文件的v1 conversion、CRT或publication合同。
+状态：当前 production 合同包含保持不变的 TX81 Kernel Runtime ABI v1、Q32.V新增的closed v2 oriented-GEMM
+profile/ABI、owner-backed `TargetLLVMModuleBundle`、Q17 staged device link和atomic `TargetArtifactBundle` publication。
+Mapped DMA与physical-footprint fill复用既有address/count ABI但增加typed Instr legality；oriented GEMM使用独立v2 call。
 
-Mapped DMA、physical-footprint fill和oriented GEMM属于已排期Q32.V typed target-capability vertical；
 `RequiredCapabilitySet`和package/schema升级只在这些扩展的真实consumer需要逐row preflight时从winner派生。
 Count writeback属于独立Q3.6。任何能力都不能由planner是否能构造某个候选而自动启用。实现状态只看
 `tasks/progress.md`。
@@ -31,8 +30,8 @@ Count writeback属于独立Q3.6。任何能力都不能由planner是否能构造
 - 不把 CRT symbol 存在等同于 packet、numeric、model admission 或 board correctness；
 - 不为 host model 另造一条 target lowering；
 - 不改变已经发布的 v1 symbol signature、target profile 或 package identity；
-- current v1 lowering不提前接受mapped DMA、physical fill、oriented GEMM、capability-set/schema或Count；前三项由
-  Q32.V在独立typed纵向闭合后加入，Count仍由Q3.6拥有；
+- current v1仍只接受compact/implicit-normal合同；mapped DMA和physical fill由typed Instr字段选择，oriented GEMM只在
+  `wafer-tx81-single-card-kernel-v2`下进入独立exact call；capability-set/schema仍未引入，Count仍由Q3.6拥有；
 - Direct DTE 只有 accepted remote receiver offset、endpoint/slot/completion 合同闭合后才能进入
   production target module；发送端不能假定各 rank 的 SPM allocation 同址。
 
@@ -74,9 +73,9 @@ Pipeline position:
   当前v1：normal/normal GEMM、现有compact RDMA/WDMA、GS、compute、peripheral、sync和已闭合Direct DTE
   family通过geometry/range/narrowing/full-conversion；任一失败source module byte-identical。
   TargetProfileId从CompilationRequest/ExecutionConfig贯穿ExecutableBundle、TargetLLVMModuleBundle、
-  TargetArtifactBundle和package readback且没有default；109-symbol CRT conformance、rank-count=1/16
+  TargetArtifactBundle和package readback且没有default；110-symbol CRT conformance、rank-count=1/16
   owner lifetime、all-and-only module/ABI-slot/digest、late-rank atomic failure和真实production driver通过。
-  Q32.V/Q3.6各自拥有独立completion gate，不反向改写本current v1证据；Q32.V完成后新增typed profile/ABI row由
+  Q32.V/Q3.6各自拥有独立completion gate，不反向改写current v1证据；Q32.V新增typed profile/ABI row由
   Q32.M/S通用candidate owner消费。
 ```
 
@@ -91,17 +90,21 @@ commit之后从accepted instruction IR生成。
 
 ## 3. Current Closed Target Profile 与 Format Contract
 
-### 3.1 v1 profile identity
+### 3.1 closed profile identity
 
-当前唯一 registered spelling 是 `wafer-tx81-single-card-kernel-v1`，对应 closed typed
-`TargetProfileId`。它唯一映射到：
+registry包含`wafer-tx81-single-card-kernel-v1`和`wafer-tx81-single-card-kernel-v2`两个closed typed
+`TargetProfileId`。二者都映射到target identity `wafer-tx81-single-card`和module format `elf-riscv64`；v1映射
+`wafer-tx81-kernel-v1`，v2映射`wafer-tx81-kernel-v2`。v2只扩展oriented GEMM exact call，并显式引用v1
+format/numeric compatibility profile；这不合并两个Kernel ABI identity，也不改变v1含义。
+
+v1唯一映射到：
 
 - target identity `wafer-tx81-single-card`；
 - Kernel Runtime ABI `wafer-tx81-kernel-v1`；
 - module format `elf-riscv64`。
 
 spelling 是 opaque canonical key，不能按连字符拆字段，也不表示未有证据的 silicon revision。不存在
-unknown revision、default profile 或字符串 fallback。future profile 必须新增 closed typed record，不能改变
+unknown revision、default profile 或字符串 fallback。future profile仍必须新增 closed typed record，不能改变
 v1 key 含义。
 
 普通 compiler conversion 的配置输入只有 `TargetProfileId`。conversion 根据它取得 target identity、runtime
@@ -233,10 +236,9 @@ current v1 最低规则：
 uint32；`Data_Shape` 维度还必须适配底层 uint16。`-1` sentinel 只能出现在明确 ABI 字段，不能依赖
 i64→i32 截断产生。
 
-当前 lowering 对已有 typed view/root address 和 GS local offset 做 checked address derivation。这不等于
-Q32.I/R/B已支持mapped DMA：RDMA/WDMA 的非compact physical mapping、额外 local offset 或 route-specific
-mode若不能由current typed operands唯一重建，必须在Q32.V先扩 typed Instr/TargetCall，再由本节消费。
-target conversion不能读取 planner的 `IndexRelation` 来补字段。
+当前 lowering 对typed view/root address、GS local offset和mapped RDMA/WDMA双端offset做checked address derivation。
+mapped DMA由final Instr上的offset pair和descriptor fields表达，target conversion分别checked加到root address后复用
+既有RDMA/WDMA call；它不能读取planner的`IndexRelation`来补字段，也不能接受双侧stride。
 
 ## 7. Kernel ABI
 
@@ -266,7 +268,8 @@ device linker共享同一 exact signature事实。CRT wrapper只传递已经验�
 
 current v1 已验证边界：
 
-- 109 个 production symbols 在 header/source/symbol checker/device link 闭合；
+- 110 个 production symbols 在 header/source/symbol checker/device link 闭合；其中新增
+  `wafer_tx81_gemm_oriented_v2`只属于v2 ABI，plain `wafer_tx81_gemm`保持v1 normal/normal；
 - LLVM calls 使用 fixed function type，不使用 vararg；
 - `wafer_tx81_mask_move` 端到端使用显式 `uint32_t mask`；
 - repo-local CRT 可由 pinned TX8 GCC 编译并参与 device link；
@@ -275,8 +278,9 @@ current v1 已验证边界：
 - existing ArgMax/ArgMin writeback在destination store前执行`TsmWaitfinish()`，其 typed effect/completion
   与 result-store contract 由现有 verifier/lowering共同检查。
 
-current v1 不包含 oriented GEMM、Count 或新增 CRT symbol。`wafer_tx81_gemm` 永远只代表 v1
-normal/normal。symbol存在也不证明 packet、shape、numeric、completion 或 board support。
+current v1不包含oriented GEMM或Count。`wafer_tx81_gemm`永远只代表v1 normal/normal；
+`wafer_tx81_gemm_oriented_v2`逐字段携带两个orientation且只在v2 runtime ABI解码。symbol存在也不证明
+packet、shape、numeric、completion或board support。
 
 ## 9. Owner-Backed Target LLVM Bundle
 
@@ -398,7 +402,7 @@ current v1测试层次：
 1. op/verifier negative：OOB、descriptor payload、shape relation、alignment和narrowing；
 2. conversion：branch/loop/call结构保持、typed calls、full legality、late failure source identity；
 3. profile/format：explicit v1 profile、unknown/missing拒绝、engine×format和convert whitelist；
-4. CRT：109-symbol header/source/signature/wrapper conformance；
+4. CRT：110-symbol header/source/signature/wrapper conformance，v1/v2 GEMM transflag分别固定/显式；
 5. device link：compiler-generated positive和required/allowed undefined negative；
 6. owner lifetime：rank-count=1/16 `TargetLLVMModuleBundle`、module/context lifetime、move-only type；
 7. Q17 publication：all-and-only modules、identity/ABI slots/digest和late-rank atomic failure；
@@ -413,9 +417,8 @@ current negative还必须证明：
 
 ## 12. Q32.V Typed Target-Capability Vertical 与其它扩展
 
-本节定义Q32.V已排期能力及其它扩展的边界和保持不变的typed ABI原则。没有实现、验证和execution
-consumer前，不进入current profile、CRT surface或artifact fields；但mapped DMA、physical fill和oriented GEMM不能因删除
-provider/query协议而从任务目标消失。
+本节记录Q32.V已闭合能力及其它扩展的边界和保持不变的typed ABI原则。mapped DMA、physical fill和oriented GEMM
+已经进入对应typed compiler/formal/SystemC surface；未实现、未验证或无consumer的其它能力仍不得进入profile、CRT或artifact fields。
 
 fixed Cx/NCx encoding absorption不是Q32.V ABI extension：它复用current format/profile和相同TargetCall signature，要求包含
 Q32.M absorption rewrite的Q32.S winner（由Q32.G默认路径提交）在进入本层前已经删除显式layout/GS movement。本层若需要新增
@@ -442,7 +445,7 @@ relation analysis。
 
 ### 12.2 Q32.V：Physical-Footprint Fill
 
-Q32.V为fill增加typed logical-valid / physical-footprint domain或等价closed字段，并从destination encoding、valid/padding
+Q32.V已为fill增加typed logical-valid / physical-footprint domain，并从destination encoding、valid/padding
 domain和bitpacked element width checked派生最终count/range。TargetCall必须携带consumer实际需要的domain/count/raw scalar
 事实，CRT/SystemC不能读取planner invalid-lane state补猜。
 
@@ -451,9 +454,9 @@ bit状态、target-call lowering和formal/SystemC正负例。底层memset存在�
 
 ### 12.3 Q32.V：Oriented GEMM ABI
 
-v1 profile和`wafer_tx81_gemm`保持normal/normal原义，不能原地改变。Q32.V必须建立真实oriented source、
-typed Instr/TargetCall和repo-owned SystemC/formal consumer，并为它设计新的closed Kernel Runtime ABI/profile
-revision；symbol、字段宽度、参数顺序和revision spelling在这些实现与consumer同批确定，本文不预先冻结。
+v1 profile和`wafer_tx81_gemm`保持normal/normal原义。Q32.V已建立structured source/typed Tile/Instr/TargetCall和
+repo-owned SystemC/formal consumer，并冻结`wafer-tx81-single-card-kernel-v2`、`wafer-tx81-kernel-v2`及
+`wafer_tx81_gemm_oriented_v2(lhs,rhs,dst,m,k,n,batch,format,lhs_orientation,rhs_orientation)` exact signature。
 
 orientation必须是Instr、TargetCall transaction、LLVM call和decoder中逐字段验证的closed enum；CRT只做checked enum到
 wrapper transflag的映射，不从shape、layout、symbol后缀或payload猜测。新revision不能让v1 module或symbol静默获得

@@ -697,8 +697,35 @@ mlir::LogicalResult InstrFillOp::verify() {
     return emitOpError(
         "target_abi_narrowing: fill value type exceeds the uint32_t target "
         "scalar ABI");
-  return verifyStaticElementCountFitsUInt32(getOperation(), getDest().getType(),
-                                            "fill dest");
+  FillDomain domain = getFillDomain().value_or(FillDomain::LogicalValid);
+  if (domain == FillDomain::LogicalValid) {
+    if (!hasWaferLayout(getDest().getType(), MemLayout::Tensor))
+      return emitOpError(
+          "logical_valid fill destination must use tensor layout");
+    return verifyStaticElementCountFitsUInt32(getOperation(),
+                                              getDest().getType(), "fill dest");
+  }
+
+  auto destType = mlir::cast<mlir::MemRefType>(getDest().getType());
+  std::optional<WaferPhysicalTensorInfo> info =
+      computeWaferPhysicalTensorInfo(destType);
+  if (!info || info->physicalBytes <= 0 || info->physicalElements <= 0)
+    return emitOpError(
+        "physical_footprint fill requires a static positive physical "
+        "destination footprint");
+  uint64_t elements = static_cast<uint64_t>(info->physicalElements);
+  if (info->bitPackedElement) {
+    if (static_cast<uint64_t>(info->physicalBytes) >
+        std::numeric_limits<uint32_t>::max() / UINT64_C(8))
+      return emitOpError(
+          "target_abi_narrowing: bitpacked physical fill element count must "
+          "fit uint32_t");
+    elements = static_cast<uint64_t>(info->physicalBytes) * UINT64_C(8);
+  }
+  if (elements > std::numeric_limits<uint32_t>::max())
+    return emitOpError(
+        "target_abi_narrowing: physical fill element count must fit uint32_t");
+  return mlir::success();
 }
 
 InstrFamily InstrFillOp::getInstructionFamily() { return InstrFamily::TDMA; }
@@ -1040,6 +1067,16 @@ mlir::LogicalResult InstrGemmOp::verify() {
           "gemm operand and dest element types must match")))
     return mlir::failure();
 
+  if (static_cast<bool>(getLhsOrientationAttr()) !=
+      static_cast<bool>(getRhsOrientationAttr()))
+    return emitOpError(
+        "lhs_orientation and rhs_orientation must either both be present for "
+        "the oriented GEMM ABI or both be absent for the v1 NN ABI");
+  GemmOrientation lhsOrientation =
+      getLhsOrientation().value_or(GemmOrientation::Normal);
+  GemmOrientation rhsOrientation =
+      getRhsOrientation().value_or(GemmOrientation::Normal);
+
   int64_t m = getMAttr().getInt();
   int64_t k = getKAttr().getInt();
   int64_t n = getNAttr().getInt();
@@ -1054,10 +1091,14 @@ mlir::LogicalResult InstrGemmOp::verify() {
       destTensor->getRank() == 2) {
     if (hasAnyBatchedGemmAttrs(getOperation()))
       return emitOpError("rank-2 gemm must not carry batched GEMM attrs");
-    if (hasStaticMismatch(lhsTensor->getDimSize(0), m) ||
-        hasStaticMismatch(lhsTensor->getDimSize(1), k) ||
-        hasStaticMismatch(rhsTensor->getDimSize(0), k) ||
-        hasStaticMismatch(rhsTensor->getDimSize(1), n) ||
+    int64_t lhsMDim = lhsOrientation == GemmOrientation::Normal ? 0 : 1;
+    int64_t lhsKDim = lhsOrientation == GemmOrientation::Normal ? 1 : 0;
+    int64_t rhsKDim = rhsOrientation == GemmOrientation::Normal ? 0 : 1;
+    int64_t rhsNDim = rhsOrientation == GemmOrientation::Normal ? 1 : 0;
+    if (hasStaticMismatch(lhsTensor->getDimSize(lhsMDim), m) ||
+        hasStaticMismatch(lhsTensor->getDimSize(lhsKDim), k) ||
+        hasStaticMismatch(rhsTensor->getDimSize(rhsKDim), k) ||
+        hasStaticMismatch(rhsTensor->getDimSize(rhsNDim), n) ||
         hasStaticMismatch(destTensor->getDimSize(0), m) ||
         hasStaticMismatch(destTensor->getDimSize(1), n))
       return emitOpError("m/k/n attrs must match GEMM operand shapes");
@@ -1094,11 +1135,22 @@ mlir::LogicalResult InstrGemmOp::verify() {
           "canonical batch dimensions");
   }
   int64_t matrixRankBase = lhsTensor->getRank() - 2;
-  if (attrs.lhsMDim != matrixRankBase ||
-      attrs.lhsContractingDim != matrixRankBase + 1 ||
-      attrs.rhsContractingDim != matrixRankBase ||
-      attrs.rhsNDim != matrixRankBase + 1 ||
-      attrs.resultMDim != matrixRankBase ||
+  int64_t expectedLhsMDim = lhsOrientation == GemmOrientation::Normal
+                                ? matrixRankBase
+                                : matrixRankBase + 1;
+  int64_t expectedLhsKDim = lhsOrientation == GemmOrientation::Normal
+                                ? matrixRankBase + 1
+                                : matrixRankBase;
+  int64_t expectedRhsKDim = rhsOrientation == GemmOrientation::Normal
+                                ? matrixRankBase
+                                : matrixRankBase + 1;
+  int64_t expectedRhsNDim = rhsOrientation == GemmOrientation::Normal
+                                ? matrixRankBase + 1
+                                : matrixRankBase;
+  if (attrs.lhsMDim != expectedLhsMDim ||
+      attrs.lhsContractingDim != expectedLhsKDim ||
+      attrs.rhsContractingDim != expectedRhsKDim ||
+      attrs.rhsNDim != expectedRhsNDim || attrs.resultMDim != matrixRankBase ||
       attrs.resultNDim != matrixRankBase + 1)
     return emitOpError(
         "target_geometry_mismatch: target GEMM ABI requires canonical trailing "

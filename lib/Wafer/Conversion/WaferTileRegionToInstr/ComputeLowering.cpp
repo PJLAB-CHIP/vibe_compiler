@@ -60,12 +60,19 @@ inferGemmMKN(ComputeGemmOp op, mlir::PatternRewriter &rewriter,
     return llvm::SmallVector<int64_t, 3>{*m, *k, *n};
   }
 
-  mlir::FailureOr<int64_t> m =
-      getStaticDim(rewriter, op, *lhs, 0, failureReason, "rank-2 tile.gemm");
-  mlir::FailureOr<int64_t> k =
-      getStaticDim(rewriter, op, *lhs, 1, failureReason, "rank-2 tile.gemm");
-  mlir::FailureOr<int64_t> n =
-      getStaticDim(rewriter, op, *rhs, 1, failureReason, "rank-2 tile.gemm");
+  GemmOrientation lhsOrientation =
+      op.getLhsOrientation().value_or(GemmOrientation::Normal);
+  GemmOrientation rhsOrientation =
+      op.getRhsOrientation().value_or(GemmOrientation::Normal);
+  int64_t lhsMDim = lhsOrientation == GemmOrientation::Normal ? 0 : 1;
+  int64_t lhsKDim = lhsOrientation == GemmOrientation::Normal ? 1 : 0;
+  int64_t rhsNDim = rhsOrientation == GemmOrientation::Normal ? 1 : 0;
+  mlir::FailureOr<int64_t> m = getStaticDim(rewriter, op, *lhs, lhsMDim,
+                                            failureReason, "rank-2 tile.gemm");
+  mlir::FailureOr<int64_t> k = getStaticDim(rewriter, op, *lhs, lhsKDim,
+                                            failureReason, "rank-2 tile.gemm");
+  mlir::FailureOr<int64_t> n = getStaticDim(rewriter, op, *rhs, rhsNDim,
+                                            failureReason, "rank-2 tile.gemm");
   if (mlir::failed(m) || mlir::failed(k) || mlir::failed(n))
     return mlir::failure();
   return llvm::SmallVector<int64_t, 3>{*m, *k, *n};
@@ -82,7 +89,8 @@ public:
   mlir::LogicalResult
   matchAndRewrite(ComputeFillOp op,
                   mlir::PatternRewriter &rewriter) const final {
-    rewriter.replaceOpWithNewOp<InstrFillOp>(op, op.getDest(), op.getValue());
+    rewriter.replaceOpWithNewOp<InstrFillOp>(op, op.getDest(), op.getValue(),
+                                             op.getFillDomainAttr());
     return mlir::success();
   }
 };
@@ -754,7 +762,8 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    rewriter.create<InstrFillOp>(op.getLoc(), accumulatorA, init);
+    rewriter.create<InstrFillOp>(op.getLoc(), accumulatorA, init,
+                                 /*fill_domain=*/FillDomainAttr{});
     rewriter.create<SyncLocalFenceOp>(op.getLoc());
     mlir::Value currentAccumulator = accumulatorA;
     mlir::Value nextAccumulator = accumulatorB;
@@ -801,7 +810,8 @@ public:
     auto instr = rewriter.create<InstrGemmOp>(
         op.getLoc(), op.getLhs(), op.getRhs(), *dest,
         getI64Attr(rewriter, (*mkn)[0]), getI64Attr(rewriter, (*mkn)[1]),
-        getI64Attr(rewriter, (*mkn)[2]),
+        getI64Attr(rewriter, (*mkn)[2]), op.getLhsOrientationAttr(),
+        op.getRhsOrientationAttr(),
         /*batch_count=*/mlir::IntegerAttr{},
         /*lhs_batch_dims=*/mlir::DenseI64ArrayAttr{},
         /*lhs_m_dim=*/mlir::IntegerAttr{},

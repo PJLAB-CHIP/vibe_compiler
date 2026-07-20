@@ -487,7 +487,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertCollectivePermute(
         op.getLoc(), resultTensorType.getElementType(), builder);
     if (!zero)
       return fail("collective_permute zero-fill requires numeric element type");
-    builder.create<ComputeFillOp>(op.getLoc(), alloc.getResult(), zero);
+    builder.create<ComputeFillOp>(op.getLoc(), alloc.getResult(), zero,
+                                  /*fill_domain=*/FillDomainAttr{});
     resultBuffer = alloc.getResult();
   }
 

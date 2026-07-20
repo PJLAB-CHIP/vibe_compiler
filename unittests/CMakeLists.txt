@@ -284,6 +284,31 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   add_test(NAME WaferSystemCModelBatchedGemmIntegrationTest
     COMMAND WaferSystemCModelBatchedGemmIntegrationTest)
 
+  add_executable(WaferSystemCModelOrientedGemmIntegrationTest
+    Model/SystemCTargetModelOrientedGemmIntegrationTest.cpp
+  )
+  llvm_update_compile_flags(WaferSystemCModelOrientedGemmIntegrationTest)
+  target_link_libraries(WaferSystemCModelOrientedGemmIntegrationTest
+    PRIVATE
+    WaferSystemCModel
+    WaferCompiler
+    WaferIR
+    MLIRArithDialect
+    MLIRBufferizationDialect
+    MLIRControlFlowDialect
+    MLIRFuncDialect
+    MLIRLinalgDialect
+    MLIRLLVMDialect
+    MLIRMathDialect
+    MLIRMemRefDialect
+    MLIRSCFDialect
+    MLIRTensorDialect
+    SystemC::systemc
+    GTest::gtest
+  )
+  add_test(NAME WaferSystemCModelOrientedGemmIntegrationTest
+    COMMAND WaferSystemCModelOrientedGemmIntegrationTest)
+
   add_executable(WaferSystemCModelDTEIntegrationTest
     Model/SystemCTargetModelDTEIntegrationTest.cpp
   )
@@ -343,6 +368,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   set_tests_properties(
     WaferSystemCModelIntegrationTest
     WaferSystemCModelBatchedGemmIntegrationTest
+    WaferSystemCModelOrientedGemmIntegrationTest
     WaferSystemCModelDTEIntegrationTest
     WaferSystemCModelDTEMismatchTest
     WaferSystemCModelNoProgressTest
@@ -361,6 +387,9 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
       $<TARGET_FILE:WaferSystemCModelBatchedGemmIntegrationTest>
     COMMAND ${CMAKE_COMMAND} -E env
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
+      $<TARGET_FILE:WaferSystemCModelOrientedGemmIntegrationTest>
+    COMMAND ${CMAKE_COMMAND} -E env
+      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
       $<TARGET_FILE:WaferSystemCModelDTEIntegrationTest>
     COMMAND ${CMAKE_COMMAND} -E env
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
@@ -374,6 +403,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     DEPENDS
       WaferSystemCModelIntegrationTest
       WaferSystemCModelBatchedGemmIntegrationTest
+      WaferSystemCModelOrientedGemmIntegrationTest
       WaferSystemCModelDTEIntegrationTest
       WaferSystemCModelDTEMismatchTest
       WaferSystemCModelNoProgressTest

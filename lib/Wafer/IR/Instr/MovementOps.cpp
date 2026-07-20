@@ -205,7 +205,8 @@ static mlir::LogicalResult verifyMovementDescriptor(
 
 static mlir::LogicalResult
 verifyBytesWithinPhysicalRange(mlir::Operation *op, mlir::Type type,
-                               int64_t bytes, llvm::StringRef role) {
+                               mlir::IntegerAttr offsetAttr, int64_t bytes,
+                               llvm::StringRef role) {
   auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
   if (!memrefType)
     return mlir::success();
@@ -214,7 +215,11 @@ verifyBytesWithinPhysicalRange(mlir::Operation *op, mlir::Type type,
   if (!info || info->physicalBytes < 0)
     return op->emitOpError() << "target_geometry_mismatch: " << role
                              << " physical byte size must be statically known";
-  if (bytes > info->physicalBytes)
+  int64_t end = 0;
+  if (!checkedAdd(getOptionalI64AttrValue(offsetAttr), bytes, end))
+    return op->emitOpError() << "target_range_overflow: " << role
+                             << " byte range overflows int64";
+  if (end > info->physicalBytes)
     return op->emitOpError() << "target_geometry_mismatch: " << role
                              << " byte count exceeds physical byte size";
   return mlir::success();
@@ -352,12 +357,25 @@ verifyMovementElementContract(mlir::Operation *op, mlir::Type sourceType,
 } // namespace
 
 mlir::LogicalResult InstrRDMAOp::verify() {
+  if ((*this)->hasAttr("dst_strides") || (*this)->hasAttr("dst_iterations"))
+    return emitOpError(
+        "RDMA destination is sequential and must not carry destination "
+        "stride fields");
   if (mlir::failed(
           verifyDDRMemRef(getOperation(), getSource().getType(), "source")) ||
       mlir::failed(
           verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
-  if (mlir::failed(verifyMovementDescriptor(
+  if (static_cast<bool>(getSrcOffsetAttr()) !=
+      static_cast<bool>(getDstOffsetAttr()))
+    return emitOpError(
+        "src_offset and dst_offset must either both be present for mapped "
+        "DMA or both be absent for compact DMA");
+  if (mlir::failed(verifyNonNegativeOptionalI64Attr(
+          getOperation(), getSrcOffsetAttr(), "src_offset")) ||
+      mlir::failed(verifyNonNegativeOptionalI64Attr(
+          getOperation(), getDstOffsetAttr(), "dst_offset")) ||
+      mlir::failed(verifyMovementDescriptor(
           getOperation(), getByteCountAttr(), getInnerBytesAttr(),
           getSrcStridesAttr(), getSrcIterationsAttr(), {}, {})) ||
       mlir::failed(verifyMovementElementContract(
@@ -367,11 +385,12 @@ mlir::LogicalResult InstrRDMAOp::verify() {
           getOperation(), getByteCountAttr(), getInnerBytesAttr(),
           getSrcStridesAttr(), getSrcIterationsAttr())) ||
       mlir::failed(verifyDescriptorWithinPhysicalRange(
-          getOperation(), getSource().getType(), {}, getInnerBytesAttr(),
-          getSrcStridesAttr(), getSrcIterationsAttr(), "source")) ||
+          getOperation(), getSource().getType(), getSrcOffsetAttr(),
+          getInnerBytesAttr(), getSrcStridesAttr(), getSrcIterationsAttr(),
+          "source")) ||
       mlir::failed(verifyBytesWithinPhysicalRange(
-          getOperation(), getDest().getType(), getByteCountAttr().getInt(),
-          "destination")))
+          getOperation(), getDest().getType(), getDstOffsetAttr(),
+          getByteCountAttr().getInt(), "destination")))
     return mlir::failure();
   return mlir::success();
 }
@@ -401,12 +420,24 @@ mlir::LogicalResult InstrRDMAOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult InstrWDMAOp::verify() {
+  if ((*this)->hasAttr("src_strides") || (*this)->hasAttr("src_iterations"))
+    return emitOpError(
+        "WDMA source is sequential and must not carry source stride fields");
   if (mlir::failed(
           verifySPMMemRef(getOperation(), getSource().getType(), "source")) ||
       mlir::failed(
           verifyDDRMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
-  if (mlir::failed(verifyMovementDescriptor(
+  if (static_cast<bool>(getSrcOffsetAttr()) !=
+      static_cast<bool>(getDstOffsetAttr()))
+    return emitOpError(
+        "src_offset and dst_offset must either both be present for mapped "
+        "DMA or both be absent for compact DMA");
+  if (mlir::failed(verifyNonNegativeOptionalI64Attr(
+          getOperation(), getSrcOffsetAttr(), "src_offset")) ||
+      mlir::failed(verifyNonNegativeOptionalI64Attr(
+          getOperation(), getDstOffsetAttr(), "dst_offset")) ||
+      mlir::failed(verifyMovementDescriptor(
           getOperation(), getByteCountAttr(), getInnerBytesAttr(), {}, {},
           getDstStridesAttr(), getDstIterationsAttr())) ||
       mlir::failed(verifyMovementElementContract(
@@ -416,11 +447,12 @@ mlir::LogicalResult InstrWDMAOp::verify() {
           getOperation(), getByteCountAttr(), getInnerBytesAttr(),
           getDstStridesAttr(), getDstIterationsAttr())) ||
       mlir::failed(verifyBytesWithinPhysicalRange(
-          getOperation(), getSource().getType(), getByteCountAttr().getInt(),
-          "source")) ||
+          getOperation(), getSource().getType(), getSrcOffsetAttr(),
+          getByteCountAttr().getInt(), "source")) ||
       mlir::failed(verifyDescriptorWithinPhysicalRange(
-          getOperation(), getDest().getType(), {}, getInnerBytesAttr(),
-          getDstStridesAttr(), getDstIterationsAttr(), "destination")))
+          getOperation(), getDest().getType(), getDstOffsetAttr(),
+          getInnerBytesAttr(), getDstStridesAttr(), getDstIterationsAttr(),
+          "destination")))
     return mlir::failure();
   return mlir::success();
 }

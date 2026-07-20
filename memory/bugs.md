@@ -376,7 +376,7 @@
 
 ## 2026-07-15 completion声明必须追到最后一个execution consumer
 
-- 现象：target-call的109项测试只验证variant family仍被写成“逐字段闭合”；bulk final record保存implementation/descriptor，
+- 现象：target-call当时的109项（Q32.V后为110项）测试只验证variant family仍被写成“逐字段闭合”；bulk final record保存implementation/descriptor，
   runtime admission却未携带或比较；SystemC设计正文写长寿命可复用，公开入口实际只允许initial elaboration一次调用。
 - 根因：把registry/readback对象存在、组件层negative或设计目标当成了下游实际消费证明，没有逐项重放completion gate中的
   field mapping、runtime evidence drift、source late-rank和lifecycle事实。
@@ -741,3 +741,26 @@
   identity与finite contract，禁止从另一个历史目录拼接reference。隔离compiler回归时先比较final typed IR，再比较
   corpus identity，避免用容差或关闭优化掩盖输入问题。
 - 防复发：归档证据记录稳定corpus算法/identity而非临时路径；相同MLIR digest只证明结构等价，不能替代payload配对证明。
+
+## 2026-07-20 raw scalar ABI不能对窄整数做符号扩展
+
+- 现象：`i1 true` physical-footprint fill在LLVM lowering中变成`i32 -1`，target model按BOOL storage width验证时拒绝
+  `0xffffffff`；同类路径也会把负I8的raw byte错误扩成32-bit符号值。
+- 根因：共用的constant helper用`APInt::getSExtValue()`解释目标`uint32_t value`字段，把“数值有符号性”混入本应保留
+  storage bit pattern的raw scalar ABI。
+- 修复模式：raw scalar lowering先限制storage宽度适配32-bit字段，再用zero-extension保存原始位型；浮点继续bitcast为
+  APInt。target model按logical format的canonical storage width重新验证并编码，不能接受靠截断恢复的非canonical值。
+- 防复发：同时检查lowered call常量和model写入结果；BOOL true必须传`1`并覆盖unused physical bits，F16等浮点检查
+  exact raw payload，signed integer另用高位为1的case锁定zero-extension。
+
+## 2026-07-20 同一build目录的lit入口不能并发重放
+
+- 现象：`check-wafer`已经全绿后，并发运行`ctest`和独立`lit --show-unsupported`会在同一
+  `build/.../test/*/Output`下互相删除、复制或重建临时目录，产生output directory提前出现、fixture消失和digest mismatch等
+  大量看似无关的失败；串行重跑立即恢复。
+- 根因：lit的每个测试只保证相对同一次lit invocation的独立临时路径，不保证两个lit进程共享同一build test tree时隔离。
+  CTest的`wafer-lit`本身已经启动一个完整lit进程，外部再对同一目录启动lit会违反这一前提。
+- 修复模式：同一build目录上的`check-wafer`、CTest内`wafer-lit`和独立unsupported审计必须串行；需要并行时使用不同build
+  目录。并发失败后不能保留污染结果，等所有lit进程退出，再从一个入口完整fresh重放。
+- 防复发：验证编排以build目录为互斥单位；可与lit并行的只限不读写该build test `Output`树的源码组织、dependency、
+  format或独立配置检查。

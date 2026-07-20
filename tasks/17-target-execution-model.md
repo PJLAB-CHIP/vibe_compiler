@@ -1,8 +1,8 @@
 # Wafer Target Execution Model（CModel）
 
-状态：2026-07-20已完成Q22.N/L/B/H/S/V、Q22 model-only functional-numeric profile、Q28标准7B单block scale vertical及
-Q31多seed数值表征。Q32.I/R/B先重放当前已完成的v1 target-call/SystemC gate；mapped DMA、physical fill和
-versioned GEMM orientation由已排期Q32.V typed target vertical闭合。Q32.M的fixed Cx/NCx encoding absorption只消费现有
+状态：2026-07-20已完成Q22.N/L/B/H/S/V、Q22 model-only functional-numeric profile、Q28标准7B单block scale vertical、
+Q31多seed数值表征及Q32.V typed target vertical。mapped DMA、physical-footprint fill和v2 oriented GEMM已经通过
+exact TargetCall、formal和SystemC gate；Q32.M的fixed Cx/NCx encoding absorption只消费现有
 profile/encoding/shape/tail事实，不增加可编程vector-width或packing参数。`RequiredCapabilitySet`/package schema upgrade只在真实
 execution consumer需要逐row preflight时从winner派生。model/board admission仍由本文拥有，Q22.C board correlation和
 Q22.E exact-package execution保持独立later gate。封闭vendor Host-CRT/packet/DWFC seam不作为数值CModel依赖。本文固定以数值正确性为
@@ -132,13 +132,12 @@ Pipeline position:
   transport和terminal completion；target model不得重新选择candidate或重算跨rankbinding。
 - tasks/14现有per-rank transaction-local target preparation已完成entry output/workspace/status ABI preparation，随后把
   instruction结构保持地lower为fixed `void(i64...)` target LLVM CRT calls；RISC-V device link在该lowering之后发生。
-- 当前Wafer CRT header、lowering、source和checker形成109个production symbol的闭合surface。CRT源码通过
+- 当前Wafer CRT header、lowering、source和checker形成110个production symbol的闭合surface。CRT源码通过
   `TsmNew*`/operator function table填写`Tsm*Instr`并调用`TsmExecute`，而不是直接写模型结果；symbol存在仍只证明
   ABI closure，不证明packet、numeric或hardware completion。
-- 当前109-symbol/v1 surface中的plain GEMM没有orientation字段，模型只发布implicit normal/normal canonical row；
-  RDMA/WDMA transaction也没有planner-local offset字段，offset若存在必须先由target lowering折入最终address。
-  versioned oriented call及mapped-transfer Instr字段由Q32.V实现；在tasks/14/11落地并通过exact-signature gate前
-  均不是当前model capability，也不阻塞Q32.I/R/B的current-v1纵向。
+- plain `wafer_tx81_gemm`没有orientation字段，模型继续发布implicit normal/normal canonical row；v2
+  `wafer_tx81_gemm_oriented_v2`逐字段解码两个orientation。mapped RDMA/WDMA的Instr-local offset由target lowering
+  checked折入最终transaction address，模型不读取planner relation或恢复layout conversion。
 - Q17正式交付物是all-and-only RISC-V ELF `TargetArtifactBundle`；Q18 package只包含typed resource/slot/module/
   entry/completion/transport requirement，不包含instruction schedule。
 - Q18当前只实现pure no-card `RuntimeSessionPlan`。真实`RuntimeProvider`生命周期和board执行尚未实现。
@@ -913,10 +912,10 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 | storage / physical codec | 13种logical raw codec；compact、Cx、NCx及bitpacked BOOL的shared physical geometry/roundtrip；typed ABI slot显式携带layout | program-boundary compact BOOL NPY尚无bitpacked source合同；codec存在不开放无target encoding的engine row |
 | formal convert | 101条确定性typed convert policy，四种确定性rounding及完整raw/special/status政策 | 4条INT8-source zero-point公式和stochastic state未证，保持命名candidate/rejected；f64不在target profile |
 | formal elementwise | 88条selector（84条floating和4条BOOL logic）；f16/bf16/f32的已注册算术、关系、基础/MPFR transcendental按唯一profile执行 | integer elementwise、`exp_lp`/`sat_relu`/`leaky_relu`未闭合参数政策；未知selector无fallback |
-| formal GEMM / reduce | 当前v1 normal/normal f16、bf16、f32同dtypeGEMM，F32 fused accumulator、+0 init、K递增、destination RNE；native F32 sum reduce按+0 accumulator、logical row-major input递增和逐step RNE执行 | Q32.V oriented GEMM需新的versioned TargetCall/key/formal语义；采用external bulk lane时再闭合该lane的exact admission，board执行另需独立board row；I8 accumulator政策、TF32 generic GEMM、其余15条native reduce selector拒绝；不从dtype猜窄/宽accumulator |
+| formal GEMM / reduce | v1 normal/normal及v2 NN/NT/TN/TT f16、bf16、f32同dtype GEMM；stored shape和orientation进入exact key，F32 fused accumulator、+0 init、K递增、destination RNE；native F32 sum reduce按+0 accumulator、logical row-major input递增和逐step RNE执行 | oriented external bulk lane仍需独立exact admission，board执行另需独立board row；I8 accumulator政策、TF32 generic GEMM、其余15条native reduce selector拒绝；不从dtype猜窄/宽accumulator |
 | admitted bulk GEMM | 当前component资格覆盖v1 normal/normal f16/bf16/f32同dtype、rank 2/3、Cx/NCx；Q22 source发布的admitted完整case为Q20首个f32 GEMM和64³ f32 GEMM | orientation是exact identity；无exact command/payload/destination/environment/expected-output record即no admission；超过formal budget时绝不scalar fallback；不外推连续输入域bit-exact |
 | managed-reference bulk GEMM | Q28 scale gate逐command验证supported GEMM semantic、shape/layout、受管environment、finite inputs及byte budget，并强制完整PyTorch expected tolerance comparison | 不产生exact qualification record，不声明raw-exact target arithmetic、hardware correlation或未检查value-domain；provenance与exact admission分字段 |
-| functional transaction / event | checked RDMA/WDMA、gather/scatter、memset、elementwise、convert、当前v1 GEMM、local fence及当前single-destination Direct DTE control；all-rank private SPM/DDR和atomic output | mapped DMA、physical-footprint fill与oriented GEMM由Q32.V实现：分别增加Instr/local-address、typed fill domain/raw scalar和versioned orientation gate；Count当前只有opcode/raw-writeback线索且无typed semantic/model consumer，必须pre-effect拒绝；field-valid但无kernel的conv/pool/unpool等family、未知地址/layout/endpoint；无worker/queue容量、packet或timing claim |
+| functional transaction / event | checked compact/mapped RDMA/WDMA、gather/scatter、logical/physical memset、elementwise、convert、v1/v2 GEMM、local fence及当前single-destination Direct DTE control；all-rank private SPM/DDR和atomic output | Count当前只有opcode/raw-writeback线索且无typed semantic/model consumer，必须pre-effect拒绝；field-valid但无kernel的conv/pool/unpool等family、未知地址/layout/endpoint；无worker/queue容量、packet或timing claim |
 | source vertical | Q20 formal/admitted、f16/bf16 formal、64³ f32 admitted、Q21 16-rank Direct DTE；全部直接比较固定source CPU expected | 未固定expected的shape stress不算numeric evidence |
 
 这张矩阵说明“支持多数据类型”由storage、engine legality、numeric selector、functional kernel和source evidence分层；不能把
@@ -968,7 +967,7 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 #### Q22.H repo-owned target-call frontend
 
 - Q22.L同一target LLVM经过owner-safe clone/native retarget和动态slot thunk；稳定Target层shared typed registry同时拥有
-  lowering和frontend需要的symbol/signature/call family/field decoder，109项descriptor逐项形成对应typed payload，
+  lowering和frontend需要的symbol/signature/call family/field decoder，110项descriptor逐项形成对应typed payload，
   不能在JIT/SystemC/test复制字符串表；
 - frontend在sink begin前交付完整ordered typed slot metadata/value bindings；per-rank exact-signature bridge显式绑定invocation/rank context并形成
   typed transaction。rank防yield重入，prepare-commit失败仍可abort，unknown symbol/signature、wrong ABI slot和
@@ -1010,8 +1009,7 @@ unsupported-reason closure只是各row必要条件，不能替代相应positive 
 - preflight从current reachable target calls检查当前v1 model admission。结果只决定本次model consumer接受或拒绝
   已选程序，不进入planner、不生成候选，也不改变compiler legality。
 
-下列compiler与repo-owned model项目属于已排期Q32.V，不改变Q22 done状态，但必须在Q32.M/S消费相应planner
-choice前独立闭合：
+下列compiler与repo-owned model项目已由Q32.V独立闭合，不改变Q22 done状态；Q32.M/S可在共同owner中消费相应typed row：
 
 - mapped RDMA/WDMA：非零SPM local offset已折入最终address、多descriptor、full/C0 tail、pre/post canary及非法
   双侧stride；CModel只凭最终`TargetTransaction`验证bytes，不读取planner relation；
@@ -1473,7 +1471,7 @@ Q22.H现已从该bundle解锁并按repo-owned target-call frontend推进。
 - 只消费Q22.L `TargetLLVMModuleBundle`；host clone/JIT执行same fully legal target LLVM，不形成另一份instruction lowering或
   改写bundle；host retarget前拒绝target intrinsic、inline asm、未知address space和非registry external call；
 - 稳定Target层的shared typed target-call registry由lowering和frontend共同消费，拥有symbol、exact signature、call
-  family和field decoder；109项descriptor均需通过all-and-only signature/payload gate。完整symbol只允许exact ABI-key
+  family和field decoder；110项descriptor均需通过all-and-only signature/payload gate。完整symbol只允许exact ABI-key
   lookup，不能在JIT/SystemC/test复制字符串表，也不能从前后缀、参数数量或任意字符串启发式恢复语义；
 - 每rank生成`void(const uint64_t *slots)` fixed thunk和exact-signature bridge；bridge显式携带invocation/rank context，
   实际动态call形成typed transaction并同步投递transaction-local sink，Direct DTE返回invocation-local opaque identity；
@@ -1492,7 +1490,7 @@ failure无partial result。该gate不编译repo CRT、不构造Tsm packet，不�
 - 消费Q22.H实际typed transaction，建立rank-local virtual SPM/DDR、typed slots、checked address、invocation error latch、
   单一保守logical issue domain、resource event、local drain、可yield wait及Direct DTE/FSM；不声明worker window、
   `3×5`物理queue或engine复制；
-- shared decoder对109项descriptor逐ABI字段形成typed payload，所有payload family进入统一field-valid validator；
+- shared decoder对110项descriptor逐ABI字段形成typed payload，所有payload family进入统一field-valid validator；
   RDMA/WDMA、gather/scatter、memset、elementwise、convert、GEMM和Direct DTE control
   具有checked functional effect，其它field-valid family保持结构化unsupported。首个profile的DDR/SPM都在invocation-private
   registry内完成，不建立没有consumer的TLM socket；future ISS/interconnect只能通过另行设计的受限TLM边界接入，packet/MMIO

@@ -75,6 +75,18 @@ void createRDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
 void createWDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
                 mlir::Value source, mlir::Value dest,
                 const MovementDescriptor &descriptor);
+void createMappedRDMASegments(mlir::PatternRewriter &rewriter,
+                              mlir::Location loc, mlir::Value source,
+                              mlir::Value dest,
+                              llvm::ArrayRef<LogicalMovementSegment> segments);
+void createMappedWDMASegments(mlir::PatternRewriter &rewriter,
+                              mlir::Location loc, mlir::Value source,
+                              mlir::Value dest,
+                              llvm::ArrayRef<LogicalMovementSegment> segments);
+mlir::LogicalResult
+preflightMappedDMASegments(mlir::PatternRewriter &rewriter, mlir::Operation *op,
+                           llvm::ArrayRef<LogicalMovementSegment> segments,
+                           std::string *failureReason, llvm::StringRef opLabel);
 void createGatherScatter(mlir::PatternRewriter &rewriter, mlir::Location loc,
                          mlir::Value source, mlir::Value dest,
                          const MovementDescriptor &sourceDescriptor,

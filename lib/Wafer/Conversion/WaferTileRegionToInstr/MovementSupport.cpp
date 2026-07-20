@@ -276,16 +276,77 @@ void createRDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
                 mlir::Value source, mlir::Value dest,
                 const MovementDescriptor &descriptor) {
   rewriter.create<InstrRDMAOp>(loc, source, dest, descriptor.byteCount,
-                               descriptor.innerBytes, descriptor.strides,
-                               descriptor.iterations);
+                               descriptor.innerBytes,
+                               /*src_offset=*/mlir::IntegerAttr{},
+                               /*dst_offset=*/mlir::IntegerAttr{},
+                               descriptor.strides, descriptor.iterations);
 }
 
 void createWDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
                 mlir::Value source, mlir::Value dest,
                 const MovementDescriptor &descriptor) {
   rewriter.create<InstrWDMAOp>(loc, source, dest, descriptor.byteCount,
-                               descriptor.innerBytes, descriptor.strides,
-                               descriptor.iterations);
+                               descriptor.innerBytes,
+                               /*src_offset=*/mlir::IntegerAttr{},
+                               /*dst_offset=*/mlir::IntegerAttr{},
+                               descriptor.strides, descriptor.iterations);
+}
+
+mlir::LogicalResult
+preflightMappedDMASegments(mlir::PatternRewriter &rewriter, mlir::Operation *op,
+                           llvm::ArrayRef<LogicalMovementSegment> segments,
+                           std::string *failureReason,
+                           llvm::StringRef opLabel) {
+  if (segments.empty())
+    return failPattern(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel).concat(" produced no mapped DMA segments").str());
+  if (segments.size() > detail::kStaticTerminalOperationBudget)
+    return failPattern(rewriter, op, failureReason,
+                       llvm::Twine("static_terminal_budget_exceeded: ")
+                           .concat(opLabel)
+                           .concat(" mapped DMA command count exceeds 4096")
+                           .str());
+  for (const LogicalMovementSegment &segment : segments) {
+    if (segment.sourceOffset < 0 || segment.destOffset < 0 ||
+        segment.bytes <= 0 ||
+        static_cast<uint64_t>(segment.bytes) >
+            std::numeric_limits<uint32_t>::max())
+      return failPattern(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel)
+              .concat(" mapped DMA segment is not target-encodable")
+              .str());
+  }
+  return mlir::success();
+}
+
+void createMappedRDMASegments(mlir::PatternRewriter &rewriter,
+                              mlir::Location loc, mlir::Value source,
+                              mlir::Value dest,
+                              llvm::ArrayRef<LogicalMovementSegment> segments) {
+  constexpr int64_t kZeroStrides[] = {0, 0, 0};
+  constexpr int64_t kOneIterations[] = {1, 1, 1};
+  for (const LogicalMovementSegment &segment : segments)
+    rewriter.create<InstrRDMAOp>(
+        loc, source, dest, segment.bytes, segment.bytes,
+        rewriter.getI64IntegerAttr(segment.sourceOffset),
+        rewriter.getI64IntegerAttr(segment.destOffset), kZeroStrides,
+        kOneIterations);
+}
+
+void createMappedWDMASegments(mlir::PatternRewriter &rewriter,
+                              mlir::Location loc, mlir::Value source,
+                              mlir::Value dest,
+                              llvm::ArrayRef<LogicalMovementSegment> segments) {
+  constexpr int64_t kZeroStrides[] = {0, 0, 0};
+  constexpr int64_t kOneIterations[] = {1, 1, 1};
+  for (const LogicalMovementSegment &segment : segments)
+    rewriter.create<InstrWDMAOp>(
+        loc, source, dest, segment.bytes, segment.bytes,
+        rewriter.getI64IntegerAttr(segment.sourceOffset),
+        rewriter.getI64IntegerAttr(segment.destOffset), kZeroStrides,
+        kOneIterations);
 }
 
 void createGatherScatter(mlir::PatternRewriter &rewriter, mlir::Location loc,

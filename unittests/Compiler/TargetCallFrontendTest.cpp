@@ -309,6 +309,11 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
     case wafer::TargetCallBuiltin::Gemm:
       arguments[7] = supportedF32Code(wafer::TargetFormatEngine::NE);
       break;
+    case wafer::TargetCallBuiltin::GemmOrientedV2:
+      arguments[7] = supportedF32Code(wafer::TargetFormatEngine::NE);
+      arguments[8] = 1;
+      arguments[9] = 0;
+      break;
     case wafer::TargetCallBuiltin::TDMAPad:
       arguments[14] = supportedF32Code(wafer::TargetFormatEngine::TDMA);
       break;
@@ -485,7 +490,8 @@ void expectPayloadFields(
       expectFormat(value.format);
       return;
     }
-    case wafer::TargetCallBuiltin::Gemm: {
+    case wafer::TargetCallBuiltin::Gemm:
+    case wafer::TargetCallBuiltin::GemmOrientedV2: {
       ASSERT_TRUE(
           std::holds_alternative<wafer::compiler::TargetGemmTransaction>(
               payload));
@@ -499,6 +505,11 @@ void expectPayloadFields(
       EXPECT_EQ(value.n, u32(5));
       EXPECT_EQ(value.batchCount, u32(6));
       expectFormat(value.format);
+      EXPECT_EQ(value.lhsOrientation,
+                *builtin == wafer::TargetCallBuiltin::GemmOrientedV2
+                    ? wafer::GemmOrientation::Transpose
+                    : wafer::GemmOrientation::Normal);
+      EXPECT_EQ(value.rhsOrientation, wafer::GemmOrientation::Normal);
       return;
     }
     case wafer::TargetCallBuiltin::TDMAPad:
@@ -799,7 +810,7 @@ void expectPayloadFields(
 TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   llvm::ArrayRef<wafer::TargetCallDescriptor> descriptors =
       wafer::getTargetCallDescriptors();
-  ASSERT_EQ(descriptors.size(), 109u);
+  ASSERT_EQ(descriptors.size(), 110u);
   llvm::DenseSet<llvm::StringRef> symbols;
   for (const wafer::TargetCallDescriptor &descriptor : descriptors) {
     EXPECT_TRUE(llvm::StringRef(descriptor.symbol).starts_with("wafer_tx81_"));
@@ -831,12 +842,17 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
 }
 
 TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
-  wafer::TargetCallDecodeContext context{
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1(), 16};
   size_t decoded = 0;
   for (const wafer::TargetCallDescriptor &descriptor :
        wafer::getTargetCallDescriptors()) {
     std::vector<uint64_t> arguments = makeDecodableArguments(descriptor);
+    const bool oriented =
+        descriptor.semantic ==
+        wafer::TargetCallSemantic(wafer::TargetCallBuiltin::GemmOrientedV2);
+    wafer::TargetCallDecodeContext context{
+        oriented ? wafer::TargetProfileId::waferTx81SingleCardKernelV2()
+                 : wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+        16};
     auto payload =
         wafer::decodeTargetCallPayload(descriptor, context, arguments);
     ASSERT_TRUE(static_cast<bool>(payload))
@@ -844,7 +860,7 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
     expectPayloadFields(descriptor, arguments, *payload);
     ++decoded;
   }
-  EXPECT_EQ(decoded, 109u);
+  EXPECT_EQ(decoded, 110u);
 }
 
 TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {

@@ -24,6 +24,7 @@
 
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace wafer::tensor_program_to_tile_region {
 
@@ -447,6 +448,9 @@ private:
 
   mlir::LogicalResult convertMatmul(mlir::linalg::LinalgOp op,
                                     mlir::OpBuilder &builder);
+
+  mlir::FailureOr<std::pair<GemmOrientation, GemmOrientation>>
+  inferRank2GemmOrientations(mlir::linalg::LinalgOp op);
 
   mlir::FailureOr<unsigned> findOperandDimForLoop(mlir::AffineMap map,
                                                   unsigned loopDim,

@@ -1,7 +1,8 @@
 # Wafer Physical-Dataflow Synthesis 与 Candidate Selection
 
-状态：2026-07-20已同步Q32.B production-shaped candidate/all-rank seam；typed target-capability
-vertical继续由Q32.V推进。实现状态以`tasks/progress.md`为准。
+状态：2026-07-20已同步Q32.V typed target-capability vertical；mapped DMA、physical-footprint fill和
+versioned oriented GEMM已形成typed compiler/formal/SystemC闭环，后续由Q32.M接入共同candidate owner。
+实现状态以`tasks/progress.md`为准。
 
 本文是 rank-local physical-dataflow candidate generation、candidate acceptance 和 all-rank atomic commit 的唯一设计
 owner。它不定义第二套 semantic IR、provider registry、shadow schedule、序列化 frontier 或 qualification 协议。07、08、
@@ -64,7 +65,7 @@ verified structured MLIR
 | communication algorithm选择 | collective OpInterface、topology helper和direct/ring/tree complete-clone rewrite | alternative进入同一rank frontier；all-rank coordinator只从最终p2p/message/completion IR重证 |
 | resource-aware candidate generation | 从当前clone重算liveness、capacity lower bound、descriptor/resource pressure；邻居仍必须物化完整IR | resource事实能产生有界tile/residency/buffering/order邻居，09/12/Q34继续作唯一exact placement gate |
 | bounded joint search和selection | baseline slot、actual IR clones、有界worklist/frontier、exact cost和existing all-rank transaction | 全部producer受生成/materialization/whole-variant hard cap；预算耗尽保留合法baseline |
-| target能力纵向 | 独立Q32.V在ODS/type/interface、Instr、TargetCall、ABI和SystemC中增加mapped DMA、physical fill、oriented GEMM | planner只在typed纵向闭合后消费新能力；model/board admission仍不参与compile-time choice |
+| target能力纵向 | Q32.V已在source/ODS/type/interface、Instr、TargetCall、ABI和SystemC中闭合mapped DMA、physical fill、oriented GEMM | Q32.M起由共同owner消费这些typed能力；external model/board admission仍不参与compile-time choice |
 | whole-tensor share-vs-recompute | SSA use-def、`TilingInterface`、IndexRelation及effect/speculation proof分别物化共享version和按consumer dependent region重算的clone | share与recompute各有production winner；compute work、movement和live-range/high-water从各自final IR比较 |
 | static loop-invariant hoist | `LoopLikeOpInterface`、dominance、SSA、effect/completion proof和PatternRewriter直接移动真实op/value | 至少一个hoist winner从loop外dominant SSA取值并重跑lifetime/placement；不可移动或资源更差时保留baseline |
 | fixed Cx/NCx encoding absorption | existing typed encoding、IndexRelation、physical-map/valid-lane proof让已有target contract接受Cx/NCx的family直接消费physical version；current限GEMM/batched GEMM | Tensor↔Cx/NCx `materialize_layout`、GS或等价pack/unpack movement在winner中真实消失；其它compute family不自动获得该能力，也不新增虚构的vector-width/packing参数 |
@@ -340,7 +341,7 @@ Q32.M的mandatory mechanism closure如下；它描述必须交付的功能，不
 | relation/view normalization | structured tensor | identity、permutation、broadcast、slice、reshape、concat/分段view的composition与exact cover |
 | dependent producer tiling/fusion | structured tensor | DPS pure producer→consumer、static tile、tail和effect/numeric barrier |
 | pointwise relation propagation | structured tensor | 多operand exact relation对齐，不能靠same-shape猜测 |
-| implementation materialization/absorption | structured→selected tile | 至少一个非baseline current implementation；Q32.V完成后覆盖typed GEMM orientation；current Cx/NCx packing identity只留在encoding |
+| implementation materialization/absorption | structured→selected tile | 至少一个非baseline current implementation；已闭合Q32.V typed GEMM orientation；current Cx/NCx packing identity只留在encoding |
 | encoding/view/materialization choice | selected physical payload | current Tensor/Cx/NCx及合法metadata view和显式reorder/materialization |
 | boundary transfer choice | selected physical payload | zero-copy、current compact DMA、GS/staged；Q32.V后增加mapped DMA |
 | multi-use physical-version reuse | selected physical payload | fanout、partial-compatible maximal subset和immutable input reuse，受hard cap而非`2^fanout`枚举 |
@@ -560,10 +561,9 @@ DMA/GS、SPM和event限制。它们可以由closed target registry或小型typed
 - board admission由configured board environment拥有；
 - 板端缺失不阻塞compiler结构优化，也不能被compiler结果冒充为board证据。
 
-Q32.V是已排期的独立typed target纵向，不是“以后再评估是否需要”：它负责mapped DMA/WDMA两端offset与descriptor、
-physical-footprint fill/invalid-lane初始化、oriented GEMM的ODS/interface/verifier、Instr/TargetCall、必要ABI revision和SystemC
-consumer。每个能力在纵向闭合前不进入candidate domain；闭合后由§5同一通用
-candidate owner消费，不新增feature-specific planner。
+Q32.V已完成独立typed target纵向：mapped DMA/WDMA两端offset与descriptor、physical-footprint fill/invalid-lane初始化、
+oriented GEMM的source/ODS/interface/verifier、Instr/TargetCall、v2 ABI revision和SystemC/formal consumer均已闭合。
+Q32.M起由§5同一通用candidate owner消费，不新增feature-specific planner。
 
 Count仍由独立Q3.6拥有，因为当前缺少稳定source predicate和model证据。若Q32.V扩展command的package/runtime consumer需要逐row
 preflight，`RequiredCapabilitySet`和必要package revision只能从winner实际Instr/TargetCall rows在post-selection阶段派生；它们

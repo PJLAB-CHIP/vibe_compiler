@@ -24,4 +24,4 @@ module {
     into memref<5x2x7xf32, #wafer.memory<spm, ncx>>
 }
 
-// CHECK: error: 'wafer.instr.gemm' op GEMM batched form requires canonical [B,M,K] x [B,K,N] -> [B,M,N] dimension attrs
+// CHECK: error: 'wafer.instr.gemm' op GEMM batched form dimension attrs must match the explicit stored operand orientations and canonical [B,M,N] result
