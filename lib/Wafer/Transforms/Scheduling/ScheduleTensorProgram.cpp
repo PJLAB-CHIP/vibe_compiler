@@ -1133,6 +1133,170 @@ struct ScheduleTensorProgramPass
 
 } // namespace
 
+namespace {
+
+using SourceProducer = unsigned (*)(mlir::func::FuncOp);
+
+static unsigned applySourceProducer(mlir::ModuleOp module,
+                                    SourceProducer producer) {
+  unsigned changed = 0;
+  module.walk(
+      [&](mlir::func::FuncOp function) { changed += producer(function); });
+  return changed;
+}
+
+static void buildBoundedSourceVariants(
+    mlir::ModuleOp source,
+    llvm::SmallVectorImpl<mlir::OwningOpRef<mlir::ModuleOp>> &owners,
+    llvm::SmallVectorImpl<mlir::ModuleOp> &variants) {
+  constexpr unsigned sourceVariantLimit = 16;
+  const SourceProducer producers[] = {
+      materializeConsumerLocalTensorRecomputation,
+      hoistStaticLoopInvariantOperations,
+      reassociateIntegerElementwiseExpressions,
+      balanceIntegerElementwiseReductionTrees,
+      contractIntegerDistributiveExpressions,
+      factorIntegerElementwiseExpressions,
+  };
+
+  variants.push_back(source);
+  auto tryAdd = [&](llvm::ArrayRef<unsigned> producerIndices,
+                    unsigned minimumAppliedProducers) {
+    if (variants.size() >= sourceVariantLimit)
+      return;
+    mlir::OwningOpRef<mlir::ModuleOp> candidate =
+        mlir::cast<mlir::ModuleOp>(source->clone());
+    unsigned appliedProducers = 0;
+    for (unsigned index : producerIndices)
+      appliedProducers +=
+          applySourceProducer(*candidate, producers[index]) != 0;
+    if (appliedProducers < minimumAppliedProducers ||
+        mlir::failed(mlir::verify(*candidate)))
+      return;
+    owners.push_back(std::move(candidate));
+    variants.push_back(*owners.back());
+  };
+
+  // Reserve one slot for the all-applicable joint state. Singletons guarantee
+  // that every producer reaches the rank frontier; canonical pairs provide a
+  // bounded interaction sample without permutation duplicates.
+  for (unsigned index = 0; index < std::size(producers); ++index)
+    tryAdd({index}, /*minimumAppliedProducers=*/1);
+  for (unsigned lhs = 0;
+       lhs < std::size(producers) && variants.size() + 1 < sourceVariantLimit;
+       ++lhs)
+    for (unsigned rhs = lhs + 1;
+         rhs < std::size(producers) && variants.size() + 1 < sourceVariantLimit;
+         ++rhs)
+      tryAdd({lhs, rhs}, /*minimumAppliedProducers=*/2);
+
+  llvm::SmallVector<unsigned, 8> allProducerIndices;
+  for (unsigned index = 0; index < std::size(producers); ++index)
+    allProducerIndices.push_back(index);
+  tryAdd(allProducerIndices, /*minimumAppliedProducers=*/2);
+}
+
+static llvm::SmallVector<SelectionConfig, 12>
+buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
+  constexpr unsigned recipeLimit = 12;
+  bool hasAllGather = false;
+  bool hasAllReduce = false;
+  llvm::SmallVector<TargetImplementationKind, 2> implementations;
+  source.walk([&](mlir::Operation *operation) {
+    hasAllGather |=
+        mlir::isa<LinalgExtCollectiveAllGatherOp, CommAllGatherOp>(operation);
+    hasAllReduce |=
+        mlir::isa<LinalgExtCollectiveAllReduceOp, CommAllReduceOp>(operation);
+    if (auto interface =
+            mlir::dyn_cast<WaferTargetImplementationOpInterface>(operation)) {
+      llvm::SmallVector<TargetImplementationCandidate, 2> candidates;
+      interface.collectTargetImplementationCandidates(WaferTargetCapabilities{},
+                                                      candidates);
+      for (const TargetImplementationCandidate &candidate :
+           llvm::drop_begin(candidates))
+        if (!llvm::is_contained(implementations, candidate.kind))
+          implementations.push_back(candidate.kind);
+    }
+  });
+
+  llvm::SmallVector<SelectionConfig, 12> recipes;
+  auto addRecipe = [&](CommunicationAlternative communication,
+                       std::optional<TargetImplementationKind> implementation,
+                       unsigned taskOrdinal,
+                       bool useDirectMappedBoundaryTransfer = false) {
+    if (recipes.size() >= recipeLimit)
+      return;
+    SelectionConfig recipe = base;
+    recipe.communicationAlternative = communication;
+    recipe.allowAutomaticImplementationAlternatives = false;
+    recipe.forcedImplementationAlternative = implementation;
+    recipe.taskAlternativeOrdinal = taskOrdinal;
+    recipe.useDirectMappedBoundaryTransfer =
+        useDirectMappedBoundaryTransfer;
+    recipes.push_back(std::move(recipe));
+  };
+
+  addRecipe(CommunicationAlternative::Ring, std::nullopt, 0);
+  if (hasAllGather)
+    addRecipe(CommunicationAlternative::DirectAllGather, std::nullopt, 0);
+  if (hasAllReduce)
+    addRecipe(CommunicationAlternative::TreeAllReduce, std::nullopt, 0);
+  if (hasAllGather && hasAllReduce)
+    addRecipe(CommunicationAlternative::DirectAllGatherTreeAllReduce,
+              std::nullopt, 0);
+  for (TargetImplementationKind implementation : implementations)
+    addRecipe(CommunicationAlternative::Ring, implementation, 0);
+  addRecipe(CommunicationAlternative::Ring, std::nullopt, 1);
+  addRecipe(CommunicationAlternative::Ring, std::nullopt, 0,
+            /*useDirectMappedBoundaryTransfer=*/true);
+  for (TargetImplementationKind implementation : implementations)
+    addRecipe(CommunicationAlternative::Ring, implementation, 0,
+              /*useDirectMappedBoundaryTransfer=*/true);
+
+  // Cross the currently supported non-baseline implementation and task beam
+  // with communication parameters while the fixed recipe cap has room.
+  for (TargetImplementationKind implementation : implementations) {
+    if (hasAllGather)
+      addRecipe(CommunicationAlternative::DirectAllGather, implementation, 0);
+    if (hasAllReduce)
+      addRecipe(CommunicationAlternative::TreeAllReduce, implementation, 0);
+    if (hasAllGather)
+      addRecipe(CommunicationAlternative::DirectAllGather, implementation, 0,
+                /*useDirectMappedBoundaryTransfer=*/true);
+    if (hasAllReduce)
+      addRecipe(CommunicationAlternative::TreeAllReduce, implementation, 0,
+                /*useDirectMappedBoundaryTransfer=*/true);
+  }
+  if (hasAllGather)
+    addRecipe(CommunicationAlternative::DirectAllGather, std::nullopt, 1);
+  if (hasAllReduce)
+    addRecipe(CommunicationAlternative::TreeAllReduce, std::nullopt, 1);
+  if (hasAllGather)
+    addRecipe(CommunicationAlternative::DirectAllGather, std::nullopt, 0,
+              /*useDirectMappedBoundaryTransfer=*/true);
+  if (hasAllReduce)
+    addRecipe(CommunicationAlternative::TreeAllReduce, std::nullopt, 0,
+              /*useDirectMappedBoundaryTransfer=*/true);
+  for (TargetImplementationKind implementation : implementations)
+    addRecipe(CommunicationAlternative::Ring, implementation, 1);
+  return recipes;
+}
+
+struct RankEvaluationRequest {
+  unsigned sourceIndex = 0;
+  unsigned recipeIndex = 0;
+  unsigned policyIndex = 0;
+
+  friend bool operator==(const RankEvaluationRequest &lhs,
+                         const RankEvaluationRequest &rhs) {
+    return lhs.sourceIndex == rhs.sourceIndex &&
+           lhs.recipeIndex == rhs.recipeIndex &&
+           lhs.policyIndex == rhs.policyIndex;
+  }
+};
+
+} // namespace
+
 mlir::FailureOr<std::vector<ScheduledRankCandidate>>
 buildScheduledRankCandidateFrontier(
     mlir::ModuleOp sourceModule,
@@ -1178,78 +1342,144 @@ buildScheduledRankCandidateFrontier(
        /*cutTerminalFullTraversalOnlyRoots=*/false},
   };
 
-  constexpr int64_t conservativeDiscoveryOrder = 5;
+  constexpr unsigned conservativePolicyIndex = 5;
+  constexpr unsigned optimizedRankEvaluationLimit = 64;
+  constexpr unsigned optimizedRankFrontierLimit = 256;
+  constexpr unsigned stableRecipeStride = 12;
 
-  // The generation inputs are actual, unplaced complete-rank source clones.
-  // The baseline is borrowed; a LICM alternative is retained only when the
-  // LoopLike/effect/speculation proof moved real operations and the resulting
-  // module verifies. No hoist decision is copied into attrs or side records.
-  llvm::SmallVector<mlir::ModuleOp, 2> generationSources{sourceModule};
-  mlir::OwningOpRef<mlir::ModuleOp> hoistedSource =
-      mlir::cast<mlir::ModuleOp>(sourceModule->clone());
-  unsigned hoistedOperations = 0;
-  hoistedSource->walk([&](mlir::func::FuncOp function) {
-    hoistedOperations += hoistStaticLoopInvariantOperations(function);
-  });
-  if (hoistedOperations != 0 && mlir::succeeded(mlir::verify(*hoistedSource)))
-    generationSources.push_back(*hoistedSource);
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> sourceOwners;
+  llvm::SmallVector<mlir::ModuleOp, 16> generationSources;
+  buildBoundedSourceVariants(sourceModule, sourceOwners, generationSources);
+  llvm::SmallVector<SelectionConfig, 12> recipes =
+      buildRankSearchRecipes(sourceModule, config);
 
-  llvm::SmallVector<std::string, 6> failures;
+  llvm::SmallVector<std::string, 16> failures;
   std::vector<ScheduledRankCandidate> frontier;
-  frontier.reserve(generationSources.size() * std::size(policies) * 4);
+  frontier.reserve(optimizedRankFrontierLimit + 1);
   unsigned reservedBaselineCount = 0;
-  for (auto [sourceIndex, generationSource] :
-       llvm::enumerate(generationSources)) {
-    llvm::StringSet<> seenPartitions;
-    // Preserve the baseline conservative policy as the common cross-rank
-    // recovery key even when it is structurally identical to an aggressive
-    // prefix. Optimized sources never claim this reserved allowance.
-    llvm::StringSet<> conservativeSeenPartitions;
-    for (auto [policyIndex, policy] : llvm::enumerate(policies)) {
-      int64_t discoveryOrder =
-          static_cast<int64_t>(sourceIndex * std::size(policies) + policyIndex);
-      bool isReservedPolicy =
-          sourceIndex == 0 && policyIndex == conservativeDiscoveryOrder;
-      llvm::StringSet<> &policySeenPartitions =
-          isReservedPolicy ? conservativeSeenPartitions : seenPartitions;
-      RankVariantEvaluation evaluation = evaluateRankVariant(
-          generationSource, config, policy, policySeenPartitions,
-          /*preservePhysicalAlternatives=*/true);
-      if (evaluation.noScopes) {
-        if (sourceIndex != 0)
-          continue;
-        // A baseline rank without schedulable structured work is still a
-        // complete local alternative. Finalization and whole-card acceptance
-        // remain shared with non-empty ranks.
-        clearCandidateEvaluationFacts(*evaluation.module);
-        frontier.emplace_back(std::move(evaluation.module), /*cost=*/0,
-                              /*discoveryOrder=*/conservativeDiscoveryOrder,
-                              /*reservedBaseline=*/true);
-        return frontier;
-      }
-      if (evaluation.duplicate)
+  unsigned optimizedFrontierCount = 0;
+  auto appendAccepted = [&](RankVariantEvaluation &evaluation,
+                            int64_t discoveryOrder,
+                            bool reservedPolicy) -> mlir::LogicalResult {
+    bool hasBaselineSpill = false;
+    for (RankArtifactAlternative &alternative : evaluation.alternatives) {
+      bool isBaselineSpill =
+          alternative.promotedHandoffs == 0 && !alternative.readyReordered;
+      bool reserved = reservedPolicy && isBaselineSpill;
+      hasBaselineSpill |= isBaselineSpill;
+      reservedBaselineCount += reserved;
+      if (optimizedFrontierCount >= optimizedRankFrontierLimit && !reserved)
         continue;
-      if (evaluation.accepted) {
-        bool hasPolicySpill = false;
-        for (RankArtifactAlternative &alternative : evaluation.alternatives) {
-          bool isSpill = alternative.promotedHandoffs == 0;
-          bool isBaselineSpill = isSpill && !alternative.readyReordered;
-          bool reserved = isReservedPolicy && isBaselineSpill;
-          hasPolicySpill |= isBaselineSpill;
-          reservedBaselineCount += reserved;
-          frontier.emplace_back(std::move(alternative.module),
-                                alternative.estimatedTimePs, discoveryOrder,
-                                reserved);
-        }
-        if (isReservedPolicy && !hasPolicySpill) {
-          sourceModule.emitError()
-              << "reserved_baseline_unavailable: conservative spill artifact "
-                 "did not pass rank-local exact gates";
-          return mlir::failure();
-        }
-        continue;
-      }
+      frontier.emplace_back(std::move(alternative.module),
+                            alternative.estimatedTimePs, discoveryOrder,
+                            reserved);
+      optimizedFrontierCount += !reserved;
+    }
+    return !reservedPolicy || hasBaselineSpill ? mlir::success()
+                                               : mlir::failure();
+  };
 
+  // The conservative spill tuple has an allowance outside every optimization
+  // cap. It must exist before producer/recipe work can add frontier members.
+  llvm::StringSet<> reservedSeenPartitions;
+  RankVariantEvaluation reserved = evaluateRankVariant(
+      generationSources.front(), recipes.front(),
+      policies[conservativePolicyIndex], reservedSeenPartitions,
+      /*preservePhysicalAlternatives=*/true);
+  if (reserved.noScopes) {
+    clearCandidateEvaluationFacts(*reserved.module);
+    frontier.emplace_back(std::move(reserved.module), /*cost=*/0,
+                          /*discoveryOrder=*/conservativePolicyIndex,
+                          /*reservedBaseline=*/true);
+    return frontier;
+  }
+  if (!reserved.accepted ||
+      mlir::failed(appendAccepted(reserved,
+                                  /*discoveryOrder=*/conservativePolicyIndex,
+                                  /*reservedPolicy=*/true))) {
+    sourceModule.emitError()
+        << "reserved_baseline_unavailable: conservative spill artifact did "
+           "not pass rank-local exact gates"
+        << (reserved.failureReason.empty() ? "" : ": ")
+        << reserved.failureReason;
+    return mlir::failure();
+  }
+
+  llvm::SmallVector<RankEvaluationRequest, 32> requests;
+  auto addRequest = [&](unsigned sourceIndex, unsigned recipeIndex,
+                        unsigned policyIndex) {
+    RankEvaluationRequest request{sourceIndex, recipeIndex, policyIndex};
+    if (requests.size() >= optimizedRankEvaluationLimit ||
+        llvm::is_contained(requests, request) ||
+        (sourceIndex == 0 && recipeIndex == 0 &&
+         policyIndex == conservativePolicyIndex))
+      return;
+    requests.push_back(request);
+  };
+
+  // Stable seed order first admits every source producer, every task/
+  // communication recipe, and every scope policy. Remaining allowance then
+  // samples their Cartesian product in canonical source/recipe/policy order.
+  for (unsigned sourceIndex = 0; sourceIndex < generationSources.size();
+       ++sourceIndex)
+    addRequest(sourceIndex, /*recipeIndex=*/0, /*policyIndex=*/0);
+  for (unsigned recipeIndex = 0; recipeIndex < recipes.size(); ++recipeIndex)
+    addRequest(/*sourceIndex=*/0, recipeIndex, /*policyIndex=*/0);
+  for (unsigned policyIndex = 0; policyIndex < std::size(policies);
+       ++policyIndex)
+    addRequest(/*sourceIndex=*/0, /*recipeIndex=*/0, policyIndex);
+
+  // Consume the remaining fixed budget on genuine joint states before the
+  // canonical Cartesian tail. The all-applicable source crosses the far ends
+  // of both other axes, and every independently materialized source crosses
+  // one non-baseline recipe and one non-baseline scope policy when present.
+  if (generationSources.size() > 1 && recipes.size() > 1 &&
+      std::size(policies) > 1)
+    addRequest(generationSources.size() - 1, recipes.size() - 1,
+               std::size(policies) - 1);
+  if (recipes.size() > 1)
+    for (unsigned sourceIndex = 1; sourceIndex < generationSources.size();
+         ++sourceIndex)
+      addRequest(sourceIndex, /*recipeIndex=*/1, /*policyIndex=*/0);
+  if (std::size(policies) > 1)
+    for (unsigned sourceIndex = 1; sourceIndex < generationSources.size();
+         ++sourceIndex)
+      addRequest(sourceIndex, /*recipeIndex=*/0, /*policyIndex=*/1);
+  for (unsigned sourceIndex = 1; sourceIndex < generationSources.size();
+       ++sourceIndex)
+    for (unsigned recipeIndex = 1; recipeIndex < recipes.size(); ++recipeIndex)
+      addRequest(sourceIndex, recipeIndex, /*policyIndex=*/0);
+  for (unsigned sourceIndex = 0; sourceIndex < generationSources.size();
+       ++sourceIndex)
+    for (unsigned recipeIndex = 0; recipeIndex < recipes.size(); ++recipeIndex)
+      for (unsigned policyIndex = 0; policyIndex < std::size(policies);
+           ++policyIndex)
+        addRequest(sourceIndex, recipeIndex, policyIndex);
+
+  std::vector<llvm::StringSet<>> seenPartitions(generationSources.size() *
+                                                recipes.size());
+  for (const RankEvaluationRequest &request : requests) {
+    if (optimizedFrontierCount >= optimizedRankFrontierLimit)
+      break;
+    llvm::StringSet<> &seen =
+        seenPartitions[request.sourceIndex * recipes.size() +
+                       request.recipeIndex];
+    RankVariantEvaluation evaluation = evaluateRankVariant(
+        generationSources[request.sourceIndex], recipes[request.recipeIndex],
+        policies[request.policyIndex], seen,
+        /*preservePhysicalAlternatives=*/true);
+    if (evaluation.noScopes || evaluation.duplicate)
+      continue;
+    int64_t discoveryOrder = static_cast<int64_t>(
+        (request.sourceIndex * stableRecipeStride + request.recipeIndex) *
+            std::size(policies) +
+        request.policyIndex);
+    if (evaluation.accepted) {
+      (void)appendAccepted(evaluation, discoveryOrder,
+                           /*reservedPolicy=*/false);
+      continue;
+    }
+    if (failures.size() < 16) {
       std::string failure;
       llvm::raw_string_ostream os(failure);
       os << evaluation.label << ": "
@@ -1259,16 +1489,8 @@ buildScheduledRankCandidateFrontier(
     }
   }
 
-  if (!frontier.empty() && reservedBaselineCount == 1)
+  if (reservedBaselineCount == 1)
     return frontier;
-
-  if (!frontier.empty()) {
-    sourceModule.emitError()
-        << "reserved_baseline_unavailable: expected exactly one conservative "
-           "spill artifact but found "
-        << reservedBaselineCount;
-    return mlir::failure();
-  }
 
   auto diagnostic = sourceModule.emitError()
                     << "no_complete_rank_variant: bounded scheduling search "

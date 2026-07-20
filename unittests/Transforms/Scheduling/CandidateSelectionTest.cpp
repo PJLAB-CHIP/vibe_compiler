@@ -142,7 +142,7 @@ module {
 }
 
 TEST(CandidateSelectionTest,
-     EvaluatesReciprocalDivisionAsDistinctCompleteImplementationCandidate) {
+     EvaluatesTargetReciprocalAsDistinctCompleteImplementationCandidate) {
   constexpr llvm::StringLiteral task = R"mlir(
 module {
   func.func @reciprocal(%input: tensor<4xf32>, %out: tensor<4xf32>)
@@ -170,7 +170,7 @@ module {
                          /*reductionSplitSizes=*/{}};
   CandidateSpec alternative = baseline;
   alternative.selectedImplementationAlternative =
-      wafer::TargetImplementationKind::GenericReciprocalViaDivision;
+      wafer::TargetImplementationKind::GenericReciprocal;
 
   CandidateCheckResult baselineResult = evaluateCandidateOnStandaloneTaskText(
       task, /*traversalShape=*/{4}, baseline, config);
@@ -185,7 +185,7 @@ module {
             CandidateArtifactSource::CompleteTraversalAPI);
   EXPECT_EQ(alternativeResult.artifactSource,
             CandidateArtifactSource::CompleteTraversalAPI);
-  EXPECT_GT(alternativeResult.stats.program.instructionCount.value,
+  EXPECT_LT(alternativeResult.stats.program.instructionCount.value,
             baselineResult.stats.program.instructionCount.value);
 }
 

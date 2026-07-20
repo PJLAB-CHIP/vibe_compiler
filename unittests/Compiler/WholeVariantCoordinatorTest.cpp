@@ -2,18 +2,22 @@
 
 #include "../../lib/Wafer/Compiler/WholeVariantCoordinator.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
+#include "../../lib/Wafer/Compiler/ScheduledRankFinalization.h"
 
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -52,6 +56,89 @@ protected:
         source, mlir::ParserConfig(context.get()));
     EXPECT_TRUE(module);
     return {std::move(module), cost, discoveryOrder, reservedBaseline};
+  }
+
+  wafer::frontend::FrontendProgramVerificationResult
+  replicated1DProgram(unsigned inputCount, int64_t elementCount,
+                      llvm::StringRef dtype,
+                      unsigned outputCount = 1,
+                      int64_t rankCount = 1) const {
+    auto makeBoundary = [&](int64_t index) {
+      wafer::frontend::ProgramBoundaryBinding binding;
+      binding.index = index;
+      binding.programIndex = index;
+      binding.distribution =
+          wafer::frontend::ProgramDistributionKind::Replicated;
+      binding.globalShape = {elementCount};
+      binding.localShape = {elementCount};
+      binding.dtype = dtype.str();
+      for (int64_t rank = 0; rank < rankCount; ++rank) {
+        wafer::frontend::ProgramRankSlice slice;
+        slice.logicalRank = rank;
+        slice.replicaId = rank;
+        slice.offsets = {0};
+        slice.sizes = {elementCount};
+        slice.strides = {1};
+        binding.rankSlices.push_back(std::move(slice));
+      }
+      return binding;
+    };
+
+    wafer::frontend::FrontendProgramVerificationResult program;
+    program.logicalRankCount = rankCount;
+    program.programUserInputCount = inputCount;
+    for (unsigned index = 0; index < inputCount; ++index)
+      program.distributedInputs.push_back(makeBoundary(index));
+    for (unsigned index = 0; index < outputCount; ++index)
+      program.distributedOutputs.push_back(makeBoundary(index));
+    return program;
+  }
+
+  mlir::FailureOr<wafer::compiler::detail::AcceptedWholeVariant>
+  selectProductionVariant(
+      mlir::ModuleOp source,
+      const wafer::frontend::FrontendProgramVerificationResult &program,
+      llvm::raw_ostream &diagnostics,
+      std::optional<wafer::analysis::InstructionProgramCost> *baselineCost =
+          nullptr,
+      int64_t rankCount = 1) const {
+    std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(
+        static_cast<size_t>(rankCount));
+    for (int64_t rank = 0; rank < rankCount; ++rank) {
+      wafer::TensorProgramSchedulingConfig schedulingConfig;
+      schedulingConfig.logicalRank = rank;
+      schedulingConfig.candidateParallelism = 1;
+      auto scheduled = wafer::buildScheduledRankCandidateFrontier(
+          source, schedulingConfig);
+      if (mlir::failed(scheduled))
+        return mlir::failure();
+      auto finalized =
+          wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
+              std::move(*scheduled));
+      if (mlir::failed(finalized))
+        return mlir::failure();
+
+      for (wafer::compiler::detail::FinalizedRankCandidate &candidate :
+           *finalized) {
+        if (baselineCost && rank == 0 && candidate.reservedBaseline)
+          *baselineCost = wafer::analysis::analyzeInstructionProgramCost(
+              candidate.module.get(),
+              wafer::analysis::getTargetScheduleCostPolicy(
+                  wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+        frontiers[rank].push_back({std::move(candidate.module),
+                                   candidate.estimatedTimePs,
+                                   candidate.discoveryOrder,
+                                   candidate.reservedBaseline});
+      }
+    }
+    auto executionConfig =
+        wafer::compiler::ExecutionConfig::createForSingleCard(
+            rankCount,
+            wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+    if (!executionConfig)
+      return mlir::failure();
+    return wafer::compiler::detail::selectAcceptedWholeVariant(
+        frontiers, program, *executionConfig, diagnostics);
   }
 
   static constexpr llvm::StringLiteral kSendMismatched = R"mlir(
@@ -202,6 +289,217 @@ TEST_F(WholeVariantCoordinatorTest,
 }
 
 TEST_F(WholeVariantCoordinatorTest,
+       SelectsFinalParetoWinnerInsteadOfFirstBaselineImprovement) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(
+      candidate("    wafer.instr.local_fence\n    wafer.instr.local_fence", 1,
+                200, 5, true));
+  // The scalar order visits this candidate first, but the later candidate has
+  // a strictly lower final instruction count and must replace it on the exact
+  // Pareto frontier.
+  frontiers[0].push_back(candidate("    wafer.instr.local_fence", 1, 0, 0));
+  frontiers[0].push_back(candidate("", 1, 100, 1));
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_EQ(accepted->selectedDiscoveryOrders.size(), 1u);
+  EXPECT_EQ(accepted->selectedDiscoveryOrders.front(), 1);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       UsesValidatedSPMHighWaterInExactParetoSelection) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+  constexpr llvm::StringLiteral highWater = R"mlir(
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<131072>} : memref<4xf32, #wafer.memory<spm, tensor>>
+)mlir";
+  constexpr llvm::StringLiteral lowWater = R"mlir(
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<4xf32, #wafer.memory<spm, tensor>>
+)mlir";
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(candidate(highWater, 1, 0, 5, true));
+  frontiers[0].push_back(candidate(lowWater, 1, 0, 0));
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_EQ(accepted->selectedDiscoveryOrders.size(), 1u);
+  EXPECT_EQ(accepted->selectedDiscoveryOrders.front(), 0);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       StaticPolicyAcceptsKnownExecutionGainWithinSPMCapacity) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+  constexpr llvm::StringLiteral lowWaterWithFence = R"mlir(
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<4xf32, #wafer.memory<spm, tensor>>
+    wafer.instr.local_fence
+)mlir";
+  constexpr llvm::StringLiteral highWaterWithoutFence = R"mlir(
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<131072>} : memref<4xf32, #wafer.memory<spm, tensor>>
+)mlir";
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(candidate(lowWaterWithFence, 1, 0, 5, true));
+  frontiers[0].push_back(candidate(highWaterWithoutFence, 1, 0, 0));
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_EQ(accepted->selectedDiscoveryOrders.size(), 1u);
+  EXPECT_EQ(accepted->selectedDiscoveryOrders.front(), 0);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsTargetReciprocalFromProductionRankFrontier) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
+    policy = "explicit", shape = array<i64: 1>, topology = @default
+  }
+  func.func @main(%input: tensor<16xf32>) -> tensor<16xf32> {
+    %out = tensor.empty() : tensor<16xf32>
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%input : tensor<16xf32>) outs(%out : tensor<16xf32>) {
+    ^bb0(%value: f32, %init: f32):
+      %one = arith.constant 1.0 : f32
+      %reciprocal = arith.divf %one, %value : f32
+      linalg.yield %reciprocal : f32
+    } -> tensor<16xf32>
+    return %result : tensor<16xf32>
+  }
+}
+)mlir",
+                                                        context.get());
+  ASSERT_TRUE(source);
+
+  wafer::TensorProgramSchedulingConfig schedulingConfig;
+  schedulingConfig.logicalRank = 0;
+  schedulingConfig.candidateParallelism = 1;
+  auto scheduled =
+      wafer::buildScheduledRankCandidateFrontier(*source, schedulingConfig);
+  ASSERT_TRUE(mlir::succeeded(scheduled));
+  auto finalized =
+      wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
+          std::move(*scheduled));
+  ASSERT_TRUE(mlir::succeeded(finalized));
+
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  std::optional<int64_t> baselineTime;
+  std::optional<int64_t> reciprocalTime;
+  std::optional<uint64_t> baselineInstructions;
+  std::optional<uint64_t> reciprocalInstructions;
+  std::optional<uint64_t> baselineHighWater;
+  std::optional<uint64_t> reciprocalHighWater;
+  for (wafer::compiler::detail::FinalizedRankCandidate &candidate :
+       *finalized) {
+    bool hasReciprocal = false;
+    candidate.module->walk([&](wafer::InstrElementwiseOp elementwise) {
+      hasReciprocal |=
+          elementwise.getKind() == wafer::InstrElementwiseKind::Recip;
+    });
+    wafer::analysis::InstructionProgramCost exact =
+        wafer::analysis::analyzeInstructionProgramCost(
+            candidate.module.get(),
+            wafer::analysis::getTargetScheduleCostPolicy(
+                wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+    if (candidate.reservedBaseline) {
+      baselineTime = candidate.estimatedTimePs;
+      baselineInstructions = exact.instructionCount.value;
+      baselineHighWater = exact.spmHighWaterBytes.value;
+    }
+    if (hasReciprocal &&
+        (!reciprocalInstructions ||
+         exact.instructionCount.value < *reciprocalInstructions)) {
+      reciprocalTime = candidate.estimatedTimePs;
+      reciprocalInstructions = exact.instructionCount.value;
+      reciprocalHighWater = exact.spmHighWaterBytes.value;
+    }
+    frontiers[0].push_back({std::move(candidate.module),
+                            candidate.estimatedTimePs, candidate.discoveryOrder,
+                            candidate.reservedBaseline});
+  }
+  ASSERT_TRUE(baselineTime);
+  ASSERT_TRUE(reciprocalTime);
+  ASSERT_TRUE(baselineInstructions);
+  ASSERT_TRUE(reciprocalInstructions);
+  ASSERT_TRUE(baselineHighWater);
+  ASSERT_TRUE(reciprocalHighWater);
+  EXPECT_LT(*reciprocalInstructions, *baselineInstructions);
+  EXPECT_LE(*reciprocalHighWater, *baselineHighWater);
+
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  auto makeBoundary = [](int64_t index) {
+    wafer::frontend::ProgramBoundaryBinding binding;
+    binding.index = index;
+    binding.programIndex = index;
+    binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
+    binding.globalShape = {16};
+    binding.localShape = {16};
+    binding.dtype = "f32";
+    wafer::frontend::ProgramRankSlice slice;
+    slice.logicalRank = 0;
+    slice.replicaId = 0;
+    slice.offsets = {0};
+    slice.sizes = {16};
+    slice.strides = {1};
+    binding.rankSlices.push_back(std::move(slice));
+    return binding;
+  };
+  program.programUserInputCount = 1;
+  program.distributedInputs = {makeBoundary(0)};
+  wafer::frontend::ProgramBoundaryBinding output = makeBoundary(0);
+  program.distributedOutputs.push_back(std::move(output));
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_EQ(accepted->ranks.size(), 1u);
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+
+  bool sawReciprocal = false;
+  bool sawDivision = false;
+  accepted->ranks.front().getModule().walk(
+      [&](wafer::InstrElementwiseOp elementwise) {
+        sawReciprocal |=
+            elementwise.getKind() == wafer::InstrElementwiseKind::Recip;
+        sawDivision |=
+            elementwise.getKind() == wafer::InstrElementwiseKind::Div;
+      });
+  EXPECT_TRUE(sawReciprocal);
+  EXPECT_FALSE(sawDivision);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
        DoesNotUseAlternativeToMaskReservedBaselineFailure) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
@@ -223,6 +521,903 @@ TEST_F(WholeVariantCoordinatorTest,
   EXPECT_NE(diagnosticText.find("reserved all-baseline variant failed"),
             std::string::npos)
       << diagnosticText;
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsModularReassociationFromProductionFrontier) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
+    policy = "explicit", shape = array<i64: 1>, topology = @default
+  }
+  func.func @main(%a: tensor<16xi8>, %b: tensor<16xi8>,
+                  %c: tensor<16xi8>) -> tensor<16xi8> {
+    %out = tensor.empty() : tensor<16xi8>
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c : tensor<16xi8>, tensor<16xi8>, tensor<16xi8>)
+      outs(%out : tensor<16xi8>) {
+    ^bb0(%av: i8, %bv: i8, %cv: i8, %unused: i8):
+      %aa = arith.muli %av, %av : i8
+      %aab = arith.addi %aa, %bv : i8
+      %result = arith.addi %aab, %cv : i8
+      linalg.yield %result : i8
+    } -> tensor<16xi8>
+    return %r : tensor<16xi8>
+  }
+}
+)mlir", context.get());
+  ASSERT_TRUE(source);
+  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = selectProductionVariant(
+      *source, replicated1DProgram(3, 16, "i8"), diagnostics, &baselineCost);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_TRUE(baselineCost);
+  ASSERT_TRUE(baselineCost->dataDependencyDepth.isKnown());
+  ASSERT_TRUE(
+      accepted->resourceCost.maximumRankDataDependencyDepth.isKnown());
+  EXPECT_LT(accepted->resourceCost.maximumRankDataDependencyDepth.value,
+            baselineCost->dataDependencyDepth.value);
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+
+  llvm::DenseMap<mlir::Value, wafer::InstrElementwiseKind> writers;
+  accepted->ranks.front().getModule().walk(
+      [&](wafer::InstrElementwiseOp op) { writers[op.getDest()] = op.getKind(); });
+  bool sawReassociatedJoin = false;
+  accepted->ranks.front().getModule().walk(
+      [&](wafer::InstrElementwiseOp op) {
+        if (op.getKind() != wafer::InstrElementwiseKind::Add)
+          return;
+        bool readsMul = false;
+        bool readsAdd = false;
+        for (mlir::Value input : op.getInputs()) {
+          auto found = writers.find(input);
+          if (found == writers.end())
+            continue;
+          readsMul |= found->second == wafer::InstrElementwiseKind::Mul;
+          readsAdd |= found->second == wafer::InstrElementwiseKind::Add;
+        }
+        sawReassociatedJoin |= readsMul && readsAdd;
+      });
+  EXPECT_TRUE(sawReassociatedJoin);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsBalancedModularAdditionTreeFromProductionFrontier) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
+    policy = "explicit", shape = array<i64: 1>, topology = @default
+  }
+  func.func @main(%a: tensor<16xi8>, %b: tensor<16xi8>,
+                  %c: tensor<16xi8>, %d: tensor<16xi8>)
+      -> tensor<16xi8> {
+    %out = tensor.empty() : tensor<16xi8>
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c, %d : tensor<16xi8>, tensor<16xi8>, tensor<16xi8>,
+                            tensor<16xi8>) outs(%out : tensor<16xi8>) {
+    ^bb0(%av: i8, %bv: i8, %cv: i8, %dv: i8, %unused: i8):
+      %ab = arith.addi %av, %bv : i8
+      %abc = arith.addi %ab, %cv : i8
+      %result = arith.addi %abc, %dv : i8
+      linalg.yield %result : i8
+    } -> tensor<16xi8>
+    return %r : tensor<16xi8>
+  }
+}
+)mlir", context.get());
+  ASSERT_TRUE(source);
+  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = selectProductionVariant(
+      *source, replicated1DProgram(4, 16, "i8"), diagnostics, &baselineCost);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_TRUE(baselineCost);
+  ASSERT_TRUE(baselineCost->dataDependencyDepth.isKnown());
+  ASSERT_TRUE(
+      accepted->resourceCost.maximumRankDataDependencyDepth.isKnown());
+  EXPECT_LT(accepted->resourceCost.maximumRankDataDependencyDepth.value,
+            baselineCost->dataDependencyDepth.value);
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+
+  llvm::DenseMap<mlir::Value, wafer::InstrElementwiseKind> writers;
+  accepted->ranks.front().getModule().walk(
+      [&](wafer::InstrElementwiseOp op) { writers[op.getDest()] = op.getKind(); });
+  bool sawBalancedJoin = false;
+  accepted->ranks.front().getModule().walk(
+      [&](wafer::InstrElementwiseOp op) {
+        if (op.getKind() != wafer::InstrElementwiseKind::Add)
+          return;
+        unsigned addInputs = 0;
+        for (mlir::Value input : op.getInputs()) {
+          auto found = writers.find(input);
+          addInputs += found != writers.end() &&
+                       found->second == wafer::InstrElementwiseKind::Add;
+        }
+        sawBalancedJoin |= addInputs == 2;
+      });
+  EXPECT_TRUE(sawBalancedJoin);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsModularDistributiveContractionFromProductionFrontier) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
+    policy = "explicit", shape = array<i64: 1>, topology = @default
+  }
+  func.func @main(%a: tensor<16xi8>, %b: tensor<16xi8>,
+                  %c: tensor<16xi8>) -> tensor<16xi8> {
+    %out = tensor.empty() : tensor<16xi8>
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c : tensor<16xi8>, tensor<16xi8>, tensor<16xi8>)
+      outs(%out : tensor<16xi8>) {
+    ^bb0(%av: i8, %bv: i8, %cv: i8, %unused: i8):
+      %ab = arith.muli %av, %bv : i8
+      %ac = arith.muli %av, %cv : i8
+      %result = arith.subi %ab, %ac : i8
+      linalg.yield %result : i8
+    } -> tensor<16xi8>
+    return %r : tensor<16xi8>
+  }
+}
+)mlir", context.get());
+  ASSERT_TRUE(source);
+  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = selectProductionVariant(
+      *source, replicated1DProgram(3, 16, "i8"), diagnostics, &baselineCost);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_TRUE(baselineCost);
+  const auto &winnerCost = accepted->resourceCost.rankCosts.front();
+  EXPECT_LT(winnerCost.instructionCount.value,
+            baselineCost->instructionCount.value);
+  EXPECT_LT(winnerCost.compute.vectorOtherLogicalOps.value,
+            baselineCost->compute.vectorOtherLogicalOps.value);
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+  unsigned multiplies = 0;
+  unsigned subtracts = 0;
+  accepted->ranks.front().getModule().walk(
+      [&](wafer::InstrElementwiseOp op) {
+        multiplies += op.getKind() == wafer::InstrElementwiseKind::Mul;
+        subtracts += op.getKind() == wafer::InstrElementwiseKind::Sub;
+      });
+  EXPECT_EQ(multiplies, 1u);
+  EXPECT_EQ(subtracts, 1u);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsModularCommonFactorFromProductionFrontier) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
+    policy = "explicit", shape = array<i64: 1>, topology = @default
+  }
+  func.func @main(%a: tensor<16xi8>, %b: tensor<16xi8>,
+                  %c: tensor<16xi8>) -> tensor<16xi8> {
+    %out = tensor.empty() : tensor<16xi8>
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c : tensor<16xi8>, tensor<16xi8>, tensor<16xi8>)
+      outs(%out : tensor<16xi8>) {
+    ^bb0(%av: i8, %bv: i8, %cv: i8, %unused: i8):
+      %ab = arith.muli %av, %bv : i8
+      %ac = arith.muli %av, %cv : i8
+      %result = arith.addi %ab, %ac : i8
+      linalg.yield %result : i8
+    } -> tensor<16xi8>
+    return %r : tensor<16xi8>
+  }
+}
+)mlir", context.get());
+  ASSERT_TRUE(source);
+  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = selectProductionVariant(
+      *source, replicated1DProgram(3, 16, "i8"), diagnostics, &baselineCost);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_TRUE(baselineCost);
+  const auto &winnerCost = accepted->resourceCost.rankCosts.front();
+  EXPECT_LT(winnerCost.instructionCount.value,
+            baselineCost->instructionCount.value);
+  EXPECT_LT(winnerCost.compute.vectorOtherLogicalOps.value,
+            baselineCost->compute.vectorOtherLogicalOps.value);
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+  unsigned adds = 0;
+  unsigned multiplies = 0;
+  accepted->ranks.front().getModule().walk(
+      [&](wafer::InstrElementwiseOp op) {
+        adds += op.getKind() == wafer::InstrElementwiseKind::Add;
+        multiplies += op.getKind() == wafer::InstrElementwiseKind::Mul;
+      });
+  EXPECT_EQ(adds, 1u);
+  EXPECT_EQ(multiplies, 1u);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsConsumerLocalRecomputationFromProductionFrontier) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
+    policy = "explicit", shape = array<i64: 1>, topology = @default
+  }
+  func.func @main(%input: tensor<262144xf32>, %other: tensor<262144xf32>)
+      -> (tensor<262144xf32>, tensor<262144xf32>, tensor<262144xf32>) {
+    %producer_out = tensor.empty() : tensor<262144xf32>
+    %producer = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%input : tensor<262144xf32>)
+      outs(%producer_out : tensor<262144xf32>) {
+    ^bb0(%value: f32, %unused: f32):
+      %result = arith.negf %value : f32
+      linalg.yield %result : f32
+    } -> tensor<262144xf32>
+    %left_out = tensor.empty() : tensor<262144xf32>
+    %left = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%producer : tensor<262144xf32>)
+      outs(%left_out : tensor<262144xf32>) {
+    ^bb0(%value: f32, %unused: f32):
+      %result = arith.addf %value, %value : f32
+      linalg.yield %result : f32
+    } -> tensor<262144xf32>
+    %middle_out = tensor.empty() : tensor<262144xf32>
+    %middle = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%other : tensor<262144xf32>)
+      outs(%middle_out : tensor<262144xf32>) {
+    ^bb0(%value: f32, %unused: f32):
+      %result = arith.negf %value : f32
+      linalg.yield %result : f32
+    } -> tensor<262144xf32>
+    %right_out = tensor.empty() : tensor<262144xf32>
+    %right = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%producer : tensor<262144xf32>)
+      outs(%right_out : tensor<262144xf32>) {
+    ^bb0(%value: f32, %unused: f32):
+      %result = arith.mulf %value, %value : f32
+      linalg.yield %result : f32
+    } -> tensor<262144xf32>
+    return %left, %middle, %right : tensor<262144xf32>, tensor<262144xf32>,
+                                    tensor<262144xf32>
+  }
+}
+)mlir", context.get());
+  ASSERT_TRUE(source);
+  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = selectProductionVariant(
+      *source, replicated1DProgram(2, 262144, "f32", 3), diagnostics,
+      &baselineCost);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_TRUE(baselineCost);
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+  unsigned negations = 0;
+  accepted->ranks.front().getModule().walk(
+      [&](wafer::InstrElementwiseOp op) {
+        negations += op.getKind() == wafer::InstrElementwiseKind::Neg;
+      });
+  EXPECT_GE(negations, 3u);
+  EXPECT_LT(accepted->resourceCost.aggregateDDRReadBytes.value,
+            baselineCost->ddrReadBytes.value);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsSharedProducerFusionFromProductionFrontier) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
+    policy = "explicit", shape = array<i64: 1>, topology = @default
+  }
+  func.func @main(%input: tensor<16xf32>)
+      -> (tensor<16xf32>, tensor<16xf32>, tensor<16xf32>) {
+    %producer_out = tensor.empty() : tensor<16xf32>
+    %producer = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%input : tensor<16xf32>) outs(%producer_out : tensor<16xf32>) {
+    ^bb0(%value: f32, %unused: f32):
+      %result = arith.negf %value : f32
+      linalg.yield %result : f32
+    } -> tensor<16xf32>
+    %left_out = tensor.empty() : tensor<16xf32>
+    %left = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%producer : tensor<16xf32>) outs(%left_out : tensor<16xf32>) {
+    ^bb0(%value: f32, %unused: f32):
+      %result = arith.addf %value, %value : f32
+      linalg.yield %result : f32
+    } -> tensor<16xf32>
+    %right_out = tensor.empty() : tensor<16xf32>
+    %right = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%producer : tensor<16xf32>) outs(%right_out : tensor<16xf32>) {
+    ^bb0(%value: f32, %unused: f32):
+      %result = arith.mulf %value, %value : f32
+      linalg.yield %result : f32
+    } -> tensor<16xf32>
+    return %producer, %left, %right : tensor<16xf32>, tensor<16xf32>,
+                                      tensor<16xf32>
+  }
+}
+)mlir", context.get());
+  ASSERT_TRUE(source);
+  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = selectProductionVariant(
+      *source, replicated1DProgram(1, 16, "f32", 3), diagnostics,
+      &baselineCost);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_TRUE(baselineCost);
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+  EXPECT_LT(accepted->resourceCost.aggregateDDRReadBytes.value,
+            baselineCost->ddrReadBytes.value);
+
+  mlir::ModuleOp winner = accepted->ranks.front().getModule();
+  unsigned negations = 0;
+  unsigned fusedResultCount = 0;
+  unsigned sharedInputLoads = 0;
+  winner.walk([&](wafer::InstrElementwiseOp op) {
+    negations += op.getKind() == wafer::InstrElementwiseKind::Neg;
+  });
+  winner.walk([&](wafer::TileRegionOp region) {
+    fusedResultCount = std::max(fusedResultCount, region.getNumResults());
+    if (region.getNumResults() == 2)
+      region.walk([&](wafer::InstrRDMAOp) { ++sharedInputLoads; });
+  });
+  EXPECT_EQ(negations, 1u);
+  EXPECT_EQ(fusedResultCount, 2u);
+  EXPECT_EQ(sharedInputLoads, 1u);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsStaticLoopInvariantHoistFromProductionFrontier) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
+    policy = "explicit", shape = array<i64: 1>, topology = @default
+  }
+  func.func @main(%input: tensor<16xf32>) -> tensor<16xf32> {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %empty = tensor.empty() : tensor<16xf32>
+    %loop = scf.for %iv = %c0 to %c4 step %c1
+        iter_args(%iter = %input) -> tensor<16xf32> {
+      %invariant = linalg.generic {
+          indexing_maps = [affine_map<(d0)->(d0)>,
+                           affine_map<(d0)->(d0)>],
+          iterator_types = ["parallel"]}
+        ins(%input : tensor<16xf32>) outs(%empty : tensor<16xf32>) {
+      ^bb0(%value: f32, %unused: f32):
+        %negated = arith.negf %value : f32
+        linalg.yield %negated : f32
+      } -> tensor<16xf32>
+      scf.yield %invariant : tensor<16xf32>
+    }
+    %final_out = tensor.empty() : tensor<16xf32>
+    %final = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%loop : tensor<16xf32>) outs(%final_out : tensor<16xf32>) {
+    ^bb0(%value: f32, %unused: f32):
+      %negated = arith.negf %value : f32
+      linalg.yield %negated : f32
+    } -> tensor<16xf32>
+    return %final : tensor<16xf32>
+  }
+}
+)mlir", context.get());
+  ASSERT_TRUE(source);
+  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = selectProductionVariant(
+      *source, replicated1DProgram(1, 16, "f32"), diagnostics, &baselineCost);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_TRUE(baselineCost);
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+  EXPECT_LT(accepted->resourceCost.aggregateCompute.vectorF32LogicalOps.value,
+            baselineCost->compute.vectorF32LogicalOps.value);
+  bool instructionInsideLoop = false;
+  accepted->ranks.front().getModule().walk(
+      [&](wafer::InstrElementwiseOp op) {
+        for (mlir::scf::ForOp loop = op->getParentOfType<mlir::scf::ForOp>();
+             loop; loop = loop->getParentOfType<mlir::scf::ForOp>()) {
+          auto upper = loop.getUpperBound()
+                           .getDefiningOp<mlir::arith::ConstantIndexOp>();
+          instructionInsideLoop |= upper && upper.value() == 4;
+        }
+      });
+  EXPECT_FALSE(instructionInsideLoop);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsMovementFirstReadyOrderFromProductionFrontier) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
+    policy = "explicit", shape = array<i64: 1>, topology = @default
+  }
+  func.func @main(%a: tensor<16xf32>, %b: tensor<16xf32>)
+      -> tensor<16xf32> {
+    %producer_out = tensor.empty() : tensor<16xf32>
+    %producer = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a : tensor<16xf32>) outs(%producer_out : tensor<16xf32>) {
+    ^bb0(%value: f32, %unused: f32):
+      %negated = arith.negf %value : f32
+      linalg.yield %negated : f32
+    } -> tensor<16xf32>
+    %consumer_out = tensor.empty() : tensor<16xf32>
+    %consumer = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%producer, %a, %b : tensor<16xf32>, tensor<16xf32>,
+                                tensor<16xf32>)
+      outs(%consumer_out : tensor<16xf32>) {
+    ^bb0(%pv: f32, %av: f32, %bv: f32, %unused: f32):
+      %left = arith.addf %pv, %av : f32
+      %result = arith.addf %left, %bv : f32
+      linalg.yield %result : f32
+    } -> tensor<16xf32>
+    return %consumer : tensor<16xf32>
+  }
+}
+)mlir", context.get());
+  ASSERT_TRUE(source);
+  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = selectProductionVariant(
+      *source, replicated1DProgram(2, 16, "f32"), diagnostics, &baselineCost);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_TRUE(baselineCost);
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+  const auto &winnerCost = accepted->resourceCost.rankCosts.front();
+  ASSERT_TRUE(winnerCost.readyOrderPriorityInversions.isKnown());
+  ASSERT_TRUE(baselineCost->readyOrderPriorityInversions.isKnown());
+  EXPECT_LT(winnerCost.readyOrderPriorityInversions.value,
+            baselineCost->readyOrderPriorityInversions.value);
+  EXPECT_LE(winnerCost.dataDependencyDepth.value,
+            baselineCost->dataDependencyDepth.value);
+  EXPECT_LE(winnerCost.instructionCount.value,
+            baselineCost->instructionCount.value);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsResidentReuseAcrossMixedShapeConsumersFromProductionFrontier) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
+    policy = "explicit", shape = array<i64: 1>, topology = @default
+  }
+  func.func @main(%input: tensor<2x4xf16>)
+      -> (tensor<2x4xf32>, tensor<2xf32>) {
+    %converted_empty = tensor.empty() : tensor<2x4xf32>
+    %converted = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1)->(d0, d1)>,
+                         affine_map<(d0, d1)->(d0, d1)>],
+        iterator_types = ["parallel", "parallel"]}
+      ins(%input : tensor<2x4xf16>)
+      outs(%converted_empty : tensor<2x4xf32>) {
+    ^bb0(%value: f16, %unused: f32):
+      %extended = arith.extf %value : f16 to f32
+      linalg.yield %extended : f32
+    } -> tensor<2x4xf32>
+    %zero = arith.constant 0.0 : f32
+    %reduced_empty = tensor.empty() : tensor<2xf32>
+    %reduced_init = linalg.fill ins(%zero : f32)
+        outs(%reduced_empty : tensor<2xf32>) -> tensor<2xf32>
+    %reduced = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1)->(d0, d1)>,
+                         affine_map<(d0, d1)->(d0)>],
+        iterator_types = ["parallel", "reduction"]}
+      ins(%converted : tensor<2x4xf32>)
+      outs(%reduced_init : tensor<2xf32>) {
+    ^bb0(%value: f32, %accumulator: f32):
+      %sum = arith.addf %accumulator, %value : f32
+      linalg.yield %sum : f32
+    } -> tensor<2xf32>
+    %negated_empty = tensor.empty() : tensor<2x4xf32>
+    %negated = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1)->(d0, d1)>,
+                         affine_map<(d0, d1)->(d0, d1)>],
+        iterator_types = ["parallel", "parallel"]}
+      ins(%converted : tensor<2x4xf32>)
+      outs(%negated_empty : tensor<2x4xf32>) {
+    ^bb0(%value: f32, %unused: f32):
+      %negative = arith.negf %value : f32
+      linalg.yield %negative : f32
+    } -> tensor<2x4xf32>
+    return %negated, %reduced : tensor<2x4xf32>, tensor<2xf32>
+  }
+}
+)mlir", context.get());
+  ASSERT_TRUE(source);
+
+  auto makeBoundary = [](int64_t index, llvm::ArrayRef<int64_t> shape,
+                         llvm::StringRef dtype) {
+    wafer::frontend::ProgramBoundaryBinding binding;
+    binding.index = index;
+    binding.programIndex = index;
+    binding.distribution =
+        wafer::frontend::ProgramDistributionKind::Replicated;
+    binding.globalShape.assign(shape.begin(), shape.end());
+    binding.localShape.assign(shape.begin(), shape.end());
+    binding.dtype = dtype.str();
+    wafer::frontend::ProgramRankSlice slice;
+    slice.logicalRank = 0;
+    slice.replicaId = 0;
+    slice.offsets.assign(shape.size(), 0);
+    slice.sizes.assign(shape.begin(), shape.end());
+    slice.strides.assign(shape.size(), 1);
+    binding.rankSlices.push_back(std::move(slice));
+    return binding;
+  };
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  program.programUserInputCount = 1;
+  program.distributedInputs.push_back(makeBoundary(0, {2, 4}, "f16"));
+  program.distributedOutputs.push_back(makeBoundary(0, {2, 4}, "f32"));
+  program.distributedOutputs.push_back(makeBoundary(1, {2}, "f32"));
+
+  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted =
+      selectProductionVariant(*source, program, diagnostics, &baselineCost);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_TRUE(baselineCost);
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+  const auto &winnerCost = accepted->resourceCost.rankCosts.front();
+  EXPECT_LT(winnerCost.ddrReadBytes.value, baselineCost->ddrReadBytes.value);
+  EXPECT_LT(winnerCost.ddrWriteBytes.value, baselineCost->ddrWriteBytes.value);
+
+  mlir::ModuleOp winner = accepted->ranks.front().getModule();
+  bool hasSPMProducerResult = false;
+  bool hasSPMConsumerOperand = false;
+  winner.walk([&](wafer::TileRegionOp region) {
+    hasSPMProducerResult |=
+        llvm::any_of(region.getResultTypes(), wafer::isWaferSPMMemRefType);
+    hasSPMConsumerOperand |= llvm::any_of(
+        region.getOperandTypes(), wafer::isWaferSPMMemRefType);
+  });
+  EXPECT_TRUE(hasSPMProducerResult);
+  EXPECT_TRUE(hasSPMConsumerOperand);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsFixedCxGemmWithDirectMappedMovementInWholeWinner) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
+    policy = "explicit", shape = array<i64: 1>, topology = @default
+  }
+  func.func @main(%lhs: tensor<1x1xf16>,
+                  %rhs: tensor<1x1xf16>) -> tensor<1x1xf16> {
+    %zero = arith.constant 0.0 : f16
+    %out = tensor.empty() : tensor<1x1xf16>
+    %init = linalg.fill ins(%zero : f16)
+        outs(%out : tensor<1x1xf16>) -> tensor<1x1xf16>
+    %result = linalg.matmul
+        ins(%lhs, %rhs : tensor<1x1xf16>, tensor<1x1xf16>)
+        outs(%init : tensor<1x1xf16>) -> tensor<1x1xf16>
+    return %result : tensor<1x1xf16>
+  }
+}
+)mlir", context.get());
+  ASSERT_TRUE(source);
+
+  auto makeBoundary = [](int64_t index, llvm::ArrayRef<int64_t> shape) {
+    wafer::frontend::ProgramBoundaryBinding binding;
+    binding.index = index;
+    binding.programIndex = index;
+    binding.distribution =
+        wafer::frontend::ProgramDistributionKind::Replicated;
+    binding.globalShape.assign(shape.begin(), shape.end());
+    binding.localShape.assign(shape.begin(), shape.end());
+    binding.dtype = "f16";
+    wafer::frontend::ProgramRankSlice slice;
+    slice.logicalRank = 0;
+    slice.replicaId = 0;
+    slice.offsets.assign(shape.size(), 0);
+    slice.sizes.assign(shape.begin(), shape.end());
+    slice.strides.assign(shape.size(), 1);
+    binding.rankSlices.push_back(std::move(slice));
+    return binding;
+  };
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  program.programUserInputCount = 2;
+  program.distributedInputs.push_back(makeBoundary(0, {1, 1}));
+  program.distributedInputs.push_back(makeBoundary(1, {1, 1}));
+  program.distributedOutputs.push_back(makeBoundary(0, {1, 1}));
+
+  wafer::TensorProgramSchedulingConfig schedulingConfig;
+  schedulingConfig.logicalRank = 0;
+  schedulingConfig.candidateParallelism = 1;
+  auto rankFrontier =
+      wafer::buildScheduledRankCandidateFrontier(*source, schedulingConfig);
+  ASSERT_TRUE(mlir::succeeded(rankFrontier));
+  bool sawDirectMappedRoute = false;
+  for (wafer::ScheduledRankCandidate &candidate : *rankFrontier) {
+    candidate.module->walk([&](mlir::Operation *operation) {
+      if (mlir::isa<wafer::InstrRDMAOp, wafer::InstrWDMAOp>(operation))
+        sawDirectMappedRoute |= operation->hasAttr("src_offset") ||
+                                operation->hasAttr("dst_offset");
+    });
+  }
+  EXPECT_TRUE(sawDirectMappedRoute);
+
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = selectProductionVariant(*source, program, diagnostics);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+  mlir::ModuleOp winner = accepted->ranks.front().getModule();
+
+  unsigned gemmCount = 0;
+  winner.walk([&](wafer::InstrGemmOp gemm) {
+    ++gemmCount;
+    for (mlir::Type type : {gemm.getLhs().getType(), gemm.getRhs().getType(),
+                            gemm.getDest().getType()}) {
+      auto memref = mlir::cast<mlir::MemRefType>(type);
+      EXPECT_EQ(wafer::getWaferMemoryAttr(memref).getLayout(),
+                wafer::MemLayout::Cx);
+    }
+  });
+  EXPECT_GT(gemmCount, 0u);
+  unsigned gatherScatterCount = 0;
+  winner.walk(
+      [&](wafer::InstrGatherScatterOp) { ++gatherScatterCount; });
+  std::string winnerText;
+  llvm::raw_string_ostream winnerStream(winnerText);
+  winner.print(winnerStream);
+  EXPECT_EQ(gatherScatterCount, 0u) << winnerStream.str();
+  unsigned mappedMovementCount = 0;
+  winner.walk([&](mlir::Operation *operation) {
+    if (!mlir::isa<wafer::InstrRDMAOp, wafer::InstrWDMAOp>(operation))
+      return;
+    mappedMovementCount += operation->hasAttr("src_offset") ||
+                           operation->hasAttr("dst_offset");
+  });
+  EXPECT_GT(mappedMovementCount, 0u) << winnerStream.str();
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsDirectAllGatherFromProductionAllRankFrontier) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64>,
+    policy = "all_available", shape = array<i64: 16>, topology = @default
+  }
+  func.func @main(%input: tensor<4xf32>) -> tensor<64xf32> {
+    %out = tensor.empty() : tensor<64xf32>
+    %gathered = wafer.linalg_ext.collective.all_gather
+        ins(%input : tensor<4xf32>) outs(%out : tensor<64xf32>)
+        {axis = 0 : i64, channel_id = 47 : i64,
+         rank_group = array<i64: 0, 1, 2, 3, 4, 5, 6, 7,
+                                8, 9, 10, 11, 12, 13, 14, 15>}
+        -> tensor<64xf32>
+    return %gathered : tensor<64xf32>
+  }
+}
+)mlir", context.get());
+  ASSERT_TRUE(source);
+
+  auto makeBoundary = [](int64_t elements) {
+    wafer::frontend::ProgramBoundaryBinding binding;
+    binding.index = 0;
+    binding.programIndex = 0;
+    binding.distribution =
+        wafer::frontend::ProgramDistributionKind::Replicated;
+    binding.globalShape = {elements};
+    binding.localShape = {elements};
+    binding.dtype = "f32";
+    for (int64_t rank = 0; rank < 16; ++rank) {
+      wafer::frontend::ProgramRankSlice slice;
+      slice.logicalRank = rank;
+      slice.replicaId = rank;
+      slice.offsets = {0};
+      slice.sizes = {elements};
+      slice.strides = {1};
+      binding.rankSlices.push_back(std::move(slice));
+    }
+    return binding;
+  };
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 16;
+  program.programUserInputCount = 1;
+  program.distributedInputs.push_back(makeBoundary(4));
+  program.distributedOutputs.push_back(makeBoundary(64));
+
+  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = selectProductionVariant(*source, program, diagnostics,
+                                          &baselineCost, /*rankCount=*/16);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_TRUE(baselineCost);
+  ASSERT_EQ(accepted->ranks.size(), 16u);
+  EXPECT_TRUE(llvm::none_of(accepted->selectedReservedBaselines,
+                            [](bool reserved) { return reserved; }));
+  EXPECT_LT(accepted->resourceCost.rankCosts.front().instructionCount.value,
+            baselineCost->instructionCount.value);
+  EXPECT_LT(
+      accepted->resourceCost.rankCosts.front().spmMovementBytes.value,
+      baselineCost->spmMovementBytes.value);
+  for (const auto &rank : accepted->ranks) {
+    bool sawDirect = false;
+    bool sawRing = false;
+    rank.getModule().walk([&](wafer::InstrDTESendOp send) {
+      sawDirect |= send.getMessage().getPhase() ==
+                   wafer::DTEProtocolPhase::AllGatherDirect;
+      sawRing |= send.getMessage().getPhase() ==
+                 wafer::DTEProtocolPhase::AllGatherRing;
+    });
+    rank.getModule().walk([&](wafer::InstrDTERecvOp recv) {
+      sawDirect |= recv.getMessage().getPhase() ==
+                   wafer::DTEProtocolPhase::AllGatherDirect;
+      sawRing |= recv.getMessage().getPhase() ==
+                 wafer::DTEProtocolPhase::AllGatherRing;
+    });
+    EXPECT_TRUE(sawDirect);
+    EXPECT_FALSE(sawRing);
+  }
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SelectsTreeAllReduceFromProductionAllRankFrontier) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64>,
+    policy = "all_available", shape = array<i64: 16>, topology = @default
+  }
+  func.func @main(%input: tensor<4xf32>) -> tensor<4xf32> {
+    %out = tensor.empty() : tensor<4xf32>
+    %reduced = wafer.linalg_ext.collective.all_reduce
+        ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
+      ^bb0(%lhs: f32, %rhs: f32):
+        %sum = arith.addf %lhs, %rhs : f32
+        wafer.linalg_ext.collective.yield %sum : f32
+    } {channel_id = 53 : i64,
+       rank_group = array<i64: 0, 1, 2, 3, 4, 5, 6, 7,
+                              8, 9, 10, 11, 12, 13, 14, 15>}
+        -> tensor<4xf32>
+    return %reduced : tensor<4xf32>
+  }
+}
+)mlir", context.get());
+  ASSERT_TRUE(source);
+
+  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = selectProductionVariant(
+      *source, replicated1DProgram(1, 4, "f32", /*outputCount=*/1,
+                                   /*rankCount=*/16),
+      diagnostics, &baselineCost, /*rankCount=*/16);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_TRUE(baselineCost);
+  ASSERT_EQ(accepted->ranks.size(), 16u);
+  EXPECT_TRUE(llvm::none_of(accepted->selectedReservedBaselines,
+                            [](bool reserved) { return reserved; }));
+  EXPECT_LT(accepted->resourceCost.aggregateInstructionCount.value,
+            baselineCost->instructionCount.value * 16);
+  for (const auto &rank : accepted->ranks) {
+    bool sawTree = false;
+    bool sawRing = false;
+    rank.getModule().walk([&](wafer::InstrDTESendOp send) {
+      sawTree |= send.getMessage().getPhase() ==
+                     wafer::DTEProtocolPhase::AllReduceTreeReduce ||
+                 send.getMessage().getPhase() ==
+                     wafer::DTEProtocolPhase::AllReduceTreeBroadcast;
+      sawRing |= send.getMessage().getPhase() ==
+                 wafer::DTEProtocolPhase::AllReduceRing;
+    });
+    rank.getModule().walk([&](wafer::InstrDTERecvOp recv) {
+      sawTree |= recv.getMessage().getPhase() ==
+                     wafer::DTEProtocolPhase::AllReduceTreeReduce ||
+                 recv.getMessage().getPhase() ==
+                     wafer::DTEProtocolPhase::AllReduceTreeBroadcast;
+      sawRing |= recv.getMessage().getPhase() ==
+                 wafer::DTEProtocolPhase::AllReduceRing;
+    });
+    EXPECT_TRUE(sawTree);
+    EXPECT_FALSE(sawRing);
+  }
 }
 
 } // namespace

@@ -32,7 +32,8 @@ mlir::LogicalResult wafer::lowerCandidateTensorProgramToTileRegionModule(
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
     int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative) {
+    std::optional<TargetImplementationKind> selectedAlternative,
+    bool useDirectMappedBoundaryTransfer) {
   if (failureReason)
     failureReason->clear();
 
@@ -48,7 +49,8 @@ mlir::LogicalResult wafer::lowerCandidateTensorProgramToTileRegionModule(
   return convertTensorProgramToTileRegionModuleInPlace(
       *module, function.getContext(), currentLogicalRank, failureReason,
       /*suppressDiagnostics=*/true, /*verifyResult=*/true,
-      /*populateFallbackFailureReason=*/true, selectedAlternative);
+      /*populateFallbackFailureReason=*/true, selectedAlternative,
+      useDirectMappedBoundaryTransfer);
 }
 
 mlir::LogicalResult
@@ -57,7 +59,8 @@ wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
     int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative) {
+    std::optional<TargetImplementationKind> selectedAlternative,
+    bool useDirectMappedBoundaryTransfer) {
   if (failureReason)
     failureReason->clear();
 
@@ -74,7 +77,8 @@ wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
   if (mlir::failed(convertTensorProgramToTileRegionModuleInPlace(
           *candidateModule, function.getContext(), currentLogicalRank,
           failureReason, /*suppressDiagnostics=*/true, /*verifyResult=*/true,
-          /*populateFallbackFailureReason=*/true, selectedAlternative)))
+          /*populateFallbackFailureReason=*/true, selectedAlternative,
+          useDirectMappedBoundaryTransfer)))
     return mlir::failure();
   module = std::move(candidateModule);
   return mlir::success();

@@ -376,6 +376,158 @@ module {
 }
 
 TEST_F(ScheduleCostAnalysisTest,
+       MeasuresStructuralDataDependencyDepthWithoutTimingAssumptions) {
+  auto chain = parse(R"mlir(
+module {
+  func.func @main() {
+    %a = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %b = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %c = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %d = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66304>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %ab = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66560>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %abc = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66816>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67072>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    wafer.instr.elementwise <add> %a, %b into %ab
+        : memref<4xi8, #wafer.memory<spm, tensor>>,
+          memref<4xi8, #wafer.memory<spm, tensor>>
+       into memref<4xi8, #wafer.memory<spm, tensor>>
+    wafer.instr.elementwise <add> %ab, %c into %abc
+        : memref<4xi8, #wafer.memory<spm, tensor>>,
+          memref<4xi8, #wafer.memory<spm, tensor>>
+       into memref<4xi8, #wafer.memory<spm, tensor>>
+    wafer.instr.elementwise <add> %abc, %d into %out
+        : memref<4xi8, #wafer.memory<spm, tensor>>,
+          memref<4xi8, #wafer.memory<spm, tensor>>
+       into memref<4xi8, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir");
+  auto balanced = parse(R"mlir(
+module {
+  func.func @main() {
+    %a = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %b = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %c = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %d = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66304>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %ab = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66560>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %cd = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66816>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67072>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    wafer.instr.elementwise <add> %a, %b into %ab
+        : memref<4xi8, #wafer.memory<spm, tensor>>,
+          memref<4xi8, #wafer.memory<spm, tensor>>
+       into memref<4xi8, #wafer.memory<spm, tensor>>
+    wafer.instr.elementwise <add> %c, %d into %cd
+        : memref<4xi8, #wafer.memory<spm, tensor>>,
+          memref<4xi8, #wafer.memory<spm, tensor>>
+       into memref<4xi8, #wafer.memory<spm, tensor>>
+    wafer.instr.elementwise <add> %ab, %cd into %out
+        : memref<4xi8, #wafer.memory<spm, tensor>>,
+          memref<4xi8, #wafer.memory<spm, tensor>>
+       into memref<4xi8, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(chain);
+  ASSERT_TRUE(balanced);
+  InstructionProgramCost chainCost = analyze(*chain);
+  InstructionProgramCost balancedCost = analyze(*balanced);
+  ASSERT_TRUE(chainCost.dataDependencyDepth.isKnown());
+  ASSERT_TRUE(balancedCost.dataDependencyDepth.isKnown());
+  EXPECT_EQ(chainCost.dataDependencyDepth.value, 3u);
+  EXPECT_EQ(balancedCost.dataDependencyDepth.value, 2u);
+  EXPECT_EQ(chainCost.instructionCount.value,
+            balancedCost.instructionCount.value);
+  EXPECT_EQ(chainCost.compute.vectorOtherLogicalOps.value,
+            balancedCost.compute.vectorOtherLogicalOps.value);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       MeasuresReadyPriorityInversionsWithoutAOverlapModel) {
+  auto sourceOrder = parse(R"mlir(
+module {
+  func.func @main() {
+    %compute_source = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %compute_dest = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %dma_dest = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %ddr = memref.alloc()
+        : memref<4xi8, #wafer.memory<ddr, tensor>>
+    wafer.instr.elementwise <neg> %compute_source into %compute_dest
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+       into memref<4xi8, #wafer.memory<spm, tensor>>
+    wafer.instr.rdma %ddr to %dma_dest
+        {byte_count = 4 : i64, inner_bytes = 4 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<4xi8, #wafer.memory<ddr, tensor>>
+       to memref<4xi8, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir");
+  auto readyOrder = parse(R"mlir(
+module {
+  func.func @main() {
+    %compute_source = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %compute_dest = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %dma_dest = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %ddr = memref.alloc()
+        : memref<4xi8, #wafer.memory<ddr, tensor>>
+    wafer.instr.rdma %ddr to %dma_dest
+        {byte_count = 4 : i64, inner_bytes = 4 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<4xi8, #wafer.memory<ddr, tensor>>
+       to memref<4xi8, #wafer.memory<spm, tensor>>
+    wafer.instr.elementwise <neg> %compute_source into %compute_dest
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+       into memref<4xi8, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(sourceOrder);
+  ASSERT_TRUE(readyOrder);
+  InstructionProgramCost sourceCost = analyze(*sourceOrder);
+  InstructionProgramCost readyCost = analyze(*readyOrder);
+  ASSERT_TRUE(sourceCost.readyOrderPriorityInversions.isKnown());
+  ASSERT_TRUE(readyCost.readyOrderPriorityInversions.isKnown());
+  EXPECT_EQ(sourceCost.readyOrderPriorityInversions.value, 1u);
+  EXPECT_EQ(readyCost.readyOrderPriorityInversions.value, 0u);
+  EXPECT_EQ(sourceCost.dataDependencyDepth.value,
+            readyCost.dataDependencyDepth.value);
+  EXPECT_EQ(sourceCost.instructionCount.value,
+            readyCost.instructionCount.value);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
        AggregatesWholeCardExecutionAndKeepsPrivateSPMDimensions) {
   auto first = parse(R"mlir(
 module {
@@ -427,6 +579,9 @@ module {
   EXPECT_EQ(cost.aggregateSPMMovementBytes.value, 16u);
   ASSERT_TRUE(cost.aggregateInstructionCount.isKnown());
   EXPECT_EQ(cost.aggregateInstructionCount.value, 3u);
+  ASSERT_TRUE(cost.maximumRankDataDependencyDepth.isKnown());
+  EXPECT_EQ(cost.maximumRankDataDependencyDepth.value, 2u);
+  ASSERT_TRUE(cost.aggregateReadyOrderPriorityInversions.isKnown());
   ASSERT_TRUE(cost.aggregateCompute.vectorF16Bf16LogicalOps.isKnown());
   EXPECT_EQ(cost.aggregateCompute.vectorF16Bf16LogicalOps.value, 4u);
   ASSERT_TRUE(cost.maximumRankSPMHighWaterBytes.isKnown());
@@ -468,6 +623,14 @@ module {
   EXPECT_EQ(cost.aggregateDDRReadBytes.reason,
             ScheduleCostReason::DynamicLoopTripCount);
   EXPECT_TRUE(cost.maximumRankSPMHighWaterBytes.isKnown());
+  EXPECT_EQ(cost.maximumRankDataDependencyDepth.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.maximumRankDataDependencyDepth.reason,
+            ScheduleCostReason::UnsupportedControlFlow);
+  EXPECT_EQ(cost.aggregateReadyOrderPriorityInversions.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.aggregateReadyOrderPriorityInversions.reason,
+            ScheduleCostReason::UnsupportedControlFlow);
 }
 
 } // namespace

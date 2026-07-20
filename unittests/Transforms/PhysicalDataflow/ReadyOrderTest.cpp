@@ -98,4 +98,55 @@ module {
             0u);
 }
 
+TEST(ReadyOrderTest, MovesAcrossIndependentProductionSetupOperations) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::memref::MemRefDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  %compute_dest = memref.alloc()
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>
+  %compute_source = memref.alloc()
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>
+  wafer.instr.elementwise #wafer.instr_elementwise_kind<add>
+      %compute_source, %compute_source into %compute_dest
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>,
+        memref<4x8xf16, #wafer.memory<spm, tensor>>
+    into memref<4x8xf16, #wafer.memory<spm, tensor>>
+  %ddr = memref.alloc()
+      : memref<4x8xf16, #wafer.memory<ddr, tensor>>
+  %cast = memref.cast %ddr
+      : memref<4x8xf16, #wafer.memory<ddr, tensor>>
+     to memref<4x8xf16, strided<[8, 1], offset: ?>,
+               #wafer.memory<ddr, tensor>>
+  %dma_dest = memref.alloc()
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>
+  wafer.instr.rdma %cast to %dma_dest
+      {byte_count = 64 : i64, inner_bytes = 64 : i64,
+       src_strides = array<i64: 0, 0, 0>,
+       src_iterations = array<i64: 1, 1, 1>}
+      : memref<4x8xf16, strided<[8, 1], offset: ?>,
+               #wafer.memory<ddr, tensor>>
+     to memref<4x8xf16, #wafer.memory<spm, tensor>>
+}
+)mlir", mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+
+  EXPECT_NE(wafer::scheduleIndependentInstructionsByReadyOrder(
+                module->getOperation()),
+            0u);
+  llvm::SmallVector<mlir::Operation *, 2> ordered;
+  module->walk([&](mlir::Operation *operation) {
+    if (mlir::isa<wafer::WaferInstructionOpInterface>(operation))
+      ordered.push_back(operation);
+  });
+  ASSERT_EQ(ordered.size(), 2u);
+  EXPECT_TRUE(mlir::isa<wafer::InstrRDMAOp>(ordered[0]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrElementwiseOp>(ordered[1]));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+}
+
 } // namespace

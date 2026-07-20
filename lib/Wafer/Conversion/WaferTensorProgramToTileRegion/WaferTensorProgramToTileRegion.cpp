@@ -75,7 +75,8 @@ static void normalizeMapOps(mlir::func::FuncOp function) {
 static mlir::LogicalResult rewriteTensorProgramInPlace(
     mlir::ModuleOp module, int64_t currentLogicalRank,
     std::string *failureReason,
-    std::optional<TargetImplementationKind> selectedAlternative) {
+    std::optional<TargetImplementationKind> selectedAlternative,
+    bool useDirectMappedBoundaryTransfer) {
   mlir::func::FuncOp function = findSingleStandaloneTensorProgram(module);
   if (!function) {
     setFailureReason(
@@ -96,7 +97,8 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
   mlir::IRRewriter rewriter(module.getContext());
   rewriter.setInsertionPoint(oldReturn);
   TileRegionBodyEmitter emitter(failureReason, currentLogicalRank,
-                                selectedAlternative);
+                                selectedAlternative,
+                                useDirectMappedBoundaryTransfer);
   mlir::FailureOr<TileRegionOp> tileRegion = emitter.emit(scope, rewriter);
   if (mlir::failed(tileRegion))
     return mlir::failure();
@@ -152,7 +154,8 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
         int64_t currentLogicalRank, std::string *failureReason,
         bool suppressDiagnostics, bool verifyResult,
         bool populateFallbackFailureReason,
-        std::optional<TargetImplementationKind> selectedAlternative) {
+        std::optional<TargetImplementationKind> selectedAlternative,
+        bool useDirectMappedBoundaryTransfer) {
   // Rewrite a private clone and commit only after the complete scheduling
   // scope has lowered and verified.
   mlir::OwningOpRef<mlir::ModuleOp> candidate = module.clone();
@@ -161,10 +164,12 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
     mlir::ScopedDiagnosticHandler handler(
         context, [](mlir::Diagnostic &) { return mlir::success(); });
     conversionResult = rewriteTensorProgramInPlace(
-        *candidate, currentLogicalRank, failureReason, selectedAlternative);
+        *candidate, currentLogicalRank, failureReason, selectedAlternative,
+        useDirectMappedBoundaryTransfer);
   } else {
     conversionResult = rewriteTensorProgramInPlace(
-        *candidate, currentLogicalRank, failureReason, selectedAlternative);
+        *candidate, currentLogicalRank, failureReason, selectedAlternative,
+        useDirectMappedBoundaryTransfer);
   }
 
   if (mlir::failed(conversionResult)) {
@@ -190,7 +195,8 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
 mlir::LogicalResult wafer::lowerTensorProgramToTileRegionModule(
     mlir::func::FuncOp function, mlir::OwningOpRef<mlir::ModuleOp> &module,
     std::string *failureReason, int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative) {
+    std::optional<TargetImplementationKind> selectedAlternative,
+    bool useDirectMappedBoundaryTransfer) {
   if (failureReason)
     failureReason->clear();
   if (mlir::failed(verifyTensorProgramScope(function, failureReason)))
@@ -199,5 +205,6 @@ mlir::LogicalResult wafer::lowerTensorProgramToTileRegionModule(
   return convertTensorProgramToTileRegionModuleInPlace(
       *module, function.getContext(), currentLogicalRank, failureReason,
       /*suppressDiagnostics=*/true, /*verifyResult=*/true,
-      /*populateFallbackFailureReason=*/true, selectedAlternative);
+      /*populateFallbackFailureReason=*/true, selectedAlternative,
+      useDirectMappedBoundaryTransfer);
 }

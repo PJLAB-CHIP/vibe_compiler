@@ -532,6 +532,19 @@ numeric variant先过独立numeric gate，
 Q9获得validated PMU/timing evidence后，可以新增calibrated ranking policy，但只能重排已经通过同一exact legality的候选，不能
 改变semantic、numeric、capacity、descriptor或ABI合法性。
 
+当前closed target profile的未校准static policy按resource class显式排序：DDR read/write、NoC aggregate/collective、SPM
+movement、instruction/event、compute logical work、最后是data-dependency depth/ready-order inversion。每一class内部只接受
+componentwise strict reduction；同一class出现双向tradeoff、任何所需量Unknown或overflow时保持当前winner，最终无法证明优于
+reserved baseline时返回baseline。validated SPM high-water只作capacity/resource事实；它可以参与exact resource Pareto，但不被解释成
+hardware time。policy在完整Pareto frontier上逐个比较survivor，不能只找第一个优于baseline的candidate，也不能用candidate
+discovery ordinal打破语义选择。
+
+Q32.S已按actual producer增长固定当前上界：source clone 16、recipe 12、optimized rank evaluation 64、optimized rank frontier
+256、whole best-first tuple 64、coordinated tuple 64和whole Pareto 16；唯一conservative spill baseline拥有独立allowance。source、
+recipe与scope policy先分别入列，再优先加入source×recipe、source×policy及all-applicable联合状态，剩余预算按稳定笛卡尔顺序
+materialize。implementation与direct-mapped route等同一task内的可组合参数必须形成同一actual recipe；只生成两个单点不能冒充
+联合覆盖。实现与winner证据见`tasks/archive/bounded-joint-physical-dataflow-selection.md`。
+
 ## 9. All-Rank Coordination 和 Atomicity
 
 all-rank coordination保留现有 compiler-level owner，不放入function pass，也不建立跨rank shadow program。每个rank candidate

@@ -52,7 +52,8 @@ cloneTensorProgramToStandaloneModule(mlir::func::FuncOp function);
 mlir::LogicalResult lowerTensorProgramToTileRegionModule(
     mlir::func::FuncOp function, mlir::OwningOpRef<mlir::ModuleOp> &module,
     std::string *failureReason, int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt);
+    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
+    bool useDirectMappedBoundaryTransfer = false);
 
 /// Verifies that replacing one structured reduction by more than one ordered
 /// chunk, including neutral-initialized partials and chunk-result combines, is
@@ -68,7 +69,8 @@ mlir::LogicalResult lowerCandidateTensorProgramToTileRegionModule(
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
     int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt);
+    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
+    bool useDirectMappedBoundaryTransfer = false);
 
 /// Materializes a compact structured traversal of a standalone tensor
 /// program and lowers it to tile-region IR.
@@ -77,7 +79,8 @@ mlir::LogicalResult lowerCompleteCandidateTensorProgramToTileRegionModule(
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
     int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt);
+    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
+    bool useDirectMappedBoundaryTransfer = false);
 
 } // namespace wafer
 

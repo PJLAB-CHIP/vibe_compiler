@@ -23,6 +23,8 @@
 
 #include "gtest/gtest.h"
 
+#include <set>
+
 namespace {
 
 TEST(RankCandidateFrontierTest,
@@ -74,9 +76,19 @@ module {
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   ASSERT_GE(frontier->size(), 2u);
+  EXPECT_LE(frontier->size(), 257u);
 
   unsigned baselineCount = 0;
   bool sawResidentAlternative = false;
+  bool sawRingAllReduce = false;
+  bool sawTreeReduce = false;
+  bool sawTreeBroadcast = false;
+  auto recordCommunicationPhase = [&](wafer::DTEProtocolPhase phase) {
+    sawRingAllReduce |= phase == wafer::DTEProtocolPhase::AllReduceRing;
+    sawTreeReduce |= phase == wafer::DTEProtocolPhase::AllReduceTreeReduce;
+    sawTreeBroadcast |=
+        phase == wafer::DTEProtocolPhase::AllReduceTreeBroadcast;
+  };
   for (wafer::ScheduledRankCandidate &candidate : *frontier) {
     baselineCount += candidate.reservedBaseline;
     bool candidateResident = false;
@@ -94,15 +106,20 @@ module {
       if (wafer::isWaferDDRMemRefType(allocation.getType()))
         EXPECT_FALSE(allocation->hasAttr(wafer::kWaferDDROffsetAttrName));
     });
-    candidate.module->walk([](wafer::InstrDTESendOp send) {
+    candidate.module->walk([&](wafer::InstrDTESendOp send) {
       EXPECT_FALSE(send.getBinding().has_value());
+      recordCommunicationPhase(send.getMessage().getPhase());
     });
-    candidate.module->walk([](wafer::InstrDTERecvOp recv) {
+    candidate.module->walk([&](wafer::InstrDTERecvOp recv) {
       EXPECT_FALSE(recv.getBinding().has_value());
+      recordCommunicationPhase(recv.getMessage().getPhase());
     });
   }
   EXPECT_EQ(baselineCount, 1u);
   EXPECT_TRUE(sawResidentAlternative);
+  EXPECT_TRUE(sawRingAllReduce);
+  EXPECT_TRUE(sawTreeReduce);
+  EXPECT_TRUE(sawTreeBroadcast);
 
   config.candidateParallelism = 4;
   auto parallelFrontier =
@@ -189,6 +206,319 @@ module {
   bool sourceContainsTileRegion = false;
   source->walk([&](wafer::TileRegionOp) { sourceContainsTileRegion = true; });
   EXPECT_FALSE(sourceContainsTileRegion);
+}
+
+TEST(RankCandidateFrontierTest,
+     SendsDirectAndRingAllGatherClonesThroughTheSameRankFrontier) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                  wafer::WaferDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  wafer::registerTargetImplementationExternalModels(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(%input: tensor<4xf32>) -> tensor<8xf32> {
+    %out = tensor.empty() : tensor<8xf32>
+    %gathered = wafer.linalg_ext.collective.all_gather
+        ins(%input : tensor<4xf32>) outs(%out : tensor<8xf32>)
+        {axis = 0 : i64, channel_id = 47 : i64,
+         rank_group = array<i64: 0, 1>} -> tensor<8xf32>
+    return %gathered : tensor<8xf32>
+  }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(source);
+
+  wafer::TensorProgramSchedulingConfig config;
+  config.logicalRank = 0;
+  config.candidateParallelism = 1;
+  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  ASSERT_TRUE(mlir::succeeded(frontier));
+  EXPECT_LE(frontier->size(), 257u);
+  EXPECT_EQ(llvm::count_if(*frontier,
+                           [](const auto &candidate) {
+                             return candidate.reservedBaseline;
+                           }),
+            1u);
+
+  bool sawRing = false;
+  bool sawDirect = false;
+  auto recordPhase = [&](wafer::DTEProtocolPhase phase) {
+    sawRing |= phase == wafer::DTEProtocolPhase::AllGatherRing;
+    sawDirect |= phase == wafer::DTEProtocolPhase::AllGatherDirect;
+  };
+  for (wafer::ScheduledRankCandidate &candidate : *frontier) {
+    candidate.module->walk([&](wafer::InstrDTESendOp send) {
+      recordPhase(send.getMessage().getPhase());
+    });
+    candidate.module->walk([&](wafer::InstrDTERecvOp recv) {
+      recordPhase(recv.getMessage().getPhase());
+    });
+  }
+  EXPECT_TRUE(sawRing);
+  EXPECT_TRUE(sawDirect);
+}
+
+TEST(RankCandidateFrontierTest,
+     SendsEveryModularAlgebraSourceCloneThroughRankExactGates) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                  wafer::WaferDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  wafer::registerTargetImplementationExternalModels(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @reassociate(%a: tensor<4xi32>, %b: tensor<4xi32>,
+                         %c: tensor<4xi32>, %out: tensor<4xi32>)
+      -> tensor<4xi32> {
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c : tensor<4xi32>, tensor<4xi32>, tensor<4xi32>)
+      outs(%out : tensor<4xi32>) {
+    ^bb0(%av: i32, %bv: i32, %cv: i32, %unused: i32):
+      %ab = arith.addi %av, %bv : i32
+      %abc = arith.addi %ab, %cv : i32
+      linalg.yield %abc : i32
+    } -> tensor<4xi32>
+    return %r : tensor<4xi32>
+  }
+  func.func @tree(%a: tensor<4xi32>, %b: tensor<4xi32>,
+                  %c: tensor<4xi32>, %d: tensor<4xi32>,
+                  %out: tensor<4xi32>) -> tensor<4xi32> {
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c, %d : tensor<4xi32>, tensor<4xi32>, tensor<4xi32>,
+                            tensor<4xi32>) outs(%out : tensor<4xi32>) {
+    ^bb0(%av: i32, %bv: i32, %cv: i32, %dv: i32, %unused: i32):
+      %ab = arith.addi %av, %bv : i32
+      %abc = arith.addi %ab, %cv : i32
+      %abcd = arith.addi %abc, %dv : i32
+      linalg.yield %abcd : i32
+    } -> tensor<4xi32>
+    return %r : tensor<4xi32>
+  }
+  func.func @distribute(%a: tensor<4xi32>, %b: tensor<4xi32>,
+                        %c: tensor<4xi32>, %out: tensor<4xi32>)
+      -> tensor<4xi32> {
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c : tensor<4xi32>, tensor<4xi32>, tensor<4xi32>)
+      outs(%out : tensor<4xi32>) {
+    ^bb0(%av: i32, %bv: i32, %cv: i32, %unused: i32):
+      %ab = arith.muli %av, %bv : i32
+      %ac = arith.muli %av, %cv : i32
+      %r0 = arith.subi %ab, %ac : i32
+      linalg.yield %r0 : i32
+    } -> tensor<4xi32>
+    return %r : tensor<4xi32>
+  }
+  func.func @factor(%a: tensor<4xi32>, %b: tensor<4xi32>,
+                    %c: tensor<4xi32>, %out: tensor<4xi32>)
+      -> tensor<4xi32> {
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c : tensor<4xi32>, tensor<4xi32>, tensor<4xi32>)
+      outs(%out : tensor<4xi32>) {
+    ^bb0(%av: i32, %bv: i32, %cv: i32, %unused: i32):
+      %ab = arith.muli %av, %bv : i32
+      %ac = arith.muli %av, %cv : i32
+      %r0 = arith.addi %ab, %ac : i32
+      linalg.yield %r0 : i32
+    } -> tensor<4xi32>
+    return %r : tensor<4xi32>
+  }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(source);
+
+  wafer::TensorProgramSchedulingConfig config;
+  config.logicalRank = 0;
+  config.candidateParallelism = 1;
+  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  ASSERT_TRUE(mlir::succeeded(frontier));
+  EXPECT_LE(frontier->size(), 257u);
+
+  std::set<int64_t> sourceBands;
+  std::set<std::pair<unsigned, unsigned>> addMulCounts;
+  bool sawSourceRecipeJointState = false;
+  bool sawSourcePolicyJointState = false;
+  for (wafer::ScheduledRankCandidate &candidate : *frontier) {
+    // Source recipes use a stable private ordinal band. Reaching four
+    // non-baseline bands proves reassociation, tree balancing, distribution,
+    // and factorization clones survived the complete rank gates; the winner
+    // never reads these ordinals as mechanism facts.
+    sourceBands.insert(candidate.discoveryOrder / 72);
+    int64_t sourceIndex = candidate.discoveryOrder / 72;
+    int64_t recipeIndex = (candidate.discoveryOrder / 6) % 12;
+    int64_t policyIndex = candidate.discoveryOrder % 6;
+    sawSourceRecipeJointState |= sourceIndex > 0 && recipeIndex > 0;
+    sawSourcePolicyJointState |= sourceIndex > 0 && policyIndex > 0;
+    unsigned adds = 0;
+    unsigned multiplies = 0;
+    candidate.module->walk([&](wafer::InstrElementwiseOp elementwise) {
+      adds += elementwise.getKind() == wafer::InstrElementwiseKind::Add;
+      multiplies += elementwise.getKind() == wafer::InstrElementwiseKind::Mul;
+    });
+    addMulCounts.insert({adds, multiplies});
+  }
+  EXPECT_GE(sourceBands.size(), 5u);
+  EXPECT_TRUE(addMulCounts.count({6, 4}));
+  EXPECT_TRUE(addMulCounts.count({6, 3}));
+  EXPECT_TRUE(addMulCounts.count({6, 2}));
+  EXPECT_TRUE(sawSourceRecipeJointState);
+  EXPECT_TRUE(sawSourcePolicyJointState);
+}
+
+TEST(RankCandidateFrontierTest,
+     SendsShareAndRecomputeActualClonesThroughRankExactGates) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                  wafer::WaferDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  wafer::registerTargetImplementationExternalModels(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(%input: tensor<4xi32>, %producer_out: tensor<4xi32>,
+                  %left_out: tensor<4xi32>, %right_out: tensor<4xi32>)
+      -> (tensor<4xi32>, tensor<4xi32>) {
+    %producer = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%input : tensor<4xi32>) outs(%producer_out : tensor<4xi32>) {
+    ^bb0(%value: i32, %unused: i32):
+      %incremented = arith.addi %value, %value : i32
+      linalg.yield %incremented : i32
+    } -> tensor<4xi32>
+    %left = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%producer : tensor<4xi32>) outs(%left_out : tensor<4xi32>) {
+    ^bb0(%value: i32, %unused: i32):
+      %result = arith.addi %value, %value : i32
+      linalg.yield %result : i32
+    } -> tensor<4xi32>
+    %right = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%producer : tensor<4xi32>) outs(%right_out : tensor<4xi32>) {
+    ^bb0(%value: i32, %unused: i32):
+      %result = arith.addi %value, %value : i32
+      linalg.yield %result : i32
+    } -> tensor<4xi32>
+    return %left, %right : tensor<4xi32>, tensor<4xi32>
+  }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(source);
+
+  wafer::TensorProgramSchedulingConfig config;
+  config.logicalRank = 0;
+  config.candidateParallelism = 1;
+  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  ASSERT_TRUE(mlir::succeeded(frontier));
+  EXPECT_LE(frontier->size(), 257u);
+
+  std::set<unsigned> elementwiseCounts;
+  for (wafer::ScheduledRankCandidate &candidate : *frontier) {
+    unsigned count = 0;
+    candidate.module->walk([&](wafer::InstrElementwiseOp) { ++count; });
+    elementwiseCounts.insert(count);
+  }
+  EXPECT_TRUE(elementwiseCounts.count(3));
+  EXPECT_TRUE(elementwiseCounts.count(4));
+}
+
+TEST(RankCandidateFrontierTest,
+     SendsImplementationAndTaskBeamClonesThroughRankExactGates) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                  wafer::WaferDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  wafer::registerTargetImplementationExternalModels(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(%input: tensor<16xf32>, %out: tensor<16xf32>)
+      -> tensor<16xf32> {
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%input : tensor<16xf32>) outs(%out : tensor<16xf32>) {
+    ^bb0(%value: f32, %init: f32):
+      %one = arith.constant 1.0 : f32
+      %reciprocal = arith.divf %one, %value : f32
+      linalg.yield %reciprocal : f32
+    } -> tensor<16xf32>
+    return %result : tensor<16xf32>
+  }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(source);
+
+  wafer::TensorProgramSchedulingConfig config;
+  config.logicalRank = 0;
+  config.candidateParallelism = 1;
+  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  ASSERT_TRUE(mlir::succeeded(frontier));
+
+  bool sawReciprocal = false;
+  bool sawDivision = false;
+  bool sawSecondTaskCandidate = false;
+  for (wafer::ScheduledRankCandidate &candidate : *frontier) {
+    candidate.module->walk([&](wafer::InstrElementwiseOp elementwise) {
+      sawReciprocal |=
+          elementwise.getKind() == wafer::InstrElementwiseKind::Recip;
+      sawDivision |= elementwise.getKind() == wafer::InstrElementwiseKind::Div;
+    });
+    sawSecondTaskCandidate |= candidate.discoveryOrder == 12;
+  }
+  EXPECT_TRUE(sawReciprocal);
+  EXPECT_TRUE(sawDivision);
+  EXPECT_TRUE(sawSecondTaskCandidate);
 }
 
 } // namespace

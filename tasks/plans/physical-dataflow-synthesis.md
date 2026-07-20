@@ -300,6 +300,9 @@ communication仍靠旧option/selector；一个不兼容fanout use导致全部reu
 
 ### Checkpoint G（Q32.S）：Bounded Joint Composition与Resource-Aware Selection
 
+状态：已完成。实现与fresh gate见`tasks/archive/bounded-joint-physical-dataflow-selection.md`；后续状态只看
+`tasks/progress.md`。
+
 输入：Checkpoint F全部candidate producers及fresh candidate-growth/compile-wall数据。
 
 施工：
@@ -332,6 +335,8 @@ production-shaped source形成passing whole-variant并成为winner；7B compile 
 provider cache/shadow state去重；allocator修改candidate。
 
 ### Checkpoint H（Q32.G）：Production Cutover与旧路径删除
+
+状态：进行中。动态状态只看`tasks/progress.md`。
 
 输入：Checkpoints A-G全部fresh通过。
 

@@ -764,3 +764,23 @@
   目录。并发失败后不能保留污染结果，等所有lit进程退出，再从一个入口完整fresh重放。
 - 防复发：验证编排以build目录为互斥单位；可与lit并行的只限不读写该build test `Output`树的源码组织、dependency、
   format或独立配置检查。
+
+## 2026-07-20 静态非空loop result不能把init误当成运行时origin
+
+- 现象：`scf.for`下界、上界和步长证明至少执行一次时，lifetime provenance仍把result建模成init与backedge的union；DDR view
+  resolution也优先沿init，导致winner中实际来自body的view/root被错误扩展live range或恢复成错误boundary。
+- 根因：把“loop-carried iter_arg在进入loop时可见”与“loop result在退出时可能取init”混为一谈。只有zero-trip path存在时，
+  result才可能等于init；正trip的result只能来自最后一次backedge。
+- 修复模式：用checked static trip predicate区分result origin。statically nonempty只发布backedge；potentially empty发布
+  init+backedge；zero-trip只发布init。iter_arg本身仍需init/backedge fixed point。DDR/SPM provenance consumers共享同一判定，
+  并分别用positive/potentially-empty回归锁定。
+
+## 2026-07-20 whole selection不能返回第一个baseline improvement
+
+- 现象：share/fusion和recompute都通过whole gate且都优于reserved baseline，但coordinator按discovery顺序遇到share后立即返回，
+  没有比较后续DDR write更低的recompute；同类问题会让earlier recipe稳定遮住更优联合状态。
+- 根因：把baseline acceptance/fallback与Pareto frontier winner选择合成一次early-exit判断；候选hard cap存在并不意味着可以跳过
+  已接受survivors之间的比较。
+- 修复模式：baseline先独立通过全部gate并保留；optimization budget内的accepted tuples全部进入bounded exact Pareto；最后由
+  target-owned static policy逐个与当前winner比较，Unknown/overflow/同class tradeoff保持当前winner。测试必须至少包含“first
+  improvement不是final winner”和两个真实producer相互遮蔽的production-shaped case。

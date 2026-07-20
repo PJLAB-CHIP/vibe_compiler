@@ -85,9 +85,11 @@ matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
 
 TileRegionBodyEmitter::TileRegionBodyEmitter(
     std::string *failureReason, int64_t currentLogicalRank,
-    std::optional<TargetImplementationKind> selectedAlternative)
+    std::optional<TargetImplementationKind> selectedAlternative,
+    bool useDirectMappedBoundaryTransfer)
     : failureReason(failureReason), currentLogicalRank(currentLogicalRank),
-      selectedAlternative(selectedAlternative) {}
+      selectedAlternative(selectedAlternative),
+      useDirectMappedBoundaryTransfer(useDirectMappedBoundaryTransfer) {}
 
 mlir::FailureOr<TileRegionOp>
 TileRegionBodyEmitter::emit(TensorProgramScope scope,
@@ -443,12 +445,29 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::getOrMaterialize(
     if (!tensorType)
       return failValue("cannot materialize non-ranked-tensor value");
 
+    auto externalType =
+        mlir::dyn_cast<mlir::MemRefType>(externalIt->second.getType());
+    mlir::MemRefType directDestinationType =
+        makeSPMMemRefType(tensorType, targetLayout);
+    analysis::IndexRelationResult identity =
+        analysis::IndexRelation::identity(tensorType.getShape());
+    if (useDirectMappedBoundaryTransfer && targetLayout != MemLayout::Tensor &&
+        externalType && identity.isExact() &&
+        mlir::succeeded(analysis::TransferRealizability::proveMappedDma(
+            externalType, directDestinationType, *identity.get()))) {
+      auto destination = builder.create<mlir::memref::AllocOp>(
+          original.getLoc(), directDestinationType);
+      builder.create<StorageLoadOp>(original.getLoc(), externalIt->second,
+                                    destination.getResult());
+      record(original, targetLayout, destination.getResult());
+      return destination.getResult();
+    }
+
     auto destination = builder.create<mlir::memref::AllocOp>(
         original.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor));
     builder.create<StorageLoadOp>(original.getLoc(), externalIt->second,
                                   destination.getResult());
-    stagedBoundarySourceType =
-        mlir::dyn_cast<mlir::MemRefType>(externalIt->second.getType());
+    stagedBoundarySourceType = externalType;
     record(original, MemLayout::Tensor, destination.getResult());
     source = destination.getResult();
     sourceLayout = MemLayout::Tensor;
@@ -605,13 +624,12 @@ mlir::LogicalResult TileRegionBodyEmitter::materializeTargetImplementation(
                                 builder);
     break;
   case TargetImplementationKind::Generic:
-  case TargetImplementationKind::GenericReciprocalViaDivision:
+  case TargetImplementationKind::GenericReciprocal:
     if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(source))
-      return convertGeneric(
-          generic,
-          candidate.kind ==
-              TargetImplementationKind::GenericReciprocalViaDivision,
-          builder);
+      return convertGeneric(generic,
+                            candidate.kind ==
+                                TargetImplementationKind::GenericReciprocal,
+                            builder);
     break;
   }
   return fail("selected target implementation does not match source op");
@@ -644,12 +662,29 @@ TileRegionBodyEmitter::finishRegion(TensorProgramScope scope,
       continue;
     }
 
-    mlir::FailureOr<mlir::Value> tensorBuffer =
-        getOrMaterialize(value, MemLayout::Tensor, builder);
-    if (mlir::failed(tensorBuffer))
-      return mlir::failure();
-
-    builder.create<StorageStoreOp>(value.getLoc(), *tensorBuffer, output);
+    MemLayout currentLayout = MemLayout::Tensor;
+    mlir::Value current = lookupAny(value, currentLayout);
+    auto outputType = mlir::dyn_cast<mlir::MemRefType>(output.getType());
+    auto currentType = current
+                           ? mlir::dyn_cast<mlir::MemRefType>(current.getType())
+                           : mlir::MemRefType{};
+    auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+    analysis::IndexRelationResult identity =
+        tensorType ? analysis::IndexRelation::identity(tensorType.getShape())
+                   : analysis::IndexRelationResult{};
+    if (useDirectMappedBoundaryTransfer && current &&
+        currentLayout != MemLayout::Tensor && currentType && outputType &&
+        identity.isExact() &&
+        mlir::succeeded(analysis::TransferRealizability::proveMappedDma(
+            currentType, outputType, *identity.get()))) {
+      builder.create<StorageStoreOp>(value.getLoc(), current, output);
+    } else {
+      mlir::FailureOr<mlir::Value> tensorBuffer =
+          getOrMaterialize(value, MemLayout::Tensor, builder);
+      if (mlir::failed(tensorBuffer))
+        return mlir::failure();
+      builder.create<StorageStoreOp>(value.getLoc(), *tensorBuffer, output);
+    }
     yieldedValues.push_back(output);
   }
 

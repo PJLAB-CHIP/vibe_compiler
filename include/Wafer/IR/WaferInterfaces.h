@@ -34,7 +34,7 @@ enum class TargetImplementationKind : uint32_t {
   Gemm,
   BatchGemm,
   Generic,
-  GenericReciprocalViaDivision,
+  GenericReciprocal,
 };
 
 llvm::StringRef

@@ -37,9 +37,9 @@ unsigned reassociateIntegerElementwiseExpressions(mlir::func::FuncOp task);
 /// explicit SSA tree.
 unsigned balanceIntegerElementwiseReductionTrees(mlir::func::FuncOp task);
 
-/// Distribute modular integer multiplication over addition in eligible
-/// linalg scalar bodies.
-unsigned distributeIntegerElementwiseExpressions(mlir::func::FuncOp task);
+/// Contract a common multiplicand across modular integer subtraction in
+/// eligible linalg scalar bodies.
+unsigned contractIntegerDistributiveExpressions(mlir::func::FuncOp task);
 
 /// Factor a common modular integer multiplicand from eligible linalg scalar
 /// bodies.

@@ -396,7 +396,10 @@ getStaticIndexRange(mlir::Operation *anchor, mlir::OpFoldResult offset,
 }
 
 static mlir::Value resolveCarriedViewValue(mlir::Value value) {
+  llvm::DenseSet<mlir::Value> visited;
   while (true) {
+    if (!visited.insert(value).second)
+      return value;
     mlir::Value resolved = resolveTileRegionBoundaryValue(value);
     if (resolved != value) {
       value = resolved;
@@ -414,7 +417,20 @@ static mlir::Value resolveCarriedViewValue(mlir::Value value) {
     if (auto result = mlir::dyn_cast<mlir::OpResult>(value)) {
       if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(result.getOwner())) {
         if (result.getResultNumber() < forOp.getInitArgs().size()) {
-          value = forOp.getInitArgs()[result.getResultNumber()];
+          std::optional<int64_t> lower = mlir::getConstantIntValue(
+              mlir::getAsOpFoldResult(forOp.getLowerBound()));
+          std::optional<int64_t> upper = mlir::getConstantIntValue(
+              mlir::getAsOpFoldResult(forOp.getUpperBound()));
+          std::optional<int64_t> step = mlir::getConstantIntValue(
+              mlir::getAsOpFoldResult(forOp.getStep()));
+          auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(
+              forOp.getBody()->getTerminator());
+          bool nonEmpty = lower && upper && step && *step > 0 &&
+                          *lower < *upper && yield &&
+                          result.getResultNumber() < yield.getNumOperands();
+          value = nonEmpty
+                      ? yield.getOperand(result.getResultNumber())
+                      : forOp.getInitArgs()[result.getResultNumber()];
           continue;
         }
       }

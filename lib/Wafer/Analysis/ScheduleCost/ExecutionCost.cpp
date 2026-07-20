@@ -11,10 +11,13 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <algorithm>
 #include <optional>
 
 namespace wafer::analysis::detail {
@@ -438,6 +441,185 @@ private:
 
 void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
   ProgramWalker(cost).walkRoot(root);
+}
+
+namespace {
+
+struct BufferDependencyState {
+  uint64_t lastWriterDepth = 0;
+  uint64_t maximumReaderDepth = 0;
+};
+
+struct StructuralScheduleFacts {
+  uint64_t maximumDependencyDepth = 0;
+  uint64_t readyPriorityInversions = 0;
+};
+
+static unsigned getStaticReadyPriority(mlir::Operation *operation) {
+  auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(operation);
+  if (!instruction)
+    return 3;
+  switch (instruction.getInstructionFamily()) {
+  case InstrFamily::RDMA:
+  case InstrFamily::WDMA:
+  case InstrFamily::TDMA:
+    return 0;
+  case InstrFamily::DTE:
+    return 1;
+  case InstrFamily::CT:
+  case InstrFamily::NE:
+    return 2;
+  }
+  llvm_unreachable("unknown instruction family");
+}
+
+static bool hasUnsupportedDependencyControlFlow(mlir::func::FuncOp function) {
+  bool unsupported = false;
+  function.walk([&](mlir::Operation *operation) {
+    if (mlir::isa<mlir::scf::ForOp, mlir::scf::IfOp, mlir::func::CallOp>(
+            operation))
+      unsupported = true;
+  });
+  return unsupported;
+}
+
+static std::optional<StructuralScheduleFacts>
+analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
+  if (function.isDeclaration() || !function.getBody().hasOneBlock() ||
+      hasUnsupportedDependencyControlFlow(function))
+    return std::nullopt;
+
+  llvm::DenseMap<mlir::Value, BufferDependencyState> buffers;
+  llvm::DenseMap<mlir::Operation *, uint64_t> operationDepths;
+  uint64_t maximumDepth = 0;
+  uint64_t latestFenceDepth = 0;
+  uint64_t readyPriorityInversions = 0;
+  uint64_t seenReadyPriorities[3] = {};
+  mlir::Block *readyBlock = nullptr;
+  bool overflow = false;
+
+  function.walk([&](mlir::Operation *operation) {
+    if (overflow ||
+        !mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp>(operation))
+      return;
+
+    auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
+    if (!effects) {
+      overflow = true;
+      return;
+    }
+
+    uint64_t predecessorDepth = latestFenceDepth;
+    for (mlir::Value operand : operation->getOperands()) {
+      auto definition = operationDepths.find(operand.getDefiningOp());
+      if (definition != operationDepths.end())
+        predecessorDepth = std::max(predecessorDepth, definition->second);
+    }
+
+    llvm::DenseMap<mlir::Value, unsigned> accesses;
+    llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> instances;
+    effects.getEffects(instances);
+    for (const auto &effect : instances) {
+      mlir::Value value = effect.getValue();
+      if (!value)
+        continue;
+      unsigned &flags = accesses[value];
+      flags |= llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect()) ? 1u
+                                                                       : 0u;
+      flags |= llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect()) ? 2u
+                                                                         : 0u;
+    }
+    for (auto [value, flags] : accesses) {
+      const BufferDependencyState &state = buffers[value];
+      if (flags & 1u)
+        predecessorDepth =
+            std::max(predecessorDepth, state.lastWriterDepth);
+      if (flags & 2u)
+        predecessorDepth =
+            std::max({predecessorDepth, state.lastWriterDepth,
+                      state.maximumReaderDepth});
+    }
+
+    bool isFence = mlir::isa<SyncLocalFenceOp>(operation);
+    if (isFence)
+      predecessorDepth = std::max(predecessorDepth, maximumDepth);
+    uint64_t depth = 0;
+    if (!checkedAdd(predecessorDepth, 1, depth)) {
+      overflow = true;
+      return;
+    }
+    operationDepths[operation] = depth;
+    maximumDepth = std::max(maximumDepth, depth);
+
+    for (auto [value, flags] : accesses) {
+      BufferDependencyState &state = buffers[value];
+      if (flags & 2u) {
+        state.lastWriterDepth = depth;
+        state.maximumReaderDepth = 0;
+      } else if (flags & 1u) {
+        state.maximumReaderDepth = std::max(state.maximumReaderDepth, depth);
+      }
+    }
+    if (isFence)
+      latestFenceDepth = depth;
+
+    if (operation->getBlock() != readyBlock || isFence) {
+      readyBlock = operation->getBlock();
+      std::fill_n(seenReadyPriorities, 3, 0);
+    }
+    if (!isFence) {
+      unsigned priority = getStaticReadyPriority(operation);
+      uint64_t precedingLowerPriority = 0;
+      for (unsigned index = priority + 1; index < 3; ++index)
+        if (!checkedAdd(precedingLowerPriority, seenReadyPriorities[index],
+                        precedingLowerPriority)) {
+          overflow = true;
+          return;
+        }
+      if (!checkedAdd(readyPriorityInversions, precedingLowerPriority,
+                      readyPriorityInversions)) {
+        overflow = true;
+        return;
+      }
+      if (!checkedAdd(seenReadyPriorities[priority], 1,
+                      seenReadyPriorities[priority]))
+        overflow = true;
+    }
+  });
+  if (overflow)
+    return std::nullopt;
+  return StructuralScheduleFacts{maximumDepth, readyPriorityInversions};
+}
+
+} // namespace
+
+void collectDataDependencyDepth(mlir::Operation *root,
+                                InstructionProgramCost &cost) {
+  bool sawFunction = false;
+  bool unknown = false;
+  root->walk([&](mlir::func::FuncOp function) {
+    if (function.isDeclaration())
+      return;
+    sawFunction = true;
+    std::optional<StructuralScheduleFacts> facts =
+        analyzeFunctionStructuralSchedule(function);
+    if (!facts) {
+      unknown = true;
+      return;
+    }
+    cost.dataDependencyDepth.value =
+        std::max(cost.dataDependencyDepth.value,
+                 facts->maximumDependencyDepth);
+    add(cost.readyOrderPriorityInversions,
+        Quantity{facts->readyPriorityInversions});
+  });
+  if (!sawFunction || unknown) {
+    degrade(cost.dataDependencyDepth, ScheduleCostKnowledge::Unknown,
+            ScheduleCostReason::UnsupportedControlFlow);
+    degrade(cost.readyOrderPriorityInversions,
+            ScheduleCostKnowledge::Unknown,
+            ScheduleCostReason::UnsupportedControlFlow);
+  }
 }
 
 } // namespace wafer::analysis::detail

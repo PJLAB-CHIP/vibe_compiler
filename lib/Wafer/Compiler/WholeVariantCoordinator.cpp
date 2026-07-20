@@ -36,6 +36,8 @@ namespace wafer::compiler::detail {
 namespace {
 
 constexpr size_t kWholeVariantVisitLimit = 64;
+constexpr size_t kCoordinatedPolicyVisitLimit = 64;
+constexpr size_t kWholeVariantParetoLimit = 16;
 constexpr size_t kReportedAttemptLimit = 8;
 
 static mlir::LogicalResult
@@ -409,13 +411,32 @@ enum class ParetoOrder {
   Unknown,
 };
 
+struct MetricPair {
+  const analysis::ScheduleCostMetric *left;
+  const analysis::ScheduleCostMetric *right;
+};
+
+static ParetoOrder compareKnownMetrics(llvm::ArrayRef<MetricPair> dimensions) {
+  bool leftLower = false;
+  bool rightLower = false;
+  for (const MetricPair &dimension : dimensions) {
+    if (!dimension.left->isKnown() || !dimension.right->isKnown())
+      return ParetoOrder::Unknown;
+    leftLower |= dimension.left->value < dimension.right->value;
+    rightLower |= dimension.right->value < dimension.left->value;
+  }
+  if (!leftLower && !rightLower)
+    return ParetoOrder::Equivalent;
+  if (leftLower && !rightLower)
+    return ParetoOrder::LeftDominates;
+  if (!leftLower && rightLower)
+    return ParetoOrder::RightDominates;
+  return ParetoOrder::Incomparable;
+}
+
 static ParetoOrder compareExactWholeVariantCost(
     const analysis::WholeCardInstructionProgramCost &left,
     const analysis::WholeCardInstructionProgramCost &right) {
-  struct MetricPair {
-    const analysis::ScheduleCostMetric *left;
-    const analysis::ScheduleCostMetric *right;
-  };
   const MetricPair dimensions[] = {
       {&left.aggregateCompute.npuF16Bf16LogicalOps,
        &right.aggregateCompute.npuF16Bf16LogicalOps},
@@ -434,36 +455,191 @@ static ParetoOrder compareExactWholeVariantCost(
        &right.aggregateNoC.aggregateTransmitBytes},
       {&left.aggregateNoC.aggregateReceiveBytes,
        &right.aggregateNoC.aggregateReceiveBytes},
+      {&left.aggregateNoC.collectiveTransmitBytes[0],
+       &right.aggregateNoC.collectiveTransmitBytes[0]},
+      {&left.aggregateNoC.collectiveTransmitBytes[1],
+       &right.aggregateNoC.collectiveTransmitBytes[1]},
+      {&left.aggregateNoC.collectiveTransmitBytes[2],
+       &right.aggregateNoC.collectiveTransmitBytes[2]},
+      {&left.aggregateNoC.collectiveTransmitBytes[3],
+       &right.aggregateNoC.collectiveTransmitBytes[3]},
+      {&left.aggregateNoC.collectiveTransmitBytes[4],
+       &right.aggregateNoC.collectiveTransmitBytes[4]},
       {&left.aggregateInstructionCount, &right.aggregateInstructionCount},
       {&left.aggregateEventCount, &right.aggregateEventCount},
+      {&left.maximumRankSPMHighWaterBytes, &right.maximumRankSPMHighWaterBytes},
+      {&left.summedRankSPMHighWaterBytes, &right.summedRankSPMHighWaterBytes},
   };
 
-  bool leftLower = false;
-  bool rightLower = false;
-  for (const MetricPair &dimension : dimensions) {
-    if (!dimension.left->isKnown() || !dimension.right->isKnown())
-      return ParetoOrder::Unknown;
-    leftLower |= dimension.left->value < dimension.right->value;
-    rightLower |= dimension.right->value < dimension.left->value;
-  }
-  if (!leftLower && !rightLower)
-    return ParetoOrder::Equivalent;
-  if (leftLower && !rightLower)
+  return compareKnownMetrics(dimensions);
+}
+
+static ParetoOrder compareExactExecutionResources(
+    const analysis::WholeCardInstructionProgramCost &left,
+    const analysis::WholeCardInstructionProgramCost &right) {
+  analysis::WholeCardInstructionProgramCost leftExecution = left;
+  analysis::WholeCardInstructionProgramCost rightExecution = right;
+  leftExecution.maximumRankSPMHighWaterBytes = {};
+  leftExecution.summedRankSPMHighWaterBytes = {};
+  rightExecution.maximumRankSPMHighWaterBytes = {};
+  rightExecution.summedRankSPMHighWaterBytes = {};
+  return compareExactWholeVariantCost(leftExecution, rightExecution);
+}
+
+static ParetoOrder compareStaticDataflowPolicy(
+    const analysis::WholeCardInstructionProgramCost &left,
+    const analysis::WholeCardInstructionProgramCost &right) {
+  const analysis::ScheduleCostMetric &leftDepth =
+      left.maximumRankDataDependencyDepth;
+  const analysis::ScheduleCostMetric &rightDepth =
+      right.maximumRankDataDependencyDepth;
+  if (!leftDepth.isKnown() || !rightDepth.isKnown())
+    return ParetoOrder::Unknown;
+  if (leftDepth.value < rightDepth.value)
     return ParetoOrder::LeftDominates;
-  if (!leftLower && rightLower)
+  if (leftDepth.value > rightDepth.value)
     return ParetoOrder::RightDominates;
-  return ParetoOrder::Incomparable;
+  const analysis::ScheduleCostMetric &leftInversions =
+      left.aggregateReadyOrderPriorityInversions;
+  const analysis::ScheduleCostMetric &rightInversions =
+      right.aggregateReadyOrderPriorityInversions;
+  if (!leftInversions.isKnown() || !rightInversions.isKnown())
+    return ParetoOrder::Unknown;
+  if (leftInversions.value < rightInversions.value)
+    return ParetoOrder::LeftDominates;
+  if (leftInversions.value > rightInversions.value)
+    return ParetoOrder::RightDominates;
+  return ParetoOrder::Equivalent;
+}
+
+static ParetoOrder compareTargetStaticTradeoff(
+    const analysis::WholeCardInstructionProgramCost &left,
+    const analysis::WholeCardInstructionProgramCost &right,
+    const TargetStaticSelectionPolicy &policy) {
+  if (policy.tradeoff == TargetStaticTradeoffPolicy::Conservative)
+    return ParetoOrder::Equivalent;
+
+  const llvm::SmallVector<llvm::SmallVector<MetricPair, 8>, 6>
+      priorityClasses = {
+          {{&left.aggregateDDRReadBytes, &right.aggregateDDRReadBytes},
+           {&left.aggregateDDRWriteBytes, &right.aggregateDDRWriteBytes}},
+          {{&left.aggregateNoC.aggregateTransmitBytes,
+            &right.aggregateNoC.aggregateTransmitBytes},
+           {&left.aggregateNoC.aggregateReceiveBytes,
+            &right.aggregateNoC.aggregateReceiveBytes},
+           {&left.aggregateNoC.collectiveTransmitBytes[0],
+            &right.aggregateNoC.collectiveTransmitBytes[0]},
+           {&left.aggregateNoC.collectiveTransmitBytes[1],
+            &right.aggregateNoC.collectiveTransmitBytes[1]},
+           {&left.aggregateNoC.collectiveTransmitBytes[2],
+            &right.aggregateNoC.collectiveTransmitBytes[2]},
+           {&left.aggregateNoC.collectiveTransmitBytes[3],
+            &right.aggregateNoC.collectiveTransmitBytes[3]},
+           {&left.aggregateNoC.collectiveTransmitBytes[4],
+            &right.aggregateNoC.collectiveTransmitBytes[4]}},
+          {{&left.aggregateSPMMovementBytes,
+            &right.aggregateSPMMovementBytes}},
+          {{&left.aggregateInstructionCount,
+            &right.aggregateInstructionCount},
+           {&left.aggregateEventCount, &right.aggregateEventCount}},
+          {{&left.aggregateCompute.npuF16Bf16LogicalOps,
+            &right.aggregateCompute.npuF16Bf16LogicalOps},
+           {&left.aggregateCompute.npuOtherLogicalOps,
+            &right.aggregateCompute.npuOtherLogicalOps},
+           {&left.aggregateCompute.vectorF16Bf16LogicalOps,
+            &right.aggregateCompute.vectorF16Bf16LogicalOps},
+           {&left.aggregateCompute.vectorF32LogicalOps,
+            &right.aggregateCompute.vectorF32LogicalOps},
+           {&left.aggregateCompute.vectorOtherLogicalOps,
+            &right.aggregateCompute.vectorOtherLogicalOps}},
+          {{&left.maximumRankDataDependencyDepth,
+            &right.maximumRankDataDependencyDepth},
+           {&left.aggregateReadyOrderPriorityInversions,
+            &right.aggregateReadyOrderPriorityInversions}},
+      };
+  for (const llvm::SmallVector<MetricPair, 8> &priorityClass :
+       priorityClasses) {
+    ParetoOrder order = compareKnownMetrics(priorityClass);
+    if (order != ParetoOrder::Equivalent)
+      return order;
+  }
+  return ParetoOrder::Equivalent;
 }
 
 static bool isPreferredOver(const AcceptedWholeVariant &candidate,
-                            const AcceptedWholeVariant &baseline) {
+                            const AcceptedWholeVariant &baseline,
+                            const TargetStaticSelectionPolicy &policy) {
   ParetoOrder order = compareExactWholeVariantCost(candidate.resourceCost,
                                                    baseline.resourceCost);
   if (order == ParetoOrder::LeftDominates)
     return true;
+  if (order == ParetoOrder::Equivalent)
+    return compareStaticDataflowPolicy(candidate.resourceCost,
+                                       baseline.resourceCost) ==
+           ParetoOrder::LeftDominates;
   if (order != ParetoOrder::Incomparable)
     return false;
-  return candidate.estimatedTimePs < baseline.estimatedTimePs;
+  // Accepted high-water is a capacity fact, not a calibrated performance
+  // quantity. When all exact execution-resource dimensions are no worse and
+  // at least one is lower, the static target policy accepts the known
+  // high-water tradeoff instead of requiring an unavailable timing model.
+  if (compareExactExecutionResources(candidate.resourceCost,
+                                     baseline.resourceCost) ==
+      ParetoOrder::LeftDominates)
+    return true;
+  return compareTargetStaticTradeoff(candidate.resourceCost,
+                                     baseline.resourceCost, policy) ==
+         ParetoOrder::LeftDominates;
+}
+
+static bool hasEarlierStaticPolicyOrder(const AcceptedWholeVariant &lhs,
+                                        const AcceptedWholeVariant &rhs) {
+  return std::tie(lhs.selectedDiscoveryOrders,
+                  lhs.selectedReservedBaselines) <
+         std::tie(rhs.selectedDiscoveryOrders,
+                  rhs.selectedReservedBaselines);
+}
+
+static void
+insertParetoCandidate(AcceptedWholeVariant candidate,
+                      llvm::SmallVectorImpl<AcceptedWholeVariant> &frontier) {
+  llvm::SmallVector<unsigned, 8> dominatedIndices;
+  for (auto [index, existing] : llvm::enumerate(frontier)) {
+    switch (compareExactWholeVariantCost(candidate.resourceCost,
+                                         existing.resourceCost)) {
+    case ParetoOrder::Unknown:
+    case ParetoOrder::RightDominates:
+      return;
+    case ParetoOrder::Equivalent:
+      switch (compareStaticDataflowPolicy(candidate.resourceCost,
+                                          existing.resourceCost)) {
+      case ParetoOrder::LeftDominates:
+        dominatedIndices.push_back(index);
+        continue;
+      case ParetoOrder::RightDominates:
+        return;
+      case ParetoOrder::Equivalent:
+      case ParetoOrder::Incomparable:
+      case ParetoOrder::Unknown:
+        break;
+      }
+      if (!hasEarlierStaticPolicyOrder(candidate, existing))
+        return;
+      dominatedIndices.push_back(index);
+      break;
+    case ParetoOrder::LeftDominates:
+      dominatedIndices.push_back(index);
+      break;
+    case ParetoOrder::Incomparable:
+      break;
+    }
+  }
+  for (unsigned index : llvm::reverse(dominatedIndices))
+    frontier.erase(frontier.begin() + index);
+  frontier.push_back(std::move(candidate));
+  llvm::sort(frontier, hasEarlierStaticPolicyOrder);
+  if (frontier.size() > kWholeVariantParetoLimit)
+    frontier.pop_back();
 }
 
 static std::string summarizeAttemptFailure(llvm::ArrayRef<size_t> indices,
@@ -576,6 +752,13 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
       diagnostics << "  - " << failure << "\n";
     return mlir::failure();
   }
+  AcceptedWholeVariant baselineAccepted = std::move(*baseline);
+  llvm::SmallVector<AcceptedWholeVariant, kWholeVariantParetoLimit>
+      paretoFrontier;
+  auto retainAccepted = [&](mlir::FailureOr<AcceptedWholeVariant> accepted) {
+    if (mlir::succeeded(accepted))
+      insertParetoCandidate(std::move(*accepted), paretoFrontier);
+  };
 
   size_t visited = 0;
   while (!queue.empty() && visited < kWholeVariantVisitLimit) {
@@ -584,9 +767,7 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
     ++visited;
     std::vector<size_t> candidateIndices =
         getCandidateIndices(combination.positions, *candidateOrder);
-    mlir::FailureOr<AcceptedWholeVariant> accepted = attempt(candidateIndices);
-    if (mlir::succeeded(accepted) && isPreferredOver(*accepted, *baseline))
-      return accepted;
+    retainAccepted(attempt(candidateIndices));
 
     for (size_t rank = 0; rank < combination.positions.size(); ++rank) {
       std::vector<size_t> neighbor = combination.positions;
@@ -607,7 +788,10 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
   std::set<int64_t> discoveryOrders;
   for (const RankVariantCandidate &candidate : frontiers.front())
     discoveryOrders.insert(candidate.discoveryOrder);
+  size_t coordinatedVisited = 0;
   for (int64_t discoveryOrder : discoveryOrders) {
+    if (coordinatedVisited >= kCoordinatedPolicyVisitLimit)
+      break;
     std::vector<size_t> candidateIndices;
     candidateIndices.reserve(frontiers.size());
     bool complete = true;
@@ -628,9 +812,8 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
     }
     if (!complete || attemptedCandidateIndices.count(candidateIndices))
       continue;
-    mlir::FailureOr<AcceptedWholeVariant> accepted = attempt(candidateIndices);
-    if (mlir::succeeded(accepted) && isPreferredOver(*accepted, *baseline))
-      return accepted;
+    ++coordinatedVisited;
+    retainAccepted(attempt(candidateIndices));
   }
 
   // Signature deduplication can make the conservative partition share the
@@ -654,12 +837,17 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
     policyTail.push_back(selected);
   }
   if (!attemptedCandidateIndices.count(policyTail)) {
-    mlir::FailureOr<AcceptedWholeVariant> accepted = attempt(policyTail);
-    if (mlir::succeeded(accepted) && isPreferredOver(*accepted, *baseline))
-      return accepted;
+    retainAccepted(attempt(policyTail));
   }
 
-  return std::move(*baseline);
+  const TargetStaticSelectionPolicy selectionPolicy =
+      getDefaultWaferTargetPolicy(TileSearchEffort::Default).staticSelection;
+  AcceptedWholeVariant selected = std::move(baselineAccepted);
+  for (AcceptedWholeVariant &candidate : paretoFrontier) {
+    if (isPreferredOver(candidate, selected, selectionPolicy))
+      selected = std::move(candidate);
+  }
+  return selected;
 }
 
 } // namespace wafer::compiler::detail

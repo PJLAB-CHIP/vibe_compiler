@@ -45,6 +45,13 @@ namespace wafer::tensor_program_scheduling {
 
 enum class TileSearchMode { FirstLegal, MinEstimatedTime };
 
+enum class CommunicationAlternative {
+  Ring,
+  DirectAllGather,
+  TreeAllReduce,
+  DirectAllGatherTreeAllReduce,
+};
+
 struct CandidateSpec {
   llvm::SmallVector<int64_t, 4> tileSizes;
   llvm::SmallVector<int64_t, 2> reductionSplitSizes;
@@ -122,6 +129,27 @@ struct SelectionConfig {
   int64_t maxSearchCandidates = 0;
   int64_t searchBeamWidth = 0;
   int64_t candidateParallelism = 1;
+  /// Selects one compiler-private communication rewrite parameter point. The
+  /// choice is materialized in an actual clone and never persisted as an IR
+  /// attribute or artifact field.
+  CommunicationAlternative communicationAlternative =
+      CommunicationAlternative::Ring;
+  /// Requests a bounded alternative from the task candidate beam. Zero is
+  /// the locally best complete candidate. A missing ordinal rejects only the
+  /// enclosing optimized rank recipe.
+  unsigned taskAlternativeOrdinal = 0;
+  /// Rank-frontier recipes disable implicit implementation enumeration so the
+  /// reserved tuple remains a true source-interface baseline and each
+  /// optimized implementation is represented by its own complete clone.
+  bool allowAutomaticImplementationAlternatives = true;
+  /// When present, eligible source ops are evaluated only with this
+  /// implementation form; ineligible tasks retain their ordinary baseline.
+  std::optional<TargetImplementationKind> forcedImplementationAlternative;
+  /// When true, exact cross-space identity transfers may load/store directly
+  /// between a DDR Tensor boundary and the selected Cx/NCx SPM version.
+  /// Otherwise the candidate materializes the conservative Tensor staging
+  /// route. The choice is reflected only by actual movement IR.
+  bool useDirectMappedBoundaryTransfer = false;
   bool printCandidateSummary = false;
   int64_t spmBase = 0;
   int64_t spmLimit = 0;

@@ -35,6 +35,8 @@ Quantity multiply(Quantity lhs, uint64_t rhs);
 void add(ScheduleCostMetric &metric, Quantity quantity);
 
 void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost);
+void collectDataDependencyDepth(mlir::Operation *root,
+                                InstructionProgramCost &cost);
 void collectSPMHighWater(mlir::Operation *root, InstructionProgramCost &cost,
                          const TargetScheduleCostPolicy &policy);
 

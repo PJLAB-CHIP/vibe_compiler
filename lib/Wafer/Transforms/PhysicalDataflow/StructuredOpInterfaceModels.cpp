@@ -53,7 +53,7 @@ static bool hasReciprocalExpression(mlir::linalg::GenericOp generic) {
       });
 }
 
-/// The reciprocal-via-division alternative is pointwise only when every
+/// The target reciprocal alternative is pointwise only when every
 /// structured input relation is exactly represented by the current static
 /// indexing maps. This is the first production consumer of IndexRelation; a
 /// sound bound or unsupported relation keeps the baseline implementation.
@@ -204,7 +204,7 @@ struct GenericTargetImplementationModel
         hasReciprocalExpression(generic) &&
         hasExactPointwiseIndexRelations(generic))
       candidates.push_back(TargetImplementationCandidate{
-          TargetImplementationKind::GenericReciprocalViaDivision});
+          TargetImplementationKind::GenericReciprocal});
   }
 
   mlir::LogicalResult materializeSelectedTargetImplementation(

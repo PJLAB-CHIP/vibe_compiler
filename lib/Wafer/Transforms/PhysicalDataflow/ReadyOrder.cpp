@@ -4,8 +4,10 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <limits>
@@ -173,10 +175,131 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
   return moved;
 }
 
+static bool isMutatingEffect(
+    const mlir::MemoryEffects::EffectInstance &effect) {
+  return !llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
+}
+
+static bool areKnownDistinctValues(mlir::Value lhs, mlir::Value rhs) {
+  if (lhs == rhs)
+    return false;
+  // Each memref.alloc result denotes a fresh allocation. This is the only
+  // non-alias proof needed for crossing the setup emitted by the production
+  // tile/instruction lowering; all other different values fail closed.
+  return lhs.getDefiningOp<mlir::memref::AllocOp>() ||
+         rhs.getDefiningOp<mlir::memref::AllocOp>();
+}
+
+static bool effectsMayConflict(
+    const mlir::MemoryEffects::EffectInstance &lhs,
+    const mlir::MemoryEffects::EffectInstance &rhs) {
+  if (!isMutatingEffect(lhs) && !isMutatingEffect(rhs))
+    return false;
+  if (lhs.getResource() != rhs.getResource())
+    return false;
+  mlir::Value lhsValue = lhs.getValue();
+  mlir::Value rhsValue = rhs.getValue();
+  if (lhsValue && rhsValue && areKnownDistinctValues(lhsValue, rhsValue))
+    return false;
+  return true;
+}
+
+static bool canReorderEffects(mlir::Operation *lhs, mlir::Operation *rhs) {
+  if (mlir::isa<WaferInstructionOpInterface>(lhs) &&
+      mlir::isa<WaferInstructionOpInterface>(rhs)) {
+    llvm::SmallVector<BufferAccess, 4> lhsAccesses;
+    llvm::SmallVector<BufferAccess, 4> rhsAccesses;
+    collectBufferAccesses(lhs, lhsAccesses);
+    collectBufferAccesses(rhs, rhsAccesses);
+    for (const BufferAccess &lhsAccess : lhsAccesses)
+      for (const BufferAccess &rhsAccess : rhsAccesses)
+        if (lhsAccess.value == rhsAccess.value &&
+            (lhsAccess.write || rhsAccess.write))
+          return false;
+    return true;
+  }
+  auto lhsEffects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(lhs);
+  auto rhsEffects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(rhs);
+  if (!lhsEffects || !rhsEffects)
+    return mlir::isMemoryEffectFree(lhs) && mlir::isMemoryEffectFree(rhs);
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> lhsInstances;
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> rhsInstances;
+  lhsEffects.getEffects(lhsInstances);
+  rhsEffects.getEffects(rhsInstances);
+  for (const auto &lhsEffect : lhsInstances)
+    for (const auto &rhsEffect : rhsInstances)
+      if (effectsMayConflict(lhsEffect, rhsEffect))
+        return false;
+  return true;
+}
+
+static bool canMoveAfter(mlir::Operation *operation,
+                         mlir::Operation *destination) {
+  if (operation->getBlock() != destination->getBlock() ||
+      operation == destination || operation->getNumRegions() != 0)
+    return false;
+  llvm::DenseSet<mlir::Value> results;
+  for (mlir::Value result : operation->getResults())
+    results.insert(result);
+  for (mlir::Operation *crossed = operation->getNextNode(); crossed;
+       crossed = crossed->getNextNode()) {
+    if (crossed->hasTrait<mlir::OpTrait::IsTerminator>() ||
+        crossed->getNumRegions() != 0 || isLocalFence(crossed) ||
+        !canReorderEffects(operation, crossed))
+      return false;
+    if (llvm::any_of(crossed->getOperands(), [&](mlir::Value operand) {
+          return results.contains(operand);
+        }))
+      return false;
+    if (crossed == destination)
+      return true;
+  }
+  return false;
+}
+
+static unsigned scheduleWindow(llvm::ArrayRef<mlir::Operation *> operations) {
+  if (operations.size() < 2)
+    return 0;
+  llvm::SmallVector<mlir::Operation *, 16> order(operations);
+  unsigned moved = 0;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (unsigned index = 0; index + 1 < order.size(); ++index) {
+      mlir::Operation *earlier = order[index];
+      mlir::Operation *later = order[index + 1];
+      if (getReadyPriority(earlier) <= getReadyPriority(later) ||
+          !canMoveAfter(earlier, later))
+        continue;
+      earlier->moveAfter(later);
+      std::swap(order[index], order[index + 1]);
+      ++moved;
+      changed = true;
+    }
+  }
+  return moved;
+}
+
 static unsigned scheduleBlock(mlir::Block &block) {
   unsigned moved = 0;
+  llvm::SmallVector<llvm::SmallVector<mlir::Operation *, 16>, 4> windows(1);
+  for (mlir::Operation &operation : block) {
+    if (isLocalFence(&operation)) {
+      windows.emplace_back();
+      continue;
+    }
+    if (mlir::isa<WaferInstructionOpInterface>(&operation))
+      windows.back().push_back(&operation);
+  }
+  // A full fence-bounded window permits a lower-priority instruction to move
+  // later across effect-independent cast/allocation setup.
+  for (llvm::ArrayRef<mlir::Operation *> window : windows)
+    moved += scheduleWindow(window);
+
+  // Keep the contiguous DAG scheduler as the stronger path for runs where
+  // multiple legal ready nodes can be selected without crossing setup ops.
   llvm::SmallVector<mlir::Operation *, 16> run;
-  auto flush = [&] {
+  auto flushRun = [&] {
     moved += scheduleRun(run);
     run.clear();
   };
@@ -184,9 +307,9 @@ static unsigned scheduleBlock(mlir::Block &block) {
     if (isReadyOrderOperation(&operation))
       run.push_back(&operation);
     else
-      flush();
+      flushRun();
   }
-  flush();
+  flushRun();
   return moved;
 }
 

@@ -121,6 +121,18 @@ struct InstructionProgramCost {
   /// instruction program, not the number of waits consuming those tokens.
   ScheduleCostMetric eventCount;
 
+  /// Longest value/data-effect dependency chain in the accepted instruction
+  /// IR. This is a structural count, not a cycle, latency, or overlap model.
+  /// Unsupported control flow leaves it unknown without degrading the exact
+  /// resource dimensions above.
+  ScheduleCostMetric dataDependencyDepth;
+
+  /// Count of target-static ready-priority inversions in fence-bounded final
+  /// instruction order. This describes an actual order, not latency or
+  /// overlap, and is used only after exact resources and dependency depth are
+  /// equivalent.
+  ScheduleCostMetric readyOrderPriorityInversions;
+
   /// Maximum accepted SPM address end relative to the target SPM base. This is
   /// address-space high-water, not liveness-aware peak allocation.
   ScheduleCostMetric spmHighWaterBytes;
@@ -142,6 +154,15 @@ struct WholeCardInstructionProgramCost {
   ScheduleNoCCost aggregateNoC;
   ScheduleCostMetric aggregateInstructionCount;
   ScheduleCostMetric aggregateEventCount;
+
+  /// Maximum rank-local structural data-dependency depth. It is retained for
+  /// exact-resource-equivalent static policy tie-breaking, not summed as
+  /// consumed work and not converted to time.
+  ScheduleCostMetric maximumRankDataDependencyDepth;
+
+  /// Sum of rank-local ready-priority inversions for exact-resource and
+  /// dependency-depth-equivalent static policy tie-breaking.
+  ScheduleCostMetric aggregateReadyOrderPriorityInversions;
 
   ScheduleCostMetric maximumRankSPMHighWaterBytes;
   ScheduleCostMetric summedRankSPMHighWaterBytes;

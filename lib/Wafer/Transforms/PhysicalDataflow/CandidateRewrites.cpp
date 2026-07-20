@@ -13,6 +13,8 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <optional>
+
 namespace wafer {
 namespace {
 
@@ -37,6 +39,8 @@ static bool isCompatibleConsumerUse(mlir::OpOperand &use,
 static bool hasNoOverflowPromise(mlir::Operation *operation) {
   if (auto add = mlir::dyn_cast<mlir::arith::AddIOp>(operation))
     return add.getOverflowFlags() != mlir::arith::IntegerOverflowFlags::none;
+  if (auto sub = mlir::dyn_cast<mlir::arith::SubIOp>(operation))
+    return sub.getOverflowFlags() != mlir::arith::IntegerOverflowFlags::none;
   if (auto mul = mlir::dyn_cast<mlir::arith::MulIOp>(operation))
     return mul.getOverflowFlags() != mlir::arith::IntegerOverflowFlags::none;
   return true;
@@ -61,6 +65,31 @@ static mlir::arith::AddIOp asModularAdd(mlir::Value value) {
 static mlir::arith::MulIOp asModularMul(mlir::Value value) {
   auto mul = value.getDefiningOp<mlir::arith::MulIOp>();
   return mul && isModularIntegerBinary(mul) ? mul : mlir::arith::MulIOp{};
+}
+
+static mlir::arith::SubIOp asModularSub(mlir::Value value) {
+  auto sub = value.getDefiningOp<mlir::arith::SubIOp>();
+  return sub && isModularIntegerBinary(sub) ? sub : mlir::arith::SubIOp{};
+}
+
+struct CommonMultiplicand {
+  mlir::Value factor;
+  mlir::Value lhsOther;
+  mlir::Value rhsOther;
+};
+
+static std::optional<CommonMultiplicand>
+findCommonMultiplicand(mlir::arith::MulIOp lhs,
+                       mlir::arith::MulIOp rhs) {
+  if (lhs.getLhs() == rhs.getLhs())
+    return CommonMultiplicand{lhs.getLhs(), lhs.getRhs(), rhs.getRhs()};
+  if (lhs.getLhs() == rhs.getRhs())
+    return CommonMultiplicand{lhs.getLhs(), lhs.getRhs(), rhs.getLhs()};
+  if (lhs.getRhs() == rhs.getLhs())
+    return CommonMultiplicand{lhs.getRhs(), lhs.getLhs(), rhs.getRhs()};
+  if (lhs.getRhs() == rhs.getRhs())
+    return CommonMultiplicand{lhs.getRhs(), lhs.getLhs(), rhs.getLhs()};
+  return std::nullopt;
 }
 
 template <typename Rewrite>
@@ -180,30 +209,32 @@ unsigned balanceIntegerElementwiseReductionTrees(mlir::func::FuncOp task) {
       });
 }
 
-unsigned distributeIntegerElementwiseExpressions(mlir::func::FuncOp task) {
+unsigned contractIntegerDistributiveExpressions(mlir::func::FuncOp task) {
   return rewriteIntegerYields(
       task, [](mlir::linalg::YieldOp yield, mlir::Value yielded) {
-        auto multiply = asModularMul(yielded);
-        if (!multiply || !multiply->hasOneUse())
+        auto difference = asModularSub(yielded);
+        auto lhs = difference ? asModularMul(difference.getLhs())
+                              : mlir::arith::MulIOp{};
+        auto rhs = difference ? asModularMul(difference.getRhs())
+                              : mlir::arith::MulIOp{};
+        if (!difference || !lhs || !rhs || !difference->hasOneUse() ||
+            !lhs->hasOneUse() || !rhs->hasOneUse())
           return false;
-        auto sum = asModularAdd(multiply.getRhs());
-        mlir::Value factor = multiply.getLhs();
-        if (!sum) {
-          sum = asModularAdd(multiply.getLhs());
-          factor = multiply.getRhs();
-        }
-        if (!sum || !sum->hasOneUse())
+
+        std::optional<CommonMultiplicand> common =
+            findCommonMultiplicand(lhs, rhs);
+        if (!common)
           return false;
-        mlir::OpBuilder builder(multiply);
-        auto lhs = builder.create<mlir::arith::MulIOp>(
-            multiply.getLoc(), factor, sum.getLhs());
-        auto rhs = builder.create<mlir::arith::MulIOp>(
-            multiply.getLoc(), factor, sum.getRhs());
-        auto distributed = builder.create<mlir::arith::AddIOp>(
-            multiply.getLoc(), lhs, rhs);
-        yield->setOperand(0, distributed);
-        eraseIfDead(multiply);
-        eraseIfDead(sum);
+
+        mlir::OpBuilder builder(difference);
+        auto terms = builder.create<mlir::arith::SubIOp>(
+            difference.getLoc(), common->lhsOther, common->rhsOther);
+        auto contracted = builder.create<mlir::arith::MulIOp>(
+            difference.getLoc(), common->factor, terms);
+        yield->setOperand(0, contracted);
+        eraseIfDead(difference);
+        eraseIfDead(lhs);
+        eraseIfDead(rhs);
         return true;
       });
 }
@@ -218,34 +249,16 @@ unsigned factorIntegerElementwiseExpressions(mlir::func::FuncOp task) {
             !lhs->hasOneUse() || !rhs->hasOneUse())
           return false;
 
-        mlir::Value factor;
-        mlir::Value lhsOther;
-        mlir::Value rhsOther;
-        if (lhs.getLhs() == rhs.getLhs()) {
-          factor = lhs.getLhs();
-          lhsOther = lhs.getRhs();
-          rhsOther = rhs.getRhs();
-        } else if (lhs.getLhs() == rhs.getRhs()) {
-          factor = lhs.getLhs();
-          lhsOther = lhs.getRhs();
-          rhsOther = rhs.getLhs();
-        } else if (lhs.getRhs() == rhs.getLhs()) {
-          factor = lhs.getRhs();
-          lhsOther = lhs.getLhs();
-          rhsOther = rhs.getRhs();
-        } else if (lhs.getRhs() == rhs.getRhs()) {
-          factor = lhs.getRhs();
-          lhsOther = lhs.getLhs();
-          rhsOther = rhs.getLhs();
-        } else {
+        std::optional<CommonMultiplicand> common =
+            findCommonMultiplicand(lhs, rhs);
+        if (!common)
           return false;
-        }
 
         mlir::OpBuilder builder(sum);
         auto terms = builder.create<mlir::arith::AddIOp>(
-            sum.getLoc(), lhsOther, rhsOther);
+            sum.getLoc(), common->lhsOther, common->rhsOther);
         auto factored = builder.create<mlir::arith::MulIOp>(
-            sum.getLoc(), factor, terms);
+            sum.getLoc(), common->factor, terms);
         yield->setOperand(0, factored);
         eraseIfDead(sum);
         eraseIfDead(lhs);

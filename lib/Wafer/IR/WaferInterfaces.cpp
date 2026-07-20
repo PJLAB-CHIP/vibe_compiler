@@ -15,8 +15,8 @@ wafer::stringifyTargetImplementationKind(TargetImplementationKind kind) {
     return "batch-gemm";
   case TargetImplementationKind::Generic:
     return "generic";
-  case TargetImplementationKind::GenericReciprocalViaDivision:
-    return "generic-reciprocal-via-division";
+  case TargetImplementationKind::GenericReciprocal:
+    return "generic-reciprocal";
   }
   llvm_unreachable("unknown target implementation kind");
 }

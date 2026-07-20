@@ -125,6 +125,7 @@ analyzeInstructionProgramCost(mlir::Operation *root,
   if (!root)
     return cost;
   detail::collectExecutionCost(root, cost);
+  detail::collectDataDependencyDepth(root, cost);
   detail::collectSPMHighWater(root, cost, policy);
   return cost;
 }
@@ -199,6 +200,10 @@ WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
     addNoCCost(result.aggregateNoC, rankCost.noc);
     addMetric(result.aggregateInstructionCount, rankCost.instructionCount);
     addMetric(result.aggregateEventCount, rankCost.eventCount);
+    maximizeMetric(result.maximumRankDataDependencyDepth,
+                   rankCost.dataDependencyDepth);
+    addMetric(result.aggregateReadyOrderPriorityInversions,
+              rankCost.readyOrderPriorityInversions);
     maximizeMetric(result.maximumRankSPMHighWaterBytes,
                    rankCost.spmHighWaterBytes);
     addMetric(result.summedRankSPMHighWaterBytes, rankCost.spmHighWaterBytes);

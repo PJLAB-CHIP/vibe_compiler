@@ -533,6 +533,100 @@ module {
   }));
 }
 
+TEST_F(LifetimeAnalysisTest,
+       DataflowUsesOnlyBackedgeOriginForStaticallyNonEmptyLoopResult) {
+  auto module = parse(R"mlir(
+module {
+  func.func @positive_loop_result(%lhs: memref<16xi8>,
+                                  %rhs: memref<16xi8>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %looped = scf.for %index = %c0 to %c4 step %c1
+        iter_args(%iter = %lhs) -> (memref<16xi8>) {
+      scf.yield %rhs : memref<16xi8>
+    }
+    %unused = memref.load %looped[%c0] : memref<16xi8>
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::scf::ForOp forOp;
+  mlir::memref::LoadOp load;
+  function.walk([&](mlir::scf::ForOp op) { forOp = op; });
+  function.walk([&](mlir::memref::LoadOp op) { load = op; });
+  ASSERT_TRUE(forOp);
+  ASSERT_TRUE(load);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 0> demands;
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return mlir::isa<mlir::MemRefType>(type);
+  });
+  LifetimeFailure failure;
+  ASSERT_TRUE(mlir::succeeded(dataflow.run(function, nullptr, &failure)));
+
+  std::optional<ProgramPoint> usePoint = timeline->lookup(load);
+  ASSERT_TRUE(usePoint);
+  llvm::SmallVector<ValueOriginRef, 2> origins =
+      dataflow.originsAt(forOp.getResult(0), usePoint->path);
+  ASSERT_EQ(origins.size(), 1u);
+  EXPECT_EQ(origins.front().root, function.getArgument(1));
+}
+
+TEST_F(LifetimeAnalysisTest,
+       DataflowRetainsInitAndBackedgeOriginsForPotentiallyEmptyLoopResult) {
+  auto module = parse(R"mlir(
+module {
+  func.func @dynamic_loop_result(
+      %lhs: memref<16xi8>, %rhs: memref<16xi8>,
+      %lower: index, %upper: index, %step: index) {
+    %c0 = arith.constant 0 : index
+    %looped = scf.for %index = %lower to %upper step %step
+        iter_args(%iter = %lhs) -> (memref<16xi8>) {
+      scf.yield %rhs : memref<16xi8>
+    }
+    %unused = memref.load %looped[%c0] : memref<16xi8>
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::scf::ForOp forOp;
+  mlir::memref::LoadOp load;
+  function.walk([&](mlir::scf::ForOp op) { forOp = op; });
+  function.walk([&](mlir::memref::LoadOp op) { load = op; });
+  ASSERT_TRUE(forOp);
+  ASSERT_TRUE(load);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 0> demands;
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return mlir::isa<mlir::MemRefType>(type);
+  });
+  LifetimeFailure failure;
+  ASSERT_TRUE(mlir::succeeded(dataflow.run(function, nullptr, &failure)));
+
+  std::optional<ProgramPoint> usePoint = timeline->lookup(load);
+  ASSERT_TRUE(usePoint);
+  llvm::SmallVector<ValueOriginRef, 2> origins =
+      dataflow.originsAt(forOp.getResult(0), usePoint->path);
+  ASSERT_EQ(origins.size(), 2u);
+  EXPECT_TRUE(llvm::any_of(origins, [&](ValueOriginRef origin) {
+    return origin.root == function.getArgument(0);
+  }));
+  EXPECT_TRUE(llvm::any_of(origins, [&](ValueOriginRef origin) {
+    return origin.root == function.getArgument(1);
+  }));
+}
+
 TEST_F(LifetimeAnalysisTest, DataflowRejectsUnknownTrackedRootProducer) {
   auto module = parse(R"mlir(
 module {

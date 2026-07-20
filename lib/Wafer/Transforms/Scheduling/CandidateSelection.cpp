@@ -509,13 +509,19 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
   }
   std::optional<std::string> reductionSplitLegalityFailure =
       getReductionSplitLegalityFailure(task);
+  llvm::SmallVector<TargetImplementationKind, 2> implementationAlternatives =
+      collectImplementationAlternatives(task);
+  bool forcedImplementationApplies =
+      config.forcedImplementationAlternative &&
+      llvm::is_contained(implementationAlternatives,
+                         *config.forcedImplementationAlternative);
   TileSizeOptions tileSizeOptions;
   if (supportsTiledTraversal)
     tileSizeOptions = buildTileSizeOptions(
         *shape, *reductionRanges, config.preferredTileSizes,
         config.maxCandidatesPerDim, !reductionSplitLegalityFailure);
 
-  std::optional<SelectedCandidate> best;
+  llvm::SmallVector<SelectedCandidate, 8> candidateFrontier;
   int64_t rejectedCount = 0;
   std::string lastFailure;
   int64_t visitedCount = 0;
@@ -523,6 +529,9 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
   llvm::SmallVector<CandidateWorkItem, 32> queue;
   CandidateSpec initial;
   initial.tileSizes.assign(shape->begin(), shape->end());
+  if (forcedImplementationApplies)
+    initial.selectedImplementationAlternative =
+        config.forcedImplementationAlternative;
   std::optional<CandidateSpec> capacitySeed;
   if (supportsTiledTraversal) {
     capacitySeed = findCapacityDirectedSeed(task, initial, *reductionRanges,
@@ -537,12 +546,13 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
   if (capacitySeed)
     enqueueCandidate(*capacitySeed, seen, queue);
   enqueueCandidate(initial, seen, queue);
-  for (TargetImplementationKind implementation :
-       collectImplementationAlternatives(task)) {
-    CandidateSpec alternative = initial;
-    alternative.selectedImplementationAlternative = implementation;
-    enqueueCandidate(alternative, seen, queue);
-  }
+  if (config.allowAutomaticImplementationAlternatives &&
+      !config.forcedImplementationAlternative)
+    for (TargetImplementationKind implementation : implementationAlternatives) {
+      CandidateSpec alternative = initial;
+      alternative.selectedImplementationAlternative = implementation;
+      enqueueCandidate(alternative, seen, queue);
+    }
 
   auto buildSelected = [&](CandidateCheckResult &check,
                            int64_t currentVisited) {
@@ -559,6 +569,18 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
     selected.module = std::move(check.module);
     selected.artifactSource = check.artifactSource;
     return selected;
+  };
+  unsigned frontierLimit = static_cast<unsigned>(std::max<int64_t>(
+      {1, config.searchBeamWidth,
+       static_cast<int64_t>(config.taskAlternativeOrdinal) + 1}));
+  auto insertCandidate = [&](SelectedCandidate selected) {
+    auto position = llvm::find_if(
+        candidateFrontier, [&](const SelectedCandidate &existing) {
+          return isBetterCandidate(selected, &existing);
+        });
+    candidateFrontier.insert(position, std::move(selected));
+    if (candidateFrontier.size() > frontierLimit)
+      candidateFrontier.pop_back();
   };
   auto isRetryableFailure = [](llvm::StringRef failure) {
     return failure.starts_with("cheap_bound:") ||
@@ -582,8 +604,9 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
       llvm::errs() << " reason=" << failure << "\n";
     }
     if (supportsTiledTraversal && isRetryableFailure(lastFailure))
-      enqueueRefinements(task, candidate, *reductionRanges, tileSizeOptions,
-                         seen, queue, best ? config.searchBeamWidth : 0);
+      enqueueRefinements(
+          task, candidate, *reductionRanges, tileSizeOptions, seen, queue,
+          candidateFrontier.empty() ? 0 : config.searchBeamWidth);
   };
   auto processCheckResult = [&](CandidateCheckResult &check) {
     if (!check.failureReason.empty()) {
@@ -604,7 +627,12 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
       }
     }
     SelectedCandidate selected = buildSelected(check, visitedCount);
-    if (isBetterCandidate(selected, best ? &*best : nullptr)) {
+    auto insertionPoint = llvm::find_if(
+        candidateFrontier, [&](const SelectedCandidate &existing) {
+          return isBetterCandidate(selected, &existing);
+        });
+    if (static_cast<unsigned>(std::distance(candidateFrontier.begin(),
+                                            insertionPoint)) < frontierLimit) {
       if (!selected.module) {
         CandidateEvaluation accepted =
             evaluateCompleteCandidate(task, *shape, selected.spec, config);
@@ -615,7 +643,7 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
         selected.module = std::move(accepted.module);
         selected.artifactSource = accepted.artifactSource;
       }
-      best = std::move(selected);
+      insertCandidate(std::move(selected));
     }
     if (supportsTiledTraversal)
       enqueueRefinements(task, check.spec, *reductionRanges, tileSizeOptions,
@@ -730,34 +758,40 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
     SelectedCandidate selected = buildSelected(check, visitedCount);
     if (config.mode == TileSearchMode::FirstLegal)
       return selected;
-    if (isBetterCandidate(selected, best ? &*best : nullptr))
-      best = std::move(selected);
+    insertCandidate(std::move(selected));
     if (supportsTiledTraversal)
       enqueueRefinements(task, candidate, *reductionRanges, tileSizeOptions,
                          seen, queue, config.searchBeamWidth);
   }
 
-  if (best) {
-    best->candidateCount = visitedCount;
-    best->rejectedCount = rejectedCount;
-    if (!best->module || !isCompleteArtifactSource(best->artifactSource)) {
+  if (config.taskAlternativeOrdinal < candidateFrontier.size()) {
+    SelectedCandidate selected =
+        std::move(candidateFrontier[config.taskAlternativeOrdinal]);
+    selected.candidateCount = visitedCount;
+    selected.rejectedCount = rejectedCount;
+    if (!selected.module ||
+        !isCompleteArtifactSource(selected.artifactSource)) {
       CandidateEvaluation accepted =
-          evaluateCompleteCandidate(task, *shape, best->spec, config);
+          evaluateCompleteCandidate(task, *shape, selected.spec, config);
       if (!accepted.failureReason.empty()) {
         anchor->emitError()
             << "selected task candidate complete artifact failed: "
             << accepted.failureReason;
         return mlir::failure();
       }
-      best->module = std::move(accepted.module);
-      best->artifactSource = accepted.artifactSource;
+      selected.module = std::move(accepted.module);
+      selected.artifactSource = accepted.artifactSource;
     }
-    return std::move(*best);
+    return selected;
   }
   mlir::InFlightDiagnostic diagnostic = anchor->emitError();
   diagnostic
       << "no_candidate: tile selection found no passing task candidate after "
       << visitedCount << " candidates";
+  if (!candidateFrontier.empty())
+    diagnostic << "; requested bounded alternative ordinal "
+               << config.taskAlternativeOrdinal << " but only "
+               << candidateFrontier.size() << " candidate(s) survived";
   if (!lastFailure.empty())
     diagnostic << "; last failure: " << lastFailure;
   if (!supportsTiledTraversal)
@@ -772,51 +806,7 @@ mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
     const structured_scheduler::StructuredSchedulingScope &scope,
     mlir::func::FuncOp task, llvm::StringRef label,
     const SelectionConfig &config) {
-  mlir::FailureOr<SelectedCandidate> baseline =
-      selectCandidateForTask(scope, task, label, config);
-  if (mlir::failed(baseline) || config.mode == TileSearchMode::FirstLegal)
-    return baseline;
-
-  SelectedCandidate best = std::move(*baseline);
-  using Producer = unsigned (*)(mlir::func::FuncOp);
-  // These are concrete rewrite entry points, not a mechanism registry. Each
-  // call starts from the same verified baseline task, mutates an actual source
-  // clone immediately, and sends that clone through the ordinary complete
-  // tile/instruction/SPM/DDR/verifier/cost gates below.
-  const Producer producers[] = {
-      materializeConsumerLocalTensorRecomputation,
-      reassociateIntegerElementwiseExpressions,
-      balanceIntegerElementwiseReductionTrees,
-      distributeIntegerElementwiseExpressions,
-      factorIntegerElementwiseExpressions,
-  };
-
-  for (Producer producer : producers) {
-    mlir::OwningOpRef<mlir::ModuleOp> source =
-        detail::cloneTensorProgramToStandaloneModule(task);
-    mlir::func::FuncOp alternativeTask = findSingleSelectionTask(*source);
-    if (!alternativeTask || producer(alternativeTask) == 0 ||
-        mlir::failed(mlir::verify(*source)))
-      continue;
-
-    mlir::FailureOr<SelectedCandidate> alternative;
-    {
-      // A producer is conditional. Failure of its independently materialized
-      // clone rejects only that optimized path; the already accepted baseline
-      // remains authoritative and diagnostics must not escape as pass errors.
-      mlir::ScopedDiagnosticHandler handler(
-          task.getContext(),
-          [](mlir::Diagnostic &) { return mlir::success(); });
-      alternative =
-          selectCandidateForTask(scope, alternativeTask, label, config);
-    }
-    if (mlir::failed(alternative))
-      continue;
-    alternative->sourceModule = std::move(source);
-    if (isBetterCandidate(*alternative, &best))
-      best = std::move(*alternative);
-  }
-  return best;
+  return selectCandidateForTask(scope, task, label, config);
 }
 
 } // namespace wafer::tensor_program_scheduling

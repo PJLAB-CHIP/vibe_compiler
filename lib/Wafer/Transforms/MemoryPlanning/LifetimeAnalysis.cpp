@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
@@ -58,6 +59,16 @@ static bool isSupportedAsyncTaskProducer(mlir::Operation *op) {
 
 static mlir::scf::ForOp getEnclosingFor(mlir::Operation *op) {
   return op ? op->getParentOfType<mlir::scf::ForOp>() : mlir::scf::ForOp{};
+}
+
+static bool isStaticallyNonEmpty(mlir::scf::ForOp loop) {
+  std::optional<int64_t> lower =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getLowerBound()));
+  std::optional<int64_t> upper =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getUpperBound()));
+  std::optional<int64_t> step =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getStep()));
+  return lower && upper && step && *step > 0 && *lower < *upper;
 }
 
 static mlir::scf::YieldOp getSingleBlockYield(mlir::Region &region) {
@@ -726,7 +737,8 @@ LifetimeDataflow::rootsAt(mlir::Value value, PathCondition usePath) const {
             appendAt(yield.getResults()[index], timeline.lookup(yield));
       } else if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(def)) {
         unsigned index = result.getResultNumber();
-        if (index < forOp.getInitArgs().size())
+        if (!isStaticallyNonEmpty(forOp) &&
+            index < forOp.getInitArgs().size())
           appendAt(forOp.getInitArgs()[index], timeline.lookup(forOp));
         mlir::scf::YieldOp yield = mlir::dyn_cast<mlir::scf::YieldOp>(
             forOp.getBody()->getTerminator());
@@ -846,7 +858,8 @@ LifetimeDataflow::originsAt(mlir::Value value, PathCondition usePath) const {
       } else if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(def)) {
         hasAliasSemantics = true;
         unsigned index = result.getResultNumber();
-        if (index < forOp.getInitArgs().size())
+        if (!isStaticallyNonEmpty(forOp) &&
+            index < forOp.getInitArgs().size())
           appendAt(forOp.getInitArgs()[index], timeline.lookup(forOp));
         mlir::scf::YieldOp yield = mlir::dyn_cast<mlir::scf::YieldOp>(
             forOp.getBody()->getTerminator());
@@ -1533,20 +1546,18 @@ LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
       }
       continue;
     }
-    llvm::SmallVector<RootRef, 2> refs;
-    llvm::SmallVector<ValueOriginRef, 2> origins;
+    llvm::SmallVector<RootRef, 2> initialRefs;
+    llvm::SmallVector<ValueOriginRef, 2> initialOrigins;
     if (index < forOp.getInitArgs().size()) {
-      llvm::SmallVector<RootRef, 2> initial =
-          rootsAt(forOp.getInitArgs()[index], loopPoint->path);
-      appendUniqueRootRefs(refs, initial);
-      llvm::SmallVector<ValueOriginRef, 2> initialOrigins =
+      initialRefs = rootsAt(forOp.getInitArgs()[index], loopPoint->path);
+      initialOrigins =
           originsAt(forOp.getInitArgs()[index], loopPoint->path);
-      origins.append(initialOrigins.begin(), initialOrigins.end());
     }
+    llvm::SmallVector<RootRef, 2> backedgeRefs;
+    llvm::SmallVector<ValueOriginRef, 2> backedgeOrigins;
     if (yieldPoint && index < yield.getResults().size()) {
-      llvm::SmallVector<RootRef, 2> backedge =
-          rootsAt(yield.getResults()[index], yieldPoint->path);
-      for (RootRef ref : backedge) {
+      backedgeRefs = rootsAt(yield.getResults()[index], yieldPoint->path);
+      for (RootRef ref : backedgeRefs) {
         if (ref.demandIndex >= demands.size())
           continue;
         mlir::Operation *allocation =
@@ -1558,32 +1569,42 @@ LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
                            allocation);
         return mlir::failure();
       }
-      appendUniqueRootRefs(refs, backedge);
-      llvm::SmallVector<ValueOriginRef, 2> backedgeOrigins =
+      backedgeOrigins =
           originsAt(yield.getResults()[index], yieldPoint->path);
-      origins.append(backedgeOrigins.begin(), backedgeOrigins.end());
     }
+
+    llvm::SmallVector<RootRef, 2> recurrenceRefs = initialRefs;
+    appendUniqueRootRefs(recurrenceRefs, backedgeRefs);
+    llvm::SmallVector<ValueOriginRef, 2> recurrenceOrigins = initialOrigins;
+    appendUniqueOriginRefs(recurrenceOrigins, backedgeOrigins);
+    llvm::SmallVector<RootRef, 2> resultRefs =
+        isStaticallyNonEmpty(forOp) ? backedgeRefs : recurrenceRefs;
+    llvm::SmallVector<ValueOriginRef, 2> resultOrigins =
+        isStaticallyNonEmpty(forOp) ? backedgeOrigins : recurrenceOrigins;
 
     // The same recurrence may traverse a different loop-local branch on a
     // later iteration. Preserve outer non-repeatable control conditions but
     // forget repeatable decisions before publishing the fixed-point union.
-    forgetRepeatableDecisions(refs);
-    forgetRepeatableDecisions(origins);
+    forgetRepeatableDecisions(recurrenceRefs);
+    forgetRepeatableDecisions(recurrenceOrigins);
+    forgetRepeatableDecisions(resultRefs);
+    forgetRepeatableDecisions(resultOrigins);
 
-    for (RootRef ref : refs)
+    for (RootRef ref : recurrenceRefs)
       if (ref.demandIndex < demands.size())
         demands[ref.demandIndex].segments.push_back(
             LiveSegment{loopPoint->event, *loopEnd, ref.path});
-    if (!refs.empty()) {
-      if (index < forOp.getRegionIterArgs().size())
-        valueRefs[normalize(forOp.getRegionIterArgs()[index])] = refs;
-      valueRefs[normalize(result)] = std::move(refs);
-    }
-    if (!origins.empty()) {
-      if (index < forOp.getRegionIterArgs().size())
-        valueOrigins[normalize(forOp.getRegionIterArgs()[index])] = origins;
-      valueOrigins[normalize(result)] = std::move(origins);
-    }
+    if (!recurrenceRefs.empty() &&
+        index < forOp.getRegionIterArgs().size())
+      valueRefs[normalize(forOp.getRegionIterArgs()[index])] = recurrenceRefs;
+    if (!resultRefs.empty())
+      valueRefs[normalize(result)] = std::move(resultRefs);
+    if (!recurrenceOrigins.empty() &&
+        index < forOp.getRegionIterArgs().size())
+      valueOrigins[normalize(forOp.getRegionIterArgs()[index])] =
+          recurrenceOrigins;
+    if (!resultOrigins.empty())
+      valueOrigins[normalize(result)] = std::move(resultOrigins);
   }
 
   // A root defined outside the loop and referenced from its body may be read

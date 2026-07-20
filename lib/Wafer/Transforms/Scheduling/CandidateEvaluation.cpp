@@ -109,35 +109,25 @@ finishCandidateEvaluation(CandidateEvaluation evaluation,
   return evaluation;
 }
 
-static CandidateEvaluation
-finishCandidateAlternatives(CandidateEvaluation tileEvaluation,
-                            const SelectionConfig &config) {
-  const TileRegionToInstrOptions alternatives[] = {
-      {},
-      {/*allGatherSchedule=*/AllGatherSchedule::Direct,
-       /*allReduceSchedule=*/AllReduceSchedule::Ring,
-       /*reduceScatterSchedule=*/ReduceScatterSchedule::Direct},
-      {/*allGatherSchedule=*/AllGatherSchedule::Ring,
-       /*allReduceSchedule=*/AllReduceSchedule::Tree,
-       /*reduceScatterSchedule=*/ReduceScatterSchedule::Direct},
-  };
-
-  CandidateEvaluation baseline;
-  for (auto [index, options] : llvm::enumerate(alternatives)) {
-    CandidateEvaluation branch;
-    branch.artifactSource = tileEvaluation.artifactSource;
-    branch.module =
-        mlir::cast<mlir::ModuleOp>((*tileEvaluation.module)->clone());
-    branch = finishCandidateEvaluation(std::move(branch), config, options);
-    // Q32.M closes each producer and sends every actual clone through the
-    // complete local gates, but does not prune alternatives before the shared
-    // rank/whole-variant frontier. Until Q32.S carries this branch dimension
-    // through that frontier, preserve the pre-existing ring/ring result even
-    // when another independently accepted branch has a lower local estimate.
-    if (index == 0)
-      baseline = std::move(branch);
+static TileRegionToInstrOptions
+getCommunicationOptions(CommunicationAlternative alternative) {
+  switch (alternative) {
+  case CommunicationAlternative::Ring:
+    return {};
+  case CommunicationAlternative::DirectAllGather:
+    return {/*allGatherSchedule=*/AllGatherSchedule::Direct,
+            /*allReduceSchedule=*/AllReduceSchedule::Ring,
+            /*reduceScatterSchedule=*/ReduceScatterSchedule::Direct};
+  case CommunicationAlternative::TreeAllReduce:
+    return {/*allGatherSchedule=*/AllGatherSchedule::Ring,
+            /*allReduceSchedule=*/AllReduceSchedule::Tree,
+            /*reduceScatterSchedule=*/ReduceScatterSchedule::Direct};
+  case CommunicationAlternative::DirectAllGatherTreeAllReduce:
+    return {/*allGatherSchedule=*/AllGatherSchedule::Direct,
+            /*allReduceSchedule=*/AllReduceSchedule::Tree,
+            /*reduceScatterSchedule=*/ReduceScatterSchedule::Direct};
   }
-  return baseline;
+  llvm_unreachable("unknown communication alternative");
 }
 
 static bool
@@ -155,37 +145,79 @@ CandidateEvaluation evaluateCompleteCandidate(
   CandidateEvaluation evaluation;
   std::string failureReason;
   mlir::LogicalResult result = mlir::success();
-  std::string diagnostics = takeDiagnostics(
-      task.getContext(),
-      [&]() {
-        return lowerCompleteCandidateTensorProgramToTileRegionModule(
-            task, candidate.tileSizes, candidate.reductionSplitSizes,
-            evaluation.module, &failureReason, config.logicalRank,
-            candidate.selectedImplementationAlternative);
-      },
-      result);
-  evaluation.artifactSource = CandidateArtifactSource::CompleteTraversalAPI;
-  if (mlir::failed(result) &&
-      canUseFullTraversalFallback(candidate, traversalShape)) {
+  const bool canUseFullTraversal =
+      canUseFullTraversalFallback(candidate, traversalShape);
+  // A full-shape direct-boundary route must be materialized from the original
+  // task boundary.  Building a one-trip complete traversal first introduces
+  // extract/insert slices whose identity is only visible after lowering, so
+  // it would silently collapse this distinct route back to Tensor staging.
+  const bool preferFullTraversal =
+      config.useDirectMappedBoundaryTransfer && canUseFullTraversal;
+  std::string diagnostics;
+  if (preferFullTraversal) {
+    diagnostics = takeDiagnostics(
+        task.getContext(),
+        [&]() {
+          return lowerTensorProgramToTileRegionModule(
+              task, evaluation.module, &failureReason, config.logicalRank,
+              candidate.selectedImplementationAlternative,
+              config.useDirectMappedBoundaryTransfer);
+        },
+        result);
+    evaluation.artifactSource =
+        CandidateArtifactSource::FullTraversalFallback;
+  } else {
+    diagnostics = takeDiagnostics(
+        task.getContext(),
+        [&]() {
+          return lowerCompleteCandidateTensorProgramToTileRegionModule(
+              task, candidate.tileSizes, candidate.reductionSplitSizes,
+              evaluation.module, &failureReason, config.logicalRank,
+              candidate.selectedImplementationAlternative,
+              config.useDirectMappedBoundaryTransfer);
+        },
+        result);
+    evaluation.artifactSource =
+        CandidateArtifactSource::CompleteTraversalAPI;
+  }
+  if (mlir::failed(result) && canUseFullTraversal && !preferFullTraversal) {
     failureReason.clear();
     diagnostics = takeDiagnostics(
         task.getContext(),
         [&]() {
           return lowerTensorProgramToTileRegionModule(
               task, evaluation.module, &failureReason, config.logicalRank,
-              candidate.selectedImplementationAlternative);
+              candidate.selectedImplementationAlternative,
+              config.useDirectMappedBoundaryTransfer);
         },
         result);
     if (mlir::succeeded(result))
       evaluation.artifactSource =
           CandidateArtifactSource::FullTraversalFallback;
+  } else if (mlir::failed(result) && preferFullTraversal) {
+    failureReason.clear();
+    diagnostics = takeDiagnostics(
+        task.getContext(),
+        [&]() {
+          return lowerCompleteCandidateTensorProgramToTileRegionModule(
+              task, candidate.tileSizes, candidate.reductionSplitSizes,
+              evaluation.module, &failureReason, config.logicalRank,
+              candidate.selectedImplementationAlternative,
+              config.useDirectMappedBoundaryTransfer);
+        },
+        result);
+    if (mlir::succeeded(result))
+      evaluation.artifactSource =
+          CandidateArtifactSource::CompleteTraversalAPI;
   }
   if (mlir::failed(result)) {
     evaluation.failureReason =
         joinFailure("complete-tile-region", failureReason, diagnostics);
     return evaluation;
   }
-  return finishCandidateAlternatives(std::move(evaluation), config);
+  return finishCandidateEvaluation(
+      std::move(evaluation), config,
+      getCommunicationOptions(config.communicationAlternative));
 }
 
 static void

@@ -160,6 +160,16 @@ static mlir::MemRefType getContiguousSPMBufferType(mlir::MemRefType type) {
                                mlir::MemRefLayoutAttrInterface{},
                                type.getMemorySpace());
 }
+
+static bool canReceiveDirectlyIntoSlot(mlir::Value slot, int64_t bytes) {
+  auto slotType = mlir::dyn_cast<mlir::MemRefType>(slot.getType());
+  if (!slotType)
+    return false;
+  std::optional<WaferPhysicalTensorInfo> info =
+      wafer::computeWaferPhysicalTensorInfo(slotType);
+  return info && info->compactBytes == bytes && info->physicalBytes == bytes;
+}
+
 static int64_t getHighestTreeMask(int64_t groupSize) {
   int64_t mask = 1;
   while (mask < groupSize)
@@ -240,8 +250,12 @@ public:
         if (mlir::failed(recvSlot))
           return mlir::failure();
 
-        auto recvCommSlot =
-            rewriter.create<mlir::memref::AllocOp>(op.getLoc(), commSlotType);
+        mlir::Value recvBuffer = *recvSlot;
+        if (!canReceiveDirectlyIntoSlot(recvBuffer, bytes))
+          recvBuffer = rewriter
+                           .create<mlir::memref::AllocOp>(op.getLoc(),
+                                                         commSlotType)
+                           .getResult();
         auto sendMessage = DTEMessageAttr::get(
             rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
             DTEProtocolPhase::AllGatherDirect, distance, localRank);
@@ -256,22 +270,23 @@ public:
             DirectDTEBindingAttr());
         auto recv = rewriter.create<InstrDTERecvOp>(
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
-            recvCommSlot.getResult(),
+            recvBuffer,
             rewriter.getI64IntegerAttr(rankGroup[recvPeerIndex]),
             rewriter.getI64IntegerAttr(bytes), recvMessage,
             DirectDTEBindingAttr());
         llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
                                                  recv.getToken()};
         rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
-        if (mlir::failed(createLogicalSPMCopy(
-                rewriter, op.getLoc(), op, recvCommSlot.getResult(), *recvSlot,
+        if (recvBuffer != *recvSlot &&
+            mlir::failed(createLogicalSPMCopy(
+                rewriter, op.getLoc(), op, recvBuffer, *recvSlot,
                 failureReason, "tile.all_gather received slot copy")))
           return mlir::failure();
       }
 
-      // DTE wait completes each receive, but the following local copy into the
-      // gathered result is a separate movement-engine issue.  Complete all
-      // such providers before a resident consumer can read gatherBuffer.
+      // DTE wait completes each direct receive. Any fallback copy into a
+      // non-contiguous gathered slot is a separate movement-engine issue;
+      // complete all providers before a resident consumer reads gatherBuffer.
       rewriter.create<SyncLocalFenceOp>(op.getLoc());
       rewriter.eraseOp(op);
       return mlir::success();

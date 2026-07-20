@@ -277,7 +277,51 @@ module {
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
-     MaterializesReciprocalDivisionAlternativeThroughSourceInterface) {
+     DirectMappedBoundaryRouteEliminatesStagedCxMaterialization) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @matmul(%lhs: tensor<2x3xf16>, %rhs: tensor<3x2xf16>,
+                    %out: tensor<2x2xf16>) -> tensor<2x2xf16> {
+    %zero = arith.constant 0.0 : f16
+    %init = linalg.fill ins(%zero : f16)
+        outs(%out : tensor<2x2xf16>) -> tensor<2x2xf16>
+    %result = linalg.matmul
+        ins(%lhs, %rhs : tensor<2x3xf16>, tensor<3x2xf16>)
+        outs(%init : tensor<2x2xf16>) -> tensor<2x2xf16>
+    return %result : tensor<2x2xf16>
+  }
+}
+)mlir", mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  ASSERT_TRUE(function);
+
+  mlir::OwningOpRef<mlir::ModuleOp> direct;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToTileRegionModule(
+      function, direct, &failureReason, /*currentLogicalRank=*/0,
+      std::nullopt, /*useDirectMappedBoundaryTransfer=*/true)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*direct, &failureReason)))
+      << failureReason;
+  EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*direct), 0u);
+  unsigned mapped = 0;
+  direct->walk([&](mlir::Operation *operation) {
+    if (mlir::isa<wafer::InstrRDMAOp, wafer::InstrWDMAOp>(operation))
+      mapped += operation->hasAttr("src_offset") ||
+                operation->hasAttr("dst_offset");
+  });
+  EXPECT_GT(mapped, 0u);
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     MaterializesTargetReciprocalAlternativeThroughSourceInterface) {
   mlir::DialectRegistry registry;
   registerConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -319,11 +363,11 @@ module {
   ASSERT_EQ(candidates.size(), 2u);
   EXPECT_EQ(candidates[0].kind, wafer::TargetImplementationKind::Generic);
   EXPECT_EQ(candidates[1].kind,
-            wafer::TargetImplementationKind::GenericReciprocalViaDivision);
-  wafer::WaferTargetCapabilities noDivision;
-  noDivision.supportsElementwiseDivision = false;
+            wafer::TargetImplementationKind::GenericReciprocal);
+  wafer::WaferTargetCapabilities noReciprocal;
+  noReciprocal.supportsElementwiseReciprocal = false;
   candidates.clear();
-  interface.collectTargetImplementationCandidates(noDivision, candidates);
+  interface.collectTargetImplementationCandidates(noReciprocal, candidates);
   ASSERT_EQ(candidates.size(), 1u);
   EXPECT_EQ(candidates.front().kind, wafer::TargetImplementationKind::Generic);
 
@@ -341,7 +385,7 @@ module {
           function, /*candidateTileSizes=*/{2},
           /*candidateReductionTileSizes=*/{}, alternative, &failureReason,
           /*currentLogicalRank=*/0,
-          wafer::TargetImplementationKind::GenericReciprocalViaDivision)))
+          wafer::TargetImplementationKind::GenericReciprocal)))
       << failureReason;
 
   llvm::SmallVector<wafer::ComputeElementwiseKind, 4> baselineKinds;
@@ -353,14 +397,14 @@ module {
     alternativeKinds.push_back(op.getKind());
   });
   EXPECT_TRUE(
-      llvm::is_contained(baselineKinds, wafer::ComputeElementwiseKind::Recip));
-  EXPECT_FALSE(
       llvm::is_contained(baselineKinds, wafer::ComputeElementwiseKind::Div));
-  EXPECT_TRUE(
+  EXPECT_FALSE(
+      llvm::is_contained(baselineKinds, wafer::ComputeElementwiseKind::Recip));
+  EXPECT_TRUE(llvm::is_contained(alternativeKinds,
+                                 wafer::ComputeElementwiseKind::Recip));
+  EXPECT_FALSE(
       llvm::is_contained(alternativeKinds, wafer::ComputeElementwiseKind::Div));
-  EXPECT_FALSE(llvm::is_contained(alternativeKinds,
-                                  wafer::ComputeElementwiseKind::Recip));
-  EXPECT_GT(countOps<wafer::ComputeFillOp>(*alternative), 0u);
+  EXPECT_GT(countOps<wafer::ComputeFillOp>(*baseline), 0u);
 
   ASSERT_TRUE(mlir::succeeded(
       wafer::convertTileRegionToInstrModule(*baseline, &failureReason)))

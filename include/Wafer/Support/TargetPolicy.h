@@ -37,10 +37,25 @@ struct TargetTimingPolicy {
   bool assumeDdrComputeOverlap = false;
 };
 
+enum class TargetStaticTradeoffPolicy {
+  /// Before calibrated timing is available, prefer a strict reduction in the
+  /// highest-priority known resource class: DDR movement, NoC movement, SPM
+  /// movement, issued work, then static dataflow depth/order. A tradeoff
+  /// within one class, or any Unknown fact, remains conservative.
+  ExternalMovementFirst,
+  Conservative,
+};
+
+struct TargetStaticSelectionPolicy {
+  TargetStaticTradeoffPolicy tradeoff =
+      TargetStaticTradeoffPolicy::ExternalMovementFirst;
+};
+
 struct WaferTargetPolicy {
   TileSearchPolicy tileSearch;
   TargetMemoryPolicy memory;
   TargetTimingPolicy timing;
+  TargetStaticSelectionPolicy staticSelection;
 };
 
 inline TileSearchPolicy getTileSearchPolicy(TileSearchEffort effort) {

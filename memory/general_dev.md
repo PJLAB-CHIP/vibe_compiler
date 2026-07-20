@@ -646,3 +646,18 @@
 - 静态layout hot loop应把`memref type -> physical geometry`构造成command/conversion-local可重算calculator，并用已验证
   lexicographic odometer流式遍历；不要为每个element重复反线性化、重建MLIR layout事实或物化等长offset side table。
   性能收口必须同时比较完整package目录、target-model计数/environment和独立expected，不能只依赖wall time或同实现oracle。
+
+## Bounded actual-clone selection
+
+- candidate hard cap必须覆盖生成和保留两端：source clone、每类typed recipe、scope policy、rank evaluation、rank frontier、
+  whole tuple和whole Pareto分别限额，唯一conservative baseline用独立allowance先跑全部late gate。只限制frontier top-K却允许
+  cap前无界生成不算bounded；budget耗尽不得淘汰已验证baseline。
+- 多轴联合覆盖要从actual clone验证：各轴单点先入列，再优先materialize source×recipe、source×policy和all-applicable状态。
+  若implementation与route/communication在同一task可共存，必须形成同一complete recipe；两个独立passing单点不能证明联合状态。
+- full-shape direct boundary route应从原始task boundary物化。若先构造one-trip complete traversal，identity
+  extract/insert slice可能只在lowering后显现，使distinct direct route静默退回Tensor staging；非full tile仍必须依赖exact
+  mapped-transfer proof，不能用shape或recipe flag强行直连。
+- final selection先保留完整exact Pareto frontier，再由target profile显式static policy在survivors间持续比较当前winner。
+  不能找到第一个优于baseline的candidate就返回，否则较早share/fusion会遮住DDR movement更低的recompute联合candidate。
+  generation/discovery ordinal只用于确定性与跨rank对应，不是语义winner维度；Unknown、overflow或同一priority class双向tradeoff
+  保持保守。

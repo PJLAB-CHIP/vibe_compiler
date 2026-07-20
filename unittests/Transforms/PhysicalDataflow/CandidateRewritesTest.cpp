@@ -189,8 +189,9 @@ module {
       ins(%a, %b, %c : tensor<4xi32>, tensor<4xi32>, tensor<4xi32>)
       outs(%out : tensor<4xi32>) {
     ^bb0(%av: i32, %bv: i32, %cv: i32, %unused: i32):
-      %bc = arith.addi %bv, %cv : i32
-      %r0 = arith.muli %av, %bc : i32
+      %ab = arith.muli %av, %bv : i32
+      %ac = arith.muli %av, %cv : i32
+      %r0 = arith.subi %ab, %ac : i32
       linalg.yield %r0 : i32
     } -> tensor<4xi32>
     return %r : tensor<4xi32>
@@ -221,7 +222,7 @@ module {
   EXPECT_EQ(wafer::balanceIntegerElementwiseReductionTrees(
                 module->lookupSymbol<mlir::func::FuncOp>("tree")),
             1u);
-  EXPECT_EQ(wafer::distributeIntegerElementwiseExpressions(
+  EXPECT_EQ(wafer::contractIntegerDistributiveExpressions(
                 module->lookupSymbol<mlir::func::FuncOp>("distribute")),
             1u);
   EXPECT_EQ(wafer::factorIntegerElementwiseExpressions(
@@ -284,6 +285,23 @@ module {
     } -> tensor<4xi32>
     return %r : tensor<4xi32>
   }
+  func.func @no_wrap_distribution(
+      %a: tensor<4xi32>, %b: tensor<4xi32>, %c: tensor<4xi32>,
+      %out: tensor<4xi32>) -> tensor<4xi32> {
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c : tensor<4xi32>, tensor<4xi32>, tensor<4xi32>)
+      outs(%out : tensor<4xi32>) {
+    ^bb0(%av: i32, %bv: i32, %cv: i32, %unused: i32):
+      %ab = arith.muli %av, %bv : i32
+      %ac = arith.muli %av, %cv : i32
+      %r0 = arith.subi %ab, %ac overflow<nsw> : i32
+      linalg.yield %r0 : i32
+    } -> tensor<4xi32>
+    return %r : tensor<4xi32>
+  }
 }
 )mlir");
   ASSERT_TRUE(module);
@@ -292,6 +310,10 @@ module {
             0u);
   EXPECT_EQ(wafer::reassociateIntegerElementwiseExpressions(
                 module->lookupSymbol<mlir::func::FuncOp>("no_wrap")),
+            0u);
+  EXPECT_EQ(wafer::contractIntegerDistributiveExpressions(
+                module->lookupSymbol<mlir::func::FuncOp>(
+                    "no_wrap_distribution")),
             0u);
 }
 

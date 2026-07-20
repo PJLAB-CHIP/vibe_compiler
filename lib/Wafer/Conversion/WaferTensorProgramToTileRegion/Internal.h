@@ -214,7 +214,8 @@ public:
   explicit TileRegionBodyEmitter(std::string *failureReason,
                                  int64_t currentLogicalRank,
                                  std::optional<TargetImplementationKind>
-                                     selectedAlternative = std::nullopt);
+                                     selectedAlternative = std::nullopt,
+                                 bool useDirectMappedBoundaryTransfer = false);
 
   mlir::FailureOr<TileRegionOp> emit(TensorProgramScope scope,
                                      mlir::RewriterBase &rewriter);
@@ -223,6 +224,7 @@ private:
   std::string *failureReason;
   int64_t currentLogicalRank = -1;
   std::optional<TargetImplementationKind> selectedAlternative;
+  bool useDirectMappedBoundaryTransfer = false;
   bool selectedAlternativeMaterialized = false;
   llvm::DenseMap<mlir::Value, BufferVersions> buffers;
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
@@ -524,12 +526,12 @@ private:
   mlir::LogicalResult convertElementwiseScalarOp(
       mlir::linalg::GenericOp generic, mlir::Operation *op,
       llvm::DenseMap<mlir::Value, ElementwiseExprValue> &values,
-      mlir::RankedTensorType resultTensorType, bool reciprocalViaDivision,
+      mlir::RankedTensorType resultTensorType, bool useReciprocalInstruction,
       mlir::OpBuilder &builder);
 
   mlir::LogicalResult
   convertElementwiseGenericExpression(mlir::linalg::GenericOp generic,
-                                      bool reciprocalViaDivision,
+                                      bool useReciprocalInstruction,
                                       mlir::OpBuilder &builder);
 
   mlir::LogicalResult convertPassthroughGeneric(mlir::linalg::GenericOp generic,
@@ -548,7 +550,7 @@ private:
                              int64_t concatAxis, mlir::OpBuilder &builder);
 
   mlir::LogicalResult convertGeneric(mlir::linalg::GenericOp generic,
-                                     bool reciprocalViaDivision,
+                                     bool useReciprocalInstruction,
                                      mlir::OpBuilder &builder);
 
   mlir::LogicalResult finishRegion(TensorProgramScope scope,
@@ -561,6 +563,7 @@ mlir::LogicalResult convertTensorProgramToTileRegionModuleInPlace(
     int64_t currentLogicalRank, std::string *failureReason,
     bool suppressDiagnostics = true, bool verifyResult = true,
     bool populateFallbackFailureReason = true,
-    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt);
+    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt,
+    bool useDirectMappedBoundaryTransfer = false);
 
 } // namespace wafer::tensor_program_to_tile_region

@@ -54,7 +54,8 @@
 
 ## 实施计划导航
 
-当前`doing`是Q32.S bounded joint composition与resource-aware selection；Q32.M mandatory mechanism与
+当前`doing`是Q32.G production cutover与旧decision路径删除；Q32.S bounded joint composition与resource-aware
+selection已归档为`tasks/archive/bounded-joint-physical-dataflow-selection.md`，Q32.M mandatory mechanism与
 choice-producer closure已归档为`tasks/archive/physical-mechanism-choice-closure.md`，Q32.V typed target-capability vertical已归档为
 `tasks/archive/typed-target-capability-vertical.md`，Q32.B production-shaped candidate/all-rank vertical已归档为
 `tasks/archive/physical-dataflow-test-seam-vertical.md`，Q32.R relation/physical realization已归档为
@@ -93,6 +94,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/bounded-joint-physical-dataflow-selection.md` | 已完成Q32.S的actual-clone有界联合frontier、reserved baseline、validated whole-card exact cost、target static policy及逐producer whole-winner记录 |
 | `tasks/archive/physical-mechanism-choice-closure.md` | 已完成Q32.M的actual-clone recompute/LICM/integer algebra、partial fanout、spill/resident/ready-order、communication alternatives及重复layout/resource/collective/instruction合同删除记录 |
 | `tasks/archive/physical-relation-realization.md` | 已完成Q32.R的rich IndexRelation、physical encoding interface、TransferRealizability、destination-style load、relation-backed resident handoff和fresh 7B TP16数值纵向记录 |
 | `tasks/archive/typed-target-capability-vertical.md` | 已完成Q32.V的mapped DMA双端offset、physical-footprint fill、source/Tile/Instr/v2 oriented GEMM及formal/SystemC fresh纵向记录 |

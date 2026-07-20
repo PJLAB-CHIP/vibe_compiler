@@ -6,6 +6,7 @@
 // RUN: wafer-opt --wafer-plan-ddr-memory='ddr-capacity-bytes=512 ddr-largest-contiguous-bytes=256' %t/loop-origin.mlir | FileCheck --check-prefix=LOOP-ORIGIN %s
 // RUN: not wafer-opt --wafer-plan-ddr-memory='ddr-capacity-bytes=256 ddr-largest-contiguous-bytes=256' %t/repeatable-origin.mlir 2>&1 | FileCheck --check-prefix=REPEATABLE-ORIGIN-CAPACITY %s
 // RUN: wafer-opt --wafer-plan-ddr-memory='ddr-capacity-bytes=512 ddr-largest-contiguous-bytes=256' %t/repeatable-origin.mlir | FileCheck --check-prefix=REPEATABLE-ORIGIN %s
+// RUN: wafer-opt --wafer-plan-ddr-memory='ddr-capacity-bytes=512 ddr-largest-contiguous-bytes=256' %t/positive-loop-result.mlir | FileCheck --check-prefix=POSITIVE-LOOP-RESULT %s
 // RUN: not wafer-opt --wafer-plan-ddr-memory='ddr-capacity-bytes=256 ddr-largest-contiguous-bytes=256' %t/memory-space-cast.mlir 2>&1 | FileCheck --check-prefix=SPACE-CAST-CAPACITY %s
 // RUN: wafer-opt --wafer-plan-ddr-memory='ddr-capacity-bytes=512 ddr-largest-contiguous-bytes=256' %t/memory-space-cast.mlir | FileCheck --check-prefix=SPACE-CAST %s
 
@@ -203,6 +204,43 @@ func.func @repeatable_branch_origin_crosses_backedge(
 // REPEATABLE-ORIGIN-LABEL: func.func @repeatable_branch_origin_crosses_backedge
 // REPEATABLE-ORIGIN: scf.for
 // REPEATABLE-ORIGIN: wafer.instr.rdma
+
+//--- positive-loop-result.mlir
+func.func @positive_loop_result_uses_backedge_ddr_root() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %init = memref.alloc()
+      : memref<128xf16, #wafer.memory<ddr, tensor>>
+  %next = memref.alloc()
+      : memref<128xf16, #wafer.memory<ddr, tensor>>
+  %looped = scf.for %i = %c0 to %c2 step %c1
+      iter_args(%iter = %init)
+      -> (memref<128xf16, #wafer.memory<ddr, tensor>>) {
+    scf.yield %next : memref<128xf16, #wafer.memory<ddr, tensor>>
+  }
+  %dynamic = memref.cast %looped
+      : memref<128xf16, #wafer.memory<ddr, tensor>>
+     to memref<128xf16, strided<[1], offset: ?>,
+               #wafer.memory<ddr, tensor>>
+  %spm = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+      : memref<128xf16, #wafer.memory<spm, tensor>>
+  wafer.instr.rdma %dynamic to %spm
+      {byte_count = 256 : i64, inner_bytes = 256 : i64,
+       src_iterations = array<i64: 1, 1, 1>,
+       src_strides = array<i64: 0, 0, 0>}
+      : memref<128xf16, strided<[1], offset: ?>,
+               #wafer.memory<ddr, tensor>>
+     to memref<128xf16, #wafer.memory<spm, tensor>>
+  wafer.instr.local_fence
+  return
+}
+
+// POSITIVE-LOOP-RESULT-LABEL: func.func @positive_loop_result_uses_backedge_ddr_root
+// POSITIVE-LOOP-RESULT: %[[NEXT:.+]] = memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<256>
+// POSITIVE-LOOP-RESULT: %[[LOOPED:.+]] = scf.for
+// POSITIVE-LOOP-RESULT: memref.cast %[[LOOPED]]
+// POSITIVE-LOOP-RESULT: wafer.instr.rdma
 
 //--- memory-space-cast.mlir
 func.func @memory_space_cast_keeps_managed_root_live() {

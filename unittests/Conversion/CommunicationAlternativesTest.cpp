@@ -68,11 +68,23 @@ module {
       *module, options, &failure)))
       << failure;
   unsigned directMessages = 0;
+  unsigned directReceivesIntoGatherSlots = 0;
   module->walk([&](wafer::InstrDTESendOp send) {
     directMessages += send.getMessage().getPhase() ==
                       wafer::DTEProtocolPhase::AllGatherDirect;
   });
+  module->walk([&](wafer::InstrDTERecvOp recv) {
+    if (recv.getMessage().getPhase() !=
+        wafer::DTEProtocolPhase::AllGatherDirect)
+      return;
+    directReceivesIntoGatherSlots +=
+        recv.getBuffer().getDefiningOp<mlir::memref::SubViewOp>() != nullptr;
+  });
   EXPECT_GT(directMessages, 0u);
+  EXPECT_EQ(directReceivesIntoGatherSlots, 3u);
+  unsigned localCopies = 0;
+  module->walk([&](wafer::InstrGatherScatterOp) { ++localCopies; });
+  EXPECT_EQ(localCopies, 2u);
   bool retainedTileCollective = false;
   module->walk(
       [&](wafer::CommAllGatherOp) { retainedTileCollective = true; });
