@@ -135,14 +135,8 @@ TileRegionBodyEmitter::convertNestedOp(mlir::Operation *op,
                                        mlir::OpBuilder &builder) {
   if (mlir::isa<WaferLinalgExtCollectiveOpInterface>(op))
     return fail("nested collective materialization is not implemented");
-  if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(op))
-    return convertFill(fill, builder);
-  if (mlir::isa<mlir::linalg::MatmulOp>(op))
-    return convertMatmul(mlir::cast<mlir::linalg::LinalgOp>(op), builder);
-  if (mlir::isa<mlir::linalg::BatchMatmulOp>(op))
-    return convertBatchMatmul(mlir::cast<mlir::linalg::LinalgOp>(op), builder);
-  if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(op))
-    return convertGeneric(generic, builder);
+  if (mlir::isa<mlir::linalg::LinalgOp>(op))
+    return materializeSourceImplementation(op, builder);
   if (mlir::isa<mlir::arith::ConstantOp, mlir::tensor::EmptyOp,
                 mlir::tensor::ExtractOp, mlir::tensor::ExtractSliceOp,
                 mlir::tensor::InsertSliceOp, mlir::tensor::ExpandShapeOp,

@@ -184,14 +184,16 @@ typed op/attrs、ODS verifier、适用的标准MLIR interface和conversion legal
 当前 target profile 是 closed registry。没有第二个 target 实现时，普通 typed helper也足够；只有出现多个 dialect/target
 实现且确有共同 consumer 时，才评估 `DialectInterface`。不得为了未来插件化先建立动态 provider registry。
 
-Q32.I同时执行一次native-interface reuse audit。现有`WaferTilingInterface`只重新枚举DPS
-inputs/outs/results，必须迁移到`TilingInterface`、`DestinationStyleOpInterface`和typed operands/results后删除。
+Q32.I已完成首轮native-interface reuse audit：只重新枚举DPS inputs/outs/results的
+`WaferTilingInterface`已迁移到`TilingInterface`、`DestinationStyleOpInterface`和typed operands/results后删除；
+实现与consumer盘点证据见`tasks/archive/mlir-native-implementation-relation-foundation.md`。
 `WaferLayoutOpInterface`、`WaferLayoutMaterializationOpInterface`与`WaferResourceEffectInterface`不能自动成为
 Q32合同：layout requirement优先由typed memref encoding、标准view/subset语义和op verifier表达，effect优先由
 `MemoryEffectOpInterface`及MLIR `SideEffects::Resource`表达，bytes/footprint从current IR重算。Q32.M迁移真实consumer
 后删除只复制这些事实的接口。
 
-`WaferTargetImplementationOpInterface`之所以允许保留，是因为标准MLIR interface不表达Wafer target implementation
+`WaferTargetImplementationOpInterface`已由Q32.I用真实reciprocal/division actual-clone贯通；之所以允许保留，
+是因为标准MLIR interface不表达Wafer target implementation
 参数枚举；它不得重新发布tiling、DPS、layout或effect语义。任何其它Wafer-specific interface必须列出标准接口缺口、
 至少两个真实op family和generic consumer；否则使用typed pattern/helper，不新增动态语义层。
 

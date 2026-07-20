@@ -1,4 +1,5 @@
 add_mlir_library(WaferTransforms
+  PhysicalDataflow/StructuredOpInterfaceModels.cpp
   Scheduling/CandidateAnalysis.cpp
   Scheduling/CandidateCommit.cpp
   Scheduling/CandidateEvaluation.cpp

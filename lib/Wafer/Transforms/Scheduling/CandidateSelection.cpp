@@ -190,7 +190,10 @@ static bool isBetterCandidate(const SelectedCandidate &candidate,
   if (candidate.spec.reductionSplitSizes.empty() !=
       best->spec.reductionSplitSizes.empty())
     return candidate.spec.reductionSplitSizes.empty();
-  return candidate.spec.reductionSplitSizes > best->spec.reductionSplitSizes;
+  if (candidate.spec.reductionSplitSizes != best->spec.reductionSplitSizes)
+    return candidate.spec.reductionSplitSizes > best->spec.reductionSplitSizes;
+  return !candidate.spec.selectedImplementationAlternative &&
+         best->spec.selectedImplementationAlternative.has_value();
 }
 
 static std::string getCandidateKey(const CandidateSpec &candidate) {
@@ -199,7 +202,29 @@ static std::string getCandidateKey(const CandidateSpec &candidate) {
   printI64List(candidate.tileSizes, os);
   os << "|";
   printI64List(candidate.reductionSplitSizes, os);
+  os << "|";
+  if (candidate.selectedImplementationAlternative)
+    os << stringifyTargetImplementationKind(
+        *candidate.selectedImplementationAlternative);
+  else
+    os << "baseline";
   return os.str();
+}
+
+static llvm::SmallVector<TargetImplementationKind, 2>
+collectImplementationAlternatives(mlir::func::FuncOp task) {
+  llvm::SmallVector<TargetImplementationKind, 2> alternatives;
+  task.walk([&](WaferTargetImplementationOpInterface interface) {
+    llvm::SmallVector<TargetImplementationCandidate, 2> candidates;
+    interface.collectTargetImplementationCandidates(WaferTargetCapabilities{},
+                                                    candidates);
+    for (const TargetImplementationCandidate &candidate :
+         llvm::drop_begin(candidates)) {
+      if (!llvm::is_contained(alternatives, candidate.kind))
+        alternatives.push_back(candidate.kind);
+    }
+  });
+  return alternatives;
 }
 
 static std::optional<size_t> findSizeIndex(llvm::ArrayRef<int64_t> sizes,
@@ -512,6 +537,12 @@ mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
   if (capacitySeed)
     enqueueCandidate(*capacitySeed, seen, queue);
   enqueueCandidate(initial, seen, queue);
+  for (TargetImplementationKind implementation :
+       collectImplementationAlternatives(task)) {
+    CandidateSpec alternative = initial;
+    alternative.selectedImplementationAlternative = implementation;
+    enqueueCandidate(alternative, seen, queue);
+  }
 
   auto buildSelected = [&](CandidateCheckResult &check,
                            int64_t currentVisited) {

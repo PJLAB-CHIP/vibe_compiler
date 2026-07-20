@@ -54,7 +54,8 @@
 
 ## 实施计划导航
 
-当前无`doing`；唯一`next`是Q32.I MLIR-native implementation/relation foundation，Q32通用
+当前`doing`是Q32.R relation/physical realization；Q32.I MLIR-native implementation/relation foundation已归档为
+`tasks/archive/mlir-native-implementation-relation-foundation.md`。Q32通用
 physical-dataflow synthesis实施计划为`tasks/plans/physical-dataflow-synthesis.md`。Q34 static memory packing已完成并归档为
 `tasks/archive/static-memory-packing.md`。这些计划只拆
 施工checkpoint和验证/删除门槛；动态blocked-by只看progress，算法与IR合同仍由01、05、06-18编号设计文档拥有。
@@ -88,6 +89,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/mlir-native-implementation-relation-foundation.md` | 已完成Q32.I的fresh baseline、source implementation external model、真实reciprocal/division actual-clone纵向、MLIR-backed IndexRelation foundation和custom interface盘点/首轮删除记录 |
 | `tasks/archive/static-memory-packing.md` | 已完成Q34的MiniMalloc默认fixed-capacity packing、精确conflict适配、宽松确定性work budget、typed outcome/fallback和SPM/DDR/7B纵向gate记录 |
 | `tasks/archive/llama-block-numeric-characterization.md` | 已完成Q31的ProgramTensor逐rank abs/ULP统计、非admission多seed 7B重放及source/model comparator gate收紧记录 |
 | `tasks/archive/llama-block-production-performance.md` | 已完成Q30的static movement/physical codec host性能收口、package等价性和完整7B双replay记录 |

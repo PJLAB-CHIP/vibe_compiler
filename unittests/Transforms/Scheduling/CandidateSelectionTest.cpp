@@ -141,6 +141,54 @@ module {
             CandidateArtifactSource::CompleteTraversalAPI);
 }
 
+TEST(CandidateSelectionTest,
+     EvaluatesReciprocalDivisionAsDistinctCompleteImplementationCandidate) {
+  constexpr llvm::StringLiteral task = R"mlir(
+module {
+  func.func @reciprocal(%input: tensor<4xf32>, %out: tensor<4xf32>)
+      -> tensor<4xf32> {
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
+    ^bb0(%value: f32, %init: f32):
+      %one = arith.constant 1.0 : f32
+      %reciprocal = arith.divf %one, %value : f32
+      linalg.yield %reciprocal : f32
+    } -> tensor<4xf32>
+    return %result : tensor<4xf32>
+  }
+}
+)mlir";
+
+  wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
+  SelectionConfig config(policy);
+  config.logicalRank = 0;
+
+  CandidateSpec baseline{/*tileSizes=*/{2},
+                         /*reductionSplitSizes=*/{}};
+  CandidateSpec alternative = baseline;
+  alternative.selectedImplementationAlternative =
+      wafer::TargetImplementationKind::GenericReciprocalViaDivision;
+
+  CandidateCheckResult baselineResult = evaluateCandidateOnStandaloneTaskText(
+      task, /*traversalShape=*/{4}, baseline, config);
+  CandidateCheckResult alternativeResult =
+      evaluateCandidateOnStandaloneTaskText(task, /*traversalShape=*/{4},
+                                            alternative, config);
+  EXPECT_TRUE(baselineResult.failureReason.empty())
+      << baselineResult.failureReason;
+  EXPECT_TRUE(alternativeResult.failureReason.empty())
+      << alternativeResult.failureReason;
+  EXPECT_EQ(baselineResult.artifactSource,
+            CandidateArtifactSource::CompleteTraversalAPI);
+  EXPECT_EQ(alternativeResult.artifactSource,
+            CandidateArtifactSource::CompleteTraversalAPI);
+  EXPECT_GT(alternativeResult.stats.program.instructionCount.value,
+            baselineResult.stats.program.instructionCount.value);
+}
+
 TEST(CandidateSelectionTest, AccountsForCXPaddingInMatmulWorkingSet) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,

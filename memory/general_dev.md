@@ -609,6 +609,9 @@
   H=4096、I=11008、32 heads、FP16、batch 1、sequence 16。最终`expected.npy`必须由同一确定性input/parameter payload的
   PyTorch eager CPU完整block输出产生；手写NumPy仅用于定位误差。production完成入口仍是一次`wafer-compile
   --target-model`的TP16 package与全局output comparison，不把临时corpus目录或生成package写成长期路径。
+- TP16 exporter在CPU PJRT上需要显式提供16个logical devices；运行repository workload exporter时设置
+  `CPU_NUM_DEVICES=16`，否则XLA会在需要16 devices而只发现默认1 device时结构化拒绝。这只影响本地source
+  corpus生成环境，不是compiler、IR、package或runtime协议。
 - scale corpus不能使用会沿matrix axis重复的短周期序列，也不能让不同parameter stream保持系统性相关。按global
   row-major counter、固定seed和显式独立stream生成versioned长周期payload，并在digest/artifact publication前检查
   input、全部parameter和expected均finite；public NPY多字节payload统一canonical little-endian。

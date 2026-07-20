@@ -108,9 +108,9 @@ finishCandidateEvaluation(CandidateEvaluation evaluation,
   return evaluation;
 }
 
-static bool canUseFullTraversalFallback(
-    const CandidateSpec &candidate,
-    llvm::ArrayRef<int64_t> traversalShape) {
+static bool
+canUseFullTraversalFallback(const CandidateSpec &candidate,
+                            llvm::ArrayRef<int64_t> traversalShape) {
   return candidate.reductionSplitSizes.empty() &&
          candidate.tileSizes.size() == traversalShape.size() &&
          std::equal(candidate.tileSizes.begin(), candidate.tileSizes.end(),
@@ -128,7 +128,8 @@ CandidateEvaluation evaluateCompleteCandidate(
       [&]() {
         return lowerCompleteCandidateTensorProgramToTileRegionModule(
             task, candidate.tileSizes, candidate.reductionSplitSizes,
-            evaluation.module, &failureReason, config.logicalRank);
+            evaluation.module, &failureReason, config.logicalRank,
+            candidate.selectedImplementationAlternative);
       },
       result);
   evaluation.artifactSource = CandidateArtifactSource::CompleteTraversalAPI;
@@ -139,7 +140,8 @@ CandidateEvaluation evaluateCompleteCandidate(
         task.getContext(),
         [&]() {
           return lowerTensorProgramToTileRegionModule(
-              task, evaluation.module, &failureReason, config.logicalRank);
+              task, evaluation.module, &failureReason, config.logicalRank,
+              candidate.selectedImplementationAlternative);
         },
         result);
     if (mlir::succeeded(result))
@@ -164,6 +166,7 @@ registerSelectionEvaluationDialects(mlir::DialectRegistry &registry) {
                   wafer::WaferDialect>();
   mlir::linalg::registerTilingInterfaceExternalModels(registry);
   mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  wafer::registerTargetImplementationExternalModels(registry);
 }
 
 static mlir::OwningOpRef<mlir::ModuleOp>
@@ -232,10 +235,11 @@ CandidateCheckResult evaluateCandidateOnOriginalTask(
                                /*retainAcceptedModule=*/true);
 }
 
-CandidateCheckResult evaluateCandidateOnStandaloneTaskText(
-    llvm::StringRef standaloneTaskModuleText,
-    llvm::ArrayRef<int64_t> traversalShape, const CandidateSpec &candidate,
-    const SelectionConfig &config) {
+CandidateCheckResult
+evaluateCandidateOnStandaloneTaskText(llvm::StringRef standaloneTaskModuleText,
+                                      llvm::ArrayRef<int64_t> traversalShape,
+                                      const CandidateSpec &candidate,
+                                      const SelectionConfig &config) {
   CandidateCheckResult result;
   result.spec = candidate;
   mlir::DialectRegistry registry;

@@ -1,6 +1,7 @@
 wafer_require_gtest()
 
 add_executable(WaferUnitTests
+  Analysis/PhysicalDataflow/IndexRelationTest.cpp
   Analysis/ScheduleCostAnalysisTest.cpp
   Compiler/CompilationTest.cpp
   Compiler/DirectDTETransportTest.cpp

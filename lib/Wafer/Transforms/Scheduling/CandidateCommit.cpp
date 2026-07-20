@@ -8,22 +8,28 @@ namespace wafer::tensor_program_scheduling {
 void printSelectedSummary(const SelectedCandidate &selected,
                           TileSearchMode mode) {
   llvm::errs() << "wafer.schedule_tensor_program selected task "
-               << selected.label
-               << " mode="
+               << selected.label << " mode="
                << (mode == TileSearchMode::FirstLegal ? "first-legal"
                                                       : "min-estimated-time")
                << " tile=";
   printI64List(selected.spec.tileSizes, llvm::errs());
   llvm::errs() << " split=";
   printI64List(selected.spec.reductionSplitSizes, llvm::errs());
+  llvm::errs() << " implementation=";
+  if (selected.spec.selectedImplementationAlternative)
+    llvm::errs() << stringifyTargetImplementationKind(
+        *selected.spec.selectedImplementationAlternative);
+  else
+    llvm::errs() << "baseline";
   llvm::errs() << " estimated_time_ps=" << selected.estimatedTimePs
                << " candidates=" << selected.candidateCount
                << " rejected=" << selected.rejectedCount
                << " representatives=" << selected.representativeCount << "\n";
 }
 
-static mlir::FailureOr<mlir::func::FuncOp> getStandaloneSelectedFunction(
-    mlir::Operation *anchor, mlir::ModuleOp selectedModule) {
+static mlir::FailureOr<mlir::func::FuncOp>
+getStandaloneSelectedFunction(mlir::Operation *anchor,
+                              mlir::ModuleOp selectedModule) {
   mlir::func::FuncOp selectedFunc;
   for (auto func : selectedModule.getOps<mlir::func::FuncOp>()) {
     if (selectedFunc) {
@@ -41,8 +47,8 @@ static mlir::FailureOr<mlir::func::FuncOp> getStandaloneSelectedFunction(
   return selectedFunc;
 }
 
-mlir::LogicalResult commitSelectedTaskCandidate(
-    SelectedCandidate &selected, const SelectionConfig &config) {
+mlir::LogicalResult commitSelectedTaskCandidate(SelectedCandidate &selected,
+                                                const SelectionConfig &config) {
   structured_scheduler::StructuredSchedulingScope &scope = selected.scope;
   mlir::Operation *anchor = scope.insertionPoint;
   if (!anchor || !selected.sourceTask || !selected.module ||
@@ -66,18 +72,16 @@ mlir::LogicalResult commitSelectedTaskCandidate(
   mlir::FailureOr<llvm::SmallVector<int64_t, 4>> traversalShape =
       getStaticTraversalShape(selected.sourceTask);
   if (mlir::failed(traversalShape)) {
-    anchor->emitError(
-        "selected task commit has no static traversal shape");
+    anchor->emitError("selected task commit has no static traversal shape");
     return mlir::failure();
   }
   CandidateEvaluation commitProof = evaluateCompleteCandidate(
       selected.sourceTask, *traversalShape, selected.spec, config);
   if (!commitProof.failureReason.empty() || !commitProof.module ||
       !isCompleteArtifactSource(commitProof.artifactSource)) {
-    anchor->emitError()
-        << "selected task complete artifact proof failed"
-        << (commitProof.failureReason.empty() ? "" : ": ")
-        << commitProof.failureReason;
+    anchor->emitError() << "selected task complete artifact proof failed"
+                        << (commitProof.failureReason.empty() ? "" : ": ")
+                        << commitProof.failureReason;
     return mlir::failure();
   }
   selected.module = std::move(commitProof.module);
@@ -93,19 +97,16 @@ mlir::LogicalResult commitSelectedTaskCandidate(
     return mlir::failure();
   }
   mlir::Block &entry = selectedFunc->getBody().front();
-  auto returnOp =
-      mlir::dyn_cast<mlir::func::ReturnOp>(entry.getTerminator());
+  auto returnOp = mlir::dyn_cast<mlir::func::ReturnOp>(entry.getTerminator());
   if (!returnOp) {
-    anchor->emitError(
-        "selected task commit requires func.return terminator");
+    anchor->emitError("selected task commit requires func.return terminator");
     return mlir::failure();
   }
   unsigned expectedArgCount =
       static_cast<unsigned>(scope.inputs.size() + scope.outs.size());
   if (entry.getNumArguments() != expectedArgCount ||
       returnOp.getNumOperands() != scope.yieldedValues.size()) {
-    anchor->emitError(
-        "selected task commit boundary cardinality mismatch");
+    anchor->emitError("selected task commit boundary cardinality mismatch");
     return mlir::failure();
   }
 
@@ -114,8 +115,7 @@ mlir::LogicalResult commitSelectedTaskCandidate(
   for (mlir::Value input : scope.inputs) {
     mlir::BlockArgument argument = entry.getArgument(argumentIndex++);
     if (argument.getType() != input.getType()) {
-      anchor->emitError(
-          "selected task commit input boundary type mismatch");
+      anchor->emitError("selected task commit input boundary type mismatch");
       return mlir::failure();
     }
     mapping.map(argument, input);
@@ -123,8 +123,7 @@ mlir::LogicalResult commitSelectedTaskCandidate(
   for (mlir::Value out : scope.outs) {
     mlir::BlockArgument argument = entry.getArgument(argumentIndex++);
     if (argument.getType() != out.getType()) {
-      anchor->emitError(
-          "selected task commit output boundary type mismatch");
+      anchor->emitError("selected task commit output boundary type mismatch");
       return mlir::failure();
     }
     mapping.map(argument, out);
@@ -140,14 +139,12 @@ mlir::LogicalResult commitSelectedTaskCandidate(
   for (auto [returned, yielded] :
        llvm::zip_equal(returnOp.getOperands(), scope.yieldedValues)) {
     if (returned.getType() != yielded.getType()) {
-      anchor->emitError(
-          "selected task commit result boundary type mismatch");
+      anchor->emitError("selected task commit result boundary type mismatch");
       return mlir::failure();
     }
     mlir::Value mapped = mapping.lookupOrNull(returned);
     if (!mapped) {
-      anchor->emitError(
-          "selected task commit could not map returned value");
+      anchor->emitError("selected task commit could not map returned value");
       return mlir::failure();
     }
     if (mapped.getType() != yielded.getType()) {

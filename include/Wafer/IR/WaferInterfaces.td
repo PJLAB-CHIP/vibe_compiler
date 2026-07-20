@@ -14,21 +14,26 @@ def Wafer_CommunicationResource
     : Resource<"::wafer::WaferCommunicationResource">;
 def Wafer_SyncResource : Resource<"::wafer::WaferSyncResource">;
 
-def WaferTilingInterface : OpInterface<"WaferTilingInterface"> {
+def WaferTargetImplementationOpInterface
+    : OpInterface<"WaferTargetImplementationOpInterface"> {
   let cppNamespace = "::wafer";
   let description = [{
-    Interface for operations that expose structural tiling facts derived from
-    the current IR. Implementations must not return planner side tables or
-    cached search state.
+    Interface for bounded target implementation enumeration on source
+    structured operations. Standard MLIR interfaces remain authoritative for
+    source semantics, tiling, DPS roles, layout, and effects.
   }];
   let methods = [
     InterfaceMethod<
-      "Collect the tensor values that participate in Wafer tiling.",
-      "void", "collectWaferTilingDemand",
-      (ins "::llvm::SmallVectorImpl<::wafer::WaferTilingDemand> &":$demands)>,
+      "Collect deterministic target implementation candidates for this source operation.",
+      "void", "collectTargetImplementationCandidates",
+      (ins "const ::wafer::WaferTargetCapabilities &":$capabilities,
+           "::llvm::SmallVectorImpl<::wafer::TargetImplementationCandidate> &":$candidates)>,
     InterfaceMethod<
-      "Verify that the operation's tiling contract is represented in IR.",
-      "::mlir::LogicalResult", "verifyWaferTilingContract", (ins)>
+      "Materialize one selected candidate into typed target-abstract IR.",
+      "::mlir::LogicalResult", "materializeSelectedTargetImplementation",
+      (ins "const ::wafer::TargetImplementationCandidate &":$candidate,
+           "::wafer::WaferTargetImplementationMaterializer &":$materializer,
+           "::mlir::OpBuilder &":$builder)>
   ];
 }
 

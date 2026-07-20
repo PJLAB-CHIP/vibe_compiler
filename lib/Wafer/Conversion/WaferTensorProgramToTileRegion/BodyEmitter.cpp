@@ -82,9 +82,11 @@ matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
   return std::nullopt;
 }
 
-TileRegionBodyEmitter::TileRegionBodyEmitter(std::string *failureReason,
-                                             int64_t currentLogicalRank)
-    : failureReason(failureReason), currentLogicalRank(currentLogicalRank) {}
+TileRegionBodyEmitter::TileRegionBodyEmitter(
+    std::string *failureReason, int64_t currentLogicalRank,
+    std::optional<TargetImplementationKind> selectedAlternative)
+    : failureReason(failureReason), currentLogicalRank(currentLogicalRank),
+      selectedAlternative(selectedAlternative) {}
 
 mlir::FailureOr<TileRegionOp>
 TileRegionBodyEmitter::emit(TensorProgramScope scope,
@@ -153,6 +155,11 @@ TileRegionBodyEmitter::emit(TensorProgramScope scope,
     if (mlir::failed(convertOp(opPlan, rewriter)))
       return mlir::failure();
   }
+
+  if (selectedAlternative && !selectedAlternativeMaterialized)
+    return failAndReturn(
+        "selected target implementation alternative did not match any "
+        "source operation in the materialized clone");
 
   if (mlir::failed(finishRegion(scope, tileRegion, rewriter)))
     return mlir::failure();
@@ -519,16 +526,74 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(const OpLayoutPlan &opPlan,
   if (opPlan.kind == OpTilingDemandKind::LinalgExtCollective)
     return convertLinalgExtCollective(op, opPlan.collectiveInfo, builder);
 
-  if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(op))
-    return convertFill(fill, builder);
-  if (mlir::isa<mlir::linalg::MatmulOp>(op))
-    return convertMatmul(mlir::cast<mlir::linalg::LinalgOp>(op), builder);
-  if (mlir::isa<mlir::linalg::BatchMatmulOp>(op))
-    return convertBatchMatmul(mlir::cast<mlir::linalg::LinalgOp>(op), builder);
-  if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(op))
-    return convertGeneric(generic, builder);
+  if (mlir::isa<mlir::linalg::LinalgOp>(op))
+    return materializeSourceImplementation(op, builder);
 
   return fail("unsupported linalg op " + op->getName().getStringRef().str());
+}
+
+mlir::LogicalResult TileRegionBodyEmitter::materializeSourceImplementation(
+    mlir::Operation *operation, mlir::OpBuilder &builder) {
+  auto interface =
+      mlir::dyn_cast<WaferTargetImplementationOpInterface>(operation);
+  if (!interface)
+    return fail("source operation has no target implementation interface: " +
+                operation->getName().getStringRef().str());
+
+  llvm::SmallVector<TargetImplementationCandidate, 2> candidates;
+  interface.collectTargetImplementationCandidates(WaferTargetCapabilities{},
+                                                  candidates);
+  if (candidates.empty())
+    return fail("source target implementation is explicitly unsupported: " +
+                operation->getName().getStringRef().str());
+
+  const TargetImplementationCandidate *selected = &candidates.front();
+  if (selectedAlternative) {
+    auto alternative = llvm::find_if(candidates, [&](const auto &candidate) {
+      return candidate.kind == *selectedAlternative;
+    });
+    if (alternative != candidates.end()) {
+      selected = &*alternative;
+      selectedAlternativeMaterialized = true;
+    }
+  }
+  if (mlir::failed(interface.materializeSelectedTargetImplementation(
+          *selected, *this, builder))) {
+    if (failureReason && !failureReason->empty())
+      return mlir::failure();
+    return fail("selected target implementation failed to materialize");
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult TileRegionBodyEmitter::materializeTargetImplementation(
+    mlir::Operation *source, const TargetImplementationCandidate &candidate,
+    mlir::OpBuilder &builder) {
+  switch (candidate.kind) {
+  case TargetImplementationKind::Fill:
+    if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(source))
+      return convertFill(fill, builder);
+    break;
+  case TargetImplementationKind::Gemm:
+    if (mlir::isa<mlir::linalg::MatmulOp>(source))
+      return convertMatmul(mlir::cast<mlir::linalg::LinalgOp>(source), builder);
+    break;
+  case TargetImplementationKind::BatchGemm:
+    if (mlir::isa<mlir::linalg::BatchMatmulOp>(source))
+      return convertBatchMatmul(mlir::cast<mlir::linalg::LinalgOp>(source),
+                                builder);
+    break;
+  case TargetImplementationKind::Generic:
+  case TargetImplementationKind::GenericReciprocalViaDivision:
+    if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(source))
+      return convertGeneric(
+          generic,
+          candidate.kind ==
+              TargetImplementationKind::GenericReciprocalViaDivision,
+          builder);
+    break;
+  }
+  return fail("selected target implementation does not match source op");
 }
 
 mlir::LogicalResult

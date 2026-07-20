@@ -72,14 +72,6 @@ bool hasResourceEffect(llvm::ArrayRef<wafer::WaferResourceEffect> effects,
   });
 }
 
-bool hasTilingDemand(llvm::ArrayRef<wafer::WaferTilingDemand> demands,
-                     wafer::WaferTilingDemandKind kind, unsigned index,
-                     mlir::Type type) {
-  return llvm::any_of(demands, [&](const wafer::WaferTilingDemand &demand) {
-    return demand.kind == kind && demand.index == index && demand.type == type;
-  });
-}
-
 llvm::SmallVector<mlir::OpFoldResult>
 getIndexOpFoldResults(mlir::MLIRContext &context,
                       llvm::ArrayRef<int64_t> values) {
@@ -121,26 +113,6 @@ template <typename OpT> void expectLinalgExtCollectiveInterfaces(OpT op) {
     EXPECT_EQ(dpsInputs[index], input);
   for (auto [index, out] : llvm::enumerate(op.getOuts()))
     EXPECT_EQ(dps.getDpsInits()[index], out);
-
-  auto waferTiling =
-      mlir::dyn_cast<wafer::WaferTilingInterface>(op.getOperation());
-  ASSERT_TRUE(waferTiling);
-  llvm::SmallVector<wafer::WaferTilingDemand, 8> demands;
-  waferTiling.collectWaferTilingDemand(demands);
-  for (auto [index, input] : llvm::enumerate(op.getInputs())) {
-    EXPECT_TRUE(hasTilingDemand(demands, wafer::WaferTilingDemandKind::Input,
-                                static_cast<unsigned>(index), input.getType()));
-  }
-  for (auto [index, out] : llvm::enumerate(op.getOuts())) {
-    EXPECT_TRUE(hasTilingDemand(demands, wafer::WaferTilingDemandKind::Output,
-                                static_cast<unsigned>(index), out.getType()));
-  }
-  for (auto [index, result] : llvm::enumerate(op.getResults())) {
-    EXPECT_TRUE(hasTilingDemand(demands, wafer::WaferTilingDemandKind::Result,
-                                static_cast<unsigned>(index),
-                                result.getType()));
-  }
-  EXPECT_TRUE(mlir::succeeded(waferTiling.verifyWaferTilingContract()));
 
   auto collective = mlir::dyn_cast<wafer::WaferLinalgExtCollectiveOpInterface>(
       op.getOperation());
@@ -466,8 +438,7 @@ module {
   auto rdmaInstruction =
       mlir::dyn_cast<wafer::WaferInstructionOpInterface>(rdma.getOperation());
   ASSERT_TRUE(rdmaInstruction);
-  EXPECT_EQ(rdmaInstruction.getInstructionFamily(),
-            wafer::InstrFamily::RDMA);
+  EXPECT_EQ(rdmaInstruction.getInstructionFamily(), wafer::InstrFamily::RDMA);
   EXPECT_TRUE(mlir::succeeded(rdmaInstruction.verifyInstructionContract()));
 
   auto rdmaResources =
@@ -490,8 +461,7 @@ module {
   auto gatherInstruction =
       mlir::dyn_cast<wafer::WaferInstructionOpInterface>(gather.getOperation());
   ASSERT_TRUE(gatherInstruction);
-  EXPECT_EQ(gatherInstruction.getInstructionFamily(),
-            wafer::InstrFamily::TDMA);
+  EXPECT_EQ(gatherInstruction.getInstructionFamily(), wafer::InstrFamily::TDMA);
 
   auto fill = findSingleOp<wafer::InstrFillOp>(*module);
   ASSERT_TRUE(fill);
@@ -505,8 +475,7 @@ module {
   auto maskMoveInstruction = mlir::dyn_cast<wafer::WaferInstructionOpInterface>(
       maskMove.getOperation());
   ASSERT_TRUE(maskMoveInstruction);
-  EXPECT_EQ(maskMoveInstruction.getInstructionFamily(),
-            wafer::InstrFamily::CT);
+  EXPECT_EQ(maskMoveInstruction.getInstructionFamily(), wafer::InstrFamily::CT);
 
   auto elementwise = findSingleOp<wafer::InstrElementwiseOp>(*module);
   ASSERT_TRUE(elementwise);
@@ -529,8 +498,7 @@ module {
   auto wdmaInstruction =
       mlir::dyn_cast<wafer::WaferInstructionOpInterface>(wdma.getOperation());
   ASSERT_TRUE(wdmaInstruction);
-  EXPECT_EQ(wdmaInstruction.getInstructionFamily(),
-            wafer::InstrFamily::WDMA);
+  EXPECT_EQ(wdmaInstruction.getInstructionFamily(), wafer::InstrFamily::WDMA);
 }
 
 TEST(WaferInterfacesTest, LinalgExtCollectivesExposeLinalgExtStyleContracts) {
@@ -739,8 +707,8 @@ module {
   EXPECT_TRUE(info.hasCommunicationEffect);
   EXPECT_EQ(info.channelId, 12);
   EXPECT_EQ(info.sourceTargetPairs, llvm::SmallVector<int64_t>({0, 1, 1, 0}));
-  EXPECT_TRUE(
-      mlir::succeeded(permuteCollective.verifyWaferLinalgExtCollectiveContract()));
+  EXPECT_TRUE(mlir::succeeded(
+      permuteCollective.verifyWaferLinalgExtCollectiveContract()));
   EXPECT_TRUE(mlir::isa<mlir::TilingInterface>(permute.getOperation()));
   expectTiledImplementation(
       permute, context, llvm::SmallVector<int64_t>{1},
@@ -892,7 +860,8 @@ module {
                       {2, 64, 512})});
 }
 
-TEST(WaferInterfacesTest, LinalgExtCollectiveTilingHandlesDynamicNonAxisShapes) {
+TEST(WaferInterfacesTest,
+     LinalgExtCollectiveTilingHandlesDynamicNonAxisShapes) {
   mlir::DialectRegistry registry;
   wafer::registerAllDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::tensor::TensorDialect>();

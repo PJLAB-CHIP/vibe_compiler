@@ -3,6 +3,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitAll.h"
 #include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -54,6 +55,7 @@ void registerConversionDialects(mlir::DialectRegistry &registry) {
   mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  wafer::registerTargetImplementationExternalModels(registry);
 }
 
 mlir::func::FuncOp findSingleTensorProgram(mlir::ModuleOp module) {
@@ -272,6 +274,105 @@ module {
           mlir::cast<mlir::MemRefType>(instructions.front().getLhs().getType()))
           .getLayout(),
       wafer::MemLayout::NCx);
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     MaterializesReciprocalDivisionAlternativeThroughSourceInterface) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @reciprocal(%input: tensor<4xf32>, %out: tensor<4xf32>)
+      -> tensor<4xf32> {
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0) -> (d0)>,
+          affine_map<(d0) -> (d0)>
+        ],
+        iterator_types = ["parallel"]
+      } ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
+    ^bb0(%value: f32, %init: f32):
+      %one = arith.constant 1.0 : f32
+      %reciprocal = arith.divf %one, %value : f32
+      linalg.yield %reciprocal : f32
+    } -> tensor<4xf32>
+    return %result : tensor<4xf32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  ASSERT_TRUE(function);
+
+  auto generic = *function.getOps<mlir::linalg::GenericOp>().begin();
+  auto interface = mlir::dyn_cast<wafer::WaferTargetImplementationOpInterface>(
+      generic.getOperation());
+  ASSERT_TRUE(interface);
+  llvm::SmallVector<wafer::TargetImplementationCandidate, 2> candidates;
+  interface.collectTargetImplementationCandidates(
+      wafer::WaferTargetCapabilities{}, candidates);
+  ASSERT_EQ(candidates.size(), 2u);
+  EXPECT_EQ(candidates[0].kind, wafer::TargetImplementationKind::Generic);
+  EXPECT_EQ(candidates[1].kind,
+            wafer::TargetImplementationKind::GenericReciprocalViaDivision);
+  wafer::WaferTargetCapabilities noDivision;
+  noDivision.supportsElementwiseDivision = false;
+  candidates.clear();
+  interface.collectTargetImplementationCandidates(noDivision, candidates);
+  ASSERT_EQ(candidates.size(), 1u);
+  EXPECT_EQ(candidates.front().kind, wafer::TargetImplementationKind::Generic);
+
+  mlir::OwningOpRef<mlir::ModuleOp> baseline;
+  mlir::OwningOpRef<mlir::ModuleOp> alternative;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+          function, /*candidateTileSizes=*/{2},
+          /*candidateReductionTileSizes=*/{}, baseline, &failureReason,
+          /*currentLogicalRank=*/0)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+          function, /*candidateTileSizes=*/{2},
+          /*candidateReductionTileSizes=*/{}, alternative, &failureReason,
+          /*currentLogicalRank=*/0,
+          wafer::TargetImplementationKind::GenericReciprocalViaDivision)))
+      << failureReason;
+
+  llvm::SmallVector<wafer::ComputeElementwiseKind, 4> baselineKinds;
+  llvm::SmallVector<wafer::ComputeElementwiseKind, 4> alternativeKinds;
+  baseline->walk([&](wafer::ComputeElementwiseOp op) {
+    baselineKinds.push_back(op.getKind());
+  });
+  alternative->walk([&](wafer::ComputeElementwiseOp op) {
+    alternativeKinds.push_back(op.getKind());
+  });
+  EXPECT_TRUE(
+      llvm::is_contained(baselineKinds, wafer::ComputeElementwiseKind::Recip));
+  EXPECT_FALSE(
+      llvm::is_contained(baselineKinds, wafer::ComputeElementwiseKind::Div));
+  EXPECT_TRUE(
+      llvm::is_contained(alternativeKinds, wafer::ComputeElementwiseKind::Div));
+  EXPECT_FALSE(llvm::is_contained(alternativeKinds,
+                                  wafer::ComputeElementwiseKind::Recip));
+  EXPECT_GT(countOps<wafer::ComputeFillOp>(*alternative), 0u);
+
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*baseline, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*alternative, &failureReason)))
+      << failureReason;
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*baseline)));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*alternative)));
+  EXPECT_GT(countOps<wafer::InstrElementwiseOp>(*baseline), 0u);
+  EXPECT_GT(countOps<wafer::InstrElementwiseOp>(*alternative), 0u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
 }
 
 TEST(WaferTensorProgramToTileRegionTest,

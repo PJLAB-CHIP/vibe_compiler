@@ -93,11 +93,11 @@ rewrite 所需的 typed facts，不生成 detached semantic descriptor。
 每个具体 rewrite 文件只负责一个同层变换，直接在 isolated clone 中创建/修改 IR，并用 `IRMapping`、
 `PatternRewriter` 和新鲜 analysis 协作。
 
-该文件不注册第二套tiling/layout/effect语义。Q32.I/M把现有`WaferTilingInterface` consumer迁到
-`TilingInterface`+`DestinationStyleOpInterface`，把layout要求迁到typed encoding/view/op verifier，把
-resource事实迁到`MemoryEffectOpInterface`+`SideEffects::Resource`和current-IR analysis；相应只复制字段的
-interface、struct和boilerplate实现删除。Wafer-specific interface只有通过tasks/10 native reuse gate后才能留在
-`WaferInterfaces.td`。
+该文件不注册第二套tiling/layout/effect语义。Q32.I已把`WaferTilingInterface` consumer迁到
+`TilingInterface`+`DestinationStyleOpInterface`并删除该重复接口；Q32.M继续把layout要求迁到typed
+encoding/view/op verifier，把resource事实迁到`MemoryEffectOpInterface`+`SideEffects::Resource`和
+current-IR analysis，再删除相应只复制字段的interface、struct和boilerplate实现。Wafer-specific interface只有
+通过tasks/10 native reuse gate后才能留在`WaferInterfaces.td`。
 
 同批迁移`StorageLoadOp`的ODS与所有builder/conversion/test：load使用explicit DDR source和已创建SPM
 destination、无隐式allocation/result。旧`StructuredSchedulingTilingDemand`/

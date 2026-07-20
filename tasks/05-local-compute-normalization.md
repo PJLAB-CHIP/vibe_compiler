@@ -109,8 +109,8 @@ rank-group/channel/combiner事实，不再复制DPS/tiling或返回collective in
 - all-reduce/reduce-scatter的exact scalar combiner region；
 - collective-permute的logical source-target pairs。
 
-当前代码仍挂有`WaferTilingInterface`和聚合collective-info路径；这是Q29迁移实现，不是本节终态合同。
-Q32.I/M迁移consumer并删除重复语义，同时审计pinned MLIR Mesh op能无损承载的子集；标准Mesh无法表达的
+重复DPS/tiling语义的`WaferTilingInterface`已由Q32.I删除；聚合collective-info路径仍是Q29迁移实现，
+不是本节终态合同。Q32.M继续迁移consumer并删除重复聚合语义，同时审计pinned MLIR Mesh op能无损承载的子集；标准Mesh无法表达的
 arbitrary groups/channel/combiner才保留在Wafer typed op中。
 
 verifier用execution mesh检查logical ranks范围，并用selected rank-group size检查gather/scatter/all-to-all shape

@@ -4,6 +4,8 @@
 #ifndef WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_H
 #define WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_H
 
+#include "Wafer/IR/WaferInterfaces.h"
+
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -11,6 +13,7 @@
 #include "llvm/ADT/ArrayRef.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace wafer {
@@ -48,7 +51,8 @@ cloneTensorProgramToStandaloneModule(mlir::func::FuncOp function);
 
 mlir::LogicalResult lowerTensorProgramToTileRegionModule(
     mlir::func::FuncOp function, mlir::OwningOpRef<mlir::ModuleOp> &module,
-    std::string *failureReason, int64_t currentLogicalRank);
+    std::string *failureReason, int64_t currentLogicalRank,
+    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt);
 
 /// Verifies that replacing one structured reduction by more than one ordered
 /// chunk, including neutral-initialized partials and chunk-result combines, is
@@ -63,7 +67,8 @@ mlir::LogicalResult lowerCandidateTensorProgramToTileRegionModule(
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank);
+    int64_t currentLogicalRank,
+    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt);
 
 /// Materializes a compact structured traversal of a standalone tensor
 /// program and lowers it to tile-region IR.
@@ -71,7 +76,8 @@ mlir::LogicalResult lowerCompleteCandidateTensorProgramToTileRegionModule(
     mlir::func::FuncOp function, llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
-    int64_t currentLogicalRank);
+    int64_t currentLogicalRank,
+    std::optional<TargetImplementationKind> selectedAlternative = std::nullopt);
 
 } // namespace wafer
 

@@ -358,36 +358,6 @@ verifySourceTargetPairs(mlir::Operation *op,
                                                "source_target_pairs");
 }
 
-void collectLinalgExtCollectiveTilingDemand(
-    mlir::OperandRange inputs, mlir::OperandRange outs,
-    mlir::ResultRange results,
-    llvm::SmallVectorImpl<WaferTilingDemand> &demands) {
-  for (auto [index, input] : llvm::enumerate(inputs))
-    demands.push_back({WaferTilingDemandKind::Input,
-                       static_cast<unsigned>(index), input.getType()});
-  for (auto [index, out] : llvm::enumerate(outs))
-    demands.push_back({WaferTilingDemandKind::Output,
-                       static_cast<unsigned>(index), out.getType()});
-  for (auto [index, result] : llvm::enumerate(results))
-    demands.push_back({WaferTilingDemandKind::Result,
-                       static_cast<unsigned>(index), result.getType()});
-}
-
-mlir::LogicalResult verifyLinalgExtCollectiveTilingContract(
-    mlir::Operation *op, mlir::OperandRange inputs, mlir::OperandRange outs,
-    mlir::ResultRange results) {
-  llvm::SmallVector<WaferTilingDemand, 8> demands;
-  collectLinalgExtCollectiveTilingDemand(inputs, outs, results, demands);
-  if (demands.empty())
-    return op->emitOpError("tiling interface must expose collective tensors");
-  for (const WaferTilingDemand &demand : demands) {
-    if (!mlir::isa<mlir::RankedTensorType>(demand.type))
-      return op->emitOpError(
-          "tiling interface must expose only ranked tensors");
-  }
-  return mlir::success();
-}
-
 void assignDenseI64Array(mlir::DenseI64ArrayAttr attr,
                          llvm::SmallVectorImpl<int64_t> &values) {
   values.clear();
@@ -790,18 +760,6 @@ mlir::LogicalResult LinalgExtCollectiveAllGatherOp::verify() {
       getCollectiveRankGroupSize(getRankGroupAttr(), getRankGroupsAttr()));
 }
 
-void LinalgExtCollectiveAllGatherOp::collectWaferTilingDemand(
-    llvm::SmallVectorImpl<WaferTilingDemand> &demands) {
-  collectLinalgExtCollectiveTilingDemand(getInputs(), getOuts(), getResults(),
-                                         demands);
-}
-
-mlir::LogicalResult
-LinalgExtCollectiveAllGatherOp::verifyWaferTilingContract() {
-  return verifyLinalgExtCollectiveTilingContract(getOperation(), getInputs(),
-                                                 getOuts(), getResults());
-}
-
 void LinalgExtCollectiveAllGatherOp::collectWaferLinalgExtCollectiveInfo(
     WaferLinalgExtCollectiveInfo &info) {
   info = {};
@@ -874,18 +832,6 @@ mlir::LogicalResult LinalgExtCollectiveReduceScatterOp::verify() {
 mlir::LogicalResult LinalgExtCollectiveReduceScatterOp::verifyRegions() {
   return verifyCombinerRegion(getOperation(), getCombiner(), getInputs(),
                               getResults());
-}
-
-void LinalgExtCollectiveReduceScatterOp::collectWaferTilingDemand(
-    llvm::SmallVectorImpl<WaferTilingDemand> &demands) {
-  collectLinalgExtCollectiveTilingDemand(getInputs(), getOuts(), getResults(),
-                                         demands);
-}
-
-mlir::LogicalResult
-LinalgExtCollectiveReduceScatterOp::verifyWaferTilingContract() {
-  return verifyLinalgExtCollectiveTilingContract(getOperation(), getInputs(),
-                                                 getOuts(), getResults());
 }
 
 void LinalgExtCollectiveReduceScatterOp::collectWaferLinalgExtCollectiveInfo(
@@ -962,18 +908,6 @@ mlir::LogicalResult LinalgExtCollectiveAllReduceOp::verifyRegions() {
                               getResults());
 }
 
-void LinalgExtCollectiveAllReduceOp::collectWaferTilingDemand(
-    llvm::SmallVectorImpl<WaferTilingDemand> &demands) {
-  collectLinalgExtCollectiveTilingDemand(getInputs(), getOuts(), getResults(),
-                                         demands);
-}
-
-mlir::LogicalResult
-LinalgExtCollectiveAllReduceOp::verifyWaferTilingContract() {
-  return verifyLinalgExtCollectiveTilingContract(getOperation(), getInputs(),
-                                                 getOuts(), getResults());
-}
-
 void LinalgExtCollectiveAllReduceOp::collectWaferLinalgExtCollectiveInfo(
     WaferLinalgExtCollectiveInfo &info) {
   info = {};
@@ -1039,17 +973,6 @@ mlir::LogicalResult LinalgExtCollectiveAllToAllOp::verify() {
   return verifyAllToAllShape(getOperation(), getInputs(), getResults(),
                              getSplitAxisAttr(), getConcatAxisAttr(),
                              getSplitCountAttr().getInt());
-}
-
-void LinalgExtCollectiveAllToAllOp::collectWaferTilingDemand(
-    llvm::SmallVectorImpl<WaferTilingDemand> &demands) {
-  collectLinalgExtCollectiveTilingDemand(getInputs(), getOuts(), getResults(),
-                                         demands);
-}
-
-mlir::LogicalResult LinalgExtCollectiveAllToAllOp::verifyWaferTilingContract() {
-  return verifyLinalgExtCollectiveTilingContract(getOperation(), getInputs(),
-                                                 getOuts(), getResults());
 }
 
 void LinalgExtCollectiveAllToAllOp::collectWaferLinalgExtCollectiveInfo(
@@ -1125,18 +1048,6 @@ mlir::LogicalResult LinalgExtCollectiveCollectivePermuteOp::verify() {
     return mlir::failure();
   return verifyCollectivePermuteShape(getOperation(), getInputs(),
                                       getResults());
-}
-
-void LinalgExtCollectiveCollectivePermuteOp::collectWaferTilingDemand(
-    llvm::SmallVectorImpl<WaferTilingDemand> &demands) {
-  collectLinalgExtCollectiveTilingDemand(getInputs(), getOuts(), getResults(),
-                                         demands);
-}
-
-mlir::LogicalResult
-LinalgExtCollectiveCollectivePermuteOp::verifyWaferTilingContract() {
-  return verifyLinalgExtCollectiveTilingContract(getOperation(), getInputs(),
-                                                 getOuts(), getResults());
 }
 
 void LinalgExtCollectiveCollectivePermuteOp::

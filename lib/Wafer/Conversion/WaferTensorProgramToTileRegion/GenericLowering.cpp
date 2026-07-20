@@ -199,7 +199,8 @@ TileRegionBodyEmitter::createElementwiseOpExprValue(
 mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
     mlir::linalg::GenericOp generic, mlir::Operation *op,
     llvm::DenseMap<mlir::Value, ElementwiseExprValue> &values,
-    mlir::RankedTensorType resultTensorType, mlir::OpBuilder &builder) {
+    mlir::RankedTensorType resultTensorType, bool reciprocalViaDivision,
+    mlir::OpBuilder &builder) {
   auto lookup = [&](mlir::Value value) {
     auto it = values.find(value);
     if (it != values.end())
@@ -340,7 +341,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
     return createBinary(muli.getLhs(), muli.getRhs(),
                         ComputeElementwiseKind::Mul);
   if (auto divf = mlir::dyn_cast<mlir::arith::DivFOp>(op)) {
-    if (isScalarLikeConstant(generic, divf.getLhs(), 1.0))
+    if (!reciprocalViaDivision &&
+        isScalarLikeConstant(generic, divf.getLhs(), 1.0))
       return createUnary(divf.getRhs(), ComputeElementwiseKind::Recip);
     return createBinary(divf.getLhs(), divf.getRhs(),
                         ComputeElementwiseKind::Div);
@@ -420,7 +422,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
 }
 
 mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseGenericExpression(
-    mlir::linalg::GenericOp generic, mlir::OpBuilder &builder) {
+    mlir::linalg::GenericOp generic, bool reciprocalViaDivision,
+    mlir::OpBuilder &builder) {
   auto resultTensorType =
       mlir::dyn_cast<mlir::RankedTensorType>(generic->getResult(0).getType());
   if (!resultTensorType)
@@ -462,8 +465,9 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseGenericExpression(
   }
 
   for (mlir::Operation &op : body.without_terminator()) {
-    if (mlir::failed(convertElementwiseScalarOp(generic, &op, values,
-                                                resultTensorType, builder)))
+    if (mlir::failed(
+            convertElementwiseScalarOp(generic, &op, values, resultTensorType,
+                                       reciprocalViaDivision, builder)))
       return mlir::failure();
   }
 
@@ -781,6 +785,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTwoWayConcatGeneric(
 
 mlir::LogicalResult
 TileRegionBodyEmitter::convertGeneric(mlir::linalg::GenericOp generic,
+                                      bool reciprocalViaDivision,
                                       mlir::OpBuilder &builder) {
   if (generic.getNumDpsInits() != 1 || generic->getNumResults() != 1)
     return fail("unsupported linalg.generic arity");
@@ -795,7 +800,8 @@ TileRegionBodyEmitter::convertGeneric(mlir::linalg::GenericOp generic,
       mlir::succeeded(concatInputs))
     return convertTwoWayConcatGeneric(generic, *concatInputs, concatAxis,
                                       builder);
-  return convertElementwiseGenericExpression(generic, builder);
+  return convertElementwiseGenericExpression(generic, reciprocalViaDivision,
+                                             builder);
 }
 
 } // namespace wafer::tensor_program_to_tile_region

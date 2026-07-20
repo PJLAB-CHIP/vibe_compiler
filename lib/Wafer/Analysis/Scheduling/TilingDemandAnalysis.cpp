@@ -189,55 +189,43 @@ collectCollectiveDemand(WaferLinalgExtCollectiveOpInterface op,
   }
   demand.iteratorTypes = mlirTiling.getLoopIteratorTypes();
 
-  llvm::SmallVector<WaferTilingDemand, 4> tilingDemands;
-  if (auto tiling = mlir::dyn_cast<WaferTilingInterface>(op.getOperation()))
-    tiling.collectWaferTilingDemand(tilingDemands);
-  if (tilingDemands.empty()) {
+  auto dps =
+      mlir::dyn_cast<mlir::DestinationStyleOpInterface>(op.getOperation());
+  if (!dps) {
     demand.kind = OpTilingDemandKind::Failure;
-    demand.failureReason = "collective did not expose tiling demand";
+    demand.failureReason =
+        "collective does not implement DestinationStyleOpInterface";
     return mlir::failure();
   }
 
-  for (const WaferTilingDemand &tilingDemand : tilingDemands) {
-    TilingDemandValueRole role;
-    switch (tilingDemand.kind) {
-    case WaferTilingDemandKind::Input:
-      role = TilingDemandValueRole::Input;
-      break;
-    case WaferTilingDemandKind::Output:
-      role = TilingDemandValueRole::Output;
-      break;
-    case WaferTilingDemandKind::Result:
-      role = TilingDemandValueRole::Result;
-      break;
+  auto addDpsValues = [&](mlir::ValueRange values, TilingDemandValueRole role,
+                          llvm::StringRef roleName) {
+    for (auto [index, value] : llvm::enumerate(values)) {
+      if (!isRankedTensor(value.getType())) {
+        demand.kind = OpTilingDemandKind::Failure;
+        demand.failureReason = "collective ";
+        demand.failureReason += roleName;
+        demand.failureReason += " is not ranked tensor";
+        return mlir::failure();
+      }
+      addBoundaryValue(demand.values, role, static_cast<unsigned>(index),
+                       value);
     }
+    return mlir::success();
+  };
 
-    mlir::Value value;
-    if (role == TilingDemandValueRole::Input &&
-        tilingDemand.index < op.getOperation()->getNumOperands())
-      value = op.getOperation()->getOperand(tilingDemand.index);
-    if (role == TilingDemandValueRole::Output) {
-      auto dpsOp =
-          mlir::dyn_cast<mlir::DestinationStyleOpInterface>(op.getOperation());
-      if (dpsOp && tilingDemand.index < dpsOp.getNumDpsInits())
-        value = dpsOp.getDpsInits()[tilingDemand.index];
-    }
-    if (role == TilingDemandValueRole::Result &&
-        tilingDemand.index < op.getOperation()->getNumResults())
-      value = op.getOperation()->getResult(tilingDemand.index);
-
-    if (!value) {
-      demand.kind = OpTilingDemandKind::Failure;
-      demand.failureReason =
-          "collective tiling demand references missing value";
-      return mlir::failure();
-    }
-    if (!isRankedTensor(value.getType())) {
-      demand.kind = OpTilingDemandKind::Failure;
-      demand.failureReason = "collective demand is not ranked tensor";
-      return mlir::failure();
-    }
-    addBoundaryValue(demand.values, role, tilingDemand.index, value);
+  if (mlir::failed(addDpsValues(dps.getDpsInputs(),
+                                TilingDemandValueRole::Input, "input")) ||
+      mlir::failed(addDpsValues(dps.getDpsInits(),
+                                TilingDemandValueRole::Output, "output")) ||
+      mlir::failed(addDpsValues(op.getOperation()->getResults(),
+                                TilingDemandValueRole::Result, "result"))) {
+    return mlir::failure();
+  }
+  if (demand.values.empty()) {
+    demand.kind = OpTilingDemandKind::Failure;
+    demand.failureReason = "collective has no DPS or result tensor values";
+    return mlir::failure();
   }
 
   return mlir::success();

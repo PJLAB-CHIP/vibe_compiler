@@ -7,6 +7,7 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -47,6 +48,7 @@ enum class TileSearchMode { FirstLegal, MinEstimatedTime };
 struct CandidateSpec {
   llvm::SmallVector<int64_t, 4> tileSizes;
   llvm::SmallVector<int64_t, 2> reductionSplitSizes;
+  std::optional<TargetImplementationKind> selectedImplementationAlternative;
 };
 
 struct TileInstance {

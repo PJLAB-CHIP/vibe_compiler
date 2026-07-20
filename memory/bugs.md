@@ -707,3 +707,12 @@
   如何销毁；删除旧对象时建立“原功能目标→MLIR-native owner→production consumer→completion evidence”矩阵，确认删的是
   重复表示而不是功能。任务顺序必须先出现通用rewrite与完整下游gate，再允许从全部candidate producer的实际增长数据抽象
   搜索策略；不能在只打通两条rewrite后把Q32报成完成。
+
+## 2026-07-20 external model语义匹配必须处理缺失constant attr
+
+- 现象：source implementation external model检查`1/x`时，对非constant SSA operand取得空`Attribute`后直接
+  `dyn_cast`，debug构建在完整lit中触发“isa<> used on a null pointer”断言；只跑正例时容易漏掉。
+- 根因：把“当前operand可能由constant定义”误写成“constant attr必然存在”，没有在optional source fact边界
+  fail closed。
+- 修复模式：先显式检查空Attribute/Value/defining op；匹配不完整时只是不枚举alternative，保留baseline，
+  不产生诊断或猜测语义。external model matcher必须同时用含非constant operand的完整source回归验证。

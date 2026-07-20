@@ -11,7 +11,6 @@ class Wafer_LinalgExtCollectiveOp<string mnemonic, list<Trait> traits = []>
         AttrSizedOperandSegments,
         DestinationStyleOpInterface,
         TilingInterface,
-        DeclareOpInterfaceMethods<WaferTilingInterface>,
         DeclareOpInterfaceMethods<WaferLinalgExtCollectiveOpInterface>
       ], traits)> {
   let arguments = (ins

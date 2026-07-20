@@ -72,9 +72,10 @@ static void normalizeMapOps(mlir::func::FuncOp function) {
   }
 }
 
-static mlir::LogicalResult
-rewriteTensorProgramInPlace(mlir::ModuleOp module, int64_t currentLogicalRank,
-                            std::string *failureReason) {
+static mlir::LogicalResult rewriteTensorProgramInPlace(
+    mlir::ModuleOp module, int64_t currentLogicalRank,
+    std::string *failureReason,
+    std::optional<TargetImplementationKind> selectedAlternative) {
   mlir::func::FuncOp function = findSingleStandaloneTensorProgram(module);
   if (!function) {
     setFailureReason(
@@ -94,7 +95,8 @@ rewriteTensorProgramInPlace(mlir::ModuleOp module, int64_t currentLogicalRank,
   mlir::func::ReturnOp oldReturn = scope.getReturn();
   mlir::IRRewriter rewriter(module.getContext());
   rewriter.setInsertionPoint(oldReturn);
-  TileRegionBodyEmitter emitter(failureReason, currentLogicalRank);
+  TileRegionBodyEmitter emitter(failureReason, currentLogicalRank,
+                                selectedAlternative);
   mlir::FailureOr<TileRegionOp> tileRegion = emitter.emit(scope, rewriter);
   if (mlir::failed(tileRegion))
     return mlir::failure();
@@ -135,8 +137,7 @@ rewriteTensorProgramInPlace(mlir::ModuleOp module, int64_t currentLogicalRank,
     os << "tile-region lowering retained source operation "
        << pending.front()->getName();
     if (!pending.front()->use_empty())
-      os << " through "
-         << (*pending.front()->getUsers().begin())->getName();
+      os << " through " << (*pending.front()->getUsers().begin())->getName();
     setFailureReason(failureReason, os.str());
     return mlir::failure();
   }
@@ -150,7 +151,8 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
         mlir::ModuleOp module, mlir::MLIRContext *context,
         int64_t currentLogicalRank, std::string *failureReason,
         bool suppressDiagnostics, bool verifyResult,
-        bool populateFallbackFailureReason) {
+        bool populateFallbackFailureReason,
+        std::optional<TargetImplementationKind> selectedAlternative) {
   // Rewrite a private clone and commit only after the complete scheduling
   // scope has lowered and verified.
   mlir::OwningOpRef<mlir::ModuleOp> candidate = module.clone();
@@ -159,10 +161,10 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
     mlir::ScopedDiagnosticHandler handler(
         context, [](mlir::Diagnostic &) { return mlir::success(); });
     conversionResult = rewriteTensorProgramInPlace(
-        *candidate, currentLogicalRank, failureReason);
+        *candidate, currentLogicalRank, failureReason, selectedAlternative);
   } else {
     conversionResult = rewriteTensorProgramInPlace(
-        *candidate, currentLogicalRank, failureReason);
+        *candidate, currentLogicalRank, failureReason, selectedAlternative);
   }
 
   if (mlir::failed(conversionResult)) {
@@ -187,12 +189,15 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
 
 mlir::LogicalResult wafer::lowerTensorProgramToTileRegionModule(
     mlir::func::FuncOp function, mlir::OwningOpRef<mlir::ModuleOp> &module,
-    std::string *failureReason, int64_t currentLogicalRank) {
+    std::string *failureReason, int64_t currentLogicalRank,
+    std::optional<TargetImplementationKind> selectedAlternative) {
   if (failureReason)
     failureReason->clear();
   if (mlir::failed(verifyTensorProgramScope(function, failureReason)))
     return mlir::failure();
   module = detail::cloneTensorProgramToStandaloneModule(function);
   return convertTensorProgramToTileRegionModuleInPlace(
-      *module, function.getContext(), currentLogicalRank, failureReason);
+      *module, function.getContext(), currentLogicalRank, failureReason,
+      /*suppressDiagnostics=*/true, /*verifyResult=*/true,
+      /*populateFallbackFailureReason=*/true, selectedAlternative);
 }
