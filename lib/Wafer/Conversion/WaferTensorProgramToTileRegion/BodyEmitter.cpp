@@ -109,12 +109,12 @@ TileRegionBodyEmitter::emit(TensorProgramScope scope,
   if (mlir::failed(verifyNamedLinalgPayloads(scope)))
     return mlir::failure();
 
-  StructuredSchedulingLayoutPlan layoutPlan;
-  if (mlir::failed(collectStructuredSchedulingLayoutPlan(
-          scope.getFunction(), scope.getInputCount(), layoutPlan)))
-    return failAndReturn("tensor-program layout planning failed");
-  if (!layoutPlan.succeeded)
-    return failAndReturn(layoutPlan.failureReason);
+  // Snapshot only the current source operations before creating the target
+  // region in the same function. This is an iteration worklist, not a second
+  // semantic plan; every conversion decision is made from the live operation.
+  llvm::SmallVector<mlir::Operation *, 16> sourceOps;
+  for (mlir::Operation &op : scope.getBody().without_terminator())
+    sourceOps.push_back(&op);
 
   llvm::SmallVector<mlir::Value, 4> tileRegionInputs;
   for (mlir::Value original : scope.getInputs()) {
@@ -154,8 +154,8 @@ TileRegionBodyEmitter::emit(TensorProgramScope scope,
   if (mlir::failed(initializeBoundary(scope, tileRegion, rewriter)))
     return mlir::failure();
 
-  for (OpLayoutPlan &opPlan : layoutPlan.ops) {
-    if (mlir::failed(convertOp(opPlan, rewriter)))
+  for (mlir::Operation *op : sourceOps) {
+    if (mlir::failed(convertOp(op, rewriter)))
       return mlir::failure();
   }
 
@@ -551,21 +551,27 @@ TileRegionBodyEmitter::initializeBoundary(TensorProgramScope scope,
   return mlir::success();
 }
 
-mlir::LogicalResult TileRegionBodyEmitter::convertOp(const OpLayoutPlan &opPlan,
+mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
                                                      mlir::OpBuilder &builder) {
-  if (opPlan.kind == OpTilingDemandKind::Failure)
-    return fail(opPlan.failureReason);
-
-  mlir::Operation *op = opPlan.op;
-  if (opPlan.kind == OpTilingDemandKind::Support)
-    return convertSupportOp(op, builder);
-  if (opPlan.kind == OpTilingDemandKind::LinalgExtCollective)
+  if (mlir::isa<WaferLinalgExtCollectiveOpInterface>(op))
     return convertLinalgExtCollective(op, builder);
 
-  if (mlir::isa<mlir::linalg::LinalgOp>(op))
+  if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(op)) {
+    if (!linalg.hasOnlyProjectedPermutations())
+      return fail("unsupported linalg indexing maps");
     return materializeSourceImplementation(op, builder);
+  }
 
-  return fail("unsupported linalg op " + op->getName().getStringRef().str());
+  if (mlir::isa<mlir::arith::ConstantOp, mlir::bufferization::ToMemrefOp,
+                mlir::bufferization::ToTensorOp, mlir::tensor::EmptyOp,
+                mlir::tensor::ExtractOp, mlir::tensor::ExtractSliceOp,
+                mlir::tensor::InsertSliceOp, mlir::tensor::ExpandShapeOp,
+                mlir::tensor::CollapseShapeOp, mlir::scf::IfOp,
+                mlir::scf::ForOp>(op))
+    return convertSupportOp(op, builder);
+
+  return fail("unsupported tensor-program op " +
+              op->getName().getStringRef().str());
 }
 
 mlir::LogicalResult TileRegionBodyEmitter::materializeSourceImplementation(

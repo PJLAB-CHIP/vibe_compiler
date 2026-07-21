@@ -131,12 +131,6 @@ STABLEHLO_CONVERSION_SOURCES = [
     "lib/Wafer/Conversion/StableHLOToLinalg/LegalizeStablehloToLinalg.cpp",
     "lib/Wafer/Conversion/StableHLOToLinalg/NormalizeStablehloCollectives.cpp",
 ]
-SCHEDULING_ANALYSIS_FILES = [
-    "include/Wafer/Analysis/Scheduling/LayoutPlanningAnalysis.h",
-    "include/Wafer/Analysis/Scheduling/TilingDemandAnalysis.h",
-    "lib/Wafer/Analysis/Scheduling/LayoutPlanningAnalysis.cpp",
-    "lib/Wafer/Analysis/Scheduling/TilingDemandAnalysis.cpp",
-]
 FORBIDDEN_IR_STRINGS = (
     "wafer.abi.",
     "wafer.ddr.",
@@ -344,23 +338,11 @@ def check_conversion_organization(root: Path, errors: list[str]) -> None:
 def check_analysis_organization(root: Path, errors: list[str]) -> None:
     lib_cmake = check_file(root / "lib/Wafer/CMakeLists.txt", errors)
     analysis_cmake = check_file(root / "lib/Wafer/Analysis/CMakeLists.txt", errors)
-    transforms_cmake = check_file(root / "lib/Wafer/Transforms/CMakeLists.txt", errors)
 
     if "add_subdirectory(Analysis)" not in lib_cmake:
         fail(errors, "lib/Wafer/CMakeLists.txt must add_subdirectory(Analysis)")
     if "add_mlir_library(WaferAnalysis" not in analysis_cmake:
-        fail(errors, "scheduling analysis must be owned by WaferAnalysis")
-    for relative in SCHEDULING_ANALYSIS_FILES:
-        check_file(root / relative, errors)
-    for source in [
-        "Scheduling/LayoutPlanningAnalysis.cpp",
-        "Scheduling/TilingDemandAnalysis.cpp",
-    ]:
-        if source in transforms_cmake:
-            fail(
-                errors,
-                f"WaferTransforms must not compile scheduling analysis source {source}",
-            )
+        fail(errors, "compiler analyses must be owned by WaferAnalysis")
     for legacy_root in (
         root / "include/Wafer/Analysis/Group",
         root / "lib/Wafer/Analysis/Group",

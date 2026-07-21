@@ -6,6 +6,7 @@
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -19,6 +20,13 @@ struct BufferAccess {
   mlir::Value value;
   bool write = false;
 };
+
+static mlir::Value getAccessBase(mlir::Value value) {
+  while (auto view = mlir::dyn_cast_or_null<mlir::ViewLikeOpInterface>(
+             value.getDefiningOp()))
+    value = view.getViewSource();
+  return value;
+}
 
 static bool isReadyOrderOperation(mlir::Operation *operation) {
   return mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp>(operation);
@@ -48,6 +56,7 @@ static void collectBufferAccesses(
     mlir::Value value = effect.getValue();
     if (!value)
       continue;
+    value = getAccessBase(value);
     bool read = llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
     bool write = llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect());
     if (!read && !write)
@@ -181,6 +190,8 @@ static bool isMutatingEffect(
 }
 
 static bool areKnownDistinctValues(mlir::Value lhs, mlir::Value rhs) {
+  lhs = getAccessBase(lhs);
+  rhs = getAccessBase(rhs);
   if (lhs == rhs)
     return false;
   // Each memref.alloc result denotes a fresh allocation. This is the only
@@ -199,6 +210,10 @@ static bool effectsMayConflict(
     return false;
   mlir::Value lhsValue = lhs.getValue();
   mlir::Value rhsValue = rhs.getValue();
+  if (lhsValue)
+    lhsValue = getAccessBase(lhsValue);
+  if (rhsValue)
+    rhsValue = getAccessBase(rhsValue);
   if (lhsValue && rhsValue && areKnownDistinctValues(lhsValue, rhsValue))
     return false;
   return true;

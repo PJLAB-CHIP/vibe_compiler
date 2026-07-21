@@ -14,13 +14,6 @@ class OpPassManager;
 namespace wafer {
 
 void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm);
-/// Schedules a verified per-rank structured tensor program and commits the
-/// accepted, memory-planned instruction program.  The input contract is
-/// Linalg/Tensor/SCF SSA dataflow; callers do not form or serialize scheduling
-/// boundaries.
-void buildScheduleTensorProgramToSelectedInstrPipeline(mlir::OpPassManager &pm,
-                                                       int64_t logicalRank);
-
 /// Finalizes one independently scheduled rank candidate.  The input already
 /// contains explicit tiled task/instruction dataflow; this pipeline closes
 /// function-boundary bufferization and recomputes rank-wide SPM/DDR offsets.

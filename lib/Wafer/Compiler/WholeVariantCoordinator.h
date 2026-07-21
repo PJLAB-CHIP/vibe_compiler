@@ -6,6 +6,7 @@
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/Compiler/Compilation.h"
 #include "Wafer/Frontend/Program.h"
+#include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -15,13 +16,13 @@
 
 namespace wafer::compiler::detail {
 
-/// One compiler-private member of a rank-local scheduling frontier.  Cost and
-/// discovery order participate only in deterministic selection; the module is
-/// the sole semantic artifact.
+/// One compiler-private member of a rank-local scheduling frontier. Stable
+/// ordinal plus artifact kind form the cross-rank correspondence key; the
+/// module remains the sole semantic artifact.
 struct RankVariantCandidate {
   mlir::OwningOpRef<mlir::ModuleOp> module;
-  int64_t estimatedTimePs = 0;
-  int64_t discoveryOrder = 0;
+  int64_t stableOrdinal = 0;
+  wafer::RankArtifactKind artifactKind = wafer::RankArtifactKind::Spill;
   bool reservedBaseline = false;
 };
 
@@ -30,13 +31,15 @@ using RankVariantFrontier = std::vector<RankVariantCandidate>;
 struct AcceptedWholeVariant {
   std::vector<RankExecutable> ranks;
   analysis::WholeCardInstructionProgramCost resourceCost;
-  std::vector<int64_t> selectedDiscoveryOrders;
+  std::vector<int64_t> selectedStableOrdinals;
+  std::vector<wafer::RankArtifactKind> selectedArtifactKinds;
   std::vector<bool> selectedReservedBaselines;
-  int64_t estimatedTimePs = 0;
 };
 
 /// Selects a complete rank-domain combination from independently planned
-/// frontiers.  Every attempted combination is cloned, then passes exact
+/// frontiers. Every attempted combination must carry one same-generation
+/// stable ordinal and one physical artifact kind across all ranks before it is
+/// cloned, then passes exact
 /// execution-config verification, Direct DTE binding, whole-card resources,
 /// accepted-rank/resource projection, and target ABI lowering.  Only a fully
 /// passing combination is returned, so no failed attempt can partially commit

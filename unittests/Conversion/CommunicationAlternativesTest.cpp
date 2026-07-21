@@ -1,4 +1,4 @@
-#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
+#include "Wafer/Conversion/WaferTileRegionToInstr/Internal.h"
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitAll.h"
@@ -61,11 +61,13 @@ module {
 }
 )mlir");
   ASSERT_TRUE(module);
-  wafer::TileRegionToInstrOptions options;
-  options.allGatherSchedule = wafer::AllGatherSchedule::Direct;
+  wafer::tile_region_to_instr::TileRegionToInstrOptions options;
+  options.allGatherSchedule =
+      wafer::tile_region_to_instr::AllGatherSchedule::Direct;
   std::string failure;
-  ASSERT_TRUE(mlir::succeeded(wafer::convertTileRegionToInstrModule(
-      *module, options, &failure)))
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::tile_region_to_instr::convertTileRegionToInstrModule(
+          *module, options, &failure)))
       << failure;
   unsigned directMessages = 0;
   unsigned directReceivesIntoGatherSlots = 0;
@@ -124,11 +126,13 @@ module {
 }
 )mlir");
   ASSERT_TRUE(module);
-  wafer::TileRegionToInstrOptions options;
-  options.allReduceSchedule = wafer::AllReduceSchedule::Tree;
+  wafer::tile_region_to_instr::TileRegionToInstrOptions options;
+  options.allReduceSchedule =
+      wafer::tile_region_to_instr::AllReduceSchedule::Tree;
   std::string failure;
-  ASSERT_TRUE(mlir::succeeded(wafer::convertTileRegionToInstrModule(
-      *module, options, &failure)))
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::tile_region_to_instr::convertTileRegionToInstrModule(
+          *module, options, &failure)))
       << failure;
   bool sawReduce = false;
   bool sawBroadcast = false;

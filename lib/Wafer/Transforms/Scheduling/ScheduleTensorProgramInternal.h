@@ -4,7 +4,7 @@
 #include "Scheduling/StructuredSchedulingScope.h"
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
-#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
+#include "Wafer/Conversion/WaferTileRegionToInstr/Internal.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
@@ -43,7 +43,10 @@
 
 namespace wafer::tensor_program_scheduling {
 
-enum class TileSearchMode { FirstLegal, MinEstimatedTime };
+using tile_region_to_instr::AllGatherSchedule;
+using tile_region_to_instr::AllReduceSchedule;
+using tile_region_to_instr::ReduceScatterSchedule;
+using tile_region_to_instr::TileRegionToInstrOptions;
 
 enum class CommunicationAlternative {
   Ring,
@@ -96,7 +99,6 @@ struct SelectedCandidate {
   mlir::func::FuncOp sourceTask;
   CandidateSpec spec;
   CandidateStats stats;
-  int64_t estimatedTimePs = 0;
   int64_t candidateCount = 0;
   int64_t rejectedCount = 0;
   int64_t representativeCount = 0;
@@ -122,7 +124,6 @@ struct SelectionConfig {
         ddrBandwidthLimitBytes(policy.memory.ddrBandwidthLimitBytes),
         ddrAlignmentBytes(policy.memory.ddrAlignmentBytes) {}
 
-  TileSearchMode mode = TileSearchMode::FirstLegal;
   int64_t logicalRank = -1;
   llvm::SmallVector<int64_t, 8> preferredTileSizes;
   int64_t maxCandidatesPerDim = 0;
@@ -134,9 +135,8 @@ struct SelectionConfig {
   /// attribute or artifact field.
   CommunicationAlternative communicationAlternative =
       CommunicationAlternative::Ring;
-  /// Requests a bounded alternative from the task candidate beam. Zero is
-  /// the locally best complete candidate. A missing ordinal rejects only the
-  /// enclosing optimized rank recipe.
+  /// Requests a bounded alternative in stable complete-candidate generation
+  /// order. A missing ordinal rejects only the enclosing optimized rank recipe.
   unsigned taskAlternativeOrdinal = 0;
   /// Rank-frontier recipes disable implicit implementation enumeration so the
   /// reserved tuple remains a true source-interface baseline and each
@@ -179,16 +179,6 @@ std::string getNearestSymbolName(mlir::Operation *op);
 
 void printI64List(llvm::ArrayRef<int64_t> values, llvm::raw_ostream &os);
 
-mlir::FailureOr<llvm::SmallVector<int64_t, 8>>
-parseI64List(llvm::StringRef text, llvm::StringRef optionName,
-             mlir::Operation *anchor);
-
-mlir::FailureOr<TileSearchMode> parseTileSearchMode(llvm::StringRef text,
-                                                    mlir::Operation *anchor);
-
-mlir::FailureOr<TileSearchEffort>
-parseTileSearchEffort(llvm::StringRef text, mlir::Operation *anchor);
-
 int64_t saturatingAdd(int64_t lhs, int64_t rhs);
 
 int64_t saturatingMul(int64_t lhs, int64_t rhs);
@@ -198,15 +188,6 @@ int64_t ceilDiv(int64_t numerator, int64_t denominator);
 CandidateStats estimateStats(mlir::ModuleOp module);
 
 std::optional<std::string> getRankingCostFailure(const CandidateStats &stats);
-
-int64_t estimateCandidateTimePs(const CandidateStats &stats);
-
-/// Returns true only when every exact execution-cost dimension is no worse
-/// than the baseline and at least one is strictly lower.  This supplies a
-/// deterministic ranking fallback when an uncalibrated compute class makes
-/// both coarse scalar time estimates saturate.
-bool hasStrictExecutionCostDominance(const CandidateStats &candidate,
-                                     const CandidateStats &baseline);
 
 mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
 getStaticTraversalShape(mlir::func::FuncOp task);
@@ -286,9 +267,6 @@ mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
     const structured_scheduler::StructuredSchedulingScope &scope,
     mlir::func::FuncOp task, llvm::StringRef label,
     const SelectionConfig &config);
-
-void printSelectedSummary(const SelectedCandidate &selected,
-                          TileSearchMode mode);
 
 mlir::LogicalResult commitSelectedTaskCandidate(SelectedCandidate &selected,
                                                 const SelectionConfig &config);

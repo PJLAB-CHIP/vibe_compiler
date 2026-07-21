@@ -41,6 +41,7 @@ add_executable(WaferUnitTests
 )
 llvm_update_compile_flags(WaferUnitTests)
 target_include_directories(WaferUnitTests PRIVATE
+  ${CMAKE_SOURCE_DIR}/lib
   ${CMAKE_SOURCE_DIR}/lib/Wafer/Transforms
 )
 find_program(WAFER_TEST_LLVM_CLANGXX NAMES clang++ REQUIRED)

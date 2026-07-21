@@ -24,51 +24,6 @@ void printI64List(llvm::ArrayRef<int64_t> values, llvm::raw_ostream &os) {
   os << "]";
 }
 
-mlir::FailureOr<llvm::SmallVector<int64_t, 8>>
-parseI64List(llvm::StringRef text, llvm::StringRef optionName,
-             mlir::Operation *anchor) {
-  llvm::SmallVector<int64_t, 8> values;
-  llvm::SmallVector<llvm::StringRef, 8> parts;
-  llvm::SplitString(text, parts, ",");
-  for (llvm::StringRef part : parts) {
-    part = part.trim();
-    if (part.empty())
-      continue;
-    int64_t value = 0;
-    if (part.getAsInteger(10, value) || value <= 0) {
-      anchor->emitError() << "invalid positive integer in " << optionName
-                          << ": " << part;
-      return mlir::failure();
-    }
-    values.push_back(value);
-  }
-  return values;
-}
-
-mlir::FailureOr<TileSearchMode> parseTileSearchMode(llvm::StringRef text,
-                                                    mlir::Operation *anchor) {
-  if (text == "first-legal")
-    return TileSearchMode::FirstLegal;
-  if (text == "min-estimated-time")
-    return TileSearchMode::MinEstimatedTime;
-  anchor->emitError()
-      << "invalid_tile_search: expected first-legal or min-estimated-time";
-  return mlir::failure();
-}
-
-mlir::FailureOr<TileSearchEffort>
-parseTileSearchEffort(llvm::StringRef text, mlir::Operation *anchor) {
-  if (text == "quick")
-    return TileSearchEffort::Quick;
-  if (text == "default")
-    return TileSearchEffort::Default;
-  if (text == "deep")
-    return TileSearchEffort::Deep;
-  anchor->emitError()
-      << "invalid_tile_search_effort: expected quick, default or deep";
-  return mlir::failure();
-}
-
 static bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
   if (lhs < 0 || rhs < 0)
     return false;

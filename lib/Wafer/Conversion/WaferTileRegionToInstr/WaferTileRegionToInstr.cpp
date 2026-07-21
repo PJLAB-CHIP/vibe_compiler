@@ -176,14 +176,14 @@ wafer::detail::checkStaticTerminalOperationBudget(mlir::Operation *root,
 mlir::LogicalResult
 wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
                                       std::string *failureReason) {
-  return wafer::convertTileRegionToInstrModule(
+  return wafer::tile_region_to_instr::convertTileRegionToInstrModule(
       module, TileRegionToInstrOptions{}, failureReason);
 }
 
 mlir::LogicalResult
-wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
-                                      const TileRegionToInstrOptions &options,
-                                      std::string *failureReason) {
+wafer::tile_region_to_instr::convertTileRegionToInstrModule(
+    mlir::ModuleOp module, const TileRegionToInstrOptions &options,
+    std::string *failureReason) {
   if (failureReason)
     failureReason->clear();
 

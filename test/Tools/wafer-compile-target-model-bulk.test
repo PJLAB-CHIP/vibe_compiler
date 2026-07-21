@@ -22,22 +22,22 @@
 # RUN: test -s %t.large-missing/manifest.json
 # RUN: test -s %t.large-missing/modules/rank_00000.so
 
-# FORMAL: target model outputs matched; ranks=1 transactions=24
+# FORMAL: target model outputs matched; ranks=1 transactions=19
 # FORMAL-SAME: formal_commands=6 managed_reference_commands=0 managed_reference_scalars=0 bulk_commands=0
-# ADMITTED: target model outputs matched; ranks=1 transactions=24
+# ADMITTED: target model outputs matched; ranks=1 transactions=19
 # ADMITTED-SAME: formal_commands=5 managed_reference_commands=0 managed_reference_scalars=0 bulk_commands=1 bulk_matmuls=1
 # ADMITTED-SAME: bulk_formal_fmas=0
 # ADMITTED: wafer-compile: target model bulk admission=sha256:
-# MANAGED-TENSOR: target model outputs matched; ranks=1 transactions=24
+# MANAGED-TENSOR: target model outputs matched; ranks=1 transactions=19
 # MANAGED-TENSOR-SAME: formal_commands=0 managed_reference_commands=4 managed_reference_scalars=192
 # MANAGED-TENSOR-SAME: bulk_commands=2 bulk_matmuls=2
 # MANAGED-TENSOR: wafer-compile: target model managed-reference tensor environment=sha256:
 # MANAGED-TENSOR: wafer-compile: target model managed-reference tensor implementation=native-non-nan-f16-f32-tensor-v1
-# LARGE: target model outputs matched; ranks=1 transactions=10
+# LARGE: target model outputs matched; ranks=1 transactions=5
 # LARGE-SAME: formal_commands=0 managed_reference_commands=0 managed_reference_scalars=0 bulk_commands=1 bulk_matmuls=1
 # LARGE-SAME: bulk_formal_fmas=0
 # LARGE: wafer-compile: target model bulk admission=sha256:
-# MANAGED: target model outputs matched; ranks=1 transactions=10
+# MANAGED: target model outputs matched; ranks=1 transactions=5
 # MANAGED-SAME: formal_commands=0 managed_reference_commands=0 managed_reference_scalars=0 bulk_commands=1 bulk_matmuls=1
 # MANAGED-SAME: bulk_formal_fmas=0
 # MANAGED: wafer-compile: target model managed-reference environment=sha256:

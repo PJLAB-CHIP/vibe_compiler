@@ -341,25 +341,24 @@
 - 完整output traversal使用compact `scf.for`并显式覆盖static tail；ordered reduction chunk/terminal op仍用
   checked ceil-div/product和4096个host materialization预算。该上限只防止编译时间/内存失控，不能写成硬件容量、
   IR/workload legality或16-tile topology限制。
-- positive `maxSearchCandidates`是每次scope candidate search的无条件hard cap，first-legal、min-cost、all-fail和
-  parallel batch都不能越过；parallel batch只能消费剩余预算。当前每rank按shared-input prefix、terminal recovery和
-  conservative partition最多形成六个distinct alternatives；whole-variant coordinator最多访问64个best-first组合，
-  再尝试至多六个共同policy和一个tail，去重后不超过71次exact gate。
+- candidate hard cap必须分别覆盖source clone、task recipe、semantic scope policy、rank evaluation、rank frontier、
+  whole best-first、coordinated correspondence和Pareto retain；parallel evaluation只能消费同一固定预算。当前scope只保留
+  root-local closure、complete shared-input closure、terminal cut和conservative partition四类semantic policy；唯一reserved
+  conservative spill拥有独立allowance，但执行相同late gates。
 - capacity-directed seed必须区分“用于排队的保守inventory”和“可用于拒绝的required-live bound”。当前direct
   rank-2 matmul精确建模Tensor/Cx六个root；exact passthrough transpose+matmul为seed额外计入原始source Tensor，
   共七个root，而early reject只使用后续matmul phase必然同时存活的六个root。seed应先于已知高压full candidate
   消费hard-cap slot，但任何accepted candidate仍须走完整instruction/SPM/DDR gate。其它producer chain无法形成
   安全边界时返回unknown，不从名字或诊断字符串猜测。
-- terminal `FullTraversalOnly`yield scope若同时包含Tiled producer且full candidate失败，shared-input peer prefix只会
-  增加独立root，不能改变direct dataflow closure的traversal capability；可立即尝试原有唯一terminal-cut recovery。
-  这是六policy frontier内的短路重排，不得再与peer prefix组合或增加alternative。
-- 当前scope-prefix是粗粒度residency选择：共享external DPS input的peer按benefit density稳定排序并枚举
-  `0/1/2/all`，同scope的短edge直接保持SPM SSA。generic per-edge residency、task-order/layout-cut和
-  double-buffer/ping-pong尚未实现，是延期性能扩展而不是正确性fallback。
-- 粗scalar cost可能因未校准compute class而饱和，不能据此把明确减少movement的alternative判成等价。仅在complete
-  current IR的compute-class、DDR、SPM、NoC、instruction和event count全部known，candidate无一dimension变差且
-  至少一项严格降低时，才可用strict dominance补充scalar排序；unknown或tradeoff必须回到保守选择。这是exact count
-  比较，不是board-time claim。
+- terminal `FullTraversalOnly`yield scope若同时包含Tiled producer且full candidate失败，terminal-cut policy只能改变
+  task boundary，不能伪造traversal capability。shared-input peers要么作为完整SSA-compatible closure整体加入，要么完全不加入；
+  不枚举cost-ranked prefix。
+- winner只读取final instruction IR、validated SPM/DDR placement、transport/completion和whole-card exact resource vector。
+  complete Known dimensions上的Pareto与target-owned static policy可以选择resource tradeoff；不再计算或保存scalar time，
+  也不把静态resource改善称作board/time收益。
+- rank-local semantic generation和physical derivation是两个不同的correspondence维度：stable ordinal匹配source/recipe/scope，
+  artifact kind匹配spill、spill-ready、resident或resident-ready。all-rank tuple必须同时匹配两者；只匹配ordinal会把不同
+  physical program拼在一起，即使每个rank单独通过verifier和resource gate也可能破坏collective数值语义。
 - scheduler frontier之后的function-boundary bufferization和physical-memory replanning可能改变movement、offset和issue
   count。应逐alternative独立finalize，只过滤later gate失败的alternative，并从final instruction IR fresh recost；
   一个alternative失败不能拒绝仍有survivor的rank，只有finalized frontier为空才失败。
@@ -661,3 +660,5 @@
   不能找到第一个优于baseline的candidate就返回，否则较早share/fusion会遮住DDR movement更低的recompute联合candidate。
   generation/discovery ordinal只用于确定性与跨rank对应，不是语义winner维度；Unknown、overflow或同一priority class双向tradeoff
   保持保守。
+- ready-order的buffer hazard必须先沿`ViewLikeOpInterface`追到storage base；base memref与cast/subview/reshape view不是独立
+  allocation。exact SSA value比较只适合use-def依赖，不能作为memory alias proof。

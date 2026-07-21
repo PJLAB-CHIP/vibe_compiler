@@ -68,7 +68,7 @@ module {
 };
 
 TEST_F(ScheduledRankFinalizationTest,
-       FiltersFailedAlternativeAndRecomputesSurvivorCost) {
+       FiltersFailedAlternativeAndClosesSurvivorExactCost) {
   mlir::OwningOpRef<mlir::ModuleOp> overflow =
       candidateWithSPMElements(/*elements=*/2'000'000);
   mlir::OwningOpRef<mlir::ModuleOp> valid =
@@ -86,11 +86,11 @@ TEST_F(ScheduledRankFinalizationTest,
       });
 
   std::vector<wafer::ScheduledRankCandidate> frontier;
-  frontier.emplace_back(std::move(overflow), /*estimatedTimePs=*/111,
-                        /*discoveryOrder=*/3,
+  frontier.emplace_back(std::move(overflow), /*stableOrdinal=*/3,
+                        wafer::RankArtifactKind::Spill,
                         /*reservedBaseline=*/false);
-  frontier.emplace_back(std::move(valid), /*estimatedTimePs=*/999,
-                        /*discoveryOrder=*/4,
+  frontier.emplace_back(std::move(valid), /*stableOrdinal=*/4,
+                        wafer::RankArtifactKind::Spill,
                         /*reservedBaseline=*/true);
   mlir::FailureOr<std::vector<wafer::compiler::detail::FinalizedRankCandidate>>
       finalized =
@@ -99,10 +99,9 @@ TEST_F(ScheduledRankFinalizationTest,
 
   ASSERT_TRUE(mlir::succeeded(finalized)) << diagnostics;
   ASSERT_EQ(finalized->size(), 1u);
-  EXPECT_EQ(finalized->front().discoveryOrder, 4);
+  EXPECT_EQ(finalized->front().stableOrdinal, 4);
+  EXPECT_EQ(finalized->front().artifactKind, wafer::RankArtifactKind::Spill);
   EXPECT_TRUE(finalized->front().reservedBaseline);
-  EXPECT_NE(finalized->front().estimatedTimePs, 999);
-  EXPECT_GT(finalized->front().estimatedTimePs, 0);
   EXPECT_NE(diagnostics.find("capacity_overflow"), std::string::npos)
       << diagnostics;
 }
@@ -121,8 +120,8 @@ TEST_F(ScheduledRankFinalizationTest, FailsOnlyWhenNoAlternativeSurvives) {
         return mlir::success();
       });
   std::vector<wafer::ScheduledRankCandidate> frontier;
-  frontier.emplace_back(std::move(overflow), /*estimatedTimePs=*/111,
-                        /*discoveryOrder=*/3,
+  frontier.emplace_back(std::move(overflow), /*stableOrdinal=*/3,
+                        wafer::RankArtifactKind::Spill,
                         /*reservedBaseline=*/true);
 
   EXPECT_TRUE(mlir::failed(
@@ -146,8 +145,8 @@ TEST_F(ScheduledRankFinalizationTest,
         return mlir::success();
       });
   std::vector<wafer::ScheduledRankCandidate> frontier;
-  frontier.emplace_back(std::move(placed), /*estimatedTimePs=*/0,
-                        /*discoveryOrder=*/5,
+  frontier.emplace_back(std::move(placed), /*stableOrdinal=*/5,
+                        wafer::RankArtifactKind::Spill,
                         /*reservedBaseline=*/true);
 
   EXPECT_TRUE(mlir::failed(

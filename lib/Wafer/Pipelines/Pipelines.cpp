@@ -83,23 +83,6 @@ void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
   addStablehloToLinalgBody(pm);
 }
 
-void buildScheduleTensorProgramToSelectedInstrPipeline(mlir::OpPassManager &pm,
-                                                       int64_t logicalRank) {
-  // Candidate scopes are compiler-private SSA/dataflow views over the
-  // structured tensor program.  The scheduling pipeline does not materialize
-  // a wrapper operation or a second tensor-program artifact.
-  ScheduleTensorProgramPassOptions options;
-  options.logicalRank = logicalRank;
-  options.tileSearch = "min-estimated-time";
-  // Production already lowers the independent rank domain in parallel.  A
-  // small nested candidate width uses the remaining host cores without
-  // creating the unbounded rank x candidate fanout that hardware-sized
-  // workloads would otherwise invite.
-  options.candidateParallelism = 4;
-  pm.addPass(createScheduleTensorProgramPass(options));
-  buildFinalizeScheduledTensorProgramPipeline(pm);
-}
-
 void buildFinalizeScheduledTensorProgramPipeline(mlir::OpPassManager &pm) {
   buildFinalizeScheduledRankCandidatePipeline(pm);
   buildPlanDDRMemoryPipeline(pm);

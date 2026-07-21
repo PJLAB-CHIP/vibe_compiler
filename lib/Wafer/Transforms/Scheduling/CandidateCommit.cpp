@@ -5,28 +5,6 @@
 
 namespace wafer::tensor_program_scheduling {
 
-void printSelectedSummary(const SelectedCandidate &selected,
-                          TileSearchMode mode) {
-  llvm::errs() << "wafer.schedule_tensor_program selected task "
-               << selected.label << " mode="
-               << (mode == TileSearchMode::FirstLegal ? "first-legal"
-                                                      : "min-estimated-time")
-               << " tile=";
-  printI64List(selected.spec.tileSizes, llvm::errs());
-  llvm::errs() << " split=";
-  printI64List(selected.spec.reductionSplitSizes, llvm::errs());
-  llvm::errs() << " implementation=";
-  if (selected.spec.selectedImplementationAlternative)
-    llvm::errs() << stringifyTargetImplementationKind(
-        *selected.spec.selectedImplementationAlternative);
-  else
-    llvm::errs() << "baseline";
-  llvm::errs() << " estimated_time_ps=" << selected.estimatedTimePs
-               << " candidates=" << selected.candidateCount
-               << " rejected=" << selected.rejectedCount
-               << " representatives=" << selected.representativeCount << "\n";
-}
-
 static mlir::FailureOr<mlir::func::FuncOp>
 getStandaloneSelectedFunction(mlir::Operation *anchor,
                               mlir::ModuleOp selectedModule) {

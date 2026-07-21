@@ -13,34 +13,6 @@ static int64_t computeTileCount(llvm::ArrayRef<int64_t> traversalShape,
   return count;
 }
 
-static int64_t estimateMetricTimePs(const analysis::ScheduleCostMetric &metric,
-                                    uint64_t unitsPerSecond) {
-  if (metric.isKnown() && metric.value == 0)
-    return 0;
-  if (!metric.isKnown() || unitsPerSecond == 0)
-    return std::numeric_limits<int64_t>::max();
-  constexpr uint64_t picosecondsPerSecond = 1'000'000'000'000ULL;
-  __uint128_t numerator =
-      static_cast<__uint128_t>(metric.value) * picosecondsPerSecond;
-  __uint128_t value = (numerator + unitsPerSecond - 1) / unitsPerSecond;
-  if (value > static_cast<__uint128_t>(std::numeric_limits<int64_t>::max()))
-    return std::numeric_limits<int64_t>::max();
-  return static_cast<int64_t>(value);
-}
-
-static uint64_t deriveCoarseRate(uint64_t referenceUnitsPerSecond,
-                                 int64_t unitsPerCycle,
-                                 int64_t referenceUnitsPerCycle) {
-  if (unitsPerCycle <= 0 || referenceUnitsPerCycle <= 0)
-    return 0;
-  __uint128_t rate = static_cast<__uint128_t>(referenceUnitsPerSecond) *
-                     static_cast<uint64_t>(unitsPerCycle) /
-                     static_cast<uint64_t>(referenceUnitsPerCycle);
-  return rate > static_cast<__uint128_t>(std::numeric_limits<uint64_t>::max())
-             ? std::numeric_limits<uint64_t>::max()
-             : static_cast<uint64_t>(rate);
-}
-
 std::optional<std::string> getRankingCostFailure(const CandidateStats &stats) {
   const analysis::InstructionProgramCost &cost = stats.program;
   struct NamedMetric {
@@ -73,127 +45,6 @@ std::optional<std::string> getRankingCostFailure(const CandidateStats &stats) {
     return failure;
   }
   return std::nullopt;
-}
-
-int64_t estimateCandidateTimePs(const CandidateStats &stats) {
-  const analysis::InstructionProgramCost &cost = stats.program;
-  analysis::TargetScheduleCostPolicy policy =
-      analysis::getTargetScheduleCostPolicy(
-          TargetProfileId::waferTx81SingleCardKernelV1());
-  const TargetTimingPolicy coarseTiming;
-
-  int64_t compute = 0;
-  compute = saturatingAdd(
-      compute,
-      estimateMetricTimePs(cost.compute.npuF16Bf16LogicalOps,
-                           policy.f16Bf16NPULogicalOpsPerSecondPerTile));
-  compute = saturatingAdd(
-      compute,
-      estimateMetricTimePs(cost.compute.vectorF16Bf16LogicalOps,
-                           policy.f16Bf16VectorLogicalOpsPerSecondPerTile));
-  compute = saturatingAdd(
-      compute,
-      estimateMetricTimePs(cost.compute.vectorF32LogicalOps,
-                           policy.f32VectorLogicalOpsPerSecondPerTile));
-  if (cost.compute.npuOtherLogicalOps.value != 0 ||
-      cost.compute.vectorOtherLogicalOps.value != 0)
-    compute = std::numeric_limits<int64_t>::max();
-
-  analysis::ScheduleCostMetric ddr = cost.ddrReadBytes;
-  if (ddr.isKnown() && cost.ddrWriteBytes.isKnown()) {
-    if (cost.ddrWriteBytes.value >
-        std::numeric_limits<uint64_t>::max() - ddr.value) {
-      ddr.knowledge = analysis::ScheduleCostKnowledge::Overflow;
-      ddr.reason = analysis::ScheduleCostReason::ArithmeticOverflow;
-      ddr.value = 0;
-    } else {
-      ddr.value += cost.ddrWriteBytes.value;
-    }
-  } else if (!cost.ddrWriteBytes.isKnown()) {
-    ddr = cost.ddrWriteBytes;
-  }
-  int64_t movement = estimateMetricTimePs(ddr, policy.cardDDRBytesPerSecond);
-  movement = saturatingAdd(
-      movement, estimateMetricTimePs(cost.noc.aggregateTransmitBytes,
-                                     policy.directionalNoCBytesPerSecond));
-
-  // The target contract establishes no calibrated SPM or issue clock. Keep
-  // these dimensions in the ranking by anchoring the compiler-private
-  // bytes/cycle and issue-cycle ratios to the established DDR rate. This is a
-  // coarse ordering policy, not a board-time claim. Every term is serialized;
-  // no compute/movement or event overlap is assumed.
-  uint64_t spmBytesPerSecond = deriveCoarseRate(policy.cardDDRBytesPerSecond,
-                                                coarseTiming.spmBytesPerCycle,
-                                                coarseTiming.ddrBytesPerCycle);
-  int64_t issueReferenceUnitsPerCycle = saturatingMul(
-      coarseTiming.ddrBytesPerCycle, coarseTiming.instrIssueCycles);
-  uint64_t issuesPerSecond =
-      deriveCoarseRate(policy.cardDDRBytesPerSecond, /*unitsPerCycle=*/1,
-                       issueReferenceUnitsPerCycle);
-  movement = saturatingAdd(
-      movement, estimateMetricTimePs(cost.spmMovementBytes, spmBytesPerSecond));
-  int64_t setup = estimateMetricTimePs(cost.instructionCount, issuesPerSecond);
-  setup = saturatingAdd(setup,
-                        estimateMetricTimePs(cost.eventCount, issuesPerSecond));
-
-  return saturatingAdd(saturatingAdd(compute, movement), setup);
-}
-
-bool hasStrictExecutionCostDominance(const CandidateStats &candidate,
-                                     const CandidateStats &baseline) {
-  const analysis::InstructionProgramCost &candidateCost = candidate.program;
-  const analysis::InstructionProgramCost &baselineCost = baseline.program;
-  struct MetricPair {
-    const analysis::ScheduleCostMetric *candidate;
-    const analysis::ScheduleCostMetric *baseline;
-  };
-  const MetricPair dimensions[] = {
-      {&candidateCost.compute.npuF16Bf16LogicalOps,
-       &baselineCost.compute.npuF16Bf16LogicalOps},
-      {&candidateCost.compute.npuOtherLogicalOps,
-       &baselineCost.compute.npuOtherLogicalOps},
-      {&candidateCost.compute.vectorF16Bf16LogicalOps,
-       &baselineCost.compute.vectorF16Bf16LogicalOps},
-      {&candidateCost.compute.vectorF32LogicalOps,
-       &baselineCost.compute.vectorF32LogicalOps},
-      {&candidateCost.compute.vectorOtherLogicalOps,
-       &baselineCost.compute.vectorOtherLogicalOps},
-      {&candidateCost.ddrReadBytes, &baselineCost.ddrReadBytes},
-      {&candidateCost.ddrWriteBytes, &baselineCost.ddrWriteBytes},
-      {&candidateCost.spmMovementBytes, &baselineCost.spmMovementBytes},
-      {&candidateCost.noc.aggregateTransmitBytes,
-       &baselineCost.noc.aggregateTransmitBytes},
-      {&candidateCost.noc.aggregateReceiveBytes,
-       &baselineCost.noc.aggregateReceiveBytes},
-      {&candidateCost.instructionCount, &baselineCost.instructionCount},
-      {&candidateCost.eventCount, &baselineCost.eventCount},
-  };
-
-  bool strictlyLower = false;
-  for (const MetricPair &dimension : dimensions) {
-    if (!dimension.candidate->isKnown() || !dimension.baseline->isKnown() ||
-        dimension.candidate->value > dimension.baseline->value)
-      return false;
-    strictlyLower |= dimension.candidate->value < dimension.baseline->value;
-  }
-  return strictlyLower;
-}
-
-static bool isBetterCandidate(const SelectedCandidate &candidate,
-                              const SelectedCandidate *best) {
-  if (!best)
-    return true;
-  if (candidate.estimatedTimePs != best->estimatedTimePs)
-    return candidate.estimatedTimePs < best->estimatedTimePs;
-  if (candidate.spec.tileSizes != best->spec.tileSizes)
-    return candidate.spec.tileSizes > best->spec.tileSizes;
-  if (candidate.spec.reductionSplitSizes.empty() !=
-      best->spec.reductionSplitSizes.empty())
-    return candidate.spec.reductionSplitSizes.empty();
-  if (candidate.spec.reductionSplitSizes != best->spec.reductionSplitSizes)
-    return candidate.spec.reductionSplitSizes > best->spec.reductionSplitSizes;
-  return !candidate.spec.selectedImplementationAlternative &&
-         best->spec.selectedImplementationAlternative.has_value();
 }
 
 static std::string getCandidateKey(const CandidateSpec &candidate) {
@@ -562,7 +413,6 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
     selected.sourceTask = task;
     selected.spec = check.spec;
     selected.stats = check.stats;
-    selected.estimatedTimePs = estimateCandidateTimePs(selected.stats);
     selected.candidateCount = currentVisited;
     selected.rejectedCount = rejectedCount;
     selected.representativeCount = check.representativeCount;
@@ -574,13 +424,8 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
       {1, config.searchBeamWidth,
        static_cast<int64_t>(config.taskAlternativeOrdinal) + 1}));
   auto insertCandidate = [&](SelectedCandidate selected) {
-    auto position = llvm::find_if(
-        candidateFrontier, [&](const SelectedCandidate &existing) {
-          return isBetterCandidate(selected, &existing);
-        });
-    candidateFrontier.insert(position, std::move(selected));
-    if (candidateFrontier.size() > frontierLimit)
-      candidateFrontier.pop_back();
+    if (candidateFrontier.size() < frontierLimit)
+      candidateFrontier.push_back(std::move(selected));
   };
   auto isRetryableFailure = [](llvm::StringRef failure) {
     return failure.starts_with("cheap_bound:") ||
@@ -619,20 +464,13 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
           "complete-artifact: candidate passed without complete provenance");
       return;
     }
-    if (config.mode == TileSearchMode::MinEstimatedTime) {
-      if (std::optional<std::string> failure =
-              getRankingCostFailure(check.stats)) {
-        rejectCandidate(check.spec, *failure);
-        return;
-      }
+    if (std::optional<std::string> failure =
+            getRankingCostFailure(check.stats)) {
+      rejectCandidate(check.spec, *failure);
+      return;
     }
     SelectedCandidate selected = buildSelected(check, visitedCount);
-    auto insertionPoint = llvm::find_if(
-        candidateFrontier, [&](const SelectedCandidate &existing) {
-          return isBetterCandidate(selected, &existing);
-        });
-    if (static_cast<unsigned>(std::distance(candidateFrontier.begin(),
-                                            insertionPoint)) < frontierLimit) {
+    if (candidateFrontier.size() < frontierLimit) {
       if (!selected.module) {
         CandidateEvaluation accepted =
             evaluateCompleteCandidate(task, *shape, selected.spec, config);
@@ -652,16 +490,14 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
 
   size_t queueIndex = 0;
   std::string standaloneTaskModuleText;
-  if (config.mode == TileSearchMode::MinEstimatedTime &&
-      config.candidateParallelism > 1)
+  if (config.candidateParallelism > 1)
     standaloneTaskModuleText = getStandaloneTaskModuleText(task);
 
   while (queueIndex < queue.size()) {
     if (config.maxSearchCandidates > 0 &&
         visitedCount >= config.maxSearchCandidates)
       break;
-    if (config.mode == TileSearchMode::MinEstimatedTime &&
-        config.candidateParallelism > 1) {
+    if (config.candidateParallelism > 1) {
       size_t remainingBudget =
           config.maxSearchCandidates > 0
               ? static_cast<size_t>(config.maxSearchCandidates - visitedCount)
@@ -748,16 +584,12 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
           "complete-artifact: candidate passed without accepted module");
       continue;
     }
-    if (config.mode == TileSearchMode::MinEstimatedTime) {
-      if (std::optional<std::string> failure =
-              getRankingCostFailure(check.stats)) {
-        rejectCandidate(candidate, *failure);
-        continue;
-      }
+    if (std::optional<std::string> failure =
+            getRankingCostFailure(check.stats)) {
+      rejectCandidate(candidate, *failure);
+      continue;
     }
     SelectedCandidate selected = buildSelected(check, visitedCount);
-    if (config.mode == TileSearchMode::FirstLegal)
-      return selected;
     insertCandidate(std::move(selected));
     if (supportsTiledTraversal)
       enqueueRefinements(task, candidate, *reductionRanges, tileSizeOptions,

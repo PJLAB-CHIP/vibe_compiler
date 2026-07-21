@@ -3,7 +3,7 @@
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
-#include "Wafer/Transforms/TensorProgramScheduling.h"
+#include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -91,6 +91,8 @@ module {
   };
   for (wafer::ScheduledRankCandidate &candidate : *frontier) {
     baselineCount += candidate.reservedBaseline;
+    if (candidate.reservedBaseline)
+      EXPECT_EQ(candidate.artifactKind, wafer::RankArtifactKind::Spill);
     bool candidateResident = false;
     candidate.module->walk([&](wafer::TileRegionOp region) {
       candidateResident |=
@@ -128,8 +130,8 @@ module {
   ASSERT_EQ(parallelFrontier->size(), frontier->size());
   for (auto &&[serial, parallel] :
        llvm::zip_equal(*frontier, *parallelFrontier)) {
-    EXPECT_EQ(serial.estimatedTimePs, parallel.estimatedTimePs);
-    EXPECT_EQ(serial.discoveryOrder, parallel.discoveryOrder);
+    EXPECT_EQ(serial.stableOrdinal, parallel.stableOrdinal);
+    EXPECT_EQ(serial.artifactKind, parallel.artifactKind);
     EXPECT_EQ(serial.reservedBaseline, parallel.reservedBaseline);
     std::string serialText;
     llvm::raw_string_ostream serialStream(serialText);
@@ -199,7 +201,7 @@ module {
                            }),
             1u);
   EXPECT_TRUE(llvm::any_of(*frontier, [](const auto &candidate) {
-    return candidate.discoveryOrder >= 6;
+    return candidate.stableOrdinal >= 48;
   }));
 
   // Both generation paths are isolated from the shared source.
@@ -374,10 +376,10 @@ module {
     // non-baseline bands proves reassociation, tree balancing, distribution,
     // and factorization clones survived the complete rank gates; the winner
     // never reads these ordinals as mechanism facts.
-    sourceBands.insert(candidate.discoveryOrder / 72);
-    int64_t sourceIndex = candidate.discoveryOrder / 72;
-    int64_t recipeIndex = (candidate.discoveryOrder / 6) % 12;
-    int64_t policyIndex = candidate.discoveryOrder % 6;
+    sourceBands.insert(candidate.stableOrdinal / 48);
+    int64_t sourceIndex = candidate.stableOrdinal / 48;
+    int64_t recipeIndex = (candidate.stableOrdinal / 4) % 12;
+    int64_t policyIndex = candidate.stableOrdinal % 4;
     sawSourceRecipeJointState |= sourceIndex > 0 && recipeIndex > 0;
     sawSourcePolicyJointState |= sourceIndex > 0 && policyIndex > 0;
     unsigned adds = 0;
@@ -514,7 +516,10 @@ module {
           elementwise.getKind() == wafer::InstrElementwiseKind::Recip;
       sawDivision |= elementwise.getKind() == wafer::InstrElementwiseKind::Div;
     });
-    sawSecondTaskCandidate |= candidate.discoveryOrder == 12;
+    // The reciprocal implementation occupies recipe 1. Recipe 2 requests
+    // the second complete task candidate, and each recipe has four scope
+    // policies in the invocation-local ordinal layout.
+    sawSecondTaskCandidate |= candidate.stableOrdinal == 8;
   }
   EXPECT_TRUE(sawReciprocal);
   EXPECT_TRUE(sawDivision);

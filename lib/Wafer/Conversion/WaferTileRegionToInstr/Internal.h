@@ -19,6 +19,22 @@
 
 namespace wafer::tile_region_to_instr {
 
+enum class AllGatherSchedule { Ring, Direct };
+enum class AllReduceSchedule { Ring, Tree };
+enum class ReduceScatterSchedule { Direct };
+
+struct TileRegionToInstrOptions {
+  AllGatherSchedule allGatherSchedule = AllGatherSchedule::Ring;
+  AllReduceSchedule allReduceSchedule = AllReduceSchedule::Ring;
+  ReduceScatterSchedule reduceScatterSchedule = ReduceScatterSchedule::Direct;
+};
+
+/// Compiler-private materialization point used only by actual-clone candidate
+/// generation. The installed conversion API always lowers the baseline form.
+mlir::LogicalResult convertTileRegionToInstrModule(
+    mlir::ModuleOp module, const TileRegionToInstrOptions &options,
+    std::string *failureReason = nullptr);
+
 struct MovementDescriptor {
   int64_t byteCount = 0;
   int64_t innerBytes = 0;

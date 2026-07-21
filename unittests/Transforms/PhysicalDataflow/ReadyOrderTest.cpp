@@ -98,6 +98,43 @@ module {
             0u);
 }
 
+TEST(ReadyOrderTest, RetainsHazardsThroughMemrefViews) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::memref::MemRefDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  %buffer = memref.alloc()
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>
+  %alias = memref.cast %buffer
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>
+     to memref<4x8xf16, strided<[8, 1], offset: ?>,
+               #wafer.memory<spm, tensor>>
+  %ddr = memref.alloc()
+      : memref<4x8xf16, #wafer.memory<ddr, tensor>>
+  %zero = arith.constant 0.000000e+00 : f16
+  wafer.instr.fill %buffer, %zero
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>, f16
+  wafer.instr.wdma %alias to %ddr
+      {byte_count = 64 : i64, inner_bytes = 64 : i64,
+       dst_strides = array<i64: 0, 0, 0>,
+       dst_iterations = array<i64: 1, 1, 1>}
+      : memref<4x8xf16, strided<[8, 1], offset: ?>,
+               #wafer.memory<spm, tensor>>
+     to memref<4x8xf16, #wafer.memory<ddr, tensor>>
+}
+)mlir", mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  EXPECT_EQ(wafer::scheduleIndependentInstructionsByReadyOrder(
+                module->getOperation()),
+            0u);
+}
+
 TEST(ReadyOrderTest, MovesAcrossIndependentProductionSetupOperations) {
   mlir::DialectRegistry registry;
   wafer::registerAllDialects(registry);

@@ -29,14 +29,6 @@ struct TargetMemoryPolicy {
   int64_t ddrAlignmentBytes = 256;
 };
 
-struct TargetTimingPolicy {
-  int64_t computeOpsPerCycle = 1024;
-  int64_t ddrBytesPerCycle = 256;
-  int64_t spmBytesPerCycle = 1024;
-  int64_t instrIssueCycles = 1;
-  bool assumeDdrComputeOverlap = false;
-};
-
 enum class TargetStaticTradeoffPolicy {
   /// Before calibrated timing is available, prefer a strict reduction in the
   /// highest-priority known resource class: DDR movement, NoC movement, SPM
@@ -54,7 +46,6 @@ struct TargetStaticSelectionPolicy {
 struct WaferTargetPolicy {
   TileSearchPolicy tileSearch;
   TargetMemoryPolicy memory;
-  TargetTimingPolicy timing;
   TargetStaticSelectionPolicy staticSelection;
 };
 

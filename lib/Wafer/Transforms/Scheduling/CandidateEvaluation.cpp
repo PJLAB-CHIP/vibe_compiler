@@ -61,8 +61,8 @@ finishCandidateEvaluation(CandidateEvaluation evaluation,
   std::string diagnostics = takeDiagnostics(
       context,
       [&]() {
-        return convertTileRegionToInstrModule(*evaluation.module, options,
-                                              &failureReason);
+        return tile_region_to_instr::convertTileRegionToInstrModule(
+            *evaluation.module, options, &failureReason);
       },
       result);
   if (mlir::failed(result)) {

@@ -19,16 +19,16 @@
 # F16: wafer-compile: published verified package with execution-ranks=1:
 # F16: target model numeric statistics index=0 rank=0 dtype=f16 elements=64 exact=64 exact_fraction=1
 # F16-SAME: mean_abs=0 p99_abs=0 p999_abs=0 max_abs=0 mean_ulp=0 p99_ulp=0 p999_ulp=0 max_ulp=0
-# F16: target model outputs matched; ranks=1 transactions=10
+# F16: target model outputs matched; ranks=1 transactions=5
 # F16-SAME: formal_commands=1 managed_reference_commands=0 managed_reference_scalars=0 bulk_commands=0
 # BF16: wafer-compile: published verified package with execution-ranks=1:
-# BF16: target model outputs matched; ranks=1 transactions=10
+# BF16: target model outputs matched; ranks=1 transactions=5
 # BF16-SAME: formal_commands=1 managed_reference_commands=0 managed_reference_scalars=0 bulk_commands=0
 # MODEL-MISSING: wafer-compile: target model execution requires both --model-input and --model-expected
 # MODEL-DUPLICATE: wafer-compile: duplicate --model-input index: 0
 # MODEL-TOLERANCE: wafer-compile: invalid --model-atol value: -1
 # LLAMA: wafer-compile: published verified package with execution-ranks=16:
-# LLAMA: target model outputs matched; ranks=16 transactions=13184 systemc_threads=17
+# LLAMA: target model outputs matched; ranks=16 transactions=8900 systemc_threads=17
 # LATE-MODEL: wafer-compile: published verified package with execution-ranks=16:
 # LATE-MODEL: SystemC target model invocation-failure: stage=injected-terminal-failure rank=15: test-only terminal failure injection
 # LATE-MODEL-NOT: target model outputs matched

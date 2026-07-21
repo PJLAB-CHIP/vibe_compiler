@@ -1,4 +1,4 @@
-//===- CandidateSelectionTest.cpp - Ranking cost policy -----------------===//
+//===- CandidateSelectionTest.cpp - Candidate exact gates ---------------===//
 
 #include "Scheduling/ScheduleTensorProgramInternal.h"
 
@@ -10,39 +10,11 @@ using wafer::tensor_program_scheduling::CandidateArtifactSource;
 using wafer::tensor_program_scheduling::CandidateCheckResult;
 using wafer::tensor_program_scheduling::CandidateSpec;
 using wafer::tensor_program_scheduling::CandidateStats;
-using wafer::tensor_program_scheduling::estimateCandidateTimePs;
 using wafer::tensor_program_scheduling::estimateTargetSPMRequiredLiveBytes;
 using wafer::tensor_program_scheduling::estimateTargetSPMWorkingSetBytes;
 using wafer::tensor_program_scheduling::evaluateCandidateOnStandaloneTaskText;
 using wafer::tensor_program_scheduling::getRankingCostFailure;
-using wafer::tensor_program_scheduling::hasStrictExecutionCostDominance;
 using wafer::tensor_program_scheduling::SelectionConfig;
-
-TEST(CandidateSelectionTest, SerializesSPMMovementIssueAndEventCosts) {
-  CandidateStats zero;
-  EXPECT_EQ(estimateCandidateTimePs(zero), 0);
-
-  CandidateStats spmOnly;
-  spmOnly.program.spmMovementBytes.value = 1024;
-  int64_t spmTime = estimateCandidateTimePs(spmOnly);
-  EXPECT_GT(spmTime, 0);
-
-  CandidateStats issueOnly;
-  issueOnly.program.instructionCount.value = 1;
-  int64_t issueTime = estimateCandidateTimePs(issueOnly);
-  EXPECT_GT(issueTime, 0);
-
-  CandidateStats eventOnly;
-  eventOnly.program.eventCount.value = 1;
-  int64_t eventTime = estimateCandidateTimePs(eventOnly);
-  EXPECT_GT(eventTime, 0);
-
-  CandidateStats combined;
-  combined.program.spmMovementBytes.value = 1024;
-  combined.program.instructionCount.value = 1;
-  combined.program.eventCount.value = 1;
-  EXPECT_EQ(estimateCandidateTimePs(combined), spmTime + issueTime + eventTime);
-}
 
 TEST(CandidateSelectionTest, RejectsUnknownOrUnsupportedRankingDimensions) {
   CandidateStats unknown;
@@ -69,40 +41,6 @@ TEST(CandidateSelectionTest, RejectsUnknownOrUnsupportedRankingDimensions) {
                                      "(unsupported-instruction-semantics)"),
             std::string::npos)
       << *unsupportedFailure;
-}
-
-TEST(CandidateSelectionTest,
-     UsesExactDominanceWhenCoarseTimeSaturatesForUncalibratedCompute) {
-  CandidateStats spill;
-  spill.program.compute.vectorOtherLogicalOps.value = 128;
-  spill.program.ddrReadBytes.value = 4096;
-  spill.program.ddrWriteBytes.value = 4096;
-  spill.program.spmMovementBytes.value = 8192;
-  spill.program.instructionCount.value = 8;
-
-  CandidateStats resident = spill;
-  resident.program.ddrReadBytes.value = 0;
-  resident.program.ddrWriteBytes.value = 0;
-  resident.program.spmMovementBytes.value = 4096;
-  resident.program.instructionCount.value = 6;
-
-  EXPECT_EQ(estimateCandidateTimePs(spill),
-            std::numeric_limits<int64_t>::max());
-  EXPECT_EQ(estimateCandidateTimePs(resident),
-            std::numeric_limits<int64_t>::max());
-  EXPECT_TRUE(hasStrictExecutionCostDominance(resident, spill));
-  EXPECT_FALSE(hasStrictExecutionCostDominance(spill, resident));
-
-  CandidateStats tradeoff = resident;
-  tradeoff.program.spmMovementBytes.value = 8193;
-  EXPECT_FALSE(hasStrictExecutionCostDominance(tradeoff, spill));
-
-  CandidateStats unknown = resident;
-  unknown.program.ddrReadBytes.knowledge =
-      wafer::analysis::ScheduleCostKnowledge::Unknown;
-  unknown.program.ddrReadBytes.reason =
-      wafer::analysis::ScheduleCostReason::UnknownResourceBytes;
-  EXPECT_FALSE(hasStrictExecutionCostDominance(unknown, spill));
 }
 
 TEST(CandidateSelectionTest,

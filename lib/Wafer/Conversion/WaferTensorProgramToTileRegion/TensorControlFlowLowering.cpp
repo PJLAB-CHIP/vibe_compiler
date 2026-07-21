@@ -138,7 +138,8 @@ TileRegionBodyEmitter::convertNestedOp(mlir::Operation *op,
     return fail("nested collective materialization is not implemented");
   if (mlir::isa<mlir::linalg::LinalgOp>(op))
     return materializeSourceImplementation(op, builder);
-  if (mlir::isa<mlir::arith::ConstantOp, mlir::tensor::EmptyOp,
+  if (mlir::isa<mlir::arith::ConstantOp, mlir::bufferization::ToMemrefOp,
+                mlir::bufferization::ToTensorOp, mlir::tensor::EmptyOp,
                 mlir::tensor::ExtractOp, mlir::tensor::ExtractSliceOp,
                 mlir::tensor::InsertSliceOp, mlir::tensor::ExpandShapeOp,
                 mlir::tensor::CollapseShapeOp, mlir::scf::IfOp,

@@ -44,28 +44,6 @@ replicatedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape,
   return binding;
 }
 
-TEST(PipelinesTest, ClosedLoopRankSchedulerUsesEstimatedTimeRanking) {
-  mlir::MLIRContext context;
-  mlir::PassManager manager(&context);
-  wafer::buildScheduleTensorProgramToSelectedInstrPipeline(manager,
-                                                           /*logicalRank=*/7);
-
-  std::string pipeline;
-  llvm::raw_string_ostream os(pipeline);
-  manager.printAsTextualPipeline(os);
-  os.flush();
-
-  EXPECT_NE(pipeline.find("wafer-schedule-tensor-program"), std::string::npos)
-      << pipeline;
-  EXPECT_NE(pipeline.find("logical-rank=7"), std::string::npos) << pipeline;
-  EXPECT_NE(pipeline.find("tile-search=min-estimated-time"), std::string::npos)
-      << pipeline;
-  EXPECT_NE(pipeline.find("candidate-parallelism=4"), std::string::npos)
-      << pipeline;
-  EXPECT_EQ(pipeline.find("tile-search=first-legal"), std::string::npos)
-      << pipeline;
-}
-
 TEST(PipelinesTest, ScheduledRankFinalizationDoesNotSelectAnotherCandidate) {
   mlir::MLIRContext context;
   mlir::PassManager manager(&context);

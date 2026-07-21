@@ -85,7 +85,7 @@ module {
 )mlir");
   ASSERT_TRUE(module);
 
-  ScopeDiscoveryPolicy policy{/*maxSharedInputPeers=*/0,
+  ScopeDiscoveryPolicy policy{/*includeSharedInputPeers=*/false,
                               /*allowCrossShapeDataflow=*/true,
                               /*cutTerminalFullTraversalOnlyRoots=*/true};
   llvm::SmallVector<StructuredSchedulingScope, 2> scopes;
@@ -135,7 +135,7 @@ module {
 )mlir");
   ASSERT_TRUE(module);
 
-  ScopeDiscoveryPolicy policy{/*maxSharedInputPeers=*/0,
+  ScopeDiscoveryPolicy policy{/*includeSharedInputPeers=*/false,
                               /*allowCrossShapeDataflow=*/true,
                               /*cutTerminalFullTraversalOnlyRoots=*/true};
   llvm::SmallVector<StructuredSchedulingScope, 1> scopes;
@@ -180,7 +180,7 @@ module {
 )mlir");
   ASSERT_TRUE(module);
 
-  ScopeDiscoveryPolicy policy{/*maxSharedInputPeers=*/0,
+  ScopeDiscoveryPolicy policy{/*includeSharedInputPeers=*/false,
                               /*allowCrossShapeDataflow=*/true,
                               /*cutTerminalFullTraversalOnlyRoots=*/true};
   llvm::SmallVector<StructuredSchedulingScope, 1> scopes;
@@ -240,7 +240,7 @@ module {
 )mlir");
   ASSERT_TRUE(module);
 
-  ScopeDiscoveryPolicy policy{/*maxSharedInputPeers=*/0,
+  ScopeDiscoveryPolicy policy{/*includeSharedInputPeers=*/false,
                               /*allowCrossShapeDataflow=*/true,
                               /*cutTerminalFullTraversalOnlyRoots=*/true};
   llvm::SmallVector<StructuredSchedulingScope, 3> scopes;
@@ -287,7 +287,7 @@ module {
 )mlir");
   ASSERT_TRUE(module);
 
-  ScopeDiscoveryPolicy policy{/*maxSharedInputPeers=*/0,
+  ScopeDiscoveryPolicy policy{/*includeSharedInputPeers=*/false,
                               /*allowCrossShapeDataflow=*/true,
                               /*cutTerminalFullTraversalOnlyRoots=*/true};
   llvm::SmallVector<StructuredSchedulingScope, 2> scopes;
@@ -325,7 +325,7 @@ module {
 )mlir");
   ASSERT_TRUE(module);
 
-  ScopeDiscoveryPolicy policy{/*maxSharedInputPeers=*/0,
+  ScopeDiscoveryPolicy policy{/*includeSharedInputPeers=*/false,
                               /*allowCrossShapeDataflow=*/true,
                               /*cutTerminalFullTraversalOnlyRoots=*/true};
   llvm::SmallVector<StructuredSchedulingScope, 1> scopes;

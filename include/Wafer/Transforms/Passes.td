@@ -90,60 +90,6 @@ def LowerInstrToTargetLLVMPass
   ];
 }
 
-def ScheduleTensorProgramPass
-    : Pass<"wafer-schedule-tensor-program", "mlir::ModuleOp"> {
-  let summary = "Schedule structured tensor tasks and commit selected lowering";
-  let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::async::AsyncDialect",
-                           "mlir::bufferization::BufferizationDialect",
-                           "mlir::func::FuncDialect",
-                           "mlir::linalg::LinalgDialect",
-                           "mlir::math::MathDialect",
-                           "mlir::memref::MemRefDialect",
-                           "mlir::scf::SCFDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
-  ];
-  let options = [
-    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"-1",
-           "Explicit logical execution rank used to materialize task-local "
-           "communication facts">,
-    Option<"tileSearch", "tile-search", "std::string",
-           /*default=*/"\"min-estimated-time\"",
-           "Tile candidate search mode: min-estimated-time, or explicit "
-           "debug-only first-legal">,
-    Option<"tileSearchEffort", "tile-search-effort", "std::string",
-           /*default=*/"\"default\"",
-           "Tile candidate search effort: quick, default or deep">,
-    Option<"maxCandidatesPerDim", "max-candidates-per-dim", "int64_t",
-           /*default=*/"-1",
-           "Maximum candidate tile sizes kept per traversal/reduction "
-           "dimension; -1 uses tile-search-effort policy and 0 keeps all "
-           "shape-driven refinements">,
-    Option<"preferredTileSizes", "preferred-tile-sizes", "std::string",
-           /*default=*/"\"\"",
-           "Comma-separated tile-size hints used as refinement tie-breakers; "
-           "empty uses tile-search-effort policy">,
-    Option<"maxSearchCandidates", "max-search-candidates", "int64_t",
-           /*default=*/"-1",
-           "Positive hard total candidate-visit cap, enforced whether or not "
-           "a passing candidate exists; -1 uses tile-search-effort policy "
-           "and 0 disables the cap">,
-    Option<"searchBeamWidth", "search-beam-width", "int64_t",
-           /*default=*/"-1",
-           "Maximum refinement neighbors enqueued after the first passing "
-           "candidate; -1 uses tile-search-effort policy and 0 disables the "
-           "beam cap">,
-    Option<"candidateParallelism", "candidate-parallelism", "int64_t",
-           /*default=*/"1",
-           "Maximum candidate evaluations run concurrently in "
-           "min-estimated-time; ignored by first-legal">,
-    Option<"printCandidateSummary", "print-candidate-summary", "bool",
-           /*default=*/"false",
-           "Print discovered scopes, rejected candidates and selected "
-           "candidate summaries to stderr">
-  ];
-}
-
 def NormalizeStablehloCollectivesPass
     : Pass<"wafer-normalize-stablehlo-collectives", "mlir::ModuleOp"> {
   let summary =

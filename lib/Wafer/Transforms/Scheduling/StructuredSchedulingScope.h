@@ -20,13 +20,12 @@ struct StructuredSchedulingScope {
   mlir::Operation *insertionPoint = nullptr;
 };
 
-/// Compiler-private, bounded scope-partition choice.  A negative peer limit
-/// admits the complete profitable prefix; zero disables independent
-/// shared-input peers. Cross-shape dataflow is still checked by complete
-/// candidate lowering before commit. Terminal full-traversal-only roots may
-/// be cut only by the dedicated bounded recovery policy.
+/// Compiler-private scope-partition choice. Shared-input peers are either
+/// omitted or admitted as the complete SSA-compatible closure; partial
+/// cost-ranked prefixes are not a scheduling protocol. Cross-shape dataflow is
+/// still checked by complete candidate lowering before commit.
 struct ScopeDiscoveryPolicy {
-  int64_t maxSharedInputPeers = -1;
+  bool includeSharedInputPeers = true;
   bool allowCrossShapeDataflow = true;
   bool cutTerminalFullTraversalOnlyRoots = false;
 };

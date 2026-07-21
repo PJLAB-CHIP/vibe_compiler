@@ -64,8 +64,10 @@ add_mlir_library(WaferTransforms
   MLIRTransforms
 )
 
-target_include_directories(obj.WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(obj.WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+                                                    ${PROJECT_SOURCE_DIR}/lib)
+target_include_directories(WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+                                                ${PROJECT_SOURCE_DIR}/lib)
 
 target_link_libraries(obj.WaferTransforms PRIVATE WaferThirdPartyMiniMalloc)
 target_link_libraries(WaferTransforms PRIVATE WaferThirdPartyMiniMalloc)

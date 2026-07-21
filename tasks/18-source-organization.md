@@ -100,8 +100,8 @@ current-IR analysis，再删除相应只复制字段的interface、struct和boil
 通过tasks/10 native reuse gate后才能留在`WaferInterfaces.td`。
 
 同批迁移`StorageLoadOp`的ODS与所有builder/conversion/test：load使用explicit DDR source和已创建SPM
-destination、无隐式allocation/result。旧`StructuredSchedulingTilingDemand`/
-`StructuredSchedulingLayoutPlan`只允许作为Q29迁移审计输入；Q32.G删除失去consumer的影子结构与源码。
+destination、无隐式allocation/result。Q29迁移审计使用过的`StructuredSchedulingTilingDemand`/
+`StructuredSchedulingLayoutPlan`已在Q32.G随失去consumer的影子结构与源码一并删除。
 
 层间语义变化继续由现有 Conversion libraries 拥有：source-to-tile conversion 消费已经选定且自包含的
 structured clone，tile-to-instruction conversion 消费 typed tile-dataflow IR。Conversion 不重新搜索
@@ -113,9 +113,9 @@ analysis/evaluation/selection/commit 协调；whole-rank finalization、all-rank
 format或平行 coordinator。上述文件名是 owner 映射；实现时可按 translation-unit 规模合并同一职责，但不能
 跨层合并 analysis、rewrite、conversion 和 coordination。
 
-tasks/13已有direct/ring/tree collective expansion/lowering语义继续位于`WaferTileRegionToInstr`/communication owner；当前实现仍由
-pass option选择单一路径。Q32.M先把同一语义暴露为无状态complete-clone producers，再由现有Scheduling candidate owner调用，
-不复制成`PhysicalDataflow`通信图或selector。implementation、encoding/route、share/recompute、loop hoist、current
+tasks/13已有direct/ring/tree collective expansion/lowering语义继续位于`WaferTileRegionToInstr`/communication owner；
+无状态complete-clone producer由Scheduling candidate owner以compiler-private typed参数调用，public pass option、selector和
+手工pipeline均已删除，不复制成`PhysicalDataflow`通信图。implementation、encoding/route、share/recompute、loop hoist、current
 integer-domain exact/modular numeric rewrite、buffering/order及resource-aware neighbor producers同样在Scheduling编排已有
 interface/analysis/rewrite，不建立统一dispatch registry。
 

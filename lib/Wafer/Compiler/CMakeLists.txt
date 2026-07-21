@@ -83,6 +83,9 @@ add_mlir_library(WaferCompiler
   ${WAFER_NATIVE_JIT_LIBS}
 )
 
+target_include_directories(obj.WaferCompiler PRIVATE ${PROJECT_SOURCE_DIR}/lib)
+target_include_directories(WaferCompiler PRIVATE ${PROJECT_SOURCE_DIR}/lib)
+
 if(WAFER_ENABLE_IMPORTER_DEPS)
   target_compile_definitions(obj.WaferCompiler PRIVATE WAFER_ENABLE_STABLEHLO=1)
   target_compile_definitions(WaferCompiler PRIVATE WAFER_ENABLE_STABLEHLO=1)

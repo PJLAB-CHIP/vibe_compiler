@@ -201,21 +201,12 @@ buildRankProgramBindings(
   return bindings;
 }
 
-static int64_t saturatingAddCost(int64_t lhs, int64_t rhs) {
-  if (lhs < 0 || rhs < 0 || rhs > std::numeric_limits<int64_t>::max() - lhs)
-    return std::numeric_limits<int64_t>::max();
-  return lhs + rhs;
-}
-
 struct Combination {
   std::vector<size_t> positions;
-  int64_t cost = 0;
 };
 
 struct WorseCombination {
   bool operator()(const Combination &lhs, const Combination &rhs) const {
-    if (lhs.cost != rhs.cost)
-      return lhs.cost > rhs.cost;
     return lhs.positions > rhs.positions;
   }
 };
@@ -253,30 +244,18 @@ buildCandidateOrder(const std::vector<RankVariantFrontier> &frontiers,
       return mlir::failure();
     order[rank].resize(frontier.size());
     for (size_t index = 0; index < frontier.size(); ++index) {
-      if (!frontier[index].module || frontier[index].estimatedTimePs < 0 ||
-          frontier[index].discoveryOrder < 0)
+      if (!frontier[index].module || frontier[index].stableOrdinal < 0)
         return mlir::failure();
       order[rank][index] = index;
     }
     llvm::sort(order[rank], [&](size_t lhs, size_t rhs) {
       const RankVariantCandidate &left = frontier[lhs];
       const RankVariantCandidate &right = frontier[rhs];
-      return std::tie(left.estimatedTimePs, left.discoveryOrder, lhs) <
-             std::tie(right.estimatedTimePs, right.discoveryOrder, rhs);
+      return std::tie(left.stableOrdinal, left.artifactKind, lhs) <
+             std::tie(right.stableOrdinal, right.artifactKind, rhs);
     });
   }
   return order;
-}
-
-static int64_t
-getCombinationCost(llvm::ArrayRef<size_t> positions,
-                   const std::vector<RankVariantFrontier> &frontiers,
-                   const CandidateOrder &order) {
-  int64_t cost = 0;
-  for (size_t rank = 0; rank < positions.size(); ++rank)
-    cost = saturatingAddCost(
-        cost, frontiers[rank][order[rank][positions[rank]]].estimatedTimePs);
-  return cost;
 }
 
 static std::vector<size_t> getCandidateIndices(llvm::ArrayRef<size_t> positions,
@@ -294,6 +273,29 @@ tryCombination(llvm::ArrayRef<size_t> candidateIndices,
                const frontend::FrontendProgramVerificationResult &program,
                const ExecutionConfig &executionConfig,
                std::string &failureGate) {
+  if (candidateIndices.size() != frontiers.size() || candidateIndices.empty()) {
+    failureGate = "rank-candidate-correspondence";
+    return mlir::failure();
+  }
+  std::optional<int64_t> stableOrdinal;
+  std::optional<wafer::RankArtifactKind> artifactKind;
+  for (auto [rank, candidateIndex] : llvm::enumerate(candidateIndices)) {
+    if (candidateIndex >= frontiers[rank].size()) {
+      failureGate = "rank-candidate-correspondence";
+      return mlir::failure();
+    }
+    int64_t current = frontiers[rank][candidateIndex].stableOrdinal;
+    wafer::RankArtifactKind currentArtifactKind =
+        frontiers[rank][candidateIndex].artifactKind;
+    if ((stableOrdinal && current != *stableOrdinal) ||
+        (artifactKind && currentArtifactKind != *artifactKind)) {
+      failureGate = "rank-candidate-correspondence";
+      return mlir::failure();
+    }
+    stableOrdinal = current;
+    artifactKind = currentArtifactKind;
+  }
+
   std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modules;
   llvm::SmallVector<mlir::ModuleOp, 16> moduleViews;
   modules.reserve(candidateIndices.size());
@@ -389,16 +391,16 @@ tryCombination(llvm::ArrayRef<size_t> candidateIndices,
   AcceptedWholeVariant accepted;
   accepted.ranks = std::move(ranks);
   accepted.resourceCost = std::move(*resourceCost);
-  accepted.selectedDiscoveryOrders.reserve(candidateIndices.size());
+  accepted.selectedStableOrdinals.reserve(candidateIndices.size());
+  accepted.selectedArtifactKinds.reserve(candidateIndices.size());
   accepted.selectedReservedBaselines.reserve(candidateIndices.size());
   for (auto [rank, candidateIndex] : llvm::enumerate(candidateIndices)) {
-    accepted.selectedDiscoveryOrders.push_back(
-        frontiers[rank][candidateIndex].discoveryOrder);
+    accepted.selectedStableOrdinals.push_back(
+        frontiers[rank][candidateIndex].stableOrdinal);
+    accepted.selectedArtifactKinds.push_back(
+        frontiers[rank][candidateIndex].artifactKind);
     accepted.selectedReservedBaselines.push_back(
         frontiers[rank][candidateIndex].reservedBaseline);
-    accepted.estimatedTimePs =
-        saturatingAddCost(accepted.estimatedTimePs,
-                          frontiers[rank][candidateIndex].estimatedTimePs);
   }
   return accepted;
 }
@@ -594,9 +596,9 @@ static bool isPreferredOver(const AcceptedWholeVariant &candidate,
 
 static bool hasEarlierStaticPolicyOrder(const AcceptedWholeVariant &lhs,
                                         const AcceptedWholeVariant &rhs) {
-  return std::tie(lhs.selectedDiscoveryOrders,
+  return std::tie(lhs.selectedStableOrdinals, lhs.selectedArtifactKinds,
                   lhs.selectedReservedBaselines) <
-         std::tie(rhs.selectedDiscoveryOrders,
+         std::tie(rhs.selectedStableOrdinals, rhs.selectedArtifactKinds,
                   rhs.selectedReservedBaselines);
 }
 
@@ -706,8 +708,7 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
   std::priority_queue<Combination, std::vector<Combination>, WorseCombination>
       queue;
   std::vector<size_t> initial(frontiers.size(), 0);
-  queue.push(
-      {initial, getCombinationCost(initial, frontiers, *candidateOrder)});
+  queue.push({initial});
   enqueuedPositions.insert(initial);
 
   llvm::SmallVector<std::string, kReportedAttemptLimit> failures;
@@ -775,21 +776,22 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
         continue;
       if (!enqueuedPositions.insert(neighbor).second)
         continue;
-      queue.push(
-          {neighbor, getCombinationCost(neighbor, frontiers, *candidateOrder)});
+      queue.push({neighbor});
     }
   }
 
-  // A coordinated discovery policy can sit far from the local-cost corner of
-  // a high-dimensional Cartesian product.  Always try every discovery order
-  // represented by all ranks, in canonical order, after the bounded best-first
-  // frontier.  This gives transport-compatible conservative policies a stable
-  // fallback without opening an unbounded search.
-  std::set<int64_t> discoveryOrders;
+  // A same-generation tuple can sit far from the canonical Cartesian corner
+  // of a high-dimensional product. Try each complete correspondence ordinal
+  // after the bounded product walk so cross-rank actual clones generated from
+  // one semantic recipe are evaluated together without reconstructing state.
+  using CorrespondenceKey =
+      std::pair<int64_t, wafer::RankArtifactKind>;
+  std::set<CorrespondenceKey> correspondenceKeys;
   for (const RankVariantCandidate &candidate : frontiers.front())
-    discoveryOrders.insert(candidate.discoveryOrder);
+    correspondenceKeys.insert(
+        {candidate.stableOrdinal, candidate.artifactKind});
   size_t coordinatedVisited = 0;
-  for (int64_t discoveryOrder : discoveryOrders) {
+  for (CorrespondenceKey key : correspondenceKeys) {
     if (coordinatedVisited >= kCoordinatedPolicyVisitLimit)
       break;
     std::vector<size_t> candidateIndices;
@@ -798,10 +800,10 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
     for (const RankVariantFrontier &frontier : frontiers) {
       std::optional<size_t> match;
       for (auto [index, candidate] : llvm::enumerate(frontier)) {
-        if (candidate.discoveryOrder != discoveryOrder)
+        if (candidate.stableOrdinal != key.first ||
+            candidate.artifactKind != key.second)
           continue;
-        if (!match || std::tie(candidate.estimatedTimePs, index) <
-                          std::tie(frontier[*match].estimatedTimePs, *match))
+        if (!match || index < *match)
           match = index;
       }
       if (!match) {
@@ -814,30 +816,6 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
       continue;
     ++coordinatedVisited;
     retainAccepted(attempt(candidateIndices));
-  }
-
-  // Signature deduplication can make the conservative partition share the
-  // module retained under an earlier discovery order on only some ranks.  A
-  // final policy-tail vector therefore picks the latest available order per
-  // rank independently.  It is one bounded attempt, and preserves the same
-  // deterministic recovery intent without requiring duplicate modules in a
-  // rank frontier.
-  std::vector<size_t> policyTail;
-  policyTail.reserve(frontiers.size());
-  for (const RankVariantFrontier &frontier : frontiers) {
-    size_t selected = 0;
-    for (size_t index = 1; index < frontier.size(); ++index) {
-      const RankVariantCandidate &candidate = frontier[index];
-      const RankVariantCandidate &current = frontier[selected];
-      if (candidate.discoveryOrder > current.discoveryOrder ||
-          (candidate.discoveryOrder == current.discoveryOrder &&
-           candidate.estimatedTimePs < current.estimatedTimePs))
-        selected = index;
-    }
-    policyTail.push_back(selected);
-  }
-  if (!attemptedCandidateIndices.count(policyTail)) {
-    retainAccepted(attempt(policyTail));
   }
 
   const TargetStaticSelectionPolicy selectionPolicy =

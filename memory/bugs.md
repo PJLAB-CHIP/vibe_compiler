@@ -586,11 +586,11 @@
   class让spill与resident的scalar estimate都饱和到最大值，selector因此错误保留spill。
 - 根因：把coarse、saturating的时间投影当成唯一序关系；它丢失了原始cost vector上“所有dimension不更差且至少一项
   更低”的信息。直接调小常量或忽略未校准class又会制造没有hardware依据的timing claim。
-- 修复模式：保留scalar estimate作为普通排序；只在complete current IR重算的NPU/vector compute classes、DDR read/write、
-  SPM movement、NoC transmit/receive、instruction和event全部known时，允许strict Pareto dominance补充选择。
-  任一dimension变差或unknown都返回false，不能用部分计数猜收益。
-- 防复发：回归同时覆盖scalar饱和但strict dominance成立、反向比较、真实tradeoff和unknown metric；不能只测常规
-  unsaturated时间大小。
+- 修复模式：Q32.G已删除scalar estimate和time projection。当前只从complete final IR重算NPU/vector compute classes、
+  DDR read/write、SPM movement、NoC transmit/receive、instruction、event、dependency/order和validated high-water，先保留
+  exact Pareto，再由target-owned static resource policy处理Known tradeoff。任一required dimension unknown时保持保守。
+- 防复发：回归覆盖strict dominance、反向比较、真实tradeoff和unknown metric，并搜索`estimatedTimePs`及scalar winner残留；
+  static resource选择不能宣称board/time收益。
 
 ## 2026-07-16 rank frontier finalization不能因一个alternative失败而整体终止
 
@@ -599,8 +599,8 @@
   movement或issue发生变化时whole-variant排序会读取stale cost。
 - 根因：把候选frontier错误实现成“任一项失败即rank失败”的线性pipeline，并假设后续bufferization/replanning不改变cost。
 - 修复模式：逐alternative独立运行finalization；失败项只从frontier过滤，每个survivor从final instruction IR重新计算
-  scalar cost，只有没有survivor时才拒绝rank。discovery order随survivor保留，后续whole-variant coordinator只消费
-  finalized frontier。
+  exact resource vector，只有没有survivor时才拒绝rank。generation ordinal和physical artifact kind随survivor保留，
+  后续whole-variant coordinator只消费finalized frontier。
 - 防复发：单测用一个确定SPM overflow项加一个合法项，断言只保留合法项且cost不是输入的stale值；另测全部失败才返回
   failure，并要求两类路径都保留结构化capacity diagnostic。
 
@@ -784,3 +784,18 @@
 - 修复模式：baseline先独立通过全部gate并保留；optimization budget内的accepted tuples全部进入bounded exact Pareto；最后由
   target-owned static policy逐个与当前winner比较，Unknown/overflow/同class tradeoff保持当前winner。测试必须至少包含“first
   improvement不是final winner”和两个真实producer相互遮蔽的production-shaped case。
+
+## 2026-07-21 all-rank candidate correspondence不能只匹配semantic generation
+
+- 现象：tiny-Llama的每个rank candidate都通过verifier、SPM/DDR、transport、resource和ABI gate，但coordinator把同一
+  source/recipe/scope ordinal下的spill、resident、ready-order派生混成一个16-rank tuple，SystemC完整输出64/64元素错误。
+  单独强制全rank spill、ready或resident均数值正确，rank 0正确/错误winner IR也完全相同。
+- 根因：stable ordinal只标识semantic generation，frontier内一个generation仍有四种physical derivation；best-first和
+  coordinated fallback只检查ordinal，允许各rank选择不同artifact kind。另一个独立缺口是ready-order按原始SSA value比较
+  memory effect，未沿memref view追到storage base。
+- 修复模式：frontier显式携带compiler-private `RankArtifactKind`（spill、spill-ready、resident、resident-ready），经过
+  finalization和并行序列化保留；all-rank attempt和coordinated fallback同时匹配generation ordinal与artifact kind。
+  ready-order hazard收集沿`ViewLikeOpInterface`规范化到storage base，base/view冲突保守保序。
+- 防复发：coordinator负例用rank 0 resident、其它rank resident-ready，要求回到完整reserved spill tuple；frontier并行
+  determinism同时比较ordinal与artifact kind；真实16-rank source必须执行SystemC完整tensor comparator，不能以IR verifier、
+  rank 0 dump或package发布成功代替数值证明。

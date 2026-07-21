@@ -6,7 +6,7 @@
 #include "ScheduledRankFinalization.h"
 #include "WholeVariantCoordinator.h"
 
-#include "Wafer/Transforms/TensorProgramScheduling.h"
+#include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Parser/Parser.h"
@@ -39,8 +39,8 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
   struct RankLoweringResult {
     struct SerializedCandidate {
       std::string moduleText;
-      int64_t estimatedTimePs = 0;
-      int64_t discoveryOrder = 0;
+      int64_t stableOrdinal = 0;
+      wafer::RankArtifactKind artifactKind = wafer::RankArtifactKind::Spill;
       bool reservedBaseline = false;
     };
 
@@ -103,8 +103,8 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
     result.candidates.reserve(finalized->size());
     for (detail::FinalizedRankCandidate &candidate : *finalized) {
       RankLoweringResult::SerializedCandidate serialized;
-      serialized.estimatedTimePs = candidate.estimatedTimePs;
-      serialized.discoveryOrder = candidate.discoveryOrder;
+      serialized.stableOrdinal = candidate.stableOrdinal;
+      serialized.artifactKind = candidate.artifactKind;
       serialized.reservedBaseline = candidate.reservedBaseline;
       llvm::raw_string_ostream moduleStream(serialized.moduleText);
       candidate.module->print(moduleStream);
@@ -137,8 +137,8 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
         return fail("failed to import a lowered scheduling candidate for "
                     "logical rank " +
                     std::to_string(logicalRank));
-      imported.push_back({std::move(module), candidate.estimatedTimePs,
-                          candidate.discoveryOrder,
+      imported.push_back({std::move(module), candidate.stableOrdinal,
+                          candidate.artifactKind,
                           candidate.reservedBaseline});
     }
     frontiers.push_back(std::move(imported));

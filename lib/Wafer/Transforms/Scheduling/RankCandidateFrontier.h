@@ -1,7 +1,7 @@
-//===- TensorProgramScheduling.h - Rank scheduling frontier ---*- C++ -*-===//
+//===- RankCandidateFrontier.h - Private rank frontier --------*- C++ -*-===//
 
-#ifndef WAFER_TRANSFORMS_TENSORPROGRAMSCHEDULING_H
-#define WAFER_TRANSFORMS_TENSORPROGRAMSCHEDULING_H
+#ifndef WAFER_LIB_TRANSFORMS_SCHEDULING_RANKCANDIDATEFRONTIER_H
+#define WAFER_LIB_TRANSFORMS_SCHEDULING_RANKCANDIDATEFRONTIER_H
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -12,15 +12,26 @@
 
 namespace wafer {
 
-/// One fully materialized and rank-planned scheduling alternative.  The
-/// discovery order is a deterministic compiler-private tie-breaker; neither it
-/// nor the estimated cost is persisted in accepted IR.
+/// Compiler-private physical derivation of one rank artifact. The value is a
+/// cross-rank correspondence fact, not a persisted IR property or a cost.
+enum class RankArtifactKind : uint8_t {
+  Spill,
+  SpillReady,
+  Resident,
+  ResidentReady,
+};
+
+/// One fully materialized and rank-planned scheduling alternative. The stable
+/// ordinal identifies one semantic generation and the artifact kind identifies
+/// its physical derivation across logical ranks. Neither is persisted in
+/// accepted IR or used as a resource preference.
 struct ScheduledRankCandidate {
   ScheduledRankCandidate(mlir::OwningOpRef<mlir::ModuleOp> module,
-                         int64_t estimatedTimePs, int64_t discoveryOrder,
+                         int64_t stableOrdinal,
+                         RankArtifactKind artifactKind,
                          bool reservedBaseline = false)
-      : module(std::move(module)), estimatedTimePs(estimatedTimePs),
-        discoveryOrder(discoveryOrder), reservedBaseline(reservedBaseline) {}
+      : module(std::move(module)), stableOrdinal(stableOrdinal),
+        artifactKind(artifactKind), reservedBaseline(reservedBaseline) {}
 
   ScheduledRankCandidate(ScheduledRankCandidate &&) = default;
   ScheduledRankCandidate &operator=(ScheduledRankCandidate &&) = default;
@@ -28,8 +39,8 @@ struct ScheduledRankCandidate {
   ScheduledRankCandidate &operator=(const ScheduledRankCandidate &) = delete;
 
   mlir::OwningOpRef<mlir::ModuleOp> module;
-  int64_t estimatedTimePs;
-  int64_t discoveryOrder;
+  int64_t stableOrdinal;
+  RankArtifactKind artifactKind;
   /// Compiler-private allowance marker. Exactly one finalized candidate per
   /// rank carries it; it is never persisted in accepted IR or artifacts.
   bool reservedBaseline;
@@ -41,22 +52,14 @@ struct TensorProgramSchedulingConfig {
 };
 
 /// Builds a bounded frontier of complete rank alternatives in independent
-/// clones.  Every returned module has passed task commit, whole-rank SPM/DDR
-/// SPM planning, verification, and ranking-cost closure. The source module is
+/// clones. Every returned module has passed task commit, whole-rank SPM
+/// planning, verification, and exact cost closure. The source module is
 /// never modified. DDR placement, cross-rank transport, card resources, and
 /// target ABI are deliberately deferred to the executable-bundle coordinator.
 mlir::FailureOr<std::vector<ScheduledRankCandidate>>
 buildScheduledRankCandidateFrontier(
     mlir::ModuleOp sourceModule, const TensorProgramSchedulingConfig &config);
 
-/// Recomputes the scalar scheduling cost from a complete instruction-level
-/// rank artifact.  Callers use this after transformations such as
-/// function-boundary bufferization and physical-memory replanning that may
-/// change movement or issue counts.  Unknown or overflowed required metrics
-/// fail closed instead of preserving a stale pre-transformation estimate.
-mlir::FailureOr<int64_t>
-estimateScheduledRankProgramTimePs(mlir::ModuleOp module);
-
 } // namespace wafer
 
-#endif // WAFER_TRANSFORMS_TENSORPROGRAMSCHEDULING_H
+#endif // WAFER_LIB_TRANSFORMS_SCHEDULING_RANKCANDIDATEFRONTIER_H

@@ -322,7 +322,7 @@ communication仍靠旧option/selector；一个不兼容fanout use导致全部reu
   否则只作safe bound；不建立PackingEnvelope schema、cross-candidate cache或allocator repair；
 - exact Pareto后由target static policy处理Known tradeoff；缺policy/Unknown/overflow回baseline；
 - winner selection只读取final validated IR facts，不能读取mechanism-applied计数或producer预估收益；
-- 并行评估按stable ordinal归并，winner不依赖线程完成顺序。
+- 并行评估按semantic generation ordinal与physical artifact kind归并，winner不依赖线程完成顺序。
 
 产出：覆盖全部当前轴的bounded joint candidate owner及可解释static selection。
 
@@ -336,7 +336,7 @@ provider cache/shadow state去重；allocator修改candidate。
 
 ### Checkpoint H（Q32.G）：Production Cutover与旧路径删除
 
-状态：进行中。动态状态只看`tasks/progress.md`。
+状态：已完成。动态状态只看`tasks/progress.md`。
 
 输入：Checkpoints A-G全部fresh通过。
 

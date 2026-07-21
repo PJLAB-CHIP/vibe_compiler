@@ -2,18 +2,14 @@
 
 #include "Scheduling/ScheduleTensorProgramInternal.h"
 #include "Wafer/Transforms/Passes.h"
-#include "Wafer/Transforms/TensorProgramScheduling.h"
+#include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/SymbolTable.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 
 namespace wafer {
-#define GEN_PASS_DEF_SCHEDULETENSORPROGRAMPASS
-#include "Wafer/Transforms/WaferPasses.h.inc"
-
 using namespace tensor_program_scheduling;
 
 namespace {
@@ -478,11 +474,18 @@ static void foldCommittedBufferizationRoundTrips(mlir::ModuleOp module) {
 
 struct RankArtifactAlternative {
   mlir::OwningOpRef<mlir::ModuleOp> module;
-  CandidateStats stats;
-  int64_t estimatedTimePs = std::numeric_limits<int64_t>::max();
   unsigned promotedHandoffs = 0;
   bool readyReordered = false;
 };
+
+static RankArtifactKind
+getRankArtifactKind(const RankArtifactAlternative &alternative) {
+  if (alternative.promotedHandoffs != 0)
+    return alternative.readyReordered ? RankArtifactKind::ResidentReady
+                                      : RankArtifactKind::Resident;
+  return alternative.readyReordered ? RankArtifactKind::SpillReady
+                                    : RankArtifactKind::Spill;
+}
 
 struct RankVariantEvaluation {
   std::string label;
@@ -490,18 +493,10 @@ struct RankVariantEvaluation {
   std::string failureReason;
   mlir::OwningOpRef<mlir::ModuleOp> module;
   llvm::SmallVector<SelectedCandidate, 8> selectedCandidates;
-  CandidateStats stats;
-  int64_t estimatedTimePs = std::numeric_limits<int64_t>::max();
   std::vector<RankArtifactAlternative> alternatives;
   bool accepted = false;
   bool duplicate = false;
   bool noScopes = false;
-  bool failedOnCuttableTerminalFullTraversalOnlyScope = false;
-};
-
-struct FinalizedRankMetrics {
-  CandidateStats stats;
-  int64_t estimatedTimePs = std::numeric_limits<int64_t>::max();
 };
 
 static std::string
@@ -512,11 +507,8 @@ getPolicyLabel(const structured_scheduler::ScopeDiscoveryPolicy &policy) {
     os << "dataflow-terminal-full-only-cut";
   else
     os << (policy.allowCrossShapeDataflow ? "dataflow" : "conservative");
-  os << "/shared-peers=";
-  if (policy.maxSharedInputPeers < 0)
-    os << "all";
-  else
-    os << policy.maxSharedInputPeers;
+  os << (policy.includeSharedInputPeers ? "/shared-closure"
+                                       : "/root-closure");
   return label;
 }
 
@@ -536,8 +528,7 @@ static mlir::LogicalResult failRankVariant(RankVariantEvaluation &evaluation,
 /// until the exact same whole-rank SPM, verifier, and cost gates accept it.
 /// DDR placement is a whole-variant gate owned by the all-rank coordinator.
 static std::optional<std::string>
-finalizeRankArtifact(mlir::ModuleOp module, const SelectionConfig &config,
-                     FinalizedRankMetrics &metrics) {
+finalizeRankArtifact(mlir::ModuleOp module, const SelectionConfig &config) {
   if (mlir::failed(mlir::verify(module)))
     return "whole-rank-pre-plan-verifier";
   if (mlir::failed(planSPMMemoryModule(module, config.spmBase, config.spmLimit,
@@ -546,13 +537,9 @@ finalizeRankArtifact(mlir::ModuleOp module, const SelectionConfig &config,
   if (mlir::failed(mlir::verify(module)))
     return "whole-rank-verifier";
 
-  metrics.stats = estimateStats(module);
-  if (config.mode == TileSearchMode::MinEstimatedTime) {
-    if (std::optional<std::string> failure =
-            getRankingCostFailure(metrics.stats))
-      return (llvm::Twine("whole-rank-cost: ") + *failure).str();
-  }
-  metrics.estimatedTimePs = estimateCandidateTimePs(metrics.stats);
+  CandidateStats stats = estimateStats(module);
+  if (std::optional<std::string> failure = getRankingCostFailure(stats))
+    return (llvm::Twine("whole-rank-cost: ") + *failure).str();
   return std::nullopt;
 }
 
@@ -633,8 +620,7 @@ checkRankTerminalBudget(mlir::ModuleOp stagedModule,
 static mlir::LogicalResult evaluateRankVariantImpl(
     mlir::ModuleOp sourceModule, const SelectionConfig &config,
     const structured_scheduler::ScopeDiscoveryPolicy &policy,
-    llvm::StringSet<> &seenPartitions, RankVariantEvaluation &evaluation,
-    bool preservePhysicalAlternatives) {
+    llvm::StringSet<> &seenPartitions, RankVariantEvaluation &evaluation) {
   evaluation.label = getPolicyLabel(policy);
   evaluation.module = mlir::cast<mlir::ModuleOp>(sourceModule->clone());
   outlineRankDenseTensorConstants(*evaluation.module);
@@ -712,22 +698,8 @@ static mlir::LogicalResult evaluateRankVariantImpl(
     taskModules.push_back(std::move(taskModule));
     mlir::FailureOr<SelectedCandidate> selected =
         selectCandidateForScope(scope, task, labelOs.str(), config);
-    if (mlir::failed(selected)) {
-      // A full-traversal-only yielded root fixes this entire scope at its full
-      // shape. Shared-input peer prefixes can only add independent roots;
-      // they cannot make the direct dataflow closure tileable. Record the
-      // precise structural case handled by the one bounded terminal recovery
-      // policy so the caller need not evaluate the remaining normal prefixes
-      // before trying that policy.
-      if (getTaskTraversalRootCapability(task) ==
-              CandidateTraversalRootCapability::FullTraversalOnly &&
-          llvm::any_of(scope.orderedOps, [](mlir::Operation *operation) {
-            return classifyCandidateTraversalRoot(operation) ==
-                   CandidateTraversalRootCapability::Tiled;
-          }))
-        evaluation.failedOnCuttableTerminalFullTraversalOnlyScope = true;
+    if (mlir::failed(selected))
       return failRankVariant(evaluation, "candidate-selection");
-    }
     evaluation.selectedCandidates.push_back(std::move(*selected));
   }
 
@@ -804,25 +776,18 @@ static mlir::LogicalResult evaluateRankVariantImpl(
       residentReadyModule = std::move(candidate);
   }
 
-  FinalizedRankMetrics spillMetrics;
   std::optional<std::string> spillFailure =
-      finalizeRankArtifact(*spillModule, config, spillMetrics);
-  FinalizedRankMetrics residentMetrics;
+      finalizeRankArtifact(*spillModule, config);
   std::optional<std::string> residentFailure;
   if (promotedHandoffs != 0) {
-    residentFailure =
-        finalizeRankArtifact(*residentModule, config, residentMetrics);
+    residentFailure = finalizeRankArtifact(*residentModule, config);
   }
-  FinalizedRankMetrics spillReadyMetrics;
   std::optional<std::string> spillReadyFailure;
   if (spillReadyModule)
-    spillReadyFailure =
-        finalizeRankArtifact(*spillReadyModule, config, spillReadyMetrics);
-  FinalizedRankMetrics residentReadyMetrics;
+    spillReadyFailure = finalizeRankArtifact(*spillReadyModule, config);
   std::optional<std::string> residentReadyFailure;
   if (residentReadyModule)
-    residentReadyFailure = finalizeRankArtifact(*residentReadyModule, config,
-                                                residentReadyMetrics);
+    residentReadyFailure = finalizeRankArtifact(*residentReadyModule, config);
 
   if (spillFailure && (promotedHandoffs == 0 || residentFailure)) {
     std::string detail;
@@ -835,68 +800,22 @@ static mlir::LogicalResult evaluateRankVariantImpl(
 
   if (!spillFailure)
     evaluation.alternatives.push_back(
-        {std::move(spillModule), spillMetrics.stats,
-         spillMetrics.estimatedTimePs, /*promotedHandoffs=*/0,
+        {std::move(spillModule), /*promotedHandoffs=*/0,
          /*readyReordered=*/false});
   if (spillReadyModule && !spillReadyFailure)
     evaluation.alternatives.push_back(
-        {std::move(spillReadyModule), spillReadyMetrics.stats,
-         spillReadyMetrics.estimatedTimePs, /*promotedHandoffs=*/0,
+        {std::move(spillReadyModule), /*promotedHandoffs=*/0,
          /*readyReordered=*/true});
   if (promotedHandoffs != 0 && !residentFailure)
     evaluation.alternatives.push_back(
-        {std::move(residentModule), residentMetrics.stats,
-         residentMetrics.estimatedTimePs, promotedHandoffs,
+        {std::move(residentModule), promotedHandoffs,
          /*readyReordered=*/false});
   if (residentReadyModule && !residentReadyFailure)
     evaluation.alternatives.push_back(
-        {std::move(residentReadyModule), residentReadyMetrics.stats,
-         residentReadyMetrics.estimatedTimePs, promotedHandoffs,
+        {std::move(residentReadyModule), promotedHandoffs,
          /*readyReordered=*/true});
 
-  bool selectResident =
-      promotedHandoffs != 0 && !residentFailure &&
-      (spillFailure ||
-       residentMetrics.estimatedTimePs < spillMetrics.estimatedTimePs ||
-       hasStrictExecutionCostDominance(residentMetrics.stats,
-                                       spillMetrics.stats));
-  if (selectResident) {
-    evaluation.stats = residentMetrics.stats;
-    evaluation.estimatedTimePs = residentMetrics.estimatedTimePs;
-    if (config.printCandidateSummary)
-      llvm::errs() << "wafer.schedule_tensor_program selected "
-                   << promotedHandoffs
-                   << " full-buffer SPM handoff(s) for rank variant "
-                   << evaluation.label << "\n";
-  } else {
-    evaluation.stats = spillMetrics.stats;
-    evaluation.estimatedTimePs = spillMetrics.estimatedTimePs;
-    if (promotedHandoffs != 0 && config.printCandidateSummary) {
-      llvm::errs() << "wafer.schedule_tensor_program retained DDR spill for "
-                   << promotedHandoffs
-                   << " full-buffer handoff candidate(s) in rank variant "
-                   << evaluation.label;
-      if (residentFailure)
-        llvm::errs() << ": " << *residentFailure;
-      else
-        llvm::errs() << ": resident cost is not lower";
-      llvm::errs() << "\n";
-    }
-  }
-  if (!preservePhysicalAlternatives) {
-    auto selected = llvm::find_if(
-        evaluation.alternatives, [&](const RankArtifactAlternative &artifact) {
-          return selectResident ? artifact.promotedHandoffs != 0
-                                : artifact.promotedHandoffs == 0;
-        });
-    if (selected == evaluation.alternatives.end())
-      return failRankVariant(evaluation, "whole-rank-artifact",
-                             "selected artifact is unavailable");
-    evaluation.module = std::move(selected->module);
-    evaluation.alternatives.clear();
-  } else {
-    evaluation.module = nullptr;
-  }
+  evaluation.module = nullptr;
   evaluation.accepted = true;
   return mlir::success();
 }
@@ -904,8 +823,7 @@ static mlir::LogicalResult evaluateRankVariantImpl(
 static RankVariantEvaluation
 evaluateRankVariant(mlir::ModuleOp sourceModule, const SelectionConfig &config,
                     const structured_scheduler::ScopeDiscoveryPolicy &policy,
-                    llvm::StringSet<> &seenPartitions,
-                    bool preservePhysicalAlternatives = false) {
+                    llvm::StringSet<> &seenPartitions) {
   RankVariantEvaluation evaluation;
   std::string diagnostics;
   mlir::LogicalResult result = mlir::success();
@@ -917,9 +835,8 @@ evaluateRankVariant(mlir::ModuleOp sourceModule, const SelectionConfig &config,
           os << "\n";
           return mlir::success();
         });
-    result =
-        evaluateRankVariantImpl(sourceModule, config, policy, seenPartitions,
-                                evaluation, preservePhysicalAlternatives);
+    result = evaluateRankVariantImpl(sourceModule, config, policy,
+                                     seenPartitions, evaluation);
   }
   if (mlir::failed(result)) {
     llvm::StringRef captured = llvm::StringRef(diagnostics).trim();
@@ -932,204 +849,6 @@ evaluateRankVariant(mlir::ModuleOp sourceModule, const SelectionConfig &config,
   }
   return evaluation;
 }
-
-static bool isBetterRankVariant(const RankVariantEvaluation &candidate,
-                                const RankVariantEvaluation *best) {
-  return !best || candidate.estimatedTimePs < best->estimatedTimePs;
-}
-
-struct ScheduleTensorProgramPass
-    : public impl::ScheduleTensorProgramPassBase<ScheduleTensorProgramPass> {
-  using impl::ScheduleTensorProgramPassBase<
-      ScheduleTensorProgramPass>::ScheduleTensorProgramPassBase;
-
-  void runOnOperation() final {
-    mlir::FailureOr<TileSearchMode> parsedMode =
-        parseTileSearchMode(tileSearch, getOperation());
-    mlir::FailureOr<TileSearchEffort> parsedEffort =
-        parseTileSearchEffort(tileSearchEffort, getOperation());
-    if (mlir::failed(parsedMode) || mlir::failed(parsedEffort)) {
-      signalPassFailure();
-      return;
-    }
-    std::optional<llvm::SmallVector<int64_t, 8>> parsedPreferred;
-    if (!llvm::StringRef(preferredTileSizes).trim().empty()) {
-      mlir::FailureOr<llvm::SmallVector<int64_t, 8>> parsed = parseI64List(
-          preferredTileSizes, "preferred-tile-sizes", getOperation());
-      if (mlir::failed(parsed)) {
-        signalPassFailure();
-        return;
-      }
-      parsedPreferred = std::move(*parsed);
-    }
-
-    if (maxCandidatesPerDim < -1 || maxSearchCandidates < -1 ||
-        searchBeamWidth < -1) {
-      getOperation()->emitError()
-          << "invalid_tile_search_config: search-space overrides must be -1 "
-             "or non-negative";
-      signalPassFailure();
-      return;
-    }
-    if (*parsedMode == TileSearchMode::MinEstimatedTime &&
-        candidateParallelism <= 0) {
-      getOperation()->emitError()
-          << "invalid_tile_search_config: min-estimated-time requires "
-             "positive candidate-parallelism";
-      signalPassFailure();
-      return;
-    }
-
-    WaferTargetPolicy targetPolicy = getDefaultWaferTargetPolicy(*parsedEffort);
-    SelectionConfig config(targetPolicy);
-    config.mode = *parsedMode;
-    config.logicalRank = logicalRank;
-    if (parsedPreferred && parsedPreferred->empty()) {
-      getOperation()->emitError()
-          << "invalid_tile_search_config: preferred-tile-sizes cannot be empty "
-             "when explicitly provided";
-      signalPassFailure();
-      return;
-    }
-    if (parsedPreferred)
-      config.preferredTileSizes = *parsedPreferred;
-    if (maxCandidatesPerDim >= 0)
-      config.maxCandidatesPerDim = maxCandidatesPerDim;
-    if (maxSearchCandidates >= 0)
-      config.maxSearchCandidates = maxSearchCandidates;
-    if (searchBeamWidth >= 0)
-      config.searchBeamWidth = searchBeamWidth;
-    if (config.mode == TileSearchMode::MinEstimatedTime)
-      config.candidateParallelism = candidateParallelism;
-    config.printCandidateSummary = printCandidateSummary;
-
-    // Partition alternatives are bounded prefixes of the deterministic
-    // shared-input reuse order.  Each alternative is independently cloned,
-    // selected, committed, rank-planned, verified, and costed.  A partition
-    // signature prevents a no-op prefix from repeating expensive candidate
-    // search.
-    const structured_scheduler::ScopeDiscoveryPolicy aggressivePolicies[] = {
-        {/*maxSharedInputPeers=*/0, /*allowCrossShapeDataflow=*/true,
-         /*cutTerminalFullTraversalOnlyRoots=*/false},
-        {/*maxSharedInputPeers=*/1, /*allowCrossShapeDataflow=*/true,
-         /*cutTerminalFullTraversalOnlyRoots=*/false},
-        {/*maxSharedInputPeers=*/2, /*allowCrossShapeDataflow=*/true,
-         /*cutTerminalFullTraversalOnlyRoots=*/false},
-        {/*maxSharedInputPeers=*/-1, /*allowCrossShapeDataflow=*/true,
-         /*cutTerminalFullTraversalOnlyRoots=*/false},
-    };
-    const structured_scheduler::ScopeDiscoveryPolicy recoveryPolicy = {
-        /*maxSharedInputPeers=*/0,
-        /*allowCrossShapeDataflow=*/true,
-        /*cutTerminalFullTraversalOnlyRoots=*/true};
-    llvm::StringSet<> seenPartitions;
-    llvm::SmallVector<std::string, 6> failures;
-    std::optional<RankVariantEvaluation> best;
-    bool recoveryAttempted = false;
-    auto recordFailure = [&](const RankVariantEvaluation &evaluation) {
-      std::string failure;
-      llvm::raw_string_ostream os(failure);
-      os << evaluation.label << ": "
-         << (evaluation.failureReason.empty() ? "failed"
-                                              : evaluation.failureReason);
-      failures.push_back(std::move(failure));
-    };
-    for (const auto &policy : aggressivePolicies) {
-      RankVariantEvaluation evaluation =
-          evaluateRankVariant(getOperation(), config, policy, seenPartitions);
-      if (evaluation.noScopes) {
-        markAllAnalysesPreserved();
-        return;
-      }
-      if (evaluation.duplicate)
-        continue;
-      if (!evaluation.accepted) {
-        recordFailure(evaluation);
-        if (evaluation.failedOnCuttableTerminalFullTraversalOnlyScope &&
-            !recoveryAttempted) {
-          // Every normal peer-prefix retains the same direct dataflow closure
-          // and therefore the same non-tileable yielded root. Try the sole
-          // terminal-cut policy now instead of replaying that deterministic
-          // failure through the remaining prefixes. This only reorders the
-          // existing frontier; it neither adds a policy nor crosses recovery
-          // with peer choices.
-          recoveryAttempted = true;
-          RankVariantEvaluation recovery = evaluateRankVariant(
-              getOperation(), config, recoveryPolicy, seenPartitions);
-          if (recovery.noScopes) {
-            markAllAnalysesPreserved();
-            return;
-          }
-          if (recovery.accepted) {
-            best = std::move(recovery);
-            break;
-          }
-          if (!recovery.duplicate)
-            recordFailure(recovery);
-        }
-        continue;
-      }
-      if (config.mode == TileSearchMode::FirstLegal ||
-          isBetterRankVariant(evaluation, best ? &*best : nullptr))
-        best = std::move(evaluation);
-      if (config.mode == TileSearchMode::FirstLegal)
-        break;
-    }
-
-    // If no failed scope exposed the exact capability condition above, retain
-    // the recovery policy at its original bounded fallback position.
-    if (!best && !recoveryAttempted) {
-      recoveryAttempted = true;
-      RankVariantEvaluation evaluation = evaluateRankVariant(
-          getOperation(), config, recoveryPolicy, seenPartitions);
-      if (evaluation.noScopes) {
-        markAllAnalysesPreserved();
-        return;
-      }
-      if (evaluation.accepted)
-        best = std::move(evaluation);
-      else if (!evaluation.duplicate)
-        recordFailure(evaluation);
-    }
-
-    // Conservative shape/family closure is the broad legality recovery path,
-    // not a cost competitor to a successful dataflow or root-capability
-    // partition.
-    if (!best) {
-      const structured_scheduler::ScopeDiscoveryPolicy fallbackPolicy = {
-          /*maxSharedInputPeers=*/0,
-          /*allowCrossShapeDataflow=*/false,
-          /*cutTerminalFullTraversalOnlyRoots=*/false};
-      RankVariantEvaluation evaluation = evaluateRankVariant(
-          getOperation(), config, fallbackPolicy, seenPartitions);
-      if (evaluation.noScopes) {
-        markAllAnalysesPreserved();
-        return;
-      }
-      if (evaluation.accepted)
-        best = std::move(evaluation);
-      else if (!evaluation.duplicate)
-        recordFailure(evaluation);
-    }
-
-    if (!best) {
-      auto diagnostic = getOperation()->emitError()
-                        << "no_complete_rank_variant: bounded scheduling "
-                           "search found no fully legal rank artifact";
-      for (const std::string &failure : failures)
-        diagnostic << "\n  - " << failure;
-      signalPassFailure();
-      return;
-    }
-
-    if (printCandidateSummary)
-      for (const SelectedCandidate &selected : best->selectedCandidates)
-        printSelectedSummary(selected, config.mode);
-    getOperation()->setAttrs((*best->module)->getAttrs());
-    getOperation().getBodyRegion().takeBody(best->module->getBodyRegion());
-    return;
-  }
-};
 
 } // namespace
 
@@ -1319,30 +1038,25 @@ buildScheduledRankCandidateFrontier(
   WaferTargetPolicy targetPolicy =
       getDefaultWaferTargetPolicy(TileSearchEffort::Default);
   SelectionConfig config(targetPolicy);
-  config.mode = TileSearchMode::MinEstimatedTime;
   config.logicalRank = frontierConfig.logicalRank;
   config.candidateParallelism = frontierConfig.candidateParallelism;
 
-  // Discovery order is a stable compiler-private correspondence key across
-  // ranks.  Every distinct partition is independently materialized and
-  // rank-planned; the whole-variant coordinator may therefore reject a cheap
-  // but cross-rank-incompatible combination without rerunning local search.
+  // Stable ordinals identify invocation-local semantic generations across
+  // ranks. RankArtifactKind separately identifies the spill/resident and
+  // ready-order derivation; no partial shared-input prefix is a candidate
+  // protocol.
   const structured_scheduler::ScopeDiscoveryPolicy policies[] = {
-      {/*maxSharedInputPeers=*/0, /*allowCrossShapeDataflow=*/true,
-       /*cutTerminalFullTraversalOnlyRoots=*/false},
-      {/*maxSharedInputPeers=*/1, /*allowCrossShapeDataflow=*/true,
-       /*cutTerminalFullTraversalOnlyRoots=*/false},
-      {/*maxSharedInputPeers=*/2, /*allowCrossShapeDataflow=*/true,
-       /*cutTerminalFullTraversalOnlyRoots=*/false},
-      {/*maxSharedInputPeers=*/-1, /*allowCrossShapeDataflow=*/true,
-       /*cutTerminalFullTraversalOnlyRoots=*/false},
-      {/*maxSharedInputPeers=*/0, /*allowCrossShapeDataflow=*/true,
+      {/*includeSharedInputPeers=*/false, /*allowCrossShapeDataflow=*/true,
+         /*cutTerminalFullTraversalOnlyRoots=*/false},
+      {/*includeSharedInputPeers=*/true, /*allowCrossShapeDataflow=*/true,
+         /*cutTerminalFullTraversalOnlyRoots=*/false},
+      {/*includeSharedInputPeers=*/false, /*allowCrossShapeDataflow=*/true,
        /*cutTerminalFullTraversalOnlyRoots=*/true},
-      {/*maxSharedInputPeers=*/0, /*allowCrossShapeDataflow=*/false,
+      {/*includeSharedInputPeers=*/false, /*allowCrossShapeDataflow=*/false,
        /*cutTerminalFullTraversalOnlyRoots=*/false},
   };
 
-  constexpr unsigned conservativePolicyIndex = 5;
+  constexpr unsigned conservativePolicyIndex = 3;
   constexpr unsigned optimizedRankEvaluationLimit = 64;
   constexpr unsigned optimizedRankFrontierLimit = 256;
   constexpr unsigned stableRecipeStride = 12;
@@ -1359,7 +1073,7 @@ buildScheduledRankCandidateFrontier(
   unsigned reservedBaselineCount = 0;
   unsigned optimizedFrontierCount = 0;
   auto appendAccepted = [&](RankVariantEvaluation &evaluation,
-                            int64_t discoveryOrder,
+                            int64_t stableOrdinal,
                             bool reservedPolicy) -> mlir::LogicalResult {
     bool hasBaselineSpill = false;
     for (RankArtifactAlternative &alternative : evaluation.alternatives) {
@@ -1370,9 +1084,8 @@ buildScheduledRankCandidateFrontier(
       reservedBaselineCount += reserved;
       if (optimizedFrontierCount >= optimizedRankFrontierLimit && !reserved)
         continue;
-      frontier.emplace_back(std::move(alternative.module),
-                            alternative.estimatedTimePs, discoveryOrder,
-                            reserved);
+      frontier.emplace_back(std::move(alternative.module), stableOrdinal,
+                            getRankArtifactKind(alternative), reserved);
       optimizedFrontierCount += !reserved;
     }
     return !reservedPolicy || hasBaselineSpill ? mlir::success()
@@ -1384,18 +1097,18 @@ buildScheduledRankCandidateFrontier(
   llvm::StringSet<> reservedSeenPartitions;
   RankVariantEvaluation reserved = evaluateRankVariant(
       generationSources.front(), recipes.front(),
-      policies[conservativePolicyIndex], reservedSeenPartitions,
-      /*preservePhysicalAlternatives=*/true);
+      policies[conservativePolicyIndex], reservedSeenPartitions);
   if (reserved.noScopes) {
     clearCandidateEvaluationFacts(*reserved.module);
-    frontier.emplace_back(std::move(reserved.module), /*cost=*/0,
-                          /*discoveryOrder=*/conservativePolicyIndex,
+    frontier.emplace_back(std::move(reserved.module),
+                          /*stableOrdinal=*/conservativePolicyIndex,
+                          RankArtifactKind::Spill,
                           /*reservedBaseline=*/true);
     return frontier;
   }
   if (!reserved.accepted ||
       mlir::failed(appendAccepted(reserved,
-                                  /*discoveryOrder=*/conservativePolicyIndex,
+                                  /*stableOrdinal=*/conservativePolicyIndex,
                                   /*reservedPolicy=*/true))) {
     sourceModule.emitError()
         << "reserved_baseline_unavailable: conservative spill artifact did "
@@ -1466,16 +1179,15 @@ buildScheduledRankCandidateFrontier(
                        request.recipeIndex];
     RankVariantEvaluation evaluation = evaluateRankVariant(
         generationSources[request.sourceIndex], recipes[request.recipeIndex],
-        policies[request.policyIndex], seen,
-        /*preservePhysicalAlternatives=*/true);
+        policies[request.policyIndex], seen);
     if (evaluation.noScopes || evaluation.duplicate)
       continue;
-    int64_t discoveryOrder = static_cast<int64_t>(
+    int64_t stableOrdinal = static_cast<int64_t>(
         (request.sourceIndex * stableRecipeStride + request.recipeIndex) *
             std::size(policies) +
         request.policyIndex);
     if (evaluation.accepted) {
-      (void)appendAccepted(evaluation, discoveryOrder,
+      (void)appendAccepted(evaluation, stableOrdinal,
                            /*reservedPolicy=*/false);
       continue;
     }
@@ -1498,18 +1210,6 @@ buildScheduledRankCandidateFrontier(
   for (const std::string &failure : failures)
     diagnostic << "\n  - " << failure;
   return mlir::failure();
-}
-
-mlir::FailureOr<int64_t>
-estimateScheduledRankProgramTimePs(mlir::ModuleOp module) {
-  if (!module)
-    return mlir::failure();
-  CandidateStats stats = estimateStats(module);
-  if (std::optional<std::string> failure = getRankingCostFailure(stats)) {
-    module.emitError() << "scheduled_rank_cost_failure: " << *failure;
-    return mlir::failure();
-  }
-  return estimateCandidateTimePs(stats);
 }
 
 } // namespace wafer

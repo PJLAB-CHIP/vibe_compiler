@@ -371,80 +371,15 @@ expandSelection(mlir::Operation *root,
   bool rootRequiresFullTraversal =
       classifyCandidateTraversalRoot(root) ==
       CandidateTraversalRootCapability::FullTraversalOnly;
-  int64_t admittedSharedInputPeers = 0;
   bool changed = true;
   while (changed) {
     changed = false;
-    if (policy.maxSharedInputPeers != 0 &&
-        (policy.maxSharedInputPeers < 0 ||
-         admittedSharedInputPeers < policy.maxSharedInputPeers)) {
-      struct RankedPeer {
-        mlir::Operation *operation;
-        int64_t sharedBytes;
-        int64_t resultBytes;
-      };
-      auto getTensorBytes = [](mlir::Value value) -> int64_t {
-        auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
-        if (!type || !type.hasStaticShape())
-          return 0;
-        int64_t elements = 1;
-        for (int64_t dim : type.getShape()) {
-          if (dim <= 0 || elements > std::numeric_limits<int64_t>::max() / dim)
-            return 0;
-          elements *= dim;
-        }
-        mlir::Type elementType = type.getElementType();
-        unsigned bits = 0;
-        if (auto integerType = mlir::dyn_cast<mlir::IntegerType>(elementType))
-          bits = integerType.getWidth();
-        else if (auto floatType = mlir::dyn_cast<mlir::FloatType>(elementType))
-          bits = floatType.getWidth();
-        else
-          return 0;
-        int64_t bytes = std::max<int64_t>(1, (bits + 7) / 8);
-        return elements > std::numeric_limits<int64_t>::max() / bytes
-                   ? 0
-                   : elements * bytes;
-      };
-      llvm::SmallVector<RankedPeer, 8> peers;
+    if (policy.includeSharedInputPeers) {
       for (mlir::Operation &candidate : *block) {
         if (!canAbsorbSharedInputPeer(&candidate, root, block, selected,
                                       forbidden))
           continue;
-        int64_t sharedBytes = 0;
-        auto candidateDps =
-            mlir::cast<mlir::DestinationStyleOpInterface>(&candidate);
-        for (mlir::Value input : candidateDps.getDpsInputs()) {
-          for (mlir::Operation *selectedOp : selected) {
-            auto selectedDps =
-                mlir::dyn_cast<mlir::DestinationStyleOpInterface>(selectedOp);
-            if (selectedDps &&
-                llvm::is_contained(selectedDps.getDpsInputs(), input)) {
-              sharedBytes = std::max(sharedBytes, getTensorBytes(input));
-              break;
-            }
-          }
-        }
-        int64_t resultBytes = 0;
-        for (mlir::Value result : candidate.getResults())
-          resultBytes = std::max(resultBytes, getTensorBytes(result));
-        peers.push_back(RankedPeer{&candidate, sharedBytes,
-                                   std::max<int64_t>(1, resultBytes)});
-      }
-      llvm::stable_sort(
-          peers, [](const RankedPeer &lhs, const RankedPeer &rhs) {
-            __int128 lhsDensity =
-                static_cast<__int128>(lhs.sharedBytes) * rhs.resultBytes;
-            __int128 rhsDensity =
-                static_cast<__int128>(rhs.sharedBytes) * lhs.resultBytes;
-            return lhsDensity > rhsDensity;
-          });
-      for (const RankedPeer &peer : peers) {
-        if (policy.maxSharedInputPeers >= 0 &&
-            admittedSharedInputPeers >= policy.maxSharedInputPeers)
-          break;
-        selected.insert(peer.operation);
-        ++admittedSharedInputPeers;
+        selected.insert(&candidate);
         changed = true;
       }
     }
@@ -781,7 +716,7 @@ mlir::LogicalResult discoverStructuredSchedulingScopes(
       StructuredSchedulingScope fallback;
       ScopeSelectionFailure fallbackFailure;
       ScopeDiscoveryPolicy fallbackPolicy = policy;
-      fallbackPolicy.maxSharedInputPeers = 0;
+      fallbackPolicy.includeSharedInputPeers = false;
       if (!buildStructuredSchedulingScope(root, fallback, fallbackFailure,
                                           fallbackPolicy, consumed)) {
         root->emitOpError("cannot form required scheduling task: ")

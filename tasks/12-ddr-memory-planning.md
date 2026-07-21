@@ -456,14 +456,15 @@ storage bytes, the corresponding memref type/encoding must make that visible.
 
 ### 9.3 Candidate Selection
 
-candidate selection由tasks/06拥有，通过MLIR interface/rewrite产生baseline和少量完整tile/implementation/physical-version/
-transfer/resident alternatives。full-shape、当前shared-input prefix及spill/max-resident
-策略只是当前迁移producer的deterministic proposals；Q32切换后删除这些decision owner，它们不是DDR输入schema或silent
-fallback。每个rank candidate先把DDR view、mapped/staged movement、explicit spill和instruction descriptor显式物化并过
+candidate selection由tasks/06拥有，通过MLIR interface/rewrite产生bounded complete-rank tile/implementation/physical-version/
+transfer/resident/ready-order alternatives。scope只采用root-local closure、complete shared-input closure、terminal cut和
+conservative partition四类semantic policy；spill/resident/ready-order分别形成显式physical artifact kind，并与semantic
+generation共同约束all-rank correspondence。它们都不是DDR输入schema或silent fallback。每个rank candidate先把DDR view、
+mapped/staged movement、explicit spill和instruction descriptor显式物化并过
 per-rank gate；lazy join后的每个complete variant再独立重跑whole-variant DDR exact gate。
 first/tail representative tiles只允许便宜地拒绝candidate，不能证明traversal coverage、descriptor closure、lifetime、
 capacity或completion。DDR planning拒绝candidate时不写主IR、不改变transfer/residency choice，并丢弃完整clone；
-其它candidate clone继续独立评估。当前代码仍按Q29历史策略产生候选。
+其它candidate clone继续独立评估。reserved conservative spill拥有独立allowance，但仍执行同一complete late gates。
 SPM/DDR arena constraints是各自planning gate输入；DDR exact movement bytes是06 cost输入，不是candidate field或未校准
 bandwidth legality。
 

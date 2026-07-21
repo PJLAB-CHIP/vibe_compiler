@@ -1,8 +1,8 @@
 //===- Internal.h - Tensor program to tile-region internals -*- C++ -*-===//
 #pragma once
 
-#include "Wafer/Analysis/Scheduling/LayoutPlanningAnalysis.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
+#include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -341,7 +341,7 @@ private:
                                          TileRegionOp tileRegion,
                                          mlir::OpBuilder &builder);
 
-  mlir::LogicalResult convertOp(const OpLayoutPlan &opPlan,
+  mlir::LogicalResult convertOp(mlir::Operation *op,
                                 mlir::OpBuilder &builder);
 
   mlir::LogicalResult

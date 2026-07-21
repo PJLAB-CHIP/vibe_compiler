@@ -199,9 +199,9 @@ Q32.M已完成后续native-interface reuse closure：layout requirement由typed 
 参数枚举；它不得重新发布tiling、DPS、layout或effect语义。任何其它Wafer-specific interface必须列出标准接口缺口、
 至少两个真实op family和generic consumer；否则使用typed pattern/helper，不新增动态语义层。
 
-现有`StructuredSchedulingTilingDemand`和`StructuredSchedulingLayoutPlan`只作为Q29迁移输入审计，不进入
-Q32 candidate语义；Q32从current op/interface/IndexRelation/encoding直接重算所需analysis，Q32.G随旧decision
-owner删除不再有真实consumer的Demand/Plan结构。普通局部analysis可以保留，但不能复制一份selected tile/layout事实。
+Q29迁移审计曾使用的`StructuredSchedulingTilingDemand`和`StructuredSchedulingLayoutPlan`已随旧decision owner删除。
+Q32从current op/interface/IndexRelation/encoding直接重算所需analysis；普通局部analysis可以保留，但不能复制一份
+selected tile/layout事实。
 
 ### 3.2 IndexRelationAnalysis
 
@@ -278,13 +278,13 @@ candidate的语义主体始终是actual IR clone，但生成与exact evaluation�
 
 ```text
 generation worklist entry
-  = unplaced actual complete-rank clone + stable ordinal + next-decision cursor
+  = unplaced actual complete-rank clone + semantic generation ordinal + next-decision cursor
 
 rank frontier entry
-  = separately evaluated actual rank clone + stable ordinal + rank-local exact facts/safe bounds
+  = separately evaluated actual rank clone + semantic generation ordinal + physical artifact kind + rank-local exact facts/safe bounds
 
 whole-variant evaluation
-  = disposable clone of one complete rank tuple + whole-variant exact facts
+  = disposable clone of one generation- and artifact-kind-compatible complete rank tuple + whole-variant exact facts
 ```
 
 generation clone不带owner-produced SPM/DDR offset、Direct DTE binding或ABI/package派生事实。rank-local
@@ -411,9 +411,10 @@ Q32不实现独立约束语言或一次性巨型solver，但必须有界组合�
    generation parent重新clone并回到步骤4实际改写；不得改写或复用已带offset/binding的evaluation clone。09/12/Q34 allocator
    只回答placement，不返回repair或替planner改IR。
 8. **维护rank frontier。** 从rank-local finalized current IR读取已知exact facts和safe bounds，只做不会误删潜在
-   whole-variant winner的剪枝，并按stable ordinal保留有界rank frontier。budget耗尽不淘汰reserved baseline。
+   whole-variant winner的剪枝，并按semantic generation ordinal与physical artifact kind保留有界rank frontier。budget耗尽不淘汰reserved baseline。
 9. **all-rank join与最终选择。** existing coordinator先用reserved allowance评估all-baseline tuple；baseline variant ready后
-   才按optimization hard cap组合其它complete rank tuples，communication compatibility仅作可重算预筛。每个variant在独立
+   才按optimization hard cap组合其它complete rank tuples；每个tuple的所有rank必须同时匹配semantic generation与
+   spill/spill-ready/resident/resident-ready artifact kind，communication compatibility仅作可重算预筛。每个variant在独立
    clone上依次运行whole-variant DDR placement、post-memory Direct DTE matching/binding、all-rank
    message/range/completion/resource、ABI和package eligibility，从通过后的bound instruction IR读取validated
    high-water与final metrics，再做exact Pareto/static-policy selection。成功后一次性提交winner bundle。
@@ -651,8 +652,8 @@ IR重新统计，算法接入本身不算性能收益。
    high-water/cost、Pareto/static-policy选择；根据完整producer的actual growth决定fixed-capacity candidate vector/frontier/beam，
    而不是只根据前两条
    rewrite决定；
-8. Q32.G让默认`wafer-compile`重放逐功能winner/commit证据，并删除旧scope-prefix、layout/materialization、maximal-resident、
-   communication selector和scalar-time旁路；
+8. Q32.G已让默认`wafer-compile`重放逐功能winner/commit证据，并删除旧scope-prefix、layout/materialization、maximal-resident、
+   communication selector和scalar-time旁路；all-rank candidate还必须同时匹配semantic generation与physical artifact kind；
 9. 重放rank-count=1/16、通用property/topology、Q20/Q21、7B PyTorch/SystemC及全部exact gates，完成原子audit。
 
 上述顺序不插入provider registry、query codec、版本化诊断schema、shadow frontier或Transform extension。target capability纵向、

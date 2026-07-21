@@ -2,6 +2,7 @@
 
 #include "../../lib/Wafer/Compiler/WholeVariantCoordinator.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
+#include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
 #include "../../lib/Wafer/Compiler/ScheduledRankFinalization.h"
 
 #include "Wafer/IR/WaferDialect.h"
@@ -12,6 +13,7 @@
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
@@ -19,6 +21,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -28,7 +31,7 @@ class WholeVariantCoordinatorTest : public ::testing::Test {
 protected:
   WholeVariantCoordinatorTest() {
     wafer::compiler::detail::registerCompilationDialects(registry);
-    context = std::make_unique<mlir::MLIRContext>(registry);
+    context = std::make_shared<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
   }
 
@@ -49,13 +52,15 @@ protected:
   }
 
   wafer::compiler::detail::RankVariantCandidate
-  candidate(llvm::StringRef body, int64_t rankCount, int64_t cost,
-            int64_t discoveryOrder, bool reservedBaseline = false) {
+  candidate(llvm::StringRef body, int64_t rankCount, int64_t /*legacyCost*/,
+            int64_t stableOrdinal, bool reservedBaseline = false,
+            wafer::RankArtifactKind artifactKind =
+                wafer::RankArtifactKind::Spill) {
     std::string source = moduleWithBody(body, rankCount);
     auto module = mlir::parseSourceString<mlir::ModuleOp>(
         source, mlir::ParserConfig(context.get()));
     EXPECT_TRUE(module);
-    return {std::move(module), cost, discoveryOrder, reservedBaseline};
+    return {std::move(module), stableOrdinal, artifactKind, reservedBaseline};
   }
 
   wafer::frontend::FrontendProgramVerificationResult
@@ -94,6 +99,39 @@ protected:
     return program;
   }
 
+  llvm::Expected<wafer::compiler::ExecutableBundle> buildDefaultBundle(
+      mlir::ModuleOp source,
+      const wafer::frontend::FrontendProgramVerificationResult &program,
+      wafer::compiler::ExecutionConfig executionConfig,
+      llvm::raw_ostream &diagnostics) const {
+    std::string sourceText;
+    llvm::raw_string_ostream sourceStream(sourceText);
+    source.print(sourceStream);
+    sourceStream.flush();
+
+    mlir::DialectRegistry productionRegistry;
+    wafer::compiler::detail::registerCompilationDialects(productionRegistry);
+    auto productionContext =
+        std::make_shared<mlir::MLIRContext>(productionRegistry);
+    productionContext->loadAllAvailableDialects();
+    mlir::OwningOpRef<mlir::ModuleOp> productionSource =
+        mlir::parseSourceString<mlir::ModuleOp>(sourceText,
+                                                productionContext.get());
+    if (!productionSource)
+      return llvm::createStringError(
+          std::make_error_code(std::errc::invalid_argument),
+          "cannot reparse production source");
+    llvm::Expected<wafer::compiler::ExecutableBundle> bundle =
+        wafer::compiler::detail::buildExecutableBundle(
+            productionContext, *productionSource, program, executionConfig,
+            diagnostics, std::nullopt);
+    // buildExecutableBundle moves the context into the successful bundle.
+    // Destroy its source while that owner is still alive.
+    if (bundle)
+      productionSource = nullptr;
+    return bundle;
+  }
+
   mlir::FailureOr<wafer::compiler::detail::AcceptedWholeVariant>
   selectProductionVariant(
       mlir::ModuleOp source,
@@ -101,7 +139,7 @@ protected:
       llvm::raw_ostream &diagnostics,
       std::optional<wafer::analysis::InstructionProgramCost> *baselineCost =
           nullptr,
-      int64_t rankCount = 1) const {
+      int64_t rankCount = 1) {
     std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(
         static_cast<size_t>(rankCount));
     for (int64_t rank = 0; rank < rankCount; ++rank) {
@@ -126,8 +164,8 @@ protected:
               wafer::analysis::getTargetScheduleCostPolicy(
                   wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
         frontiers[rank].push_back({std::move(candidate.module),
-                                   candidate.estimatedTimePs,
-                                   candidate.discoveryOrder,
+                                   candidate.stableOrdinal,
+                                   candidate.artifactKind,
                                    candidate.reservedBaseline});
       }
     }
@@ -137,8 +175,35 @@ protected:
             wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     if (!executionConfig)
       return mlir::failure();
-    return wafer::compiler::detail::selectAcceptedWholeVariant(
+    auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
         frontiers, program, *executionConfig, diagnostics);
+    if (mlir::failed(accepted))
+      return mlir::failure();
+
+    // Replay the same source through the default executable-bundle owner and
+    // require byte-for-byte committed rank IR correspondence. The detailed
+    // checks below therefore describe the artifact that wafer-compile commits,
+    // not merely a coordinator seam result.
+    llvm::Expected<wafer::compiler::ExecutableBundle> production =
+        buildDefaultBundle(source, program, *executionConfig, diagnostics);
+    if (!production) {
+      diagnostics << llvm::toString(production.takeError()) << "\n";
+      return mlir::failure();
+    }
+    if (production->getRankExecutables().size() != accepted->ranks.size())
+      return mlir::failure();
+    for (auto [expected, committed] : llvm::zip_equal(
+             accepted->ranks, production->getRankExecutables())) {
+      std::string expectedText;
+      llvm::raw_string_ostream expectedStream(expectedText);
+      expected.getModule().print(expectedStream);
+      std::string committedText;
+      llvm::raw_string_ostream committedStream(committedText);
+      committed.getModule().print(committedStream);
+      if (expectedStream.str() != committedStream.str())
+        return mlir::failure();
+    }
+    return accepted;
   }
 
   static constexpr llvm::StringLiteral kSendMismatched = R"mlir(
@@ -166,7 +231,7 @@ protected:
 )mlir";
 
   mlir::DialectRegistry registry;
-  std::unique_ptr<mlir::MLIRContext> context;
+  std::shared_ptr<mlir::MLIRContext> context;
 };
 
 TEST_F(WholeVariantCoordinatorTest,
@@ -177,16 +242,21 @@ TEST_F(WholeVariantCoordinatorTest,
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   frontiers[0].push_back(candidate(kSendMismatched, 16, 0, 0));
-  frontiers[0].push_back(candidate(kSendMatched, 16, 100, 5, true));
+  frontiers[0].push_back(candidate(kSendMatched, 16, 0, 5));
+  frontiers[0].push_back(candidate(
+      (kSendMatched + "    wafer.instr.local_fence\n").str(), 16, 100, 9,
+      true));
   frontiers[1].push_back(candidate(kRecvMismatched, 16, 0, 0));
-  frontiers[1].push_back(candidate(kRecvMatched, 16, 100, 5, true));
-  for (int rank = 2; rank < 15; ++rank) {
+  frontiers[1].push_back(candidate(kRecvMatched, 16, 0, 5));
+  frontiers[1].push_back(candidate(
+      (kRecvMatched + "    wafer.instr.local_fence\n").str(), 16, 100, 9,
+      true));
+  for (int rank = 2; rank < 16; ++rank) {
     frontiers[rank].push_back(candidate("", 16, 0, 0));
-    frontiers[rank].push_back(candidate("", 16, 100, 5, true));
+    frontiers[rank].push_back(candidate("", 16, 0, 5));
+    frontiers[rank].push_back(
+        candidate("    wafer.instr.local_fence", 16, 100, 9, true));
   }
-  // This rank models signature deduplication: its conservative partition is
-  // already represented by an earlier discovery order.
-  frontiers[15].push_back(candidate("", 16, 0, 2, true));
 
   wafer::frontend::FrontendProgramVerificationResult program;
   program.logicalRankCount = 16;
@@ -196,10 +266,9 @@ TEST_F(WholeVariantCoordinatorTest,
       frontiers, program, *config, diagnostics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_EQ(accepted->ranks.size(), 16u);
-  ASSERT_EQ(accepted->selectedDiscoveryOrders.size(), 16u);
-  for (int rank = 0; rank < 15; ++rank)
-    EXPECT_EQ(accepted->selectedDiscoveryOrders[rank], 5);
-  EXPECT_EQ(accepted->selectedDiscoveryOrders[15], 2);
+  ASSERT_EQ(accepted->selectedStableOrdinals.size(), 16u);
+  for (int rank = 0; rank < 16; ++rank)
+    EXPECT_EQ(accepted->selectedStableOrdinals[rank], 5);
 
   wafer::InstrDTESendOp send;
   accepted->ranks[0].getModule().walk(
@@ -212,6 +281,65 @@ TEST_F(WholeVariantCoordinatorTest,
   ASSERT_TRUE(send.getBinding());
   EXPECT_EQ(send.getBinding(), recv.getBinding());
   EXPECT_EQ(send.getMessage().getCommunicationId(), 20);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       DoesNotMixDistinctGenerationOrdinalsAcrossRanks) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
+  for (int rank = 0; rank < 16; ++rank) {
+    frontiers[rank].push_back(
+        candidate("    wafer.instr.local_fence", 16, 100, 9, true));
+    frontiers[rank].push_back(candidate("", 16, 0, rank == 0 ? 0 : 2));
+  }
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 16;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_EQ(accepted->selectedStableOrdinals.size(), 16u);
+  EXPECT_TRUE(llvm::all_of(accepted->selectedStableOrdinals,
+                           [](int64_t ordinal) { return ordinal == 9; }));
+  EXPECT_TRUE(llvm::all_of(accepted->selectedReservedBaselines,
+                           [](bool reserved) { return reserved; }));
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       DoesNotMixPhysicalArtifactKindsAcrossRanks) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
+  for (int rank = 0; rank < 16; ++rank) {
+    frontiers[rank].push_back(
+        candidate("    wafer.instr.local_fence", 16, 100, 9, true));
+    frontiers[rank].push_back(candidate(
+        "", 16, 0, 0, false,
+        rank == 0 ? wafer::RankArtifactKind::Resident
+                  : wafer::RankArtifactKind::ResidentReady));
+  }
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 16;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_EQ(accepted->selectedArtifactKinds.size(), 16u);
+  EXPECT_TRUE(llvm::all_of(
+      accepted->selectedArtifactKinds, [](wafer::RankArtifactKind kind) {
+        return kind == wafer::RankArtifactKind::Spill;
+      }));
+  EXPECT_TRUE(llvm::all_of(accepted->selectedReservedBaselines,
+                           [](bool reserved) { return reserved; }));
 }
 
 TEST_F(WholeVariantCoordinatorTest,
@@ -259,8 +387,8 @@ TEST_F(WholeVariantCoordinatorTest, RetainsBaselineWhenExactCostsAreEqual) {
   auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
       frontiers, program, *config, diagnostics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
-  ASSERT_EQ(accepted->selectedDiscoveryOrders.size(), 1u);
-  EXPECT_EQ(accepted->selectedDiscoveryOrders.front(), 3);
+  ASSERT_EQ(accepted->selectedStableOrdinals.size(), 1u);
+  EXPECT_EQ(accepted->selectedStableOrdinals.front(), 3);
   ASSERT_EQ(accepted->selectedReservedBaselines.size(), 1u);
   EXPECT_TRUE(accepted->selectedReservedBaselines.front());
 }
@@ -282,8 +410,8 @@ TEST_F(WholeVariantCoordinatorTest,
   auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
       frontiers, program, *config, diagnostics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
-  ASSERT_EQ(accepted->selectedDiscoveryOrders.size(), 1u);
-  EXPECT_EQ(accepted->selectedDiscoveryOrders.front(), 0);
+  ASSERT_EQ(accepted->selectedStableOrdinals.size(), 1u);
+  EXPECT_EQ(accepted->selectedStableOrdinals.front(), 0);
   ASSERT_EQ(accepted->selectedReservedBaselines.size(), 1u);
   EXPECT_FALSE(accepted->selectedReservedBaselines.front());
 }
@@ -297,8 +425,8 @@ TEST_F(WholeVariantCoordinatorTest,
   frontiers[0].push_back(
       candidate("    wafer.instr.local_fence\n    wafer.instr.local_fence", 1,
                 200, 5, true));
-  // The scalar order visits this candidate first, but the later candidate has
-  // a strictly lower final instruction count and must replace it on the exact
+  // The earlier stable ordinal is visited first, but the later candidate has a
+  // strictly lower final instruction count and must replace it on the exact
   // Pareto frontier.
   frontiers[0].push_back(candidate("    wafer.instr.local_fence", 1, 0, 0));
   frontiers[0].push_back(candidate("", 1, 100, 1));
@@ -310,8 +438,8 @@ TEST_F(WholeVariantCoordinatorTest,
   auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
       frontiers, program, *config, diagnostics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
-  ASSERT_EQ(accepted->selectedDiscoveryOrders.size(), 1u);
-  EXPECT_EQ(accepted->selectedDiscoveryOrders.front(), 1);
+  ASSERT_EQ(accepted->selectedStableOrdinals.size(), 1u);
+  EXPECT_EQ(accepted->selectedStableOrdinals.front(), 1);
 }
 
 TEST_F(WholeVariantCoordinatorTest,
@@ -336,8 +464,8 @@ TEST_F(WholeVariantCoordinatorTest,
   auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
       frontiers, program, *config, diagnostics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
-  ASSERT_EQ(accepted->selectedDiscoveryOrders.size(), 1u);
-  EXPECT_EQ(accepted->selectedDiscoveryOrders.front(), 0);
+  ASSERT_EQ(accepted->selectedStableOrdinals.size(), 1u);
+  EXPECT_EQ(accepted->selectedStableOrdinals.front(), 0);
 }
 
 TEST_F(WholeVariantCoordinatorTest,
@@ -363,8 +491,8 @@ TEST_F(WholeVariantCoordinatorTest,
   auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
       frontiers, program, *config, diagnostics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
-  ASSERT_EQ(accepted->selectedDiscoveryOrders.size(), 1u);
-  EXPECT_EQ(accepted->selectedDiscoveryOrders.front(), 0);
+  ASSERT_EQ(accepted->selectedStableOrdinals.size(), 1u);
+  EXPECT_EQ(accepted->selectedStableOrdinals.front(), 0);
 }
 
 TEST_F(WholeVariantCoordinatorTest,
@@ -409,8 +537,6 @@ module {
   ASSERT_TRUE(mlir::succeeded(finalized));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
-  std::optional<int64_t> baselineTime;
-  std::optional<int64_t> reciprocalTime;
   std::optional<uint64_t> baselineInstructions;
   std::optional<uint64_t> reciprocalInstructions;
   std::optional<uint64_t> baselineHighWater;
@@ -428,23 +554,19 @@ module {
             wafer::analysis::getTargetScheduleCostPolicy(
                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
     if (candidate.reservedBaseline) {
-      baselineTime = candidate.estimatedTimePs;
       baselineInstructions = exact.instructionCount.value;
       baselineHighWater = exact.spmHighWaterBytes.value;
     }
     if (hasReciprocal &&
         (!reciprocalInstructions ||
          exact.instructionCount.value < *reciprocalInstructions)) {
-      reciprocalTime = candidate.estimatedTimePs;
       reciprocalInstructions = exact.instructionCount.value;
       reciprocalHighWater = exact.spmHighWaterBytes.value;
     }
-    frontiers[0].push_back({std::move(candidate.module),
-                            candidate.estimatedTimePs, candidate.discoveryOrder,
+    frontiers[0].push_back({std::move(candidate.module), candidate.stableOrdinal,
+                            candidate.artifactKind,
                             candidate.reservedBaseline});
   }
-  ASSERT_TRUE(baselineTime);
-  ASSERT_TRUE(reciprocalTime);
   ASSERT_TRUE(baselineInstructions);
   ASSERT_TRUE(reciprocalInstructions);
   ASSERT_TRUE(baselineHighWater);
@@ -497,6 +619,24 @@ module {
       });
   EXPECT_TRUE(sawReciprocal);
   EXPECT_FALSE(sawDivision);
+
+  llvm::Expected<wafer::compiler::ExecutableBundle> production =
+      buildDefaultBundle(*source, program, *config, diagnostics);
+  ASSERT_TRUE(static_cast<bool>(production))
+      << diagnosticText
+      << (production ? "" : llvm::toString(production.takeError()));
+  ASSERT_EQ(production->getRankExecutables().size(), 1u);
+  bool committedReciprocal = false;
+  bool committedDivision = false;
+  production->getRankExecutables().front().getModule().walk(
+      [&](wafer::InstrElementwiseOp elementwise) {
+        committedReciprocal |=
+            elementwise.getKind() == wafer::InstrElementwiseKind::Recip;
+        committedDivision |=
+            elementwise.getKind() == wafer::InstrElementwiseKind::Div;
+      });
+  EXPECT_TRUE(committedReciprocal);
+  EXPECT_FALSE(committedDivision);
 }
 
 TEST_F(WholeVariantCoordinatorTest,

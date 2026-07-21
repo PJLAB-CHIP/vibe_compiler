@@ -3,7 +3,7 @@
 #ifndef WAFER_COMPILER_SCHEDULEDRANKFINALIZATION_H
 #define WAFER_COMPILER_SCHEDULEDRANKFINALIZATION_H
 
-#include "Wafer/Transforms/TensorProgramScheduling.h"
+#include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -15,14 +15,15 @@
 namespace wafer::compiler::detail {
 
 /// A rank candidate after function-boundary bufferization, SPM replanning, and
-/// cost recomputation. The reserved baseline must survive; failures of other
+/// exact cost closure. The reserved baseline must survive; failures of other
 /// alternatives only prune the finalized frontier.
 struct FinalizedRankCandidate {
   FinalizedRankCandidate(mlir::OwningOpRef<mlir::ModuleOp> module,
-                         int64_t estimatedTimePs, int64_t discoveryOrder,
+                         int64_t stableOrdinal,
+                         wafer::RankArtifactKind artifactKind,
                          bool reservedBaseline)
-      : module(std::move(module)), estimatedTimePs(estimatedTimePs),
-        discoveryOrder(discoveryOrder), reservedBaseline(reservedBaseline) {}
+      : module(std::move(module)), stableOrdinal(stableOrdinal),
+        artifactKind(artifactKind), reservedBaseline(reservedBaseline) {}
 
   FinalizedRankCandidate(FinalizedRankCandidate &&) = default;
   FinalizedRankCandidate &operator=(FinalizedRankCandidate &&) = default;
@@ -30,8 +31,8 @@ struct FinalizedRankCandidate {
   FinalizedRankCandidate &operator=(const FinalizedRankCandidate &) = delete;
 
   mlir::OwningOpRef<mlir::ModuleOp> module;
-  int64_t estimatedTimePs;
-  int64_t discoveryOrder;
+  int64_t stableOrdinal;
+  wafer::RankArtifactKind artifactKind;
   bool reservedBaseline;
 };
 
