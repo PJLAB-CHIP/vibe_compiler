@@ -1,7 +1,8 @@
 # MLIR-Native Physical-Dataflow Synthesis 实施计划
 
-状态：2026-07-20按“保留功能目标、删除平行语义协议”重写。动态状态只看
-`tasks/progress.md`；算法与IR合同由tasks/01、06-18拥有。
+状态：historical / completed（2026-07-21）。Tracking ID为Q32；最终审计见
+`tasks/archive/physical-dataflow-synthesis-completion-audit.md`。当前状态只看`tasks/progress.md`；
+算法与IR合同由tasks/01、06-18拥有。
 
 本计划交付的不是“两条rewrite演示”，而是当前target支持的implementation、tile、encoding、
 storage realization、transfer route、residency、buffering/order和communication alternatives的有界联合

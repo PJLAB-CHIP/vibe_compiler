@@ -638,7 +638,8 @@ IR重新统计，算法接入本身不算性能收益。
 
 ## 13. 实施顺序
 
-详细checkpoint见`tasks/plans/physical-dataflow-synthesis.md`。顺序固定为：
+已完成checkpoint与integrated checklist见`tasks/archive/physical-dataflow-synthesis.md`；最终fresh证据见
+`tasks/archive/physical-dataflow-synthesis-completion-audit.md`。施工顺序为：
 
 1. fresh重放当前baseline，确认现有candidate clone、finalization、all-rank coordinator和exact gates；
 2. Q32.I增加source OpInterface/external models、至少一个真实implementation alternative及第一批MLIR-backed IndexRelation；

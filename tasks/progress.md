@@ -1,23 +1,22 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-20
+更新时间：2026-07-21
 
 本文件只记录当前调度状态、前置关系和紧凑完成索引，不保存逐轮测试数字、实现复盘或历史工作日志。
 长期架构与pipeline contract以编号设计文档为准，详细完成证据与实施记录位于`tasks/archive/`，完整导航见
 `tasks/README.md`；历史变化由Git保留。
 
 当前发布基线：Q22 repo-owned target-call/SystemC model-only untimed functional-numeric链、Q28标准Llama-2 7B单block
-TP16 scale vertical、Q30 production vertical host性能收口及Q31多seed数值表征已经完成；数值纵向直接比较固定source CPU
+TP16 scale vertical、Q30 production vertical host性能收口、Q31多seed数值表征及Q32 MLIR-native bounded
+physical-dataflow synthesis已经完成；数值纵向直接比较固定source CPU
 expected，不再维护
 accepted-IR第二套解释器。SystemC受管依赖统一位于`third_party/systemc-model`。板端执行、板端数值相关、exact package执行、
 packet provenance和timing仍是独立later/external gate。
 
-共享SPM/DDR static memory packing已从保守greedy升级为默认MiniMalloc fixed-capacity canonical search，并用
-确定性宽松work budget、三态结果、独立placement validator和仅限资源耗尽的first-fit fallback闭合编译
-资源边界。当前直接进入通用physical-dataflow synthesis；后者先在现有candidate clone和exact gate骨架上完成真实
-implementation与dependent-tiling/resident纵向，再补齐encoding/view/route、reuse/movement、buffering/order、
-direct/ring/tree communication和typed target capability，最终以bounded actual-clone search统一选择并退役旧decision旁路。
-当前不建设平行provider/query/schema或独立语义求解器；删除机制不删除功能轴。
+共享SPM/DDR static memory packing已由默认MiniMalloc fixed-capacity canonical search闭合；Q32在该owner之上完成
+implementation、relation/tiling、encoding/view/route、residency、buffering/order、direct/ring/tree communication、
+current integer-domain variants和typed target capability的bounded actual-clone联合选择，并退役旧decision旁路。
+当前没有平行provider/query/schema或独立语义求解器；删除机制没有删除功能轴。
 
 ## 队列规则
 
@@ -69,27 +68,27 @@ explicit Count semantic/target/model evidence -> Q3.6 (independent typed writeba
 
 ## 当前实施队列
 
-Q32是当前唯一`doing` row；正在执行integrated completion audit。Q32 umbrella不会让后续row自动进入执行，later/external gate也不会
+当前没有`doing` row。Q32已完成integrated completion audit；该完成不会让后续row自动进入执行，later/external gate也不会
 自动进入主线。
 
-设计就绪边界：Q32.I/R/B/V/M/S/G采用MLIR interface、可重算analysis、actual-clone rewrite、DialectConversion、现有exact
+完成边界：Q32.I/R/B/V/M/S/G采用MLIR interface、可重算analysis、actual-clone rewrite、DialectConversion、现有exact
 gates和atomic commit；保留implementation、tile、encoding/view/route、storage/residency、buffering/order、communication、
 resource-aware selection及mapped/physical-fill/oriented target纵向，不再把provider/query/key、shadow frontier、版本化诊断
-schema或model/board qualification作为planner协议。下表状态表示实现/验证调度，不表示实现已经完成。board、hardware numeric、
+schema或model/board qualification作为planner协议。下表保存Q32各checkpoint的紧凑完成索引。board、hardware numeric、
 simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later / External Gates。
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q32.I | `mlir-native-implementation-relation-foundation` | `done` | Q29、Q28、Q30、Q31 | source OpInterface/external models已让generic division与target reciprocal两种真实implementation进入complete clone；MLIR Affine/Presburger/ValueBounds IndexRelation foundation与precision/failure/property gate闭合；重复DPS/Tiling语义的WaferTilingInterface已删除。证据见`tasks/archive/mlir-native-implementation-relation-foundation.md`。 | 01、06、08、10、13、16、18；`tasks/plans/physical-dataflow-synthesis.md` A/B |
+| Q32.I | `mlir-native-implementation-relation-foundation` | `done` | Q29、Q28、Q30、Q31 | source OpInterface/external models已让generic division与target reciprocal两种真实implementation进入complete clone；MLIR Affine/Presburger/ValueBounds IndexRelation foundation与precision/failure/property gate闭合；重复DPS/Tiling语义的WaferTilingInterface已删除。证据见`tasks/archive/mlir-native-implementation-relation-foundation.md`。 | 01、06、08、10、13、16、18；`tasks/archive/physical-dataflow-synthesis.md` A/B |
 | Q32.R | `physical-relation-realization` | `done` | Q32.I | rich IndexRelation查询、physical encoding attr interface、TransferRealizability、destination-style StorageLoad和relation-backed resident handoff已闭合；非7B source删除真实中间WDMA/RDMA，标准7B source选择26条handoff并通过fresh TP16 package/SystemC/PyTorch gate。证据见`tasks/archive/physical-relation-realization.md`。 | 06-11、16、18；同计划C |
 | Q32.B | `physical-dataflow-test-seam-vertical` | `done` | Q32.R、Q34 | compiler-private production-shaped seam已让conservative spill唯一reserved baseline与spill/resident optimized actual clones共同进入rank frontier；rank只做SPM，all-rank disposable tuple重做DDR及全部late gate，1/16-rank与标准7B source-to-package/SystemC/PyTorch及determinism/atomic gate通过。证据见`tasks/archive/physical-dataflow-test-seam-vertical.md`。 | 01、06-18；同计划D |
 | Q32.V | `typed-target-capability-vertical` | `done` | Q32.B | mapped DMA/WDMA双端root-relative offset与descriptor、physical-footprint fill的padding/tail/bitpacked domain及oriented GEMM source/Tile/Instr/v2 TargetCall/CRT/formal/SystemC纵向已闭合；v1 ABI保持不变，package schema因无真实逐row consumer保持v3。证据见`tasks/archive/typed-target-capability-vertical.md`。 | 06、08、10、11、14-18；同计划E |
 | Q32.M | `physical-mechanism-choice-closure` | `done` | Q32.V | shared candidate owner已从verified source独立产生recompute、static LICM和integer modular reassociation/tree/distribution/factorization actual clones；partial fanout保留DDR spill并增加maximal-compatible SPM SSA result，spill/resident与movement-first ready-order分别形成完整rank alternatives；communication从同一tile parent产生ring/ring、direct/ring和ring/tree完整clone并逐个重跑Instr/SPM/DDR/verifier/cost。layout/resource与collective consumers已迁到typed op、value-associated standard effects、custom resources和SSA token/fence，重复layout/resource/collective-info/verifyInstructionContract合同及public communication selector已删除。证据见`tasks/archive/physical-mechanism-choice-closure.md`。 | 05-13、16、18；同计划F |
 | Q32.S | `bounded-joint-physical-dataflow-selection` | `done` | Q32.M | source/recipe/scope-policy与spill/resident/ready-order均以actual clone有界组合；reserved baseline独立于source 16、recipe 12、rank evaluation 64、rank frontier 256、whole tuple 64+64及whole Pareto 16等optimization caps。validated placement/high-water及final DDR/SPM/NoC/collective/compute/instruction/event/dataflow facts进入whole-card exact Pareto与target-owned static policy；最终winner不读scalar time或producer计数。implementation、fusion/share/recompute、LICM、各current integer variant、fixed-Cx direct mapped route、resident reuse、ready-order及direct/tree collective均有production-shaped whole winner。证据见`tasks/archive/bounded-joint-physical-dataflow-selection.md`。 | 06-13、16、18；同计划G |
 | Q32.G | `physical-dataflow-production-cutover` | `done` | Q32.S | 默认`wafer-compile`已成为唯一production decision owner并原子提交whole-variant winner；旧public scheduling pass/pipeline、scope-prefix、layout/demand影子结构、communication selector/options、scalar-time winner和discovery recovery已删除。rank frontier以semantic generation与physical artifact kind双键约束all-rank correspondence，默认source/bulk SystemC数值纵向通过。证据见`tasks/archive/physical-dataflow-production-cutover.md`。 | 01、06-18；同计划H |
-| Q32 | `physical-dataflow-synthesis` | `doing` | Q32.G | current功能面包含implementation、relation/tiling、encoding/view/route、GEMM/batched-GEMM fixed-Cx-NCx absorption、storage/residency、share-vs-recompute、static loop-invariant hoist、全部Q32.M current numeric variants、buffering/resource-aware ready-order、communication、resource-aware selection及Q32.V typed capability；每个choice producer具备production IR mutation、下游exact consumer、whole-variant winner和atomic bundle commit证据，无选择分支的required closure mutation保留在committed winner。当前重放rank-count=1/16、Q20/Q21、Q28 fixed-seed/Q31 held-out 7B PyTorch/SystemC和全部SPM/DDR/event/transport/instruction/ABI/package/atomic gates。不含floating reassociation/tree、generic online reduction、non-GEMM FMA contraction、超出current integer-domain exact/modular子集的algebraic distribution/factorization、board性能或timing。 | 01、06-18；`tasks/plans/physical-dataflow-synthesis.md` completion audit |
+| Q32 | `physical-dataflow-synthesis` | `done` | Q32.G | current功能面包含implementation、relation/tiling、encoding/view/route、GEMM/batched-GEMM fixed-Cx-NCx absorption、storage/residency、share-vs-recompute、static loop-invariant hoist、全部Q32.M current numeric variants、buffering/resource-aware ready-order、communication、resource-aware selection及Q32.V typed capability；每个choice producer具备production IR mutation、下游exact consumer、whole-variant winner和atomic bundle commit证据，无选择分支的required closure mutation保留在committed winner。rank-count=1/16、Q20/Q21、Q28 fixed-seed/Q31 held-out 7B PyTorch/SystemC和全部SPM/DDR/event/transport/instruction/ABI/package/atomic gates已fresh通过。不含floating reassociation/tree、generic online reduction、non-GEMM FMA contraction、超出current integer-domain exact/modular子集的algebraic distribution/factorization、board性能或timing。证据见`tasks/archive/physical-dataflow-synthesis-completion-audit.md`。 | 01、06-18；`tasks/archive/physical-dataflow-synthesis.md` completion audit |
 
-下列later/external gate不会因Q32.I进入`next`自动进入主线。
+下列later/external gate不会因Q32完成自动进入主线。
 
 ## Later / External Gates
 
@@ -153,9 +152,9 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 ## 实施计划入口
 
-- Active task：Q32.S `bounded-joint-physical-dataflow-selection`，计划见
-  `tasks/plans/physical-dataflow-synthesis.md`。
-- Completed predecessor：Q32.M `physical-mechanism-choice-closure`，证据见
-  `tasks/archive/physical-mechanism-choice-closure.md`。
+- Active task：无；Later / External Gates不会自动进入执行。
+- Completed task：Q32 `physical-dataflow-synthesis`，完成审计见
+  `tasks/archive/physical-dataflow-synthesis-completion-audit.md`，实施计划见
+  `tasks/archive/physical-dataflow-synthesis.md`。
 - 新实施计划：`tasks/plans/`。
 - 已完成计划和历史证据：`tasks/README.md`的“实施计划导航”和“归档文档”。

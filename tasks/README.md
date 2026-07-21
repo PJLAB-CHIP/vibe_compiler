@@ -54,17 +54,11 @@
 
 ## 实施计划导航
 
-当前`doing`是Q32 integrated completion audit；Q32.G production cutover与旧decision路径删除已归档为
-`tasks/archive/physical-dataflow-production-cutover.md`，Q32.S bounded joint composition与resource-aware
-selection已归档为`tasks/archive/bounded-joint-physical-dataflow-selection.md`，Q32.M mandatory mechanism与
-choice-producer closure已归档为`tasks/archive/physical-mechanism-choice-closure.md`，Q32.V typed target-capability vertical已归档为
-`tasks/archive/typed-target-capability-vertical.md`，Q32.B production-shaped candidate/all-rank vertical已归档为
-`tasks/archive/physical-dataflow-test-seam-vertical.md`，Q32.R relation/physical realization已归档为
-`tasks/archive/physical-relation-realization.md`，Q32.I MLIR-native implementation/relation foundation已归档为
-`tasks/archive/mlir-native-implementation-relation-foundation.md`。Q32通用
-physical-dataflow synthesis实施计划为`tasks/plans/physical-dataflow-synthesis.md`。Q34 static memory packing已完成并归档为
-`tasks/archive/static-memory-packing.md`。这些计划只拆
-施工checkpoint和验证/删除门槛；动态blocked-by只看progress，算法与IR合同仍由01、05、06-18编号设计文档拥有。
+当前没有`doing`任务。Q32 integrated completion audit已归档为
+`tasks/archive/physical-dataflow-synthesis-completion-audit.md`，完成后的实施计划归档为
+`tasks/archive/physical-dataflow-synthesis.md`；Q32.G/S/M/V/B/R/I各checkpoint仍由对应独立归档记录保存详细变更和
+验证证据。Q34 static memory packing已归档为`tasks/archive/static-memory-packing.md`。这些计划和记录只保存施工checkpoint、
+验证/删除门槛与历史证据；动态blocked-by只看progress，算法与IR合同仍由01、05、06-18编号设计文档拥有。
 
 已完成Q31标准7B单block多seed数值表征和source/model gate收紧归档为
 `tasks/archive/llama-block-numeric-characterization.md`；Q30标准7B单block production vertical性能收口归档为
@@ -95,6 +89,8 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/physical-dataflow-synthesis-completion-audit.md` | 已完成Q32的七checkpoint证据映射、双配置全量门禁、fixed/held-out 7B scale重放、单一production owner及剩余边界审计 |
+| `tasks/archive/physical-dataflow-synthesis.md` | 已完成Q32 MLIR-native bounded physical-dataflow synthesis的施工checkpoint、hard-cap与integrated completion checklist |
 | `tasks/archive/physical-dataflow-production-cutover.md` | 已完成Q32.G默认production winner cutover、旧decision surface删除、all-rank双键correspondence及source/bulk数值回归记录 |
 | `tasks/archive/bounded-joint-physical-dataflow-selection.md` | 已完成Q32.S的actual-clone有界联合frontier、reserved baseline、validated whole-card exact cost、target static policy及逐producer whole-winner记录 |
 | `tasks/archive/physical-mechanism-choice-closure.md` | 已完成Q32.M的actual-clone recompute/LICM/integer algebra、partial fanout、spill/resident/ready-order、communication alternatives及重复layout/resource/collective/instruction合同删除记录 |
