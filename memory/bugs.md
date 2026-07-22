@@ -799,3 +799,35 @@
 - 防复发：coordinator负例用rank 0 resident、其它rank resident-ready，要求回到完整reserved spill tuple；frontier并行
   determinism同时比较ordinal与artifact kind；真实16-rank source必须执行SystemC完整tensor comparator，不能以IR verifier、
   rank 0 dump或package发布成功代替数值证明。
+
+## 2026-07-21 TX module entry不是host风格的direct scalar ABI
+
+- 现象：target LLVM和ELF entry都生成`void(i64, i64, ...)`，host runtime却按public launch API传一块packed argument
+  buffer；module能load/resolve/launch，但device entry把参数块地址当第一个DDR地址，输出保持未写或触发后续device error。
+- 根因：把compiler内部fixed slot ABI和TX loader publication ABI当成同一函数类型。typed slots只固定内容和顺序，不能证明
+  vendor loader会把每个slot拆成独立RISC-V argument register。
+- 修复模式：owner-backed LLVM module继续保留`void(i64...)`供legality/model消费；device publication只在clone中把body
+  internalize，并生成原symbol的`void(ptr slots)` trampoline逐槽load i64后调用body。runtime按同一ordered slots构造dense
+  uint64参数块并传exact byte count；link前验证body signature，link后反汇编/readback与真实board gate共同锁定。
+- 防复发：不能从txLaunchKernel的C++形参形式推断device function prototype；先对同版本vendor qualification module和host caller做
+  双侧ABI核对。module load、symbol resolve和零退出码都不能替代非零输入的完整output comparison。
+
+## 2026-07-21 dynamic-module relocation失败可能伪装成Kcore OOM
+
+- 现象：一个vendor预置operator module可在host侧load、resolve和launch，但后续copyback报告Kcore `Out of memory`；错误后继续
+  unload/free又全部失败，形成“内存耗尽并且cleanup失效”的级联假象。同一重启周期里混入runtime reset、无完整比较的sample和
+  多次cleanup后，再拿后续Wafer结果归因，无法建立可靠因果链。
+- 根因：该module有13个undefined symbol，其中7个不在与宿主boot-source闭合的匹配SDK Kcore ELF
+  `__rtmsym_*` export surface；Kcore relocation失败被
+  loader统一映射为数值3，host再显示为`Out of memory`，并非已证明的heap耗尽。宿主boot-source Kcore payload与compile SDK
+  ELF提取payload字节级一致，driver cached version/status为1.0.1/on；没有device-RAM dump，不能据此声称运行中payload byte
+  identity。Wafer add module仅依赖匹配SDK export surface中闭合的`csi_kernel_malloc/free`，随后完整数值执行通过。legacy
+  `libtx8_runtime`确实对V5.6 public provider缺旧符号，但它只是另一条tutorial路径不兼容，不是`libhpgr`主线失败的根因。
+- 修复模式：执行dynamic module前，先把宿主boot-source firmware payload、cached runtime version/status与对应SDK ELF闭合，
+  再按module全部UND对Kcore `__rtmsym_*`做all-and-only检查；只有静态闭合的candidate才允许进入一次性runner。runner必须使用非平凡输入、完整CPU
+  expected和逐API返回值，首个provider错误fsync诊断后立即结束进程，不reset、不power、不retry，也不在poisoned context上cleanup。
+- 防复发：vendor路径、sample零退出码、host load/resolve/launch success和错误字符串都不是qualification。provider必须暴露sticky
+  context disposition；只有明确usable的失败才逆序cleanup，poisoned首错后copyback/unload/free/error-string调用全部禁止。
+  不把driver unbind/rebind当常规恢复手段；涉及reset、power、driver恢复或整机重启时必须作为invocation外显式动作单独授权。
+  构建board adapter和授权live test必须分成两个默认关闭边界；普通CTest不得触卡。执行gate还应精确匹配public runtime
+  library digest、runtime API version、PCI/device/tile inventory，并在首个allocation前以当前free bytes验证aggregate demand和reserve。

@@ -181,6 +181,10 @@ PACKAGE_MANIFEST_SOURCES = (
     "PackageManifestVerification.cpp",
     "RuntimeSessionPreflight.cpp",
 )
+BOARD_RUNTIME_SOURCES = (
+    "BoardRuntime.cpp",
+)
+WAFER_RUN_SOURCES = ("TxBoardRuntime.cpp", "wafer-run.cpp")
 STABLEHLO_NORMALIZATION_SOURCES = (
     "ConstantTensorFolding.cpp",
     "NormalizeStablehloCollectives.cpp",
@@ -1611,7 +1615,10 @@ def check_compiler_artifact_package_owners(root: Path, errors: list[str]) -> Non
     runtime_cmake = runtime_root / "CMakeLists.txt"
     runtime_text = read_required(runtime_cmake, errors)
     check_exact_sources(
-        runtime_root, PACKAGE_MANIFEST_SOURCES, "package manifest", errors
+        runtime_root,
+        PACKAGE_MANIFEST_SOURCES + BOARD_RUNTIME_SOURCES,
+        "runtime",
+        errors,
     )
     check_private_header(
         runtime_root / "PackageManifestInternal.h",
@@ -1624,14 +1631,14 @@ def check_compiler_artifact_package_owners(root: Path, errors: list[str]) -> Non
     )
     check_cmake_sources(
         body=runtime_body,
-        required=PACKAGE_MANIFEST_SOURCES,
+        required=PACKAGE_MANIFEST_SOURCES + ("BoardRuntime.cpp",),
         cmake_path=runtime_cmake,
         target="WaferRuntime",
         errors=errors,
     )
     check_cmake_source_ownership(
         text=runtime_text,
-        required=PACKAGE_MANIFEST_SOURCES,
+        required=PACKAGE_MANIFEST_SOURCES + BOARD_RUNTIME_SOURCES,
         cmake_path=runtime_cmake,
         target="WaferRuntime",
         errors=errors,
@@ -1650,9 +1657,34 @@ def check_compiler_artifact_package_owners(root: Path, errors: list[str]) -> Non
             compiler_root / "TargetArtifactInternal.h",
         ]
         + [runtime_root / name for name in PACKAGE_MANIFEST_SOURCES]
+        + [runtime_root / name for name in BOARD_RUNTIME_SOURCES]
         + [runtime_root / "PackageManifestInternal.h"],
         "compiler/artifact/package",
         errors,
+    )
+
+    runner_root = root / "tools/wafer-run"
+    runner_cmake = runner_root / "CMakeLists.txt"
+    runner_text = read_required(runner_cmake, errors)
+    check_exact_sources(runner_root, WAFER_RUN_SOURCES, "wafer-run", errors)
+    runner_body = cmake_target_body(
+        runner_text, "add_executable", "wafer-run", runner_cmake, errors
+    )
+    check_cmake_sources(
+        body=runner_body,
+        required=("wafer-run.cpp",),
+        cmake_path=runner_cmake,
+        target="wafer-run",
+        errors=errors,
+    )
+    if "target_sources(wafer-run PRIVATE TxBoardRuntime.cpp)" not in runner_text:
+        fail(errors, "wafer-run must own the optional TX board adapter")
+    check_cmake_source_ownership(
+        text=runner_text,
+        required=WAFER_RUN_SOURCES,
+        cmake_path=runner_cmake,
+        target="wafer-run",
+        errors=errors,
     )
 
 

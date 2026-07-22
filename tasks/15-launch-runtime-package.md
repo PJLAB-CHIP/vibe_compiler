@@ -273,11 +273,12 @@ all-rank invocation/session，将现有verified entries和bindings组成共同su
 Q22.C board numeric correlation是独立verification evidence，不是第四个runtime/artifact执行边界，也不消费或改写
 package；可选packet/MMIO correlation同样只增加packet provenance claim。
 
-### 8.1 Deferred All-Rank Provider Session Contract
+### 8.1 All-Rank Provider Session Contract
 
-该合同只在Q22.E进入实现时materialize。其默认输入是Q32 integrated audit原样冻结的current schema-v3
-package；未来wire或target ABI扩展只有先独立完成compiler、package、runtime和model readback，才能作为新的显式输入。
-Q22.E本身不触发manifest迁移。当前Q18完成状态仍止于per-entry pure no-card plan。
+该owner-backed all-rank session合同首先在Q6.B推进rank-count=16真实board lifecycle时materialize；Q22.E未来
+exact-module model provider复用同一session语义，但保持provider backend和evidence独立。其默认输入是Q32 integrated
+audit原样冻结的current schema-v3 package；未来wire或target ABI扩展只有先独立完成compiler、package、runtime和model
+readback，才能作为新的显式输入。Q22.E本身不触发manifest迁移。当前Q18完成状态仍止于per-entry pure no-card plan。
 
 ```text
 Pipeline position:
@@ -287,8 +288,9 @@ Pipeline position:
   按ResourceId和global/local slice闭合的all-rank invocation bindings，以及已验证的typed provider environment。
 - Current stage responsibility:
   先对完整rank domain做side-effect-free capability/binding preflight，再建立provider-owned context、allocation/import、
-  H2D、exact module load/resolve、共同submit/progress/wait/status、D2H和逆序cleanup。Direct DTE ranks属于一个执行域，
-  不能从per-entry vector顺序恢复progress。
+  H2D、exact module load/resolve、共同submit/progress/wait/status和D2H。成功或cleanup-safe失败才逆序cleanup；任一rank使
+  context poisoned后整个session立即quarantine，不再调用低层provider API。Direct DTE ranks属于一个执行域，不能从
+  per-entry vector顺序恢复progress。
 - Output artifact / IR:
   owner-backed invocation-local provider session/result，拥有all-rank runtime handles、terminal/error状态、typed outputs
   和cleanup state；它不序列化、不进入package或compiler artifact。失败不产生partial successful result。
@@ -302,8 +304,56 @@ Pipeline position:
   恢复transport identity。
 - Completion gate:
   rank-count=1/16真实package的all-and-only bindings、entries和modules均经历完整provider lifecycle；每阶段failure
-  injection保证descendant suppression、wait/status失败无copyback、资源逆序cleanup，任一rank失败无partial result。
+  injection保证descendant suppression、wait/status失败无copyback、cleanup-safe失败逆序释放、poisoned失败不再调用低层
+  provider API，任一rank失败无partial result。
 ```
+
+### 8.2 Q6.B TX Board RuntimeProvider Contract
+
+Q6.B在configured TX board可用后实现第三层`RuntimeProvider`，不改变Q18 schema-v3 package或compiler artifact。
+它只接受同一typed verifier重新加载的fresh package、显式device identity和按`ResourceId`绑定的host buffers；文件名、
+resource name、参数顺序和测试case不能恢复binding语义。entry slot顺序已经由manifest中的typed
+`PackageABISlotBinding`唯一拥有，provider只机械构造对应的64-bit device-address参数块。
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  Q0.L/Q21之后由production wafer-compile fresh发布并重新验证的schema-v3 package、typed RuntimeEnvironment、
+  按ResourceId all-and-only绑定的invocation buffers和configured TX board inventory。
+- Current stage responsibility:
+  在任何provider调用前完成package/binding静态preflight；显式选择device并读取只读inventory后，在allocation、load和launch
+  前完成live environment identity、public runtime library digest及aggregate free-memory admission。随后通过TX runtime实际
+  执行allocation、必要H2D、exact ELF load、entry resolve、launch、trusted completion/status、D2H和逆序cleanup。
+  任一阶段失败抑制未开始的后继；只有成功路径及provider明确报告context仍usable的失败才逆序释放已取得资源。
+  provider报告sticky poisoned后立即quarantine，禁止copyback、unload、free及其它低层TX API，不自动reset、power或retry。
+- Output artifact / IR:
+  invocation-local board result，包含按ResourceId索引的完整host-visible output bytes、typed stage outcome及所选
+  entry/module/device/public-runtime identity evidence；失败的typed error另携带provider context disposition。两者都不
+  序列化进package，也不回写compiler IR。
+- Downstream consumer:
+  tasks/16 Q6.B board gate；完成后由Q22.C消费同package的board输出做model/board numeric correlation，由Q9消费独立
+  correctness通过后的profile evidence做cost calibration。
+- User-level driver / named pipeline:
+  board-capable wafer-run从verified package、显式qualified device和ResourceId绑定建立provider session；
+  `WAFER_ENABLE_BOARD_RUNTIME`只构建能力，不授权live execution。hardware CTest还必须通过默认关闭的独立配置开关注册，
+  并在执行时显式设置`WAFER_EXECUTE_HARDWARE_TESTS=1`；默认CTest不得触卡。
+- Explicit non-goals:
+  不在runtime重新planning或选择variant/route/FSM，不修改manifest，不从名字或路径猜ABI，不把单次board执行升级为
+  packet provenance、numeric profile、performance或timing calibration，不让基础compiler/runtime强依赖vendor SDK。
+- Completion gate:
+  fresh rank-count=1/16 package的all-and-only resources/modules/entries经历真实TX lifecycle；完整输出与独立CPU expected
+  比较，重复执行一致；failure injection分别覆盖cleanup-safe逆序释放与poisoned首错即停。只有board CTest实际注册并执行
+  成功且确认未skip才能关闭Q6.B，unsupported/skipped/no-card/fake/model均不计完成。
+```
+
+board能力用独立CMake feature配置。feature开启时必须在configure阶段找到root-contained vendor public header和提供完整所需
+public symbols的runtime library，否则configuration fail；board路径先从同一open fd完成digest qualification，再通过
+`/proc/self/fd`加载该inode并逐symbol核对provider dev/inode，避免path hash/load竞态，no-card路径不加载vendor DSO。
+live hardware CTest使用另一默认关闭的开关和执行时arm。provider不能把SDK handle、raw device address或caller
+buffer pointer放进manifest、IR或长期side table。`getContextState()`是invocation-local、无副作用且不进入TX runtime/device的
+cached disposition读取；poison后禁止的是所有低层TX API和provider side effect。board入口是one-shot process：显式runtime
+lifecycle和诊断flush完成后以`std::_Exit`结束，不执行未资格化的vendor DSO finalizer；`dlopen`后的setup失败同样走该出口，
+不能以`dlclose`补偿。这不替代module/allocation显式cleanup。
 
 最小API语义：
 

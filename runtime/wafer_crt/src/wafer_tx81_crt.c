@@ -11,6 +11,29 @@
 
 extern int8_t *get_spm_memory_mapping(uint64_t offset);
 
+/*
+ * The vendored instruction support archives use RT-Thread's one-argument heap
+ * API, while the TX8 Kcore loader exports the scoped CSI heap API.  Keep that
+ * compatibility boundary inside the target CRT.  V5.6 dynamic modules use
+ * scope 0 for the local-tile DDR heap (the same a0 value used by the vendor
+ * TsmNew* call sites); SPM and RTOS scopes are different allocation domains.
+ */
+extern void *csi_kernel_malloc(uint8_t scope, int32_t size, void *caller);
+extern void csi_kernel_free(uint8_t scope, void *ptr, void *caller);
+
+enum { WAFER_TX81_LOCAL_TILE_DDR_HEAP_SCOPE = 0 };
+
+void *rt_malloc(size_t size) {
+  if (size > INT32_MAX)
+    return NULL;
+  return csi_kernel_malloc(WAFER_TX81_LOCAL_TILE_DDR_HEAP_SCOPE, (int32_t)size,
+                           NULL);
+}
+
+void rt_free(void *ptr) {
+  csi_kernel_free(WAFER_TX81_LOCAL_TILE_DDR_HEAP_SCOPE, ptr, NULL);
+}
+
 typedef struct {
   uint32_t stride;
   uint32_t iteration;
@@ -35,8 +58,8 @@ extern void direct_sync_wait(uint32_t tile_this, uint32_t tile_other);
 extern void *direct_fsm_monitor_init(int fsm_id, uintptr_t addr,
                                      int packet_size, int packet_cnt);
 extern int direct_fsm_monitor_deinit(void *fsm_hd);
-extern void direct_fsm_monitor_receive(uint16_t tile_this,
-                                       uint16_t tile_other, void *fsm_hd);
+extern void direct_fsm_monitor_receive(uint16_t tile_this, uint16_t tile_other,
+                                       void *fsm_hd);
 extern void *direct_dte_attach(uint32_t is_high_performance);
 extern int direct_dte_release(void *dte_node);
 extern int direct_dte_send_async(WaferDirectDTESendInfo *dte_info);
@@ -81,10 +104,12 @@ void wafer_tx81_direct_dte_begin(uint64_t status_addr, uint32_t rank_count) {
   direct_sync_init((int)rank_count);
 }
 
-uint64_t wafer_tx81_direct_dte_send_prepare(
-    uint64_t src, uint64_t remote_dst, uint32_t byte_count,
-    uint32_t local_tile, uint32_t remote_tile, uint32_t remote_fsm_id,
-    uint32_t is_high_performance) {
+uint64_t wafer_tx81_direct_dte_send_prepare(uint64_t src, uint64_t remote_dst,
+                                            uint32_t byte_count,
+                                            uint32_t local_tile,
+                                            uint32_t remote_tile,
+                                            uint32_t remote_fsm_id,
+                                            uint32_t is_high_performance) {
   if (wafer_direct_dte_sender.active || remote_fsm_id >= 4 ||
       local_tile > UINT16_MAX || remote_tile > UINT16_MAX) {
     wafer_direct_dte_set_error();
@@ -104,9 +129,10 @@ uint64_t wafer_tx81_direct_dte_send_prepare(
   return WAFER_DIRECT_DTE_SEND_EVENT;
 }
 
-uint64_t wafer_tx81_direct_dte_recv_prepare(
-    uint64_t dst, uint32_t byte_count, uint32_t local_tile,
-    uint32_t remote_tile, uint32_t local_fsm_id) {
+uint64_t wafer_tx81_direct_dte_recv_prepare(uint64_t dst, uint32_t byte_count,
+                                            uint32_t local_tile,
+                                            uint32_t remote_tile,
+                                            uint32_t local_fsm_id) {
   if (local_fsm_id >= WAFER_DIRECT_DTE_MAX_RECEIVERS ||
       local_tile > UINT16_MAX || remote_tile > UINT16_MAX ||
       byte_count > INT32_MAX) {
@@ -119,8 +145,8 @@ uint64_t wafer_tx81_direct_dte_recv_prepare(
     wafer_direct_dte_set_error();
     return 0;
   }
-  receiver->handle = direct_fsm_monitor_init(
-      (int)local_fsm_id, (uintptr_t)dst, (int)byte_count, 1);
+  receiver->handle = direct_fsm_monitor_init((int)local_fsm_id, (uintptr_t)dst,
+                                             (int)byte_count, 1);
   if (!receiver->handle) {
     wafer_direct_dte_set_error();
     return 0;
@@ -153,11 +179,10 @@ void wafer_tx81_direct_dte_wait(uint64_t event) {
   }
 
   if (event >= WAFER_DIRECT_DTE_RECV_EVENT_BASE &&
-      event < WAFER_DIRECT_DTE_RECV_EVENT_BASE +
-                  WAFER_DIRECT_DTE_MAX_RECEIVERS) {
+      event <
+          WAFER_DIRECT_DTE_RECV_EVENT_BASE + WAFER_DIRECT_DTE_MAX_RECEIVERS) {
     uint32_t fsm_id = (uint32_t)(event - WAFER_DIRECT_DTE_RECV_EVENT_BASE);
-    WaferDirectDTEReceiverState *receiver =
-        &wafer_direct_dte_receivers[fsm_id];
+    WaferDirectDTEReceiverState *receiver = &wafer_direct_dte_receivers[fsm_id];
     if (!receiver->active) {
       wafer_direct_dte_set_error();
       return;
@@ -187,28 +212,23 @@ void wafer_tx81_direct_dte_finish(void) {
     *wafer_direct_dte_status = WAFER_TX81_DIRECT_DTE_STATUS_SUCCESS;
 }
 
-static Data_Format wafer_format(uint32_t format) {
-  return (Data_Format)format;
-}
+static Data_Format wafer_format(uint32_t format) { return (Data_Format)format; }
 
 static RND_MODE wafer_rounding(uint32_t rounding_mode) {
   return (RND_MODE)rounding_mode;
 }
 
-static Data_Shape wafer_shape4(uint32_t n, uint32_t h, uint32_t w,
-                               uint32_t c) {
+static Data_Shape wafer_shape4(uint32_t n, uint32_t h, uint32_t w, uint32_t c) {
   Data_Shape shape = {(uint16_t)n, (uint16_t)h, (uint16_t)w, (uint16_t)c};
   return shape;
 }
 
-static St_StrideIteration wafer_stride_iteration(uint32_t stride0,
-                                                 uint32_t stride1,
-                                                 uint32_t stride2,
-                                                 uint32_t iteration0,
-                                                 uint32_t iteration1,
-                                                 uint32_t iteration2) {
-  St_StrideIteration si = {stride0, iteration0, stride1,
-                           iteration1, stride2, iteration2};
+static St_StrideIteration
+wafer_stride_iteration(uint32_t stride0, uint32_t stride1, uint32_t stride2,
+                       uint32_t iteration0, uint32_t iteration1,
+                       uint32_t iteration2) {
+  St_StrideIteration si = {stride0,    iteration0, stride1,
+                           iteration1, stride2,    iteration2};
   return si;
 }
 
@@ -265,7 +285,9 @@ static void wafer_execute_ct(CT_Param *instr) { (void)TsmExecute(instr); }
 static void wafer_execute_ne(TsmNeInstr *instr) { (void)TsmExecute(instr); }
 static void wafer_execute_rdma(TsmRdmaInstr *instr) { (void)TsmExecute(instr); }
 static void wafer_execute_wdma(TsmWdmaInstr *instr) { (void)TsmExecute(instr); }
-static void wafer_execute_td(TsmDataMoveInstr *instr) { (void)TsmExecute(instr); }
+static void wafer_execute_td(TsmDataMoveInstr *instr) {
+  (void)TsmExecute(instr);
+}
 
 static uint64_t wafer_spm_mapped_addr(uint64_t offset) {
   return (uint64_t)(uintptr_t)get_spm_memory_mapping(offset);
@@ -300,9 +322,8 @@ static void wafer_store_value(uint64_t addr, uint32_t format, uint64_t value) {
 
 void wafer_tx81_rdma(uint64_t src, uint64_t dst, uint32_t byte_count,
                      uint32_t inner_bytes, uint32_t stride0, uint32_t stride1,
-                     uint32_t stride2, uint32_t iteration0,
-                     uint32_t iteration1, uint32_t iteration2,
-                     uint32_t format) {
+                     uint32_t stride2, uint32_t iteration0, uint32_t iteration1,
+                     uint32_t iteration2, uint32_t format) {
   uint32_t inner_elements = 0;
   (void)byte_count;
   if (!wafer_elem_count_from_bytes(inner_bytes, format, &inner_elements))
@@ -318,9 +339,8 @@ void wafer_tx81_rdma(uint64_t src, uint64_t dst, uint32_t byte_count,
 
 void wafer_tx81_wdma(uint64_t src, uint64_t dst, uint32_t byte_count,
                      uint32_t inner_bytes, uint32_t stride0, uint32_t stride1,
-                     uint32_t stride2, uint32_t iteration0,
-                     uint32_t iteration1, uint32_t iteration2,
-                     uint32_t format) {
+                     uint32_t stride2, uint32_t iteration0, uint32_t iteration1,
+                     uint32_t iteration2, uint32_t format) {
   uint32_t inner_elements = 0;
   (void)byte_count;
   if (!wafer_elem_count_from_bytes(inner_bytes, format, &inner_elements))
@@ -334,13 +354,14 @@ void wafer_tx81_wdma(uint64_t src, uint64_t dst, uint32_t byte_count,
   TsmDeleteWdma(wdma);
 }
 
-void wafer_tx81_gather_scatter(
-    uint64_t src, uint64_t dst, uint32_t byte_count, uint32_t inner_bytes,
-    uint32_t src_stride0, uint32_t src_stride1, uint32_t src_stride2,
-    uint32_t src_iteration0, uint32_t src_iteration1,
-    uint32_t src_iteration2, uint32_t dst_stride0, uint32_t dst_stride1,
-    uint32_t dst_stride2, uint32_t dst_iteration0,
-    uint32_t dst_iteration1, uint32_t dst_iteration2) {
+void wafer_tx81_gather_scatter(uint64_t src, uint64_t dst, uint32_t byte_count,
+                               uint32_t inner_bytes, uint32_t src_stride0,
+                               uint32_t src_stride1, uint32_t src_stride2,
+                               uint32_t src_iteration0, uint32_t src_iteration1,
+                               uint32_t src_iteration2, uint32_t dst_stride0,
+                               uint32_t dst_stride1, uint32_t dst_stride2,
+                               uint32_t dst_iteration0, uint32_t dst_iteration1,
+                               uint32_t dst_iteration2) {
   (void)byte_count;
   TsmDataMoveInstr instr = {0};
   TsmDataMove *move = TsmNewDataMove();
@@ -360,8 +381,7 @@ void wafer_tx81_memset(uint64_t dst, uint32_t value, uint32_t elem_count,
   TsmDataMoveInstr instr = {0};
   TsmPeripheral *peripheral = TsmNewPeripheral();
   St_StrideIteration si = {0};
-  peripheral->Memset(&instr, dst, value, elem_count, &si,
-                     wafer_format(format));
+  peripheral->Memset(&instr, dst, value, elem_count, &si, wafer_format(format));
   wafer_execute_td(&instr);
   TsmDeletePeripheral(peripheral);
 }
@@ -384,86 +404,86 @@ void wafer_tx81_mask_move(uint64_t src, uint32_t mask, uint64_t dst,
   TsmDeleteMaskDataMove(move);
 }
 
-#define WAFER_DEFINE_ARITH_UNARY(SYMBOL, METHOD)                              \
+#define WAFER_DEFINE_ARITH_UNARY(SYMBOL, METHOD)                               \
   void SYMBOL(uint64_t src, uint64_t dst, uint32_t elem_count,                 \
               uint32_t format) {                                               \
-    TsmArithInstr instr = {0};                                                  \
-    TsmArith *arith = TsmNewArith();                                            \
-    arith->METHOD(&instr, src, dst, elem_count, wafer_format(format));          \
-    wafer_execute_ct(&instr);                                                   \
-    TsmDeleteArith(arith);                                                      \
+    TsmArithInstr instr = {0};                                                 \
+    TsmArith *arith = TsmNewArith();                                           \
+    arith->METHOD(&instr, src, dst, elem_count, wafer_format(format));         \
+    wafer_execute_ct(&instr);                                                  \
+    TsmDeleteArith(arith);                                                     \
   }
 
-#define WAFER_DEFINE_ARITH_BINARY(SYMBOL, METHOD)                             \
-  void SYMBOL(uint64_t lhs, uint64_t rhs, uint64_t dst,                        \
-              uint32_t elem_count, uint32_t format) {                          \
-    TsmArithInstr instr = {0};                                                  \
-    TsmArith *arith = TsmNewArith();                                            \
-    arith->METHOD(&instr, lhs, rhs, dst, elem_count, RND_NEAREST_EVEN,          \
-                  wafer_format(format));                                        \
-    wafer_execute_ct(&instr);                                                   \
-    TsmDeleteArith(arith);                                                      \
+#define WAFER_DEFINE_ARITH_BINARY(SYMBOL, METHOD)                              \
+  void SYMBOL(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t elem_count,   \
+              uint32_t format) {                                               \
+    TsmArithInstr instr = {0};                                                 \
+    TsmArith *arith = TsmNewArith();                                           \
+    arith->METHOD(&instr, lhs, rhs, dst, elem_count, RND_NEAREST_EVEN,         \
+                  wafer_format(format));                                       \
+    wafer_execute_ct(&instr);                                                  \
+    TsmDeleteArith(arith);                                                     \
   }
 
-#define WAFER_DEFINE_RELATION(SYMBOL, METHOD, BOOL_METHOD)                    \
-  void SYMBOL(uint64_t lhs, uint64_t rhs, uint64_t dst,                        \
-              uint32_t elem_count, uint32_t format) {                          \
-    TsmRelationInstr instr = {0};                                               \
-    TsmRelation *relation = TsmNewRelation();                                   \
-    if (format == Fmt_BOOL)                                                     \
-      relation->BOOL_METHOD(&instr, lhs, rhs, dst, elem_count,                  \
-                            wafer_format(format));                              \
-    else                                                                        \
-      relation->METHOD(&instr, lhs, rhs, dst, elem_count,                       \
-                       wafer_format(format));                                   \
-    wafer_execute_ct(&instr);                                                   \
-    TsmDeleteRelation(relation);                                                \
+#define WAFER_DEFINE_RELATION(SYMBOL, METHOD, BOOL_METHOD)                     \
+  void SYMBOL(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t elem_count,   \
+              uint32_t format) {                                               \
+    TsmRelationInstr instr = {0};                                              \
+    TsmRelation *relation = TsmNewRelation();                                  \
+    if (format == Fmt_BOOL)                                                    \
+      relation->BOOL_METHOD(&instr, lhs, rhs, dst, elem_count,                 \
+                            wafer_format(format));                             \
+    else                                                                       \
+      relation->METHOD(&instr, lhs, rhs, dst, elem_count,                      \
+                       wafer_format(format));                                  \
+    wafer_execute_ct(&instr);                                                  \
+    TsmDeleteRelation(relation);                                               \
   }
 
-#define WAFER_DEFINE_LOGIC_UNARY(SYMBOL, METHOD, BOOL_METHOD)                 \
+#define WAFER_DEFINE_LOGIC_UNARY(SYMBOL, METHOD, BOOL_METHOD)                  \
   void SYMBOL(uint64_t src, uint64_t dst, uint32_t elem_count,                 \
               uint32_t format) {                                               \
-    TsmLogicInstr instr = {0};                                                  \
-    TsmLogic *logic = TsmNewLogic();                                            \
-    if (format == Fmt_BOOL)                                                     \
-      logic->BOOL_METHOD(&instr, src, dst, elem_count);                         \
-    else                                                                        \
-      logic->METHOD(&instr, src, dst, elem_count, wafer_format(format));        \
-    wafer_execute_ct(&instr);                                                   \
-    TsmDeleteLogic(logic);                                                      \
+    TsmLogicInstr instr = {0};                                                 \
+    TsmLogic *logic = TsmNewLogic();                                           \
+    if (format == Fmt_BOOL)                                                    \
+      logic->BOOL_METHOD(&instr, src, dst, elem_count);                        \
+    else                                                                       \
+      logic->METHOD(&instr, src, dst, elem_count, wafer_format(format));       \
+    wafer_execute_ct(&instr);                                                  \
+    TsmDeleteLogic(logic);                                                     \
   }
 
-#define WAFER_DEFINE_LOGIC_BINARY(SYMBOL, METHOD, BOOL_METHOD)                \
-  void SYMBOL(uint64_t lhs, uint64_t rhs, uint64_t dst,                        \
-              uint32_t elem_count, uint32_t format) {                          \
-    TsmLogicInstr instr = {0};                                                  \
-    TsmLogic *logic = TsmNewLogic();                                            \
-    if (format == Fmt_BOOL)                                                     \
-      logic->BOOL_METHOD(&instr, lhs, rhs, dst, elem_count);                    \
-    else                                                                        \
-      logic->METHOD(&instr, lhs, rhs, dst, elem_count, wafer_format(format));   \
-    wafer_execute_ct(&instr);                                                   \
-    TsmDeleteLogic(logic);                                                      \
+#define WAFER_DEFINE_LOGIC_BINARY(SYMBOL, METHOD, BOOL_METHOD)                 \
+  void SYMBOL(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t elem_count,   \
+              uint32_t format) {                                               \
+    TsmLogicInstr instr = {0};                                                 \
+    TsmLogic *logic = TsmNewLogic();                                           \
+    if (format == Fmt_BOOL)                                                    \
+      logic->BOOL_METHOD(&instr, lhs, rhs, dst, elem_count);                   \
+    else                                                                       \
+      logic->METHOD(&instr, lhs, rhs, dst, elem_count, wafer_format(format));  \
+    wafer_execute_ct(&instr);                                                  \
+    TsmDeleteLogic(logic);                                                     \
   }
 
 #define WAFER_DEFINE_TRANS(SYMBOL, METHOD)                                     \
   void SYMBOL(uint64_t src, uint64_t dst, uint32_t elem_count,                 \
               uint32_t format) {                                               \
-    TsmTranscendentalInstr instr = {0};                                         \
+    TsmTranscendentalInstr instr = {0};                                        \
     TsmTranscendental *trans = TsmNewTranscendental();                         \
-    trans->METHOD(&instr, src, dst, elem_count, wafer_format(format));          \
-    wafer_execute_ct(&instr);                                                   \
-    TsmDeleteTranscendental(trans);                                             \
+    trans->METHOD(&instr, src, dst, elem_count, wafer_format(format));         \
+    wafer_execute_ct(&instr);                                                  \
+    TsmDeleteTranscendental(trans);                                            \
   }
 
-#define WAFER_DEFINE_ACTIVATION(SYMBOL, METHOD)                               \
+#define WAFER_DEFINE_ACTIVATION(SYMBOL, METHOD)                                \
   void SYMBOL(uint64_t src, uint64_t dst, uint32_t elem_count,                 \
               uint32_t format) {                                               \
-    TsmActivationInstr instr = {0};                                             \
-    TsmActivation *activation = TsmNewActivation();                             \
-    activation->METHOD(&instr, src, dst, elem_count, wafer_format(format));     \
-    wafer_execute_ct(&instr);                                                   \
-    TsmDeleteActivation(activation);                                            \
+    TsmActivationInstr instr = {0};                                            \
+    TsmActivation *activation = TsmNewActivation();                            \
+    activation->METHOD(&instr, src, dst, elem_count, wafer_format(format));    \
+    wafer_execute_ct(&instr);                                                  \
+    TsmDeleteActivation(activation);                                           \
   }
 
 WAFER_DEFINE_ARITH_UNARY(wafer_tx81_elementwise_abs, AbsVV)
@@ -483,8 +503,7 @@ WAFER_DEFINE_RELATION(wafer_tx81_elementwise_ne, UnEqualVV, BoolUnEqualVV)
 WAFER_DEFINE_RELATION(wafer_tx81_elementwise_ge, GreaterEqualVV,
                       BoolGreaterEqualVV)
 WAFER_DEFINE_RELATION(wafer_tx81_elementwise_gt, GreaterVV, BoolGreaterVV)
-WAFER_DEFINE_RELATION(wafer_tx81_elementwise_le, LessEqualVV,
-                      BoolLessEqualVV)
+WAFER_DEFINE_RELATION(wafer_tx81_elementwise_le, LessEqualVV, BoolLessEqualVV)
 WAFER_DEFINE_RELATION(wafer_tx81_elementwise_lt, LessThenVV, BoolLessThenVV)
 WAFER_DEFINE_LOGIC_UNARY(wafer_tx81_elementwise_logic_not, NotV, BoolNotV)
 WAFER_DEFINE_LOGIC_BINARY(wafer_tx81_elementwise_logic_and, AndVV, BoolAndV)
@@ -504,7 +523,7 @@ WAFER_DEFINE_ACTIVATION(wafer_tx81_elementwise_satrelu, Satrelu)
 WAFER_DEFINE_ACTIVATION(wafer_tx81_elementwise_leakyrelu, Leakyrelu)
 WAFER_DEFINE_ACTIVATION(wafer_tx81_elementwise_softplus, Softplus)
 
-#define WAFER_DEFINE_REDUCE(SYMBOL, METHOD)                                   \
+#define WAFER_DEFINE_REDUCE(SYMBOL, METHOD)                                    \
   void SYMBOL(uint64_t src, uint64_t dst, uint32_t dim, uint32_t n,            \
               uint32_t h, uint32_t w, uint32_t c, uint32_t format) {           \
     TsmReduceInstr instr = {0};                                                \
@@ -520,7 +539,7 @@ WAFER_DEFINE_REDUCE(wafer_tx81_reduce_max, ReduceMax)
 WAFER_DEFINE_REDUCE(wafer_tx81_reduce_min, ReduceMin)
 WAFER_DEFINE_REDUCE(wafer_tx81_reduce_avg, ReduceAvg)
 
-#define WAFER_DEFINE_CONVERT_ZP(SYMBOL, METHOD)                               \
+#define WAFER_DEFINE_CONVERT_ZP(SYMBOL, METHOD)                                \
   void SYMBOL(uint64_t src, uint64_t dst, uint32_t elem_count,                 \
               uint32_t zero_point, uint32_t rounding_mode) {                   \
     (void)rounding_mode;                                                       \
@@ -531,18 +550,19 @@ WAFER_DEFINE_REDUCE(wafer_tx81_reduce_avg, ReduceAvg)
     TsmDeleteConvert(convert);                                                 \
   }
 
-#define WAFER_DEFINE_CONVERT_ROUND(SYMBOL, METHOD)                            \
+#define WAFER_DEFINE_CONVERT_ROUND(SYMBOL, METHOD)                             \
   void SYMBOL(uint64_t src, uint64_t dst, uint32_t elem_count,                 \
               uint32_t zero_point, uint32_t rounding_mode) {                   \
     (void)zero_point;                                                          \
     TsmConvertInstr instr = {0};                                               \
     TsmConvert *convert = TsmNewConvert();                                     \
-    convert->METHOD(&instr, src, dst, elem_count, wafer_rounding(rounding_mode)); \
+    convert->METHOD(&instr, src, dst, elem_count,                              \
+                    wafer_rounding(rounding_mode));                            \
     wafer_execute_ct(&instr);                                                  \
     TsmDeleteConvert(convert);                                                 \
   }
 
-#define WAFER_DEFINE_CONVERT_PLAIN(SYMBOL, METHOD)                            \
+#define WAFER_DEFINE_CONVERT_PLAIN(SYMBOL, METHOD)                             \
   void SYMBOL(uint64_t src, uint64_t dst, uint32_t elem_count,                 \
               uint32_t zero_point, uint32_t rounding_mode) {                   \
     (void)zero_point;                                                          \
@@ -635,9 +655,10 @@ void wafer_tx81_gemm_oriented_v2(uint64_t lhs, uint64_t rhs, uint64_t dst,
   TsmDeleteGemm(gemm);
 }
 
-#define WAFER_CONFIGURE_CONV(OP, INSTR)                                       \
+#define WAFER_CONFIGURE_CONV(OP, INSTR)                                        \
   do {                                                                         \
-    OP->AddInput(INSTR, input, wafer_shape4(input_n, input_h, input_w, input_c), \
+    OP->AddInput(INSTR, input,                                                 \
+                 wafer_shape4(input_n, input_h, input_w, input_c),             \
                  wafer_format(format));                                        \
     OP->AddWeight(INSTR, weight,                                               \
                   wafer_shape4(weight_n, weight_h, weight_w, weight_c),        \
@@ -666,11 +687,10 @@ void wafer_tx81_conv(uint64_t input, uint64_t weight, uint64_t dst,
                      uint32_t weight_h, uint32_t weight_w, uint32_t weight_c,
                      uint32_t output_n, uint32_t output_h, uint32_t output_w,
                      uint32_t output_c, uint32_t pad_top, uint32_t pad_bottom,
-                     uint32_t pad_left, uint32_t pad_right,
-                     uint32_t unpad_top, uint32_t unpad_bottom,
-                     uint32_t unpad_left, uint32_t unpad_right,
-                     uint32_t kernel_x, uint32_t kernel_y, uint32_t stride_x,
-                     uint32_t stride_y, uint32_t dilation0,
+                     uint32_t pad_left, uint32_t pad_right, uint32_t unpad_top,
+                     uint32_t unpad_bottom, uint32_t unpad_left,
+                     uint32_t unpad_right, uint32_t kernel_x, uint32_t kernel_y,
+                     uint32_t stride_x, uint32_t stride_y, uint32_t dilation0,
                      uint32_t dilation1, uint32_t format) {
   TsmNeInstr instr = {0};
   TsmConv *conv = TsmNewConv();
@@ -682,13 +702,12 @@ void wafer_tx81_conv(uint64_t input, uint64_t weight, uint64_t dst,
 void wafer_tx81_depthwise_conv(
     uint64_t input, uint64_t weight, uint64_t dst, uint32_t kind,
     uint32_t input_n, uint32_t input_h, uint32_t input_w, uint32_t input_c,
-    uint32_t weight_n, uint32_t weight_h, uint32_t weight_w,
-    uint32_t weight_c, uint32_t output_n, uint32_t output_h,
-    uint32_t output_w, uint32_t output_c, uint32_t pad_top,
-    uint32_t pad_bottom, uint32_t pad_left, uint32_t pad_right,
-    uint32_t unpad_top, uint32_t unpad_bottom, uint32_t unpad_left,
-    uint32_t unpad_right, uint32_t kernel_x, uint32_t kernel_y,
-    uint32_t stride_x, uint32_t stride_y, uint32_t dilation0,
+    uint32_t weight_n, uint32_t weight_h, uint32_t weight_w, uint32_t weight_c,
+    uint32_t output_n, uint32_t output_h, uint32_t output_w, uint32_t output_c,
+    uint32_t pad_top, uint32_t pad_bottom, uint32_t pad_left,
+    uint32_t pad_right, uint32_t unpad_top, uint32_t unpad_bottom,
+    uint32_t unpad_left, uint32_t unpad_right, uint32_t kernel_x,
+    uint32_t kernel_y, uint32_t stride_x, uint32_t stride_y, uint32_t dilation0,
     uint32_t dilation1, uint32_t format) {
   TsmNeInstr instr = {0};
   TsmDepthwiseConv *conv = TsmNewDepthwiseConv();
@@ -700,13 +719,12 @@ void wafer_tx81_depthwise_conv(
 void wafer_tx81_backward_conv(
     uint64_t input, uint64_t weight, uint64_t dst, uint32_t kind,
     uint32_t input_n, uint32_t input_h, uint32_t input_w, uint32_t input_c,
-    uint32_t weight_n, uint32_t weight_h, uint32_t weight_w,
-    uint32_t weight_c, uint32_t output_n, uint32_t output_h,
-    uint32_t output_w, uint32_t output_c, uint32_t pad_top,
-    uint32_t pad_bottom, uint32_t pad_left, uint32_t pad_right,
-    uint32_t unpad_top, uint32_t unpad_bottom, uint32_t unpad_left,
-    uint32_t unpad_right, uint32_t kernel_x, uint32_t kernel_y,
-    uint32_t stride_x, uint32_t stride_y, uint32_t dilation0,
+    uint32_t weight_n, uint32_t weight_h, uint32_t weight_w, uint32_t weight_c,
+    uint32_t output_n, uint32_t output_h, uint32_t output_w, uint32_t output_c,
+    uint32_t pad_top, uint32_t pad_bottom, uint32_t pad_left,
+    uint32_t pad_right, uint32_t unpad_top, uint32_t unpad_bottom,
+    uint32_t unpad_left, uint32_t unpad_right, uint32_t kernel_x,
+    uint32_t kernel_y, uint32_t stride_x, uint32_t stride_y, uint32_t dilation0,
     uint32_t dilation1, uint32_t format) {
   TsmNeInstr instr = {0};
   TsmConv *conv = TsmNewConv();
@@ -715,51 +733,50 @@ void wafer_tx81_backward_conv(
   TsmDeleteConv(conv);
 }
 
-#define WAFER_DEFINE_POOL(SYMBOL, METHOD)                                     \
+#define WAFER_DEFINE_POOL(SYMBOL, METHOD)                                      \
   void SYMBOL(uint64_t input, uint64_t dst, uint32_t kind, uint32_t src_n,     \
-              uint32_t src_h, uint32_t src_w, uint32_t src_c,                 \
-              uint32_t dst_n, uint32_t dst_h, uint32_t dst_w,                 \
-              uint32_t dst_c, uint32_t pad_top, uint32_t pad_bottom,          \
-              uint32_t pad_left, uint32_t pad_right, uint32_t kernel_x,        \
-              uint32_t kernel_y, uint32_t stride_x, uint32_t stride_y,         \
-              uint32_t format) {                                              \
-    (void)kind;                                                               \
-    (void)dst_n;                                                              \
-    (void)dst_h;                                                              \
-    (void)dst_w;                                                              \
-    (void)dst_c;                                                              \
-    TsmPoolInstr instr = {0};                                                 \
-    TsmPool *pool = TsmNewPool();                                             \
-    pool->METHOD(&instr, input, wafer_shape4(src_n, src_h, src_w, src_c),     \
-                 dst, wafer_shape4(pad_top, pad_bottom, pad_left, pad_right), \
-                 wafer_shape4(kernel_x, kernel_y, stride_x, stride_y),        \
-                 wafer_format(format));                                       \
-    wafer_execute_ct(&instr);                                                 \
-    TsmDeletePool(pool);                                                      \
-  }
-
-#define WAFER_DEFINE_POOL_INDEXED(SYMBOL, METHOD)                             \
-  void SYMBOL(uint64_t input, uint64_t value_dst, uint64_t index_dst,          \
-              uint32_t kind, uint32_t src_n, uint32_t src_h,                  \
-              uint32_t src_w, uint32_t src_c, uint32_t dst_n,                 \
-              uint32_t dst_h, uint32_t dst_w, uint32_t dst_c,                 \
+              uint32_t src_h, uint32_t src_w, uint32_t src_c, uint32_t dst_n,  \
+              uint32_t dst_h, uint32_t dst_w, uint32_t dst_c,                  \
               uint32_t pad_top, uint32_t pad_bottom, uint32_t pad_left,        \
               uint32_t pad_right, uint32_t kernel_x, uint32_t kernel_y,        \
               uint32_t stride_x, uint32_t stride_y, uint32_t format) {         \
-    (void)kind;                                                               \
-    (void)dst_n;                                                              \
-    (void)dst_h;                                                              \
-    (void)dst_w;                                                              \
-    (void)dst_c;                                                              \
-    TsmPoolInstr instr = {0};                                                 \
-    TsmPool *pool = TsmNewPool();                                             \
-    pool->METHOD(&instr, input, wafer_shape4(src_n, src_h, src_w, src_c),     \
-                 value_dst, index_dst,                                        \
-                 wafer_shape4(pad_top, pad_bottom, pad_left, pad_right),      \
-                 wafer_shape4(kernel_x, kernel_y, stride_x, stride_y),        \
-                 wafer_format(format));                                       \
-    wafer_execute_ct(&instr);                                                 \
-    TsmDeletePool(pool);                                                      \
+    (void)kind;                                                                \
+    (void)dst_n;                                                               \
+    (void)dst_h;                                                               \
+    (void)dst_w;                                                               \
+    (void)dst_c;                                                               \
+    TsmPoolInstr instr = {0};                                                  \
+    TsmPool *pool = TsmNewPool();                                              \
+    pool->METHOD(&instr, input, wafer_shape4(src_n, src_h, src_w, src_c), dst, \
+                 wafer_shape4(pad_top, pad_bottom, pad_left, pad_right),       \
+                 wafer_shape4(kernel_x, kernel_y, stride_x, stride_y),         \
+                 wafer_format(format));                                        \
+    wafer_execute_ct(&instr);                                                  \
+    TsmDeletePool(pool);                                                       \
+  }
+
+#define WAFER_DEFINE_POOL_INDEXED(SYMBOL, METHOD)                              \
+  void SYMBOL(uint64_t input, uint64_t value_dst, uint64_t index_dst,          \
+              uint32_t kind, uint32_t src_n, uint32_t src_h, uint32_t src_w,   \
+              uint32_t src_c, uint32_t dst_n, uint32_t dst_h, uint32_t dst_w,  \
+              uint32_t dst_c, uint32_t pad_top, uint32_t pad_bottom,           \
+              uint32_t pad_left, uint32_t pad_right, uint32_t kernel_x,        \
+              uint32_t kernel_y, uint32_t stride_x, uint32_t stride_y,         \
+              uint32_t format) {                                               \
+    (void)kind;                                                                \
+    (void)dst_n;                                                               \
+    (void)dst_h;                                                               \
+    (void)dst_w;                                                               \
+    (void)dst_c;                                                               \
+    TsmPoolInstr instr = {0};                                                  \
+    TsmPool *pool = TsmNewPool();                                              \
+    pool->METHOD(&instr, input, wafer_shape4(src_n, src_h, src_w, src_c),      \
+                 value_dst, index_dst,                                         \
+                 wafer_shape4(pad_top, pad_bottom, pad_left, pad_right),       \
+                 wafer_shape4(kernel_x, kernel_y, stride_x, stride_y),         \
+                 wafer_format(format));                                        \
+    wafer_execute_ct(&instr);                                                  \
+    TsmDeletePool(pool);                                                       \
   }
 
 WAFER_DEFINE_POOL(wafer_tx81_pool_avg, AvgPool)
@@ -839,9 +856,9 @@ void wafer_tx81_unpool_mask(uint64_t input, uint64_t dst, uint32_t kind,
 void wafer_tx81_tdma_pad(uint64_t src, uint64_t dst, uint32_t src_n,
                          uint32_t src_h, uint32_t src_w, uint32_t src_c,
                          uint32_t dst_n, uint32_t dst_h, uint32_t dst_w,
-                         uint32_t dst_c, uint32_t pad_top,
-                         uint32_t pad_bottom, uint32_t pad_left,
-                         uint32_t pad_right, uint32_t format) {
+                         uint32_t dst_c, uint32_t pad_top, uint32_t pad_bottom,
+                         uint32_t pad_left, uint32_t pad_right,
+                         uint32_t format) {
   TsmDataMoveInstr instr = {0};
   TsmDataMove *move = TsmNewDataMove();
   move->Pad(&instr, src, wafer_shape4(src_n, src_h, src_w, src_c), dst,
@@ -865,7 +882,8 @@ void wafer_tx81_tdma_img2col(uint64_t src, uint64_t dst, uint32_t src_n,
   TsmDataMoveInstr instr = {0};
   TsmDataMove *move = TsmNewDataMove();
   move->Img2col(&instr, src, src_shape, dst, dst_shape,
-                wafer_shape_elements(src_shape), wafer_shape_elements(dst_shape),
+                wafer_shape_elements(src_shape),
+                wafer_shape_elements(dst_shape),
                 wafer_shape4(kernel_x, kernel_y, stride_x, stride_y),
                 wafer_shape4(pad_top, pad_bottom, pad_left, pad_right),
                 wafer_format(format));
@@ -882,10 +900,12 @@ static void wafer_arg_writeback(uint64_t value_dst, uint64_t index_dst,
                   (uint32_t)instr->param.wb_data1);
 }
 
-void wafer_tx81_peripheral_argmax(
-    uint64_t src, uint64_t value_dst, uint64_t index_dst, uint32_t kind,
-    uint32_t elem_count, uint32_t format, uint32_t lut_elem_count,
-    uint32_t scale, uint32_t probability, uint32_t rounding_mode) {
+void wafer_tx81_peripheral_argmax(uint64_t src, uint64_t value_dst,
+                                  uint64_t index_dst, uint32_t kind,
+                                  uint32_t elem_count, uint32_t format,
+                                  uint32_t lut_elem_count, uint32_t scale,
+                                  uint32_t probability,
+                                  uint32_t rounding_mode) {
   (void)kind;
   (void)lut_elem_count;
   (void)scale;
@@ -899,10 +919,12 @@ void wafer_tx81_peripheral_argmax(
   TsmDeletePeripheral(peripheral);
 }
 
-void wafer_tx81_peripheral_argmin(
-    uint64_t src, uint64_t value_dst, uint64_t index_dst, uint32_t kind,
-    uint32_t elem_count, uint32_t format, uint32_t lut_elem_count,
-    uint32_t scale, uint32_t probability, uint32_t rounding_mode) {
+void wafer_tx81_peripheral_argmin(uint64_t src, uint64_t value_dst,
+                                  uint64_t index_dst, uint32_t kind,
+                                  uint32_t elem_count, uint32_t format,
+                                  uint32_t lut_elem_count, uint32_t scale,
+                                  uint32_t probability,
+                                  uint32_t rounding_mode) {
   (void)kind;
   (void)lut_elem_count;
   (void)scale;
@@ -930,19 +952,20 @@ void wafer_tx81_peripheral_bilinear(
   (void)rounding_mode;
   TsmPeripheralInstr instr = {0};
   TsmPeripheral *peripheral = TsmNewPeripheral();
-  peripheral->Bilinear(&instr, src, dst, wafer_shape4(src_n, src_h, src_w, src_c),
-                       wafer_shape4(dst_n, dst_h, dst_w, dst_c),
-                       wafer_bilinear_scale(src_w, dst_w),
-                       wafer_bilinear_scale(src_h, dst_h),
-                       wafer_format(format));
+  peripheral->Bilinear(
+      &instr, src, dst, wafer_shape4(src_n, src_h, src_w, src_c),
+      wafer_shape4(dst_n, dst_h, dst_w, dst_c),
+      wafer_bilinear_scale(src_w, dst_w), wafer_bilinear_scale(src_h, dst_h),
+      wafer_format(format));
   wafer_execute_ct(&instr);
   TsmDeletePeripheral(peripheral);
 }
 
-void wafer_tx81_peripheral_lut16(
-    uint64_t src, uint64_t lut, uint64_t dst, uint32_t kind,
-    uint32_t elem_count, uint32_t format, uint32_t lut_elem_count,
-    uint32_t scale, uint32_t probability, uint32_t rounding_mode) {
+void wafer_tx81_peripheral_lut16(uint64_t src, uint64_t lut, uint64_t dst,
+                                 uint32_t kind, uint32_t elem_count,
+                                 uint32_t format, uint32_t lut_elem_count,
+                                 uint32_t scale, uint32_t probability,
+                                 uint32_t rounding_mode) {
   (void)kind;
   (void)format;
   (void)scale;
@@ -955,10 +978,11 @@ void wafer_tx81_peripheral_lut16(
   TsmDeletePeripheral(peripheral);
 }
 
-void wafer_tx81_peripheral_lut32(
-    uint64_t src, uint64_t lut, uint64_t dst, uint32_t kind,
-    uint32_t elem_count, uint32_t format, uint32_t lut_elem_count,
-    uint32_t scale, uint32_t probability, uint32_t rounding_mode) {
+void wafer_tx81_peripheral_lut32(uint64_t src, uint64_t lut, uint64_t dst,
+                                 uint32_t kind, uint32_t elem_count,
+                                 uint32_t format, uint32_t lut_elem_count,
+                                 uint32_t scale, uint32_t probability,
+                                 uint32_t rounding_mode) {
   (void)kind;
   (void)format;
   (void)scale;
@@ -971,11 +995,12 @@ void wafer_tx81_peripheral_lut32(
   TsmDeletePeripheral(peripheral);
 }
 
-void wafer_tx81_peripheral_rand_gen(
-    uint64_t src0, uint64_t src1, uint64_t dst0, uint64_t dst1, uint64_t dst2,
-    uint32_t kind, uint32_t elem_count, uint32_t format,
-    uint32_t lut_elem_count, uint32_t scale, uint32_t probability,
-    uint32_t rounding_mode) {
+void wafer_tx81_peripheral_rand_gen(uint64_t src0, uint64_t src1, uint64_t dst0,
+                                    uint64_t dst1, uint64_t dst2, uint32_t kind,
+                                    uint32_t elem_count, uint32_t format,
+                                    uint32_t lut_elem_count, uint32_t scale,
+                                    uint32_t probability,
+                                    uint32_t rounding_mode) {
   (void)kind;
   (void)lut_elem_count;
   (void)scale;
@@ -989,16 +1014,18 @@ void wafer_tx81_peripheral_rand_gen(
   TsmDeletePeripheral(peripheral);
 }
 
-void wafer_tx81_peripheral_elem_mask(
-    uint64_t src, uint64_t dst, uint32_t kind, uint32_t elem_count,
-    uint32_t format, uint32_t lut_elem_count, uint32_t scale,
-    uint32_t probability, uint32_t rounding_mode) {
+void wafer_tx81_peripheral_elem_mask(uint64_t src, uint64_t dst, uint32_t kind,
+                                     uint32_t elem_count, uint32_t format,
+                                     uint32_t lut_elem_count, uint32_t scale,
+                                     uint32_t probability,
+                                     uint32_t rounding_mode) {
   (void)kind;
   (void)lut_elem_count;
   TsmPeripheralInstr instr = {0};
   TsmPeripheral *peripheral = TsmNewPeripheral();
-  peripheral->ElemMask(&instr, src, scale, dst, elem_count, wafer_format(format),
-                       probability, wafer_rounding(rounding_mode));
+  peripheral->ElemMask(&instr, src, scale, dst, elem_count,
+                       wafer_format(format), probability,
+                       wafer_rounding(rounding_mode));
   wafer_execute_ct(&instr);
   TsmDeletePeripheral(peripheral);
 }

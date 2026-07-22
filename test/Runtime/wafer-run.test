@@ -4,7 +4,10 @@
 # RUN: cp %S/Inputs/typed-package-manifest.json %t.package/manifest.json
 # RUN: wafer-run --package-dir %t.package --entry-id 0 --no-card | FileCheck %s --check-prefix=PLAN
 # RUN: not wafer-run --package-dir %t.package --entry-id 0 2>&1 | FileCheck %s --check-prefix=NO-MODE
+# RUN: not wafer-run --package-dir %t.package --entry-id 0 --board 2>&1 | FileCheck %s --check-prefix=BOARD-QUALIFICATION
+# RUN: not wafer-run --package-dir %t.package --entry-id 0 --board --max-resource-bytes 32 2>&1 | FileCheck %s --check-prefix=BOARD-OPTIONS
 # RUN: not wafer-run --package-dir %t.package --entry-id 0 --no-card --max-resource-bytes 32 2>&1 | FileCheck %s --check-prefix=CAPACITY
+# RUN: not wafer-run --package-dir %t.package --entry-id 0 --no-card --device-id 0 2>&1 | FileCheck %s --check-prefix=NO-CARD-BOARD-OPTION
 # RUN: cp -R %t.package %t.bad-package
 # RUN: printf extra > %t.bad-package/modules/extra.so
 # RUN: not wafer-run --package-dir %t.bad-package --entry-id 0 --no-card 2>&1 | FileCheck %s --check-prefix=EXTRA
@@ -26,7 +29,10 @@
 # PLAN: board_execution: false
 
 # NO-MODE: wafer-run requires explicit --no-card
+# BOARD-QUALIFICATION: --board requires complete explicit TX qualification options
+# BOARD-OPTIONS: no-card admission options are not valid with --board
 # CAPACITY: runtime environment resource capacity is insufficient
+# NO-CARD-BOARD-OPTION: board binding and qualification options require --board
 # EXTRA: package modules contain an unreferenced payload
 # DIGEST: package module digest mismatch
 # LEGACY: failed to read package manifest

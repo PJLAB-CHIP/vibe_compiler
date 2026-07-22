@@ -33,9 +33,9 @@ LOADER_ABI_UNDEFINED_SYMBOLS = {
             "direct_sync_init",
             "direct_sync_post",
             "direct_sync_wait",
+            "csi_kernel_free",
+            "csi_kernel_malloc",
             "monitor_write_log",
-            "rt_free",
-            "rt_malloc",
             "rt_thread_mdelay",
             "tsm_ep_log",
             "tx8_kernel_printf",
@@ -213,6 +213,9 @@ def build_commands(
         "-O2",
         "-c",
         "-fPIC",
+        "-ffunction-sections",
+        "-fdata-sections",
+        "-fvisibility=hidden",
         "-DCONFIG_NO_PLATFORM_HOOK_H",
         "-DUSING_RISCV",
         f"-I{wafer_crt_include_dir}",
@@ -257,6 +260,7 @@ def build_commands(
     link_cmd.extend(f"-L{path}" for path in args.extra_library_dir)
     link_cmd.extend(
         [
+            "-Wl,--exclude-libs,ALL",
             "-Wl,--start-group",
             "-lcommon_util",
             "-linstr_tx81",

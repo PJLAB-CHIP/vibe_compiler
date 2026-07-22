@@ -47,14 +47,18 @@ TargetLLVMModuleBundle::operator=(TargetLLVMModuleBundle &&) = default;
 
 llvm::Expected<TargetToolchain>
 TargetToolchain::create(llvm::StringRef pythonExecutable,
-                        llvm::StringRef deviceLinkerScript) {
+                        llvm::StringRef deviceLinkerScript,
+                        llvm::StringRef llvmClangXX) {
   if (pythonExecutable.empty())
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "Python executable must not be empty");
   if (deviceLinkerScript.empty())
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "device linker script must not be empty");
-  return TargetToolchain(pythonExecutable, deviceLinkerScript);
+  if (llvmClangXX.empty())
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "LLVM clang++ must not be empty");
+  return TargetToolchain(pythonExecutable, deviceLinkerScript, llvmClangXX);
 }
 
 llvm::Expected<TargetArtifactBundle> compileExecutableBundleToTargetArtifacts(

@@ -40,6 +40,13 @@
 # RUN:   --crt-object-output %t.success.crt.o
 # RUN: %python -c 'from pathlib import Path; output = Path("%t.success.so"); assert output.read_bytes().startswith(b"\x7fELF"); assert Path("%t.success.o").stat().st_size > 0; assert Path("%t.success.crt.o").stat().st_size > 0; assert not list(output.parent.glob(f".{output.name}.staging-*"))'
 
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/minimal-target-heap-entry.ll \
+# RUN:   --output %t.heap.so
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm -u %t.heap.so | FileCheck %s --check-prefix=HEAP
+# RUN: %python -c 'import subprocess; command=["%wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm", "-u", "%t.heap.so"]; symbols={line.split()[-1] for line in subprocess.check_output(command, text=True).splitlines() if line.split()}; assert symbols == {"csi_kernel_malloc", "csi_kernel_free"}, symbols'
+# RUN: %python -c 'import subprocess; command=["%wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-readelf", "-d", "%t.heap.so"]; dynamic=subprocess.check_output(command, text=True); assert "(NEEDED)" not in dynamic, dynamic'
+
 # CHECK-LABEL: compile:
 # CHECK-SAME: /opt/llvm/bin/clang++
 # CHECK-SAME: minimal-target-kernel.ll
@@ -63,6 +70,9 @@
 # CHECK-SAME: -O2
 # CHECK-SAME: -c
 # CHECK-SAME: -fPIC
+# CHECK-SAME: -ffunction-sections
+# CHECK-SAME: -fdata-sections
+# CHECK-SAME: -fvisibility=hidden
 # CHECK-SAME: -DCONFIG_NO_PLATFORM_HOOK_H
 # CHECK-SAME: -DUSING_RISCV
 # CHECK-SAME: -I{{[^ ]*}}/runtime/wafer_crt/include
@@ -91,6 +101,7 @@
 # CHECK-SAME: -L{{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/riscv64-unknown-elf/lib/rv64imafdc/lp64d
 # CHECK-SAME: -L{{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/lib/gcc/riscv64-unknown-elf/10.4.0/rv64imafdc/lp64d
 # CHECK-SAME: -L{{[^ ]*}}/third_party/tx8_deps/lib
+# CHECK-SAME: -Wl,--exclude-libs,ALL
 # CHECK-SAME: -Wl,--start-group
 # CHECK-SAME: -lcommon_util
 # CHECK-SAME: -linstr_tx81
@@ -114,3 +125,8 @@
 # UNDEF: error: undefined Wafer target CRT symbols remain after link: wafer_tx81_missing
 
 # NOTALLOWED: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-v1: unexpected_loader_hook
+
+# HEAP-DAG: U csi_kernel_free
+# HEAP-DAG: U csi_kernel_malloc
+# HEAP-NOT: rt_free
+# HEAP-NOT: rt_malloc

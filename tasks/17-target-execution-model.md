@@ -230,8 +230,9 @@ geometry/ABI定义或生成的typed定义，不能把本文表格复制成第二
    `init/freeTsmOpPointer_cmodel`或`instr_tick_cc`定义；RISC-V `libkcorert.a`里的cycle-mode set/get只是兼容stub。
    当前repo CRT也不调用`initTsmOpPointer_cmodel`，而是直接`TsmNew* -> 填packet -> TsmExecute -> TsmDelete*`，所以
    仅取得该operator-table initializer仍不足以host化CRT。
-2. **host runtime级**：fresh `RTLD_NOW` probe在x86 `libtx8_runtime.so`上首先因`libhpgr.so`缺失而失败；其dynamic
-   dependency还要求缺失的`libtsmml.so`。该runtime的`Runtime::SetCModelHandle`会尝试`dlopen`
+2. **host runtime级**：checkout内fresh `RTLD_NOW` probe在x86 `libtx8_runtime.so`上首先因`libhpgr.so`缺失而失败；其dynamic
+   dependency还要求缺失的`libtsmml.so`。对installed V5.6 provider继续解析后，该legacy runtime仍有旧public接口未闭合，
+   因而只排除legacy CModel/tutorial seam，不影响当前public `libhpgr` board provider。该runtime的`Runtime::SetCModelHandle`会尝试`dlopen`
    `libcmodel_runtime_api.so`并解析device、compile、launch、run、copy和tile-info等高层入口。被加载的library、其匹配
    header/resource以及该binary还依赖的host libraries均不在checkout；现有binary只证明`dlsym`结果被存入字段且library
    handle会被`dlclose`，没有证明普通launch路径读取/调用这些字段。因此这是vendor CModel存在的强线索，不是当前
@@ -1045,8 +1046,9 @@ packet provenance；它属于Q22.K可选诊断证据，不是Q22、Q32.V compile
 
 Q22.C在Q22、Q32 integrated audit、Q6.B和configured numeric corpus均可用后执行，是独立later gate，不要求PMU、packet capture、
 exact-module provider或新的package capability schema。当前v1 correlation消费当次compiler发布并验证的package/profile，
-fresh重放Q6.B lifecycle；Q6.B证明allocation/H2D/load/launch/wait/status/D2H/cleanup、watchdog/reset和
-重复invocation有效。任何provider、completion、copyback或guard失败的sample均为invalid，不能用于调numeric。
+fresh重放Q6.B lifecycle；Q6.B证明allocation/H2D/load/launch/wait/status/D2H/cleanup、显式timeout、fail-stop context
+quarantine和重复invocation有效。任何provider、completion、copyback或guard失败的sample均为invalid，不能用于调numeric；
+reset/power不是routine invocation cleanup。
 
 board provider必须在任何effect前把本次将执行的current command rows匹配到同environment的board-supported
 allowlist；model row或profile名不能替代该gate。若correlate Q32.V扩展且其consumer采用capability-bearing package，才额外要求同一revision的
@@ -1119,13 +1121,13 @@ legal target modules、typed ABI/capability、packet和address/completion关系�
 
 ### 9.1 样本有效性和记录纪律
 
-每次板端运行必须记录device SKU/revision和unit identity、good-tile map、firmware/driver/runtime/instruction-library/CRT/
+每个拟进入Q22.C calibration/profile evidence的板端样本必须记录device SKU/revision和unit identity、good-tile map、firmware/driver/runtime/instruction-library/CRT/
 ABI digest、compiler/model revision、package/module digest、input seed、typed invocation、完整input/parameter/output raw bytes、
-pre/post DDR/SPM及guard bytes、provider phase、terminal status/exception、reset/repeat identity和comparison report。packet/
+pre/post DDR/SPM及guard bytes、provider phase、terminal status/exception、process/repeat identity及显式外部恢复identity和comparison report。packet/
 register capture若存在则记录来源、完整性和digest；不可用时明确写`unavailable`，不能补造。
 
-Q6.B的allocation/import/H2D/load/launch/wait/status/D2H/cleanup、watchdog/reset和重复invocation先闭合。input未正确写入、
-completion不可信、copyback失败、guard被破坏或reset后health check失败的sample必须保留但标`invalid`，不得进入numeric
+Q6.B的allocation/import/H2D/load/launch/wait/status/D2H/cleanup、显式timeout、poisoned首错即停和重复invocation先闭合。
+input未正确写入、completion不可信、copyback失败、guard被破坏或显式恢复后health check失败的sample必须保留但标`invalid`，不得进入numeric
 calibration。calibration vectors、随机held-out、shape/layout held-out和真实workload corpus必须预先分区；comparison policy
 和阈值在查看held-out结果前冻结。Q22.C数值校准不需要PMU、wall-time或固定频率。
 
@@ -1634,7 +1636,7 @@ Q31用Q28固定seed和两个预先冻结、明确`admission=false`的diagnostic 
 ### 10.8 Q22.C Board numeric correlation
 
 - 当前v1先以当次compiler发布并验证的package/profile fresh重放Q6.B board provider correctness、
-  watchdog/reset和重复invocation；它不等待条件性Q32.V package capability字段；
+  显式timeout、fail-stop context quarantine和重复invocation；它不等待条件性Q32.V package capability字段；
 - board environment在任何effect前匹配本次current command rows；若测试Q32.V扩展且已采用capability-bearing package，再对同一revision的
   `RequiredCapabilitySet`逐key匹配allowlist；
 - 按第8.3节的capability row、区分向量和comparison policy采集calibration corpus；

@@ -121,19 +121,24 @@ private:
 class TargetToolchain {
 public:
   static llvm::Expected<TargetToolchain>
-  create(llvm::StringRef pythonExecutable, llvm::StringRef deviceLinkerScript);
+  create(llvm::StringRef pythonExecutable, llvm::StringRef deviceLinkerScript,
+         llvm::StringRef llvmClangXX);
 
   llvm::StringRef getPythonExecutable() const { return pythonExecutable; }
   llvm::StringRef getDeviceLinkerScript() const { return deviceLinkerScript; }
+  llvm::StringRef getLLVMClangXX() const { return llvmClangXX; }
 
 private:
   TargetToolchain(llvm::StringRef pythonExecutable,
-                  llvm::StringRef deviceLinkerScript)
+                  llvm::StringRef deviceLinkerScript,
+                  llvm::StringRef llvmClangXX)
       : pythonExecutable(pythonExecutable.str()),
-        deviceLinkerScript(deviceLinkerScript.str()) {}
+        deviceLinkerScript(deviceLinkerScript.str()),
+        llvmClangXX(llvmClangXX.str()) {}
 
   std::string pythonExecutable;
   std::string deviceLinkerScript;
+  std::string llvmClangXX;
 };
 
 /// Owner-backed result retained by downstream consumers that need the same

@@ -509,9 +509,10 @@ Python wrapper和C++必须走同一verifier；不能再有不同acceptance。
 current no-card不读取`RequiredCapabilitySet`，也不做model/board qualification。若Q32.V引入capability-bearing package
 projection，其结构和package readback由8.1验证，真正的model/board逐项admission只属于下节provider gate。
 
-### 8.3 Deferred Provider Gate
+### 8.3 Provider And Board Gate
 
-以下验证不属于Q18 no-card完成条件；恢复provider/board任务时必须实际执行，而不能用打印trace替代：
+Q6.B已materialize TX rank-one provider子集；rank-count=16 all-rank session与Q22.E exact-module provider仍未闭合。
+以下验证不属于Q18 no-card完成条件，provider/board推进时必须实际执行，不能用打印trace替代：
 
 若Q32.V扩展TargetCall的execution consumer采用`RequiredCapabilitySet`，它必须在任何effect前消费同版本集合：model provider以
 显式`ModelProfileId`逐key验证compiler-emittable和model admission，board provider逐key匹配environment-owned
@@ -531,8 +532,11 @@ set-device/context
   -> cleanup
 ```
 
-每一步注入失败；未满足依赖的descendant不调用；已经获取的资源逆序cleanup；typed error保留stage/rank/entry。
-wait timeout/error使dependent runtime state poison，禁止后续copyback/publication并进入同一cleanup合同。
+每一步注入失败；未满足依赖的descendant不调用；typed error保留stage/rank/entry及provider context disposition。
+provider明确保持usable的cleanup-safe失败才逆序释放已经获取的资源；wait timeout/device error或其它provider-declared
+poison使dependent runtime state sticky poisoned，禁止后续copyback/publication/unload/free及任何低层provider调用。
+`getContextState()`只能读取invocation-local cached disposition，不得进入TX runtime/device。
+恢复只允许由invocation之外的用户显式动作完成，provider不得自动reset、power或retry。
 
 ## 9. Source CPU Oracle 与 Target Consumer Gates
 
@@ -987,7 +991,8 @@ Q22.C在Q22、Q32和Q6.B完成且配置board numeric corpus后执行，不要求
 Q22.C必须使用Q32 completion audit冻结的同一verified package/profile在board上fresh重放Q6.B lifecycle，不能复用另一份
 历史package的结果。若Q32.V的真实consumer采用winner-derived required-capability set，还必须在任何effect前逐key匹配environment
 allowlist。Q6.B再证明
-provider lifecycle、watchdog/reset、trusted completion、完整copyback和重复invocation；无效sample不能进入numeric profile。
+provider lifecycle、显式timeout、fail-stop context quarantine、trusted completion、完整copyback和重复invocation；无效sample
+不能进入numeric profile，reset/power也不能作为routine invocation cleanup。
 
 - 同一op/dtype/accumulator/rounding/optional-field row运行预先设计的rounding tie、NaN/Inf/signed-zero、subnormal、
   overflow、accumulation-order/fusion和zero-point区分向量，同时保存input/output raw bits、guard和status；
@@ -1017,7 +1022,8 @@ vendor builder若可得，只作为额外packet/MMIO provenance；缺失不阻�
 - package semantic verification、typed invocation和environment compatibility先于任何provider side effect；
 - allocation/import、H2D、module load/entry resolve、all-rank submit、wait/status、D2H、cleanup均实际执行；
 - loader ABI、SPM alias、MMIO/custom instruction、Direct DTE/FSM和host watchdog有typed capability；
-- 每阶段failure injection保证descendant不调用、wait/status失败禁止copyback、已获取资源逆序cleanup；
+- 每阶段failure injection保证descendant不调用、wait/status失败禁止copyback；cleanup-safe失败逆序释放已获取资源，
+  poisoned失败使本次provider调用序列立即终止；
 - 同一Q20/Q21 package不增加model instruction sidecar、不替换host module、不重做planning；
 - 完整output/status与source CPU expected比较。通过只称package target-model execution，不称board。
 
@@ -1049,6 +1055,22 @@ configured board suite只消费Q0.L完成后fresh replay形成的Gate C同一ver
 - copyback和完整输出CPU comparison；
 - cleanup和重复invocation。
 
+Q6.B的第一条bootstrap gate固定为production `wafer-compile` fresh发布的rank-one f32 `stablehlo.add` package：两个
+非平凡且不同的16-element输入按manifest `ResourceId` all-and-only绑定，独立NumPy/CPU加法生成完整expected raw bytes；
+board-capable `wafer-run`必须至少重复两次真实allocation→load→launch→trusted completion→copyback→cleanup，并报告全部stage
+和`exact=true`。`WAFER_ENABLE_BOARD_RUNTIME`只构建能力；hardware test只有通过默认关闭的独立execution配置、完整预期
+runtime-library digest/runtime version/PCI/device/tile qualification才注册，并且运行时还须显式设置
+`WAFER_EXECUTE_HARDWARE_TESTS=1`。普通CTest必须skip或不注册，不得触卡；Q6.B证据必须确认hardware CTest未skip。
+
+环境诊断必须与compiler gate分开。qualification candidate必须与当前driver、public runtime、宿主boot-source firmware、
+运行中Kcore缓存version/status和module toolchain闭合；若没有device-RAM dump，不得声明运行中payload的byte identity。执行前
+先证明module的全部动态imports由匹配SDK Kcore export surface满足，执行后必须完成非平凡输入的完整CPU output comparison。
+vendor标签、安装目录中的预置ELF、tutorial或零退出码本身都不能获得known-good身份；缺符号的sample应在静态
+qualification阶段排除，不能拿它的loader error给compiler或环境定责。只有imports已闭合的candidate仍返回相同device error或
+错误输出时，才记录为board/driver/firmware environment failure，Q6.B继续doing/blocked，且不能修改compiler expected或loader
+allowlist。provider不自动执行runtime reset、PCI reset、power或driver恢复；用户显式完成外部恢复后，先重放同版本qualification，
+再重放同一fresh Wafer package，只有后者完整比较通过才形成Wafer correctness evidence。
+
 Q32.V target-capability新能力在进入真实workload前先跑隔离验证：mapped RDMA/WDMA分别覆盖两端零/非零root offset、多descriptor、
 full/C0 tail、pre/post canary、exact bytes和非法双侧stride；physical-footprint fill覆盖Cx/NCx/BOOL count、canonical raw scalar、
 padding/unused bits和fill→segmented ordering；oriented GEMM按NN/NT/TN/TT逐tuple使用非方阵、非对称
@@ -1056,7 +1078,7 @@ payload比较CPU oracle并记录raw input/output/status、target/CRT/ABI revisio
 通过只允许model/experimental profile发射；board profile只有对应tuple通过校准与held-out后才标supported。任何timing/PMU
 结果只用于后续cost calibration，不参与这些semantic/legality gate。
 
-board不可用、test unsupported/skipped或只到symbol discovery时，Q6.B保持later/blocked。任何no-card、reference、
+board不可用、test unsupported/skipped或只到symbol discovery时，Q6.B保持doing/blocked。任何no-card、reference、
 fake provider或target model结果都不能改变该状态。Q6.B只证明board execution；Q22.C再消费Q6.B、Q22和Q32 verified
 package结果做model/board numeric correlation；若被测Q32.V extension consumer采用capability-bearing package，
 还须消费其required-set结果。两者都不能反向替代Q6.B。

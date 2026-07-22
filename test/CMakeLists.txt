@@ -86,6 +86,84 @@ add_test(NAME wafer-runtime-adapter-python
     --wafer-run $<TARGET_FILE:wafer-run>
 )
 
+if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
+  if(NOT WAFER_ENABLE_IMPORTER_DEPS OR
+     NOT WAFER_ENABLE_SPMD_PARTITIONER_DEPS OR
+     NOT WAFER_XLA_SPMD_PARTITIONER_HELPER)
+    message(FATAL_ERROR
+      "WAFER_ENABLE_BOARD_TEST_EXECUTION=ON requires importer and SPMD "
+      "dependencies plus WAFER_XLA_SPMD_PARTITIONER_HELPER")
+  endif()
+  set(WAFER_BOARD_TEST_DEVICE_ID "0" CACHE STRING
+    "TX device used by configured board execution tests")
+  set(WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION "" CACHE STRING
+    "Expected decimal TX runtime API version for board tests")
+  set(WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME "" CACHE STRING
+    "Expected exact TX device name for board tests")
+  set(WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID "" CACHE STRING
+    "Expected exact TX PCI bus ID for board tests")
+  set(WAFER_BOARD_TEST_EXPECTED_TILE_COUNT "" CACHE STRING
+    "Expected TX tile count for board tests")
+  set(WAFER_BOARD_TEST_EXPECTED_RUNTIME_LIBRARY_SHA256 "" CACHE STRING
+    "Expected SHA-256 of the public TX runtime library for board tests")
+  foreach(_wafer_board_qualification_variable IN ITEMS
+      WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION
+      WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME
+      WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID
+      WAFER_BOARD_TEST_EXPECTED_TILE_COUNT
+      WAFER_BOARD_TEST_EXPECTED_RUNTIME_LIBRARY_SHA256)
+    if("${${_wafer_board_qualification_variable}}" STREQUAL "")
+      message(FATAL_ERROR
+        "WAFER_ENABLE_BOARD_TEST_EXECUTION=ON requires explicit "
+        "${_wafer_board_qualification_variable}")
+    endif()
+  endforeach()
+  string(LENGTH "${WAFER_BOARD_TEST_EXPECTED_RUNTIME_LIBRARY_SHA256}"
+    _wafer_expected_tx_runtime_library_sha256_length)
+  if(NOT WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION MATCHES "^[1-9][0-9]*$" OR
+     NOT WAFER_BOARD_TEST_EXPECTED_TILE_COUNT MATCHES "^[1-9][0-9]*$" OR
+     NOT WAFER_BOARD_TEST_EXPECTED_RUNTIME_LIBRARY_SHA256 MATCHES
+       "^[0-9a-fA-F]+$" OR
+     NOT _wafer_expected_tx_runtime_library_sha256_length EQUAL 64)
+    message(FATAL_ERROR "Invalid TX board-test qualification value")
+  endif()
+  file(SHA256 "${WAFER_TX_RUNTIME_LIBRARY_REAL_PATH}"
+    _wafer_tx_runtime_library_sha256)
+  string(TOLOWER "${WAFER_BOARD_TEST_EXPECTED_RUNTIME_LIBRARY_SHA256}"
+    _wafer_expected_tx_runtime_library_sha256)
+  if(NOT _wafer_tx_runtime_library_sha256 STREQUAL
+     _wafer_expected_tx_runtime_library_sha256)
+    message(FATAL_ERROR
+      "Configured TX runtime library does not match the explicitly expected "
+      "board-test SHA-256")
+  endif()
+  add_test(NAME wafer-board-single-op-add
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_single_op_add_test.py
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/board-single-op-add
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --repeat 2
+  )
+  set_tests_properties(wafer-board-single-op-add PROPERTIES
+    LABELS "board;hardware;single-op"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 300
+  )
+  unset(_wafer_board_qualification_variable)
+  unset(_wafer_expected_tx_runtime_library_sha256)
+  unset(_wafer_expected_tx_runtime_library_sha256_length)
+  unset(_wafer_tx_runtime_library_sha256)
+endif()
+
 add_test(NAME wafer-numeric-dependency-record-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_SOURCE_DIR}/tools/test_numeric_deps.py

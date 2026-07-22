@@ -1,4 +1,7 @@
 add_mlir_library(WaferRuntime
+  PARTIAL_SOURCES_INTENDED
+
+  BoardRuntime.cpp
   PackageManifest.cpp
   PackageManifestJson.cpp
   PackageManifestReadback.cpp

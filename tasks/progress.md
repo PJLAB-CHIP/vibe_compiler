@@ -68,8 +68,17 @@ explicit Count semantic/target/model evidence -> Q3.6 (independent typed writeba
 
 ## 当前实施队列
 
-当前没有`doing` row。Q32已完成integrated completion audit；该完成不会让后续row自动进入执行，later/external gate也不会
-自动进入主线。
+当前`doing` row为Q6.B：board provider、rank-one add gate和fresh package链路已经接通。当前configured TX8110的driver、
+ML/SMI为V5.6.0.1231，public runtime 1.3.0 payload与同一V5.6安装包逐字节一致；宿主引导源`kcore_fw.bin`与compile SDK
+对应ELF提取payload逐字节一致，driver debugfs缓存显示运行中Kcore version=1.0.1、status=on。未读取device RAM，因此不声明
+运行中payload的byte identity。fresh Wafer add module仅依赖匹配SDK Kcore export surface中的`csi_kernel_malloc/free`。
+production `wafer-compile` fresh发布的rank-one f32 add已由显式armed、identity-qualified的board-capable `wafer-run`
+连续两次完成allocation→H2D→load/resolve→launch→completion→D2H→cleanup，完整64-byte输出均exact。
+已定位vendor预置module这一次OOM表象来自7个未闭合动态符号的远端relocation失败；同一污染周期内其它后续失败不作追溯性
+因果归因。legacy host runtime只是不兼容的另一条tutorial路径，不是public runtime失败根因。rank-one bootstrap已闭合，Q6.B继续`doing`，
+下一边界是rank-count=16 owner-backed all-rank provider session，而不是重复单卡reset或重跑无效sample。
+Q32已完成integrated completion audit；该完成不会让其它
+later/external gate自动进入主线。
 
 完成边界：Q32.I/R/B/V/M/S/G采用MLIR interface、可重算analysis、actual-clone rewrite、DialectConversion、现有exact
 gates和atomic commit；保留implementation、tile、encoding/view/route、storage/residency、buffering/order、communication、
@@ -94,7 +103,7 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 / 外部 gate | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q6.B | `runtime-board` | `later` | Q0.L、Q21 + configured board | 用fresh verified package实际执行board lifecycle并比较完整输出。 | 15、16 |
+| Q6.B | `runtime-board` | `doing` | Q0.L、Q21 + configured board | rank-one f32 add fresh package已连续两次完整exact；继续实现rank-count=16 owner-backed all-rank lifecycle和完整输出比较。 | 15、16 |
 | Q9 | `cost-calibration` | `later` | Q32、Q6.B + profile environment | 只校准Q32合法候选排序，不改变语义合法性。 | 06、16 |
 | Q22.C | `target-model-numeric-correlation` | `later` | Q22、Q32、Q6.B + configured numeric corpus | 按capability row用board区分向量和held-out冻结numeric comparator/profile。 | 16、17 |
 | Q22.E | `target-model-package-execution` | `later` | Q18、Q22、Q32 + configured simulator/ISS | 原样执行Q32 integrated audit冻结的verified package及all-and-only RISC-V ELF；任何未来schema升级必须先独立完成再作为该gate输入。 | 15、16、17 |

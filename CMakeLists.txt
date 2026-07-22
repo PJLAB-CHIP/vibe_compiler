@@ -2,15 +2,101 @@ cmake_minimum_required(VERSION 3.24)
 
 project(WaferCompiler LANGUAGES CXX C)
 
-include(cmake/third_party/WaferDependencyVersions.cmake)
-include(cmake/third_party/WaferThirdParty.cmake)
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS NO)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+include(cmake/third_party/WaferDependencyVersions.cmake)
+include(cmake/third_party/WaferThirdParty.cmake)
+
 option(WAFER_ENABLE_UNIT_TESTS "Build Wafer C++ unit tests" ON)
+option(WAFER_ENABLE_BOARD_RUNTIME
+  "Build the TX board RuntimeProvider capability" OFF)
+option(WAFER_ENABLE_BOARD_TEST_EXECUTION
+  "Register explicitly qualified tests that execute TX hardware" OFF)
+if(WAFER_ENABLE_BOARD_TEST_EXECUTION AND NOT WAFER_ENABLE_BOARD_RUNTIME)
+  message(FATAL_ERROR
+    "WAFER_ENABLE_BOARD_TEST_EXECUTION=ON requires "
+    "WAFER_ENABLE_BOARD_RUNTIME=ON")
+endif()
+if(WAFER_ENABLE_BOARD_RUNTIME)
+  if(NOT IS_ABSOLUTE "${WAFER_TX_RUNTIME_ROOT}" OR
+     NOT EXISTS "${WAFER_TX_RUNTIME_ROOT}" OR
+     NOT IS_DIRECTORY "${WAFER_TX_RUNTIME_ROOT}")
+    message(FATAL_ERROR
+      "WAFER_ENABLE_BOARD_RUNTIME=ON requires an existing absolute "
+      "WAFER_TX_RUNTIME_ROOT")
+  endif()
+  file(REAL_PATH "${WAFER_TX_RUNTIME_ROOT}" WAFER_TX_RUNTIME_ROOT_REAL_PATH)
+  unset(WAFER_TX_RUNTIME_INCLUDE_DIR CACHE)
+  unset(WAFER_TX_RUNTIME_INCLUDE_DIR)
+  unset(WAFER_TX_RUNTIME_LIBRARY CACHE)
+  unset(WAFER_TX_RUNTIME_LIBRARY)
+  find_path(WAFER_TX_RUNTIME_INCLUDE_DIR
+    NAMES tx_runtime.h
+    PATHS "${WAFER_TX_RUNTIME_ROOT}/include"
+    NO_DEFAULT_PATH
+    NO_CACHE
+    REQUIRED)
+  find_library(WAFER_TX_RUNTIME_LIBRARY
+    NAMES hpgr
+    PATHS "${WAFER_TX_RUNTIME_ROOT}/lib"
+    NO_DEFAULT_PATH
+    NO_CACHE
+    REQUIRED)
+  file(REAL_PATH "${WAFER_TX_RUNTIME_INCLUDE_DIR}"
+    WAFER_TX_RUNTIME_INCLUDE_DIR_REAL_PATH)
+  file(REAL_PATH "${WAFER_TX_RUNTIME_LIBRARY}"
+    WAFER_TX_RUNTIME_LIBRARY_REAL_PATH)
+  cmake_path(IS_PREFIX WAFER_TX_RUNTIME_ROOT_REAL_PATH
+    "${WAFER_TX_RUNTIME_INCLUDE_DIR_REAL_PATH}" NORMALIZE
+    WAFER_TX_RUNTIME_INCLUDE_IS_CONTAINED)
+  cmake_path(IS_PREFIX WAFER_TX_RUNTIME_ROOT_REAL_PATH
+    "${WAFER_TX_RUNTIME_LIBRARY_REAL_PATH}" NORMALIZE
+    WAFER_TX_RUNTIME_LIBRARY_IS_CONTAINED)
+  if(NOT WAFER_TX_RUNTIME_INCLUDE_IS_CONTAINED OR
+     NOT WAFER_TX_RUNTIME_LIBRARY_IS_CONTAINED)
+    message(FATAL_ERROR
+      "TX runtime header/library resolved outside WAFER_TX_RUNTIME_ROOT")
+  endif()
+  set(WAFER_TX_RUNTIME_INCLUDE_DIR
+    "${WAFER_TX_RUNTIME_INCLUDE_DIR_REAL_PATH}")
+
+  include(CMakePushCheckState)
+  include(CheckCXXSourceCompiles)
+  cmake_push_check_state(RESET)
+  set(CMAKE_REQUIRED_INCLUDES "${WAFER_TX_RUNTIME_INCLUDE_DIR}")
+  set(CMAKE_REQUIRED_LIBRARIES "${WAFER_TX_RUNTIME_LIBRARY_REAL_PATH}")
+  unset(WAFER_TX_RUNTIME_HAS_REQUIRED_SYMBOLS CACHE)
+  check_cxx_source_compiles([[
+    #include "tx_runtime.h"
+    int main() {
+      volatile auto p0 = &txGetDeviceCount;
+      volatile auto p1 = &txSetDevice;
+      volatile auto p2 = &txGetDeviceProperty;
+      volatile auto p3 = &txMemGetInfo;
+      volatile auto p4 = &txRuntimeGetVersion;
+      volatile auto p5 = &txGetDevicePCIBusId;
+      volatile auto p6 = &txMalloc;
+      volatile auto p7 = &txFree;
+      volatile auto p8 = &txMemcpy;
+      volatile auto p9 = &txModuleLoad;
+      volatile auto p10 = &txModuleUnload;
+      volatile auto p11 = &txModuleGetFunction;
+      volatile auto p12 = &txLaunchKernel;
+      volatile auto p13 = &txStreamSynchronize;
+      return !(p0 && p1 && p2 && p3 && p4 && p5 && p6 && p7 && p8 && p9 &&
+               p10 && p11 && p12 && p13);
+    }
+  ]] WAFER_TX_RUNTIME_HAS_REQUIRED_SYMBOLS)
+  cmake_pop_check_state()
+  if(NOT WAFER_TX_RUNTIME_HAS_REQUIRED_SYMBOLS)
+    message(FATAL_ERROR
+      "The configured TX runtime library does not provide the complete "
+      "public symbol set required by wafer-run")
+  endif()
+endif()
 set(WAFER_XLA_SPMD_PARTITIONER_HELPER "" CACHE FILEPATH
   "Path to the pinned-XLA SPMD partitioner helper used by wafer-compile")
 if(WAFER_XLA_SPMD_PARTITIONER_HELPER)

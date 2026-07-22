@@ -83,6 +83,33 @@
   `cmake -S . -B build/wafer-dev -GNinja -DMLIR_DIR=<pinned-llvm-install>/lib/cmake/mlir -DLLVM_DIR=<pinned-llvm-install>/lib/cmake/llvm -DWAFER_ENABLE_IMPORTER_DEPS=ON -DWAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS=ON -DWAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON -DWAFER_IMPORTER_PYTHON_EXECUTABLE=$PWD/third_party/python-importer-py311/bin/python`，
   然后跑 `cmake --build build/wafer-dev --target check-wafer -- -j128` 和
   `ctest --test-dir build/wafer-dev --output-on-failure`。
+- board-capable配置在同一pinned compiler配置上增加
+  `-DWAFER_ENABLE_BOARD_RUNTIME=ON -DWAFER_TX_RUNTIME_ROOT=<tx-sdk-root>`；configure必须在该root内找到public
+  `tx_runtime.h`和完整所需symbol的`libhpgr`，否则fail closed。这个开关只构建能力，adapter只在`--board`路径按需加载DSO；
+  no-card路径不加载vendor library。board loader必须以同一个open fd完成hash和`/proc/self/fd` load，并按dev/inode核对全部
+  dlsym provider；不能分两次按path读取。先用`ctest --test-dir <board-build> -LE hardware --output-on-failure`验证host closure。
+  live test还需显式配置默认关闭的`WAFER_ENABLE_BOARD_TEST_EXECUTION=ON`及预期runtime digest/version/PCI/device/tile；执行时只用
+  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-single-op-add$' --output-on-failure`，并确认未skip。
+  vendor adapter由`tools/wafer-run` executable拥有，通用`WaferRuntime`只拥有typed provider接口和lifecycle executor；
+  不把`tx_runtime` header/library依赖放进compiler或通用runtime library。
+- TX device publication必须用当前pinned LLVM installation内的`clang++`消费compiler打印的opaque-pointer LLVM IR；
+  不能fallback到ambient旧clang。CMake把resolved absolute Python和LLVM clang++路径写入`wafer-compile`，device link再用
+  vendored Xuantie GCC完成CRT/link。CRT和static support用function/data sections、hidden visibility、archive symbol hiding和
+  section GC，只发布当前entry closure；final undefined symbols继续经过versioned loader ABI exact allowlist。
+- TX board环境分层先证明driver/public runtime版本，再把宿主boot-source Kcore payload与module toolchain对应firmware/ELF闭合，
+  并核对driver cached runtime version/status；没有device-RAM dump时不得声称运行中payload byte identity。
+  对待执行module的全部UND逐项检查Kcore `__rtmsym_*` export，缺项时在静态qualification阶段排除。随后用一次性
+  public-runtime caller记录allocation、H2D、load、resolve、launch、completion、D2H和cleanup每个返回值，并对非平凡输入做
+  完整CPU comparison；device异步错误可能只在后续D2H出现，不能只看launch/synchronize或vendor程序退出码。预置sample和fresh
+  tutorial build不自动成为known-good。legacy host runtime的`ldd -r`失败只排除该legacy路径，不能反推当前public `libhpgr`
+  主线不兼容。
+- Board provider把首个非success runtime结果保守标成sticky poisoned。executor只在provider仍明确usable时逆序cleanup；poisoned后
+  不再调用copyback、unload、free或provider error-string，CLI flush typed stage/context诊断后直接结束一次性进程。reset、power、
+  PCI/driver恢复和retry都不属于invocation cleanup；需要时由用户在进程外显式执行并重新从qualification开始。board成功或失败
+  都在显式module/allocation lifecycle和output/diagnostic flush后用`std::_Exit`结束，不触发未经资格化的vendor DSO finalizer。
+  `dlopen`成功后的symbol/readback失败也必须leak handle并走相同`std::_Exit`，不能用RAII `dlclose`触发未知fini链。
+- Board allocation admission使用当前free bytes而非total bytes，并对本次全部resource allocation做checked aggregate和显式reserve；
+  单个resource小于总容量不能替代aggregate gate。`getContextState()`只能读进程内cached disposition，不得调用TX runtime/device。
 - `ctest`通过不等于关键program/E2E gate被执行。涉及frontend/SPMD/program pipeline或声称
   主链路跑通时，先跑`cmake --build build/wafer-dev --target check-wafer-lit -- -j128`；需要审计
   unsupported清单时，使用`build/wafer-dev/CMakeCache.txt`中配置的`LLVM_EXTERNAL_LIT`执行
@@ -96,9 +123,10 @@
 - Runtime adapter 测试分层：package metadata/exporter 这类 compiler artifact golden 用 lit；no-card
   adapter contract、`fake-tx` test backend call sequence 和 runtime library discovery diagnostics 用 Python
   unittest / ctest；真实板端 launch/completion/error propagation 必须 gated 到有卡环境，不能塞进默认 lit。
-- C++ `wafer-run`当前只是独立prototype，不能冒充typed manifest/no-card gate。正式no-card preflight必须从
-  verified manifest构造binding/module/launch/completion plan，验证ABI slot与resource的一一对应，并在任何
-  allocation/load side effect前拒绝unsupported completion或runtime mode；不能从旧自由字符串或instruction文本恢复。
+- C++ `wafer-run`是verified package的唯一runtime入口：默认`--no-card`只构造typed
+  binding/module/launch/completion plan；board feature开启后`--board`按`ResourceId`接收all-and-only raw buffers并调用同一
+  preflight后的provider lifecycle。两种模式都验证ABI slot与resource一一对应，并在任何allocation/load side effect前拒绝
+  unsupported completion/runtime mode；不能从自由字符串、resource name、文件名或instruction文本恢复语义。
 - Shardy 不用 standalone Bazel workspace 作为 Wafer dependency 编译验证；`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
   会通过 `cmake/third_party/WaferShardyCMake.cmake` 编译 `wafer-shardy-cmake-gate` / `shardy-sdy-opt`，
   复用同一套固定版本 LLVM/MLIR 和 embedded StableHLO。

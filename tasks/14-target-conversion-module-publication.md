@@ -261,6 +261,17 @@ matching 或排序。
 当前 Kernel ABI 摘要是 invocation-local typed C++ value，不新增 IR op 或 wire schema。若未来有真实跨进程
 consumer，单独设计稳定 descriptor，不能从当前私有对象布局生成。
 
+owner-backed `TargetLLVMModule`中的entry继续使用与typed slots一一对应的`void(i64...)`，供target legality、
+readback和repo-owned target-call frontend消费。TX module publication在同一module的transaction-local clone上把该entry
+改成internal body，并以原symbol新建唯一external `void(ptr slots)` trampoline；trampoline按stable slot ordinal从
+loader传入的dense 64-bit参数块逐槽load并直接调用body。board provider机械构造同顺序的device-address数组并把
+`slot_count * sizeof(uint64_t)`作为参数块长度传给public runtime。该publication adapter不改变bundle中的owner-backed
+LLVM module，也不允许runtime从resource name、文件路径或host参数顺序恢复slot。
+
+device entry clone必须在写`.ll`前重新通过LLVM verifier；entry缺失、返回非void、vararg、slot数量不一致或任一body
+参数不是i64都在device link前失败。module readback仍检查原entry symbol、ELF identity和ordered Kernel ABI slots；
+trampoline存在只证明loader调用形状闭合，不证明算子数值、completion或board可用。
+
 ## 8. Current Wafer CRT ABI
 
 Wafer-owned production symbols 使用 `wafer_tx81_*` 前缀；header、lowering、CRT source、symbol checker 和
@@ -275,12 +286,19 @@ current v1 已验证边界：
 - repo-local CRT 可由 pinned TX8 GCC 编译并参与 device link；
 - required `wafer_tx81_*` symbol 缺失会被 post-link gate 拒绝；
 - 全部 undefined symbols 都经过 `tx8-kcore-loader-v1` exact allowlist，未知非Wafer symbol同样拒绝；
+- vendored instruction archives内部的一参`rt_malloc/rt_free`由repo-local CRT桥接到loader导出的
+  `csi_kernel_malloc(0, size, nullptr)` / `csi_kernel_free(0, ptr, nullptr)`；scope 0是V5.6 dynamic module与官方
+  `TsmNew*`调用点共同使用的local-tile DDR heap，不是SPM或RTOS scope。最终module的undefined heap surface只允许exact
+  `csi_kernel_malloc/free`，不能直接泄漏旧heap调用；
+- CRT使用function/data sections和hidden visibility，static archives通过`--exclude-libs,ALL`隐藏；link后gc删除未被当前
+  entry closure消费的operator/CRT代码，不能把整份archive symbol surface发布成module ABI；
 - existing ArgMax/ArgMin writeback在destination store前执行`TsmWaitfinish()`，其 typed effect/completion
   与 result-store contract 由现有 verifier/lowering共同检查。
 
 current v1不包含oriented GEMM或Count。`wafer_tx81_gemm`永远只代表v1 normal/normal；
 `wafer_tx81_gemm_oriented_v2`逐字段携带两个orientation且只在v2 runtime ABI解码。symbol存在也不证明
-packet、shape、numeric、completion或board support。
+packet、shape、numeric、completion或board support。heap bridge和link closure同样只证明当前loader surface与module
+静态闭包，运行时heap初始化仍由tasks/16真实board gate证明。
 
 ## 9. Owner-Backed Target LLVM Bundle
 

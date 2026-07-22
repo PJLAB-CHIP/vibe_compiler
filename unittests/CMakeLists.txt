@@ -20,6 +20,7 @@ add_executable(WaferUnitTests
   Frontend/NpyPayloadTest.cpp
   Model/TargetModelMemoryTest.cpp
   Pipelines/PipelinesTest.cpp
+  Runtime/BoardRuntimeTest.cpp
   Runtime/PackageManifestTest.cpp
   Target/FormalNumericTest.cpp
   Target/NumericCodecTest.cpp

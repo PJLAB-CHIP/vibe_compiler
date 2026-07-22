@@ -8,8 +8,14 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
@@ -58,6 +64,53 @@ static int linkTargetModule(llvm::StringRef outputPath) {
 TEST(TargetArtifactTest, PublicVerifiedModuleCannotBeForgedOrDefaulted) {
   static_assert(
       !std::is_default_constructible_v<wafer::compiler::VerifiedTargetModule>);
+}
+
+TEST(TargetArtifactTest, DevicePublicationWrapsOrderedSlotsWithoutMutatingOwner) {
+  llvm::LLVMContext context;
+  llvm::Module module("device-entry", context);
+  llvm::Type *i64 = llvm::Type::getInt64Ty(context);
+  llvm::FunctionType *type = llvm::FunctionType::get(
+      llvm::Type::getVoidTy(context), {i64, i64}, /*isVarArg=*/false);
+  llvm::Function *entry = llvm::Function::Create(
+      type, llvm::GlobalValue::ExternalLinkage, "main", module);
+  llvm::IRBuilder<> builder(
+      llvm::BasicBlock::Create(context, "entry", entry));
+  builder.CreateRetVoid();
+
+  llvm::SmallString<256> temporaryDirectory;
+  ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory(
+      "wafer-device-entry", temporaryDirectory));
+  auto cleanup = llvm::make_scope_exit([&]() {
+    (void)llvm::sys::fs::remove_directories(temporaryDirectory);
+  });
+  llvm::SmallString<256> outputPath =
+      pathInDirectory(temporaryDirectory, "entry.ll");
+  if (llvm::Error error = wafer::compiler::detail::writeLLVMIR(
+          module, "main", /*slotCount=*/2, outputPath))
+    FAIL() << llvm::toString(std::move(error));
+
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> output =
+      llvm::MemoryBuffer::getFile(outputPath);
+  ASSERT_TRUE(static_cast<bool>(output)) << output.getError().message();
+  llvm::StringRef text = (*output)->getBuffer();
+  EXPECT_TRUE(text.contains("define void @main(ptr %slots)"));
+  EXPECT_TRUE(text.contains(
+      "define internal void @wafer_device_entry_body(i64 %0, i64 %1)"));
+  EXPECT_TRUE(
+      text.contains("getelementptr inbounds i64, ptr %slots, i64 1"));
+  EXPECT_TRUE(text.contains("call void @wafer_device_entry_body(i64"));
+
+  EXPECT_EQ(module.getFunction("main"), entry);
+  EXPECT_EQ(entry->arg_size(), 2u);
+  EXPECT_EQ(module.getFunction("wafer_device_entry_body"), nullptr);
+
+  llvm::Error invalid = wafer::compiler::detail::writeLLVMIR(
+      module, "main", /*slotCount=*/3, outputPath);
+  ASSERT_TRUE(static_cast<bool>(invalid));
+  EXPECT_NE(llvm::toString(std::move(invalid))
+                .find("does not match its typed ABI slots"),
+            std::string::npos);
 }
 
 TEST(TargetArtifactTest, LinkedRiscvELFReadbackCarriesTypedProfileFacts) {

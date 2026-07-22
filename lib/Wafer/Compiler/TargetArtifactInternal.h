@@ -101,7 +101,9 @@ llvm::Error verifyTargetLLVMModule(const llvm::Module &module,
                                    llvm::StringRef expectedModuleFormat,
                                    llvm::ArrayRef<KernelABISlot> expectedSlots);
 
-llvm::Error writeLLVMIR(const llvm::Module &module, llvm::StringRef path);
+llvm::Error writeLLVMIR(const llvm::Module &module,
+                        llvm::StringRef entrySymbol, size_t slotCount,
+                        llvm::StringRef path);
 llvm::Error runDeviceLink(const TargetToolchain &toolchain,
                           llvm::StringRef llvmIR, llvm::StringRef module,
                           llvm::StringRef object, llvm::StringRef crtObject);

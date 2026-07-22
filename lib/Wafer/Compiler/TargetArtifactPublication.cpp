@@ -108,6 +108,9 @@ compileTargetLLVMModuleBundleToTargetArtifacts(
   if (!detail::isRegularTargetFile(toolchain.getDeviceLinkerScript()))
     return detail::fail(
         diagnostics, "configured device linker script is not a regular file");
+  if (!detail::isExecutableTargetFile(toolchain.getLLVMClangXX()))
+    return detail::fail(diagnostics,
+                        "configured LLVM clang++ is not executable");
 
   llvm::SmallString<256> outputParent(outputDirectory);
   llvm::sys::path::remove_filename(outputParent);
@@ -158,8 +161,9 @@ compileTargetLLVMModuleBundleToTargetArtifacts(
     llvm::sys::path::append(crtObjectPath, stem + ".wafer_crt.o");
     llvm::SmallString<256> modulePath(modulesDirectory);
     llvm::sys::path::append(modulePath, stem + ".so");
-    if (llvm::Error error =
-            detail::writeLLVMIR(targetLLVMModule.getModule(), llvmIRPath))
+    if (llvm::Error error = detail::writeLLVMIR(
+            targetLLVMModule.getModule(), targetLLVMModule.getEntrySymbol(),
+            targetLLVMModule.getKernelABISlots().size(), llvmIRPath))
       return detail::fail(diagnostics, "target_module_verification_failed: " +
                                            llvm::toString(std::move(error)));
     if (llvm::Error error = detail::runDeviceLink(

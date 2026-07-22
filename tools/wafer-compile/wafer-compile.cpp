@@ -30,6 +30,9 @@
 #ifndef WAFER_DEVICE_LINKER_SCRIPT
 #define WAFER_DEVICE_LINKER_SCRIPT ""
 #endif
+#ifndef WAFER_DEVICE_CLANGXX
+#define WAFER_DEVICE_CLANGXX ""
+#endif
 
 using namespace wafer::compile_driver;
 
@@ -263,7 +266,8 @@ int main(int argc, char **argv) {
   }
   llvm::Expected<wafer::compiler::TargetToolchain> targetToolchain =
       wafer::compiler::TargetToolchain::create(WAFER_PYTHON_EXECUTABLE,
-                                               WAFER_DEVICE_LINKER_SCRIPT);
+                                               WAFER_DEVICE_LINKER_SCRIPT,
+                                               WAFER_DEVICE_CLANGXX);
   if (!targetToolchain) {
     llvm::errs() << "wafer-compile: "
                  << llvm::toString(targetToolchain.takeError()) << "\n";
