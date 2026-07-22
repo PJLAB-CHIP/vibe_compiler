@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "program": {
     "id": 0
   },
@@ -67,10 +67,15 @@
   "modules": [
     {
       "id": 0,
-      "rank": 0,
       "path": "modules/rank_00000.so",
       "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "format": "elf-riscv64"
+      "format": "elf-riscv64",
+      "exports": [
+        {
+          "role": "main",
+          "symbol": "main"
+        }
+      ]
     }
   ],
   "entries": [
@@ -78,7 +83,6 @@
       "id": 0,
       "rank": 0,
       "module": 0,
-      "symbol": "main",
       "slots": [
         {
           "ordinal": 0,

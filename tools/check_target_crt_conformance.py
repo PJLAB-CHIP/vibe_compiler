@@ -37,7 +37,9 @@ def read_text(path: pathlib.Path) -> str:
 
 def function_body(text: str, name: str) -> str:
     match = re.search(
-        r"\b(?:static\s+)?(?:void|bool)\s+" + re.escape(name) + r"\s*\(",
+        r"\b(?:static\s+)?(?:void|bool|uint64_t)\s+"
+        + re.escape(name)
+        + r"\s*\(",
         text,
     )
     if not match:
@@ -467,6 +469,72 @@ def check_no_old_abi_or_helpers(source_text: str) -> None:
         require_absent(source_text, needle, "runtime CRT source")
 
 
+def check_direct_dte_lifecycle(source_text: str) -> None:
+    begin = function_body(source_text, "wafer_tx81_direct_dte_begin")
+    require_contains(
+        begin,
+        "wafer_direct_dte_reset_state(status_addr);",
+        "standalone Direct DTE begin state reset",
+    )
+    require_contains(
+        begin,
+        "direct_sync_init((int)rank_count);",
+        "standalone Direct DTE begin synchronization initialization",
+    )
+
+    after_prepare = function_body(
+        source_text, "wafer_tx81_direct_dte_begin_after_prepare"
+    )
+    require_contains(
+        after_prepare,
+        "(void)rank_count;",
+        "prepared Direct DTE begin rank-count contract",
+    )
+    require_contains(
+        after_prepare,
+        "wafer_direct_dte_reset_state(status_addr);",
+        "prepared Direct DTE begin state reset",
+    )
+    require_absent(
+        after_prepare,
+        "direct_sync_init",
+        "prepared Direct DTE begin synchronization ownership",
+    )
+
+    send_prepare = function_body(
+        source_text, "wafer_tx81_direct_dte_send_prepare"
+    )
+    require_in_order(
+        send_prepare,
+        [
+            "get_tile_spm_addr_base(",
+            "remote_dst > UINT64_MAX - remote_spm_base",
+            "info.src_addr = (uintptr_t)src;",
+            "info.dst_addr = (uintptr_t)(remote_spm_base + remote_dst);",
+        ],
+        "Direct DTE sender local/remote SPM address materialization",
+    )
+
+    recv_prepare = function_body(
+        source_text, "wafer_tx81_direct_dte_recv_prepare"
+    )
+    require_contains(
+        recv_prepare,
+        "direct_fsm_monitor_init((int)local_fsm_id, (uintptr_t)dst,",
+        "Direct DTE receiver local SPM offset",
+    )
+    require_absent(
+        recv_prepare,
+        "get_spm_memory_mapping",
+        "Direct DTE receiver local SPM offset",
+    )
+    require_absent(
+        recv_prepare,
+        "get_tile_spm_addr_base",
+        "Direct DTE receiver local SPM offset",
+    )
+
+
 def check_dma(source_text: str) -> None:
     conversion = function_body(source_text, "wafer_elem_count_from_bytes")
     for needle in [
@@ -731,6 +799,7 @@ def main() -> int:
     )
 
     check_no_old_abi_or_helpers(source_text)
+    check_direct_dte_lifecycle(source_text)
     check_dma(source_text)
     check_gather_scatter_and_mask(source_text, header_text, lowering_text)
     check_arg_writeback(source_text, instruction_ops_text, lowering_text)

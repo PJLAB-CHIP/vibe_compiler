@@ -105,12 +105,13 @@ protected:
                            256,
                            PackageAccessMode::ReadWrite,
                            false}};
-    manifest.modules = {{ModuleId(0), 0, "modules/rank_00000.so",
-                         moduleDigest(), target.moduleFormat.str()}};
+    manifest.modules = {
+        {ModuleId(0), "modules/rank_00000.so", moduleDigest(),
+         target.moduleFormat.str(),
+         {{PackageModuleExportRole::Main, "main"}}}};
     manifest.entries = {{EntryId(0),
                          0,
                          ModuleId(0),
-                         "main",
                          {{0, ResourceId(0), PackageAccessMode::ReadOnly},
                           {1, ResourceId(1), PackageAccessMode::WriteOnly},
                           {2, ResourceId(2), PackageAccessMode::ReadWrite}},
@@ -126,10 +127,13 @@ protected:
     using namespace wafer::runtime;
     const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
-    PackageManifest manifest(target.id, target.targetIdentity,
-                             target.kernelRuntimeABI,
-                             wafer::TargetLaunchABIId::perRankPointerBlockV1(),
-                             target.moduleFormat);
+    const bool cluster = allDirectDTE || lastRankDirectDTEOnly;
+    PackageManifest manifest(
+        target.id, target.targetIdentity, target.kernelRuntimeABI,
+        cluster ? wafer::TargetLaunchABIId::
+                      tx81ClusterDirectDTEPrepareMainV1()
+                : wafer::TargetLaunchABIId::perRankPointerBlockV1(),
+        target.moduleFormat);
     manifest.program = ProgramId(0);
     manifest.rankCount = rankCount;
 
@@ -146,11 +150,19 @@ protected:
       std::string moduleName =
           "rank_" + std::string(5 - rankText.size(), '0') + rankText +
           ".so";
-      ModuleId module(permutedId(rank, 7, 5));
+      ModuleId module(cluster ? 0 : permutedId(rank, 7, 5));
       EntryId entry(permutedId(rank, 5, 3));
       CompletionId completion(permutedId(rank, 9, 1));
-      manifest.modules.push_back({module, rank, "modules/" + moduleName,
-                                  moduleDigest(), target.moduleFormat.str()});
+      if (!cluster || rank == 0)
+        manifest.modules.push_back(
+            {module, "modules/" + moduleName, moduleDigest(),
+             target.moduleFormat.str(),
+             cluster
+                 ? std::vector<PackageModuleExportRecord>{
+                       {PackageModuleExportRole::Prepare, "prepare"},
+                       {PackageModuleExportRole::Main, "main"}}
+                 : std::vector<PackageModuleExportRecord>{
+                       {PackageModuleExportRole::Main, "main"}}});
       manifest.completions.push_back({completion, rank, "entry_return"});
 
       std::vector<PackageABISlotBinding> slots;
@@ -181,11 +193,13 @@ protected:
       if (directDTE) {
         ResourceId status = addResource(
             PackageResourceRole::TransportStatus, 0, "direct_dte_status",
-            "u32", {1}, 4, 4, PackageAccessMode::ReadWrite, false);
+            "u32", {1}, kDirectDTEStatusStorageBytes,
+            kDirectDTEStatusStorageAlignment, PackageAccessMode::ReadWrite,
+            false);
         transport = DirectDTETransportRequirements{
             status, kDirectDTEStatusABI.str(), true};
       }
-      manifest.entries.push_back({entry, rank, module, "main", std::move(slots),
+      manifest.entries.push_back({entry, rank, module, std::move(slots),
                                   completion, std::move(transport)});
     }
 
@@ -228,7 +242,7 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
       << llvm::toString(verified.takeError());
   std::string canonical =
       wafer::runtime::serializeCanonicalPackageJson(*verified);
-  EXPECT_NE(canonical.find("\"schema_version\": 4"), std::string::npos);
+  EXPECT_NE(canonical.find("\"schema_version\": 5"), std::string::npos);
   EXPECT_NE(canonical.find(
                 "\"profile\": \"wafer-tx81-single-card-kernel-v1\""),
             std::string::npos);
@@ -239,7 +253,11 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
       wafer::runtime::parseCanonicalPackageJson(canonical, root);
   ASSERT_TRUE(static_cast<bool>(parsed)) << llvm::toString(parsed.takeError());
   canonical.clear();
-  EXPECT_EQ(parsed->getManifest().entries.front().symbol, "main");
+  ASSERT_EQ(parsed->getManifest().modules.front().exports.size(), 1u);
+  EXPECT_EQ(parsed->getManifest().modules.front().exports.front().role,
+            wafer::runtime::PackageModuleExportRole::Main);
+  EXPECT_EQ(parsed->getManifest().modules.front().exports.front().symbol,
+            "main");
   EXPECT_EQ(wafer::runtime::serializeCanonicalPackageJson(*parsed),
             wafer::runtime::serializeCanonicalPackageJson(*verified));
 }
@@ -252,10 +270,10 @@ TEST_F(PackageManifestTest, RejectsLegacySchemaAndMissingTargetFacts) {
       wafer::runtime::serializeCanonicalPackageJson(*verified);
 
   std::string legacy = canonical;
-  size_t schema = legacy.find("\"schema_version\": 4");
+  size_t schema = legacy.find("\"schema_version\": 5");
   ASSERT_NE(schema, std::string::npos);
-  legacy.replace(schema, std::string("\"schema_version\": 4").size(),
-                 "\"schema_version\": 3");
+  legacy.replace(schema, std::string("\"schema_version\": 5").size(),
+                 "\"schema_version\": 4");
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> rejected =
       wafer::runtime::parseCanonicalPackageJson(legacy, root);
   ASSERT_FALSE(static_cast<bool>(rejected));
@@ -421,6 +439,9 @@ TEST_F(PackageManifestTest, RejectsEmptyKernelGridBeforeRuntimeProvider) {
   PackageManifest manifest = makeRankManifest(16, /*permuteIdentities=*/false);
   manifest.launchABI =
       wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1();
+  manifest.modules.resize(1);
+  for (PackageEntrypointRecord &entry : manifest.entries)
+    entry.module = manifest.modules.front().id;
   manifest.resources.clear();
   for (PackageEntrypointRecord &entry : manifest.entries)
     entry.slots.clear();
@@ -520,7 +541,6 @@ TEST_F(PackageManifestTest,
   ASSERT_TRUE(static_cast<bool>(verified))
       << llvm::toString(verified.takeError());
   ASSERT_NE(verified->getManifest().entries.front().logicalRank, 0);
-  ASSERT_NE(verified->getManifest().modules.front().logicalRank, 0);
 
   std::vector<RuntimeInvocationBinding> bindings =
       makeHostBindings(verified->getManifest());
@@ -609,15 +629,30 @@ TEST_F(PackageManifestTest,
                        /*lastRankDirectDTEOnly=*/true);
   llvm::Expected<VerifiedPackageManifest> verifiedMixed =
       verifyPackageManifest(std::move(mixed), root);
-  ASSERT_TRUE(static_cast<bool>(verifiedMixed))
-      << llvm::toString(verifiedMixed.takeError());
-  std::vector<RuntimeInvocationBinding> bindings =
-      makeHostBindings(verifiedMixed->getManifest());
-  llvm::Expected<RuntimeInvocationPlan> rejected =
-      preflightNoCardRuntimeInvocation(*verifiedMixed, bindings, environment);
-  ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError()).find("mixed transport"),
+  ASSERT_FALSE(static_cast<bool>(verifiedMixed));
+  EXPECT_NE(llvm::toString(verifiedMixed.takeError()).find("transport"),
             std::string::npos);
+
+  PackageManifest legacy =
+      makeRankManifest(16, /*permuteIdentities=*/true,
+                       /*allDirectDTE=*/true);
+  for (PackageEntrypointRecord &entry : legacy.entries)
+    std::get<DirectDTETransportRequirements>(entry.transport).statusABI =
+        kDirectDTEStatusABIV1.str();
+  llvm::Expected<VerifiedPackageManifest> verifiedLegacy =
+      verifyPackageManifest(std::move(legacy), root);
+  ASSERT_FALSE(static_cast<bool>(verifiedLegacy));
+  EXPECT_NE(llvm::toString(verifiedLegacy.takeError()).find("Direct DTE"),
+            std::string::npos);
+
+  for (int64_t rank = 1; rank < 16; ++rank) {
+    std::string rankText = std::to_string(rank);
+    llvm::SmallString<256> path(root);
+    llvm::sys::path::append(
+        path, "modules",
+        "rank_" + std::string(5 - rankText.size(), '0') + rankText + ".so");
+    ASSERT_FALSE(llvm::sys::fs::remove(path));
+  }
 
   PackageManifest direct =
       makeRankManifest(16, /*permuteIdentities=*/true,
@@ -626,8 +661,11 @@ TEST_F(PackageManifestTest,
       verifyPackageManifest(std::move(direct), root);
   ASSERT_TRUE(static_cast<bool>(verifiedDirect))
       << llvm::toString(verifiedDirect.takeError());
-  bindings = makeHostBindings(verifiedDirect->getManifest());
-  rejected =
+  std::vector<RuntimeInvocationBinding> bindings =
+      makeHostBindings(verifiedDirect->getManifest());
+  environment.launchABI =
+      wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+  llvm::Expected<RuntimeInvocationPlan> rejected =
       preflightNoCardRuntimeInvocation(*verifiedDirect, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("Direct DTE"),
@@ -652,12 +690,13 @@ TEST_F(PackageManifestTest,
 }
 
 TEST_F(PackageManifestTest,
-       DirectDTERequirementBindsInternalStatusAndChecksEnvironment) {
+       RejectsDirectDTERequirementOutsideClusterLaunchABI) {
   using namespace wafer::runtime;
   PackageManifest manifest = makeManifest();
   manifest.resources.push_back(
       {ResourceId(3), 0, PackageResourceRole::TransportStatus, 0,
-       "direct_dte_status", {"u32", {1}}, 4, 4,
+       "direct_dte_status", {"u32", {1}}, kDirectDTEStatusStorageBytes,
+       kDirectDTEStatusStorageAlignment,
        PackageAccessMode::ReadWrite, false});
   manifest.entries.front().slots.push_back(
       {3, ResourceId(3), PackageAccessMode::ReadWrite});
@@ -665,37 +704,9 @@ TEST_F(PackageManifestTest,
       ResourceId(3), kDirectDTEStatusABI.str(), true};
   llvm::Expected<VerifiedPackageManifest> verified =
       verifyPackageManifest(std::move(manifest), root);
-  ASSERT_TRUE(static_cast<bool>(verified))
-      << llvm::toString(verified.takeError());
-
-  std::vector<RuntimeInvocationBinding> bindings = {
-      {ResourceId(0), 64, 256, PackageAccessMode::ReadOnly, true},
-      {ResourceId(1), 64, 256, PackageAccessMode::WriteOnly, true}};
-  const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1());
-  RuntimeEnvironment environment{target.id, target.targetIdentity,
-                                 target.kernelRuntimeABI,
-                                 wafer::TargetLaunchABIId::perRankPointerBlockV1(),
-                                 target.moduleFormat,
-                                 1024};
-  llvm::Expected<RuntimeSessionPlan> rejected = preflightNoCardRuntimeSession(
-      *verified, EntryId(0), bindings, environment);
-  ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError()).find("Direct DTE"),
+  ASSERT_FALSE(static_cast<bool>(verified));
+  EXPECT_NE(llvm::toString(verified.takeError()).find("transport"),
             std::string::npos);
-
-  environment.supportsDirectDTE = true;
-  environment.directDTEStatusABI = kDirectDTEStatusABI.str();
-  environment.supportsHostWatchdog = true;
-  llvm::Expected<RuntimeSessionPlan> plan = preflightNoCardRuntimeSession(
-      *verified, EntryId(0), bindings, environment);
-  ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
-  ASSERT_EQ(plan->resources.size(), 4u);
-  EXPECT_EQ(plan->resources.back().role,
-            PackageResourceRole::TransportStatus);
-  EXPECT_FALSE(plan->resources.back().externallyBound);
-  EXPECT_TRUE(std::holds_alternative<DirectDTETransportRequirements>(
-      plan->transport));
 }
 
 } // namespace

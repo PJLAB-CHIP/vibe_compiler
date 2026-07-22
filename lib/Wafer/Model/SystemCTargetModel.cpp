@@ -3,6 +3,8 @@
 #include "Wafer/Model/SystemCTargetModel.h"
 #include "Wafer/Model/Testing.h"
 
+#include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
+
 #include "SystemCBridge.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -402,7 +404,9 @@ private:
     llvm::Expected<TargetModelResolvedRange> status =
         memory.getAddressPlan().resolve(rank, TargetModelAddressSpace::CardDDR,
                                         TargetModelAccess::ReadWrite,
-                                        begin.statusAddress, 4, 4);
+                                        begin.statusAddress,
+                                        WAFER_TX81_DIRECT_DTE_STATUS_V2_VALUE_BYTES,
+                                        WAFER_TX81_DIRECT_DTE_STATUS_V2_VALUE_BYTES);
     if (!status || !status->slotOrdinal) {
       const std::string diagnostic = status
                                          ? "status address has no ABI slot"

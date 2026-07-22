@@ -850,7 +850,8 @@ per-rank argument blocks without an explicit SPMD publication ABI.
 
 `txLaunchModel` is now more than an opaque research hint: the exact V5.6
 type-6/type-7 layouts and device entry call have been recovered. Wafer's
-schema-v4 `tx81-model-bootparam-v1` publication/provider now owns the typed
+current schema-v5 `tx81-model-bootparam-v1` publication/provider (the model
+BootParam ABI was first introduced in schema-v4) now owns the typed
 builder, nested device-address and module-identity validation, artifact
 export/readback, and fake lifecycle gates. A fresh qualified full-good-board
 replay also completed two exact type-6/type-7 Add iterations over logical tile

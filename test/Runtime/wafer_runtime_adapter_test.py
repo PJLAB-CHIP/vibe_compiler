@@ -68,7 +68,7 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
             package = self.make_package(pathlib.Path(temporary))
             result = self.run_adapter(package, "--no-card")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("package: id=0 schema=4 ranks=1", result.stdout)
+        self.assertIn("package: id=0 schema=5 ranks=1", result.stdout)
         self.assertIn(
             "target_profile: wafer-tx81-single-card-kernel-v1", result.stdout
         )

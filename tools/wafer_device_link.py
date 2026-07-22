@@ -16,12 +16,14 @@ import tempfile
 DEFAULT_TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 DEFAULT_GCC_VERSION = "10.4.0"
 DEFAULT_MARCH = "rv64imafdc"
+DEFAULT_CRT_MCPU = "c908"
 DEFAULT_MABI = "lp64d"
 DEFAULT_LOADER_ABI = "tx8-kcore-loader-v1"
 BASE_LOADER_ABI_UNDEFINED_SYMBOLS = frozenset(
     {
         "get_log_level",
         "get_spm_memory_mapping",
+        "get_tile_spm_addr_base",
         "direct_dte_attach",
         "direct_dte_release",
         "direct_dte_send_async",
@@ -45,9 +47,12 @@ LOADER_ABI_UNDEFINED_SYMBOLS = {
     "tx8-kcore-loader-v1": BASE_LOADER_ABI_UNDEFINED_SYMBOLS,
     "tx8-kcore-loader-grid-v1": BASE_LOADER_ABI_UNDEFINED_SYMBOLS
     | {"__get_pid"},
+    "tx8-kcore-loader-cluster-v1": BASE_LOADER_ABI_UNDEFINED_SYMBOLS
+    | {"__get_pid", "init_tile_id"},
 }
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_TX8_DEPS_DIR = REPO_ROOT / "third_party" / "tx8_deps"
+DEFAULT_WAFER_INCLUDE_DIR = REPO_ROOT / "include"
 DEFAULT_WAFER_CRT_SOURCE = REPO_ROOT / "runtime" / "wafer_crt" / "src" / "wafer_tx81_crt.c"
 DEFAULT_WAFER_CRT_INCLUDE_DIR = REPO_ROOT / "runtime" / "wafer_crt" / "include"
 
@@ -222,8 +227,9 @@ def build_commands(
         "-DCONFIG_NO_PLATFORM_HOOK_H",
         "-DUSING_RISCV",
         f"-I{wafer_crt_include_dir}",
+        f"-I{DEFAULT_WAFER_INCLUDE_DIR}",
         f"-I{tx8_include_dir}",
-        f"-march={args.march}",
+        f"-mcpu={args.crt_mcpu}",
         f"-mabi={args.mabi}",
         "-o",
         str(crt_object_output),
@@ -324,6 +330,8 @@ def validate_execute_inputs(
     wafer_crt_include_dir = pathlib.Path(args.wafer_crt_include_dir)
     if not wafer_crt_include_dir.is_dir():
         fail(f"Wafer CRT include dir does not exist: {wafer_crt_include_dir}")
+    if not DEFAULT_WAFER_INCLUDE_DIR.is_dir():
+        fail(f"Wafer public include dir does not exist: {DEFAULT_WAFER_INCLUDE_DIR}")
     tx8_include_dir = resolve_tx8_include_dir(
         pathlib.Path(args.tx8_deps_root), args.tx8_include_dir
     )
@@ -504,6 +512,11 @@ def main() -> int:
     parser.add_argument("--toolchain-dir-name", default=DEFAULT_TOOLCHAIN_DIR)
     parser.add_argument("--gcc-version", default=DEFAULT_GCC_VERSION)
     parser.add_argument("--march", default=DEFAULT_MARCH)
+    parser.add_argument(
+        "--crt-mcpu",
+        default=DEFAULT_CRT_MCPU,
+        help="Xuantie CPU selected for the TX81 target CRT",
+    )
     parser.add_argument("--mabi", default=DEFAULT_MABI)
     parser.add_argument(
         "--loader-abi",

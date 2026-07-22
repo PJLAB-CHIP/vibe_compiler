@@ -193,16 +193,94 @@ llvm::Expected<TargetLLVMModuleBundle>
 compileExecutableBundleToTargetLLVMModules(
     const ExecutableBundle &executableBundle, llvm::raw_ostream &diagnostics);
 
+/// Bundle-local identity for one unique published target payload. Rank to
+/// payload coverage is represented only by VerifiedTargetRankInterface; this
+/// identifier carries no implicit logical-rank or scope semantics.
+class TargetArtifactModuleId {
+public:
+  TargetArtifactModuleId() = delete;
+  explicit constexpr TargetArtifactModuleId(uint64_t value) : value(value) {}
+
+  constexpr uint64_t getValue() const { return value; }
+
+  friend constexpr bool operator==(TargetArtifactModuleId lhs,
+                                   TargetArtifactModuleId rhs) {
+    return lhs.value == rhs.value;
+  }
+  friend constexpr bool operator!=(TargetArtifactModuleId lhs,
+                                   TargetArtifactModuleId rhs) {
+    return !(lhs == rhs);
+  }
+  friend constexpr bool operator<(TargetArtifactModuleId lhs,
+                                  TargetArtifactModuleId rhs) {
+    return lhs.value < rhs.value;
+  }
+
+private:
+  uint64_t value;
+};
+
+/// Semantic role of one externally visible target-module function. Symbol
+/// spelling is only a loader locator; the closed launch ABI interprets roles.
+enum class TargetExportRole { Prepare, Main };
+
+class VerifiedTargetExport {
+public:
+  TargetExportRole getRole() const { return role; }
+  llvm::StringRef getSymbol() const { return symbol; }
+
+private:
+  friend struct TargetArtifactBundleBuilder;
+
+  VerifiedTargetExport(TargetExportRole role, llvm::StringRef symbol)
+      : role(role), symbol(symbol.str()) {}
+
+  TargetExportRole role;
+  std::string symbol;
+};
+
 class VerifiedTargetModule {
 public:
-  int64_t getLogicalRank() const { return logicalRank; }
-  llvm::StringRef getEntrySymbol() const { return entrySymbol; }
+  TargetArtifactModuleId getId() const { return id; }
   llvm::StringRef getRelativePath() const { return relativePath; }
   llvm::StringRef getContentDigest() const { return contentDigest; }
   TargetProfileId getTargetProfileId() const { return targetProfile; }
   TargetIdentityId getTargetIdentityId() const { return targetIdentity; }
   KernelRuntimeABIId getKernelRuntimeABIId() const { return kernelRuntimeABI; }
   llvm::StringRef getModuleFormat() const { return moduleFormat; }
+  const std::vector<VerifiedTargetExport> &getExports() const {
+    return exports;
+  }
+
+private:
+  friend struct TargetArtifactBundleBuilder;
+
+  VerifiedTargetModule(TargetArtifactModuleId id, llvm::StringRef relativePath,
+                       llvm::StringRef contentDigest,
+                       TargetProfileId targetProfile,
+                       TargetIdentityId targetIdentity,
+                       KernelRuntimeABIId kernelRuntimeABI,
+                       llvm::StringRef moduleFormat,
+                       std::vector<VerifiedTargetExport> exports)
+      : id(id), relativePath(relativePath.str()),
+        contentDigest(contentDigest.str()), targetProfile(targetProfile),
+        targetIdentity(targetIdentity), kernelRuntimeABI(kernelRuntimeABI),
+        moduleFormat(moduleFormat.str()), exports(std::move(exports)) {}
+
+  TargetArtifactModuleId id;
+  std::string relativePath;
+  std::string contentDigest;
+  TargetProfileId targetProfile;
+  TargetIdentityId targetIdentity;
+  KernelRuntimeABIId kernelRuntimeABI;
+  std::string moduleFormat;
+  std::vector<VerifiedTargetExport> exports;
+};
+
+class VerifiedTargetRankInterface {
+public:
+  int64_t getLogicalRank() const { return logicalRank; }
+  TargetArtifactModuleId getModuleId() const { return moduleId; }
   const std::vector<KernelABISlot> &getKernelABISlots() const {
     return kernelABISlots;
   }
@@ -210,28 +288,14 @@ public:
 private:
   friend struct TargetArtifactBundleBuilder;
 
-  VerifiedTargetModule(int64_t logicalRank, llvm::StringRef entrySymbol,
-                       llvm::StringRef relativePath,
-                       llvm::StringRef contentDigest,
-                       TargetProfileId targetProfile,
-                       TargetIdentityId targetIdentity,
-                       KernelRuntimeABIId kernelRuntimeABI,
-                       llvm::StringRef moduleFormat,
-                       std::vector<KernelABISlot> kernelABISlots)
-      : logicalRank(logicalRank), entrySymbol(entrySymbol.str()),
-        relativePath(relativePath.str()), contentDigest(contentDigest.str()),
-        targetProfile(targetProfile), targetIdentity(targetIdentity),
-        kernelRuntimeABI(kernelRuntimeABI), moduleFormat(moduleFormat.str()),
+  VerifiedTargetRankInterface(int64_t logicalRank,
+                              TargetArtifactModuleId moduleId,
+                              std::vector<KernelABISlot> kernelABISlots)
+      : logicalRank(logicalRank), moduleId(moduleId),
         kernelABISlots(std::move(kernelABISlots)) {}
 
   int64_t logicalRank;
-  std::string entrySymbol;
-  std::string relativePath;
-  std::string contentDigest;
-  TargetProfileId targetProfile;
-  TargetIdentityId targetIdentity;
-  KernelRuntimeABIId kernelRuntimeABI;
-  std::string moduleFormat;
+  TargetArtifactModuleId moduleId;
   std::vector<KernelABISlot> kernelABISlots;
 };
 
@@ -247,33 +311,39 @@ public:
   const std::vector<VerifiedTargetModule> &getModules() const {
     return modules;
   }
+  const std::vector<VerifiedTargetRankInterface> &getRankInterfaces() const {
+    return rankInterfaces;
+  }
 
 private:
   friend struct TargetArtifactBundleBuilder;
 
   TargetArtifactBundle(llvm::StringRef rootDirectory,
                        ExecutionConfig executionConfig,
-                       std::vector<VerifiedTargetModule> modules)
+                       std::vector<VerifiedTargetModule> modules,
+                       std::vector<VerifiedTargetRankInterface> rankInterfaces)
       : rootDirectory(rootDirectory.str()), executionConfig(executionConfig),
-        modules(std::move(modules)) {}
+        modules(std::move(modules)), rankInterfaces(std::move(rankInterfaces)) {
+  }
 
   std::string rootDirectory;
   ExecutionConfig executionConfig;
   std::vector<VerifiedTargetModule> modules;
+  std::vector<VerifiedTargetRankInterface> rankInterfaces;
 };
 
-/// Links and publishes the exact verified LLVM modules owned by the bundle.
-/// This consumer never re-runs ABI preparation, target lowering, or LLVM
-/// translation.
+/// Materializes the launch-ABI module topology from the exact verified LLVM
+/// rank domain and publishes it atomically. This consumer never re-runs ABI
+/// preparation, target lowering, or LLVM translation.
 llvm::Expected<TargetArtifactBundle>
 compileTargetLLVMModuleBundleToTargetArtifacts(
     const TargetLLVMModuleBundle &targetLLVMModules,
     llvm::StringRef outputDirectory, const TargetToolchain &toolchain,
     llvm::raw_ostream &diagnostics);
 
-/// Compiles and links every executable rank into a private transaction
-/// directory, verifies the complete rank/module/entry/ABI/digest domain, and
-/// publishes the target-artifact root only after all ranks pass.
+/// Compiles the complete executable-rank domain into a private transaction,
+/// verifies the resulting all-and-only rank interfaces, unique modules,
+/// typed exports, ABI, and digests, and publishes only after all checks pass.
 llvm::Expected<TargetArtifactBundle> compileExecutableBundleToTargetArtifacts(
     const ExecutableBundle &executableBundle, llvm::StringRef outputDirectory,
     const TargetToolchain &toolchain, llvm::raw_ostream &diagnostics);

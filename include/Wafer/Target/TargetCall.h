@@ -258,6 +258,7 @@ enum class TargetCallBuiltin : uint8_t {
   TDMAImg2Col,
   LocalFence,
   DirectDTEBegin,
+  DirectDTEBeginAfterPrepare,
   DirectDTESendPrepare,
   DirectDTERecvPrepare,
   DirectDTEWait,
@@ -288,7 +289,7 @@ struct TargetCallDecodeContext {
   int64_t rankCount;
 };
 
-/// Returns the closed 110-call surface emitted by target LLVM lowering.
+/// Returns the closed 111-call surface emitted by target LLVM lowering.
 llvm::ArrayRef<TargetCallDescriptor> getTargetCallDescriptors();
 
 const TargetCallDescriptor *findTargetCallDescriptor(llvm::StringRef symbol);

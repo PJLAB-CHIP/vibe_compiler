@@ -73,7 +73,7 @@ Pipeline position:
   当前v1：normal/normal GEMM、现有compact RDMA/WDMA、GS、compute、peripheral、sync和已闭合Direct DTE
   family通过geometry/range/narrowing/full-conversion；任一失败source module byte-identical。
   TargetProfileId和TargetLaunchABIId从CompilationRequest/ExecutionConfig贯穿ExecutableBundle、TargetLLVMModuleBundle、
-  TargetArtifactBundle和package readback且没有default；closed compatibility table拒绝未资格化组合；110-symbol CRT conformance、rank-count=1/16
+  TargetArtifactBundle和package readback且没有default；closed compatibility table拒绝未资格化组合；111-symbol CRT conformance、rank-count=1/16
   owner lifetime、all-and-only module/ABI-slot/digest、late-rank atomic failure和真实production driver通过。
   Q32.V/Q3.6各自拥有独立completion gate，不反向改写current v1证据；Q32.V新增typed profile/ABI row由
   Q32.M/S通用candidate owner消费。
@@ -110,8 +110,9 @@ v1 key 含义。
 普通 instruction-to-target conversion只用`TargetProfileId`取得target identity、runtime
 ABI、module format、logical-format encoding 和 exact call signature，并与 selected typed IR 交叉验证。它不读取
 model profile、board environment、admission status或planner上下文。Q17 device-entry materialization另从同一
-`ExecutionConfig`读取`TargetLaunchABIId`，选择per-rank pointer block、kernel-grid pid/rank-major table或model
-BootParam wrapper；该选择不能由symbol、module path或rank数恢复。
+`ExecutionConfig`读取`TargetLaunchABIId`，选择per-rank pointer block、kernel-grid pid/rank-major table、model
+BootParam wrapper或cluster Direct DTE prepare/main rank-major table。cluster只对完整16-rank Direct DTE contract开放，
+`prepare`与`main`是typed export role，symbol只是locator；该选择不能由symbol、module path、digest或rank数恢复。
 
 model semantics/evidence 由 `tasks/17-target-execution-model.md` 拥有；package/runtime/board admission 由
 `tasks/15-launch-runtime-package.md` 拥有。二者可以拒绝 compiler 已能发射的 module，但不能反向扩大
@@ -183,7 +184,13 @@ GEMM/batched-GEMM。winner中的compute/instruction已经直接
    address alias。Cx/NCx、dynamic offset 或 footprint 不同必须 fail closed。
 6. Direct DTE 只消费已提交的 typed physical binding：rank/peer 到 endpoint、opaque event、wait、
    remote receiver offset 和 typed status slot 均从 accepted IR/ABI 得到。缺 binding/status/remote
-   offset 一致性时拒绝。
+   offset 一致性时拒绝。accepted IR保留的是receiver planned SPM offset，不提前复制target映射地址；
+   TX81 CRT发送端在最终target边界用`get_tile_spm_addr_base(remote_tile, 4, 4) + remote_receiver_offset`
+   物化firmware `dst_addr`，本地source和receiver FSM仍消费各自的raw SPM offset。transport status位于host分配的
+   cacheable device DDR；current status-v2以64-byte storage/alignment独占一条TX81 cache line，逻辑`u32`位offset 0。
+   CRT在pending/error/success每次publication时先更新本地状态，再写status并按C908 firmware
+   `FLUSH`路径对该cache line执行clean/invalidate。`volatile` store或entry return本身不构成host D2H可见性；
+   4-byte allocation不能证明cache operation不影响相邻resource。
 7. 没有 explicit DDR arena base binding 的 compiler-managed arena-relative allocation 不能变成 target
    address。ABI preparation追加 typed arena-base slot后，lowering才生成 `base + offset`。
 
@@ -231,7 +238,12 @@ current v1 最低规则：
   不存在额外packing field或lowering-time pack fallback。
 - ordinary conv、pool/unpool、TDMA pad/img2col 和已支持 peripheral：shape attrs 与 memref、算子和
   capacity 一致；未定义 shape profile 的 op fail closed。
-- DTE：bytes/range、peer/endpoint、remote offset、event/status/completion 都来自 typed accepted IR。
+- DTE：bytes/range、peer/endpoint、remote offset、event/status/completion 都来自 typed accepted IR；
+  lowering传递本地source offset、accepted remote receiver offset和本地receiver offset，TX81 CRT只在sender
+  `dst_addr`边界结合target 4×4 topology形成peer SPM映射地址。不得把mapped peer address回写进IR，
+  也不得把本地FSM offset改成Kcore CPU mapped pointer。device linker对通用target LLVM继续使用既有RV64 ISA，
+  对包含cache publication实现的TX81 CRT单独以`-mcpu=c908`编译；最终CRT反汇编必须存在C908 cache操作，不能留下
+  未解析的firmware cache helper符号。
 - completion op：只等待真实 issue token/engine，不能丢 token 或合并不相关 completion。
 
 传入 CRT 的地址使用 checked uint64；普通 count/stride/iteration/enum 和 `mask_move` mask 使用 checked
@@ -349,7 +361,8 @@ TargetLLVMModuleBundle
   -> TargetArtifactBundle
 ```
 
-current typed artifact 与 live C++ owner一致：
+current typed artifact 以rank interface表示rank到payload的唯一引用关系；module不再复制logical rank、
+scope或slot schema：
 
 ```text
 ExecutionConfig {
@@ -370,34 +383,58 @@ KernelABISlot {
   alignment
 }
 
+TargetArtifactModuleId
+
+VerifiedTargetExport {
+  role                         // prepare | main
+  symbol                       // ELF locator only
+}
+
 VerifiedTargetModule {
-  logical_rank
-  entry_symbol
+  TargetArtifactModuleId
   delivery_relative_path
   content_sha256
   TargetProfileId
   TargetIdentityId
   KernelRuntimeABIId
   module_format
+  VerifiedTargetExport[]
+}
+
+VerifiedTargetRankInterface {
+  logical_rank
+  TargetArtifactModuleId
   KernelABISlot[]
 }
 
 TargetArtifactBundle {
   publication_root
   ExecutionConfig
-  VerifiedTargetModule[] ordered by logical rank
+  VerifiedTargetModule[] unique payload domain
+  VerifiedTargetRankInterface[] ordered by logical rank
 }
 ```
 
 slot ordinals all-and-only连续；shape、bytes、alignment为positive且在typed range内，alignment为2的幂。
-logical rank all-and-only覆盖 `[0, rank_count)`。target profile/identity/runtime ABI/module format必须逐module
-与 `ExecutionConfig` 及 closed profile mapping一致；launch ABI必须满足closed profile兼容表。kernel-grid只在
-16-rank slot schema一致且最终modules byte-identical时发布，并使用只对该ABI放行`__get_pid`的loader symbol closure；
-model只在parameter-free f32 rank-1..6 tensor合同、共享entry及动态导出表/重定位readback通过时发布。
+rank interface all-and-only覆盖 `[0, rank_count)`，每个interface只引用一个已存在module，每个module至少被一个
+interface引用；该引用拓扑是rank-local/shared payload的唯一事实源，不再另存module scope。target
+profile/identity/runtime ABI/module format必须逐module与`ExecutionConfig`及closed profile mapping一致。
+`VerifiedTargetExport.role`在module内唯一，symbol只是ELF locator；具体calling convention和submit语义由
+`(TargetLaunchABIId, role)`的唯一closed registry解释，不增加平行entry-ABI事实源。
 
-每个 `VerifiedTargetModule` 从其 input `TargetLLVMModule`、link output 和 readback逐字段构造；Q17不回读
-`ExecutableBundle`，也不用 path、symbol scan 或 manifest补 typed fields。relative path只负责定位
-publication root下的bytes，由content digest约束。
+per-rank为rank interface到module的一一映射且每个module只有`main`；model保持16个rank-local
+payload、`main`导出及现有BootParam gate。kernel-grid在16-rank slot schema一致且最终module byte-identical后只
+发布一个被16个rank interface共同引用的payload，并使用只对该ABI放行`__get_pid`的loader symbol
+closure。`tx81-cluster-direct-dte-prepare-main-v1`也只发布一个共享payload，但它从16个已验证的
+rank-specialized LLVM body构造：在同一LLVM context中确定性重命名/内部化definitions，link后生成
+`__get_pid(0)` dispatch的`main`；`prepare`以同一pid调用`init_tile_id(pid, 4)`建立TX81单卡4×4拓扑状态，再调用
+`direct_sync_init(16)`。cluster loader closure只额外放行`__get_pid`和`init_tile_id`。聚合前对COMDAT、alias/
+ifunc、ctor/dtor/appending global等未闭合链接语义fail closed；不从callee名、路径或digest推断phase。
+cluster的16个rank-major pointer row不得超过当前V5.6 C-INS packet的`0x7d0`-byte argument上限。
+
+每个 `VerifiedTargetModule` 从input `TargetLLVMModuleBundle`、typed launch ABI、link output和readback逐字段构造；
+`VerifiedTargetRankInterface`直接投影同一bundle的rank和ordered slots。Q17不回读`ExecutableBundle`，也不用
+path、symbol scan或manifest补typed fields。relative path只负责定位publication root下的bytes，由content digest约束。
 
 prepared value在publish前预分配final root string、module/slot vectors和diagnostic所需storage。no-replace
 rename是最后一个fallible step；成功后只允许noexcept move/type-state promote，不再分配、hash、parse、stat或
@@ -425,7 +462,7 @@ current v1测试层次：
 1. op/verifier negative：OOB、descriptor payload、shape relation、alignment和narrowing；
 2. conversion：branch/loop/call结构保持、typed calls、full legality、late failure source identity；
 3. profile/format：explicit v1 profile、unknown/missing拒绝、engine×format和convert whitelist；
-4. CRT：110-symbol header/source/signature/wrapper conformance，v1/v2 GEMM transflag分别固定/显式；
+4. CRT：111-symbol header/source/signature/wrapper conformance，v1/v2 GEMM transflag分别固定/显式；
 5. device link：compiler-generated positive和required/allowed undefined negative；
 6. owner lifetime：rank-count=1/16 `TargetLLVMModuleBundle`、module/context lifetime、move-only type；
 7. Q17 publication：all-and-only modules、identity/ABI slots/digest和late-rank atomic failure；

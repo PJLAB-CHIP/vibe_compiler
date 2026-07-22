@@ -27,6 +27,7 @@ add_mlir_library(WaferCompiler
   TargetABIPreparation.cpp
   TargetArtifact.cpp
   TargetArtifactPublication.cpp
+  TargetClusterArtifact.cpp
   TargetDeviceLink.cpp
   TargetLLVMTranslation.cpp
   TargetModuleReadback.cpp
@@ -43,6 +44,7 @@ add_mlir_library(WaferCompiler
   LLVMBitWriter
   LLVMExecutionEngine
   LLVMJITLink
+  LLVMLinker
   LLVMObject
   LLVMOrcJIT
   LLVMRuntimeDyld

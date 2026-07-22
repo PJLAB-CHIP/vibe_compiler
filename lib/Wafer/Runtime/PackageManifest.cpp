@@ -28,6 +28,16 @@ findModule(llvm::ArrayRef<PackageModuleRecord> modules, ModuleId id) {
   return iterator == modules.end() ? nullptr : &*iterator;
 }
 
+const PackageModuleExportRecord *
+findModuleExport(const PackageModuleRecord &module,
+                 PackageModuleExportRole role) {
+  auto iterator = llvm::find_if(
+      module.exports, [&](const auto &moduleExport) {
+        return moduleExport.role == role;
+      });
+  return iterator == module.exports.end() ? nullptr : &*iterator;
+}
+
 const PackageCompletionRecord *
 findCompletion(llvm::ArrayRef<PackageCompletionRecord> completions,
                CompletionId id) {
@@ -66,6 +76,17 @@ llvm::StringRef stringifyPackageAccessMode(PackageAccessMode access) {
     return "read_write";
   }
   llvm_unreachable("unknown package access mode");
+}
+
+llvm::StringRef
+stringifyPackageModuleExportRole(PackageModuleExportRole role) {
+  switch (role) {
+  case PackageModuleExportRole::Prepare:
+    return "prepare";
+  case PackageModuleExportRole::Main:
+    return "main";
+  }
+  llvm_unreachable("unknown package module export role");
 }
 
 } // namespace wafer::runtime

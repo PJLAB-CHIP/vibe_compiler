@@ -96,10 +96,12 @@
   16×grid1 provider lifecycle smoke，current V5.6静态确认都由tile0执行；它不再作为16-tile gate。真实多tile命令只有对应
   static/fake gate先通过后才串行执行
   `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-kernel-grid-add$' --output-on-failure`和
-  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-model-add$' --output-on-failure`；两者之间再次只读验卡，
+  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-model-add$' --output-on-failure`；Direct DTE再独立执行
+  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-cluster-direct-dte$' --output-on-failure`。各项之间只读验卡，
   首个失败或超时即停，不retry/reset/power，也不能用临时runner路径替代已注册CTest。开启importer/SPMD helper的配置还应在未armed
-  环境实际执行`wafer-runtime-kernel-grid-add-no-card`和`wafer-runtime-model-add-no-card`，它们从production source fresh编译到
-  schema-v4 package并进入all-rank no-card consumer，不允许返回77或以fake manifest替代。
+  环境实际执行对应kernel-grid、model和Direct DTE production no-card gate，它们从production source fresh编译到
+  schema-v5 package并进入all-rank no-card consumer，不允许返回77或以fake manifest替代。schema-v5 module不带rank，
+  entry不带symbol；rank覆盖只由entry到module引用表达，module通过typed exports定位`prepare`/`main`。
   vendor adapter由`tools/wafer-run` executable拥有，通用`WaferRuntime`只拥有typed provider接口和lifecycle executor；
   不把`tx_runtime` header/library依赖放进compiler或通用runtime library。
 - TX device publication必须用当前pinned LLVM installation内的`clang++`消费compiler打印的opaque-pointer LLVM IR；
@@ -113,11 +115,14 @@
   完整CPU comparison；device异步错误可能只在后续D2H出现，不能只看launch/synchronize或vendor程序退出码。预置sample和fresh
   tutorial build不自动成为known-good。legacy host runtime的`ldd -r`失败只排除该legacy路径，不能反推当前public `libhpgr`
   主线不兼容。
-- Board provider把首个非success runtime结果保守标成sticky poisoned。executor只在provider仍明确usable时逆序cleanup；poisoned后
+- Board provider只把低层query/device error、deadline或其它无法信任terminal/context的结果标成sticky poisoned；普通
+  `NOT_READY`仍是pending。executor只在provider仍明确usable时逆序cleanup；poisoned后
   不再调用copyback、unload、free或provider error-string，CLI flush typed stage/context诊断后直接结束一次性进程。reset、power、
   PCI/driver恢复和retry都不属于invocation cleanup；需要时由用户在进程外显式执行并重新从qualification开始。board成功或失败
   都在显式module/allocation lifecycle和output/diagnostic flush后用`std::_Exit`结束，不触发未经资格化的vendor DSO finalizer。
-  `dlopen`成功后的symbol/readback失败也必须leak handle并走相同`std::_Exit`，不能用RAII `dlclose`触发未知fini链。
+  `dlopen`成功后的symbol/readback失败也必须leak handle并走相同`std::_Exit`，不能用RAII `dlclose`触发未知fini链。CPU comparator在
+  trusted completion、D2H和显式cleanup之后运行；其数值失败不改变provider disposition。只有明确poison、untrusted terminal或
+  执行后只读resource/inventory未回到基线时才进入恢复判定，clean numeric mismatch不要求重启。
 - 当前V5.6 kernel提交是异步消费host argument bytes；provider必须深拷贝每个argument block并至少持有到成功release，不能把
   invocation-local `SmallVector`/stack地址交给vendor queue。所有kernel ABI在首个TX effect前还必须检查packet不超过`0x7dc`
   （2012）字节。model type-6同步调用没有内部deadline；真实model CTest必须运行在一次性子进程外层deadline内，超时后kill/wait并
@@ -134,8 +139,22 @@
   full-good logical inventory、逐字节不同于expected的output canary、16个互斥slice和完整CPU exact形成logical tile 0..15执行依据；
   不声明physical tile坐标。BPM是当前V5.6 exact-build恢复ABI，public API无builder；repository-owned typed builder、
   nested allocation lifetime、module identity、artifact export/readback和fake lifecycle必须先于真实板测闭合。
-  nested allocation/module identity和fake gate闭合前不得触卡。Direct DTE继续独立fail closed，PG selection、inventory、reset或power
-  都不能补placement/readiness/completion语义。
+  nested allocation/module identity和fake gate闭合前不得触卡。Direct DTE始终使用独立typed/static/fake/no-card/hardware gate，
+  PG selection、inventory、reset或power都不能补placement/readiness/completion语义。
+- TX81 C-Intrinsic Direct DTE不能只调用`direct_sync_init`。vendor生成entry先执行`init_tile_id(logic_id, row_length)`；
+  `direct_sync_post`从SPM `0x2f0458`读取row length来计算peer SPM base。当前full-16、offset=0时可用
+  `init_tile_id(__get_pid(0), 4)`，其中4来自单卡4×4 target topology；subset cluster的pid不是通用logical tile id，必须显式消费offset映射。
+- Direct DTE accepted binding中的remote receiver地址是peer planned SPM offset，不是firmware `DirectDTESendInfo.dst_addr`。
+  TX81 CRT sender必须用`get_tile_spm_addr_base(peer, 4, 4) + offset`形成远端映射地址；sender source和receiver FSM继续使用
+  本地raw SPM offset，不能统一套`get_spm_memory_mapping`。device-link base loader allowlist和fresh module/Kcore export closure必须包含
+  `get_tile_spm_addr_base`，并用CRT/module反汇编同时检查remote add与receiver未映射。
+- TX81 Kcore对host分配DDR的scalar store不是自动coherent。firmware进入dynamic module前只invalidate参数表，entry返回不clean
+  module写入；Direct DTE status-v2的逻辑`u32`位offset 0，resource以64-byte storage/alignment独占cache line，
+  CRT统一写入并对该line执行C908 `dcache.cipa/civa` clean/invalidate序列。
+  CRT以`-mcpu=c908`编译，通用kernel LLVM ISA配置保持独立；工具测试要反汇编检查cache opcode，不能只查C源码或`volatile`。
+- ready-order处理`wafer.instr.dte_wait`时必须沿token派生in-flight buffer effect：send wait延续source read，recv wait形成destination
+  completion write，并沿ViewLike追到storage base。focused unit同时覆盖recv-before-consumer与send-before-overwrite；production
+  qualification还要读回最终ELF顺序。反汇编前核对artifact的mtime、shape和digest，避免把并发重编译留下的旧产物当成当前结果。
 - 相同code object可能由vendor runtime复用为同一个module handle。adapter按`handle -> digest + logical owner count`维护所有权：
   同handle同digest只在最后一个logical owner释放时真正unload；同handle不同digest是provider contract violation并立即quarantine。
   query deadline要在每次低层query前后检查，不能只在完整rank轮询结束后检查，否则慢调用会使整体deadline失真。
@@ -277,7 +296,7 @@
   `.ll -> .o -> kcore .so` 不等于主线 gate 完成；required-symbol 检查必须拒绝未解释的
   `wafer_tx81_*` undefined symbol。
 - `tools/check_target_crt_symbols.py`从稳定Target层的typed target-call registry和`WaferAttrs.td` enum
-  spelling推导110项production surface，并确认target lowering只消费该registry，再与CRT header/source和编译对象
+  spelling推导111项production surface，并确认target lowering只消费该registry，再与CRT header/source和编译对象
   `nm`做exact closure；
   `check_target_crt_conformance.py`从instruction verifier、target address lowering和CRT实现交叉证明关系。
   两者都不能解析`tasks/`或supporting Markdown marker作为expected ABI事实源。
@@ -545,7 +564,7 @@
 - 当前typed package入口是`Wafer/Runtime/PackageManifest.h`：compiler只从Q16 `ExecutableBundle`和Q17
   `TargetArtifactBundle`构造manifest，在私有staging内复制payload、核对digest、canonical serialize/parse readback、
   fsync后no-replace发布。`wafer-run --package-dir <root> --entry-id <id> --no-card`是唯一runtime inspection入口；
-  Direct DTE package还必须显式声明兼容environment：`--direct-dte-status-abi wafer-direct-dte-status-v1
+  Direct DTE package还必须显式声明兼容environment：`--direct-dte-status-abi wafer-direct-dte-status-v2
   --supports-host-watchdog`，缺失时应fail closed；这些选项只形成preflight facts，不代表provider执行。
   Python adapter只启动该二进制。排查package时先跑`PackageManifestTest.*`和`test/Runtime/wafer-run.test`，不要恢复
   已删除的Python schema/exporter或C++ `HostRuntime` acceptance。
@@ -574,7 +593,7 @@
 - `wafer-compile --target-model`只消费显式`--model-input`和固定source CPU `--model-expected`。已发布的
   F16/BF16/F32 finite output按case显式atol/rtol逐元素比较；整数、布尔和其它非浮点storage raw exact；TF32/F64等
   尚无source-output policy的浮点格式fail closed，NaN/Inf拒绝。比较失败仍保留已经原子发布的verified package供审计。
-- target-call decoder closure不能只断言110项都能形成正确variant family。为每个descriptor生成ABI位置互异的sentinel，
+- target-call decoder closure不能只断言111项都能形成正确variant family。为每个descriptor生成ABI位置互异的sentinel，
   再逐字段比较typed payload中的地址、count、shape/stride、optional parameter、format和static kind；这样字段交换或漏消费
   才会失败。host native frontend的control value也要显式限制为integer/void，LLVM的pointer PHI/select/icmp本身合法，不能
   靠IR verifier替代frontend legality。

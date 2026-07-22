@@ -144,6 +144,15 @@ llvm::Expected<PackageAccessMode> parseAccess(llvm::StringRef access) {
   return invalid("unsupported package access mode '" + access + "'");
 }
 
+llvm::Expected<PackageModuleExportRole>
+parseModuleExportRole(llvm::StringRef role) {
+  if (role == "prepare")
+    return PackageModuleExportRole::Prepare;
+  if (role == "main")
+    return PackageModuleExportRole::Main;
+  return invalid("unsupported package module export role '" + role + "'");
+}
+
 llvm::Expected<PackageResourceRecord>
 parseResource(const llvm::json::Value &value, uint64_t index,
               const PackageParseLimits &limits) {
@@ -245,14 +254,11 @@ parseModuleRecord(const llvm::json::Value &value, uint64_t index,
   if (!object)
     return invalid(context + " must be an object");
   if (llvm::Error error = requireExactFields(
-          *object, {"id", "rank", "path", "digest", "format"}, context))
+          *object, {"id", "path", "digest", "format", "exports"}, context))
     return std::move(error);
   llvm::Expected<uint64_t> id = requireUnsigned(*object, "id", context);
   if (!id)
     return id.takeError();
-  llvm::Expected<int64_t> rank = requireInteger(*object, "rank", context);
-  if (!rank)
-    return rank.takeError();
   llvm::Expected<std::string> path =
       requireString(*object, "path", context, limits);
   if (!path)
@@ -265,8 +271,39 @@ parseModuleRecord(const llvm::json::Value &value, uint64_t index,
       requireString(*object, "format", context, limits);
   if (!format)
     return format.takeError();
-  return PackageModuleRecord{ModuleId(*id), *rank, std::move(*path),
-                             std::move(*digest), std::move(*format)};
+  llvm::Expected<const llvm::json::Array *> exports =
+      requireArray(*object, "exports", context);
+  if (!exports)
+    return exports.takeError();
+  if ((*exports)->size() > limits.maxRecords)
+    return invalid(context + ".exports exceeds record limit");
+
+  PackageModuleRecord record{ModuleId(*id), std::move(*path),
+                             std::move(*digest), std::move(*format), {}};
+  for (auto [exportIndex, exportValue] : llvm::enumerate(**exports)) {
+    const llvm::json::Object *moduleExport = exportValue.getAsObject();
+    std::string exportContext =
+        context + ".exports[" + std::to_string(exportIndex) + "]";
+    if (!moduleExport)
+      return invalid(exportContext + " must be an object");
+    if (llvm::Error error = requireExactFields(
+            *moduleExport, {"role", "symbol"}, exportContext))
+      return std::move(error);
+    llvm::Expected<std::string> roleText =
+        requireString(*moduleExport, "role", exportContext, limits);
+    if (!roleText)
+      return roleText.takeError();
+    llvm::Expected<PackageModuleExportRole> role =
+        parseModuleExportRole(*roleText);
+    if (!role)
+      return role.takeError();
+    llvm::Expected<std::string> symbol =
+        requireString(*moduleExport, "symbol", exportContext, limits);
+    if (!symbol)
+      return symbol.takeError();
+    record.exports.push_back({*role, std::move(*symbol)});
+  }
+  return record;
 }
 
 llvm::Expected<PackageCompletionRecord>
@@ -337,7 +374,7 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
     return invalid(context + " must be an object");
   if (llvm::Error error =
           requireExactFields(*object,
-                             {"id", "rank", "module", "symbol", "slots",
+                             {"id", "rank", "module", "slots",
                               "terminal_completion", "transport"},
                              context))
     return std::move(error);
@@ -350,10 +387,6 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
   llvm::Expected<uint64_t> module = requireUnsigned(*object, "module", context);
   if (!module)
     return module.takeError();
-  llvm::Expected<std::string> symbol =
-      requireString(*object, "symbol", context, limits);
-  if (!symbol)
-    return symbol.takeError();
   llvm::Expected<const llvm::json::Array *> slots =
       requireArray(*object, "slots", context);
   if (!slots)
@@ -377,7 +410,6 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
   record.id = EntryId(*id);
   record.logicalRank = *rank;
   record.module = ModuleId(*module);
-  record.symbol = std::move(*symbol);
   record.terminalCompletion = CompletionId(*completion);
   record.transport = std::move(*transport);
   for (auto [slotIndex, slotValue] : llvm::enumerate(**slots)) {

@@ -3,6 +3,7 @@
 #ifndef WAFER_TRANSFORMS_TARGETCONVERSION_H
 #define WAFER_TRANSFORMS_TARGETCONVERSION_H
 
+#include "Wafer/Target/TargetLaunchABI.h"
 #include "Wafer/Target/TargetProfile.h"
 
 #include <cstdint>
@@ -22,6 +23,7 @@ struct TargetConversionRequest {
   int64_t defaultDDRArenaArgumentIndex = -1;
   int64_t logicalRank = -1;
   int64_t transportStatusArgumentIndex = -1;
+  TargetLaunchABIId launchABI = TargetLaunchABIId::perRankPointerBlockV1();
 };
 
 std::unique_ptr<mlir::Pass>

@@ -1,7 +1,7 @@
 # TX81 CRT Static Evidence Matrix
 
-本文把旧DLCompiler TX81 CRT source audit与repo-local Wafer CRT实现做静态对照。它只记录
-source-backed evidence，不拥有production membership、prototype/signature、IR、ABI、lowering或
+本文把旧DLCompiler TX81 CRT source、当前public headers/installed binary反汇编与repo-local Wafer CRT实现做静态对照。它只记录
+source/disassembly-backed evidence，不拥有production membership、prototype/signature、IR、ABI、lowering或
 runtime policy。当前IR / ABI和production closure合同查看`tasks/14-target-conversion-module-publication.md`，
 prototype与repo-local实现分别查看`runtime/wafer_crt/include/wafer_tx81_crt.h`和
 `runtime/wafer_crt/src/wafer_tx81_crt.c`；闭合状态查看`tools/check_target_crt_symbols.py`与
@@ -9,11 +9,11 @@ prototype与repo-local实现分别查看`runtime/wafer_crt/include/wafer_tx81_cr
 
 ## Scope
 
-- Evidence source：旧 DLCompiler `lib/Tx81` source snapshot与public TX8 headers。
+- Evidence source：旧 DLCompiler `lib/Tx81` source snapshot、public TX8 headers，以及digest-qualified installed Kcore/vendor module反汇编。
 - Repo-local observation：compiler target lowering以及`runtime/wafer_crt` public header/source中可直接
   读取的legality、ABI、wrapper调用、参数处理、wait/writeback和optional-feature配置。
 - 本表不因旧helper存在而授权新symbol，也不定义某个family的production状态。
-- 当前symbol checker从target lowering和Wafer enum registry推导出104个production symbol；这是当前
+- 当前symbol checker从target lowering和Wafer enum registry推导出111个production symbol；这是当前
   实现的可重放观察，closure事实源仍是checker，不由本表另建清单。
 
 ## Static Matrix
@@ -34,38 +34,28 @@ prototype与repo-local实现分别查看`runtime/wafer_crt/include/wafer_tx81_cr
 | Peripheral factorize | no matching old source file was found; public headers expose the wrapper entry point | repo-local CRT header/source不含factorize symbol；compiler target lowering将该IR kind显式判为`unsupported_target_operation`，不能进入production closure |
 | Peripheral elem-mask | no matching old source file was found; public headers expose the wrapper entry point | Wafer CRT contains the corresponding public-wrapper call |
 | Peripheral bilinear / LUT / random | `__Bilinear`, `__Lut16`, `__Lut32` and `__RandGen` provide direct wrapper evidence | Wafer CRT contains the corresponding public-wrapper calls; bilinear scale is computed from shapes |
-| Count / Direct DTE / composite helpers | old source contains `__Count`, `__Send`, an empty `__Recv`, GELU, MXFP, reduce-mul and layout helpers | these helper names are not observed in the repo-local CRT source snapshot; the old source alone does not establish reusable Wafer IR / ABI or completion semantics |
+| Direct DTE | old source contains `__Send` and an empty `__Recv`; current public/Kcore headers and installed firmware additionally expose direct sync、FSM、async send/wait/release、tile-id和peer-SPM helpers | Wafer CRT implements typed begin/begin-after-prepare、send/recv prepare、wait和finish status lifecycle。sender source与receiver FSM使用raw local SPM offset，sender destination使用`get_tile_spm_addr_base(remote,4,4)+offset`；status-v2以64-byte storage/alignment独占cache line，offset 0的`u32`写入cacheable DDR后执行C908 cache clean/invalidate |
+| Count / composite helpers | old source contains `__Count`, GELU, MXFP, reduce-mul and layout helpers | these helper names are not observed in the repo-local CRT source snapshot; the old source alone does not establish reusable Wafer IR / ABI or completion semantics |
 
-Direct DTE当前没有physical endpoint/slot和target CRT closure，target conversion在call emission前将
-`wafer.instr.dte_*`判为`unsupported_target_transport`。同样，只有arena-relative offset、没有explicit
-arena base binding的compiler-managed DDR allocation会判为`unsupported_target_address`；两者都不能由
-runtime或CRT补做语义恢复。
+Direct DTE当前只消费compiler已经all-rank accepted的physical binding、remote receiver offset、token/wait和typed status slot；
+target conversion/CRT不重新选择endpoint、FSM或route。cluster prepare先执行`init_tile_id(__get_pid(0),4)`，再执行
+`direct_sync_init(16)`；main不重复清ready slots。只有arena-relative offset、没有explicit arena base binding的
+compiler-managed DDR allocation仍会判为`unsupported_target_address`，不能由runtime或CRT补做语义恢复。
 
 ## Evidence Limits
 
-- Static source matching can show wrapper call order and field handling; it cannot establish compiler legality,
+- Static source/disassembly matching can show wrapper call order and field handling; it cannot by itself establish compiler legality,
   instruction coverage, target ABI acceptance or runtime completion.
 - Missing old source does not imply missing hardware capability, and an old helper name does not imply a reusable
   Wafer target symbol.
 - Production closure contract、header prototype、repo-local implementation和closure result分别以编号设计、
   public header/source、checker与任务队列为准。
 
-## Legacy Checker Compatibility
-
-`tools/check_target_crt_conformance.py`当前仍做presence-only的历史文本检查。下面的token只为保持现有
-gate可重放，不是状态、分类协议或ABI source；解除该耦合已由`tasks/progress.md`中的
-`supporting-doc-tool-decoupling`单独排期。
-
-- `direct-wrapper-derived`
-- `public-header-derived`
-- `intentionally-excluded`
-- `mismatch-fixed-this-batch`
-
 Pipeline position:
-- Upstream artifact / IR: none; this file consumes source snapshots as evidence.
+- Upstream artifact / IR: none; this file consumes source and binary snapshots as evidence.
 - Current stage responsibility: preserve an auditable static evidence comparison.
 - Output artifact / IR: none.
-- Downstream consumer: legacy presence-only conformance check; no compiler or runtime consumer.
+- Downstream consumer: human/static evidence audit；conformance tools derive expected facts from code and do not parse this document.
 - User-level driver / named pipeline: none.
 - Explicit non-goals: owning production membership, IR, ABI, lowering, package or runtime policy.
-- Completion gate: evidence statements remain source-backed and current contracts remain in numbered designs.
+- Completion gate: evidence statements remain source/disassembly-backed and current contracts remain in numbered designs.

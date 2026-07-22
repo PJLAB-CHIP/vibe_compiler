@@ -132,7 +132,7 @@ Pipeline position:
   transport和terminal completion；target model不得重新选择candidate或重算跨rankbinding。
 - tasks/14现有per-rank transaction-local target preparation已完成entry output/workspace/status ABI preparation，随后把
   instruction结构保持地lower为fixed `void(i64...)` target LLVM CRT calls；RISC-V device link在该lowering之后发生。
-- 当前Wafer CRT header、lowering、source和checker形成110个production symbol的闭合surface。CRT源码通过
+- 当前Wafer CRT header、lowering、source和checker形成111个production symbol的闭合surface。CRT源码通过
   `TsmNew*`/operator function table填写`Tsm*Instr`并调用`TsmExecute`，而不是直接写模型结果；symbol存在仍只证明
   ABI closure，不证明packet、numeric或hardware completion。
 - plain `wafer_tx81_gemm`没有orientation字段，模型继续发布implicit normal/normal canonical row；v2
@@ -140,9 +140,9 @@ Pipeline position:
   checked折入最终transaction address，模型不读取planner relation或恢复layout conversion。
 - Q17正式交付物是all-and-only RISC-V ELF `TargetArtifactBundle`；Q18 package只包含typed resource/slot/module/
   entry/completion/transport requirement，不包含instruction schedule。
-- Q18保留pure no-card `RuntimeSessionPlan`；Q6.B已另行实现per-rank、单次kernel-grid和type-6/type-7 model三种
-  `transport:none`真实`RuntimeProvider`生命周期，并以fresh Add完成板端数值gate。Direct DTE真实receiver
-  placement/readiness/completion仍未实现，不能由这些NoTransport结果替代。
+- Q18保留pure no-card `RuntimeSessionPlan`；Q6.B已另行实现per-rank、单次kernel-grid、type-6/type-7 model和cluster
+  prepare/main Direct DTE四种真实`RuntimeProvider`生命周期。前三者以fresh Add闭合NoTransport板端数值gate，第四条以
+  16-rank、每rank 256-byte tree reduction/broadcast闭合真实receiver placement/readiness/completion；这些证据彼此不能替代。
 - accepted instruction/memory facts由target lowering和target model直接消费；不存在独立reference-only numeric或
   deterministic DTE policy可成为target model的旁路事实源。
 - Q0.L shared registry显式枚举13种logical format，但engine×format准入只开放tasks/14有静态编码证据的row；
@@ -970,7 +970,7 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 #### Q22.H repo-owned target-call frontend
 
 - Q22.L同一target LLVM经过owner-safe clone/native retarget和动态slot thunk；稳定Target层shared typed registry同时拥有
-  lowering和frontend需要的symbol/signature/call family/field decoder，110项descriptor逐项形成对应typed payload，
+  lowering和frontend需要的symbol/signature/call family/field decoder，111项descriptor逐项形成对应typed payload，
   不能在JIT/SystemC/test复制字符串表；
 - frontend在sink begin前交付完整ordered typed slot metadata/value bindings；per-rank exact-signature bridge显式绑定invocation/rank context并形成
   typed transaction。rank防yield重入，prepare-commit失败仍可abort，unknown symbol/signature、wrong ABI slot和
@@ -1278,7 +1278,7 @@ target-call frontend和Q22.S functional-event model；Q22.K才等待合法vendor
   closure；Q22.B随后独立闭合受管oneDNN、qualification record和发布政策，readiness probe本身没有被当作bulk admission。
 - Q22.L已经独立形成owner-backed target LLVM bundle；Q22.H直接消费它建立repo-owned target-call frontend；
   Q22.S/Q22.V继续依赖Q22.H，external vendor seam只影响Q22.K packet provenance。
-- 除Q6.B已闭合的kernel-grid/model Add logical-execution gate外，vendor CModel套件、更广的board numeric以及
+- 除Q6.B已闭合的kernel-grid/model Add和Direct DTE logical-execution gate外，vendor CModel套件、更广的board numeric以及
   hardware packet/timing仍是external evidence；它们不否定model-only方案，也不能由文档、有限corpus或SystemC选择推断。
 
 ### 10.1 Capability和依赖收敛
@@ -1475,7 +1475,7 @@ Q22.H现已从该bundle解锁并按repo-owned target-call frontend推进。
 - 只消费Q22.L `TargetLLVMModuleBundle`；host clone/JIT执行same fully legal target LLVM，不形成另一份instruction lowering或
   改写bundle；host retarget前拒绝target intrinsic、inline asm、未知address space和非registry external call；
 - 稳定Target层的shared typed target-call registry由lowering和frontend共同消费，拥有symbol、exact signature、call
-  family和field decoder；110项descriptor均需通过all-and-only signature/payload gate。完整symbol只允许exact ABI-key
+  family和field decoder；111项descriptor均需通过all-and-only signature/payload gate。完整symbol只允许exact ABI-key
   lookup，不能在JIT/SystemC/test复制字符串表，也不能从前后缀、参数数量或任意字符串启发式恢复语义；
 - 每rank生成`void(const uint64_t *slots)` fixed thunk和exact-signature bridge；bridge显式携带invocation/rank context，
   实际动态call形成typed transaction并同步投递transaction-local sink，Direct DTE返回invocation-local opaque identity；
@@ -1494,7 +1494,7 @@ failure无partial result。该gate不编译repo CRT、不构造Tsm packet，不�
 - 消费Q22.H实际typed transaction，建立rank-local virtual SPM/DDR、typed slots、checked address、invocation error latch、
   单一保守logical issue domain、resource event、local drain、可yield wait及Direct DTE/FSM；不声明worker window、
   `3×5`物理queue或engine复制；
-- shared decoder对110项descriptor逐ABI字段形成typed payload，所有payload family进入统一field-valid validator；
+- shared decoder对111项descriptor逐ABI字段形成typed payload，所有payload family进入统一field-valid validator；
   RDMA/WDMA、gather/scatter、memset、elementwise、convert、GEMM和Direct DTE control
   具有checked functional effect，其它field-valid family保持结构化unsupported。首个profile的DDR/SPM都在invocation-private
   registry内完成，不建立没有consumer的TLM socket；future ISS/interconnect只能通过另行设计的受限TLM边界接入，packet/MMIO

@@ -13,6 +13,8 @@ constexpr TargetLaunchABIRecord kTargetLaunchABIs[] = {
     {TargetLaunchABIId::tx81KernelGridPointerTableV1(),
      "tx81-kernel-grid-pointer-table-v1"},
     {TargetLaunchABIId::tx81ModelBootParamV1(), "tx81-model-bootparam-v1"},
+    {TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1(),
+     "tx81-cluster-direct-dte-prepare-main-v1"},
 };
 
 } // namespace

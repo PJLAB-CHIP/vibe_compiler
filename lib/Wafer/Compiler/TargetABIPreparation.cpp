@@ -4,6 +4,7 @@
 
 #include "AcceptedCallClosure.h"
 
+#include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 
@@ -26,6 +27,7 @@ namespace wafer::compiler::detail {
 
 PreparedTargetRank::PreparedTargetRank(const ExecutionConfig &executionConfig)
     : targetProfile(executionConfig.getTargetProfileId()),
+      launchABI(executionConfig.getTargetLaunchABIId()),
       targetIdentity(getTargetProfileRecord(targetProfile).targetIdentity),
       kernelRuntimeABI(getTargetProfileRecord(targetProfile).kernelRuntimeABI),
       moduleFormat(getTargetProfileRecord(targetProfile).moduleFormat.str()) {}
@@ -290,8 +292,8 @@ prepareTargetABI(const RankExecutable &rankExecutable,
                               "u32",
                               MemLayout::Tensor,
                               {1},
-                              4,
-                              4});
+                              WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_BYTES,
+                              WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_ALIGNMENT});
   }
 
   if (mlir::failed(mlir::verify(*prepared.module)))

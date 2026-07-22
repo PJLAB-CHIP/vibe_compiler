@@ -86,6 +86,15 @@ add_test(NAME wafer-runtime-adapter-python
     --wafer-run $<TARGET_FILE:wafer-run>
 )
 
+add_test(NAME wafer-board-direct-dte-outer-deadline
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_direct_dte_timeout_test.py
+)
+set_tests_properties(wafer-board-direct-dte-outer-deadline PROPERTIES
+  LABELS "runtime;no-card;board;direct-dte;safety"
+  TIMEOUT 30
+)
+
 if(WAFER_ENABLE_IMPORTER_DEPS AND
    WAFER_ENABLE_SPMD_PARTITIONER_DEPS AND
    WAFER_XLA_SPMD_PARTITIONER_HELPER)
@@ -114,6 +123,18 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
   endforeach()
   unset(_wafer_no_card_launch_abi)
   unset(_wafer_no_card_launch_test)
+  add_test(NAME wafer-runtime-cluster-direct-dte-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_direct_dte_collective_test.py
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/runtime-cluster-direct-dte
+      --no-card
+  )
+  set_tests_properties(wafer-runtime-cluster-direct-dte-no-card PROPERTIES
+    LABELS "runtime;no-card;all-rank;cluster;direct-dte"
+    TIMEOUT 300
+  )
 endif()
 
 if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
@@ -254,6 +275,28 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     )
     set_tests_properties(wafer-board-model-add PROPERTIES
       LABELS "board;hardware;model;all-rank;single-op"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 600
+    )
+    add_test(NAME wafer-board-cluster-direct-dte
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_direct_dte_collective_test.py
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/board-cluster-direct-dte
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 60000
+        --repeat 2
+    )
+    set_tests_properties(wafer-board-cluster-direct-dte PROPERTIES
+      LABELS "board;hardware;cluster;all-rank;direct-dte"
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
       TIMEOUT 600

@@ -134,9 +134,9 @@
 # RUN: FileCheck %s --input-file=%t.outputs/rank1/functions/forward.parameter_shards.json --check-prefix=RANK1-SHARDS
 # RUN: %python -c 'import json, pathlib; b=json.loads(pathlib.Path("%t.outputs/rank1/functions/forward.meta").read_text())["distributed_boundary"]; assert b["version"]==1 and b["logical_rank_count"]==1; assert b["inputs"][0]["argument_index"]==0 and b["inputs"][0]["distribution"]=="replicated"; assert b["outputs"][0]["result_index"]==0 and b["outputs"][0]["distribution"]=="replicated"'
 # RUN: test -f %t.outputs/rank1/parameter_shards/weight/rank_00000.npy
-# RUN: test -s %t.outputs/rank1/modules/rank_00000.so
-# RUN: %python -c 'from pathlib import Path; modules=list(Path("%t.outputs/rank1/modules").glob("rank_*.so")); assert len(modules)==1 and modules[0].read_bytes().startswith(b"\x7fELF")'
-# RUN: %python -c 'import json, pathlib; m=json.loads(pathlib.Path("%t.outputs/rank1/manifest.json").read_text()); assert m["schema_version"]==4 and m["target"]["profile"]=="wafer-tx81-single-card-kernel-v1" and m["target"]["launch_abi"]=="per-rank-pointer-block-v1" and m["rank_count"]==1; assert len(m["modules"])==len(m["entries"])==len(m["completions"])==1; assert [s["ordinal"] for s in m["entries"][0]["slots"]]==list(range(len(m["resources"])))'
+# RUN: test -s %t.outputs/rank1/modules/module_00000.so
+# RUN: %python -c 'from pathlib import Path; modules=list(Path("%t.outputs/rank1/modules").glob("module_*.so")); assert len(modules)==1 and modules[0].read_bytes().startswith(b"\x7fELF")'
+# RUN: %python -c 'import json, pathlib; m=json.loads(pathlib.Path("%t.outputs/rank1/manifest.json").read_text()); assert m["schema_version"]==5 and m["target"]["profile"]=="wafer-tx81-single-card-kernel-v1" and m["target"]["launch_abi"]=="per-rank-pointer-block-v1" and m["rank_count"]==1; assert len(m["modules"])==len(m["entries"])==len(m["completions"])==1 and m["modules"][0]["exports"]==[{"role":"main","symbol":"main"}]; assert [s["ordinal"] for s in m["entries"][0]["slots"]]==list(range(len(m["resources"])))'
 # RUN: wafer-run --package-dir %t.outputs/rank1 --entry-id 0 --no-card | FileCheck %s --check-prefix=NO-CARD
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
@@ -183,7 +183,7 @@
 # SOURCE-SDY-STRING: wafer-compile: source program contains Shardy semantics that the external XLA SPMD helper boundary cannot consume
 # NESTED-FACTS: target topology and execution mesh must be direct module members
 # RANK1: wafer-compile: published verified package with execution-ranks=1:
-# NO-CARD: package: id=0 schema=4 ranks=1
+# NO-CARD: package: id=0 schema=5 ranks=1
 # NO-CARD: entry: 0 rank=0 symbol=main
 # NO-CARD: board_execution: false
 # RANK1-IR: wafer.execution.mesh @default_mesh

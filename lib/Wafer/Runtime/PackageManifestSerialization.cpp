@@ -58,10 +58,19 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
       for (const PackageModuleRecord &module : manifest.modules)
         json.object([&] {
           json.attribute("id", int64_t(module.id.getValue()));
-          json.attribute("rank", module.logicalRank);
           json.attribute("path", module.relativePath);
           json.attribute("digest", module.digest);
           json.attribute("format", module.format);
+          json.attributeArray("exports", [&] {
+            for (const PackageModuleExportRecord &moduleExport :
+                 module.exports)
+              json.object([&] {
+                json.attribute(
+                    "role",
+                    stringifyPackageModuleExportRole(moduleExport.role));
+                json.attribute("symbol", moduleExport.symbol);
+              });
+          });
         });
     });
     json.attributeArray("entries", [&] {
@@ -70,7 +79,6 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
           json.attribute("id", int64_t(entry.id.getValue()));
           json.attribute("rank", entry.logicalRank);
           json.attribute("module", int64_t(entry.module.getValue()));
-          json.attribute("symbol", entry.symbol);
           json.attributeArray("slots", [&] {
             for (const PackageABISlotBinding &slot : entry.slots)
               json.object([&] {

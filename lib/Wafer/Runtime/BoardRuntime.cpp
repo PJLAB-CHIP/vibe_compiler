@@ -16,6 +16,7 @@
 #include "llvm/Support/SHA256.h"
 
 #include <limits>
+#include <cstring>
 #include <optional>
 #include <set>
 #include <string>
@@ -79,8 +80,15 @@ struct LiveAllocation {
   BoardDeviceMemory memory;
 };
 
+struct VerifiedModuleSnapshot {
+  const PackageModuleRecord *module = nullptr;
+  int64_t diagnosticRank = -1;
+  EntryId diagnosticEntry;
+  std::vector<uint8_t> bytes;
+};
+
 struct LiveModule {
-  const RuntimeSessionPlan *rank = nullptr;
+  const PackageModuleRecord *moduleRecord = nullptr;
   BoardModuleHandle module;
 };
 
@@ -151,6 +159,9 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
                                     tx81KernelGridPointerTableV1();
   const bool modelLaunch =
       manifest.launchABI == TargetLaunchABIId::tx81ModelBootParamV1();
+  const bool clusterDirectDTELaunch =
+      manifest.launchABI ==
+      TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
   if (request.qualification.runtimeVersion == 0 ||
       request.qualification.tileCount == 0 ||
       request.qualification.name.empty() ||
@@ -165,12 +176,16 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
     return boardError(BoardRuntimeStage::Preflight, -1, noEntry,
                       "board completion timeout is outside the supported "
                       "range");
-  for (const PackageEntrypointRecord &entry : manifest.entries)
-    if (!std::holds_alternative<NoTransportRequirements>(entry.transport))
+  for (const PackageEntrypointRecord &entry : manifest.entries) {
+    const bool directDTE =
+        std::holds_alternative<DirectDTETransportRequirements>(
+            entry.transport);
+    if (directDTE != clusterDirectDTELaunch)
       return boardError(
           BoardRuntimeStage::Preflight, entry.logicalRank, entry.id,
-          "TX board provider cannot satisfy Direct DTE rank placement and "
-          "per-rank argument ABI");
+          "TX board Direct DTE requires the closed cluster prepare/main "
+          "launch ABI");
+  }
 
   llvm::DenseMap<uint64_t, BoardRuntimeBinding *> bindingsByResource;
   for (BoardRuntimeBinding &binding : request.bindings) {
@@ -212,20 +227,31 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
     return wrapDriverError(BoardRuntimeStage::Preflight, -1, noEntry,
                            semanticPlan.takeError());
 
-  std::vector<std::vector<uint8_t>> moduleSnapshots;
-  moduleSnapshots.reserve(semanticPlan->ranks.size());
-  for (const RuntimeSessionPlan &rank : semanticPlan->ranks) {
-    const PackageModuleRecord *module =
-        detail::findModule(manifest.modules, rank.module);
-    if (!module)
-      return boardError(BoardRuntimeStage::Preflight, rank.logicalRank,
-                        rank.entry, "entry module is missing");
-    llvm::Expected<std::vector<uint8_t>> bytes =
-        readVerifiedModule(packageRoot, *module, rank.logicalRank, rank.entry);
+  std::vector<VerifiedModuleSnapshot> moduleSnapshots;
+  moduleSnapshots.reserve(manifest.modules.size());
+  for (const PackageModuleRecord &module : manifest.modules) {
+    auto firstRank = llvm::find_if(semanticPlan->ranks, [&](const auto &rank) {
+      return rank.module == module.id;
+    });
+    if (firstRank == semanticPlan->ranks.end())
+      return boardError(BoardRuntimeStage::Preflight, -1, noEntry,
+                        "package contains an unreferenced module");
+    llvm::Expected<std::vector<uint8_t>> bytes = readVerifiedModule(
+        packageRoot, module, firstRank->logicalRank, firstRank->entry);
     if (!bytes)
       return bytes.takeError();
-    moduleSnapshots.push_back(std::move(*bytes));
+    moduleSnapshots.push_back(
+        {&module, firstRank->logicalRank, firstRank->entry, std::move(*bytes)});
   }
+  llvm::sort(moduleSnapshots, [](const auto &lhs, const auto &rhs) {
+    return lhs.diagnosticRank < rhs.diagnosticRank;
+  });
+  auto findSnapshot = [&](ModuleId module) -> const VerifiedModuleSnapshot * {
+    auto iterator = llvm::find_if(moduleSnapshots, [&](const auto &snapshot) {
+      return snapshot.module->id == module;
+    });
+    return iterator == moduleSnapshots.end() ? nullptr : &*iterator;
+  };
 
   if (driver.getContextState() == BoardRuntimeContextState::Poisoned)
     return boardError(BoardRuntimeStage::DeviceSelection, -1, noEntry,
@@ -309,10 +335,8 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
                           "aggregate board allocation byte count overflows");
       allocationBytes += resource.bytes;
     }
-  const size_t admittedModuleCount =
-      kernelGridLaunch ? 1 : moduleSnapshots.size();
-  for (size_t index = 0; index < admittedModuleCount; ++index) {
-    uint64_t moduleBytes = moduleSnapshots[index].size();
+  for (const VerifiedModuleSnapshot &snapshot : moduleSnapshots) {
+    uint64_t moduleBytes = snapshot.bytes.size();
     if (moduleBytes > std::numeric_limits<uint64_t>::max() - allocationBytes)
       return boardError(BoardRuntimeStage::Preflight, -1, noEntry,
                         "aggregate board module byte count overflows");
@@ -355,8 +379,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
       if (llvm::Error error = driver.unloadModule(liveModule.module)) {
         BoardRuntimeContextState state = driver.getContextState();
         llvm::Error wrapped = wrapDriverError(
-            BoardRuntimeStage::Cleanup, liveModule.rank->logicalRank,
-            liveModule.rank->entry, std::move(error), state);
+            BoardRuntimeStage::Cleanup, -1, noEntry, std::move(error), state);
         if (state == BoardRuntimeContextState::Poisoned)
           return llvm::joinErrors(std::move(cleanupError), std::move(wrapped));
         cleanupError =
@@ -425,7 +448,9 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
     if (binding != bindingsByResource.end()) {
       source = binding->second->bytes;
     } else {
-      zeros.assign(static_cast<size_t>(resource.bytes), 0);
+      const uint8_t initialValue =
+          resource.role == PackageResourceRole::TransportStatus ? 0xff : 0;
+      zeros.assign(static_cast<size_t>(resource.bytes), initialValue);
       source = zeros;
     }
     if (llvm::Error error = driver.copyHostToDevice(allocation.memory, source))
@@ -442,54 +467,87 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
       const RuntimeSessionPlan &rank = capacityPlan->ranks[index];
       const PackageModuleRecord *module =
           detail::findModule(manifest.modules, rank.module);
+      const VerifiedModuleSnapshot *snapshot = findSnapshot(rank.module);
+      if (!module || !snapshot)
+        return fail(BoardRuntimeStage::ModuleLoad, rank.logicalRank,
+                    rank.entry,
+                    detail::invalid("model graph module snapshot is missing"));
       graphModules.push_back(
           {static_cast<uint16_t>(rank.logicalRank), rank.module,
-           module->digest, moduleSnapshots[index]});
+           module->digest, snapshot->bytes});
     }
-    llvm::Expected<BoardGraphHandle> loaded = driver.loadGraph(
-        graphModules, capacityPlan->ranks.front().entrySymbol);
+    llvm::Expected<BoardGraphHandle> loaded =
+        driver.loadGraph(graphModules, capacityPlan->ranks.front().mainSymbol);
     if (!loaded)
       return fail(BoardRuntimeStage::ModuleLoad, -1, noEntry,
                   loaded.takeError());
     liveGraph = *loaded;
   } else {
-    const size_t moduleCount = kernelGridLaunch ? 1 : capacityPlan->ranks.size();
-    for (size_t index = 0; index < moduleCount; ++index) {
-      const RuntimeSessionPlan &rank = capacityPlan->ranks[index];
+    for (const VerifiedModuleSnapshot &snapshot : moduleSnapshots) {
       llvm::Expected<BoardModuleHandle> loaded =
-          driver.loadModule(moduleSnapshots[index]);
+          driver.loadModule(snapshot.bytes);
       if (!loaded)
-        return fail(BoardRuntimeStage::ModuleLoad, rank.logicalRank, rank.entry,
+        return fail(BoardRuntimeStage::ModuleLoad, snapshot.diagnosticRank,
+                    snapshot.diagnosticEntry,
                     loaded.takeError());
-      liveModules.push_back({&capacityPlan->ranks[index], *loaded});
+      liveModules.push_back({snapshot.module, *loaded});
     }
   }
   result.completedStages.push_back(BoardRuntimeStage::ModuleLoad);
 
-  std::vector<BoardFunctionHandle> functions;
+  llvm::DenseMap<uint64_t, BoardFunctionHandle> mainFunctionsByModule;
+  std::optional<BoardFunctionHandle> clusterPrepareFunction;
   if (!modelLaunch) {
-    functions.reserve(liveModules.size());
     for (const LiveModule &liveModule : liveModules) {
+      auto firstRank =
+          llvm::find_if(capacityPlan->ranks, [&](const auto &rank) {
+            return rank.module == liveModule.moduleRecord->id;
+          });
+      if (firstRank == capacityPlan->ranks.end())
+        return fail(BoardRuntimeStage::EntryResolve, -1, noEntry,
+                    detail::invalid(
+                        "loaded module has no typed rank interface"));
       llvm::Expected<BoardFunctionHandle> function =
-          driver.resolveEntry(liveModule.module, liveModule.rank->entrySymbol);
+          driver.resolveEntry(liveModule.module, firstRank->mainSymbol);
       if (!function)
         return fail(BoardRuntimeStage::EntryResolve,
-                    liveModule.rank->logicalRank, liveModule.rank->entry,
+                    firstRank->logicalRank, firstRank->entry,
                     function.takeError());
-      functions.push_back(*function);
+      mainFunctionsByModule[liveModule.moduleRecord->id.getValue()] = *function;
+      if (clusterDirectDTELaunch) {
+        const PackageModuleExportRecord *prepare = detail::findModuleExport(
+            *liveModule.moduleRecord, PackageModuleExportRole::Prepare);
+        if (!prepare)
+          return fail(BoardRuntimeStage::EntryResolve,
+                      firstRank->logicalRank, firstRank->entry,
+                      detail::invalid(
+                          "cluster module has no typed prepare export"));
+        llvm::Expected<BoardFunctionHandle> resolvedPrepare =
+            driver.resolveEntry(liveModule.module, prepare->symbol);
+        if (!resolvedPrepare)
+          return fail(BoardRuntimeStage::EntryResolve,
+                      firstRank->logicalRank, firstRank->entry,
+                      resolvedPrepare.takeError());
+        clusterPrepareFunction = *resolvedPrepare;
+      }
     }
   }
   result.completedStages.push_back(BoardRuntimeStage::EntryResolve);
 
   std::vector<BoardRankLaunch> launches;
   launches.reserve(capacityPlan->ranks.size());
-  for (auto [index, rank] : llvm::enumerate(capacityPlan->ranks)) {
+  for (const RuntimeSessionPlan &rank : capacityPlan->ranks) {
     BoardRankLaunch launch;
     launch.logicalRank = rank.logicalRank;
     launch.entry = rank.entry;
-    launch.function = kernelGridLaunch ? functions.front() :
-                                         (modelLaunch ? BoardFunctionHandle{} :
-                                                        functions[index]);
+    if (!modelLaunch) {
+      auto function = mainFunctionsByModule.find(rank.module.getValue());
+      if (function == mainFunctionsByModule.end())
+        return fail(BoardRuntimeStage::EntryResolve, rank.logicalRank,
+                    rank.entry,
+                    detail::invalid("rank main export was not resolved"));
+      launch.function = function->second;
+    }
     launch.arguments.reserve(rank.launchOrder.size());
     for (ResourceId resource : rank.launchOrder) {
       auto memory = memoryByResource.find(resource.getValue());
@@ -505,6 +563,13 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
       return driver.submitAll(launches);
     if (kernelGridLaunch)
       return driver.submitKernelGrid(launches);
+    if (clusterDirectDTELaunch) {
+      if (!clusterPrepareFunction)
+        return detail::invalid(
+            "cluster prepare export was not resolved");
+      return driver.submitClusterPrepareMain(*clusterPrepareFunction,
+                                             launches);
+    }
     if (modelLaunch) {
       std::vector<BoardModelTensorLaunch> tensors;
       for (const RuntimeSessionPlan &rank : capacityPlan->ranks)
@@ -534,6 +599,42 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
     return fail(BoardRuntimeStage::Completion, -1, noEntry, std::move(error));
   result.completedStages.push_back(BoardRuntimeStage::Completion);
 
+  if (clusterDirectDTELaunch) {
+    size_t observedStatuses = 0;
+    for (const LiveAllocation &allocation : allocations) {
+      const PackageResourceRecord &resource = *allocation.resource;
+      if (resource.role != PackageResourceRole::TransportStatus)
+        continue;
+      ++observedStatuses;
+      std::vector<uint8_t> statusBytes(resource.bytes);
+      if (llvm::Error error =
+              driver.copyDeviceToHost(statusBytes, allocation.memory)) {
+        driver.quarantine();
+        return fail(BoardRuntimeStage::DeviceToHost, resource.logicalRank,
+                    allocation.entry, std::move(error));
+      }
+      uint32_t status = kDirectDTEStatusPoison;
+      if (statusBytes.size() == kDirectDTEStatusStorageBytes)
+        std::memcpy(&status,
+                    statusBytes.data() + kDirectDTEStatusValueOffset,
+                    kDirectDTEStatusValueBytes);
+      if (status != static_cast<uint32_t>(DirectDTEStatusValue::Success)) {
+        driver.quarantine();
+        return fail(
+            BoardRuntimeStage::Completion, resource.logicalRank,
+            allocation.entry,
+            detail::invalid("Direct DTE terminal status is not success: " +
+                            llvm::Twine(status)));
+      }
+    }
+    if (observedStatuses != static_cast<size_t>(manifest.rankCount)) {
+      driver.quarantine();
+      return fail(BoardRuntimeStage::Completion, -1, noEntry,
+                  detail::invalid(
+                      "Direct DTE terminal status domain is incomplete"));
+    }
+  }
+
   for (const LiveAllocation &allocation : allocations) {
     const PackageResourceRecord &resource = *allocation.resource;
     if (!resource.hostVisible || resource.access == PackageAccessMode::ReadOnly)
@@ -541,9 +642,12 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
     BoardRuntimeOutput output{resource.id,
                               std::vector<uint8_t>(resource.bytes)};
     if (llvm::Error error =
-            driver.copyDeviceToHost(output.bytes, allocation.memory))
+            driver.copyDeviceToHost(output.bytes, allocation.memory)) {
+      if (clusterDirectDTELaunch)
+        driver.quarantine();
       return fail(BoardRuntimeStage::DeviceToHost, resource.logicalRank,
                   allocation.entry, std::move(error));
+    }
     result.outputs.push_back(std::move(output));
   }
   result.completedStages.push_back(BoardRuntimeStage::DeviceToHost);

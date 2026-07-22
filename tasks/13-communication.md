@@ -3,8 +3,8 @@
 状态：本文定义终态的 MLIR-native device-side communication 边界。任务实施状态以
 `tasks/progress.md` 为准。当前主线覆盖 typed logical collective、rank-local explicit unicast
 communication、SPM/event planning、完整 rank domain 上的 Direct DTE acceptance、target lowering 和
-runtime-observable completion/error。segmented peer exchange、跨卡 route、raw non-unicast DTE 和真实板端
-completion 仍是独立扩展，不能反向改变本文的 logical collective 语义。
+runtime-observable completion/error。configured TX81上的真实板端completion由tasks/16作为下游证据闭合；segmented peer
+exchange、跨卡 route和raw non-unicast DTE仍是独立扩展，不能反向改变本文的 logical collective 语义。
 
 本文的核心原则只有一条：**通信语义、已展开执行和物理绑定分别由当前层的 typed IR 表达，不在 IR
 外复制另一份计划。**
@@ -276,7 +276,12 @@ wafer.instr.dte_wait(tokens...)
 - `bytes`与buffer view的连续physical byte range一致，且为静态非负值；
 - send读取source，recv写入destination；DTE不隐式转换layout或执行reduction；
 - 每个issue产生SSA token，token必须由显式wait消费；
-- source/destination及其root allocation的lifetime覆盖issue到wait；
+- source/destination及其root allocation的lifetime覆盖issue到wait；wait即使没有显式buffer operand，也仍是该次
+  in-flight访问的completion边界；
+- ready-order、lifetime和其它memory-effect consumer必须沿wait token回溯到issue，并沿`ViewLikeOpInterface`归一到
+  storage root：send wait延续对source的read，recv wait在completion点形成对destination的write。由此必须得到
+  `recv issue -> wait -> destination consumer`和`send issue -> wait -> source overwrite`，不能因另一个engine优先级更高而
+  把buffer consumer/overwrite移到wait之前；
 - acceptance前没有physical endpoint、DTE id、FSM id、runtime address或raw register字段；
 - acceptance后send/recv各有且仅有一个`DirectDTEBindingAttr`。
 
@@ -461,7 +466,7 @@ movement。physical transport acceptance必须发生在planning之后，因为re
 | logical collective | Communication保守write | 仅阻止非法generic motion，不表示硬件完成 |
 | DTE send | 读source SPM；Communication issue | token覆盖source不可复用区间 |
 | DTE recv | 写destination SPM；Communication issue | token覆盖destination不可读区间 |
-| DTE wait | Communication read+write barrier | 完成对应issue，不完成后续local movement/compute |
+| DTE wait | Communication barrier；沿token派生send source read或recv destination completion write | 完成对应issue，不完成后续local movement/compute |
 | local movement/compute | 对实际SPM/DDR与Movement/Compute resource报告effect | 由对应local fence排序可见性 |
 | local fence | Sync及所排序local resource effect | 不完成Direct DTE |
 | group barrier | group control effect | 不替代local fence或DTE wait |

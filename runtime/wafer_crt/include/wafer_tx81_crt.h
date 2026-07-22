@@ -1,6 +1,8 @@
 #ifndef WAFER_TX81_CRT_H
 #define WAFER_TX81_CRT_H
 
+#include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -54,13 +56,9 @@ void wafer_tx81_tdma_img2col(uint64_t src, uint64_t dst, uint32_t src_n,
                              uint32_t stride_y, uint32_t format);
 void wafer_tx81_local_fence(void);
 
-enum {
-  WAFER_TX81_DIRECT_DTE_STATUS_PENDING = 0,
-  WAFER_TX81_DIRECT_DTE_STATUS_SUCCESS = 1,
-  WAFER_TX81_DIRECT_DTE_STATUS_TRANSPORT_ERROR = 2,
-};
-
 void wafer_tx81_direct_dte_begin(uint64_t status_addr, uint32_t rank_count);
+void wafer_tx81_direct_dte_begin_after_prepare(uint64_t status_addr,
+                                               uint32_t rank_count);
 uint64_t wafer_tx81_direct_dte_send_prepare(
     uint64_t src, uint64_t remote_dst, uint32_t byte_count, uint32_t local_tile,
     uint32_t remote_tile, uint32_t remote_fsm_id, uint32_t is_high_performance);

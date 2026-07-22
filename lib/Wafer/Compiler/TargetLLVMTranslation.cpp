@@ -357,10 +357,9 @@ verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
 
 mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared) {
   TargetConversionRequest request{
-      prepared.targetProfile,
-      prepared.defaultDDRArenaArgumentIndex,
-      prepared.logicalRank,
-      prepared.transportStatusArgumentIndex,
+      prepared.targetProfile, prepared.defaultDDRArenaArgumentIndex,
+      prepared.logicalRank,   prepared.transportStatusArgumentIndex,
+      prepared.launchABI,
   };
   mlir::PassManager manager(prepared.module->getContext());
   manager.addPass(createLowerInstrToTargetLLVMPass(request));

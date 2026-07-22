@@ -47,6 +47,7 @@ compileExecutableBundleToTargetLLVMModulesImpl(
                       std::to_string(expectedRank));
     if (prepared->logicalRank != static_cast<int64_t>(expectedRank) ||
         prepared->targetProfile != targetProfile.id ||
+        prepared->launchABI != executionConfig.getTargetLaunchABIId() ||
         prepared->targetIdentity != targetProfile.targetIdentity ||
         prepared->kernelRuntimeABI != targetProfile.kernelRuntimeABI ||
         prepared->moduleFormat != targetProfile.moduleFormat)

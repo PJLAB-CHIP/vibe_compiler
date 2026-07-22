@@ -152,6 +152,7 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
   case TargetCallBuiltin::LocalFence:
     return TargetTransactionPayload{TargetLocalFenceTransaction{}};
   case TargetCallBuiltin::DirectDTEBegin:
+  case TargetCallBuiltin::DirectDTEBeginAfterPrepare:
     if (argument32(arguments, 1) != context.rankCount)
       return llvm::createStringError(
           "Direct-DTE begin rank count does not match the invocation");

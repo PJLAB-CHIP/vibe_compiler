@@ -183,10 +183,12 @@ mlir::LogicalResult
 injectDirectDTEStatusLifecycle(mlir::ModuleOp moduleOp,
                                llvm::StringRef entrySymbol,
                                int64_t statusArgumentIndex, int64_t rankCount,
+                               TargetCallBuiltin beginBuiltin,
                                llvm::StringMap<CalleeSignature> &usedCallees);
 
 mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
                                        TargetProfileId targetProfile,
+                                       TargetLaunchABIId launchABI,
                                        int64_t defaultDDRArenaArgumentIndex,
                                        int64_t logicalRank,
                                        int64_t transportStatusArgumentIndex);

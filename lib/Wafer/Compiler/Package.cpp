@@ -165,6 +165,23 @@ runtime::PackageAccessMode getAccess(KernelABISlotRole role) {
   llvm_unreachable("unknown kernel ABI slot role");
 }
 
+runtime::PackageModuleExportRole getPackageExportRole(TargetExportRole role) {
+  switch (role) {
+  case TargetExportRole::Prepare:
+    return runtime::PackageModuleExportRole::Prepare;
+  case TargetExportRole::Main:
+    return runtime::PackageModuleExportRole::Main;
+  }
+  llvm_unreachable("unknown target export role");
+}
+
+llvm::StringRef getMainExport(const VerifiedTargetModule &module) {
+  for (const VerifiedTargetExport &targetExport : module.getExports())
+    if (targetExport.getRole() == TargetExportRole::Main)
+      return targetExport.getSymbol();
+  return {};
+}
+
 llvm::Expected<runtime::PackageManifest>
 buildManifest(const ExecutableBundle &executableBundle,
               const TargetArtifactBundle &targetArtifacts,
@@ -172,7 +189,7 @@ buildManifest(const ExecutableBundle &executableBundle,
   const ExecutionConfig &config = executableBundle.getExecutionConfig();
   if (targetArtifacts.getExecutionConfig() != config ||
       executableBundle.getRankExecutables().size() !=
-          targetArtifacts.getModules().size() ||
+          targetArtifacts.getRankInterfaces().size() ||
       executableBundle.getRankExecutables().size() !=
           static_cast<size_t>(config.getRankCount()))
     return fail(diagnostics,
@@ -186,39 +203,84 @@ buildManifest(const ExecutableBundle &executableBundle,
   const VerifiedTargetModule &firstTargetModule =
       targetArtifacts.getModules().front();
   if (firstTargetModule.getTargetProfileId() != config.getTargetProfileId() ||
-      firstTargetModule.getTargetIdentityId() !=
-          targetProfile.targetIdentity ||
+      firstTargetModule.getTargetIdentityId() != targetProfile.targetIdentity ||
       firstTargetModule.getKernelRuntimeABIId() !=
           targetProfile.kernelRuntimeABI ||
       firstTargetModule.getModuleFormat() != targetProfile.moduleFormat)
     return fail(diagnostics,
                 "package target module facts do not match ExecutionConfig "
                 "and target registry");
-  runtime::PackageManifest manifest(
-      firstTargetModule.getTargetProfileId(),
-      firstTargetModule.getTargetIdentityId(),
-      firstTargetModule.getKernelRuntimeABIId(),
-      config.getTargetLaunchABIId(),
-      firstTargetModule.getModuleFormat());
+  runtime::PackageManifest manifest(firstTargetModule.getTargetProfileId(),
+                                    firstTargetModule.getTargetIdentityId(),
+                                    firstTargetModule.getKernelRuntimeABIId(),
+                                    config.getTargetLaunchABIId(),
+                                    firstTargetModule.getModuleFormat());
   manifest.program = runtime::ProgramId(0);
   manifest.rankCount = config.getRankCount();
 
-  uint64_t nextResourceId = 0;
-  for (int64_t logicalRank = 0; logicalRank < config.getRankCount();
-       ++logicalRank) {
-    const RankExecutable &rank =
-        executableBundle.getRankExecutables()[logicalRank];
-    const VerifiedTargetModule &target =
-        targetArtifacts.getModules()[logicalRank];
-    if (rank.getLogicalRank() != logicalRank ||
-        target.getLogicalRank() != logicalRank ||
-        rank.getEntrySymbol() != target.getEntrySymbol() ||
+  const TargetLaunchABIId launchABI = config.getTargetLaunchABIId();
+  const bool sharedModule =
+      launchABI == TargetLaunchABIId::tx81KernelGridPointerTableV1() ||
+      launchABI == TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+  const bool hasPrepare =
+      launchABI == TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+  if (targetArtifacts.getModules().size() !=
+      (sharedModule ? 1u : static_cast<size_t>(config.getRankCount())))
+    return fail(diagnostics,
+                "package target module topology does not match launch ABI");
+
+  for (auto [expectedModuleId, target] :
+       llvm::enumerate(targetArtifacts.getModules())) {
+    if (target.getId().getValue() != expectedModuleId ||
         target.getTargetProfileId() != firstTargetModule.getTargetProfileId() ||
         target.getTargetIdentityId() !=
             firstTargetModule.getTargetIdentityId() ||
         target.getKernelRuntimeABIId() !=
             firstTargetModule.getKernelRuntimeABIId() ||
         target.getModuleFormat() != firstTargetModule.getModuleFormat())
+      return fail(diagnostics, "package target module domain is not canonical");
+    bool seenPrepare = false;
+    bool seenMain = false;
+    runtime::PackageModuleRecord module;
+    module.id = runtime::ModuleId(expectedModuleId);
+    module.relativePath = target.getRelativePath().str();
+    module.digest = target.getContentDigest().str();
+    module.format = target.getModuleFormat().str();
+    for (const VerifiedTargetExport &targetExport : target.getExports()) {
+      bool *seen = targetExport.getRole() == TargetExportRole::Prepare
+                       ? &seenPrepare
+                       : &seenMain;
+      if (*seen || targetExport.getSymbol().empty())
+        return fail(diagnostics,
+                    "package target module exports are not canonical");
+      *seen = true;
+      module.exports.push_back({getPackageExportRole(targetExport.getRole()),
+                                targetExport.getSymbol().str()});
+    }
+    if (!seenMain || seenPrepare != hasPrepare ||
+        module.exports.size() != (hasPrepare ? 2u : 1u))
+      return fail(diagnostics,
+                  "package target module exports do not match launch ABI");
+    manifest.modules.push_back(std::move(module));
+  }
+
+  uint64_t nextResourceId = 0;
+  for (int64_t logicalRank = 0; logicalRank < config.getRankCount();
+       ++logicalRank) {
+    const RankExecutable &rank =
+        executableBundle.getRankExecutables()[logicalRank];
+    const VerifiedTargetRankInterface &rankInterface =
+        targetArtifacts.getRankInterfaces()[logicalRank];
+    const uint64_t moduleId = rankInterface.getModuleId().getValue();
+    if (moduleId >= targetArtifacts.getModules().size())
+      return fail(diagnostics,
+                  "package rank interface references an unknown module");
+    const VerifiedTargetModule &target = targetArtifacts.getModules()[moduleId];
+    if (rank.getLogicalRank() != logicalRank ||
+        rankInterface.getLogicalRank() != logicalRank ||
+        target.getId() != rankInterface.getModuleId() ||
+        moduleId != static_cast<uint64_t>(sharedModule ? 0 : logicalRank) ||
+        rank.getEntrySymbol() != getMainExport(target))
       return fail(diagnostics,
                   "package rank/module/entry/profile domain is not canonical");
 
@@ -227,12 +289,11 @@ buildManifest(const ExecutableBundle &executableBundle,
     runtime::PackageEntrypointRecord entry;
     entry.id = runtime::EntryId(logicalRank);
     entry.logicalRank = logicalRank;
-    entry.module = runtime::ModuleId(logicalRank);
-    entry.symbol = target.getEntrySymbol().str();
+    entry.module = runtime::ModuleId(moduleId);
     entry.terminalCompletion = runtime::CompletionId(logicalRank);
     std::optional<runtime::ResourceId> transportStatusResource;
 
-    for (const KernelABISlot &slot : target.getKernelABISlots()) {
+    for (const KernelABISlot &slot : rankInterface.getKernelABISlots()) {
       if (slot.ordinal != static_cast<int64_t>(entry.slots.size()) ||
           slot.byteSize <= 0 || slot.alignment <= 0)
         return fail(diagnostics,
@@ -243,8 +304,7 @@ buildManifest(const ExecutableBundle &executableBundle,
         size_t bindingPosition = 0;
         for (auto [position, candidate] :
              llvm::enumerate(rank.getProgramBindings())) {
-          if (candidate.role != getProgramRole(slot.role) ||
-              candidate.index != slot.resourceIndex)
+          if (!detail::doesPackageSlotMatchProgramBinding(slot, candidate))
             continue;
           if (binding)
             return fail(diagnostics,
@@ -252,23 +312,17 @@ buildManifest(const ExecutableBundle &executableBundle,
           binding = &candidate;
           bindingPosition = position;
         }
-        if (!binding || usedProgramBindings[bindingPosition] ||
-            binding->dtype != slot.dtype || binding->localShape != slot.shape ||
-            binding->name != slot.name)
+        if (!binding || usedProgramBindings[bindingPosition])
           return fail(diagnostics,
                       "package ABI slot does not match executable resource "
                       "binding");
         usedProgramBindings[bindingPosition] = true;
       } else if (slot.role == KernelABISlotRole::Workspace &&
-                 (slot.resourceIndex != 0 ||
-                  slot.name != "default_ddr_arena")) {
+                 !detail::isValidPackageCompilerManagedSlot(slot)) {
         return fail(diagnostics,
                     "package workspace ABI slot identity is invalid");
       } else if (slot.role == KernelABISlotRole::TransportStatus &&
-                 (slot.resourceIndex != 0 ||
-                  slot.name != "direct_dte_status" || slot.dtype != "u32" ||
-                  slot.shape != std::vector<int64_t>{1} ||
-                  slot.byteSize != 4 || slot.alignment != 4 ||
+                 (!detail::isValidPackageCompilerManagedSlot(slot) ||
                   transportStatusResource)) {
         return fail(diagnostics,
                     "package Direct DTE status ABI slot identity is invalid");
@@ -284,9 +338,8 @@ buildManifest(const ExecutableBundle &executableBundle,
       resource.bytes = static_cast<uint64_t>(slot.byteSize);
       resource.alignment = static_cast<uint64_t>(slot.alignment);
       resource.access = getAccess(slot.role);
-      resource.hostVisible =
-          slot.role != KernelABISlotRole::Workspace &&
-          slot.role != KernelABISlotRole::TransportStatus;
+      resource.hostVisible = slot.role != KernelABISlotRole::Workspace &&
+                             slot.role != KernelABISlotRole::TransportStatus;
       if (slot.role == KernelABISlotRole::TransportStatus)
         transportStatusResource = resource.id;
       entry.slots.push_back(
@@ -309,10 +362,6 @@ buildManifest(const ExecutableBundle &executableBundle,
                   "transport status slot exists without Direct DTE contract");
     }
 
-    manifest.modules.push_back({runtime::ModuleId(logicalRank), logicalRank,
-                                target.getRelativePath().str(),
-                                target.getContentDigest().str(),
-                                target.getModuleFormat().str()});
     manifest.entries.push_back(std::move(entry));
     manifest.completions.push_back(
         {runtime::CompletionId(logicalRank), logicalRank, "entry_return"});
@@ -340,12 +389,13 @@ llvm::Error copyTargetModules(const TargetArtifactBundle &targetArtifacts,
     if (std::error_code error = llvm::sys::fs::copy_file(source, destination))
       return fail(diagnostics,
                   "failed to copy verified target module: " + error.message());
-    if (failAfterLogicalRank &&
-        module.getLogicalRank() == *failAfterLogicalRank)
-      return fail(diagnostics,
-                  "test-only injected package failure after logical rank " +
-                      std::to_string(module.getLogicalRank()));
   }
+  if (failAfterLogicalRank && *failAfterLogicalRank >= 0 &&
+      *failAfterLogicalRank <
+          static_cast<int64_t>(targetArtifacts.getRankInterfaces().size()))
+    return fail(diagnostics,
+                "test-only injected package failure after logical rank " +
+                    std::to_string(*failAfterLogicalRank));
   return llvm::Error::success();
 }
 
@@ -445,6 +495,32 @@ bool publishDirectoryNoReplace(llvm::StringRef source,
 
 } // namespace
 
+bool detail::doesPackageSlotMatchProgramBinding(
+    const KernelABISlot &slot, const RankProgramBinding &binding) {
+  if (slot.role == KernelABISlotRole::Workspace ||
+      slot.role == KernelABISlotRole::TransportStatus)
+    return false;
+  return binding.role == getProgramRole(slot.role) &&
+         binding.index == slot.resourceIndex && binding.dtype == slot.dtype &&
+         binding.localShape == slot.shape;
+}
+
+bool detail::isValidPackageCompilerManagedSlot(const KernelABISlot &slot) {
+  if (slot.resourceIndex != 0 || slot.layout != MemLayout::Tensor ||
+      slot.byteSize <= 0 || slot.alignment <= 0)
+    return false;
+  if (slot.role == KernelABISlotRole::Workspace)
+    return slot.dtype == "u8" && slot.shape.size() == 1 &&
+           slot.shape.front() == slot.byteSize;
+  if (slot.role == KernelABISlotRole::TransportStatus)
+    return slot.dtype == "u32" && slot.shape == std::vector<int64_t>{1} &&
+           slot.byteSize ==
+               runtime::kDirectDTEStatusStorageBytes &&
+           slot.alignment ==
+               runtime::kDirectDTEStatusStorageAlignment;
+  return false;
+}
+
 llvm::Expected<PackageBundle>
 detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
                                   const ExecutableBundle &executableBundle,
@@ -516,14 +592,11 @@ detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
       targetArtifacts.getModules().front();
   if (readbackManifest.rankCount != executionConfig.getRankCount() ||
       readbackManifest.targetProfile != targetReadback.getTargetProfileId() ||
-      readbackManifest.targetIdentity !=
-          targetReadback.getTargetIdentityId() ||
-      readbackManifest.runtimeABI !=
-          targetReadback.getKernelRuntimeABIId() ||
+      readbackManifest.targetIdentity != targetReadback.getTargetIdentityId() ||
+      readbackManifest.runtimeABI != targetReadback.getKernelRuntimeABIId() ||
       readbackManifest.launchABI != executionConfig.getTargetLaunchABIId() ||
       readbackManifest.moduleFormat != targetReadback.getModuleFormat() ||
-      readbackManifest.targetProfile !=
-          executionConfig.getTargetProfileId())
+      readbackManifest.targetProfile != executionConfig.getTargetProfileId())
     return fail(diagnostics,
                 "package manifest readback does not match target module facts "
                 "and ExecutionConfig");

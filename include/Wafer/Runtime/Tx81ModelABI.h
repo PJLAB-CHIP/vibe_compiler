@@ -42,8 +42,8 @@ struct Tx81ModelBootParamImage {
 
 /// Builds the host bytes copied to the device before txLaunchModel. The first
 /// implementation intentionally accepts only the parameter-free FP32 tensor
-/// subset proven by the Add board gate. Unsupported tensor contracts fail
-/// before any TX call.
+/// subset admitted by the closed model BootParam v1 contract. Unsupported
+/// tensor contracts fail before any TX call.
 llvm::Expected<Tx81ModelBootParamImage> buildTx81ModelBootParam(
     llvm::ArrayRef<Tx81ModelTensorDescriptor> tensors,
     uint64_t dynamicTLVDeviceAddress);

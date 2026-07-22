@@ -98,32 +98,81 @@ declareCallees(mlir::ModuleOp moduleOp,
   }
   return mlir::success();
 }
+
+static mlir::FailureOr<int64_t>
+resolveDirectDTEContractRankCount(mlir::ModuleOp moduleOp) {
+  ExecutionMeshOp mesh;
+  bool duplicateMesh = false;
+  moduleOp.walk([&](ExecutionMeshOp candidate) {
+    if (!mesh)
+      mesh = candidate;
+    else
+      duplicateMesh = true;
+  });
+  if (!mesh || duplicateMesh)
+    return moduleOp.emitError()
+           << "unsupported_target_transport: Direct DTE status contract "
+              "requires exactly one execution mesh";
+
+  llvm::ArrayRef<int64_t> shape = mesh.getShapeAttr().asArrayRef();
+  int64_t rankCount = 1;
+  for (int64_t dimension : shape) {
+    if (dimension <= 0 ||
+        rankCount > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) /
+                        dimension)
+      return mesh.emitError()
+             << "target_abi_narrowing: Direct DTE rank count must fit a "
+                "positive uint32_t";
+    rankCount *= dimension;
+  }
+  if (shape.empty())
+    return mesh.emitError()
+           << "unsupported_target_transport: Direct DTE execution mesh "
+              "shape must not be empty";
+  return rankCount;
+}
 } // namespace
 
 mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
                                        TargetProfileId targetProfile,
+                                       TargetLaunchABIId launchABI,
                                        int64_t defaultDDRArenaArgumentIndex,
                                        int64_t logicalRank,
                                        int64_t transportStatusArgumentIndex) {
   if (mlir::failed(flattenTileRegions(moduleOp)))
     return mlir::failure();
 
-  bool hasDirectDTE = false;
+  bool hasDirectDTEOps = false;
   moduleOp.walk([&](mlir::Operation *op) {
     if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(op))
-      hasDirectDTE = true;
+      hasDirectDTEOps = true;
   });
+  const bool hasDirectDTEContract = transportStatusArgumentIndex >= 0;
+  if (hasDirectDTEOps && !hasDirectDTEContract)
+    return moduleOp.emitError()
+           << "unsupported_target_transport: Direct DTE requires a "
+              "launch-observable status argument";
+
+  std::optional<int64_t> dteRankCount;
+  if (hasDirectDTEContract) {
+    mlir::FailureOr<int64_t> resolved =
+        resolveDirectDTEContractRankCount(moduleOp);
+    if (mlir::failed(resolved))
+      return mlir::failure();
+    dteRankCount = *resolved;
+  }
+
   std::optional<DirectDTEEndpointDomain> dteDomain;
-  if (hasDirectDTE) {
-    if (transportStatusArgumentIndex < 0)
-      return moduleOp.emitError()
-             << "unsupported_target_transport: Direct DTE requires a "
-                "launch-observable status argument";
+  if (hasDirectDTEOps) {
     mlir::FailureOr<DirectDTEEndpointDomain> resolved =
         resolveDirectDTEEndpointDomain(moduleOp, logicalRank);
     if (mlir::failed(resolved))
       return mlir::failure();
     dteDomain = std::move(*resolved);
+    if (static_cast<int64_t>(dteDomain->rankToTile.size()) != *dteRankCount)
+      return moduleOp.emitError()
+             << "unsupported_target_transport: Direct DTE endpoint domain "
+                "does not match the execution mesh rank count";
   }
 
   DirectCallGraph callGraph;
@@ -132,7 +181,7 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
                                           transportStatusArgumentIndex)))
     return mlir::failure();
   std::string dteEntrySymbol;
-  if (hasDirectDTE) {
+  if (hasDirectDTEContract) {
     mlir::FailureOr<mlir::func::FuncOp> entry =
         findUniqueRootFunction(moduleOp, callGraph);
     if (mlir::failed(entry))
@@ -197,10 +246,14 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
            << "target_llvm_lowering_failure: full target LLVM conversion "
               "failed";
 
-  if (hasDirectDTE &&
+  TargetCallBuiltin dteBeginBuiltin =
+      launchABI == TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1()
+          ? TargetCallBuiltin::DirectDTEBeginAfterPrepare
+          : TargetCallBuiltin::DirectDTEBegin;
+  if (hasDirectDTEContract &&
       mlir::failed(injectDirectDTEStatusLifecycle(
-          moduleOp, dteEntrySymbol, transportStatusArgumentIndex,
-          static_cast<int64_t>(dteDomain->rankToTile.size()), usedCallees)))
+          moduleOp, dteEntrySymbol, transportStatusArgumentIndex, *dteRankCount,
+          dteBeginBuiltin, usedCallees)))
     return mlir::failure();
 
   if (mlir::failed(declareCallees(moduleOp, usedCallees)))

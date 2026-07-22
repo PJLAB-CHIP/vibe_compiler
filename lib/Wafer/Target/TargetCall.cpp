@@ -76,7 +76,7 @@ static llvm::StringRef convStem(InstrConvKind kind) {
 
 static std::vector<TargetCallDescriptor> buildDescriptors() {
   std::vector<TargetCallDescriptor> result;
-  result.reserve(110);
+  result.reserve(111);
 
   auto add = [&](llvm::StringRef stem, Result callResult,
                  std::vector<Scalar> arguments, TargetCallSemantic semantic) {
@@ -105,6 +105,8 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
 
   addVoid("direct_dte_begin", {Scalar::I64, Scalar::I32},
           TargetCallBuiltin::DirectDTEBegin);
+  addVoid("direct_dte_begin_after_prepare", {Scalar::I64, Scalar::I32},
+          TargetCallBuiltin::DirectDTEBeginAfterPrepare);
   add("direct_dte_send_prepare", Result::I64, signature(2, 5),
       TargetCallBuiltin::DirectDTESendPrepare);
   add("direct_dte_recv_prepare", Result::I64, signature(1, 4),
@@ -174,7 +176,7 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
   addPeripheral(InstrPeripheralKind::RandGen, 5, 7);
   addPeripheral(InstrPeripheralKind::ElemMask, 2, 7);
 
-  assert(result.size() == 110 && "target-call registry must stay closed");
+  assert(result.size() == 111 && "target-call registry must stay closed");
   assert(llvm::all_of(
              result,
              [&](const TargetCallDescriptor &descriptor) {

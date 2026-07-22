@@ -164,6 +164,12 @@ public:
   /// an explicit recovery action outside board invocation execution.
   virtual BoardRuntimeContextState getContextState() const = 0;
 
+  /// Marks this invocation-local provider context sticky poisoned without
+  /// issuing a runtime or device call. The executor uses this after a
+  /// terminal command produced an untrustworthy transport outcome. No later
+  /// provider call is permitted.
+  virtual void quarantine() = 0;
+
   /// Returns cached provider-owned semantic capability. This accessor must not
   /// issue a runtime or device call.
   virtual const RuntimeEnvironment &getProviderEnvironment() const = 0;
@@ -203,6 +209,15 @@ public:
   /// to the same verified function and carry canonical rank-major slots.
   virtual llvm::Error
   submitKernelGrid(llvm::ArrayRef<BoardRankLaunch> launches) = 0;
+
+  /// Establishes the closed two-phase TX81 cluster Direct-DTE submission.
+  /// The provider first submits `prepare`, observes its all-tile terminal
+  /// state, and only then submits the shared main function carried by the
+  /// canonical rank launches. Both phases retain one module/argument table/
+  /// stream and share the deadline passed to waitAll().
+  virtual llvm::Error submitClusterPrepareMain(
+      BoardFunctionHandle prepare,
+      llvm::ArrayRef<BoardRankLaunch> mainLaunches) = 0;
 
   /// One txLaunchModel submission owned by a previously loaded graph. The TX
   /// provider alone materializes the qualified BootParam/type-7 wire bytes.
@@ -274,9 +289,8 @@ struct BoardRuntimeInvocationResult {
 };
 
 /// Executes the complete verified logical-rank domain as one owner-backed
-/// provider session. The current TX provider accepts only transport:none;
-/// Direct DTE remains a side-effect-free rejection until a proven placement
-/// and per-rank argument ABI exists.
+/// provider session. Direct DTE is accepted only through its closed cluster
+/// prepare/main launch ABI and is otherwise rejected before device effects.
 llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
     const VerifiedPackageManifest &package, llvm::StringRef packageRoot,
     BoardRuntimeInvocationRequest request, BoardRuntimeDriver &driver);

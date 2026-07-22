@@ -5,6 +5,7 @@
 #include "Wafer/Target/TargetCall.h"
 
 #include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
+#include "../../lib/Wafer/Compiler/TargetArtifactInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -32,6 +33,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Error.h"
@@ -163,7 +165,10 @@ module {
 }
 
 llvm::Expected<wafer::compiler::TargetLLVMModuleBundle>
-buildDirectDTETargetBundle(std::string &diagnosticText) {
+buildDirectDTETargetBundle(
+    std::string &diagnosticText,
+    wafer::TargetLaunchABIId launchABI =
+        wafer::TargetLaunchABIId::perRankPointerBlockV1()) {
   auto context = createCompilerContext();
   auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -193,8 +198,7 @@ module {
   program.distributedInputs = {partitionedBoundary(0)};
   program.distributedOutputs = {partitionedBoundary(0)};
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(), launchABI);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
@@ -323,6 +327,7 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
       arguments[18] = supportedF32Code(wafer::TargetFormatEngine::TDMA);
       break;
     case wafer::TargetCallBuiltin::DirectDTEBegin:
+    case wafer::TargetCallBuiltin::DirectDTEBeginAfterPrepare:
       arguments[1] = 16;
       break;
     case wafer::TargetCallBuiltin::DirectDTESendPrepare:
@@ -545,7 +550,8 @@ void expectPayloadFields(
           std::holds_alternative<wafer::compiler::TargetLocalFenceTransaction>(
               payload));
       return;
-    case wafer::TargetCallBuiltin::DirectDTEBegin: {
+    case wafer::TargetCallBuiltin::DirectDTEBegin:
+    case wafer::TargetCallBuiltin::DirectDTEBeginAfterPrepare: {
       ASSERT_TRUE(std::holds_alternative<
                   wafer::compiler::TargetDirectDTEBeginTransaction>(payload));
       const auto &value =
@@ -812,7 +818,7 @@ void expectPayloadFields(
 TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   llvm::ArrayRef<wafer::TargetCallDescriptor> descriptors =
       wafer::getTargetCallDescriptors();
-  ASSERT_EQ(descriptors.size(), 110u);
+  ASSERT_EQ(descriptors.size(), 111u);
   llvm::DenseSet<llvm::StringRef> symbols;
   for (const wafer::TargetCallDescriptor &descriptor : descriptors) {
     EXPECT_TRUE(llvm::StringRef(descriptor.symbol).starts_with("wafer_tx81_"));
@@ -862,7 +868,7 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
     expectPayloadFields(descriptor, arguments, *payload);
     ++decoded;
   }
-  EXPECT_EQ(decoded, 110u);
+  EXPECT_EQ(decoded, 111u);
 }
 
 TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
@@ -1013,6 +1019,46 @@ TEST(TargetCallFrontendTest, ExecutesAllRanksWithExplicitDTEOpaqueEvents) {
   EXPECT_EQ(beginRanks.size(), 16u);
   EXPECT_EQ(finishRanks.size(), 16u);
   EXPECT_GT(waitCount, 0u);
+}
+
+TEST(TargetCallFrontendTest,
+     ClusterAggregationConsumesProductionDirectDTERankModules) {
+  std::string diagnostics;
+  auto bundle = buildDirectDTETargetBundle(
+      diagnostics,
+      wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1());
+  ASSERT_TRUE(static_cast<bool>(bundle))
+      << diagnostics << llvm::toString(bundle.takeError());
+  auto aggregate = wafer::compiler::detail::buildClusterTargetModule(*bundle);
+  ASSERT_TRUE(static_cast<bool>(aggregate))
+      << llvm::toString(aggregate.takeError());
+
+  size_t rankBodyCount = 0;
+  size_t afterPrepareCalls = 0;
+  size_t directSyncInitCalls = 0;
+  size_t initTileIdCalls = 0;
+  for (const llvm::Function &function : aggregate->module->functions()) {
+    if (function.getName().starts_with("__wafer_cluster_rank_") &&
+        function.getName().ends_with("_main_body"))
+      ++rankBodyCount;
+    for (const llvm::BasicBlock &block : function)
+      for (const llvm::Instruction &instruction : block) {
+        const auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
+        if (!call || !call->getCalledFunction())
+          continue;
+        if (call->getCalledFunction()->getName() ==
+            "wafer_tx81_direct_dte_begin_after_prepare")
+          ++afterPrepareCalls;
+        if (call->getCalledFunction()->getName() == "direct_sync_init")
+          ++directSyncInitCalls;
+        if (call->getCalledFunction()->getName() == "init_tile_id")
+          ++initTileIdCalls;
+      }
+  }
+  EXPECT_EQ(rankBodyCount, 16u);
+  EXPECT_EQ(afterPrepareCalls, 16u);
+  EXPECT_EQ(directSyncInitCalls, 1u);
+  EXPECT_EQ(initTileIdCalls, 1u);
 }
 
 TEST(TargetCallFrontendTest, LateRankFailureAbortsTheWholeInvocation) {

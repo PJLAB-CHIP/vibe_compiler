@@ -17,6 +17,10 @@ findResource(llvm::ArrayRef<PackageResourceRecord> resources, ResourceId id);
 const PackageModuleRecord *
 findModule(llvm::ArrayRef<PackageModuleRecord> modules, ModuleId id);
 
+const PackageModuleExportRecord *
+findModuleExport(const PackageModuleRecord &module,
+                 PackageModuleExportRole role);
+
 const PackageCompletionRecord *
 findCompletion(llvm::ArrayRef<PackageCompletionRecord> completions,
                CompletionId id);

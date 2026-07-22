@@ -376,7 +376,7 @@
 
 ## 2026-07-15 completion声明必须追到最后一个execution consumer
 
-- 现象：target-call当时的109项（Q32.V后为110项）测试只验证variant family仍被写成“逐字段闭合”；bulk final record保存implementation/descriptor，
+- 现象：target-call当时的109项（Q32.V后为110项，Q6.B prepare lifecycle后为111项）测试只验证variant family仍被写成“逐字段闭合”；bulk final record保存implementation/descriptor，
   runtime admission却未携带或比较；SystemC设计正文写长寿命可复用，公开入口实际只允许initial elaboration一次调用。
 - 根因：把registry/readback对象存在、组件层negative或设计目标当成了下游实际消费证明，没有逐项重放completion gate中的
   field mapping、runtime evidence drift、source late-rank和lifecycle事实。
@@ -907,3 +907,103 @@
   不retry，不在未知context上调用unload/free/reset/power。
 - 防复发：测试必须覆盖外层timeout的退出诊断和“不执行下一轮”；不能以更长的stream timeout、signal handler内调用vendor API或自动
   device reset冒充安全取消。
+
+## 2026-07-22 Direct DTE初始化必须先形成全tile phase boundary
+
+- 现象：每个rank进入main后各自执行`direct_sync_init(16)`；较晚rank可能清掉较早peer已经post的ready token，使peer永久等待。
+  只有本地含DTE op的rank注入status lifecycle时，无本地通信但属于同一transport contract的rank也没有可观察terminal。
+- 根因：把card-wide transport初始化降成了rank-local函数序言，并从本地op存在性推导invocation transport责任；异步rank启动顺序
+  不能提供全tile happens-before。
+- 修复模式：cluster launch ABI显式发布typed `prepare`/`main` exports。`prepare`在16 tile上执行一次初始化并等待共同terminal，
+  host随后在同一stream、参数表和deadline内发`main`；main使用不重复初始化的`begin_after_prepare`，所有transport-contract rank
+  均写status。main terminal后先D2H并验证16个status，全部success后才允许读取用户output。
+- 防复发：launch ABI而不是symbol/name选择两阶段lifecycle；module export role、entry到shared module覆盖和`0x7d0`参数上限由
+  schema verifier闭合。status pending/error/unknown或status D2H失败立即sticky quarantine，之后不cleanup、retry、reset或power。
+
+## 2026-07-22 C-Intrinsic Direct DTE必须初始化tile拓扑状态
+
+- 现象：干净重启后的cluster run中，`prepare` CINS在92us内完成，随后`main`等待60s；Kcore日志报告
+  `get_tile_spm_addr_base: Invalid tile_y==0`。同一进程退出后的vendor context自动清理/reset又超时，下一次尝试甚至卡在module load，
+  因此后一次失败不能反向归因成prepare本身失败。
+- 根因：聚合cluster entry只执行了`direct_sync_init(16)`，没有像vendor生成entry那样先调用
+  `init_tile_id(logic_id, row_length)`。`direct_sync_post`会从SPM `0x2f0458`读取row length再计算peer SPM base；未初始化时该值为0。
+  `__get_pid(0)`表示block坐标，不天然等于logical tile id；仅在当前full-16、first-tile offset 0下数值同为0..15。
+- 修复模式：full-16 TX81 cluster `prepare`在每个tile先执行`init_tile_id(__get_pid(0), 4)`，随后再统一清ready slots；
+  cluster loader symbol closure显式包含`__get_pid`和`init_tile_id`。subset cluster必须从显式offset/topology建立rank到logical tile映射，
+  不能复用full-16等价关系。
+- 防复发：板测日志必须按module load、prepare CINS、main CINS和进程teardown分阶段对齐；SMI空闲不证明vendor内部context已恢复。
+  context teardown/reset一旦超时，停止硬件重试并等待干净重启，不主动调用reset/power补救。
+
+## 2026-07-22 Direct DTE远端receiver offset必须在CRT物化为peer SPM地址
+
+- 现象：补齐`init_tile_id(pid,4)`后，干净环境中cluster prepare已共同terminal且不再出现row-length坐标错误，main仍超过host
+  deadline；host只记录poisoned context teardown `-110`，没有形成transport status或用户output。
+- 根因：compiler binding正确保留了发送端本地无法重算的accepted remote receiver SPM offset，但TX81 CRT把该offset原样写入
+  `DirectDTESendInfo.dst_addr`。当前SDK生成的ring module实际调用
+  `get_tile_spm_addr_base(remote_tile, tile_x, tile_y)`并加receiver offset；其sender source和receiver FSM则都直接使用本地raw SPM
+  offset。把三者都当普通offset或都转成`get_spm_memory_mapping`都会破坏firmware地址合同。
+- 修复模式：保持IR/TargetCall fixed signature不变，在TX81 CRT sender边界按当前full-16 4×4 target profile构造peer base加offset，
+  checked拒绝加法overflow；base loader ABI显式允许该Kcore symbol。receiver lowering/CRT不做映射，避免把本地FSM offset误改为CPU pointer。
+- 防复发：CRT conformance检查source/remote/receiver三类地址分工；RISC-V CRT反汇编必须看到remote helper call和base+offset，receiver
+  function不得调用local/peer mapping helper；fresh shared module的全部imports必须与同版本Kcore exports闭包。static gate通过后才允许
+  干净环境的一次性armed运行，timeout后不cleanup、retry、reset或power。
+- 诊断补充：上述main timeout后只读SMI仍可显示0% utilization、固定memory baseline和无进程；用户明确要求的唯一一次rank-one
+  NoTransport Add仍卡在completion，并新增同一context fini `-110`。因此SMI表面空闲不是可执行性probe，已poisoned context上的普通
+  kernel失败也不能反向判定Add compiler/module有错；后续必须由干净重启后的既有known-good Add重新建立baseline。
+
+## 2026-07-22 debugfs写成功不能证明KCore power-cycle成功
+
+- 现象：当前V5.6 EVB上，`tsm_smi --reset`在任何kill、卸驱动或reset前返回`invalid machine`；该二进制的完整恢复实现只接受
+  REX1032/REX1008。经用户单独授权后，向设备的`fw/kcore` debugfs入口写入一次`reset`，shell在约2.9秒后以0退出，缓存状态仍显示
+  `on`，但KMD日志明确报告`kiq power reset fw cost: 3028ms, r = -110`和`fw ops reset failed`。
+- 根因：EVB不在SMI全设备reset的机型分支中。KMD debugfs入口会向该设备全部valid tile的KCore发送
+  `TSM_RVCORE_POWER_CYCLE`，固定等待3秒；write handler即使内部调用失败仍返回已消费字节数，且失败时不会把缓存firmware状态改为
+  `off`，所以shell返回值和`status: on`都可能是假成功。
+- 修复模式：把SMI整机型reset、KMD KCore power-cycle和runtime `txDeviceReset`视为三个不同作用域。debugfs recovery只能作为
+  invocation外、用户显式授权的独立维护动作；执行后必须以KMD日志中的`r = 0`为第一成功门禁，再用新进程的known-good Add建立
+  execution baseline。KIQ超时后立即停止，不运行Add、不retry，也不追加其它reset/power调用。
+- 防复发：调用任何供应商恢复入口前先静态确认机型分支、目标tile/core域、timeout和错误传播；不得从命令退出0、debugfs缓存状态、
+  SMI inventory或无占用进程推断设备已经恢复。容器内也不能自行拼接PCI remove/rescan、driver rebind或宿主power操作。
+
+## 2026-07-22 Kcore写cacheable DDR status必须显式发布到host可见层级
+
+- 现象：Direct DTE main stream正常terminal，但host D2H的16个status仍是执行前预填的`0xffffffff`；仅把指针声明为
+  `volatile`没有改变结果。
+- 根因：当前firmware只在进入dynamic module前invalidate参数表，entry返回路径不会clean module写入的cacheable DDR。
+  scalar store可以停留在Kcore private write-back D-cache；`volatile`只约束编译器访问，不能建立device-to-host cache一致性。
+- 修复模式：CRT保存一份local status state，所有pending/error/success统一经过publication helper：写DDR后按安装firmware
+  `rt_hw_cpu_dcache_ops(FLUSH)`的C908序列对64-byte line执行mode-dependent `dcache.cipa/civa`及必要fence/sync。
+  device linker只对CRT使用`-mcpu=c908`，最终对象反汇编检查cache opcode；不依赖未闭合的firmware cache helper符号。
+- 防复发：transport status gate必须同时覆盖预填毒值、main terminal、D2H terminal值和最终CRT反汇编。不能把stream完成、
+  `volatile`、uncached地址猜测或host侧重复D2H当作device cache publication。
+
+## 2026-07-22 cache-line publication必须拥有整条存储
+
+- 现象：Direct DTE status的逻辑值只是4-byte `u32`，旧manifest因此也只申明4-byte storage/alignment；
+  CRT为建立host可见性实际会对包含该值的整条64-byte cache line执行clean/invalidate。
+- 根因：把逻辑value width误当成cache operation的ownership范围。仅4-byte分配时，通用子分配器可以把相邻resource
+  放到同一cache line，因而status publication无法证明只作用于自己拥有的storage。
+- 修复模式：将current status ABI升为v2：offset 0仍是`u32`，但resource bytes/alignment固定为`64/64`，
+  其余padding无语义；host读回整个storage后只解码value field，compiler/package/runtime/CRT共用同一C-compatible
+  ABI header，v1 fail closed。回归同时锁定manifest尺寸/对齐与bounds和begin/error/finish的cache publication机器码。
+
+## 2026-07-22 DTE wait的间接buffer effect必须参与ready-order
+
+- 现象：旧16-rank collective ELF中，rank 1按`recv_prepare -> gather_scatter -> direct_dte_wait`执行，先消费接收buffer再等
+  receive completion；普通各rank独立Add此前仍能通过。
+- 根因：`wafer.instr.dte_wait`只显式携带issue token，没有buffer operand。ready-order只建立issue到wait和issue到buffer consumer，
+  未把wait视作receive destination的write completion；更高优先级的local movement因此越过wait。独立Add没有异步DTE，不能覆盖该依赖。
+- 修复模式：沿wait token回溯send/recv producer，并沿`ViewLikeOpInterface`归一到storage base：send wait延续source read，recv wait
+  形成destination completion write。由此建立`recv -> wait -> consumer`和`send -> wait -> overwrite`，不为单个collective或shape加fence。
+- 防复发：同时保留recv-consumer和send-overwrite focused unit、最终ELF call-order readback及多rank板端exact三层gate；审计产物前
+  核对mtime、payload shape和digest，不能把并发重编译留下的旧ELF当成当前产物。
+
+## 2026-07-22 clean numeric mismatch不等于provider poison或需要重启
+
+- 现象：一次板端output compare失败后，因为one-shot进程打印“不运行vendor DSO finalizer”而一度误判context已坏并认为必须重启。
+- 根因：混淆了runtime lifecycle与其下游CPU comparator。当前compare发生在trusted terminal、D2H和显式cleanup之后；正常
+  one-shot退出提示只说明DSO finalizer policy。真正poisoned路径会由provider显式返回quarantine disposition，并停止低层cleanup。
+- 修复模式：按provider disposition和执行后只读基线分级：普通numeric mismatch在已清理session上直接查compiler/runtime；只有
+  timeout、query/device error、untrusted terminal、明确poisoned，或memory/process/inventory未回到基线时才停止触卡并进入恢复判定。
+- 防复发：不因compare失败自动reset/reboot，也不把SMI空闲单独当作已poisoned context可执行证明。恢复接口仍须独立确认作用域并由
+  用户明确授权；成功运行回到基线时无需恢复动作。

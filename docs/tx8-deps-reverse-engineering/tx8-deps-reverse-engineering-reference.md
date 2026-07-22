@@ -496,6 +496,24 @@ direct DTE helper：
 
 - `direct_sync_init` 清零 `0x2f0200` 附近 sync slots。
 - `direct_sync_wait` 等待 magic `0x12345678` 后清除。
+- 安装版Kcore动态module入口在调用entry前invalidate参数表，但entry返回路径不替module clean其写入的cacheable DDR。
+  因此对`txMalloc` status地址的`volatile` scalar store不足以保证后续host D2H看到terminal值。firmware
+  `rt_hw_cpu_dcache_ops(FLUSH)`反汇编使用64-byte cache line，并执行`fence; sync; mxstatus`后按当前mode选择
+  `dcache.cipa`或`dcache.civa`，再执行`sync.is; fence; sync`。repo-local TX81 CRT以`-mcpu=c908`编译并在每次
+  pending/error/success status publication后复用该clean/invalidate序列；通用target LLVM module仍使用既有RV64 ISA配置。
+  因为cache operation的作用域是整条64-byte line，current Wafer status-v2以64-byte storage/alignment独占该line，
+  其offset 0为唯一有语义的`u32`字段。
+- `init_tile_id(logic_id, row_length)`把逻辑tile id写入`0x2f0454`、当前物理tile寄存器值写入`0x2f0450`、
+  row length写入`0x2f0458`。vendor生成的Kcore entry在通信前显式调用它。
+- `direct_sync_post(tile_this, tile_other)`从`0x2f0458`读取row length，并调用
+  `get_tile_spm_addr_base(tile_other, 0, row_length)`定位对端SPM；row length为0会记录Kcore错误并退回4，不能把该fallback
+  当作初始化合同。full-16单卡C-Intrinsic的first-tile offset为0时，`__get_pid(0)`的0..15 block坐标可作为
+  `init_tile_id`的logical id，row length为TX81 4×4拓扑的4；subset cluster还需显式处理offset，不能直接令pid等于logical id。
+- 当前SDK生成的ring Direct DTE module与Kcore helper交叉反汇编确认三种地址不能混用：sender `src_addr`直接取本地tensor
+  SPM offset，receiver `direct_fsm_monitor_init`直接取本地planned SPM offset；只有sender `dst_addr`先调用
+  `get_tile_spm_addr_base(remote_tile, tile_x, tile_y)`取得peer SPM映射base，再加receiver offset。TX81 full-16 profile的
+  `tile_x/tile_y`均为4。`get_spm_memory_mapping(offset)=offset+0x30400000`用于Kcore CPU本地访问，不是receiver FSM参数，
+  也不能替代peer base计算。
 - `direct_dte_wait_done` 轮询 DTE status，使用 `0x2F0280` SPM counter 和 tile row length 等元数据。
 - `mod_kuiper_dte_alloc(0)` 按 DTE id 1、2、3 选择空闲节点；`mod_kuiper_dte_alloc(1)` 只尝试 DTE id 2。
 - `mod_kuiper_dte_config_src_and_dst` 对 null node 返回 `-11`，src mode 仅在 mode 4 传 shuffle cfg，dst info 仅在 mode 5 传 shuffle cfg；dst address 会 OR 上 `tile_logic_id << 40`。

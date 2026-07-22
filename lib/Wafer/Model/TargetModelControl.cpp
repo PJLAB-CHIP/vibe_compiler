@@ -2,6 +2,8 @@
 
 #include "TargetModelKernelInternal.h"
 
+#include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
+
 #include <limits>
 #include <utility>
 #include <variant>
@@ -39,7 +41,9 @@ validateControlAddresses(const compiler::TargetTransaction &transaction,
                          "Direct DTE rank_count differs from invocation");
     llvm::Expected<TargetModelResolvedRange> status =
         plan.resolve(transaction.logicalRank, TargetModelAddressSpace::CardDDR,
-                     TargetModelAccess::ReadWrite, begin->statusAddress, 4, 4);
+                     TargetModelAccess::ReadWrite, begin->statusAddress,
+                     WAFER_TX81_DIRECT_DTE_STATUS_V2_VALUE_BYTES,
+                     WAFER_TX81_DIRECT_DTE_STATUS_V2_VALUE_BYTES);
     if (!status)
       return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
                          llvm::toString(status.takeError()));

@@ -14,7 +14,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,6 +37,11 @@ public:
 
   wafer::runtime::BoardRuntimeContextState getContextState() const override {
     return contextState;
+  }
+
+  void quarantine() override {
+    calls.push_back("quarantine");
+    contextState = wafer::runtime::BoardRuntimeContextState::Poisoned;
   }
 
   const wafer::runtime::RuntimeEnvironment &
@@ -114,6 +121,7 @@ public:
     if (iterator == allocations.end() ||
         iterator->bytes.size() != source.size())
       return injected("invalid-h2d");
+    h2dPayloads.emplace_back(source.begin(), source.end());
     std::copy(source.begin(), source.end(), iterator->bytes.begin());
     return llvm::Error::success();
   }
@@ -167,9 +175,10 @@ public:
       return injectedFailure();
     if (std::find(liveModules.begin(), liveModules.end(), module.value) ==
             liveModules.end() ||
-        symbol != "main")
+        (symbol != "main" && symbol != "prepare"))
       return injected("invalid-entry");
-    return wafer::runtime::BoardFunctionHandle{module.value + 0x2000};
+    return wafer::runtime::BoardFunctionHandle{
+        module.value + (symbol == "prepare" ? 0x1000 : 0x2000)};
   }
 
   llvm::Expected<wafer::runtime::BoardGraphHandle> loadGraph(
@@ -208,7 +217,7 @@ public:
     submittedLaunches.assign(launches.begin(), launches.end());
     for (auto [index, launch] : llvm::enumerate(launches)) {
       if (launch.logicalRank != static_cast<int64_t>(index) ||
-          launch.function.value != 0x9000 + index ||
+          launch.function.value == 0 ||
           launch.arguments.size() != 3)
         return injected("invalid-canonical-submit");
       auto input = find(launch.arguments[0]);
@@ -246,6 +255,43 @@ public:
       for (size_t byte = 0; byte < input->bytes.size(); ++byte)
         output->bytes[byte] =
             input->bytes[byte] ^ static_cast<uint8_t>(rank);
+    }
+    submissionLive = true;
+    return llvm::Error::success();
+  }
+
+  llvm::Error submitClusterPrepareMain(
+      wafer::runtime::BoardFunctionHandle prepare,
+      llvm::ArrayRef<wafer::runtime::BoardRankLaunch> launches) override {
+    calls.push_back("submit-cluster-prepare-main");
+    if (shouldFail("submit-cluster-prepare-main"))
+      return injectedFailure();
+    if (submissionLive || launches.size() != 16 || prepare.value != 0x8000)
+      return injected("invalid-cluster-state");
+    submittedLaunches.assign(launches.begin(), launches.end());
+    for (auto [rank, launch] : llvm::enumerate(launches)) {
+      if (launch.logicalRank != static_cast<int64_t>(rank) ||
+          launch.function.value != 0x9000 || launch.arguments.size() < 3)
+        return injected("invalid-cluster-launch");
+      auto input = find(launch.arguments[0]);
+      auto output = find(launch.arguments[1]);
+      auto status = find(launch.arguments.back());
+      if (input == allocations.end() || output == allocations.end() ||
+          status == allocations.end() ||
+          input->bytes.size() != output->bytes.size() ||
+          status->bytes.size() !=
+              wafer::runtime::kDirectDTEStatusStorageBytes)
+        return injected("invalid-cluster-buffers");
+      for (size_t byte = 0; byte < input->bytes.size(); ++byte)
+        output->bytes[byte] =
+            input->bytes[byte] ^ static_cast<uint8_t>(rank);
+      const uint32_t terminalStatus =
+          clusterStatusOverride.value_or(static_cast<uint32_t>(
+              wafer::runtime::DirectDTEStatusValue::Success));
+      std::memcpy(status->bytes.data() +
+                      wafer::runtime::kDirectDTEStatusValueOffset,
+                  &terminalStatus,
+                  sizeof(terminalStatus));
     }
     submissionLive = true;
     return llvm::Error::success();
@@ -318,6 +364,7 @@ public:
   std::vector<uintptr_t> freedAddresses;
   std::vector<uintptr_t> loadedHandles;
   std::vector<uintptr_t> unloadedHandles;
+  std::vector<std::vector<uint8_t>> h2dPayloads;
   std::vector<wafer::runtime::BoardRankLaunch> submittedLaunches;
   std::vector<wafer::runtime::BoardModelTensorLaunch> submittedModelTensors;
   uint64_t observedTimeoutMilliseconds = 0;
@@ -327,14 +374,24 @@ public:
   uint64_t totalMemoryBytes = 256ULL * 1024 * 1024;
   std::string runtimeLibraryDigest =
       "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  std::optional<uint32_t> clusterStatusOverride;
 
 private:
   static wafer::runtime::RuntimeEnvironment
   makeProviderEnvironment(wafer::TargetLaunchABIId launchABI) {
     const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
-    return {target.id, target.targetIdentity, target.kernelRuntimeABI,
-            launchABI, target.moduleFormat};
+    wafer::runtime::RuntimeEnvironment environment{
+        target.id, target.targetIdentity, target.kernelRuntimeABI, launchABI,
+        target.moduleFormat};
+    if (launchABI == wafer::TargetLaunchABIId::
+                         tx81ClusterDirectDTEPrepareMainV1()) {
+      environment.supportsDirectDTE = true;
+      environment.directDTEStatusABI =
+          wafer::runtime::kDirectDTEStatusABI.str();
+      environment.supportsHostWatchdog = true;
+    }
+    return environment;
   }
 
   bool shouldFail(llvm::StringRef operation) {
@@ -433,13 +490,13 @@ protected:
                            PackageAccessMode::ReadWrite,
                            false}};
     manifest.modules = {
-        {ModuleId(0), 0, "modules/rank_00000.so",
+        {ModuleId(0), "modules/rank_00000.so",
          "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true),
-         target.moduleFormat.str()}};
+         target.moduleFormat.str(),
+         {{PackageModuleExportRole::Main, "main"}}}};
     manifest.entries = {{EntryId(0),
                          0,
                          ModuleId(0),
-                         "main",
                          {{0, ResourceId(0), PackageAccessMode::ReadOnly},
                           {1, ResourceId(1), PackageAccessMode::WriteOnly},
                           {2, ResourceId(2), PackageAccessMode::ReadWrite}},
@@ -481,24 +538,42 @@ protected:
                              target.moduleFormat);
     manifest.program = ProgramId(0);
     manifest.rankCount = 16;
+    const bool sharedModule =
+        launchABI ==
+            wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1() ||
+        launchABI == wafer::TargetLaunchABIId::
+                         tx81ClusterDirectDTEPrepareMainV1();
+    const bool cluster =
+        launchABI == wafer::TargetLaunchABIId::
+                         tx81ClusterDirectDTEPrepareMainV1();
 
     uint64_t nextResource = 0;
     for (int64_t rank = 0; rank < 16; ++rank) {
       std::string rankText = std::to_string(rank);
       std::string moduleName =
           "rank_" + std::string(5 - rankText.size(), '0') + rankText + ".so";
-      ModuleId module(static_cast<uint64_t>((rank * 7 + 5) % 16));
+      ModuleId module(sharedModule
+                          ? 0
+                          : static_cast<uint64_t>((rank * 7 + 5) % 16));
       EntryId entry(static_cast<uint64_t>((rank * 5 + 3) % 16));
       CompletionId completion(static_cast<uint64_t>((rank * 9 + 1) % 16));
-      manifest.modules.push_back({module, rank, "modules/" + moduleName,
-                                  moduleDigest(), target.moduleFormat.str()});
+      if (!sharedModule || rank == 0)
+        manifest.modules.push_back(
+            {module, "modules/" + moduleName, moduleDigest(),
+             target.moduleFormat.str(),
+             cluster
+                 ? std::vector<PackageModuleExportRecord>{
+                       {PackageModuleExportRole::Prepare, "prepare"},
+                       {PackageModuleExportRole::Main, "main"}}
+                 : std::vector<PackageModuleExportRecord>{
+                       {PackageModuleExportRole::Main, "main"}}});
       manifest.completions.push_back({completion, rank, "entry_return"});
 
       std::vector<PackageABISlotBinding> slots;
       auto addResource = [&](PackageResourceRole role, llvm::StringRef name,
                              llvm::StringRef dtype, std::vector<int64_t> shape,
                              uint64_t bytes, PackageAccessMode access,
-                             bool hostVisible) {
+                             bool hostVisible, uint64_t alignment = 256) {
         ResourceId resource(nextResource++);
         manifest.resources.push_back(
             {resource,
@@ -508,7 +583,7 @@ protected:
              (llvm::Twine(name) + "_rank_" + llvm::Twine(rank)).str(),
              {dtype.str(), std::move(shape)},
              bytes,
-             256,
+             alignment,
              access,
              hostVisible});
         slots.push_back({slots.size(), resource, access});
@@ -520,8 +595,23 @@ protected:
       if (launchABI != wafer::TargetLaunchABIId::tx81ModelBootParamV1())
         addResource(PackageResourceRole::Workspace, "workspace", "u8", {512},
                     512, PackageAccessMode::ReadWrite, false);
-      manifest.entries.push_back({entry, rank, module, "main", std::move(slots),
-                                  completion, NoTransportRequirements{}});
+      TransportRequirements transport = NoTransportRequirements{};
+      if (cluster) {
+        ResourceId status(nextResource++);
+        manifest.resources.push_back(
+            {status, rank, PackageResourceRole::TransportStatus, 0,
+             (llvm::Twine("direct_dte_status_rank_") + llvm::Twine(rank))
+                 .str(),
+             {"u32", {1}}, kDirectDTEStatusStorageBytes,
+             kDirectDTEStatusStorageAlignment, PackageAccessMode::ReadWrite,
+             false});
+        slots.push_back(
+            {slots.size(), status, PackageAccessMode::ReadWrite});
+        transport = DirectDTETransportRequirements{
+            status, kDirectDTEStatusABI.str(), true};
+      }
+      manifest.entries.push_back({entry, rank, module, std::move(slots),
+                                  completion, std::move(transport)});
     }
 
     // Identity order is intentionally unrelated to logical-rank order. The
@@ -537,6 +627,25 @@ protected:
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> verifyRank16(
       wafer::TargetLaunchABIId launchABI =
           wafer::TargetLaunchABIId::perRankPointerBlockV1()) const {
+    const bool sharedModule =
+        launchABI ==
+            wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1() ||
+        launchABI == wafer::TargetLaunchABIId::
+                         tx81ClusterDirectDTEPrepareMainV1();
+    if (sharedModule) {
+      for (int64_t rank = 1; rank < 16; ++rank) {
+        std::string rankText = std::to_string(rank);
+        llvm::SmallString<256> path(root);
+        llvm::sys::path::append(
+            path, "modules",
+            "rank_" + std::string(5 - rankText.size(), '0') + rankText +
+                ".so");
+        if (llvm::sys::fs::exists(path))
+          EXPECT_FALSE(llvm::sys::fs::remove(path));
+      }
+    } else {
+      createRankModules(16);
+    }
     return wafer::runtime::verifyPackageManifest(makeRank16Manifest(launchABI),
                                                  root);
   }
@@ -770,6 +879,146 @@ TEST_F(BoardRuntimeTest,
 }
 
 TEST_F(BoardRuntimeTest,
+       ClusterDirectDTEUsesTypedPrepareMainAndChecksStatusBeforeOutputs) {
+  using wafer::TargetLaunchABIId;
+  const TargetLaunchABIId launchABI =
+      TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+      verifyRank16(launchABI);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  const wafer::runtime::PackageManifest &manifest = package->getManifest();
+  FakeBoardDriver driver(launchABI);
+  llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
+      wafer::runtime::executeBoardInvocation(
+          *package, root, makeRank16Request(manifest), driver);
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "load-module"),
+            1);
+  EXPECT_EQ(
+      std::count(driver.calls.begin(), driver.calls.end(), "resolve-entry"), 2);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "submit-cluster-prepare-main"),
+            1);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "d2h"), 32);
+  EXPECT_EQ(std::count_if(driver.h2dPayloads.begin(),
+                          driver.h2dPayloads.end(), [](const auto &bytes) {
+                            return bytes.size() ==
+                                       wafer::runtime::
+                                           kDirectDTEStatusStorageBytes &&
+                                   llvm::all_of(bytes, [](uint8_t byte) {
+                                     return byte == 0xff;
+                                   });
+                          }),
+            16);
+  ASSERT_EQ(result->outputs.size(), 16u);
+  for (const wafer::runtime::BoardRuntimeOutput &output : result->outputs) {
+    auto resource =
+        llvm::find_if(manifest.resources, [&](const auto &candidate) {
+          return candidate.id == output.resource;
+        });
+    ASSERT_NE(resource, manifest.resources.end());
+    EXPECT_EQ(resource->role, wafer::runtime::PackageResourceRole::Output);
+    for (size_t byte = 0; byte < output.bytes.size(); ++byte)
+      EXPECT_EQ(output.bytes[byte],
+                rankInputByte(resource->logicalRank, byte) ^
+                    static_cast<uint8_t>(resource->logicalRank));
+  }
+}
+
+TEST_F(BoardRuntimeTest,
+       ClusterDirectDTEBadStatusQuarantinesBeforeAnyUserOutputReadback) {
+  using wafer::TargetLaunchABIId;
+  const TargetLaunchABIId launchABI =
+      TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+      verifyRank16(launchABI);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  FakeBoardDriver driver(launchABI);
+  driver.clusterStatusOverride = static_cast<uint32_t>(
+      wafer::runtime::DirectDTEStatusValue::Pending);
+  llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
+      wafer::runtime::executeBoardInvocation(
+          *package, root, makeRank16Request(package->getManifest()), driver);
+  ASSERT_FALSE(static_cast<bool>(result));
+  bool sawPoison = false;
+  llvm::handleAllErrors(
+      result.takeError(),
+      [&](const wafer::runtime::BoardRuntimeError &error) {
+        sawPoison = true;
+        EXPECT_EQ(error.getStage(),
+                  wafer::runtime::BoardRuntimeStage::Completion);
+        EXPECT_EQ(error.getContextState(),
+                  wafer::runtime::BoardRuntimeContextState::Poisoned);
+      });
+  EXPECT_TRUE(sawPoison);
+  ASSERT_FALSE(driver.calls.empty());
+  EXPECT_EQ(driver.calls.back(), "quarantine");
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "d2h"), 1);
+  EXPECT_EQ(std::find(driver.calls.begin(), driver.calls.end(),
+                      "release-submission"),
+            driver.calls.end());
+  EXPECT_TRUE(driver.unloadedHandles.empty());
+  EXPECT_TRUE(driver.freedAddresses.empty());
+}
+
+TEST_F(BoardRuntimeTest,
+       ClusterDirectDTEStatusReadbackFailureQuarantinesWithoutCleanup) {
+  using wafer::TargetLaunchABIId;
+  const TargetLaunchABIId launchABI =
+      TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+      verifyRank16(launchABI);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  FakeBoardDriver driver(launchABI);
+  driver.failOperation = "d2h";
+  llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
+      wafer::runtime::executeBoardInvocation(
+          *package, root, makeRank16Request(package->getManifest()), driver);
+  ASSERT_FALSE(static_cast<bool>(result));
+  llvm::consumeError(result.takeError());
+  ASSERT_GE(driver.calls.size(), 2u);
+  EXPECT_EQ(driver.calls[driver.calls.size() - 2], "d2h");
+  EXPECT_EQ(driver.calls.back(), "quarantine");
+  EXPECT_EQ(std::find(driver.calls.begin(), driver.calls.end(),
+                      "release-submission"),
+            driver.calls.end());
+  EXPECT_TRUE(driver.unloadedHandles.empty());
+  EXPECT_TRUE(driver.freedAddresses.empty());
+}
+
+TEST_F(BoardRuntimeTest,
+       ClusterDirectDTEOutputReadbackFailureQuarantinesWithoutCleanup) {
+  using wafer::TargetLaunchABIId;
+  const TargetLaunchABIId launchABI =
+      TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+      verifyRank16(launchABI);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  FakeBoardDriver driver(launchABI);
+  driver.failOperation = "d2h";
+  driver.failIndex = 16;
+  llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
+      wafer::runtime::executeBoardInvocation(
+          *package, root, makeRank16Request(package->getManifest()), driver);
+  ASSERT_FALSE(static_cast<bool>(result));
+  llvm::consumeError(result.takeError());
+  ASSERT_GE(driver.calls.size(), 2u);
+  EXPECT_EQ(driver.calls[driver.calls.size() - 2], "d2h");
+  EXPECT_EQ(driver.calls.back(), "quarantine");
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "d2h"), 17);
+  EXPECT_EQ(std::find(driver.calls.begin(), driver.calls.end(),
+                      "release-submission"),
+            driver.calls.end());
+  EXPECT_TRUE(driver.unloadedHandles.empty());
+  EXPECT_TRUE(driver.freedAddresses.empty());
+}
+
+TEST_F(BoardRuntimeTest,
        ModelLoadsCompleteGraphAndSubmitsTypedTensorDomain) {
   using wafer::TargetLaunchABIId;
   const TargetLaunchABIId launchABI =
@@ -909,13 +1158,13 @@ TEST_F(BoardRuntimeTest,
   expectRejected(std::move(insufficientAlignment));
 
   PackageManifest longSymbol = makeRank16Manifest(launchABI);
-  for (auto &entry : longSymbol.entries)
-    entry.symbol.assign(128, 'm');
+  for (auto &module : longSymbol.modules)
+    module.exports.front().symbol.assign(128, 'm');
   expectRejected(std::move(longSymbol));
 
   PackageManifest nulSymbol = makeRank16Manifest(launchABI);
-  for (auto &entry : nulSymbol.entries)
-    entry.symbol = std::string("ma\0in", 5);
+  for (auto &module : nulSymbol.modules)
+    module.exports.front().symbol = std::string("ma\0in", 5);
   expectRejected(std::move(nulSymbol));
 }
 

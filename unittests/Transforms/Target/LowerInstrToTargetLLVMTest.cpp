@@ -192,4 +192,57 @@ module {
   EXPECT_EQ(countOps<mlir::LLVM::LLVMFuncOp>(*source), 0u);
 }
 
+TEST(LowerInstrToTargetLLVMTest,
+     InjectsPreparedDirectDTELifecycleWithoutLocalDTEOps) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {topology = @default, axes = ["rank"], shape = array<i64: 16>,
+       policy = "all_available", endpoints = array<i64>}
+  func.func @main(%status: i64) {
+    return
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+
+  mlir::PassManager manager(&context);
+  wafer::TargetConversionRequest request{
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
+  request.logicalRank = 15;
+  request.transportStatusArgumentIndex = 0;
+  request.launchABI =
+      wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+  manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
+
+  ASSERT_TRUE(mlir::succeeded(manager.run(*source)));
+  EXPECT_EQ(countOps<wafer::InstrDTESendOp>(*source), 0u);
+  EXPECT_EQ(countOps<wafer::InstrDTERecvOp>(*source), 0u);
+  EXPECT_EQ(countOps<wafer::InstrDTEWaitOp>(*source), 0u);
+  EXPECT_EQ(countOps<mlir::LLVM::CallOp>(*source), 2u);
+  EXPECT_FALSE(source->lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+      "wafer_tx81_direct_dte_begin"));
+  EXPECT_TRUE(source->lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+      "wafer_tx81_direct_dte_begin_after_prepare"));
+  EXPECT_TRUE(source->lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+      "wafer_tx81_direct_dte_finish"));
+
+  int64_t rankCount = -1;
+  source->walk([&](mlir::LLVM::ConstantOp constant) {
+    if (auto value = mlir::dyn_cast<mlir::IntegerAttr>(constant.getValue()))
+      rankCount = value.getInt();
+  });
+  EXPECT_EQ(rankCount, 16);
+}
+
 } // namespace

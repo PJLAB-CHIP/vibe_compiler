@@ -52,6 +52,7 @@ struct TxApi {
   decltype(&txModuleUnload) moduleUnload = nullptr;
   decltype(&txModuleGetFunction) moduleGetFunction = nullptr;
   decltype(&txLaunchKernel) launchKernel = nullptr;
+  decltype(&txLaunchClusterKernel) launchClusterKernel = nullptr;
   decltype(&txLoadGraph) loadGraph = nullptr;
   decltype(&txUnloadGraph) unloadGraph = nullptr;
   decltype(&txLaunchModel) launchModel = nullptr;
@@ -68,6 +69,11 @@ RuntimeEnvironment makeTxProviderEnvironment(TargetLaunchABIId launchABI) {
                                  launchABI,
                                  profile.moduleFormat);
   environment.supportsHostWatchdog = true;
+  if (launchABI ==
+      TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1()) {
+    environment.supportsDirectDTE = true;
+    environment.directDTEStatusABI = kDirectDTEStatusABI.str();
+  }
   return environment;
 }
 
@@ -270,6 +276,10 @@ public:
 
   BoardRuntimeContextState getContextState() const override {
     return contextState;
+  }
+
+  void quarantine() override {
+    contextState = BoardRuntimeContextState::Poisoned;
   }
 
   const RuntimeEnvironment &getProviderEnvironment() const override {
@@ -679,6 +689,77 @@ public:
     return llvm::Error::success();
   }
 
+  llvm::Error submitClusterPrepareMain(
+      BoardFunctionHandle prepare,
+      llvm::ArrayRef<BoardRankLaunch> mainLaunches) override {
+    if (llvm::Error error = requireUsable("cluster prepare submission"))
+      return error;
+    if (providerEnvironment.launchABI !=
+            TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1() ||
+        !api.launchClusterKernel)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "TX cluster submission requires its explicit Direct-DTE launch "
+          "ABI");
+    if (submissionActive || !activeStreams.empty() ||
+        !submissionArgumentBlocks.empty() || clusterMainFunction != 0 ||
+        mainLaunches.size() != 16)
+      return poisonContractViolation(
+          "TX cluster provider has invalid submission ownership");
+
+    const uintptr_t mainFunction = mainLaunches.front().function.value;
+    const size_t slotsPerRank = mainLaunches.front().arguments.size();
+    if (prepare.value == 0 || mainFunction == 0 || slotsPerRank == 0)
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "TX cluster launch is empty");
+    if (slotsPerRank > kTx81ClusterKernelArgumentBytesMax / sizeof(uint64_t) /
+                           mainLaunches.size())
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "TX cluster rank-major argument table exceeds the qualified V5.6 "
+          "C-INS packet limit");
+
+    std::vector<uint64_t> arguments;
+    arguments.reserve(slotsPerRank * mainLaunches.size());
+    for (auto [rank, launch] : llvm::enumerate(mainLaunches)) {
+      if (launch.logicalRank != static_cast<int64_t>(rank) ||
+          !launch.entry.isValid() || launch.function.value != mainFunction ||
+          launch.arguments.size() != slotsPerRank)
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "TX cluster launches are not a canonical shared-function rank "
+            "domain");
+      arguments.insert(arguments.end(), launch.arguments.begin(),
+                       launch.arguments.end());
+    }
+
+    txStream_t stream = nullptr;
+    txError_t status = api.streamCreate(&stream);
+    if (status != TX_SUCCESS)
+      return txError("txStreamCreate(cluster)", status);
+    if (!stream)
+      return poisonContractViolation(
+          "txStreamCreate(cluster) returned a null stream");
+    activeStreams.push_back(stream);
+    completedStreams.assign(1, false);
+    submissionArgumentBlocks.push_back(std::move(arguments));
+    clusterMainFunction = mainFunction;
+
+    dim3 clusterDim = {1, 1, 1};
+    dim3 gridDim = {16, 1, 1};
+    dim3 blockDim = {1, 1, 1};
+    status = api.launchClusterKernel(
+        reinterpret_cast<txFunction_t>(prepare.value), clusterDim, gridDim,
+        blockDim, submissionArgumentBlocks.front().data(),
+        static_cast<uint32_t>(submissionArgumentBlocks.front().size() *
+                              sizeof(uint64_t)),
+        0, stream);
+    if (status != TX_SUCCESS)
+      return txError("txLaunchClusterKernel(prepare)", status);
+    submissionActive = true;
+    return llvm::Error::success();
+  }
+
   llvm::Error
   submitModel(BoardGraphHandle graph,
               llvm::ArrayRef<BoardModelTensorLaunch> tensors) override {
@@ -804,9 +885,15 @@ public:
                           std::chrono::milliseconds(timeoutMilliseconds);
     auto deadlineExceeded = [&]() -> llvm::Error {
       contextState = BoardRuntimeContextState::Poisoned;
+      llvm::StringRef submissionPhase = "all-rank";
+      if (providerEnvironment.launchABI ==
+          TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
+        submissionPhase = clusterMainFunction != 0 ? "cluster prepare"
+                                                   : "cluster main";
       return llvm::createStringError(
           llvm::errc::io_error,
-          "TX all-rank completion exceeded the host deadline");
+          "TX %s completion exceeded the host deadline",
+          submissionPhase.str().c_str());
     };
     while (true) {
       bool allComplete = true;
@@ -829,8 +916,28 @@ public:
         if (std::chrono::steady_clock::now() >= deadline)
           return deadlineExceeded();
       }
-      if (allComplete)
+      if (allComplete) {
+        if (clusterMainFunction != 0) {
+          if (std::chrono::steady_clock::now() >= deadline)
+            return deadlineExceeded();
+          dim3 clusterDim = {1, 1, 1};
+          dim3 gridDim = {16, 1, 1};
+          dim3 blockDim = {1, 1, 1};
+          txError_t status = api.launchClusterKernel(
+              reinterpret_cast<txFunction_t>(clusterMainFunction),
+              clusterDim, gridDim, blockDim,
+              submissionArgumentBlocks.front().data(),
+              static_cast<uint32_t>(submissionArgumentBlocks.front().size() *
+                                    sizeof(uint64_t)),
+              0, activeStreams.front());
+          if (status != TX_SUCCESS)
+            return txError("txLaunchClusterKernel(main)", status);
+          clusterMainFunction = 0;
+          completedStreams.assign(1, false);
+          continue;
+        }
         return llvm::Error::success();
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
   }
@@ -857,6 +964,7 @@ public:
     }
     submissionArgumentBlocks.clear();
     completedStreams.clear();
+    clusterMainFunction = 0;
     submissionActive = false;
     return llvm::Error::success();
   }
@@ -912,6 +1020,7 @@ private:
   std::vector<bool> completedStreams;
   std::vector<std::vector<uint64_t>> submissionArgumentBlocks;
   std::vector<void *> submissionMetadata;
+  uintptr_t clusterMainFunction = 0;
   bool submissionActive = false;
 };
 
@@ -922,7 +1031,9 @@ createTxBoardRuntimeDriver(llvm::StringRef expectedRuntimeLibraryDigest,
                            TargetLaunchABIId launchABI) {
   if (launchABI != TargetLaunchABIId::perRankPointerBlockV1() &&
       launchABI != TargetLaunchABIId::tx81KernelGridPointerTableV1() &&
-      launchABI != TargetLaunchABIId::tx81ModelBootParamV1())
+      launchABI != TargetLaunchABIId::tx81ModelBootParamV1() &&
+      launchABI !=
+          TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "TX launch ABI is not registered");
   llvm::StringRef configuredLibrary = WAFER_TX_RUNTIME_LIBRARY_PATH;
@@ -1003,7 +1114,11 @@ createTxBoardRuntimeDriver(llvm::StringRef expectedRuntimeLibraryDigest,
     WAFER_RESOLVE_TX_API(moduleLoad, txModuleLoad);
     WAFER_RESOLVE_TX_API(moduleUnload, txModuleUnload);
     WAFER_RESOLVE_TX_API(moduleGetFunction, txModuleGetFunction);
-    WAFER_RESOLVE_TX_API(launchKernel, txLaunchKernel);
+    if (launchABI ==
+        TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
+      WAFER_RESOLVE_TX_API(launchClusterKernel, txLaunchClusterKernel);
+    else
+      WAFER_RESOLVE_TX_API(launchKernel, txLaunchKernel);
   }
   WAFER_RESOLVE_TX_API(streamCreate, txStreamCreate);
   WAFER_RESOLVE_TX_API(streamDestroy, txStreamDestroy);

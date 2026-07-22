@@ -310,7 +310,7 @@ indexResourceFiles(llvm::ArrayRef<Options::ResourceFile> files,
 
 void printNoCardRankPlan(const wafer::runtime::RuntimeSessionPlan &plan) {
   llvm::outs() << "entry: " << plan.entry.getValue()
-               << " rank=" << plan.logicalRank << " symbol=" << plan.entrySymbol
+               << " rank=" << plan.logicalRank << " symbol=" << plan.mainSymbol
                << "\n";
   llvm::outs() << "module: " << plan.module.getValue()
                << " path=" << plan.modulePath << "\n";
@@ -577,10 +577,15 @@ int runBoard(const Options &options,
       llvm::outs() << "launch_pattern: kernel-grid-x16\n";
       llvm::outs() << "logical_tile_execution_basis: "
                       "scheduler-pid-x-and-exact-rank-slices\n";
-    } else {
+    } else if (manifest.launchABI ==
+               wafer::TargetLaunchABIId::tx81ModelBootParamV1()) {
       llvm::outs() << "launch_pattern: model-type6-type7\n";
       llvm::outs() << "logical_tile_execution_basis: "
                       "graph-tile-module-map-and-exact-rank-slices\n";
+    } else {
+      llvm::outs() << "launch_pattern: cluster-prepare-main-x16\n";
+      llvm::outs() << "logical_tile_execution_basis: "
+                      "cluster-pid-and-exact-rank-slices\n";
     }
     llvm::outs() << "logical_tile_domain: 0..15\n";
     llvm::outs() << "physical_execution_claim: none\n";

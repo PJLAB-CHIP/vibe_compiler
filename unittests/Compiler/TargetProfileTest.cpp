@@ -83,10 +83,12 @@ TEST(TargetLaunchABITest, RegistryIsClosedCanonicalAndRoundTrips) {
   static_assert(!std::is_default_constructible_v<wafer::TargetLaunchABIId>);
   llvm::ArrayRef<wafer::TargetLaunchABIRecord> records =
       wafer::getRegisteredTargetLaunchABIs();
-  ASSERT_EQ(records.size(), 3u);
+  ASSERT_EQ(records.size(), 4u);
   EXPECT_EQ(records[0].canonicalSpelling, "per-rank-pointer-block-v1");
   EXPECT_EQ(records[1].canonicalSpelling, "tx81-kernel-grid-pointer-table-v1");
   EXPECT_EQ(records[2].canonicalSpelling, "tx81-model-bootparam-v1");
+  EXPECT_EQ(records[3].canonicalSpelling,
+            "tx81-cluster-direct-dte-prepare-main-v1");
   for (const wafer::TargetLaunchABIRecord &record : records) {
     llvm::Expected<wafer::TargetLaunchABIId> parsed =
         wafer::parseTargetLaunchABIId(record.canonicalSpelling);
@@ -113,8 +115,14 @@ TEST(TargetLaunchABITest, RegistryIsClosedCanonicalAndRoundTrips) {
   EXPECT_TRUE(wafer::isTargetLaunchABICompatible(
       wafer::TargetLaunchABIId::tx81ModelBootParamV1(),
       wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+  EXPECT_TRUE(wafer::isTargetLaunchABICompatible(
+      wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1(),
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
   EXPECT_FALSE(wafer::isTargetLaunchABICompatible(
       wafer::TargetLaunchABIId::tx81ModelBootParamV1(),
+      wafer::TargetProfileId::waferTx81SingleCardKernelV2()));
+  EXPECT_FALSE(wafer::isTargetLaunchABICompatible(
+      wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1(),
       wafer::TargetProfileId::waferTx81SingleCardKernelV2()));
 }
 

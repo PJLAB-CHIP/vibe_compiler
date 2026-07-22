@@ -3,6 +3,7 @@
 #ifndef WAFER_RUNTIME_PACKAGEMANIFEST_H
 #define WAFER_RUNTIME_PACKAGEMANIFEST_H
 
+#include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 #include "Wafer/Target/TargetLaunchABI.h"
 #include "Wafer/Target/TargetProfile.h"
 
@@ -19,10 +20,32 @@
 
 namespace wafer::runtime {
 
-inline constexpr uint32_t kPackageManifestSchemaVersion = 4;
+inline constexpr uint32_t kPackageManifestSchemaVersion = 5;
 inline constexpr llvm::StringLiteral kPackageManifestFileName = "manifest.json";
+inline constexpr llvm::StringLiteral kDirectDTEStatusABIV1 =
+    WAFER_TX81_DIRECT_DTE_STATUS_ABI_V1;
+inline constexpr llvm::StringLiteral kDirectDTEStatusABIV2 =
+    WAFER_TX81_DIRECT_DTE_STATUS_ABI_V2;
 inline constexpr llvm::StringLiteral kDirectDTEStatusABI =
-    "wafer-direct-dte-status-v1";
+    WAFER_TX81_DIRECT_DTE_STATUS_ABI_V2;
+enum class DirectDTEStatusValue : uint32_t {
+  Pending = WAFER_TX81_DIRECT_DTE_STATUS_PENDING,
+  Success = WAFER_TX81_DIRECT_DTE_STATUS_SUCCESS,
+  TransportError = WAFER_TX81_DIRECT_DTE_STATUS_TRANSPORT_ERROR,
+};
+inline constexpr uint32_t kDirectDTEStatusPoison =
+    WAFER_TX81_DIRECT_DTE_STATUS_POISON;
+inline constexpr uint64_t kDirectDTEStatusValueOffset =
+    WAFER_TX81_DIRECT_DTE_STATUS_V2_VALUE_OFFSET;
+inline constexpr uint64_t kDirectDTEStatusValueBytes =
+    WAFER_TX81_DIRECT_DTE_STATUS_V2_VALUE_BYTES;
+inline constexpr uint64_t kDirectDTEStatusStorageBytes =
+    WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_BYTES;
+inline constexpr uint64_t kDirectDTEStatusStorageAlignment =
+    WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_ALIGNMENT;
+static_assert(kDirectDTEStatusValueBytes == sizeof(uint32_t));
+static_assert(kDirectDTEStatusValueOffset + kDirectDTEStatusValueBytes <=
+              kDirectDTEStatusStorageBytes);
 
 template <typename Tag> class StrongId {
 public:
@@ -90,12 +113,19 @@ struct PackageABISlotBinding {
   PackageAccessMode access = PackageAccessMode::ReadOnly;
 };
 
+enum class PackageModuleExportRole { Prepare, Main };
+
+struct PackageModuleExportRecord {
+  PackageModuleExportRole role = PackageModuleExportRole::Main;
+  std::string symbol;
+};
+
 struct PackageModuleRecord {
   ModuleId id;
-  int64_t logicalRank = -1;
   std::string relativePath;
   std::string digest;
   std::string format;
+  std::vector<PackageModuleExportRecord> exports;
 };
 
 struct NoTransportRequirements {};
@@ -113,7 +143,6 @@ struct PackageEntrypointRecord {
   EntryId id;
   int64_t logicalRank = -1;
   ModuleId module;
-  std::string symbol;
   std::vector<PackageABISlotBinding> slots;
   CompletionId terminalCompletion;
   TransportRequirements transport;
@@ -179,6 +208,7 @@ private:
 
 llvm::StringRef stringifyPackageResourceRole(PackageResourceRole role);
 llvm::StringRef stringifyPackageAccessMode(PackageAccessMode access);
+llvm::StringRef stringifyPackageModuleExportRole(PackageModuleExportRole role);
 
 llvm::Expected<VerifiedPackageManifest>
 verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
@@ -239,7 +269,7 @@ struct RuntimeSessionPlan {
   int64_t logicalRank = -1;
   ModuleId module;
   std::string modulePath;
-  std::string entrySymbol;
+  std::string mainSymbol;
   CompletionId terminalCompletion;
   std::vector<PlannedRuntimeResource> resources;
   std::vector<ResourceId> launchOrder;

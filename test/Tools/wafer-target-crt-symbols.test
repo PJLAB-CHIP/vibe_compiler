@@ -2,12 +2,49 @@
 # RUN: %python %wafer_src_root/tools/check_target_crt_conformance.py --repo-root %wafer_src_root | FileCheck --check-prefix=CONFORMANCE %s
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-gcc \
 # RUN:   -O2 -c -fPIC -DCONFIG_NO_PLATFORM_HOOK_H -DUSING_RISCV \
+# RUN:   -mcpu=c908 -mabi=lp64d \
 # RUN:   -I%wafer_src_root/runtime/wafer_crt/include \
+# RUN:   -I%wafer_src_root/include \
 # RUN:   -I%wafer_src_root/third_party/tx8_deps/include \
 # RUN:   %wafer_src_root/runtime/wafer_crt/src/wafer_tx81_crt.c -o %t.crt.o
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm \
 # RUN:   -g --defined-only %t.crt.o | %python %wafer_src_root/tools/check_target_crt_symbols.py \
 # RUN:   --repo-root %wafer_src_root --defined-symbols-stdin
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
+# RUN:   -dr %t.crt.o | FileCheck --check-prefix=LIFECYCLE %s
 
-# SURFACE: checked 110 production wafer_tx81_* CRT symbols from the shared typed target-call registry
+# SURFACE: checked 111 production wafer_tx81_* CRT symbols from the shared typed target-call registry
 # CONFORMANCE: checked Wafer target CRT conformance rules from compiler and CRT code: formats=13, encoding_rows=65, convert_routes=36, groups=4/23/9
+
+# LIFECYCLE-LABEL: <wafer_tx81_direct_dte_begin>:
+# LIFECYCLE: andi {{[a-z0-9]+}},{{[a-z0-9]+}},-64
+# LIFECYCLE: sw zero,0({{[a-z0-9]+}})
+# LIFECYCLE-DAG: dcache.cipa
+# LIFECYCLE-DAG: dcache.civa
+# LIFECYCLE: R_RISCV_CALL_PLT direct_sync_init
+# LIFECYCLE-LABEL: <wafer_tx81_direct_dte_begin_after_prepare>:
+# LIFECYCLE-NOT: direct_sync_init
+# LIFECYCLE: ret
+# LIFECYCLE-LABEL: <wafer_tx81_direct_dte_send_prepare>:
+# LIFECYCLE: R_RISCV_CALL_PLT get_tile_spm_addr_base
+# LIFECYCLE: add
+# LIFECYCLE-LABEL: <wafer_tx81_direct_dte_recv_prepare>:
+# LIFECYCLE-NOT: get_spm_memory_mapping
+# LIFECYCLE-NOT: get_tile_spm_addr_base
+# LIFECYCLE: R_RISCV_CALL_PLT direct_fsm_monitor_init
+# LIFECYCLE-LABEL: <wafer_tx81_direct_dte_wait>:
+# LIFECYCLE: li {{[a-z0-9]+}},2
+# LIFECYCLE: sw {{[a-z0-9]+}},0({{[a-z0-9]+}})
+# LIFECYCLE: andi {{[a-z0-9]+}},{{[a-z0-9]+}},-64
+# LIFECYCLE: dcache.cipa
+# LIFECYCLE-LABEL: <wafer_tx81_direct_dte_finish>:
+# LIFECYCLE: li {{[a-z0-9]+}},2
+# LIFECYCLE: sw {{[a-z0-9]+}},0({{[a-z0-9]+}})
+# LIFECYCLE: andi {{[a-z0-9]+}},{{[a-z0-9]+}},-64
+# LIFECYCLE: dcache.civa
+# LIFECYCLE: li {{[a-z0-9]+}},1
+# LIFECYCLE: andi {{[a-z0-9]+}},{{[a-z0-9]+}},-64
+# LIFECYCLE: sw {{[a-z0-9]+}},0({{[a-z0-9]+}})
+# LIFECYCLE: dcache.civa
+# LIFECYCLE: dcache.cipa
+# LIFECYCLE: dcache.cipa

@@ -47,20 +47,8 @@ static bool isLocalFence(mlir::Operation *operation) {
 static void collectBufferAccesses(
     mlir::Operation *operation,
     llvm::SmallVectorImpl<BufferAccess> &accesses) {
-  auto interface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
-  if (!interface)
-    return;
-  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
-  interface.getEffects(effects);
-  for (const auto &effect : effects) {
-    mlir::Value value = effect.getValue();
-    if (!value)
-      continue;
+  auto recordAccess = [&](mlir::Value value, bool write) {
     value = getAccessBase(value);
-    bool read = llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
-    bool write = llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect());
-    if (!read && !write)
-      continue;
     auto found = llvm::find_if(accesses, [&](const BufferAccess &access) {
       return access.value == value;
     });
@@ -68,6 +56,35 @@ static void collectBufferAccesses(
       accesses.push_back({value, write});
     else
       found->write |= write;
+  };
+
+  auto interface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
+  if (interface) {
+    llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
+    interface.getEffects(effects);
+    for (const auto &effect : effects) {
+      mlir::Value value = effect.getValue();
+      if (!value)
+        continue;
+      bool read = llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
+      // Write, allocate, free, and any future non-read effect are mutating for
+      // buffer ordering.  In particular, a DTE wait must not cross a standard
+      // memref deallocation of its in-flight buffer.
+      recordAccess(value, /*write=*/!read);
+    }
+  }
+
+  // A Direct DTE issue only starts an asynchronous buffer access.  Recover
+  // the in-flight access from the wait's SSA tokens so ready ordering cannot
+  // move a receive consumer, or a send-source overwrite, before completion.
+  auto wait = mlir::dyn_cast<InstrDTEWaitOp>(operation);
+  if (!wait)
+    return;
+  for (mlir::Value token : wait.getTokens()) {
+    if (auto send = token.getDefiningOp<InstrDTESendOp>())
+      recordAccess(send.getBuffer(), /*write=*/false);
+    else if (auto recv = token.getDefiningOp<InstrDTERecvOp>())
+      recordAccess(recv.getBuffer(), /*write=*/true);
   }
 }
 
@@ -220,19 +237,22 @@ static bool effectsMayConflict(
 }
 
 static bool canReorderEffects(mlir::Operation *lhs, mlir::Operation *rhs) {
+  // Compare concrete buffer effects for every operation pair, not only two
+  // Wafer instructions. scheduleWindow may move an instruction across
+  // standard memref operations that sit between two ready-order operations.
+  llvm::SmallVector<BufferAccess, 4> lhsAccesses;
+  llvm::SmallVector<BufferAccess, 4> rhsAccesses;
+  collectBufferAccesses(lhs, lhsAccesses);
+  collectBufferAccesses(rhs, rhsAccesses);
+  for (const BufferAccess &lhsAccess : lhsAccesses)
+    for (const BufferAccess &rhsAccess : rhsAccesses)
+      if (lhsAccess.value == rhsAccess.value &&
+          (lhsAccess.write || rhsAccess.write))
+        return false;
+
   if (mlir::isa<WaferInstructionOpInterface>(lhs) &&
-      mlir::isa<WaferInstructionOpInterface>(rhs)) {
-    llvm::SmallVector<BufferAccess, 4> lhsAccesses;
-    llvm::SmallVector<BufferAccess, 4> rhsAccesses;
-    collectBufferAccesses(lhs, lhsAccesses);
-    collectBufferAccesses(rhs, rhsAccesses);
-    for (const BufferAccess &lhsAccess : lhsAccesses)
-      for (const BufferAccess &rhsAccess : rhsAccesses)
-        if (lhsAccess.value == rhsAccess.value &&
-            (lhsAccess.write || rhsAccess.write))
-          return false;
+      mlir::isa<WaferInstructionOpInterface>(rhs))
     return true;
-  }
   auto lhsEffects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(lhs);
   auto rhsEffects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(rhs);
   if (!lhsEffects || !rhsEffects)

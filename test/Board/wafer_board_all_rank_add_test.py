@@ -245,20 +245,34 @@ def validate_manifest(
     manifest = json.loads((package / "manifest.json").read_text())
     target = manifest.get("target")
     if (
-        manifest.get("schema_version") != 4
+        manifest.get("schema_version") != 5
         or manifest.get("rank_count") != RANK_COUNT
         or not isinstance(target, dict)
         or target.get("profile") != TARGET_PROFILE
         or target.get("launch_abi") != launch_abi
     ):
         raise RuntimeError(
-            "all-rank board gate requires a schema-v4 rank-16 TX package"
+            "all-rank board gate requires a schema-v5 rank-16 TX package"
         )
 
-    modules = require_rank_domain(manifest.get("modules"), "modules")
+    modules = manifest.get("modules")
+    if not isinstance(modules, list):
+        raise RuntimeError("modules must be a list")
+    expected_module_count = 1 if launch_abi == KERNEL_GRID_LAUNCH_ABI else RANK_COUNT
+    if len(modules) != expected_module_count:
+        raise RuntimeError("launch ABI has an invalid unique module count")
+    module_by_id: dict[int, dict[str, object]] = {}
+    for module in modules:
+        if not isinstance(module, dict) or not isinstance(module.get("id"), int):
+            raise RuntimeError("package module identity is invalid")
+        module_id = module["id"]
+        if module_id in module_by_id or module.get("exports") != [
+            {"role": "main", "symbol": "main"}
+        ]:
+            raise RuntimeError("package module export contract is invalid")
+        module_by_id[module_id] = module
     entries = require_rank_domain(manifest.get("entries"), "entries")
     completions = require_rank_domain(manifest.get("completions"), "completions")
-    module_by_rank = {record["rank"]: record for record in modules}
     completion_by_rank = {record["rank"]: record for record in completions}
 
     resources = manifest.get("resources")
@@ -310,14 +324,13 @@ def validate_manifest(
     entry_evidence: set[tuple[int, int, int]] = set()
     for entry in entries:
         rank = entry["rank"]
-        module = module_by_rank[rank]
+        module = module_by_id.get(entry.get("module"))
         completion = completion_by_rank[rank]
         if (
-            entry.get("module") != module.get("id")
+            module is None
             or entry.get("terminal_completion") != completion.get("id")
             or completion.get("kind") != "entry_return"
             or entry.get("transport") != {"kind": "none"}
-            or entry.get("symbol") != "main"
         ):
             raise RuntimeError(f"rank {rank} entry/completion contract is invalid")
         expected_slots = [
@@ -335,6 +348,13 @@ def validate_manifest(
         entry_evidence.add((entry["id"], rank, entry["module"]))
     if len(entry_evidence) != RANK_COUNT:
         raise RuntimeError("rank-16 entry evidence is not unique")
+    referenced_modules = {entry["module"] for entry in entries}
+    if referenced_modules != set(module_by_id):
+        raise RuntimeError("entry-to-module coverage is not all-and-only")
+    if launch_abi == KERNEL_GRID_LAUNCH_ABI and len(referenced_modules) != 1:
+        raise RuntimeError("kernel-grid entries do not share one module")
+    if launch_abi != KERNEL_GRID_LAUNCH_ABI and len(referenced_modules) != RANK_COUNT:
+        raise RuntimeError("rank-local launch entries are not one-to-one with modules")
     return bindings
 
 
@@ -489,7 +509,7 @@ def verify_board_evidence(
 
 def verify_no_card_evidence(stdout: str, launch_abi: str) -> None:
     required = (
-        "package: id=0 schema=4 ranks=16",
+        "package: id=0 schema=5 ranks=16",
         "target: wafer-tx81-single-card "
         "runtime_abi=wafer-tx81-kernel-v1 "
         f"launch_abi={launch_abi} module_format=elf-riscv64",

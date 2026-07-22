@@ -17,6 +17,11 @@ namespace wafer {
 /// packet reserves 0x24 bytes outside the kernel argument block.
 inline constexpr uint64_t kTx81KernelArgumentBytesMax = 0x7dc;
 
+/// Digest-qualified TX81 V5.6 cluster C-INS argument limit. The cluster task
+/// table reserves 0x30 bytes from its 0x800-byte packet, independently of the
+/// ordinary kernel command limit above.
+inline constexpr uint64_t kTx81ClusterKernelArgumentBytesMax = 0x7d0;
+
 /// Closed identity for the host/device entry and submission ABI. Launch ABI
 /// is deliberately orthogonal to target hardware and numeric profiles.
 class TargetLaunchABIId {
@@ -31,6 +36,9 @@ public:
   }
   static constexpr TargetLaunchABIId tx81ModelBootParamV1() {
     return TargetLaunchABIId(Value::Tx81ModelBootParamV1);
+  }
+  static constexpr TargetLaunchABIId tx81ClusterDirectDTEPrepareMainV1() {
+    return TargetLaunchABIId(Value::Tx81ClusterDirectDTEPrepareMainV1);
   }
 
   friend constexpr bool operator==(TargetLaunchABIId lhs,
@@ -47,6 +55,7 @@ private:
     PerRankPointerBlockV1,
     Tx81KernelGridPointerTableV1,
     Tx81ModelBootParamV1,
+    Tx81ClusterDirectDTEPrepareMainV1,
   };
 
   explicit constexpr TargetLaunchABIId(Value value) : value(value) {}

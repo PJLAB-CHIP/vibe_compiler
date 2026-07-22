@@ -2,6 +2,7 @@
 
 #include "Wafer/Model/TargetModelKernel.h"
 
+#include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
@@ -81,8 +82,8 @@ TargetCallInvocationDescriptor makeInvocation(size_t rankCount = 1) {
           "u32",
           MemLayout::Tensor,
           {1},
-          4,
-          4}},
+          WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_BYTES,
+          WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_ALIGNMENT}},
         {rankBase, rankBase + UINT64_C(0x1000), rankBase + UINT64_C(0x2000)},
         TargetIdentityId::waferTx81SingleCard(),
         KernelRuntimeABIId::waferTx81KernelV1()});
@@ -213,6 +214,7 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
       arguments[18] = supportedF32Code(TargetFormatEngine::TDMA);
       break;
     case TargetCallBuiltin::DirectDTEBegin:
+    case TargetCallBuiltin::DirectDTEBeginAfterPrepare:
       arguments[1] = 16;
       break;
     case TargetCallBuiltin::DirectDTESendPrepare:
@@ -306,7 +308,7 @@ TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
         << descriptor.symbol << ": " << llvm::toString(std::move(error));
     ++validated;
   }
-  EXPECT_EQ(validated, 110u);
+  EXPECT_EQ(validated, 111u);
 }
 
 TEST(TargetModelKernelTest, StridedRDMAAndWDMACommitOnlyCompleteEffects) {

@@ -57,6 +57,22 @@
 # RUN:   --output %t.get-pid-base.so \
 # RUN:   --loader-abi tx8-kcore-loader-v1 2>&1 | FileCheck %s --check-prefix=GETPID-BASE
 
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/cluster-topology-target-kernel.ll \
+# RUN:   --output %t.cluster-topology.so \
+# RUN:   --loader-abi tx8-kcore-loader-cluster-v1
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm -u %t.cluster-topology.so | FileCheck %s --check-prefix=CLUSTER-TOPOLOGY
+# RUN: not %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/cluster-topology-target-kernel.ll \
+# RUN:   --output %t.cluster-topology-grid.so \
+# RUN:   --loader-abi tx8-kcore-loader-grid-v1 2>&1 | FileCheck %s --check-prefix=CLUSTER-TOPOLOGY-GRID
+
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/direct-dte-address-target-kernel.ll \
+# RUN:   --output %t.direct-dte-address.so \
+# RUN:   --loader-abi tx8-kcore-loader-v1
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm -u %t.direct-dte-address.so | FileCheck %s --check-prefix=DTE-ADDRESS
+
 # CHECK-LABEL: compile:
 # CHECK-SAME: /opt/llvm/bin/clang++
 # CHECK-SAME: minimal-target-kernel.ll
@@ -86,8 +102,9 @@
 # CHECK-SAME: -DCONFIG_NO_PLATFORM_HOOK_H
 # CHECK-SAME: -DUSING_RISCV
 # CHECK-SAME: -I{{[^ ]*}}/runtime/wafer_crt/include
+# CHECK-SAME: -I{{[^ ]*}}/include
 # CHECK-SAME: -I{{[^ ]*}}/third_party/tx8_deps/include
-# CHECK-SAME: -march=rv64imafdc
+# CHECK-SAME: -mcpu=c908
 # CHECK-SAME: -mabi=lp64d
 # CHECK-SAME: -o
 # CHECK-SAME: kernel.wafer_crt.o
@@ -143,3 +160,9 @@
 
 # GETPID: U __get_pid
 # GETPID-BASE: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-v1: __get_pid
+
+# CLUSTER-TOPOLOGY-DAG: U __get_pid
+# CLUSTER-TOPOLOGY-DAG: U init_tile_id
+# CLUSTER-TOPOLOGY-GRID: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-grid-v1: init_tile_id
+
+# DTE-ADDRESS: U get_tile_spm_addr_base

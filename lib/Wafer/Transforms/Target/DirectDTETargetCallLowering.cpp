@@ -254,6 +254,7 @@ mlir::LogicalResult
 injectDirectDTEStatusLifecycle(mlir::ModuleOp moduleOp,
                                llvm::StringRef entrySymbol,
                                int64_t statusArgumentIndex, int64_t rankCount,
+                               TargetCallBuiltin beginBuiltin,
                                llvm::StringMap<CalleeSignature> &usedCallees) {
   auto entry = moduleOp.lookupSymbol<mlir::LLVM::LLVMFuncOp>(entrySymbol);
   if (!entry || entry.isDeclaration() || entry.getBody().empty() ||
@@ -271,8 +272,7 @@ injectDirectDTEStatusLifecycle(mlir::ModuleOp moduleOp,
 
   mlir::OpBuilder builder(moduleOp.getContext());
   mlir::Type i32Type = mlir::IntegerType::get(moduleOp.getContext(), 32);
-  const TargetCallDescriptor &begin =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEBegin);
+  const TargetCallDescriptor &begin = getTargetCallDescriptor(beginBuiltin);
   const TargetCallDescriptor &finish =
       getTargetCallDescriptor(TargetCallBuiltin::DirectDTEFinish);
   registerTargetCallee(moduleOp.getContext(), usedCallees, begin);

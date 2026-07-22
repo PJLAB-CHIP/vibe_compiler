@@ -237,16 +237,25 @@ llvm::Error writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
                         llvm::ArrayRef<KernelABISlot> slots,
                         TargetLaunchABIId targetLaunchABI, int64_t logicalRank,
                         int64_t rankCount, llvm::StringRef path) {
+  if (targetLaunchABI == TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "cluster target modules must use complete-rank aggregation");
   llvm::Expected<std::unique_ptr<llvm::Module>> deviceModule =
       materializeDeviceEntryABI(module, entrySymbol, slots, targetLaunchABI,
                                 logicalRank, rankCount);
   if (!deviceModule)
     return deviceModule.takeError();
+  return writeTargetLLVMIR(**deviceModule, path);
+}
+
+llvm::Error writeTargetLLVMIR(const llvm::Module &module,
+                              llvm::StringRef path) {
   std::error_code error;
   llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
   if (error)
     return llvm::createStringError(error, "failed to open target LLVM IR");
-  (*deviceModule)->print(output, nullptr);
+  module.print(output, nullptr);
   output.close();
   if (output.has_error())
     return llvm::createStringError(llvm::errc::io_error,
@@ -265,10 +274,12 @@ llvm::Error runDeviceLink(const TargetToolchain &toolchain,
   std::string moduleStorage = module.str();
   std::string objectStorage = object.str();
   std::string crtObjectStorage = crtObject.str();
-  std::string loaderABI =
-      targetLaunchABI == TargetLaunchABIId::tx81KernelGridPointerTableV1()
-          ? "tx8-kcore-loader-grid-v1"
-          : "tx8-kcore-loader-v1";
+  std::string loaderABI = "tx8-kcore-loader-v1";
+  if (targetLaunchABI == TargetLaunchABIId::tx81KernelGridPointerTableV1())
+    loaderABI = "tx8-kcore-loader-grid-v1";
+  else if (targetLaunchABI ==
+           TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
+    loaderABI = "tx8-kcore-loader-cluster-v1";
   llvm::SmallVector<llvm::StringRef, 15> arguments = {python,
                                                       script,
                                                       "--llvm-ir",

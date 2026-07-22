@@ -54,7 +54,7 @@
 
 ## 实施计划导航
 
-当前没有`doing`任务。Q32 integrated completion audit已归档为
+当前没有`doing`任务。Q6.B board runtime完成计划已归档为`tasks/archive/runtime-board.md`。Q32 integrated completion audit已归档为
 `tasks/archive/physical-dataflow-synthesis-completion-audit.md`，完成后的实施计划归档为
 `tasks/archive/physical-dataflow-synthesis.md`；Q32.G/S/M/V/B/R/I各checkpoint仍由对应独立归档记录保存详细变更和
 验证证据。Q34 static memory packing已归档为`tasks/archive/static-memory-packing.md`。这些计划和记录只保存施工checkpoint、
@@ -89,6 +89,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/runtime-board.md` | 已完成Q6.B的typed TX board provider、kernel/model多tile launch、cluster Direct DTE、failure lifecycle及真实板端重复exact记录 |
 | `tasks/archive/physical-dataflow-synthesis-completion-audit.md` | 已完成Q32的七checkpoint证据映射、双配置全量门禁、fixed/held-out 7B scale重放、单一production owner及剩余边界审计 |
 | `tasks/archive/physical-dataflow-synthesis.md` | 已完成Q32 MLIR-native bounded physical-dataflow synthesis的施工checkpoint、hard-cap与integrated completion checklist |
 | `tasks/archive/physical-dataflow-production-cutover.md` | 已完成Q32.G默认production winner cutover、旧decision surface删除、all-rank双键correspondence及source/bulk数值回归记录 |

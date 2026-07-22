@@ -26,7 +26,8 @@ struct LowerInstrToTargetLLVMPass
       LowerInstrToTargetLLVMPass>::LowerInstrToTargetLLVMPassBase;
 
   explicit LowerInstrToTargetLLVMPass(const TargetConversionRequest &request)
-      : typedTargetProfile(request.targetProfile) {
+      : typedTargetProfile(request.targetProfile),
+        typedLaunchABI(request.launchABI) {
     defaultDDRArenaArgumentIndex = request.defaultDDRArenaArgumentIndex;
     logicalRank = request.logicalRank;
     transportStatusArgumentIndex = request.transportStatusArgumentIndex;
@@ -52,6 +53,25 @@ struct LowerInstrToTargetLLVMPass
         return;
       }
       resolvedProfile = *parsed;
+    }
+    std::optional<TargetLaunchABIId> resolvedLaunchABI = typedLaunchABI;
+    if (!resolvedLaunchABI) {
+      llvm::Expected<TargetLaunchABIId> parsed =
+          parseTargetLaunchABIId(targetLaunchABI.getValue());
+      if (!parsed) {
+        moduleOp.emitError()
+            << "invalid target-launch-abi for target LLVM conversion: "
+            << llvm::toString(parsed.takeError());
+        signalPassFailure();
+        return;
+      }
+      resolvedLaunchABI = *parsed;
+    }
+    if (!isTargetLaunchABICompatible(*resolvedLaunchABI, *resolvedProfile)) {
+      moduleOp.emitError()
+          << "target launch ABI is incompatible with target profile";
+      signalPassFailure();
+      return;
     }
     if (mlir::failed(target_llvm_detail::preflightTargetAddresses(moduleOp)) ||
         mlir::failed(target_llvm_detail::preflightTargetFormats(
@@ -82,8 +102,9 @@ struct LowerInstrToTargetLLVMPass
       return;
     }
     if (mlir::failed(target_llvm_detail::lowerModuleInPlace(
-            *loweredModule, *resolvedProfile, defaultDDRArenaArgumentIndex,
-            logicalRank, transportStatusArgumentIndex))) {
+            *loweredModule, *resolvedProfile, *resolvedLaunchABI,
+            defaultDDRArenaArgumentIndex, logicalRank,
+            transportStatusArgumentIndex))) {
       signalPassFailure();
       return;
     }
@@ -93,6 +114,7 @@ struct LowerInstrToTargetLLVMPass
   }
 
   std::optional<TargetProfileId> typedTargetProfile;
+  std::optional<TargetLaunchABIId> typedLaunchABI;
 };
 
 } // namespace

@@ -9,6 +9,7 @@
 namespace wafer::runtime {
 
 using detail::findModule;
+using detail::findModuleExport;
 using detail::findResource;
 using detail::invalid;
 
@@ -43,6 +44,10 @@ llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
       findModule(manifest.modules, entry.module);
   if (!module)
     return invalid("runtime entry references a missing module");
+  const PackageModuleExportRecord *mainExport =
+      findModuleExport(*module, PackageModuleExportRole::Main);
+  if (!mainExport)
+    return invalid("runtime entry module has no typed main export");
 
   std::vector<const RuntimeInvocationBinding *> bindingsByResource(
       manifest.resources.size(), nullptr);
@@ -60,7 +65,7 @@ llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
   plan.logicalRank = entry.logicalRank;
   plan.module = module->id;
   plan.modulePath = module->relativePath;
-  plan.entrySymbol = entry.symbol;
+  plan.mainSymbol = mainExport->symbol;
   plan.terminalCompletion = entry.terminalCompletion;
   plan.transport = entry.transport;
   if (auto *requirements =

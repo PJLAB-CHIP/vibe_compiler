@@ -39,27 +39,49 @@ struct TargetLLVMModuleBundleBuilder {
 };
 
 struct TargetArtifactBundleBuilder {
+  static VerifiedTargetExport makeExport(TargetExportRole role,
+                                         llvm::StringRef symbol) {
+    return VerifiedTargetExport(role, symbol);
+  }
+
   static VerifiedTargetModule
-  makeModule(int64_t logicalRank, llvm::StringRef entrySymbol,
-             llvm::StringRef relativePath, llvm::StringRef contentDigest,
-             TargetProfileId targetProfile, TargetIdentityId targetIdentity,
+  makeModule(TargetArtifactModuleId id, llvm::StringRef relativePath,
+             llvm::StringRef contentDigest, TargetProfileId targetProfile,
+             TargetIdentityId targetIdentity,
              KernelRuntimeABIId kernelRuntimeABI, llvm::StringRef moduleFormat,
-             std::vector<KernelABISlot> kernelABISlots) {
-    return VerifiedTargetModule(logicalRank, entrySymbol, relativePath,
-                                contentDigest, targetProfile, targetIdentity,
-                                kernelRuntimeABI, moduleFormat,
-                                std::move(kernelABISlots));
+             std::vector<VerifiedTargetExport> exports) {
+    return VerifiedTargetModule(id, relativePath, contentDigest, targetProfile,
+                                targetIdentity, kernelRuntimeABI, moduleFormat,
+                                std::move(exports));
+  }
+
+  static VerifiedTargetRankInterface
+  makeRankInterface(int64_t logicalRank, TargetArtifactModuleId moduleId,
+                    std::vector<KernelABISlot> kernelABISlots) {
+    return VerifiedTargetRankInterface(logicalRank, moduleId,
+                                       std::move(kernelABISlots));
   }
 
   static TargetArtifactBundle
   makeBundle(llvm::StringRef rootDirectory, ExecutionConfig executionConfig,
-             std::vector<VerifiedTargetModule> modules) {
+             std::vector<VerifiedTargetModule> modules,
+             std::vector<VerifiedTargetRankInterface> rankInterfaces) {
     return TargetArtifactBundle(rootDirectory, executionConfig,
-                                std::move(modules));
+                                std::move(modules), std::move(rankInterfaces));
   }
 };
 
 namespace detail {
+
+inline constexpr llvm::StringLiteral kClusterPrepareExportSymbol =
+    "__wafer_cluster_prepare";
+
+/// Owns one synthesized LLVM module and its uniquing context. Declaration
+/// order ensures the module is destroyed before its context.
+struct OwnedTargetLLVMModule {
+  std::unique_ptr<llvm::LLVMContext> context;
+  std::unique_ptr<llvm::Module> module;
+};
 
 struct PreparedTargetRank {
   explicit PreparedTargetRank(const ExecutionConfig &executionConfig);
@@ -67,6 +89,7 @@ struct PreparedTargetRank {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::vector<KernelABISlot> slots;
   TargetProfileId targetProfile;
+  TargetLaunchABIId launchABI;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId kernelRuntimeABI;
   std::string moduleFormat;
@@ -105,14 +128,19 @@ llvm::Error writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
                         llvm::ArrayRef<KernelABISlot> slots,
                         TargetLaunchABIId targetLaunchABI, int64_t logicalRank,
                         int64_t rankCount, llvm::StringRef path);
+llvm::Error writeTargetLLVMIR(const llvm::Module &module, llvm::StringRef path);
+
+/// Imports the complete rank domain into one context, scopes every supported
+/// definition by rank, links it, and creates typed prepare/main exports.
+llvm::Expected<OwnedTargetLLVMModule>
+buildClusterTargetModule(const TargetLLVMModuleBundle &targetLLVMModules);
 llvm::Error runDeviceLink(const TargetToolchain &toolchain,
                           llvm::StringRef llvmIR, llvm::StringRef module,
                           llvm::StringRef object, llvm::StringRef crtObject,
                           TargetLaunchABIId targetLaunchABI);
-llvm::Expected<TargetModuleReadback>
-verifyTargetModule(llvm::StringRef path, llvm::StringRef entrySymbol,
-                   TargetProfileId expectedProfile,
-                   TargetLaunchABIId expectedLaunchABI);
+llvm::Expected<TargetModuleReadback> verifyTargetModule(
+    llvm::StringRef path, llvm::ArrayRef<VerifiedTargetExport> expectedExports,
+    TargetProfileId expectedProfile, TargetLaunchABIId expectedLaunchABI);
 
 /// Runs production entry-only ABI preparation, target lowering, and lowered
 /// entry verification on an owned clone. This narrow hook lets unit tests
@@ -123,7 +151,7 @@ lowerTargetABIForTesting(const RankExecutable &rankExecutable,
                          const ExecutionConfig &executionConfig);
 
 /// Verifies a genuinely linked module with the production ELF readback path
-/// and exposes the immutable typed facts that production stores per rank.
+/// and exposes the immutable typed facts that production stores per module.
 llvm::Expected<VerifiedTargetModule> verifyLinkedTargetModuleForTesting(
     llvm::StringRef path, llvm::StringRef entrySymbol,
     TargetProfileId targetProfile, TargetLaunchABIId targetLaunchABI);

@@ -10,6 +10,8 @@
 #include "instr_adapter.h"
 
 extern int8_t *get_spm_memory_mapping(uint64_t offset);
+extern uint64_t get_tile_spm_addr_base(uint32_t tile_id_1d, int32_t tile_x,
+                                       int32_t tile_y);
 
 /*
  * The vendored instruction support archives use RT-Thread's one-argument heap
@@ -69,6 +71,8 @@ enum {
   WAFER_DIRECT_DTE_SEND_EVENT = 0x100,
   WAFER_DIRECT_DTE_RECV_EVENT_BASE = 0x200,
   WAFER_DIRECT_DTE_MAX_RECEIVERS = 4,
+  WAFER_TX81_TILE_GRID_X = 4,
+  WAFER_TX81_TILE_GRID_Y = 4,
 };
 
 typedef struct {
@@ -85,23 +89,72 @@ typedef struct {
 } WaferDirectDTEReceiverState;
 
 static volatile uint32_t *wafer_direct_dte_status;
+static uint32_t wafer_direct_dte_status_value;
 static WaferDirectDTESenderState wafer_direct_dte_sender;
 static WaferDirectDTEReceiverState
     wafer_direct_dte_receivers[WAFER_DIRECT_DTE_MAX_RECEIVERS];
 
-static void wafer_direct_dte_set_error(void) {
-  if (wafer_direct_dte_status)
-    *wafer_direct_dte_status = WAFER_TX81_DIRECT_DTE_STATUS_TRANSPORT_ERROR;
+/*
+ * Kernel arguments and txMalloc resources are cacheable device-DDR
+ * addresses.  The firmware invalidates the argument table before entering a
+ * dynamic module, but it does not clean module writes when the entry returns.
+ * Publish the transport status with the same C908 clean-and-invalidate
+ * sequence used by the firmware's rt_hw_cpu_dcache_ops(FLUSH) path so a host
+ * D2H observes the terminal value rather than the pre-launch poison word.
+ */
+static void
+wafer_direct_dte_flush_status(volatile uint32_t *status) {
+  enum {
+    WAFER_TX81_SUPERVISOR_MODE = 1,
+    WAFER_TX81_MACHINE_MODE = 3,
+  };
+  uintptr_t address = (uintptr_t)status &
+                      ~(uintptr_t)(
+                          WAFER_TX81_DIRECT_DTE_STATUS_V2_CACHE_LINE_BYTES - 1);
+  uintptr_t mode;
+  __asm__ volatile("fence" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+  __asm__ volatile("csrr %0, mxstatus" : "=r"(mode));
+  mode = (mode >> 30) & 3U;
+  if (mode == WAFER_TX81_MACHINE_MODE)
+    __asm__ volatile("dcache.cipa %0" : : "r"(address) : "memory");
+  else if (mode == WAFER_TX81_SUPERVISOR_MODE)
+    __asm__ volatile("dcache.civa %0" : : "r"(address) : "memory");
+  __asm__ volatile("sync.is" ::: "memory");
+  __asm__ volatile("fence" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
 }
 
-void wafer_tx81_direct_dte_begin(uint64_t status_addr, uint32_t rank_count) {
+static void wafer_direct_dte_publish_status(uint32_t value) {
+  wafer_direct_dte_status_value = value;
+  if (!wafer_direct_dte_status)
+    return;
+  *wafer_direct_dte_status = value;
+  wafer_direct_dte_flush_status(wafer_direct_dte_status);
+}
+
+static void wafer_direct_dte_set_error(void) {
+  wafer_direct_dte_publish_status(
+      WAFER_TX81_DIRECT_DTE_STATUS_TRANSPORT_ERROR);
+}
+
+static void wafer_direct_dte_reset_state(uint64_t status_addr) {
   wafer_direct_dte_status = (volatile uint32_t *)(uintptr_t)status_addr;
   wafer_direct_dte_sender.active = false;
   for (uint32_t index = 0; index < WAFER_DIRECT_DTE_MAX_RECEIVERS; ++index)
     wafer_direct_dte_receivers[index].active = false;
-  if (wafer_direct_dte_status)
-    *wafer_direct_dte_status = WAFER_TX81_DIRECT_DTE_STATUS_PENDING;
+  wafer_direct_dte_publish_status(WAFER_TX81_DIRECT_DTE_STATUS_PENDING);
+}
+
+void wafer_tx81_direct_dte_begin(uint64_t status_addr, uint32_t rank_count) {
+  wafer_direct_dte_reset_state(status_addr);
   direct_sync_init((int)rank_count);
+}
+
+void wafer_tx81_direct_dte_begin_after_prepare(uint64_t status_addr,
+                                               uint32_t rank_count) {
+  (void)rank_count;
+  wafer_direct_dte_reset_state(status_addr);
 }
 
 uint64_t wafer_tx81_direct_dte_send_prepare(uint64_t src, uint64_t remote_dst,
@@ -115,9 +168,15 @@ uint64_t wafer_tx81_direct_dte_send_prepare(uint64_t src, uint64_t remote_dst,
     wafer_direct_dte_set_error();
     return 0;
   }
+  uint64_t remote_spm_base = get_tile_spm_addr_base(
+      remote_tile, WAFER_TX81_TILE_GRID_X, WAFER_TX81_TILE_GRID_Y);
+  if (remote_dst > UINT64_MAX - remote_spm_base) {
+    wafer_direct_dte_set_error();
+    return 0;
+  }
   WaferDirectDTESendInfo info = {0};
   info.src_addr = (uintptr_t)src;
-  info.dst_addr = (uintptr_t)remote_dst;
+  info.dst_addr = (uintptr_t)(remote_spm_base + remote_dst);
   info.length = byte_count;
   info.remote_fsm_id = (uint8_t)remote_fsm_id;
   info.mode = 0;
@@ -208,8 +267,8 @@ void wafer_tx81_direct_dte_finish(void) {
       return;
     }
   if (wafer_direct_dte_status &&
-      *wafer_direct_dte_status == WAFER_TX81_DIRECT_DTE_STATUS_PENDING)
-    *wafer_direct_dte_status = WAFER_TX81_DIRECT_DTE_STATUS_SUCCESS;
+      wafer_direct_dte_status_value == WAFER_TX81_DIRECT_DTE_STATUS_PENDING)
+    wafer_direct_dte_publish_status(WAFER_TX81_DIRECT_DTE_STATUS_SUCCESS);
 }
 
 static Data_Format wafer_format(uint32_t format) { return (Data_Format)format; }

@@ -101,8 +101,8 @@ def invocation_arguments(
     manifest_path: pathlib.Path, raw_paths: dict[tuple[str, int], pathlib.Path]
 ) -> list[str]:
     manifest = json.loads(manifest_path.read_text())
-    if manifest.get("schema_version") != 4 or manifest.get("rank_count") != 1:
-        raise RuntimeError("single-op board gate requires a schema-v4 rank-one package")
+    if manifest.get("schema_version") != 5 or manifest.get("rank_count") != 1:
+        raise RuntimeError("single-op board gate requires a schema-v5 rank-one package")
     entries = manifest.get("entries", [])
     if len(entries) != 1 or entries[0].get("id") != 0:
         raise RuntimeError("single-op board gate requires the unique entry ID 0")

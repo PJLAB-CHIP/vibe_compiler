@@ -5,6 +5,7 @@
 #include "Wafer/Support/TargetPolicy.h"
 
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Errc.h"
@@ -162,45 +163,12 @@ llvm::Error verifyModelDynamicExport(const llvm::object::ObjectFile &object,
   return llvm::Error::success();
 }
 
-} // namespace
-
-llvm::Expected<TargetModuleReadback>
-verifyTargetModule(llvm::StringRef path, llvm::StringRef entrySymbol,
-                   TargetProfileId expectedProfile,
-                   TargetLaunchABIId expectedLaunchABI) {
-  const TargetProfileRecord &profile = getTargetProfileRecord(expectedProfile);
-  constexpr llvm::StringLiteral kDetectedRiscv64ELF = "elf-riscv64";
-  if (profile.moduleFormat != kDetectedRiscv64ELF)
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "target profile module format '%s' has no ELF readback verifier",
-        profile.moduleFormat.str().c_str());
-  if (!isRegularTargetFile(path))
-    return llvm::createStringError(llvm::errc::invalid_argument,
-                                   "target module is not a regular file");
-  auto buffer = llvm::MemoryBuffer::getFile(path, /*IsText=*/false,
-                                            /*RequiresNullTerminator=*/false);
-  if (!buffer)
-    return llvm::createStringError(buffer.getError(),
-                                   "failed to read target module");
-  llvm::StringRef bytes = (*buffer)->getBuffer();
-  if (bytes.size() < 4 || !bytes.starts_with("\x7f"
-                                             "ELF"))
-    return llvm::createStringError(llvm::errc::invalid_argument,
-                                   "target module is not ELF");
-
-  auto object = llvm::object::ObjectFile::createObjectFile(path);
-  if (!object)
-    return object.takeError();
-  if (!(*object).getBinary()->isELF() ||
-      (*object).getBinary()->getBytesInAddress() != 8 ||
-      (*object).getBinary()->makeTriple().getArch() != llvm::Triple::riscv64)
-    return llvm::createStringError(llvm::errc::invalid_argument,
-                                   "target module is not RISC-V 64-bit ELF");
+llvm::Error verifyExportedFunction(const llvm::object::ObjectFile &object,
+                                   llvm::StringRef expectedSymbol) {
   bool foundEntry = false;
   bool foundNonFunctionEntry = false;
   bool foundNonExportedFunctionEntry = false;
-  for (llvm::object::SymbolRef symbol : (*object).getBinary()->symbols()) {
+  for (llvm::object::SymbolRef symbol : object.symbols()) {
     llvm::Expected<llvm::StringRef> name = symbol.getName();
     llvm::Expected<uint32_t> flags = symbol.getFlags();
     if (!name || !flags) {
@@ -211,7 +179,7 @@ verifyTargetModule(llvm::StringRef path, llvm::StringRef entrySymbol,
       return llvm::createStringError(llvm::errc::invalid_argument,
                                      "target module symbol readback failed");
     }
-    if (*name != entrySymbol ||
+    if (*name != expectedSymbol ||
         (*flags & llvm::object::BasicSymbolRef::SF_Undefined))
       continue;
     llvm::Expected<llvm::object::SymbolRef::Type> type = symbol.getType();
@@ -243,10 +211,77 @@ verifyTargetModule(llvm::StringRef path, llvm::StringRef entrySymbol,
   if (!foundEntry)
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "target entry symbol is not defined");
+  return llvm::Error::success();
+}
+
+} // namespace
+
+llvm::Expected<TargetModuleReadback> verifyTargetModule(
+    llvm::StringRef path, llvm::ArrayRef<VerifiedTargetExport> expectedExports,
+    TargetProfileId expectedProfile, TargetLaunchABIId expectedLaunchABI) {
+  const TargetProfileRecord &profile = getTargetProfileRecord(expectedProfile);
+  constexpr llvm::StringLiteral kDetectedRiscv64ELF = "elf-riscv64";
+  if (profile.moduleFormat != kDetectedRiscv64ELF)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target profile module format '%s' has no ELF readback verifier",
+        profile.moduleFormat.str().c_str());
+  if (!isRegularTargetFile(path))
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "target module is not a regular file");
+  auto buffer = llvm::MemoryBuffer::getFile(path, /*IsText=*/false,
+                                            /*RequiresNullTerminator=*/false);
+  if (!buffer)
+    return llvm::createStringError(buffer.getError(),
+                                   "failed to read target module");
+  llvm::StringRef bytes = (*buffer)->getBuffer();
+  if (bytes.size() < 4 || !bytes.starts_with("\x7f"
+                                             "ELF"))
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "target module is not ELF");
+
+  auto object = llvm::object::ObjectFile::createObjectFile(path);
+  if (!object)
+    return object.takeError();
+  if (!(*object).getBinary()->isELF() ||
+      (*object).getBinary()->getBytesInAddress() != 8 ||
+      (*object).getBinary()->makeTriple().getArch() != llvm::Triple::riscv64)
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "target module is not RISC-V 64-bit ELF");
+  if (expectedExports.empty())
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "target module export domain is empty");
+  bool seenPrepare = false;
+  bool seenMain = false;
+  llvm::StringSet<> symbols;
+  llvm::StringRef mainSymbol;
+  for (const VerifiedTargetExport &targetExport : expectedExports) {
+    bool *seen = targetExport.getRole() == TargetExportRole::Prepare
+                     ? &seenPrepare
+                     : &seenMain;
+    if (*seen || targetExport.getSymbol().empty() ||
+        !symbols.insert(targetExport.getSymbol()).second)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "target module exports have duplicate roles or symbols");
+    *seen = true;
+    if (targetExport.getRole() == TargetExportRole::Main)
+      mainSymbol = targetExport.getSymbol();
+    if (llvm::Error error = verifyExportedFunction(*(*object).getBinary(),
+                                                   targetExport.getSymbol()))
+      return std::move(error);
+  }
+  const bool cluster = expectedLaunchABI ==
+                       TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+  if (!seenMain || seenPrepare != cluster ||
+      expectedExports.size() != (cluster ? 2u : 1u))
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target module export roles do not match the closed launch ABI");
 
   if (expectedLaunchABI == TargetLaunchABIId::tx81ModelBootParamV1())
     if (llvm::Error error =
-            verifyModelDynamicExport(*(*object).getBinary(), entrySymbol))
+            verifyModelDynamicExport(*(*object).getBinary(), mainSymbol))
       return std::move(error);
 
   llvm::SHA256 hasher;
@@ -259,16 +294,18 @@ verifyTargetModule(llvm::StringRef path, llvm::StringRef entrySymbol,
 llvm::Expected<VerifiedTargetModule> verifyLinkedTargetModuleForTesting(
     llvm::StringRef path, llvm::StringRef entrySymbol,
     TargetProfileId targetProfile, TargetLaunchABIId targetLaunchABI) {
+  std::vector<VerifiedTargetExport> exports;
+  exports.push_back(TargetArtifactBundleBuilder::makeExport(
+      TargetExportRole::Main, entrySymbol));
   llvm::Expected<TargetModuleReadback> readback =
-      verifyTargetModule(path, entrySymbol, targetProfile, targetLaunchABI);
+      verifyTargetModule(path, exports, targetProfile, targetLaunchABI);
   if (!readback)
     return readback.takeError();
   const TargetProfileRecord &profile = getTargetProfileRecord(targetProfile);
   return TargetArtifactBundleBuilder::makeModule(
-      /*logicalRank=*/0, entrySymbol, llvm::sys::path::filename(path),
+      TargetArtifactModuleId(0), llvm::sys::path::filename(path),
       readback->contentDigest, targetProfile, profile.targetIdentity,
-      profile.kernelRuntimeABI, readback->moduleFormat,
-      /*kernelABISlots=*/{});
+      profile.kernelRuntimeABI, readback->moduleFormat, std::move(exports));
 }
 
 } // namespace wafer::compiler::detail
