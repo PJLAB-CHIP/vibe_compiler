@@ -129,7 +129,8 @@ module {
   llvm::Expected<wafer::compiler::ExecutionConfig> executionConfig =
       wafer::compiler::ExecutionConfig::createForSingleCard(
           /*executionRankCount=*/1,
-          wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+          wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+          wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(executionConfig));
 
   std::string diagnosticsText;

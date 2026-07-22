@@ -24,6 +24,7 @@ struct CommandLineOptions {
   std::optional<std::string> outputProgramDirectory;
   std::optional<std::string> executionRanks;
   std::optional<std::string> targetProfile;
+  std::optional<std::string> targetLaunchABI;
   std::vector<std::string> modelInputs;
   std::vector<std::string> modelExpected;
   std::optional<std::string> modelAtol;

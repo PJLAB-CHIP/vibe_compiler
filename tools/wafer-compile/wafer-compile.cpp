@@ -52,7 +52,8 @@ int main(int argc, char **argv) {
   if (!requireOption(options.inputProgramDirectory, "--input-program-dir") ||
       !requireOption(options.outputProgramDirectory, "--output-program-dir") ||
       !requireOption(options.executionRanks, "--execution-ranks") ||
-      !requireOption(options.targetProfile, "--target-profile"))
+      !requireOption(options.targetProfile, "--target-profile") ||
+      !requireOption(options.targetLaunchABI, "--launch-abi"))
     return 1;
 
   bool modelInvocationRequested = !options.modelInputs.empty() ||
@@ -240,9 +241,17 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  llvm::Expected<wafer::TargetLaunchABIId> targetLaunchABI =
+      wafer::parseTargetLaunchABIId(*options.targetLaunchABI);
+  if (!targetLaunchABI) {
+    llvm::errs() << "wafer-compile: "
+                 << llvm::toString(targetLaunchABI.takeError()) << "\n";
+    return 1;
+  }
+
   llvm::Expected<wafer::compiler::ExecutionConfig> executionConfig =
-      wafer::compiler::ExecutionConfig::createForSingleCard(rankCount,
-                                                            *targetProfile);
+      wafer::compiler::ExecutionConfig::createForSingleCard(
+          rankCount, *targetProfile, *targetLaunchABI);
   if (!executionConfig) {
     llvm::errs() << "wafer-compile: "
                  << llvm::toString(executionConfig.takeError()) << "\n";

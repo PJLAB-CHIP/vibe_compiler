@@ -140,7 +140,9 @@ Pipeline position:
   checked折入最终transaction address，模型不读取planner relation或恢复layout conversion。
 - Q17正式交付物是all-and-only RISC-V ELF `TargetArtifactBundle`；Q18 package只包含typed resource/slot/module/
   entry/completion/transport requirement，不包含instruction schedule。
-- Q18当前只实现pure no-card `RuntimeSessionPlan`。真实`RuntimeProvider`生命周期和board执行尚未实现。
+- Q18保留pure no-card `RuntimeSessionPlan`；Q6.B已另行实现per-rank、单次kernel-grid和type-6/type-7 model三种
+  `transport:none`真实`RuntimeProvider`生命周期，并以fresh Add完成板端数值gate。Direct DTE真实receiver
+  placement/readiness/completion仍未实现，不能由这些NoTransport结果替代。
 - accepted instruction/memory facts由target lowering和target model直接消费；不存在独立reference-only numeric或
   deterministic DTE policy可成为target model的旁路事实源。
 - Q0.L shared registry显式枚举13种logical format，但engine×format准入只开放tasks/14有静态编码证据的row；
@@ -1276,8 +1278,8 @@ target-call frontend和Q22.S functional-event model；Q22.K才等待合法vendor
   closure；Q22.B随后独立闭合受管oneDNN、qualification record和发布政策，readiness probe本身没有被当作bulk admission。
 - Q22.L已经独立形成owner-backed target LLVM bundle；Q22.H直接消费它建立repo-owned target-call frontend；
   Q22.S/Q22.V继续依赖Q22.H，external vendor seam只影响Q22.K packet provenance。
-- vendor CModel套件、真实board和hardware numeric/packet/timing仍是external evidence；它们不否定model-only方案，也不能由
-  文档、有限corpus或SystemC选择推断。
+- 除Q6.B已闭合的kernel-grid/model Add logical-execution gate外，vendor CModel套件、更广的board numeric以及
+  hardware packet/timing仍是external evidence；它们不否定model-only方案，也不能由文档、有限corpus或SystemC选择推断。
 
 ### 10.1 Capability和依赖收敛
 

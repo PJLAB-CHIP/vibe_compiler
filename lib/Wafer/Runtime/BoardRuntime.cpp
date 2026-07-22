@@ -16,6 +16,7 @@
 #include "llvm/Support/SHA256.h"
 
 #include <limits>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -143,6 +144,13 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
     BoardRuntimeInvocationRequest request, BoardRuntimeDriver &driver) {
   const PackageManifest &manifest = package.getManifest();
   const EntryId noEntry;
+  const bool perRankLaunch =
+      manifest.launchABI == TargetLaunchABIId::perRankPointerBlockV1();
+  const bool kernelGridLaunch = manifest.launchABI ==
+                                TargetLaunchABIId::
+                                    tx81KernelGridPointerTableV1();
+  const bool modelLaunch =
+      manifest.launchABI == TargetLaunchABIId::tx81ModelBootParamV1();
   if (request.qualification.runtimeVersion == 0 ||
       request.qualification.tileCount == 0 ||
       request.qualification.name.empty() ||
@@ -301,6 +309,15 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
                           "aggregate board allocation byte count overflows");
       allocationBytes += resource.bytes;
     }
+  const size_t admittedModuleCount =
+      kernelGridLaunch ? 1 : moduleSnapshots.size();
+  for (size_t index = 0; index < admittedModuleCount; ++index) {
+    uint64_t moduleBytes = moduleSnapshots[index].size();
+    if (moduleBytes > std::numeric_limits<uint64_t>::max() - allocationBytes)
+      return boardError(BoardRuntimeStage::Preflight, -1, noEntry,
+                        "aggregate board module byte count overflows");
+    allocationBytes += moduleBytes;
+  }
   if (device->freeMemoryBytes <= boardRuntimeFreeMemoryReserve ||
       allocationBytes > device->freeMemoryBytes - boardRuntimeFreeMemoryReserve)
     return boardError(
@@ -318,6 +335,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
 
   std::vector<LiveAllocation> allocations;
   std::vector<LiveModule> liveModules;
+  std::optional<BoardGraphHandle> liveGraph;
   bool submissionLive = false;
   auto cleanup = [&]() -> llvm::Error {
     llvm::Error cleanupError = llvm::Error::success();
@@ -346,6 +364,18 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
       }
     }
     liveModules.clear();
+    if (liveGraph) {
+      if (llvm::Error error = driver.unloadGraph(*liveGraph)) {
+        BoardRuntimeContextState state = driver.getContextState();
+        llvm::Error wrapped = wrapDriverError(BoardRuntimeStage::Cleanup, -1,
+                                              noEntry, std::move(error), state);
+        if (state == BoardRuntimeContextState::Poisoned)
+          return llvm::joinErrors(std::move(cleanupError), std::move(wrapped));
+        cleanupError =
+            llvm::joinErrors(std::move(cleanupError), std::move(wrapped));
+      }
+      liveGraph.reset();
+    }
     for (LiveAllocation &allocation : llvm::reverse(allocations)) {
       if (llvm::Error error = driver.free(allocation.memory)) {
         BoardRuntimeContextState state = driver.getContextState();
@@ -389,8 +419,6 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
 
   for (const LiveAllocation &allocation : allocations) {
     const PackageResourceRecord &resource = *allocation.resource;
-    if (resource.access == PackageAccessMode::WriteOnly)
-      continue;
     llvm::ArrayRef<uint8_t> source;
     std::vector<uint8_t> zeros;
     auto binding = bindingsByResource.find(resource.id.getValue());
@@ -407,26 +435,49 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
   }
   result.completedStages.push_back(BoardRuntimeStage::HostToDevice);
 
-  for (size_t index = 0; index < capacityPlan->ranks.size(); ++index) {
-    const RuntimeSessionPlan &rank = capacityPlan->ranks[index];
-    llvm::Expected<BoardModuleHandle> loaded =
-        driver.loadModule(moduleSnapshots[index]);
+  if (modelLaunch) {
+    std::vector<BoardGraphModuleSnapshot> graphModules;
+    graphModules.reserve(capacityPlan->ranks.size());
+    for (size_t index = 0; index < capacityPlan->ranks.size(); ++index) {
+      const RuntimeSessionPlan &rank = capacityPlan->ranks[index];
+      const PackageModuleRecord *module =
+          detail::findModule(manifest.modules, rank.module);
+      graphModules.push_back(
+          {static_cast<uint16_t>(rank.logicalRank), rank.module,
+           module->digest, moduleSnapshots[index]});
+    }
+    llvm::Expected<BoardGraphHandle> loaded = driver.loadGraph(
+        graphModules, capacityPlan->ranks.front().entrySymbol);
     if (!loaded)
-      return fail(BoardRuntimeStage::ModuleLoad, rank.logicalRank, rank.entry,
+      return fail(BoardRuntimeStage::ModuleLoad, -1, noEntry,
                   loaded.takeError());
-    liveModules.push_back({&capacityPlan->ranks[index], *loaded});
+    liveGraph = *loaded;
+  } else {
+    const size_t moduleCount = kernelGridLaunch ? 1 : capacityPlan->ranks.size();
+    for (size_t index = 0; index < moduleCount; ++index) {
+      const RuntimeSessionPlan &rank = capacityPlan->ranks[index];
+      llvm::Expected<BoardModuleHandle> loaded =
+          driver.loadModule(moduleSnapshots[index]);
+      if (!loaded)
+        return fail(BoardRuntimeStage::ModuleLoad, rank.logicalRank, rank.entry,
+                    loaded.takeError());
+      liveModules.push_back({&capacityPlan->ranks[index], *loaded});
+    }
   }
   result.completedStages.push_back(BoardRuntimeStage::ModuleLoad);
 
   std::vector<BoardFunctionHandle> functions;
-  functions.reserve(liveModules.size());
-  for (const LiveModule &liveModule : liveModules) {
-    llvm::Expected<BoardFunctionHandle> function =
-        driver.resolveEntry(liveModule.module, liveModule.rank->entrySymbol);
-    if (!function)
-      return fail(BoardRuntimeStage::EntryResolve, liveModule.rank->logicalRank,
-                  liveModule.rank->entry, function.takeError());
-    functions.push_back(*function);
+  if (!modelLaunch) {
+    functions.reserve(liveModules.size());
+    for (const LiveModule &liveModule : liveModules) {
+      llvm::Expected<BoardFunctionHandle> function =
+          driver.resolveEntry(liveModule.module, liveModule.rank->entrySymbol);
+      if (!function)
+        return fail(BoardRuntimeStage::EntryResolve,
+                    liveModule.rank->logicalRank, liveModule.rank->entry,
+                    function.takeError());
+      functions.push_back(*function);
+    }
   }
   result.completedStages.push_back(BoardRuntimeStage::EntryResolve);
 
@@ -436,7 +487,9 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
     BoardRankLaunch launch;
     launch.logicalRank = rank.logicalRank;
     launch.entry = rank.entry;
-    launch.function = functions[index];
+    launch.function = kernelGridLaunch ? functions.front() :
+                                         (modelLaunch ? BoardFunctionHandle{} :
+                                                        functions[index]);
     launch.arguments.reserve(rank.launchOrder.size());
     for (ResourceId resource : rank.launchOrder) {
       auto memory = memoryByResource.find(resource.getValue());
@@ -447,8 +500,33 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
     }
     launches.push_back(std::move(launch));
   }
-  if (llvm::Error error = driver.submitAll(launches))
-    return fail(BoardRuntimeStage::Launch, -1, noEntry, std::move(error));
+  llvm::Error submissionError = [&]() -> llvm::Error {
+    if (perRankLaunch)
+      return driver.submitAll(launches);
+    if (kernelGridLaunch)
+      return driver.submitKernelGrid(launches);
+    if (modelLaunch) {
+      std::vector<BoardModelTensorLaunch> tensors;
+      for (const RuntimeSessionPlan &rank : capacityPlan->ranks)
+        for (auto [slotOrdinal, resourceId] :
+             llvm::enumerate(rank.launchOrder)) {
+          const PackageResourceRecord *resource =
+              detail::findResource(manifest.resources, resourceId);
+          auto memory = memoryByResource.find(resourceId.getValue());
+          if (!resource || memory == memoryByResource.end())
+            return detail::invalid(
+                "model launch slot has no typed resource allocation");
+          tensors.push_back({rank.logicalRank, slotOrdinal, resource->role,
+                             memory->second, resource->bytes,
+                             resource->type.dtype, resource->type.shape});
+        }
+      return driver.submitModel(*liveGraph, tensors);
+    }
+    return detail::invalid("package has an unknown launch ABI");
+  }();
+  if (submissionError)
+    return fail(BoardRuntimeStage::Launch, -1, noEntry,
+                std::move(submissionError));
   submissionLive = true;
   result.completedStages.push_back(BoardRuntimeStage::Launch);
 

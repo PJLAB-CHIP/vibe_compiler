@@ -955,7 +955,7 @@ After the `firmware_kuiper` pass, the host/runtime split is:
 
 | layer | snapshot evidence |
 |---|---|
-| HPGR `tx_runtime` | Broad CUDA-like API surface observed in this SDK snapshot: device, memory, stream/event, module/kernel/model/graph, rank/tile, and P2P. Model-manager sync/async paths wait on command-slot completion; module launch polls a device-written `completeSignal`; stream finish waits on the queued command completion object. |
+| HPGR `tx_runtime` | Broad CUDA-like API surface observed in the SDK snapshot and digest-qualified external V5.6 installation: device, memory, stream/event, module/kernel/model/graph, rank/tile, and P2P. Current AP/Kcore traces close ordinary-grid block distribution, type-6 graph load, type-7 run, same-BPM broadcast, and `entry(head)`. Model-manager sync/async paths wait on command-slot completion; module launch polls a device-written `completeSignal`; stream finish waits on the queued command completion object. |
 | KMD UAPI | Exposes `/dev/accel/dev-N` BO/job/NPU/DTE/C2C/log/info/topology ioctl families, BAR/ATU windows, BO pools, PG tile maps, and firmware loading. The observed compute-job fence is directly signaled after MHU doorbell kick and does not prove device-side compute completion. |
 | VS/old `Tsm*` | Compatibility-layer and DTE-TLV evidence. Several launch/sync/discovery paths are stub/no-op in the recovered build. |
 
@@ -985,8 +985,10 @@ because they share the word "cmodel":
    packet ABI.
 
 The relevant `libcmodel_runtime_api.so`, matching host-runtime/TsmML development
-headers, `libhpgr.so`, `libtsmml.so`, and model resources are not available as a
-usable package in this checkout. Within the recovered binary, `dlsym` results
+headers, `libtsmml.so`, and model resources are not available as a usable
+package in this checkout. A digest-qualified external V5.6 `libhpgr.so` is
+available and was audited independently, but it does not provide the missing
+CModel seam. Within the recovered binary, `dlsym` results
 are stored in CModel function-pointer fields and the library handle is later
 passed to `dlclose`; the ordinary launch path is not proven to read or call
 those fields. A missing external component could
@@ -1023,6 +1025,9 @@ compiler target, or instruction semantic category.
 | `TsmMemcpyOffsetH2D`, `TsmMemcpyOffsetD2H` | Stub-like offset helpers in the recovered hardware implementation; no required-copy side effect was observed. |
 | `TsmMemcpyD2D` | Builds a `D_MEMCPY_D2D` dyn TLV and launches a Kcore DTE copy program. Uses 16 tile configs and 4 KiB chunking in recovered implementation. |
 | `TsmRun` | Converts the bootparam device pointer through `Runtime::GetPhyAddr`; the active `tx*` backend calls `txLaunchModelSync(phy_bootparam)` and returns `1` on tx error. In inactive backend mode it returns `0`. HPGR model/module completion is a separate observed mechanism, not a Wafer completion-policy owner. |
+| current `txLaunchKernel` | AP partitions the total grid over fixed logical tile ids `0..15`; it does not renumber by the active-tile count. On the qualified full-good snapshot grid one runs on logical tile 0 and grid-x-16 assigns pid `t` to logical tile `t`. A missing tile loses its pid rather than remapping it. |
+| current `txLoadGraph` | Reads 16 tile-specific shared objects and synchronously sends a type-6 dynamic-load TLV through the outer model packet. It loads and registers entries; it does not run one inference. |
+| current `txLaunchModel` | Sends a device BPM address. Type 7 looks up the type-6-registered module on each tile and calls `entry(D_BootParamHead *)`; public `txMalloc` addresses are accepted directly, but no public BPM builder or layout-version contract exists. |
 | `TsmAsyncRun` | Stub returns `0`. |
 | `TsmLaunch`, `TsmLaunchPg` | `RuntimeApiImplHw` returns `0` without an observed launch side effect; the return value alone is not execution evidence. |
 | `TsmDeviceSynchronize`, `TsmInitDevice`, `TsmReleaseDevice` | Stub/success-return paths with no device-completion proof in this snapshot. |
@@ -1132,8 +1137,52 @@ Observed layout:
 - bootparam head starts at the bootparam buffer base.
 - dyninfo begins at `head + 0x38`.
 - dyninfo entries are ordered as inputs, then outputs, then params.
-- runtime launch converts the device bootparam pointer through
-  `Runtime::GetPhyAddr` before calling `txLaunchModelSync`.
+- the legacy `Tsm*` runtime converts its allocation wrapper through
+  `Runtime::GetPhyAddr` before calling `txLaunchModelSync`; this is not a rule
+  for the public HPGR pointer. In current V5.6, public `txMalloc` returns the
+  address used by `txMemcpy` and accepted directly as the `uint64_t` BPM device
+  address by `txLaunchModel`.
+
+Current HPGR graph-load records are:
+
+```c
+typedef struct D_GraphInfo {
+    char module_name[128];
+    char module_symbol[128];
+    uint32_t module_size[16];
+    uint64_t module_addr[16];
+} D_GraphInfo; // size 448
+
+typedef struct D_DynMods {
+    uint16_t module_num;
+    // six bytes of ABI padding
+    D_GraphInfo graph;
+} D_DynMods; // size 456
+
+typedef struct D_GraphTLV {
+    uint32_t type;
+    uint32_t len;
+    uint64_t dyn_mods_addr;
+} D_GraphTLV; // size 16
+```
+
+For type 6, `txLoadGraph(path, symbol)` reads exactly
+`path/tile0/kcore_fw.so` through `path/tile15/kcore_fw.so`, fills the 16
+size/address pairs, and uses one shared name and symbol. Kcore indexes those
+arrays by its own tile id, loads the tile-specific object, resolves the shared
+symbol, and registers the resulting entry under the module name. The outer
+host command is packet type 5, but the inner operation remains
+`DYNLIB_LOAD`; this synchronous call does not run an inference.
+
+Across two legacy host builds, the type-7 run payload is the same 456-byte
+one-module `D_DynMods` with only `module_name` material, referenced by the same
+16-byte TLV form with `type=7` and `len=8`. Current Kcore receives the same
+bootparam pointer on every active tile, finds the locally registered entry by
+name, and calls exactly `entry(D_BootParamHead *)`. V5.6 graph modules confirm
+that entry contract by reading input at `+56`, output at `+128`, parameter at
+`+200`, and cache address at `+32` for the one-input/one-output/one-parameter
+case. Per-tile compiled constants, rather than 16 host launches, select each
+tile's work.
 
 Dynamic TLV header:
 
@@ -1166,6 +1215,16 @@ Dynamic TLV types:
 Known payloads are defined in the generated annex: terminate, kcore config,
 profiling config, group data dump, `D_DteCfgList`, `TileMappingTable`,
 `D_DynTLV_Cfgpmu`, and related runtime structs.
+
+Evidence boundary: the structures and call chain above are statically closed
+for the qualified V5.6 binary and cross-checked against legacy builders and
+installed device modules. The public header still provides no BPM builder or
+layout-version contract. Wafer schema-v4 publication and its board provider
+now materialize typed graph I/O ordinals, checked sizes/offsets, nested
+allocation lifetimes, module-name identity, and artifact export/readback as
+the explicit `tx81-model-bootparam-v1` launch ABI. That ABI remains qualified
+only for the pinned V5.6 runtime digest; it is neither an opaque sidecar nor a
+silent substitute for either kernel launch ABI.
 
 ## 15. Evidence-to-Design Handoff
 

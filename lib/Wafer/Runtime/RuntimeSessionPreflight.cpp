@@ -19,6 +19,7 @@ llvm::Error validateRuntimeEnvironment(const PackageManifest &manifest,
   if (environment.targetProfile != manifest.targetProfile ||
       environment.targetIdentity != manifest.targetIdentity ||
       environment.runtimeABI != manifest.runtimeABI ||
+      environment.launchABI != manifest.launchABI ||
       environment.moduleFormat != manifest.moduleFormat)
     return invalid("runtime environment is incompatible with package target");
   return llvm::Error::success();

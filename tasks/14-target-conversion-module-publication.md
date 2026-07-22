@@ -45,11 +45,11 @@ Pipeline position:
   SPM/DDR planning、transport binding及completion verification的selected typed wafer.instr/SCF/CF/func IR。
   每个rank已有accepted SPM/DDR offsets、typed views、physical geometry和ordered Kernel ABI resources。
 - Current stage responsibility:
-  只从 ExecutionConfig 读取 TargetProfileId，并用当前closed target-profile/format/target-call contracts
+  从 ExecutionConfig 读取 TargetProfileId和TargetLaunchABIId；用当前closed target-profile/format/target-call contracts
   映射 TargetIdentityId、KernelRuntimeABIId、module format和exact CRT signatures；从selected typed IR
   验证geometry、range、effect/completion和narrow fields。在module clone上执行structure-preserving
   DialectConversion，全部成功后翻译成由独立LLVMContext拥有的llvm::Module。Q17随后直接消费该
-  TargetLLVMModuleBundle做CRT compile/device link、symbol/entry/ELF/identity/ABI-slot/digest readback，
+  TargetLLVMModuleBundle做launch-specific entry wrapper、CRT compile/device link、symbol/entry/ELF/identity/ABI-slot/digest readback，
   并在all-rank成功后原子发布TargetArtifactBundle。
 - Output artifact / IR:
   move-only、不可序列化的TargetLLVMModuleBundle：ExecutionConfig和all-and-only rank modules；每个module
@@ -62,7 +62,7 @@ Pipeline position:
   Q17 RISC-V device link、repo-owned target-call/SystemC frontend直接消费同一个TargetLLVMModuleBundle；
   package transaction消费TargetArtifactBundle并逐字段readback。runtime/module loader只消费verified package。
 - User-level driver / named pipeline:
-  production wafer-compile要求显式--target-profile=<registered-id>，在all-rank ExecutableBundle完成后自动
+  production wafer-compile要求显式--target-profile=<registered-id>与--launch-abi=<registered-id>，在all-rank ExecutableBundle完成后自动
   进入target conversion/publication。focused C++ tests可直接构造typed request；没有profile default，
   也不提供从中间调度IR直达target LLVM的兼容pipeline。
 - Explicit non-goals:
@@ -72,8 +72,8 @@ Pipeline position:
 - Completion gate:
   当前v1：normal/normal GEMM、现有compact RDMA/WDMA、GS、compute、peripheral、sync和已闭合Direct DTE
   family通过geometry/range/narrowing/full-conversion；任一失败source module byte-identical。
-  TargetProfileId从CompilationRequest/ExecutionConfig贯穿ExecutableBundle、TargetLLVMModuleBundle、
-  TargetArtifactBundle和package readback且没有default；110-symbol CRT conformance、rank-count=1/16
+  TargetProfileId和TargetLaunchABIId从CompilationRequest/ExecutionConfig贯穿ExecutableBundle、TargetLLVMModuleBundle、
+  TargetArtifactBundle和package readback且没有default；closed compatibility table拒绝未资格化组合；110-symbol CRT conformance、rank-count=1/16
   owner lifetime、all-and-only module/ABI-slot/digest、late-rank atomic failure和真实production driver通过。
   Q32.V/Q3.6各自拥有独立completion gate，不反向改写current v1证据；Q32.V新增typed profile/ABI row由
   Q32.M/S通用candidate owner消费。
@@ -107,9 +107,11 @@ spelling 是 opaque canonical key，不能按连字符拆字段，也不表示�
 unknown revision、default profile 或字符串 fallback。future profile仍必须新增 closed typed record，不能改变
 v1 key 含义。
 
-普通 compiler conversion 的配置输入只有 `TargetProfileId`。conversion 根据它取得 target identity、runtime
+普通 instruction-to-target conversion只用`TargetProfileId`取得target identity、runtime
 ABI、module format、logical-format encoding 和 exact call signature，并与 selected typed IR 交叉验证。它不读取
-model profile、board environment、admission status或planner上下文。
+model profile、board environment、admission status或planner上下文。Q17 device-entry materialization另从同一
+`ExecutionConfig`读取`TargetLaunchABIId`，选择per-rank pointer block、kernel-grid pid/rank-major table或model
+BootParam wrapper；该选择不能由symbol、module path或rank数恢复。
 
 model semantics/evidence 由 `tasks/17-target-execution-model.md` 拥有；package/runtime/board admission 由
 `tasks/15-launch-runtime-package.md` 拥有。二者可以拒绝 compiler 已能发射的 module，但不能反向扩大
@@ -353,6 +355,7 @@ current typed artifact 与 live C++ owner一致：
 ExecutionConfig {
   execution_rank_count
   TargetProfileId
+  TargetLaunchABIId
 }
 
 KernelABISlot {
@@ -388,7 +391,9 @@ TargetArtifactBundle {
 
 slot ordinals all-and-only连续；shape、bytes、alignment为positive且在typed range内，alignment为2的幂。
 logical rank all-and-only覆盖 `[0, rank_count)`。target profile/identity/runtime ABI/module format必须逐module
-与 `ExecutionConfig` 及 closed profile mapping一致。
+与 `ExecutionConfig` 及 closed profile mapping一致；launch ABI必须满足closed profile兼容表。kernel-grid只在
+16-rank slot schema一致且最终modules byte-identical时发布，并使用只对该ABI放行`__get_pid`的loader symbol closure；
+model只在parameter-free f32 rank-1..6 tensor合同、共享entry及动态导出表/重定位readback通过时发布。
 
 每个 `VerifiedTargetModule` 从其 input `TargetLLVMModule`、link output 和 readback逐字段构造；Q17不回读
 `ExecutableBundle`，也不用 path、symbol scan 或 manifest补 typed fields。relative path只负责定位

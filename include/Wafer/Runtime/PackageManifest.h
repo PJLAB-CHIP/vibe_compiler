@@ -3,6 +3,7 @@
 #ifndef WAFER_RUNTIME_PACKAGEMANIFEST_H
 #define WAFER_RUNTIME_PACKAGEMANIFEST_H
 
+#include "Wafer/Target/TargetLaunchABI.h"
 #include "Wafer/Target/TargetProfile.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -18,7 +19,7 @@
 
 namespace wafer::runtime {
 
-inline constexpr uint32_t kPackageManifestSchemaVersion = 3;
+inline constexpr uint32_t kPackageManifestSchemaVersion = 4;
 inline constexpr llvm::StringLiteral kPackageManifestFileName = "manifest.json";
 inline constexpr llvm::StringLiteral kDirectDTEStatusABI =
     "wafer-direct-dte-status-v1";
@@ -127,15 +128,19 @@ struct PackageCompletionRecord {
 struct PackageManifest {
   PackageManifest(TargetProfileId targetProfile,
                   TargetIdentityId targetIdentity,
-                  KernelRuntimeABIId runtimeABI, llvm::StringRef moduleFormat)
+                  KernelRuntimeABIId runtimeABI,
+                  TargetLaunchABIId launchABI,
+                  llvm::StringRef moduleFormat)
       : targetProfile(targetProfile), targetIdentity(targetIdentity),
-        runtimeABI(runtimeABI), moduleFormat(moduleFormat.str()) {}
+        runtimeABI(runtimeABI), launchABI(launchABI),
+        moduleFormat(moduleFormat.str()) {}
 
   uint32_t schemaVersion = kPackageManifestSchemaVersion;
   ProgramId program;
   TargetProfileId targetProfile;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId runtimeABI;
+  TargetLaunchABIId launchABI;
   std::string moduleFormat;
   int64_t rankCount = 0;
   std::vector<PackageResourceRecord> resources;
@@ -201,15 +206,18 @@ struct RuntimeInvocationBinding {
 struct RuntimeEnvironment {
   RuntimeEnvironment(
       TargetProfileId targetProfile, TargetIdentityId targetIdentity,
-      KernelRuntimeABIId runtimeABI, llvm::StringRef moduleFormat,
+      KernelRuntimeABIId runtimeABI, TargetLaunchABIId launchABI,
+      llvm::StringRef moduleFormat,
       uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max())
       : targetProfile(targetProfile), targetIdentity(targetIdentity),
-        runtimeABI(runtimeABI), moduleFormat(moduleFormat.str()),
+        runtimeABI(runtimeABI), launchABI(launchABI),
+        moduleFormat(moduleFormat.str()),
         maxResourceBytes(maxResourceBytes) {}
 
   TargetProfileId targetProfile;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId runtimeABI;
+  TargetLaunchABIId launchABI;
   std::string moduleFormat;
   uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max();
   bool supportsDirectDTE = false;

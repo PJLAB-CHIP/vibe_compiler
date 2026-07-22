@@ -343,7 +343,7 @@ int runNoCard(const Options &options,
   }
   wafer::runtime::RuntimeEnvironment environment{
       manifest.targetProfile, manifest.targetIdentity, manifest.runtimeABI,
-      manifest.moduleFormat, options.maxResourceBytes};
+      manifest.launchABI, manifest.moduleFormat, options.maxResourceBytes};
   if (options.directDTEStatusABI) {
     environment.supportsDirectDTE = true;
     environment.directDTEStatusABI = *options.directDTEStatusABI;
@@ -377,6 +377,8 @@ int runNoCard(const Options &options,
                << wafer::stringifyTargetIdentityId(manifest.targetIdentity)
                << " runtime_abi="
                << wafer::stringifyKernelRuntimeABIId(manifest.runtimeABI)
+               << " launch_abi="
+               << wafer::stringifyTargetLaunchABIId(manifest.launchABI)
                << " module_format=" << manifest.moduleFormat << "\n";
   if (selectedEntry) {
     printNoCardRankPlan(*selectedPlan);
@@ -448,6 +450,10 @@ int runBoard(const Options &options,
         return fail(loaded.takeError());
       expectedBytes[resource.id.getValue()] = std::move(*loaded);
       expected->erase(reference);
+      if (resource.access == wafer::runtime::PackageAccessMode::WriteOnly)
+        for (size_t index = 0; index < bytes.size(); ++index)
+          bytes[index] = static_cast<uint8_t>(
+              ~expectedBytes[resource.id.getValue()][index]);
     }
     request.bindings.push_back({resource.id, std::move(bytes)});
   }
@@ -458,7 +464,7 @@ int runBoard(const Options &options,
 
   llvm::Expected<std::unique_ptr<wafer::runtime::BoardRuntimeDriver>> driver =
       wafer::runtime::createTxBoardRuntimeDriver(
-          options.expectedRuntimeLibraryDigest);
+          options.expectedRuntimeLibraryDigest, manifest.launchABI);
   if (!driver) {
     llvm::errs() << "wafer-run: " << llvm::toString(driver.takeError())
                  << "\nwafer-run: ending TX provider setup without running "
@@ -561,7 +567,23 @@ int runBoard(const Options &options,
                    << rank.terminalCompletion.getValue()
                    << " kind=entry_return rank=" << rank.logicalRank << "\n";
     llvm::outs() << "invocation_ranks: " << result->ranks.size() << "\n";
-    llvm::outs() << "physical_rank_mapping: unclaimed\n";
+    if (manifest.launchABI ==
+        wafer::TargetLaunchABIId::perRankPointerBlockV1()) {
+      llvm::outs() << "launch_pattern: independent-grid1\n";
+      llvm::outs() << "logical_tile_execution_basis: none\n";
+    } else if (manifest.launchABI ==
+               wafer::TargetLaunchABIId::
+                   tx81KernelGridPointerTableV1()) {
+      llvm::outs() << "launch_pattern: kernel-grid-x16\n";
+      llvm::outs() << "logical_tile_execution_basis: "
+                      "scheduler-pid-x-and-exact-rank-slices\n";
+    } else {
+      llvm::outs() << "launch_pattern: model-type6-type7\n";
+      llvm::outs() << "logical_tile_execution_basis: "
+                      "graph-tile-module-map-and-exact-rank-slices\n";
+    }
+    llvm::outs() << "logical_tile_domain: 0..15\n";
+    llvm::outs() << "physical_execution_claim: none\n";
   }
   llvm::outs() << "board_execution: true\n";
   llvm::outs().flush();

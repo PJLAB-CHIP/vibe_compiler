@@ -29,7 +29,8 @@ protected:
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
     auto created = wafer::compiler::ExecutionConfig::createForSingleCard(
-        1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+        1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+        wafer::TargetLaunchABIId::perRankPointerBlockV1());
     EXPECT_TRUE(static_cast<bool>(created));
     if (created)
       config = std::make_unique<wafer::compiler::ExecutionConfig>(*created);
@@ -234,7 +235,8 @@ module {
 }
 )mlir";
   auto cardConfig = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(cardConfig));
 
   llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;

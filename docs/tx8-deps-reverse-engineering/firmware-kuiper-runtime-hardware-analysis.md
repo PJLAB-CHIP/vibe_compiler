@@ -818,23 +818,45 @@ Two ownership/ABI details are material for an all-rank provider:
   untrustworthy provider contract violation.
 - The current `TxModuleObjectMgr::loadGraph` always reads
   `graphPath/tile0/kcore_fw.so` through `tile15/kcore_fw.so`. Its private
-  `DynMods` record has one shared module name, one shared symbol, and 16
-  size/address entries. However, it constructs `TxGraphObject` with input,
-  output, and parameter counts all zero; the boot parameter points only to a
-  type-6 `graphTLV`/`DynMods` payload. It then immediately invokes
-  `launchModel`, whose command packet type is 5 (`MODULE_MODEL_LAUNCH_PACKET`),
-  and waits for completion before registering the graph. Thus this binary's
-  `txLoadGraph` is load-plus-one-synchronous-execution, despite the public
-  header suggesting a separate later inference step. It supplies no public
-  location for 16 independent runtime argument blobs and cannot directly
-  execute the schema-v3 per-rank pointer ABI.
+  `graphInfo` record has one shared module name, one shared symbol, and 16
+  size/address entries. It constructs a zero-I/O boot parameter whose dynamic
+  data is one type-6 `DYNLIB_LOAD` TLV, sends it through the outer type-5
+  `MODULE_MODEL_LAUNCH_PACKET`, waits synchronously, and then registers the
+  graph. The outer packet is only an envelope: `txLoadGraph` synchronously
+  loads the 16 dynamic libraries and does **not** perform one inference. Kcore
+  indexes the size/address arrays with its own tile id, so tile N loads the
+  corresponding `tileN/kcore_fw.so` and resolves the shared symbol.
 
-`txLaunchClusterKernel` does establish one block per tile with `blockIdx.x` as
-the tile index, but broadcasts one module/function/argument blob. It is a
-candidate only for a separately designed cluster-compatible SPMD artifact, not
-for 16 independent schema-v3 rank ELF/argument blocks. `txLaunchModel` remains
-a research candidate because its BPM table must be toolchain-preprocessed and
-this snapshot exposes neither a public BPM layout nor a supported builder.
+- Computation is a later type-7 `DYNLIB_RUN`. The AP broadcasts the same boot
+  parameter physical address to every active tile. Current Kcore preserves the
+  original boot-parameter pointer, finds the type-6-registered module by name,
+  and calls the tile-local entry as `entry(D_BootParamHead *)`. Two legacy host
+  builds independently construct the same one-module type-7 payload, while the
+  installed V5.6 graph entries read input/output/parameter addresses at the
+  expected 56-byte-head plus 72-byte-dyninfo offsets. This recovers an
+  exact-build model ABI candidate, not a vendor-supported public builder or a
+  direct interpretation of either kernel pointer-table ABI.
+
+Ordinary `txLaunchKernel` is also multi-tile when the grid contains enough
+blocks: the current AP/Kcore partitions the total grid over fixed logical tile
+ids `0..15` rather than renumbering by active-tile count, and sets the per-call
+pid. Consequently 16 independent grid-one launches all run their sole block on
+logical tile 0, while one grid-x-16 launch on the current full-good device maps
+logical tile `t` to pid `t`. A missing tile loses the corresponding pid instead
+of remapping it. `txLaunchClusterKernel` separately
+establishes one block per selected tile and broadcasts one
+module/function/argument blob. Neither launch can consume 16 independent
+per-rank argument blocks without an explicit SPMD publication ABI.
+
+`txLaunchModel` is now more than an opaque research hint: the exact V5.6
+type-6/type-7 layouts and device entry call have been recovered. Wafer's
+schema-v4 `tx81-model-bootparam-v1` publication/provider now owns the typed
+builder, nested device-address and module-identity validation, artifact
+export/readback, and fake lifecycle gates. A fresh qualified full-good-board
+replay also completed two exact type-6/type-7 Add iterations over logical tile
+ids `0..15`. This is a logical-execution/result gate, not a physical-coordinate
+claim, because the public header exposes neither a supported BPM builder nor a
+layout-version guarantee.
 
 Important model strings in HPGR include `bpm_table`, `bpmTableAddr`,
 `ModuleLoadPayload`, `tritonLaunchPayload`, `graphTLV`, `DYNLIB_LOAD`,
@@ -909,6 +931,7 @@ start execution through `Run`.  Observed type ids:
 | operation | type |
 | --- | ---: |
 | dynamic library load | 6 |
+| dynamic library run | 7 |
 | dynamic library unload | 8 |
 | D2D DTE config | 9 |
 | P2P send DTE config | `0x0a` |

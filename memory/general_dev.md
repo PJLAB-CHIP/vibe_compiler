@@ -88,10 +88,18 @@
   `tx_runtime.h`和完整所需symbol的`libhpgr`，否则fail closed。这个开关只构建能力，adapter只在`--board`路径按需加载DSO；
   no-card路径不加载vendor library。board loader必须以同一个open fd完成hash和`/proc/self/fd` load，并按dev/inode核对全部
   dlsym provider；不能分两次按path读取。先用`ctest --test-dir <board-build> -LE hardware --output-on-failure`验证host closure。
-  live test还需显式配置默认关闭的`WAFER_ENABLE_BOARD_TEST_EXECUTION=ON`及预期runtime digest/version/PCI/device/tile；先后用
+  live test还需显式配置默认关闭的`WAFER_ENABLE_BOARD_TEST_EXECUTION=ON`及预期runtime digest/version/PCI/device/tile；现有
+  rank-one与per-rank multi-launch smoke可先后用
   `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-single-op-add$' --output-on-failure`和
-  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-all-rank-add$' --output-on-failure`，每次确认未skip，
-  并在前后只读核对device memory/process与firmware status；前一gate失败时不执行后一gate。
+  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-per-rank-add-smoke$' --output-on-failure`，每次确认未skip，
+  并在前后只读核对device memory/process与firmware status；前一gate失败时不执行后一gate。`wafer-board-per-rank-add-smoke`是
+  16×grid1 provider lifecycle smoke，current V5.6静态确认都由tile0执行；它不再作为16-tile gate。真实多tile命令只有对应
+  static/fake gate先通过后才串行执行
+  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-kernel-grid-add$' --output-on-failure`和
+  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-model-add$' --output-on-failure`；两者之间再次只读验卡，
+  首个失败或超时即停，不retry/reset/power，也不能用临时runner路径替代已注册CTest。开启importer/SPMD helper的配置还应在未armed
+  环境实际执行`wafer-runtime-kernel-grid-add-no-card`和`wafer-runtime-model-add-no-card`，它们从production source fresh编译到
+  schema-v4 package并进入all-rank no-card consumer，不允许返回77或以fake manifest替代。
   vendor adapter由`tools/wafer-run` executable拥有，通用`WaferRuntime`只拥有typed provider接口和lifecycle executor；
   不把`tx_runtime` header/library依赖放进compiler或通用runtime library。
 - TX device publication必须用当前pinned LLVM installation内的`clang++`消费compiler打印的opaque-pointer LLVM IR；
@@ -110,15 +118,24 @@
   PCI/driver恢复和retry都不属于invocation cleanup；需要时由用户在进程外显式执行并重新从qualification开始。board成功或失败
   都在显式module/allocation lifecycle和output/diagnostic flush后用`std::_Exit`结束，不触发未经资格化的vendor DSO finalizer。
   `dlopen`成功后的symbol/readback失败也必须leak handle并走相同`std::_Exit`，不能用RAII `dlclose`触发未知fini链。
+- 当前V5.6 kernel提交是异步消费host argument bytes；provider必须深拷贝每个argument block并至少持有到成功release，不能把
+  invocation-local `SmallVector`/stack地址交给vendor queue。所有kernel ABI在首个TX effect前还必须检查packet不超过`0x7dc`
+  （2012）字节。model type-6同步调用没有内部deadline；真实model CTest必须运行在一次性子进程外层deadline内，超时后kill/wait并
+  停止后续gate，不在未知context上调用cleanup、reset或power。
 - Board allocation admission使用当前free bytes而非total bytes，并对本次全部resource allocation做checked aggregate和显式reserve；
   单个resource小于总容量不能替代aggregate gate。`getContextState()`只能读进程内cached disposition，不得调用TX runtime/device。
-- TX `transport:none`多rank执行使用一次owner-backed invocation：完整rank domain先做all-and-only pure preflight，再统一完成
+- TX `transport:none`多rank multi-launch使用一次owner-backed invocation：完整rank domain先做all-and-only pure preflight，再统一完成
   aggregate admission、resource/module ownership、独立custom stream submit、`txStreamQuery` host deadline、原子copyback和逆序cleanup。
-  stream只是command queue，不是tile selector；即使16个logical rank都得到exact输出，也必须把physical rank mapping标为unclaimed，
-  不能据此宣称固定tile placement或16-tile并行利用率。live gate先跑rank-one、复核只读卡状态，再跑all-rank；首错即停。
-- 当前TX public launch surface中，`txLaunchKernel`没有per-launch tile参数，cluster launch只广播同一module/function/argument block，
-  graph/model入口也没有已验证的schema-v3独立rank参数构造合同。因此Direct DTE必须在device effect前fail closed，直到存在受支持且
-  可验证的placement/parameter ABI；PG selection、tile inventory、reset或power都不能补这个语义缺口。
+  stream只是command queue，不是tile selector；current V5.6中每条grid1 launch的唯一block落在tile0，所以16份exact结果只能证明
+  logical ABI和lifecycle。live workflow先跑rank-one、复核只读卡状态，再跑该smoke；首错即停。
+- TX真实多tile Add分两条验证。kernel qualification用一次`txLaunchKernel(grid.x=16, block=1)`和rank-major pointer table，entry按
+  `__get_pid(0)`选择不重叠slice；model发射用`txLoadGraph` type-6加载16份tile-specific module，再以type-7 BPM调用一次
+  `txLaunchModel`，各tile收到同一56-byte head并读取其后的72-byte input/output/param dyninfo。两条都必须结合静态调度合同、
+  full-good logical inventory、逐字节不同于expected的output canary、16个互斥slice和完整CPU exact形成logical tile 0..15执行依据；
+  不声明physical tile坐标。BPM是当前V5.6 exact-build恢复ABI，public API无builder；repository-owned typed builder、
+  nested allocation lifetime、module identity、artifact export/readback和fake lifecycle必须先于真实板测闭合。
+  nested allocation/module identity和fake gate闭合前不得触卡。Direct DTE继续独立fail closed，PG selection、inventory、reset或power
+  都不能补placement/readiness/completion语义。
 - 相同code object可能由vendor runtime复用为同一个module handle。adapter按`handle -> digest + logical owner count`维护所有权：
   同handle同digest只在最后一个logical owner释放时真正unload；同handle不同digest是provider contract violation并立即quarantine。
   query deadline要在每次低层query前后检查，不能只在完整rank轮询结束后检查，否则慢调用会使整体deadline失真。

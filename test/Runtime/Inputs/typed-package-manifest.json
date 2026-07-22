@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "program": {
     "id": 0
   },
@@ -7,6 +7,7 @@
     "profile": "wafer-tx81-single-card-kernel-v1",
     "identity": "wafer-tx81-single-card",
     "runtime_abi": "wafer-tx81-kernel-v1",
+    "launch_abi": "per-rank-pointer-block-v1",
     "module_format": "elf-riscv64"
   },
   "rank_count": 1,

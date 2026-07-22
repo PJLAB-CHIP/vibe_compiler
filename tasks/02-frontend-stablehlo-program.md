@@ -238,7 +238,7 @@ frontend mandatory coverage包括：
 - parameter/constant NPY shape/dtype/order/truncation与unsafe path负例；F16 `<f2`、host-compatible `=f2`、BF16 `|V2`
   canonical bytes正例及`>f2`拒绝；
 - `input_arg` position唯一连续；
-- schema-v3 replicated/partitioned rank coverage、gap/overlap、payload一致性和mesh mismatch；
+- `forward.parameter_shards.json` schema-v3 replicated/partitioned rank coverage、gap/overlap、payload一致性和mesh mismatch；
 - schema-v1 distributed input/result identity、global/local shape、dtype、rank/replica domain及data/column真实策略；
 - pre-exported StableHLO parse/printer及显式IR-local lowering补充测试。
 

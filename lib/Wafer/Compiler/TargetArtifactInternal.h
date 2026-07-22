@@ -101,15 +101,18 @@ llvm::Error verifyTargetLLVMModule(const llvm::Module &module,
                                    llvm::StringRef expectedModuleFormat,
                                    llvm::ArrayRef<KernelABISlot> expectedSlots);
 
-llvm::Error writeLLVMIR(const llvm::Module &module,
-                        llvm::StringRef entrySymbol, size_t slotCount,
-                        llvm::StringRef path);
+llvm::Error writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
+                        llvm::ArrayRef<KernelABISlot> slots,
+                        TargetLaunchABIId targetLaunchABI, int64_t logicalRank,
+                        int64_t rankCount, llvm::StringRef path);
 llvm::Error runDeviceLink(const TargetToolchain &toolchain,
                           llvm::StringRef llvmIR, llvm::StringRef module,
-                          llvm::StringRef object, llvm::StringRef crtObject);
+                          llvm::StringRef object, llvm::StringRef crtObject,
+                          TargetLaunchABIId targetLaunchABI);
 llvm::Expected<TargetModuleReadback>
 verifyTargetModule(llvm::StringRef path, llvm::StringRef entrySymbol,
-                   TargetProfileId expectedProfile);
+                   TargetProfileId expectedProfile,
+                   TargetLaunchABIId expectedLaunchABI);
 
 /// Runs production entry-only ABI preparation, target lowering, and lowered
 /// entry verification on an owned clone. This narrow hook lets unit tests
@@ -121,15 +124,19 @@ lowerTargetABIForTesting(const RankExecutable &rankExecutable,
 
 /// Verifies a genuinely linked module with the production ELF readback path
 /// and exposes the immutable typed facts that production stores per rank.
-llvm::Expected<VerifiedTargetModule>
-verifyLinkedTargetModuleForTesting(llvm::StringRef path,
-                                   llvm::StringRef entrySymbol,
-                                   TargetProfileId targetProfile);
+llvm::Expected<VerifiedTargetModule> verifyLinkedTargetModuleForTesting(
+    llvm::StringRef path, llvm::StringRef entrySymbol,
+    TargetProfileId targetProfile, TargetLaunchABIId targetLaunchABI);
 
 /// Re-runs the production target LLVM module readback against the immutable
 /// typed facts stored by the owner-backed entry.
 llvm::Error
 verifyTargetLLVMModuleForTesting(const TargetLLVMModule &targetModule);
+
+/// Runs the side-effect-free all-rank launch-ABI domain preflight used before
+/// publication creates its private staging directory.
+llvm::Error validateTargetLaunchABIDomainForTesting(
+    const TargetLLVMModuleBundle &targetLLVMModules);
 
 llvm::Expected<TargetLLVMModuleBundle>
 compileExecutableBundleToTargetLLVMModulesImpl(

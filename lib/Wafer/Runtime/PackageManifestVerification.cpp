@@ -1,6 +1,7 @@
 //===- PackageManifestVerification.cpp - Manifest semantic verification --===//
 
 #include "PackageManifestInternal.h"
+#include "Wafer/Runtime/Tx81ModelABI.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -123,6 +124,106 @@ bool expectedHostVisible(PackageResourceRole role) {
          role != PackageResourceRole::TransportStatus;
 }
 
+llvm::Error verifyLaunchABIContract(const PackageManifest &manifest) {
+  if (manifest.launchABI == TargetLaunchABIId::perRankPointerBlockV1()) {
+    for (const PackageEntrypointRecord &entry : manifest.entries)
+      if (entry.slots.size() >
+          kTx81KernelArgumentBytesMax / sizeof(uint64_t))
+        return invalid(
+            "per-rank kernel argument block exceeds the qualified V5.6 "
+            "packet limit");
+    return llvm::Error::success();
+  }
+
+  const bool kernelGrid = manifest.launchABI ==
+                          TargetLaunchABIId::tx81KernelGridPointerTableV1();
+  const bool model =
+      manifest.launchABI == TargetLaunchABIId::tx81ModelBootParamV1();
+  if (!kernelGrid && !model)
+    return invalid("package target launch ABI is not registered");
+  if (manifest.rankCount != 16 || manifest.entries.size() != 16 ||
+      manifest.modules.size() != 16)
+    return invalid("multi-tile launch ABI requires a complete 16-rank domain");
+
+  std::vector<const PackageEntrypointRecord *> entriesByRank(16, nullptr);
+  std::vector<const PackageModuleRecord *> modulesByRank(16, nullptr);
+  for (const PackageEntrypointRecord &entry : manifest.entries)
+    entriesByRank[entry.logicalRank] = &entry;
+  for (const PackageModuleRecord &module : manifest.modules)
+    modulesByRank[module.logicalRank] = &module;
+  const PackageEntrypointRecord &first = *entriesByRank.front();
+  const PackageModuleRecord &firstModule = *modulesByRank.front();
+  if (kernelGrid) {
+    if (first.slots.empty())
+      return invalid("kernel-grid launch requires at least one typed ABI slot");
+    if (first.slots.size() >
+        kTx81KernelArgumentBytesMax / sizeof(uint64_t) / 16)
+      return invalid(
+          "kernel-grid rank-major argument table exceeds the qualified V5.6 "
+          "packet limit");
+  }
+  if (model && first.symbol.size() >= 128)
+    return invalid(
+        "model launch entry symbol must fit the 128-byte loader field");
+
+  std::vector<Tx81ModelTensorDescriptor> modelTensors;
+
+  for (int64_t rank = 0; rank < 16; ++rank) {
+    const PackageEntrypointRecord &entry = *entriesByRank[rank];
+    const PackageModuleRecord &module = *modulesByRank[rank];
+    if (entry.symbol != first.symbol || entry.slots.size() != first.slots.size())
+      return invalid(
+          "multi-tile launch entries have different symbols or slot counts");
+    if (!std::holds_alternative<NoTransportRequirements>(entry.transport))
+      return invalid("multi-tile launch ABI does not support transport slots");
+    if (kernelGrid && module.digest != firstModule.digest)
+      return invalid("kernel-grid launch modules are not byte-identical");
+    for (size_t slotIndex = 0; slotIndex < entry.slots.size(); ++slotIndex) {
+      const PackageResourceRecord *resource =
+          findResource(manifest.resources, entry.slots[slotIndex].resource);
+      const PackageResourceRecord *reference = findResource(
+          manifest.resources, first.slots[slotIndex].resource);
+      if (!resource || !reference || resource->role != reference->role ||
+          resource->roleIndex != reference->roleIndex ||
+          resource->type.dtype != reference->type.dtype ||
+          resource->type.shape != reference->type.shape ||
+          resource->bytes != reference->bytes ||
+          resource->alignment != reference->alignment ||
+          resource->access != reference->access)
+        return invalid("multi-tile launch rank slot schemas are inconsistent");
+      if (model &&
+          (resource->role != PackageResourceRole::UserInput &&
+           resource->role != PackageResourceRole::Output))
+        return invalid(
+            "model launch ABI accepts only user-input and output resources");
+      if (model &&
+          (resource->type.dtype != "f32" || resource->type.shape.empty() ||
+           resource->type.shape.size() > 6 ||
+           resource->alignment < alignof(float)))
+        return invalid(
+            "model launch ABI accepts only aligned rank-1..6 f32 tensors");
+      if (model) {
+        Tx81ModelTensorClass tensorClass =
+            resource->role == PackageResourceRole::UserInput
+                ? Tx81ModelTensorClass::Input
+                : Tx81ModelTensorClass::Output;
+        modelTensors.push_back({tensorClass, rank, slotIndex,
+                                /*deviceAddress=*/8, resource->bytes,
+                                resource->type.dtype, resource->type.shape});
+      }
+    }
+  }
+  if (model) {
+    llvm::Expected<Tx81ModelBootParamImage> bootParam =
+        buildTx81ModelBootParam(modelTensors,
+                                /*dynamicTLVDeviceAddress=*/8);
+    if (!bootParam)
+      return invalid("model launch BootParam contract is invalid: " +
+                     llvm::toString(bootParam.takeError()));
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error verifyModuleFiles(const PackageManifest &manifest,
                               llvm::StringRef packageRoot) {
   llvm::StringSet<> expectedPaths;
@@ -179,8 +280,15 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
       manifest.runtimeABI != targetProfile.kernelRuntimeABI ||
       manifest.moduleFormat != targetProfile.moduleFormat)
     return invalid("package target profile mapping is inconsistent");
+  if (!isTargetLaunchABICompatible(manifest.launchABI,
+                                   manifest.targetProfile))
+    return invalid(
+        "package launch ABI is not qualified for its target profile");
   if (manifest.rankCount != 1 && manifest.rankCount != 16)
     return invalid("package rank_count must be exactly 1 or 16");
+  if (manifest.launchABI != TargetLaunchABIId::perRankPointerBlockV1() &&
+      manifest.rankCount != 16)
+    return invalid("multi-tile package launch ABI requires rank_count=16");
   uint64_t totalRecords = manifest.resources.size() + manifest.modules.size() +
                           manifest.entries.size() + manifest.completions.size();
   if (totalRecords > limits.maxRecords)
@@ -264,7 +372,8 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
   for (PackageEntrypointRecord &entry : manifest.entries) {
     if (entry.logicalRank < 0 || entry.logicalRank >= manifest.rankCount ||
         seenEntryRank[entry.logicalRank] || entry.symbol.empty() ||
-        entry.symbol.size() > limits.maxStringBytes)
+        entry.symbol.size() > limits.maxStringBytes ||
+        llvm::StringRef(entry.symbol).contains('\0'))
       return invalid("package entry rank/symbol domain is invalid");
     seenEntryRank[entry.logicalRank] = true;
     const PackageModuleRecord *module =
@@ -325,6 +434,8 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
   if (!llvm::all_of(referencedResources, [](bool value) { return value; }))
     return invalid(
         "package resources are not covered all-and-only by ABI slots");
+  if (llvm::Error error = verifyLaunchABIContract(manifest))
+    return std::move(error);
 
   std::vector<bool> seenCompletionRank(manifest.rankCount, false);
   for (const PackageCompletionRecord &completion : manifest.completions) {

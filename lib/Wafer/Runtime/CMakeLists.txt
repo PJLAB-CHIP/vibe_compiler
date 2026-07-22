@@ -8,6 +8,7 @@ add_mlir_library(WaferRuntime
   PackageManifestSerialization.cpp
   PackageManifestVerification.cpp
   RuntimeSessionPreflight.cpp
+  Tx81ModelABI.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport

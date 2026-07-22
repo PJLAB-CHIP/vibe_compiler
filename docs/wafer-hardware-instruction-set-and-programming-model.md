@@ -108,9 +108,9 @@
 
 | 模式 | Host 入口 | tile 调度方式 | 备注 |
 | --- | --- | --- | --- |
-| Triton kernel | `txLaunchKernel` / `KernelLaunch` | AP 按 grid/block 切给 tile，Kcore 根据 `Start_block_id_*` 和 `sub_block_num_*` 循环设置 pid 并调用 kernel | Kcore 固件中 `__get_pid(dim)` 读取当前 block id |
+| Triton kernel | `txLaunchKernel` / `KernelLaunch` | AP按固定logical tile id `0..15`划分总grid block，Kcore根据`Start_block_id_*`和`sub_block_num_*`逐block设置pid并调用kernel | stream不是tile selector，也不存在按active-count重编号。当前full-good V5.6中grid1的唯一block落到logical tile 0；一次grid16由logical tile `t`执行pid `t`，缺失tile会丢失对应pid而不会remap，entry可由`__get_pid(dim)`读取block id |
 | C intrinsic / cluster kernel | `ClusterKernelLaunch` / intrinsic launch packet | 用户指定 cluster tile 数，AP 选择连续 tile group 同时运行同一任务 | 支持 1/2/4/8/16 tile；cluster 内可以 DTE 通信 |
-| Model launch | `txLaunchModel(task_table)` | Host/AP 透传模型启动参数表 | vendor图模式事实；Wafer交付和provider实例化边界由`tasks/15`定义 |
+| Model launch | `txLoadGraph` + `txLaunchModel(bpm)` | type-6先按tile id加载16份tile-specific module；type-7把同一BootParam广播到active tiles，各tile调用本地`entry(head)` | 外层host packet type 5只是model envelope，不改变内层type-6 load/type-7 run语义；这是最终模型发射候选，Wafer typed artifact/provider边界由`tasks/15`定义 |
 
 ### Host runtime / driver 边界
 
@@ -118,7 +118,7 @@
 
 | 层 | 当前证据 | 证据限制 / 设计 owner |
 | --- | --- | --- |
-| HPGR `tx_runtime` | `firmware_kuiper/kuiper/include/tx_runtime.h` 与 `libhpgr.so` 暴露 CUDA-like device/memory/stream/event/module/kernel/model/graph/rank/tile/P2P surface。HPGR model/module completion涉及command slot、async receive thread、`completeSignal`和stream wait | 这是当前最完整的provider evidence，不证明Wafer必须采用其对象模型；`tasks/15`拥有package/runtime合同 |
+| HPGR `tx_runtime` | `firmware_kuiper/kuiper/include/tx_runtime.h`以及digest-qualified V5.6安装产物`tx_runtime.h`/`libhpgr.so`暴露CUDA-like device/memory/stream/event/module/kernel/model/graph/rank/tile/P2P surface。current model链已静态确认type-6 load、type-7 run、同BPM广播和`entry(head)`；completion涉及command slot、async receive thread、`completeSignal`和stream wait | 这是当前最完整的provider evidence，但public header没有BootParam builder或私有布局稳定性承诺；`tasks/15`拥有typed package/runtime合同 |
 | KMD/UAPI | `/dev/accel/dev-N`、`/dev/accel_drv_mgr` 提供runtime allocation、jobs、NPU tile mem、C2C、log、device info、driver topology和driver-level DTE ioctl。当前KMD compute fence在MHU doorbell后直接signal | 该fence本身不证明model/kernel completion；production mapping由`tasks/15`定义和验证 |
 | VS/旧 `Tsm*` runtime | `libvs_runtime.so`桥接部分HPGR API，但`TsmLaunch/TsmLaunchPg/TsmAsyncRun/TsmDeviceSynchronize`等路径在当前构建中是stub/no-op success；D2D/P2P TLV仍有DTE证据价值 | 只证明兼容层和DTE TLV形状，不证明correctness fence或最终ABI；owner为`tasks/15` |
 | x86 CModel动态seam | `libtx8_runtime.so`的`Runtime::SetCModelHandle`会尝试`dlopen`缺失的`libcmodel_runtime_api.so`并解析device/compile/launch/run/copy/tile-info入口 | 当前缺完整host-runtime headers、CModel/HPGR/TsmML libraries和model resources；未证明该seam实际被launch路径消费、使用SystemC或接受Q17/Q18 artifact；owner为`tasks/17` |
@@ -137,7 +137,7 @@ kernel/module launch、tile topology、profiling和power hook的兼容host证据
 | device memory | `TsmDeviceMalloc/Free`走`txMalloc/txFree`；inactive backend下malloc返回失败 | 证明行为依赖active backend，错误传播合同由`tasks/15`定义 |
 | H2D/D2H | `TsmMemcpyH2D/D2H`走`txMemcpy(..., kind=1/2)`；offset memcpy是no-op/stub | offset路径没有可用性证据；production acceptance由`tasks/15`定义 |
 | D2D/P2P | `TsmMemcpyD2D`/`TsmSend`/`TsmRecv`通过dyn TLV + Kcore DTE配置发bootparam | 这是host通信证据，不规定compiler transport表示；owner为`tasks/13`/`tasks/15` |
-| launch/fence | `TsmRun`把bootparam device pointer转physical后调用`txLaunchModelSync`；`TsmLaunch/TsmLaunchPg/TsmAsyncRun/TsmDeviceSynchronize`当前是stub/success path。KMD compute fence也不是model/kernel done证明 | 只提供completion候选和反例；terminal completion合同由`tasks/15`拥有 |
+| launch/fence | 旧`TsmRun`把bootparam device pointer转physical后调用`txLaunchModelSync`；旧`TsmLaunch/TsmLaunchPg/TsmAsyncRun/TsmDeviceSynchronize`是stub/success path。与之分开的current HPGR `txLoadGraph`/`txLaunchModel`是真实type-6/type-7链。KMD compute fence仍不是model/kernel done证明 | 旧兼容层stub不能否定current HPGR；两条路径都只提供completion候选，terminal completion合同由`tasks/15`拥有 |
 | tile topology/profiling | `TsmGetTileInfo/SetTileInfo`走`txGetDeviceAllTileInfo/txSetDeviceSelectedTileInfo`；`TsmProcessProfData`生成profiling dyn TLV并运行bootparam | topology返回和counter准确性仍需目标环境验证；owner为`tasks/04`/`tasks/16` |
 
 ### CModel library seam证据
@@ -166,7 +166,9 @@ C-intrinsic 文档中的规则：
 | 8 | 先纵向后横向 |
 | 16 | 全卡 16 tile |
 
-Kcore 通过 AP 下发的 `offset`、自身 `logic-id`、以及卡内 1D/2D id 规则计算 cluster 内目标 tile 的 logic id。卡内 1D id 由二维 id `(X,Y)` 映射为 `X * 4 + Y`。
+Kcore通过AP下发的`offset`、自身`logic-id`以及卡内1D/2D id规则计算cluster内目标tile的logic id。历史PDF把二维
+`(X,Y)`写成`X * 4 + Y`；current实现按其字段命名观察为`4 * phyTiley + phyTilex`。两式可能只差坐标字母约定，不能在没有
+同一份topology record的情况下据此恢复placement。
 
 上述4x4规则和历史1D/2D公式只证明snapshot中的拓扑与寻址行为；PG、bad tile和跨卡变化仍需provider实测。
 Wafer如何导入、表示和验证这些事实只由`tasks/04`定义，本文不复制topology/mesh IR字段。

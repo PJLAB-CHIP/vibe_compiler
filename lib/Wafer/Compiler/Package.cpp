@@ -198,6 +198,7 @@ buildManifest(const ExecutableBundle &executableBundle,
       firstTargetModule.getTargetProfileId(),
       firstTargetModule.getTargetIdentityId(),
       firstTargetModule.getKernelRuntimeABIId(),
+      config.getTargetLaunchABIId(),
       firstTargetModule.getModuleFormat());
   manifest.program = runtime::ProgramId(0);
   manifest.rankCount = config.getRankCount();
@@ -519,6 +520,7 @@ detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
           targetReadback.getTargetIdentityId() ||
       readbackManifest.runtimeABI !=
           targetReadback.getKernelRuntimeABIId() ||
+      readbackManifest.launchABI != executionConfig.getTargetLaunchABIId() ||
       readbackManifest.moduleFormat != targetReadback.getModuleFormat() ||
       readbackManifest.targetProfile !=
           executionConfig.getTargetProfileId())

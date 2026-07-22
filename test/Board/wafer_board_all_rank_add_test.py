@@ -19,6 +19,24 @@ RANK_COUNT = 16
 GLOBAL_ELEMENTS = 256
 LOCAL_ELEMENTS = GLOBAL_ELEMENTS // RANK_COUNT
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
+PER_RANK_LAUNCH_ABI = "per-rank-pointer-block-v1"
+KERNEL_GRID_LAUNCH_ABI = "tx81-kernel-grid-pointer-table-v1"
+MODEL_LAUNCH_ABI = "tx81-model-bootparam-v1"
+MODEL_PROCESS_TIMEOUT_MARGIN_SECONDS = 30
+LAUNCH_EVIDENCE = {
+    PER_RANK_LAUNCH_ABI: (
+        "independent-grid1",
+        "none",
+    ),
+    KERNEL_GRID_LAUNCH_ABI: (
+        "kernel-grid-x16",
+        "scheduler-pid-x-and-exact-rank-slices",
+    ),
+    MODEL_LAUNCH_ABI: (
+        "model-type6-type7",
+        "graph-tile-module-map-and-exact-rank-slices",
+    ),
+}
 SHARDING = "{devices=[16]0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"
 
 MODULE = f"""\
@@ -56,19 +74,49 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wafer-compile", type=pathlib.Path, required=True)
     parser.add_argument("--wafer-run", type=pathlib.Path, required=True)
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
+    parser.add_argument(
+        "--no-card",
+        action="store_true",
+        help="compile and validate the complete no-card launch pipeline",
+    )
+    parser.add_argument(
+        "--launch-abi",
+        choices=tuple(LAUNCH_EVIDENCE),
+        default=PER_RANK_LAUNCH_ABI,
+    )
     parser.add_argument("--device-id", type=int, default=0)
-    parser.add_argument("--expected-runtime-version", type=int, required=True)
-    parser.add_argument("--expected-device-name", required=True)
-    parser.add_argument("--expected-pci-bus-id", required=True)
-    parser.add_argument("--expected-tile-count", type=int, required=True)
-    parser.add_argument("--expected-runtime-library-sha256", required=True)
+    parser.add_argument("--expected-runtime-version", type=int)
+    parser.add_argument("--expected-device-name")
+    parser.add_argument("--expected-pci-bus-id")
+    parser.add_argument("--expected-tile-count", type=int)
+    parser.add_argument("--expected-runtime-library-sha256")
     parser.add_argument("--completion-timeout-ms", type=int, default=60000)
     parser.add_argument("--repeat", type=int, default=2)
     return parser.parse_args()
 
 
-def run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(command, text=True, capture_output=True)
+def run(
+    command: list[str], timeout_seconds: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as error:
+        for partial in (error.stdout, error.stderr):
+            if partial:
+                if isinstance(partial, bytes):
+                    partial = partial.decode(errors="replace")
+                print(partial, end="", file=sys.stderr)
+        raise RuntimeError(
+            "one-shot model process exceeded its outer type-6/type-7 "
+            "deadline; it was killed and this test will not retry or invoke "
+            "reset/power operations; board state requires external "
+            "read-only qualification"
+        ) from error
     if result.returncode != 0:
         print(result.stdout, end="", file=sys.stderr)
         print(result.stderr, end="", file=sys.stderr)
@@ -191,17 +239,20 @@ def load_boundary_slices(package: pathlib.Path) -> dict[int, slice]:
     return output_slices
 
 
-def validate_manifest(package: pathlib.Path) -> dict[tuple[int, str, int], int]:
+def validate_manifest(
+    package: pathlib.Path, launch_abi: str
+) -> dict[tuple[int, str, int], int]:
     manifest = json.loads((package / "manifest.json").read_text())
     target = manifest.get("target")
     if (
-        manifest.get("schema_version") != 3
+        manifest.get("schema_version") != 4
         or manifest.get("rank_count") != RANK_COUNT
         or not isinstance(target, dict)
         or target.get("profile") != TARGET_PROFILE
+        or target.get("launch_abi") != launch_abi
     ):
         raise RuntimeError(
-            "all-rank board gate requires a schema-v3 rank-16 TX package"
+            "all-rank board gate requires a schema-v4 rank-16 TX package"
         )
 
     modules = require_rank_domain(manifest.get("modules"), "modules")
@@ -348,10 +399,12 @@ def write_rank_payloads(
 
 def verify_board_evidence(
     stdout: str,
+    launch_abi: str,
     output_ids: set[int],
     entry_evidence: set[tuple[int, int, int]],
     completion_evidence: set[tuple[int, int]],
 ) -> None:
+    launch_pattern, logical_tile_basis = LAUNCH_EVIDENCE[launch_abi]
     required = (
         "board_stage: preflight",
         "board_stage: device-selection",
@@ -364,7 +417,10 @@ def verify_board_evidence(
         "board_stage: device-to-host",
         "board_stage: cleanup",
         f"invocation_ranks: {RANK_COUNT}",
-        "physical_rank_mapping: unclaimed",
+        f"launch_pattern: {launch_pattern}",
+        f"logical_tile_execution_basis: {logical_tile_basis}",
+        "logical_tile_domain: 0..15",
+        "physical_execution_claim: none",
         "board_execution: true",
     )
     output_lines = set(stdout.splitlines())
@@ -385,6 +441,12 @@ def verify_board_evidence(
         stdout,
         re.MULTILINE,
     )
+    tile_matches = re.findall(
+        r"^board_tile: logical=(\d+) available=(true|false) "
+        r"physical_x=(\d+) physical_y=(\d+)$",
+        stdout,
+        re.MULTILINE,
+    )
     actual_entries = {
         (int(entry), int(rank), int(module)) for entry, rank, module in entry_matches
     }
@@ -392,6 +454,19 @@ def verify_board_evidence(
         (int(completion), int(rank)) for completion, rank in completion_matches
     }
     actual_outputs = {int(resource) for resource in output_matches}
+    available_tiles = [
+        int(logical)
+        for logical, available, _physical_x, _physical_y in tile_matches
+        if available == "true"
+    ]
+    if (
+        len(available_tiles) != RANK_COUNT
+        or len(set(available_tiles)) != RANK_COUNT
+        or sorted(available_tiles) != list(range(RANK_COUNT))
+    ):
+        raise RuntimeError(
+            "board inventory did not prove available logical tiles 0..15"
+        )
     if (
         len(entry_matches) != RANK_COUNT
         or actual_entries != entry_evidence
@@ -412,8 +487,43 @@ def verify_board_evidence(
         raise RuntimeError("board result did not prove all 16 exact output comparisons")
 
 
+def verify_no_card_evidence(stdout: str, launch_abi: str) -> None:
+    required = (
+        "package: id=0 schema=4 ranks=16",
+        "target: wafer-tx81-single-card "
+        "runtime_abi=wafer-tx81-kernel-v1 "
+        f"launch_abi={launch_abi} module_format=elf-riscv64",
+        f"invocation_ranks: {RANK_COUNT}",
+        "board_execution: false",
+    )
+    output_lines = set(stdout.splitlines())
+    missing = [text for text in required if text not in output_lines]
+    if missing:
+        raise RuntimeError(f"no-card launch invocation omitted evidence: {missing}")
+
+    entry_ranks = sorted(
+        int(rank)
+        for rank in re.findall(
+            r"^entry: \d+ rank=(\d+) symbol=\S+$", stdout, re.MULTILINE
+        )
+    )
+    completion_ids = sorted(
+        int(completion)
+        for completion in re.findall(
+            r"^terminal_completion: (\d+) kind=entry_return$",
+            stdout,
+            re.MULTILINE,
+        )
+    )
+    if entry_ranks != list(range(RANK_COUNT)):
+        raise RuntimeError("no-card launch invocation omitted a rank entry")
+    if completion_ids != list(range(RANK_COUNT)):
+        raise RuntimeError("no-card launch invocation omitted a terminal completion")
+
+
 def main() -> int:
-    if os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
+    args = parse_args()
+    if not args.no_card and os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
         print(
             "wafer_board_all_rank_add_test: hardware execution is not armed; "
             "set WAFER_EXECUTE_HARDWARE_TESTS=1",
@@ -421,13 +531,28 @@ def main() -> int:
         )
         return 77
 
-    args = parse_args()
-    if args.repeat < 2:
-        raise RuntimeError("--repeat must be at least 2")
-    if args.completion_timeout_ms <= 0:
-        raise RuntimeError("--completion-timeout-ms must be positive")
-    if args.expected_tile_count != RANK_COUNT:
-        raise RuntimeError(f"--expected-tile-count must be {RANK_COUNT}")
+    if not args.no_card:
+        required_board_options = {
+            "--expected-runtime-version": args.expected_runtime_version,
+            "--expected-device-name": args.expected_device_name,
+            "--expected-pci-bus-id": args.expected_pci_bus_id,
+            "--expected-tile-count": args.expected_tile_count,
+            "--expected-runtime-library-sha256": (
+                args.expected_runtime_library_sha256
+            ),
+        }
+        missing = [name for name, value in required_board_options.items() if value is None]
+        if missing:
+            raise RuntimeError(
+                "hardware execution requires explicit qualification options: "
+                + ", ".join(missing)
+            )
+        if args.repeat < 2:
+            raise RuntimeError("--repeat must be at least 2")
+        if args.completion_timeout_ms <= 0:
+            raise RuntimeError("--completion-timeout-ms must be positive")
+        if args.expected_tile_count != RANK_COUNT:
+            raise RuntimeError(f"--expected-tile-count must be {RANK_COUNT}")
 
     source = write_source_program(args.work_dir)
     package = args.work_dir / "package"
@@ -440,6 +565,7 @@ def main() -> int:
             str(package),
             f"--execution-ranks={RANK_COUNT}",
             f"--target-profile={TARGET_PROFILE}",
+            f"--launch-abi={args.launch_abi}",
         ]
     )
     if (
@@ -449,7 +575,22 @@ def main() -> int:
         raise RuntimeError("wafer-compile did not report a verified rank-16 package")
 
     slices = load_boundary_slices(package)
-    bindings = validate_manifest(package)
+    bindings = validate_manifest(package, args.launch_abi)
+    if args.no_card:
+        result = run(
+            [
+                str(args.wafer_run),
+                "--package-dir",
+                str(package),
+                "--all-ranks",
+                "--no-card",
+            ]
+        )
+        verify_no_card_evidence(result.stdout, args.launch_abi)
+        print(f"no_card_launch_abi: {args.launch_abi}")
+        print(result.stdout, end="")
+        return 0
+
     (
         resource_arguments,
         output_ids,
@@ -479,11 +620,24 @@ def main() -> int:
         *resource_arguments,
     ]
     for iteration in range(args.repeat):
-        result = run(command)
+        process_timeout_seconds = None
+        if args.launch_abi == MODEL_LAUNCH_ABI:
+            process_timeout_seconds = (
+                args.completion_timeout_ms / 1000
+                + MODEL_PROCESS_TIMEOUT_MARGIN_SECONDS
+            )
+        result = run(command, timeout_seconds=process_timeout_seconds)
         verify_board_evidence(
-            result.stdout, output_ids, entry_evidence, completion_evidence
+            result.stdout,
+            args.launch_abi,
+            output_ids,
+            entry_evidence,
+            completion_evidence,
         )
-        print(f"board_all_rank_add_iteration: {iteration + 1}/{args.repeat}")
+        print(
+            "board_all_rank_add_iteration: "
+            f"{iteration + 1}/{args.repeat} launch_abi={args.launch_abi}"
+        )
         print(result.stdout, end="")
     return 0
 

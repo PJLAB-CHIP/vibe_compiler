@@ -471,7 +471,9 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
           requireExactFields(**program, {"id"}, "manifest.program"))
     return std::move(error);
   if (llvm::Error error = requireExactFields(
-          **target, {"profile", "identity", "runtime_abi", "module_format"},
+          **target,
+          {"profile", "identity", "runtime_abi", "launch_abi",
+           "module_format"},
           "manifest.target"))
     return std::move(error);
   llvm::Expected<uint64_t> programId =
@@ -490,6 +492,10 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
       requireString(**target, "runtime_abi", "manifest.target", limits);
   if (!runtimeABI)
     return runtimeABI.takeError();
+  llvm::Expected<std::string> launchABI =
+      requireString(**target, "launch_abi", "manifest.target", limits);
+  if (!launchABI)
+    return launchABI.takeError();
   llvm::Expected<std::string> moduleFormat =
       requireString(**target, "module_format", "manifest.target", limits);
   if (!moduleFormat)
@@ -507,8 +513,12 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
       parseKernelRuntimeABIId(*runtimeABI);
   if (!parsedRuntimeABI)
     return parsedRuntimeABI.takeError();
+  llvm::Expected<TargetLaunchABIId> parsedLaunchABI =
+      parseTargetLaunchABIId(*launchABI);
+  if (!parsedLaunchABI)
+    return parsedLaunchABI.takeError();
   PackageManifest manifest(*parsedTargetProfile, *parsedTargetIdentity,
-                           *parsedRuntimeABI, *moduleFormat);
+                           *parsedRuntimeABI, *parsedLaunchABI, *moduleFormat);
 
   if (*schemaVersion > std::numeric_limits<uint32_t>::max())
     return invalid("manifest.schema_version exceeds uint32");

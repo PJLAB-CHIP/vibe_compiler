@@ -120,7 +120,8 @@ module {
                                singleRankBoundary(1, {2, 128, 1})};
   program.distributedOutputs = {singleRankBoundary(0, {2, 1, 1})};
   llvm::Expected<ExecutionConfig> config = ExecutionConfig::createForSingleCard(
-      1, TargetProfileId::waferTx81SingleCardKernelV1());
+      1, TargetProfileId::waferTx81SingleCardKernelV1(),
+      TargetLaunchABIId::perRankPointerBlockV1());
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);

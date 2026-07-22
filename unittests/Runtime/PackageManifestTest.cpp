@@ -70,7 +70,9 @@ protected:
     const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     PackageManifest manifest(target.id, target.targetIdentity,
-                             target.kernelRuntimeABI, target.moduleFormat);
+                             target.kernelRuntimeABI,
+                             wafer::TargetLaunchABIId::perRankPointerBlockV1(),
+                             target.moduleFormat);
     manifest.program = ProgramId(0);
     manifest.rankCount = 1;
     manifest.resources = {{ResourceId(0),
@@ -125,7 +127,9 @@ protected:
     const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     PackageManifest manifest(target.id, target.targetIdentity,
-                             target.kernelRuntimeABI, target.moduleFormat);
+                             target.kernelRuntimeABI,
+                             wafer::TargetLaunchABIId::perRankPointerBlockV1(),
+                             target.moduleFormat);
     manifest.program = ProgramId(0);
     manifest.rankCount = rankCount;
 
@@ -224,9 +228,12 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
       << llvm::toString(verified.takeError());
   std::string canonical =
       wafer::runtime::serializeCanonicalPackageJson(*verified);
-  EXPECT_NE(canonical.find("\"schema_version\": 3"), std::string::npos);
+  EXPECT_NE(canonical.find("\"schema_version\": 4"), std::string::npos);
   EXPECT_NE(canonical.find(
                 "\"profile\": \"wafer-tx81-single-card-kernel-v1\""),
+            std::string::npos);
+  EXPECT_NE(canonical.find(
+                "\"launch_abi\": \"per-rank-pointer-block-v1\""),
             std::string::npos);
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> parsed =
       wafer::runtime::parseCanonicalPackageJson(canonical, root);
@@ -237,7 +244,7 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
             wafer::runtime::serializeCanonicalPackageJson(*verified));
 }
 
-TEST_F(PackageManifestTest, RejectsLegacySchemaAndMissingTargetProfile) {
+TEST_F(PackageManifestTest, RejectsLegacySchemaAndMissingTargetFacts) {
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> verified = verify();
   ASSERT_TRUE(static_cast<bool>(verified))
       << llvm::toString(verified.takeError());
@@ -245,10 +252,10 @@ TEST_F(PackageManifestTest, RejectsLegacySchemaAndMissingTargetProfile) {
       wafer::runtime::serializeCanonicalPackageJson(*verified);
 
   std::string legacy = canonical;
-  size_t schema = legacy.find("\"schema_version\": 3");
+  size_t schema = legacy.find("\"schema_version\": 4");
   ASSERT_NE(schema, std::string::npos);
-  legacy.replace(schema, std::string("\"schema_version\": 3").size(),
-                 "\"schema_version\": 2");
+  legacy.replace(schema, std::string("\"schema_version\": 4").size(),
+                 "\"schema_version\": 3");
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> rejected =
       wafer::runtime::parseCanonicalPackageJson(legacy, root);
   ASSERT_FALSE(static_cast<bool>(rejected));
@@ -268,6 +275,34 @@ TEST_F(PackageManifestTest, RejectsLegacySchemaAndMissingTargetProfile) {
       wafer::runtime::parseCanonicalPackageJson(missingProfile, root);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("missing field 'profile'"),
+            std::string::npos);
+
+  std::string missingLaunchABI = canonical;
+  size_t launchABI = missingLaunchABI.find(
+      "    \"launch_abi\": \"per-rank-pointer-block-v1\",\n");
+  ASSERT_NE(launchABI, std::string::npos);
+  missingLaunchABI.erase(
+      launchABI,
+      std::string(
+          "    \"launch_abi\": \"per-rank-pointer-block-v1\",\n")
+          .size());
+  rejected =
+      wafer::runtime::parseCanonicalPackageJson(missingLaunchABI, root);
+  ASSERT_FALSE(static_cast<bool>(rejected));
+  EXPECT_NE(llvm::toString(rejected.takeError())
+                .find("missing field 'launch_abi'"),
+            std::string::npos);
+
+  std::string unknownLaunchABI = canonical;
+  launchABI = unknownLaunchABI.find("per-rank-pointer-block-v1");
+  ASSERT_NE(launchABI, std::string::npos);
+  unknownLaunchABI.replace(
+      launchABI, std::string("per-rank-pointer-block-v1").size(),
+      "not-a-registered-launch-abi");
+  rejected =
+      wafer::runtime::parseCanonicalPackageJson(unknownLaunchABI, root);
+  ASSERT_FALSE(static_cast<bool>(rejected));
+  EXPECT_NE(llvm::toString(rejected.takeError()).find("launch ABI"),
             std::string::npos);
 }
 
@@ -380,6 +415,24 @@ TEST_F(PackageManifestTest, RejectsSlotResourceAndPayloadMismatches) {
             std::string::npos);
 }
 
+TEST_F(PackageManifestTest, RejectsEmptyKernelGridBeforeRuntimeProvider) {
+  using namespace wafer::runtime;
+  createRankModules(16);
+  PackageManifest manifest = makeRankManifest(16, /*permuteIdentities=*/false);
+  manifest.launchABI =
+      wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1();
+  manifest.resources.clear();
+  for (PackageEntrypointRecord &entry : manifest.entries)
+    entry.slots.clear();
+
+  llvm::Expected<VerifiedPackageManifest> rejected =
+      verifyPackageManifest(std::move(manifest), root);
+  ASSERT_FALSE(static_cast<bool>(rejected));
+  EXPECT_NE(llvm::toString(rejected.takeError())
+                .find("at least one typed ABI slot"),
+            std::string::npos);
+}
+
 TEST_F(PackageManifestTest, NoCardPreflightIsExactAndSideEffectFree) {
   using namespace wafer::runtime;
   llvm::Expected<VerifiedPackageManifest> verified = verify();
@@ -391,7 +444,9 @@ TEST_F(PackageManifestTest, NoCardPreflightIsExactAndSideEffectFree) {
   const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
       wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   RuntimeEnvironment environment{target.id, target.targetIdentity,
-                                 target.kernelRuntimeABI, target.moduleFormat,
+                                 target.kernelRuntimeABI,
+                                 wafer::TargetLaunchABIId::perRankPointerBlockV1(),
+                                 target.moduleFormat,
                                  1024};
   llvm::Expected<RuntimeSessionPlan> first = preflightNoCardRuntimeSession(
       *verified, EntryId(0), bindings, environment);
@@ -428,6 +483,16 @@ TEST_F(PackageManifestTest, NoCardPreflightIsExactAndSideEffectFree) {
             std::string::npos);
   environment.moduleFormat = target.moduleFormat.str();
 
+  environment.launchABI =
+      wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1();
+  incompatible = preflightNoCardRuntimeSession(
+      *verified, EntryId(0), bindings, environment);
+  ASSERT_FALSE(static_cast<bool>(incompatible));
+  EXPECT_NE(llvm::toString(incompatible.takeError()).find("incompatible"),
+            std::string::npos);
+  environment.launchABI =
+      wafer::TargetLaunchABIId::perRankPointerBlockV1();
+
   bindings.pop_back();
   llvm::Expected<RuntimeSessionPlan> rejected = preflightNoCardRuntimeSession(
       *verified, EntryId(0), bindings, environment);
@@ -462,7 +527,9 @@ TEST_F(PackageManifestTest,
   const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
       wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   RuntimeEnvironment environment{target.id, target.targetIdentity,
-                                 target.kernelRuntimeABI, target.moduleFormat,
+                                 target.kernelRuntimeABI,
+                                 wafer::TargetLaunchABIId::perRankPointerBlockV1(),
+                                 target.moduleFormat,
                                  1024};
   llvm::Expected<RuntimeInvocationPlan> plan =
       preflightNoCardRuntimeInvocation(*verified, bindings, environment);
@@ -531,7 +598,9 @@ TEST_F(PackageManifestTest,
   const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
       wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   RuntimeEnvironment environment{target.id, target.targetIdentity,
-                                 target.kernelRuntimeABI, target.moduleFormat,
+                                 target.kernelRuntimeABI,
+                                 wafer::TargetLaunchABIId::perRankPointerBlockV1(),
+                                 target.moduleFormat,
                                  1024};
 
   PackageManifest mixed =
@@ -605,7 +674,9 @@ TEST_F(PackageManifestTest,
   const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
       wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   RuntimeEnvironment environment{target.id, target.targetIdentity,
-                                 target.kernelRuntimeABI, target.moduleFormat,
+                                 target.kernelRuntimeABI,
+                                 wafer::TargetLaunchABIId::perRankPointerBlockV1(),
+                                 target.moduleFormat,
                                  1024};
   llvm::Expected<RuntimeSessionPlan> rejected = preflightNoCardRuntimeSession(
       *verified, EntryId(0), bindings, environment);

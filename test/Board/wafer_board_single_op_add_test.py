@@ -101,8 +101,8 @@ def invocation_arguments(
     manifest_path: pathlib.Path, raw_paths: dict[tuple[str, int], pathlib.Path]
 ) -> list[str]:
     manifest = json.loads(manifest_path.read_text())
-    if manifest.get("schema_version") != 3 or manifest.get("rank_count") != 1:
-        raise RuntimeError("single-op board gate requires a schema-v3 rank-one package")
+    if manifest.get("schema_version") != 4 or manifest.get("rank_count") != 1:
+        raise RuntimeError("single-op board gate requires a schema-v4 rank-one package")
     entries = manifest.get("entries", [])
     if len(entries) != 1 or entries[0].get("id") != 0:
         raise RuntimeError("single-op board gate requires the unique entry ID 0")
@@ -152,6 +152,7 @@ def main() -> int:
             str(package),
             "--execution-ranks=1",
             "--target-profile=wafer-tx81-single-card-kernel-v1",
+            "--launch-abi=per-rank-pointer-block-v1",
         ]
     )
     if "published verified package" not in compile_result.stdout:

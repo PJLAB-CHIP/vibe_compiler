@@ -47,6 +47,16 @@
 # RUN: %python -c 'import subprocess; command=["%wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm", "-u", "%t.heap.so"]; symbols={line.split()[-1] for line in subprocess.check_output(command, text=True).splitlines() if line.split()}; assert symbols == {"csi_kernel_malloc", "csi_kernel_free"}, symbols'
 # RUN: %python -c 'import subprocess; command=["%wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-readelf", "-d", "%t.heap.so"]; dynamic=subprocess.check_output(command, text=True); assert "(NEEDED)" not in dynamic, dynamic'
 
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/get-pid-target-kernel.ll \
+# RUN:   --output %t.get-pid.so \
+# RUN:   --loader-abi tx8-kcore-loader-grid-v1
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm -u %t.get-pid.so | FileCheck %s --check-prefix=GETPID
+# RUN: not %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/get-pid-target-kernel.ll \
+# RUN:   --output %t.get-pid-base.so \
+# RUN:   --loader-abi tx8-kcore-loader-v1 2>&1 | FileCheck %s --check-prefix=GETPID-BASE
+
 # CHECK-LABEL: compile:
 # CHECK-SAME: /opt/llvm/bin/clang++
 # CHECK-SAME: minimal-target-kernel.ll
@@ -130,3 +140,6 @@
 # HEAP-DAG: U csi_kernel_malloc
 # HEAP-NOT: rt_free
 # HEAP-NOT: rt_malloc
+
+# GETPID: U __get_pid
+# GETPID-BASE: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-v1: __get_pid

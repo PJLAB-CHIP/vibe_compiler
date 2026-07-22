@@ -19,6 +19,7 @@ void printHelp() {
   llvm::outs() << "usage: wafer-compile --input-program-dir <dir> "
                   "--output-program-dir <dir> --execution-ranks <1|16> "
                   "--target-profile <registered-id> "
+                  "--launch-abi <registered-id> "
                   "[--target-model "
                   "--model-input <index>=<npy> "
                   "--model-expected <index>=<npy> "
@@ -116,6 +117,12 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
     if (arg == "--target-profile" || arg.starts_with("--target-profile=")) {
       if (parseValueOption(argc, argv, index, arg, "--target-profile",
                            options.targetProfile))
+        return false;
+      continue;
+    }
+    if (arg == "--launch-abi" || arg.starts_with("--launch-abi=")) {
+      if (parseValueOption(argc, argv, index, arg, "--launch-abi",
+                           options.targetLaunchABI))
         return false;
       continue;
     }

@@ -18,7 +18,8 @@ namespace {
 TEST(CompilationTest, ExecutionConfigAcceptsOnlyCurrentSingleCardDomains) {
   for (int64_t accepted : {int64_t{1}, int64_t{16}}) {
     auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-        accepted, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+        accepted, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+        wafer::TargetLaunchABIId::perRankPointerBlockV1());
     ASSERT_TRUE(static_cast<bool>(config));
     EXPECT_EQ(config->getRankCount(), accepted);
   }
@@ -27,25 +28,48 @@ TEST(CompilationTest, ExecutionConfigAcceptsOnlyCurrentSingleCardDomains) {
                            int64_t{0}, int64_t{2}, int64_t{8}, int64_t{15},
                            int64_t{17}, std::numeric_limits<int64_t>::max()}) {
     auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-        rejected, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+        rejected, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+        wafer::TargetLaunchABIId::perRankPointerBlockV1());
     ASSERT_FALSE(static_cast<bool>(config));
     EXPECT_FALSE(llvm::toString(config.takeError()).empty());
   }
 }
 
-TEST(CompilationTest, ExecutionConfigEqualityCoversRankAndTargetProfile) {
+TEST(CompilationTest, ExecutionConfigEqualityCoversRankProfileAndLaunchABI) {
   wafer::TargetProfileId profile =
       wafer::TargetProfileId::waferTx81SingleCardKernelV1();
-  auto first =
-      wafer::compiler::ExecutionConfig::createForSingleCard(1, profile);
-  auto same = wafer::compiler::ExecutionConfig::createForSingleCard(1, profile);
-  auto differentRank =
-      wafer::compiler::ExecutionConfig::createForSingleCard(16, profile);
+  auto first = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, profile, wafer::TargetLaunchABIId::perRankPointerBlockV1());
+  auto same = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, profile, wafer::TargetLaunchABIId::perRankPointerBlockV1());
+  auto differentRank = wafer::compiler::ExecutionConfig::createForSingleCard(
+      16, profile, wafer::TargetLaunchABIId::perRankPointerBlockV1());
+  auto differentLaunchABI =
+      wafer::compiler::ExecutionConfig::createForSingleCard(
+          16, profile,
+          wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1());
   ASSERT_TRUE(static_cast<bool>(first));
   ASSERT_TRUE(static_cast<bool>(same));
   ASSERT_TRUE(static_cast<bool>(differentRank));
+  ASSERT_TRUE(static_cast<bool>(differentLaunchABI));
   EXPECT_EQ(*first, *same);
   EXPECT_NE(*first, *differentRank);
+  EXPECT_NE(*differentRank, *differentLaunchABI);
+
+  auto invalidGrid = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, profile, wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1());
+  ASSERT_FALSE(static_cast<bool>(invalidGrid));
+  EXPECT_NE(llvm::toString(invalidGrid.takeError())
+                .find("requires execution-ranks=16"),
+            std::string::npos);
+
+  auto unqualifiedModel =
+      wafer::compiler::ExecutionConfig::createForSingleCard(
+          16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
+          wafer::TargetLaunchABIId::tx81ModelBootParamV1());
+  ASSERT_FALSE(static_cast<bool>(unqualifiedModel));
+  EXPECT_NE(llvm::toString(unqualifiedModel.takeError()).find("not qualified"),
+            std::string::npos);
 }
 
 TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
@@ -91,7 +115,8 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
   static_assert(std::is_move_constructible_v<wafer::compiler::PackageBundle>);
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(config));
   std::string source = "/tmp/source.program";
   auto request =
@@ -102,11 +127,14 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
   EXPECT_EQ(request->getExecutionConfig().getRankCount(), 1);
   EXPECT_EQ(request->getExecutionConfig().getTargetProfileId(),
             wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  EXPECT_EQ(request->getExecutionConfig().getTargetLaunchABIId(),
+            wafer::TargetLaunchABIId::perRankPointerBlockV1());
 }
 
 TEST(CompilationTest, CompilationRequestRejectsEmptySourceLocator) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(config));
   auto request = wafer::compiler::CompilationRequest::create("", *config);
   ASSERT_FALSE(static_cast<bool>(request));

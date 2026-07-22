@@ -116,6 +116,32 @@ struct BoardFunctionHandle {
   uintptr_t value = 0;
 };
 
+struct BoardGraphHandle {
+  uintptr_t value = 0;
+};
+
+/// One immutable, already-digest-verified tile module snapshot. Graph loading
+/// must synchronously consume the bytes; it may not retain the ArrayRef.
+struct BoardGraphModuleSnapshot {
+  uint16_t logicalTile = 0;
+  ModuleId module;
+  llvm::StringRef digest;
+  llvm::ArrayRef<uint8_t> bytes;
+};
+
+/// One model launch tensor projected from a verified entry slot. The provider
+/// receives typed semantics and a device allocation, never a caller-built raw
+/// BootParam buffer.
+struct BoardModelTensorLaunch {
+  int64_t logicalRank = -1;
+  uint64_t slotOrdinal = 0;
+  PackageResourceRole role = PackageResourceRole::UserInput;
+  BoardDeviceMemory memory;
+  uint64_t bytes = 0;
+  std::string dtype;
+  std::vector<int64_t> shape;
+};
+
 /// One canonical logical-rank launch owned by an all-rank provider
 /// submission. The provider may implement the common submission using
 /// multiple command queues, but callers cannot observe or assemble those
@@ -159,11 +185,30 @@ public:
   virtual llvm::Expected<BoardFunctionHandle>
   resolveEntry(BoardModuleHandle module, llvm::StringRef symbol) = 0;
 
+  /// Stages and synchronously loads the complete tile0..tile15 graph module
+  /// set. Success owns one graph until unloadGraph; failure must state its
+  /// sticky context state through getContextState().
+  virtual llvm::Expected<BoardGraphHandle>
+  loadGraph(llvm::ArrayRef<BoardGraphModuleSnapshot> modules,
+            llvm::StringRef symbol) = 0;
+  virtual llvm::Error unloadGraph(BoardGraphHandle graph) = 0;
+
   /// Establishes one provider-owned submission for the complete logical-rank
   /// domain. A failure after an unknown or non-empty accepted subset must
   /// poison the context. A usable failure guarantees that no submission state
   /// remains live.
   virtual llvm::Error submitAll(llvm::ArrayRef<BoardRankLaunch> launches) = 0;
+
+  /// One txLaunchKernel grid.x=rank_count submission. All launches must refer
+  /// to the same verified function and carry canonical rank-major slots.
+  virtual llvm::Error
+  submitKernelGrid(llvm::ArrayRef<BoardRankLaunch> launches) = 0;
+
+  /// One txLaunchModel submission owned by a previously loaded graph. The TX
+  /// provider alone materializes the qualified BootParam/type-7 wire bytes.
+  virtual llvm::Error
+  submitModel(BoardGraphHandle graph,
+              llvm::ArrayRef<BoardModelTensorLaunch> tensors) = 0;
 
   /// Waits for every submitted rank with a host deadline. Timeout or an
   /// untrustworthy terminal state must poison the context.

@@ -22,6 +22,7 @@ add_executable(WaferUnitTests
   Pipelines/PipelinesTest.cpp
   Runtime/BoardRuntimeTest.cpp
   Runtime/PackageManifestTest.cpp
+  Runtime/Tx81ModelABITest.cpp
   Target/FormalNumericTest.cpp
   Target/NumericCodecTest.cpp
   Target/NumericDependencyConformanceTest.cpp

@@ -842,3 +842,68 @@
   sticky quarantine，返回session级错误，不再destroy stream、unload、free、reset、power或调用其它TX API。
 - 防复发：fake provider覆盖“首个query跨过deadline且后续rank不得被query”、NOT_READY继续轮询和query error首错即停；
   deadline测试不能只断言最终返回timeout，还要检查最后一次允许的provider调用位置。
+
+## 2026-07-22 不能从logical launch数量推断physical tile参与
+
+- 现象：16份不同rank的Add均得到exact输出，文档一度把它当成physical mapping未定的16-tile候选；实际provider为16个stream
+  各提交一次`grid=(1,1,1)`普通kernel launch。
+- 根因：把command queue、logical package rank、grid block和physical tile混为一谈。current V5.6 AP/Kcore按总block数分配，
+  grid1的唯一block每次都由tile0取得；stream没有tile selector语义。
+- 修复模式：旧结果降级为multi-launch/provider-lifecycle smoke。kernel多tile用单次grid16、rank-major pointer table和pid分片；model
+  多tile用type-6 graph load加type-7 BPM run和tile-specific module。两条均以full-good logical inventory、限定版本静态映射、一次
+  aggregate launch、预填为`~expected`的output canary、16个互斥slice及完整CPU exact形成logical tile 0..15执行依据。
+- 防复发：没有独立physical-coordinate观测就必须显式声明`physical_execution_claim: none`；stream数、rank数、module数、launch成功
+  或输出数量都不能单独证明tile利用率，也不能把manifest entry/completion或静态mapping打印成逐tile动态观测。
+
+## 2026-07-22 model外层packet类型不能替代内层dynamic TLV语义
+
+- 现象：`txLoadGraph`通过type-5 model packet同步返回，一度被写成“load-plus-one inference”。
+- 根因：只看host/AP envelope，没有继续追踪BootParam内层TLV和Kcore handler。该调用的内层type 6是`DYNLIB_LOAD`；实际计算由
+  后续type 7 `DYNLIB_RUN`按module name查本tileentry并调用`entry(D_BootParamHead *)`。
+- 修复模式：文档和provider状态机把graph load与model run分开；type-6完成只取得graph/module ownership，不发布output，type-7
+  terminal completion后才允许D2H。BootParam head/dyninfo和nested device address均由typed builder检查。
+- 防复发：分析packet协议时同时记录外层transport envelope、内层opcode/TLV、device handler、entry prototype和completion；任一层
+  未闭合都不能用名称补推语义。
+
+## 2026-07-22 TX kernel argument pointer的寿命必须覆盖异步组包
+
+- 现象：host侧`txLaunchKernel`调用已返回，后续stream query/D2H才可能暴露device错误；provider原先把invocation-local参数块地址
+  直接传给vendor runtime，并在submit返回后允许该storage析构。
+- 根因：当前V5.6 runtime只在提交时借用host argument pointer，后台command组包阶段才复制bytes；C API返回不代表host参数已消费。
+  同时，command packet给参数区的硬上限是`0x7dc`（2012）bytes，不能等后台失败后再诊断。
+- 修复模式：provider为per-rank和grid提交深拷贝argument bytes，并持有到成功stream release；poisoned路径持有到one-shot进程退出。
+  compiler、package verifier与provider在任何TX effect前共同拒绝超过`0x7dc`的参数块。
+- 防复发：fake test不仅检查参数内容，还要让caller storage离开作用域后再读取provider保存的副本，并覆盖超限时零vendor call；不能把
+  同步C函数返回误写成异步payload lifetime终点。
+
+## 2026-07-22 WriteOnly output不做H2D会让board canary失效
+
+- 现象：板测为output生成了非结果canary，但runtime把`WriteOnly`解释成无需H2D初始化；未执行、部分写或复用旧显存时，测试可能碰巧
+  读到expected，失去all-bytes execution gate。
+- 根因：把编译器resource effect语义与测试的显存初始状态混为一谈。`WriteOnly`只描述device程序不读旧值，不禁止host为了验证而
+  先写确定性毒值。
+- 修复模式：所有有initial bytes的resource都执行H2D；真实Add gate把每个output逐字节初始化为`~expected`，随后要求完整D2H bytes
+  exact。这样未写和部分写都必然保留至少一个错误byte。
+- 防复发：fake provider验证output H2D次数和顺序，板测同时断言每个canary byte都不同于expected；不能只依靠expected非零或新分配
+  显存通常被清零。
+
+## 2026-07-22 model graph身份和preflight必须在type-6前闭合
+
+- 现象：只使用`/proc/self/fd/<fd>`作为graph path时，one-shot进程可能重复获得同一fd数字；当前runtime又以exact path的
+  `std::hash<std::string>`生成module identity，跨进程重复测试会碰撞。另一个早期实现会在type-6加载后才发现BPM shape/bytes/
+  alignment或symbol不合法，此时已产生不可安全回滚的device effect。
+- 根因：把可解析到同一inode的路径等同于runtime identity，并把model wire validation放进load之后的执行阶段。
+- 修复模式：在已pin住的目录fd下创建权限受限、invocation-unique的graph root，并把包含随机basename的exact
+  `/proc/self/fd/<fd>/<basename>`交给runtime；逐module复核digest/size，symbol拒绝NUL且满足128-byte限制。manifest verifier和typed
+  BootParam builder在首个TX call前完成shape、byte count、ordering、overflow和alignment检查；type-6再只消费已验证artifact。
+- 防复发：fake test要求非法model manifest的最后一个provider call为空，并验证两次graph staging identity不同；不能依赖PID、fd号、
+  文件名惯例或load后的vendor错误补做协议验证。
+
+## 2026-07-22 model type-6同步调用需要进程外deadline
+
+- 现象：`txLoadGraph`的type-6同步路径没有恢复到可用的内部timeout，若卡住，普通stream completion deadline完全覆盖不到它。
+- 根因：把type-7 completion policy误认为整个model invocation的取消边界；host线程一旦阻塞在type-6，进程内无法安全发出cancel或cleanup。
+- 修复模式：真实model CTest把一次性runner放在外层子进程deadline内；超时后kill/wait、停止后续gate，并要求外部只读qualification。
+  不retry，不在未知context上调用unload/free/reset/power。
+- 防复发：测试必须覆盖外层timeout的退出诊断和“不执行下一轮”；不能以更长的stream timeout、signal handler内调用vendor API或自动
+  device reset冒充安全取消。

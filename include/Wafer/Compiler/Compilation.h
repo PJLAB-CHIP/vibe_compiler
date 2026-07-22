@@ -4,6 +4,7 @@
 #define WAFER_COMPILER_COMPILATION_H
 
 #include "Wafer/Frontend/Program.h"
+#include "Wafer/Target/TargetLaunchABI.h"
 #include "Wafer/Target/TargetProfile.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -31,16 +32,18 @@ class TargetToolchain;
 class ExecutionConfig {
 public:
   static llvm::Expected<ExecutionConfig>
-  createForSingleCard(int64_t executionRankCount,
-                      TargetProfileId targetProfile);
+  createForSingleCard(int64_t executionRankCount, TargetProfileId targetProfile,
+                      TargetLaunchABIId targetLaunchABI);
 
   int64_t getRankCount() const { return executionRankCount; }
   TargetProfileId getTargetProfileId() const { return targetProfile; }
+  TargetLaunchABIId getTargetLaunchABIId() const { return targetLaunchABI; }
 
   friend bool operator==(const ExecutionConfig &lhs,
                          const ExecutionConfig &rhs) {
     return lhs.executionRankCount == rhs.executionRankCount &&
-           lhs.targetProfile == rhs.targetProfile;
+           lhs.targetProfile == rhs.targetProfile &&
+           lhs.targetLaunchABI == rhs.targetLaunchABI;
   }
   friend bool operator!=(const ExecutionConfig &lhs,
                          const ExecutionConfig &rhs) {
@@ -48,11 +51,14 @@ public:
   }
 
 private:
-  ExecutionConfig(int64_t executionRankCount, TargetProfileId targetProfile)
-      : executionRankCount(executionRankCount), targetProfile(targetProfile) {}
+  ExecutionConfig(int64_t executionRankCount, TargetProfileId targetProfile,
+                  TargetLaunchABIId targetLaunchABI)
+      : executionRankCount(executionRankCount), targetProfile(targetProfile),
+        targetLaunchABI(targetLaunchABI) {}
 
   int64_t executionRankCount;
   TargetProfileId targetProfile;
+  TargetLaunchABIId targetLaunchABI;
 };
 
 /// Move-only semantic input to the compiler driver. Output locations,

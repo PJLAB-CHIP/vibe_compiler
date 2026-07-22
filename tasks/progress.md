@@ -68,19 +68,31 @@ explicit Count semantic/target/model evidence -> Q3.6 (independent typed writeba
 
 ## 当前实施队列
 
-当前`doing` row为Q6.B：board provider、rank-one及rank-count=16 `transport:none` add gate和fresh package链路已经接通。当前configured TX8110的driver为
+当前`doing` row为Q6.B：board provider、rank-one bootstrap、rank-count=16 `transport:none` multi-launch smoke和fresh package链路已经接通；
+schema-v4的`tx81-kernel-grid-pointer-table-v1`与`tx81-model-bootparam-v1` artifact/provider、静态readback、fake lifecycle及独立
+hardware CTest已闭合；两条非hardware production compile→package→all-rank no-card CTest也已注册并实际通过；2026-07-22两条
+真实Add gate又各连续执行两轮且完整exact。当前configured TX8110的driver为
 V5.6.0.1231、ML/SMI为V5.6.0.1231.01，public runtime 1.3.0 payload与同一V5.6安装包逐字节一致；宿主引导源`kcore_fw.bin`与compile SDK
 对应ELF提取payload逐字节一致，driver debugfs缓存显示运行中Kcore version=1.0.1、status=on。未读取device RAM，因此不声明
 运行中payload的byte identity。fresh Wafer add module仅依赖匹配SDK Kcore export surface中的`csi_kernel_malloc/free`。
 production `wafer-compile` fresh发布的rank-one和16-rank f32 add已由显式armed、identity-qualified的board-capable
 `wafer-run`分别连续两次完成allocation→H2D→load/resolve→launch→completion→D2H→cleanup，all-and-only输出均exact；
-执行前后卡的memory/process/firmware状态回到同一健康基线，过程中没有调用reset或power。16-rank gate使用一个owner-backed
-invocation、独立stream和有deadline的共同progress，只证明16份logical entry/module/argument block均执行；stream不是tile
-selector，因此physical rank mapping保持unclaimed，也不声明16-tile并行利用率。
+执行前后卡的memory/process/firmware状态回到同一健康基线，过程中没有调用reset或power。16-rank结果来自16个独立stream各执行
+一次`grid=(1,1,1)`普通kernel launch；结合当前V5.6 AP/Kcore block分配可确认每次唯一block均由tile0取得。因此该结果只保留为
+16份logical entry/module/argument block和provider生命周期的multi-launch smoke，不再称为16-tile或physical mapping未定。
+当前V5.6静态证据同时闭合了两条真实多tile入口：普通Kcore handler按固定logical tile id `0..15`划分总grid，不按active-count
+重编号；因此full-good设备上的单次`txLaunchKernel(grid.x=16, block=1)`由logical tile `t`执行pid `t`，缺失tile会丢失对应pid而
+不会remap。model路径由`txLoadGraph`通过type-6 `DYNLIB_LOAD`在每tile加载`tileN/kcore_fw.so`，再由type-7
+`DYNLIB_RUN`把同一56-byte BootParam head广播给各tile并调用本地`entry(head)`。BootParam后接72-byte、按input/output/param
+排序的dyninfo。repository-owned typed builder、nested device-address/module identity验证、artifact export/readback、异步kernel参数寿命、
+`0x7dc` packet上限和model外层one-shot deadline均已闭合；该ABI仍只对当前digest-qualified V5.6 binary成立，不是vendor公开稳定builder。
 已定位vendor预置module这一次OOM表象来自7个未闭合动态符号的远端relocation失败；同一污染周期内其它后续失败不作追溯性
-因果归因。legacy host runtime只是不兼容的另一条tutorial路径，不是public runtime失败根因。rank-one及NoTransport all-rank
-bootstrap已闭合，Q6.B继续`doing`；下一边界是Direct DTE所需的可验证placement/parameter ABI、真实receiver readiness和
-共同completion，而不是把command queue当成tile placement或重复单卡reset。
+因果归因。legacy host runtime只是不兼容的另一条tutorial路径，不是public runtime失败根因。rank-one和multi-launch smoke
+已闭合。单次grid16 kernel SPMD Add和type-6 load + type-7/BPM model SPMD Add均消费fresh production package，使用
+`~expected`预填和16个互斥64-byte output slice；两条路径各连续两轮全部`exact=true`，分别报告`kernel-grid-x16`和
+`model-type6-type7`、logical tile domain `0..15`及`physical_execution_claim: none`。执行前、两项之间与执行后只读SMI均为
+`9248M / 65536M`、0% utilization、无运行进程且device online，全程没有retry/reset/power。Q6.B继续`doing`；下一边界是
+Direct DTE的可验证placement/parameter ABI、真实receiver readiness和共同completion。command queue仍不作为tile placement。
 Q32已完成integrated completion audit；该完成不会让其它
 later/external gate自动进入主线。
 
@@ -95,7 +107,7 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 | Q32.I | `mlir-native-implementation-relation-foundation` | `done` | Q29、Q28、Q30、Q31 | source OpInterface/external models已让generic division与target reciprocal两种真实implementation进入complete clone；MLIR Affine/Presburger/ValueBounds IndexRelation foundation与precision/failure/property gate闭合；重复DPS/Tiling语义的WaferTilingInterface已删除。证据见`tasks/archive/mlir-native-implementation-relation-foundation.md`。 | 01、06、08、10、13、16、18；`tasks/archive/physical-dataflow-synthesis.md` A/B |
 | Q32.R | `physical-relation-realization` | `done` | Q32.I | rich IndexRelation查询、physical encoding attr interface、TransferRealizability、destination-style StorageLoad和relation-backed resident handoff已闭合；非7B source删除真实中间WDMA/RDMA，标准7B source选择26条handoff并通过fresh TP16 package/SystemC/PyTorch gate。证据见`tasks/archive/physical-relation-realization.md`。 | 06-11、16、18；同计划C |
 | Q32.B | `physical-dataflow-test-seam-vertical` | `done` | Q32.R、Q34 | compiler-private production-shaped seam已让conservative spill唯一reserved baseline与spill/resident optimized actual clones共同进入rank frontier；rank只做SPM，all-rank disposable tuple重做DDR及全部late gate，1/16-rank与标准7B source-to-package/SystemC/PyTorch及determinism/atomic gate通过。证据见`tasks/archive/physical-dataflow-test-seam-vertical.md`。 | 01、06-18；同计划D |
-| Q32.V | `typed-target-capability-vertical` | `done` | Q32.B | mapped DMA/WDMA双端root-relative offset与descriptor、physical-footprint fill的padding/tail/bitpacked domain及oriented GEMM source/Tile/Instr/v2 TargetCall/CRT/formal/SystemC纵向已闭合；v1 ABI保持不变，package schema因无真实逐row consumer保持v3。证据见`tasks/archive/typed-target-capability-vertical.md`。 | 06、08、10、11、14-18；同计划E |
+| Q32.V | `typed-target-capability-vertical` | `done` | Q32.B | mapped DMA/WDMA双端root-relative offset与descriptor、physical-footprint fill的padding/tail/bitpacked domain及oriented GEMM source/Tile/Instr/v2 TargetCall/CRT/formal/SystemC纵向已闭合；v1 ABI保持不变，Q32.V完成当时因无真实逐row consumer而保持schema v3，后续Q6.B launch ABI consumer已独立升级为当前schema v4。证据见`tasks/archive/typed-target-capability-vertical.md`。 | 06、08、10、11、14-18；同计划E |
 | Q32.M | `physical-mechanism-choice-closure` | `done` | Q32.V | shared candidate owner已从verified source独立产生recompute、static LICM和integer modular reassociation/tree/distribution/factorization actual clones；partial fanout保留DDR spill并增加maximal-compatible SPM SSA result，spill/resident与movement-first ready-order分别形成完整rank alternatives；communication从同一tile parent产生ring/ring、direct/ring和ring/tree完整clone并逐个重跑Instr/SPM/DDR/verifier/cost。layout/resource与collective consumers已迁到typed op、value-associated standard effects、custom resources和SSA token/fence，重复layout/resource/collective-info/verifyInstructionContract合同及public communication selector已删除。证据见`tasks/archive/physical-mechanism-choice-closure.md`。 | 05-13、16、18；同计划F |
 | Q32.S | `bounded-joint-physical-dataflow-selection` | `done` | Q32.M | source/recipe/scope-policy与spill/resident/ready-order均以actual clone有界组合；reserved baseline独立于source 16、recipe 12、rank evaluation 64、rank frontier 256、whole tuple 64+64及whole Pareto 16等optimization caps。validated placement/high-water及final DDR/SPM/NoC/collective/compute/instruction/event/dataflow facts进入whole-card exact Pareto与target-owned static policy；最终winner不读scalar time或producer计数。implementation、fusion/share/recompute、LICM、各current integer variant、fixed-Cx direct mapped route、resident reuse、ready-order及direct/tree collective均有production-shaped whole winner。证据见`tasks/archive/bounded-joint-physical-dataflow-selection.md`。 | 06-13、16、18；同计划G |
 | Q32.G | `physical-dataflow-production-cutover` | `done` | Q32.S | 默认`wafer-compile`已成为唯一production decision owner并原子提交whole-variant winner；旧public scheduling pass/pipeline、scope-prefix、layout/demand影子结构、communication selector/options、scalar-time winner和discovery recovery已删除。rank frontier以semantic generation与physical artifact kind双键约束all-rank correspondence，默认source/bulk SystemC数值纵向通过。证据见`tasks/archive/physical-dataflow-production-cutover.md`。 | 01、06-18；同计划H |
@@ -107,7 +119,7 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 / 外部 gate | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q6.B | `runtime-board` | `doing` | Q0.L、Q21 + configured board | rank-one和16-rank `transport:none` fresh package已分别重复完整exact；继续闭合Direct DTE placement/parameter ABI、receiver readiness和共同completion，不声明stream到physical tile映射。 | 15、16 |
+| Q6.B | `runtime-board` | `doing` | Q0.L、Q21 + configured board | rank-one与16×grid1 multi-launch smoke已重复完整exact；当前grid1静态确认只执行logical tile 0。单次grid16 kernel与type6/type7 model Add的typed artifact、provider、static/fake、production no-card纵向及真实板端两轮logical tile 0..15完整exact gate均已闭合；剩余Direct DTE placement/readiness/completion。 | 15、16 |
 | Q9 | `cost-calibration` | `later` | Q32、Q6.B + profile environment | 只校准Q32合法候选排序，不改变语义合法性。 | 06、16 |
 | Q22.C | `target-model-numeric-correlation` | `later` | Q22、Q32、Q6.B + configured numeric corpus | 按capability row用board区分向量和held-out冻结numeric comparator/profile。 | 16、17 |
 | Q22.E | `target-model-package-execution` | `later` | Q18、Q22、Q32 + configured simulator/ISS | 原样执行Q32 integrated audit冻结的verified package及all-and-only RISC-V ELF；任何未来schema升级必须先独立完成再作为该gate输入。 | 15、16、17 |

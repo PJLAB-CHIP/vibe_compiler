@@ -17,12 +17,22 @@ namespace wafer::compiler {
 
 llvm::Expected<ExecutionConfig>
 ExecutionConfig::createForSingleCard(int64_t executionRankCount,
-                                     TargetProfileId targetProfile) {
+                                     TargetProfileId targetProfile,
+                                     TargetLaunchABIId targetLaunchABI) {
   if (executionRankCount != 1 && executionRankCount != 16)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "execution-ranks must be exactly 1 or 16 for the single-card compiler");
-  return ExecutionConfig(executionRankCount, targetProfile);
+  if (targetLaunchABI != TargetLaunchABIId::perRankPointerBlockV1() &&
+      executionRankCount != 16)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "multi-tile target launch ABI requires execution-ranks=16");
+  if (!isTargetLaunchABICompatible(targetLaunchABI, targetProfile))
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target launch ABI is not qualified for the selected target profile");
+  return ExecutionConfig(executionRankCount, targetProfile, targetLaunchABI);
 }
 
 llvm::Expected<CompilationRequest>

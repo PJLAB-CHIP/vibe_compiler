@@ -28,6 +28,8 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
                      stringifyTargetIdentityId(manifest.targetIdentity));
       json.attribute("runtime_abi",
                      stringifyKernelRuntimeABIId(manifest.runtimeABI));
+      json.attribute("launch_abi",
+                     stringifyTargetLaunchABIId(manifest.launchABI));
       json.attribute("module_format", manifest.moduleFormat);
     });
     json.attribute("rank_count", manifest.rankCount);

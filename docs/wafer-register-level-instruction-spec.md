@@ -1256,6 +1256,9 @@ typed DAG 接受并通过 `tasks/16` gate 后才具有 Wafer runtime 语义。
 | `TsmMemcpyH2D/D2H` | active backend 调 `txMemcpy(..., kind=1/2)`；offset variants 是 stub | stub success 不能证明 copy 或 correctness completion |
 | `TsmMemcpyD2D` | 构造 `D_MEMCPY_D2D` dyn TLV，使用 16 个 `TileDteCfg` 和 4KB chunking，launch bootparam | 证明一条 host-level D2D/P2P provider 路径；不同于 inline Direct DTE helper，但不定义 Wafer transport |
 | `TsmRun` | `Runtime::GetPhyAddr(bootparam)` 后调 `txLaunchModelSync(phy_bootparam)` | 只证明该旧 provider 暴露 synchronous call；不能证明它与 HPGR completion 的相对架构地位 |
+| current `txLaunchKernel` | AP按固定logical tile id `0..15`划分总grid block，Kcore逐block设置pid后调用共享entry；不会按active-count重编号 | 当前full-good V5.6中grid1只由logical tile 0取得唯一block；一次grid16由logical tile `t`执行pid `t`。缺失tile会丢失对应pid而不会remap；真实执行依据仍需full-good inventory与slice/canary板端写回 |
+| current `txLoadGraph` | 读取`tile0..tile15/kcore_fw.so`，以外层type-5 model packet同步执行内层type-6 `DYNLIB_LOAD` | 只加载；不能把外层packet名解释成一次inference。每tile按自身id选择对应size/address并解析共享symbol |
+| current `txLaunchModel` | AP把同一BPM地址广播到active tiles；内层type-7按module name运行各tile本地`entry(D_BootParamHead *)` | 已恢复exact-build布局和device call；public header没有builder/版本承诺，production acceptance归`tasks/15`/`tasks/16` |
 | `TsmLaunch/TsmLaunchPg/TsmAsyncRun/TsmDeviceSynchronize` | 当前实现是 stub/success path | 不能作为 execution 或 completion 证据 |
 | `TsmGetTileInfo/SetTileInfo` | 调 `txGetDeviceAllTileInfo/txSetDeviceSelectedTileInfo`，复制 16/8 个 tile records | 静态调用链不能证明返回内容；board gate 归 `tasks/16` |
 | `TsmProcessProfData` | 构造 profiling dyn TLV，运行 bootparam，结束路径 dump profiling data | record shape 静态可见，counter accuracy 归 `tasks/16` 验证 |
@@ -1263,8 +1266,9 @@ typed DAG 接受并通过 `tasks/16` gate 后才具有 Wafer runtime 语义。
 x86 `libtx8_runtime.so`还暴露另一条、与上述packet seam不同的高层CModel线索：
 `Runtime::SetCModelHandle`尝试`dlopen("libcmodel_runtime_api.so")`，并解析device、compile、launch、run、copy和tile-info
 等15个`CModel_*`入口。这些入口使用`TsmDevice`/`TsmModel`/`CompileOption`风格C++ ABI，不等于`TsmExecute` packet ABI。
-当前checkout缺该library、匹配host-runtime/TsmML headers、`libhpgr.so`、`libtsmml.so`和model resources；现有binary只
-证明`dlsym`结果被存入字段且library handle会被`dlclose`，没有证明普通launch路径读取/调用这些字段。故它是vendor
+当前checkout缺该CModel library、匹配host-runtime/TsmML headers、`libtsmml.so`和model resources；digest-qualified外部V5.6
+`libhpgr.so`已完成独立静态审计，但它不补齐CModel seam。现有`libtx8_runtime.so`只证明`dlsym`结果被存入字段且library handle
+会被`dlclose`，没有证明普通launch路径读取/调用这些字段。故CModel线索是vendor
 CModel存在的强线索，不是当前可运行
 provider，也不能证明内部使用SystemC或可消费Q17/Q18 artifact。完整模型设计和vendor索取边界见`tasks/17`。
 
@@ -1296,10 +1300,42 @@ typedef struct D_DynTLV {
 } D_DynTLV;
 ```
 
+current HPGR的dynamic-module载荷进一步闭合为：
+
+```c
+typedef struct D_GraphInfo {
+    char module_name[128];
+    char module_symbol[128];
+    uint32_t module_size[16];
+    uint64_t module_addr[16];
+} D_GraphInfo; // 448 bytes
+
+typedef struct D_DynMods {
+    uint16_t module_num;
+    uint8_t padding[6];
+    D_GraphInfo graph;
+} D_DynMods; // 456 bytes
+
+typedef struct D_GraphTLV {
+    uint32_t type;
+    uint32_t len;
+    uint64_t dyn_mods_addr;
+} D_GraphTLV; // 16 bytes
+```
+
+type 6携带共享module name/symbol及16份tile-specific size/address；type 7只需module name，Kcore查找本tile在type 6注册的
+entry并把原始BootParam head作为唯一entry参数。V5.6随包module在one-input/one-output/one-param case中读取`+56/+128/+200`
+三个dyninfo地址和`+32` cache address，与56-byte head和72-byte entry严格吻合。外层host packet type 5不改变内层type 6/7语义。
+
 已识别 dyn TLV type：`0 final`、`1 cfg PMU`、`2 kcore cfg`、`3 export SPM`、
 `4 disable calc`、`5 profiling config`、`6 dynlib load`、`7 dynlib run`、
 `8 dynlib unload`、`9 memcpy D2D`、`10 P2P send`、`11 P2P recv`、
 `12 group data dump`、`13 max marker`。
+
+这些结构是qualified V5.6 binary、随包device module和两个legacy builder交叉得到的exact-build ABI证据，不是公开稳定wire。
+Wafer schema-v4 `tx81-model-bootparam-v1`现已由typed graph artifact、ordinal verifier、checked allocation/lifetime、module identity、
+artifact export/readback和fake provider共同拥有，并已在限定V5.6/full-good设备完成两轮type-6/type-7 Add完整exact gate；该gate只形成
+logical tile `0..15`执行依据，不声明physical coordinate。该wire不能成为opaque payload sidecar，也不能静默解释已有kernel launch ABI。
 
 ## 硬件证据成熟度
 

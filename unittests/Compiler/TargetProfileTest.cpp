@@ -1,6 +1,7 @@
 //===- TargetProfileTest.cpp - Closed target profile registry tests -------===//
 
 #include "Wafer/Target/TargetProfile.h"
+#include "Wafer/Target/TargetLaunchABI.h"
 
 #include "llvm/Support/Error.h"
 #include "gtest/gtest.h"
@@ -76,6 +77,45 @@ TEST(TargetProfileTest, UnknownAndEmptySpellingsHaveNoFallback) {
   ASSERT_FALSE(static_cast<bool>(abi));
   EXPECT_NE(llvm::toString(abi.takeError()).find("unknown kernel runtime ABI"),
             std::string::npos);
+}
+
+TEST(TargetLaunchABITest, RegistryIsClosedCanonicalAndRoundTrips) {
+  static_assert(!std::is_default_constructible_v<wafer::TargetLaunchABIId>);
+  llvm::ArrayRef<wafer::TargetLaunchABIRecord> records =
+      wafer::getRegisteredTargetLaunchABIs();
+  ASSERT_EQ(records.size(), 3u);
+  EXPECT_EQ(records[0].canonicalSpelling, "per-rank-pointer-block-v1");
+  EXPECT_EQ(records[1].canonicalSpelling, "tx81-kernel-grid-pointer-table-v1");
+  EXPECT_EQ(records[2].canonicalSpelling, "tx81-model-bootparam-v1");
+  for (const wafer::TargetLaunchABIRecord &record : records) {
+    llvm::Expected<wafer::TargetLaunchABIId> parsed =
+        wafer::parseTargetLaunchABIId(record.canonicalSpelling);
+    ASSERT_TRUE(static_cast<bool>(parsed))
+        << llvm::toString(parsed.takeError());
+    EXPECT_EQ(*parsed, record.id);
+    EXPECT_EQ(wafer::stringifyTargetLaunchABIId(*parsed),
+              record.canonicalSpelling);
+  }
+
+  llvm::Expected<wafer::TargetLaunchABIId> unknown =
+      wafer::parseTargetLaunchABIId("unknown-launch-abi");
+  ASSERT_FALSE(static_cast<bool>(unknown));
+  EXPECT_NE(
+      llvm::toString(unknown.takeError()).find("unknown target launch ABI"),
+      std::string::npos);
+
+  EXPECT_TRUE(wafer::isTargetLaunchABICompatible(
+      wafer::TargetLaunchABIId::perRankPointerBlockV1(),
+      wafer::TargetProfileId::waferTx81SingleCardKernelV2()));
+  EXPECT_TRUE(wafer::isTargetLaunchABICompatible(
+      wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1(),
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+  EXPECT_TRUE(wafer::isTargetLaunchABICompatible(
+      wafer::TargetLaunchABIId::tx81ModelBootParamV1(),
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+  EXPECT_FALSE(wafer::isTargetLaunchABICompatible(
+      wafer::TargetLaunchABIId::tx81ModelBootParamV1(),
+      wafer::TargetProfileId::waferTx81SingleCardKernelV2()));
 }
 
 } // namespace

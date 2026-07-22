@@ -233,7 +233,7 @@ Q0历史完成结果不覆盖本轮review发现的target profile、engine×forma
 
 上述gate已由Q0.L fresh结果闭合：`check-wafer`执行63个C++ unit和249个lit（248 pass、1个feature-inverse
 unsupported），configured `--show-unsupported`确认唯一unsupported为`wafer-compile-stablehlo-disabled.test`，CTest 3/3
-通过。Q20 rank1/rank16、Q21 rank16/HF、CRT conformance、真实RISC-V64 ELF readback、schema-v3 package/no-card以及rank-15
+通过。Q20 rank1/rank16、Q21 rank16/HF、CRT conformance、真实RISC-V64 ELF readback、当时的schema-v3 package/no-card以及rank-15
 target/package late failure均在同一完整suite中实际执行；板端、vendor-exact packet和timing仍不属于本gate。
 
 ## 5. Q15 Typed Driver And Structured Program Gates
@@ -392,7 +392,7 @@ current-binary modules后，每rank target call inventory均为gather/RDMA/WDMA/
 whole-rank planner沿tile-region yield/result/operand SSA
 传播allocation root，SPM high-water为2,725,568 / 3,014,656 bytes，即90.411%。
 
-最终TP16 production用520.346秒wall、12,543.822秒user、15.246秒system time发布schema-v3 package；manifest
+最终TP16 production用520.346秒wall、12,543.822秒user、15.246秒system time发布当时的schema-v3 package；manifest
 为`rank_count=16`，modules/entries/completions各16个、resources 288个。16个module均为328,456-byte RISC-V
 ELF64 DYN，SHA-256逐项readback且因rank-specific DTE metadata保持digest互异；pre-SPM-root历史module为
 332,552 bytes。对entry 0..15逐一运行
@@ -478,8 +478,9 @@ Q32.T保持later，不阻塞Q32。当前没有需要rank-local Transform control
 
 ### 8.1 Typed Manifest
 
-当前Q18 schema-v3 gate保持已完成。Q32 candidate cutover本身不改变package schema。若Q32.V/Q3.6的真实consumer引入新的closed package revision，必须在
-独立target/package任务中增加以下gate，不能给v3静默补set：
+当前Q18 wire form为schema v4：在schema v3 profile合同上新增必填closed launch ABI。Q32 candidate cutover本身
+不改变package schema；该升级由真实kernel-grid/model launch consumer驱动。v2/v3输入均作为legacy明确拒绝，不能静默补字段。
+后续若Q32.V/Q3.6的真实consumer再引入新的closed package revision，必须在独立target/package任务中增加以下gate：
 
 - canonical serialize/parse byte-identical；
 - unknown/deprecated field、wrong schema version、bad numeric/path/limits；
@@ -490,6 +491,9 @@ Q32.T保持later，不阻塞Q32。当前没有需要rank-local Transform control
 - missing/extra payload和digest mismatch；
 - completion missing、rank mismatch或unsupported terminal；
 - production JSON含`instructions`直接拒绝。
+- target profile、identity、runtime ABI、launch ABI和module format五项exact；missing/unknown/unqualified launch ABI拒绝；
+- kernel-grid完整16-rank、共享symbol/slot schema、final module byte identity和`0x7dc` packet上限；model完整16-rank、
+  共享symbol、tile modules、parameter-free aligned f32 rank-1..6 shape/bytes、export record/relocation与BootParam pre-effect验证；
 - 若Q32.V的真实consumer确需`required_capabilities`，当批冻结的typed keys/encoding必须与Q16 winner、Q17
   owner-backed module/artifact和package readback all-and-only一致；missing/extra/noncanonical/tampered或late-rank union
   mismatch在publication前失败。当前不预设schema编号、digest算法、key数量或wire encoding；requirement只能表达最终
@@ -501,7 +505,7 @@ Python wrapper和C++必须走同一verifier；不能再有不同acceptance。
 
 - entry selection和invocation binding all-and-only；
 - module/resource/completion resolution确定性；
-- schema-v3 target profile、runtime ABI、transport requirement和environment compatibility在任何side effect前精确匹配；
+- schema-v4 target profile、runtime ABI、launch ABI、transport requirement和environment compatibility在任何side effect前精确匹配；
 - repeated preflight相同输入产生相同plan；
 - metadata buffer释放后verified typed value仍可安全使用；
 - no-card输出明确标记未执行board。
@@ -511,8 +515,10 @@ projection，其结构和package readback由8.1验证，真正的model/board逐�
 
 ### 8.3 Provider And Board Gate
 
-Q6.B已materialize TX rank-one和rank-count=16 `transport:none` provider子集；Direct DTE真实placement/readiness/completion与
-Q22.E exact-module provider仍未闭合。
+Q6.B已materialize TX rank-one和rank-count=16 `transport:none` multi-launch provider子集；当前V5.6静态调度确认后者的
+16次`grid=(1,1,1)`均由tile0执行，所以它只作为aggregate lifecycle smoke。单次grid16 kernel SPMD、type-6/type-7 model SPMD、
+typed artifact/provider/static/fake gate及真实板端重复gate已经闭合；Direct DTE真实placement/readiness/completion与Q22.E
+exact-module provider仍未闭合。
 以下验证不属于Q18 no-card完成条件，provider/board推进时必须实际执行，不能用打印trace替代：
 
 若Q32.V扩展TargetCall的execution consumer采用`RequiredCapabilitySet`，它必须在任何effect前消费同版本集合：model provider以
@@ -526,8 +532,8 @@ execution consumer是否执行已经选定的程序，不返回compiler planner�
 set-device/context
   -> allocate/import
   -> copy H2D
-  -> load module / resolve entry
-  -> submit
+  -> load module / resolve entry OR load graph / build verified BPM
+  -> typed kernel-grid or model submit
   -> wait/status
   -> copy D2H
   -> cleanup
@@ -1047,28 +1053,55 @@ Q22.P不在近期numeric correctness范围内；只有另行恢复并配置可�
 
 ## 12. Board Gate
 
-configured board suite只消费Q0.L完成后fresh replay形成的Gate C同一verified package，不允许用Q0.L前旧package、另造fixture
-或provider-specific plan。必须实际执行：
+configured board suite只消费Q0.L完成后fresh replay形成的Gate C同一verified artifact/package，不允许用Q0.L前旧package、
+另造fixture或provider-specific旁路。kernel-grid与model graph需要新的launch ABI时，必须先由compiler artifact、package readback
+和runtime verifier显式拥有，不能让test脚本临时拼私有结构。必须实际执行：
 
-- allocation/import/copy/module load/entry resolve；
+- allocation/import/copy；kernel分支执行module load/entry resolve，model分支执行type-6 graph load和tile-local symbol registration；
 - launch及manifest实际声明的transport；
 - trusted completion/status/timeout/error；
 - copyback和完整输出CPU comparison；
 - cleanup和重复invocation。
 
-Q6.B的第一条bootstrap gate固定为production `wafer-compile` fresh发布的rank-one f32 `stablehlo.add` package：两个
+Q6.B的第一条bootstrap gate固定为production `wafer-compile` fresh发布的rank-one f32 `stablehlo.add` kernel package：两个
 非平凡且不同的16-element输入按manifest `ResourceId` all-and-only绑定，独立NumPy/CPU加法生成完整expected raw bytes；
 board-capable `wafer-run`必须至少重复两次真实allocation→load→launch→trusted completion→copyback→cleanup，并报告全部stage
 和`exact=true`。`WAFER_ENABLE_BOARD_RUNTIME`只构建能力；hardware test只有通过默认关闭的独立execution配置、完整预期
 runtime-library digest/runtime version/PCI/device/tile qualification才注册，并且运行时还须显式设置
 `WAFER_EXECUTE_HARDWARE_TESTS=1`。普通CTest必须skip或不注册，不得触卡；Q6.B证据必须确认hardware CTest未skip。
 
-第二条bootstrap gate将同一Add扩为16-rank `transport:none` package：全局输入按axis-0形成16个互不重叠且完整覆盖的
-rank-local slice，完整rank domain的resources/modules/entries先通过一次pure preflight，再由一个provider-owned invocation
-完成aggregate admission、全部allocation/H2D/load/resolve、独立stream共同submit、有deadline的query progress、全部D2H和
-逆序cleanup。每个rank使用可区分输入并逐ResourceId比较完整raw bytes，至少重复两次；结果只证明16份logical ABI execution，
-必须显式报告physical mapping unclaimed，不能从stream或inventory推断rank到tile绑定或并行利用率。该NoTransport gate通过
-不关闭上一节Direct DTE真实receiver readiness、timeout和board completion要求，因此Q6.B仍保持doing。
+既有16-rank `transport:none` Add继续作为multi-launch回归：全局输入按axis-0形成16个互不重叠且完整覆盖的rank-local slice，
+完整rank domain先pure preflight，再完成aggregate admission、allocation/H2D/load/resolve、16 stream共同submit、deadline、D2H和
+逆序cleanup。它必须继续逐ResourceId exact，输出明确报告independent-grid1且不发布physical execution claim；当前快照tile0结论由
+独立静态资格证据拥有，不把版本特定映射硬编码进通用CLI。该回归不再作为16-tile bootstrap。
+
+真实kernel SPMD gate使用一次普通`txLaunchKernel`：`grid=(16,1,1)`、`block=(1,1,1)`、一个共享module/function和rank-major argument table。
+device entry按Kcore提供的block pid选择16个不重叠且完整覆盖的全局Add slice。host在执行前以非结果值填充全部output；
+当前实现以每byte `~expected`预填，任一未写或部分写都会失败。限定V5.6/full-good inventory下，固定logical scheduler
+映射、单次aggregate launch与16个互斥且完整覆盖的exact slice共同形成logical tile 0..15参与依据；不声明physical coordinate，
+也不把manifest-derived entry/completion打印当作逐tile观测。该gate至少重复两次，只证明kernel单算子qualification。
+
+真实model SPMD gate消费compiler-owned all-rank target artifact：`txLoadGraph`先对`tile0..tile15/kcore_fw.so`执行type-6 load，
+不得把该同步model command误写成一次计算；随后provider从typed graph I/O构造56-byte head、72-byte input/output dyninfo和
+type-7 payload，以一次`txLaunchModel`触发16个tile本地`entry(head)`。每个tile-specific entry只处理自己的全局Add slice并写唯一
+slice；同样以`~expected`预填、固定type-6 tile0..15映射、单次type-7 aggregate launch和16个互斥exact slice形成
+logical tile 0..15参与依据，并要求完整CPU exact和至少两次重复。type-6同步调用没有安全的进程内cancel，gate以one-shot外层
+deadline约束；超时后终止测试、不重试、不调用reset/power，并报告需要外部只读资格检查。只有该gate才验证最终模型发射边界，
+kernel-grid或16×grid1结果不能替代。
+
+2026-07-22 fresh hardware evidence：在driver `V5.6.0.1231`、SMI/ML `V5.6.0.1231.01`、runtime `1.3.0`、
+`TX8110-256-00`、full-good logical tile `0..15`和钉死`libhpgr.so` digest
+`b4f19d673e1767314f6cd900f7f66345e7d1d8c0545de83a7139d62596a6e12c`下，
+`wafer-board-kernel-grid-add`与`wafer-board-model-add`分别实际执行且未skip。两者各连续两轮，每轮16个64-byte output slice均
+`exact=true`；前者报告`kernel-grid-x16`/`scheduler-pid-x-and-exact-rank-slices`，后者报告
+`model-type6-type7`/`graph-tile-module-map-and-exact-rank-slices`，均只声明logical domain `0..15`和
+`physical_execution_claim: none`。执行前、两项之间及执行后SMI memory均为`9248M / 65536M`、NPU utilization为0、无运行进程，
+device online且heartbeat持续推进；没有调用retry/reset/power。对应非hardware production纵向
+`wafer-runtime-kernel-grid-add-no-card`与`wafer-runtime-model-add-no-card`也实际编译fresh source、验证schema-v4/16-rank
+entry-completion domain并进入`wafer-run --all-ranks --no-card`，不依赖hardware arm或skip；收尾fresh package与live package逐文件
+byte-identical。
+
+两条真实SPMD gate通过仍不关闭上一节Direct DTE真实receiver readiness、timeout和board completion要求，因此Q6.B保持doing。
 
 环境诊断必须与compiler gate分开。qualification candidate必须与当前driver、public runtime、宿主boot-source firmware、
 运行中Kcore缓存version/status和module toolchain闭合；若没有device-RAM dump，不得声明运行中payload的byte identity。执行前

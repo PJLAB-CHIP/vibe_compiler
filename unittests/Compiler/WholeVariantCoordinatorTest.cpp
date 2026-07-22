@@ -51,11 +51,10 @@ protected:
     return source;
   }
 
-  wafer::compiler::detail::RankVariantCandidate
-  candidate(llvm::StringRef body, int64_t rankCount, int64_t /*legacyCost*/,
-            int64_t stableOrdinal, bool reservedBaseline = false,
-            wafer::RankArtifactKind artifactKind =
-                wafer::RankArtifactKind::Spill) {
+  wafer::compiler::detail::RankVariantCandidate candidate(
+      llvm::StringRef body, int64_t rankCount, int64_t /*legacyCost*/,
+      int64_t stableOrdinal, bool reservedBaseline = false,
+      wafer::RankArtifactKind artifactKind = wafer::RankArtifactKind::Spill) {
     std::string source = moduleWithBody(body, rankCount);
     auto module = mlir::parseSourceString<mlir::ModuleOp>(
         source, mlir::ParserConfig(context.get()));
@@ -65,8 +64,7 @@ protected:
 
   wafer::frontend::FrontendProgramVerificationResult
   replicated1DProgram(unsigned inputCount, int64_t elementCount,
-                      llvm::StringRef dtype,
-                      unsigned outputCount = 1,
+                      llvm::StringRef dtype, unsigned outputCount = 1,
                       int64_t rankCount = 1) const {
     auto makeBoundary = [&](int64_t index) {
       wafer::frontend::ProgramBoundaryBinding binding;
@@ -146,8 +144,8 @@ protected:
       wafer::TensorProgramSchedulingConfig schedulingConfig;
       schedulingConfig.logicalRank = rank;
       schedulingConfig.candidateParallelism = 1;
-      auto scheduled = wafer::buildScheduledRankCandidateFrontier(
-          source, schedulingConfig);
+      auto scheduled =
+          wafer::buildScheduledRankCandidateFrontier(source, schedulingConfig);
       if (mlir::failed(scheduled))
         return mlir::failure();
       auto finalized =
@@ -163,16 +161,15 @@ protected:
               candidate.module.get(),
               wafer::analysis::getTargetScheduleCostPolicy(
                   wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
-        frontiers[rank].push_back({std::move(candidate.module),
-                                   candidate.stableOrdinal,
-                                   candidate.artifactKind,
-                                   candidate.reservedBaseline});
+        frontiers[rank].push_back(
+            {std::move(candidate.module), candidate.stableOrdinal,
+             candidate.artifactKind, candidate.reservedBaseline});
       }
     }
     auto executionConfig =
         wafer::compiler::ExecutionConfig::createForSingleCard(
-            rankCount,
-            wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+            rankCount, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+            wafer::TargetLaunchABIId::perRankPointerBlockV1());
     if (!executionConfig)
       return mlir::failure();
     auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
@@ -192,8 +189,8 @@ protected:
     }
     if (production->getRankExecutables().size() != accepted->ranks.size())
       return mlir::failure();
-    for (auto [expected, committed] : llvm::zip_equal(
-             accepted->ranks, production->getRankExecutables())) {
+    for (auto [expected, committed] :
+         llvm::zip_equal(accepted->ranks, production->getRankExecutables())) {
       std::string expectedText;
       llvm::raw_string_ostream expectedStream(expectedText);
       expected.getModule().print(expectedStream);
@@ -237,20 +234,21 @@ protected:
 TEST_F(WholeVariantCoordinatorTest,
        UsesCoordinatedFallbackBeyondTheBestFirstVisitBound) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   frontiers[0].push_back(candidate(kSendMismatched, 16, 0, 0));
   frontiers[0].push_back(candidate(kSendMatched, 16, 0, 5));
-  frontiers[0].push_back(candidate(
-      (kSendMatched + "    wafer.instr.local_fence\n").str(), 16, 100, 9,
-      true));
+  frontiers[0].push_back(
+      candidate((kSendMatched + "    wafer.instr.local_fence\n").str(), 16, 100,
+                9, true));
   frontiers[1].push_back(candidate(kRecvMismatched, 16, 0, 0));
   frontiers[1].push_back(candidate(kRecvMatched, 16, 0, 5));
-  frontiers[1].push_back(candidate(
-      (kRecvMatched + "    wafer.instr.local_fence\n").str(), 16, 100, 9,
-      true));
+  frontiers[1].push_back(
+      candidate((kRecvMatched + "    wafer.instr.local_fence\n").str(), 16, 100,
+                9, true));
   for (int rank = 2; rank < 16; ++rank) {
     frontiers[rank].push_back(candidate("", 16, 0, 0));
     frontiers[rank].push_back(candidate("", 16, 0, 5));
@@ -286,7 +284,8 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        DoesNotMixDistinctGenerationOrdinalsAcrossRanks) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
@@ -313,17 +312,18 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        DoesNotMixPhysicalArtifactKindsAcrossRanks) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   for (int rank = 0; rank < 16; ++rank) {
     frontiers[rank].push_back(
         candidate("    wafer.instr.local_fence", 16, 100, 9, true));
-    frontiers[rank].push_back(candidate(
-        "", 16, 0, 0, false,
-        rank == 0 ? wafer::RankArtifactKind::Resident
-                  : wafer::RankArtifactKind::ResidentReady));
+    frontiers[rank].push_back(
+        candidate("", 16, 0, 0, false,
+                  rank == 0 ? wafer::RankArtifactKind::Resident
+                            : wafer::RankArtifactKind::ResidentReady));
   }
 
   wafer::frontend::FrontendProgramVerificationResult program;
@@ -334,10 +334,10 @@ TEST_F(WholeVariantCoordinatorTest,
       frontiers, program, *config, diagnostics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_EQ(accepted->selectedArtifactKinds.size(), 16u);
-  EXPECT_TRUE(llvm::all_of(
-      accepted->selectedArtifactKinds, [](wafer::RankArtifactKind kind) {
-        return kind == wafer::RankArtifactKind::Spill;
-      }));
+  EXPECT_TRUE(llvm::all_of(accepted->selectedArtifactKinds,
+                           [](wafer::RankArtifactKind kind) {
+                             return kind == wafer::RankArtifactKind::Spill;
+                           }));
   EXPECT_TRUE(llvm::all_of(accepted->selectedReservedBaselines,
                            [](bool reserved) { return reserved; }));
 }
@@ -345,7 +345,8 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        RejectsCompleteFrontierWithoutMutatingCandidateBindings) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
@@ -374,7 +375,8 @@ TEST_F(WholeVariantCoordinatorTest,
 
 TEST_F(WholeVariantCoordinatorTest, RetainsBaselineWhenExactCostsAreEqual) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(candidate("", 1, 0, 3, true));
@@ -396,7 +398,8 @@ TEST_F(WholeVariantCoordinatorTest, RetainsBaselineWhenExactCostsAreEqual) {
 TEST_F(WholeVariantCoordinatorTest,
        SelectsStrictlyDominatingAlternativeAfterBaselineAcceptance) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(
@@ -419,7 +422,8 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        SelectsFinalParetoWinnerInsteadOfFirstBaselineImprovement) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(
@@ -445,7 +449,8 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        UsesValidatedSPMHighWaterInExactParetoSelection) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(config));
   constexpr llvm::StringLiteral highWater = R"mlir(
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<131072>} : memref<4xf32, #wafer.memory<spm, tensor>>
@@ -471,7 +476,8 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest,
        StaticPolicyAcceptsKnownExecutionGainWithinSPMCapacity) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(config));
   constexpr llvm::StringLiteral lowWaterWithFence = R"mlir(
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<4xf32, #wafer.memory<spm, tensor>>
@@ -563,8 +569,8 @@ module {
       reciprocalInstructions = exact.instructionCount.value;
       reciprocalHighWater = exact.spmHighWaterBytes.value;
     }
-    frontiers[0].push_back({std::move(candidate.module), candidate.stableOrdinal,
-                            candidate.artifactKind,
+    frontiers[0].push_back({std::move(candidate.module),
+                            candidate.stableOrdinal, candidate.artifactKind,
                             candidate.reservedBaseline});
   }
   ASSERT_TRUE(baselineInstructions);
@@ -575,7 +581,8 @@ module {
   EXPECT_LE(*reciprocalHighWater, *baselineHighWater);
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(config));
   wafer::frontend::FrontendProgramVerificationResult program;
   program.logicalRankCount = 1;
@@ -642,7 +649,8 @@ module {
 TEST_F(WholeVariantCoordinatorTest,
        DoesNotUseAlternativeToMaskReservedBaselineFailure) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   constexpr llvm::StringLiteral oversizedSPM = R"mlir(
@@ -693,7 +701,8 @@ module {
     return %r : tensor<16xi8>
   }
 }
-)mlir", context.get());
+)mlir",
+                                                        context.get());
   ASSERT_TRUE(source);
   std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
@@ -703,31 +712,30 @@ module {
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_TRUE(baselineCost);
   ASSERT_TRUE(baselineCost->dataDependencyDepth.isKnown());
-  ASSERT_TRUE(
-      accepted->resourceCost.maximumRankDataDependencyDepth.isKnown());
+  ASSERT_TRUE(accepted->resourceCost.maximumRankDataDependencyDepth.isKnown());
   EXPECT_LT(accepted->resourceCost.maximumRankDataDependencyDepth.value,
             baselineCost->dataDependencyDepth.value);
   EXPECT_FALSE(accepted->selectedReservedBaselines.front());
 
   llvm::DenseMap<mlir::Value, wafer::InstrElementwiseKind> writers;
-  accepted->ranks.front().getModule().walk(
-      [&](wafer::InstrElementwiseOp op) { writers[op.getDest()] = op.getKind(); });
+  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
+    writers[op.getDest()] = op.getKind();
+  });
   bool sawReassociatedJoin = false;
-  accepted->ranks.front().getModule().walk(
-      [&](wafer::InstrElementwiseOp op) {
-        if (op.getKind() != wafer::InstrElementwiseKind::Add)
-          return;
-        bool readsMul = false;
-        bool readsAdd = false;
-        for (mlir::Value input : op.getInputs()) {
-          auto found = writers.find(input);
-          if (found == writers.end())
-            continue;
-          readsMul |= found->second == wafer::InstrElementwiseKind::Mul;
-          readsAdd |= found->second == wafer::InstrElementwiseKind::Add;
-        }
-        sawReassociatedJoin |= readsMul && readsAdd;
-      });
+  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
+    if (op.getKind() != wafer::InstrElementwiseKind::Add)
+      return;
+    bool readsMul = false;
+    bool readsAdd = false;
+    for (mlir::Value input : op.getInputs()) {
+      auto found = writers.find(input);
+      if (found == writers.end())
+        continue;
+      readsMul |= found->second == wafer::InstrElementwiseKind::Mul;
+      readsAdd |= found->second == wafer::InstrElementwiseKind::Add;
+    }
+    sawReassociatedJoin |= readsMul && readsAdd;
+  });
   EXPECT_TRUE(sawReassociatedJoin);
 }
 
@@ -763,7 +771,8 @@ module {
     return %r : tensor<16xi8>
   }
 }
-)mlir", context.get());
+)mlir",
+                                                        context.get());
   ASSERT_TRUE(source);
   std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
@@ -773,28 +782,27 @@ module {
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_TRUE(baselineCost);
   ASSERT_TRUE(baselineCost->dataDependencyDepth.isKnown());
-  ASSERT_TRUE(
-      accepted->resourceCost.maximumRankDataDependencyDepth.isKnown());
+  ASSERT_TRUE(accepted->resourceCost.maximumRankDataDependencyDepth.isKnown());
   EXPECT_LT(accepted->resourceCost.maximumRankDataDependencyDepth.value,
             baselineCost->dataDependencyDepth.value);
   EXPECT_FALSE(accepted->selectedReservedBaselines.front());
 
   llvm::DenseMap<mlir::Value, wafer::InstrElementwiseKind> writers;
-  accepted->ranks.front().getModule().walk(
-      [&](wafer::InstrElementwiseOp op) { writers[op.getDest()] = op.getKind(); });
+  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
+    writers[op.getDest()] = op.getKind();
+  });
   bool sawBalancedJoin = false;
-  accepted->ranks.front().getModule().walk(
-      [&](wafer::InstrElementwiseOp op) {
-        if (op.getKind() != wafer::InstrElementwiseKind::Add)
-          return;
-        unsigned addInputs = 0;
-        for (mlir::Value input : op.getInputs()) {
-          auto found = writers.find(input);
-          addInputs += found != writers.end() &&
-                       found->second == wafer::InstrElementwiseKind::Add;
-        }
-        sawBalancedJoin |= addInputs == 2;
-      });
+  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
+    if (op.getKind() != wafer::InstrElementwiseKind::Add)
+      return;
+    unsigned addInputs = 0;
+    for (mlir::Value input : op.getInputs()) {
+      auto found = writers.find(input);
+      addInputs += found != writers.end() &&
+                   found->second == wafer::InstrElementwiseKind::Add;
+    }
+    sawBalancedJoin |= addInputs == 2;
+  });
   EXPECT_TRUE(sawBalancedJoin);
 }
 
@@ -828,7 +836,8 @@ module {
     return %r : tensor<16xi8>
   }
 }
-)mlir", context.get());
+)mlir",
+                                                        context.get());
   ASSERT_TRUE(source);
   std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
@@ -845,11 +854,10 @@ module {
   EXPECT_FALSE(accepted->selectedReservedBaselines.front());
   unsigned multiplies = 0;
   unsigned subtracts = 0;
-  accepted->ranks.front().getModule().walk(
-      [&](wafer::InstrElementwiseOp op) {
-        multiplies += op.getKind() == wafer::InstrElementwiseKind::Mul;
-        subtracts += op.getKind() == wafer::InstrElementwiseKind::Sub;
-      });
+  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
+    multiplies += op.getKind() == wafer::InstrElementwiseKind::Mul;
+    subtracts += op.getKind() == wafer::InstrElementwiseKind::Sub;
+  });
   EXPECT_EQ(multiplies, 1u);
   EXPECT_EQ(subtracts, 1u);
 }
@@ -884,7 +892,8 @@ module {
     return %r : tensor<16xi8>
   }
 }
-)mlir", context.get());
+)mlir",
+                                                        context.get());
   ASSERT_TRUE(source);
   std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
@@ -901,11 +910,10 @@ module {
   EXPECT_FALSE(accepted->selectedReservedBaselines.front());
   unsigned adds = 0;
   unsigned multiplies = 0;
-  accepted->ranks.front().getModule().walk(
-      [&](wafer::InstrElementwiseOp op) {
-        adds += op.getKind() == wafer::InstrElementwiseKind::Add;
-        multiplies += op.getKind() == wafer::InstrElementwiseKind::Mul;
-      });
+  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
+    adds += op.getKind() == wafer::InstrElementwiseKind::Add;
+    multiplies += op.getKind() == wafer::InstrElementwiseKind::Mul;
+  });
   EXPECT_EQ(adds, 1u);
   EXPECT_EQ(multiplies, 1u);
 }
@@ -968,22 +976,22 @@ module {
                                     tensor<262144xf32>
   }
 }
-)mlir", context.get());
+)mlir",
+                                                        context.get());
   ASSERT_TRUE(source);
   std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  auto accepted = selectProductionVariant(
-      *source, replicated1DProgram(2, 262144, "f32", 3), diagnostics,
-      &baselineCost);
+  auto accepted =
+      selectProductionVariant(*source, replicated1DProgram(2, 262144, "f32", 3),
+                              diagnostics, &baselineCost);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_TRUE(baselineCost);
   EXPECT_FALSE(accepted->selectedReservedBaselines.front());
   unsigned negations = 0;
-  accepted->ranks.front().getModule().walk(
-      [&](wafer::InstrElementwiseOp op) {
-        negations += op.getKind() == wafer::InstrElementwiseKind::Neg;
-      });
+  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
+    negations += op.getKind() == wafer::InstrElementwiseKind::Neg;
+  });
   EXPECT_GE(negations, 3u);
   EXPECT_LT(accepted->resourceCost.aggregateDDRReadBytes.value,
             baselineCost->ddrReadBytes.value);
@@ -1034,14 +1042,15 @@ module {
                                       tensor<16xf32>
   }
 }
-)mlir", context.get());
+)mlir",
+                                                        context.get());
   ASSERT_TRUE(source);
   std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  auto accepted = selectProductionVariant(
-      *source, replicated1DProgram(1, 16, "f32", 3), diagnostics,
-      &baselineCost);
+  auto accepted =
+      selectProductionVariant(*source, replicated1DProgram(1, 16, "f32", 3),
+                              diagnostics, &baselineCost);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_TRUE(baselineCost);
   EXPECT_FALSE(accepted->selectedReservedBaselines.front());
@@ -1108,7 +1117,8 @@ module {
     return %final : tensor<16xf32>
   }
 }
-)mlir", context.get());
+)mlir",
+                                                        context.get());
   ASSERT_TRUE(source);
   std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
@@ -1121,15 +1131,14 @@ module {
   EXPECT_LT(accepted->resourceCost.aggregateCompute.vectorF32LogicalOps.value,
             baselineCost->compute.vectorF32LogicalOps.value);
   bool instructionInsideLoop = false;
-  accepted->ranks.front().getModule().walk(
-      [&](wafer::InstrElementwiseOp op) {
-        for (mlir::scf::ForOp loop = op->getParentOfType<mlir::scf::ForOp>();
-             loop; loop = loop->getParentOfType<mlir::scf::ForOp>()) {
-          auto upper = loop.getUpperBound()
-                           .getDefiningOp<mlir::arith::ConstantIndexOp>();
-          instructionInsideLoop |= upper && upper.value() == 4;
-        }
-      });
+  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
+    for (mlir::scf::ForOp loop = op->getParentOfType<mlir::scf::ForOp>(); loop;
+         loop = loop->getParentOfType<mlir::scf::ForOp>()) {
+      auto upper =
+          loop.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      instructionInsideLoop |= upper && upper.value() == 4;
+    }
+  });
   EXPECT_FALSE(instructionInsideLoop);
 }
 
@@ -1175,7 +1184,8 @@ module {
     return %consumer : tensor<16xf32>
   }
 }
-)mlir", context.get());
+)mlir",
+                                                        context.get());
   ASSERT_TRUE(source);
   std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
@@ -1249,7 +1259,8 @@ module {
     return %negated, %reduced : tensor<2x4xf32>, tensor<2xf32>
   }
 }
-)mlir", context.get());
+)mlir",
+                                                        context.get());
   ASSERT_TRUE(source);
 
   auto makeBoundary = [](int64_t index, llvm::ArrayRef<int64_t> shape,
@@ -1257,8 +1268,7 @@ module {
     wafer::frontend::ProgramBoundaryBinding binding;
     binding.index = index;
     binding.programIndex = index;
-    binding.distribution =
-        wafer::frontend::ProgramDistributionKind::Replicated;
+    binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
     binding.globalShape.assign(shape.begin(), shape.end());
     binding.localShape.assign(shape.begin(), shape.end());
     binding.dtype = dtype.str();
@@ -1296,8 +1306,8 @@ module {
   winner.walk([&](wafer::TileRegionOp region) {
     hasSPMProducerResult |=
         llvm::any_of(region.getResultTypes(), wafer::isWaferSPMMemRefType);
-    hasSPMConsumerOperand |= llvm::any_of(
-        region.getOperandTypes(), wafer::isWaferSPMMemRefType);
+    hasSPMConsumerOperand |=
+        llvm::any_of(region.getOperandTypes(), wafer::isWaferSPMMemRefType);
   });
   EXPECT_TRUE(hasSPMProducerResult);
   EXPECT_TRUE(hasSPMConsumerOperand);
@@ -1327,15 +1337,15 @@ module {
     return %result : tensor<1x1xf16>
   }
 }
-)mlir", context.get());
+)mlir",
+                                                        context.get());
   ASSERT_TRUE(source);
 
   auto makeBoundary = [](int64_t index, llvm::ArrayRef<int64_t> shape) {
     wafer::frontend::ProgramBoundaryBinding binding;
     binding.index = index;
     binding.programIndex = index;
-    binding.distribution =
-        wafer::frontend::ProgramDistributionKind::Replicated;
+    binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
     binding.globalShape.assign(shape.begin(), shape.end());
     binding.localShape.assign(shape.begin(), shape.end());
     binding.dtype = "f16";
@@ -1390,8 +1400,7 @@ module {
   });
   EXPECT_GT(gemmCount, 0u);
   unsigned gatherScatterCount = 0;
-  winner.walk(
-      [&](wafer::InstrGatherScatterOp) { ++gatherScatterCount; });
+  winner.walk([&](wafer::InstrGatherScatterOp) { ++gatherScatterCount; });
   std::string winnerText;
   llvm::raw_string_ostream winnerStream(winnerText);
   winner.print(winnerStream);
@@ -1400,8 +1409,8 @@ module {
   winner.walk([&](mlir::Operation *operation) {
     if (!mlir::isa<wafer::InstrRDMAOp, wafer::InstrWDMAOp>(operation))
       return;
-    mappedMovementCount += operation->hasAttr("src_offset") ||
-                           operation->hasAttr("dst_offset");
+    mappedMovementCount +=
+        operation->hasAttr("src_offset") || operation->hasAttr("dst_offset");
   });
   EXPECT_GT(mappedMovementCount, 0u) << winnerStream.str();
 }
@@ -1429,15 +1438,15 @@ module {
     return %gathered : tensor<64xf32>
   }
 }
-)mlir", context.get());
+)mlir",
+                                                        context.get());
   ASSERT_TRUE(source);
 
   auto makeBoundary = [](int64_t elements) {
     wafer::frontend::ProgramBoundaryBinding binding;
     binding.index = 0;
     binding.programIndex = 0;
-    binding.distribution =
-        wafer::frontend::ProgramDistributionKind::Replicated;
+    binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
     binding.globalShape = {elements};
     binding.localShape = {elements};
     binding.dtype = "f32";
@@ -1470,9 +1479,8 @@ module {
                             [](bool reserved) { return reserved; }));
   EXPECT_LT(accepted->resourceCost.rankCosts.front().instructionCount.value,
             baselineCost->instructionCount.value);
-  EXPECT_LT(
-      accepted->resourceCost.rankCosts.front().spmMovementBytes.value,
-      baselineCost->spmMovementBytes.value);
+  EXPECT_LT(accepted->resourceCost.rankCosts.front().spmMovementBytes.value,
+            baselineCost->spmMovementBytes.value);
   for (const auto &rank : accepted->ranks) {
     bool sawDirect = false;
     bool sawRing = false;
@@ -1519,15 +1527,17 @@ module {
     return %reduced : tensor<4xf32>
   }
 }
-)mlir", context.get());
+)mlir",
+                                                        context.get());
   ASSERT_TRUE(source);
 
   std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto accepted = selectProductionVariant(
-      *source, replicated1DProgram(1, 4, "f32", /*outputCount=*/1,
-                                   /*rankCount=*/16),
+      *source,
+      replicated1DProgram(1, 4, "f32", /*outputCount=*/1,
+                          /*rankCount=*/16),
       diagnostics, &baselineCost, /*rankCount=*/16);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_TRUE(baselineCost);

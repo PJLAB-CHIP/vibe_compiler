@@ -18,30 +18,33 @@ DEFAULT_GCC_VERSION = "10.4.0"
 DEFAULT_MARCH = "rv64imafdc"
 DEFAULT_MABI = "lp64d"
 DEFAULT_LOADER_ABI = "tx8-kcore-loader-v1"
+BASE_LOADER_ABI_UNDEFINED_SYMBOLS = frozenset(
+    {
+        "get_log_level",
+        "get_spm_memory_mapping",
+        "direct_dte_attach",
+        "direct_dte_release",
+        "direct_dte_send_async",
+        "direct_dte_wait_done",
+        "direct_fsm_monitor_deinit",
+        "direct_fsm_monitor_init",
+        "direct_fsm_monitor_receive",
+        "direct_sync_init",
+        "direct_sync_post",
+        "direct_sync_wait",
+        "csi_kernel_free",
+        "csi_kernel_malloc",
+        "monitor_write_log",
+        "rt_thread_mdelay",
+        "tsm_ep_log",
+        "tx8_kernel_printf",
+        "tx8_kernel_vprintf",
+    }
+)
 LOADER_ABI_UNDEFINED_SYMBOLS = {
-    "tx8-kcore-loader-v1": frozenset(
-        {
-            "get_log_level",
-            "get_spm_memory_mapping",
-            "direct_dte_attach",
-            "direct_dte_release",
-            "direct_dte_send_async",
-            "direct_dte_wait_done",
-            "direct_fsm_monitor_deinit",
-            "direct_fsm_monitor_init",
-            "direct_fsm_monitor_receive",
-            "direct_sync_init",
-            "direct_sync_post",
-            "direct_sync_wait",
-            "csi_kernel_free",
-            "csi_kernel_malloc",
-            "monitor_write_log",
-            "rt_thread_mdelay",
-            "tsm_ep_log",
-            "tx8_kernel_printf",
-            "tx8_kernel_vprintf",
-        }
-    )
+    "tx8-kcore-loader-v1": BASE_LOADER_ABI_UNDEFINED_SYMBOLS,
+    "tx8-kcore-loader-grid-v1": BASE_LOADER_ABI_UNDEFINED_SYMBOLS
+    | {"__get_pid"},
 }
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_TX8_DEPS_DIR = REPO_ROOT / "third_party" / "tx8_deps"

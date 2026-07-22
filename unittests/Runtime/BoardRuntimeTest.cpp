@@ -28,7 +28,10 @@ llvm::Error injected(llvm::StringRef operation) {
 
 class FakeBoardDriver final : public wafer::runtime::BoardRuntimeDriver {
 public:
-  FakeBoardDriver() : providerEnvironment(makeProviderEnvironment()) {}
+  explicit FakeBoardDriver(
+      wafer::TargetLaunchABIId launchABI =
+          wafer::TargetLaunchABIId::perRankPointerBlockV1())
+      : providerEnvironment(makeProviderEnvironment(launchABI)) {}
 
   wafer::runtime::BoardRuntimeContextState getContextState() const override {
     return contextState;
@@ -169,6 +172,32 @@ public:
     return wafer::runtime::BoardFunctionHandle{module.value + 0x2000};
   }
 
+  llvm::Expected<wafer::runtime::BoardGraphHandle> loadGraph(
+      llvm::ArrayRef<wafer::runtime::BoardGraphModuleSnapshot> modules,
+      llvm::StringRef symbol) override {
+    calls.push_back("load-graph");
+    if (shouldFail("load-graph"))
+      return injectedFailure();
+    if (graphLive || modules.size() != 16 || symbol != "main")
+      return injected("invalid-graph-load");
+    for (auto [tile, module] : llvm::enumerate(modules))
+      if (module.logicalTile != tile || module.bytes.empty() ||
+          module.digest.empty())
+        return injected("invalid-graph-module-domain");
+    graphLive = true;
+    return wafer::runtime::BoardGraphHandle{0xa000};
+  }
+
+  llvm::Error unloadGraph(wafer::runtime::BoardGraphHandle graph) override {
+    calls.push_back("unload-graph");
+    if (shouldFail("unload-graph"))
+      return injectedFailure();
+    if (!graphLive || graph.value != 0xa000)
+      return injected("invalid-graph-unload");
+    graphLive = false;
+    return llvm::Error::success();
+  }
+
   llvm::Error
   submitAll(llvm::ArrayRef<wafer::runtime::BoardRankLaunch> launches) override {
     calls.push_back("submit-all");
@@ -192,6 +221,67 @@ public:
       for (size_t byte = 0; byte < input->bytes.size(); ++byte)
         output->bytes[byte] =
             input->bytes[byte] ^ static_cast<uint8_t>(launch.logicalRank);
+    }
+    submissionLive = true;
+    return llvm::Error::success();
+  }
+
+  llvm::Error submitKernelGrid(
+      llvm::ArrayRef<wafer::runtime::BoardRankLaunch> launches) override {
+    calls.push_back("submit-kernel-grid");
+    if (shouldFail("submit-kernel-grid"))
+      return injectedFailure();
+    if (submissionLive || launches.size() != 16)
+      return injected("invalid-kernel-grid-state");
+    submittedLaunches.assign(launches.begin(), launches.end());
+    for (auto [rank, launch] : llvm::enumerate(launches)) {
+      if (launch.logicalRank != static_cast<int64_t>(rank) ||
+          launch.function.value != 0x9000 || launch.arguments.size() < 2)
+        return injected("invalid-kernel-grid-launch");
+      auto input = find(launch.arguments[0]);
+      auto output = find(launch.arguments[1]);
+      if (input == allocations.end() || output == allocations.end() ||
+          input->bytes.size() != output->bytes.size())
+        return injected("invalid-kernel-grid-buffers");
+      for (size_t byte = 0; byte < input->bytes.size(); ++byte)
+        output->bytes[byte] =
+            input->bytes[byte] ^ static_cast<uint8_t>(rank);
+    }
+    submissionLive = true;
+    return llvm::Error::success();
+  }
+
+  llvm::Error submitModel(
+      wafer::runtime::BoardGraphHandle graph,
+      llvm::ArrayRef<wafer::runtime::BoardModelTensorLaunch> tensors) override {
+    calls.push_back("submit-model");
+    if (shouldFail("submit-model"))
+      return injectedFailure();
+    if (submissionLive || !graphLive || graph.value != 0xa000 ||
+        tensors.empty())
+      return injected("invalid-model-submit-state");
+    submittedModelTensors.assign(tensors.begin(), tensors.end());
+    for (int64_t rank = 0; rank < 16; ++rank) {
+      auto input = llvm::find_if(tensors, [&](const auto &tensor) {
+        return tensor.logicalRank == rank &&
+               tensor.role ==
+                   wafer::runtime::PackageResourceRole::UserInput;
+      });
+      auto output = llvm::find_if(tensors, [&](const auto &tensor) {
+        return tensor.logicalRank == rank &&
+               tensor.role == wafer::runtime::PackageResourceRole::Output;
+      });
+      if (input == tensors.end() || output == tensors.end())
+        return injected("invalid-model-tensor-domain");
+      auto inputAllocation = find(input->memory.value);
+      auto outputAllocation = find(output->memory.value);
+      if (inputAllocation == allocations.end() ||
+          outputAllocation == allocations.end() ||
+          inputAllocation->bytes.size() != outputAllocation->bytes.size())
+        return injected("invalid-model-buffers");
+      for (size_t byte = 0; byte < inputAllocation->bytes.size(); ++byte)
+        outputAllocation->bytes[byte] =
+            inputAllocation->bytes[byte] ^ static_cast<uint8_t>(rank);
     }
     submissionLive = true;
     return llvm::Error::success();
@@ -229,6 +319,7 @@ public:
   std::vector<uintptr_t> loadedHandles;
   std::vector<uintptr_t> unloadedHandles;
   std::vector<wafer::runtime::BoardRankLaunch> submittedLaunches;
+  std::vector<wafer::runtime::BoardModelTensorLaunch> submittedModelTensors;
   uint64_t observedTimeoutMilliseconds = 0;
   uint32_t selectedDevice = std::numeric_limits<uint32_t>::max();
   int64_t unavailableLogicalTile = -1;
@@ -238,11 +329,12 @@ public:
       "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 private:
-  static wafer::runtime::RuntimeEnvironment makeProviderEnvironment() {
+  static wafer::runtime::RuntimeEnvironment
+  makeProviderEnvironment(wafer::TargetLaunchABIId launchABI) {
     const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     return {target.id, target.targetIdentity, target.kernelRuntimeABI,
-            target.moduleFormat};
+            launchABI, target.moduleFormat};
   }
 
   bool shouldFail(llvm::StringRef operation) {
@@ -272,6 +364,7 @@ private:
   uintptr_t nextAddress = 0x1000;
   std::vector<Allocation> allocations;
   std::vector<uintptr_t> liveModules;
+  bool graphLive = false;
   bool submissionLive = false;
   size_t matchingFailureCall = 0;
   wafer::runtime::RuntimeEnvironment providerEnvironment;
@@ -304,7 +397,9 @@ protected:
     llvm::SHA256 hasher;
     hasher.update(moduleBytes);
     PackageManifest manifest(target.id, target.targetIdentity,
-                             target.kernelRuntimeABI, target.moduleFormat);
+                             target.kernelRuntimeABI,
+                             wafer::TargetLaunchABIId::perRankPointerBlockV1(),
+                             target.moduleFormat);
     manifest.program = ProgramId(0);
     manifest.rankCount = 1;
     manifest.resources = {{ResourceId(0),
@@ -375,12 +470,15 @@ protected:
     return "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
   }
 
-  wafer::runtime::PackageManifest makeRank16Manifest() const {
+  wafer::runtime::PackageManifest makeRank16Manifest(
+      wafer::TargetLaunchABIId launchABI =
+          wafer::TargetLaunchABIId::perRankPointerBlockV1()) const {
     using namespace wafer::runtime;
     const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     PackageManifest manifest(target.id, target.targetIdentity,
-                             target.kernelRuntimeABI, target.moduleFormat);
+                             target.kernelRuntimeABI, launchABI,
+                             target.moduleFormat);
     manifest.program = ProgramId(0);
     manifest.rankCount = 16;
 
@@ -419,8 +517,9 @@ protected:
                   PackageAccessMode::ReadOnly, true);
       addResource(PackageResourceRole::Output, "output", "f32", {16}, 64,
                   PackageAccessMode::WriteOnly, true);
-      addResource(PackageResourceRole::Workspace, "workspace", "u8", {512}, 512,
-                  PackageAccessMode::ReadWrite, false);
+      if (launchABI != wafer::TargetLaunchABIId::tx81ModelBootParamV1())
+        addResource(PackageResourceRole::Workspace, "workspace", "u8", {512},
+                    512, PackageAccessMode::ReadWrite, false);
       manifest.entries.push_back({entry, rank, module, "main", std::move(slots),
                                   completion, NoTransportRequirements{}});
     }
@@ -435,8 +534,11 @@ protected:
     return manifest;
   }
 
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> verifyRank16() const {
-    return wafer::runtime::verifyPackageManifest(makeRank16Manifest(), root);
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> verifyRank16(
+      wafer::TargetLaunchABIId launchABI =
+          wafer::TargetLaunchABIId::perRankPointerBlockV1()) const {
+    return wafer::runtime::verifyPackageManifest(makeRank16Manifest(launchABI),
+                                                 root);
   }
 
   static uint8_t rankInputByte(int64_t rank, size_t byte) {
@@ -586,7 +688,7 @@ TEST_F(BoardRuntimeTest,
     size_t expectedCount;
   };
   const BeforeSubmit beforeSubmit[] = {{"allocate", 48},
-                                       {"h2d", 32},
+                                       {"h2d", 48},
                                        {"load-module", 16},
                                        {"resolve-entry", 16}};
   for (const BeforeSubmit &expected : beforeSubmit) {
@@ -618,6 +720,203 @@ TEST_F(BoardRuntimeTest,
   std::vector<uintptr_t> expectedAllocations = driver.allocatedAddresses;
   std::reverse(expectedAllocations.begin(), expectedAllocations.end());
   EXPECT_EQ(driver.freedAddresses, expectedAllocations);
+}
+
+TEST_F(BoardRuntimeTest,
+       KernelGridLoadsOneSharedModuleAndSubmitsOneCanonicalGrid) {
+  using wafer::TargetLaunchABIId;
+  const TargetLaunchABIId launchABI =
+      TargetLaunchABIId::tx81KernelGridPointerTableV1();
+  createRankModules(16);
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+      verifyRank16(launchABI);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  const wafer::runtime::PackageManifest &manifest = package->getManifest();
+  FakeBoardDriver driver(launchABI);
+  llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
+      wafer::runtime::executeBoardInvocation(
+          *package, root, makeRank16Request(manifest), driver);
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "load-module"),
+            1);
+  EXPECT_EQ(
+      std::count(driver.calls.begin(), driver.calls.end(), "resolve-entry"), 1);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "submit-kernel-grid"),
+            1);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "submit-all"),
+            0);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "load-graph"),
+            0);
+  ASSERT_EQ(driver.submittedLaunches.size(), 16u);
+  for (auto [rank, launch] : llvm::enumerate(driver.submittedLaunches)) {
+    EXPECT_EQ(launch.logicalRank, static_cast<int64_t>(rank));
+    EXPECT_EQ(launch.function.value, 0x9000u);
+  }
+
+  ASSERT_EQ(result->outputs.size(), 16u);
+  for (const wafer::runtime::BoardRuntimeOutput &output : result->outputs) {
+    auto resource = llvm::find_if(manifest.resources, [&](const auto &candidate) {
+      return candidate.id == output.resource;
+    });
+    ASSERT_NE(resource, manifest.resources.end());
+    for (size_t byte = 0; byte < output.bytes.size(); ++byte)
+      EXPECT_EQ(output.bytes[byte],
+                rankInputByte(resource->logicalRank, byte) ^
+                    static_cast<uint8_t>(resource->logicalRank));
+  }
+}
+
+TEST_F(BoardRuntimeTest,
+       ModelLoadsCompleteGraphAndSubmitsTypedTensorDomain) {
+  using wafer::TargetLaunchABIId;
+  const TargetLaunchABIId launchABI =
+      TargetLaunchABIId::tx81ModelBootParamV1();
+  createRankModules(16);
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+      verifyRank16(launchABI);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  const wafer::runtime::PackageManifest &manifest = package->getManifest();
+  FakeBoardDriver driver(launchABI);
+  llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
+      wafer::runtime::executeBoardInvocation(
+          *package, root, makeRank16Request(manifest), driver);
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "load-graph"),
+            1);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "submit-model"),
+            1);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "load-module"),
+            0);
+  EXPECT_EQ(
+      std::count(driver.calls.begin(), driver.calls.end(), "resolve-entry"), 0);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "submit-all"),
+            0);
+  ASSERT_EQ(driver.submittedModelTensors.size(), 32u);
+  for (int64_t rank = 0; rank < 16; ++rank)
+    EXPECT_EQ(llvm::count_if(driver.submittedModelTensors,
+                             [&](const auto &tensor) {
+                               return tensor.logicalRank == rank;
+                             }),
+              2);
+
+  auto release =
+      std::find(driver.calls.begin(), driver.calls.end(), "release-submission");
+  auto unloadGraph =
+      std::find(driver.calls.begin(), driver.calls.end(), "unload-graph");
+  auto firstFree = std::find_if(
+      driver.calls.begin(), driver.calls.end(),
+      [](const std::string &call) { return call.find("free:") == 0; });
+  ASSERT_NE(release, driver.calls.end());
+  ASSERT_NE(unloadGraph, driver.calls.end());
+  ASSERT_NE(firstFree, driver.calls.end());
+  EXPECT_LT(release, unloadGraph);
+  EXPECT_LT(unloadGraph, firstFree);
+
+  ASSERT_EQ(result->outputs.size(), 16u);
+  for (const wafer::runtime::BoardRuntimeOutput &output : result->outputs) {
+    auto resource = llvm::find_if(manifest.resources, [&](const auto &candidate) {
+      return candidate.id == output.resource;
+    });
+    ASSERT_NE(resource, manifest.resources.end());
+    for (size_t byte = 0; byte < output.bytes.size(); ++byte)
+      EXPECT_EQ(output.bytes[byte],
+                rankInputByte(resource->logicalRank, byte) ^
+                    static_cast<uint8_t>(resource->logicalRank));
+  }
+}
+
+TEST_F(BoardRuntimeTest,
+       MultiTilePoisonedProviderFailureIsTheFinalDriverCall) {
+  using wafer::TargetLaunchABIId;
+  struct Scenario {
+    TargetLaunchABIId launchABI;
+    llvm::StringLiteral operation;
+  };
+  const Scenario scenarios[] = {
+      {TargetLaunchABIId::tx81KernelGridPointerTableV1(),
+       "submit-kernel-grid"},
+      {TargetLaunchABIId::tx81ModelBootParamV1(), "load-graph"},
+      {TargetLaunchABIId::tx81ModelBootParamV1(), "submit-model"},
+  };
+  createRankModules(16);
+  for (const Scenario &scenario : scenarios) {
+    SCOPED_TRACE(scenario.operation.str());
+    llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+        verifyRank16(scenario.launchABI);
+    ASSERT_TRUE(static_cast<bool>(package))
+        << llvm::toString(package.takeError());
+    FakeBoardDriver driver(scenario.launchABI);
+    driver.failOperation = scenario.operation.str();
+    driver.poisonOnFailure = true;
+    llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
+        wafer::runtime::executeBoardInvocation(
+            *package, root, makeRank16Request(package->getManifest()), driver);
+    ASSERT_FALSE(static_cast<bool>(result));
+    llvm::consumeError(result.takeError());
+    ASSERT_FALSE(driver.calls.empty());
+    EXPECT_EQ(driver.calls.back(), scenario.operation);
+    EXPECT_EQ(std::find(driver.calls.begin(), driver.calls.end(),
+                        "release-submission"),
+              driver.calls.end());
+    EXPECT_EQ(std::find(driver.calls.begin(), driver.calls.end(),
+                        "unload-graph"),
+              driver.calls.end());
+    EXPECT_EQ(std::find_if(driver.calls.begin(), driver.calls.end(),
+                           [](const std::string &call) {
+                             return call.find("unload-module:") == 0 ||
+                                    call.find("free:") == 0;
+                           }),
+              driver.calls.end());
+  }
+}
+
+TEST_F(BoardRuntimeTest,
+       ModelManifestRejectsUnqualifiedBootParamBeforeDriverCreation) {
+  using wafer::TargetLaunchABIId;
+  using wafer::runtime::PackageManifest;
+  const TargetLaunchABIId launchABI =
+      TargetLaunchABIId::tx81ModelBootParamV1();
+  createRankModules(16);
+
+  auto expectRejected = [&](PackageManifest manifest) {
+    llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+        wafer::runtime::verifyPackageManifest(std::move(manifest), root);
+    EXPECT_FALSE(static_cast<bool>(package));
+    if (!package)
+      llvm::consumeError(package.takeError());
+  };
+
+  PackageManifest zeroExtent = makeRank16Manifest(launchABI);
+  for (auto &resource : zeroExtent.resources)
+    if (resource.role == wafer::runtime::PackageResourceRole::UserInput)
+      resource.type.shape = {0};
+  expectRejected(std::move(zeroExtent));
+
+  PackageManifest byteMismatch = makeRank16Manifest(launchABI);
+  for (auto &resource : byteMismatch.resources)
+    if (resource.role == wafer::runtime::PackageResourceRole::UserInput)
+      resource.bytes -= sizeof(float);
+  expectRejected(std::move(byteMismatch));
+
+  PackageManifest insufficientAlignment = makeRank16Manifest(launchABI);
+  for (auto &resource : insufficientAlignment.resources)
+    resource.alignment = 1;
+  expectRejected(std::move(insufficientAlignment));
+
+  PackageManifest longSymbol = makeRank16Manifest(launchABI);
+  for (auto &entry : longSymbol.entries)
+    entry.symbol.assign(128, 'm');
+  expectRejected(std::move(longSymbol));
+
+  PackageManifest nulSymbol = makeRank16Manifest(launchABI);
+  for (auto &entry : nulSymbol.entries)
+    entry.symbol = std::string("ma\0in", 5);
+  expectRejected(std::move(nulSymbol));
 }
 
 TEST_F(BoardRuntimeTest, Rank16RequiresCompleteUniqueTileInventory) {
@@ -660,7 +959,7 @@ TEST_F(BoardRuntimeTest,
   };
   const Scenario scenarios[] = {
       {"allocate", 45, wafer::runtime::BoardRuntimeStage::ResourceAllocation},
-      {"h2d", 30, wafer::runtime::BoardRuntimeStage::HostToDevice},
+      {"h2d", 45, wafer::runtime::BoardRuntimeStage::HostToDevice},
       {"load-module", 15, wafer::runtime::BoardRuntimeStage::ModuleLoad},
       {"resolve-entry", 15, wafer::runtime::BoardRuntimeStage::EntryResolve},
       {"d2h", 15, wafer::runtime::BoardRuntimeStage::DeviceToHost},
@@ -723,7 +1022,7 @@ TEST_F(BoardRuntimeTest,
   };
   const Scenario scenarios[] = {
       {"allocate", 45, wafer::runtime::BoardRuntimeStage::ResourceAllocation},
-      {"h2d", 30, wafer::runtime::BoardRuntimeStage::HostToDevice},
+      {"h2d", 45, wafer::runtime::BoardRuntimeStage::HostToDevice},
       {"load-module", 15, wafer::runtime::BoardRuntimeStage::ModuleLoad},
       {"resolve-entry", 15, wafer::runtime::BoardRuntimeStage::EntryResolve},
       {"d2h", 15, wafer::runtime::BoardRuntimeStage::DeviceToHost},
