@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-21
+更新时间：2026-07-22
 
 本文件只记录当前调度状态、前置关系和紧凑完成索引，不保存逐轮测试数字、实现复盘或历史工作日志。
 长期架构与pipeline contract以编号设计文档为准，详细完成证据与实施记录位于`tasks/archive/`，完整导航见
@@ -68,15 +68,19 @@ explicit Count semantic/target/model evidence -> Q3.6 (independent typed writeba
 
 ## 当前实施队列
 
-当前`doing` row为Q6.B：board provider、rank-one add gate和fresh package链路已经接通。当前configured TX8110的driver、
-ML/SMI为V5.6.0.1231，public runtime 1.3.0 payload与同一V5.6安装包逐字节一致；宿主引导源`kcore_fw.bin`与compile SDK
+当前`doing` row为Q6.B：board provider、rank-one及rank-count=16 `transport:none` add gate和fresh package链路已经接通。当前configured TX8110的driver为
+V5.6.0.1231、ML/SMI为V5.6.0.1231.01，public runtime 1.3.0 payload与同一V5.6安装包逐字节一致；宿主引导源`kcore_fw.bin`与compile SDK
 对应ELF提取payload逐字节一致，driver debugfs缓存显示运行中Kcore version=1.0.1、status=on。未读取device RAM，因此不声明
 运行中payload的byte identity。fresh Wafer add module仅依赖匹配SDK Kcore export surface中的`csi_kernel_malloc/free`。
-production `wafer-compile` fresh发布的rank-one f32 add已由显式armed、identity-qualified的board-capable `wafer-run`
-连续两次完成allocation→H2D→load/resolve→launch→completion→D2H→cleanup，完整64-byte输出均exact。
+production `wafer-compile` fresh发布的rank-one和16-rank f32 add已由显式armed、identity-qualified的board-capable
+`wafer-run`分别连续两次完成allocation→H2D→load/resolve→launch→completion→D2H→cleanup，all-and-only输出均exact；
+执行前后卡的memory/process/firmware状态回到同一健康基线，过程中没有调用reset或power。16-rank gate使用一个owner-backed
+invocation、独立stream和有deadline的共同progress，只证明16份logical entry/module/argument block均执行；stream不是tile
+selector，因此physical rank mapping保持unclaimed，也不声明16-tile并行利用率。
 已定位vendor预置module这一次OOM表象来自7个未闭合动态符号的远端relocation失败；同一污染周期内其它后续失败不作追溯性
-因果归因。legacy host runtime只是不兼容的另一条tutorial路径，不是public runtime失败根因。rank-one bootstrap已闭合，Q6.B继续`doing`，
-下一边界是rank-count=16 owner-backed all-rank provider session，而不是重复单卡reset或重跑无效sample。
+因果归因。legacy host runtime只是不兼容的另一条tutorial路径，不是public runtime失败根因。rank-one及NoTransport all-rank
+bootstrap已闭合，Q6.B继续`doing`；下一边界是Direct DTE所需的可验证placement/parameter ABI、真实receiver readiness和
+共同completion，而不是把command queue当成tile placement或重复单卡reset。
 Q32已完成integrated completion audit；该完成不会让其它
 later/external gate自动进入主线。
 
@@ -103,7 +107,7 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 / 外部 gate | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q6.B | `runtime-board` | `doing` | Q0.L、Q21 + configured board | rank-one f32 add fresh package已连续两次完整exact；继续实现rank-count=16 owner-backed all-rank lifecycle和完整输出比较。 | 15、16 |
+| Q6.B | `runtime-board` | `doing` | Q0.L、Q21 + configured board | rank-one和16-rank `transport:none` fresh package已分别重复完整exact；继续闭合Direct DTE placement/parameter ABI、receiver readiness和共同completion，不声明stream到physical tile映射。 | 15、16 |
 | Q9 | `cost-calibration` | `later` | Q32、Q6.B + profile environment | 只校准Q32合法候选排序，不改变语义合法性。 | 06、16 |
 | Q22.C | `target-model-numeric-correlation` | `later` | Q22、Q32、Q6.B + configured numeric corpus | 按capability row用board区分向量和held-out冻结numeric comparator/profile。 | 16、17 |
 | Q22.E | `target-model-package-execution` | `later` | Q18、Q22、Q32 + configured simulator/ISS | 原样执行Q32 integrated audit冻结的verified package及all-and-only RISC-V ELF；任何未来schema升级必须先独立完成再作为该gate输入。 | 15、16、17 |
@@ -161,7 +165,7 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 ## 实施计划入口
 
-- Active task：无；Later / External Gates不会自动进入执行。
+- Active task：Q6.B `runtime-board`，实施计划见`tasks/plans/runtime-board.md`。
 - Completed task：Q32 `physical-dataflow-synthesis`，完成审计见
   `tasks/archive/physical-dataflow-synthesis-completion-audit.md`，实施计划见
   `tasks/archive/physical-dataflow-synthesis.md`。

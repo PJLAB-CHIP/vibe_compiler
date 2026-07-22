@@ -21,7 +21,8 @@ Pipeline position:
   不在runtime重新planning，不从名字或路径恢复ABI，不把sample、model或性能结果当作board correctness；不自动reset、power、
   retry或把context恢复混入invocation cleanup；one-shot board进程在显式lifecycle和flush后不运行vendor DSO finalizer。
 - Completion gate:
-  同版本qualification baseline健康后，fresh rank-count=1/16 package在真实TX board完成all-and-only lifecycle、完整输出比较和重复稳定性验证。
+  同版本qualification baseline健康后，fresh rank-count=1/16 NoTransport package在真实TX board完成all-and-only lifecycle、
+  完整输出比较和重复稳定性验证；Q6.B整体还须由Direct DTE package闭合真实placement/readiness/completion。
 ```
 
 ## Checkpoints
@@ -34,7 +35,14 @@ Pipeline position:
 4. 环境资格：driver/public runtime与宿主boot-source Kcore payload、module toolchain字节级闭合，debugfs cached
    version/status对应且module imports由匹配SDK Kcore exports闭合；没有device-RAM dump时不声明运行中payload逐字节一致。
    缺符号且无完整数值比较的vendor sample被明确排除。
-5. rank-count=16：在rank-one bootstrap通过后，按provider-owned all-rank session合同执行共同submit/progress/status/cleanup和完整输出比较。
-6. 收尾：显式armed执行hardware CTest并确认未skip/unsupported，同步任务队列、编号设计和memory，提交相关改动。
+5. rank-count=16：先以`transport:none` fresh Add闭合provider-owned all-rank session：完整domain静态preflight、只读16-tile
+   inventory、aggregate capacity、全部resource/module/entry ownership、独立stream共同submit、query deadline、原子D2H发布、逆序
+   cleanup和完整输出比较。该gate只证明16个logical rank均执行，不把stream当作tile selector，也不宣称rank到physical tile的
+   固定映射或16-tile并行利用率。Direct DTE继续在device effect前拒绝，直到vendor BPM/placement ABI或另行设计的
+   cluster-compatible artifact/ABI能表达16份独立module与argument block。
+6. Direct DTE：只有取得可验证且受支持的BPM/placement/parameter ABI，或另行闭合cluster-compatible artifact/ABI后，才允许
+   进入device effect；必须证明logical/remote tile关系、真实receiver readiness、timeout和共同completion，NoTransport结果不能替代。
+7. 批次收尾：显式armed执行对应hardware CTest并确认未skip/unsupported，同步任务队列、编号设计和memory，提交相关改动；
+   checkpoint 1-5的完成不把仍缺checkpoint 6的Q6.B标为done。
 
 当前环境资格缺口和下一动作只记录在`tasks/progress.md`，不在本计划复制动态状态。

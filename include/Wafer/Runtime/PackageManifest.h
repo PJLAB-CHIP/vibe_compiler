@@ -199,12 +199,10 @@ struct RuntimeInvocationBinding {
 };
 
 struct RuntimeEnvironment {
-  RuntimeEnvironment(TargetProfileId targetProfile,
-                     TargetIdentityId targetIdentity,
-                     KernelRuntimeABIId runtimeABI,
-                     llvm::StringRef moduleFormat,
-                     uint64_t maxResourceBytes =
-                         std::numeric_limits<uint64_t>::max())
+  RuntimeEnvironment(
+      TargetProfileId targetProfile, TargetIdentityId targetIdentity,
+      KernelRuntimeABIId runtimeABI, llvm::StringRef moduleFormat,
+      uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max())
       : targetProfile(targetProfile), targetIdentity(targetIdentity),
         runtimeABI(runtimeABI), moduleFormat(moduleFormat.str()),
         maxResourceBytes(maxResourceBytes) {}
@@ -241,8 +239,19 @@ struct RuntimeSessionPlan {
   TransportRequirements transport;
 };
 
+struct RuntimeInvocationPlan {
+  int64_t rankCount = 0;
+  /// One record for every package rank, in canonical logical-rank order.
+  std::vector<RuntimeSessionPlan> ranks;
+};
+
 llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
     const VerifiedPackageManifest &package, EntryId entry,
+    llvm::ArrayRef<RuntimeInvocationBinding> invocationBindings,
+    const RuntimeEnvironment &environment);
+
+llvm::Expected<RuntimeInvocationPlan> preflightNoCardRuntimeInvocation(
+    const VerifiedPackageManifest &package,
     llvm::ArrayRef<RuntimeInvocationBinding> invocationBindings,
     const RuntimeEnvironment &environment);
 

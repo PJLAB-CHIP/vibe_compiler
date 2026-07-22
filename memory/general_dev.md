@@ -88,8 +88,10 @@
   `tx_runtime.h`和完整所需symbol的`libhpgr`，否则fail closed。这个开关只构建能力，adapter只在`--board`路径按需加载DSO；
   no-card路径不加载vendor library。board loader必须以同一个open fd完成hash和`/proc/self/fd` load，并按dev/inode核对全部
   dlsym provider；不能分两次按path读取。先用`ctest --test-dir <board-build> -LE hardware --output-on-failure`验证host closure。
-  live test还需显式配置默认关闭的`WAFER_ENABLE_BOARD_TEST_EXECUTION=ON`及预期runtime digest/version/PCI/device/tile；执行时只用
-  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-single-op-add$' --output-on-failure`，并确认未skip。
+  live test还需显式配置默认关闭的`WAFER_ENABLE_BOARD_TEST_EXECUTION=ON`及预期runtime digest/version/PCI/device/tile；先后用
+  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-single-op-add$' --output-on-failure`和
+  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-all-rank-add$' --output-on-failure`，每次确认未skip，
+  并在前后只读核对device memory/process与firmware status；前一gate失败时不执行后一gate。
   vendor adapter由`tools/wafer-run` executable拥有，通用`WaferRuntime`只拥有typed provider接口和lifecycle executor；
   不把`tx_runtime` header/library依赖放进compiler或通用runtime library。
 - TX device publication必须用当前pinned LLVM installation内的`clang++`消费compiler打印的opaque-pointer LLVM IR；
@@ -110,6 +112,16 @@
   `dlopen`成功后的symbol/readback失败也必须leak handle并走相同`std::_Exit`，不能用RAII `dlclose`触发未知fini链。
 - Board allocation admission使用当前free bytes而非total bytes，并对本次全部resource allocation做checked aggregate和显式reserve；
   单个resource小于总容量不能替代aggregate gate。`getContextState()`只能读进程内cached disposition，不得调用TX runtime/device。
+- TX `transport:none`多rank执行使用一次owner-backed invocation：完整rank domain先做all-and-only pure preflight，再统一完成
+  aggregate admission、resource/module ownership、独立custom stream submit、`txStreamQuery` host deadline、原子copyback和逆序cleanup。
+  stream只是command queue，不是tile selector；即使16个logical rank都得到exact输出，也必须把physical rank mapping标为unclaimed，
+  不能据此宣称固定tile placement或16-tile并行利用率。live gate先跑rank-one、复核只读卡状态，再跑all-rank；首错即停。
+- 当前TX public launch surface中，`txLaunchKernel`没有per-launch tile参数，cluster launch只广播同一module/function/argument block，
+  graph/model入口也没有已验证的schema-v3独立rank参数构造合同。因此Direct DTE必须在device effect前fail closed，直到存在受支持且
+  可验证的placement/parameter ABI；PG selection、tile inventory、reset或power都不能补这个语义缺口。
+- 相同code object可能由vendor runtime复用为同一个module handle。adapter按`handle -> digest + logical owner count`维护所有权：
+  同handle同digest只在最后一个logical owner释放时真正unload；同handle不同digest是provider contract violation并立即quarantine。
+  query deadline要在每次低层query前后检查，不能只在完整rank轮询结束后检查，否则慢调用会使整体deadline失真。
 - `ctest`通过不等于关键program/E2E gate被执行。涉及frontend/SPMD/program pipeline或声称
   主链路跑通时，先跑`cmake --build build/wafer-dev --target check-wafer-lit -- -j128`；需要审计
   unsupported清单时，使用`build/wafer-dev/CMakeCache.txt`中配置的`LLVM_EXTERNAL_LIT`执行

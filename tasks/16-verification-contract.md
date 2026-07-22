@@ -511,7 +511,8 @@ projection，其结构和package readback由8.1验证，真正的model/board逐�
 
 ### 8.3 Provider And Board Gate
 
-Q6.B已materialize TX rank-one provider子集；rank-count=16 all-rank session与Q22.E exact-module provider仍未闭合。
+Q6.B已materialize TX rank-one和rank-count=16 `transport:none` provider子集；Direct DTE真实placement/readiness/completion与
+Q22.E exact-module provider仍未闭合。
 以下验证不属于Q18 no-card完成条件，provider/board推进时必须实际执行，不能用打印trace替代：
 
 若Q32.V扩展TargetCall的execution consumer采用`RequiredCapabilitySet`，它必须在任何effect前消费同版本集合：model provider以
@@ -1050,7 +1051,7 @@ configured board suite只消费Q0.L完成后fresh replay形成的Gate C同一ver
 或provider-specific plan。必须实际执行：
 
 - allocation/import/copy/module load/entry resolve；
-- launch和卡内transport；
+- launch及manifest实际声明的transport；
 - trusted completion/status/timeout/error；
 - copyback和完整输出CPU comparison；
 - cleanup和重复invocation。
@@ -1061,6 +1062,13 @@ board-capable `wafer-run`必须至少重复两次真实allocation→load→launc
 和`exact=true`。`WAFER_ENABLE_BOARD_RUNTIME`只构建能力；hardware test只有通过默认关闭的独立execution配置、完整预期
 runtime-library digest/runtime version/PCI/device/tile qualification才注册，并且运行时还须显式设置
 `WAFER_EXECUTE_HARDWARE_TESTS=1`。普通CTest必须skip或不注册，不得触卡；Q6.B证据必须确认hardware CTest未skip。
+
+第二条bootstrap gate将同一Add扩为16-rank `transport:none` package：全局输入按axis-0形成16个互不重叠且完整覆盖的
+rank-local slice，完整rank domain的resources/modules/entries先通过一次pure preflight，再由一个provider-owned invocation
+完成aggregate admission、全部allocation/H2D/load/resolve、独立stream共同submit、有deadline的query progress、全部D2H和
+逆序cleanup。每个rank使用可区分输入并逐ResourceId比较完整raw bytes，至少重复两次；结果只证明16份logical ABI execution，
+必须显式报告physical mapping unclaimed，不能从stream或inventory推断rank到tile绑定或并行利用率。该NoTransport gate通过
+不关闭上一节Direct DTE真实receiver readiness、timeout和board completion要求，因此Q6.B仍保持doing。
 
 环境诊断必须与compiler gate分开。qualification candidate必须与当前driver、public runtime、宿主boot-source firmware、
 运行中Kcore缓存version/status和module toolchain闭合；若没有device-RAM dump，不得声明运行中payload的byte identity。执行前

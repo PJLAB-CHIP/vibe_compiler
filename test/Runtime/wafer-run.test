@@ -3,6 +3,8 @@
 # RUN: touch %t.package/modules/rank_00000.so
 # RUN: cp %S/Inputs/typed-package-manifest.json %t.package/manifest.json
 # RUN: wafer-run --package-dir %t.package --entry-id 0 --no-card | FileCheck %s --check-prefix=PLAN
+# RUN: wafer-run --package-dir %t.package --all-ranks --no-card | FileCheck %s --check-prefix=ALL-RANKS
+# RUN: not wafer-run --package-dir %t.package --entry-id 0 --all-ranks --no-card 2>&1 | FileCheck %s --check-prefix=SELECTION
 # RUN: not wafer-run --package-dir %t.package --entry-id 0 2>&1 | FileCheck %s --check-prefix=NO-MODE
 # RUN: not wafer-run --package-dir %t.package --entry-id 0 --board 2>&1 | FileCheck %s --check-prefix=BOARD-QUALIFICATION
 # RUN: not wafer-run --package-dir %t.package --entry-id 0 --board --max-resource-bytes 32 2>&1 | FileCheck %s --check-prefix=BOARD-OPTIONS
@@ -27,6 +29,13 @@
 # PLAN: launch_slot: 2 resource=2 role=workspace bytes=512 alignment=256 access=read_write externally_bound=false
 # PLAN: terminal_completion: 0 kind=entry_return
 # PLAN: board_execution: false
+
+# ALL-RANKS: package: id=0 schema=3 ranks=1
+# ALL-RANKS: entry: 0 rank=0 symbol=main
+# ALL-RANKS: invocation_ranks: 1
+# ALL-RANKS: board_execution: false
+
+# SELECTION: exactly one of --entry-id or --all-ranks is required
 
 # NO-MODE: wafer-run requires explicit --no-card
 # BOARD-QUALIFICATION: --board requires complete explicit TX qualification options

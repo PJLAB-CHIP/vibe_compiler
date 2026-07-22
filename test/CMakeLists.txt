@@ -158,6 +158,33 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     SKIP_RETURN_CODE 77
     TIMEOUT 300
   )
+  if(WAFER_BOARD_TEST_EXPECTED_TILE_COUNT EQUAL 16)
+    add_test(NAME wafer-board-all-rank-add
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_all_rank_add_test.py
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/board-all-rank-add
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 60000
+        --repeat 2
+    )
+    set_tests_properties(wafer-board-all-rank-add PROPERTIES
+      LABELS "board;hardware;all-rank;single-op"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 600
+    )
+  else()
+    message(STATUS
+      "Not registering the all-rank board test: it requires exactly 16 TX tiles")
+  endif()
   unset(_wafer_board_qualification_variable)
   unset(_wafer_expected_tx_runtime_library_sha256)
   unset(_wafer_expected_tx_runtime_library_sha256_length)

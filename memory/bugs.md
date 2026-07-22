@@ -831,3 +831,14 @@
   不把driver unbind/rebind当常规恢复手段；涉及reset、power、driver恢复或整机重启时必须作为invocation外显式动作单独授权。
   构建board adapter和授权live test必须分成两个默认关闭边界；普通CTest不得触卡。执行gate还应精确匹配public runtime
   library digest、runtime API version、PCI/device/tile inventory，并在首个allocation前以当前free bytes验证aggregate demand和reserve。
+
+## 2026-07-22 all-rank stream deadline不能只在整轮query后检查
+
+- 现象：初版all-rank completion loop只在轮询完整rank domain后检查host deadline；若某次`txStreamQuery`本身较慢，截止时间后
+  仍会继续query同轮后续stream，实际停止边界随rank数和单次调用时长漂移。
+- 根因：把“完成一轮公平轮询”和“deadline是所有低层调用的硬边界”混成一个检查点。`TX_ERROR_NOT_READY`只是当前stream pending，
+  不授权在已经过期的session上继续调用其它TX API。
+- 修复模式：使用单调时钟，并在每次低层query之前和之后都检查deadline；query error或任一检查发现超时，立即把整个session
+  sticky quarantine，返回session级错误，不再destroy stream、unload、free、reset、power或调用其它TX API。
+- 防复发：fake provider覆盖“首个query跨过deadline且后续rank不得被query”、NOT_READY继续轮询和query error首错即停；
+  deadline测试不能只断言最终返回timeout，还要检查最后一次允许的provider调用位置。

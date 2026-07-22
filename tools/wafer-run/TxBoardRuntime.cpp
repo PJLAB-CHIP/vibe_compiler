@@ -2,6 +2,7 @@
 
 #include "Wafer/Runtime/TxBoardRuntime.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
@@ -11,6 +12,7 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
@@ -20,8 +22,11 @@
 #include <string>
 #include <sys/stat.h>
 #include <system_error>
+#include <thread>
 #include <unistd.h>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace wafer::runtime {
 namespace {
@@ -30,6 +35,7 @@ struct TxApi {
   decltype(&txGetDeviceCount) getDeviceCount = nullptr;
   decltype(&txSetDevice) setDevice = nullptr;
   decltype(&txGetDeviceProperty) getDeviceProperty = nullptr;
+  decltype(&txGetDeviceAllTileInfo) getDeviceAllTileInfo = nullptr;
   decltype(&txMemGetInfo) memGetInfo = nullptr;
   decltype(&txRuntimeGetVersion) runtimeGetVersion = nullptr;
   decltype(&txGetDevicePCIBusId) getDevicePCIBusId = nullptr;
@@ -40,8 +46,20 @@ struct TxApi {
   decltype(&txModuleUnload) moduleUnload = nullptr;
   decltype(&txModuleGetFunction) moduleGetFunction = nullptr;
   decltype(&txLaunchKernel) launchKernel = nullptr;
-  decltype(&txStreamSynchronize) streamSynchronize = nullptr;
+  decltype(&txStreamCreate) streamCreate = nullptr;
+  decltype(&txStreamDestroy) streamDestroy = nullptr;
+  decltype(&txStreamQuery) streamQuery = nullptr;
 };
+
+RuntimeEnvironment makeTxProviderEnvironment() {
+  const TargetProfileRecord &profile =
+      getTargetProfileRecord(TargetProfileId::waferTx81SingleCardKernelV1());
+  RuntimeEnvironment environment(profile.id, profile.targetIdentity,
+                                 profile.kernelRuntimeABI,
+                                 profile.moduleFormat);
+  environment.supportsHostWatchdog = true;
+  return environment;
+}
 
 class ScopedFD {
 public:
@@ -117,7 +135,8 @@ public:
   TxBoardRuntimeDriver(void *library, TxApi api,
                        std::string runtimeLibraryDigest)
       : library(library), api(api),
-        runtimeLibraryDigest(std::move(runtimeLibraryDigest)) {}
+        runtimeLibraryDigest(std::move(runtimeLibraryDigest)),
+        providerEnvironment(makeTxProviderEnvironment()) {}
 
   // The board CLI is a one-shot process and exits with std::_Exit after the
   // explicit TX lifecycle. The handle intentionally remains process-owned so
@@ -126,6 +145,10 @@ public:
 
   BoardRuntimeContextState getContextState() const override {
     return contextState;
+  }
+
+  const RuntimeEnvironment &getProviderEnvironment() const override {
+    return providerEnvironment;
   }
 
   llvm::Expected<uint32_t> getDeviceCount() override {
@@ -164,6 +187,10 @@ public:
     status = api.getDevicePCIBusId(pciBusId, sizeof(pciBusId), deviceId);
     if (status != TX_SUCCESS)
       return txError("txGetDevicePCIBusId", status);
+    tileTotalInfo tileInfo{};
+    status = api.getDeviceAllTileInfo(deviceId, &tileInfo);
+    if (status != TX_SUCCESS)
+      return txError("txGetDeviceAllTileInfo", status);
 
     BoardDeviceInfo info;
     info.deviceId = deviceId;
@@ -175,6 +202,10 @@ public:
                      strnlen(property.devProp.devName, NPU_NAME_LENGTH));
     info.pciBusId.assign(pciBusId, strnlen(pciBusId, sizeof(pciBusId)));
     info.runtimeLibraryDigest = runtimeLibraryDigest;
+    info.tiles.reserve(NPU_TILE_COUNT_MAX);
+    for (const tileFullInfo &tile : tileInfo.tilesFullInfo)
+      info.tiles.push_back(
+          {tile.index, tile.isAvailable == 1, tile.phyTilex, tile.phyTiley});
     return info;
   }
 
@@ -231,6 +262,12 @@ public:
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "TX module byte count must be nonzero and fit uint32_t");
+    llvm::SHA256 hasher;
+    hasher.update(
+        llvm::StringRef(reinterpret_cast<const char *>(moduleBytes.data()),
+                        moduleBytes.size()));
+    std::string digest =
+        "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
     txModule_t module = nullptr;
     txError_t status = api.moduleLoad(
         &module, reinterpret_cast<const char *>(moduleBytes.data()),
@@ -240,14 +277,40 @@ public:
     if (!module)
       return poisonContractViolation(
           "txModuleLoad returned success with a null module");
-    return BoardModuleHandle{reinterpret_cast<uintptr_t>(module)};
+    uintptr_t handle = reinterpret_cast<uintptr_t>(module);
+    auto iterator = moduleOwnership.find(handle);
+    if (iterator == moduleOwnership.end()) {
+      moduleOwnership.emplace(handle, ModuleOwnership{std::move(digest), 1});
+    } else {
+      if (iterator->second.digest != digest)
+        return poisonContractViolation(
+            "txModuleLoad aliased different code objects to one module handle");
+      if (iterator->second.logicalReferences ==
+          std::numeric_limits<uint64_t>::max())
+        return poisonContractViolation(
+            "TX logical module ownership count overflowed");
+      ++iterator->second.logicalReferences;
+    }
+    return BoardModuleHandle{handle};
   }
 
   llvm::Error unloadModule(BoardModuleHandle module) override {
     if (llvm::Error error = requireUsable("txModuleUnload"))
       return error;
-    return check("txModuleUnload",
-                 api.moduleUnload(reinterpret_cast<txModule_t>(module.value)));
+    auto iterator = moduleOwnership.find(module.value);
+    if (iterator == moduleOwnership.end())
+      return poisonContractViolation(
+          "logical TX module ownership is missing during unload");
+    if (iterator->second.logicalReferences > 1) {
+      --iterator->second.logicalReferences;
+      return llvm::Error::success();
+    }
+    if (llvm::Error error =
+            check("txModuleUnload",
+                  api.moduleUnload(reinterpret_cast<txModule_t>(module.value))))
+      return error;
+    moduleOwnership.erase(iterator);
+    return llvm::Error::success();
   }
 
   llvm::Expected<BoardFunctionHandle>
@@ -267,28 +330,118 @@ public:
     return BoardFunctionHandle{reinterpret_cast<uintptr_t>(function)};
   }
 
-  llvm::Error launch(BoardFunctionHandle function,
-                     llvm::ArrayRef<uint64_t> arguments) override {
-    if (llvm::Error error = requireUsable("txLaunchKernel"))
+  llvm::Error submitAll(llvm::ArrayRef<BoardRankLaunch> launches) override {
+    if (llvm::Error error = requireUsable("all-rank submission"))
       return error;
-    if (arguments.size() >
-        std::numeric_limits<uint32_t>::max() / sizeof(uint64_t))
+    if (submissionActive || !activeStreams.empty())
+      return poisonContractViolation(
+          "TX provider already owns a live all-rank submission");
+    if (launches.empty())
       return llvm::createStringError(llvm::errc::invalid_argument,
-                                     "TX launch argument block is too large");
+                                     "all-rank submission is empty");
+
+    for (const BoardRankLaunch &launch : launches) {
+      if (launch.logicalRank < 0 || !launch.entry.isValid() ||
+          launch.function.value == 0)
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "all-rank submission contains invalid rank/function identity");
+      if (launch.arguments.size() >
+          std::numeric_limits<uint32_t>::max() / sizeof(uint64_t))
+        return llvm::createStringError(llvm::errc::invalid_argument,
+                                       "TX launch argument block is too large");
+    }
+
+    activeStreams.reserve(launches.size());
+    completedStreams.assign(launches.size(), false);
+    for (size_t index = 0; index < launches.size(); ++index) {
+      txStream_t stream = nullptr;
+      txError_t status = api.streamCreate(&stream);
+      if (status != TX_SUCCESS)
+        return txError("txStreamCreate", status);
+      if (!stream)
+        return poisonContractViolation(
+            "txStreamCreate returned success with a null stream");
+      activeStreams.push_back(stream);
+    }
+
     dim3 gridDim = {1, 1, 1};
     dim3 blockDim = {1, 1, 1};
-    return check("txLaunchKernel",
-                 api.launchKernel(
-                     reinterpret_cast<txFunction_t>(function.value), gridDim,
-                     blockDim, const_cast<uint64_t *>(arguments.data()),
-                     static_cast<uint32_t>(arguments.size() * sizeof(uint64_t)),
-                     0, nullptr));
+    for (auto [index, launch] : llvm::enumerate(launches)) {
+      txError_t status = api.launchKernel(
+          reinterpret_cast<txFunction_t>(launch.function.value), gridDim,
+          blockDim, const_cast<uint64_t *>(launch.arguments.data()),
+          static_cast<uint32_t>(launch.arguments.size() * sizeof(uint64_t)), 0,
+          activeStreams[index]);
+      if (status != TX_SUCCESS)
+        return txError("txLaunchKernel(all-rank)", status);
+    }
+    submissionActive = true;
+    return llvm::Error::success();
   }
 
-  llvm::Error synchronize() override {
-    if (llvm::Error error = requireUsable("txStreamSynchronize"))
+  llvm::Error waitAll(uint64_t timeoutMilliseconds) override {
+    if (llvm::Error error = requireUsable("all-rank completion"))
       return error;
-    return check("txStreamSynchronize", api.streamSynchronize(nullptr));
+    if (!submissionActive || activeStreams.empty() ||
+        completedStreams.size() != activeStreams.size())
+      return poisonContractViolation(
+          "TX all-rank completion has no live submission");
+    if (timeoutMilliseconds == 0)
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "TX completion timeout must be positive");
+
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeoutMilliseconds);
+    auto deadlineExceeded = [&]() -> llvm::Error {
+      contextState = BoardRuntimeContextState::Poisoned;
+      return llvm::createStringError(
+          llvm::errc::io_error,
+          "TX all-rank completion exceeded the host deadline");
+    };
+    while (true) {
+      bool allComplete = true;
+      for (size_t index = 0; index < activeStreams.size(); ++index) {
+        if (completedStreams[index])
+          continue;
+        if (std::chrono::steady_clock::now() >= deadline)
+          return deadlineExceeded();
+        txError_t status = api.streamQuery(activeStreams[index]);
+        if (status == TX_SUCCESS) {
+          completedStreams[index] = true;
+        } else if (status == TX_ERROR_NOT_READY) {
+          allComplete = false;
+        } else {
+          return txError("txStreamQuery", status);
+        }
+        // A completion observation counts only when the query itself returned
+        // before the host deadline. Once expired, this local quarantine is the
+        // final action and no later stream is queried.
+        if (std::chrono::steady_clock::now() >= deadline)
+          return deadlineExceeded();
+      }
+      if (allComplete)
+        return llvm::Error::success();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+
+  llvm::Error releaseSubmission() override {
+    if (llvm::Error error = requireUsable("txStreamDestroy"))
+      return error;
+    if (!submissionActive ||
+        !llvm::all_of(completedStreams, [](bool complete) { return complete; }))
+      return poisonContractViolation(
+          "TX submission release requires all ranks to be terminal");
+    while (!activeStreams.empty()) {
+      if (llvm::Error error =
+              check("txStreamDestroy", api.streamDestroy(activeStreams.back())))
+        return error;
+      activeStreams.pop_back();
+    }
+    completedStreams.clear();
+    submissionActive = false;
+    return llvm::Error::success();
   }
 
 private:
@@ -321,9 +474,18 @@ private:
   }
 
   BoardRuntimeContextState contextState = BoardRuntimeContextState::Usable;
+  struct ModuleOwnership {
+    std::string digest;
+    uint64_t logicalReferences = 0;
+  };
   void *library = nullptr;
   TxApi api;
   std::string runtimeLibraryDigest;
+  RuntimeEnvironment providerEnvironment;
+  std::unordered_map<uintptr_t, ModuleOwnership> moduleOwnership;
+  std::vector<txStream_t> activeStreams;
+  std::vector<bool> completedStreams;
+  bool submissionActive = false;
 };
 
 } // namespace
@@ -393,6 +555,7 @@ createTxBoardRuntimeDriver(llvm::StringRef expectedRuntimeLibraryDigest) {
   WAFER_RESOLVE_TX_API(getDeviceCount, txGetDeviceCount);
   WAFER_RESOLVE_TX_API(setDevice, txSetDevice);
   WAFER_RESOLVE_TX_API(getDeviceProperty, txGetDeviceProperty);
+  WAFER_RESOLVE_TX_API(getDeviceAllTileInfo, txGetDeviceAllTileInfo);
   WAFER_RESOLVE_TX_API(memGetInfo, txMemGetInfo);
   WAFER_RESOLVE_TX_API(runtimeGetVersion, txRuntimeGetVersion);
   WAFER_RESOLVE_TX_API(getDevicePCIBusId, txGetDevicePCIBusId);
@@ -403,7 +566,9 @@ createTxBoardRuntimeDriver(llvm::StringRef expectedRuntimeLibraryDigest) {
   WAFER_RESOLVE_TX_API(moduleUnload, txModuleUnload);
   WAFER_RESOLVE_TX_API(moduleGetFunction, txModuleGetFunction);
   WAFER_RESOLVE_TX_API(launchKernel, txLaunchKernel);
-  WAFER_RESOLVE_TX_API(streamSynchronize, txStreamSynchronize);
+  WAFER_RESOLVE_TX_API(streamCreate, txStreamCreate);
+  WAFER_RESOLVE_TX_API(streamDestroy, txStreamDestroy);
+  WAFER_RESOLVE_TX_API(streamQuery, txStreamQuery);
 #undef WAFER_RESOLVE_TX_API
   return std::make_unique<TxBoardRuntimeDriver>(library, api,
                                                 std::move(*digest));

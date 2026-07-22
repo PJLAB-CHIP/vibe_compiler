@@ -34,7 +34,11 @@ struct Options {
 
   std::string packageDirectory;
   uint64_t entryId = std::numeric_limits<uint64_t>::max();
+  bool allRanks = false;
   uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max();
+  uint64_t completionTimeoutMilliseconds =
+      wafer::runtime::kDefaultBoardCompletionTimeoutMilliseconds;
+  bool completionTimeoutSpecified = false;
   uint32_t deviceId = 0;
   bool deviceIdSpecified = false;
   uint32_t expectedRuntimeVersion = 0;
@@ -55,11 +59,16 @@ void printUsage(llvm::raw_ostream &output) {
             "  wafer-run --package-dir <path> --entry-id <id> --no-card "
             "[--max-resource-bytes <bytes>] [--direct-dte-status-abi <abi> "
             "--supports-host-watchdog]\n"
-            "  wafer-run --package-dir <path> --entry-id <id> --board "
+            "  wafer-run --package-dir <path> --all-ranks --no-card "
+            "[--max-resource-bytes <bytes>] [--direct-dte-status-abi <abi> "
+            "--supports-host-watchdog]\n"
+            "  wafer-run --package-dir <path> (--all-ranks | --entry-id <id>) "
+            "--board "
             "[--device-id <id>] --expected-runtime-version <decimal> "
             "--expected-device-name <name> --expected-pci-bus-id <bdf> "
             "--expected-tile-count <count> "
             "--expected-runtime-library-sha256 <hex> "
+            "[--completion-timeout-ms <milliseconds>] "
             "--resource <ResourceId=raw-file>... "
             "--expected <ResourceId=raw-file>...\n";
 }
@@ -103,6 +112,10 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
                                        "--entry-id must be an integer");
       continue;
     }
+    if (argument == "--all-ranks") {
+      options.allRanks = true;
+      continue;
+    }
     if (argument == "--max-resource-bytes") {
       llvm::Expected<llvm::StringRef> value = requireValue();
       if (!value)
@@ -121,6 +134,20 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
         return llvm::createStringError(llvm::errc::invalid_argument,
                                        "--device-id must be an integer");
       options.deviceIdSpecified = true;
+      continue;
+    }
+    if (argument == "--completion-timeout-ms") {
+      llvm::Expected<llvm::StringRef> value = requireValue();
+      if (!value)
+        return value.takeError();
+      if (value->getAsInteger(10, options.completionTimeoutMilliseconds) ||
+          options.completionTimeoutMilliseconds == 0 ||
+          options.completionTimeoutMilliseconds >
+              wafer::runtime::kMaximumBoardCompletionTimeoutMilliseconds)
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "--completion-timeout-ms is outside the supported range");
+      options.completionTimeoutSpecified = true;
       continue;
     }
     if (argument == "--expected-runtime-version" ||
@@ -211,9 +238,11 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
   if (options.packageDirectory.empty())
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "--package-dir is required");
-  if (options.entryId == std::numeric_limits<uint64_t>::max())
+  const bool hasEntry = options.entryId != std::numeric_limits<uint64_t>::max();
+  if (hasEntry == options.allRanks)
     return llvm::createStringError(llvm::errc::invalid_argument,
-                                   "--entry-id is required");
+                                   "exactly one of --entry-id or --all-ranks "
+                                   "is required");
   if (options.noCard == options.board)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
@@ -223,7 +252,8 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
        options.expectedRuntimeVersion != 0 || options.expectedTileCount != 0 ||
        options.deviceIdSpecified || !options.expectedDeviceName.empty() ||
        !options.expectedPCIBusId.empty() ||
-       !options.expectedRuntimeLibraryDigest.empty()))
+       !options.expectedRuntimeLibraryDigest.empty() ||
+       options.completionTimeoutSpecified))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "board binding and qualification options require --board");
@@ -278,14 +308,35 @@ indexResourceFiles(llvm::ArrayRef<Options::ResourceFile> files,
   return indexed;
 }
 
+void printNoCardRankPlan(const wafer::runtime::RuntimeSessionPlan &plan) {
+  llvm::outs() << "entry: " << plan.entry.getValue()
+               << " rank=" << plan.logicalRank << " symbol=" << plan.entrySymbol
+               << "\n";
+  llvm::outs() << "module: " << plan.module.getValue()
+               << " path=" << plan.modulePath << "\n";
+  for (auto [ordinal, resource] : llvm::enumerate(plan.resources)) {
+    llvm::outs() << "launch_slot: " << ordinal
+                 << " resource=" << resource.resource.getValue() << " role="
+                 << wafer::runtime::stringifyPackageResourceRole(resource.role)
+                 << " bytes=" << resource.bytes
+                 << " alignment=" << resource.alignment << " access="
+                 << wafer::runtime::stringifyPackageAccessMode(resource.access)
+                 << " externally_bound="
+                 << (resource.externallyBound ? "true" : "false") << "\n";
+  }
+  llvm::outs() << "terminal_completion: " << plan.terminalCompletion.getValue()
+               << " kind=entry_return\n";
+}
+
 int runNoCard(const Options &options,
               const wafer::runtime::VerifiedPackageManifest &package,
-              const wafer::runtime::PackageEntrypointRecord &entry) {
+              const wafer::runtime::PackageEntrypointRecord *selectedEntry) {
   const wafer::runtime::PackageManifest &manifest = package.getManifest();
   std::vector<wafer::runtime::RuntimeInvocationBinding> bindings;
   for (const wafer::runtime::PackageResourceRecord &resource :
        manifest.resources) {
-    if (resource.logicalRank != entry.logicalRank || !resource.hostVisible)
+    if (!resource.hostVisible ||
+        (selectedEntry && resource.logicalRank != selectedEntry->logicalRank))
       continue;
     bindings.push_back({resource.id, resource.bytes, resource.alignment,
                         resource.access, true});
@@ -298,11 +349,23 @@ int runNoCard(const Options &options,
     environment.directDTEStatusABI = *options.directDTEStatusABI;
   }
   environment.supportsHostWatchdog = options.supportsHostWatchdog;
-  llvm::Expected<wafer::runtime::RuntimeSessionPlan> plan =
-      wafer::runtime::preflightNoCardRuntimeSession(package, entry.id, bindings,
-                                                    environment);
-  if (!plan)
-    return fail(plan.takeError());
+  std::optional<wafer::runtime::RuntimeSessionPlan> selectedPlan;
+  std::optional<wafer::runtime::RuntimeInvocationPlan> invocationPlan;
+  if (selectedEntry) {
+    llvm::Expected<wafer::runtime::RuntimeSessionPlan> plan =
+        wafer::runtime::preflightNoCardRuntimeSession(
+            package, selectedEntry->id, bindings, environment);
+    if (!plan)
+      return fail(plan.takeError());
+    selectedPlan.emplace(std::move(*plan));
+  } else {
+    llvm::Expected<wafer::runtime::RuntimeInvocationPlan> plan =
+        wafer::runtime::preflightNoCardRuntimeInvocation(package, bindings,
+                                                         environment);
+    if (!plan)
+      return fail(plan.takeError());
+    invocationPlan.emplace(std::move(*plan));
+  }
 
   llvm::outs() << "package: id=" << manifest.program.getValue()
                << " schema=" << manifest.schemaVersion
@@ -315,31 +378,20 @@ int runNoCard(const Options &options,
                << " runtime_abi="
                << wafer::stringifyKernelRuntimeABIId(manifest.runtimeABI)
                << " module_format=" << manifest.moduleFormat << "\n";
-  llvm::outs() << "entry: " << plan->entry.getValue()
-               << " rank=" << plan->logicalRank
-               << " symbol=" << plan->entrySymbol << "\n";
-  llvm::outs() << "module: " << plan->module.getValue()
-               << " path=" << plan->modulePath << "\n";
-  for (auto [ordinal, resource] : llvm::enumerate(plan->resources)) {
-    llvm::outs() << "launch_slot: " << ordinal
-                 << " resource=" << resource.resource.getValue() << " role="
-                 << wafer::runtime::stringifyPackageResourceRole(resource.role)
-                 << " bytes=" << resource.bytes
-                 << " alignment=" << resource.alignment << " access="
-                 << wafer::runtime::stringifyPackageAccessMode(resource.access)
-                 << " externally_bound="
-                 << (resource.externallyBound ? "true" : "false") << "\n";
+  if (selectedEntry) {
+    printNoCardRankPlan(*selectedPlan);
+  } else {
+    for (const wafer::runtime::RuntimeSessionPlan &rank : invocationPlan->ranks)
+      printNoCardRankPlan(rank);
+    llvm::outs() << "invocation_ranks: " << invocationPlan->rankCount << "\n";
   }
-  llvm::outs() << "terminal_completion: " << plan->terminalCompletion.getValue()
-               << " kind=entry_return\n";
   llvm::outs() << "board_execution: false\n";
   return 0;
 }
 
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
 int runBoard(const Options &options,
-             const wafer::runtime::VerifiedPackageManifest &package,
-             const wafer::runtime::PackageEntrypointRecord &entry) {
+             const wafer::runtime::VerifiedPackageManifest &package) {
   const wafer::runtime::PackageManifest &manifest = package.getManifest();
   llvm::Expected<llvm::DenseMap<uint64_t, std::string>> resources =
       indexResourceFiles(options.resourceFiles, "--resource");
@@ -350,19 +402,18 @@ int runBoard(const Options &options,
   if (!expected)
     return fail(expected.takeError());
 
-  wafer::runtime::BoardRuntimeRequest request;
+  wafer::runtime::BoardRuntimeInvocationRequest request;
   request.deviceId = options.deviceId;
-  request.entry = entry.id;
+  request.completionTimeoutMilliseconds = options.completionTimeoutMilliseconds;
   request.qualification = {
       options.expectedRuntimeVersion,       options.expectedTileCount,
       options.expectedDeviceName,           options.expectedPCIBusId,
       options.expectedRuntimeLibraryDigest,
   };
-  std::vector<wafer::runtime::RuntimeInvocationBinding> preflightBindings;
   llvm::DenseMap<uint64_t, std::vector<uint8_t>> expectedBytes;
   for (const wafer::runtime::PackageResourceRecord &resource :
        manifest.resources) {
-    if (resource.logicalRank != entry.logicalRank || !resource.hostVisible)
+    if (!resource.hostVisible)
       continue;
     std::vector<uint8_t> bytes(resource.bytes, 0);
     auto source = resources->find(resource.id.getValue());
@@ -399,23 +450,11 @@ int runBoard(const Options &options,
       expected->erase(reference);
     }
     request.bindings.push_back({resource.id, std::move(bytes)});
-    preflightBindings.push_back({resource.id, resource.bytes,
-                                 resource.alignment, resource.access,
-                                 resource.hostVisible});
   }
   if (!resources->empty() || !expected->empty())
     return fail(llvm::createStringError(
         llvm::errc::invalid_argument,
-        "board invocation contains ResourceIds outside the selected entry"));
-
-  wafer::runtime::RuntimeEnvironment semanticEnvironment{
-      manifest.targetProfile, manifest.targetIdentity, manifest.runtimeABI,
-      manifest.moduleFormat};
-  llvm::Expected<wafer::runtime::RuntimeSessionPlan> semanticPlan =
-      wafer::runtime::preflightNoCardRuntimeSession(
-          package, entry.id, preflightBindings, semanticEnvironment);
-  if (!semanticPlan)
-    return fail(semanticPlan.takeError());
+        "board invocation contains ResourceIds outside the package"));
 
   llvm::Expected<std::unique_ptr<wafer::runtime::BoardRuntimeDriver>> driver =
       wafer::runtime::createTxBoardRuntimeDriver(
@@ -441,9 +480,9 @@ int runBoard(const Options &options,
     llvm::errs().flush();
     std::_Exit(1);
   };
-  llvm::Expected<wafer::runtime::BoardRuntimeResult> result =
-      wafer::runtime::executeBoardEntry(package, options.packageDirectory,
-                                        std::move(request), **driver);
+  llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
+      wafer::runtime::executeBoardInvocation(package, options.packageDirectory,
+                                             std::move(request), **driver);
   if (!result) {
     llvm::Error error = result.takeError();
     bool poisoned = (*driver)->getContextState() ==
@@ -491,17 +530,39 @@ int runBoard(const Options &options,
                << " total_memory_bytes=" << result->device.totalMemoryBytes
                << " runtime_library_digest="
                << result->device.runtimeLibraryDigest << "\n";
-  llvm::outs() << "entry: " << result->entry.getValue()
-               << " rank=" << result->logicalRank << "\n";
+  for (const auto &tile : result->device.tiles)
+    llvm::outs() << "board_tile: logical=" << tile.logicalIndex
+                 << " available=" << (tile.available ? "true" : "false")
+                 << " physical_x=" << tile.physicalX
+                 << " physical_y=" << tile.physicalY << "\n";
+  if (!options.allRanks) {
+    const wafer::runtime::BoardRuntimeRankResult &rank = result->ranks.front();
+    llvm::outs() << "entry: " << rank.entry.getValue()
+                 << " rank=" << rank.logicalRank << "\n";
+  } else {
+    for (const wafer::runtime::BoardRuntimeRankResult &rank : result->ranks)
+      llvm::outs() << "entry: " << rank.entry.getValue()
+                   << " rank=" << rank.logicalRank
+                   << " module=" << rank.module.getValue() << "\n";
+  }
   for (wafer::runtime::BoardRuntimeStage stage : result->completedStages)
     llvm::outs() << "board_stage: "
                  << wafer::runtime::stringifyBoardRuntimeStage(stage) << "\n";
   for (const wafer::runtime::BoardRuntimeOutput &output : result->outputs)
     llvm::outs() << "output_compare: resource=" << output.resource.getValue()
                  << " bytes=" << output.bytes.size() << " exact=true\n";
-  llvm::outs() << "terminal_completion: "
-               << result->terminalCompletion.getValue()
-               << " kind=entry_return\n";
+  if (!options.allRanks) {
+    llvm::outs() << "terminal_completion: "
+                 << result->ranks.front().terminalCompletion.getValue()
+                 << " kind=entry_return\n";
+  } else {
+    for (const wafer::runtime::BoardRuntimeRankResult &rank : result->ranks)
+      llvm::outs() << "terminal_completion: "
+                   << rank.terminalCompletion.getValue()
+                   << " kind=entry_return rank=" << rank.logicalRank << "\n";
+    llvm::outs() << "invocation_ranks: " << result->ranks.size() << "\n";
+    llvm::outs() << "physical_rank_mapping: unclaimed\n";
+  }
   llvm::outs() << "board_execution: true\n";
   llvm::outs().flush();
   llvm::errs().flush();
@@ -521,18 +582,26 @@ int main(int argc, char **argv) {
   if (!package)
     return fail(package.takeError());
   const wafer::runtime::PackageManifest &manifest = package->getManifest();
-  wafer::runtime::EntryId entryId(options->entryId);
-  auto entry = llvm::find_if(manifest.entries, [&](const auto &candidate) {
-    return candidate.id == entryId;
-  });
-  if (entry == manifest.entries.end())
-    return fail(llvm::createStringError(llvm::errc::invalid_argument,
-                                        "entry ID is not present in package"));
+  const wafer::runtime::PackageEntrypointRecord *selectedEntry = nullptr;
+  if (!options->allRanks) {
+    wafer::runtime::EntryId entryId(options->entryId);
+    auto entry = llvm::find_if(manifest.entries, [&](const auto &candidate) {
+      return candidate.id == entryId;
+    });
+    if (entry == manifest.entries.end())
+      return fail(llvm::createStringError(
+          llvm::errc::invalid_argument, "entry ID is not present in package"));
+    selectedEntry = &*entry;
+  }
+  if (options->board && !options->allRanks && manifest.rankCount != 1)
+    return fail(llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "multi-rank board execution requires --all-ranks"));
 
   if (options->noCard)
-    return runNoCard(*options, *package, *entry);
+    return runNoCard(*options, *package, selectedEntry);
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
-  return runBoard(*options, *package, *entry);
+  return runBoard(*options, *package);
 #else
   return fail(llvm::createStringError(
       llvm::errc::not_supported,

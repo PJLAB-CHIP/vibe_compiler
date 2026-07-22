@@ -75,19 +75,22 @@ if(WAFER_ENABLE_BOARD_RUNTIME)
       volatile auto p0 = &txGetDeviceCount;
       volatile auto p1 = &txSetDevice;
       volatile auto p2 = &txGetDeviceProperty;
-      volatile auto p3 = &txMemGetInfo;
-      volatile auto p4 = &txRuntimeGetVersion;
-      volatile auto p5 = &txGetDevicePCIBusId;
-      volatile auto p6 = &txMalloc;
-      volatile auto p7 = &txFree;
-      volatile auto p8 = &txMemcpy;
-      volatile auto p9 = &txModuleLoad;
-      volatile auto p10 = &txModuleUnload;
-      volatile auto p11 = &txModuleGetFunction;
-      volatile auto p12 = &txLaunchKernel;
-      volatile auto p13 = &txStreamSynchronize;
+      volatile auto p3 = &txGetDeviceAllTileInfo;
+      volatile auto p4 = &txMemGetInfo;
+      volatile auto p5 = &txRuntimeGetVersion;
+      volatile auto p6 = &txGetDevicePCIBusId;
+      volatile auto p7 = &txMalloc;
+      volatile auto p8 = &txFree;
+      volatile auto p9 = &txMemcpy;
+      volatile auto p10 = &txModuleLoad;
+      volatile auto p11 = &txModuleUnload;
+      volatile auto p12 = &txModuleGetFunction;
+      volatile auto p13 = &txLaunchKernel;
+      volatile auto p14 = &txStreamCreate;
+      volatile auto p15 = &txStreamDestroy;
+      volatile auto p16 = &txStreamQuery;
       return !(p0 && p1 && p2 && p3 && p4 && p5 && p6 && p7 && p8 && p9 &&
-               p10 && p11 && p12 && p13);
+               p10 && p11 && p12 && p13 && p14 && p15 && p16);
     }
   ]] WAFER_TX_RUNTIME_HAS_REQUIRED_SYMBOLS)
   cmake_pop_check_state()

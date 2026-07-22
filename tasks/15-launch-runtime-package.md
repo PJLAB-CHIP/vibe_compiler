@@ -267,15 +267,16 @@ functional-numeric链；它不调用repo CRT、不构造Tsm packet，也不属�
 ABI/MMIO/Direct DTE并完成上述生命周期时，才作为target model `RuntimeProvider`。provider选择属于typed runtime
 environment/session policy，不进入manifest，也不能增加model专用
 resource、instruction schedule或transport分支。执行只产出invocation-local typed result/status/diagnostic，不修改或
-回写package。当前`RuntimeSessionPlan`只覆盖一个entry/rank；Direct DTE exact provider落地时必须增加owner-backed
-all-rank invocation/session，将现有verified entries和bindings组成共同submit/progress/status/cleanup域，不能简单顺序
-循环单entry plan，也不能为此把module内message/packet schedule复制到manifest。
+回写package。Q18 `RuntimeSessionPlan`保留单entry/rank pure no-card component preflight；Q6.B已经materialize完整rank domain的
+`RuntimeInvocationPlan`和owner-backed all-rank provider session，将verified entries和bindings组成共同
+submit/progress/status/cleanup域。rank-one兼容入口委托同一invocation实现，调用方不能顺序循环single-entry session后拼接结果，
+也不能为此把module内message/packet schedule复制到manifest。Direct DTE exact provider必须复用该all-rank session边界。
 Q22.C board numeric correlation是独立verification evidence，不是第四个runtime/artifact执行边界，也不消费或改写
 package；可选packet/MMIO correlation同样只增加packet provenance claim。
 
 ### 8.1 All-Rank Provider Session Contract
 
-该owner-backed all-rank session合同首先在Q6.B推进rank-count=16真实board lifecycle时materialize；Q22.E未来
+该owner-backed all-rank session合同已由Q6.B的rank-count=16真实NoTransport board lifecycle materialize；Q22.E未来
 exact-module model provider复用同一session语义，但保持provider backend和evidence独立。其默认输入是Q32 integrated
 audit原样冻结的current schema-v3 package；未来wire或target ABI扩展只有先独立完成compiler、package、runtime和model
 readback，才能作为新的显式输入。Q22.E本身不触发manifest迁移。当前Q18完成状态仍止于per-entry pure no-card plan。
@@ -303,7 +304,8 @@ Pipeline position:
   不复制module内instruction/message/packet schedule，不重新分配logical peer/FSM，不修改manifest，不从entry调用顺序
   恢复transport identity。
 - Completion gate:
-  rank-count=1/16真实package的all-and-only bindings、entries和modules均经历完整provider lifecycle；每阶段failure
+  rank-count=1/16真实package的all-and-only bindings、entries和modules均经历完整provider lifecycle；NoTransport路径和
+  Direct DTE路径分别按自身transport requirement验收，不能互相替代；每阶段failure
   injection保证descendant suppression、wait/status失败无copyback、cleanup-safe失败逆序释放、poisoned失败不再调用低层
   provider API，任一rank失败无partial result。
 ```
@@ -342,8 +344,9 @@ Pipeline position:
   packet provenance、numeric profile、performance或timing calibration，不让基础compiler/runtime强依赖vendor SDK。
 - Completion gate:
   fresh rank-count=1/16 package的all-and-only resources/modules/entries经历真实TX lifecycle；完整输出与独立CPU expected
-  比较，重复执行一致；failure injection分别覆盖cleanup-safe逆序释放与poisoned首错即停。只有board CTest实际注册并执行
-  成功且确认未skip才能关闭Q6.B，unsupported/skipped/no-card/fake/model均不计完成。
+  比较，重复执行一致；failure injection分别覆盖cleanup-safe逆序释放与poisoned首错即停。rank-count=16 NoTransport gate
+  只关闭无跨rank transport的owner-backed session增量；Q6.B整体还须由Direct DTE package证明真实placement/readiness/completion。
+  对应board CTest必须实际注册并执行成功且确认未skip；unsupported/skipped/no-card/fake/model均不计完成。
 ```
 
 board能力用独立CMake feature配置。feature开启时必须在configure阶段找到root-contained vendor public header和提供完整所需
@@ -354,6 +357,33 @@ buffer pointer放进manifest、IR或长期side table。`getContextState()`是inv
 cached disposition读取；poison后禁止的是所有低层TX API和provider side effect。board入口是one-shot process：显式runtime
 lifecycle和诊断flush完成后以`std::_Exit`结束，不执行未资格化的vendor DSO finalizer；`dlopen`后的setup失败同样走该出口，
 不能以`dlclose`补偿。这不替代module/allocation显式cleanup。
+
+当前TX public runtime的rank-count=16实现边界按transport语义区分，不能把command queue、tile placement和package rank
+混为一谈：
+
+- `NoTransportRequirements`的logical rank之间没有卡内peer/FSM约束。provider可以为完整rank domain先创建独立stream，
+  再在一个owner-backed `submitAll`内提交全部rank，最后以`txStreamQuery`做有deadline的共同progress。这里证明的是16份
+  package entry/module/argument block都经历同一session和完整数值比较；stream不是tile selector，因此不得宣称rank N固定落在
+  physical tile N，也不得从该结果宣称16-tile并行利用率。
+- `DirectDTETransportRequirements`依赖compiler固化的logical/remote tile和共同推进。当前`txLaunchKernel`与stream API没有
+  per-launch tile参数；`txLaunchClusterKernel`只能向全部tile广播同一module/function/argument block；当前binary中的
+  `txLoadGraph`虽固定读取`tile0..tile15/kcore_fw.so`，但公开入口只接受共享symbol，内部boot parameter又没有schema-v3
+  每rank独立ResourceId argument block；`txLaunchModel`所需BPM没有公开、受支持的builder/schema。因此TX provider必须在任何
+  device effect前拒绝Direct DTE，直到vendor提供可验证的BPM/placement ABI，或compiler/runtime另行完成cluster-compatible
+  artifact与ABI设计。
+- `txGetDeviceAllTileInfo`只用于只读inventory qualification；PG tile selection是8-tile partial-good设备配置，不是launch
+  selector，不能用于rank placement。rank-count=16 admission要求live inventory中的logical index、availability和physical
+  coordinate关系完整且内部唯一；当前qualification不携带expected physical map，因此不能据此声明rank到physical tile的映射。
+- `txDeviceReset`作用于当前target device整体并使其stream/module/model/memory状态失效，且实现可能先等待已有stream；
+  deprecated Kcore power API在当前runtime不提供恢复能力。二者都不是invocation cleanup、timeout cancellation或retry机制，
+  不进入provider执行路径。
+- custom stream完成必须用非阻塞query和host deadline。`TX_ERROR_NOT_READY`仅表示pending，不污染context；query error或deadline
+  则将整个session sticky quarantine，且该query或本地deadline判断之后不再调用destroy/unload/free/reset/power。
+- 当前runtime会按code-object digest复用module handle。adapter必须给重复handle维护logical ownership计数；同handle且同digest
+  只在最后一个logical owner释放时调用一次真实unload，同handle却对应不同digest视为provider contract violation并quarantine。
+
+上述`NoTransportRequirements`路径已经作为Q6.B的可独立评审增量完成真实rank-count=1/16重复exact验证；它不会关闭
+Direct DTE placement/parameter ABI缺口，不升级schema-v3，也不把invocation-local stream/module ownership序列化成sidecar。
 
 最小API语义：
 
@@ -367,10 +397,24 @@ preflightNoCardRuntimeSession(const VerifiedPackageManifest &package,
                               EntryId entry,
                               ArrayRef<RuntimeInvocationBinding> bindings,
                               const RuntimeEnvironment &environment);
+
+Expected<RuntimeInvocationPlan>
+preflightNoCardRuntimeInvocation(
+    const VerifiedPackageManifest &package,
+    ArrayRef<RuntimeInvocationBinding> allRankBindings,
+    const RuntimeEnvironment &providerEnvironment);
+
+Expected<BoardRuntimeInvocationResult>
+executeBoardInvocation(const VerifiedPackageManifest &package,
+                       StringRef packageRoot,
+                       BoardRuntimeInvocationRequest request,
+                       BoardRuntimeDriver &provider);
 ```
 
 `RuntimeInvocationBinding`按ResourceId绑定user buffer/parameter，不按名字猜role。preflight检查all-and-only、bytes、
-alignment、mutability、host visibility和alias限制。
+alignment、mutability、host visibility和alias限制。`RuntimeInvocationPlan`只保存按logical rank canonicalize的typed rank
+records；它是一次invocation的纯计划，不是可由调用方分别执行再拼接的per-entry session vector。board入口只公开完整package
+invocation；rank-count=1兼容入口也委托同一实现。
 
 ## 9. No-Card And Board Evidence
 

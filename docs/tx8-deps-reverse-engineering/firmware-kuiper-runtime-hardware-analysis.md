@@ -730,6 +730,15 @@ Header and disassembly agree on these semantics:
 the current device.  Do not confuse it with old `TsmDeviceSynchronize()` in
 `libvs_runtime.so`, which is a no-op success in this build.
 
+The public `txDeviceReset()` contract applies to the entire selected target
+device and all of its cards, returning it to the initial power-on state. The
+current `itxDeviceReset` path first synchronizes and destroys all streams, then
+releases model, module, and memory-manager state. A deeper reset ioctl was not
+proven in this pass, so the public contract remains the conservative boundary:
+all existing stream/module/model/allocation handles become invalid, and reset
+may itself block while waiting for outstanding streams. It is not a per-kernel
+cancellation or invocation cleanup primitive.
+
 ### 5.4 Memory and Copy APIs
 
 `txMemcpyKind` values:
@@ -773,6 +782,15 @@ ordered by command dependencies and marker/event objects.  This is a runtime
 ordering guarantee; it is not proof of SPM bank safety or NE/CT/DTE hardware
 parallelism safety.
 
+A stream is not a tile selector. `txLaunchKernel` carries a function, one
+argument blob, grid/block dimensions, shared-memory bytes, and a stream, but no
+logical or physical tile identifier. `txStreamQuery` returns
+`TX_ERROR_NOT_READY` for normal pending work; that value must not be promoted to
+a device/context failure. A host deadline can therefore be built from bounded
+query polling, but the runtime exposes no cancellation operation: query error
+or deadline leaves the invocation quarantined and forbids blocking stream
+destroy, module unload, memory free, reset, or power calls in that context.
+
 ### 5.6 Module, Kernel, Model, and Graph APIs
 
 Implemented APIs include:
@@ -788,6 +806,35 @@ Implemented APIs include:
 | `txLaunchModel` | Enqueues a `CusModelCommand` on a stream. |
 | `txLaunchModelSync` | Synchronous compiled-model run; validates BPM/stream-config device memory. |
 | `txLoadGraph`, `txUnloadGraph` | Graph asset load/unload into module object manager. |
+
+Two ownership/ABI details are material for an all-rank provider:
+
+- `TxModuleObjectMgr::loadCodeObject` deduplicates code objects by a 64-bit MD5
+  key and can return the same module handle for repeated identical ELF bytes.
+  The matching unload path has no recovered logical reference increment.
+  A caller that loads 16 identical rank modules must therefore keep its own
+  handle-to-digest logical ownership count and issue the real unload only for
+  the final owner; returning one handle for different digests is an
+  untrustworthy provider contract violation.
+- The current `TxModuleObjectMgr::loadGraph` always reads
+  `graphPath/tile0/kcore_fw.so` through `tile15/kcore_fw.so`. Its private
+  `DynMods` record has one shared module name, one shared symbol, and 16
+  size/address entries. However, it constructs `TxGraphObject` with input,
+  output, and parameter counts all zero; the boot parameter points only to a
+  type-6 `graphTLV`/`DynMods` payload. It then immediately invokes
+  `launchModel`, whose command packet type is 5 (`MODULE_MODEL_LAUNCH_PACKET`),
+  and waits for completion before registering the graph. Thus this binary's
+  `txLoadGraph` is load-plus-one-synchronous-execution, despite the public
+  header suggesting a separate later inference step. It supplies no public
+  location for 16 independent runtime argument blobs and cannot directly
+  execute the schema-v3 per-rank pointer ABI.
+
+`txLaunchClusterKernel` does establish one block per tile with `blockIdx.x` as
+the tile index, but broadcasts one module/function/argument blob. It is a
+candidate only for a separately designed cluster-compatible SPMD artifact, not
+for 16 independent schema-v3 rank ELF/argument blocks. `txLaunchModel` remains
+a research candidate because its BPM table must be toolchain-preprocessed and
+this snapshot exposes neither a public BPM layout nor a supported builder.
 
 Important model strings in HPGR include `bpm_table`, `bpmTableAddr`,
 `ModuleLoadPayload`, `tritonLaunchPayload`, `graphTLV`, `DYNLIB_LOAD`,

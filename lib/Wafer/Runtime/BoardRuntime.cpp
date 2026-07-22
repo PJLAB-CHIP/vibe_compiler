@@ -5,6 +5,7 @@
 #include "PackageManifestInternal.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
@@ -15,7 +16,7 @@
 #include "llvm/Support/SHA256.h"
 
 #include <limits>
-#include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,17 +40,6 @@ llvm::Error wrapDriverError(
     BoardRuntimeContextState contextState = BoardRuntimeContextState::Usable) {
   return boardError(stage, logicalRank, entry, llvm::toString(std::move(error)),
                     contextState);
-}
-
-const PackageResourceRecord *
-findResourceForEntry(const PackageManifest &manifest,
-                     const PackageEntrypointRecord &entry,
-                     ResourceId resourceId) {
-  const PackageResourceRecord *resource =
-      detail::findResource(manifest.resources, resourceId);
-  if (!resource || resource->logicalRank != entry.logicalRank)
-    return nullptr;
-  return resource;
 }
 
 llvm::Expected<std::vector<uint8_t>>
@@ -84,7 +74,13 @@ readVerifiedModule(llvm::StringRef packageRoot,
 
 struct LiveAllocation {
   const PackageResourceRecord *resource = nullptr;
+  EntryId entry;
   BoardDeviceMemory memory;
+};
+
+struct LiveModule {
+  const RuntimeSessionPlan *rank = nullptr;
+  BoardModuleHandle module;
 };
 
 } // namespace
@@ -129,9 +125,12 @@ stringifyBoardRuntimeContextState(BoardRuntimeContextState state) {
 }
 
 void BoardRuntimeError::log(llvm::raw_ostream &stream) const {
-  stream << "board runtime " << stringifyBoardRuntimeStage(stage)
-         << " failed for rank " << logicalRank << " entry " << entry.getValue()
-         << " (context=" << stringifyBoardRuntimeContextState(contextState)
+  stream << "board runtime " << stringifyBoardRuntimeStage(stage) << " failed";
+  if (logicalRank >= 0)
+    stream << " for rank " << logicalRank;
+  if (entry.isValid())
+    stream << " entry " << entry.getValue();
+  stream << " (context=" << stringifyBoardRuntimeContextState(contextState)
          << "): " << detail;
 }
 
@@ -139,178 +138,220 @@ std::error_code BoardRuntimeError::convertToErrorCode() const {
   return llvm::make_error_code(llvm::errc::io_error);
 }
 
-llvm::Expected<BoardRuntimeResult>
-executeBoardEntry(const VerifiedPackageManifest &package,
-                  llvm::StringRef packageRoot, BoardRuntimeRequest request,
-                  BoardRuntimeDriver &driver) {
+llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
+    const VerifiedPackageManifest &package, llvm::StringRef packageRoot,
+    BoardRuntimeInvocationRequest request, BoardRuntimeDriver &driver) {
   const PackageManifest &manifest = package.getManifest();
-  auto entryIterator = llvm::find_if(manifest.entries, [&](const auto &entry) {
-    return entry.id == request.entry;
-  });
-  if (entryIterator == manifest.entries.end())
-    return boardError(BoardRuntimeStage::Preflight, -1, request.entry,
-                      "entry ID is not present in package");
-  const PackageEntrypointRecord &entry = *entryIterator;
+  const EntryId noEntry;
   if (request.qualification.runtimeVersion == 0 ||
       request.qualification.tileCount == 0 ||
       request.qualification.name.empty() ||
       request.qualification.pciBusId.empty() ||
       request.qualification.runtimeLibraryDigest.empty())
-    return boardError(BoardRuntimeStage::Preflight, entry.logicalRank, entry.id,
+    return boardError(BoardRuntimeStage::Preflight, -1, noEntry,
                       "board execution requires complete explicit device "
                       "qualification facts");
-  if (!std::holds_alternative<NoTransportRequirements>(entry.transport))
-    return boardError(BoardRuntimeStage::Preflight, entry.logicalRank, entry.id,
-                      "single-entry execution cannot satisfy Direct DTE");
-  const PackageModuleRecord *module =
-      detail::findModule(manifest.modules, entry.module);
-  if (!module)
-    return boardError(BoardRuntimeStage::Preflight, entry.logicalRank, entry.id,
-                      "entry module is missing");
+  if (request.completionTimeoutMilliseconds == 0 ||
+      request.completionTimeoutMilliseconds >
+          kMaximumBoardCompletionTimeoutMilliseconds)
+    return boardError(BoardRuntimeStage::Preflight, -1, noEntry,
+                      "board completion timeout is outside the supported "
+                      "range");
+  for (const PackageEntrypointRecord &entry : manifest.entries)
+    if (!std::holds_alternative<NoTransportRequirements>(entry.transport))
+      return boardError(
+          BoardRuntimeStage::Preflight, entry.logicalRank, entry.id,
+          "TX board provider cannot satisfy Direct DTE rank placement and "
+          "per-rank argument ABI");
 
   llvm::DenseMap<uint64_t, BoardRuntimeBinding *> bindingsByResource;
   for (BoardRuntimeBinding &binding : request.bindings) {
     uint64_t id = binding.resource.getValue();
     if (!binding.resource.isValid() || bindingsByResource.count(id))
-      return boardError(BoardRuntimeStage::Preflight, entry.logicalRank,
-                        entry.id,
+      return boardError(BoardRuntimeStage::Preflight, -1, noEntry,
                         "invocation has a duplicate or invalid ResourceId");
     const PackageResourceRecord *resource =
-        findResourceForEntry(manifest, entry, binding.resource);
+        detail::findResource(manifest.resources, binding.resource);
     if (!resource || !resource->hostVisible)
-      return boardError(BoardRuntimeStage::Preflight, entry.logicalRank,
-                        entry.id,
+      return boardError(BoardRuntimeStage::Preflight, -1, noEntry,
                         "invocation binds an unknown or internal ResourceId");
     if (binding.bytes.size() != resource->bytes)
-      return boardError(BoardRuntimeStage::Preflight, entry.logicalRank,
-                        entry.id, "invocation buffer byte count is not exact");
+      return boardError(BoardRuntimeStage::Preflight, resource->logicalRank,
+                        noEntry, "invocation buffer byte count is not exact");
     bindingsByResource[id] = &binding;
   }
 
   std::vector<RuntimeInvocationBinding> preflightBindings;
-  for (const PackageABISlotBinding &slot : entry.slots) {
-    const PackageResourceRecord *resource =
-        findResourceForEntry(manifest, entry, slot.resource);
-    if (!resource)
-      return boardError(BoardRuntimeStage::Preflight, entry.logicalRank,
-                        entry.id, "entry slot resource is missing");
-    if (!resource->hostVisible)
+  for (const PackageResourceRecord &resource : manifest.resources) {
+    if (!resource.hostVisible)
       continue;
-    if (!bindingsByResource.count(resource->id.getValue()))
-      return boardError(BoardRuntimeStage::Preflight, entry.logicalRank,
-                        entry.id, "invocation omits a host-visible ResourceId");
-    preflightBindings.push_back({resource->id, resource->bytes,
-                                 resource->alignment, resource->access, true});
+    if (!bindingsByResource.count(resource.id.getValue()))
+      return boardError(BoardRuntimeStage::Preflight, resource.logicalRank,
+                        noEntry, "invocation omits a host-visible ResourceId");
+    preflightBindings.push_back({resource.id, resource.bytes,
+                                 resource.alignment, resource.access, true});
   }
   if (preflightBindings.size() != request.bindings.size())
-    return boardError(BoardRuntimeStage::Preflight, entry.logicalRank, entry.id,
-                      "invocation bindings are not all-and-only for entry");
+    return boardError(BoardRuntimeStage::Preflight, -1, noEntry,
+                      "invocation bindings are not all-and-only for package");
 
-  RuntimeEnvironment semanticEnvironment{
-      manifest.targetProfile, manifest.targetIdentity, manifest.runtimeABI,
-      manifest.moduleFormat, std::numeric_limits<uint64_t>::max()};
-  llvm::Expected<RuntimeSessionPlan> semanticPlan =
-      preflightNoCardRuntimeSession(package, entry.id, preflightBindings,
-                                    semanticEnvironment);
+  const RuntimeEnvironment &providerEnvironment =
+      driver.getProviderEnvironment();
+  llvm::Expected<RuntimeInvocationPlan> semanticPlan =
+      preflightNoCardRuntimeInvocation(package, preflightBindings,
+                                       providerEnvironment);
   if (!semanticPlan)
-    return wrapDriverError(BoardRuntimeStage::Preflight, entry.logicalRank,
-                           entry.id, semanticPlan.takeError());
+    return wrapDriverError(BoardRuntimeStage::Preflight, -1, noEntry,
+                           semanticPlan.takeError());
 
-  llvm::Expected<std::vector<uint8_t>> moduleBytes =
-      readVerifiedModule(packageRoot, *module, entry.logicalRank, entry.id);
-  if (!moduleBytes)
-    return moduleBytes.takeError();
+  std::vector<std::vector<uint8_t>> moduleSnapshots;
+  moduleSnapshots.reserve(semanticPlan->ranks.size());
+  for (const RuntimeSessionPlan &rank : semanticPlan->ranks) {
+    const PackageModuleRecord *module =
+        detail::findModule(manifest.modules, rank.module);
+    if (!module)
+      return boardError(BoardRuntimeStage::Preflight, rank.logicalRank,
+                        rank.entry, "entry module is missing");
+    llvm::Expected<std::vector<uint8_t>> bytes =
+        readVerifiedModule(packageRoot, *module, rank.logicalRank, rank.entry);
+    if (!bytes)
+      return bytes.takeError();
+    moduleSnapshots.push_back(std::move(*bytes));
+  }
+
+  if (driver.getContextState() == BoardRuntimeContextState::Poisoned)
+    return boardError(BoardRuntimeStage::DeviceSelection, -1, noEntry,
+                      "TX provider is already quarantined",
+                      BoardRuntimeContextState::Poisoned);
 
   llvm::Expected<uint32_t> deviceCount = driver.getDeviceCount();
   if (!deviceCount)
-    return wrapDriverError(BoardRuntimeStage::DeviceSelection,
-                           entry.logicalRank, entry.id, deviceCount.takeError(),
-                           driver.getContextState());
+    return wrapDriverError(BoardRuntimeStage::DeviceSelection, -1, noEntry,
+                           deviceCount.takeError(), driver.getContextState());
   if (request.deviceId >= *deviceCount)
-    return boardError(BoardRuntimeStage::DeviceSelection, entry.logicalRank,
-                      entry.id, "requested device is not present");
+    return boardError(BoardRuntimeStage::DeviceSelection, -1, noEntry,
+                      "requested device is not present");
   if (llvm::Error error = driver.selectDevice(request.deviceId))
-    return wrapDriverError(BoardRuntimeStage::DeviceSelection,
-                           entry.logicalRank, entry.id, std::move(error),
-                           driver.getContextState());
+    return wrapDriverError(BoardRuntimeStage::DeviceSelection, -1, noEntry,
+                           std::move(error), driver.getContextState());
   llvm::Expected<BoardDeviceInfo> device =
       driver.getDeviceInfo(request.deviceId);
   if (!device)
-    return wrapDriverError(BoardRuntimeStage::DeviceSelection,
-                           entry.logicalRank, entry.id, device.takeError(),
-                           driver.getContextState());
+    return wrapDriverError(BoardRuntimeStage::DeviceSelection, -1, noEntry,
+                           device.takeError(), driver.getContextState());
   if (device->runtimeVersion != request.qualification.runtimeVersion ||
       device->tileCount != request.qualification.tileCount ||
       device->name != request.qualification.name ||
       device->pciBusId != request.qualification.pciBusId ||
       device->runtimeLibraryDigest !=
           request.qualification.runtimeLibraryDigest)
-    return boardError(BoardRuntimeStage::DeviceSelection, entry.logicalRank,
-                      entry.id,
+    return boardError(BoardRuntimeStage::DeviceSelection, -1, noEntry,
                       "live TX inventory does not match the explicit board "
                       "qualification");
   if (device->freeMemoryBytes > device->totalMemoryBytes)
-    return boardError(BoardRuntimeStage::DeviceSelection, entry.logicalRank,
-                      entry.id,
+    return boardError(BoardRuntimeStage::DeviceSelection, -1, noEntry,
                       "TX runtime reported free memory greater than total "
                       "memory");
-  RuntimeEnvironment capacityEnvironment{
-      manifest.targetProfile, manifest.targetIdentity, manifest.runtimeABI,
-      manifest.moduleFormat, device->freeMemoryBytes};
-  llvm::Expected<RuntimeSessionPlan> capacityPlan =
-      preflightNoCardRuntimeSession(package, entry.id, preflightBindings,
-                                    capacityEnvironment);
+
+  uint32_t availableTiles = 0;
+  llvm::DenseSet<uint32_t> logicalTiles;
+  llvm::DenseSet<uint32_t> availableLogicalTiles;
+  std::set<std::pair<uint32_t, uint32_t>> physicalTiles;
+  for (const BoardDeviceInfo::Tile &tile : device->tiles) {
+    if (!logicalTiles.insert(tile.logicalIndex).second)
+      return boardError(BoardRuntimeStage::DeviceSelection, -1, noEntry,
+                        "TX inventory contains duplicate logical tile indices");
+    if (!tile.available)
+      continue;
+    ++availableTiles;
+    availableLogicalTiles.insert(tile.logicalIndex);
+    if (!physicalTiles.emplace(tile.physicalX, tile.physicalY).second)
+      return boardError(BoardRuntimeStage::DeviceSelection, -1, noEntry,
+                        "TX inventory maps available tiles to duplicate "
+                        "physical coordinates");
+  }
+  if (availableTiles != device->tileCount ||
+      availableTiles < static_cast<uint32_t>(manifest.rankCount))
+    return boardError(BoardRuntimeStage::DeviceSelection, -1, noEntry,
+                      "TX tile availability does not cover the package rank "
+                      "domain");
+  if (manifest.rankCount == 16) {
+    for (uint32_t logicalRank = 0; logicalRank < 16; ++logicalRank)
+      if (!availableLogicalTiles.contains(logicalRank))
+        return boardError(BoardRuntimeStage::DeviceSelection, -1, noEntry,
+                          "TX inventory does not contain logical tiles 0..15");
+  }
+
+  RuntimeEnvironment capacityEnvironment = providerEnvironment;
+  capacityEnvironment.maxResourceBytes = device->freeMemoryBytes;
+  llvm::Expected<RuntimeInvocationPlan> capacityPlan =
+      preflightNoCardRuntimeInvocation(package, preflightBindings,
+                                       capacityEnvironment);
   if (!capacityPlan)
-    return wrapDriverError(BoardRuntimeStage::Preflight, entry.logicalRank,
-                           entry.id, capacityPlan.takeError());
+    return wrapDriverError(BoardRuntimeStage::Preflight, -1, noEntry,
+                           capacityPlan.takeError());
 
   uint64_t allocationBytes = 0;
-  for (const PlannedRuntimeResource &resource : capacityPlan->resources) {
-    if (resource.bytes > std::numeric_limits<uint64_t>::max() - allocationBytes)
-      return boardError(BoardRuntimeStage::Preflight, entry.logicalRank,
-                        entry.id,
-                        "aggregate board allocation byte count overflows");
-    allocationBytes += resource.bytes;
-  }
+  for (const RuntimeSessionPlan &rank : capacityPlan->ranks)
+    for (const PlannedRuntimeResource &resource : rank.resources) {
+      if (resource.bytes >
+          std::numeric_limits<uint64_t>::max() - allocationBytes)
+        return boardError(BoardRuntimeStage::Preflight, rank.logicalRank,
+                          rank.entry,
+                          "aggregate board allocation byte count overflows");
+      allocationBytes += resource.bytes;
+    }
   if (device->freeMemoryBytes <= boardRuntimeFreeMemoryReserve ||
       allocationBytes > device->freeMemoryBytes - boardRuntimeFreeMemoryReserve)
     return boardError(
-        BoardRuntimeStage::Preflight, entry.logicalRank, entry.id,
+        BoardRuntimeStage::Preflight, -1, noEntry,
         "aggregate board allocation demand exceeds qualified free memory "
         "after the runtime safety reserve");
 
-  BoardRuntimeResult result;
+  BoardRuntimeInvocationResult result;
   result.device = std::move(*device);
-  result.entry = entry.id;
-  result.logicalRank = entry.logicalRank;
-  result.module = module->id;
-  result.terminalCompletion = entry.terminalCompletion;
+  for (const RuntimeSessionPlan &rank : capacityPlan->ranks)
+    result.ranks.push_back(
+        {rank.entry, rank.logicalRank, rank.module, rank.terminalCompletion});
   result.completedStages.push_back(BoardRuntimeStage::Preflight);
   result.completedStages.push_back(BoardRuntimeStage::DeviceSelection);
 
   std::vector<LiveAllocation> allocations;
-  std::optional<BoardModuleHandle> liveModule;
+  std::vector<LiveModule> liveModules;
+  bool submissionLive = false;
   auto cleanup = [&]() -> llvm::Error {
     llvm::Error cleanupError = llvm::Error::success();
-    if (liveModule) {
-      if (llvm::Error error = driver.unloadModule(*liveModule)) {
+    if (submissionLive) {
+      if (llvm::Error error = driver.releaseSubmission()) {
         BoardRuntimeContextState state = driver.getContextState();
-        llvm::Error wrapped =
-            wrapDriverError(BoardRuntimeStage::Cleanup, entry.logicalRank,
-                            entry.id, std::move(error), state);
+        llvm::Error wrapped = wrapDriverError(BoardRuntimeStage::Cleanup, -1,
+                                              noEntry, std::move(error), state);
         if (state == BoardRuntimeContextState::Poisoned)
           return llvm::joinErrors(std::move(cleanupError), std::move(wrapped));
         cleanupError =
             llvm::joinErrors(std::move(cleanupError), std::move(wrapped));
       }
-      liveModule.reset();
+      submissionLive = false;
     }
+    for (LiveModule &liveModule : llvm::reverse(liveModules)) {
+      if (llvm::Error error = driver.unloadModule(liveModule.module)) {
+        BoardRuntimeContextState state = driver.getContextState();
+        llvm::Error wrapped = wrapDriverError(
+            BoardRuntimeStage::Cleanup, liveModule.rank->logicalRank,
+            liveModule.rank->entry, std::move(error), state);
+        if (state == BoardRuntimeContextState::Poisoned)
+          return llvm::joinErrors(std::move(cleanupError), std::move(wrapped));
+        cleanupError =
+            llvm::joinErrors(std::move(cleanupError), std::move(wrapped));
+      }
+    }
+    liveModules.clear();
     for (LiveAllocation &allocation : llvm::reverse(allocations)) {
       if (llvm::Error error = driver.free(allocation.memory)) {
         BoardRuntimeContextState state = driver.getContextState();
-        llvm::Error wrapped =
-            wrapDriverError(BoardRuntimeStage::Cleanup, entry.logicalRank,
-                            entry.id, std::move(error), state);
+        llvm::Error wrapped = wrapDriverError(
+            BoardRuntimeStage::Cleanup, allocation.resource->logicalRank,
+            allocation.entry, std::move(error), state);
         if (state == BoardRuntimeContextState::Poisoned)
           return llvm::joinErrors(std::move(cleanupError), std::move(wrapped));
         cleanupError =
@@ -320,27 +361,30 @@ executeBoardEntry(const VerifiedPackageManifest &package,
     allocations.clear();
     return cleanupError;
   };
-  auto fail = [&](BoardRuntimeStage stage,
-                  llvm::Error error) -> llvm::Expected<BoardRuntimeResult> {
+  auto fail =
+      [&](BoardRuntimeStage stage, int64_t logicalRank, EntryId entry,
+          llvm::Error error) -> llvm::Expected<BoardRuntimeInvocationResult> {
     BoardRuntimeContextState state = driver.getContextState();
-    llvm::Error primary = wrapDriverError(stage, entry.logicalRank, entry.id,
-                                          std::move(error), state);
+    llvm::Error primary =
+        wrapDriverError(stage, logicalRank, entry, std::move(error), state);
     if (state == BoardRuntimeContextState::Poisoned)
       return std::move(primary);
     return llvm::joinErrors(std::move(primary), cleanup());
   };
 
   llvm::DenseMap<uint64_t, BoardDeviceMemory> memoryByResource;
-  for (const PackageABISlotBinding &slot : entry.slots) {
-    const PackageResourceRecord *resource =
-        findResourceForEntry(manifest, entry, slot.resource);
-    llvm::Expected<BoardDeviceMemory> memory =
-        driver.allocate(resource->bytes, resource->alignment);
-    if (!memory)
-      return fail(BoardRuntimeStage::ResourceAllocation, memory.takeError());
-    allocations.push_back({resource, *memory});
-    memoryByResource[resource->id.getValue()] = *memory;
-  }
+  for (const RuntimeSessionPlan &rank : capacityPlan->ranks)
+    for (ResourceId resourceId : rank.launchOrder) {
+      const PackageResourceRecord *resource =
+          detail::findResource(manifest.resources, resourceId);
+      llvm::Expected<BoardDeviceMemory> memory =
+          driver.allocate(resource->bytes, resource->alignment);
+      if (!memory)
+        return fail(BoardRuntimeStage::ResourceAllocation, rank.logicalRank,
+                    rank.entry, memory.takeError());
+      allocations.push_back({resource, rank.entry, *memory});
+      memoryByResource[resource->id.getValue()] = *memory;
+    }
   result.completedStages.push_back(BoardRuntimeStage::ResourceAllocation);
 
   for (const LiveAllocation &allocation : allocations) {
@@ -357,37 +401,59 @@ executeBoardEntry(const VerifiedPackageManifest &package,
       source = zeros;
     }
     if (llvm::Error error = driver.copyHostToDevice(allocation.memory, source))
-      return fail(BoardRuntimeStage::HostToDevice, std::move(error));
+      return fail(BoardRuntimeStage::HostToDevice,
+                  allocation.resource->logicalRank, allocation.entry,
+                  std::move(error));
   }
   result.completedStages.push_back(BoardRuntimeStage::HostToDevice);
 
-  llvm::Expected<BoardModuleHandle> loaded = driver.loadModule(*moduleBytes);
-  if (!loaded)
-    return fail(BoardRuntimeStage::ModuleLoad, loaded.takeError());
-  liveModule = *loaded;
+  for (size_t index = 0; index < capacityPlan->ranks.size(); ++index) {
+    const RuntimeSessionPlan &rank = capacityPlan->ranks[index];
+    llvm::Expected<BoardModuleHandle> loaded =
+        driver.loadModule(moduleSnapshots[index]);
+    if (!loaded)
+      return fail(BoardRuntimeStage::ModuleLoad, rank.logicalRank, rank.entry,
+                  loaded.takeError());
+    liveModules.push_back({&capacityPlan->ranks[index], *loaded});
+  }
   result.completedStages.push_back(BoardRuntimeStage::ModuleLoad);
 
-  llvm::Expected<BoardFunctionHandle> function =
-      driver.resolveEntry(*liveModule, entry.symbol);
-  if (!function)
-    return fail(BoardRuntimeStage::EntryResolve, function.takeError());
+  std::vector<BoardFunctionHandle> functions;
+  functions.reserve(liveModules.size());
+  for (const LiveModule &liveModule : liveModules) {
+    llvm::Expected<BoardFunctionHandle> function =
+        driver.resolveEntry(liveModule.module, liveModule.rank->entrySymbol);
+    if (!function)
+      return fail(BoardRuntimeStage::EntryResolve, liveModule.rank->logicalRank,
+                  liveModule.rank->entry, function.takeError());
+    functions.push_back(*function);
+  }
   result.completedStages.push_back(BoardRuntimeStage::EntryResolve);
 
-  std::vector<uint64_t> arguments;
-  arguments.reserve(entry.slots.size());
-  for (const PackageABISlotBinding &slot : entry.slots) {
-    auto memory = memoryByResource.find(slot.resource.getValue());
-    if (memory == memoryByResource.end())
-      return fail(BoardRuntimeStage::Launch,
-                  detail::invalid("launch slot has no device allocation"));
-    arguments.push_back(static_cast<uint64_t>(memory->second.value));
+  std::vector<BoardRankLaunch> launches;
+  launches.reserve(capacityPlan->ranks.size());
+  for (auto [index, rank] : llvm::enumerate(capacityPlan->ranks)) {
+    BoardRankLaunch launch;
+    launch.logicalRank = rank.logicalRank;
+    launch.entry = rank.entry;
+    launch.function = functions[index];
+    launch.arguments.reserve(rank.launchOrder.size());
+    for (ResourceId resource : rank.launchOrder) {
+      auto memory = memoryByResource.find(resource.getValue());
+      if (memory == memoryByResource.end())
+        return fail(BoardRuntimeStage::Launch, rank.logicalRank, rank.entry,
+                    detail::invalid("launch slot has no device allocation"));
+      launch.arguments.push_back(static_cast<uint64_t>(memory->second.value));
+    }
+    launches.push_back(std::move(launch));
   }
-  if (llvm::Error error = driver.launch(*function, arguments))
-    return fail(BoardRuntimeStage::Launch, std::move(error));
+  if (llvm::Error error = driver.submitAll(launches))
+    return fail(BoardRuntimeStage::Launch, -1, noEntry, std::move(error));
+  submissionLive = true;
   result.completedStages.push_back(BoardRuntimeStage::Launch);
 
-  if (llvm::Error error = driver.synchronize())
-    return fail(BoardRuntimeStage::Completion, std::move(error));
+  if (llvm::Error error = driver.waitAll(request.completionTimeoutMilliseconds))
+    return fail(BoardRuntimeStage::Completion, -1, noEntry, std::move(error));
   result.completedStages.push_back(BoardRuntimeStage::Completion);
 
   for (const LiveAllocation &allocation : allocations) {
@@ -398,7 +464,8 @@ executeBoardEntry(const VerifiedPackageManifest &package,
                               std::vector<uint8_t>(resource.bytes)};
     if (llvm::Error error =
             driver.copyDeviceToHost(output.bytes, allocation.memory))
-      return fail(BoardRuntimeStage::DeviceToHost, std::move(error));
+      return fail(BoardRuntimeStage::DeviceToHost, resource.logicalRank,
+                  allocation.entry, std::move(error));
     result.outputs.push_back(std::move(output));
   }
   result.completedStages.push_back(BoardRuntimeStage::DeviceToHost);
@@ -407,6 +474,41 @@ executeBoardEntry(const VerifiedPackageManifest &package,
     return std::move(error);
   result.completedStages.push_back(BoardRuntimeStage::Cleanup);
   return result;
+}
+
+llvm::Expected<BoardRuntimeResult>
+executeBoardEntry(const VerifiedPackageManifest &package,
+                  llvm::StringRef packageRoot, BoardRuntimeRequest request,
+                  BoardRuntimeDriver &driver) {
+  const PackageManifest &manifest = package.getManifest();
+  if (manifest.rankCount != 1 || manifest.entries.size() != 1 ||
+      manifest.entries.front().id != request.entry)
+    return boardError(
+        BoardRuntimeStage::Preflight, -1, request.entry,
+        "single-entry compatibility execution requires the unique entry of a "
+        "rank-count=1 package");
+
+  BoardRuntimeInvocationRequest invocation;
+  invocation.deviceId = request.deviceId;
+  invocation.completionTimeoutMilliseconds =
+      request.completionTimeoutMilliseconds;
+  invocation.qualification = std::move(request.qualification);
+  invocation.bindings = std::move(request.bindings);
+  llvm::Expected<BoardRuntimeInvocationResult> result = executeBoardInvocation(
+      package, packageRoot, std::move(invocation), driver);
+  if (!result)
+    return result.takeError();
+
+  const BoardRuntimeRankResult &rank = result->ranks.front();
+  BoardRuntimeResult entryResult;
+  entryResult.device = std::move(result->device);
+  entryResult.entry = rank.entry;
+  entryResult.logicalRank = rank.logicalRank;
+  entryResult.module = rank.module;
+  entryResult.terminalCompletion = rank.terminalCompletion;
+  entryResult.completedStages = std::move(result->completedStages);
+  entryResult.outputs = std::move(result->outputs);
+  return entryResult;
 }
 
 } // namespace wafer::runtime

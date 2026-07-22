@@ -15,6 +15,10 @@
 
 namespace wafer::runtime {
 
+inline constexpr uint64_t kDefaultBoardCompletionTimeoutMilliseconds = 60000;
+inline constexpr uint64_t kMaximumBoardCompletionTimeoutMilliseconds =
+    60ULL * 60 * 1000;
+
 enum class BoardRuntimeStage {
   Preflight,
   DeviceSelection,
@@ -79,6 +83,13 @@ struct BoardDeviceInfo {
   std::string name;
   std::string pciBusId;
   std::string runtimeLibraryDigest;
+  struct Tile {
+    uint16_t logicalIndex = 0;
+    bool available = false;
+    uint32_t physicalX = 0;
+    uint32_t physicalY = 0;
+  };
+  std::vector<Tile> tiles;
 };
 
 /// Invocation-external qualification facts that must match the live public
@@ -105,6 +116,17 @@ struct BoardFunctionHandle {
   uintptr_t value = 0;
 };
 
+/// One canonical logical-rank launch owned by an all-rank provider
+/// submission. The provider may implement the common submission using
+/// multiple command queues, but callers cannot observe or assemble those
+/// queues themselves.
+struct BoardRankLaunch {
+  int64_t logicalRank = -1;
+  EntryId entry;
+  BoardFunctionHandle function;
+  std::vector<uint64_t> arguments;
+};
+
 /// Low-level board calls used by the owner-backed executor. Implementations
 /// must not infer resource roles or ABI slots; those are supplied by the
 /// verified package plan.
@@ -113,8 +135,12 @@ public:
   virtual ~BoardRuntimeDriver() = default;
 
   /// Returns sticky provider state. A poisoned context can only transition by
-  /// an explicit recovery action outside executeBoardEntry().
+  /// an explicit recovery action outside board invocation execution.
   virtual BoardRuntimeContextState getContextState() const = 0;
+
+  /// Returns cached provider-owned semantic capability. This accessor must not
+  /// issue a runtime or device call.
+  virtual const RuntimeEnvironment &getProviderEnvironment() const = 0;
 
   virtual llvm::Expected<uint32_t> getDeviceCount() = 0;
   virtual llvm::Error selectDevice(uint32_t deviceId) = 0;
@@ -132,9 +158,20 @@ public:
   virtual llvm::Error unloadModule(BoardModuleHandle module) = 0;
   virtual llvm::Expected<BoardFunctionHandle>
   resolveEntry(BoardModuleHandle module, llvm::StringRef symbol) = 0;
-  virtual llvm::Error launch(BoardFunctionHandle function,
-                             llvm::ArrayRef<uint64_t> arguments) = 0;
-  virtual llvm::Error synchronize() = 0;
+
+  /// Establishes one provider-owned submission for the complete logical-rank
+  /// domain. A failure after an unknown or non-empty accepted subset must
+  /// poison the context. A usable failure guarantees that no submission state
+  /// remains live.
+  virtual llvm::Error submitAll(llvm::ArrayRef<BoardRankLaunch> launches) = 0;
+
+  /// Waits for every submitted rank with a host deadline. Timeout or an
+  /// untrustworthy terminal state must poison the context.
+  virtual llvm::Error waitAll(uint64_t timeoutMilliseconds) = 0;
+
+  /// Releases provider-owned submission state after every rank is known
+  /// terminal. It must never be called after poison.
+  virtual llvm::Error releaseSubmission() = 0;
 };
 
 /// One move-owned host buffer bound by typed ResourceId. Read-only and
@@ -148,6 +185,16 @@ struct BoardRuntimeBinding {
 struct BoardRuntimeRequest {
   uint32_t deviceId = 0;
   EntryId entry;
+  uint64_t completionTimeoutMilliseconds =
+      kDefaultBoardCompletionTimeoutMilliseconds;
+  BoardDeviceQualification qualification;
+  std::vector<BoardRuntimeBinding> bindings;
+};
+
+struct BoardRuntimeInvocationRequest {
+  uint32_t deviceId = 0;
+  uint64_t completionTimeoutMilliseconds =
+      kDefaultBoardCompletionTimeoutMilliseconds;
   BoardDeviceQualification qualification;
   std::vector<BoardRuntimeBinding> bindings;
 };
@@ -167,9 +214,31 @@ struct BoardRuntimeResult {
   std::vector<BoardRuntimeOutput> outputs;
 };
 
-/// Executes exactly one verified rank entry. Direct-DTE entries are rejected
-/// until the all-rank provider session can submit and progress the complete
-/// rank domain as one execution unit.
+struct BoardRuntimeRankResult {
+  EntryId entry;
+  int64_t logicalRank = -1;
+  ModuleId module;
+  CompletionId terminalCompletion;
+};
+
+struct BoardRuntimeInvocationResult {
+  BoardDeviceInfo device;
+  std::vector<BoardRuntimeRankResult> ranks;
+  std::vector<BoardRuntimeStage> completedStages;
+  std::vector<BoardRuntimeOutput> outputs;
+};
+
+/// Executes the complete verified logical-rank domain as one owner-backed
+/// provider session. The current TX provider accepts only transport:none;
+/// Direct DTE remains a side-effect-free rejection until a proven placement
+/// and per-rank argument ABI exists.
+llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
+    const VerifiedPackageManifest &package, llvm::StringRef packageRoot,
+    BoardRuntimeInvocationRequest request, BoardRuntimeDriver &driver);
+
+/// Compatibility entry point for a rank-count=1 package. It delegates to the
+/// same owner-backed invocation implementation; it cannot select one rank out
+/// of a multi-rank package.
 llvm::Expected<BoardRuntimeResult>
 executeBoardEntry(const VerifiedPackageManifest &package,
                   llvm::StringRef packageRoot, BoardRuntimeRequest request,
