@@ -134,8 +134,11 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
 mlir::LogicalResult
 TileRegionBodyEmitter::convertNestedOp(mlir::Operation *op,
                                        mlir::OpBuilder &builder) {
+  if (auto allReduce = mlir::dyn_cast<LinalgExtCollectiveAllReduceOp>(op))
+    return convertAllReduce(allReduce, builder);
   if (mlir::isa<WaferLinalgExtCollectiveOpInterface>(op))
-    return fail("nested collective materialization is not implemented");
+    return fail("nested collective materialization is only implemented for "
+                "single-tensor all_reduce");
   if (mlir::isa<mlir::linalg::LinalgOp>(op))
     return materializeSourceImplementation(op, builder);
   if (mlir::isa<mlir::arith::ConstantOp, mlir::bufferization::ToMemrefOp,
@@ -469,7 +472,7 @@ bool TileRegionBodyEmitter::hasNoObservableDestUseExceptInsert(
   for (mlir::OpOperand &use : dest.getUses()) {
     if (&use == destOperand)
       continue;
-    if (isUnreadLinalgDpsInitUse(use))
+    if (isUnreadDpsInitUse(use))
       continue;
     auto extractSlice =
         mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(use.getOwner());
@@ -721,8 +724,14 @@ TileRegionBodyEmitter::getScalarValue(mlir::Value original) {
   return it->second;
 }
 
-bool TileRegionBodyEmitter::isUnreadLinalgDpsInitUse(
-    mlir::OpOperand &use) const {
+bool TileRegionBodyEmitter::isUnreadDpsInitUse(mlir::OpOperand &use) const {
+  if (auto allReduce =
+          mlir::dyn_cast<LinalgExtCollectiveAllReduceOp>(use.getOwner())) {
+    auto dps =
+        mlir::cast<mlir::DestinationStyleOpInterface>(allReduce.getOperation());
+    return dps.isDpsInit(&use);
+  }
+
   auto linalgOp = mlir::dyn_cast<mlir::linalg::LinalgOp>(use.getOwner());
   if (!linalgOp)
     return false;
@@ -742,7 +751,7 @@ bool TileRegionBodyEmitter::onlyFeedsUnreadDpsInit(
   if (value.use_empty() || !visited.insert(value).second)
     return false;
   for (mlir::OpOperand &use : value.getUses()) {
-    if (isUnreadLinalgDpsInitUse(use))
+    if (isUnreadDpsInitUse(use))
       continue;
     auto extractSlice =
         mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(use.getOwner());

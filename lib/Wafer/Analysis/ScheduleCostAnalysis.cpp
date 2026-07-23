@@ -3,11 +3,16 @@
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 
 #include "ScheduleCost/Internal.h"
+#include "Wafer/Analysis/ExecutionTopologyAnalysis.h"
+#include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <utility>
 
 namespace wafer::analysis {
@@ -183,6 +188,101 @@ static void addNoCCost(ScheduleNoCCost &aggregate,
               rankCost.collectiveTransmitBytes[index]);
 }
 
+struct PendingHopTransmit {
+  size_t sourceRank = 0;
+  int64_t peer = -1;
+  detail::Quantity payloadBytes;
+};
+
+static mlir::ModuleOp getContainingModule(mlir::Operation *root) {
+  if (!root)
+    return {};
+  if (auto module = mlir::dyn_cast<mlir::ModuleOp>(root))
+    return module;
+  return root->getParentOfType<mlir::ModuleOp>();
+}
+
+static void
+collectMinimumHopLinkByteDemand(llvm::ArrayRef<mlir::Operation *> rankRoots,
+                                ScheduleCostMetric &minimumHopLinkByteDemand) {
+  llvm::SmallVector<PendingHopTransmit, 32> transmits;
+  bool hasKnownPositiveTransmit = false;
+  for (auto [sourceRank, root] : llvm::enumerate(rankRoots)) {
+    if (!root) {
+      detail::degrade(minimumHopLinkByteDemand, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      continue;
+    }
+    auto collect = [&](mlir::Operation *operation,
+                       detail::Quantity multiplicity) {
+      auto send = mlir::dyn_cast<InstrDTESendOp>(operation);
+      if (!send)
+        return;
+      detail::Quantity bytes =
+          send.getBytes() < 0
+              ? detail::Quantity::unsupported(
+                    ScheduleCostReason::UnsupportedInstructionSemantics)
+              : detail::Quantity{static_cast<uint64_t>(send.getBytes())};
+      detail::Quantity payload = detail::multiply(bytes, multiplicity);
+      if (payload.knowledge != ScheduleCostKnowledge::Known) {
+        detail::add(minimumHopLinkByteDemand, payload);
+        return;
+      }
+      if (payload.value == 0)
+        return;
+      hasKnownPositiveTransmit = true;
+      transmits.push_back({static_cast<size_t>(sourceRank),
+                           send.getPeerAttr().getInt(), payload});
+    };
+    auto markUnsupported = [&]() {
+      detail::degrade(minimumHopLinkByteDemand,
+                      ScheduleCostKnowledge::Unsupported,
+                      ScheduleCostReason::UnsupportedControlFlow);
+    };
+    detail::walkInstructionProgram(root, collect, markUnsupported);
+  }
+
+  // Zero final sends imply an exact zero link-byte demand independently of
+  // topology. This keeps compute-only whole variants analyzable while still
+  // requiring typed topology for every positive communication edge.
+  if (!hasKnownPositiveTransmit)
+    return;
+
+  llvm::SmallVector<ExecutionTopologyAnalysis, 16> rankTopologies;
+  rankTopologies.reserve(rankRoots.size());
+  for (mlir::Operation *root : rankRoots) {
+    mlir::ModuleOp module = getContainingModule(root);
+    mlir::FailureOr<ExecutionTopologyAnalysis> topology =
+        ExecutionTopologyAnalysis::create(module);
+    if (mlir::failed(topology)) {
+      detail::degrade(minimumHopLinkByteDemand, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      return;
+    }
+    if (topology->getRankCount() != static_cast<int64_t>(rankRoots.size()) ||
+        (!rankTopologies.empty() &&
+         !rankTopologies.front().isEquivalentTo(*topology))) {
+      detail::degrade(minimumHopLinkByteDemand, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      return;
+    }
+    rankTopologies.push_back(std::move(*topology));
+  }
+
+  const ExecutionTopologyAnalysis &topology = rankTopologies.front();
+  for (const PendingHopTransmit &transmit : transmits) {
+    std::optional<uint64_t> hops = topology.getShortestHopDistance(
+        static_cast<int64_t>(transmit.sourceRank), transmit.peer);
+    if (!hops) {
+      detail::degrade(minimumHopLinkByteDemand, ScheduleCostKnowledge::Unknown,
+                      ScheduleCostReason::InvalidExecutionTopology);
+      return;
+    }
+    detail::add(minimumHopLinkByteDemand,
+                detail::multiply(transmit.payloadBytes, *hops));
+  }
+}
+
 } // namespace
 
 WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
@@ -209,6 +309,7 @@ WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
     addMetric(result.summedRankSPMHighWaterBytes, rankCost.spmHighWaterBytes);
     result.rankCosts.push_back(std::move(rankCost));
   }
+  collectMinimumHopLinkByteDemand(rankRoots, result.minimumHopLinkByteDemand);
   return result;
 }
 
@@ -251,6 +352,8 @@ llvm::StringRef stringifyScheduleCostReason(ScheduleCostReason reason) {
     return "unsupported-spm-root";
   case ScheduleCostReason::UnresolvedNoCRoute:
     return "unresolved-noc-route";
+  case ScheduleCostReason::InvalidExecutionTopology:
+    return "invalid-execution-topology";
   case ScheduleCostReason::UnsupportedInstructionSemantics:
     return "unsupported-instruction-semantics";
   case ScheduleCostReason::UnsupportedComputeType:

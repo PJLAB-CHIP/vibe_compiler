@@ -196,8 +196,8 @@ static llvm::SmallVector<RefinementDim, 6> rankRefinementDimsImpl(
 static llvm::SmallVector<RefinementDim, 6>
 rankRefinementDims(mlir::func::FuncOp task, const CandidateSpec &candidate,
                    llvm::ArrayRef<int64_t> reductionRanges) {
-  return rankRefinementDimsImpl(getYieldedRootLinalgOps(task), candidate,
-                                reductionRanges);
+  return rankRefinementDimsImpl(getTraversalComputeRootLinalgOps(task),
+                                candidate, reductionRanges);
 }
 
 static std::optional<CandidateSpec> refineCandidateDim(

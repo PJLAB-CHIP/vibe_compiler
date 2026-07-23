@@ -24,6 +24,9 @@ set(WAFER_TORCHVISION_VERSION "0.20.0")
 set(WAFER_TORCH_XLA_PYTHON_VERSION "2.5.0")
 set(WAFER_PYTORCH_XLA_COMMIT "396608c7105b3763874fe3800dfabdfa2b38a28a")
 set(WAFER_PYTORCH_XLA_REPOSITORY "https://github.com/pytorch/xla.git")
+set(WAFER_BAZEL_VERSION "6.5.0")
+set(WAFER_BAZEL_LINUX_X64_URL "https://github.com/bazelbuild/bazel/releases/download/6.5.0/bazel-6.5.0-linux-x86_64")
+set(WAFER_BAZEL_LINUX_X64_SHA256 "a40ac69263440761199fcb8da47ad4e3f328cbe79ffbf4ecc14e5ba252857307")
 
 set(WAFER_PYTHON_LIT_VERSION "18.1.8")
 

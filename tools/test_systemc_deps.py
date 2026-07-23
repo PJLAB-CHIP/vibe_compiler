@@ -11,6 +11,7 @@ import tarfile
 import tempfile
 import unittest
 
+from bootstrap_deps import write_systemc_consumer
 from systemc_deps import (
     BUILD_OPTIONS,
     RECORD_KIND,
@@ -122,6 +123,13 @@ class SystemCDependencyRecordTest(unittest.TestCase):
 
     def rewrite(self, record: dict[str, object]) -> None:
         self.record_path.write_text(canonical_json(record), encoding="utf-8")
+
+    def test_generated_consumer_accepts_managed_host_cmake_baseline(self) -> None:
+        source = self.root / "consumer"
+        write_systemc_consumer(source)
+        cmake_lists = (source / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn("cmake_minimum_required(VERSION 3.16)", cmake_lists)
+        self.assertNotIn("cmake_minimum_required(VERSION 3.24)", cmake_lists)
 
     def test_valid_record_produces_closed_absolute_snapshot(self) -> None:
         resolved = validate_record(self.record_path, self.root, self.versions)

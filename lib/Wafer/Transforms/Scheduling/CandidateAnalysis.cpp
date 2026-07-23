@@ -140,6 +140,90 @@ getYieldedRootLinalgOps(mlir::func::FuncOp task) {
   return roots;
 }
 
+namespace {
+
+struct TraversalComputeRootInfo {
+  llvm::SmallVector<mlir::linalg::LinalgOp, 4> roots;
+  bool hasAllReduceWrapper = false;
+};
+
+/// Recognizes only the all-reduce wrapper that complete traversal can tile and
+/// fuse without recovering semantic roles from names: one ranked tensor
+/// input/out/result, identical shape-preserving types, a direct unique Linalg
+/// producer, and a direct task output destination. Fanout remains fail-closed
+/// because its additional live dataflow is not represented by the estimator.
+static mlir::linalg::LinalgOp getAllReduceTraversalComputeRoot(
+    mlir::func::FuncOp task, mlir::Value yieldedValue, unsigned outputIndex) {
+  auto allReduce = mlir::dyn_cast_or_null<LinalgExtCollectiveAllReduceOp>(
+      yieldedValue.getDefiningOp());
+  if (!allReduce || allReduce->getBlock() != &task.getBody().front() ||
+      allReduce.getInputs().size() != 1 || allReduce.getOuts().size() != 1 ||
+      allReduce->getNumResults() != 1 || allReduce.getResult(0) != yieldedValue)
+    return {};
+
+  mlir::Value input = allReduce.getInputs().front();
+  mlir::Value output = allReduce.getOuts().front();
+  auto inputType = mlir::dyn_cast<mlir::RankedTensorType>(input.getType());
+  auto outputType = mlir::dyn_cast<mlir::RankedTensorType>(output.getType());
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(yieldedValue.getType());
+  auto outputArgument = mlir::dyn_cast<mlir::BlockArgument>(output);
+  unsigned outputArgumentBase = task.getNumArguments() - task.getNumResults();
+  if (!inputType || !outputType || !resultType || inputType != outputType ||
+      inputType != resultType || !outputArgument ||
+      outputArgument.getOwner() != &task.getBody().front() ||
+      outputArgument.getArgNumber() != outputArgumentBase + outputIndex ||
+      !output.hasOneUse() || !yieldedValue.hasOneUse())
+    return {};
+
+  auto producer =
+      mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(input.getDefiningOp());
+  if (!producer || producer->getBlock() != &task.getBody().front() ||
+      producer->getNumResults() != 1 || producer->getResult(0) != input ||
+      !input.hasOneUse())
+    return {};
+  return producer;
+}
+
+static std::optional<TraversalComputeRootInfo>
+getTraversalComputeRootInfo(mlir::func::FuncOp task) {
+  if (!task || !task.getBody().hasOneBlock())
+    return std::nullopt;
+  if (task.getNumArguments() < task.getNumResults())
+    return std::nullopt;
+  auto returnOp = mlir::dyn_cast<mlir::func::ReturnOp>(
+      task.getBody().front().getTerminator());
+  if (!returnOp || returnOp.getOperands().empty())
+    return std::nullopt;
+
+  TraversalComputeRootInfo info;
+  for (auto [outputIndex, value] : llvm::enumerate(returnOp.getOperands())) {
+    if (auto root = mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(
+            value.getDefiningOp())) {
+      info.roots.push_back(root);
+      continue;
+    }
+    mlir::linalg::LinalgOp root = getAllReduceTraversalComputeRoot(
+        task, value, static_cast<unsigned>(outputIndex));
+    if (!root)
+      return std::nullopt;
+    info.roots.push_back(root);
+    info.hasAllReduceWrapper = true;
+  }
+  return info;
+}
+
+} // namespace
+
+std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>>
+getTraversalComputeRootLinalgOps(mlir::func::FuncOp task) {
+  std::optional<TraversalComputeRootInfo> info =
+      getTraversalComputeRootInfo(task);
+  if (!info)
+    return std::nullopt;
+  return std::move(info->roots);
+}
+
 CandidateTraversalRootCapability
 getTaskTraversalRootCapability(mlir::func::FuncOp task) {
   if (!task || !task.getBody().hasOneBlock())
@@ -307,7 +391,7 @@ static std::optional<int64_t> estimateRequiredSPMLowerBoundBytes(
 bool failsCheapSPMBound(mlir::func::FuncOp task, const CandidateSpec &candidate,
                         int64_t spmBase, int64_t spmLimit) {
   std::optional<int64_t> lowerBoundBytes = estimateRequiredSPMLowerBoundBytes(
-      getYieldedRootLinalgOps(task), candidate);
+      getTraversalComputeRootLinalgOps(task), candidate);
   if (!lowerBoundBytes || spmLimit <= spmBase)
     return false;
   return *lowerBoundBytes > (spmLimit - spmBase);
@@ -337,6 +421,77 @@ getAlignedPhysicalSPMBytes(llvm::ArrayRef<int64_t> shape,
 static bool isDirectTaskArgument(mlir::func::FuncOp task, mlir::Value value) {
   auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
   return argument && argument.getOwner() == &task.getBody().front();
+}
+
+/// Returns the rank-independent required-live SPM bound for a task whose
+/// returned values are direct, shape-preserving multi-rank all-reduces.
+///
+/// A tree reduction's internal rank must hold the local input, receive tile,
+/// and accumulator tile at the same time.  Leaf ranks can sometimes alias
+/// those roots and therefore pass exact rank-local SPM planning with a larger
+/// tile.  Candidate legality must nevertheless use the worst collective role:
+/// otherwise peers select different traversal steps and no longer execute the
+/// same DTE message instances.
+static std::optional<int64_t> estimateDirectAllReduceRequiredLiveBytes(
+    mlir::func::FuncOp task, const CandidateSpec &candidate,
+    int64_t spmAlignment) {
+  if (!task || !task.getBody().hasOneBlock() ||
+      !candidate.reductionSplitSizes.empty() || candidate.tileSizes.empty())
+    return std::nullopt;
+  auto returnOp = mlir::dyn_cast<mlir::func::ReturnOp>(
+      task.getBody().front().getTerminator());
+  if (!returnOp || returnOp.getOperands().empty())
+    return std::nullopt;
+
+  int64_t largestTileBytes = 0;
+  for (mlir::Value returned : returnOp.getOperands()) {
+    auto allReduce =
+        returned.getDefiningOp<LinalgExtCollectiveAllReduceOp>();
+    if (!allReduce || allReduce.getInputs().size() != 1 ||
+        allReduce.getOuts().size() != 1 || allReduce->getNumResults() != 1 ||
+        allReduce.getResult(0) != returned ||
+        !isDirectTaskArgument(task, allReduce.getInputs().front()) ||
+        !isDirectTaskArgument(task, allReduce.getOuts().front()))
+      return std::nullopt;
+
+    int64_t groupSize = 0;
+    if (auto rankGroup = allReduce.getRankGroupAttr()) {
+      groupSize = static_cast<int64_t>(rankGroup.asArrayRef().size());
+    } else if (auto rankGroups = allReduce.getRankGroupsAttr()) {
+      auto type = mlir::dyn_cast<mlir::RankedTensorType>(rankGroups.getType());
+      if (!type || type.getRank() != 2)
+        return std::nullopt;
+      groupSize = type.getDimSize(1);
+    }
+    if (groupSize <= 1)
+      return std::nullopt;
+
+    auto inputType = mlir::dyn_cast<mlir::RankedTensorType>(
+        allReduce.getInputs().front().getType());
+    auto outputType = mlir::dyn_cast<mlir::RankedTensorType>(
+        allReduce.getOuts().front().getType());
+    auto resultType =
+        mlir::dyn_cast<mlir::RankedTensorType>(returned.getType());
+    if (!inputType || !outputType || !resultType ||
+        inputType != outputType || inputType != resultType ||
+        !resultType.hasStaticShape() ||
+        static_cast<int64_t>(candidate.tileSizes.size()) !=
+            resultType.getRank())
+      return std::nullopt;
+    for (auto [tile, extent] :
+         llvm::zip(candidate.tileSizes, resultType.getShape()))
+      if (tile <= 0 || tile > extent)
+        return std::nullopt;
+
+    std::optional<int64_t> tileBytes = getAlignedPhysicalSPMBytes(
+        candidate.tileSizes, resultType.getElementType(), MemLayout::Tensor,
+        spmAlignment);
+    if (!tileBytes)
+      return std::nullopt;
+    largestTileBytes = std::max(largestTileBytes, *tileBytes);
+  }
+
+  return saturatingMul(largestTileBytes, 3);
 }
 
 /// Recognizes the exact rank-2 passthrough transpose producer generated by the
@@ -394,7 +549,8 @@ getDirectPassthroughTransposeInputType(mlir::func::FuncOp task,
 
 static std::optional<int64_t> estimateTargetSPMWorkingSetBytesImpl(
     mlir::func::FuncOp task, const CandidateSpec &candidate,
-    int64_t spmAlignment, bool includeFusedTransposeSource) {
+    int64_t spmAlignment, bool includeFusedTransposeSource,
+    bool includeAllReduceTileBuffers) {
   // The named matmul lowering has a closed target-layout contract when the LHS
   // is a direct task boundary and the RHS is either direct or produced by one
   // exact rank-2 passthrough transpose. Direct operands contribute Tensor and
@@ -405,13 +561,14 @@ static std::optional<int64_t> estimateTargetSPMWorkingSetBytesImpl(
   //
   // Other producer chains can introduce unmodeled materialized views, so
   // decline to estimate them rather than understate their demand.
-  std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
-      getYieldedRootLinalgOps(task);
-  if (!roots || roots->size() != 1 || candidate.tileSizes.size() != 2 ||
+  std::optional<TraversalComputeRootInfo> rootInfo =
+      getTraversalComputeRootInfo(task);
+  if (!rootInfo || rootInfo->roots.size() != 1 ||
+      candidate.tileSizes.size() != 2 ||
       !candidate.reductionSplitSizes.empty() || !task.getBody().hasOneBlock())
     return std::nullopt;
-  auto matmul =
-      mlir::dyn_cast<mlir::linalg::MatmulOp>(roots->front().getOperation());
+  auto matmul = mlir::dyn_cast<mlir::linalg::MatmulOp>(
+      rootInfo->roots.front().getOperation());
   if (!matmul)
     return std::nullopt;
 
@@ -468,6 +625,17 @@ static std::optional<int64_t> estimateTargetSPMWorkingSetBytesImpl(
   buffers.push_back({{k, n}, rhsType.getElementType(), MemLayout::Cx});
   buffers.push_back({{m, n}, resultType.getElementType(), MemLayout::Cx});
   buffers.push_back({{m, n}, resultType.getElementType(), MemLayout::Tensor});
+  // Complete all-reduce traversal additionally materializes shape-preserving
+  // input/out/result Tensor tiles around the fused producer. Count three
+  // aligned tile roots as a conservative search-direction inventory. This is
+  // deliberately excluded from the required-live rejection bound below: the
+  // exact collective lifetimes remain owned by complete materialization and
+  // SPM planning rather than this queue-ordering estimate.
+  if (includeAllReduceTileBuffers && rootInfo->hasAllReduceWrapper) {
+    for (int64_t index = 0; index < 3; ++index)
+      buffers.push_back(
+          {{m, n}, resultType.getElementType(), MemLayout::Tensor});
+  }
 
   int64_t workingSetBytes = 0;
   for (const BufferShape &buffer : buffers) {
@@ -490,13 +658,19 @@ estimateTargetSPMWorkingSetBytes(mlir::func::FuncOp task,
   // alias the source Tensor after the transpose completes.
   return estimateTargetSPMWorkingSetBytesImpl(
       task, candidate, spmAlignment,
-      /*includeFusedTransposeSource=*/true);
+      /*includeFusedTransposeSource=*/true,
+      /*includeAllReduceTileBuffers=*/true);
 }
 
 std::optional<int64_t>
 estimateTargetSPMRequiredLiveBytes(mlir::func::FuncOp task,
                                    const CandidateSpec &candidate,
                                    int64_t spmAlignment) {
+  if (std::optional<int64_t> collectiveBytes =
+          estimateDirectAllReduceRequiredLiveBytes(task, candidate,
+                                                   spmAlignment))
+    return collectiveBytes;
+
   // The source Tensor of a fused transpose need not overlap the later matmul
   // phase. The remaining six Tensor/Cx roots do: the transposed Tensor and Cx
   // RHS replace the direct RHS pair, and local issue completion keeps them
@@ -504,7 +678,8 @@ estimateTargetSPMRequiredLiveBytes(mlir::func::FuncOp task,
   // bound that may reject an impossible candidate before materialization.
   return estimateTargetSPMWorkingSetBytesImpl(
       task, candidate, spmAlignment,
-      /*includeFusedTransposeSource=*/false);
+      /*includeFusedTransposeSource=*/false,
+      /*includeAllReduceTileBuffers=*/false);
 }
 
 static std::optional<std::string> getCheapTargetGeometryFailureImpl(
@@ -549,8 +724,8 @@ std::optional<std::string>
 getCheapTargetGeometryFailure(mlir::func::FuncOp task,
                               const CandidateSpec &candidate,
                               llvm::ArrayRef<int64_t> reductionRanges) {
-  return getCheapTargetGeometryFailureImpl(getYieldedRootLinalgOps(task),
-                                           candidate, reductionRanges);
+  return getCheapTargetGeometryFailureImpl(
+      getTraversalComputeRootLinalgOps(task), candidate, reductionRanges);
 }
 
 static void addUnique(llvm::SmallVectorImpl<int64_t> &values, int64_t value,

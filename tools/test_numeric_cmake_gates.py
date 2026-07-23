@@ -49,6 +49,16 @@ def existing_file(value: str) -> pathlib.Path:
     return path
 
 
+def existing_python(value: str) -> pathlib.Path:
+    # Preserve the configured spelling of a virtual-environment interpreter.
+    # Resolving its executable symlink selects the base interpreter and loses
+    # the venv's installed packages in nested CMake configurations.
+    path = pathlib.Path(value).absolute()
+    if not path.is_file():
+        raise argparse.ArgumentTypeError(f"file does not exist: {path}")
+    return path
+
+
 def existing_directory(value: str) -> pathlib.Path:
     path = pathlib.Path(value).resolve()
     if not path.is_dir():
@@ -69,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cxx-compiler", required=True, type=existing_file)
     parser.add_argument("--llvm-dir", required=True, type=existing_directory)
     parser.add_argument("--mlir-dir", required=True, type=existing_directory)
-    parser.add_argument("--python", required=True, type=existing_file)
+    parser.add_argument("--python", required=True, type=existing_python)
     parser.add_argument("--build-type")
     return parser.parse_args()
 

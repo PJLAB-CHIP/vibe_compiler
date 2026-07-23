@@ -1,6 +1,7 @@
 wafer_require_gtest()
 
 add_executable(WaferUnitTests
+  Analysis/ExecutionTopologyAnalysisTest.cpp
   Analysis/PhysicalDataflow/IndexRelationTest.cpp
   Analysis/ScheduleCostAnalysisTest.cpp
   Compiler/CompilationTest.cpp
@@ -13,6 +14,8 @@ add_executable(WaferUnitTests
   Compiler/TargetProfileTest.cpp
   Compiler/WholeVariantCoordinatorTest.cpp
   Compiler/WholeVariantResourceAcceptanceTest.cpp
+  Conversion/CollectiveCompletionTest.cpp
+  Conversion/CollectiveTopologyTest.cpp
   Conversion/WaferTensorProgramToTileRegionTest.cpp
   Conversion/CommunicationAlternativesTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp

@@ -151,15 +151,15 @@ buildReductionChunks(mlir::linalg::LinalgOp root,
                      std::string *failureReason);
 
 mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
-    TensorProgramScope scope, mlir::linalg::LinalgOp root, unsigned outputIndex,
+    TensorProgramScope scope, mlir::Operation *root, unsigned outputIndex,
     llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     std::string *failureReason);
 
 mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
-    mlir::OpBuilder &builder, TensorProgramScope scope,
-    mlir::linalg::LinalgOp root, unsigned outputIndex,
+    mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
+    unsigned outputIndex,
     llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
@@ -171,7 +171,7 @@ getCandidateOutputBoundary(TensorProgramScope scope, unsigned outputIndex,
                            std::string *failureReason);
 
 mlir::Value
-insertCandidateRootTile(mlir::linalg::LinalgOp root, mlir::Value tileValue,
+insertCandidateRootTile(mlir::Operation *root, mlir::Value tileValue,
                         mlir::Value outputDestination,
                         llvm::ArrayRef<int64_t> candidateTileOffsets,
                         llvm::ArrayRef<int64_t> candidateTileSizes);
@@ -182,7 +182,7 @@ insertCandidateRootTile(mlir::OpBuilder &builder, mlir::Location loc,
                         llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
                         llvm::ArrayRef<int64_t> candidateTileSizes);
 
-mlir::FailureOr<llvm::SmallVector<mlir::linalg::LinalgOp, 4>>
+mlir::FailureOr<llvm::SmallVector<mlir::Operation *, 4>>
 collectCandidateRoots(TensorProgramScope scope, bool rejectProducerChains,
                       std::string *failureReason);
 
@@ -341,8 +341,7 @@ private:
                                          TileRegionOp tileRegion,
                                          mlir::OpBuilder &builder);
 
-  mlir::LogicalResult convertOp(mlir::Operation *op,
-                                mlir::OpBuilder &builder);
+  mlir::LogicalResult convertOp(mlir::Operation *op, mlir::OpBuilder &builder);
 
   mlir::LogicalResult
   materializeSourceImplementation(mlir::Operation *operation,
@@ -408,7 +407,7 @@ private:
 
   mlir::FailureOr<mlir::Value> getScalarValue(mlir::Value original);
 
-  bool isUnreadLinalgDpsInitUse(mlir::OpOperand &use) const;
+  bool isUnreadDpsInitUse(mlir::OpOperand &use) const;
 
   bool onlyFeedsUnreadDpsInit(mlir::Value value,
                               llvm::DenseSet<mlir::Value> &visited) const;

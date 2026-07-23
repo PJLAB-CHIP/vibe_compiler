@@ -51,6 +51,7 @@ using tile_region_to_instr::TileRegionToInstrOptions;
 enum class CommunicationAlternative {
   Ring,
   DirectAllGather,
+  RingReduceScatter,
   TreeAllReduce,
   DirectAllGatherTreeAllReduce,
 };
@@ -196,6 +197,15 @@ std::optional<int64_t> getElementByteWidth(mlir::Type type);
 
 std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>>
 getYieldedRootLinalgOps(mlir::func::FuncOp task);
+
+/// Returns the Linalg compute roots used only to direct traversal-pressure and
+/// target-capacity analysis. In addition to direct yielded Linalg roots, this
+/// may look through a verified single-input/single-result shape-preserving
+/// all-reduce to its unique direct Linalg producer. Reduction-range and
+/// reduction-split legality must continue to use getYieldedRootLinalgOps so an
+/// upstream SPMD contracting shard is not reinterpreted as a local K split.
+std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>>
+getTraversalComputeRootLinalgOps(mlir::func::FuncOp task);
 
 CandidateTraversalRootCapability
 getTaskTraversalRootCapability(mlir::func::FuncOp task);

@@ -283,7 +283,8 @@ TEST(WaferTensorProgramToTileRegionTest,
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
-  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+  auto source =
+      mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   func.func @matmul(%lhs: tensor<2x3xf16>, %rhs: tensor<3x2xf16>,
                     %out: tensor<2x2xf16>) -> tensor<2x2xf16> {
@@ -296,7 +297,8 @@ module {
     return %result : tensor<2x2xf16>
   }
 }
-)mlir", mlir::ParserConfig(&context));
+)mlir",
+                                              mlir::ParserConfig(&context));
   ASSERT_TRUE(source);
   mlir::func::FuncOp function = findSingleTensorProgram(*source);
   ASSERT_TRUE(function);
@@ -304,8 +306,8 @@ module {
   mlir::OwningOpRef<mlir::ModuleOp> direct;
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToTileRegionModule(
-      function, direct, &failureReason, /*currentLogicalRank=*/0,
-      std::nullopt, /*useDirectMappedBoundaryTransfer=*/true)))
+      function, direct, &failureReason, /*currentLogicalRank=*/0, std::nullopt,
+      /*useDirectMappedBoundaryTransfer=*/true)))
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(
       wafer::convertTileRegionToInstrModule(*direct, &failureReason)))
@@ -314,8 +316,8 @@ module {
   unsigned mapped = 0;
   direct->walk([&](mlir::Operation *operation) {
     if (mlir::isa<wafer::InstrRDMAOp, wafer::InstrWDMAOp>(operation))
-      mapped += operation->hasAttr("src_offset") ||
-                operation->hasAttr("dst_offset");
+      mapped +=
+          operation->hasAttr("src_offset") || operation->hasAttr("dst_offset");
   });
   EXPECT_GT(mapped, 0u);
 }
@@ -511,6 +513,73 @@ module {
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
   EXPECT_EQ(countOps<mlir::scf::ForOp>(*lowered), 2u);
   EXPECT_EQ(countOps<wafer::StorageStoreOp>(*lowered), 1u);
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     TilesTerminalAllReduceAndFusesItsMatmulProducer) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {topology = @default, axes = ["rank"], shape = array<i64: 2>,
+       policy = "all_available", endpoints = array<i64>}
+  func.func @matmul_all_reduce(
+      %lhs: tensor<4x8xf16>, %rhs: tensor<8x6xf16>,
+      %out: tensor<4x6xf16>) -> tensor<4x6xf16> {
+    %zero = arith.constant 0.0 : f16
+    %empty = tensor.empty() : tensor<4x6xf16>
+    %init = linalg.fill ins(%zero : f16)
+        outs(%empty : tensor<4x6xf16>) -> tensor<4x6xf16>
+    %local = linalg.matmul
+        ins(%lhs, %rhs : tensor<4x8xf16>, tensor<8x6xf16>)
+        outs(%init : tensor<4x6xf16>) -> tensor<4x6xf16>
+    %result = wafer.linalg_ext.collective.all_reduce
+        ins(%local : tensor<4x6xf16>)
+        outs(%out : tensor<4x6xf16>) {
+    ^bb0(%left: f16, %right: f16):
+      %sum = arith.addf %left, %right : f16
+      wafer.linalg_ext.collective.yield %sum : f16
+    } {channel_id = 7 : i64, rank_group = array<i64: 0, 1>}
+        -> tensor<4x6xf16>
+    return %result : tensor<4x6xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  ASSERT_TRUE(function);
+
+  mlir::OwningOpRef<mlir::ModuleOp> lowered;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+          function, /*candidateTileSizes=*/{2, 3},
+          /*candidateReductionTileSizes=*/{}, lowered, &failureReason,
+          /*currentLogicalRank=*/0)))
+      << failureReason;
+  ASSERT_TRUE(lowered);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+  EXPECT_EQ(countOps<mlir::scf::ForOp>(*lowered), 2u);
+  EXPECT_EQ(countOps<wafer::ComputeGemmOp>(*lowered), 1u);
+  EXPECT_EQ(countOps<wafer::CommAllReduceOp>(*lowered), 1u);
+  EXPECT_EQ(countOps<wafer::StorageStoreOp>(*lowered), 1u);
+
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*lowered, &failureReason)))
+      << failureReason;
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+  EXPECT_EQ(countOps<wafer::InstrGemmOp>(*lowered), 1u);
+  EXPECT_EQ(countOps<wafer::CommAllReduceOp>(*lowered), 0u);
+  EXPECT_GT(countOps<wafer::InstrDTEWaitOp>(*lowered), 0u);
 }
 
 TEST(WaferTensorProgramToTileRegionTest,

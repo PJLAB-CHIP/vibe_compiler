@@ -5,6 +5,8 @@
 
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 
+#include "llvm/ADT/STLFunctionalExtras.h"
+
 #include <cstdint>
 
 namespace mlir {
@@ -33,6 +35,15 @@ struct Quantity {
 Quantity multiply(Quantity lhs, Quantity rhs);
 Quantity multiply(Quantity lhs, uint64_t rhs);
 void add(ScheduleCostMetric &metric, Quantity quantity);
+
+/// Visits the same statically executable instruction stream used by the
+/// rank-local cost collector. The callback receives the current static
+/// multiplicity. Unsupported recursive/call control flow invokes
+/// `onUnsupportedControlFlow` because it may hide instructions.
+void walkInstructionProgram(
+    mlir::Operation *root,
+    llvm::function_ref<void(mlir::Operation *, Quantity)> onInstruction,
+    llvm::function_ref<void()> onUnsupportedControlFlow);
 
 void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost);
 void collectDataDependencyDepth(mlir::Operation *root,

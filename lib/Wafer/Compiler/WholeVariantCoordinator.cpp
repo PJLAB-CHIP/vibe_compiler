@@ -457,6 +457,7 @@ static ParetoOrder compareExactWholeVariantCost(
        &right.aggregateNoC.aggregateTransmitBytes},
       {&left.aggregateNoC.aggregateReceiveBytes,
        &right.aggregateNoC.aggregateReceiveBytes},
+      {&left.minimumHopLinkByteDemand, &right.minimumHopLinkByteDemand},
       {&left.aggregateNoC.collectiveTransmitBytes[0],
        &right.aggregateNoC.collectiveTransmitBytes[0]},
       {&left.aggregateNoC.collectiveTransmitBytes[1],
@@ -521,14 +522,15 @@ static ParetoOrder compareTargetStaticTradeoff(
   if (policy.tradeoff == TargetStaticTradeoffPolicy::Conservative)
     return ParetoOrder::Equivalent;
 
-  const llvm::SmallVector<llvm::SmallVector<MetricPair, 8>, 6>
-      priorityClasses = {
+  const llvm::SmallVector<llvm::SmallVector<MetricPair, 8>, 6> priorityClasses =
+      {
           {{&left.aggregateDDRReadBytes, &right.aggregateDDRReadBytes},
            {&left.aggregateDDRWriteBytes, &right.aggregateDDRWriteBytes}},
           {{&left.aggregateNoC.aggregateTransmitBytes,
             &right.aggregateNoC.aggregateTransmitBytes},
            {&left.aggregateNoC.aggregateReceiveBytes,
             &right.aggregateNoC.aggregateReceiveBytes},
+           {&left.minimumHopLinkByteDemand, &right.minimumHopLinkByteDemand},
            {&left.aggregateNoC.collectiveTransmitBytes[0],
             &right.aggregateNoC.collectiveTransmitBytes[0]},
            {&left.aggregateNoC.collectiveTransmitBytes[1],
@@ -539,10 +541,8 @@ static ParetoOrder compareTargetStaticTradeoff(
             &right.aggregateNoC.collectiveTransmitBytes[3]},
            {&left.aggregateNoC.collectiveTransmitBytes[4],
             &right.aggregateNoC.collectiveTransmitBytes[4]}},
-          {{&left.aggregateSPMMovementBytes,
-            &right.aggregateSPMMovementBytes}},
-          {{&left.aggregateInstructionCount,
-            &right.aggregateInstructionCount},
+          {{&left.aggregateSPMMovementBytes, &right.aggregateSPMMovementBytes}},
+          {{&left.aggregateInstructionCount, &right.aggregateInstructionCount},
            {&left.aggregateEventCount, &right.aggregateEventCount}},
           {{&left.aggregateCompute.npuF16Bf16LogicalOps,
             &right.aggregateCompute.npuF16Bf16LogicalOps},
@@ -590,8 +590,8 @@ static bool isPreferredOver(const AcceptedWholeVariant &candidate,
       ParetoOrder::LeftDominates)
     return true;
   return compareTargetStaticTradeoff(candidate.resourceCost,
-                                     baseline.resourceCost, policy) ==
-         ParetoOrder::LeftDominates;
+                                     baseline.resourceCost,
+                                     policy) == ParetoOrder::LeftDominates;
 }
 
 static bool hasEarlierStaticPolicyOrder(const AcceptedWholeVariant &lhs,
@@ -784,8 +784,7 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
   // of a high-dimensional product. Try each complete correspondence ordinal
   // after the bounded product walk so cross-rank actual clones generated from
   // one semantic recipe are evaluated together without reconstructing state.
-  using CorrespondenceKey =
-      std::pair<int64_t, wafer::RankArtifactKind>;
+  using CorrespondenceKey = std::pair<int64_t, wafer::RankArtifactKind>;
   std::set<CorrespondenceKey> correspondenceKeys;
   for (const RankVariantCandidate &candidate : frontiers.front())
     correspondenceKeys.insert(

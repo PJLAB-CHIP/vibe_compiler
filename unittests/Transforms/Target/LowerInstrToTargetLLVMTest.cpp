@@ -1,3 +1,4 @@
+#include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitAll.h"
 #include "Wafer/Transforms/TargetConversion.h"
@@ -31,6 +32,144 @@ template <typename OpT> unsigned countOps(mlir::ModuleOp module) {
   unsigned count = 0;
   module.walk([&](OpT) { ++count; });
   return count;
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     ResolvesAllAvailableDirectDTEEndpointsFromSharedTopologyAnalysis) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 2, 3>,
+       unavailable_tiles = array<i64: 0, 0, 0, 0, 0, 0, 1, 2>}
+  wafer.execution.mesh @default_mesh
+      {topology = @default, axes = ["rank"], shape = array<i64: 4>,
+       policy = "all_available", endpoints = array<i64>}
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+
+  mlir::FailureOr<wafer::target_llvm_detail::DirectDTEEndpointDomain> domain =
+      wafer::target_llvm_detail::resolveDirectDTEEndpointDomain(
+          *source, /*logicalRank=*/2);
+  ASSERT_TRUE(mlir::succeeded(domain));
+  EXPECT_EQ(domain->logicalRank, 2);
+  const llvm::SmallVector<int64_t, 4> expected{1, 2, 3, 4};
+  EXPECT_EQ(domain->rankToTile, expected);
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     ResolvesExplicitDirectDTEEndpointOrderFromSharedTopologyAnalysis) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {topology = @default, axes = ["rank"], shape = array<i64: 3>,
+       policy = "explicit",
+       endpoints = array<i64: 0, 0, 3, 3, 0, 0, 0, 2, 0, 0, 2, 1>}
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+
+  mlir::FailureOr<wafer::target_llvm_detail::DirectDTEEndpointDomain> domain =
+      wafer::target_llvm_detail::resolveDirectDTEEndpointDomain(
+          *source, /*logicalRank=*/1);
+  ASSERT_TRUE(mlir::succeeded(domain));
+  EXPECT_EQ(domain->logicalRank, 1);
+  const llvm::SmallVector<int64_t, 4> expected{15, 2, 9};
+  EXPECT_EQ(domain->rankToTile, expected);
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     PreservesDirectDTEV0SingleCardDiagnosticCategory) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 2>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {topology = @default, axes = ["rank"], shape = array<i64: 2>,
+       policy = "all_available", endpoints = array<i64>}
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+
+  std::string diagnostics;
+  mlir::ScopedDiagnosticHandler handler(
+      &context, [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream stream(diagnostics);
+        diagnostic.print(stream);
+        return mlir::success();
+      });
+  mlir::FailureOr<wafer::target_llvm_detail::DirectDTEEndpointDomain> domain =
+      wafer::target_llvm_detail::resolveDirectDTEEndpointDomain(
+          *source, /*logicalRank=*/0);
+  EXPECT_TRUE(mlir::failed(domain));
+  EXPECT_NE(diagnostics.find("unsupported_target_transport: Direct DTE V0 "
+                             "requires one single-card execution domain"),
+            std::string::npos)
+      << diagnostics;
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     PreservesDirectDTETileEndpointABINarrowingDiagnosticCategory) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 65537>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {topology = @default, axes = ["rank"], shape = array<i64: 1>,
+       policy = "explicit", endpoints = array<i64: 0, 0, 0, 65536>}
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+
+  std::string diagnostics;
+  mlir::ScopedDiagnosticHandler handler(
+      &context, [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream stream(diagnostics);
+        diagnostic.print(stream);
+        return mlir::success();
+      });
+  mlir::FailureOr<wafer::target_llvm_detail::DirectDTEEndpointDomain> domain =
+      wafer::target_llvm_detail::resolveDirectDTEEndpointDomain(
+          *source, /*logicalRank=*/0);
+  EXPECT_TRUE(mlir::failed(domain));
+  EXPECT_NE(diagnostics.find("target_abi_narrowing: Direct DTE tile endpoint "
+                             "must fit uint16_t"),
+            std::string::npos)
+      << diagnostics;
 }
 
 TEST(LowerInstrToTargetLLVMTest,

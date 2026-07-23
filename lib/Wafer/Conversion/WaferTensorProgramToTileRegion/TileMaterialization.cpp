@@ -111,6 +111,14 @@ static mlir::LogicalResult fuseCandidateProducerSlices(
       continue;
     if (!mlir::isa<mlir::TilingInterface>(producerResult.getOwner()))
       continue;
+    if (mlir::isa<WaferLinalgExtCollectiveOpInterface>(
+            producerResult.getOwner())) {
+      setFailureReason(
+          failureReason,
+          "candidate producer fusion requires an internal logical collective "
+          "to remain a separate scheduling task");
+      return mlir::failure();
+    }
 
     std::optional<mlir::scf::SCFFuseProducerOfSliceResult> fused =
         mlir::scf::tileAndFuseProducerOfSlice(rewriter, slice, loops);
@@ -145,7 +153,7 @@ void eraseDeadCandidateSupportClosure(TensorProgramScope scope) {
 }
 
 mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
-    TensorProgramScope scope, mlir::linalg::LinalgOp root, unsigned outputIndex,
+    TensorProgramScope scope, mlir::Operation *root, unsigned outputIndex,
     llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
@@ -177,7 +185,7 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
       candidateReductionTileSizes, loops, failureReason);
 }
 
-mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
+static mlir::FailureOr<mlir::Value> materializeCandidateLinalgRootTileValue(
     mlir::OpBuilder &builder, TensorProgramScope scope,
     mlir::linalg::LinalgOp root, unsigned outputIndex,
     llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
@@ -321,6 +329,99 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
   return accumulator;
 }
 
+static mlir::FailureOr<mlir::Value> materializeCandidateInterfaceRootTileValue(
+    mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
+    unsigned outputIndex,
+    llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    std::string *failureReason) {
+  auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(root);
+  auto tiling = mlir::dyn_cast<mlir::TilingInterface>(root);
+  if (!dps || !tiling || dps.getNumDpsInits() != 1 ||
+      root->getNumResults() != 1) {
+    setFailureReason(failureReason,
+                     "candidate interface root requires one DPS output and "
+                     "TilingInterface");
+    return mlir::failure();
+  }
+  if (!candidateReductionTileSizes.empty()) {
+    setFailureReason(
+        failureReason,
+        "candidate reduction split requires a yielded linalg reduction root");
+    return mlir::failure();
+  }
+  if (!isTensorProgramOutputBoundary(scope, dps.getDpsInits().front(),
+                                     outputIndex)) {
+    setFailureReason(failureReason,
+                     "candidate interface root requires direct output "
+                     "boundary init");
+    return mlir::failure();
+  }
+
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
+  if (!resultType || candidateTileOffsets.size() != candidateTileSizes.size() ||
+      candidateTileSizes.size() != static_cast<size_t>(resultType.getRank()) ||
+      llvm::any_of(candidateTileSizes,
+                   [](int64_t size) { return size <= 0; })) {
+    setFailureReason(failureReason,
+                     "candidate interface tile rank or size mismatch");
+    return mlir::failure();
+  }
+
+  llvm::SmallVector<mlir::OpFoldResult, 4> mixedSizes;
+  mixedSizes.reserve(candidateTileSizes.size());
+  for (int64_t size : candidateTileSizes)
+    mixedSizes.push_back(builder.getIndexAttr(size));
+  mlir::FailureOr<mlir::TilingResult> tiled =
+      tiling.getTiledImplementation(builder, candidateTileOffsets, mixedSizes);
+  if (mlir::failed(tiled)) {
+    setFailureReason(failureReason,
+                     "candidate interface root rejected the requested tile");
+    return mlir::failure();
+  }
+  if (tiled->tiledOps.size() != 1 || tiled->tiledValues.size() != 1 ||
+      tiled->tiledOps.front()->getNumResults() != 1 ||
+      tiled->tiledOps.front()->getResult(0) != tiled->tiledValues.front()) {
+    setFailureReason(
+        failureReason,
+        "candidate interface root must materialize one tiled op and result");
+    return mlir::failure();
+  }
+
+  mlir::Operation *tiledRoot = tiled->tiledOps.front();
+  if (mlir::failed(
+          fuseCandidateProducerSlices(tiledRoot, scope, loops, failureReason)))
+    return mlir::failure();
+  builder.setInsertionPointAfter(tiledRoot);
+  return tiled->tiledValues.front();
+}
+
+mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
+    mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
+    unsigned outputIndex,
+    llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    std::string *failureReason) {
+  if (auto linalg = mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(root))
+    return materializeCandidateLinalgRootTileValue(
+        builder, scope, linalg, outputIndex, candidateTileOffsets,
+        candidateTileSizes, candidateReductionTileSizes, loops, failureReason);
+  if (classifyCandidateTraversalRoot(root) !=
+      CandidateTraversalRootCapability::Tiled) {
+    setFailureReason(failureReason,
+                     "candidate traversal root does not support tiling");
+    return mlir::failure();
+  }
+  return materializeCandidateInterfaceRootTileValue(
+      builder, scope, root, outputIndex, candidateTileOffsets,
+      candidateTileSizes, candidateReductionTileSizes, loops, failureReason);
+}
+
 mlir::FailureOr<mlir::Value>
 getCandidateOutputBoundary(TensorProgramScope scope, unsigned outputIndex,
                            std::string *failureReason) {
@@ -335,7 +436,7 @@ getCandidateOutputBoundary(TensorProgramScope scope, unsigned outputIndex,
 }
 
 mlir::Value
-insertCandidateRootTile(mlir::linalg::LinalgOp root, mlir::Value tileValue,
+insertCandidateRootTile(mlir::Operation *root, mlir::Value tileValue,
                         mlir::Value outputDestination,
                         llvm::ArrayRef<int64_t> candidateTileOffsets,
                         llvm::ArrayRef<int64_t> candidateTileSizes) {
@@ -344,7 +445,7 @@ insertCandidateRootTile(mlir::linalg::LinalgOp root, mlir::Value tileValue,
   offsets.reserve(candidateTileOffsets.size());
   for (int64_t offset : candidateTileOffsets)
     offsets.push_back(builder.getIndexAttr(offset));
-  return insertCandidateRootTile(builder, root.getLoc(), tileValue,
+  return insertCandidateRootTile(builder, root->getLoc(), tileValue,
                                  outputDestination, offsets,
                                  candidateTileSizes);
 }
@@ -368,7 +469,7 @@ insertCandidateRootTile(mlir::OpBuilder &builder, mlir::Location loc,
   return inserted.getResult();
 }
 
-mlir::FailureOr<llvm::SmallVector<mlir::linalg::LinalgOp, 4>>
+mlir::FailureOr<llvm::SmallVector<mlir::Operation *, 4>>
 collectCandidateRoots(TensorProgramScope scope, bool rejectProducerChains,
                       std::string *failureReason) {
   auto returnOp =
@@ -380,7 +481,7 @@ collectCandidateRoots(TensorProgramScope scope, bool rejectProducerChains,
     return mlir::failure();
   }
 
-  llvm::SmallVector<mlir::linalg::LinalgOp, 4> roots;
+  llvm::SmallVector<mlir::Operation *, 4> roots;
   llvm::DenseSet<mlir::Operation *> seenRoots;
   for (auto [index, value] : llvm::enumerate(returnOp.getOperands())) {
     mlir::Operation *rootOperation = value.getDefiningOp();
@@ -396,11 +497,11 @@ collectCandidateRoots(TensorProgramScope scope, bool rejectProducerChains,
                        "candidate traversal root is unsupported");
       return mlir::failure();
     }
-    auto root = mlir::cast<mlir::linalg::LinalgOp>(rootOperation);
-    if (root->getBlock() != &scope.getBody() ||
-        !seenRoots.insert(root.getOperation()).second ||
-        root->getNumResults() != 1 || root.getNumDpsInits() != 1 ||
-        root->getResult(0) != value) {
+    auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(rootOperation);
+    if (rootOperation->getBlock() != &scope.getBody() ||
+        !seenRoots.insert(rootOperation).second ||
+        rootOperation->getNumResults() != 1 || !dps ||
+        dps.getNumDpsInits() != 1 || rootOperation->getResult(0) != value) {
       setFailureReason(failureReason,
                        "candidate multi-output coverage requires distinct "
                        "single-result yielded roots");
@@ -425,7 +526,7 @@ collectCandidateRoots(TensorProgramScope scope, bool rejectProducerChains,
     }
 
     if (rejectProducerChains) {
-      for (mlir::Value input : root.getDpsInputs()) {
+      for (mlir::Value input : dps.getDpsInputs()) {
         if (!mlir::isa<mlir::RankedTensorType>(input.getType()))
           continue;
         auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(input);
@@ -468,10 +569,11 @@ collectCandidateRoots(TensorProgramScope scope, bool rejectProducerChains,
         return mlir::failure();
       }
 
-      mlir::Value init = root.getDpsInits().front();
+      mlir::Value init = dps.getDpsInits().front();
       bool hasDirectOutputInit = isTensorProgramOutputBoundary(
           scope, init, static_cast<unsigned>(index));
-      bool hasReduction = !getReductionLoopDims(root).empty();
+      auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(rootOperation);
+      bool hasReduction = linalg && !getReductionLoopDims(linalg).empty();
       if (!hasDirectOutputInit &&
           (!hasReduction || !init.getDefiningOp<mlir::linalg::FillOp>())) {
         setFailureReason(
@@ -481,7 +583,7 @@ collectCandidateRoots(TensorProgramScope scope, bool rejectProducerChains,
         return mlir::failure();
       }
     }
-    roots.push_back(root);
+    roots.push_back(rootOperation);
   }
 
   return roots;
@@ -492,15 +594,16 @@ mlir::LogicalResult materializeCandidateTileSlices(
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     std::string *failureReason) {
-  mlir::FailureOr<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
+  mlir::FailureOr<llvm::SmallVector<mlir::Operation *, 4>> roots =
       collectCandidateRoots(scope, /*rejectProducerChains=*/false,
                             failureReason);
   if (mlir::failed(roots))
     return mlir::failure();
 
   if (!candidateReductionTileSizes.empty() &&
-      llvm::none_of(*roots, [](mlir::linalg::LinalgOp root) {
-        return !getReductionLoopDims(root).empty();
+      llvm::none_of(*roots, [](mlir::Operation *root) {
+        auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(root);
+        return linalg && !getReductionLoopDims(linalg).empty();
       })) {
     setFailureReason(failureReason,
                      "candidate reduction split requires a reduction root");
@@ -526,7 +629,7 @@ mlir::LogicalResult materializeCandidateTileSlices(
 
   for (auto [index, inserted] : llvm::enumerate(insertedValues))
     returnOp->setOperand(index, inserted);
-  for (mlir::linalg::LinalgOp root : *roots)
+  for (mlir::Operation *root : *roots)
     root->erase();
   eraseDeadCandidateSupportClosure(scope);
   return mlir::success();

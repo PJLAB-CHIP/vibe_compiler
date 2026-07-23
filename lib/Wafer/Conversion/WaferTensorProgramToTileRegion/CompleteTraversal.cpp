@@ -93,7 +93,7 @@ static void deduplicateExternalSlicesInBlock(mlir::Block &block,
 static mlir::FailureOr<llvm::SmallVector<mlir::Value, 4>>
 materializeLoopedRootsTraversal(
     mlir::OpBuilder &builder, TensorProgramScope scope,
-    llvm::ArrayRef<mlir::linalg::LinalgOp> roots, llvm::ArrayRef<int64_t> shape,
+    llvm::ArrayRef<mlir::Operation *> roots, llvm::ArrayRef<int64_t> shape,
     llvm::ArrayRef<int64_t> tileSizes,
     llvm::ArrayRef<int64_t> reductionTileSizes, unsigned dim,
     mlir::ValueRange outputs,
@@ -177,7 +177,7 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
     TensorProgramScope scope, llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     std::string *failureReason) {
-  mlir::FailureOr<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
+  mlir::FailureOr<llvm::SmallVector<mlir::Operation *, 4>> roots =
       collectCandidateRoots(scope, /*rejectProducerChains=*/false,
                             failureReason);
   if (mlir::failed(roots))
@@ -199,7 +199,7 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
     return mlir::failure();
 
   bool hasReductionRoot = false;
-  for (mlir::linalg::LinalgOp root : *roots) {
+  for (mlir::Operation *root : *roots) {
     auto resultType =
         mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
     if (!resultType || resultType.getShape() != firstResultType.getShape()) {
@@ -208,7 +208,8 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
           "complete candidate traversal requires equal static result shapes");
       return mlir::failure();
     }
-    hasReductionRoot |= !getReductionLoopDims(root).empty();
+    if (auto linalgRoot = mlir::dyn_cast<mlir::linalg::LinalgOp>(root))
+      hasReductionRoot |= !getReductionLoopDims(linalgRoot).empty();
   }
   if (!candidateReductionTileSizes.empty() && !hasReductionRoot) {
     setFailureReason(failureReason,
@@ -240,7 +241,7 @@ mlir::LogicalResult materializeCompleteCandidateTraversal(
 
   for (auto [index, output] : llvm::enumerate(*completeOutputs))
     returnOp->setOperand(index, output);
-  for (mlir::linalg::LinalgOp root : *roots)
+  for (mlir::Operation *root : *roots)
     root->erase();
 
   eraseDeadCandidateSupportClosure(scope);

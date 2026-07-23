@@ -72,6 +72,7 @@ module {
   ASSERT_TRUE(mlir::succeeded(accepted));
   EXPECT_EQ(accepted->rankCosts.size(), 1u);
   EXPECT_EQ(accepted->aggregateDDRReadBytes.value, 8u);
+  EXPECT_EQ(accepted->minimumHopLinkByteDemand.value, 0u);
   EXPECT_EQ(accepted->maximumRankSPMHighWaterBytes.value, 8u);
 }
 
@@ -254,6 +255,63 @@ module {
   EXPECT_EQ(accepted->aggregateInstructionCount.value, 16u);
   EXPECT_EQ(accepted->maximumRankSPMHighWaterBytes.value, 8u);
   EXPECT_EQ(accepted->summedRankSPMHighWaterBytes.value, 128u);
+}
+
+TEST_F(WholeVariantResourceAcceptanceTest,
+       RejectsCommunicatingVariantWithoutKnownExecutionTopology) {
+  constexpr llvm::StringLiteral sendSource = R"mlir(
+module {
+  func.func @main() {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %token = wafer.instr.dte_send %buffer
+        {peer = 1 : i64, bytes = 4 : i64,
+         message = #wafer.dte_message<communication = 7, phase = collective_permute, round = 0, slice = 0>}
+        : memref<4xi8, #wafer.memory<spm, tensor>> -> !async.token
+    return
+  }
+}
+)mlir";
+  constexpr llvm::StringLiteral receiveSource = R"mlir(
+module {
+  func.func @main() {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xi8, #wafer.memory<spm, tensor>>
+    %token = wafer.instr.dte_recv %buffer
+        {peer = 0 : i64, bytes = 4 : i64,
+         message = #wafer.dte_message<communication = 7, phase = collective_permute, round = 0, slice = 0>}
+        : memref<4xi8, #wafer.memory<spm, tensor>> -> !async.token
+    return
+  }
+}
+)mlir";
+  constexpr llvm::StringLiteral idleSource = R"mlir(
+module {
+  func.func @main() {
+    return
+  }
+}
+)mlir";
+  auto cardConfig = wafer::compiler::ExecutionConfig::createForSingleCard(
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+  ASSERT_TRUE(static_cast<bool>(cardConfig));
+
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;
+  llvm::SmallVector<mlir::ModuleOp, 16> modules;
+  for (int rank = 0; rank < 16; ++rank) {
+    llvm::StringRef source = rank == 0   ? llvm::StringRef(sendSource)
+                             : rank == 1 ? llvm::StringRef(receiveSource)
+                                         : llvm::StringRef(idleSource);
+    owners.push_back(parse(source));
+    ASSERT_TRUE(owners.back());
+    modules.push_back(*owners.back());
+  }
+  mlir::ScopedDiagnosticHandler suppress(
+      context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
+  EXPECT_TRUE(
+      mlir::failed(wafer::compiler::testing::acceptWholeVariantResources(
+          modules, *cardConfig)));
 }
 
 } // namespace

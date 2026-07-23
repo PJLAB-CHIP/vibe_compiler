@@ -1265,7 +1265,7 @@ def run_systemc_gate(
 def write_systemc_consumer(source_root: pathlib.Path) -> None:
     source_root.mkdir()
     (source_root / "CMakeLists.txt").write_text(
-        r'''cmake_minimum_required(VERSION 3.24)
+        r'''cmake_minimum_required(VERSION 3.16)
 project(SystemCDeltaEventSmoke LANGUAGES CXX)
 find_package(SystemCLanguage 3.0.2 CONFIG REQUIRED NO_DEFAULT_PATH)
 if(NOT TARGET SystemC::systemc)
@@ -1540,6 +1540,42 @@ def build_systemc_model_dependency(
         return record_path
 
 
+def fetch_importer_bazel(
+    versions: dict[str, str], prefix: pathlib.Path
+) -> pathlib.Path:
+    tools_root = prefix / "tools"
+    tools_root.mkdir(parents=True, exist_ok=True)
+    version = versions["WAFER_BAZEL_VERSION"]
+    url = versions["WAFER_BAZEL_LINUX_X64_URL"]
+    expected_sha256 = versions["WAFER_BAZEL_LINUX_X64_SHA256"]
+    binary = tools_root / f"bazel-{version}-linux-x86_64"
+    if binary.exists() and (
+        not binary.is_file()
+        or binary.is_symlink()
+        or sha256_file(binary) != expected_sha256
+    ):
+        if binary.is_dir() and not binary.is_symlink():
+            raise RuntimeError(f"managed Bazel path is a directory: {binary}")
+        binary.unlink()
+    if not binary.exists():
+        download_with_resume(url, binary)
+    actual_sha256 = sha256_file(binary)
+    if actual_sha256 != expected_sha256:
+        binary.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Bazel SHA256 mismatch: {actual_sha256} != {expected_sha256}"
+        )
+    binary.chmod(0o755)
+
+    default = tools_root / "bazel"
+    if default.is_symlink() or default.is_file():
+        default.unlink()
+    elif default.exists():
+        raise RuntimeError(f"managed Bazel link path is a directory: {default}")
+    default.symlink_to(binary.name)
+    return default
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prefix", default=str(REPO_ROOT / "third_party"))
@@ -1555,6 +1591,11 @@ def main() -> int:
         "--importer-python",
         action="store_true",
         help="install pinned importer Python packages for the PyTorch/XLA source build; build/install torch_xla from third_party/pytorch-xla source separately",
+    )
+    parser.add_argument(
+        "--importer-bazel",
+        action="store_true",
+        help="download and checksum the Bazel binary pinned for the PyTorch/XLA source build",
     )
     parser.add_argument("--test-sources", action="store_true", help="sync pinned googletest submodule")
     parser.add_argument(
@@ -1655,6 +1696,10 @@ def main() -> int:
         importer_python = ensure_venv(prefix, "python-importer", REPO_ROOT / "requirements-importer.txt")
         print(f"Importer Python tools installed: {importer_python}")
 
+    if args.all or args.importer_bazel:
+        bazel = fetch_importer_bazel(versions, prefix)
+        print(f"Importer Bazel installed: {bazel}")
+
     if args.llvm:
         llvm_root = fetch_llvm_prebuilt(versions, prefix)
         print(f"LLVM/MLIR installed: {llvm_root}")
@@ -1694,6 +1739,7 @@ def main() -> int:
         or args.llvm_source
         or args.importer_sources
         or args.importer_python
+        or args.importer_bazel
         or args.test_sources
         or args.numeric_model_sources
         or args.numeric_model_deps

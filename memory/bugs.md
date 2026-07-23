@@ -541,10 +541,12 @@
 
 - 现象：tile搜索把一个浮点reduction拆成多个neutral-init partial再combine，结构和shape都合法，却改变了原程序的
   grouping、NaN/Inf和signed-zero行为；named matmul也可能被误认为天然允许K split。
-- 根因：把“source reduction可由实现选择内部tree”和“compiler额外建立多个可观察partial”混成同一合同。
+- 根因：把“source rank-local reduction可由实现选择内部tree”和“compiler额外建立多个可观察partial”混成同一合同。
 - 修复模式：selector与直接materializer共用current-IR numeric gate。generic floating只在exact single combiner且
   `fastmath<reassoc,nnan,ninf,nsz>`时拆分；named floating matmul保持完整K；integer只放行无overflow flag的
-  modular add和signed min/max。未拆分source reduction不因缺少reassociation事实被拒绝。
+  modular add和signed min/max。未拆分source reduction不因缺少reassociation事实被拒绝。StableHLO collective
+  允许中序遍历保持`rank_group`的ordered implementation tree，不属于这种额外rank-local partial，不能套用同一
+  fast-math门槛；cyclic Ring若置换leaf次序仍须显式numeric permission。
 
 ## 2026-07-16 DTE wait不能完成collective后的本地compute/movement effect
 
@@ -1007,3 +1009,85 @@
   timeout、query/device error、untrusted terminal、明确poisoned，或memory/process/inventory未回到基线时才停止触卡并进入恢复判定。
 - 防复发：不因compare失败自动reset/reboot，也不把SMI空闲单独当作已poisoned context可执行证明。恢复接口仍须独立确认作用域并由
   用户明确授权；成功运行回到基线时无需恢复动作。
+
+## 2026-07-22 terminal all-reduce不能用collective family统一禁止切块
+
+- 现象：full-4096 K-sharded GEMM的post-SPMD程序已经是local `4096x256 x 256x4096` matmul加replicated all-reduce，
+  但候选只尝试完整`4096x4096` output，随后因32 MiB output远超SPM窗口而失败；同一compiler此前能处理Llama并不能证明
+  terminal collective会继承producer的M/N tile。
+- 根因：traversal capability把全部logical collective统一标成`FullTraversalOnly`，capacity/geometry analysis又只读取直接
+  yielded Linalg root。terminal all-reduce因此既遮住local matmul压力，也阻止TilingInterface从result tile反向融合producer；
+  简单把local K=256暴露成reduction range还会错误引入第二次floating K split。
+- 修复模式：production只开放verifier已证明单输入、单输出、shape-preserving的terminal all-reduce作为tiled root；完整物化从
+  all-reduce result tile反向融合local matmul slice。capacity/geometry/refinement可窄化看穿到compute root，reduction-range/split
+  仍只认真实yielded Linalg root。最终候选必须由Instr/SPM/DDR/Direct-DTE和whole-variant gate重证，不能以小shape fixture代替。
+- 防复发：full-4096 f16 whole-variant回归锁定M/N小于4096、K恒为256、DTE payload小于32 MiB、无full-output SPM allocation；
+  axis-changing collective和shape-preserving collective-permute仍有`FullTraversalOnly`负例。internal collective作为producer时必须
+  独立task或fail closed，避免原始full op与tiled clone重复通信。
+
+## 2026-07-22 all-reduce强制Tensor会阻断跨communication的Cx传播
+
+- 现象：rank-2 GEMM按target合同消费并产生Cx，但logical all-reduce lowering立即把input materialize为Tensor、把result登记为
+  Tensor；后续`CommAllReduceOp` lowering再次显式拒绝非Tensor SPM buffer。最终程序因此在GEMM与collective之间出现
+  `Cx -> Tensor` gather/scatter，即使Direct DTE range acceptance本身能够解释Cx。
+- 根因：collective两级lowering把历史V0实现选择写成固定layout legality，没有消费current typed memref encoding，也没有让
+  producer、communication和consumer在同一actual clone中比较same-layout与conversion alternative。DTE支持某种layout不等于
+  collective accumulator、tail、payload byte range和result consumer已经共同合法。
+- 修复模式：all-reduce input/recv/result必须保持同一显式layout type；当Cx/NCx encoding、block/tail、valid lane、elementwise
+  accumulation、DTE physical range和所有rank一致性均可证明时，直接在该layout上通信并传播result。无法证明时保守materialize
+  Tensor；只在真实boundary或consumer要求处插转换，不按workload/shape特判。
+- 防复发：保留aligned Cx direct、Cx tail/padding negative、mixed-rank layout negative、Cx collective后接Cx consumer以及最终
+  Tensor boundary五类回归，并从selected Instr IR检查不必要的GS真实消失。板端首字节numeric mismatch只能作为调查入口；在
+  GEMM/layout与collective隔离case完成前，不能把该round-trip直接写成数值错误唯一根因。
+
+## 2026-07-23 算法标签不能替代真实分块、拓扑事实和DTE隔离
+
+- 现象：旧`Ring AllReduce`每轮仍发送完整buffer并归约完整buffer；Tree固定root 0/XOR rank关系，
+  Reduce-Scatter只有Direct候选，whole-card cost只比较注入bytes。把Ring改成标准分块后，isolated task/candidate clone
+  又因未携带topology/mesh而无法派生邻居；AllReduce all-gather阶段直接recv到accumulator的另一subview，还会在send与
+  joint wait之间访问同一allocation root，触发Direct DTE isolation失败。
+- 根因：把算法名、logical rank算术和局部buffer view当成了已证明的物理协议。名字不证明每轮message大小或local work；
+  subview不改变Direct DTE acceptance追踪的allocation root；analysis fact所在的module op也不会被function-only clone自动保留。
+- 修复模式：从current typed topology/mesh统一重算rank placement与shortest-hop；isolated artifact边界显式复制这两个fact op。
+  Ring AllReduce展开为chunked reduce-scatter+all-gather，Ring Reduce-Scatter为独立候选；Tree用interval DP从
+  `rank_group`连续区间构造minimum-total-shortest-hop ordered binary tree，中序严格保持group次序，不采用
+  MST/center、root 0或XOR/binomial模板。whole-card从final sends计算`payload_bytes * minimum_hops`。Ring gather
+  先recv到dedicated buffer，wait后local copy/fence到accumulator slot。singleton logical collective在生成Tile Comm前
+  折叠为identity。ordered Tree可用于floating collective；会置换leaf的cyclic Ring需要另行numeric permission。
+- 防复发：直接测试round/slice/bytes/local reduction、arbitrary rank-group message matching、explicit placement winner、
+  clone后topology可重算及Direct DTE root isolation；production-shaped全rank回归必须真正经过memory planning和transport
+  acceptance，不能用只验证未绑定Instr IR的局部conversion代替。
+
+## 2026-07-23 venv Python路径不能解析成base interpreter
+
+- 现象：PyTorch/XLA source helper接收`third_party/python-importer/bin/python`，但路径规范化后实际运行base Python；
+  build看到了错误的`sys.prefix`、headers和site-packages，importer依赖看似已安装却在构建中缺失。
+- 根因：venv的`bin/python`通常是指向base interpreter的symlink；`Path.resolve()`把“以哪个venv身份启动”这一语义消掉。
+- 修复模式：只把用户给出的解释器路径转成absolute，不解析最终symlink；所有layout probe、pip build和runtime import都用
+  同一个保留venv路径的解释器。回归同时检查默认路径和symlink venv。
+
+## 2026-07-23 Bazel编译器选择必须覆盖repository configuration和action
+
+- 现象：宿主默认GCC 9编译pinned XLA时在defaulted `noexcept` move处失败；仅把GCC 10 wrapper放进`PATH`后，
+  Bazel external repository仍可能沿用旧`local_config_cc`，源码构建继续使用错误compiler。
+- 根因：Bazel在repository configuration阶段固定C/C++ toolchain，普通action环境和shell命令查找不是同一个选择边界。
+- 修复模式：PyTorch/XLA helper优先选择GCC 10，并在开始重构workspace前编译最小C++17 move probe；显式override同时进入
+  `--repo_env`和`--action_env`，`build`与`info bazel-bin`使用同一wrapper。其它compiler只有通过同一probe才可使用。
+
+## 2026-07-23 editable install不能从临时build目录发布Bazel extension
+
+- 现象：PyTorch/XLA Bazel action已经成功生成`_XLAC`，但editable wheel结束后package只能导入纯Python部分；
+  helper从pip临时`build/lib.*`查找extension时得到旧文件或空目录。
+- 根因：pip editable build目录是frontend拥有的临时空间，完成后可被删除或复用；它不是Bazel产物的稳定发布边界。
+- 修复模式：安装完成后通过同一Bazel wrapper查询persistent `bazel-bin`，从该目录复制`_XLAC`和
+  `_XLAC_cuda_functions`到editable source package，并用目标venv实际导入`torch_xla`、顶层`_XLAC`及StableHLO export API。
+  文件存在或wheel命令exit 0都不能替代import gate。
+
+## 2026-07-23 dependency smoke不能提高项目未要求的宿主CMake下限
+
+- 现象：SystemC本体和安装已完成，但bootstrap生成的独立consumer声明CMake 3.24，在受管宿主CMake 3.16上
+  consumer-configure失败，导致正确的SystemC 3.0.2 artifact无法发布record。
+- 根因：smoke只需`find_package(SystemCLanguage)`、C++17和一个delta-event executable，却从开发环境复制了无关的较新
+  CMake minimum，把工具版本误变成依赖资格条件。
+- 修复模式：独立SystemC consumer保持项目可支持的CMake 3.16下限，并由回归直接检查生成文本；以后只有smoke实际使用
+  更高版本语义时才能同步提高，不能因为本机CMake较新而改写。

@@ -41,6 +41,7 @@ enum class ScheduleCostReason {
   InvalidAcceptedSPMOffset,
   UnsupportedSPMRoot,
   UnresolvedNoCRoute,
+  InvalidExecutionTopology,
   UnsupportedInstructionSemantics,
   UnsupportedComputeType,
   ArithmeticOverflow,
@@ -152,6 +153,11 @@ struct WholeCardInstructionProgramCost {
   ScheduleCostMetric aggregateDDRWriteBytes;
   ScheduleCostMetric aggregateSPMMovementBytes;
   ScheduleNoCCost aggregateNoC;
+  /// Sum over final send instructions of
+  /// payload bytes * static execution multiplicity * minimum topology hops.
+  /// This is a whole-domain link-byte demand lower bound, not an actual route,
+  /// directional link load, congestion estimate, or execution time.
+  ScheduleCostMetric minimumHopLinkByteDemand;
   ScheduleCostMetric aggregateInstructionCount;
   ScheduleCostMetric aggregateEventCount;
 

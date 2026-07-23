@@ -6,7 +6,9 @@
 #include "../../lib/Wafer/Compiler/ScheduledRankFinalization.h"
 
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/TargetPolicy.h"
 
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
@@ -17,6 +19,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -1416,7 +1419,7 @@ module {
 }
 
 TEST_F(WholeVariantCoordinatorTest,
-       SelectsDirectAllGatherFromProductionAllRankFrontier) {
+       SelectsTopologyRingAllGatherFromProductionAllRankFrontier) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -1475,12 +1478,15 @@ module {
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_TRUE(baselineCost);
   ASSERT_EQ(accepted->ranks.size(), 16u);
-  EXPECT_TRUE(llvm::none_of(accepted->selectedReservedBaselines,
-                            [](bool reserved) { return reserved; }));
-  EXPECT_LT(accepted->resourceCost.rankCosts.front().instructionCount.value,
-            baselineCost->instructionCount.value);
-  EXPECT_LT(accepted->resourceCost.rankCosts.front().spmMovementBytes.value,
-            baselineCost->spmMovementBytes.value);
+  ASSERT_TRUE(
+      accepted->resourceCost.minimumHopLinkByteDemand.isKnown());
+  EXPECT_EQ(accepted->resourceCost.minimumHopLinkByteDemand.value, 3840u);
+  // Both schedules inject 16 * 15 * 16 = 3840 bytes.  On this 4x4 mesh the
+  // minimum-hop Hamiltonian ring uses one hop per send, while the direct
+  // all-pairs schedule has 10240 link-bytes of shortest-path demand.
+  EXPECT_EQ(accepted->resourceCost.aggregateNoC.aggregateTransmitBytes.value,
+            3840u);
+  EXPECT_LT(accepted->resourceCost.minimumHopLinkByteDemand.value, 10240u);
   for (const auto &rank : accepted->ranks) {
     bool sawDirect = false;
     bool sawRing = false;
@@ -1496,13 +1502,17 @@ module {
       sawRing |= recv.getMessage().getPhase() ==
                  wafer::DTEProtocolPhase::AllGatherRing;
     });
-    EXPECT_TRUE(sawDirect);
-    EXPECT_FALSE(sawRing);
+    EXPECT_FALSE(sawDirect);
+    EXPECT_TRUE(sawRing);
   }
 }
 
 TEST_F(WholeVariantCoordinatorTest,
        SelectsTreeAllReduceFromProductionAllRankFrontier) {
+  // Keep the reserved Auto candidate and the explicit Tree candidate
+  // genuinely distinct: i8 addition is exactly reassociable and sixteen
+  // elements form one nonzero Ring chunk per rank. Floating-point Auto must
+  // already use the ordered tree and is covered by the lowering tests.
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -1513,18 +1523,18 @@ module {
     axes = ["rank"], endpoints = array<i64>,
     policy = "all_available", shape = array<i64: 16>, topology = @default
   }
-  func.func @main(%input: tensor<4xf32>) -> tensor<4xf32> {
-    %out = tensor.empty() : tensor<4xf32>
+  func.func @main(%input: tensor<16xi8>) -> tensor<16xi8> {
+    %out = tensor.empty() : tensor<16xi8>
     %reduced = wafer.linalg_ext.collective.all_reduce
-        ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
-      ^bb0(%lhs: f32, %rhs: f32):
-        %sum = arith.addf %lhs, %rhs : f32
-        wafer.linalg_ext.collective.yield %sum : f32
+        ins(%input : tensor<16xi8>) outs(%out : tensor<16xi8>) {
+      ^bb0(%lhs: i8, %rhs: i8):
+        %sum = arith.addi %lhs, %rhs : i8
+        wafer.linalg_ext.collective.yield %sum : i8
     } {channel_id = 53 : i64,
        rank_group = array<i64: 0, 1, 2, 3, 4, 5, 6, 7,
                               8, 9, 10, 11, 12, 13, 14, 15>}
-        -> tensor<4xf32>
-    return %reduced : tensor<4xf32>
+        -> tensor<16xi8>
+    return %reduced : tensor<16xi8>
   }
 }
 )mlir",
@@ -1536,7 +1546,7 @@ module {
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto accepted = selectProductionVariant(
       *source,
-      replicated1DProgram(1, 4, "f32", /*outputCount=*/1,
+      replicated1DProgram(1, 16, "i8", /*outputCount=*/1,
                           /*rankCount=*/16),
       diagnostics, &baselineCost, /*rankCount=*/16);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
@@ -1544,8 +1554,16 @@ module {
   ASSERT_EQ(accepted->ranks.size(), 16u);
   EXPECT_TRUE(llvm::none_of(accepted->selectedReservedBaselines,
                             [](bool reserved) { return reserved; }));
+  ASSERT_TRUE(baselineCost->instructionCount.isKnown());
+  ASSERT_TRUE(accepted->resourceCost.aggregateInstructionCount.isKnown());
   EXPECT_LT(accepted->resourceCost.aggregateInstructionCount.value,
             baselineCost->instructionCount.value * 16);
+  ASSERT_TRUE(accepted->resourceCost.minimumHopLinkByteDemand.isKnown());
+  EXPECT_EQ(accepted->resourceCost.minimumHopLinkByteDemand.value, 480u);
+  ASSERT_TRUE(
+      accepted->resourceCost.aggregateNoC.aggregateTransmitBytes.isKnown());
+  EXPECT_EQ(accepted->resourceCost.aggregateNoC.aggregateTransmitBytes.value,
+            480u);
   for (const auto &rank : accepted->ranks) {
     bool sawTree = false;
     bool sawRing = false;
@@ -1568,6 +1586,166 @@ module {
     EXPECT_TRUE(sawTree);
     EXPECT_FALSE(sawRing);
   }
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       TilesLargeKShardedF16GemmAllReduceInProductionWholeVariant) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64>,
+    policy = "all_available", shape = array<i64: 16>, topology = @default
+  }
+  func.func @main(%lhs: tensor<4096x256xf16>,
+                  %rhs: tensor<256x4096xf16>) -> tensor<4096x4096xf16> {
+    %zero = arith.constant 0.0 : f16
+    %partial_out = tensor.empty() : tensor<4096x4096xf16>
+    %partial_init = linalg.fill ins(%zero : f16)
+        outs(%partial_out : tensor<4096x4096xf16>)
+        -> tensor<4096x4096xf16>
+    %partial = linalg.matmul
+        ins(%lhs, %rhs : tensor<4096x256xf16>, tensor<256x4096xf16>)
+        outs(%partial_init : tensor<4096x4096xf16>)
+        -> tensor<4096x4096xf16>
+    %reduced_out = tensor.empty() : tensor<4096x4096xf16>
+    %reduced = wafer.linalg_ext.collective.all_reduce
+        ins(%partial : tensor<4096x4096xf16>)
+        outs(%reduced_out : tensor<4096x4096xf16>) {
+      ^bb0(%lhs_value: f16, %rhs_value: f16):
+        %sum = arith.addf %lhs_value, %rhs_value : f16
+        wafer.linalg_ext.collective.yield %sum : f16
+    } {channel_id = 61 : i64,
+       rank_group = array<i64: 0, 1, 2, 3, 4, 5, 6, 7,
+                              8, 9, 10, 11, 12, 13, 14, 15>}
+        -> tensor<4096x4096xf16>
+    return %reduced : tensor<4096x4096xf16>
+  }
+}
+)mlir",
+                                                        context.get());
+  ASSERT_TRUE(source);
+
+  auto makeBoundary = [](int64_t index, llvm::ArrayRef<int64_t> globalShape,
+                         llvm::ArrayRef<int64_t> localShape,
+                         wafer::frontend::ProgramDistributionKind distribution,
+                         bool shardFirstDimension) {
+    wafer::frontend::ProgramBoundaryBinding binding;
+    binding.index = index;
+    binding.programIndex = index;
+    binding.distribution = distribution;
+    binding.globalShape.assign(globalShape.begin(), globalShape.end());
+    binding.localShape.assign(localShape.begin(), localShape.end());
+    binding.dtype = "f16";
+    for (int64_t rank = 0; rank < 16; ++rank) {
+      wafer::frontend::ProgramRankSlice slice;
+      slice.logicalRank = rank;
+      slice.replicaId =
+          distribution == wafer::frontend::ProgramDistributionKind::Replicated
+              ? rank
+              : 0;
+      slice.offsets.assign(globalShape.size(), 0);
+      if (distribution ==
+          wafer::frontend::ProgramDistributionKind::Partitioned) {
+        const size_t shardDimension = shardFirstDimension ? 0 : 1;
+        slice.offsets[shardDimension] = rank * localShape[shardDimension];
+      }
+      slice.sizes.assign(localShape.begin(), localShape.end());
+      slice.strides.assign(globalShape.size(), 1);
+      binding.rankSlices.push_back(std::move(slice));
+    }
+    return binding;
+  };
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 16;
+  program.programUserInputCount = 2;
+  program.distributedInputs.push_back(
+      makeBoundary(0, {4096, 4096}, {4096, 256},
+                   wafer::frontend::ProgramDistributionKind::Partitioned,
+                   /*shardFirstDimension=*/false));
+  program.distributedInputs.push_back(
+      makeBoundary(1, {4096, 4096}, {256, 4096},
+                   wafer::frontend::ProgramDistributionKind::Partitioned,
+                   /*shardFirstDimension=*/true));
+  program.distributedOutputs.push_back(
+      makeBoundary(0, {4096, 4096}, {4096, 4096},
+                   wafer::frontend::ProgramDistributionKind::Replicated,
+                   /*shardFirstDimension=*/false));
+
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = selectProductionVariant(*source, program, diagnostics,
+                                          /*baselineCost=*/nullptr,
+                                          /*rankCount=*/16);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_EQ(accepted->ranks.size(), 16u);
+
+  constexpr int64_t fullOutputExtent = 4096;
+  constexpr int64_t localContractingExtent = 256;
+  constexpr int64_t fullOutputBytes = fullOutputExtent * fullOutputExtent * 2;
+  const wafer::WaferTargetPolicy targetPolicy =
+      wafer::getDefaultWaferTargetPolicy();
+
+  unsigned totalGemmCount = 0;
+  unsigned totalDTEIssueCount = 0;
+  unsigned totalSPMAllocationCount = 0;
+  for (const wafer::compiler::RankExecutable &rank : accepted->ranks) {
+    EXPECT_EQ(rank.getTransportContract(),
+              wafer::compiler::TransportContract::DirectDTE);
+    mlir::ModuleOp winner = rank.getModule();
+
+    int64_t largestGemmOutputTileBytes = 0;
+    winner.walk([&](wafer::InstrGemmOp gemm) {
+      ++totalGemmCount;
+      EXPECT_GT(gemm.getM(), 0);
+      EXPECT_GT(gemm.getN(), 0);
+      EXPECT_LT(gemm.getM(), fullOutputExtent);
+      EXPECT_LT(gemm.getN(), fullOutputExtent);
+      EXPECT_EQ(gemm.getK(), localContractingExtent);
+      EXPECT_TRUE(gemm->getParentOfType<mlir::scf::ForOp>());
+      largestGemmOutputTileBytes = std::max(
+          largestGemmOutputTileBytes,
+          static_cast<int64_t>(gemm.getM() * gemm.getN() * 2));
+    });
+
+    auto checkDTEIssue = [&](auto issue) {
+      ++totalDTEIssueCount;
+      EXPECT_GT(issue.getBytes(), 0);
+      EXPECT_LT(issue.getBytes(), fullOutputBytes);
+      EXPECT_LE(issue.getBytes(), largestGemmOutputTileBytes);
+      EXPECT_TRUE(issue.getBinding());
+      EXPECT_TRUE(
+          issue.getOperation()->template getParentOfType<mlir::scf::ForOp>());
+    };
+    winner.walk([&](wafer::InstrDTESendOp send) { checkDTEIssue(send); });
+    winner.walk([&](wafer::InstrDTERecvOp recv) { checkDTEIssue(recv); });
+
+    winner.walk([&](mlir::memref::AllocOp allocation) {
+      if (!wafer::isWaferSPMMemRefType(allocation.getType()))
+        return;
+      ++totalSPMAllocationCount;
+      llvm::ArrayRef<int64_t> shape = allocation.getType().getShape();
+      EXPECT_FALSE(shape.size() == 2 && shape[0] == fullOutputExtent &&
+                   shape[1] == fullOutputExtent);
+      auto offset = allocation->getAttrOfType<wafer::SPMOffsetAttr>(
+          wafer::kWaferSPMOffsetAttrName);
+      ASSERT_TRUE(offset);
+      std::optional<wafer::WaferPhysicalTensorInfo> physical =
+          wafer::computeWaferPhysicalTensorInfo(allocation.getType());
+      ASSERT_TRUE(physical);
+      ASSERT_GE(physical->physicalBytes, 0);
+      EXPECT_GE(offset.getOffset(), targetPolicy.memory.spmBase);
+      EXPECT_LE(offset.getOffset() + physical->physicalBytes,
+                targetPolicy.memory.spmLimit);
+    });
+  }
+  EXPECT_GT(totalGemmCount, 0u);
+  EXPECT_GT(totalDTEIssueCount, 0u);
+  EXPECT_GT(totalSPMAllocationCount, 0u);
 }
 
 } // namespace

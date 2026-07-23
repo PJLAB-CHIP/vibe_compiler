@@ -20,12 +20,12 @@
 namespace wafer::tile_region_to_instr {
 
 enum class AllGatherSchedule { Ring, Direct };
-enum class AllReduceSchedule { Ring, Tree };
-enum class ReduceScatterSchedule { Direct };
+enum class AllReduceSchedule { Auto, Ring, Tree };
+enum class ReduceScatterSchedule { Direct, Ring };
 
 struct TileRegionToInstrOptions {
   AllGatherSchedule allGatherSchedule = AllGatherSchedule::Ring;
-  AllReduceSchedule allReduceSchedule = AllReduceSchedule::Ring;
+  AllReduceSchedule allReduceSchedule = AllReduceSchedule::Auto;
   ReduceScatterSchedule reduceScatterSchedule = ReduceScatterSchedule::Direct;
 };
 

@@ -35,6 +35,9 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
 - 把integer-domain exact/modular-proof-backed reassociation、显式reduction tree和algebraic distribution/factorization物化为真实op DAG、SCF和
   loop-carried state；不保存numeric-choice attr。
 - 按 selected tile domain生成 all-and-only traversal、static tail和合法 reduction sequence。
+- 对production capability分类与`TilingInterface`共同证明可切的terminal logical collective，从result tile反向物化
+  operand/out tile并融合producer；当前只启用单输入、单输出、shape-preserving `all_reduce`，其每个dynamic loop
+  instance只处理当前tile，完整result由显式insert/writeback拼接。其它collective在各自gate闭合前仍是full traversal。
 - 通过`WaferTargetImplementationOpInterface::materializeSelectedImplementation`创建typed
   `wafer.tile.*` compute。
 - 物化 Wafer-tagged memref、standard/typed view、resident SSA edge、显式 movement、spill/reload、
@@ -84,7 +87,7 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
       不让runtime选择physical realization，不声明板端性能或timing。
     - Completion gate:
       contraction、pointwise、ordered reduction、view、broadcast/slice、fanout/fanin、多root、
-      structured control flow和communication均有真实source正负例；每个成功case发生可观察的
+      structured control flow和当前已启用的terminal all-reduce tiled traversal均有真实source正负例；每个成功case发生可观察的
       MLIR mutation并覆盖完整traversal；失败保持source不变；输出被instruction、SPM/DDR、
       completion、transport和ABI gate直接消费；rank-count 1/16与冻结7B纵向重放通过。
 

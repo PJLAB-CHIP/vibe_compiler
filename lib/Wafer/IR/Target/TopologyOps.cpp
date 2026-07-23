@@ -1,7 +1,9 @@
 //===- TopologyOps.cpp - Wafer target topology verifier implementation ----===//
 
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/IR/Target/TopologyUtils.h"
 
+#include "mlir/IR/Builders.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -10,6 +12,16 @@
 #include <vector>
 
 using namespace wafer;
+
+void wafer::cloneTargetExecutionFacts(mlir::ModuleOp sourceModule,
+                                      mlir::ModuleOp destinationModule) {
+  mlir::OpBuilder builder(destinationModule.getBodyRegion());
+  for (TargetTopologyOp topology :
+       sourceModule.getOps<TargetTopologyOp>())
+    builder.clone(*topology.getOperation());
+  for (ExecutionMeshOp mesh : sourceModule.getOps<ExecutionMeshOp>())
+    builder.clone(*mesh.getOperation());
+}
 
 namespace {
 

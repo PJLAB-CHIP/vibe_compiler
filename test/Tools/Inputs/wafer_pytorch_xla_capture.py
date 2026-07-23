@@ -1705,9 +1705,21 @@ def _named_parameters(reference_module: Any) -> list[tuple[str, Any]]:
     return parameters
 
 
-def _state_dict_numpy(reference_module: Any) -> dict[str, Any]:
+def _state_dict_numpy(
+    torch_module: Any, reference_module: Any
+) -> dict[str, Any]:
+    numpy_module = _import_numpy()
     return {
-        name: parameter.detach().cpu().numpy()
+        name: _torch_to_workload_storage(
+            torch_module,
+            numpy_module,
+            parameter,
+            (
+                "bfloat16"
+                if parameter.dtype == torch_module.bfloat16
+                else str(parameter.dtype).replace("torch.", "")
+            ),
+        )
         for name, parameter in _named_parameters(reference_module)
     }
 
@@ -2340,12 +2352,18 @@ def emit_sharded_stablehlo_program(
     else:
         reference_module = reference_module_factory()
     reference_module.eval()
-    state_dict = _state_dict_numpy(reference_module)
+    state_dict = _state_dict_numpy(torch_module, reference_module)
 
     device = xla_model_module.xla_device()
     reference_module = _move_to_device(reference_module, device)
+    first_parameter = next(reference_module.parameters(), None)
+    input_dtype = (
+        first_parameter.dtype
+        if first_parameter is not None
+        else torch_module.float32
+    )
     input_tensor = _move_to_device(
-        torch_module.empty(size, size, dtype=torch_module.float32), device
+        torch_module.empty(size, size, dtype=input_dtype), device
     )
 
     mesh = create_spmd_mesh(spmd_module, strategy)
@@ -2442,7 +2460,7 @@ def emit_hf_megatron_transformer_block_program(
         parameter_arrays=parameter_arrays,
     )
     reference_module.eval()
-    state_dict = _state_dict_numpy(reference_module)
+    state_dict = _state_dict_numpy(torch_module, reference_module)
 
     if input_array is not None:
         cpu_input_tensor = torch_module.from_numpy(input_array.copy())

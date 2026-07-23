@@ -3,6 +3,7 @@
 #include "Scheduling/StructuredSchedulingScope.h"
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
+#include "Wafer/IR/Target/TopologyUtils.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -32,8 +33,7 @@ static bool hasTensorInits(mlir::DestinationStyleOpInterface dpsOp) {
 }
 
 static bool isLinalgExtCollectiveRoot(mlir::Operation *op) {
-  return classifyCandidateTraversalRoot(op) ==
-         CandidateTraversalRootCapability::FullTraversalOnly;
+  return mlir::isa_and_nonnull<WaferLinalgExtCollectiveOpInterface>(op);
 }
 
 static bool isLinalgRoot(mlir::Operation *op) {
@@ -302,9 +302,9 @@ canAbsorbConsumer(mlir::Operation *consumer, mlir::Block *block,
 }
 
 /// A single-use static reshape does not introduce a new tensor value or a
-/// scheduling decision, but it can hide the tiled consumer of a
-/// full-traversal-only root. Admit only a closed, linear view chain: fanout or
-/// a terminal view remains an explicit task boundary rather than silently
+/// scheduling decision, but it can hide the tiled consumer of a logical
+/// collective root. Admit only a closed, linear view chain: fanout or a
+/// terminal view remains an explicit task boundary rather than silently
 /// extending SPM residency.
 static bool canAbsorbTransparentViewConsumer(
     mlir::Operation *candidate, mlir::Block *block,
@@ -368,9 +368,11 @@ expandSelection(mlir::Operation *root,
                 const llvm::DenseSet<mlir::Operation *> &forbidden) {
   mlir::Block *block = root->getBlock();
   selected.insert(root);
-  bool rootRequiresFullTraversal =
+  bool rootIsLogicalCollective = isLinalgExtCollectiveRoot(root);
+  bool rootIsTiledLogicalCollective =
+      rootIsLogicalCollective &&
       classifyCandidateTraversalRoot(root) ==
-      CandidateTraversalRootCapability::FullTraversalOnly;
+          CandidateTraversalRootCapability::Tiled;
   bool changed = true;
   while (changed) {
     changed = false;
@@ -401,7 +403,15 @@ expandSelection(mlir::Operation *root,
           uses.push_back(&use);
         for (mlir::OpOperand *use : uses) {
           mlir::Operation *consumer = use->getOwner();
-          if (rootRequiresFullTraversal &&
+          // A tiled logical collective may be fused as the terminal consumer
+          // of an upstream compute task.  When it is itself the discovery
+          // root, keep it as a task boundary: absorbing a downstream consumer
+          // would turn the collective into an internal producer, duplicate
+          // its untiled source op during producer fusion, and lose the direct
+          // output-boundary contract used by complete traversal.
+          if (rootIsTiledLogicalCollective)
+            continue;
+          if (rootIsLogicalCollective &&
               canAbsorbTransparentViewConsumer(consumer, block, selected,
                                                forbidden)) {
             selected.insert(consumer);
@@ -422,9 +432,8 @@ expandSelection(mlir::Operation *root,
 static bool
 hasTiledSchedulingRoot(const llvm::DenseSet<mlir::Operation *> &selected) {
   return llvm::any_of(selected, [](mlir::Operation *operation) {
-    return isLinalgRoot(operation) &&
-           classifyCandidateTraversalRoot(operation) ==
-               CandidateTraversalRootCapability::Tiled;
+    return classifyCandidateTraversalRoot(operation) ==
+           CandidateTraversalRootCapability::Tiled;
   });
 }
 
@@ -752,6 +761,11 @@ cloneScopeToStandaloneModule(const StructuredSchedulingScope &scope,
     return nullptr;
   mlir::Location loc = scope.insertionPoint->getLoc();
   auto module = mlir::ModuleOp::create(loc);
+  mlir::ModuleOp sourceModule =
+      scope.insertionPoint->getParentOfType<mlir::ModuleOp>();
+  if (!sourceModule)
+    return nullptr;
+  cloneTargetExecutionFacts(sourceModule, module);
   mlir::OpBuilder moduleBuilder(module.getBodyRegion());
   llvm::SmallVector<mlir::Type> argumentTypes;
   for (mlir::Value input : scope.inputs)

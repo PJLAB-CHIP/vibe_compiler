@@ -118,6 +118,10 @@ getCommunicationOptions(CommunicationAlternative alternative) {
     return {/*allGatherSchedule=*/AllGatherSchedule::Direct,
             /*allReduceSchedule=*/AllReduceSchedule::Ring,
             /*reduceScatterSchedule=*/ReduceScatterSchedule::Direct};
+  case CommunicationAlternative::RingReduceScatter:
+    return {/*allGatherSchedule=*/AllGatherSchedule::Ring,
+            /*allReduceSchedule=*/AllReduceSchedule::Auto,
+            /*reduceScatterSchedule=*/ReduceScatterSchedule::Ring};
   case CommunicationAlternative::TreeAllReduce:
     return {/*allGatherSchedule=*/AllGatherSchedule::Ring,
             /*allReduceSchedule=*/AllReduceSchedule::Tree,

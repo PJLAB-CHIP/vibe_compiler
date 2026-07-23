@@ -135,6 +135,19 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     LABELS "runtime;no-card;all-rank;cluster;direct-dte"
     TIMEOUT 300
   )
+  add_test(NAME wafer-runtime-k-sharded-gemm-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_k_sharded_gemm_test.py
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-k-sharded-gemm-no-card
+      --no-card
+  )
+  set_tests_properties(wafer-runtime-k-sharded-gemm-no-card PROPERTIES
+    LABELS "runtime;no-card;heavy;all-rank;gemm;direct-dte"
+    TIMEOUT 1800
+  )
 endif()
 
 if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
@@ -301,6 +314,28 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       SKIP_RETURN_CODE 77
       TIMEOUT 600
     )
+    add_test(NAME wafer-board-k-sharded-gemm
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_k_sharded_gemm_test.py
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/board-k-sharded-gemm
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 600000
+        --repeat 2
+    )
+    set_tests_properties(wafer-board-k-sharded-gemm PROPERTIES
+      LABELS "board;hardware;heavy;cluster;all-rank;gemm;direct-dte"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 1800
+    )
   else()
     message(STATUS
       "Not registering the all-rank board test: it requires exactly 16 TX tiles")
@@ -314,6 +349,14 @@ endif()
 add_test(NAME wafer-numeric-dependency-record-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_SOURCE_DIR}/tools/test_numeric_deps.py
+)
+
+add_test(NAME wafer-pytorch-xla-runtime-build-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/test_pytorch_xla_runtime_build.py
+)
+set_tests_properties(wafer-pytorch-xla-runtime-build-python PROPERTIES
+  LABELS "framework-importer;managed-dependencies"
 )
 
 add_test(NAME wafer-bulk-dependency-record-python

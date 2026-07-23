@@ -22,8 +22,26 @@ def run(command: list[str], *, cwd: pathlib.Path | None = None, env: dict[str, s
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
-def capture(command: list[str]) -> str:
-    return subprocess.check_output(command, text=True).strip()
+def capture(
+    command: list[str],
+    *,
+    cwd: pathlib.Path | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
+    return subprocess.check_output(command, cwd=cwd, env=env, text=True).strip()
+
+
+def find_executable(command: pathlib.Path) -> pathlib.Path:
+    expanded = command.expanduser()
+    if expanded.parent != pathlib.Path("."):
+        candidate = make_absolute_without_resolving(expanded)
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+        raise RuntimeError(f"executable not found: {candidate}")
+    discovered = shutil.which(os.fspath(expanded))
+    if discovered is None:
+        raise RuntimeError(f"executable not found on PATH: {expanded}")
+    return pathlib.Path(discovered)
 
 
 def load_versions() -> dict[str, str]:
@@ -199,26 +217,37 @@ cc_library(name = "{target_name}")
     )
 
 
-def copy_built_extensions(pytorch_xla: pathlib.Path, layout: dict[str, str]) -> None:
-    build_libs = sorted(
-        pytorch_xla.glob("build/lib.*"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    if not build_libs:
-        raise RuntimeError(f"no build/lib.* directory found under {pytorch_xla}")
-    build_lib = build_libs[0]
+def copy_built_extensions(
+    pytorch_xla: pathlib.Path,
+    layout: dict[str, str],
+    bazel_bin: pathlib.Path,
+) -> None:
+    if not bazel_bin.is_dir():
+        raise RuntimeError(f"Bazel output directory not found: {bazel_bin}")
     ext_suffix = layout["ext_suffix"]
     for name in ["_XLAC", "_XLAC_cuda_functions"]:
-        source = build_lib / f"{name}{ext_suffix}"
+        source = bazel_bin / f"{name}.so"
         if not source.is_file():
             raise RuntimeError(f"built extension not found: {source}")
-        shutil.copy2(source, pytorch_xla / source.name)
+        shutil.copy2(source, pytorch_xla / f"{name}{ext_suffix}")
+
+
+def verify_runtime_import(python: pathlib.Path) -> None:
+    run(
+        [
+            str(python),
+            "-c",
+            "import torch; import torch_xla; import _XLAC; "
+            "from torch_xla.stablehlo import exported_program_to_stablehlo",
+        ]
+    )
 
 
 def materialize_bazel_wrapper(
     wrapper: pathlib.Path,
     bazel: pathlib.Path,
+    cc: pathlib.Path,
+    cxx: pathlib.Path,
     torch_repo: pathlib.Path,
     pypi_torch_repo: pathlib.Path,
     llvm_raw_repo: pathlib.Path,
@@ -231,6 +260,8 @@ def materialize_bazel_wrapper(
 set -euo pipefail
 real_bazel={str(bazel)!r}
 repo_root={str(REPO_ROOT)!r}
+cc={str(cc)!r}
+cxx={str(cxx)!r}
 torch_repo={str(torch_repo)!r}
 pypi_torch_repo={str(pypi_torch_repo)!r}
 llvm_raw_repo={str(llvm_raw_repo)!r}
@@ -238,7 +269,7 @@ llvm_zlib_repo={str(llvm_zlib_repo)!r}
 llvm_zstd_repo={str(llvm_zstd_repo)!r}
 
 case "${{1:-}}" in
-  build|test|run|query|cquery|aquery|coverage)
+  build|test|run|query|cquery|aquery|coverage|info)
     exec "$real_bazel" "$@" \\
       "--override_repository=xla=$repo_root/third_party/xla" \\
       "--override_repository=llvm-raw=$llvm_raw_repo" \\
@@ -246,7 +277,11 @@ case "${{1:-}}" in
       "--override_repository=llvm_zstd=$llvm_zstd_repo" \\
       "--override_repository=stablehlo=$repo_root/third_party/stablehlo" \\
       "--override_repository=torch=$torch_repo" \\
-      "--override_repository=pypi_torch=$pypi_torch_repo"
+      "--override_repository=pypi_torch=$pypi_torch_repo" \\
+      "--repo_env=CC=$cc" \\
+      "--repo_env=CXX=$cxx" \\
+      "--action_env=CC=$cc" \\
+      "--action_env=CXX=$cxx"
     ;;
   *)
     exec "$real_bazel" "$@"
@@ -256,20 +291,86 @@ esac
     )
 
 
+def materialize_compiler_wrapper(
+    wrapper: pathlib.Path, compiler: pathlib.Path
+) -> None:
+    write_executable(
+        wrapper,
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+exec {str(compiler)!r} "$@"
+""",
+    )
+
+
+def verify_cxx_move_support(cxx: pathlib.Path) -> None:
+    source = (
+        "struct Member { Member(); Member(Member&&); };"
+        "struct Owner { Member value; Owner();"
+        "Owner(Owner&&) noexcept = default; };"
+        "Owner move(Owner value) { return value; }"
+    )
+    result = subprocess.run(
+        [str(cxx), "-std=c++17", "-x", "c++", "-fsyntax-only", "-"],
+        input=source,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"C++ compiler {cxx} cannot compile the defaulted noexcept move "
+            "contract required by the pinned XLA source; select a newer GCC "
+            "with --cc/--cxx"
+        )
+
+
+def preferred_compiler(
+    environment_name: str, pinned_command: str, fallback_command: str
+) -> pathlib.Path:
+    configured = os.getenv(environment_name)
+    if configured:
+        return pathlib.Path(configured)
+    if shutil.which(pinned_command):
+        return pathlib.Path(pinned_command)
+    return pathlib.Path(fallback_command)
+
+
 def parse_args() -> argparse.Namespace:
-    default_python = REPO_ROOT / "third_party" / "python-importer-py311" / "bin" / "python"
+    default_python = REPO_ROOT / "third_party" / "python-importer" / "bin" / "python"
     parser = argparse.ArgumentParser()
     parser.add_argument("--python", type=pathlib.Path, default=default_python)
     parser.add_argument("--bazel", type=pathlib.Path, default=REPO_ROOT / "third_party" / "tools" / "bazel")
+    parser.add_argument(
+        "--cc",
+        type=pathlib.Path,
+        default=preferred_compiler("CC", "gcc-10", "gcc"),
+    )
+    parser.add_argument(
+        "--cxx",
+        type=pathlib.Path,
+        default=preferred_compiler("CXX", "g++-10", "g++"),
+    )
     parser.add_argument("--build-root", type=pathlib.Path, default=REPO_ROOT / "build" / "pytorch-xla-source-build")
     parser.add_argument("--jobs", default=os.getenv("BAZEL_JOBS", "8"))
     return parser.parse_args()
 
 
+def make_absolute_without_resolving(path: pathlib.Path) -> pathlib.Path:
+    """Make a command path absolute while preserving virtualenv symlinks."""
+    return pathlib.Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
 def main() -> int:
     args = parse_args()
-    python = args.python.resolve()
+    # Resolving a venv's bin/python symlink selects the base interpreter and
+    # silently loses the venv's sys.prefix/site-packages.  PyTorch/XLA must be
+    # built and installed with the exact importer environment named by the
+    # caller.
+    python = make_absolute_without_resolving(args.python)
     bazel = args.bazel.resolve()
+    cc = find_executable(args.cc)
+    cxx = find_executable(args.cxx)
     build_root = args.build_root.resolve()
     pytorch_xla = REPO_ROOT / "third_party" / "pytorch-xla"
 
@@ -279,6 +380,7 @@ def main() -> int:
         raise RuntimeError(f"Bazel not found: {bazel}")
     if not pytorch_xla.is_dir():
         raise RuntimeError(f"PyTorch/XLA source checkout not found: {pytorch_xla}")
+    verify_cxx_move_support(cxx)
 
     versions = load_versions()
     layout = get_python_layout(python)
@@ -297,12 +399,16 @@ def main() -> int:
     materialize_bazel_wrapper(
         wrapper,
         bazel,
+        cc,
+        cxx,
         torch_repo,
         pypi_torch_repo,
         llvm_raw_repo,
         llvm_zlib_repo,
         llvm_zstd_repo,
     )
+    materialize_compiler_wrapper(wrapper.parent / "gcc", cc)
+    materialize_compiler_wrapper(wrapper.parent / "g++", cxx)
 
     env = os.environ.copy()
     env["PATH"] = os.pathsep.join(
@@ -316,6 +422,8 @@ def main() -> int:
     env["BAZEL_JOBS"] = args.jobs
     env["BUILD_CPP_TESTS"] = "0"
     env["BUNDLE_LIBTPU"] = "0"
+    env["CC"] = str(cc)
+    env["CXX"] = str(cxx)
     env["GIT_VERSIONED_XLA_BUILD"] = "0"
     env["HERMETIC_PYTHON_VERSION"] = layout["major_minor"]
     env["TORCH_XLA_VERSION"] = versions["WAFER_TORCH_XLA_PYTHON_VERSION"]
@@ -336,7 +444,11 @@ def main() -> int:
         cwd=pytorch_xla,
         env=env,
     )
-    copy_built_extensions(pytorch_xla, layout)
+    bazel_bin = pathlib.Path(
+        capture([str(wrapper), "info", "bazel-bin"], cwd=pytorch_xla, env=env)
+    )
+    copy_built_extensions(pytorch_xla, layout, bazel_bin)
+    verify_runtime_import(python)
     return 0
 
 

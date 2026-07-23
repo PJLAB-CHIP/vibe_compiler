@@ -8,7 +8,7 @@ def Wafer_CommAllGatherOp : Wafer_Op<"tile.all_gather", [
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_CommunicationResource>]>
   ]> {
-  let summary = "target-abstract fixed-size ring all-gather request";
+  let summary = "target-abstract fixed-size all-gather request";
   let description = [{
     `wafer.tile.all_gather` is the collective-level communication boundary
     between logical StableHLO all-gather semantics and explicit p2p schedules.
@@ -16,8 +16,11 @@ def Wafer_CommAllGatherOp : Wafer_Op<"tile.all_gather", [
     `rank_group` logical execution ranks, `local_rank` as the group-local
     index into that rank group, and the fixed byte size of one shard. It does
     not choose raw DTE register modes, encode physical endpoints, or hide a
-    communication plan side table; lowering rewrites it into explicit
-    `wafer.instr.dte_send` / `dte_recv` / `dte_wait` instructions.
+    communication plan side table. Lowering derives bounded algorithm
+    parameters from the current execution mesh and target topology, then
+    rewrites the request into explicit `wafer.instr.dte_send` / `dte_recv` /
+    `dte_wait` instructions. The selected algorithm is not part of this op's
+    semantics.
   }];
 
   let arguments = (ins
@@ -91,14 +94,14 @@ def Wafer_CommReduceScatterOp : Wafer_Op<"tile.reduce_scatter", [
 }
 
 def Wafer_CommAllReduceOp : Wafer_CommReduceCollectiveOp<"tile.all_reduce"> {
-  let summary = "target-abstract fixed-size ring all-reduce request";
+  let summary = "target-abstract fixed-size all-reduce request";
   let description = [{
     `wafer.tile.all_reduce` represents a same-shaped collective reduction.
     `rank_group` contains logical execution ranks and `local_rank` is the
-    group-local index. Physical endpoints are derived from the execution mesh
-    and target topology during lowering. V0 lowering uses unicast ring
-    communication plus explicit local elementwise accumulation instead of raw
-    DTE non-unicast or packet-side reduction.
+    group-local index. Physical endpoints and bounded ring/tree parameters are
+    derived from the execution mesh and target topology during lowering.
+    Lowering uses explicit unicast communication and local elementwise
+    accumulation instead of hiding reduction in DTE protocol state.
   }];
 }
 

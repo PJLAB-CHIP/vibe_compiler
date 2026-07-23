@@ -2,6 +2,8 @@
 
 #include "Internal.h"
 
+#include "Wafer/IR/Target/TopologyUtils.h"
+
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include <algorithm>
 #include <limits>
@@ -14,6 +16,14 @@ CandidateTraversalRootCapability
 classifyCandidateTraversalRoot(mlir::Operation *operation) {
   if (mlir::isa_and_nonnull<mlir::linalg::LinalgOp>(operation))
     return CandidateTraversalRootCapability::Tiled;
+  if (auto allReduce =
+          mlir::dyn_cast_or_null<LinalgExtCollectiveAllReduceOp>(operation)) {
+    if (allReduce.getInputs().size() == 1 && allReduce.getOuts().size() == 1 &&
+        allReduce->getNumResults() == 1 &&
+        mlir::isa<mlir::TilingInterface>(operation))
+      return CandidateTraversalRootCapability::Tiled;
+    return CandidateTraversalRootCapability::FullTraversalOnly;
+  }
   if (mlir::isa_and_nonnull<WaferLinalgExtCollectiveOpInterface>(operation))
     return CandidateTraversalRootCapability::FullTraversalOnly;
   return CandidateTraversalRootCapability::Unsupported;
@@ -94,6 +104,9 @@ static mlir::OwningOpRef<mlir::ModuleOp>
 cloneTensorProgramToStandaloneModuleImpl(mlir::func::FuncOp function) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::ModuleOp::create(function.getLoc());
+  if (mlir::ModuleOp sourceModule =
+          function->getParentOfType<mlir::ModuleOp>())
+    cloneTargetExecutionFacts(sourceModule, *module);
   mlir::OpBuilder builder(module->getBodyRegion());
   builder.clone(*function.getOperation());
   return module;

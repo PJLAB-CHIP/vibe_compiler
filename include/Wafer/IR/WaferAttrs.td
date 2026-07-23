@@ -160,6 +160,8 @@ def Wafer_DTEProtocolPhaseAllReduceTreeReduce
 def Wafer_DTEProtocolPhaseAllReduceTreeBroadcast
     : I32EnumAttrCase<"AllReduceTreeBroadcast", 7,
                       "all_reduce_tree_broadcast">;
+def Wafer_DTEProtocolPhaseReduceScatterRing
+    : I32EnumAttrCase<"ReduceScatterRing", 8, "reduce_scatter_ring">;
 def Wafer_DTEProtocolPhase
     : I32EnumAttr<"DTEProtocolPhase",
                   "Wafer logical Direct DTE protocol phase", [
@@ -170,7 +172,8 @@ def Wafer_DTEProtocolPhase
   Wafer_DTEProtocolPhaseReduceScatterDirect,
   Wafer_DTEProtocolPhaseAllReduceRing,
   Wafer_DTEProtocolPhaseAllReduceTreeReduce,
-  Wafer_DTEProtocolPhaseAllReduceTreeBroadcast
+  Wafer_DTEProtocolPhaseAllReduceTreeBroadcast,
+  Wafer_DTEProtocolPhaseReduceScatterRing
 ]> {
   let cppNamespace = "::wafer";
   let genSpecializedAttr = 0;

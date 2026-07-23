@@ -2,9 +2,12 @@
 
 #include "Internal.h"
 
+#include "Wafer/Analysis/CollectiveTopologyAnalysis.h"
+
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -170,14 +173,126 @@ static bool canReceiveDirectlyIntoSlot(mlir::Value slot, int64_t bytes) {
   return info && info->compactBytes == bytes && info->physicalBytes == bytes;
 }
 
-static int64_t getHighestTreeMask(int64_t groupSize) {
-  int64_t mask = 1;
-  while (mask < groupSize)
-    mask <<= 1;
-  return mask >> 1;
+static mlir::FailureOr<analysis::CollectiveRingOrder>
+getCollectiveRingOrder(mlir::PatternRewriter &rewriter, mlir::Operation *op,
+                       llvm::ArrayRef<int64_t> rankGroup,
+                       std::string *failureReason, llvm::StringRef opLabel) {
+  mlir::FailureOr<analysis::CollectiveRingOrder> order =
+      analysis::buildMinimumHopCollectiveRingOrder(op, rankGroup);
+  if (mlir::failed(order))
+    return failFailureOr<analysis::CollectiveRingOrder>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" requires a topology-derived bounded rank order")
+            .str());
+  return order;
 }
 
-static int64_t getLowestSetBit(int64_t value) { return value & -value; }
+static mlir::FailureOr<int64_t>
+getRingPosition(mlir::PatternRewriter &rewriter, mlir::Operation *op,
+                const analysis::CollectiveRingOrder &order,
+                int64_t localGroupIndex, std::string *failureReason,
+                llvm::StringRef opLabel) {
+  auto position = llvm::find(order.groupIndices, localGroupIndex);
+  if (position == order.groupIndices.end())
+    return failFailureOr<int64_t>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" rank order does not contain the local rank")
+            .str());
+  return static_cast<int64_t>(position - order.groupIndices.begin());
+}
+
+struct RingChunking {
+  int64_t axis = -1;
+  int64_t bytes = 0;
+  mlir::MemRefType type;
+};
+
+static std::optional<RingChunking> inferContiguousRingChunking(
+    mlir::MemRefType inputType, int64_t groupSize, int64_t fullBytes,
+    std::optional<int64_t> requiredAxis = std::nullopt) {
+  if (inputType.getRank() == 0 || !inputType.hasStaticShape())
+    return std::nullopt;
+
+  std::optional<WaferPhysicalTensorInfo> inputInfo =
+      wafer::computeWaferPhysicalTensorInfo(inputType);
+  if (!inputInfo || inputInfo->elementBytes <= 0 ||
+      inputInfo->bitPackedElement || inputInfo->compactBytes != fullBytes ||
+      inputInfo->physicalBytes != fullBytes)
+    return std::nullopt;
+
+  llvm::SmallVector<int64_t> strides;
+  int64_t offset = 0;
+  if (mlir::failed(mlir::getStridesAndOffset(inputType, strides, offset)) ||
+      static_cast<int64_t>(strides.size()) != inputType.getRank())
+    return std::nullopt;
+  (void)offset;
+
+  for (int64_t axis = 0; axis < inputType.getRank(); ++axis) {
+    if (requiredAxis && axis != *requiredAxis)
+      continue;
+    int64_t axisSize = inputType.getDimSize(axis);
+    if (axisSize <= 0 || axisSize % groupSize != 0)
+      continue;
+
+    llvm::SmallVector<int64_t> chunkShape(inputType.getShape());
+    chunkShape[axis] /= groupSize;
+
+    // A DTE message and the local reduction both consume one typed,
+    // physically-contiguous chunk.  Prove compact row-major strides for this
+    // particular view; size-one dimensions do not constrain their stride.
+    int64_t expectedStride = 1;
+    bool isContiguous = true;
+    for (int64_t dim = inputType.getRank() - 1; dim >= 0; --dim) {
+      int64_t size = chunkShape[dim];
+      int64_t stride = strides[dim];
+      if (size <= 0 || stride == mlir::ShapedType::kDynamic || stride < 0) {
+        isContiguous = false;
+        break;
+      }
+      if (size > 1 && stride != expectedStride) {
+        isContiguous = false;
+        break;
+      }
+      if (size > 0 &&
+          expectedStride > std::numeric_limits<int64_t>::max() / size) {
+        isContiguous = false;
+        break;
+      }
+      expectedStride *= size;
+    }
+    if (!isContiguous || expectedStride <= 0 ||
+        expectedStride >
+            std::numeric_limits<int64_t>::max() / inputInfo->elementBytes)
+      continue;
+
+    int64_t chunkBytes = expectedStride * inputInfo->elementBytes;
+    if (chunkBytes <= 0 || chunkBytes > fullBytes ||
+        chunkBytes > std::numeric_limits<int64_t>::max() / groupSize ||
+        chunkBytes * groupSize != fullBytes)
+      continue;
+
+    RingChunking chunking;
+    chunking.axis = axis;
+    chunking.bytes = chunkBytes;
+    chunking.type = mlir::MemRefType::get(
+        chunkShape, inputType.getElementType(),
+        mlir::MemRefLayoutAttrInterface{}, inputType.getMemorySpace());
+    return chunking;
+  }
+
+  return std::nullopt;
+}
+
+// StableHLO permits an implementation-defined reduction tree only when its
+// inorder traversal retains rank_group order.  A ring rotates/reassociates
+// those leaves.  That is exact for the currently supported integer
+// reductions, but not for floating add/min/max without an explicit numeric
+// permission carried by production IR.
+static bool hasExactRingReassociation(mlir::MemRefType type) {
+  return mlir::isa<mlir::IntegerType>(type.getElementType());
+}
 
 class AllGatherLowering : public mlir::OpRewritePattern<CommAllGatherOp> {
 public:
@@ -204,7 +319,6 @@ public:
         static_cast<int64_t>(rankGroup.size()) != groupSize)
       return failPattern(rewriter, op, failureReason,
                          "tile.all_gather lowering requires valid rank facts");
-
     mlir::FailureOr<int64_t> axis =
         inferAllGatherAxis(rewriter, op, localType, gatherType, failureReason);
     if (mlir::failed(axis))
@@ -243,6 +357,8 @@ public:
 
     int64_t bytes = op.getBytesAttr().getInt();
     if (schedule == AllGatherSchedule::Direct) {
+      // Direct exchange is defined over semantic group indices.  Every rank
+      // uses the same cyclic round, independently of topology search limits.
       for (int64_t distance = 1; distance < groupSize; ++distance) {
         int64_t sendPeerIndex = (localRank + distance) % groupSize;
         int64_t recvPeerIndex = (localRank + groupSize - distance) % groupSize;
@@ -252,10 +368,9 @@ public:
 
         mlir::Value recvBuffer = *recvSlot;
         if (!canReceiveDirectlyIntoSlot(recvBuffer, bytes))
-          recvBuffer = rewriter
-                           .create<mlir::memref::AllocOp>(op.getLoc(),
-                                                         commSlotType)
-                           .getResult();
+          recvBuffer =
+              rewriter.create<mlir::memref::AllocOp>(op.getLoc(), commSlotType)
+                  .getResult();
         auto sendMessage = DTEMessageAttr::get(
             rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
             DTEProtocolPhase::AllGatherDirect, distance, localRank);
@@ -269,8 +384,7 @@ public:
             rewriter.getI64IntegerAttr(bytes), sendMessage,
             DirectDTEBindingAttr());
         auto recv = rewriter.create<InstrDTERecvOp>(
-            op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
-            recvBuffer,
+            op.getLoc(), rewriter.getType<mlir::async::TokenType>(), recvBuffer,
             rewriter.getI64IntegerAttr(rankGroup[recvPeerIndex]),
             rewriter.getI64IntegerAttr(bytes), recvMessage,
             DirectDTEBindingAttr());
@@ -279,8 +393,8 @@ public:
         rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
         if (recvBuffer != *recvSlot &&
             mlir::failed(createLogicalSPMCopy(
-                rewriter, op.getLoc(), op, recvBuffer, *recvSlot,
-                failureReason, "tile.all_gather received slot copy")))
+                rewriter, op.getLoc(), op, recvBuffer, *recvSlot, failureReason,
+                "tile.all_gather received slot copy")))
           return mlir::failure();
       }
 
@@ -292,18 +406,36 @@ public:
       return mlir::success();
     }
 
-    int64_t nextPeer = rankGroup[(localRank + 1) % groupSize];
-    int64_t prevPeer = rankGroup[(localRank + groupSize - 1) % groupSize];
+    mlir::FailureOr<analysis::CollectiveRingOrder> ringOrder =
+        getCollectiveRingOrder(rewriter, op, rankGroup, failureReason,
+                               "tile.all_gather ring lowering");
+    if (mlir::failed(ringOrder))
+      return mlir::failure();
+    mlir::FailureOr<int64_t> ringPosition =
+        getRingPosition(rewriter, op, *ringOrder, localRank, failureReason,
+                        "tile.all_gather ring lowering");
+    if (mlir::failed(ringPosition))
+      return mlir::failure();
+    llvm::ArrayRef<int64_t> orderedGroupIndices = ringOrder->groupIndices;
+    int64_t nextPeerIndex =
+        orderedGroupIndices[(*ringPosition + 1) % groupSize];
+    int64_t prevPeerIndex =
+        orderedGroupIndices[(*ringPosition + groupSize - 1) % groupSize];
+    int64_t nextPeer = rankGroup[nextPeerIndex];
+    int64_t prevPeer = rankGroup[prevPeerIndex];
     mlir::Value sendSlot = localCommSlot.getResult();
     for (int64_t step = 0; step < groupSize - 1; ++step) {
-      int64_t recvSlotIndex = (localRank + groupSize - step - 1) % groupSize;
+      int64_t sendPayloadSlice =
+          orderedGroupIndices[(*ringPosition + groupSize - step) % groupSize];
+      int64_t recvSlotIndex =
+          orderedGroupIndices[(*ringPosition + groupSize - step - 1) %
+                              groupSize];
       mlir::FailureOr<mlir::Value> recvSlot = getSlot(recvSlotIndex);
       if (mlir::failed(recvSlot))
         return mlir::failure();
 
       auto recvCommSlot =
           rewriter.create<mlir::memref::AllocOp>(op.getLoc(), commSlotType);
-      int64_t sendPayloadSlice = (localRank + groupSize - step) % groupSize;
       auto sendMessage = DTEMessageAttr::get(
           rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
           DTEProtocolPhase::AllGatherRing, step, sendPayloadSlice);
@@ -387,7 +519,6 @@ public:
       return failPattern(rewriter, op, failureReason,
                          "tile.reduce_scatter lowering requires valid rank "
                          "facts");
-
     int64_t axis = op.getAxisAttr().getInt();
     if (axis < 0 || axis >= inputType.getRank() ||
         inputType.getRank() != resultType.getRank())
@@ -422,10 +553,119 @@ public:
     if (mlir::failed(accumulationKind))
       return mlir::failure();
 
-    mlir::FailureOr<mlir::Value> accumulator = createDestAlloc(
-        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
-    if (mlir::failed(accumulator))
-      return mlir::failure();
+    int64_t bytes = op.getBytesAttr().getInt();
+    if (schedule == ReduceScatterSchedule::Ring) {
+      if (!hasExactRingReassociation(inputType))
+        return failPattern(
+            rewriter, op, failureReason,
+            "tile.reduce_scatter ring reorders reduction leaves and requires "
+            "an integer element type with exact reassociation");
+      mlir::FailureOr<analysis::CollectiveRingOrder> ringOrder =
+          getCollectiveRingOrder(rewriter, op, rankGroup, failureReason,
+                                 "tile.reduce_scatter ring lowering");
+      if (mlir::failed(ringOrder))
+        return mlir::failure();
+      mlir::FailureOr<int64_t> ringPosition =
+          getRingPosition(rewriter, op, *ringOrder, localRank, failureReason,
+                          "tile.reduce_scatter ring lowering");
+      if (mlir::failed(ringPosition))
+        return mlir::failure();
+      llvm::ArrayRef<int64_t> orderedGroupIndices = ringOrder->groupIndices;
+
+      std::optional<int64_t> fullBytes = checkedMulI64(bytes, groupSize);
+      std::optional<RingChunking> chunking;
+      if (fullBytes)
+        chunking =
+            inferContiguousRingChunking(inputType, groupSize, *fullBytes, axis);
+      if (!chunking || chunking->axis != axis || chunking->bytes != bytes ||
+          chunking->type != resultType)
+        return failPattern(
+            rewriter, op, failureReason,
+            "tile.reduce_scatter ring requires a contiguous axis partition "
+            "matching the result slot");
+
+      mlir::FailureOr<mlir::Value> accumulator = createDestAlloc(
+          op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+      if (mlir::failed(accumulator))
+        return mlir::failure();
+
+      llvm::SmallVector<mlir::Value> inputSlots(groupSize);
+      auto getInputSlot = [&](int64_t slot) -> mlir::FailureOr<mlir::Value> {
+        if (inputSlots[slot])
+          return inputSlots[slot];
+        mlir::FailureOr<mlir::Value> view = createAxisSlotView(
+            rewriter, op.getLoc(), op, resultType, op.getInput(), axis, slot,
+            failureReason, "tile.reduce_scatter ring");
+        if (mlir::failed(view))
+          return mlir::failure();
+        inputSlots[slot] = *view;
+        return inputSlots[slot];
+      };
+
+      int64_t nextPeerIndex =
+          orderedGroupIndices[(*ringPosition + 1) % groupSize];
+      int64_t prevPeerIndex =
+          orderedGroupIndices[(*ringPosition + groupSize - 1) % groupSize];
+      int64_t nextPeer = rankGroup[nextPeerIndex];
+      int64_t prevPeer = rankGroup[prevPeerIndex];
+
+      // The first message reads a view of the original local contribution.
+      // Complete any preceding resident producer before DTE observes it.
+      rewriter.create<SyncLocalFenceOp>(op.getLoc());
+      mlir::Value sendBuffer;
+      for (int64_t step = 0; step < groupSize - 1; ++step) {
+        int64_t sendPayloadSlice =
+            orderedGroupIndices[(*ringPosition + groupSize - step - 1) %
+                                groupSize];
+        int64_t recvPayloadSlice =
+            orderedGroupIndices[(*ringPosition + groupSize - step - 2) %
+                                groupSize];
+        if (step == 0) {
+          mlir::FailureOr<mlir::Value> firstSendSlot =
+              getInputSlot(sendPayloadSlice);
+          if (mlir::failed(firstSendSlot))
+            return mlir::failure();
+          sendBuffer = *firstSendSlot;
+        } else {
+          sendBuffer = *accumulator;
+        }
+        mlir::FailureOr<mlir::Value> localInputSlot =
+            getInputSlot(recvPayloadSlice);
+        if (mlir::failed(localInputSlot))
+          return mlir::failure();
+
+        auto sendMessage = DTEMessageAttr::get(
+            rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+            DTEProtocolPhase::ReduceScatterRing, step, sendPayloadSlice);
+        auto recvMessage = DTEMessageAttr::get(
+            rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+            DTEProtocolPhase::ReduceScatterRing, step, recvPayloadSlice);
+        auto send = rewriter.create<InstrDTESendOp>(
+            op.getLoc(), rewriter.getType<mlir::async::TokenType>(), sendBuffer,
+            rewriter.getI64IntegerAttr(nextPeer),
+            rewriter.getI64IntegerAttr(bytes), sendMessage,
+            DirectDTEBindingAttr());
+        auto recv = rewriter.create<InstrDTERecvOp>(
+            op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+            op.getRecvBuffer(), rewriter.getI64IntegerAttr(prevPeer),
+            rewriter.getI64IntegerAttr(bytes), recvMessage,
+            DirectDTEBindingAttr());
+        llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
+                                                 recv.getToken()};
+        rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+
+        llvm::SmallVector<mlir::Value, 2> inputs{*localInputSlot,
+                                                 op.getRecvBuffer()};
+        rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
+                                            inputs, *accumulator);
+        // Completes the partial chunk before it is forwarded in the next
+        // round, and publishes the final local scatter slot after the last.
+        rewriter.create<SyncLocalFenceOp>(op.getLoc());
+      }
+
+      rewriter.replaceOp(op, *accumulator);
+      return mlir::success();
+    }
 
     llvm::SmallVector<mlir::Value> inputSlots(groupSize);
     auto getInputSlot = [&](int64_t slot) -> mlir::FailureOr<mlir::Value> {
@@ -440,55 +680,71 @@ public:
       return inputSlots[slot];
     };
 
-    mlir::FailureOr<mlir::Value> localSlot = getInputSlot(localRank);
-    if (mlir::failed(localSlot))
+    mlir::FailureOr<mlir::Value> accumulator = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    if (mlir::failed(accumulator))
       return mlir::failure();
-    if (mlir::failed(createContiguousSPMCopy(
-            rewriter, op.getLoc(), op, *localSlot, *accumulator, failureReason,
-            "tile.reduce_scatter accumulator init")))
-      return mlir::failure();
+
+    // Every destination consumes source-rank contributions in rank_group
+    // order.  Source s sends its destination-specific slice to all other
+    // ranks during round s; its own destination uses the local slice.  This
+    // implements StableHLO reduce_scatter as ordered all_reduce followed by
+    // split, while remaining independent of the bounded topology-ring search.
     rewriter.create<SyncLocalFenceOp>(op.getLoc());
+    for (int64_t sourceIndex = 0; sourceIndex < groupSize; ++sourceIndex) {
+      mlir::Value contribution;
+      if (sourceIndex == localRank) {
+        llvm::SmallVector<mlir::Value> sendTokens;
+        sendTokens.reserve(groupSize - 1);
+        for (int64_t targetIndex = 0; targetIndex < groupSize; ++targetIndex) {
+          mlir::FailureOr<mlir::Value> sourceSlot =
+              getInputSlot(targetIndex);
+          if (mlir::failed(sourceSlot))
+            return mlir::failure();
+          if (targetIndex == localRank) {
+            contribution = *sourceSlot;
+            continue;
+          }
+          auto message = DTEMessageAttr::get(
+              rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+              DTEProtocolPhase::ReduceScatterDirect, sourceIndex,
+              targetIndex);
+          auto send = rewriter.create<InstrDTESendOp>(
+              op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+              *sourceSlot,
+              rewriter.getI64IntegerAttr(rankGroup[targetIndex]),
+              rewriter.getI64IntegerAttr(bytes), message,
+              DirectDTEBindingAttr());
+          sendTokens.push_back(send.getToken());
+        }
+        rewriter.create<InstrDTEWaitOp>(op.getLoc(), sendTokens);
+      } else {
+        auto message = DTEMessageAttr::get(
+            rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+            DTEProtocolPhase::ReduceScatterDirect, sourceIndex, localRank);
+        auto recv = rewriter.create<InstrDTERecvOp>(
+            op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+            op.getRecvBuffer(),
+            rewriter.getI64IntegerAttr(rankGroup[sourceIndex]),
+            rewriter.getI64IntegerAttr(bytes), message,
+            DirectDTEBindingAttr());
+        llvm::SmallVector<mlir::Value, 1> recvTokens{recv.getToken()};
+        rewriter.create<InstrDTEWaitOp>(op.getLoc(), recvTokens);
+        contribution = op.getRecvBuffer();
+      }
 
-    switch (schedule) {
-    case ReduceScatterSchedule::Direct:
-      break;
-    }
-
-    int64_t bytes = op.getBytesAttr().getInt();
-    for (int64_t distance = 1; distance < groupSize; ++distance) {
-      int64_t sendSlotIndex = (localRank + distance) % groupSize;
-      int64_t recvRankIndex = (localRank + groupSize - distance) % groupSize;
-      mlir::FailureOr<mlir::Value> sendSlot = getInputSlot(sendSlotIndex);
-      if (mlir::failed(sendSlot))
-        return mlir::failure();
-
-      auto sendMessage = DTEMessageAttr::get(
-          rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
-          DTEProtocolPhase::ReduceScatterDirect, distance, sendSlotIndex);
-      auto recvMessage = DTEMessageAttr::get(
-          rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
-          DTEProtocolPhase::ReduceScatterDirect, distance, localRank);
-      auto send = rewriter.create<InstrDTESendOp>(
-          op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *sendSlot,
-          rewriter.getI64IntegerAttr(rankGroup[sendSlotIndex]),
-          rewriter.getI64IntegerAttr(bytes), sendMessage,
-          DirectDTEBindingAttr());
-      auto recv = rewriter.create<InstrDTERecvOp>(
-          op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
-          op.getRecvBuffer(),
-          rewriter.getI64IntegerAttr(rankGroup[recvRankIndex]),
-          rewriter.getI64IntegerAttr(bytes), recvMessage,
-          DirectDTEBindingAttr());
-      llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
-                                               recv.getToken()};
-      rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
-
-      llvm::SmallVector<mlir::Value, 2> inputs{*accumulator,
-                                               op.getRecvBuffer()};
-      rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
-                                          inputs, *accumulator);
-      // Reduction order is an execution dependency, not just block order.
-      // This also completes the final accumulator before a resident consumer.
+      if (sourceIndex == 0) {
+        if (mlir::failed(createContiguousSPMCopy(
+                rewriter, op.getLoc(), op, contribution, *accumulator,
+                failureReason, "tile.reduce_scatter accumulator init")))
+          return mlir::failure();
+      } else {
+        llvm::SmallVector<mlir::Value, 2> inputs{*accumulator, contribution};
+        rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
+                                            inputs, *accumulator);
+      }
+      // The accumulator and reused receive buffer are execution dependencies,
+      // not merely operations ordered in a block.
       rewriter.create<SyncLocalFenceOp>(op.getLoc());
     }
 
@@ -545,40 +801,101 @@ public:
     if (mlir::failed(accumulationKind))
       return mlir::failure();
 
-    mlir::FailureOr<mlir::Value> accumulator = createDestAlloc(
-        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
-    if (mlir::failed(accumulator))
-      return mlir::failure();
-
     int64_t bytes = op.getBytesAttr().getInt();
-    if (schedule == AllReduceSchedule::Tree) {
-      if (mlir::failed(createContiguousSPMCopy(
-              rewriter, op.getLoc(), op, op.getInput(), *accumulator,
-              failureReason, "tile.all_reduce accumulator init")))
+    std::optional<RingChunking> chunking =
+        inferContiguousRingChunking(inputType, groupSize, bytes);
+    bool ringReassociationIsExact = hasExactRingReassociation(inputType);
+    std::optional<analysis::CollectiveRingOrder> ringOrder;
+    if (schedule != AllReduceSchedule::Tree && ringReassociationIsExact &&
+        chunking) {
+      mlir::FailureOr<analysis::CollectiveRingOrder> candidateOrder =
+          analysis::buildMinimumHopCollectiveRingOrder(op, rankGroup);
+      if (mlir::succeeded(candidateOrder))
+        ringOrder = std::move(*candidateOrder);
+    }
+    bool useTree =
+        schedule == AllReduceSchedule::Tree ||
+        (schedule == AllReduceSchedule::Auto &&
+         (!ringReassociationIsExact || !chunking || !ringOrder));
+    if (useTree) {
+      mlir::FailureOr<analysis::CollectiveTree> tree =
+          analysis::buildMinimumHopCollectiveTree(op, rankGroup);
+      if (mlir::failed(tree))
+        return failPattern(
+            rewriter, op, failureReason,
+            "tile.all_reduce tree requires topology-derived rank edges");
+      mlir::FailureOr<mlir::Value> accumulator = createDestAlloc(
+          op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+      if (mlir::failed(accumulator))
         return mlir::failure();
       rewriter.create<SyncLocalFenceOp>(op.getLoc());
-      for (int64_t mask = 1; mask < groupSize; mask <<= 1) {
-        if ((localRank & mask) != 0) {
-          int64_t parentRank = localRank ^ mask;
-          auto message = DTEMessageAttr::get(
-              rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
-              DTEProtocolPhase::AllReduceTreeReduce, mask, localRank);
-          auto send = rewriter.create<InstrDTESendOp>(
-              op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
-              *accumulator, rewriter.getI64IntegerAttr(rankGroup[parentRank]),
-              rewriter.getI64IntegerAttr(bytes), message,
-              DirectDTEBindingAttr());
-          llvm::SmallVector<mlir::Value, 1> tokens{send.getToken()};
-          rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
-          break;
-        }
 
-        int64_t childRank = localRank | mask;
-        if (childRank >= groupSize)
-          continue;
+      llvm::ArrayRef<int64_t> children =
+          tree->childGroupIndices[static_cast<size_t>(localRank)];
+      if (children.size() > 2)
+        return failPattern(
+            rewriter, op, failureReason,
+            "tile.all_reduce ordered tree has more than two children");
+      std::optional<int64_t> leftChild;
+      std::optional<int64_t> rightChild;
+      for (int64_t childRank : children) {
+        if (childRank < localRank) {
+          if (leftChild)
+            return failPattern(
+                rewriter, op, failureReason,
+                "tile.all_reduce ordered tree has multiple left children");
+          leftChild = childRank;
+        } else if (childRank > localRank) {
+          if (rightChild)
+            return failPattern(
+                rewriter, op, failureReason,
+                "tile.all_reduce ordered tree has multiple right children");
+          rightChild = childRank;
+        } else {
+          return failPattern(
+              rewriter, op, failureReason,
+              "tile.all_reduce ordered tree contains a self child");
+        }
+      }
+
+      // StableHLO requires the reduction tree's inorder traversal to match
+      // rank_group.  Build this node as
+      //   left-subtree result, local operand, right-subtree result.
+      // The explicit fences are execution dependencies for the reused receive
+      // and accumulator buffers.
+      if (leftChild) {
+        int64_t childRank = *leftChild;
         auto message = DTEMessageAttr::get(
             rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
-            DTEProtocolPhase::AllReduceTreeReduce, mask, childRank);
+            DTEProtocolPhase::AllReduceTreeReduce,
+            tree->depths[static_cast<size_t>(childRank)], childRank);
+        auto recv = rewriter.create<InstrDTERecvOp>(
+            op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+            op.getRecvBuffer(),
+            rewriter.getI64IntegerAttr(rankGroup[childRank]),
+            rewriter.getI64IntegerAttr(bytes), message, DirectDTEBindingAttr());
+        llvm::SmallVector<mlir::Value, 1> tokens{recv.getToken()};
+        rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+
+        llvm::SmallVector<mlir::Value, 2> inputs{op.getRecvBuffer(),
+                                                 op.getInput()};
+        rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
+                                            inputs, *accumulator);
+        rewriter.create<SyncLocalFenceOp>(op.getLoc());
+      } else {
+        if (mlir::failed(createContiguousSPMCopy(
+                rewriter, op.getLoc(), op, op.getInput(), *accumulator,
+                failureReason, "tile.all_reduce accumulator init")))
+          return mlir::failure();
+        rewriter.create<SyncLocalFenceOp>(op.getLoc());
+      }
+
+      if (rightChild) {
+        int64_t childRank = *rightChild;
+        auto message = DTEMessageAttr::get(
+            rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+            DTEProtocolPhase::AllReduceTreeReduce,
+            tree->depths[static_cast<size_t>(childRank)], childRank);
         auto recv = rewriter.create<InstrDTERecvOp>(
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
             op.getRecvBuffer(),
@@ -593,35 +910,44 @@ public:
                                             inputs, *accumulator);
         rewriter.create<SyncLocalFenceOp>(op.getLoc());
       }
-
-      bool hasFinalResult = localRank == 0;
-      int64_t receiveMask = localRank == 0 ? 0 : getLowestSetBit(localRank);
-      for (int64_t mask = getHighestTreeMask(groupSize); mask >= 1;
-           mask >>= 1) {
-        if (!hasFinalResult && receiveMask == mask) {
-          int64_t parentRank = localRank ^ mask;
-          auto message = DTEMessageAttr::get(
-              rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
-              DTEProtocolPhase::AllReduceTreeBroadcast, mask, localRank);
-          auto recv = rewriter.create<InstrDTERecvOp>(
-              op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
-              *accumulator, rewriter.getI64IntegerAttr(rankGroup[parentRank]),
-              rewriter.getI64IntegerAttr(bytes), message,
-              DirectDTEBindingAttr());
-          llvm::SmallVector<mlir::Value, 1> tokens{recv.getToken()};
-          rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
-          hasFinalResult = true;
-          continue;
-        }
-
-        if (!hasFinalResult || (localRank & mask) != 0)
-          continue;
-        int64_t childRank = localRank | mask;
-        if (childRank >= groupSize || getLowestSetBit(childRank) != mask)
-          continue;
+      if (localRank != tree->rootGroupIndex) {
+        int64_t parentRank =
+            tree->parentGroupIndices[static_cast<size_t>(localRank)];
+        if (parentRank < 0)
+          return failPattern(
+              rewriter, op, failureReason,
+              "tile.all_reduce tree is missing a non-root parent");
         auto message = DTEMessageAttr::get(
             rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
-            DTEProtocolPhase::AllReduceTreeBroadcast, mask, childRank);
+            DTEProtocolPhase::AllReduceTreeReduce,
+            tree->depths[static_cast<size_t>(localRank)], localRank);
+        auto send = rewriter.create<InstrDTESendOp>(
+            op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+            *accumulator, rewriter.getI64IntegerAttr(rankGroup[parentRank]),
+            rewriter.getI64IntegerAttr(bytes), message, DirectDTEBindingAttr());
+        llvm::SmallVector<mlir::Value, 1> tokens{send.getToken()};
+        rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+      }
+
+      if (localRank != tree->rootGroupIndex) {
+        int64_t parentRank =
+            tree->parentGroupIndices[static_cast<size_t>(localRank)];
+        auto message = DTEMessageAttr::get(
+            rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+            DTEProtocolPhase::AllReduceTreeBroadcast,
+            tree->depths[static_cast<size_t>(localRank)], localRank);
+        auto recv = rewriter.create<InstrDTERecvOp>(
+            op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+            *accumulator, rewriter.getI64IntegerAttr(rankGroup[parentRank]),
+            rewriter.getI64IntegerAttr(bytes), message, DirectDTEBindingAttr());
+        llvm::SmallVector<mlir::Value, 1> tokens{recv.getToken()};
+        rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+      }
+      for (int64_t childRank : children) {
+        auto message = DTEMessageAttr::get(
+            rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+            DTEProtocolPhase::AllReduceTreeBroadcast,
+            tree->depths[static_cast<size_t>(childRank)], childRank);
         auto send = rewriter.create<InstrDTESendOp>(
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
             *accumulator, rewriter.getI64IntegerAttr(rankGroup[childRank]),
@@ -629,28 +955,86 @@ public:
         llvm::SmallVector<mlir::Value, 1> tokens{send.getToken()};
         rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
       }
-
       rewriter.replaceOp(op, *accumulator);
       return mlir::success();
     }
 
-    auto forwardBuffer =
-        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), inputType);
+    if (!ringReassociationIsExact)
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.all_reduce ring reorders reduction leaves and requires an "
+          "integer element type with exact reassociation");
+    if (!chunking)
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.all_reduce ring requires an evenly divisible contiguous "
+          "axis");
+    if (!ringOrder)
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.all_reduce ring requires a topology-derived bounded rank "
+          "order");
+    mlir::FailureOr<int64_t> ringPosition =
+        getRingPosition(rewriter, op, *ringOrder, localRank, failureReason,
+                        "tile.all_reduce ring");
+    if (mlir::failed(ringPosition))
+      return mlir::failure();
+    llvm::ArrayRef<int64_t> orderedGroupIndices = ringOrder->groupIndices;
+
+    mlir::FailureOr<mlir::Value> accumulator = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    if (mlir::failed(accumulator))
+      return mlir::failure();
     if (mlir::failed(createContiguousSPMCopy(
             rewriter, op.getLoc(), op, op.getInput(), *accumulator,
             failureReason, "tile.all_reduce accumulator init")))
       return mlir::failure();
-    if (mlir::failed(createContiguousSPMCopy(
-            rewriter, op.getLoc(), op, op.getInput(), forwardBuffer.getResult(),
-            failureReason, "tile.all_reduce forward init")))
-      return mlir::failure();
     rewriter.create<SyncLocalFenceOp>(op.getLoc());
 
-    int64_t nextPeer = rankGroup[(localRank + 1) % groupSize];
-    int64_t prevPeer = rankGroup[(localRank + groupSize - 1) % groupSize];
+    llvm::SmallVector<mlir::Value> accumulatorChunks(groupSize);
+    llvm::SmallVector<mlir::Value> recvChunks(groupSize);
+    auto getChunk = [&](mlir::Value fullBuffer,
+                        llvm::SmallVectorImpl<mlir::Value> &chunks,
+                        int64_t chunk) -> mlir::FailureOr<mlir::Value> {
+      if (chunks[chunk])
+        return chunks[chunk];
+      mlir::FailureOr<mlir::Value> view = createAxisSlotView(
+          rewriter, op.getLoc(), op, chunking->type, fullBuffer, chunking->axis,
+          chunk, failureReason, "tile.all_reduce ring");
+      if (mlir::failed(view))
+        return mlir::failure();
+      chunks[chunk] = *view;
+      return chunks[chunk];
+    };
+
+    int64_t nextPeerIndex =
+        orderedGroupIndices[(*ringPosition + 1) % groupSize];
+    int64_t prevPeerIndex =
+        orderedGroupIndices[(*ringPosition + groupSize - 1) % groupSize];
+    int64_t nextPeer = rankGroup[nextPeerIndex];
+    int64_t prevPeer = rankGroup[prevPeerIndex];
+
+    // Reduce-scatter.  The accumulator starts with this rank's full input.
+    // Each round forwards one partial chunk and reduces the predecessor's
+    // contribution into the next chunk.  The wait completes DTE before local
+    // compute, and the local fence completes that compute before the chunk can
+    // be forwarded in the following round.
     for (int64_t step = 0; step < groupSize - 1; ++step) {
-      int64_t sendPayloadSlice = (localRank + groupSize - step) % groupSize;
-      int64_t recvPayloadSlice = (localRank + groupSize - step - 1) % groupSize;
+      int64_t sendPayloadSlice =
+          orderedGroupIndices[(*ringPosition + groupSize - step) % groupSize];
+      int64_t recvPayloadSlice =
+          orderedGroupIndices[(*ringPosition + groupSize - step - 1) %
+                              groupSize];
+      mlir::FailureOr<mlir::Value> sendChunk =
+          getChunk(*accumulator, accumulatorChunks, sendPayloadSlice);
+      mlir::FailureOr<mlir::Value> recvChunk =
+          getChunk(op.getRecvBuffer(), recvChunks, recvPayloadSlice);
+      mlir::FailureOr<mlir::Value> accumulatorChunk =
+          getChunk(*accumulator, accumulatorChunks, recvPayloadSlice);
+      if (mlir::failed(sendChunk) || mlir::failed(recvChunk) ||
+          mlir::failed(accumulatorChunk))
+        return mlir::failure();
+
       auto sendMessage = DTEMessageAttr::get(
           rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
           DTEProtocolPhase::AllReduceRing, step, sendPayloadSlice);
@@ -658,40 +1042,81 @@ public:
           rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
           DTEProtocolPhase::AllReduceRing, step, recvPayloadSlice);
       auto send = rewriter.create<InstrDTESendOp>(
-          op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
-          forwardBuffer.getResult(), rewriter.getI64IntegerAttr(nextPeer),
-          rewriter.getI64IntegerAttr(bytes), sendMessage,
+          op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *sendChunk,
+          rewriter.getI64IntegerAttr(nextPeer),
+          rewriter.getI64IntegerAttr(chunking->bytes), sendMessage,
           DirectDTEBindingAttr());
       auto recv = rewriter.create<InstrDTERecvOp>(
-          op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
-          op.getRecvBuffer(), rewriter.getI64IntegerAttr(prevPeer),
-          rewriter.getI64IntegerAttr(bytes), recvMessage,
+          op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *recvChunk,
+          rewriter.getI64IntegerAttr(prevPeer),
+          rewriter.getI64IntegerAttr(chunking->bytes), recvMessage,
           DirectDTEBindingAttr());
       llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
                                                recv.getToken()};
       rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
 
-      llvm::SmallVector<mlir::Value, 2> inputs{*accumulator,
-                                               op.getRecvBuffer()};
+      llvm::SmallVector<mlir::Value, 2> inputs{*accumulatorChunk, *recvChunk};
       rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
-                                          inputs, *accumulator);
+                                          inputs, *accumulatorChunk);
+      rewriter.create<SyncLocalFenceOp>(op.getLoc());
+    }
 
-      if (step + 1 == groupSize - 1)
-        continue;
+    // All-gather.  Reduce-scatter leaves rank r owning reduced chunk r + 1
+    // (mod P) for the chosen ring orientation.  Each round forwards the most
+    // recently acquired complete chunk and receives the next one directly
+    // into its final accumulator slot.  Continue round numbering across both
+    // phases so DTE message identity remains globally unique.
+    for (int64_t step = 0; step < groupSize - 1; ++step) {
+      int64_t sendPayloadSlice =
+          orderedGroupIndices[(*ringPosition + 1 + groupSize - step) %
+                              groupSize];
+      int64_t recvPayloadSlice =
+          orderedGroupIndices[(*ringPosition + groupSize - step) % groupSize];
+      mlir::FailureOr<mlir::Value> sendChunk =
+          getChunk(*accumulator, accumulatorChunks, sendPayloadSlice);
+      mlir::FailureOr<mlir::Value> recvChunk =
+          getChunk(op.getRecvBuffer(), recvChunks, recvPayloadSlice);
+      mlir::FailureOr<mlir::Value> accumulatorChunk =
+          getChunk(*accumulator, accumulatorChunks, recvPayloadSlice);
+      if (mlir::failed(sendChunk) || mlir::failed(recvChunk) ||
+          mlir::failed(accumulatorChunk))
+        return mlir::failure();
+
+      int64_t round = groupSize - 1 + step;
+      auto sendMessage = DTEMessageAttr::get(
+          rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+          DTEProtocolPhase::AllReduceRing, round, sendPayloadSlice);
+      auto recvMessage = DTEMessageAttr::get(
+          rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+          DTEProtocolPhase::AllReduceRing, round, recvPayloadSlice);
+      auto send = rewriter.create<InstrDTESendOp>(
+          op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *sendChunk,
+          rewriter.getI64IntegerAttr(nextPeer),
+          rewriter.getI64IntegerAttr(chunking->bytes), sendMessage,
+          DirectDTEBindingAttr());
+      auto recv = rewriter.create<InstrDTERecvOp>(
+          op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *recvChunk,
+          rewriter.getI64IntegerAttr(prevPeer),
+          rewriter.getI64IntegerAttr(chunking->bytes), recvMessage,
+          DirectDTEBindingAttr());
+      llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
+                                               recv.getToken()};
+      rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+
+      // Direct DTE requires both issue roots to remain isolated until the
+      // joint wait.  Receive into the dedicated communication buffer, then
+      // publish the completed chunk into its final accumulator slot.  The
+      // fence also makes that slot available for forwarding next round.
       if (mlir::failed(createContiguousSPMCopy(
-              rewriter, op.getLoc(), op, op.getRecvBuffer(),
-              forwardBuffer.getResult(), failureReason,
-              "tile.all_reduce forward copy")))
+              rewriter, op.getLoc(), op, *recvChunk, *accumulatorChunk,
+              failureReason, "tile.all_reduce ring all-gather receive copy")))
         return mlir::failure();
       rewriter.create<SyncLocalFenceOp>(op.getLoc());
     }
 
-    // The final reduction writes the value returned by the collective.  A
-    // following resident consumer (for example the tensor-parallel residual
-    // add) may read that same accumulator immediately, so the last local
-    // elementwise issue needs an explicit completion boundary just like the
-    // intermediate rounds.  DTE wait only completes the send/recv tokens; it
-    // does not complete the local reduction engine.
+    // Every receive has completed, and every local reduction was fenced
+    // before reuse.  Publish the complete accumulator to a following resident
+    // consumer.
     rewriter.create<SyncLocalFenceOp>(op.getLoc());
 
     rewriter.replaceOp(op, *accumulator);

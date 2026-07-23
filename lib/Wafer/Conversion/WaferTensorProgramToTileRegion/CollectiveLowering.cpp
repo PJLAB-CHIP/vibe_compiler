@@ -122,28 +122,37 @@ TileRegionBodyEmitter::convertAllGather(LinalgExtCollectiveAllGatherOp op,
     return mlir::failure();
   if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
     return fail("all_gather materialization supports one input and one out");
-  mlir::FailureOr<int64_t> communicationId =
-      getCommunicationId(op.getChannelIdAttr(), "all_gather");
-  if (mlir::failed(communicationId))
+  mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
+      getCollectiveRankGroup(op.getRankGroupAttr(), op.getRankGroupsAttr());
+  if (mlir::failed(rankGroup))
     return mlir::failure();
-
-  auto resultTensorType =
-      mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
-  if (!resultTensorType)
-    return fail("all_gather result is not a ranked tensor");
 
   mlir::FailureOr<mlir::Value> localChunk =
       getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
   if (mlir::failed(localChunk))
     return mlir::failure();
 
+  // A singleton collective is the identity. Keep the already resident local
+  // value instead of materializing a communication request or requiring a
+  // channel that can never be used.
+  if (rankGroup->ranks.size() == 1) {
+    record(op.getResult(0), MemLayout::Tensor, *localChunk);
+    return mlir::success();
+  }
+
+  mlir::FailureOr<int64_t> communicationId =
+      getCommunicationId(op.getChannelIdAttr(), "all_gather");
+  if (mlir::failed(communicationId))
+    return mlir::failure();
+  auto resultTensorType =
+      mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
+  if (!resultTensorType)
+    return fail("all_gather result is not a ranked tensor");
   auto gatherBuffer = builder.create<mlir::memref::AllocOp>(
       op.getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Tensor));
   mlir::FailureOr<int64_t> bytes =
       getCompactByteSize(*localChunk, "all_gather local chunk");
-  mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
-      getCollectiveRankGroup(op.getRankGroupAttr(), op.getRankGroupsAttr());
-  if (mlir::failed(bytes) || mlir::failed(rankGroup))
+  if (mlir::failed(bytes))
     return mlir::failure();
 
   mlir::MLIRContext *context = builder.getContext();
@@ -165,6 +174,20 @@ mlir::LogicalResult TileRegionBodyEmitter::convertReduceScatter(
   if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
     return fail(
         "reduce_scatter materialization supports one input and one out");
+  mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
+      getCollectiveRankGroup(op.getRankGroupAttr(), op.getRankGroupsAttr());
+  if (mlir::failed(rankGroup))
+    return mlir::failure();
+  mlir::FailureOr<mlir::Value> input =
+      getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
+  if (mlir::failed(input))
+    return mlir::failure();
+
+  if (rankGroup->ranks.size() == 1) {
+    record(op.getResult(0), MemLayout::Tensor, *input);
+    return mlir::success();
+  }
+
   mlir::FailureOr<int64_t> communicationId =
       getCommunicationId(op.getChannelIdAttr(), "reduce_scatter");
   if (mlir::failed(communicationId))
@@ -172,13 +195,6 @@ mlir::LogicalResult TileRegionBodyEmitter::convertReduceScatter(
   std::optional<ComputeReduceKind> kind =
       inferCollectiveReduceKind(op.getCombiner());
   if (!kind)
-    return mlir::failure();
-
-  mlir::FailureOr<mlir::Value> input =
-      getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
-  mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
-      getCollectiveRankGroup(op.getRankGroupAttr(), op.getRankGroupsAttr());
-  if (mlir::failed(input) || mlir::failed(rankGroup))
     return mlir::failure();
   auto resultTensorType =
       mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
@@ -211,6 +227,20 @@ TileRegionBodyEmitter::convertAllReduce(LinalgExtCollectiveAllReduceOp op,
     return mlir::failure();
   if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
     return fail("all_reduce materialization supports one input and one out");
+  mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
+      getCollectiveRankGroup(op.getRankGroupAttr(), op.getRankGroupsAttr());
+  if (mlir::failed(rankGroup))
+    return mlir::failure();
+  mlir::FailureOr<mlir::Value> input =
+      getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
+  if (mlir::failed(input))
+    return mlir::failure();
+
+  if (rankGroup->ranks.size() == 1) {
+    record(op.getResult(0), MemLayout::Tensor, *input);
+    return mlir::success();
+  }
+
   mlir::FailureOr<int64_t> communicationId =
       getCommunicationId(op.getChannelIdAttr(), "all_reduce");
   if (mlir::failed(communicationId))
@@ -219,14 +249,6 @@ TileRegionBodyEmitter::convertAllReduce(LinalgExtCollectiveAllReduceOp op,
       inferCollectiveReduceKind(op.getCombiner());
   if (!kind)
     return mlir::failure();
-
-  mlir::FailureOr<mlir::Value> input =
-      getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
-  mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
-      getCollectiveRankGroup(op.getRankGroupAttr(), op.getRankGroupsAttr());
-  if (mlir::failed(input) || mlir::failed(rankGroup))
-    return mlir::failure();
-
   auto inputType = mlir::cast<mlir::MemRefType>((*input).getType());
   auto recvBuffer =
       builder.create<mlir::memref::AllocOp>(op.getLoc(), inputType);
@@ -254,11 +276,6 @@ TileRegionBodyEmitter::convertAllToAll(LinalgExtCollectiveAllToAllOp op,
     return mlir::failure();
   if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
     return fail("all_to_all materialization supports one input and one out");
-  mlir::FailureOr<int64_t> communicationId =
-      getCommunicationId(op.getChannelIdAttr(), "all_to_all");
-  if (mlir::failed(communicationId))
-    return mlir::failure();
-
   mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
       getCollectiveRankGroup(op.getRankGroupAttr(), op.getRankGroupsAttr());
   mlir::FailureOr<mlir::Value> input =
@@ -326,12 +343,6 @@ TileRegionBodyEmitter::convertAllToAll(LinalgExtCollectiveAllToAllOp op,
     return mlir::DenseI64ArrayAttr::get(builder.getContext(), values);
   };
 
-  std::optional<WaferPhysicalTensorInfo> slotPhysicalInfo =
-      computeWaferPhysicalTensorInfo(slotType);
-  if (!slotPhysicalInfo || slotPhysicalInfo->compactBytes <= 0)
-    return fail("all_to_all slot compact byte size is not representable");
-  int64_t bytes = slotPhysicalInfo->compactBytes;
-
   struct PendingSend {
     mlir::Value buffer;
     int64_t targetIndex = -1;
@@ -377,9 +388,28 @@ TileRegionBodyEmitter::convertAllToAll(LinalgExtCollectiveAllToAllOp op,
         {recvBuffer.getResult(), sourceIndex, rankGroup->ranks[sourceIndex]});
   }
 
+  std::optional<int64_t> communicationId;
+  std::optional<int64_t> bytes;
+  if (!sends.empty() || !recvs.empty()) {
+    mlir::FailureOr<int64_t> selectedCommunicationId =
+        getCommunicationId(op.getChannelIdAttr(), "all_to_all");
+    if (mlir::failed(selectedCommunicationId))
+      return mlir::failure();
+    communicationId = *selectedCommunicationId;
+
+    std::optional<WaferPhysicalTensorInfo> slotPhysicalInfo =
+        computeWaferPhysicalTensorInfo(slotType);
+    if (!slotPhysicalInfo || slotPhysicalInfo->compactBytes <= 0)
+      return fail("all_to_all slot compact byte size is not representable");
+    bytes = slotPhysicalInfo->compactBytes;
+  }
+
   mlir::Type tokenType = builder.getType<mlir::async::TokenType>();
   if (!sends.empty() || !recvs.empty())
     builder.create<SyncLocalFenceOp>(op.getLoc());
+  // Direct all-to-all uses one globally consistent cyclic permutation of
+  // semantic group indices.  It is not a ring-forwarding algorithm and must
+  // not inherit the bounded exact topology-ring search.
   for (int64_t distance = 1; distance < groupSize; ++distance) {
     int64_t targetIndex = (localRank + distance) % groupSize;
     int64_t sourceIndex = (localRank + groupSize - distance) % groupSize;
@@ -397,14 +427,14 @@ TileRegionBodyEmitter::convertAllToAll(LinalgExtCollectiveAllToAllOp op,
     auto dteSend = builder.create<InstrDTESendOp>(
         op.getLoc(), tokenType, sendIt->buffer,
         builder.getI64IntegerAttr(sendIt->peer),
-        builder.getI64IntegerAttr(bytes), message, DirectDTEBindingAttr());
+        builder.getI64IntegerAttr(*bytes), message, DirectDTEBindingAttr());
     auto recvMessage =
         DTEMessageAttr::get(builder.getContext(), *communicationId,
                             DTEProtocolPhase::AllToAll, distance, localRank);
     auto dteRecv = builder.create<InstrDTERecvOp>(
         op.getLoc(), tokenType, recvIt->buffer,
         builder.getI64IntegerAttr(recvIt->peer),
-        builder.getI64IntegerAttr(bytes), recvMessage, DirectDTEBindingAttr());
+        builder.getI64IntegerAttr(*bytes), recvMessage, DirectDTEBindingAttr());
     llvm::SmallVector<mlir::Value, 2> roundTokens{dteSend.getToken(),
                                                   dteRecv.getToken()};
     builder.create<InstrDTEWaitOp>(op.getLoc(), roundTokens);
@@ -420,6 +450,11 @@ TileRegionBodyEmitter::convertAllToAll(LinalgExtCollectiveAllToAllOp op,
     resultBuffer = insert.getResult();
   }
 
+  // The receive waits only complete the DTE writes into the slot buffers.
+  // Inserting those slots (and the local slot for a singleton group) is a
+  // separate local movement issue.  Complete it before exposing the assembled
+  // result to the following tile operation.
+  builder.create<SyncLocalFenceOp>(op.getLoc());
   record(op.getResult(0), MemLayout::Tensor, resultBuffer);
   return mlir::success();
 }
@@ -431,10 +466,6 @@ mlir::LogicalResult TileRegionBodyEmitter::convertCollectivePermute(
   if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
     return fail(
         "collective_permute materialization supports one input and one out");
-  mlir::FailureOr<int64_t> communicationId =
-      getCommunicationId(op.getChannelIdAttr(), "collective_permute");
-  if (mlir::failed(communicationId))
-    return mlir::failure();
   llvm::ArrayRef<int64_t> sourceTargetPairs =
       op.getSourceTargetPairsAttr().asArrayRef();
   if (sourceTargetPairs.empty() || sourceTargetPairs.size() % 2)
@@ -474,28 +505,51 @@ mlir::LogicalResult TileRegionBodyEmitter::convertCollectivePermute(
     }
   }
 
-  mlir::FailureOr<int64_t> bytes =
-      getCompactByteSize(*input, "collective_permute input");
-  if (mlir::failed(bytes))
-    return mlir::failure();
-
   mlir::Value resultBuffer;
+  bool hasLocalResultIssue = false;
   if (localCopy) {
     resultBuffer =
         builder.create<MoveCopyOp>(op.getLoc(), resultType, *input).getResult();
+    hasLocalResultIssue = true;
   } else {
     auto alloc = builder.create<mlir::memref::AllocOp>(op.getLoc(), resultType);
-    mlir::Value zero = createZeroScalar(
-        op.getLoc(), resultTensorType.getElementType(), builder);
-    if (!zero)
-      return fail("collective_permute zero-fill requires numeric element type");
-    builder.create<ComputeFillOp>(op.getLoc(), alloc.getResult(), zero,
-                                  /*fill_domain=*/FillDomainAttr{});
     resultBuffer = alloc.getResult();
+    // Collective-permute defines zero only for ranks without an incoming
+    // source.  A receive owns the whole result buffer, so initializing that
+    // same storage would introduce a local-fill/DTE-write race.
+    if (!recvPeer) {
+      mlir::Value zero = createZeroScalar(
+          op.getLoc(), resultTensorType.getElementType(), builder);
+      if (!zero)
+        return fail(
+            "collective_permute zero-fill requires numeric element type");
+      builder.create<ComputeFillOp>(op.getLoc(), resultBuffer, zero,
+                                    /*fill_domain=*/FillDomainAttr{});
+      hasLocalResultIssue = true;
+    }
+  }
+
+  std::optional<int64_t> communicationId;
+  std::optional<int64_t> bytes;
+  if (sendPeer || recvPeer) {
+    mlir::FailureOr<int64_t> selectedCommunicationId =
+        getCommunicationId(op.getChannelIdAttr(), "collective_permute");
+    mlir::FailureOr<int64_t> selectedBytes =
+        getCompactByteSize(*input, "collective_permute input");
+    if (mlir::failed(selectedCommunicationId) || mlir::failed(selectedBytes))
+      return mlir::failure();
+    communicationId = *selectedCommunicationId;
+    bytes = *selectedBytes;
   }
 
   llvm::SmallVector<mlir::Value, 2> tokens;
   mlir::Type tokenType = builder.getType<mlir::async::TokenType>();
+  // A send may consume a buffer produced by a local compute or movement.
+  // The same fence also completes a local copy/zero-fill result before it is
+  // exposed to a consumer.  Receive-only results use their DTE wait below as
+  // the completion boundary.
+  if (sendPeer || hasLocalResultIssue)
+    builder.create<SyncLocalFenceOp>(op.getLoc());
   if (sendPeer) {
     auto message = DTEMessageAttr::get(builder.getContext(), *communicationId,
                                        DTEProtocolPhase::CollectivePermute,

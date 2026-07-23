@@ -1028,8 +1028,8 @@ fixed Cx/NCx encoding absorption不属于Q32.V：它复用当前v1 encoding、co
 actual clone mutation与完整接受、共同frontier winner以及默认`wafer-compile`提交。局部`wafer-opt`改写、隐藏flag、额外
 planner packing参数或只通过但从未胜出的candidate都不能替代该证据。
 
-floating reassociation/tree、generic online reduction、non-GEMM FMA contraction和超出current integer-domain exact/modular子集的algebraic
-distribution/factorization属于Q32.N Later。
+floating rank-local reassociation/tree、generic online reduction、non-GEMM FMA contraction和超出current integer-domain
+exact/modular子集的algebraic distribution/factorization属于当前Q32.N。
 online reduction必须先有source predicate以及显式SSA state/update/finalize与evaluation-order合同；non-GEMM FMA必须先有
 program-selectable fused semantic和Tile→Instr→TargetCall/ABI→SystemC typed纵向。当前固定GEMM FMA numeric profile只解释
 已经发射的GEMM，不能授权source `mul`+`add` contraction，也不能作为production采用证据。上述纵向闭合后，它们仍须经过
@@ -1056,6 +1056,12 @@ board provider必须在任何effect前把本次将执行的current command rows�
 allowlist；model row或profile名不能替代该gate。若correlate Q32.V扩展且其consumer采用capability-bearing package，才额外要求同一revision的
 `RequiredCapabilitySet` all-and-only readback并逐key匹配。缺少Q32.V package set只阻止扩展row升级，不阻止当前v1
 Q22.C设计继续作为later gate。
+
+Q35 full-4096 f16 K-sharded GEMM可以在Q22.C前独立形成一条workload-level board evidence：它消费显式
+row/contracting SPMD产生的local GEMM+all-reduce、Q32 current production winner和Q6.B cluster Direct DTE lifecycle，
+比较16份完整replicated output。该case没有预冻结的capability-row区分向量、calibration/held-out分区和profile graduation，
+因此即使raw exact也不能把GEMM/reduction row从`model-only`升级、不能完成Q22.C，也不能反馈planner legality/cost。
+在exact-package provider未闭合时，这条证据只记录source/board workload result，不标`same-package model correlation`。
 
 板端corpus按capability row生成，而不是按一个op名字笼统通过。首批顺序是：
 

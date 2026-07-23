@@ -5,8 +5,12 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -23,6 +27,21 @@
 namespace wafer::compiler::detail {
 namespace {
 
+struct StructuredLoopSite {
+  int64_t lower = 0;
+  int64_t upper = 0;
+  int64_t step = 0;
+  int64_t siblingOrdinal = -1;
+
+  auto asTuple() const { return std::tie(lower, upper, step, siblingOrdinal); }
+  bool operator<(const StructuredLoopSite &other) const {
+    return asTuple() < other.asTuple();
+  }
+};
+
+using MessageBaseKey =
+    std::tuple<int64_t, int64_t, int64_t, DTEProtocolPhase, int64_t, int64_t>;
+
 struct MessageKey {
   int64_t sourceRank = -1;
   int64_t destinationRank = -1;
@@ -30,13 +49,24 @@ struct MessageKey {
   DTEProtocolPhase phase = DTEProtocolPhase::CollectivePermute;
   int64_t round = -1;
   int64_t payloadSlice = -1;
+  // This is the structured execution order of static sites that sequentially
+  // reuse one typed message identity.  It is acceptance-only proof state, not
+  // a synthesized DTE message field or physical binding.
+  int64_t sequentialReuseIndex = -1;
+  llvm::SmallVector<StructuredLoopSite, 4> structuredLoopSite;
 
-  auto asTuple() const {
+  auto baseTuple() const {
     return std::tie(sourceRank, destinationRank, communicationId, phase, round,
                     payloadSlice);
   }
   bool operator<(const MessageKey &other) const {
-    return asTuple() < other.asTuple();
+    if (baseTuple() != other.baseTuple())
+      return baseTuple() < other.baseTuple();
+    if (sequentialReuseIndex != other.sequentialReuseIndex)
+      return sequentialReuseIndex < other.sequentialReuseIndex;
+    return std::lexicographical_compare(
+        structuredLoopSite.begin(), structuredLoopSite.end(),
+        other.structuredLoopSite.begin(), other.structuredLoopSite.end());
   }
 };
 
@@ -212,11 +242,119 @@ static mlir::FailureOr<mlir::Operation *> findUniqueSameBlockWait(
   return wait;
 }
 
-static MessageKey makeMessageKey(int64_t rank, int64_t peer,
-                                 DTEMessageAttr message, bool isSend) {
-  return MessageKey{isSend ? rank : peer,         isSend ? peer : rank,
-                    message.getCommunicationId(), message.getPhase(),
-                    message.getRound(),           message.getPayloadSlice()};
+static mlir::LogicalResult verifyIssueBufferIsolation(mlir::Operation *issue,
+                                                      mlir::Operation *wait,
+                                                      mlir::Value buffer) {
+  mlir::Value root = getRootViewSource(buffer);
+  for (mlir::Operation *operation = issue->getNextNode(); operation != wait;
+       operation = operation->getNextNode()) {
+    if (!operation)
+      llvm_unreachable("same-block ordered wait must be reachable from issue");
+
+    bool hasRootOperand =
+        llvm::any_of(operation->getOperands(), [&](mlir::Value operand) {
+          return getRootViewSource(operand) == root;
+        });
+    if (operation->getNumRegions() != 0 && !mlir::isMemoryEffectFree(operation))
+      return operation->emitError(
+          "direct_dte_acceptance: effectful nested control is unsupported "
+          "between a DTE issue and its matching wait");
+
+    auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
+    if (!effects) {
+      if (!mlir::isMemoryEffectFree(operation))
+        return operation->emitError(
+            "direct_dte_acceptance: issue buffer has an unknown access before "
+            "its matching wait");
+      continue;
+    }
+
+    llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> instances;
+    effects.getEffects(instances);
+    bool conflicts = llvm::any_of(instances, [&](const auto &effect) {
+      mlir::Value value = effect.getValue();
+      if (value)
+        return getRootViewSource(value) == root;
+      return hasRootOperand;
+    });
+    if (conflicts)
+      return operation->emitError(
+          "direct_dte_acceptance: issue buffer must remain isolated until its "
+          "matching wait");
+  }
+  return mlir::success();
+}
+
+static int64_t getStructuredLoopSiblingOrdinal(mlir::scf::ForOp loop) {
+  // This is a path in the structured-control tree, not an ordinal assigned to
+  // DTE issues.  It distinguishes sibling main/edge loop families while
+  // leaving the typed DTE message identity unchanged.
+  int64_t ordinal = 0;
+  for (mlir::Operation &sibling : *loop->getBlock()) {
+    if (&sibling == loop.getOperation())
+      return ordinal;
+    if (mlir::isa<mlir::scf::ForOp>(sibling))
+      ++ordinal;
+  }
+  llvm_unreachable("scf.for must be present in its parent block");
+}
+
+static mlir::FailureOr<llvm::SmallVector<StructuredLoopSite, 4>>
+getStructuredLoopSite(mlir::Operation *issue) {
+  llvm::SmallVector<StructuredLoopSite, 4> reversedLoops;
+  mlir::Operation *nested = issue;
+  while (mlir::Operation *parent = nested->getParentOp()) {
+    mlir::Region *parentRegion = nested->getParentRegion();
+    if (parentRegion && !parentRegion->hasOneBlock())
+      return issue->emitError(
+          "direct_dte_acceptance: DTE issue requires single-block structured "
+          "control flow");
+
+    if (mlir::isa<mlir::scf::IfOp>(parent))
+      return issue->emitError(
+          "direct_dte_acceptance: DTE issue under scf.if has no statically "
+          "matched control instance");
+
+    if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
+      std::optional<int64_t> lower = mlir::getConstantIntValue(
+          mlir::getAsOpFoldResult(loop.getLowerBound()));
+      std::optional<int64_t> upper = mlir::getConstantIntValue(
+          mlir::getAsOpFoldResult(loop.getUpperBound()));
+      std::optional<int64_t> step =
+          mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getStep()));
+      if (!lower || !upper || !step || *step <= 0)
+        return issue->emitError(
+            "direct_dte_acceptance: enclosing scf.for requires constant "
+            "bounds and a positive constant step");
+      reversedLoops.push_back(StructuredLoopSite{
+          *lower, *upper, *step, getStructuredLoopSiblingOrdinal(loop)});
+    } else if (!mlir::isa<mlir::func::FuncOp, mlir::ModuleOp, TileRegionOp>(
+                   parent) &&
+               parent->getNumRegions() != 0) {
+      return issue->emitError()
+             << "direct_dte_acceptance: unsupported control ancestor "
+             << parent->getName() << " for DTE issue";
+    }
+    nested = parent;
+  }
+  std::reverse(reversedLoops.begin(), reversedLoops.end());
+  return reversedLoops;
+}
+
+static MessageBaseKey makeMessageBaseKey(int64_t rank, int64_t peer,
+                                         DTEMessageAttr message, bool isSend) {
+  return std::make_tuple(isSend ? rank : peer, isSend ? peer : rank,
+                         message.getCommunicationId(), message.getPhase(),
+                         message.getRound(), message.getPayloadSlice());
+}
+
+static MessageKey makeMessageKey(const MessageBaseKey &base,
+                                 int64_t sequentialReuseIndex,
+                                 llvm::ArrayRef<StructuredLoopSite> loopSite) {
+  return MessageKey{std::get<0>(base),    std::get<1>(base),
+                    std::get<2>(base),    std::get<3>(base),
+                    std::get<4>(base),    std::get<5>(base),
+                    sequentialReuseIndex, {loopSite.begin(), loopSite.end()}};
 }
 
 static mlir::LogicalResult
@@ -224,6 +362,7 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> rankModules,
               llvm::SmallVectorImpl<IssueRecord> &issues) {
   for (size_t rankIndex = 0; rankIndex < rankModules.size(); ++rankIndex) {
     mlir::ModuleOp module = rankModules[rankIndex];
+    std::map<MessageBaseKey, int64_t> sequentialReuseCounts;
     llvm::DenseMap<mlir::Operation *, unsigned> operationIndices;
     module.walk([&](mlir::Block *block) {
       for (auto [index, operation] : llvm::enumerate(*block))
@@ -270,19 +409,28 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> rankModules,
           send ? send.getBytesAttr().getInt() : recv.getBytesAttr().getInt();
       DTEMessageAttr message =
           send ? send.getMessageAttr() : recv.getMessageAttr();
+      MessageBaseKey messageBase =
+          makeMessageBaseKey(static_cast<int64_t>(rankIndex), peer, message,
+                             static_cast<bool>(send));
+      int64_t sequentialReuseIndex = sequentialReuseCounts[messageBase]++;
+      mlir::FailureOr<llvm::SmallVector<StructuredLoopSite, 4>> loopSite =
+          getStructuredLoopSite(operation);
       mlir::FailureOr<PhysicalRange> range =
           resolveAcceptedRange(operation, buffer, bytes);
       mlir::FailureOr<mlir::Operation *> wait =
           findUniqueSameBlockWait(operation, token, operationIndices);
-      if (mlir::failed(range) || mlir::failed(wait)) {
+      if (mlir::failed(loopSite) || mlir::failed(range) || mlir::failed(wait)) {
+        result = mlir::failure();
+        return mlir::WalkResult::interrupt();
+      }
+      if (mlir::failed(verifyIssueBufferIsolation(operation, *wait, buffer))) {
         result = mlir::failure();
         return mlir::WalkResult::interrupt();
       }
       issues.push_back(IssueRecord{
           operation, *wait, operation->getBlock(),
-          makeMessageKey(static_cast<int64_t>(rankIndex), peer, message,
-                         static_cast<bool>(send)),
-          *range, bytes, operationIndices.lookup(operation),
+          makeMessageKey(messageBase, sequentialReuseIndex, *loopSite), *range,
+          bytes, operationIndices.lookup(operation),
           operationIndices.lookup(*wait), -1, static_cast<bool>(send)});
       return mlir::WalkResult::advance();
     });

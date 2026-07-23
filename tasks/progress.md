@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-22
+更新时间：2026-07-23
 
 本文件只记录当前调度状态、前置关系和紧凑完成索引，不保存逐轮测试数字、实现复盘或历史工作日志。
 长期架构与pipeline contract以编号设计文档为准，详细完成证据与实施记录位于`tasks/archive/`，完整导航见
@@ -57,6 +57,13 @@ Q29 + Q28 + Q30 + Q31 -> Q32.I -> Q32.R -> Q32.B -> Q32.V -> Q32.M -> Q32.S -> Q
 configured board runtime（已完成）：
 Q0.L + Q21 + configured board -> Q6.B
 
+已完成communication quality closure与待续large-shape board vertical：
+Q32 -> Q36
+Q32 + Q6.B + Q36 + configured board -> Q35
+
+当前numeric algebraic extension：
+Q32 + source numeric semantics + typed target consumer -> Q32.N
+
 later/external：
 Q32 + Q6.B -> Q9
 Q22 + Q32 + Q6.B + configured numeric corpus -> Q22.C
@@ -64,15 +71,29 @@ Q18 + Q22 + Q32 + configured simulator/ISS -> Q22.E
 Q32 + Q22.C + validated PMU/timing environment -> Q22.P
 Q22 + owner-approved packet evidence -> Q22.K
 Q32 -> Q32.T (optional compiler control plane)
-Q32 + production-carried native MLIR numeric permission/semantics + per-feature typed selected/target consumer -> Q32.N
 explicit Count semantic/target/model evidence -> Q3.6 (independent typed writeback/ABI/numeric closure)
 ```
 
 ## 当前实施队列
 
-当前没有`doing` row。Q6.B已闭合四条typed board launch/runtime路径，包括独立Direct DTE
+当前`doing`为Q32.N numeric algebraic extension。它先把StableHLO ordered reduction、dot precision/algorithm和
+frontend strict/model-relaxed mode无损落到typed structured IR与标准`arith.fastmath`，再让floating
+reassociation、K-split、leaf permutation、contraction和algebraic candidates按current IR与target numeric profile
+逐项证明，而不是按dtype统一拒绝或从target固定FMA反推source permission。f16/bf16是compiler主线验证dtype；
+integer bitwise/overflow和模型自身dtype测试保持其真实类型。
+
+Q36已闭合current topology/execution mesh到compiler-private Ring/ordered-Tree参数、explicit p2p instruction、
+collective completion和whole-card minimum-hop cost的事实链；详细证据见
+`tasks/archive/topology-aware-collective-lowering.md`。Q35前置已满足并转为`next`，待Q32.N当前主线收口后继续消费
+Q6.B已闭合的cluster Direct DTE launch/runtime，不重开provider机制；重点验证
+显式SPMD contracting shard、large-shape M/N tiling、fixed-capacity SPM、local GEMM与all-reduce的完整production
+package及板端exact。Q6.B已闭合四条typed board launch/runtime路径，包括独立Direct DTE
 placement/readiness/completion、重复完整CPU exact和清理后资源基线；详细合同与证据由tasks/13-16及
 `tasks/archive/runtime-board.md`拥有。
+Q35当前已通过full-4096 f16 production compile/no-card并静态确认`M=256,K=256,N=512`、每rank128个tile和256 KiB
+DTE payload；首次真实board invocation clean completion后在resource 2 byte 0发生`expected=0x40, actual=0x46`，执行后设备
+回到`9248M / 65536M`、0% utilization、无进程基线。当前阻塞是GEMM Cx materialization、all-reduce强制Tensor layout和
+collective数值路径的分层定位，不能标done；执行记录见当前Q35实施计划。
 Q32已完成integrated completion audit；该完成不会让其它
 later/external gate自动进入主线。
 
@@ -84,6 +105,9 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
+| Q32.N | `numeric-algebraic-extension` | `doing` | Q32 | frontend strict/model-relaxed mode只在StableHLO→structured边界物化标准fastmath；typed dot precision/algorithm与ordered reduction保留StableHLO事实；floating reassociation、leaf permutation、K-split、contraction、distribution/factorization按current IR permission和target profile逐项证明，selected order/algorithm进入显式SSA/Tile/Instr并由formal/SystemC验证。不得按dtype猜permission或从target固定FMA反向授权source。 | 02、05-07、10-11、14、16-18；`tasks/plans/numeric-algebraic-extension.md` |
+| Q36 | `topology-aware-collective-lowering` | `done` | Q32 | current typed topology/mesh派生rank placement、exact bounded Ring与保持rank_group中序的ordered Tree；collective correctness/completion、singleton identity和final p2p minimum-hop whole-card cost闭合，不声明route/cycle/timing。 | 04、06、11、13、16、18；`tasks/archive/topology-aware-collective-lowering.md` |
+| Q35 | `k-sharded-gemm-board-vertical` | `next` | Q32、Q6.B、Q36 + configured board | full-4096 f16 GEMM由显式row/contracting SPMD形成16份local K=256 GEMM和sum all-reduce；production M/N tiling、SPM/DDR、Direct DTE、shared ELF、no-card与完整板端raw exact闭合。只形成该case/environment的workload-level evidence，不新增ABI、不授权compiler拆floating local K、不完成Q22.C或timing。 | 02、03、05-07、09、10、13-17；`tasks/plans/k-sharded-gemm-board-vertical.md` |
 | Q32.I | `mlir-native-implementation-relation-foundation` | `done` | Q29、Q28、Q30、Q31 | source OpInterface/external models已让generic division与target reciprocal两种真实implementation进入complete clone；MLIR Affine/Presburger/ValueBounds IndexRelation foundation与precision/failure/property gate闭合；重复DPS/Tiling语义的WaferTilingInterface已删除。证据见`tasks/archive/mlir-native-implementation-relation-foundation.md`。 | 01、06、08、10、13、16、18；`tasks/archive/physical-dataflow-synthesis.md` A/B |
 | Q32.R | `physical-relation-realization` | `done` | Q32.I | rich IndexRelation查询、physical encoding attr interface、TransferRealizability、destination-style StorageLoad和relation-backed resident handoff已闭合；非7B source删除真实中间WDMA/RDMA，标准7B source选择26条handoff并通过fresh TP16 package/SystemC/PyTorch gate。证据见`tasks/archive/physical-relation-realization.md`。 | 06-11、16、18；同计划C |
 | Q32.B | `physical-dataflow-test-seam-vertical` | `done` | Q32.R、Q34 | compiler-private production-shaped seam已让conservative spill唯一reserved baseline与spill/resident optimized actual clones共同进入rank frontier；rank只做SPM，all-rank disposable tuple重做DDR及全部late gate，1/16-rank与标准7B source-to-package/SystemC/PyTorch及determinism/atomic gate通过。证据见`tasks/archive/physical-dataflow-test-seam-vertical.md`。 | 01、06-18；同计划D |
@@ -100,12 +124,11 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 / 外部 gate | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q9 | `cost-calibration` | `later` | Q32、Q6.B + profile environment | 只校准Q32合法候选排序，不改变语义合法性。 | 06、16 |
-| Q22.C | `target-model-numeric-correlation` | `later` | Q22、Q32、Q6.B + configured numeric corpus | 按capability row用board区分向量和held-out冻结numeric comparator/profile。 | 16、17 |
+| Q22.C | `target-model-numeric-correlation` | `later` | Q22、Q32、Q6.B + configured numeric corpus | 按capability row用board区分向量和held-out冻结numeric comparator/profile；Q35可提供large K-sharded GEMM workload-level证据，但不是本gate的硬前置且不能单独满足它。 | 16、17 |
 | Q22.E | `target-model-package-execution` | `later` | Q18、Q22、Q32 + configured simulator/ISS | 原样执行Q32 integrated audit冻结的verified package及all-and-only RISC-V ELF；任何未来schema升级必须先独立完成再作为该gate输入。 | 15、16、17 |
 | Q22.K | `target-model-packet-provenance` | `later` | Q22 + owner-approved vendor package或独立公开规范 | 可选关联repo CRT/packet/MMIO；缺失不阻塞数值CModel。 | 14、16、17 |
 | Q22.P | `target-model-timing-calibration` | `later` | Q32、Q22.C + validated PMU/timing environment | deferred LT/AT校准；没有RTL/vendor cycle证据不声明cycle accuracy。 | 16、17 |
 | Q32.T | `compiler-transform-control` | `later` | Q32 + explicit external control-plane consumer | 只有出现真实wafer-opt/autotuning consumer后才设计；必须复用同一rewrite/conversion，Transform IR不保存candidate frontier、不替代all-rank coordinator，也不进入wafer-compile或artifact。当前没有冻结param/report schema。 | 01、05-08、10、16、18 |
-| Q32.N | `numeric-algebraic-extension` | `later` | Q32 + production-carried native MLIR numeric permission/semantics + per-feature typed selected/target consumer | 闭合floating reassociation/tree、generic online reduction、non-GEMM FMA contraction及超出current integer-domain exact/modular子集的algebraic distribution/factorization：先定义production source permission/predicate、显式SSA state/tree/fused op、Tile→Instr→TargetCall/必要ABI→SystemC数值纵向，再接入同一production candidate owner、frontier、winner和atomic commit。不得新增Wafer private numeric policy artifact；target固定FMA profile、手写`wafer-opt`或无consumer rewrite不算前置。 | 05-07、10-11、14、16-17 |
 | Q3.6 | `crt-writeback-scalar` | `later` | explicit Count predicate + wrapper/target/model consumer evidence | static compact-contiguous source到proven-disjoint single-element i32 SPM destination的Count writeback。必须独立闭合typed instruction、effect/completion、ABI/CRT、model evidence和必要package readback；当前predicate/golden/formal-SystemC evidence/board row absent，source/model/board admission保持关闭。它不依赖Q32/Q32.V planner或capability协议。 | 11、14-17 |
 
 新model/distributed/executable dialect、MPMD/rank class、跨卡coherent variant、WCRE/global registry、capability lease、

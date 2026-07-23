@@ -45,6 +45,15 @@ TEST(RankCandidateFrontierTest,
   auto source = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"],
+    endpoints = array<i64: 0, 0, 0, 0, 0, 0, 0, 1>,
+    policy = "explicit", shape = array<i64: 2>, topology = @default
+  }
   func.func @main(%lhs: tensor<256x128xf16>,
                   %rhs: tensor<128x1024xf16>) -> tensor<256x1024xf16> {
     %zero = arith.constant 0.0 : f16
@@ -119,7 +128,10 @@ module {
   }
   EXPECT_EQ(baselineCount, 1u);
   EXPECT_TRUE(sawResidentAlternative);
-  EXPECT_TRUE(sawRingAllReduce);
+  // Floating collectives retain StableHLO rank_group reduction order. The
+  // current ring rotates/reassociates leaves, so only the ordered tree remains
+  // a legal floating communication candidate.
+  EXPECT_FALSE(sawRingAllReduce);
   EXPECT_TRUE(sawTreeReduce);
   EXPECT_TRUE(sawTreeBroadcast);
 
@@ -227,6 +239,15 @@ TEST(RankCandidateFrontierTest,
 
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"],
+    endpoints = array<i64: 0, 0, 0, 0, 0, 0, 0, 1>,
+    policy = "explicit", shape = array<i64: 2>, topology = @default
+  }
   func.func @main(%input: tensor<4xf32>) -> tensor<8xf32> {
     %out = tensor.empty() : tensor<8xf32>
     %gathered = wafer.linalg_ext.collective.all_gather

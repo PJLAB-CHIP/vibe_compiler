@@ -1,6 +1,6 @@
 # Wafer Target Topology 与 Execution Mesh 设计
 
-状态：2026-07-14按Q0.L typed target-profile carry-through边界同步。本文只拥有`wafer.target.topology`和
+状态：2026-07-23按topology-aware communication consumer边界同步。本文只拥有`wafer.target.topology`和
 `wafer.execution.mesh`合同；tasks/14拥有`TargetProfileId`和target-profile registry，本层只要求`ExecutionConfig`无损
 携带，不把它复制进topology/mesh IR。calibration、accepted physical transport binding和多卡deployment均不属于本层；
 实现状态看`tasks/progress.md`。
@@ -22,7 +22,8 @@ Pipeline position:
   logical execution-rank domain，不是sharding plan、per-rank executable或runtime placement。
 - Downstream consumer:
   Q15的XLA SPMD helper调用与post-SPMD parameter-shard verifier；Q16从同一mesh domain派生
-  logicalRank=0..N-1的isolated static clones。
+  logicalRank=0..N-1的isolated static clones；communication candidate与whole-card cost从current
+  topology/mesh fresh派生rank endpoint和minimum-hop facts。
 - User-level driver / named pipeline:
   正式入口为
   `wafer-compile --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`；两个选项都必须显式给出，
@@ -36,7 +37,8 @@ Pipeline position:
 - Completion gate:
   rank-count=1/16均得到exact topology/mesh，已有不匹配、重复或nested事实fail closed；post-SPMD metadata中的
   logical_rank_count与mesh一致；Q15最终structured tensor program重新parse后仍通过同一exact-config gate。Q0.L另要求registered
-  target profile从CLI/request/config到accepted bundle和target preparation逐层相同，缺失/冲突/default fail closed。
+  target profile从CLI/request/config到accepted bundle和target preparation逐层相同，缺失/冲突/default fail closed；
+  通用analysis对mesh/torus、explicit placement和unavailable detour给出一致、可重算的rank mapping与shortest-hop结果。
 ```
 
 ## 2. 当前 Single-Card 配置
@@ -116,6 +118,28 @@ endpoint数，且这些endpoint在derived graph中连通。`explicit`的tuple数
 
 axis名只标识mesh dimension，不等同于`dp`、`tp`或任何model strategy。当前production统一使用单axis
 `rank`；frontend sharding和XLA helper决定tensor如何使用rank domain，topology/mesh层不切tensor。
+
+### 3.3 可重算的 execution-topology analysis
+
+下游不得各自复制rank mapping或按logical rank编号猜physical邻接。共享只读analysis从current module的唯一
+execution mesh及其引用topology派生：
+
+- `logical rank -> (card_y, card_x, tile_y, tile_x)`；`all_available`按规则线性endpoint顺序跳过
+  unavailable coordinate，`explicit`严格保持IR中tuple顺序；
+- available endpoint graph；tile grid使用同card四邻接，card mesh/torus在相同tile coordinate之间连接；
+- 任意两个logical rank endpoint之间的shortest-hop distance。
+
+这些结果可失效、可重算且不写入IR。shortest-hop只表示当前typed graph上不可避免的minimum link traversal；
+在IR没有route policy时，不从它伪造实际N/S/E/W route、per-link congestion、cycle或带宽时间。若未来需要任意
+带权/不规则graph或确定route，必须扩展本层typed topology合同并同步verifier，不能靠target profile名、side table
+或特定卡编号补猜。
+
+communication consumer可在一次rewrite调用内继续从上述距离和current `rank_group`派生有界参数。当前
+`CollectiveTopologyAnalysis`对不超过16 rank的Ring求exact minimum-total-hop Hamiltonian cycle；对Tree则以
+`rank_group`连续区间做动态规划，枚举其中序遍历严格等于`rank_group`的全部有序二叉树，先最小化edge的
+shortest-hop总和，再依次以最大root distance、root distance总和和logical-rank次序确定性解平局。这个Tree不是
+先构造无序MST再选择center，也不固定root 0、XOR/binomial关系；root、parent和左右children都是本次analysis结果。
+这些参数仍属于tasks/13的collective rewrite，不进入topology/mesh IR。
 
 ## 4. Q15 Driver 交接
 

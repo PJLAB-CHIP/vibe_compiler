@@ -57,19 +57,19 @@ verified structured MLIR
 | 功能目标 | MLIR-native实现 | selected / completion evidence |
 | --- | --- | --- |
 | parameterized implementation选择 | source OpInterface；上游op用external model；选择后立即materialize为typed `wafer.tile.*` | 至少两个真实implementation参数点进入complete clone，非baseline实现被真实source选中 |
-| dependent tiling、fusion和relation propagation | `TilingInterface`、DPS、Affine/Presburger/ValueBounds `IndexRelation`、PatternRewriter | dependent region、tail和all-and-only coverage可重证，最终IR实际删除重复whole-tensor work/movement |
+| dependent tiling、fusion和relation propagation | `TilingInterface`、DPS、Affine/Presburger/ValueBounds `IndexRelation`、PatternRewriter；traversal capability由具体op的tile mapping与legality决定，不按dialect/op family一刀切 | dependent region、当前production启用的terminal shape-preserving all-reduce、tail和all-and-only coverage可重证，最终IR实际删除重复whole-tensor work/movement |
 | physical encoding与metadata view | encoding attr/type interface、标准view op和显式Wafer physical op | 至少两个current target encoding/view/materialization alternative形成不同IR并通过physical verifier |
 | transfer route与storage realization | 跨两端buffer的analysis/helper；zero-copy/direct/current GS/staged alternative立即变成view/movement/temp/event IR | route不是sidecar；final descriptor、range、valid-lane和completion从当前IR重证 |
 | residency与physical-version reuse | SSA root/view、alias/effect/lifetime分析和typed rewrite | chain、fanout及partial-compatible use能有界复用；spill/reload cut在winner中真实消失 |
 | buffering和resource-aware DAG-legal issue order | 实际buffer SSA、loop-carried value、async token/wait/fence和resource effect；从current SSA/effect DAG生成少量ready-order alternative | current Q29能力不回退；至少一个非source-order alternative改变真实buffer/token/order IR、通过lifetime/resource gate并成为winner |
-| communication algorithm选择 | collective OpInterface、topology helper和direct/ring/tree complete-clone rewrite | alternative进入同一rank frontier；all-rank coordinator只从最终p2p/message/completion IR重证 |
+| communication algorithm选择 | collective OpInterface、topology helper，以及Direct、Ring和保持`rank_group`中序的ordered-Tree complete-clone rewrite | alternative进入同一rank frontier；all-rank coordinator只从最终p2p/message/completion IR重证，floating collective的ordered Tree与会置换归约leaf的Ring分别做数值合法性判断 |
 | resource-aware candidate generation | 从当前clone重算liveness、capacity lower bound、descriptor/resource pressure；邻居仍必须物化完整IR | resource事实能产生有界tile/residency/buffering/order邻居，09/12/Q34继续作唯一exact placement gate |
 | bounded joint search和selection | baseline slot、actual IR clones、有界worklist/frontier、exact cost和existing all-rank transaction | 全部producer受生成/materialization/whole-variant hard cap；预算耗尽保留合法baseline |
 | target能力纵向 | Q32.V已在source/ODS/type/interface、Instr、TargetCall、ABI和SystemC中闭合mapped DMA、physical fill、oriented GEMM | Q32.M起由共同owner消费这些typed能力；external model/board admission仍不参与compile-time choice |
 | whole-tensor share-vs-recompute | SSA use-def、`TilingInterface`、IndexRelation及effect/speculation proof分别物化共享version和按consumer dependent region重算的clone | share与recompute各有production winner；compute work、movement和live-range/high-water从各自final IR比较 |
 | static loop-invariant hoist | `LoopLikeOpInterface`、dominance、SSA、effect/completion proof和PatternRewriter直接移动真实op/value | 至少一个hoist winner从loop外dominant SSA取值并重跑lifetime/placement；不可移动或资源更差时保留baseline |
 | fixed Cx/NCx encoding absorption | existing typed encoding、IndexRelation、physical-map/valid-lane proof让已有target contract接受Cx/NCx的family直接消费physical version；current限GEMM/batched GEMM | Tensor↔Cx/NCx `materialize_layout`、GS或等价pack/unpack movement在winner中真实消失；其它compute family不自动获得该能力，也不新增虚构的vector-width/packing参数 |
-| integer-domain exact/modular-proof-gated algebraic variants | 从current integer IR及其overflow/wrap语义证明reassociation、显式reduction tree和algebraic distribution/factorization的exact/modular子集 | 每个current variant各有独立production正例/winner和无proof负例；tree/order必须是actual SSA/SCF；所有floating algebraic rewrite及`contract`-based FMA均不属于current |
+| integer-domain exact/modular-proof-gated algebraic variants | 从current integer IR及其overflow/wrap语义证明reassociation、显式rank-local reduction tree和algebraic distribution/factorization的exact/modular子集 | 每个current variant各有独立production正例/winner和无proof负例；tree/order必须是actual SSA/SCF；所有floating rank-local algebraic rewrite及`contract`-based FMA均不属于current |
 
 `IndexRelation`、候选worklist、cost和资源摘要可以是transformation-local C++ analysis/state，但不是新的IR、wire schema或
 跨stage事实源。目标是保留上述能力闭包，同时删除descriptor/provider/query/key/registry/telemetry等重复语义。
@@ -98,11 +98,11 @@ Q32.B test seam、`wafer-opt`手工pass、隐藏feature flag或测试专用callb
 实现、production接入或正负测试。本文列为Q32功能的conditional row必须至少有一个predicate-positive production winner；若当前
 target纵向无法表达，必须在Q32完成前把它移动到有明确前置的Later row，不能留下已注册但永远不被production消费的死功能。
 
-floating reassociation/tree、generic online reduction、non-GEMM FMA contraction以及超出current integer-domain exact/modular子集的algebraic
-distribution/factorization当前缺少production-carried source permission或完整typed selected/target consumer，不属于Q32 current
-completion；它们由
-`numeric-algebraic-extension` Later gate拥有。Later gate闭合前不得注册production
-candidate，也不能拿target固定FMA语义或手写`wafer-opt`测试冒充采用。
+floating rank-local algebraic reassociation/reduction-tree rewrite、generic online reduction、non-GEMM FMA contraction以及超出
+current integer-domain exact/modular子集的algebraic distribution/factorization不属于已完成Q32合同；当前Q32.N
+`numeric-algebraic-extension`按`tasks/plans/numeric-algebraic-extension.md`补齐production source permission、
+typed selected/target consumer和低精度纵向。任一feature在对应consumer闭合前不得注册production candidate，也不能拿
+target固定FMA语义或手写`wafer-opt`测试冒充采用。
 
 ## 2. Pipeline Contract
 
@@ -193,6 +193,17 @@ Q32.M已完成后续native-interface reuse closure：layout requirement由typed 
 从current IR重算；原`WaferLayoutOpInterface`、`WaferLayoutMaterializationOpInterface`与
 `WaferResourceEffectInterface`及其重复record已删除。证据见
 `tasks/archive/physical-mechanism-choice-closure.md`。
+
+structured traversal root的切块能力同样必须消费current op的`TilingInterface`，不能把全部logical collective长期
+归为whole-tensor-only。shape-preserving `all_reduce`和`collective_permute`允许沿任意result tensor维切块；
+`all_gather`、`reduce_scatter`和`all_to_all`只允许接口证明不跨越其gather/scatter/split/concat受限轴的tile。
+候选物化必须从terminal collective result tile反向融合同尺寸producer slice，并把每个tile的compute、communication和
+writeback保留在同一complete compact traversal中；接口拒绝的tile只拒绝该候选，不能靠op名放宽，也不能把可切root
+降级成一次full-buffer尝试。
+
+Q35 production enablement只开放verifier已证明shape-preserving、单输入单输出的`all_reduce`作为terminal tiled root；
+其它collective虽然已有接口级tile mapping，仍保持`FullTraversalOnly`，直到各自的producer fusion、受限轴、control-instance
+和下游transport gate有独立正负例。接口“能描述某个tile”不等于该op已经进入production candidate search。
 
 `WaferTargetImplementationOpInterface`已由Q32.I用真实reciprocal/division actual-clone贯通；之所以允许保留，
 是因为标准MLIR interface不表达Wafer target implementation
@@ -352,7 +363,7 @@ Q32.M的mandatory mechanism closure如下；它描述必须交付的功能，不
 | fixed Cx/NCx encoding absorption | structured→selected physical payload | 仅已有typed verifier/target contract接受Cx/NCx的compute family可直接消费；current限GEMM/batched GEMM，exact physical-map/valid-lane proof后删除显式layout/GS movement；无packing side attr |
 | static buffering/resource-aware order | selected physical payload / instruction | 显式buffer slot、token、wait/fence和DAG-legal ready-order alternative；unknown completion保守串行 |
 | collective expansion alternative | structured/tile→instruction | current direct/ring/tree参数实际展开为p2p、staging、local work和completion IR |
-| integer-domain exact/modular-proof-gated algebraic rewrite | structured tensor | current只开放可从integer IR及overflow/wrap语义证明exact/modular的reassociation、显式reduction tree和distribution/factorization；无proof保持barrier，全部floating algebraic rewrite与`contract`-based FMA归Q32.N |
+| integer-domain exact/modular-proof-gated algebraic rewrite | structured tensor | current只开放可从integer IR及overflow/wrap语义证明exact/modular的reassociation、显式rank-local reduction tree和distribution/factorization；无proof保持barrier，全部floating rank-local algebraic rewrite与`contract`-based FMA归Q32.N |
 
 每一row至少有通用positive/negative source、一次真实production candidate mutation和完整exact-gate消费，并按§1.2继续进入
 共同frontier、selection和默认production commit。current numeric子项分别验收，不能用一个reassociation正例代表tree或
@@ -375,11 +386,14 @@ op/type/attr或SSA关系。
 
 ### 4.3 Numeric 和 effect barrier
 
-默认只做保持原 evaluation order 和 numeric contract 的结构变换。Q32 current的reassociation、reduction tree改变及algebraic
+默认只做保持原 evaluation order 和 numeric contract 的结构变换。Q32 current的rank-local reassociation、reduction tree改变及algebraic
 distribution/factorization仅限integer domain，必须由从current IR及overflow/wrap语义得出的exact/modular proof授权，并有独立
 correctness evidence；没有proof时形成barrier。当前production source不能携带standard floating fast-math permission，因此即使
-IR-local fixture可表达，floating reassociation/tree也不进入Q32 producer。unknown effect、不可解释DPS tie、
-control-flow join、collective wait和observable store同样形成rewrite boundary。
+IR-local fixture可表达，floating rank-local algebraic reassociation/reduction-tree rewrite也不进入Q32 producer。这里的
+fast-math门槛只约束compiler额外把一个rank内的source reduction拆成多个partial；StableHLO collective允许实现选择
+中序遍历保持`rank_group`次序的ordered binary tree，因此这种collective Tree不需要额外fast-math。会循环置换leaf次序的
+Ring仍须从current logical op获得明确numeric permission。unknown effect、不可解释DPS tie、control-flow join、
+collective wait和observable store同样形成rewrite boundary。
 
 ## 5. Bounded MLIR-Native Joint Candidate Generation
 
@@ -509,6 +523,12 @@ legality先于cost。candidate只有完成lowering、placement和所有当前sco
 transport bytes/messages、compute logical work、descriptor/command/issue、temporary、event/fence/wait、padding work和immutable
 payload。Known zero与Unknown分开；overflow或无法扫描为Unknown，不能伪造为0。
 
+communication的whole-variant metric还必须消费current `wafer.target.topology`、`wafer.execution.mesh`和final
+`dte_send.peer`。payload injected bytes保持独立维度；另以graph shortest-path distance计算
+`sum(payload bytes * minimum hops)`。该值是规则topology上的minimum link-byte demand，不是route、contention或time；
+没有typed route policy时directional/per-link load保持Unknown。rank-local cost不能因缺少canonical source rank而猜测
+physical endpoint，这一维只能在完整rank domain的late analysis中重算。
+
 这些字段不需要17维registry、canonical wire vector或完整IR signature。字段方向、聚合和static preference由closed typed
 target profile/C++ policy定义；新增维度必须有final-IR collector和测试，而不是只增加诊断名。
 
@@ -533,8 +553,9 @@ numeric variant先过独立numeric gate，
 Q9获得validated PMU/timing evidence后，可以新增calibrated ranking policy，但只能重排已经通过同一exact legality的候选，不能
 改变semantic、numeric、capacity、descriptor或ABI合法性。
 
-当前closed target profile的未校准static policy按resource class显式排序：DDR read/write、NoC aggregate/collective、SPM
-movement、instruction/event、compute logical work、最后是data-dependency depth/ready-order inversion。每一class内部只接受
+当前closed target profile的未校准static policy按resource class显式排序：DDR read/write、NoC payload aggregate/
+collective与minimum-hop demand、SPM movement、instruction/event、compute logical work、最后是
+data-dependency depth/ready-order inversion。每一class内部只接受
 componentwise strict reduction；同一class出现双向tradeoff、任何所需量Unknown或overflow时保持当前winner，最终无法证明优于
 reserved baseline时返回baseline。validated SPM high-water只作capacity/resource事实；它可以参与exact resource Pareto，但不被解释成
 hardware time。policy在完整Pareto frontier上逐个比较survivor，不能只找第一个优于baseline的candidate，也不能用candidate
@@ -552,7 +573,8 @@ all-rank coordination保留现有 compiler-level owner，不放入function pass�
 是同一MLIRContext中的完整module clone；coordinator负责：
 
 - 按轻量、IR-derived communication compatibility facts剪掉明显不可能组合；
-- 从每个完整variant的typed instruction IR重新收集message、range、completion和resource；
+- 从每个完整variant的typed instruction IR重新收集message、range、completion和resource，并用canonical rank
+  order及current topology/mesh重算minimum-hop demand；
 - 先运行whole-variant DDR placement，再运行post-memory Direct DTE matching/binding、whole-variant resource和
   ABI/package eligibility；
 - 只从全部gate通过的variant读取validated placement/high-water和final metrics，执行最终Pareto/static-policy selection；
@@ -671,7 +693,7 @@ Q32完成必须同时满足：
 3. `IndexRelation`优先复用MLIR Affine/Presburger/ValueBounds，覆盖§3.2 relation closure并由tiling、view、propagation、transfer和
    reuse真实消费；无私有wire relation IR；
 4. §4.1 mandatory mechanisms全部被production candidate generator真实调用，至少各有一个通用source发生mutation并通过完整gate；
-   share-vs-recompute、static loop-invariant hoist、fixed Cx/NCx absorption以及reassociation、显式reduction tree、algebraic
+   share-vs-recompute、static loop-invariant hoist、fixed Cx/NCx absorption以及reassociation、显式rank-local reduction tree、algebraic
    distribution/factorization的integer-domain exact/modular variants各自有predicate-positive mutation/acceptance和
    predicate-negative baseline证据；
 5. current implementation、encoding/view/materialization、route、residency、buffering/ready-order和direct/ring/tree communication

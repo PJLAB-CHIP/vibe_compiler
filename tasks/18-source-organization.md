@@ -82,6 +82,26 @@ lib/Wafer/Compiler/
   WholeVariantCoordinator.cpp
 ```
 
+topology-aware communication复用的只读事实与参数分析同样按owner分层：
+
+```text
+include/Wafer/Analysis/
+  ExecutionTopologyAnalysis.h
+  CollectiveTopologyAnalysis.h
+lib/Wafer/Analysis/
+  ExecutionTopologyAnalysis.cpp
+  CollectiveTopologyAnalysis.cpp
+include/Wafer/IR/Target/
+  TopologyUtils.h
+```
+
+`ExecutionTopologyAnalysis`只从current topology/mesh派生rank endpoint和shortest-hop；
+`CollectiveTopologyAnalysis`只从这些距离与collective rank group派生invocation-local参数：Ring是有界exact
+minimum-total-hop cycle；Tree由interval DP求保持`rank_group`中序的minimum-total-shortest-hop ordered binary
+tree，而不是MST/center或固定root/binomial模板。
+`TopologyUtils`只负责在compiler建立isolated standalone module时复制typed topology/mesh op，不保存analysis结果、
+algorithm choice或side table。
+
 `IndexRelation` 从当前 op、indexing map、view chain、shape bounds 和 SSA def-use 派生；
 `TransferRealizability` 从当前 source/destination、relation、typed physical encoding、alias/effect 和显式 target
 profile 派生 view/transfer realizability、descriptor cover 与资源摘要。这些结果不修改 IR，任何相关 rewrite
@@ -147,6 +167,17 @@ Compiler / target-model core <- functional model <- bulk/SystemC adapters
   physical-dataflow 再建只转发这些库的 facade target。
 - optional StableHLO/Shardy、numeric、oneDNN、SystemC 依赖只能出现在已经定义的 feature target 内，不能因
   拆文件扩大到 core public link interface。
+- optional dependency的版本和下载摘要只由`WaferDependencyVersions.cmake`拥有；`bootstrap_deps.py`是
+  managed Python/Bazel及numeric/oneDNN/SystemC source/build/install record的producer，项目CMake只验证并消费
+  已发布root，不在configure中下载或fallback到ambient package。
+- framework importer runtime由`third_party/pytorch-xla`源码和`third_party/python-importer`环境共同拥有；
+  `build_pytorch_xla_runtime.py`只负责受管Bazel overlay、source build、persistent Bazel output中的extension发布和
+  runtime import验证。它不成为frontend语义、StableHLO IR或compiler artifact的第二owner。
+- pinned-XLA SPMD executable仍由`build_xla_spmd_partitioner_helper.py`从Wafer-owned helper source清单和
+  `third_party/xla`生成；consumer只通过configure-time absolute helper路径使用该产物。PyTorch/XLA runtime helper与
+  XLA SPMD helper是两个独立consumer artifact，不能用其中一个的成功替代另一个。
+- numeric、oneDNN和SystemC bootstrap各自发布canonical record；feature target只能消费对应validator确认的record。
+  SystemC的独立consumer probe保持CMake 3.16兼容，避免bootstrap对项目本身未要求的更新宿主CMake形成隐藏依赖。
 - CMake source list按上述职责分组；若拆出新 target，必须有独立依赖收益，不能建立只转发同一组依赖的
   空壳 library。
 - 公共 umbrella target 可以保持兼容，但底层实现 target 不得形成环，也不得依赖 tools 或 tests。
@@ -229,6 +260,10 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
   directory facade；`ProgramInternal.h` 只暴露同 library 跨 TU 所需的 typed helper。
 - `wafer-compile` 已分为 CLI、target-model gate 和 main compile/publication orchestration；production
   与 test executable 使用同一 source set，但保留各自 feature/test compile definitions。
+- Q36的`ExecutionTopologyAnalysis`与`CollectiveTopologyAnalysis`由`WaferAnalysis`独立source拥有；
+  IR/Target只拥有topology/mesh op、verifier和clone helper，collective conversion、Direct DTE acceptance、
+  target lowering与whole-card cost共同消费analysis而不复制rank mapping或邻接实现。对应analysis、conversion和
+  compiler测试分别留在现有owner目录，不新增communication facade。
 - `tools/check_source_organization.py` 检查 owner、私有头、CMake source list、旧聚合文件移除和 library 配置顺序；
   根 `check-wafer` 按实际存在的 feature target 聚合 lit、unit、numeric、bulk 和 SystemC gate。
 - SPM/DDR planner共用的structured timeline、path condition、query-time ViewLike/SelectLike/scf.if/scf.for

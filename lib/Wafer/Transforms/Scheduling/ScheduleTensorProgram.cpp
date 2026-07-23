@@ -919,11 +919,14 @@ static llvm::SmallVector<SelectionConfig, 12>
 buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
   constexpr unsigned recipeLimit = 12;
   bool hasAllGather = false;
+  bool hasReduceScatter = false;
   bool hasAllReduce = false;
   llvm::SmallVector<TargetImplementationKind, 2> implementations;
   source.walk([&](mlir::Operation *operation) {
     hasAllGather |=
         mlir::isa<LinalgExtCollectiveAllGatherOp, CommAllGatherOp>(operation);
+    hasReduceScatter |= mlir::isa<LinalgExtCollectiveReduceScatterOp,
+                                  CommReduceScatterOp>(operation);
     hasAllReduce |=
         mlir::isa<LinalgExtCollectiveAllReduceOp, CommAllReduceOp>(operation);
     if (auto interface =
@@ -958,6 +961,8 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
   addRecipe(CommunicationAlternative::Ring, std::nullopt, 0);
   if (hasAllGather)
     addRecipe(CommunicationAlternative::DirectAllGather, std::nullopt, 0);
+  if (hasReduceScatter)
+    addRecipe(CommunicationAlternative::RingReduceScatter, std::nullopt, 0);
   if (hasAllReduce)
     addRecipe(CommunicationAlternative::TreeAllReduce, std::nullopt, 0);
   if (hasAllGather && hasAllReduce)
@@ -977,6 +982,9 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
   for (TargetImplementationKind implementation : implementations) {
     if (hasAllGather)
       addRecipe(CommunicationAlternative::DirectAllGather, implementation, 0);
+    if (hasReduceScatter)
+      addRecipe(CommunicationAlternative::RingReduceScatter, implementation,
+                0);
     if (hasAllReduce)
       addRecipe(CommunicationAlternative::TreeAllReduce, implementation, 0);
     if (hasAllGather)
@@ -988,6 +996,8 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
   }
   if (hasAllGather)
     addRecipe(CommunicationAlternative::DirectAllGather, std::nullopt, 1);
+  if (hasReduceScatter)
+    addRecipe(CommunicationAlternative::RingReduceScatter, std::nullopt, 1);
   if (hasAllReduce)
     addRecipe(CommunicationAlternative::TreeAllReduce, std::nullopt, 1);
   if (hasAllGather)

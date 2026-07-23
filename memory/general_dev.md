@@ -34,6 +34,10 @@
   commit或digest、license入口、导出的唯一CMake target、thread/TLS状态和最小运行结果；probe通过只形成candidate，不能
   替代统一版本文件、受管bootstrap、上游self-test和项目gate。configure始终显式指定source/build目录和工作目录，避免
   把上游临时文件写入repo root。
+- 受管formal numeric依赖入口是`python3 tools/bootstrap_deps.py --numeric-model-deps --numeric-jobs <n>`；它从统一
+  版本文件下载、校验并构建SoftFloat/TestFloat/m4/GMP/MPFR，完成conformance后原子发布
+  `third_party/numeric-model/numeric-model-deps.json`。CMake启用`WAFER_ENABLE_NUMERIC_MODEL_DEPS=ON`时只消费该
+  canonical record，不在配置期下载或fallback到宿主numeric library。
 - 受管bulk model依赖入口是`python3 tools/bootstrap_deps.py --bulk-model-deps --bulk-jobs <n>`；它从统一版本文件下载、
   校验并clean-build固定oneDNN，完成API smoke后原子发布`third_party/bulk-model/bulk-model-deps.json`。启用bulk build时
   必须同时设置`WAFER_ENABLE_NUMERIC_MODEL_DEPS=ON`和`WAFER_ENABLE_BULK_MODEL_DEPS=ON`；CMake只消费canonical record
@@ -46,7 +50,9 @@
   clean-build静态安装并用独立CMake consumer实际运行两个`SC_THREAD`的delta-event smoke，随后原子发布
   `third_party/systemc-model/systemc-model-deps.json`。启用时同时设置`WAFER_ENABLE_NUMERIC_MODEL_DEPS=ON`和
   `WAFER_ENABLE_SYSTEMC_MODEL=ON`；CMake只从canonical record指定的`SystemCLanguage`目录导入官方
-  `SystemC::systemc`，不联网或fallback到宿主package。plain model core不得包含SystemC header或链接该target。
+  `SystemC::systemc`，不联网或fallback到宿主package。bootstrap生成的独立consumer保持
+  `cmake_minimum_required(VERSION 3.16)`，因为它只验证imported package和C++17 smoke，不能额外要求宿主更新到
+  CMake 3.24。plain model core不得包含SystemC header或链接该target。
 - SystemC 3.0.2 public process/event headers使用RTTI和异常，而仓库LLVM/MLIR ABI是`-fno-rtti -fno-exceptions`。正式adapter要拆成
   只含plain C++ callback/opaque pointer的bridge TU：bridge可包含SystemC header并独立启用RTTI/异常，但不能包含LLVM/Wafer
   header；LLVM error/model TU保持仓库ABI且不包含SystemC header。不要给同时使用`llvm::ErrorInfo`的model target整体打开RTTI，
@@ -66,12 +72,20 @@
   prebuilt `torch_xla` wheel不能作为source-build完成证明。
 - `python3 tools/bootstrap_deps.py --importer-python` 只准备 PyTorch/XLA 源码构建需要的 importer
   Python packages；`torch_xla` runtime 必须随后从 `third_party/pytorch-xla` 源码用该 Python 编译/安装。
-- `tools/build_pytorch_xla_runtime.py --python third_party/python-importer/bin/python --jobs 8`是当前
-  `torch_xla`源码构建入口。`bootstrap_deps.py --importer-python`创建`third_party/python-importer`，而build
-  script仍有`python-importer-py311`历史默认值，所以在Q13.W收口前必须显式传`--python`。该入口调用
-  `third_party/pytorch-xla`，并用 Bazel override 固定到本仓库 `third_party/xla` /
-  `third_party/llvm-project` 和 importer Python 的 `torch` headers/libs。这个步骤可以生成本地
-  editable install，但不能替换成 prebuilt `torch_xla` wheel。
+- `python3 tools/bootstrap_deps.py --importer-bazel`下载受管Bazel 6.5.0到`third_party/tools`，并按统一版本文件
+  核对SHA-256 `a40ac69263440761199fcb8da47ad4e3f328cbe79ffbf4ecc14e5ba252857307`；
+  `third_party/tools/bazel`是source runtime构建的默认入口，不依赖ambient Bazel/Bazelisk。
+- `tools/build_pytorch_xla_runtime.py --jobs 8`是当前`torch_xla`源码构建入口，默认消费
+  `third_party/python-importer/bin/python`、`third_party/tools/bazel`和`third_party/pytorch-xla`，并用Bazel override
+  固定到本仓库`third_party/xla`/`third_party/llvm-project`及importer Python的`torch` headers/libs。不要resolve
+  venv的`bin/python` symlink，否则会越过该venv的`sys.prefix`和site-packages。
+- pinned XLA source需要能编译defaulted `noexcept` move的C++17 compiler；helper优先选择`gcc-10`/`g++-10`，
+  也接受显式`CC`/`CXX`或`--cc`/`--cxx`，并在重构Bazel workspace前运行probe。compiler选择必须同时传入Bazel
+  repository configuration和action environment；只修改shell `PATH`不足以改变已生成的`local_config_cc`。
+- editable install完成后从`bazel info bazel-bin`指向的persistent output复制`_XLAC`和
+  `_XLAC_cuda_functions`到source editable package，再用同一importer Python验证`torch`、`torch_xla`、顶层
+  `_XLAC`和`torch_xla.stablehlo.exported_program_to_stablehlo`。不得从pip临时`build/lib.*`发布extension，也不能
+  用只有纯Python package可导入冒充runtime完成；prebuilt `torch_xla` wheel仍不构成source-build证据。
 - 当前依赖栈没有pinned LLVM/MLIR prebuilt URL。用`python3 tools/bootstrap_deps.py --llvm-source`
   同步`WaferDependencyVersions.cmake`固定的llvm-project commit，再独立build/install；当前不要使用
   `--llvm`，也不能把它写成可用的prebuilt bootstrap入口。
@@ -80,7 +94,7 @@
   -DPython3_EXECUTABLE=$PWD/third_party/python/bin/python -DWAFER_ALLOW_UNPINNED_LLVM=ON`。
 - 当前统一依赖验证使用上述source-built pinned LLVM/MLIR install。默认build dir使用中性的
   `build/wafer-dev`，不要把阶段名、任务号或某个frontend依赖名写进长期build目录约定：
-  `cmake -S . -B build/wafer-dev -GNinja -DMLIR_DIR=<pinned-llvm-install>/lib/cmake/mlir -DLLVM_DIR=<pinned-llvm-install>/lib/cmake/llvm -DWAFER_ENABLE_IMPORTER_DEPS=ON -DWAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS=ON -DWAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON -DWAFER_IMPORTER_PYTHON_EXECUTABLE=$PWD/third_party/python-importer-py311/bin/python`，
+  `cmake -S . -B build/wafer-dev -GNinja -DMLIR_DIR=<pinned-llvm-install>/lib/cmake/mlir -DLLVM_DIR=<pinned-llvm-install>/lib/cmake/llvm -DWAFER_ENABLE_IMPORTER_DEPS=ON -DWAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS=ON -DWAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON -DWAFER_IMPORTER_PYTHON_EXECUTABLE=$PWD/third_party/python-importer/bin/python -DWAFER_XLA_SPMD_PARTITIONER_HELPER=$PWD/build/xla-spmd-helper/wafer_xla_spmd_partitioner -DWAFER_ENABLE_NUMERIC_MODEL_DEPS=ON -DWAFER_ENABLE_BULK_MODEL_DEPS=ON -DWAFER_ENABLE_SYSTEMC_MODEL=ON`，
   然后跑 `cmake --build build/wafer-dev --target check-wafer -- -j128` 和
   `ctest --test-dir build/wafer-dev --output-on-failure`。
 - board-capable配置在同一pinned compiler配置上增加
@@ -165,6 +179,10 @@
   structured-program production gate必须执行统一`wafer-compile`到verified structured tensor program；
   `wafer-compile-spmd-partition.test`和`wafer-compile-structured-tensor-program.test`必须在配置了
   `WAFER_XLA_SPMD_PARTITIONER_HELPER`后实际执行，不能只用`ctest passed`宣称完成。
+- optional dependency收口必须保留两个独立build：full-feature配置显式启用StableHLO/Shardy、source-built
+  PyTorch/XLA、pinned-XLA helper、numeric、oneDNN和SystemC，要求对应required tests不再因dependency
+  unavailable而unsupported；feature-off配置显式关闭这些feature并验证预期unsupported清单及core binary link closure。
+  两边都用各自cache中的lit执行`--show-unsupported`并记录完整名单；总数相同或CTest通过不能替代逐项审计。
 - 不要并发运行两个会写同一个lit output tree的验证命令，例如同时跑`ctest --test-dir
   build/wafer-dev`和configured lit的`... build/wafer-dev/test`。部分`test/Tools`用固定
   `%t` output 路径，两个 lit 实例会互相清理目录，导致假失败；需要顺序跑。
@@ -212,7 +230,9 @@
 - pinned-XLA SPMD partition helper构建入口是`tools/build_xla_spmd_partitioner_helper.py`；它在
   `build/xla-spmd-helper/workspace` 生成围绕 `third_party/xla` 的 Bazel overlay，默认用 clang 构建
   `//xla/wafer_tools:wafer_xla_spmd_partitioner`，产物复制到
-  `build/xla-spmd-helper/wafer_xla_spmd_partitioner`。本地把 helper 接进 compiler build / lit：
+  `build/xla-spmd-helper/wafer_xla_spmd_partitioner`。受管环境显式运行
+  `tools/build_xla_spmd_partitioner_helper.py --bazel third_party/tools/bazel`，避免ambient Bazel版本进入结果。
+  本地把 helper 接进 compiler build / lit：
   `cmake -S . -B build/wafer-dev -DWAFER_XLA_SPMD_PARTITIONER_HELPER=$PWD/build/xla-spmd-helper/wafer_xla_spmd_partitioner`。
   production `wafer-compile` 不接收 helper 路径；driver 从 build-time
   `WAFER_XLA_SPMD_PARTITIONER_HELPER` 解析 helper。`wafer-opt` 只处理显式 MLIR 的IR-local debug/test，
@@ -385,7 +405,9 @@
   的operands精确连接reduced value与accumulator。未拆分source reduction保持原合同；candidate把一个reduction
   regroup成多个partial时，generic floating必须显式有`fastmath<reassoc,nnan,ninf,nsz>`，named floating matmul
   没有该typed事实所以K不拆。integer split只覆盖无overflow flag的modular add和signed min/max；unsigned min/max、
-  overflow-qualified add及`maxnum/minnum`仍fail closed。
+  overflow-qualified add及`maxnum/minnum`仍fail closed。该规则只针对compiler新增的rank-local partial；StableHLO
+  collective允许实现使用中序遍历保持`rank_group`的ordered binary tree，浮点不需要因此额外携带fast-math。
+  cyclic Ring会置换leaf次序，仍须logical collective显式numeric permission。
 - whole-op fast path必须证明整个payload可被删除：passthrough/concat/reduction以及named
   fill/matmul/batch_matmul都要检查exact SSA wiring、允许op集合和effect；只匹配yield、shape或op class会
   静默擦除side effect或改写数值语义。structured materializer/verifier应递归检查nested body dialect/type。
@@ -426,8 +448,11 @@
   共七个root，而early reject只使用后续matmul phase必然同时存活的六个root。seed应先于已知高压full candidate
   消费hard-cap slot，但任何accepted candidate仍须走完整instruction/SPM/DDR gate。其它producer chain无法形成
   安全边界时返回unknown，不从名字或诊断字符串猜测。
-- terminal `FullTraversalOnly`yield scope若同时包含Tiled producer且full candidate失败，terminal-cut policy只能改变
-  task boundary，不能伪造traversal capability。shared-input peers要么作为完整SSA-compatible closure整体加入，要么完全不加入；
+- terminal collective的logical tile mapping和production traversal capability必须分开判断。当前只对单输入、单输出、
+  shape-preserving all-reduce启用terminal tiled traversal：从collective result tile反向融合producer，并让capacity/geometry
+  analysis只为M/N压力看穿到local Linalg root；reduction-range/split仍只读真实yielded Linalg root，不能把SPMD local K重新解释为
+  compiler reduction split。其它collective继续`FullTraversalOnly`。all-reduce位于consumer之前时应成为独立task或fail closed，
+  不能同时保留原始full collective与tiled clone。shared-input peers要么作为完整SSA-compatible closure整体加入，要么完全不加入；
   不枚举cost-ranked prefix。
 - winner只读取final instruction IR、validated SPM/DDR placement、transport/completion和whole-card exact resource vector。
   complete Known dimensions上的Pareto与target-owned static policy可以选择resource tradeoff；不再计算或保存scalar time，
@@ -478,27 +503,36 @@
   连续 buffer，recv 后再 insert 到 concat result slot；当前没有 ring/blocked schedule selector、
   raw non-unicast DTE 或 cross-card route binding。
 - communication schedule不是public pass option或IR attr。production candidate owner从同一tile-region parent
-  独立clone并用typed conversion参数物化ring/direct all-gather和ring/tree all-reduce；每个clone都要重新执行
-  instruction、SPM/DDR、verifier与cost gate。IR-local replay可以显式传typed参数，但不能恢复用户selector。
-  展开后只保留`wafer.instr.dte_*`/local compute body，不保存algorithm attr。
+  独立clone并用typed conversion参数物化Direct/Ring all-gather、Direct/Ring reduce-scatter和Ring/Tree
+  all-reduce；每个clone都要重新执行instruction、SPM/DDR、verifier与cost gate。IR-local replay可以显式传
+  typed参数，但不能恢复用户selector。展开后只保留`wafer.instr.dte_*`/local compute body，不保存algorithm attr。
+- execution topology的rank mapping与hop事实只由共享`ExecutionTopologyAnalysis`从current module唯一
+  `wafer.target.topology`/`wafer.execution.mesh`重算。isolated task/candidate clone必须同时复制这两个typed fact op；
+  不得回退到logical rank编号、target profile名或固定4x4算术。Ring有序cycle和Tree edge/root是rewrite-local
+  C++值；whole-card cost从final send peer计算minimum-hop link-byte demand，不把shortest path冒充实际route或timing。
 - tile-region-to-instr 的 V0 all-gather lowering 从 `wafer.tile.all_gather` 的 compact `tensor/ntensor`
   local/gather SPM buffer shape 推导唯一 gather axis。`ring` 先把 local chunk 写入本 rank slot，
   插入 `wafer.instr.local_fence` 后沿 ring forward slot view；`direct` 每个 phase 发送 local slot
-  给 `(rank+d)`，同时接收 `(rank-d)` 的 chunk 到contiguous staging并复制到对应result slot。全部received-slot
-  copy后必须再有final local fence；DTE wait不完成后续movement engine。DTE peer 仍是 logical rank，SPM offset、
-  physical endpoint、DTE id 和 packet field 留给后续 planning / ABI 边界。
-- tile-region-to-instr 的 V0 all-reduce lowering 支持 full-buffer ring reduce 和 binomial tree。
-  `ring` 先把 input copy 到 accumulator 和 forward staging buffer，`local_fence` 后每步 DTE send
-  forward buffer、recv 到 staging buffer、wait token，再用 `wafer.instr.elementwise` 做 sum/max/min
-  accumulation；最终accumulation在resident consumer读取前也必须有local fence。下一步 forward 的是刚收到的
-  partial，不是 accumulator。`tree` 先 reduce 到group-local root 0，再 reverse broadcast final accumulator；
-  本地accumulation和accumulator被DTE读取前需要local fence，纯receive由matching DTE wait完成。
+  给semantic group-index cyclic round中的peer，同时从对应peer接收chunk到contiguous staging并复制到result slot；
+  Direct不调用有界topology Ring搜索。
+  全部received-slot copy后必须再有final local fence；DTE wait不完成后续movement engine。DTE peer仍是logical rank，
+  SPM offset、physical endpoint、DTE id和packet field留给后续planning/ABI边界。
+- tile-region-to-instr 的 all-reduce Ring是标准`P-1`轮chunked reduce-scatter加`P-1`轮all-gather，每条message
+  只承载`B/P` chunk。reduce阶段wait后显式sum/max/min并fence；gather阶段必须先收进独立recv-buffer chunk，
+  joint wait后再copy到accumulator slot并fence，不能让同时进行的send/recv共享一个allocation root。Tree在
+  `rank_group`连续区间上做interval DP，求中序严格保持group次序的minimum-total-shortest-hop ordered binary
+  tree；每node按left-subtree、local operand、right-subtree累计，再沿reverse tree broadcast。它不是MST加center，
+  也不使用root 0、XOR/binomial或固定rank邻接。该ordered Tree可用于floating collective；current cyclic Ring
+  reduction只对integer生成，直到production IR携带其leaf permutation的numeric permission。
 - tile-region-to-instr 的 V0 reduce-scatter lowering 使用 full input + local slot result 表示：
   structured task materializer不预切当前rank slot，`wafer.tile.reduce_scatter`显式携带scatter `axis`，
-  instruction lowering 从 full input 派生 per-target slot `memref.subview`，按 phase-ordered
-  all-to-owner unicast 生成 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`，wait 后用
-  `wafer.instr.elementwise` 把 recv contribution 累计到 local accumulator；每次累计后都要local fence，包括
-  交给resident consumer前的最后一次。
+  Direct lowering从full input派生per-target slot `memref.subview`并执行all-to-owner；Ring按topology-derived
+  cycle执行`P-1`轮result-sized chunk转发与显式local reduction。两者都在wait后用
+  `wafer.instr.elementwise`累计并在partial复用或resident consumer前local fence；不能形成连续非零typed chunk时
+  只拒绝Ring clone，保留Direct baseline。
+- singleton logical all-gather/reduce-scatter/all-reduce在tensor-program到tile-region入口折叠为resident identity，
+  早于channel、combiner、recv allocation和`wafer.tile.*`通信op；Tile communication IR仍只表示group size大于一
+  的真实跨rank协议。
 - 通用 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。裸的 `tx8` / `tx81` 不能作为 dialect、pipeline、pass、fixture 或可推断字段的
   主线命名；硬件/依赖逆向事实和tasks/14 closed registry中的opaque canonical profile key例外。例如

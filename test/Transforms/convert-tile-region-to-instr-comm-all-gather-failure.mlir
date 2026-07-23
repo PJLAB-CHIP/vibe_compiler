@@ -1,5 +1,12 @@
 // RUN: not wafer-opt --wafer-convert-tile-region-to-instr %s 2>&1 | FileCheck %s
 
+wafer.target.topology @default
+    {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+     tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+wafer.execution.mesh @default_mesh
+    {topology = @default, axes = ["rank"], shape = array<i64: 2>,
+     policy = "all_available", endpoints = array<i64>}
+
 func.func @reject_all_gather_aligned_layout(
     %boundary: memref<8xf32, #wafer.memory<ddr, tensor>>) {
   %region = wafer.tile.region(%boundary

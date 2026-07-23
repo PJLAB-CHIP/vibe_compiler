@@ -360,7 +360,7 @@ distribution/factorization；它们由06在structured actual clone上选择，�
 compute也必须是普通typed ops。lowering不读取“已选择numeric mechanism”attr，也不重新选择另一代数形式。
 
 generic online reduction在有明确source pattern、state/update/finalize/finalize-order合同前保持unsupported；non-GEMM FMA
-contraction在有显式fused selected op/field及11/14/17 consumer前保持unsupported。二者由Q32.N Later gate拥有；当前target固定
+contraction在有显式fused selected op/field及11/14/17 consumer前保持unsupported。二者由当前Q32.N gate拥有；target固定
 GEMM FMA profile和source `contract` fact都不能单独授权source mul+add contraction。
 
 floating reassociation/tree同样由Q32.N拥有：当前production StableHLO source没有标准fast-math permission vertical，IR-local

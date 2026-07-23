@@ -3,7 +3,7 @@
 状态：2026-07-22同步Q6.B configured-board gate；rank-one、kernel-grid、model和cluster Direct DTE已按本文
 完成真实板端execution evidence，Q22.C更广板端numeric correlation仍为独立later gate。保留Q32.V typed
 target-capability vertical、Q31标准7B单block多seed数值证据及已完成Q22.N/B/L/H/S/V和Q22 model-only汇总；
-Q32.T、Q32.N与Q3.6 Count保持later独立合同。
+Q32.N已进入当前实施队列；Q32.T与Q3.6 Count保持later独立合同。
 本文是跨stage稳定验证合同，不是`tasks/plans/`中的动态实施计划。它拥有完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
 
@@ -133,14 +133,51 @@ performance；board单case不是scale或全输入域完成。
 `check-wafer`只构建unit executable而未执行属于gate bug，必须修复。feature-inverse disabled test在enabled build
 中unsupported可以接受，但unsupported名单必须显式展示。
 
+### 3.1 Managed Full-Feature Dependency Gate
+
+StableHLO/XLA source、framework importer和target-model依赖属于configured compiler能力，不能把依赖未启用产生的
+大批`unsupported`计作主线通过。其稳定合同为：
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  WaferDependencyVersions.cmake中的单点版本/摘要、pinned LLVM/StableHLO/Shardy/OpenXLA/PyTorch-XLA源码，
+  importer Python环境、managed Bazel，以及numeric/oneDNN/SystemC canonical dependency records。
+- Current stage responsibility:
+  从pinned PyTorch/XLA checkout构建可导入的torch_xla/_XLAC runtime，构建pinned-XLA SPMD helper，
+  验证三个model dependency records，并在同一个consumer配置中显式启用frontend、SPMD、framework importer、
+  numeric、bulk和SystemC feature。
+- Output artifact / IR:
+  可重放的full-feature build配置及其feature清单、source-backed importer/SPMD/target-model测试结果和显式
+  unsupported/skipped清单；依赖构建产物不是compiler IR或package artifact。
+- Downstream consumer:
+  Q15/Q20/Q21 source-to-structured-program链、Q22 numeric/bulk/SystemC model链及依赖这些入口的后续compiler gate。
+- User-level driver / named pipeline:
+  tools/bootstrap_deps.py的受管依赖入口、tools/build_pytorch_xla_runtime.py、
+  tools/build_xla_spmd_partitioner_helper.py，以及配置后的check-wafer/lit/CTest入口。
+- Explicit non-goals:
+  不允许CMake配置期联网或fallback到ambient Python/Bazel/system package；不把prebuilt torch_xla wheel、
+  单独import smoke或feature-off结果当作full-feature纵向证据；不执行板卡。
+- Completion gate:
+  受管版本/record自检和source-built runtime import通过；full-feature配置中所有因StableHLO、Shardy、
+  PyTorch/XLA、XLA helper、numeric、bulk或SystemC缺失而分类的主线测试均实际执行，只有对应
+  feature-inverse negative可保持unsupported；独立feature-off配置继续证明预期unsupported清单和core link closure。
+  两个配置都记录fresh discovered/passed/failed/unsupported/skipped数量，不在本合同预填尚未重放的数字。
+```
+
+full-feature和feature-off是互补证据：前者证明optional链真实可用，后者证明core没有反向泄漏依赖。审计必须顺序运行
+统一测试入口和`lit --show-unsupported`，不能只比较总数，也不能并发写同一个lit output tree。任何required case在
+full-feature配置仍因依赖feature unavailable而unsupported时，本gate未闭合。
+
 ## 4. Q0 / Q0.L Target Correctness Gates
 
 ### 4.1 Complete Traversal
 
 - static elementwise/GEMM覆盖一个tile、多个整tile和非整除tail；
-- multi-output和受数值合法性约束的single-axis reduction split：generic floating需要exact single combiner及
-  `fastmath<reassoc,nnan,ninf,nsz>`，named floating matmul保持完整K，integer只覆盖已证明的modular add和
-  signed min/max；
+- multi-output和受数值合法性约束的single-axis reduction split：当compiler在一个rank内额外建立多个partial时，
+  generic floating需要exact single combiner及`fastmath<reassoc,nnan,ninf,nsz>`，named floating matmul保持完整K，
+  integer只覆盖已证明的modular add和signed min/max；这个门槛不适用于保持`rank_group`中序的StableHLO collective
+  implementation tree；
 - 每个output element all-and-only一次，无gap/overlap；
 - candidate representative只作筛选，accepted IR包含全部traversal；
 - 放大shape不能只提交first tile。
@@ -326,7 +363,7 @@ Q29数字保留为历史实现基线，不能替代Q32 fresh gate。
   implementation materialization/absorption、encoding/view/materialization、zero-copy/current DMA/GS/staged及Q32.V route、
   partial-compatible fanout与immutable-input reuse、movement/resident-cut elimination、current static
   buffering/resource-aware ready-order、direct/ring/tree collective expansion、whole-tensor share-vs-recompute、static
-  loop-invariant hoist、fixed Cx/NCx encoding absorption，以及reassociation、显式reduction tree、algebraic
+  loop-invariant hoist、fixed Cx/NCx encoding absorption，以及reassociation、显式rank-local reduction tree、algebraic
   distribution/factorization的integer-domain exact/modular variants各自proof-gated rewrite。每一row至少有一个通用source发生mutation并通过完整downstream gate；
 - 功能采用按三关独立取证：Q32.M要求shared candidate owner在Q32.B production-shaped seam从Q15 source发现机会、修改
   actual clone并形成exact-gate passing candidate；Q32.S要求该producer进入同一rank frontier和whole-variant selection，并至少有一个
@@ -335,14 +372,14 @@ Q29数字保留为历史实现基线，不能替代Q32 fresh gate。
 - share-vs-recompute分别覆盖share winner与dependent-region recompute winner，后者增加的logical work和减少的movement/live bytes
   都从final IR收集；loop hoist覆盖winner中dominant loop-external SSA value及延长lifetime后的placement；fixed Cx/NCx absorption
   current只覆盖GEMM/batched GEMM，证明其compute/Instr直接消费existing encoding且显式layout/GS movement真实消失；
-  reassociation、显式reduction tree和algebraic distribution/factorization的integer-domain exact/modular variants逐项覆盖有proof的winner及无proof barrier，
+  reassociation、显式rank-local reduction tree和algebraic distribution/factorization的integer-domain exact/modular variants逐项覆盖有proof的winner及无proof barrier，
   不能用单个numeric正例合并验收；
 - fixed Cx/NCx absorption differential由本集成gate构造两份分别通过完整downstream gate的artifact：direct winner与显式
   materialization baseline分别交给tasks/17执行，再比较logical/numeric result及所有consumer-observable defined bytes。两者
   各自的`InvalidLaneState`只需满足同一最终consumer precondition，无需相同；unobservable padding可以不同，只有consumer要求
   padding可观察且defined时才逐byte比较，canary始终不变；
-- floating reassociation/tree、generic online reduction、non-GEMM FMA contraction及超出current integer-domain exact/modular子集的algebraic
-  distribution/factorization由Q32.N Later gate拥有。
+- floating rank-local algebraic reassociation/reduction-tree rewrite、generic online reduction、non-GEMM FMA contraction及超出current integer-domain exact/modular子集的algebraic
+  distribution/factorization由当前Q32.N gate拥有。
   在source predicate、显式selected SSA/SCF或fused op、Tile→Instr→TargetCall/必要ABI→SystemC纵向闭合前，production candidate
   必须不存在；target固定FMA profile或手写`wafer-opt`正例不能替代该纵向；
 - selected tile IR通过MLIR `DialectConversion`和declared legality转换成complete-rank `wafer.instr.*`。
@@ -1144,6 +1181,86 @@ clean/invalidate。每轮均完成allocation/H2D/load/prepare/main/status D2H/ou
 `9248M / 65536M`、0% utilization、无进程的执行前基线，全程没有retry/reset/power。由此Q6.B的Direct DTE
 placement/readiness/completion和重复稳定性gate闭合。同一status-v2批次的fresh host gate为379/379 unit、
 214 lit passed + 10 feature-configured unsupported、Direct DTE production no-card与outer-deadline 2/2；hardware CTest为1/1。
+
+### 12.1 Full-4096 K-Sharded GEMM Board Vertical
+
+Q35消费已经闭合的Q15 row/contracting SPMD、Q32 physical-dataflow synthesis和Q6.B cluster Direct DTE provider，
+不修改这三层协议。固定验证case为f16
+`A[4096,4096] x B[4096,4096] -> C[4096,4096]`：frontend在两个contracting operand上显式标记16-way K
+sharding，helper必须产生每rank `4096x256 x 256x4096`的完整local-K GEMM和replicated `4096x4096`
+sum all-reduce。named floating GEMM的local K=256不得再被candidate planner拆成多个partial；M/N traversal则必须由
+production tiling覆盖全部4096x4096 output。
+
+本case每rank的2 MiB lhs shard与2 MiB rhs shard不能同时作为完整SPM resident工作集，32 MiB output也不能作为完整
+SPM resident buffer；compiler成功只在complete traversal、fixed-capacity SPM planning和post-memory Direct DTE
+acceptance均通过时成立。验证必须从current
+StableHLO program directory经`wafer-compile`完整形成schema-v5/status-v2、one-shared-ELF cluster package，并证明：
+
+- 16个K slice无重叠、无缺口且完整覆盖global K；output boundary为16份replicated完整tensor；
+- terminal all-reduce由其`TilingInterface`产生与local GEMM output一致的M/N tile；complete compact traversal覆盖
+  all-and-only main tile及存在时的static tail并显式拼接完整output，不能把tiled GEMM重新汇入full-buffer collective；
+- selected program的全部SPM allocation落在`[65536, 3080192)`，local GEMM completion/fence支配DTE send source，
+  recv wait支配collective consumer和output writeback；16个rank的collective loop domain/order一致，任一tile的issue/wait/
+  local fence在下一dynamic communication instance前闭合；
+- 实际GEMM instruction的lhs/rhs/result storage format均为F16，local K保持256且不发射F32 operand/result GEMM；
+  本case的raw exact依赖既有numeric semantic profile规定的F32 fused accumulator、positive-zero初始化、increasing-K
+  和最终F16 RNE写回，而不是假设逐步F16累加也相等；payload使用f16可精确表示的有界二进制缩放值域，
+  `A=(rank+1+(m mod 17))/4096`、`B=1+(n mod 19)`；17/19与selected tile stride互素且周期大于对应
+  tile数，使每个rank和tile起点都可区分，漏掉、重复或错配任一rank/tile必然改变output；
+  冻结expected对16份完整32 MiB output逐字节比较，不以rank 0、抽样、hash或容差代替；
+- production no-card先通过，armed hardware CTest再执行至少两次fresh allocation/invocation；每次16个status-v2均为
+  `SUCCESS=1`、16份output exact、cleanup完整，执行后只读resource/inventory回到前置基线；
+- outer timeout只终止当前one-shot进程并停止后续device effect；不retry、不自动reset/power。trusted completion、D2H和
+  cleanup后的clean numeric mismatch只记compiler/runtime correctness失败，不要求重启。
+
+该证据只覆盖冻结shape、dtype、payload和绑定environment的workload-level board execution。它不新增model launch ABI，
+不声明type-6/type-7 model+Direct DTE、physical tile coordinate、通用GEMM numeric profile、Q22.C完成、性能或timing。
+稳定pipeline contract和实施checkpoint见`tasks/plans/k-sharded-gemm-board-vertical.md`。
+
+2026-07-22首次Q35 live evidence尚未通过本gate：production no-card通过，selected ELF确认`M=256,K=256,N=512`、
+每rank16×8 traversal和262144-byte per-tile DTE；armed invocation完成trusted terminal、D2H和cleanup后，在首个output
+resource的byte 0得到`expected=0x40, actual=0x46`。执行后只读设备资源回到`9248M / 65536M`、0% utilization、无进程，
+全程未retry/reset/power，因此按本合同归类为clean compiler/runtime numeric mismatch而非provider poison。当前IR还确认
+GEMM使用Cx，而all-reduce的两级lowering均强制Tensor；该layout round-trip必须与GEMM orientation/segment和collective
+accumulation分别隔离，尚不能从首字节差异直接定责。完整命令、payload digest和后续检查点由Q35实施计划记录。
+
+### 12.2 Topology-Aware Collective Lowering Gate
+
+Q36是compiler/no-card correctness与selection gate，不以板卡、PMU或固定TX81坐标作为完成前置。必须证明：
+
+- topology analysis从current typed topology/mesh而非target profile名或logical rank算术解析placement；覆盖规则
+  mesh/torus、all-available、explicit permutation、unavailable detour、unreachable/overflow失败；
+- All-Reduce Ring对`P`个rank的静态整分payload实际产生`P-1`轮reduce-scatter和`P-1`轮all-gather，每消息只含
+  一个chunk，全卡payload为`2*(P-1)*B`；不得把旧full-buffer circulate仅重命名；
+- standalone Reduce-Scatter Ring实际产生`P-1`轮固定topology前后继通信，每消息一个result-sized chunk，
+  每rank执行`P-1`次显式local reduction/fence并最终得到其local group-index owned slice；任意
+  `rank_group`顺序下send/recv message identity必须跨rank一一匹配，同时保留Direct baseline；
+- singleton All-Gather、Reduce-Scatter与All-Reduce在logical-to-tile边界作为identity消除；即使没有
+  `channel_id`也不得生成buffer-level collective、recv staging或DTE issue；
+- All-Reduce Tree由current shortest-hop matrix和`rank_group`通过有界interval DP产生；每个subtree覆盖连续
+  group-index区间、每node至多一个left child和一个right child，全树中序遍历严格等于`rank_group`。analysis的
+  lexicographic objective依次验证total edge hops、maximum root distance、summed root distance和deterministic
+  logical-rank/child tie breaks；
+  不能用MST加center、root 0、XOR/binomial或固定rank邻接替代；
+- Tree与Ring、Direct与Ring等每个参数点均形成complete-rank actual clone，并在共同Instr/SPM/DDR/message/
+  completion gate后比较；额外候选失败不破坏独立baseline；
+- All-to-All remote insert之后存在local visibility completion；Collective-Permute对remote incoming不先写
+  conflicting zero-fill，无incoming才按语义zero-fill，send source、recv/local result与consumer之间均有明确
+  wait/fence；
+- whole-card cost从canonical source rank、final send peer、static multiplicity和current topology fresh计算
+  payload injected bytes与minimum-hop link-byte demand；同payload不同peer edge能改变cost和统一winner，
+  overflow/缺失拓扑保持typed Unknown，不能降为0；
+- accepted instruction IR、target package和public CLI不保存Ring/Tree名、rank order、route、hop cost、candidate
+  ordinal或task编号；没有typed route contract时不声明directional link load、contention、cycle或timing；
+- 相关unit、lit及production-shaped rank-count=1/16 no-card真实执行。unsupported/skipped清单必须单列，
+  不用“构建成功”或单个IR fixture替代整条pipeline。
+
+保持`rank_group`中序的StableHLO collective Tree可直接用于f16/bf16/f32，不要求rank-local algebraic fast-math；
+对应测试必须检查实际left/local/right accumulation order。standard Ring会循环置换floating reduction leaf，只有
+logical op的numeric permission允许该次序，且独立numeric gate接受时才生成该候选；current没有这项production
+permission，因此浮点Ring为明确negative而Auto保留ordered Tree。Q36的静态minimum-hop结果不是Q9 cost calibration
+或Q22.C板端numeric correlation，不能由二者反向替代。完整施工checkpoint见
+`tasks/plans/topology-aware-collective-lowering.md`。
 
 环境诊断必须与compiler gate分开。qualification candidate必须与当前driver、public runtime、宿主boot-source firmware、
 运行中Kcore缓存version/status和module toolchain闭合；若没有device-RAM dump，不得声明运行中payload的byte identity。执行前

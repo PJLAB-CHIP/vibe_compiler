@@ -41,6 +41,9 @@ REQUIRED_KEYS = [
     "WAFER_TORCHVISION_VERSION",
     "WAFER_TORCH_XLA_PYTHON_VERSION",
     "WAFER_PYTORCH_XLA_COMMIT",
+    "WAFER_BAZEL_VERSION",
+    "WAFER_BAZEL_LINUX_X64_URL",
+    "WAFER_BAZEL_LINUX_X64_SHA256",
     "WAFER_PYTHON_LIT_VERSION",
     "WAFER_MINIMALLOC_COMMIT",
     "WAFER_MINIMALLOC_REPOSITORY",
@@ -316,6 +319,7 @@ def check_cmake_target_visibility() -> None:
         "absl-py==2.1.0",
         "pyyaml==6.0.1",
         "requests==2.32.3",
+        "wheel==0.44.0",
     ]:
         check_text_contains(REPO_ROOT / "requirements-importer.txt", requirement)
     if "torch_xla" in (REPO_ROOT / "requirements-importer.txt").read_text(encoding="utf-8"):

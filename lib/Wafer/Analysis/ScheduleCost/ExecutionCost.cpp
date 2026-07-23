@@ -115,6 +115,7 @@ static NoCCollectiveKind classifyCollective(DTEProtocolPhase phase) {
   case DTEProtocolPhase::AllGatherRing:
     return NoCCollectiveKind::AllGather;
   case DTEProtocolPhase::ReduceScatterDirect:
+  case DTEProtocolPhase::ReduceScatterRing:
     return NoCCollectiveKind::ReduceScatter;
   case DTEProtocolPhase::AllReduceRing:
   case DTEProtocolPhase::AllReduceTreeReduce:
@@ -336,7 +337,11 @@ static Quantity getTripCount(mlir::scf::ForOp loop) {
 
 class ProgramWalker {
 public:
-  explicit ProgramWalker(InstructionProgramCost &cost) : cost(cost) {}
+  ProgramWalker(
+      llvm::function_ref<void(mlir::Operation *, Quantity)> onInstruction,
+      llvm::function_ref<void()> onUnsupportedControlFlow)
+      : onInstruction(onInstruction),
+        onUnsupportedControlFlow(onUnsupportedControlFlow) {}
 
   void walkRoot(mlir::Operation *root) {
     if (mlir::isa<mlir::func::FuncOp>(root))
@@ -382,7 +387,7 @@ private:
     }
 
     if (mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp>(op)) {
-      collectInstructionCost(op, cost, multiplicity);
+      onInstruction(op, multiplicity);
       return;
     }
     if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op)) {
@@ -391,7 +396,7 @@ private:
               call, call.getCalleeAttr());
       if (!callee || callee.isDeclaration() ||
           !activeFunctions.insert(callee.getOperation()).second) {
-        markAllExecutionMetricsUnsupported();
+        onUnsupportedControlFlow();
         return;
       }
       walkRegion(callee.getBody(), multiplicity);
@@ -410,7 +415,25 @@ private:
                                  ScheduleCostReason::UnsupportedControlFlow)));
   }
 
-  void markAllExecutionMetricsUnsupported() {
+  llvm::function_ref<void(mlir::Operation *, Quantity)> onInstruction;
+  llvm::function_ref<void()> onUnsupportedControlFlow;
+  llvm::DenseSet<mlir::Operation *> activeFunctions;
+};
+
+} // namespace
+
+void walkInstructionProgram(
+    mlir::Operation *root,
+    llvm::function_ref<void(mlir::Operation *, Quantity)> onInstruction,
+    llvm::function_ref<void()> onUnsupportedControlFlow) {
+  ProgramWalker(onInstruction, onUnsupportedControlFlow).walkRoot(root);
+}
+
+void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
+  auto collect = [&](mlir::Operation *operation, Quantity multiplicity) {
+    collectInstructionCost(operation, cost, multiplicity);
+  };
+  auto markAllUnsupported = [&]() {
     auto mark = [](ScheduleCostMetric &metric) {
       degrade(metric, ScheduleCostKnowledge::Unsupported,
               ScheduleCostReason::UnsupportedControlFlow);
@@ -431,16 +454,8 @@ private:
       mark(metric);
     mark(cost.instructionCount);
     mark(cost.eventCount);
-  }
-
-  InstructionProgramCost &cost;
-  llvm::DenseSet<mlir::Operation *> activeFunctions;
-};
-
-} // namespace
-
-void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
-  ProgramWalker(cost).walkRoot(root);
+  };
+  walkInstructionProgram(root, collect, markAllUnsupported);
 }
 
 namespace {
@@ -524,20 +539,18 @@ analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
       if (!value)
         continue;
       unsigned &flags = accesses[value];
-      flags |= llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect()) ? 1u
-                                                                       : 0u;
-      flags |= llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect()) ? 2u
-                                                                         : 0u;
+      flags |=
+          llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect()) ? 1u : 0u;
+      flags |=
+          llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect()) ? 2u : 0u;
     }
     for (auto [value, flags] : accesses) {
       const BufferDependencyState &state = buffers[value];
       if (flags & 1u)
-        predecessorDepth =
-            std::max(predecessorDepth, state.lastWriterDepth);
+        predecessorDepth = std::max(predecessorDepth, state.lastWriterDepth);
       if (flags & 2u)
-        predecessorDepth =
-            std::max({predecessorDepth, state.lastWriterDepth,
-                      state.maximumReaderDepth});
+        predecessorDepth = std::max({predecessorDepth, state.lastWriterDepth,
+                                     state.maximumReaderDepth});
     }
 
     bool isFence = mlir::isa<SyncLocalFenceOp>(operation);
@@ -608,16 +621,14 @@ void collectDataDependencyDepth(mlir::Operation *root,
       return;
     }
     cost.dataDependencyDepth.value =
-        std::max(cost.dataDependencyDepth.value,
-                 facts->maximumDependencyDepth);
+        std::max(cost.dataDependencyDepth.value, facts->maximumDependencyDepth);
     add(cost.readyOrderPriorityInversions,
         Quantity{facts->readyPriorityInversions});
   });
   if (!sawFunction || unknown) {
     degrade(cost.dataDependencyDepth, ScheduleCostKnowledge::Unknown,
             ScheduleCostReason::UnsupportedControlFlow);
-    degrade(cost.readyOrderPriorityInversions,
-            ScheduleCostKnowledge::Unknown,
+    degrade(cost.readyOrderPriorityInversions, ScheduleCostKnowledge::Unknown,
             ScheduleCostReason::UnsupportedControlFlow);
   }
 }

@@ -1,6 +1,7 @@
 //===- Target LLVM lowering implementation -------------------------------===//
 
 #include "Target/LowerInstrToTargetLLVMInternal.h"
+#include "Wafer/Analysis/ExecutionTopologyAnalysis.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
@@ -39,80 +40,42 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
-#include <vector>
 
 namespace wafer::target_llvm_detail {
 
-static bool isUnavailableEndpoint(llvm::ArrayRef<int64_t> unavailable,
-                                  int64_t cardY, int64_t cardX, int64_t tileY,
-                                  int64_t tileX) {
-  for (size_t index = 0; index < unavailable.size(); index += 4)
-    if (unavailable[index] == cardY && unavailable[index + 1] == cardX &&
-        unavailable[index + 2] == tileY && unavailable[index + 3] == tileX)
-      return true;
-  return false;
-}
-
 mlir::FailureOr<DirectDTEEndpointDomain>
 resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp, int64_t logicalRank) {
-  ExecutionMeshOp mesh;
-  bool duplicateMesh = false;
-  moduleOp.walk([&](ExecutionMeshOp candidate) {
-    if (!mesh)
-      mesh = candidate;
-    else
-      duplicateMesh = true;
-  });
-  if (!mesh || duplicateMesh)
+  mlir::FailureOr<analysis::ExecutionTopologyAnalysis> topology =
+      analysis::ExecutionTopologyAnalysis::create(moduleOp);
+  if (mlir::failed(topology))
     return moduleOp.emitError()
-           << "unsupported_target_transport: Direct DTE requires exactly one "
-              "execution mesh";
-  TargetTopologyOp topology = moduleOp.lookupSymbol<TargetTopologyOp>(
-      mesh.getTopologyAttr().getValue());
-  if (!topology)
-    return mesh.emitError()
-           << "unsupported_target_transport: Direct DTE mesh references a "
-              "missing target topology";
-
-  llvm::ArrayRef<int64_t> cardGrid = topology.getCardGridAttr().asArrayRef();
-  llvm::ArrayRef<int64_t> tileGrid = topology.getTileGridAttr().asArrayRef();
-  llvm::ArrayRef<int64_t> unavailable =
-      topology.getUnavailableTilesAttr().asArrayRef();
-  if (cardGrid.size() != 2 || tileGrid.size() != 2 || cardGrid[0] != 1 ||
-      cardGrid[1] != 1)
-    return mesh.emitError()
+           << "unsupported_target_transport: Direct DTE requires one valid "
+              "execution topology and mesh";
+  llvm::ArrayRef<int64_t> cardGrid = topology->getCardGrid();
+  llvm::ArrayRef<int64_t> tileGrid = topology->getTileGrid();
+  if (cardGrid[0] != 1 || cardGrid[1] != 1)
+    return moduleOp.emitError()
            << "unsupported_target_transport: Direct DTE V0 requires one "
               "single-card execution domain";
 
   DirectDTEEndpointDomain domain;
   domain.logicalRank = logicalRank;
-  if (mesh.getPolicyAttr().getValue() == "all_available") {
-    for (int64_t tileY = 0; tileY < tileGrid[0]; ++tileY)
-      for (int64_t tileX = 0; tileX < tileGrid[1]; ++tileX)
-        if (!isUnavailableEndpoint(unavailable, 0, 0, tileY, tileX))
-          domain.rankToTile.push_back(tileY * tileGrid[1] + tileX);
-  } else if (mesh.getPolicyAttr().getValue() == "explicit") {
-    llvm::ArrayRef<int64_t> endpoints = mesh.getEndpointsAttr().asArrayRef();
-    for (size_t index = 0; index < endpoints.size(); index += 4) {
-      if (endpoints[index] != 0 || endpoints[index + 1] != 0)
-        return mesh.emitError()
-               << "unsupported_target_transport: Direct DTE V0 explicit "
-                  "endpoints must remain on one card";
-      domain.rankToTile.push_back(endpoints[index + 2] * tileGrid[1] +
-                                  endpoints[index + 3]);
-    }
-  } else {
-    return mesh.emitError()
-           << "unsupported_target_transport: unknown execution mesh policy";
+  for (const analysis::ExecutionEndpoint &endpoint :
+       topology->getRankEndpoints()) {
+    if (endpoint.cardY != 0 || endpoint.cardX != 0)
+      return moduleOp.emitError()
+             << "unsupported_target_transport: Direct DTE V0 endpoints must "
+                "remain on one card";
+    domain.rankToTile.push_back(endpoint.tileY * tileGrid[1] + endpoint.tileX);
   }
   if (logicalRank < 0 ||
       logicalRank >= static_cast<int64_t>(domain.rankToTile.size()))
-    return mesh.emitError()
+    return moduleOp.emitError()
            << "unsupported_target_transport: logical rank is outside the "
               "Direct DTE endpoint domain";
   for (int64_t tile : domain.rankToTile)
     if (tile < 0 || tile > std::numeric_limits<uint16_t>::max())
-      return mesh.emitError()
+      return moduleOp.emitError()
              << "target_abi_narrowing: Direct DTE tile endpoint must fit "
                 "uint16_t";
   return domain;

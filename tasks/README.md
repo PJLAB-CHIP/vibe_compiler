@@ -54,7 +54,15 @@
 
 ## 实施计划导航
 
-当前没有`doing`任务。Q6.B board runtime完成计划已归档为`tasks/archive/runtime-board.md`。Q32 integrated completion audit已归档为
+当前`doing`任务为Q32.N numeric algebraic extension，实施计划见
+`tasks/plans/numeric-algebraic-extension.md`。它把frontend strict/model-relaxed mode物化为标准fastmath，
+保留StableHLO dot/ordered-reduction typed语义，并让floating algebraic、K-split、communication leaf permutation和
+target FMA/accumulator按current IR与numeric profile逐项证明。Q36 topology-aware collective lowering已经闭合，
+证据归档为`tasks/archive/topology-aware-collective-lowering.md`。Q35 full-4096 K-sharded GEMM board vertical的
+前置已满足并处于`next`，实施计划仍为`tasks/plans/k-sharded-gemm-board-vertical.md`；恢复时继续复用Q6.B cluster
+Direct DTE路径验证large-shape M/N tiling与communication，不重开runtime ABI，也不单case完成Q22.C。
+Q6.B board runtime完成计划已归档为
+`tasks/archive/runtime-board.md`。Q32 integrated completion audit已归档为
 `tasks/archive/physical-dataflow-synthesis-completion-audit.md`，完成后的实施计划归档为
 `tasks/archive/physical-dataflow-synthesis.md`；Q32.G/S/M/V/B/R/I各checkpoint仍由对应独立归档记录保存详细变更和
 验证证据。Q34 static memory packing已归档为`tasks/archive/static-memory-packing.md`。这些计划和记录只保存施工checkpoint、

@@ -87,6 +87,8 @@ acceptWholeVariantResources(llvm::ArrayRef<mlir::ModuleOp> rankModules,
                            cost.aggregateNoC.aggregateTransmitBytes)) ||
       mlir::failed(requireAggregate("aggregate NoC receive bytes",
                                     cost.aggregateNoC.aggregateReceiveBytes)) ||
+      mlir::failed(requireAggregate("minimum-hop link-byte demand",
+                                    cost.minimumHopLinkByteDemand)) ||
       mlir::failed(requireAggregate("aggregate instruction count",
                                     cost.aggregateInstructionCount)) ||
       mlir::failed(requireAggregate("aggregate event count",

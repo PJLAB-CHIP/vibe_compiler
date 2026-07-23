@@ -57,7 +57,7 @@ protected:
 };
 
 TEST_F(StructuredSchedulingScopeTest,
-       CutsTerminalFullTraversalOnlyRootAfterTiledProducer) {
+       KeepsShapePreservingAllReduceWithTiledProducer) {
   auto module = parse(R"mlir(
 module {
   func.func @terminal_collective(
@@ -88,26 +88,23 @@ module {
   ScopeDiscoveryPolicy policy{/*includeSharedInputPeers=*/false,
                               /*allowCrossShapeDataflow=*/true,
                               /*cutTerminalFullTraversalOnlyRoots=*/true};
-  llvm::SmallVector<StructuredSchedulingScope, 2> scopes;
+  llvm::SmallVector<StructuredSchedulingScope, 1> scopes;
   ASSERT_TRUE(mlir::succeeded(
       wafer::structured_scheduler::discoverStructuredSchedulingScopes(
           *module, scopes, policy)));
-  ASSERT_EQ(scopes.size(), 2u);
-  ASSERT_EQ(scopes[0].orderedOps.size(), 1u);
-  ASSERT_EQ(scopes[1].orderedOps.size(), 1u);
+  ASSERT_EQ(scopes.size(), 1u);
+  ASSERT_EQ(scopes[0].orderedOps.size(), 2u);
 
   EXPECT_EQ(wafer::classifyCandidateTraversalRoot(scopes[0].orderedOps[0]),
             CandidateTraversalRootCapability::Tiled);
-  EXPECT_EQ(wafer::classifyCandidateTraversalRoot(scopes[1].orderedOps[0]),
-            CandidateTraversalRootCapability::FullTraversalOnly);
+  EXPECT_EQ(wafer::classifyCandidateTraversalRoot(scopes[0].orderedOps[1]),
+            CandidateTraversalRootCapability::Tiled);
   EXPECT_EQ(getScopeTaskCapability(scopes[0]),
             CandidateTraversalRootCapability::Tiled);
-  EXPECT_EQ(getScopeTaskCapability(scopes[1]),
-            CandidateTraversalRootCapability::FullTraversalOnly);
 }
 
 TEST_F(StructuredSchedulingScopeTest,
-       KeepsCollectiveInternalWhenTiledConsumerIsTerminal) {
+       SeparatesTiledCollectiveBeforeDownstreamConsumer) {
   auto module = parse(R"mlir(
 module {
   func.func @collective_epilogue(
@@ -138,18 +135,25 @@ module {
   ScopeDiscoveryPolicy policy{/*includeSharedInputPeers=*/false,
                               /*allowCrossShapeDataflow=*/true,
                               /*cutTerminalFullTraversalOnlyRoots=*/true};
-  llvm::SmallVector<StructuredSchedulingScope, 1> scopes;
+  llvm::SmallVector<StructuredSchedulingScope, 2> scopes;
   ASSERT_TRUE(mlir::succeeded(
       wafer::structured_scheduler::discoverStructuredSchedulingScopes(
           *module, scopes, policy)));
-  ASSERT_EQ(scopes.size(), 1u);
-  EXPECT_EQ(scopes.front().orderedOps.size(), 2u);
-  EXPECT_EQ(getScopeTaskCapability(scopes.front()),
+  ASSERT_EQ(scopes.size(), 2u);
+  ASSERT_EQ(scopes[0].orderedOps.size(), 1u);
+  ASSERT_EQ(scopes[1].orderedOps.size(), 1u);
+  EXPECT_TRUE(mlir::isa<wafer::LinalgExtCollectiveAllReduceOp>(
+      scopes[0].orderedOps.front()));
+  EXPECT_TRUE(
+      mlir::isa<mlir::linalg::GenericOp>(scopes[1].orderedOps.front()));
+  EXPECT_EQ(getScopeTaskCapability(scopes[0]),
+            CandidateTraversalRootCapability::Tiled);
+  EXPECT_EQ(getScopeTaskCapability(scopes[1]),
             CandidateTraversalRootCapability::Tiled);
 }
 
 TEST_F(StructuredSchedulingScopeTest,
-       KeepsCollectiveInternalThroughSingleUseStaticReshape) {
+       SeparatesTiledCollectiveBeforeStaticReshapeConsumer) {
   auto module = parse(R"mlir(
 module {
   func.func @collective_reshape_epilogue(
@@ -183,18 +187,22 @@ module {
   ScopeDiscoveryPolicy policy{/*includeSharedInputPeers=*/false,
                               /*allowCrossShapeDataflow=*/true,
                               /*cutTerminalFullTraversalOnlyRoots=*/true};
-  llvm::SmallVector<StructuredSchedulingScope, 1> scopes;
+  llvm::SmallVector<StructuredSchedulingScope, 2> scopes;
   ASSERT_TRUE(mlir::succeeded(
       wafer::structured_scheduler::discoverStructuredSchedulingScopes(
           *module, scopes, policy)));
-  ASSERT_EQ(scopes.size(), 1u);
-  ASSERT_EQ(scopes.front().orderedOps.size(), 3u);
+  ASSERT_EQ(scopes.size(), 2u);
+  ASSERT_EQ(scopes[0].orderedOps.size(), 1u);
   EXPECT_TRUE(mlir::isa<wafer::LinalgExtCollectiveAllReduceOp>(
-      scopes.front().orderedOps[0]));
+      scopes[0].orderedOps.front()));
+  ASSERT_EQ(scopes[1].orderedOps.size(), 2u);
   EXPECT_TRUE(
-      mlir::isa<mlir::tensor::ExpandShapeOp>(scopes.front().orderedOps[1]));
-  EXPECT_TRUE(mlir::isa<mlir::linalg::GenericOp>(scopes.front().orderedOps[2]));
-  EXPECT_EQ(getScopeTaskCapability(scopes.front()),
+      mlir::isa<mlir::tensor::ExpandShapeOp>(scopes[1].orderedOps.front()));
+  EXPECT_TRUE(
+      mlir::isa<mlir::linalg::GenericOp>(scopes[1].orderedOps.back()));
+  EXPECT_EQ(getScopeTaskCapability(scopes[0]),
+            CandidateTraversalRootCapability::Tiled);
+  EXPECT_EQ(getScopeTaskCapability(scopes[1]),
             CandidateTraversalRootCapability::Tiled);
 }
 
@@ -252,7 +260,7 @@ module {
   EXPECT_TRUE(mlir::isa<wafer::LinalgExtCollectiveAllReduceOp>(
       scopes.front().orderedOps.front()));
   EXPECT_EQ(getScopeTaskCapability(scopes.front()),
-            CandidateTraversalRootCapability::FullTraversalOnly);
+            CandidateTraversalRootCapability::Tiled);
 }
 
 TEST_F(StructuredSchedulingScopeTest,
@@ -299,7 +307,7 @@ module {
   EXPECT_TRUE(mlir::isa<wafer::LinalgExtCollectiveAllReduceOp>(
       scopes[0].orderedOps.front()));
   EXPECT_EQ(getScopeTaskCapability(scopes[0]),
-            CandidateTraversalRootCapability::FullTraversalOnly);
+            CandidateTraversalRootCapability::Tiled);
   ASSERT_EQ(scopes[1].orderedOps.size(), 2u);
   EXPECT_TRUE(
       mlir::isa<mlir::tensor::CollapseShapeOp>(scopes[1].orderedOps.front()));
@@ -307,7 +315,7 @@ module {
 }
 
 TEST_F(StructuredSchedulingScopeTest,
-       KeepsSingletonCollectiveAsFullTraversalOnlyTask) {
+       KeepsSingletonShapePreservingAllReduceAsTiledTask) {
   auto module = parse(R"mlir(
 module {
   func.func @singleton_collective(
@@ -335,14 +343,79 @@ module {
   ASSERT_EQ(scopes.size(), 1u);
   ASSERT_EQ(scopes.front().orderedOps.size(), 1u);
   EXPECT_EQ(getScopeTaskCapability(scopes.front()),
-            CandidateTraversalRootCapability::FullTraversalOnly);
+            CandidateTraversalRootCapability::Tiled);
   EXPECT_EQ(
       wafer::classifyCandidateTraversalRoot(scopes.front().orderedOps.front()),
-      CandidateTraversalRootCapability::FullTraversalOnly);
+      CandidateTraversalRootCapability::Tiled);
   auto returnOp = mlir::cast<mlir::func::ReturnOp>(
       scopes.front().orderedOps.front()->getBlock()->getTerminator());
   EXPECT_EQ(wafer::classifyCandidateTraversalRoot(returnOp.getOperation()),
             CandidateTraversalRootCapability::Unsupported);
+}
+
+TEST_F(StructuredSchedulingScopeTest,
+       KeepsAxisChangingCollectiveFullTraversalOnly) {
+  auto module = parse(R"mlir(
+module {
+  func.func @singleton_all_gather(
+      %input: tensor<4xf32>, %out: tensor<8xf32>) -> tensor<8xf32> {
+    %collective = wafer.linalg_ext.collective.all_gather
+        ins(%input : tensor<4xf32>) outs(%out : tensor<8xf32>)
+        {axis = 0 : i64, channel_id = 4 : i64,
+         rank_group = array<i64: 0, 1>} -> tensor<8xf32>
+    return %collective : tensor<8xf32>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  ScopeDiscoveryPolicy policy{/*includeSharedInputPeers=*/false,
+                              /*allowCrossShapeDataflow=*/true,
+                              /*cutTerminalFullTraversalOnlyRoots=*/true};
+  llvm::SmallVector<StructuredSchedulingScope, 1> scopes;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::structured_scheduler::discoverStructuredSchedulingScopes(
+          *module, scopes, policy)));
+  ASSERT_EQ(scopes.size(), 1u);
+  ASSERT_EQ(scopes.front().orderedOps.size(), 1u);
+  EXPECT_EQ(getScopeTaskCapability(scopes.front()),
+            CandidateTraversalRootCapability::FullTraversalOnly);
+  EXPECT_EQ(
+      wafer::classifyCandidateTraversalRoot(scopes.front().orderedOps.front()),
+      CandidateTraversalRootCapability::FullTraversalOnly);
+}
+
+TEST_F(StructuredSchedulingScopeTest,
+       KeepsShapePreservingCollectivePermuteFullTraversalOnly) {
+  auto module = parse(R"mlir(
+module {
+  func.func @singleton_collective_permute(
+      %input: tensor<4xf16>, %out: tensor<4xf16>) -> tensor<4xf16> {
+    %collective = wafer.linalg_ext.collective.collective_permute
+        ins(%input : tensor<4xf16>) outs(%out : tensor<4xf16>)
+        {channel_id = 5 : i64,
+         source_target_pairs = array<i64: 0, 1, 1, 0>}
+        -> tensor<4xf16>
+    return %collective : tensor<4xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  ScopeDiscoveryPolicy policy{/*includeSharedInputPeers=*/false,
+                              /*allowCrossShapeDataflow=*/true,
+                              /*cutTerminalFullTraversalOnlyRoots=*/true};
+  llvm::SmallVector<StructuredSchedulingScope, 1> scopes;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::structured_scheduler::discoverStructuredSchedulingScopes(
+          *module, scopes, policy)));
+  ASSERT_EQ(scopes.size(), 1u);
+  ASSERT_EQ(scopes.front().orderedOps.size(), 1u);
+  EXPECT_EQ(getScopeTaskCapability(scopes.front()),
+            CandidateTraversalRootCapability::FullTraversalOnly);
+  EXPECT_EQ(
+      wafer::classifyCandidateTraversalRoot(scopes.front().orderedOps.front()),
+      CandidateTraversalRootCapability::FullTraversalOnly);
 }
 
 } // namespace

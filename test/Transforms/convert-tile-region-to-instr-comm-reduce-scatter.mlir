@@ -48,34 +48,40 @@ module {
 // CHECK: %[[INPUT:.+]] = memref.alloc
 // CHECK: %[[RECV:.+]] = memref.alloc
 // CHECK: %[[ACC:.+]] = memref.alloc
-// CHECK: %[[LOCAL_SLOT:.+]] = memref.subview %[[INPUT]][4] [4] [1]
-// CHECK: wafer.instr.gather_scatter %[[LOCAL_SLOT]] to %[[ACC]]
-// CHECK-SAME: byte_count = 16 : i64
 // CHECK: wafer.instr.local_fence
-// CHECK: %[[SLOT2:.+]] = memref.subview %[[INPUT]][8] [4] [1]
-// CHECK: %[[SEND0:.+]] = wafer.instr.dte_send %[[SLOT2]]
-// CHECK-SAME: message = #wafer.dte_message<communication = 18, phase = reduce_scatter_direct, round = 1, slice = 2>
-// CHECK-SAME: peer = 2 : i64
 // CHECK: %[[RECV0:.+]] = wafer.instr.dte_recv %[[RECV]]
-// CHECK-SAME: message = #wafer.dte_message<communication = 18, phase = reduce_scatter_direct, round = 1, slice = 1>
+// CHECK-SAME: message = #wafer.dte_message<communication = 18, phase = reduce_scatter_direct, round = 0, slice = 1>
 // CHECK-SAME: peer = 0 : i64
-// CHECK: wafer.instr.dte_wait %[[SEND0]], %[[RECV0]]
-// CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]
-// CHECK-NEXT: wafer.instr.local_fence
-// CHECK: %[[SLOT3:.+]] = memref.subview %[[INPUT]][12] [4] [1]
-// CHECK: %[[SEND1:.+]] = wafer.instr.dte_send %[[SLOT3]]
-// CHECK-SAME: peer = 3 : i64
-// CHECK: %[[RECV1:.+]] = wafer.instr.dte_recv %[[RECV]]
-// CHECK-SAME: peer = 3 : i64
-// CHECK: wafer.instr.dte_wait %[[SEND1]], %[[RECV1]]
-// CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]
+// CHECK: wafer.instr.dte_wait %[[RECV0]]
+// CHECK: wafer.instr.gather_scatter %[[RECV]] to %[[ACC]]
+// CHECK-SAME: byte_count = 16 : i64
 // CHECK-NEXT: wafer.instr.local_fence
 // CHECK: %[[SLOT0:.+]] = memref.subview %[[INPUT]][0] [4] [1]
-// CHECK: %[[SEND2:.+]] = wafer.instr.dte_send %[[SLOT0]]
+// CHECK: %[[SEND0:.+]] = wafer.instr.dte_send %[[SLOT0]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 18, phase = reduce_scatter_direct, round = 1, slice = 0>
 // CHECK-SAME: peer = 0 : i64
-// CHECK: %[[RECV2:.+]] = wafer.instr.dte_recv %[[RECV]]
+// CHECK: %[[LOCAL_SLOT:.+]] = memref.subview %[[INPUT]][4] [4] [1]
+// CHECK: %[[SLOT2:.+]] = memref.subview %[[INPUT]][8] [4] [1]
+// CHECK: %[[SEND1:.+]] = wafer.instr.dte_send %[[SLOT2]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 18, phase = reduce_scatter_direct, round = 1, slice = 2>
 // CHECK-SAME: peer = 2 : i64
-// CHECK: wafer.instr.dte_wait %[[SEND2]], %[[RECV2]]
+// CHECK: %[[SLOT3:.+]] = memref.subview %[[INPUT]][12] [4] [1]
+// CHECK: %[[SEND2:.+]] = wafer.instr.dte_send %[[SLOT3]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 18, phase = reduce_scatter_direct, round = 1, slice = 3>
+// CHECK-SAME: peer = 3 : i64
+// CHECK: wafer.instr.dte_wait %[[SEND0]], %[[SEND1]], %[[SEND2]]
+// CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[LOCAL_SLOT]] into %[[ACC]]
+// CHECK-NEXT: wafer.instr.local_fence
+// CHECK: %[[RECV1:.+]] = wafer.instr.dte_recv %[[RECV]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 18, phase = reduce_scatter_direct, round = 2, slice = 1>
+// CHECK-SAME: peer = 2 : i64
+// CHECK: wafer.instr.dte_wait %[[RECV1]]
+// CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]
+// CHECK-NEXT: wafer.instr.local_fence
+// CHECK: %[[RECV2:.+]] = wafer.instr.dte_recv %[[RECV]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 18, phase = reduce_scatter_direct, round = 3, slice = 1>
+// CHECK-SAME: peer = 3 : i64
+// CHECK: wafer.instr.dte_wait %[[RECV2]]
 // CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]
 // CHECK-NEXT: wafer.instr.local_fence
 // CHECK-NOT: wafer.tile.reduce_scatter

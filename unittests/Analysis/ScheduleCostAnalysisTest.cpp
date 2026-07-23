@@ -14,10 +14,12 @@
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
 #include <memory>
 #include <optional>
+#include <string>
 
 namespace {
 
@@ -47,6 +49,32 @@ protected:
     return wafer::analysis::analyzeInstructionProgramCost(
         module, wafer::analysis::getTargetScheduleCostPolicy(
                     wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+  }
+
+  mlir::OwningOpRef<mlir::ModuleOp> makeDTERankModule(
+      int64_t rankCount, int64_t tileColumns, llvm::StringRef functionArguments,
+      llvm::StringRef instructionBody, bool includeTopology = true) {
+    std::string source;
+    llvm::raw_string_ostream os(source);
+    os << "module {\n";
+    if (includeTopology) {
+      os << "  wafer.target.topology @topology {card_grid = array<i64: 1, 1>, "
+            "card_interconnect = \"mesh\", tile_grid = array<i64: 1, "
+         << tileColumns << ">, unavailable_tiles = array<i64>}\n"
+         << "  wafer.execution.mesh @mesh {topology = @topology, axes = "
+            "[\"rank\"], shape = array<i64: "
+         << rankCount
+         << ">, policy = \"all_available\", endpoints = array<i64>}\n";
+    }
+    os << "  func.func @main(" << functionArguments << ") {\n"
+       << "    %buffer = memref.alloc() "
+          "{wafer.spm.offset = #wafer.spm_offset<65536>} "
+          ": memref<16xi8, #wafer.memory<spm, tensor>>\n"
+       << instructionBody << "\n"
+       << "    return\n"
+       << "  }\n"
+       << "}\n";
+    return parse(os.str());
   }
 
   mlir::DialectRegistry registry;
@@ -631,6 +659,159 @@ module {
             ScheduleCostKnowledge::Unknown);
   EXPECT_EQ(cost.aggregateReadyOrderPriorityInversions.reason,
             ScheduleCostReason::UnsupportedControlFlow);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       WholeCardMinimumHopDemandDistinguishesEqualPayloadEdges) {
+  constexpr llvm::StringLiteral nearSend = R"mlir(
+    %sent = wafer.instr.dte_send %buffer
+        {peer = 1 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 1, phase = collective_permute, round = 0, slice = 0>}
+        : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+)mlir";
+  constexpr llvm::StringLiteral farSend = R"mlir(
+    %sent = wafer.instr.dte_send %buffer
+        {peer = 3 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 1, phase = collective_permute, round = 0, slice = 0>}
+        : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+)mlir";
+
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 4> nearOwners;
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 4> farOwners;
+  llvm::SmallVector<mlir::Operation *, 4> nearRoots;
+  llvm::SmallVector<mlir::Operation *, 4> farRoots;
+  for (int64_t rank = 0; rank < 4; ++rank) {
+    nearOwners.push_back(
+        makeDTERankModule(4, 4, "", rank == 0 ? nearSend : ""));
+    farOwners.push_back(makeDTERankModule(4, 4, "", rank == 0 ? farSend : ""));
+    ASSERT_TRUE(nearOwners.back());
+    ASSERT_TRUE(farOwners.back());
+    nearRoots.push_back(nearOwners.back()->getOperation());
+    farRoots.push_back(farOwners.back()->getOperation());
+  }
+
+  const auto policy = wafer::analysis::getTargetScheduleCostPolicy(
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  auto nearCost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
+      nearRoots, policy);
+  auto farCost =
+      wafer::analysis::analyzeWholeCardInstructionProgramCost(farRoots, policy);
+  ASSERT_TRUE(nearCost.aggregateNoC.aggregateTransmitBytes.isKnown());
+  ASSERT_TRUE(farCost.aggregateNoC.aggregateTransmitBytes.isKnown());
+  EXPECT_EQ(nearCost.aggregateNoC.aggregateTransmitBytes.value, 16u);
+  EXPECT_EQ(farCost.aggregateNoC.aggregateTransmitBytes.value, 16u);
+  ASSERT_TRUE(nearCost.minimumHopLinkByteDemand.isKnown());
+  ASSERT_TRUE(farCost.minimumHopLinkByteDemand.isKnown());
+  EXPECT_EQ(nearCost.minimumHopLinkByteDemand.value, 16u);
+  EXPECT_EQ(farCost.minimumHopLinkByteDemand.value, 48u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       WholeCardMinimumHopDemandUsesStaticLoopMultiplicity) {
+  constexpr llvm::StringLiteral repeatedSend = R"mlir(
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    scf.for %i = %c0 to %c3 step %c1 {
+      %sent = wafer.instr.dte_send %buffer
+          {peer = 2 : i64, bytes = 4 : i64,
+           message = #wafer.dte_message<communication = 2, phase = collective_permute, round = 0, slice = 0>}
+          : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+    }
+)mlir";
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 3> owners;
+  llvm::SmallVector<mlir::Operation *, 3> roots;
+  for (int64_t rank = 0; rank < 3; ++rank) {
+    owners.push_back(
+        makeDTERankModule(3, 3, "", rank == 0 ? repeatedSend : ""));
+    ASSERT_TRUE(owners.back());
+    roots.push_back(owners.back()->getOperation());
+  }
+  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
+      roots, wafer::analysis::getTargetScheduleCostPolicy(
+                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+  ASSERT_TRUE(cost.minimumHopLinkByteDemand.isKnown());
+  EXPECT_EQ(cost.minimumHopLinkByteDemand.value, 24u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       WholeCardMinimumHopDemandPropagatesArithmeticOverflow) {
+  constexpr llvm::StringLiteral overflowingSend = R"mlir(
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %cmax = arith.constant 9223372036854775807 : index
+    scf.for %i = %c0 to %cmax step %c1 {
+      %sent = wafer.instr.dte_send %buffer
+          {peer = 2 : i64, bytes = 2 : i64,
+           message = #wafer.dte_message<communication = 3, phase = collective_permute, round = 0, slice = 0>}
+          : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+    }
+)mlir";
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 3> owners;
+  llvm::SmallVector<mlir::Operation *, 3> roots;
+  for (int64_t rank = 0; rank < 3; ++rank) {
+    owners.push_back(
+        makeDTERankModule(3, 3, "", rank == 0 ? overflowingSend : ""));
+    ASSERT_TRUE(owners.back());
+    roots.push_back(owners.back()->getOperation());
+  }
+  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
+      roots, wafer::analysis::getTargetScheduleCostPolicy(
+                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+  EXPECT_EQ(cost.minimumHopLinkByteDemand.knowledge,
+            ScheduleCostKnowledge::Overflow);
+  EXPECT_EQ(cost.minimumHopLinkByteDemand.reason,
+            ScheduleCostReason::ArithmeticOverflow);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       WholeCardMinimumHopDemandFailsClosedWithoutTypedTopology) {
+  constexpr llvm::StringLiteral send = R"mlir(
+    %sent = wafer.instr.dte_send %buffer
+        {peer = 1 : i64, bytes = 4 : i64,
+         message = #wafer.dte_message<communication = 4, phase = collective_permute, round = 0, slice = 0>}
+        : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+)mlir";
+  auto rank0 = makeDTERankModule(2, 2, "", send, false);
+  auto rank1 = makeDTERankModule(2, 2, "", "", false);
+  ASSERT_TRUE(rank0);
+  ASSERT_TRUE(rank1);
+  llvm::SmallVector<mlir::Operation *, 2> roots{rank0->getOperation(),
+                                                rank1->getOperation()};
+  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
+      roots, wafer::analysis::getTargetScheduleCostPolicy(
+                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+  EXPECT_EQ(cost.minimumHopLinkByteDemand.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.minimumHopLinkByteDemand.reason,
+            ScheduleCostReason::InvalidExecutionTopology);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       WholeCardMinimumHopDemandPreservesDynamicMultiplicityUnknown) {
+  constexpr llvm::StringLiteral dynamicSend = R"mlir(
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    scf.for %i = %c0 to %n step %c1 {
+      %sent = wafer.instr.dte_send %buffer
+          {peer = 1 : i64, bytes = 4 : i64,
+           message = #wafer.dte_message<communication = 5, phase = collective_permute, round = 0, slice = 0>}
+          : memref<16xi8, #wafer.memory<spm, tensor>> -> !async.token
+    }
+)mlir";
+  auto rank0 = makeDTERankModule(2, 2, "%n: index", dynamicSend);
+  auto rank1 = makeDTERankModule(2, 2, "", "");
+  ASSERT_TRUE(rank0);
+  ASSERT_TRUE(rank1);
+  llvm::SmallVector<mlir::Operation *, 2> roots{rank0->getOperation(),
+                                                rank1->getOperation()};
+  auto cost = wafer::analysis::analyzeWholeCardInstructionProgramCost(
+      roots, wafer::analysis::getTargetScheduleCostPolicy(
+                 wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+  EXPECT_EQ(cost.minimumHopLinkByteDemand.knowledge,
+            ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.minimumHopLinkByteDemand.reason,
+            ScheduleCostReason::DynamicLoopTripCount);
 }
 
 } // namespace

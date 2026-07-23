@@ -35,8 +35,10 @@ Pipeline position:
   `wafer.target.topology`；以及当前rank的isolated complete-rank candidate clone、已选tiling/layout/residency
   与对应未放置SPM storage values。
 - Current stage responsibility:
-  typed rewrite pattern直接读取current collective op、DPS/Tiling和execution mesh；由一个无状态topology helper枚举固定小集合的
-  typed direct/ring/tree参数；对每个参数点使用PatternRewriter/DialectConversion在complete-rank clone内
+  typed rewrite pattern直接读取current collective op、DPS/Tiling和execution mesh；从closed schedule enum枚举
+  Direct/Ring/Tree小集合，并由无状态topology helper从current rank-to-endpoint placement与规则邻接派生Ring/Tree
+  的typed order/edge参数；对每个参数点使用
+  PatternRewriter/DialectConversion在complete-rank clone内
   直接展开全部p2p、local movement/compute、communication staging、SSA token、wait和local fence，并在
   rewrite结束后fresh验证IR。不得产生独立于clone的执行图或可序列化候选记录。
 - Output artifact / IR:
@@ -45,7 +47,8 @@ Pipeline position:
   op/SSA/effect中；该candidate边界不允许残留未展开collective或算法选择attr。
 - Downstream consumer:
   instruction legality、SPM/DDR lifetime与offset planning、event-liveness、exact static cost/resource analysis，
-  以及随后完整rank domain上的Direct DTE acceptance。
+  以及随后完整rank domain上的Direct DTE acceptance。memory planning与all-rank message matching后，
+  whole-variant analysis从final send、canonical source rank和logical peer重算minimum-hop link-byte demand。
 - User-level driver / named pipeline:
   production只由现有`wafer-compile`完整compile pipeline进入；`wafer-opt`只提供显式IR的local
   conversion/verifier调试入口，不暴露communication专用用户stage或要求用户拼pass。
@@ -56,7 +59,9 @@ Pipeline position:
 - Completion gate:
   至少all-gather、reduce-scatter、all-reduce、all-to-all和collective-permute从真实structured path进入
   complete-rank clone；每个被选参数点都实际产生不同且完整的typed IR，所有staging/lifetime/effect可由
-  后续analysis从当前IR重算，并在rank-count=1/16 production pipeline中到达memory-bound instruction IR。
+  后续analysis从当前IR重算，并在rank-count=1/16 production pipeline中到达memory-bound instruction IR；
+  standard Ring All-Reduce实际展开为chunked reduce-scatter+all-gather；Ring order及保持`rank_group`中序的
+  ordered-Tree root/edges改变explicit peer edges与whole-card minimum-hop cost，不保存算法或cost attr。
 ```
 
 ### 1.2 Physical Direct DTE Acceptance
@@ -145,7 +150,25 @@ verifier，不能从op名、operand位置、buffer名或遍历顺序猜测。
 `rank_group`和`source_target_pairs`中的值始终是logical execution rank，不是physical tile encoding。
 physical endpoint只由acceptance阶段从execution mesh与target topology派生。
 
-### 2.2 Buffer-level collective op
+### 2.2 Logical collective tiling
+
+logical collective的payload tile由其`TilingInterface`定义，而不是由communication lowering另选tile size：
+
+- shape-preserving `all_reduce`和`collective_permute`可沿任意result tensor维切块；
+- `all_gather`和`reduce_scatter`的gather/scatter轴必须保持接口要求的完整范围；
+- `all_to_all`的split/concat轴必须保持接口要求的完整范围；其它维只有在operand/result tile mapping可证明时才可切。
+
+上述是各op的logical tile mapping合同；当前production scheduler只启用单输入、单输出、shape-preserving `all_reduce`。
+`collective_permute`及轴变换collective继续保持full traversal，不能仅凭已有`TilingInterface`实现跳过它们尚未闭合的
+fusion、control-instance和transport验证。
+
+terminal collective作为complete traversal root时，每个rank必须执行相同的static/tail tile domain和词典序control flow。
+同一静态issue op可以在structured loop中产生多个dynamic communication instance，但每个instance必须在进入下一tile前
+完成匹配的issue/wait及local consumer fence；因此同一message identity只允许顺序复用，不能存在跨iteration的并发live
+instance。all-rank acceptance必须从current SCF、token、wait和message IR验证这一关系；不得把loop ordinal编码进旁路表，
+也不得仅因静态send/recv各出现一次就推定dynamic instance匹配。
+
+### 2.3 Buffer-level collective op
 
 现有`wafer.tile.all_gather`、`wafer.tile.reduce_scatter`和`wafer.tile.all_reduce`可继续作为
 rank-specialization与instruction expansion之间的短生命周期typed conversion op。它们只保存buffer-level
@@ -162,7 +185,7 @@ communication identity。
 
 这保留了已有bufferization cut，又避免把中间op升级成第二个planner IR层。
 
-### 2.3 Logical effect
+### 2.4 Logical effect
 
 logical collective尚未issue硬件命令，但不是pure/speculatable op。终态通过标准
 `MemoryEffectOpInterface`在`WaferCommunicationResource`上提供保守write barrier，使generic CSE、DCE、
@@ -179,29 +202,27 @@ communication只需要一个compiler-private、无状态、可重算的helper。
 rank group/mesh axes、execution mesh和target topology后调用helper，返回固定小集合的typed参数，例如：
 
 ```text
-DirectParams {
-  peer_order
-}
-
 RingParams {
   rank_order
-  direction
 }
 
 TreeParams {
   root
-  radix
-  rank_order
+  parent_group_indices
+  child_group_indices
 }
 
-CollectiveLoweringParams = DirectParams | RingParams | TreeParams
+CollectiveLoweringParams = Direct | RingParams | TreeParams
 ```
 
 这些是普通C++值，不是dialect object、attr、长期key或artifact。字段只允许影响真实rewrite：
 
-- `peer_order`决定direct issue的确定性顺序；
-- `rank_order`与`direction`决定ring的前驱、后继和round；
-- `root`、`radix`和`rank_order`决定tree parent/children及reduce/broadcast phase。
+- Direct没有topology参数；当前all-gather、reduce-scatter与all-to-all按semantic group index的确定性
+  cyclic/ascending顺序issue，collective-permute直接使用source-target pairs；
+- `rank_order`这个有序cycle决定ring的前驱、后继和round；
+- `root`、`parent_group_indices`和left-before-right的`child_group_indices`决定ordered-tree edge及
+  reduce/broadcast phase；每个subtree覆盖`rank_group`的连续区间，整棵树的中序遍历必须严格等于
+  `rank_group`。
 
 helper的边界：
 
@@ -216,10 +237,10 @@ helper的边界：
 | Collective | 可枚举参数 | 说明 |
 | --- | --- | --- |
 | collective-permute | direct | source-target pairs已经给出唯一logical edges |
-| all-to-all | direct | 当前fixed-size equal split/exchange/concat路径 |
+| all-to-all | direct | 当前fixed-size equal split/exchange/concat路径；peer issue按semantic group index的全rank一致cyclic round，不调用有界Ring topology搜索 |
 | all-gather | ring、direct | ring减少每rank直接peer fanout；direct是简单对照路径 |
-| reduce-scatter | direct | 当前all-to-owner fixed-size correctness路径 |
-| all-reduce | ring、tree | local reduction显式存在；DTE不执行reduction |
+| reduce-scatter | direct、ring | all-to-owner按`rank_group`次序累计并保留correctness baseline；ring按chunk沿topology-derived cycle归约，当前只有整数满足其leaf-order gate |
+| all-reduce | ring、tree | ordered tree保持`rank_group`中序并支持浮点；ring会循环置换leaf，当前只有整数满足其numeric gate；两者的local reduction均显式存在，DTE不执行reduction |
 
 新增算法时先证明它可由现有typed op/effect/completion表达，再增加一个窄参数类型和rewrite pattern。不能先
 增加抽象登记层或通用节点图。
@@ -249,6 +270,8 @@ instruction IR的真实send/recv/message/range/completion匹配证明。
 候选指标直接从展开后的IR和memory plan派生：
 
 - DTE message数与传输bytes；
+- final logical peer edge在current topology/execution placement上的shortest-hop distance，以及
+  `sum(payload bytes * shortest hops)`形成的minimum link-byte demand；
 - local movement/compute op数；
 - communication staging bytes和accepted SPM high-water；
 - terminal instruction数；
@@ -257,6 +280,11 @@ instruction IR的真实send/recv/message/range/completion匹配证明。
 这些值是可失效analysis结果，不写入accepted IR。它们进入tasks/06统一exact Pareto和target static selection policy；
 strict dominance可直接剪枝，tradeoff只有在profile显式policy且所需量全部Known时才排序，否则保留baseline。任何候选都必须
 通过相同all-rank gate；本文不建立communication专用winner规则。
+
+minimum-hop demand是current typed graph上的精确下界，不是实际route或时间。topology没有确定route policy时，
+directional/per-link load、contention、startup、cycle和带宽重叠保持Unknown；不能用Manhattan猜测、profile名或现有
+bandwidth常数把下界包装成伪timing。未来若typed topology增加确定route/link weight，这些metric仍从final message和
+current topology fresh重算，不写入collective或accepted instruction IR。
 
 ## 4. Explicit P2P IR
 
@@ -345,7 +373,7 @@ DTE本身不承担gather/scatter、layout conversion或local visibility。
 - 不参与pair：按collective语义生成zero fill或保持合法empty contribution。
 
 rewrite检查pair唯一性、rank domain、shape/bytes和destination visibility。没有算法状态，因此只需要
-`DirectParams`，也不需要额外tile collective op。
+Direct schedule choice，也不需要额外tile collective op或topology参数。
 
 ### 5.2 All-Gather
 
@@ -354,7 +382,7 @@ direct：
 ```text
 copy local shard to local result slot
 local_fence
-for peer in DirectParams.peer_order excluding self:
+for distance in 1 .. group_size - 1 using semantic group indices:
   send local slot to peer
   recv peer shard into contiguous staging
   wait send/recv
@@ -376,12 +404,12 @@ for round in 0 .. group_size - 2:
 final local_fence
 ```
 
-`RingParams.rank_order/direction`决定predecessor、successor与payload slice。每个round在IR中都有独立message、
+`RingParams.rank_order`决定predecessor、successor与payload slice。每个round在IR中都有独立message、
 buffer view、token和wait；最终local fence排序received-slot movement后，resident consumer才能读取完整result。
 
 ### 5.3 Reduce-Scatter
 
-当前direct all-to-owner路径使用full local input和当前rank local result slot：
+direct all-to-owner路径使用full local input和当前rank local result slot：
 
 ```text
 initialize local accumulator from own contribution
@@ -396,20 +424,38 @@ for each remote contributor in deterministic peer order:
 scatter axis、slot shape和combiner来自logical collective。sum/max/min等local reduction由明确compute op表达，
 不能藏在recv effect或DTE completion中。
 
+ring把full input划分为`group_size`个logical chunk，按`RingParams.rank_order`执行
+`group_size - 1`轮；每轮只发送当前持有的一个chunk、接收前驱chunk并归约到对应chunk，最终每rank持有其owned
+reduced chunk。只有当每个chunk都能由typed view或显式pack/unpack表示、没有zero-byte message且reduction order
+满足op语义时才生成该候选；当前production IR没有授权floating leaf permutation，因此浮点只保留按
+`rank_group`次序累计的direct baseline。失败只拒绝ring clone，不破坏direct。
+
 ### 5.4 All-Reduce
 
-ring：每rank先初始化accumulator与forward buffer；每round发送当前partial、接收新的partial、wait，再显式local
-reduce。下一round转发刚收到的partial，不重复发送已经累积全部历史contribution的accumulator。每次local compute
-完成后按后续use插入local fence。
+ring必须复用同一chunk语义组合两段真实body：
 
-tree：`TreeParams`派生binomial或目标支持的固定radix parent/children：
+1. `group_size - 1`轮reduce-scatter，每轮只发送/接收一个`B / group_size`量级的chunk并显式local reduce；
+2. `group_size - 1`轮all-gather，沿同一ring传播已经归约完成的chunk并写入其final result slot。
 
-1. reduce phase由children向root发送partial；parent wait后显式local reduce；
+整除静态payload时，全卡注入bytes为`2 * (group_size - 1) * B`，而不是
+`group_size * (group_size - 1) * B`。不能整分时必须用typed ragged chunk及非零byte message明确实现；在该能力
+闭合前只拒绝ring候选并保留tree，不能回退为每轮发送full buffer却仍称为Ring。每次local compute、pack/unpack和
+final result发布都由显式token/wait/fence排序。
+
+tree：`TreeParams`从current topology/placement和`rank_group`派生一棵有界、确定性的ordered binary tree。
+interval DP枚举每个连续group-index区间的合法root/左右子树，要求全树中序遍历严格等于`rank_group`；目标先
+最小化所有tree edge的shortest-hop总和，再依次最小化最大root distance和root distance总和，最后用logical-rank
+次序解平局。因此它不是无序MST加center-root后处理，也不固定root 0或XOR/binomial关系：
+
+1. reduce phase由children向root发送partial；parent按left-subtree、local operand、right-subtree次序wait并显式local reduce；
 2. reverse broadcast phase由root沿同一tree发送最终accumulator；
 3. 非root rank wait final recv后发布result；
 4. 任何将被DTE读取或被resident consumer读取的local-compute结果之前都有正确local fence。
 
-ring和tree的区别完全体现在clone里的p2p/local-compute body中，不保留algorithm attr。
+StableHLO collective允许这种保持rank-group leaf次序的实现tree，所以floating add/min/max不因缺少fast-math而
+拒绝ordered Tree。cyclic Ring会按chunk旋转leaf次序，只有current logical numeric contract明确许可时才能用于
+floating reduction；当前实现只对integer生成该Ring。ring和tree的区别完全体现在clone里的p2p/local-compute
+body中，不保留algorithm attr。
 
 ### 5.5 Equal-Split All-to-All
 
@@ -421,7 +467,8 @@ ring和tree的区别完全体现在clone里的p2p/local-compute body中，不保
 - recv完成后从连续staging显式insert到对应result slot；
 - split/concat axis和slot mapping由logical op verifier检查。
 
-该路径使用`DirectParams`。ring/blocked exchange、non-contiguous descriptor或跨卡route如需加入，必须先形成
+该路径按semantic group index的cyclic distance确定每轮同时send/recv的logical peer，payload slot严格由
+source/target语义决定；它不复用有界topology Ring order。ring/blocked exchange、non-contiguous descriptor或跨卡route如需加入，必须先形成
 可验证的typed rewrite和lower-level能力，不能把它们表示成一个未展开algorithm名称。
 
 ### 5.6 Segmented Peer Exchange
@@ -645,19 +692,19 @@ p2p instruction：
 %send = wafer.instr.dte_send %carried {
   peer = 1 : i64,
   bytes = 4096 : i64,
-  message = #wafer.dte_message<communication_id = 7,
-                                phase = all_gather,
+  message = #wafer.dte_message<communication = 7,
+                                phase = all_gather_ring,
                                 round = 0,
-                                payload_slice = 0>
+                                slice = 0>
 } : memref<..., #wafer.memory<spm, tensor>> -> !async.token
 
 %recv = wafer.instr.dte_recv %recv_staging {
   peer = 3 : i64,
   bytes = 4096 : i64,
-  message = #wafer.dte_message<communication_id = 7,
-                                phase = all_gather,
+  message = #wafer.dte_message<communication = 7,
+                                phase = all_gather_ring,
                                 round = 0,
-                                payload_slice = 3>
+                                slice = 3>
 } : memref<..., #wafer.memory<spm, tensor>> -> !async.token
 
 wafer.instr.dte_wait %send, %recv : !async.token, !async.token
@@ -670,7 +717,8 @@ buffer、token、wait和后处理在IR中可验证。
 
 ### 12.2 Tree all-reduce
 
-对任意rank group，`TreeParams(root, radix, rank_order)`只决定parent/children。非leaf parent的实际IR片段为：
+对任意rank group，`TreeParams(root, parent_group_indices, child_group_indices)`只决定parent/children，且
+left-before-right children使全树中序遍历保持该rank group。非leaf parent的实际IR片段为：
 
 ```text
 recv child partial into staging -> wait
@@ -680,8 +728,8 @@ repeat for remaining children
 send reduced accumulator to parent -> wait
 ```
 
-root在reduce phase完成后沿reverse tree广播final accumulator。更换root、radix或rank order会产生另一份完整
-clone；不会产生一个等待后续解释的tree描述。
+root在reduce phase完成后沿reverse tree广播final accumulator。只有仍满足ordered-tree约束的root/edge set才是
+合法参数；更换它们会产生另一份完整clone，不会产生一个等待后续解释的tree描述。
 
 ### 12.3 Equal-split all-to-all
 
@@ -700,7 +748,8 @@ send/recv、wait和insert；self slot只有local movement。任一slot的bytes�
   collective family动态查询的最小`WaferLinalgExtCollectiveOpInterface`；generic consumer直接typed dispatch，
   聚合`WaferLinalgExtCollectiveInfo`路径已删除；
 - `wafer.tile.all_gather`、`wafer.tile.reduce_scatter`、`wafer.tile.all_reduce`及对应verifier；
-- all-gather ring/direct、all-reduce ring/tree、reduce-scatter direct的explicit instruction lowering；
+- all-gather ring/direct、all-reduce chunked-ring/tree、reduce-scatter direct/chunked-ring的explicit
+  instruction lowering；Ring邻居和Tree edge/root均从current topology/placement派生；
 - collective-permute与equal-split all-to-all的direct p2p/local movement lowering；
 - `wafer.instr.dte_send`、`dte_recv`、`dte_wait`、`DTEMessageAttr`和`DirectDTEBindingAttr`；
 - 从planned SPM range和current instruction IR执行的all-rank Direct DTE acceptance；
@@ -709,13 +758,26 @@ send/recv、wait和insert；self slot只有local movement。任一slot的bytes�
 Q32.M已沿上述边界完成producer接入，Q32.S继续负责bounded joint composition：
 
 1. public schedule option与hard-coded selector已删除；shared candidate owner从同一parent建立complete-rank
-   ring/ring、direct/ring和ring/tree actual clones；
+   All-Gather Direct/Ring、Reduce-Scatter Direct/Ring与All-Reduce Ring/Tree actual clones；
 2. 每个参数点直接复用现有collective lowering pattern，不新增平行communication表示；
 3. logical/tile/instruction effect逐层由标准MemoryEffectOpInterface、SideEffects::Resource和SSA completion闭合；
    `WaferTilingInterface`、重复collective-info和Wafer resource-effect事实均已删除；
 4. 每个producer clone已经独立重算memory/verifier/cost；Q32.S只比较进入共同rank/whole-variant frontier后的
    final exact metrics，并复用all-rank、target与atomic gates；
 5. 只保留typed IR-local conversion测试和production-shaped candidate集成测试，不恢复手动算法CLI入口。
+
+Q36已用共享execution-topology analysis替换logical-rank算术：规则mesh/torus、unavailable endpoint与explicit
+placement共同派生rank endpoint、exact bounded Ring cycle，以及通过interval DP求得、保持`rank_group`中序的
+minimum-total-shortest-hop ordered Tree；All-Reduce已展开为真实
+chunked reduce-scatter+all-gather，standalone Reduce-Scatter同时保留Direct baseline与Ring clone。whole-card
+cost从final sends计算minimum-hop link-byte demand并进入统一selection；All-to-All/Collective-Permute completion
+也已补齐。当前fresh gate尚在执行，未通过前Q36仍不能标done。
+
+当前明确限制是：exact Ring cycle搜索和ordered-Tree interval DP都只覆盖不超过16 rank；Ring只接受能形成非零、
+连续、等分typed chunk的静态payload，涉及reduction时当前还只接受integer element type；ordered Tree本身不需要floating fast-math。
+ragged/segmented路径尚未实现；equal-split All-to-All的网络payload已是direct exchange最小量，但
+现有`MoveInsertSlice` lowering仍会为每个slot复制完整累计result，这个local movement问题必须在后续独立任务
+通过可验证的in-place/subview表示消除，不能把它写成collective网络最优。
 
 后续独立扩展包括segmented peer exchange、cross-card collective、raw non-unicast DTE和经硬件证据校准的
 compute/communication overlap cost。它们必须通过新的typed IR、verifier、lowering和consumer进入，不得修改
