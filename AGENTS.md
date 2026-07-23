@@ -99,6 +99,8 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
 - 默认直接在当前 checkout 工作。
 - 不主动新建 worktree，除非用户明确要求。
 - Git 操作前先看 `git status`。
+- 本仓库由 Codex 执行并提交的共同工作使用 `Codex <codex@openai.com>` 作为 author，并附加
+  `Co-authored-by: hehesnail <shashen008he@gmail.com>`；推送前检查共同署名。
 - 不使用破坏性 git 命令；不要回滚用户或其它工具做的无关改动。
 
 ## 编码和设计规则
