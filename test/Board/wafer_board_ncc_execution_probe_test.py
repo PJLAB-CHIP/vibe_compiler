@@ -562,6 +562,13 @@ V2_ENGINES = (
     ncc_protocol.Engine.WDMA,
     ncc_protocol.Engine.TDMA,
 )
+V2_DOCUMENTED_QUEUE_DEPTHS = {
+    ncc_protocol.Engine.CT: 6,
+    ncc_protocol.Engine.NE: 6,
+    ncc_protocol.Engine.RDMA: 6,
+    ncc_protocol.Engine.WDMA: 6,
+    ncc_protocol.Engine.TDMA: 4,
+}
 QUALIFICATION_CASES = (
     GenericProbeCase(
         "environment-readonly",
@@ -604,15 +611,48 @@ V2_SINGLE_CASES = tuple(
     )
     for engine in V2_ENGINES
 )
-V2_BACKLOG_CASES = tuple(
+V2_MULTI_ISSUE_CASES = tuple(
     v2_case(
-        f"{engine.name.lower()}-raw-rounds4-window",
+        (
+            f"{engine.name.lower()}-raw-"
+            f"rounds{min(4, depth - 2)}-window"
+        ),
         (v2_lane(engine),),
-        rounds=4,
+        rounds=min(4, depth - 2),
         schedule=ncc_protocol.Schedule.WINDOW,
         seed=0x200 + int(engine),
     )
-    for engine in V2_ENGINES
+    for engine, depth in V2_DOCUMENTED_QUEUE_DEPTHS.items()
+)
+V2_DOCUMENTED_DEPTH_CASES = tuple(
+    v2_case(
+        f"{engine.name.lower()}-raw-documented-depth{depth}-window",
+        (
+            (v2_lane(engine), v2_lane(engine))
+            if depth > ncc_protocol.MAX_ROUNDS
+            else (v2_lane(engine),)
+        ),
+        rounds=(
+            depth // 2
+            if depth > ncc_protocol.MAX_ROUNDS
+            else depth
+        ),
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x280 + int(engine) * 0x10 + depth,
+    )
+    for engine, depth in V2_DOCUMENTED_QUEUE_DEPTHS.items()
+)
+V2_DEPTH_PLUS_ONE_CASES = tuple(
+    v2_case(
+        f"{engine.name.lower()}-raw-depth{depth}-plus1-tight-window",
+        (v2_lane(engine), v2_lane(engine)),
+        rounds=4 if depth == 6 else 3,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x5000 + int(engine),
+        flags=ncc_protocol.TIGHT_DEPTH_PLUS_ONE,
+        issue_limit=depth + 1,
+    )
+    for engine, depth in V2_DOCUMENTED_QUEUE_DEPTHS.items()
 )
 V2_PAIR_CASES = tuple(
     v2_case(
@@ -740,26 +780,6 @@ V2_HAZARD_DISJOINT_CONTROLS = tuple(
 V2_HAZARD_MANUAL_CASES = (
     V2_HAZARD_DISJOINT_CONTROLS + V2_HAZARD_CASES
 )
-V2_QUEUE_DEPTHS = {
-    ncc_protocol.Engine.CT: 6,
-    ncc_protocol.Engine.NE: 6,
-    ncc_protocol.Engine.RDMA: 6,
-    ncc_protocol.Engine.WDMA: 6,
-    ncc_protocol.Engine.TDMA: 4,
-}
-V2_SATURATION_CASES = tuple(
-    v2_case(
-        f"{engine.name.lower()}-manual-saturation-d{depth}-plus1",
-        (v2_lane(engine), v2_lane(engine)),
-        rounds=4 if depth == 6 else 3,
-        schedule=ncc_protocol.Schedule.WINDOW,
-        seed=0x5000 + int(engine),
-        wait_kind=ncc_protocol.WaitKind.NONE,
-        flags=ncc_protocol.MANUAL_SATURATION,
-        issue_limit=depth + 1,
-    )
-    for engine, depth in V2_QUEUE_DEPTHS.items()
-)
 FOCUSED_CASES = V2_SINGLE_CASES + (
     next(
         case
@@ -774,7 +794,7 @@ FOCUSED_CASES = V2_SINGLE_CASES + (
 )
 CALIBRATION_CASES = (
     V2_SINGLE_CASES
-    + V2_BACKLOG_CASES
+    + V2_MULTI_ISSUE_CASES
     + V2_PAIR_CASES
     + V2_PIPELINE_CASES
 )
@@ -783,7 +803,8 @@ SUITES = {
     "focused": FOCUSED_CASES,
     "calibration": CALIBRATION_CASES,
     "hazard-manual": V2_HAZARD_MANUAL_CASES,
-    "saturation-manual": V2_SATURATION_CASES,
+    "documented-depth-manual": V2_DOCUMENTED_DEPTH_CASES,
+    "depth-plus-one-manual": V2_DEPTH_PLUS_ONE_CASES,
 }
 CASE_CATALOGS = {
     "no-card-protocol": NO_CARD_PROTOCOL_CASES,
@@ -805,16 +826,50 @@ def validate_no_card_protocol_cases() -> None:
                 f"{case.name}: no-card protocol case lost its typed I8 lane"
             )
         plan.request_words()
-    if len(V2_SINGLE_CASES) != 5 or len(V2_BACKLOG_CASES) != 5:
-        raise RuntimeError("generic catalog lost a single/backlog engine case")
+    if len(V2_SINGLE_CASES) != 5 or len(V2_MULTI_ISSUE_CASES) != 5:
+        raise RuntimeError("generic catalog lost a single/multi-issue case")
+    for engine, depth in V2_DOCUMENTED_QUEUE_DEPTHS.items():
+        issue_counts = {
+            len(case.plan.issue_identities())
+            for case in V2_MULTI_ISSUE_CASES
+            if case.plan.lanes[0].engine == engine
+        }
+        if issue_counts != {min(4, depth - 2)}:
+            raise RuntimeError(
+                f"{engine.name}: generic catalog must stay at the "
+                "conservative below-depth backlog"
+            )
+        depth_cases = [
+            case
+            for case in V2_DOCUMENTED_DEPTH_CASES
+            if case.plan.lanes[0].engine == engine
+        ]
+        if len(depth_cases) != 1 or len(
+            depth_cases[0].plan.issue_identities()
+        ) != depth:
+            raise RuntimeError(
+                f"{engine.name}: documented-depth catalog is malformed"
+            )
+        plus_one_cases = [
+            case
+            for case in V2_DEPTH_PLUS_ONE_CASES
+            if case.plan.lanes[0].engine == engine
+        ]
+        if (
+            len(plus_one_cases) != 1
+            or len(plus_one_cases[0].plan.issue_identities()) != depth + 1
+            or plus_one_cases[0].plan.wait_kind
+            != ncc_protocol.WaitKind.BY_WORKER
+        ):
+            raise RuntimeError(
+                f"{engine.name}: depth-plus-one catalog is malformed"
+            )
     if len(V2_PAIR_CASES) != 40:
         raise RuntimeError("generic catalog lost a disjoint pair control")
     if len(V2_PIPELINE_CASES) != 4:
         raise RuntimeError("generic catalog lost the three-lane controls")
     if len(V2_HAZARD_CASES) != 24:
         raise RuntimeError("generic catalog lost a typed hazard control")
-    if len(V2_SATURATION_CASES) != 5:
-        raise RuntimeError("generic catalog lost a manual saturation case")
 
 
 def write_request(
@@ -1117,7 +1172,10 @@ def validate_observed_ranges_v2(
         lane = plan.lanes[identity.lane]
         expected_flags = (
             ncc_protocol.PACKET_OBSERVED
-            if lane.issue_mode == ncc_protocol.IssueMode.RAW
+            if (
+                lane.issue_mode == ncc_protocol.IssueMode.RAW
+                and plan.flags != ncc_protocol.TIGHT_DEPTH_PLUS_ONE
+            )
             else 0
         )
         read0 = v2_operand_spm_address(
@@ -1147,6 +1205,11 @@ def validate_observed_ranges_v2(
             )
         elif lane.engine == ncc_protocol.Engine.TDMA:
             expected_flags |= ncc_protocol.WRITE_VALID
+        if (
+            plan.flags == ncc_protocol.TIGHT_DEPTH_PLUS_ONE
+            and identity.slot == plan.issue_order()[-1]
+        ):
+            expected_flags |= ncc_protocol.WINDOW_CONTROL_VALID
         if observation.flags != expected_flags:
             raise RuntimeError(
                 f"{case.name}: slot {identity.slot} issue flags are "
@@ -1342,9 +1405,8 @@ def parse_record(
                 f"{case.name}: raw execute rc is "
                 f"{observation.execute_rc}, expected current value 1"
             )
-        manual_saturation = plan.flags == ncc_protocol.MANUAL_SATURATION
         if (
-            (observation.boundary_mismatches and not manual_saturation)
+            observation.boundary_mismatches
             or observation.boundary_guard_mismatches
             or observation.final_mismatches
             or observation.final_guard_mismatches
@@ -1352,11 +1414,6 @@ def parse_record(
             raise RuntimeError(
                 f"{case.name}: slot {observation.identity.slot} oracle "
                 "reported a mismatch"
-            )
-        if manual_saturation and observation.execute_cycles <= 0:
-            raise RuntimeError(
-                f"{case.name}: slot {observation.identity.slot} has no "
-                "TsmExecute cycle evidence"
             )
     validate_observed_ranges_v2(case, plan, observations)
     v2_disjoint_ranges(case, plan, observations)
@@ -1557,7 +1614,13 @@ def execute_cases(
                 f"{case.name}: its disjoint engine pair has not passed "
                 "the serial/window overlap qualification"
             )
-        samples = args.repeat if len(case.plan.lanes) > 1 else 1
+        samples = (
+            1
+            if case in (
+                V2_DOCUMENTED_DEPTH_CASES + V2_DEPTH_PLUS_ONE_CASES
+            )
+            else args.repeat if len(case.plan.lanes) > 1 else 1
+        )
         for sample in range(samples):
             request = raw / f"{case.name}.{sample}.request.raw"
             payload = raw / f"{case.name}.{sample}.payload.raw"
@@ -1713,94 +1776,68 @@ def report_overlap(
         raise RuntimeError("no multi-engine overlap observations were reported")
 
 
-def report_saturation(observations: list[dict[str, object]]) -> None:
-    groups: dict[str, list[dict[str, object]]] = {}
-    for observation in observations:
-        case = observation.get("case")
-        if (
-            isinstance(case, dict)
-            and case.get("flags") == ncc_protocol.MANUAL_SATURATION
-        ):
-            engines = case.get("engines")
-            if not isinstance(engines, list) or len(set(engines)) != 1:
-                raise RuntimeError(
-                    "manual saturation record lost its single-engine type"
-                )
-            groups.setdefault(str(engines[0]), []).append(observation)
-    if not groups:
-        raise RuntimeError("manual saturation suite produced no evidence")
-
-    for engine, samples in groups.items():
-        sample_evidence: list[dict[str, object]] = []
-        for sample in samples:
-            case = sample["case"]
-            issues = sample["issues"]
-            blocking = sample["blocking_delta"]
-            if (
-                not isinstance(case, dict)
-                or not isinstance(issues, list)
-                or not isinstance(blocking, dict)
-            ):
-                raise RuntimeError("manual saturation evidence is malformed")
-            issue_limit = int(case["issue_limit"])
-            depth = issue_limit - 1
-            ordered = sorted(
-                issues,
-                key=lambda issue: (
-                    int(issue["identity"]["round"]),
-                    int(issue["identity"]["lane"]),
+def report_depth_plus_one(
+    observations: list[dict[str, object]],
+) -> None:
+    if len(observations) != 1:
+        raise RuntimeError(
+            "depth-plus-one suite must produce exactly one observation"
+        )
+    observation = observations[0]
+    case_record = observation.get("case")
+    issues = observation.get("issues")
+    blocking = observation.get("blocking_delta")
+    if (
+        not isinstance(case_record, dict)
+        or not isinstance(issues, list)
+        or not isinstance(blocking, dict)
+    ):
+        raise RuntimeError("depth-plus-one observation is malformed")
+    case = next(
+        (
+            candidate
+            for candidate in V2_DEPTH_PLUS_ONE_CASES
+            if candidate.name == case_record.get("name")
+        ),
+        None,
+    )
+    if case is None:
+        raise RuntimeError("depth-plus-one observation has an unknown case")
+    by_slot = {
+        int(issue["identity"]["slot"]): issue
+        for issue in issues
+        if isinstance(issue, dict) and isinstance(issue.get("identity"), dict)
+    }
+    ordered = [by_slot[slot] for slot in case.plan.issue_order()]
+    cycles = [int(issue["execute_cycles"]) for issue in ordered]
+    final_control = int(ordered[-1]["control_after_issue"])
+    engine = case.plan.lanes[0].engine.name.lower()
+    backpressure_cycles = int(blocking[f"worker0.{engine}"])
+    print(
+        "ncc_depth_plus_one_decision: "
+        + json.dumps(
+            {
+                "engine": engine,
+                "issue_count": len(ordered),
+                "classification": (
+                    "completed-with-pmu-backpressure"
+                    if backpressure_cycles > 0
+                    else "completed-without-pmu-backpressure"
                 ),
-            )
-            if len(ordered) != issue_limit:
-                raise RuntimeError(
-                    f"{engine}: manual issue evidence is truncated"
-                )
-            ib_counters = [
-                int(issue["control_after_issue"]) & 0xFF
-                for issue in ordered
-            ]
-            cycles = [int(issue["execute_cycles"]) for issue in ordered]
-            reached_depth = max(ib_counters) >= depth
-            last_call_dominates = cycles[-1] > max(cycles[:-1])
-            sample_evidence.append(
-                {
-                    "sample": sample["sample"],
-                    "depth": depth,
-                    "issue_count": issue_limit,
-                    "ib_counters": ib_counters,
-                    "execute_cycles": cycles,
-                    "blocking_delta": int(
-                        blocking[f"worker0.{engine}"]
-                    ),
-                    "occupancy_reached_depth": reached_depth,
-                    "d_plus_1_call_dominates": last_call_dominates,
-                }
-            )
-        observed = all(
-            bool(item["occupancy_reached_depth"])
-            and bool(item["d_plus_1_call_dominates"])
-            for item in sample_evidence
+                "execute_cycles": cycles,
+                "last_call_cycle_dominates": (
+                    cycles[-1] > max(cycles[:-1])
+                ),
+                "control_after_tight_window": final_control,
+                "blocking_delta": backpressure_cycles,
+                "interpretation": (
+                    "completion/count/output/guard prove depth+1 total "
+                    "submission; occupancy requires independent evidence"
+                ),
+            },
+            sort_keys=True,
         )
-        print(
-            "ncc_saturation_decision: "
-            + json.dumps(
-                {
-                    "engine": engine,
-                    "classification": (
-                        "backpressure-observed"
-                        if observed
-                        else "inconclusive"
-                    ),
-                    "interpretation": (
-                        "instruction count and final oracle prove total "
-                        "depth+1 acceptance; backpressure additionally "
-                        "requires repeated IB>=D and a dominant D+1 call"
-                    ),
-                    "samples": sample_evidence,
-                },
-                sort_keys=True,
-            )
-        )
+    )
 
 
 def write_qualification(
@@ -1854,6 +1891,15 @@ def main() -> int:
         raise RuntimeError("--case requires a board execution suite")
     if args.suite != "build-smoke" and args.no_card:
         raise RuntimeError("board suites do not accept --no-card")
+    if args.suite in (
+        "documented-depth-manual",
+        "depth-plus-one-manual",
+    ) and (
+        not args.selected_cases or len(args.selected_cases) != 1
+    ):
+        raise RuntimeError(
+            f"{args.suite} requires exactly one --case"
+        )
     if args.suite != "build-smoke":
         if os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
             print(
@@ -1900,8 +1946,8 @@ def main() -> int:
         write_qualification(args, package, observations)
     if args.suite == "calibration":
         report_overlap(observations, args.require_overlap)
-    if args.suite == "saturation-manual":
-        report_saturation(observations)
+    if args.suite == "depth-plus-one-manual":
+        report_depth_plus_one(observations)
     return 0
 
 

@@ -20,6 +20,7 @@ enum MockEventKind {
   MOCK_SNAPSHOT_BOUNDARY = 3001,
   MOCK_SNAPSHOT_FINAL = 3002,
   MOCK_ISSUE = 4000,
+  MOCK_READ_CONTROL = 4500,
   MOCK_OBSERVE = 5000,
   MOCK_SERIAL_DRAIN = 6000,
   MOCK_REQUESTED_WAIT = 7000,
@@ -186,6 +187,7 @@ static uint64_t mock_read_worker_control(void *opaque, uint32_t worker) {
   uint32_t issued = 0;
   for (uint32_t slot = 0; slot < WAFER_NCC_PROTOCOL_MAX_ISSUES; ++slot)
     issued += (context->issued_mask >> slot) & 1U;
+  mock_event(context, MOCK_READ_CONTROL + issued - 1U);
   return (uint64_t)(issued & UINT8_MAX) | ((uint64_t)worker << 16);
 }
 
@@ -287,6 +289,12 @@ static void test_dual_lane_boundary_order(void) {
        index < sizeof(expected_slots) / sizeof(expected_slots[0]); ++index) {
     uint32_t position =
         find_event(&context, MOCK_ISSUE + expected_slots[index]);
+    uint32_t control =
+        find_event(&context, MOCK_READ_CONTROL + index);
+    uint32_t observe =
+        find_event(&context, MOCK_OBSERVE + expected_slots[index]);
+    assert(position < control);
+    assert(control < observe);
     if (index != 0)
       assert(position > previous);
     previous = position;
@@ -473,13 +481,11 @@ static void test_failed_safety_drain_is_not_retried(void) {
   assert(context.prepared_mask == 0);
 }
 
-static void test_manual_saturation_records_bounded_issue_evidence(void) {
+static void test_depth_plus_one_is_tight_and_waited(void) {
   WaferNccProbeRequest plan = request(2, 4, WAFER_NCC_SCHEDULE_WINDOW);
   plan.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
   plan.lanes[1] = plan.lanes[0];
-  plan.wait_kind = WAFER_NCC_WAIT_NONE;
-  plan.wait_worker_mask = 0;
-  plan.flags = WAFER_NCC_REQUEST_MANUAL_SATURATION;
+  plan.flags = WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE;
   plan.issue_limit = 7;
 
   MockContext context = {0};
@@ -489,23 +495,51 @@ static void test_manual_saturation_records_bounded_issue_evidence(void) {
              &context, record) == WAFER_NCC_STATUS_OK);
   assert(record[WAFER_NCC_REC_ISSUE_COUNT] == 7);
   assert(record[WAFER_NCC_REC_ISSUE_LIMIT] == 7);
-  static const uint32_t expected_issue_position[] = {1, 3, 5, 7, 2, 4, 6};
-  for (uint32_t ordinal = 0; ordinal < 7; ++ordinal) {
+  static const uint32_t expected_slots[] = {0, 4, 1, 5, 2, 6, 3};
+  uint32_t last_issue =
+      find_event(&context, MOCK_ISSUE + expected_slots[6]);
+  uint32_t control = find_event(&context, MOCK_READ_CONTROL + 6);
+  assert(last_issue < control);
+  for (uint32_t index = 0; index < 7; ++index) {
+    assert(find_event(&context, MOCK_ISSUE + expected_slots[index]) < control);
+    assert(find_event(&context, MOCK_OBSERVE + expected_slots[index]) >
+           control);
     uint32_t base =
-        wafer_ncc_protocol_issue_word(ordinal, WAFER_NCC_ISSUE_ORDINAL);
+        wafer_ncc_protocol_issue_word(index, WAFER_NCC_ISSUE_ORDINAL);
     assert(record[base + WAFER_NCC_ISSUE_EXECUTE_CYCLES] == 11);
-    assert((record[base + WAFER_NCC_ISSUE_CONTROL_AFTER_ISSUE] & UINT8_MAX) ==
-           expected_issue_position[ordinal]);
+    assert(record[base + WAFER_NCC_ISSUE_CONTROL_AFTER_ISSUE] ==
+           (index == 3 ? 7U : 0U));
+    assert((record[base + WAFER_NCC_ISSUE_FLAGS] &
+            WAFER_NCC_ISSUE_WINDOW_CONTROL_VALID) ==
+           (index == 3 ? WAFER_NCC_ISSUE_WINDOW_CONTROL_VALID : 0U));
   }
-  uint32_t unused =
-      wafer_ncc_protocol_issue_word(7, WAFER_NCC_ISSUE_ORDINAL);
-  assert(record[unused + WAFER_NCC_ISSUE_TAG] == 0);
   assert(context.prepared_mask == 0);
 
-  plan.issue_limit = 6;
+  plan.wait_kind = WAFER_NCC_WAIT_NONE;
+  plan.wait_worker_mask = 0;
   assert(wafer_ncc_probe_validate_plan(
              &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
          WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+}
+
+static void test_full_depth_window_is_accepted_without_overflow(void) {
+  WaferNccProbeRequest plan = request(1, 4, WAFER_NCC_SCHEDULE_WINDOW);
+  plan.lanes[0] = lane(WAFER_NCC_ENGINE_TDMA, 0);
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
+
+  plan = request(2, 3, WAFER_NCC_SCHEDULE_WINDOW);
+  plan.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
+  plan.lanes[1] = plan.lanes[0];
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
+
+  plan.rounds = 4;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSAFE_WINDOW);
 }
 
 int main(void) {
@@ -514,6 +548,7 @@ int main(void) {
   test_validation_bounds();
   test_wire_decode();
   test_failed_safety_drain_is_not_retried();
-  test_manual_saturation_records_bounded_issue_evidence();
+  test_depth_plus_one_is_tight_and_waited();
+  test_full_depth_window_is_accepted_without_overflow();
   return 0;
 }

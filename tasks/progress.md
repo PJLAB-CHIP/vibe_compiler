@@ -88,6 +88,13 @@ multi-tile arrival、launch ABI与PMU measurement basis。每个维度必须得�
 IR上物化显式multi-buffer、prologue/steady/epilogue、resource-aware issue order和latest-legal wait/fence，并让
 每个actual clone重新经过SPM/DDR、instruction、target、package与board correctness gate。计划见
 `tasks/plans/multi-engine-software-pipelining.md`。
+当前queue active occupancy与full行为仍在Q37内保持`unknown`：静态depth不直接作为occupancy证据。普通
+calibration只运行1/2/4（TDMA 1/2）。修正builder生命周期和逐issue观察位置后，CT exact documented
+`D=6`已由单engine、单case、单样本及前后known-good Add heartbeat闭合submission/completion/count/output/guard；
+逐issue control均为`0x100`，因此不声明六条并发occupancy。本轮显式manual授权的CT typed tight `D+1=7`也在
+单engine/case/sample、紧邻issue、前后Add heartbeat和完整oracle下通过，证明documented depth是pending
+queue storage而非完整lifetime总提交上限；window后control为`0x100`且blocking为0，未观察到resident/full/
+backpressure。NE/RDMA/WDMA/TDMA对应边界仍待校准，任意更深提交继续禁用。
 
 Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
 现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的

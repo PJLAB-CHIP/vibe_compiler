@@ -1134,17 +1134,46 @@
 ## 2026-07-23 单对指令不能判定TX81跨queue并行能力
 
 - 现象：同worker的单对RDMA/CT以及当前production Add/GEMM窗口中，global PMU union等于各engine时间之和，一度被解释成
-  硬件不并行；把2至6组disjoint packet紧邻入队后，`sum(engine)-global_union`稳定为正。当前one-shot CRT因每次
+  硬件不并行；把2或4组disjoint packet紧邻入队后，`sum(engine)-global_union`稳定为正。当前one-shot CRT因每次
   `TsmNew/config/TsmExecute/TsmDelete`产生构包间隔，要到更深backlog才观察到同类重叠。
 - 根因：queue容量、engine可并行与某个短窗口是否喂饱queue是三个不同问题。单对包含启动/填充开销；wrapper发射间隙还可能
   让前一engine在后一packet入队前结束。
 - 修复模式：并行校准使用serial control、issue-count sweep、强oracle和重复PMU样本；只以
   `engine_a + engine_b - global_union`的重复正值声明当前profile的重叠。compiler先用真实multi-buffer/issue window形成
   backlog，再决定是否需要prepared issue ABI。
-- 防复发：不把queue depth当active transfer数，不从单样本/host wall time推断engine overlap。`depth+1`
-  只允许由显式typed manual suite逐engine、逐进程执行：精确限制为`D+1`，配独立timeout、最终drain、
-  instruction count、完整output/guard以及逐次IB/cycle证据；证据不足只记`inconclusive`。窗口大小是
-  target候选和capacity约束，不是case硬编码的通用规则。
+- 防复发：不把queue depth当active transfer数、安全issue bound或并行度，不从单样本/host wall time推断
+  engine overlap。窗口大小是target候选和capacity约束，不是case硬编码的通用规则；普通calibration使用
+  1/2/4（TDMA 1/2），exact documented depth只由隔离manual case校准。typed tight `D+1`只能用于区分
+  pending storage depth和完整lifetime总提交上限，不能用来证明active occupancy或engine overlap。
+
+## 2026-07-23 builder生命周期与逐issue MMIO会污染NCC depth probe
+
+- 现象：single-engine CT的issue limit 5连续三次得到完整正确output和guard，但每条记录的
+  `control_after_issue`均为`0x100`，没有看到5条请求并发驻留。issue limit 6第一次就timeout；停止该case后，
+  同一批次的既有known-good Add也timeout，而`tsm_smi`仍显示idle。
+- 根因：旧probe为每条issue创建一个`TsmNew` builder并把全部builder保留到case结束，同时在一次
+  `TsmExecute`与下一次之间插入多组MMIO观察。对象生命周期和观测间隔改变了被测连续提交路径，因此issue6
+  timeout不能归因硬件queue或静态depth。header/register中的depth也只描述queue storage形状，不证明active
+  occupancy；管理面的idle/accounting不覆盖Kcore execution、completion或已poisoned context。
+- 修复模式：packet构造完成后立即`TsmDelete` builder，只保留独立packet；worker control在
+  `TsmExecute`返回后立即读取，其它观察移出相邻issue关键路径。普通calibration只跑1/2/4（TDMA 1/2）。
+  exact documented depth使用独立manual case：单engine、单case、单样本，前后各运行一次known-good Add
+  heartbeat，并核对连续提交、最终completion、instruction count、完整output和guard。若要区分静态depth与
+  总提交上限，另用typed tight `D+1`：全部builder预先释放，相邻execute之间只做cycle采样，planned range
+  只用于entry与oracle关联、不视为实际register capture，window后再统一读control并进入matching wait/full
+  oracle。
+- 复验：修正后的CT exact `D=6`在前后Add均1/1 exact且cleanup完成的隔离批次中通过；六次execute rc均为1，
+  CT instruction delta为6、CT/full execution delta均为473 cycles、blocking delta为0，全部boundary/final
+  result、guard及slot 6独立地址结果正确。旧issue6 timeout由此确认为probe污染，不能归因硬件depth。
+- 继续复验：本轮显式manual授权的CT typed tight `D+1=7`在前后Add均1/1 exact且cleanup完成的独立批次中通过；
+  七次execute rc均为1，issue-order cycle为`[3558, 322, 561, 365, 236, 237, 218]`，CT instruction delta
+  为7、CT/full execution delta均为553 cycles、blocking delta为0，全部boundary/final result和guard
+  mismatch为0，window后control为`0x100`。
+- 防复发：静态queue shape、总issue接受数、并发occupancy、安全issue上限和queue-full/backpressure是五类不同
+  结论，必须分别取证。CT `D=6`与`D+1=7`证明对应submission/completion vector，且后者证明documented
+  depth是pending storage而非完整lifetime总提交上限；但短workload在观测前已排空，不能证明六或七条同时
+  驻留，也没有校准queue-full/backpressure。其它engine边界仍需独立复验，任意更深overflow在真实occupancy/
+  full闭合前禁止。`tsm_smi` idle不能解除fail-stop，测试框架不得自动retry、reset或power。
 
 ## 2026-07-23 TDMA Memset的inactive iteration不能清零
 
@@ -1165,7 +1194,7 @@
 ## 2026-07-23 current TX81 profile不能发射native TDMA Fmt_BOOL Memset
 
 - 现象：小range、带guard的native `Fmt_BOOL` TDMA Memset在10秒内未完成。测试上下文被隔离且没有重试；
-  随后只读设备状态为idle、无残留进程，所以这次timeout不是需要reset或重启的整卡异常。
+  随后只读设备状态为idle、无残留进程，但该状态只覆盖管理面，不能证明execution/completion面健康。
 - 根因：current profile没有可接受的native `Fmt_BOOL` Memset完成性证据。bitpacked BOOL的physical footprint按byte
   存储，直接把bit count和format 7交给TDMA不能因为enum存在就视为合法。
 - 修复模式：production仅对`physical_footprint` BOOL fill做唯一target canonicalization：Instr/TargetCall保持
@@ -1173,9 +1202,9 @@
   ceil-div换算byte count（对准入domain是exact division），并发出`Fmt_INT8` `0x00/0xff` TDMA byte splat。
   native `Fmt_BOOL`保持excluded；logical-valid BOOL会涉及unused tail bits，
   不能复用该路径。
-- 防复发：format enum、packet可构造和板端可完成是三层不同证据。timeout后先停止批次、隔离context并做一次只读
-  设备状态检查；设备已idle时不要自动reset/power/reboot。替代mapping仍需独立board held-out，未通过前不能写成
-  supported capability。
+- 防复发：format enum、packet可构造和板端可完成是三层不同证据。timeout后先停止批次、隔离context且不自动
+  reset/power；只读设备状态只能辅助诊断，不能授权继续。后续板测必须由新进程known-good Add heartbeat重新证明
+  execution baseline。替代mapping仍需独立board held-out，未通过前不能写成supported capability。
 
 ## 2026-07-23 raw output去重必须按文件系统路径语义
 

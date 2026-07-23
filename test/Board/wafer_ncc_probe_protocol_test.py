@@ -442,64 +442,108 @@ class ProtocolTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             execution_probe.report_overlap(observations, require_overlap=True)
 
-    def test_manual_saturation_is_typed_and_classified_conservatively(
-        self,
-    ) -> None:
+    def test_depth_plus_one_is_typed_and_requires_a_wait(self) -> None:
         case = next(
             item
-            for item in execution_probe.V2_SATURATION_CASES
+            for item in execution_probe.V2_DEPTH_PLUS_ONE_CASES
             if item.plan.lanes[0].engine == protocol.Engine.CT
         )
         plan = case.plan
-        self.assertEqual(plan.flags, protocol.MANUAL_SATURATION)
+        self.assertEqual(plan.flags, protocol.TIGHT_DEPTH_PLUS_ONE)
         self.assertEqual(plan.issue_limit, 7)
         self.assertEqual(len(plan.issue_identities()), 7)
         self.assertEqual(plan.issue_order(), (0, 4, 1, 5, 2, 6, 3))
-        words = plan.request_words()
-        self.assertEqual(words[protocol.REQ["ISSUE_LIMIT"]], 7)
+        self.assertEqual(plan.wait_kind, protocol.WaitKind.BY_WORKER)
+        self.assertEqual(
+            plan.request_words()[protocol.REQ["ISSUE_LIMIT"]], 7
+        )
+        invalid = dataclasses.replace(
+            plan,
+            wait_kind=protocol.WaitKind.NONE,
+            wait_worker_mask=0,
+        )
+        with self.assertRaisesRegex(ValueError, "matching wait"):
+            invalid.request_words()
 
-        def sample(
-            ordinal: int, ib_counters: list[int], cycles: list[int]
-        ) -> dict[str, object]:
-            issues = []
-            by_slot = {
-                identity.slot: identity
-                for identity in plan.issue_identities()
+    def test_multi_issue_catalog_stays_below_documented_depth(self) -> None:
+        for engine, depth in (
+            execution_probe.V2_DOCUMENTED_QUEUE_DEPTHS.items()
+        ):
+            cases = [
+                case
+                for case in execution_probe.V2_MULTI_ISSUE_CASES
+                if case.plan.lanes[0].engine == engine
+            ]
+            issue_counts = {
+                len(case.plan.issue_identities()) for case in cases
             }
-            for slot, ib, cycle in zip(
-                plan.issue_order(), ib_counters, cycles, strict=True
-            ):
-                identity = by_slot[slot]
-                issues.append(
-                    {
-                        "identity": dataclasses.asdict(identity),
-                        "control_after_issue": ib,
-                        "execute_cycles": cycle,
-                    }
-                )
-            return {
-                "case": case.as_dict(),
-                "sample": ordinal,
-                "issues": issues,
-                "blocking_delta": {"worker0.ct": 13},
-            }
+            self.assertEqual(issue_counts, {min(4, depth - 2)})
+            self.assertTrue(all(count < depth for count in issue_counts))
 
-        observed = [
-            sample(0, [1, 2, 3, 4, 5, 6, 7], [4, 4, 5, 4, 5, 5, 20]),
-            sample(1, [1, 2, 3, 4, 5, 6, 7], [5, 4, 5, 5, 4, 5, 18]),
+    def test_documented_depth_catalog_is_exact_and_one_shot(self) -> None:
+        for engine, depth in (
+            execution_probe.V2_DOCUMENTED_QUEUE_DEPTHS.items()
+        ):
+            cases = [
+                case
+                for case in execution_probe.V2_DOCUMENTED_DEPTH_CASES
+                if case.plan.lanes[0].engine == engine
+            ]
+            self.assertEqual(len(cases), 1)
+            self.assertEqual(
+                len(cases[0].plan.issue_identities()), depth
+            )
+            self.assertEqual(cases[0].plan.flags, 0)
+            self.assertEqual(cases[0].plan.issue_limit, 0)
+
+    def test_depth_plus_one_catalog_is_exact(self) -> None:
+        for engine, depth in (
+            execution_probe.V2_DOCUMENTED_QUEUE_DEPTHS.items()
+        ):
+            cases = [
+                case
+                for case in execution_probe.V2_DEPTH_PLUS_ONE_CASES
+                if case.plan.lanes[0].engine == engine
+            ]
+            self.assertEqual(len(cases), 1)
+            self.assertEqual(
+                len(cases[0].plan.issue_identities()), depth + 1
+            )
+            self.assertEqual(
+                cases[0].plan.flags, protocol.TIGHT_DEPTH_PLUS_ONE
+            )
+
+    def test_depth_plus_one_report_uses_tight_issue_order(self) -> None:
+        case = next(
+            item
+            for item in execution_probe.V2_DEPTH_PLUS_ONE_CASES
+            if item.plan.lanes[0].engine == protocol.Engine.CT
+        )
+        issues = [
+            {
+                "identity": dataclasses.asdict(identity),
+                "execute_cycles": identity.slot + 10,
+                "control_after_issue": (
+                    0x102
+                    if identity.slot == case.plan.issue_order()[-1]
+                    else 0
+                ),
+            }
+            for identity in case.plan.issue_identities()
         ]
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            execution_probe.report_saturation(observed)
-        self.assertIn("backpressure-observed", output.getvalue())
-
-        observed[1] = sample(
-            1, [1, 2, 3, 4, 5, 5, 5], [5, 4, 5, 5, 4, 5, 18]
-        )
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            execution_probe.report_saturation(observed)
-        self.assertIn("inconclusive", output.getvalue())
+            execution_probe.report_depth_plus_one(
+                [
+                    {
+                        "case": case.as_dict(),
+                        "issues": issues,
+                        "blocking_delta": {"worker0.ct": 9},
+                    }
+                ]
+            )
+        self.assertIn("completed-with-pmu-backpressure", output.getvalue())
+        self.assertIn('"control_after_tight_window": 258', output.getvalue())
 
 
 if __name__ == "__main__":

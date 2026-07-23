@@ -850,6 +850,13 @@ static int wafer_ncc_v2_prepare(void *opaque,
   default:
     return 1;
   }
+  /*
+   * TsmNew* owns only the method table used to materialize the packet.  The
+   * packet itself lives in the probe context and is the sole TsmExecute input.
+   * Release each constructor immediately so a window never retains one heap
+   * object per queued packet.
+   */
+  wafer_ncc_probe_release(instruction);
   return built ? 0 : 1;
 }
 
@@ -982,13 +989,18 @@ static int wafer_ncc_v2_observe(void *opaque,
       context, issue, WAFER_NCC_OPERAND_READ1);
   uint64_t write = wafer_ncc_v2_operand_address(
       context, issue, WAFER_NCC_OPERAND_WRITE);
-  if (issue->lane_spec->issue_mode == WAFER_NCC_ISSUE_RAW) {
+  int raw_issue =
+      issue->lane_spec->issue_mode == WAFER_NCC_ISSUE_RAW;
+  if (raw_issue &&
+      request->flags != WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE) {
     observation->inter_type = context->issued_inter_types[issue->slot];
     return wafer_ncc_v2_observe_raw_registers(issue, observation);
   }
   (void)instruction;
-  observation->inter_type =
-      (uint64_t)issue->engine | ((uint64_t)issue->worker << 8);
+  observation->inter_type = raw_issue
+                                ? context->issued_inter_types[issue->slot]
+                                : ((uint64_t)issue->engine |
+                                   ((uint64_t)issue->worker << 8));
   observation->flags = 0;
   switch (issue->engine) {
   case WAFER_NCC_ENGINE_CT:

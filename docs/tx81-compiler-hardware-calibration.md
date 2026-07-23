@@ -35,8 +35,8 @@ Pipeline position:
   source-to-bundle named pipeline。
 - Explicit non-goals:
   不建立第二份总体架构，不穷举未暴露ISA，不用aggregate PMU宣称cycle accuracy，不把一次observed结果
-  外推到其它firmware/runtime/SKU，不以reset/power cycle作为测试步骤，不用unsafe queue overflow或缺失
-  participant的DTE case探索错误行为。
+  外推到其它firmware/runtime/SKU，不以reset/power cycle作为测试步骤，不用缺失typed gate与前后heartbeat的
+  任意queue overflow或缺失participant的DTE case探索错误行为。
 - Completion gate:
   本文compiler-sensitive矩阵每一项都有可追溯静态合同和板端校准结论，或者有明确Unknown/unsupported、
   风险及保守compiler处理；校准vector与held-out vector分离，正确性oracle先于性能解释。只有完成该gate后，
@@ -83,7 +83,9 @@ PCI BDF、临时build目录和安装路径只是单次运行信息，不是稳�
 8. 完整readback、canary、terminal status和资源cleanup。
 
 timeout、设备无响应或状态异常会立即停止该批次；测试不自动重试，不调用NPU power、reset或firmware替换。
-只有设备实际异常时才由用户决定是否重启。
+管理面显示idle、0%利用率或无进程只说明inventory/accounting表面状态，不能证明execution/completion面仍健康。
+后续queue边界probe使用独立进程、单case，并在case前后各运行一次既有known-good Add heartbeat；任一heartbeat
+timeout就停止全部板测，由用户决定恢复方式。
 
 ### 2.2 强oracle
 
@@ -113,19 +115,39 @@ target model和`blocking_time == 0`均不能单独作为成功或并行证据。
 
 首轮base和length至少256B对齐。64KiB只可作为offset sweep样本，不能预设为物理bank周期。
 
-### 2.4 Schema 2 hazard与手动饱和边界
+### 2.4 Schema 2 hazard与queue安全边界
 
 parameterized NCC probe在wire中显式携带first/second operand角色；RAW/WAR/WAW/RAR不能从lane名、
 engine名或buffer名恢复。host只在同一engine pair的rounds=2 disjoint serial/window对照已经观察到
 可重叠后，才允许执行exact/partial/adjacent hazard case。device以实际packet range回传证据，并用逐段
 composition golden、未选operand guard和最终copyback共同闭合正确性。
 
-queue `depth+1`不进入普通calibration suite，只能由typed manual-saturation flag启动。该suite固定同一
-engine/worker的raw window、无requested wait、精确发射`D+1`条，每次记录worker control/IB和`rdcycle`
-包围的execute耗时；boundary允许结果尚未完成，但guard必须始终为零，最终safety drain后instruction count、
-完整结果和guard必须精确。只有重复样本均达到`IB >= D`且第`D+1`次调用耗时稳定高于此前调用时，才记为
-`backpressure-observed`，否则记为`inconclusive`，不能据此推断nonblocking/full-return语义。当前只完成
-schema、device/host实现和no-card验证，尚无板端结论。
+register/header中的queue depth只描述静态storage/register形状，不等于host可安全连续发射的outstanding上限，
+也不证明IB会在该数值驻留。旧CT边界probe的issue limit 5连续三次得到完整正确结果且记录
+`control_after_issue=0x100`，issue limit 6第一次timeout，随后known-good Add也timeout；但旧实现同时保留
+全部`TsmNew` builder到case结束，并在每次issue后、下一次issue前插入多组MMIO观察。对象生命周期和观察间隔都
+污染了连续提交路径，因此这组5/6结果不能用于归因硬件queue，也不能把issue6 timeout解释为静态depth不安全。
+
+修正后的probe在packet构造完成后立即`TsmDelete` builder，只保留独立packet，并把worker control读取紧邻
+`TsmExecute`之后。普通calibration仍只运行保守multi-issue 1/2/4，TDMA只运行1/2。静态documented depth由独立
+`documented-depth-manual`校准：一次只选一个engine和一个case、只运行一遍，并在前后各用known-good Add heartbeat
+确认execution/completion面；它只验证连续提交恰好`D`条后的completion、instruction count、完整结果和guard，
+不把成功提升成并发occupancy证据。当前profile上，修正后的CT exact `D=6`单样本及前后Add heartbeat已经完整
+通过，证明该CT submission/completion vector可用；六次issue后的control观察均为`0x100`，没有证明六条请求
+同时active或resident。
+
+本轮取得显式manual授权以区分“静态depth”和“总提交数”后，CT另执行一次typed tight `D+1` manual gate：仍为单engine、
+单case、单样本，七份packet的builder预先释放；七次`TsmExecute`之间只保留`rdcycle`采样，不插入逐issue
+register MMIO，只记录planned range供每个entry的oracle关联而不冒充实际register capture，整个window之后
+只读一次control，再执行matching wait和完整result/guard oracle。前置Add 1/1 exact且cleanup完成；七次execute
+rc均为1，issue-order cycle为
+`[3558, 322, 561, 365, 236, 237, 218]`，`worker0.ct instruction_delta=7`，CT/full execution delta均为
+553 cycles、blocking delta为0，七份boundary/final result与guard mismatch均为0，window后control为`0x100`；
+后置Add同样1/1 exact且cleanup完成。这个向量证明当前profile可接受并完成超过静态depth的多次连续提交，因此
+documented depth描述pending queue storage，不是一次完整submission/completion lifetime的总提交上限。
+静态实现还表明`TsmExecute`没有software queue-full check；但该短workload在观测前已经排空，没有观察到resident
+数量、queue full或backpressure，不能把七次成功写成“七条同时驻留”或饱和语义。typed tight `D+1`只保留为
+隔离manual gate；任意更深提交在真实occupancy/full行为闭合前仍不执行。NE/RDMA/WDMA/TDMA对应边界仍待校准。
 
 ### 2.5 DTE/SPM PMU有效样本边界
 
@@ -160,9 +182,9 @@ measurement basis仍为`unknown`。
 | SPM capacity/reservation | allocatable range和保留区 | boundary-positive与verifier negative；不触碰保留区 | 09/11 | 静态hard bound；board边界held-out未闭合 |
 | SPM alignment/bank | 256B legality、非1024-bit访问代价、bank/color映射 | disjoint offset sweep，固定长度/engine pair/serial control | 09 placement与06 cost | 256B静态；exact bank mapping `unknown` |
 | DDR/cache/coherence | host H2D、Kcore cache、DMA completion和host publication是不同域 | Kcore read前invalidate对照、DMA round-trip、matching drain后D2H | 09/12/14/15 | stale-cache机制`calibrated`；完整direction matrix待闭合 |
-| queue capacity | CT/NE/RDMA/WDMA深度6，TDMA深度4以内不丢entry；full行为 | `N=1,D-1,D`，每entry唯一地址/pattern/count；独立typed manual suite才允许`D+1` | 10/11/16 | RDMA/CT深度6内部分`board-observed`；D+1 probe已通过no-card，板端行为`unknown` |
+| queue shape与连续提交边界 | register/header中CT/NE/RDMA/WDMA静态depth为6、TDMA为4；该数值描述pending storage，不是完整lifetime总提交上限，active occupancy和full行为不能由形状或总提交数推出 | 普通calibration只跑1/2/4（TDMA 1/2）；隔离manual gate先验证恰好`D`，再经显式manual授权执行typed tight `D+1`，均为单engine/case/sample、前后Add heartbeat和完整count/output/guard；禁止任意更深提交 | 10/11/16 | CT exact `D=6`与tight `D+1=7`的submission/completion/count/output/guard均为当前profile `board-observed`；D+1 window后control为`0x100`且blocking为0，只证明总提交可超过depth，occupancy/full/backpressure仍`unknown`；NE/RDMA/WDMA/TDMA边界待校准 |
 | worker scope | worker0/1/2 routing、default wait和`bywork` scope | CT三worker；matching wait后、safety drain前读CSR/result | 10/11/14/15 | worker0 `board-observed`；worker1/2 wait scope `unknown` |
-| cross-engine overlap | 五类engine全部10个pair的可重叠性和共享资源 | disjoint backlog2/4 + serial control；`Ea+Eb-FU`重复正值 | 06/10/11/16 cost/scheduling | RDMA+CT `calibrated`；其余`unknown` |
+| cross-engine overlap | 五类engine全部10个pair的可重叠性和共享资源 | disjoint backlog2 + serial control；仅在不触及任一engine full-depth时增加backlog4；`Ea+Eb-FU`重复正值 | 06/10/11/16 cost/scheduling | RDMA+CT `calibrated`；其余`unknown` |
 | address dependency | busytable对RAW/WAR/WAW/RAR及exact/partial/adjacent/stride envelope的处理 | 仅对已证实可重叠pair做composition golden和PMU对照 | 09-11 legality/scheduling | 显式operand/range schema与composition oracle已通过no-card；板端行为`unknown` |
 | issue overhead | wrapper构包/heap间隔对短window的影响，prepared issue是否值得materialize | 同packet序列wrapper与prebuilt对照 | 06/14 candidate/lowering | RDMA+CT `calibrated`；不构成新IR语义 |
 | local completion | default wait、`bywork`、local fence的范围和visibility | matching wait后立即CSR/Kcore oracle，再做safety drain | 09-11/15 | worker0正向`board-observed`；跨worker`unknown` |
@@ -181,12 +203,33 @@ measurement basis仍为`unknown`。
 ### 4.1 NCC mode、queue和RDMA/CT overlap
 
 - 3个worker的`serial_mode`只读值均为0。
-- worker 0上disjoint RDMA/CT使用64KiB强sentinel workload；issue count `1/2/4/6`均在显式drain和
-  WDMA round-trip后完整exact，未执行depth+1。
+- worker 0上disjoint RDMA/CT使用64KiB强sentinel workload；低深度issue count `1/2/4`均在显式drain和
+  WDMA round-trip后完整exact。旧sweep中的aggregate issue-count 6只能保留为该配对workload的历史观察，
+  不能作为任一单queue可安全outstanding 6条的证据。
 - prebuilt packet在backlog 2已出现稳定正overlap；one-shot wrapper因构包、heap和释放间隔，在较深backlog
   才形成明显窗口。issue-count-4重复样本的prebuilt overlap显著大于wrapper。
 - 这证明当前profile的RDMA/CT queue能够并行，也证明“queue容量”“硬件可并行”和“软件是否及时喂饱queue”
   是三个不同问题；它不证明其它9个pair或任何alias关系。
+- 旧single-engine CT边界样本中，issue limit 5连续三次完整正确且
+  `control_after_issue=0x100`，issue limit 6第一次timeout，随后known-good Add也timeout。但该probe保留全部
+  `TsmNew` builder，并在相邻issue之间读取多组MMIO，故不能从该timeout判断硬件queue depth或安全提交上限。
+- 修正probe在packet构造后立即删除builder，并在`TsmExecute`后立刻读取control。重启后先运行known-good Add，
+  1/1 exact且cleanup完成；随后`ct-raw-documented-depth6-window`单样本中六次`execute_rc`均为1，
+  `worker0.ct instruction_delta=6`、CT与full execution delta均为473 cycles、blocking delta为0，六个
+  boundary/final result及guard mismatch均为0，slot 6独立地址的结果也正确；最后一次known-good Add同样
+  1/1 exact且cleanup完成。这把旧timeout归因于受污染probe路径，而不能归因于硬件documented depth。
+- 六次issue后的`control_after_issue`均为`0x100`，观测点处IB为空闲，因此本次只把CT exact `D=6`的
+  submission/completion/count/output/guard记为当前profile `board-observed`；它不证明六条同时active或
+  resident，也不校准queue-full/backpressure。
+- 随后的CT typed tight `D+1`只在明确manual gate中执行：七份builder预先释放，七次`TsmExecute`之间仅做
+  `rdcycle`采样，planned range只用于entry与oracle关联、不视为实际register capture，window后才统一读取
+  control并进入matching wait/full oracle。前置Add 1/1 exact且cleanup完成；七次rc均为1，issue-order cycle为
+  `[3558, 322, 561, 365, 236, 237, 218]`，CT instruction delta为7、CT/full execution delta均为553 cycles、
+  blocking delta为0，全部result/guard mismatch为0，window后control为`0x100`；后置Add同样1/1 exact且
+  cleanup完成。这证明七次总提交可被接受和完成，静态depth不是完整lifetime总提交上限。
+- 该短CT workload在唯一control观测前已排空，所以没有看到七条resident、queue full或backpressure；
+  `TsmExecute`静态路径也没有software queue-full check。实际full行为继续为`unknown`，不得用本结果选择
+  production outstanding window。NE/RDMA/WDMA/TDMA对应边界仍待校准，任意更深overflow不执行。
 
 overlap只按下面的PMU关系解释：
 
@@ -234,9 +277,9 @@ overlap_cycles = rdma_exec + ct_exec - fu_union_exec
   `elem_count=128`且实际source descriptor为`stride0=256, iteration0=1`。
 - 在当前profile的配对样本里，64B×64比whole 4KiB和128B×32用时更长。该结果只是一条
   profile-scoped performance observation，不是stride legality、固定代价或跨profile cost常数。
-- 原生TDMA `Fmt_BOOL`的小range安全case在10秒内未完成；执行上下文被隔离，随后只读设备状态已回到
-  idle且没有残留进程，因此没有reset或重启。这足以把native packet在当前profile标记为`excluded`，
-  不能据此推断其它profile或其它TDMA kind。
+- 原生TDMA `Fmt_BOOL`的小range安全case在10秒内未完成；执行上下文被隔离且没有自动重试/reset/power。
+  随后的只读设备状态回到idle且没有残留进程只说明管理面状态，不能证明execution面健康。该packet因没有
+  可接受的completion证据而在当前profile标记为`excluded`，但不能据此推断其它profile或其它TDMA kind。
 - production只对`physical_footprint` BOOL fill定义替代路径：Instr/TargetCall保持bit count和canonical
   bool scalar，TX81 CRT边界把完整physical bytes改写成`Fmt_INT8`、byte count和`0x00/0xff` byte splat，
   继续由TDMA Memset执行。该路径会有意覆盖最后一个byte中的unused bits，故不能用于
@@ -259,27 +302,35 @@ overlap_cycles = rdma_exec + ct_exec - fu_union_exec
 1. **TDMA held-out**：用独立value/length复验I8/F16/BF16 descriptor；只执行会发出`Fmt_INT8` packet的
    production BOOL physical-footprint canonicalization，并核对实际register、完整byte range和guard。native
    `Fmt_BOOL`不再发射；GatherScatter和其它DataMove kind分别保留自己的校准项。
-2. **single-engine completion**：CT/NE/RDMA/WDMA/TDMA在worker 0做`N=1,D-1,D`唯一entry；CT在worker
-   1/2验证routing与matching wait。
-3. **manual saturation**：只有对应single-engine `D`样本完整通过后，才逐engine、逐进程执行typed `D+1`
-   case。每个进程有独立外层timeout，任何timeout、状态异常、count/output/guard失败立即停止整个批次；
-   不自动重试、reset或power。结果只按2.4节证据分成`backpressure-observed`或`inconclusive`。
-4. **全部disjoint pair**：10个engine pair各用serial control、backlog2/4和重复PMU样本；4KiB只做正确性，
+2. **single-engine completion**：CT/NE/RDMA/WDMA/TDMA在worker 0从`N=1`开始递增，但每个case严格低于
+   register/header给出的静态depth；普通calibration使用1/2/4，TDMA只使用1/2。CT在worker 1/2只做低深度
+   routing与matching wait。
+3. **documented-depth manual**：修正probe后，一次只选择一个engine和一个case，恰好发射该engine文档depth，
+   只运行一遍，并在前后各跑一次known-good Add heartbeat。验证连续提交、最终completion、instruction count、
+   完整output和guard，不声明并发occupancy；CT `D=6`已经按此合同闭合，后续只剩NE/RDMA/WDMA `D=6`和
+   TDMA `D=4`。
+4. **typed tight depth-plus-one manual**：只有同engine的`D`向量已通过且取得显式manual授权时，才能由独立typed
+   gate发射恰好`D+1`条；单engine、单case、单样本、前后Add heartbeat和完整oracle不变，相邻execute之间
+   不做register MMIO。CT `D+1=7`已证明总提交数可以超过pending queue depth，但没有观察到occupancy/full；
+   其它engine仍待校准，任意更深提交不执行。
+5. **全部disjoint pair**：10个engine pair各用serial control、backlog2和重复PMU样本；只有参与engine的
+   静态depth都严格大于4时才增加backlog4，任何pair都不触及其中任一engine的full-depth。4KiB只做正确性，
    64KiB或由单engine时长选择的payload才用于overlap判断。
-5. **dependency relation**：只对已证明能重叠的pair做RAW/WAR/WAW/RAR × exact/partial/adjacent；每个结果
+6. **dependency relation**：只对已证明能重叠的pair做RAW/WAR/WAW/RAR × exact/partial/adjacent；每个结果
    使用逐元素或逐字节composition golden。
-6. **SPM offset sweep**：固定workload，只改变相对offset；建立经验conflict class，不提前命名物理bank。
-7. **worker/join/visibility**：三worker disjoint并行，matching wait后且safety drain前验证CSR、Kcore和host
+7. **SPM offset sweep**：固定workload，只改变相对offset；建立经验conflict class，不提前命名物理bank。
+8. **worker/join/visibility**：三worker disjoint并行，matching wait后且safety drain前验证CSR、Kcore和host
    visibility；跨worker同地址只跑显式ordered正向。
-8. **DTE/SPM PMU与multi-tile**：先闭合counter basis，再测有序producer/consumer和full-card arrival；
+9. **DTE/SPM PMU与multi-tile**：先闭合counter basis，再测有序producer/consumer和full-card arrival；
    错误坐标、缺participant和资源提前复用保持negative，不上板。
-9. **numeric/layout held-out**：以f16/bf16为主，补CT/NE的tail、transpose、边界值和special value；模型
+10. **numeric/layout held-out**：以f16/bf16为主，补CT/NE的tail、transpose、边界值和special value；模型
    纵向保持模型自身dtype。
 
 ## 6. 明确禁测或保守处理
 
-- `depth + 1`只允许进入2.4节定义的typed manual-saturation suite；普通calibration、任意更深overflow、
-  缺独立timeout/最终drain/强oracle的变体均不执行。
+- `depth + 1`不得混入普通calibration；它只允许进入typed tight manual gate：单engine、单case、单样本，
+  packet builder预先释放，相邻execute之间不插入register MMIO，并要求前后known-good Add heartbeat和完整
+  count/output/guard均通过。除这个精确`D+1`向量外，任意更深或未证明occupancy/full的overflow仍不执行。
 - 不发射SCALAR、DTE或CSR raw packet到`TsmExecute`。
 - 当前profile不发射TDMA Memset native `Fmt_BOOL` packet；BOOL full-footprint只允许先canonicalize为I8
   byte fill，logical-valid BOOL fill保持fail closed。

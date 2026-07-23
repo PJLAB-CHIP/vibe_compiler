@@ -30,12 +30,18 @@
   legality。packet/register字段只能证明请求和路由，完整非零output、全range readback及双侧guard才是
   correctness oracle。
 - 板端case一旦timeout立即停止当前批次并隔离该execution context，不在同批次自动重试，也不调用
-  reset、power或firmware替换。随后只做一次设备状态/残留进程检查：设备已回idle时记录case为当前profile
-  excluded或unknown并继续离线修复，无需重启；只有设备确实无响应、状态异常或资源未回基线时才升级恢复动作。
-- queue容量边界的`D+1`不能混入普通calibration：使用typed manual flag、精确issue limit、单engine/worker、
-  独立进程和外层timeout，boundary只允许结果pending而不允许guard损坏，最终drain后count/output/guard必须
-  完整。只有重复IB达到`D`且第`D+1`次issue出现可区分的等待证据时才记backpressure；否则保持
-  `inconclusive`，不能把“总共接受D+1条”写成queue-full返回或并发occupancy合同。
+  reset、power或firmware替换。`tsm_smi` idle、0%利用率、memory baseline和无残留进程只证明管理面表面状态，
+  不证明execution/completion面健康。queue边界probe在case前后各运行一次新进程的known-good Add heartbeat；
+  任一heartbeat timeout就停止全部板测并由用户决定恢复方式。
+- register/header中的NCC queue depth只描述静态storage/register形状，不是可安全连续issue的outstanding上限。
+  普通calibration只跑1/2/4，TDMA只跑1/2。恰好documented depth使用独立
+  `documented-depth-manual`：packet构造后立即删除`TsmNew` builder，control读取紧随`TsmExecute`，一次只选
+  一个engine/case且只跑一遍，前后各做known-good Add heartbeat，核对连续提交、最终completion、
+  instruction count、完整output/guard。typed tight `D+1`只能在`D`已通过且取得显式manual授权后使用相同隔离
+  边界；packet builder预先释放，相邻execute只做cycle采样，window后统一读control并完成matching wait/full
+  oracle。CT `D=6`与`D+1=7`均已board-observed，后者证明documented depth不是完整lifetime总提交上限；
+  但control观测时已空闲且blocking为0，不能声明并发resident、queue full或backpressure。其它engine仍需
+  独立校准，任意更深overflow不执行。
 - PMU parser必须把“counter可读”和“样本有效”分开：split counter先做稳定读取，再验证enable、scope在window
   内未变化和workload至少触发一个相关delta。enable缺失、scope变化或全部delta为零时样本保持
   `inconclusive`；PMU结论不能替代payload、guard和completion正确性。

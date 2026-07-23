@@ -113,7 +113,7 @@ enum WaferNccProtocolRecordFlag {
 };
 
 enum WaferNccProtocolRequestFlag {
-  WAFER_NCC_REQUEST_MANUAL_SATURATION = UINT32_C(1) << 0,
+  WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE = UINT32_C(1) << 0,
 };
 
 enum WaferNccProtocolMemoryEffect {
@@ -134,6 +134,7 @@ enum WaferNccProtocolIssueFlag {
   WAFER_NCC_ISSUE_READ1_VALID = UINT32_C(1) << 1,
   WAFER_NCC_ISSUE_WRITE_VALID = UINT32_C(1) << 2,
   WAFER_NCC_ISSUE_PACKET_OBSERVED = UINT32_C(1) << 3,
+  WAFER_NCC_ISSUE_WINDOW_CONTROL_VALID = UINT32_C(1) << 4,
 };
 
 enum WaferNccProtocolRequestWord {

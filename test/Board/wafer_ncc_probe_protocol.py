@@ -74,8 +74,8 @@ LANE_BASE = _macro("WAFER_NCC_PROTOCOL_LANE_BASE")
 LANE_STRIDE = _macro("WAFER_NCC_PROTOCOL_LANE_STRIDE")
 ISSUE_BASE = _macro("WAFER_NCC_PROTOCOL_ISSUE_BASE")
 ISSUE_STRIDE = _macro("WAFER_NCC_PROTOCOL_ISSUE_STRIDE")
-MANUAL_SATURATION = _enumerator(
-    "WAFER_NCC_REQUEST_MANUAL_SATURATION"
+TIGHT_DEPTH_PLUS_ONE = _enumerator(
+    "WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE"
 )
 
 
@@ -265,6 +265,9 @@ READ0_VALID = _enumerator("WAFER_NCC_ISSUE_READ0_VALID")
 READ1_VALID = _enumerator("WAFER_NCC_ISSUE_READ1_VALID")
 WRITE_VALID = _enumerator("WAFER_NCC_ISSUE_WRITE_VALID")
 PACKET_OBSERVED = _enumerator("WAFER_NCC_ISSUE_PACKET_OBSERVED")
+WINDOW_CONTROL_VALID = _enumerator(
+    "WAFER_NCC_ISSUE_WINDOW_CONTROL_VALID"
+)
 ALL_PHASE_FLAGS = sum(
     _enumerator(name)
     for name in (
@@ -443,16 +446,17 @@ class Plan:
                 raise ValueError("wait mask contains a non-participant worker")
         elif self.wait_worker_mask:
             raise ValueError("only BY_WORKER consumes a worker mask")
-        if self.flags not in (0, MANUAL_SATURATION):
+        if self.flags not in (0, TIGHT_DEPTH_PLUS_ONE):
             raise ValueError("unknown plan flags are not safe")
-        if self.flags == MANUAL_SATURATION:
-            queue_depths = {
-                Engine.CT: 6,
-                Engine.NE: 6,
-                Engine.RDMA: 6,
-                Engine.WDMA: 6,
-                Engine.TDMA: 4,
-            }
+        queue_depths = {
+            Engine.CT: 6,
+            Engine.NE: 6,
+            Engine.RDMA: 6,
+            Engine.WDMA: 6,
+            Engine.TDMA: 4,
+        }
+        tight_depth_plus_one = self.flags == TIGHT_DEPTH_PLUS_ONE
+        if tight_depth_plus_one:
             if (
                 len(self.lanes) != 2
                 or self.lanes[0] != self.lanes[1]
@@ -461,8 +465,8 @@ class Plan:
                 or self.effect_relation != EffectRelation.NONE
                 or self.range_relation != RangeRelation.DISJOINT
                 or self.schedule != Schedule.WINDOW
-                or self.wait_kind != WaitKind.NONE
-                or self.wait_worker_mask
+                or self.wait_kind != WaitKind.BY_WORKER
+                or self.wait_worker_mask != 1
                 or self.issue_limit
                 != queue_depths[self.lanes[0].engine] + 1
                 or self.issue_limit > len(self.lanes) * self.rounds
@@ -470,11 +474,22 @@ class Plan:
                 <= (len(self.lanes) - 1) * self.rounds
             ):
                 raise ValueError(
-                    "manual saturation must issue exactly depth+1 raw "
-                    "entries on one worker/engine without a boundary wait"
+                    "tight depth-plus-one must issue exactly depth+1 raw "
+                    "entries on one worker/engine with a matching wait"
                 )
         elif self.issue_limit:
-            raise ValueError("only manual saturation consumes issue_limit")
+            raise ValueError(
+                "only tight depth-plus-one consumes issue_limit"
+            )
+        if self.schedule == Schedule.WINDOW and not tight_depth_plus_one:
+            outstanding: dict[tuple[Engine, int], int] = {}
+            for lane in self.lanes:
+                key = (lane.engine, lane.worker)
+                outstanding[key] = outstanding.get(key, 0) + self.rounds
+                if outstanding[key] > queue_depths[lane.engine]:
+                    raise ValueError(
+                        "window exceeds the documented queue depth"
+                    )
 
     def issue_identities(self) -> tuple[IssueIdentity, ...]:
         self.validate()
