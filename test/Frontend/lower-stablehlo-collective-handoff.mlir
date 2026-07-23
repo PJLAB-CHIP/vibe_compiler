@@ -36,6 +36,18 @@ module {
     return %0 : tensor<4xf32>
   }
 
+  func.func @partitioned_all_reduce_promoted(%input: tensor<4xf16>) -> tensor<4xf32> {
+    %0 = "stablehlo.all_reduce"(%input) ({
+    ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
+      %sum = stablehlo.add %lhs, %rhs : tensor<f32>
+      "stablehlo.return"(%sum) : (tensor<f32>) -> ()
+    }) {
+      replica_groups = dense<[[0, 1]]> : tensor<1x2xi64>,
+      channel_handle = #stablehlo.channel_handle<handle = 7, type = 1>
+    } : (tensor<4xf16>) -> tensor<4xf32>
+    return %0 : tensor<4xf32>
+  }
+
   func.func @partitioned_reduce_scatter(%input: tensor<8x4xf32>) -> tensor<4x4xf32> {
     %0 = "stablehlo.reduce_scatter"(%input) ({
     ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
@@ -46,6 +58,19 @@ module {
       replica_groups = dense<[[0, 1]]> : tensor<1x2xi64>,
       channel_handle = #stablehlo.channel_handle<handle = 3, type = 1>
     } : (tensor<8x4xf32>) -> tensor<4x4xf32>
+    return %0 : tensor<4x4xf32>
+  }
+
+  func.func @partitioned_reduce_scatter_promoted(%input: tensor<8x4xbf16>) -> tensor<4x4xf32> {
+    %0 = "stablehlo.reduce_scatter"(%input) ({
+    ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
+      %sum = stablehlo.add %lhs, %rhs : tensor<f32>
+      "stablehlo.return"(%sum) : (tensor<f32>) -> ()
+    }) {
+      scatter_dimension = 0 : i64,
+      replica_groups = dense<[[0, 1]]> : tensor<1x2xi64>,
+      channel_handle = #stablehlo.channel_handle<handle = 8, type = 1>
+    } : (tensor<8x4xbf16>) -> tensor<4x4xf32>
     return %0 : tensor<4x4xf32>
   }
 
@@ -96,6 +121,16 @@ module {
 // IR-SAME: use_global_device_ids = true
 // IR-NOT: stablehlo.all_reduce
 
+// IR-LABEL: func.func @partitioned_all_reduce_promoted
+// IR: tensor.empty() : tensor<4xf32>
+// IR: wafer.linalg_ext.collective.all_reduce
+// IR-SAME: ins(%{{.*}} : tensor<4xf16>)
+// IR-SAME: outs(%{{.*}} : tensor<4xf32>)
+// IR: ^bb0(%{{.*}}: f32, %{{.*}}: f32):
+// IR: arith.addf
+// IR: channel_id = 7 : i64
+// IR-NOT: stablehlo.all_reduce
+
 // IR-LABEL: func.func @partitioned_reduce_scatter
 // IR: tensor.empty() : tensor<4x4xf32>
 // IR: wafer.linalg_ext.collective.reduce_scatter
@@ -103,6 +138,16 @@ module {
 // IR-SAME: rank_group = array<i64: 0, 1>
 // IR-NOT: stablehlo.reduce_scatter
 // IR-NOT: wafer.instr.dte_send
+
+// IR-LABEL: func.func @partitioned_reduce_scatter_promoted
+// IR: tensor.empty() : tensor<4x4xf32>
+// IR: wafer.linalg_ext.collective.reduce_scatter
+// IR-SAME: ins(%{{.*}} : tensor<8x4xbf16>)
+// IR-SAME: outs(%{{.*}} : tensor<4x4xf32>)
+// IR: ^bb0(%{{.*}}: f32, %{{.*}}: f32):
+// IR: arith.addf
+// IR: channel_id = 8 : i64
+// IR-NOT: stablehlo.reduce_scatter
 
 // IR-LABEL: func.func @partitioned_all_to_all
 // IR: tensor.empty() : tensor<4x8xf32>

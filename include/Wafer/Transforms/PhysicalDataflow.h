@@ -28,22 +28,23 @@ unsigned materializeConsumerLocalTensorRecomputation(mlir::func::FuncOp task);
 /// callers must rerun lifetime and placement on the mutated clone.
 unsigned hoistStaticLoopInvariantOperations(mlir::func::FuncOp function);
 
-/// Apply one modularly exact integer reassociation to each eligible linalg
-/// scalar body.  Operations carrying no-wrap promises are deliberately not
-/// rewritten because a changed poison boundary is not a modular equivalence.
-unsigned reassociateIntegerElementwiseExpressions(mlir::func::FuncOp task);
+/// Apply one reassociation to each eligible integer or floating-point linalg
+/// scalar body. Integer operations carrying no-wrap promises are deliberately
+/// not rewritten because a changed poison boundary is not a modular
+/// equivalence.
+unsigned reassociateElementwiseExpressions(mlir::func::FuncOp task);
 
-/// Balance an eligible four-leaf modular integer addition chain into an
-/// explicit SSA tree.
-unsigned balanceIntegerElementwiseReductionTrees(mlir::func::FuncOp task);
+/// Balance an eligible four-leaf addition chain into an explicit SSA tree
+/// for either modular integer or floating-point arithmetic.
+unsigned balanceElementwiseReductionTrees(mlir::func::FuncOp task);
 
-/// Contract a common multiplicand across modular integer subtraction in
-/// eligible linalg scalar bodies.
-unsigned contractIntegerDistributiveExpressions(mlir::func::FuncOp task);
-
-/// Factor a common modular integer multiplicand from eligible linalg scalar
+/// Contract a common multiplicand across subtraction in eligible linalg scalar
 /// bodies.
-unsigned factorIntegerElementwiseExpressions(mlir::func::FuncOp task);
+unsigned contractDistributiveExpressions(mlir::func::FuncOp task);
+
+/// Factor a common multiplicand from eligible integer or floating-point linalg
+/// scalar bodies.
+unsigned factorElementwiseExpressions(mlir::func::FuncOp task);
 
 /// Reorder independent instruction runs with a deterministic movement-first
 /// ready policy. SSA dependencies, value-associated read/write hazards, and

@@ -261,6 +261,104 @@ module {
 }
 
 TEST_F(CommunicationAlternativesTest,
+       FP16AndBF16RingCollectivesLowerWithoutNumericAnnotations) {
+  auto module = parse(R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {topology = @default, axes = ["rank"], shape = array<i64: 4>,
+       policy = "all_available", endpoints = array<i64>}
+  func.func @bf16_all_reduce(
+      %boundary: memref<4xbf16, #wafer.memory<ddr, tensor>>) {
+    %region = wafer.tile.region(%boundary
+        : memref<4xbf16, #wafer.memory<ddr, tensor>>)
+        -> (memref<4xbf16, #wafer.memory<ddr, tensor>>) {
+    ^bb0(%arg0: memref<4xbf16, #wafer.memory<ddr, tensor>>):
+      %input = memref.alloc()
+          : memref<4xbf16, #wafer.memory<spm, tensor>>
+      %recv = memref.alloc()
+          : memref<4xbf16, #wafer.memory<spm, tensor>>
+      %result = wafer.tile.all_reduce #wafer.reduce_kind<sum> %input using %recv
+          {local_rank = 1 : i64, group_size = 4 : i64,
+           rank_group = array<i64: 0, 1, 2, 3>, bytes = 8 : i64,
+           communication_id = 21 : i64}
+          : (memref<4xbf16, #wafer.memory<spm, tensor>>,
+             memref<4xbf16, #wafer.memory<spm, tensor>>)
+         -> memref<4xbf16, #wafer.memory<spm, tensor>>
+      wafer.tile.yield %arg0
+          : memref<4xbf16, #wafer.memory<ddr, tensor>>
+    }
+    return
+  }
+  func.func @f16_reduce_scatter(
+      %boundary: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    %region = wafer.tile.region(%boundary
+        : memref<4xf16, #wafer.memory<ddr, tensor>>)
+        -> (memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    ^bb0(%arg0: memref<4xf16, #wafer.memory<ddr, tensor>>):
+      %input = memref.alloc()
+          : memref<16xf16, #wafer.memory<spm, tensor>>
+      %recv = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      %result = wafer.tile.reduce_scatter #wafer.reduce_kind<sum>
+          %input using %recv
+          {axis = 0 : i64, local_rank = 1 : i64, group_size = 4 : i64,
+           rank_group = array<i64: 0, 1, 2, 3>, bytes = 8 : i64,
+           communication_id = 22 : i64}
+          : (memref<16xf16, #wafer.memory<spm, tensor>>,
+             memref<4xf16, #wafer.memory<spm, tensor>>)
+         -> memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.tile.yield %arg0
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  wafer::tile_region_to_instr::TileRegionToInstrOptions options;
+  options.allReduceSchedule =
+      wafer::tile_region_to_instr::AllReduceSchedule::Ring;
+  options.reduceScatterSchedule =
+      wafer::tile_region_to_instr::ReduceScatterSchedule::Ring;
+  std::string failure;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::tile_region_to_instr::convertTileRegionToInstrModule(
+          *module, options, &failure)))
+      << failure;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  unsigned allReduceRingMessages = 0;
+  unsigned reduceScatterRingMessages = 0;
+  module->walk([&](wafer::InstrDTESendOp send) {
+    allReduceRingMessages +=
+        send.getMessage().getPhase() ==
+        wafer::DTEProtocolPhase::AllReduceRing;
+    reduceScatterRingMessages +=
+        send.getMessage().getPhase() ==
+        wafer::DTEProtocolPhase::ReduceScatterRing;
+  });
+  EXPECT_EQ(allReduceRingMessages, 6u);
+  EXPECT_EQ(reduceScatterRingMessages, 3u);
+
+  unsigned bf16Reductions = 0;
+  unsigned f16Reductions = 0;
+  module->walk([&](wafer::InstrElementwiseOp reduction) {
+    auto destType = mlir::cast<mlir::MemRefType>(reduction.getDest().getType());
+    if (destType.getElementType().isBF16())
+      ++bf16Reductions;
+    else if (destType.getElementType().isF16())
+      ++f16Reductions;
+    else
+      ADD_FAILURE() << "unexpected Ring reduction element type";
+  });
+  EXPECT_EQ(bf16Reductions, 3u);
+  EXPECT_EQ(f16Reductions, 3u);
+}
+
+TEST_F(CommunicationAlternativesTest,
        KeepsDirectReduceScatterBeyondExactRingBound) {
   auto module = parse(R"mlir(
 module {
@@ -488,7 +586,7 @@ module {
 }
 
 TEST_F(CommunicationAlternativesTest,
-       FloatingAllReduceUsesOrderedTreeAndRejectsRing) {
+       BF16AllReduceAutoSelectsRingWithoutNumericAnnotations) {
   constexpr llvm::StringLiteral source = R"mlir(
 module {
   wafer.target.topology @default
@@ -497,24 +595,24 @@ module {
   wafer.execution.mesh @default_mesh
       {topology = @default, axes = ["rank"], shape = array<i64: 4>,
        policy = "all_available", endpoints = array<i64>}
-  func.func @main(%boundary: memref<4xf32, #wafer.memory<ddr, tensor>>) {
+  func.func @main(%boundary: memref<4xbf16, #wafer.memory<ddr, tensor>>) {
     %region = wafer.tile.region(%boundary
-        : memref<4xf32, #wafer.memory<ddr, tensor>>)
-        -> (memref<4xf32, #wafer.memory<ddr, tensor>>) {
-    ^bb0(%arg0: memref<4xf32, #wafer.memory<ddr, tensor>>):
+        : memref<4xbf16, #wafer.memory<ddr, tensor>>)
+        -> (memref<4xbf16, #wafer.memory<ddr, tensor>>) {
+    ^bb0(%arg0: memref<4xbf16, #wafer.memory<ddr, tensor>>):
       %input = memref.alloc()
-          : memref<4xf32, #wafer.memory<spm, tensor>>
+          : memref<4xbf16, #wafer.memory<spm, tensor>>
       %recv = memref.alloc()
-          : memref<4xf32, #wafer.memory<spm, tensor>>
+          : memref<4xbf16, #wafer.memory<spm, tensor>>
       %result = wafer.tile.all_reduce #wafer.reduce_kind<sum> %input using %recv
           {local_rank = 1 : i64, group_size = 4 : i64,
-           rank_group = array<i64: 0, 1, 2, 3>, bytes = 16 : i64,
+           rank_group = array<i64: 0, 1, 2, 3>, bytes = 8 : i64,
            communication_id = 19 : i64}
-          : (memref<4xf32, #wafer.memory<spm, tensor>>,
-             memref<4xf32, #wafer.memory<spm, tensor>>)
-         -> memref<4xf32, #wafer.memory<spm, tensor>>
+          : (memref<4xbf16, #wafer.memory<spm, tensor>>,
+             memref<4xbf16, #wafer.memory<spm, tensor>>)
+         -> memref<4xbf16, #wafer.memory<spm, tensor>>
       wafer.tile.yield %arg0
-          : memref<4xf32, #wafer.memory<ddr, tensor>>
+          : memref<4xbf16, #wafer.memory<ddr, tensor>>
     }
     return
   }
@@ -539,8 +637,8 @@ module {
     sawRing |=
         send.getMessage().getPhase() == wafer::DTEProtocolPhase::AllReduceRing;
   });
-  EXPECT_TRUE(sawTree);
-  EXPECT_FALSE(sawRing);
+  EXPECT_FALSE(sawTree);
+  EXPECT_TRUE(sawRing);
 
   auto ringModule = parse(source);
   ASSERT_TRUE(ringModule);
@@ -548,10 +646,17 @@ module {
   ringOptions.allReduceSchedule =
       wafer::tile_region_to_instr::AllReduceSchedule::Ring;
   std::string ringFailure;
-  EXPECT_TRUE(
-      mlir::failed(wafer::tile_region_to_instr::convertTileRegionToInstrModule(
-          *ringModule, ringOptions, &ringFailure)));
-  EXPECT_NE(ringFailure.find("reorders reduction leaves"), std::string::npos);
+  ASSERT_TRUE(
+      mlir::succeeded(
+          wafer::tile_region_to_instr::convertTileRegionToInstrModule(
+              *ringModule, ringOptions, &ringFailure)))
+      << ringFailure;
+  unsigned ringMessages = 0;
+  ringModule->walk([&](wafer::InstrDTESendOp send) {
+    ringMessages += send.getMessage().getPhase() ==
+                    wafer::DTEProtocolPhase::AllReduceRing;
+  });
+  EXPECT_EQ(ringMessages, 6u);
 }
 
 TEST_F(CommunicationAlternativesTest,

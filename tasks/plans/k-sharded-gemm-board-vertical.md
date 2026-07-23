@@ -16,7 +16,8 @@ Pipeline position:
   用production `wafer-compile`重放frontend、SPMD、structured normalization、physical-dataflow、
   M/N traversal tiling、SPM/DDR planning、logical collective lowering、Direct DTE acceptance、target
   conversion和package publication；随后由同一package进入production no-card与qualified board provider。
-  K切分只来自upstream SPMD；每rank named floating GEMM保持完整local K=256，compiler不得另建K partial。
+  upstream SPMD固定16个rank partial；每rank local K=256可继续由现有candidate按资源做内部切分，
+  但不能改变rank间all-reduce边界。
 - Output artifact / IR:
   schema-v5/status-v2的16-rank cluster Direct DTE verified package、all-and-only typed host resources、
   frozen deterministic raw inputs/CPU expected、静态tiling/SPM/transport证据以及board output/status/lifecycle证据。
@@ -29,13 +30,14 @@ Pipeline position:
   --launch-abi=tx81-cluster-direct-dte-prepare-main-v1`；no-card和board均由`wafer-run --all-ranks`
   消费同一typed package。局部`wafer-opt`/FileCheck只补结构覆盖。
 - Explicit non-goals:
-  不新增launch ABI，不走当前不支持Direct DTE的type-6/type-7 model launch，不修改floating reassociation
-  policy，不声明physical tile coordinate、packet provenance、性能/timing、通用GEMM数值域或Q22.C profile；
+  不新增launch ABI，不走当前不支持Direct DTE的type-6/type-7 model launch，不增加numeric mode或IR carrier，
+  不声明physical tile coordinate、packet provenance、性能/timing、通用GEMM数值域或Q22.C profile；
   不在失败后自动retry/reset/power/reboot。
 - Completion gate:
   helper/readback证明16个K shard无重叠完整覆盖且output replicated；production selection证明完整4096x4096
   traversal不能把两个2 MiB local input与32 MiB output的完整工作集整体放入SPM，selected program的accepted SPM high-water
-  位于[65536, 3080192)并保留local K=256；all-rank Direct DTE issue/wait/binding及status-v2 package闭合；
+  位于[65536, 3080192)，GEMM指令的K chunks无重叠完整覆盖每rank local K=256；all-rank Direct DTE
+  issue/wait/binding及status-v2 package闭合；
   production no-card通过；armed hardware gate实际执行未skip，16个rank status均SUCCESS且16份完整32 MiB
   output与冻结expected逐字节相等，cleanup后只读设备资源回到执行前基线。
 ```
@@ -67,8 +69,8 @@ collective、memory/effect/token和package resource关系；compiler/runtime代�
    StableHLO→local matmul+all-reduce handoff。既有PyTorch/XLA `row` strategy test继续证明framework mark_sharding
    走同一production helper边界；full-4096板测fixture直接以StableHLO program directory进入，不增加板测对framework
    importer runtime的依赖。
-2. **Tiling / memory / communication**：fresh compile full shape；审计实际指令的lhs/rhs/result均为F16、local K=256且
-   没有发射F32 operand/result GEMM；审计terminal all-reduce自身按result tile物化、
+2. **Tiling / memory / communication**：fresh compile full shape；审计实际指令的lhs/rhs/result均为F16、各K chunk
+   无重叠完整覆盖local K=256且没有发射F32 operand/result GEMM；审计terminal all-reduce自身按result tile物化、
    local GEMM producer slice融合、完整M/N traversal和all-and-only output stitch；同时核对local K、SPM high-water、
    per-tile DTE payload/range、all-rank loop/control instance、GEMM completion→send source和recv wait→consumer ordering，
    以及one-shared-ELF publication。

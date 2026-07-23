@@ -54,10 +54,10 @@
 
 ## 实施计划导航
 
-当前`doing`任务为Q32.N numeric algebraic extension，实施计划见
-`tasks/plans/numeric-algebraic-extension.md`。它把frontend strict/model-relaxed mode物化为标准fastmath，
-保留StableHLO dot/ordered-reduction typed语义，并让floating algebraic、K-split、communication leaf permutation和
-target FMA/accumulator按current IR与numeric profile逐项证明。Q36 topology-aware collective lowering已经闭合，
+最新完成任务为Q32.N numeric algebraic extension，实施计划见
+`tasks/plans/numeric-algebraic-extension.md`。它直接删除physical-dataflow algebraic、reduction/GEMM切分和
+Ring collective中不必要的float类型门槛，以无额外标注的f16/bf16覆盖现有production pipeline，不增加
+frontend mode、私有numeric policy或Tile/Instr carrier。Q36 topology-aware collective lowering已经闭合，
 证据归档为`tasks/archive/topology-aware-collective-lowering.md`。Q35 full-4096 K-sharded GEMM board vertical的
 前置已满足并处于`next`，实施计划仍为`tasks/plans/k-sharded-gemm-board-vertical.md`；恢复时继续复用Q6.B cluster
 Direct DTE路径验证large-shape M/N tiling与communication，不重开runtime ABI，也不单case完成Q22.C。

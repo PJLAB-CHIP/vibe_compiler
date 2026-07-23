@@ -403,11 +403,10 @@
   geometry helper推导；runtime object、physical address和packet字段不得写回planning IR。
 - reduction语义恢复不能只看yielded op class。使用`mlir::matchReduction`或等价结构匹配，证明单一combiner
   的operands精确连接reduced value与accumulator。未拆分source reduction保持原合同；candidate把一个reduction
-  regroup成多个partial时，generic floating必须显式有`fastmath<reassoc,nnan,ninf,nsz>`，named floating matmul
-  没有该typed事实所以K不拆。integer split只覆盖无overflow flag的modular add和signed min/max；unsigned min/max、
-  overflow-qualified add及`maxnum/minnum`仍fail closed。该规则只针对compiler新增的rank-local partial；StableHLO
-  collective允许实现使用中序遍历保持`rank_group`的ordered binary tree，浮点不需要因此额外携带fast-math。
-  cyclic Ring会置换leaf次序，仍须logical collective显式numeric permission。
+  regroup成多个partial时，generic floating只要求exact single combiner，named floating matmul可按合法K范围切分，
+  二者不要求额外fast-math标注。integer split仍只覆盖无overflow flag的modular add和signed min/max；
+  unsigned min/max、overflow-qualified add及`maxnum/minnum`保持fail closed。Tree和Ring collective都接受支持的
+  floating element type，但仍必须验证rank group、topology、chunk和completion。
 - whole-op fast path必须证明整个payload可被删除：passthrough/concat/reduction以及named
   fill/matmul/batch_matmul都要检查exact SSA wiring、允许op集合和effect；只匹配yield、shape或op class会
   静默擦除side effect或改写数值语义。structured materializer/verifier应递归检查nested body dialect/type。

@@ -128,9 +128,27 @@ mlir::LogicalResult verifyChannelAttrs(mlir::Operation *op,
   return mlir::success();
 }
 
+bool isSupportedCollectiveInputPromotion(mlir::Type inputElementType,
+                                         mlir::Type resultElementType) {
+  if (inputElementType == resultElementType)
+    return true;
+
+  auto inputFloat = mlir::dyn_cast<mlir::FloatType>(inputElementType);
+  auto resultFloat = mlir::dyn_cast<mlir::FloatType>(resultElementType);
+  if (!inputFloat || !resultFloat)
+    return false;
+  auto isSupportedStorageType = [](mlir::Type type) {
+    return mlir::isa<mlir::Float16Type, mlir::BFloat16Type,
+                     mlir::Float32Type>(type);
+  };
+  return isSupportedStorageType(inputElementType) &&
+         isSupportedStorageType(resultElementType) &&
+         inputFloat.getWidth() <= resultFloat.getWidth();
+}
+
 mlir::LogicalResult verifySingleDestinationStyleShape(
     mlir::Operation *op, mlir::OperandRange inputs, mlir::OperandRange outs,
-    mlir::ResultRange results) {
+    mlir::ResultRange results, bool allowPromotedInputs = false) {
   if (inputs.empty())
     return op->emitOpError(
         "linalg-ext collective must have at least one input");
@@ -152,9 +170,15 @@ mlir::LogicalResult verifySingleDestinationStyleShape(
     if (outType != resultType)
       return op->emitOpError("out type must match tied result type at index ")
              << index;
-    if (inputType.getElementType() != outType.getElementType())
-      return op->emitOpError("input and out element types must match at index ")
-             << index;
+    if (inputType.getElementType() != outType.getElementType()) {
+      if (!allowPromotedInputs ||
+          !isSupportedCollectiveInputPromotion(inputType.getElementType(),
+                                               outType.getElementType()))
+        return op->emitOpError(
+                   "input element type must match the out element type or use "
+                   "a supported floating promotion at index ")
+               << index;
+    }
   }
 
   return mlir::success();
@@ -257,8 +281,11 @@ mlir::LogicalResult verifyAllReduceLikeShape(mlir::Operation *op,
                                              mlir::OperandRange inputs,
                                              mlir::ResultRange results) {
   for (auto [input, result] : llvm::zip(inputs, results)) {
-    if (input.getType() != result.getType())
-      return op->emitOpError("all_reduce input and result types must match");
+    auto inputType = mlir::cast<mlir::RankedTensorType>(input.getType());
+    auto resultType = mlir::cast<mlir::RankedTensorType>(result.getType());
+    if (inputType.getShape() != resultType.getShape())
+      return op->emitOpError(
+          "all_reduce input and result shapes must match");
   }
   return mlir::success();
 }
@@ -614,13 +641,13 @@ mlir::LogicalResult verifyCombinerRegion(mlir::Operation *op,
   if (block.getNumArguments() != expectedArgs)
     return op->emitOpError("combiner must have two scalar arguments per input");
 
-  for (auto [index, input] : llvm::enumerate(inputs)) {
-    auto inputType = mlir::cast<mlir::RankedTensorType>(input.getType());
-    mlir::Type elementType = inputType.getElementType();
+  for (auto [index, result] : llvm::enumerate(results)) {
+    auto resultType = mlir::cast<mlir::RankedTensorType>(result.getType());
+    mlir::Type elementType = resultType.getElementType();
     if (block.getArgument(index).getType() != elementType ||
         block.getArgument(index + inputs.size()).getType() != elementType)
       return op->emitOpError(
-          "combiner argument types must match input element types");
+          "combiner argument types must match result element types");
   }
 
   auto yield =
@@ -715,7 +742,8 @@ mlir::LogicalResult LinalgExtCollectiveReduceScatterOp::verify() {
                                        "channel_id", "use_global_device_ids"})))
     return mlir::failure();
   if (mlir::failed(verifySingleDestinationStyleShape(
-          getOperation(), getInputs(), getOuts(), getResults())))
+          getOperation(), getInputs(), getOuts(), getResults(),
+          /*allowPromotedInputs=*/true)))
     return mlir::failure();
   if (mlir::failed(verifyCollectiveRankGroups(
           getOperation(), getRankGroupAttr(), getRankGroupsAttr())))
@@ -778,7 +806,8 @@ mlir::LogicalResult LinalgExtCollectiveAllReduceOp::verify() {
                                        "channel_id", "use_global_device_ids"})))
     return mlir::failure();
   if (mlir::failed(verifySingleDestinationStyleShape(
-          getOperation(), getInputs(), getOuts(), getResults())))
+          getOperation(), getInputs(), getOuts(), getResults(),
+          /*allowPromotedInputs=*/true)))
     return mlir::failure();
   if (mlir::failed(verifyCollectiveRankGroups(
           getOperation(), getRankGroupAttr(), getRankGroupsAttr())))

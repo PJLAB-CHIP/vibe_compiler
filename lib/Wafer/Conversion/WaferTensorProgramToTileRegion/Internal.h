@@ -317,6 +317,12 @@ private:
 
   mlir::LogicalResult requireSingleTensorCollective(mlir::Operation *op);
 
+  mlir::FailureOr<mlir::Value>
+  materializeCollectiveInputInResultType(mlir::Value input,
+                                         mlir::Type resultElementType,
+                                         mlir::Location loc,
+                                         mlir::OpBuilder &builder);
+
   mlir::LogicalResult convertAllGather(LinalgExtCollectiveAllGatherOp op,
                                        mlir::OpBuilder &builder);
 

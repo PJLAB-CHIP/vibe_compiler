@@ -128,10 +128,7 @@ module {
   }
   EXPECT_EQ(baselineCount, 1u);
   EXPECT_TRUE(sawResidentAlternative);
-  // Floating collectives retain StableHLO rank_group reduction order. The
-  // current ring rotates/reassociates leaves, so only the ordered tree remains
-  // a legal floating communication candidate.
-  EXPECT_FALSE(sawRingAllReduce);
+  EXPECT_TRUE(sawRingAllReduce);
   EXPECT_TRUE(sawTreeReduce);
   EXPECT_TRUE(sawTreeBroadcast);
 
@@ -417,6 +414,68 @@ module {
   EXPECT_TRUE(addMulCounts.count({6, 2}));
   EXPECT_TRUE(sawSourceRecipeJointState);
   EXPECT_TRUE(sawSourcePolicyJointState);
+}
+
+TEST(RankCandidateFrontierTest,
+     SendsUnannotatedF16FactorCloneThroughRankExactGates) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                  wafer::WaferDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  wafer::registerTargetImplementationExternalModels(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(%a: tensor<16xf16>, %b: tensor<16xf16>,
+                  %c: tensor<16xf16>) -> tensor<16xf16> {
+    %out = tensor.empty() : tensor<16xf16>
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c : tensor<16xf16>, tensor<16xf16>, tensor<16xf16>)
+      outs(%out : tensor<16xf16>) {
+    ^bb0(%av: f16, %bv: f16, %cv: f16, %unused: f16):
+      %ab = arith.mulf %av, %bv : f16
+      %ac = arith.mulf %av, %cv : f16
+      %result = arith.addf %ab, %ac : f16
+      linalg.yield %result : f16
+    } -> tensor<16xf16>
+    return %r : tensor<16xf16>
+  }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(source);
+
+  wafer::TensorProgramSchedulingConfig config;
+  config.logicalRank = 0;
+  config.candidateParallelism = 1;
+  auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
+  ASSERT_TRUE(mlir::succeeded(frontier));
+  EXPECT_LE(frontier->size(), 257u);
+
+  bool sawBaseline = false;
+  bool sawFactored = false;
+  for (wafer::ScheduledRankCandidate &candidate : *frontier) {
+    unsigned adds = 0;
+    unsigned multiplies = 0;
+    candidate.module->walk([&](wafer::InstrElementwiseOp elementwise) {
+      adds += elementwise.getKind() == wafer::InstrElementwiseKind::Add;
+      multiplies += elementwise.getKind() == wafer::InstrElementwiseKind::Mul;
+    });
+    sawBaseline |= adds == 1 && multiplies == 2;
+    sawFactored |= adds == 1 && multiplies == 1;
+  }
+  EXPECT_TRUE(sawBaseline);
+  EXPECT_TRUE(sawFactored);
 }
 
 TEST(RankCandidateFrontierTest,

@@ -61,8 +61,8 @@ Q0.L + Q21 + configured board -> Q6.B
 Q32 -> Q36
 Q32 + Q6.B + Q36 + configured board -> Q35
 
-当前numeric algebraic extension：
-Q32 + source numeric semantics + typed target consumer -> Q32.N
+已完成float candidate支持：
+Q32 -> Q32.N
 
 later/external：
 Q32 + Q6.B -> Q9
@@ -76,11 +76,10 @@ explicit Count semantic/target/model evidence -> Q3.6 (independent typed writeba
 
 ## 当前实施队列
 
-当前`doing`为Q32.N numeric algebraic extension。它先把StableHLO ordered reduction、dot precision/algorithm和
-frontend strict/model-relaxed mode无损落到typed structured IR与标准`arith.fastmath`，再让floating
-reassociation、K-split、leaf permutation、contraction和algebraic candidates按current IR与target numeric profile
-逐项证明，而不是按dtype统一拒绝或从target固定FMA反推source permission。f16/bf16是compiler主线验证dtype；
-integer bitwise/overflow和模型自身dtype测试保持其真实类型。
+Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
+现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的
+f16/bf16/f32，不增加frontend mode、fast-math协议或Tile/Instr附加字段。结构、shape、layout、资源、
+target encoding以及integer overflow/no-wrap检查保持；f16/bf16是compiler主线验证dtype，模型测试保持自身类型。
 
 Q36已闭合current topology/execution mesh到compiler-private Ring/ordered-Tree参数、explicit p2p instruction、
 collective completion和whole-card minimum-hop cost的事实链；详细证据见
@@ -105,9 +104,9 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q32.N | `numeric-algebraic-extension` | `doing` | Q32 | frontend strict/model-relaxed mode只在StableHLO→structured边界物化标准fastmath；typed dot precision/algorithm与ordered reduction保留StableHLO事实；floating reassociation、leaf permutation、K-split、contraction、distribution/factorization按current IR permission和target profile逐项证明，selected order/algorithm进入显式SSA/Tile/Instr并由formal/SystemC验证。不得按dtype猜permission或从target固定FMA反向授权source。 | 02、05-07、10-11、14、16-18；`tasks/plans/numeric-algebraic-extension.md` |
+| Q32.N | `numeric-algebraic-extension` | `done` | Q32 | algebraic candidate、generic reduction、named GEMM K切分和Ring collective已删除仅因float或缺少额外fast-math标注而拒绝的分支；f16/bf16无标注正向覆盖actual mutation、frontier和Tile/Instr lowering，integer overflow/no-wrap及真实结构、资源和target负例保持。未新增frontend mode、私有数值policy或IR carrier。 | 05-07、10-11、13、16；`tasks/plans/numeric-algebraic-extension.md` |
 | Q36 | `topology-aware-collective-lowering` | `done` | Q32 | current typed topology/mesh派生rank placement、exact bounded Ring与保持rank_group中序的ordered Tree；collective correctness/completion、singleton identity和final p2p minimum-hop whole-card cost闭合，不声明route/cycle/timing。 | 04、06、11、13、16、18；`tasks/archive/topology-aware-collective-lowering.md` |
-| Q35 | `k-sharded-gemm-board-vertical` | `next` | Q32、Q6.B、Q36 + configured board | full-4096 f16 GEMM由显式row/contracting SPMD形成16份local K=256 GEMM和sum all-reduce；production M/N tiling、SPM/DDR、Direct DTE、shared ELF、no-card与完整板端raw exact闭合。只形成该case/environment的workload-level evidence，不新增ABI、不授权compiler拆floating local K、不完成Q22.C或timing。 | 02、03、05-07、09、10、13-17；`tasks/plans/k-sharded-gemm-board-vertical.md` |
+| Q35 | `k-sharded-gemm-board-vertical` | `next` | Q32、Q6.B、Q36 + configured board | full-4096 f16 GEMM由显式row/contracting SPMD形成16份local K=256 GEMM和sum all-reduce；production可继续选择rank-local K chunk，并闭合M/N tiling、SPM/DDR、Direct DTE、shared ELF、no-card与完整板端raw exact。只形成该case/environment的workload-level evidence，不新增ABI、不完成Q22.C或timing。 | 02、03、05-07、09、10、13-17；`tasks/plans/k-sharded-gemm-board-vertical.md` |
 | Q32.I | `mlir-native-implementation-relation-foundation` | `done` | Q29、Q28、Q30、Q31 | source OpInterface/external models已让generic division与target reciprocal两种真实implementation进入complete clone；MLIR Affine/Presburger/ValueBounds IndexRelation foundation与precision/failure/property gate闭合；重复DPS/Tiling语义的WaferTilingInterface已删除。证据见`tasks/archive/mlir-native-implementation-relation-foundation.md`。 | 01、06、08、10、13、16、18；`tasks/archive/physical-dataflow-synthesis.md` A/B |
 | Q32.R | `physical-relation-realization` | `done` | Q32.I | rich IndexRelation查询、physical encoding attr interface、TransferRealizability、destination-style StorageLoad和relation-backed resident handoff已闭合；非7B source删除真实中间WDMA/RDMA，标准7B source选择26条handoff并通过fresh TP16 package/SystemC/PyTorch gate。证据见`tasks/archive/physical-relation-realization.md`。 | 06-11、16、18；同计划C |
 | Q32.B | `physical-dataflow-test-seam-vertical` | `done` | Q32.R、Q34 | compiler-private production-shaped seam已让conservative spill唯一reserved baseline与spill/resident optimized actual clones共同进入rank frontier；rank只做SPM，all-rank disposable tuple重做DDR及全部late gate，1/16-rank与标准7B source-to-package/SystemC/PyTorch及determinism/atomic gate通过。证据见`tasks/archive/physical-dataflow-test-seam-vertical.md`。 | 01、06-18；同计划D |

@@ -922,6 +922,64 @@ module {
 }
 
 TEST_F(WholeVariantCoordinatorTest,
+       SelectsRelaxedBF16CommonFactorFromProductionFrontier) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  wafer.target.topology @default {
+    card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+    tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>
+  }
+  wafer.execution.mesh @default_mesh {
+    axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
+    policy = "explicit", shape = array<i64: 1>, topology = @default
+  }
+  func.func @main(%a: tensor<16xbf16>, %b: tensor<16xbf16>,
+                  %c: tensor<16xbf16>) -> tensor<16xbf16> {
+    %out = tensor.empty() : tensor<16xbf16>
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c : tensor<16xbf16>, tensor<16xbf16>, tensor<16xbf16>)
+      outs(%out : tensor<16xbf16>) {
+    ^bb0(%av: bf16, %bv: bf16, %cv: bf16, %unused: bf16):
+      %ab = arith.mulf %av, %bv : bf16
+      %ac = arith.mulf %av, %cv : bf16
+      %result = arith.addf %ab, %ac : bf16
+      linalg.yield %result : bf16
+    } -> tensor<16xbf16>
+    return %r : tensor<16xbf16>
+  }
+}
+)mlir",
+                                                        context.get());
+  ASSERT_TRUE(source);
+  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted =
+      selectProductionVariant(*source, replicated1DProgram(3, 16, "bf16"),
+                              diagnostics, &baselineCost);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  ASSERT_TRUE(baselineCost);
+  const auto &winnerCost = accepted->resourceCost.rankCosts.front();
+  EXPECT_LT(winnerCost.instructionCount.value,
+            baselineCost->instructionCount.value);
+  EXPECT_LT(winnerCost.compute.vectorF16Bf16LogicalOps.value,
+            baselineCost->compute.vectorF16Bf16LogicalOps.value);
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+
+  unsigned adds = 0;
+  unsigned multiplies = 0;
+  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
+    adds += op.getKind() == wafer::InstrElementwiseKind::Add;
+    multiplies += op.getKind() == wafer::InstrElementwiseKind::Mul;
+  });
+  EXPECT_EQ(adds, 1u);
+  EXPECT_EQ(multiplies, 1u);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
        SelectsConsumerLocalRecomputationFromProductionFrontier) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {

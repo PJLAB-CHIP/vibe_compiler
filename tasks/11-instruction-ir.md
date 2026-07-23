@@ -737,10 +737,9 @@ generic online reduction和non-GEMM FMA contraction因此不属于current Q32 in
 predicate、selected state/fused op、对应Instr/TargetCall/必要ABI和SystemC数值纵向；target固定GEMM FMA profile不能被source
 rewrite当作通用contract许可。
 
-floating rank-local algebraic reassociation/reduction-tree rewrite也不通过Instr attr恢复：Q32.N先要求production source无损
-携带standard permission，再把选择物化为显式SSA DAG/SCF；instruction lowering只消费该actual DAG，不读取隐藏order或
-“已重结合”标志。StableHLO collective的ordered tree是另一条语义：只要实际左右子树使中序遍历保持`rank_group`，
-它就是logical collective允许的实现次序，不依赖该rank-local fast-math permission。
+floating rank-local algebraic reassociation/reduction-tree rewrite不通过Instr attr恢复：Q32.N把选择直接物化为
+显式SSA DAG/SCF；instruction lowering只消费该actual DAG，不读取隐藏order或“已重结合”标志。collective
+Tree/Ring也以实际p2p、elementwise和token DAG表达，不增加numeric carrier。
 
 #### 7.5.1 Fixed Cx/NCx Encoding Absorption
 
@@ -932,8 +931,8 @@ peer edge、message、local work和completion。
 | `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits packed `wafer.instr.gather_scatter` descriptors only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 | `wafer.tile.all_gather` | requires matching `tensor/ntensor` SPM layouts and infers the unique gather axis from compact local/gather buffer shapes. `ring` copies the local chunk into the local gather slot, fences, then forwards one slot per round around the topology-derived rank order. `direct` uses the deterministic cyclic order of semantic group indices to send the local slot to every other logical rank while receiving each peer chunk into its result slot；it does not invoke topology Ring search. |
-| `wafer.tile.all_reduce` | requires matching `tensor` SPM buffers and sum/max/min reduce kind. `ring` is standard chunked reduce-scatter plus all-gather: each round communicates only one nonzero typed chunk and reduces only that chunk; the final result is assembled from all reduced chunks. `tree` uses a topology-derived ordered binary tree whose inorder traversal equals `rank_group`: each node combines left-subtree partial, local operand and right-subtree partial in that order, then broadcasts the final accumulator down the reverse tree. This ordered Tree is valid for floating collectives without fast-math. The current cyclic Ring is limited to integer element types until production IR carries permission for its leaf permutation. Both forms materialize all local reduction and DTE-read/consumer fences explicitly. |
-| `wafer.tile.reduce_scatter` | requires a full `tensor` SPM input whose scatter `axis` size is `group_size * result_axis_size`, plus matching local-slot recv/result buffers. `direct` sends each destination-owned input slot to its owner and accumulates received contributions in `rank_group` order for the local slot. `ring` performs one typed chunk transfer/reduction per round along the selected rank order. The current Ring is integer-only for the same leaf-order reason. Non-contiguous slots require explicit pack/unpack; an unrepresentable extra candidate fails without weakening the direct baseline. |
+| `wafer.tile.all_reduce` | requires matching `tensor` SPM buffers and sum/max/min reduce kind. `ring` is standard chunked reduce-scatter plus all-gather: each round communicates only one nonzero typed chunk and reduces only that chunk; the final result is assembled from all reduced chunks. `tree` uses a topology-derived ordered binary tree whose inorder traversal equals `rank_group`: each node combines left-subtree partial, local operand and right-subtree partial in that order, then broadcasts the final accumulator down the reverse tree. Both integer and supported floating element types are accepted, and both forms materialize all local reduction and DTE-read/consumer fences explicitly. |
+| `wafer.tile.reduce_scatter` | requires a full `tensor` SPM input whose scatter `axis` size is `group_size * result_axis_size`, plus matching local-slot recv/result buffers. `direct` sends each destination-owned input slot to its owner and accumulates received contributions in `rank_group` order for the local slot. `ring` performs one typed chunk transfer/reduction per round along the selected rank order for integer or supported floating elements. Non-contiguous slots require explicit pack/unpack; an unrepresentable extra candidate fails without weakening the direct baseline. |
 
 旧all-reduce ring曾每轮发送full buffer；它只能作为Q36修复前的实现事实，不能继续满足本表的Ring合同或用于
 算法优劣证明。equal-split all-to-all和collective-permute虽然在更早的structured→tile-region rewrite直接产生
@@ -977,12 +976,12 @@ R3.2d V0 communication coverage：
   `tree`由current topology/placement和`rank_group`通过interval DP派生minimum-total-shortest-hop ordered binary
   tree；其中序遍历严格等于`rank_group`，root不固定，left/local/right reduction后沿reverse tree broadcast。
   reduction不藏进DTE side effect；每个reduce step都先wait DTE token，再用`wafer.instr.elementwise`做本地累计。
-  ordered Tree可用于floating collective；current Ring只对integer element type生成，浮点Ring等待显式numeric permission。
+  ordered Tree和Ring都可用于支持的floating collective；不要求额外numeric permission。
 - `wafer.tile.reduce_scatter` 使用 full input + local slot result 表示。tile-region lowering 不再预先把
   input 截成当前 rank 的 slot；instruction lowering 从 full input 的 per-target slot `memref.subview`
   直接派生 p2p send source，并在 wait 后显式累计 recv contribution。Direct是phase-ordered
   all-to-owner baseline；Ring按topology-derived cycle执行`group_size - 1`轮typed chunk归约。两者均不保存
-  全局plan attr；current浮点输入只保留按`rank_group`次序累计的Direct。
+  全局plan attr；浮点输入同样可生成Direct和Ring。
 
 R3.2d may generate multiple instruction ops for a single target-abstract movement op, but it must not write a
 global schedule attr. The instruction sequence is the region body itself.

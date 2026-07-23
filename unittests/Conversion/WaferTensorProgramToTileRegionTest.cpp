@@ -580,10 +580,11 @@ module {
   EXPECT_EQ(countOps<wafer::InstrGemmOp>(*lowered), 1u);
   EXPECT_EQ(countOps<wafer::CommAllReduceOp>(*lowered), 0u);
   EXPECT_GT(countOps<wafer::InstrDTEWaitOp>(*lowered), 0u);
+  EXPECT_GT(countOps<wafer::InstrElementwiseOp>(*lowered), 0u);
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
-     LowersSingleAxisGenericReductionChunksInSourceOrder) {
+     PromotesCollectiveInputBeforeAllReduceCommunication) {
   mlir::DialectRegistry registry;
   registerConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -592,26 +593,93 @@ TEST(WaferTensorProgramToTileRegionTest,
   auto source = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
-  func.func @reduce(%input: tensor<2x5xf32>, %out: tensor<2xf32>)
-      -> tensor<2xf32> {
-    %zero = arith.constant 0.0 : f32
-    %empty = tensor.empty() : tensor<2xf32>
-    %init = linalg.fill ins(%zero : f32)
-        outs(%empty : tensor<2xf32>) -> tensor<2xf32>
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {topology = @default, axes = ["rank"], shape = array<i64: 2>,
+       policy = "all_available", endpoints = array<i64>}
+  func.func @matmul_promoted_all_reduce(
+      %lhs: tensor<4x8xf16>, %rhs: tensor<8x6xf16>,
+      %out: tensor<4x6xf32>) -> tensor<4x6xf32> {
+    %zero = arith.constant 0.0 : f16
+    %empty = tensor.empty() : tensor<4x6xf16>
+    %init = linalg.fill ins(%zero : f16)
+        outs(%empty : tensor<4x6xf16>) -> tensor<4x6xf16>
+    %local = linalg.matmul
+        ins(%lhs, %rhs : tensor<4x8xf16>, tensor<8x6xf16>)
+        outs(%init : tensor<4x6xf16>) -> tensor<4x6xf16>
+    %result = wafer.linalg_ext.collective.all_reduce
+        ins(%local : tensor<4x6xf16>)
+        outs(%out : tensor<4x6xf32>) {
+    ^bb0(%left: f32, %right: f32):
+      %sum = arith.addf %left, %right : f32
+      wafer.linalg_ext.collective.yield %sum : f32
+    } {channel_id = 9 : i64, rank_group = array<i64: 0, 1>}
+        -> tensor<4x6xf32>
+    return %result : tensor<4x6xf32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  ASSERT_TRUE(function);
+
+  mlir::OwningOpRef<mlir::ModuleOp> lowered;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+          function, /*candidateTileSizes=*/{2, 3},
+          /*candidateReductionTileSizes=*/{}, lowered, &failureReason,
+          /*currentLogicalRank=*/0)))
+      << failureReason;
+  ASSERT_TRUE(lowered);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+  EXPECT_EQ(countOps<wafer::ComputeGemmOp>(*lowered), 1u);
+  EXPECT_EQ(countOps<wafer::ComputeConvertOp>(*lowered), 1u);
+  EXPECT_EQ(countOps<wafer::CommAllReduceOp>(*lowered), 1u);
+  EXPECT_EQ(countOps<wafer::StorageStoreOp>(*lowered), 1u);
+
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*lowered, &failureReason)))
+      << failureReason;
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+  EXPECT_EQ(countOps<wafer::ComputeConvertOp>(*lowered), 0u);
+  EXPECT_EQ(countOps<wafer::InstrConvertOp>(*lowered), 1u);
+  EXPECT_EQ(countOps<wafer::CommAllReduceOp>(*lowered), 0u);
+  EXPECT_GT(countOps<wafer::InstrDTEWaitOp>(*lowered), 0u);
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     LowersF16GenericReductionChunks) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @reduce(%input: tensor<2x5xf16>, %out: tensor<2xf16>)
+      -> tensor<2xf16> {
+    %zero = arith.constant 0.0 : f16
+    %empty = tensor.empty() : tensor<2xf16>
+    %init = linalg.fill ins(%zero : f16)
+        outs(%empty : tensor<2xf16>) -> tensor<2xf16>
     %result = linalg.generic {
         indexing_maps = [
           affine_map<(d0, d1) -> (d0, d1)>,
           affine_map<(d0, d1) -> (d0)>
         ],
         iterator_types = ["parallel", "reduction"]
-      } ins(%input : tensor<2x5xf32>)
-        outs(%init : tensor<2xf32>) {
-    ^bb0(%value: f32, %acc: f32):
-      %sum = arith.addf %value, %acc
-          fastmath<reassoc,nnan,ninf,nsz> : f32
-      linalg.yield %sum : f32
-    } -> tensor<2xf32>
-    return %result : tensor<2xf32>
+      } ins(%input : tensor<2x5xf16>)
+        outs(%init : tensor<2xf16>) {
+    ^bb0(%value: f16, %acc: f16):
+      %sum = arith.addf %value, %acc : f16
+      linalg.yield %sum : f16
+    } -> tensor<2xf16>
+    return %result : tensor<2xf16>
   }
 }
 )mlir",
@@ -676,6 +744,62 @@ module {
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*singleTile)));
   EXPECT_EQ(countOps<wafer::ComputeReduceOp>(*singleTile), 2u);
   EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(*singleTile), 1u);
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     LowersBF16MaximumChunks) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @reduce(%input: tensor<2x5xbf16>, %out: tensor<2xbf16>)
+      -> tensor<2xbf16> {
+    %zero = arith.constant 0.0 : bf16
+    %empty = tensor.empty() : tensor<2xbf16>
+    %init = linalg.fill ins(%zero : bf16)
+        outs(%empty : tensor<2xbf16>) -> tensor<2xbf16>
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0)>
+        ],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%input : tensor<2x5xbf16>)
+        outs(%init : tensor<2xbf16>) {
+    ^bb0(%value: bf16, %acc: bf16):
+      %maximum = arith.maximumf %value, %acc : bf16
+      linalg.yield %maximum : bf16
+    } -> tensor<2xbf16>
+    return %result : tensor<2xbf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  ASSERT_TRUE(function);
+
+  mlir::OwningOpRef<mlir::ModuleOp> lowered;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+          function, /*candidateTileSizes=*/{2},
+          /*candidateReductionTileSizes=*/{3}, lowered, &failureReason,
+          /*currentLogicalRank=*/0)))
+      << failureReason;
+  ASSERT_TRUE(lowered);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+  llvm::SmallVector<wafer::ComputeReduceOp, 2> reductions;
+  llvm::SmallVector<wafer::ComputeElementwiseOp, 1> combines;
+  lowered->walk([&](wafer::ComputeReduceOp op) { reductions.push_back(op); });
+  lowered->walk(
+      [&](wafer::ComputeElementwiseOp op) { combines.push_back(op); });
+  ASSERT_EQ(reductions.size(), 2u);
+  ASSERT_EQ(combines.size(), 1u);
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
@@ -750,43 +874,72 @@ module {
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
-     RejectsFloatingPointMatmulReductionSplitWithoutSourceLegality) {
-  mlir::DialectRegistry registry;
-  registerConversionDialects(registry);
-  mlir::MLIRContext context(registry);
-  context.loadAllAvailableDialects();
+     LowersF16AndBF16MatmulContractingChunks) {
+  for (llvm::StringRef typeSpelling : {"f16", "bf16"}) {
+    mlir::DialectRegistry registry;
+    registerConversionDialects(registry);
+    mlir::MLIRContext context(registry);
+    context.loadAllAvailableDialects();
 
-  auto source = mlir::parseSourceString<mlir::ModuleOp>(
-      R"mlir(
+    std::string sourceText = R"mlir(
 module {
-  func.func @matmul(%lhs: tensor<2x5xf32>, %rhs: tensor<5x3xf32>,
-                    %out: tensor<2x3xf32>) -> tensor<2x3xf32> {
-    %zero = arith.constant 0.0 : f32
-    %init = linalg.fill ins(%zero : f32)
-        outs(%out : tensor<2x3xf32>) -> tensor<2x3xf32>
+  func.func @matmul(%lhs: tensor<2x5xTYPE>, %rhs: tensor<5x3xTYPE>,
+                    %out: tensor<2x3xTYPE>) -> tensor<2x3xTYPE> {
+    %zero = arith.constant 0.0 : TYPE
+    %init = linalg.fill ins(%zero : TYPE)
+        outs(%out : tensor<2x3xTYPE>) -> tensor<2x3xTYPE>
     %result = linalg.matmul
-        ins(%lhs, %rhs : tensor<2x5xf32>, tensor<5x3xf32>)
-        outs(%init : tensor<2x3xf32>) -> tensor<2x3xf32>
-    return %result : tensor<2x3xf32>
+        ins(%lhs, %rhs : tensor<2x5xTYPE>, tensor<5x3xTYPE>)
+        outs(%init : tensor<2x3xTYPE>) -> tensor<2x3xTYPE>
+    return %result : tensor<2x3xTYPE>
   }
 }
-)mlir",
-      mlir::ParserConfig(&context));
-  ASSERT_TRUE(source);
-  mlir::func::FuncOp function = findSingleTensorProgram(*source);
-  ASSERT_TRUE(function);
+)mlir";
+    for (size_t position = sourceText.find("TYPE");
+         position != std::string::npos;
+         position = sourceText.find("TYPE", position + typeSpelling.size()))
+      sourceText.replace(position, 4, typeSpelling);
 
-  mlir::OwningOpRef<mlir::ModuleOp> lowered;
-  std::string failureReason;
-  EXPECT_TRUE(
-      mlir::failed(wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
-          function, /*candidateTileSizes=*/{2, 3},
-          /*candidateReductionTileSizes=*/{3}, lowered, &failureReason,
-          /*currentLogicalRank=*/0)));
-  EXPECT_EQ(failureReason,
-            "candidate floating-point matmul reduction split has no explicit "
-            "source-IR reassociation legality fact");
-  EXPECT_FALSE(lowered);
+    auto source = mlir::parseSourceString<mlir::ModuleOp>(
+        sourceText, mlir::ParserConfig(&context));
+    ASSERT_TRUE(source) << typeSpelling.str();
+    mlir::func::FuncOp function = findSingleTensorProgram(*source);
+    ASSERT_TRUE(function);
+
+    mlir::OwningOpRef<mlir::ModuleOp> lowered;
+    std::string failureReason;
+    ASSERT_TRUE(mlir::succeeded(
+        wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+            function, /*candidateTileSizes=*/{2, 3},
+            /*candidateReductionTileSizes=*/{3}, lowered, &failureReason,
+            /*currentLogicalRank=*/0)))
+        << typeSpelling.str() << ": " << failureReason;
+    ASSERT_TRUE(lowered);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+
+    llvm::SmallVector<wafer::ComputeGemmOp, 2> gemms;
+    lowered->walk([&](wafer::ComputeGemmOp op) { gemms.push_back(op); });
+    ASSERT_EQ(gemms.size(), 2u);
+    auto firstLhsType =
+        mlir::cast<mlir::MemRefType>(gemms[0].getLhs().getType());
+    auto tailLhsType =
+        mlir::cast<mlir::MemRefType>(gemms[1].getLhs().getType());
+    EXPECT_EQ(firstLhsType.getDimSize(1), 3);
+    EXPECT_EQ(tailLhsType.getDimSize(1), 2);
+    EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(*lowered), 1u);
+
+    ASSERT_TRUE(mlir::succeeded(
+        wafer::convertTileRegionToInstrModule(*lowered, &failureReason)))
+        << failureReason;
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+    llvm::SmallVector<wafer::InstrGemmOp, 2> instrGemms;
+    lowered->walk(
+        [&](wafer::InstrGemmOp op) { instrGemms.push_back(op); });
+    ASSERT_EQ(instrGemms.size(), 2u);
+    EXPECT_EQ(instrGemms[0].getK(), 3);
+    EXPECT_EQ(instrGemms[1].getK(), 2);
+    EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*lowered), 1u);
+  }
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
@@ -1143,16 +1296,6 @@ TEST(WaferTensorProgramToTileRegionTest,
                 /*splitReduction=*/true),
             "candidate reduction split requires one exact combiner wired to "
             "the reduced value and accumulator");
-}
-
-TEST(WaferTensorProgramToTileRegionTest,
-     RejectsFloatingPointReductionSplitWithoutFastMathLegality) {
-  EXPECT_EQ(lowerF32ReductionAndGetFailure(
-                "        %combined = arith.addf %value, %acc : f32\n",
-                /*splitReduction=*/true),
-            "candidate reduction split changes floating-point grouping and "
-            "requires explicit fastmath<reassoc,nnan,ninf,nsz> source "
-            "legality");
 }
 
 TEST(WaferTensorProgramToTileRegionTest, RejectsMaxNumReductionSplitSemantics) {

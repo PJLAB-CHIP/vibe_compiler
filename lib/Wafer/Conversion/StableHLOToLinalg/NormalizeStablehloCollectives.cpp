@@ -182,20 +182,25 @@ static mlir::LogicalResult convertCombinerRegion(mlir::Region &sourceRegion,
   if (!sourceRegion.hasOneBlock())
     return mlir::failure();
   mlir::Block &sourceBlock = sourceRegion.front();
-  if (sourceBlock.getNumArguments() != inputs.size() * 2)
+  if (inputs.size() != results.size() ||
+      sourceBlock.getNumArguments() != inputs.size() * 2)
     return mlir::failure();
 
-  llvm::SmallVector<mlir::Type> argTypes;
-  argTypes.reserve(sourceBlock.getNumArguments());
-  for (mlir::Value input : inputs) {
-    auto inputType = mlir::dyn_cast<mlir::RankedTensorType>(input.getType());
-    if (!inputType)
+  llvm::SmallVector<mlir::Type> resultElementTypes;
+  resultElementTypes.reserve(results.size());
+  for (auto [index, result] : llvm::enumerate(results)) {
+    auto resultType =
+        mlir::dyn_cast<mlir::RankedTensorType>(result.getType());
+    if (!resultType)
       return mlir::failure();
-    argTypes.push_back(inputType.getElementType());
-  }
-  for (mlir::Value input : inputs) {
-    auto inputType = mlir::cast<mlir::RankedTensorType>(input.getType());
-    argTypes.push_back(inputType.getElementType());
+    mlir::Type elementType = resultType.getElementType();
+    if (mlir::getElementTypeOrSelf(sourceBlock.getArgument(index).getType()) !=
+            elementType ||
+        mlir::getElementTypeOrSelf(
+            sourceBlock.getArgument(index + inputs.size()).getType()) !=
+            elementType)
+      return mlir::failure();
+    resultElementTypes.push_back(elementType);
   }
 
   auto sourceReturn =
@@ -206,8 +211,9 @@ static mlir::LogicalResult convertCombinerRegion(mlir::Region &sourceRegion,
   destRegion.push_back(new mlir::Block);
   mlir::Block &destBlock = destRegion.front();
   mlir::Location argLoc = sourceRegion.getParentOp()->getLoc();
-  for (mlir::Type argType : argTypes)
-    destBlock.addArgument(argType, argLoc);
+  for (unsigned copy = 0; copy < 2; ++copy)
+    for (mlir::Type elementType : resultElementTypes)
+      destBlock.addArgument(elementType, argLoc);
 
   llvm::DenseMap<mlir::Value, mlir::Value> valueMap;
   for (auto [sourceArg, destArg] :

@@ -174,10 +174,9 @@ full-feature配置仍因依赖feature unavailable而unsupported时，本gate未�
 ### 4.1 Complete Traversal
 
 - static elementwise/GEMM覆盖一个tile、多个整tile和非整除tail；
-- multi-output和受数值合法性约束的single-axis reduction split：当compiler在一个rank内额外建立多个partial时，
-  generic floating需要exact single combiner及`fastmath<reassoc,nnan,ninf,nsz>`，named floating matmul保持完整K，
-  integer只覆盖已证明的modular add和signed min/max；这个门槛不适用于保持`rank_group`中序的StableHLO collective
-  implementation tree；
+- multi-output和single-axis reduction split：generic reduction必须有可恢复的exact single combiner，
+  named matmul必须有合法shaped result；支持的floating dtype无需额外标注，integer仍覆盖已证明的
+  modular add和signed min/max并保留no-wrap负例；
 - 每个output element all-and-only一次，无gap/overlap；
 - candidate representative只作筛选，accepted IR包含全部traversal；
 - 放大shape不能只提交first tile。
@@ -1188,8 +1187,8 @@ Q35消费已经闭合的Q15 row/contracting SPMD、Q32 physical-dataflow synthes
 不修改这三层协议。固定验证case为f16
 `A[4096,4096] x B[4096,4096] -> C[4096,4096]`：frontend在两个contracting operand上显式标记16-way K
 sharding，helper必须产生每rank `4096x256 x 256x4096`的完整local-K GEMM和replicated `4096x4096`
-sum all-reduce。named floating GEMM的local K=256不得再被candidate planner拆成多个partial；M/N traversal则必须由
-production tiling覆盖全部4096x4096 output。
+sum all-reduce。candidate planner可按现有资源搜索继续切分每rank local K=256，但不得改变16-way SPMD
+rank partial与all-reduce边界；M/N traversal必须覆盖全部4096x4096 output。
 
 本case每rank的2 MiB lhs shard与2 MiB rhs shard不能同时作为完整SPM resident工作集，32 MiB output也不能作为完整
 SPM resident buffer；compiler成功只在complete traversal、fixed-capacity SPM planning和post-memory Direct DTE
@@ -1255,10 +1254,8 @@ Q36是compiler/no-card correctness与selection gate，不以板卡、PMU或固�
 - 相关unit、lit及production-shaped rank-count=1/16 no-card真实执行。unsupported/skipped清单必须单列，
   不用“构建成功”或单个IR fixture替代整条pipeline。
 
-保持`rank_group`中序的StableHLO collective Tree可直接用于f16/bf16/f32，不要求rank-local algebraic fast-math；
-对应测试必须检查实际left/local/right accumulation order。standard Ring会循环置换floating reduction leaf，只有
-logical op的numeric permission允许该次序，且独立numeric gate接受时才生成该候选；current没有这项production
-permission，因此浮点Ring为明确negative而Auto保留ordered Tree。Q36的静态minimum-hop结果不是Q9 cost calibration
+Tree与Ring都可直接用于支持的f16/bf16/f32 collective，不要求额外numeric attr；对应测试检查实际
+p2p/local accumulation、chunk、topology和completion。Q36的静态minimum-hop结果不是Q9 cost calibration
 或Q22.C板端numeric correlation，不能由二者反向替代。完整施工checkpoint见
 `tasks/plans/topology-aware-collective-lowering.md`。
 

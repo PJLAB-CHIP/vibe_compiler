@@ -386,14 +386,11 @@ op/type/attr或SSA关系。
 
 ### 4.3 Numeric 和 effect barrier
 
-默认只做保持原 evaluation order 和 numeric contract 的结构变换。Q32 current的rank-local reassociation、reduction tree改变及algebraic
-distribution/factorization仅限integer domain，必须由从current IR及overflow/wrap语义得出的exact/modular proof授权，并有独立
-correctness evidence；没有proof时形成barrier。当前production source不能携带standard floating fast-math permission，因此即使
-IR-local fixture可表达，floating rank-local algebraic reassociation/reduction-tree rewrite也不进入Q32 producer。这里的
-fast-math门槛只约束compiler额外把一个rank内的source reduction拆成多个partial；StableHLO collective允许实现选择
-中序遍历保持`rank_group`次序的ordered binary tree，因此这种collective Tree不需要额外fast-math。会循环置换leaf次序的
-Ring仍须从current logical op获得明确numeric permission。unknown effect、不可解释DPS tie、control-flow join、
-collective wait和observable store同样形成rewrite boundary。
+Q32.N让现有rank-local reassociation、reduction切分及algebraic distribution/factorization直接覆盖支持的
+integer和floating op family。float candidate不要求额外fast-math标注；integer仍由current IR的
+overflow/wrap语义证明modular合法性，带no-wrap promise的改写保持barrier。Tree和Ring collective同样接受
+支持的floating element type，但rank group、topology、chunk、completion和target encoding检查不变。
+unknown effect、不可解释DPS tie、control-flow join、collective wait和observable store仍形成rewrite boundary。
 
 ## 5. Bounded MLIR-Native Joint Candidate Generation
 

@@ -1,6 +1,6 @@
 # Wafer StableHLO 到 Local Structured Tensor IR 设计
 
-状态：2026-07-23按Q32.N source numeric contract同步。本文拥有post-SPMD StableHLO local compute与logical collective到
+状态：2026-07-23按Q32.N float支持边界同步。本文拥有post-SPMD StableHLO local compute与logical collective到
 structured tensor IR的normalization合同；不拥有SPMD、task/dataflow candidate、memory、target或runtime。实现状态看
 `tasks/progress.md`。
 
@@ -15,17 +15,15 @@ Pipeline position:
   将StableHLO compute/data movement/constants通过pinned官方StableHLO-to-Linalg conversion规整成
   `linalg`/`tensor`/`scf`/`arith`/`math`；先把supported StableHLO collectives转换为
   `wafer.linalg_ext.collective.*`destination-style tensor ops；清理可静态证明的SPMD residual；保留转换结果中
-  current native MLIR fast-math/overflow/rounding/contract事实、evaluation order、SCF/SSA control与effect/speculation语义；
-  消费frontend strict/model-relaxed numeric mode，并无损投影StableHLO dot precision/algorithm与ordered reduction语义。
+  dtype、shape、indexing、reduction combiner、SCF/SSA control与effect/speculation语义。
 - Output artifact / IR:
   target-independent structured tensor program，包含local compute、ConstantLike values、logical collective、标准
-  `arith.fastmath`、typed dot precision/algorithm、ordered local reduction和下游可直接读取的native numeric/effect/control facts；
+  Linalg/arith payload和下游可直接读取的native type/effect/control facts；
   不残留raw StableHLO或SDY语义。
 - Downstream consumer:
   Q29 rank-local tile-dataflow analysis、candidate materialization与whole-variant commit。
 - User-level driver / named pipeline:
-  production只经`wafer-compile`并继续到verified rank-local structured tensor program。frontend numeric mode由
-  CompilationRequest或named pipeline显式提供，并在本stage消费；它不作为module attr向下游传递。
+  production只经`wafer-compile`并继续到verified rank-local structured tensor program。
   `wafer-lower-stablehlo-to-linalg`是显式IR
   debug/test pipeline，不是program-directory入口或用户stop-stage。
 - Explicit non-goals:
@@ -33,7 +31,7 @@ Pipeline position:
   physical layout、SPM/DDR、DTE、target CRT、manifest或runtime binding。
 - Completion gate:
   Q15真实helper输出经同一normalization后不残留StableHLO/SDY，supported collectives与local reduce成为verifier-legal
-  LinalgExt ops，dot precision/algorithm、ordered-tree与native numeric/effect/control facts经write/readback保持，
+  structured IR，dtype、shape、indexing、combiner与native effect/control facts经write/readback保持，
   随后能直接进入structured task/dataflow scheduler；
   unsupported semantic fail closed而不是留给下游猜测。
 ```
@@ -50,22 +48,10 @@ func + tensor + linalg + scf + arith + math
   + wafer.linalg_ext.collective.*
 ```
 
-shape、dtype、indexing maps、iterator types、DPS ties、reduction region和SSA use-def必须保持可验证。arith/math/linalg op或
-其scalar region已有的standard fast-math、integer overflow、rounding/contract语义，SCF dominance/loop-carried SSA，以及
-`MemoryEffectOpInterface`/`ConditionallySpeculatable`结论同样必须保留；缺失某项许可时，下游把它当作变换barrier，不能由
-Wafer私有attr、模型名或target性能目标补猜。target facts
+shape、dtype、indexing maps、iterator types、DPS ties、reduction region和SSA use-def必须保持可验证。arith/math/linalg op、
+SCF dominance/loop-carried SSA，以及`MemoryEffectOpInterface`/`ConditionallySpeculatable`结论同样必须保留。
+下游对支持的float类型不能仅因缺少额外数值标注而拒绝现有candidate。target facts
 只能在下游作为legality/cost input，不能提前变成layout strings、memory attrs、physical endpoint或packet fields。
-
-standard `contract` fact在本层只是source permission，不会自动注册non-GEMM FMA producer。只有显式fused selected op及
-Instr/TargetCall/必要ABI/SystemC consumer闭合后才能参与production candidate legality；target固定GEMM FMA profile不能反向
-授权任意source `mul`+`add` contraction。
-
-frontend numeric mode不是IR policy：
-
-- `strict`不额外注入fast-math，但保留StableHLO本身允许的ordered arbitrary tree与dot precision合同；
-- `model-relaxed`只向eligible floating scalar payload注入标准`reassoc|contract`；
-- `nnan`、`ninf`和`nsz`是独立source假设，不能由model-relaxed默认捆绑；
-- direct Linalg输入不读取CompilationRequest mode，只相信其current scalar payload已有的标准fastmath。
 
 当前frontend program没有typed mutable-state/model graph合同；本stage也不虚构state/resource owner。parameter在
 program directory和function argument上的绑定由tasks/02 verifier拥有，normalization只保持IR value/type关系。
@@ -83,19 +69,14 @@ StableHLO使pipeline失败。
 | constant | `arith.constant`或其它ConstantLike | exact element type/shape/value |
 | pointwise | `linalg.generic` + scalar arith/math | broadcast/indexing与dtype |
 | broadcast/reshape/transpose/slice/concat | linalg/tensor/scf data-movement或view结构 | dimension mapping、static slice/view relation |
-| `dot_general`/dot | `linalg.matmul`、batch matmul或structured generic + typed Wafer dot attrs | batch/contracting dims、indexing maps、precision config、exact DotAlgorithm、accumulator/result type |
-| reduce supported subset | `wafer.linalg_ext.ordered_reduce` | reduction dims、init、combiner region、lexicographic input leaf和repeatable/interspersed init语义 |
+| `dot_general`/dot | `linalg.matmul`、batch matmul或structured generic | batch/contracting dims、indexing maps、operand/accumulator/result type |
+| reduce supported subset | Linalg reduction | reduction dims、init和combiner region |
 | reduce-window supported subset | linalg reduction/pooling-like structure | window/dimension、init与combiner region |
 | staged softmax/norm/RoPE/MLP graph | 细粒度reduce/pointwise/shape ops | 原SSA dataflow，不引入Wafer高层model op |
 
-StableHLO dot的`precision_config`和`DotAlgorithm`不能由official conversion静默丢弃。normalization把前者完整投影为
-typed precision attr，把存在的exact algorithm逐字段投影为typed algorithm attr；unsupported exact algorithm在本层或
-target capability preflight结构化失败，不能fallback。`dot_general`是否最终映射Wafer GEMM由dimension/indexing、
-selected exact algorithm与target numeric/geometry gates共同决定，不能靠operand名或storage dtype识别。
-
-标准Linalg reduction无法同时表达“leaf保持lexicographic次序、括号任意、init可重复并插入任意位置”的StableHLO合同。
-因此local StableHLO reduce使用LinalgExt ordered-reduce；它不是优化policy或隐藏schedule。后续若选择tree/chunk，
-实际顺序必须成为SSA/SCF。只有combiner standard `reassoc`或独立proof才允许置换source leaf。
+`dot_general`是否最终映射Wafer GEMM由dimension/indexing和target numeric/geometry gates共同决定，
+不能靠operand名或storage dtype识别。reduction是否可切分由下游从Linalg iterator、indexing和exact
+combiner结构判断；支持的float类型不要求额外fast-math载荷。
 
 softmax、RMSNorm、LayerNorm和RoPE在当前input中是fine-grained StableHLO graph。长期不引入
 `wafer.softmax`、`wafer.norm`或`wafer.rope`来隐藏数学语义。若其multi-stage schedule需要额外temporary或
@@ -137,8 +118,8 @@ consumer后另行设计，不能作为当前completion gate。
 
 StableHLO all-reduce/reduce-scatter允许operand element type提升到combiner/result type。LinalgExt verifier和
 normalization必须保留这一关系，并在buffer lowering时显式materialize conversion；不得把input、accumulator和result
-强制同型，也不得只用attr假装宽累加。保持`rank_group`中序的ordered Tree在strict floating下合法；cyclic Ring若轮转
-leaf次序，必须由combiner fastmath或其它current typed permission单独证明。
+强制同型，也不得只用attr假装宽累加。现有Tree和Ring实现都接受支持的floating element type；拓扑、rank group、
+chunk和DTE约束仍由communication lowering验证。
 
 ## 5. Static Residual Cleanup
 
@@ -209,9 +190,8 @@ directory orchestration由`wafer-compile`负责，用户不选择该stage或手�
 
 - official conversion后raw StableHLO为零；
 - dot/batch/contracting/indexing、broadcast与reduction关系；
-- strict/model-relaxed mode分别产生无额外flag和标准`reassoc|contract`，不默认产生`nnan/ninf/nsz`；native
-  fast-math/overflow/rounding、evaluation order、SCF loop-carried SSA和effect/speculation在normalization write/readback前后一致；
-- dot precision/algorithm typed roundtrip、unsupported exact algorithm negative和ordered-reduce parser/verifier；
+- f16/bf16/f32的dtype、evaluation order、SCF loop-carried SSA和effect/speculation在normalization write/readback前后一致；
+- dot indexing/contracting关系及reduction combiner roundtrip；
 - static shape-view与constant residual cleanup positive/negative；
 - 五类collective的shape、axis、DPS ties、rank group/rank groups与combiner verifier；
 - logical rank越mesh范围、invalid replica groups、shape mismatch与unsupported collective fail closed；

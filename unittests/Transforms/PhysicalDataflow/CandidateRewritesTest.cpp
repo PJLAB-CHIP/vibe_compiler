@@ -216,16 +216,16 @@ module {
 }
 )mlir");
   ASSERT_TRUE(module);
-  EXPECT_EQ(wafer::reassociateIntegerElementwiseExpressions(
+  EXPECT_EQ(wafer::reassociateElementwiseExpressions(
                 module->lookupSymbol<mlir::func::FuncOp>("reassociate")),
             1u);
-  EXPECT_EQ(wafer::balanceIntegerElementwiseReductionTrees(
+  EXPECT_EQ(wafer::balanceElementwiseReductionTrees(
                 module->lookupSymbol<mlir::func::FuncOp>("tree")),
             1u);
-  EXPECT_EQ(wafer::contractIntegerDistributiveExpressions(
+  EXPECT_EQ(wafer::contractDistributiveExpressions(
                 module->lookupSymbol<mlir::func::FuncOp>("distribute")),
             1u);
-  EXPECT_EQ(wafer::factorIntegerElementwiseExpressions(
+  EXPECT_EQ(wafer::factorElementwiseExpressions(
                 module->lookupSymbol<mlir::func::FuncOp>("factor")),
             1u);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
@@ -250,25 +250,123 @@ module {
   }
 }
 
-TEST_F(CandidateRewritesTest, RejectsFloatingAndPoisonChangingAlgebra) {
+TEST_F(CandidateRewritesTest,
+       RewritesF16AndBF16AlgebraWithoutNumericAnnotations) {
   auto module = parse(R"mlir(
 module {
-  func.func @floating(%a: tensor<4xf32>, %b: tensor<4xf32>,
-                      %c: tensor<4xf32>, %out: tensor<4xf32>)
-      -> tensor<4xf32> {
+  func.func @reassociate_f16(
+      %a: tensor<4xf16>, %b: tensor<4xf16>, %c: tensor<4xf16>,
+      %out: tensor<4xf16>) -> tensor<4xf16> {
     %r = linalg.generic {
         indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
                          affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
         iterator_types = ["parallel"]}
-      ins(%a, %b, %c : tensor<4xf32>, tensor<4xf32>, tensor<4xf32>)
-      outs(%out : tensor<4xf32>) {
-    ^bb0(%av: f32, %bv: f32, %cv: f32, %unused: f32):
-      %ab = arith.addf %av, %bv : f32
-      %abc = arith.addf %ab, %cv : f32
-      linalg.yield %abc : f32
-    } -> tensor<4xf32>
-    return %r : tensor<4xf32>
+      ins(%a, %b, %c : tensor<4xf16>, tensor<4xf16>, tensor<4xf16>)
+      outs(%out : tensor<4xf16>) {
+    ^bb0(%av: f16, %bv: f16, %cv: f16, %unused: f16):
+      %ab = arith.addf %av, %bv : f16
+      %abc = arith.addf %ab, %cv : f16
+      linalg.yield %abc : f16
+    } -> tensor<4xf16>
+    return %r : tensor<4xf16>
   }
+  func.func @tree_bf16(
+      %a: tensor<4xbf16>, %b: tensor<4xbf16>, %c: tensor<4xbf16>,
+      %d: tensor<4xbf16>, %out: tensor<4xbf16>) -> tensor<4xbf16> {
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c, %d
+          : tensor<4xbf16>, tensor<4xbf16>, tensor<4xbf16>,
+            tensor<4xbf16>) outs(%out : tensor<4xbf16>) {
+    ^bb0(%av: bf16, %bv: bf16, %cv: bf16, %dv: bf16, %unused: bf16):
+      %ab = arith.addf %av, %bv : bf16
+      %abc = arith.addf %ab, %cv : bf16
+      %abcd = arith.addf %abc, %dv : bf16
+      linalg.yield %abcd : bf16
+    } -> tensor<4xbf16>
+    return %r : tensor<4xbf16>
+  }
+  func.func @distribute_f16(
+      %a: tensor<4xf16>, %b: tensor<4xf16>, %c: tensor<4xf16>,
+      %out: tensor<4xf16>) -> tensor<4xf16> {
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c : tensor<4xf16>, tensor<4xf16>, tensor<4xf16>)
+      outs(%out : tensor<4xf16>) {
+    ^bb0(%av: f16, %bv: f16, %cv: f16, %unused: f16):
+      %ab = arith.mulf %av, %bv : f16
+      %ac = arith.mulf %av, %cv : f16
+      %r0 = arith.subf %ab, %ac : f16
+      linalg.yield %r0 : f16
+    } -> tensor<4xf16>
+    return %r : tensor<4xf16>
+  }
+  func.func @factor_bf16(
+      %a: tensor<4xbf16>, %b: tensor<4xbf16>, %c: tensor<4xbf16>,
+      %out: tensor<4xbf16>) -> tensor<4xbf16> {
+    %r = linalg.generic {
+        indexing_maps = [affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>,
+                         affine_map<(d0)->(d0)>, affine_map<(d0)->(d0)>],
+        iterator_types = ["parallel"]}
+      ins(%a, %b, %c : tensor<4xbf16>, tensor<4xbf16>, tensor<4xbf16>)
+      outs(%out : tensor<4xbf16>) {
+    ^bb0(%av: bf16, %bv: bf16, %cv: bf16, %unused: bf16):
+      %ab = arith.mulf %av, %bv : bf16
+      %ac = arith.mulf %av, %cv : bf16
+      %r0 = arith.addf %ab, %ac : bf16
+      linalg.yield %r0 : bf16
+    } -> tensor<4xbf16>
+    return %r : tensor<4xbf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  EXPECT_EQ(wafer::reassociateElementwiseExpressions(
+                module->lookupSymbol<mlir::func::FuncOp>("reassociate_f16")),
+            1u);
+  EXPECT_EQ(wafer::balanceElementwiseReductionTrees(
+                module->lookupSymbol<mlir::func::FuncOp>("tree_bf16")),
+            1u);
+  EXPECT_EQ(wafer::contractDistributiveExpressions(
+                module->lookupSymbol<mlir::func::FuncOp>("distribute_f16")),
+            1u);
+  EXPECT_EQ(wafer::factorElementwiseExpressions(
+                module->lookupSymbol<mlir::func::FuncOp>("factor_bf16")),
+            1u);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  auto reassociate =
+      module->lookupSymbol<mlir::func::FuncOp>("reassociate_f16");
+  auto reassociateGeneric =
+      *reassociate.getOps<mlir::linalg::GenericOp>().begin();
+  auto reassociateYield = mlir::cast<mlir::linalg::YieldOp>(
+      reassociateGeneric.getBody()->getTerminator());
+  auto reassociated =
+      reassociateYield.getValues().front().getDefiningOp<mlir::arith::AddFOp>();
+  ASSERT_TRUE(reassociated);
+  auto right = reassociated.getRhs().getDefiningOp<mlir::arith::AddFOp>();
+  ASSERT_TRUE(right);
+
+  auto factor = module->lookupSymbol<mlir::func::FuncOp>("factor_bf16");
+  auto factorGeneric = *factor.getOps<mlir::linalg::GenericOp>().begin();
+  auto factorYield = mlir::cast<mlir::linalg::YieldOp>(
+      factorGeneric.getBody()->getTerminator());
+  auto factored =
+      factorYield.getValues().front().getDefiningOp<mlir::arith::MulFOp>();
+  ASSERT_TRUE(factored);
+  auto terms = factored.getRhs().getDefiningOp<mlir::arith::AddFOp>();
+  ASSERT_TRUE(terms);
+}
+
+TEST_F(CandidateRewritesTest, RejectsPoisonChangingIntegerAlgebra) {
+  auto module = parse(R"mlir(
+module {
   func.func @no_wrap(%a: tensor<4xi32>, %b: tensor<4xi32>,
                      %c: tensor<4xi32>, %out: tensor<4xi32>)
       -> tensor<4xi32> {
@@ -305,13 +403,10 @@ module {
 }
 )mlir");
   ASSERT_TRUE(module);
-  EXPECT_EQ(wafer::reassociateIntegerElementwiseExpressions(
-                module->lookupSymbol<mlir::func::FuncOp>("floating")),
-            0u);
-  EXPECT_EQ(wafer::reassociateIntegerElementwiseExpressions(
+  EXPECT_EQ(wafer::reassociateElementwiseExpressions(
                 module->lookupSymbol<mlir::func::FuncOp>("no_wrap")),
             0u);
-  EXPECT_EQ(wafer::contractIntegerDistributiveExpressions(
+  EXPECT_EQ(wafer::contractDistributiveExpressions(
                 module->lookupSymbol<mlir::func::FuncOp>(
                     "no_wrap_distribution")),
             0u);

@@ -537,16 +537,15 @@
   必须无条件来自将被commit的完整traversal IR。回归同时锁定完整shape覆盖、loop multiplicity、summary cost字段和
   deterministic tie-break，不能仅证明单tile cost analysis单测通过。
 
-## 2026-07-16 reduction切chunk必须重新证明数值合法性
+## 2026-07-16 reduction切chunk曾对float设置过重门槛
 
 - 现象：tile搜索把一个浮点reduction拆成多个neutral-init partial再combine，结构和shape都合法，却改变了原程序的
   grouping、NaN/Inf和signed-zero行为；named matmul也可能被误认为天然允许K split。
-- 根因：把“source rank-local reduction可由实现选择内部tree”和“compiler额外建立多个可观察partial”混成同一合同。
-- 修复模式：selector与直接materializer共用current-IR numeric gate。generic floating只在exact single combiner且
-  `fastmath<reassoc,nnan,ninf,nsz>`时拆分；named floating matmul保持完整K；integer只放行无overflow flag的
-  modular add和signed min/max。未拆分source reduction不因缺少reassociation事实被拒绝。StableHLO collective
-  允许中序遍历保持`rank_group`的ordered implementation tree，不属于这种额外rank-local partial，不能套用同一
-  fast-math门槛；cyclic Ring若置换leaf次序仍须显式numeric permission。
+- 根因：为避免极端IEEE差异，把float candidate一律绑定到新fast-math policy和额外IR carrier，导致普通
+  f16/bf16模型路径无法使用已有优化。
+- 修复模式：selector与直接materializer共用结构gate。generic floating要求exact single combiner，
+  named floating matmul按合法K范围切分，均不要求额外标注；integer继续只放行无overflow flag的modular add和
+  signed min/max。真实shape、layout、资源、target encoding和completion限制不能随之放宽。
 
 ## 2026-07-16 DTE wait不能完成collective后的本地compute/movement effect
 
@@ -1017,11 +1016,11 @@
   terminal collective会继承producer的M/N tile。
 - 根因：traversal capability把全部logical collective统一标成`FullTraversalOnly`，capacity/geometry analysis又只读取直接
   yielded Linalg root。terminal all-reduce因此既遮住local matmul压力，也阻止TilingInterface从result tile反向融合producer；
-  简单把local K=256暴露成reduction range还会错误引入第二次floating K split。
+  local K=256暴露成reduction range后还必须与M/N traversal和all-reduce边界共同验证，不能只靠小shape fixture。
 - 修复模式：production只开放verifier已证明单输入、单输出、shape-preserving的terminal all-reduce作为tiled root；完整物化从
   all-reduce result tile反向融合local matmul slice。capacity/geometry/refinement可窄化看穿到compute root，reduction-range/split
   仍只认真实yielded Linalg root。最终候选必须由Instr/SPM/DDR/Direct-DTE和whole-variant gate重证，不能以小shape fixture代替。
-- 防复发：full-4096 f16 whole-variant回归锁定M/N小于4096、K恒为256、DTE payload小于32 MiB、无full-output SPM allocation；
+- 防复发：full-4096 f16 whole-variant回归锁定M/N小于4096、K chunks完整覆盖256、DTE payload小于32 MiB、无full-output SPM allocation；
   axis-changing collective和shape-preserving collective-permute仍有`FullTraversalOnly`负例。internal collective作为producer时必须
   独立task或fail closed，避免原始full op与tiled clone重复通信。
 

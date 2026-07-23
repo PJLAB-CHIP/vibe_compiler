@@ -115,6 +115,23 @@ TileRegionBodyEmitter::requireSingleTensorCollective(mlir::Operation *op) {
   return mlir::success();
 }
 
+mlir::FailureOr<mlir::Value>
+TileRegionBodyEmitter::materializeCollectiveInputInResultType(
+    mlir::Value input, mlir::Type resultElementType, mlir::Location loc,
+    mlir::OpBuilder &builder) {
+  auto inputType = mlir::dyn_cast<mlir::MemRefType>(input.getType());
+  if (!inputType)
+    return failValue("collective input must materialize as a memref");
+  if (inputType.getElementType() == resultElementType)
+    return input;
+
+  auto convertedTensorType = mlir::RankedTensorType::get(
+      inputType.getShape(), resultElementType);
+  auto converted = builder.create<ComputeConvertOp>(
+      loc, makeSPMMemRefType(convertedTensorType, MemLayout::Tensor), input);
+  return converted.getResult();
+}
+
 mlir::LogicalResult
 TileRegionBodyEmitter::convertAllGather(LinalgExtCollectiveAllGatherOp op,
                                         mlir::OpBuilder &builder) {
@@ -182,6 +199,14 @@ mlir::LogicalResult TileRegionBodyEmitter::convertReduceScatter(
       getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
   if (mlir::failed(input))
     return mlir::failure();
+  auto resultTensorType =
+      mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
+  if (!resultTensorType)
+    return fail("reduce_scatter result must be ranked");
+  input = materializeCollectiveInputInResultType(
+      *input, resultTensorType.getElementType(), op.getLoc(), builder);
+  if (mlir::failed(input))
+    return mlir::failure();
 
   if (rankGroup->ranks.size() == 1) {
     record(op.getResult(0), MemLayout::Tensor, *input);
@@ -196,10 +221,6 @@ mlir::LogicalResult TileRegionBodyEmitter::convertReduceScatter(
       inferCollectiveReduceKind(op.getCombiner());
   if (!kind)
     return mlir::failure();
-  auto resultTensorType =
-      mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
-  if (!resultTensorType)
-    return fail("reduce_scatter result must be ranked");
   auto slotType = makeSPMMemRefType(resultTensorType, MemLayout::Tensor);
   auto recvBuffer =
       builder.create<mlir::memref::AllocOp>(op.getLoc(), slotType);
@@ -233,6 +254,14 @@ TileRegionBodyEmitter::convertAllReduce(LinalgExtCollectiveAllReduceOp op,
     return mlir::failure();
   mlir::FailureOr<mlir::Value> input =
       getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
+  if (mlir::failed(input))
+    return mlir::failure();
+  auto resultTensorType =
+      mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
+  if (!resultTensorType)
+    return fail("all_reduce result must be ranked");
+  input = materializeCollectiveInputInResultType(
+      *input, resultTensorType.getElementType(), op.getLoc(), builder);
   if (mlir::failed(input))
     return mlir::failure();
 

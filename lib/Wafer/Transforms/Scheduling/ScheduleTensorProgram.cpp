@@ -872,10 +872,10 @@ static void buildBoundedSourceVariants(
   const SourceProducer producers[] = {
       materializeConsumerLocalTensorRecomputation,
       hoistStaticLoopInvariantOperations,
-      reassociateIntegerElementwiseExpressions,
-      balanceIntegerElementwiseReductionTrees,
-      contractIntegerDistributiveExpressions,
-      factorIntegerElementwiseExpressions,
+      reassociateElementwiseExpressions,
+      balanceElementwiseReductionTrees,
+      contractDistributiveExpressions,
+      factorElementwiseExpressions,
   };
 
   variants.push_back(source);

@@ -77,9 +77,7 @@ TileRegionBodyEmitter::verifyExactGemmPayload(mlir::linalg::LinalgOp op,
   mlir::Value sum;
   if (auto mul = mlir::dyn_cast<mlir::arith::MulFOp>(payloadOps[0])) {
     auto add = mlir::dyn_cast<mlir::arith::AddFOp>(payloadOps[1]);
-    if (!add || mul.getFastmath() != mlir::arith::FastMathFlags::none ||
-        add.getFastmath() != mlir::arith::FastMathFlags::none ||
-        !matchesPair(mul.getLhs(), mul.getRhs(), lhs, rhs) ||
+    if (!add || !matchesPair(mul.getLhs(), mul.getRhs(), lhs, rhs) ||
         !matchesPair(add.getLhs(), add.getRhs(), mul.getResult(), accumulator))
       return fail(
           (subject + " requires an exact multiply-accumulate payload").str());

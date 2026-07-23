@@ -149,9 +149,11 @@ struct TraversalComputeRootInfo {
 
 /// Recognizes only the all-reduce wrapper that complete traversal can tile and
 /// fuse without recovering semantic roles from names: one ranked tensor
-/// input/out/result, identical shape-preserving types, a direct unique Linalg
-/// producer, and a direct task output destination. Fanout remains fail-closed
-/// because its additional live dataflow is not represented by the estimator.
+/// input/out/result, a shape-preserving input and type-identical out/result, a
+/// direct unique Linalg producer, and a direct task output destination. The
+/// collective verifier owns any input-element promotion legality. Fanout
+/// remains fail-closed because its additional live dataflow is not represented
+/// by the estimator.
 static mlir::linalg::LinalgOp getAllReduceTraversalComputeRoot(
     mlir::func::FuncOp task, mlir::Value yieldedValue, unsigned outputIndex) {
   auto allReduce = mlir::dyn_cast_or_null<LinalgExtCollectiveAllReduceOp>(
@@ -169,8 +171,9 @@ static mlir::linalg::LinalgOp getAllReduceTraversalComputeRoot(
       mlir::dyn_cast<mlir::RankedTensorType>(yieldedValue.getType());
   auto outputArgument = mlir::dyn_cast<mlir::BlockArgument>(output);
   unsigned outputArgumentBase = task.getNumArguments() - task.getNumResults();
-  if (!inputType || !outputType || !resultType || inputType != outputType ||
-      inputType != resultType || !outputArgument ||
+  if (!inputType || !outputType || !resultType ||
+      inputType.getShape() != resultType.getShape() ||
+      outputType != resultType || !outputArgument ||
       outputArgument.getOwner() != &task.getBody().front() ||
       outputArgument.getArgNumber() != outputArgumentBase + outputIndex ||
       !output.hasOneUse() || !yieldedValue.hasOneUse())

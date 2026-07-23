@@ -354,8 +354,8 @@ constant tensor source通过ConstantLike、logical slice和load operand表达，
 
 ### 5.6 Algebraic Rewrite Handoff
 
-Q32 current只接收由current integer IR及overflow/wrap语义的exact/modular proof授权的reassociation、显式reduction tree及algebraic
-distribution/factorization；它们由06在structured actual clone上选择，本文只
+Q32.N让reassociation、显式reduction tree及algebraic distribution/factorization覆盖current integer和floating
+scalar op family；integer仍检查overflow/wrap语义，float不要求额外标注。它们由06在structured actual clone上选择，本文只
 消费改写后的current op DAG：tree顺序由明确SSA combiner DAG/SCF loop-carried state表达，distribution/factorization的新增/删除
 compute也必须是普通typed ops。lowering不读取“已选择numeric mechanism”attr，也不重新选择另一代数形式。
 
@@ -363,8 +363,7 @@ generic online reduction在有明确source pattern、state/update/finalize/final
 contraction在有显式fused selected op/field及11/14/17 consumer前保持unsupported。二者由当前Q32.N gate拥有；target固定
 GEMM FMA profile和source `contract` fact都不能单独授权source mul+add contraction。
 
-floating reassociation/tree同样由Q32.N拥有：当前production StableHLO source没有标准fast-math permission vertical，IR-local
-手写Linalg flag只能做focused test，不能注册production candidate。
+floating reassociation/tree由Q32.N直接进入production candidate；f16/bf16正向测试不依赖手写fast-math属性。
 
 ## 6. Selected Op Native Contracts 与 Effects
 
@@ -555,11 +554,8 @@ candidate、selected op verifier、IndexRelation和memory/event gates。
 - block-scaled FP8/FP4 decode或native low-precision GEMM。
 - fused epilogue、conv/pool/unpool和复杂dynamic broadcast/mask。
 - dynamic shape、paged KV、serving schedule和persistent weight cache。
-- 无current integer-IR exact/modular proof的reassociation、reduction tree或K split。
-- floating reassociation/tree（含改变reduction order的K split）、generic online reduction、non-GEMM FMA contraction及超出
-  current integer-domain exact/modular proof子集的algebraic
-  distribution/factorization；
-  它们由Q32.N闭合完整source→selected IR→Instr/TargetCall/SystemC纵向后才能启用。
+- integer带no-wrap promise而无法证明modular等价的reassociation、reduction tree或K split。
+- generic online reduction、尚无明确typed consumer的non-GEMM fused instruction以及真实target不支持的dtype/layout。
 
 扩展一种实现时必须同时增加：
 

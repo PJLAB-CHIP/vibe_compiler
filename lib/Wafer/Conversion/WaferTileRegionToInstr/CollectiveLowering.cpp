@@ -285,13 +285,9 @@ static std::optional<RingChunking> inferContiguousRingChunking(
   return std::nullopt;
 }
 
-// StableHLO permits an implementation-defined reduction tree only when its
-// inorder traversal retains rank_group order.  A ring rotates/reassociates
-// those leaves.  That is exact for the currently supported integer
-// reductions, but not for floating add/min/max without an explicit numeric
-// permission carried by production IR.
-static bool hasExactRingReassociation(mlir::MemRefType type) {
-  return mlir::isa<mlir::IntegerType>(type.getElementType());
+static bool supportsRingElementType(mlir::MemRefType type) {
+  return mlir::isa<mlir::IntegerType, mlir::FloatType>(
+      type.getElementType());
 }
 
 class AllGatherLowering : public mlir::OpRewritePattern<CommAllGatherOp> {
@@ -555,11 +551,11 @@ public:
 
     int64_t bytes = op.getBytesAttr().getInt();
     if (schedule == ReduceScatterSchedule::Ring) {
-      if (!hasExactRingReassociation(inputType))
+      if (!supportsRingElementType(inputType))
         return failPattern(
             rewriter, op, failureReason,
-            "tile.reduce_scatter ring reorders reduction leaves and requires "
-            "an integer element type with exact reassociation");
+            "tile.reduce_scatter ring requires integer or floating-point "
+            "elements");
       mlir::FailureOr<analysis::CollectiveRingOrder> ringOrder =
           getCollectiveRingOrder(rewriter, op, rankGroup, failureReason,
                                  "tile.reduce_scatter ring lowering");
@@ -804,9 +800,10 @@ public:
     int64_t bytes = op.getBytesAttr().getInt();
     std::optional<RingChunking> chunking =
         inferContiguousRingChunking(inputType, groupSize, bytes);
-    bool ringReassociationIsExact = hasExactRingReassociation(inputType);
+    bool ringElementTypeSupported = supportsRingElementType(inputType);
     std::optional<analysis::CollectiveRingOrder> ringOrder;
-    if (schedule != AllReduceSchedule::Tree && ringReassociationIsExact &&
+    if (schedule != AllReduceSchedule::Tree &&
+        ringElementTypeSupported &&
         chunking) {
       mlir::FailureOr<analysis::CollectiveRingOrder> candidateOrder =
           analysis::buildMinimumHopCollectiveRingOrder(op, rankGroup);
@@ -816,7 +813,7 @@ public:
     bool useTree =
         schedule == AllReduceSchedule::Tree ||
         (schedule == AllReduceSchedule::Auto &&
-         (!ringReassociationIsExact || !chunking || !ringOrder));
+         (!ringElementTypeSupported || !chunking || !ringOrder));
     if (useTree) {
       mlir::FailureOr<analysis::CollectiveTree> tree =
           analysis::buildMinimumHopCollectiveTree(op, rankGroup);
@@ -959,11 +956,10 @@ public:
       return mlir::success();
     }
 
-    if (!ringReassociationIsExact)
+    if (!ringElementTypeSupported)
       return failPattern(
           rewriter, op, failureReason,
-          "tile.all_reduce ring reorders reduction leaves and requires an "
-          "integer element type with exact reassociation");
+          "tile.all_reduce ring requires integer or floating-point elements");
     if (!chunking)
       return failPattern(
           rewriter, op, failureReason,

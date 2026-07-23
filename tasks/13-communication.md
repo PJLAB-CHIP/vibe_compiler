@@ -452,10 +452,8 @@ interval DP枚举每个连续group-index区间的合法root/左右子树，要�
 3. 非root rank wait final recv后发布result；
 4. 任何将被DTE读取或被resident consumer读取的local-compute结果之前都有正确local fence。
 
-StableHLO collective允许这种保持rank-group leaf次序的实现tree，所以floating add/min/max不因缺少fast-math而
-拒绝ordered Tree。cyclic Ring会按chunk旋转leaf次序，只有current logical numeric contract明确许可时才能用于
-floating reduction；当前实现只对integer生成该Ring。ring和tree的区别完全体现在clone里的p2p/local-compute
-body中，不保留algorithm attr。
+Tree和Ring都接受支持的floating add/min/max，不要求额外numeric permission；二者区别完全体现在clone里的
+p2p/local-compute body中，不保留algorithm attr。rank group、topology、chunk和completion仍逐项验证。
 
 ### 5.5 Equal-Split All-to-All
 
@@ -774,7 +772,7 @@ cost从final sends计算minimum-hop link-byte demand并进入统一selection；A
 也已补齐。当前fresh gate尚在执行，未通过前Q36仍不能标done。
 
 当前明确限制是：exact Ring cycle搜索和ordered-Tree interval DP都只覆盖不超过16 rank；Ring只接受能形成非零、
-连续、等分typed chunk的静态payload，涉及reduction时当前还只接受integer element type；ordered Tree本身不需要floating fast-math。
+连续、等分typed chunk的静态payload，其reduction element type可为integer或支持的floating type。
 ragged/segmented路径尚未实现；equal-split All-to-All的网络payload已是direct exchange最小量，但
 现有`MoveInsertSlice` lowering仍会为每个slot复制完整累计result，这个local movement问题必须在后续独立任务
 通过可验证的in-place/subview表示消除，不能把它写成collective网络最优。

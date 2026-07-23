@@ -55,6 +55,26 @@ func.func @all_reduce_rank_groups(
 // CHECK: wafer.linalg_ext.collective.all_reduce
 // CHECK: rank_groups = dense<{{\[\[}}0, 1], [2, 3]]> : tensor<2x2xi64>
 
+func.func @all_reduce_promoted(
+    %input: tensor<4xf16>,
+    %out: tensor<4xf32>) -> tensor<4xf32> {
+  %0 = wafer.linalg_ext.collective.all_reduce
+      ins(%input : tensor<4xf16>)
+      outs(%out : tensor<4xf32>)
+      {
+    ^bb0(%lhs: f32, %rhs: f32):
+      %sum = arith.addf %lhs, %rhs : f32
+      wafer.linalg_ext.collective.yield %sum : f32
+    } {rank_group = array<i64: 0, 1>} -> tensor<4xf32>
+  return %0 : tensor<4xf32>
+}
+
+// CHECK-LABEL: func.func @all_reduce_promoted
+// CHECK: wafer.linalg_ext.collective.all_reduce
+// CHECK-SAME: ins(%{{.*}} : tensor<4xf16>)
+// CHECK-SAME: outs(%{{.*}} : tensor<4xf32>)
+// CHECK: ^bb0(%{{.*}}: f32, %{{.*}}: f32):
+
 func.func @reduce_scatter(
     %input: tensor<8x4xf32>,
     %out: tensor<2x4xf32>) -> tensor<2x4xf32> {
@@ -71,6 +91,27 @@ func.func @reduce_scatter(
 
 // CHECK-LABEL: func.func @reduce_scatter
 // CHECK: wafer.linalg_ext.collective.reduce_scatter
+
+func.func @reduce_scatter_promoted(
+    %input: tensor<8x4xbf16>,
+    %out: tensor<2x4xf32>) -> tensor<2x4xf32> {
+  %0 = wafer.linalg_ext.collective.reduce_scatter
+      ins(%input : tensor<8x4xbf16>)
+      outs(%out : tensor<2x4xf32>)
+      {
+    ^bb0(%lhs: f32, %rhs: f32):
+      %sum = arith.addf %lhs, %rhs : f32
+      wafer.linalg_ext.collective.yield %sum : f32
+    } {axis = 0 : i64, rank_group = array<i64: 0, 1, 2, 3>}
+      -> tensor<2x4xf32>
+  return %0 : tensor<2x4xf32>
+}
+
+// CHECK-LABEL: func.func @reduce_scatter_promoted
+// CHECK: wafer.linalg_ext.collective.reduce_scatter
+// CHECK-SAME: ins(%{{.*}} : tensor<8x4xbf16>)
+// CHECK-SAME: outs(%{{.*}} : tensor<2x4xf32>)
+// CHECK: ^bb0(%{{.*}}: f32, %{{.*}}: f32):
 
 func.func @all_to_all(
     %input: tensor<8x4xf32>,

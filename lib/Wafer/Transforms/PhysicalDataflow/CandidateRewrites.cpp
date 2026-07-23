@@ -57,19 +57,101 @@ static bool isModularIntegerBinary(mlir::Operation *operation) {
          operation->getOperand(1).getType() == integer;
 }
 
-static mlir::arith::AddIOp asModularAdd(mlir::Value value) {
-  auto add = value.getDefiningOp<mlir::arith::AddIOp>();
-  return add && isModularIntegerBinary(add) ? add : mlir::arith::AddIOp{};
+enum class NumericDomain {
+  ModularInteger,
+  Floating,
+};
+
+enum class NumericBinaryKind {
+  Add,
+  Subtract,
+  Multiply,
+};
+
+struct NumericBinary {
+  mlir::Operation *operation;
+  mlir::Value lhs;
+  mlir::Value rhs;
+  NumericDomain domain;
+
+  mlir::Value getResult() const { return operation->getResult(0); }
+  bool hasOneUse() const { return operation->hasOneUse(); }
+};
+
+static std::optional<NumericBinary>
+matchNumericBinary(mlir::Value value, NumericBinaryKind kind) {
+  auto matchInteger = [&](auto operation) -> std::optional<NumericBinary> {
+    if (!operation || !isModularIntegerBinary(operation))
+      return std::nullopt;
+    return NumericBinary{operation, operation.getLhs(), operation.getRhs(),
+                         NumericDomain::ModularInteger};
+  };
+  auto matchFloating = [&](auto operation) -> std::optional<NumericBinary> {
+    if (!operation)
+      return std::nullopt;
+    auto resultType =
+        mlir::dyn_cast<mlir::FloatType>(operation.getResult().getType());
+    if (!resultType || operation.getLhs().getType() != resultType ||
+        operation.getRhs().getType() != resultType)
+      return std::nullopt;
+    return NumericBinary{operation, operation.getLhs(), operation.getRhs(),
+                         NumericDomain::Floating};
+  };
+
+  switch (kind) {
+  case NumericBinaryKind::Add:
+    if (auto integer = matchInteger(
+            value.getDefiningOp<mlir::arith::AddIOp>()))
+      return integer;
+    return matchFloating(value.getDefiningOp<mlir::arith::AddFOp>());
+  case NumericBinaryKind::Subtract:
+    if (auto integer = matchInteger(
+            value.getDefiningOp<mlir::arith::SubIOp>()))
+      return integer;
+    return matchFloating(value.getDefiningOp<mlir::arith::SubFOp>());
+  case NumericBinaryKind::Multiply:
+    if (auto integer = matchInteger(
+            value.getDefiningOp<mlir::arith::MulIOp>()))
+      return integer;
+    return matchFloating(value.getDefiningOp<mlir::arith::MulFOp>());
+  }
+  llvm_unreachable("unknown numeric binary kind");
 }
 
-static mlir::arith::MulIOp asModularMul(mlir::Value value) {
-  auto mul = value.getDefiningOp<mlir::arith::MulIOp>();
-  return mul && isModularIntegerBinary(mul) ? mul : mlir::arith::MulIOp{};
+static bool hasUniformNumericDomain(
+    llvm::ArrayRef<NumericBinary> operations) {
+  if (operations.empty())
+    return false;
+  NumericDomain domain = operations.front().domain;
+  return llvm::all_of(operations, [&](const NumericBinary &operation) {
+    return operation.domain == domain;
+  });
 }
 
-static mlir::arith::SubIOp asModularSub(mlir::Value value) {
-  auto sub = value.getDefiningOp<mlir::arith::SubIOp>();
-  return sub && isModularIntegerBinary(sub) ? sub : mlir::arith::SubIOp{};
+static mlir::Value
+createNumericBinary(mlir::OpBuilder &builder, mlir::Location loc,
+                    NumericBinaryKind kind, NumericDomain domain,
+                    mlir::Value lhs, mlir::Value rhs) {
+  if (domain == NumericDomain::ModularInteger) {
+    switch (kind) {
+    case NumericBinaryKind::Add:
+      return builder.create<mlir::arith::AddIOp>(loc, lhs, rhs);
+    case NumericBinaryKind::Subtract:
+      return builder.create<mlir::arith::SubIOp>(loc, lhs, rhs);
+    case NumericBinaryKind::Multiply:
+      return builder.create<mlir::arith::MulIOp>(loc, lhs, rhs);
+    }
+  }
+
+  switch (kind) {
+  case NumericBinaryKind::Add:
+    return builder.create<mlir::arith::AddFOp>(loc, lhs, rhs);
+  case NumericBinaryKind::Subtract:
+    return builder.create<mlir::arith::SubFOp>(loc, lhs, rhs);
+  case NumericBinaryKind::Multiply:
+    return builder.create<mlir::arith::MulFOp>(loc, lhs, rhs);
+  }
+  llvm_unreachable("unknown numeric binary kind");
 }
 
 struct CommonMultiplicand {
@@ -79,21 +161,20 @@ struct CommonMultiplicand {
 };
 
 static std::optional<CommonMultiplicand>
-findCommonMultiplicand(mlir::arith::MulIOp lhs,
-                       mlir::arith::MulIOp rhs) {
-  if (lhs.getLhs() == rhs.getLhs())
-    return CommonMultiplicand{lhs.getLhs(), lhs.getRhs(), rhs.getRhs()};
-  if (lhs.getLhs() == rhs.getRhs())
-    return CommonMultiplicand{lhs.getLhs(), lhs.getRhs(), rhs.getLhs()};
-  if (lhs.getRhs() == rhs.getLhs())
-    return CommonMultiplicand{lhs.getRhs(), lhs.getLhs(), rhs.getRhs()};
-  if (lhs.getRhs() == rhs.getRhs())
-    return CommonMultiplicand{lhs.getRhs(), lhs.getLhs(), rhs.getLhs()};
+findCommonMultiplicand(const NumericBinary &lhs, const NumericBinary &rhs) {
+  if (lhs.lhs == rhs.lhs)
+    return CommonMultiplicand{lhs.lhs, lhs.rhs, rhs.rhs};
+  if (lhs.lhs == rhs.rhs)
+    return CommonMultiplicand{lhs.lhs, lhs.rhs, rhs.lhs};
+  if (lhs.rhs == rhs.lhs)
+    return CommonMultiplicand{lhs.rhs, lhs.lhs, rhs.rhs};
+  if (lhs.rhs == rhs.rhs)
+    return CommonMultiplicand{lhs.rhs, lhs.lhs, rhs.lhs};
   return std::nullopt;
 }
 
 template <typename Rewrite>
-static unsigned rewriteIntegerYields(mlir::func::FuncOp task,
+static unsigned rewriteNumericYields(mlir::func::FuncOp task,
                                      Rewrite &&rewrite) {
   unsigned changed = 0;
   task.walk([&](mlir::linalg::GenericOp generic) {
@@ -167,102 +248,134 @@ unsigned hoistStaticLoopInvariantOperations(mlir::func::FuncOp function) {
   return changed;
 }
 
-unsigned reassociateIntegerElementwiseExpressions(mlir::func::FuncOp task) {
-  return rewriteIntegerYields(
+unsigned reassociateElementwiseExpressions(mlir::func::FuncOp task) {
+  return rewriteNumericYields(
       task, [](mlir::linalg::YieldOp yield, mlir::Value yielded) {
-        auto outer = asModularAdd(yielded);
-        auto left = outer ? asModularAdd(outer.getLhs()) : mlir::arith::AddIOp{};
-        if (!outer || !left || !outer->hasOneUse() || !left->hasOneUse())
+        std::optional<NumericBinary> outer =
+            matchNumericBinary(yielded, NumericBinaryKind::Add);
+        std::optional<NumericBinary> left =
+            outer ? matchNumericBinary(outer->lhs, NumericBinaryKind::Add)
+                  : std::nullopt;
+        if (!outer || !left || !outer->hasOneUse() || !left->hasOneUse() ||
+            !hasUniformNumericDomain({*outer, *left}))
           return false;
-        mlir::OpBuilder builder(outer);
-        auto right = builder.create<mlir::arith::AddIOp>(
-            outer.getLoc(), left.getRhs(), outer.getRhs());
-        auto reassociated = builder.create<mlir::arith::AddIOp>(
-            outer.getLoc(), left.getLhs(), right);
+        mlir::OpBuilder builder(outer->operation);
+        mlir::Value right = createNumericBinary(
+            builder, outer->operation->getLoc(), NumericBinaryKind::Add,
+            outer->domain, left->rhs, outer->rhs);
+        mlir::Value reassociated = createNumericBinary(
+            builder, outer->operation->getLoc(), NumericBinaryKind::Add,
+            outer->domain, left->lhs, right);
         yield->setOperand(0, reassociated);
-        eraseIfDead(outer);
-        eraseIfDead(left);
+        eraseIfDead(outer->operation);
+        eraseIfDead(left->operation);
         return true;
       });
 }
 
-unsigned balanceIntegerElementwiseReductionTrees(mlir::func::FuncOp task) {
-  return rewriteIntegerYields(
+unsigned balanceElementwiseReductionTrees(mlir::func::FuncOp task) {
+  return rewriteNumericYields(
       task, [](mlir::linalg::YieldOp yield, mlir::Value yielded) {
-        auto outer = asModularAdd(yielded);
-        auto middle =
-            outer ? asModularAdd(outer.getLhs()) : mlir::arith::AddIOp{};
-        auto inner =
-            middle ? asModularAdd(middle.getLhs()) : mlir::arith::AddIOp{};
+        std::optional<NumericBinary> outer =
+            matchNumericBinary(yielded, NumericBinaryKind::Add);
+        std::optional<NumericBinary> middle =
+            outer ? matchNumericBinary(outer->lhs, NumericBinaryKind::Add)
+                  : std::nullopt;
+        std::optional<NumericBinary> inner =
+            middle ? matchNumericBinary(middle->lhs, NumericBinaryKind::Add)
+                   : std::nullopt;
         if (!outer || !middle || !inner || !outer->hasOneUse() ||
-            !middle->hasOneUse() || !inner->hasOneUse())
+            !middle->hasOneUse() || !inner->hasOneUse() ||
+            !hasUniformNumericDomain({*outer, *middle, *inner}))
           return false;
-        mlir::OpBuilder builder(outer);
-        auto right = builder.create<mlir::arith::AddIOp>(
-            outer.getLoc(), middle.getRhs(), outer.getRhs());
-        auto balanced = builder.create<mlir::arith::AddIOp>(
-            outer.getLoc(), inner.getResult(), right.getResult());
+        mlir::OpBuilder builder(outer->operation);
+        mlir::Value right = createNumericBinary(
+            builder, outer->operation->getLoc(), NumericBinaryKind::Add,
+            outer->domain, middle->rhs, outer->rhs);
+        mlir::Value balanced = createNumericBinary(
+            builder, outer->operation->getLoc(), NumericBinaryKind::Add,
+            outer->domain, inner->getResult(), right);
         yield->setOperand(0, balanced);
-        eraseIfDead(outer);
-        eraseIfDead(middle);
+        eraseIfDead(outer->operation);
+        eraseIfDead(middle->operation);
         return true;
       });
 }
 
-unsigned contractIntegerDistributiveExpressions(mlir::func::FuncOp task) {
-  return rewriteIntegerYields(
+unsigned contractDistributiveExpressions(mlir::func::FuncOp task) {
+  return rewriteNumericYields(
       task, [](mlir::linalg::YieldOp yield, mlir::Value yielded) {
-        auto difference = asModularSub(yielded);
-        auto lhs = difference ? asModularMul(difference.getLhs())
-                              : mlir::arith::MulIOp{};
-        auto rhs = difference ? asModularMul(difference.getRhs())
-                              : mlir::arith::MulIOp{};
+        std::optional<NumericBinary> difference =
+            matchNumericBinary(yielded, NumericBinaryKind::Subtract);
+        std::optional<NumericBinary> lhs =
+            difference
+                ? matchNumericBinary(difference->lhs,
+                                     NumericBinaryKind::Multiply)
+                : std::nullopt;
+        std::optional<NumericBinary> rhs =
+            difference
+                ? matchNumericBinary(difference->rhs,
+                                     NumericBinaryKind::Multiply)
+                : std::nullopt;
         if (!difference || !lhs || !rhs || !difference->hasOneUse() ||
-            !lhs->hasOneUse() || !rhs->hasOneUse())
+            !lhs->hasOneUse() || !rhs->hasOneUse() ||
+            !hasUniformNumericDomain({*difference, *lhs, *rhs}))
           return false;
 
         std::optional<CommonMultiplicand> common =
-            findCommonMultiplicand(lhs, rhs);
+            findCommonMultiplicand(*lhs, *rhs);
         if (!common)
           return false;
 
-        mlir::OpBuilder builder(difference);
-        auto terms = builder.create<mlir::arith::SubIOp>(
-            difference.getLoc(), common->lhsOther, common->rhsOther);
-        auto contracted = builder.create<mlir::arith::MulIOp>(
-            difference.getLoc(), common->factor, terms);
+        mlir::OpBuilder builder(difference->operation);
+        mlir::Value terms = createNumericBinary(
+            builder, difference->operation->getLoc(),
+            NumericBinaryKind::Subtract, difference->domain, common->lhsOther,
+            common->rhsOther);
+        mlir::Value contracted = createNumericBinary(
+            builder, difference->operation->getLoc(),
+            NumericBinaryKind::Multiply, difference->domain, common->factor,
+            terms);
         yield->setOperand(0, contracted);
-        eraseIfDead(difference);
-        eraseIfDead(lhs);
-        eraseIfDead(rhs);
+        eraseIfDead(difference->operation);
+        eraseIfDead(lhs->operation);
+        eraseIfDead(rhs->operation);
         return true;
       });
 }
 
-unsigned factorIntegerElementwiseExpressions(mlir::func::FuncOp task) {
-  return rewriteIntegerYields(
+unsigned factorElementwiseExpressions(mlir::func::FuncOp task) {
+  return rewriteNumericYields(
       task, [](mlir::linalg::YieldOp yield, mlir::Value yielded) {
-        auto sum = asModularAdd(yielded);
-        auto lhs = sum ? asModularMul(sum.getLhs()) : mlir::arith::MulIOp{};
-        auto rhs = sum ? asModularMul(sum.getRhs()) : mlir::arith::MulIOp{};
+        std::optional<NumericBinary> sum =
+            matchNumericBinary(yielded, NumericBinaryKind::Add);
+        std::optional<NumericBinary> lhs =
+            sum ? matchNumericBinary(sum->lhs, NumericBinaryKind::Multiply)
+                : std::nullopt;
+        std::optional<NumericBinary> rhs =
+            sum ? matchNumericBinary(sum->rhs, NumericBinaryKind::Multiply)
+                : std::nullopt;
         if (!sum || !lhs || !rhs || !sum->hasOneUse() ||
-            !lhs->hasOneUse() || !rhs->hasOneUse())
+            !lhs->hasOneUse() || !rhs->hasOneUse() ||
+            !hasUniformNumericDomain({*sum, *lhs, *rhs}))
           return false;
 
         std::optional<CommonMultiplicand> common =
-            findCommonMultiplicand(lhs, rhs);
+            findCommonMultiplicand(*lhs, *rhs);
         if (!common)
           return false;
 
-        mlir::OpBuilder builder(sum);
-        auto terms = builder.create<mlir::arith::AddIOp>(
-            sum.getLoc(), common->lhsOther, common->rhsOther);
-        auto factored = builder.create<mlir::arith::MulIOp>(
-            sum.getLoc(), common->factor, terms);
+        mlir::OpBuilder builder(sum->operation);
+        mlir::Value terms = createNumericBinary(
+            builder, sum->operation->getLoc(), NumericBinaryKind::Add,
+            sum->domain, common->lhsOther, common->rhsOther);
+        mlir::Value factored = createNumericBinary(
+            builder, sum->operation->getLoc(), NumericBinaryKind::Multiply,
+            sum->domain, common->factor, terms);
         yield->setOperand(0, factored);
-        eraseIfDead(sum);
-        eraseIfDead(lhs);
-        eraseIfDead(rhs);
+        eraseIfDead(sum->operation);
+        eraseIfDead(lhs->operation);
+        eraseIfDead(rhs->operation);
         return true;
       });
 }

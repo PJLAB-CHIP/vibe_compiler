@@ -33,31 +33,6 @@ classifyCandidateTraversalRoot(mlir::Operation *operation) {
 
 namespace wafer::tensor_program_to_tile_region {
 
-static std::optional<mlir::arith::FastMathFlags>
-getFloatingCombinerFastMath(mlir::Operation *combiner) {
-  if (auto add = mlir::dyn_cast<mlir::arith::AddFOp>(combiner))
-    return add.getFastmath();
-  if (auto maximum = mlir::dyn_cast<mlir::arith::MaximumFOp>(combiner))
-    return maximum.getFastmath();
-  if (auto minimum = mlir::dyn_cast<mlir::arith::MinimumFOp>(combiner))
-    return minimum.getFastmath();
-  return std::nullopt;
-}
-
-static bool permitsFloatingChunkRegrouping(mlir::arith::FastMathFlags flags) {
-  auto has = [&](mlir::arith::FastMathFlags flag) {
-    return static_cast<bool>(flags & flag);
-  };
-  // Reassociation authorizes the changed rounding points. The remaining
-  // facts close the exceptional-value differences introduced by computing a
-  // neutral-initialized partial result before combining it with the running
-  // accumulator.
-  return has(mlir::arith::FastMathFlags::reassoc) &&
-         has(mlir::arith::FastMathFlags::nnan) &&
-         has(mlir::arith::FastMathFlags::ninf) &&
-         has(mlir::arith::FastMathFlags::nsz);
-}
-
 static mlir::LogicalResult
 verifyGenericReductionSplitNumericLegality(mlir::linalg::GenericOp generic,
                                            std::string *failureReason) {
@@ -86,18 +61,7 @@ verifyGenericReductionSplitNumericLegality(mlir::linalg::GenericOp generic,
     return mlir::failure();
   }
 
-  std::optional<mlir::arith::FastMathFlags> flags =
-      getFloatingCombinerFastMath(combinerOps.front());
-  if (!flags)
-    return mlir::success();
-  if (permitsFloatingChunkRegrouping(*flags))
-    return mlir::success();
-
-  setFailureReason(
-      failureReason,
-      "candidate reduction split changes floating-point grouping and "
-      "requires explicit fastmath<reassoc,nnan,ninf,nsz> source legality");
-  return mlir::failure();
+  return mlir::success();
 }
 
 static mlir::OwningOpRef<mlir::ModuleOp>
@@ -450,14 +414,8 @@ mlir::LogicalResult wafer::verifyCandidateReductionSplitNumericLegality(
           "candidate matmul reduction split requires a shaped result");
       return mlir::failure();
     }
-    if (mlir::isa<mlir::FloatType>(resultType.getElementType())) {
-      tensor_program_to_tile_region::setFailureReason(
-          failureReason,
-          "candidate floating-point matmul reduction split has no explicit "
-          "source-IR reassociation legality fact");
-      return mlir::failure();
-    }
-    if (!mlir::isa<mlir::IntegerType>(resultType.getElementType())) {
+    if (!mlir::isa<mlir::IntegerType, mlir::FloatType>(
+            resultType.getElementType())) {
       tensor_program_to_tile_region::setFailureReason(
           failureReason,
           "candidate matmul reduction split requires integer or floating-"

@@ -279,7 +279,7 @@ ABI全部通过，coordinator才能提交包含全部logical ranks的结果。ma
 | ordered reduction | reduction iterators、init、combiner、source order和reassociation许可 | ordered composite或已证明等价的native op |
 | share-vs-recompute | SSA use-def、exact dependent region、effect/speculation和cost choice | shared multi-use或consumer-local producer SSA clone |
 | loop-invariant hoist | LoopLike、dominance、invariant operands、effect/completion | loop外真实op和body捕获的dominant SSA value |
-| numeric reassociation/tree/distribution | current integer IR、overflow/wrap语义、exact/modular proof和combiner/dataflow | 显式SSA combiner tree或等价rewritten op DAG；floating permission与`contract`不生成current producer，无隐藏order attr |
+| numeric reassociation/tree/distribution | current integer或floating scalar op family、integer overflow/wrap语义和combiner/dataflow | 显式SSA combiner tree或等价rewritten op DAG；float不要求额外permission，integer no-wrap保持barrier，无隐藏order attr |
 | view/reshape/permutation | type、view/subset semantics、index relation和alias proof | metadata view或explicit movement |
 | broadcast/slice/concat | indexing relation、static domain和piece coverage | view、movement或structured failure |
 | constant tensor | ConstantLike value、logical slice和selected destination encoding | typed fill/load |
@@ -287,8 +287,7 @@ ABI全部通过，coordinator才能提交包含全部logical ranks的结果。ma
 | communication | rank-local operands、typed peer/group facts、bytes和completion | explicit movement/event body；无未展开占位 |
 
 通用测试至少覆盖chain、diamond、fanout/fanin、shared-input contraction、multi-root、residual、collective、
-多个dtype、整tile、非整除tail以及integer-domain exact/modular proof正负例。IR-local fast-math fixture只验证事实保留，不算production
-floating reassociation/tree证据。新增source op优先通过现有Linalg、
+多个dtype、整tile、非整除tail、f16/bf16无标注正例以及integer modular/no-wrap正负例。新增source op优先通过现有Linalg、
 DPS、Tiling、ViewLike和effect interfaces进入这些family；只有新数学语义不能稳定表达时才扩IR。
 
 每个positive必须从真实source进入production materializer并发生非零IR mutation。negative至少覆盖wrong
