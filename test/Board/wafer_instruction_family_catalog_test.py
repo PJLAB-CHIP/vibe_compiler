@@ -304,6 +304,73 @@ def validate_pool_max_oracle() -> None:
         )
 
 
+def validate_conv_oracle() -> None:
+    case = catalog.CASES_BY_NAME["conv-f16"]
+    assert case.is_safe
+    assert case.oracle_name == "EXACT_BITS"
+    assert case.result_bytes == 16
+    assert case.output_span == 256
+    assert case.aux_span == 0
+
+    built = catalog.build_case_payload(case)
+    source = struct.unpack_from(
+        "<12e", built.payload, catalog.BODY_OFFSET
+    )
+    assert source == (
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+    )
+    weight = struct.unpack_from(
+        "<16e",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    assert weight == (
+        1.0,
+        2.0,
+        4.0,
+        8.0,
+        16.0,
+        32.0,
+        64.0,
+        128.0,
+        3.0,
+        5.0,
+        7.0,
+        9.0,
+        11.0,
+        13.0,
+        15.0,
+        17.0,
+    )
+    result = struct.unpack_from(
+        "<8e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert result == (1.0, 16.0, 3.0, 11.0, 2.0, 32.0, 5.0, 13.0)
+    padding = struct.pack("<e", -13.0) * (
+        (case.output_span - case.result_bytes) // 2
+    )
+    assert built.expected_output_slot[
+        catalog.BODY_OFFSET + case.result_bytes :
+        catalog.BODY_OFFSET + case.output_span
+    ] == padding
+    assert built.expected_output_slot[
+        catalog.BODY_OFFSET + case.output_span :
+    ] == bytes([catalog.SLOT_CANARY]) * (
+        catalog.SLOT_BYTES - catalog.BODY_OFFSET - case.output_span
+    )
+
+
 def validate_img2col_oracle() -> None:
     for name, dtype_name in (
         ("tdma-img2col-f16", "F16"),
@@ -395,18 +462,16 @@ def _output_seed_padding() -> bytes:
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 37
+    assert len(catalog.SAFE_CASES) == 38
     assert len(catalog.CATALOG) == 39
     assert {case.case_id for case in catalog.SAFE_CASES} == (
-        set(range(1, 30)) | {100, 101, 103, 105, 106, 107, 108, 109}
+        set(range(1, 30)) | {100, 101, 102, 103, 105, 106, 107, 108, 109}
     )
     assert {
-        case.reason_name
+        (case.symbol, case.reason_name)
         for case in catalog.CATALOG
         if not case.is_safe
-    } == {
-        "REASON_GEOMETRY_UNQUALIFIED",
-    }
+    } == {("UNPOOL_F16", "REASON_GEOMETRY_UNQUALIFIED")}
     for name in (
         "reduce-sum-f16",
         "reduce-max-f16",
@@ -469,6 +534,7 @@ def main() -> int:
     validate_gemm_padding_domain()
     validate_gemm_dtype_oracles()
     validate_arg_extrema_composite_oracles()
+    validate_conv_oracle()
     validate_pool_max_oracle()
     validate_img2col_oracle()
     validate_lut16_oracle()

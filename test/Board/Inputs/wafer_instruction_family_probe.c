@@ -238,6 +238,10 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     wafer_tx81_tdma_img2col(input_a, output, 1, 3, 3, 64, 1, 4, 4, 64, 0, 0, 0,
                             0, 2, 2, 1, 1, format);
     break;
+  case WAFER_IFP_CASE_CONV_F16:
+    wafer_tx81_conv(input_a, input_b, output, 0, 1, 1, 3, 4, 1, 1, 4, 4, 1, 1,
+                    2, 4, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 1, 1, 1, format);
+    break;
   case WAFER_IFP_CASE_POOL_F16:
   case WAFER_IFP_CASE_POOL_BF16:
     wafer_tx81_pool_max(

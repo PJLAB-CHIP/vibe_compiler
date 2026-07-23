@@ -115,7 +115,7 @@ delta均为1；worker0/1/2 disjoint join使用mask `0b111`，三个worker CT del
 boundary/final result与guard均正确、blocking为0，前后Add heartbeat通过。当前将CT三worker routing、
 matching `bywork`及disjoint join记为`board-observed`；跨worker并行、仲裁、同地址行为与
 default/local-fence跨worker scope仍保持保守`unknown/excluded`。
-instruction-family typed catalog的37个safe case也已全部逐个串行上板通过，覆盖f16/bf16 elementwise、
+instruction-family typed catalog的38个safe case也已全部逐个串行上板通过，覆盖f16/bf16 elementwise、
 convert、reduce、select composite、f16 NE GEMM、f16 TDMA Pad与f16 peripheral ArgMax/ArgMin composite
 writeback、f16 PoolMax、peripheral LUT16 raw-offset lookup，以及f16 TDMA Img2Col；每个case均有精确bit
 oracle、SPM guard、
@@ -142,8 +142,10 @@ BF16 PoolMax与TDMA Img2Col也已在同一host进程内逐case串行通过：前
 suffix guard、terminal、cleanup和后置Add heartbeat正常。
 Conv板测准备发现existing verifier仍按legacy `[Kh,Kw,I,O]`与H/W轴序解释wrapper参数；current vendor
 合同实际是weight `[Kx,Ky,O,I]`、kernel/stride `[Kx,Ky,Sx,Sy]`、dilation `[Dx,Dy]`。verifier、
-非对称正反例、register-bound axis case及完整target ABI lowering golden已同步；对应非对称FP16板测仍在
-Q37当前批次内，未通过前不把Conv记为board-observed。
+非对称正反例、register-bound axis case及完整target ABI lowering golden已同步。对应FP16板测使用
+input `[1,1,3,4]`、HWOI weight `[1,1,4,4]`、output `[1,1,2,4]`与`Sx/Sy=2/1`，8个结果逐bit正确，
+16B logical result、256B physical span、guard、terminal、cleanup和后置Add均通过；ordinary Conv现记为
+current profile `board-observed`。catalog原有row只剩Unpool仍deferred。
 
 Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
 现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的

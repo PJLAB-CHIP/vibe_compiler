@@ -141,8 +141,8 @@ enum WaferIFPDeferredReason {
     F16, EXACT_COMPOSITE, REASON_NONE, 8, 8, 0)                                \
   X(PERIPHERAL_ARGMIN_F16, 101, "peripheral-argmin-f16", SAFE, PERIPHERAL,    \
     F16, EXACT_COMPOSITE, REASON_NONE, 8, 8, 0)                                \
-  X(CONV_F16, 102, "conv-f16", DEFERRED, CONV, F16, NO_ORACLE,                \
-    REASON_GEOMETRY_UNQUALIFIED, 0, 0, 0)                                     \
+  X(CONV_F16, 102, "conv-f16", SAFE, CONV, F16, EXACT_BITS, REASON_NONE,      \
+    16, 256, 0)                                                                \
   X(POOL_F16, 103, "pool-f16", SAFE, POOL, F16, EXACT_BITS, REASON_NONE,      \
     256, 256, 0)                                                               \
   X(UNPOOL_F16, 104, "unpool-f16", DEFERRED, UNPOOL, F16, NO_ORACLE,          \

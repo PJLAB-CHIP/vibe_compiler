@@ -448,6 +448,45 @@ def _img2col(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
     return _fp(case.dtype_name, source), b"", _fp(case.dtype_name, expected)
 
 
+def _conv(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
+    if case.symbol != "CONV_F16":
+        raise RuntimeError(f"{case.name}: unknown convolution kind")
+    source = (
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+    )
+    weight = (
+        1.0,
+        2.0,
+        4.0,
+        8.0,
+        16.0,
+        32.0,
+        64.0,
+        128.0,
+        3.0,
+        5.0,
+        7.0,
+        9.0,
+        11.0,
+        13.0,
+        15.0,
+        17.0,
+    )
+    expected = (1.0, 16.0, 3.0, 11.0, 2.0, 32.0, 5.0, 13.0)
+    return _f16(source), _f16(weight), _f16(expected)
+
+
 def _pool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
     if case.symbol not in ("POOL_F16", "POOL_BF16"):
         raise RuntimeError(f"{case.name}: unknown pool kind")
@@ -529,6 +568,8 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
         input_a, input_b, expected = _pad()
     elif case.family_name == "TDMA_IMG2COL":
         input_a, input_b, expected = _img2col(case)
+    elif case.family_name == "CONV":
+        input_a, input_b, expected = _conv(case)
     elif case.family_name == "POOL":
         input_a, input_b, expected = _pool(case)
     elif case.family_name == "PERIPHERAL":

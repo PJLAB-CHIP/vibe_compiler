@@ -155,7 +155,7 @@ Pipeline position:
   三worker join使用mask `0b111`，三个worker的CT delta各为1。全部boundary/final result与guard正确、
   blocking为0，前后Add heartbeat通过。该证据闭合CT worker routing、matching `bywork`和disjoint join
   正确性，不外推跨worker并行、仲裁或default/local-fence跨worker scope。
-- instruction-family catalog的37个safe case已全部逐个串行上板并通过typed bit oracle、SPM guard、
+- instruction-family catalog的38个safe case已全部逐个串行上板并通过typed bit oracle、SPM guard、
   terminal与cleanup，覆盖f16/bf16 elementwise、convert、reduce、select composite、f16 NE GEMM和
   f16 TDMA Pad、f16 TDMA Img2Col、f16 PoolMax、peripheral LUT16 raw-offset lookup，以及f16 peripheral
   ArgMax/ArgMin的value/index composite writeback。
@@ -176,8 +176,9 @@ Pipeline position:
   output及guard；这些case闭合BF16 format路径，不新增geometry外推。
 - ordinary Conv verifier已从legacy `[Kh,Kw,I,O]`修正为current wrapper合同
   `[Kx,Ky,O,I]`，kernel/stride/dilation分别为`[Kx,Ky,Sx,Sy]`与`[Dx,Dy]`，并由非对称正反例、
-  register-bound axis case和完整target ABI golden验证。对应FP16 Conv板端exact case仍待本批串行执行，
-  通过前不进入board-observed capability。
+  register-bound axis case和完整target ABI golden验证。对应FP16 Conv以`Sx/Sy=2/1`、
+  `[1,1,3,4] × [1,1,4,4] -> [1,1,2,4]`串行上板，16B logical result、256B physical span与guard
+  均通过；ordinary Conv现为current profile `board-observed`。
 - 旧single-engine CT issue limit 5连续三次完整正确且`control_after_issue=0x100`，issue limit 6第一次
   timeout，随后known-good Add也timeout；同时`tsm_smi`仍显示idle。但旧probe把所有`TsmNew` builder保留到
   case结束，并在每次issue后插入多组MMIO观察，故timeout不能归因硬件queue或静态depth。
