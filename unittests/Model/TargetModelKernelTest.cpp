@@ -14,6 +14,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -309,6 +310,127 @@ TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
     ++validated;
   }
   EXPECT_EQ(validated, 111u);
+}
+
+TEST(TargetModelKernelTest, TargetRegisterBoundsFailClosedAtModelEntry) {
+  auto validate = [](auto payload) {
+    return validateTargetModelTransactionFields(
+        TargetTransaction{0, 0, TargetTransactionPayload{std::move(payload)}});
+  };
+  auto expectInvalid = [&](auto payload, llvm::StringRef expected) {
+    std::string error = expectError(validate(std::move(payload)));
+    EXPECT_NE(error.find(expected.str()), std::string::npos) << error;
+  };
+  auto expectValid = [&](auto payload) {
+    llvm::Error error = validate(std::move(payload));
+    EXPECT_FALSE(static_cast<bool>(error)) << llvm::toString(std::move(error));
+  };
+
+  expectValid(
+      TargetGemmTransaction{0, 0, 0, 1, 16384, 1, 4096, LogicalFormat::F16});
+  expectInvalid(
+      TargetGemmTransaction{0, 0, 0, 1, 16385, 1, 1, LogicalFormat::F16},
+      "GEMM k must be in [1, 16384]");
+  expectInvalid(
+      TargetGemmTransaction{0, 0, 0, 1, 1, 1, 4097, LogicalFormat::F16},
+      "GEMM batch_count must be in [1, 4096]");
+
+  expectValid(TargetReduceTransaction{
+      InstrReduceKind::Sum,
+      0,
+      0,
+      static_cast<uint32_t>(NativeCTReduceDimension::Trailing0),
+      {4096, 4096, 4096, 16384},
+      LogicalFormat::F32});
+  expectInvalid(TargetReduceTransaction{InstrReduceKind::Sum,
+                                        0,
+                                        0,
+                                        static_cast<uint32_t>(
+                                            NativeCTReduceDimension::Trailing0),
+                                        {4097, 1, 1, 1},
+                                        LogicalFormat::F32},
+                "reduce shape N dimension must be in [1, 4096]");
+  expectInvalid(TargetReduceTransaction{InstrReduceKind::Sum,
+                                        0,
+                                        0,
+                                        static_cast<uint32_t>(
+                                            NativeCTReduceDimension::Trailing0),
+                                        {1, 1, 1, 16385},
+                                        LogicalFormat::F32},
+                "reduce shape C dimension must be in [1, 16384]");
+
+  auto makeConv = [] {
+    return TargetConvTransaction{InstrConvKind::Conv,
+                                 0,
+                                 0,
+                                 0,
+                                 {1, 1, 1, 1},
+                                 {1, 1, 1, 1},
+                                 {1, 1, 1, 1},
+                                 {0, 0, 0, 0},
+                                 {0, 0, 0, 0},
+                                 {1, 1, 1, 1},
+                                 {1, 1},
+                                 LogicalFormat::F16};
+  };
+  TargetConvTransaction conv = makeConv();
+  conv.pads[0] = 1024;
+  expectInvalid(std::move(conv), "convolution pads must be in [0, 1023]");
+  conv = makeConv();
+  conv.kernelStrides[0] = 256;
+  expectInvalid(std::move(conv),
+                "convolution kernel_strides must be in [1, 255]");
+  conv = makeConv();
+  conv.kernelStrides[2] = 1024;
+  expectInvalid(std::move(conv),
+                "convolution kernel_strides must be in [1, 1023]");
+  conv = makeConv();
+  conv.dilations[0] = 1024;
+  expectInvalid(std::move(conv), "convolution dilations must be in [1, 1023]");
+}
+
+TEST(TargetModelKernelTest, ConvolutionWeightShapeIsNotADataShape) {
+  TargetConvTransaction conv{InstrConvKind::Conv,
+                             0,
+                             0,
+                             0,
+                             {1, 1, 1, 4097},
+                             {1, 1, 4097, 1},
+                             {1, 1, 1, 1},
+                             {0, 0, 0, 0},
+                             {0, 0, 0, 0},
+                             {1, 1, 1, 1},
+                             {1, 1},
+                             LogicalFormat::F16};
+  llvm::Error error = validateTargetModelTransactionFields(
+      TargetTransaction{0, 0, TargetTransactionPayload{conv}});
+  EXPECT_FALSE(static_cast<bool>(error)) << llvm::toString(std::move(error));
+
+  conv.weightShape[2] =
+      static_cast<uint32_t>(std::numeric_limits<uint16_t>::max()) + 1;
+  std::string failure = expectError(validateTargetModelTransactionFields(
+      TargetTransaction{0, 0, TargetTransactionPayload{std::move(conv)}}));
+  EXPECT_NE(failure.find("convolution weight shape must be in [1, 65535]"),
+            std::string::npos)
+      << failure;
+}
+
+TEST(TargetModelKernelTest,
+     BoolMemsetFieldValidationRequiresPhysicalFootprintByteGranularity) {
+  auto validate = [](uint32_t elementCount) {
+    return validateTargetModelTransactionFields(TargetTransaction{
+        0, 0,
+        TargetMemsetTransaction{0, UINT32_C(1), elementCount,
+                                LogicalFormat::Bool}});
+  };
+
+  llvm::Error valid = validate(16);
+  EXPECT_FALSE(static_cast<bool>(valid)) << llvm::toString(std::move(valid));
+  std::string failure = expectError(validate(9));
+  EXPECT_NE(failure.find("physical-footprint element_count must be a multiple "
+                         "of 8 for byte granularity"),
+            std::string::npos)
+      << failure;
 }
 
 TEST(TargetModelKernelTest, StridedRDMAAndWDMACommitOnlyCompleteEffects) {

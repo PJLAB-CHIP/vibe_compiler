@@ -1,0 +1,1916 @@
+#!/usr/bin/env python3
+"""Build and explicitly run the rank-one TX81 NCC execution probe."""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import hashlib
+import itertools
+import json
+import os
+import pathlib
+import re
+import shlex
+import shutil
+import statistics
+import struct
+import subprocess
+import sys
+from collections.abc import Iterable
+
+import wafer_ncc_probe_protocol as ncc_protocol
+
+
+TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
+LAUNCH_ABI = "per-rank-pointer-block-v1"
+TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
+INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
+PROBE_C = INPUT_DIR / "wafer_ncc_execution_probe.c"
+PROBE_PLAN_C = INPUT_DIR / "wafer_ncc_probe_plan.c"
+PROBE_HAZARD_C = INPUT_DIR / "wafer_ncc_hazard_relation.c"
+PROBE_LL = INPUT_DIR / "wafer_ncc_execution_probe.ll"
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo-root", type=pathlib.Path, required=True)
+    parser.add_argument("--wafer-compile", type=pathlib.Path, required=True)
+    parser.add_argument("--wafer-run", type=pathlib.Path, required=True)
+    parser.add_argument("--llvm-clangxx", type=pathlib.Path, required=True)
+    parser.add_argument("--work-dir", type=pathlib.Path, required=True)
+    parser.add_argument(
+        "--suite",
+        choices=("build-smoke", *SUITES),
+        default="build-smoke",
+    )
+    parser.add_argument(
+        "--case",
+        action="append",
+        dest="selected_cases",
+        help="run only the named case from the selected suite; repeatable",
+    )
+    parser.add_argument("--list-cases", action="store_true")
+    parser.add_argument("--no-card", action="store_true")
+    parser.add_argument("--device-id", type=int, default=0)
+    parser.add_argument("--expected-runtime-version", type=int)
+    parser.add_argument("--expected-device-name")
+    parser.add_argument("--expected-pci-bus-id")
+    parser.add_argument("--expected-tile-count", type=int)
+    parser.add_argument("--expected-runtime-library-sha256")
+    parser.add_argument("--completion-timeout-ms", type=int, default=10000)
+    parser.add_argument("--repeat", type=int, default=3)
+    parser.add_argument("--require-overlap", action="store_true")
+    return parser.parse_args()
+
+
+def run(
+    command: list[str], timeout_seconds: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as error:
+        for partial in (error.stdout, error.stderr):
+            if partial:
+                if isinstance(partial, bytes):
+                    partial = partial.decode(errors="replace")
+                print(partial, end="", file=sys.stderr)
+        raise RuntimeError(
+            "one-shot NCC execution probe exceeded its outer deadline; "
+            "the runner will not retry or call reset/power interfaces"
+        ) from error
+    if result.returncode != 0:
+        print(result.stdout, end="", file=sys.stderr)
+        print(result.stderr, end="", file=sys.stderr)
+        raise RuntimeError(
+            f"command failed with exit code {result.returncode}: "
+            f"{shlex.join(command)}"
+        )
+    return result
+
+
+def write_source_program(work_dir: pathlib.Path) -> pathlib.Path:
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    source = work_dir / "source-program"
+    (source / "functions").mkdir(parents=True)
+    (source / "data").mkdir()
+    (source / "functions" / "forward.mlir").write_text(MODULE)
+    (source / "functions" / "forward.meta").write_text(
+        json.dumps(METADATA, separators=(",", ":")) + "\n"
+    )
+    return source
+
+
+def compile_seed_package(
+    args: argparse.Namespace, source: pathlib.Path
+) -> pathlib.Path:
+    package = args.work_dir / "package"
+    result = run(
+        [
+            str(args.wafer_compile),
+            "--input-program-dir",
+            str(source),
+            "--output-program-dir",
+            str(package),
+            "--execution-ranks=1",
+            f"--target-profile={TARGET_PROFILE}",
+            f"--launch-abi={LAUNCH_ABI}",
+        ],
+        timeout_seconds=300,
+    )
+    if "published verified package" not in result.stdout:
+        raise RuntimeError("wafer-compile did not publish the seed package")
+    return package
+
+
+def locate_probe_bindings(
+    package: pathlib.Path,
+) -> tuple[pathlib.Path, tuple[int, int, int]]:
+    manifest = json.loads((package / "manifest.json").read_text())
+    entries = manifest.get("entries")
+    modules = manifest.get("modules")
+    resources = manifest.get("resources")
+    if (
+        manifest.get("rank_count") != 1
+        or not isinstance(entries, list)
+        or len(entries) != 1
+        or not isinstance(modules, list)
+        or len(modules) != 1
+        or not isinstance(resources, list)
+    ):
+        raise RuntimeError("NCC probe requires a unique rank-one package")
+    entry = entries[0]
+    module = modules[0]
+    slots = entry.get("slots")
+    if (
+        entry.get("rank") != 0
+        or entry.get("module") != module.get("id")
+        or not isinstance(slots, list)
+        or [slot.get("ordinal") for slot in slots] != [0, 1, 2]
+    ):
+        raise RuntimeError("NCC probe pointer-table slots are not canonical")
+    resources_by_id = {
+        resource.get("id"): resource
+        for resource in resources
+        if isinstance(resource, dict) and isinstance(resource.get("id"), int)
+    }
+    resource_ids = tuple(slot.get("resource") for slot in slots)
+    if len(resources_by_id) != len(resources) or any(
+        resource_id not in resources_by_id for resource_id in resource_ids
+    ):
+        raise RuntimeError("NCC probe resources are not uniquely indexed")
+    expected = (
+        ("user_input", "read_only"),
+        ("user_input", "read_only"),
+        ("output", "write_only"),
+    )
+    for resource_id, contract in zip(resource_ids, expected):
+        resource = resources_by_id[resource_id]
+        if (
+            (resource.get("role"), resource.get("access")) != contract
+            or resource.get("bytes") != RESOURCE_BYTES
+            or resource.get("host_visible") is not True
+        ):
+            raise RuntimeError(
+                f"NCC probe resource {resource_id} does not match {contract}"
+            )
+    module_path_value = module.get("path")
+    if not isinstance(module_path_value, str):
+        raise RuntimeError("NCC probe module path is missing")
+    module_path = package / module_path_value
+    if not module_path.is_file():
+        raise RuntimeError("NCC probe seed module is missing")
+    return module_path, resource_ids
+
+
+def build_probe(
+    args: argparse.Namespace, package: pathlib.Path, module_path: pathlib.Path
+) -> None:
+    deps = args.repo_root / "third_party" / "tx8_deps"
+    tool_bin = deps / TOOLCHAIN_DIR / "bin"
+    gcc = tool_bin / "riscv64-unknown-elf-gcc"
+    objcopy = tool_bin / "riscv64-unknown-elf-objcopy"
+    device_linker = args.repo_root / "tools" / "wafer_device_link.py"
+    required = (
+        gcc,
+        objcopy,
+        device_linker,
+        args.llvm_clangxx,
+        PROBE_C,
+        PROBE_PLAN_C,
+        PROBE_HAZARD_C,
+        PROBE_LL,
+    )
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise RuntimeError(f"NCC probe build dependencies are missing: {missing}")
+
+    build = args.work_dir / "probe-build"
+    build.mkdir()
+    helper = build / "wafer_ncc_execution_probe.o"
+    plan = build / "wafer_ncc_probe_plan.o"
+    hazard = build / "wafer_ncc_hazard_relation.o"
+    linked = build / "wafer_ncc_execution_probe.so"
+    compile_prefix = [
+            str(gcc),
+            "-std=c11",
+            "-O2",
+            "-c",
+            "-fPIC",
+            "-ffreestanding",
+            "-fno-stack-protector",
+            "-ffunction-sections",
+            "-fdata-sections",
+            "-fvisibility=hidden",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-DCONFIG_NO_PLATFORM_HOOK_H",
+            "-DUSING_RISCV",
+            f"-I{args.repo_root / 'runtime' / 'wafer_crt' / 'include'}",
+            f"-I{args.repo_root / 'include'}",
+            f"-I{deps / 'include'}",
+            f"-I{INPUT_DIR}",
+            "-mcpu=c908",
+            "-mabi=lp64d",
+    ]
+    run(
+        [
+            *compile_prefix,
+            str(PROBE_C),
+            "-o",
+            str(helper),
+        ]
+    )
+    run([*compile_prefix, str(PROBE_PLAN_C), "-o", str(plan)])
+    run([*compile_prefix, str(PROBE_HAZARD_C), "-o", str(hazard)])
+    run([str(objcopy), "-R", ".riscv.attributes", str(helper)])
+    run([str(objcopy), "-R", ".riscv.attributes", str(plan)])
+    run([str(objcopy), "-R", ".riscv.attributes", str(hazard)])
+    run(
+        [
+            sys.executable,
+            str(device_linker),
+            "--llvm-ir",
+            str(PROBE_LL),
+            "--llvm-clangxx",
+            str(args.llvm_clangxx),
+            "--output",
+            str(linked),
+            "--loader-abi",
+            "tx8-kcore-loader-v1",
+            "--extra-object",
+            str(helper),
+            "--extra-object",
+            str(plan),
+            "--extra-object",
+            str(hazard),
+        ],
+        timeout_seconds=120,
+    )
+
+    staged = module_path.with_name(f".{module_path.name}.ncc-execution-probe")
+    shutil.copy2(linked, staged)
+    os.replace(staged, module_path)
+    manifest_path = package / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    module_id = manifest["entries"][0]["module"]
+    matching_modules = [
+        module for module in manifest["modules"] if module.get("id") == module_id
+    ]
+    if len(matching_modules) != 1:
+        raise RuntimeError("NCC probe could not resolve its unique module record")
+    matching_modules[0]["digest"] = (
+        "sha256:" + hashlib.sha256(module_path.read_bytes()).hexdigest()
+    )
+    staged_manifest = manifest_path.with_name(
+        ".manifest.json.ncc-execution-probe"
+    )
+    staged_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
+    os.replace(staged_manifest, manifest_path)
+
+
+def verify_no_card(args: argparse.Namespace, package: pathlib.Path) -> None:
+    result = run(
+        [
+            str(args.wafer_run),
+            "--package-dir",
+            str(package),
+            "--entry-id",
+            "0",
+            "--no-card",
+        ]
+    )
+    if "board_execution: false" not in result.stdout:
+        raise RuntimeError("wafer-run did not verify the rewritten NCC package")
+    print("ncc_execution_probe_build: passed")
+
+
+def validate_board_args(args: argparse.Namespace) -> None:
+    required = {
+        "--expected-runtime-version": args.expected_runtime_version,
+        "--expected-device-name": args.expected_device_name,
+        "--expected-pci-bus-id": args.expected_pci_bus_id,
+        "--expected-tile-count": args.expected_tile_count,
+        "--expected-runtime-library-sha256": args.expected_runtime_library_sha256,
+    }
+    missing = [option for option, value in required.items() if value in (None, "")]
+    if missing:
+        raise RuntimeError(f"board execution requires qualification: {missing}")
+    digest = str(args.expected_runtime_library_sha256)
+    if re.fullmatch(r"[0-9a-fA-F]{64}", digest) is None:
+        raise RuntimeError("runtime library SHA-256 must contain 64 hex digits")
+    if args.completion_timeout_ms <= 0 or args.repeat <= 0:
+        raise RuntimeError("completion timeout and repeat must be positive")
+
+
+def validate_work_dir(
+    repo_root: pathlib.Path, work_dir: pathlib.Path
+) -> pathlib.Path:
+    resolved_repo = repo_root.resolve()
+    resolved_work = work_dir.resolve()
+    if resolved_work == resolved_repo or resolved_work in resolved_repo.parents:
+        raise RuntimeError("NCC probe work directory is too broad")
+    return resolved_work
+
+
+def delta32(after: int, before: int) -> int:
+    return (after - before) & 0xFFFFFFFF
+
+
+def delta64(after: int, before: int) -> int:
+    return (after - before) & 0xFFFFFFFFFFFFFFFF
+
+
+def board_command(
+    args: argparse.Namespace,
+    package: pathlib.Path,
+    resource_ids: tuple[int, int, int],
+    request: pathlib.Path,
+    payload: pathlib.Path,
+    output: pathlib.Path,
+) -> list[str]:
+    return [
+        str(args.wafer_run),
+        "--package-dir",
+        str(package),
+        "--entry-id",
+        "0",
+        "--board",
+        "--device-id",
+        str(args.device_id),
+        "--expected-runtime-version",
+        str(args.expected_runtime_version),
+        "--expected-device-name",
+        str(args.expected_device_name),
+        "--expected-pci-bus-id",
+        str(args.expected_pci_bus_id),
+        "--expected-tile-count",
+        str(args.expected_tile_count),
+        "--expected-runtime-library-sha256",
+        str(args.expected_runtime_library_sha256),
+        "--completion-timeout-ms",
+        str(args.completion_timeout_ms),
+        "--resource",
+        f"{resource_ids[0]}={request}",
+        "--resource",
+        f"{resource_ids[1]}={payload}",
+        "--output",
+        f"{resource_ids[2]}={output}",
+    ]
+
+
+RESOURCE_BYTES = 65536
+RECORD_BYTES = ncc_protocol.RECORD_WORDS * 8
+V2_OUTPUT_SLOT_BASE = 4096
+V2_OUTPUT_SLOT_STRIDE = 4608
+V2_OUTPUT_GUARD_BYTES = 256
+V2_RECORD_GUARD = 0xD87C2A916BE4035F
+V2_SPM_SLOT_BASE = 0x10000
+V2_SPM_SLOT_STRIDE = 0x20000
+V2_SPM_READ0_OFFSET = 0x100
+V2_SPM_READ1_OFFSET = 0x5100
+V2_SPM_WRITE_OFFSET = 0xA100
+V2_NE_PHYSICAL_BYTES = 256
+V2_NE_RHS_BYTES = 512
+V2_NE_RESULT_BYTES = 32
+V2_HAZARD_SELECTED_OFFSET = 0x4000
+V2_HAZARD_SECOND_BASELINE_OFFSET = 0x6000
+V2_HAZARD_UNSELECTED_OFFSETS = (
+    (0x8000, 0xA000, 0xC000),
+    (0x10000, 0x12000, 0x14000),
+)
+FMT_INT8 = 0
+FMT_FP16 = 2
+FMT_BF16 = 3
+PMU64_NAMES = (
+    "window",
+    "full",
+    "ct",
+    "ne",
+    "rdma",
+    "wdma",
+    "tdma",
+    "scalar",
+)
+PMU64_COUNTERS = (
+    ncc_protocol.REC["PMU64_AFTER"] - ncc_protocol.REC["PMU64_BEFORE"]
+)
+if len(PMU64_NAMES) != PMU64_COUNTERS:
+    raise RuntimeError("NCC PMU name table does not match the wire schema")
+PMU_STABLE_MASK = (1 << PMU64_COUNTERS) - 1
+
+MODULE = """\
+module {
+  func.func @main(
+      %request: tensor<16384xf32>,
+      %payload: tensor<16384xf32>) -> tensor<16384xf32> {
+    %result = stablehlo.add %request, %payload : tensor<16384xf32>
+    return %result : tensor<16384xf32>
+  }
+}
+"""
+METADATA = {
+    "name": "forward",
+    "stablehlo_version": "0.0.0",
+    "input_signature": [
+        {"shape": [16384], "dtype": "float32", "dynamic_dims": []},
+        {"shape": [16384], "dtype": "float32", "dynamic_dims": []},
+    ],
+    "output_signature": [
+        {"shape": [16384], "dtype": "float32", "dynamic_dims": []}
+    ],
+    "input_locations": [
+        {"type_": "input_arg", "position": 0, "name": "request"},
+        {"type_": "input_arg", "position": 1, "name": "payload"},
+    ],
+    "unused_inputs": [],
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class GenericProbeCase:
+    name: str
+    plan: ncc_protocol.Plan
+
+    def plan_for_sample(self, sample: int) -> ncc_protocol.Plan:
+        return dataclasses.replace(self.plan, sample=sample)
+
+    def request_words(self, sample: int) -> tuple[int, ...]:
+        return self.plan_for_sample(sample).request_words()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "engines": [lane.engine.name.lower() for lane in self.plan.lanes],
+            "workers": [lane.worker for lane in self.plan.lanes],
+            "rounds": self.plan.rounds,
+            "effect": self.plan.effect_relation.name.lower(),
+            "range": self.plan.range_relation.name.lower(),
+            "first_operand": self.plan.first_operand.name.lower(),
+            "second_operand": self.plan.second_operand.name.lower(),
+            "schedule": self.plan.schedule.name.lower(),
+            "wait": self.plan.wait_kind.name.lower(),
+            "wait_worker_mask": self.plan.wait_worker_mask,
+            "flags": self.plan.flags,
+            "issue_limit": self.plan.issue_limit,
+            "issue_modes": [
+                lane.issue_mode.name.lower() for lane in self.plan.lanes
+            ],
+            "transfer_bytes": [
+                lane.transfer_bytes for lane in self.plan.lanes
+            ],
+            "formats": [lane.element_format for lane in self.plan.lanes],
+        }
+
+def v2_lane(
+    engine: ncc_protocol.Engine,
+    *,
+    worker: int = 0,
+    mode: ncc_protocol.IssueMode = ncc_protocol.IssueMode.RAW,
+    transfer_bytes: int | None = None,
+    element_format: int | None = None,
+) -> ncc_protocol.Lane:
+    if transfer_bytes is None:
+        transfer_bytes = 256 if engine == ncc_protocol.Engine.NE else 4096
+    if element_format is None:
+        element_format = (
+            FMT_FP16
+            if engine in (ncc_protocol.Engine.CT, ncc_protocol.Engine.NE)
+            else FMT_INT8
+        )
+    return ncc_protocol.Lane(
+        engine=engine,
+        worker=worker,
+        issue_mode=mode,
+        transfer_bytes=transfer_bytes,
+        element_format=element_format,
+    )
+
+
+def v2_case(
+    name: str,
+    lanes: tuple[ncc_protocol.Lane, ...],
+    *,
+    rounds: int,
+    schedule: ncc_protocol.Schedule,
+    seed: int,
+    effect_relation: ncc_protocol.EffectRelation = (
+        ncc_protocol.EffectRelation.NONE
+    ),
+    range_relation: ncc_protocol.RangeRelation = (
+        ncc_protocol.RangeRelation.DISJOINT
+    ),
+    first_operand: ncc_protocol.Operand = ncc_protocol.Operand.AUTO,
+    second_operand: ncc_protocol.Operand = ncc_protocol.Operand.AUTO,
+    wait_kind: ncc_protocol.WaitKind = ncc_protocol.WaitKind.BY_WORKER,
+    flags: int = 0,
+    issue_limit: int = 0,
+) -> GenericProbeCase:
+    worker_mask = 0
+    if wait_kind == ncc_protocol.WaitKind.BY_WORKER:
+        for lane in lanes:
+            worker_mask |= 1 << lane.worker
+    return GenericProbeCase(
+        name,
+        ncc_protocol.Plan(
+            lanes=lanes,
+            rounds=rounds,
+            effect_relation=effect_relation,
+            range_relation=range_relation,
+            schedule=schedule,
+            wait_kind=wait_kind,
+            wait_worker_mask=worker_mask,
+            seed=seed,
+            first_operand=first_operand,
+            second_operand=second_operand,
+            flags=flags,
+            issue_limit=issue_limit,
+        ),
+    )
+
+
+V2_ENGINES = (
+    ncc_protocol.Engine.CT,
+    ncc_protocol.Engine.NE,
+    ncc_protocol.Engine.RDMA,
+    ncc_protocol.Engine.WDMA,
+    ncc_protocol.Engine.TDMA,
+)
+QUALIFICATION_CASES = (
+    GenericProbeCase(
+        "environment-readonly",
+        ncc_protocol.Plan(
+            lanes=(),
+            rounds=0,
+            effect_relation=ncc_protocol.EffectRelation.NONE,
+            range_relation=ncc_protocol.RangeRelation.DISJOINT,
+            schedule=ncc_protocol.Schedule.WINDOW,
+            wait_kind=ncc_protocol.WaitKind.NONE,
+            wait_worker_mask=0,
+            seed=0,
+            command=ncc_protocol.Command.QUALIFY,
+        ),
+    ),
+)
+NO_CARD_PROTOCOL_CASES = (
+    v2_case(
+        "tdma-crt-i8-physical16",
+        (
+            v2_lane(
+                ncc_protocol.Engine.TDMA,
+                mode=ncc_protocol.IssueMode.WRAPPER,
+                transfer_bytes=16,
+                element_format=FMT_INT8,
+            ),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x1001,
+    ),
+)
+V2_SINGLE_CASES = tuple(
+    v2_case(
+        f"{engine.name.lower()}-raw-single",
+        (v2_lane(engine),),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x100 + int(engine),
+    )
+    for engine in V2_ENGINES
+)
+V2_BACKLOG_CASES = tuple(
+    v2_case(
+        f"{engine.name.lower()}-raw-rounds4-window",
+        (v2_lane(engine),),
+        rounds=4,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x200 + int(engine),
+    )
+    for engine in V2_ENGINES
+)
+V2_PAIR_CASES = tuple(
+    v2_case(
+        (
+            f"{first.name.lower()}-{second.name.lower()}-disjoint-"
+            f"r{rounds}-{schedule.name.lower()}"
+        ),
+        (v2_lane(first), v2_lane(second)),
+        rounds=rounds,
+        schedule=schedule,
+        seed=(
+            0x1000
+            + int(first) * 0x100
+            + int(second) * 0x10
+            + rounds
+            + int(schedule)
+        ),
+    )
+    for first, second in itertools.combinations(V2_ENGINES, 2)
+    for rounds in (2, 4)
+    for schedule in (
+        ncc_protocol.Schedule.SERIAL,
+        ncc_protocol.Schedule.WINDOW,
+    )
+)
+V2_PIPELINE_CASES = tuple(
+    v2_case(
+        f"rdma-ct-wdma-disjoint-r{rounds}-{schedule.name.lower()}",
+        (
+            v2_lane(ncc_protocol.Engine.RDMA),
+            v2_lane(ncc_protocol.Engine.CT),
+            v2_lane(ncc_protocol.Engine.WDMA),
+        ),
+        rounds=rounds,
+        schedule=schedule,
+        seed=0x3000 + rounds + int(schedule),
+    )
+    for rounds in (2, 4)
+    for schedule in (
+        ncc_protocol.Schedule.SERIAL,
+        ncc_protocol.Schedule.WINDOW,
+    )
+)
+V2_HAZARD_SPECS = (
+    (
+        ncc_protocol.EffectRelation.RAW,
+        ncc_protocol.Engine.RDMA,
+        ncc_protocol.Engine.CT,
+        ncc_protocol.Operand.WRITE,
+        ncc_protocol.Operand.READ0,
+    ),
+    (
+        ncc_protocol.EffectRelation.WAR,
+        ncc_protocol.Engine.CT,
+        ncc_protocol.Engine.TDMA,
+        ncc_protocol.Operand.READ0,
+        ncc_protocol.Operand.WRITE,
+    ),
+    (
+        ncc_protocol.EffectRelation.WAW,
+        ncc_protocol.Engine.RDMA,
+        ncc_protocol.Engine.TDMA,
+        ncc_protocol.Operand.WRITE,
+        ncc_protocol.Operand.WRITE,
+    ),
+    (
+        ncc_protocol.EffectRelation.RAR,
+        ncc_protocol.Engine.CT,
+        ncc_protocol.Engine.WDMA,
+        ncc_protocol.Operand.READ0,
+        ncc_protocol.Operand.READ0,
+    ),
+)
+V2_HAZARD_CASES = tuple(
+    v2_case(
+        (
+            f"{effect.name.lower()}-{first.name.lower()}-"
+            f"{second.name.lower()}-{relation.name.lower()}-r2-"
+            f"{schedule.name.lower()}"
+        ),
+        (
+            v2_lane(
+                first, transfer_bytes=4096, element_format=FMT_FP16
+            ),
+            v2_lane(
+                second, transfer_bytes=4096, element_format=FMT_FP16
+            ),
+        ),
+        rounds=2,
+        schedule=schedule,
+        seed=(
+            0x4000
+            + int(effect) * 0x100
+            + int(relation) * 0x10
+            + int(schedule)
+        ),
+        effect_relation=effect,
+        range_relation=relation,
+        first_operand=first_operand,
+        second_operand=second_operand,
+    )
+    for effect, first, second, first_operand, second_operand
+    in V2_HAZARD_SPECS
+    for relation in (
+        ncc_protocol.RangeRelation.EXACT,
+        ncc_protocol.RangeRelation.PARTIAL,
+        ncc_protocol.RangeRelation.ADJACENT,
+    )
+    for schedule in (
+        ncc_protocol.Schedule.SERIAL,
+        ncc_protocol.Schedule.WINDOW,
+    )
+)
+V2_HAZARD_PAIR_KEYS = {
+    frozenset((first, second))
+    for _, first, second, _, _ in V2_HAZARD_SPECS
+}
+V2_HAZARD_DISJOINT_CONTROLS = tuple(
+    case
+    for case in V2_PAIR_CASES
+    if case.plan.rounds == 2
+    and frozenset(lane.engine for lane in case.plan.lanes)
+    in V2_HAZARD_PAIR_KEYS
+)
+V2_HAZARD_MANUAL_CASES = (
+    V2_HAZARD_DISJOINT_CONTROLS + V2_HAZARD_CASES
+)
+V2_QUEUE_DEPTHS = {
+    ncc_protocol.Engine.CT: 6,
+    ncc_protocol.Engine.NE: 6,
+    ncc_protocol.Engine.RDMA: 6,
+    ncc_protocol.Engine.WDMA: 6,
+    ncc_protocol.Engine.TDMA: 4,
+}
+V2_SATURATION_CASES = tuple(
+    v2_case(
+        f"{engine.name.lower()}-manual-saturation-d{depth}-plus1",
+        (v2_lane(engine), v2_lane(engine)),
+        rounds=4 if depth == 6 else 3,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x5000 + int(engine),
+        wait_kind=ncc_protocol.WaitKind.NONE,
+        flags=ncc_protocol.MANUAL_SATURATION,
+        issue_limit=depth + 1,
+    )
+    for engine, depth in V2_QUEUE_DEPTHS.items()
+)
+FOCUSED_CASES = V2_SINGLE_CASES + (
+    next(
+        case
+        for case in V2_PAIR_CASES
+        if case.name == "ct-rdma-disjoint-r2-window"
+    ),
+    next(
+        case
+        for case in V2_PIPELINE_CASES
+        if case.name == "rdma-ct-wdma-disjoint-r2-window"
+    ),
+)
+CALIBRATION_CASES = (
+    V2_SINGLE_CASES
+    + V2_BACKLOG_CASES
+    + V2_PAIR_CASES
+    + V2_PIPELINE_CASES
+)
+SUITES = {
+    "qualification": QUALIFICATION_CASES,
+    "focused": FOCUSED_CASES,
+    "calibration": CALIBRATION_CASES,
+    "hazard-manual": V2_HAZARD_MANUAL_CASES,
+    "saturation-manual": V2_SATURATION_CASES,
+}
+CASE_CATALOGS = {
+    "no-card-protocol": NO_CARD_PROTOCOL_CASES,
+    **SUITES,
+}
+
+
+def validate_no_card_protocol_cases() -> None:
+    for case in NO_CARD_PROTOCOL_CASES:
+        plan = case.plan
+        if (
+            len(plan.lanes) != 1
+            or plan.lanes[0].engine != ncc_protocol.Engine.TDMA
+            or plan.lanes[0].issue_mode != ncc_protocol.IssueMode.WRAPPER
+            or plan.lanes[0].element_format != FMT_INT8
+            or plan.lanes[0].transfer_bytes != 16
+        ):
+            raise RuntimeError(
+                f"{case.name}: no-card protocol case lost its typed I8 lane"
+            )
+        plan.request_words()
+    if len(V2_SINGLE_CASES) != 5 or len(V2_BACKLOG_CASES) != 5:
+        raise RuntimeError("generic catalog lost a single/backlog engine case")
+    if len(V2_PAIR_CASES) != 40:
+        raise RuntimeError("generic catalog lost a disjoint pair control")
+    if len(V2_PIPELINE_CASES) != 4:
+        raise RuntimeError("generic catalog lost the three-lane controls")
+    if len(V2_HAZARD_CASES) != 24:
+        raise RuntimeError("generic catalog lost a typed hazard control")
+    if len(V2_SATURATION_CASES) != 5:
+        raise RuntimeError("generic catalog lost a manual saturation case")
+
+
+def write_request(
+    path: pathlib.Path, case: GenericProbeCase, sample: int
+) -> None:
+    payload = bytearray([0xD3] * RESOURCE_BYTES)
+    encoded = struct.pack(
+        f"<{ncc_protocol.REQUEST_WORDS}Q", *case.request_words(sample)
+    )
+    payload[: len(encoded)] = encoded
+    path.write_bytes(payload)
+
+
+def v2_pattern_byte(slot: int, index: int) -> int:
+    return ((slot + 1) * 29 + index * 17) & 0xFF
+
+
+def write_payload(path: pathlib.Path, case: GenericProbeCase) -> None:
+    payload = bytearray([0xCC] * RESOURCE_BYTES)
+    for identity in case.plan.issue_identities():
+        lane = case.plan.lanes[identity.lane]
+        begin = (
+            identity.slot * V2_OUTPUT_SLOT_STRIDE + V2_OUTPUT_GUARD_BYTES
+        )
+        if (
+            case.plan.effect_relation
+            != ncc_protocol.EffectRelation.NONE
+            and identity.lane == 0
+            and lane.engine == ncc_protocol.Engine.RDMA
+        ):
+            value = struct.pack("<H", v2_half(4 + identity.round))
+            payload[begin : begin + lane.transfer_bytes] = value * (
+                lane.transfer_bytes // len(value)
+            )
+        else:
+            payload[begin : begin + lane.transfer_bytes] = bytes(
+                v2_pattern_byte(identity.slot, index)
+                for index in range(lane.transfer_bytes)
+            )
+    path.write_bytes(payload)
+
+
+def v2_half(value: int) -> int:
+    values = (
+        0x0000,
+        0x3C00,
+        0x4000,
+        0x4200,
+        0x4400,
+        0x4500,
+        0x4600,
+        0x4700,
+        0x4800,
+        0x4880,
+        0x4900,
+        0x4980,
+        0x4A00,
+        0x4A80,
+    )
+    return values[value]
+
+
+def v2_hazard_ranges(
+    plan: ncc_protocol.Plan, round_index: int
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    pair_base = V2_SPM_SLOT_BASE + round_index * V2_SPM_SLOT_STRIDE
+    byte_count = plan.lanes[0].transfer_bytes
+    first = (
+        pair_base + V2_HAZARD_SELECTED_OFFSET,
+        pair_base + V2_HAZARD_SELECTED_OFFSET + byte_count,
+    )
+    if plan.range_relation == ncc_protocol.RangeRelation.EXACT:
+        second_begin = first[0]
+    elif plan.range_relation == ncc_protocol.RangeRelation.PARTIAL:
+        second_begin = first[1] - byte_count // 2
+    elif plan.range_relation == ncc_protocol.RangeRelation.ADJACENT:
+        second_begin = first[1]
+    else:
+        raise RuntimeError("hazard plan has no concrete alias relation")
+    return first, (second_begin, second_begin + byte_count)
+
+
+def v2_hazard_source_value(
+    plan: ncc_protocol.Plan,
+    round_index: int,
+    address: int,
+    *,
+    second_read: bool,
+) -> int:
+    first, second = v2_hazard_ranges(plan, round_index)
+    if not (
+        min(first[0], second[0])
+        <= address
+        < max(first[1], second[1])
+    ):
+        raise RuntimeError("hazard oracle address is outside its footprint")
+    value = 2 + round_index
+    if (
+        plan.first_operand == ncc_protocol.Operand.WRITE
+        and first[0] <= address < first[1]
+    ):
+        value = 4 + round_index
+    if (
+        not second_read
+        and plan.second_operand == ncc_protocol.Operand.WRITE
+        and second[0] <= address < second[1]
+    ):
+        value = 8 + round_index
+    return value
+
+
+def v2_hazard_result(
+    identity: ncc_protocol.IssueIdentity,
+    lane: ncc_protocol.Lane,
+    plan: ncc_protocol.Plan,
+) -> bytes:
+    first, second = v2_hazard_ranges(plan, identity.round)
+    selected = first if identity.lane == 0 else second
+    if lane.engine == ncc_protocol.Engine.CT:
+        values = (
+            v2_hazard_source_value(
+                plan,
+                identity.round,
+                selected[0] + index * 2,
+                second_read=identity.lane == 1,
+            )
+            + 1
+            for index in range(lane.transfer_bytes // 2)
+        )
+    elif lane.engine == ncc_protocol.Engine.WDMA:
+        values = (
+            v2_hazard_source_value(
+                plan,
+                identity.round,
+                selected[0] + index * 2,
+                second_read=True,
+            )
+            for index in range(lane.transfer_bytes // 2)
+        )
+    elif lane.engine in (
+        ncc_protocol.Engine.RDMA,
+        ncc_protocol.Engine.TDMA,
+    ):
+        values = (
+            v2_hazard_source_value(
+                plan,
+                identity.round,
+                selected[0] + index * 2,
+                second_read=False,
+            )
+            for index in range(lane.transfer_bytes // 2)
+        )
+    else:
+        raise RuntimeError(
+            f"hazard oracle does not support {lane.engine.name}"
+        )
+    return struct.pack(
+        f"<{lane.transfer_bytes // 2}H",
+        *(v2_half(value) for value in values),
+    )
+
+
+def v2_expected_result(
+    identity: ncc_protocol.IssueIdentity,
+    lane: ncc_protocol.Lane,
+    plan: ncc_protocol.Plan,
+) -> bytes:
+    if plan.effect_relation != ncc_protocol.EffectRelation.NONE:
+        return v2_hazard_result(identity, lane, plan)
+    if lane.engine == ncc_protocol.Engine.CT:
+        return struct.pack(
+            f"<{lane.transfer_bytes // 2}H",
+            *([v2_half(identity.slot + 2)] * (lane.transfer_bytes // 2)),
+        )
+    if lane.engine == ncc_protocol.Engine.NE:
+        return struct.pack(
+            "<16H", *([v2_half(identity.slot + 1)] * 16)
+        )
+    if lane.engine in (
+        ncc_protocol.Engine.RDMA,
+        ncc_protocol.Engine.WDMA,
+    ):
+        return bytes(
+            v2_pattern_byte(identity.slot, index)
+            for index in range(lane.transfer_bytes)
+        )
+    if lane.element_format == FMT_INT8:
+        return bytes([0x31 + identity.slot * 7]) * lane.transfer_bytes
+    if lane.element_format == FMT_FP16:
+        value = struct.pack("<H", v2_half(identity.slot + 1))
+    elif lane.element_format == FMT_BF16:
+        value = struct.pack("<H", 0x3F80)
+    else:
+        raise RuntimeError(f"unsupported TDMA format {lane.element_format}")
+    repeats, remainder = divmod(lane.transfer_bytes, len(value))
+    return value * repeats + value[:remainder]
+
+
+def v2_spm_address(slot: int, offset: int) -> int:
+    return V2_SPM_SLOT_BASE + slot * V2_SPM_SLOT_STRIDE + offset
+
+
+def v2_operand_uses_spm(
+    engine: ncc_protocol.Engine, operand: ncc_protocol.Operand
+) -> bool:
+    if operand == ncc_protocol.Operand.READ1:
+        return engine in (ncc_protocol.Engine.CT, ncc_protocol.Engine.NE)
+    if operand == ncc_protocol.Operand.READ0:
+        return engine not in (
+            ncc_protocol.Engine.RDMA,
+            ncc_protocol.Engine.TDMA,
+        )
+    if operand == ncc_protocol.Operand.WRITE:
+        return engine != ncc_protocol.Engine.WDMA
+    return False
+
+
+def v2_operand_spm_address(
+    plan: ncc_protocol.Plan,
+    identity: ncc_protocol.IssueIdentity,
+    operand: ncc_protocol.Operand,
+) -> int:
+    if plan.effect_relation != ncc_protocol.EffectRelation.NONE:
+        selected = (
+            plan.first_operand
+            if identity.lane == 0
+            else plan.second_operand
+        )
+        if operand == selected:
+            return v2_hazard_ranges(plan, identity.round)[identity.lane][0]
+        engine = plan.lanes[identity.lane].engine
+        if v2_operand_uses_spm(engine, operand):
+            pair_base = (
+                V2_SPM_SLOT_BASE
+                + identity.round * V2_SPM_SLOT_STRIDE
+            )
+            return (
+                pair_base
+                + V2_HAZARD_UNSELECTED_OFFSETS[identity.lane][operand]
+            )
+    offsets = (
+        V2_SPM_READ0_OFFSET,
+        V2_SPM_READ1_OFFSET,
+        V2_SPM_WRITE_OFFSET,
+    )
+    return v2_spm_address(identity.slot, offsets[operand])
+
+
+def validate_observed_ranges_v2(
+    case: GenericProbeCase,
+    plan: ncc_protocol.Plan,
+    observations: tuple[ncc_protocol.IssueObservation, ...],
+) -> None:
+    ddr_bases: dict[str, int] = {}
+
+    def check_spm(
+        observation: ncc_protocol.IssueObservation,
+        name: str,
+        begin: int,
+        byte_count: int,
+    ) -> None:
+        actual = getattr(observation, name)
+        expected = ncc_protocol.InclusiveRange(
+            begin, begin + byte_count - 1
+        )
+        if actual != expected:
+            raise RuntimeError(
+                f"{case.name}: slot {observation.identity.slot} {name} "
+                f"range is {actual}, expected {expected}"
+            )
+
+    def check_ddr(
+        observation: ncc_protocol.IssueObservation,
+        name: str,
+        role: str,
+        offset: int,
+        byte_count: int,
+    ) -> None:
+        actual = getattr(observation, name)
+        if actual is None or actual.end - actual.begin + 1 != byte_count:
+            raise RuntimeError(
+                f"{case.name}: slot {observation.identity.slot} {name} "
+                f"does not cover {byte_count} inclusive DDR bytes"
+            )
+        if actual.begin < offset:
+            raise RuntimeError(
+                f"{case.name}: slot {observation.identity.slot} {name} "
+                "precedes its planned DDR offset"
+            )
+        base = actual.begin - offset
+        previous = ddr_bases.setdefault(role, base)
+        if previous != base:
+            raise RuntimeError(
+                f"{case.name}: slot {observation.identity.slot} {name} "
+                f"does not share the {role} resource base"
+            )
+
+    for observation in observations:
+        identity = observation.identity
+        lane = plan.lanes[identity.lane]
+        expected_flags = (
+            ncc_protocol.PACKET_OBSERVED
+            if lane.issue_mode == ncc_protocol.IssueMode.RAW
+            else 0
+        )
+        read0 = v2_operand_spm_address(
+            plan, identity, ncc_protocol.Operand.READ0
+        )
+        read1 = v2_operand_spm_address(
+            plan, identity, ncc_protocol.Operand.READ1
+        )
+        write = v2_operand_spm_address(
+            plan, identity, ncc_protocol.Operand.WRITE
+        )
+        if lane.engine in (
+            ncc_protocol.Engine.CT,
+            ncc_protocol.Engine.NE,
+        ):
+            expected_flags |= (
+                ncc_protocol.READ0_VALID
+                | ncc_protocol.READ1_VALID
+                | ncc_protocol.WRITE_VALID
+            )
+        elif lane.engine in (
+            ncc_protocol.Engine.RDMA,
+            ncc_protocol.Engine.WDMA,
+        ):
+            expected_flags |= (
+                ncc_protocol.READ0_VALID | ncc_protocol.WRITE_VALID
+            )
+        elif lane.engine == ncc_protocol.Engine.TDMA:
+            expected_flags |= ncc_protocol.WRITE_VALID
+        if observation.flags != expected_flags:
+            raise RuntimeError(
+                f"{case.name}: slot {identity.slot} issue flags are "
+                f"{observation.flags:#x}, expected {expected_flags:#x}"
+            )
+
+        if lane.engine == ncc_protocol.Engine.CT:
+            check_spm(observation, "read0", read0, lane.transfer_bytes)
+            check_spm(observation, "read1", read1, lane.transfer_bytes)
+            check_spm(observation, "write", write, lane.transfer_bytes)
+        elif lane.engine == ncc_protocol.Engine.NE:
+            check_spm(
+                observation, "read0", read0, V2_NE_PHYSICAL_BYTES
+            )
+            check_spm(observation, "read1", read1, V2_NE_RHS_BYTES)
+            check_spm(
+                observation, "write", write, V2_NE_PHYSICAL_BYTES
+            )
+        elif lane.engine == ncc_protocol.Engine.RDMA:
+            check_ddr(
+                observation,
+                "read0",
+                "payload",
+                identity.slot * V2_OUTPUT_SLOT_STRIDE
+                + V2_OUTPUT_GUARD_BYTES,
+                lane.transfer_bytes,
+            )
+            check_spm(observation, "write", write, lane.transfer_bytes)
+        elif lane.engine == ncc_protocol.Engine.WDMA:
+            check_spm(observation, "read0", read0, lane.transfer_bytes)
+            check_ddr(
+                observation,
+                "write",
+                "output",
+                V2_OUTPUT_SLOT_BASE
+                + identity.slot * V2_OUTPUT_SLOT_STRIDE
+                + V2_OUTPUT_GUARD_BYTES,
+                lane.transfer_bytes,
+            )
+        else:
+            check_spm(observation, "write", write, lane.transfer_bytes)
+
+
+def v2_disjoint_ranges(
+    case: GenericProbeCase,
+    plan: ncc_protocol.Plan,
+    observations: tuple[ncc_protocol.IssueObservation, ...],
+) -> None:
+    ranges: list[
+        tuple[ncc_protocol.IssueObservation, int, int, str]
+    ] = []
+    for observation in observations:
+        for name in ("read0", "read1", "write"):
+            value = getattr(observation, name)
+            if value is not None:
+                ranges.append(
+                    (
+                        observation,
+                        value.begin,
+                        value.end + 1,
+                        name,
+                    )
+                )
+    for index, first in enumerate(ranges):
+        for second in ranges[index + 1 :]:
+            if first[0].identity.slot == second[0].identity.slot:
+                continue
+            if first[2] <= second[1] or second[2] <= first[1]:
+                continue
+            allowed_hazard = False
+            if plan.effect_relation != ncc_protocol.EffectRelation.NONE:
+                identities = (first[0].identity, second[0].identity)
+                by_lane = {identity.lane: item for identity, item in zip(
+                    identities, (first, second), strict=True
+                )}
+                if (
+                    set(by_lane) == {0, 1}
+                    and identities[0].round == identities[1].round
+                ):
+                    operand_names = {
+                        ncc_protocol.Operand.READ0: "read0",
+                        ncc_protocol.Operand.READ1: "read1",
+                        ncc_protocol.Operand.WRITE: "write",
+                    }
+                    allowed_hazard = (
+                        by_lane[0][3]
+                        == operand_names[plan.first_operand]
+                        and by_lane[1][3]
+                        == operand_names[plan.second_operand]
+                    )
+            if not allowed_hazard:
+                raise RuntimeError(
+                    f"{case.name}: slots "
+                    f"{first[0].identity.slot}/"
+                    f"{second[0].identity.slot} "
+                    f"{first[3]}/{second[3]} ranges overlap"
+                )
+
+
+def validate_output_payload_v2(
+    output: bytes,
+    case: GenericProbeCase,
+    plan: ncc_protocol.Plan,
+) -> None:
+    mutable = bytearray(output)
+    mutable[:RECORD_BYTES] = bytes([0xA5]) * RECORD_BYTES
+    for identity in plan.issue_identities():
+        lane = plan.lanes[identity.lane]
+        expected = v2_expected_result(identity, lane, plan)
+        begin = (
+            V2_OUTPUT_SLOT_BASE
+            + identity.slot * V2_OUTPUT_SLOT_STRIDE
+            + V2_OUTPUT_GUARD_BYTES
+        )
+        actual = output[begin : begin + len(expected)]
+        if actual != expected:
+            mismatch = next(
+                index
+                for index, (actual_byte, expected_byte) in enumerate(
+                    zip(actual, expected)
+                )
+                if actual_byte != expected_byte
+            )
+            raise RuntimeError(
+                f"{case.name}: slot {identity.slot} differs at byte "
+                f"{mismatch}: expected=0x{expected[mismatch]:02x} "
+                f"actual=0x{actual[mismatch]:02x}"
+            )
+        mutable[begin : begin + len(expected)] = (
+            bytes([0xA5]) * len(expected)
+        )
+    if mutable != bytes([0xA5]) * RESOURCE_BYTES:
+        mismatch = next(
+            index for index, value in enumerate(mutable) if value != 0xA5
+        )
+        raise RuntimeError(
+            f"{case.name}: output changed outside record/result at "
+            f"byte {mismatch}"
+        )
+
+
+def parse_record(
+    path: pathlib.Path, case: GenericProbeCase, sample: int
+) -> dict[str, object]:
+    output = path.read_bytes()
+    if len(output) != RESOURCE_BYTES:
+        raise RuntimeError(
+            f"{case.name}: captured {len(output)} bytes, expected "
+            f"{RESOURCE_BYTES}"
+        )
+    words = struct.unpack_from(
+        f"<{ncc_protocol.RECORD_WORDS}Q", output
+    )
+    plan = case.plan_for_sample(sample)
+    observations = ncc_protocol.validate_record(words, plan)
+    rec = ncc_protocol.REC
+    if (
+        words[rec["OUTPUT_SLOT_BASE"]] != V2_OUTPUT_SLOT_BASE
+        or words[rec["OUTPUT_SLOT_STRIDE"]] != V2_OUTPUT_SLOT_STRIDE
+        or words[rec["OUTPUT_GUARD_BYTES"]] != V2_OUTPUT_GUARD_BYTES
+        or words[rec["RESOURCE_BYTES"]] != RESOURCE_BYTES
+        or words[rec["RECORD_GUARD"]] != V2_RECORD_GUARD
+    ):
+        raise RuntimeError(f"{case.name}: output layout metadata is invalid")
+    if (
+        words[rec["STABLE_BEFORE"]] != PMU_STABLE_MASK
+        or words[rec["STABLE_AFTER"]] != PMU_STABLE_MASK
+        or words[rec["PMU_ENABLE"]] == 0
+    ):
+        raise RuntimeError(f"{case.name}: PMU snapshot is not stable/enabled")
+    serial_modes = [
+        words[rec["SERIAL_MODE"] + worker] & 1 for worker in range(3)
+    ]
+    if serial_modes != [0, 0, 0]:
+        raise RuntimeError(
+            f"{case.name}: parallel queue mode is not active: {serial_modes}"
+        )
+    for observation in observations:
+        if (
+            observation.inter_type & 0xFF != observation.engine
+            or observation.inter_type >> 8 & 0x3 != observation.worker
+        ):
+            raise RuntimeError(
+                f"{case.name}: slot {observation.identity.slot} route is "
+                f"{observation.inter_type:#x}"
+            )
+        lane = plan.lanes[observation.identity.lane]
+        if (
+            lane.issue_mode == ncc_protocol.IssueMode.RAW
+            and observation.execute_rc != 1
+        ):
+            raise RuntimeError(
+                f"{case.name}: raw execute rc is "
+                f"{observation.execute_rc}, expected current value 1"
+            )
+        manual_saturation = plan.flags == ncc_protocol.MANUAL_SATURATION
+        if (
+            (observation.boundary_mismatches and not manual_saturation)
+            or observation.boundary_guard_mismatches
+            or observation.final_mismatches
+            or observation.final_guard_mismatches
+        ):
+            raise RuntimeError(
+                f"{case.name}: slot {observation.identity.slot} oracle "
+                "reported a mismatch"
+            )
+        if manual_saturation and observation.execute_cycles <= 0:
+            raise RuntimeError(
+                f"{case.name}: slot {observation.identity.slot} has no "
+                "TsmExecute cycle evidence"
+            )
+    validate_observed_ranges_v2(case, plan, observations)
+    v2_disjoint_ranges(case, plan, observations)
+
+    expected_counts: dict[tuple[int, int], int] = {}
+    for identity in plan.issue_identities():
+        lane = plan.lanes[identity.lane]
+        key = (lane.worker, int(lane.engine))
+        expected_counts[key] = expected_counts.get(key, 0) + 1
+    instruction_delta: dict[str, int] = {}
+    blocking_delta: dict[str, int] = {}
+    for worker in range(3):
+        for engine in V2_ENGINES:
+            index = worker * 5 + int(engine)
+            count = delta32(
+                words[rec["INSTRUCTION_AFTER"] + index],
+                words[rec["INSTRUCTION_BEFORE"] + index],
+            )
+            blocking = delta32(
+                words[rec["BLOCKING_AFTER"] + index],
+                words[rec["BLOCKING_BEFORE"] + index],
+            )
+            key = f"worker{worker}.{engine.name.lower()}"
+            instruction_delta[key] = count
+            blocking_delta[key] = blocking
+            if count != expected_counts.get((worker, int(engine)), 0):
+                raise RuntimeError(
+                    f"{case.name}: {key} instruction delta is {count}"
+                )
+    execution_delta = {
+        name: delta64(
+            words[rec["PMU64_AFTER"] + index],
+            words[rec["PMU64_BEFORE"] + index],
+        )
+        for index, name in enumerate(PMU64_NAMES)
+    }
+    for worker in {lane.worker for lane in plan.lanes}:
+        if not words[rec["CONTROL_FINAL"] + worker] & 0x100:
+            raise RuntimeError(
+                f"{case.name}: worker {worker} did not reach task_done"
+            )
+    validate_output_payload_v2(output, case, plan)
+    return {
+        "case": case.as_dict(),
+        "sample": sample,
+        "serial_mode": serial_modes,
+        "instruction_delta": instruction_delta,
+        "blocking_delta": blocking_delta,
+        "execution_delta": execution_delta,
+        "issues": [dataclasses.asdict(item) for item in observations],
+    }
+
+
+def hazard_pair_key(plan: ncc_protocol.Plan) -> frozenset[str]:
+    if len(plan.lanes) != 2:
+        raise ValueError("hazard qualification requires two lanes")
+    return frozenset(lane.engine.name.lower() for lane in plan.lanes)
+
+
+def qualified_disjoint_pairs(
+    observations: Iterable[dict[str, object]],
+) -> set[frozenset[str]]:
+    groups: dict[
+        frozenset[str], dict[str, list[dict[str, object]]]
+    ] = {}
+    for observation in observations:
+        case = observation.get("case")
+        execution = observation.get("execution_delta")
+        if not isinstance(case, dict) or not isinstance(execution, dict):
+            continue
+        engines = case.get("engines")
+        if (
+            not isinstance(engines, list)
+            or len(engines) != 2
+            or case.get("effect") != "none"
+            or case.get("range") != "disjoint"
+            or case.get("rounds") != 2
+        ):
+            continue
+        schedule = case.get("schedule")
+        if schedule not in ("serial", "window"):
+            continue
+        groups.setdefault(frozenset(str(item) for item in engines), {}).setdefault(
+            str(schedule), []
+        ).append(execution)
+
+    qualified: set[frozenset[str]] = set()
+    for pair, schedules in groups.items():
+        serial = schedules.get("serial", [])
+        window = schedules.get("window", [])
+        if not serial or not window:
+            continue
+        engines = tuple(sorted(pair))
+        serial_excess = statistics.median(
+            sum(int(sample[engine]) for engine in engines)
+            - int(sample["full"])
+            for sample in serial
+        )
+        window_excess = statistics.median(
+            sum(int(sample[engine]) for engine in engines)
+            - int(sample["full"])
+            for sample in window
+        )
+        if window_excess > max(0, serial_excess):
+            qualified.add(pair)
+    return qualified
+
+
+def validate_hazard_selection(cases: Iterable[GenericProbeCase]) -> None:
+    selected = tuple(cases)
+    hazards = tuple(
+        case
+        for case in selected
+        if case.plan.effect_relation != ncc_protocol.EffectRelation.NONE
+    )
+    if not hazards:
+        return
+    controls = {
+        (
+            hazard_pair_key(case.plan),
+            case.plan.schedule,
+        )
+        for case in selected
+        if case.plan.effect_relation == ncc_protocol.EffectRelation.NONE
+        and len(case.plan.lanes) == 2
+        and case.plan.range_relation
+        == ncc_protocol.RangeRelation.DISJOINT
+        and case.plan.rounds == 2
+    }
+    missing_controls = {
+        (hazard_pair_key(case.plan), schedule)
+        for case in hazards
+        for schedule in (
+            ncc_protocol.Schedule.SERIAL,
+            ncc_protocol.Schedule.WINDOW,
+        )
+        if (hazard_pair_key(case.plan), schedule) not in controls
+    }
+    if missing_controls:
+        missing = sorted(
+            (sorted(pair), schedule.name)
+            for pair, schedule in missing_controls
+        )
+        raise RuntimeError(
+            "hazard selection requires its r2 disjoint serial/window "
+            f"controls: {missing}"
+        )
+
+    groups: dict[
+        tuple[
+            ncc_protocol.EffectRelation,
+            ncc_protocol.RangeRelation,
+            tuple[ncc_protocol.Engine, ...],
+            ncc_protocol.Operand,
+            ncc_protocol.Operand,
+        ],
+        set[ncc_protocol.Schedule],
+    ] = {}
+    for case in hazards:
+        key = (
+            case.plan.effect_relation,
+            case.plan.range_relation,
+            tuple(lane.engine for lane in case.plan.lanes),
+            case.plan.first_operand,
+            case.plan.second_operand,
+        )
+        groups.setdefault(key, set()).add(case.plan.schedule)
+    if any(
+        schedules
+        != {
+            ncc_protocol.Schedule.SERIAL,
+            ncc_protocol.Schedule.WINDOW,
+        }
+        for schedules in groups.values()
+    ):
+        raise RuntimeError(
+            "every hazard relation needs paired serial/window controls"
+        )
+
+
+def execute_cases(
+    args: argparse.Namespace,
+    package: pathlib.Path,
+    resource_ids: tuple[int, int, int],
+    cases: Iterable[GenericProbeCase],
+) -> list[dict[str, object]]:
+    raw = args.work_dir / "raw"
+    raw.mkdir()
+    observations: list[dict[str, object]] = []
+    for case in cases:
+        if (
+            case.plan.effect_relation
+            != ncc_protocol.EffectRelation.NONE
+            and hazard_pair_key(case.plan)
+            not in qualified_disjoint_pairs(observations)
+        ):
+            raise RuntimeError(
+                f"{case.name}: its disjoint engine pair has not passed "
+                "the serial/window overlap qualification"
+            )
+        samples = args.repeat if len(case.plan.lanes) > 1 else 1
+        for sample in range(samples):
+            request = raw / f"{case.name}.{sample}.request.raw"
+            payload = raw / f"{case.name}.{sample}.payload.raw"
+            output = raw / f"{case.name}.{sample}.output.raw"
+            write_request(request, case, sample)
+            write_payload(payload, case)
+            result = run(
+                board_command(
+                    args, package, resource_ids, request, payload, output
+                ),
+                timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
+            )
+            required = {
+                "board_stage: completion",
+                "board_stage: device-to-host",
+                "board_stage: cleanup",
+                "board_execution: true",
+            }
+            if not required.issubset(set(result.stdout.splitlines())):
+                raise RuntimeError(
+                    f"{case.name}: wafer-run omitted lifecycle evidence"
+                )
+            observation = parse_record(output, case, sample)
+            observations.append(observation)
+            print(
+                "ncc_execution_sample: "
+                + json.dumps(observation, sort_keys=True)
+            )
+    return observations
+
+
+def overlap_metrics(
+    engines: tuple[str, ...], execution: dict[str, object]
+) -> dict[str, int | bool]:
+    engine_cycles = sum(int(execution[engine]) for engine in engines)
+    full_cycles = int(execution["full"])
+    pairwise_excess = engine_cycles - full_cycles
+    metrics: dict[str, int | bool] = {
+        "pairwise_excess": pairwise_excess,
+    }
+    if len(engines) == 2:
+        metrics["overlap_observed"] = pairwise_excess > 0
+    elif len(engines) == 3:
+        triple_lower_bound = max(0, engine_cycles - 2 * full_cycles)
+        metrics["simultaneous_triple_lower_bound"] = triple_lower_bound
+        metrics["triple_overlap_observed"] = engine_cycles > 2 * full_cycles
+    else:
+        raise ValueError("overlap metrics require two or three engines")
+    return metrics
+
+
+def validate_overlap_selection(cases: Iterable[GenericProbeCase]) -> None:
+    groups: dict[tuple[tuple[str, ...], int], set[str]] = {}
+    for case in cases:
+        if len(case.plan.lanes) < 2:
+            continue
+        key = (
+            tuple(lane.engine.name.lower() for lane in case.plan.lanes),
+            case.plan.rounds,
+        )
+        groups.setdefault(key, set()).add(case.plan.schedule.name.lower())
+    if not groups:
+        raise RuntimeError(
+            "--require-overlap selected no multi-engine control group"
+        )
+    incomplete = {
+        key: sorted({"serial", "window"} - schedules)
+        for key, schedules in groups.items()
+        if not {"serial", "window"}.issubset(schedules)
+    }
+    if incomplete:
+        raise RuntimeError(
+            "--require-overlap needs paired serial/window controls: "
+            + repr(incomplete)
+        )
+
+
+def report_overlap(
+    observations: list[dict[str, object]], require_overlap: bool
+) -> None:
+    groups: dict[
+        tuple[tuple[str, ...], int],
+        dict[str, list[dict[str, int | bool]]],
+    ] = {}
+    for observation in observations:
+        case = observation["case"]
+        execution = observation["execution_delta"]
+        if (
+            not isinstance(case, dict)
+            or not isinstance(execution, dict)
+            or len(case["engines"]) < 2
+        ):
+            continue
+        engines = tuple(str(engine) for engine in case["engines"])
+        if len(engines) not in (2, 3):
+            continue
+        metrics = overlap_metrics(engines, execution)
+        key = (engines, int(case["rounds"]))
+        groups.setdefault(key, {}).setdefault(
+            str(case["schedule"]), []
+        ).append(metrics)
+    for (engines, rounds), schedules in groups.items():
+        serial = schedules.get("serial", [])
+        window = schedules.get("window", [])
+        if not serial or not window:
+            if require_overlap:
+                raise RuntimeError(
+                    f"{engines} r{rounds} is missing a serial/window control"
+                )
+            continue
+        serial_pairwise = statistics.median(
+            int(item["pairwise_excess"]) for item in serial
+        )
+        window_pairwise = statistics.median(
+            int(item["pairwise_excess"]) for item in window
+        )
+        report = {
+            "engines": engines,
+            "rounds": rounds,
+            "serial_pairwise_excess_median": serial_pairwise,
+            "window_pairwise_excess_median": window_pairwise,
+        }
+        if len(engines) == 2:
+            observed = window_pairwise > max(0, serial_pairwise)
+            report["overlap_observed"] = observed
+        else:
+            serial_triple = statistics.median(
+                int(item["simultaneous_triple_lower_bound"])
+                for item in serial
+            )
+            window_triple = statistics.median(
+                int(item["simultaneous_triple_lower_bound"])
+                for item in window
+            )
+            observed = window_triple > max(0, serial_triple)
+            report.update(
+                {
+                    "serial_simultaneous_triple_lower_bound_median": (
+                        serial_triple
+                    ),
+                    "window_simultaneous_triple_lower_bound_median": (
+                        window_triple
+                    ),
+                    "triple_overlap_observed": observed,
+                }
+            )
+        print("ncc_overlap_decision: " + json.dumps(report, sort_keys=True))
+        if require_overlap and not observed:
+            raise RuntimeError(
+                f"{engines} r{rounds} did not satisfy its overlap criterion"
+            )
+    if require_overlap and not groups:
+        raise RuntimeError("no multi-engine overlap observations were reported")
+
+
+def report_saturation(observations: list[dict[str, object]]) -> None:
+    groups: dict[str, list[dict[str, object]]] = {}
+    for observation in observations:
+        case = observation.get("case")
+        if (
+            isinstance(case, dict)
+            and case.get("flags") == ncc_protocol.MANUAL_SATURATION
+        ):
+            engines = case.get("engines")
+            if not isinstance(engines, list) or len(set(engines)) != 1:
+                raise RuntimeError(
+                    "manual saturation record lost its single-engine type"
+                )
+            groups.setdefault(str(engines[0]), []).append(observation)
+    if not groups:
+        raise RuntimeError("manual saturation suite produced no evidence")
+
+    for engine, samples in groups.items():
+        sample_evidence: list[dict[str, object]] = []
+        for sample in samples:
+            case = sample["case"]
+            issues = sample["issues"]
+            blocking = sample["blocking_delta"]
+            if (
+                not isinstance(case, dict)
+                or not isinstance(issues, list)
+                or not isinstance(blocking, dict)
+            ):
+                raise RuntimeError("manual saturation evidence is malformed")
+            issue_limit = int(case["issue_limit"])
+            depth = issue_limit - 1
+            ordered = sorted(
+                issues,
+                key=lambda issue: (
+                    int(issue["identity"]["round"]),
+                    int(issue["identity"]["lane"]),
+                ),
+            )
+            if len(ordered) != issue_limit:
+                raise RuntimeError(
+                    f"{engine}: manual issue evidence is truncated"
+                )
+            ib_counters = [
+                int(issue["control_after_issue"]) & 0xFF
+                for issue in ordered
+            ]
+            cycles = [int(issue["execute_cycles"]) for issue in ordered]
+            reached_depth = max(ib_counters) >= depth
+            last_call_dominates = cycles[-1] > max(cycles[:-1])
+            sample_evidence.append(
+                {
+                    "sample": sample["sample"],
+                    "depth": depth,
+                    "issue_count": issue_limit,
+                    "ib_counters": ib_counters,
+                    "execute_cycles": cycles,
+                    "blocking_delta": int(
+                        blocking[f"worker0.{engine}"]
+                    ),
+                    "occupancy_reached_depth": reached_depth,
+                    "d_plus_1_call_dominates": last_call_dominates,
+                }
+            )
+        observed = all(
+            bool(item["occupancy_reached_depth"])
+            and bool(item["d_plus_1_call_dominates"])
+            for item in sample_evidence
+        )
+        print(
+            "ncc_saturation_decision: "
+            + json.dumps(
+                {
+                    "engine": engine,
+                    "classification": (
+                        "backpressure-observed"
+                        if observed
+                        else "inconclusive"
+                    ),
+                    "interpretation": (
+                        "instruction count and final oracle prove total "
+                        "depth+1 acceptance; backpressure additionally "
+                        "requires repeated IB>=D and a dominant D+1 call"
+                    ),
+                    "samples": sample_evidence,
+                },
+                sort_keys=True,
+            )
+        )
+
+
+def write_qualification(
+    args: argparse.Namespace,
+    package: pathlib.Path,
+    observations: list[dict[str, object]],
+) -> None:
+    if len(observations) != 1:
+        raise RuntimeError("qualification must produce one snapshot")
+    manifest = json.loads((package / "manifest.json").read_text())
+    modules = manifest.get("modules")
+    if not isinstance(modules, list) or len(modules) != 1:
+        raise RuntimeError("qualification package does not have one probe ELF")
+    record = {
+        "probe_schema": ncc_protocol.SCHEMA,
+        "probe_elf_digest": modules[0].get("digest"),
+        "runtime_library_sha256": str(
+            args.expected_runtime_library_sha256
+        ).lower(),
+        "device_id": args.device_id,
+        "expected_device_name": args.expected_device_name,
+        "expected_pci_bus_id": args.expected_pci_bus_id,
+        "expected_runtime_version": args.expected_runtime_version,
+        "expected_tile_count": args.expected_tile_count,
+        "observation": observations[0],
+    }
+    path = args.work_dir / "qualification.json"
+    path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    print(f"ncc_execution_qualification: {path}")
+
+
+def main() -> int:
+    args = parse_args()
+    args.repo_root = args.repo_root.resolve()
+    if args.list_cases:
+        print(
+            json.dumps(
+                {
+                    name: [case.as_dict() for case in cases]
+                    for name, cases in CASE_CATALOGS.items()
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    args.work_dir = validate_work_dir(args.repo_root, args.work_dir)
+    if args.suite == "build-smoke" and not args.no_card:
+        raise RuntimeError("build-smoke requires --no-card")
+    if args.suite == "build-smoke" and args.selected_cases:
+        raise RuntimeError("--case requires a board execution suite")
+    if args.suite != "build-smoke" and args.no_card:
+        raise RuntimeError("board suites do not accept --no-card")
+    if args.suite != "build-smoke":
+        if os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
+            print(
+                "wafer_board_ncc_execution_probe_test: hardware execution "
+                "is not armed; set WAFER_EXECUTE_HARDWARE_TESTS=1",
+                file=sys.stderr,
+            )
+            return 77
+        validate_board_args(args)
+    else:
+        validate_no_card_protocol_cases()
+
+    selected_cases: tuple[GenericProbeCase, ...] = ()
+    if args.suite != "build-smoke":
+        selected_cases = SUITES[args.suite]
+        if args.selected_cases:
+            by_name = {case.name: case for case in selected_cases}
+            missing = [
+                name for name in args.selected_cases if name not in by_name
+            ]
+            if missing:
+                raise RuntimeError(
+                    f"cases are not in suite {args.suite}: {missing}"
+                )
+            selected_cases = tuple(
+                by_name[name] for name in args.selected_cases
+            )
+    validate_hazard_selection(selected_cases)
+    if args.require_overlap:
+        validate_overlap_selection(selected_cases)
+
+    source = write_source_program(args.work_dir)
+    package = compile_seed_package(args, source)
+    module_path, resource_ids = locate_probe_bindings(package)
+    build_probe(args, package, module_path)
+    verify_no_card(args, package)
+    if args.suite == "build-smoke":
+        return 0
+
+    observations = execute_cases(
+        args, package, resource_ids, selected_cases
+    )
+    if args.suite == "qualification":
+        write_qualification(args, package, observations)
+    if args.suite == "calibration":
+        report_overlap(observations, args.require_overlap)
+    if args.suite == "saturation-manual":
+        report_saturation(observations)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+        print(
+            f"wafer_board_ncc_execution_probe_test: {error}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)

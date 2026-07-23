@@ -99,6 +99,62 @@ module {
             0u);
 }
 
+TEST(ReadyOrderTest, DoesNotMoveInstructionsAcrossArgWritebackBarrier) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  registry.insert<mlir::memref::MemRefDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  %compute_source = memref.alloc()
+      : memref<4xf16, #wafer.memory<spm, tensor>>
+  %compute_dest = memref.alloc()
+      : memref<4xf16, #wafer.memory<spm, tensor>>
+  %arg_input = memref.alloc()
+      : memref<4xf16, #wafer.memory<spm, tensor>>
+  %arg_value = memref.alloc()
+      : memref<1xf16, #wafer.memory<spm, tensor>>
+  %arg_index = memref.alloc()
+      : memref<1xi32, #wafer.memory<spm, tensor>>
+  %dma_dest = memref.alloc()
+      : memref<4xf16, #wafer.memory<spm, tensor>>
+  %ddr = memref.alloc()
+      : memref<4xf16, #wafer.memory<ddr, tensor>>
+  wafer.instr.elementwise #wafer.instr_elementwise_kind<neg>
+      %compute_source into %compute_dest
+      : memref<4xf16, #wafer.memory<spm, tensor>>
+    into memref<4xf16, #wafer.memory<spm, tensor>>
+  wafer.instr.peripheral #wafer.instr_peripheral_kind<argmax>
+      %arg_input into %arg_value, %arg_index {elem_count = 4 : i64}
+      : memref<4xf16, #wafer.memory<spm, tensor>>
+    into memref<1xf16, #wafer.memory<spm, tensor>>,
+         memref<1xi32, #wafer.memory<spm, tensor>>
+  wafer.instr.rdma %ddr to %dma_dest
+      {byte_count = 8 : i64, inner_bytes = 8 : i64,
+       src_strides = array<i64: 0, 0, 0>,
+       src_iterations = array<i64: 1, 1, 1>}
+      : memref<4xf16, #wafer.memory<ddr, tensor>>
+     to memref<4xf16, #wafer.memory<spm, tensor>>
+}
+)mlir", mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  EXPECT_EQ(wafer::scheduleIndependentInstructionsByReadyOrder(
+                module->getOperation()),
+            0u);
+  llvm::SmallVector<mlir::Operation *, 3> ordered;
+  module->walk([&](wafer::WaferInstructionOpInterface op) {
+    ordered.push_back(op.getOperation());
+  });
+  ASSERT_EQ(ordered.size(), 3u);
+  EXPECT_TRUE(mlir::isa<wafer::InstrElementwiseOp>(ordered[0]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrPeripheralOp>(ordered[1]));
+  EXPECT_TRUE(mlir::isa<wafer::InstrRDMAOp>(ordered[2]));
+}
+
 TEST(ReadyOrderTest, RetainsHazardsThroughMemrefViews) {
   mlir::DialectRegistry registry;
   wafer::registerAllDialects(registry);

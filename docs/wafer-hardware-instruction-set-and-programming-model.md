@@ -569,6 +569,32 @@ Stream、mailbox和CSR的具体wrapper/API表放在register-level evidence annex
 | CSR/wait | `TsmExecute`是本tile发射，`TsmWaitfinish`是本tile NCC worker/task local wait；DTE/Stream和multi-tile arrival有独立语义。它们在Wafer中的typed node与binding由`tasks/13`/`tasks/15`拥有，不由本硬件文档命名ABI |
 | NCC parallel mode | `serial_mode=0` 是 NCC worker 内部 queue scheduler 模式：CT、NE、RDMA、WDMA、TDMA 按最终 `inter_type` 进入独立 queue，由硬件基于 packet 地址范围做依赖检测和乱序发射；它不覆盖 Direct DTE、Stream、Kcore 直接 SPM 访问或多 tile barrier |
 
+### Current profile板端校准
+
+Q37在当前安装profile上用强sentinel、完整DMA round-trip、PMU前后差值和16-rank Direct DTE status形成下列
+环境绑定事实；profile身份、证据等级、probe matrix和未闭合项统一记录在
+`docs/tx81-compiler-hardware-calibration.md`，实施顺序才由对应任务计划拥有。下列摘要不把cycle常数提升成
+硬件通则：
+
+- 3个worker的`serial_mode`均只读返回0。worker 0的disjoint RDMA/CT在backlog达到2时可观察到跨queue
+  execution重叠，文档容量6以内的issue/count/output均闭合；单对无重叠不能反证硬件并行。
+- 当前one-shot CRT在两次`TsmExecute`之间包含packet构造、heap和释放开销，短任务需要更深backlog；把packet
+  预构后紧邻发射可显著扩大重叠窗口。这是software issue成本，不是新的IR语义或绕过地址依赖的许可。
+- TDMA register中的stride/iteration descriptor使用byte stride和raw logical trip count，inactive dimension为1，
+  不沿用RDMA/WDMA的`iteration - 1`编码。Memset的I8 whole/128B×32/64B×64以及FP16/BF16 raw与CRT
+  区分向量均全range exact、guard正确；64B×64较慢只是一条current-profile observation，不是通用cost常数。
+- native TDMA `Fmt_BOOL` Memset小range在10秒内未完成；隔离该context后设备仍为idle、无残留进程，因此没有
+  reset或重启。current profile禁止该packet；production只把完整bitpacked BOOL physical footprint
+  canonicalize成TDMA I8 byte fill，logical-valid BOOL仍fail closed。该替代路径需独立板端held-out后才能升级为
+  supported。
+- Kcore普通load读取复用的cacheable DDR input前需要明确的cache invalidate；NCC DMA completion不会自动建立
+  host H2D到Kcore load的coherence。NCC/Kcore、DTE和host-visible publication继续作为不同completion/visibility域。
+- `NCC producer -> local drain -> DTE send`和`DTE receive wait -> NCC consumer`已各自通过16-rank exact正向
+  case；disjoint NCC/DTE的两种安全wait顺序也正确。没有共同DTE/NCC cycle timer，故不从这些case声明overlap，
+  也不允许local drain与DTE wait互相替代。
+- HPGR stream/event属于host command-queue控制面，不进入intra-kernel dependency；历史Atomic Barrier缺少可接受的
+  lifecycle、timeout、错误和版本闭合，不作为当前compiler primitive。
+
 ## 公开 Triton backend 暴露的问题和线索
 
 现有Tx81 Triton backend只作为wrapper调用、参数单位和实现缺陷的证据来源，不能直接决定Wafer compiler的抽象、ABI、layout模型或runtime设计。可观察限制包括：
@@ -576,7 +602,7 @@ Stream、mailbox和CSR的具体wrapper/API表放在register-level evidence annex
 | 问题 | 影响 |
 | --- | --- |
 | SPM allocator 用 logical num elements * elem bytes，不理解 layout padding/tail/bitpack/double buffer | 不能证明padded/bitpacked/double-buffer allocation correctness |
-| `Memset` CRT 忽略真实 strides/iterations | strided memset 不可靠 |
+| 历史Triton `Memset` CRT 忽略真实 strides/iterations | 该实现的strided memset不可靠；不能覆盖Wafer current CRT的checked descriptor合同 |
 | `send.c` hardcoded 16-tile ring，忽略传入 tile id；`recv.c` 未实现 | 不能证明通用DTE collective runtime |
 | `ChannelNorm` dialect 说明写 align_base=64，但 CRT 对 INT8 使用 128 | 文档与实现不一致，不能单独证明dtype alignment |
 | `TsmDataMoveInstr` 是 `TD_Param`，但 CRT 初始化经常写 `I_CGRA` | 不能从初始化值判断队列；要看 wrapper 最终写入的 `inter_type`。多数 `TsmDataMove` 主搬运 op 会改成 `I_TDMA`，但 `Concat`、`UnPool`、`MaskDataMove` 仍走 CT/CGRA |
@@ -595,11 +621,12 @@ Stream、mailbox和CSR的具体wrapper/API表放在register-level evidence annex
 | SPM layout/alignment | NE/Reduce/Pool/UnPool样例使用aligned layout；Cx/NCx C0 tail和256B padding来自helper；未发现通用64KB base legality | `tasks/08`/`tasks/11`决定representation与verifier |
 | semantic/physical layout | 历史材料区分semantic layout与`Tensor/NTensor/Cx/NCx` physical organization；这些历史名字不规定Wafer IR | `tasks/08`拥有layout合同 |
 | dtype | CT non-convert样例使用同dtype输入输出；convert opcode 139..174编码dtype pair；NE/Reduce/Pool另有wrapper字段 | `tasks/10`/`tasks/11`拥有legality |
-| DMA descriptor | wrapper暴露contiguous或三层stride/iteration；stride按byte，wrapper写`iteration - 1` | `tasks/11`/`tasks/14`决定可表达范围和structured failure |
+| DMA descriptor | wrapper暴露contiguous或三层stride/iteration；Wafer public CRT descriptor使用byte stride，vendor RDMA/WDMA setter使用logical element stride并由CRT在边界checked-convert，register存`iteration - 1`。TDMA register使用byte stride和raw logical trip count，inactive为1；GatherScatter各kind的packet构造仍须独立验证 | `tasks/11`/`tasks/14`决定可表达范围和structured failure |
+| TDMA Memset | current profile的I8/F16/BF16 raw与CRT区分向量全range exact；native `Fmt_BOOL` timeout后设备仍idle，故native BOOL排除，physical-footprint BOOL经CRT改写为I8 byte fill | `tasks/10`/`tasks/11`拥有typed fill/domain legality，`tasks/14`拥有唯一target/CRT mapping，板端held-out归`tasks/16` |
 | overlap | RDMA/WDMA/TDMA、CT、NE是不同部件；`serial_mode=0`下busytable依据packet range/bank facts控制ready | `tasks/10`/`tasks/11`拥有issue/effect legality，`tasks/09`拥有lifetime/reuse，`tasks/13`拥有跨transport completion，`tasks/15`只消费committed DAG；性能需`tasks/16`的board calibration |
 | GatherScatter | wrapper只暴露三层stride/iteration，inner size/stride按byte | `tasks/11`/`tasks/14`拥有command legality |
 | DTE | public helper静态证明single-destination call shape和lifecycle调用序列；source read时机、destination visibility及raw multi-destination acceptance仍需vendor/board证据 | `tasks/13`/`tasks/14`拥有binding与command ABI，`tasks/16`拥有hardware gate |
-| bool | 观察到bitpacked表示和8-element byte granularity | `tasks/10`/`tasks/11`决定tail/padding legality |
+| bool | 观察到bitpacked表示和8-element byte granularity；current profile的TDMA native `Fmt_BOOL` Memset不准入，完整physical footprint只能按I8 `0x00/0xff` byte splat实现 | `tasks/10`/`tasks/11`决定tail/padding legality，`tasks/14`决定target mapping |
 | host runtime stubs | 当前snapshot中的`TsmLaunch/TsmLaunchPg/TsmAsyncRun/TsmDeviceSynchronize`与部分discovery是stub/success path | 这些路径没有positive execution/completion证据；provider acceptance由`tasks/15`决定 |
 | vendor CModel seam | 低层header和高层x86 runtime均有CModel接口痕迹，但对应host实现、依赖、headers和resources不完整 | 不能宣称当前可链接、内部使用SystemC、packet-exact或可消费Wafer package；target-model接入和验证由`tasks/17`决定 |
 | ChannelNorm | 历史CRT通过GatherScatter做真实movement | `tasks/08`/`tasks/11`决定是否及如何materialize |
@@ -607,8 +634,8 @@ Stream、mailbox和CSR的具体wrapper/API表放在register-level evidence annex
 
 ## 剩余确认项
 
-以下只保留hardware/instruction/runtime snapshot仍需确认的事实。当前静态资料不能证明provider实际设置或读回
-`serial_mode=0`；对应capability/query与初始化责任只由`tasks/15`定义。
+以下只保留hardware/instruction/runtime snapshot仍需确认的事实。当前板端profile已只读确认`serial_mode=0`，
+但其它provider/profile仍不能从静态模板推断该值；对应capability/query与初始化责任只由`tasks/15`定义。
 
 target CRT command ABI/prototype已由`tasks/14`拥有。本文观察到的full-card/subgroup barrier helper只证明硬件候选机制，不声明`wafer_group_barrier(...)`之类稳定接口；multi-rank barrier仍由`tasks/13`/`tasks/15`的typed completion合同决定。
 
@@ -621,5 +648,7 @@ target CRT command ABI/prototype已由`tasks/14`拥有。本文观察到的full-
 | PMU counter准确性 | DTE/SPM/NCC PMU register和TLV shape已知；split-counter读取顺序不统一，聚合NCC helper的instruction/blocking地址实际硬编码worker 0，user-timer helper只覆盖worker 0/1；counter unit、wrap edge、worker scope和event correlation需实测 | 仅作为`tasks/16` calibration evidence |
 | latency/resource conflict | 独立部件与busytable ready条件有静态证据，LSU/NoC/SPM/DDR具体竞争成本无完整表 | 不足以单独证明legality或cost model，需编号合同和board/profile evidence |
 
-Conv optional/fused字段、TDMA variants、Peripheral bitcount、raw DTE non-unicast、SCALAR/CSR ordinary execution等只作为能力类别和证据缺口保留；是否进入production IR/ABI以及当前完成状态只看编号设计与`tasks/progress.md`。现有证据表明SPM bank conflict和非
+Conv optional/fused字段、除上述Memset外的TDMA variants、Peripheral bitcount、raw DTE non-unicast、
+SCALAR/CSR ordinary execution等只作为能力类别和证据缺口保留；是否进入production IR/ABI以及当前完成状态
+只看编号设计与`tasks/progress.md`。现有证据表明SPM bank conflict和非
 1024-bit内部对齐访问会影响queue ready、stall和性能，但不足以单独推导单条指令legality。

@@ -492,11 +492,13 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
   std::optional<mlir::RankedTensorType> destTensor =
       getLogicalTensorType(getDest().getType());
   if (mlir::failed(
-          verifyShapeAttrMatchesBuffer(getOperation(), getSource().getType(),
-                                       getSourceShapeAttr(), "source_shape")) ||
+          verifyDataShapeAttrMatchesBuffer(
+              getOperation(), getSource().getType(), getSourceShapeAttr(),
+              "source_shape")) ||
       mlir::failed(
-          verifyShapeAttrMatchesBuffer(getOperation(), getDest().getType(),
-                                       getDestShapeAttr(), "dest_shape")))
+          verifyDataShapeAttrMatchesBuffer(
+              getOperation(), getDest().getType(), getDestShapeAttr(),
+              "dest_shape")))
     return mlir::failure();
   if (getPermutationAttr() &&
       mlir::failed(verifyPermutationI64Array(
@@ -519,9 +521,10 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
                                   "kernel_strides", 4,
                                   /*positive=*/true)))
     return mlir::failure();
-  if (mlir::failed(verifyUInt16Array(getOperation(), getPadsAttr(), "pads")) ||
-      mlir::failed(verifyUInt16Array(getOperation(), getKernelStridesAttr(),
-                                     "kernel_strides")))
+  if (mlir::failed(
+          verifyPaddingBounds(getOperation(), getPadsAttr(), "pads")) ||
+      mlir::failed(verifyKernelStrideBounds(
+          getOperation(), getKernelStridesAttr(), "kernel_strides")))
     return mlir::failure();
 
   switch (getKindAttr().getValue()) {

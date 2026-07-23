@@ -811,6 +811,75 @@ module {
       }));
 }
 
+TEST_F(LifetimeAnalysisTest,
+       ArgWritebackBarrierCompletesPriorLocalIssueAndItself) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %ddr = memref.alloc()
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+    %dma_source = memref.alloc()
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %arg_input = memref.alloc()
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %arg_value = memref.alloc()
+        : memref<1xf16, #wafer.memory<spm, tensor>>
+    %arg_index = memref.alloc()
+        : memref<1xi32, #wafer.memory<spm, tensor>>
+    wafer.instr.wdma %dma_source to %ddr
+        {byte_count = 8 : i64, dst_iterations = array<i64: 1, 1, 1>,
+         dst_strides = array<i64: 0, 0, 0>, inner_bytes = 8 : i64}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+       to memref<4xf16, #wafer.memory<ddr, tensor>>
+    wafer.instr.peripheral #wafer.instr_peripheral_kind<argmax>
+        %arg_input into %arg_value, %arg_index {elem_count = 4 : i64}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+      into memref<1xf16, #wafer.memory<spm, tensor>>,
+           memref<1xi32, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  wafer::InstrPeripheralOp barrier;
+  llvm::SmallVector<mlir::memref::AllocOp, 5> allocations;
+  function.walk([&](wafer::InstrPeripheralOp op) { barrier = op; });
+  function.walk([&](mlir::memref::AllocOp op) { allocations.push_back(op); });
+  ASSERT_TRUE(barrier);
+  ASSERT_EQ(allocations.size(), 5u);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 5> demands;
+  size_t ddrDemandIndex = 0;
+  for (auto [index, allocation] : llvm::enumerate(allocations)) {
+    std::optional<wafer::WaferPhysicalTensorInfo> physical =
+        wafer::computeWaferPhysicalTensorInfo(allocation.getType());
+    ASSERT_TRUE(physical);
+    if (wafer::isWaferDDRMemRefType(allocation.getType()))
+      ddrDemandIndex = index;
+    demands.push_back(LifetimeDemand{
+        allocation, physical->physicalBytes, /*alignment=*/1,
+        static_cast<unsigned>(index)});
+  }
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type) ||
+           wafer::isWaferDDRMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  ASSERT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+
+  std::optional<ProgramPoint> barrierPoint = timeline->lookup(barrier);
+  ASSERT_TRUE(barrierPoint);
+  EXPECT_TRUE(llvm::any_of(
+      demands[ddrDemandIndex].segments, [&](const LiveSegment &segment) {
+        return segment.endEvent == barrierPoint->event;
+      }));
+}
+
 TEST_F(LifetimeAnalysisTest, ExternalDDRLocalIssueStillRequiresFence) {
   auto module = parse(R"mlir(
 module {

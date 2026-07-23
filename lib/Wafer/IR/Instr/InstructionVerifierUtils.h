@@ -34,10 +34,29 @@ mlir::LogicalResult verifyUInt32Array(mlir::Operation *op,
 mlir::LogicalResult verifyUInt16Array(mlir::Operation *op,
                                       mlir::DenseI64ArrayAttr values,
                                       llvm::StringRef name);
+mlir::LogicalResult verifyDataShapeBounds(mlir::Operation *op,
+                                          llvm::ArrayRef<int64_t> shape,
+                                          llvm::StringRef name);
 mlir::LogicalResult verifyShapeAttrMatchesBuffer(mlir::Operation *op,
                                                  mlir::Type type,
                                                  mlir::DenseI64ArrayAttr shape,
                                                  llvm::StringRef name);
+mlir::LogicalResult
+verifyDataShapeAttrMatchesBuffer(mlir::Operation *op, mlir::Type type,
+                                 mlir::DenseI64ArrayAttr shape,
+                                 llvm::StringRef name);
+mlir::LogicalResult verifyPaddingBounds(mlir::Operation *op,
+                                        mlir::DenseI64ArrayAttr values,
+                                        llvm::StringRef name);
+mlir::LogicalResult
+verifyKernelStrideBounds(mlir::Operation *op,
+                         mlir::DenseI64ArrayAttr values,
+                         llvm::StringRef name);
+mlir::LogicalResult verifyDilationBounds(mlir::Operation *op,
+                                         mlir::DenseI64ArrayAttr values,
+                                         llvm::StringRef name);
+mlir::LogicalResult verifyGemmKBounds(mlir::Operation *op, int64_t value);
+mlir::LogicalResult verifyGemmBatchBounds(mlir::Operation *op, int64_t value);
 mlir::FailureOr<int64_t>
 computeWindowedOutputDim(mlir::Operation *op, int64_t input, int64_t kernel,
                          int64_t stride, int64_t dilation, int64_t padBefore,

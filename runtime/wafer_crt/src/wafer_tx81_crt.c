@@ -330,6 +330,34 @@ static bool wafer_elem_count_from_bytes(uint32_t bytes, uint32_t format,
   return true;
 }
 
+static bool wafer_memset_span_bytes(uint32_t elem_count, uint32_t format,
+                                    uint32_t *span_bytes) {
+  if (elem_count == 0)
+    return false;
+  switch ((Data_Format)format) {
+  case Fmt_INT8:
+  case Fmt_INT16:
+  case Fmt_FP16:
+  case Fmt_BF16:
+  case Fmt_INT32:
+  case Fmt_FP32:
+  case Fmt_TF32:
+  case Fmt_UINT8:
+  case Fmt_UINT16:
+  case Fmt_UINT32:
+  case Fmt_INT64:
+  case Fmt_UINT64:
+    break;
+  default:
+    return false;
+  }
+  uint32_t elem_bytes = wafer_format_bytes(format);
+  if (elem_count > UINT32_MAX / elem_bytes)
+    return false;
+  *span_bytes = elem_count * elem_bytes;
+  return true;
+}
+
 static uint64_t wafer_shape_elements(Data_Shape shape) {
   return (uint64_t)shape.n * shape.h * shape.w * shape.c;
 }
@@ -451,10 +479,28 @@ void wafer_tx81_gather_scatter(uint64_t src, uint64_t dst, uint32_t byte_count,
 
 void wafer_tx81_memset(uint64_t dst, uint32_t value, uint32_t elem_count,
                        uint32_t format) {
+  uint32_t packet_value = value;
+  uint32_t packet_elem_count = elem_count;
+  uint32_t packet_format = format;
+  if ((Data_Format)format == Fmt_BOOL) {
+    if (elem_count == 0)
+      return;
+    packet_value = value != 0 ? UINT8_MAX : 0;
+    packet_elem_count = elem_count / 8U + (elem_count % 8U != 0);
+    packet_format = Fmt_INT8;
+  }
+  uint32_t span_bytes = 0;
+  if (!wafer_memset_span_bytes(packet_elem_count, packet_format, &span_bytes))
+    return;
   TsmDataMoveInstr instr = {0};
   TsmPeripheral *peripheral = TsmNewPeripheral();
-  St_StrideIteration si = {0};
-  peripheral->Memset(&instr, dst, value, elem_count, &si, wafer_format(format));
+  St_StrideIteration si = {
+      span_bytes, 1,
+      0,          1,
+      0,          1,
+  };
+  peripheral->Memset(&instr, dst, packet_value, packet_elem_count, &si,
+                     wafer_format(packet_format));
   wafer_execute_td(&instr);
   TsmDeletePeripheral(peripheral);
 }

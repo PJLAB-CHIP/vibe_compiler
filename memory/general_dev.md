@@ -19,6 +19,26 @@
   memory/target基础设施、构建依赖，或任务completion gate明确要求时，才运行全量unit/lit/CTest。
   定向验证已经覆盖改动及其直接consumer时，不为“每次提交”机械追加全量长测试；最终结果要明确
   写出实际验证范围和未运行项。
+- 板端版本、ABI、loader symbol和最终ELF反汇编属于环境或相关实现变化时的一次性qualification基线，
+  不能默认塞进每轮workload热路径重复执行。基线未变化时，普通板测只做一次设备空闲/可用性确认、
+  正常launch、完整结果及该case必要的PMU读回；成功后直接继续。只有timeout、device/query error、
+  untrusted terminal、资源未回基线或结果暴露新的低层歧义时，才按需进入反汇编、库/firmware版本和
+  ABI深入诊断，不为每个case机械重跑整套检查。
+- compiler-sensitive硬件probe按profile绑定的证据台账推进：先做no-card/schema gate，再按单engine、
+  serial control、disjoint overlap、alias relation和completion/visibility分层上板。每条结论必须区分
+  static、single-vector observed、calibrated、supported、unknown和excluded；性能观察不能反向扩大semantic
+  legality。packet/register字段只能证明请求和路由，完整非零output、全range readback及双侧guard才是
+  correctness oracle。
+- 板端case一旦timeout立即停止当前批次并隔离该execution context，不在同批次自动重试，也不调用
+  reset、power或firmware替换。随后只做一次设备状态/残留进程检查：设备已回idle时记录case为当前profile
+  excluded或unknown并继续离线修复，无需重启；只有设备确实无响应、状态异常或资源未回基线时才升级恢复动作。
+- queue容量边界的`D+1`不能混入普通calibration：使用typed manual flag、精确issue limit、单engine/worker、
+  独立进程和外层timeout，boundary只允许结果pending而不允许guard损坏，最终drain后count/output/guard必须
+  完整。只有重复IB达到`D`且第`D+1`次issue出现可区分的等待证据时才记backpressure；否则保持
+  `inconclusive`，不能把“总共接受D+1条”写成queue-full返回或并发occupancy合同。
+- PMU parser必须把“counter可读”和“样本有效”分开：split counter先做稳定读取，再验证enable、scope在window
+  内未变化和workload至少触发一个相关delta。enable缺失、scope变化或全部delta为零时样本保持
+  `inconclusive`；PMU结论不能替代payload、guard和completion正确性。
 - `tasks/progress.md` 是任务队列，不是设计合同。确定下一步时先定位队列项，再读该项指向的编号
   设计文档；不要从旧 progress 叙事、单个工具现状或历史 memory 反推出当前架构边界。若
   `memory/` 与编号设计文档或任务队列冲突，同步修 memory。

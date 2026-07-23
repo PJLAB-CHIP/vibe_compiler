@@ -51,18 +51,14 @@ verifyStaticElementCountFitsUInt32(mlir::Operation *op, mlir::Type type,
   return mlir::success();
 }
 
-static mlir::LogicalResult verifyStaticShapeFitsUInt16(mlir::Operation *op,
+static mlir::LogicalResult verifyStaticDataShapeBounds(mlir::Operation *op,
                                                        mlir::Type type,
                                                        llvm::StringRef role) {
   std::optional<mlir::RankedTensorType> tensor = getLogicalTensorType(type);
   if (!tensor || !tensor->hasStaticShape() || tensor->getRank() > 4)
     return op->emitOpError() << "target_geometry_mismatch: " << role
                              << " shape must be static with rank at most 4";
-  for (int64_t dim : tensor->getShape()) {
-    if (mlir::failed(verifyUInt16Value(op, dim, role)))
-      return mlir::failure();
-  }
-  return mlir::success();
+  return verifyDataShapeBounds(op, tensor->getShape(), role);
 }
 
 static mlir::LogicalResult verifyConvShapeRelation(
@@ -841,8 +837,8 @@ mlir::LogicalResult InstrReduceOp::verify() {
   if (mlir::failed(verifyInstructionReduceContract(getOperation(), getInput(),
                                                    getDest(), getDimAttr())))
     return mlir::failure();
-  return verifyStaticShapeFitsUInt16(getOperation(), getInput().getType(),
-                                     "reduce input shape dimension");
+  return verifyStaticDataShapeBounds(getOperation(), getInput().getType(),
+                                     "reduce input shape");
 }
 
 InstrFamily InstrReduceOp::getInstructionFamily() { return InstrFamily::CT; }
@@ -942,7 +938,7 @@ mlir::LogicalResult InstrGemmOp::verify() {
   if (m <= 0 || k <= 0 || n <= 0)
     return emitOpError("m, k and n must be positive");
   if (mlir::failed(verifyUInt16Value(getOperation(), m, "m")) ||
-      mlir::failed(verifyUInt16Value(getOperation(), k, "k")) ||
+      mlir::failed(verifyGemmKBounds(getOperation(), k)) ||
       mlir::failed(verifyUInt16Value(getOperation(), n, "n")))
     return mlir::failure();
 
@@ -982,7 +978,7 @@ mlir::LogicalResult InstrGemmOp::verify() {
                         n))
     return emitOpError("m/k/n attrs must match batched GEMM dimensions");
   if (mlir::failed(
-          verifyUInt16Value(getOperation(), attrs.batchCount, "batch_count")))
+          verifyGemmBatchBounds(getOperation(), attrs.batchCount)))
     return mlir::failure();
   for (size_t index = 0; index < attrs.lhsBatchDims.size(); ++index) {
     int64_t expected = static_cast<int64_t>(index);
@@ -1057,21 +1053,25 @@ mlir::LogicalResult InstrConvOp::verify() {
                                   "dilations", 2, /*positive=*/true)))
     return mlir::failure();
   if (mlir::failed(
-          verifyShapeAttrMatchesBuffer(getOperation(), getInput().getType(),
-                                       getInputShapeAttr(), "input_shape")) ||
+          verifyDataShapeAttrMatchesBuffer(
+              getOperation(), getInput().getType(), getInputShapeAttr(),
+              "input_shape")) ||
       mlir::failed(
           verifyShapeAttrMatchesBuffer(getOperation(), getWeight().getType(),
                                        getWeightShapeAttr(), "weight_shape")) ||
       mlir::failed(
-          verifyShapeAttrMatchesBuffer(getOperation(), getDest().getType(),
-                                       getOutputShapeAttr(), "output_shape")) ||
-      mlir::failed(verifyUInt16Array(getOperation(), getPadsAttr(), "pads")) ||
+          verifyDataShapeAttrMatchesBuffer(
+              getOperation(), getDest().getType(), getOutputShapeAttr(),
+              "output_shape")) ||
       mlir::failed(
-          verifyUInt16Array(getOperation(), getUnpadsAttr(), "unpads")) ||
-      mlir::failed(verifyUInt16Array(getOperation(), getKernelStridesAttr(),
-                                     "kernel_strides")) ||
+          verifyPaddingBounds(getOperation(), getPadsAttr(), "pads")) ||
       mlir::failed(
-          verifyUInt16Array(getOperation(), getDilationsAttr(), "dilations")) ||
+          verifyPaddingBounds(getOperation(), getUnpadsAttr(), "unpads")) ||
+      mlir::failed(verifyKernelStrideBounds(
+          getOperation(), getKernelStridesAttr(), "kernel_strides")) ||
+      mlir::failed(
+          verifyDilationBounds(getOperation(), getDilationsAttr(),
+                               "dilations")) ||
       mlir::failed(verifyConvShapeRelation(
           getOperation(), getKindAttr().getValue(), getInputShapeAttr(),
           getWeightShapeAttr(), getOutputShapeAttr(), getPadsAttr(),
@@ -1109,11 +1109,13 @@ mlir::LogicalResult InstrPoolOp::verify() {
   std::optional<mlir::RankedTensorType> inputTensor =
       getLogicalTensorType(getInput().getType());
   if (mlir::failed(
-          verifyShapeAttrMatchesBuffer(getOperation(), getInput().getType(),
-                                       getSourceShapeAttr(), "source_shape")) ||
-      mlir::failed(verifyUInt16Array(getOperation(), getPadsAttr(), "pads")) ||
-      mlir::failed(verifyUInt16Array(getOperation(), getKernelStridesAttr(),
-                                     "kernel_strides")) ||
+          verifyDataShapeAttrMatchesBuffer(
+              getOperation(), getInput().getType(), getSourceShapeAttr(),
+              "source_shape")) ||
+      mlir::failed(
+          verifyPaddingBounds(getOperation(), getPadsAttr(), "pads")) ||
+      mlir::failed(verifyKernelStrideBounds(
+          getOperation(), getKernelStridesAttr(), "kernel_strides")) ||
       mlir::failed(verifyPoolShapeRelation(getOperation(), getSourceShapeAttr(),
                                            getDestShapeAttr(), getPadsAttr(),
                                            getKernelStridesAttr())))
@@ -1124,7 +1126,7 @@ mlir::LogicalResult InstrPoolOp::verify() {
       return mlir::failure();
     std::optional<mlir::RankedTensorType> destTensor =
         getLogicalTensorType(dest.getType());
-    if (mlir::failed(verifyShapeAttrMatchesBuffer(
+    if (mlir::failed(verifyDataShapeAttrMatchesBuffer(
             getOperation(), dest.getType(), getDestShapeAttr(), "dest_shape")))
       return mlir::failure();
     if (index == 0) {
@@ -1165,13 +1167,15 @@ mlir::LogicalResult InstrUnpoolOp::verify() {
           "unpool input and dest element types must match")))
     return mlir::failure();
   if (mlir::failed(
-          verifyShapeAttrMatchesBuffer(getOperation(), getInput().getType(),
-                                       getSourceShapeAttr(), "source_shape")) ||
+          verifyDataShapeAttrMatchesBuffer(
+              getOperation(), getInput().getType(), getSourceShapeAttr(),
+              "source_shape")) ||
       mlir::failed(
-          verifyShapeAttrMatchesBuffer(getOperation(), getDest().getType(),
-                                       getDestShapeAttr(), "dest_shape")) ||
-      mlir::failed(verifyUInt16Array(getOperation(), getKernelStridesAttr(),
-                                     "kernel_strides")) ||
+          verifyDataShapeAttrMatchesBuffer(
+              getOperation(), getDest().getType(), getDestShapeAttr(),
+              "dest_shape")) ||
+      mlir::failed(verifyKernelStrideBounds(
+          getOperation(), getKernelStridesAttr(), "kernel_strides")) ||
       mlir::failed(verifyUnpoolShapeRelation(
           getOperation(), getSourceShapeAttr(), getDestShapeAttr(),
           getKernelStridesAttr())))

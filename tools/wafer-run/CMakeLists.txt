@@ -1,4 +1,5 @@
 add_executable(wafer-run
+  WaferRunBoardIO.cpp
   wafer-run.cpp
 )
 llvm_update_compile_flags(wafer-run)

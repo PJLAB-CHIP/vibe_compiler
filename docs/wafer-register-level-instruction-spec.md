@@ -209,7 +209,7 @@ SCALAR、DTE 或 CSR 存在同形态 packet issue path。production instruction 
 | --- | --- | --- |
 | `Data_Shape` | `n,h,w,c` | NHWC 语义的 tensor descriptor。它不是全局 layout 设计，只是 packet 字段形态 |
 | `St_Elem_Shape` | `elem_count, unit_elem_count, full_elem_count, full_unit_elem_count` | vector/unit-vector/loop 类 CT 指令的元素计数 |
-| `St_StrideIteration` | `stride0, iteration0, stride1, iteration1, stride2, iteration2` | 3 层 strided loop descriptor；GatherScatter/TDMA使用byte stride，RDMA/WDMA setter使用logical element stride；wrapper会把logical iteration存成`iteration - 1` |
+| `St_StrideIteration` | `stride0, iteration0, stride1, iteration1, stride2, iteration2` | 3层strided loop descriptor；字段单位和iteration编码由具体wrapper决定，不能由结构体本身统一解释。RDMA/WDMA setter使用logical element stride并存`iteration - 1`；TDMA register使用byte stride和raw logical trip count，inactive dimension为1，其中`TsmPeripheral::Memset`已由反汇编和板端区分向量闭合，GatherScatter及其它kind仍须分别证明wrapper构包 |
 
 `Data_Shape` 的 C struct 顺序是 `n,h,w,c`；写入 64-bit `*_tfr`
 register 时则是 C 低位、N 高位：
@@ -753,7 +753,7 @@ RDMA 和 WDMA 共用 `DMA_Param`。读写方向不靠 opcode，而靠 `inter_typ
 | `elem_count` | 最内层连续搬运元素数 | 按 `format` 的元素数，不是 byte 数，除非 wrapper 特别说明 |
 | `format` | 元素 dtype | 映射 `Data_Format` |
 | `stride0/1/2` | logical element stride | RDMA/WDMA setter与LSU register使用元素跨度；Wafer IR/public CRT ABI的byte stride在wrapper边界按format checked-convert。BOOL输入为logical bit stride，setter再pack到byte |
-| `iteration0/1/2` | logical loop count | wrapper 存入硬件字段时使用 `iteration - 1`；logical iteration 为 0 非法 |
+| `iteration0/1/2` | logical loop count | RDMA/WDMA wrapper存入硬件字段时使用`iteration - 1`；logical iteration为0非法 |
 | `src_end/dst_end` | 末字节地址(inclusive) | wrapper从element count/stride乘format width计算末地址；对BOOL先把logical bit count/stride pack为byte。Wafer byte-level descriptor的等价range公式由`tasks/11`拥有 |
 
 反汇编确认的 DMA hardware register offset，相对 NCC worker window base：
@@ -824,8 +824,8 @@ typedef struct TD_Param {
 | shape | `src0_tfr/dst_tfr` | source/destination descriptor |
 | pad/kernel | `pdr/swr` | pad、img2col、pool/unpool 相关 |
 | vector/byte count | `elem_count` / `size` | 普通 DataMove/Peripheral wrapper 的 `elem_count` 是元素数；`TsmDataMove::GatherScatter` 单独使用 `size` 表示 byte count；`TsmPeripheral::Memset` 的 `elem_count` 是元素数但 `St_StrideIteration.stride` 是 byte |
-| source stride | `src_stride0/1/2`, `src_iteration0/1/2` | source 三层 stride/iteration |
-| destination stride | `dst_stride0/1/2`, `dst_iteration0/1/2` | destination 三层 stride/iteration |
+| source stride | `src_stride0/1/2`, `src_iteration0/1/2` | source三层stride/iteration；具体单位和iteration编码由kind-specific wrapper决定 |
+| destination stride | `dst_stride0/1/2`, `dst_iteration0/1/2` | destination三层stride/iteration；具体单位和iteration编码由kind-specific wrapper决定 |
 | range end | `src0_end/src1_end/dst_end` | 地址范围 end；Tsm wrapper/execute 路径会维护。raw command 的验证责任由 `tasks/14` 拥有 |
 | dim | `dims` | concat/reduce-like dimension selector |
 
@@ -842,6 +842,37 @@ typedef struct TD_Param {
 | source stride/iteration 0..2 | `0x5e0..0x600` |
 | destination stride/iteration 0..2 | `0x610..0x630` |
 | `src0_end/src1_end/dst_end` | `0x640/0x650/0x660` |
+
+### Memset descriptor与current profile板端校准
+
+version-matched `TsmPeripheral::Memset`反汇编确认：
+
+- opcode为179，最终`inter_type=I_TDMA`；`src0`承载fill raw value，`dst`是tile-local SPM地址；
+- `elem_count`是当前format的logical element count；
+- `St_StrideIteration`的byte stride和raw logical iteration被直接写入TDMA source descriptor，Memset路径
+  不执行`iteration - 1`转换；unused dimension必须以iteration 1表示，不能清零；
+- 对普通非bitpacked dtype，实际inclusive destination range为
+  `dst + Σ((iteration_i - 1) * stride_i) + elem_count * element_bytes - 1`；
+- canonical contiguous descriptor为
+  `{stride0=physical_bytes, iteration0=1, stride1=0, iteration1=1,
+  stride2=0, iteration2=1}`。
+
+current profile的安全板端区分向量给出以下窄结论；证据等级、probe protocol和其它compiler-sensitive
+维度统一见`docs/tx81-compiler-hardware-calibration.md`：
+
+- I8 whole 4KiB、128B×32和64B×64 raw descriptor都完成全range写入，前后guard不变；production CRT的
+  whole 4KiB与raw path一致。先前“请求4KiB只改变首128B”来自全零iteration descriptor，不是128B
+  最大传输限制；即使`dst_end`显示完整range也不能替代output readback。
+- FP16和BF16各有256B raw/CRT向量精确通过：`elem_count=128`，实际source descriptor为
+  `stride0=256, iteration0=1`，destination range为256B。
+- 同一profile的配对样本中，64B×64比whole 4KiB和128B×32更慢。这只是一条performance observation，
+  不能提升为固定cost、legality约束或其它profile的结论。
+- native `Fmt_BOOL` Memset小range case在10秒内未完成；测试上下文隔离后设备只读状态为idle、无残留进程。
+  当前profile因此禁止发射native `Fmt_BOOL` TDMA packet。Wafer production只对完整
+  `physical_footprint`使用TX81 CRT canonicalization：上游先证明bit count等于完整physical bytes×8，
+  CRT再以ceil-div换算byte count（对准入domain是exact division），把canonical false/true变成I8
+  `0x00/0xff` splat并发射合法TDMA Memset。该映射会覆盖unused tail bits，
+  不能用于logical-valid BOOL fill；板端held-out完成前只算实现合同，不算supported capability。
 
 ### DataMove opcode 和 wrapper
 
@@ -902,7 +933,7 @@ Peripheral 是 CT/CGRA opcode 175..186。wrapper family 为 `TsmPeripheral`。
 | 176 | bitcount | public `TsmPeripheral`中未发现独立wrapper | opcode enum存在但API未暴露；只构成证据缺口，不能由本文授权production ABI |
 | 177 | argmax | `ArgMax(src, elem_count, fmt)` | writeback 结果为 `wb_data0=value`、`wb_data1=uint32 index`；公开 CRT 只 materialize FP16/BF16/FP32/TF32，`elem_count==1` fast path index 为 0 |
 | 178 | argmin | `ArgMin(src, elem_count, fmt)` | 同 argmax，`wb_data0=value`、`wb_data1=uint32 index` |
-| 179 | memset | `Memset(dst, value, elem_count, si, fmt)` | signature 使用 `TsmDataMoveInstr` |
+| 179 | memset | `Memset(dst, value, elem_count, si, fmt)` | signature使用`TsmDataMoveInstr`；Memset的raw logical iteration与current-profile BOOL限制见TDMA小节 |
 | 180 | fp32 factorize | `Factorize(src, dst, dst1, dst2, src_elem_num)` | wrapper 暴露三输出；本附件没有可证明的 production profile |
 | 181 | bit2fp | `Bit2Fp(src, dst, elem_count, fmt)` | header 注释表明 `src0_format` 表示 dst format |
 | 182 | bilinear | `Bilinear(src, dst, src_shape, dst_shape, scale_w, scale_h, fmt)` | 使用 scale 字段 |
@@ -1077,7 +1108,7 @@ Direct DTE module 的 wrapper 暴露下列 lifecycle：
 
 ### `serial_mode=0` 的可观察队列关系
 
-`serial_mode` 是 NCC worker CSR，不是 host 线程或 Kcore 线程开关。CSR offset 为 `GR_CSR_SERIAL_MODE_ADDR = 0x780`；worker CSR window 由 `NCC_ADDR + ((workerid % 3) << 20) + offset` 选中。当前静态证据既没有证明默认值，也没有证明任何 provider 的初始化/读回行为；runtime capability 与初始化合同归 `tasks/15`，board 验证归 `tasks/16`。
+`serial_mode` 是 NCC worker CSR，不是 host 线程或 Kcore 线程开关。CSR offset 为 `GR_CSR_SERIAL_MODE_ADDR = 0x780`；worker CSR window 由 `NCC_ADDR + ((workerid % 3) << 20) + offset` 选中。静态证据不能证明默认值或provider初始化；Q37已在当前安装profile只读确认3个worker均为0，但其它profile仍必须通过`tasks/15` capability/query和`tasks/16` board gate确认，不能从codegen模板推断。
 
 `inter_type` 的低 8 bit 选择 `TsmExecute` 分派目标，bits 8..9 选择 worker。反汇编确认 `TsmExecute` 只接受 `0..4`，然后分派到 `__execute_ct/__execute_ne/__execute_rdma/__execute_wdma/__execute_td`；各 `__execute_*` 再从 packet word0 的 bits 8..9 取 worker，并写入对应 worker 的 NCC register window。当前公开路径因此可观察到同一 worker 的五类分派目标；production resource model 由 `tasks/11` 拥有：
 
@@ -1088,6 +1119,11 @@ Direct DTE module 的 wrapper 暴露下列 lifecycle：
 | RDMA | `I_RDMA` | LSU 内 RDMA component，DDR/外部地址到 SPM |
 | WDMA | `I_WDMA` | LSU 内 WDMA component，SPM 到 DDR/外部地址 |
 | TDMA | `I_TDMA` | LSU 内 TDMA component，SPM local move/mirror/pad/img2col/gatherscatter/memset 等最终写 TDMA packet 的 op |
+
+硬件总览给出的每个 worker queue 容量是：CT/NE/RDMA/WDMA 各 6 条，TDMA/SCALAR 各 4 条。
+这是 NCC instruction queue 容量，不等于 LSU 的实际传输并行度。LSU 另有两个 DMA channel，每个
+channel 可缓存 4 条命令、同一时刻最多执行 1 条 active transfer；compiler 在未校准 mapping 前不能
+把 queue depth 直接当作可同时执行的 DMA 数量。
 
 静态可见的并行与依赖边界：
 
@@ -1100,7 +1136,7 @@ Direct DTE module 的 wrapper 暴露下列 lifecycle：
 | 不受保护的边界 | Kcore 直接 SPM load/store、Direct DTE、Stream/mailbox、host 可见性、多 tile arrival、跨 worker/跨 storage 复用不在普通 NCC queue dependency detection 内；对应 completion DAG 由 `tasks/13`/`tasks/15` 拥有 |
 | 资源竞争 | RDMA/WDMA/TDMA 虽有独立 queue/component，仍共享 LSU、SPM banks、NoC 与 DDR；CT/NE 也访问 SPM。非 1024-bit 内部访问由 RAM_ACC/Ram_acc_phy 对齐/移位，可能增加 stall。静态资料没有给出可靠成本，profile/calibration gate 见 `tasks/16` |
 | allocation 线索 | 历史 Triton 策略出现 `strategy.isParallel ? 64 * 1024 : 256`；静态 wrapper/CSR/runtime reject 路径只证明 256B 上取整和 `0x2F0000` 上限，没有证明 64KB 或 256B 是单 packet base 的硬 legality。正式 allocation/scheduling policy 不由本文定义 |
-| 多 worker | `I_WORKER0/1/2` 与 `TsmWaitfinish_bywork(workerid)` 证明当前 tile 有 3 个 worker CSR/window 和 wait 入口；静态证据不能证明它们是完全独立的物理资源池，resource/lifetime/completion owner 见编号合同 |
+| 多 worker | `I_WORKER0/1/2` 与 `TsmWaitfinish_bywork(workerid)` 证明当前 tile 有 3 个 worker CSR/window 和 wait 入口；底层地址计算对worker id取`%3`，所以production必须先验证`0..2`，不能让非法值静默别名。静态证据不能证明它们是完全独立的物理资源池，resource/lifetime/completion owner见编号合同 |
 | DTE/SCALAR/CSR | `TsmExecute` 对 `I_SCALAR/I_DTE/I_CSR` 返回失败路径；这些类型不纳入 `serial_mode=0` 的五类 NCC queue 模型 |
 
 tx8_deps 反汇编确认：NCC 发射 wrapper 只按 `inter_type[9:8]` 选 worker register window，并把 packet 的 base/end 字段直接写入 CT/NE/RDMA/WDMA/TDMA 参数寄存器；`common_get_spm_addr_by_offset()` 只做 256B 上取整和 `0x2F0000` 上限检查。当前静态证据未发现任何把 SPM operand base 强制为 64KB 对齐的 CSR、register wrapper 或 runtime reject 路径。
@@ -1109,7 +1145,7 @@ tx8_deps 反汇编确认：NCC 发射 wrapper 只按 `inter_type[9:8]` 选 worke
 
 | wrapper | 作用 |
 | --- | --- |
-| `TsmWaitfinish()` | 等待当前 worker/task |
+| `TsmWaitfinish()` | 等待默认worker 0/task |
 | `TsmGetCsrTaskstatus()` | 读取 task status |
 | `TsmGetCsrIbcounter()` | 读取 instruction buffer counter |
 | `TsmGetCsrTaskstatus_bywork(workerid)` | 读取指定 worker task status |
@@ -1125,13 +1161,13 @@ tx8_deps 反汇编确认：NCC 发射 wrapper 只按 `inter_type[9:8]` 选 worke
 | `TsmExecute(void *instr)` | 读取 packet 第 0 byte 的 `inter_type`，只对 `0..4` 分派到对应 `__execute_*`；关键映射包括 `I_CGRA -> __execute_ct`、`I_NEUR -> __execute_ne`、`I_RDMA -> __execute_rdma`、`I_WDMA -> __execute_wdma`、`I_TDMA -> __execute_td`。值大于 4 返回 `1` | 发射/配置当前 tile 的对应 NCC 队列；不是 wait，也不是 barrier；不用于 SCALAR/DTE/CSR |
 | `TsmGetCsrTaskstatus()` | `getreg(0x740)` 后取 `ib_status.TASK_DONE` | 读取当前 worker/task 是否完成 |
 | `TsmGetCsrIbcounter()` | `getreg(0x740)` 后取低 8 bit | 读取 instruction buffer counter |
-| `TsmWaitfinish()` | 循环调用 `TsmGetCsrTaskstatus()`，直到返回 1 | 等待当前 tile 当前 worker/task 队列完成 |
+| `TsmWaitfinish()` | 循环调用 `TsmGetCsrTaskstatus()`，直到返回 1；当前实现读取worker 0 CSR | 等待当前 tile默认worker 0队列完成 |
 | `TsmGetCsrTaskstatus_bywork(workerid)` | `get_ncc_reg(workerid, 0x740)` 后取 `TASK_DONE` | 读取当前 tile 上指定 worker 的 task status |
 | `TsmWaitfinish_bywork(workerid)` | 循环调用 `TsmGetCsrTaskstatus_bywork(workerid)`，直到返回 1 | 等待当前 tile 上指定 worker 完成 |
 
 `0x740` 对应 `GR_CSR_CONTROL_ADDR`，`ib_status` 中 `[7:0]` 是 `IB_COUNTER`，`[8]` 是 `TASK_DONE`。`get_ncc_reg(workerid, offset)` 的地址基于 `NCC_ADDR + ((workerid % 3) << 20) + offset`。
 
-静态反汇编证明：`TsmExecute`是发射/配置入口，`TsmWaitfinish`只观察local drain，不是multi-tile barrier或默认per-op fence。在`serial_mode=0`下，普通NCC指令的RAW/WAW顺序由硬件dependency detection和queue scheduler处理；该路径不能证明NCC queue之外的域已完成。下列名称只示意不同硬件域，不是Wafer ABI：
+静态反汇编证明：`TsmExecute`是发射/配置入口，`TsmWaitfinish`只观察local drain，不是multi-tile barrier或默认per-op fence。在`serial_mode=0`下，普通NCC queue head仍受SPM bank busytable约束，RDMA/WDMA还受DDR range overlap约束；现有静态材料不能证明该检查分别怎样处理RAW、WAR、WAW与read/read，不能把它简化成只由硬件保证RAW/WAW。该路径也不能证明NCC queue之外的域已完成。下列名称只示意不同硬件域，不是Wafer ABI：
 
 ```text
 local_ncc_drain             // TsmWaitfinish / TsmWaitfinish_bywork evidence
@@ -1139,6 +1175,19 @@ multi_tile_arrival          // hrt_barrier / SPM handshake candidates
 ```
 
 静态行为表明，NCC local drain、DTE/Stream completion 与 multi-tile arrival 属于不同硬件域，单独调用 `TsmWaitfinish()` 不能证明后两者完成。它们之间的 typed dependency、join 与 terminal placement 只由 `tasks/13`/`tasks/15` 定义；本文不规定 compiler/runtime 直接调用顺序。
+
+### Current profile execution校准
+
+当前安装profile的板端microcase补充了以下register/wrapper解释，精确样本保留在Q37任务计划：
+
+- worker 0上预构packet后紧邻发射，RDMA/CT backlog 2已出现PMU union重叠；one-shot CRT因packet构造与heap
+  间隔，要到更深backlog才稳定出现。容量6以内的instruction delta与强sentinel DMA round-trip均正确；
+  未执行depth+1，queue-full blocking/return仍未知。
+- 全零input曾让RDMA oracle假通过。非零payload经RDMA/local drain/WDMA写回host完整exact，而Kcore直接读取同一
+  cacheable DDR input会命中旧cache；对读取range执行machine `dcache.ipa`或supervisor `dcache.iva`后恢复exact。
+  这证明cache invalidate、NCC drain和host publication是不同机制。
+- 16-rank正向case确认local drain足以发布NCC产生的DTE source，receiver wait足以让后续NCC消费DTE destination；
+  两者仍不可互换。Direct DTE没有与NCC PMU共用的cycle timer，故此证据只闭合completion/visibility。
 
 ### Stream wrapper
 

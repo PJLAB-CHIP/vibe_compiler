@@ -1832,28 +1832,22 @@ void LocalCompletionTracker::processFence(ProgramPoint fencePoint,
 mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
                                                     LifetimeDataflow &dataflow,
                                                     LifetimeFailure *failure) {
-  auto effectInterface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
   std::optional<ProgramPoint> point = dataflow.timeline.lookup(op);
-  if (!effectInterface || !point)
+  if (!point)
     return mlir::success();
 
+  LocalInstructionCompletion completion =
+      classifyLocalInstructionCompletion(op);
+  if (completion == LocalInstructionCompletion::BarrierAndComplete)
+    processFence(*point, dataflow);
+  if (completion != LocalInstructionCompletion::PendingUntilFence)
+    return mlir::success();
+
+  auto effectInterface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
+  if (!effectInterface)
+    return mlir::success();
   llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
   effectInterface.getEffects(effects);
-  bool hasFence = llvm::any_of(effects, [](const auto &effect) {
-    return llvm::isa<WaferSyncResource>(effect.getResource()) &&
-           llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect());
-  });
-  if (hasFence)
-    processFence(*point, dataflow);
-
-  bool hasLocalIssue = llvm::any_of(effects, [](const auto &effect) {
-    return llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect()) &&
-           llvm::isa<WaferComputeResource, WaferMovementResource>(
-               effect.getResource());
-  });
-  if (!hasLocalIssue)
-    return mlir::success();
-
   llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> trackedEffects;
   llvm::copy_if(
       effects, std::back_inserter(trackedEffects), [&](const auto &effect) {

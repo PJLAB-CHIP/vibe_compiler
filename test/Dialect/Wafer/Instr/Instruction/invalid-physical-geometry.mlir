@@ -282,7 +282,7 @@ module {
       : () -> memref<1x65536xf16, #wafer.memory<spm, cx>>
   %dst = "builtin.unrealized_conversion_cast"()
       : () -> memref<1xf16, #wafer.memory<spm, cx>>
-  // expected-error @below {{reduce input shape dimension must fit uint16_t}}
+  // expected-error @below {{reduce input shape C dimension must be in [1, 16384]}}
   wafer.instr.reduce #wafer.instr_reduce_kind<sum> %input into %dst
       {dim = 0 : i64}
       : memref<1x65536xf16, #wafer.memory<spm, cx>>
@@ -326,7 +326,7 @@ module {
       : () -> memref<1x1x1x65536xf16, #wafer.memory<spm, tensor>>
   %dst = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x1x1x65536xf16, #wafer.memory<spm, tensor>>
-  // expected-error @below {{source_shape entries must fit uint16_t}}
+  // expected-error @below {{source_shape C dimension must be in [1, 16384]}}
   wafer.instr.peripheral #wafer.instr_peripheral_kind<bilinear> %src into %dst
       {elem_count = 65536 : i64,
        source_shape = array<i64: 1, 1, 1, 65536>,
@@ -342,7 +342,7 @@ module {
       : () -> memref<1x1x1x1xf16, #wafer.memory<spm, tensor>>
   %dst = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x1x1x1xf16, #wafer.memory<spm, tensor>>
-  // expected-error @below {{pads entries must fit uint16_t}}
+  // expected-error @below {{pads entries must be in [0, 1023]}}
   wafer.instr.tdma_data_move #wafer.instr_data_move_kind<pad> %src into %dst
       {source_shape = array<i64: 1, 1, 1, 1>,
        dest_shape = array<i64: 1, 1, 1, 1>,
@@ -397,7 +397,7 @@ module {
       : () -> memref<1x1x1x1xf16, #wafer.memory<spm, ncx>>
   %output = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x1x1x65536xf16, #wafer.memory<spm, ncx>>
-  // expected-error @below {{input_shape entries must fit uint16_t}}
+  // expected-error @below {{input_shape C dimension must be in [1, 16384]}}
   wafer.instr.conv #wafer.instr_conv_kind<conv> %input, %weight into %output
       {input_shape = array<i64: 1, 1, 1, 65536>,
        weight_shape = array<i64: 1, 1, 1, 1>,

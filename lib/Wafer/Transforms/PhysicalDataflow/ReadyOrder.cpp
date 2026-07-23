@@ -32,16 +32,9 @@ static bool isReadyOrderOperation(mlir::Operation *operation) {
   return mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp>(operation);
 }
 
-static bool isLocalFence(mlir::Operation *operation) {
-  auto interface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
-  if (!interface)
-    return false;
-  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> effects;
-  interface.getEffects(effects);
-  return llvm::any_of(effects, [](const auto &effect) {
-    return llvm::isa<WaferSyncResource>(effect.getResource()) &&
-           llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect());
-  });
+static bool isLocalCompletionBarrier(mlir::Operation *operation) {
+  return classifyLocalInstructionCompletion(operation) ==
+         LocalInstructionCompletion::BarrierAndComplete;
 }
 
 static void collectBufferAccesses(
@@ -138,7 +131,7 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
 
     if (lastFence)
       addEdge(*lastFence, index);
-    if (isLocalFence(operation)) {
+    if (isLocalCompletionBarrier(operation)) {
       for (unsigned predecessor = 0; predecessor < index; ++predecessor)
         addEdge(predecessor, index);
       lastFence = index;
@@ -279,7 +272,8 @@ static bool canMoveAfter(mlir::Operation *operation,
   for (mlir::Operation *crossed = operation->getNextNode(); crossed;
        crossed = crossed->getNextNode()) {
     if (crossed->hasTrait<mlir::OpTrait::IsTerminator>() ||
-        crossed->getNumRegions() != 0 || isLocalFence(crossed) ||
+        crossed->getNumRegions() != 0 ||
+        isLocalCompletionBarrier(crossed) ||
         !canReorderEffects(operation, crossed))
       return false;
     if (llvm::any_of(crossed->getOperands(), [&](mlir::Value operand) {
@@ -319,7 +313,7 @@ static unsigned scheduleBlock(mlir::Block &block) {
   unsigned moved = 0;
   llvm::SmallVector<llvm::SmallVector<mlir::Operation *, 16>, 4> windows(1);
   for (mlir::Operation &operation : block) {
-    if (isLocalFence(&operation)) {
+    if (isLocalCompletionBarrier(&operation)) {
       windows.emplace_back();
       continue;
     }

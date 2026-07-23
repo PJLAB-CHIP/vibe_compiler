@@ -82,9 +82,9 @@ def Wafer_InstrGatherScatterOp : Wafer_InstrDMAOp<"instr.gather_scatter", [
 
 def Wafer_InstrFillOp : Wafer_InstrOp<"instr.fill", [
     MemoryEffects<[MemWrite<Wafer_SPMResource>,
-                   MemWrite<Wafer_ComputeResource>]>
+                   MemWrite<Wafer_MovementResource>]>
   ]> {
-  let summary = "instruction-level CT scalar fill";
+  let summary = "instruction-level TDMA scalar fill";
   let arguments = (ins
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
     AnyType:$value,
@@ -129,9 +129,9 @@ def Wafer_InstrBit2FpOp : Wafer_InstrOp<"instr.bit2fp", [
 def Wafer_InstrMaskMoveOp : Wafer_InstrOp<"instr.mask_move", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
-                   MemWrite<Wafer_MovementResource>]>
+                   MemWrite<Wafer_ComputeResource>]>
   ]> {
-  let summary = "instruction-level masked SPM data move";
+  let summary = "instruction-level CT masked SPM data move";
   let description = [{
     When the mask element is true/non-zero, copy the corresponding source
     element into dest. When the mask element is false/zero, dest keeps the

@@ -58,7 +58,7 @@ static mlir::LogicalResult verifyPeripheralShapeAttr(mlir::Operation *op,
     return op->emitOpError() << "peripheral kind requires " << name << " attr";
   if (mlir::failed(verifyI64Array(op, attr, name, 4, /*positive=*/true)))
     return mlir::failure();
-  return verifyShapeAttrMatchesBuffer(op, bufferType, attr, name);
+  return verifyDataShapeAttrMatchesBuffer(op, bufferType, attr, name);
 }
 
 static mlir::LogicalResult verifyRequiredUInt32Attr(mlir::Operation *op,

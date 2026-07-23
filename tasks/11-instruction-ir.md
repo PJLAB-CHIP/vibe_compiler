@@ -371,7 +371,7 @@ packet/register与板端证据另由`tasks/16` gate。
 | --- | --- | --- | --- |
 | RDMA / WDMA contiguous 和三层 stride descriptor | `wafer.instr.rdma` / `wafer.instr.wdma` | V0 production target op | target LLVM call emission 必须生成 target CRT call；descriptor 保持 byte-level `inner_bytes`、stride 和 iteration |
 | TDMA `TsmDataMove::GatherScatter` | `wafer.instr.gather_scatter` | V0 production target op | layout materialization、SPM copy 和可静态证明的 slice/transpose/broadcast movement 都展开为一条或多条 gather/scatter；无法压成 V0 descriptor 时结构化失败 |
-| `TsmPeripheral::Memset` / scalar fill | `wafer.instr.fill` | V0 production target op | attr缺省保持v1 Tensor logical-valid count；显式`physical_footprint`从Cx/NCx/BOOL physical encoding checked派生count并覆盖padding/tail/unused bits，其它组合fail closed |
+| `TsmPeripheral::Memset` / scalar fill | `wafer.instr.fill` | V0 production target op | attr缺省保持v1 Tensor logical-valid count；显式`physical_footprint`从Cx/NCx/BOOL physical encoding checked派生count并覆盖padding/tail/unused bits。current TX81只对BOOL full physical footprint开放I8 byte-fill canonicalization，native TDMA `Fmt_BOOL`和logical-valid BOOL均fail closed |
 | CT arithmetic / relation / logic / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | V0 production target op | 覆盖当前 enum 中的 target kind；tile-level map必须先materialize为movement/同形状operand并strip，terminal op不携带`indexing_maps`；scalar immediate、bitpacked bool loop/VuV和rounding mode需显式target variant后才能开放 |
 | semantic select | 无单条 select op | V0 composite lowering | 必须展开为 false-copy `gather_scatter` + `bit2fp` + `mask_move`；`wafer.instr.elementwise <select>` 非法 |
 | CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` + target `dim` code | target-native leaf；Q0.L source-reduce correctness baseline不直接生成 | terminal op不携带init operand/attr；只有compiler-owned target policy对完整value domain证明native identity/order/special-value等价时才可替换有序composite，不得依赖Q22 candidate profile |
@@ -554,7 +554,9 @@ contiguous movement 使用 `inner_bytes == byte_count`，stride 全 0，iteratio
 logical iteration；TX81 RDMA/WDMA `ConfigStrideIteration`则要求inner和stride均为logical element count，
 因此CRT到vendor wrapper边界按dtype同时checked-convert四个byte字段。bitpacked BOOL按`bytes * 8`恢复logical
 bit count并要求乘法结果适配`uint32_t`；其它format要求每个byte字段被target element byte width整除。
-GatherScatter/TDMA仍按各自byte-unit合同处理，不能套用RDMA/WDMA转换。descriptor 表达不了的
+GatherScatter/TDMA仍按各自byte-unit合同处理，不能套用RDMA/WDMA转换。TDMA packet/register中的iteration是
+raw logical trip count，inactive dimension为1；每个kind-specific wrapper仍须证明它如何从IR descriptor构造packet。
+descriptor 表达不了的
 dynamic stride、超过 3 层的静态 stride 或不规则
 非连续访问，R3.2d 必须结构化失败，不能生成名字上合法但下游无法 packetize 的 instruction op。
 compact RDMA/WDMA不携带`src_offset`/`dst_offset`，从operand root与accepted allocation offset形成地址；mapped
@@ -636,7 +638,7 @@ wafer.instr.convert #wafer.instr_convert_kind<src_dst> source into dest attr-dic
 
 | op | operands | result | required attrs |
 | --- | --- | --- | --- |
-| `wafer.instr.fill` | `dest: SPM memref`, `value: scalar` | none | attr缺省为`logical_valid`且只接受Tensor；显式`physical_footprint`按physical elements计数，BOOL按physical bytes×8计数，scalar按原始storage bits写入32-bit ABI字段 |
+| `wafer.instr.fill` | `dest: SPM memref`, `value: scalar` | none | attr缺省为`logical_valid`且只接受Tensor；显式`physical_footprint`按physical elements计数，BOOL按physical bytes×8计数，scalar按原始storage bits写入32-bit ABI字段；current TX81的BOOL只准入`physical_footprint` |
 | `wafer.instr.elementwise` | `inputs: Variadic<SPM memref>`, `dest: SPM memref` | none | `kind: #wafer.instr_elementwise_kind`; operands/dest same-shape；`indexing_maps`不属于terminal op合同 |
 | `wafer.instr.reduce` | `input: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_reduce_kind`, `dim` target reduce code；init operand/`init_value`不属于terminal op合同 |
 | `wafer.instr.convert` | `source: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_convert_kind`; required `zero_point` for INT8->FP kinds, required `rounding_mode` for rounding wrapper kinds, no extra attrs for plain kinds |
@@ -648,8 +650,13 @@ Q32.V已增加typed `#wafer.fill_domain<logical_valid|physical_footprint>`，其
 footprint可整除format element bytes并取商，BOOL按`bytes * 8` checked得到bit count；count、range和target field必须可表示。
 它是建立Cx/NCx padding与bitpacked unused bits `KnownSplat`的唯一full-fill路径；若底层Memset不能按该count完整写入则row非法。
 TargetCall仍消费明确`elem_count`，无需读取planner state；formal/SystemC语义必须证明scalar到canonical raw element的
-映射，无法唯一确定的NaN/-0/conversion tuple不得建立KnownSplat。当前Cx/NCx/BOOL physical-fill尚不是v1 capability；
-该domain已闭合Tile/Instr/TargetCall/model正负纵向；未命中typed约束的组合仍fail closed。
+映射，无法唯一确定的NaN/-0/conversion tuple不得建立KnownSplat。current TX81 profile不把native TDMA
+`Fmt_BOOL`列为format capability：BOOL physical-footprint的Instr/TargetCall仍以bit count和canonical false/true表达，
+target verifier先证明count等于完整physical bytes×8；唯一CRT边界再以ceil-div换算byte count（对已准入domain
+恰为exact division），并改写为`Fmt_INT8`和`0x00/0xff` splat。该改写保持TDMA resource/effect，但会覆盖unused tail bits，所以不能用于
+`logical_valid` BOOL。native packet排除与I8替代路径的板端证据等级见
+`docs/tx81-compiler-hardware-calibration.md`。Cx/NCx的其它physical-fill组合仍按各自profile row决定；
+未命中typed约束的组合fail closed。
 
 `wafer.instr.convert` 作为 instruction op 定义，因为 hardware convert 当前属于 CT instruction family；
 其 `kind` 直接对应 convert wrapper / opcode pair，例如 `fp32_int32`，verifier 从 kind 推导
@@ -1036,7 +1043,11 @@ R3.2d verifier checks only instruction legality:
   strides and positive byte counts；`byte_count == inner_bytes * product(iterations)`，且RDMA/WDMA的
   bitpacked BOOL `inner_bytes`必须不超过`UINT32_MAX / 8`，按`bytes * 8`恢复logical element count；
   非BOOL `inner_bytes`必须能被target data-format element byte width整除。两条路径都必须checked，不能在
-  CRT中溢出乘法或截断除法。
+  CRT中溢出乘法或截断除法。TDMA packet/register保存raw positive iteration，inactive dimension必须为1；
+  不能复用RDMA/WDMA `iteration - 1`编码。
+- current TX81的BOOL fill只接受连续`physical_footprint`，其bit count必须与完整physical byte range精确对应，
+  raw scalar必须是canonical false/true。target/CRT把它改写成TDMA I8 byte splat；native `Fmt_BOOL`和
+  logical-valid BOOL fill均target-illegal。
 - 每条descriptor的`byte_count`只等于该instruction实际搬运bytes并独立满足payload等式；split cover按checked sum与
   compact tensor或statically described slice/broadcast/transpose的logical valid-domain payload做all-and-only核对。
   Cx/NCx padding span由`computeWaferPhysicalTensorInfo(memrefType)`和target policy推导，不复制进任一DMA `byte_count`。

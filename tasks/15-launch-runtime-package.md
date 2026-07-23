@@ -411,6 +411,13 @@ cached disposition读取；poison后禁止的是所有低层TX API和provider si
 lifecycle和诊断flush完成后以`std::_Exit`结束，不执行未资格化的vendor DSO finalizer；`dlopen`后的setup失败同样走该出口，
 不能以`dlclose`补偿。这不替代module/allocation显式cleanup。
 
+`wafer-run`的raw file边界仍按typed `ResourceId`绑定：每个host-visible readable resource必须由`--resource`提供，
+每个writable resource必须至少有`--expected`或`--output`，两者可以为同一resource并存。`--expected`只在完整provider
+result返回后做逐字节比较；`--output`只在all-and-only writable result、byte count及全部requested comparison通过后发布
+原始bytes，不改变provider request或package语义。多个capture先全部写入目标同目录的唯一临时文件，任一staging失败不改动
+任何目标；staging全部成功后才以逐文件atomic rename发布。duplicate ResourceId、package外或read-only capture及多个
+ResourceId指向同一output path均在provider effect前拒绝。
+
 当前TX public runtime存在四种必须分开的closed launch语义，不能把command queue、grid block、tile placement和package rank混为一谈：
 
 - 既有`NoTransportRequirements` multi-launch为完整rank domain创建16个stream，再各自提交一次
@@ -534,6 +541,8 @@ target model均不能替代hardware gate。
 - completion missing、rank mismatch或非`entry_return` terminal；
 - canonical byte-identical roundtrip和parse limits；
 - transaction中compile/link/manifest/write/fsync/rename每个late failure；
+- board raw capture的正向bytes、duplicate/unknown/read-only ResourceId、readable/write-only/read-write组合、
+  `--expected`与`--output`并存、provider duplicate/missing/wrong-size output，以及staging失败不覆盖既有目标；
 - single-tile和16-rank真实compiler bundle直接进入schema-v5 manifest/runtime；
 - target profile、identity、Kernel Runtime ABI和module format逐字段registry mapping及
   `RuntimeEnvironment` exact-match；wrong profile、mixed-rank target facts和module/profile冲突均在provider effect前拒绝；

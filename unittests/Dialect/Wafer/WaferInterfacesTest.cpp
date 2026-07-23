@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
@@ -410,6 +411,19 @@ module {
       mlir::dyn_cast<wafer::WaferInstructionOpInterface>(fill.getOperation());
   ASSERT_TRUE(fillInstruction);
   EXPECT_EQ(fillInstruction.getInstructionFamily(), wafer::InstrFamily::TDMA);
+  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(fill),
+            wafer::LocalInstructionCompletion::PendingUntilFence);
+  effects.clear();
+  mlir::cast<mlir::MemoryEffectOpInterface>(fill.getOperation())
+      .getEffects(effects);
+  EXPECT_TRUE((
+      hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferMovementResource>(
+          effects)));
+  EXPECT_FALSE((
+      hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferComputeResource>(
+          effects)));
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Write>(
+      effects, fill.getDest()));
 
   auto maskMove = findSingleOp<wafer::InstrMaskMoveOp>(*module);
   ASSERT_TRUE(maskMove);
@@ -417,6 +431,23 @@ module {
       maskMove.getOperation());
   ASSERT_TRUE(maskMoveInstruction);
   EXPECT_EQ(maskMoveInstruction.getInstructionFamily(), wafer::InstrFamily::CT);
+  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(maskMove),
+            wafer::LocalInstructionCompletion::PendingUntilFence);
+  effects.clear();
+  mlir::cast<mlir::MemoryEffectOpInterface>(maskMove.getOperation())
+      .getEffects(effects);
+  EXPECT_TRUE((
+      hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferComputeResource>(
+          effects)));
+  EXPECT_FALSE((
+      hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferMovementResource>(
+          effects)));
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Read>(
+      effects, maskMove.getSource()));
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Read>(
+      effects, maskMove.getMask()));
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Write>(
+      effects, maskMove.getDest()));
 
   auto elementwise = findSingleOp<wafer::InstrElementwiseOp>(*module);
   ASSERT_TRUE(elementwise);
@@ -440,6 +471,82 @@ module {
       mlir::dyn_cast<wafer::WaferInstructionOpInterface>(wdma.getOperation());
   ASSERT_TRUE(wdmaInstruction);
   EXPECT_EQ(wdmaInstruction.getInstructionFamily(), wafer::InstrFamily::WDMA);
+}
+
+TEST(WaferInterfacesTest,
+     ArgPeripheralKindsOwnTheOnlyImplicitLocalCompletionBarrier) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  %input = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4xf16, #wafer.memory<spm, tensor>>
+  %value = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1xf16, #wafer.memory<spm, tensor>>
+  %index = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1xi32, #wafer.memory<spm, tensor>>
+  %resized = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4xf16, #wafer.memory<spm, tensor>>
+  wafer.instr.peripheral #wafer.instr_peripheral_kind<argmax>
+      %input into %value, %index {elem_count = 4 : i64}
+      : memref<4xf16, #wafer.memory<spm, tensor>>
+    into memref<1xf16, #wafer.memory<spm, tensor>>,
+         memref<1xi32, #wafer.memory<spm, tensor>>
+  wafer.instr.peripheral #wafer.instr_peripheral_kind<argmin>
+      %input into %value, %index {elem_count = 4 : i64}
+      : memref<4xf16, #wafer.memory<spm, tensor>>
+    into memref<1xf16, #wafer.memory<spm, tensor>>,
+         memref<1xi32, #wafer.memory<spm, tensor>>
+  wafer.instr.peripheral #wafer.instr_peripheral_kind<bilinear>
+      %input into %resized
+      {elem_count = 4 : i64,
+       source_shape = array<i64: 1, 1, 1, 4>,
+       dest_shape = array<i64: 1, 1, 1, 4>}
+      : memref<4xf16, #wafer.memory<spm, tensor>>
+    into memref<4xf16, #wafer.memory<spm, tensor>>
+  wafer.instr.local_fence
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  wafer::InstrPeripheralOp argmax;
+  wafer::InstrPeripheralOp argmin;
+  wafer::InstrPeripheralOp bilinear;
+  module->walk([&](wafer::InstrPeripheralOp op) {
+    switch (op.getKindAttr().getValue()) {
+    case wafer::InstrPeripheralKind::ArgMax:
+      argmax = op;
+      break;
+    case wafer::InstrPeripheralKind::ArgMin:
+      argmin = op;
+      break;
+    case wafer::InstrPeripheralKind::Bilinear:
+      bilinear = op;
+      break;
+    default:
+      break;
+    }
+  });
+  auto fence = findSingleOp<wafer::SyncLocalFenceOp>(*module);
+  ASSERT_TRUE(argmax);
+  ASSERT_TRUE(argmin);
+  ASSERT_TRUE(bilinear);
+  ASSERT_TRUE(fence);
+
+  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(argmax),
+            wafer::LocalInstructionCompletion::BarrierAndComplete);
+  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(argmin),
+            wafer::LocalInstructionCompletion::BarrierAndComplete);
+  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(bilinear),
+            wafer::LocalInstructionCompletion::PendingUntilFence);
+  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(fence),
+            wafer::LocalInstructionCompletion::BarrierAndComplete);
 }
 
 TEST(WaferInterfacesTest, LinalgExtCollectivesExposeLinalgExtStyleContracts) {

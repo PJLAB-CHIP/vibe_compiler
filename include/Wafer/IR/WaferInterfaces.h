@@ -18,6 +18,24 @@ enum class MemLayout : uint32_t;
 enum class MemorySpace : uint32_t;
 enum class InstrFamily : uint32_t;
 
+/// Completion behavior of one local Compute/Movement instruction.
+///
+/// Ordinary issues remain pending until an explicit local fence. A
+/// barrier-and-complete operation drains prior local issues and has completed
+/// its own value effects when the operation returns. `None` covers operations
+/// outside the local NCC completion domain, including Direct DTE.
+enum class LocalInstructionCompletion : uint32_t {
+  None,
+  PendingUntilFence,
+  BarrierAndComplete,
+};
+
+/// Derive the local completion contract from the typed operation and its
+/// standard resource effects. This is the shared scheduling/lifetime boundary;
+/// callers must not infer completion from an operation or symbol name.
+LocalInstructionCompletion
+classifyLocalInstructionCompletion(mlir::Operation *operation);
+
 /// Closed target capabilities consumed while enumerating source
 /// implementations.  These values are compiler inputs, not source-IR attrs or
 /// serialized candidate state.

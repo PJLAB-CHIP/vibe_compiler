@@ -1,0 +1,697 @@
+"""Typed host view of the bounded NCC probe wire protocol.
+
+Numeric protocol values are loaded from ``wafer_ncc_probe_protocol.h`` so the
+device and host do not maintain parallel schema constants.  This module is
+deliberately independent of named workloads: catalogs build typed lane plans,
+while packet construction and golden semantics stay in engine adapters.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import enum
+import pathlib
+import re
+from collections.abc import Iterable, Sequence
+
+
+PROTOCOL_HEADER = (
+    pathlib.Path(__file__).resolve().parent
+    / "Inputs"
+    / "wafer_ncc_probe_protocol.h"
+)
+_HEADER_TEXT = PROTOCOL_HEADER.read_text()
+
+
+def _c_integer(expression: str) -> int:
+    expression = re.sub(r"UINT(?:32|64)_C\(([^)]+)\)", r"\1", expression)
+    expression = re.sub(
+        r"(?<=\d)[uUlL]+\b|(?<=[a-fA-F0-9])[uUlL]+\b", "", expression
+    )
+    if re.fullmatch(r"[\s0-9a-fA-FxX()<>|+-]+", expression) is None:
+        raise RuntimeError(f"unsupported protocol integer: {expression!r}")
+    return int(eval(expression, {"__builtins__": {}}, {}))
+
+
+def _macro(name: str) -> int:
+    match = re.search(
+        rf"^#define\s+{re.escape(name)}\s+(.+?)\s*$",
+        _HEADER_TEXT,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise RuntimeError(f"protocol macro {name} is missing")
+    return _c_integer(match.group(1))
+
+
+def _enumerator(name: str) -> int:
+    match = re.search(
+        rf"^\s*{re.escape(name)}\s*=\s*([^,]+),?\s*$",
+        _HEADER_TEXT,
+        re.MULTILINE,
+    )
+    if match is None:
+        raise RuntimeError(f"protocol enumerator {name} is missing")
+    return _c_integer(match.group(1))
+
+
+REQUEST_MAGIC = _macro("WAFER_NCC_PROTOCOL_REQUEST_MAGIC")
+RECORD_MAGIC = _macro("WAFER_NCC_PROTOCOL_RECORD_MAGIC")
+SCHEMA = _macro("WAFER_NCC_PROTOCOL_SCHEMA")
+REQUEST_WORDS = _macro("WAFER_NCC_PROTOCOL_REQUEST_WORDS")
+RECORD_WORDS = _macro("WAFER_NCC_PROTOCOL_RECORD_WORDS")
+MAX_LANES = _macro("WAFER_NCC_PROTOCOL_MAX_LANES")
+MAX_ROUNDS = _macro("WAFER_NCC_PROTOCOL_MAX_ROUNDS")
+MAX_ISSUES = _macro("WAFER_NCC_PROTOCOL_MAX_ISSUES")
+WORKERS = _macro("WAFER_NCC_PROTOCOL_WORKERS")
+REQUEST_RESERVED_BASE = _macro(
+    "WAFER_NCC_PROTOCOL_REQUEST_RESERVED_BASE"
+)
+REQUEST_RESERVED_WORDS = _macro(
+    "WAFER_NCC_PROTOCOL_REQUEST_RESERVED_WORDS"
+)
+LANE_BASE = _macro("WAFER_NCC_PROTOCOL_LANE_BASE")
+LANE_STRIDE = _macro("WAFER_NCC_PROTOCOL_LANE_STRIDE")
+ISSUE_BASE = _macro("WAFER_NCC_PROTOCOL_ISSUE_BASE")
+ISSUE_STRIDE = _macro("WAFER_NCC_PROTOCOL_ISSUE_STRIDE")
+MANUAL_SATURATION = _enumerator(
+    "WAFER_NCC_REQUEST_MANUAL_SATURATION"
+)
+
+
+def _typed_enum(
+    class_name: str, prefix: str, members: Iterable[str]
+) -> type[enum.IntEnum]:
+    return enum.IntEnum(
+        class_name,
+        {
+            member: _enumerator(f"{prefix}{member}")
+            for member in members
+        },
+    )
+
+
+Command = _typed_enum(
+    "Command", "WAFER_NCC_COMMAND_", ("QUALIFY", "EXECUTE")
+)
+Engine = _typed_enum(
+    "Engine",
+    "WAFER_NCC_ENGINE_",
+    ("CT", "NE", "RDMA", "WDMA", "TDMA", "NONE"),
+)
+EffectRelation = _typed_enum(
+    "EffectRelation",
+    "WAFER_NCC_EFFECT_",
+    ("NONE", "RAW", "WAR", "WAW", "RAR"),
+)
+Operand = _typed_enum(
+    "Operand",
+    "WAFER_NCC_OPERAND_",
+    ("READ0", "READ1", "WRITE", "AUTO"),
+)
+RangeRelation = _typed_enum(
+    "RangeRelation",
+    "WAFER_NCC_RANGE_",
+    ("DISJOINT", "EXACT", "PARTIAL", "ADJACENT", "STRIDED_ENVELOPE"),
+)
+Schedule = _typed_enum(
+    "Schedule", "WAFER_NCC_SCHEDULE_", ("WINDOW", "SERIAL")
+)
+WaitKind = _typed_enum(
+    "WaitKind",
+    "WAFER_NCC_WAIT_",
+    ("NONE", "BY_WORKER", "DEFAULT", "LOCAL_FENCE"),
+)
+IssueMode = _typed_enum(
+    "IssueMode", "WAFER_NCC_ISSUE_", ("RAW", "WRAPPER")
+)
+LayoutKind = _typed_enum(
+    "LayoutKind",
+    "WAFER_NCC_LAYOUT_",
+    ("CONTIGUOUS", "INNER_STRIDED"),
+)
+Status = _typed_enum(
+    "Status",
+    "WAFER_NCC_STATUS_",
+    (
+        "OK",
+        "BAD_REQUEST",
+        "MISSING_ADAPTER",
+        "UNSUPPORTED_COMBINATION",
+        "UNSAFE_WINDOW",
+        "SEED_FAILED",
+        "PREPARE_FAILED",
+        "ISSUE_FAILED",
+        "OBSERVATION_FAILED",
+        "WAIT_FAILED",
+        "DRAIN_FAILED",
+    ),
+)
+
+
+def _word(prefix: str, name: str) -> int:
+    return _enumerator(f"{prefix}{name}")
+
+
+REQ = {
+    name: _word("WAFER_NCC_REQ_", name)
+    for name in (
+        "MAGIC",
+        "SCHEMA_AND_WORDS",
+        "COMMAND",
+        "LANE_COUNT",
+        "ROUNDS",
+        "EFFECT_RELATION",
+        "RANGE_RELATION",
+        "SCHEDULE",
+        "WAIT_KIND",
+        "WAIT_WORKER_MASK",
+        "SEED",
+        "SAMPLE",
+        "FLAGS",
+        "FIRST_OPERAND",
+        "SECOND_OPERAND",
+        "ISSUE_LIMIT",
+    )
+}
+LANE = {
+    name: _word("WAFER_NCC_LANE_", name)
+    for name in (
+        "ENGINE",
+        "WORKER",
+        "ISSUE_MODE",
+        "TRANSFER_BYTES",
+        "ELEMENT_FORMAT",
+        "LAYOUT_KIND",
+        "LAYOUT_INNER_BYTES",
+        "FLAGS",
+    )
+}
+REC = {
+    name: _word("WAFER_NCC_REC_", name)
+    for name in (
+        "MAGIC",
+        "SCHEMA_AND_WORDS",
+        "STATUS",
+        "FLAGS",
+        "COMMAND",
+        "LANE_COUNT",
+        "ROUNDS",
+        "ISSUE_COUNT",
+        "EFFECT_RELATION",
+        "RANGE_RELATION",
+        "SCHEDULE",
+        "WAIT_KIND",
+        "WAIT_WORKER_MASK",
+        "SAFETY_WORKER_MASK",
+        "SEED",
+        "SAMPLE",
+        "BOUNDARY_MISMATCHES",
+        "FINAL_MISMATCHES",
+        "BOUNDARY_GUARD_MISMATCHES",
+        "FINAL_GUARD_MISMATCHES",
+        "STABLE_BEFORE",
+        "STABLE_AFTER",
+        "FIRST_OPERAND",
+        "SECOND_OPERAND",
+        "CONTROL_BEFORE",
+        "CONTROL_BOUNDARY",
+        "CONTROL_FINAL",
+        "PMU64_BEFORE",
+        "PMU64_AFTER",
+        "INSTRUCTION_BEFORE",
+        "INSTRUCTION_AFTER",
+        "BLOCKING_BEFORE",
+        "BLOCKING_AFTER",
+        "PMU_ENABLE",
+        "SERIAL_MODE",
+        "OUTPUT_SLOT_BASE",
+        "OUTPUT_SLOT_STRIDE",
+        "OUTPUT_GUARD_BYTES",
+        "RESOURCE_BYTES",
+        "ISSUE_LIMIT",
+        "RECORD_GUARD",
+    )
+}
+ISSUE = {
+    name: _word("WAFER_NCC_ISSUE_", name)
+    for name in (
+        "ORDINAL",
+        "LANE",
+        "ROUND",
+        "SLOT",
+        "ENGINE",
+        "WORKER",
+        "TAG",
+        "EXECUTE_RC",
+        "INTER_TYPE",
+        "READ0_BEGIN",
+        "READ0_END",
+        "READ1_BEGIN",
+        "READ1_END",
+        "WRITE_BEGIN",
+        "WRITE_END",
+        "BOUNDARY_MISMATCHES",
+        "BOUNDARY_GUARD_MISMATCHES",
+        "FINAL_MISMATCHES",
+        "FINAL_GUARD_MISMATCHES",
+        "FLAGS",
+        "CONTROL_AFTER_ISSUE",
+        "EXECUTE_CYCLES",
+    )
+}
+
+READ0_VALID = _enumerator("WAFER_NCC_ISSUE_READ0_VALID")
+READ1_VALID = _enumerator("WAFER_NCC_ISSUE_READ1_VALID")
+WRITE_VALID = _enumerator("WAFER_NCC_ISSUE_WRITE_VALID")
+PACKET_OBSERVED = _enumerator("WAFER_NCC_ISSUE_PACKET_OBSERVED")
+ALL_PHASE_FLAGS = sum(
+    _enumerator(name)
+    for name in (
+        "WAFER_NCC_RECORD_BEFORE_CAPTURED",
+        "WAFER_NCC_RECORD_REQUESTED_WAIT_DONE",
+        "WAFER_NCC_RECORD_BOUNDARY_CAPTURED",
+        "WAFER_NCC_RECORD_BOUNDARY_ORACLE_DONE",
+        "WAFER_NCC_RECORD_SAFETY_DRAIN_DONE",
+        "WAFER_NCC_RECORD_FINAL_CAPTURED",
+        "WAFER_NCC_RECORD_FINAL_ORACLE_DONE",
+    )
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class Lane:
+    engine: Engine
+    worker: int
+    issue_mode: IssueMode
+    transfer_bytes: int
+    element_format: int
+    layout_kind: LayoutKind = LayoutKind.CONTIGUOUS
+    layout_inner_bytes: int = 0
+    flags: int = 0
+
+    def validate(self) -> None:
+        if self.engine == Engine.NONE:
+            raise ValueError("an active lane cannot use Engine.NONE")
+        if not 0 <= self.worker < WORKERS:
+            raise ValueError(f"worker must be in [0, {WORKERS})")
+        if self.transfer_bytes <= 0:
+            raise ValueError("transfer_bytes must be positive")
+        if self.flags != 0:
+            raise ValueError("unknown lane flags are not safe")
+        if self.layout_kind == LayoutKind.CONTIGUOUS:
+            if self.layout_inner_bytes != 0:
+                raise ValueError("contiguous lanes have no inner byte span")
+        elif (
+            self.layout_inner_bytes <= 0
+            or self.layout_inner_bytes > self.transfer_bytes
+            or self.transfer_bytes % self.layout_inner_bytes
+        ):
+            raise ValueError("inner-strided layout must exactly tile the span")
+
+
+@dataclasses.dataclass(frozen=True)
+class IssueIdentity:
+    ordinal: int
+    lane: int
+    round: int
+    slot: int
+    tag: int
+
+
+@dataclasses.dataclass(frozen=True)
+class Plan:
+    lanes: tuple[Lane, ...]
+    rounds: int
+    effect_relation: EffectRelation
+    range_relation: RangeRelation
+    schedule: Schedule
+    wait_kind: WaitKind
+    wait_worker_mask: int
+    seed: int
+    first_operand: Operand = Operand.AUTO
+    second_operand: Operand = Operand.AUTO
+    issue_limit: int = 0
+    sample: int = 0
+    command: Command = Command.EXECUTE
+    flags: int = 0
+
+    def validate(self) -> None:
+        if self.command == Command.QUALIFY:
+            if (
+                self.lanes
+                or self.rounds != 0
+                or self.effect_relation != EffectRelation.NONE
+                or self.range_relation != RangeRelation.DISJOINT
+                or self.schedule != Schedule.WINDOW
+                or self.wait_kind != WaitKind.NONE
+                or self.wait_worker_mask
+                or self.first_operand != Operand.AUTO
+                or self.second_operand != Operand.AUTO
+                or self.issue_limit
+                or self.flags
+            ):
+                raise ValueError("qualification must not carry an execution plan")
+            return
+        if not 1 <= len(self.lanes) <= MAX_LANES:
+            raise ValueError(f"execute plans require 1..{MAX_LANES} lanes")
+        if not 1 <= self.rounds <= MAX_ROUNDS:
+            raise ValueError(f"rounds must be in [1, {MAX_ROUNDS}]")
+        for lane in self.lanes:
+            lane.validate()
+        if len(self.lanes) == 1 and (
+            self.effect_relation != EffectRelation.NONE
+            or self.range_relation != RangeRelation.DISJOINT
+        ):
+            raise ValueError("single-lane plans do not have a cross-lane relation")
+        if len(self.lanes) == 3 and (
+            self.effect_relation != EffectRelation.NONE
+            or self.range_relation != RangeRelation.DISJOINT
+        ):
+            raise ValueError("three-lane plans are disjoint windows, not hazards")
+        if self.effect_relation == EffectRelation.NONE:
+            if (
+                self.first_operand != Operand.AUTO
+                or self.second_operand != Operand.AUTO
+            ):
+                raise ValueError(
+                    "non-hazard plans cannot select hazard operands"
+                )
+        else:
+            if len(self.lanes) != 2:
+                raise ValueError("hazard plans require exactly two lanes")
+            selected = (self.first_operand, self.second_operand)
+            if any(
+                operand not in (Operand.READ0, Operand.READ1, Operand.WRITE)
+                for operand in selected
+            ):
+                raise ValueError(
+                    "hazard plans require explicit operand selections"
+                )
+            reads = (Operand.READ0, Operand.READ1)
+            expected = {
+                EffectRelation.RAW: (Operand.WRITE, reads),
+                EffectRelation.WAR: (reads, Operand.WRITE),
+                EffectRelation.WAW: (Operand.WRITE, Operand.WRITE),
+                EffectRelation.RAR: (reads, reads),
+            }[self.effect_relation]
+            if (
+                (
+                    self.first_operand not in expected[0]
+                    if isinstance(expected[0], tuple)
+                    else self.first_operand != expected[0]
+                )
+                or (
+                    self.second_operand not in expected[1]
+                    if isinstance(expected[1], tuple)
+                    else self.second_operand != expected[1]
+                )
+            ):
+                raise ValueError(
+                    "selected operands do not implement the effect relation"
+                )
+            engine_operands = {
+                Engine.CT: (Operand.READ0, Operand.READ1, Operand.WRITE),
+                Engine.NE: (Operand.READ0, Operand.READ1, Operand.WRITE),
+                Engine.RDMA: (Operand.READ0, Operand.WRITE),
+                Engine.WDMA: (Operand.READ0, Operand.WRITE),
+                Engine.TDMA: (Operand.WRITE,),
+            }
+            if (
+                self.first_operand not in engine_operands[self.lanes[0].engine]
+                or self.second_operand
+                not in engine_operands[self.lanes[1].engine]
+            ):
+                raise ValueError(
+                    "selected operand is not exposed by its engine"
+                )
+        if (
+            self.range_relation == RangeRelation.STRIDED_ENVELOPE
+            and not any(
+                lane.layout_kind == LayoutKind.INNER_STRIDED
+                for lane in self.lanes
+            )
+        ):
+            raise ValueError("strided-envelope relation requires a strided lane")
+        participants = 0
+        for lane in self.lanes:
+            participants |= 1 << lane.worker
+        if self.wait_kind == WaitKind.BY_WORKER:
+            if not self.wait_worker_mask:
+                raise ValueError("worker wait requires an explicit nonzero mask")
+            if self.wait_worker_mask & ~participants:
+                raise ValueError("wait mask contains a non-participant worker")
+        elif self.wait_worker_mask:
+            raise ValueError("only BY_WORKER consumes a worker mask")
+        if self.flags not in (0, MANUAL_SATURATION):
+            raise ValueError("unknown plan flags are not safe")
+        if self.flags == MANUAL_SATURATION:
+            queue_depths = {
+                Engine.CT: 6,
+                Engine.NE: 6,
+                Engine.RDMA: 6,
+                Engine.WDMA: 6,
+                Engine.TDMA: 4,
+            }
+            if (
+                len(self.lanes) != 2
+                or self.lanes[0] != self.lanes[1]
+                or self.lanes[0].worker != 0
+                or self.lanes[0].issue_mode != IssueMode.RAW
+                or self.effect_relation != EffectRelation.NONE
+                or self.range_relation != RangeRelation.DISJOINT
+                or self.schedule != Schedule.WINDOW
+                or self.wait_kind != WaitKind.NONE
+                or self.wait_worker_mask
+                or self.issue_limit
+                != queue_depths[self.lanes[0].engine] + 1
+                or self.issue_limit > len(self.lanes) * self.rounds
+                or self.issue_limit
+                <= (len(self.lanes) - 1) * self.rounds
+            ):
+                raise ValueError(
+                    "manual saturation must issue exactly depth+1 raw "
+                    "entries on one worker/engine without a boundary wait"
+                )
+        elif self.issue_limit:
+            raise ValueError("only manual saturation consumes issue_limit")
+
+    def issue_identities(self) -> tuple[IssueIdentity, ...]:
+        self.validate()
+        identities = []
+        for lane_index in range(len(self.lanes)):
+            for round_index in range(self.rounds):
+                ordinal = lane_index * self.rounds + round_index
+                slot = lane_index * MAX_ROUNDS + round_index
+                tag = (
+                    (self.seed * 0x9E3779B97F4A7C15)
+                    & 0xFFFFFFFFFFFFFF00
+                ) | (slot + 1)
+                identities.append(
+                    IssueIdentity(
+                        ordinal, lane_index, round_index, slot, tag
+                    )
+                )
+        if self.issue_limit:
+            identities = identities[: self.issue_limit]
+        return tuple(identities)
+
+    def issue_order(self) -> tuple[int, ...]:
+        identities = self.issue_identities()
+        by_ordinal = {identity.ordinal: identity for identity in identities}
+        return tuple(
+            by_ordinal[ordinal].slot
+            for round_index in range(self.rounds)
+            for lane_index in range(len(self.lanes))
+            if (
+                ordinal := lane_index * self.rounds + round_index
+            )
+            in by_ordinal
+        )
+
+    def request_words(self) -> tuple[int, ...]:
+        self.validate()
+        words = [0] * REQUEST_WORDS
+        words[REQ["MAGIC"]] = REQUEST_MAGIC
+        words[REQ["SCHEMA_AND_WORDS"]] = (SCHEMA << 32) | REQUEST_WORDS
+        words[REQ["COMMAND"]] = self.command
+        words[REQ["LANE_COUNT"]] = len(self.lanes)
+        words[REQ["ROUNDS"]] = self.rounds
+        words[REQ["EFFECT_RELATION"]] = self.effect_relation
+        words[REQ["RANGE_RELATION"]] = self.range_relation
+        words[REQ["SCHEDULE"]] = self.schedule
+        words[REQ["WAIT_KIND"]] = self.wait_kind
+        words[REQ["WAIT_WORKER_MASK"]] = self.wait_worker_mask
+        words[REQ["SEED"]] = self.seed
+        words[REQ["SAMPLE"]] = self.sample
+        words[REQ["FLAGS"]] = self.flags
+        words[REQ["FIRST_OPERAND"]] = self.first_operand
+        words[REQ["SECOND_OPERAND"]] = self.second_operand
+        words[REQ["ISSUE_LIMIT"]] = self.issue_limit
+        for lane_index, lane in enumerate(self.lanes):
+            base = LANE_BASE + lane_index * LANE_STRIDE
+            words[base + LANE["ENGINE"]] = lane.engine
+            words[base + LANE["WORKER"]] = lane.worker
+            words[base + LANE["ISSUE_MODE"]] = lane.issue_mode
+            words[base + LANE["TRANSFER_BYTES"]] = lane.transfer_bytes
+            words[base + LANE["ELEMENT_FORMAT"]] = lane.element_format
+            words[base + LANE["LAYOUT_KIND"]] = lane.layout_kind
+            words[base + LANE["LAYOUT_INNER_BYTES"]] = (
+                lane.layout_inner_bytes
+            )
+            words[base + LANE["FLAGS"]] = lane.flags
+        return tuple(int(word) for word in words)
+
+
+@dataclasses.dataclass(frozen=True)
+class InclusiveRange:
+    begin: int
+    end: int
+
+
+@dataclasses.dataclass(frozen=True)
+class IssueObservation:
+    identity: IssueIdentity
+    engine: Engine
+    worker: int
+    execute_rc: int
+    inter_type: int
+    read0: InclusiveRange | None
+    read1: InclusiveRange | None
+    write: InclusiveRange | None
+    boundary_mismatches: int
+    boundary_guard_mismatches: int
+    final_mismatches: int
+    final_guard_mismatches: int
+    flags: int
+    control_after_issue: int
+    execute_cycles: int
+
+
+def _optional_range(
+    words: Sequence[int],
+    base: int,
+    valid_flag: int,
+    begin_field: str,
+    end_field: str,
+    flags: int,
+) -> InclusiveRange | None:
+    begin = words[base + ISSUE[begin_field]]
+    end = words[base + ISSUE[end_field]]
+    if flags & valid_flag:
+        if end < begin:
+            raise ValueError(f"{begin_field[:-6]} inclusive range is inverted")
+        return InclusiveRange(begin, end)
+    if begin != 0 or end != 0:
+        raise ValueError(f"{begin_field[:-6]} range lacks its validity flag")
+    return None
+
+
+def validate_record(
+    words: Sequence[int], plan: Plan
+) -> tuple[IssueObservation, ...]:
+    if len(words) < RECORD_WORDS:
+        raise ValueError("record is truncated")
+    if words[REC["MAGIC"]] != RECORD_MAGIC:
+        raise ValueError("record magic is invalid")
+    if words[REC["SCHEMA_AND_WORDS"]] != (SCHEMA << 32) | RECORD_WORDS:
+        raise ValueError("record schema/length is invalid")
+    if Status(words[REC["STATUS"]]) != Status.OK:
+        raise ValueError(f"probe status is {Status(words[REC['STATUS']]).name}")
+    plan.validate()
+    identities = plan.issue_identities()
+    if (
+        words[REC["COMMAND"]] != plan.command
+        or words[REC["LANE_COUNT"]] != len(plan.lanes)
+        or words[REC["ROUNDS"]] != plan.rounds
+        or words[REC["ISSUE_COUNT"]] != len(identities)
+        or words[REC["EFFECT_RELATION"]] != plan.effect_relation
+        or words[REC["RANGE_RELATION"]] != plan.range_relation
+        or words[REC["SCHEDULE"]] != plan.schedule
+        or words[REC["WAIT_KIND"]] != plan.wait_kind
+        or words[REC["WAIT_WORKER_MASK"]] != plan.wait_worker_mask
+        or words[REC["FIRST_OPERAND"]] != plan.first_operand
+        or words[REC["SECOND_OPERAND"]] != plan.second_operand
+        or words[REC["ISSUE_LIMIT"]] != plan.issue_limit
+        or words[REC["SEED"]] != plan.seed
+        or words[REC["SAMPLE"]] != plan.sample
+    ):
+        raise ValueError("record does not echo the requested typed plan")
+    if words[REC["FLAGS"]] & ALL_PHASE_FLAGS != ALL_PHASE_FLAGS:
+        raise ValueError("record did not complete every observation phase")
+
+    observations = []
+    seen_slots: set[int] = set()
+    seen_tags: set[int] = set()
+    for expected in identities:
+        base = ISSUE_BASE + expected.ordinal * ISSUE_STRIDE
+        if (
+            words[base + ISSUE["ORDINAL"]] != expected.ordinal
+            or words[base + ISSUE["LANE"]] != expected.lane
+            or words[base + ISSUE["ROUND"]] != expected.round
+            or words[base + ISSUE["SLOT"]] != expected.slot
+            or words[base + ISSUE["TAG"]] != expected.tag
+        ):
+            raise ValueError("per-issue identity does not match the plan")
+        if expected.slot in seen_slots or expected.tag in seen_tags:
+            raise ValueError("per-issue slot/tag is not unique")
+        seen_slots.add(expected.slot)
+        seen_tags.add(expected.tag)
+        lane = plan.lanes[expected.lane]
+        if (
+            words[base + ISSUE["ENGINE"]] != lane.engine
+            or words[base + ISSUE["WORKER"]] != lane.worker
+        ):
+            raise ValueError("per-issue engine/worker routing is inconsistent")
+        flags = words[base + ISSUE["FLAGS"]]
+        observations.append(
+            IssueObservation(
+                identity=expected,
+                engine=lane.engine,
+                worker=lane.worker,
+                execute_rc=words[base + ISSUE["EXECUTE_RC"]],
+                inter_type=words[base + ISSUE["INTER_TYPE"]],
+                read0=_optional_range(
+                    words,
+                    base,
+                    READ0_VALID,
+                    "READ0_BEGIN",
+                    "READ0_END",
+                    flags,
+                ),
+                read1=_optional_range(
+                    words,
+                    base,
+                    READ1_VALID,
+                    "READ1_BEGIN",
+                    "READ1_END",
+                    flags,
+                ),
+                write=_optional_range(
+                    words,
+                    base,
+                    WRITE_VALID,
+                    "WRITE_BEGIN",
+                    "WRITE_END",
+                    flags,
+                ),
+                boundary_mismatches=words[
+                    base + ISSUE["BOUNDARY_MISMATCHES"]
+                ],
+                boundary_guard_mismatches=words[
+                    base + ISSUE["BOUNDARY_GUARD_MISMATCHES"]
+                ],
+                final_mismatches=words[base + ISSUE["FINAL_MISMATCHES"]],
+                final_guard_mismatches=words[
+                    base + ISSUE["FINAL_GUARD_MISMATCHES"]
+                ],
+                flags=flags,
+                control_after_issue=words[
+                    base + ISSUE["CONTROL_AFTER_ISSUE"]
+                ],
+                execute_cycles=words[
+                    base + ISSUE["EXECUTE_CYCLES"]
+                ],
+            )
+        )
+    return tuple(observations)

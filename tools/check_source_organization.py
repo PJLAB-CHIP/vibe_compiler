@@ -185,7 +185,11 @@ BOARD_RUNTIME_SOURCES = (
     "BoardRuntime.cpp",
     "Tx81ModelABI.cpp",
 )
-WAFER_RUN_SOURCES = ("TxBoardRuntime.cpp", "wafer-run.cpp")
+WAFER_RUN_SOURCES = (
+    "TxBoardRuntime.cpp",
+    "WaferRunBoardIO.cpp",
+    "wafer-run.cpp",
+)
 STABLEHLO_NORMALIZATION_SOURCES = (
     "ConstantTensorFolding.cpp",
     "NormalizeStablehloCollectives.cpp",

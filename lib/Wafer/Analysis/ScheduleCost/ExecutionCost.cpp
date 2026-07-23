@@ -553,8 +553,10 @@ analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
                                      state.maximumReaderDepth});
     }
 
-    bool isFence = mlir::isa<SyncLocalFenceOp>(operation);
-    if (isFence)
+    bool isCompletionBarrier =
+        classifyLocalInstructionCompletion(operation) ==
+        LocalInstructionCompletion::BarrierAndComplete;
+    if (isCompletionBarrier)
       predecessorDepth = std::max(predecessorDepth, maximumDepth);
     uint64_t depth = 0;
     if (!checkedAdd(predecessorDepth, 1, depth)) {
@@ -573,14 +575,14 @@ analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
         state.maximumReaderDepth = std::max(state.maximumReaderDepth, depth);
       }
     }
-    if (isFence)
+    if (isCompletionBarrier)
       latestFenceDepth = depth;
 
-    if (operation->getBlock() != readyBlock || isFence) {
+    if (operation->getBlock() != readyBlock || isCompletionBarrier) {
       readyBlock = operation->getBlock();
       std::fill_n(seenReadyPriorities, 3, 0);
     }
-    if (!isFence) {
+    if (!isCompletionBarrier) {
       unsigned priority = getStaticReadyPriority(operation);
       uint64_t precedingLowerPriority = 0;
       for (unsigned index = priority + 1; index < 3; ++index)

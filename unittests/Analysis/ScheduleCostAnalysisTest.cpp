@@ -556,6 +556,57 @@ module {
 }
 
 TEST_F(ScheduleCostAnalysisTest,
+       ArgWritebackBarrierContributesStructuralDependencyDepth) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(
+      %ddr: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    %compute_source = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %compute_dest = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %arg_input = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %arg_value = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66304>}
+        : memref<1xf16, #wafer.memory<spm, tensor>>
+    %arg_index = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66560>}
+        : memref<1xi32, #wafer.memory<spm, tensor>>
+    %dma_dest = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66816>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.elementwise <neg> %compute_source into %compute_dest
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+       into memref<4xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.peripheral #wafer.instr_peripheral_kind<argmax>
+        %arg_input into %arg_value, %arg_index {elem_count = 4 : i64}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+      into memref<1xf16, #wafer.memory<spm, tensor>>,
+           memref<1xi32, #wafer.memory<spm, tensor>>
+    wafer.instr.rdma %ddr to %dma_dest
+        {byte_count = 8 : i64, inner_bytes = 8 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<4xf16, #wafer.memory<ddr, tensor>>
+       to memref<4xf16, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  ASSERT_TRUE(cost.dataDependencyDepth.isKnown());
+  EXPECT_EQ(cost.dataDependencyDepth.value, 3u);
+  ASSERT_TRUE(cost.readyOrderPriorityInversions.isKnown());
+  EXPECT_EQ(cost.readyOrderPriorityInversions.value, 0u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
        AggregatesWholeCardExecutionAndKeepsPrivateSPMDimensions) {
   auto first = parse(R"mlir(
 module {

@@ -87,9 +87,25 @@ endif()
 
 add_test(NAME WaferUnitTests COMMAND WaferUnitTests)
 
+add_executable(WaferRunBoardIOUnitTests
+  Runtime/WaferRunBoardIOTest.cpp
+  ${CMAKE_SOURCE_DIR}/tools/wafer-run/WaferRunBoardIO.cpp
+)
+llvm_update_compile_flags(WaferRunBoardIOUnitTests)
+target_include_directories(WaferRunBoardIOUnitTests PRIVATE
+  ${CMAKE_SOURCE_DIR}/tools/wafer-run
+)
+target_link_libraries(WaferRunBoardIOUnitTests
+  PRIVATE
+  WaferRuntime
+  GTest::gtest_main
+)
+add_test(NAME WaferRunBoardIOUnitTests COMMAND WaferRunBoardIOUnitTests)
+
 add_custom_target(check-wafer-unit
   COMMAND $<TARGET_FILE:WaferUnitTests>
-  DEPENDS WaferUnitTests
+  COMMAND $<TARGET_FILE:WaferRunBoardIOUnitTests>
+  DEPENDS WaferUnitTests WaferRunBoardIOUnitTests
   USES_TERMINAL
 )
 

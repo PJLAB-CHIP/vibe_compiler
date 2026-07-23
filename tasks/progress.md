@@ -64,6 +64,9 @@ Q32 + Q6.B + Q36 + configured board -> Q35
 已完成float candidate支持：
 Q32 -> Q32.N
 
+active compiler-sensitive hardware calibration and multi-engine overlap：
+Q32 + Q6.B + configured board -> Q37
+
 later/external：
 Q32 + Q6.B -> Q9
 Q22 + Q32 + Q6.B + configured numeric corpus -> Q22.C
@@ -75,6 +78,16 @@ explicit Count semantic/target/model evidence -> Q3.6 (independent typed writeba
 ```
 
 ## 当前实施队列
+
+Q37 compiler-sensitive hardware calibration and multi-engine software pipelining正在执行。第一checkpoint先形成
+`docs/tx81-compiler-hardware-calibration.md`独立证据台账，以current硬件资料、vendor header/library与安全板端
+microcase闭合会改变compiler legality、planning、lowering、cost或runtime completion的TX81事实，包括instruction
+packet/数值/layout、SPM/DDR与cache、NCC各engine/worker/queue/address dependency、同步/可见性、Direct DTE/
+multi-tile arrival、launch ABI与PMU measurement basis。每个维度必须得到已验证结论，或得到带保守compiler
+处理的明确Unknown/unsupported边界；这些事实未闭合前不修改production scheduling。随后才在complete instruction
+IR上物化显式multi-buffer、prologue/steady/epilogue、resource-aware issue order和latest-legal wait/fence，并让
+每个actual clone重新经过SPM/DDR、instruction、target、package与board correctness gate。计划见
+`tasks/plans/multi-engine-software-pipelining.md`。
 
 Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
 现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的
@@ -104,6 +117,7 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
+| Q37 | `tx81-compiler-hardware-calibration-and-multi-engine-software-pipelining` | `doing` | Q32、Q6.B + configured board | 先以独立证据台账和安全板端microcase闭合会改变compiler legality/planning/lowering/cost/runtime completion的instruction、数值/layout、memory/cache、engine/worker/queue、address dependency、同步/可见性、DTE/multi-tile、launch与PMU事实；每个未闭合维度保留带保守处理的显式Unknown/unsupported。完成该gate后，才从current instruction SSA/effect/loop事实物化通用multi-buffer软件流水、跨engine issue order及latest-legal wait/fence，经过完整memory/target/package/correctness gate并以板端对照确认实际重叠；aggregate PMU不伪装成cycle-accurate模型。 | 06、08-17；`docs/tx81-compiler-hardware-calibration.md`；`tasks/plans/multi-engine-software-pipelining.md` |
 | Q32.N | `numeric-algebraic-extension` | `done` | Q32 | algebraic candidate、generic reduction、named GEMM K切分和Ring collective已删除仅因float或缺少额外fast-math标注而拒绝的分支；f16/bf16无标注正向覆盖actual mutation、frontier和Tile/Instr lowering，integer overflow/no-wrap及真实结构、资源和target负例保持。未新增frontend mode、私有数值policy或IR carrier。 | 05-07、10-11、13、16；`tasks/plans/numeric-algebraic-extension.md` |
 | Q36 | `topology-aware-collective-lowering` | `done` | Q32 | current typed topology/mesh派生rank placement、exact bounded Ring与保持rank_group中序的ordered Tree；collective correctness/completion、singleton identity和final p2p minimum-hop whole-card cost闭合，不声明route/cycle/timing。 | 04、06、11、13、16、18；`tasks/archive/topology-aware-collective-lowering.md` |
 | Q35 | `k-sharded-gemm-board-vertical` | `done` | Q32、Q6.B、Q36 + configured board | full-4096 f16 GEMM由显式row/contracting SPMD形成16份local K=256 GEMM和sum all-reduce；production闭合M/N tiling、SPM/DDR、Direct DTE、shared ELF、no-card与完整板端raw exact。修复CRT GEMM raw orientation及strided RDMA/WDMA element-unit边界后，纯tiling 32 MiB exact，16-rank full case连续两轮16份32 MiB output全部exact并回到设备基线。只形成该case/environment的workload-level evidence，不新增ABI、不完成Q22.C或timing。 | 02、03、05-07、09、10、13-17；`tasks/archive/k-sharded-gemm-board-vertical.md` |
@@ -179,8 +193,9 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 ## 实施计划入口
 
-- 当前无active implementation task；最新完成任务Q35见
-  `tasks/archive/k-sharded-gemm-board-vertical.md`。
+- 当前active implementation task为Q37，计划见
+  `tasks/plans/multi-engine-software-pipelining.md`。
+- 最新完成任务Q35见`tasks/archive/k-sharded-gemm-board-vertical.md`。
 - Q6.B完成计划见`tasks/archive/runtime-board.md`。
 - Completed task：Q32 `physical-dataflow-synthesis`，完成审计见
   `tasks/archive/physical-dataflow-synthesis-completion-audit.md`，实施计划见

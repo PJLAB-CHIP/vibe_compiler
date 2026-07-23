@@ -3,7 +3,9 @@
 #include "InstructionVerifierUtils.h"
 
 #include "OpVerifierUtils.h"
+#include "Wafer/Target/Tx81InstructionLimits.h"
 
+#include <array>
 #include <limits>
 #include <optional>
 
@@ -24,6 +26,44 @@ mlir::LogicalResult verifyWaferMemRef(mlir::Operation *op, mlir::Type type,
            << role << " must be a "
            << (memorySpace == MemorySpace::SPM ? "SPM" : "DDR")
            << " Wafer memref";
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult verifyArrayRange(mlir::Operation *op,
+                                     mlir::DenseI64ArrayAttr values,
+                                     llvm::StringRef name, int64_t minimum,
+                                     int64_t maximum) {
+  if (!values)
+    return mlir::success();
+  for (int64_t value : values.asArrayRef()) {
+    if (value < minimum || value > maximum)
+      return op->emitOpError()
+             << "target_register_range: " << name << " entries must be in ["
+             << minimum << ", " << maximum << "]";
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult
+verifyShapeAttrMatchesBufferGeometry(mlir::Operation *op, mlir::Type type,
+                                     mlir::DenseI64ArrayAttr shape,
+                                     llvm::StringRef name) {
+  std::optional<mlir::RankedTensorType> tensor = getLogicalTensorType(type);
+  if (!tensor || !tensor->hasStaticShape() || tensor->getRank() > 4)
+    return op->emitOpError()
+           << "target_geometry_mismatch: " << name
+           << " requires a static Wafer buffer of rank at most 4";
+  if (!shape || shape.size() != 4)
+    return op->emitOpError() << "target_geometry_mismatch: " << name
+                             << " must contain exactly 4 entries";
+  int64_t leadingOnes = 4 - tensor->getRank();
+  for (int64_t index = 0; index < 4; ++index) {
+    int64_t expected =
+        index < leadingOnes ? 1 : tensor->getDimSize(index - leadingOnes);
+    if (shape.asArrayRef()[index] != expected)
+      return op->emitOpError() << "target_geometry_mismatch: " << name
+                               << " must match the logical buffer shape";
   }
   return mlir::success();
 }
@@ -107,27 +147,103 @@ mlir::LogicalResult verifyUInt16Array(mlir::Operation *op,
   return mlir::success();
 }
 
+mlir::LogicalResult verifyDataShapeBounds(mlir::Operation *op,
+                                          llvm::ArrayRef<int64_t> shape,
+                                          llvm::StringRef name) {
+  if (shape.empty() || shape.size() > 4)
+    return op->emitOpError() << "target_register_range: " << name
+                             << " must have between 1 and 4 dimensions";
+
+  constexpr std::array<llvm::StringLiteral, 4> dimensionNames = {"N", "H", "W",
+                                                                 "C"};
+  constexpr std::array<int64_t, 4> dimensionMaximums = {
+      Tx81InstructionLimits::dataShapeOuterMax,
+      Tx81InstructionLimits::dataShapeOuterMax,
+      Tx81InstructionLimits::dataShapeOuterMax,
+      Tx81InstructionLimits::dataShapeChannelMax};
+  const size_t leadingOnes = 4 - shape.size();
+  for (auto [index, value] : llvm::enumerate(shape)) {
+    const size_t packedIndex = leadingOnes + index;
+    if (value <= 0 || value > dimensionMaximums[packedIndex])
+      return op->emitOpError()
+             << "target_register_range: " << name << " "
+             << dimensionNames[packedIndex] << " dimension must be in [1, "
+             << dimensionMaximums[packedIndex] << "]";
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult verifyShapeAttrMatchesBuffer(mlir::Operation *op,
                                                  mlir::Type type,
                                                  mlir::DenseI64ArrayAttr shape,
                                                  llvm::StringRef name) {
-  std::optional<mlir::RankedTensorType> tensor = getLogicalTensorType(type);
-  if (!tensor || !tensor->hasStaticShape() || tensor->getRank() > 4)
-    return op->emitOpError()
-           << "target_geometry_mismatch: " << name
-           << " requires a static Wafer buffer of rank at most 4";
-  if (!shape || shape.size() != 4)
-    return op->emitOpError() << "target_geometry_mismatch: " << name
-                             << " must contain exactly 4 entries";
-  int64_t leadingOnes = 4 - tensor->getRank();
-  for (int64_t index = 0; index < 4; ++index) {
-    int64_t expected =
-        index < leadingOnes ? 1 : tensor->getDimSize(index - leadingOnes);
-    if (shape.asArrayRef()[index] != expected)
-      return op->emitOpError() << "target_geometry_mismatch: " << name
-                               << " must match the logical buffer shape";
-  }
+  if (mlir::failed(verifyShapeAttrMatchesBufferGeometry(op, type, shape, name)))
+    return mlir::failure();
   return verifyUInt16Array(op, shape, name);
+}
+
+mlir::LogicalResult
+verifyDataShapeAttrMatchesBuffer(mlir::Operation *op, mlir::Type type,
+                                 mlir::DenseI64ArrayAttr shape,
+                                 llvm::StringRef name) {
+  if (mlir::failed(verifyShapeAttrMatchesBufferGeometry(op, type, shape, name)))
+    return mlir::failure();
+  return verifyDataShapeBounds(op, shape.asArrayRef(), name);
+}
+
+mlir::LogicalResult verifyPaddingBounds(mlir::Operation *op,
+                                        mlir::DenseI64ArrayAttr values,
+                                        llvm::StringRef name) {
+  return verifyArrayRange(op, values, name, /*minimum=*/0,
+                          Tx81InstructionLimits::paddingMax);
+}
+
+mlir::LogicalResult verifyKernelStrideBounds(mlir::Operation *op,
+                                             mlir::DenseI64ArrayAttr values,
+                                             llvm::StringRef name) {
+  if (!values)
+    return mlir::success();
+  if (values.size() != 4)
+    return op->emitOpError() << "target_register_range: " << name
+                             << " must contain exactly 4 entries";
+  llvm::ArrayRef<int64_t> entries = values.asArrayRef();
+  for (size_t index = 0; index < 2; ++index) {
+    if (entries[index] <= 0 ||
+        entries[index] > Tx81InstructionLimits::kernelMax)
+      return op->emitOpError() << "target_register_range: " << name
+                               << " kernel entries must be in [1, "
+                               << Tx81InstructionLimits::kernelMax << "]";
+  }
+  for (size_t index = 2; index < 4; ++index) {
+    if (entries[index] <= 0 ||
+        entries[index] > Tx81InstructionLimits::strideMax)
+      return op->emitOpError() << "target_register_range: " << name
+                               << " stride entries must be in [1, "
+                               << Tx81InstructionLimits::strideMax << "]";
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult verifyDilationBounds(mlir::Operation *op,
+                                         mlir::DenseI64ArrayAttr values,
+                                         llvm::StringRef name) {
+  return verifyArrayRange(op, values, name, /*minimum=*/1,
+                          Tx81InstructionLimits::dilationMax);
+}
+
+mlir::LogicalResult verifyGemmKBounds(mlir::Operation *op, int64_t value) {
+  if (value <= 0 || value > Tx81InstructionLimits::gemmKMax)
+    return op->emitOpError() << "target_register_range: k must be in [1, "
+                             << Tx81InstructionLimits::gemmKMax << "]";
+  return mlir::success();
+}
+
+mlir::LogicalResult verifyGemmBatchBounds(mlir::Operation *op, int64_t value) {
+  if (value <= 0 || value > Tx81InstructionLimits::gemmBatchMax)
+    return op->emitOpError()
+           << "target_register_range: batch_count must be in [1, "
+           << Tx81InstructionLimits::gemmBatchMax << "]";
+  return mlir::success();
 }
 
 mlir::FailureOr<int64_t>

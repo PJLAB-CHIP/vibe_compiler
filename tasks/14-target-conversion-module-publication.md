@@ -150,7 +150,10 @@ profile×engine×logical-format 的 typed encoding row：
 `S`只表示当前 ABI/register 证据足以编码该 engine 的 format-bearing command；op-kind、shape、layout、
 geometry 和 narrowing 仍分别验证。`CT×BOOL` 的 `S*` 只准入明确列出的 bool relation/logic op，
 不是通用 CT BOOL。TDMA `gather_scatter` 和 DTE 是 byte-counted contract，不因表中某个 format row
-自动获得支持。未列 format、F64、`Fmt_UNUSED` 和 unknown code 均 fail closed。
+自动获得支持。TDMA×BOOL的`—`明确表示current profile不发射native `Fmt_BOOL` packet；
+`physical_footprint` BOOL fill仍保持BOOL Instr/TargetCall语义，target verifier闭合physical range后只在唯一
+TX81 CRT边界改写成TDMA×I8 byte fill，因此不会把该cell升级为`S`。未列 format、F64、`Fmt_UNUSED`
+和 unknown code 均 fail closed。
 
 CT convert 使用独立 typed whitelist，只准入 opcode 139..174 定义的 36 条 route：
 
@@ -235,7 +238,13 @@ current v1 最低规则：
   operand view、allocation root 和 accepted base/offset checked推导。
 - gather-scatter：source/destination optional local offsets、stride/iteration、payload、alignment 和两端
   SPM range 完整验证。
-- fill/elementwise/bit2fp/mask/convert：logical element relation 和 physical capacity 一致。
+- fill/elementwise/bit2fp/mask/convert：logical element relation 和 physical capacity 一致。TDMA Memset packet
+  使用raw positive iteration，inactive dimension为1；普通dtype的inclusive range按
+  `dst + Σ((iteration_i - 1) * stride_i) + elem_count * element_bytes - 1`验证，不能复用
+  RDMA/WDMA packet中的`iteration - 1`编码。
+- current profile的BOOL fill只接受连续`physical_footprint`：TargetCall bit count必须等于完整physical
+  byte range乘8，scalar必须是canonical false/true；TX81 CRT将其改写为`Fmt_INT8`、physical byte count和
+  `0x00/0xff` byte splat。native `Fmt_BOOL`和logical-valid BOOL均在call emission前fail closed。
 - reduce：dim 和 input/output shape 合法；terminal op 不携带 init，source init 已 lower 为有序 composite。
 - GEMM：v1 只接受 normal/normal canonical mapping；M/K/N/batch、stored operands 和 result mapping一致。
   任何 transpose/oriented tuple 当前 target-illegal。
@@ -516,6 +525,20 @@ domain和bitpacked element width checked派生最终count/range。TargetCall必�
 
 该能力必须同批闭合Tile/Instr verifier、scalar到canonical raw element语义、Cx/NCx/BOOL full-footprint range、padding与unused
 bit状态、target-call lowering和formal/SystemC正负例。底层memset存在不证明任意dtype/raw scalar/domain均合法。
+
+current TX81 profile对BOOL的唯一target mapping是完整physical-footprint byte canonicalization：
+
+1. Instr/TargetCall仍携带BOOL format、checked physical bit count和canonical false/true raw scalar；
+2. target verifier已证明bit count等于完整physical bytes×8；CRT以ceil-div换算byte count（对该准入domain
+   恰为exact division），生成`Fmt_INT8`和`0x00/0xff`；
+3. TDMA Memset使用raw logical iteration，canonical contiguous descriptor的active dimension为
+   `{stride=physical_bytes, iteration=1}`，其它inactive dimension同样为1；
+4. native TDMA `Fmt_BOOL`不进入packet，logical-valid BOOL因可能保留unused tail bits而拒绝。
+
+该mapping不改变Instr dtype、MemoryEffects、TDMA resource或上层BOOL语义，也不把I8 packet细节提升到
+Tile/Instr IR。current profile的native `Fmt_BOOL`板端小range在10秒内未完成且context隔离后设备仍idle，
+所以native row为excluded；I8 canonicalization只有通过独立板端held-out后才能从实现合同升级为supported。
+profile绑定、证据等级和held-out状态统一见`docs/tx81-compiler-hardware-calibration.md`。
 
 ### 12.3 Q32.V：Oriented GEMM ABI
 

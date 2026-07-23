@@ -245,9 +245,10 @@ private:
   llvm::SmallVector<AsyncTaskState, 4> asyncTasks;
 };
 
-/// Extends tracked local-engine accesses through path-covering fences. An
-/// issue is tracked only when the same operation has both a Compute/Movement
-/// effect and a value-associated read/write effect on a tracked root.
+/// Extends tracked local-engine accesses through path-covering completion
+/// barriers. An asynchronous issue is tracked only when its centralized local
+/// completion contract is PendingUntilFence and it has a value-associated
+/// read/write effect on a tracked root.
 class LocalCompletionTracker {
 public:
   LocalCompletionTracker() = default;

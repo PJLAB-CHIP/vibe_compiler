@@ -406,13 +406,15 @@ alignment：
 
 - hard alignment 来自 wrapper/op verifier、physical layout、stride/range-end 规则。
 - 256B 是 line/layout padding 粒度，也是普通 allocation 的保守 preferred alignment。
-- 64KB 是 overlap-critical allocation 的 page/color 粒度，不是所有 packet base address 的硬性
-  legality。
+- 64KB 只是在历史 parallel allocator 中出现过的 page/color 候选粒度；当前 register/library
+  证据没有证明它对应物理 bank 或硬件 legality。在 board offset sweep 校准前，不能把它固化为
+  overlap-critical allocation 的固定粒度。
 
 V0 对 coloring 的处理：
 
 - 普通 buffer 不做 hard coloring。
-- overlap-critical buffer 记录 color class，作为 cost/diagnostic。
+- overlap-critical buffer 只有在 target profile 已由 board calibration 提供可解释的 bank/color
+  mapping 时才记录 color class；未校准时只保留 address-range/alignment 事实和 Unknown cost。
 - 只有当 scheduler 明确启用 parallel issue 且 target policy 要求隔离时，color conflict 才升级为
   hard legality。
 

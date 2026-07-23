@@ -1117,3 +1117,74 @@
 - 防复发：conformance checker锁定RDMA/WDMA四个字段的转换；板端同时保留single-tile和rank-one
   `4096x256 x 256x4096`纯tilingcase，后者完整比较32 MiB output。最终full-4096 16-rank case连续两轮验证16份
   32 MiB output逐字节exact；contiguous小case不能替代strided descriptor覆盖。
+
+## 2026-07-23 板端DMA oracle不能让Kcore直接比较cacheable DDR
+
+- 现象：RDMA microcase使用全零host input时报告exact；换成非零模式后，Kcore从SPM与input DDR逐word比较出现大量
+  mismatch，看起来像RDMA只搬了一个cache line。但同一payload经`RDMA -> local drain -> WDMA -> host`完整round-trip
+  逐字节exact；对Kcore将读取的DDR range按64-byte line执行machine `dcache.ipa`或supervisor `dcache.iva`及
+  fence/sync后，Kcore比较也恢复exact。
+- 根因：复用的device DDR allocation是cacheable，host H2D、NCC DMA completion与Kcore普通load不自动形成同一cache
+  coherence合同。全零输入又与旧SPM/DDR内容相同，掩盖了错误oracle。
+- 修复模式：DMA正确性由强sentinel、guard和DMA写回host验证；Kcore读取host-updated DDR时先执行明确invalidate，并把它
+  单列为visibility合同。Kcore写host-visible status/output则使用clean-and-invalidate publication，不能互换方向。
+- 防复发：板端microcase禁止全零/常量弱oracle和只比较一条cache line；request header也属于Kcore DDR input，复用地址时
+  同样先invalidate。任何PMU性能结论必须以完整数值/canary正确为前置。
+
+## 2026-07-23 单对指令不能判定TX81跨queue并行能力
+
+- 现象：同worker的单对RDMA/CT以及当前production Add/GEMM窗口中，global PMU union等于各engine时间之和，一度被解释成
+  硬件不并行；把2至6组disjoint packet紧邻入队后，`sum(engine)-global_union`稳定为正。当前one-shot CRT因每次
+  `TsmNew/config/TsmExecute/TsmDelete`产生构包间隔，要到更深backlog才观察到同类重叠。
+- 根因：queue容量、engine可并行与某个短窗口是否喂饱queue是三个不同问题。单对包含启动/填充开销；wrapper发射间隙还可能
+  让前一engine在后一packet入队前结束。
+- 修复模式：并行校准使用serial control、issue-count sweep、强oracle和重复PMU样本；只以
+  `engine_a + engine_b - global_union`的重复正值声明当前profile的重叠。compiler先用真实multi-buffer/issue window形成
+  backlog，再决定是否需要prepared issue ABI。
+- 防复发：不把queue depth当active transfer数，不从单样本/host wall time推断engine overlap。`depth+1`
+  只允许由显式typed manual suite逐engine、逐进程执行：精确限制为`D+1`，配独立timeout、最终drain、
+  instruction count、完整output/guard以及逐次IB/cycle证据；证据不足只记`inconclusive`。窗口大小是
+  target候选和capacity约束，不是case硬编码的通用规则。
+
+## 2026-07-23 TDMA Memset的inactive iteration不能清零
+
+- 现象：请求TDMA Memset写4KiB，packet/register中的`dst_end`覆盖完整range，但实际只有首128B发生变化；一度看起来
+  像硬件单次Memset最多只能写一个1024-bit beat。
+- 根因：`St_StrideIteration`不能跨wrapper族统一解释。RDMA/WDMA把logical iteration编码成
+  `iteration - 1`，而TDMA register保存raw logical trip count；`TsmPeripheral::Memset`直接复制该字段。
+  全零descriptor使三个iteration均为非法0。inactive dimension应为1，普通dtype的range为
+  `dst + Σ((iteration_i - 1) * stride_i) + elem_count * element_bytes - 1`。
+- 修复模式：contiguous Memset使用
+  `{stride0=physical_bytes, iteration0=1, stride1=0, iteration1=1,
+  stride2=0, iteration2=1}`，并对span、count、format width和inclusive end做checked计算。
+  I8 whole 4KiB、128B×32、64B×64及FP16/BF16 raw/CRT区分向量都用完整WDMA readback和双侧guard验证。
+- 防复发：不能只看prepared packet或`dst_end`，也不能从一次128B退化反推硬件上限；descriptor测试必须包含多个
+  inner width/iteration组合、全range强pattern和guard。GatherScatter及其它TDMA kind仍须分别证明其wrapper构包规则，
+  不能因共享`St_StrideIteration`就默认相同。
+
+## 2026-07-23 current TX81 profile不能发射native TDMA Fmt_BOOL Memset
+
+- 现象：小range、带guard的native `Fmt_BOOL` TDMA Memset在10秒内未完成。测试上下文被隔离且没有重试；
+  随后只读设备状态为idle、无残留进程，所以这次timeout不是需要reset或重启的整卡异常。
+- 根因：current profile没有可接受的native `Fmt_BOOL` Memset完成性证据。bitpacked BOOL的physical footprint按byte
+  存储，直接把bit count和format 7交给TDMA不能因为enum存在就视为合法。
+- 修复模式：production仅对`physical_footprint` BOOL fill做唯一target canonicalization：Instr/TargetCall保持
+  BOOL bit count和canonical false/true，target verifier先证明count等于完整physical bytes×8；CRT再以
+  ceil-div换算byte count（对准入domain是exact division），并发出`Fmt_INT8` `0x00/0xff` TDMA byte splat。
+  native `Fmt_BOOL`保持excluded；logical-valid BOOL会涉及unused tail bits，
+  不能复用该路径。
+- 防复发：format enum、packet可构造和板端可完成是三层不同证据。timeout后先停止批次、隔离context并做一次只读
+  设备状态检查；设备已idle时不要自动reset/power/reboot。替代mapping仍需独立board held-out，未通过前不能写成
+  supported capability。
+
+## 2026-07-23 raw output去重必须按文件系统路径语义
+
+- 现象：`wafer-run --output`若只比较用户传入字符串，`dir/out.raw`、`dir/./out.raw`或经父目录symlink
+  到达同一目录的路径可被不同ResourceId同时选中，后发布者会覆盖前者。
+- 根因：输出路径身份属于文件系统语义；先做纯词法`..`消解也不正确，因为`sibling-link/../out.raw`
+  必须先解析symlink指向的目录，再解释`..`。
+- 修复模式：先转绝对路径，把完整parent交给`real_path`按文件系统语义解析，再拼回受限filename并做去重；
+  现有目录目标在provider执行前拒绝。全部capture先完成相邻临时文件staging，随后才逐文件atomic rename；
+  多个独立目标不承诺group transaction。
+- 防复发：覆盖相同字符串、词法alias、父目录symlink alias、symlink后的`..`和目录目标；不要用字符串规范化
+  代替真实parent解析，也不要把逐文件rename描述成全组可回滚事务。

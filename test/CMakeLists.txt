@@ -95,6 +95,76 @@ set_tests_properties(wafer-board-direct-dte-outer-deadline PROPERTIES
   TIMEOUT 30
 )
 
+add_executable(wafer-ncc-probe-plan-test
+  Board/Inputs/wafer_ncc_probe_plan.c
+  Board/wafer_ncc_probe_plan_test.c
+)
+target_include_directories(wafer-ncc-probe-plan-test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/Board/Inputs
+)
+set_target_properties(wafer-ncc-probe-plan-test PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS NO
+)
+target_compile_options(wafer-ncc-probe-plan-test PRIVATE
+  -Wall
+  -Wextra
+  -Werror
+  -pedantic
+)
+add_test(NAME wafer-ncc-probe-plan
+  COMMAND $<TARGET_FILE:wafer-ncc-probe-plan-test>
+)
+set_tests_properties(wafer-ncc-probe-plan PROPERTIES
+  LABELS "runtime;no-card;ncc;probe-protocol"
+  TIMEOUT 30
+)
+
+add_executable(wafer-ncc-hazard-relation-test
+  Board/Inputs/wafer_ncc_hazard_relation.c
+  Board/wafer_ncc_hazard_relation_test.c
+)
+target_include_directories(wafer-ncc-hazard-relation-test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/Board/Inputs
+)
+set_target_properties(wafer-ncc-hazard-relation-test PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS NO
+)
+target_compile_options(wafer-ncc-hazard-relation-test PRIVATE
+  -Wall
+  -Wextra
+  -Werror
+  -pedantic
+)
+add_test(NAME wafer-ncc-hazard-relation
+  COMMAND $<TARGET_FILE:wafer-ncc-hazard-relation-test>
+)
+set_tests_properties(wafer-ncc-hazard-relation PROPERTIES
+  LABELS "runtime;no-card;ncc;probe-protocol"
+  TIMEOUT 30
+)
+
+add_test(NAME wafer-ncc-probe-protocol-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_ncc_probe_protocol_test.py
+)
+set_tests_properties(wafer-ncc-probe-protocol-python PROPERTIES
+  LABELS "runtime;no-card;ncc;probe-protocol"
+  TIMEOUT 30
+)
+
+add_test(NAME wafer-instruction-family-catalog-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_instruction_family_catalog_test.py
+)
+set_tests_properties(wafer-instruction-family-catalog-python PROPERTIES
+  LABELS "runtime;no-card;instruction;qualification;oracle"
+  TIMEOUT 30
+)
+
 if(WAFER_ENABLE_IMPORTER_DEPS AND
    WAFER_ENABLE_SPMD_PARTITIONER_DEPS AND
    WAFER_XLA_SPMD_PARTITIONER_HELPER)
@@ -135,6 +205,23 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     LABELS "runtime;no-card;all-rank;cluster;direct-dte"
     TIMEOUT 300
   )
+  add_test(NAME wafer-runtime-dte-ncc-execution-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_dte_ncc_execution_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-dte-ncc-execution-probe
+      --total-timeout-seconds 300
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-dte-ncc-execution-probe-no-card PROPERTIES
+    LABELS "runtime;no-card;all-rank;cluster;direct-dte;ncc;probe-build"
+    TIMEOUT 330
+  )
   add_test(NAME wafer-runtime-k-sharded-gemm-no-card
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_k_sharded_gemm_test.py
@@ -159,6 +246,56 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
   set_tests_properties(wafer-runtime-single-gemm-no-card PROPERTIES
     LABELS "runtime;no-card;single-op;gemm"
     TIMEOUT 600
+  )
+  add_test(NAME wafer-runtime-ncc-pmu-readonly-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ncc_pmu_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-ncc-pmu-readonly-probe-no-card
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-ncc-pmu-readonly-probe-no-card PROPERTIES
+    LABELS "runtime;no-card;board;pmu;static-audit"
+    TIMEOUT 300
+  )
+  add_test(NAME wafer-runtime-ncc-execution-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ncc_execution_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-ncc-execution-probe-no-card
+      --suite build-smoke
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-ncc-execution-probe-no-card PROPERTIES
+    LABELS "runtime;no-card;ncc;execution-model;build-smoke"
+    TIMEOUT 300
+  )
+  add_test(NAME wafer-runtime-instruction-family-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_instruction_family_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-instruction-family-probe
+      --suite safe
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-instruction-family-probe-no-card PROPERTIES
+    LABELS "runtime;no-card;instruction;qualification;probe-build"
+    TIMEOUT 300
   )
   add_test(NAME wafer-runtime-mn-tiled-gemm-no-card
     COMMAND ${Python3_EXECUTABLE}
@@ -226,6 +363,55 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       "Configured TX runtime library does not match the explicitly expected "
       "board-test SHA-256")
   endif()
+  add_test(NAME wafer-board-ncc-pmu-readonly-probe
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ncc_pmu_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-ncc-pmu-readonly-probe
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 10000
+  )
+  set_tests_properties(wafer-board-ncc-pmu-readonly-probe PROPERTIES
+    LABELS "board;hardware;pmu;register-read-only;safety"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 60
+  )
+  add_test(NAME wafer-board-instruction-family-safe
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_instruction_family_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-instruction-family-safe
+      --suite safe
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 30000
+  )
+  set_tests_properties(wafer-board-instruction-family-safe PROPERTIES
+    LABELS "board;hardware;instruction;qualification;safe"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 1800
+  )
   add_test(NAME wafer-board-single-op-add
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_single_op_add_test.py
@@ -383,6 +569,31 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
       TIMEOUT 600
+    )
+    add_test(NAME wafer-board-dte-ncc-execution-probe
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_dte_ncc_execution_probe_test.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-dte-ncc-execution-probe
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 60000
+        --total-timeout-seconds 600
+    )
+    set_tests_properties(wafer-board-dte-ncc-execution-probe PROPERTIES
+      LABELS "board;hardware;cluster;all-rank;direct-dte;ncc;execution-probe"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 630
     )
     add_test(NAME wafer-board-k-sharded-gemm
       COMMAND ${Python3_EXECUTABLE}

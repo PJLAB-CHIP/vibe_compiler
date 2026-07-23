@@ -3,6 +3,7 @@
 #include "TargetModelKernelInternal.h"
 
 #include "Wafer/Target/TargetFormat.h"
+#include "Wafer/Target/Tx81InstructionLimits.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -266,6 +267,76 @@ llvm::Error validateShapeProduct(llvm::ArrayRef<uint32_t> shape,
   return llvm::Error::success();
 }
 
+llvm::Error validateInclusiveRange(llvm::ArrayRef<uint32_t> values,
+                                   llvm::StringRef role, uint32_t minimum,
+                                   uint32_t maximum) {
+  for (uint32_t value : values)
+    if (value < minimum || value > maximum)
+      return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
+                         llvm::Twine(role) + " must be in [" +
+                             llvm::Twine(minimum) + ", " +
+                             llvm::Twine(maximum) + "]");
+  return llvm::Error::success();
+}
+
+llvm::Error validateDataShape(llvm::ArrayRef<uint32_t> shape,
+                              llvm::StringRef role) {
+  if (shape.size() != 4)
+    return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
+                       llvm::Twine(role) + " must contain exactly 4 entries");
+  if (llvm::Error error = validateShapeProduct(shape, role))
+    return error;
+
+  constexpr std::array<llvm::StringLiteral, 4> dimensionNames = {"N", "H", "W",
+                                                                 "C"};
+  constexpr std::array<uint32_t, 4> dimensionMaximums = {
+      Tx81InstructionLimits::dataShapeOuterMax,
+      Tx81InstructionLimits::dataShapeOuterMax,
+      Tx81InstructionLimits::dataShapeOuterMax,
+      Tx81InstructionLimits::dataShapeChannelMax};
+  for (auto [index, value] : llvm::enumerate(shape))
+    if (value > dimensionMaximums[index])
+      return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
+                         llvm::Twine(role) + " " + dimensionNames[index] +
+                             " dimension must be in [1, " +
+                             llvm::Twine(dimensionMaximums[index]) + "]");
+  return llvm::Error::success();
+}
+
+llvm::Error validateWeightShape(llvm::ArrayRef<uint32_t> shape,
+                                llvm::StringRef role) {
+  if (llvm::Error error = validateShapeProduct(shape, role))
+    return error;
+  return validateInclusiveRange(
+      shape, role, /*minimum=*/1,
+      static_cast<uint32_t>(std::numeric_limits<uint16_t>::max()));
+}
+
+llvm::Error validatePadding(llvm::ArrayRef<uint32_t> values,
+                            llvm::StringRef role) {
+  return validateInclusiveRange(values, role, /*minimum=*/0,
+                                Tx81InstructionLimits::paddingMax);
+}
+
+llvm::Error validateKernelStrides(llvm::ArrayRef<uint32_t> values,
+                                  llvm::StringRef role) {
+  if (values.size() != 4)
+    return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
+                       llvm::Twine(role) + " must contain exactly 4 entries");
+  if (llvm::Error error =
+          validateInclusiveRange(values.take_front(2), role, /*minimum=*/1,
+                                 Tx81InstructionLimits::kernelMax))
+    return error;
+  return validateInclusiveRange(values.drop_front(2), role, /*minimum=*/1,
+                                Tx81InstructionLimits::strideMax);
+}
+
+llvm::Error validateDilations(llvm::ArrayRef<uint32_t> values,
+                              llvm::StringRef role) {
+  return validateInclusiveRange(values, role, /*minimum=*/1,
+                                Tx81InstructionLimits::dilationMax);
+}
+
 llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
   return std::visit(
       [](const auto &value) -> llvm::Error {
@@ -303,6 +374,12 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           if (llvm::Error error = requireEngineFormat(
                   value.format, TargetFormatEngine::TDMA, "memset"))
             return error;
+          if (value.format == LogicalFormat::Bool &&
+              value.elementCount % UINT32_C(8) != 0)
+            return kernelError(
+                TargetModelKernelErrorCode::InvalidTransactionField,
+                "memset BOOL physical-footprint element_count must be a "
+                "multiple of 8 for byte granularity");
           return llvm::Error::success();
         } else if constexpr (std::is_same_v<
                                  T, compiler::TargetBit2FPTransaction> ||
@@ -316,15 +393,22 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
                                      "CT movement");
         } else if constexpr (std::is_same_v<T,
                                             compiler::TargetGemmTransaction>) {
-          if (value.m == 0 || value.k == 0 || value.n == 0 ||
-              value.batchCount == 0 ||
-              value.m > std::numeric_limits<uint16_t>::max() ||
-              value.k > std::numeric_limits<uint16_t>::max() ||
-              value.n > std::numeric_limits<uint16_t>::max() ||
-              value.batchCount > std::numeric_limits<uint16_t>::max())
+          if (value.m == 0 || value.m > std::numeric_limits<uint16_t>::max() ||
+              value.n == 0 || value.n > std::numeric_limits<uint16_t>::max())
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
-                "GEMM dimensions and batch count must be positive uint16");
+                "GEMM m and n must be positive uint16");
+          if (value.k == 0 || value.k > Tx81InstructionLimits::gemmKMax)
+            return kernelError(
+                TargetModelKernelErrorCode::InvalidTransactionField,
+                llvm::Twine("GEMM k must be in [1, ") +
+                    llvm::Twine(Tx81InstructionLimits::gemmKMax) + "]");
+          if (value.batchCount == 0 ||
+              value.batchCount > Tx81InstructionLimits::gemmBatchMax)
+            return kernelError(
+                TargetModelKernelErrorCode::InvalidTransactionField,
+                llvm::Twine("GEMM batch_count must be in [1, ") +
+                    llvm::Twine(Tx81InstructionLimits::gemmBatchMax) + "]");
           if ((value.lhsOrientation != GemmOrientation::Normal &&
                value.lhsOrientation != GemmOrientation::Transpose) ||
               (value.rhsOrientation != GemmOrientation::Normal &&
@@ -346,8 +430,7 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "reduce dimension has an unknown selector");
-          if (llvm::Error error =
-                  validateShapeProduct(value.nhwc, "reduce shape"))
+          if (llvm::Error error = validateDataShape(value.nhwc, "reduce shape"))
             return error;
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "reduce");
@@ -359,15 +442,27 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
           if (llvm::Error error =
                   requireKnownEnum(value.kind, "convolution kind"))
             return error;
-          for (auto [shape, role] :
-               {std::pair<llvm::ArrayRef<uint32_t>, llvm::StringRef>(
-                    value.inputShape, "convolution input shape"),
-                {value.weightShape, "convolution weight shape"},
-                {value.outputShape, "convolution output shape"},
-                {value.kernelStrides, "convolution strides"},
-                {value.dilations, "convolution dilations"}})
-            if (llvm::Error error = validateShapeProduct(shape, role))
-              return error;
+          if (llvm::Error error = validateDataShape(value.inputShape,
+                                                    "convolution input shape"))
+            return error;
+          if (llvm::Error error = validateWeightShape(
+                  value.weightShape, "convolution weight shape"))
+            return error;
+          if (llvm::Error error = validateDataShape(value.outputShape,
+                                                    "convolution output shape"))
+            return error;
+          if (llvm::Error error =
+                  validatePadding(value.pads, "convolution pads"))
+            return error;
+          if (llvm::Error error =
+                  validatePadding(value.unpads, "convolution unpads"))
+            return error;
+          if (llvm::Error error = validateKernelStrides(
+                  value.kernelStrides, "convolution kernel_strides"))
+            return error;
+          if (llvm::Error error =
+                  validateDilations(value.dilations, "convolution dilations"))
+            return error;
           return requireEngineFormat(value.format, TargetFormatEngine::NE,
                                      "convolution");
         } else if constexpr (std::is_same_v<T,
@@ -380,13 +475,17 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "pool index destination presence differs from pool kind");
-          for (auto [shape, role] :
-               {std::pair<llvm::ArrayRef<uint32_t>, llvm::StringRef>(
-                    value.sourceShape, "pool source shape"),
-                {value.destinationShape, "pool destination shape"},
-                {value.kernelStrides, "pool strides"}})
-            if (llvm::Error error = validateShapeProduct(shape, role))
-              return error;
+          if (llvm::Error error =
+                  validateDataShape(value.sourceShape, "pool source shape"))
+            return error;
+          if (llvm::Error error = validateDataShape(value.destinationShape,
+                                                    "pool destination shape"))
+            return error;
+          if (llvm::Error error = validatePadding(value.pads, "pool pads"))
+            return error;
+          if (llvm::Error error = validateKernelStrides(value.kernelStrides,
+                                                        "pool kernel_strides"))
+            return error;
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "pool");
         } else if constexpr (std::is_same_v<
@@ -397,13 +496,15 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "unpool index presence differs from unpool kind");
-          for (auto [shape, role] :
-               {std::pair<llvm::ArrayRef<uint32_t>, llvm::StringRef>(
-                    value.sourceShape, "unpool source shape"),
-                {value.destinationShape, "unpool destination shape"},
-                {value.kernelStrides, "unpool strides"}})
-            if (llvm::Error error = validateShapeProduct(shape, role))
-              return error;
+          if (llvm::Error error =
+                  validateDataShape(value.sourceShape, "unpool source shape"))
+            return error;
+          if (llvm::Error error = validateDataShape(value.destinationShape,
+                                                    "unpool destination shape"))
+            return error;
+          if (llvm::Error error = validateKernelStrides(
+                  value.kernelStrides, "unpool kernel_strides"))
+            return error;
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "unpool");
         } else if constexpr (std::is_same_v<
@@ -419,14 +520,16 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "TDMA kernel strides presence differs from transform kind");
           if (llvm::Error error =
-                  validateShapeProduct(value.sourceShape, "TDMA source shape"))
+                  validateDataShape(value.sourceShape, "TDMA source shape"))
             return error;
-          if (llvm::Error error = validateShapeProduct(
-                  value.destinationShape, "TDMA destination shape"))
+          if (llvm::Error error = validateDataShape(value.destinationShape,
+                                                    "TDMA destination shape"))
+            return error;
+          if (llvm::Error error = validatePadding(value.pads, "TDMA pads"))
             return error;
           if (value.kernelStrides)
-            if (llvm::Error error =
-                    validateShapeProduct(*value.kernelStrides, "TDMA strides"))
+            if (llvm::Error error = validateKernelStrides(
+                    *value.kernelStrides, "TDMA kernel_strides"))
               return error;
           return requireEngineFormat(value.format, TargetFormatEngine::TDMA,
                                      "TDMA transform");
@@ -450,10 +553,10 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "bilinear element_count must be positive");
-          if (llvm::Error error = validateShapeProduct(value.sourceShape,
-                                                       "bilinear source shape"))
+          if (llvm::Error error =
+                  validateDataShape(value.sourceShape, "bilinear source shape"))
             return error;
-          if (llvm::Error error = validateShapeProduct(
+          if (llvm::Error error = validateDataShape(
                   value.destinationShape, "bilinear destination shape"))
             return error;
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
