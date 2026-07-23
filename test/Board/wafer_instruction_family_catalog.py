@@ -413,6 +413,23 @@ def _pad() -> tuple[bytes, bytes, bytes]:
     return _f16(source), b"", _f16(expected)
 
 
+def _pool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
+    if case.symbol != "POOL_F16":
+        raise RuntimeError(f"{case.name}: unknown pool kind")
+    source = [
+        float(100 * row + 10 * column + channel % 8)
+        for row in range(2)
+        for column in range(4)
+        for channel in range(64)
+    ]
+    expected = [
+        float(100 + 10 * (2 * output_column + 1) + channel % 8)
+        for output_column in range(2)
+        for channel in range(64)
+    ]
+    return _f16(source), b"", _f16(expected)
+
+
 def _peripheral_arg_extrema(
     case: InstructionCase,
 ) -> tuple[bytes, bytes, bytes]:
@@ -454,6 +471,8 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
         input_a, input_b, expected = _gemm()
     elif case.family_name == "TDMA_PAD":
         input_a, input_b, expected = _pad()
+    elif case.family_name == "POOL":
+        input_a, input_b, expected = _pool(case)
     elif case.family_name == "PERIPHERAL":
         input_a, input_b, expected = _peripheral_arg_extrema(case)
     else:

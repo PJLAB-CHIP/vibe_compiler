@@ -185,15 +185,50 @@ def validate_arg_extrema_composite_oracles() -> None:
         )
 
 
+def validate_pool_max_oracle() -> None:
+    case = catalog.CASES_BY_NAME["pool-f16"]
+    assert case.is_safe
+    assert case.oracle_name == "EXACT_BITS"
+    assert case.result_bytes == 256
+    assert case.output_span == 256
+    assert case.aux_span == 0
+
+    built = catalog.build_case_payload(case)
+    source = struct.unpack_from(
+        "<512e", built.payload, catalog.BODY_OFFSET
+    )
+    assert source[0] == 0.0
+    assert source[63] == 7.0
+    assert source[64] == 10.0
+    assert source[4 * 64] == 100.0
+    assert source[-1] == 137.0
+
+    result = struct.unpack_from(
+        "<128e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert result[:8] == tuple(float(110 + channel) for channel in range(8))
+    assert result[64:72] == tuple(
+        float(130 + channel) for channel in range(8)
+    )
+    assert built.expected_output_slot[: catalog.BODY_OFFSET] == bytes(
+        [catalog.SLOT_CANARY]
+    ) * catalog.BODY_OFFSET
+    assert built.expected_output_slot[
+        catalog.BODY_OFFSET + case.output_span :
+    ] == bytes([catalog.SLOT_CANARY]) * (
+        catalog.SLOT_BYTES - catalog.BODY_OFFSET - case.output_span
+    )
+
+
 def _output_seed_padding() -> bytes:
     return struct.pack("<e", -13.0)
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 31
+    assert len(catalog.SAFE_CASES) == 32
     assert len(catalog.CATALOG) == 36
     assert {case.case_id for case in catalog.SAFE_CASES} == (
-        set(range(1, 30)) | {100, 101}
+        set(range(1, 30)) | {100, 101, 103}
     )
     assert {
         case.reason_name
@@ -264,6 +299,7 @@ def main() -> int:
     validate_rounding_and_bit2fp_oracles()
     validate_gemm_padding_domain()
     validate_arg_extrema_composite_oracles()
+    validate_pool_max_oracle()
 
     print("wafer_instruction_family_catalog_test: passed")
     return 0

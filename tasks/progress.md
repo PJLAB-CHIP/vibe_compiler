@@ -115,16 +115,17 @@ delta均为1；worker0/1/2 disjoint join使用mask `0b111`，三个worker CT del
 boundary/final result与guard均正确、blocking为0，前后Add heartbeat通过。当前将CT三worker routing、
 matching `bywork`及disjoint join记为`board-observed`；跨worker并行、仲裁、同地址行为与
 default/local-fence跨worker scope仍保持保守`unknown/excluded`。
-instruction-family typed catalog的31个safe case也已全部逐个串行上板通过，覆盖f16/bf16 elementwise、
+instruction-family typed catalog的32个safe case也已全部逐个串行上板通过，覆盖f16/bf16 elementwise、
 convert、reduce、select composite、f16 NE GEMM、f16 TDMA Pad与f16 peripheral ArgMax/ArgMin composite
-writeback；每个case均有精确bit oracle、SPM guard、
+writeback，以及f16 PoolMax；每个case均有精确bit oracle、SPM guard、
 terminal和cleanup。首次`reduce-sum-f16`准确暴露catalog边界错误：逻辑结果是128B，但CT physical write
 span为256B。将四个reduction row修正为`result_bytes=128`、`output_span=256`后，reduction和剩余case全部
 通过。ArgMax在含负数普通值且唯一最大值`100@index73`时通过；ArgMin在全正普通值且唯一最小值
 `0.5@index42`时通过，value/index分别写入同一slot的`[0:2]`与`[4:8]`，中间2B保持不变。ArgMin负数
 对照会错误返回首元素`-30@index0`而不是`-100@index42`，因此负数域保持unsupported，不由正数case外推。
 最终Add heartbeat正常。f32、special value、held-out tail以及其余deferred geometry/writeback family继续
-留在Q37后续校准。
+留在Q37后续校准。PoolMax使用`[1,2,4,64] -> [1,1,2,64]`、无padding、2x2 kernel/stride，
+两个输出窗口的128个FP16结果逐bit正确，256B physical output span和suffix guard均通过。
 
 Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
 现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的

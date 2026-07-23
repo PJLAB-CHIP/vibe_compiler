@@ -155,9 +155,11 @@ Pipeline position:
   三worker join使用mask `0b111`，三个worker的CT delta各为1。全部boundary/final result与guard正确、
   blocking为0，前后Add heartbeat通过。该证据闭合CT worker routing、matching `bywork`和disjoint join
   正确性，不外推跨worker并行、仲裁或default/local-fence跨worker scope。
-- instruction-family catalog的31个safe case已全部逐个串行上板并通过typed bit oracle、SPM guard、
+- instruction-family catalog的32个safe case已全部逐个串行上板并通过typed bit oracle、SPM guard、
   terminal与cleanup，覆盖f16/bf16 elementwise、convert、reduce、select composite、f16 NE GEMM和
-  f16 TDMA Pad，以及f16 peripheral ArgMax/ArgMin的value/index composite writeback。首次reduction失败
+  f16 TDMA Pad、f16 PoolMax，以及f16 peripheral ArgMax/ArgMin的value/index composite writeback。
+  PoolMax使用无padding的`[1,2,4,64] -> [1,1,2,64]`、2x2 kernel/stride，完整256B exact output与guard
+  均通过。首次reduction失败
   定位为catalog把128B logical result误当成physical write span；
   当前合同明确为`result_bytes=128`、`output_span=256`，修正后四个reduction及余下case通过。该证据不外推
   f32、special value、held-out tail或deferred geometry/writeback family。ArgMax含负数普通值case通过；

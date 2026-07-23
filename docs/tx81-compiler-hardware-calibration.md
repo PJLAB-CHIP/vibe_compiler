@@ -275,10 +275,12 @@ pairwise_excess = engine_a_exec + engine_b_exec - fu_union_exec
 ### 4.2 单engine correctness与ABI观察
 
 - CT f16 Add使用非零输入、完整fp16 golden、guard和DMA round-trip通过。
-- instruction-family typed catalog的31个safe case已逐个串行launch并通过完整bit oracle、SPM guard、
+- instruction-family typed catalog的32个safe case已逐个串行launch并通过完整bit oracle、SPM guard、
   terminal与cleanup：f16/bf16 Neg/Add/Sub/Mul/Max/Min/Pow2/Relu，I8→f16/bf16、bf16→f16、
   f16→bf16/i16 convert，f16 Sum/Max、bf16 Min/Avg reduction，f16/bf16 Bit2FP+MaskMove select，
-  f16 NE GEMM、f16 TDMA Pad与f16 peripheral ArgMax/ArgMin。ArgMax在含负数的128元素输入上返回
+  f16 NE GEMM、f16 TDMA Pad、f16 PoolMax与f16 peripheral ArgMax/ArgMin。PoolMax使用
+  `[1,2,4,64] -> [1,1,2,64]`、无padding、2x2 kernel/stride，两个输出窗口的128个FP16结果逐bit正确，
+  256B physical output span和suffix guard均通过。ArgMax在含负数的128元素输入上返回
   `100@index73`；ArgMin在全正128元素输入上返回`0.5@index42`。两者都由CRT等待writeback后把FP16 value
   写到slot `[0:2]`、uint32 index写到`[4:8]`，并保持`[2:4]` poison不变。ArgMin负数对照返回了
   `-30@index0`，没有返回真实最小值`-100@index42`，因此current profile只闭合ArgMin正数普通值domain，
