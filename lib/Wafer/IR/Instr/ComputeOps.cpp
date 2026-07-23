@@ -78,31 +78,37 @@ static mlir::LogicalResult verifyConvShapeRelation(
   llvm::ArrayRef<int64_t> unpad = unpads.asArrayRef();
   llvm::ArrayRef<int64_t> kernelStride = kernelStrides.asArrayRef();
   llvm::ArrayRef<int64_t> dilation = dilations.asArrayRef();
+  int64_t kernelX = kernelStride[0];
+  int64_t kernelY = kernelStride[1];
+  int64_t strideX = kernelStride[2];
+  int64_t strideY = kernelStride[3];
+  int64_t dilationX = dilation[0];
+  int64_t dilationY = dilation[1];
 
-  if (kernelStride[0] != weight[0] || kernelStride[1] != weight[1])
+  if (kernelX != weight[0] || kernelY != weight[1])
     return op->emitOpError(
         "target_geometry_mismatch: convolution kernel dimensions must match "
         "the weight shape");
   if (output[0] != input[0])
     return op->emitOpError(
         "target_geometry_mismatch: convolution batch dimensions must match");
-  if (input[3] != weight[2])
+  if (input[3] != weight[3])
     return op->emitOpError(
         "target_geometry_mismatch: convolution input channels must match the "
         "weight input channels");
 
-  int64_t expectedChannels = weight[3];
+  int64_t expectedChannels = weight[2];
   if (output[3] != expectedChannels)
     return op->emitOpError(
         "target_geometry_mismatch: convolution output channels do not match "
         "the weight relation");
 
   mlir::FailureOr<int64_t> expectedH = computeWindowedOutputDim(
-      op, input[1], kernelStride[0], kernelStride[2], dilation[0], pad[0],
-      pad[1], unpad[0], unpad[1], "convolution height");
+      op, input[1], kernelY, strideY, dilationY, pad[0], pad[1], unpad[0],
+      unpad[1], "convolution height");
   mlir::FailureOr<int64_t> expectedW = computeWindowedOutputDim(
-      op, input[2], kernelStride[1], kernelStride[3], dilation[1], pad[2],
-      pad[3], unpad[2], unpad[3], "convolution width");
+      op, input[2], kernelX, strideX, dilationX, pad[2], pad[3], unpad[2],
+      unpad[3], "convolution width");
   if (mlir::failed(expectedH) || mlir::failed(expectedW))
     return mlir::failure();
   if (output[1] != *expectedH || output[2] != *expectedW)

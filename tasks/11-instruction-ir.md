@@ -1092,7 +1092,10 @@ R3.2d verifier checks only instruction legality:
 - `wafer.instr.conv` requires aligned SPM input/weight/dest memrefs, matching element types, attrs that
   exactly match the three memref shapes, and an exact operator relation. Current production accepts only
   ordinary conv；depthwise/backward conv remain `unsupported_target_geometry` until their distinct
-  channel/group and output equations are defined.
+  channel/group and output equations are defined. Ordinary Conv的vendor-visible weight shape固定为
+  `[Kx, Ky, O, I]`，`kernel_strides=[Kx, Ky, Sx, Sy]`，`dilations=[Dx, Dy]`；NHWC input/output的
+  H关系使用`Ky/Sy/Dy`与top/bottom pad/unpad，W关系使用`Kx/Sx/Dx`与left/right pad/unpad，
+  input C匹配weight I，output C匹配weight O。不能把常见`[Kh,Kw,I,O]`直接当作该target wrapper ABI。
 - `wafer.instr.pool` / `wafer.instr.unpool` require aligned SPM operands, matching value element type,
   source/dest attrs equal to memref shapes, and exact batch/channel/spatial output equations. Indexed pool
   index dest must use i32 element type. Unpool `unpool` / `mask` require scalar uint32 `index`; `avg` forbids it.

@@ -106,20 +106,20 @@ module {
 
 module {
   %input = "builtin.unrealized_conversion_cast"()
-      : () -> memref<1x1024x1x1xf16, #wafer.memory<spm, ncx>>
+      : () -> memref<1x1x1024x1xf16, #wafer.memory<spm, ncx>>
   %weight = "builtin.unrealized_conversion_cast"()
       : () -> memref<2x1x1x1xf16, #wafer.memory<spm, ncx>>
   %output = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x1x1x1xf16, #wafer.memory<spm, ncx>>
   wafer.instr.conv #wafer.instr_conv_kind<conv> %input, %weight into %output
-      {input_shape = array<i64: 1, 1024, 1, 1>,
+      {input_shape = array<i64: 1, 1, 1024, 1>,
        weight_shape = array<i64: 2, 1, 1, 1>,
        output_shape = array<i64: 1, 1, 1, 1>,
        pads = array<i64: 0, 0, 0, 0>,
        unpads = array<i64: 0, 0, 0, 0>,
        kernel_strides = array<i64: 2, 1, 1, 1>,
        dilations = array<i64: 1023, 1023>}
-      : memref<1x1024x1x1xf16, #wafer.memory<spm, ncx>>,
+      : memref<1x1x1024x1xf16, #wafer.memory<spm, ncx>>,
         memref<2x1x1x1xf16, #wafer.memory<spm, ncx>>
     into memref<1x1x1x1xf16, #wafer.memory<spm, ncx>>
 }

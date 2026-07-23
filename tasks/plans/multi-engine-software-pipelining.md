@@ -172,6 +172,10 @@ Pipeline position:
   `[Kx,Ky,Sx,Sy] -> [N,Kx*Ky,outH*outW,C]`，不再接受被1x1 case掩盖的旧shape关系。
   NE BF16 1x16x16 identity GEMM的32B logical result、256B physical span与suffix guard也已闭合；
   该case只作为BF16 format/current layout基线，不外推累加舍入、transpose或tail。
+- ordinary Conv verifier已从legacy `[Kh,Kw,I,O]`修正为current wrapper合同
+  `[Kx,Ky,O,I]`，kernel/stride/dilation分别为`[Kx,Ky,Sx,Sy]`与`[Dx,Dy]`，并由非对称正反例、
+  register-bound axis case和完整target ABI golden验证。对应FP16 Conv板端exact case仍待本批串行执行，
+  通过前不进入board-observed capability。
 - 旧single-engine CT issue limit 5连续三次完整正确且`control_after_issue=0x100`，issue limit 6第一次
   timeout，随后known-good Add也timeout；同时`tsm_smi`仍显示idle。但旧probe把所有`TsmNew` builder保留到
   case结束，并在每次issue后插入多组MMIO观察，故timeout不能归因硬件queue或静态depth。

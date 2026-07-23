@@ -136,6 +136,10 @@ verifier已同步为`kernel_strides=[Kx,Ky,Sx,Sy]`及destination
 NE BF16 1x16x16 identity GEMM也已通过：32B logical result逐bit正确，256B physical output span和
 suffix guard均正确；该结果只闭合BF16 format、当前normal/normal layout与identity数值，不外推累加舍入、
 transpose或tail。
+Conv板测准备发现existing verifier仍按legacy `[Kh,Kw,I,O]`与H/W轴序解释wrapper参数；current vendor
+合同实际是weight `[Kx,Ky,O,I]`、kernel/stride `[Kx,Ky,Sx,Sy]`、dilation `[Dx,Dy]`。verifier、
+非对称正反例、register-bound axis case及完整target ABI lowering golden已同步；对应非对称FP16板测仍在
+Q37当前批次内，未通过前不把Conv记为board-observed。
 
 Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
 现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的

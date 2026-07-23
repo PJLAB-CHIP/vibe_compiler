@@ -51,10 +51,12 @@ module {
         : memref<1xi32, #wafer.memory<spm, tensor>>
     %conv_act = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<68608>}
         : memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
+    %conv_input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<98304>}
+        : memref<1x7x11x5xf16, #wafer.memory<spm, ncx>>
     %conv_weight = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<131072>}
-        : memref<3x3x64x64xf16, #wafer.memory<spm, ncx>>
+        : memref<3x2x7x5xf16, #wafer.memory<spm, ncx>>
     %conv_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<262144>}
-        : memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
+        : memref<1x3x5x7xf16, #wafer.memory<spm, ncx>>
     %pool_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<327680>}
         : memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>
     %pool_idx = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<344064>}
@@ -105,17 +107,17 @@ module {
         : memref<2x3xf16, #wafer.memory<spm, cx>>,
           memref<3x4xf16, #wafer.memory<spm, cx>>
       into memref<2x4xf16, #wafer.memory<spm, cx>>
-    wafer.instr.conv #wafer.instr_conv_kind<conv> %conv_act, %conv_weight into %conv_out
-        {input_shape = array<i64: 1, 8, 8, 64>,
-         weight_shape = array<i64: 3, 3, 64, 64>,
-         output_shape = array<i64: 1, 8, 8, 64>,
-         pads = array<i64: 1, 1, 1, 1>,
+    wafer.instr.conv #wafer.instr_conv_kind<conv> %conv_input, %conv_weight into %conv_out
+        {input_shape = array<i64: 1, 7, 11, 5>,
+         weight_shape = array<i64: 3, 2, 7, 5>,
+         output_shape = array<i64: 1, 3, 5, 7>,
+         pads = array<i64: 1, 0, 2, 1>,
          unpads = array<i64: 0, 0, 0, 0>,
-         kernel_strides = array<i64: 3, 3, 1, 1>,
-         dilations = array<i64: 1, 1>}
-        : memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>,
-          memref<3x3x64x64xf16, #wafer.memory<spm, ncx>>
-      into memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
+         kernel_strides = array<i64: 3, 2, 2, 3>,
+         dilations = array<i64: 2, 1>}
+        : memref<1x7x11x5xf16, #wafer.memory<spm, ncx>>,
+          memref<3x2x7x5xf16, #wafer.memory<spm, ncx>>
+      into memref<1x3x5x7xf16, #wafer.memory<spm, ncx>>
     wafer.instr.pool #wafer.instr_pool_kind<indexedmax> %conv_act into %pool_out, %pool_idx
         {source_shape = array<i64: 1, 8, 8, 64>,
          dest_shape = array<i64: 1, 4, 4, 64>,
@@ -200,8 +202,14 @@ module {
 // LLVMIR: call void @wafer_tx81_rdma(i64 %{{.*}}, i64 65536, i32 12, i32 6, i32 16, i32 0, i32 0, i32 2, i32 1, i32 1, i32 2)
 // LLVMIR: call void @wafer_tx81_gather_scatter(i64 65538, i64 65796, i32 8, i32 4, i32 4, i32 0, i32 0, i32 2, i32 1, i32 1, i32 4, i32 0, i32 0, i32 2, i32 1, i32 1)
 // LLVMIR: call void @wafer_tx81_gemm(i64 65792, i64 66048, i64 66304, i32 2, i32 3, i32 4, i32 1, i32 2)
-// LLVMIR: call void @wafer_tx81_conv(i64 68608, i64 131072, i64 262144,
-// LLVMIR-SAME: i32 0, i32 1, i32 8, i32 8, i32 64,
+// LLVMIR: call void @wafer_tx81_conv(i64 98304, i64 131072, i64 262144,
+// LLVMIR-SAME: i32 0, i32 1, i32 7, i32 11, i32 5,
+// LLVMIR-SAME: i32 3, i32 2, i32 7, i32 5,
+// LLVMIR-SAME: i32 1, i32 3, i32 5, i32 7,
+// LLVMIR-SAME: i32 1, i32 0, i32 2, i32 1,
+// LLVMIR-SAME: i32 0, i32 0, i32 0, i32 0,
+// LLVMIR-SAME: i32 3, i32 2, i32 2, i32 3,
+// LLVMIR-SAME: i32 2, i32 1, i32 2)
 // LLVMIR: call void @wafer_tx81_tdma_img2col(i64 352256, i64 360448,
 // LLVMIR-SAME: i32 1, i32 4, i32 5, i32 3,
 // LLVMIR-SAME: i32 1, i32 6, i32 12, i32 3,

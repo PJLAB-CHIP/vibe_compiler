@@ -1252,3 +1252,14 @@
   exact result验证kernel-major顺序和2048B physical span。
 - 防复发：验证window、layout或axis order时不得只用1x1、方形、对称padding或相等stride；至少一个正例必须让
   每个维度产生不同可观测结果，并同时包含旧错误关系的negative verifier case。
+
+## 2026-07-23 对称Conv case会掩盖weight与X/Y轴序错误
+
+- 现象：ordinary Conv verifier按常见`[Kh,Kw,I,O]`和H-first kernel/stride/dilation解释参数，既有方形、
+  通道数相等case仍能通过并lower到current CRT。
+- 根因：current vendor wrapper合同实际为weight `[Kx,Ky,O,I]`、kernel/stride `[Kx,Ky,Sx,Sy]`、
+  dilation `[Dx,Dy]`；当Kx==Ky、Sx==Sy且I==O时，错误轴序完全退化为相同shape和调用参数。
+- 修复模式：verifier按vendor-visible合同核对input/output channel与H/W window；正例同时使用非方形kernel、
+  不同X/Y stride/dilation、非对称padding和I!=O，负例显式提交legacy weight轴序，LLVM golden逐项检查完整ABI。
+- 防复发：Conv/Pool/Img2Col等二维wrapper的contract test必须至少让Kx/Ky、Sx/Sy或I/O中的两组不相等；
+  square identity只适合作smoke，不能作为axis、layout或weight codec的完成证明。

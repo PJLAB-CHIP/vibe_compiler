@@ -595,6 +595,29 @@ module {
 
 module {
   %input = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x7x11x5xf16, #wafer.memory<spm, ncx>>
+  %weight = "builtin.unrealized_conversion_cast"()
+      : () -> memref<3x2x5x7xf16, #wafer.memory<spm, ncx>>
+  %output = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x3x5x7xf16, #wafer.memory<spm, ncx>>
+  // expected-error @below {{target_geometry_mismatch: convolution input channels must match the weight input channels}}
+  wafer.instr.conv #wafer.instr_conv_kind<conv> %input, %weight into %output
+      {input_shape = array<i64: 1, 7, 11, 5>,
+       weight_shape = array<i64: 3, 2, 5, 7>,
+       output_shape = array<i64: 1, 3, 5, 7>,
+       pads = array<i64: 1, 0, 2, 1>,
+       unpads = array<i64: 0, 0, 0, 0>,
+       kernel_strides = array<i64: 3, 2, 2, 3>,
+       dilations = array<i64: 2, 1>}
+      : memref<1x7x11x5xf16, #wafer.memory<spm, ncx>>,
+        memref<3x2x5x7xf16, #wafer.memory<spm, ncx>>
+    into memref<1x3x5x7xf16, #wafer.memory<spm, ncx>>
+}
+
+// -----
+
+module {
+  %input = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x8x8x16xf16, #wafer.memory<spm, ncx>>
   %output = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x5x4x16xf16, #wafer.memory<spm, ncx>>
