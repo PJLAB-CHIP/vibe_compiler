@@ -115,9 +115,10 @@ delta均为1；worker0/1/2 disjoint join使用mask `0b111`，三个worker CT del
 boundary/final result与guard均正确、blocking为0，前后Add heartbeat通过。当前将CT三worker routing、
 matching `bywork`及disjoint join记为`board-observed`；跨worker并行、仲裁、同地址行为与
 default/local-fence跨worker scope仍保持保守`unknown/excluded`。
-instruction-family typed catalog的33个safe case也已全部逐个串行上板通过，覆盖f16/bf16 elementwise、
+instruction-family typed catalog的34个safe case也已全部逐个串行上板通过，覆盖f16/bf16 elementwise、
 convert、reduce、select composite、f16 NE GEMM、f16 TDMA Pad与f16 peripheral ArgMax/ArgMin composite
-writeback、f16 PoolMax，以及peripheral LUT16 raw-offset lookup；每个case均有精确bit oracle、SPM guard、
+writeback、f16 PoolMax、peripheral LUT16 raw-offset lookup，以及f16 TDMA Img2Col；每个case均有精确bit
+oracle、SPM guard、
 terminal和cleanup。首次`reduce-sum-f16`准确暴露catalog边界错误：逻辑结果是128B，但CT physical write
 span为256B。将四个reduction row修正为`result_bytes=128`、`output_span=256`后，reduction和剩余case全部
 通过。ArgMax在含负数普通值且唯一最大值`100@index73`时通过；ArgMin在全正普通值且唯一最小值
@@ -128,6 +129,10 @@ span为256B。将四个reduction row修正为`result_bytes=128`、`output_span=2
 两个输出窗口的128个FP16结果逐bit正确，256B physical output span和suffix guard均通过。
 LUT16使用128个非顺序`uint16`字节偏移查找128项FP16 table，完整256B结果逐bit正确；该证据只闭合
 raw 16-bit byte-offset语义，不能把source解释成FP16数值index。
+Img2Col使用`[1,3,3,64]`、2x2 kernel、1x1 stride和零padding，vendor destination
+`[1,4,4,64]`按`ky,kx,oh,ow,c`展开；1024个FP16结果和2048B physical span/guard全部通过。compiler
+verifier已同步为`kernel_strides=[Kx,Ky,Sx,Sy]`及destination
+`[N,Kx*Ky,outH*outW,C]`，并用非对称非1x1正反例和完整target ABI lowering golden闭合。
 
 Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
 现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的

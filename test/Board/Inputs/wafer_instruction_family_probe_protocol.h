@@ -147,8 +147,8 @@ enum WaferIFPDeferredReason {
     256, 256, 0)                                                               \
   X(UNPOOL_F16, 104, "unpool-f16", DEFERRED, UNPOOL, F16, NO_ORACLE,          \
     REASON_GEOMETRY_UNQUALIFIED, 0, 0, 0)                                     \
-  X(TDMA_IMG2COL_F16, 105, "tdma-img2col-f16", DEFERRED, TDMA_IMG2COL, F16,   \
-    NO_ORACLE, REASON_GEOMETRY_UNQUALIFIED, 0, 0, 0)                          \
+  X(TDMA_IMG2COL_F16, 105, "tdma-img2col-f16", SAFE, TDMA_IMG2COL, F16,       \
+    EXACT_BITS, REASON_NONE, 2048, 2048, 0)                                   \
   X(PERIPHERAL_LUT16_F16, 106, "peripheral-lut16-f16", SAFE, PERIPHERAL,      \
     F16, EXACT_BITS, REASON_NONE, 256, 256, 0)
 

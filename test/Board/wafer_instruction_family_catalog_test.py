@@ -220,6 +220,61 @@ def validate_pool_max_oracle() -> None:
     )
 
 
+def validate_img2col_oracle() -> None:
+    case = catalog.CASES_BY_NAME["tdma-img2col-f16"]
+    assert case.is_safe
+    assert case.oracle_name == "EXACT_BITS"
+    assert case.result_bytes == 2048
+    assert case.output_span == 2048
+    assert case.aux_span == 0
+
+    built = catalog.build_case_payload(case)
+    source = struct.unpack_from(
+        "<576e", built.payload, catalog.BODY_OFFSET
+    )
+    assert source[0] == 1.0
+    assert source[64] == 65.0
+    assert source[3 * 64] == 257.0
+    assert source[-1] == 704.0
+
+    result = struct.unpack_from(
+        "<1024e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    expected = tuple(
+        source[((output_row + kernel_y) * 3 + output_column + kernel_x) * 64
+               + channel]
+        for kernel_y in range(2)
+        for kernel_x in range(2)
+        for output_row in range(2)
+        for output_column in range(2)
+        for channel in range(64)
+    )
+    assert result == expected
+    assert result[::64] == (
+        1.0,
+        65.0,
+        257.0,
+        321.0,
+        65.0,
+        129.0,
+        321.0,
+        385.0,
+        257.0,
+        321.0,
+        513.0,
+        577.0,
+        321.0,
+        385.0,
+        577.0,
+        641.0,
+    )
+    assert built.expected_output_slot[
+        catalog.BODY_OFFSET + case.output_span :
+    ] == bytes([catalog.SLOT_CANARY]) * (
+        catalog.SLOT_BYTES - catalog.BODY_OFFSET - case.output_span
+    )
+
+
 def validate_lut16_oracle() -> None:
     case = catalog.CASES_BY_NAME["peripheral-lut16-f16"]
     assert case.is_safe
@@ -255,10 +310,10 @@ def _output_seed_padding() -> bytes:
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 33
+    assert len(catalog.SAFE_CASES) == 34
     assert len(catalog.CATALOG) == 36
     assert {case.case_id for case in catalog.SAFE_CASES} == (
-        set(range(1, 30)) | {100, 101, 103, 106}
+        set(range(1, 30)) | {100, 101, 103, 105, 106}
     )
     assert {
         case.reason_name
@@ -329,6 +384,7 @@ def main() -> int:
     validate_gemm_padding_domain()
     validate_arg_extrema_composite_oracles()
     validate_pool_max_oracle()
+    validate_img2col_oracle()
     validate_lut16_oracle()
 
     print("wafer_instruction_family_catalog_test: passed")

@@ -833,6 +833,11 @@ wafer.instr.peripheral #wafer.instr_peripheral_kind<kind> inputs into dests attr
 
 `wafer.instr.tdma_data_move` 的V0 production surface只表达wrapper-level `pad` / `img2col`；两者的
 source/dest attrs必须匹配memref shape，并分别证明pad或kernel/stride/pad的输出关系。
+Img2col的`kernel_strides`固定为`[Kx, Ky, Sx, Sy]`，`pads`为`[top, bottom, left, right]`；
+对NHWC source `[N,H,W,C]`，其vendor-visible destination是
+`[N, Kx*Ky, outH*outW, C]`，其中`outH=(H+top+bottom-Ky)/Sy+1`、
+`outW=(W+left+right-Kx)/Sx+1`并要求整型窗口关系合法。第二维按`ky,kx`、第三维按`oh,ow`
+展开；不能把常见的`[N,outH,outW,C*Ky*Kx]`表示直接当作该wrapper ABI。
 mirror、transpose、rotate、NCHW/NHWC 和 TensorNom 这类 transform-like DataMove kind 虽然有
 public wrapper/header 证据，但 V0 不把它们作为 production target surface；普通 copy、layout segment
 movement、static slice / broadcast / transpose / mirror / rotate 的可证明 byte movement 由 compiler

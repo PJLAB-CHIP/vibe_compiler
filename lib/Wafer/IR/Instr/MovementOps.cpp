@@ -256,22 +256,26 @@ static mlir::LogicalResult verifyImg2ColShapeRelation(
   llvm::ArrayRef<int64_t> dest = destShape.asArrayRef();
   llvm::ArrayRef<int64_t> pad = pads.asArrayRef();
   llvm::ArrayRef<int64_t> kernelStride = kernelStrides.asArrayRef();
-  mlir::FailureOr<int64_t> expectedH = computeWindowedOutputDim(
-      op, source[1], kernelStride[0], kernelStride[2], /*dilation=*/1, pad[0],
-      pad[1], /*unpadBefore=*/0, /*unpadAfter=*/0, "img2col height");
+  int64_t kernelX = kernelStride[0];
+  int64_t kernelY = kernelStride[1];
+  int64_t strideX = kernelStride[2];
+  int64_t strideY = kernelStride[3];
   mlir::FailureOr<int64_t> expectedW = computeWindowedOutputDim(
-      op, source[2], kernelStride[1], kernelStride[3], /*dilation=*/1, pad[2],
-      pad[3], /*unpadBefore=*/0, /*unpadAfter=*/0, "img2col width");
-  int64_t expectedC = 0;
+      op, source[2], kernelX, strideX, /*dilation=*/1, pad[2], pad[3],
+      /*unpadBefore=*/0, /*unpadAfter=*/0, "img2col width");
+  mlir::FailureOr<int64_t> expectedH = computeWindowedOutputDim(
+      op, source[1], kernelY, strideY, /*dilation=*/1, pad[0], pad[1],
+      /*unpadBefore=*/0, /*unpadAfter=*/0, "img2col height");
   int64_t kernelElements = 0;
-  if (mlir::failed(expectedH) || mlir::failed(expectedW))
+  int64_t outputPositions = 0;
+  if (mlir::failed(expectedW) || mlir::failed(expectedH))
     return mlir::failure();
-  if (!checkedMul(kernelStride[0], kernelStride[1], kernelElements) ||
-      !checkedMul(source[3], kernelElements, expectedC))
+  if (!checkedMul(kernelX, kernelY, kernelElements) ||
+      !checkedMul(*expectedH, *expectedW, outputPositions))
     return op->emitOpError(
-        "target_range_overflow: img2col destination channels overflow int64");
-  if (dest[0] != source[0] || dest[1] != *expectedH || dest[2] != *expectedW ||
-      dest[3] != expectedC)
+        "target_range_overflow: img2col destination geometry overflows int64");
+  if (dest[0] != source[0] || dest[1] != kernelElements ||
+      dest[2] != outputPositions || dest[3] != source[3])
     return op->emitOpError(
         "target_geometry_mismatch: img2col destination shape does not match "
         "source/kernel/stride/pad");

@@ -59,8 +59,10 @@ module {
         : memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>
     %pool_idx = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<344064>}
         : memref<1x4x4x64xi32, #wafer.memory<spm, ncx>>
+    %img2col_src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<352256>}
+        : memref<1x4x5x3xf16, #wafer.memory<spm, tensor>>
     %img2col_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<360448>}
-        : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+        : memref<1x6x12x3xf16, #wafer.memory<spm, tensor>>
     %fill_value = arith.constant 7 : i32
 
     wafer.instr.rdma %input_tile to %loaded
@@ -135,13 +137,13 @@ module {
          pads = array<i64: 0, 0, 0, 0>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
        to memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.tdma_data_move #wafer.instr_data_move_kind<img2col> %loaded into %img2col_out
-        {source_shape = array<i64: 1, 1, 2, 3>,
-         dest_shape = array<i64: 1, 1, 2, 3>,
-         pads = array<i64: 0, 0, 0, 0>,
-         kernel_strides = array<i64: 1, 1, 1, 1>}
-        : memref<2x3xf16, #wafer.memory<spm, tensor>>
-       to memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.tdma_data_move #wafer.instr_data_move_kind<img2col> %img2col_src into %img2col_out
+        {source_shape = array<i64: 1, 4, 5, 3>,
+         dest_shape = array<i64: 1, 6, 12, 3>,
+         pads = array<i64: 1, 0, 2, 1>,
+         kernel_strides = array<i64: 2, 3, 2, 1>}
+        : memref<1x4x5x3xf16, #wafer.memory<spm, tensor>>
+       to memref<1x6x12x3xf16, #wafer.memory<spm, tensor>>
     wafer.instr.peripheral #wafer.instr_peripheral_kind<argmax> %loaded into %arg_value, %arg_index
         {elem_count = 6 : i64}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
@@ -200,6 +202,9 @@ module {
 // LLVMIR: call void @wafer_tx81_gemm(i64 65792, i64 66048, i64 66304, i32 2, i32 3, i32 4, i32 1, i32 2)
 // LLVMIR: call void @wafer_tx81_conv(i64 68608, i64 131072, i64 262144,
 // LLVMIR-SAME: i32 0, i32 1, i32 8, i32 8, i32 64,
-// LLVMIR: call void @wafer_tx81_tdma_img2col(i64 65536, i64 360448,
-// LLVMIR-SAME: i32 1, i32 1, i32 2, i32 3,
+// LLVMIR: call void @wafer_tx81_tdma_img2col(i64 352256, i64 360448,
+// LLVMIR-SAME: i32 1, i32 4, i32 5, i32 3,
+// LLVMIR-SAME: i32 1, i32 6, i32 12, i32 3,
+// LLVMIR-SAME: i32 1, i32 0, i32 2, i32 1,
+// LLVMIR-SAME: i32 2, i32 3, i32 2, i32 1, i32 2)
 // LLVMIR: call void @wafer_tx81_wdma(i64 65536, i64 %{{.*}}, i32 12, i32 6, i32 16, i32 0, i32 0, i32 2, i32 1, i32 1, i32 2)

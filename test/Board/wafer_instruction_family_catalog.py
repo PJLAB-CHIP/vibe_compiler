@@ -413,6 +413,27 @@ def _pad() -> tuple[bytes, bytes, bytes]:
     return _f16(source), b"", _f16(expected)
 
 
+def _img2col(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
+    if case.symbol != "TDMA_IMG2COL_F16":
+        raise RuntimeError(f"{case.name}: unknown Img2Col kind")
+    source = [
+        float(1 + 256 * row + 64 * column + channel)
+        for row in range(3)
+        for column in range(3)
+        for channel in range(64)
+    ]
+    expected = [
+        source[((output_row + kernel_y) * 3 + output_column + kernel_x) * 64
+               + channel]
+        for kernel_y in range(2)
+        for kernel_x in range(2)
+        for output_row in range(2)
+        for output_column in range(2)
+        for channel in range(64)
+    ]
+    return _f16(source), b"", _f16(expected)
+
+
 def _pool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
     if case.symbol != "POOL_F16":
         raise RuntimeError(f"{case.name}: unknown pool kind")
@@ -492,6 +513,8 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
         input_a, input_b, expected = _gemm()
     elif case.family_name == "TDMA_PAD":
         input_a, input_b, expected = _pad()
+    elif case.family_name == "TDMA_IMG2COL":
+        input_a, input_b, expected = _img2col(case)
     elif case.family_name == "POOL":
         input_a, input_b, expected = _pool(case)
     elif case.family_name == "PERIPHERAL":

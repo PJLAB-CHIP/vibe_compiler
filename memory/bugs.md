@@ -1240,3 +1240,15 @@
   poison和suffix guard；负数域保持unsupported，不用正数case宣称通用浮点支持。
 - 防复发：writeback完成、index ABI正确和数值domain正确是三项独立资格门禁。每个reduction/extrema opcode都要
   单独覆盖符号域；某一domain失败时保留最小可复现case，不能降级oracle或把错误值写成expected。
+
+## 2026-07-23 1x1 Img2Col case会掩盖wrapper layout合同错误
+
+- 现象：Instr verifier长期把Img2Col参数解释为`[Kh,Kw,Sh,Sw]`并要求传统
+  `[N,outH,outW,C*Kh*Kw]` destination，但已有1x1测试仍能通过。
+- 根因：current vendor wrapper/packet合同是`[Kx,Ky,Sx,Sy]`，输出按`ky,kx,oh,ow,c`展开为
+  `[N,Kx*Ky,outH*outW,C]`；kernel为1x1时两种表示在元素数和主要维度上退化，无法区分参数轴序与layout。
+- 修复模式：verifier改用vendor-visible合同和checked geometry；正例使用非对称H/W、Kx/Ky、Sx/Sy和padding，
+  负例显式提交旧layout，target lowering golden逐项检查完整CRT ABI参数。板端再以2x2 kernel的1024个FP16
+  exact result验证kernel-major顺序和2048B physical span。
+- 防复发：验证window、layout或axis order时不得只用1x1、方形、对称padding或相等stride；至少一个正例必须让
+  每个维度产生不同可观测结果，并同时包含旧错误关系的negative verifier case。

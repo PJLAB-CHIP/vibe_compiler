@@ -623,3 +623,20 @@ module {
       : memref<1x2x2x4xf16, #wafer.memory<spm, tensor>>
      to memref<1x4x5x4xf16, #wafer.memory<spm, tensor>>
 }
+
+// -----
+
+module {
+  %src = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x4x5x3xf16, #wafer.memory<spm, tensor>>
+  %dst = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x2x6x18xf16, #wafer.memory<spm, tensor>>
+  // expected-error @below {{target_geometry_mismatch: img2col destination shape does not match source/kernel/stride/pad}}
+  wafer.instr.tdma_data_move #wafer.instr_data_move_kind<img2col> %src into %dst
+      {source_shape = array<i64: 1, 4, 5, 3>,
+       dest_shape = array<i64: 1, 2, 6, 18>,
+       pads = array<i64: 1, 0, 2, 1>,
+       kernel_strides = array<i64: 2, 3, 2, 1>}
+      : memref<1x4x5x3xf16, #wafer.memory<spm, tensor>>
+     to memref<1x2x6x18xf16, #wafer.memory<spm, tensor>>
+}
