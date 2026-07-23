@@ -1170,12 +1170,14 @@
   七次execute rc均为1，issue-order cycle为`[3558, 322, 561, 365, 236, 237, 218]`，CT instruction delta
   为7、CT/full execution delta均为553 cycles、blocking delta为0，全部boundary/final result和guard
   mismatch为0，window后control为`0x100`。
+- 同合同下NE/RDMA/WDMA `D+1=7`与TDMA `D+1=5`也逐engine通过完整instruction count、result、guard和
+  completion oracle，blocking均为0。
 - 防复发：静态queue shape、总issue接受数、并发occupancy、安全issue上限和queue-full/backpressure是五类不同
-  结论，必须分别取证。CT `D=6`与`D+1=7`证明对应submission/completion vector，且后者证明documented
-  depth是pending storage而非完整lifetime总提交上限；但短workload在观测前已排空，不能证明六或七条同时
-  驻留，也没有校准queue-full/backpressure。其它engine的exact documented depth已独立通过，但其`D+1`及
-  所有engine的真实occupancy/full仍需复验；任意更深overflow在这些边界闭合前禁止。`tsm_smi` idle不能解除
-  fail-stop，测试框架不得自动retry、reset或power。
+  结论，必须分别取证。五类engine的`D`与`D+1`证明对应submission/completion vector，且`D+1`证明
+  documented depth是pending storage而非完整lifetime总提交上限；但短workload在观察前已排空，不能证明
+  `D`或`D+1`请求同时驻留，也没有校准queue-full/backpressure。所有engine的真实occupancy/full仍需复验；
+  任意更深overflow在这些边界闭合前禁止。`tsm_smi` idle不能解除fail-stop，测试框架不得自动retry、
+  reset或power。
 
 ## 2026-07-23 logical result不能代替硬件physical write span
 
@@ -1276,3 +1278,17 @@
 - 防复发：遇到疑似address-valued integer ABI字段时，先用能让每元素descriptor不同的composite vector确认
   scalar/address语义，再决定IR carrier；同时保留缺operand、错误dtype/shape、legacy attr和地址narrowing
   negative gate，不能让C prototype单独成为语义事实源。
+
+## 2026-07-23 手写cluster probe遗漏terminal publication会伪装成barrier失败
+
+- 现象：首个16-rank、两epoch `hrt_barrier` probe很快由host报Direct DTE terminal status
+  `0xffffffff`；没有任何rank output可用于判断barrier是否进入或完成。
+- 根因：probe复用了带`wafer-direct-dte-status-v2` completion resource的cluster package，却只在
+  prepare中初始化tile/direct-sync，在main中执行barrier；device entry遗漏
+  `wafer_tx81_direct_dte_begin_after_prepare()`和`wafer_tx81_direct_dte_finish()`，status保持host预填
+  poison。该错误属于launch terminal ABI，不是`hrt_barrier`、participant或卡状态错误。
+- 修复模式：从rank-local binding取对应status resource，prepare之后调用begin，完成结果publication后调用
+  finish；补齐后同一full-card probe的两轮反向错峰均16/16 marker正确、0 mismatch/crosstalk。
+- 防复发：手写cluster fixture必须验证entrypoint、resource binding与completion schema的双射，并在
+  no-card gate检查每个terminal status都有begin/finish控制流。`0xffffffff`且无device output时先审计status
+  publication，不能直接重试、reset/power或归因硬件同步。

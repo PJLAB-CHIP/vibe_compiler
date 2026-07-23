@@ -19,6 +19,9 @@
   memory/target基础设施、构建依赖，或任务completion gate明确要求时，才运行全量unit/lit/CTest。
   定向验证已经覆盖改动及其直接consumer时，不为“每次提交”机械追加全量长测试；最终结果要明确
   写出实际验证范围和未运行项。
+- 本机普通CPU构建默认使用`cmake --build <build> -j$(nproc)`，不要无依据固定成低并发。只有已观察到
+  内存压力、共享机器约束或特定工具不支持并行时才主动降并发，并在进度中说明。板卡执行仍由独立
+  resource lock保持单进程串行，不能把CPU构建并发规则套到硬件case。
 - 板端版本、ABI、loader symbol和最终ELF反汇编属于环境或相关实现变化时的一次性qualification基线，
   不能默认塞进每轮workload热路径重复执行。基线未变化时，普通板测只做一次设备空闲/可用性确认、
   正常launch、完整结果及该case必要的PMU读回；成功后直接继续。只有timeout、device/query error、
@@ -39,9 +42,15 @@
   一个engine/case且只跑一遍，前后各做known-good Add heartbeat，核对连续提交、最终completion、
   instruction count、完整output/guard。typed tight `D+1`只能在`D`已通过且取得显式manual授权后使用相同隔离
   边界；packet builder预先释放，相邻execute只做cycle采样，window后统一读control并完成matching wait/full
-  oracle。CT `D=6`与`D+1=7`均已board-observed，后者证明documented depth不是完整lifetime总提交上限；
-  但control观测时已空闲且blocking为0，不能声明并发resident、queue full或backpressure。其它engine仍需
-  独立校准，任意更深overflow不执行。
+  oracle。CT/NE/RDMA/WDMA的`D=6`/`D+1=7`与TDMA的`D=4`/`D+1=5`均已board-observed，
+  `D+1`证明documented depth不是完整lifetime总提交上限；但control观察时已空闲且blocking为0，不能声明
+  并发resident、queue full或backpressure。任意更深overflow不执行。
+- `TsmWaitfinish()`、`TsmWaitfinish_bywork(worker)`和multi-tile barrier必须按不同completion scope处理。
+  current version-matched静态反汇编中default wait只轮询worker0，local fence直接复用default wait；非default worker使用
+  matching `bywork`，跨worker join逐worker显式完成。短workload即使在default wait后结果正确，也可能只是在
+  wait观察前自然排空，不能据此外推default会等待其它worker。逐指令wait相对window末尾单次wait的三轮对照
+  方向一致地更慢，因此compiler应把wait放在latest-legal消费/地址复用/visibility边界并合并相邻wait；不把
+  单轮cycle写成固定cost。
 - PMU parser必须把“counter可读”和“样本有效”分开：split counter先做稳定读取，再验证enable、scope在window
   内未变化和workload至少触发一个相关delta。enable缺失、scope变化或全部delta为零时样本保持
   `inconclusive`；PMU结论不能替代payload、guard和completion正确性。

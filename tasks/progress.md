@@ -89,15 +89,13 @@ IR上物化显式multi-buffer、prologue/steady/epilogue、resource-aware issue 
 每个actual clone重新经过SPM/DDR、instruction、target、package与board correctness gate。计划见
 `tasks/plans/multi-engine-software-pipelining.md`。
 当前queue active occupancy与full行为仍在Q37内保持`unknown`：静态depth不直接作为occupancy证据。普通
-calibration只运行1/2/4（TDMA 1/2）。修正builder生命周期和逐issue观察位置后，CT exact documented
-`D=6`已由单engine、单case、单样本及前后known-good Add heartbeat闭合submission/completion/count/output/guard；
-逐issue control均为`0x100`，因此不声明六条并发occupancy。本轮显式manual授权的CT typed tight `D+1=7`也在
-单engine/case/sample、紧邻issue、前后Add heartbeat和完整oracle下通过，证明documented depth是pending
-queue storage而非完整lifetime总提交上限；window后control为`0x100`且blocking为0，未观察到resident/full/
-backpressure。current profile上的NE/RDMA/WDMA exact `D=6`与TDMA exact `D=4`也已分别由单engine、
-单case、单样本、前后known-good Add heartbeat及完整oracle闭合：`instruction_delta=6/6/6/4`，对应
-engine/full execution delta为`492/2101/1578/292` cycles，blocking delta均为0，全部boundary/final result与
-guard mismatch均为0。该组结果不证明active occupancy、full或backpressure，任意更深提交继续禁用。
+calibration只运行1/2/4（TDMA 1/2）。修正builder生命周期和逐issue观察位置后，CT/NE/RDMA/WDMA exact
+`D=6`与TDMA exact `D=4`已分别由单engine、单case、单样本及前后known-good Add heartbeat闭合
+submission/completion/count/output/guard。经显式manual授权，五类engine的typed tight `D+1`也逐项通过：
+CT/NE/RDMA/WDMA各7条、TDMA 5条的instruction count、完整result/guard和completion均正确，blocking均为0。
+这些向量证明documented depth是pending queue storage而非完整lifetime总提交上限；短workload在control观察前
+已经自然排空，仍不证明并发resident、queue full或backpressure。任意更深提交继续禁用，单次cycle不外推为
+固定cost。
 current profile的10个disjoint cross-engine pair也已按单进程串行执行完成：serial/window各3个样本，全部
 instruction count、result和guard正确，blocking delta均为0，最终known-good Add heartbeat通过。已有
 CT+RDMA r4正overlap现降级为`historical/inconclusive`：本轮canonical CT→RDMA r4 window excess为
@@ -115,7 +113,14 @@ delta均为1；worker0/1/2 disjoint join使用mask `0b111`，三个worker CT del
 boundary/final result与guard均正确、blocking为0，前后Add heartbeat通过。当前将CT三worker routing、
 matching `bywork`及disjoint join记为`board-observed`；跨worker并行、仲裁、同地址行为与
 default/local-fence跨worker scope仍保持保守`unknown/excluded`。
-instruction-family typed catalog的41个safe case也已全部逐个串行上板通过，覆盖f16/bf16 elementwise、
+version-matched静态反汇编确认default `TsmWaitfinish()`轮询worker0，`bywork(worker)`轮询指定worker，
+current local fence直接调用default wait。现有worker1 depth-6 RDMA向量，以及worker0短TDMA/worker1
+depth-6 NE向量，都在default wait的boundary观察前自然排空；default和`bywork(1)`均结果正确仍不能证明
+default跨worker scope。worker0六条CT的逐条wait与
+末尾单次wait对照独立运行
+三轮，完整结果/guard均正确且三轮都观察到频繁wait的plan cycles更高；该结果只支持latest-legal、合并wait的
+方向，不提供固定cycle常数。
+instruction-family typed catalog的60个safe case也已全部逐个串行上板通过，覆盖f16/bf16 elementwise、
 convert、reduce、select composite、f16 NE GEMM、f16 TDMA Pad与f16 peripheral ArgMax/ArgMin composite
 writeback、f16 PoolMax/Unpool、peripheral LUT16 raw-offset lookup，以及f16 TDMA Img2Col；每个case均有精确bit
 oracle、SPM guard、
@@ -124,8 +129,10 @@ span为256B。将四个reduction row修正为`result_bytes=128`、`output_span=2
 通过。ArgMax在含负数普通值且唯一最大值`100@index73`时通过；ArgMin在全正普通值且唯一最小值
 `0.5@index42`时通过，value/index分别写入同一slot的`[0:2]`与`[4:8]`，中间2B保持不变。ArgMin负数
 对照会错误返回首元素`-30@index0`而不是`-100@index42`，因此负数域保持unsupported，不由正数case外推。
-最终Add heartbeat正常。f32、special value、held-out tail以及其余deferred geometry/writeback family继续
-留在Q37后续校准。PoolMax使用`[1,2,4,64] -> [1,1,2,64]`、无padding、2x2 kernel/stride，
+最终Add heartbeat正常。新增CT Add f16/bf16 tail130、finite f32及不含NaN的special-value向量也均逐bit通过：
+tail130分别验证260B logical result、512B physical span与guard；special向量覆盖正负零、正负无穷、
+max-finite、min-normal和min-subnormal。该证据不外推NaN或其它f32 opcode。PoolMax使用
+`[1,2,4,64] -> [1,1,2,64]`、无padding、2x2 kernel/stride，
 两个输出窗口的128个FP16结果逐bit正确，256B physical output span和suffix guard均通过。
 LUT16使用128个非顺序`uint16`字节偏移查找128项FP16 table，完整256B结果逐bit正确；该证据只闭合
 raw 16-bit byte-offset语义，不能把source解释成FP16数值index。
@@ -152,13 +159,25 @@ current profile `board-observed`。
 新增NE BF16 `M1K16N16`累加向量让每个输出包含16个非零K贡献，并以精确二进制构造同时检查round-up与
 round-down；32B结果逐bit通过，256B physical span、guard、terminal、cleanup和后置Add正常。该结果排除
 逐项BF16累加丢精度与末端截断两类错误，当前只不外推transpose、batch或tail。
+NE后续held-out矩阵也已逐项通过：FP16覆盖非平凡累加、`M=4`、batch2/`M=8`、`K=17`、
+`N=17/N=65`、NT/TN/TT orientation和raw psum；BF16覆盖batch2/`M=8`、`K=17`、`N=65`及NT。
+每项均有完整logical result、physical span和guard oracle；raw psum只闭合本地nonzero psum writeback，
+不外推跨tile reduction或communication。
 Unpool协议已从错误的scalar `uint32` index attr收敛为显式i16 SPM index memref：indexedmax/min pool的
 第二个结果使用i16，mask/unpool消费该same-shape buffer，avg不消费并在既有ABI槽传0；target lowering只把
 已验证的静态SPM起始地址写入该`uint32_t`槽。FP16板测以indexedmax
 `[1,2,2,64] -> [1,1,1,64]` value/index、local fence及maskunpool
 `[1,1,1,64] -> [1,2,2,64]`组成单一composite，按channel变化的四个空间index区分buffer地址与scalar误解；
-512B结果逐bitexact，256B index auxiliary guard、terminal、cleanup和后置Add均通过。catalog当前41/41
+512B结果逐bitexact，256B index auxiliary guard、terminal、cleanup和后置Add均通过。catalog当前60/60
 safe row均已有串行板端证据；该向量只闭合FP16、2x2/stride2及当前indexedmax→maskunpool组合。
+RDMA/WDMA的FP16 1D/2D/3D strided round-trip也已逐字节验证compact payload、scatter位置、stride holes和
+双侧guard；直接CRT TDMA I8 physical16向量同样exact，但不能替代production BOOL→I8 canonicalization
+held-out。
+独立full-card `hrt_barrier`以rank递增和反向错峰复用两个epoch；两轮均16/16 marker正确、0 mismatch和
+0 crosstalk，等待cycle次序随错峰方向反转。该结果只将当前16-rank full-card participant/reuse记为
+`board-observed`，subgroup仍`unknown`。首轮probe出现Direct DTE terminal status `0xffffffff`的根因是
+手写cluster entry遗漏terminal ABI的`begin_after_prepare`/`finish`；补齐后同一barrier通过，不能把该
+probe错误归因于硬件barrier。
 
 Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
 现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的
