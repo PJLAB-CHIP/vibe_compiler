@@ -19,6 +19,7 @@ import wafer_board_direct_dte_collective_test as cluster_seed
 
 
 RANK_COUNT = 16
+UNSUPPORTED_PARTICIPANT_COUNTS = (1, 2, 4, 8, 15)
 RESOURCE_BYTES = 256
 SLOTS_PER_RANK = 3
 LAUNCH_ABI = "tx81-cluster-direct-dte-prepare-main-v1"
@@ -54,6 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--llvm-clangxx", type=pathlib.Path, required=True)
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
     parser.add_argument("--no-card", action="store_true")
+    parser.add_argument("--participants", type=int, default=RANK_COUNT)
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--expected-runtime-version", type=int)
     parser.add_argument("--expected-device-name")
@@ -62,6 +64,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-runtime-library-sha256")
     parser.add_argument("--completion-timeout-ms", type=int, default=60000)
     return parser.parse_args()
+
+
+def validate_participant_count(participants: int) -> None:
+    if participants != RANK_COUNT:
+        raise RuntimeError(
+            "current hrt_barrier is fixed to exactly 16 participant slots; "
+            f"refusing unsafe subgroup size {participants} before compile "
+            "or device submission"
+        )
 
 
 def run(
@@ -507,6 +518,7 @@ def execute_board(
 
 def main() -> int:
     args = parse_args()
+    validate_participant_count(args.participants)
     args.repo_root = args.repo_root.resolve()
     args.work_dir = validate_work_dir(args.repo_root, args.work_dir)
     validate_host_contract()

@@ -103,6 +103,13 @@ dtype/form/main-tail row；NE catalog覆盖FP16/BF16、NN/NT/TN/TT、large `M64K
 tail `M65K129N129`和NCx batch2共24个row，并由共享Cx/NCx host codec生成physical payload/oracle；
 TDMA新增`Fmt_BOOL` 136 logical bits到17-byte I8 physical fill的typed held-out。三者都已完成device
 compile/link和shared-package no-card闭环；仍不得在实卡结果前升级为board evidence。
+SPM matrix也已落成22个typed row：16个board-positive覆盖可分配区上下边界、256B/8KiB/4KiB
+held-out以及12个64B到64KiB相对offset，6个static-negative覆盖低于base、跨保留区、保留区首line、
+硬件末端、零长度和地址溢出；所有正向row共享一个package，执行RDMA→SPM→WDMA exact round-trip，
+同时检查64B SPM前后guard、DDR未触及区和RDMA/WDMA count/PMU。multi-tile arrival沿用两epoch、
+16-rank反向错峰正向probe，并对1/2/4/8/15 participant在compile/submission前做typed-negative；
+version-matched `hrt_barrier`固定观察16个slot，因此不发送不安全subgroup正向。上述资产已通过host
+oracle、target C `-Werror`、shared-package no-card和28行索引一致性测试，仍不构成实卡结论。
 同一子阶段还要求把SPM、同步和并行case准备到与instruction matrix相同粒度：SPM覆盖边界、对齐、
 relative offset、alias/stride、physical layout和slot reuse；同步覆盖same-worker、worker-specific wait、
 cross-worker join、Kcore/cache、Direct DTE、multi-tile arrival和runtime publication；并行覆盖五类engine的

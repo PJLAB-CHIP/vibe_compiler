@@ -67,6 +67,12 @@ NE_CALIBRATION = (
     "test/Board/Inputs/wafer_ne_calibration_probe.c",
     "test/Board/Inputs/wafer_ne_calibration_probe_protocol.h",
 )
+SPM_CALIBRATION = (
+    "test/Board/wafer_board_spm_calibration_probe_test.py",
+    "test/Board/wafer_spm_calibration_catalog.py",
+    "test/Board/Inputs/wafer_spm_calibration_probe.c",
+    "test/Board/Inputs/wafer_spm_calibration_probe_protocol.h",
+)
 DTE_NCC = (
     "test/Board/wafer_board_dte_ncc_execution_probe_test.py",
     "test/Board/Inputs/wafer_dte_ncc_execution_probe.c",
@@ -225,19 +231,27 @@ CALIBRATION_DOMAINS = (
         "spm-capacity-reservation",
         "SPM capacity/reservation",
         "rank-one-static-and-worker0",
-        "in-progress",
-        remaining=(
-            "profile-derived boundary-positive plan",
-            "reserved/cross-boundary static negatives",
+        "ready",
+        positive=SPM_CALIBRATION,
+        negative=(
+            "test/Board/wafer_spm_calibration_catalog.py",
+            "test/Board/wafer_spm_calibration_catalog_test.py",
+        ),
+        tests=(
+            "wafer-spm-calibration-catalog-python",
+            "wafer-runtime-spm-calibration-probe-no-card",
         ),
     ),
     _domain(
         "spm-alignment-bank",
         "SPM alignment/bank",
         "rank-one-worker0",
-        "in-progress",
-        positive=NCC_EXECUTION,
-        remaining=("parameterized relative-offset sweep and held-out",),
+        "ready",
+        positive=NCC_EXECUTION + SPM_CALIBRATION,
+        tests=(
+            "wafer-spm-calibration-catalog-python",
+            "wafer-runtime-spm-calibration-probe-no-card",
+        ),
     ),
     _domain(
         "ddr-cache-coherence",
@@ -279,13 +293,17 @@ CALIBRATION_DOMAINS = (
         "address-dependency",
         "address dependency",
         "rank-one-worker0-manual",
-        "in-progress",
+        "ready",
         positive=NCC_EXECUTION,
+        negative=(
+            "test/Board/wafer_ncc_hazard_relation_test.c",
+            "test/Board/Inputs/wafer_ncc_hazard_relation.c",
+            "test/Board/Inputs/wafer_ncc_hazard_relation.h",
+        ),
         tests=(
             "wafer-ncc-hazard-relation",
             "wafer-ncc-probe-protocol-python",
         ),
-        remaining=("strided-envelope hazard rows",),
     ),
     _domain(
         "issue-overhead",
@@ -327,9 +345,16 @@ CALIBRATION_DOMAINS = (
         "multi-tile-arrival",
         "multi-tile arrival",
         "full-card-and-subgroup",
-        "in-progress",
+        "ready",
         positive=FULL_CARD_BARRIER,
-        remaining=("safe explicit subgroup positive and negative gates",),
+        negative=(
+            "test/Board/wafer_full_card_barrier_contract_test.py",
+            "test/Board/wafer_board_full_card_barrier_probe_test.py",
+        ),
+        tests=(
+            "wafer-full-card-barrier-contract-python",
+            "wafer-runtime-full-card-barrier-probe-no-card",
+        ),
     ),
     _domain(
         "host-launch-runtime",

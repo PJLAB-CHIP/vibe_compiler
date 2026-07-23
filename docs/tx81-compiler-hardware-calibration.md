@@ -262,18 +262,18 @@ measurement basis仍为`unknown`。
 | TDMA Memset | element count、byte stride、raw logical iteration、inclusive range和dtype packet encoding | whole/128B×32/64B×64 geometry，I8/F16/BF16 raw与CRT，全range和guard | 10/11/14 | 普通dtype descriptor `calibrated`；I8/F16/BF16 vectors `board-observed` |
 | TDMA BOOL fill | native `Fmt_BOOL` completion与bitpacked physical-footprint实现 | native小range timeout隔离；production BOOL→I8 byte fill需独立raw register、全range和guard | 10/11/14 | native `Fmt_BOOL`在当前profile `excluded`；直接CRT I8 physical16向量`board-observed`，但BOOL→I8 production canonicalization仍待held-out |
 | TDMA movement variants | GatherScatter和其它DataMove的byte count、stride/iteration、range与kind-specific geometry | 每个已准入kind使用能区分错误descriptor的非零pattern、全range和guard | 08/10/11/14 | f16 Pad vector `board-observed`；GatherScatter已有compiler/model路径，其它variant仍`unknown` |
-| SPM capacity/reservation | allocatable range和保留区 | boundary-positive与verifier negative；不触碰保留区 | 09/11 | 静态hard bound；board边界held-out未闭合 |
-| SPM alignment/bank | 256B legality、非1024-bit访问代价、bank/color映射 | disjoint offset sweep，固定长度/engine pair/serial control | 09 placement与06 cost | 256B静态；exact bank mapping `unknown` |
+| SPM capacity/reservation | allocatable range和保留区 | boundary-positive与verifier negative；不触碰保留区 | 09/11 | 4个边界/held-out board-positive和6个static-negative已完成catalog、target build与no-card准备；实卡结论仍`unknown` |
+| SPM alignment/bank | 256B legality、非1024-bit访问代价、bank/color映射 | disjoint offset sweep，固定长度/engine pair/serial control | 09 placement与06 cost | 12个64B到64KiB相对offset的4KiB exact round-trip已准备；实卡PMU/bank class仍`unknown` |
 | DDR/cache/coherence | host H2D、Kcore cache、DMA completion和host publication是不同域 | Kcore read前invalidate对照、DMA round-trip、matching drain后D2H | 09/12/14/15 | stale-cache机制`calibrated`；完整direction matrix待闭合 |
 | queue shape与连续提交边界 | register/header中CT/NE/RDMA/WDMA静态depth为6、TDMA为4；该数值描述pending storage，不是完整lifetime总提交上限，active occupancy和full行为不能由形状或总提交数推出 | 普通calibration只跑1/2/4（TDMA 1/2）；隔离manual gate先验证恰好`D`，再经显式manual授权执行typed tight `D+1`，均为单engine/case/sample、前后Add heartbeat和完整count/output/guard；禁止任意更深提交 | 10/11/16 | 五类engine的exact `D`与typed tight `D+1` submission/completion/count/output/guard均为当前profile `board-observed`；短workload在观察前已排空且blocking为0，只证明总提交可超过depth；所有engine的occupancy/full/backpressure仍`unknown` |
 | worker scope | worker0/1/2 routing、default wait和`bywork` scope | CT三worker；matching wait后、safety drain前读CSR/result | 10/11/14/15 | CT worker0/1/2 routing与matching `bywork`均`board-observed`；version-matched静态反汇编显示default wait轮询worker0，现有worker1板测在观察前自然排空，故default跨worker scope仍`unknown` |
 | cross-engine overlap | 五类engine全部10个pair的可重叠性和共享资源 | disjoint backlog2 + serial control；仅在不触及任一engine full-depth时增加backlog4；`Ea+Eb-FU`重复正值 | 06/10/11/16 cost/scheduling | 旧CT+RDMA正overlap降级为`historical/inconclusive`；本轮两个方向r4对照median均为0，其余pair当前workload也未观察到PMU overlap；不外推成硬件不支持并行，compiler全部串行 |
-| address dependency | busytable对RAW/WAR/WAW/RAR及exact/partial/adjacent/stride envelope的处理 | 仅对已证实可重叠pair做composition golden和PMU对照 | 09-11 legality/scheduling | 显式operand/range schema与composition oracle已通过no-card；本轮两次RAW选择均在hazard发射前被资格门禁拦截，板端hazard未执行；当前暂不适用 |
+| address dependency | busytable对RAW/WAR/WAW/RAR及exact/partial/adjacent/stride envelope的处理 | 仅对已证实可重叠pair做composition golden和PMU对照 | 09-11 legality/scheduling | 显式operand/range schema与exact/partial/adjacent composition oracle已通过no-card；strided envelope已作为显式conservative-envelope row完成static positive/negative gate，但在descriptor segment ownership进入schema前为`isolated-deferred`，不会发送伪造的连续range；本轮两次RAW选择均在hazard发射前被资格门禁拦截，板端hazard当前不适用 |
 | issue overhead | wrapper构包/heap间隔对短window的影响，prepared issue是否值得materialize | 同packet序列wrapper与prebuilt对照 | 06/14 candidate/lowering | 旧RDMA+CT差异为`historical/inconclusive`，本轮未复现稳定正overlap，不构成新IR语义或收益结论 |
 | local completion | default wait、`bywork`、local fence的范围和visibility | matching wait后立即CSR/Kcore oracle，再做safety drain | 09-11/15 | worker0/1/2 matching `bywork`正向`board-observed`；三轮worker0对照均观察到逐指令wait比window末尾一次wait更慢，但不形成固定cost；default/local-fence跨worker scope仍`unknown` |
 | cross-worker join | 多worker并行、仲裁与地址依赖是否跨worker | disjoint w0/w1/w2，逐workerjoin；同地址不做无序正向 | 10/11/15 | 三worker disjoint CT matching join `board-observed`；并行性、仲裁与同地址行为仍`unknown/excluded` |
 | Direct DTE | source read、destination visibility、participant、channel/FSM、terminal status | 16-rank receiver-first；producer→DTE、DTE→consumer和disjoint顺序 | 13-16 | 四个有序case `board-observed`；sender overlap `unknown` |
-| multi-tile arrival | full-card/subgroup barrier的participant与复用合同 | production 16-rank正向；缺participant/错误坐标不测试 | 13/15 | 两轮反向错峰的16-rank `hrt_barrier`均16/16 marker正确、0 mismatch/crosstalk，full-card复用`board-observed`；通用subgroup `unknown` |
+| multi-tile arrival | full-card/subgroup barrier的participant与复用合同 | production 16-rank正向；缺participant/错误坐标不测试 | 13/15 | 两轮反向错峰的16-rank `hrt_barrier`均16/16 marker正确、0 mismatch/crosstalk，full-card复用`board-observed`；version-matched实现固定观察16个slot，故1/2/4/8/15 subgroup已落成compile/submission前typed-negative，不能作为正向发包；未来只有独立participant-aware primitive才能新增subgroup positive |
 | host launch/runtime | kernel/model launch、resource staging/readback、timeout、failure cleanup | 同package schema、exact output、terminal/cleanup | 14-16 | 已有kernel/model与16-rank路径`board-observed/supported`，按owner证据解释 |
 | NCC PMU basis | instruction count、engine exec、global union、worker scope、wrap稳定读取 | 单engine等式、pair union、high-low-high和重复样本 | 16与后续Q9 | worker0 engine/union `calibrated` |
 | DTE/SPM/TMNOC PMU | counter scope、unit和与workload相关性 | 独立单域workload和held-out payload sweep | 16与后续Q9 | register shape `static`；measurement basis `unknown` |
@@ -649,6 +649,15 @@ SPM单engine基础矩阵覆盖CT read/write、NE双读单写、RDMA DDR→SPM、
 SPM→SPM；每类先做contiguous，再做其ABI支持的stride/tail。cross-engine offset sweep只在对应pair的
 disjoint correctness已闭合后执行，保持两条workload、issue count和地址以外的变量不变。所有slot由planner
 证明落在当前profile可分配区，测试自身不探测未知保留区。
+
+当前`wafer_spm_calibration_catalog.py`把基础容量/offset资格收敛为22个row。16个board-positive共享一个
+device package，使用非零byte pattern执行RDMA→指定SPM offset→WDMA exact round-trip，并检查SPM前后
+64B guard、DDR record/result之外的完整canary以及RDMA/WDMA instruction count；4个容量row分别触及
+allocatable lower/upper边界并包含8KiB和4KiB held-out，12个alignment row覆盖相对offset
+`0/64/128/192/256/320/512/768/1024/4096/65536/65728`。低于base、跨保留区、保留区首line、
+hardware end crossing、零长度和地址溢出六种非法range只进入static-negative，catalog禁止生成设备request。
+这些row只准备了实卡所需输入、oracle和共享package；offset的性能差异与bank class必须等实卡原始PMU，
+不能由no-card或静态地址公式预判。
 
 ### 5.7 Synchronization、visibility 与 completion suite
 

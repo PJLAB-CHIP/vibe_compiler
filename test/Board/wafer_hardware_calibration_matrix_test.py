@@ -102,11 +102,7 @@ def main() -> int:
         "instruction-physical-layout",
         "datamove-layout",
         "tdma-movement-variants",
-        "spm-capacity-reservation",
-        "spm-alignment-bank",
         "ddr-cache-coherence",
-        "address-dependency",
-        "multi-tile-arrival",
         "transport-pmu-basis",
     )
     print(
