@@ -25,6 +25,99 @@ static int wafer_ncc_probe_words_are_zero(const volatile uint64_t *words,
   return 1;
 }
 
+static int wafer_ncc_probe_checked_mul(uint64_t lhs, uint64_t rhs,
+                                       uint64_t *result) {
+  if (rhs != 0 && lhs > UINT64_MAX / rhs)
+    return 0;
+  *result = lhs * rhs;
+  return 1;
+}
+
+static int wafer_ncc_probe_checked_add(uint64_t lhs, uint64_t rhs,
+                                       uint64_t *result) {
+  if (lhs > UINT64_MAX - rhs)
+    return 0;
+  *result = lhs + rhs;
+  return 1;
+}
+
+static int
+wafer_ncc_probe_dma_lane_is_valid(const WaferNccProbeLane *lane) {
+  if ((lane->engine != WAFER_NCC_ENGINE_RDMA &&
+       lane->engine != WAFER_NCC_ENGINE_WDMA) ||
+      lane->issue_mode != WAFER_NCC_ISSUE_WRAPPER ||
+      lane->element_format != WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16 ||
+      lane->layout_inner_bytes == 0 || lane->layout_iteration0 == 0 ||
+      lane->layout_iteration1 == 0 || lane->layout_iteration2 == 0 ||
+      (lane->layout_inner_bytes | lane->layout_stride0_bytes |
+       lane->layout_stride1_bytes | lane->layout_stride2_bytes) &
+          UINT32_C(1))
+    return 0;
+
+  uint64_t compact_bytes = lane->layout_inner_bytes;
+  uint64_t row_bytes = 0;
+  uint64_t plane_bytes = 0;
+  uint64_t envelope_bytes = 0;
+  uint64_t product = 0;
+  if (!wafer_ncc_probe_checked_mul(compact_bytes, lane->layout_iteration0,
+                                   &compact_bytes) ||
+      !wafer_ncc_probe_checked_mul(compact_bytes, lane->layout_iteration1,
+                                   &compact_bytes) ||
+      !wafer_ncc_probe_checked_mul(compact_bytes, lane->layout_iteration2,
+                                   &compact_bytes) ||
+      !wafer_ncc_probe_checked_mul(lane->layout_iteration0 - 1U,
+                                   lane->layout_stride0_bytes, &product) ||
+      !wafer_ncc_probe_checked_add(product, lane->layout_inner_bytes,
+                                   &row_bytes) ||
+      !wafer_ncc_probe_checked_mul(lane->layout_iteration1 - 1U,
+                                   lane->layout_stride1_bytes, &product) ||
+      !wafer_ncc_probe_checked_add(product, row_bytes, &plane_bytes) ||
+      !wafer_ncc_probe_checked_mul(lane->layout_iteration2 - 1U,
+                                   lane->layout_stride2_bytes, &product) ||
+      !wafer_ncc_probe_checked_add(product, plane_bytes, &envelope_bytes))
+    return 0;
+  return compact_bytes == lane->transfer_bytes &&
+         (lane->layout_iteration0 == 1 ||
+          lane->layout_stride0_bytes >= lane->layout_inner_bytes) &&
+         (lane->layout_iteration1 == 1 ||
+          lane->layout_stride1_bytes >= row_bytes) &&
+         (lane->layout_iteration2 == 1 ||
+          lane->layout_stride2_bytes >= plane_bytes) &&
+         envelope_bytes <= WAFER_NCC_PROTOCOL_MAX_DMA_ENVELOPE_BYTES;
+}
+
+static int wafer_ncc_probe_dma_layout_equal(const WaferNccProbeLane *lhs,
+                                            const WaferNccProbeLane *rhs) {
+  return lhs->layout_kind == WAFER_NCC_LAYOUT_DMA_STRIDED &&
+         rhs->layout_kind == WAFER_NCC_LAYOUT_DMA_STRIDED &&
+         lhs->transfer_bytes == rhs->transfer_bytes &&
+         lhs->element_format == rhs->element_format &&
+         lhs->layout_inner_bytes == rhs->layout_inner_bytes &&
+         lhs->layout_stride0_bytes == rhs->layout_stride0_bytes &&
+         lhs->layout_stride1_bytes == rhs->layout_stride1_bytes &&
+         lhs->layout_stride2_bytes == rhs->layout_stride2_bytes &&
+         lhs->layout_iteration0 == rhs->layout_iteration0 &&
+         lhs->layout_iteration1 == rhs->layout_iteration1 &&
+         lhs->layout_iteration2 == rhs->layout_iteration2;
+}
+
+static int
+wafer_ncc_probe_is_serial_dma_roundtrip(const WaferNccProbeRequest *request) {
+  return request->lane_count == 2 && request->rounds == 1 &&
+         request->effect_relation == WAFER_NCC_EFFECT_RAW &&
+         request->range_relation == WAFER_NCC_RANGE_EXACT &&
+         request->schedule == WAFER_NCC_SCHEDULE_SERIAL &&
+         request->wait_kind == WAFER_NCC_WAIT_BY_WORKER &&
+         request->wait_worker_mask == 1 &&
+         request->first_operand == WAFER_NCC_OPERAND_WRITE &&
+         request->second_operand == WAFER_NCC_OPERAND_READ0 &&
+         request->lanes[0].engine == WAFER_NCC_ENGINE_RDMA &&
+         request->lanes[1].engine == WAFER_NCC_ENGINE_WDMA &&
+         request->lanes[0].worker == 0 && request->lanes[1].worker == 0 &&
+         wafer_ncc_probe_dma_layout_equal(&request->lanes[0],
+                                          &request->lanes[1]);
+}
+
 static const WaferNccProbeEngineAdapter *
 wafer_ncc_probe_find_adapter(const WaferNccProbeEngineAdapter *adapters,
                              uint32_t adapter_count, uint32_t engine) {
@@ -225,6 +318,24 @@ uint32_t wafer_ncc_probe_decode_request(const volatile uint64_t *request_words,
         !wafer_ncc_probe_decode_u32(request_words,
                                     base + WAFER_NCC_LANE_LAYOUT_INNER_BYTES,
                                     &decoded->layout_inner_bytes) ||
+        !wafer_ncc_probe_decode_u32(
+            request_words, base + WAFER_NCC_LANE_LAYOUT_STRIDE0_BYTES,
+            &decoded->layout_stride0_bytes) ||
+        !wafer_ncc_probe_decode_u32(
+            request_words, base + WAFER_NCC_LANE_LAYOUT_STRIDE1_BYTES,
+            &decoded->layout_stride1_bytes) ||
+        !wafer_ncc_probe_decode_u32(
+            request_words, base + WAFER_NCC_LANE_LAYOUT_STRIDE2_BYTES,
+            &decoded->layout_stride2_bytes) ||
+        !wafer_ncc_probe_decode_u32(
+            request_words, base + WAFER_NCC_LANE_LAYOUT_ITERATION0,
+            &decoded->layout_iteration0) ||
+        !wafer_ncc_probe_decode_u32(
+            request_words, base + WAFER_NCC_LANE_LAYOUT_ITERATION1,
+            &decoded->layout_iteration1) ||
+        !wafer_ncc_probe_decode_u32(
+            request_words, base + WAFER_NCC_LANE_LAYOUT_ITERATION2,
+            &decoded->layout_iteration2) ||
         !wafer_ncc_probe_decode_u32(request_words,
                                     base + WAFER_NCC_LANE_FLAGS,
                                     &decoded->flags))
@@ -296,14 +407,23 @@ uint32_t wafer_ncc_probe_validate_plan(
 
   uint32_t participant_mask = 0;
   int has_strided_lane = 0;
+  int has_dma_strided_lane = 0;
   for (uint32_t lane = 0; lane < request->lane_count; ++lane) {
     const WaferNccProbeLane *lane_spec = &request->lanes[lane];
     if (lane_spec->engine > WAFER_NCC_ENGINE_TDMA ||
         lane_spec->worker >= WAFER_NCC_PROTOCOL_WORKERS ||
         lane_spec->issue_mode > WAFER_NCC_ISSUE_WRAPPER ||
         lane_spec->transfer_bytes == 0 ||
-        lane_spec->layout_kind > WAFER_NCC_LAYOUT_INNER_STRIDED ||
+        lane_spec->layout_kind > WAFER_NCC_LAYOUT_DMA_STRIDED ||
         lane_spec->flags != 0)
+      return WAFER_NCC_STATUS_BAD_REQUEST;
+    if (lane_spec->layout_kind != WAFER_NCC_LAYOUT_DMA_STRIDED &&
+        (lane_spec->layout_stride0_bytes != 0 ||
+         lane_spec->layout_stride1_bytes != 0 ||
+         lane_spec->layout_stride2_bytes != 0 ||
+         lane_spec->layout_iteration0 != 0 ||
+         lane_spec->layout_iteration1 != 0 ||
+         lane_spec->layout_iteration2 != 0))
       return WAFER_NCC_STATUS_BAD_REQUEST;
     if (lane_spec->layout_kind == WAFER_NCC_LAYOUT_CONTIGUOUS &&
         lane_spec->layout_inner_bytes != 0)
@@ -314,6 +434,11 @@ uint32_t wafer_ncc_probe_validate_plan(
           lane_spec->layout_inner_bytes > lane_spec->transfer_bytes ||
           lane_spec->transfer_bytes % lane_spec->layout_inner_bytes != 0)
         return WAFER_NCC_STATUS_BAD_REQUEST;
+    } else if (lane_spec->layout_kind == WAFER_NCC_LAYOUT_DMA_STRIDED) {
+      has_strided_lane = 1;
+      has_dma_strided_lane = 1;
+      if (!wafer_ncc_probe_dma_lane_is_valid(lane_spec))
+        return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
     }
     participant_mask |= UINT32_C(1) << lane_spec->worker;
 
@@ -333,6 +458,9 @@ uint32_t wafer_ncc_probe_validate_plan(
   }
   if (request->range_relation == WAFER_NCC_RANGE_STRIDED_ENVELOPE &&
       !has_strided_lane)
+    return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
+  if (has_dma_strided_lane &&
+      !wafer_ncc_probe_is_serial_dma_roundtrip(request))
     return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
 
   if (request->lane_count == 2 &&
@@ -414,6 +542,12 @@ uint32_t wafer_ncc_probe_validate_plan(
         second->element_format != first->element_format ||
         second->layout_kind != first->layout_kind ||
         second->layout_inner_bytes != first->layout_inner_bytes ||
+        second->layout_stride0_bytes != first->layout_stride0_bytes ||
+        second->layout_stride1_bytes != first->layout_stride1_bytes ||
+        second->layout_stride2_bytes != first->layout_stride2_bytes ||
+        second->layout_iteration0 != first->layout_iteration0 ||
+        second->layout_iteration1 != first->layout_iteration1 ||
+        second->layout_iteration2 != first->layout_iteration2 ||
         second->flags != first->flags || adapter == NULL ||
         request->issue_limit != adapter->queue_depth + 1U ||
         request->issue_limit > request->lane_count * request->rounds ||
@@ -528,6 +662,7 @@ uint32_t wafer_ncc_probe_execute_plan(
       request->flags == WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE;
   int issued_any = 0;
   WaferNccProbeIssue *last_issued = NULL;
+  uint64_t plan_cycle_before = hooks->read_cycle(context);
   for (uint32_t round = 0; round < request->rounds; ++round) {
     for (uint32_t lane = 0; lane < request->lane_count; ++lane) {
       uint32_t ordinal = lane * request->rounds + round;
@@ -567,11 +702,26 @@ uint32_t wafer_ncc_probe_execute_plan(
             adapter_count, hooks, context, record, issues, prepared_count, 1);
       wafer_ncc_probe_write_observation(record, issue, &observation);
 
-      if (request->schedule == WAFER_NCC_SCHEDULE_SERIAL &&
-          hooks->serial_drain(context, UINT32_C(1) << issue->worker) != 0)
-        return wafer_ncc_probe_finish_after_failure(
-            WAFER_NCC_STATUS_DRAIN_FAILED, request, adapters, adapter_count,
-            hooks, context, record, issues, prepared_count, 1);
+      if (request->schedule == WAFER_NCC_SCHEDULE_SERIAL) {
+        uint64_t serial_wait_before = hooks->read_cycle(context);
+        int serial_wait_rc =
+            hooks->serial_drain(context, UINT32_C(1) << issue->worker);
+        uint64_t serial_wait_after = hooks->read_cycle(context);
+        uint64_t serial_wait_cycles =
+            serial_wait_after - serial_wait_before;
+        uint64_t serial_wait_index =
+            record[WAFER_NCC_REC_SERIAL_WAIT_COUNT];
+        if (serial_wait_index < WAFER_NCC_PROTOCOL_MAX_WAIT_SAMPLES)
+          record[WAFER_NCC_PROTOCOL_WAIT_SAMPLE_BASE + serial_wait_index] =
+              serial_wait_cycles;
+        record[WAFER_NCC_REC_SERIAL_WAIT_CYCLES] +=
+            serial_wait_cycles;
+        ++record[WAFER_NCC_REC_SERIAL_WAIT_COUNT];
+        if (serial_wait_rc != 0)
+          return wafer_ncc_probe_finish_after_failure(
+              WAFER_NCC_STATUS_DRAIN_FAILED, request, adapters, adapter_count,
+              hooks, context, record, issues, prepared_count, 1);
+      }
     }
   }
 
@@ -600,12 +750,22 @@ uint32_t wafer_ncc_probe_execute_plan(
         WAFER_NCC_ISSUE_WINDOW_CONTROL_VALID;
   }
 
-  if (request->wait_kind != WAFER_NCC_WAIT_NONE &&
-      hooks->requested_wait(context, request->wait_kind,
-                            request->wait_worker_mask) != 0)
-    return wafer_ncc_probe_finish_after_failure(
-        WAFER_NCC_STATUS_WAIT_FAILED, request, adapters, adapter_count, hooks,
-        context, record, issues, prepared_count, issued_any);
+  uint64_t plan_cycle_after = 0;
+  if (request->wait_kind != WAFER_NCC_WAIT_NONE) {
+    uint64_t wait_before = hooks->read_cycle(context);
+    int wait_rc = hooks->requested_wait(context, request->wait_kind,
+                                        request->wait_worker_mask);
+    uint64_t wait_after = hooks->read_cycle(context);
+    plan_cycle_after = wait_after;
+    record[WAFER_NCC_REC_WAIT_CYCLES] = wait_after - wait_before;
+    if (wait_rc != 0)
+      return wafer_ncc_probe_finish_after_failure(
+          WAFER_NCC_STATUS_WAIT_FAILED, request, adapters, adapter_count,
+          hooks, context, record, issues, prepared_count, issued_any);
+  } else
+    plan_cycle_after = hooks->read_cycle(context);
+  record[WAFER_NCC_REC_PLAN_CYCLES] =
+      plan_cycle_after - plan_cycle_before;
   record[WAFER_NCC_REC_FLAGS] |= WAFER_NCC_RECORD_REQUESTED_WAIT_DONE;
 
   if (hooks->snapshot(context, WAFER_NCC_SNAPSHOT_BOUNDARY, record) != 0)

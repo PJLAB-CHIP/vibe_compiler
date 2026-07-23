@@ -466,6 +466,85 @@ static void test_wire_decode(void) {
          WAFER_NCC_STATUS_BAD_REQUEST);
 }
 
+static void test_dma_strided_roundtrip_is_serial_and_bounded(void) {
+  WaferNccProbeRequest plan = request(2, 1, WAFER_NCC_SCHEDULE_SERIAL);
+  WaferNccProbeLane descriptor = {0};
+  descriptor.worker = 0;
+  descriptor.issue_mode = WAFER_NCC_ISSUE_WRAPPER;
+  descriptor.transfer_bytes = 32;
+  descriptor.element_format = 2;
+  descriptor.layout_kind = WAFER_NCC_LAYOUT_DMA_STRIDED;
+  descriptor.layout_inner_bytes = 4;
+  descriptor.layout_stride0_bytes = 8;
+  descriptor.layout_stride1_bytes = 20;
+  descriptor.layout_stride2_bytes = 52;
+  descriptor.layout_iteration0 = 2;
+  descriptor.layout_iteration1 = 2;
+  descriptor.layout_iteration2 = 2;
+  descriptor.engine = WAFER_NCC_ENGINE_RDMA;
+  plan.lanes[0] = descriptor;
+  descriptor.engine = WAFER_NCC_ENGINE_WDMA;
+  plan.lanes[1] = descriptor;
+  plan.effect_relation = WAFER_NCC_EFFECT_RAW;
+  plan.range_relation = WAFER_NCC_RANGE_EXACT;
+  plan.first_operand = WAFER_NCC_OPERAND_WRITE;
+  plan.second_operand = WAFER_NCC_OPERAND_READ0;
+
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
+  MockContext context = {0};
+  uint64_t record[WAFER_NCC_PROTOCOL_RECORD_WORDS];
+  assert(wafer_ncc_probe_execute_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0]), &hooks,
+             &context, record) == WAFER_NCC_STATUS_OK);
+  uint32_t issue_count = 0;
+  uint32_t drain_count = 0;
+  int needs_drain = 0;
+  for (uint32_t index = 0; index < context.event_count; ++index) {
+    uint32_t event = context.events[index];
+    if (event == MOCK_ISSUE || event == MOCK_ISSUE + 4U) {
+      assert(!needs_drain);
+      ++issue_count;
+      needs_drain = 1;
+    } else if (event == MOCK_SERIAL_DRAIN + 1U) {
+      assert(needs_drain);
+      ++drain_count;
+      needs_drain = 0;
+    }
+  }
+  assert(issue_count == 2);
+  assert(drain_count == 2);
+  assert(!needs_drain);
+
+  plan.schedule = WAFER_NCC_SCHEDULE_WINDOW;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+  plan.schedule = WAFER_NCC_SCHEDULE_SERIAL;
+  plan.lanes[1].layout_stride0_bytes = 9;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+  plan.lanes[1].layout_stride0_bytes = 8;
+  plan.lanes[1].transfer_bytes = 30;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+  plan.lanes[1].transfer_bytes = 32;
+  plan.lanes[1].issue_mode = WAFER_NCC_ISSUE_RAW;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+  plan.lanes[1].issue_mode = WAFER_NCC_ISSUE_WRAPPER;
+  plan.lanes[0].layout_iteration0 = UINT32_MAX;
+  plan.lanes[0].layout_iteration1 = UINT32_MAX;
+  plan.lanes[0].layout_iteration2 = UINT32_MAX;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+}
+
 static void test_failed_safety_drain_is_not_retried(void) {
   WaferNccProbeRequest plan = request(1, 1, WAFER_NCC_SCHEDULE_WINDOW);
   plan.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
@@ -547,6 +626,7 @@ int main(void) {
   test_three_lane_disjoint_window_and_serial();
   test_validation_bounds();
   test_wire_decode();
+  test_dma_strided_roundtrip_is_serial_and_bounded();
   test_failed_safety_drain_is_not_retried();
   test_depth_plus_one_is_tight_and_waited();
   test_full_depth_window_is_accepted_without_overflow();

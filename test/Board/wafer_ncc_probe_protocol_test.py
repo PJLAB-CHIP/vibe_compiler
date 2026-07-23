@@ -6,6 +6,7 @@ import io
 import pathlib
 import struct
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -26,13 +27,20 @@ def lane(engine: protocol.Engine, worker: int = 0) -> protocol.Lane:
 
 class ProtocolTest(unittest.TestCase):
     def test_header_is_the_numeric_source(self) -> None:
-        self.assertEqual(protocol.SCHEMA, 2)
+        self.assertEqual(protocol.SCHEMA, 3)
         self.assertEqual(protocol.MAX_LANES, 3)
         self.assertEqual(protocol.MAX_ROUNDS, 4)
         self.assertEqual(protocol.MAX_ISSUES, 12)
-        self.assertEqual(protocol.REQUEST_WORDS, 40)
+        self.assertEqual(protocol.REQUEST_WORDS, 58)
         self.assertEqual(protocol.RECORD_WORDS, 400)
         self.assertEqual(protocol.ISSUE_STRIDE, 22)
+        self.assertEqual(protocol.WAIT_SAMPLE_BASE, 392)
+        self.assertEqual(protocol.MAX_WAIT_SAMPLES, 8)
+        self.assertEqual(
+            protocol.WAIT_SAMPLE_BASE,
+            protocol.ISSUE_BASE
+            + protocol.MAX_ISSUES * protocol.ISSUE_STRIDE,
+        )
         self.assertEqual(
             execution_probe.PMU64_NAMES,
             (
@@ -111,6 +119,146 @@ class ProtocolTest(unittest.TestCase):
             words[inactive_begin : inactive_begin + protocol.LANE_STRIDE],
             (0,) * protocol.LANE_STRIDE,
         )
+
+    def test_dma_stride_matrix_plan_and_exact_host_oracle(self) -> None:
+        expected = (
+            ((0, 10, 20, 30), 36, 12),
+            ((0, 8, 16, 28, 36, 44), 48, 24),
+            ((0, 8, 20, 28, 52, 60, 72, 80), 84, 52),
+        )
+        self.assertEqual(
+            len(execution_probe.V2_DMA_STRIDE_MATRIX_CASES), len(expected)
+        )
+        for case, (offsets, envelope, hole_bytes) in zip(
+            execution_probe.V2_DMA_STRIDE_MATRIX_CASES,
+            expected,
+            strict=True,
+        ):
+            plan = case.plan
+            self.assertEqual(plan.issue_order(), (0, 4))
+            self.assertTrue(plan.is_serial_dma_roundtrip())
+            self.assertEqual(plan.schedule, protocol.Schedule.SERIAL)
+            self.assertEqual(plan.wait_worker_mask, 1)
+            self.assertEqual(
+                tuple(lane.engine for lane in plan.lanes),
+                (protocol.Engine.RDMA, protocol.Engine.WDMA),
+            )
+            self.assertTrue(
+                all(
+                    lane.issue_mode == protocol.IssueMode.WRAPPER
+                    and lane.element_format == execution_probe.FMT_FP16
+                    and lane.layout_kind == protocol.LayoutKind.DMA_STRIDED
+                    and lane.dma_chunk_offsets() == offsets
+                    and lane.dma_envelope_bytes() == envelope
+                    for lane in plan.lanes
+                )
+            )
+            lane = plan.lanes[0]
+            selected = {
+                offset + byte
+                for offset in offsets
+                for byte in range(lane.layout_inner_bytes)
+            }
+            self.assertEqual(envelope - len(selected), hole_bytes)
+
+            with self.subTest(case=case.name):
+                with contextlib.ExitStack() as stack:
+                    directory = pathlib.Path(
+                        stack.enter_context(
+                            tempfile.TemporaryDirectory()
+                        )
+                    )
+                    payload_path = directory / "payload.raw"
+                    execution_probe.write_payload(payload_path, case)
+                    payload = payload_path.read_bytes()
+                    begin = execution_probe.V2_OUTPUT_GUARD_BYTES
+                    compact = execution_probe.v2_expected_result(
+                        plan.issue_identities()[0], lane, plan
+                    )
+                    rebuilt = b"".join(
+                        payload[
+                            begin + offset :
+                            begin + offset + lane.layout_inner_bytes
+                        ]
+                        for offset in offsets
+                    )
+                    self.assertEqual(rebuilt, compact)
+                    self.assertTrue(
+                        all(
+                            payload[begin + offset] == 0xCC
+                            for offset in range(envelope)
+                            if offset not in selected
+                        )
+                    )
+
+                    output = bytearray(
+                        [0xA5] * execution_probe.RESOURCE_BYTES
+                    )
+                    rdma_identity, wdma_identity = plan.issue_identities()
+                    rdma_begin = (
+                        execution_probe.V2_OUTPUT_SLOT_BASE
+                        + rdma_identity.slot
+                        * execution_probe.V2_OUTPUT_SLOT_STRIDE
+                        + execution_probe.V2_OUTPUT_GUARD_BYTES
+                    )
+                    output[
+                        rdma_begin : rdma_begin + len(compact)
+                    ] = compact
+                    wdma_begin = (
+                        execution_probe.V2_OUTPUT_SLOT_BASE
+                        + wdma_identity.slot
+                        * execution_probe.V2_OUTPUT_SLOT_STRIDE
+                        + execution_probe.V2_OUTPUT_GUARD_BYTES
+                    )
+                    execution_probe.v2_scatter_compact(
+                        output, wdma_begin, plan.lanes[1], compact
+                    )
+                    execution_probe.validate_output_payload_v2(
+                        bytes(output), case, plan
+                    )
+            with self.assertRaisesRegex(ValueError, "serial"):
+                dataclasses.replace(
+                    plan, schedule=protocol.Schedule.WINDOW
+                ).request_words()
+            with self.assertRaisesRegex(ValueError, "2-byte"):
+                dataclasses.replace(
+                    plan,
+                    lanes=(
+                        dataclasses.replace(
+                            plan.lanes[0],
+                            layout_stride0_bytes=(
+                                plan.lanes[0].layout_stride0_bytes + 1
+                            ),
+                        ),
+                        plan.lanes[1],
+                    ),
+                ).request_words()
+
+    def test_tdma_crt_case_is_exposed_as_one_exact_manual_case(self) -> None:
+        cases = execution_probe.SUITES["tdma-crt-manual"]
+        self.assertIs(cases, execution_probe.NO_CARD_PROTOCOL_CASES)
+        self.assertEqual(tuple(case.name for case in cases), (
+            "tdma-crt-i8-physical16",
+        ))
+        case = cases[0]
+        plan = case.plan
+        lane = plan.lanes[0]
+        self.assertEqual(plan.schedule, protocol.Schedule.SERIAL)
+        self.assertEqual(plan.issue_order(), (0,))
+        self.assertEqual(lane.engine, protocol.Engine.TDMA)
+        self.assertEqual(lane.issue_mode, protocol.IssueMode.WRAPPER)
+        self.assertEqual(lane.element_format, execution_probe.FMT_INT8)
+        self.assertEqual(lane.transfer_bytes, 16)
+
+        output = bytearray([0xA5] * execution_probe.RESOURCE_BYTES)
+        identity = plan.issue_identities()[0]
+        expected = execution_probe.v2_expected_result(identity, lane, plan)
+        begin = (
+            execution_probe.V2_OUTPUT_SLOT_BASE
+            + execution_probe.V2_OUTPUT_GUARD_BYTES
+        )
+        output[begin : begin + len(expected)] = expected
+        execution_probe.validate_output_payload_v2(bytes(output), case, plan)
 
     def test_three_lane_window_is_disjoint_only(self) -> None:
         plan = protocol.Plan(
@@ -198,6 +346,134 @@ class ProtocolTest(unittest.TestCase):
             self.assertEqual(len(plan.issue_identities()), len(workers))
             self.assertEqual(plan.issue_order(), issue_order)
 
+    def test_completion_scope_cases_observe_before_safety_drain(self) -> None:
+        expected = {
+            "ne-worker1-depth6-default-wait-window": (
+                protocol.WaitKind.DEFAULT,
+                0x6121,
+                0,
+            ),
+            "ne-worker1-depth6-byworker-wait-window": (
+                protocol.WaitKind.BY_WORKER,
+                0x6122,
+                0b010,
+            ),
+        }
+        cases = execution_probe.SUITES["completion-scope-manual"]
+        self.assertIs(cases, execution_probe.V2_COMPLETION_SCOPE_CASES)
+        self.assertEqual({case.name for case in cases}, set(expected))
+        for case in cases:
+            wait_kind, seed, wait_mask = expected[case.name]
+            plan = case.plan
+            words = plan.request_words()
+            self.assertEqual(
+                tuple(lane.engine for lane in plan.lanes),
+                (
+                    protocol.Engine.TDMA,
+                    protocol.Engine.NE,
+                    protocol.Engine.NE,
+                ),
+            )
+            self.assertEqual(
+                tuple(lane.worker for lane in plan.lanes), (0, 1, 1)
+            )
+            self.assertEqual(plan.lanes[0].transfer_bytes, 16)
+            self.assertEqual(
+                plan.lanes[0].element_format, execution_probe.FMT_INT8
+            )
+            self.assertTrue(
+                all(
+                    lane.transfer_bytes
+                    == execution_probe.V2_NE_PHYSICAL_BYTES
+                    and lane.element_format == execution_probe.FMT_FP16
+                    for lane in plan.lanes[1:]
+                )
+            )
+            self.assertEqual(plan.rounds, 3)
+            self.assertEqual(plan.schedule, protocol.Schedule.WINDOW)
+            self.assertEqual(
+                plan.issue_order(), (0, 4, 8, 1, 5, 9, 2, 6, 10)
+            )
+            self.assertEqual(plan.wait_kind, wait_kind)
+            self.assertEqual(plan.wait_worker_mask, wait_mask)
+            self.assertEqual(plan.seed, seed)
+            self.assertEqual(words[protocol.REQ["WAIT_KIND"]], wait_kind)
+            self.assertEqual(
+                words[protocol.REQ["WAIT_WORKER_MASK"]], wait_mask
+            )
+            self.assertEqual(
+                execution_probe.v2_completion_marker(plan),
+                (
+                    0x49,
+                    execution_probe.V2_SPM_SLOT_BASE
+                    + 10 * execution_probe.V2_SPM_SLOT_STRIDE
+                    + execution_probe.V2_SPM_WRITE_OFFSET
+                    + execution_probe.V2_NE_RESULT_BYTES
+                    - 1,
+                ),
+            )
+
+        source = (
+            pathlib.Path(__file__).resolve().parent
+            / "Inputs"
+            / "wafer_ncc_probe_plan.c"
+        ).read_text()
+        execute = source.split(
+            "uint32_t wafer_ncc_probe_execute_plan(", maxsplit=1
+        )[1]
+        requested_wait = execute.index("hooks->requested_wait(")
+        boundary_oracle = execute.index(
+            "WAFER_NCC_ORACLE_BOUNDARY", requested_wait
+        )
+        safety_drain = execute.index(
+            "hooks->safety_drain(", boundary_oracle
+        )
+        self.assertLess(requested_wait, boundary_oracle)
+        self.assertLess(boundary_oracle, safety_drain)
+
+    def test_wait_overhead_cases_share_one_short_ct_workload(self) -> None:
+        cases = execution_probe.SUITES["wait-overhead-manual"]
+        self.assertIs(cases, execution_probe.V2_WAIT_OVERHEAD_CASES)
+        self.assertEqual(
+            {case.name for case in cases},
+            {
+                "ct-worker0-depth6-wait-each",
+                "ct-worker0-depth6-wait-once",
+            },
+        )
+        plans = [case.plan for case in cases]
+        self.assertEqual(
+            {plan.schedule for plan in plans},
+            {protocol.Schedule.SERIAL, protocol.Schedule.WINDOW},
+        )
+        for plan in plans:
+            self.assertEqual(plan.rounds, 3)
+            self.assertEqual(plan.issue_order(), (0, 4, 1, 5, 2, 6))
+            self.assertEqual(plan.wait_kind, protocol.WaitKind.BY_WORKER)
+            self.assertEqual(plan.wait_worker_mask, 1)
+            self.assertTrue(
+                all(
+                    lane.engine == protocol.Engine.CT
+                    and lane.worker == 0
+                    and lane.transfer_bytes == 256
+                    and lane.element_format == execution_probe.FMT_FP16
+                    for lane in plan.lanes
+                )
+            )
+            plan.request_words()
+        self.assertLess(
+            protocol.REC["PLAN_CYCLES"],
+            protocol.REC["RECORD_GUARD"],
+        )
+        self.assertLess(
+            protocol.REC["SERIAL_WAIT_CYCLES"],
+            protocol.REC["RECORD_GUARD"],
+        )
+        self.assertLess(
+            protocol.REC["SERIAL_WAIT_COUNT"],
+            protocol.REC["RECORD_GUARD"],
+        )
+
     def test_typed_hazard_catalog_and_composition_golden(self) -> None:
         self.assertEqual(len(execution_probe.V2_HAZARD_CASES), 24)
         execution_probe.validate_hazard_selection(
@@ -268,6 +544,9 @@ class ProtocolTest(unittest.TestCase):
         )
 
     def test_hazard_requires_disjoint_overlap_qualification(self) -> None:
+        execution_probe.validate_hazard_selection(
+            execution_probe.V2_DMA_STRIDE_MATRIX_CASES
+        )
         hazards = tuple(
             case
             for case in execution_probe.V2_HAZARD_CASES
@@ -278,6 +557,8 @@ class ProtocolTest(unittest.TestCase):
             )
         )
         hazard = hazards[-1]
+        with self.assertRaisesRegex(RuntimeError, "disjoint serial/window"):
+            execution_probe.validate_hazard_selection((hazards[0],))
         with self.assertRaisesRegex(RuntimeError, "disjoint serial/window"):
             execution_probe.validate_hazard_selection((hazard,))
         controls = {

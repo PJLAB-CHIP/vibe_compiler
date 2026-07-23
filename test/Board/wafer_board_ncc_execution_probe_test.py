@@ -486,6 +486,24 @@ class GenericProbeCase:
                 lane.transfer_bytes for lane in self.plan.lanes
             ],
             "formats": [lane.element_format for lane in self.plan.lanes],
+            "layouts": [
+                {
+                    "kind": lane.layout_kind.name.lower(),
+                    "inner_bytes": lane.layout_inner_bytes,
+                    "strides": [
+                        lane.layout_stride0_bytes,
+                        lane.layout_stride1_bytes,
+                        lane.layout_stride2_bytes,
+                    ],
+                    "iterations": [
+                        lane.layout_iteration0,
+                        lane.layout_iteration1,
+                        lane.layout_iteration2,
+                    ],
+                    "envelope_bytes": lane.dma_envelope_bytes(),
+                }
+                for lane in self.plan.lanes
+            ],
         }
 
 def v2_lane(
@@ -529,11 +547,19 @@ def v2_case(
     first_operand: ncc_protocol.Operand = ncc_protocol.Operand.AUTO,
     second_operand: ncc_protocol.Operand = ncc_protocol.Operand.AUTO,
     wait_kind: ncc_protocol.WaitKind = ncc_protocol.WaitKind.BY_WORKER,
+    wait_worker_mask_override: int | None = None,
     flags: int = 0,
     issue_limit: int = 0,
 ) -> GenericProbeCase:
-    worker_mask = 0
-    if wait_kind == ncc_protocol.WaitKind.BY_WORKER:
+    worker_mask = (
+        0
+        if wait_worker_mask_override is None
+        else wait_worker_mask_override
+    )
+    if (
+        wait_worker_mask_override is None
+        and wait_kind == ncc_protocol.WaitKind.BY_WORKER
+    ):
         for lane in lanes:
             worker_mask |= 1 << lane.worker
     return GenericProbeCase(
@@ -552,6 +578,37 @@ def v2_case(
             flags=flags,
             issue_limit=issue_limit,
         ),
+    )
+
+
+def v2_dma_strided_lane(
+    engine: ncc_protocol.Engine,
+    descriptor: tuple[int, int, int, int, int, int, int, int],
+) -> ncc_protocol.Lane:
+    (
+        byte_count,
+        inner_bytes,
+        stride0_bytes,
+        stride1_bytes,
+        stride2_bytes,
+        iteration0,
+        iteration1,
+        iteration2,
+    ) = descriptor
+    return ncc_protocol.Lane(
+        engine=engine,
+        worker=0,
+        issue_mode=ncc_protocol.IssueMode.WRAPPER,
+        transfer_bytes=byte_count,
+        element_format=FMT_FP16,
+        layout_kind=ncc_protocol.LayoutKind.DMA_STRIDED,
+        layout_inner_bytes=inner_bytes,
+        layout_stride0_bytes=stride0_bytes,
+        layout_stride1_bytes=stride1_bytes,
+        layout_stride2_bytes=stride2_bytes,
+        layout_iteration0=iteration0,
+        layout_iteration1=iteration1,
+        layout_iteration2=iteration2,
     )
 
 
@@ -624,6 +681,31 @@ NO_CARD_PROTOCOL_CASES = (
         seed=0x1001,
     ),
 )
+TDMA_CRT_MANUAL_CASES = NO_CARD_PROTOCOL_CASES
+V2_DMA_STRIDE_DESCRIPTORS = (
+    ("1d", (24, 6, 10, 0, 0, 4, 1, 1)),
+    ("2d", (24, 4, 8, 28, 0, 3, 2, 1)),
+    ("3d", (32, 4, 8, 20, 52, 2, 2, 2)),
+)
+V2_DMA_STRIDE_MATRIX_CASES = tuple(
+    v2_case(
+        f"dma-stride-roundtrip-{dimension}",
+        (
+            v2_dma_strided_lane(ncc_protocol.Engine.RDMA, descriptor),
+            v2_dma_strided_lane(ncc_protocol.Engine.WDMA, descriptor),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x7200 + index,
+        effect_relation=ncc_protocol.EffectRelation.RAW,
+        range_relation=ncc_protocol.RangeRelation.EXACT,
+        first_operand=ncc_protocol.Operand.WRITE,
+        second_operand=ncc_protocol.Operand.READ0,
+    )
+    for index, (dimension, descriptor) in enumerate(
+        V2_DMA_STRIDE_DESCRIPTORS, start=1
+    )
+)
 V2_SINGLE_CASES = tuple(
     v2_case(
         f"{engine.name.lower()}-raw-single",
@@ -660,6 +742,58 @@ V2_WORKER_CASES = (
         schedule=ncc_protocol.Schedule.WINDOW,
         seed=0x6112,
     ),
+)
+V2_COMPLETION_SCOPE_CASES = tuple(
+    v2_case(
+        f"ne-worker1-depth6-{spelling}-wait-window",
+        (
+            v2_lane(
+                ncc_protocol.Engine.TDMA,
+                worker=0,
+                transfer_bytes=16,
+                element_format=FMT_INT8,
+            ),
+            v2_lane(ncc_protocol.Engine.NE, worker=1),
+            v2_lane(ncc_protocol.Engine.NE, worker=1),
+        ),
+        rounds=3,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=seed,
+        wait_kind=wait_kind,
+        wait_worker_mask_override=(
+            0b010
+            if wait_kind == ncc_protocol.WaitKind.BY_WORKER
+            else None
+        ),
+    )
+    for spelling, wait_kind, seed in (
+        ("default", ncc_protocol.WaitKind.DEFAULT, 0x6121),
+        ("byworker", ncc_protocol.WaitKind.BY_WORKER, 0x6122),
+    )
+)
+V2_WAIT_OVERHEAD_CASES = tuple(
+    v2_case(
+        f"ct-worker0-depth6-{spelling}",
+        (
+            v2_lane(
+                ncc_protocol.Engine.CT,
+                worker=0,
+                transfer_bytes=256,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.CT,
+                worker=0,
+                transfer_bytes=256,
+            ),
+        ),
+        rounds=3,
+        schedule=schedule,
+        seed=0x6130,
+    )
+    for spelling, schedule in (
+        ("wait-each", ncc_protocol.Schedule.SERIAL),
+        ("wait-once", ncc_protocol.Schedule.WINDOW),
+    )
 )
 V2_MULTI_ISSUE_CASES = tuple(
     v2_case(
@@ -876,11 +1010,17 @@ SUITES = {
     "focused": FOCUSED_CASES,
     "calibration": CALIBRATION_CASES,
     "hazard-manual": V2_HAZARD_MANUAL_CASES,
+    "completion-scope-manual": V2_COMPLETION_SCOPE_CASES,
+    "wait-overhead-manual": V2_WAIT_OVERHEAD_CASES,
+    "tdma-crt-manual": TDMA_CRT_MANUAL_CASES,
+    "dma-stride-matrix-manual": V2_DMA_STRIDE_MATRIX_CASES,
     "documented-depth-manual": V2_DOCUMENTED_DEPTH_CASES,
     "depth-plus-one-manual": V2_DEPTH_PLUS_ONE_CASES,
 }
 CASE_CATALOGS = {
-    "no-card-protocol": NO_CARD_PROTOCOL_CASES,
+    "no-card-protocol": (
+        NO_CARD_PROTOCOL_CASES + V2_DMA_STRIDE_MATRIX_CASES
+    ),
     **SUITES,
 }
 
@@ -897,6 +1037,32 @@ def validate_no_card_protocol_cases() -> None:
         ):
             raise RuntimeError(
                 f"{case.name}: no-card protocol case lost its typed I8 lane"
+            )
+        plan.request_words()
+    expected_envelopes = (36, 48, 84)
+    for case, expected_envelope in zip(
+        V2_DMA_STRIDE_MATRIX_CASES, expected_envelopes, strict=True
+    ):
+        plan = case.plan
+        if (
+            len(plan.lanes) != 2
+            or tuple(lane.engine for lane in plan.lanes)
+            != (ncc_protocol.Engine.RDMA, ncc_protocol.Engine.WDMA)
+            or any(
+                lane.issue_mode != ncc_protocol.IssueMode.WRAPPER
+                or lane.element_format != FMT_FP16
+                or lane.layout_kind
+                != ncc_protocol.LayoutKind.DMA_STRIDED
+                or lane.dma_envelope_bytes() != expected_envelope
+                for lane in plan.lanes
+            )
+            or plan.rounds != 1
+            or plan.schedule != ncc_protocol.Schedule.SERIAL
+            or plan.effect_relation != ncc_protocol.EffectRelation.RAW
+            or plan.range_relation != ncc_protocol.RangeRelation.EXACT
+        ):
+            raise RuntimeError(
+                f"{case.name}: DMA stride matrix lost its serial roundtrip plan"
             )
         plan.request_words()
     if len(V2_SINGLE_CASES) != 5 or len(V2_MULTI_ISSUE_CASES) != 5:
@@ -940,6 +1106,83 @@ def validate_no_card_protocol_cases() -> None:
         ):
             raise RuntimeError(
                 f"{case.name}: worker/join protocol is malformed"
+            )
+        plan.request_words()
+    completion_scope_specs = {
+        "ne-worker1-depth6-default-wait-window": (
+            ncc_protocol.WaitKind.DEFAULT,
+            0x6121,
+        ),
+        "ne-worker1-depth6-byworker-wait-window": (
+            ncc_protocol.WaitKind.BY_WORKER,
+            0x6122,
+        ),
+    }
+    if {
+        case.name for case in V2_COMPLETION_SCOPE_CASES
+    } != set(completion_scope_specs):
+        raise RuntimeError("generic catalog lost a completion-scope case")
+    for case in V2_COMPLETION_SCOPE_CASES:
+        wait_kind, seed = completion_scope_specs[case.name]
+        plan = case.plan
+        if (
+            tuple(lane.worker for lane in plan.lanes) != (0, 1, 1)
+            or plan.lanes[0].engine != ncc_protocol.Engine.TDMA
+            or plan.lanes[0].issue_mode != ncc_protocol.IssueMode.RAW
+            or plan.lanes[0].element_format != FMT_INT8
+            or plan.lanes[0].transfer_bytes != 16
+            or any(
+                lane.engine != ncc_protocol.Engine.NE
+                or lane.issue_mode != ncc_protocol.IssueMode.RAW
+                or lane.element_format != FMT_FP16
+                or lane.transfer_bytes != V2_NE_PHYSICAL_BYTES
+                for lane in plan.lanes[1:]
+            )
+            or plan.rounds != 3
+            or plan.schedule != ncc_protocol.Schedule.WINDOW
+            or plan.wait_kind != wait_kind
+            or plan.wait_worker_mask
+            != (
+                0b010
+                if wait_kind == ncc_protocol.WaitKind.BY_WORKER
+                else 0
+            )
+            or plan.seed != seed
+            or plan.issue_order() != (0, 4, 8, 1, 5, 9, 2, 6, 10)
+        ):
+            raise RuntimeError(
+                f"{case.name}: completion-scope protocol is malformed"
+            )
+        plan.request_words()
+    overhead_specs = {
+        "ct-worker0-depth6-wait-each": ncc_protocol.Schedule.SERIAL,
+        "ct-worker0-depth6-wait-once": ncc_protocol.Schedule.WINDOW,
+    }
+    if {
+        case.name for case in V2_WAIT_OVERHEAD_CASES
+    } != set(overhead_specs):
+        raise RuntimeError("generic catalog lost a wait-overhead case")
+    for case in V2_WAIT_OVERHEAD_CASES:
+        plan = case.plan
+        if (
+            len(plan.lanes) != 2
+            or any(
+                lane.engine != ncc_protocol.Engine.CT
+                or lane.worker != 0
+                or lane.issue_mode != ncc_protocol.IssueMode.RAW
+                or lane.element_format != FMT_FP16
+                or lane.transfer_bytes != 256
+                for lane in plan.lanes
+            )
+            or plan.rounds != 3
+            or plan.schedule != overhead_specs[case.name]
+            or plan.wait_kind != ncc_protocol.WaitKind.BY_WORKER
+            or plan.wait_worker_mask != 1
+            or plan.seed != 0x6130
+            or plan.issue_order() != (0, 4, 1, 5, 2, 6)
+        ):
+            raise RuntimeError(
+                f"{case.name}: wait-overhead protocol is malformed"
             )
         plan.request_words()
     for engine, depth in V2_DOCUMENTED_QUEUE_DEPTHS.items():
@@ -1001,6 +1244,26 @@ def v2_pattern_byte(slot: int, index: int) -> int:
     return ((slot + 1) * 29 + index * 17) & 0xFF
 
 
+def v2_scatter_compact(
+    buffer: bytearray,
+    begin: int,
+    lane: ncc_protocol.Lane,
+    compact: bytes,
+) -> None:
+    if lane.layout_kind != ncc_protocol.LayoutKind.DMA_STRIDED:
+        buffer[begin : begin + len(compact)] = compact
+        return
+    cursor = 0
+    for offset in lane.dma_chunk_offsets():
+        chunk_end = cursor + lane.layout_inner_bytes
+        buffer[
+            begin + offset : begin + offset + lane.layout_inner_bytes
+        ] = compact[cursor:chunk_end]
+        cursor = chunk_end
+    if cursor != len(compact):
+        raise RuntimeError("DMA stride descriptor did not consume compact bytes")
+
+
 def write_payload(path: pathlib.Path, case: GenericProbeCase) -> None:
     payload = bytearray([0xCC] * RESOURCE_BYTES)
     for identity in case.plan.issue_identities():
@@ -1008,6 +1271,14 @@ def write_payload(path: pathlib.Path, case: GenericProbeCase) -> None:
         begin = (
             identity.slot * V2_OUTPUT_SLOT_STRIDE + V2_OUTPUT_GUARD_BYTES
         )
+        if lane.layout_kind == ncc_protocol.LayoutKind.DMA_STRIDED:
+            if lane.engine == ncc_protocol.Engine.RDMA:
+                compact = bytes(
+                    v2_pattern_byte(identity.slot, index)
+                    for index in range(lane.transfer_bytes)
+                )
+                v2_scatter_compact(payload, begin, lane, compact)
+            continue
         if (
             case.plan.effect_relation
             != ncc_protocol.EffectRelation.NONE
@@ -1044,6 +1315,36 @@ def v2_half(value: int) -> int:
         0x4A80,
     )
     return values[value]
+
+
+def v2_completion_marker(
+    plan: ncc_protocol.Plan,
+) -> tuple[int, int]:
+    last_slot = plan.issue_order()[-1]
+    last_identity = next(
+        identity
+        for identity in plan.issue_identities()
+        if identity.slot == last_slot
+    )
+    lane = plan.lanes[last_identity.lane]
+    write = (
+        V2_SPM_SLOT_BASE
+        + last_slot * V2_SPM_SLOT_STRIDE
+        + V2_SPM_WRITE_OFFSET
+    )
+    if lane.engine == ncc_protocol.Engine.RDMA:
+        return (
+            v2_pattern_byte(last_slot, lane.transfer_bytes - 1),
+            write + lane.transfer_bytes - 1,
+        )
+    if lane.engine == ncc_protocol.Engine.NE:
+        return (
+            v2_half(last_slot + 1) >> 8,
+            write + V2_NE_RESULT_BYTES - 1,
+        )
+    raise RuntimeError(
+        "completion-scope marker requires a result-producing final lane"
+    )
 
 
 def v2_hazard_ranges(
@@ -1151,6 +1452,12 @@ def v2_expected_result(
     lane: ncc_protocol.Lane,
     plan: ncc_protocol.Plan,
 ) -> bytes:
+    if lane.layout_kind == ncc_protocol.LayoutKind.DMA_STRIDED:
+        source_slot = identity.round
+        return bytes(
+            v2_pattern_byte(source_slot, index)
+            for index in range(lane.transfer_bytes)
+        )
     if plan.effect_relation != ncc_protocol.EffectRelation.NONE:
         return v2_hazard_result(identity, lane, plan)
     if lane.engine == ncc_protocol.Engine.CT:
@@ -1349,7 +1656,7 @@ def validate_observed_ranges_v2(
                 "payload",
                 identity.slot * V2_OUTPUT_SLOT_STRIDE
                 + V2_OUTPUT_GUARD_BYTES,
-                lane.transfer_bytes,
+                lane.dma_envelope_bytes(),
             )
             check_spm(observation, "write", write, lane.transfer_bytes)
         elif lane.engine == ncc_protocol.Engine.WDMA:
@@ -1361,7 +1668,7 @@ def validate_observed_ranges_v2(
                 V2_OUTPUT_SLOT_BASE
                 + identity.slot * V2_OUTPUT_SLOT_STRIDE
                 + V2_OUTPUT_GUARD_BYTES,
-                lane.transfer_bytes,
+                lane.dma_envelope_bytes(),
             )
         else:
             check_spm(observation, "write", write, lane.transfer_bytes)
@@ -1438,23 +1745,50 @@ def validate_output_payload_v2(
             + identity.slot * V2_OUTPUT_SLOT_STRIDE
             + V2_OUTPUT_GUARD_BYTES
         )
-        actual = output[begin : begin + len(expected)]
-        if actual != expected:
-            mismatch = next(
-                index
-                for index, (actual_byte, expected_byte) in enumerate(
-                    zip(actual, expected)
+        if (
+            lane.engine == ncc_protocol.Engine.WDMA
+            and lane.layout_kind == ncc_protocol.LayoutKind.DMA_STRIDED
+        ):
+            cursor = 0
+            for offset in lane.dma_chunk_offsets():
+                chunk_end = cursor + lane.layout_inner_bytes
+                actual = output[
+                    begin + offset :
+                    begin + offset + lane.layout_inner_bytes
+                ]
+                wanted = expected[cursor:chunk_end]
+                if actual != wanted:
+                    raise RuntimeError(
+                        f"{case.name}: slot {identity.slot} scatter chunk "
+                        f"at byte {offset} differs"
+                    )
+                mutable[
+                    begin + offset :
+                    begin + offset + lane.layout_inner_bytes
+                ] = bytes([0xA5]) * lane.layout_inner_bytes
+                cursor = chunk_end
+            if cursor != len(expected):
+                raise RuntimeError(
+                    f"{case.name}: scatter oracle did not consume compact bytes"
                 )
-                if actual_byte != expected_byte
+        else:
+            actual = output[begin : begin + len(expected)]
+            if actual != expected:
+                mismatch = next(
+                    index
+                    for index, (actual_byte, expected_byte) in enumerate(
+                        zip(actual, expected)
+                    )
+                    if actual_byte != expected_byte
+                )
+                raise RuntimeError(
+                    f"{case.name}: slot {identity.slot} differs at byte "
+                    f"{mismatch}: expected=0x{expected[mismatch]:02x} "
+                    f"actual=0x{actual[mismatch]:02x}"
+                )
+            mutable[begin : begin + len(expected)] = (
+                bytes([0xA5]) * len(expected)
             )
-            raise RuntimeError(
-                f"{case.name}: slot {identity.slot} differs at byte "
-                f"{mismatch}: expected=0x{expected[mismatch]:02x} "
-                f"actual=0x{actual[mismatch]:02x}"
-            )
-        mutable[begin : begin + len(expected)] = (
-            bytes([0xA5]) * len(expected)
-        )
     if mutable != bytes([0xA5]) * RESOURCE_BYTES:
         mismatch = next(
             index for index, value in enumerate(mutable) if value != 0xA5
@@ -1480,6 +1814,7 @@ def parse_record(
     plan = case.plan_for_sample(sample)
     observations = ncc_protocol.validate_record(words, plan)
     rec = ncc_protocol.REC
+    is_wait_scope = case in V2_COMPLETION_SCOPE_CASES
     if (
         words[rec["OUTPUT_SLOT_BASE"]] != V2_OUTPUT_SLOT_BASE
         or words[rec["OUTPUT_SLOT_STRIDE"]] != V2_OUTPUT_SLOT_STRIDE
@@ -1501,6 +1836,50 @@ def parse_record(
         raise RuntimeError(
             f"{case.name}: parallel queue mode is not active: {serial_modes}"
         )
+    serial_wait_count = words[rec["SERIAL_WAIT_COUNT"]]
+    expected_serial_wait_count = (
+        len(plan.issue_identities())
+        if plan.schedule == ncc_protocol.Schedule.SERIAL
+        else 0
+    )
+    if (
+        words[rec["PLAN_CYCLES"]] == 0
+        or serial_wait_count != expected_serial_wait_count
+        or (
+            serial_wait_count != 0
+            and words[rec["SERIAL_WAIT_CYCLES"]] == 0
+        )
+    ):
+        raise RuntimeError(f"{case.name}: wait timing record is malformed")
+    serial_wait_samples = [
+        words[ncc_protocol.WAIT_SAMPLE_BASE + index]
+        for index in range(
+            min(serial_wait_count, ncc_protocol.MAX_WAIT_SAMPLES)
+        )
+    ]
+    if (
+        case in V2_WAIT_OVERHEAD_CASES
+        and (
+            serial_wait_count > ncc_protocol.MAX_WAIT_SAMPLES
+            or sum(serial_wait_samples)
+            != words[rec["SERIAL_WAIT_CYCLES"]]
+        )
+    ):
+        raise RuntimeError(
+            f"{case.name}: per-wait cycle samples are incomplete"
+        )
+    timing = {
+        "plan_cycles": words[rec["PLAN_CYCLES"]],
+        "requested_wait_cycles": words[rec["WAIT_CYCLES"]],
+        "serial_wait_count": serial_wait_count,
+        "serial_wait_cycles": words[rec["SERIAL_WAIT_CYCLES"]],
+        "serial_wait_samples": serial_wait_samples,
+        "serial_wait_average_cycles": (
+            words[rec["SERIAL_WAIT_CYCLES"]] / serial_wait_count
+            if serial_wait_count
+            else 0
+        ),
+    }
     for observation in observations:
         if (
             observation.inter_type & 0xFF != observation.engine
@@ -1520,10 +1899,13 @@ def parse_record(
                 f"{observation.execute_rc}, expected current value 1"
             )
         if (
-            observation.boundary_mismatches
-            or observation.boundary_guard_mismatches
+            observation.boundary_guard_mismatches
             or observation.final_mismatches
             or observation.final_guard_mismatches
+            or (
+                observation.boundary_mismatches
+                and not is_wait_scope
+            )
         ):
             raise RuntimeError(
                 f"{case.name}: slot {observation.identity.slot} oracle "
@@ -1569,16 +1951,94 @@ def parse_record(
             raise RuntimeError(
                 f"{case.name}: worker {worker} did not reach task_done"
             )
+    wait_scope: dict[str, object] | None = None
+    if is_wait_scope:
+        expected_marker, expected_marker_address = v2_completion_marker(plan)
+        boundary_marker = words[rec["COMPLETION_MARKER_BOUNDARY"]]
+        final_marker = words[rec["COMPLETION_MARKER_FINAL"]]
+        boundary_task_done = bool(
+            words[rec["CONTROL_BOUNDARY"] + 1] & 0x100
+        )
+        worker0_task_done = bool(
+            words[rec["CONTROL_BOUNDARY"]] & 0x100
+        )
+        worker1_boundary_exact = all(
+            observation.boundary_mismatches == 0
+            for observation in observations
+            if observation.worker == 1
+        )
+        if (
+            words[rec["WAIT_CYCLES"]] == 0
+            or words[rec["COMPLETION_MARKER_EXPECTED"]]
+            != expected_marker
+            or words[rec["COMPLETION_MARKER_ADDRESS"]]
+            != expected_marker_address
+            or final_marker != expected_marker
+        ):
+            raise RuntimeError(
+                f"{case.name}: wait/marker observation is malformed"
+            )
+        if (
+            plan.wait_kind == ncc_protocol.WaitKind.BY_WORKER
+            and not (
+                boundary_task_done
+                and boundary_marker == expected_marker
+                and worker1_boundary_exact
+            )
+        ):
+            raise RuntimeError(
+                f"{case.name}: by-worker wait returned before worker1 "
+                "completed"
+            )
+        if (
+            plan.wait_kind == ncc_protocol.WaitKind.DEFAULT
+            and not worker0_task_done
+        ):
+            raise RuntimeError(
+                f"{case.name}: default wait returned before worker0 "
+                "completed"
+            )
+        wait_scope = {
+            "wait_cycles": words[rec["WAIT_CYCLES"]],
+            "worker0_task_status": words[rec["CONTROL_BOUNDARY"]],
+            "worker0_task_done": worker0_task_done,
+            "worker1_task_status": words[
+                rec["CONTROL_BOUNDARY"] + 1
+            ],
+            "worker1_task_done": boundary_task_done,
+            "marker_expected": expected_marker,
+            "marker_boundary": boundary_marker,
+            "marker_final": final_marker,
+            "marker_done_at_boundary": boundary_marker == expected_marker,
+            "worker1_results_exact_at_boundary": worker1_boundary_exact,
+            "interpretation": (
+                "byworker1-completed-worker1"
+                if plan.wait_kind == ncc_protocol.WaitKind.BY_WORKER
+                else (
+                    "default-returned-before-worker1"
+                    if not (
+                        boundary_task_done
+                        and boundary_marker == expected_marker
+                        and worker1_boundary_exact
+                    )
+                    else "default-covered-worker1-or-backlog-drained"
+                )
+            ),
+        }
     validate_output_payload_v2(output, case, plan)
-    return {
+    result = {
         "case": case.as_dict(),
         "sample": sample,
         "serial_mode": serial_modes,
         "instruction_delta": instruction_delta,
         "blocking_delta": blocking_delta,
         "execution_delta": execution_delta,
+        "timing": timing,
         "issues": [dataclasses.asdict(item) for item in observations],
     }
+    if wait_scope is not None:
+        result["wait_scope"] = wait_scope
+    return result
 
 
 def hazard_pair_key(plan: ncc_protocol.Plan) -> tuple[str, str]:
@@ -1649,7 +2109,10 @@ def validate_hazard_selection(cases: Iterable[GenericProbeCase]) -> None:
     hazards = tuple(
         case
         for case in selected
-        if case.plan.effect_relation != ncc_protocol.EffectRelation.NONE
+        if (
+            case.plan.effect_relation != ncc_protocol.EffectRelation.NONE
+            and not case.plan.is_serial_dma_roundtrip()
+        )
     )
     if not hazards:
         return
@@ -1737,6 +2200,7 @@ def execute_cases(
         if (
             case.plan.effect_relation
             != ncc_protocol.EffectRelation.NONE
+            and not case.plan.is_serial_dma_roundtrip()
             and hazard_pair_key(case.plan)
             not in qualified_disjoint_pairs(observations)
         ):
@@ -1747,7 +2211,11 @@ def execute_cases(
         samples = (
             1
             if case in (
-                V2_DOCUMENTED_DEPTH_CASES + V2_DEPTH_PLUS_ONE_CASES
+                V2_DOCUMENTED_DEPTH_CASES
+                + V2_DEPTH_PLUS_ONE_CASES
+                + V2_DMA_STRIDE_MATRIX_CASES
+                + V2_COMPLETION_SCOPE_CASES
+                + V2_WAIT_OVERHEAD_CASES
             )
             else args.repeat if len(case.plan.lanes) > 1 else 1
         )
@@ -1970,6 +2438,46 @@ def report_depth_plus_one(
     )
 
 
+def report_wait_overhead(
+    observations: list[dict[str, object]],
+) -> None:
+    if len(observations) != 2:
+        raise RuntimeError(
+            "wait-overhead suite requires its serial/window pair"
+        )
+    by_schedule: dict[str, dict[str, object]] = {}
+    for observation in observations:
+        case = observation.get("case")
+        timing = observation.get("timing")
+        if not isinstance(case, dict) or not isinstance(timing, dict):
+            raise RuntimeError("wait-overhead observation is malformed")
+        by_schedule[str(case["schedule"])] = timing
+    if set(by_schedule) != {"serial", "window"}:
+        raise RuntimeError("wait-overhead serial/window control is incomplete")
+    serial = by_schedule["serial"]
+    window = by_schedule["window"]
+    report = {
+        "workload": "6x ct fp16 elements128 worker0",
+        "wait_each_plan_cycles": int(serial["plan_cycles"]),
+        "wait_once_plan_cycles": int(window["plan_cycles"]),
+        "wait_each_calls": int(serial["serial_wait_count"]),
+        "wait_each_total_cycles": int(serial["serial_wait_cycles"]),
+        "wait_each_average_cycles": serial[
+            "serial_wait_average_cycles"
+        ],
+        "wait_each_cycle_samples": serial["serial_wait_samples"],
+        "empty_wait_cycles": int(serial["requested_wait_cycles"]),
+        "window_final_wait_cycles": int(window["requested_wait_cycles"]),
+        "frequent_wait_extra_plan_cycles": (
+            int(serial["plan_cycles"]) - int(window["plan_cycles"])
+        ),
+    }
+    print(
+        "ncc_wait_overhead_decision: "
+        + json.dumps(report, sort_keys=True)
+    )
+
+
 def write_qualification(
     args: argparse.Namespace,
     package: pathlib.Path,
@@ -2024,11 +2532,16 @@ def main() -> int:
     if args.suite in (
         "documented-depth-manual",
         "depth-plus-one-manual",
+        "completion-scope-manual",
     ) and (
         not args.selected_cases or len(args.selected_cases) != 1
     ):
         raise RuntimeError(
             f"{args.suite} requires exactly one --case"
+        )
+    if args.suite == "wait-overhead-manual" and args.selected_cases:
+        raise RuntimeError(
+            "wait-overhead-manual always runs its serial/window pair"
         )
     if args.suite != "build-smoke":
         if os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
@@ -2078,6 +2591,8 @@ def main() -> int:
         report_overlap(observations, args.require_overlap)
     if args.suite == "depth-plus-one-manual":
         report_depth_plus_one(observations)
+    if args.suite == "wait-overhead-manual":
+        report_wait_overhead(observations)
     return 0
 
 

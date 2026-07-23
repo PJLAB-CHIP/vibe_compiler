@@ -64,6 +64,10 @@ MAX_LANES = _macro("WAFER_NCC_PROTOCOL_MAX_LANES")
 MAX_ROUNDS = _macro("WAFER_NCC_PROTOCOL_MAX_ROUNDS")
 MAX_ISSUES = _macro("WAFER_NCC_PROTOCOL_MAX_ISSUES")
 WORKERS = _macro("WAFER_NCC_PROTOCOL_WORKERS")
+MAX_DMA_ENVELOPE_BYTES = _macro(
+    "WAFER_NCC_PROTOCOL_MAX_DMA_ENVELOPE_BYTES"
+)
+DMA_FORMAT_FP16 = _macro("WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16")
 REQUEST_RESERVED_BASE = _macro(
     "WAFER_NCC_PROTOCOL_REQUEST_RESERVED_BASE"
 )
@@ -74,6 +78,8 @@ LANE_BASE = _macro("WAFER_NCC_PROTOCOL_LANE_BASE")
 LANE_STRIDE = _macro("WAFER_NCC_PROTOCOL_LANE_STRIDE")
 ISSUE_BASE = _macro("WAFER_NCC_PROTOCOL_ISSUE_BASE")
 ISSUE_STRIDE = _macro("WAFER_NCC_PROTOCOL_ISSUE_STRIDE")
+WAIT_SAMPLE_BASE = _macro("WAFER_NCC_PROTOCOL_WAIT_SAMPLE_BASE")
+MAX_WAIT_SAMPLES = _macro("WAFER_NCC_PROTOCOL_MAX_WAIT_SAMPLES")
 TIGHT_DEPTH_PLUS_ONE = _enumerator(
     "WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE"
 )
@@ -128,7 +134,7 @@ IssueMode = _typed_enum(
 LayoutKind = _typed_enum(
     "LayoutKind",
     "WAFER_NCC_LAYOUT_",
-    ("CONTIGUOUS", "INNER_STRIDED"),
+    ("CONTIGUOUS", "INNER_STRIDED", "DMA_STRIDED"),
 )
 Status = _typed_enum(
     "Status",
@@ -184,6 +190,12 @@ LANE = {
         "ELEMENT_FORMAT",
         "LAYOUT_KIND",
         "LAYOUT_INNER_BYTES",
+        "LAYOUT_STRIDE0_BYTES",
+        "LAYOUT_STRIDE1_BYTES",
+        "LAYOUT_STRIDE2_BYTES",
+        "LAYOUT_ITERATION0",
+        "LAYOUT_ITERATION1",
+        "LAYOUT_ITERATION2",
         "FLAGS",
     )
 }
@@ -230,6 +242,14 @@ REC = {
         "OUTPUT_GUARD_BYTES",
         "RESOURCE_BYTES",
         "ISSUE_LIMIT",
+        "WAIT_CYCLES",
+        "COMPLETION_MARKER_EXPECTED",
+        "COMPLETION_MARKER_BOUNDARY",
+        "COMPLETION_MARKER_FINAL",
+        "COMPLETION_MARKER_ADDRESS",
+        "PLAN_CYCLES",
+        "SERIAL_WAIT_CYCLES",
+        "SERIAL_WAIT_COUNT",
         "RECORD_GUARD",
     )
 }
@@ -291,6 +311,12 @@ class Lane:
     element_format: int
     layout_kind: LayoutKind = LayoutKind.CONTIGUOUS
     layout_inner_bytes: int = 0
+    layout_stride0_bytes: int = 0
+    layout_stride1_bytes: int = 0
+    layout_stride2_bytes: int = 0
+    layout_iteration0: int = 0
+    layout_iteration1: int = 0
+    layout_iteration2: int = 0
     flags: int = 0
 
     def validate(self) -> None:
@@ -302,15 +328,123 @@ class Lane:
             raise ValueError("transfer_bytes must be positive")
         if self.flags != 0:
             raise ValueError("unknown lane flags are not safe")
+        extra_layout = (
+            self.layout_stride0_bytes,
+            self.layout_stride1_bytes,
+            self.layout_stride2_bytes,
+            self.layout_iteration0,
+            self.layout_iteration1,
+            self.layout_iteration2,
+        )
+        if any(type(value) is not int or value < 0 for value in extra_layout):
+            raise ValueError("layout strides and iterations must be nonnegative")
         if self.layout_kind == LayoutKind.CONTIGUOUS:
-            if self.layout_inner_bytes != 0:
-                raise ValueError("contiguous lanes have no inner byte span")
-        elif (
-            self.layout_inner_bytes <= 0
-            or self.layout_inner_bytes > self.transfer_bytes
-            or self.transfer_bytes % self.layout_inner_bytes
-        ):
-            raise ValueError("inner-strided layout must exactly tile the span")
+            if self.layout_inner_bytes != 0 or any(extra_layout):
+                raise ValueError("contiguous lanes have no layout descriptor")
+        elif self.layout_kind == LayoutKind.INNER_STRIDED:
+            if any(extra_layout):
+                raise ValueError(
+                    "inner-strided lanes do not carry a DMA descriptor"
+                )
+            if (
+                self.layout_inner_bytes <= 0
+                or self.layout_inner_bytes > self.transfer_bytes
+                or self.transfer_bytes % self.layout_inner_bytes
+            ):
+                raise ValueError(
+                    "inner-strided layout must exactly tile the span"
+                )
+        elif self.layout_kind == LayoutKind.DMA_STRIDED:
+            if self.engine not in (Engine.RDMA, Engine.WDMA):
+                raise ValueError("DMA-strided layout requires RDMA or WDMA")
+            if self.issue_mode != IssueMode.WRAPPER:
+                raise ValueError("DMA-strided layout uses the public CRT wrapper")
+            if self.element_format != DMA_FORMAT_FP16:
+                raise ValueError("DMA-strided layout is qualified for FP16")
+            if (
+                self.layout_inner_bytes
+                | self.layout_stride0_bytes
+                | self.layout_stride1_bytes
+                | self.layout_stride2_bytes
+            ) & 1:
+                raise ValueError(
+                    "FP16 DMA inner span and strides must be 2-byte aligned"
+                )
+            iterations = (
+                self.layout_iteration0,
+                self.layout_iteration1,
+                self.layout_iteration2,
+            )
+            if self.layout_inner_bytes <= 0 or any(
+                iteration <= 0 for iteration in iterations
+            ):
+                raise ValueError(
+                    "DMA-strided layout requires a positive inner span "
+                    "and three positive iterations"
+                )
+            compact_bytes = self.layout_inner_bytes
+            for iteration in iterations:
+                compact_bytes *= iteration
+            if compact_bytes != self.transfer_bytes:
+                raise ValueError(
+                    "DMA-strided byte_count must equal "
+                    "inner_bytes*iteration0*iteration1*iteration2"
+                )
+            row_bytes = (
+                (self.layout_iteration0 - 1)
+                * self.layout_stride0_bytes
+                + self.layout_inner_bytes
+            )
+            plane_bytes = (
+                (self.layout_iteration1 - 1)
+                * self.layout_stride1_bytes
+                + row_bytes
+            )
+            envelope_bytes = (
+                (self.layout_iteration2 - 1)
+                * self.layout_stride2_bytes
+                + plane_bytes
+            )
+            if (
+                (
+                    self.layout_iteration0 > 1
+                    and self.layout_stride0_bytes
+                    < self.layout_inner_bytes
+                )
+                or (
+                    self.layout_iteration1 > 1
+                    and self.layout_stride1_bytes < row_bytes
+                )
+                or (
+                    self.layout_iteration2 > 1
+                    and self.layout_stride2_bytes < plane_bytes
+                )
+            ):
+                raise ValueError("DMA-strided chunks must not overlap")
+            if envelope_bytes > MAX_DMA_ENVELOPE_BYTES:
+                raise ValueError("DMA-strided envelope exceeds its DDR slot")
+        else:
+            raise ValueError("unknown layout kind")
+
+    def dma_chunk_offsets(self) -> tuple[int, ...]:
+        self.validate()
+        if self.layout_kind != LayoutKind.DMA_STRIDED:
+            return (0,)
+        return tuple(
+            outer * self.layout_stride2_bytes
+            + middle * self.layout_stride1_bytes
+            + inner * self.layout_stride0_bytes
+            for outer in range(self.layout_iteration2)
+            for middle in range(self.layout_iteration1)
+            for inner in range(self.layout_iteration0)
+        )
+
+    def dma_envelope_bytes(self) -> int:
+        return max(self.dma_chunk_offsets()) + (
+            self.layout_inner_bytes
+            if self.layout_kind == LayoutKind.DMA_STRIDED
+            else self.transfer_bytes
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -339,6 +473,44 @@ class Plan:
     command: Command = Command.EXECUTE
     flags: int = 0
 
+    def is_serial_dma_roundtrip(self) -> bool:
+        if len(self.lanes) != 2:
+            return False
+        first, second = self.lanes
+        descriptor_fields = (
+            "transfer_bytes",
+            "element_format",
+            "layout_kind",
+            "layout_inner_bytes",
+            "layout_stride0_bytes",
+            "layout_stride1_bytes",
+            "layout_stride2_bytes",
+            "layout_iteration0",
+            "layout_iteration1",
+            "layout_iteration2",
+        )
+        return (
+            self.rounds == 1
+            and self.effect_relation == EffectRelation.RAW
+            and self.range_relation == RangeRelation.EXACT
+            and self.schedule == Schedule.SERIAL
+            and self.wait_kind == WaitKind.BY_WORKER
+            and self.wait_worker_mask == 1
+            and self.first_operand == Operand.WRITE
+            and self.second_operand == Operand.READ0
+            and self.flags == 0
+            and self.issue_limit == 0
+            and first.engine == Engine.RDMA
+            and second.engine == Engine.WDMA
+            and first.worker == second.worker == 0
+            and first.layout_kind == LayoutKind.DMA_STRIDED
+            and second.layout_kind == LayoutKind.DMA_STRIDED
+            and all(
+                getattr(first, field) == getattr(second, field)
+                for field in descriptor_fields
+            )
+        )
+
     def validate(self) -> None:
         if self.command == Command.QUALIFY:
             if (
@@ -362,6 +534,14 @@ class Plan:
             raise ValueError(f"rounds must be in [1, {MAX_ROUNDS}]")
         for lane in self.lanes:
             lane.validate()
+        if any(
+            lane.layout_kind == LayoutKind.DMA_STRIDED
+            for lane in self.lanes
+        ) and not self.is_serial_dma_roundtrip():
+            raise ValueError(
+                "DMA-strided lanes require one worker0 serial "
+                "RDMA-to-WDMA FP16 roundtrip"
+            )
         if len(self.lanes) == 1 and (
             self.effect_relation != EffectRelation.NONE
             or self.range_relation != RangeRelation.DISJOINT
@@ -432,6 +612,7 @@ class Plan:
             self.range_relation == RangeRelation.STRIDED_ENVELOPE
             and not any(
                 lane.layout_kind == LayoutKind.INNER_STRIDED
+                or lane.layout_kind == LayoutKind.DMA_STRIDED
                 for lane in self.lanes
             )
         ):
@@ -553,6 +734,24 @@ class Plan:
             words[base + LANE["LAYOUT_KIND"]] = lane.layout_kind
             words[base + LANE["LAYOUT_INNER_BYTES"]] = (
                 lane.layout_inner_bytes
+            )
+            words[base + LANE["LAYOUT_STRIDE0_BYTES"]] = (
+                lane.layout_stride0_bytes
+            )
+            words[base + LANE["LAYOUT_STRIDE1_BYTES"]] = (
+                lane.layout_stride1_bytes
+            )
+            words[base + LANE["LAYOUT_STRIDE2_BYTES"]] = (
+                lane.layout_stride2_bytes
+            )
+            words[base + LANE["LAYOUT_ITERATION0"]] = (
+                lane.layout_iteration0
+            )
+            words[base + LANE["LAYOUT_ITERATION1"]] = (
+                lane.layout_iteration1
+            )
+            words[base + LANE["LAYOUT_ITERATION2"]] = (
+                lane.layout_iteration2
             )
             words[base + LANE["FLAGS"]] = lane.flags
         return tuple(int(word) for word in words)

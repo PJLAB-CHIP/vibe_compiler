@@ -13,6 +13,12 @@ typedef struct WaferNccProbeLane {
   uint32_t element_format;
   uint32_t layout_kind;
   uint32_t layout_inner_bytes;
+  uint32_t layout_stride0_bytes;
+  uint32_t layout_stride1_bytes;
+  uint32_t layout_stride2_bytes;
+  uint32_t layout_iteration0;
+  uint32_t layout_iteration1;
+  uint32_t layout_iteration2;
   uint32_t flags;
 } WaferNccProbeLane;
 
