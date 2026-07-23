@@ -454,6 +454,27 @@ def _peripheral_arg_extrema(
     return _f16(values), b"", expected
 
 
+def _peripheral_lut16() -> tuple[bytes, bytes, bytes]:
+    table_indices = tuple((37 * index + 11) % 128 for index in range(128))
+    source = struct.pack(
+        "<128H", *(2 * table_index for table_index in table_indices)
+    )
+    table_values = tuple(float(index - 64) for index in range(128))
+    expected = _f16(table_values[index] for index in table_indices)
+    return source, _f16(table_values), expected
+
+
+def _peripheral(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
+    if case.symbol in (
+        "PERIPHERAL_ARGMAX_F16",
+        "PERIPHERAL_ARGMIN_F16",
+    ):
+        return _peripheral_arg_extrema(case)
+    if case.symbol == "PERIPHERAL_LUT16_F16":
+        return _peripheral_lut16()
+    raise RuntimeError(f"{case.name}: unknown peripheral kind")
+
+
 def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
     if not case.is_safe:
         raise RuntimeError(
@@ -474,7 +495,7 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
     elif case.family_name == "POOL":
         input_a, input_b, expected = _pool(case)
     elif case.family_name == "PERIPHERAL":
-        input_a, input_b, expected = _peripheral_arg_extrema(case)
+        input_a, input_b, expected = _peripheral(case)
     else:
         raise RuntimeError(f"{case.name}: safe case has no oracle builder")
     if len(expected) != case.result_bytes:

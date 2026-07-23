@@ -149,8 +149,8 @@ enum WaferIFPDeferredReason {
     REASON_GEOMETRY_UNQUALIFIED, 0, 0, 0)                                     \
   X(TDMA_IMG2COL_F16, 105, "tdma-img2col-f16", DEFERRED, TDMA_IMG2COL, F16,   \
     NO_ORACLE, REASON_GEOMETRY_UNQUALIFIED, 0, 0, 0)                          \
-  X(PERIPHERAL_LUT16_F16, 106, "peripheral-lut16-f16", DEFERRED, PERIPHERAL,  \
-    F16, NO_ORACLE, REASON_NUMERIC_UNQUALIFIED, 0, 0, 0)
+  X(PERIPHERAL_LUT16_F16, 106, "peripheral-lut16-f16", SAFE, PERIPHERAL,      \
+    F16, EXACT_BITS, REASON_NONE, 256, 256, 0)
 
 enum WaferIFPCase {
 #define WAFER_IFP_ENUM_CASE(SYMBOL, ID, SPELLING, DISPOSITION, FAMILY, DTYPE,  \

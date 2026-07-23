@@ -245,6 +245,11 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
         input_a, output, output + 4,
         OP_FUNC_CGRATensor_PeriOp_V_V_argmin, elements, Fmt_FP16, 0, 0, 0, 0);
     break;
+  case WAFER_IFP_CASE_PERIPHERAL_LUT16_F16:
+    wafer_tx81_peripheral_lut16(
+        input_a, input_b, output, OP_FUNC_CGRATensor_PeriOp_V_V_lut16,
+        elements, Fmt_FP16, elements, 0, 0, 0);
+    break;
   default:
     return 1;
   }

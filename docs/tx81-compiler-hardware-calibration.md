@@ -275,10 +275,10 @@ pairwise_excess = engine_a_exec + engine_b_exec - fu_union_exec
 ### 4.2 单engine correctness与ABI观察
 
 - CT f16 Add使用非零输入、完整fp16 golden、guard和DMA round-trip通过。
-- instruction-family typed catalog的32个safe case已逐个串行launch并通过完整bit oracle、SPM guard、
+- instruction-family typed catalog的33个safe case已逐个串行launch并通过完整bit oracle、SPM guard、
   terminal与cleanup：f16/bf16 Neg/Add/Sub/Mul/Max/Min/Pow2/Relu，I8→f16/bf16、bf16→f16、
   f16→bf16/i16 convert，f16 Sum/Max、bf16 Min/Avg reduction，f16/bf16 Bit2FP+MaskMove select，
-  f16 NE GEMM、f16 TDMA Pad、f16 PoolMax与f16 peripheral ArgMax/ArgMin。PoolMax使用
+  f16 NE GEMM、f16 TDMA Pad、f16 PoolMax、peripheral LUT16与f16 peripheral ArgMax/ArgMin。PoolMax使用
   `[1,2,4,64] -> [1,1,2,64]`、无padding、2x2 kernel/stride，两个输出窗口的128个FP16结果逐bit正确，
   256B physical output span和suffix guard均通过。ArgMax在含负数的128元素输入上返回
   `100@index73`；ArgMin在全正128元素输入上返回`0.5@index42`。两者都由CRT等待writeback后把FP16 value
@@ -286,6 +286,9 @@ pairwise_excess = engine_a_exec + engine_b_exec - fu_union_exec
   `-30@index0`，没有返回真实最小值`-100@index42`，因此current profile只闭合ArgMin正数普通值domain，
   负数域保持unsupported。该批只证明catalog中的有限普通值与固定geometry，不外推f32、special value、
   held-out tail或其它instruction family。
+- LUT16 source是128个`uint16`字节偏移`2*((37*i+11)%128)`，不是FP16数值index；table/output才是
+  FP16 payload。128项互异table经过非顺序lookup后的完整256B输出逐bit正确，physical span与suffix guard
+  均通过。该证据只闭合raw 16-bit byte-offset lookup，不外推其它index编码或不同source/table count。
 - reduction首次运行暴露的是probe ABI错误而非硬件错误：四个case的逻辑结果均为128B，但CT会写满256B
   physical block，后128B是padding。catalog把allowed output span误写成128B，因而准确报告128B guard
   mismatch；将`result_bytes=128`与`output_span=256`分开后，四个reduction及余下case全部通过。结果逻辑域、

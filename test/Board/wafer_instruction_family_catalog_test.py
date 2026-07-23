@@ -220,15 +220,45 @@ def validate_pool_max_oracle() -> None:
     )
 
 
+def validate_lut16_oracle() -> None:
+    case = catalog.CASES_BY_NAME["peripheral-lut16-f16"]
+    assert case.is_safe
+    assert case.oracle_name == "EXACT_BITS"
+    assert case.result_bytes == 256
+    assert case.output_span == 256
+    assert case.aux_span == 0
+
+    built = catalog.build_case_payload(case)
+    source = struct.unpack_from(
+        "<128H", built.payload, catalog.BODY_OFFSET
+    )
+    table = struct.unpack_from(
+        "<128e",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    expected_indices = tuple(
+        (37 * index + 11) % 128 for index in range(128)
+    )
+    assert source == tuple(2 * index for index in expected_indices)
+    assert all(offset % 2 == 0 and offset < 256 for offset in source)
+    assert table == tuple(float(index - 64) for index in range(128))
+
+    result = struct.unpack_from(
+        "<128e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert result == tuple(table[index] for index in expected_indices)
+
+
 def _output_seed_padding() -> bytes:
     return struct.pack("<e", -13.0)
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 32
+    assert len(catalog.SAFE_CASES) == 33
     assert len(catalog.CATALOG) == 36
     assert {case.case_id for case in catalog.SAFE_CASES} == (
-        set(range(1, 30)) | {100, 101, 103}
+        set(range(1, 30)) | {100, 101, 103, 106}
     )
     assert {
         case.reason_name
@@ -236,7 +266,6 @@ def main() -> int:
         if not case.is_safe
     } == {
         "REASON_GEOMETRY_UNQUALIFIED",
-        "REASON_NUMERIC_UNQUALIFIED",
     }
     for name in (
         "reduce-sum-f16",
@@ -300,6 +329,7 @@ def main() -> int:
     validate_gemm_padding_domain()
     validate_arg_extrema_composite_oracles()
     validate_pool_max_oracle()
+    validate_lut16_oracle()
 
     print("wafer_instruction_family_catalog_test: passed")
     return 0
