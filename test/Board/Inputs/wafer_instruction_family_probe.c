@@ -230,6 +230,16 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     wafer_tx81_tdma_pad(input_a, output, 1, 2, 2, 64, 1, 4, 4, 64, 1, 1, 1,
                         1, Fmt_FP16);
     break;
+  case WAFER_IFP_CASE_PERIPHERAL_ARGMAX_F16:
+    wafer_tx81_peripheral_argmax(
+        input_a, output, output + 4,
+        OP_FUNC_CGRATensor_PeriOp_V_V_argmax, elements, Fmt_FP16, 0, 0, 0, 0);
+    break;
+  case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_F16:
+    wafer_tx81_peripheral_argmin(
+        input_a, output, output + 4,
+        OP_FUNC_CGRATensor_PeriOp_V_V_argmin, elements, Fmt_FP16, 0, 0, 0, 0);
+    break;
   default:
     return 1;
   }

@@ -137,12 +137,10 @@ enum WaferIFPDeferredReason {
     REASON_NONE, 32, 256, 0)                                                   \
   X(TDMA_PAD_F16, 29, "tdma-pad-f16", SAFE, TDMA_PAD, F16, EXACT_BITS,        \
     REASON_NONE, 2048, 2048, 0)                                               \
-  X(PERIPHERAL_ARGMAX_F16, 100, "peripheral-argmax-f16", DEFERRED,            \
-    PERIPHERAL, F16, NO_ORACLE,                                                \
-    REASON_ISOLATED_COMPLETION_WRITEBACK_UNQUALIFIED, 0, 0, 0)                 \
-  X(PERIPHERAL_ARGMIN_F16, 101, "peripheral-argmin-f16", DEFERRED,            \
-    PERIPHERAL, F16, NO_ORACLE,                                                \
-    REASON_ISOLATED_COMPLETION_WRITEBACK_UNQUALIFIED, 0, 0, 0)                 \
+  X(PERIPHERAL_ARGMAX_F16, 100, "peripheral-argmax-f16", SAFE, PERIPHERAL,    \
+    F16, EXACT_COMPOSITE, REASON_NONE, 8, 8, 0)                                \
+  X(PERIPHERAL_ARGMIN_F16, 101, "peripheral-argmin-f16", SAFE, PERIPHERAL,    \
+    F16, EXACT_COMPOSITE, REASON_NONE, 8, 8, 0)                                \
   X(CONV_F16, 102, "conv-f16", DEFERRED, CONV, F16, NO_ORACLE,                \
     REASON_GEOMETRY_UNQUALIFIED, 0, 0, 0)                                     \
   X(POOL_F16, 103, "pool-f16", DEFERRED, POOL, F16, NO_ORACLE,                \

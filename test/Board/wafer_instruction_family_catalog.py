@@ -413,6 +413,30 @@ def _pad() -> tuple[bytes, bytes, bytes]:
     return _f16(source), b"", _f16(expected)
 
 
+def _peripheral_arg_extrema(
+    case: InstructionCase,
+) -> tuple[bytes, bytes, bytes]:
+    if case.symbol == "PERIPHERAL_ARGMAX_F16":
+        values = [float((index * 17) % 61 - 30) for index in range(128)]
+        result_index = 73
+        result_value = 100.0
+    elif case.symbol == "PERIPHERAL_ARGMIN_F16":
+        # Current hardware is qualified only for this positive finite domain;
+        # a negative-domain probe returned element zero instead of the minimum.
+        values = [float((index * 17) % 61 + 1) for index in range(128)]
+        result_index = 42
+        result_value = 0.5
+    else:
+        raise RuntimeError(f"{case.name}: unknown peripheral extrema kind")
+    values[result_index] = result_value
+    expected = (
+        _f16((result_value,))
+        + _f16((-13.0,))
+        + struct.pack("<I", result_index)
+    )
+    return _f16(values), b"", expected
+
+
 def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
     if not case.is_safe:
         raise RuntimeError(
@@ -430,6 +454,8 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
         input_a, input_b, expected = _gemm()
     elif case.family_name == "TDMA_PAD":
         input_a, input_b, expected = _pad()
+    elif case.family_name == "PERIPHERAL":
+        input_a, input_b, expected = _peripheral_arg_extrema(case)
     else:
         raise RuntimeError(f"{case.name}: safe case has no oracle builder")
     if len(expected) != case.result_bytes:

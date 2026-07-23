@@ -1231,3 +1231,12 @@
   多个独立目标不承诺group transaction。
 - 防复发：覆盖相同字符串、词法alias、父目录symlink alias、symlink后的`..`和目录目标；不要用字符串规范化
   代替真实parent解析，也不要把逐文件rename描述成全组可回滚事务。
+
+## 2026-07-23 peripheral ArgMin不能从正数case外推负数域
+
+- 现象：FP16 ArgMin对128个有限值正常完成writeback，但含负数输入返回首元素`-30@index0`，没有返回唯一
+  最小值`-100@index42`；同批ArgMax含负数输入正确返回`100@index73`，后置Add heartbeat正常。
+- 处理：ArgMin catalog只用全正普通值闭合`0.5@index42`，精确验证FP16 value、uint32 index、中间未写2B
+  poison和suffix guard；负数域保持unsupported，不用正数case宣称通用浮点支持。
+- 防复发：writeback完成、index ABI正确和数值domain正确是三项独立资格门禁。每个reduction/extrema opcode都要
+  单独覆盖符号域；某一domain失败时保留最小可复现case，不能降级oracle或把错误值写成expected。

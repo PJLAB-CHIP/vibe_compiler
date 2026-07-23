@@ -151,16 +151,55 @@ def validate_gemm_padding_domain() -> None:
             raise AssertionError("GEMM suffix guard mismatch was accepted")
 
 
+def validate_arg_extrema_composite_oracles() -> None:
+    expected_cases = (
+        ("peripheral-argmax-f16", max, 73, 100.0),
+        ("peripheral-argmin-f16", min, 42, 0.5),
+    )
+    for name, operation, expected_index, expected_value in expected_cases:
+        case = catalog.CASES_BY_NAME[name]
+        assert case.oracle_name == "EXACT_COMPOSITE"
+        assert case.result_bytes == 8
+        assert case.output_span == 8
+        assert case.aux_span == 0
+        built = catalog.build_case_payload(case)
+        source = struct.unpack_from(
+            "<128e", built.payload, catalog.BODY_OFFSET
+        )
+        assert operation(source) == expected_value
+        assert source.count(expected_value) == 1
+        assert source.index(expected_value) == expected_index
+
+        result = built.expected_output_slot[
+            catalog.BODY_OFFSET : catalog.BODY_OFFSET + case.result_bytes
+        ]
+        assert struct.unpack_from("<e", result, 0)[0] == expected_value
+        assert result[2:4] == _output_seed_padding()
+        assert struct.unpack_from("<I", result, 4)[0] == expected_index
+        output_payload_offset = 2 * catalog.SLOT_BYTES + catalog.BODY_OFFSET
+        assert (
+            built.payload[
+                output_payload_offset + 2 : output_payload_offset + 4
+            ]
+            == result[2:4]
+        )
+
+
+def _output_seed_padding() -> bytes:
+    return struct.pack("<e", -13.0)
+
+
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 29
+    assert len(catalog.SAFE_CASES) == 31
     assert len(catalog.CATALOG) == 36
-    assert {case.case_id for case in catalog.SAFE_CASES} == set(range(1, 30))
+    assert {case.case_id for case in catalog.SAFE_CASES} == (
+        set(range(1, 30)) | {100, 101}
+    )
     assert {
         case.reason_name
         for case in catalog.CATALOG
         if not case.is_safe
     } == {
-        "REASON_ISOLATED_COMPLETION_WRITEBACK_UNQUALIFIED",
         "REASON_GEOMETRY_UNQUALIFIED",
         "REASON_NUMERIC_UNQUALIFIED",
     }
@@ -224,6 +263,7 @@ def main() -> int:
     )
     validate_rounding_and_bit2fp_oracles()
     validate_gemm_padding_domain()
+    validate_arg_extrema_composite_oracles()
 
     print("wafer_instruction_family_catalog_test: passed")
     return 0
