@@ -133,11 +133,23 @@ Pipeline position:
 - 只读CSR确认3个worker的`serial_mode`均为0、PMU已启用。已有未优化Add和GEMM的PMU窗口中，
   global union等于各active engine时间之和，说明当前production issue/fence形态没有形成可观测重叠。
 - 同worker、disjoint RDMA/CT、64KiB强sentinel workload在低深度issue count `1/2/4`下均由
-  `RDMA -> drain -> WDMA -> host`完整round-trip exact。现有CRT one-shot wrapper的overlap为
+  `RDMA -> drain -> WDMA -> host`完整round-trip exact。旧样本中CRT one-shot wrapper的overlap为
   `0/0/147` cycles；预构packet紧邻`TsmExecute`为`0/582/1691` cycles。三次重复的
   issue-count-4样本中，wrapper median full/overlap为`8868/377`，prebuilt为`7112/1691`。
-  因而硬件在backlog 2已能跨queue并行，当前wrapper对短窗口有显著构包间隔，backlog 4才稳定形成重叠；
-  这不形成静态depth 6以内均可安全发射的合同。
+  这些旧正值在本轮资格复测中不可复现，现只保留为`historical/inconclusive`，不再形成CT+RDMA并行
+  capability或prepared-issue收益结论。
+- canonical CT→RDMA r4 disjoint资格对照的serial/window各运行3个样本，本轮window pairwise excess为
+  `[78,0,0]`、median为0，未通过稳定正overlap门禁。新增同RAW顺序RDMA→CT r4对照也各运行3个serial/window
+  样本，全部result、guard、instruction count正确且blocking为0，但每个样本均满足
+  `ct_exec + rdma_exec == full_exec`，两组median excess均为0。
+- 其余9个disjoint pair已在同一current profile按单进程串行执行；每个serial/window配置各3个样本，全部
+  instruction count、result和guard正确，blocking delta均为0，整批最终Add heartbeat通过。CT+WDMA、
+  RDMA+WDMA、CT+NE、NE+RDMA、NE+WDMA的r2与r4中，serial/window pairwise-excess median均为0；
+  CT+TDMA、NE+TDMA、RDMA+TDMA、WDMA+TDMA只运行不触及静态depth的r2，serial/window median也均为0，
+  r4未运行。该结果只说明当前profile和当前workload未观察到PMU overlap，不证明这些engine pair在其它
+  workload上永远不能并行。本轮两次RAW exact/partial/adjacent选择都在发射hazard前被disjoint资格门禁拦截，
+  因而没有执行hazard。整批前后Add heartbeat均通过、卡健康且未调用reset/power。scheduler当前对所有pair
+  保守串行；只有未来对照稳定取得median正overlap，才恢复对应hazard校准和并行候选。
 - 旧single-engine CT issue limit 5连续三次完整正确且`control_after_issue=0x100`，issue limit 6第一次
   timeout，随后known-good Add也timeout；同时`tsm_smi`仍显示idle。但旧probe把所有`TsmNew` builder保留到
   case结束，并在每次issue后插入多组MMIO观察，故timeout不能归因硬件queue或静态depth。
@@ -147,8 +159,11 @@ Pipeline position:
   boundary/final result、guard及slot 6独立地址结果正确；后置Add同样1/1 exact且cleanup完成。因此旧timeout
   只能归因于旧probe污染，不能归因硬件depth。
 - CT exact `D=6`的submission/completion/count/output/guard已成为当前profile的board evidence，但六次
-  `control_after_issue`均为`0x100`，只说明各观察点为空闲，不证明六条同时active或resident。NE/RDMA/WDMA
-  `D=6`和TDMA `D=4`仍待独立manual case。
+  `control_after_issue`均为`0x100`，只说明各观察点为空闲，不证明六条同时active或resident。
+- NE/RDMA/WDMA exact `D=6`与TDMA exact `D=4`的独立manual case也已在前后Add heartbeat下通过：
+  instruction delta分别为`6/6/6/4`，对应engine/full execution delta分别为`492/2101/1578/292` cycles，
+  blocking delta均为0，全部boundary/final result与guard mismatch均为0。该组结果闭合当前profile的
+  submission/completion/count/output/guard，不证明active occupancy、full或backpressure。
 - 本轮显式manual授权的CT typed tight `D+1=7`在同一隔离合同下通过：packet builder预先释放，七次execute之间
   只做`rdcycle`采样，window后才读取一次control并进入matching wait/full oracle。前后Add均1/1 exact且
   cleanup完成；七次execute rc均为1，issue-order cycle为`[3558, 322, 561, 365, 236, 237, 218]`，
@@ -157,7 +172,8 @@ Pipeline position:
 - 该向量证明当前profile允许超过documented pending queue depth的总提交数，静态depth不是完整lifetime的
   总提交上限。短CT workload在control观测前已排空，静态`TsmExecute`也没有software queue-full check，
   因而resident数量、queue-full返回和backpressure仍为`unknown`，不能据此扩大production issue window。
-  NE/RDMA/WDMA/TDMA对应边界仍待校准；任意更深overflow不执行。
+  五类engine的exact documented-depth submission/completion边界均已闭合，但其它engine的`D+1`以及所有
+  active occupancy/full/backpressure仍未校准；任意更深overflow不执行。
 - 4KiB one-shot/短backlog可被当前wrapper构包间隔完全串行化；同一现象不能外推成硬件不支持并行。
   首版production候选先比较窗口2/4并以真实tile workload选择；prepared issue ABI是否进入首版由纵向收益决定。
 - Kcore直接读取复用的cacheable DDR input可观察到陈旧cache；同一4KiB payload的DMA round-trip仍完整exact，
@@ -189,11 +205,13 @@ profiling按可证明范围分层使用：
 普通批次先用known-good Add建立execution baseline，然后按保守1/2/4（TDMA 1/2）的单engine baseline、显式fence
 串行对照、完全disjoint候选、RAW/WAR/WAW/read-read、wait/visibility、Direct DTE/cluster正向的顺序执行。
 恰好documented depth另用单engine、单case、单样本的manual入口，前后均追加一次Add heartbeat；每个case
-独立进程、外层timeout、完整output/canary oracle。CT `D=6`已闭合；NE/RDMA/WDMA `D=6`与TDMA `D=4`
-仍按相同合同逐项校准。typed tight `D+1`也只能使用相同隔离边界；CT `D+1=7`已闭合总提交接受与完成，
-但未闭合active occupancy/full/backpressure，其它engine与任意更深提交不从该向量外推。
+独立进程、外层timeout、完整output/canary oracle。CT/NE/RDMA/WDMA `D=6`与TDMA `D=4`均已按该合同闭合。
+typed tight `D+1`也只能使用相同隔离边界；CT `D+1=7`已闭合总提交接受与完成，但未闭合active
+occupancy/full/backpressure，其它engine与任意更深提交不从该向量外推。
 case或heartbeat timeout后停止该批次，不自动重试、reset或power cycle；`tsm_smi` idle不能解除停止条件。
-板端parameterized probe只回传事实，编译器策略在全部代表维度闭合后决定。
+板端parameterized probe只回传事实，编译器策略在全部代表维度闭合后决定。当前没有engine pair通过稳定正
+overlap资格门禁，RAW hazard暂不适用且所有pair保持串行；只有未来同方向disjoint serial/window对照稳定达到
+median正overlap，才运行对应exact/partial/adjacent composition oracle。
 
 ## Checkpoint B：通用 IR 物化
 

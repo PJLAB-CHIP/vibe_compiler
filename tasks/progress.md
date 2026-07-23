@@ -94,7 +94,21 @@ calibration只运行1/2/4（TDMA 1/2）。修正builder生命周期和逐issue�
 逐issue control均为`0x100`，因此不声明六条并发occupancy。本轮显式manual授权的CT typed tight `D+1=7`也在
 单engine/case/sample、紧邻issue、前后Add heartbeat和完整oracle下通过，证明documented depth是pending
 queue storage而非完整lifetime总提交上限；window后control为`0x100`且blocking为0，未观察到resident/full/
-backpressure。NE/RDMA/WDMA/TDMA对应边界仍待校准，任意更深提交继续禁用。
+backpressure。current profile上的NE/RDMA/WDMA exact `D=6`与TDMA exact `D=4`也已分别由单engine、
+单case、单样本、前后known-good Add heartbeat及完整oracle闭合：`instruction_delta=6/6/6/4`，对应
+engine/full execution delta为`492/2101/1578/292` cycles，blocking delta均为0，全部boundary/final result与
+guard mismatch均为0。该组结果不证明active occupancy、full或backpressure，任意更深提交继续禁用。
+current profile的10个disjoint cross-engine pair也已按单进程串行执行完成：serial/window各3个样本，全部
+instruction count、result和guard正确，blocking delta均为0，最终known-good Add heartbeat通过。已有
+CT+RDMA r4正overlap现降级为`historical/inconclusive`：本轮canonical CT→RDMA r4 window excess为
+`[78,0,0]`、median为0；新增同RAW顺序RDMA→CT r4对照中，serial/window每个样本都满足
+`ct_exec + rdma_exec == full_exec`，median excess同样为0。两个方向均为serial/window各3样本；新增对照的
+result、guard、instruction count全部正确且blocking为0。CT+WDMA、RDMA+WDMA、CT+NE、NE+RDMA、NE+WDMA在r2/r4的
+serial/window pairwise-excess median均为0，四个含TDMA pair在r2也均为0，r4因TDMA静态depth为4未运行。
+两次RAW exact/partial/adjacent请求都在hazard发射前被disjoint资格门禁拦截，未执行hazard。整批前后Add
+heartbeat均通过、卡健康且未调用reset/power。当前profile和current workload下没有pair满足稳定正overlap门禁；
+这不证明硬件永远不能并行，但compiler对所有pair默认保守串行。RAW hazard暂不适用，只有未来对照稳定达到
+median正overlap后才重新执行。
 
 Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
 现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的

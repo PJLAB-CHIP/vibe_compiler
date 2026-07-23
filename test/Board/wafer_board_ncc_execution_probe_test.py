@@ -569,6 +569,29 @@ V2_DOCUMENTED_QUEUE_DEPTHS = {
     ncc_protocol.Engine.WDMA: 6,
     ncc_protocol.Engine.TDMA: 4,
 }
+V2_DOCUMENTED_QUEUE_DEPTHS_BY_NAME = {
+    engine.name.lower(): depth
+    for engine, depth in V2_DOCUMENTED_QUEUE_DEPTHS.items()
+}
+
+
+def v2_disjoint_control_rounds_are_safe(
+    engine_names: Iterable[str], rounds: object
+) -> bool:
+    names = tuple(engine_names)
+    return (
+        type(rounds) is int
+        and rounds > 0
+        and len(names) == 2
+        and len(set(names)) == 2
+        and all(
+            name in V2_DOCUMENTED_QUEUE_DEPTHS_BY_NAME
+            and rounds < V2_DOCUMENTED_QUEUE_DEPTHS_BY_NAME[name]
+            for name in names
+        )
+    )
+
+
 QUALIFICATION_CASES = (
     GenericProbeCase(
         "environment-readonly",
@@ -773,9 +796,31 @@ V2_HAZARD_PAIR_KEYS = {
 V2_HAZARD_DISJOINT_CONTROLS = tuple(
     case
     for case in V2_PAIR_CASES
-    if case.plan.rounds == 2
-    and frozenset(lane.engine for lane in case.plan.lanes)
+    if frozenset(lane.engine for lane in case.plan.lanes)
     in V2_HAZARD_PAIR_KEYS
+    and v2_disjoint_control_rounds_are_safe(
+        (lane.engine.name.lower() for lane in case.plan.lanes),
+        case.plan.rounds,
+    )
+) + tuple(
+    v2_case(
+        (
+            f"rdma-ct-disjoint-r{rounds}-"
+            f"{schedule.name.lower()}"
+        ),
+        (
+            v2_lane(ncc_protocol.Engine.RDMA),
+            v2_lane(ncc_protocol.Engine.CT),
+        ),
+        rounds=rounds,
+        schedule=schedule,
+        seed=0x4800 + rounds + int(schedule),
+    )
+    for rounds in (2, 4)
+    for schedule in (
+        ncc_protocol.Schedule.SERIAL,
+        ncc_protocol.Schedule.WINDOW,
+    )
 )
 V2_HAZARD_MANUAL_CASES = (
     V2_HAZARD_DISJOINT_CONTROLS + V2_HAZARD_CASES
@@ -1467,17 +1512,21 @@ def parse_record(
     }
 
 
-def hazard_pair_key(plan: ncc_protocol.Plan) -> frozenset[str]:
+def hazard_pair_key(plan: ncc_protocol.Plan) -> tuple[str, str]:
     if len(plan.lanes) != 2:
         raise ValueError("hazard qualification requires two lanes")
-    return frozenset(lane.engine.name.lower() for lane in plan.lanes)
+    return (
+        plan.lanes[0].engine.name.lower(),
+        plan.lanes[1].engine.name.lower(),
+    )
 
 
 def qualified_disjoint_pairs(
     observations: Iterable[dict[str, object]],
-) -> set[frozenset[str]]:
+) -> set[tuple[str, str]]:
     groups: dict[
-        frozenset[str], dict[str, list[dict[str, object]]]
+        tuple[tuple[str, str], int],
+        dict[str, list[dict[str, object]]],
     ] = {}
     for observation in observations:
         case = observation.get("case")
@@ -1490,23 +1539,27 @@ def qualified_disjoint_pairs(
             or len(engines) != 2
             or case.get("effect") != "none"
             or case.get("range") != "disjoint"
-            or case.get("rounds") != 2
         ):
+            continue
+        engine_names = tuple(str(item) for item in engines)
+        rounds = case.get("rounds")
+        if not v2_disjoint_control_rounds_are_safe(engine_names, rounds):
             continue
         schedule = case.get("schedule")
         if schedule not in ("serial", "window"):
             continue
-        groups.setdefault(frozenset(str(item) for item in engines), {}).setdefault(
-            str(schedule), []
-        ).append(execution)
+        key = (engine_names, int(rounds))
+        groups.setdefault(key, {}).setdefault(str(schedule), []).append(
+            execution
+        )
 
-    qualified: set[frozenset[str]] = set()
-    for pair, schedules in groups.items():
+    qualified: set[tuple[str, str]] = set()
+    for (pair, _), schedules in groups.items():
         serial = schedules.get("serial", [])
         window = schedules.get("window", [])
         if not serial or not window:
             continue
-        engines = tuple(sorted(pair))
+        engines = pair
         serial_excess = statistics.median(
             sum(int(sample[engine]) for engine in engines)
             - int(sample["full"])
@@ -1531,35 +1584,43 @@ def validate_hazard_selection(cases: Iterable[GenericProbeCase]) -> None:
     )
     if not hazards:
         return
-    controls = {
-        (
-            hazard_pair_key(case.plan),
-            case.plan.schedule,
-        )
-        for case in selected
-        if case.plan.effect_relation == ncc_protocol.EffectRelation.NONE
-        and len(case.plan.lanes) == 2
-        and case.plan.range_relation
-        == ncc_protocol.RangeRelation.DISJOINT
-        and case.plan.rounds == 2
+    control_groups: dict[
+        tuple[tuple[str, str], int], set[ncc_protocol.Schedule]
+    ] = {}
+    for case in selected:
+        plan = case.plan
+        if (
+            plan.effect_relation != ncc_protocol.EffectRelation.NONE
+            or len(plan.lanes) != 2
+            or plan.range_relation != ncc_protocol.RangeRelation.DISJOINT
+            or not v2_disjoint_control_rounds_are_safe(
+                (lane.engine.name.lower() for lane in plan.lanes),
+                plan.rounds,
+            )
+        ):
+            continue
+        control_groups.setdefault(
+            (hazard_pair_key(plan), plan.rounds), set()
+        ).add(plan.schedule)
+    required_schedules = {
+        ncc_protocol.Schedule.SERIAL,
+        ncc_protocol.Schedule.WINDOW,
+    }
+    qualified_control_pairs = {
+        pair
+        for (pair, _), schedules in control_groups.items()
+        if required_schedules.issubset(schedules)
     }
     missing_controls = {
-        (hazard_pair_key(case.plan), schedule)
+        hazard_pair_key(case.plan)
         for case in hazards
-        for schedule in (
-            ncc_protocol.Schedule.SERIAL,
-            ncc_protocol.Schedule.WINDOW,
-        )
-        if (hazard_pair_key(case.plan), schedule) not in controls
+        if hazard_pair_key(case.plan) not in qualified_control_pairs
     }
     if missing_controls:
-        missing = sorted(
-            (sorted(pair), schedule.name)
-            for pair, schedule in missing_controls
-        )
+        missing = sorted(sorted(pair) for pair in missing_controls)
         raise RuntimeError(
-            "hazard selection requires its r2 disjoint serial/window "
-            f"controls: {missing}"
+            "hazard selection requires below-depth disjoint serial/window "
+            f"controls at one common rounds value: {missing}"
         )
 
     groups: dict[

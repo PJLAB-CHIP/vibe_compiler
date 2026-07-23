@@ -208,31 +208,66 @@ class ProtocolTest(unittest.TestCase):
         )
 
     def test_hazard_requires_disjoint_overlap_qualification(self) -> None:
-        hazard = next(
+        hazards = tuple(
             case
             for case in execution_probe.V2_HAZARD_CASES
-            if case.name == "raw-rdma-ct-exact-r2-window"
+            if case.name
+            in (
+                "raw-rdma-ct-exact-r2-serial",
+                "raw-rdma-ct-exact-r2-window",
+            )
         )
+        hazard = hazards[-1]
         with self.assertRaisesRegex(RuntimeError, "disjoint serial/window"):
             execution_probe.validate_hazard_selection((hazard,))
-        controls = tuple(
-            case
+        controls = {
+            (case.plan.rounds, case.plan.schedule): case
             for case in execution_probe.V2_HAZARD_DISJOINT_CONTROLS
             if execution_probe.hazard_pair_key(case.plan)
             == execution_probe.hazard_pair_key(hazard.plan)
+        }
+        serial = controls[(4, protocol.Schedule.SERIAL)]
+        window = controls[(4, protocol.Schedule.WINDOW)]
+        self.assertEqual(
+            tuple(lane.engine for lane in serial.plan.lanes),
+            (protocol.Engine.RDMA, protocol.Engine.CT),
         )
-        serial, window = (
-            next(
-                case
-                for case in controls
-                if case.plan.schedule == schedule
-            )
-            for schedule in (
-                protocol.Schedule.SERIAL,
-                protocol.Schedule.WINDOW,
-            )
+        self.assertEqual(
+            tuple(lane.engine for lane in window.plan.lanes),
+            (protocol.Engine.RDMA, protocol.Engine.CT),
         )
+        execution_probe.validate_hazard_selection(
+            (serial, window, *hazards)
+        )
+        with self.assertRaisesRegex(RuntimeError, "one common rounds"):
+            execution_probe.validate_hazard_selection(
+                (
+                    controls[(2, protocol.Schedule.SERIAL)],
+                    window,
+                    *hazards,
+                )
+            )
         observations = [
+            {
+                "case": controls[
+                    (2, protocol.Schedule.SERIAL)
+                ].as_dict(),
+                "execution_delta": {
+                    "ct": 80,
+                    "rdma": 70,
+                    "full": 150,
+                },
+            },
+            {
+                "case": controls[
+                    (2, protocol.Schedule.WINDOW)
+                ].as_dict(),
+                "execution_delta": {
+                    "ct": 80,
+                    "rdma": 70,
+                    "full": 150,
+                },
+            },
             {
                 "case": serial.as_dict(),
                 "execution_delta": {
@@ -253,6 +288,81 @@ class ProtocolTest(unittest.TestCase):
         self.assertIn(
             execution_probe.hazard_pair_key(hazard.plan),
             execution_probe.qualified_disjoint_pairs(observations),
+        )
+        mismatched_rounds = [
+            observations[-2],
+            {
+                **observations[-1],
+                "case": {
+                    **window.as_dict(),
+                    "rounds": 2,
+                },
+            },
+        ]
+        self.assertNotIn(
+            execution_probe.hazard_pair_key(hazard.plan),
+            execution_probe.qualified_disjoint_pairs(mismatched_rounds),
+        )
+        reversed_window = {
+            **observations[-1],
+            "case": {
+                **window.as_dict(),
+                "engines": ["ct", "rdma"],
+            },
+        }
+        self.assertNotIn(
+            execution_probe.hazard_pair_key(hazard.plan),
+            execution_probe.qualified_disjoint_pairs(
+                (observations[-2], reversed_window)
+            ),
+        )
+
+    def test_hazard_control_catalog_adds_only_below_depth_r4(self) -> None:
+        rounds_by_pair: dict[
+            frozenset[protocol.Engine], set[int]
+        ] = {}
+        schedules_by_group: dict[
+            tuple[frozenset[protocol.Engine], int],
+            set[protocol.Schedule],
+        ] = {}
+        for case in execution_probe.V2_HAZARD_DISJOINT_CONTROLS:
+            plan = case.plan
+            pair = frozenset(lane.engine for lane in plan.lanes)
+            rounds_by_pair.setdefault(pair, set()).add(plan.rounds)
+            schedules_by_group.setdefault((pair, plan.rounds), set()).add(
+                plan.schedule
+            )
+            self.assertTrue(
+                all(
+                    plan.rounds
+                    < execution_probe.V2_DOCUMENTED_QUEUE_DEPTHS[
+                        lane.engine
+                    ]
+                    for lane in plan.lanes
+                )
+            )
+
+        self.assertEqual(
+            rounds_by_pair[
+                frozenset((protocol.Engine.CT, protocol.Engine.RDMA))
+            ],
+            {2, 4},
+        )
+        self.assertEqual(
+            rounds_by_pair[
+                frozenset((protocol.Engine.CT, protocol.Engine.WDMA))
+            ],
+            {2, 4},
+        )
+        for pair, rounds in rounds_by_pair.items():
+            if protocol.Engine.TDMA in pair:
+                self.assertEqual(rounds, {2})
+        self.assertTrue(
+            all(
+                schedules
+                == {protocol.Schedule.SERIAL, protocol.Schedule.WINDOW}
+                for schedules in schedules_by_group.values()
+            )
         )
 
     def test_range_requires_validity_bit(self) -> None:
