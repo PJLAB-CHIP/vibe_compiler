@@ -408,6 +408,7 @@ V2_HAZARD_UNSELECTED_OFFSETS = (
 FMT_INT8 = 0
 FMT_FP16 = 2
 FMT_BF16 = 3
+FMT_BOOL = 7
 PMU64_NAMES = (
     "window",
     "full",
@@ -680,6 +681,20 @@ NO_CARD_PROTOCOL_CASES = (
         schedule=ncc_protocol.Schedule.SERIAL,
         seed=0x1001,
     ),
+    v2_case(
+        "tdma-crt-bool-to-i8-physical17",
+        (
+            v2_lane(
+                ncc_protocol.Engine.TDMA,
+                mode=ncc_protocol.IssueMode.WRAPPER,
+                transfer_bytes=17,
+                element_format=FMT_BOOL,
+            ),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x1002,
+    ),
 )
 TDMA_CRT_MANUAL_CASES = NO_CARD_PROTOCOL_CASES
 V2_DMA_STRIDE_DESCRIPTORS = (
@@ -855,7 +870,7 @@ V2_PAIR_CASES = tuple(
             + int(schedule)
         ),
     )
-    for first, second in itertools.combinations(V2_ENGINES, 2)
+    for first, second in itertools.permutations(V2_ENGINES, 2)
     for rounds in (2, 4)
     for schedule in (
         ncc_protocol.Schedule.SERIAL,
@@ -951,36 +966,17 @@ V2_HAZARD_CASES = tuple(
     )
 )
 V2_HAZARD_PAIR_KEYS = {
-    frozenset((first, second))
+    (first, second)
     for _, first, second, _, _ in V2_HAZARD_SPECS
 }
 V2_HAZARD_DISJOINT_CONTROLS = tuple(
     case
     for case in V2_PAIR_CASES
-    if frozenset(lane.engine for lane in case.plan.lanes)
+    if tuple(lane.engine for lane in case.plan.lanes)
     in V2_HAZARD_PAIR_KEYS
     and v2_disjoint_control_rounds_are_safe(
         (lane.engine.name.lower() for lane in case.plan.lanes),
         case.plan.rounds,
-    )
-) + tuple(
-    v2_case(
-        (
-            f"rdma-ct-disjoint-r{rounds}-"
-            f"{schedule.name.lower()}"
-        ),
-        (
-            v2_lane(ncc_protocol.Engine.RDMA),
-            v2_lane(ncc_protocol.Engine.CT),
-        ),
-        rounds=rounds,
-        schedule=schedule,
-        seed=0x4800 + rounds + int(schedule),
-    )
-    for rounds in (2, 4)
-    for schedule in (
-        ncc_protocol.Schedule.SERIAL,
-        ncc_protocol.Schedule.WINDOW,
     )
 )
 V2_HAZARD_MANUAL_CASES = (
@@ -1026,17 +1022,24 @@ CASE_CATALOGS = {
 
 
 def validate_no_card_protocol_cases() -> None:
+    expected_lanes = {
+        "tdma-crt-i8-physical16": (FMT_INT8, 16),
+        "tdma-crt-bool-to-i8-physical17": (FMT_BOOL, 17),
+    }
+    if {case.name for case in NO_CARD_PROTOCOL_CASES} != set(expected_lanes):
+        raise RuntimeError("typed TDMA no-card catalog changed unexpectedly")
     for case in NO_CARD_PROTOCOL_CASES:
         plan = case.plan
+        expected_format, expected_bytes = expected_lanes[case.name]
         if (
             len(plan.lanes) != 1
             or plan.lanes[0].engine != ncc_protocol.Engine.TDMA
             or plan.lanes[0].issue_mode != ncc_protocol.IssueMode.WRAPPER
-            or plan.lanes[0].element_format != FMT_INT8
-            or plan.lanes[0].transfer_bytes != 16
+            or plan.lanes[0].element_format != expected_format
+            or plan.lanes[0].transfer_bytes != expected_bytes
         ):
             raise RuntimeError(
-                f"{case.name}: no-card protocol case lost its typed I8 lane"
+                f"{case.name}: no-card protocol case lost its typed lane"
             )
         plan.request_words()
     expected_envelopes = (36, 48, 84)
@@ -1221,8 +1224,27 @@ def validate_no_card_protocol_cases() -> None:
             raise RuntimeError(
                 f"{engine.name}: depth-plus-one catalog is malformed"
             )
-    if len(V2_PAIR_CASES) != 40:
+    if len(V2_PAIR_CASES) != 80:
         raise RuntimeError("generic catalog lost a disjoint pair control")
+    for first, second in itertools.permutations(V2_ENGINES, 2):
+        schedules = {
+            (case.plan.rounds, case.plan.schedule)
+            for case in V2_PAIR_CASES
+            if tuple(lane.engine for lane in case.plan.lanes)
+            == (first, second)
+        }
+        if schedules != {
+            (rounds, schedule)
+            for rounds in (2, 4)
+            for schedule in (
+                ncc_protocol.Schedule.SERIAL,
+                ncc_protocol.Schedule.WINDOW,
+            )
+        }:
+            raise RuntimeError(
+                "generic catalog lost an oriented disjoint pair control: "
+                f"{first.name.lower()}->{second.name.lower()}"
+            )
     if len(V2_PIPELINE_CASES) != 4:
         raise RuntimeError("generic catalog lost the three-lane controls")
     if len(V2_HAZARD_CASES) != 24:
@@ -1479,6 +1501,8 @@ def v2_expected_result(
         )
     if lane.element_format == FMT_INT8:
         return bytes([0x31 + identity.slot * 7]) * lane.transfer_bytes
+    if lane.element_format == FMT_BOOL:
+        return bytes([0xFF]) * lane.transfer_bytes
     if lane.element_format == FMT_FP16:
         value = struct.pack("<H", v2_half(identity.slot + 1))
     elif lane.element_format == FMT_BF16:

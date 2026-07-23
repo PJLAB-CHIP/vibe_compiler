@@ -94,8 +94,20 @@ Q37的instruction qualification子阶段先冻结完整case规划，再进入pro
 calibration/held-out；NE单独覆盖FP16/BF16 large/tail/batch/orientation和Conv/Depthwise option，
 Concat、GatherScatter broadcast及其它DataMove使用非对称large-shape physical oracle。所有组合必须有
 `board-positive/static-negative/isolated-deferred`去向；同一resource class后续共享package，local
-instruction/layout默认单tile执行，只有rank-dependent语义才启动多rank。本批只收敛规划，不修改probe或
-production代码。
+instruction/layout默认单tile执行，只有rank-dependent语义才启动多rank。当前已进入probe准备阶段：
+实卡到位前以第3节全部28行`remaining_preparation`清零为门禁，每行必须绑定catalog、payload/oracle、
+physical span/guard、device dispatcher、资源预算、运行过滤、timeout/cleanup及no-card验证；不安全或
+typed非法组合分别落成带原因的`isolated-deferred`或`static-negative`，不能留空或由邻近case外推。
+首批可执行资产已经进入同一门禁：CT vector catalog覆盖opcode `0..110`的626个
+dtype/form/main-tail row；NE catalog覆盖FP16/BF16、NN/NT/TN/TT、large `M64K128N128`、
+tail `M65K129N129`和NCx batch2共24个row，并由共享Cx/NCx host codec生成physical payload/oracle；
+TDMA新增`Fmt_BOOL` 136 logical bits到17-byte I8 physical fill的typed held-out。三者都已完成device
+compile/link和shared-package no-card闭环；仍不得在实卡结果前升级为board evidence。
+同一子阶段还要求把SPM、同步和并行case准备到与instruction matrix相同粒度：SPM覆盖边界、对齐、
+relative offset、alias/stride、physical layout和slot reuse；同步覆盖same-worker、worker-specific wait、
+cross-worker join、Kcore/cache、Direct DTE、multi-tile arrival和runtime publication；并行覆盖五类engine的
+single-engine issue、10个engine pair双向serial/window、正overlap资格后的dependency relation、
+multi-worker及DTE/NCC交互。没有correctness/guard/completion oracle的row不得由PMU或最终drain冒充通过。
 当前queue active occupancy与full行为仍在Q37内保持`unknown`：静态depth不直接作为occupancy证据。普通
 calibration只运行1/2/4（TDMA 1/2）。修正builder生命周期和逐issue观察位置后，CT/NE/RDMA/WDMA exact
 `D=6`与TDMA exact `D=4`已分别由单engine、单case、单样本及前后known-good Add heartbeat闭合

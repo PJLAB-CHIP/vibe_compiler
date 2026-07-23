@@ -531,6 +531,12 @@ FP16、BF16、FP32 row；不能由同opcode的另一dtype外推。
 | `139..174` convert | 36条source→destination route全部入表；有参数的route覆盖round-to-nearest-even、zero、+Inf、-Inf | 普通值、正负halfway、饱和/溢出、zero-point；stochastic rounding单独统计suite，不与确定性exact混跑 |
 | `175..186` peripheral | Count、BitCount、ArgMax/Min、Memset、Factorize、Bit2Fp、Bilinear、LUT16/32、RandGen、ElemMask | deterministic entry验证全部writeback；RandGen/随机ElemMask在seed、分布和可恢复性合同闭合前为`isolated-deferred` |
 
+实卡前的第一份shared-package资产已把opcode `0..110`展开为626个可筛选row：FP16/BF16/FP32、
+`VV/VS/VuV/VuVLoop`、value/bitpacked BOOL以及8192-element calibration/8197-element held-out共用
+一个device dispatcher；host为exact/tolerance/board-observed三类提前生成typed payload和expected。
+这只表示case准备和no-card link闭合，不表示任何新增opcode已经取得板端证据。`111..186`仍按上表逐项
+进入后续extended catalog，不能由既有60-row instruction-family结果代替。
+
 算术/比较的form参数还要有专门的区分向量：`VS`的scalar bit pattern不能等于任一vector首元素；`VuV`的unit
 不能整段常量；`VuVLoop`的每个outer chunk使用不同unit pattern，并让最后一个不完整chunk参与expected。
 这样同一case能区分“误当VV”“只重复首unit”“忽略full字段”和“只执行第一段”。
@@ -555,6 +561,12 @@ instruction与layout组合先按physical行为分类，再为每个公开entry�
 | reduce/pool/unpool × Cx/NCx | 原生wrapper声明的shape/layout逐kind正向；compact Tensor版本若需转换则重放movement | 不由GEMM或CT vector结果外推 |
 | GEMM × Cx/NCx | rank-2 Cx与single-leading-batch NCx分别闭合，见5.4节 | current production native路径 |
 | 任意不受typed ABI支持的direct组合 | verifier/lowering/required-symbol negative | 不上板、不以raw packet绕过 |
+
+NE实卡前资产使用同一host physical codec生成Cx/NCx block-major payload、C0 tail、N-slice步进和padding
+poison，已准备24个row：FP16/BF16 × `NN/NT/TN/TT` × rank-2 large `M64K128N128`、rank-2 held-out
+`M65K129N129`、NCx batch2 `B2M32K64N65`。所有row使用非零、非恒定lhs与逐batch identity-like rhs，
+完整校验logical bits、physical padding和slot guard；最大单operand physical span为34304B。该资产已通过
+target device compile/link和shared-package no-card gate，仍须实卡逐row执行后才产生board evidence。
 
 Cx/NCx的共同shape族为`[2,7,9,65]`，边界族覆盖`C=63/64/65/127/129`；每个N slice、full block、
 compact `C0` tail和256B physical padding使用不同poison。DataMove使用下列非对称case，所有FP16/BF16/FP32
@@ -619,25 +631,65 @@ shape relation或wrapper根本不接受的组合进入`static-negative`。
 任何具体shape在进入board-positive前都必须由SPM/DDR planner证明输入、全部writeback、padding和前后guard不
 越过当前可分配范围。shape是诊断向量，不成为compiler支持上限；更大shape由分块后的相同typed合同覆盖。
 
-### 5.6 Execution、completion 与 transport case
+### 5.6 SPM、physical range 与复用 suite
 
-instruction qualification之外，Q37其余硬件边界继续按下列case维护；已闭合项只在profile签名变化或需要
-held-out时重跑：
+SPM测试不能只看最终数值；每个case同时记录allocation/view的半开区间、packet inclusive end、logical
+result、完整physical footprint和前后guard。测试分成下面六类：
 
-1. **TDMA held-out**：独立value/length复验I8/F16/BF16 descriptor；native `Fmt_BOOL`保持excluded，
-   production BOOL physical-footprint只测试I8 byte-fill canonicalization。
-2. **single-engine/worker completion**：CT/NE/RDMA/WDMA/TDMA低深度1/2/4，TDMA只到2；worker1/2只做
-   routing与matching wait。
-3. **documented depth与tight `D+1`（已闭合）**：保留单engine/case/sample及前后heartbeat；不继续更深，
-   不把总提交完成解释成occupancy/full/backpressure。
-4. **cross-engine disjoint/dependency**：10个pair当前保持串行；只有同方向serial/window稳定正overlap后，
-   才执行对应RAW/WAR/WAW/RAR exact/partial/adjacent composition。
-5. **SPM offset**：固定workload只改变相对offset，形成经验conflict class，不提前命名物理bank。
-6. **worker/join/visibility**：补default wait跨worker区分向量；同地址只跑显式ordered正向。
-7. **DTE/SPM PMU与multi-tile**：补counter basis和安全subgroup正向；错误坐标、缺participant和资源提前
-   复用只做negative，不上板。
+| case类 | calibration vector | oracle、准入与禁止外推 |
+| --- | --- | --- |
+| capacity/reservation | 从profile静态可分配区推导最高合法256B block、跨界1 block和保留区相邻block | 合法边界做round-trip；越界和保留区只做planner/verifier negative，不发板端packet |
+| alignment | 同一4KiB/64KiB payload放在256B对齐base；另建128B/64B/non-power-of-two base或length negative | 只把header/ABI明确合法的alignment上板；成功不外推成所有byte alignment合法 |
+| relative-offset sweep | 固定engine、length和pattern，只改变A/B相对offset：0、256、512、1KiB、2KiB、4KiB、8KiB、16KiB、32KiB、64KiB及独立held-out offset | 完整output/guard先通过；PMU只形成经验conflict class，不把64KiB或某个峰值命名成bank周期 |
+| address relation | exact、half-partial、adjacent、far-disjoint和1D/2D/3D strided envelope；分别构造RAW/WAR/WAW/RAR | 先有同engine-pair disjoint正overlap才上板alias case；否则只保留composition oracle与保守串行 |
+| physical layout | Tensor、Cx、NCx的full block、C0 tail、N-slice步进和每段padding poison | logical point、padding和guard分别比较；不能把padding写入当作logical正确 |
+| lifetime/reuse | producer完成前后复用同一slot、双slot轮转、奇偶iteration和最后一次tail | 有typed wait/token的正向上板；缺wait、悬空view、capacity不足只做IR/verifier negative |
 
-### 5.7 下一轮实卡执行顺序
+SPM单engine基础矩阵覆盖CT read/write、NE双读单写、RDMA DDR→SPM、WDMA SPM→DDR和TDMA
+SPM→SPM；每类先做contiguous，再做其ABI支持的stride/tail。cross-engine offset sweep只在对应pair的
+disjoint correctness已闭合后执行，保持两条workload、issue count和地址以外的变量不变。所有slot由planner
+证明落在当前profile可分配区，测试自身不探测未知保留区。
+
+### 5.7 Synchronization、visibility 与 completion suite
+
+同步测试按completion domain分开，不能用最后一次全局drain把错误边界掩盖掉。每个正向case在“目标同步
+刚返回、safety drain之前”读取区分性结果或状态；safety drain只负责进程恢复。
+
+| domain/case | producer→consumer与区分向量 | 成功oracle |
+| --- | --- | --- |
+| same-worker local completion | CT/NE/RDMA/WDMA/TDMA各自issue→matching completion；连续两条同engine和跨engine各一组 | completion后立即检查目标queue count、result和guard；逐指令wait与window末尾wait分开记录 |
+| worker-specific wait | worker0/1/2各发独立CT pattern，分别调用matching `bywork`；default wait另用能让worker1保持pending的长短workload对照 | 只允许对应worker结果可见；default scope无法区分时保持`unknown` |
+| cross-worker join | w0/w1/w2 disjoint输出，单worker join、两worker mask和三worker mask | join mask覆盖的worker全部完成，未覆盖worker不被伪称完成；最终safety join后全部guard正确 |
+| NCC producer/consumer | RDMA→CT、CT/NE→WDMA、TDMA→CT/NE、CT/NE写后Kcore读 | 在first true consumer前使用typed local completion；无completion版本只做negative |
+| Kcore/cache visibility | host H2D→Kcore read、Kcore store→NCC read、NCC write→Kcore read、WDMA→host D2H | invalidate/clean/fence前后对照、DMA round-trip和host全量expected分别闭合，不能互相替代 |
+| Direct DTE | NCC producer→local drain→DTE send；DTE receive→event wait→NCC consumer；source/destination复用在event后 | 每rank source/receive/compute guard、DDR output、event、terminal status与participant全部正确 |
+| multi-tile arrival | full-card两个epoch反向错峰；安全subgroup使用显式rank group和两次复用 | 每个participant得到rank-specific marker，0 mismatch/crosstalk；缺participant/错坐标不上板 |
+| runtime publication | device terminal→runtime completion→D2H→cleanup；失败路径使用外层timeout | terminal schema、完整output、cleanup和下一次heartbeat；管理面idle不替代execution heartbeat |
+
+同步negative必须在IR/verifier、package validator或host gate被拒绝：跨worker同地址无ordered producer、
+DTE source提前复用、receiver未prepare、错误participant、wait未知event、host readback早于terminal都不作为
+“看看硬件会怎样”的板端case。
+
+### 5.8 Parallel issue、engine pair 与 multi-rank suite
+
+并行测试先证明correctness，再判断是否存在可观测overlap。负overlap样本只说明当前workload/profile没有形成
+窗口，不等于硬件不支持并行。
+
+| case类 | 覆盖矩阵 | control与oracle |
+| --- | --- | --- |
+| single-engine multi-issue | CT/NE/RDMA/WDMA普通1/2/4，TDMA 1/2；worker1/2只做代表routing | 独立地址/pattern、精确instruction count、全部result/guard；documented `D`与tight `D+1`沿用已闭合manual gate，不再加深 |
+| 10个cross-engine pair | CT/NE/RDMA/WDMA/TDMA两两组合；每个pair两个issue order；含TDMA只做r2，其它先r2再r4 | 同一payload的显式serial control与window各至少3次；`Ea + Eb - FU` median稳定为正才取得overlap资格 |
+| backlog形成 | compute使用足够大的CT/NE shape，movement使用至少64KiB强sentinel；prebuilt packet与wrapper路径分开 | 证明两engine各自count/result不变，避免4KiB短workload在构包间隙自然排空 |
+| dependency under overlap | 仅对已取得正overlap的pair，按RAW/WAR/WAW/RAR × exact/partial/adjacent/strided-envelope执行 | 实际packet range、逐段composition golden、未选operand guard和blocking/PMU共同闭合 |
+| multi-worker | w0/w1/w2 disjoint单发、两两window和三worker window；同地址只跑显式ordered正向 | matching join、各worker count/result/guard；不由wall time宣称并行 |
+| DTE/NCC interaction | producer→DTE、DTE→consumer、disjoint local-first/DTE-first；broadcast每个destination独立pattern | correctness/completion先闭合；NCC与DTE无共同可信time base时overlap保持`unknown` |
+| software-pipeline vertical | 双SPM slot的movement[n+1]、compute[n]、writeback[n-1]，含prologue/steady/epilogue、奇偶iteration和single-iteration identity | baseline/optimized使用同一source与package gate；只有结构窗口、完整expected和可信板端对照都通过才进入production |
+
+parallel performance row还必须记录serial/window原始PMU、per-engine execution、global union、blocking、
+issue order、repeat ordinal和profile identity。host wall time只用于发现launch异常；没有稳定正overlap或PMU
+measurement basis时，不形成cost常数或scheduler capability。
+
+### 5.9 下一轮实卡执行顺序
 
 实现阶段按suite生成共享catalog/oracle和共享device dispatcher；同一ABI/resource class只编译、链接和打包
 一次，由typed request选择case，不为每个row重复编译。所有static-negative、host oracle、device compile/link
@@ -659,8 +711,12 @@ held-out时重跑：
 5. NE FP16/BF16 GEMM main/tail/orientation/batch，再做Conv/Depthwise和one-factor options；
 6. reduce、pool/unpool、convert确定性rounding和deterministic peripheral；
 7. transcendental/activation的普通域与误差观察；
-8. zero/subnormal/Inf/NaN、multi-writeback、随机或其它`isolated-deferred`，每项单独manual gate；
-9. 尚未闭合的SPM、visibility、PMU和安全multi-tile case。
+8. SPM capacity/alignment static gate、单engine physical range/layout和relative-offset correctness；
+9. same-worker completion、worker-specific wait、cross-worker join和四种cache/visibility方向；
+10. 10个engine pair的disjoint serial/window资格；只有稳定正overlap的pair继续dependency relation；
+11. Direct DTE有序交互、PMU basis和安全multi-tile/subgroup；
+12. zero/subnormal/Inf/NaN、multi-writeback、随机或其它`isolated-deferred`，每项单独manual gate；
+13. software-pipeline source vertical只在所需SPM、sync和parallel capability均闭合后执行。
 
 一批case只有在完整expected、physical span、padding/guard、terminal、issue count和cleanup全部通过时才记
 `board-observed`；calibration与独立held-out均通过后才可记`calibrated`；production source-to-package纵向

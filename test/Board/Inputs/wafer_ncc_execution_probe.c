@@ -166,6 +166,8 @@ static uint32_t wafer_ncc_probe_tdma_elements(uint32_t bytes,
   switch ((Data_Format)format) {
   case Fmt_INT8:
     return bytes;
+  case Fmt_BOOL:
+    return bytes * 8U;
   case Fmt_FP16:
   case Fmt_BF16:
     return bytes / 2U;
@@ -796,7 +798,8 @@ static int wafer_ncc_v2_seed(void *opaque,
   case WAFER_NCC_ENGINE_TDMA:
     if (issue->lane_spec->element_format != Fmt_INT8 &&
         issue->lane_spec->element_format != Fmt_FP16 &&
-        issue->lane_spec->element_format != Fmt_BF16)
+        issue->lane_spec->element_format != Fmt_BF16 &&
+        issue->lane_spec->element_format != Fmt_BOOL)
       return 1;
     if (!wafer_ncc_v2_is_hazard_operand(request, issue,
                                         WAFER_NCC_OPERAND_WRITE))
@@ -1002,6 +1005,8 @@ static int wafer_ncc_v2_issue(void *opaque,
             ? wafer_ncc_v2_hazard_second_write_f16(issue->round)
         : format == Fmt_INT8
             ? (uint32_t)wafer_ncc_v2_tdma_byte(issue->slot, format, 0)
+            : format == Fmt_BOOL
+                ? UINT32_C(1)
             : format == Fmt_FP16
                   ? wafer_ncc_v2_positive_integer_f16(issue->slot + 1U)
                   : UINT32_C(0x3f80);

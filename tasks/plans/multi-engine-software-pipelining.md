@@ -56,6 +56,25 @@ Pipeline position:
 - 以`docs/tx81-compiler-hardware-calibration.md`作为唯一profile-scoped校准台账。硬件总览和register-level
   spec继续拥有跨profile静态事实；编号设计继续拥有IR/runtime合同；校准台账只记录probe方法、证据成熟度、
   observed profile、结果和可消费边界，不成为第二份总体架构。
+- Checkpoint A不再以“某类case已经写了一部分”作为阶段完成，而以校准台账第3节的28行矩阵逐行准备
+  完成作为唯一门禁。`test/Board/wafer_hardware_calibration_matrix.py`是机器可审计索引；每一行必须同时
+  绑定positive或typed-negative资产、case catalog、固定payload/独立expected、logical/physical
+  output span与guard、rank/tile/worker scope、resource预算、shared package/device dispatcher、host
+  filter/timeout/cleanup入口和no-card测试。明确不应发送到设备的组合必须落成`static-negative`；
+  随机、无恢复路径或当前ABI无法安全构造的组合必须落成带原因的`isolated-deferred`，不能用空白、
+  `TODO`或其它同类case代替。实卡到位前，28行的`remaining_preparation`必须全部为空；届时唯一允许
+  保留的是按profile执行、记录观测值以及用独立held-out决定是否提升证据成熟度。
+- 28行按下面的固定批次施工和复核；批次只是执行顺序，不改变矩阵行的独立验收：
+  1. 基础协议：profile qualification、constructor ownership、execute result、packet routing/range；
+  2. 指令与布局：CT numeric/form、instruction × physical layout、DataMove/layout、NE numeric/layout、
+     RDMA/WDMA descriptor、TDMA Memset、TDMA BOOL fill、TDMA movement variants；
+  3. 存储：SPM capacity/reservation、SPM alignment/bank、DDR/cache/coherence；
+  4. NCC执行与依赖：queue shape与连续提交边界、worker scope、cross-engine overlap、address dependency、
+     issue overhead、local completion、cross-worker join；
+  5. 集群与runtime：Direct DTE、multi-tile arrival、host launch/runtime；
+  6. 测量与负向边界：NCC PMU basis、DTE/SPM/TMNOC PMU、SCALAR/CSR ordinary issue。
+  每批结束都运行矩阵一致性测试；最终复核必须证明文档第3节行名与机器索引严格一一对应、没有重复、
+  没有未绑定资产、没有未注册no-card测试，也没有任何`in-progress`行。
 - 校准矩阵按compiler consumer分层，而不是按vendor API罗列：
   - instruction/encoding：constructor ownership、packet routing、descriptor单位、range materialization、
     alignment/tail、返回值与错误可观察性；
@@ -81,12 +100,18 @@ Pipeline position:
   1. 先冻结header opcode/method、typed compiler consumer与layout disposition inventory；
   2. 再实现由同一row schema生成的catalog、固定input、CPU/formal expected、physical span和guard；
   3. 先过static-negative、host oracle、device compile/link、no-card package与timeout/cleanup自检；
-  4. 最后按`docs/tx81-compiler-hardware-calibration.md`第5.7节分批上板，calibration与held-out分离；
+  4. 最后按`docs/tx81-compiler-hardware-calibration.md`第5.9节分批上板，calibration与held-out分离；
   5. 只有held-out和production source纵向都通过，才修改target capability或production legality。
 - 同一ABI/resource class共享device dispatcher和package，由typed request选择case；不按row重复编译。
   local instruction/layout资格默认单tile、worker0，worker1/2只用routing代表case；只有Direct DTE、
   multi-tile arrival和其它rank-dependent语义才启动多rank。safe deterministic suite按批次做前后heartbeat，
   queue/deferred/random/multi-writeback等高风险manual row逐case隔离。
+- SPM、同步和并行分别使用独立matrix：SPM覆盖capacity/reservation、alignment、relative-offset、
+  exact/partial/adjacent/strided range、Tensor/Cx/NCx physical footprint和slot reuse；同步覆盖same-worker、
+  `bywork`、cross-worker join、Kcore/cache、DTE event、multi-tile arrival和runtime publication；并行覆盖
+  single-engine multi-issue、10个engine pair双向serial/window、正overlap后的dependency relation、
+  multi-worker、DTE/NCC interaction和最终双slot software-pipeline vertical。三类都先有完整correctness/
+  guard/completion oracle，不能由aggregate PMU或最终safety drain替代。
 - 明确parallel mode由谁设置、最终packet `inter_type`如何进入CT/NE/RDMA/WDMA/TDMA queue、地址begin/end或
   descriptor如何参与RAW/WAR/WAW判定、哪些路径不在该scheduler域内。
 - 明确每类operand的地址范围、alignment、length/stride unit、SPM bank/page、worker/queue/outstanding和
