@@ -720,8 +720,8 @@ def check_gemm_conv(source_text: str) -> None:
     )
     require_contains(
         gemm,
-        "gemm->SetTransflag(&instr, 0, 0);",
-        "v1 GEMM fixed orientation",
+        "gemm->SetTransflag(&instr, 0, 1);",
+        "v1 GEMM semantic NN to hardware orientation",
     )
 
     oriented_gemm = function_body(source_text, "wafer_tx81_gemm_oriented_v2")
@@ -732,8 +732,8 @@ def check_gemm_conv(source_text: str) -> None:
     )
     require_contains(
         oriented_gemm,
-        "gemm->SetTransflag(&instr, lhs_orientation, rhs_orientation);",
-        "oriented GEMM typed orientation",
+        "gemm->SetTransflag(&instr, lhs_orientation, !rhs_orientation);",
+        "oriented GEMM semantic to hardware orientation",
     )
 
     conv = require_macro_body(source_text, "WAFER_CONFIGURE_CONV")

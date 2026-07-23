@@ -97,6 +97,11 @@ registry包含`wafer-tx81-single-card-kernel-v1`和`wafer-tx81-single-card-kerne
 `wafer-tx81-kernel-v1`，v2映射`wafer-tx81-kernel-v2`。v2只扩展oriented GEMM exact call，并显式引用v1
 format/numeric compatibility profile；这不合并两个Kernel ABI identity，也不改变v1含义。
 
+GEMM orientation在Instr、TargetCall和public CRT signature中始终是semantic normal/transpose。TX81 raw
+`SetTransflag`只有RHS bit采用相反编码，因此CRT packet wrapper在唯一硬件边界执行映射：v1 semantic
+normal/normal固定发`(0, 1)`，v2发`(lhs_orientation, !rhs_orientation)`。该映射不改变v1/v2 symbol
+signature、profile identity或上层IR语义，conformance checker必须锁定raw packet mapping而不能把semantic值直接转发。
+
 v1唯一映射到：
 
 - target identity `wafer-tx81-single-card`；

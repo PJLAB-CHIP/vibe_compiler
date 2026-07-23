@@ -117,6 +117,30 @@ mismatch的唯一根因。
    loop bounds/step/order；value-less/global memory effect不能被issue→wait buffer isolation静默放过。
 4. 上述host正负例、production whole-variant和no-card全部fresh通过后，再只读验卡并执行单次armed复测；首错仍立即停止。
 
+## 2026-07-23 standalone GEMM隔离与CRT修复
+
+以production StableHLO入口新增rank-one无communication f16 GEMM：`256x256 x 256x512`，即full-4096 winner实际发射的
+单个GEMM tile shape。lhs为单位阵，rhs为
+`1 + ((17*k + 3*n) mod 1024) / 8`，因此CPU oracle直接是`C[m,n] = rhs[m,n]`；所有值均可由f16精确表示，
+每个output只有一个非零乘积，完整262144-byte output可以使用raw exact。该case继续经过production
+StableHLO normalization、physical selection、SPM/DDR、target conversion、device link、schema-v5 package和
+per-rank pointer-block runtime，不手写post-SPMD/Instr IR，也不进入collective。
+
+修复前fresh ELF反汇编显示semantic normal/normal最终调用`SetTransflag(0, 0)`；真实板端3.47秒到达trusted completion、
+D2H和cleanup，随后在resource 2 byte 2发生numeric mismatch。current V5.6 Kcore source和SDK GEMM example均要求RHS raw
+hardware bit与semantic orientation相反，即normal/normal发`(0, 1)`；按该错误读取Q35旧payload还可重放出首元素
+84.375（f16 `0x5546`），其little-endian首字节`0x46`与7月22日板端首错逐bit一致。
+
+CRT现只在raw packet边界映射该事实：v1固定发`(0, 1)`，v2发
+`(lhs_orientation, !rhs_orientation)`；Instr/TargetCall/public signature继续携带semantic orientation。更新后的fresh ELF
+反汇编已确认调用点为`a1=0, a2=1`，target CRT conformance、focused lit和production no-card通过。同一standalone
+case随后在真实板端3.41秒完成，resource 2完整262144 bytes `exact=true`；执行后只读设备仍为
+`9248M / 65536M`、0% utilization、无进程。
+
+该结果证明当前shape上的Tensor→Cx输入、GEMM Cx计算、Cx→Tensor结果和WDMA writeback可形成正确完整输出，并将7月22日
+首错根因从collective排除。all-reduce强制Tensor仍是独立layout优化缺口，但不再作为该numeric mismatch的解释。下一步以
+当前compiler、CRT和Q36 collective实现fresh编译full-4096 package，静态核对新ELF后执行一次16-rank raw-exact board gate。
+
 ## 不算完成
 
 - 只编译小shape、只看到`linalg.matmul`/symbol/manifest或只跑no-card。

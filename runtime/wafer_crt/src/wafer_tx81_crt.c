@@ -678,7 +678,8 @@ void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t m,
   gemm->AddInput(&instr, lhs, rhs, wafer_format(format));
   gemm->ConfigMKN(&instr, m, k, n);
   gemm->ConfigBatch(&instr, batch_count, batch_count);
-  gemm->SetTransflag(&instr, 0, 0);
+  /* TX81 encodes the RHS hardware transpose bit opposite to GEMM semantics. */
+  gemm->SetTransflag(&instr, 0, 1);
   gemm->SetPsum(&instr, 0, 0, Fmt_UNUSED);
   gemm->SetQuant(&instr, 0, 0, 0, 0);
   gemm->AddBias(&instr, 0, 0);
@@ -701,7 +702,8 @@ void wafer_tx81_gemm_oriented_v2(uint64_t lhs, uint64_t rhs, uint64_t dst,
   gemm->AddInput(&instr, lhs, rhs, wafer_format(format));
   gemm->ConfigMKN(&instr, m, k, n);
   gemm->ConfigBatch(&instr, batch_count, batch_count);
-  gemm->SetTransflag(&instr, lhs_orientation, rhs_orientation);
+  /* Keep the public ABI semantic; invert only the raw RHS hardware bit. */
+  gemm->SetTransflag(&instr, lhs_orientation, !rhs_orientation);
   gemm->SetPsum(&instr, 0, 0, Fmt_UNUSED);
   gemm->SetQuant(&instr, 0, 0, 0, 0);
   gemm->AddBias(&instr, 0, 0);

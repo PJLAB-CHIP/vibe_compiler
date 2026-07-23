@@ -1090,3 +1090,17 @@
   CMake minimum，把工具版本误变成依赖资格条件。
 - 修复模式：独立SystemC consumer保持项目可支持的CMake 3.16下限，并由回归直接检查生成文本；以后只有smoke实际使用
   更高版本语义时才能同步提高，不能因为本机CMake较新而改写。
+
+## 2026-07-23 GEMM semantic orientation不能直接当作TX81 raw transpose bit
+
+- 现象：normal/normal f16 GEMM在host model和no-card均通过，但真实板端完整执行后数值错误；full-4096 K-sharded case的
+  首字节为`expected=0x40, actual=0x46`，无communication的rank-one非对称GEMM也独立复现。设备均完成trusted
+  completion、D2H、cleanup并回到资源基线，不是provider poison。
+- 根因：Instr、TargetCall和public CRT参数表达semantic orientation，CRT却把RHS值直接传给TX81
+  `SetTransflag`。current V5.6 Kcore和SDK证据表明RHS raw hardware bit语义相反；semantic NN必须发`(0,1)`。
+  repo host model同样直接解释semantic enum，因而与错误CRT自洽，无法暴露packet映射错误。
+- 修复模式：只在CRT到raw packet的唯一边界反转RHS bit：v1 NN发`(0,1)`，oriented v2发
+  `(lhs_orientation,!rhs_orientation)`；上层IR、TargetCall、symbol signature和profile identity不变。conformance
+  checker锁定该映射，fresh ELF反汇编确认实际寄存器参数。
+- 防复发：板端GEMM隔离case使用单位lhs和同时随K/N变化的非对称rhs，使oracle直接为`C=B`；payload选择f16精确可表示值，
+  比较完整raw output，并在执行前后只读检查设备基线。只用对称/常量rhs、host CModel或no-card不能证明raw orientation。
