@@ -23,10 +23,15 @@
   内存压力、共享机器约束或特定工具不支持并行时才主动降并发，并在进度中说明。板卡执行仍由独立
   resource lock保持单进程串行，不能把CPU构建并发规则套到硬件case。
 - 板端版本、ABI、loader symbol和最终ELF反汇编属于环境或相关实现变化时的一次性qualification基线，
-  不能默认塞进每轮workload热路径重复执行。基线未变化时，普通板测只做一次设备空闲/可用性确认、
-  正常launch、完整结果及该case必要的PMU读回；成功后直接继续。只有timeout、device/query error、
-  untrusted terminal、资源未回基线或结果暴露新的低层歧义时，才按需进入反汇编、库/firmware版本和
-  ABI深入诊断，不为每个case机械重跑整套检查。
+  不能默认塞进每轮workload热路径重复执行。qualification按重启后的板测会话复用：software/runtime
+  identity未变化且设备持续正常时，只在会话开始确认一次空闲/可用性，后续case直接launch，不重复
+  `tsm_smi` inventory、版本/hash、反汇编、manifest/profile qualification或known-good Add heartbeat。
+  harness/schema的no-card和host oracle检查属于实现变化后的定向构建验证，也不随每次相同板端invocation
+  重跑。普通case的最小执行路径只保留单进程串行、bounded timeout、当前case的完整结果/guard和必要PMU
+  读回、正常资源释放；成功后直接继续。只有timeout、device/query error、untrusted terminal、资源未回
+  基线、software/runtime identity变化或结果暴露新的低层歧义时，才升级到状态、反汇编、库/firmware
+  版本和ABI诊断。恢复后的known-good heartbeat用于重新资格化execution/completion面；有明确风险边界
+  的隔离probe仅在对应任务合同明确要求时使用前后heartbeat，不能把它扩成所有case的固定仪式。
 - compiler-sensitive硬件probe按profile绑定的证据台账推进：先做no-card/schema gate，再按单engine、
   serial control、disjoint overlap、alias relation和completion/visibility分层上板。每条结论必须区分
   static、single-vector observed、calibrated、supported、unknown和excluded；性能观察不能反向扩大semantic
@@ -34,8 +39,9 @@
   correctness oracle。
 - 板端case一旦timeout立即停止当前批次并隔离该execution context，不在同批次自动重试，也不调用
   reset、power或firmware替换。`tsm_smi` idle、0%利用率、memory baseline和无残留进程只证明管理面表面状态，
-  不证明execution/completion面健康。queue边界probe在case前后各运行一次新进程的known-good Add heartbeat；
-  任一heartbeat timeout就停止全部板测并由用户决定恢复方式。
+  不证明execution/completion面健康。发生异常并由用户恢复后，使用一次新进程的known-good Add heartbeat
+  重新确认execution/completion面；heartbeat timeout就停止全部板测并由用户决定恢复方式。健康会话中的
+  普通case不重复执行heartbeat。
 - register/header中的NCC queue depth只描述静态storage/register形状，不是可安全连续issue的outstanding上限。
   普通calibration只跑1/2/4，TDMA只跑1/2。恰好documented depth使用独立
   `documented-depth-manual`：packet构造后立即删除`TsmNew` builder，control读取紧随`TsmExecute`，一次只选

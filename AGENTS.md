@@ -35,6 +35,14 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
 
 如果某一步因为环境或外部依赖无法完成，结果中必须说明缺口、已做验证和剩余风险。
 
+### 板端测试
+
+- 同一重启会话且软硬件身份未变化时，环境资格只确认一次；不为每个 case 重复版本、反汇编、状态、
+  heartbeat 或其它无关 gate。
+- 普通 case 走最小路径：增量构建、单进程串行 launch、bounded timeout、结果 / guard 校验和正常生命周期。
+- no-card、host oracle及深入 ABI / firmware诊断只在测试实现变化、环境变化或板端异常需要归因时执行。
+- 板端测试不并发；timeout或设备异常后停止当前批次，不自动 retry、reset或power。
+
 ## 讨论和推进
 
 - 设计讨论先说明当前理解、关键假设、已确认事实和仍需判断的点。
