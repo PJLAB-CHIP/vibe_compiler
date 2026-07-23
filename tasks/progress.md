@@ -94,7 +94,7 @@ Q37的instruction qualification子阶段先冻结完整case规划，再进入pro
 calibration/held-out；NE单独覆盖FP16/BF16 large/tail/batch/orientation和Conv/Depthwise option，
 Concat、GatherScatter broadcast及其它DataMove使用非对称large-shape physical oracle。所有组合必须有
 `board-positive/static-negative/isolated-deferred`去向；同一resource class后续共享package，local
-instruction/layout默认单tile执行，只有rank-dependent语义才启动多rank。当前已进入probe准备阶段：
+instruction/layout默认单tile执行，只有rank-dependent语义才启动多rank。实卡前probe准备使用以下门禁：
 实卡到位前以第3节全部28行`remaining_preparation`清零为门禁，每行必须绑定catalog、payload/oracle、
 physical span/guard、device dispatcher、资源预算、运行过滤、timeout/cleanup及no-card验证；不安全或
 typed非法组合分别落成带原因的`isolated-deferred`或`static-negative`，不能留空或由邻近case外推。
@@ -110,6 +110,18 @@ held-out以及12个64B到64KiB相对offset，6个static-negative覆盖低于base
 16-rank反向错峰正向probe，并对1/2/4/8/15 participant在compile/submission前做typed-negative；
 version-matched `hrt_barrier`固定观察16个slot，因此不发送不安全subgroup正向。上述资产已通过host
 oracle、target C `-Werror`、shared-package no-card和28行索引一致性测试，仍不构成实卡结论。
+实卡前准备门禁现已28/28闭合：机器索引全部`ready`、没有`in-progress`或非空
+`remaining_preparation`。CT新增`139..174`全部36条convert route的8192/8197-element共72个exact row，
+并以187-entry disposition覆盖公开opcode `0..186`，当前173个可执行、12个`isolated-deferred`、2个
+`static-negative`；不能安全形成oracle的pool/DataMove/peripheral不发raw packet。DataMove新增15个
+共享package board case，覆盖transpose/mirror/rotate、NCHW↔NHWC、concat、row/column broadcast、
+Tensor↔Cx/NCx和strided gather；公开`121..138`及CT/NE/RDMA/WDMA/TDMA × Tensor/NTensor/Cx/NCx
+组合分别有18-entry和20-entry完整disposition。DDR/cache新增host H2D→Kcore、Kcore store→NCC RDMA、
+NCC WDMA→Kcore和WDMA→host D2H四方向、五phase、16KiB强oracle。transport PMU新增四种有序DTE/NCC
+mode × 16/32/64B共12个full-card case，六个decoded DTE/SPM counter按payload保存raw趋势；TMNOC因
+version-matched header只有base、没有decoded只读offset而显式`static-negative`。上述新增资产均已通过
+catalog/host oracle、target device C `-Werror`编译链接和shared-package no-card；仍需实卡执行后才能形成
+board evidence，Q37整体继续`doing`。
 同一子阶段还要求把SPM、同步和并行case准备到与instruction matrix相同粒度：SPM覆盖边界、对齐、
 relative offset、alias/stride、physical layout和slot reuse；同步覆盖same-worker、worker-specific wait、
 cross-worker join、Kcore/cache、Direct DTE、multi-tile arrival和runtime publication；并行覆盖五类engine的

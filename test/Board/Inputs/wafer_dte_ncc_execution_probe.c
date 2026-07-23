@@ -11,33 +11,30 @@ extern int8_t *get_spm_memory_mapping(uint64_t offset);
 #define WAFER_PROBE_RANK_COUNT UINT32_C(16)
 #define WAFER_PROBE_HEADER_BYTES UINT32_C(128)
 #define WAFER_PROBE_INPUT_BYTES UINT32_C(96)
-#define WAFER_PROBE_PAYLOAD_BYTES UINT32_C(64)
+#define WAFER_PROBE_MAX_PAYLOAD_BYTES UINT32_C(64)
 #define WAFER_PROBE_DISJOINT_BYTES UINT32_C(32)
 #define WAFER_PROBE_OUTPUT_GUARD_BYTES UINT32_C(32)
 #define WAFER_PROBE_SPM_GUARD_BYTES UINT32_C(256)
-#define WAFER_PROBE_PAYLOAD_ELEMENTS                                    \
-  (WAFER_PROBE_PAYLOAD_BYTES / (uint32_t)sizeof(uint16_t))
-#define WAFER_PROBE_DISJOINT_ELEMENTS                                   \
+#define WAFER_PROBE_DISJOINT_ELEMENTS                                          \
   (WAFER_PROBE_DISJOINT_BYTES / (uint32_t)sizeof(uint16_t))
 
-#define WAFER_PROBE_SPM_INPUT                                            \
-  (UINT64_C(0x10000) + WAFER_PROBE_SPM_GUARD_BYTES)
-#define WAFER_PROBE_SPM_PRODUCED                                         \
+#define WAFER_PROBE_SPM_INPUT (UINT64_C(0x10000) + WAFER_PROBE_SPM_GUARD_BYTES)
+#define WAFER_PROBE_SPM_PRODUCED                                               \
   (UINT64_C(0x20000) + WAFER_PROBE_SPM_GUARD_BYTES)
-#define WAFER_PROBE_SPM_DTE_RECV                                         \
+#define WAFER_PROBE_SPM_DTE_RECV                                               \
   (UINT64_C(0x40000) + WAFER_PROBE_SPM_GUARD_BYTES)
-#define WAFER_PROBE_SPM_DISJOINT_INPUT                                   \
+#define WAFER_PROBE_SPM_DISJOINT_INPUT                                         \
   (UINT64_C(0x60000) + WAFER_PROBE_SPM_GUARD_BYTES)
-#define WAFER_PROBE_SPM_DISJOINT_OUTPUT                                  \
+#define WAFER_PROBE_SPM_DISJOINT_OUTPUT                                        \
   (UINT64_C(0x70000) + WAFER_PROBE_SPM_GUARD_BYTES)
 
 #define WAFER_PROBE_PMU_BASE UINT64_C(0x590000)
 #define WAFER_PROBE_MAGIC UINT64_C(0x3143434e45544457)
 #define WAFER_PROBE_CANARY UINT64_C(0xd7e0ca11d7e0ca11)
-#define WAFER_PROBE_SCHEMA UINT64_C(3)
+#define WAFER_PROBE_SCHEMA UINT64_C(4)
 #define WAFER_PROBE_STABLE_RETRIES UINT32_C(8)
 #define WAFER_PROBE_TRANSPORT_COUNTER_COUNT UINT32_C(6)
-#define WAFER_PROBE_TRANSPORT_STABLE_MASK                                  \
+#define WAFER_PROBE_TRANSPORT_STABLE_MASK                                      \
   ((UINT32_C(1) << WAFER_PROBE_TRANSPORT_COUNTER_COUNT) - UINT32_C(1))
 
 #define WAFER_PROBE_INPUT_GUARD_BEFORE UINT8_C(0x31)
@@ -52,8 +49,8 @@ extern int8_t *get_spm_memory_mapping(uint64_t offset);
 #define WAFER_PROBE_DISJOINT_OUTPUT_GUARD_AFTER UINT8_C(0x72)
 #define WAFER_PROBE_SPM_PAYLOAD_POISON UINT8_C(0xc3)
 
-#if WAFER_PROBE_HEADER_BYTES + 2U * WAFER_PROBE_OUTPUT_GUARD_BYTES +       \
-        WAFER_PROBE_PAYLOAD_BYTES !=                                      \
+#if WAFER_PROBE_HEADER_BYTES + 2U * WAFER_PROBE_OUTPUT_GUARD_BYTES +           \
+        WAFER_PROBE_MAX_PAYLOAD_BYTES !=                                       \
     256U
 #error "DTE/NCC probe record must fit the existing 256-byte output resource"
 #endif
@@ -62,13 +59,13 @@ extern int8_t *get_spm_memory_mapping(uint64_t offset);
 #error "DTE/NCC input data must fit the existing 256-byte input resource"
 #endif
 
-#if WAFER_PROBE_HEADER_BYTES %                                              \
-        WAFER_TX81_DIRECT_DTE_STATUS_V2_CACHE_LINE_BYTES !=                 \
+#if WAFER_PROBE_HEADER_BYTES %                                                 \
+        WAFER_TX81_DIRECT_DTE_STATUS_V2_CACHE_LINE_BYTES !=                    \
     0U
 #error "DTE/NCC probe header must own complete cache lines"
 #endif
 
-#if WAFER_PROBE_PAYLOAD_BYTES % 2U != 0U ||                               \
+#if WAFER_PROBE_MAX_PAYLOAD_BYTES % 2U != 0U ||                                \
     WAFER_PROBE_DISJOINT_BYTES % 2U != 0U
 #error "DTE/NCC f16 payloads must contain complete elements"
 #endif
@@ -186,6 +183,11 @@ static uint32_t wafer_probe_u8_saturated(uint32_t value) {
   return value > UINT8_MAX ? UINT8_MAX : value;
 }
 
+static int wafer_probe_payload_bytes_are_valid(uint32_t payload_bytes) {
+  return payload_bytes == UINT32_C(16) || payload_bytes == UINT32_C(32) ||
+         payload_bytes == WAFER_PROBE_MAX_PAYLOAD_BYTES;
+}
+
 static uint32_t wafer_probe_mmio_read32(uint64_t base, uint32_t offset) {
   const volatile uint32_t *address =
       (const volatile uint32_t *)(uintptr_t)(base + offset);
@@ -211,18 +213,17 @@ static uint64_t wafer_probe_mmio_read64(uint64_t base, uint32_t low_offset,
 
 static WaferProbePmu wafer_probe_read_pmu(void) {
   WaferProbePmu sample = {0};
-  sample.full = wafer_probe_mmio_read64(
-      WAFER_PROBE_PMU_BASE, GR_PMU_FU_EXE_TIME, UINT32_C(1) << 0,
-      &sample.stable_mask);
-  sample.ct = wafer_probe_mmio_read64(
-      WAFER_PROBE_PMU_BASE, GR_PMU_CT_EXE_TIME, UINT32_C(1) << 1,
-      &sample.stable_mask);
-  sample.rdma = wafer_probe_mmio_read64(
-      WAFER_PROBE_PMU_BASE, GR_PMU_RDMA_EXE_TIME, UINT32_C(1) << 2,
-      &sample.stable_mask);
-  sample.wdma = wafer_probe_mmio_read64(
-      WAFER_PROBE_PMU_BASE, GR_PMU_WDMA_EXE_TIME, UINT32_C(1) << 3,
-      &sample.stable_mask);
+  sample.full =
+      wafer_probe_mmio_read64(WAFER_PROBE_PMU_BASE, GR_PMU_FU_EXE_TIME,
+                              UINT32_C(1) << 0, &sample.stable_mask);
+  sample.ct = wafer_probe_mmio_read64(WAFER_PROBE_PMU_BASE, GR_PMU_CT_EXE_TIME,
+                                      UINT32_C(1) << 1, &sample.stable_mask);
+  sample.rdma =
+      wafer_probe_mmio_read64(WAFER_PROBE_PMU_BASE, GR_PMU_RDMA_EXE_TIME,
+                              UINT32_C(1) << 2, &sample.stable_mask);
+  sample.wdma =
+      wafer_probe_mmio_read64(WAFER_PROBE_PMU_BASE, GR_PMU_WDMA_EXE_TIME,
+                              UINT32_C(1) << 3, &sample.stable_mask);
   sample.ct_count =
       wafer_probe_mmio_read32(WAFER_PROBE_PMU_BASE, GR_PMU_CT_INST_NUMS);
   sample.rdma_count =
@@ -235,54 +236,53 @@ static WaferProbePmu wafer_probe_read_pmu(void) {
 static WaferProbeTransportPmu wafer_probe_read_transport_pmu(void) {
   WaferProbeTransportPmu sample = {0};
   __asm__ volatile("fence iorw, iorw" ::: "memory");
-  sample.dte_enable =
-      wafer_probe_mmio_read32(SCT_REG_BASE_DTE, SCT_DTE_PMU_EN);
-  sample.spm_enable =
-      wafer_probe_mmio_read32(SCT_REG_BASE_SPM, SPM1_PMU_EN);
-  sample.dte_channel0_transfer = wafer_probe_mmio_read64(
-      SCT_REG_BASE_DTE, SCT_DTE_CH0_TRANS_DATA_L, UINT32_C(1) << 0,
-      &sample.stable_mask);
-  sample.dte_channel1_transfer = wafer_probe_mmio_read64(
-      SCT_REG_BASE_DTE, SCT_DTE_CH1_TRANS_DATA_L, UINT32_C(1) << 1,
-      &sample.stable_mask);
-  sample.dte_channel0_execution = wafer_probe_mmio_read64(
-      SCT_REG_BASE_DTE, SCT_DTE_CH0_CLK_COUNTER_L, UINT32_C(1) << 2,
-      &sample.stable_mask);
-  sample.dte_channel1_execution = wafer_probe_mmio_read64(
-      SCT_REG_BASE_DTE, SCT_DTE_CH1_CLK_COUNTER_L, UINT32_C(1) << 3,
-      &sample.stable_mask);
-  sample.spm_dte_t2_port8 = wafer_probe_mmio_read64(
-      SCT_REG_BASE_SPM, SPM1_PMU_T2_8_31_0, UINT32_C(1) << 4,
-      &sample.stable_mask);
-  sample.spm_dte_t3_port8 = wafer_probe_mmio_read64(
-      SCT_REG_BASE_SPM, SPM1_PMU_T3_8_31_0, UINT32_C(1) << 5,
-      &sample.stable_mask);
+  sample.dte_enable = wafer_probe_mmio_read32(SCT_REG_BASE_DTE, SCT_DTE_PMU_EN);
+  sample.spm_enable = wafer_probe_mmio_read32(SCT_REG_BASE_SPM, SPM1_PMU_EN);
+  sample.dte_channel0_transfer =
+      wafer_probe_mmio_read64(SCT_REG_BASE_DTE, SCT_DTE_CH0_TRANS_DATA_L,
+                              UINT32_C(1) << 0, &sample.stable_mask);
+  sample.dte_channel1_transfer =
+      wafer_probe_mmio_read64(SCT_REG_BASE_DTE, SCT_DTE_CH1_TRANS_DATA_L,
+                              UINT32_C(1) << 1, &sample.stable_mask);
+  sample.dte_channel0_execution =
+      wafer_probe_mmio_read64(SCT_REG_BASE_DTE, SCT_DTE_CH0_CLK_COUNTER_L,
+                              UINT32_C(1) << 2, &sample.stable_mask);
+  sample.dte_channel1_execution =
+      wafer_probe_mmio_read64(SCT_REG_BASE_DTE, SCT_DTE_CH1_CLK_COUNTER_L,
+                              UINT32_C(1) << 3, &sample.stable_mask);
+  sample.spm_dte_t2_port8 =
+      wafer_probe_mmio_read64(SCT_REG_BASE_SPM, SPM1_PMU_T2_8_31_0,
+                              UINT32_C(1) << 4, &sample.stable_mask);
+  sample.spm_dte_t3_port8 =
+      wafer_probe_mmio_read64(SCT_REG_BASE_SPM, SPM1_PMU_T3_8_31_0,
+                              UINT32_C(1) << 5, &sample.stable_mask);
   __asm__ volatile("fence iorw, iorw" ::: "memory");
   return sample;
 }
 
 static void wafer_probe_seed_regions(void) {
   wafer_probe_seed_guarded_region(
-      WAFER_PROBE_SPM_INPUT, WAFER_PROBE_PAYLOAD_BYTES,
+      WAFER_PROBE_SPM_INPUT, WAFER_PROBE_MAX_PAYLOAD_BYTES,
       WAFER_PROBE_INPUT_GUARD_BEFORE, WAFER_PROBE_INPUT_GUARD_AFTER);
   wafer_probe_seed_guarded_region(
-      WAFER_PROBE_SPM_PRODUCED, WAFER_PROBE_PAYLOAD_BYTES,
+      WAFER_PROBE_SPM_PRODUCED, WAFER_PROBE_MAX_PAYLOAD_BYTES,
       WAFER_PROBE_PRODUCED_GUARD_BEFORE, WAFER_PROBE_PRODUCED_GUARD_AFTER);
   wafer_probe_seed_guarded_region(
-      WAFER_PROBE_SPM_DTE_RECV, WAFER_PROBE_PAYLOAD_BYTES,
+      WAFER_PROBE_SPM_DTE_RECV, WAFER_PROBE_MAX_PAYLOAD_BYTES,
       WAFER_PROBE_RECV_GUARD_BEFORE, WAFER_PROBE_RECV_GUARD_AFTER);
-  wafer_probe_seed_guarded_region(
-      WAFER_PROBE_SPM_DISJOINT_INPUT, WAFER_PROBE_DISJOINT_BYTES,
-      WAFER_PROBE_DISJOINT_INPUT_GUARD_BEFORE,
-      WAFER_PROBE_DISJOINT_INPUT_GUARD_AFTER);
-  wafer_probe_seed_guarded_region(
-      WAFER_PROBE_SPM_DISJOINT_OUTPUT, WAFER_PROBE_DISJOINT_BYTES,
-      WAFER_PROBE_DISJOINT_OUTPUT_GUARD_BEFORE,
-      WAFER_PROBE_DISJOINT_OUTPUT_GUARD_AFTER);
+  wafer_probe_seed_guarded_region(WAFER_PROBE_SPM_DISJOINT_INPUT,
+                                  WAFER_PROBE_DISJOINT_BYTES,
+                                  WAFER_PROBE_DISJOINT_INPUT_GUARD_BEFORE,
+                                  WAFER_PROBE_DISJOINT_INPUT_GUARD_AFTER);
+  wafer_probe_seed_guarded_region(WAFER_PROBE_SPM_DISJOINT_OUTPUT,
+                                  WAFER_PROBE_DISJOINT_BYTES,
+                                  WAFER_PROBE_DISJOINT_OUTPUT_GUARD_BEFORE,
+                                  WAFER_PROBE_DISJOINT_OUTPUT_GUARD_AFTER);
   __asm__ volatile("fence iorw, iorw" ::: "memory");
 }
 
-static WaferProbeOracle wafer_probe_read_oracle(uint32_t rank, uint32_t mode) {
+static WaferProbeOracle wafer_probe_read_oracle(uint32_t rank, uint32_t mode,
+                                                uint32_t payload_bytes) {
   WaferProbeOracle oracle = {0};
   uint32_t predecessor =
       (rank + WAFER_PROBE_RANK_COUNT - 1U) % WAFER_PROBE_RANK_COUNT;
@@ -290,14 +290,20 @@ static WaferProbeOracle wafer_probe_read_oracle(uint32_t rank, uint32_t mode) {
   uint8_t source_guard_before = WAFER_PROBE_INPUT_GUARD_BEFORE;
   uint8_t source_guard_after = WAFER_PROBE_INPUT_GUARD_AFTER;
   uint64_t compute_payload = WAFER_PROBE_SPM_PRODUCED;
-  uint32_t compute_bytes = WAFER_PROBE_PAYLOAD_BYTES;
+  uint32_t compute_bytes = WAFER_PROBE_MAX_PAYLOAD_BYTES;
   uint8_t compute_guard_before = WAFER_PROBE_PRODUCED_GUARD_BEFORE;
   uint8_t compute_guard_after = WAFER_PROBE_PRODUCED_GUARD_AFTER;
   uint32_t compute_source_rank = rank;
   uint32_t compute_first_lane = 0;
-  uint32_t compute_elements = WAFER_PROBE_PAYLOAD_ELEMENTS;
+  uint32_t compute_elements = payload_bytes / (uint32_t)sizeof(uint16_t);
 
-  if (mode == WAFER_PROBE_NCC_PRODUCER_DTE) {
+  if (!wafer_probe_payload_bytes_are_valid(payload_bytes)) {
+    oracle.source_guard_mismatches = UINT8_MAX;
+    oracle.receive_guard_mismatches = UINT8_MAX;
+    oracle.compute_guard_mismatches = UINT8_MAX;
+    oracle.compute_result_mismatches = UINT8_MAX;
+    return oracle;
+  } else if (mode == WAFER_PROBE_NCC_PRODUCER_DTE) {
     source_payload = WAFER_PROBE_SPM_PRODUCED;
     source_guard_before = WAFER_PROBE_PRODUCED_GUARD_BEFORE;
     source_guard_after = WAFER_PROBE_PRODUCED_GUARD_AFTER;
@@ -309,7 +315,8 @@ static WaferProbeOracle wafer_probe_read_oracle(uint32_t rank, uint32_t mode) {
     compute_bytes = WAFER_PROBE_DISJOINT_BYTES;
     compute_guard_before = WAFER_PROBE_DISJOINT_OUTPUT_GUARD_BEFORE;
     compute_guard_after = WAFER_PROBE_DISJOINT_OUTPUT_GUARD_AFTER;
-    compute_first_lane = WAFER_PROBE_PAYLOAD_ELEMENTS;
+    compute_first_lane =
+        WAFER_PROBE_MAX_PAYLOAD_BYTES / (uint32_t)sizeof(uint16_t);
     compute_elements = WAFER_PROBE_DISJOINT_ELEMENTS;
   } else {
     oracle.source_guard_mismatches = UINT8_MAX;
@@ -320,17 +327,17 @@ static WaferProbeOracle wafer_probe_read_oracle(uint32_t rank, uint32_t mode) {
   }
 
   oracle.source_guard_mismatches = wafer_probe_guard_mismatches(
-      source_payload, WAFER_PROBE_PAYLOAD_BYTES, source_guard_before,
+      source_payload, WAFER_PROBE_MAX_PAYLOAD_BYTES, source_guard_before,
       source_guard_after);
   oracle.receive_guard_mismatches = wafer_probe_guard_mismatches(
-      WAFER_PROBE_SPM_DTE_RECV, WAFER_PROBE_PAYLOAD_BYTES,
+      WAFER_PROBE_SPM_DTE_RECV, WAFER_PROBE_MAX_PAYLOAD_BYTES,
       WAFER_PROBE_RECV_GUARD_BEFORE, WAFER_PROBE_RECV_GUARD_AFTER);
-  oracle.compute_guard_mismatches = wafer_probe_guard_mismatches(
-      compute_payload, compute_bytes, compute_guard_before,
-      compute_guard_after);
-  oracle.compute_result_mismatches = wafer_probe_compute_mismatches(
-      compute_payload, compute_source_rank, compute_first_lane,
-      compute_elements);
+  oracle.compute_guard_mismatches =
+      wafer_probe_guard_mismatches(compute_payload, compute_bytes,
+                                   compute_guard_before, compute_guard_after);
+  oracle.compute_result_mismatches =
+      wafer_probe_compute_mismatches(compute_payload, compute_source_rank,
+                                     compute_first_lane, compute_elements);
   return oracle;
 }
 
@@ -365,8 +372,8 @@ static void wafer_probe_dte_ring(uint32_t rank, uint64_t source_spm,
 }
 
 static void wafer_probe_publish_header(uint64_t output_ddr, uint32_t rank,
-                                       uint32_t mode, uint32_t status,
-                                       WaferProbePmu before,
+                                       uint32_t mode, uint32_t payload_bytes,
+                                       uint32_t status, WaferProbePmu before,
                                        WaferProbePmu after,
                                        WaferProbeTransportPmu transport_before,
                                        WaferProbeTransportPmu transport_after,
@@ -383,34 +390,26 @@ static void wafer_probe_publish_header(uint64_t output_ddr, uint32_t rank,
       (transport_before.dte_enable != transport_after.dte_enable
            ? UINT32_C(1)
            : UINT32_C(0)) |
-      (transport_before.spm_enable != transport_after.spm_enable
-           ? UINT32_C(2)
-           : UINT32_C(0));
-  uint64_t metadata =
-      (WAFER_PROBE_SCHEMA << 32) | ((uint64_t)mode << 24) |
-      ((uint64_t)rank << 16) | WAFER_PROBE_PAYLOAD_BYTES |
-      ((uint64_t)stable_mask << 48);
+      (transport_before.spm_enable != transport_after.spm_enable ? UINT32_C(2)
+                                                                 : UINT32_C(0));
+  uint64_t metadata = (WAFER_PROBE_SCHEMA << 32) | ((uint64_t)mode << 24) |
+                      ((uint64_t)rank << 16) | payload_bytes |
+                      ((uint64_t)stable_mask << 48);
   uint64_t counts =
       (uint64_t)(status & UINT8_MAX) |
       ((uint64_t)wafer_probe_u8_saturated(after.ct_count - before.ct_count)
        << 8) |
-      ((uint64_t)wafer_probe_u8_saturated(after.rdma_count -
-                                          before.rdma_count)
+      ((uint64_t)wafer_probe_u8_saturated(after.rdma_count - before.rdma_count)
        << 16) |
-      ((uint64_t)wafer_probe_u8_saturated(after.wdma_count -
-                                          before.wdma_count)
+      ((uint64_t)wafer_probe_u8_saturated(after.wdma_count - before.wdma_count)
        << 24) |
-      ((uint64_t)wafer_probe_u8_saturated(
-           oracle.source_guard_mismatches)
+      ((uint64_t)wafer_probe_u8_saturated(oracle.source_guard_mismatches)
        << 32) |
-      ((uint64_t)wafer_probe_u8_saturated(
-           oracle.receive_guard_mismatches)
+      ((uint64_t)wafer_probe_u8_saturated(oracle.receive_guard_mismatches)
        << 40) |
-      ((uint64_t)wafer_probe_u8_saturated(
-           oracle.compute_guard_mismatches)
+      ((uint64_t)wafer_probe_u8_saturated(oracle.compute_guard_mismatches)
        << 48) |
-      ((uint64_t)wafer_probe_u8_saturated(
-           oracle.compute_result_mismatches)
+      ((uint64_t)wafer_probe_u8_saturated(oracle.compute_result_mismatches)
        << 56);
   uintptr_t mode_bits;
 
@@ -422,10 +421,9 @@ static void wafer_probe_publish_header(uint64_t output_ddr, uint32_t rank,
   record[5] = after.ct - before.ct;
   record[6] = after.rdma - before.rdma;
   record[7] = after.wdma - before.wdma;
-  record[8] =
-      (uint64_t)transport_stable_mask |
-      ((uint64_t)WAFER_PROBE_TRANSPORT_STABLE_MASK << 16) |
-      ((uint64_t)scope_change << 32) | (UINT64_C(1) << 40);
+  record[8] = (uint64_t)transport_stable_mask |
+              ((uint64_t)WAFER_PROBE_TRANSPORT_STABLE_MASK << 16) |
+              ((uint64_t)scope_change << 32) | (UINT64_C(1) << 40);
   record[9] = (uint64_t)transport_before.dte_enable |
               ((uint64_t)transport_before.spm_enable << 32);
   record[10] = transport_after.dte_channel0_transfer -
@@ -477,96 +475,95 @@ static void wafer_probe_invalidate_input_header(uint64_t input_ddr) {
   __asm__ volatile("sync" ::: "memory");
 }
 
-__attribute__((visibility("hidden"))) void wafer_tx81_dte_ncc_execution_probe(
-    uint32_t rank, uint64_t input_ddr, uint64_t output_ddr,
-    uint64_t status_ddr) {
+__attribute__((visibility("hidden"))) void
+wafer_tx81_dte_ncc_execution_probe(uint32_t rank, uint64_t input_ddr,
+                                   uint64_t output_ddr, uint64_t status_ddr) {
   const volatile uint32_t *input =
       (const volatile uint32_t *)(uintptr_t)input_ddr;
   uint32_t mode;
+  uint32_t payload_bytes;
   uint64_t input_payload = input_ddr + WAFER_PROBE_HEADER_BYTES;
-  uint64_t output_payload = output_ddr + WAFER_PROBE_HEADER_BYTES +
-                            WAFER_PROBE_OUTPUT_GUARD_BYTES;
+  uint64_t output_payload =
+      output_ddr + WAFER_PROBE_HEADER_BYTES + WAFER_PROBE_OUTPUT_GUARD_BYTES;
   WaferProbePmu before;
   WaferProbePmu after;
   WaferProbeTransportPmu transport_before;
   WaferProbeTransportPmu transport_after;
   WaferProbeOracle oracle;
 
-  wafer_tx81_direct_dte_begin_after_prepare(status_ddr,
-                                            WAFER_PROBE_RANK_COUNT);
+  wafer_tx81_direct_dte_begin_after_prepare(status_ddr, WAFER_PROBE_RANK_COUNT);
   /*
    * Host H2D and Kcore cached loads are not coherent on this profile.  Only
-   * the request word is read by Kcore; tensor payload remains an RDMA oracle.
-  */
+   * the request words are read by Kcore; tensor payload remains an RDMA
+   * oracle.
+   */
   wafer_probe_invalidate_input_header(input_ddr);
   mode = input[0];
+  payload_bytes = input[1];
   wafer_probe_seed_regions();
   before = wafer_probe_read_pmu();
   transport_before = wafer_probe_read_transport_pmu();
 
-  switch ((enum WaferDteNccProbeMode)mode) {
-  case WAFER_PROBE_NCC_PRODUCER_DTE:
-    wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT,
-                         WAFER_PROBE_PAYLOAD_BYTES);
-    wafer_tx81_elementwise_add(
-        WAFER_PROBE_SPM_INPUT, WAFER_PROBE_SPM_INPUT,
-        WAFER_PROBE_SPM_PRODUCED, WAFER_PROBE_PAYLOAD_ELEMENTS, Fmt_FP16);
-    wafer_tx81_local_fence();
-    wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_PRODUCED,
-                         WAFER_PROBE_PAYLOAD_BYTES);
-    wafer_probe_dma_write(WAFER_PROBE_SPM_DTE_RECV, output_payload,
-                          WAFER_PROBE_PAYLOAD_BYTES);
-    wafer_tx81_local_fence();
-    break;
-
-  case WAFER_PROBE_DTE_NCC_CONSUMER:
-    wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT,
-                         WAFER_PROBE_PAYLOAD_BYTES);
-    wafer_tx81_local_fence();
-    wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_INPUT,
-                         WAFER_PROBE_PAYLOAD_BYTES);
-    wafer_tx81_elementwise_add(
-        WAFER_PROBE_SPM_DTE_RECV, WAFER_PROBE_SPM_DTE_RECV,
-        WAFER_PROBE_SPM_PRODUCED, WAFER_PROBE_PAYLOAD_ELEMENTS, Fmt_FP16);
-    wafer_tx81_local_fence();
-    wafer_probe_dma_write(WAFER_PROBE_SPM_PRODUCED, output_payload,
-                          WAFER_PROBE_PAYLOAD_BYTES);
-    wafer_tx81_local_fence();
-    break;
-
-  case WAFER_PROBE_DISJOINT_LOCAL_WAIT_FIRST:
-  case WAFER_PROBE_DISJOINT_DTE_WAIT_FIRST:
-    wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT,
-                         WAFER_PROBE_PAYLOAD_BYTES);
-    wafer_probe_dma_read(input_payload + WAFER_PROBE_PAYLOAD_BYTES,
-                         WAFER_PROBE_SPM_DISJOINT_INPUT,
-                         WAFER_PROBE_DISJOINT_BYTES);
-    wafer_tx81_local_fence();
-    wafer_tx81_elementwise_add(
-        WAFER_PROBE_SPM_DISJOINT_INPUT, WAFER_PROBE_SPM_DISJOINT_INPUT,
-        WAFER_PROBE_SPM_DISJOINT_OUTPUT, WAFER_PROBE_DISJOINT_ELEMENTS,
-        Fmt_FP16);
-    if (mode == WAFER_PROBE_DISJOINT_LOCAL_WAIT_FIRST) {
+  if (wafer_probe_payload_bytes_are_valid(payload_bytes)) {
+    switch ((enum WaferDteNccProbeMode)mode) {
+    case WAFER_PROBE_NCC_PRODUCER_DTE:
+      wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT, payload_bytes);
+      wafer_tx81_elementwise_add(WAFER_PROBE_SPM_INPUT, WAFER_PROBE_SPM_INPUT,
+                                 WAFER_PROBE_SPM_PRODUCED,
+                                 payload_bytes / (uint32_t)sizeof(uint16_t),
+                                 Fmt_FP16);
       wafer_tx81_local_fence();
-      wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_INPUT,
-                           WAFER_PROBE_PAYLOAD_BYTES);
-    } else {
-      wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_INPUT,
-                           WAFER_PROBE_PAYLOAD_BYTES);
+      wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_PRODUCED, payload_bytes);
+      wafer_probe_dma_write(WAFER_PROBE_SPM_DTE_RECV, output_payload,
+                            WAFER_PROBE_MAX_PAYLOAD_BYTES);
       wafer_tx81_local_fence();
+      break;
+
+    case WAFER_PROBE_DTE_NCC_CONSUMER:
+      wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT, payload_bytes);
+      wafer_tx81_local_fence();
+      wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_INPUT, payload_bytes);
+      wafer_tx81_elementwise_add(
+          WAFER_PROBE_SPM_DTE_RECV, WAFER_PROBE_SPM_DTE_RECV,
+          WAFER_PROBE_SPM_PRODUCED, payload_bytes / (uint32_t)sizeof(uint16_t),
+          Fmt_FP16);
+      wafer_tx81_local_fence();
+      wafer_probe_dma_write(WAFER_PROBE_SPM_PRODUCED, output_payload,
+                            WAFER_PROBE_MAX_PAYLOAD_BYTES);
+      wafer_tx81_local_fence();
+      break;
+
+    case WAFER_PROBE_DISJOINT_LOCAL_WAIT_FIRST:
+    case WAFER_PROBE_DISJOINT_DTE_WAIT_FIRST:
+      wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT, payload_bytes);
+      wafer_probe_dma_read(input_payload + WAFER_PROBE_MAX_PAYLOAD_BYTES,
+                           WAFER_PROBE_SPM_DISJOINT_INPUT,
+                           WAFER_PROBE_DISJOINT_BYTES);
+      wafer_tx81_local_fence();
+      wafer_tx81_elementwise_add(WAFER_PROBE_SPM_DISJOINT_INPUT,
+                                 WAFER_PROBE_SPM_DISJOINT_INPUT,
+                                 WAFER_PROBE_SPM_DISJOINT_OUTPUT,
+                                 WAFER_PROBE_DISJOINT_ELEMENTS, Fmt_FP16);
+      if (mode == WAFER_PROBE_DISJOINT_LOCAL_WAIT_FIRST) {
+        wafer_tx81_local_fence();
+        wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_INPUT, payload_bytes);
+      } else {
+        wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_INPUT, payload_bytes);
+        wafer_tx81_local_fence();
+      }
+      wafer_probe_dma_write(WAFER_PROBE_SPM_DTE_RECV, output_payload,
+                            WAFER_PROBE_MAX_PAYLOAD_BYTES);
+      wafer_tx81_local_fence();
+      break;
     }
-    wafer_probe_dma_write(WAFER_PROBE_SPM_DTE_RECV, output_payload,
-                          WAFER_PROBE_PAYLOAD_BYTES);
-    wafer_tx81_local_fence();
-    break;
   }
 
   after = wafer_probe_read_pmu();
   transport_after = wafer_probe_read_transport_pmu();
-  oracle = wafer_probe_read_oracle(rank, mode);
+  oracle = wafer_probe_read_oracle(rank, mode, payload_bytes);
   wafer_tx81_direct_dte_finish();
-  wafer_probe_publish_header(
-      output_ddr, rank, mode,
-      *(const volatile uint32_t *)(uintptr_t)status_ddr, before, after,
-      transport_before, transport_after, oracle);
+  wafer_probe_publish_header(output_ddr, rank, mode, payload_bytes,
+                             *(const volatile uint32_t *)(uintptr_t)status_ddr,
+                             before, after, transport_before, transport_after,
+                             oracle);
 }

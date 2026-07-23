@@ -37,6 +37,11 @@
   static、single-vector observed、calibrated、supported、unknown和excluded；性能观察不能反向扩大semantic
   legality。packet/register字段只能证明请求和路由，完整非零output、全range readback及双侧guard才是
   correctness oracle。
+- 大型硬件校准在上卡前使用机器manifest做逐行完备性门禁：文档行名与manifest key一一对应，每行必须
+  `ready`、无剩余准备、至少绑定一个registered no-card gate；可执行行还必须绑定board runner和positive
+  asset，非法或不安全行绑定`static-negative`/带原因的`isolated-deferred`。opcode、layout或counter
+  inventory不能因缺case而消失；“有明确fail-closed处置”属于准备完成，“由邻近case外推”不属于。共享
+  dispatcher/package的target C build/link和host oracle通过只证明上卡资产可用，不得写成board evidence。
 - 板端case一旦timeout立即停止当前批次并隔离该execution context，不在同批次自动重试，也不调用
   reset、power或firmware替换。`tsm_smi` idle、0%利用率、memory baseline和无残留进程只证明管理面表面状态，
   不证明execution/completion面健康。发生异常并由用户恢复后，使用一次新进程的known-good Add heartbeat

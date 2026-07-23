@@ -17,29 +17,25 @@ import sys
 import time
 
 import wafer_board_direct_dte_collective_test as production_baseline
+import wafer_transport_pmu_calibration_catalog as transport_catalog
 
 
 RANK_COUNT = 16
 RESOURCE_BYTES = 256
 HEADER_BYTES = 128
 INPUT_BYTES = 96
-PAYLOAD_BYTES = 64
+MAX_PAYLOAD_BYTES = 64
+PAYLOAD_SWEEP = transport_catalog.PAYLOAD_SWEEP
+PAYLOAD_POISON = 0xC3
 OUTPUT_GUARD_BYTES = 32
 OUTPUT_GUARD_VALUE = 0xA5
 MAGIC = 0x3143434E45544457
 CANARY = 0xD7E0CA11D7E0CA11
-SCHEMA = 3
+SCHEMA = 4
 STATUS_SUCCESS = 1
 DTE_ENABLE_MASK = 0x3
 SPM_ENABLE_MASK = 0x1F
-TRANSPORT_COUNTER_NAMES = (
-    "dte_channel0_transfer",
-    "dte_channel1_transfer",
-    "dte_channel0_execution",
-    "dte_channel1_execution",
-    "spm_dte_t2_port8",
-    "spm_dte_t3_port8",
-)
+TRANSPORT_COUNTER_NAMES = transport_catalog.BOARD_COUNTER_NAMES
 TRANSPORT_STABLE_MASK = (1 << len(TRANSPORT_COUNTER_NAMES)) - 1
 LAUNCH_ABI = "tx81-cluster-direct-dte-prepare-main-v1"
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
@@ -59,17 +55,25 @@ EXPECTED_INSTRUCTION_COUNTS = {
     4: (1, 2, 1),
 }
 DEFAULT_NO_CARD_TOTAL_TIMEOUT_SECONDS = 300.0
-DEFAULT_BOARD_TOTAL_TIMEOUT_SECONDS = 600.0
+DEFAULT_BOARD_TOTAL_TIMEOUT_SECONDS = 1200.0
 _total_deadline: float | None = None
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo-root", type=pathlib.Path, required=True)
-    parser.add_argument("--wafer-compile", type=pathlib.Path, required=True)
-    parser.add_argument("--wafer-run", type=pathlib.Path, required=True)
-    parser.add_argument("--llvm-clangxx", type=pathlib.Path, required=True)
-    parser.add_argument("--work-dir", type=pathlib.Path, required=True)
+    parser.add_argument("--repo-root", type=pathlib.Path)
+    parser.add_argument("--wafer-compile", type=pathlib.Path)
+    parser.add_argument("--wafer-run", type=pathlib.Path)
+    parser.add_argument("--llvm-clangxx", type=pathlib.Path)
+    parser.add_argument("--work-dir", type=pathlib.Path)
+    parser.add_argument("--mode", type=int, action="append", dest="selected_modes")
+    parser.add_argument(
+        "--payload-bytes",
+        type=int,
+        action="append",
+        dest="selected_payload_bytes",
+    )
+    parser.add_argument("--list-cases", action="store_true")
     parser.add_argument("--no-card", action="store_true")
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--expected-runtime-version", type=int)
@@ -80,6 +84,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--completion-timeout-ms", type=int, default=60000)
     parser.add_argument("--total-timeout-seconds", type=float)
     return parser.parse_args()
+
+
+def require_build_args(args: argparse.Namespace) -> None:
+    required = {
+        "--repo-root": args.repo_root,
+        "--wafer-compile": args.wafer_compile,
+        "--wafer-run": args.wafer_run,
+        "--llvm-clangxx": args.llvm_clangxx,
+        "--work-dir": args.work_dir,
+    }
+    missing = tuple(name for name, value in required.items() if value is None)
+    if missing:
+        raise RuntimeError(
+            "DTE/NCC probe build requires " + ", ".join(missing)
+        )
+
+
+def select_execution_axes(
+    args: argparse.Namespace,
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    modes = tuple(dict.fromkeys(args.selected_modes or MODES))
+    payload_bytes = tuple(
+        dict.fromkeys(args.selected_payload_bytes or PAYLOAD_SWEEP)
+    )
+    invalid_modes = tuple(mode for mode in modes if mode not in MODES)
+    invalid_payloads = tuple(
+        size for size in payload_bytes if size not in PAYLOAD_SWEEP
+    )
+    if invalid_modes:
+        raise RuntimeError(f"unsupported DTE/NCC modes {invalid_modes}")
+    if invalid_payloads:
+        raise RuntimeError(
+            f"unsupported transport payload sizes {invalid_payloads}"
+        )
+    return modes, payload_bytes
 
 
 def start_total_deadline(timeout_seconds: float) -> None:
@@ -325,14 +364,19 @@ def write_probe_inputs(
     work_dir: pathlib.Path,
     bindings: dict[tuple[int, str, int], int],
     mode: int,
+    payload_bytes: int,
 ) -> tuple[list[str], dict[int, pathlib.Path]]:
-    raw = work_dir / "probe-raw" / f"mode-{mode}"
+    if payload_bytes not in PAYLOAD_SWEEP:
+        raise RuntimeError(f"unsupported transport payload size {payload_bytes}")
+    raw = work_dir / "probe-raw" / f"mode-{mode}-bytes-{payload_bytes}"
     raw.mkdir(parents=True)
     arguments: list[str] = []
     outputs: dict[int, pathlib.Path] = {}
     values = [f16_payload(rank) for rank in range(RANK_COUNT)]
     for rank in range(RANK_COUNT):
-        header = struct.pack("<I", mode) + bytes(HEADER_BYTES - 4)
+        header = struct.pack("<II", mode, payload_bytes) + bytes(
+            HEADER_BYTES - 8
+        )
         payload = struct.pack(f"<{len(values[rank])}e", *values[rank])
         input_path = raw / f"input-{rank:02d}.raw"
         output_path = raw / f"output-{rank:02d}.raw"
@@ -351,19 +395,26 @@ def write_probe_inputs(
     return arguments, outputs
 
 
-def expected_payload(mode: int, rank: int) -> bytes:
+def expected_payload(mode: int, rank: int, payload_bytes: int) -> bytes:
+    if payload_bytes not in PAYLOAD_SWEEP:
+        raise RuntimeError(f"unsupported transport payload size {payload_bytes}")
     predecessor = (rank - 1) % RANK_COUNT
-    remote = f16_payload(predecessor)[: PAYLOAD_BYTES // 2]
+    remote = f16_payload(predecessor)[: payload_bytes // 2]
     if mode in (1, 2):
         values = [2.0 * value for value in remote]
     else:
         values = remote
-    return struct.pack(f"<{len(values)}e", *values)
+    active = struct.pack(f"<{len(values)}e", *values)
+    return active + bytes([PAYLOAD_POISON]) * (
+        MAX_PAYLOAD_BYTES - payload_bytes
+    )
 
 
 def parse_probe_payload(
-    payload: bytes, mode: int, rank: int
+    payload: bytes, mode: int, rank: int, payload_bytes: int
 ) -> dict[str, object]:
+    if payload_bytes not in PAYLOAD_SWEEP:
+        raise RuntimeError(f"unsupported transport payload size {payload_bytes}")
     if len(payload) != RESOURCE_BYTES:
         raise RuntimeError(f"rank {rank} mode {mode} output has invalid size")
     words = struct.unpack("<16Q", payload[:HEADER_BYTES])
@@ -390,7 +441,7 @@ def parse_probe_payload(
         or schema != SCHEMA
         or recorded_mode != mode
         or recorded_rank != rank
-        or recorded_bytes != PAYLOAD_BYTES
+        or recorded_bytes != payload_bytes
         or status != STATUS_SUCCESS
     ):
         raise RuntimeError(
@@ -431,14 +482,16 @@ def parse_probe_payload(
         HEADER_BYTES : HEADER_BYTES + OUTPUT_GUARD_BYTES
     ]
     logical_begin = HEADER_BYTES + OUTPUT_GUARD_BYTES
-    logical_end = logical_begin + PAYLOAD_BYTES
+    logical_end = logical_begin + MAX_PAYLOAD_BYTES
     guard_after = payload[logical_end:]
     expected_guard = bytes([OUTPUT_GUARD_VALUE]) * OUTPUT_GUARD_BYTES
     if guard_before != expected_guard or guard_after != expected_guard:
         raise RuntimeError(
             f"rank {rank} mode {mode} output payload guard changed"
         )
-    if payload[logical_begin:logical_end] != expected_payload(mode, rank):
+    if payload[logical_begin:logical_end] != expected_payload(
+        mode, rank, payload_bytes
+    ):
         raise RuntimeError(f"rank {rank} mode {mode} payload is not exact")
 
     dte_enable = words[9] & 0xFFFFFFFF
@@ -460,6 +513,7 @@ def parse_probe_payload(
     )
     return {
         "rank": rank,
+        "payload_bytes": payload_bytes,
         "stable_mask": stable_mask,
         "status": status,
         "ct_count_delta": instruction_counts[0],
@@ -482,6 +536,9 @@ def parse_probe_payload(
             "inconclusive_reasons": inconclusive_reasons,
             "delta_arithmetic": "raw_modulo_2^64",
             "stable_counter_mask": f"0x{transport_stable_mask:02x}",
+            "raw_counter_deltas": dict(
+                zip(TRANSPORT_COUNTER_NAMES, transport_deltas, strict=True)
+            ),
             "scope": {
                 "tile_local": True,
                 "read_only": read_only,
@@ -514,14 +571,15 @@ def parse_probe_payload(
 
 
 def parse_probe_output(
-    path: pathlib.Path, mode: int, rank: int
+    path: pathlib.Path, mode: int, rank: int, payload_bytes: int
 ) -> dict[str, object]:
-    return parse_probe_payload(path.read_bytes(), mode, rank)
+    return parse_probe_payload(path.read_bytes(), mode, rank, payload_bytes)
 
 
 def synthetic_probe_payload(
     mode: int,
     rank: int,
+    payload_bytes: int,
     *,
     dte_enable: int = DTE_ENABLE_MASK,
     spm_enable: int = SPM_ENABLE_MASK,
@@ -542,7 +600,7 @@ def synthetic_probe_payload(
         | (SCHEMA << 32)
         | (mode << 24)
         | (rank << 16)
-        | PAYLOAD_BYTES
+        | payload_bytes
     )
     words[2] = CANARY
     words[3] = (
@@ -568,7 +626,7 @@ def synthetic_probe_payload(
     return (
         struct.pack("<16Q", *words)
         + guard
-        + expected_payload(mode, rank)
+        + expected_payload(mode, rank, payload_bytes)
         + guard
     )
 
@@ -578,24 +636,32 @@ def run_host_oracle_self_tests() -> None:
         if not condition:
             raise RuntimeError(f"DTE/NCC host oracle self-test: {message}")
 
-    def require_rejected(payload: bytes, message: str) -> None:
+    def require_rejected(
+        payload: bytes, payload_bytes: int, message: str
+    ) -> None:
         try:
-            parse_probe_payload(payload, 1, 0)
+            parse_probe_payload(payload, 1, 0, payload_bytes)
         except RuntimeError:
             return
         raise RuntimeError(
             f"DTE/NCC host oracle self-test accepted {message}"
         )
 
-    for mode in MODES:
-        for rank in (0, RANK_COUNT - 1):
-            parsed = parse_probe_payload(
-                synthetic_probe_payload(mode, rank), mode, rank
-            )
-            require(
-                parsed["transport_pmu"]["sample_state"] == "raw_observation",
-                f"valid mode {mode} rank {rank} was not a raw observation",
-            )
+    for payload_bytes in PAYLOAD_SWEEP:
+        for mode in MODES:
+            for rank in (0, RANK_COUNT - 1):
+                parsed = parse_probe_payload(
+                    synthetic_probe_payload(mode, rank, payload_bytes),
+                    mode,
+                    rank,
+                    payload_bytes,
+                )
+                require(
+                    parsed["transport_pmu"]["sample_state"]
+                    == "raw_observation",
+                    f"valid mode {mode} rank {rank} bytes "
+                    f"{payload_bytes} was not a raw observation",
+                )
 
     inconclusive_cases = (
         (
@@ -617,7 +683,10 @@ def run_host_oracle_self_tests() -> None:
     )
     for options, expected_reasons in inconclusive_cases:
         parsed = parse_probe_payload(
-            synthetic_probe_payload(1, 0, **options), 1, 0
+            synthetic_probe_payload(1, 0, MAX_PAYLOAD_BYTES, **options),
+            1,
+            0,
+            MAX_PAYLOAD_BYTES,
         )
         reasons = parsed["transport_pmu"]["inconclusive_reasons"]
         require(
@@ -630,12 +699,17 @@ def run_host_oracle_self_tests() -> None:
         synthetic_probe_payload(
             1,
             0,
+            MAX_PAYLOAD_BYTES,
             transport_stable_mask=TRANSPORT_STABLE_MASK ^ 1,
         ),
+        MAX_PAYLOAD_BYTES,
         "an unstable transport split counter",
     )
     require_rejected(
-        synthetic_probe_payload(1, 0, read_only=False),
+        synthetic_probe_payload(
+            1, 0, MAX_PAYLOAD_BYTES, read_only=False
+        ),
+        MAX_PAYLOAD_BYTES,
         "a non-read-only transport sample",
     )
     for index, name in enumerate(
@@ -647,74 +721,154 @@ def run_host_oracle_self_tests() -> None:
             synthetic_probe_payload(
                 1,
                 0,
+                MAX_PAYLOAD_BYTES,
                 device_oracle_mismatches=tuple(mismatches),
             ),
+            MAX_PAYLOAD_BYTES,
             name,
         )
 
-    corrupted_guard = bytearray(synthetic_probe_payload(1, 0))
+    corrupted_guard = bytearray(
+        synthetic_probe_payload(1, 0, MAX_PAYLOAD_BYTES)
+    )
     corrupted_guard[HEADER_BYTES] ^= 1
-    require_rejected(bytes(corrupted_guard), "a changed output guard before")
-    corrupted_guard = bytearray(synthetic_probe_payload(1, 0))
+    require_rejected(
+        bytes(corrupted_guard),
+        MAX_PAYLOAD_BYTES,
+        "a changed output guard before",
+    )
+    corrupted_guard = bytearray(
+        synthetic_probe_payload(1, 0, MAX_PAYLOAD_BYTES)
+    )
     corrupted_guard[-1] ^= 1
-    require_rejected(bytes(corrupted_guard), "a changed output guard after")
-    corrupted_payload = bytearray(synthetic_probe_payload(1, 0))
+    require_rejected(
+        bytes(corrupted_guard),
+        MAX_PAYLOAD_BYTES,
+        "a changed output guard after",
+    )
+    corrupted_payload = bytearray(
+        synthetic_probe_payload(1, 0, MAX_PAYLOAD_BYTES)
+    )
     corrupted_payload[HEADER_BYTES + OUTPUT_GUARD_BYTES] ^= 1
-    require_rejected(bytes(corrupted_payload), "a changed logical payload")
+    require_rejected(
+        bytes(corrupted_payload),
+        MAX_PAYLOAD_BYTES,
+        "a changed logical payload",
+    )
+    corrupted_suffix = bytearray(synthetic_probe_payload(1, 0, 16))
+    corrupted_suffix[
+        HEADER_BYTES + OUTPUT_GUARD_BYTES + 16
+    ] ^= 1
+    require_rejected(
+        bytes(corrupted_suffix),
+        16,
+        "a changed inactive payload suffix",
+    )
 
 
 def execute_probe_modes(
     args: argparse.Namespace,
     package: pathlib.Path,
     bindings: dict[tuple[int, str, int], int],
+    selected_modes: tuple[int, ...],
+    selected_payload_bytes: tuple[int, ...],
 ) -> None:
-    for mode, name in MODES.items():
-        resource_args, outputs = write_probe_inputs(args.work_dir, bindings, mode)
-        result = run(
-            [*board_base_command(args, package), *resource_args],
-            timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
-        )
-        if result.stdout.count("output_capture:") != RANK_COUNT:
-            raise RuntimeError(f"{name} omitted one or more rank output captures")
-        observations = [
-            parse_probe_output(outputs[rank], mode, rank)
-            for rank in range(RANK_COUNT)
-        ]
-        inconclusive_ranks = [
-            observation["rank"]
-            for observation in observations
-            if observation["transport_pmu"]["sample_state"]
-            == "inconclusive"
-        ]
-        print(
-            "dte_ncc_case: "
-            + json.dumps(
-                {
-                    "case": name,
-                    "ranks": RANK_COUNT,
-                    "exact": True,
-                    "canary": True,
-                    "guards": {
-                        "source_spm": "exact",
-                        "receive_spm": "exact",
-                        "compute_spm": "exact",
-                        "output_ddr_before_after": "exact",
-                    },
-                    "transport_status": "success",
-                    "ncc_pmu": observations,
-                    "transport_pmu_sample_state": (
-                        "inconclusive"
-                        if inconclusive_ranks
-                        else "raw_observation"
-                    ),
-                    "transport_pmu_inconclusive_ranks": inconclusive_ranks,
-                    "dte_common_timer": None,
-                    "dte_ncc_overlap": "unknown",
-                },
-                sort_keys=True,
+    sweep_observations: dict[
+        int, dict[int, list[dict[str, object]]]
+    ] = {mode: {} for mode in selected_modes}
+    for payload_bytes in selected_payload_bytes:
+        for mode in selected_modes:
+            name = MODES[mode]
+            resource_args, outputs = write_probe_inputs(
+                args.work_dir, bindings, mode, payload_bytes
             )
+            result = run(
+                [*board_base_command(args, package), *resource_args],
+                timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
+            )
+            if result.stdout.count("output_capture:") != RANK_COUNT:
+                raise RuntimeError(
+                    f"{name} bytes {payload_bytes} omitted one or more "
+                    "rank output captures"
+                )
+            observations = [
+                parse_probe_output(
+                    outputs[rank], mode, rank, payload_bytes
+                )
+                for rank in range(RANK_COUNT)
+            ]
+            sweep_observations[mode][payload_bytes] = observations
+            inconclusive_ranks = [
+                observation["rank"]
+                for observation in observations
+                if observation["transport_pmu"]["sample_state"]
+                == "inconclusive"
+            ]
+            print(
+                "dte_ncc_case: "
+                + json.dumps(
+                    {
+                        "case": name,
+                        "payload_bytes": payload_bytes,
+                        "ranks": RANK_COUNT,
+                        "exact": True,
+                        "canary": True,
+                        "guards": {
+                            "source_spm": "exact",
+                            "receive_spm": "exact",
+                            "compute_spm": "exact",
+                            "output_ddr_before_after": "exact",
+                        },
+                        "transport_status": "success",
+                        "ncc_pmu": observations,
+                        "transport_pmu_sample_state": (
+                            "inconclusive"
+                            if inconclusive_ranks
+                            else "raw_observation"
+                        ),
+                        "transport_pmu_inconclusive_ranks": inconclusive_ranks,
+                        "dte_common_timer": None,
+                        "dte_ncc_overlap": "unknown",
+                    },
+                    sort_keys=True,
+                )
+            )
+            print(result.stdout, end="")
+
+    sweep_summary: dict[str, object] = {}
+    for mode in selected_modes:
+        name = MODES[mode]
+        counter_summaries: dict[str, object] = {}
+        for counter_name in TRANSPORT_COUNTER_NAMES:
+            samples = {
+                payload_bytes: tuple(
+                    int(
+                        observation["transport_pmu"][
+                            "raw_counter_deltas"
+                        ][counter_name]
+                    )
+                    for observation in sweep_observations[mode][payload_bytes]
+                )
+                for payload_bytes in selected_payload_bytes
+            }
+            counter_summaries[counter_name] = (
+                transport_catalog.classify_payload_series(samples)
+            )
+        sweep_summary[name] = counter_summaries
+    print(
+        "transport_pmu_payload_sweep: "
+        + json.dumps(
+            {
+                "payload_bytes": selected_payload_bytes,
+                "modes": sweep_summary,
+                "tmnoc": transport_catalog.COUNTERS_BY_NAME[
+                    "tmnoc"
+                ].disposition,
+                "unit_policy": "report observation; never infer without data",
+            },
+            sort_keys=True,
         )
-        print(result.stdout, end="")
+    )
 
 
 def validate_board_args(args: argparse.Namespace) -> None:
@@ -742,6 +896,17 @@ def validate_board_args(args: argparse.Namespace) -> None:
 
 def main() -> int:
     args = parse_args()
+    if args.list_cases:
+        print(
+            json.dumps(
+                [case.as_dict() for case in transport_catalog.CASES],
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    require_build_args(args)
+    selected_modes, selected_payload_bytes = select_execution_axes(args)
     args.repo_root = args.repo_root.resolve()
     total_timeout = args.total_timeout_seconds
     if total_timeout is None:
@@ -772,7 +937,13 @@ def main() -> int:
     verify_no_card(args, package)
     print("probe_package_verification: passed")
     if not args.no_card:
-        execute_probe_modes(args, package, bindings)
+        execute_probe_modes(
+            args,
+            package,
+            bindings,
+            selected_modes,
+            selected_payload_bytes,
+        )
     return 0
 
 

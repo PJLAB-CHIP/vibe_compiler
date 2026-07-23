@@ -75,6 +75,14 @@ Pipeline position:
   6. 测量与负向边界：NCC PMU basis、DTE/SPM/TMNOC PMU、SCALAR/CSR ordinary issue。
   每批结束都运行矩阵一致性测试；最终复核必须证明文档第3节行名与机器索引严格一一对应、没有重复、
   没有未绑定资产、没有未注册no-card测试，也没有任何`in-progress`行。
+- 实卡前准备门禁现已闭合为28/28：机器索引全部`ready`且`remaining_preparation`为空。新增资产包括
+  CT `0..110`的626个vector row、`139..174`的72个convert row和`0..186`的187-entry disposition；
+  15个DataMove board case、18-entry movement disposition及五类instruction × 四种layout的20-entry
+  disposition；24个NE FP16/BF16 large/tail/batch/orientation row；22个SPM positive/negative row；
+  DDR/cache四方向五phase；full-card barrier正向和subgroup typed-negative；DTE/SPM PMU四mode ×
+  16/32/64B共12个full-card case及TMNOC static-negative。所有新增可执行族均有shared dispatcher/package、
+  host oracle、target C `-Werror` build/link、运行过滤/timeout/cleanup和no-card CTest；该状态只表示
+  上卡前准备完成，不表示新增硬件结论，也不完成Checkpoint A的实卡证据门禁。
 - 校准矩阵按compiler consumer分层，而不是按vendor API罗列：
   - instruction/encoding：constructor ownership、packet routing、descriptor单位、range materialization、
     alignment/tail、返回值与错误可观察性；

@@ -234,31 +234,40 @@ class ProtocolTest(unittest.TestCase):
                     ),
                 ).request_words()
 
-    def test_tdma_crt_case_is_exposed_as_one_exact_manual_case(self) -> None:
+    def test_tdma_crt_cases_are_exposed_as_exact_manual_cases(self) -> None:
         cases = execution_probe.SUITES["tdma-crt-manual"]
         self.assertIs(cases, execution_probe.NO_CARD_PROTOCOL_CASES)
         self.assertEqual(tuple(case.name for case in cases), (
             "tdma-crt-i8-physical16",
+            "tdma-crt-bool-to-i8-physical17",
         ))
-        case = cases[0]
-        plan = case.plan
-        lane = plan.lanes[0]
-        self.assertEqual(plan.schedule, protocol.Schedule.SERIAL)
-        self.assertEqual(plan.issue_order(), (0,))
-        self.assertEqual(lane.engine, protocol.Engine.TDMA)
-        self.assertEqual(lane.issue_mode, protocol.IssueMode.WRAPPER)
-        self.assertEqual(lane.element_format, execution_probe.FMT_INT8)
-        self.assertEqual(lane.transfer_bytes, 16)
-
-        output = bytearray([0xA5] * execution_probe.RESOURCE_BYTES)
-        identity = plan.issue_identities()[0]
-        expected = execution_probe.v2_expected_result(identity, lane, plan)
-        begin = (
-            execution_probe.V2_OUTPUT_SLOT_BASE
-            + execution_probe.V2_OUTPUT_GUARD_BYTES
+        expected_lanes = (
+            (execution_probe.FMT_INT8, 16),
+            (execution_probe.FMT_BOOL, 17),
         )
-        output[begin : begin + len(expected)] = expected
-        execution_probe.validate_output_payload_v2(bytes(output), case, plan)
+        for case, (expected_format, expected_bytes) in zip(
+            cases, expected_lanes, strict=True
+        ):
+            plan = case.plan
+            lane = plan.lanes[0]
+            self.assertEqual(plan.schedule, protocol.Schedule.SERIAL)
+            self.assertEqual(plan.issue_order(), (0,))
+            self.assertEqual(lane.engine, protocol.Engine.TDMA)
+            self.assertEqual(lane.issue_mode, protocol.IssueMode.WRAPPER)
+            self.assertEqual(lane.element_format, expected_format)
+            self.assertEqual(lane.transfer_bytes, expected_bytes)
+
+            output = bytearray([0xA5] * execution_probe.RESOURCE_BYTES)
+            identity = plan.issue_identities()[0]
+            expected = execution_probe.v2_expected_result(identity, lane, plan)
+            begin = (
+                execution_probe.V2_OUTPUT_SLOT_BASE
+                + execution_probe.V2_OUTPUT_GUARD_BYTES
+            )
+            output[begin : begin + len(expected)] = expected
+            execution_probe.validate_output_payload_v2(
+                bytes(output), case, plan
+            )
 
     def test_three_lane_window_is_disjoint_only(self) -> None:
         plan = protocol.Plan(

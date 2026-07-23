@@ -1,0 +1,301 @@
+#include "instr_def.h"
+#include "wafer_ct_convert_calibration_probe_protocol.h"
+#include "wafer_tx81_crt.h"
+
+#include <stdint.h>
+
+#define WAFER_CTC_PMU_BASE UINT64_C(0x590000)
+#define WAFER_CTC_STABLE_RETRIES 8U
+
+extern int8_t *get_spm_memory_mapping(uint64_t offset);
+
+typedef struct WaferCTCCase {
+  uint32_t case_id;
+  uint32_t opcode;
+  uint32_t source_type;
+  uint32_t destination_type;
+  uint32_t elements;
+  uint32_t input_bytes;
+  uint32_t result_bytes;
+  uint32_t output_span;
+  uint32_t rounding_mode;
+} WaferCTCCase;
+
+typedef struct WaferCTCPMU {
+  uint32_t instructions;
+  uint32_t blocking;
+  uint64_t execution;
+} WaferCTCPMU;
+
+static const uint8_t wafer_ctc_source_types[36] = {
+    WAFER_CTC_INT8,  WAFER_CTC_INT8,  WAFER_CTC_INT8,  WAFER_CTC_INT8,
+    WAFER_CTC_INT16, WAFER_CTC_INT16, WAFER_CTC_INT16, WAFER_CTC_INT16,
+    WAFER_CTC_INT32, WAFER_CTC_INT32, WAFER_CTC_INT32, WAFER_CTC_INT32,
+    WAFER_CTC_BF16,  WAFER_CTC_BF16,  WAFER_CTC_BF16,  WAFER_CTC_BF16,
+    WAFER_CTC_BF16,  WAFER_CTC_BF16,  WAFER_CTC_FP16,  WAFER_CTC_FP16,
+    WAFER_CTC_FP16,  WAFER_CTC_FP16,  WAFER_CTC_FP16,  WAFER_CTC_FP16,
+    WAFER_CTC_FP32,  WAFER_CTC_FP32,  WAFER_CTC_FP32,  WAFER_CTC_FP32,
+    WAFER_CTC_FP32,  WAFER_CTC_FP32,  WAFER_CTC_TF32,  WAFER_CTC_TF32,
+    WAFER_CTC_TF32,  WAFER_CTC_TF32,  WAFER_CTC_TF32,  WAFER_CTC_TF32,
+};
+
+static const uint8_t wafer_ctc_destination_types[36] = {
+    WAFER_CTC_FP16,  WAFER_CTC_BF16,  WAFER_CTC_FP32,  WAFER_CTC_TF32,
+    WAFER_CTC_FP16,  WAFER_CTC_BF16,  WAFER_CTC_FP32,  WAFER_CTC_TF32,
+    WAFER_CTC_FP16,  WAFER_CTC_BF16,  WAFER_CTC_FP32,  WAFER_CTC_TF32,
+    WAFER_CTC_INT8,  WAFER_CTC_INT16, WAFER_CTC_INT32, WAFER_CTC_FP16,
+    WAFER_CTC_FP32,  WAFER_CTC_TF32,  WAFER_CTC_INT8,  WAFER_CTC_INT16,
+    WAFER_CTC_INT32, WAFER_CTC_BF16,  WAFER_CTC_FP32,  WAFER_CTC_TF32,
+    WAFER_CTC_INT8,  WAFER_CTC_INT16, WAFER_CTC_INT32, WAFER_CTC_FP16,
+    WAFER_CTC_BF16,  WAFER_CTC_TF32,  WAFER_CTC_INT8,  WAFER_CTC_INT16,
+    WAFER_CTC_INT32, WAFER_CTC_FP16,  WAFER_CTC_BF16,  WAFER_CTC_FP32,
+};
+
+static const uint8_t wafer_ctc_type_bytes[7] = {1U, 2U, 4U, 2U, 2U, 4U, 4U};
+
+static void wafer_ctc_cache_range(uint64_t begin, uint32_t bytes,
+                                  uint32_t invalidate_only) {
+  enum {
+    WAFER_CTC_SUPERVISOR_MODE = 1,
+    WAFER_CTC_MACHINE_MODE = 3,
+    WAFER_CTC_CACHE_LINE_BYTES = 64,
+  };
+  uintptr_t mode;
+  __asm__ volatile("fence" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+  __asm__ volatile("csrr %0, mxstatus" : "=r"(mode));
+  mode = (mode >> 30) & 3U;
+  for (uintptr_t address = (uintptr_t)begin; address < (uintptr_t)begin + bytes;
+       address += WAFER_CTC_CACHE_LINE_BYTES) {
+    if (mode == WAFER_CTC_MACHINE_MODE) {
+      if (invalidate_only != 0U)
+        __asm__ volatile("dcache.ipa %0" : : "r"(address) : "memory");
+      else
+        __asm__ volatile("dcache.cipa %0" : : "r"(address) : "memory");
+    } else if (mode == WAFER_CTC_SUPERVISOR_MODE) {
+      if (invalidate_only != 0U)
+        __asm__ volatile("dcache.iva %0" : : "r"(address) : "memory");
+      else
+        __asm__ volatile("dcache.civa %0" : : "r"(address) : "memory");
+    }
+  }
+  __asm__ volatile("sync.is" ::: "memory");
+  __asm__ volatile("fence" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+}
+
+static uint32_t wafer_ctc_read32(uint32_t offset) {
+  return *(const volatile uint32_t *)(uintptr_t)(WAFER_CTC_PMU_BASE + offset);
+}
+
+static uint64_t wafer_ctc_read64(uint32_t low_offset) {
+  uint32_t low = 0;
+  uint32_t high_after = 0;
+  for (uint32_t retry = 0; retry < WAFER_CTC_STABLE_RETRIES; ++retry) {
+    uint32_t high_before = wafer_ctc_read32(low_offset + 4U);
+    low = wafer_ctc_read32(low_offset);
+    high_after = wafer_ctc_read32(low_offset + 4U);
+    if (high_before == high_after)
+      break;
+  }
+  return ((uint64_t)high_after << 32) | low;
+}
+
+static WaferCTCPMU wafer_ctc_read_pmu(void) {
+  WaferCTCPMU result;
+  result.instructions = wafer_ctc_read32(GR_PMU_CT_INST_NUMS);
+  result.blocking = wafer_ctc_read32(GR_PMU_CT_BLOCKING_TIME);
+  result.execution = wafer_ctc_read64(GR_PMU_CT_EXE_TIME);
+  return result;
+}
+
+static uint32_t wafer_ctc_decode(const volatile uint64_t *request,
+                                 WaferCTCCase *selected) {
+  if (request[WAFER_CTC_REQ_MAGIC] != WAFER_CTC_REQUEST_MAGIC ||
+      request[WAFER_CTC_REQ_SCHEMA_AND_WORDS] !=
+          (((uint64_t)WAFER_CTC_SCHEMA << 32) | WAFER_CTC_REQUEST_WORDS) ||
+      request[WAFER_CTC_REQ_RESOURCE_BYTES] != WAFER_CTC_RESOURCE_BYTES ||
+      request[WAFER_CTC_REQ_SLOT_BYTES] != WAFER_CTC_SLOT_BYTES ||
+      request[WAFER_CTC_REQ_BODY_OFFSET] != WAFER_CTC_BODY_OFFSET ||
+      request[WAFER_CTC_REQ_GUARD] != WAFER_CTC_REQUEST_GUARD)
+    return WAFER_CTC_STATUS_BAD_REQUEST;
+
+  uint32_t opcode = (uint32_t)request[WAFER_CTC_REQ_OPCODE];
+  uint32_t case_id = (uint32_t)request[WAFER_CTC_REQ_CASE];
+  if (opcode < 139U || opcode > 174U || case_id >= 72U ||
+      case_id / 2U != opcode - 139U)
+    return WAFER_CTC_STATUS_BAD_REQUEST;
+  uint32_t route = opcode - 139U;
+  uint32_t elements = (uint32_t)request[WAFER_CTC_REQ_ELEMENTS];
+  if (elements != WAFER_CTC_MAIN_ELEMENTS &&
+      elements != WAFER_CTC_TAIL_ELEMENTS)
+    return WAFER_CTC_STATUS_BAD_REQUEST;
+  if ((case_id & 1U) != (elements == WAFER_CTC_TAIL_ELEMENTS))
+    return WAFER_CTC_STATUS_BAD_REQUEST;
+  uint32_t source_type = wafer_ctc_source_types[route];
+  uint32_t destination_type = wafer_ctc_destination_types[route];
+  uint32_t input_bytes = elements * wafer_ctc_type_bytes[source_type];
+  uint32_t result_bytes = elements * wafer_ctc_type_bytes[destination_type];
+  uint32_t output_span = (result_bytes + 255U) & ~UINT32_C(255);
+  if (request[WAFER_CTC_REQ_SRC_TYPE] != source_type ||
+      request[WAFER_CTC_REQ_DST_TYPE] != destination_type ||
+      request[WAFER_CTC_REQ_INPUT_BYTES] != input_bytes ||
+      request[WAFER_CTC_REQ_RESULT_BYTES] != result_bytes ||
+      request[WAFER_CTC_REQ_OUTPUT_SPAN] != output_span ||
+      request[WAFER_CTC_REQ_ROUNDING] != RND_NEAREST_EVEN ||
+      WAFER_CTC_BODY_OFFSET + input_bytes > WAFER_CTC_SLOT_BYTES ||
+      WAFER_CTC_BODY_OFFSET + output_span > WAFER_CTC_SLOT_BYTES)
+    return WAFER_CTC_STATUS_BAD_REQUEST;
+
+  selected->case_id = case_id;
+  selected->opcode = opcode;
+  selected->source_type = source_type;
+  selected->destination_type = destination_type;
+  selected->elements = elements;
+  selected->input_bytes = input_bytes;
+  selected->result_bytes = result_bytes;
+  selected->output_span = output_span;
+  selected->rounding_mode = RND_NEAREST_EVEN;
+  return WAFER_CTC_STATUS_OK;
+}
+
+static void wafer_ctc_fill_output(void) {
+  volatile uint8_t *output =
+      (volatile uint8_t *)(void *)get_spm_memory_mapping(WAFER_CTC_SPM_OUTPUT);
+  for (uint32_t index = 0; index < WAFER_CTC_SLOT_BYTES; ++index)
+    output[index] = WAFER_CTC_SLOT_CANARY;
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
+}
+
+static uint64_t wafer_ctc_guard_mismatches(const WaferCTCCase *selected) {
+  const volatile uint8_t *output =
+      (const volatile uint8_t *)(const void *)get_spm_memory_mapping(
+          WAFER_CTC_SPM_OUTPUT);
+  uint64_t mismatches = 0;
+  for (uint32_t index = 0; index < WAFER_CTC_BODY_OFFSET; ++index)
+    mismatches += output[index] != WAFER_CTC_SLOT_CANARY;
+  for (uint32_t index = WAFER_CTC_BODY_OFFSET + selected->output_span;
+       index < WAFER_CTC_SLOT_BYTES; ++index)
+    mismatches += output[index] != WAFER_CTC_SLOT_CANARY;
+  return mismatches;
+}
+
+#define WAFER_CTC_DISPATCH(OPCODE, SYMBOL)                                     \
+  case OPCODE:                                                                 \
+    SYMBOL(source, destination, selected->elements, 0U,                        \
+           selected->rounding_mode);                                           \
+    break
+
+static uint32_t wafer_ctc_issue(const WaferCTCCase *selected) {
+  uint64_t source = WAFER_CTC_SPM_INPUT + WAFER_CTC_BODY_OFFSET;
+  uint64_t destination = WAFER_CTC_SPM_OUTPUT + WAFER_CTC_BODY_OFFSET;
+  switch (selected->opcode) {
+    WAFER_CTC_DISPATCH(139U, wafer_tx81_convert_int8_fp16);
+    WAFER_CTC_DISPATCH(140U, wafer_tx81_convert_int8_bf16);
+    WAFER_CTC_DISPATCH(141U, wafer_tx81_convert_int8_fp32);
+    WAFER_CTC_DISPATCH(142U, wafer_tx81_convert_int8_tf32);
+    WAFER_CTC_DISPATCH(143U, wafer_tx81_convert_int16_fp16);
+    WAFER_CTC_DISPATCH(144U, wafer_tx81_convert_int16_bf16);
+    WAFER_CTC_DISPATCH(145U, wafer_tx81_convert_int16_fp32);
+    WAFER_CTC_DISPATCH(146U, wafer_tx81_convert_int16_tf32);
+    WAFER_CTC_DISPATCH(147U, wafer_tx81_convert_int32_fp16);
+    WAFER_CTC_DISPATCH(148U, wafer_tx81_convert_int32_bf16);
+    WAFER_CTC_DISPATCH(149U, wafer_tx81_convert_int32_fp32);
+    WAFER_CTC_DISPATCH(150U, wafer_tx81_convert_int32_tf32);
+    WAFER_CTC_DISPATCH(151U, wafer_tx81_convert_bf16_int8);
+    WAFER_CTC_DISPATCH(152U, wafer_tx81_convert_bf16_int16);
+    WAFER_CTC_DISPATCH(153U, wafer_tx81_convert_bf16_int32);
+    WAFER_CTC_DISPATCH(154U, wafer_tx81_convert_bf16_fp16);
+    WAFER_CTC_DISPATCH(155U, wafer_tx81_convert_bf16_fp32);
+    WAFER_CTC_DISPATCH(156U, wafer_tx81_convert_bf16_tf32);
+    WAFER_CTC_DISPATCH(157U, wafer_tx81_convert_fp16_int8);
+    WAFER_CTC_DISPATCH(158U, wafer_tx81_convert_fp16_int16);
+    WAFER_CTC_DISPATCH(159U, wafer_tx81_convert_fp16_int32);
+    WAFER_CTC_DISPATCH(160U, wafer_tx81_convert_fp16_bf16);
+    WAFER_CTC_DISPATCH(161U, wafer_tx81_convert_fp16_fp32);
+    WAFER_CTC_DISPATCH(162U, wafer_tx81_convert_fp16_tf32);
+    WAFER_CTC_DISPATCH(163U, wafer_tx81_convert_fp32_int8);
+    WAFER_CTC_DISPATCH(164U, wafer_tx81_convert_fp32_int16);
+    WAFER_CTC_DISPATCH(165U, wafer_tx81_convert_fp32_int32);
+    WAFER_CTC_DISPATCH(166U, wafer_tx81_convert_fp32_fp16);
+    WAFER_CTC_DISPATCH(167U, wafer_tx81_convert_fp32_bf16);
+    WAFER_CTC_DISPATCH(168U, wafer_tx81_convert_fp32_tf32);
+    WAFER_CTC_DISPATCH(169U, wafer_tx81_convert_tf32_int8);
+    WAFER_CTC_DISPATCH(170U, wafer_tx81_convert_tf32_int16);
+    WAFER_CTC_DISPATCH(171U, wafer_tx81_convert_tf32_int32);
+    WAFER_CTC_DISPATCH(172U, wafer_tx81_convert_tf32_fp16);
+    WAFER_CTC_DISPATCH(173U, wafer_tx81_convert_tf32_bf16);
+    WAFER_CTC_DISPATCH(174U, wafer_tx81_convert_tf32_fp32);
+  default:
+    return 0U;
+  }
+  wafer_tx81_local_fence();
+  return 1U;
+}
+
+#undef WAFER_CTC_DISPATCH
+
+static void wafer_ctc_init_record(volatile uint64_t *record, uint32_t status) {
+  for (uint32_t index = 0; index < WAFER_CTC_RECORD_WORDS; ++index)
+    record[index] = 0;
+  record[WAFER_CTC_REC_MAGIC] = WAFER_CTC_RECORD_MAGIC;
+  record[WAFER_CTC_REC_SCHEMA_AND_WORDS] =
+      ((uint64_t)WAFER_CTC_SCHEMA << 32) | WAFER_CTC_RECORD_WORDS;
+  record[WAFER_CTC_REC_STATUS] = status;
+  record[WAFER_CTC_REC_OUTPUT_DDR_OFFSET] = WAFER_CTC_OUTPUT_DDR_OFFSET;
+  record[WAFER_CTC_REC_SLOT_BYTES] = WAFER_CTC_SLOT_BYTES;
+  record[WAFER_CTC_REC_BODY_OFFSET] = WAFER_CTC_BODY_OFFSET;
+  record[WAFER_CTC_REC_RECORD_GUARD] = WAFER_CTC_RECORD_GUARD;
+}
+
+__attribute__((visibility("hidden"))) void
+wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
+                                    uint64_t output_ddr) {
+  wafer_ctc_cache_range(request_ddr, WAFER_CTC_RESOURCE_BYTES, 1U);
+  wafer_ctc_cache_range(payload_ddr, WAFER_CTC_RESOURCE_BYTES, 1U);
+  const volatile uint64_t *request =
+      (const volatile uint64_t *)(uintptr_t)request_ddr;
+  volatile uint64_t *record = (volatile uint64_t *)(uintptr_t)output_ddr;
+  WaferCTCCase selected = {0};
+  uint32_t status = wafer_ctc_decode(request, &selected);
+  wafer_ctc_init_record(record, status);
+  if (status == WAFER_CTC_STATUS_OK) {
+    record[WAFER_CTC_REC_CASE] = selected.case_id;
+    record[WAFER_CTC_REC_OPCODE] = selected.opcode;
+    record[WAFER_CTC_REC_SRC_TYPE] = selected.source_type;
+    record[WAFER_CTC_REC_DST_TYPE] = selected.destination_type;
+    record[WAFER_CTC_REC_ELEMENTS] = selected.elements;
+    record[WAFER_CTC_REC_INPUT_BYTES] = selected.input_bytes;
+    record[WAFER_CTC_REC_RESULT_BYTES] = selected.result_bytes;
+    record[WAFER_CTC_REC_OUTPUT_SPAN] = selected.output_span;
+    record[WAFER_CTC_REC_ROUNDING] = selected.rounding_mode;
+    record[WAFER_CTC_REC_SAMPLE] = request[WAFER_CTC_REQ_SAMPLE];
+    record[WAFER_CTC_REC_REQUEST_GUARD] = request[WAFER_CTC_REQ_GUARD];
+
+    wafer_tx81_rdma(payload_ddr, WAFER_CTC_SPM_INPUT, WAFER_CTC_SLOT_BYTES,
+                    WAFER_CTC_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+    wafer_tx81_local_fence();
+    wafer_ctc_fill_output();
+    WaferCTCPMU before = wafer_ctc_read_pmu();
+    if (wafer_ctc_issue(&selected) == 0U) {
+      status = WAFER_CTC_STATUS_EXECUTE_FAILED;
+    } else {
+      WaferCTCPMU after = wafer_ctc_read_pmu();
+      record[WAFER_CTC_REC_CT_INST_DELTA] =
+          (uint32_t)(after.instructions - before.instructions);
+      record[WAFER_CTC_REC_CT_EXEC_DELTA] = after.execution - before.execution;
+      record[WAFER_CTC_REC_CT_BLOCKING_DELTA] =
+          (uint32_t)(after.blocking - before.blocking);
+      record[WAFER_CTC_REC_OUTPUT_GUARD_MISMATCHES] =
+          wafer_ctc_guard_mismatches(&selected);
+      wafer_tx81_wdma(WAFER_CTC_SPM_OUTPUT,
+                      output_ddr + WAFER_CTC_OUTPUT_DDR_OFFSET,
+                      WAFER_CTC_SLOT_BYTES, WAFER_CTC_SLOT_BYTES, 0, 0, 0, 1, 1,
+                      1, Fmt_UINT8);
+      wafer_tx81_local_fence();
+    }
+    record[WAFER_CTC_REC_STATUS] = status;
+  }
+  wafer_ctc_cache_range(output_ddr, WAFER_CTC_RECORD_WORDS * sizeof(uint64_t),
+                        0U);
+}

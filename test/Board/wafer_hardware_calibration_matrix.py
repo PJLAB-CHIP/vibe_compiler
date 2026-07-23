@@ -57,6 +57,22 @@ CT_VECTOR_CALIBRATION = (
     "test/Board/Inputs/wafer_ct_vector_calibration_probe.c",
     "test/Board/Inputs/wafer_ct_vector_calibration_probe_protocol.h",
 )
+CT_CONVERT_CALIBRATION = (
+    "test/Board/wafer_board_ct_convert_calibration_probe_test.py",
+    "test/Board/wafer_ct_convert_calibration_catalog.py",
+    "test/Board/Inputs/wafer_ct_convert_calibration_probe.c",
+    "test/Board/Inputs/wafer_ct_convert_calibration_probe_protocol.h",
+)
+CT_OPCODE_DISPOSITIONS = (
+    "test/Board/wafer_ct_opcode_disposition_catalog.py",
+    "test/Board/wafer_ct_opcode_disposition_catalog_test.py",
+)
+DATAMOVE_CALIBRATION = (
+    "test/Board/wafer_board_datamove_calibration_probe_test.py",
+    "test/Board/wafer_datamove_calibration_catalog.py",
+    "test/Board/Inputs/wafer_datamove_calibration_probe.c",
+    "test/Board/Inputs/wafer_datamove_calibration_probe_protocol.h",
+)
 PHYSICAL_TENSOR_CODEC = (
     "test/Board/wafer_physical_tensor_codec.py",
     "test/Board/wafer_physical_tensor_codec_test.py",
@@ -73,9 +89,19 @@ SPM_CALIBRATION = (
     "test/Board/Inputs/wafer_spm_calibration_probe.c",
     "test/Board/Inputs/wafer_spm_calibration_probe_protocol.h",
 )
+CACHE_COHERENCE_CALIBRATION = (
+    "test/Board/wafer_board_cache_coherence_calibration_probe_test.py",
+    "test/Board/wafer_cache_coherence_calibration_catalog.py",
+    "test/Board/Inputs/wafer_cache_coherence_calibration_probe.c",
+    "test/Board/Inputs/wafer_cache_coherence_calibration_probe_protocol.h",
+)
 DTE_NCC = (
     "test/Board/wafer_board_dte_ncc_execution_probe_test.py",
     "test/Board/Inputs/wafer_dte_ncc_execution_probe.c",
+)
+TRANSPORT_PMU_CALIBRATION = (
+    "test/Board/wafer_transport_pmu_calibration_catalog.py",
+    "test/Board/wafer_transport_pmu_calibration_catalog_test.py",
 )
 FULL_CARD_BARRIER = (
     "test/Board/wafer_board_full_card_barrier_probe_test.py",
@@ -131,48 +157,60 @@ CALIBRATION_DOMAINS = (
         "ct-numeric-form",
         "CT numeric/form",
         "rank-one-worker0",
-        "in-progress",
-        positive=INSTRUCTION_FAMILY + CT_VECTOR_CALIBRATION,
+        "ready",
+        positive=(
+            INSTRUCTION_FAMILY
+            + CT_VECTOR_CALIBRATION
+            + CT_CONVERT_CALIBRATION
+            + CT_OPCODE_DISPOSITIONS
+        ),
+        negative=CT_OPCODE_DISPOSITIONS,
         tests=(
             "wafer-instruction-family-catalog-python",
             "wafer-ct-vector-calibration-catalog-python",
+            "wafer-ct-convert-calibration-catalog-python",
+            "wafer-ct-opcode-disposition-catalog-python",
             "wafer-runtime-ct-vector-calibration-probe-no-card",
-        ),
-        remaining=(
-            "opcode 111..186 disposition and executable/deferred closure",
-            "convert special-value and deterministic-rounding held-out rows",
+            "wafer-runtime-ct-convert-calibration-probe-no-card",
         ),
     ),
     _domain(
         "instruction-physical-layout",
         "instruction × physical layout",
         "rank-one-worker0",
-        "in-progress",
+        "ready",
         positive=(
             INSTRUCTION_FAMILY
             + CT_VECTOR_CALIBRATION
             + PHYSICAL_TENSOR_CODEC
             + NE_CALIBRATION
+            + DATAMOVE_CALIBRATION
+        ),
+        negative=(
+            "test/Board/wafer_datamove_calibration_catalog.py",
+            "test/Board/wafer_datamove_calibration_catalog_test.py",
         ),
         tests=(
             "wafer-physical-tensor-codec-python",
             "wafer-ne-calibration-catalog-python",
+            "wafer-datamove-calibration-catalog-python",
             "wafer-runtime-ne-calibration-probe-no-card",
-        ),
-        remaining=(
-            "CT Tensor-to-Cx/NCx explicit materialization representatives",
-            "typed illegal direct-layout negative gates",
+            "wafer-runtime-datamove-calibration-probe-no-card",
         ),
     ),
     _domain(
         "datamove-layout",
         "DataMove/layout",
         "rank-one-worker0",
-        "in-progress",
-        positive=INSTRUCTION_FAMILY,
-        remaining=(
-            "concat/broadcast/transform/mask inventory and oracles",
-            "device dispatch and no-card link closure",
+        "ready",
+        positive=INSTRUCTION_FAMILY + DATAMOVE_CALIBRATION,
+        negative=(
+            "test/Board/wafer_datamove_calibration_catalog.py",
+            "test/Board/wafer_datamove_calibration_catalog_test.py",
+        ),
+        tests=(
+            "wafer-datamove-calibration-catalog-python",
+            "wafer-runtime-datamove-calibration-probe-no-card",
         ),
     ),
     _domain(
@@ -223,9 +261,16 @@ CALIBRATION_DOMAINS = (
         "tdma-movement-variants",
         "TDMA movement variants",
         "rank-one-worker0",
-        "in-progress",
-        positive=INSTRUCTION_FAMILY + NCC_EXECUTION,
-        remaining=("all public movement kind dispositions and oracles",),
+        "ready",
+        positive=INSTRUCTION_FAMILY + NCC_EXECUTION + DATAMOVE_CALIBRATION,
+        negative=(
+            "test/Board/wafer_datamove_calibration_catalog.py",
+            "test/Board/wafer_datamove_calibration_catalog_test.py",
+        ),
+        tests=(
+            "wafer-datamove-calibration-catalog-python",
+            "wafer-runtime-datamove-calibration-probe-no-card",
+        ),
     ),
     _domain(
         "spm-capacity-reservation",
@@ -257,9 +302,14 @@ CALIBRATION_DOMAINS = (
         "ddr-cache-coherence",
         "DDR/cache/coherence",
         "rank-one-and-full-card",
-        "in-progress",
-        positive=DTE_NCC + NCC_EXECUTION,
-        remaining=("complete four-direction visibility matrix",),
+        "ready",
+        positive=(
+            DTE_NCC + NCC_EXECUTION + CACHE_COHERENCE_CALIBRATION
+        ),
+        tests=(
+            "wafer-cache-coherence-calibration-catalog-python",
+            "wafer-runtime-cache-coherence-calibration-probe-no-card",
+        ),
     ),
     _domain(
         "queue-shape-submission",
@@ -388,9 +438,13 @@ CALIBRATION_DOMAINS = (
         "transport-pmu-basis",
         "DTE/SPM/TMNOC PMU",
         "full-card-and-rank-one",
-        "in-progress",
-        positive=DTE_NCC,
-        remaining=("TMNOC scope/unit correlation and held-out sweep",),
+        "ready",
+        positive=DTE_NCC + TRANSPORT_PMU_CALIBRATION,
+        negative=TRANSPORT_PMU_CALIBRATION,
+        tests=(
+            "wafer-transport-pmu-calibration-catalog-python",
+            "wafer-runtime-dte-ncc-execution-probe-no-card",
+        ),
     ),
     _domain(
         "scalar-csr-ordinary-issue",

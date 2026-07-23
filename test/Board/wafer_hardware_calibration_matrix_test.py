@@ -70,11 +70,22 @@ def main() -> int:
         assert domain.preparation in allowed_states
         assert domain.execution_scope
         assets = domain.positive_assets + domain.negative_assets
+        assert domain.no_card_tests, (
+            f"{domain.key}: preparation requires at least one no-card gate"
+        )
         if domain.preparation == "ready":
             assert assets
             assert not domain.remaining_preparation
         else:
             assert domain.remaining_preparation
+        if domain.execution_scope != "static-negative":
+            assert domain.positive_assets, (
+                f"{domain.key}: executable domain has no positive asset"
+            )
+            assert any(
+                "/wafer_board_" in relative
+                for relative in domain.positive_assets
+            ), f"{domain.key}: executable domain has no board runner"
         for relative in assets:
             path = repo / relative
             assert path.is_file(), f"{domain.key}: missing asset {relative}"
@@ -97,14 +108,7 @@ def main() -> int:
     incomplete = tuple(
         domain.key for domain in domains if domain.preparation != "ready"
     )
-    assert incomplete == (
-        "ct-numeric-form",
-        "instruction-physical-layout",
-        "datamove-layout",
-        "tdma-movement-variants",
-        "ddr-cache-coherence",
-        "transport-pmu-basis",
-    )
+    assert incomplete == ()
     print(
         "wafer_hardware_calibration_matrix_test: "
         f"rows={len(domains)} incomplete={len(incomplete)} passed"
