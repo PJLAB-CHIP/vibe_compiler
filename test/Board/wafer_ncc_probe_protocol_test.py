@@ -138,6 +138,66 @@ class ProtocolTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "three-lane"):
             invalid.request_words()
 
+    def test_worker_catalog_routes_and_joins_exact_participants(self) -> None:
+        expected = {
+            "ct-worker1-raw-single": (
+                (1,),
+                protocol.Schedule.SERIAL,
+                0b010,
+                (0,),
+            ),
+            "ct-worker2-raw-single": (
+                (2,),
+                protocol.Schedule.SERIAL,
+                0b100,
+                (0,),
+            ),
+            "ct-workers012-disjoint-r1-window": (
+                (0, 1, 2),
+                protocol.Schedule.WINDOW,
+                0b111,
+                (0, 4, 8),
+            ),
+        }
+        self.assertEqual(
+            {case.name for case in execution_probe.V2_WORKER_CASES},
+            set(expected),
+        )
+        self.assertTrue(
+            all(
+                case in execution_probe.CALIBRATION_CASES
+                for case in execution_probe.V2_WORKER_CASES
+            )
+        )
+        for case in execution_probe.V2_WORKER_CASES:
+            workers, schedule, wait_mask, issue_order = expected[case.name]
+            plan = case.plan
+            words = plan.request_words()
+            self.assertEqual(
+                tuple(item.worker for item in plan.lanes), workers
+            )
+            self.assertEqual(
+                tuple(item.engine for item in plan.lanes),
+                (protocol.Engine.CT,) * len(workers),
+            )
+            self.assertTrue(
+                all(
+                    item.issue_mode == protocol.IssueMode.RAW
+                    and item.element_format == execution_probe.FMT_FP16
+                    and item.transfer_bytes == 4096
+                    for item in plan.lanes
+                )
+            )
+            self.assertEqual(plan.rounds, 1)
+            self.assertEqual(plan.schedule, schedule)
+            self.assertEqual(plan.wait_kind, protocol.WaitKind.BY_WORKER)
+            self.assertEqual(plan.wait_worker_mask, wait_mask)
+            self.assertEqual(
+                words[protocol.REQ["WAIT_WORKER_MASK"]], wait_mask
+            )
+            self.assertEqual(len(plan.issue_identities()), len(workers))
+            self.assertEqual(plan.issue_order(), issue_order)
+
     def test_typed_hazard_catalog_and_composition_golden(self) -> None:
         self.assertEqual(len(execution_probe.V2_HAZARD_CASES), 24)
         execution_probe.validate_hazard_selection(

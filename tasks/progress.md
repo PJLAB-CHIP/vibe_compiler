@@ -109,6 +109,12 @@ serial/window pairwise-excess median均为0，四个含TDMA pair在r2也均为0�
 heartbeat均通过、卡健康且未调用reset/power。当前profile和current workload下没有pair满足稳定正overlap门禁；
 这不证明硬件永远不能并行，但compiler对所有pair默认保守串行。RAW hazard暂不适用，只有未来对照稳定达到
 median正overlap后才重新执行。
+CT worker1/2 routing与三worker matching join也已由低深度4KiB FP16 Add闭合：worker1/2单case的
+`inter_type`分别为`0x100/0x200`，matching `bywork` mask为`0b010/0b100`，对应worker CT instruction
+delta均为1；worker0/1/2 disjoint join使用mask `0b111`，三个worker CT delta各为1。三个case的
+boundary/final result与guard均正确、blocking为0，前后Add heartbeat通过。当前将CT三worker routing、
+matching `bywork`及disjoint join记为`board-observed`；跨worker并行、仲裁、同地址行为与
+default/local-fence跨worker scope仍保持保守`unknown/excluded`。
 
 Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
 现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的

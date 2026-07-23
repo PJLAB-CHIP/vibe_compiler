@@ -634,6 +634,33 @@ V2_SINGLE_CASES = tuple(
     )
     for engine in V2_ENGINES
 )
+V2_WORKER_CASES = (
+    v2_case(
+        "ct-worker1-raw-single",
+        (v2_lane(ncc_protocol.Engine.CT, worker=1),),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x6101,
+    ),
+    v2_case(
+        "ct-worker2-raw-single",
+        (v2_lane(ncc_protocol.Engine.CT, worker=2),),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x6102,
+    ),
+    v2_case(
+        "ct-workers012-disjoint-r1-window",
+        (
+            v2_lane(ncc_protocol.Engine.CT, worker=0),
+            v2_lane(ncc_protocol.Engine.CT, worker=1),
+            v2_lane(ncc_protocol.Engine.CT, worker=2),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x6112,
+    ),
+)
 V2_MULTI_ISSUE_CASES = tuple(
     v2_case(
         (
@@ -839,6 +866,7 @@ FOCUSED_CASES = V2_SINGLE_CASES + (
 )
 CALIBRATION_CASES = (
     V2_SINGLE_CASES
+    + V2_WORKER_CASES
     + V2_MULTI_ISSUE_CASES
     + V2_PAIR_CASES
     + V2_PIPELINE_CASES
@@ -873,6 +901,47 @@ def validate_no_card_protocol_cases() -> None:
         plan.request_words()
     if len(V2_SINGLE_CASES) != 5 or len(V2_MULTI_ISSUE_CASES) != 5:
         raise RuntimeError("generic catalog lost a single/multi-issue case")
+    worker_specs = {
+        "ct-worker1-raw-single": (
+            (1,),
+            ncc_protocol.Schedule.SERIAL,
+            0b010,
+        ),
+        "ct-worker2-raw-single": (
+            (2,),
+            ncc_protocol.Schedule.SERIAL,
+            0b100,
+        ),
+        "ct-workers012-disjoint-r1-window": (
+            (0, 1, 2),
+            ncc_protocol.Schedule.WINDOW,
+            0b111,
+        ),
+    }
+    if {case.name for case in V2_WORKER_CASES} != set(worker_specs):
+        raise RuntimeError("generic catalog lost a worker/join case")
+    for case in V2_WORKER_CASES:
+        plan = case.plan
+        workers, schedule, wait_mask = worker_specs[case.name]
+        if (
+            tuple(lane.worker for lane in plan.lanes) != workers
+            or any(
+                lane.engine != ncc_protocol.Engine.CT
+                or lane.issue_mode != ncc_protocol.IssueMode.RAW
+                or lane.element_format != FMT_FP16
+                or lane.transfer_bytes != 4096
+                for lane in plan.lanes
+            )
+            or plan.rounds != 1
+            or plan.schedule != schedule
+            or plan.wait_kind != ncc_protocol.WaitKind.BY_WORKER
+            or plan.wait_worker_mask != wait_mask
+            or len(plan.issue_identities()) != len(workers)
+        ):
+            raise RuntimeError(
+                f"{case.name}: worker/join protocol is malformed"
+            )
+        plan.request_words()
     for engine, depth in V2_DOCUMENTED_QUEUE_DEPTHS.items():
         issue_counts = {
             len(case.plan.issue_identities())

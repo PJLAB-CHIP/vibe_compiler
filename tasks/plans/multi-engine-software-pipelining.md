@@ -150,6 +150,11 @@ Pipeline position:
   workload上永远不能并行。本轮两次RAW exact/partial/adjacent选择都在发射hazard前被disjoint资格门禁拦截，
   因而没有执行hazard。整批前后Add heartbeat均通过、卡健康且未调用reset/power。scheduler当前对所有pair
   保守串行；只有未来对照稳定取得median正overlap，才恢复对应hazard校准和并行候选。
+- CT worker1/2各一个4KiB FP16 Add以及worker0/1/2各一个CT的disjoint join均已通过。单worker
+  `inter_type=0x100/0x200`、matching `bywork` mask为`0b010/0b100`，对应worker instruction delta均为1；
+  三worker join使用mask `0b111`，三个worker的CT delta各为1。全部boundary/final result与guard正确、
+  blocking为0，前后Add heartbeat通过。该证据闭合CT worker routing、matching `bywork`和disjoint join
+  正确性，不外推跨worker并行、仲裁或default/local-fence跨worker scope。
 - 旧single-engine CT issue limit 5连续三次完整正确且`control_after_issue=0x100`，issue limit 6第一次
   timeout，随后known-good Add也timeout；同时`tsm_smi`仍显示idle。但旧probe把所有`TsmNew` builder保留到
   case结束，并在每次issue后插入多组MMIO观察，故timeout不能归因硬件queue或静态depth。

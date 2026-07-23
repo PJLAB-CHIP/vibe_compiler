@@ -190,12 +190,12 @@ measurement basis仍为`unknown`。
 | SPM alignment/bank | 256B legality、非1024-bit访问代价、bank/color映射 | disjoint offset sweep，固定长度/engine pair/serial control | 09 placement与06 cost | 256B静态；exact bank mapping `unknown` |
 | DDR/cache/coherence | host H2D、Kcore cache、DMA completion和host publication是不同域 | Kcore read前invalidate对照、DMA round-trip、matching drain后D2H | 09/12/14/15 | stale-cache机制`calibrated`；完整direction matrix待闭合 |
 | queue shape与连续提交边界 | register/header中CT/NE/RDMA/WDMA静态depth为6、TDMA为4；该数值描述pending storage，不是完整lifetime总提交上限，active occupancy和full行为不能由形状或总提交数推出 | 普通calibration只跑1/2/4（TDMA 1/2）；隔离manual gate先验证恰好`D`，再经显式manual授权执行typed tight `D+1`，均为单engine/case/sample、前后Add heartbeat和完整count/output/guard；禁止任意更深提交 | 10/11/16 | CT/NE/RDMA/WDMA exact `D=6`与TDMA exact `D=4`的submission/completion/count/output/guard均为当前profile `board-observed`；CT tight `D+1=7`也为`board-observed`，但window后control为`0x100`且blocking为0，只证明总提交可超过depth；其它engine的`D+1`及所有engine的occupancy/full/backpressure仍`unknown` |
-| worker scope | worker0/1/2 routing、default wait和`bywork` scope | CT三worker；matching wait后、safety drain前读CSR/result | 10/11/14/15 | worker0 `board-observed`；worker1/2 wait scope `unknown` |
+| worker scope | worker0/1/2 routing、default wait和`bywork` scope | CT三worker；matching wait后、safety drain前读CSR/result | 10/11/14/15 | CT worker0/1/2 routing与matching `bywork`均`board-observed`；default wait跨worker scope仍`unknown` |
 | cross-engine overlap | 五类engine全部10个pair的可重叠性和共享资源 | disjoint backlog2 + serial control；仅在不触及任一engine full-depth时增加backlog4；`Ea+Eb-FU`重复正值 | 06/10/11/16 cost/scheduling | 旧CT+RDMA正overlap降级为`historical/inconclusive`；本轮两个方向r4对照median均为0，其余pair当前workload也未观察到PMU overlap；不外推成硬件不支持并行，compiler全部串行 |
 | address dependency | busytable对RAW/WAR/WAW/RAR及exact/partial/adjacent/stride envelope的处理 | 仅对已证实可重叠pair做composition golden和PMU对照 | 09-11 legality/scheduling | 显式operand/range schema与composition oracle已通过no-card；本轮两次RAW选择均在hazard发射前被资格门禁拦截，板端hazard未执行；当前暂不适用 |
 | issue overhead | wrapper构包/heap间隔对短window的影响，prepared issue是否值得materialize | 同packet序列wrapper与prebuilt对照 | 06/14 candidate/lowering | 旧RDMA+CT差异为`historical/inconclusive`，本轮未复现稳定正overlap，不构成新IR语义或收益结论 |
-| local completion | default wait、`bywork`、local fence的范围和visibility | matching wait后立即CSR/Kcore oracle，再做safety drain | 09-11/15 | worker0正向`board-observed`；跨worker`unknown` |
-| cross-worker join | 多worker并行、仲裁与地址依赖是否跨worker | disjoint w0/w1/w2，逐workerjoin；同地址不做无序正向 | 10/11/15 | `unknown`；跨worker同地址无completion为`excluded` |
+| local completion | default wait、`bywork`、local fence的范围和visibility | matching wait后立即CSR/Kcore oracle，再做safety drain | 09-11/15 | worker0/1/2 matching `bywork`正向`board-observed`；default/local-fence跨worker scope仍`unknown` |
+| cross-worker join | 多worker并行、仲裁与地址依赖是否跨worker | disjoint w0/w1/w2，逐workerjoin；同地址不做无序正向 | 10/11/15 | 三worker disjoint CT matching join `board-observed`；并行性、仲裁与同地址行为仍`unknown/excluded` |
 | Direct DTE | source read、destination visibility、participant、channel/FSM、terminal status | 16-rank receiver-first；producer→DTE、DTE→consumer和disjoint顺序 | 13-16 | 四个有序case `board-observed`；sender overlap `unknown` |
 | multi-tile arrival | full-card/subgroup barrier的participant与复用合同 | production 16-rank正向；缺participant/错误坐标不测试 | 13/15 | full-card production路径`board-observed`；通用subgroup `unknown` |
 | host launch/runtime | kernel/model launch、resource staging/readback、timeout、failure cleanup | 同package schema、exact output、terminal/cleanup | 14-16 | 已有kernel/model与16-rank路径`board-observed/supported`，按owner证据解释 |
@@ -231,6 +231,13 @@ measurement basis仍为`unknown`。
   没有执行hazard。整批前后known-good Add heartbeat均通过、卡健康，且未调用reset或power接口。当前profile
   下compiler对所有engine pair保守串行；只有未来同方向对照稳定达到median正overlap才重新开放对应hazard
   校准与并行候选。
+- CT在worker 1和worker 2各执行一个4KiB FP16 Add；packet `inter_type`分别编码为`0x100/0x200`，
+  matching `TsmWaitfinish_bywork` mask分别为`0b010/0b100`，对应worker CT instruction delta均为1，
+  CT/full execution delta分别为`78/79` cycles。三worker disjoint join随后以mask `0b111`执行，
+  worker0/1/2 CT instruction delta各为1，CT/full execution delta均为238 cycles。三个case在
+  safety drain前的boundary result/guard及final result/guard均无mismatch，blocking均为0，前后Add
+  heartbeat通过；这闭合当前profile的CT worker routing、matching `bywork`和disjoint join正确性，
+  不证明跨worker并行、仲裁或default/local-fence跨worker scope。
 - 旧single-engine CT边界样本中，issue limit 5连续三次完整正确且
   `control_after_issue=0x100`，issue limit 6第一次timeout，随后known-good Add也timeout。但该probe保留全部
   `TsmNew` builder，并在相邻issue之间读取多组MMIO，故不能从该timeout判断硬件queue depth或安全提交上限。
