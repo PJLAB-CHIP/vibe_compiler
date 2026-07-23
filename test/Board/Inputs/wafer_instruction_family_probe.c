@@ -226,6 +226,9 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
   case WAFER_IFP_CASE_GEMM_F16:
     wafer_tx81_gemm(input_a, input_b, output, 1, 16, 16, 1, Fmt_FP16);
     break;
+  case WAFER_IFP_CASE_GEMM_BF16:
+    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 16, 1, Fmt_BF16);
+    break;
   case WAFER_IFP_CASE_TDMA_PAD_F16:
     wafer_tx81_tdma_pad(input_a, output, 1, 2, 2, 64, 1, 4, 4, 64, 1, 1, 1,
                         1, Fmt_FP16);

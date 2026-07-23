@@ -385,11 +385,17 @@ def _select(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
     )
 
 
-def _gemm() -> tuple[bytes, bytes, bytes]:
+def _gemm(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
+    if case.symbol not in ("GEMM_F16", "GEMM_BF16"):
+        raise RuntimeError(f"{case.name}: unknown GEMM kind")
     lhs = _repeat((1.0, 2.0, 3.0, 4.0), 16)
     lhs_physical = lhs + [0.0] * (128 - len(lhs))
     rhs = [1.0 if row == column else 0.0 for row in range(16) for column in range(16)]
-    return _f16(lhs_physical), _f16(rhs), _f16(lhs)
+    return (
+        _fp(case.dtype_name, lhs_physical),
+        _fp(case.dtype_name, rhs),
+        _fp(case.dtype_name, lhs),
+    )
 
 
 def _pad() -> tuple[bytes, bytes, bytes]:
@@ -510,7 +516,7 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
     elif case.family_name == "CT_SELECT_COMPOSITE":
         input_a, input_b, expected = _select(case)
     elif case.family_name == "NE_GEMM":
-        input_a, input_b, expected = _gemm()
+        input_a, input_b, expected = _gemm(case)
     elif case.family_name == "TDMA_PAD":
         input_a, input_b, expected = _pad()
     elif case.family_name == "TDMA_IMG2COL":
@@ -538,7 +544,7 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
         false_values = _repeat((-1.0, -2.0, -3.0, -4.0))
         output_seed = _fp(case.dtype_name, false_values)
     elif case.family_name == "NE_GEMM":
-        output_seed = _f16(_repeat((-13.0,), 128))
+        output_seed = _fp(case.dtype_name, _repeat((-13.0,), 128))
     else:
         seed_elements = case.output_span // 2
         output_seed = _fp(

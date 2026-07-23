@@ -115,7 +115,7 @@ delta均为1；worker0/1/2 disjoint join使用mask `0b111`，三个worker CT del
 boundary/final result与guard均正确、blocking为0，前后Add heartbeat通过。当前将CT三worker routing、
 matching `bywork`及disjoint join记为`board-observed`；跨worker并行、仲裁、同地址行为与
 default/local-fence跨worker scope仍保持保守`unknown/excluded`。
-instruction-family typed catalog的34个safe case也已全部逐个串行上板通过，覆盖f16/bf16 elementwise、
+instruction-family typed catalog的35个safe case也已全部逐个串行上板通过，覆盖f16/bf16 elementwise、
 convert、reduce、select composite、f16 NE GEMM、f16 TDMA Pad与f16 peripheral ArgMax/ArgMin composite
 writeback、f16 PoolMax、peripheral LUT16 raw-offset lookup，以及f16 TDMA Img2Col；每个case均有精确bit
 oracle、SPM guard、
@@ -133,6 +133,9 @@ Img2Col使用`[1,3,3,64]`、2x2 kernel、1x1 stride和零padding，vendor destin
 `[1,4,4,64]`按`ky,kx,oh,ow,c`展开；1024个FP16结果和2048B physical span/guard全部通过。compiler
 verifier已同步为`kernel_strides=[Kx,Ky,Sx,Sy]`及destination
 `[N,Kx*Ky,outH*outW,C]`，并用非对称非1x1正反例和完整target ABI lowering golden闭合。
+NE BF16 1x16x16 identity GEMM也已通过：32B logical result逐bit正确，256B physical output span和
+suffix guard均正确；该结果只闭合BF16 format、当前normal/normal layout与identity数值，不外推累加舍入、
+transpose或tail。
 
 Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
 现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的

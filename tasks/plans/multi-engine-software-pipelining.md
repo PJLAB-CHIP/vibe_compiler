@@ -155,7 +155,7 @@ Pipeline position:
   三worker join使用mask `0b111`，三个worker的CT delta各为1。全部boundary/final result与guard正确、
   blocking为0，前后Add heartbeat通过。该证据闭合CT worker routing、matching `bywork`和disjoint join
   正确性，不外推跨worker并行、仲裁或default/local-fence跨worker scope。
-- instruction-family catalog的34个safe case已全部逐个串行上板并通过typed bit oracle、SPM guard、
+- instruction-family catalog的35个safe case已全部逐个串行上板并通过typed bit oracle、SPM guard、
   terminal与cleanup，覆盖f16/bf16 elementwise、convert、reduce、select composite、f16 NE GEMM和
   f16 TDMA Pad、f16 TDMA Img2Col、f16 PoolMax、peripheral LUT16 raw-offset lookup，以及f16 peripheral
   ArgMax/ArgMin的value/index composite writeback。
@@ -170,6 +170,8 @@ Pipeline position:
   Img2Col以`[1,3,3,64]`、2x2 kernel、1x1 stride、零padding和kernel-major `[1,4,4,64]` destination
   闭合完整2048B exact output；compiler verifier和target ABI test已同步为
   `[Kx,Ky,Sx,Sy] -> [N,Kx*Ky,outH*outW,C]`，不再接受被1x1 case掩盖的旧shape关系。
+  NE BF16 1x16x16 identity GEMM的32B logical result、256B physical span与suffix guard也已闭合；
+  该case只作为BF16 format/current layout基线，不外推累加舍入、transpose或tail。
 - 旧single-engine CT issue limit 5连续三次完整正确且`control_after_issue=0x100`，issue limit 6第一次
   timeout，随后known-good Add也timeout；同时`tsm_smi`仍显示idle。但旧probe把所有`TsmNew` builder保留到
   case结束，并在每次issue后插入多组MMIO观察，故timeout不能归因硬件queue或静态depth。

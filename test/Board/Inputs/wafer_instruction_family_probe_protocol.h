@@ -150,7 +150,9 @@ enum WaferIFPDeferredReason {
   X(TDMA_IMG2COL_F16, 105, "tdma-img2col-f16", SAFE, TDMA_IMG2COL, F16,       \
     EXACT_BITS, REASON_NONE, 2048, 2048, 0)                                   \
   X(PERIPHERAL_LUT16_F16, 106, "peripheral-lut16-f16", SAFE, PERIPHERAL,      \
-    F16, EXACT_BITS, REASON_NONE, 256, 256, 0)
+    F16, EXACT_BITS, REASON_NONE, 256, 256, 0)                                 \
+  X(GEMM_BF16, 107, "ne-gemm-bf16", SAFE, NE_GEMM, BF16, EXACT_BITS,         \
+    REASON_NONE, 32, 256, 0)
 
 enum WaferIFPCase {
 #define WAFER_IFP_ENUM_CASE(SYMBOL, ID, SPELLING, DISPOSITION, FAMILY, DTYPE,  \

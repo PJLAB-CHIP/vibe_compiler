@@ -151,6 +151,67 @@ def validate_gemm_padding_domain() -> None:
             raise AssertionError("GEMM suffix guard mismatch was accepted")
 
 
+def validate_gemm_dtype_oracles() -> None:
+    values = tuple(float(value) for value in (1, 2, 3, 4) * 4)
+    identity = tuple(
+        1.0 if row == column else 0.0
+        for row in range(16)
+        for column in range(16)
+    )
+
+    def encode(dtype_name: str, source: tuple[float, ...]) -> bytes:
+        if dtype_name == "F16":
+            return struct.pack(f"<{len(source)}e", *source)
+        assert dtype_name == "BF16"
+        words = {
+            -13.0: 0xC150,
+            0.0: 0x0000,
+            1.0: 0x3F80,
+            2.0: 0x4000,
+            3.0: 0x4040,
+            4.0: 0x4080,
+        }
+        return struct.pack(
+            f"<{len(source)}H", *(words[value] for value in source)
+        )
+
+    for name, dtype_name in (
+        ("ne-gemm-f16", "F16"),
+        ("ne-gemm-bf16", "BF16"),
+    ):
+        case = catalog.CASES_BY_NAME[name]
+        assert case.is_safe
+        assert case.dtype_name == dtype_name
+        assert case.oracle_name == "EXACT_BITS"
+        assert case.result_bytes == 32
+        assert case.output_span == 256
+        assert case.aux_span == 0
+
+        built = catalog.build_case_payload(case)
+        lhs = encode(dtype_name, values)
+        lhs_begin = catalog.BODY_OFFSET
+        assert built.payload[lhs_begin : lhs_begin + len(lhs)] == lhs
+        assert built.payload[lhs_begin + len(lhs) : lhs_begin + 256] == bytes(
+            256 - len(lhs)
+        )
+
+        rhs = encode(dtype_name, identity)
+        rhs_begin = catalog.SLOT_BYTES + catalog.BODY_OFFSET
+        assert built.payload[rhs_begin : rhs_begin + len(rhs)] == rhs
+        assert (
+            built.expected_output_slot[
+                catalog.BODY_OFFSET : catalog.BODY_OFFSET + len(lhs)
+            ]
+            == lhs
+        )
+
+        seed = encode(dtype_name, (-13.0,) * 128)
+        output_begin = 2 * catalog.SLOT_BYTES + catalog.BODY_OFFSET
+        assert (
+            built.payload[output_begin : output_begin + len(seed)] == seed
+        )
+
+
 def validate_arg_extrema_composite_oracles() -> None:
     expected_cases = (
         ("peripheral-argmax-f16", max, 73, 100.0),
@@ -310,10 +371,10 @@ def _output_seed_padding() -> bytes:
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 34
-    assert len(catalog.CATALOG) == 36
+    assert len(catalog.SAFE_CASES) == 35
+    assert len(catalog.CATALOG) == 37
     assert {case.case_id for case in catalog.SAFE_CASES} == (
-        set(range(1, 30)) | {100, 101, 103, 105, 106}
+        set(range(1, 30)) | {100, 101, 103, 105, 106, 107}
     )
     assert {
         case.reason_name
@@ -382,6 +443,7 @@ def main() -> int:
     )
     validate_rounding_and_bit2fp_oracles()
     validate_gemm_padding_domain()
+    validate_gemm_dtype_oracles()
     validate_arg_extrema_composite_oracles()
     validate_pool_max_oracle()
     validate_img2col_oracle()
