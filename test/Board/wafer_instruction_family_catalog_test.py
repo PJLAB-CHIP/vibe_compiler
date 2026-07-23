@@ -305,18 +305,7 @@ def validate_pool_max_oracle() -> None:
 
 
 def validate_conv_oracle() -> None:
-    case = catalog.CASES_BY_NAME["conv-f16"]
-    assert case.is_safe
-    assert case.oracle_name == "EXACT_BITS"
-    assert case.result_bytes == 16
-    assert case.output_span == 256
-    assert case.aux_span == 0
-
-    built = catalog.build_case_payload(case)
-    source = struct.unpack_from(
-        "<12e", built.payload, catalog.BODY_OFFSET
-    )
-    assert source == (
+    source_values = (
         1.0,
         0.0,
         0.0,
@@ -330,12 +319,7 @@ def validate_conv_oracle() -> None:
         0.0,
         0.0,
     )
-    weight = struct.unpack_from(
-        "<16e",
-        built.payload,
-        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
-    )
-    assert weight == (
+    weight_values = (
         1.0,
         2.0,
         4.0,
@@ -353,22 +337,48 @@ def validate_conv_oracle() -> None:
         15.0,
         17.0,
     )
-    result = struct.unpack_from(
-        "<8e", built.expected_output_slot, catalog.BODY_OFFSET
-    )
-    assert result == (1.0, 16.0, 3.0, 11.0, 2.0, 32.0, 5.0, 13.0)
-    padding = struct.pack("<e", -13.0) * (
-        (case.output_span - case.result_bytes) // 2
-    )
-    assert built.expected_output_slot[
-        catalog.BODY_OFFSET + case.result_bytes :
-        catalog.BODY_OFFSET + case.output_span
-    ] == padding
-    assert built.expected_output_slot[
-        catalog.BODY_OFFSET + case.output_span :
-    ] == bytes([catalog.SLOT_CANARY]) * (
-        catalog.SLOT_BYTES - catalog.BODY_OFFSET - case.output_span
-    )
+    expected_values = (1.0, 16.0, 3.0, 11.0, 2.0, 32.0, 5.0, 13.0)
+
+    for name, dtype_name in (
+        ("conv-f16", "F16"),
+        ("conv-bf16", "BF16"),
+    ):
+        case = catalog.CASES_BY_NAME[name]
+        assert case.is_safe
+        assert case.dtype_name == dtype_name
+        assert case.oracle_name == "EXACT_BITS"
+        assert case.result_bytes == 16
+        assert case.output_span == 256
+        assert case.aux_span == 0
+
+        built = catalog.build_case_payload(case)
+        source = struct.unpack_from(
+            "<12H", built.payload, catalog.BODY_OFFSET
+        )
+        assert source == _encoded_words(dtype_name, source_values)
+        weight = struct.unpack_from(
+            "<16H",
+            built.payload,
+            catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+        )
+        assert weight == _encoded_words(dtype_name, weight_values)
+        result = struct.unpack_from(
+            "<8H", built.expected_output_slot, catalog.BODY_OFFSET
+        )
+        assert result == _encoded_words(dtype_name, expected_values)
+
+        padding_elements = (case.output_span - case.result_bytes) // 2
+        padding_word = _encoded_words(dtype_name, (-13.0,))[0]
+        padding = struct.pack("<H", padding_word) * padding_elements
+        assert built.expected_output_slot[
+            catalog.BODY_OFFSET + case.result_bytes :
+            catalog.BODY_OFFSET + case.output_span
+        ] == padding
+        assert built.expected_output_slot[
+            catalog.BODY_OFFSET + case.output_span :
+        ] == bytes([catalog.SLOT_CANARY]) * (
+            catalog.SLOT_BYTES - catalog.BODY_OFFSET - case.output_span
+        )
 
 
 def validate_img2col_oracle() -> None:
@@ -462,10 +472,11 @@ def _output_seed_padding() -> bytes:
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 38
-    assert len(catalog.CATALOG) == 39
+    assert len(catalog.SAFE_CASES) == 39
+    assert len(catalog.CATALOG) == 40
     assert {case.case_id for case in catalog.SAFE_CASES} == (
-        set(range(1, 30)) | {100, 101, 102, 103, 105, 106, 107, 108, 109}
+        set(range(1, 30))
+        | {100, 101, 102, 103, 105, 106, 107, 108, 109, 110}
     )
     assert {
         (case.symbol, case.reason_name)

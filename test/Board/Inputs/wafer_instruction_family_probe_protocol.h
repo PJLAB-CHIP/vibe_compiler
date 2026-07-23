@@ -156,7 +156,9 @@ enum WaferIFPDeferredReason {
   X(POOL_BF16, 108, "pool-bf16", SAFE, POOL, BF16, EXACT_BITS, REASON_NONE,  \
     256, 256, 0)                                                               \
   X(TDMA_IMG2COL_BF16, 109, "tdma-img2col-bf16", SAFE, TDMA_IMG2COL, BF16,   \
-    EXACT_BITS, REASON_NONE, 2048, 2048, 0)
+    EXACT_BITS, REASON_NONE, 2048, 2048, 0)                                    \
+  X(CONV_BF16, 110, "conv-bf16", SAFE, CONV, BF16, EXACT_BITS, REASON_NONE,  \
+    16, 256, 0)
 
 enum WaferIFPCase {
 #define WAFER_IFP_ENUM_CASE(SYMBOL, ID, SPELLING, DISPOSITION, FAMILY, DTYPE,  \

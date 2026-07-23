@@ -449,7 +449,7 @@ def _img2col(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
 
 
 def _conv(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
-    if case.symbol != "CONV_F16":
+    if case.symbol not in ("CONV_F16", "CONV_BF16"):
         raise RuntimeError(f"{case.name}: unknown convolution kind")
     source = (
         1.0,
@@ -484,7 +484,11 @@ def _conv(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
         17.0,
     )
     expected = (1.0, 16.0, 3.0, 11.0, 2.0, 32.0, 5.0, 13.0)
-    return _f16(source), _f16(weight), _f16(expected)
+    return (
+        _fp(case.dtype_name, source),
+        _fp(case.dtype_name, weight),
+        _fp(case.dtype_name, expected),
+    )
 
 
 def _pool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
