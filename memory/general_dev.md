@@ -14,6 +14,11 @@
 
 ## Wafer compiler local build harness
 
+- 每次提交的验证范围按改动影响面选择，不默认跑全量。普通局部修改先构建受影响target，并运行对应
+  unit/lit或脚本自检；只有改动跨多个pipeline边界、公共IR/ODS/interface、ABI/schema、核心调度/
+  memory/target基础设施、构建依赖，或任务completion gate明确要求时，才运行全量unit/lit/CTest。
+  定向验证已经覆盖改动及其直接consumer时，不为“每次提交”机械追加全量长测试；最终结果要明确
+  写出实际验证范围和未运行项。
 - `tasks/progress.md` 是任务队列，不是设计合同。确定下一步时先定位队列项，再读该项指向的编号
   设计文档；不要从旧 progress 叙事、单个工具现状或历史 memory 反推出当前架构边界。若
   `memory/` 与编号设计文档或任务队列冲突，同步修 memory。
