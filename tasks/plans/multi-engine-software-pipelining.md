@@ -155,7 +155,7 @@ Pipeline position:
   三worker join使用mask `0b111`，三个worker的CT delta各为1。全部boundary/final result与guard正确、
   blocking为0，前后Add heartbeat通过。该证据闭合CT worker routing、matching `bywork`和disjoint join
   正确性，不外推跨worker并行、仲裁或default/local-fence跨worker scope。
-- instruction-family catalog的35个safe case已全部逐个串行上板并通过typed bit oracle、SPM guard、
+- instruction-family catalog的37个safe case已全部逐个串行上板并通过typed bit oracle、SPM guard、
   terminal与cleanup，覆盖f16/bf16 elementwise、convert、reduce、select composite、f16 NE GEMM和
   f16 TDMA Pad、f16 TDMA Img2Col、f16 PoolMax、peripheral LUT16 raw-offset lookup，以及f16 peripheral
   ArgMax/ArgMin的value/index composite writeback。
@@ -172,6 +172,8 @@ Pipeline position:
   `[Kx,Ky,Sx,Sy] -> [N,Kx*Ky,outH*outW,C]`，不再接受被1x1 case掩盖的旧shape关系。
   NE BF16 1x16x16 identity GEMM的32B logical result、256B physical span与suffix guard也已闭合；
   该case只作为BF16 format/current layout基线，不外推累加舍入、transpose或tail。
+  BF16 PoolMax与TDMA Img2Col也已沿用对应FP16 geometry逐case串行通过，分别精确验证256B与2048B
+  output及guard；这些case闭合BF16 format路径，不新增geometry外推。
 - ordinary Conv verifier已从legacy `[Kh,Kw,I,O]`修正为current wrapper合同
   `[Kx,Ky,O,I]`，kernel/stride/dilation分别为`[Kx,Ky,Sx,Sy]`与`[Dx,Dy]`，并由非对称正反例、
   register-bound axis case和完整target ABI golden验证。对应FP16 Conv板端exact case仍待本批串行执行，

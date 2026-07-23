@@ -420,14 +420,22 @@ def _pad() -> tuple[bytes, bytes, bytes]:
 
 
 def _img2col(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
-    if case.symbol != "TDMA_IMG2COL_F16":
+    if case.symbol == "TDMA_IMG2COL_F16":
+        source = [
+            float(1 + 256 * row + 64 * column + channel)
+            for row in range(3)
+            for column in range(3)
+            for channel in range(64)
+        ]
+    elif case.symbol == "TDMA_IMG2COL_BF16":
+        source = [
+            float(1 + 64 * row + 16 * column + channel % 8)
+            for row in range(3)
+            for column in range(3)
+            for channel in range(64)
+        ]
+    else:
         raise RuntimeError(f"{case.name}: unknown Img2Col kind")
-    source = [
-        float(1 + 256 * row + 64 * column + channel)
-        for row in range(3)
-        for column in range(3)
-        for channel in range(64)
-    ]
     expected = [
         source[((output_row + kernel_y) * 3 + output_column + kernel_x) * 64
                + channel]
@@ -437,11 +445,11 @@ def _img2col(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
         for output_column in range(2)
         for channel in range(64)
     ]
-    return _f16(source), b"", _f16(expected)
+    return _fp(case.dtype_name, source), b"", _fp(case.dtype_name, expected)
 
 
 def _pool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
-    if case.symbol != "POOL_F16":
+    if case.symbol not in ("POOL_F16", "POOL_BF16"):
         raise RuntimeError(f"{case.name}: unknown pool kind")
     source = [
         float(100 * row + 10 * column + channel % 8)
@@ -454,7 +462,7 @@ def _pool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
         for output_column in range(2)
         for channel in range(64)
     ]
-    return _f16(source), b"", _f16(expected)
+    return _fp(case.dtype_name, source), b"", _fp(case.dtype_name, expected)
 
 
 def _peripheral_arg_extrema(

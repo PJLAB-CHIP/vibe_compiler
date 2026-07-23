@@ -234,13 +234,15 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
                         1, Fmt_FP16);
     break;
   case WAFER_IFP_CASE_TDMA_IMG2COL_F16:
+  case WAFER_IFP_CASE_TDMA_IMG2COL_BF16:
     wafer_tx81_tdma_img2col(input_a, output, 1, 3, 3, 64, 1, 4, 4, 64, 0, 0, 0,
-                            0, 2, 2, 1, 1, Fmt_FP16);
+                            0, 2, 2, 1, 1, format);
     break;
   case WAFER_IFP_CASE_POOL_F16:
+  case WAFER_IFP_CASE_POOL_BF16:
     wafer_tx81_pool_max(
         input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_max, 1, 2, 4, 64, 1, 1,
-        2, 64, 0, 0, 0, 0, 2, 2, 2, 2, Fmt_FP16);
+        2, 64, 0, 0, 0, 0, 2, 2, 2, 2, format);
     break;
   case WAFER_IFP_CASE_PERIPHERAL_ARGMAX_F16:
     wafer_tx81_peripheral_argmax(

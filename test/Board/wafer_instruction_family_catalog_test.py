@@ -12,6 +12,21 @@ import wafer_instruction_family_catalog as catalog
 import wafer_board_instruction_family_probe_test as runner
 
 
+def _encoded_words(
+    dtype_name: str, values: tuple[float, ...] | list[float]
+) -> tuple[int, ...]:
+    if dtype_name == "F16":
+        raw = struct.pack(f"<{len(values)}e", *values)
+        return struct.unpack(f"<{len(values)}H", raw)
+    assert dtype_name == "BF16"
+    words = []
+    for value in values:
+        bits = struct.unpack("<I", struct.pack("<f", value))[0]
+        rounding_bias = 0x7FFF + ((bits >> 16) & 1)
+        words.append(((bits + rounding_bias) >> 16) & 0xFFFF)
+    return tuple(words)
+
+
 def validate_rounding_and_bit2fp_oracles() -> None:
     assert "convert-i8-f16-zp0" in catalog.CASES_BY_NAME
     assert "convert-i8-bf16-zp0" in catalog.CASES_BY_NAME
@@ -247,93 +262,102 @@ def validate_arg_extrema_composite_oracles() -> None:
 
 
 def validate_pool_max_oracle() -> None:
-    case = catalog.CASES_BY_NAME["pool-f16"]
-    assert case.is_safe
-    assert case.oracle_name == "EXACT_BITS"
-    assert case.result_bytes == 256
-    assert case.output_span == 256
-    assert case.aux_span == 0
+    source_values = [
+        float(100 * row + 10 * column + channel % 8)
+        for row in range(2)
+        for column in range(4)
+        for channel in range(64)
+    ]
+    expected_values = [
+        float(100 + 10 * (2 * output_column + 1) + channel % 8)
+        for output_column in range(2)
+        for channel in range(64)
+    ]
+    for name, dtype_name in (
+        ("pool-f16", "F16"),
+        ("pool-bf16", "BF16"),
+    ):
+        case = catalog.CASES_BY_NAME[name]
+        assert case.is_safe
+        assert case.dtype_name == dtype_name
+        assert case.oracle_name == "EXACT_BITS"
+        assert case.result_bytes == 256
+        assert case.output_span == 256
+        assert case.aux_span == 0
 
-    built = catalog.build_case_payload(case)
-    source = struct.unpack_from(
-        "<512e", built.payload, catalog.BODY_OFFSET
-    )
-    assert source[0] == 0.0
-    assert source[63] == 7.0
-    assert source[64] == 10.0
-    assert source[4 * 64] == 100.0
-    assert source[-1] == 137.0
-
-    result = struct.unpack_from(
-        "<128e", built.expected_output_slot, catalog.BODY_OFFSET
-    )
-    assert result[:8] == tuple(float(110 + channel) for channel in range(8))
-    assert result[64:72] == tuple(
-        float(130 + channel) for channel in range(8)
-    )
-    assert built.expected_output_slot[: catalog.BODY_OFFSET] == bytes(
-        [catalog.SLOT_CANARY]
-    ) * catalog.BODY_OFFSET
-    assert built.expected_output_slot[
-        catalog.BODY_OFFSET + case.output_span :
-    ] == bytes([catalog.SLOT_CANARY]) * (
-        catalog.SLOT_BYTES - catalog.BODY_OFFSET - case.output_span
-    )
+        built = catalog.build_case_payload(case)
+        source = struct.unpack_from(
+            "<512H", built.payload, catalog.BODY_OFFSET
+        )
+        assert source == _encoded_words(dtype_name, source_values)
+        result = struct.unpack_from(
+            "<128H", built.expected_output_slot, catalog.BODY_OFFSET
+        )
+        assert result == _encoded_words(dtype_name, expected_values)
+        assert built.expected_output_slot[: catalog.BODY_OFFSET] == bytes(
+            [catalog.SLOT_CANARY]
+        ) * catalog.BODY_OFFSET
+        assert built.expected_output_slot[
+            catalog.BODY_OFFSET + case.output_span :
+        ] == bytes([catalog.SLOT_CANARY]) * (
+            catalog.SLOT_BYTES - catalog.BODY_OFFSET - case.output_span
+        )
 
 
 def validate_img2col_oracle() -> None:
-    case = catalog.CASES_BY_NAME["tdma-img2col-f16"]
-    assert case.is_safe
-    assert case.oracle_name == "EXACT_BITS"
-    assert case.result_bytes == 2048
-    assert case.output_span == 2048
-    assert case.aux_span == 0
+    for name, dtype_name in (
+        ("tdma-img2col-f16", "F16"),
+        ("tdma-img2col-bf16", "BF16"),
+    ):
+        case = catalog.CASES_BY_NAME[name]
+        assert case.is_safe
+        assert case.dtype_name == dtype_name
+        assert case.oracle_name == "EXACT_BITS"
+        assert case.result_bytes == 2048
+        assert case.output_span == 2048
+        assert case.aux_span == 0
 
-    built = catalog.build_case_payload(case)
-    source = struct.unpack_from(
-        "<576e", built.payload, catalog.BODY_OFFSET
-    )
-    assert source[0] == 1.0
-    assert source[64] == 65.0
-    assert source[3 * 64] == 257.0
-    assert source[-1] == 704.0
+        if dtype_name == "F16":
+            source_values = [
+                float(1 + 256 * row + 64 * column + channel)
+                for row in range(3)
+                for column in range(3)
+                for channel in range(64)
+            ]
+        else:
+            source_values = [
+                float(1 + 64 * row + 16 * column + channel % 8)
+                for row in range(3)
+                for column in range(3)
+                for channel in range(64)
+            ]
+        source_words = _encoded_words(dtype_name, source_values)
+        built = catalog.build_case_payload(case)
+        source = struct.unpack_from(
+            "<576H", built.payload, catalog.BODY_OFFSET
+        )
+        assert source == source_words
 
-    result = struct.unpack_from(
-        "<1024e", built.expected_output_slot, catalog.BODY_OFFSET
-    )
-    expected = tuple(
-        source[((output_row + kernel_y) * 3 + output_column + kernel_x) * 64
-               + channel]
-        for kernel_y in range(2)
-        for kernel_x in range(2)
-        for output_row in range(2)
-        for output_column in range(2)
-        for channel in range(64)
-    )
-    assert result == expected
-    assert result[::64] == (
-        1.0,
-        65.0,
-        257.0,
-        321.0,
-        65.0,
-        129.0,
-        321.0,
-        385.0,
-        257.0,
-        321.0,
-        513.0,
-        577.0,
-        321.0,
-        385.0,
-        577.0,
-        641.0,
-    )
-    assert built.expected_output_slot[
-        catalog.BODY_OFFSET + case.output_span :
-    ] == bytes([catalog.SLOT_CANARY]) * (
-        catalog.SLOT_BYTES - catalog.BODY_OFFSET - case.output_span
-    )
+        expected = tuple(
+            source_words[
+                ((output_row + kernel_y) * 3 + output_column + kernel_x) * 64
+                + channel
+            ]
+            for kernel_y in range(2)
+            for kernel_x in range(2)
+            for output_row in range(2)
+            for output_column in range(2)
+            for channel in range(64)
+        )
+        result = struct.unpack_from(
+            "<1024H", built.expected_output_slot, catalog.BODY_OFFSET
+        )
+        assert result == expected
+        assert built.expected_output_slot[
+            catalog.BODY_OFFSET + case.output_span :
+        ] == bytes([catalog.SLOT_CANARY]) * (
+            catalog.SLOT_BYTES - catalog.BODY_OFFSET - case.output_span
+        )
 
 
 def validate_lut16_oracle() -> None:
@@ -371,10 +395,10 @@ def _output_seed_padding() -> bytes:
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 35
-    assert len(catalog.CATALOG) == 37
+    assert len(catalog.SAFE_CASES) == 37
+    assert len(catalog.CATALOG) == 39
     assert {case.case_id for case in catalog.SAFE_CASES} == (
-        set(range(1, 30)) | {100, 101, 103, 105, 106, 107}
+        set(range(1, 30)) | {100, 101, 103, 105, 106, 107, 108, 109}
     )
     assert {
         case.reason_name
