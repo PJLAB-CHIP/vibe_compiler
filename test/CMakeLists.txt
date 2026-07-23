@@ -222,6 +222,22 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     LABELS "runtime;no-card;all-rank;cluster;direct-dte;ncc;probe-build"
     TIMEOUT 330
   )
+  add_test(NAME wafer-runtime-full-card-barrier-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_full_card_barrier_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-full-card-barrier-probe
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-full-card-barrier-probe-no-card PROPERTIES
+    LABELS "runtime;no-card;all-rank;cluster;barrier;probe-build"
+    TIMEOUT 330
+  )
   add_test(NAME wafer-runtime-k-sharded-gemm-no-card
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_k_sharded_gemm_test.py
@@ -591,6 +607,30 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     )
     set_tests_properties(wafer-board-dte-ncc-execution-probe PROPERTIES
       LABELS "board;hardware;cluster;all-rank;direct-dte;ncc;execution-probe"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 630
+    )
+    add_test(NAME wafer-board-full-card-barrier-probe
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_full_card_barrier_probe_test.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-full-card-barrier-probe
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 60000
+    )
+    set_tests_properties(wafer-board-full-card-barrier-probe PROPERTIES
+      LABELS "board;hardware;cluster;all-rank;barrier;execution-probe"
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
       TIMEOUT 630
