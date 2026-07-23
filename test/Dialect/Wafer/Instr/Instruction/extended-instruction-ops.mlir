@@ -12,7 +12,7 @@ module {
   %pool_out = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>
   %pool_idx = "builtin.unrealized_conversion_cast"()
-      : () -> memref<1x4x4x64xi32, #wafer.memory<spm, ncx>>
+      : () -> memref<1x4x4x64xi16, #wafer.memory<spm, ncx>>
   %tensor = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x8x8x64xf16, #wafer.memory<spm, tensor>>
   %moved = "builtin.unrealized_conversion_cast"()
@@ -45,14 +45,14 @@ module {
        kernel_strides = array<i64: 2, 2, 2, 2>}
       : memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
     into memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>,
-         memref<1x4x4x64xi32, #wafer.memory<spm, ncx>>
+         memref<1x4x4x64xi16, #wafer.memory<spm, ncx>>
 
-  wafer.instr.unpool #wafer.instr_unpool_kind<mask> %pool_out into %act
+  wafer.instr.unpool #wafer.instr_unpool_kind<mask> %pool_out, %pool_idx into %act
       {source_shape = array<i64: 1, 4, 4, 64>,
        dest_shape = array<i64: 1, 8, 8, 64>,
-       kernel_strides = array<i64: 2, 2, 2, 2>,
-       index = 0 : i64}
-      : memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>
+       kernel_strides = array<i64: 2, 2, 2, 2>}
+      : memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>,
+        memref<1x4x4x64xi16, #wafer.memory<spm, ncx>>
     into memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
 
   wafer.instr.tdma_data_move #wafer.instr_data_move_kind<pad> %tensor into %moved
@@ -83,6 +83,7 @@ module {
 // CHECK-SAME: weight_shape = array<i64: 3, 2, 7, 5>
 // CHECK: wafer.instr.pool <indexedmax>
 // CHECK: wafer.instr.unpool <mask>
+// CHECK-SAME: %{{.*}}, %{{.*}} into %{{.*}}
 // CHECK: wafer.instr.tdma_data_move <pad>
 // CHECK-SAME: pads = array<i64: 0, 0, 0, 0>
 // CHECK: wafer.instr.tdma_data_move <img2col>

@@ -148,7 +148,8 @@ mlir::LogicalResult FunctionLowering::lowerMaskMove(InstrMaskMoveOp op) {
   llvm::SmallVector<mlir::Value, 6> args;
   mlir::FailureOr<mlir::Value> source =
       materializeAddress(op, op.getSource(), "mask_move source");
-  mlir::FailureOr<int64_t> mask = getStaticUInt32MaskAddress(op, op.getMask());
+  mlir::FailureOr<int64_t> mask =
+      getStaticUInt32SPMAddress(op, op.getMask(), "mask");
   mlir::FailureOr<mlir::Value> dest =
       materializeAddress(op, op.getDest(), "mask_move dest");
   auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
@@ -322,11 +323,18 @@ mlir::LogicalResult FunctionLowering::lowerUnpool(InstrUnpoolOp op) {
       getDataFormatCode(op, op.getInput(), "unpool input", targetProfile);
   if (mlir::failed(input) || mlir::failed(dest) || mlir::failed(fmt))
     return mlir::failure();
+  int64_t indexAddress = 0;
+  if (mlir::Value index = op.getIndex()) {
+    mlir::FailureOr<int64_t> resolvedIndex =
+        getStaticUInt32SPMAddress(op, index, "unpool index");
+    if (mlir::failed(resolvedIndex))
+      return mlir::failure();
+    indexAddress = *resolvedIndex;
+  }
   args.push_back(*input);
   args.push_back(*dest);
   appendI32(op.getLoc(), args, static_cast<int64_t>(op.getKind()));
-  appendI32(op.getLoc(), args,
-            getOptionalIntegerAttrValue(op.getIndexAttr(), -1));
+  appendI32(op.getLoc(), args, indexAddress);
   appendArrayI32(op.getLoc(), args, op.getSourceShape());
   appendArrayI32(op.getLoc(), args, op.getDestShape());
   appendArrayI32(op.getLoc(), args, op.getKernelStrides());

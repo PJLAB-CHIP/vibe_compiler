@@ -267,15 +267,16 @@ def Wafer_InstrUnpoolOp : Wafer_InstrOp<"instr.unpool", [
   let arguments = (ins
     Wafer_InstrUnpoolKindAttr:$kind,
     Arg<AnyMemRef, "", [MemRead]>:$input,
+    Arg<Optional<AnyMemRef>, "", [MemRead]>:$index,
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
-    OptionalAttr<I64Attr>:$index,
     DenseI64ArrayAttr:$source_shape,
     DenseI64ArrayAttr:$dest_shape,
     DenseI64ArrayAttr:$kernel_strides
   );
   let hasVerifier = 1;
   let assemblyFormat =
-      "$kind $input `into` $dest attr-dict `:` type($input) `into` type($dest)";
+      "$kind $input (`,` $index^)? `into` $dest attr-dict `:` type($input) "
+      "(`,` type($index)^)? `into` type($dest)";
 }
 
 def Wafer_InstrTDMADataMoveOp : Wafer_InstrOp<"instr.tdma_data_move", [

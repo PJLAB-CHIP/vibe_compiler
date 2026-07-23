@@ -1263,3 +1263,16 @@
   不同X/Y stride/dilation、非对称padding和I!=O，负例显式提交legacy weight轴序，LLVM golden逐项检查完整ABI。
 - 防复发：Conv/Pool/Img2Col等二维wrapper的contract test必须至少让Kx/Ky、Sx/Sy或I/O中的两组不相等；
   square identity只适合作smoke，不能作为axis、layout或weight codec的完成证明。
+
+## 2026-07-23 Unpool的`uint32_t` ABI槽是SPM索引地址而不是scalar index
+
+- 现象：旧Instr合同把Unpool wrapper的`uint32_t index`形参直接建模成scalar attr，无法表达indexed pool为
+  每个输出元素产生的不同位置，也隐藏了pool到Unpool之间真实的buffer依赖。
+- 根因：C类型宽度只能说明ABI载荷，不足以说明字段语义；current wrapper把该32-bit值解释为i16 index
+  buffer的SPM起始地址。只看prototype会把address-valued integer误判成普通scalar。
+- 修复模式：indexedmax/indexedmin的第二个dest使用same-shape i16 SPM memref；mask/unpool以显式SSA
+  operand读取它并验证shape、capacity和memory space，旧scalar attr拒绝。target lowering从已规划SPM
+  allocation和view静态求址、验证完整range适配`uint32_t`后写入ABI槽；avg禁止index operand并传0。
+- 防复发：遇到疑似address-valued integer ABI字段时，先用能让每元素descriptor不同的composite vector确认
+  scalar/address语义，再决定IR carrier；同时保留缺operand、错误dtype/shape、legacy attr和地址narrowing
+  negative gate，不能让C prototype单独成为语义事实源。

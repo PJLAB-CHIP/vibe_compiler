@@ -275,11 +275,11 @@ pairwise_excess = engine_a_exec + engine_b_exec - fu_union_exec
 ### 4.2 单engine correctness与ABI观察
 
 - CT f16 Add使用非零输入、完整fp16 golden、guard和DMA round-trip通过。
-- instruction-family typed catalog的40个safe case已逐个串行launch并通过完整bit oracle、SPM guard、
+- instruction-family typed catalog的41个safe case已逐个串行launch并通过完整bit oracle、SPM guard、
   terminal与cleanup：f16/bf16 Neg/Add/Sub/Mul/Max/Min/Pow2/Relu，I8→f16/bf16、bf16→f16、
   f16→bf16/i16 convert，f16 Sum/Max、bf16 Min/Avg reduction，f16/bf16 Bit2FP+MaskMove select，
   f16 NE GEMM、f16 TDMA Pad、f16 TDMA Img2Col、f16 PoolMax、peripheral LUT16与f16 peripheral
-  ArgMax/ArgMin。PoolMax使用
+  ArgMax/ArgMin，以及f16 indexedmax→maskunpool composite。PoolMax使用
   `[1,2,4,64] -> [1,1,2,64]`、无padding、2x2 kernel/stride，两个输出窗口的128个FP16结果逐bit正确，
   256B physical output span和suffix guard均通过。ArgMax在含负数的128元素输入上返回
   `100@index73`；ArgMin在全正128元素输入上返回`0.5@index42`。两者都由CRT等待writeback后把FP16 value
@@ -300,6 +300,13 @@ pairwise_excess = engine_a_exec + engine_b_exec - fu_union_exec
 - BF16 PoolMax与TDMA Img2Col沿用已闭合FP16 geometry，但使用BF16可精确表示的小整数隔离format路径：
   PoolMax两个2x2/stride2窗口的256B结果逐bit正确；Img2Col 2x2/stride1 kernel-major重排的2048B结果
   逐bit正确。两者的physical span、suffix guard、terminal、cleanup和后置Add heartbeat均通过。
+- Unpool composite先以indexedmax把FP16 `[1,2,2,64]`写成value与i16 index
+  `[1,1,1,64]`，经local fence后由maskunpool恢复`[1,2,2,64]`。输入让64个channel的最大值位置按
+  `channel % 4`分布到四个空间位置，因此能区分“传入i16 SPM index buffer地址”与旧scalar-index误解；
+  512B输出逐bitexact，256B auxiliary index span的suffix guard、terminal、cleanup及后置Add heartbeat
+  均通过。该结果把current FP16 2x2/stride2 indexedmax→maskunpool组合记为`board-observed`，不外推
+  indexedmin、avg、其它geometry或dtype。compiler侧indexed pool第二个dest为same-shape i16 SPM memref，
+  mask/unpool显式读取该operand；target lowering只在静态SPM range适配`uint32_t`时传其起始地址，avg传0。
 - ordinary FP16 Conv使用非对称`Sx/Sy=2/1`、input `[1,1,3,4]`、HWOI weight `[1,1,4,4]`和output
   `[1,1,2,4]`，8个结果逐bit正确；16B logical result、256B physical span及suffix guard通过。该向量能
   区分旧HWIO channel轴和对称stride误解，并与已修正的compiler verifier/target ABI合同一致。

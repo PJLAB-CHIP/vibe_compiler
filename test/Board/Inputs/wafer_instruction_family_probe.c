@@ -250,6 +250,16 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
         input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_max, 1, 2, 4, 64, 1, 1,
         2, 64, 0, 0, 0, 0, 2, 2, 2, 2, format);
     break;
+  case WAFER_IFP_CASE_UNPOOL_F16:
+    wafer_tx81_pool_indexedmax(
+        input_a, input_b, auxiliary,
+        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 2, 2, 64, 1, 1, 1, 64, 0,
+        0, 0, 0, 2, 2, 2, 2, Fmt_FP16);
+    wafer_tx81_local_fence();
+    wafer_tx81_unpool_mask(
+        input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_maskunpool,
+        (uint32_t)auxiliary, 1, 1, 1, 64, 1, 2, 2, 64, 2, 2, 2, 2, Fmt_FP16);
+    break;
   case WAFER_IFP_CASE_PERIPHERAL_ARGMAX_F16:
     wafer_tx81_peripheral_argmax(
         input_a, output, output + 4,

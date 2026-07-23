@@ -1142,8 +1142,8 @@ mlir::LogicalResult InstrPoolOp::verify() {
         return mlir::failure();
       continue;
     }
-    if (!destTensor->getElementType().isInteger(32))
-      return emitOpError("indexed pool index dest element type must be i32");
+    if (!destTensor->getElementType().isInteger(16))
+      return emitOpError("indexed pool index dest element type must be i16");
   }
   return mlir::success();
 }
@@ -1151,6 +1151,10 @@ mlir::LogicalResult InstrPoolOp::verify() {
 InstrFamily InstrPoolOp::getInstructionFamily() { return InstrFamily::CT; }
 
 mlir::LogicalResult InstrUnpoolOp::verify() {
+  if ((*this)->hasAttr("index"))
+    return emitOpError(
+        "scalar index attr is not supported; use an index memref operand");
+
   if (mlir::failed(verifyAlignedSPMMemRef(getOperation(), getInput().getType(),
                                           "input")) ||
       mlir::failed(verifyAlignedSPMMemRef(getOperation(), getDest().getType(),
@@ -1186,16 +1190,31 @@ mlir::LogicalResult InstrUnpoolOp::verify() {
           getOperation(), getSourceShapeAttr(), getDestShapeAttr(),
           getKernelStridesAttr())))
     return mlir::failure();
-  mlir::IntegerAttr index =
-      getOperation()->getAttrOfType<mlir::IntegerAttr>("index");
+  mlir::Value index = getIndex();
   if (getKindAttr().getValue() == InstrUnpoolKind::Avg) {
     if (index)
-      return emitOpError("avg unpool must not have index attr");
+      return emitOpError("avg unpool must not have index operand");
   } else {
     if (!index)
-      return emitOpError("unpool kind requires scalar index attr");
-    if (mlir::failed(verifyOptionalUInt32Attr(getOperation(), index, "index")))
+      return emitOpError("unpool kind requires index operand");
+    if (mlir::failed(
+            verifyAlignedSPMMemRef(getOperation(), index.getType(), "index")))
       return mlir::failure();
+    auto indexType = mlir::cast<mlir::MemRefType>(index.getType());
+    if (!indexType.getElementType().isInteger(16))
+      return emitOpError("index element type must be i16");
+    if (mlir::failed(verifyDataShapeAttrMatchesBuffer(
+            getOperation(), indexType, getSourceShapeAttr(),
+            "index source_shape")))
+      return mlir::failure();
+
+    std::optional<WaferPhysicalTensorInfo> indexInfo =
+        computeWaferPhysicalTensorInfo(indexType);
+    if (!indexInfo || indexInfo->physicalElements <= 0 ||
+        indexInfo->physicalElements < inputTensor->getNumElements())
+      return emitOpError(
+          "target_geometry_mismatch: index physical capacity must cover one "
+          "i16 entry per source element");
   }
   return mlir::success();
 }

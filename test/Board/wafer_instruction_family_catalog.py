@@ -531,6 +531,22 @@ def _pool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
     return _fp(case.dtype_name, source), b"", _fp(case.dtype_name, expected)
 
 
+def _unpool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
+    if case.symbol != "UNPOOL_F16":
+        raise RuntimeError(f"{case.name}: unknown unpool kind")
+    source = [
+        float(128 + channel if position == channel % 4 else 1 + position)
+        for position in range(4)
+        for channel in range(64)
+    ]
+    expected = [
+        float(128 + channel if position == channel % 4 else 0)
+        for position in range(4)
+        for channel in range(64)
+    ]
+    return _f16(source), b"", _f16(expected)
+
+
 def _peripheral_arg_extrema(
     case: InstructionCase,
 ) -> tuple[bytes, bytes, bytes]:
@@ -599,6 +615,8 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
         input_a, input_b, expected = _conv(case)
     elif case.family_name == "POOL":
         input_a, input_b, expected = _pool(case)
+    elif case.family_name == "UNPOOL":
+        input_a, input_b, expected = _unpool(case)
     elif case.family_name == "PERIPHERAL":
         input_a, input_b, expected = _peripheral(case)
     else:
@@ -621,6 +639,8 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
         output_seed = _fp(case.dtype_name, false_values)
     elif case.family_name == "NE_GEMM":
         output_seed = _fp(case.dtype_name, _repeat((-13.0,), 128))
+    elif case.family_name == "UNPOOL":
+        output_seed = _f16([0.0] * (case.output_span // 2))
     else:
         seed_elements = case.output_span // 2
         output_seed = _fp(

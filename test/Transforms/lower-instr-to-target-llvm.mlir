@@ -60,7 +60,7 @@ module {
     %pool_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<327680>}
         : memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>
     %pool_idx = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<344064>}
-        : memref<1x4x4x64xi32, #wafer.memory<spm, ncx>>
+        : memref<1x4x4x64xi16, #wafer.memory<spm, ncx>>
     %img2col_src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<352256>}
         : memref<1x4x5x3xf16, #wafer.memory<spm, tensor>>
     %img2col_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<360448>}
@@ -125,12 +125,18 @@ module {
          kernel_strides = array<i64: 2, 2, 2, 2>}
         : memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
       into memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>,
-           memref<1x4x4x64xi32, #wafer.memory<spm, ncx>>
-    wafer.instr.unpool #wafer.instr_unpool_kind<mask> %pool_out into %conv_act
+           memref<1x4x4x64xi16, #wafer.memory<spm, ncx>>
+    wafer.instr.unpool #wafer.instr_unpool_kind<mask> %pool_out, %pool_idx into %conv_act
         {source_shape = array<i64: 1, 4, 4, 64>,
          dest_shape = array<i64: 1, 8, 8, 64>,
-         kernel_strides = array<i64: 2, 2, 2, 2>,
-         index = 0 : i64}
+         kernel_strides = array<i64: 2, 2, 2, 2>}
+        : memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>,
+          memref<1x4x4x64xi16, #wafer.memory<spm, ncx>>
+      into memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
+    wafer.instr.unpool #wafer.instr_unpool_kind<avg> %pool_out into %conv_act
+        {source_shape = array<i64: 1, 4, 4, 64>,
+         dest_shape = array<i64: 1, 8, 8, 64>,
+         kernel_strides = array<i64: 2, 2, 2, 2>}
         : memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>
       into memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
     wafer.instr.tdma_data_move #wafer.instr_data_move_kind<pad> %loaded into %pad_out
@@ -210,6 +216,22 @@ module {
 // LLVMIR-SAME: i32 0, i32 0, i32 0, i32 0,
 // LLVMIR-SAME: i32 3, i32 2, i32 2, i32 3,
 // LLVMIR-SAME: i32 2, i32 1, i32 2)
+// LLVMIR: call void @wafer_tx81_pool_indexedmax(i64 68608, i64 327680,
+// LLVMIR-SAME: i64 344064, i32 118,
+// LLVMIR-SAME: i32 1, i32 8, i32 8, i32 64,
+// LLVMIR-SAME: i32 1, i32 4, i32 4, i32 64,
+// LLVMIR-SAME: i32 0, i32 0, i32 0, i32 0,
+// LLVMIR-SAME: i32 2, i32 2, i32 2, i32 2, i32 2)
+// LLVMIR: call void @wafer_tx81_unpool_mask(i64 327680, i64 68608,
+// LLVMIR-SAME: i32 123, i32 344064,
+// LLVMIR-SAME: i32 1, i32 4, i32 4, i32 64,
+// LLVMIR-SAME: i32 1, i32 8, i32 8, i32 64,
+// LLVMIR-SAME: i32 2, i32 2, i32 2, i32 2, i32 2)
+// LLVMIR: call void @wafer_tx81_unpool_avg(i64 327680, i64 68608,
+// LLVMIR-SAME: i32 122, i32 0,
+// LLVMIR-SAME: i32 1, i32 4, i32 4, i32 64,
+// LLVMIR-SAME: i32 1, i32 8, i32 8, i32 64,
+// LLVMIR-SAME: i32 2, i32 2, i32 2, i32 2, i32 2)
 // LLVMIR: call void @wafer_tx81_tdma_img2col(i64 352256, i64 360448,
 // LLVMIR-SAME: i32 1, i32 4, i32 5, i32 3,
 // LLVMIR-SAME: i32 1, i32 6, i32 12, i32 3,

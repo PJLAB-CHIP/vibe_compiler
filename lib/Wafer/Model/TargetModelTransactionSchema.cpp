@@ -492,7 +492,8 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
                                  T, compiler::TargetUnpoolTransaction>) {
           if (llvm::Error error = requireKnownEnum(value.kind, "unpool kind"))
             return error;
-          if (value.index.has_value() == (value.kind == InstrUnpoolKind::Avg))
+          if (value.indexAddress.has_value() ==
+              (value.kind == InstrUnpoolKind::Avg))
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "unpool index presence differs from unpool kind");

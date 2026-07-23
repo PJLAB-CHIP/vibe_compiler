@@ -612,7 +612,8 @@ def check_gather_scatter_and_mask(
     require_pattern(
         lowering_text,
         r"lowerMaskMove\(InstrMaskMoveOp\s+op\).*?"
-        r"getStaticUInt32MaskAddress\(op,\s*op\.getMask\(\)\).*?"
+        r"getStaticUInt32SPMAddress\(op,\s*op\.getMask\(\),\s*"
+        r'"mask"\).*?'
         r"args\.push_back\(constantI32\(op\.getLoc\(\),\s*\*mask\)\);",
         "MaskMove compiler uint32 proof and call ABI",
     )

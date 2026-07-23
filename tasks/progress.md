@@ -115,9 +115,9 @@ delta均为1；worker0/1/2 disjoint join使用mask `0b111`，三个worker CT del
 boundary/final result与guard均正确、blocking为0，前后Add heartbeat通过。当前将CT三worker routing、
 matching `bywork`及disjoint join记为`board-observed`；跨worker并行、仲裁、同地址行为与
 default/local-fence跨worker scope仍保持保守`unknown/excluded`。
-instruction-family typed catalog的40个safe case也已全部逐个串行上板通过，覆盖f16/bf16 elementwise、
+instruction-family typed catalog的41个safe case也已全部逐个串行上板通过，覆盖f16/bf16 elementwise、
 convert、reduce、select composite、f16 NE GEMM、f16 TDMA Pad与f16 peripheral ArgMax/ArgMin composite
-writeback、f16 PoolMax、peripheral LUT16 raw-offset lookup，以及f16 TDMA Img2Col；每个case均有精确bit
+writeback、f16 PoolMax/Unpool、peripheral LUT16 raw-offset lookup，以及f16 TDMA Img2Col；每个case均有精确bit
 oracle、SPM guard、
 terminal和cleanup。首次`reduce-sum-f16`准确暴露catalog边界错误：逻辑结果是128B，但CT physical write
 span为256B。将四个reduction row修正为`result_bytes=128`、`output_span=256`后，reduction和剩余case全部
@@ -145,13 +145,20 @@ Conv板测准备发现existing verifier仍按legacy `[Kh,Kw,I,O]`与H/W轴序解
 非对称正反例、register-bound axis case及完整target ABI lowering golden已同步。对应FP16板测使用
 input `[1,1,3,4]`、HWOI weight `[1,1,4,4]`、output `[1,1,2,4]`与`Sx/Sy=2/1`，8个结果逐bit正确，
 16B logical result、256B physical span、guard、terminal、cleanup和后置Add均通过；ordinary Conv现记为
-current profile `board-observed`。catalog原有row只剩Unpool仍deferred。
+current profile `board-observed`。
 同一非对称Conv geometry随后以BF16 tight input/weight/output复验，8个结果逐bit正确，16B logical result、
 256B physical span、guard、terminal、cleanup和后置Add均通过；该case闭合BF16 Conv format路径，不外推
 非平凡累加舍入或其它geometry。
 新增NE BF16 `M1K16N16`累加向量让每个输出包含16个非零K贡献，并以精确二进制构造同时检查round-up与
 round-down；32B结果逐bit通过，256B physical span、guard、terminal、cleanup和后置Add正常。该结果排除
 逐项BF16累加丢精度与末端截断两类错误，当前只不外推transpose、batch或tail。
+Unpool协议已从错误的scalar `uint32` index attr收敛为显式i16 SPM index memref：indexedmax/min pool的
+第二个结果使用i16，mask/unpool消费该same-shape buffer，avg不消费并在既有ABI槽传0；target lowering只把
+已验证的静态SPM起始地址写入该`uint32_t`槽。FP16板测以indexedmax
+`[1,2,2,64] -> [1,1,1,64]` value/index、local fence及maskunpool
+`[1,1,1,64] -> [1,2,2,64]`组成单一composite，按channel变化的四个空间index区分buffer地址与scalar误解；
+512B结果逐bitexact，256B index auxiliary guard、terminal、cleanup和后置Add均通过。catalog当前41/41
+safe row均已有串行板端证据；该向量只闭合FP16、2x2/stride2及当前indexedmax→maskunpool组合。
 
 Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
 现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的

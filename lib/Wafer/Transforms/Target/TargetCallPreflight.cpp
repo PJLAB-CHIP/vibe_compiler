@@ -399,15 +399,16 @@ preflightDynamicDDRSubview(mlir::memref::SubViewOp subviewOp) {
 }
 } // namespace
 
-mlir::FailureOr<int64_t> getStaticUInt32MaskAddress(mlir::Operation *op,
-                                                    mlir::Value value) {
+mlir::FailureOr<int64_t>
+getStaticUInt32SPMAddress(mlir::Operation *op, mlir::Value value,
+                          llvm::StringRef role) {
   auto viewType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
   if (!viewType || !isWaferSPMMemRefType(viewType))
-    return op->emitError()
-           << "target_abi_narrowing: mask address must be a Wafer SPM memref";
+    return op->emitError() << "target_abi_narrowing: " << role
+                           << " address must be a Wafer SPM memref";
 
   mlir::FailureOr<int64_t> viewOffset =
-      getStaticViewOffsetBytes(op, viewType, "mask");
+      getStaticViewOffsetBytes(op, viewType, role);
   if (mlir::failed(viewOffset))
     return mlir::failure();
 
@@ -417,14 +418,14 @@ mlir::FailureOr<int64_t> getStaticUInt32MaskAddress(mlir::Operation *op,
   auto rootType = mlir::dyn_cast<mlir::MemRefType>(root.getType());
   auto alloc = root.getDefiningOp<mlir::memref::AllocOp>();
   if (!rootType || !isWaferSPMMemRefType(rootType) || !alloc)
-    return op->emitError()
-           << "target_abi_narrowing: mask address must be statically rooted "
-              "in a planned SPM allocation";
+    return op->emitError() << "target_abi_narrowing: " << role
+                           << " address must be statically rooted in a "
+                              "planned SPM allocation";
   auto offset = alloc->getAttrOfType<SPMOffsetAttr>(kWaferSPMOffsetAttrName);
   if (!offset)
-    return op->emitError()
-           << "target_llvm_missing_spm_offset: mask SPM allocation is missing "
-              "accepted wafer.spm.offset";
+    return op->emitError() << "target_llvm_missing_spm_offset: " << role
+                           << " SPM allocation is missing accepted "
+                              "wafer.spm.offset";
 
   std::optional<WaferPhysicalTensorInfo> viewInfo =
       computeWaferPhysicalTensorInfo(viewType);
@@ -432,39 +433,36 @@ mlir::FailureOr<int64_t> getStaticUInt32MaskAddress(mlir::Operation *op,
       computeWaferPhysicalTensorInfo(rootType);
   if (!viewInfo || !rootInfo || viewInfo->physicalBytes < 0 ||
       rootInfo->physicalBytes < 0)
-    return op->emitError()
-           << "target_abi_narrowing: mask physical address range must be "
-              "statically known";
+    return op->emitError() << "target_abi_narrowing: " << role
+                           << " physical address range must be statically "
+                              "known";
 
   int64_t start = 0;
   if (!checkedAdd(offset.getOffset(), *viewOffset, start))
-    return op->emitError()
-           << "target_range_overflow: mask physical start address overflows "
-              "int64";
+    return op->emitError() << "target_range_overflow: " << role
+                           << " physical start address overflows int64";
   int64_t end = start;
   if (viewInfo->physicalBytes > 0 &&
       !checkedAdd(start, viewInfo->physicalBytes - 1, end))
-    return op->emitError()
-           << "target_range_overflow: mask physical end address overflows "
-              "int64";
+    return op->emitError() << "target_range_overflow: " << role
+                           << " physical end address overflows int64";
 
   int64_t rootEnd = offset.getOffset();
   if (rootInfo->physicalBytes > 0 &&
       !checkedAdd(offset.getOffset(), rootInfo->physicalBytes - 1, rootEnd))
-    return op->emitError()
-           << "target_range_overflow: mask root physical range overflows "
-              "int64";
+    return op->emitError() << "target_range_overflow: " << role
+                           << " root physical range overflows int64";
   if (end > rootEnd)
-    return op->emitError()
-           << "target_geometry_mismatch: mask view physical range exceeds "
-              "its planned SPM allocation";
+    return op->emitError() << "target_geometry_mismatch: " << role
+                           << " view physical range exceeds its planned SPM "
+                              "allocation";
 
   constexpr int64_t maxUInt32 =
       static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
   if (start > maxUInt32 || end > maxUInt32)
-    return op->emitError()
-           << "target_abi_narrowing: mask physical address range [" << start
-           << ", " << end << "] must fit uint32_t";
+    return op->emitError() << "target_abi_narrowing: " << role
+                           << " physical address range [" << start << ", "
+                           << end << "] must fit uint32_t";
   return start;
 }
 

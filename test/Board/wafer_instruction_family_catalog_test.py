@@ -353,6 +353,55 @@ def validate_pool_max_oracle() -> None:
         )
 
 
+def validate_unpool_composite_oracle() -> None:
+    case = catalog.CASES_BY_NAME["unpool-f16"]
+    assert case.is_safe
+    assert case.oracle_name == "EXACT_COMPOSITE"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (
+        512,
+        512,
+        256,
+    )
+
+    built = catalog.build_case_payload(case)
+    source = struct.unpack_from(
+        "<256e", built.payload, catalog.BODY_OFFSET
+    )
+    assert source == tuple(
+        float(128 + channel if position == channel % 4 else 1 + position)
+        for position in range(4)
+        for channel in range(64)
+    )
+    output_seed = built.payload[
+        2 * catalog.SLOT_BYTES + catalog.BODY_OFFSET :
+        2 * catalog.SLOT_BYTES + catalog.BODY_OFFSET + case.output_span
+    ]
+    assert output_seed == bytes(case.output_span)
+    expected = struct.unpack_from(
+        "<256e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert expected == tuple(
+        float(128 + channel if position == channel % 4 else 0)
+        for position in range(4)
+        for channel in range(64)
+    )
+
+    probe = (
+        pathlib.Path(__file__).resolve().parent
+        / "Inputs"
+        / "wafer_instruction_family_probe.c"
+    ).read_text()
+    case_body = probe[
+        probe.index("case WAFER_IFP_CASE_UNPOOL_F16:") :
+        probe.index("break;", probe.index("case WAFER_IFP_CASE_UNPOOL_F16:"))
+    ]
+    pool = case_body.index("wafer_tx81_pool_indexedmax")
+    fence = case_body.index("wafer_tx81_local_fence")
+    unpool = case_body.index("wafer_tx81_unpool_mask")
+    assert pool < fence < unpool
+    assert "(uint32_t)auxiliary" in case_body
+
+
 def validate_conv_oracle() -> None:
     source_values = (
         1.0,
@@ -521,17 +570,17 @@ def _output_seed_padding() -> bytes:
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 40
+    assert len(catalog.SAFE_CASES) == 41
     assert len(catalog.CATALOG) == 41
     assert {case.case_id for case in catalog.SAFE_CASES} == (
         set(range(1, 30))
-        | {100, 101, 102, 103, 105, 106, 107, 108, 109, 110, 111}
+        | {100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111}
     )
     assert {
         (case.symbol, case.reason_name)
         for case in catalog.CATALOG
         if not case.is_safe
-    } == {("UNPOOL_F16", "REASON_GEOMETRY_UNQUALIFIED")}
+    } == set()
     for name in (
         "reduce-sum-f16",
         "reduce-max-f16",
@@ -597,6 +646,7 @@ def main() -> int:
     validate_arg_extrema_composite_oracles()
     validate_conv_oracle()
     validate_pool_max_oracle()
+    validate_unpool_composite_oracle()
     validate_img2col_oracle()
     validate_lut16_oracle()
 

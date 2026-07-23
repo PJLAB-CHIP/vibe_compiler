@@ -59,8 +59,9 @@ mlir::FailureOr<int64_t> getStaticViewOffsetBytes(mlir::Operation *op,
                                                   llvm::StringRef role);
 mlir::FailureOr<DynamicSubviewAddressPlan>
 analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp);
-mlir::FailureOr<int64_t> getStaticUInt32MaskAddress(mlir::Operation *op,
-                                                    mlir::Value value);
+mlir::FailureOr<int64_t>
+getStaticUInt32SPMAddress(mlir::Operation *op, mlir::Value value,
+                          llvm::StringRef role);
 mlir::FailureOr<int64_t> getStaticSPMAddress(mlir::Operation *op,
                                              mlir::Value value,
                                              llvm::StringRef role);

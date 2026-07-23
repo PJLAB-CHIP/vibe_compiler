@@ -138,7 +138,7 @@ struct TargetUnpoolTransaction {
   InstrUnpoolKind kind;
   uint64_t input;
   uint64_t destination;
-  std::optional<uint32_t> index;
+  std::optional<uint32_t> indexAddress;
   std::array<uint32_t, 4> sourceShape;
   std::array<uint32_t, 4> destinationShape;
   std::array<uint32_t, 4> kernelStrides;

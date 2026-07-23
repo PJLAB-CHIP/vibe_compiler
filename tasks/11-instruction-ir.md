@@ -1,6 +1,6 @@
 # Wafer Instruction IR Design
 
-状态：2026-07-20同步MLIR-native physical-dataflow candidate边界；当前合同覆盖instruction-level hardware invocation IR、
+状态：2026-07-23同步Unpool显式index-buffer dataflow；当前合同覆盖instruction-level hardware invocation IR、
 memref buffer和shared physical geometry/ABI legality。shared verifier 已闭合当前支持子集的静态 DMA descriptor payload/range/
 element-width relation、fill/elementwise/reduce/convert/GEMM element/shape relation、ordinary conv、pool/
 unpool、TDMA pad/img2col和peripheral kind-specific capacity，并在target字段写入前检查ABI narrowing。
@@ -332,7 +332,7 @@ instr-level target kind。
 | CT | `wafer.instr.convert` | future convert lowering | `#wafer.instr_convert_kind` opcode-aligned dtype pair + kind-specific wrapper attrs |
 | NE | `wafer.instr.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
 | NE | `wafer.instr.conv` | future conv lowering / imported target op | basic Conv / Depthwise / BackwardConv packet fields |
-| CT | `wafer.instr.pool` / `wafer.instr.unpool` | future pool/unpool lowering / imported target op | pool indexed-output arity and unpool scalar-index descriptor |
+| CT | `wafer.instr.pool` / `wafer.instr.unpool` | future pool/unpool lowering / imported target op | pool indexed-output arity与i16 index-buffer SSA dataflow |
 | TDMA | `wafer.instr.tdma_data_move` | future structured data-move lowering / imported target op | V0 production target 只允许 pad / img2col；mirror / transpose / rotate / NCHW-NHWC / TensorNom 这类 transform movement 如果以 imported target op 进入 instr IR，必须由 instr lowering 在 target LLVM / package export 前 materialize 成 gather_scatter，或在后续板端验证后再开启 target path |
 | CT | `wafer.instr.peripheral` | future peripheral lowering / imported target op | arg / factorize / bilinear / LUT / random / element-mask target kind；factorize保留IR kind但当前target-illegal；count typed writeback合同见7.7，live implementation在完成前仍拒绝 |
 | DTE | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | accepted `wafer.tile.*` collective p2p schedule | fixed-size unicast Direct DTE invocation over unplaced SPM memrefs |
@@ -794,15 +794,15 @@ wafer.instr.conv #wafer.instr_conv_kind<kind> input, weight into dest attr-dict
     : type(input), type(weight) into type(dest)
 wafer.instr.pool #wafer.instr_pool_kind<kind> input into dests attr-dict
     : type(input) into type(dests)
-wafer.instr.unpool #wafer.instr_unpool_kind<kind> input into dest attr-dict
-    : type(input) into type(dest)
+wafer.instr.unpool #wafer.instr_unpool_kind<kind> input [, index] into dest attr-dict
+    : type(input) [, type(index)] into type(dest)
 ```
 
 | op | operands | result | required attrs |
 | --- | --- | --- | --- |
 | `wafer.instr.conv` | `input: aligned SPM memref`, `weight: aligned SPM memref`, `dest: aligned SPM memref` | none | `kind: #wafer.instr_conv_kind`, `input_shape`, `weight_shape`, `output_shape`, `pads`, `unpads`, `kernel_strides`, `dilations` |
 | `wafer.instr.pool` | `input: aligned SPM memref`, `dests: Variadic<aligned SPM memref>` | none | `kind: #wafer.instr_pool_kind`, `source_shape`, `dest_shape`, `pads`, `kernel_strides` |
-| `wafer.instr.unpool` | `input: aligned SPM memref`, `dest: aligned SPM memref` | none | `kind: #wafer.instr_unpool_kind`, `source_shape`, `dest_shape`, `kernel_strides`; scalar `index` attr required for `unpool` / `mask`, forbidden for `avg` |
+| `wafer.instr.unpool` | `input: aligned SPM memref`, optional `index: aligned i16 SPM memref`, `dest: aligned SPM memref` | none | `kind: #wafer.instr_unpool_kind`, `source_shape`, `dest_shape`, `kernel_strides` |
 
 `#wafer.instr_conv_kind`保留Conv / Depthwise / BackwardConv packet family枚举，但当前production verifier
 只接受ordinary `conv`：input/weight/output attrs必须逐项匹配memref shape，并证明batch/channel、kernel、
@@ -812,10 +812,14 @@ output relation，必须以`unsupported_target_geometry`失败；bias、scale、
 
 `wafer.instr.pool` / `wafer.instr.unpool` 覆盖CT Pool/UnPool wrapper family，并证明source/dest attrs与
 memref shape一致以及batch/channel、kernel/stride/pad的精确输出关系。普通pool kind只有
-一个 value dest；`indexedmax` / `indexedmin` 必须有 value dest 和 i32 index dest。UnPool public
-wrapper 的 indexed/mask variants 使用 scalar `uint32_t index`，不是 index SPM buffer；`avg` variant
-没有 index 参数。shape、pad、stride attr 都是 wrapper-level descriptor 字段，不是 tile-level
-semantic layout 描述；source lowering 需要先把 feature layout materialize 到对应 aligned SPM layout。
+一个 value dest；`indexedmax` / `indexedmin` 必须有 value dest 和同shape的i16 index dest。
+`unpool` / `mask` 必须显式消费同`source_shape`的i16 SPM index operand，并证明其physical capacity能覆盖
+每个source element；`avg`禁止携带index operand。该SSA operand使indexed pool到Unpool的数据依赖和
+MemoryEffects保持可见；旧scalar `index` attr一律拒绝。target lowering只在已规划SPM offset及完整range
+均可静态证明且适配`uint32_t`时，把index memref的SPM起始地址写入既有ABI槽；`avg`向该槽传0。
+因此wrapper中的`uint32_t`是index buffer地址，不是单个索引值。shape、pad、stride attr都是
+wrapper-level descriptor字段，不是tile-level semantic layout描述；source lowering需要先把feature
+layout materialize到对应aligned SPM layout。
 
 ### 7.7 Structured TDMA DataMove / Peripheral
 
@@ -1098,7 +1102,9 @@ R3.2d verifier checks only instruction legality:
   input C匹配weight I，output C匹配weight O。不能把常见`[Kh,Kw,I,O]`直接当作该target wrapper ABI。
 - `wafer.instr.pool` / `wafer.instr.unpool` require aligned SPM operands, matching value element type,
   source/dest attrs equal to memref shapes, and exact batch/channel/spatial output equations. Indexed pool
-  index dest must use i32 element type. Unpool `unpool` / `mask` require scalar uint32 `index`; `avg` forbids it.
+  index dest must use i16 element type. Unpool `unpool` / `mask` require an aligned i16 SPM index operand
+  whose logical shape equals `source_shape` and whose physical capacity covers one entry per source element；
+  `avg` forbids the operand, and the legacy scalar `index` attr is always rejected.
 - `wafer.instr.tdma_data_move` requires SPM source/dest memrefs with matching element type, rank-4
   positive source/dest descriptors equal to memref shapes, and kind-specific descriptor attrs/equations.
   V0 production target only accepts `pad` with exact pad output relation and `img2col` with exact
@@ -1271,8 +1277,10 @@ R3.2d.1 已完成：
    `wafer.instr.reduce`现为不接受init operand/attr的target-native leaf；source tile reduce按init-first canonical-order
    fill/movement/map-free elementwise composite展开，不直接生成该leaf。未来只有compiler-owned full-domain等价证明才能
    选择native reduce，不能由Q22 candidate或CModel policy反向授权。
-5. `wafer.instr.unpool` 已改成 wrapper-aligned scalar `index` attr；`mask` / `unpool` 需要
-   uint32 `index`，`avg` 禁止携带。`wafer.instr.tdma_data_move` verifier 按 kind 检查字段组合：
+5. `wafer.instr.unpool` 已改成显式optional index memref operand；`mask` / `unpool`需要同
+   `source_shape`的aligned i16 SPM buffer，`avg`禁止携带，旧scalar `index` attr一律拒绝。
+   indexed pool的第二个dest同步为i16。target lowering把已证明的静态SPM起始地址写入既有
+   `uint32_t` ABI槽，`avg`传0。`wafer.instr.tdma_data_move` verifier 按 kind 检查字段组合：
    `pad` / `img2col` 是 V0 production target input，transform-like kind 只允许作为 pre-lowering/imported
    instr IR；`transpose`、`mirror`、`rotate*`、NCHW/NHWC 和 TensorNom 由
    `--wafer-convert-tile-region-to-instr` 在 target/package 边界前 materialize；
