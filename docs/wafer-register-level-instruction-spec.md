@@ -160,7 +160,7 @@ command/prototype 的唯一 owner 是 `tasks/14` 及其 public header。
 | CRT 中 packet 初始化形态不能单独判断队列：`TsmDataMoveInstr` 经常先初始化成 `{I_CGRA,{0},{0}}`，但 wrapper 会重写 `inter_type` | wrapper 配置后的最终 `inter_type` 才是反汇编可见的实际队列选择；IR/command mapping 见 `tasks/11`/`tasks/14` |
 | `ENABLE_SYNCHRONOUS_INTRINSIC`控制部分op是否wait，但部分路径仍硬编码`TsmWaitfinish()` | 证明issue与local drain存在不同调用行为；具体completion node和插入点见`tasks/11`/`tasks/13`/`tasks/15` |
 | Kcore 可通过 `get_spm_memory_mapping(offset)` 直接 load/store SPM | 这不是 NCC 指令，静态可见的 NCC dependency detection 不覆盖该访问；跨域可见性和 completion 关系由 `tasks/13`/`tasks/15` 拥有 |
-| `GatherScatter` 明确使用 byte count 和 byte stride | `St_StrideIteration` 的 GatherScatter/strided helper 以 byte 表示 stride；IR 到该单位的转换由 `tasks/11`/`tasks/14` 拥有 |
+| `GatherScatter` 明确使用 byte count 和 byte stride | `St_StrideIteration` 在GatherScatter中以byte表示stride；RDMA/WDMA `ConfigStrideIteration`则使用logical element stride，不能混为同一单位。IR到vendor单位的转换由 `tasks/11`/`tasks/14` 拥有 |
 | ChannelNorm样例通过GatherScatter实现 | 单个样例与native opcode名称都不能证明production eligibility；正式路径见`tasks/11`/`tasks/14` |
 
 ## 指令大类索引
@@ -209,7 +209,7 @@ SCALAR、DTE 或 CSR 存在同形态 packet issue path。production instruction 
 | --- | --- | --- |
 | `Data_Shape` | `n,h,w,c` | NHWC 语义的 tensor descriptor。它不是全局 layout 设计，只是 packet 字段形态 |
 | `St_Elem_Shape` | `elem_count, unit_elem_count, full_elem_count, full_unit_elem_count` | vector/unit-vector/loop 类 CT 指令的元素计数 |
-| `St_StrideIteration` | `stride0, iteration0, stride1, iteration1, stride2, iteration2` | 3 层 strided loop descriptor；逆向确认 DMA/TDMA/DTE 侧 stride 按 byte 建模，wrapper 会把 logical iteration 存成 `iteration - 1` |
+| `St_StrideIteration` | `stride0, iteration0, stride1, iteration1, stride2, iteration2` | 3 层 strided loop descriptor；GatherScatter/TDMA使用byte stride，RDMA/WDMA setter使用logical element stride；wrapper会把logical iteration存成`iteration - 1` |
 
 `Data_Shape` 的 C struct 顺序是 `n,h,w,c`；写入 64-bit `*_tfr`
 register 时则是 C 低位、N 高位：
@@ -752,9 +752,9 @@ RDMA 和 WDMA 共用 `DMA_Param`。读写方向不靠 opcode，而靠 `inter_typ
 | `src/dst` | 源/目标地址 | RDMA: src DDR, dst SPM；WDMA: src SPM, dst DDR |
 | `elem_count` | 最内层连续搬运元素数 | 按 `format` 的元素数，不是 byte 数，除非 wrapper 特别说明 |
 | `format` | 元素 dtype | 映射 `Data_Format` |
-| `stride0/1/2` | byte stride | DMA descriptor 是三层 stride/iteration；逆向确认 wrapper 写入 byte stride。IR 单位转换与 narrowing 由 `tasks/11`/`tasks/14` 拥有 |
+| `stride0/1/2` | logical element stride | RDMA/WDMA setter与LSU register使用元素跨度；Wafer IR/public CRT ABI的byte stride在wrapper边界按format checked-convert。BOOL输入为logical bit stride，setter再pack到byte |
 | `iteration0/1/2` | logical loop count | wrapper 存入硬件字段时使用 `iteration - 1`；logical iteration 为 0 非法 |
-| `src_end/dst_end` | 末字节地址(inclusive) | wrapper 会计算最后访问字节地址。对 strided source/contiguous destination：`src_end = src + inner_bytes + (iter0-1)*stride0 + (iter1-1)*stride1 + (iter2-1)*stride2 - 1`，`dst_end = dst + inner_bytes*iter0*iter1*iter2 - 1`；BOOL 按 bitpack byte 数向上取整 |
+| `src_end/dst_end` | 末字节地址(inclusive) | wrapper从element count/stride乘format width计算末地址；对BOOL先把logical bit count/stride pack为byte。Wafer byte-level descriptor的等价range公式由`tasks/11`拥有 |
 
 反汇编确认的 DMA hardware register offset，相对 NCC worker window base：
 
@@ -777,7 +777,7 @@ RDMA 和 WDMA 共用 `DMA_Param`。读写方向不靠 opcode，而靠 `inter_typ
 | --- | --- |
 | `TsmRdma::AddSrcDst(instr, src, dst, fmt)` | `inter_type=I_RDMA`, `src`, `dst`, `format` |
 | `TsmWdma::AddSrcDst(instr, src, dst, fmt)` | `inter_type=I_WDMA`, `src`, `dst`, `format` |
-| `ConfigStrideIteration(instr, elem_count, stride0, iteration0, stride1, iteration1, stride2, iteration2)` | `elem_count` 和 3 层 byte stride/logical iteration；这就是 CRT 中 `Rdma4d/Wdma4d` helper 的核心配置 |
+| `ConfigStrideIteration(instr, elem_count, stride0, iteration0, stride1, iteration1, stride2, iteration2)` | `elem_count`和3层logical element stride/logical iteration；BOOL使用logical bit count/stride并由setter pack；这是CRT中RDMA/WDMA helper的核心配置 |
 | `TsmRdma` contiguous helper | contiguous RDMA |
 | `TsmWdma` contiguous helper | contiguous WDMA |
 

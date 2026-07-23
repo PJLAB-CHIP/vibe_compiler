@@ -1,6 +1,6 @@
 # K-Sharded GEMM Board Vertical 实施计划
 
-状态：执行中。本文只拆解 full-4096 K-sharded GEMM 从 StableHLO 到真实板端的施工与验证步骤；稳定
+状态：已完成。本文只拆解 full-4096 K-sharded GEMM 从 StableHLO 到真实板端的施工与验证步骤；稳定
 SPMD、tile/dataflow、SPM、communication、target、runtime 和 verification 合同仍由编号设计文档拥有。
 
 ## Pipeline Contract
@@ -55,8 +55,10 @@ Pipeline position:
 - 冻结expected为
   `C[m,n] = ((136 + 16 * (m mod 17)) / 16) * (1 + (n mod 19))`，raw SHA-256为
   `f82ced1cea5d133a8f4640a527025333a80cbf2e49e7a529dc9c7c941e20360f`。
-  最大值465.5；输入、乘积、每rank最终partial和tree collective各层结果均可由f16精确表示，
-  允许本case使用raw byte exact验证目标F16 GEMM/collective，而不把有限样本提升为通用浮点GEMM结论。
+  最大值465.5；输入和每rank最终partial可由f16精确表示。冻结323种`(m mod 17,n mod 19)`组合已经按
+  selected ordered-tree的逐步f16 RNE顺序穷举，虽然21种组合在中间节点发生`0.125`舍入，最终root与冻结expected
+  仍逐bit一致。因此本case可以使用raw byte exact验证该固定payload和执行顺序，而不把有限样本提升为通用浮点
+  GEMM/collective结论。
 - 每rank两个2 MiB输入合计已超过可用SPM窗口，32 MiB replicated output也显著超出该窗口；成功package必须
   通过真实M/N traversal tiling、movement和fixed-capacity planning，不能由single-tile fixture冒充。
 
@@ -83,7 +85,7 @@ collective、memory/effect/token和package resource关系；compiler/runtime代�
 6. **收尾**：同步tasks/16、tasks/17、progress和必要memory，顺序执行full host gate与hardware gate，记录
    unsupported/skipped清单和环境identity；计划归档、队列移入Done Index并提交相关改动。
 
-## 2026-07-22 实际执行记录与当前阻塞
+## 2026-07-22 首次执行记录
 
 本轮从同一full-4096 f16 source重新形成schema-v5/status-v2 package。实际post-SPMD IR为每rank
 `tensor<4096x256xf16> x tensor<256x4096xf16>` local `linalg.matmul`，其结果进入16-rank sum
@@ -140,6 +142,27 @@ case随后在真实板端3.41秒完成，resource 2完整262144 bytes `exact=tru
 该结果证明当前shape上的Tensor→Cx输入、GEMM Cx计算、Cx→Tensor结果和WDMA writeback可形成正确完整输出，并将7月22日
 首错根因从collective排除。all-reduce强制Tensor仍是独立layout优化缺口，但不再作为该numeric mismatch的解释。下一步以
 当前compiler、CRT和Q36 collective实现fresh编译full-4096 package，静态核对新ELF后执行一次16-rank raw-exact board gate。
+
+## 2026-07-23 strided DMA修复与完成证据
+
+rank-one大shape隔离case使用同一production StableHLO入口执行
+`4096x256 x 256x4096 -> 4096x4096`，不做SPMD sharding或communication。planner选择
+`M=512,K=256,N=512`，形成8×8共64个tile；one-hot lhs让CPU expected直接取对应rhs row。修复前该case完成
+trusted terminal、D2H和cleanup，但完整比较在byte 8192，即第二个output row首字节，读到未写回哨兵值。
+
+current Kcore `__set_rdma_config`/`__set_wdma_config`和正常caller共同证明
+`ConfigStrideIteration`的inner与三层stride均以logical element计数；BOOL以logical bit计数，wrapper再pack为byte。
+Wafer Instr/TargetCall/public CRT ABI继续保持byte-level descriptor，CRT到vendor wrapper的唯一边界把
+`inner_bytes`和三层byte stride一起做checked element conversion。旧实现只转换inner，导致f16 strided RDMA/WDMA
+的实际byte hop放大两倍。修复后的fresh ELF反汇编确认f16 inner/stride均除以2；同一rank-one大shape在板端3.24秒完成，
+32 MiB output逐字节`exact=true`。
+
+full-4096 fresh production no-card随后通过。armed hardware CTest连续执行两轮fresh invocation，耗时19.05秒；
+每轮16个rank均达到`entry_return`，resource 2、6、…、62的16份32 MiB output全部逐字节`exact=true`，
+expected SHA-256保持
+`f82ced1cea5d133a8f4640a527025333a80cbf2e49e7a529dc9c7c941e20360f`。执行后只读设备回到
+`9248M / 65536M`、0% utilization、无进程基线，全程未调用retry/reset/power。由此本计划completion gate闭合；
+证据只覆盖固定workload/environment，不完成Q22.C、性能或timing。
 
 ## 不算完成
 

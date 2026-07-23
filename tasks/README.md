@@ -58,9 +58,9 @@
 `tasks/plans/numeric-algebraic-extension.md`。它直接删除physical-dataflow algebraic、reduction/GEMM切分和
 Ring collective中不必要的float类型门槛，以无额外标注的f16/bf16覆盖现有production pipeline，不增加
 frontend mode、私有numeric policy或Tile/Instr carrier。Q36 topology-aware collective lowering已经闭合，
-证据归档为`tasks/archive/topology-aware-collective-lowering.md`。Q35 full-4096 K-sharded GEMM board vertical的
-前置已满足并处于`next`，实施计划仍为`tasks/plans/k-sharded-gemm-board-vertical.md`；恢复时继续复用Q6.B cluster
-Direct DTE路径验证large-shape M/N tiling与communication，不重开runtime ABI，也不单case完成Q22.C。
+证据归档为`tasks/archive/topology-aware-collective-lowering.md`。Q35 full-4096 K-sharded GEMM board vertical也已完成，
+实施与板端重复raw-exact证据归档为`tasks/archive/k-sharded-gemm-board-vertical.md`；它复用Q6.B cluster
+Direct DTE路径闭合large-shape M/N tiling与communication，没有重开runtime ABI，也不单case完成Q22.C。
 Q6.B board runtime完成计划已归档为
 `tasks/archive/runtime-board.md`。Q32 integrated completion audit已归档为
 `tasks/archive/physical-dataflow-synthesis-completion-audit.md`，完成后的实施计划归档为
@@ -97,6 +97,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/k-sharded-gemm-board-vertical.md` | 已完成Q35 full-4096 f16 K-sharded GEMM的production tiling/SPM/Direct-DTE package、纯tiling隔离及16-rank重复板端raw-exact记录 |
 | `tasks/archive/runtime-board.md` | 已完成Q6.B的typed TX board provider、kernel/model多tile launch、cluster Direct DTE、failure lifecycle及真实板端重复exact记录 |
 | `tasks/archive/physical-dataflow-synthesis-completion-audit.md` | 已完成Q32的七checkpoint证据映射、双配置全量门禁、fixed/held-out 7B scale重放、单一production owner及剩余边界审计 |
 | `tasks/archive/physical-dataflow-synthesis.md` | 已完成Q32 MLIR-native bounded physical-dataflow synthesis的施工checkpoint、hard-cap与integrated completion checklist |

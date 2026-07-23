@@ -550,11 +550,11 @@ physical packet：
 | `dst_offset` | `I64Attr` | allocation root内的非负destination byte offset；GatherScatter可选携带；mapped RDMA/WDMA与`src_offset`成对显式携带（包括0） |
 
 contiguous movement 使用 `inner_bytes == byte_count`，stride 全 0，iteration 全 1。byte stride
-必须已经从 element stride 转换完成。硬件 RDMA/WDMA 和 TDMA 都是“最内层连续搬运 +
-三层 byte stride/logical iteration”的 descriptor 模型；RDMA/WDMA packetization 时最内层字段会按
-dtype element count 写入，R3.2d IR 仍用 byte-level `inner_bytes` / `byte_count` 作为统一
-resource/legality 合同。bitpacked BOOL按`inner_bytes * 8`恢复logical element count，并要求乘法结果
-适配`uint32_t`；其它format要求`inner_bytes`被target element byte width整除。descriptor 表达不了的
+必须已经从 element stride 转换完成。R3.2d IR与public CRT ABI统一携带最内层byte count、三层byte stride和
+logical iteration；TX81 RDMA/WDMA `ConfigStrideIteration`则要求inner和stride均为logical element count，
+因此CRT到vendor wrapper边界按dtype同时checked-convert四个byte字段。bitpacked BOOL按`bytes * 8`恢复logical
+bit count并要求乘法结果适配`uint32_t`；其它format要求每个byte字段被target element byte width整除。
+GatherScatter/TDMA仍按各自byte-unit合同处理，不能套用RDMA/WDMA转换。descriptor 表达不了的
 dynamic stride、超过 3 层的静态 stride 或不规则
 非连续访问，R3.2d 必须结构化失败，不能生成名字上合法但下游无法 packetize 的 instruction op。
 compact RDMA/WDMA不携带`src_offset`/`dst_offset`，从operand root与accepted allocation offset形成地址；mapped

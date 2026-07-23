@@ -325,6 +325,9 @@
   `nm`做exact closure；
   `check_target_crt_conformance.py`从instruction verifier、target address lowering和CRT实现交叉证明关系。
   两者都不能解析`tasks/`或supporting Markdown marker作为expected ABI事实源。
+- Wafer RDMA/WDMA Instr、TargetCall和public CRT ABI统一使用byte-level inner/stride；TX81
+  `ConfigStrideIteration`使用logical element count/stride，BOOL使用logical bit count/stride。转换只发生在repo CRT到
+  vendor wrapper的边界，并同时覆盖inner与三层stride；GatherScatter继续使用byte descriptor，不能共用该转换。
 - owner-backed target LLVM在host JIT前使用闭集legality：只允许当前producer需要的integer metadata/control-flow和
   direct registered calls，禁止generic intrinsic、global、pointer memory access、inline asm和间接/未知call；不能只拒绝
   target intrinsic后就native retarget。跨rank可yield frontend必须先materialize全部rank，再由每rank process各调用一次

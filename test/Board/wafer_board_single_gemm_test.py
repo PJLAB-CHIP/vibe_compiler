@@ -15,15 +15,24 @@ import sys
 import numpy as np
 
 
-M = 256
-K = 256
-N = 512
+GEMM_CASE_SHAPES = {
+    "single-tile": (256, 256, 512),
+    "mn-tiled": (4096, 256, 4096),
+}
+M, K, N = GEMM_CASE_SHAPES["single-tile"]
 F16_BYTES = np.dtype("<f2").itemsize
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
 LAUNCH_ABI = "per-rank-pointer-block-v1"
 PROCESS_TIMEOUT_MARGIN_SECONDS = 30
 
-MODULE = f"""\
+
+def configure_gemm_case(name: str) -> None:
+    global M, K, N
+    M, K, N = GEMM_CASE_SHAPES[name]
+
+
+def module_text() -> str:
+    return f"""\
 module {{
   func.func @main(
       %lhs: tensor<{M}x{K}xf16>,
@@ -40,20 +49,24 @@ module {{
 }}
 """
 
-METADATA = {
-    "name": "forward",
-    "stablehlo_version": "0.0.0",
-    "input_signature": [
-        {"shape": [M, K], "dtype": "float16", "dynamic_dims": []},
-        {"shape": [K, N], "dtype": "float16", "dynamic_dims": []},
-    ],
-    "output_signature": [{"shape": [M, N], "dtype": "float16", "dynamic_dims": []}],
-    "input_locations": [
-        {"type_": "input_arg", "position": 0, "name": "lhs"},
-        {"type_": "input_arg", "position": 1, "name": "rhs"},
-    ],
-    "unused_inputs": [],
-}
+
+def metadata() -> dict[str, object]:
+    return {
+        "name": "forward",
+        "stablehlo_version": "0.0.0",
+        "input_signature": [
+            {"shape": [M, K], "dtype": "float16", "dynamic_dims": []},
+            {"shape": [K, N], "dtype": "float16", "dynamic_dims": []},
+        ],
+        "output_signature": [
+            {"shape": [M, N], "dtype": "float16", "dynamic_dims": []}
+        ],
+        "input_locations": [
+            {"type_": "input_arg", "position": 0, "name": "lhs"},
+            {"type_": "input_arg", "position": 1, "name": "rhs"},
+        ],
+        "unused_inputs": [],
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,6 +74,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wafer-compile", type=pathlib.Path, required=True)
     parser.add_argument("--wafer-run", type=pathlib.Path, required=True)
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
+    parser.add_argument(
+        "--gemm-case", choices=tuple(GEMM_CASE_SHAPES), default="single-tile"
+    )
     parser.add_argument("--no-card", action="store_true")
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--expected-runtime-version", type=int)
@@ -106,9 +122,9 @@ def write_source_program(work_dir: pathlib.Path) -> pathlib.Path:
     source = work_dir / "source-program"
     (source / "functions").mkdir(parents=True)
     (source / "data").mkdir()
-    (source / "functions" / "forward.mlir").write_text(MODULE)
+    (source / "functions" / "forward.mlir").write_text(module_text())
     (source / "functions" / "forward.meta").write_text(
-        json.dumps(METADATA, separators=(",", ":")) + "\n"
+        json.dumps(metadata(), separators=(",", ":")) + "\n"
     )
     return source
 
@@ -236,13 +252,19 @@ def write_payloads(
 ) -> list[str]:
     raw = work_dir / "raw"
     raw.mkdir()
-    lhs = np.eye(M, K, dtype="<f2")
+    rows = np.arange(M, dtype=np.int32)
+    lhs = np.zeros((M, K), dtype="<f2")
+    lhs[rows, rows % K] = np.float16(1.0)
     k_indices = np.arange(K, dtype=np.int32)[:, None]
     n_indices = np.arange(N, dtype=np.int32)[None, :]
     rhs = (1 + ((k_indices * 17 + n_indices * 3) % 1024) / 8).astype("<f2")
-    expected = rhs.copy()
-    if not np.array_equal(lhs.astype(np.float32) @ rhs.astype(np.float32), expected):
-        raise RuntimeError("standalone GEMM CPU identity oracle is invalid")
+    expected = rhs[rows % K, :].copy()
+    if (
+        np.count_nonzero(lhs) != M
+        or not np.all(lhs[rows, rows % K] == np.float16(1.0))
+        or expected.shape != (M, N)
+    ):
+        raise RuntimeError("standalone GEMM one-hot CPU oracle is invalid")
 
     paths = {
         ("user_input", 0): raw / "lhs_identity.f16.raw",
@@ -300,6 +322,7 @@ def verify_board_evidence(stdout: str, output_id: int) -> None:
 
 def main() -> int:
     args = parse_args()
+    configure_gemm_case(args.gemm_case)
     if args.repeat < 1 or args.completion_timeout_ms < 1:
         raise RuntimeError("repeat and completion timeout must be positive")
     if not args.no_card and os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":

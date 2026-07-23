@@ -160,6 +160,19 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     LABELS "runtime;no-card;single-op;gemm"
     TIMEOUT 600
   )
+  add_test(NAME wafer-runtime-mn-tiled-gemm-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_single_gemm_test.py
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/runtime-mn-tiled-gemm-no-card
+      --gemm-case mn-tiled
+      --no-card
+  )
+  set_tests_properties(wafer-runtime-mn-tiled-gemm-no-card PROPERTIES
+    LABELS "runtime;no-card;single-op;gemm;tiling"
+    TIMEOUT 600
+  )
 endif()
 
 if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
@@ -252,6 +265,29 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
   )
   set_tests_properties(wafer-board-single-gemm PROPERTIES
     LABELS "board;hardware;single-op;gemm"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 600
+  )
+  add_test(NAME wafer-board-mn-tiled-gemm
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_single_gemm_test.py
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/board-mn-tiled-gemm
+      --gemm-case mn-tiled
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 60000
+      --repeat 1
+  )
+  set_tests_properties(wafer-board-mn-tiled-gemm PROPERTIES
+    LABELS "board;hardware;single-op;gemm;tiling"
     RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
     SKIP_RETURN_CODE 77
     TIMEOUT 600

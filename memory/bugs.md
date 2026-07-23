@@ -1104,3 +1104,16 @@
   checker锁定该映射，fresh ELF反汇编确认实际寄存器参数。
 - 防复发：板端GEMM隔离case使用单位lhs和同时随K/N变化的非对称rhs，使oracle直接为`C=B`；payload选择f16精确可表示值，
   比较完整raw output，并在执行前后只读检查设备基线。只用对称/常量rhs、host CModel或no-card不能证明raw orientation。
+
+## 2026-07-23 Wafer byte-level DMA stride必须在TX81 wrapper边界转换成element stride
+
+- 现象：无sharding/communication的f16大shape GEMM完成trusted terminal和cleanup，但32 MiB output从第二行开始出现
+  未写回哨兵；single-tile GEMM因RDMA/WDMA均为contiguous而未暴露。full K-sharded GEMM也发生数值错误。
+- 根因：Wafer Instr/TargetCall/public CRT ABI以byte表达`inner_bytes`和三层stride；TX81
+  `ConfigStrideIteration`却要求inner和stride均为logical element count，BOOL要求logical bit count。CRT旧实现只转换
+  inner，f16 strided RDMA/WDMA把byte stride直接当element stride，使实际byte hop放大两倍。
+- 修复模式：仅在CRT到vendor wrapper的边界对inner与三层stride统一checked-convert；i16/f16/bf16除2，
+  i32/f32除4，i64除8，byte format保持，BOOL乘8并检查溢出。Wafer IR/public ABI和GatherScatter byte-unit合同不变。
+- 防复发：conformance checker锁定RDMA/WDMA四个字段的转换；板端同时保留single-tile和rank-one
+  `4096x256 x 256x4096`纯tilingcase，后者完整比较32 MiB output。最终full-4096 16-rank case连续两轮验证16份
+  32 MiB output逐字节exact；contiguous小case不能替代strided descriptor覆盖。

@@ -69,7 +69,7 @@ names alone do not establish relationships between those layers.
 |---|---|---|
 | Instruction wrapper API | `TsmElemWise`, CT relation/logic/reduce/convert/peripheral helpers | Function family, opcode range, address-versus-scalar operand role, dtype storage size, bool packing, end-field behavior, writeback behavior, and observed field bounds. |
 | Instruction wrapper API | `TsmConv`, `TsmDepthWiseConv`, `TsmGemm` | Argument-to-field mapping for input/weight/output/psum/bias/scale/sparse/quant/pad/stride/dilation/GEMM MKN/batch/trans flags, plus shape and quant bounds. |
-| Instruction wrapper API | `TsmRdma`, `TsmWdma`, `TsmDataMove`, `TsmPeripheral` | DDR/SPM direction, family-specific element/byte count, byte-stride and iteration units, `iteration-1` encoding, TDMA opcodes, and register window offsets. |
+| Instruction wrapper API | `TsmRdma`, `TsmWdma`, `TsmDataMove`, `TsmPeripheral` | DDR/SPM direction, family-specific element/byte count and stride units, `iteration-1` encoding, TDMA opcodes, and register window offsets. |
 | CSR/reserved API | CSR helpers and `I_SCALAR` | CSR status bit meanings and worker addressing are recovered; scalar packet execution is a stub with no observed register emission. Production acceptance belongs to `tasks/11` and `tasks/14`. |
 | Kcore hardware API | DTE | Register fields, mode/user_id bits, high-level modes, source/destination setup, shuffle stride encoding, trigger, done/error return codes, and packet-counter update format. |
 | Kcore hardware API | Stream FSM and mailbox | Stream config layout, packet counters, online/offline/request/push/pop payloads, mailbox TX/RX window protocol, payload register count, and observed status handling. |
@@ -79,8 +79,8 @@ names alone do not establish relationships between those layers.
 | HPGR/KMD API | `tx_runtime.h`, KMD UAPI | CUDA-like device/memory/stream/event/model/module API, command completion, BO pools, job/DTE/C2C ioctl surfaces, PG tile map, and BAR/ATU address-space handling. |
 
 Interface units are explicit in the relevant sections: tensor element counts for
-CT/NE logical work, packed bytes for bool storage, byte strides for DMA/TDMA/DTE
-stride fields, byte lengths for DTE transfers, and device physical addresses for
+CT/NE logical work, packed bytes for bool storage, logical element strides for
+RDMA/WDMA, byte strides for TDMA/DTE fields, byte lengths for DTE transfers, and device physical addresses for
 runtime bootparams and dyn-data buffers.
 
 ## 2. TX8 Hardware Surface Map
@@ -514,7 +514,7 @@ Packet type: `DMA_Param`.
 |---|---|
 | `Rdma::AddSrcDst(src,dst,fmt)` | Sets `inter_type=I_RDMA`, `cmd_valid=1`, `src=src` DDR, `dst=dst` SPM, `format=fmt`. |
 | `Wdma::AddSrcDst(src,dst,fmt)` | Sets `inter_type=I_WDMA`, `cmd_valid=1`, `src=src` SPM, `dst=dst` DDR, `format=fmt`. |
-| `ConfigStrideIteration(elem_count, stride0, iteration0, stride1, iteration1, stride2, iteration2)` | Stores byte strides and stores each logical iteration as `iteration - 1`; zero logical iteration is invalid. |
+| `ConfigStrideIteration(elem_count, stride0, iteration0, stride1, iteration1, stride2, iteration2)` | Stores logical element strides and each logical iteration as `iteration - 1`; BOOL inputs are logical bit counts/strides and are packed by the setter; zero logical iteration is invalid. |
 | contiguous helper API | Build a single contiguous movement, infer stride and end fields from format and element count. |
 
 RDMA register offsets:

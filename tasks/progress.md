@@ -83,17 +83,16 @@ target encoding以及integer overflow/no-wrap检查保持；f16/bf16是compiler�
 
 Q36已闭合current topology/execution mesh到compiler-private Ring/ordered-Tree参数、explicit p2p instruction、
 collective completion和whole-card minimum-hop cost的事实链；详细证据见
-`tasks/archive/topology-aware-collective-lowering.md`。Q35已恢复为当前`doing`并继续消费
-Q6.B已闭合的cluster Direct DTE launch/runtime，不重开provider机制；重点验证
-显式SPMD contracting shard、large-shape M/N tiling、fixed-capacity SPM、local GEMM与all-reduce的完整production
-package及板端exact。Q6.B已闭合四条typed board launch/runtime路径，包括独立Direct DTE
+`tasks/archive/topology-aware-collective-lowering.md`。Q35已完成并消费
+Q6.B已闭合的cluster Direct DTE launch/runtime，形成显式SPMD contracting shard、large-shape M/N tiling、
+fixed-capacity SPM、local GEMM与all-reduce的完整production package及板端exact证据。Q6.B已闭合四条typed board launch/runtime路径，包括独立Direct DTE
 placement/readiness/completion、重复完整CPU exact和清理后资源基线；详细合同与证据由tasks/13-16及
 `tasks/archive/runtime-board.md`拥有。
-Q35当前已通过full-4096 f16 production compile/no-card并静态确认`M=256,K=256,N=512`、每rank128个tile和256 KiB
-DTE payload；首次真实board invocation的`expected=0x40, actual=0x46`已由无communication standalone GEMM隔离到CRT
-RHS raw transpose bit错误。semantic NN到hardware `(0,1)`的通用映射修复后，同一实际tile shape的rank-one f16 GEMM
-完整262144-byte raw exact通过，设备回到`9248M / 65536M`、0% utilization、无进程基线。Q35仍不能标done；下一步是以
-当前compiler/CRT和collective实现fresh重放full-4096 16-rank board gate，执行记录见当前Q35实施计划。
+Q35 full-4096 f16 production静态确认`M=256,K=256,N=512`、每rank128个tile和256 KiB DTE payload；
+先后修复CRT RHS raw transpose映射和RDMA/WDMA byte-stride到vendor element-stride的边界转换。无sharding的
+`4096x256 x 256x4096`纯tiling隔离case完整32 MiB raw exact；最终16-rank full case连续两轮均由16个rank
+正常完成，16份32 MiB output逐字节exact，cleanup后设备回到`9248M / 65536M`、0% utilization、无进程基线。
+完成记录见`tasks/archive/k-sharded-gemm-board-vertical.md`。
 Q32已完成integrated completion audit；该完成不会让其它
 later/external gate自动进入主线。
 
@@ -107,7 +106,7 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 | --- | --- | --- | --- | --- | --- |
 | Q32.N | `numeric-algebraic-extension` | `done` | Q32 | algebraic candidate、generic reduction、named GEMM K切分和Ring collective已删除仅因float或缺少额外fast-math标注而拒绝的分支；f16/bf16无标注正向覆盖actual mutation、frontier和Tile/Instr lowering，integer overflow/no-wrap及真实结构、资源和target负例保持。未新增frontend mode、私有数值policy或IR carrier。 | 05-07、10-11、13、16；`tasks/plans/numeric-algebraic-extension.md` |
 | Q36 | `topology-aware-collective-lowering` | `done` | Q32 | current typed topology/mesh派生rank placement、exact bounded Ring与保持rank_group中序的ordered Tree；collective correctness/completion、singleton identity和final p2p minimum-hop whole-card cost闭合，不声明route/cycle/timing。 | 04、06、11、13、16、18；`tasks/archive/topology-aware-collective-lowering.md` |
-| Q35 | `k-sharded-gemm-board-vertical` | `doing` | Q32、Q6.B、Q36 + configured board | full-4096 f16 GEMM由显式row/contracting SPMD形成16份local K=256 GEMM和sum all-reduce；production可继续选择rank-local K chunk，并闭合M/N tiling、SPM/DDR、Direct DTE、shared ELF、no-card与完整板端raw exact。单-rank无通信f16 GEMM已隔离并修复CRT RHS raw transpose bit，完整raw exact通过；当前重放fresh 16-rank full-4096 gate。只形成该case/environment的workload-level evidence，不新增ABI、不完成Q22.C或timing。 | 02、03、05-07、09、10、13-17；`tasks/plans/k-sharded-gemm-board-vertical.md` |
+| Q35 | `k-sharded-gemm-board-vertical` | `done` | Q32、Q6.B、Q36 + configured board | full-4096 f16 GEMM由显式row/contracting SPMD形成16份local K=256 GEMM和sum all-reduce；production闭合M/N tiling、SPM/DDR、Direct DTE、shared ELF、no-card与完整板端raw exact。修复CRT GEMM raw orientation及strided RDMA/WDMA element-unit边界后，纯tiling 32 MiB exact，16-rank full case连续两轮16份32 MiB output全部exact并回到设备基线。只形成该case/environment的workload-level evidence，不新增ABI、不完成Q22.C或timing。 | 02、03、05-07、09、10、13-17；`tasks/archive/k-sharded-gemm-board-vertical.md` |
 | Q32.I | `mlir-native-implementation-relation-foundation` | `done` | Q29、Q28、Q30、Q31 | source OpInterface/external models已让generic division与target reciprocal两种真实implementation进入complete clone；MLIR Affine/Presburger/ValueBounds IndexRelation foundation与precision/failure/property gate闭合；重复DPS/Tiling语义的WaferTilingInterface已删除。证据见`tasks/archive/mlir-native-implementation-relation-foundation.md`。 | 01、06、08、10、13、16、18；`tasks/archive/physical-dataflow-synthesis.md` A/B |
 | Q32.R | `physical-relation-realization` | `done` | Q32.I | rich IndexRelation查询、physical encoding attr interface、TransferRealizability、destination-style StorageLoad和relation-backed resident handoff已闭合；非7B source删除真实中间WDMA/RDMA，标准7B source选择26条handoff并通过fresh TP16 package/SystemC/PyTorch gate。证据见`tasks/archive/physical-relation-realization.md`。 | 06-11、16、18；同计划C |
 | Q32.B | `physical-dataflow-test-seam-vertical` | `done` | Q32.R、Q34 | compiler-private production-shaped seam已让conservative spill唯一reserved baseline与spill/resident optimized actual clones共同进入rank frontier；rank只做SPM，all-rank disposable tuple重做DDR及全部late gate，1/16-rank与标准7B source-to-package/SystemC/PyTorch及determinism/atomic gate通过。证据见`tasks/archive/physical-dataflow-test-seam-vertical.md`。 | 01、06-18；同计划D |
@@ -180,8 +179,8 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 ## 实施计划入口
 
-- 当前active implementation task：Q35 `k-sharded-gemm-board-vertical`，见
-  `tasks/plans/k-sharded-gemm-board-vertical.md`。
+- 当前无active implementation task；最新完成任务Q35见
+  `tasks/archive/k-sharded-gemm-board-vertical.md`。
 - Q6.B完成计划见`tasks/archive/runtime-board.md`。
 - Completed task：Q32 `physical-dataflow-synthesis`，完成审计见
   `tasks/archive/physical-dataflow-synthesis-completion-audit.md`，实施计划见

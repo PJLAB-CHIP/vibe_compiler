@@ -1214,14 +1214,23 @@ StableHLO program directory经`wafer-compile`完整形成schema-v5/status-v2、o
 
 该证据只覆盖冻结shape、dtype、payload和绑定environment的workload-level board execution。它不新增model launch ABI，
 不声明type-6/type-7 model+Direct DTE、physical tile coordinate、通用GEMM numeric profile、Q22.C完成、性能或timing。
-稳定pipeline contract和实施checkpoint见`tasks/plans/k-sharded-gemm-board-vertical.md`。
+稳定pipeline contract和完成checkpoint见`tasks/archive/k-sharded-gemm-board-vertical.md`。
 
 2026-07-22首次Q35 live evidence尚未通过本gate：production no-card通过，selected ELF确认`M=256,K=256,N=512`、
 每rank16×8 traversal和262144-byte per-tile DTE；armed invocation完成trusted terminal、D2H和cleanup后，在首个output
 resource的byte 0得到`expected=0x40, actual=0x46`。执行后只读设备资源回到`9248M / 65536M`、0% utilization、无进程，
 全程未retry/reset/power，因此按本合同归类为clean compiler/runtime numeric mismatch而非provider poison。当前IR还确认
 GEMM使用Cx，而all-reduce的两级lowering均强制Tensor；该layout round-trip必须与GEMM orientation/segment和collective
-accumulation分别隔离，尚不能从首字节差异直接定责。完整命令、payload digest和后续检查点由Q35实施计划记录。
+ accumulation分别隔离，尚不能从首字节差异直接定责。完整命令、payload digest和后续检查点由Q35实施计划记录。
+
+2026-07-23 Q35 completion evidence：无sharding/communication的rank-one
+`4096x256 x 256x4096 -> 4096x4096` production case先隔离出strided DMA问题。Wafer byte-level descriptor到
+TX81 `ConfigStrideIteration` element-unit API的CRT边界现同时checked-convert inner与三层stride；修复后的纯tiling
+32 MiB output逐字节exact。full-4096 production no-card通过后，armed hardware CTest连续两轮均由16个rank正常
+`entry_return`，每轮16份32 MiB output全部逐字节exact，expected SHA-256为
+`f82ced1cea5d133a8f4640a527025333a80cbf2e49e7a529dc9c7c941e20360f`；cleanup后只读设备回到
+`9248M / 65536M`、0% utilization、无进程基线，全程未retry/reset/power。Q35 workload-level gate由此完成，
+不改变本节的Q22.C、性能、timing和physical-coordinate非目标。
 
 ### 12.2 Topology-Aware Collective Lowering Gate
 

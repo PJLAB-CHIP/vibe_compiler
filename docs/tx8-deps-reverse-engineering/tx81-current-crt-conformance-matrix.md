@@ -20,7 +20,7 @@ prototype与repo-local实现分别查看`runtime/wafer_crt/include/wafer_tx81_cr
 
 | family | old-source / public-header evidence | repo-local implementation observation |
 | --- | --- | --- |
-| RDMA / WDMA | `__Rdma4d`, `__Wdma4d` call `AddSrcDst` and `ConfigStrideIteration`; old generic helpers also contain a vectorize fallback | Wafer compiler/CRT用checked conversion把`inner_bytes`转为element count：bitpacked BOOL要求`inner_bytes <= UINT32_MAX / 8`并计算`bytes * 8`，其它format要求可被element byte width整除；不满足时fail closed，不做截断除法或溢出乘法 |
+| RDMA / WDMA | `__Rdma4d`, `__Wdma4d` call `AddSrcDst` and `ConfigStrideIteration`；Kcore setter及正常caller证明inner和三层stride均为logical element count，BOOL为logical bit count；old generic helpers also contain a vectorize fallback | Wafer compiler/CRT public descriptor保持byte unit；CRT到vendor wrapper边界对`inner_bytes`和三层byte stride统一做checked conversion：bitpacked BOOL要求字段`<= UINT32_MAX / 8`并计算`bytes * 8`，其它format要求可被element byte width整除；不满足时fail closed，不做截断除法或溢出乘法 |
 | GatherScatter | `__GatherScatter` and `__Memcpy` expose source/destination stride-iteration ordering | Wafer CRT passes byte `inner_bytes` and separate source/destination descriptors to `GatherScatter` |
 | Memset / Bit2Fp / MaskMove | old direct helpers and public wrapper declarations expose these operations; the public MaskMove field is `uint32_t` | Wafer CRT header/source都以`uint32_t mask`调用public wrapper，不含隐藏cast；compiler lowering证明mask来自已规划SPM allocation、view/range不越界且完整physical address range适配`uint32_t`后才发i32参数 |
 | Elementwise arithmetic / relation / logic | `arith.c`, `relation.c`, `logic.c` and unary files contain VV, VS, bool and value wrapper variants | Wafer CRT source defines per-kind wrapper calls; relation/logic macros branch on `Fmt_BOOL` |

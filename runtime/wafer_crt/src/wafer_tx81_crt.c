@@ -384,14 +384,21 @@ void wafer_tx81_rdma(uint64_t src, uint64_t dst, uint32_t byte_count,
                      uint32_t stride2, uint32_t iteration0, uint32_t iteration1,
                      uint32_t iteration2, uint32_t format) {
   uint32_t inner_elements = 0;
+  uint32_t stride0_elements = 0;
+  uint32_t stride1_elements = 0;
+  uint32_t stride2_elements = 0;
   (void)byte_count;
-  if (!wafer_elem_count_from_bytes(inner_bytes, format, &inner_elements))
+  if (!wafer_elem_count_from_bytes(inner_bytes, format, &inner_elements) ||
+      !wafer_elem_count_from_bytes(stride0, format, &stride0_elements) ||
+      !wafer_elem_count_from_bytes(stride1, format, &stride1_elements) ||
+      !wafer_elem_count_from_bytes(stride2, format, &stride2_elements))
     return;
   TsmRdmaInstr instr = {0};
   TsmRdma *rdma = TsmNewRdma();
   rdma->AddSrcDst(&instr, src, dst, wafer_format(format));
-  rdma->ConfigStrideIteration(&instr, inner_elements, stride0, iteration0,
-                              stride1, iteration1, stride2, iteration2);
+  rdma->ConfigStrideIteration(
+      &instr, inner_elements, stride0_elements, iteration0, stride1_elements,
+      iteration1, stride2_elements, iteration2);
   wafer_execute_rdma(&instr);
   TsmDeleteRdma(rdma);
 }
@@ -401,14 +408,21 @@ void wafer_tx81_wdma(uint64_t src, uint64_t dst, uint32_t byte_count,
                      uint32_t stride2, uint32_t iteration0, uint32_t iteration1,
                      uint32_t iteration2, uint32_t format) {
   uint32_t inner_elements = 0;
+  uint32_t stride0_elements = 0;
+  uint32_t stride1_elements = 0;
+  uint32_t stride2_elements = 0;
   (void)byte_count;
-  if (!wafer_elem_count_from_bytes(inner_bytes, format, &inner_elements))
+  if (!wafer_elem_count_from_bytes(inner_bytes, format, &inner_elements) ||
+      !wafer_elem_count_from_bytes(stride0, format, &stride0_elements) ||
+      !wafer_elem_count_from_bytes(stride1, format, &stride1_elements) ||
+      !wafer_elem_count_from_bytes(stride2, format, &stride2_elements))
     return;
   TsmWdmaInstr instr = {0};
   TsmWdma *wdma = TsmNewWdma();
   wdma->AddSrcDst(&instr, src, dst, wafer_format(format));
-  wdma->ConfigStrideIteration(&instr, inner_elements, stride0, iteration0,
-                              stride1, iteration1, stride2, iteration2);
+  wdma->ConfigStrideIteration(
+      &instr, inner_elements, stride0_elements, iteration0, stride1_elements,
+      iteration1, stride2_elements, iteration2);
   wafer_execute_wdma(&instr);
   TsmDeleteWdma(wdma);
 }

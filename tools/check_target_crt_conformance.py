@@ -554,7 +554,17 @@ def check_dma(source_text: str) -> None:
         "!wafer_elem_count_from_bytes(inner_bytes, format, &inner_elements)",
         "RDMA checked inner byte to element conversion",
     )
-    require_contains(rdma, "&instr, inner_elements", "RDMA checked element count")
+    for index in range(3):
+        require_contains(
+            rdma,
+            f"!wafer_elem_count_from_bytes(stride{index}, format, &stride{index}_elements)",
+            f"RDMA checked stride{index} byte to element conversion",
+        )
+    require_contains(
+        rdma,
+        "&instr, inner_elements, stride0_elements, iteration0, stride1_elements",
+        "RDMA checked element geometry",
+    )
 
     wdma = function_body(source_text, "wafer_tx81_wdma")
     require_contains(wdma, "(void)byte_count;", "WDMA")
@@ -564,7 +574,17 @@ def check_dma(source_text: str) -> None:
         "!wafer_elem_count_from_bytes(inner_bytes, format, &inner_elements)",
         "WDMA checked inner byte to element conversion",
     )
-    require_contains(wdma, "&instr, inner_elements", "WDMA checked element count")
+    for index in range(3):
+        require_contains(
+            wdma,
+            f"!wafer_elem_count_from_bytes(stride{index}, format, &stride{index}_elements)",
+            f"WDMA checked stride{index} byte to element conversion",
+        )
+    require_contains(
+        wdma,
+        "&instr, inner_elements, stride0_elements, iteration0, stride1_elements",
+        "WDMA checked element geometry",
+    )
 
 
 def check_gather_scatter_and_mask(
