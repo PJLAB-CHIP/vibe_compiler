@@ -88,6 +88,14 @@ multi-tile arrival、launch ABI与PMU measurement basis。每个维度必须得�
 IR上物化显式multi-buffer、prologue/steady/epilogue、resource-aware issue order和latest-legal wait/fence，并让
 每个actual clone重新经过SPM/DDR、instruction、target、package与board correctness gate。计划见
 `tasks/plans/multi-engine-software-pipelining.md`。
+Q37的instruction qualification子阶段先冻结完整case规划，再进入probe实现：CT按公开opcode `0..186`
+逐段覆盖arithmetic/relation/logic/transcendental/activation/reduce/pool/unpool/DataMove/convert/peripheral，
+显式区分`VV/VS/VuV/VuVLoop`、FP16/BF16/FP32、value/bitpacked BOOL、Tensor/NTensor/Cx/NCx以及
+calibration/held-out；NE单独覆盖FP16/BF16 large/tail/batch/orientation和Conv/Depthwise option，
+Concat、GatherScatter broadcast及其它DataMove使用非对称large-shape physical oracle。所有组合必须有
+`board-positive/static-negative/isolated-deferred`去向；同一resource class后续共享package，local
+instruction/layout默认单tile执行，只有rank-dependent语义才启动多rank。本批只收敛规划，不修改probe或
+production代码。
 当前queue active occupancy与full行为仍在Q37内保持`unknown`：静态depth不直接作为occupancy证据。普通
 calibration只运行1/2/4（TDMA 1/2）。修正builder生命周期和逐issue观察位置后，CT/NE/RDMA/WDMA exact
 `D=6`与TDMA exact `D=4`已分别由单engine、单case、单样本及前后known-good Add heartbeat闭合

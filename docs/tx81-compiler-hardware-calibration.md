@@ -142,6 +142,82 @@ known-good Add heartbeat完整通过：`instruction_delta=6/6/6/4`，对应engin
 这些向量闭合当前profile的submission/completion/count/output/guard，但不证明active occupancy、full或
 backpressure。
 
+### 2.5 Instruction、dtype、layout 与 shape 覆盖合同
+
+instruction-family qualification不能再用“某条FP16 Add通过”代表CT，也不能用“同一数学shape在host上
+连续”代表所有device layout。校准矩阵的一个row由下面的typed tuple唯一确定：
+
+```text
+(engine, opcode/kind, operand form, input/output dtype, input/output layout,
+ logical shape class, physical tail class, numeric domain, oracle)
+```
+
+其中opcode universe以current version-matched vendor header和`instr_def.h`为静态输入：CT opcode
+`0..186`覆盖arithmetic、relation、logic、transcendental、activation、reduce、pool/unpool、DataMove、
+convert和peripheral；NE另覆盖GEMM、Conv与DepthwiseConv配置面；RDMA、WDMA、TDMA GatherScatter和Direct
+DTE分别保留自己的descriptor/transport矩阵。catalog必须对每个公开entry给出以下三种 disposition 之一，
+不能因没有实现case而从清单消失：
+
+- `board-positive`：已具备固定输入、完整expected、physical write span和guard，可进入隔离板端suite；
+- `static-negative`：该dtype/layout/form在当前typed compiler/ABI中明确非法，由verifier、lowering或
+  required-symbol gate拒绝，不发射raw packet；
+- `isolated-deferred`：header/opcode存在，但语义、writeback、随机性、别名或completion边界尚不足以形成
+  强oracle；只做constructor/packet/link静态检查，待独立manual gate，不能计为功能覆盖。
+
+浮点CT的基础dtype矩阵为FP16、BF16和FP32。普通值域、signed zero、Inf、subnormal、NaN分别记账；
+没有NaN payload/quieting证据时不能由普通值结果外推。convert按opcode的完整source/destination pair记账，
+integer、TF32和rounding mode不能折进“FP16/BF16/FP32已测”。relation同时区分value output和bitpacked bool
+output；logic同时区分value logic和bitpacked bool logic。operand form至少包括：
+
+| 指令组 | 必须区分的form |
+| --- | --- |
+| arithmetic binary | `VV`、`VS`、`VuV`、`VuVLoop` |
+| relation | 六种predicate × `VV/VS/VuV/VuVLoop` × value/bool output |
+| logic | value `V/VV/VuV/VuVLoop`与bitpacked bool `V/VV/VuV/VuVLoop` |
+| unary/transcendental/activation | 各公开opcode的vector form |
+| reduce/pool/unpool | kind、axis/window、indexed/non-indexed output及dtype |
+| DataMove | mirror、transpose、rotate、NCHW/NHWC、concat、pad、Img2Col、TensorNom、
+  GatherScatter、MaskMove/MaskGather；compiler broadcast另按GatherScatter materialization验证 |
+| peripheral | count/arg、memset、bit2fp、bilinear、LUT、rand/factorize/elem-mask按各自arity和
+  writeback/randomness disposition |
+
+这里的三种“broadcast”不能合并：CT `VuV/VuVLoop`是短向量operand form；source/tile broadcast在
+current production pipeline中materialize为一条或多条typed GatherScatter；raw Direct DTE broadcast属于
+multi-destination communication ABI。三者的地址、completion和consumer不同。
+
+layout矩阵以`Tensor/NTensor/Cx/NCx`的真实physical encoding为准，而不是为每个opcode盲做笛卡尔积：
+
+| layout row | 正向检查 | 必须区分的negative/边界 |
+| --- | --- | --- |
+| compact `Tensor/NTensor` | logical element、physical span、tail和guard一致 | rank/shape/dtype不匹配、越界descriptor |
+| `Cx` | full channel block、compact `C0` tail、256B physical padding逐段oracle | `C=B-1/B/B+1`及第二个full block后tail；padding不能按逻辑值外推 |
+| `NCx` | 每个N slice独立Cx block/tail，跨N步进和整份footprint正确 | 不得把rank-3/4静默flatten成Cx；N slice间guard/poison不得串扰 |
+| layout materialization | Tensor↔Cx/NCx、transpose、slice、broadcast、concat由显式movement覆盖
+  all-and-only logical points | 不能把native transform、metadata view和GatherScatter composite混成一条能力 |
+
+current production CT elementwise仍只接受`Tensor/no-invalid-lane`。Cx/NCx row只有在显式
+Tensor↔Cx/NCx materialization后执行CT，或未来建立segmented/full-physical typed TargetCall、CRT和SystemC
+纵向后，才能成为正向production case；raw packet直接扫physical footprint只能校准hardware行为，不能绕过
+compiler legality。plain GEMM按rank-2 Cx验证，batched GEMM按单leading-batch NCx验证；Conv/Pool类按其
+NHWC/NCx wrapper关系独立验证，不能从GEMM layout外推。
+
+为避免只测启动开销，新的数值/布局row使用有诊断能力的中等shape：
+
+- CT Tensor主向量使用至少8192个logical element，并另设非256B整除的held-out tail；`VuV`使用不超过
+  64的非平凡unit，`VuVLoop`同时让full与tail字段非零；
+- Cx/NCx至少覆盖`C=63/64/65/127/129`中的block边界和`N>1, H*W>1`，每个physical padding区保持独立
+  canary；
+- NE FP16/BF16至少覆盖`M=64,K=128,N=128`的非平凡累加、`M=65,K=129,N=129`的M/K/N tail、batch2及
+  NN/NT/TN/TT中合法组合；每个case分别记录logical output与physical Cx/NCx span；
+- transform/layout movement使用至少数千元素并采用非对称维度，防止1x1、方阵或全零输入掩盖轴顺序。
+
+完整矩阵按opcode/form、dtype、layout/shape-class分suite串行执行，不要求一次进程跑完全部case。每个
+board-positive row仍是独立launch和外层timeout；安全deterministic suite在批次前后做known-good heartbeat，
+queue/deferred/random/multi-writeback等高风险manual row才逐case做前后heartbeat。no-card preflight只闭合
+catalog、oracle、compiler verifier、device object/link和package协议，不能把row状态升级为
+`board-observed`或`calibrated`。本节当前只冻结case规划和准入合同；probe、catalog与oracle实现放在规划
+评审后，不在同一批文档修改中提前展开。
+
 本轮取得显式manual授权以区分“静态depth”和“总提交数”后，五类engine分别执行typed tight `D+1`
 manual gate：CT/NE/RDMA/WDMA各连续提交7条，TDMA连续提交5条；每个向量仍为单engine、单case、单样本，
 packet builder预先释放，相邻`TsmExecute`之间不插入register MMIO，window后才执行matching wait和完整
@@ -154,7 +230,7 @@ documented depth不是一次完整submission/completion lifetime的总提交上�
 只保留为隔离manual gate；任意更深提交在真实occupancy/full行为闭合前仍不执行。单次cycle与engine
 execution delta只保留为原始profile样本，不外推为固定cost。
 
-### 2.5 DTE/SPM PMU有效样本边界
+### 2.6 DTE/SPM PMU有效样本边界
 
 DTE/NCC有序交互probe使用独立transport PMU采样合同。设备按high-low-high读取DTE channel与SPM port
 64-bit counter，同时记录window前的enable值、window内enable是否变化和stable mask；host只有在DTE
@@ -178,7 +254,9 @@ measurement basis仍为`unknown`。
 | constructor ownership | instruction method-table对象可以位于local地址0；allocation成功不能由pointer truthiness判断 | 第一份raw constructor，精确PMU count和结果；显式ownership bit控制delete | 14 CRT lowering与probe infrastructure | `calibrated` |
 | execute result | `TsmExecute`成功和invalid type路径都可返回1，raw rc不能区分成功 | packet legality、目标queue count和结果共同判定 | 14/15 structured error boundary | `calibrated`；rc只记录不判成功 |
 | packet routing/range | `inter_type`映射、worker编码、begin/end materialization和inclusive end | 五类单engine，执行后读实际register/packet，完整结果 | 11/14 instruction legality | CT/NE/RDMA/WDMA部分`board-observed`；TDMA Memset routing/range `board-observed` |
-| CT numeric | f16/bf16/f32 opcode、convert、rounding、NaN/Inf/subnormal/signed-zero、tail | 非零elementwise vectors、边界值和held-out tail | 10/11/17 numeric capability | finite f16/bf16 catalog、f16/bf16 Add tail130、finite f32 Add及不含NaN的f16/bf16 special Add `board-observed`；NaN及其它f32 opcode仍`unknown` |
+| CT numeric/form | opcode 0..186；arithmetic/relation/logic的`VV/VS/VuV/VuVLoop`、value/bool output；f16/bf16/f32、convert pair、rounding、NaN/Inf/subnormal/signed-zero、large-shape tail | opcode/form×dtype typed catalog；至少8192元素普通值、非256B held-out tail、短向量unit/full-tail、完整bit oracle | 10/11/17 numeric capability | existing 60-row有限catalog及Add held-out仍为既有`board-observed`；完整opcode/form×dtype扩展仍为`unknown`，不由既有Add外推 |
+| instruction × physical layout | Tensor/NTensor/Cx/NCx原生资格、materialization路径、C0 tail、N-slice步进、padding lane | valid组合exact output/span/canary；需materialize组合重放Tensor↔Cx/NCx movement；非法组合verifier/packet negative | 08/10/11 physical legality | current CT production只准Tensor/no-invalid-lane，plain/batched GEMM分别使用Cx/NCx；其它组合必须按row闭合，不能由同opcode Tensor结果外推 |
+| DataMove/layout | mirror/transpose/rotate、NCHW/NHWC、concat、pad、Img2Col、TensorNom、GatherScatter/MaskMove/MaskGather及compiler broadcast materialization | 非对称large-shape、axis-sensitive payload、all-and-only logical point oracle、physical guard | 08/10/11 movement legality | Pad/Img2Col和部分GatherScatter composite有既有证据；concat、native transforms、MaskGather及large-shape broadcast仍为`unknown`，其中缺安全强oracle的row使用`isolated-deferred` disposition |
 | NE numeric/layout | f16/bf16、accumulation、transpose、C0 tail、padding、K/M/N边界 | 非零identity/diagonal GEMM、完整padded range/canary | 08/10/11/17 | f16/bf16 accumulation、selected batch/M/K/N tail与orientation，以及f16 raw psum `board-observed`；未覆盖组合仍`unknown` |
 | RDMA/WDMA descriptor | byte/logical-element stride转换、iteration、inclusive range、tail | contiguous + 1/2/3D stride，非零round-trip和guard | 08/11/14 | contiguous与既有large GEMM `supported`；FP16 1/2/3D stride round-trip、holes和guards `board-observed` |
 | TDMA Memset | element count、byte stride、raw logical iteration、inclusive range和dtype packet encoding | whole/128B×32/64B×64 geometry，I8/F16/BF16 raw与CRT，全range和guard | 10/11/14 | 普通dtype descriptor `calibrated`；I8/F16/BF16 vectors `board-observed` |
@@ -402,37 +480,192 @@ pairwise_excess = engine_a_exec + engine_b_exec - fu_union_exec
   `hrt_barrier`超时。补齐terminal publication ABI后同一两轮barrier通过；手写cluster probe必须把
   status begin/finish视为launch ABI，而不能用未发布的poison status判断硬件同步失败。
 
-## 5. 当前首先要闭合的case批次
+## 5. 校准 case 规划与执行批次
 
-以下顺序按诊断价值和恢复风险排序；任一异常都停止当前批次，不自动reset：
+本节是后续实现和实卡执行的唯一case拆解入口。当前先完成inventory、case分层、shape/value选择、oracle和
+执行顺序；不在规划尚未评审时写probe。已有板端事实不因新规划失效，但只作为对应row的既有证据，不替代
+新增row。
 
-1. **TDMA held-out**：用独立value/length复验I8/F16/BF16 descriptor；只执行会发出`Fmt_INT8` packet的
-   production BOOL physical-footprint canonicalization，并核对实际register、完整byte range和guard。native
-   `Fmt_BOOL`不再发射；GatherScatter和其它DataMove kind分别保留自己的校准项。
-2. **single-engine completion**：CT/NE/RDMA/WDMA/TDMA在worker 0从`N=1`开始递增，但每个case严格低于
-   register/header给出的静态depth；普通calibration使用1/2/4，TDMA只使用1/2。CT在worker 1/2只做低深度
+### 5.1 Case row、分层和完成证据
+
+每个catalog row必须显式记录下列字段。opcode编号和vendor method只用于关联静态证据，稳定语义仍由
+family/form/dtype/layout描述。
+
+| 字段组 | 必填内容 |
+| --- | --- |
+| semantic | engine、instruction family、opcode/kind、operand form、input/output角色 |
+| typing | input/output dtype、rounding、zero-point、bitpacked BOOL或value output |
+| physical | input/output layout、logical shape、physical span、tail/padding class、读写半开区间 |
+| data | numeric domain、固定seed或固定pattern、input digest；不同operand不能复用同一pattern |
+| oracle | CPU/formal expected、exact bits或预先声明的误差口径、全logical output、padding/guard/canary |
+| execution | disposition、rank/tile/worker scope、static/no-card/board gate、profile identity、timeout、terminal、PMU issue count与cleanup |
+
+每个合法语义分支分三层：
+
+1. `calibration`使用诊断能力最强的main shape/value，排除未执行、首段执行、form解释错误、轴错误和layout错误；
+2. `held-out`使用独立shape、value和tail，不从calibration seed机械缩放，只用于成熟度升级；
+3. `production-vertical`从真实source/IR重放到package，证明typed consumer真的使用该能力。
+
+所有公开opcode/form/layout组合都必须出现在inventory，但不是全部发raw packet：native合法组合进入
+`board-positive`；需要显式movement的组合由materialization正向case闭合；typed非法组合进入
+`static-negative`；无法形成安全强oracle的组合进入`isolated-deferred`。因此“覆盖全部组合”指每个组合都有
+明确结论和gate，不是把非法或危险组合也做成板端笛卡尔积。
+
+### 5.2 CT opcode、form 与 dtype suite
+
+CT以current header的`0..186`为完整inventory。除bitpacked BOOL自身没有浮点dtype外，浮点入口均分别建立
+FP16、BF16、FP32 row；不能由同opcode的另一dtype外推。
+
+| opcode/family | 计划case | main oracle与held-out |
+| --- | --- | --- |
+| `0..5` unary arithmetic | Abs、Recip、Square、Sqrt、Rsqrt、Neg × FP16/BF16/FP32 | 8192普通值；8197 tail。Recip/Sqrt/Rsqrt分别含正域、零和负域隔离row |
+| `6..29` binary arithmetic | Max/Min/Add/Sub/Mul/Div × `VV/VS/VuV/VuVLoop` × 3 dtype | 8192主向量；8197 tail；`VuV`用非平凡且非2次幂unit，`VuVLoop`让full与tail字段均参与结果 |
+| `30..77` relation | Eq/Ne/Ge/Gt/Le/Lt × `VV/VS/VuV/VuVLoop` × value/bitpacked BOOL output × 3 input dtype | 同一truth pattern同时验证value codeword与BOOL逐bit结果；检查BOOL末字节未用bit和suffix guard |
+| `78..97` logic | value Not/And/Or/Xor及公开`VV/VuV/VuVLoop` form；packed BOOL Not/And/Or/Xor及对应form | value按FP16/BF16/FP32 raw codeword做bit-exact；BOOL用交错、全0、全1和非整字节tail |
+| `98..104` transcendental | Log2、Ln、Pow2、Exp、ExpLp、Sin、Cos × 3 dtype | 正常域用高精度reference记录误差；定义profile tolerance前只记`board-observed`，域外和special value独立 |
+| `105..110` activation | Tanh、Sigmoid、Relu、SatRelu、LeakyRelu、Softplus × 3 dtype | 负/零/正、拐点两侧和饱和区；参数隐含行为未闭合时不升级为production支持 |
+| `111..114` reduce | Sum/Avg/Max/Min × C/W/H/HW × 3 dtype | 非对称`[2,7,9,65]`，每个轴使用不同pattern；held-out覆盖C block边界、负值和tie |
+| `115..120` pool | Avg/Sum/Max/Min及indexed Max/Min × 3 dtype | 非方kernel、非对称stride/pad；indexed case检查value、index编码、tie-breaking和双writeback guard |
+| `121..123` unpool | scalar-index Unpool、Avg Unpool、mask/index Unpool × 3 dtype | 多个非零位置、重叠/非重叠窗口和完整destination footprint；index来源及重复index语义分别记账 |
+| `124..138` DataMove | 由5.3节逐entry展开 | all-and-only logical point、完整physical span和每段padding canary |
+| `139..174` convert | 36条source→destination route全部入表；有参数的route覆盖round-to-nearest-even、zero、+Inf、-Inf | 普通值、正负halfway、饱和/溢出、zero-point；stochastic rounding单独统计suite，不与确定性exact混跑 |
+| `175..186` peripheral | Count、BitCount、ArgMax/Min、Memset、Factorize、Bit2Fp、Bilinear、LUT16/32、RandGen、ElemMask | deterministic entry验证全部writeback；RandGen/随机ElemMask在seed、分布和可恢复性合同闭合前为`isolated-deferred` |
+
+算术/比较的form参数还要有专门的区分向量：`VS`的scalar bit pattern不能等于任一vector首元素；`VuV`的unit
+不能整段常量；`VuVLoop`的每个outer chunk使用不同unit pattern，并让最后一个不完整chunk参与expected。
+这样同一case能区分“误当VV”“只重复首unit”“忽略full字段”和“只执行第一段”。
+
+数值域按下列顺序分suite，避免一个NaN或随机case把整个基础资格变成不可诊断：
+
+1. 普通有限、可精确表示的正负数和非零operand；
+2. rounding-sensitive halfway、长累加和cancellation；
+3. `+0/-0`、最小normal、subnormal、overflow和`+Inf/-Inf`；
+4. quiet/signaling NaN与payload/quieting传播；没有明确oracle时只记录raw bits，不升级支持；
+5. integer min/max、饱和、zero-point和随机模式。
+
+### 5.3 Layout、Concat、Broadcast 与 DataMove suite
+
+instruction与layout组合先按physical行为分类，再为每个公开entry登记disposition：
+
+| 组合类 | 必须执行的正向case | production含义 |
+| --- | --- | --- |
+| CT vector × Tensor/NTensor | 每个CT vector opcode/form/dtype的main与tail | native正向资格 |
+| CT vector × Cx | lane-independent代表覆盖full-physical raw span；另以Tensor↔Cx显式movement只处理logical-valid points | raw结果只校准硬件；production仍需materialize或未来typed segmented consumer |
+| CT vector × NCx | 至少两个N slice，slice使用不同pattern和独立padding poison；逐slice重放Cx逻辑 | 不得把NCx静默flatten成单个Cx |
+| reduce/pool/unpool × Cx/NCx | 原生wrapper声明的shape/layout逐kind正向；compact Tensor版本若需转换则重放movement | 不由GEMM或CT vector结果外推 |
+| GEMM × Cx/NCx | rank-2 Cx与single-leading-batch NCx分别闭合，见5.4节 | current production native路径 |
+| 任意不受typed ABI支持的direct组合 | verifier/lowering/required-symbol negative | 不上板、不以raw packet绕过 |
+
+Cx/NCx的共同shape族为`[2,7,9,65]`，边界族覆盖`C=63/64/65/127/129`；每个N slice、full block、
+compact `C0` tail和256B physical padding使用不同poison。DataMove使用下列非对称case，所有FP16/BF16/FP32
+可接受entry分别记账：
+
+| DataMove能力 | calibration shape/关系 | 必须区分的错误 |
+| --- | --- | --- |
+| Mirror、Rotate90/180/270 | `[2,7,9,65]`，H/W位置编码不同 | H/W轴颠倒、只处理首N、padding被当逻辑值 |
+| Transpose | header定义的固定映射使用非对称H/W/C shape，held-out更换三轴长度 | metadata-only、固定轴映射错误、Cx block步进错误 |
+| NCHW↔NHWC | `[2,65,7,9] ↔ [2,7,9,65]` | 仅改shape未搬数据、C/H/W顺序错误 |
+| raw Concat | vendor公开的C/W/H/HW维度分别使用不等长两输入；C用33+32→65，H/W使用非对称切分 | 两输入反序、轴错误、第二输入tail/padding串扰 |
+| compiler concat | N轴或任意raw wrapper不能原生表达的合法concat由typed GatherScatter composite闭合 | 不能把raw Concat可用性外推成全部source语义 |
+| Pad | `[2,5,7,65]`到非对称pad后的`[2,7,10,65]` | top/bottom/left/right次序、pad值、内部physical padding |
+| TensorNom/channelnorm | `[2,7,9,65]`且各channel统计不同 | 归一化轴、统计范围和padding参与错误 |
+| GatherScatter | contiguous、1D/2D/3D stride、holes与边界tail | byte/element单位、iteration off-by-one、inclusive end |
+| compiler broadcast | scalar→full、`[65]` channel→`[2,7,9,65]`、`[9,65]` row→full | broadcast轴、stride0解释、只填首slice |
+| MaskMove/MaskGather/value-to-BOOL MaskGather | 稀疏非周期mask、非整字节BOOL tail | mask/index单位、bit order、未选位置被覆盖 |
+| Img2Col | `[2,9,11,65]`、非方kernel/stride与非对称pad | kernel-major顺序、X/Y轴、输出shape与padding |
+| Tensor↔Cx/NCx | 同一logical payload的双向round-trip和单向physical golden | C0 tail、N步进、padding publication与逻辑值混淆 |
+
+CT `VuV/VuVLoop`、compiler GatherScatter broadcast和Direct DTE broadcast分别属于operand form、local
+materialization和multi-rank transport；三组case不能共用一个“broadcast passed”状态。Direct DTE broadcast
+仍要求receiver-first、participant、channel/FSM、terminal和每个destination独立guard。
+
+### 5.4 NE FP16/BF16 compute suite
+
+NE先把BF16当独立numeric profile，而不是“FP16换format字段”。GEMM基础矩阵如下：
+
+| 维度 | calibration | held-out/边界 |
+| --- | --- | --- |
+| shape | `M=64,K=128,N=128` | `M=65,K=129,N=129`，M/K/N tail同时出现 |
+| orientation | NN、NT、TN、TT逐项使用非对称operand | 第二组非方M/K/N，防止转置flag错误被方阵掩盖 |
+| batch/layout | rank-2 Cx；batch2 NCx且两个batch pattern不同 | 左右batch broadcast/不等batch只在typed ABI明确后进入正向 |
+| dtype | FP16→FP16、BF16→BF16；其它input/output pair逐项登记 | 不由input BF16推导accumulator或output rounding |
+| accumulation | 每个output含至少128个非零贡献 | cancellation、round-up/down区分、K=129尾项非零 |
+| options | bias、psum、ReLU/LeakyReLU、axis scale各做one-factor-at-a-time | quant、sparse和组合option在单项语义闭合后才组合 |
+
+BF16专门建立普通精确值、长累加、正负cancellation、round-up/down、signed zero、normal/subnormal、
+overflow/Inf和NaN传播row。每个row同时检查logical result、Cx/NCx physical span、padding和guard；只要
+accumulator宽度、flush-to-zero或NaN传播仍有多个解释，就保持`board-observed/unknown`而不写成通用BF16
+语义。
+
+Conv、DepthwiseConv和BackwardConv分别建inventory，不能由ordinary Conv外推。ordinary Conv主shape采用
+`N=2,H=17,W=19,I=65,O=96`、非方`Kx=3,Ky=2`、非对称stride/pad/dilation，held-out把O改为65；
+Depthwise按其独立channel relation选择同级别非64整除shape，不复用ordinary Conv的O。每种kind先闭合bare
+FP16/BF16，再对bias、psum、ReLU/LeakyReLU、axis scale、quant、sparse、pad/unpad做
+one-factor-at-a-time。header可配置但typed compiler尚无consumer的option进入`isolated-deferred`；
+shape relation或wrapper根本不接受的组合进入`static-negative`。
+
+### 5.5 Shape、资源与oracle基线
+
+| suite | calibration shape | held-out | 目的 |
+| --- | --- | --- | --- |
+| CT compact vector | 8192 logical elements | 8197 elements | 排除启动开销主导并覆盖非256B tail |
+| CT `VuV` | 8192与非2次幂unit | 8197与另一legal unit | 区分unit重复、full/tail |
+| Cx/NCx | `[2,7,9,65]` | C=63/64/127/129族 | 覆盖block、C0 tail、N stride |
+| reduce/pool/movement | 至少数千元素、非对称H/W/C | 独立axis/window/pad | 排除1x1、方阵和全零弱oracle |
+| GEMM | 64×128×128 | 65×129×129、batch2 | 非平凡累加和三维tail |
+| Conv | N2、17×19、3×2 kernel、I65/O96 | 独立stride/dilation、O65 | 轴、channel tail和option |
+| RDMA/WDMA/TDMA | 64KiB强sentinel加1D/2D/3D holes | 独立length/offset/tail | descriptor单位、range和cache |
+
+任何具体shape在进入board-positive前都必须由SPM/DDR planner证明输入、全部writeback、padding和前后guard不
+越过当前可分配范围。shape是诊断向量，不成为compiler支持上限；更大shape由分块后的相同typed合同覆盖。
+
+### 5.6 Execution、completion 与 transport case
+
+instruction qualification之外，Q37其余硬件边界继续按下列case维护；已闭合项只在profile签名变化或需要
+held-out时重跑：
+
+1. **TDMA held-out**：独立value/length复验I8/F16/BF16 descriptor；native `Fmt_BOOL`保持excluded，
+   production BOOL physical-footprint只测试I8 byte-fill canonicalization。
+2. **single-engine/worker completion**：CT/NE/RDMA/WDMA/TDMA低深度1/2/4，TDMA只到2；worker1/2只做
    routing与matching wait。
-3. **documented-depth manual（已闭合）**：修正probe后，一次只选择一个engine和一个case，恰好发射该engine文档depth，
-   只运行一遍，并在前后各跑一次known-good Add heartbeat。验证连续提交、最终completion、instruction count、
-   完整output和guard，不声明并发occupancy；CT/NE/RDMA/WDMA `D=6`与TDMA `D=4`均已按此合同闭合。
-4. **typed tight depth-plus-one manual（五类engine已闭合）**：只有同engine的`D`向量已通过且取得显式manual授权时，才能由独立typed
-   gate发射恰好`D+1`条；单engine、单case、单样本、前后Add heartbeat和完整oracle不变，相邻execute之间
-   不做register MMIO。CT/NE/RDMA/WDMA `D+1=7`与TDMA `D+1=5`均证明总提交数可以超过pending queue
-   depth，但没有观察到occupancy/full；任意更深提交不执行。
-5. **全部disjoint pair（当前workload已闭合）**：10个engine pair的serial/window各3个样本均正确；
-   CT+RDMA本轮两个方向r4对照median均为0，旧正overlap降级为historical/inconclusive；其余9个pair当前也
-   未观察到PMU overlap。含TDMA的pair只运行r2，r4因会触及TDMA静态depth 4而不运行；负观察不外推成硬件
-   永久不能并行。
-6. **dependency relation（资格未满足）**：两次RAW exact/partial/adjacent选择都在hazard发射前被
-   disjoint资格门禁拦截，当前不执行板端hazard。所有pair保持保守串行；只有未来同方向serial/window对照
-   稳定达到median正overlap，才恢复对应composition golden。
-7. **SPM offset sweep**：固定workload，只改变相对offset；建立经验conflict class，不提前命名物理bank。
-8. **worker/join/visibility**：三worker matching join已闭合；default wait跨worker scope仍未被现有自然
-   排空向量区分，需能在wait边界保持worker1 pending且可安全恢复的正向case。跨worker同地址只跑显式ordered正向。
-9. **DTE/SPM PMU与multi-tile**：有序producer/consumer与full-card两轮arrival已闭合；继续校准counter
-   basis和subgroup。错误坐标、缺participant和资源提前复用保持negative，不上板。
-10. **numeric/layout held-out**：CT Add tail/f32/non-NaN special及NE selected tail/orientation/psum已闭合；
-   继续补NaN、其它f32 opcode及未覆盖的dtype/layout组合。模型纵向保持模型自身dtype。
+3. **documented depth与tight `D+1`（已闭合）**：保留单engine/case/sample及前后heartbeat；不继续更深，
+   不把总提交完成解释成occupancy/full/backpressure。
+4. **cross-engine disjoint/dependency**：10个pair当前保持串行；只有同方向serial/window稳定正overlap后，
+   才执行对应RAW/WAR/WAW/RAR exact/partial/adjacent composition。
+5. **SPM offset**：固定workload只改变相对offset，形成经验conflict class，不提前命名物理bank。
+6. **worker/join/visibility**：补default wait跨worker区分向量；同地址只跑显式ordered正向。
+7. **DTE/SPM PMU与multi-tile**：补counter basis和安全subgroup正向；错误坐标、缺participant和资源提前
+   复用只做negative，不上板。
+
+### 5.7 下一轮实卡执行顺序
+
+实现阶段按suite生成共享catalog/oracle和共享device dispatcher；同一ABI/resource class只编译、链接和打包
+一次，由typed request选择case，不为每个row重复编译。所有static-negative、host oracle、device compile/link
+和no-card package在进入实卡环境前一次性闭合，因此实卡时间主要用于execution/readback，不随case数线性重复
+编译。
+
+本地CT/NE/DataMove、layout和descriptor资格默认只在一个known-good tile的worker0运行；worker routing只用
+代表case覆盖worker1/2。只有Direct DTE、multi-tile arrival、collective或明确rank-dependent语义才启动多rank，
+不能为了“每rank workload相同”把同一个local instruction oracle在所有rank重复16遍。
+
+实卡按下面批次串行执行。每个board-positive row独立launch和外层timeout；safe deterministic suite在批次
+前后heartbeat，高风险manual row逐case前后heartbeat。任一case或heartbeat异常立即停止，不自动
+重试/reset/power：
+
+1. profile identity、只读状态和known-good Add heartbeat；
+2. CT Tensor普通有限值：unary、binary四种form，再做FP16/BF16/FP32 tail；
+3. relation value/BOOL与logic value/BOOL，优先闭合bit order、write span和guard；
+4. Tensor↔Cx/NCx、Concat、GatherScatter broadcast及其它deterministic DataMove；
+5. NE FP16/BF16 GEMM main/tail/orientation/batch，再做Conv/Depthwise和one-factor options；
+6. reduce、pool/unpool、convert确定性rounding和deterministic peripheral；
+7. transcendental/activation的普通域与误差观察；
+8. zero/subnormal/Inf/NaN、multi-writeback、随机或其它`isolated-deferred`，每项单独manual gate；
+9. 尚未闭合的SPM、visibility、PMU和安全multi-tile case。
+
+一批case只有在完整expected、physical span、padding/guard、terminal、issue count和cleanup全部通过时才记
+`board-observed`；calibration与独立held-out均通过后才可记`calibrated`；production source-to-package纵向
+再通过后才可记`supported`。原始日志按profile和case row关联保存，不把一次板端输出直接改写成跨profile
+compiler常数。
 
 ## 6. 明确禁测或保守处理
 

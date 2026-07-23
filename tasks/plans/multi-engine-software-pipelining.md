@@ -59,16 +59,34 @@ Pipeline position:
 - 校准矩阵按compiler consumer分层，而不是按vendor API罗列：
   - instruction/encoding：constructor ownership、packet routing、descriptor单位、range materialization、
     alignment/tail、返回值与错误可观察性；
-  - numeric/layout：CT/NE及代表性movement的f16/bf16、非零值、tail/padding、transpose/stride、舍入和
-    special-value边界；没有硬件证据的组合保持typed unsupported，不由同dtype其它指令外推；
+  - numeric/layout：以vendor opcode/header为完整inventory，CT覆盖arithmetic/relation/logic的
+    `VV/VS/VuV/VuVLoop`、value/bitpacked-bool output、全部公开unary/transcendental/activation/reduce/
+    pool/unpool/DataMove/convert/peripheral entry；FP16/BF16/FP32、convert pair、非零值、
+    NaN/Inf/subnormal/signed-zero、
+    large-shape tail/padding分别记账。NE至少覆盖FP16/BF16 large/tail/batch/orientation。Tensor/NTensor/
+    Cx/NCx按“原生、显式materialize、typed非法”三类建立positive/negative gate，concat、compiler
+    broadcast的GatherScatter materialization及其它公开DataMove使用非对称large-shape oracle；没有硬件
+    证据的组合保持typed unsupported，不由同dtype或同layout其它指令外推；
   - memory/coherence：SPM容量/保留区/bank conflict、DDR range、Kcore cache、DMA与host publication；
   - execution/synchronization：各engine、worker、queue/outstanding、RAW/WAR/WAW/RAR、local wait、
     cross-worker join、multi-tile arrival与DTE completion；
   - runtime/profiling：kernel/model launch、resource staging/readback、failure cleanup、NCC/DTE/SPM/TMNOC
     PMU可读性、scope、counter unit、wrap和event correlation。
-- 每个维度不要求笛卡尔积穷举；先用区分能力最强的calibration vectors排除错误语义，再冻结独立held-out
-  shape/value/layout。一个维度只有在held-out仍通过且profile identity完整时才能从`board-observed`提升为
-  `calibrated/supported`。
+- 不对明确非法的dtype/layout做raw笛卡尔积；每个公开opcode/form必须有catalog disposition，每个合法
+  dtype/layout等价类必须至少有正向large-shape与独立held-out boundary，需materialize组合必须重放显式
+  movement，非法组合必须有negative gate。先用区分能力最强的calibration vectors排除错误语义，再冻结
+  独立held-out shape/value/layout。一个维度只有在held-out仍通过且profile identity完整时才能从
+  `board-observed`提升为`calibrated/supported`。
+- instruction qualification分成明确checkpoint，不能边写单个case边扩scope：
+  1. 先冻结header opcode/method、typed compiler consumer与layout disposition inventory；
+  2. 再实现由同一row schema生成的catalog、固定input、CPU/formal expected、physical span和guard；
+  3. 先过static-negative、host oracle、device compile/link、no-card package与timeout/cleanup自检；
+  4. 最后按`docs/tx81-compiler-hardware-calibration.md`第5.7节分批上板，calibration与held-out分离；
+  5. 只有held-out和production source纵向都通过，才修改target capability或production legality。
+- 同一ABI/resource class共享device dispatcher和package，由typed request选择case；不按row重复编译。
+  local instruction/layout资格默认单tile、worker0，worker1/2只用routing代表case；只有Direct DTE、
+  multi-tile arrival和其它rank-dependent语义才启动多rank。safe deterministic suite按批次做前后heartbeat，
+  queue/deferred/random/multi-writeback等高风险manual row逐case隔离。
 - 明确parallel mode由谁设置、最终packet `inter_type`如何进入CT/NE/RDMA/WDMA/TDMA queue、地址begin/end或
   descriptor如何参与RAW/WAR/WAW判定、哪些路径不在该scheduler域内。
 - 明确每类operand的地址范围、alignment、length/stride unit、SPM bank/page、worker/queue/outstanding和
