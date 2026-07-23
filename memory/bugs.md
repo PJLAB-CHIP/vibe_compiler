@@ -1131,16 +1131,17 @@
 - 防复发：板端microcase禁止全零/常量弱oracle和只比较一条cache line；request header也属于Kcore DDR input，复用地址时
   同样先invalidate。任何PMU性能结论必须以完整数值/canary正确为前置。
 
-## 2026-07-23 单对指令不能判定TX81跨queue并行能力
+## 2026-07-23 短window不能判定TX81跨queue并行能力
 
 - 现象：同worker的单对RDMA/CT以及当前production Add/GEMM窗口中，global PMU union等于各engine时间之和，一度被解释成
-  硬件不并行；把2或4组disjoint packet紧邻入队后，`sum(engine)-global_union`稳定为正。当前one-shot CRT因每次
-  `TsmNew/config/TsmExecute/TsmDelete`产生构包间隔，要到更深backlog才观察到同类重叠。
+  硬件不并行；旧样本把2或4组disjoint packet紧邻入队后曾观察到`sum(engine)-global_union`正值，但本轮
+  CT→RDMA与RDMA→CT两个方向的r4 serial/window重复资格对照median均为0，旧正值不可复现，只能保留为
+  `historical/inconclusive`。
 - 根因：queue容量、engine可并行与某个短窗口是否喂饱queue是三个不同问题。单对包含启动/填充开销；wrapper发射间隙还可能
   让前一engine在后一packet入队前结束。
 - 修复模式：并行校准使用serial control、issue-count sweep、强oracle和重复PMU样本；只以
-  `engine_a + engine_b - global_union`的重复正值声明当前profile的重叠。compiler先用真实multi-buffer/issue window形成
-  backlog，再决定是否需要prepared issue ABI。
+  `engine_a + engine_b - global_union`的同方向、同rounds重复正值声明当前profile的重叠。当前没有pair满足
+  稳定正overlap门禁，compiler保持串行；未来由真实multi-buffer/issue window重新形成可复现backlog后再校准。
 - 防复发：不把queue depth当active transfer数、安全issue bound或并行度，不从单样本/host wall time推断
   engine overlap。窗口大小是target候选和capacity约束，不是case硬编码的通用规则；普通calibration使用
   1/2/4（TDMA 1/2），exact documented depth只由隔离manual case校准。typed tight `D+1`只能用于区分
@@ -1172,8 +1173,21 @@
 - 防复发：静态queue shape、总issue接受数、并发occupancy、安全issue上限和queue-full/backpressure是五类不同
   结论，必须分别取证。CT `D=6`与`D+1=7`证明对应submission/completion vector，且后者证明documented
   depth是pending storage而非完整lifetime总提交上限；但短workload在观测前已排空，不能证明六或七条同时
-  驻留，也没有校准queue-full/backpressure。其它engine边界仍需独立复验，任意更深overflow在真实occupancy/
-  full闭合前禁止。`tsm_smi` idle不能解除fail-stop，测试框架不得自动retry、reset或power。
+  驻留，也没有校准queue-full/backpressure。其它engine的exact documented depth已独立通过，但其`D+1`及
+  所有engine的真实occupancy/full仍需复验；任意更深overflow在这些边界闭合前禁止。`tsm_smi` idle不能解除
+  fail-stop，测试框架不得自动retry、reset或power。
+
+## 2026-07-23 logical result不能代替硬件physical write span
+
+- 现象：`reduce-sum-f16`的128B逻辑结果数值正确，但SPM guard报告紧随其后的128B被改写；同批前21个
+  elementwise/convert case均精确通过，后置Add也正常。
+- 根因：CT reduction按256B physical block写回，逻辑结果只占前128B，后128B是padding。catalog同时把
+  `result_bytes`和`output_span`写成128B，错误地把合法padding写回判成越界。
+- 修复模式：协议分别记录并验证`result_bytes=128`和`output_span=256`；逻辑域逐bit比较，logical tail到
+  physical span之间允许目标写回，physical span之后仍由canary严格保护。四个f16/bf16 reduction row统一修正，
+  板端复验全部通过。
+- 防复发：shape上的逻辑元素数、target block/tile写回范围和allocator lifetime是不同事实；任何带padding或
+  retained layout的instruction都必须同时给出logical oracle、physical write span和suffix guard。
 
 ## 2026-07-23 TDMA Memset的inactive iteration不能清零
 

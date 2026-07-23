@@ -122,13 +122,13 @@ enum WaferIFPDeferredReason {
   X(CONVERT_F16_I16_ROUND, 21, "convert-f16-i16-round", SAFE, CT_CONVERT,     \
     F16_TO_I16, EXACT_BITS, REASON_NONE, 256, 256, 0)                          \
   X(REDUCE_SUM_F16, 22, "reduce-sum-f16", SAFE, CT_REDUCE, F16, EXACT_BITS,   \
-    REASON_NONE, 128, 128, 0)                                                  \
+    REASON_NONE, 128, 256, 0)                                                  \
   X(REDUCE_MAX_F16, 23, "reduce-max-f16", SAFE, CT_REDUCE, F16, EXACT_BITS,   \
-    REASON_NONE, 128, 128, 0)                                                  \
+    REASON_NONE, 128, 256, 0)                                                  \
   X(REDUCE_MIN_BF16, 24, "reduce-min-bf16", SAFE, CT_REDUCE, BF16,            \
-    EXACT_BITS, REASON_NONE, 128, 128, 0)                                      \
+    EXACT_BITS, REASON_NONE, 128, 256, 0)                                      \
   X(REDUCE_AVG_BF16, 25, "reduce-avg-bf16", SAFE, CT_REDUCE, BF16,            \
-    EXACT_BITS, REASON_NONE, 128, 128, 0)                                      \
+    EXACT_BITS, REASON_NONE, 128, 256, 0)                                      \
   X(SELECT_F16, 26, "select-bit2fp-maskmove-f16", SAFE,                        \
     CT_SELECT_COMPOSITE, F16, EXACT_COMPOSITE, REASON_NONE, 256, 256, 256)    \
   X(SELECT_BF16, 27, "select-bit2fp-maskmove-bf16", SAFE,                      \

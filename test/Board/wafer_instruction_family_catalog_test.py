@@ -164,6 +164,15 @@ def main() -> int:
         "REASON_GEOMETRY_UNQUALIFIED",
         "REASON_NUMERIC_UNQUALIFIED",
     }
+    for name in (
+        "reduce-sum-f16",
+        "reduce-max-f16",
+        "reduce-min-bf16",
+        "reduce-avg-bf16",
+    ):
+        case = catalog.CASES_BY_NAME[name]
+        assert case.result_bytes == 128
+        assert case.output_span == 256
 
     for case in catalog.SAFE_CASES:
         built = catalog.build_case_payload(case, sample=7)

@@ -180,12 +180,12 @@ measurement basis仍为`unknown`。
 | constructor ownership | instruction method-table对象可以位于local地址0；allocation成功不能由pointer truthiness判断 | 第一份raw constructor，精确PMU count和结果；显式ownership bit控制delete | 14 CRT lowering与probe infrastructure | `calibrated` |
 | execute result | `TsmExecute`成功和invalid type路径都可返回1，raw rc不能区分成功 | packet legality、目标queue count和结果共同判定 | 14/15 structured error boundary | `calibrated`；rc只记录不判成功 |
 | packet routing/range | `inter_type`映射、worker编码、begin/end materialization和inclusive end | 五类单engine，执行后读实际register/packet，完整结果 | 11/14 instruction legality | CT/NE/RDMA/WDMA部分`board-observed`；TDMA Memset routing/range `board-observed` |
-| CT numeric | f16/bf16/f32 opcode、convert、rounding、NaN/Inf/subnormal/signed-zero、tail | 非零elementwise vectors、边界值和held-out tail | 10/11/17 numeric capability | f16 Add `board-observed`；其余`unknown` |
+| CT numeric | f16/bf16/f32 opcode、convert、rounding、NaN/Inf/subnormal/signed-zero、tail | 非零elementwise vectors、边界值和held-out tail | 10/11/17 numeric capability | finite f16/bf16 elementwise、convert、reduce和select vectors `board-observed`；f32、special value及held-out tail仍`unknown` |
 | NE numeric/layout | f16/bf16、accumulation、transpose、C0 tail、padding、K/M/N边界 | 非零identity/diagonal GEMM、完整padded range/canary | 08/10/11/17 | f16 16x16 identity和retained C0=16 `board-observed` |
 | RDMA/WDMA descriptor | byte/logical-element stride转换、iteration、inclusive range、tail | contiguous + 1/2/3D stride，非零round-trip和guard | 08/11/14 | contiguous与既有large GEMM `supported`；完整stride matrix待held-out |
 | TDMA Memset | element count、byte stride、raw logical iteration、inclusive range和dtype packet encoding | whole/128B×32/64B×64 geometry，I8/F16/BF16 raw与CRT，全range和guard | 10/11/14 | 普通dtype descriptor `calibrated`；I8/F16/BF16 vectors `board-observed` |
 | TDMA BOOL fill | native `Fmt_BOOL` completion与bitpacked physical-footprint实现 | native小range timeout隔离；production BOOL→I8 byte fill需独立raw register、全range和guard | 10/11/14 | native `Fmt_BOOL`在当前profile `excluded`；I8 canonicalization待board held-out |
-| TDMA movement variants | GatherScatter和其它DataMove的byte count、stride/iteration、range与kind-specific geometry | 每个已准入kind使用能区分错误descriptor的非零pattern、全range和guard | 08/10/11/14 | GatherScatter已有compiler/model路径；本轮板端measurement basis及其它variant仍`unknown` |
+| TDMA movement variants | GatherScatter和其它DataMove的byte count、stride/iteration、range与kind-specific geometry | 每个已准入kind使用能区分错误descriptor的非零pattern、全range和guard | 08/10/11/14 | f16 Pad vector `board-observed`；GatherScatter已有compiler/model路径，其它variant仍`unknown` |
 | SPM capacity/reservation | allocatable range和保留区 | boundary-positive与verifier negative；不触碰保留区 | 09/11 | 静态hard bound；board边界held-out未闭合 |
 | SPM alignment/bank | 256B legality、非1024-bit访问代价、bank/color映射 | disjoint offset sweep，固定长度/engine pair/serial control | 09 placement与06 cost | 256B静态；exact bank mapping `unknown` |
 | DDR/cache/coherence | host H2D、Kcore cache、DMA completion和host publication是不同域 | Kcore read前invalidate对照、DMA round-trip、matching drain后D2H | 09/12/14/15 | stale-cache机制`calibrated`；完整direction matrix待闭合 |
@@ -275,6 +275,15 @@ pairwise_excess = engine_a_exec + engine_b_exec - fu_union_exec
 ### 4.2 单engine correctness与ABI观察
 
 - CT f16 Add使用非零输入、完整fp16 golden、guard和DMA round-trip通过。
+- instruction-family typed catalog的29个safe case已逐个串行launch并通过完整bit oracle、SPM guard、
+  terminal与cleanup：f16/bf16 Neg/Add/Sub/Mul/Max/Min/Pow2/Relu，I8→f16/bf16、bf16→f16、
+  f16→bf16/i16 convert，f16 Sum/Max、bf16 Min/Avg reduction，f16/bf16 Bit2FP+MaskMove select，
+  f16 NE GEMM与f16 TDMA Pad。该批只证明catalog中的有限普通值与固定geometry，不外推f32、special value、
+  held-out tail或其它instruction family。
+- reduction首次运行暴露的是probe ABI错误而非硬件错误：四个case的逻辑结果均为128B，但CT会写满256B
+  physical block，后128B是padding。catalog把allowed output span误写成128B，因而准确报告128B guard
+  mismatch；将`result_bytes=128`与`output_span=256`分开后，四个reduction及余下case全部通过。结果逻辑域、
+  physical write span和suffix guard必须分别建模，不能用逻辑shape缩小硬件写范围。
 - RDMA和WDMA分别以非零pattern、全range round-trip和精确instruction count通过。
 - NE f16 16x16 identity GEMM通过；实际source/output register range均覆盖256B。retained logical
   `C0=16`使用compact stride 16，错误使用full block stride 64只会得到前4个正确对角元素。该case证明layout
