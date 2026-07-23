@@ -94,6 +94,179 @@ def validate_rounding_and_bit2fp_oracles() -> None:
         assert expected[8:16] == (catalog.BIT2FP_FALSE_WORD,) * 8
 
 
+def validate_ct_add_f16_tail130_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ct-add-f16-tail130"]
+    assert case.is_safe
+    assert case.dtype_name == "F16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (
+        260,
+        512,
+        0,
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<130e", built.payload, catalog.BODY_OFFSET)
+    rhs = struct.unpack_from(
+        "<130e",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    expected = struct.unpack_from(
+        "<130e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert expected == tuple(
+        left + right for left, right in zip(lhs, rhs, strict=True)
+    )
+    assert lhs[128:] == (-3.0, -2.0)
+    assert rhs[128:] == (1.0, -1.0)
+    assert expected[128:] == (-2.0, -3.0)
+
+
+def validate_ct_add_bf16_tail130_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ct-add-bf16-tail130"]
+    assert case.is_safe
+    assert case.dtype_name == "BF16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (
+        260,
+        512,
+        0,
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<130H", built.payload, catalog.BODY_OFFSET)
+    rhs = struct.unpack_from(
+        "<130H",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    expected = struct.unpack_from(
+        "<130H", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    lhs_pattern = (-3.0, -2.0, -1.0, 0.5, 1.0, 2.0, 3.0, 4.0)
+    rhs_pattern = (1.0, -1.0, 2.0, 2.0, 0.5, -2.0, 4.0, -0.5)
+    lhs_values = [lhs_pattern[index % len(lhs_pattern)] for index in range(130)]
+    rhs_values = [rhs_pattern[index % len(rhs_pattern)] for index in range(130)]
+    expected_values = [
+        left + right
+        for left, right in zip(lhs_values, rhs_values, strict=True)
+    ]
+    assert lhs == _encoded_words("BF16", lhs_values)
+    assert rhs == _encoded_words("BF16", rhs_values)
+    assert expected == _encoded_words("BF16", expected_values)
+    assert expected_values[128:] == [-2.0, -3.0]
+
+
+def validate_ct_add_f32_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ct-add-f32"]
+    assert case.is_safe
+    assert case.dtype_name == "F32"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (
+        512,
+        512,
+        0,
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128f", built.payload, catalog.BODY_OFFSET)
+    rhs = struct.unpack_from(
+        "<128f",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    expected = struct.unpack_from(
+        "<128f", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert all(value.is_integer() for value in lhs + rhs)
+    assert expected == tuple(
+        left + right for left, right in zip(lhs, rhs, strict=True)
+    )
+
+
+def validate_ct_add_special_f16_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ct-add-special-f16"]
+    assert case.is_safe
+    assert case.dtype_name == "F16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (
+        256,
+        256,
+        0,
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128H", built.payload, catalog.BODY_OFFSET)
+    rhs = struct.unpack_from(
+        "<128H",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    expected = struct.unpack_from(
+        "<128H", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert lhs[:12] == (
+        0x0000,
+        0x8000,
+        0x0000,
+        0x8000,
+        0x7C00,
+        0xFC00,
+        0x7BFF,
+        0xFBFF,
+        0x0400,
+        0x8400,
+        0x0001,
+        0x8001,
+    )
+    assert rhs[:4] == (0x0000, 0x0000, 0x8000, 0x8000)
+    assert expected[:4] == (0x0000, 0x0000, 0x0000, 0x8000)
+    assert expected[4:12] == lhs[4:12]
+    assert all((word & 0x7C00) != 0x7C00 or (word & 0x03FF) == 0 for word in lhs)
+
+
+def validate_ct_add_special_bf16_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ct-add-special-bf16"]
+    assert case.is_safe
+    assert case.dtype_name == "BF16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (
+        256,
+        256,
+        0,
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128H", built.payload, catalog.BODY_OFFSET)
+    rhs = struct.unpack_from(
+        "<128H",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    expected = struct.unpack_from(
+        "<128H", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert lhs[:12] == (
+        0x0000,
+        0x8000,
+        0x0000,
+        0x8000,
+        0x7F80,
+        0xFF80,
+        0x7F7F,
+        0xFF7F,
+        0x0080,
+        0x8080,
+        0x0001,
+        0x8001,
+    )
+    assert rhs[:4] == (0x0000, 0x0000, 0x8000, 0x8000)
+    assert expected[:4] == (0x0000, 0x0000, 0x0000, 0x8000)
+    assert expected[4:12] == lhs[4:12]
+    assert all((word & 0x7F80) != 0x7F80 or (word & 0x007F) == 0 for word in lhs)
+
+
 def validate_gemm_padding_domain() -> None:
     case = catalog.CASES_BY_NAME["ne-gemm-f16"]
     built = catalog.build_case_payload(case, sample=3)
@@ -274,6 +447,606 @@ def validate_gemm_bf16_accum_round_oracle() -> None:
         0x3F92,
         0x3F8F,
     )
+
+
+def validate_gemm_f16_accum_round_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-f16-accum-round"]
+    assert case.is_safe
+    assert case.dtype_name == "F16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (32, 256, 0)
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128H", built.payload, catalog.BODY_OFFSET)
+    assert lhs[:16] == (0x3C00,) * 16
+    assert lhs[16:] == (0,) * 112
+
+    rhs = struct.unpack_from(
+        "<256H",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    assert rhs[:16] == tuple(0x3C00 + column for column in range(16))
+    for row in range(1, 16):
+        assert rhs[row * 16 : (row + 1) * 16] == tuple(
+            0x0C00
+            if column % 2 == 0
+            else 0x0800
+            if row <= 8
+            else 0x8800
+            for column in range(16)
+        )
+
+    expected = struct.unpack_from(
+        "<16H", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert expected == tuple(
+        0x3C00 + column + (4 if column % 2 == 0 else 0)
+        for column in range(16)
+    )
+
+
+def validate_gemm_f16_m4_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-f16-m4"]
+    assert case.is_safe
+    assert case.dtype_name == "F16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (
+        128,
+        256,
+        0,
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128e", built.payload, catalog.BODY_OFFSET)
+    expected_rows = (
+        tuple(float(value) for value in range(1, 17)),
+        tuple(float(value) for value in range(33, 49)),
+        tuple(float(-value) for value in range(65, 81)),
+        tuple(float(value) for value in range(97, 113)),
+    )
+    expected = tuple(value for row in expected_rows for value in row)
+    assert lhs[:64] == expected
+    assert lhs[64:] == (0.0,) * 64
+    assert len(set(expected_rows)) == 4
+
+    rhs = struct.unpack_from(
+        "<256e",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    assert rhs == tuple(
+        1.0 if row == column else 0.0
+        for row in range(16)
+        for column in range(16)
+    )
+    actual_expected = struct.unpack_from(
+        "<64e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert actual_expected == expected
+
+
+def validate_gemm_f16_batch2_m8_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-f16-batch2-m8"]
+    assert case.is_safe
+    assert case.dtype_name == "F16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (
+        512,
+        512,
+        0,
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<256e", built.payload, catalog.BODY_OFFSET)
+    assert lhs == tuple(float(value) for value in range(1, 257))
+
+    rhs = struct.unpack_from(
+        "<512e",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    identity = tuple(
+        1.0 if row == column else 0.0
+        for row in range(16)
+        for column in range(16)
+    )
+    negative_identity = tuple(-value for value in identity)
+    assert rhs == identity + negative_identity
+
+    expected = struct.unpack_from(
+        "<256e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert expected == tuple(float(value) for value in range(1, 129)) + tuple(
+        float(-value) for value in range(129, 257)
+    )
+
+
+def validate_gemm_bf16_batch2_m8_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-bf16-batch2-m8"]
+    assert case.is_safe
+    assert case.dtype_name == "BF16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (
+        512,
+        512,
+        0,
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<256H", built.payload, catalog.BODY_OFFSET)
+    assert lhs == _encoded_words(
+        "BF16", [float(value) for value in range(1, 257)]
+    )
+
+    rhs = struct.unpack_from(
+        "<512H",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    rhs_values = [
+        float(
+            1
+            if batch == 0 and row == column
+            else -1
+            if batch == 1 and row == column
+            else 0
+        )
+        for batch in range(2)
+        for row in range(16)
+        for column in range(16)
+    ]
+    assert rhs == _encoded_words("BF16", rhs_values)
+
+    expected_values = [float(value) for value in range(1, 129)] + [
+        float(-value) for value in range(129, 257)
+    ]
+    expected = struct.unpack_from(
+        "<256H", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert expected == _encoded_words("BF16", expected_values)
+
+
+def validate_gemm_f16_n17_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-f16-n17"]
+    assert case.is_safe
+    assert case.dtype_name == "F16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (34, 256, 0)
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128e", built.payload, catalog.BODY_OFFSET)
+    assert lhs[:16] == (1.0,) * 16
+    assert lhs[16:] == (0.0,) * 112
+
+    rhs = struct.unpack_from(
+        "<512e",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    for row in range(16):
+        physical_row = rhs[row * 32 : (row + 1) * 32]
+        assert physical_row[17:] == (-29.0,) * 15
+        assert tuple(
+            column
+            for column, value in enumerate(physical_row[:17])
+            if value != 0.0
+        ) == tuple(
+            column for column in range(17) if row == column % 16
+        )
+    expected = struct.unpack_from(
+        "<17e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert expected == tuple(float(value) for value in range(1, 18))
+
+
+def validate_gemm_f16_k17_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-f16-k17"]
+    assert case.is_safe
+    assert case.dtype_name == "F16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (32, 256, 0)
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128e", built.payload, catalog.BODY_OFFSET)
+    assert lhs[:17] == tuple(float(value) for value in range(1, 18))
+    assert lhs[17:32] == (-29.0,) * 15
+    assert lhs[32:] == (0.0,) * 96
+
+    rhs = struct.unpack_from(
+        "<384e",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    for row in range(16):
+        assert rhs[row * 16 : (row + 1) * 16] == (1.0,) * 16
+    assert rhs[16 * 16 : 17 * 16] == tuple(
+        float(value) for value in range(2, 18)
+    )
+    assert rhs[17 * 16 :] == (-31.0,) * 112
+
+    expected = struct.unpack_from(
+        "<16e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert expected == tuple(float(170 + 17 * column) for column in range(16))
+
+
+def validate_gemm_bf16_k17_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-bf16-k17"]
+    assert case.is_safe
+    assert case.dtype_name == "BF16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (32, 256, 0)
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128H", built.payload, catalog.BODY_OFFSET)
+    assert lhs == _encoded_words(
+        "BF16", [1.0] * 17 + [-29.0] * 15 + [0.0] * 96
+    )
+
+    rhs = struct.unpack_from(
+        "<384H",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    expected_rhs = [
+        float(1 if row < 16 else column + 2)
+        for row in range(17)
+        for column in range(16)
+    ] + [-31.0] * 112
+    assert rhs == _encoded_words("BF16", expected_rhs)
+
+    expected = struct.unpack_from(
+        "<16H", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert expected == _encoded_words(
+        "BF16", [float(18 + column) for column in range(16)]
+    )
+
+
+def validate_gemm_f16_n65_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-f16-n65"]
+    assert case.is_safe
+    assert case.dtype_name == "F16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (
+        130,
+        256,
+        0,
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128e", built.payload, catalog.BODY_OFFSET)
+    assert lhs[:16] == (1.0,) * 16
+    assert lhs[16:] == (0.0,) * 112
+
+    rhs = struct.unpack_from(
+        "<1152e",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    full_block = rhs[: 16 * 64]
+    for row in range(16):
+        expected_row = (
+            (1.0,) * 64
+            if row < 15
+            else tuple(float(value) for value in range(100, 164))
+        )
+        assert full_block[row * 64 : (row + 1) * 64] == expected_row
+    tail = rhs[16 * 64 : 16 * 68]
+    for row in range(16):
+        assert tail[row * 4 : (row + 1) * 4] == (
+            float(1 if row < 15 else 164),
+            -29.0,
+            -29.0,
+            -29.0,
+        )
+    assert rhs[16 * 68 :] == (-31.0,) * 64
+
+    expected = struct.unpack_from(
+        "<65e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert expected == tuple(float(115 + column) for column in range(65))
+
+
+def validate_gemm_bf16_n65_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-bf16-n65"]
+    assert case.is_safe
+    assert case.dtype_name == "BF16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (
+        130,
+        256,
+        0,
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128H", built.payload, catalog.BODY_OFFSET)
+    assert lhs == _encoded_words("BF16", [1.0] * 16 + [0.0] * 112)
+
+    rhs = struct.unpack_from(
+        "<1152H",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    physical_rhs = (
+        [
+            float(1 if row < 15 else 100 + column)
+            for row in range(16)
+            for column in range(64)
+        ]
+        + [
+            value
+            for row in range(16)
+            for value in (
+                float(1 if row < 15 else 164),
+                -29.0,
+                -29.0,
+                -29.0,
+            )
+        ]
+        + [-31.0] * 64
+    )
+    assert rhs == _encoded_words("BF16", physical_rhs)
+
+    expected = struct.unpack_from(
+        "<65H", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert expected == _encoded_words(
+        "BF16", [float(115 + column) for column in range(65)]
+    )
+
+
+def validate_gemm_f16_oriented_nt_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-f16-oriented-nt"]
+    assert case.is_safe
+    assert case.dtype_name == "F16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (64, 256, 0)
+
+    semantic_lhs = tuple(
+        float((row * 5 + contracting * 3) % 7 - 3)
+        for row in range(4)
+        for contracting in range(16)
+    )
+    semantic_rhs = tuple(
+        float((contracting * 2 + column * 5) % 9 - 4)
+        for contracting in range(16)
+        for column in range(8)
+    )
+    stored_rhs = tuple(
+        semantic_rhs[contracting * 8 + column]
+        for column in range(8)
+        for contracting in range(16)
+    )
+    expected = tuple(
+        float(
+            sum(
+                semantic_lhs[row * 16 + contracting]
+                * semantic_rhs[contracting * 8 + column]
+                for contracting in range(16)
+            )
+        )
+        for row in range(4)
+        for column in range(8)
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128e", built.payload, catalog.BODY_OFFSET)
+    assert lhs[:64] == semantic_lhs
+    assert lhs[64:] == (0.0,) * 64
+    rhs = struct.unpack_from(
+        "<128e",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    assert rhs == stored_rhs
+    assert stored_rhs != semantic_rhs
+    actual_expected = struct.unpack_from(
+        "<32e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert actual_expected == expected
+
+
+def validate_gemm_bf16_oriented_nt_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-bf16-oriented-nt"]
+    assert case.is_safe
+    assert case.dtype_name == "BF16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (64, 256, 0)
+
+    semantic_lhs = [
+        float((row * 5 + contracting * 3) % 7 - 3)
+        for row in range(4)
+        for contracting in range(16)
+    ]
+    semantic_rhs = [
+        float((contracting * 2 + column * 5) % 9 - 4)
+        for contracting in range(16)
+        for column in range(8)
+    ]
+    stored_rhs = [
+        semantic_rhs[contracting * 8 + column]
+        for column in range(8)
+        for contracting in range(16)
+    ]
+    expected_values = [
+        float(
+            sum(
+                semantic_lhs[row * 16 + contracting]
+                * semantic_rhs[contracting * 8 + column]
+                for contracting in range(16)
+            )
+        )
+        for row in range(4)
+        for column in range(8)
+    ]
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128H", built.payload, catalog.BODY_OFFSET)
+    assert lhs == _encoded_words("BF16", semantic_lhs + [0.0] * 64)
+    rhs = struct.unpack_from(
+        "<128H",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    assert rhs == _encoded_words("BF16", stored_rhs)
+    assert stored_rhs != semantic_rhs
+    expected = struct.unpack_from(
+        "<32H", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert expected == _encoded_words("BF16", expected_values)
+
+
+def validate_gemm_f16_oriented_tn_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-f16-oriented-tn"]
+    assert case.is_safe
+    assert case.dtype_name == "F16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (64, 256, 0)
+
+    semantic_lhs = tuple(
+        float((row * 5 + contracting * 3) % 7 - 3)
+        for row in range(4)
+        for contracting in range(16)
+    )
+    semantic_rhs = tuple(
+        float((contracting * 2 + column * 5) % 9 - 4)
+        for contracting in range(16)
+        for column in range(8)
+    )
+    stored_lhs = tuple(
+        semantic_lhs[row * 16 + contracting]
+        for contracting in range(16)
+        for row in range(4)
+    )
+    expected = tuple(
+        float(
+            sum(
+                semantic_lhs[row * 16 + contracting]
+                * semantic_rhs[contracting * 8 + column]
+                for contracting in range(16)
+            )
+        )
+        for row in range(4)
+        for column in range(8)
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128e", built.payload, catalog.BODY_OFFSET)
+    assert lhs[:64] == stored_lhs
+    assert lhs[64:] == (0.0,) * 64
+    assert stored_lhs != semantic_lhs
+    rhs = struct.unpack_from(
+        "<128e",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    assert rhs == semantic_rhs
+    actual_expected = struct.unpack_from(
+        "<32e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert actual_expected == expected
+
+
+def validate_gemm_f16_oriented_tt_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-f16-oriented-tt"]
+    assert case.is_safe
+    assert case.dtype_name == "F16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (64, 256, 0)
+
+    semantic_lhs = tuple(
+        float((row * 5 + contracting * 3) % 7 - 3)
+        for row in range(4)
+        for contracting in range(16)
+    )
+    semantic_rhs = tuple(
+        float((contracting * 2 + column * 5) % 9 - 4)
+        for contracting in range(16)
+        for column in range(8)
+    )
+    stored_lhs = tuple(
+        semantic_lhs[row * 16 + contracting]
+        for contracting in range(16)
+        for row in range(4)
+    )
+    stored_rhs = tuple(
+        semantic_rhs[contracting * 8 + column]
+        for column in range(8)
+        for contracting in range(16)
+    )
+    expected = tuple(
+        float(
+            sum(
+                semantic_lhs[row * 16 + contracting]
+                * semantic_rhs[contracting * 8 + column]
+                for contracting in range(16)
+            )
+        )
+        for row in range(4)
+        for column in range(8)
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128e", built.payload, catalog.BODY_OFFSET)
+    assert lhs[:64] == stored_lhs
+    assert lhs[64:] == (0.0,) * 64
+    rhs = struct.unpack_from(
+        "<128e",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    assert rhs == stored_rhs
+    assert stored_lhs != semantic_lhs
+    assert stored_rhs != semantic_rhs
+    actual_expected = struct.unpack_from(
+        "<32e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert actual_expected == expected
+
+
+def validate_gemm_f16_psum_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-f16-psum"]
+    assert case.is_safe
+    assert case.dtype_name == "F16"
+    assert case.oracle_name == "EXACT_COMPOSITE"
+    assert (case.result_bytes, case.output_span, case.aux_span) == (
+        32,
+        256,
+        256,
+    )
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128e", built.payload, catalog.BODY_OFFSET)
+    assert lhs[:16] == (1.0,) * 16
+    assert lhs[16:] == (0.0,) * 112
+    rhs = struct.unpack_from(
+        "<256e",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    assert rhs == tuple(
+        float(column + 1)
+        for _row in range(16)
+        for column in range(16)
+    )
+    psum = struct.unpack_from(
+        "<128e",
+        built.payload,
+        3 * catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    assert psum[:16] == tuple(float(1000 + column) for column in range(16))
+    assert psum[16:] == (-23.0,) * 112
+
+    expected = struct.unpack_from(
+        "<16e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    overwrite_only = tuple(float(16 * (column + 1)) for column in range(16))
+    assert expected == tuple(
+        float(1016 + 17 * column) for column in range(16)
+    )
+    assert expected != overwrite_only
 
 
 def validate_arg_extrema_composite_oracles() -> None:
@@ -570,11 +1343,43 @@ def _output_seed_padding() -> bytes:
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 41
-    assert len(catalog.CATALOG) == 41
+    assert len(catalog.SAFE_CASES) == 60
+    assert len(catalog.CATALOG) == 60
     assert {case.case_id for case in catalog.SAFE_CASES} == (
         set(range(1, 30))
-        | {100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111}
+        | {
+            100,
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120,
+            121,
+            122,
+            123,
+            124,
+            125,
+            126,
+            127,
+            128,
+            129,
+            130,
+        }
     )
     assert {
         (case.symbol, case.reason_name)
@@ -640,9 +1445,28 @@ def main() -> int:
         0xFF if byte % 2 == 0 else 0x00 for byte in range(16)
     )
     validate_rounding_and_bit2fp_oracles()
+    validate_ct_add_f16_tail130_oracle()
+    validate_ct_add_bf16_tail130_oracle()
+    validate_ct_add_f32_oracle()
+    validate_ct_add_special_f16_oracle()
+    validate_ct_add_special_bf16_oracle()
     validate_gemm_padding_domain()
     validate_gemm_dtype_oracles()
     validate_gemm_bf16_accum_round_oracle()
+    validate_gemm_f16_accum_round_oracle()
+    validate_gemm_f16_m4_oracle()
+    validate_gemm_f16_batch2_m8_oracle()
+    validate_gemm_bf16_batch2_m8_oracle()
+    validate_gemm_f16_n17_oracle()
+    validate_gemm_f16_k17_oracle()
+    validate_gemm_bf16_k17_oracle()
+    validate_gemm_f16_n65_oracle()
+    validate_gemm_bf16_n65_oracle()
+    validate_gemm_f16_oriented_nt_oracle()
+    validate_gemm_bf16_oriented_nt_oracle()
+    validate_gemm_f16_oriented_tn_oracle()
+    validate_gemm_f16_oriented_tt_oracle()
+    validate_gemm_f16_psum_oracle()
     validate_arg_extrema_composite_oracles()
     validate_conv_oracle()
     validate_pool_max_oracle()

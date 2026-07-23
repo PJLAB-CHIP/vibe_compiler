@@ -47,6 +47,7 @@ DTYPES = {
     "BF16_TO_F16": 4,
     "F16_TO_BF16": 5,
     "F16_TO_I16": 6,
+    "F32": 7,
 }
 ORACLES = {"EXACT_BITS": 0, "EXACT_COMPOSITE": 1, "NO_ORACLE": 2}
 REASONS = {
@@ -249,6 +250,11 @@ def _f16_from_bits(bits: Iterable[int]) -> bytes:
     return struct.pack(f"<{len(bits)}H", *bits)
 
 
+def _f32(values: Iterable[float]) -> bytes:
+    values = tuple(values)
+    return struct.pack(f"<{len(values)}f", *values)
+
+
 def _bf16_bits(value: float) -> int:
     bits = struct.unpack("<I", struct.pack("<f", value))[0]
     rounding_bias = 0x7FFF + ((bits >> 16) & 1)
@@ -265,6 +271,8 @@ def _fp(dtype_name: str, values: Iterable[float]) -> bytes:
         return _f16(values)
     if dtype_name in ("BF16", "I8_TO_BF16", "F16_TO_BF16"):
         return _bf16(values)
+    if dtype_name == "F32":
+        return _f32(values)
     raise RuntimeError(f"no floating encoder for {dtype_name}")
 
 
@@ -279,9 +287,75 @@ def _put(slot: bytearray, raw: bytes) -> None:
     slot[BODY_OFFSET:end] = raw
 
 
+def _special_add_zero(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
+    if case.symbol == "CT_ADD_SPECIAL_F16":
+        distinguishing = (
+            (0x0000, 0x0000, 0x0000),
+            (0x8000, 0x0000, 0x0000),
+            (0x0000, 0x8000, 0x0000),
+            (0x8000, 0x8000, 0x8000),
+            (0x7C00, 0x0000, 0x7C00),
+            (0xFC00, 0x0000, 0xFC00),
+            (0x7BFF, 0x0000, 0x7BFF),
+            (0xFBFF, 0x0000, 0xFBFF),
+            (0x0400, 0x0000, 0x0400),
+            (0x8400, 0x0000, 0x8400),
+            (0x0001, 0x0000, 0x0001),
+            (0x8001, 0x0000, 0x8001),
+        )
+    elif case.symbol == "CT_ADD_SPECIAL_BF16":
+        distinguishing = (
+            (0x0000, 0x0000, 0x0000),
+            (0x8000, 0x0000, 0x0000),
+            (0x0000, 0x8000, 0x0000),
+            (0x8000, 0x8000, 0x8000),
+            (0x7F80, 0x0000, 0x7F80),
+            (0xFF80, 0x0000, 0xFF80),
+            (0x7F7F, 0x0000, 0x7F7F),
+            (0xFF7F, 0x0000, 0xFF7F),
+            (0x0080, 0x0000, 0x0080),
+            (0x8080, 0x0000, 0x8080),
+            (0x0001, 0x0000, 0x0001),
+            (0x8001, 0x0000, 0x8001),
+        )
+    else:
+        raise RuntimeError(f"{case.name}: unknown special-value add kind")
+    vectors = tuple(
+        distinguishing[index % len(distinguishing)] for index in range(128)
+    )
+    return (
+        _f16_from_bits(entry[0] for entry in vectors),
+        _f16_from_bits(entry[1] for entry in vectors),
+        _f16_from_bits(entry[2] for entry in vectors),
+    )
+
+
 def _arithmetic(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
-    base_a = _repeat((-3.0, -2.0, -1.0, 0.5, 1.0, 2.0, 3.0, 4.0))
-    base_b = _repeat((1.0, -1.0, 2.0, 2.0, 0.5, -2.0, 4.0, -0.5))
+    if case.symbol in ("CT_ADD_SPECIAL_F16", "CT_ADD_SPECIAL_BF16"):
+        return _special_add_zero(case)
+    element_count = (
+        130
+        if case.symbol in ("CT_ADD_F16_TAIL130", "CT_ADD_BF16_TAIL130")
+        else 128
+    )
+    if case.symbol == "CT_ADD_F32":
+        base_a = _repeat(
+            (-16.0, -7.0, -1.0, 0.0, 1.0, 7.0, 16.0, 31.0),
+            element_count,
+        )
+        base_b = _repeat(
+            (3.0, -2.0, 5.0, 9.0, -1.0, 4.0, -8.0, 2.0),
+            element_count,
+        )
+    else:
+        base_a = _repeat(
+            (-3.0, -2.0, -1.0, 0.5, 1.0, 2.0, 3.0, 4.0),
+            element_count,
+        )
+        base_b = _repeat(
+            (1.0, -1.0, 2.0, 2.0, 0.5, -2.0, 4.0, -0.5),
+            element_count,
+        )
     operation = case.name.split("-")[1]
     if operation == "pow2":
         base_a = _repeat((-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0))
@@ -411,6 +485,230 @@ def _gemm(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
             else 1.0 + column / 128.0
             for column in range(16)
         ]
+    elif case.symbol == "GEMM_F16_ACCUM_ROUND":
+        lhs = [1.0] * 16
+        rhs = [
+            1.0 + column / 1024.0
+            if row == 0
+            else 1.0 / 4096.0
+            if column % 2 == 0
+            else 1.0 / 8192.0
+            if row <= 8
+            else -1.0 / 8192.0
+            for row in range(16)
+            for column in range(16)
+        ]
+        expected = [
+            1.0 + (column + 4) / 1024.0
+            if column % 2 == 0
+            else 1.0 + column / 1024.0
+            for column in range(16)
+        ]
+    elif case.symbol == "GEMM_F16_M4":
+        lhs = [
+            float(
+                column + 1
+                if row == 0
+                else 32 + column + 1
+                if row == 1
+                else -(64 + column + 1)
+                if row == 2
+                else 96 + column + 1
+            )
+            for row in range(4)
+            for column in range(16)
+        ]
+        rhs = [
+            1.0 if row == column else 0.0
+            for row in range(16)
+            for column in range(16)
+        ]
+        expected = lhs
+    elif case.symbol in ("GEMM_F16_BATCH2_M8", "GEMM_BF16_BATCH2_M8"):
+        lhs = [
+            float(batch * 128 + row * 16 + column + 1)
+            for batch in range(2)
+            for row in range(8)
+            for column in range(16)
+        ]
+        rhs = [
+            float(
+                1
+                if batch == 0 and row == column
+                else -1
+                if batch == 1 and row == column
+                else 0
+            )
+            for batch in range(2)
+            for row in range(16)
+            for column in range(16)
+        ]
+        expected = lhs[:128] + [-value for value in lhs[128:]]
+    elif case.symbol == "GEMM_F16_N17":
+        lhs = [1.0] * 16
+        rhs = [
+            float(
+                column + 1
+                if column < 17 and row == column % 16
+                else -29
+                if column >= 17
+                else 0
+            )
+            for row in range(16)
+            for column in range(32)
+        ]
+        expected = [float(column + 1) for column in range(17)]
+    elif case.symbol == "GEMM_F16_K17":
+        lhs = (
+            [float(index + 1) for index in range(17)]
+            + [-29.0] * 15
+            + [0.0] * 96
+        )
+        rhs = (
+            [
+                float(1 if row < 16 else column + 2)
+                for row in range(17)
+                for column in range(16)
+            ]
+            + [-31.0] * 112
+        )
+        expected = [float(170 + 17 * column) for column in range(16)]
+    elif case.symbol == "GEMM_BF16_K17":
+        lhs = [1.0] * 17 + [-29.0] * 15 + [0.0] * 96
+        rhs = (
+            [
+                float(1 if row < 16 else column + 2)
+                for row in range(17)
+                for column in range(16)
+            ]
+            + [-31.0] * 112
+        )
+        expected = [float(18 + column) for column in range(16)]
+    elif case.symbol in ("GEMM_F16_N65", "GEMM_BF16_N65"):
+        lhs = [1.0] * 16
+        semantic_rhs = [
+            float(1 if row < 15 else 100 + column)
+            for row in range(16)
+            for column in range(65)
+        ]
+        rhs = (
+            [
+                semantic_rhs[row * 65 + column]
+                for row in range(16)
+                for column in range(64)
+            ]
+            + [
+                value
+                for row in range(16)
+                for value in (
+                    semantic_rhs[row * 65 + 64],
+                    -29.0,
+                    -29.0,
+                    -29.0,
+                )
+            ]
+            + [-31.0] * 64
+        )
+        expected = [float(115 + column) for column in range(65)]
+    elif case.symbol in (
+        "GEMM_F16_ORIENTED_NT",
+        "GEMM_BF16_ORIENTED_NT",
+    ):
+        semantic_lhs = [
+            float((row * 5 + contracting * 3) % 7 - 3)
+            for row in range(4)
+            for contracting in range(16)
+        ]
+        semantic_rhs = [
+            float((contracting * 2 + column * 5) % 9 - 4)
+            for contracting in range(16)
+            for column in range(8)
+        ]
+        lhs = semantic_lhs
+        rhs = [
+            semantic_rhs[contracting * 8 + column]
+            for column in range(8)
+            for contracting in range(16)
+        ]
+        expected = [
+            float(
+                sum(
+                    semantic_lhs[row * 16 + contracting]
+                    * semantic_rhs[contracting * 8 + column]
+                    for contracting in range(16)
+                )
+            )
+            for row in range(4)
+            for column in range(8)
+        ]
+    elif case.symbol == "GEMM_F16_ORIENTED_TN":
+        semantic_lhs = [
+            float((row * 5 + contracting * 3) % 7 - 3)
+            for row in range(4)
+            for contracting in range(16)
+        ]
+        semantic_rhs = [
+            float((contracting * 2 + column * 5) % 9 - 4)
+            for contracting in range(16)
+            for column in range(8)
+        ]
+        lhs = [
+            semantic_lhs[row * 16 + contracting]
+            for contracting in range(16)
+            for row in range(4)
+        ]
+        rhs = semantic_rhs
+        expected = [
+            float(
+                sum(
+                    semantic_lhs[row * 16 + contracting]
+                    * semantic_rhs[contracting * 8 + column]
+                    for contracting in range(16)
+                )
+            )
+            for row in range(4)
+            for column in range(8)
+        ]
+    elif case.symbol == "GEMM_F16_ORIENTED_TT":
+        semantic_lhs = [
+            float((row * 5 + contracting * 3) % 7 - 3)
+            for row in range(4)
+            for contracting in range(16)
+        ]
+        semantic_rhs = [
+            float((contracting * 2 + column * 5) % 9 - 4)
+            for contracting in range(16)
+            for column in range(8)
+        ]
+        lhs = [
+            semantic_lhs[row * 16 + contracting]
+            for contracting in range(16)
+            for row in range(4)
+        ]
+        rhs = [
+            semantic_rhs[contracting * 8 + column]
+            for column in range(8)
+            for contracting in range(16)
+        ]
+        expected = [
+            float(
+                sum(
+                    semantic_lhs[row * 16 + contracting]
+                    * semantic_rhs[contracting * 8 + column]
+                    for contracting in range(16)
+                )
+            )
+            for row in range(4)
+            for column in range(8)
+        ]
+    elif case.symbol == "GEMM_F16_PSUM":
+        lhs = [1.0] * 16
+        rhs = [
+            float(column + 1)
+            for _row in range(16)
+            for column in range(16)
+        ]
+        expected = [float(1016 + 17 * column) for column in range(16)]
     else:
         raise RuntimeError(f"{case.name}: unknown GEMM kind")
     lhs_physical = lhs + [0.0] * (128 - len(lhs))
@@ -633,6 +931,14 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
     _put(slots[0], input_a)
     if input_b:
         _put(slots[1], input_b)
+    if case.symbol == "GEMM_F16_PSUM":
+        _put(
+            slots[3],
+            _f16(
+                [float(1000 + column) for column in range(16)]
+                + [-23.0] * 112
+            ),
+        )
 
     if case.family_name == "CT_SELECT_COMPOSITE":
         false_values = _repeat((-1.0, -2.0, -3.0, -4.0))
@@ -642,9 +948,17 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
     elif case.family_name == "UNPOOL":
         output_seed = _f16([0.0] * (case.output_span // 2))
     else:
-        seed_elements = case.output_span // 2
+        seed_element_bytes = 4 if case.dtype_name == "F32" else 2
+        seed_elements = case.output_span // seed_element_bytes
+        seed_dtype = (
+            "BF16"
+            if case.dtype_name == "BF16"
+            else "F32"
+            if case.dtype_name == "F32"
+            else "F16"
+        )
         output_seed = _fp(
-            "BF16" if case.dtype_name == "BF16" else "F16",
+            seed_dtype,
             _repeat((-13.0,), seed_elements),
         )
     _put(slots[2], output_seed)

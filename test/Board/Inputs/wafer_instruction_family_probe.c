@@ -1,4 +1,5 @@
 #include "instr_def.h"
+#include "instr_adapter.h"
 #include "wafer_instruction_family_probe_protocol.h"
 #include "wafer_tx81_crt.h"
 
@@ -117,6 +118,8 @@ static uint32_t wafer_ifp_fp_format(const WaferIFPDescriptor *descriptor) {
   case WAFER_IFP_F16_TO_BF16:
   case WAFER_IFP_F16_TO_I16:
     return Fmt_FP16;
+  case WAFER_IFP_F32:
+    return Fmt_FP32;
   case WAFER_IFP_BF16:
   case WAFER_IFP_I8_TO_BF16:
     return Fmt_BF16;
@@ -160,6 +163,21 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
   case WAFER_IFP_CASE_CT_ADD_F16:
   case WAFER_IFP_CASE_CT_ADD_BF16:
     wafer_tx81_elementwise_add(input_a, input_b, output, elements, format);
+    break;
+  case WAFER_IFP_CASE_CT_ADD_F16_TAIL130:
+    wafer_tx81_elementwise_add(input_a, input_b, output, 130, Fmt_FP16);
+    break;
+  case WAFER_IFP_CASE_CT_ADD_BF16_TAIL130:
+    wafer_tx81_elementwise_add(input_a, input_b, output, 130, Fmt_BF16);
+    break;
+  case WAFER_IFP_CASE_CT_ADD_F32:
+    wafer_tx81_elementwise_add(input_a, input_b, output, elements, Fmt_FP32);
+    break;
+  case WAFER_IFP_CASE_CT_ADD_SPECIAL_F16:
+    wafer_tx81_elementwise_add(input_a, input_b, output, elements, Fmt_FP16);
+    break;
+  case WAFER_IFP_CASE_CT_ADD_SPECIAL_BF16:
+    wafer_tx81_elementwise_add(input_a, input_b, output, elements, Fmt_BF16);
     break;
   case WAFER_IFP_CASE_CT_SUB_F16:
   case WAFER_IFP_CASE_CT_SUB_BF16:
@@ -226,9 +244,79 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
   case WAFER_IFP_CASE_GEMM_F16:
     wafer_tx81_gemm(input_a, input_b, output, 1, 16, 16, 1, Fmt_FP16);
     break;
+  case WAFER_IFP_CASE_GEMM_F16_ACCUM_ROUND:
+    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 16, 1, Fmt_FP16);
+    break;
+  case WAFER_IFP_CASE_GEMM_F16_M4:
+    wafer_tx81_gemm(input_a, input_b, output, 4, 16, 16, 1, Fmt_FP16);
+    break;
+  case WAFER_IFP_CASE_GEMM_F16_BATCH2_M8:
+    wafer_tx81_gemm(input_a, input_b, output, 8, 16, 16, 2, Fmt_FP16);
+    break;
+  case WAFER_IFP_CASE_GEMM_F16_N17:
+    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 17, 1, Fmt_FP16);
+    break;
+  case WAFER_IFP_CASE_GEMM_F16_K17:
+    wafer_tx81_gemm(input_a, input_b, output, 1, 17, 16, 1, Fmt_FP16);
+    break;
+  case WAFER_IFP_CASE_GEMM_F16_N65:
+    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 65, 1, Fmt_FP16);
+    break;
+  case WAFER_IFP_CASE_GEMM_F16_ORIENTED_NT:
+    wafer_tx81_gemm_oriented_v2(
+        input_a, input_b, output, 4, 16, 8, 1, Fmt_FP16,
+        WAFER_IFP_GEMM_ORIENTATION_NORMAL,
+        WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE);
+    break;
+  case WAFER_IFP_CASE_GEMM_BF16_ORIENTED_NT:
+    wafer_tx81_gemm_oriented_v2(
+        input_a, input_b, output, 4, 16, 8, 1, Fmt_BF16,
+        WAFER_IFP_GEMM_ORIENTATION_NORMAL,
+        WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE);
+    break;
+  case WAFER_IFP_CASE_GEMM_F16_ORIENTED_TN:
+    wafer_tx81_gemm_oriented_v2(
+        input_a, input_b, output, 4, 16, 8, 1, Fmt_FP16,
+        WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE,
+        WAFER_IFP_GEMM_ORIENTATION_NORMAL);
+    break;
+  case WAFER_IFP_CASE_GEMM_F16_ORIENTED_TT:
+    wafer_tx81_gemm_oriented_v2(
+        input_a, input_b, output, 4, 16, 8, 1, Fmt_FP16,
+        WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE,
+        WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE);
+    break;
+  case WAFER_IFP_CASE_GEMM_F16_PSUM: {
+    TsmNeInstr instruction = {0};
+    TsmGemm *gemm = TsmNewGemm();
+    gemm->AddInput(&instruction, input_a, input_b, Fmt_FP16);
+    gemm->ConfigMKN(&instruction, 1, 16, 16);
+    gemm->ConfigBatch(&instruction, 1, 1);
+    gemm->SetTransflag(&instruction, 0, 1);
+    gemm->SetPsum(&instruction, 1, auxiliary, Fmt_FP16);
+    gemm->SetQuant(&instruction, 0, 0, 0, 0);
+    gemm->AddBias(&instruction, 0, 0);
+    gemm->SetNegativeAxisScale(&instruction, 0, 0);
+    gemm->SetPositiveAxisScale(&instruction, 0, 0);
+    gemm->DisableRelu(&instruction);
+    gemm->DisableLeakyRelu(&instruction);
+    gemm->AddOutput(&instruction, output, Fmt_FP16);
+    (void)TsmExecute(&instruction);
+    TsmDeleteGemm(gemm);
+    break;
+  }
   case WAFER_IFP_CASE_GEMM_BF16:
   case WAFER_IFP_CASE_GEMM_BF16_ACCUM_ROUND:
     wafer_tx81_gemm(input_a, input_b, output, 1, 16, 16, 1, Fmt_BF16);
+    break;
+  case WAFER_IFP_CASE_GEMM_BF16_BATCH2_M8:
+    wafer_tx81_gemm(input_a, input_b, output, 8, 16, 16, 2, Fmt_BF16);
+    break;
+  case WAFER_IFP_CASE_GEMM_BF16_K17:
+    wafer_tx81_gemm(input_a, input_b, output, 1, 17, 16, 1, Fmt_BF16);
+    break;
+  case WAFER_IFP_CASE_GEMM_BF16_N65:
+    wafer_tx81_gemm(input_a, input_b, output, 1, 16, 65, 1, Fmt_BF16);
     break;
   case WAFER_IFP_CASE_TDMA_PAD_F16:
     wafer_tx81_tdma_pad(input_a, output, 1, 2, 2, 64, 1, 4, 4, 64, 1, 1, 1,

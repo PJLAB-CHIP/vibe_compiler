@@ -29,6 +29,8 @@
 #define WAFER_IFP_BIT2FP_TRUE_F16 UINT16_C(0x3c00)
 #define WAFER_IFP_BIT2FP_TRUE_BF16 UINT16_C(0x3f80)
 #define WAFER_IFP_BIT2FP_FALSE UINT16_C(0x0000)
+#define WAFER_IFP_GEMM_ORIENTATION_NORMAL UINT32_C(0)
+#define WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE UINT32_C(1)
 #define WAFER_IFP_REQUEST_GUARD UINT64_C(0x8e7c6a5948372615)
 #define WAFER_IFP_RECORD_GUARD UINT64_C(0x192a3b4c5d6e7f80)
 
@@ -59,6 +61,7 @@ enum WaferIFPDType {
   WAFER_IFP_BF16_TO_F16 = 4,
   WAFER_IFP_F16_TO_BF16 = 5,
   WAFER_IFP_F16_TO_I16 = 6,
+  WAFER_IFP_F32 = 7,
 };
 
 enum WaferIFPOracle {
@@ -160,7 +163,45 @@ enum WaferIFPDeferredReason {
   X(CONV_BF16, 110, "conv-bf16", SAFE, CONV, BF16, EXACT_BITS, REASON_NONE,  \
     16, 256, 0)                                                                \
   X(GEMM_BF16_ACCUM_ROUND, 111, "ne-gemm-bf16-accum-round", SAFE, NE_GEMM,   \
-    BF16, EXACT_BITS, REASON_NONE, 32, 256, 0)
+    BF16, EXACT_BITS, REASON_NONE, 32, 256, 0)                                  \
+  X(GEMM_F16_ACCUM_ROUND, 112, "ne-gemm-f16-accum-round", SAFE, NE_GEMM,     \
+    F16, EXACT_BITS, REASON_NONE, 32, 256, 0)                                   \
+  X(GEMM_F16_M4, 113, "ne-gemm-f16-m4", SAFE, NE_GEMM, F16, EXACT_BITS,      \
+    REASON_NONE, 128, 256, 0)                                                   \
+  X(GEMM_F16_BATCH2_M8, 114, "ne-gemm-f16-batch2-m8", SAFE, NE_GEMM, F16,   \
+    EXACT_BITS, REASON_NONE, 512, 512, 0)                                      \
+  X(GEMM_F16_N17, 115, "ne-gemm-f16-n17", SAFE, NE_GEMM, F16, EXACT_BITS,   \
+    REASON_NONE, 34, 256, 0)                                                    \
+  X(GEMM_F16_K17, 116, "ne-gemm-f16-k17", SAFE, NE_GEMM, F16, EXACT_BITS,   \
+    REASON_NONE, 32, 256, 0)                                                    \
+  X(GEMM_F16_ORIENTED_NT, 117, "ne-gemm-f16-oriented-nt", SAFE, NE_GEMM,    \
+    F16, EXACT_BITS, REASON_NONE, 64, 256, 0)                                  \
+  X(GEMM_F16_PSUM, 118, "ne-gemm-f16-psum", SAFE, NE_GEMM, F16,             \
+    EXACT_COMPOSITE, REASON_NONE, 32, 256, 256)                               \
+  X(GEMM_F16_ORIENTED_TN, 119, "ne-gemm-f16-oriented-tn", SAFE, NE_GEMM,    \
+    F16, EXACT_BITS, REASON_NONE, 64, 256, 0)                                  \
+  X(GEMM_F16_ORIENTED_TT, 120, "ne-gemm-f16-oriented-tt", SAFE, NE_GEMM,    \
+    F16, EXACT_BITS, REASON_NONE, 64, 256, 0)                                  \
+  X(GEMM_F16_N65, 121, "ne-gemm-f16-n65", SAFE, NE_GEMM, F16, EXACT_BITS,   \
+    REASON_NONE, 130, 256, 0)                                                  \
+  X(GEMM_BF16_BATCH2_M8, 122, "ne-gemm-bf16-batch2-m8", SAFE, NE_GEMM,     \
+    BF16, EXACT_BITS, REASON_NONE, 512, 512, 0)                                \
+  X(GEMM_BF16_K17, 123, "ne-gemm-bf16-k17", SAFE, NE_GEMM, BF16,           \
+    EXACT_BITS, REASON_NONE, 32, 256, 0)                                      \
+  X(GEMM_BF16_N65, 124, "ne-gemm-bf16-n65", SAFE, NE_GEMM, BF16,           \
+    EXACT_BITS, REASON_NONE, 130, 256, 0)                                     \
+  X(GEMM_BF16_ORIENTED_NT, 125, "ne-gemm-bf16-oriented-nt", SAFE, NE_GEMM, \
+    BF16, EXACT_BITS, REASON_NONE, 64, 256, 0)                                 \
+  X(CT_ADD_F16_TAIL130, 126, "ct-add-f16-tail130", SAFE, CT_ELEMENTWISE,    \
+    F16, EXACT_BITS, REASON_NONE, 260, 512, 0)                                 \
+  X(CT_ADD_BF16_TAIL130, 127, "ct-add-bf16-tail130", SAFE, CT_ELEMENTWISE,  \
+    BF16, EXACT_BITS, REASON_NONE, 260, 512, 0)                                \
+  X(CT_ADD_F32, 128, "ct-add-f32", SAFE, CT_ELEMENTWISE, F32, EXACT_BITS,   \
+    REASON_NONE, 512, 512, 0)                                                  \
+  X(CT_ADD_SPECIAL_F16, 129, "ct-add-special-f16", SAFE, CT_ELEMENTWISE,    \
+    F16, EXACT_BITS, REASON_NONE, 256, 256, 0)                                 \
+  X(CT_ADD_SPECIAL_BF16, 130, "ct-add-special-bf16", SAFE, CT_ELEMENTWISE,  \
+    BF16, EXACT_BITS, REASON_NONE, 256, 256, 0)
 
 enum WaferIFPCase {
 #define WAFER_IFP_ENUM_CASE(SYMBOL, ID, SPELLING, DISPOSITION, FAMILY, DTYPE,  \
