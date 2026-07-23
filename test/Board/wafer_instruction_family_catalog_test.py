@@ -227,6 +227,55 @@ def validate_gemm_dtype_oracles() -> None:
         )
 
 
+def validate_gemm_bf16_accum_round_oracle() -> None:
+    case = catalog.CASES_BY_NAME["ne-gemm-bf16-accum-round"]
+    assert case.is_safe
+    assert case.dtype_name == "BF16"
+    assert case.oracle_name == "EXACT_BITS"
+    assert case.result_bytes == 32
+    assert case.output_span == 256
+    assert case.aux_span == 0
+
+    built = catalog.build_case_payload(case)
+    lhs = struct.unpack_from("<128H", built.payload, catalog.BODY_OFFSET)
+    assert lhs[:16] == (0x3F80,) * 16
+    assert lhs[16:] == (0,) * 112
+
+    rhs = struct.unpack_from(
+        "<256H",
+        built.payload,
+        catalog.SLOT_BYTES + catalog.BODY_OFFSET,
+    )
+    assert rhs[:16] == tuple(0x3F80 + column for column in range(16))
+    for row in range(1, 16):
+        assert rhs[row * 16 : (row + 1) * 16] == tuple(
+            0x3B00 if column % 2 == 0 else 0x3980
+            for column in range(16)
+        )
+
+    expected = struct.unpack_from(
+        "<16H", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert expected == (
+        0x3F84,
+        0x3F81,
+        0x3F86,
+        0x3F83,
+        0x3F88,
+        0x3F85,
+        0x3F8A,
+        0x3F87,
+        0x3F8C,
+        0x3F89,
+        0x3F8E,
+        0x3F8B,
+        0x3F90,
+        0x3F8D,
+        0x3F92,
+        0x3F8F,
+    )
+
+
 def validate_arg_extrema_composite_oracles() -> None:
     expected_cases = (
         ("peripheral-argmax-f16", max, 73, 100.0),
@@ -472,11 +521,11 @@ def _output_seed_padding() -> bytes:
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 39
-    assert len(catalog.CATALOG) == 40
+    assert len(catalog.SAFE_CASES) == 40
+    assert len(catalog.CATALOG) == 41
     assert {case.case_id for case in catalog.SAFE_CASES} == (
         set(range(1, 30))
-        | {100, 101, 102, 103, 105, 106, 107, 108, 109, 110}
+        | {100, 101, 102, 103, 105, 106, 107, 108, 109, 110, 111}
     )
     assert {
         (case.symbol, case.reason_name)
@@ -544,6 +593,7 @@ def main() -> int:
     validate_rounding_and_bit2fp_oracles()
     validate_gemm_padding_domain()
     validate_gemm_dtype_oracles()
+    validate_gemm_bf16_accum_round_oracle()
     validate_arg_extrema_composite_oracles()
     validate_conv_oracle()
     validate_pool_max_oracle()

@@ -386,15 +386,38 @@ def _select(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
 
 
 def _gemm(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
-    if case.symbol not in ("GEMM_F16", "GEMM_BF16"):
+    if case.symbol in ("GEMM_F16", "GEMM_BF16"):
+        lhs = _repeat((1.0, 2.0, 3.0, 4.0), 16)
+        rhs = [
+            1.0 if row == column else 0.0
+            for row in range(16)
+            for column in range(16)
+        ]
+        expected = lhs
+    elif case.symbol == "GEMM_BF16_ACCUM_ROUND":
+        lhs = [1.0] * 16
+        rhs = [
+            1.0 + column / 128.0
+            if row == 0
+            else 1.0 / 512.0
+            if column % 2 == 0
+            else 1.0 / 4096.0
+            for row in range(16)
+            for column in range(16)
+        ]
+        expected = [
+            1.0 + (column + 4) / 128.0
+            if column % 2 == 0
+            else 1.0 + column / 128.0
+            for column in range(16)
+        ]
+    else:
         raise RuntimeError(f"{case.name}: unknown GEMM kind")
-    lhs = _repeat((1.0, 2.0, 3.0, 4.0), 16)
     lhs_physical = lhs + [0.0] * (128 - len(lhs))
-    rhs = [1.0 if row == column else 0.0 for row in range(16) for column in range(16)]
     return (
         _fp(case.dtype_name, lhs_physical),
         _fp(case.dtype_name, rhs),
-        _fp(case.dtype_name, lhs),
+        _fp(case.dtype_name, expected),
     )
 
 

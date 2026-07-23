@@ -275,7 +275,7 @@ pairwise_excess = engine_a_exec + engine_b_exec - fu_union_exec
 ### 4.2 单engine correctness与ABI观察
 
 - CT f16 Add使用非零输入、完整fp16 golden、guard和DMA round-trip通过。
-- instruction-family typed catalog的39个safe case已逐个串行launch并通过完整bit oracle、SPM guard、
+- instruction-family typed catalog的40个safe case已逐个串行launch并通过完整bit oracle、SPM guard、
   terminal与cleanup：f16/bf16 Neg/Add/Sub/Mul/Max/Min/Pow2/Relu，I8→f16/bf16、bf16→f16、
   f16→bf16/i16 convert，f16 Sum/Max、bf16 Min/Avg reduction，f16/bf16 Bit2FP+MaskMove select，
   f16 NE GEMM、f16 TDMA Pad、f16 TDMA Img2Col、f16 PoolMax、peripheral LUT16与f16 peripheral
@@ -305,6 +305,9 @@ pairwise_excess = engine_a_exec + engine_b_exec - fu_union_exec
   区分旧HWIO channel轴和对称stride误解，并与已修正的compiler verifier/target ABI合同一致。
 - 同一Conv geometry以BF16 tight payload独立上板，8个结果、16B logical result、256B physical span及
   guard同样逐bit正确；该证据只新增BF16 format资格，不外推非平凡accumulation rounding或其它geometry。
+- NE BF16 `M1K16N16`非平凡累加向量让每个输出具有16个非零K贡献；输入和FP32点积均为精确二进制数，
+  expected同时包含非tie round-up/down。32B结果逐bit正确，256B physical span与guard通过，因此排除逐项
+  BF16累加和末端截断；该向量仍不证明transpose、batch或logical tail。
 - reduction首次运行暴露的是probe ABI错误而非硬件错误：四个case的逻辑结果均为128B，但CT会写满256B
   physical block，后128B是padding。catalog把allowed output span误写成128B，因而准确报告128B guard
   mismatch；将`result_bytes=128`与`output_span=256`分开后，四个reduction及余下case全部通过。结果逻辑域、
