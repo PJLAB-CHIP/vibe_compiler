@@ -1084,6 +1084,24 @@ def validate_arg_extrema_composite_oracles() -> None:
         )
 
 
+def validate_probe_seed_is_synchronous_and_instruction_local() -> None:
+    probe = (
+        pathlib.Path(__file__).resolve().parent
+        / "Inputs"
+        / "wafer_instruction_family_probe.c"
+    ).read_text()
+    start = probe.index("static void wafer_ifp_seed")
+    body = probe[start : probe.index("\n}", start) + 2]
+    assert "get_spm_memory_mapping(destinations[slot])" in body
+    assert "volatile uint8_t *destination" in body
+    assert "const volatile uint8_t *source" in body
+    assert "source[slot * WAFER_IFP_SLOT_BYTES + index]" in body
+    assert '__asm__ volatile("fence"' in body
+    assert '__asm__ volatile("sync"' in body
+    assert "wafer_tx81_rdma" not in body
+    assert "wafer_tx81_local_fence" not in body
+
+
 def validate_pool_max_oracle() -> None:
     source_values = [
         float(100 * row + 10 * column + channel % 8)
@@ -1605,6 +1623,7 @@ def main() -> int:
     validate_gemm_f16_oriented_tt_oracle()
     validate_gemm_f16_psum_oracle()
     validate_arg_extrema_composite_oracles()
+    validate_probe_seed_is_synchronous_and_instruction_local()
     validate_conv_oracle()
     validate_pool_max_oracle()
     validate_unpool_composite_oracle()

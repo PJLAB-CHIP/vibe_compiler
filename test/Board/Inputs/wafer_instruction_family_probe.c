@@ -90,11 +90,17 @@ static void wafer_ifp_seed(uint64_t payload_ddr) {
       WAFER_IFP_SPM_OUTPUT,
       WAFER_IFP_SPM_AUX,
   };
-  for (uint32_t slot = 0; slot < 4; ++slot)
-    wafer_tx81_rdma(payload_ddr + slot * WAFER_IFP_SLOT_BYTES,
-                    destinations[slot], WAFER_IFP_SLOT_BYTES,
-                    WAFER_IFP_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
-  wafer_tx81_local_fence();
+  const volatile uint8_t *source =
+      (const volatile uint8_t *)(uintptr_t)payload_ddr;
+  for (uint32_t slot = 0; slot < 4; ++slot) {
+    volatile uint8_t *destination =
+        (volatile uint8_t *)(void *)get_spm_memory_mapping(destinations[slot]);
+    for (uint32_t index = 0; index < WAFER_IFP_SLOT_BYTES; ++index)
+      destination[index] =
+          source[slot * WAFER_IFP_SLOT_BYTES + index];
+  }
+  __asm__ volatile("fence" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
 }
 
 static uint64_t wafer_ifp_guard_mismatches(uint64_t slot,

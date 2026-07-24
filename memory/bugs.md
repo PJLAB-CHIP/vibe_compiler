@@ -1282,6 +1282,19 @@
 - 防复发：writeback完成、index ABI正确和数值domain正确是三项独立资格门禁。每个reduction/extrema opcode都要
   单独覆盖符号域；某一domain失败时保留最小可复现case，不能降级oracle或把错误值写成expected。
 
+## 2026-07-24 instruction资格probe不能用未独立闭合的异步DMA准备输入
+
+- 现象：连续执行ArgMax、ArgMin时，ArgMin的host payload是全正有限值，但输出恰好是上一条ArgMax输入的真实
+  最小值`-30@index0`；record、output span、writeback value/index位置和guard均正常。
+- 根因：instruction-family probe使用RDMA把host payload搬入SPM后，只用default local fence建立消费边界；
+  连续launch复用地址时，目标CT可能消费上一轮SPM内容。该失败属于probe setup dataflow，不是ArgMin oracle、
+  output copyback或已知的ArgMin负数域限制。
+- 修复模式：instruction资格probe以Kcore volatile byte copy把已invalidate的DDR payload同步写入mapped SPM，
+  并在目标指令前执行`fence`/`sync`；RDMA completion与cache语义由各自校准suite独立验证，不能混入目标指令
+  数值资格。
+- 防复发：instruction microcase的setup必须自身同步且不依赖待校准的其它engine；若实际值精确对应上一case的
+  输入，先对照raw payload与前一case语义，再判断oracle或硬件数值能力。
+
 ## 2026-07-23 1x1 Img2Col case会掩盖wrapper layout合同错误
 
 - 现象：Instr verifier长期把Img2Col参数解释为`[Kh,Kw,Sh,Sw]`并要求传统
