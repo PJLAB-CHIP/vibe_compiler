@@ -41,6 +41,8 @@ typedef struct MockContext {
   uint64_t cycle;
   uint32_t fail_prepare_slot_plus_one;
   uint64_t fail_prepare_flags;
+  uint32_t prepare_cleanup_mask;
+  uint32_t release_mask;
   int fail_safety_drain;
 } MockContext;
 
@@ -76,6 +78,14 @@ static int mock_prepare(void *opaque, const WaferNccProbeRequest *request,
   assert((context->prepared_mask & bit) == 0);
   if (context->fail_prepare_slot_plus_one == issue->slot + 1U) {
     *preparation_flags |= context->fail_prepare_flags;
+    if ((*preparation_flags &
+         WAFER_NCC_ISSUE_PREPARE_BUILDER_ACQUIRED) != 0 &&
+        (*preparation_flags &
+         WAFER_NCC_ISSUE_PREPARE_PACKET_MATERIALIZED) == 0) {
+      assert((context->prepare_cleanup_mask & bit) == 0);
+      context->prepare_cleanup_mask |= bit;
+      *preparation_flags |= WAFER_NCC_ISSUE_PREPARE_BUILDER_RELEASED;
+    }
     mock_event(context, MOCK_PREPARE + issue->slot);
     return 1;
   }
@@ -140,8 +150,11 @@ static int mock_oracle(void *opaque, const WaferNccProbeRequest *request,
 
 static void mock_release(void *opaque, const WaferNccProbeIssue *issue) {
   MockContext *context = (MockContext *)opaque;
-  assert((context->prepared_mask & (UINT32_C(1) << issue->slot)) != 0);
-  context->prepared_mask &= ~(UINT32_C(1) << issue->slot);
+  uint32_t bit = UINT32_C(1) << issue->slot;
+  assert((context->prepared_mask & bit) != 0);
+  assert((context->release_mask & bit) == 0);
+  context->prepared_mask &= ~bit;
+  context->release_mask |= bit;
   mock_event(context, MOCK_RELEASE + issue->slot);
 }
 
@@ -679,9 +692,12 @@ static void test_prepare_failure_retains_exact_issue_stage(void) {
           WAFER_NCC_ISSUE_PREPARE_COMPLETED));
   assert(record[second_base + WAFER_NCC_ISSUE_FLAGS] ==
          (WAFER_NCC_ISSUE_PREPARE_ENTERED |
-          WAFER_NCC_ISSUE_PREPARE_BUILDER_ACQUIRED));
+          WAFER_NCC_ISSUE_PREPARE_BUILDER_ACQUIRED |
+          WAFER_NCC_ISSUE_PREPARE_BUILDER_RELEASED));
   assert((context.prepared_mask & UINT32_C(1)) == 0);
   assert((context.prepared_mask & UINT32_C(2)) == 0);
+  assert(context.prepare_cleanup_mask == UINT32_C(2));
+  assert(context.release_mask == UINT32_C(1));
 }
 
 static void test_depth_plus_one_is_tight_and_waited(void) {

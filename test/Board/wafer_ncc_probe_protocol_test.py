@@ -1183,8 +1183,23 @@ class ProtocolTest(unittest.TestCase):
         )[1].split(
             "static int wafer_ncc_v2_issue(", maxsplit=1
         )[0]
+        failed_materialization = prepare.index("if (!built) {")
+        failed_release = prepare.index(
+            "wafer_ncc_probe_release(instruction)",
+            failed_materialization,
+        )
+        failed_release_flag = prepare.index(
+            "WAFER_NCC_ISSUE_PREPARE_BUILDER_RELEASED",
+            failed_release,
+        )
+        failed_return = prepare.index("return 1;", failed_release_flag)
+        self.assertLess(failed_materialization, failed_release)
+        self.assertLess(failed_release, failed_release_flag)
+        self.assertLess(failed_release_flag, failed_return)
         capture = prepare.index("context->constructor_address")
-        release = prepare.index("wafer_ncc_probe_release(instruction)")
+        release = prepare.index(
+            "wafer_ncc_probe_release(instruction)", capture
+        )
         self.assertLess(capture, release)
         self.assertIn(
             "WAFER_NCC_REC_CONSTRUCTOR_ADDRESS", source

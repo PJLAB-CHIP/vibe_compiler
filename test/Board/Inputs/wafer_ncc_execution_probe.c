@@ -1180,8 +1180,11 @@ static int wafer_ncc_v2_prepare(void *opaque,
   if (!instruction->has_owner)
     return 1;
   *preparation_flags |= WAFER_NCC_ISSUE_PREPARE_BUILDER_ACQUIRED;
-  if (!built)
+  if (!built) {
+    wafer_ncc_probe_release(instruction);
+    *preparation_flags |= WAFER_NCC_ISSUE_PREPARE_BUILDER_RELEASED;
     return 1;
+  }
   *preparation_flags |= WAFER_NCC_ISSUE_PREPARE_PACKET_MATERIALIZED;
   if (request->flags == WAFER_NCC_REQUEST_CONSTRUCTOR_OBSERVATION) {
     context->constructor_address = (uint64_t)(uintptr_t)instruction->owner;
