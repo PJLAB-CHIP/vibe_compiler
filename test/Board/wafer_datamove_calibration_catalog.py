@@ -7,6 +7,7 @@ import dataclasses
 import struct
 
 import wafer_ct_vector_calibration_catalog as ct_inventory
+import wafer_datamove_extended_calibration_catalog as extended
 import wafer_physical_tensor_codec as codec
 
 
@@ -537,6 +538,7 @@ _BOARD_CASES_BY_OPCODE = {
 }
 _EXISTING_EVIDENCE = {
     121: ("unpool-index-f16",),
+    122: ("unpool-avg-f16",),
     123: ("unpool-f16",),
     132: ("tdma-pad-f16",),
     134: (
@@ -545,27 +547,19 @@ _EXISTING_EVIDENCE = {
     ),
     138: ("tdma-img2col-f16", "tdma-img2col-bf16"),
 }
+_EXTENDED_EVIDENCE = {
+    opcode: tuple(case.name for case in rows)
+    for opcode, rows in extended.EVIDENCE_BY_OPCODE.items()
+}
 EXISTING_EVIDENCE_OPCODES = {
     "unpool-index-f16": frozenset({118, 121}),
+    "unpool-avg-f16": frozenset({122}),
     "unpool-f16": frozenset({118, 123}),
     "tdma-pad-f16": frozenset({132}),
     "select-bit2fp-maskmove-f16": frozenset({134}),
     "select-bit2fp-maskmove-bf16": frozenset({134}),
     "tdma-img2col-f16": frozenset({138}),
     "tdma-img2col-bf16": frozenset({138}),
-}
-_DEFERRED = {
-    122: "unpool-avg geometry lacks an independent large-shape physical oracle",
-    131: (
-        "raw Concat C/W/H/HW packet write-span and padding behavior are not "
-        "qualified; compiler concat uses bounded GatherScatter materialization"
-    ),
-    133: (
-        "raw TensorNom normalization semantics are not qualified; Tensor/Cx/"
-        "NCx layout materialization uses bounded GatherScatter"
-    ),
-    136: "MaskGather index ownership and bounded write span are not qualified",
-    137: "bit-vector MaskGather index ownership is not qualified",
 }
 
 
@@ -574,14 +568,17 @@ def build_public_dispositions() -> tuple[PublicMovementDisposition, ...]:
     for opcode in range(121, 139):
         name = ct_inventory.OPCODE_NAMES[opcode]
         operation = name.split("DataMoveOp_", 1)[1].lower()
-        evidence = _BOARD_CASES_BY_OPCODE[opcode] + _EXISTING_EVIDENCE.get(
-            opcode, ()
+        evidence = (
+            _BOARD_CASES_BY_OPCODE[opcode]
+            + _EXISTING_EVIDENCE.get(opcode, ())
+            + _EXTENDED_EVIDENCE.get(opcode, ())
         )
-        if opcode in _DEFERRED:
-            disposition = "isolated-deferred"
-            reason = _DEFERRED[opcode]
-        elif evidence:
-            disposition = "board-executable"
+        if evidence:
+            disposition = (
+                "board-observation"
+                if opcode in {131, 133, 136, 137}
+                else "board-executable"
+            )
             reason = None
         else:
             raise RuntimeError(f"public DataMove opcode {opcode} has no disposition")
@@ -612,13 +609,13 @@ RAW_CONCAT_DISPOSITIONS = tuple(
     SemanticDisposition(
         f"raw-concat-{axis.lower()}",
         f"concat-axis-{axis}",
-        "isolated-deferred",
-        (),
-        (
-            "opcode 131 exposes the dimension selector, but current ABI "
-            "evidence does not independently bound raw physical write span "
-            "and padding; use the matching compiler-materialized exact case"
+        "board-observation",
+        tuple(
+            case.name
+            for case in extended.CONCAT_CASES
+            if case.semantic_axis == axis
         ),
+        None,
     )
     for axis in ("C", "W", "H", "HW")
 )
@@ -627,23 +624,14 @@ EXTENDED_DATAMOVE_DISPOSITIONS = (
     SemanticDisposition(
         "pad-large-n2h5w7c65-to-n2h7w10c65",
         "pad-large-non-symmetric",
-        "isolated-deferred",
-        (),
-        (
-            "the raw Pad wrapper is qualified only by the smaller existing "
-            "case; the large destination plus full physical padding oracle "
-            "does not fit the current shared slot"
-        ),
+        "board-executable",
+        (extended.LARGE_TYPED_CASES[0].name,),
     ),
     SemanticDisposition(
         "img2col-large-n2h9w11c65",
         "img2col-large-non-square",
-        "isolated-deferred",
-        (),
-        (
-            "the requested large non-square Img2Col output exceeds the "
-            "current shared slot; keep the small typed ABI evidence separate"
-        ),
+        "board-executable",
+        (extended.LARGE_TYPED_CASES[1].name,),
     ),
 )
 
@@ -674,28 +662,16 @@ INSTRUCTION_LAYOUT_DISPOSITIONS = (
         "direct CT NTensor qualification is absent; materialize compact Tensor first",
     ),
     InstructionLayoutDisposition(
-        "CT", "Cx", "isolated-deferred",
-        ("datamove-cx-to-tensor-n2h7w9c65",),
-        (
-            "Cx-to-Tensor movement is concrete, but no combined runner "
-            "executes the CT consumer after materialization"
-        ),
+        "CT", "Cx", "composite-board-executable",
+        ("datamove-cx-materialize-ct-add-n2c65",),
     ),
     InstructionLayoutDisposition(
-        "CT", "NCx", "isolated-deferred",
-        ("datamove-ncx-to-tensor-n2h7w9c65",),
-        (
-            "NCx-to-Tensor movement is concrete, but no combined runner "
-            "executes the CT consumer after materialization"
-        ),
+        "CT", "NCx", "composite-board-executable",
+        ("datamove-ncx-materialize-ct-add-n2c65",),
     ),
     InstructionLayoutDisposition(
-        "NE", "Tensor", "isolated-deferred",
-        ("datamove-tensor-to-cx-n2h7w9c65",),
-        (
-            "Tensor-to-Cx movement is concrete, but no combined runner "
-            "executes the NE consumer after materialization"
-        ),
+        "NE", "Tensor", "composite-board-executable",
+        ("datamove-tensor-materialize-ne-identity-m1k16n16",),
     ),
     InstructionLayoutDisposition(
         "NE", "NTensor", "static-negative", (),
@@ -768,13 +744,20 @@ INSTRUCTION_LAYOUT_DISPOSITIONS = (
 INSTRUCTION_LAYOUT_POSITIVE_DISPOSITIONS = tuple(
     row
     for row in INSTRUCTION_LAYOUT_DISPOSITIONS
-    if row.disposition == "native-board-executable"
+    if row.disposition
+    in {"native-board-executable", "composite-board-executable"}
 )
 
 INSTRUCTION_LAYOUT_COMPOSITE_DEFERRED_DISPOSITIONS = tuple(
     row
     for row in INSTRUCTION_LAYOUT_DISPOSITIONS
     if row.disposition == "isolated-deferred"
+)
+
+INSTRUCTION_LAYOUT_COMPOSITE_POSITIVE_DISPOSITIONS = tuple(
+    row
+    for row in INSTRUCTION_LAYOUT_DISPOSITIONS
+    if row.disposition == "composite-board-executable"
 )
 
 INSTRUCTION_LAYOUT_NONBOARD_DISPOSITIONS = tuple(
@@ -794,10 +777,14 @@ def _cases_with(**fields: object) -> tuple[DataMoveCase, ...]:
 
 CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
     "instruction-layout-native-positive": (
-        INSTRUCTION_LAYOUT_POSITIVE_DISPOSITIONS
+        tuple(
+            row
+            for row in INSTRUCTION_LAYOUT_POSITIVE_DISPOSITIONS
+            if row.disposition == "native-board-executable"
+        )
     ),
-    "instruction-layout-composite-deferred": (
-        INSTRUCTION_LAYOUT_COMPOSITE_DEFERRED_DISPOSITIONS
+    "instruction-layout-composite-positive": (
+        INSTRUCTION_LAYOUT_COMPOSITE_POSITIVE_DISPOSITIONS
     ),
     "instruction-layout-static-negative": (
         INSTRUCTION_LAYOUT_NONBOARD_DISPOSITIONS

@@ -6,6 +6,8 @@ from __future__ import annotations
 import dataclasses
 import struct
 
+import wafer_memory_descriptor_calibration_catalog as memory_descriptor
+
 
 REQUEST_MAGIC = 0x3151455248434357
 RECORD_MAGIC = 0x3143455248434357
@@ -86,6 +88,7 @@ class CacheCoherenceCase:
     payload_bytes: int = PAYLOAD_BYTES
     disposition: str = "board-executable"
     reason: str | None = None
+    evidence: tuple[object, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         oracle = (
@@ -113,6 +116,9 @@ class CacheCoherenceCase:
             "oracle": oracle,
             "disposition": self.disposition,
             "reason": self.reason,
+            "evidence": tuple(
+                getattr(row, "name", repr(row)) for row in self.evidence
+            ),
         }
 
 
@@ -210,10 +216,15 @@ DDR_LARGE_DESCRIPTOR_DISPOSITIONS = (
         0,
         kind="descriptor-disposition",
         payload_bytes=65536,
-        disposition="isolated-deferred",
+        disposition="delegated-board-case",
         reason=(
-            "two disjoint 64KiB ranges plus guards do not fit the current "
-            "shared 64KiB resource; do not silently downsize the case"
+            "the dedicated memory-descriptor package owns the 64KiB payload "
+            "and its independent output/SPM guards"
+        ),
+        evidence=(
+            memory_descriptor.CASES_BY_NAME[
+                "ddr-large-contiguous-65536"
+            ],
         ),
     ),
     CacheCoherenceCase(
@@ -226,10 +237,18 @@ DDR_LARGE_DESCRIPTOR_DISPOSITIONS = (
         "not-issued",
         0,
         kind="descriptor-disposition",
-        disposition="isolated-deferred",
+        disposition="delegated-board-case",
         reason=(
-            "the cache probe record does not encode independent 1D/2D/3D "
-            "descriptor envelopes; use the NCC DMA descriptor suite first"
+            "the dedicated memory-descriptor package owns independent "
+            "1D/2D/3D envelopes and descriptor-hole guards"
+        ),
+        evidence=tuple(
+            memory_descriptor.CASES_BY_NAME[name]
+            for name in (
+                "ddr-large-1d-stride-holes",
+                "ddr-large-2d-stride-holes",
+                "ddr-large-3d-stride-holes",
+            )
         ),
     ),
     CacheCoherenceCase(
@@ -242,10 +261,19 @@ DDR_LARGE_DESCRIPTOR_DISPOSITIONS = (
         "not-issued",
         0,
         kind="descriptor-disposition",
-        disposition="isolated-deferred",
+        disposition="delegated-board-case",
         reason=(
-            "burst and tail unit semantics need a bounded descriptor record "
-            "before a bank-classification packet is safe"
+            "the dedicated memory-descriptor package owns default burst "
+            "boundary and large-tail observations"
+        ),
+        evidence=tuple(
+            memory_descriptor.CASES_BY_NAME[name]
+            for name in (
+                "ddr-default-burst-boundary-4095",
+                "ddr-default-burst-boundary-4096",
+                "ddr-default-burst-boundary-4097",
+                "ddr-large-tail-65535",
+            )
         ),
     ),
 )

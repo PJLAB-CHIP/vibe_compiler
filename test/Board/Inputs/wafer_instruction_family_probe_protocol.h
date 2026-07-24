@@ -203,7 +203,30 @@ enum WaferIFPDeferredReason {
   X(CT_ADD_SPECIAL_BF16, 130, "ct-add-special-bf16", SAFE, CT_ELEMENTWISE,  \
     BF16, EXACT_BITS, REASON_NONE, 256, 256, 0)                                \
   X(UNPOOL_INDEX_F16, 131, "unpool-index-f16", SAFE, UNPOOL, F16,           \
-    EXACT_COMPOSITE, REASON_NONE, 512, 512, 256)
+    EXACT_COMPOSITE, REASON_NONE, 512, 512, 256)                              \
+  X(POOL_AVG_F16, 132, "pool-avg-f16", SAFE, POOL, F16, EXACT_BITS,          \
+    REASON_NONE, 256, 256, 0)                                                  \
+  X(POOL_SUM_F16, 133, "pool-sum-f16", SAFE, POOL, F16, EXACT_BITS,          \
+    REASON_NONE, 256, 256, 0)                                                  \
+  X(POOL_MIN_F16, 134, "pool-min-f16", SAFE, POOL, F16, EXACT_BITS,          \
+    REASON_NONE, 256, 256, 0)                                                  \
+  X(POOL_INDEXED_MIN_F16, 135, "pool-indexed-min-f16", SAFE, POOL, F16,      \
+    EXACT_COMPOSITE, REASON_NONE, 512, 512, 0)                                 \
+  X(UNPOOL_AVG_F16, 136, "unpool-avg-f16", SAFE, UNPOOL, F16, EXACT_BITS,    \
+    REASON_NONE, 512, 512, 0)                                                  \
+  X(PERIPHERAL_BILINEAR_F16, 137, "peripheral-bilinear-f16", SAFE,           \
+    PERIPHERAL, F16, EXACT_BITS, REASON_NONE, 256, 256, 0)                    \
+  X(PERIPHERAL_FACTORIZE_F32_OBSERVED, 138,                                  \
+    "peripheral-factorize-f32-observed", SAFE, PERIPHERAL, F32, NO_ORACLE,   \
+    REASON_NONE, 1536, 1536, 0)                                               \
+  X(PERIPHERAL_LUT32_OBSERVED, 139, "peripheral-lut32-observed", SAFE,       \
+    PERIPHERAL, F32, NO_ORACLE, REASON_NONE, 512, 512, 0)                    \
+  X(PERIPHERAL_RANDGEN_F16_OBSERVED, 140,                                    \
+    "peripheral-randgen-f16-observed", SAFE, PERIPHERAL, F16, NO_ORACLE,     \
+    REASON_NONE, 1536, 1536, 0)                                               \
+  X(PERIPHERAL_ELEMMASK_F16_OBSERVED, 141,                                   \
+    "peripheral-elemmask-f16-observed", SAFE, PERIPHERAL, F16, NO_ORACLE,    \
+    REASON_NONE, 256, 256, 0)
 
 enum WaferIFPCase {
 #define WAFER_IFP_ENUM_CASE(SYMBOL, ID, SPELLING, DISPOSITION, FAMILY, DTYPE,  \

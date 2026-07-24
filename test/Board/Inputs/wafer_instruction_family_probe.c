@@ -338,6 +338,27 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
         input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_max, 1, 2, 4, 64, 1, 1,
         2, 64, 0, 0, 0, 0, 2, 2, 2, 2, format);
     break;
+  case WAFER_IFP_CASE_POOL_AVG_F16:
+    wafer_tx81_pool_avg(
+        input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_avg, 1, 2, 4, 64, 1, 1,
+        2, 64, 0, 0, 0, 0, 2, 2, 2, 2, Fmt_FP16);
+    break;
+  case WAFER_IFP_CASE_POOL_SUM_F16:
+    wafer_tx81_pool_sum(
+        input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_sum, 1, 2, 4, 64, 1, 1,
+        2, 64, 0, 0, 0, 0, 2, 2, 2, 2, Fmt_FP16);
+    break;
+  case WAFER_IFP_CASE_POOL_MIN_F16:
+    wafer_tx81_pool_min(
+        input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_min, 1, 2, 4, 64, 1, 1,
+        2, 64, 0, 0, 0, 0, 2, 2, 2, 2, Fmt_FP16);
+    break;
+  case WAFER_IFP_CASE_POOL_INDEXED_MIN_F16:
+    wafer_tx81_pool_indexedmin(
+        input_a, output, output + 256U,
+        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmin, 1, 2, 4, 64, 1, 1, 2, 64,
+        0, 0, 0, 0, 2, 2, 2, 2, Fmt_FP16);
+    break;
   case WAFER_IFP_CASE_UNPOOL_F16:
     wafer_tx81_pool_indexedmax(
         input_a, input_b, auxiliary,
@@ -358,6 +379,11 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
         input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool,
         (uint32_t)auxiliary, 1, 1, 1, 64, 1, 2, 2, 64, 2, 2, 2, 2, Fmt_FP16);
     break;
+  case WAFER_IFP_CASE_UNPOOL_AVG_F16:
+    wafer_tx81_unpool_avg(
+        input_a, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool_avg, 0U, 1,
+        1, 1, 64, 1, 2, 2, 64, 2, 2, 2, 2, Fmt_FP16);
+    break;
   case WAFER_IFP_CASE_PERIPHERAL_ARGMAX_F16:
     wafer_tx81_peripheral_argmax(
         input_a, output, output + 4,
@@ -372,6 +398,36 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     wafer_tx81_peripheral_lut16(
         input_a, input_b, output, OP_FUNC_CGRATensor_PeriOp_V_V_lut16,
         elements, Fmt_FP16, elements, 0, 0, 0);
+    break;
+  case WAFER_IFP_CASE_PERIPHERAL_BILINEAR_F16:
+    wafer_tx81_peripheral_bilinear(
+        input_a, output, OP_FUNC_CGRATensor_PeriOp_T_T_bilinear, elements,
+        Fmt_FP16, 1, 1, 2, 64, 1, 1, 2, 64, 0, 0, 0, 0);
+    break;
+  case WAFER_IFP_CASE_PERIPHERAL_FACTORIZE_F32_OBSERVED: {
+    TsmPeripheralInstr instruction = {0};
+    TsmPeripheral *peripheral = TsmNewPeripheral();
+    peripheral->Factorize(&instruction, input_a, output, output + 512U,
+                          output + 1024U, 32U);
+    (void)TsmExecute(&instruction);
+    TsmDeletePeripheral(peripheral);
+    break;
+  }
+  case WAFER_IFP_CASE_PERIPHERAL_LUT32_OBSERVED:
+    wafer_tx81_peripheral_lut32(
+        input_a, input_b, output, OP_FUNC_CGRATensor_PeriOp_V_V_lut32,
+        elements, Fmt_FP32, elements, 0, 0, 0);
+    break;
+  case WAFER_IFP_CASE_PERIPHERAL_RANDGEN_F16_OBSERVED:
+    wafer_tx81_peripheral_rand_gen(
+        input_a, input_b, output, output + 512U, output + 1024U,
+        OP_FUNC_CGRATensor_PeriOp_V_rand_gen, elements, Fmt_FP16, 0, 0, 0,
+        0);
+    break;
+  case WAFER_IFP_CASE_PERIPHERAL_ELEMMASK_F16_OBSERVED:
+    wafer_tx81_peripheral_elem_mask(
+        input_a, output, OP_FUNC_CGRATensor_PeriOp_V_V_elem_mask, elements,
+        Fmt_FP16, 0, UINT32_C(0x00003c00), 50U, RND_STOCHASTIC);
     break;
   default:
     return 1;

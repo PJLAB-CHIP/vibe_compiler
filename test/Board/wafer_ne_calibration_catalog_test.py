@@ -3,15 +3,18 @@
 
 from __future__ import annotations
 
+import pathlib
 import struct
+import tempfile
 
+import wafer_board_ne_calibration_probe_test as runner
 import wafer_ne_calibration_catalog as catalog
 import wafer_physical_tensor_codec as physical
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 58
-    assert len(catalog.CATALOG) == 67
+    assert len(catalog.SAFE_CASES) == 67
+    assert len(catalog.CATALOG) == 70
     assert len(catalog.CASES_BY_NAME) == len(catalog.CATALOG)
     coverage = {
         (
@@ -26,7 +29,7 @@ def main() -> int:
     }
     assert coverage == {
         (dtype, geometry, orientation)
-        for dtype in catalog.DTYPES
+        for dtype in catalog.FLOAT_DTYPES
         for geometry in catalog.GEOMETRIES
         for orientation in catalog.ORIENTATIONS
     }
@@ -44,6 +47,9 @@ def main() -> int:
         assert words[catalog.REQ["OPTION"]] == case.option
         assert words[catalog.REQ["AUX_SPAN"]] == case.aux_span
         assert words[catalog.REQ["DISPOSITION"]] == case.disposition
+        assert words[catalog.REQ["BATCH_PAIR"]] == (
+            (case.lhs_batch << 32) | case.rhs_batch
+        )
         assert words[catalog.REQ["GUARD"]] == catalog.REQUEST_GUARD
         assert max(case.lhs_span, case.rhs_span, case.output_span) <= (
             catalog.SLOT_BYTES - catalog.BODY_OFFSET
@@ -54,7 +60,7 @@ def main() -> int:
             unpacked = physical.unpack_scalar_bytes(
                 case.output_shape,
                 case.output_layout,
-                2,
+                case.element_bytes,
                 built.expected_physical,
             )
             assert unpacked == built.expected_logical
@@ -196,11 +202,170 @@ def main() -> int:
         <= catalog.SLOT_BYTES - catalog.BODY_OFFSET
         for case in conv_cases
     )
-    deferred = tuple(
+
+    quant = catalog.CASES_BY_NAME["ne-gemm-quant-observed"]
+    assert quant.dtype_name == "I8"
+    assert quant.element_bytes == 1
+    assert quant.disposition_name == "BOARD_OBSERVED"
+    assert (quant.lhs_span, quant.rhs_span, quant.output_span) == (
+        256,
+        256,
+        256,
+    )
+    quant_built = catalog.build_case_payload(quant)
+    quant_lhs = physical.unpack_scalar_bytes(
+        quant.lhs_shape,
+        quant.lhs_layout,
+        quant.element_bytes,
+        quant_built.payload[
+            catalog.BODY_OFFSET :
+            catalog.BODY_OFFSET + quant.lhs_span
+        ],
+    )
+    quant_rhs = physical.unpack_scalar_bytes(
+        quant.rhs_shape,
+        quant.rhs_layout,
+        quant.element_bytes,
+        quant_built.payload[
+            catalog.SLOT_BYTES + catalog.BODY_OFFSET :
+            catalog.SLOT_BYTES + catalog.BODY_OFFSET + quant.rhs_span
+        ],
+    )
+    assert {-7, 0, 7}.issubset(
+        {struct.unpack("<b", value)[0] for value in quant_lhs}
+    )
+    assert {-6, 0, 6}.issubset(
+        {struct.unpack("<b", value)[0] for value in quant_rhs}
+    )
+    assert quant_built.expected_logical is None
+    assert quant_built.expected_physical is None
+    raw = bytearray(
+        [runner.OUTPUT_INITIAL_CANARY] * catalog.RESOURCE_BYTES
+    )
+    record = [0] * catalog.RECORD_WORDS
+    record_values = {
+        "MAGIC": catalog.RECORD_MAGIC,
+        "SCHEMA_AND_WORDS": (
+            catalog.SCHEMA << 32
+        ) | catalog.RECORD_WORDS,
+        "STATUS": 0,
+        "CASE": quant.case_id,
+        "DTYPE": quant.dtype,
+        "LHS_ORIENTATION": quant.lhs_orientation,
+        "RHS_ORIENTATION": quant.rhs_orientation,
+        "BATCH": quant.batch,
+        "M": quant.m,
+        "K": quant.k,
+        "N": quant.n,
+        "LHS_SPAN": quant.lhs_span,
+        "RHS_SPAN": quant.rhs_span,
+        "OUTPUT_SPAN": quant.output_span,
+        "SAMPLE": 4,
+        "EXECUTE_RESULT": 1,
+        "REQUEST_GUARD": catalog.REQUEST_GUARD,
+        "OUTPUT_DDR_OFFSET": catalog.OUTPUT_DDR_OFFSET,
+        "SLOT_BYTES": catalog.SLOT_BYTES,
+        "BODY_OFFSET": catalog.BODY_OFFSET,
+        "KIND": quant.kind,
+        "PROFILE": quant.profile,
+        "OPTION": quant.option,
+        "AUX_SPAN": quant.aux_span,
+        "DISPOSITION": quant.disposition,
+        "LHS_BATCH": quant.lhs_batch,
+        "RHS_BATCH": quant.rhs_batch,
+        "RECORD_GUARD": catalog.RECORD_GUARD,
+    }
+    for name, value in record_values.items():
+        record[catalog.REC[name]] = value
+    struct.pack_into(f"<{catalog.RECORD_WORDS}Q", raw, 0, *record)
+    output_seed = quant_built.payload[
+        2 * catalog.SLOT_BYTES :
+        3 * catalog.SLOT_BYTES
+    ]
+    begin = catalog.OUTPUT_DDR_OFFSET
+    raw[begin : begin + catalog.SLOT_BYTES] = output_seed
+    with tempfile.TemporaryDirectory() as directory:
+        output = pathlib.Path(directory) / "quant-observed.raw"
+        output.write_bytes(raw)
+        try:
+            runner.validate_output(output, quant, quant_built, sample=4)
+        except RuntimeError as error:
+            assert "without any bounded writeback" in str(error)
+        else:
+            raise AssertionError("unchanged NE observation seed was accepted")
+        raw[begin + catalog.BODY_OFFSET + 3] ^= 0x1
+        output.write_bytes(raw)
+        runner.validate_output(output, quant, quant_built, sample=4)
+
+    observed_conv = catalog.CALIBRATION_LEAF_BINDINGS[
+        "ne-depthwise-backward-conv-observed"
+    ]
+    assert {case.kind_name for case in observed_conv} == {
+        "DEPTHWISE_CONV",
+        "BACKWARD_CONV",
+    }
+    assert {case.dtype_name for case in observed_conv} == {
+        "F16",
+        "BF16",
+    }
+    assert all(
+        case.disposition_name == "BOARD_OBSERVED"
+        and case.output_shape == (1, 4, 4, 64)
+        and case.output_span == 2048
+        for case in observed_conv
+    )
+    probe = (
+        pathlib.Path(__file__).resolve().parent
+        / "Inputs"
+        / "wafer_ne_calibration_probe.c"
+    ).read_text()
+    for function, op_type in (
+        ("wafer_nec_issue_depthwise", "1U"),
+        ("wafer_nec_issue_backward", "2U"),
+    ):
+        begin = probe.index(f"{function}(")
+        body = probe[begin : probe.index("static ", begin + 16)]
+        assert body.index(f"SetOpType(&instruction, {op_type})") < body.index(
+            "AddWeight(&instruction"
+        )
+
+    unequal = catalog.CALIBRATION_LEAF_BINDINGS[
+        "ne-batch-broadcast-positive"
+    ]
+    assert len(unequal) == 4
+    assert {
+        (case.dtype_name, case.lhs_batch, case.rhs_batch)
+        for case in unequal
+    } == {
+        (dtype, lhs_batch, rhs_batch)
+        for dtype in catalog.FLOAT_DTYPES
+        for lhs_batch, rhs_batch in ((1, 2), (2, 1))
+    }
+    for case in unequal:
+        assert case.exact
+        lhs, rhs = catalog._gemm_inputs(case)
+        assert len(lhs) == case.lhs_batch * case.m * case.k
+        assert len(rhs) == case.rhs_batch * case.k * case.n
+        expected = catalog._gemm_expected_values(case, lhs, rhs)
+        batch_elements = case.m * case.n
+        assert expected[:batch_elements] != expected[batch_elements:]
+        built = catalog.build_case_payload(case)
+        assert built.expected_logical == tuple(
+            catalog._encode(case.dtype_name, value) for value in expected
+        )
+
+    nonexecuting = tuple(
         case for case in catalog.CATALOG if not case.is_safe
     )
-    assert len(deferred) == 9
-    assert all(case.reason for case in deferred)
+    assert len(nonexecuting) == 3
+    assert all(case.reason for case in nonexecuting)
+    assert all(
+        case.disposition_name == "STATIC_NEGATIVE"
+        for case in nonexecuting
+    )
+    assert catalog.CASES_BY_NAME[
+        "ne-gemm-sparse-static-unsupported"
+    ].reason.startswith("TsmGemm has no SetSparse")
 
     bound = tuple(
         case

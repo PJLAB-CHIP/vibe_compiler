@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build one package and execute all exact CT convert calibration rows."""
+"""Build one package and execute exact or observed CT convert rows."""
 
 from __future__ import annotations
 
@@ -70,6 +70,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-tile-count", type=int)
     parser.add_argument("--expected-runtime-library-sha256")
     parser.add_argument("--completion-timeout-ms", type=int, default=30000)
+    parser.add_argument(
+        "--stochastic-samples",
+        type=int,
+        default=3,
+        help=(
+            "independent board observations per stochastic route; raw output "
+            "is retained and no deterministic sequence is assumed"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -186,7 +195,7 @@ def validate_output(
         for begin, end in (
             (0, catalog.BODY_OFFSET),
             (
-                catalog.BODY_OFFSET + case.result_bytes,
+                catalog.BODY_OFFSET + case.output_span,
                 catalog.SLOT_BYTES,
             ),
         ):
@@ -212,10 +221,14 @@ def validate_output(
     result = output_slot[
         catalog.BODY_OFFSET : catalog.BODY_OFFSET + case.result_bytes
     ]
+    physical = output_slot[
+        catalog.BODY_OFFSET : catalog.BODY_OFFSET + case.output_span
+    ]
     return {
         "case": case.as_dict(),
         "sample": sample,
         "result_sha256": hashlib.sha256(result).hexdigest(),
+        "physical_span_sha256": hashlib.sha256(physical).hexdigest(),
         "pmu": {
             "ct_execution": words[rec["CT_EXEC_DELTA"]],
             "ct_blocking": words[rec["CT_BLOCKING_DELTA"]],
@@ -231,35 +244,45 @@ def execute_cases(
 ) -> None:
     raw_dir = args.work_dir / "raw"
     raw_dir.mkdir()
-    for sample, case in enumerate(cases):
-        built = catalog.build_case_payload(case, sample)
-        request = raw_dir / f"{case.name}.request.raw"
-        payload = raw_dir / f"{case.name}.payload.raw"
-        output = raw_dir / f"{case.name}.output.raw"
-        request.write_bytes(built.request)
-        payload.write_bytes(built.payload)
-        result = package_support.run(
-            package_support.board_command(
-                args, package, resource_ids, request, payload, output
-            ),
-            timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
+    if args.stochastic_samples < 1:
+        raise RuntimeError("--stochastic-samples must be at least one")
+    for case in cases:
+        sample_count = (
+            args.stochastic_samples
+            if case.domain_name == "STOCHASTIC"
+            else 1
         )
-        required = {
-            "board_stage: completion",
-            "board_stage: device-to-host",
-            "board_stage: cleanup",
-            "board_execution: true",
-        }
-        if not required.issubset(set(result.stdout.splitlines())):
-            raise RuntimeError(
-                f"{case.name}: wafer-run omitted lifecycle evidence"
+        for sample in range(sample_count):
+            stem = f"{case.name}.sample{sample}"
+            built = catalog.build_case_payload(case, sample)
+            request = raw_dir / f"{stem}.request.raw"
+            payload = raw_dir / f"{stem}.payload.raw"
+            output = raw_dir / f"{stem}.output.raw"
+            request.write_bytes(built.request)
+            payload.write_bytes(built.payload)
+            result = package_support.run(
+                package_support.board_command(
+                    args, package, resource_ids, request, payload, output
+                ),
+                timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
             )
-        print(
-            "ct_convert_calibration: "
-            + json.dumps(
-                validate_output(output, case, built, sample), sort_keys=True
+            required = {
+                "board_stage: completion",
+                "board_stage: device-to-host",
+                "board_stage: cleanup",
+                "board_execution: true",
+            }
+            if not required.issubset(set(result.stdout.splitlines())):
+                raise RuntimeError(
+                    f"{case.name}: wafer-run omitted lifecycle evidence"
+                )
+            print(
+                "ct_convert_calibration: "
+                + json.dumps(
+                    validate_output(output, case, built, sample),
+                    sort_keys=True,
+                )
             )
-        )
 
 
 def main() -> int:

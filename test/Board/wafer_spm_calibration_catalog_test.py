@@ -11,8 +11,8 @@ def main() -> int:
     assert len(catalog.CASES_BY_NAME) == len(catalog.CATALOG)
     assert len(catalog.BOARD_CASES) == 19
     assert len(catalog.STATIC_NEGATIVE_CASES) == 15
-    assert len(catalog.DEFERRED_CASES) == 43
-    assert len(catalog.DELEGATED_CASES) == 7
+    assert len(catalog.DEFERRED_CASES) == 0
+    assert len(catalog.DELEGATED_CASES) == 50
     assert {case.domain for case in catalog.CATALOG} == {
         "capacity-reservation",
         "alignment-bank",
@@ -22,7 +22,7 @@ def main() -> int:
         "engine-access",
         "bank-engine-pair",
     }
-    assert {case.disposition for case in catalog.CATALOG} == (
+    assert {case.disposition for case in catalog.CATALOG}.issubset(
         catalog.DISPOSITIONS
     )
     for seed, case in enumerate(catalog.BOARD_CASES, start=1):
@@ -89,15 +89,18 @@ def main() -> int:
         "strided",
     }
     assert all(
-        case.disposition == "ISOLATED_DEFERRED"
-        and case.expected_violation
+        case.disposition == "DELEGATED_BOARD_CASE"
+        and case.expected_violation is None
+        and case.evidence
         for case in catalog.ADDRESS_RELATION_CASES
     )
     assert {case.iterations for case in catalog.LIFETIME_CASES} == {1, 4, 5}
     assert all(case.evidence for case in catalog.PHYSICAL_LAYOUT_CASES)
     assert all(case.evidence for case in catalog.DELEGATED_CASES)
     assert all(
-        row in catalog.datamove.CATALOG or row in catalog.BOARD_CASES
+        row in catalog.datamove.CATALOG
+        or row in catalog.BOARD_CASES
+        or row in catalog.memory_descriptor.CATALOG
         for case in catalog.DELEGATED_CASES
         for row in case.evidence
     )

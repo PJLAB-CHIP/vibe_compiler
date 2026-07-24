@@ -385,10 +385,10 @@ def board_command(
     ]
 
 
-RESOURCE_BYTES = 65536
+RESOURCE_BYTES = 1048576
 RECORD_BYTES = ncc_protocol.RECORD_WORDS * 8
 V2_OUTPUT_SLOT_BASE = 4096
-V2_OUTPUT_SLOT_STRIDE = 4608
+V2_OUTPUT_SLOT_STRIDE = 66048
 V2_OUTPUT_GUARD_BYTES = 256
 V2_RECORD_GUARD = 0xD87C2A916BE4035F
 V2_SPM_SLOT_BASE = 0x10000
@@ -399,6 +399,14 @@ V2_SPM_WRITE_OFFSET = 0xA100
 V2_NE_PHYSICAL_BYTES = 256
 V2_NE_RHS_BYTES = 512
 V2_NE_RESULT_BYTES = 32
+V2_NE_LARGE_M = 64
+V2_NE_LARGE_K = 128
+V2_NE_LARGE_N = 128
+V2_NE_LARGE_LHS_BYTES = 16384
+V2_NE_LARGE_RHS_BYTES = 32768
+V2_NE_LARGE_RESULT_BYTES = 16384
+V2_NE_LARGE_READ1_OFFSET = 0x4300
+V2_NE_LARGE_WRITE_OFFSET = 0xC500
 V2_HAZARD_SELECTED_OFFSET = 0x4000
 V2_HAZARD_SECOND_BASELINE_OFFSET = 0x6000
 V2_HAZARD_UNSELECTED_OFFSETS = (
@@ -429,10 +437,10 @@ PMU_STABLE_MASK = (1 << PMU64_COUNTERS) - 1
 MODULE = """\
 module {
   func.func @main(
-      %request: tensor<16384xf32>,
-      %payload: tensor<16384xf32>) -> tensor<16384xf32> {
-    %result = stablehlo.add %request, %payload : tensor<16384xf32>
-    return %result : tensor<16384xf32>
+      %request: tensor<262144xf32>,
+      %payload: tensor<262144xf32>) -> tensor<262144xf32> {
+    %result = stablehlo.add %request, %payload : tensor<262144xf32>
+    return %result : tensor<262144xf32>
   }
 }
 """
@@ -440,11 +448,11 @@ METADATA = {
     "name": "forward",
     "stablehlo_version": "0.0.0",
     "input_signature": [
-        {"shape": [16384], "dtype": "float32", "dynamic_dims": []},
-        {"shape": [16384], "dtype": "float32", "dynamic_dims": []},
+        {"shape": [262144], "dtype": "float32", "dynamic_dims": []},
+        {"shape": [262144], "dtype": "float32", "dynamic_dims": []},
     ],
     "output_signature": [
-        {"shape": [16384], "dtype": "float32", "dynamic_dims": []}
+        {"shape": [262144], "dtype": "float32", "dynamic_dims": []}
     ],
     "input_locations": [
         {"type_": "input_arg", "position": 0, "name": "request"},
@@ -458,6 +466,14 @@ METADATA = {
 class GenericProbeCase:
     name: str
     plan: ncc_protocol.Plan
+
+    @property
+    def disposition(self) -> str:
+        return (
+            "board-observation"
+            if self.name in NCC_OBSERVATION_CASE_NAMES
+            else "board-executable"
+        )
 
     def plan_for_sample(self, sample: int) -> ncc_protocol.Plan:
         return dataclasses.replace(self.plan, sample=sample)
@@ -736,6 +752,32 @@ V2_DMA_STRIDE_MATRIX_CASES = tuple(
         V2_DMA_STRIDE_DESCRIPTORS, start=1
     )
 )
+V2_STRIDED_DEPENDENCY_CASES = tuple(
+    v2_case(
+        (
+            f"dependency-strided-{dimension}-"
+            f"{schedule.name.lower()}-observation"
+        ),
+        (
+            v2_dma_strided_lane(ncc_protocol.Engine.RDMA, descriptor),
+            v2_dma_strided_lane(ncc_protocol.Engine.WDMA, descriptor),
+        ),
+        rounds=1,
+        schedule=schedule,
+        seed=0x7300 + index * 0x10 + int(schedule),
+        effect_relation=ncc_protocol.EffectRelation.RAW,
+        range_relation=ncc_protocol.RangeRelation.STRIDED_ENVELOPE,
+        first_operand=ncc_protocol.Operand.WRITE,
+        second_operand=ncc_protocol.Operand.READ0,
+    )
+    for index, (dimension, descriptor) in enumerate(
+        V2_DMA_STRIDE_DESCRIPTORS, start=1
+    )
+    for schedule in (
+        ncc_protocol.Schedule.SERIAL,
+        ncc_protocol.Schedule.WINDOW,
+    )
+)
 V2_SINGLE_CASES = tuple(
     v2_case(
         f"{engine.name.lower()}-raw-single",
@@ -745,6 +787,16 @@ V2_SINGLE_CASES = tuple(
         seed=0x100 + int(engine),
     )
     for engine in V2_ENGINES
+)
+V2_CONSTRUCTOR_CASES = (
+    v2_case(
+        "ct-constructor-return-address-nonnull",
+        (v2_lane(ncc_protocol.Engine.CT),),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x6001,
+        flags=ncc_protocol.CONSTRUCTOR_OBSERVATION,
+    ),
 )
 V2_WORKER_CASES = (
     v2_case(
@@ -820,8 +872,16 @@ V2_COMPLETION_SCOPE_CASES = tuple(
                 transfer_bytes=16,
                 element_format=FMT_INT8,
             ),
-            v2_lane(ncc_protocol.Engine.NE, worker=1),
-            v2_lane(ncc_protocol.Engine.NE, worker=1),
+            v2_lane(
+                ncc_protocol.Engine.NE,
+                worker=1,
+                transfer_bytes=V2_NE_LARGE_RESULT_BYTES,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.NE,
+                worker=1,
+                transfer_bytes=V2_NE_LARGE_RESULT_BYTES,
+            ),
         ),
         rounds=3,
         schedule=ncc_protocol.Schedule.WINDOW,
@@ -837,6 +897,33 @@ V2_COMPLETION_SCOPE_CASES = tuple(
         ("default", ncc_protocol.WaitKind.DEFAULT, 0x6121),
         ("byworker", ncc_protocol.WaitKind.BY_WORKER, 0x6122),
     )
+)
+V2_SUBSET_JOIN_CASES = tuple(
+    v2_case(
+        f"workers012-join{mask:03b}-observe-unjoined",
+        (
+            v2_lane(
+                ncc_protocol.Engine.CT,
+                worker=0,
+                transfer_bytes=16384,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.CT,
+                worker=1,
+                transfer_bytes=16384,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.NE,
+                worker=2,
+                transfer_bytes=V2_NE_LARGE_RESULT_BYTES,
+            ),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x6200 + mask,
+        wait_worker_mask_override=mask,
+    )
+    for mask in (0b001, 0b010, 0b100, 0b011, 0b101, 0b110)
 )
 V2_WAIT_OVERHEAD_CASES = tuple(
     v2_case(
@@ -935,74 +1022,207 @@ V2_PAIR_CASES = tuple(
         ncc_protocol.Schedule.WINDOW,
     )
 )
-V2_DEFERRED_CASES = (
+V2_DEFERRED_CASES: tuple[CalibrationDisposition, ...] = ()
+
+V2_PRODUCER_CONSUMER_CASES = (
+    v2_case(
+        "ordered-rdma-to-ct",
+        (
+            v2_lane(
+                ncc_protocol.Engine.RDMA,
+                transfer_bytes=256,
+                element_format=FMT_FP16,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.CT,
+                transfer_bytes=256,
+                element_format=FMT_FP16,
+            ),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x7401,
+        effect_relation=ncc_protocol.EffectRelation.RAW,
+        range_relation=ncc_protocol.RangeRelation.EXACT,
+        first_operand=ncc_protocol.Operand.WRITE,
+        second_operand=ncc_protocol.Operand.READ0,
+        flags=ncc_protocol.ORDERED_PRODUCER_CONSUMER,
+    ),
+    v2_case(
+        "ordered-ct-to-wdma",
+        (
+            v2_lane(
+                ncc_protocol.Engine.CT,
+                transfer_bytes=256,
+                element_format=FMT_FP16,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.WDMA,
+                transfer_bytes=256,
+                element_format=FMT_FP16,
+            ),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x7402,
+        effect_relation=ncc_protocol.EffectRelation.RAW,
+        range_relation=ncc_protocol.RangeRelation.EXACT,
+        first_operand=ncc_protocol.Operand.WRITE,
+        second_operand=ncc_protocol.Operand.READ0,
+        flags=ncc_protocol.ORDERED_PRODUCER_CONSUMER,
+    ),
+    v2_case(
+        "ordered-ne-to-wdma",
+        (
+            v2_lane(
+                ncc_protocol.Engine.NE,
+                transfer_bytes=V2_NE_PHYSICAL_BYTES,
+                element_format=FMT_FP16,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.WDMA,
+                transfer_bytes=V2_NE_RESULT_BYTES,
+                element_format=FMT_FP16,
+            ),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x7403,
+        effect_relation=ncc_protocol.EffectRelation.RAW,
+        range_relation=ncc_protocol.RangeRelation.EXACT,
+        first_operand=ncc_protocol.Operand.WRITE,
+        second_operand=ncc_protocol.Operand.READ0,
+        flags=ncc_protocol.ORDERED_PRODUCER_CONSUMER,
+    ),
     *(
-        CalibrationDisposition(
-            name=f"ct-workers012-join{mask:03b}-observe-unjoined",
-            domain="cross-worker-join",
-            disposition="isolated-deferred",
-            reason=(
-                "the current bounded probe cannot safely read a worker that "
-                "is intentionally still in flight at the join boundary"
+        v2_case(
+            f"ordered-tdma-to-{consumer.name.lower()}",
+            (
+                v2_lane(
+                    ncc_protocol.Engine.TDMA,
+                    transfer_bytes=256,
+                    element_format=FMT_FP16,
+                ),
+                v2_lane(
+                    consumer,
+                    transfer_bytes=256,
+                    element_format=FMT_FP16,
+                ),
             ),
-            completion_oracle=(
-                "joined workers are covered by the positive mask case; the "
-                "unjoined worker is never claimed complete"
-            ),
+            rounds=1,
+            schedule=ncc_protocol.Schedule.SERIAL,
+            seed=0x7404 + int(consumer),
+            effect_relation=ncc_protocol.EffectRelation.RAW,
+            range_relation=ncc_protocol.RangeRelation.EXACT,
+            first_operand=ncc_protocol.Operand.WRITE,
+            second_operand=ncc_protocol.Operand.READ0,
+            flags=ncc_protocol.ORDERED_PRODUCER_CONSUMER,
         )
-        for mask in (0b001, 0b010, 0b100, 0b011, 0b101, 0b110)
+        for consumer in (ncc_protocol.Engine.CT, ncc_protocol.Engine.NE)
     ),
-    CalibrationDisposition(
-        name="default-wait-cross-worker-scope",
-        domain="worker-specific-wait",
-        disposition="isolated-deferred",
-        reason=(
-            "available short workloads can drain naturally before the "
-            "boundary, so they cannot distinguish default wait scope"
+)
+V2_KCORE_BOUNDARY_CASES = (
+    v2_case(
+        "ct-to-kcore-read-boundary",
+        (
+            v2_lane(
+                ncc_protocol.Engine.CT,
+                transfer_bytes=16384,
+                element_format=FMT_FP16,
+            ),
         ),
-        completion_oracle=(
-            "requires a safely pending worker-specific marker before any "
-            "board-positive conclusion"
-        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x7410,
     ),
-    CalibrationDisposition(
-        name="dependency-strided-envelope",
-        domain="dependency-under-overlap",
-        disposition="isolated-deferred",
-        reason=(
-            "the device hazard composer currently supports exact, partial, "
-            "and adjacent ranges only"
+    v2_case(
+        "ne-to-kcore-read-boundary",
+        (
+            v2_lane(
+                ncc_protocol.Engine.NE,
+                transfer_bytes=V2_NE_LARGE_RESULT_BYTES,
+                element_format=FMT_FP16,
+            ),
         ),
-        completion_oracle=(
-            "requires a typed strided composition golden and a disjoint "
-            "positive-overlap qualification for the same oriented pair"
-        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x7411,
     ),
-    CalibrationDisposition(
-        name="movement-backlog-at-least-64k",
-        domain="parallel-backlog",
-        disposition="isolated-deferred",
-        reason=(
-            "the current NCC wire/resource slot bounds one movement issue "
-            "to 4KiB; short rows must not be relabeled as a 64KiB backlog"
-        ),
-        completion_oracle=(
-            "requires at least 64KiB exact payload, physical guards, engine "
-            "count, and paired raw/wrapper controls"
-        ),
+)
+V2_PRODUCER_CONSUMER_ALL_CASES = (
+    V2_PRODUCER_CONSUMER_CASES + V2_KCORE_BOUNDARY_CASES
+)
+
+V2_LARGE_BACKLOG_CASES = (
+    *(
+        v2_case(
+            f"{engine.name.lower()}-64k-{mode.name.lower()}-single",
+            (
+                v2_lane(
+                    engine,
+                    mode=mode,
+                    transfer_bytes=65536,
+                    element_format=FMT_INT8,
+                ),
+            ),
+            rounds=1,
+            schedule=ncc_protocol.Schedule.SERIAL,
+            seed=0x7500 + int(engine) * 0x10 + int(mode),
+        )
+        for engine in (ncc_protocol.Engine.RDMA, ncc_protocol.Engine.WDMA)
+        for mode in (
+            ncc_protocol.IssueMode.RAW,
+            ncc_protocol.IssueMode.WRAPPER,
+        )
     ),
-    CalibrationDisposition(
-        name="ne-large-shape-backlog",
-        domain="parallel-backlog",
-        disposition="isolated-deferred",
-        reason=(
-            "the generic NCC adapter is fixed to the bounded 1x16x16 GEMM "
-            "and cannot represent the required large NE shape"
-        ),
-        completion_oracle=(
-            "requires a large-shape NE payload/oracle rather than repeated "
-            "small identity work"
-        ),
+    *(
+        v2_case(
+            f"{engine.name.lower()}-large-{mode.name.lower()}-single",
+            (
+                v2_lane(
+                    engine,
+                    mode=mode,
+                    transfer_bytes=16384,
+                    element_format=FMT_FP16,
+                ),
+            ),
+            rounds=1,
+            schedule=ncc_protocol.Schedule.SERIAL,
+            seed=0x7520 + int(engine) * 0x10 + int(mode),
+        )
+        for engine in (ncc_protocol.Engine.CT, ncc_protocol.Engine.NE)
+        for mode in (
+            ncc_protocol.IssueMode.RAW,
+            ncc_protocol.IssueMode.WRAPPER,
+        )
+    ),
+    *(
+        v2_case(
+            (
+                f"rdma64k-{compute.name.lower()}-large-"
+                f"{schedule.name.lower()}"
+            ),
+            (
+                v2_lane(
+                    ncc_protocol.Engine.RDMA,
+                    transfer_bytes=65536,
+                    element_format=FMT_INT8,
+                ),
+                v2_lane(
+                    compute,
+                    transfer_bytes=16384,
+                    element_format=FMT_FP16,
+                ),
+            ),
+            rounds=1,
+            schedule=schedule,
+            seed=0x7540 + int(compute) * 0x10 + int(schedule),
+        )
+        for compute in (ncc_protocol.Engine.CT, ncc_protocol.Engine.NE)
+        for schedule in (
+            ncc_protocol.Schedule.SERIAL,
+            ncc_protocol.Schedule.WINDOW,
+        )
     ),
 )
 V2_PROTOCOL_NEGATIVE_CASES = (
@@ -1044,20 +1264,6 @@ V2_PROTOCOL_NEGATIVE_CASES = (
 )
 V2_ADDITIONAL_DISPOSITIONS = (
     CalibrationDisposition(
-        "known-good-heartbeat",
-        "runtime-publication",
-        "isolated-deferred",
-        "heartbeat belongs to the surrounding single-process board sequence",
-        "known-good Add before and after the isolated batch",
-    ),
-    CalibrationDisposition(
-        "constructor-zero-address",
-        "constructor-ownership",
-        "isolated-deferred",
-        "the current record does not publish the constructor return address",
-        "requires an explicit address observation without treating zero as failure",
-    ),
-    CalibrationDisposition(
         "constructor-builder-release",
         "constructor-ownership",
         "board-executable",
@@ -1072,62 +1278,16 @@ V2_ADDITIONAL_DISPOSITIONS = (
         "no invalid packet reaches TsmExecute",
     ),
     CalibrationDisposition(
-        "dma-contiguous-64k",
-        "dma-shape",
-        "isolated-deferred",
-        "the current NCC resource slot bounds one issue to 4KiB",
-        "requires a 64KiB exact payload and guard-preserving device adapter",
-    ),
-    CalibrationDisposition(
-        "dma-offset-alignment-tail",
-        "dma-shape",
-        "isolated-deferred",
-        "the generic NCC adapter does not expose independent DDR offset/alignment fields",
-        "requires aligned/misaligned static gates plus an exact tail oracle",
-    ),
-    CalibrationDisposition(
-        "tdma-i8-whole-strided",
-        "tdma-shape",
-        "isolated-deferred",
-        "the current TDMA wrapper leaf covers whole contiguous I8 only",
-        "requires a typed TDMA stride descriptor with hole and tail guards",
-    ),
-    CalibrationDisposition(
-        "tdma-fp16-bf16-raw-crt",
-        "tdma-format",
-        "isolated-deferred",
-        "the raw/wrapper issue-path control currently uses the ordinary I8 lane",
-        "requires paired FP16 and BF16 raw/CRT exact fills",
-    ),
-    CalibrationDisposition(
         "tdma-native-bool-exclusion",
         "tdma-format",
         "static-negative",
         "native BOOL Memset is excluded on the current profile",
         "only BOOL-to-I8 physical canonicalization may reach the device",
     ),
-    CalibrationDisposition(
-        "tdma-contiguous-stride-tail",
-        "tdma-shape",
-        "isolated-deferred",
-        "the existing 1D/2D/3D descriptors exercise RDMA/WDMA, not TDMA",
-        "requires TDMA-specific contiguous, strided, and tail exact leaves",
-    ),
-    CalibrationDisposition(
-        "double-slot-software-pipeline-vertical",
-        "software-pipeline",
-        "isolated-deferred",
-        "the source-level double-slot vertical is not represented by the bounded NCC probe",
-        "requires prologue/steady/epilogue, odd/even, single-iteration, and slot guards",
-    ),
-    CalibrationDisposition(
-        "ncc-producer-consumer-uncovered-directions",
-        "ncc-producer-consumer",
-        "isolated-deferred",
-        "the hazard catalog has representative relations but not every listed engine direction",
-        "requires RDMA-to-CT, CT/NE-to-WDMA, TDMA-to-CT/NE, and Kcore read boundaries",
-    ),
 )
+V2_ADDITIONAL_BY_NAME = {
+    case.name: case for case in V2_ADDITIONAL_DISPOSITIONS
+}
 V2_PIPELINE_CASES = tuple(
     v2_case(
         f"rdma-ct-wdma-disjoint-r{rounds}-{schedule.name.lower()}",
@@ -1141,6 +1301,40 @@ V2_PIPELINE_CASES = tuple(
         seed=0x3000 + rounds + int(schedule),
     )
     for rounds in (2, 4)
+    for schedule in (
+        ncc_protocol.Schedule.SERIAL,
+        ncc_protocol.Schedule.WINDOW,
+    )
+)
+V2_DOUBLE_SLOT_OBSERVATION_CASES = tuple(
+    v2_case(
+        (
+            f"double-slot-iterations{iterations}-"
+            f"{schedule.name.lower()}-observation"
+        ),
+        (
+            v2_lane(
+                ncc_protocol.Engine.RDMA,
+                transfer_bytes=16384,
+                element_format=FMT_FP16,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.CT,
+                transfer_bytes=16384,
+                element_format=FMT_FP16,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.WDMA,
+                transfer_bytes=16384,
+                element_format=FMT_FP16,
+            ),
+        ),
+        rounds=iterations,
+        schedule=schedule,
+        seed=0x7600 + iterations * 0x10 + int(schedule),
+        flags=ncc_protocol.DOUBLE_SLOT_OBSERVATION,
+    )
+    for iterations in (1, 2, 3, 4)
     for schedule in (
         ncc_protocol.Schedule.SERIAL,
         ncc_protocol.Schedule.WINDOW,
@@ -1252,12 +1446,65 @@ CALIBRATION_CASES = (
     + V2_PAIR_CASES
     + V2_PIPELINE_CASES
 )
+
+
+def _unique_cases(
+    *groups: tuple[GenericProbeCase, ...],
+) -> tuple[GenericProbeCase, ...]:
+    rows: list[GenericProbeCase] = []
+    names: set[str] = set()
+    for group in groups:
+        for case in group:
+            if case.name in names:
+                continue
+            names.add(case.name)
+            rows.append(case)
+    return tuple(rows)
+
+
+BOARD_ALL_SAFE_CASES = _unique_cases(
+    CALIBRATION_CASES,
+    V2_HAZARD_MANUAL_CASES,
+    V2_WAIT_OVERHEAD_CASES,
+    V2_ISSUE_PATH_CASES,
+    TDMA_CRT_MANUAL_CASES,
+    V2_DMA_STRIDE_MATRIX_CASES,
+    V2_DOCUMENTED_DEPTH_CASES,
+    V2_DEPTH_PLUS_ONE_CASES,
+    V2_PRODUCER_CONSUMER_ALL_CASES,
+    V2_STRIDED_DEPENDENCY_CASES,
+    V2_LARGE_BACKLOG_CASES,
+    V2_DOUBLE_SLOT_OBSERVATION_CASES,
+)
+BOARD_ALL_PREFLIGHT_CASES = _unique_cases(
+    BOARD_ALL_SAFE_CASES,
+    V2_CONSTRUCTOR_CASES,
+    V2_COMPLETION_SCOPE_CASES,
+    V2_SUBSET_JOIN_CASES,
+)
+NCC_OBSERVATION_CASE_NAMES = frozenset(
+    case.name
+    for case in (
+        V2_COMPLETION_SCOPE_CASES
+        + V2_SUBSET_JOIN_CASES
+        + V2_STRIDED_DEPENDENCY_CASES
+        + V2_DOUBLE_SLOT_OBSERVATION_CASES
+    )
+)
 SUITES = {
     "qualification": QUALIFICATION_CASES,
     "focused": FOCUSED_CASES,
     "calibration": CALIBRATION_CASES,
+    "board-all-safe": BOARD_ALL_SAFE_CASES,
+    "board-all-preflight": BOARD_ALL_PREFLIGHT_CASES,
     "hazard-manual": V2_HAZARD_MANUAL_CASES,
+    "constructor-observation": V2_CONSTRUCTOR_CASES,
     "completion-scope-manual": V2_COMPLETION_SCOPE_CASES,
+    "cross-worker-boundary-manual": V2_SUBSET_JOIN_CASES,
+    "producer-consumer-observation": V2_PRODUCER_CONSUMER_ALL_CASES,
+    "strided-dependency-observation": V2_STRIDED_DEPENDENCY_CASES,
+    "large-backlog-observation": V2_LARGE_BACKLOG_CASES,
+    "double-slot-observation": V2_DOUBLE_SLOT_OBSERVATION_CASES,
     "wait-overhead-manual": V2_WAIT_OVERHEAD_CASES,
     "issue-path-manual": V2_ISSUE_PATH_CASES,
     "tdma-crt-manual": TDMA_CRT_MANUAL_CASES,
@@ -1267,19 +1514,28 @@ SUITES = {
 }
 CASE_CATALOGS = {
     "no-card-protocol": (
-        NO_CARD_PROTOCOL_CASES + V2_DMA_STRIDE_MATRIX_CASES
+        NO_CARD_PROTOCOL_CASES
+        + V2_DMA_STRIDE_MATRIX_CASES
+        + V2_CONSTRUCTOR_CASES
+        + V2_COMPLETION_SCOPE_CASES
+        + V2_SUBSET_JOIN_CASES
+        + V2_PRODUCER_CONSUMER_ALL_CASES
+        + V2_STRIDED_DEPENDENCY_CASES
+        + V2_LARGE_BACKLOG_CASES
+        + V2_DOUBLE_SLOT_OBSERVATION_CASES
     ),
     **SUITES,
 }
 CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
-    "known-good-heartbeat": (V2_ADDITIONAL_DISPOSITIONS[0],),
-    "constructor-zero-address": (V2_ADDITIONAL_DISPOSITIONS[1],),
+    "constructor-return-address-nonnull": V2_CONSTRUCTOR_CASES,
     "constructor-builder-release": (
-        V2_ADDITIONAL_DISPOSITIONS[2],
+        V2_ADDITIONAL_BY_NAME["constructor-builder-release"],
         *V2_SINGLE_CASES,
     ),
     "execute-success-requires-side-effects": V2_SINGLE_CASES,
-    "execute-invalid-type-return": (V2_ADDITIONAL_DISPOSITIONS[3],),
+    "execute-invalid-type-return": (
+        V2_ADDITIONAL_BY_NAME["execute-invalid-type-return"],
+    ),
     "routing-five-engines-worker0": V2_SINGLE_CASES,
     "routing-ct-workers012": V2_WORKER_CASES,
     "range-materialization-ct-ne": tuple(
@@ -1298,60 +1554,37 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
             ncc_protocol.Engine.TDMA,
         )
     ),
-    "dma-contiguous-64k": (V2_ADDITIONAL_DISPOSITIONS[4],),
+    "dma-contiguous-64k": tuple(
+        case
+        for case in V2_LARGE_BACKLOG_CASES
+        if "64k" in case.name
+    ),
     "dma-1d-2d-3d-stride-holes": V2_DMA_STRIDE_MATRIX_CASES,
-    "dma-offset-alignment-tail": (V2_ADDITIONAL_DISPOSITIONS[5],),
     "tdma-i8-whole-positive": (NO_CARD_PROTOCOL_CASES[0],),
-    "tdma-i8-strided-deferred": (V2_ADDITIONAL_DISPOSITIONS[6],),
-    "tdma-fp16-bf16-raw-crt": (V2_ADDITIONAL_DISPOSITIONS[7],),
-    "tdma-native-bool-exclusion": (V2_ADDITIONAL_DISPOSITIONS[8],),
+    "tdma-native-bool-exclusion": (
+        V2_ADDITIONAL_BY_NAME["tdma-native-bool-exclusion"],
+    ),
     "tdma-bool-to-i8-physical-fill": (NO_CARD_PROTOCOL_CASES[1],),
-    "tdma-contiguous-stride-tail": (V2_ADDITIONAL_DISPOSITIONS[9],),
     "five-engine-n1-n2-n4": V2_SINGLE_CASES + V2_MULTI_ISSUE_CASES,
     "documented-depth-manual": V2_DOCUMENTED_DEPTH_CASES,
     "depth-plus-one-manual": V2_DEPTH_PLUS_ONE_CASES,
     "workers012-disjoint-routing": V2_WORKER_CASES,
-    "default-byworker-wait-controls": (
-        V2_WORKER_CASES + V2_COMPLETION_SCOPE_CASES
-    ),
-    "default-wait-nondefault-scope": tuple(
-        case
-        for case in V2_DEFERRED_CASES
-        if case.name == "default-wait-cross-worker-scope"
-    ),
+    "default-byworker-wait-controls": V2_WORKER_CASES,
+    "default-wait-nondefault-scope": V2_COMPLETION_SCOPE_CASES,
     "ten-engine-pairs-two-orders-controls": V2_PAIR_CASES,
-    "large-backlog-compute-movement": tuple(
-        case
-        for case in (
-            V2_DEFERRED_CASES + V2_ADDITIONAL_DISPOSITIONS
-        )
-        if case.domain == "parallel-backlog"
-        or case.name in ("dma-contiguous-64k",)
-    ),
-    "double-slot-software-pipeline-vertical": (
-        V2_ADDITIONAL_DISPOSITIONS[10],
-    ),
+    "large-backlog-compute-movement": V2_LARGE_BACKLOG_CASES,
+    "double-slot-hardware-observation": V2_DOUBLE_SLOT_OBSERVATION_CASES,
     "dependency-raw-war-waw-rar": V2_HAZARD_CASES,
     "dependency-exact-partial-adjacent": V2_HAZARD_CASES,
-    "dependency-strided-envelope": tuple(
-        case
-        for case in V2_DEFERRED_CASES
-        if case.name == "dependency-strided-envelope"
-    ),
+    "dependency-strided-envelope": V2_STRIDED_DEPENDENCY_CASES,
     "wrapper-prebuilt-same-sequence": V2_ISSUE_PATH_CASES,
     "five-engine-wait-each-window": V2_WAIT_OVERHEAD_CASES,
     "ncc-producer-consumer-representative-positive": (
         V2_HAZARD_CASES + V2_DMA_STRIDE_MATRIX_CASES
     ),
-    "ncc-producer-consumer-uncovered-deferred": (
-        V2_ADDITIONAL_DISPOSITIONS[11],
-    ),
+    "ncc-producer-consumer-all-directions": V2_PRODUCER_CONSUMER_ALL_CASES,
     "cross-worker-single-pair-triple-masks": V2_WORKER_CASES,
-    "cross-worker-unjoined-boundary": tuple(
-        case
-        for case in V2_DEFERRED_CASES
-        if case.domain == "cross-worker-join"
-    ),
+    "cross-worker-unjoined-boundary": V2_SUBSET_JOIN_CASES,
     "execute-engine-none-static-negative": tuple(
         case
         for case in V2_PROTOCOL_NEGATIVE_CASES
@@ -1513,7 +1746,7 @@ def validate_no_card_protocol_cases() -> None:
                 lane.engine != ncc_protocol.Engine.NE
                 or lane.issue_mode != ncc_protocol.IssueMode.RAW
                 or lane.element_format != FMT_FP16
-                or lane.transfer_bytes != V2_NE_PHYSICAL_BYTES
+                or lane.transfer_bytes != V2_NE_LARGE_RESULT_BYTES
                 for lane in plan.lanes[1:]
             )
             or plan.rounds != 3
@@ -1532,6 +1765,47 @@ def validate_no_card_protocol_cases() -> None:
                 f"{case.name}: completion-scope protocol is malformed"
             )
         plan.request_words()
+    if len(V2_CONSTRUCTOR_CASES) != 1 or not (
+        V2_CONSTRUCTOR_CASES[0].plan.is_constructor_observation()
+    ):
+        raise RuntimeError("constructor observation catalog is malformed")
+    if len(V2_SUBSET_JOIN_CASES) != 6 or {
+        case.plan.wait_worker_mask for case in V2_SUBSET_JOIN_CASES
+    } != {1, 2, 3, 4, 5, 6}:
+        raise RuntimeError("subset-join catalog must cover six proper masks")
+    if len(V2_PRODUCER_CONSUMER_CASES) != 5 or any(
+        not case.plan.is_ordered_producer_consumer()
+        for case in V2_PRODUCER_CONSUMER_CASES
+    ):
+        raise RuntimeError("ordered producer-consumer catalog is malformed")
+    if len(V2_KCORE_BOUNDARY_CASES) != 2:
+        raise RuntimeError("Kcore completion boundary catalog is malformed")
+    if len(V2_STRIDED_DEPENDENCY_CASES) != 6 or any(
+        not case.plan.is_strided_dependency_observation()
+        for case in V2_STRIDED_DEPENDENCY_CASES
+    ):
+        raise RuntimeError("strided dependency catalog is malformed")
+    if (
+        len(V2_LARGE_BACKLOG_CASES) != 12
+        or not any(
+            lane.transfer_bytes == 65536
+            for case in V2_LARGE_BACKLOG_CASES
+            for lane in case.plan.lanes
+        )
+        or not any(
+            v2_is_large_ne_lane(lane)
+            for case in V2_LARGE_BACKLOG_CASES
+            for lane in case.plan.lanes
+        )
+    ):
+        raise RuntimeError("large backlog catalog lost movement/NE coverage")
+    if len(V2_DOUBLE_SLOT_OBSERVATION_CASES) != 8 or any(
+        not case.plan.is_double_slot_observation()
+        for case in V2_DOUBLE_SLOT_OBSERVATION_CASES
+    ):
+        raise RuntimeError("double-slot hardware observation is malformed")
+    for case in BOARD_ALL_PREFLIGHT_CASES:
+        case.plan.request_words()
     overhead_specs = {
         f"{engine.name.lower()}-worker0-r2-{spelling}": schedule
         for engine in V2_ENGINES
@@ -1714,6 +1988,15 @@ def write_payload(path: pathlib.Path, case: GenericProbeCase) -> None:
         begin = (
             identity.slot * V2_OUTPUT_SLOT_STRIDE + V2_OUTPUT_GUARD_BYTES
         )
+        if (
+            case.plan.is_double_slot_observation()
+            and lane.engine == ncc_protocol.Engine.RDMA
+        ):
+            value = struct.pack("<H", v2_half(identity.round + 1))
+            payload[begin : begin + lane.transfer_bytes] = value * (
+                lane.transfer_bytes // len(value)
+            )
+            continue
         if lane.layout_kind == ncc_protocol.LayoutKind.DMA_STRIDED:
             if lane.engine == ncc_protocol.Engine.RDMA:
                 compact = bytes(
@@ -1770,10 +2053,8 @@ def v2_completion_marker(
         if identity.slot == last_slot
     )
     lane = plan.lanes[last_identity.lane]
-    write = (
-        V2_SPM_SLOT_BASE
-        + last_slot * V2_SPM_SLOT_STRIDE
-        + V2_SPM_WRITE_OFFSET
+    write = v2_operand_spm_address(
+        plan, last_identity, ncc_protocol.Operand.WRITE
     )
     if lane.engine == ncc_protocol.Engine.RDMA:
         return (
@@ -1783,7 +2064,7 @@ def v2_completion_marker(
     if lane.engine == ncc_protocol.Engine.NE:
         return (
             v2_half(last_slot + 1) >> 8,
-            write + V2_NE_RESULT_BYTES - 1,
+            write + v2_ne_result_bytes(lane) - 1,
         )
     raise RuntimeError(
         "completion-scope marker requires a result-producing final lane"
@@ -1901,6 +2182,42 @@ def v2_expected_result(
             v2_pattern_byte(source_slot, index)
             for index in range(lane.transfer_bytes)
         )
+    if plan.is_double_slot_observation():
+        value = v2_half(
+            identity.round + (
+                1 if lane.engine == ncc_protocol.Engine.RDMA else 2
+            )
+        )
+        return struct.pack(
+            f"<{lane.transfer_bytes // 2}H",
+            *([value] * (lane.transfer_bytes // 2)),
+        )
+    if plan.is_ordered_producer_consumer():
+        producer = plan.lanes[0].engine
+        if identity.lane == 0:
+            value = {
+                ncc_protocol.Engine.RDMA: 4,
+                ncc_protocol.Engine.TDMA: 4,
+                ncc_protocol.Engine.CT: 2,
+                ncc_protocol.Engine.NE: 1,
+            }[lane.engine]
+        else:
+            value = {
+                ncc_protocol.Engine.CT: 5,
+                ncc_protocol.Engine.NE: 4,
+                ncc_protocol.Engine.WDMA: (
+                    1 if producer == ncc_protocol.Engine.NE else 2
+                ),
+            }[lane.engine]
+        result_bytes = (
+            v2_ne_result_bytes(lane)
+            if lane.engine == ncc_protocol.Engine.NE
+            else lane.transfer_bytes
+        )
+        return struct.pack(
+            f"<{result_bytes // 2}H",
+            *([v2_half(value)] * (result_bytes // 2)),
+        )
     if plan.effect_relation != ncc_protocol.EffectRelation.NONE:
         return v2_hazard_result(identity, lane, plan)
     if lane.engine == ncc_protocol.Engine.CT:
@@ -1910,7 +2227,11 @@ def v2_expected_result(
         )
     if lane.engine == ncc_protocol.Engine.NE:
         return struct.pack(
-            "<16H", *([v2_half(identity.slot + 1)] * 16)
+            f"<{v2_ne_result_bytes(lane) // 2}H",
+            *(
+                [v2_half(identity.slot + 1)]
+                * (v2_ne_result_bytes(lane) // 2)
+            ),
         )
     if lane.engine in (
         ncc_protocol.Engine.RDMA,
@@ -1938,6 +2259,45 @@ def v2_spm_address(slot: int, offset: int) -> int:
     return V2_SPM_SLOT_BASE + slot * V2_SPM_SLOT_STRIDE + offset
 
 
+def v2_is_large_ne_lane(lane: ncc_protocol.Lane) -> bool:
+    return (
+        lane.engine == ncc_protocol.Engine.NE
+        and lane.transfer_bytes == V2_NE_LARGE_RESULT_BYTES
+    )
+
+
+def v2_ne_lhs_bytes(lane: ncc_protocol.Lane) -> int:
+    return (
+        V2_NE_LARGE_LHS_BYTES
+        if v2_is_large_ne_lane(lane)
+        else V2_NE_PHYSICAL_BYTES
+    )
+
+
+def v2_ne_rhs_bytes(lane: ncc_protocol.Lane) -> int:
+    return (
+        V2_NE_LARGE_RHS_BYTES
+        if v2_is_large_ne_lane(lane)
+        else V2_NE_RHS_BYTES
+    )
+
+
+def v2_ne_result_bytes(lane: ncc_protocol.Lane) -> int:
+    return (
+        V2_NE_LARGE_RESULT_BYTES
+        if v2_is_large_ne_lane(lane)
+        else V2_NE_RESULT_BYTES
+    )
+
+
+def v2_ne_output_span(lane: ncc_protocol.Lane) -> int:
+    return (
+        V2_NE_LARGE_RESULT_BYTES
+        if v2_is_large_ne_lane(lane)
+        else V2_NE_PHYSICAL_BYTES
+    )
+
+
 def v2_operand_uses_spm(
     engine: ncc_protocol.Engine, operand: ncc_protocol.Operand
 ) -> bool:
@@ -1958,6 +2318,56 @@ def v2_operand_spm_address(
     identity: ncc_protocol.IssueIdentity,
     operand: ncc_protocol.Operand,
 ) -> int:
+    lane = plan.lanes[identity.lane]
+    if plan.is_double_slot_observation():
+        physical_slot = identity.round & 1
+        if lane.engine == ncc_protocol.Engine.RDMA:
+            return v2_spm_address(physical_slot, V2_SPM_READ0_OFFSET)
+        if lane.engine == ncc_protocol.Engine.CT:
+            return v2_spm_address(
+                physical_slot,
+                (
+                    V2_SPM_READ0_OFFSET,
+                    V2_SPM_READ1_OFFSET,
+                    V2_SPM_WRITE_OFFSET,
+                )[operand],
+            )
+        if lane.engine == ncc_protocol.Engine.WDMA:
+            return v2_spm_address(physical_slot, V2_SPM_WRITE_OFFSET)
+    if (
+        plan.is_ordered_producer_consumer()
+        and identity.lane == 1
+        and operand == ncc_protocol.Operand.READ0
+    ):
+        first = next(
+            item for item in plan.issue_identities() if item.lane == 0
+        )
+        return v2_operand_spm_address(
+            plan, first, ncc_protocol.Operand.WRITE
+        )
+    if plan.is_ordered_producer_consumer():
+        offsets = (
+            V2_SPM_READ0_OFFSET,
+            (
+                V2_NE_LARGE_READ1_OFFSET
+                if v2_is_large_ne_lane(lane)
+                else V2_SPM_READ1_OFFSET
+            ),
+            (
+                V2_NE_LARGE_WRITE_OFFSET
+                if v2_is_large_ne_lane(lane)
+                else V2_SPM_WRITE_OFFSET
+            ),
+        )
+        return v2_spm_address(identity.slot, offsets[operand])
+    if (
+        plan.is_strided_dependency_observation()
+        and (
+            (identity.lane == 0 and operand == ncc_protocol.Operand.WRITE)
+            or (identity.lane == 1 and operand == ncc_protocol.Operand.READ0)
+        )
+    ):
+        return v2_spm_address(0, V2_SPM_WRITE_OFFSET)
     if plan.effect_relation != ncc_protocol.EffectRelation.NONE:
         selected = (
             plan.first_operand
@@ -1966,7 +2376,7 @@ def v2_operand_spm_address(
         )
         if operand == selected:
             return v2_hazard_ranges(plan, identity.round)[identity.lane][0]
-        engine = plan.lanes[identity.lane].engine
+        engine = lane.engine
         if v2_operand_uses_spm(engine, operand):
             pair_base = (
                 V2_SPM_SLOT_BASE
@@ -1978,8 +2388,16 @@ def v2_operand_spm_address(
             )
     offsets = (
         V2_SPM_READ0_OFFSET,
-        V2_SPM_READ1_OFFSET,
-        V2_SPM_WRITE_OFFSET,
+        (
+            V2_NE_LARGE_READ1_OFFSET
+            if v2_is_large_ne_lane(lane)
+            else V2_SPM_READ1_OFFSET
+        ),
+        (
+            V2_NE_LARGE_WRITE_OFFSET
+            if v2_is_large_ne_lane(lane)
+            else V2_SPM_WRITE_OFFSET
+        ),
     )
     return v2_spm_address(identity.slot, offsets[operand])
 
@@ -2088,11 +2506,13 @@ def validate_observed_ranges_v2(
             check_spm(observation, "write", write, lane.transfer_bytes)
         elif lane.engine == ncc_protocol.Engine.NE:
             check_spm(
-                observation, "read0", read0, V2_NE_PHYSICAL_BYTES
+                observation, "read0", read0, v2_ne_lhs_bytes(lane)
             )
-            check_spm(observation, "read1", read1, V2_NE_RHS_BYTES)
             check_spm(
-                observation, "write", write, V2_NE_PHYSICAL_BYTES
+                observation, "read1", read1, v2_ne_rhs_bytes(lane)
+            )
+            check_spm(
+                observation, "write", write, v2_ne_output_span(lane)
             )
         elif lane.engine == ncc_protocol.Engine.RDMA:
             check_ddr(
@@ -2103,9 +2523,13 @@ def validate_observed_ranges_v2(
                 + V2_OUTPUT_GUARD_BYTES,
                 lane.dma_envelope_bytes(),
             )
-            check_spm(observation, "write", write, lane.transfer_bytes)
+            check_spm(
+                observation, "write", write, lane.dma_envelope_bytes()
+            )
         elif lane.engine == ncc_protocol.Engine.WDMA:
-            check_spm(observation, "read0", read0, lane.transfer_bytes)
+            check_spm(
+                observation, "read0", read0, lane.dma_envelope_bytes()
+            )
             check_ddr(
                 observation,
                 "write",
@@ -2124,6 +2548,8 @@ def v2_disjoint_ranges(
     plan: ncc_protocol.Plan,
     observations: tuple[ncc_protocol.IssueObservation, ...],
 ) -> None:
+    if plan.is_double_slot_observation():
+        return
     ranges: list[
         tuple[ncc_protocol.IssueObservation, int, int, str]
     ] = []
@@ -2184,16 +2610,18 @@ def validate_output_payload_v2(
     mutable[:RECORD_BYTES] = bytes([0xA5]) * RECORD_BYTES
     for identity in plan.issue_identities():
         lane = plan.lanes[identity.lane]
+        if (
+            plan.is_double_slot_observation()
+            and lane.engine != ncc_protocol.Engine.WDMA
+        ):
+            continue
         expected = v2_expected_result(identity, lane, plan)
         begin = (
             V2_OUTPUT_SLOT_BASE
             + identity.slot * V2_OUTPUT_SLOT_STRIDE
             + V2_OUTPUT_GUARD_BYTES
         )
-        if (
-            lane.engine == ncc_protocol.Engine.WDMA
-            and lane.layout_kind == ncc_protocol.LayoutKind.DMA_STRIDED
-        ):
+        if lane.layout_kind == ncc_protocol.LayoutKind.DMA_STRIDED:
             cursor = 0
             for offset in lane.dma_chunk_offsets():
                 chunk_end = cursor + lane.layout_inner_bytes
@@ -2260,6 +2688,8 @@ def parse_record(
     observations = ncc_protocol.validate_record(words, plan)
     rec = ncc_protocol.REC
     is_wait_scope = case in V2_COMPLETION_SCOPE_CASES
+    is_subset_join = case in V2_SUBSET_JOIN_CASES
+    is_boundary_observation = is_wait_scope or is_subset_join
     if (
         words[rec["OUTPUT_SLOT_BASE"]] != V2_OUTPUT_SLOT_BASE
         or words[rec["OUTPUT_SLOT_STRIDE"]] != V2_OUTPUT_SLOT_STRIDE
@@ -2349,7 +2779,7 @@ def parse_record(
             or observation.final_guard_mismatches
             or (
                 observation.boundary_mismatches
-                and not is_wait_scope
+                and not is_boundary_observation
             )
         ):
             raise RuntimeError(
@@ -2470,6 +2900,71 @@ def parse_record(
                 )
             ),
         }
+    subset_join: dict[str, object] | None = None
+    if is_subset_join:
+        boundary_exact = {
+            worker: all(
+                observation.boundary_mismatches == 0
+                for observation in observations
+                if observation.worker == worker
+            )
+            for worker in range(3)
+        }
+        boundary_done = {
+            worker: bool(
+                words[rec["CONTROL_BOUNDARY"] + worker] & 0x100
+            )
+            for worker in range(3)
+        }
+        joined = {
+            worker
+            for worker in range(3)
+            if plan.wait_worker_mask & (1 << worker)
+        }
+        if any(
+            not boundary_exact[worker] or not boundary_done[worker]
+            for worker in joined
+        ):
+            raise RuntimeError(
+                f"{case.name}: subset join returned before a joined worker "
+                "completed"
+            )
+        subset_join = {
+            "wait_worker_mask": plan.wait_worker_mask,
+            "safety_worker_mask": words[rec["SAFETY_WORKER_MASK"]],
+            "worker_boundary_exact": boundary_exact,
+            "worker_boundary_done": boundary_done,
+            "unjoined_workers": sorted(set(range(3)) - joined),
+            "unjoined_pending_observed": any(
+                not boundary_exact[worker] or not boundary_done[worker]
+                for worker in set(range(3)) - joined
+            ),
+            "interpretation": (
+                "unjoined-worker-pending-observed"
+                if any(
+                    not boundary_exact[worker]
+                    or not boundary_done[worker]
+                    for worker in set(range(3)) - joined
+                )
+                else "unjoined-workers-drained-before-boundary"
+            ),
+        }
+    constructor: dict[str, object] | None = None
+    if case in V2_CONSTRUCTOR_CASES:
+        address = words[rec["CONSTRUCTOR_ADDRESS"]]
+        captured = bool(
+            words[rec["FLAGS"]] & ncc_protocol.CONSTRUCTOR_CAPTURED
+        )
+        if not captured or address == 0:
+            raise RuntimeError(
+                f"{case.name}: constructor return address was not nonnull"
+            )
+        constructor = {
+            "return_address": address,
+            "nonnull": True,
+            "builder_released_before_issue": True,
+            "packet_completed_after_release": True,
+        }
     validate_output_payload_v2(output, case, plan)
     result = {
         "case": case.as_dict(),
@@ -2483,6 +2978,18 @@ def parse_record(
     }
     if wait_scope is not None:
         result["wait_scope"] = wait_scope
+    if subset_join is not None:
+        result["subset_join"] = subset_join
+    if constructor is not None:
+        result["constructor"] = constructor
+    if plan.is_double_slot_observation():
+        result["double_slot"] = {
+            "hardware_observation_only": True,
+            "production_compiler_vertical": False,
+            "iterations": plan.rounds,
+            "physical_slots": 2,
+            "issue_order": list(plan.issue_order()),
+        }
     return result
 
 
@@ -2557,6 +3064,8 @@ def validate_hazard_selection(cases: Iterable[GenericProbeCase]) -> None:
         if (
             case.plan.effect_relation != ncc_protocol.EffectRelation.NONE
             and not case.plan.is_serial_dma_roundtrip()
+            and not case.plan.is_strided_dependency_observation()
+            and not case.plan.is_ordered_producer_consumer()
         )
     )
     if not hazards:
@@ -2646,6 +3155,8 @@ def execute_cases(
             case.plan.effect_relation
             != ncc_protocol.EffectRelation.NONE
             and not case.plan.is_serial_dma_roundtrip()
+            and not case.plan.is_strided_dependency_observation()
+            and not case.plan.is_ordered_producer_consumer()
             and hazard_pair_key(case.plan)
             not in qualified_disjoint_pairs(observations)
         ):
@@ -2661,6 +3172,12 @@ def execute_cases(
                 + V2_DMA_STRIDE_MATRIX_CASES
                 + V2_COMPLETION_SCOPE_CASES
                 + V2_WAIT_OVERHEAD_CASES
+                + V2_CONSTRUCTOR_CASES
+                + V2_SUBSET_JOIN_CASES
+                + V2_PRODUCER_CONSUMER_ALL_CASES
+                + V2_STRIDED_DEPENDENCY_CASES
+                + V2_LARGE_BACKLOG_CASES
+                + V2_DOUBLE_SLOT_OBSERVATION_CASES
             )
             else args.repeat if len(case.plan.lanes) > 1 else 1
         )
@@ -2983,14 +3500,23 @@ def main() -> int:
         raise RuntimeError("build-smoke requires --no-card")
     if args.suite == "build-smoke" and args.selected_cases:
         raise RuntimeError("--case requires a board execution suite")
-    if args.suite != "build-smoke" and args.no_card:
-        raise RuntimeError("board suites do not accept --no-card")
+    if args.suite == "board-all-preflight" and not args.no_card:
+        raise RuntimeError("board-all-preflight is a no-card-only suite")
     if args.suite in (
         "documented-depth-manual",
         "depth-plus-one-manual",
         "completion-scope-manual",
+        "constructor-observation",
+        "cross-worker-boundary-manual",
+        "producer-consumer-observation",
+        "strided-dependency-observation",
+        "large-backlog-observation",
+        "double-slot-observation",
     ) and (
-        not args.selected_cases or len(args.selected_cases) != 1
+        not args.no_card
+        and (
+            not args.selected_cases or len(args.selected_cases) != 1
+        )
     ):
         raise RuntimeError(
             f"{args.suite} requires exactly one --case"
@@ -2999,7 +3525,7 @@ def main() -> int:
         raise RuntimeError(
             "wait-overhead-manual always runs its serial/window pair"
         )
-    if args.suite != "build-smoke":
+    if not args.no_card:
         if os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
             print(
                 "wafer_board_ncc_execution_probe_test: hardware execution "
@@ -3035,7 +3561,7 @@ def main() -> int:
     module_path, resource_ids = locate_probe_bindings(package)
     build_probe(args, package, module_path)
     verify_no_card(args, package)
-    if args.suite == "build-smoke":
+    if args.no_card:
         return 0
 
     observations = execute_cases(

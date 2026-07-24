@@ -15,7 +15,7 @@ REQUEST_MAGIC = 0x31514552454E4357
 RECORD_MAGIC = 0x31434552454E4357
 REQUEST_GUARD = 0xB7A6958473625140
 RECORD_GUARD = 0x0F1E2D3C4B5A6978
-SCHEMA = 2
+SCHEMA = 3
 REQUEST_WORDS = 24
 RECORD_WORDS = 32
 RESOURCE_BYTES = 1048576
@@ -30,8 +30,14 @@ CONV_CASE_BASE = 23000
 CONV_OPTION_CASE_BASE = 23100
 DEFERRED_CASE_BASE = 24000
 
-DTYPES = {"F16": 0, "BF16": 1}
-KINDS = {"GEMM": 0, "CONV": 1}
+DTYPES = {"F16": 0, "BF16": 1, "I8": 2}
+FLOAT_DTYPES = ("F16", "BF16")
+KINDS = {
+    "GEMM": 0,
+    "CONV": 1,
+    "DEPTHWISE_CONV": 2,
+    "BACKWARD_CONV": 3,
+}
 PROFILES = {
     "DENSE": 0,
     "BF16_CANCELLATION": 1,
@@ -42,6 +48,11 @@ PROFILES = {
     "BF16_NAN": 6,
     "CONV_LARGE": 16,
     "CONV_HELDOUT": 17,
+    "GEMM_QUANT": 32,
+    "GEMM_L1_R2": 33,
+    "GEMM_L2_R1": 34,
+    "DEPTHWISE_1X1": 35,
+    "BACKWARD_1X1": 36,
 }
 OPTIONS = {
     "NONE": 0,
@@ -100,6 +111,7 @@ REQ = {
     "OPTION": 19,
     "AUX_SPAN": 20,
     "DISPOSITION": 21,
+    "BATCH_PAIR": 22,
     "GUARD": 23,
 }
 REC = {
@@ -129,6 +141,8 @@ REC = {
     "OPTION": 23,
     "AUX_SPAN": 24,
     "DISPOSITION": 25,
+    "LHS_BATCH": 26,
+    "RHS_BATCH": 27,
     "RECORD_GUARD": 31,
 }
 
@@ -193,6 +207,18 @@ class NECase:
         return DISPOSITIONS[self.disposition_name]
 
     @property
+    def element_bytes(self) -> int:
+        return 1 if self.dtype_name == "I8" else 2
+
+    @property
+    def lhs_batch(self) -> int:
+        return 1 if self.profile_name == "GEMM_L1_R2" else self.batch
+
+    @property
+    def rhs_batch(self) -> int:
+        return 1 if self.profile_name == "GEMM_L2_R1" else self.batch
+
+    @property
     def is_safe(self) -> bool:
         return self.disposition_name not in {
             "ISOLATED_DEFERRED",
@@ -211,6 +237,8 @@ class NECase:
             "geometry": self.geometry_name,
             "orientation": self.orientation_name,
             "batch": self.batch,
+            "lhs_batch": self.lhs_batch,
+            "rhs_batch": self.rhs_batch,
             "m": self.m,
             "k": self.k,
             "n": self.n,
@@ -258,7 +286,7 @@ def _make_case(
         output_shape, layout, 2
     ).physical_bytes
     ordinal = (
-        tuple(DTYPES).index(dtype_name) * 12
+        FLOAT_DTYPES.index(dtype_name) * 12
         + tuple(GEOMETRIES).index(geometry_name) * 4
         + tuple(ORIENTATIONS).index(orientation_name)
     )
@@ -297,7 +325,7 @@ def _make_case(
 
 _BASE_CASES = tuple(
     _make_case(dtype, geometry, orientation)
-    for dtype in DTYPES
+    for dtype in FLOAT_DTYPES
     for geometry in GEOMETRIES
     for orientation in ORIENTATIONS
 )
@@ -509,34 +537,193 @@ _SPECIAL_CASE_ROWS = tuple(
 )
 _GEMM_OPTION_CASES = tuple(
     _make_gemm_option_case(dtype, option)
-    for dtype in DTYPES
+    for dtype in FLOAT_DTYPES
     for option in tuple(OPTIONS)[1:]
 )
 _CONV_CASES = tuple(
     _make_conv_case(dtype, profile)
-    for dtype in DTYPES
+    for dtype in FLOAT_DTYPES
     for profile in ("CONV_LARGE", "CONV_HELDOUT")
 )
 _CONV_OPTION_CASES = tuple(
     _make_conv_case(dtype, "CONV_LARGE", option)
-    for dtype in DTYPES
+    for dtype in FLOAT_DTYPES
     for option in tuple(OPTIONS)[1:]
 )
-_DEFERRED_CASES = (
-    NEDeferredCase(
-        DEFERRED_CASE_BASE,
-        "ne-gemm-quant-deferred",
-        "gemm-quant",
-        "ISOLATED_DEFERRED",
-        "quant output formula and accumulator/output dtype contract are not "
-        "closed",
-    ),
+
+
+def _make_quant_case() -> NECase:
+    shape = (16, 16)
+    layout = "Cx"
+    span = physical.physical_layout(shape, layout, 1).physical_bytes
+    return NECase(
+        case_id=DEFERRED_CASE_BASE,
+        name="ne-gemm-quant-observed",
+        dtype_name="I8",
+        geometry_name="quant-16x16",
+        orientation_name="NN",
+        batch=1,
+        m=16,
+        k=16,
+        n=16,
+        kind_name="GEMM",
+        profile_name="GEMM_QUANT",
+        option_name="NONE",
+        disposition_name="BOARD_OBSERVED",
+        reason=(
+            "nonzero q0/q1 and left/right zero points are captured as raw "
+            "INT8 output without assuming a requantization formula"
+        ),
+        lhs_layout=layout,
+        rhs_layout=layout,
+        output_layout=layout,
+        lhs_orientation=0,
+        rhs_orientation=0,
+        lhs_shape=shape,
+        rhs_shape=shape,
+        output_shape=shape,
+        lhs_span=span,
+        rhs_span=span,
+        output_span=span,
+        aux_span=0,
+    )
+
+
+def _make_conv_kind_case(dtype_name: str, kind_name: str) -> NECase:
+    input_shape = (1, 4, 4, 64)
+    output_shape = input_shape
+    if kind_name == "DEPTHWISE_CONV":
+        profile_name = "DEPTHWISE_1X1"
+        weight_shape = (1, 1, 64, 1)
+        ordinal_base = 4
+        spelling = "depthwise-conv"
+    elif kind_name == "BACKWARD_CONV":
+        profile_name = "BACKWARD_1X1"
+        weight_shape = (1, 1, 64, 64)
+        ordinal_base = 6
+        spelling = "backward-conv"
+    else:
+        raise RuntimeError(f"unknown observed convolution kind {kind_name}")
+    layout = "Cx"
+    return NECase(
+        case_id=DEFERRED_CASE_BASE
+        + ordinal_base
+        + FLOAT_DTYPES.index(dtype_name),
+        name=f"ne-{spelling}-{dtype_name.lower()}-observed",
+        dtype_name=dtype_name,
+        geometry_name="1x1-n1h4w4c64",
+        orientation_name="NN",
+        batch=1,
+        m=4,
+        k=4,
+        n=64,
+        kind_name=kind_name,
+        profile_name=profile_name,
+        option_name="NONE",
+        disposition_name="BOARD_OBSERVED",
+        reason=(
+            "raw output closes bounded wrapper execution while the distinct "
+            "weight/channel relation remains a calibration result"
+        ),
+        lhs_layout=layout,
+        rhs_layout=layout,
+        output_layout=layout,
+        lhs_orientation=0,
+        rhs_orientation=0,
+        lhs_shape=input_shape,
+        rhs_shape=weight_shape,
+        output_shape=output_shape,
+        lhs_span=physical.physical_layout(
+            input_shape, layout, 2
+        ).physical_bytes,
+        rhs_span=physical.physical_layout(
+            weight_shape, layout, 2
+        ).physical_bytes,
+        output_span=physical.physical_layout(
+            output_shape, layout, 2
+        ).physical_bytes,
+        aux_span=0,
+    )
+
+
+def _make_unequal_batch_case(
+    dtype_name: str, profile_name: str
+) -> NECase:
+    batch = 2
+    m, k, n = 32, 64, 65
+    lhs_batch = 1 if profile_name == "GEMM_L1_R2" else 2
+    rhs_batch = 1 if profile_name == "GEMM_L2_R1" else 2
+    lhs_shape = (
+        (m, k) if lhs_batch == 1 else (lhs_batch, m, k)
+    )
+    rhs_shape = (
+        (k, n) if rhs_batch == 1 else (rhs_batch, k, n)
+    )
+    output_shape = (batch, m, n)
+    lhs_layout = "Cx" if lhs_batch == 1 else "NCx"
+    rhs_layout = "Cx" if rhs_batch == 1 else "NCx"
+    ordinal = (
+        FLOAT_DTYPES.index(dtype_name) * 2
+        + (profile_name == "GEMM_L2_R1")
+    )
+    return NECase(
+        case_id=DEFERRED_CASE_BASE + 8 + ordinal,
+        name=(
+            f"ne-gemm-{dtype_name.lower()}-"
+            f"{profile_name.lower().replace('_', '-')}"
+        ),
+        dtype_name=dtype_name,
+        geometry_name="unequal-batch",
+        orientation_name="NN",
+        batch=batch,
+        m=m,
+        k=k,
+        n=n,
+        kind_name="GEMM",
+        profile_name=profile_name,
+        option_name="NONE",
+        disposition_name="BOARD_EXACT",
+        reason="",
+        lhs_layout=lhs_layout,
+        rhs_layout=rhs_layout,
+        output_layout="NCx",
+        lhs_orientation=0,
+        rhs_orientation=0,
+        lhs_shape=lhs_shape,
+        rhs_shape=rhs_shape,
+        output_shape=output_shape,
+        lhs_span=physical.physical_layout(
+            lhs_shape, lhs_layout, 2
+        ).physical_bytes,
+        rhs_span=physical.physical_layout(
+            rhs_shape, rhs_layout, 2
+        ).physical_bytes,
+        output_span=physical.physical_layout(
+            output_shape, "NCx", 2
+        ).physical_bytes,
+        aux_span=0,
+    )
+
+
+_QUANT_CASES = (_make_quant_case(),)
+_DEPTHWISE_BACKWARD_CASES = tuple(
+    _make_conv_kind_case(dtype, kind)
+    for kind in ("DEPTHWISE_CONV", "BACKWARD_CONV")
+    for dtype in FLOAT_DTYPES
+)
+_UNEQUAL_BATCH_CASES = tuple(
+    _make_unequal_batch_case(dtype, profile)
+    for dtype in FLOAT_DTYPES
+    for profile in ("GEMM_L1_R2", "GEMM_L2_R1")
+)
+_NONEXECUTABLE_CASES = (
     NEDeferredCase(
         DEFERRED_CASE_BASE + 1,
-        "ne-gemm-sparse-deferred",
+        "ne-gemm-sparse-static-unsupported",
         "gemm-sparse",
-        "ISOLATED_DEFERRED",
-        "sparse-index physical layout and ownership are not closed",
+        "STATIC_NEGATIVE",
+        "TsmGemm has no SetSparse entry; Conv/Depthwise SetSparse cannot "
+        "express GEMM sparse through the typed ABI",
     ),
     NEDeferredCase(
         DEFERRED_CASE_BASE + 2,
@@ -552,46 +739,6 @@ _DEFERRED_CASES = (
         "STATIC_NEGATIVE",
         "the typed TsmGemm ABI has no unpad field",
     ),
-    NEDeferredCase(
-        DEFERRED_CASE_BASE + 4,
-        "ne-depthwise-conv-f16-deferred",
-        "depthwise-conv-f16",
-        "ISOLATED_DEFERRED",
-        "depthwise weight/channel relation lacks an independent physical "
-        "oracle",
-    ),
-    NEDeferredCase(
-        DEFERRED_CASE_BASE + 5,
-        "ne-depthwise-conv-bf16-deferred",
-        "depthwise-conv-bf16",
-        "ISOLATED_DEFERRED",
-        "depthwise weight/channel relation lacks an independent physical "
-        "oracle",
-    ),
-    NEDeferredCase(
-        DEFERRED_CASE_BASE + 6,
-        "ne-backward-conv-f16-deferred",
-        "backward-conv-f16",
-        "ISOLATED_DEFERRED",
-        "backward output geometry and weight orientation lack an independent "
-        "oracle",
-    ),
-    NEDeferredCase(
-        DEFERRED_CASE_BASE + 7,
-        "ne-backward-conv-bf16-deferred",
-        "backward-conv-bf16",
-        "ISOLATED_DEFERRED",
-        "backward output geometry and weight orientation lack an independent "
-        "oracle",
-    ),
-    NEDeferredCase(
-        DEFERRED_CASE_BASE + 8,
-        "ne-gemm-unequal-batch-deferred",
-        "gemm-unequal-batch",
-        "ISOLATED_DEFERRED",
-        "left/right batch broadcast ownership is not defined by the current "
-        "typed compiler consumer",
-    ),
 )
 
 SAFE_CASES = (
@@ -600,8 +747,11 @@ SAFE_CASES = (
     + _GEMM_OPTION_CASES
     + _CONV_CASES
     + _CONV_OPTION_CASES
+    + _QUANT_CASES
+    + _DEPTHWISE_BACKWARD_CASES
+    + _UNEQUAL_BATCH_CASES
 )
-CATALOG = SAFE_CASES + _DEFERRED_CASES
+CATALOG = SAFE_CASES + _NONEXECUTABLE_CASES
 CASES_BY_NAME = {case.name: case for case in CATALOG}
 CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
     "ne-gemm-dtype-orientation-main-tail-batch": _BASE_CASES,
@@ -632,11 +782,14 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
         for case in _GEMM_OPTION_CASES + _CONV_OPTION_CASES
         if case.disposition_name == "BOARD_OBSERVED"
     ),
-    "ne-quant-sparse-deferred": _DEFERRED_CASES[:2],
-    "ne-pad-unpad-static-negative": _DEFERRED_CASES[2:4],
+    "ne-quant-observed": _QUANT_CASES,
+    "ne-sparse-static-negative": _NONEXECUTABLE_CASES[:1],
+    "ne-pad-unpad-static-negative": _NONEXECUTABLE_CASES[1:],
     "ne-conv-large-heldout": _CONV_CASES,
-    "ne-depthwise-backward-conv-disposition": _DEFERRED_CASES[4:8],
-    "ne-batch-broadcast-disposition": _DEFERRED_CASES[8:],
+    "ne-depthwise-backward-conv-observed": (
+        _DEPTHWISE_BACKWARD_CASES
+    ),
+    "ne-batch-broadcast-positive": _UNEQUAL_BATCH_CASES,
 }
 
 
@@ -649,6 +802,11 @@ class CasePayload:
 
 
 def _encode(dtype_name: str, value: float) -> bytes:
+    if dtype_name == "I8":
+        integer = int(value)
+        if integer < -128 or integer > 127 or integer != value:
+            raise RuntimeError(f"INT8 calibration value is invalid: {value}")
+        return struct.pack("<b", integer)
     if dtype_name == "F16":
         return struct.pack("<e", value)
     bits = struct.unpack("<I", struct.pack("<f", value))[0]
@@ -695,7 +853,7 @@ def _dense_lhs(case: NECase) -> tuple[float, ...]:
         )
         & 1
         else -1.0
-        for batch in range(case.batch)
+        for batch in range(case.lhs_batch)
         for row in range(case.m)
         for inner in range(case.k)
     )
@@ -709,15 +867,31 @@ def _dense_rhs(case: NECase) -> tuple[float, ...]:
         )
         & 1
         else -1.0
-        for batch in range(case.batch)
+        for batch in range(case.rhs_batch)
         for inner in range(case.k)
         for column in range(case.n)
     )
 
 
 def _gemm_inputs(case: NECase) -> tuple[tuple[float, ...], tuple[float, ...]]:
-    if case.profile_name == "DENSE":
+    if case.profile_name in {
+        "DENSE",
+        "GEMM_L1_R2",
+        "GEMM_L2_R1",
+    }:
         return _dense_lhs(case), _dense_rhs(case)
+    if case.profile_name == "GEMM_QUANT":
+        lhs = tuple(
+            float((row * 5 + inner * 3) % 15 - 7)
+            for row in range(case.m)
+            for inner in range(case.k)
+        )
+        rhs = tuple(
+            float((inner * 7 + column * 3) % 13 - 6)
+            for inner in range(case.k)
+            for column in range(case.n)
+        )
+        return lhs, rhs
     if case.profile_name == "BF16_CANCELLATION":
         lhs = (1.0,) * (case.batch * case.m * case.k)
         rhs = tuple(
@@ -873,8 +1047,22 @@ def _gemm_expected_values(
 ) -> tuple[float, ...]:
     return tuple(
         sum(
-            lhs[(batch * case.m + row) * case.k + inner]
-            * rhs[(batch * case.k + inner) * case.n + column]
+            lhs[
+                (
+                    (0 if case.lhs_batch == 1 else batch) * case.m
+                    + row
+                )
+                * case.k
+                + inner
+            ]
+            * rhs[
+                (
+                    (0 if case.rhs_batch == 1 else batch) * case.k
+                    + inner
+                )
+                * case.n
+                + column
+            ]
             for inner in range(case.k)
         )
         for batch in range(case.batch)
@@ -979,6 +1167,41 @@ def _conv_expected_values(output_channels: int) -> tuple[float, ...]:
     return tuple(values)
 
 
+def _observed_conv_inputs(
+    case: NECase,
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    source = tuple(
+        float((y * 11 + x * 7 + channel * 3) % 17 - 8)
+        for _batch in range(1)
+        for y in range(4)
+        for x in range(4)
+        for channel in range(64)
+    )
+    if case.kind_name == "DEPTHWISE_CONV":
+        weight = tuple(
+            1.0 if channel % 3 else -1.0
+            for _kernel_x in range(1)
+            for _kernel_y in range(1)
+            for channel in range(64)
+            for _multiplier in range(1)
+        )
+    elif case.kind_name == "BACKWARD_CONV":
+        weight = tuple(
+            1.0
+            if output_channel == input_channel
+            else -1.0
+            if (output_channel + input_channel) % 31 == 0
+            else 0.0
+            for _kernel_x in range(1)
+            for _kernel_y in range(1)
+            for output_channel in range(64)
+            for input_channel in range(64)
+        )
+    else:
+        raise RuntimeError(f"{case.name}: unknown observed convolution kind")
+    return source, weight
+
+
 def _option_auxiliary(
     case: NECase,
 ) -> tuple[tuple[float, ...], tuple[int, ...], str]:
@@ -1033,14 +1256,14 @@ def build_case_payload(case: NECase, sample: int = 0) -> CasePayload:
         lhs_logical, rhs_logical = _gemm_inputs(case)
         lhs_stored = _stored_values(
             lhs_logical,
-            batch=case.batch,
+            batch=case.lhs_batch,
             rows=case.m,
             columns=case.k,
             transpose=case.lhs_orientation,
         )
         rhs_stored = _stored_values(
             rhs_logical,
-            batch=case.batch,
+            batch=case.rhs_batch,
             rows=case.k,
             columns=case.n,
             transpose=case.rhs_orientation,
@@ -1052,18 +1275,21 @@ def build_case_payload(case: NECase, sample: int = 0) -> CasePayload:
         lhs_stored = _conv_source_values()
         rhs_stored = _conv_weight_values(case.n)
         base_expected = _conv_expected_values(case.n)
+    elif case.kind_name in {"DEPTHWISE_CONV", "BACKWARD_CONV"}:
+        lhs_stored, rhs_stored = _observed_conv_inputs(case)
+        base_expected = ()
     else:
         raise RuntimeError(f"{case.name}: unknown NE instruction kind")
     lhs = physical.pack_scalar_bytes(
         case.lhs_shape,
         case.lhs_layout,
-        2,
+        case.element_bytes,
         _encoded_operand(case, "lhs", lhs_stored),
     )
     rhs = physical.pack_scalar_bytes(
         case.rhs_shape,
         case.rhs_layout,
-        2,
+        case.element_bytes,
         _encoded_operand(case, "rhs", rhs_stored),
     )
     auxiliary_values, auxiliary_shape, auxiliary_layout = (
@@ -1081,7 +1307,7 @@ def build_case_payload(case: NECase, sample: int = 0) -> CasePayload:
         expected_physical = physical.pack_scalar_bytes(
             case.output_shape,
             case.output_layout,
-            2,
+            case.element_bytes,
             expected_logical,
             padding=SLOT_CANARY,
         )
@@ -1102,17 +1328,17 @@ def build_case_payload(case: NECase, sample: int = 0) -> CasePayload:
         if len(auxiliary) != case.aux_span:
             raise RuntimeError(f"{case.name}: auxiliary span mismatch")
         slots[3][BODY_OFFSET : BODY_OFFSET + len(auxiliary)] = auxiliary
-    output_zero = physical.pack_scalar_bytes(
+    output_seed = physical.pack_scalar_bytes(
         case.output_shape,
         case.output_layout,
-        2,
+        case.element_bytes,
         (
-            _encode(case.dtype_name, 0.0)
+            _encode(case.dtype_name, -113.0 if case.dtype_name == "I8" else -13.0)
             for _ in range(math.prod(case.output_shape))
         ),
         padding=SLOT_CANARY,
     )
-    slots[2][BODY_OFFSET : BODY_OFFSET + len(output_zero)] = output_zero
+    slots[2][BODY_OFFSET : BODY_OFFSET + len(output_seed)] = output_seed
 
     words = [0] * REQUEST_WORDS
     words[REQ["MAGIC"]] = REQUEST_MAGIC
@@ -1137,6 +1363,9 @@ def build_case_payload(case: NECase, sample: int = 0) -> CasePayload:
     words[REQ["OPTION"]] = case.option
     words[REQ["AUX_SPAN"]] = case.aux_span
     words[REQ["DISPOSITION"]] = case.disposition
+    words[REQ["BATCH_PAIR"]] = (
+        (case.lhs_batch << 32) | case.rhs_batch
+    )
     words[REQ["GUARD"]] = REQUEST_GUARD
     request = struct.pack(f"<{REQUEST_WORDS}Q", *words)
     return CasePayload(

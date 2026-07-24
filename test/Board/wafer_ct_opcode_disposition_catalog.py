@@ -37,16 +37,19 @@ def _board(
     )
 
 
-def _deferred(
-    opcode: int, family: str, reason: str
+def _observation(
+    opcode: int, family: str, *evidence: str
 ) -> CTOpcodeDisposition:
+    if not evidence:
+        raise RuntimeError(
+            f"opcode {opcode}: board observation requires evidence"
+        )
     return CTOpcodeDisposition(
         opcode,
         vector_catalog.OPCODE_NAMES[opcode],
         family,
-        "isolated-deferred",
-        (),
-        reason,
+        "board-observation",
+        tuple(evidence),
     )
 
 
@@ -68,28 +71,12 @@ _REDUCE_POOL = {
     112: _board(112, "reduce", "reduce-avg-bf16"),
     113: _board(113, "reduce", "reduce-max-f16"),
     114: _board(114, "reduce", "reduce-min-bf16"),
-    115: _deferred(
-        115,
-        "pool",
-        "AvgPool lacks a large-shape exact physical oracle in the current ABI",
-    ),
-    116: _deferred(
-        116,
-        "pool",
-        "SumPool lacks a large-shape exact physical oracle in the current ABI",
-    ),
+    115: _board(115, "pool", "pool-avg-f16"),
+    116: _board(116, "pool", "pool-sum-f16"),
     117: _board(117, "pool", "pool-f16", "pool-bf16"),
     118: _board(118, "pool", "unpool-f16"),
-    119: _deferred(
-        119,
-        "pool",
-        "MinPool lacks a large-shape exact physical oracle in the current ABI",
-    ),
-    120: _deferred(
-        120,
-        "pool",
-        "IndexedMinPool value/index dual-write span is not qualified",
-    ),
+    119: _board(119, "pool", "pool-min-f16"),
+    120: _board(120, "pool", "pool-indexed-min-f16"),
 }
 
 _PERIPHERAL = {
@@ -111,10 +98,8 @@ _PERIPHERAL = {
         "tdma-crt-i8-physical16",
         "tdma-crt-bool-to-i8-physical17",
     ),
-    180: _deferred(
-        180,
-        "peripheral",
-        "Factorize has three writeback destinations without a qualified ownership/span contract",
+    180: _observation(
+        180, "peripheral", "peripheral-factorize-f32-observed"
     ),
     181: _board(
         181,
@@ -122,26 +107,14 @@ _PERIPHERAL = {
         "select-bit2fp-maskmove-f16",
         "select-bit2fp-maskmove-bf16",
     ),
-    182: _deferred(
-        182,
-        "peripheral",
-        "Bilinear geometry and physical write span are not exposed by the current typed ABI",
-    ),
+    182: _board(182, "peripheral", "peripheral-bilinear-f16"),
     183: _board(183, "peripheral", "peripheral-lut16-f16"),
-    184: _deferred(
-        184,
-        "peripheral",
-        "LUT32 table/index width and full physical output oracle are not qualified",
+    184: _observation(184, "peripheral", "peripheral-lut32-observed"),
+    185: _observation(
+        185, "peripheral", "peripheral-randgen-f16-observed"
     ),
-    185: _deferred(
-        185,
-        "peripheral",
-        "RandGen is stateful/random and has no bounded deterministic seed/recovery contract",
-    ),
-    186: _deferred(
-        186,
-        "peripheral",
-        "ElemMask is probabilistic and has no deterministic seed/recovery contract",
+    186: _observation(
+        186, "peripheral", "peripheral-elemmask-f16-observed"
     ),
 }
 
@@ -206,11 +179,11 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
         if row.opcode in _REDUCE_POOL_UNPOOL_PERIPHERAL_OPCODES
         and row.disposition == "board-executable"
     ),
-    "ct-reduce-pool-unpool-peripheral-deferred": tuple(
+    "ct-reduce-pool-unpool-peripheral-observed": tuple(
         row
         for row in CATALOG
         if row.opcode in _REDUCE_POOL_UNPOOL_PERIPHERAL_OPCODES
-        and row.disposition == "isolated-deferred"
+        and row.disposition == "board-observation"
     ),
     "ct-reduce-pool-unpool-peripheral-static-negative": tuple(
         row

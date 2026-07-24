@@ -341,13 +341,14 @@ def build_catalog() -> tuple[CTConvertCase, ...]:
                 opcode=opcode,
                 shape_name="main",
                 elements=MAIN_ELEMENTS,
-                suffix="stochastic-deferred",
+                suffix="stochastic-observed",
                 rounding_mode=RND_STOCHASTIC,
                 domain_name="STOCHASTIC",
-                disposition_name="ISOLATED_DEFERRED",
+                disposition_name="BOARD_OBSERVED",
                 reason=(
-                    "the ABI exposes stochastic mode but no seed/state or "
-                    "recoverable distribution contract"
+                    "the ABI exposes stochastic mode without seed/state; "
+                    "repeat the bounded request and retain raw output without "
+                    "assuming an exact sequence or distribution"
                 ),
             )
         )
@@ -383,7 +384,7 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
     "ct-convert-zero-point-observed": tuple(
         case for case in CATALOG if case.domain_name == "ZERO_POINT"
     ),
-    "ct-convert-stochastic-deferred": tuple(
+    "ct-convert-stochastic-observed": tuple(
         case for case in CATALOG if case.domain_name == "STOCHASTIC"
     ),
 }
@@ -679,7 +680,7 @@ def build_case_payload(case: CTConvertCase, sample: int = 0) -> CasePayload:
         else _directed_source_values(
             case.source_type, case.destination_type
         )
-        if case.domain_name == "DIRECTED"
+        if case.domain_name in ("DIRECTED", "STOCHASTIC")
         else _source_values(case.source_type, case.destination_type)
     )
     source_scalars = tuple(

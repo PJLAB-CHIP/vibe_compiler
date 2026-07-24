@@ -7,6 +7,7 @@ import pathlib
 import re
 import struct
 import tempfile
+import types
 
 import wafer_instruction_family_catalog as catalog
 import wafer_board_instruction_family_probe_test as runner
@@ -1360,45 +1361,162 @@ def _output_seed_padding() -> bytes:
     return struct.pack("<e", -13.0)
 
 
+def validate_extended_pool_unpool_oracles() -> None:
+    for name, operation in (
+        ("pool-avg-f16", lambda values: sum(values) / 4.0),
+        ("pool-sum-f16", sum),
+        ("pool-min-f16", min),
+    ):
+        case = catalog.CASES_BY_NAME[name]
+        assert case.oracle_name == "EXACT_BITS"
+        assert (case.result_bytes, case.output_span) == (256, 256)
+        built = catalog.build_case_payload(case)
+        source = struct.unpack_from(
+            "<512e", built.payload, catalog.BODY_OFFSET
+        )
+        expected = struct.unpack_from(
+            "<128e", built.expected_output_slot, catalog.BODY_OFFSET
+        )
+        oracle = tuple(
+            operation(
+                tuple(
+                    source[(row * 4 + column) * 64 + channel]
+                    for row in range(2)
+                    for column in range(
+                        2 * output_column, 2 * output_column + 2
+                    )
+                )
+            )
+            for output_column in range(2)
+            for channel in range(64)
+        )
+        assert expected == oracle
+
+    indexed = catalog.CASES_BY_NAME["pool-indexed-min-f16"]
+    assert indexed.oracle_name == "EXACT_COMPOSITE"
+    assert (indexed.result_bytes, indexed.output_span) == (512, 512)
+    built = catalog.build_case_payload(indexed)
+    source = struct.unpack_from(
+        "<512e", built.payload, catalog.BODY_OFFSET
+    )
+    values = struct.unpack_from(
+        "<128e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    indices = struct.unpack_from(
+        "<128H",
+        built.expected_output_slot,
+        catalog.BODY_OFFSET + 256,
+    )
+    for output_column in range(2):
+        for channel in range(64):
+            ordinal = output_column * 64 + channel
+            window = tuple(
+                source[(row * 4 + column) * 64 + channel]
+                for row in range(2)
+                for column in range(
+                    2 * output_column, 2 * output_column + 2
+                )
+            )
+            assert values[ordinal] == min(window)
+            assert indices[ordinal] == window.index(min(window))
+
+    unpool = catalog.CASES_BY_NAME["unpool-avg-f16"]
+    built = catalog.build_case_payload(unpool)
+    source = struct.unpack_from(
+        "<64e", built.payload, catalog.BODY_OFFSET
+    )
+    expected = struct.unpack_from(
+        "<256e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    assert expected == tuple(
+        source[channel] / 4.0
+        for _position in range(4)
+        for channel in range(64)
+    )
+
+
+def validate_peripheral_exact_and_observation_rows() -> None:
+    bilinear = catalog.CASES_BY_NAME["peripheral-bilinear-f16"]
+    built = catalog.build_case_payload(bilinear)
+    source = built.payload[
+        catalog.BODY_OFFSET : catalog.BODY_OFFSET + bilinear.result_bytes
+    ]
+    expected = built.expected_output_slot[
+        catalog.BODY_OFFSET : catalog.BODY_OFFSET + bilinear.result_bytes
+    ]
+    assert source == expected
+
+    observed_names = {
+        "peripheral-factorize-f32-observed",
+        "peripheral-lut32-observed",
+        "peripheral-randgen-f16-observed",
+        "peripheral-elemmask-f16-observed",
+    }
+    observed = tuple(
+        case for case in catalog.SAFE_CASES if case.is_observation
+    )
+    assert {case.name for case in observed} == observed_names
+    selected = runner.select_cases(
+        types.SimpleNamespace(selected_cases=None, suite="observed")
+    )
+    assert selected == observed
+
+    case = catalog.CASES_BY_NAME["peripheral-elemmask-f16-observed"]
+    built = catalog.build_case_payload(case, sample=2)
+    raw = bytearray([runner.OUTPUT_INITIAL_CANARY] * catalog.RESOURCE_BYTES)
+    words = [0] * catalog.RECORD_WORDS
+    for field, value in (
+        ("MAGIC", catalog.RECORD_MAGIC),
+        ("SCHEMA_AND_WORDS", (catalog.SCHEMA << 32) | catalog.RECORD_WORDS),
+        ("STATUS", 0),
+        ("CASE", case.case_id),
+        ("DISPOSITION", case.disposition),
+        ("FAMILY", case.family),
+        ("DTYPE", case.dtype),
+        ("ORACLE", case.oracle),
+        ("RESULT_BYTES", case.result_bytes),
+        ("OUTPUT_SPAN", case.output_span),
+        ("AUX_SPAN", case.aux_span),
+        ("SAMPLE", 2),
+        ("REQUEST_GUARD", catalog.REQUEST_GUARD),
+        ("OUTPUT_DDR_OFFSET", catalog.OUTPUT_DDR_OFFSET),
+        ("SLOT_BYTES", catalog.SLOT_BYTES),
+        ("BODY_OFFSET", catalog.BODY_OFFSET),
+        (
+            "STEP_FLAGS",
+            catalog.STEP_TARGET_ISSUED
+            | catalog.STEP_FINAL_FENCE_COMPLETED,
+        ),
+        ("RECORD_GUARD", catalog.RECORD_GUARD),
+    ):
+        words[catalog.REC[field]] = value
+    struct.pack_into(f"<{catalog.RECORD_WORDS}Q", raw, 0, *words)
+    begin = catalog.OUTPUT_DDR_OFFSET
+    raw[begin : begin + catalog.SLOT_BYTES] = built.expected_output_slot
+    with tempfile.TemporaryDirectory() as directory:
+        output = pathlib.Path(directory) / "observation.raw"
+        output.write_bytes(raw)
+        try:
+            runner.validate_output(
+                output, case, built.expected_output_slot, sample=2
+            )
+        except RuntimeError as error:
+            assert "without any bounded writeback" in str(error)
+        else:
+            raise AssertionError("unchanged observation seed was accepted")
+        raw[begin + catalog.BODY_OFFSET + 7] ^= 0x5A
+        output.write_bytes(raw)
+        runner.validate_output(
+            output, case, built.expected_output_slot, sample=2
+        )
+
+
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 61
-    assert len(catalog.CATALOG) == 61
+    assert len(catalog.SAFE_CASES) == 71
+    assert len(catalog.CATALOG) == 71
     assert {case.case_id for case in catalog.SAFE_CASES} == (
         set(range(1, 30))
-        | {
-            100,
-            101,
-            102,
-            103,
-            104,
-            105,
-            106,
-            107,
-            108,
-            109,
-            110,
-            111,
-            112,
-            113,
-            114,
-            115,
-            116,
-            117,
-            118,
-            119,
-            120,
-            121,
-            122,
-            123,
-            124,
-            125,
-            126,
-            127,
-            128,
-            129,
-            130,
-            131,
-        }
+        | set(range(100, 142))
     )
     assert {
         (case.symbol, case.reason_name)
@@ -1492,6 +1610,8 @@ def main() -> int:
     validate_unpool_composite_oracle()
     validate_img2col_oracle()
     validate_lut16_oracle()
+    validate_extended_pool_unpool_oracles()
+    validate_peripheral_exact_and_observation_rows()
 
     print("wafer_instruction_family_catalog_test: passed")
     return 0

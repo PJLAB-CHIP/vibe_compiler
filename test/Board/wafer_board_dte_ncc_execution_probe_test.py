@@ -31,8 +31,9 @@ OUTPUT_GUARD_BYTES = 32
 OUTPUT_GUARD_VALUE = 0xA5
 MAGIC = 0x3143434E45544457
 CANARY = 0xD7E0CA11D7E0CA11
-SCHEMA = 5
+SCHEMA = 6
 STATUS_SUCCESS = 1
+STATUS_TRANSPORT_ERROR = 2
 DTE_ENABLE_MASK = 0x3
 SPM_ENABLE_MASK = 0x1F
 TRANSPORT_COUNTER_NAMES = transport_catalog.BOARD_COUNTER_NAMES
@@ -46,6 +47,15 @@ INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_dte_ncc_execution_probe.c"
 PROBE_LL = INPUT_DIR / "wafer_dte_ncc_execution_probe.ll"
 MODES = dict(transport_catalog.MODE_NAMES)
+TRANSPORT_PMU_MODES = transport_catalog.TRANSPORT_PMU_MODES
+ERROR_PATH_MODES = transport_catalog.ERROR_PATH_MODES
+MODE_PAYLOADS = transport_catalog.MODE_PAYLOADS
+CONTRACT_STATUS_ERROR = 1 << 0
+CONTRACT_VALID_SEND_EVENT = 1 << 1
+CONTRACT_VALID_RECV_EVENT = 1 << 2
+CONTRACT_REJECTED_SEND_EVENT = 1 << 3
+CONTRACT_REJECTED_RECV_EVENT = 1 << 4
+CONTRACT_UNKNOWN_WAIT_RETURNED = 1 << 5
 EXPECTED_INSTRUCTION_COUNTS = {
     1: (1, 1, 1),
     2: (1, 1, 1),
@@ -53,6 +63,24 @@ EXPECTED_INSTRUCTION_COUNTS = {
     4: (1, 2, 1),
     5: (0, 2, 1),
     6: (0, 1, 1),
+    7: (0, 1, 1),
+    8: (0, 0, 1),
+    9: (0, 0, 1),
+}
+EXPECTED_CONTRACT_EVIDENCE = {
+    **{mode: 0 for mode in TRANSPORT_PMU_MODES},
+    7: (
+        CONTRACT_STATUS_ERROR
+        | CONTRACT_VALID_SEND_EVENT
+        | CONTRACT_VALID_RECV_EVENT
+        | CONTRACT_REJECTED_SEND_EVENT
+    ),
+    8: (
+        CONTRACT_STATUS_ERROR
+        | CONTRACT_REJECTED_SEND_EVENT
+        | CONTRACT_REJECTED_RECV_EVENT
+    ),
+    9: CONTRACT_STATUS_ERROR | CONTRACT_UNKNOWN_WAIT_RETURNED,
 }
 DEFAULT_NO_CARD_TOTAL_TIMEOUT_SECONDS = 300.0
 DEFAULT_BOARD_TOTAL_TIMEOUT_SECONDS = 1200.0
@@ -117,6 +145,14 @@ def select_execution_axes(
     if invalid_payloads:
         raise RuntimeError(
             f"unsupported transport payload sizes {invalid_payloads}"
+        )
+    if not any(
+        payload in MODE_PAYLOADS[mode]
+        for mode in modes
+        for payload in payload_bytes
+    ):
+        raise RuntimeError(
+            "selected DTE/NCC modes and payload sizes have no executable case"
         )
     return modes, payload_bytes
 
@@ -409,8 +445,12 @@ def expected_payload(mode: int, rank: int, payload_bytes: int) -> bytes:
     ]
     if mode in (1, 2):
         values = [2.0 * value for value in remote]
-    else:
+    elif mode in (3, 4, 5, 6, 7):
         values = remote
+    elif mode in (8, 9):
+        return bytes([PAYLOAD_POISON]) * MAX_PAYLOAD_BYTES
+    else:
+        raise RuntimeError(f"unsupported DTE/NCC mode {mode}")
     active = struct.pack(f"<{len(values)}e", *values)
     return active + bytes([PAYLOAD_POISON]) * (
         MAX_PAYLOAD_BYTES - payload_bytes
@@ -430,6 +470,7 @@ def parse_probe_payload(
     recorded_mode = (words[1] >> 24) & 0xFF
     recorded_rank = (words[1] >> 16) & 0xFF
     recorded_bytes = words[1] & 0xFFFF
+    contract_status = (words[1] >> 56) & 0xFF
     status = words[3] & 0xFF
     instruction_counts = (
         (words[3] >> 8) & 0xFF,
@@ -463,6 +504,7 @@ def parse_probe_payload(
     recorded_transport_mask = (words[8] >> 16) & 0xFFFF
     scope_change = (words[8] >> 32) & 0xFF
     read_only = bool((words[8] >> 40) & 1)
+    contract_evidence = (words[8] >> 48) & 0xFF
     if (
         recorded_transport_mask != TRANSPORT_STABLE_MASK
         or transport_stable_mask != TRANSPORT_STABLE_MASK
@@ -473,6 +515,21 @@ def parse_probe_payload(
             f"rank {rank} mode {mode} has invalid transport PMU sampling "
             f"metadata: stable=0x{transport_stable_mask:x} "
             f"expected=0x{recorded_transport_mask:x} read_only={read_only}"
+        )
+    expected_contract_status = (
+        STATUS_TRANSPORT_ERROR if mode in ERROR_PATH_MODES else STATUS_SUCCESS
+    )
+    expected_contract_evidence = EXPECTED_CONTRACT_EVIDENCE[mode]
+    if (
+        contract_status != expected_contract_status
+        or contract_evidence != expected_contract_evidence
+    ):
+        raise RuntimeError(
+            f"rank {rank} mode {mode} has invalid Direct-DTE error-path "
+            f"evidence: status={contract_status} "
+            f"evidence=0x{contract_evidence:02x} expected_status="
+            f"{expected_contract_status} expected_evidence="
+            f"0x{expected_contract_evidence:02x}"
         )
     expected_counts = EXPECTED_INSTRUCTION_COUNTS.get(mode)
     if expected_counts is None or instruction_counts != expected_counts:
@@ -523,6 +580,8 @@ def parse_probe_payload(
         "payload_bytes": payload_bytes,
         "stable_mask": stable_mask,
         "status": status,
+        "contract_status": contract_status,
+        "contract_evidence": f"0x{contract_evidence:02x}",
         "ct_count_delta": instruction_counts[0],
         "rdma_count_delta": instruction_counts[1],
         "wdma_count_delta": instruction_counts[2],
@@ -604,6 +663,14 @@ def synthetic_probe_payload(
     words[0] = MAGIC
     words[1] = (
         (0xF << 48)
+        | (
+            (
+                STATUS_TRANSPORT_ERROR
+                if mode in ERROR_PATH_MODES
+                else STATUS_SUCCESS
+            )
+            << 56
+        )
         | (SCHEMA << 32)
         | (mode << 24)
         | (rank << 16)
@@ -626,6 +693,7 @@ def synthetic_probe_payload(
         | (TRANSPORT_STABLE_MASK << 16)
         | (scope_change << 32)
         | ((1 if read_only else 0) << 40)
+        | (EXPECTED_CONTRACT_EVIDENCE[mode] << 48)
     )
     words[9] = dte_enable | (spm_enable << 32)
     words[10:16] = list(transport_deltas)
@@ -654,8 +722,8 @@ def run_host_oracle_self_tests() -> None:
             f"DTE/NCC host oracle self-test accepted {message}"
         )
 
-    for payload_bytes in PAYLOAD_SWEEP:
-        for mode in MODES:
+    for mode in MODES:
+        for payload_bytes in MODE_PAYLOADS[mode]:
             for rank in (0, RANK_COUNT - 1):
                 parsed = parse_probe_payload(
                     synthetic_probe_payload(mode, rank, payload_bytes),
@@ -785,6 +853,8 @@ def execute_probe_modes(
     ] = {mode: {} for mode in selected_modes}
     for payload_bytes in selected_payload_bytes:
         for mode in selected_modes:
+            if payload_bytes not in MODE_PAYLOADS[mode]:
+                continue
             name = MODES[mode]
             resource_args, outputs = write_probe_inputs(
                 args.work_dir, bindings, mode, payload_bytes
@@ -827,6 +897,11 @@ def execute_probe_modes(
                             "output_ddr_before_after": "exact",
                         },
                         "transport_status": "success",
+                        "contract_status": (
+                            "transport_error_observed_then_clean_success"
+                            if mode in ERROR_PATH_MODES
+                            else "success"
+                        ),
                         "ncc_pmu": observations,
                         "transport_pmu_sample_state": (
                             "inconclusive"
@@ -844,6 +919,8 @@ def execute_probe_modes(
 
     sweep_summary: dict[str, object] = {}
     for mode in selected_modes:
+        if mode not in TRANSPORT_PMU_MODES:
+            continue
         name = MODES[mode]
         counter_summaries: dict[str, object] = {}
         for counter_name in TRANSPORT_COUNTER_NAMES:
@@ -857,6 +934,7 @@ def execute_probe_modes(
                     for observation in sweep_observations[mode][payload_bytes]
                 )
                 for payload_bytes in selected_payload_bytes
+                if payload_bytes in sweep_observations[mode]
             }
             counter_summaries[counter_name] = (
                 transport_catalog.classify_payload_series(samples)

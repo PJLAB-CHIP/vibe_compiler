@@ -16,12 +16,13 @@ def main() -> int:
     assert len(catalog.BY_OPCODE) == len(catalog.CATALOG)
     allowed = {
         "board-executable",
+        "board-observation",
         "static-negative",
         "isolated-deferred",
     }
     for row in catalog.CATALOG:
         assert row.disposition in allowed
-        if row.disposition == "board-executable":
+        if row.disposition in {"board-executable", "board-observation"}:
             assert row.evidence
             assert row.reason is None
         elif row.disposition == "isolated-deferred":
@@ -34,29 +35,10 @@ def main() -> int:
         assert row.family
 
     counts = Counter(row.disposition for row in catalog.CATALOG)
-    assert counts["board-executable"] == 171
     assert counts["static-negative"] == 2
-    assert counts["isolated-deferred"] == 14
-    assert {
-        row.opcode
-        for row in catalog.CATALOG
-        if row.disposition == "isolated-deferred"
-    } == {
-        115,
-        116,
-        119,
-        120,
-        122,
-        131,
-        133,
-        136,
-        137,
-        180,
-        182,
-        184,
-        185,
-        186,
-    }
+    assert counts["isolated-deferred"] == 0
+    assert counts["board-executable"] == 177
+    assert counts["board-observation"] == 8
     assert catalog.BY_OPCODE[139].evidence[:2] == (
         "ct-op139-convert-int8-fp16-main",
         "ct-op139-convert-int8-fp16-tail",
@@ -67,6 +49,8 @@ def main() -> int:
         case.name for case in catalog.convert_catalog.CATALOG
     } | {
         case.name for case in catalog.datamove_catalog.CATALOG
+    } | {
+        case.name for case in catalog.datamove_catalog.extended.CATALOG
     } | {
         case.name for case in instruction_catalog.CATALOG
     } | {
@@ -91,21 +75,24 @@ def main() -> int:
     positive = catalog.CALIBRATION_LEAF_BINDINGS[
         "ct-reduce-pool-unpool-peripheral-positive"
     ]
-    deferred = catalog.CALIBRATION_LEAF_BINDINGS[
-        "ct-reduce-pool-unpool-peripheral-deferred"
+    observed = catalog.CALIBRATION_LEAF_BINDINGS[
+        "ct-reduce-pool-unpool-peripheral-observed"
     ]
     static_negative = catalog.CALIBRATION_LEAF_BINDINGS[
         "ct-reduce-pool-unpool-peripheral-static-negative"
     ]
-    assert positive and deferred and static_negative
+    assert set(catalog.CALIBRATION_LEAF_BINDINGS) == {
+        "ct-reduce-pool-unpool-peripheral-positive",
+        "ct-reduce-pool-unpool-peripheral-observed",
+        "ct-reduce-pool-unpool-peripheral-static-negative",
+    }
+    assert positive and observed and static_negative
     assert all(row.disposition == "board-executable" for row in positive)
-    assert all(
-        row.disposition == "isolated-deferred" for row in deferred
-    )
+    assert all(row.disposition == "board-observation" for row in observed)
     assert all(
         row.disposition == "static-negative" for row in static_negative
     )
-    bound = positive + deferred + static_negative
+    bound = positive + observed + static_negative
     expected = tuple(
         row
         for row in catalog.CATALOG

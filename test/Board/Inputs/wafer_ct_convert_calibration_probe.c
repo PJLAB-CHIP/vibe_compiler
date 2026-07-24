@@ -213,6 +213,13 @@ static uint32_t wafer_ctc_decode(const volatile uint64_t *request,
     expected_case = 3000U + route;
     expected_disposition =
         wafer_ctc_extrema_disposition(source_type, destination_type);
+  } else if (domain == WAFER_CTC_DOMAIN_STOCHASTIC) {
+    if (wafer_ctc_rounding_route(route) == 0U ||
+        elements != WAFER_CTC_MAIN_ELEMENTS ||
+        rounding_mode != RND_STOCHASTIC || zero_point != 0U)
+      return WAFER_CTC_STATUS_BAD_REQUEST;
+    expected_case = 4000U + route;
+    expected_disposition = WAFER_CTC_BOARD_OBSERVED;
   } else {
     return WAFER_CTC_STATUS_UNSUPPORTED_CASE;
   }

@@ -7,6 +7,7 @@ import dataclasses
 import struct
 
 import wafer_datamove_calibration_catalog as datamove
+import wafer_memory_descriptor_calibration_catalog as memory_descriptor
 
 
 ALLOCATABLE_BEGIN = 0x10000
@@ -346,13 +347,10 @@ ADDRESS_RELATION_CASES = tuple(
     SPMCase(
         f"spm-relation-{effect.lower()}-{relation}",
         "address-relation",
-        "ISOLATED_DEFERRED",
+        "DELEGATED_BOARD_CASE",
         SWEEP_BASE,
         TRANSFER_BYTES,
-        (
-            "requires the matching engine-pair disjoint control to demonstrate "
-            "positive overlap before an alias packet is sent"
-        ),
+        None,
         address_b=(
             SWEEP_BASE
             if relation == "exact"
@@ -364,6 +362,11 @@ ADDRESS_RELATION_CASES = tuple(
         ),
         effect=effect,
         relation=relation,
+        evidence=(
+            memory_descriptor.CASES_BY_NAME[
+                f"spm-relation-{effect.lower()}-{relation}"
+            ],
+        ),
     )
     for effect in _RELATION_EFFECTS
     for relation in _RELATIONS
@@ -438,24 +441,17 @@ FIVE_ENGINE_ACCESS_CASES = tuple(
     SPMCase(
         f"spm-engine-access-{engine.lower()}",
         "engine-access",
-        (
-            "DELEGATED_BOARD_CASE"
-            if engine in {"RDMA", "WDMA"}
-            else "ISOLATED_DEFERRED"
-        ),
+        "DELEGATED_BOARD_CASE",
         SWEEP_BASE,
         TRANSFER_BYTES,
-        (
-            None
-            if engine in {"RDMA", "WDMA"}
-            else (
-                f"the shared SPM probe has no independent {engine} typed "
-                "payload/oracle path; do not infer it from RDMA/WDMA"
-            )
-        ),
+        None,
         kind=f"engine-{engine.lower()}",
         effect=engine,
-        evidence=ALIGNMENT_CASES[:1] if engine in {"RDMA", "WDMA"} else (),
+        evidence=(
+            memory_descriptor.CASES_BY_NAME[
+                f"spm-engine-access-{engine.lower()}"
+            ],
+        ),
     )
     for engine in ("CT", "NE", "RDMA", "WDMA", "TDMA")
 )
@@ -465,17 +461,18 @@ BANK_ENGINE_PAIR_CASES = tuple(
     SPMCase(
         f"spm-bank-pair-{left.lower()}-{right.lower()}-{schedule}",
         "bank-engine-pair",
-        "ISOLATED_DEFERRED",
+        "DELEGATED_BOARD_CASE",
         SWEEP_BASE,
         TRANSFER_BYTES,
-        (
-            "current profile has no matching disjoint positive-overlap "
-            "qualification; preserve serial scheduling and do not send a "
-            "bank-contention window"
-        ),
+        None,
         address_b=SWEEP_BASE + 8192,
         effect=f"{left}-{right}",
         relation=schedule,
+        evidence=(
+            memory_descriptor.CASES_BY_NAME[
+                f"spm-bank-pair-{left.lower()}-{right.lower()}-{schedule}"
+            ],
+        ),
     )
     for left_index, left in enumerate(_ENGINES)
     for right in _ENGINES[left_index + 1 :]
@@ -521,12 +518,12 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
     "rdma-wdma-engine-access-delegated": tuple(
         case
         for case in FIVE_ENGINE_ACCESS_CASES
-        if case.disposition == "DELEGATED_BOARD_CASE"
+        if case.effect in {"RDMA", "WDMA"}
     ),
-    "ct-ne-tdma-engine-access-deferred": tuple(
+    "ct-ne-tdma-engine-access-delegated": tuple(
         case
         for case in FIVE_ENGINE_ACCESS_CASES
-        if case.disposition == "ISOLATED_DEFERRED"
+        if case.effect in {"CT", "NE", "TDMA"}
     ),
     "exact-partial-adjacent-disjoint-strided": (
         ADDRESS_RELATION_CASES

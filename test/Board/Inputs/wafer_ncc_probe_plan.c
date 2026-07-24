@@ -115,7 +115,99 @@ wafer_ncc_probe_is_serial_dma_roundtrip(const WaferNccProbeRequest *request) {
          request->lanes[1].engine == WAFER_NCC_ENGINE_WDMA &&
          request->lanes[0].worker == 0 && request->lanes[1].worker == 0 &&
          wafer_ncc_probe_dma_layout_equal(&request->lanes[0],
+                                         &request->lanes[1]);
+}
+
+static int wafer_ncc_probe_is_strided_dependency(
+    const WaferNccProbeRequest *request) {
+  return request->lane_count == 2 && request->rounds == 1 &&
+         request->effect_relation == WAFER_NCC_EFFECT_RAW &&
+         request->range_relation == WAFER_NCC_RANGE_STRIDED_ENVELOPE &&
+         request->schedule <= WAFER_NCC_SCHEDULE_SERIAL &&
+         request->wait_kind == WAFER_NCC_WAIT_BY_WORKER &&
+         request->wait_worker_mask == 1 &&
+         request->first_operand == WAFER_NCC_OPERAND_WRITE &&
+         request->second_operand == WAFER_NCC_OPERAND_READ0 &&
+         request->flags == 0 && request->issue_limit == 0 &&
+         request->lanes[0].engine == WAFER_NCC_ENGINE_RDMA &&
+         request->lanes[1].engine == WAFER_NCC_ENGINE_WDMA &&
+         request->lanes[0].worker == 0 && request->lanes[1].worker == 0 &&
+         wafer_ncc_probe_dma_layout_equal(&request->lanes[0],
                                           &request->lanes[1]);
+}
+
+static int wafer_ncc_probe_is_constructor_observation(
+    const WaferNccProbeRequest *request) {
+  const WaferNccProbeLane *lane = &request->lanes[0];
+  return request->flags == WAFER_NCC_REQUEST_CONSTRUCTOR_OBSERVATION &&
+         request->lane_count == 1 && request->rounds == 1 &&
+         request->effect_relation == WAFER_NCC_EFFECT_NONE &&
+         request->range_relation == WAFER_NCC_RANGE_DISJOINT &&
+         request->schedule == WAFER_NCC_SCHEDULE_SERIAL &&
+         request->wait_kind == WAFER_NCC_WAIT_BY_WORKER &&
+         request->wait_worker_mask == 1 &&
+         request->first_operand == WAFER_NCC_OPERAND_AUTO &&
+         request->second_operand == WAFER_NCC_OPERAND_AUTO &&
+         request->issue_limit == 0 && lane->engine == WAFER_NCC_ENGINE_CT &&
+         lane->worker == 0 && lane->issue_mode == WAFER_NCC_ISSUE_RAW;
+}
+
+static int wafer_ncc_probe_is_ordered_producer_consumer(
+    const WaferNccProbeRequest *request) {
+  if (request->flags != WAFER_NCC_REQUEST_ORDERED_PRODUCER_CONSUMER ||
+      request->lane_count != 2 || request->rounds != 1 ||
+      request->effect_relation != WAFER_NCC_EFFECT_RAW ||
+      request->range_relation != WAFER_NCC_RANGE_EXACT ||
+      request->schedule != WAFER_NCC_SCHEDULE_SERIAL ||
+      request->wait_kind != WAFER_NCC_WAIT_BY_WORKER ||
+      request->first_operand != WAFER_NCC_OPERAND_WRITE ||
+      request->second_operand != WAFER_NCC_OPERAND_READ0 ||
+      request->issue_limit != 0)
+    return 0;
+  const WaferNccProbeLane *first = &request->lanes[0];
+  const WaferNccProbeLane *second = &request->lanes[1];
+  uint32_t participants =
+      (UINT32_C(1) << first->worker) | (UINT32_C(1) << second->worker);
+  if (request->wait_worker_mask != participants)
+    return 0;
+  return (first->engine == WAFER_NCC_ENGINE_RDMA &&
+          second->engine == WAFER_NCC_ENGINE_CT) ||
+         (first->engine == WAFER_NCC_ENGINE_CT &&
+          second->engine == WAFER_NCC_ENGINE_WDMA) ||
+         (first->engine == WAFER_NCC_ENGINE_NE &&
+          second->engine == WAFER_NCC_ENGINE_WDMA) ||
+         (first->engine == WAFER_NCC_ENGINE_TDMA &&
+          second->engine == WAFER_NCC_ENGINE_CT) ||
+         (first->engine == WAFER_NCC_ENGINE_TDMA &&
+          second->engine == WAFER_NCC_ENGINE_NE);
+}
+
+static int wafer_ncc_probe_is_double_slot_observation(
+    const WaferNccProbeRequest *request) {
+  if (request->flags != WAFER_NCC_REQUEST_DOUBLE_SLOT_OBSERVATION ||
+      request->lane_count != 3 || request->rounds == 0 ||
+      request->rounds > WAFER_NCC_PROTOCOL_MAX_ROUNDS ||
+      request->effect_relation != WAFER_NCC_EFFECT_NONE ||
+      request->range_relation != WAFER_NCC_RANGE_DISJOINT ||
+      request->schedule > WAFER_NCC_SCHEDULE_SERIAL ||
+      request->wait_kind != WAFER_NCC_WAIT_BY_WORKER ||
+      request->wait_worker_mask != 1 ||
+      request->first_operand != WAFER_NCC_OPERAND_AUTO ||
+      request->second_operand != WAFER_NCC_OPERAND_AUTO ||
+      request->issue_limit != 0 ||
+      request->lanes[0].engine != WAFER_NCC_ENGINE_RDMA ||
+      request->lanes[1].engine != WAFER_NCC_ENGINE_CT ||
+      request->lanes[2].engine != WAFER_NCC_ENGINE_WDMA)
+    return 0;
+  uint32_t bytes = request->lanes[0].transfer_bytes;
+  for (uint32_t lane = 0; lane < 3; ++lane)
+    if (request->lanes[lane].worker != 0 ||
+        request->lanes[lane].transfer_bytes != bytes ||
+        request->lanes[lane].element_format !=
+            WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16 ||
+        request->lanes[lane].layout_kind != WAFER_NCC_LAYOUT_CONTIGUOUS)
+      return 0;
+  return 1;
 }
 
 static const WaferNccProbeEngineAdapter *
@@ -178,12 +270,6 @@ static uint32_t wafer_ncc_probe_initialize_issues(
     }
   }
   return count;
-}
-
-static WaferNccProbeIssue *
-wafer_ncc_probe_scheduled_issue(WaferNccProbeIssue *issues, uint32_t rounds,
-                                uint32_t lane, uint32_t round) {
-  return &issues[lane * rounds + round];
 }
 
 static void wafer_ncc_probe_write_issue_identity(
@@ -359,7 +445,10 @@ uint32_t wafer_ncc_probe_validate_plan(
     return WAFER_NCC_STATUS_BAD_REQUEST;
   if (request->command > WAFER_NCC_COMMAND_EXECUTE ||
       (request->flags != 0 &&
-       request->flags != WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE))
+       request->flags != WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE &&
+       request->flags != WAFER_NCC_REQUEST_CONSTRUCTOR_OBSERVATION &&
+       request->flags != WAFER_NCC_REQUEST_ORDERED_PRODUCER_CONSUMER &&
+       request->flags != WAFER_NCC_REQUEST_DOUBLE_SLOT_OBSERVATION))
     return WAFER_NCC_STATUS_BAD_REQUEST;
   if (request->command == WAFER_NCC_COMMAND_QUALIFY) {
     if (request->lane_count != 0 || request->rounds != 0 ||
@@ -460,7 +549,8 @@ uint32_t wafer_ncc_probe_validate_plan(
       !has_strided_lane)
     return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
   if (has_dma_strided_lane &&
-      !wafer_ncc_probe_is_serial_dma_roundtrip(request))
+      !wafer_ncc_probe_is_serial_dma_roundtrip(request) &&
+      !wafer_ncc_probe_is_strided_dependency(request))
     return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
 
   if (request->lane_count == 2 &&
@@ -557,6 +647,15 @@ uint32_t wafer_ncc_probe_validate_plan(
   } else if (request->issue_limit != 0) {
     return WAFER_NCC_STATUS_BAD_REQUEST;
   }
+  if (request->flags == WAFER_NCC_REQUEST_CONSTRUCTOR_OBSERVATION &&
+      !wafer_ncc_probe_is_constructor_observation(request))
+    return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
+  if (request->flags == WAFER_NCC_REQUEST_ORDERED_PRODUCER_CONSUMER &&
+      !wafer_ncc_probe_is_ordered_producer_consumer(request))
+    return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
+  if (request->flags == WAFER_NCC_REQUEST_DOUBLE_SLOT_OBSERVATION &&
+      !wafer_ncc_probe_is_double_slot_observation(request))
+    return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
 
   if (request->schedule == WAFER_NCC_SCHEDULE_WINDOW &&
       !tight_depth_plus_one) {
@@ -663,65 +762,78 @@ uint32_t wafer_ncc_probe_execute_plan(
   int issued_any = 0;
   WaferNccProbeIssue *last_issued = NULL;
   uint64_t plan_cycle_before = hooks->read_cycle(context);
-  for (uint32_t round = 0; round < request->rounds; ++round) {
-    for (uint32_t lane = 0; lane < request->lane_count; ++lane) {
-      uint32_t ordinal = lane * request->rounds + round;
-      if (ordinal >= issue_count)
-        continue;
-      WaferNccProbeIssue *issue =
-          wafer_ncc_probe_scheduled_issue(issues, request->rounds, lane, round);
-      const WaferNccProbeEngineAdapter *adapter = wafer_ncc_probe_find_adapter(
-          adapters, adapter_count, issue->engine);
-      uint64_t execute_rc = 0;
-      uint64_t cycle_before = hooks->read_cycle(context);
-      if (adapter->issue(context, request, issue, &execute_rc) != 0)
-        return wafer_ncc_probe_finish_after_failure(
-            WAFER_NCC_STATUS_ISSUE_FAILED, request, adapters, adapter_count,
-            hooks, context, record, issues, prepared_count, issued_any);
-      uint64_t cycle_after = hooks->read_cycle(context);
-      issued_any = 1;
-
-      uint32_t base = wafer_ncc_protocol_issue_word(
-          issue->ordinal, WAFER_NCC_ISSUE_ORDINAL);
-      record[base + WAFER_NCC_ISSUE_EXECUTE_RC] = execute_rc;
-      record[base + WAFER_NCC_ISSUE_EXECUTE_CYCLES] =
-          cycle_after - cycle_before;
-      last_issued = issue;
-
-      if (tight_submission)
-        continue;
-
-      record[base + WAFER_NCC_ISSUE_CONTROL_AFTER_ISSUE] =
-          hooks->read_worker_control(context, issue->worker);
-      WaferNccProbeObservation observation;
-      wafer_ncc_probe_zero(&observation, sizeof(observation));
-      observation.execute_rc = execute_rc;
-      if (adapter->observe(context, request, issue, &observation) != 0)
-        return wafer_ncc_probe_finish_after_failure(
-            WAFER_NCC_STATUS_OBSERVATION_FAILED, request, adapters,
-            adapter_count, hooks, context, record, issues, prepared_count, 1);
-      wafer_ncc_probe_write_observation(record, issue, &observation);
-
-      if (request->schedule == WAFER_NCC_SCHEDULE_SERIAL) {
-        uint64_t serial_wait_before = hooks->read_cycle(context);
-        int serial_wait_rc =
-            hooks->serial_drain(context, UINT32_C(1) << issue->worker);
-        uint64_t serial_wait_after = hooks->read_cycle(context);
-        uint64_t serial_wait_cycles =
-            serial_wait_after - serial_wait_before;
-        uint64_t serial_wait_index =
-            record[WAFER_NCC_REC_SERIAL_WAIT_COUNT];
-        if (serial_wait_index < WAFER_NCC_PROTOCOL_MAX_WAIT_SAMPLES)
-          record[WAFER_NCC_PROTOCOL_WAIT_SAMPLE_BASE + serial_wait_index] =
-              serial_wait_cycles;
-        record[WAFER_NCC_REC_SERIAL_WAIT_CYCLES] +=
-            serial_wait_cycles;
-        ++record[WAFER_NCC_REC_SERIAL_WAIT_COUNT];
-        if (serial_wait_rc != 0)
-          return wafer_ncc_probe_finish_after_failure(
-              WAFER_NCC_STATUS_DRAIN_FAILED, request, adapters, adapter_count,
-              hooks, context, record, issues, prepared_count, 1);
+  uint32_t schedule[WAFER_NCC_PROTOCOL_MAX_ISSUES];
+  uint32_t schedule_count = 0;
+  if (request->flags == WAFER_NCC_REQUEST_DOUBLE_SLOT_OBSERVATION) {
+    for (uint32_t step = 0; step < request->rounds + 2U; ++step) {
+      for (uint32_t lane = 0; lane < request->lane_count; ++lane) {
+        if (step < lane)
+          continue;
+        uint32_t round = step - lane;
+        if (round < request->rounds)
+          schedule[schedule_count++] = lane * request->rounds + round;
       }
+    }
+  } else {
+    for (uint32_t round = 0; round < request->rounds; ++round)
+      for (uint32_t lane = 0; lane < request->lane_count; ++lane) {
+        uint32_t ordinal = lane * request->rounds + round;
+        if (ordinal < issue_count)
+          schedule[schedule_count++] = ordinal;
+      }
+  }
+  for (uint32_t scheduled = 0; scheduled < schedule_count; ++scheduled) {
+    WaferNccProbeIssue *issue = &issues[schedule[scheduled]];
+    const WaferNccProbeEngineAdapter *adapter = wafer_ncc_probe_find_adapter(
+        adapters, adapter_count, issue->engine);
+    uint64_t execute_rc = 0;
+    uint64_t cycle_before = hooks->read_cycle(context);
+    if (adapter->issue(context, request, issue, &execute_rc) != 0)
+      return wafer_ncc_probe_finish_after_failure(
+          WAFER_NCC_STATUS_ISSUE_FAILED, request, adapters, adapter_count,
+          hooks, context, record, issues, prepared_count, issued_any);
+    uint64_t cycle_after = hooks->read_cycle(context);
+    issued_any = 1;
+
+    uint32_t base = wafer_ncc_protocol_issue_word(
+        issue->ordinal, WAFER_NCC_ISSUE_ORDINAL);
+    record[base + WAFER_NCC_ISSUE_EXECUTE_RC] = execute_rc;
+    record[base + WAFER_NCC_ISSUE_EXECUTE_CYCLES] =
+        cycle_after - cycle_before;
+    last_issued = issue;
+
+    if (tight_submission)
+      continue;
+
+    record[base + WAFER_NCC_ISSUE_CONTROL_AFTER_ISSUE] =
+        hooks->read_worker_control(context, issue->worker);
+    WaferNccProbeObservation observation;
+    wafer_ncc_probe_zero(&observation, sizeof(observation));
+    observation.execute_rc = execute_rc;
+    if (adapter->observe(context, request, issue, &observation) != 0)
+      return wafer_ncc_probe_finish_after_failure(
+          WAFER_NCC_STATUS_OBSERVATION_FAILED, request, adapters,
+          adapter_count, hooks, context, record, issues, prepared_count, 1);
+    wafer_ncc_probe_write_observation(record, issue, &observation);
+
+    if (request->schedule == WAFER_NCC_SCHEDULE_SERIAL) {
+      uint64_t serial_wait_before = hooks->read_cycle(context);
+      int serial_wait_rc =
+          hooks->serial_drain(context, UINT32_C(1) << issue->worker);
+      uint64_t serial_wait_after = hooks->read_cycle(context);
+      uint64_t serial_wait_cycles =
+          serial_wait_after - serial_wait_before;
+      uint64_t serial_wait_index =
+          record[WAFER_NCC_REC_SERIAL_WAIT_COUNT];
+      if (serial_wait_index < WAFER_NCC_PROTOCOL_MAX_WAIT_SAMPLES)
+        record[WAFER_NCC_PROTOCOL_WAIT_SAMPLE_BASE + serial_wait_index] =
+            serial_wait_cycles;
+      record[WAFER_NCC_REC_SERIAL_WAIT_CYCLES] += serial_wait_cycles;
+      ++record[WAFER_NCC_REC_SERIAL_WAIT_COUNT];
+      if (serial_wait_rc != 0)
+        return wafer_ncc_probe_finish_after_failure(
+            WAFER_NCC_STATUS_DRAIN_FAILED, request, adapters, adapter_count,
+            hooks, context, record, issues, prepared_count, 1);
     }
   }
 

@@ -27,7 +27,7 @@ def lane(engine: protocol.Engine, worker: int = 0) -> protocol.Lane:
 
 class ProtocolTest(unittest.TestCase):
     def test_header_is_the_numeric_source(self) -> None:
-        self.assertEqual(protocol.SCHEMA, 3)
+        self.assertEqual(protocol.SCHEMA, 4)
         self.assertEqual(protocol.MAX_LANES, 3)
         self.assertEqual(protocol.MAX_ROUNDS, 4)
         self.assertEqual(protocol.MAX_ISSUES, 12)
@@ -36,6 +36,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(protocol.ISSUE_STRIDE, 22)
         self.assertEqual(protocol.WAIT_SAMPLE_BASE, 392)
         self.assertEqual(protocol.MAX_WAIT_SAMPLES, 8)
+        self.assertEqual(protocol.MAX_DMA_ENVELOPE_BYTES, 65536)
         self.assertEqual(
             protocol.WAIT_SAMPLE_BASE,
             protocol.ISSUE_BASE
@@ -201,9 +202,9 @@ class ProtocolTest(unittest.TestCase):
                         * execution_probe.V2_OUTPUT_SLOT_STRIDE
                         + execution_probe.V2_OUTPUT_GUARD_BYTES
                     )
-                    output[
-                        rdma_begin : rdma_begin + len(compact)
-                    ] = compact
+                    execution_probe.v2_scatter_compact(
+                        output, rdma_begin, plan.lanes[0], compact
+                    )
                     wdma_begin = (
                         execution_probe.V2_OUTPUT_SLOT_BASE
                         + wdma_identity.slot
@@ -417,7 +418,7 @@ class ProtocolTest(unittest.TestCase):
             self.assertTrue(
                 all(
                     lane.transfer_bytes
-                    == execution_probe.V2_NE_PHYSICAL_BYTES
+                    == execution_probe.V2_NE_LARGE_RESULT_BYTES
                     and lane.element_format == execution_probe.FMT_FP16
                     for lane in plan.lanes[1:]
                 )
@@ -440,8 +441,8 @@ class ProtocolTest(unittest.TestCase):
                     0x49,
                     execution_probe.V2_SPM_SLOT_BASE
                     + 10 * execution_probe.V2_SPM_SLOT_STRIDE
-                    + execution_probe.V2_SPM_WRITE_OFFSET
-                    + execution_probe.V2_NE_RESULT_BYTES
+                    + execution_probe.V2_NE_LARGE_WRITE_OFFSET
+                    + execution_probe.V2_NE_LARGE_RESULT_BYTES
                     - 1,
                 ),
             )
@@ -993,17 +994,23 @@ class ProtocolTest(unittest.TestCase):
         self.assertTrue(
             all(execution_probe.CALIBRATION_LEAF_BINDINGS.values())
         )
-        deferred = {
-            case.name: case
-            for case in execution_probe.V2_DEFERRED_CASES
-        }
-        self.assertEqual(
-            deferred["dependency-strided-envelope"].disposition,
-            "isolated-deferred",
+        self.assertFalse(execution_probe.V2_DEFERRED_CASES)
+        self.assertTrue(
+            all(
+                case.plan.is_strided_dependency_observation()
+                for case in execution_probe.CALIBRATION_LEAF_BINDINGS[
+                    "dependency-strided-envelope"
+                ]
+            )
         )
-        self.assertIn(
-            "must not be relabeled",
-            deferred["movement-backlog-at-least-64k"].reason,
+        self.assertTrue(
+            any(
+                lane.transfer_bytes == 65536
+                for case in execution_probe.CALIBRATION_LEAF_BINDINGS[
+                    "large-backlog-compute-movement"
+                ]
+                for lane in case.plan.lanes
+            )
         )
         protocol_negative_groups = {
             "execute-engine-none-static-negative": "execute-engine-none",
@@ -1109,6 +1116,183 @@ class ProtocolTest(unittest.TestCase):
             )
         self.assertIn("completed-with-pmu-backpressure", output.getvalue())
         self.assertIn('"control_after_tight_window": 258', output.getvalue())
+
+    def test_constructor_observation_is_nonnull_and_releases_builder(self) -> None:
+        (case,) = execution_probe.V2_CONSTRUCTOR_CASES
+        self.assertTrue(case.plan.is_constructor_observation())
+        self.assertEqual(
+            case.plan.flags, protocol.CONSTRUCTOR_OBSERVATION
+        )
+        self.assertEqual(
+            execution_probe.CALIBRATION_LEAF_BINDINGS[
+                "constructor-return-address-nonnull"
+            ],
+            execution_probe.V2_CONSTRUCTOR_CASES,
+        )
+        self.assertNotIn(
+            "constructor-zero-address",
+            execution_probe.CALIBRATION_LEAF_BINDINGS,
+        )
+        source = (
+            pathlib.Path(__file__).resolve().parent
+            / "Inputs"
+            / "wafer_ncc_execution_probe.c"
+        ).read_text()
+        self.assertIn(
+            "instruction->has_owner = instruction->owner != NULL;", source
+        )
+        prepare = source.split(
+            "static int wafer_ncc_v2_prepare(", maxsplit=1
+        )[1].split(
+            "static int wafer_ncc_v2_issue(", maxsplit=1
+        )[0]
+        capture = prepare.index("context->constructor_address")
+        release = prepare.index("wafer_ncc_probe_release(instruction)")
+        self.assertLess(capture, release)
+        self.assertIn(
+            "WAFER_NCC_REC_CONSTRUCTOR_ADDRESS", source
+        )
+        self.assertIn(
+            "WAFER_NCC_RECORD_CONSTRUCTOR_CAPTURED", source
+        )
+
+    def test_subset_join_and_ordered_boundaries_are_concrete(self) -> None:
+        self.assertEqual(
+            {
+                case.plan.wait_worker_mask
+                for case in execution_probe.V2_SUBSET_JOIN_CASES
+            },
+            {1, 2, 3, 4, 5, 6},
+        )
+        for case in execution_probe.V2_SUBSET_JOIN_CASES:
+            self.assertEqual(case.plan.schedule, protocol.Schedule.WINDOW)
+            self.assertEqual(
+                tuple(lane.worker for lane in case.plan.lanes), (0, 1, 2)
+            )
+            self.assertEqual(
+                case.plan.issue_order(), (0, 4, 8)
+            )
+            case.plan.request_words()
+        self.assertEqual(
+            {
+                tuple(lane.engine for lane in case.plan.lanes)
+                for case in execution_probe.V2_PRODUCER_CONSUMER_CASES
+            },
+            {
+                (protocol.Engine.RDMA, protocol.Engine.CT),
+                (protocol.Engine.CT, protocol.Engine.WDMA),
+                (protocol.Engine.NE, protocol.Engine.WDMA),
+                (protocol.Engine.TDMA, protocol.Engine.CT),
+                (protocol.Engine.TDMA, protocol.Engine.NE),
+            },
+        )
+        self.assertTrue(
+            all(
+                case.plan.is_ordered_producer_consumer()
+                for case in execution_probe.V2_PRODUCER_CONSUMER_CASES
+            )
+        )
+        self.assertEqual(
+            {case.name for case in execution_probe.V2_KCORE_BOUNDARY_CASES},
+            {
+                "ct-to-kcore-read-boundary",
+                "ne-to-kcore-read-boundary",
+            },
+        )
+
+    def test_strided_dependency_has_serial_window_hole_oracles(self) -> None:
+        groups: dict[str, set[protocol.Schedule]] = {}
+        for case in execution_probe.V2_STRIDED_DEPENDENCY_CASES:
+            self.assertTrue(
+                case.plan.is_strided_dependency_observation()
+            )
+            dimension = case.name.split("-")[2]
+            groups.setdefault(dimension, set()).add(case.plan.schedule)
+            lane = case.plan.lanes[0]
+            touched = {
+                offset + byte
+                for offset in lane.dma_chunk_offsets()
+                for byte in range(lane.layout_inner_bytes)
+            }
+            self.assertLess(
+                len(touched), lane.dma_envelope_bytes()
+            )
+        self.assertEqual(
+            groups,
+            {
+                dimension: {
+                    protocol.Schedule.SERIAL,
+                    protocol.Schedule.WINDOW,
+                }
+                for dimension in ("1d", "2d", "3d")
+            },
+        )
+
+    def test_large_backlog_resource_and_oracles_are_bounded(self) -> None:
+        self.assertEqual(len(execution_probe.V2_LARGE_BACKLOG_CASES), 12)
+        self.assertTrue(
+            any(
+                lane.transfer_bytes == 65536
+                for case in execution_probe.V2_LARGE_BACKLOG_CASES
+                for lane in case.plan.lanes
+            )
+        )
+        self.assertTrue(
+            any(
+                execution_probe.v2_is_large_ne_lane(lane)
+                for case in execution_probe.V2_LARGE_BACKLOG_CASES
+                for lane in case.plan.lanes
+            )
+        )
+        maximum_ddr_end = (
+            execution_probe.V2_OUTPUT_SLOT_BASE
+            + (protocol.MAX_ISSUES - 1)
+            * execution_probe.V2_OUTPUT_SLOT_STRIDE
+            + execution_probe.V2_OUTPUT_GUARD_BYTES
+            + 65536
+            + execution_probe.V2_OUTPUT_GUARD_BYTES
+        )
+        self.assertLessEqual(
+            maximum_ddr_end, execution_probe.RESOURCE_BYTES
+        )
+        self.assertLessEqual(
+            execution_probe.V2_NE_LARGE_WRITE_OFFSET
+            + execution_probe.V2_NE_LARGE_RESULT_BYTES
+            + execution_probe.V2_OUTPUT_GUARD_BYTES,
+            execution_probe.V2_SPM_SLOT_STRIDE,
+        )
+
+    def test_double_slot_is_hardware_only_and_has_pipeline_order(self) -> None:
+        expected_orders = {
+            1: (0, 4, 8),
+            2: (0, 1, 4, 5, 8, 9),
+            3: (0, 1, 4, 2, 5, 8, 6, 9, 10),
+            4: (0, 1, 4, 2, 5, 8, 3, 6, 9, 7, 10, 11),
+        }
+        self.assertEqual(
+            len(execution_probe.V2_DOUBLE_SLOT_OBSERVATION_CASES), 8
+        )
+        for case in execution_probe.V2_DOUBLE_SLOT_OBSERVATION_CASES:
+            self.assertTrue(case.plan.is_double_slot_observation())
+            self.assertEqual(
+                case.plan.issue_order(), expected_orders[case.plan.rounds]
+            )
+            self.assertIn(
+                case.plan.schedule,
+                (protocol.Schedule.SERIAL, protocol.Schedule.WINDOW),
+            )
+        self.assertIn(
+            "hardware_observation_only",
+            pathlib.Path(
+                execution_probe.__file__
+            ).read_text(),
+        )
+        cmake = (
+            pathlib.Path(__file__).resolve().parents[1] / "CMakeLists.txt"
+        ).read_text()
+        self.assertIn("wafer-board-ncc-all-safe-observations", cmake)
+        self.assertIn("wafer-runtime-ncc-safe-observations-no-card", cmake)
+        self.assertIn("join${_wafer_ncc_join_mask}-unjoined-boundary", cmake)
 
 
 if __name__ == "__main__":

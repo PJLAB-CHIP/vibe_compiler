@@ -83,6 +83,15 @@ MAX_WAIT_SAMPLES = _macro("WAFER_NCC_PROTOCOL_MAX_WAIT_SAMPLES")
 TIGHT_DEPTH_PLUS_ONE = _enumerator(
     "WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE"
 )
+CONSTRUCTOR_OBSERVATION = _enumerator(
+    "WAFER_NCC_REQUEST_CONSTRUCTOR_OBSERVATION"
+)
+ORDERED_PRODUCER_CONSUMER = _enumerator(
+    "WAFER_NCC_REQUEST_ORDERED_PRODUCER_CONSUMER"
+)
+DOUBLE_SLOT_OBSERVATION = _enumerator(
+    "WAFER_NCC_REQUEST_DOUBLE_SLOT_OBSERVATION"
+)
 
 
 def _typed_enum(
@@ -250,6 +259,7 @@ REC = {
         "PLAN_CYCLES",
         "SERIAL_WAIT_CYCLES",
         "SERIAL_WAIT_COUNT",
+        "CONSTRUCTOR_ADDRESS",
         "RECORD_GUARD",
     )
 }
@@ -287,6 +297,9 @@ WRITE_VALID = _enumerator("WAFER_NCC_ISSUE_WRITE_VALID")
 PACKET_OBSERVED = _enumerator("WAFER_NCC_ISSUE_PACKET_OBSERVED")
 WINDOW_CONTROL_VALID = _enumerator(
     "WAFER_NCC_ISSUE_WINDOW_CONTROL_VALID"
+)
+CONSTRUCTOR_CAPTURED = _enumerator(
+    "WAFER_NCC_RECORD_CONSTRUCTOR_CAPTURED"
 )
 ALL_PHASE_FLAGS = sum(
     _enumerator(name)
@@ -511,6 +524,114 @@ class Plan:
             )
         )
 
+    def is_strided_dependency_observation(self) -> bool:
+        if len(self.lanes) != 2:
+            return False
+        first, second = self.lanes
+        descriptor_fields = (
+            "transfer_bytes",
+            "element_format",
+            "layout_kind",
+            "layout_inner_bytes",
+            "layout_stride0_bytes",
+            "layout_stride1_bytes",
+            "layout_stride2_bytes",
+            "layout_iteration0",
+            "layout_iteration1",
+            "layout_iteration2",
+        )
+        return (
+            self.rounds == 1
+            and self.effect_relation == EffectRelation.RAW
+            and self.range_relation == RangeRelation.STRIDED_ENVELOPE
+            and self.schedule in (Schedule.SERIAL, Schedule.WINDOW)
+            and self.wait_kind == WaitKind.BY_WORKER
+            and self.wait_worker_mask == 1
+            and self.first_operand == Operand.WRITE
+            and self.second_operand == Operand.READ0
+            and self.flags == 0
+            and self.issue_limit == 0
+            and first.engine == Engine.RDMA
+            and second.engine == Engine.WDMA
+            and first.worker == second.worker == 0
+            and first.layout_kind == LayoutKind.DMA_STRIDED
+            and second.layout_kind == LayoutKind.DMA_STRIDED
+            and all(
+                getattr(first, field) == getattr(second, field)
+                for field in descriptor_fields
+            )
+        )
+
+    def is_constructor_observation(self) -> bool:
+        return (
+            self.flags == CONSTRUCTOR_OBSERVATION
+            and len(self.lanes) == 1
+            and self.rounds == 1
+            and self.lanes[0].engine == Engine.CT
+            and self.lanes[0].worker == 0
+            and self.lanes[0].issue_mode == IssueMode.RAW
+            and self.effect_relation == EffectRelation.NONE
+            and self.range_relation == RangeRelation.DISJOINT
+            and self.schedule == Schedule.SERIAL
+            and self.wait_kind == WaitKind.BY_WORKER
+            and self.wait_worker_mask == 1
+            and self.first_operand == Operand.AUTO
+            and self.second_operand == Operand.AUTO
+            and self.issue_limit == 0
+        )
+
+    def is_ordered_producer_consumer(self) -> bool:
+        if len(self.lanes) != 2:
+            return False
+        first, second = self.lanes
+        return (
+            self.flags == ORDERED_PRODUCER_CONSUMER
+            and self.rounds == 1
+            and self.effect_relation == EffectRelation.RAW
+            and self.range_relation == RangeRelation.EXACT
+            and self.schedule == Schedule.SERIAL
+            and self.wait_kind == WaitKind.BY_WORKER
+            and self.wait_worker_mask
+            == ((1 << first.worker) | (1 << second.worker))
+            and self.first_operand == Operand.WRITE
+            and self.second_operand == Operand.READ0
+            and self.issue_limit == 0
+            and (first.engine, second.engine)
+            in (
+                (Engine.RDMA, Engine.CT),
+                (Engine.CT, Engine.WDMA),
+                (Engine.NE, Engine.WDMA),
+                (Engine.TDMA, Engine.CT),
+                (Engine.TDMA, Engine.NE),
+            )
+        )
+
+    def is_double_slot_observation(self) -> bool:
+        if len(self.lanes) != 3:
+            return False
+        rdma, ct, wdma = self.lanes
+        return (
+            self.flags == DOUBLE_SLOT_OBSERVATION
+            and 1 <= self.rounds <= MAX_ROUNDS
+            and self.effect_relation == EffectRelation.NONE
+            and self.range_relation == RangeRelation.DISJOINT
+            and self.schedule in (Schedule.SERIAL, Schedule.WINDOW)
+            and self.wait_kind == WaitKind.BY_WORKER
+            and self.wait_worker_mask == 1
+            and self.first_operand == Operand.AUTO
+            and self.second_operand == Operand.AUTO
+            and self.issue_limit == 0
+            and tuple(lane.engine for lane in self.lanes)
+            == (Engine.RDMA, Engine.CT, Engine.WDMA)
+            and all(lane.worker == 0 for lane in self.lanes)
+            and all(
+                lane.transfer_bytes == rdma.transfer_bytes
+                and lane.element_format == DMA_FORMAT_FP16
+                and lane.layout_kind == LayoutKind.CONTIGUOUS
+                for lane in (rdma, ct, wdma)
+            )
+        )
+
     def validate(self) -> None:
         if self.command == Command.QUALIFY:
             if (
@@ -537,7 +658,10 @@ class Plan:
         if any(
             lane.layout_kind == LayoutKind.DMA_STRIDED
             for lane in self.lanes
-        ) and not self.is_serial_dma_roundtrip():
+        ) and not (
+            self.is_serial_dma_roundtrip()
+            or self.is_strided_dependency_observation()
+        ):
             raise ValueError(
                 "DMA-strided lanes require one worker0 serial "
                 "RDMA-to-WDMA FP16 roundtrip"
@@ -627,7 +751,13 @@ class Plan:
                 raise ValueError("wait mask contains a non-participant worker")
         elif self.wait_worker_mask:
             raise ValueError("only BY_WORKER consumes a worker mask")
-        if self.flags not in (0, TIGHT_DEPTH_PLUS_ONE):
+        if self.flags not in (
+            0,
+            TIGHT_DEPTH_PLUS_ONE,
+            CONSTRUCTOR_OBSERVATION,
+            ORDERED_PRODUCER_CONSUMER,
+            DOUBLE_SLOT_OBSERVATION,
+        ):
             raise ValueError("unknown plan flags are not safe")
         queue_depths = {
             Engine.CT: 6,
@@ -662,6 +792,23 @@ class Plan:
             raise ValueError(
                 "only tight depth-plus-one consumes issue_limit"
             )
+        if (
+            self.flags == CONSTRUCTOR_OBSERVATION
+            and not self.is_constructor_observation()
+        ):
+            raise ValueError("constructor observation requires one raw CT issue")
+        if (
+            self.flags == ORDERED_PRODUCER_CONSUMER
+            and not self.is_ordered_producer_consumer()
+        ):
+            raise ValueError(
+                "ordered producer-consumer observation is malformed"
+            )
+        if (
+            self.flags == DOUBLE_SLOT_OBSERVATION
+            and not self.is_double_slot_observation()
+        ):
+            raise ValueError("double-slot observation is malformed")
         if self.schedule == Schedule.WINDOW and not tight_depth_plus_one:
             outstanding: dict[tuple[Engine, int], int] = {}
             for lane in self.lanes:
@@ -694,6 +841,18 @@ class Plan:
 
     def issue_order(self) -> tuple[int, ...]:
         identities = self.issue_identities()
+        if self.is_double_slot_observation():
+            by_pair = {
+                (identity.lane, identity.round): identity.slot
+                for identity in identities
+            }
+            ordered = []
+            for step in range(self.rounds + 2):
+                for lane, delay in ((0, 0), (1, 1), (2, 2)):
+                    round_index = step - delay
+                    if 0 <= round_index < self.rounds:
+                        ordered.append(by_pair[(lane, round_index)])
+            return tuple(ordered)
         by_ordinal = {identity.ordinal: identity for identity in identities}
         return tuple(
             by_ordinal[ordinal].slot

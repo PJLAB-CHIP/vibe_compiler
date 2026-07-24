@@ -64,7 +64,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wafer-run", type=pathlib.Path)
     parser.add_argument("--llvm-clangxx", type=pathlib.Path)
     parser.add_argument("--work-dir", type=pathlib.Path)
-    parser.add_argument("--suite", choices=("safe",), default="safe")
+    parser.add_argument(
+        "--suite",
+        choices=("safe", "exact", "observed", "all"),
+        default="safe",
+    )
     parser.add_argument(
         "--case",
         action="append",
@@ -80,6 +84,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-tile-count", type=int)
     parser.add_argument("--expected-runtime-library-sha256")
     parser.add_argument("--completion-timeout-ms", type=int, default=30000)
+    parser.add_argument(
+        "--observation-samples",
+        type=int,
+        default=3,
+        help="repeat each raw-observation row with identical payload",
+    )
     return parser.parse_args()
 
 
@@ -159,7 +169,19 @@ def require_board_args(args: argparse.Namespace) -> None:
 
 def select_cases(args: argparse.Namespace) -> tuple[catalog.InstructionCase, ...]:
     if not args.selected_cases:
-        return catalog.SAFE_CASES
+        if args.suite in {"safe", "all"}:
+            return catalog.SAFE_CASES
+        observed = args.suite == "observed"
+        selected = tuple(
+            case
+            for case in catalog.SAFE_CASES
+            if case.is_observation == observed
+        )
+        if not selected:
+            raise RuntimeError(
+                f"instruction qualification suite {args.suite} is empty"
+            )
+        return selected
     unknown = [
         name for name in args.selected_cases if name not in catalog.CASES_BY_NAME
     ]
@@ -501,17 +523,21 @@ def validate_output(
         catalog.OUTPUT_DDR_OFFSET :
         catalog.OUTPUT_DDR_OFFSET + catalog.SLOT_BYTES
     ]
-    exact_ranges = (
+    exact_ranges = [
         (0, catalog.BODY_OFFSET),
-        (
-            catalog.BODY_OFFSET,
-            catalog.BODY_OFFSET + case.result_bytes,
-        ),
         (
             catalog.BODY_OFFSET + case.output_span,
             catalog.SLOT_BYTES,
         ),
-    )
+    ]
+    if not case.is_observation:
+        exact_ranges.insert(
+            1,
+            (
+                catalog.BODY_OFFSET,
+                catalog.BODY_OFFSET + case.result_bytes,
+            ),
+        )
     mismatch = next(
         (
             index
@@ -534,7 +560,11 @@ def validate_output(
             f"actual=0x{actual_slot[mismatch]:02x}, "
             f"expected=0x{expected_slot[mismatch]:02x}"
         )
-    if case.result_bytes == case.output_span and actual_slot != expected_slot:
+    if (
+        not case.is_observation
+        and case.result_bytes == case.output_span
+        and actual_slot != expected_slot
+    ):
         mismatch = next(
             index
             for index, (actual, expected) in enumerate(
@@ -566,12 +596,29 @@ def validate_output(
             f"{case.name}: output changed outside record/result at byte "
             f"{mismatch}"
         )
+    result = actual_slot[
+        catalog.BODY_OFFSET :
+        catalog.BODY_OFFSET + case.output_span
+    ]
+    if (
+        case.is_observation
+        and result
+        == expected_slot[
+            catalog.BODY_OFFSET :
+            catalog.BODY_OFFSET + case.output_span
+        ]
+    ):
+        raise RuntimeError(
+            f"{case.name}: observation completed without any bounded "
+            "writeback"
+        )
     return {
         "case": case.as_dict(),
         "sample": sample,
         "step_flags": words[rec["STEP_FLAGS"]],
         "bit2fp_mismatches": words[rec["BIT2FP_MISMATCHES"]],
         "output_sha256": hashlib.sha256(actual_slot).hexdigest(),
+        "result_sha256": hashlib.sha256(result).hexdigest(),
     }
 
 
@@ -583,36 +630,41 @@ def execute_cases(
 ) -> None:
     raw_dir = args.work_dir / "raw"
     raw_dir.mkdir()
-    for sample, case in enumerate(cases):
-        built = catalog.build_case_payload(case, sample)
-        request = raw_dir / f"{case.name}.request.raw"
-        payload = raw_dir / f"{case.name}.payload.raw"
-        output = raw_dir / f"{case.name}.output.raw"
-        request.write_bytes(built.request)
-        payload.write_bytes(built.payload)
-        result = run(
-            board_command(
-                args, package, resource_ids, request, payload, output
-            ),
-            timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
-        )
-        required = {
-            "board_stage: completion",
-            "board_stage: device-to-host",
-            "board_stage: cleanup",
-            "board_execution: true",
-        }
-        if not required.issubset(set(result.stdout.splitlines())):
-            raise RuntimeError(
-                f"{case.name}: wafer-run omitted complete lifecycle evidence"
+    if args.observation_samples < 1:
+        raise RuntimeError("--observation-samples must be at least one")
+    for case in cases:
+        samples = args.observation_samples if case.is_observation else 1
+        for sample in range(samples):
+            built = catalog.build_case_payload(case, sample)
+            stem = f"{case.name}.sample-{sample}"
+            request = raw_dir / f"{stem}.request.raw"
+            payload = raw_dir / f"{stem}.payload.raw"
+            output = raw_dir / f"{stem}.output.raw"
+            request.write_bytes(built.request)
+            payload.write_bytes(built.payload)
+            result = run(
+                board_command(
+                    args, package, resource_ids, request, payload, output
+                ),
+                timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
             )
-        observation = validate_output(
-            output, case, built.expected_output_slot, sample
-        )
-        print(
-            "instruction_family_qualification: "
-            + json.dumps(observation, sort_keys=True)
-        )
+            required = {
+                "board_stage: completion",
+                "board_stage: device-to-host",
+                "board_stage: cleanup",
+                "board_execution: true",
+            }
+            if not required.issubset(set(result.stdout.splitlines())):
+                raise RuntimeError(
+                    f"{case.name}: wafer-run omitted complete lifecycle evidence"
+                )
+            observation = validate_output(
+                output, case, built.expected_output_slot, sample
+            )
+            print(
+                "instruction_family_qualification: "
+                + json.dumps(observation, sort_keys=True)
+            )
 
 
 def main() -> int:

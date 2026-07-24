@@ -64,7 +64,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--geometry",
         action="append",
-        choices=tuple(catalog.GEOMETRIES),
+        choices=tuple(
+            sorted(
+                {
+                    case.geometry_name
+                    for case in catalog.SAFE_CASES
+                }
+            )
+        ),
     )
     parser.add_argument(
         "--orientation",
@@ -214,6 +221,8 @@ def _validate_record(
         case.option,
         case.aux_span,
         case.disposition,
+        case.lhs_batch,
+        case.rhs_batch,
     )
     actual = tuple(
         words[rec[name]]
@@ -235,6 +244,8 @@ def _validate_record(
             "OPTION",
             "AUX_SPAN",
             "DISPOSITION",
+            "LHS_BATCH",
+            "RHS_BATCH",
         )
     )
     if (
@@ -277,7 +288,7 @@ def validate_output(
     actual_logical = physical.unpack_scalar_bytes(
         case.output_shape,
         case.output_layout,
-        2,
+        case.element_bytes,
         actual_physical,
     )
     if (
@@ -300,7 +311,7 @@ def validate_output(
         else physical.pack_scalar_bytes(
             case.output_shape,
             case.output_layout,
-            2,
+            case.element_bytes,
             actual_logical,
             padding=catalog.SLOT_CANARY,
         )
@@ -319,6 +330,15 @@ def validate_output(
         )
         raise RuntimeError(
             f"{case.name}: physical padding differs at byte {mismatch}"
+        )
+    initial_physical = built.payload[
+        2 * catalog.SLOT_BYTES + catalog.BODY_OFFSET :
+        2 * catalog.SLOT_BYTES + catalog.BODY_OFFSET + case.output_span
+    ]
+    if not case.exact and actual_physical == initial_physical:
+        raise RuntimeError(
+            f"{case.name}: observation completed without any bounded "
+            "writeback"
         )
 
     mutable = bytearray(raw)
@@ -345,6 +365,7 @@ def validate_output(
         "logical_sha256": hashlib.sha256(
             b"".join(actual_logical)
         ).hexdigest(),
+        "physical_sha256": hashlib.sha256(actual_physical).hexdigest(),
     }
 
 

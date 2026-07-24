@@ -154,6 +154,10 @@ class InstructionCase:
     def is_safe(self) -> bool:
         return self.disposition_name == "SAFE"
 
+    @property
+    def is_observation(self) -> bool:
+        return self.is_safe and self.oracle_name == "NO_ORACLE"
+
     def as_dict(self) -> dict[str, object]:
         return {
             "id": self.case_id,
@@ -813,23 +817,87 @@ def _conv(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
 
 
 def _pool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
-    if case.symbol not in ("POOL_F16", "POOL_BF16"):
+    if case.symbol in ("POOL_F16", "POOL_BF16"):
+        source = [
+            float(100 * row + 10 * column + channel % 8)
+            for row in range(2)
+            for column in range(4)
+            for channel in range(64)
+        ]
+        expected = [
+            float(100 + 10 * (2 * output_column + 1) + channel % 8)
+            for output_column in range(2)
+            for channel in range(64)
+        ]
+        return _fp(case.dtype_name, source), b"", _fp(
+            case.dtype_name, expected
+        )
+    if case.symbol in {
+        "POOL_AVG_F16",
+        "POOL_SUM_F16",
+        "POOL_MIN_F16",
+    }:
+        source = [
+            float(
+                4 * (row * 4 + column)
+                + 4 * (channel % 4)
+                + 32
+            )
+            for row in range(2)
+            for column in range(4)
+            for channel in range(64)
+        ]
+        windows = tuple(
+            tuple(
+                source[(row * 4 + column) * 64 + channel]
+                for row in range(2)
+                for column in range(2 * output_column, 2 * output_column + 2)
+            )
+            for output_column in range(2)
+            for channel in range(64)
+        )
+        operation = {
+            "POOL_AVG_F16": lambda values: sum(values) / 4.0,
+            "POOL_SUM_F16": sum,
+            "POOL_MIN_F16": min,
+        }[case.symbol]
+        expected = [operation(values) for values in windows]
+        return _f16(source), b"", _f16(expected)
+    if case.symbol == "POOL_INDEXED_MIN_F16":
+        source = [0.0] * (2 * 4 * 64)
+        expected_values: list[float] = []
+        expected_indices: list[int] = []
+        for output_column in range(2):
+            for channel in range(64):
+                selected = (channel + output_column) % 4
+                minimum = float(-64 - output_column * 16 - channel % 8)
+                expected_values.append(minimum)
+                expected_indices.append(selected)
+                for position in range(4):
+                    row = position // 2
+                    column = 2 * output_column + position % 2
+                    source[(row * 4 + column) * 64 + channel] = (
+                        minimum if position == selected else float(8 + position)
+                    )
+        return (
+            _f16(source),
+            b"",
+            _f16(expected_values)
+            + struct.pack("<128H", *expected_indices),
+        )
+    else:
         raise RuntimeError(f"{case.name}: unknown pool kind")
-    source = [
-        float(100 * row + 10 * column + channel % 8)
-        for row in range(2)
-        for column in range(4)
-        for channel in range(64)
-    ]
-    expected = [
-        float(100 + 10 * (2 * output_column + 1) + channel % 8)
-        for output_column in range(2)
-        for channel in range(64)
-    ]
-    return _fp(case.dtype_name, source), b"", _fp(case.dtype_name, expected)
 
 
 def _unpool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
+    if case.symbol == "UNPOOL_AVG_F16":
+        source = [float(4 * (channel % 16 + 1)) for channel in range(64)]
+        expected = [
+            source[channel] / 4.0
+            for _position in range(4)
+            for channel in range(64)
+        ]
+        return _f16(source), b"", _f16(expected)
     if case.symbol not in ("UNPOOL_F16", "UNPOOL_INDEX_F16"):
         raise RuntimeError(f"{case.name}: unknown unpool kind")
     source = [
@@ -879,6 +947,55 @@ def _peripheral_lut16() -> tuple[bytes, bytes, bytes]:
     return source, _f16(table_values), expected
 
 
+def _peripheral_bilinear() -> tuple[bytes, bytes, bytes]:
+    source = _f16(
+        float((index * 11) % 97 - 48) for index in range(128)
+    )
+    return source, b"", source
+
+
+def _peripheral_factorize_observation() -> tuple[bytes, bytes, bytes]:
+    source = _f32(
+        (
+            float((-1 if index % 2 else 1) * (index + 1))
+            + 0.25 * (index % 3)
+        )
+        for index in range(32)
+    )
+    return source, b"", bytes(1536)
+
+
+def _peripheral_lut32_observation() -> tuple[bytes, bytes, bytes]:
+    indices = tuple((29 * index + 7) % 128 for index in range(128))
+    source = struct.pack("<128I", *(4 * index for index in indices))
+    table = struct.pack(
+        "<128I",
+        *(0x3F000000 ^ (index * 0x00010101) for index in range(128)),
+    )
+    return source, table, bytes(512)
+
+
+def _peripheral_randgen_observation() -> tuple[bytes, bytes, bytes]:
+    seed0 = struct.pack(
+        "<16Q",
+        *(0x0123456789ABCDEF ^ (index * 0x1111111111111111)
+          for index in range(16)),
+    )
+    seed1 = struct.pack(
+        "<16Q",
+        *(0xFEDCBA9876543210 ^ (index * 0x0102040810204080)
+          for index in range(16)),
+    )
+    return seed0, seed1, bytes(1536)
+
+
+def _peripheral_elemmask_observation() -> tuple[bytes, bytes, bytes]:
+    source = _f16(
+        float((index % 31) - 15) / 4.0 for index in range(128)
+    )
+    return source, b"", bytes(256)
+
+
 def _peripheral(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
     if case.symbol in (
         "PERIPHERAL_ARGMAX_F16",
@@ -887,6 +1004,16 @@ def _peripheral(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
         return _peripheral_arg_extrema(case)
     if case.symbol == "PERIPHERAL_LUT16_F16":
         return _peripheral_lut16()
+    if case.symbol == "PERIPHERAL_BILINEAR_F16":
+        return _peripheral_bilinear()
+    if case.symbol == "PERIPHERAL_FACTORIZE_F32_OBSERVED":
+        return _peripheral_factorize_observation()
+    if case.symbol == "PERIPHERAL_LUT32_OBSERVED":
+        return _peripheral_lut32_observation()
+    if case.symbol == "PERIPHERAL_RANDGEN_F16_OBSERVED":
+        return _peripheral_randgen_observation()
+    if case.symbol == "PERIPHERAL_ELEMMASK_F16_OBSERVED":
+        return _peripheral_elemmask_observation()
     raise RuntimeError(f"{case.name}: unknown peripheral kind")
 
 
@@ -963,7 +1090,8 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
         )
     _put(slots[2], output_seed)
     expected_slot = bytearray(slots[2])
-    expected_slot[BODY_OFFSET : BODY_OFFSET + len(expected)] = expected
+    if not case.is_observation:
+        expected_slot[BODY_OFFSET : BODY_OFFSET + len(expected)] = expected
 
     request_words = [0] * REQUEST_WORDS
     request_words[REQ["MAGIC"]] = REQUEST_MAGIC

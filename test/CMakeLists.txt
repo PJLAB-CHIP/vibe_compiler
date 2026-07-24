@@ -95,6 +95,16 @@ set_tests_properties(wafer-board-direct-dte-outer-deadline PROPERTIES
   TIMEOUT 30
 )
 
+add_test(NAME wafer-hardware-calibration-batch-runner-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_hardware_calibration_batch_runner_test.py
+)
+set_tests_properties(
+  wafer-hardware-calibration-batch-runner-python PROPERTIES
+  LABELS "runtime;no-card;hardware-calibration;orchestration"
+  TIMEOUT 60
+)
+
 add_executable(wafer-ncc-probe-plan-test
   Board/Inputs/wafer_ncc_probe_plan.c
   Board/wafer_ncc_probe_plan_test.c
@@ -192,6 +202,16 @@ set_tests_properties(wafer-datamove-calibration-catalog-python PROPERTIES
   TIMEOUT 60
 )
 
+add_test(NAME wafer-datamove-extended-calibration-catalog-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_datamove_extended_calibration_catalog_test.py
+)
+set_tests_properties(
+  wafer-datamove-extended-calibration-catalog-python PROPERTIES
+  LABELS "runtime;no-card;instruction;datamove;layout;calibration;oracle"
+  TIMEOUT 60
+)
+
 add_test(NAME wafer-ct-opcode-disposition-catalog-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_ct_opcode_disposition_catalog_test.py
@@ -244,6 +264,16 @@ add_test(NAME wafer-cache-coherence-calibration-catalog-python
 set_tests_properties(wafer-cache-coherence-calibration-catalog-python PROPERTIES
   LABELS "runtime;no-card;cache;coherence;calibration;oracle"
   TIMEOUT 30
+)
+
+add_test(NAME wafer-memory-descriptor-calibration-catalog-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_memory_descriptor_calibration_catalog_test.py
+)
+set_tests_properties(
+  wafer-memory-descriptor-calibration-catalog-python PROPERTIES
+  LABELS "runtime;no-card;memory;dma;ddr;spm;calibration;oracle"
+  TIMEOUT 60
 )
 
 add_test(NAME wafer-transport-pmu-calibration-catalog-python
@@ -395,6 +425,23 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     LABELS "runtime;no-card;ncc;execution-model;build-smoke"
     TIMEOUT 300
   )
+  add_test(NAME wafer-runtime-ncc-safe-observations-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ncc_execution_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-ncc-safe-observations-no-card
+      --suite board-all-preflight
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-ncc-safe-observations-no-card PROPERTIES
+    LABELS "runtime;no-card;ncc;execution-model;calibration;preflight"
+    TIMEOUT 600
+  )
   add_test(NAME wafer-runtime-instruction-family-probe-no-card
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_instruction_family_probe_test.py
@@ -421,7 +468,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
       --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
       --work-dir
         ${CMAKE_CURRENT_BINARY_DIR}/runtime-ct-vector-calibration-probe
-      --suite exact
+      --suite all
       --no-card
   )
   set_tests_properties(
@@ -438,6 +485,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
       --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
       --work-dir
         ${CMAKE_CURRENT_BINARY_DIR}/runtime-ct-convert-calibration-probe
+      --suite all
       --no-card
   )
   set_tests_properties(
@@ -461,6 +509,23 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     LABELS "runtime;no-card;instruction;datamove;layout;calibration;probe-build"
     TIMEOUT 300
   )
+  add_test(NAME wafer-runtime-datamove-extended-calibration-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_datamove_extended_calibration_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-datamove-extended-calibration-probe
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-datamove-extended-calibration-probe-no-card PROPERTIES
+    LABELS
+      "runtime;no-card;instruction;datamove;layout;calibration;probe-build"
+    TIMEOUT 300
+  )
   add_test(NAME wafer-runtime-ne-calibration-probe-no-card
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ne_calibration_probe_test.py
@@ -470,6 +535,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
       --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
       --work-dir
         ${CMAKE_CURRENT_BINARY_DIR}/runtime-ne-calibration-probe
+      --suite all
       --no-card
   )
   set_tests_properties(
@@ -507,6 +573,22 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
   set_tests_properties(
     wafer-runtime-cache-coherence-calibration-probe-no-card PROPERTIES
     LABELS "runtime;no-card;cache;coherence;calibration;probe-build"
+    TIMEOUT 300
+  )
+  add_test(NAME wafer-runtime-memory-descriptor-calibration-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_memory_descriptor_calibration_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-memory-descriptor-calibration-probe
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-memory-descriptor-calibration-probe-no-card PROPERTIES
+    LABELS "runtime;no-card;memory;dma;ddr;spm;calibration;probe-build"
     TIMEOUT 300
   )
   add_test(NAME wafer-runtime-mn-tiled-gemm-no-card
@@ -599,6 +681,85 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     SKIP_RETURN_CODE 77
     TIMEOUT 60
   )
+  add_test(NAME wafer-board-ncc-all-safe-observations
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ncc_execution_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-ncc-all-safe-observations
+      --suite board-all-safe
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 30000
+      --repeat 3
+  )
+  set_tests_properties(wafer-board-ncc-all-safe-observations PROPERTIES
+    LABELS "board;hardware;ncc;execution;calibration;safe"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 21600
+  )
+
+  function(wafer_add_isolated_ncc_observation test_suffix suite case_name)
+    add_test(NAME wafer-board-ncc-${test_suffix}
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ncc_execution_probe_test.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-ncc-${test_suffix}
+        --suite ${suite}
+        --case ${case_name}
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 30000
+        --repeat 1
+    )
+    set_tests_properties(wafer-board-ncc-${test_suffix} PROPERTIES
+      LABELS "board;hardware;ncc;execution;calibration;isolated"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 600
+    )
+  endfunction()
+
+  wafer_add_isolated_ncc_observation(
+    constructor-return-address
+    constructor-observation
+    ct-constructor-return-address-nonnull
+  )
+  wafer_add_isolated_ncc_observation(
+    default-wait-worker1-boundary
+    completion-scope-manual
+    ne-worker1-depth6-default-wait-window
+  )
+  wafer_add_isolated_ncc_observation(
+    byworker1-completion-control
+    completion-scope-manual
+    ne-worker1-depth6-byworker-wait-window
+  )
+  foreach(_wafer_ncc_join_mask IN ITEMS 001 010 100 011 101 110)
+    wafer_add_isolated_ncc_observation(
+      join${_wafer_ncc_join_mask}-unjoined-boundary
+      cross-worker-boundary-manual
+      workers012-join${_wafer_ncc_join_mask}-observe-unjoined
+    )
+  endforeach()
   add_test(NAME wafer-board-instruction-family-safe
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_instruction_family_probe_test.py
@@ -624,7 +785,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     SKIP_RETURN_CODE 77
     TIMEOUT 1800
   )
-  add_test(NAME wafer-board-ct-vector-calibration-exact
+  add_test(NAME wafer-board-ct-vector-calibration
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ct_vector_calibration_probe_test.py
       --repo-root ${CMAKE_SOURCE_DIR}
@@ -632,8 +793,8 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       --wafer-run $<TARGET_FILE:wafer-run>
       --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
       --work-dir
-        ${CMAKE_CURRENT_BINARY_DIR}/board-ct-vector-calibration-exact
-      --suite exact
+        ${CMAKE_CURRENT_BINARY_DIR}/board-ct-vector-calibration
+      --suite all
       --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
       --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
       --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
@@ -643,7 +804,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
         ${_wafer_expected_tx_runtime_library_sha256}
       --completion-timeout-ms 30000
   )
-  set_tests_properties(wafer-board-ct-vector-calibration-exact PROPERTIES
+  set_tests_properties(wafer-board-ct-vector-calibration PROPERTIES
     LABELS "board;hardware;instruction;calibration;manual"
     RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
     SKIP_RETURN_CODE 77
@@ -657,6 +818,8 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       --wafer-run $<TARGET_FILE:wafer-run>
       --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/board-ct-convert-calibration
+      --suite all
+      --stochastic-samples 3
       --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
       --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
       --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
@@ -670,7 +833,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     LABELS "board;hardware;instruction;ct;convert;calibration;manual"
     RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
     SKIP_RETURN_CODE 77
-    TIMEOUT 3600
+    TIMEOUT 21600
   )
   add_test(NAME wafer-board-datamove-calibration
     COMMAND ${Python3_EXECUTABLE}
@@ -695,6 +858,31 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     SKIP_RETURN_CODE 77
     TIMEOUT 3600
   )
+  add_test(NAME wafer-board-datamove-extended-calibration
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_datamove_extended_calibration_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-datamove-extended-calibration
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 60000
+  )
+  set_tests_properties(
+    wafer-board-datamove-extended-calibration PROPERTIES
+    LABELS "board;hardware;instruction;datamove;layout;calibration;manual"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 3600
+  )
   add_test(NAME wafer-board-ne-calibration
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ne_calibration_probe_test.py
@@ -703,6 +891,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       --wafer-run $<TARGET_FILE:wafer-run>
       --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/board-ne-calibration
+      --suite all
       --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
       --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
       --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
@@ -716,7 +905,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     LABELS "board;hardware;ne;layout;calibration;manual"
     RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
     SKIP_RETURN_CODE 77
-    TIMEOUT 3600
+    TIMEOUT 21600
   )
   add_test(NAME wafer-board-spm-calibration
     COMMAND ${Python3_EXECUTABLE}
@@ -763,6 +952,31 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
     SKIP_RETURN_CODE 77
     TIMEOUT 1800
+  )
+  add_test(NAME wafer-board-memory-descriptor-calibration
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_memory_descriptor_calibration_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-memory-descriptor-calibration
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 60000
+  )
+  set_tests_properties(
+    wafer-board-memory-descriptor-calibration PROPERTIES
+    LABELS "board;hardware;memory;dma;ddr;spm;calibration;manual"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 7200
   )
   add_test(NAME wafer-board-single-op-add
     COMMAND ${Python3_EXECUTABLE}

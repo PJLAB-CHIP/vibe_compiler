@@ -8,8 +8,8 @@ import wafer_ct_convert_calibration_catalog as catalog
 
 def main() -> int:
     assert len(catalog.CATALOG) == 204
-    assert len(catalog.SAFE_CASES) == 181
-    assert len(catalog.DEFERRED_CASES) == 23
+    assert len(catalog.SAFE_CASES) == 204
+    assert len(catalog.DEFERRED_CASES) == 0
     assert set(case.opcode for case in catalog.CATALOG) == set(range(139, 175))
     assert set(case.shape_name for case in catalog.CATALOG) == {"main", "tail"}
     assert len(catalog.CASES_BY_ID) == len(catalog.CATALOG)
@@ -106,6 +106,8 @@ def main() -> int:
     } == catalog.ZERO_POINT_OPCODES
     assert all(
         case.reason
+        and case.disposition_name == "BOARD_OBSERVED"
+        and catalog.build_case_payload(case).expected_output_slot is None
         for case in catalog.CATALOG
         if case.domain_name == "STOCHASTIC"
     )

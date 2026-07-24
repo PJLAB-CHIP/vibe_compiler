@@ -46,6 +46,10 @@ EXPECTED_KEYS = {
 
 EXPECTED_SHARED_GROUP_REFERENCES = {
     (
+        "test/Board/wafer_board_single_op_add_test.py",
+        "rank-one-per-rank-add",
+    ): 2,
+    (
         "test/Board/wafer_board_ncc_execution_probe_test.py",
         "routing-five-engines-worker0",
     ): 2,
@@ -225,8 +229,10 @@ def non_board_disposition(row: object) -> str | None:
 def is_observation_row(row: object) -> bool:
     for field in ("disposition_name", "disposition"):
         value = row_value(row, field)
-        if isinstance(value, str) and "observed" in value.lower():
-            return True
+        if isinstance(value, str):
+            normalized = value.lower().replace("_", "-")
+            if "observed" in normalized or "observation" in normalized:
+                return True
     return False
 
 

@@ -21,9 +21,9 @@ def main() -> int:
         row.opcode
         for row in catalog.PUBLIC_DISPOSITIONS
         if row.disposition == "isolated-deferred"
-    } == {122, 131, 133, 136, 137}
+    } == set()
     for row in catalog.PUBLIC_DISPOSITIONS:
-        if row.disposition == "board-executable":
+        if row.disposition in {"board-executable", "board-observation"}:
             assert row.evidence
             assert row.reason is None
         else:
@@ -46,9 +46,6 @@ def main() -> int:
     for row in catalog.INSTRUCTION_LAYOUT_DISPOSITIONS:
         if row.disposition == "static-negative":
             assert not row.evidence
-            assert row.reason
-        elif row.disposition == "isolated-deferred":
-            assert row.evidence
             assert row.reason
         else:
             assert row.evidence
@@ -74,9 +71,9 @@ def main() -> int:
         ]
     )
     assert all(
-        row.disposition == "isolated-deferred"
+        row.disposition == "composite-board-executable"
         for row in catalog.CALIBRATION_LEAF_BINDINGS[
-            "instruction-layout-composite-deferred"
+            "instruction-layout-composite-positive"
         ]
     )
     assert all(
@@ -147,9 +144,9 @@ def main() -> int:
         "concat-axis-HW",
     }
     assert all(
-        row.disposition == "isolated-deferred"
-        and not row.evidence
-        and row.reason
+        row.disposition == "board-observation"
+        and row.evidence
+        and row.reason is None
         for row in raw_concat.values()
     )
     assert (
@@ -221,10 +218,21 @@ def main() -> int:
         assert key
         assert rows
         assert all(row in allowed_leaf_objects for row in rows)
+    assert all(
+        row.disposition == "board-executable"
+        and row.evidence
+        and row.reason is None
+        for row in catalog.EXTENDED_DATAMOVE_DISPOSITIONS
+    )
+    assert {
+        row.opcode
+        for row in catalog.PUBLIC_DISPOSITIONS
+        if row.disposition == "board-observation"
+    } == {131, 133, 136, 137}
     print(
         "wafer_datamove_calibration_catalog_test: "
-        "board_cases=46 public_opcodes=18 layout_combinations=20 "
-        "deferred=5 passed"
+        "base_board_cases=46 public_opcodes=18 layout_combinations=20 "
+        "deferred=0 extended_evidence=18 passed"
     )
     return 0
 

@@ -17,6 +17,15 @@ MODE_NAMES = {
     4: "disjoint-dte-wait-first",
     5: "dte-source-destination-reuse-after-events",
     6: "dte-two-destination-broadcast",
+    7: "dte-source-reuse-before-send-event-error",
+    8: "dte-invalid-fsm-error",
+    9: "dte-wait-unknown-event-error",
+}
+TRANSPORT_PMU_MODES = tuple(range(1, 7))
+ERROR_PATH_MODES = (7, 8, 9)
+MODE_PAYLOADS = {
+    **{mode: PAYLOAD_SWEEP for mode in TRANSPORT_PMU_MODES},
+    **{mode: (16,) for mode in ERROR_PATH_MODES},
 }
 BOARD_COUNTER_NAMES = (
     "dte_channel0_transfer",
@@ -69,7 +78,7 @@ CASES = tuple(
     for index, (payload_bytes, mode) in enumerate(
         (payload_bytes, mode)
         for payload_bytes in PAYLOAD_SWEEP
-        for mode in MODE_NAMES
+        for mode in TRANSPORT_PMU_MODES
     )
 )
 
@@ -82,6 +91,8 @@ class TransportContractCase:
     verification_scope: str
     gate: str
     reason: str
+    mode: int | None = None
+    payload_bytes: int | None = None
 
     def as_dict(self) -> dict[str, object]:
         return dataclasses.asdict(self)
@@ -91,26 +102,42 @@ CONTRACT_CASES = (
     TransportContractCase(
         "dte-source-reuse-before-send-event",
         "direct-dte-reuse",
-        "isolated-deferred",
-        "crt-device-state-code-audit",
-        "CRT source audit: sender-active guard publishes a device error",
-        "early reuse is not a host/prelaunch rejection and is never submitted",
+        "board-observation",
+        "board-device-error-path",
+        (
+            "record sender-active rejection, transport-error status, completed "
+            "first send/receive, exact payload, guards, and normal cleanup"
+        ),
+        (
+            "the duplicate prepare is rejected synchronously; the first "
+            "prepared transfer is still completed before runtime success"
+        ),
+        7,
+        16,
     ),
     TransportContractCase(
         "dte-receiver-unprepared",
         "direct-dte-receiver",
         "isolated-deferred",
-        "protocol-ordering-code-audit",
-        "positive path audit posts every receive before any sender wait",
-        "no rejecting probe exists; unprepared receive remains unsubmitted",
+        "isolated-safety-quarantine",
+        "never submit a sender wait without its matching receive prepare",
+        (
+            "direct_sync_wait has no bounded device timeout and can "
+            "permanently block the card session"
+        ),
     ),
     TransportContractCase(
         "dte-invalid-fsm",
         "direct-dte-routing",
-        "isolated-deferred",
-        "crt-device-state-code-audit",
-        "CRT source audit bounds FSM ids and publishes a device error",
-        "the guard is device-side, not a prelaunch verifier",
+        "board-observation",
+        "board-device-error-path",
+        (
+            "record rejected send/receive tokens, transport-error status, "
+            "untouched payload/guards, terminal completion, and cleanup"
+        ),
+        "both typed uint32 FSM guards return before transport attachment",
+        8,
+        16,
     ),
     TransportContractCase(
         "dte-invalid-coordinate",
@@ -123,10 +150,15 @@ CONTRACT_CASES = (
     TransportContractCase(
         "dte-wait-unknown-event",
         "direct-dte-completion",
-        "isolated-deferred",
-        "crt-device-status-code-audit",
-        "CRT event-decoder audit publishes a device transport error",
-        "unknown tokens are not proven rejected by a host/prelaunch verifier",
+        "board-observation",
+        "board-device-error-path",
+        (
+            "record unknown-event return, transport-error status, untouched "
+            "payload/guards, terminal completion, and cleanup"
+        ),
+        "the event decoder rejects an unknown token before any transport wait",
+        9,
+        16,
     ),
     TransportContractCase(
         "host-readback-before-terminal",
@@ -235,7 +267,13 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
         if case.disposition == "static-negative"
         and case.domain.startswith("direct-dte")
     ),
-    "direct-dte-device-contract-code-audit": tuple(
+    "direct-dte-device-error-observation": tuple(
+        case
+        for case in CONTRACT_CASES
+        if case.disposition == "board-observation"
+        and case.domain.startswith("direct-dte")
+    ),
+    "direct-dte-unsafe-isolation": tuple(
         case
         for case in CONTRACT_CASES
         if case.disposition == "isolated-deferred"

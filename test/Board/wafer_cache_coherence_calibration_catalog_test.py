@@ -69,7 +69,9 @@ def main() -> int:
         for schedule in ("serial", "window")
     }
     assert all(
-        row.disposition == "isolated-deferred" and row.reason
+        row.disposition == "delegated-board-case"
+        and row.reason
+        and row.evidence
         for row in catalog.DDR_LARGE_DESCRIPTOR_DISPOSITIONS
     )
     assert all(
@@ -89,7 +91,7 @@ def main() -> int:
     print(
         "wafer_cache_coherence_calibration_catalog_test: "
         "directions=4 cache_phases=4 ddr_pair_cases=54 "
-        "offsets=9 deferred_session=1 deferred_large_descriptor=3 passed"
+        "offsets=9 deferred_session=1 delegated_large_descriptor=3 passed"
     )
     return 0
 

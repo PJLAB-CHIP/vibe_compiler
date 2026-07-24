@@ -19,6 +19,24 @@
   propagation未冻结时不能放入exact组。任何跨phase状态型probe必须证明phase位于同一runtime session且复用同一allocation；两个独立
   launch的输出不能拼成cache coherence或资源生命周期因果oracle。
 
+## 2026-07-24 把“没有exact oracle或当前runner较小”误判成不可上板
+
+- 现象：叶子矩阵形式上给出了`isolated-deferred`处置，但CT stochastic、raw DataMove、NE option、
+  64KiB DMA、TDMA stride、SPM alias/bank、worker wait/join和dependency等多项其实已有typed ABI或可构造
+  的有界descriptor；它们仍没有真实实卡请求，导致“准备完成”不能支撑后续硬件开发。
+- 根因：把三件不同的事混在一起：没有profile-independent exact numeric oracle、某个通用probe的resource
+  slot/record字段不够、以及请求确实可能永久等待或缺少cleanup owner。前两者是补
+  `board-observation`/专用shared package的问题，不是硬件不可测边界；用“先观察到正overlap才允许测试
+  dependency”还会把硬件串行化这一有效负结果挡在门外。
+- 修复模式：owned ABI能表达且range有界时，补真实payload、device dispatcher、完整physical guard、
+  request echo、matching completion或最终safety drain、外层timeout和cleanup；未知/随机语义重复采样并
+  保存raw result，不强行判exact。通用adapter容量不足时新建同resource class的专用shared package，已有
+  concrete owner case时显式重绑，不复制短case或只改标签。
+- 防复发：每个`isolated-deferred`必须证明至少一项不可消除的安全条件：可能永久阻塞、可能写出owned
+  range、或缺少同一runtime session生命周期owner；同时列出最接近的安全替代probe。typed ABI没有
+  setter/field时用`static-negative`。机器门禁还要核对board CTest的suite/filter确实选择observation行，
+  不能只验证catalog中存在可执行对象。
+
 ## 2026-07-13 multi-rank reference不能硬编码为Direct DTE
 
 - 现象：真实PyTorch/XLA linear-residual MLP以16 rank经过production driver后形成完整replicated rank domain，

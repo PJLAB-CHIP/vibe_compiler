@@ -63,8 +63,12 @@ Pipeline position:
   处置、具体case绑定、独立expected、
   logical/physical span与guard、rank/tile/worker scope、资源预算、shared package/device dispatcher、
   host filter/timeout/cleanup入口和no-card gate。机器审计必须实际导入被绑定catalog并解析case ID，
-  不能只检查某个宽泛文件存在。明确不应发送到设备的组合必须有negative gate；随机、无恢复路径或
-  当前ABI无法安全构造的组合必须带可审计原因，不能用空白、`TODO`、邻近case或整行共用一个资产代替。
+  不能只检查某个宽泛文件存在。明确不应发送到设备的组合必须有negative gate。缺少exact numeric oracle
+  或seed不再是延后理由：只要range有界、matching completion/safety drain和cleanup可用，就必须构造成
+  重复采样并保留raw result的`board-observation`。只有可能永久等待、越过owned range或缺少同一runtime
+  session生命周期owner的输入才允许`isolated-deferred`；owned typed ABI没有对应setter/field的组合归入
+  `static-negative`。两类非执行项都必须带可审计原因和最接近的安全替代probe，不能用空白、`TODO`、
+  邻近case或整行共用一个资产代替。
   28行状态从其叶子自动汇总；只有所有叶子均完成实卡前准备时才允许整行`ready`，届时唯一允许保留的
   是按profile执行、记录观测值以及用独立held-out决定是否提升证据成熟度。
 - 28行按下面的固定批次施工和复核；批次只是执行顺序，不改变矩阵行的独立验收：
@@ -81,12 +85,26 @@ Pipeline position:
   `in-progress`行。
 - 旧版矩阵曾因只检查28行的文件存在、CTest注册和手填`remaining_preparation`，错误报告
   `28/28 ready`；该结论已经撤回。已有CT、DataMove、NE、SPM、cache、NCC、DTE与barrier资产仍可按
-  各自真实case范围执行，但不能替代未绑定的叶子需求。本轮已把28域拆成115个叶子并由新门禁全部
-  重新计算为实卡前`ready`：61个`board-positive`、7个`board-observation`、2个
-  `delegated-positive`、16个`static-negative`和29个`isolated-deferred`。每个叶子均解析到具体
-  catalog/contract对象，或解析到带理由的非执行对象；host oracle、target build/link、shared-package
-  no-card与矩阵一致性已经闭合。该状态只关闭case准备，不关闭Checkpoint A：目标profile实卡执行、
-  held-out成熟度和software-pipeline vertical仍是后续gate。
+  各自真实case范围执行，但不能替代未绑定的叶子需求。当前每个叶子均解析到具体catalog/contract对象，
+  或解析到带理由的非执行对象；最终叶子总数和处置计数只由机器矩阵审计发布，本计划不复制一份易失数字。
+  host oracle、target build/link、shared-package no-card与矩阵一致性只关闭case准备，不关闭
+  Checkpoint A：目标profile实卡执行、held-out成熟度和software-pipeline vertical仍是后续gate。
+- 当前实卡前资产快照为：CT opcode `0..186`有177 board-executable、8 board-observation、
+  2 static-negative；convert
+  204行中158 exact、46 observation，23个stochastic row均为可执行重复采样；instruction-family有71个
+  safe case。DataMove为base 46 + extended 18个case，公开`121..138`处置为14 exact、4 observation、
+  0 deferred。NE为46 exact、21 observation、3 static-negative，新增quant、Depthwise/BackwardConv和
+  左右不等batch。memory-descriptor有59个case，SPM 84行拆为19个本地board、15个static-negative、
+  50个concrete delegated、0 deferred。NCC新增constructor nonnull、default/byworker scope、六个subset
+  join、all-direction producer/consumer、strided dependency、large backlog与手写double-slot hardware
+  observation。Direct DTE另有source提前复用、invalid FSM与unknown event wait三种同步错误观察；
+  receiver未prepare因可能进入无设备timeout的永久等待而继续隔离。机器矩阵当前共121个叶子：
+  75个board positive、20个board observation、6个delegated positive、18个static negative和2个
+  isolated deferred。以上均只表示case、target/no-card ready，尚未取得本轮板端结果。
+- NCC统一板前门禁覆盖185个计划：176个普通safe计划进入同一串行CTest，constructor、default/byworker
+  对照和六个proper-subset join共9个以独立进程执行。完整板端执行使用
+  `tools/run_hardware_calibration.py`；它只调度已注册board CTest，要求双重显式授权，逐项串行、
+  首错/skip即停，不retry/reset/power，并保存log、JUnit和session summary。
 - 校准矩阵按compiler consumer分层，而不是按vendor API罗列：
   - instruction/encoding：constructor ownership、packet routing、descriptor单位、range materialization、
     alignment/tail、返回值与错误可观察性；
@@ -117,12 +135,12 @@ Pipeline position:
 - 同一ABI/resource class共享device dispatcher和package，由typed request选择case；不按row重复编译。
   local instruction/layout资格默认单tile、worker0，worker1/2只用routing代表case；只有Direct DTE、
   multi-tile arrival和其它rank-dependent语义才启动多rank。safe deterministic suite按批次做前后heartbeat，
-  queue边界、安全random observation和multi-writeback等高风险board row逐case隔离；
-  `isolated-deferred`不发板。
+  queue边界、安全random observation和multi-writeback等高风险board row逐case隔离。全部有界
+  observation均发板；`isolated-deferred`只保留不可恢复/无生命周期owner的隔离输入。
 - SPM、同步和并行分别使用独立matrix：SPM覆盖capacity/reservation、alignment、relative-offset、
   exact/partial/adjacent/strided range、Tensor/Cx/NCx physical footprint和slot reuse；同步覆盖same-worker、
   `bywork`、cross-worker join、Kcore/cache、DTE event、multi-tile arrival和runtime publication；并行覆盖
-  single-engine multi-issue、10个engine pair双向serial/window、正overlap后的dependency relation、
+  single-engine multi-issue、10个engine pair双向serial/window、全部有界dependency relation observation、
   multi-worker、DTE/NCC interaction和最终双slot software-pipeline vertical。三类都先有完整correctness/
   guard/completion oracle，不能由aggregate PMU或最终safety drain替代。
 - 明确parallel mode由谁设置、最终packet `inter_type`如何进入CT/NE/RDMA/WDMA/TDMA queue、地址begin/end或
@@ -147,9 +165,10 @@ Pipeline position:
     NCC write→Kcore read、WDMA→host publish分别以安全final drain收口；只把可重复观察到的scope写入合同。
   - busytable：RDMA→CT、CT→WDMA、RDMA/WDMA、TDMA/CT覆盖disjoint、exact、partial、adjacent和一个
     strided-envelope代表；RAW/WAR/WAW/read-read各有至少一个方向，并与显式fence串行对照配对。
-    operand角色必须由schema显式传递，不能从engine或buffer名字恢复；hazard case只有在同一pair的
-    rounds=2 disjoint serial/window对照已证明可重叠后才发射，并以实际packet range、逐段composition
-    golden及未选operand guard闭环。
+    operand角色必须由schema显式传递，不能从engine或buffer名字恢复；有界hazard correctness case不再以
+    disjoint正overlap为发射前提，仍须以实际packet range、逐段composition golden、未选operand guard和
+    最终safety drain闭环。disjoint serial/window是否稳定正overlap只决定能否把观察提升成compiler并行
+    capability或cost输入。
   - Direct DTE与cluster同步：production 16-rank exact基线、NCC producer→DTE send、DTE recv→NCC
     consumer、disjoint DTE/NCC，以及prepare-main phase、arrival、sender/receiver wait、terminal status；
     同range只跑显式ordered正向，无wait/source-reuse只做IR/verifier negative。
@@ -205,13 +224,14 @@ Pipeline position:
   r4未运行。该结果只说明当前profile和当前workload未观察到PMU overlap，不证明这些engine pair在其它
   workload上永远不能并行。本轮两次RAW exact/partial/adjacent选择都在发射hazard前被disjoint资格门禁拦截，
   因而没有执行hazard。整批前后Add heartbeat均通过、卡健康且未调用reset/power。scheduler当前对所有pair
-  保守串行；只有未来对照稳定取得median正overlap，才恢复对应hazard校准和并行候选。
+  保守串行；新增有界hazard correctness observation不再等待正overlap，只有未来对照稳定取得median正
+  overlap才恢复对应compiler并行候选。
 - CT worker1/2各一个4KiB FP16 Add以及worker0/1/2各一个CT的disjoint join均已通过。单worker
   `inter_type=0x100/0x200`、matching `bywork` mask为`0b010/0b100`，对应worker instruction delta均为1；
   三worker join使用mask `0b111`，三个worker的CT delta各为1。全部boundary/final result与guard正确、
   blocking为0，前后Add heartbeat通过。该证据闭合CT worker routing、matching `bywork`和disjoint join
   正确性，不外推跨worker并行、仲裁或default/local-fence跨worker scope。
-- instruction-family catalog的40个safe case已全部逐个串行上板并通过typed bit oracle、SPM guard、
+- instruction-family早期catalog中的40个safe case已全部逐个串行上板并通过typed bit oracle、SPM guard、
   terminal与cleanup，覆盖f16/bf16 elementwise、convert、reduce、select composite、f16 NE GEMM和
   f16 TDMA Pad、f16 TDMA Img2Col、f16 PoolMax、peripheral LUT16 raw-offset lookup，以及f16 peripheral
   ArgMax/ArgMin的value/index composite writeback。
@@ -219,7 +239,7 @@ Pipeline position:
   均通过。首次reduction失败
   定位为catalog把128B logical result误当成physical write span；
   当前合同明确为`result_bytes=128`、`output_span=256`，修正后四个reduction及余下case通过。该证据不外推
-  f32、special value、held-out tail或deferred geometry/writeback family。ArgMax含负数普通值case通过；
+  f32、special value、held-out tail或当时尚未覆盖的geometry/writeback family。ArgMax含负数普通值case通过；
   ArgMin仅全正普通值case通过，负数对照错误返回首元素，故ArgMin负数域保持unsupported。
   LUT16以128个非顺序`uint16`字节偏移、128项FP16 table和完整256B exact output闭合；source不是FP16
   数值index，该结果不外推其它index编码或不等长source/table。

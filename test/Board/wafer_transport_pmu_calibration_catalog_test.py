@@ -13,9 +13,15 @@ def main() -> int:
     assert len(catalog.CASES) == 18
     assert {(case.mode, case.payload_bytes) for case in catalog.CASES} == {
         (mode, payload)
-        for mode in catalog.MODE_NAMES
+        for mode in catalog.TRANSPORT_PMU_MODES
         for payload in catalog.PAYLOAD_SWEEP
     }
+    assert catalog.ERROR_PATH_MODES == (7, 8, 9)
+    assert {
+        (case.mode, case.payload_bytes)
+        for case in catalog.CONTRACT_CASES
+        if case.disposition == "board-observation"
+    } == {(7, 16), (8, 16), (9, 16)}
     assert sum(case.split == "calibration" for case in catalog.CASES) == 6
     assert sum(case.split == "held-out" for case in catalog.CASES) == 12
     assert {
@@ -64,21 +70,33 @@ def main() -> int:
     assert {case.verification_scope for case in direct_host_negative} == {
         "host-prelaunch-verifier"
     }
-    direct_code_audit = catalog.CALIBRATION_LEAF_BINDINGS[
-        "direct-dte-device-contract-code-audit"
+    direct_error_observation = catalog.CALIBRATION_LEAF_BINDINGS[
+        "direct-dte-device-error-observation"
     ]
-    assert {case.name for case in direct_code_audit} == {
+    assert {case.name for case in direct_error_observation} == {
         "dte-source-reuse-before-send-event",
-        "dte-receiver-unprepared",
         "dte-invalid-fsm",
         "dte-wait-unknown-event",
     }
-    assert {case.disposition for case in direct_code_audit} == {
+    assert {case.disposition for case in direct_error_observation} == {
+        "board-observation"
+    }
+    assert all(
+        case.verification_scope == "board-device-error-path"
+        for case in direct_error_observation
+    )
+    direct_unsafe = catalog.CALIBRATION_LEAF_BINDINGS[
+        "direct-dte-unsafe-isolation"
+    ]
+    assert {case.name for case in direct_unsafe} == {
+        "dte-receiver-unprepared"
+    }
+    assert {case.disposition for case in direct_unsafe} == {
         "isolated-deferred"
     }
     assert all(
-        "code-audit" in case.verification_scope
-        for case in direct_code_audit
+        case.verification_scope == "isolated-safety-quarantine"
+        for case in direct_unsafe
     )
     assert {
         case.disposition
@@ -138,6 +156,14 @@ def main() -> int:
         "void wafer_tx81_direct_dte_wait(uint64_t event)", maxsplit=1
     )[1].split("void wafer_tx81_direct_dte_finish", maxsplit=1)[0]
     assert wait_body.rstrip().endswith("wafer_direct_dte_set_error();\n}")
+    send_wait = wait_body.split(
+        "if (event == WAFER_DIRECT_DTE_SEND_EVENT)", maxsplit=1
+    )[1].split(
+        "if (event >= WAFER_DIRECT_DTE_RECV_EVENT_BASE", maxsplit=1
+    )[0]
+    assert send_wait.index("direct_sync_wait(") < send_wait.index(
+        "direct_dte_send_async("
+    )
 
     probe_source = (
         repo
@@ -157,7 +183,9 @@ def main() -> int:
     )
     broadcast = probe_source.split(
         "static void wafer_probe_dte_two_destination_broadcast(", maxsplit=1
-    )[1].split("static void wafer_probe_publish_header", maxsplit=1)[0]
+    )[1].split(
+        "static uint32_t wafer_probe_dte_reuse_before_send_event", maxsplit=1
+    )[0]
     assert broadcast.count("wafer_tx81_direct_dte_recv_prepare(") == 2
     assert broadcast.count("wafer_tx81_direct_dte_send_prepare(") == 2
     first_send = broadcast.index("wafer_tx81_direct_dte_send_prepare(")
@@ -165,6 +193,29 @@ def main() -> int:
         "wafer_tx81_direct_dte_send_prepare(", first_send + 1
     )
     assert broadcast.index("wafer_tx81_direct_dte_wait(send1)") < second_send
+    early_reuse = probe_source.split(
+        "static uint32_t wafer_probe_dte_reuse_before_send_event(", maxsplit=1
+    )[1].split("static uint32_t wafer_probe_dte_invalid_fsm", maxsplit=1)[0]
+    assert early_reuse.count("wafer_tx81_direct_dte_send_prepare(") == 2
+    assert early_reuse.count("wafer_tx81_direct_dte_recv_prepare(") == 1
+    assert early_reuse.index("rejected =") < early_reuse.index(
+        "wafer_tx81_direct_dte_wait(send)"
+    )
+    assert early_reuse.index("wafer_tx81_direct_dte_wait(send)") < (
+        early_reuse.index("wafer_tx81_direct_dte_wait(receive)")
+    )
+    invalid_fsm = probe_source.split(
+        "static uint32_t wafer_probe_dte_invalid_fsm(", maxsplit=1
+    )[1].split("static void wafer_probe_publish_header", maxsplit=1)[0]
+    assert "successor, 4, 0" in invalid_fsm
+    assert "predecessor, 4)" in invalid_fsm
+    unknown_wait = probe_source.split(
+        "case WAFER_PROBE_DTE_WAIT_UNKNOWN_EVENT_ERROR:", maxsplit=1
+    )[1].split("}", maxsplit=1)[0]
+    assert "wafer_tx81_direct_dte_wait(UINT64_C(0xdeadbeef));" in unknown_wait
+    assert probe_source.count(
+        "wafer_tx81_direct_dte_begin_after_prepare(status_ddr,"
+    ) >= 1
 
     increasing = catalog.classify_payload_series(
         {16: (16, 16), 32: (32, 32), 64: (64, 64)}
@@ -183,7 +234,7 @@ def main() -> int:
     print(
         "wafer_transport_pmu_calibration_catalog_test: "
         "cases=18 contracts=8 direct_host_negative=1 "
-        "direct_code_audit=4 board_counters=6 "
+        "direct_error_observation=3 unsafe_isolation=1 board_counters=6 "
         "tmnoc_static_negative=1 passed"
     )
     return 0

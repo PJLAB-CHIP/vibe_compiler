@@ -246,6 +246,15 @@ DATAMOVE_CALIBRATION = (
     "test/Board/Inputs/wafer_datamove_calibration_probe.c",
     "test/Board/Inputs/wafer_datamove_calibration_probe_protocol.h",
 )
+DATAMOVE_EXTENDED_CALIBRATION = (
+    "test/Board/wafer_board_datamove_extended_calibration_probe_test.py",
+    "test/Board/wafer_datamove_extended_calibration_catalog.py",
+    "test/Board/Inputs/wafer_datamove_extended_calibration_probe.c",
+    (
+        "test/Board/Inputs/"
+        "wafer_datamove_extended_calibration_probe_protocol.h"
+    ),
+)
 PHYSICAL_TENSOR_CODEC = (
     "test/Board/wafer_physical_tensor_codec.py",
     "test/Board/wafer_physical_tensor_codec_test.py",
@@ -267,6 +276,15 @@ CACHE_COHERENCE_CALIBRATION = (
     "test/Board/wafer_cache_coherence_calibration_catalog.py",
     "test/Board/Inputs/wafer_cache_coherence_calibration_probe.c",
     "test/Board/Inputs/wafer_cache_coherence_calibration_probe_protocol.h",
+)
+MEMORY_DESCRIPTOR_CALIBRATION = (
+    "test/Board/wafer_board_memory_descriptor_calibration_probe_test.py",
+    "test/Board/wafer_memory_descriptor_calibration_catalog.py",
+    "test/Board/Inputs/wafer_memory_descriptor_calibration_probe.c",
+    (
+        "test/Board/Inputs/"
+        "wafer_memory_descriptor_calibration_probe_protocol.h"
+    ),
 )
 DTE_NCC = (
     "test/Board/wafer_board_dte_ncc_execution_probe_test.py",
@@ -292,9 +310,15 @@ CT_DISPOSITION_CATALOG = (
     "test/Board/wafer_ct_opcode_disposition_catalog.py"
 )
 DATAMOVE_CATALOG = "test/Board/wafer_datamove_calibration_catalog.py"
+DATAMOVE_EXTENDED_CATALOG = (
+    "test/Board/wafer_datamove_extended_calibration_catalog.py"
+)
 NE_CATALOG = "test/Board/wafer_ne_calibration_catalog.py"
 SPM_CATALOG = "test/Board/wafer_spm_calibration_catalog.py"
 CACHE_CATALOG = "test/Board/wafer_cache_coherence_calibration_catalog.py"
+MEMORY_DESCRIPTOR_CATALOG = (
+    "test/Board/wafer_memory_descriptor_calibration_catalog.py"
+)
 NCC_CATALOG = "test/Board/wafer_board_ncc_execution_probe_test.py"
 DTE_NCC_CATALOG = (
     "test/Board/wafer_transport_pmu_calibration_catalog.py"
@@ -314,18 +338,18 @@ CALIBRATION_DOMAINS = (
     _domain(
         "profile-qualification",
         "profile qualification",
-        "rank-one-read-only",
-        positive=NCC_PMU,
+        "rank-one-read-only-and-heartbeat",
+        positive=NCC_PMU + (RUNTIME_RANK_ONE_CATALOG,),
         tests=("wafer-runtime-ncc-pmu-readonly-probe-no-card",),
     ),
     _domain(
         "constructor-ownership",
         "constructor ownership",
         "rank-one-worker0",
-        positive=INSTRUCTION_FAMILY,
+        positive=NCC_EXECUTION,
         tests=(
-            "wafer-instruction-family-catalog-python",
-            "wafer-runtime-instruction-family-probe-no-card",
+            "wafer-ncc-probe-protocol-python",
+            "wafer-runtime-ncc-safe-observations-no-card",
         ),
     ),
     _domain(
@@ -333,7 +357,7 @@ CALIBRATION_DOMAINS = (
         "execute result",
         "rank-one-worker0",
         positive=NCC_EXECUTION,
-        tests=("wafer-runtime-ncc-execution-probe-no-card",),
+        tests=("wafer-runtime-ncc-safe-observations-no-card",),
     ),
     _domain(
         "packet-routing-range",
@@ -343,7 +367,7 @@ CALIBRATION_DOMAINS = (
         tests=(
             "wafer-ncc-probe-plan",
             "wafer-ncc-probe-protocol-python",
-            "wafer-runtime-ncc-execution-probe-no-card",
+            "wafer-runtime-ncc-safe-observations-no-card",
         ),
     ),
     _domain(
@@ -376,6 +400,7 @@ CALIBRATION_DOMAINS = (
             + PHYSICAL_TENSOR_CODEC
             + NE_CALIBRATION
             + DATAMOVE_CALIBRATION
+            + DATAMOVE_EXTENDED_CALIBRATION
         ),
         negative=(
             "test/Board/wafer_datamove_calibration_catalog.py",
@@ -385,22 +410,30 @@ CALIBRATION_DOMAINS = (
             "wafer-physical-tensor-codec-python",
             "wafer-ne-calibration-catalog-python",
             "wafer-datamove-calibration-catalog-python",
+            "wafer-datamove-extended-calibration-catalog-python",
             "wafer-runtime-ne-calibration-probe-no-card",
             "wafer-runtime-datamove-calibration-probe-no-card",
+            "wafer-runtime-datamove-extended-calibration-probe-no-card",
         ),
     ),
     _domain(
         "datamove-layout",
         "DataMove/layout",
         "rank-one-worker0",
-        positive=INSTRUCTION_FAMILY + DATAMOVE_CALIBRATION,
+        positive=(
+            INSTRUCTION_FAMILY
+            + DATAMOVE_CALIBRATION
+            + DATAMOVE_EXTENDED_CALIBRATION
+        ),
         negative=(
             "test/Board/wafer_datamove_calibration_catalog.py",
             "test/Board/wafer_datamove_calibration_catalog_test.py",
         ),
         tests=(
             "wafer-datamove-calibration-catalog-python",
+            "wafer-datamove-extended-calibration-catalog-python",
             "wafer-runtime-datamove-calibration-probe-no-card",
+            "wafer-runtime-datamove-extended-calibration-probe-no-card",
         ),
     ),
     _domain(
@@ -419,18 +452,24 @@ CALIBRATION_DOMAINS = (
         "rdma-wdma-descriptor",
         "RDMA/WDMA descriptor",
         "rank-one-worker0",
-        positive=NCC_EXECUTION,
+        positive=NCC_EXECUTION + MEMORY_DESCRIPTOR_CALIBRATION,
         tests=(
             "wafer-ncc-probe-protocol-python",
-            "wafer-runtime-ncc-execution-probe-no-card",
+            "wafer-runtime-ncc-safe-observations-no-card",
+            "wafer-memory-descriptor-calibration-catalog-python",
+            "wafer-runtime-memory-descriptor-calibration-probe-no-card",
         ),
     ),
     _domain(
         "tdma-memset",
         "TDMA Memset",
         "rank-one-worker0",
-        positive=NCC_EXECUTION,
-        tests=("wafer-runtime-ncc-execution-probe-no-card",),
+        positive=NCC_EXECUTION + DATAMOVE_EXTENDED_CALIBRATION,
+        tests=(
+            "wafer-runtime-ncc-safe-observations-no-card",
+            "wafer-datamove-extended-calibration-catalog-python",
+            "wafer-runtime-datamove-extended-calibration-probe-no-card",
+        ),
     ),
     _domain(
         "tdma-bool-fill",
@@ -440,21 +479,28 @@ CALIBRATION_DOMAINS = (
         negative=("test/Board/wafer_ncc_probe_protocol_test.py",),
         tests=(
             "wafer-ncc-probe-protocol-python",
-            "wafer-runtime-ncc-execution-probe-no-card",
+            "wafer-runtime-ncc-safe-observations-no-card",
         ),
     ),
     _domain(
         "tdma-movement-variants",
         "TDMA movement variants",
         "rank-one-worker0",
-        positive=INSTRUCTION_FAMILY + NCC_EXECUTION + DATAMOVE_CALIBRATION,
+        positive=(
+            INSTRUCTION_FAMILY
+            + NCC_EXECUTION
+            + DATAMOVE_CALIBRATION
+            + DATAMOVE_EXTENDED_CALIBRATION
+        ),
         negative=(
             "test/Board/wafer_datamove_calibration_catalog.py",
             "test/Board/wafer_datamove_calibration_catalog_test.py",
         ),
         tests=(
             "wafer-datamove-calibration-catalog-python",
+            "wafer-datamove-extended-calibration-catalog-python",
             "wafer-runtime-datamove-calibration-probe-no-card",
+            "wafer-runtime-datamove-extended-calibration-probe-no-card",
         ),
     ),
     _domain(
@@ -475,10 +521,16 @@ CALIBRATION_DOMAINS = (
         "spm-alignment-bank",
         "SPM alignment/bank",
         "rank-one-worker0",
-        positive=NCC_EXECUTION + SPM_CALIBRATION,
+        positive=(
+            NCC_EXECUTION
+            + SPM_CALIBRATION
+            + MEMORY_DESCRIPTOR_CALIBRATION
+        ),
         tests=(
             "wafer-spm-calibration-catalog-python",
             "wafer-runtime-spm-calibration-probe-no-card",
+            "wafer-memory-descriptor-calibration-catalog-python",
+            "wafer-runtime-memory-descriptor-calibration-probe-no-card",
         ),
     ),
     _domain(
@@ -486,11 +538,16 @@ CALIBRATION_DOMAINS = (
         "DDR/cache/coherence",
         "rank-one-and-full-card",
         positive=(
-            DTE_NCC + NCC_EXECUTION + CACHE_COHERENCE_CALIBRATION
+            DTE_NCC
+            + NCC_EXECUTION
+            + CACHE_COHERENCE_CALIBRATION
+            + MEMORY_DESCRIPTOR_CALIBRATION
         ),
         tests=(
             "wafer-cache-coherence-calibration-catalog-python",
             "wafer-runtime-cache-coherence-calibration-probe-no-card",
+            "wafer-memory-descriptor-calibration-catalog-python",
+            "wafer-runtime-memory-descriptor-calibration-probe-no-card",
         ),
     ),
     _domain(
@@ -501,7 +558,7 @@ CALIBRATION_DOMAINS = (
         tests=(
             "wafer-ncc-probe-plan",
             "wafer-ncc-probe-protocol-python",
-            "wafer-runtime-ncc-execution-probe-no-card",
+            "wafer-runtime-ncc-safe-observations-no-card",
         ),
     ),
     _domain(
@@ -509,14 +566,14 @@ CALIBRATION_DOMAINS = (
         "worker scope",
         "rank-one-workers012-manual",
         positive=NCC_EXECUTION,
-        tests=("wafer-runtime-ncc-execution-probe-no-card",),
+        tests=("wafer-runtime-ncc-safe-observations-no-card",),
     ),
     _domain(
         "cross-engine-overlap",
         "cross-engine overlap",
         "rank-one-worker0",
         positive=NCC_EXECUTION,
-        tests=("wafer-runtime-ncc-execution-probe-no-card",),
+        tests=("wafer-runtime-ncc-safe-observations-no-card",),
     ),
     _domain(
         "address-dependency",
@@ -531,6 +588,7 @@ CALIBRATION_DOMAINS = (
         tests=(
             "wafer-ncc-hazard-relation",
             "wafer-ncc-probe-protocol-python",
+            "wafer-runtime-ncc-safe-observations-no-card",
         ),
     ),
     _domain(
@@ -538,21 +596,21 @@ CALIBRATION_DOMAINS = (
         "issue overhead",
         "rank-one-worker0-manual",
         positive=NCC_EXECUTION,
-        tests=("wafer-runtime-ncc-execution-probe-no-card",),
+        tests=("wafer-runtime-ncc-safe-observations-no-card",),
     ),
     _domain(
         "local-completion",
         "local completion",
         "rank-one-workers012-manual",
         positive=NCC_EXECUTION,
-        tests=("wafer-runtime-ncc-execution-probe-no-card",),
+        tests=("wafer-runtime-ncc-safe-observations-no-card",),
     ),
     _domain(
         "cross-worker-join",
         "cross-worker join",
         "rank-one-workers012",
         positive=NCC_EXECUTION,
-        tests=("wafer-runtime-ncc-execution-probe-no-card",),
+        tests=("wafer-runtime-ncc-safe-observations-no-card",),
     ),
     _domain(
         "direct-dte",
@@ -603,7 +661,7 @@ CALIBRATION_DOMAINS = (
         positive=NCC_PMU + NCC_EXECUTION,
         tests=(
             "wafer-runtime-ncc-pmu-readonly-probe-no-card",
-            "wafer-runtime-ncc-execution-probe-no-card",
+            "wafer-runtime-ncc-safe-observations-no-card",
         ),
     ),
     _domain(
@@ -643,29 +701,27 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "profile-identity-readonly",
             resource_budget="read-only-registers",
         ),
-        _non_board_leaf(
+        _board_leaf(
             "known-good-heartbeat",
             "held-out",
-            "isolated-deferred",
-            NCC_CATALOG,
-            "known-good-heartbeat",
-            reason=(
-                "the heartbeat is owned by the surrounding isolated board "
-                "sequence rather than this read-only qualification package"
-            ),
+            "rank-one-runtime-session",
+            RUNTIME_RANK_ONE_CATALOG,
+            "rank-one-per-rank-add",
+            resource_budget="runtime-owned-rank-one-resources",
+            oracle=("independent-f32-expected", "full-result"),
+            guards=("schema-v5-resource-binding", "rank-one-domain"),
+            completion=("terminal-status", "D2H", "cleanup"),
         ),
     ),
     "constructor-ownership": (
-        _non_board_leaf(
-            "constructor-zero-address",
+        _board_leaf(
+            "constructor-return-address-nonnull",
             "calibration",
-            "isolated-deferred",
+            "rank-one-worker0",
             NCC_CATALOG,
-            "constructor-zero-address",
-            reason=(
-                "the current record does not publish the constructor return "
-                "address needed to distinguish a valid local address zero"
-            ),
+            "constructor-return-address-nonnull",
+            resource_budget="one-owned-packet-builder",
+            oracle=("constructor-address-nonnull", "exact-packet-result"),
         ),
         _board_leaf(
             "constructor-builder-release",
@@ -887,15 +943,17 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
                 "application order remains profile-observed"
             ),
         ),
-        _non_board_leaf(
+        _observation_leaf(
             "ct-convert-stochastic",
             "held-out",
-            "isolated-deferred",
+            "rank-one-worker0-manual",
             CT_CONVERT_CATALOG,
-            "ct-convert-stochastic-deferred",
+            "ct-convert-stochastic-observed",
+            resource_budget="two-64k-ddr-slots",
             reason=(
-                "the ABI exposes stochastic rounding without seed/state or "
-                "a recoverable distribution contract"
+                "repeat each bounded stochastic route and retain raw output, "
+                "physical span, guard, PMU and completion without assuming a "
+                "seeded sequence or distribution"
             ),
         ),
         _board_leaf(
@@ -906,16 +964,16 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "ct-reduce-pool-unpool-peripheral-positive",
             resource_budget="shared-instruction-family-package",
         ),
-        _non_board_leaf(
-            "ct-reduce-pool-unpool-peripheral-deferred",
+        _observation_leaf(
+            "ct-reduce-pool-unpool-peripheral-observation",
             "held-out",
-            "isolated-deferred",
+            "rank-one-worker0",
             CT_DISPOSITION_CATALOG,
-            "ct-reduce-pool-unpool-peripheral-deferred",
+            "ct-reduce-pool-unpool-peripheral-observed",
+            resource_budget="shared-instruction-family-package",
             reason=(
-                "public entries without a safe independent geometry, "
-                "writeback or random-state oracle remain explicitly "
-                "fail-closed"
+                "Factorize, LUT32, RandGen and ElemMask have bounded raw "
+                "capture but no profile-independent numeric oracle"
             ),
         ),
         _non_board_leaf(
@@ -968,17 +1026,29 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             ),
             resource_budget="shared-datamove-package",
         ),
-        _non_board_leaf(
-            "instruction-layout-composite-deferred",
+        _leaf(
+            "instruction-layout-composite-positive",
             "held-out",
-            "isolated-deferred",
-            DATAMOVE_CATALOG,
-            "instruction-layout-composite-deferred",
-            reason=(
-                "the movement steps are concrete, but CT Cx/NCx and NE "
-                "Tensor still lack a combined materialize-then-consume "
-                "runner and cannot be qualified by movement alone"
+            "board-positive",
+            "rank-one-worker0",
+            bindings=(
+                _catalog_groups(
+                    DATAMOVE_CATALOG,
+                    "instruction-layout-composite-positive",
+                )
+                + _catalog_groups(
+                    DATAMOVE_EXTENDED_CATALOG,
+                    "materialize-then-consume",
+                )
             ),
+            oracle=("materialize-then-consume-exact", "full-result"),
+            guards=("physical-span", "prefix-suffix-canary"),
+            completion=(
+                "matching-completion",
+                "terminal-status",
+                "cleanup",
+            ),
+            resource_budget="bounded-datamove-extended-package",
         ),
         _non_board_leaf(
             "instruction-layout-static-negative",
@@ -1033,16 +1103,33 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "concat-c-w-h-hw",
             resource_budget="two-64k-ddr-slots",
         ),
-        _non_board_leaf(
+        _leaf(
             "datamove-raw-concat-disposition",
             "held-out",
-            "isolated-deferred",
-            DATAMOVE_CATALOG,
-            "raw-concat-disposition",
+            "board-observation",
+            "rank-one-worker0",
+            bindings=(
+                _catalog_groups(
+                    DATAMOVE_CATALOG,
+                    "raw-concat-disposition",
+                )
+                + _catalog_groups(
+                    DATAMOVE_EXTENDED_CATALOG,
+                    "raw-concat-c-w-h-hw",
+                )
+            ),
+            oracle=("raw-full-result-capture", "request-echo"),
+            guards=("physical-span", "prefix-suffix-canary"),
+            completion=(
+                "matching-completion",
+                "terminal-status",
+                "cleanup",
+            ),
+            resource_budget="two-128k-ddr-slots",
             reason=(
-                "raw opcode 131 exposes an axis selector but the current "
-                "ABI does not independently bound its physical write span "
-                "and padding; compiler materialization remains positive"
+                "raw opcode 131 axis behavior is bounded and captured, but "
+                "its profile-specific physical padding is not promoted to "
+                "an exact compiler contract"
             ),
         ),
         _board_leaf(
@@ -1061,16 +1148,29 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "broadcast-scalar-channel-row",
             resource_budget="two-64k-ddr-slots",
         ),
-        _non_board_leaf(
+        _leaf(
             "datamove-pad-img2col-large",
             "held-out",
-            "isolated-deferred",
-            DATAMOVE_CATALOG,
-            "pad-img2col-large",
-            reason=(
-                "existing small Pad/Img2Col evidence does not provide the "
-                "planned large physical-padding oracle"
+            "board-positive",
+            "rank-one-worker0",
+            bindings=(
+                _catalog_groups(
+                    DATAMOVE_CATALOG,
+                    "pad-img2col-large",
+                )
+                + _catalog_groups(
+                    DATAMOVE_EXTENDED_CATALOG,
+                    "large-pad-img2col",
+                )
             ),
+            oracle=("independent-expected", "full-result"),
+            guards=("physical-span", "prefix-suffix-canary"),
+            completion=(
+                "matching-completion",
+                "terminal-status",
+                "cleanup",
+            ),
+            resource_budget="two-128k-ddr-slots",
         ),
         _board_leaf(
             "datamove-gather-contiguous-strided-tail",
@@ -1080,26 +1180,60 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "gather-contiguous-strided-tail",
             resource_budget="two-64k-ddr-slots",
         ),
-        _non_board_leaf(
+        _leaf(
             "datamove-mask-gather",
             "held-out",
-            "isolated-deferred",
-            DATAMOVE_CATALOG,
-            "mask-gather-disposition",
+            "board-observation",
+            "rank-one-worker0",
+            bindings=(
+                _catalog_groups(
+                    DATAMOVE_CATALOG,
+                    "mask-gather-disposition",
+                )
+                + _catalog_groups(
+                    DATAMOVE_EXTENDED_CATALOG,
+                    "mask-gather-and-bit-vector",
+                )
+            ),
+            oracle=("raw-full-result-capture", "request-echo"),
+            guards=("physical-span", "prefix-suffix-canary"),
+            completion=(
+                "matching-completion",
+                "terminal-status",
+                "cleanup",
+            ),
+            resource_budget="two-128k-ddr-slots",
             reason=(
-                "mask-index ownership and bounded physical write span are "
-                "not exposed by the current typed constructor"
+                "MaskGather and MaskGather_bV are safely bounded captures, "
+                "while mask-index ordering remains profile-observed"
             ),
         ),
-        _non_board_leaf(
+        _leaf(
             "datamove-tensor-normalization",
             "held-out",
-            "isolated-deferred",
-            DATAMOVE_CATALOG,
-            "tensor-normalization",
+            "board-observation",
+            "rank-one-worker0",
+            bindings=(
+                _catalog_groups(
+                    DATAMOVE_CATALOG,
+                    "tensor-normalization",
+                )
+                + _catalog_groups(
+                    DATAMOVE_EXTENDED_CATALOG,
+                    "tensor-nom",
+                )
+            ),
+            oracle=("raw-full-result-capture", "request-echo"),
+            guards=("physical-span", "prefix-suffix-canary"),
+            completion=(
+                "matching-completion",
+                "terminal-status",
+                "cleanup",
+            ),
+            resource_budget="two-128k-ddr-slots",
             reason=(
-                "raw TensorNom normalization semantics are not qualified; "
-                "layout materialization is accounted independently"
+                "TensorNom is safely executed with raw output retention, "
+                "but its normalization policy remains profile-observed"
             ),
         ),
     ),
@@ -1152,15 +1286,27 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
                 "are safe captures rather than exact capability evidence"
             ),
         ),
-        _non_board_leaf(
-            "ne-quant-sparse",
+        _observation_leaf(
+            "ne-quant",
             "held-out",
-            "isolated-deferred",
+            "rank-one-worker0",
             NE_CATALOG,
-            "ne-quant-sparse-deferred",
+            "ne-quant-observed",
+            resource_budget="bounded-ne-shared-package",
             reason=(
-                "typed compiler consumers do not yet expose every vendor "
-                "option; unowned combinations remain fail-closed"
+                "INT8 quantization is safely executed and captured while "
+                "the profile-specific scale/rounding policy remains observed"
+            ),
+        ),
+        _non_board_leaf(
+            "ne-sparse",
+            "held-out",
+            "static-negative",
+            NE_CATALOG,
+            "ne-sparse-static-negative",
+            reason=(
+                "the owned TsmGemm ABI exposes no sparse configuration "
+                "field, so sparse issue is rejected before construction"
             ),
         ),
         _non_board_leaf(
@@ -1182,40 +1328,35 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "ne-conv-large-heldout",
             resource_budget="bounded-ne-shared-package",
         ),
-        _non_board_leaf(
+        _observation_leaf(
             "ne-depthwise-backward-conv",
             "held-out",
-            "isolated-deferred",
+            "rank-one-worker0",
             NE_CATALOG,
-            "ne-depthwise-backward-conv-disposition",
+            "ne-depthwise-backward-conv-observed",
+            resource_budget="bounded-ne-shared-package",
             reason=(
-                "the current typed wrapper cannot safely construct every "
-                "depthwise/backward geometry with an independent oracle"
+                "FP16/BF16 depthwise and backward-convolution outputs are "
+                "bounded captures pending a frozen numerical policy"
             ),
         ),
-        _non_board_leaf(
+        _board_leaf(
             "ne-batch-broadcast",
             "held-out",
-            "isolated-deferred",
+            "rank-one-worker0",
             NE_CATALOG,
-            "ne-batch-broadcast-disposition",
-            reason=(
-                "left/right unequal-batch semantics require explicit typed "
-                "constructor support before board execution"
-            ),
+            "ne-batch-broadcast-positive",
+            resource_budget="bounded-ne-shared-package",
         ),
     ),
     "rdma-wdma-descriptor": (
-        _non_board_leaf(
+        _board_leaf(
             "dma-contiguous-64k",
             "calibration",
-            "isolated-deferred",
+            "rank-one-worker0",
             NCC_CATALOG,
             "dma-contiguous-64k",
-            reason=(
-                "the generic NCC resource slot bounds one issue to 4KiB; a "
-                "separate memory probe owns large payload calibration"
-            ),
+            resource_budget="256k-ncc-resource-with-64k-payload",
         ),
         _board_leaf(
             "dma-1d-2d-3d-stride-holes",
@@ -1225,16 +1366,13 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "dma-1d-2d-3d-stride-holes",
             resource_budget="64k-payload-plus-guards",
         ),
-        _non_board_leaf(
+        _board_leaf(
             "dma-offset-alignment-tail",
             "held-out",
-            "isolated-deferred",
-            NCC_CATALOG,
+            "rank-one-worker0",
+            MEMORY_DESCRIPTOR_CATALOG,
             "dma-offset-alignment-tail",
-            reason=(
-                "the generic NCC adapter does not expose independent DDR "
-                "offset and alignment fields"
-            ),
+            resource_budget="256k-memory-descriptor-resource",
         ),
     ),
     "tdma-memset": (
@@ -1246,27 +1384,21 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "tdma-i8-whole-positive",
             resource_budget="4k-payload-plus-guards",
         ),
-        _non_board_leaf(
+        _board_leaf(
             "tdma-i8-strided",
             "held-out",
-            "isolated-deferred",
-            NCC_CATALOG,
-            "tdma-i8-strided-deferred",
-            reason=(
-                "the current TDMA wrapper exposes whole contiguous I8 but "
-                "not a typed stride descriptor with hole/tail guards"
-            ),
+            "rank-one-worker0",
+            DATAMOVE_EXTENDED_CATALOG,
+            "tdma-i8-strided",
+            resource_budget="two-128k-ddr-slots",
         ),
-        _non_board_leaf(
+        _board_leaf(
             "tdma-fp16-bf16-raw-crt",
             "held-out",
-            "isolated-deferred",
-            NCC_CATALOG,
+            "rank-one-worker0",
+            DATAMOVE_EXTENDED_CATALOG,
             "tdma-fp16-bf16-raw-crt",
-            reason=(
-                "the paired raw/wrapper issue-path control currently uses "
-                "the ordinary I8 lane"
-            ),
+            resource_budget="two-128k-ddr-slots",
         ),
     ),
     "tdma-bool-fill": (
@@ -1291,17 +1423,6 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         ),
     ),
     "tdma-movement-variants": (
-        _non_board_leaf(
-            "tdma-contiguous-stride-tail",
-            "calibration",
-            "isolated-deferred",
-            NCC_CATALOG,
-            "tdma-contiguous-stride-tail",
-            reason=(
-                "the existing multidimensional descriptors exercise "
-                "RDMA/WDMA rather than TDMA"
-            ),
-        ),
         _board_leaf(
             "tdma-layout-materialization",
             "held-out",
@@ -1374,26 +1495,68 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
                 "round-trip package referenced by each delegation row"
             ),
         ),
-        _non_board_leaf(
-            "spm-ct-ne-tdma-engine-access-deferred",
+        _leaf(
+            "spm-ct-ne-tdma-engine-access-delegated",
             "calibration",
-            "isolated-deferred",
-            SPM_CATALOG,
-            "ct-ne-tdma-engine-access-deferred",
+            "delegated-positive",
+            "delegated-board-runner",
+            bindings=_catalog_groups(
+                SPM_CATALOG,
+                "ct-ne-tdma-engine-access-delegated",
+            ),
+            oracle=("independent-expected", "full-result"),
+            guards=("physical-span", "prefix-suffix-canary"),
+            completion=(
+                "matching-completion",
+                "terminal-status",
+                "cleanup",
+            ),
+            resource_budget="profile-allocatable-spm",
             reason=(
-                "the shared SPM probe has direct RDMA/WDMA paths but no "
-                "independent CT/NE/TDMA typed payload/oracle path"
+                "CT, NE and TDMA SPM access are executed by the dedicated "
+                "memory-descriptor package referenced by each row"
             ),
         ),
-        _non_board_leaf(
-            "spm-address-relations",
+        _board_leaf(
+            "spm-five-engine-access-concrete",
+            "calibration",
+            "rank-one-worker0",
+            MEMORY_DESCRIPTOR_CATALOG,
+            "spm-five-engine-access",
+            resource_budget="256k-memory-descriptor-resource",
+        ),
+        _leaf(
+            "spm-address-relations-delegated",
             "held-out",
-            "isolated-deferred",
-            SPM_CATALOG,
-            "exact-partial-adjacent-disjoint-strided",
+            "delegated-positive",
+            "delegated-board-runner",
+            bindings=_catalog_groups(
+                SPM_CATALOG,
+                "exact-partial-adjacent-disjoint-strided",
+            ),
+            oracle=("raw-full-result-capture", "request-echo"),
+            guards=("physical-span", "prefix-suffix-canary"),
+            completion=(
+                "matching-completion",
+                "terminal-status",
+                "cleanup",
+            ),
+            resource_budget="profile-allocatable-spm",
             reason=(
-                "alias relations require positive overlap qualification for "
-                "the same engine pair before any device packet is admitted"
+                "the SPM planner rows delegate bounded execution to the "
+                "memory-descriptor relation package"
+            ),
+        ),
+        _observation_leaf(
+            "spm-address-relations-observation",
+            "held-out",
+            "rank-one-worker0",
+            MEMORY_DESCRIPTOR_CATALOG,
+            "spm-exact-partial-adjacent-disjoint-strided",
+            resource_budget="256k-memory-descriptor-resource",
+            reason=(
+                "RAW/WAR/WAW/RAR across exact, partial, adjacent, disjoint "
+                "and strided ranges are captured without assuming overlap"
             ),
         ),
         _leaf(
@@ -1438,16 +1601,35 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
                 "rejected before device submission"
             ),
         ),
-        _non_board_leaf(
-            "spm-bank-engine-pair-controls",
+        _leaf(
+            "spm-bank-engine-pair-controls-delegated",
             "calibration",
-            "isolated-deferred",
-            SPM_CATALOG,
-            "bank-engine-pair-controls",
-            reason=(
-                "the simple SPM ABI cannot independently issue the required "
-                "fixed engine-pair serial/window controls"
+            "delegated-positive",
+            "delegated-board-runner",
+            bindings=_catalog_groups(
+                SPM_CATALOG,
+                "bank-engine-pair-controls",
             ),
+            oracle=("independent-expected", "full-result"),
+            guards=("physical-span", "prefix-suffix-canary"),
+            completion=(
+                "matching-completion",
+                "terminal-status",
+                "cleanup",
+            ),
+            resource_budget="profile-allocatable-spm",
+            reason=(
+                "SPM bank pair rows delegate to the fixed serial/window "
+                "memory-descriptor controls"
+            ),
+        ),
+        _board_leaf(
+            "spm-bank-engine-pair-controls-concrete",
+            "calibration",
+            "rank-one-worker0",
+            MEMORY_DESCRIPTOR_CATALOG,
+            "spm-bank-engine-pair-controls",
+            resource_budget="256k-memory-descriptor-resource",
         ),
     ),
     "ddr-cache-coherence": (
@@ -1487,15 +1669,45 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "ddr-rdma-wdma-pair-controls",
             resource_budget="two-64k-ddr-windows",
         ),
-        _non_board_leaf(
-            "ddr-large-stride-burst-tail",
+        _leaf(
+            "ddr-large-stride-burst-tail-delegated",
             "held-out",
-            "isolated-deferred",
-            CACHE_CATALOG,
-            "ddr-large-stride-burst-tail",
+            "delegated-positive",
+            "delegated-board-runner",
+            bindings=_catalog_groups(
+                CACHE_CATALOG,
+                "ddr-large-stride-burst-tail",
+            ),
+            oracle=("independent-expected", "full-result"),
+            guards=("physical-span", "prefix-suffix-canary"),
+            completion=(
+                "matching-completion",
+                "terminal-status",
+                "cleanup",
+            ),
+            resource_budget="256k-memory-descriptor-resource",
             reason=(
-                "the cache record does not encode independent 1D/2D/3D "
-                "descriptor envelopes or burst/tail units"
+                "legacy cache rows delegate 64KiB, 1D/2D/3D, default-burst "
+                "boundary and tail execution to the descriptor package"
+            ),
+        ),
+        _board_leaf(
+            "ddr-large-stride-default-burst-tail",
+            "held-out",
+            "rank-one-worker0",
+            MEMORY_DESCRIPTOR_CATALOG,
+            "ddr-large-stride-default-burst-tail",
+            resource_budget="256k-memory-descriptor-resource",
+        ),
+        _non_board_leaf(
+            "ddr-configurable-burst-knob",
+            "held-out",
+            "static-negative",
+            MEMORY_DESCRIPTOR_CATALOG,
+            "ddr-configurable-burst-static-boundary",
+            reason=(
+                "the owned typed RDMA/WDMA ABI exposes no configurable "
+                "burst field; default boundaries remain executable"
             ),
         ),
     ),
@@ -1542,15 +1754,16 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "default-byworker-wait-controls",
             resource_budget="one-disjoint-output-per-worker",
         ),
-        _non_board_leaf(
+        _observation_leaf(
             "default-wait-nondefault-scope",
             "held-out",
-            "isolated-deferred",
+            "rank-one-workers012",
             NCC_CATALOG,
             "default-wait-nondefault-scope",
+            resource_budget="large-ne-backlog-plus-disjoint-control",
             reason=(
-                "current short workloads naturally drain before observation; "
-                "default scope remains unknown without a safe pending oracle"
+                "default and worker-scoped completion are compared with a "
+                "bounded pending snapshot, then all workers are safely drained"
             ),
         ),
     ),
@@ -1563,27 +1776,25 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "ten-engine-pairs-two-orders-controls",
             resource_budget="r2-all-pairs-r4-non-tdma",
         ),
-        _non_board_leaf(
+        _board_leaf(
             "large-backlog-compute-movement",
             "held-out",
-            "isolated-deferred",
+            "rank-one-worker0",
             NCC_CATALOG,
             "large-backlog-compute-movement",
-            reason=(
-                "the current shared NCC resource layout cannot hold the "
-                "required 64KiB movement and independent large CT/NE "
-                "backlog with full guards"
-            ),
+            resource_budget="256k-resource-with-64k-and-large-ne-ct-backlogs",
         ),
-        _non_board_leaf(
-            "double-slot-software-pipeline-vertical",
-            "production-vertical",
-            "isolated-deferred",
+        _observation_leaf(
+            "double-slot-hardware-observation",
+            "held-out",
+            "rank-one-worker0",
             NCC_CATALOG,
-            "double-slot-software-pipeline-vertical",
+            "double-slot-hardware-observation",
+            resource_budget="two-16k-slots-plus-guards",
             reason=(
-                "the production double-slot prologue/steady/epilogue "
-                "artifact is a later checkpoint and remains fail-closed"
+                "hand-built 1/2/3/4-iteration serial/window double-slot "
+                "execution captures hardware behavior without claiming the "
+                "production compiler software-pipeline vertical is complete"
             ),
         ),
     ),
@@ -1604,15 +1815,16 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "dependency-exact-partial-adjacent",
             resource_budget="qualified-overlap-pairs-only",
         ),
-        _non_board_leaf(
+        _observation_leaf(
             "dependency-strided-envelope",
             "held-out",
-            "isolated-deferred",
+            "rank-one-worker0",
             NCC_CATALOG,
             "dependency-strided-envelope",
+            resource_budget="bounded-1d-2d-3d-envelopes-plus-hole-guards",
             reason=(
-                "strided device hazards remain disabled until a matching "
-                "engine pair demonstrates positive disjoint overlap"
+                "serial/window strided hazards retain compact output, full "
+                "envelope and hole observations before compiler promotion"
             ),
         ),
     ),
@@ -1643,16 +1855,13 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "ncc-producer-consumer-representative-positive",
             resource_budget="one-producer-consumer-chain",
         ),
-        _non_board_leaf(
+        _board_leaf(
             "ncc-producer-consumer-boundaries",
             "held-out",
-            "isolated-deferred",
+            "rank-one-worker0",
             NCC_CATALOG,
-            "ncc-producer-consumer-uncovered-deferred",
-            reason=(
-                "the representative hazard catalog does not cover every "
-                "listed RDMA/CT/NE/WDMA/TDMA and Kcore direction"
-            ),
+            "ncc-producer-consumer-all-directions",
+            resource_budget="bounded-all-direction-producer-consumer-chains",
         ),
     ),
     "cross-worker-join": (
@@ -1664,15 +1873,16 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "cross-worker-single-pair-triple-masks",
             resource_budget="three-disjoint-worker-outputs",
         ),
-        _non_board_leaf(
+        _observation_leaf(
             "cross-worker-unjoined-boundary",
             "held-out",
-            "isolated-deferred",
+            "rank-one-workers012",
             NCC_CATALOG,
             "cross-worker-unjoined-boundary",
+            resource_budget="three-worker-backlogs-plus-six-proper-subset-masks",
             reason=(
-                "a safe observation that distinguishes an unjoined pending "
-                "worker is not available on the current short workload"
+                "six proper-subset joins retain the boundary snapshot and "
+                "then drain all participants before teardown"
             ),
         ),
         _non_board_leaf(
@@ -1723,20 +1933,28 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
                 "qualified mesh before serialization or device submission"
             ),
         ),
-        _leaf(
-            "dte-device-state-contract-code-audit",
+        _observation_leaf(
+            "dte-device-error-observation",
+            "held-out",
+            "full-card-16-rank",
+            DTE_NCC_CATALOG,
+            "direct-dte-device-error-observation",
+            resource_budget="one-16b-logical-slot-per-rank",
+            reason=(
+                "early source reuse, invalid FSM and unknown event are "
+                "synchronous bounded error observations; shadow status "
+                "retains the error before normal terminal cleanup"
+            ),
+        ),
+        _non_board_leaf(
+            "dte-receiver-unprepared",
             "held-out",
             "isolated-deferred",
-            "code-audit-no-device-submission",
-            bindings=_catalog_groups(
-                DTE_NCC_CATALOG,
-                "direct-dte-device-contract-code-audit",
-            ),
-            resource_budget="no-device-submission",
+            DTE_NCC_CATALOG,
+            "direct-dte-unsafe-isolation",
             reason=(
-                "early reuse, unprepared receive, invalid FSM and unknown "
-                "event are CRT/device-state or ordering contracts; their "
-                "guards are code-audited without claiming host rejection"
+                "send without a prepared receiver enters direct_sync_wait "
+                "without a device timeout and may permanently block"
             ),
         ),
     ),

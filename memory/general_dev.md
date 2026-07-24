@@ -45,6 +45,12 @@
   原生能力和layout能力时，重复引用要有精确白名单与引用次数断言，其余分组只允许一次引用。opcode、layout
   或counter inventory不能因缺case而消失。“有明确fail-closed处置”属于准备完成，“由邻近case外推”不属于。
   shared dispatcher/package的target C build/link和host oracle通过只证明上卡资产可用，不得写成board evidence。
+- 硬件行为未知或没有exact numeric oracle时，优先构造有界`board-observation`，不能直接归入deferred。
+  只要owned ABI能表达descriptor/write span，case有prefix/suffix guard、matching completion或最终safety
+  drain、外层timeout和正常cleanup，就重复采样并保留raw result、physical span、request echo、execute返回与
+  PMU；无seed的随机输出也按这个合同隔离执行。`isolated-deferred`只用于可能永久等待、越过owned range或
+  缺少同一runtime session生命周期owner的输入；typed ABI根本没有对应setter/field的组合是
+  `static-negative`，不能由相近wrapper或其它family代签。
 - cache、slot reuse、resource lifetime等跨phase硬件probe必须由同一个runtime session拥有全部phase，并显式
   证明复用同一allocation/handle；若每个phase分别启动进程且cleanup会卸载program、释放allocation，就只能
   各自形成单invocation visibility case，不能把两次结果解释为stale-before/control-after。无法表达同会话
@@ -213,6 +219,12 @@
   nested allocation lifetime、module identity、artifact export/readback和fake lifecycle必须先于真实板测闭合。
   nested allocation/module identity和fake gate闭合前不得触卡。Direct DTE始终使用独立typed/static/fake/no-card/hardware gate，
   PG selection、inventory、reset或power都不能补placement/readiness/completion语义。
+- 完整硬件校准统一用`python3 tools/run_hardware_calibration.py --build-dir <board-build> --list`
+  先审计该board-capable配置内注册的`board;hardware` CTest inventory，再以
+  `WAFER_EXECUTE_HARDWARE_TESTS=1 python3 tools/run_hardware_calibration.py --build-dir <board-build> --execute`
+  执行。入口只做一次增量构建，随后单进程串行、首个失败或skip即停，并保存逐项log、JUnit和增量
+  `session.json`；它不retry、reset或power，也不把case构建/no-card通过记作板端证据。新增或删除board CTest时必须同步
+  runner manifest和inventory测试。
 - TX81 C-Intrinsic Direct DTE不能只调用`direct_sync_init`。vendor生成entry先执行`init_tile_id(logic_id, row_length)`；
   `direct_sync_post`从SPM `0x2f0458`读取row length来计算peer SPM base。当前full-16、offset=0时可用
   `init_tile_id(__get_pid(0), 4)`，其中4来自单卡4×4 target topology；subset cluster的pid不是通用logical tile id，必须显式消费offset映射。

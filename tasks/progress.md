@@ -101,18 +101,28 @@ instruction/layout默认单tile执行，只有rank-dependent语义才启动多ra
 no-card验证；不能只检查宽泛文件存在、手填`remaining_preparation`或由邻近case外推。
 旧版机器索引曾错误报告`28/28 ready`：它只证明28个域绑定了文件和CTest，没有证明每个校准叶子存在。
 该结论已撤回并按叶子重建门禁；Q37继续`doing`，因为实卡执行、held-out成熟度和software-pipeline
-vertical仍未完成。当前28个导航域已拆成115个实卡前准备叶子并全部由机器索引解析：61个
-`board-positive`、7个`board-observation`、2个由明确board证据owner闭合的`delegated-positive`、
-16个`static-negative`和29个`isolated-deferred`。catalog分组全部被记账；五组原生指令/layout共享case
-有显式双重引用白名单，其余分组只允许一次引用。`ready`只表示可以按处置执行或跳过，不是板端结论。
-当前资产覆盖CT vector 653行、convert 204行和全部187个opcode disposition；NE 67行；DataMove
-46个board case、公开18个opcode的13个可执行/5个deferred处置，以及20个instruction-layout组合的
-8个native/3个composite-deferred/9个static-negative处置；SPM 84行覆盖capacity、alignment/offset、
-physical layout、lifetime、address relation、engine access和10个engine pair；cache/DDR覆盖四个
-single-invocation visibility case、54个bank offset/pair control及显式same-session stale deferred；
-Direct DTE/transport覆盖六种mode × 16/32/64B的18个full-card case。同步、barrier、engine pair、
-multi-worker、依赖和并行叶子均绑定具体正向、负向或deferred对象。host oracle、target C build/link、
-shared-package no-card和115叶矩阵一致性已经闭合，仍不得在实卡结果前升级为board evidence。
+vertical仍未完成。当前28个导航域下面的叶子均由机器索引解析到concrete catalog/contract对象或带理由
+的非执行对象；机器矩阵当前闭合121个叶子：75个`board-positive`、20个`board-observation`、
+6个`delegated-positive`、18个`static-negative`和2个`isolated-deferred`。catalog分组全部被记账，允许共享的
+case有显式白名单，其余分组只允许一次引用。`ready`只表示可以按处置执行或跳过，不是板端结论。
+当前实卡前资产覆盖CT vector 653行、convert 204行（158 exact、46 observation，含23个stochastic
+重复采样）和全部187个opcode disposition（177 board-executable、8 board-observation、
+2 static-negative），以及71个
+instruction-family safe case；NE有46 exact、21 observation、3 static-negative，新增I8 quant、
+FP16/BF16 Depthwise/BackwardConv和左右不等batch；DataMove为base 46 + extended 18个case，公开
+`121..138`为14 exact、4 observation、0 deferred，20个instruction-layout组合为8 native、
+3 materialize-then-consume、9 static-negative。memory-descriptor的59个case覆盖DMA/DDR offset、64KiB、
+1D/2D/3D stride、default burst boundary、tail、五类engine access、全部range relation和10个engine pair；
+SPM 84行由19个本地board、15个static-negative和50个concrete delegated组成，0 deferred。cache的
+same-session stale仍因缺生命周期owner隔离；Direct DTE/transport覆盖六种mode × 16/32/64B的18个
+full-card case，并新增source提前复用、invalid FSM、unknown event wait三种有界错误观察；只有
+receiver未prepare因可能永久等待继续隔离。NCC新增constructor nonnull、default/byworker scope、六个subset join、all-direction
+producer/consumer、strided dependency、large backlog和手写double-slot hardware observation。同步、
+barrier、engine pair、multi-worker、依赖和并行叶子均有具体对象。host oracle、target C build/link及
+shared-package no-card准备不等于board evidence，新增case尚未上板；手写double-slot observation也不等于
+production compiler software-pipeline vertical已经完成。统一NCC板前门禁覆盖185个计划，其中176个进入
+单一safe批次，constructor/default-vs-byworker/六个subset join共9个使用独立进程；板端总入口为
+`tools/run_hardware_calibration.py`，串行执行注册CTest、首错或skip即停并保留逐项log/JUnit/session summary。
 当前queue active occupancy与full行为仍在Q37内保持`unknown`：静态depth不直接作为occupancy证据。普通
 calibration只运行1/2/4（TDMA 1/2）。修正builder生命周期和逐issue观察位置后，CT/NE/RDMA/WDMA exact
 `D=6`与TDMA exact `D=4`已分别由单engine、单case、单样本及前后known-good Add heartbeat闭合
