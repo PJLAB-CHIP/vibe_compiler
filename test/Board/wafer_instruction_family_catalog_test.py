@@ -1084,7 +1084,7 @@ def validate_arg_extrema_composite_oracles() -> None:
         )
 
 
-def validate_probe_seed_is_synchronous_and_instruction_local() -> None:
+def validate_probe_seed_is_published_and_instruction_local() -> None:
     probe = (
         pathlib.Path(__file__).resolve().parent
         / "Inputs"
@@ -1096,6 +1096,14 @@ def validate_probe_seed_is_synchronous_and_instruction_local() -> None:
     assert "volatile uint8_t *destination" in body
     assert "const volatile uint8_t *source" in body
     assert "source[slot * WAFER_IFP_SLOT_BYTES + index]" in body
+    store = body.index(
+        "source[slot * WAFER_IFP_SLOT_BYTES + index]"
+    )
+    clean = body.index(
+        "wafer_ifp_cache_range((uint64_t)(uintptr_t)destination"
+    )
+    assert store < clean
+    assert "WAFER_IFP_SLOT_BYTES, 0);" in body[clean:]
     assert '__asm__ volatile("fence"' in body
     assert '__asm__ volatile("sync"' in body
     assert "wafer_tx81_rdma" not in body
@@ -1623,7 +1631,7 @@ def main() -> int:
     validate_gemm_f16_oriented_tt_oracle()
     validate_gemm_f16_psum_oracle()
     validate_arg_extrema_composite_oracles()
-    validate_probe_seed_is_synchronous_and_instruction_local()
+    validate_probe_seed_is_published_and_instruction_local()
     validate_conv_oracle()
     validate_pool_max_oracle()
     validate_unpool_composite_oracle()

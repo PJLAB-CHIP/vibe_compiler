@@ -98,6 +98,8 @@ static void wafer_ifp_seed(uint64_t payload_ddr) {
     for (uint32_t index = 0; index < WAFER_IFP_SLOT_BYTES; ++index)
       destination[index] =
           source[slot * WAFER_IFP_SLOT_BYTES + index];
+    wafer_ifp_cache_range((uint64_t)(uintptr_t)destination,
+                          WAFER_IFP_SLOT_BYTES, 0);
   }
   __asm__ volatile("fence" ::: "memory");
   __asm__ volatile("sync" ::: "memory");

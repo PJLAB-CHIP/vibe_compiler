@@ -1286,12 +1286,12 @@
 
 - 现象：连续执行ArgMax、ArgMin时，ArgMin的host payload是全正有限值，但输出恰好是上一条ArgMax输入的真实
   最小值`-30@index0`；record、output span、writeback value/index位置和guard均正常。
-- 根因：instruction-family probe使用RDMA把host payload搬入SPM后，只用default local fence建立消费边界；
-  连续launch复用地址时，目标CT可能消费上一轮SPM内容。该失败属于probe setup dataflow，不是ArgMin oracle、
-  output copyback或已知的ArgMin负数域限制。
-- 修复模式：instruction资格probe以Kcore volatile byte copy把已invalidate的DDR payload同步写入mapped SPM，
-  并在目标指令前执行`fence`/`sync`；RDMA completion与cache语义由各自校准suite独立验证，不能混入目标指令
-  数值资格。
+- 根因：instruction-family probe最初使用RDMA加default local fence准备SPM；改为Kcore volatile byte copy后，
+  若只执行`fence`/`sync`仍可复现，说明mapped-SPM cache line尚未发布给目标CT。该失败属于probe setup
+  dataflow，不是ArgMin oracle、output copyback或已知的ArgMin负数域限制。
+- 修复模式：instruction资格probe以Kcore volatile byte copy把已invalidate的DDR payload写入mapped SPM，
+  随后clean每个完整SPM slot的cache range并执行`fence`/`sync`；RDMA completion与cache语义由各自校准suite
+  独立验证，不能混入目标指令数值资格。
 - 防复发：instruction microcase的setup必须自身同步且不依赖待校准的其它engine；若实际值精确对应上一case的
   输入，先对照raw payload与前一case语义，再判断oracle或硬件数值能力。
 
