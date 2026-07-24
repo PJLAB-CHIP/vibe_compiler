@@ -249,6 +249,9 @@ def main() -> int:
     bf16_neg = catalog.CASES_BY_NAME[
         "ct-op005-arithop_v_v_neg-bf16-main"
     ]
+    bf16_neg_signed_zero = catalog.CASES_BY_NAME[
+        "ct-op005-arithop_v_v_neg-bf16-signed-zero"
+    ]
     f32_neg = catalog.CASES_BY_NAME[
         "ct-op005-arithop_v_v_neg-f32-main"
     ]
@@ -287,13 +290,37 @@ def main() -> int:
             f16_signed_zero_expected,
         )
     ) == {0}
-    assert bf16_neg.output_zero_sign_policy_name == "AS_COMPUTED"
+    assert (
+        bf16_neg.output_zero_sign_policy_name
+        == bf16_neg_signed_zero.output_zero_sign_policy_name
+        == "CANONICAL_POSITIVE"
+    )
     assert f32_neg.output_zero_sign_policy_name == "AS_COMPUTED"
     bf16_neg_expected = catalog.build_case_payload(bf16_neg).expected_result
+    bf16_signed_zero_expected = catalog.build_case_payload(
+        bf16_neg_signed_zero
+    ).expected_result
     f32_neg_expected = catalog.build_case_payload(f32_neg).expected_result
     assert bf16_neg_expected is not None
+    assert bf16_signed_zero_expected is not None
     assert f32_neg_expected is not None
-    assert bf16_neg_expected[6:8] == b"\x00\x80"
+    assert bf16_neg_expected[6:8] == b"\x00\x00"
+    wrong_bf16_zero_sign = bytearray(bf16_neg_expected)
+    wrong_bf16_zero_sign[7] = 0x80
+    try:
+        runner._validate_numeric(
+            bf16_neg, bytes(wrong_bf16_zero_sign), bf16_neg_expected
+        )
+    except RuntimeError as error:
+        assert "exact result differs at byte 7" in str(error)
+    else:
+        raise AssertionError("BF16 Neg zero-sign policy stopped being exact")
+    assert set(
+        struct.unpack(
+            f"<{len(bf16_signed_zero_expected) // 2}H",
+            bf16_signed_zero_expected,
+        )
+    ) == {0}
     assert f32_neg_expected[12:16] == b"\x00\x00\x00\x80"
 
     bound = tuple(
