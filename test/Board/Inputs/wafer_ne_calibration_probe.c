@@ -112,7 +112,8 @@ static uint32_t wafer_nec_geometry(uint32_t batch, uint32_t m, uint32_t k,
 }
 
 static uint32_t wafer_nec_option_disposition(uint32_t option) {
-  return option >= WAFER_NEC_OPTION_LEAKY_RELU
+  return (option == WAFER_NEC_OPTION_BIAS ||
+          option >= WAFER_NEC_OPTION_LEAKY_RELU)
              ? WAFER_NEC_BOARD_OBSERVED
              : WAFER_NEC_BOARD_EXACT;
 }
