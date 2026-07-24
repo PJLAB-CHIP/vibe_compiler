@@ -242,6 +242,25 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             len(self.steps),
         )
 
+    def test_inventory_accepts_unbuilt_non_board_test(self) -> None:
+        self.environment["FAKE_TESTS"] = json.dumps(
+            [
+                *[{"name": step.ctest_name} for step in self.steps],
+                {
+                    "name": "unbuilt-host-unit",
+                    "command": None,
+                    "labels": [],
+                },
+            ]
+        )
+        registered = RUNNER.load_registered_tests(
+            str(self.fake_ctest), self.build_dir, self.environment
+        )
+        self.assertEqual(registered["unbuilt-host-unit"].command, ())
+        RUNNER.validate_inventory(
+            registered, self.steps, reject_unplanned_board_tests=True
+        )
+
     def test_first_failure_stops_without_retrying_later_steps(self) -> None:
         environment = dict(self.environment)
         environment["FAKE_FAIL_TEST"] = self.steps[1].ctest_name

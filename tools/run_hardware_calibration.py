@@ -301,8 +301,16 @@ def load_registered_tests(
             raise CalibrationRunnerError("CTest JSON contains a malformed test")
         name = raw_test.get("name")
         command_value = raw_test.get("command")
-        if not isinstance(name, str) or not isinstance(command_value, list):
-            raise CalibrationRunnerError("CTest JSON test has no name or command")
+        if not isinstance(name, str):
+            raise CalibrationRunnerError("CTest JSON test has no string name")
+        if command_value is None:
+            command: tuple[str, ...] = ()
+        elif isinstance(command_value, list):
+            command = tuple(str(argument) for argument in command_value)
+        else:
+            raise CalibrationRunnerError(
+                f"CTest {name} has a malformed command"
+            )
         if name in registered:
             raise CalibrationRunnerError(f"CTest registered duplicate test name: {name}")
         properties = property_map(raw_test)
@@ -339,7 +347,7 @@ def load_registered_tests(
         )
         registered[name] = RegisteredTest(
             name=name,
-            command=tuple(str(argument) for argument in command_value),
+            command=command,
             labels=labels,
             timeout_seconds=timeout,
             resource_lock=resource_lock,
