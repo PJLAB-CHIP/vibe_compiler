@@ -77,7 +77,8 @@ typedef struct WaferNccProbeEngineAdapter {
   int (*seed)(void *context, const WaferNccProbeRequest *request,
               const WaferNccProbeIssue *issue);
   int (*prepare)(void *context, const WaferNccProbeRequest *request,
-                 const WaferNccProbeIssue *issue);
+                 const WaferNccProbeIssue *issue,
+                 uint64_t *preparation_flags);
   int (*issue)(void *context, const WaferNccProbeRequest *request,
                const WaferNccProbeIssue *issue, uint64_t *execute_rc);
   int (*observe)(void *context, const WaferNccProbeRequest *request,

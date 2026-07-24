@@ -298,6 +298,17 @@ PACKET_OBSERVED = _enumerator("WAFER_NCC_ISSUE_PACKET_OBSERVED")
 WINDOW_CONTROL_VALID = _enumerator(
     "WAFER_NCC_ISSUE_WINDOW_CONTROL_VALID"
 )
+PREPARE_STAGE_FLAGS = {
+    name: _macro(f"WAFER_NCC_ISSUE_PREPARE_{name}")
+    for name in (
+        "ENTERED",
+        "BUILDER_ACQUIRED",
+        "PACKET_MATERIALIZED",
+        "BUILDER_RELEASED",
+        "COMPLETED",
+    )
+}
+PREPARE_STAGE_MASK = sum(PREPARE_STAGE_FLAGS.values())
 CONSTRUCTOR_CAPTURED = _enumerator(
     "WAFER_NCC_RECORD_CONSTRUCTOR_CAPTURED"
 )
@@ -960,6 +971,52 @@ def _optional_range(
     return None
 
 
+def describe_prepare_failure(words: Sequence[int], plan: Plan) -> str:
+    """Describe the one preparation callback that did not complete."""
+    plan.validate()
+    failed: list[tuple[IssueIdentity, int]] = []
+    for identity in plan.issue_identities():
+        base = ISSUE_BASE + identity.ordinal * ISSUE_STRIDE
+        flags = words[base + ISSUE["FLAGS"]] & PREPARE_STAGE_MASK
+        if (
+            flags & PREPARE_STAGE_FLAGS["ENTERED"]
+            and not flags & PREPARE_STAGE_FLAGS["COMPLETED"]
+        ):
+            failed.append((identity, flags))
+    if len(failed) != 1:
+        return f"prepare progress identifies {len(failed)} incomplete issues"
+
+    identity, flags = failed[0]
+    lane = plan.lanes[identity.lane]
+    stages = [
+        name.lower().replace("_", "-")
+        for name, flag in PREPARE_STAGE_FLAGS.items()
+        if flags & flag
+    ]
+    if (
+        lane.issue_mode == IssueMode.RAW
+        and not flags & PREPARE_STAGE_FLAGS["BUILDER_ACQUIRED"]
+    ):
+        outcome = "builder-not-acquired"
+    elif (
+        lane.issue_mode == IssueMode.RAW
+        and not flags & PREPARE_STAGE_FLAGS["PACKET_MATERIALIZED"]
+    ):
+        outcome = "packet-not-materialized"
+    elif (
+        lane.issue_mode == IssueMode.RAW
+        and not flags & PREPARE_STAGE_FLAGS["BUILDER_RELEASED"]
+    ):
+        outcome = "builder-not-released"
+    else:
+        outcome = "adapter-rejected"
+    return (
+        f"prepare issue {identity.ordinal} slot={identity.slot} "
+        f"engine={lane.engine.name} worker={lane.worker} "
+        f"stages={','.join(stages)} outcome={outcome}"
+    )
+
+
 def validate_record(
     words: Sequence[int], plan: Plan
 ) -> tuple[IssueObservation, ...]:
@@ -969,8 +1026,14 @@ def validate_record(
         raise ValueError("record magic is invalid")
     if words[REC["SCHEMA_AND_WORDS"]] != (SCHEMA << 32) | RECORD_WORDS:
         raise ValueError("record schema/length is invalid")
-    if Status(words[REC["STATUS"]]) != Status.OK:
-        raise ValueError(f"probe status is {Status(words[REC['STATUS']]).name}")
+    status = Status(words[REC["STATUS"]])
+    if status != Status.OK:
+        detail = (
+            f": {describe_prepare_failure(words, plan)}"
+            if status == Status.PREPARE_FAILED
+            else ""
+        )
+        raise ValueError(f"probe status is {status.name}{detail}")
     plan.validate()
     identities = plan.issue_identities()
     if (

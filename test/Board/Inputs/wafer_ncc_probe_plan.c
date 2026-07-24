@@ -744,10 +744,17 @@ uint32_t wafer_ncc_probe_execute_plan(
     WaferNccProbeIssue *issue = &issues[index];
     const WaferNccProbeEngineAdapter *adapter = wafer_ncc_probe_find_adapter(
         adapters, adapter_count, issue->engine);
-    if (adapter->prepare(context, request, issue) != 0)
+    uint32_t base = wafer_ncc_protocol_issue_word(
+        issue->ordinal, WAFER_NCC_ISSUE_ORDINAL);
+    uint64_t preparation_flags = WAFER_NCC_ISSUE_PREPARE_ENTERED;
+    if (adapter->prepare(context, request, issue, &preparation_flags) != 0) {
+      record[base + WAFER_NCC_ISSUE_FLAGS] = preparation_flags;
       return wafer_ncc_probe_finish_after_failure(
           WAFER_NCC_STATUS_PREPARE_FAILED, request, adapters, adapter_count,
           hooks, context, record, issues, prepared_count, 0);
+    }
+    record[base + WAFER_NCC_ISSUE_FLAGS] =
+        preparation_flags | WAFER_NCC_ISSUE_PREPARE_COMPLETED;
     ++prepared_count;
   }
 

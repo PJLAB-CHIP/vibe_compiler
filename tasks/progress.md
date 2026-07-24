@@ -123,6 +123,10 @@ shared-package no-card准备不等于board evidence，新增case尚未上板；�
 production compiler software-pipeline vertical已经完成。统一NCC板前门禁覆盖185个计划，其中176个进入
 单一safe批次，constructor/default-vs-byworker/六个subset join共9个使用独立进程；板端总入口为
 `tools/run_hardware_calibration.py`，串行执行注册CTest、首错或skip即停并保留逐项log/JUnit/session summary。
+NCC prepare record现为每个issue保留callback进入/完成以及raw builder取得、packet物化、builder释放阶段；
+host失败诊断直接给出issue、engine/worker和最后阶段。旧普通request中的constructor address零值是未写字段，
+不能作为空返回证据；同ELF跨独立进程的一次constructor成功也不能证明其它run的heap状态。新schema的host、
+target link和no-card gate已闭合，本批未运行板卡，仍需后续精确实卡重放取得阶段事实。
 当前queue active occupancy与full行为仍在Q37内保持`unknown`：静态depth不直接作为occupancy证据。普通
 calibration只运行1/2/4（TDMA 1/2）。修正builder生命周期和逐issue观察位置后，CT/NE/RDMA/WDMA exact
 `D=6`与TDMA exact `D=4`已分别由单engine、单case、单样本及前后known-good Add heartbeat闭合

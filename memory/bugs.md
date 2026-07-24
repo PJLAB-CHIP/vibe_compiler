@@ -1358,3 +1358,15 @@
 - 防复发：手写cluster fixture必须验证entrypoint、resource binding与completion schema的双射，并在
   no-card gate检查每个terminal status都有begin/finish控制流。`0xffffffff`且无device output时先审计status
   publication，不能直接重试、reset/power或归因硬件同步。
+
+## 2026-07-24 条件写入的诊断字段零值不能当作失败事实
+
+- 现象：普通NCC request的失败record同时出现`PREPARE_FAILED`和`constructor_address=0`，而同一ELF的
+  专用constructor observation在另一个进程中成功。
+- 根因：旧schema只在专用constructor observation request中写入constructor address；普通request中的零值
+  是record初始化后的未写状态，不是一次已观测的空返回。跨独立进程的constructor成功也不能证明失败进程中
+  allocator或其它prepare状态相同。
+- 修复模式：在所有request中记录同一次调用内、逐issue的prepare进度，由generic executor记录callback进入和
+  完成，由raw adapter继续记录builder取得、packet物化和builder释放；host从未完成issue及最后阶段生成诊断。
+- 防复发：协议字段必须区分“未观测”和“观测为零”；资源缩放、跨进程成功样本和条件写入字段不能替代同一次
+  失败调用的阶段证据。没有该证据前不继续用resource大小调整推断heap根因。

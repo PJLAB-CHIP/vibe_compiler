@@ -1136,7 +1136,8 @@ static int wafer_ncc_v2_prepare_tdma(
 
 static int wafer_ncc_v2_prepare(void *opaque,
                                 const WaferNccProbeRequest *request,
-                                const WaferNccProbeIssue *issue) {
+                                const WaferNccProbeIssue *issue,
+                                uint64_t *preparation_flags) {
   WaferNccV2Context *context = (WaferNccV2Context *)opaque;
   WaferNccProbeInstruction *instruction =
       &context->instructions[issue->slot];
@@ -1176,9 +1177,13 @@ static int wafer_ncc_v2_prepare(void *opaque,
   default:
     return 1;
   }
+  if (!instruction->has_owner)
+    return 1;
+  *preparation_flags |= WAFER_NCC_ISSUE_PREPARE_BUILDER_ACQUIRED;
+  if (!built)
+    return 1;
+  *preparation_flags |= WAFER_NCC_ISSUE_PREPARE_PACKET_MATERIALIZED;
   if (request->flags == WAFER_NCC_REQUEST_CONSTRUCTOR_OBSERVATION) {
-    if (!built || !instruction->has_owner)
-      return 1;
     context->constructor_address = (uint64_t)(uintptr_t)instruction->owner;
     context->constructor_captured = 1;
   }
@@ -1189,7 +1194,8 @@ static int wafer_ncc_v2_prepare(void *opaque,
    * object per queued packet.
    */
   wafer_ncc_probe_release(instruction);
-  return built ? 0 : 1;
+  *preparation_flags |= WAFER_NCC_ISSUE_PREPARE_BUILDER_RELEASED;
+  return 0;
 }
 
 static int wafer_ncc_v2_issue(void *opaque,

@@ -39,6 +39,8 @@ typedef struct MockContext {
   uint32_t issued_mask;
   uint32_t safety_drain_calls;
   uint64_t cycle;
+  uint32_t fail_prepare_slot_plus_one;
+  uint64_t fail_prepare_flags;
   int fail_safety_drain;
 } MockContext;
 
@@ -65,13 +67,20 @@ static int mock_seed(void *opaque, const WaferNccProbeRequest *request,
 }
 
 static int mock_prepare(void *opaque, const WaferNccProbeRequest *request,
-                        const WaferNccProbeIssue *issue) {
+                        const WaferNccProbeIssue *issue,
+                        uint64_t *preparation_flags) {
   (void)request;
   MockContext *context = (MockContext *)opaque;
   uint32_t bit = UINT32_C(1) << issue->slot;
   assert((context->seeded_mask & bit) != 0);
   assert((context->prepared_mask & bit) == 0);
+  if (context->fail_prepare_slot_plus_one == issue->slot + 1U) {
+    *preparation_flags |= context->fail_prepare_flags;
+    mock_event(context, MOCK_PREPARE + issue->slot);
+    return 1;
+  }
   context->prepared_mask |= bit;
+  *preparation_flags |= WAFER_NCC_ISSUE_PREPARE_PACKET_MATERIALIZED;
   mock_event(context, MOCK_PREPARE + issue->slot);
   return 0;
 }
@@ -647,6 +656,34 @@ static void test_failed_safety_drain_is_not_retried(void) {
   assert(context.prepared_mask == 0);
 }
 
+static void test_prepare_failure_retains_exact_issue_stage(void) {
+  WaferNccProbeRequest plan = request(1, 2, WAFER_NCC_SCHEDULE_SERIAL);
+  plan.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
+  MockContext context = {0};
+  context.fail_prepare_slot_plus_one = 2;
+  context.fail_prepare_flags =
+      WAFER_NCC_ISSUE_PREPARE_BUILDER_ACQUIRED;
+  uint64_t record[WAFER_NCC_PROTOCOL_RECORD_WORDS];
+  assert(wafer_ncc_probe_execute_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0]), &hooks,
+             &context, record) == WAFER_NCC_STATUS_PREPARE_FAILED);
+  assert(record[WAFER_NCC_REC_STATUS] == WAFER_NCC_STATUS_PREPARE_FAILED);
+
+  uint32_t first_base =
+      wafer_ncc_protocol_issue_word(0, WAFER_NCC_ISSUE_ORDINAL);
+  uint32_t second_base =
+      wafer_ncc_protocol_issue_word(1, WAFER_NCC_ISSUE_ORDINAL);
+  assert(record[first_base + WAFER_NCC_ISSUE_FLAGS] ==
+         (WAFER_NCC_ISSUE_PREPARE_ENTERED |
+          WAFER_NCC_ISSUE_PREPARE_PACKET_MATERIALIZED |
+          WAFER_NCC_ISSUE_PREPARE_COMPLETED));
+  assert(record[second_base + WAFER_NCC_ISSUE_FLAGS] ==
+         (WAFER_NCC_ISSUE_PREPARE_ENTERED |
+          WAFER_NCC_ISSUE_PREPARE_BUILDER_ACQUIRED));
+  assert((context.prepared_mask & UINT32_C(1)) == 0);
+  assert((context.prepared_mask & UINT32_C(2)) == 0);
+}
+
 static void test_depth_plus_one_is_tight_and_waited(void) {
   WaferNccProbeRequest plan = request(2, 4, WAFER_NCC_SCHEDULE_WINDOW);
   plan.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
@@ -716,6 +753,7 @@ int main(void) {
   test_dma_strided_roundtrip_is_serial_and_bounded();
   test_observation_flags_and_double_slot_order();
   test_failed_safety_drain_is_not_retried();
+  test_prepare_failure_retains_exact_issue_stage();
   test_depth_plus_one_is_tight_and_waited();
   test_full_depth_window_is_accepted_without_overflow();
   return 0;

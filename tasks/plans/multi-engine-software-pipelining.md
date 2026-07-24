@@ -105,6 +105,15 @@ Pipeline position:
   对照和六个proper-subset join共9个以独立进程执行。完整板端执行使用
   `tools/run_hardware_calibration.py`；它只调度已注册board CTest，要求双重显式授权，逐项串行、
   首错/skip即停，不retry/reset/power，并保存log、JUnit和session summary。
+- NCC prepare失败现统一由每个issue的协议化阶段位诊断：generic plan记录prepare callback进入与完成，
+  raw adapter继续区分builder取得、packet物化和builder释放。host在非OK record上先报告失败issue、
+  engine/worker和最后阶段，再停止本case。旧schema中普通request的`constructor_address=0`只是该专用
+  observation字段未写，不能证明constructor实际返回空；同一ELF的一次constructor成功与其它
+  `PREPARE_FAILED`也不能跨独立进程推出稳定heap容量。当前ELF反汇编只确认`TsmNewArith`返回
+  `csi_kernel_malloc(scope=0, 240, NULL)`的`a0`，raw prepare按该返回值设置owner，空值时失败，非空后
+  才调用`AddVV`并完成packet。新schema已通过host protocol、target link和shared-package no-card，
+  本批未运行板卡；后续一次精确实卡重放应直接区分`builder-not-acquired`与更晚的packet/release阶段，
+  不再靠缩放DDR resource猜测。
 - 校准矩阵按compiler consumer分层，而不是按vendor API罗列：
   - instruction/encoding：constructor ownership、packet routing、descriptor单位、range materialization、
     alignment/tail、返回值与错误可观察性；

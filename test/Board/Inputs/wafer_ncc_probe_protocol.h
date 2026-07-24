@@ -17,7 +17,7 @@
 
 #define WAFER_NCC_PROTOCOL_REQUEST_MAGIC UINT64_C(0x3251455243434e57)
 #define WAFER_NCC_PROTOCOL_RECORD_MAGIC UINT64_C(0x3243455843434e57)
-#define WAFER_NCC_PROTOCOL_SCHEMA 4U
+#define WAFER_NCC_PROTOCOL_SCHEMA 5U
 #define WAFER_NCC_PROTOCOL_REQUEST_WORDS 58U
 #define WAFER_NCC_PROTOCOL_RECORD_WORDS 400U
 #define WAFER_NCC_PROTOCOL_MAX_LANES 3U
@@ -145,6 +145,18 @@ enum WaferNccProtocolIssueFlag {
   WAFER_NCC_ISSUE_PACKET_OBSERVED = UINT32_C(1) << 3,
   WAFER_NCC_ISSUE_WINDOW_CONTROL_VALID = UINT32_C(1) << 4,
 };
+
+/*
+ * Preparation progress is retained only when preparation fails.  A
+ * successful issue observation replaces these bits with the execution
+ * observation flags above.  The generic executor owns ENTERED/COMPLETED; a
+ * raw-packet adapter reports the three builder/materialization stages.
+ */
+#define WAFER_NCC_ISSUE_PREPARE_ENTERED (UINT64_C(1) << 32)
+#define WAFER_NCC_ISSUE_PREPARE_BUILDER_ACQUIRED (UINT64_C(1) << 33)
+#define WAFER_NCC_ISSUE_PREPARE_PACKET_MATERIALIZED (UINT64_C(1) << 34)
+#define WAFER_NCC_ISSUE_PREPARE_BUILDER_RELEASED (UINT64_C(1) << 35)
+#define WAFER_NCC_ISSUE_PREPARE_COMPLETED (UINT64_C(1) << 36)
 
 enum WaferNccProtocolRequestWord {
   WAFER_NCC_REQ_MAGIC = 0,

@@ -27,7 +27,7 @@ def lane(engine: protocol.Engine, worker: int = 0) -> protocol.Lane:
 
 class ProtocolTest(unittest.TestCase):
     def test_header_is_the_numeric_source(self) -> None:
-        self.assertEqual(protocol.SCHEMA, 4)
+        self.assertEqual(protocol.SCHEMA, 5)
         self.assertEqual(protocol.MAX_LANES, 3)
         self.assertEqual(protocol.MAX_ROUNDS, 4)
         self.assertEqual(protocol.MAX_ISSUES, 12)
@@ -56,6 +56,43 @@ class ProtocolTest(unittest.TestCase):
             ),
         )
         self.assertEqual(execution_probe.PMU_STABLE_MASK, 0xFF)
+
+    def test_prepare_failure_reports_issue_and_builder_stage(self) -> None:
+        plan = protocol.Plan(
+            lanes=(lane(protocol.Engine.CT),),
+            rounds=1,
+            effect_relation=protocol.EffectRelation.NONE,
+            range_relation=protocol.RangeRelation.DISJOINT,
+            schedule=protocol.Schedule.SERIAL,
+            wait_kind=protocol.WaitKind.BY_WORKER,
+            wait_worker_mask=1,
+            seed=3,
+        )
+        words = [0] * protocol.RECORD_WORDS
+        words[protocol.REC["MAGIC"]] = protocol.RECORD_MAGIC
+        words[protocol.REC["SCHEMA_AND_WORDS"]] = (
+            protocol.SCHEMA << 32
+        ) | protocol.RECORD_WORDS
+        words[protocol.REC["STATUS"]] = protocol.Status.PREPARE_FAILED
+        words[
+            protocol.ISSUE_BASE + protocol.ISSUE["FLAGS"]
+        ] = protocol.PREPARE_STAGE_FLAGS["ENTERED"]
+        with self.assertRaisesRegex(
+            ValueError,
+            (
+                "PREPARE_FAILED: prepare issue 0 slot=0 engine=CT worker=0 "
+                "stages=entered outcome=builder-not-acquired"
+            ),
+        ):
+            protocol.validate_record(words, plan)
+
+        words[protocol.ISSUE_BASE + protocol.ISSUE["FLAGS"]] |= (
+            protocol.PREPARE_STAGE_FLAGS["BUILDER_ACQUIRED"]
+        )
+        with self.assertRaisesRegex(
+            ValueError, "outcome=packet-not-materialized"
+        ):
+            protocol.validate_record(words, plan)
 
     def test_copyback_drains_every_wdma_issue(self) -> None:
         source = (
