@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable
 
 REQUEST_MAGIC = 0x3151455256544357
 RECORD_MAGIC = 0x3143455256544357
-SCHEMA = 2
+SCHEMA = 3
 REQUEST_WORDS = 16
 RECORD_WORDS = 32
 CASE_BASE = 10000
@@ -27,8 +27,11 @@ SLOT_CANARY = 0xA7
 REQUEST_GUARD = 0xC7B6A59483726150
 RECORD_GUARD = 0x8F7E6D5C4B3A2910
 MAIN_ELEMENTS = 8192
-TAIL_ELEMENTS = 8197
-UNIT_ELEMENTS = 37
+TAIL_ELEMENTS = 8214
+MAIN_UNIT_ELEMENTS = 32
+TAIL_UNIT_ELEMENTS = 37
+MAIN_LOOP_ELEMENTS = 256
+TAIL_LOOP_ELEMENTS = 222
 
 DISPOSITIONS = {
     "BOARD_EXACT": 0,
@@ -106,6 +109,9 @@ REC = {
     "SCALAR_BITS": 20,
     "UNIT_ELEMENTS": 21,
     "DOMAIN": 22,
+    "ELEM_COUNT": 23,
+    "FULL_ELEMENTS": 24,
+    "FULL_UNIT_ELEMENTS": 25,
     "RECORD_GUARD": 31,
 }
 
@@ -222,6 +228,22 @@ def _is_loop(opcode: int) -> bool:
     ) or opcode in (85, 86, 87, 95, 96, 97)
 
 
+def _shape_unit_elements(shape_name: str) -> int:
+    if shape_name == "main":
+        return MAIN_UNIT_ELEMENTS
+    if shape_name == "tail":
+        return TAIL_UNIT_ELEMENTS
+    raise ValueError(f"unknown CT vector shape {shape_name}")
+
+
+def _shape_loop_elements(shape_name: str) -> int:
+    if shape_name == "main":
+        return MAIN_LOOP_ELEMENTS
+    if shape_name == "tail":
+        return TAIL_LOOP_ELEMENTS
+    raise ValueError(f"unknown CT vector shape {shape_name}")
+
+
 def _disposition(opcode: int) -> str:
     if opcode in (108, 109):
         return "BOARD_OBSERVED"
@@ -330,6 +352,42 @@ class CTVectorCase:
     def tolerance(self) -> bool:
         return self.disposition_name == "BOARD_TOLERANCE"
 
+    @property
+    def unit_elements(self) -> int:
+        return (
+            _shape_unit_elements(self.shape_name)
+            if _is_vuv(self.opcode)
+            else 0
+        )
+
+    @property
+    def elem_count(self) -> int:
+        return (
+            _shape_loop_elements(self.shape_name)
+            if _is_loop(self.opcode)
+            else self.elements
+        )
+
+    @property
+    def full_elements(self) -> int:
+        return self.elements if _is_loop(self.opcode) else 0
+
+    @property
+    def full_unit_elements(self) -> int:
+        if not _is_loop(self.opcode):
+            return 0
+        return self.elements // self.elem_count * self.unit_elements
+
+    @property
+    def rhs_elements(self) -> int:
+        if not _is_vuv(self.opcode):
+            return self.elements
+        return (
+            self.full_unit_elements
+            if _is_loop(self.opcode)
+            else self.unit_elements
+        )
+
     def as_dict(self) -> dict[str, object]:
         return {
             "id": self.case_id,
@@ -351,7 +409,10 @@ class CTVectorCase:
             ),
             "shape": self.shape_name,
             "elements": self.elements,
-            "unit_elements": UNIT_ELEMENTS if _is_vuv(self.opcode) else 0,
+            "elem_count": self.elem_count,
+            "unit_elements": self.unit_elements,
+            "full_elements": self.full_elements,
+            "full_unit_elements": self.full_unit_elements,
             "result_bytes": self.result_bytes,
             "output_span": self.output_span,
         }
@@ -461,6 +522,25 @@ def build_catalog() -> tuple[CTVectorCase, ...]:
         case.output_span > SLOT_BYTES - BODY_OFFSET for case in cases
     ):
         raise RuntimeError("CT vector output does not fit its guarded slot")
+    for case in cases:
+        if not _is_vuv(case.opcode):
+            continue
+        if not (
+            1 <= case.unit_elements <= 64
+            and case.elem_count % case.unit_elements == 0
+        ):
+            raise RuntimeError(f"{case.name}: illegal VuV base geometry")
+        if _is_loop(case.opcode):
+            if not (
+                case.full_elements % case.elem_count == 0
+                and case.full_unit_elements % case.unit_elements == 0
+                and case.full_elements // case.elem_count
+                == case.full_unit_elements // case.unit_elements
+                and case.full_elements // case.elem_count > 1
+            ):
+                raise RuntimeError(f"{case.name}: illegal VuVLoop geometry")
+        elif case.full_elements != 0 or case.full_unit_elements != 0:
+            raise RuntimeError(f"{case.name}: non-loop VuV has full counts")
     return tuple(cases)
 
 
@@ -657,6 +737,38 @@ def _repeat(values: Iterable[float], count: int) -> tuple[float, ...]:
     return tuple(source[index % len(source)] for index in range(count))
 
 
+def _rhs_index(case: CTVectorCase, element_index: int) -> int:
+    if not _is_vuv(case.opcode):
+        return element_index
+    if not _is_loop(case.opcode):
+        return element_index % case.unit_elements
+    outer = element_index // case.elem_count
+    inner = element_index % case.elem_count
+    return outer * case.unit_elements + inner % case.unit_elements
+
+
+def _numeric_rhs_values(
+    case: CTVectorCase, pattern: tuple[float, ...]
+) -> tuple[float, ...]:
+    if not _is_vuv(case.opcode):
+        return _repeat(pattern, case.elements)
+    values: list[float] = []
+    outer_count = (
+        case.full_unit_elements // case.unit_elements
+        if _is_loop(case.opcode)
+        else 1
+    )
+    outer_scale = (1.0, -1.0, 2.0, -2.0, 4.0)
+    for outer in range(outer_count):
+        scale = outer_scale[outer // 8]
+        rotation = outer + (2 if _is_loop(case.opcode) else 1)
+        values.extend(
+            pattern[(lane + rotation) % len(pattern)] * scale
+            for lane in range(case.unit_elements)
+        )
+    return tuple(values)
+
+
 def _numeric_inputs(case: CTVectorCase) -> tuple[bytes, bytes, int]:
     if case.domain_name in ("SPECIAL", "QNAN", "SNAN"):
         lhs = _pack_words(
@@ -744,7 +856,6 @@ def _numeric_inputs(case: CTVectorCase) -> tuple[bytes, bytes, int]:
         (-8.0, -3.0, -1.0, 0.0, 1.0, 2.0, 3.0, 8.0),
         case.elements,
     )
-    rhs_count = UNIT_ELEMENTS if _is_vuv(case.opcode) else case.elements
     if (
         case.family_name == "RELATION"
         and 30 <= case.opcode <= 45
@@ -755,9 +866,9 @@ def _numeric_inputs(case: CTVectorCase) -> tuple[bytes, bytes, int]:
             for index, value in enumerate(lhs_values)
         )
     else:
-        rhs_values = _repeat(
+        rhs_values = _numeric_rhs_values(
+            case,
             (2.0, -2.0, 4.0, 1.0, -1.0, 0.5, 8.0, -4.0),
-            rhs_count,
         )
     scalar_bits = {
         "F16": 0x4000,
@@ -775,13 +886,24 @@ def _logic_inputs(case: CTVectorCase) -> tuple[bytes, bytes, int]:
     if case.family_name == "LOGIC_BOOL":
         byte_count = (case.elements + 7) // 8
         lhs = bytes((0x96, 0x5A, 0xF0, 0x0F)[index % 4] for index in range(byte_count))
-        rhs_count = (
-            (UNIT_ELEMENTS + 7) // 8
-            if _is_vuv(case.opcode)
-            else byte_count
-        )
-        rhs = bytes((0x69, 0xC3, 0xAA, 0x55)[index % 4] for index in range(rhs_count))
-        return lhs, rhs if case.opcode != 88 else b"", 0
+        rhs_bits = case.rhs_elements
+        rhs = bytearray((rhs_bits + 7) // 8)
+        pattern = 0xD6E8FEB86659FD93
+        for index in range(rhs_bits):
+            outer = (
+                index // case.unit_elements
+                if _is_loop(case.opcode)
+                else 0
+            )
+            lane = (
+                index % case.unit_elements
+                if _is_vuv(case.opcode)
+                else index
+            )
+            value = (pattern >> ((lane + outer) % 64)) & 1
+            value ^= (outer // 8) & 1
+            rhs[index // 8] |= value << (index % 8)
+        return lhs, bytes(rhs) if case.opcode != 88 else b"", 0
 
     word_bytes = _dtype_size(case.dtype_name)
     mask = (1 << (word_bytes * 8)) - 1
@@ -789,10 +911,18 @@ def _logic_inputs(case: CTVectorCase) -> tuple[bytes, bytes, int]:
         (0x1357_9BDF ^ (index * 0x1021)) & mask
         for index in range(case.elements)
     )
-    rhs_count = UNIT_ELEMENTS if _is_vuv(case.opcode) else case.elements
     rhs_words = tuple(
-        (0x2468_ACE0 ^ (index * 0x2043)) & mask
-        for index in range(rhs_count)
+        (
+            0x2468_ACE0
+            ^ ((index % max(case.unit_elements, 1)) * 0x2043)
+            ^ (
+                (index // case.unit_elements) * 0x0101_0011
+                if _is_loop(case.opcode)
+                else 0
+            )
+        )
+        & mask
+        for index in range(case.rhs_elements)
     )
     code = {2: "H", 4: "I"}[word_bytes]
     lhs = struct.pack(f"<{len(lhs_words)}{code}", *lhs_words)
@@ -813,9 +943,15 @@ def _numeric_expected(
         rhs_source = decode_values(case.dtype_name, input_b)
     else:
         rhs_source = ()
-    rhs = tuple(
-        rhs_source[index % len(rhs_source)] for index in range(case.elements)
-    ) if rhs_source else ()
+    if _is_vs(case.opcode):
+        rhs = _repeat(rhs_source, case.elements)
+    elif rhs_source:
+        rhs = tuple(
+            rhs_source[_rhs_index(case, index)]
+            for index in range(case.elements)
+        )
+    else:
+        rhs = ()
 
     if case.family_name == "UNARY":
         operations: tuple[Callable[[float], float], ...] = (
@@ -910,7 +1046,7 @@ def _logic_expected(
                 value = left ^ 1
             else:
                 right_index = (
-                    index % UNIT_ELEMENTS
+                    _rhs_index(case, index)
                     if _is_vuv(case.opcode)
                     else index
                 )
@@ -940,7 +1076,7 @@ def _logic_expected(
         values = tuple(
             functions[operation](
                 left,
-                rhs_words[index % len(rhs_words)],
+                rhs_words[_rhs_index(case, index)],
             )
             for index, left in enumerate(lhs)
         )

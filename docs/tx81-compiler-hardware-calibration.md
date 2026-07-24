@@ -195,6 +195,11 @@ output；logic同时区分value logic和bitpacked bool logic。operand form至�
 current production pipeline中materialize为一条或多条typed GatherScatter；raw Direct DTE broadcast属于
 multi-destination communication ABI。三者的地址、completion和consumer不同。
 
+普通`VuV`要求`1 <= unit_elem_count <= 64`且`elem_count % unit_elem_count == 0`，不写`full_*`。
+`VuVLoop`还要求`full_elem_count / elem_count == full_unit_elem_count / unit_elem_count > 1`；
+full count决定完整地址范围，每个outer片段消费自己的unit。main/held-out可用不同合法geometry，但catalog、
+device decode、packet、payload、record echo和host oracle必须从同一shape geometry派生。
+
 layout矩阵以`Tensor/NTensor/Cx/NCx`的真实physical encoding为准，而不是为每个opcode盲做笛卡尔积：
 
 | layout row | 正向检查 | 必须区分的negative/边界 |
@@ -214,7 +219,8 @@ NHWC/NCx wrapper关系独立验证，不能从GEMM layout外推。
 为避免只测启动开销，新的数值/布局row使用有诊断能力的中等shape：
 
 - CT Tensor主向量使用至少8192个logical element，并另设非256B整除的held-out tail；`VuV`使用不超过
-  64的非平凡unit，`VuVLoop`同时让full与tail字段非零；
+  64的非平凡unit且只覆盖完整unit，`VuVLoop`让基础与full计数都非零、outer count大于1并让各outer
+  unit pattern可区分；
 - Cx/NCx至少覆盖`C=63/64/65/127/129`中的block边界和`N>1, H*W>1`，每个physical padding区保持独立
   canary；
 - NE FP16/BF16至少覆盖`M=64,K=128,N=128`的非平凡累加、`M=65,K=129,N=129`的M/K/N tail、batch2及
@@ -373,6 +379,11 @@ pairwise_excess = engine_a_exec + engine_b_exec - fu_union_exec
 ### 4.2 单engine correctness与ABI观察
 
 - CT f16 Add使用非零输入、完整fp16 golden、guard和DMA round-trip通过。
+- 旧CT vector catalog的首个`VuV`实卡case在logical element 8177开始保留output canary：
+  `8192 = 37 * 221 + 15`，首差与完整unit边界精确重合。该请求违反普通`VuV`的整除合同，且probe还给
+  非loop opcode写入了`full_*`；因此这是probe形态错误，不是Max opcode的负向能力证据。修复后的catalog
+  使用shape-owned合法unit，普通`VuV`不写`full_*`；`VuVLoop`使用多个完整outer片段和对应完整RHS，
+  重新取得板端结果前这些row仍只算host/target/no-card ready。
 - instruction-family typed catalog原有60个safe case已逐个串行launch并通过完整bit oracle、SPM guard、
   terminal与cleanup：f16/bf16 Neg/Add/Sub/Mul/Max/Min/Pow2/Relu，I8→f16/bf16、bf16→f16、
   f16→bf16/i16 convert，f16 Sum/Max、bf16 Min/Avg reduction，f16/bf16 Bit2FP+MaskMove select，
@@ -563,8 +574,8 @@ FP16、BF16、FP32 row；不能由同opcode的另一dtype外推。packed BOOL lo
 
 | opcode/family | 计划case | main oracle与held-out |
 | --- | --- | --- |
-| `0..5` unary arithmetic | Abs、Recip、Square、Sqrt、Rsqrt、Neg × FP16/BF16/FP32 | 8192普通值；8197 tail。Recip/Sqrt/Rsqrt分别含正域、零和负域隔离row |
-| `6..29` binary arithmetic | Max/Min/Add/Sub/Mul/Div × `VV/VS/VuV/VuVLoop` × 3 dtype | 8192主向量；8197 tail；`VuV`用非平凡且非2次幂unit，`VuVLoop`让full与tail字段均参与结果 |
+| `0..5` unary arithmetic | Abs、Recip、Square、Sqrt、Rsqrt、Neg × FP16/BF16/FP32 | 8192普通值；8214 held-out tail。Recip/Sqrt/Rsqrt分别含正域、零和负域隔离row |
+| `6..29` binary arithmetic | Max/Min/Add/Sub/Mul/Div × `VV/VS/VuV/VuVLoop` × 3 dtype | 8192主向量使用32-element unit；8214 tail使用37-element unit；普通`VuV`整除，`VuVLoop`分别用32/37个outer片段及完整RHS验证base/full count |
 | `30..77` relation | Eq/Ne/Ge/Gt/Le/Lt × `VV/VS/VuV/VuVLoop` × value/bitpacked BOOL output × 3 input dtype | 同一truth pattern同时验证value codeword与BOOL逐bit结果；检查BOOL末字节未用bit和suffix guard |
 | `78..97` logic | value Not/And/Or/Xor及公开`VV/VuV/VuVLoop` form；packed BOOL Not/And/Or/Xor及对应form | value按FP16/BF16/FP32 raw codeword做bit-exact；BOOL用交错、全0、全1和非整字节tail |
 | `98..104` transcendental | Log2、Ln、Pow2、Exp、ExpLp、Sin、Cos × 3 dtype | 正常域用高精度reference记录误差；定义profile tolerance前只记`board-observed`，域外和special value独立 |
@@ -577,7 +588,7 @@ FP16、BF16、FP32 row；不能由同opcode的另一dtype外推。packed BOOL lo
 | `175..186` peripheral | Count、BitCount、ArgMax/Min、Memset、Factorize、Bit2Fp、Bilinear、LUT16/32、RandGen、ElemMask | deterministic entry验证全部writeback；RandGen/随机ElemMask重复采样raw output并验证有界write span、guard、completion和cleanup |
 
 实卡前的shared-package资产已把opcode `0..110`展开为653个可筛选row：FP16/BF16/FP32、
-`VV/VS/VuV/VuVLoop`、value/bitpacked BOOL、8192-element calibration/8197-element held-out以及zero、
+`VV/VS/VuV/VuVLoop`、value/bitpacked BOOL、8192-element calibration/8214-element held-out以及zero、
 signed-zero、normal/subnormal、Inf、quiet/signaling NaN和domain boundary共用一个device dispatcher；
 542个为exact、81个为预先声明tolerance、30个为只保存raw result的`board-observation`。convert
 `139..174`的36条route共有204行：72个main/tail nearest-even、69个directed-rounding、36个halfway/extrema、
@@ -589,8 +600,9 @@ instruction-family/DataMove concrete case或给出显式非执行处置；最终
 已经取得板端证据。
 
 算术/比较的form参数还要有专门的区分向量：`VS`的scalar bit pattern不能等于任一vector首元素；`VuV`的unit
-不能整段常量；`VuVLoop`的每个outer chunk使用不同unit pattern，并让最后一个不完整chunk参与expected。
-这样同一case能区分“误当VV”“只重复首unit”“忽略full字段”和“只执行第一段”。
+不能整段常量；`VuVLoop`的每个outer chunk使用不同unit pattern，并让最后一个完整chunk参与expected，
+held-out另保留非256B physical span tail。这样同一case能区分“误当VV”“只重复首unit”“忽略full字段”和
+“只执行第一段”。
 
 数值域按下列顺序分suite，避免一个NaN或随机case把整个基础资格变成不可诊断：
 

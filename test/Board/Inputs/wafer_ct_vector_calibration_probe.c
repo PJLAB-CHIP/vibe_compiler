@@ -26,7 +26,10 @@ typedef struct WaferCTVCase {
   uint32_t input_a_bytes;
   uint32_t input_b_bytes;
   uint32_t scalar_bits;
+  uint32_t elem_count;
   uint32_t unit_elements;
+  uint32_t full_elements;
+  uint32_t full_unit_elements;
   uint32_t domain;
 } WaferCTVCase;
 
@@ -183,6 +186,16 @@ static uint32_t wafer_ctv_vuv(uint32_t opcode) {
           (opcode >= 92U && opcode <= 97U));
 }
 
+static uint32_t wafer_ctv_loop(uint32_t opcode) {
+  return ((opcode >= 6U && opcode <= 29U &&
+           (opcode - 6U) % 4U == 3U) ||
+          (opcode >= 30U && opcode <= 77U &&
+           ((opcode - 30U) % 8U == 5U ||
+            (opcode - 30U) % 8U == 7U)) ||
+          (opcode >= 85U && opcode <= 87U) ||
+          (opcode >= 95U && opcode <= 97U));
+}
+
 static uint32_t wafer_ctv_has_second_operand(uint32_t opcode) {
   if (opcode <= 5U || opcode == 78U || opcode == 88U ||
       (opcode >= 98U && opcode <= 110U))
@@ -254,12 +267,40 @@ static uint32_t wafer_ctv_decode(const volatile uint64_t *request,
     return WAFER_CTV_STATUS_BAD_REQUEST;
 
   uint32_t bool_input = family == WAFER_CTV_LOGIC_BOOL;
+  uint32_t is_vuv = wafer_ctv_vuv(opcode);
+  uint32_t is_loop = wafer_ctv_loop(opcode);
+  uint32_t unit_elements =
+      elements == WAFER_CTV_MAIN_ELEMENTS
+          ? WAFER_CTV_MAIN_UNIT_ELEMENTS
+          : WAFER_CTV_TAIL_UNIT_ELEMENTS;
+  uint32_t elem_count =
+      is_loop == 0
+          ? elements
+          : (elements == WAFER_CTV_MAIN_ELEMENTS
+                 ? WAFER_CTV_MAIN_LOOP_ELEMENTS
+                 : WAFER_CTV_TAIL_LOOP_ELEMENTS);
+  uint32_t full_elements = is_loop != 0 ? elements : 0U;
+  uint32_t full_unit_elements =
+      is_loop != 0 ? elements / elem_count * unit_elements : 0U;
+  if (is_vuv != 0 &&
+      (unit_elements == 0U || unit_elements > 64U ||
+       elem_count % unit_elements != 0U ||
+       (is_loop != 0 &&
+        (full_elements % elem_count != 0U ||
+         full_unit_elements % unit_elements != 0U ||
+         full_elements / elem_count !=
+             full_unit_elements / unit_elements))))
+    return WAFER_CTV_STATUS_UNSUPPORTED_CASE;
+
   uint32_t input_a_bytes =
       bool_input != 0 ? (elements + 7U) / 8U : elements * dtype_bytes;
   uint32_t input_b_bytes = 0;
   if (wafer_ctv_has_second_operand(opcode) != 0) {
-    uint32_t second_elements =
-        wafer_ctv_vuv(opcode) != 0 ? WAFER_CTV_UNIT_ELEMENTS : elements;
+    uint32_t second_elements = is_vuv == 0
+                                   ? elements
+                                   : (is_loop != 0
+                                          ? full_unit_elements
+                                          : unit_elements);
     input_b_bytes = bool_input != 0 ? (second_elements + 7U) / 8U
                                    : second_elements * dtype_bytes;
   }
@@ -279,8 +320,10 @@ static uint32_t wafer_ctv_decode(const volatile uint64_t *request,
   decoded->input_b_bytes = input_b_bytes;
   decoded->scalar_bits =
       wafer_ctv_vs(opcode) != 0 ? wafer_ctv_scalar_bits(dtype) : 0;
-  decoded->unit_elements =
-      wafer_ctv_vuv(opcode) != 0 ? WAFER_CTV_UNIT_ELEMENTS : 0;
+  decoded->elem_count = elem_count;
+  decoded->unit_elements = is_vuv != 0 ? unit_elements : 0U;
+  decoded->full_elements = full_elements;
+  decoded->full_unit_elements = full_unit_elements;
   decoded->domain = domain;
   return WAFER_CTV_STATUS_OK;
 }
@@ -317,7 +360,7 @@ static uint64_t wafer_ctv_issue(const WaferCTVCase *selected) {
   instruction.ctrl.opcode = (uint8_t)selected->opcode;
   instruction.param.src0 = (uint32_t)WAFER_CTV_SPM_A;
   instruction.param.dst0 = output;
-  instruction.param.elem_count = selected->elements;
+  instruction.param.elem_count = selected->elem_count;
   instruction.param.src0_end =
       (uint32_t)WAFER_CTV_SPM_A + selected->input_a_bytes - 1U;
   instruction.param.dst0_end =
@@ -331,13 +374,11 @@ static uint64_t wafer_ctv_issue(const WaferCTVCase *selected) {
   }
   if (selected->unit_elements != 0) {
     instruction.param.unit_elem_count = selected->unit_elements;
-    /*
-     * The loop opcodes consume the same logical main/tail vector, while the
-     * full fields make the dependency footprint explicit and nonzero.
-     */
-    instruction.param.full_elem_count = selected->elements;
+  }
+  if (selected->full_elements != 0) {
+    instruction.param.full_elem_count = selected->full_elements;
     instruction.param.full_unit_elem_count =
-        selected->unit_elements;
+        selected->full_unit_elements;
   }
   uint64_t result = TsmExecute(&instruction);
   (void)TsmWaitfinish_bywork(0);
@@ -393,6 +434,11 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
     record[WAFER_CTV_REC_UNIT_ELEMENTS] =
         selected.unit_elements;
     record[WAFER_CTV_REC_DOMAIN] = selected.domain;
+    record[WAFER_CTV_REC_ELEM_COUNT] = selected.elem_count;
+    record[WAFER_CTV_REC_FULL_ELEMENTS] =
+        selected.full_elements;
+    record[WAFER_CTV_REC_FULL_UNIT_ELEMENTS] =
+        selected.full_unit_elements;
 
     wafer_tx81_rdma(payload_ddr, WAFER_CTV_SPM_A,
                     WAFER_CTV_SLOT_BYTES, WAFER_CTV_SLOT_BYTES,

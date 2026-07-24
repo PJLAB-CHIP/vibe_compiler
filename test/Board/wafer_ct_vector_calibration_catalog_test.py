@@ -37,6 +37,15 @@ def main() -> int:
     ).read_text()
     for dtype_name, wire_id in catalog.DTYPES.items():
         assert f"WAFER_CTV_{dtype_name} = {wire_id}" in protocol
+    for name, value in (
+        ("MAIN_ELEMENTS", catalog.MAIN_ELEMENTS),
+        ("TAIL_ELEMENTS", catalog.TAIL_ELEMENTS),
+        ("MAIN_UNIT_ELEMENTS", catalog.MAIN_UNIT_ELEMENTS),
+        ("TAIL_UNIT_ELEMENTS", catalog.TAIL_UNIT_ELEMENTS),
+        ("MAIN_LOOP_ELEMENTS", catalog.MAIN_LOOP_ELEMENTS),
+        ("TAIL_LOOP_ELEMENTS", catalog.TAIL_LOOP_ELEMENTS),
+    ):
+        assert f"#define WAFER_CTV_{name} {value}U" in protocol
     probe = (
         repo
         / "test"
@@ -46,6 +55,9 @@ def main() -> int:
     ).read_text()
     assert "_Static_assert(Fmt_BOOL == 7" in probe
     assert "case WAFER_CTV_BOOL:\n    return Fmt_BOOL;" in probe
+    assert "if (selected->full_elements != 0)" in probe
+    assert probe.count("instruction.param.full_elem_count =") == 1
+    assert probe.count("instruction.param.full_unit_elem_count =") == 1
     assert collections.Counter(
         case.family_name for case in catalog.CATALOG
     ) == {
@@ -115,6 +127,27 @@ def main() -> int:
         for storage in ("value", "bitpacked-bool")
     }
 
+    for case in (
+        case for case in catalog.CATALOG if catalog._is_vuv(case.opcode)
+    ):
+        assert 1 <= case.unit_elements <= 64
+        assert case.elem_count % case.unit_elements == 0
+        if catalog._is_loop(case.opcode):
+            assert case.full_elements == case.elements
+            assert case.full_elements % case.elem_count == 0
+            assert case.full_unit_elements % case.unit_elements == 0
+            assert (
+                case.full_elements // case.elem_count
+                == case.full_unit_elements // case.unit_elements
+                > 1
+            )
+            assert case.rhs_elements == case.full_unit_elements
+        else:
+            assert case.elem_count == case.elements
+            assert case.full_elements == 0
+            assert case.full_unit_elements == 0
+            assert case.rhs_elements == case.unit_elements
+
     for sample, case in enumerate(catalog.CATALOG):
         built = catalog.build_case_payload(case, sample)
         assert len(built.request) == catalog.RESOURCE_BYTES
@@ -159,9 +192,104 @@ def main() -> int:
     assert vv_payload.input_b_bytes == catalog.MAIN_ELEMENTS * 2
     assert vs_payload.input_b_bytes == 0
     assert vs_payload.scalar_bits == 0x4000
-    assert vuv_payload.input_b_bytes == catalog.UNIT_ELEMENTS * 2
-    assert loop_payload.input_b_bytes == catalog.UNIT_ELEMENTS * 2
+    assert vuv.elem_count == catalog.MAIN_ELEMENTS
+    assert vuv.unit_elements == catalog.MAIN_UNIT_ELEMENTS
+    assert vuv.full_elements == vuv.full_unit_elements == 0
+    assert (
+        vuv_payload.input_b_bytes
+        == catalog.MAIN_UNIT_ELEMENTS * 2
+    )
+    assert loop.elem_count == catalog.TAIL_LOOP_ELEMENTS
+    assert loop.unit_elements == catalog.TAIL_UNIT_ELEMENTS
+    assert loop.full_elements == catalog.TAIL_ELEMENTS
+    assert (
+        loop.full_unit_elements
+        == catalog.TAIL_ELEMENTS
+        // catalog.TAIL_LOOP_ELEMENTS
+        * catalog.TAIL_UNIT_ELEMENTS
+    )
+    assert loop_payload.input_b_bytes == loop.full_unit_elements * 2
     assert loop.elements == catalog.TAIL_ELEMENTS
+    loop_rhs = catalog.decode_values(
+        loop.dtype_name,
+        loop_payload.payload[
+            catalog.SLOT_BYTES :
+            catalog.SLOT_BYTES + loop_payload.input_b_bytes
+        ],
+    )
+    outer_units = tuple(
+        loop_rhs[begin : begin + loop.unit_elements]
+        for begin in range(0, len(loop_rhs), loop.unit_elements)
+    )
+    assert len(outer_units) == len(set(outer_units)) == (
+        loop.full_elements // loop.elem_count
+    )
+    loop_lhs = catalog.decode_values(
+        loop.dtype_name,
+        loop_payload.payload[: loop_payload.input_a_bytes],
+    )
+    loop_expected = catalog.decode_values(
+        loop.dtype_name, loop_payload.expected_result or b""
+    )
+    for index in (
+        0,
+        loop.elem_count - 1,
+        loop.elem_count,
+        loop.elements - 1,
+    ):
+        assert loop_expected[index] == (
+            loop_lhs[index]
+            + loop_rhs[catalog._rhs_index(loop, index)]
+        )
+    record_words = [0] * catalog.RECORD_WORDS
+    for field, value in (
+        ("MAGIC", catalog.RECORD_MAGIC),
+        (
+            "SCHEMA_AND_WORDS",
+            (catalog.SCHEMA << 32) | catalog.RECORD_WORDS,
+        ),
+        ("STATUS", 0),
+        ("CASE", loop.case_id),
+        ("DISPOSITION", loop.disposition),
+        ("FAMILY", loop.family),
+        ("DTYPE", loop.dtype),
+        ("OPCODE", loop.opcode),
+        ("RESULT_BYTES", loop.result_bytes),
+        ("OUTPUT_SPAN", loop.output_span),
+        ("ELEMENTS", loop.elements),
+        ("SAMPLE", 0),
+        ("OUTPUT_GUARD_MISMATCHES", 0),
+        ("EXECUTE_RESULT", 1),
+        ("REQUEST_GUARD", catalog.REQUEST_GUARD),
+        ("OUTPUT_DDR_OFFSET", catalog.OUTPUT_DDR_OFFSET),
+        ("SLOT_BYTES", catalog.SLOT_BYTES),
+        ("BODY_OFFSET", catalog.BODY_OFFSET),
+        ("INPUT_A_BYTES", loop_payload.input_a_bytes),
+        ("INPUT_B_BYTES", loop_payload.input_b_bytes),
+        ("SCALAR_BITS", loop_payload.scalar_bits),
+        ("UNIT_ELEMENTS", loop.unit_elements),
+        ("DOMAIN", loop.domain),
+        ("ELEM_COUNT", loop.elem_count),
+        ("FULL_ELEMENTS", loop.full_elements),
+        ("FULL_UNIT_ELEMENTS", loop.full_unit_elements),
+        ("RECORD_GUARD", catalog.RECORD_GUARD),
+    ):
+        record_words[catalog.REC[field]] = value
+    raw_record = bytearray(catalog.RESOURCE_BYTES)
+    struct.pack_into(
+        f"<{catalog.RECORD_WORDS}Q", raw_record, 0, *record_words
+    )
+    runner._validate_record(bytes(raw_record), loop, loop_payload, 0)
+    record_words[catalog.REC["FULL_UNIT_ELEMENTS"]] += 1
+    struct.pack_into(
+        f"<{catalog.RECORD_WORDS}Q", raw_record, 0, *record_words
+    )
+    try:
+        runner._validate_record(bytes(raw_record), loop, loop_payload, 0)
+    except RuntimeError as error:
+        assert "record/execute/SPM guard oracle failed" in str(error)
+    else:
+        raise AssertionError("raw loop-count mirror stopped being enforced")
     assert len({
         vv_payload.expected_result,
         vs_payload.expected_result,
