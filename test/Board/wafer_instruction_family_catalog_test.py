@@ -1153,11 +1153,14 @@ def validate_pool_max_oracle() -> None:
         )
 
 
-def validate_unpool_composite_oracle() -> None:
-    for name in ("unpool-f16", "unpool-index-f16"):
+def validate_unpool_rows() -> None:
+    for name, oracle_name in (
+        ("unpool-f16", "EXACT_COMPOSITE"),
+        ("unpool-index-f16", "NO_ORACLE"),
+    ):
         case = catalog.CASES_BY_NAME[name]
         assert case.is_safe
-        assert case.oracle_name == "EXACT_COMPOSITE"
+        assert case.oracle_name == oracle_name
         assert (case.result_bytes, case.output_span, case.aux_span) == (
             512,
             512,
@@ -1183,15 +1186,25 @@ def validate_unpool_composite_oracle() -> None:
             + catalog.BODY_OFFSET
             + case.output_span
         ]
-        assert output_seed == bytes(case.output_span)
-        expected = struct.unpack_from(
-            "<256e", built.expected_output_slot, catalog.BODY_OFFSET
-        )
-        assert expected == tuple(
-            float(128 + channel if position == channel % 4 else 0)
-            for position in range(4)
-            for channel in range(64)
-        )
+        if case.is_observation:
+            assert output_seed == struct.pack("<256e", *([-13.0] * 256))
+            assert (
+                built.expected_output_slot[
+                    catalog.BODY_OFFSET :
+                    catalog.BODY_OFFSET + case.output_span
+                ]
+                == output_seed
+            )
+        else:
+            assert output_seed == bytes(case.output_span)
+            expected = struct.unpack_from(
+                "<256e", built.expected_output_slot, catalog.BODY_OFFSET
+            )
+            assert expected == tuple(
+                float(128 + channel if position == channel % 4 else 0)
+                for position in range(4)
+                for channel in range(64)
+            )
 
     probe = (
         pathlib.Path(__file__).resolve().parent
@@ -1463,6 +1476,7 @@ def validate_extended_pool_unpool_oracles() -> None:
 
 def validate_peripheral_exact_and_observation_rows() -> None:
     bilinear = catalog.CASES_BY_NAME["peripheral-bilinear-f16"]
+    assert bilinear.is_observation
     built = catalog.build_case_payload(bilinear)
     source = built.payload[
         catalog.BODY_OFFSET : catalog.BODY_OFFSET + bilinear.result_bytes
@@ -1470,9 +1484,12 @@ def validate_peripheral_exact_and_observation_rows() -> None:
     expected = built.expected_output_slot[
         catalog.BODY_OFFSET : catalog.BODY_OFFSET + bilinear.result_bytes
     ]
-    assert source == expected
+    assert source != expected
+    assert expected == struct.pack("<128e", *([-13.0] * 128))
 
     observed_names = {
+        "unpool-index-f16",
+        "peripheral-bilinear-f16",
         "peripheral-factorize-f32-observed",
         "peripheral-lut32-observed",
         "peripheral-randgen-f16-observed",
@@ -1634,7 +1651,7 @@ def main() -> int:
     validate_probe_seed_is_published_and_instruction_local()
     validate_conv_oracle()
     validate_pool_max_oracle()
-    validate_unpool_composite_oracle()
+    validate_unpool_rows()
     validate_img2col_oracle()
     validate_lut16_oracle()
     validate_extended_pool_unpool_oracles()

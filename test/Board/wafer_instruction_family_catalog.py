@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Typed cases and exact host oracles for the TX81 instruction probe."""
+"""Typed cases and host references for the TX81 instruction probe."""
 
 from __future__ import annotations
 
@@ -951,6 +951,10 @@ def _peripheral_bilinear() -> tuple[bytes, bytes, bytes]:
     source = _f16(
         float((index * 11) % 97 - 48) for index in range(128)
     )
+    # The public wrapper proves the shape/scale ABI, but board output disproves
+    # pass-through as a numeric oracle even for equal source/destination shapes.
+    # Retain the semantic reference as discriminating input; observation mode
+    # deliberately does not compare the result against it.
     return source, b"", source
 
 
@@ -1072,7 +1076,7 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
         output_seed = _fp(case.dtype_name, false_values)
     elif case.family_name == "NE_GEMM":
         output_seed = _fp(case.dtype_name, _repeat((-13.0,), 128))
-    elif case.family_name == "UNPOOL":
+    elif case.family_name == "UNPOOL" and not case.is_observation:
         output_seed = _f16([0.0] * (case.output_span // 2))
     else:
         seed_element_bytes = 4 if case.dtype_name == "F32" else 2

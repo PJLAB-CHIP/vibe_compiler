@@ -202,8 +202,10 @@ enum WaferIFPDeferredReason {
     F16, EXACT_BITS, REASON_NONE, 256, 256, 0)                                 \
   X(CT_ADD_SPECIAL_BF16, 130, "ct-add-special-bf16", SAFE, CT_ELEMENTWISE,  \
     BF16, EXACT_BITS, REASON_NONE, 256, 256, 0)                                \
+  /* Opcode 121 completed with intact guards but did not establish the       \
+   * indexed-scatter numeric contract; keep the real path as bounded raw. */ \
   X(UNPOOL_INDEX_F16, 131, "unpool-index-f16", SAFE, UNPOOL, F16,           \
-    EXACT_COMPOSITE, REASON_NONE, 512, 512, 256)                              \
+    NO_ORACLE, REASON_NONE, 512, 512, 256)                                    \
   X(POOL_AVG_F16, 132, "pool-avg-f16", SAFE, POOL, F16, EXACT_BITS,          \
     REASON_NONE, 256, 256, 0)                                                  \
   X(POOL_SUM_F16, 133, "pool-sum-f16", SAFE, POOL, F16, EXACT_BITS,          \
@@ -214,8 +216,10 @@ enum WaferIFPDeferredReason {
     EXACT_COMPOSITE, REASON_NONE, 512, 512, 0)                                 \
   X(UNPOOL_AVG_F16, 136, "unpool-avg-f16", SAFE, UNPOOL, F16, EXACT_BITS,    \
     REASON_NONE, 512, 512, 0)                                                  \
+  /* Identity geometry produced a bounded non-identity writeback; the public \
+   * scale ABI does not establish a portable numeric reference yet. */       \
   X(PERIPHERAL_BILINEAR_F16, 137, "peripheral-bilinear-f16", SAFE,           \
-    PERIPHERAL, F16, EXACT_BITS, REASON_NONE, 256, 256, 0)                    \
+    PERIPHERAL, F16, NO_ORACLE, REASON_NONE, 256, 256, 0)                     \
   X(PERIPHERAL_FACTORIZE_F32_OBSERVED, 138,                                  \
     "peripheral-factorize-f32-observed", SAFE, PERIPHERAL, F32, NO_ORACLE,   \
     REASON_NONE, 1536, 1536, 0)                                               \
