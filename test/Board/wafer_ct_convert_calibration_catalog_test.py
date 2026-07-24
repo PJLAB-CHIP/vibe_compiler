@@ -3,7 +3,71 @@
 
 from __future__ import annotations
 
+import pathlib
+import struct
+import tempfile
+
+import wafer_board_ct_convert_calibration_probe_test as runner
 import wafer_ct_convert_calibration_catalog as catalog
+
+
+def validate_resource_canaries() -> None:
+    case = catalog.CASES_BY_NAME[
+        "ct-op139-convert-int8-fp16-main"
+    ]
+    built = catalog.build_case_payload(case)
+    assert built.expected_output_slot is not None
+    raw = bytearray(
+        [runner.package_support.OUTPUT_INITIAL_CANARY]
+        * catalog.RESOURCE_BYTES
+    )
+    raw[
+        catalog.OUTPUT_DDR_OFFSET :
+        catalog.OUTPUT_DDR_OFFSET + catalog.SLOT_BYTES
+    ] = built.expected_output_slot
+    words = [0] * catalog.RECORD_WORDS
+    expected = {
+        "MAGIC": catalog.RECORD_MAGIC,
+        "SCHEMA_AND_WORDS": (catalog.SCHEMA << 32) | catalog.RECORD_WORDS,
+        "STATUS": 0,
+        "CASE": case.case_id,
+        "OPCODE": case.opcode,
+        "SRC_TYPE": catalog.TYPE_CODES[case.source_type],
+        "DST_TYPE": catalog.TYPE_CODES[case.destination_type],
+        "ELEMENTS": case.elements,
+        "INPUT_BYTES": case.input_bytes,
+        "RESULT_BYTES": case.result_bytes,
+        "OUTPUT_SPAN": case.output_span,
+        "ROUNDING": case.rounding_mode,
+        "SAMPLE": 0,
+        "REQUEST_GUARD": catalog.REQUEST_GUARD,
+        "OUTPUT_DDR_OFFSET": catalog.OUTPUT_DDR_OFFSET,
+        "SLOT_BYTES": catalog.SLOT_BYTES,
+        "BODY_OFFSET": catalog.BODY_OFFSET,
+        "OUTPUT_GUARD_MISMATCHES": 0,
+        "CT_INST_DELTA": 1,
+        "DOMAIN": case.domain,
+        "ZERO_POINT": case.zero_point,
+        "DISPOSITION": case.disposition,
+        "RECORD_GUARD": catalog.RECORD_GUARD,
+    }
+    for name, value in expected.items():
+        words[catalog.REC[name]] = value
+    raw[: catalog.RECORD_WORDS * 8] = struct.pack(
+        f"<{catalog.RECORD_WORDS}Q", *words
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        output = pathlib.Path(directory) / "output.raw"
+        output.write_bytes(raw)
+        runner.validate_output(output, case, built, sample=0)
+        raw[catalog.RECORD_WORDS * 8] ^= 1
+        output.write_bytes(raw)
+        try:
+            runner.validate_output(output, case, built, sample=0)
+        except RuntimeError as error:
+            assert "output changed outside record/slot" in str(error)
+        else:
+            raise AssertionError("output resource canary corruption accepted")
 
 
 def main() -> int:
@@ -119,6 +183,7 @@ def main() -> int:
     assert all(catalog.CALIBRATION_LEAF_BINDINGS.values())
     assert len(bound) == len(set(bound)) == len(catalog.CATALOG)
     assert set(bound) == set(catalog.CATALOG)
+    validate_resource_canaries()
     print(
         "wafer_ct_convert_calibration_catalog_test: "
         f"opcodes=36 cases={len(catalog.CATALOG)} "

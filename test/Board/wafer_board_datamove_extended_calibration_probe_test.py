@@ -211,9 +211,11 @@ def validate_output(
 
     mutable = bytearray(raw[: catalog.OUTPUT_DDR_OFFSET])
     mutable[: catalog.RECORD_WORDS * 8] = bytes(
-        [catalog.SLOT_CANARY]
+        [package_support.OUTPUT_INITIAL_CANARY]
     ) * (catalog.RECORD_WORDS * 8)
-    if mutable != bytes([catalog.SLOT_CANARY]) * catalog.OUTPUT_DDR_OFFSET:
+    if mutable != bytes(
+        [package_support.OUTPUT_INITIAL_CANARY]
+    ) * catalog.OUTPUT_DDR_OFFSET:
         raise RuntimeError(f"{case.name}: output changed outside record/slot")
     return {
         "case": case.as_dict(),

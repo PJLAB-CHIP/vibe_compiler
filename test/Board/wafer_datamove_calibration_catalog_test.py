@@ -4,8 +4,60 @@
 from __future__ import annotations
 
 import pathlib
+import struct
+import tempfile
 
+import wafer_board_datamove_calibration_probe_test as runner
 import wafer_datamove_calibration_catalog as catalog
+
+
+def validate_resource_canaries() -> None:
+    case = catalog.CASES_BY_NAME["datamove-transpose-37x53"]
+    built = catalog.build_case_payload(case, sample=0)
+    raw = bytearray(
+        [runner.package_support.OUTPUT_INITIAL_CANARY]
+        * catalog.RESOURCE_BYTES
+    )
+    raw[
+        catalog.OUTPUT_DDR_OFFSET :
+        catalog.OUTPUT_DDR_OFFSET + catalog.SLOT_BYTES
+    ] = built.expected_output_slot
+    words = [0] * catalog.RECORD_WORDS
+    expected = {
+        "MAGIC": catalog.RECORD_MAGIC,
+        "SCHEMA_AND_WORDS": (catalog.SCHEMA << 32) | catalog.RECORD_WORDS,
+        "STATUS": 0,
+        "CASE": case.case_id,
+        "INPUT_BYTES": case.input_bytes,
+        "RESULT_BYTES": case.result_bytes,
+        "OUTPUT_SPAN": case.output_span,
+        "EXPECTED_INSTRUCTIONS": case.expected_instructions,
+        "SAMPLE": 0,
+        "REQUEST_GUARD": catalog.REQUEST_GUARD,
+        "OUTPUT_DDR_OFFSET": catalog.OUTPUT_DDR_OFFSET,
+        "SLOT_BYTES": catalog.SLOT_BYTES,
+        "BODY_OFFSET": catalog.BODY_OFFSET,
+        "OUTPUT_GUARD_MISMATCHES": 0,
+        "TDMA_INST_DELTA": case.expected_instructions,
+        "RECORD_GUARD": catalog.RECORD_GUARD,
+    }
+    for name, value in expected.items():
+        words[catalog.REC[name]] = value
+    raw[: catalog.RECORD_WORDS * 8] = struct.pack(
+        f"<{catalog.RECORD_WORDS}Q", *words
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        output = pathlib.Path(directory) / "output.raw"
+        output.write_bytes(raw)
+        runner.validate_output(output, case, built, sample=0)
+        raw[catalog.RECORD_WORDS * 8] ^= 1
+        output.write_bytes(raw)
+        try:
+            runner.validate_output(output, case, built, sample=0)
+        except RuntimeError as error:
+            assert "output changed outside record/slot" in str(error)
+        else:
+            raise AssertionError("output resource canary corruption accepted")
 
 
 def main() -> int:
@@ -188,6 +240,7 @@ def main() -> int:
         "wafer_dmc_concat_materialized(2600U, 1300U, "
         "5460U, 2730U, 2U)"
     ) in device_probe
+    validate_resource_canaries()
     assert all(
         case.opcode == 135
         for case in catalog.CATALOG
