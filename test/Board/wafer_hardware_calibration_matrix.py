@@ -1115,7 +1115,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
                 )
                 + _catalog_groups(
                     DATAMOVE_EXTENDED_CATALOG,
-                    "raw-concat-c-w-h-hw",
+                    "raw-concat-c-w-h",
                 )
             ),
             oracle=("raw-full-result-capture", "request-echo"),
@@ -1127,9 +1127,9 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             ),
             resource_budget="two-128k-ddr-slots",
             reason=(
-                "raw opcode 131 axis behavior is bounded and captured, but "
-                "its profile-specific physical padding is not promoted to "
-                "an exact compiler contract"
+                "raw opcode 131 C/W/H completion and guards are bounded, but "
+                "their numeric semantics are not yet exact-qualified; HW is "
+                "excluded after an isolated completion timeout"
             ),
         ),
         _board_leaf(

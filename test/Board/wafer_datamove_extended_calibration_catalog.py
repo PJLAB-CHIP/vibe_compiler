@@ -157,6 +157,15 @@ RAW_CONCAT_SPECS = {
         1,
     ),
 }
+# The legacy op_concat production wrapper asserts axis == rank - 1 and maps
+# that logical last dimension to native dims=0 (C).  This is a conservative
+# production contract, not proof that hardware rejects every other encoding:
+# W/H have bounded completion+guard observations.  HW remains isolated after a
+# completion timeout and is not part of the default executable catalog.
+NATIVE_CONCAT_AXES = frozenset({"C", "W", "H"})
+UNQUALIFIED_NATIVE_CONCAT_AXES = frozenset(
+    set(RAW_CONCAT_SPECS) - NATIVE_CONCAT_AXES
+)
 
 
 def _raw_concat_physical_span(axis: str) -> int:
@@ -255,18 +264,6 @@ CONCAT_CASES = (
         oracle=ORACLE_OBSERVATION,
         semantic_axis="H",
         output_span=_raw_concat_physical_span("H"),
-    ),
-    _case(
-        3,
-        "datamove-raw-concat-hw-n2-2x5-3x7-c65",
-        "raw-concat",
-        131,
-        _raw_concat_physical_span("HW"),
-        _compact_bytes(RAW_CONCAT_SPECS["HW"][2]),
-        ct=1,
-        oracle=ORACLE_OBSERVATION,
-        semantic_axis="HW",
-        output_span=_raw_concat_physical_span("HW"),
     ),
 )
 
@@ -662,7 +659,7 @@ EVIDENCE_BY_OPCODE = {
 }
 
 CALIBRATION_LEAF_BINDINGS = {
-    "raw-concat-c-w-h-hw": CONCAT_CASES,
+    "raw-concat-c-w-h": CONCAT_CASES,
     "large-pad-img2col": LARGE_TYPED_CASES,
     "mask-gather-and-bit-vector": RAW_OBSERVATION_CASES[:2],
     "tensor-nom": RAW_OBSERVATION_CASES[2:],

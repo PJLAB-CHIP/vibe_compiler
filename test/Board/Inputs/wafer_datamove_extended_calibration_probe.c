@@ -20,6 +20,7 @@ typedef struct WaferDMXCase {
   uint32_t ct_instructions;
   uint32_t ne_instructions;
   uint32_t oracle;
+  uint32_t executable;
 } WaferDMXCase;
 
 typedef struct WaferDMXPMU {
@@ -32,24 +33,24 @@ typedef struct WaferDMXPMU {
 } WaferDMXPMU;
 
 static const WaferDMXCase wafer_dmx_cases[] = {
-    {0U, 24576U, 16380U, 24576U, 0U, 1U, 0U, 1U},
-    {1U, 17408U, 16380U, 17408U, 0U, 1U, 0U, 1U},
-    {2U, 17920U, 16380U, 17920U, 0U, 1U, 0U, 1U},
-    {3U, 9216U, 8060U, 9216U, 0U, 1U, 0U, 1U},
-    {4U, 9100U, 18200U, 18432U, 1U, 0U, 0U, 0U},
-    {5U, 25740U, 84240U, 84480U, 1U, 0U, 0U, 0U},
-    {6U, 4608U, 260U, 512U, 0U, 1U, 0U, 1U},
-    {7U, 4608U, 260U, 512U, 0U, 1U, 0U, 1U},
-    {8U, 16380U, 16380U, 16384U, 1U, 0U, 0U, 1U},
-    {9U, 512U, 260U, 512U, 2U, 1U, 0U, 0U},
-    {10U, 512U, 260U, 512U, 4U, 1U, 0U, 0U},
-    {11U, 4608U, 32U, 256U, 2U, 0U, 1U, 0U},
-    {12U, 0U, 8064U, 8192U, 1U, 0U, 0U, 0U},
-    {13U, 0U, 8128U, 8192U, 1U, 0U, 0U, 0U},
-    {14U, 0U, 4096U, 4096U, 1U, 0U, 0U, 0U},
-    {15U, 0U, 4096U, 4096U, 1U, 0U, 0U, 0U},
-    {16U, 0U, 4096U, 4096U, 1U, 0U, 0U, 0U},
-    {17U, 0U, 4096U, 4096U, 1U, 0U, 0U, 0U},
+    {0U, 24576U, 16380U, 24576U, 0U, 1U, 0U, 1U, 1U},
+    {1U, 17408U, 16380U, 17408U, 0U, 1U, 0U, 1U, 1U},
+    {2U, 17920U, 16380U, 17920U, 0U, 1U, 0U, 1U, 1U},
+    {3U, 9216U, 8060U, 9216U, 0U, 1U, 0U, 1U, 0U},
+    {4U, 9100U, 18200U, 18432U, 1U, 0U, 0U, 0U, 1U},
+    {5U, 25740U, 84240U, 84480U, 1U, 0U, 0U, 0U, 1U},
+    {6U, 4608U, 260U, 512U, 0U, 1U, 0U, 1U, 1U},
+    {7U, 4608U, 260U, 512U, 0U, 1U, 0U, 1U, 1U},
+    {8U, 16380U, 16380U, 16384U, 1U, 0U, 0U, 1U, 1U},
+    {9U, 512U, 260U, 512U, 2U, 1U, 0U, 0U, 1U},
+    {10U, 512U, 260U, 512U, 4U, 1U, 0U, 0U, 1U},
+    {11U, 4608U, 32U, 256U, 2U, 0U, 1U, 0U, 1U},
+    {12U, 0U, 8064U, 8192U, 1U, 0U, 0U, 0U, 1U},
+    {13U, 0U, 8128U, 8192U, 1U, 0U, 0U, 0U, 1U},
+    {14U, 0U, 4096U, 4096U, 1U, 0U, 0U, 0U, 1U},
+    {15U, 0U, 4096U, 4096U, 1U, 0U, 0U, 0U, 1U},
+    {16U, 0U, 4096U, 4096U, 1U, 0U, 0U, 0U, 1U},
+    {17U, 0U, 4096U, 4096U, 1U, 0U, 0U, 0U, 1U},
 };
 
 static void wafer_dmx_cache_range(uint64_t begin, uint32_t bytes,
@@ -126,7 +127,8 @@ static uint32_t wafer_dmx_decode(const volatile uint64_t *request,
   if (case_id >= sizeof(wafer_dmx_cases) / sizeof(wafer_dmx_cases[0]))
     return WAFER_DMX_STATUS_BAD_REQUEST;
   *selected = wafer_dmx_cases[case_id];
-  if (request[WAFER_DMX_REQ_INPUT_BYTES] != selected->input_bytes ||
+  if (selected->executable == 0U ||
+      request[WAFER_DMX_REQ_INPUT_BYTES] != selected->input_bytes ||
       request[WAFER_DMX_REQ_RESULT_BYTES] != selected->result_bytes ||
       request[WAFER_DMX_REQ_OUTPUT_SPAN] != selected->output_span ||
       request[WAFER_DMX_REQ_TDMA_INSTRUCTIONS] !=
@@ -259,12 +261,6 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
         input, wafer_dmx_shape(2U, 3U, 9U, 65U), input + 7680U,
         wafer_dmx_shape(2U, 4U, 9U, 65U), output,
         wafer_dmx_shape(2U, 7U, 9U, 65U), 2U);
-    break;
-  case 3U:
-    *raw_execute_rc = wafer_dmx_raw_concat(
-        input, wafer_dmx_shape(2U, 2U, 5U, 65U), input + 3072U,
-        wafer_dmx_shape(2U, 3U, 7U, 65U), output,
-        wafer_dmx_shape(2U, 1U, 31U, 65U), 4U);
     break;
   case 4U:
     wafer_tx81_tdma_pad(input, output, 2U, 5U, 7U, 65U, 2U, 7U, 10U, 65U,

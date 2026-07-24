@@ -18,6 +18,12 @@ def validate_concat_physical_spans() -> None:
         "H": 17920,
         "HW": 9216,
     }
+    assert {
+        axis: catalog._raw_concat_physical_span(axis)
+        for axis in catalog.RAW_CONCAT_SPECS
+    } == expected_spans
+    assert catalog.NATIVE_CONCAT_AXES == {"C", "W", "H"}
+    assert catalog.UNQUALIFIED_NATIVE_CONCAT_AXES == {"HW"}
     for sample, case in enumerate(catalog.CONCAT_CASES):
         axis = str(case.semantic_axis)
         left_shape, right_shape, output_shape, _ = (
@@ -142,10 +148,15 @@ def validate_resource_canaries() -> None:
 
 
 def main() -> int:
-    assert len(catalog.CATALOG) == 18
+    assert len(catalog.CATALOG) == 17
     assert len(catalog.CASES_BY_ID) == len(catalog.CATALOG)
     assert len(catalog.CASES_BY_NAME) == len(catalog.CATALOG)
-    assert [case.case_id for case in catalog.CATALOG] == list(range(18))
+    assert [case.case_id for case in catalog.CATALOG] == [
+        0,
+        1,
+        2,
+        *range(4, 18),
+    ]
     assert {case.opcode for case in catalog.CATALOG} >= {
         123,
         131,
@@ -160,7 +171,6 @@ def main() -> int:
         "C",
         "W",
         "H",
-        "HW",
     }
     assert all(not case.is_exact for case in catalog.CONCAT_CASES)
     assert all(case.is_exact for case in catalog.LARGE_TYPED_CASES)
@@ -232,18 +242,23 @@ def main() -> int:
     assert "wafer_tx81_elementwise_add" in probe
     assert "wafer_tx81_gemm" in probe
     for row in (
-        "{0U, 24576U, 16380U, 24576U, 0U, 1U, 0U, 1U}",
-        "{1U, 17408U, 16380U, 17408U, 0U, 1U, 0U, 1U}",
-        "{2U, 17920U, 16380U, 17920U, 0U, 1U, 0U, 1U}",
-        "{3U, 9216U, 8060U, 9216U, 0U, 1U, 0U, 1U}",
+        "{0U, 24576U, 16380U, 24576U, 0U, 1U, 0U, 1U, 1U}",
+        "{1U, 17408U, 16380U, 17408U, 0U, 1U, 0U, 1U, 1U}",
+        "{2U, 17920U, 16380U, 17920U, 0U, 1U, 0U, 1U, 1U}",
+        "{3U, 9216U, 8060U, 9216U, 0U, 1U, 0U, 1U, 0U}",
     ):
         assert row in probe
-    for source1_offset in (16384, 7680, 3072):
+    assert "selected->executable == 0U" in probe
+    assert "case 1U:" in probe
+    assert "case 2U:" in probe
+    assert "case 3U:" not in probe
+    for source1_offset in (16384, 7680):
         assert f"input + {source1_offset}U" in probe
+    assert "input + 3072U" not in probe
     validate_resource_canaries()
     print(
         "wafer_datamove_extended_calibration_catalog_test: "
-        "cases=18 exact=11 observation=7 passed"
+        "cases=17 exact=11 observation=6 passed"
     )
     return 0
 
