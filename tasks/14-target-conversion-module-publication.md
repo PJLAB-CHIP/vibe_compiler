@@ -252,6 +252,10 @@ current v1 最低规则：
   不存在额外packing field或lowering-time pack fallback。
 - ordinary conv、pool/unpool、TDMA pad/img2col 和已支持 peripheral：shape attrs 与 memref、算子和
   capacity 一致；未定义 shape profile 的 op fail closed。
+- ArgMax/ArgMin：目标指令完成后从writeback寄存器读取value/index，通过mapped-SPM CPU store写入两个typed
+  destination，并在wrapper返回前对两个实际写入range覆盖的每条cache line执行mode-dependent
+  `dcache.cipa/civa`及fence/sync。`TsmWaitfinish()`只建立指令到CPU store的完成边界，`volatile` store本身不建立
+  后续NCC DMA可见性；该publication合同由两个extrema wrapper共享，不按kind特判。
 - DTE：bytes/range、peer/endpoint、remote offset、event/status/completion 都来自 typed accepted IR；
   lowering传递本地source offset、accepted remote receiver offset和本地receiver offset，TX81 CRT只在sender
   `dst_addr`边界结合target 4×4 topology形成peer SPM映射地址。不得把mapped peer address回写进IR，
@@ -320,8 +324,9 @@ current v1 已验证边界：
   `csi_kernel_malloc/free`，不能直接泄漏旧heap调用；
 - CRT使用function/data sections和hidden visibility，static archives通过`--exclude-libs,ALL`隐藏；link后gc删除未被当前
   entry closure消费的operator/CRT代码，不能把整份archive symbol surface发布成module ABI；
-- existing ArgMax/ArgMin writeback在destination store前执行`TsmWaitfinish()`，其 typed effect/completion
-  与 result-store contract 由现有 verifier/lowering共同检查。
+- existing ArgMax/ArgMin writeback在destination store前执行`TsmWaitfinish()`，mapped-SPM CPU store后对value/index
+  range执行C908 cache clean-and-invalidate publication；其 typed effect/completion、result-store与后续NCC DMA
+  可见性contract由现有verifier/lowering及CRT conformance共同检查。
 
 current v1不包含oriented GEMM或Count。`wafer_tx81_gemm`永远只代表v1 normal/normal；
 `wafer_tx81_gemm_oriented_v2`逐字段携带两个orientation且只在v2 runtime ABI解码。symbol存在也不证明
@@ -477,6 +482,8 @@ current v1测试层次：
 2. conversion：branch/loop/call结构保持、typed calls、full legality、late failure source identity；
 3. profile/format：explicit v1 profile、unknown/missing拒绝、engine×format和convert whitelist；
 4. CRT：111-symbol header/source/signature/wrapper conformance，v1/v2 GEMM transflag分别固定/显式；
+   ArgMax/ArgMin共同writeback helper的wait、mapped store、cache-range publication顺序由source checker与
+   C908 object反汇编同时锁定；
 5. device link：compiler-generated positive和required/allowed undefined negative；
 6. owner lifetime：rank-count=1/16 `TargetLLVMModuleBundle`、module/context lifetime、move-only type；
 7. Q17 publication：all-and-only modules、identity/ABI slots/digest和late-rank atomic failure；

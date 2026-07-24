@@ -407,6 +407,37 @@ static void wafer_store_value(uint64_t addr, uint32_t format, uint64_t value) {
   }
 }
 
+/*
+ * Arg extrema results arrive through CPU-visible writeback registers and are
+ * stored through the Kcore mapped-SPM window.  A following NCC DMA does not
+ * snoop the Kcore's private write-back cache, so publish every cache line
+ * touched by those stores before the wrapper returns.
+ */
+static void wafer_publish_spm_range(uint64_t begin, uint32_t bytes) {
+  enum {
+    WAFER_TX81_SUPERVISOR_MODE = 1,
+    WAFER_TX81_MACHINE_MODE = 3,
+    WAFER_TX81_CACHE_LINE_BYTES = 64,
+  };
+  uintptr_t address =
+      (uintptr_t)begin & ~(uintptr_t)(WAFER_TX81_CACHE_LINE_BYTES - 1);
+  uintptr_t end = (uintptr_t)begin + bytes;
+  uintptr_t mode;
+  __asm__ volatile("fence" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+  __asm__ volatile("csrr %0, mxstatus" : "=r"(mode));
+  mode = (mode >> 30) & 3U;
+  for (; address < end; address += WAFER_TX81_CACHE_LINE_BYTES) {
+    if (mode == WAFER_TX81_MACHINE_MODE)
+      __asm__ volatile("dcache.cipa %0" : : "r"(address) : "memory");
+    else if (mode == WAFER_TX81_SUPERVISOR_MODE)
+      __asm__ volatile("dcache.civa %0" : : "r"(address) : "memory");
+  }
+  __asm__ volatile("sync.is" ::: "memory");
+  __asm__ volatile("fence" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+}
+
 void wafer_tx81_rdma(uint64_t src, uint64_t dst, uint32_t byte_count,
                      uint32_t inner_bytes, uint32_t stride0, uint32_t stride1,
                      uint32_t stride2, uint32_t iteration0, uint32_t iteration1,
@@ -1015,10 +1046,12 @@ void wafer_tx81_tdma_img2col(uint64_t src, uint64_t dst, uint32_t src_n,
 static void wafer_arg_writeback(uint64_t value_dst, uint64_t index_dst,
                                 uint32_t format, TsmPeripheralInstr *instr) {
   (void)TsmWaitfinish();
-  wafer_store_value(wafer_spm_mapped_addr(value_dst), format,
-                    instr->param.wb_data0);
-  wafer_store_u32(wafer_spm_mapped_addr(index_dst),
-                  (uint32_t)instr->param.wb_data1);
+  uint64_t value_addr = wafer_spm_mapped_addr(value_dst);
+  uint64_t index_addr = wafer_spm_mapped_addr(index_dst);
+  wafer_store_value(value_addr, format, instr->param.wb_data0);
+  wafer_store_u32(index_addr, (uint32_t)instr->param.wb_data1);
+  wafer_publish_spm_range(value_addr, wafer_format_bytes(format));
+  wafer_publish_spm_range(index_addr, sizeof(uint32_t));
 }
 
 void wafer_tx81_peripheral_argmax(uint64_t src, uint64_t value_dst,

@@ -215,6 +215,12 @@ held-out。
 `board-observed`，subgroup仍`unknown`。首轮probe出现Direct DTE terminal status `0xffffffff`的根因是
 手写cluster entry遗漏terminal ABI的`begin_after_prepare`/`finish`；补齐后同一barrier通过，不能把该
 probe错误归因于硬件barrier。
+instruction-family probe完成SPM seed cache clean后的最新safe suite在`peripheral-argmin-f16`失败：
+output slot byte 256实际`0x80`、预期`0x00`，实际字节精确对应本case output seed `-13.0`的FP16低字节；
+前一ArgMax通过，排除上一case输出。host诊断定位到ArgMax/ArgMin共享CRT writeback在`TsmWaitfinish()`后做
+mapped-SPM CPU store但未建立后续WDMA可见的cache publication。共享helper现对value/index实际range执行
+mode-dependent C908 clean-and-invalidate；本批host conformance/instruction catalog、no-card package及最终module
+目标反汇编已通过。板端复验未由本批执行，Q37 instruction-family safe suite保持未重新闭合。
 
 Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
 现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的

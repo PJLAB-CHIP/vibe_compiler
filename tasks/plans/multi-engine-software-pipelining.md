@@ -250,6 +250,13 @@ Pipeline position:
   该case只作为BF16 format/current layout基线，不外推累加舍入、transpose或tail。
   BF16 PoolMax与TDMA Img2Col也已沿用对应FP16 geometry逐case串行通过，分别精确验证256B与2048B
   output及guard；这些case闭合BF16 format路径，不新增geometry外推。
+- instruction probe seed完成mapped-SPM cache clean后的最新safe suite在`peripheral-argmin-f16`重新失败：
+  output slot byte 256实际为`0x80`、预期为`0x00`；`0x80`是本case output seed `-13.0`的FP16低字节，
+  且前一ArgMax已通过，因此不是上一case结果或input setup陈旧。该证据重新打开Arg extrema writeback
+  publication gate：`TsmWaitfinish()`后的mapped-SPM CPU store可能停留在Kcore private cache，后续WDMA读到seed。
+  CRT现由ArgMax/ArgMin共享writeback helper在value/index store后clean实际range覆盖的cache line；本批host
+  conformance、instruction catalog、no-card package及最终module C908反汇编已通过，仍需独立板端复验；
+  未复验前不恢复safe suite整体通过状态。
 - ordinary Conv verifier已从legacy `[Kh,Kw,I,O]`修正为current wrapper合同
   `[Kx,Ky,O,I]`，kernel/stride/dilation分别为`[Kx,Ky,Sx,Sy]`与`[Dx,Dy]`，并由非对称正反例、
   register-bound axis case和完整target ABI golden验证。对应FP16 Conv以`Sx/Sy=2/1`、

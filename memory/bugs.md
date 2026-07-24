@@ -1295,6 +1295,20 @@
 - 防复发：instruction microcase的setup必须自身同步且不依赖待校准的其它engine；若实际值精确对应上一case的
   输入，先对照raw payload与前一case语义，再判断oracle或硬件数值能力。
 
+## 2026-07-24 mapped-SPM CPU writeback必须发布后才能由NCC DMA消费
+
+- 现象：instruction probe已对全部SPM seed执行cache clean后，ArgMax通过而随后的FP16 ArgMin仍在output slot
+  byte 256得到`0x80`、预期`0x00`。`0x80`正是本case output seed `-13.0`的低字节，不是上一ArgMax输出，
+  说明ArgMin的CPU writeback没有被后续WDMA观察到。
+- 根因：ArgMax/ArgMin共享wrapper在`TsmWaitfinish()`后读取`wb_data0/wb_data1`并通过mapped-SPM执行
+  `volatile` CPU store，但没有clean Kcore private write-back cache。wait只建立目标指令到CPU store的完成关系，
+  `volatile`和fence不能建立CPU store到NCC DMA的cache publication。
+- 修复模式：在两个store完成后，由共享extrema writeback helper按value dtype width和4-byte index width覆盖
+  实际cache line，执行machine `dcache.cipa`或supervisor `dcache.civa`及fence/sync；不要按ArgMin kind特判。
+  source conformance锁定wait→mapped store→publication顺序，目标对象反汇编锁定两种mode的cache opcode。
+- 防复发：Kcore→NCC、NCC→Kcore、Kcore→host是不同可见性方向；完成wait、CPU store、DMA copyback也分别是
+  不同gate。输出精确保留本case seed时，应优先检查producer publication，不能从前一case语义或数值oracle解释。
+
 ## 2026-07-23 1x1 Img2Col case会掩盖wrapper layout合同错误
 
 - 现象：Instr verifier长期把Img2Col参数解释为`[Kh,Kw,Sh,Sw]`并要求传统

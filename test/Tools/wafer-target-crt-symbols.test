@@ -16,6 +16,17 @@
 # SURFACE: checked 111 production wafer_tx81_* CRT symbols from the shared typed target-call registry
 # CONFORMANCE: checked Wafer target CRT conformance rules from compiler and CRT code: formats=13, encoding_rows=65, convert_routes=36, groups=4/23/9
 
+# LIFECYCLE-LABEL: <wafer_arg_writeback>:
+# LIFECYCLE: R_RISCV_CALL_PLT TsmWaitfinish
+# LIFECYCLE: R_RISCV_CALL_PLT get_spm_memory_mapping
+# LIFECYCLE: R_RISCV_CALL_PLT get_spm_memory_mapping
+# LIFECYCLE: sw {{[a-z0-9]+}},0({{[a-z0-9]+}})
+# LIFECYCLE: andi {{[a-z0-9]+}},{{[a-z0-9]+}},-64
+# LIFECYCLE: dcache.civa
+# LIFECYCLE: andi {{[a-z0-9]+}},{{[a-z0-9]+}},-64
+# LIFECYCLE: dcache.civa
+# LIFECYCLE: dcache.cipa
+# LIFECYCLE: dcache.cipa
 # LIFECYCLE-LABEL: <wafer_tx81_direct_dte_begin>:
 # LIFECYCLE: andi {{[a-z0-9]+}},{{[a-z0-9]+}},-64
 # LIFECYCLE: sw zero,0({{[a-z0-9]+}})

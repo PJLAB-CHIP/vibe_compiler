@@ -667,15 +667,51 @@ def check_arg_writeback(
     )
     body = function_body(source_text, "wafer_arg_writeback")
     require_contains(body, "TsmWaitfinish()", "argmax/argmin writeback wait")
-    require_pattern(
+    for needle in [
+        "uint64_t value_addr = wafer_spm_mapped_addr(value_dst);",
+        "uint64_t index_addr = wafer_spm_mapped_addr(index_dst);",
+        "wafer_store_value(value_addr, format, instr->param.wb_data0);",
+        "wafer_store_u32(index_addr, (uint32_t)instr->param.wb_data1);",
+        "wafer_publish_spm_range(value_addr, wafer_format_bytes(format));",
+        "wafer_publish_spm_range(index_addr, sizeof(uint32_t));",
+    ]:
+        require_contains(
+            body, needle, "argmax/argmin mapped writeback publication"
+        )
+    require_in_order(
         body,
-        r"wafer_store_value\s*\(\s*wafer_spm_mapped_addr\s*\(\s*value_dst\s*\)\s*,\s*format\s*,\s*instr->param\.wb_data0\s*\)",
-        "argmax/argmin value mapped store",
+        [
+            "wafer_store_value(value_addr, format, instr->param.wb_data0);",
+            "wafer_store_u32(index_addr, (uint32_t)instr->param.wb_data1);",
+            "wafer_publish_spm_range(value_addr, wafer_format_bytes(format));",
+            "wafer_publish_spm_range(index_addr, sizeof(uint32_t));",
+        ],
+        "argmax/argmin store-before-publication",
+    )
+    publication = function_body(source_text, "wafer_publish_spm_range")
+    for needle in [
+        "WAFER_TX81_CACHE_LINE_BYTES = 64",
+        '__asm__ volatile("fence"',
+        '__asm__ volatile("sync"',
+        '__asm__ volatile("csrr %0, mxstatus"',
+        '__asm__ volatile("dcache.cipa %0"',
+        '__asm__ volatile("dcache.civa %0"',
+        '__asm__ volatile("sync.is"',
+    ]:
+        require_contains(
+            publication, needle, "argmax/argmin mapped-SPM cache publication"
+        )
+    require_pattern(
+        publication,
+        r"\(uintptr_t\)begin\s*&\s*~\(uintptr_t\)"
+        r"\(WAFER_TX81_CACHE_LINE_BYTES\s*-\s*1\)",
+        "argmax/argmin mapped-SPM cache-line alignment",
     )
     require_pattern(
-        body,
-        r"wafer_store_u32\s*\(\s*wafer_spm_mapped_addr\s*\(\s*index_dst\s*\)\s*,\s*\(uint32_t\)instr->param\.wb_data1\s*\)",
-        "argmax/argmin index mapped store",
+        publication,
+        r"for\s*\(\s*;\s*address\s*<\s*end\s*;\s*"
+        r"address\s*\+=\s*WAFER_TX81_CACHE_LINE_BYTES\s*\)",
+        "argmax/argmin mapped-SPM cache-range coverage",
     )
     for symbol in [
         "wafer_tx81_peripheral_argmax",
