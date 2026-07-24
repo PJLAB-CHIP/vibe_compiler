@@ -60,6 +60,10 @@ DOMAINS = {
     "SNAN": 8,
     "SIGNED_ZERO": 9,
 }
+OUTPUT_ZERO_SIGN_POLICIES = {
+    "AS_COMPUTED",
+    "CANONICAL_POSITIVE",
+}
 REQ = {
     "MAGIC": 0,
     "SCHEMA_AND_WORDS": 1,
@@ -275,6 +279,15 @@ def _domain_disposition(opcode: int, domain_name: str) -> str:
     return "BOARD_OBSERVED"
 
 
+def _output_zero_sign_policy(opcode: int, dtype_name: str) -> str:
+    # The TX81 F16 Neg entry canonicalizes a zero result to +0.  Keep this
+    # per-opcode and per-dtype: the calibration contract does not infer BF16
+    # or F32 behavior from the first F16 board observation.
+    if opcode == 5 and dtype_name == "F16":
+        return "CANONICAL_POSITIVE"
+    return "AS_COMPUTED"
+
+
 @dataclasses.dataclass(frozen=True)
 class CTVectorCase:
     case_id: int
@@ -285,6 +298,7 @@ class CTVectorCase:
     dtype_name: str
     disposition_name: str
     domain_name: str
+    output_zero_sign_policy_name: str
     shape_name: str
     elements: int
     result_bytes: int
@@ -334,6 +348,9 @@ class CTVectorCase:
             ),
             "disposition": self.disposition_name.lower(),
             "numeric_domain": self.domain_name.lower().replace("_", "-"),
+            "output_zero_sign_policy": (
+                self.output_zero_sign_policy_name.lower().replace("_", "-")
+            ),
             "shape": self.shape_name,
             "elements": self.elements,
             "unit_elements": UNIT_ELEMENTS if _is_vuv(self.opcode) else 0,
@@ -397,6 +414,9 @@ def build_catalog() -> tuple[CTVectorCase, ...]:
                         dtype_name=dtype_name,
                         disposition_name=_disposition(opcode),
                         domain_name="NORMAL",
+                        output_zero_sign_policy_name=(
+                            _output_zero_sign_policy(opcode, dtype_name)
+                        ),
                         shape_name=shape_name,
                         elements=elements,
                         result_bytes=result_bytes,
@@ -426,6 +446,9 @@ def build_catalog() -> tuple[CTVectorCase, ...]:
                         opcode, domain_name
                     ),
                     domain_name=domain_name,
+                    output_zero_sign_policy_name=(
+                        _output_zero_sign_policy(opcode, dtype_name)
+                    ),
                     shape_name="main",
                     elements=elements,
                     result_bytes=result_bytes,
@@ -868,6 +891,8 @@ def _numeric_expected(
         values = tuple(function(value) for value in lhs)
     else:
         raise RuntimeError(f"{case.name}: numeric oracle family is invalid")
+    if case.output_zero_sign_policy_name == "CANONICAL_POSITIVE":
+        values = tuple(0.0 if value == 0.0 else value for value in values)
     return _encode(case.dtype_name, values)
 
 

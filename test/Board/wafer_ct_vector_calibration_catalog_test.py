@@ -240,6 +240,62 @@ def main() -> int:
         catalog.build_case_payload(negative_sqrt).expected_result is None
     )
 
+    f16_neg = catalog.CASES_BY_NAME[
+        "ct-op005-arithop_v_v_neg-f16-main"
+    ]
+    f16_neg_signed_zero = catalog.CASES_BY_NAME[
+        "ct-op005-arithop_v_v_neg-f16-signed-zero"
+    ]
+    bf16_neg = catalog.CASES_BY_NAME[
+        "ct-op005-arithop_v_v_neg-bf16-main"
+    ]
+    f32_neg = catalog.CASES_BY_NAME[
+        "ct-op005-arithop_v_v_neg-f32-main"
+    ]
+    assert (
+        f16_neg.output_zero_sign_policy_name
+        == f16_neg_signed_zero.output_zero_sign_policy_name
+        == "CANONICAL_POSITIVE"
+    )
+    assert (
+        f16_neg.as_dict()["output_zero_sign_policy"]
+        == "canonical-positive"
+    )
+    f16_neg_expected = catalog.build_case_payload(f16_neg).expected_result
+    f16_signed_zero_expected = catalog.build_case_payload(
+        f16_neg_signed_zero
+    ).expected_result
+    assert f16_neg_expected is not None
+    assert f16_signed_zero_expected is not None
+    assert f16_neg_expected[6:8] == b"\x00\x00"
+    assert runner._validate_numeric(
+        f16_neg, f16_neg_expected, f16_neg_expected
+    ) == {"mismatches": 0}
+    wrong_f16_zero_sign = bytearray(f16_neg_expected)
+    wrong_f16_zero_sign[7] = 0x80
+    try:
+        runner._validate_numeric(
+            f16_neg, bytes(wrong_f16_zero_sign), f16_neg_expected
+        )
+    except RuntimeError as error:
+        assert "exact result differs at byte 7" in str(error)
+    else:
+        raise AssertionError("F16 Neg zero-sign policy stopped being exact")
+    assert set(
+        struct.unpack(
+            f"<{len(f16_signed_zero_expected) // 2}H",
+            f16_signed_zero_expected,
+        )
+    ) == {0}
+    assert bf16_neg.output_zero_sign_policy_name == "AS_COMPUTED"
+    assert f32_neg.output_zero_sign_policy_name == "AS_COMPUTED"
+    bf16_neg_expected = catalog.build_case_payload(bf16_neg).expected_result
+    f32_neg_expected = catalog.build_case_payload(f32_neg).expected_result
+    assert bf16_neg_expected is not None
+    assert f32_neg_expected is not None
+    assert bf16_neg_expected[6:8] == b"\x00\x80"
+    assert f32_neg_expected[12:16] == b"\x00\x00\x00\x80"
+
     bound = tuple(
         case
         for cases in catalog.CALIBRATION_LEAF_BINDINGS.values()
