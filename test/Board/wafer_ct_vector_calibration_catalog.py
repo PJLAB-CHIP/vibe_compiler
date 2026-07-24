@@ -280,10 +280,8 @@ def _domain_disposition(opcode: int, domain_name: str) -> str:
 
 
 def _output_zero_sign_policy(opcode: int, dtype_name: str) -> str:
-    # The TX81 F16 and BF16 Neg entries canonicalize a zero result to +0.
-    # Keep this per-opcode and per-dtype: the calibration contract does not
-    # infer F32 behavior from the F16/BF16 board observations.
-    if opcode == 5 and dtype_name in {"F16", "BF16"}:
+    # The TX81 floating Neg entries canonicalize a zero result to +0.
+    if opcode == 5 and dtype_name in FLOAT_DTYPES:
         return "CANONICAL_POSITIVE"
     return "AS_COMPUTED"
 
