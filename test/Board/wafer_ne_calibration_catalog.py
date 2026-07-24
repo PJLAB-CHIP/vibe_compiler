@@ -15,7 +15,7 @@ REQUEST_MAGIC = 0x31514552454E4357
 RECORD_MAGIC = 0x31434552454E4357
 REQUEST_GUARD = 0xB7A6958473625140
 RECORD_GUARD = 0x0F1E2D3C4B5A6978
-SCHEMA = 3
+SCHEMA = 4
 REQUEST_WORDS = 24
 RECORD_WORDS = 32
 RESOURCE_BYTES = 1048576
@@ -365,6 +365,7 @@ def _option_disposition(option_name: str) -> str:
         if option_name
         in {
             "BIAS",
+            "RELU",
             "LEAKY_RELU",
             "POSITIVE_AXIS_SCALE",
             "NEGATIVE_AXIS_SCALE",
@@ -381,6 +382,13 @@ def _option_reason(option_name: str) -> str:
             "despite bias_en and a populated bias address; raw output "
             "records the observed behavior without treating that no-op as "
             "additive bias semantics"
+        )
+    if option_name == "RELU":
+        return (
+            "current FP16 GEMM profile retained negative base results despite "
+            "relu_en; FP16 and BF16 share this wrapper option row, so raw "
+            "output records the profile behavior without treating the "
+            "observed no-op as ReLU semantics"
         )
     if _option_disposition(option_name) == "BOARD_OBSERVED":
         return (
@@ -464,7 +472,13 @@ def _make_conv_case(
             + option
             - 1
         )
-    disposition = _option_disposition(option_name)
+    disposition = "BOARD_OBSERVED"
+    reason = (
+        "the bounded nontrivial Conv output does not match the current host "
+        "NCx/HWOI numeric oracle beyond the first output pixel; until feature, "
+        "weight, and output physical indexing are distinguished, raw output "
+        "must not establish exact Conv or fused-option semantics"
+    )
     return NECase(
         case_id=case_id,
         name=(
@@ -487,7 +501,7 @@ def _make_conv_case(
         profile_name=profile_name,
         option_name=option_name,
         disposition_name=disposition,
-        reason=_option_reason(option_name),
+        reason=reason,
         lhs_layout=lhs_layout,
         rhs_layout=rhs_layout,
         output_layout=output_layout,
@@ -601,17 +615,31 @@ def _make_quant_case() -> NECase:
 
 def _make_conv_kind_case(dtype_name: str, kind_name: str) -> NECase:
     input_shape = (1, 4, 4, 64)
-    output_shape = input_shape
     if kind_name == "DEPTHWISE_CONV":
         profile_name = "DEPTHWISE_1X1"
         weight_shape = (1, 1, 64, 1)
+        output_shape = input_shape
         ordinal_base = 4
         spelling = "depthwise-conv"
+        reason = (
+            "raw output closes bounded wrapper execution while the distinct "
+            "weight/channel relation remains a calibration result"
+        )
     elif kind_name == "BACKWARD_CONV":
         profile_name = "BACKWARD_1X1"
         weight_shape = (1, 1, 64, 64)
+        # For backward Conv the wrapper's AddWeight shape owns tfr_1, so the
+        # physical output transfer footprint follows the weight-gradient
+        # shape rather than the shape argument passed to AddOutput.
+        output_shape = weight_shape
         ordinal_base = 6
         spelling = "backward-conv"
+        reason = (
+            "raw output closes bounded wrapper execution; backward Conv "
+            "takes its physical output transfer shape from the full weight "
+            "shape stored in tfr_1, while the numeric relation remains a "
+            "calibration result"
+        )
     else:
         raise RuntimeError(f"unknown observed convolution kind {kind_name}")
     layout = "Cx"
@@ -631,10 +659,7 @@ def _make_conv_kind_case(dtype_name: str, kind_name: str) -> NECase:
         profile_name=profile_name,
         option_name="NONE",
         disposition_name="BOARD_OBSERVED",
-        reason=(
-            "raw output closes bounded wrapper execution while the distinct "
-            "weight/channel relation remains a calibration result"
-        ),
+        reason=reason,
         lhs_layout=layout,
         rhs_layout=layout,
         output_layout=layout,
@@ -1252,8 +1277,6 @@ def _apply_exact_option(
             value + extra
             for value, extra in zip(base, auxiliary, strict=True)
         )
-    if case.option_name == "RELU":
-        return tuple(max(value, 0.0) for value in base)
     raise RuntimeError(
         f"{case.name}: observed option must not request an exact oracle"
     )

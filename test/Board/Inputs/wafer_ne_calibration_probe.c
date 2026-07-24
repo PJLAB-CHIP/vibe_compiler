@@ -113,7 +113,7 @@ static uint32_t wafer_nec_geometry(uint32_t batch, uint32_t m, uint32_t k,
 
 static uint32_t wafer_nec_option_disposition(uint32_t option) {
   return (option == WAFER_NEC_OPTION_BIAS ||
-          option >= WAFER_NEC_OPTION_LEAKY_RELU)
+          option >= WAFER_NEC_OPTION_RELU)
              ? WAFER_NEC_BOARD_OBSERVED
              : WAFER_NEC_BOARD_EXACT;
 }
@@ -253,14 +253,13 @@ static uint32_t wafer_nec_decode(const volatile uint64_t *request,
         (profile == WAFER_NEC_CONV_HELDOUT &&
          option != WAFER_NEC_OPTION_NONE))
       return WAFER_NEC_STATUS_UNSUPPORTED_CASE;
+    expected_disposition = WAFER_NEC_BOARD_OBSERVED;
     if (option == WAFER_NEC_OPTION_NONE) {
       expected_case = WAFER_NEC_CONV_CASE_BASE + dtype * 2U +
                       (profile == WAFER_NEC_CONV_HELDOUT);
     } else {
       expected_case = WAFER_NEC_CONV_OPTION_CASE_BASE +
                       dtype * 6U + option - 1U;
-      expected_disposition =
-          wafer_nec_option_disposition(option);
     }
     lhs_span = wafer_nec_physical_span(2U, 17U * 19U, 65U, 2U);
     rhs_span = wafer_nec_physical_span(1U, 3U * 2U * n, 65U, 2U);
@@ -286,7 +285,9 @@ static uint32_t wafer_nec_decode(const volatile uint64_t *request,
     rhs_span = kind == WAFER_NEC_DEPTHWISE_CONV
                    ? wafer_nec_physical_span(1U, 64U, 1U, 2U)
                    : wafer_nec_physical_span(1U, 64U, 64U, 2U);
-    output_span = wafer_nec_physical_span(1U, 16U, 64U, 2U);
+    output_span = kind == WAFER_NEC_DEPTHWISE_CONV
+                      ? wafer_nec_physical_span(1U, 16U, 64U, 2U)
+                      : rhs_span;
   }
   if (request[WAFER_NEC_REQ_CASE] != expected_case ||
       request[WAFER_NEC_REQ_LHS_SPAN] != lhs_span ||

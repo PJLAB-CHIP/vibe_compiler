@@ -102,13 +102,13 @@ no-card验证；不能只检查宽泛文件存在、手填`remaining_preparation
 旧版机器索引曾错误报告`28/28 ready`：它只证明28个域绑定了文件和CTest，没有证明每个校准叶子存在。
 该结论已撤回并按叶子重建门禁；Q37继续`doing`，因为实卡执行、held-out成熟度和software-pipeline
 vertical仍未完成。当前28个导航域下面的叶子均由机器索引解析到concrete catalog/contract对象或带理由
-的非执行对象；机器矩阵当前闭合121个叶子：75个`board-positive`、20个`board-observation`、
+的非执行对象；机器矩阵当前闭合121个叶子：74个`board-positive`、21个`board-observation`、
 6个`delegated-positive`、18个`static-negative`和2个`isolated-deferred`。catalog分组全部被记账，允许共享的
 case有显式白名单，其余分组只允许一次引用。`ready`只表示可以按处置执行或跳过，不是板端结论。
 当前实卡前资产覆盖CT vector 653行、convert 204行（158 exact、46 observation，含23个stochastic
 重复采样）和全部187个opcode disposition（177 board-executable、8 board-observation、
 2 static-negative），以及71个
-instruction-family safe case；NE有46 exact、21 observation、3 static-negative，新增I8 quant、
+instruction-family safe case；NE有32 exact、35 observation、3 static-negative，新增I8 quant、
 FP16/BF16 Depthwise/BackwardConv和左右不等batch；DataMove为base 46 + extended 18个case，公开
 `121..138`为14 exact、4 observation、0 deferred，20个instruction-layout组合为8 native、
 3 materialize-then-consume、9 static-negative。memory-descriptor的59个case覆盖DMA/DDR offset、64KiB、
@@ -204,6 +204,13 @@ NE后续held-out矩阵也已逐项通过：FP16覆盖非平凡累加、`M=4`、b
 `N=17/N=65`、NT/TN/TT orientation和raw psum；BF16覆盖batch2/`M=8`、`K=17`、`N=65`及NT。
 每项均有完整logical result、physical span和guard oracle；raw psum只闭合本地nonzero psum writeback，
 不外推跨tile reduction或communication。
+NE one-factor后续raw进一步收紧oracle边界：FP16 GEMM ReLU的完整结果逐bit等于bare baseline，3828个负值
+仍未clamp，因此FP16/BF16共享wrapper的ReLU row均保持observation，不宣称exact activation；非平凡large
+ordinary Conv从logical element 97开始与current NCx/HWOI host oracle不符，且四个已执行option逐bit等于
+同一baseline，ordinary Conv bare/option统一保持observation，等待独立physical indexing区分向量。
+BackwardConv的type-2 wrapper由AddWeight full shape写`tfr_1`，因此`[1,1,64,64]` FP16 physical output
+footprint为8192B；旧catalog按AddOutput参数只允许2048B，恰产生6144个guard mismatch。catalog/probe现由
+weight shape推导8192B，span外guard仍严格；本批只做旧raw离线重放与no-card，修正后尚待独立板端复验。
 Unpool协议已从错误的scalar `uint32` index attr收敛为显式i16 SPM index memref：indexedmax/min pool的
 第二个结果使用i16，mask/unpool消费该same-shape buffer，avg不消费并在既有ABI槽传0；target lowering只把
 已验证的静态SPM起始地址写入该`uint32_t`槽。FP16板测以indexedmax

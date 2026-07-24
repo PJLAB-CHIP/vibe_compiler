@@ -1320,13 +1320,18 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
                 "both combinations before packet construction"
             ),
         ),
-        _board_leaf(
+        _observation_leaf(
             "ne-conv-large-held-out",
             "calibration",
             "rank-one-worker0",
             NE_CATALOG,
             "ne-conv-large-heldout",
             resource_budget="bounded-ne-shared-package",
+            reason=(
+                "the bounded ordinary-Conv rows have completion and physical "
+                "guards, but the current NCx/HWOI host numeric oracle does "
+                "not explain the nontrivial board output"
+            ),
         ),
         _observation_leaf(
             "ne-depthwise-backward-conv",

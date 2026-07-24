@@ -93,13 +93,13 @@ Pipeline position:
   2 static-negative；convert
   204行中158 exact、46 observation，23个stochastic row均为可执行重复采样；instruction-family有71个
   safe case。DataMove为base 46 + extended 18个case，公开`121..138`处置为14 exact、4 observation、
-  0 deferred。NE为46 exact、21 observation、3 static-negative，新增quant、Depthwise/BackwardConv和
+  0 deferred。NE为32 exact、35 observation、3 static-negative，新增quant、Depthwise/BackwardConv和
   左右不等batch。memory-descriptor有59个case，SPM 84行拆为19个本地board、15个static-negative、
   50个concrete delegated、0 deferred。NCC新增constructor nonnull、default/byworker scope、六个subset
   join、all-direction producer/consumer、strided dependency、large backlog与手写double-slot hardware
   observation。Direct DTE另有source提前复用、invalid FSM与unknown event wait三种同步错误观察；
   receiver未prepare因可能进入无设备timeout的永久等待而继续隔离。机器矩阵当前共121个叶子：
-  75个board positive、20个board observation、6个delegated positive、18个static negative和2个
+  74个board positive、21个board observation、6个delegated positive、18个static negative和2个
   isolated deferred。以上均只表示case、target/no-card ready，尚未取得本轮板端结果。
 - NCC统一板前门禁覆盖185个计划：176个普通safe计划进入同一串行CTest，constructor、default/byworker
   对照和六个proper-subset join共9个以独立进程执行。完整板端执行使用
@@ -274,6 +274,11 @@ Pipeline position:
   同一geometry的BF16 Conv也以tight payload和exact bits独立通过，只扩展BF16 format资格，不外推其它
   geometry或非平凡累加舍入。
   NE BF16 `M1K16N16`非平凡向量的每个输出含16个非零K贡献，并以exact bits同时闭合round-up/down；
+  后续large raw表明current oracle仍不能外推到非平凡ordinary Conv：FP16 bare从logical element 97开始
+  与host NCx/HWOI expected不符，四个已执行option与bare逐bit相同，因此全部ordinary Conv row降为
+  observation。FP16 GEMM ReLU也逐bit等于bare并保留3828个负值，FP16/BF16共享wrapper的ReLU row均降为
+  observation。BackwardConv type-2由weight shape拥有`tfr_1`，其`[1,1,64,64]` FP16 output footprint为
+  8192B；旧2048B span造成的6144个guard mismatch已由shape/layout推导修正，span外guard继续严格。
   它排除逐项BF16累加与末端截断，但不外推transpose、batch或tail。
 - 旧single-engine CT issue limit 5连续三次完整正确且`control_after_issue=0x100`，issue limit 6第一次
   timeout，随后known-good Add也timeout；同时`tsm_smi`仍显示idle。但旧probe把所有`TsmNew` builder保留到

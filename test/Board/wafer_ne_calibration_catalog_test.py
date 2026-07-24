@@ -6,6 +6,7 @@ from __future__ import annotations
 import pathlib
 import struct
 import tempfile
+from collections import Counter
 
 import wafer_board_ne_calibration_probe_test as runner
 import wafer_ne_calibration_catalog as catalog
@@ -16,6 +17,11 @@ def main() -> int:
     assert len(catalog.SAFE_CASES) == 67
     assert len(catalog.CATALOG) == 70
     assert len(catalog.CASES_BY_NAME) == len(catalog.CATALOG)
+    assert Counter(case.disposition_name for case in catalog.CATALOG) == {
+        "BOARD_EXACT": 32,
+        "BOARD_OBSERVED": 35,
+        "STATIC_NEGATIVE": 3,
+    }
     coverage = {
         (
             case.dtype_name,
@@ -240,8 +246,11 @@ def main() -> int:
     }
     for case in bias_cases:
         assert case.disposition_name == "BOARD_OBSERVED"
-        assert "base output unchanged" in case.reason
-        assert "bias_en" in case.reason
+        if case.kind_name == "GEMM":
+            assert "base output unchanged" in case.reason
+            assert "bias_en" in case.reason
+        else:
+            assert "NCx/HWOI numeric oracle" in case.reason
         bias_built = catalog.build_case_payload(case)
         assert bias_built.expected_logical is None
         assert bias_built.expected_physical is None
@@ -261,11 +270,43 @@ def main() -> int:
         catalog._encode(bias.dtype_name, value)
         for value in bias_additive
     )
+    relu_cases = tuple(
+        case
+        for case in catalog.SAFE_CASES
+        if case.option_name == "RELU"
+    )
+    assert {
+        (case.kind_name, case.dtype_name) for case in relu_cases
+    } == {
+        (kind, dtype)
+        for kind in ("GEMM", "CONV")
+        for dtype in catalog.FLOAT_DTYPES
+    }
+    assert all(
+        case.disposition_name == "BOARD_OBSERVED"
+        and catalog.build_case_payload(case).expected_logical is None
+        and catalog.build_case_payload(case).expected_physical is None
+        for case in relu_cases
+    )
+    f16_relu = catalog.CASES_BY_NAME["ne-f16-large-nn-relu"]
+    relu_lhs, relu_rhs = catalog._gemm_inputs(f16_relu)
+    relu_base = catalog._gemm_expected_values(
+        f16_relu, relu_lhs, relu_rhs
+    )
+    assert any(value < 0.0 for value in relu_base)
+    assert "retained negative base results" in f16_relu.reason
     conv_cases = tuple(
         case for case in catalog.SAFE_CASES if case.kind_name == "CONV"
     )
     assert len(conv_cases) == 16
     assert {case.n for case in conv_cases} == {65, 96}
+    assert all(
+        case.disposition_name == "BOARD_OBSERVED"
+        and "physical indexing" in case.reason
+        and catalog.build_case_payload(case).expected_logical is None
+        and catalog.build_case_payload(case).expected_physical is None
+        for case in conv_cases
+    )
     assert all(
         max(case.lhs_span, case.rhs_span, case.output_span)
         <= catalog.SLOT_BYTES - catalog.BODY_OFFSET
@@ -377,17 +418,47 @@ def main() -> int:
         "F16",
         "BF16",
     }
+    depthwise = tuple(
+        case
+        for case in observed_conv
+        if case.kind_name == "DEPTHWISE_CONV"
+    )
+    backward = tuple(
+        case
+        for case in observed_conv
+        if case.kind_name == "BACKWARD_CONV"
+    )
     assert all(
         case.disposition_name == "BOARD_OBSERVED"
         and case.output_shape == (1, 4, 4, 64)
         and case.output_span == 2048
-        for case in observed_conv
+        for case in depthwise
+    )
+    assert all(
+        case.disposition_name == "BOARD_OBSERVED"
+        and case.output_shape == case.rhs_shape == (1, 1, 64, 64)
+        and case.output_span == case.rhs_span == 8192
+        and "tfr_1" in case.reason
+        for case in backward
     )
     probe = (
         pathlib.Path(__file__).resolve().parent
         / "Inputs"
         / "wafer_ne_calibration_probe.c"
     ).read_text()
+    conv_decode_begin = probe.index(
+        "} else if (kind == WAFER_NEC_CONV) {"
+    )
+    conv_decode_end = probe.index(
+        "  } else {\n    uint32_t expected_profile",
+        conv_decode_begin,
+    )
+    conv_decode = probe[conv_decode_begin:conv_decode_end]
+    assert (
+        "expected_disposition = WAFER_NEC_BOARD_OBSERVED;"
+        in conv_decode
+        and "wafer_nec_option_disposition(option)" not in conv_decode
+    )
     for function, op_type in (
         ("wafer_nec_issue_depthwise", "1U"),
         ("wafer_nec_issue_backward", "2U"),
@@ -397,6 +468,92 @@ def main() -> int:
         assert body.index(f"SetOpType(&instruction, {op_type})") < body.index(
             "AddWeight(&instruction"
         )
+    assert (
+        "output_span = kind == WAFER_NEC_DEPTHWISE_CONV"
+        in probe
+        and ": rhs_span;" in probe
+    )
+
+    backward_case = catalog.CASES_BY_NAME[
+        "ne-backward-conv-f16-observed"
+    ]
+    backward_built = catalog.build_case_payload(backward_case, sample=9)
+    backward_raw = bytearray(
+        [runner.OUTPUT_INITIAL_CANARY] * catalog.RESOURCE_BYTES
+    )
+    backward_record = [0] * catalog.RECORD_WORDS
+    backward_record_values = {
+        "MAGIC": catalog.RECORD_MAGIC,
+        "SCHEMA_AND_WORDS": (
+            catalog.SCHEMA << 32
+        ) | catalog.RECORD_WORDS,
+        "STATUS": 0,
+        "CASE": backward_case.case_id,
+        "DTYPE": backward_case.dtype,
+        "LHS_ORIENTATION": backward_case.lhs_orientation,
+        "RHS_ORIENTATION": backward_case.rhs_orientation,
+        "BATCH": backward_case.batch,
+        "M": backward_case.m,
+        "K": backward_case.k,
+        "N": backward_case.n,
+        "LHS_SPAN": backward_case.lhs_span,
+        "RHS_SPAN": backward_case.rhs_span,
+        "OUTPUT_SPAN": backward_case.output_span,
+        "SAMPLE": 9,
+        "EXECUTE_RESULT": 1,
+        "REQUEST_GUARD": catalog.REQUEST_GUARD,
+        "OUTPUT_DDR_OFFSET": catalog.OUTPUT_DDR_OFFSET,
+        "SLOT_BYTES": catalog.SLOT_BYTES,
+        "BODY_OFFSET": catalog.BODY_OFFSET,
+        "OUTPUT_GUARD_MISMATCHES": 0,
+        "KIND": backward_case.kind,
+        "PROFILE": backward_case.profile,
+        "OPTION": backward_case.option,
+        "AUX_SPAN": backward_case.aux_span,
+        "DISPOSITION": backward_case.disposition,
+        "LHS_BATCH": backward_case.lhs_batch,
+        "RHS_BATCH": backward_case.rhs_batch,
+        "RECORD_GUARD": catalog.RECORD_GUARD,
+    }
+    for name, value in backward_record_values.items():
+        backward_record[catalog.REC[name]] = value
+    struct.pack_into(
+        f"<{catalog.RECORD_WORDS}Q",
+        backward_raw,
+        0,
+        *backward_record,
+    )
+    backward_slot = backward_built.payload[
+        2 * catalog.SLOT_BYTES : 3 * catalog.SLOT_BYTES
+    ]
+    backward_begin = catalog.OUTPUT_DDR_OFFSET
+    backward_raw[
+        backward_begin : backward_begin + catalog.SLOT_BYTES
+    ] = backward_slot
+    physical_begin = backward_begin + catalog.BODY_OFFSET
+    backward_raw[
+        physical_begin : physical_begin + backward_case.output_span
+    ] = bytes(backward_case.output_span)
+    with tempfile.TemporaryDirectory() as directory:
+        output = pathlib.Path(directory) / "backward-observed.raw"
+        output.write_bytes(backward_raw)
+        runner.validate_output(
+            output, backward_case, backward_built, sample=9
+        )
+        backward_raw[
+            physical_begin + backward_case.output_span
+        ] ^= 0x1
+        output.write_bytes(backward_raw)
+        try:
+            runner.validate_output(
+                output, backward_case, backward_built, sample=9
+            )
+        except RuntimeError as error:
+            assert "output suffix guard changed" in str(error)
+        else:
+            raise AssertionError(
+                "BackwardConv byte outside derived footprint was accepted"
+            )
 
     unequal = catalog.CALIBRATION_LEAF_BINDINGS[
         "ne-batch-broadcast-positive"

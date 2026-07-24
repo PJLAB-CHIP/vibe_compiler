@@ -287,7 +287,7 @@ runtime status正常SUCCESS收尾，避免把预期错误误当成BoardRuntime q
 | CT numeric/form | opcode 0..186；arithmetic/relation/logic的`VV/VS/VuV/VuVLoop`、value/bool output；f16/bf16/f32、convert pair、rounding、NaN/Inf/subnormal/signed-zero、large-shape tail | opcode/form×dtype typed catalog；至少8192元素普通值、非256B held-out tail、短向量unit/full-tail、完整bit oracle | 10/11/17 numeric capability | 实卡前资产已准备：`0..110`共653个vector row（542 exact、81 tolerance、30 observation），`139..174`共204个convert row（158 exact、46 observation，含23个重复采样的stochastic row）；`0..186`的187个opcode无遗漏处置为177个board-executable、8个board-observation、2个static-negative。instruction-family另有71个safe concrete case。全部新增row仅完成host/target/no-card准备，尚未形成板端证据 |
 | instruction × physical layout | Tensor/NTensor/Cx/NCx原生资格、materialization路径、C0 tail、N-slice步进、padding lane | valid组合exact output/span/canary；需materialize组合重放Tensor↔Cx/NCx movement；非法组合verifier/packet negative | 08/10/11 physical legality | CT/NE/RDMA/WDMA/TDMA × Tensor/NTensor/Cx/NCx共20个组合均已有处置：8个native positive、3个materialize-then-consume concrete positive和9个static-negative；Tensor↔Cx/NCx movement及CT Cx/NCx、NE Tensor materialize→consume composite均已完成no-card准备。current CT production仍只准Tensor/no-invalid-lane |
 | DataMove/layout | mirror/transpose/rotate、NCHW/NHWC、concat、pad、Img2Col、TensorNom、GatherScatter/MaskMove/MaskGather及compiler broadcast materialization | 非对称large-shape、axis-sensitive payload、all-and-only logical point oracle、physical guard | 08/10/11 movement legality | base shared package有46个case，extended package再增加18个有界case；公开`121..138`全部处置为14个exact、4个observation、0 deferred。新增资产含raw Concat C/W/H/HW、两种MaskGather、TensorNom、large Pad/Img2Col、Cx/NCx→CT与Tensor→NE materialize-consume、I8 strided TDMA及FP16/BF16 raw-vs-CRT，均仅完成host/target/no-card准备 |
-| NE numeric/layout | f16/bf16、accumulation、transpose、C0 tail、padding、K/M/N边界 | 非平凡多项累加GEMM、完整padded range/canary | 08/10/11/17 | 当前70个row为46 exact、21 safe observation、3 static-negative、0 deferred；除既有FP16/BF16 GEMM/Conv矩阵外，新增I8 quant observation、FP16/BF16 Depthwise/BackwardConv observation，以及FP16/BF16左右不等batch broadcast exact。GEMM sparse因typed `TsmGemm`无setter归入static-negative。新增row尚未上板 |
+| NE numeric/layout | f16/bf16、accumulation、transpose、C0 tail、padding、K/M/N边界 | 非平凡多项累加GEMM、完整padded range/canary | 08/10/11/17 | 当前70个row为32 exact、35 safe observation、3 static-negative、0 deferred；GEMM PSUM和左右不等batch保持exact。FP16 ReLU观察为no-op，ordinary Conv的current NCx/HWOI oracle未闭合，二者均不再宣称exact；BackwardConv output footprint按type-2 `tfr_1`的weight shape推导。GEMM sparse因typed `TsmGemm`无setter归入static-negative |
 | RDMA/WDMA descriptor | byte/logical-element stride转换、iteration、inclusive range、tail | contiguous + 1/2/3D stride，非零round-trip和guard | 08/11/14 | contiguous与既有large GEMM `supported`；FP16 1/2/3D stride round-trip、holes和guards `board-observed` |
 | TDMA Memset | element count、byte stride、raw logical iteration、inclusive range和dtype packet encoding | whole/128B×32/64B×64 geometry，I8/F16/BF16 raw与CRT，全range和guard | 10/11/14 | 普通dtype descriptor `calibrated`；I8/F16/BF16 vectors `board-observed` |
 | TDMA BOOL fill | native `Fmt_BOOL` completion与bitpacked physical-footprint实现 | native小range timeout隔离；production BOOL→I8 byte fill需独立raw register、全range和guard | 10/11/14 | native `Fmt_BOOL`在当前profile `excluded`；BOOL→I8 held-out已准备136 logical bits→17 physical bytes的全range/guard case，仍须实卡确认 |
@@ -626,7 +626,7 @@ instruction与layout组合先按physical行为分类，再为每个公开entry�
 | 任意不受typed ABI支持的direct组合 | verifier/lowering/required-symbol negative | 不上板、不以raw packet绕过 |
 
 NE实卡前资产使用同一host physical codec生成Cx/NCx block-major payload、C0 tail、N-slice步进和padding
-poison，当前共70个row：46个exact、21个安全raw observation和3个static-negative，0 deferred。既有
+poison，当前共70个row：32个exact、35个安全raw observation和3个static-negative，0 deferred。既有
 FP16/BF16 × `NN/NT/TN/TT` × main/tail/batch基础GEMM、长累加/cancellation、BF16 special、
 one-factor option和large/held-out Conv全部保留；新增I8 quant raw observation，FP16/BF16
 DepthwiseConv与BackwardConv raw observation，以及FP16/BF16左右不等batch
@@ -634,7 +634,7 @@ DepthwiseConv与BackwardConv raw observation，以及FP16/BF16左右不等batch
 非零贡献；每个batch的N个跨M column signature互异，每行至少有8个不同结果，并由N轴循环置换故障注入
 证明physical oracle可检出channel/C0-tail顺序错误。所有safe row完整校验logical/physical output、
 padding和slot guard；sparse因`TsmGemm`没有对应setter、pad/unpad因typed ABI无field而static-negative。
-新增safe row尚未上板。
+safe row仍未全部上板，处置只按已取得的窄证据收紧，不由相邻dtype/kind外推。
 
 Cx/NCx的共同shape族为`[2,7,9,65]`，边界族覆盖`C=63/64/65/127/129`；每个N slice、full block、
 compact `C0` tail和256B physical padding使用不同poison。DataMove使用下列非对称case，所有FP16/BF16/FP32
@@ -699,6 +699,19 @@ FP16/BF16，再对bias、psum、ReLU/LeakyReLU、axis scale、quant、sparse、p
 one-factor-at-a-time。owned typed ABI能表达且range有界的option进入exact或raw observation；没有
 对应setter/field、shape relation或wrapper根本不接受的组合进入`static-negative`，不能用相近Conv family
 代签。
+
+当前profile的FP16 GEMM ReLU raw完整结果逐bit等于bare baseline，8192个logical结果中3828个负值仍未
+clamp；因此FP16 row只记录no-op observation，BF16因共享同一wrapper option路径且尚无独立反证也保持
+observation。large ordinary Conv raw从logical element 97开始与current NCx/HWOI host expected不符，
+总计21632个logical mismatch；四个已执行option的physical result又逐bit等于bare baseline。该证据不足以
+在feature、weight和output physical indexing候选间唯一归因，所以ordinary Conv bare和全部option均只保留
+bounded raw observation，不能作为exact Conv或fusion资格。
+
+BackwardConv与ordinary/depthwise的transfer-shape owner不同：type-2下`AddWeight`把full weight shape写入
+`tfr_1`，`AddOutput`的shape参数不再拥有该字段。因此`[1,1,64,64]` FP16 weight-gradient footprint是
+8192B；旧catalog按`[1,4,4,64]` AddOutput参数只允许2048B，板端恰报告6144个越界guard byte。修正后的
+catalog/probe从weight shape和Cx dtype宽度推导8192B，8192B之后的suffix guard继续严格。旧raw离线按
+该边界可完整重放；新的schema-4 package只完成host/no-card，尚待独立板端复验。
 
 ### 5.5 Shape、资源与oracle基线
 
@@ -849,7 +862,7 @@ measurement basis时，不形成cost常数或scheduler capability。
 再通过后才可记`supported`。原始日志按profile和case row关联保存，不把一次板端输出直接改写成跨profile
 compiler常数。
 
-当前机器矩阵覆盖28个导航域和121个叶子：75个`board-positive`、20个`board-observation`、
+当前机器矩阵覆盖28个导航域和121个叶子：74个`board-positive`、21个`board-observation`、
 6个`delegated-positive`、18个`static-negative`及2个`isolated-deferred`。CT opcode/convert、
 71个instruction-family safe case、base 46 + extended 18个DataMove、
 70个NE row、59个memory descriptor、84个SPM row以及新增NCC constructor/wait/subset/all-direction/

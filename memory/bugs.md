@@ -1370,3 +1370,16 @@
   完成，由raw adapter继续记录builder取得、packet物化和builder释放；host从未完成issue及最后阶段生成诊断。
 - 防复发：协议字段必须区分“未观测”和“观测为零”；资源缩放、跨进程成功样本和条件写入字段不能替代同一次
   失败调用的阶段证据。没有该证据前不继续用resource大小调整推断heap根因。
+## 2026-07-24 NE option语义与BackwardConv footprint不能从通用Conv外推
+
+- 现象：GEMM ReLU request的record、execute和guard均正常，但输出逐bit等于bare baseline且负值未clamp；
+  nontrivial ordinary Conv只在首个output pixel与current host oracle一致；BackwardConv按2048B output
+  span检查时恰有6144个后缀guard byte被改写。
+- 根因：catalog把wrapper enable bit误当成exact option语义，并在尚未用区分向量闭合Conv
+  feature/weight/output physical indexing时生成CPU golden。BackwardConv还错误复用了ordinary Conv的
+  AddOutput shape；type-2实际由AddWeight full shape写`tfr_1`并拥有output transfer footprint。
+- 修复模式：有bounded execution/completion/guard但numeric解释未唯一时降为raw observation；共享wrapper
+  option不能因一个dtype未执行就伪造exact。physical span从kind-specific packet shape owner、layout和dtype
+  推导，BackwardConv按weight shape计算，span外canary仍严格。
+- 防复发：host回归同时检查disposition不生成expected、kind-specific footprint和corrected span后一字节的
+  suffix guard；已有raw先离线重放并记录可区分事实，不能用record成功替代numeric oracle。
