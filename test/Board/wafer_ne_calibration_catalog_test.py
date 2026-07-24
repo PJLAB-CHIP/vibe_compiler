@@ -13,13 +13,87 @@ import wafer_ne_calibration_catalog as catalog
 import wafer_physical_tensor_codec as physical
 
 
+def _observation_raw(
+    case: catalog.NECase,
+    built: catalog.CasePayload,
+    *,
+    sample: int,
+    actual_physical: bytes,
+) -> bytearray:
+    assert len(actual_physical) == case.output_span
+    raw = bytearray(
+        [runner.OUTPUT_INITIAL_CANARY] * catalog.RESOURCE_BYTES
+    )
+    record = [0] * catalog.RECORD_WORDS
+    values = {
+        "MAGIC": catalog.RECORD_MAGIC,
+        "SCHEMA_AND_WORDS": (
+            catalog.SCHEMA << 32
+        ) | catalog.RECORD_WORDS,
+        "STATUS": 0,
+        "CASE": case.case_id,
+        "DTYPE": case.dtype,
+        "LHS_ORIENTATION": case.lhs_orientation,
+        "RHS_ORIENTATION": case.rhs_orientation,
+        "BATCH": case.batch,
+        "M": case.m,
+        "K": case.k,
+        "N": case.n,
+        "LHS_SPAN": case.lhs_span,
+        "RHS_SPAN": case.rhs_span,
+        "OUTPUT_SPAN": case.output_span,
+        "SAMPLE": sample,
+        "EXECUTE_RESULT": 1,
+        "REQUEST_GUARD": catalog.REQUEST_GUARD,
+        "OUTPUT_DDR_OFFSET": catalog.OUTPUT_DDR_OFFSET,
+        "SLOT_BYTES": catalog.SLOT_BYTES,
+        "BODY_OFFSET": catalog.BODY_OFFSET,
+        "OUTPUT_GUARD_MISMATCHES": 0,
+        "KIND": case.kind,
+        "PROFILE": case.profile,
+        "OPTION": case.option,
+        "AUX_SPAN": case.aux_span,
+        "DISPOSITION": case.disposition,
+        "LHS_BATCH": case.lhs_batch,
+        "RHS_BATCH": case.rhs_batch,
+        "RECORD_GUARD": catalog.RECORD_GUARD,
+    }
+    for name, value in values.items():
+        record[catalog.REC[name]] = value
+    struct.pack_into(f"<{catalog.RECORD_WORDS}Q", raw, 0, *record)
+    output_slot = built.payload[
+        2 * catalog.SLOT_BYTES : 3 * catalog.SLOT_BYTES
+    ]
+    begin = catalog.OUTPUT_DDR_OFFSET
+    raw[begin : begin + catalog.SLOT_BYTES] = output_slot
+    physical_begin = begin + catalog.BODY_OFFSET
+    raw[
+        physical_begin : physical_begin + case.output_span
+    ] = actual_physical
+    return raw
+
+
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 67
-    assert len(catalog.CATALOG) == 70
+    assert runner.execution_sample_count(
+        exact=True, observation_samples=3
+    ) == 1
+    assert runner.execution_sample_count(
+        exact=False, observation_samples=3
+    ) == 3
+    try:
+        runner.execution_sample_count(
+            exact=False, observation_samples=0
+        )
+    except ValueError as error:
+        assert "--observation-samples must be positive" in str(error)
+    else:
+        raise AssertionError("zero NE observation sample count was accepted")
+    assert len(catalog.SAFE_CASES) == 70
+    assert len(catalog.CATALOG) == 73
     assert len(catalog.CASES_BY_NAME) == len(catalog.CATALOG)
     assert Counter(case.disposition_name for case in catalog.CATALOG) == {
         "BOARD_EXACT": 32,
-        "BOARD_OBSERVED": 35,
+        "BOARD_OBSERVED": 38,
         "STATIC_NEGATIVE": 3,
     }
     coverage = {
@@ -288,15 +362,28 @@ def main() -> int:
         and catalog.build_case_payload(case).expected_physical is None
         for case in relu_cases
     )
-    f16_relu = catalog.CASES_BY_NAME["ne-f16-large-nn-relu"]
-    relu_lhs, relu_rhs = catalog._gemm_inputs(f16_relu)
-    relu_base = catalog._gemm_expected_values(
-        f16_relu, relu_lhs, relu_rhs
-    )
-    assert any(value < 0.0 for value in relu_base)
-    assert "retained negative base results" in f16_relu.reason
+    for dtype in catalog.FLOAT_DTYPES:
+        relu = catalog.CASES_BY_NAME[
+            f"ne-{dtype.lower()}-large-nn-relu"
+        ]
+        relu_lhs, relu_rhs = catalog._gemm_inputs(relu)
+        relu_base = catalog._gemm_expected_values(
+            relu, relu_lhs, relu_rhs
+        )
+        assert any(value < 0.0 for value in relu_base)
+        encoded_base = tuple(
+            catalog._encode(dtype, value) for value in relu_base
+        )
+        encoded_clamped = tuple(
+            catalog._encode(dtype, max(value, 0.0))
+            for value in relu_base
+        )
+        assert encoded_base != encoded_clamped
+        assert "retained negative base results" in relu.reason
     conv_cases = tuple(
-        case for case in catalog.SAFE_CASES if case.kind_name == "CONV"
+        case
+        for case in catalog.SAFE_CASES
+        if case.profile_name in {"CONV_LARGE", "CONV_HELDOUT"}
     )
     assert len(conv_cases) == 16
     assert {case.n for case in conv_cases} == {65, 96}
@@ -312,6 +399,75 @@ def main() -> int:
         <= catalog.SLOT_BYTES - catalog.BODY_OFFSET
         for case in conv_cases
     )
+
+    conv_index_cases = tuple(
+        case
+        for case in catalog.SAFE_CASES
+        if case.profile_name in catalog.CONV_INDEX_PROFILES
+    )
+    assert tuple(
+        case.profile_name for case in conv_index_cases
+    ) == catalog.CONV_INDEX_PROFILE_ORDER
+    assert all(
+        case.dtype_name == "F16"
+        and case.option_name == "NONE"
+        and case.disposition_name == "BOARD_OBSERVED"
+        and case.as_dict()["oracle"]
+        == "conv-index-candidates+raw-physical-guard"
+        for case in conv_index_cases
+    )
+    expected_candidate_names = {
+        "CONV_FEATURE_INDEX": {"feature:ncx", "feature:cx"},
+        "CONV_WEIGHT_INDEX": {"weight:ncx", "weight:cx"},
+        "CONV_OUTPUT_INDEX": {"output:ncx", "output:cx"},
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        output = pathlib.Path(directory) / "conv-index-observed.raw"
+        for sample, case in enumerate(conv_index_cases, start=40):
+            built = catalog.build_case_payload(case, sample=sample)
+            candidates = catalog.build_conv_index_candidates(case, built)
+            assert set(candidates) == expected_candidate_names[
+                case.profile_name
+            ]
+            assert len(set(candidates.values())) == 2
+            for candidate_name, candidate in candidates.items():
+                output.write_bytes(
+                    _observation_raw(
+                        case,
+                        built,
+                        sample=sample,
+                        actual_physical=candidate,
+                    )
+                )
+                result = runner.validate_output(
+                    output, case, built, sample=sample
+                )
+                assert result["candidate_matches"] == (candidate_name,)
+                assert (
+                    result["candidate_byte_mismatches"][candidate_name]
+                    == 0
+                )
+            unknown = bytearray(next(iter(candidates.values())))
+            unknown[0] ^= 0x1
+            assert bytes(unknown) not in set(candidates.values())
+            output.write_bytes(
+                _observation_raw(
+                    case,
+                    built,
+                    sample=sample,
+                    actual_physical=bytes(unknown),
+                )
+            )
+            result = runner.validate_output(
+                output, case, built, sample=sample
+            )
+            assert result["candidate_matches"] == ()
+            assert all(
+                mismatches > 0
+                for mismatches in result[
+                    "candidate_byte_mismatches"
+                ].values()
+            )
 
     quant = catalog.CASES_BY_NAME["ne-gemm-quant-observed"]
     assert quant.dtype_name == "I8"

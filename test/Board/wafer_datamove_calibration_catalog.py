@@ -547,8 +547,24 @@ _EXISTING_EVIDENCE = {
     ),
     138: ("tdma-img2col-f16", "tdma-img2col-bf16"),
 }
+_CT_DATAMOVE_OPCODES = frozenset({121, 122, 123, 131, 134, 136, 137})
+
+
+def _matches_public_opcode_engine(
+    opcode: int, case: extended.ExtendedDataMoveCase
+) -> bool:
+    """Do not confuse the probe's case opcode with another engine's opcode."""
+    if opcode in _CT_DATAMOVE_OPCODES:
+        return case.expected_ct_instructions > 0
+    return case.expected_tdma_instructions > 0
+
+
 _EXTENDED_EVIDENCE = {
-    opcode: tuple(case.name for case in rows)
+    opcode: tuple(
+        case.name
+        for case in rows
+        if _matches_public_opcode_engine(opcode, case)
+    )
     for opcode, rows in extended.EVIDENCE_BY_OPCODE.items()
 }
 EXISTING_EVIDENCE_OPCODES = {
@@ -573,10 +589,20 @@ def build_public_dispositions() -> tuple[PublicMovementDisposition, ...]:
             + _EXISTING_EVIDENCE.get(opcode, ())
             + _EXTENDED_EVIDENCE.get(opcode, ())
         )
-        if evidence:
+        if opcode in {121, 122, 123}:
+            disposition = "typed-profile"
+            evidence = (
+                "wafer-ct-reduce-pool-capability-catalog-python",
+            )
+            reason = (
+                "unpool capability is keyed by "
+                "(opcode,dtype,index/layout,geometry); a representative "
+                "instruction-family case does not qualify the bare opcode"
+            )
+        elif evidence:
             disposition = (
                 "board-observation"
-                if opcode in {131, 133, 136, 137}
+                if opcode in {121, 131, 133, 136, 137}
                 else "board-executable"
             )
             reason = None
@@ -609,13 +635,30 @@ RAW_CONCAT_DISPOSITIONS = tuple(
     SemanticDisposition(
         f"raw-concat-{axis.lower()}",
         f"concat-axis-{axis}",
-        "board-observation",
+        (
+            "board-observation"
+            if axis in extended.NATIVE_CONCAT_AXES
+            else "isolated-deferred"
+        ),
         tuple(
             case.name
-            for case in extended.CONCAT_CASES
+            for case in (
+                extended.CONCAT_CASES
+                if axis in extended.NATIVE_CONCAT_AXES
+                else extended.ISOLATED_CONCAT_CASES
+            )
             if case.semantic_axis == axis
         ),
-        None,
+        (
+            None
+            if axis in extended.NATIVE_CONCAT_AXES
+            else (
+                "native dims=HW previously timed out at matching completion; "
+                "exclude it from the default dispatcher and allow only an "
+                "explicit final isolated selection after the bounded C/W/H "
+                "alternatives"
+            )
+        ),
     )
     for axis in ("C", "W", "H", "HW")
 )
@@ -814,7 +857,16 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
         and case.semantic_axis in {"C", "W", "H", "HW"}
         and case.case_id >= 15
     ),
-    "raw-concat-disposition": RAW_CONCAT_DISPOSITIONS,
+    "raw-concat-observation": tuple(
+        row
+        for row in RAW_CONCAT_DISPOSITIONS
+        if row.disposition == "board-observation"
+    ),
+    "raw-concat-hw-isolated": tuple(
+        row
+        for row in RAW_CONCAT_DISPOSITIONS
+        if row.disposition == "isolated-deferred"
+    ),
     "compiler-concat-materialization": _cases_with(
         operation="concat", semantic_axis="N"
     ),

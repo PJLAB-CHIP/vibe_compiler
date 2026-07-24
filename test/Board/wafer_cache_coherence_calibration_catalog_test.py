@@ -29,9 +29,14 @@ def main() -> int:
     total_phases = 0
     for case in catalog.CATALOG:
         assert case.phases == 1
+        assert case.repetitions == (
+            catalog.DDR_BANK_PMU_REPETITIONS
+            if case.kind == "ddr-bank-pair"
+            else 1
+        )
         assert case.cache_control
         assert case.output_regions in (0, 1, 2)
-        for sample in range(case.phases):
+        for sample in range(case.phases * case.repetitions):
             built = catalog.build_case_payload(case, sample)
             assert len(built.request) == catalog.RESOURCE_BYTES
             assert len(built.payload) == catalog.RESOURCE_BYTES
@@ -58,7 +63,11 @@ def main() -> int:
                         offset + len(expected) + catalog.SPM_GUARD_BYTES
                         <= catalog.RESOURCE_BYTES
                     )
-    assert total_phases == 58
+    assert total_phases == (
+        len(catalog.CACHE_CASES)
+        + len(catalog.DDR_BANK_CASES)
+        * catalog.DDR_BANK_PMU_REPETITIONS
+    )
     assert {
         (case.pair_kind, case.schedule, case.bank_offset)
         for case in catalog.DDR_BANK_CASES
@@ -78,6 +87,7 @@ def main() -> int:
         row.disposition == "isolated-deferred"
         and row.phases == 0
         and row.reason
+        and row.evidence == (catalog.CACHE_CASES[0], catalog.CACHE_CASES[2])
         for row in catalog.CACHE_SESSION_DISPOSITIONS
     )
     assert catalog.CALIBRATION_LEAF_BINDINGS
@@ -90,7 +100,7 @@ def main() -> int:
         assert all(row in allowed_leaf_objects for row in rows)
     print(
         "wafer_cache_coherence_calibration_catalog_test: "
-        "directions=4 cache_phases=4 ddr_pair_cases=54 "
+        "directions=4 cache_phases=4 ddr_pair_cases=54 ddr_samples=162 "
         "offsets=9 deferred_session=1 delegated_large_descriptor=3 passed"
     )
     return 0

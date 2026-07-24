@@ -21,6 +21,8 @@ OUTPUT_SINK0_OFFSET = 65536
 OUTPUT_SINK1_OFFSET = 73728
 RESOURCE_CANARY = 0xA5
 SPM_GUARD = 0x6D
+SPM_GUARD_BYTES = 64
+SPM_PAIR_SLOT_BYTES = 4096
 
 KIND_DMA = 0
 KIND_ENGINE_ACCESS = 1
@@ -75,7 +77,8 @@ FMT_FP16 = 2
 FMT_UINT8 = 8
 
 SPM_BASE = 0x100000
-SPM_PAIR_B = SPM_BASE + 8192
+SPM_PAIR_RELATIVE_OFFSETS = (8192, 4352, 65536)
+SPM_BANK_PMU_REPETITIONS = 3
 
 REQ = {
     "MAGIC": 0,
@@ -224,6 +227,7 @@ class MemoryCase:
     descriptor: Descriptor
     output_bytes: int
     expected_counts: tuple[int, int, int, int, int]
+    repetitions: int = 1
 
     @property
     def is_exact(self) -> bool:
@@ -258,11 +262,13 @@ class MemoryCase:
             "dst_ddr_offset": self.dst_ddr_offset,
             "spm_a": self.spm_a,
             "spm_b": self.spm_b,
+            "relative_spm_offset": self.spm_b - self.spm_a,
             "descriptor": dataclasses.asdict(self.descriptor),
             "compact_bytes": self.descriptor.compact_bytes,
             "envelope_bytes": self.descriptor.envelope_bytes,
             "output_bytes": self.output_bytes,
             "expected_counts": self.expected_counts,
+            "repetitions": self.repetitions,
             "oracle": (
                 "exact-result+descriptor-holes+SPM/output-guards"
                 if self.is_exact
@@ -455,13 +461,27 @@ RELATION_CASES = tuple(
 
 
 def _pair_case(
-    case_id: int, engine_a: int, engine_b: int, schedule: int
+    case_id: int,
+    engine_a: int,
+    engine_b: int,
+    schedule: int,
+    relative_offset: int,
 ) -> MemoryCase:
+    pair_name = (
+        f"spm-bank-pair-{ENGINE_NAMES[engine_a].lower()}-"
+        f"{ENGINE_NAMES[engine_b].lower()}"
+    )
+    schedule_name = (
+        "serial" if schedule == SCHEDULE_SERIAL else "window"
+    )
+    name = (
+        f"{pair_name}-{schedule_name}"
+        if relative_offset == 8192
+        else f"{pair_name}-offset-{relative_offset}-{schedule_name}"
+    )
     return MemoryCase(
         case_id,
-        f"spm-bank-pair-{ENGINE_NAMES[engine_a].lower()}-"
-        f"{ENGINE_NAMES[engine_b].lower()}-"
-        f"{'serial' if schedule == SCHEDULE_SERIAL else 'window'}",
+        name,
         "spm-bank-engine-pair",
         KIND_ENGINE_PAIR,
         engine_a,
@@ -474,19 +494,24 @@ def _pair_case(
         0,
         0,
         SPM_BASE,
-        SPM_PAIR_B,
+        SPM_BASE + relative_offset,
         Descriptor(256),
         512,
         _counts(engine_a, engine_b),
+        repetitions=SPM_BANK_PMU_REPETITIONS,
     )
 
 
 PAIR_CASES = tuple(
     _pair_case(
-        39 + pair_index * 2 + schedule,
+        39 + offset_index * 20 + pair_index * 2 + schedule,
         engine_a,
         engine_b,
         schedule,
+        relative_offset,
+    )
+    for offset_index, relative_offset in enumerate(
+        SPM_PAIR_RELATIVE_OFFSETS
     )
     for pair_index, (engine_a, engine_b) in enumerate(
         (left, right)

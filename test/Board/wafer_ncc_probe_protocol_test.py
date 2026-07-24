@@ -254,7 +254,7 @@ class ProtocolTest(unittest.TestCase):
                     execution_probe.validate_output_payload_v2(
                         bytes(output), case, plan
                     )
-            with self.assertRaisesRegex(ValueError, "serial"):
+            with self.assertRaisesRegex(ValueError, "bounded"):
                 dataclasses.replace(
                     plan, schedule=protocol.Schedule.WINDOW
                 ).request_words()
@@ -428,6 +428,11 @@ class ProtocolTest(unittest.TestCase):
                 protocol.WaitKind.BY_WORKER,
                 0x6122,
                 0b010,
+            ),
+            "ne-worker1-depth6-local-fence-wait-window": (
+                protocol.WaitKind.LOCAL_FENCE,
+                0x6123,
+                0,
             ),
         }
         cases = execution_probe.SUITES["completion-scope-manual"]
@@ -614,7 +619,7 @@ class ProtocolTest(unittest.TestCase):
             {execution_probe.v2_half(3)},
         )
 
-    def test_hazard_requires_disjoint_overlap_qualification(self) -> None:
+    def test_hazard_requires_controls_but_not_positive_overlap(self) -> None:
         execution_probe.validate_hazard_selection(
             execution_probe.V2_DMA_STRIDE_MATRIX_CASES
         )
@@ -727,6 +732,15 @@ class ProtocolTest(unittest.TestCase):
             execution_probe.qualified_disjoint_pairs(
                 (observations[-2], reversed_window)
             ),
+        )
+        runner = pathlib.Path(execution_probe.__file__).read_text()
+        self.assertNotIn(
+            "has not passed the serial/window overlap qualification",
+            runner,
+        )
+        self.assertIn(
+            "zero overlap must\n        # not suppress",
+            runner,
         )
 
     def test_hazard_control_catalog_adds_only_below_depth_r4(self) -> None:
@@ -1122,6 +1136,50 @@ class ProtocolTest(unittest.TestCase):
                 cases[0].plan.flags, protocol.TIGHT_DEPTH_PLUS_ONE
             )
 
+    def test_large_tight_occupancy_stays_at_depth_plus_one(self) -> None:
+        self.assertEqual(
+            {
+                case.plan.lanes[0].engine
+                for case in execution_probe.V2_ACTIVE_OCCUPANCY_CASES
+            },
+            set(execution_probe.V2_ENGINES),
+        )
+        for case in execution_probe.V2_ACTIVE_OCCUPANCY_CASES:
+            plan = case.plan
+            engine = plan.lanes[0].engine
+            depth = execution_probe.V2_DOCUMENTED_QUEUE_DEPTHS[engine]
+            self.assertEqual(
+                tuple(lane.engine for lane in plan.lanes),
+                (engine, engine),
+            )
+            self.assertTrue(
+                all(
+                    lane.issue_mode == protocol.IssueMode.RAW
+                    and lane.transfer_bytes
+                    == execution_probe.V2_ACTIVE_OCCUPANCY_BYTES[engine]
+                    for lane in plan.lanes
+                )
+            )
+            self.assertEqual(plan.flags, protocol.TIGHT_DEPTH_PLUS_ONE)
+            self.assertEqual(plan.issue_limit, depth + 1)
+            self.assertEqual(len(plan.issue_identities()), depth + 1)
+            self.assertIn(
+                case,
+                execution_probe.CALIBRATION_LEAF_BINDINGS[
+                    "depth-plus-one-manual"
+                ],
+            )
+            self.assertNotIn(
+                case, execution_probe.BOARD_ALL_SAFE_CASES
+            )
+            self.assertIn(
+                case, execution_probe.BOARD_ALL_PREFLIGHT_CASES
+            )
+            self.assertEqual(
+                execution_probe.case_sample_count(case, 3), 3
+            )
+            plan.request_words()
+
     def test_depth_plus_one_report_uses_tight_issue_order(self) -> None:
         case = next(
             item
@@ -1153,6 +1211,55 @@ class ProtocolTest(unittest.TestCase):
             )
         self.assertIn("completed-with-pmu-backpressure", output.getvalue())
         self.assertIn('"control_after_tight_window": 258', output.getvalue())
+
+    def test_active_occupancy_report_separates_activity_and_backpressure(
+        self,
+    ) -> None:
+        for case in execution_probe.V2_ACTIVE_OCCUPANCY_CASES:
+            engine_name = case.plan.lanes[0].engine.name.lower()
+            issues = [
+                {
+                    "identity": dataclasses.asdict(identity),
+                    "execute_cycles": identity.ordinal + 10,
+                    "control_after_issue": (
+                        0x2
+                        if identity.slot
+                        == case.plan.issue_order()[-1]
+                        else 0
+                    ),
+                }
+                for identity in case.plan.issue_identities()
+            ]
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                execution_probe.report_active_occupancy(
+                    [
+                        {
+                            "case": case.as_dict(),
+                            "sample": sample,
+                            "issues": issues,
+                            "blocking_delta": {
+                                f"worker0.{engine_name}": 17
+                            },
+                        }
+                        for sample in range(3)
+                    ],
+                    3,
+                )
+            rendered = output.getvalue()
+            self.assertIn(f'"engine": "{engine_name}"', rendered)
+            self.assertIn('"sample_count": 3', rendered)
+            self.assertIn('"active_samples": 3', rendered)
+            self.assertIn('"backpressure_samples": 3', rendered)
+            self.assertIn('"active_at_observation": true', rendered)
+            self.assertIn('"pmu_backpressure_observed": true', rendered)
+            self.assertIn(
+                '"resident_count": "not-observable-from-control"',
+                rendered,
+            )
+            self.assertEqual(
+                execution_probe.case_sample_count(case, 3), 3
+            )
 
     def test_constructor_observation_is_nonnull_and_releases_builder(self) -> None:
         (case,) = execution_probe.V2_CONSTRUCTOR_CASES
@@ -1253,13 +1360,21 @@ class ProtocolTest(unittest.TestCase):
         )
 
     def test_strided_dependency_has_serial_window_hole_oracles(self) -> None:
-        groups: dict[str, set[protocol.Schedule]] = {}
+        groups: dict[
+            tuple[str, protocol.EffectRelation, protocol.RangeRelation],
+            set[protocol.Schedule],
+        ] = {}
         for case in execution_probe.V2_STRIDED_DEPENDENCY_CASES:
             self.assertTrue(
                 case.plan.is_strided_dependency_observation()
             )
             dimension = case.name.split("-")[2]
-            groups.setdefault(dimension, set()).add(case.plan.schedule)
+            key = (
+                dimension,
+                case.plan.effect_relation,
+                case.plan.range_relation,
+            )
+            groups.setdefault(key, set()).add(case.plan.schedule)
             lane = case.plan.lanes[0]
             touched = {
                 offset + byte
@@ -1269,19 +1384,258 @@ class ProtocolTest(unittest.TestCase):
             self.assertLess(
                 len(touched), lane.dma_envelope_bytes()
             )
-        self.assertEqual(
-            groups,
-            {
-                dimension: {
+            case.plan.request_words()
+        self.assertTrue(
+            all(
+                schedules
+                == {
                     protocol.Schedule.SERIAL,
                     protocol.Schedule.WINDOW,
                 }
-                for dimension in ("1d", "2d", "3d")
+                for schedules in groups.values()
+            )
+        )
+        self.assertEqual(
+            {
+                effect: sum(
+                    case.plan.effect_relation == effect
+                    for case in execution_probe.V2_STRIDED_DEPENDENCY_CASES
+                )
+                for effect in (
+                    protocol.EffectRelation.RAW,
+                    protocol.EffectRelation.WAR,
+                    protocol.EffectRelation.WAW,
+                    protocol.EffectRelation.RAR,
+                )
+            },
+            {
+                protocol.EffectRelation.RAW: 6,
+                protocol.EffectRelation.WAR: 6,
+                protocol.EffectRelation.WAW: 18,
+                protocol.EffectRelation.RAR: 6,
             },
         )
+        self.assertTrue(
+            all(
+                execution_probe.case_sample_count(case, 3) == 3
+                for case in execution_probe.V2_STRIDED_DEPENDENCY_CASES
+            )
+        )
+
+    def test_strided_war_rar_waw_sinks_have_strong_oracles(self) -> None:
+        def one(
+            effect: protocol.EffectRelation,
+            relation: protocol.RangeRelation,
+        ) -> execution_probe.GenericProbeCase:
+            return next(
+                case
+                for case in execution_probe.V2_STRIDED_DEPENDENCY_CASES
+                if "strided-1d-" in case.name
+                and case.plan.schedule == protocol.Schedule.SERIAL
+                and case.plan.effect_relation == effect
+                and case.plan.range_relation == relation
+            )
+
+        war = one(
+            protocol.EffectRelation.WAR,
+            protocol.RangeRelation.STRIDED_ENVELOPE,
+        )
+        war_identities = war.plan.issue_identities()
+        war_pre = execution_probe.v2_expected_result(
+            war_identities[0], war.plan.lanes[0], war.plan
+        )
+        war_final = execution_probe.v2_expected_result(
+            war_identities[1], war.plan.lanes[1], war.plan
+        )
+        self.assertEqual(
+            war_pre,
+            bytes(
+                execution_probe.v2_pattern_byte(
+                    execution_probe.V2_STRIDED_INITIAL_SOURCE_SLOT,
+                    index,
+                )
+                for index in range(len(war_pre))
+            ),
+        )
+        self.assertEqual(
+            war_final,
+            bytes(
+                execution_probe.v2_pattern_byte(
+                    protocol.MAX_ROUNDS, index
+                )
+                for index in range(len(war_final))
+            ),
+        )
+        self.assertNotEqual(war_pre, war_final)
+
+        rar = one(
+            protocol.EffectRelation.RAR,
+            protocol.RangeRelation.STRIDED_ENVELOPE,
+        )
+        self.assertEqual(
+            *(
+                execution_probe.v2_expected_result(
+                    identity,
+                    rar.plan.lanes[identity.lane],
+                    rar.plan,
+                )
+                for identity in rar.plan.issue_identities()
+            )
+        )
+
+        partial = one(
+            protocol.EffectRelation.WAW,
+            protocol.RangeRelation.PARTIAL,
+        )
+        first_identity, second_identity = partial.plan.issue_identities()
+        first_result = execution_probe.v2_expected_result(
+            first_identity, partial.plan.lanes[0], partial.plan
+        )
+        second_result = execution_probe.v2_expected_result(
+            second_identity, partial.plan.lanes[1], partial.plan
+        )
+        first_base, second_base = (
+            execution_probe.v2_strided_dependency_bases(partial.plan)
+        )
+        saw_first_only = False
+        saw_second_wins = False
+        cursor = 0
+        for offset in partial.plan.lanes[0].dma_chunk_offsets():
+            for byte in range(partial.plan.lanes[0].layout_inner_bytes):
+                address = first_base + offset + byte
+                second_index = execution_probe.v2_strided_compact_index(
+                    partial.plan.lanes[0], second_base, address
+                )
+                if second_index is None:
+                    saw_first_only = True
+                    expected = execution_probe.v2_pattern_byte(0, cursor)
+                else:
+                    saw_second_wins = True
+                    expected = execution_probe.v2_pattern_byte(
+                        protocol.MAX_ROUNDS, second_index
+                    )
+                self.assertEqual(first_result[cursor], expected)
+                cursor += 1
+        self.assertTrue(saw_first_only)
+        self.assertTrue(saw_second_wins)
+        self.assertEqual(
+            second_result,
+            bytes(
+                execution_probe.v2_pattern_byte(
+                    protocol.MAX_ROUNDS, index
+                )
+                for index in range(len(second_result))
+            ),
+        )
+
+        exact = one(
+            protocol.EffectRelation.WAW,
+            protocol.RangeRelation.EXACT,
+        )
+        exact_evidence = execution_probe.v2_strided_dependency_evidence(
+            exact.plan
+        )
+        self.assertTrue(exact_evidence["command_semantics_sufficient"])
+        self.assertFalse(
+            exact_evidence["first_payload_independently_proven"]
+        )
+        self.assertIn(
+            "first-payload-not-independently-observable",
+            exact_evidence["evidence"],
+        )
+        generic_exact_waw = next(
+            case.plan
+            for case in execution_probe.V2_HAZARD_CASES
+            if case.plan.effect_relation == protocol.EffectRelation.WAW
+            and case.plan.range_relation == protocol.RangeRelation.EXACT
+        )
+        generic_evidence = execution_probe.v2_waw_evidence(
+            generic_exact_waw
+        )
+        self.assertTrue(
+            generic_evidence["two_write_instruction_counts_required"]
+        )
+        self.assertFalse(
+            generic_evidence["first_payload_independently_proven"]
+        )
+        for case in execution_probe.V2_STRIDED_DEPENDENCY_CASES:
+            if case.plan.effect_relation == protocol.EffectRelation.RAW:
+                continue
+            output = bytearray([0xA5] * execution_probe.RESOURCE_BYTES)
+            for identity in case.plan.issue_identities():
+                lane = case.plan.lanes[identity.lane]
+                begin = (
+                    execution_probe.V2_OUTPUT_SLOT_BASE
+                    + identity.slot
+                    * execution_probe.V2_OUTPUT_SLOT_STRIDE
+                    + execution_probe.V2_OUTPUT_GUARD_BYTES
+                )
+                execution_probe.v2_scatter_compact(
+                    output,
+                    begin,
+                    lane,
+                    execution_probe.v2_expected_result(
+                        identity, lane, case.plan
+                    ),
+                )
+            execution_probe.validate_output_payload_v2(
+                bytes(output), case, case.plan
+            )
+            lane = case.plan.lanes[0]
+            touched = {
+                offset + byte
+                for offset in lane.dma_chunk_offsets()
+                for byte in range(lane.layout_inner_bytes)
+            }
+            hole = next(
+                byte
+                for byte in range(lane.dma_envelope_bytes())
+                if byte not in touched
+            )
+            first_slot_begin = (
+                execution_probe.V2_OUTPUT_SLOT_BASE
+                + execution_probe.V2_OUTPUT_GUARD_BYTES
+            )
+            output[first_slot_begin + hole] = 0xEE
+            with self.assertRaisesRegex(
+                RuntimeError, "outside record/result"
+            ):
+                execution_probe.validate_output_payload_v2(
+                    bytes(output), case, case.plan
+                )
 
     def test_large_backlog_resource_and_oracles_are_bounded(self) -> None:
+        self.assertEqual(len(execution_probe.BOARD_ALL_SAFE_CASES), 196)
+        self.assertEqual(
+            sum(
+                execution_probe.case_sample_count(case, 3)
+                for case in execution_probe.BOARD_ALL_SAFE_CASES
+            ),
+            468,
+        )
+        for case in (
+            execution_probe.V2_DOCUMENTED_DEPTH_CASES
+            + execution_probe.V2_DEPTH_PLUS_ONE_CASES
+        ):
+            self.assertNotIn(case, execution_probe.BOARD_ALL_SAFE_CASES)
+            self.assertIn(case, execution_probe.BOARD_ALL_PREFLIGHT_CASES)
         self.assertEqual(len(execution_probe.V2_LARGE_BACKLOG_CASES), 12)
+        self.assertEqual(
+            len(execution_probe.V2_LARGE_BACKLOG_SINGLE_CASES), 8
+        )
+        self.assertEqual(len(execution_probe.V2_LARGE_OVERLAP_CASES), 4)
+        self.assertTrue(
+            all(
+                execution_probe.case_sample_count(case, 3) == 1
+                for case in execution_probe.V2_LARGE_BACKLOG_SINGLE_CASES
+            )
+        )
+        self.assertTrue(
+            all(
+                execution_probe.case_sample_count(case, 3) == 3
+                for case in execution_probe.V2_LARGE_OVERLAP_CASES
+            )
+        )
         self.assertTrue(
             any(
                 lane.transfer_bytes == 65536
@@ -1334,6 +1688,40 @@ class ProtocolTest(unittest.TestCase):
             + execution_probe.V2_OUTPUT_GUARD_BYTES,
             execution_probe.V2_SPM_SLOT_STRIDE,
         )
+
+    def test_large_overlap_summary_requires_three_paired_samples(self) -> None:
+        observations: list[dict[str, object]] = []
+        for case in execution_probe.V2_LARGE_OVERLAP_CASES:
+            engines = tuple(
+                lane.engine.name.lower() for lane in case.plan.lanes
+            )
+            for sample in range(3):
+                execution = {
+                    "full": (
+                        130
+                        if case.plan.schedule == protocol.Schedule.SERIAL
+                        else 110
+                    ),
+                    engines[0]: 80,
+                    engines[1]: 70,
+                }
+                observations.append(
+                    {
+                        "case": case.as_dict(),
+                        "sample": sample,
+                        "execution_delta": execution,
+                    }
+                )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            execution_probe.report_stable_large_overlap(observations, 3)
+        rendered = output.getvalue()
+        self.assertIn('"repeats_per_case": 3', rendered)
+        self.assertEqual(rendered.count("ncc_overlap_decision:"), 2)
+        with self.assertRaisesRegex(RuntimeError, "requested repeats"):
+            execution_probe.report_stable_large_overlap(
+                observations[:-1], 3
+            )
 
     def test_double_slot_is_hardware_only_and_has_pipeline_order(self) -> None:
         expected_orders = {

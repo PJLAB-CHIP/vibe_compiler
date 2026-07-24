@@ -10,20 +10,78 @@ import wafer_transport_pmu_calibration_catalog as catalog
 
 
 def main() -> int:
-    assert len(catalog.CASES) == 18
+    assert catalog.PAYLOAD_SWEEP == (16, 32, 64, 256, 4096)
+    assert len(catalog.CASES) == 30
     assert {(case.mode, case.payload_bytes) for case in catalog.CASES} == {
         (mode, payload)
         for mode in catalog.TRANSPORT_PMU_MODES
         for payload in catalog.PAYLOAD_SWEEP
     }
-    assert catalog.ERROR_PATH_MODES == (7, 8, 9)
+    assert catalog.ERROR_PATH_MODES == (7, 8, 9, 12)
+    assert catalog.ASYNC_SENDER_MODES == (10, 11)
     assert {
         (case.mode, case.payload_bytes)
         for case in catalog.CONTRACT_CASES
         if case.disposition == "board-observation"
-    } == {(7, 16), (8, 16), (9, 16)}
+    } == {
+        (7, 16),
+        (8, 16),
+        (9, 16),
+        (10, 64),
+        (11, 64),
+        (12, 16),
+    }
+    sender_controls = catalog.CALIBRATION_LEAF_BINDINGS[
+        "direct-dte-sender-async-controls"
+    ]
+    assert {
+        (
+            case.mode,
+            case.payload_bytes,
+            case.transport_bytes,
+            case.repetitions,
+        )
+        for case in sender_controls
+    } == {
+        (
+            10,
+            64,
+            catalog.ASYNC_SENDER_TRANSPORT_BYTES,
+            catalog.ASYNC_SENDER_REPETITIONS,
+        ),
+        (
+            11,
+            64,
+            catalog.ASYNC_SENDER_TRANSPORT_BYTES,
+            catalog.ASYNC_SENDER_REPETITIONS,
+        ),
+    }
+    assert catalog.ASYNC_SENDER_REPETITIONS >= 3
+    assert {case.disposition for case in sender_controls} == {
+        "board-observation"
+    }
+    assert {case.verification_scope for case in sender_controls} == {
+        "board-device-receiver-first-raw-async"
+    }
     assert sum(case.split == "calibration" for case in catalog.CASES) == 6
-    assert sum(case.split == "held-out" for case in catalog.CASES) == 12
+    assert sum(case.split == "held-out" for case in catalog.CASES) == 24
+    pmu_observations = catalog.CALIBRATION_LEAF_BINDINGS[
+        "dte-spm-counter-payload-sweep"
+    ]
+    assert len(pmu_observations) == len(catalog.CASES) == 30
+    assert {
+        (case.case_id, case.mode, case.payload_bytes, case.split)
+        for case in pmu_observations
+    } == {
+        (case.case_id, case.mode, case.payload_bytes, case.split)
+        for case in catalog.CASES
+    }
+    assert {
+        case.disposition for case in pmu_observations
+    } == {"board-observation"}
+    assert all(
+        "uncalibrated" in case.reason for case in pmu_observations
+    )
     assert {
         case.mode
         for case in catalog.CALIBRATION_LEAF_BINDINGS[
@@ -42,6 +100,7 @@ def main() -> int:
         id(case)
         for case in (
             catalog.CASES
+            + catalog.TRANSPORT_PMU_OBSERVATIONS
             + catalog.CONTRACT_CASES
             + catalog.COUNTER_DISPOSITIONS
         )
@@ -75,6 +134,7 @@ def main() -> int:
     ]
     assert {case.name for case in direct_error_observation} == {
         "dte-source-reuse-before-send-event",
+        "dte-destination-reuse-before-receive-event",
         "dte-invalid-fsm",
         "dte-wait-unknown-event",
     }
@@ -117,7 +177,7 @@ def main() -> int:
     assert set(catalog.BOARD_COUNTER_NAMES) == {
         disposition.name
         for disposition in catalog.COUNTER_DISPOSITIONS
-        if disposition.disposition == "board-executable"
+        if disposition.disposition == "board-observation"
     }
     tmnoc = catalog.COUNTERS_BY_NAME["tmnoc"]
     assert tmnoc.disposition == "static-negative"
@@ -152,6 +212,7 @@ def main() -> int:
     ).read_text()
     assert "wafer_direct_dte_sender.active || remote_fsm_id >= 4" in crt_source
     assert "local_fsm_id >= WAFER_DIRECT_DTE_MAX_RECEIVERS" in crt_source
+    assert "if (receiver->active)" in crt_source
     wait_body = crt_source.split(
         "void wafer_tx81_direct_dte_wait(uint64_t event)", maxsplit=1
     )[1].split("void wafer_tx81_direct_dte_finish", maxsplit=1)[0]
@@ -195,7 +256,9 @@ def main() -> int:
     assert broadcast.index("wafer_tx81_direct_dte_wait(send1)") < second_send
     early_reuse = probe_source.split(
         "static uint32_t wafer_probe_dte_reuse_before_send_event(", maxsplit=1
-    )[1].split("static uint32_t wafer_probe_dte_invalid_fsm", maxsplit=1)[0]
+    )[1].split(
+        "static uint32_t wafer_probe_dte_reuse_before_recv_event", maxsplit=1
+    )[0]
     assert early_reuse.count("wafer_tx81_direct_dte_send_prepare(") == 2
     assert early_reuse.count("wafer_tx81_direct_dte_recv_prepare(") == 1
     assert early_reuse.index("rejected =") < early_reuse.index(
@@ -204,6 +267,22 @@ def main() -> int:
     assert early_reuse.index("wafer_tx81_direct_dte_wait(send)") < (
         early_reuse.index("wafer_tx81_direct_dte_wait(receive)")
     )
+    early_receive_reuse = probe_source.split(
+        "static uint32_t wafer_probe_dte_reuse_before_recv_event(", maxsplit=1
+    )[1].split("static uint32_t wafer_probe_dte_invalid_fsm", maxsplit=1)[0]
+    assert early_receive_reuse.count(
+        "wafer_tx81_direct_dte_recv_prepare("
+    ) == 2
+    assert early_receive_reuse.count(
+        "wafer_tx81_direct_dte_send_prepare("
+    ) == 1
+    assert "WAFER_PROBE_SPM_DTE_RECV_SECOND" in early_receive_reuse
+    assert early_receive_reuse.index("rejected =") < early_receive_reuse.index(
+        "wafer_tx81_direct_dte_send_prepare("
+    )
+    assert early_receive_reuse.index(
+        "wafer_tx81_direct_dte_wait(send)"
+    ) < early_receive_reuse.index("wafer_tx81_direct_dte_wait(receive)")
     invalid_fsm = probe_source.split(
         "static uint32_t wafer_probe_dte_invalid_fsm(", maxsplit=1
     )[1].split("static void wafer_probe_publish_header", maxsplit=1)[0]
@@ -216,25 +295,135 @@ def main() -> int:
     assert probe_source.count(
         "wafer_tx81_direct_dte_begin_after_prepare(status_ddr,"
     ) >= 1
+    assert '#include "direct_dte_and_fsm.h"' in probe_source
+    assert "sizeof(DirectDTESendInfo) == 64U" in probe_source
+    assert "offsetof(DirectDTESendInfo, stride_iterations) == 28U" in (
+        probe_source
+    )
+    assert "offsetof(DirectDTESendInfo, dte_node) == 56U" in probe_source
+    raw_async = probe_source.split(
+        "wafer_probe_dte_sender_raw_async(", maxsplit=1
+    )[1].split(
+        "static void wafer_probe_dte_two_destination_broadcast(", maxsplit=1
+    )[0]
+    assert raw_async.index(
+        "wafer_tx81_direct_dte_recv_prepare("
+    ) < raw_async.index("direct_sync_wait(")
+    assert raw_async.index("direct_sync_wait(") < raw_async.index(
+        "direct_dte_attach("
+    )
+    assert raw_async.index("direct_dte_attach(") < raw_async.index(
+        "direct_dte_send_async("
+    )
+    first_ct = raw_async.index("wafer_tx81_elementwise_add(")
+    assert raw_async.count("wafer_tx81_elementwise_add(") == 2
+    assert raw_async.index("direct_dte_send_async(") < first_ct
+    assert first_ct < raw_async.index("direct_dte_wait_done(")
+    assert raw_async.index("direct_dte_wait_done(") < raw_async.index(
+        "direct_dte_release("
+    )
+    assert raw_async.index("direct_dte_release(") < raw_async.index(
+        "wafer_tx81_direct_dte_wait(receive)"
+    )
+    assert raw_async.index(
+        "wafer_tx81_direct_dte_wait(receive)"
+    ) < raw_async.rindex("wafer_tx81_local_fence()")
+    assert raw_async.index(
+        "wafer_tx81_direct_dte_wait(receive)"
+    ) < raw_async.rindex("wafer_tx81_elementwise_add(")
+    assert "result.send_result = direct_dte_send_async(&info)" in raw_async
+    assert "result.wait_result = direct_dte_wait_done(&info)" in raw_async
+    assert "result.release_result = direct_dte_release(info.dte_node)" in (
+        raw_async
+    )
+    assert "WAFER_PROBE_RAW_ASYNC_RC_MARKER" in probe_source
+    split_read = probe_source.split(
+        "static uint64_t wafer_probe_mmio_read64(", maxsplit=1
+    )[1].split("static WaferProbePmu wafer_probe_read_pmu", maxsplit=1)[0]
+    high_before = split_read.index(
+        "uint32_t high_before = wafer_probe_mmio_read32("
+    )
+    low = split_read.index(
+        "low = wafer_probe_mmio_read32(", high_before
+    )
+    high_after = split_read.index(
+        "high_after = wafer_probe_mmio_read32(", low
+    )
+    assert high_before < low < high_after
+    assert "if (high_before == high_after)" in split_read
+    assert "*stable_mask |= stable_bit;" in split_read
+    assert "return ((uint64_t)high_after << 32) | low;" in split_read
+    assert "WAFER_PROBE_STABLE_RETRIES UINT32_C(8)" in probe_source
+
+    assert catalog.modulo_counter_delta(1, 0xFFFFFFFE, 32) == 3
+    assert (
+        catalog.modulo_counter_delta(
+            1, 0xFFFFFFFFFFFFFFFE, 64
+        )
+        == 3
+    )
+    assert catalog.modulo_counter_delta(17, 5, 64) == 12
+    rollover = catalog.stable_high_low_high_read(
+        (
+            (0, 0, 1),
+            (1, 0, 1),
+        )
+    )
+    assert rollover == catalog.SplitCounterRead(
+        value=0x0000000100000000,
+        stable=True,
+        attempts=2,
+    )
+    pre_rollover = catalog.stable_high_low_high_read(
+        ((0, 0xFFFFFFFF, 0),)
+    )
+    assert pre_rollover == catalog.SplitCounterRead(
+        value=0x00000000FFFFFFFF,
+        stable=True,
+        attempts=1,
+    )
+    unstable_attempts = tuple(
+        (index & 1, index, (index & 1) ^ 1)
+        for index in range(catalog.SPLIT_COUNTER_STABLE_RETRIES)
+    )
+    exhausted = catalog.stable_high_low_high_read(
+        unstable_attempts + ((9, 7, 9),)
+    )
+    assert exhausted.stable is False
+    assert exhausted.attempts == catalog.SPLIT_COUNTER_STABLE_RETRIES
+    assert exhausted.value == (
+        (unstable_attempts[-1][2] << 32) | unstable_attempts[-1][1]
+    )
 
     increasing = catalog.classify_payload_series(
-        {16: (16, 16), 32: (32, 32), 64: (64, 64)}
+        {size: (size, size) for size in catalog.PAYLOAD_SWEEP}
     )
     assert increasing["payload_relation"] == "strictly-increasing"
     assert increasing["integer_scale_candidate"] == 1
     flat = catalog.classify_payload_series(
-        {16: (7, 7), 32: (7, 7), 64: (7, 7)}
+        {size: (7, 7) for size in catalog.PAYLOAD_SWEEP}
     )
     assert flat["payload_relation"] == "nondecreasing"
     assert flat["integer_scale_candidate"] is None
     missing = catalog.classify_payload_series({16: (1,), 32: (2,)})
     assert missing["state"] == "inconclusive"
-    assert missing["missing_payload_bytes"] == (64,)
+    assert missing["missing_payload_bytes"] == (64, 256, 4096)
+    late_drop = catalog.classify_payload_series(
+        {
+            16: (16,),
+            32: (32,),
+            64: (64,),
+            256: (256,),
+            4096: (1,),
+        }
+    )
+    assert late_drop["payload_relation"] == "non-monotonic"
 
     print(
         "wafer_transport_pmu_calibration_catalog_test: "
-        "cases=18 contracts=8 direct_host_negative=1 "
-        "direct_error_observation=3 unsafe_isolation=1 board_counters=6 "
+        "cases=30 contracts=11 direct_host_negative=1 "
+        "direct_error_observation=4 sender_async_controls=2 "
+        "unsafe_isolation=1 board_counters=6 wrap_boundaries=5 "
         "tmnoc_static_negative=1 passed"
     )
     return 0

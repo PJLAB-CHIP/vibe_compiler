@@ -207,6 +207,7 @@ def is_non_board_row(row: object) -> bool:
                     "unsupported",
                     "unprepared",
                     "delegated",
+                    "unknown",
                 )
             ):
                 return True
@@ -223,6 +224,8 @@ def non_board_disposition(row: object) -> str | None:
             return "static-negative"
         if normalized == "isolated-deferred":
             return "isolated-deferred"
+        if normalized == "unknown":
+            return "unknown"
     return None
 
 
@@ -283,6 +286,7 @@ def main() -> int:
         "delegated-positive",
         "static-negative",
         "isolated-deferred",
+        "unknown",
     }
     module_cache: dict[str, object] = {}
     referenced_groups: Counter[tuple[str, str | int]] = Counter()
@@ -480,7 +484,7 @@ def main() -> int:
     incomplete = tuple(
         leaf.key for leaf in all_leaves if leaf.preparation != "ready"
     )
-    assert incomplete == ()
+    assert not incomplete
     print(
         "wafer_hardware_calibration_matrix_test: "
         f"domains={len(domains)} leaves={len(all_leaves)} "

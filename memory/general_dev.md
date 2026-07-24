@@ -22,6 +22,11 @@
 - 本机普通CPU构建默认使用`cmake --build <build> -j$(nproc)`，不要无依据固定成低并发。只有已观察到
   内存压力、共享机器约束或特定工具不支持并行时才主动降并发，并在进度中说明。板卡执行仍由独立
   resource lock保持单进程串行，不能把CPU构建并发规则套到硬件case。
+- 板卡可用窗口用于执行已冻结的probe，不用于现场补catalog、重写oracle或重新做全域审计。离线阶段必须
+  先把待执行叶子变成真正可枚举的case：input、expected或bounded observation、physical guard、device
+  dispatcher、timeout/cleanup、target/no-card和runner入口均闭合；只有catalog条目或“保守Unknown”不算
+  case ready。上板前冻结对应提交和精确执行清单；板端只有实际失败暴露本case缺陷时才回到实现，不能因
+  无关的新想法移动本次执行终点。
 - 板端版本、ABI、loader symbol和最终ELF反汇编属于环境或相关实现变化时的一次性qualification基线，
   不能默认塞进每轮workload热路径重复执行。qualification按重启后的板测会话复用：software/runtime
   identity未变化且设备持续正常时，只在会话开始确认一次空闲/可用性，后续case直接launch，不重复
@@ -37,6 +42,10 @@
   static、single-vector observed、calibrated、supported、unknown和excluded；性能观察不能反向扩大semantic
   legality。packet/register字段只能证明请求和路由，完整非零output、全range readback及双侧guard才是
   correctness oracle。
+- 每个硬件probe在实现前先写明至少两种仍可能成立的行为解释，以及哪个boundary result、raw sink、
+  counter relation或guard能把它们区分开；只证明“请求完成”的smoke不能关闭机制问题。板端结果收口时必须
+  同时记录“观察事实、排除的解释、尚未排除的解释、当前compiler/runtime决策、下一种区分性case”，不能只
+  汇总通过数量。已有case已经具备该区分力时只绑定并执行，不为Unknown重复造同义case。
 - 大型硬件校准在上卡前使用机器manifest做叶子级完备性门禁。文档大类只作compiler-consumer导航；
   每个语义叶子必须解析到catalog中的具体case对象或带typed gate及原因的`static-negative`/
   `isolated-deferred`，并绑定calibration/held-out层、独立oracle、physical guard、matching completion、

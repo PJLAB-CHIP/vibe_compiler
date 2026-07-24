@@ -112,6 +112,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-tile-count", type=int)
     parser.add_argument("--expected-runtime-library-sha256")
     parser.add_argument("--completion-timeout-ms", type=int, default=60000)
+    parser.add_argument("--observation-samples", type=int, default=3)
     return parser.parse_args()
 
 
@@ -120,6 +121,14 @@ def configure_package_support() -> None:
     package_support.PROBE_C = PROBE_C
     package_support.MODULE = MODULE
     package_support.METADATA = METADATA
+
+
+def execution_sample_count(
+    *, exact: bool, observation_samples: int
+) -> int:
+    if observation_samples < 1:
+        raise ValueError("--observation-samples must be positive")
+    return 1 if exact else observation_samples
 
 
 def select_cases(args: argparse.Namespace) -> tuple[catalog.NECase, ...]:
@@ -285,52 +294,6 @@ def validate_output(
     if slot[end:] != bytes([catalog.SLOT_CANARY]) * (len(slot) - end):
         raise RuntimeError(f"{case.name}: output suffix guard changed")
     actual_physical = slot[begin:end]
-    actual_logical = physical.unpack_scalar_bytes(
-        case.output_shape,
-        case.output_layout,
-        case.element_bytes,
-        actual_physical,
-    )
-    if (
-        built.expected_logical is not None
-        and actual_logical != built.expected_logical
-    ):
-        mismatch = next(
-            index
-            for index, (left, right) in enumerate(
-                zip(actual_logical, built.expected_logical, strict=True)
-            )
-            if left != right
-        )
-        raise RuntimeError(
-            f"{case.name}: logical result differs at element {mismatch}"
-        )
-    canonical_physical = (
-        built.expected_physical
-        if built.expected_physical is not None
-        else physical.pack_scalar_bytes(
-            case.output_shape,
-            case.output_layout,
-            case.element_bytes,
-            actual_logical,
-            padding=catalog.OUTPUT_PADDING,
-        )
-    )
-    if actual_physical != canonical_physical:
-        mismatch = next(
-            index
-            for index, (left, right) in enumerate(
-                zip(
-                    actual_physical,
-                    canonical_physical,
-                    strict=True,
-                )
-            )
-            if left != right
-        )
-        raise RuntimeError(
-            f"{case.name}: physical padding differs at byte {mismatch}"
-        )
     initial_physical = built.payload[
         2 * catalog.SLOT_BYTES + catalog.BODY_OFFSET :
         2 * catalog.SLOT_BYTES + catalog.BODY_OFFSET + case.output_span
@@ -340,6 +303,80 @@ def validate_output(
             f"{case.name}: observation completed without any bounded "
             "writeback"
         )
+    actual_logical = physical.unpack_scalar_bytes(
+        case.output_shape,
+        case.output_layout,
+        case.element_bytes,
+        actual_physical,
+    )
+    candidate_matches: tuple[str, ...] = ()
+    candidate_byte_mismatches: dict[str, int] = {}
+    if case.profile_name in catalog.CONV_INDEX_PROFILES:
+        candidates = catalog.build_conv_index_candidates(case, built)
+        candidate_byte_mismatches = {
+            name: sum(
+                left != right
+                for left, right in zip(
+                    actual_physical, candidate, strict=True
+                )
+            )
+            for name, candidate in candidates.items()
+        }
+        candidate_matches = tuple(
+            name
+            for name, mismatches in candidate_byte_mismatches.items()
+            if mismatches == 0
+        )
+        if len(candidate_matches) > 1:
+            raise RuntimeError(
+                f"{case.name}: physical-index fingerprint is ambiguous: "
+                f"{candidate_matches}"
+            )
+    else:
+        if (
+            built.expected_logical is not None
+            and actual_logical != built.expected_logical
+        ):
+            mismatch = next(
+                index
+                for index, (left, right) in enumerate(
+                    zip(
+                        actual_logical,
+                        built.expected_logical,
+                        strict=True,
+                    )
+                )
+                if left != right
+            )
+            raise RuntimeError(
+                f"{case.name}: logical result differs at element {mismatch}"
+            )
+        canonical_physical = (
+            built.expected_physical
+            if built.expected_physical is not None
+            else physical.pack_scalar_bytes(
+                case.output_shape,
+                case.output_layout,
+                case.element_bytes,
+                actual_logical,
+                padding=catalog.OUTPUT_PADDING,
+            )
+        )
+        if actual_physical != canonical_physical:
+            mismatch = next(
+                index
+                for index, (left, right) in enumerate(
+                    zip(
+                        actual_physical,
+                        canonical_physical,
+                        strict=True,
+                    )
+                )
+                if left != right
+            )
+            raise RuntimeError(
+                f"{case.name}: physical padding differs at byte {mismatch}"
+            )
 
     mutable = bytearray(raw)
     mutable[: catalog.RECORD_WORDS * 8] = bytes(
@@ -358,7 +395,7 @@ def validate_output(
         raise RuntimeError(
             f"{case.name}: output changed outside record/result at {mismatch}"
         )
-    return {
+    result = {
         "case": case.as_dict(),
         "sample": sample,
         "execute_result": words[catalog.REC["EXECUTE_RESULT"]],
@@ -367,6 +404,10 @@ def validate_output(
         ).hexdigest(),
         "physical_sha256": hashlib.sha256(actual_physical).hexdigest(),
     }
+    if candidate_byte_mismatches:
+        result["candidate_matches"] = candidate_matches
+        result["candidate_byte_mismatches"] = candidate_byte_mismatches
+    return result
 
 
 def execute_cases(
@@ -377,40 +418,49 @@ def execute_cases(
 ) -> None:
     raw_dir = args.work_dir / "raw"
     raw_dir.mkdir()
-    for sample, case in enumerate(cases):
-        built = catalog.build_case_payload(case, sample)
-        request = raw_dir / f"{case.name}.request.raw"
-        payload = raw_dir / f"{case.name}.payload.raw"
-        output = raw_dir / f"{case.name}.output.raw"
-        request.write_bytes(built.request)
-        payload.write_bytes(built.payload)
-        result = package_support.run(
-            package_support.board_command(
-                args, package, resource_ids, request, payload, output
-            ),
-            timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
+    for case in cases:
+        sample_count = execution_sample_count(
+            exact=case.exact,
+            observation_samples=args.observation_samples,
         )
-        required = {
-            "board_stage: completion",
-            "board_stage: device-to-host",
-            "board_stage: cleanup",
-            "board_execution: true",
-        }
-        if not required.issubset(set(result.stdout.splitlines())):
-            raise RuntimeError(
-                f"{case.name}: wafer-run omitted lifecycle evidence"
+        for sample in range(sample_count):
+            built = catalog.build_case_payload(case, sample)
+            stem = f"{case.name}.sample-{sample}"
+            request = raw_dir / f"{stem}.request.raw"
+            payload = raw_dir / f"{stem}.payload.raw"
+            output = raw_dir / f"{stem}.output.raw"
+            request.write_bytes(built.request)
+            payload.write_bytes(built.payload)
+            result = package_support.run(
+                package_support.board_command(
+                    args, package, resource_ids, request, payload, output
+                ),
+                timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
             )
-        print(
-            "ne_calibration: "
-            + json.dumps(
-                validate_output(output, case, built, sample),
-                sort_keys=True,
+            required = {
+                "board_stage: completion",
+                "board_stage: device-to-host",
+                "board_stage: cleanup",
+                "board_execution: true",
+            }
+            if not required.issubset(set(result.stdout.splitlines())):
+                raise RuntimeError(
+                    f"{case.name}: wafer-run omitted lifecycle evidence"
+                )
+            print(
+                "ne_calibration: "
+                + json.dumps(
+                    validate_output(output, case, built, sample),
+                    sort_keys=True,
+                )
             )
-        )
 
 
 def main() -> int:
     args = parse_args()
+    execution_sample_count(
+        exact=False, observation_samples=args.observation_samples
+    )
     if args.list_cases:
         print(
             json.dumps(

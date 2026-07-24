@@ -56,6 +56,15 @@ METADATA = {
     "unused_inputs": [],
 }
 
+CT_CAPABILITY_CASE_ID_MIN = 143
+CT_CAPABILITY_CASE_ID_MAX = 246
+QUALIFICATION_REGRESSION_CASES = (
+    "peripheral-argmin-f16",
+    "peripheral-argmin-negative-f16-observed",
+    "unpool-index-f16",
+    "peripheral-bilinear-f16",
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -66,7 +75,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--work-dir", type=pathlib.Path)
     parser.add_argument(
         "--suite",
-        choices=("safe", "exact", "observed", "all"),
+        choices=(
+            "safe",
+            "exact",
+            "observed",
+            "ct-capability",
+            "qualification-regression",
+            "all",
+        ),
         default="safe",
     )
     parser.add_argument(
@@ -88,7 +104,7 @@ def parse_args() -> argparse.Namespace:
         "--observation-samples",
         type=int,
         default=3,
-        help="repeat each raw-observation row with identical payload",
+        help="repeat each raw-observation row with an independently tagged sample",
     )
     return parser.parse_args()
 
@@ -171,6 +187,22 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.InstructionCase, ...
     if not args.selected_cases:
         if args.suite in {"safe", "all"}:
             return catalog.SAFE_CASES
+        if args.suite == "ct-capability":
+            selected = tuple(
+                case
+                for case in catalog.SAFE_CASES
+                if CT_CAPABILITY_CASE_ID_MIN
+                <= case.case_id
+                <= CT_CAPABILITY_CASE_ID_MAX
+            )
+            if not selected:
+                raise RuntimeError("CT capability qualification suite is empty")
+            return selected
+        if args.suite == "qualification-regression":
+            return tuple(
+                catalog.CASES_BY_NAME[name]
+                for name in QUALIFICATION_REGRESSION_CASES
+            )
         observed = args.suite == "observed"
         selected = tuple(
             case
@@ -523,26 +555,23 @@ def validate_output(
         catalog.OUTPUT_DDR_OFFSET :
         catalog.OUTPUT_DDR_OFFSET + catalog.SLOT_BYTES
     ]
-    exact_ranges = [
-        (0, catalog.BODY_OFFSET),
-        (
+    result_offsets = (
+        set(catalog.reduce_exact_result_byte_offsets(case))
+        if not case.is_observation
+        else set()
+    )
+    exact_indices = [
+        *range(0, catalog.BODY_OFFSET),
+        *sorted(result_offsets),
+        *range(
             catalog.BODY_OFFSET + case.output_span,
             catalog.SLOT_BYTES,
         ),
     ]
-    if not case.is_observation:
-        exact_ranges.insert(
-            1,
-            (
-                catalog.BODY_OFFSET,
-                catalog.BODY_OFFSET + case.result_bytes,
-            ),
-        )
     mismatch = next(
         (
             index
-            for begin, end in exact_ranges
-            for index in range(begin, end)
+            for index in exact_indices
             if actual_slot[index] != expected_slot[index]
         ),
         None,
@@ -550,9 +579,7 @@ def validate_output(
     if mismatch is not None:
         domain = (
             "logical result"
-            if catalog.BODY_OFFSET
-            <= mismatch
-            < catalog.BODY_OFFSET + case.result_bytes
+            if mismatch in result_offsets
             else "SPM guard"
         )
         raise RuntimeError(

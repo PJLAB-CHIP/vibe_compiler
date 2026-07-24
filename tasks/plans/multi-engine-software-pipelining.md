@@ -91,19 +91,28 @@ Pipeline position:
   Checkpoint A：目标profile实卡执行、held-out成熟度和software-pipeline vertical仍是后续gate。
 - 当前实卡前资产快照为：CT opcode `0..186`有177 board-executable、8 board-observation、
   2 static-negative；convert
-  204行中158 exact、46 observation，23个stochastic row均为可执行重复采样；instruction-family有71个
-  safe case。DataMove为base 46 + extended默认17个safe case，并保留1个只允许显式选择的native `dims=HW`
+  204行中158 exact、46 observation，23个stochastic row均为可执行重复采样；instruction-family有168个
+  safe case，其中139个exact、29个bounded observation。Reduce/Pool/Unpool的117个typed capability row
+  已全部落到82个board-executable、24个board-observation或11个static-negative，0 Unknown。
+  DataMove为base 46 + extended默认17个safe case，并保留1个只允许显式选择的native `dims=HW`
   Concat隔离复测case；公开`121..138`处置为14 exact、4 observation、0 deferred。NE为32 exact、
-  35 observation、3 static-negative，新增quant、Depthwise/BackwardConv和
-  左右不等batch。memory-descriptor有59个case，SPM 84行拆为19个本地board、15个static-negative、
-  50个concrete delegated、0 deferred。NCC新增constructor nonnull、default/byworker scope、六个subset
+  38 observation、3 static-negative，新增quant、Depthwise/BackwardConv和
+  左右不等batch。memory-descriptor当前有99个case（既有59行加40个多offset pair row），SPM 124行拆为
+  24个本地board、10个static-negative、90个concrete delegated、0 deferred。新增5个非preferred
+  base/length只作bounded legality observation，不提前supported；NCC新增constructor nonnull、
+  default/byworker scope、六个subset
   join、all-direction producer/consumer、strided dependency、large backlog与手写double-slot hardware
-  observation。Direct DTE另有source提前复用、invalid FSM与unknown event wait三种同步错误观察；
-  receiver未prepare因可能进入无设备timeout的永久等待而继续隔离。机器矩阵当前共121个叶子：
-  74个board positive、21个board observation、6个delegated positive、18个static negative和2个
-  isolated deferred。以上均只表示case、target/no-card ready，尚未取得本轮板端结果。
-- NCC统一板前门禁覆盖185个计划：176个普通safe计划进入同一串行CTest，constructor、default/byworker
-  对照和六个proper-subset join共9个以独立进程执行。完整板端执行使用
+  observation。Direct DTE另有source提前复用、destination提前复用、invalid FSM与unknown event wait
+  四种同步错误观察；receiver未prepare因可能进入无设备timeout的永久等待而继续隔离。机器矩阵当前共
+  123个叶子：73个board positive、24个board observation、6个delegated positive、17个static negative和
+  3个isolated deferred，全部ready。2026-07-24已按当前catalog/validator核对保存板端产物：
+  CT convert 204、DataMove
+  base 46、SPM原本地19、memory descriptor既有59、cache/coherence 58及SPM原50个delegated row已有对应
+  exact/observation证据，不再笼统记为“尚未上板”。本轮新增SPM 5行和pair 40行仍待板；pair current
+  protocol按3 offset × serial/window × 3样本重跑前，旧单样本PMU仍不能形成bank、overlap或固定cost结论。
+- NCC统一板前门禁当前覆盖196个普通safe case（按oracle采样规则合计468次launch），进入同一串行CTest；
+  constructor、default/byworker/local-fence对照、五类engine active-occupancy和六个proper-subset join共
+  15个focused CTest以独立进程执行。完整板端执行使用
   `tools/run_hardware_calibration.py`；它只调度已注册board CTest，要求双重显式授权，逐项串行、
   首错/skip即停，不retry/reset/power，并保存log、JUnit和session summary。
 - NCC prepare失败现统一由每个issue的协议化阶段位诊断：generic plan记录prepare callback进入与完成，
@@ -115,6 +124,13 @@ Pipeline position:
   才调用`AddVV`并完成packet。新schema已通过host protocol、target link和shared-package no-card，
   本批未运行板卡；后续一次精确实卡重放应直接区分`builder-not-acquired`与更晚的packet/release阶段，
   不再靠缩放DDR resource猜测。
+- 下一重启会话只跑剩余项：current CT vector；新增95个Reduce/Pool/Unpool case、此前尚未上板的独立
+  IndexedMax以及ArgMin、旧Unpool-index和Bilinear的instruction-family复验；DataMove extended余项及最后隔离的native
+  `dims=HW`；NE当前ReLU/Conv/BackwardConv；新增5个SPM non-preferred geometry和40个三offset
+  engine-pair row；current NCC schema单case、safe suite和15个独立case；Direct DTE/transport的30个
+  payload-sweep、4个有界错误和2个sender async对照，共36个尚无current产物的配置。已有证据的SPM 19、
+  memory descriptor 59、cache 58、DataMove base和CT convert
+  不重复跑。
 - 校准矩阵按compiler consumer分层，而不是按vendor API罗列：
   - instruction/encoding：constructor ownership、packet routing、descriptor单位、range materialization、
     alignment/tail、返回值与错误可观察性；

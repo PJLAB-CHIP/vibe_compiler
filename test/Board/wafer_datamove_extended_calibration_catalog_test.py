@@ -149,6 +149,41 @@ def validate_resource_canaries() -> None:
 
 
 def main() -> int:
+    cmake = (
+        pathlib.Path(__file__).resolve().parents[1] / "CMakeLists.txt"
+    ).read_text()
+    assert "NAME wafer-board-datamove-native-concat-hw-isolated" in cmake
+    assert "--allow-isolated-native-concat-hw" in cmake
+    isolated_ctest = cmake[
+        cmake.index("NAME wafer-board-datamove-native-concat-hw-isolated") :
+        cmake.index(
+            "add_test(NAME wafer-board-ne-calibration",
+            cmake.index(
+                "NAME wafer-board-datamove-native-concat-hw-isolated"
+            ),
+        )
+    ]
+    positions = [
+        isolated_ctest.index(name)
+        for name in runner.ISOLATED_NATIVE_CONCAT_HW_SEQUENCE
+    ]
+    assert positions == sorted(positions)
+    assert runner.execution_sample_count(
+        exact=True, observation_samples=3
+    ) == 1
+    assert runner.execution_sample_count(
+        exact=False, observation_samples=3
+    ) == 3
+    try:
+        runner.execution_sample_count(
+            exact=False, observation_samples=0
+        )
+    except ValueError as error:
+        assert "--observation-samples must be positive" in str(error)
+    else:
+        raise AssertionError(
+            "zero DataMove observation sample count was accepted"
+        )
     assert len(catalog.CATALOG) == 17
     assert len(catalog.ALL_CASES) == 18
     assert len(catalog.CASES_BY_ID) == len(catalog.ALL_CASES)
@@ -199,17 +234,49 @@ def main() -> int:
             selected_cases=None,
             operation=None,
             oracle=None,
+            allow_isolated_native_concat_hw=False,
         )
     )
     assert default_selection == catalog.CATALOG
+    try:
+        runner.select_cases(
+            types.SimpleNamespace(
+                selected_cases=[isolated_hw.name],
+                operation=None,
+                oracle=None,
+                allow_isolated_native_concat_hw=False,
+            )
+        )
+    except RuntimeError as error:
+        assert "explicit isolated authorization" in str(error)
+    else:
+        raise AssertionError("native HW Concat bypassed isolated authorization")
     explicit_selection = runner.select_cases(
         types.SimpleNamespace(
-            selected_cases=[isolated_hw.name],
+            selected_cases=list(
+                runner.ISOLATED_NATIVE_CONCAT_HW_SEQUENCE
+            ),
             operation=None,
             oracle=None,
+            allow_isolated_native_concat_hw=True,
         )
     )
-    assert explicit_selection == (isolated_hw,)
+    assert tuple(case.name for case in explicit_selection) == (
+        runner.ISOLATED_NATIVE_CONCAT_HW_SEQUENCE
+    )
+    try:
+        runner.select_cases(
+            types.SimpleNamespace(
+                selected_cases=[isolated_hw.name],
+                operation=None,
+                oracle=None,
+                allow_isolated_native_concat_hw=True,
+            )
+        )
+    except RuntimeError as error:
+        assert "fixed C/W/H control sequence" in str(error)
+    else:
+        raise AssertionError("native HW Concat ran without fixed controls")
 
     for sample, case in enumerate(catalog.CATALOG):
         assert case.result_bytes > 0

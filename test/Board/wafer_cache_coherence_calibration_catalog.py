@@ -26,6 +26,7 @@ SPM_GUARD_BYTES = 64
 BANK_PAYLOAD_BYTES = 4096
 BANK_REGION_GAP = 8192
 BANK_OFFSETS = (0, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768)
+DDR_BANK_PMU_REPETITIONS = 3
 REQ = {
     "MAGIC": 0,
     "SCHEMA_AND_WORDS": 1,
@@ -89,6 +90,7 @@ class CacheCoherenceCase:
     disposition: str = "board-executable"
     reason: str | None = None
     evidence: tuple[object, ...] = ()
+    repetitions: int = 1
 
     def as_dict(self) -> dict[str, object]:
         oracle = (
@@ -104,6 +106,7 @@ class CacheCoherenceCase:
             "name": self.name,
             "direction": self.direction,
             "phases": self.phases,
+            "repetitions": self.repetitions,
             "payload_bytes": self.payload_bytes,
             "expected_rdma": self.expected_rdma,
             "expected_wdma": self.expected_wdma,
@@ -196,6 +199,7 @@ def _bank_cases(first_case_id: int) -> tuple[CacheCoherenceCase, ...]:
                         schedule=schedule,
                         bank_offset=offset,
                         payload_bytes=BANK_PAYLOAD_BYTES,
+                        repetitions=DDR_BANK_PMU_REPETITIONS,
                     )
                 )
                 case_id += 1
@@ -297,6 +301,10 @@ CACHE_SESSION_DISPOSITIONS = (
             "over the same allocation; separate wafer-run invocations unload "
             "and free resources"
         ),
+        evidence=(
+            CACHE_CASES[0],
+            CACHE_CASES[2],
+        ),
     ),
 )
 
@@ -335,10 +343,11 @@ def kcore_store_pattern(
     )
 
 
-def bank_pattern(case_id: int, lane: int) -> bytes:
+def bank_pattern(case_id: int, sample: int, lane: int) -> bytes:
     return bytes(
         (
             case_id * 31
+            + (sample + 1) * 43
             + lane * 97
             + index * 19
             + (index >> 6) * 11
@@ -365,8 +374,11 @@ def build_case_payload(
         raise RuntimeError(
             f"{case.name}: deferred case cannot produce a device request"
         )
-    if sample < 0 or sample >= case.phases:
-        raise RuntimeError(f"{case.name}: sample {sample} is outside phase count")
+    sample_count = case.phases * case.repetitions
+    if sample < 0 or sample >= sample_count:
+        raise RuntimeError(
+            f"{case.name}: sample {sample} is outside sample count"
+        )
     words = [0] * REQUEST_WORDS
     words[REQ["MAGIC"]] = REQUEST_MAGIC
     words[REQ["SCHEMA_AND_WORDS"]] = (SCHEMA << 32) | REQUEST_WORDS
@@ -391,8 +403,8 @@ def build_case_payload(
     payload[BODY_OFFSET : BODY_OFFSET + case.payload_bytes] = input_pattern
     expected_regions: tuple[tuple[int, bytes], ...] = ()
     if case.kind == "ddr-bank-pair":
-        lane0 = bank_pattern(case.case_id, 0)
-        lane1 = bank_pattern(case.case_id, 1)
+        lane0 = bank_pattern(case.case_id, sample, 0)
+        lane1 = bank_pattern(case.case_id, sample, 1)
         second = BODY_OFFSET + BANK_REGION_GAP + case.bank_offset
         payload[BODY_OFFSET : BODY_OFFSET + BANK_PAYLOAD_BYTES] = lane0
         payload[second : second + BANK_PAYLOAD_BYTES] = lane1

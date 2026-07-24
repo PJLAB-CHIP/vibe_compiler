@@ -118,22 +118,62 @@ wafer_ncc_probe_is_serial_dma_roundtrip(const WaferNccProbeRequest *request) {
                                          &request->lanes[1]);
 }
 
-static int wafer_ncc_probe_is_strided_dependency(
+int wafer_ncc_probe_is_strided_dependency(
     const WaferNccProbeRequest *request) {
-  return request->lane_count == 2 && request->rounds == 1 &&
-         request->effect_relation == WAFER_NCC_EFFECT_RAW &&
-         request->range_relation == WAFER_NCC_RANGE_STRIDED_ENVELOPE &&
-         request->schedule <= WAFER_NCC_SCHEDULE_SERIAL &&
-         request->wait_kind == WAFER_NCC_WAIT_BY_WORKER &&
-         request->wait_worker_mask == 1 &&
-         request->first_operand == WAFER_NCC_OPERAND_WRITE &&
-         request->second_operand == WAFER_NCC_OPERAND_READ0 &&
-         request->flags == 0 && request->issue_limit == 0 &&
-         request->lanes[0].engine == WAFER_NCC_ENGINE_RDMA &&
-         request->lanes[1].engine == WAFER_NCC_ENGINE_WDMA &&
-         request->lanes[0].worker == 0 && request->lanes[1].worker == 0 &&
-         wafer_ncc_probe_dma_layout_equal(&request->lanes[0],
-                                          &request->lanes[1]);
+  if (request->lane_count != 2 || request->rounds != 1 ||
+      request->schedule > WAFER_NCC_SCHEDULE_SERIAL ||
+      request->wait_kind != WAFER_NCC_WAIT_BY_WORKER ||
+      request->wait_worker_mask != 1 || request->flags != 0 ||
+      request->issue_limit != 0 || request->lanes[0].worker != 0 ||
+      request->lanes[1].worker != 0 ||
+      request->lanes[0].issue_mode != WAFER_NCC_ISSUE_WRAPPER ||
+      request->lanes[1].issue_mode != WAFER_NCC_ISSUE_WRAPPER ||
+      request->lanes[0].element_format !=
+          WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16 ||
+      request->lanes[1].element_format !=
+          WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16 ||
+      !wafer_ncc_probe_dma_layout_equal(&request->lanes[0],
+                                        &request->lanes[1]))
+    return 0;
+
+  uint32_t first = request->lanes[0].engine;
+  uint32_t second = request->lanes[1].engine;
+  switch (request->effect_relation) {
+  case WAFER_NCC_EFFECT_RAW:
+    return request->range_relation == WAFER_NCC_RANGE_STRIDED_ENVELOPE &&
+           first == WAFER_NCC_ENGINE_RDMA &&
+           second == WAFER_NCC_ENGINE_WDMA &&
+           request->first_operand == WAFER_NCC_OPERAND_WRITE &&
+           request->second_operand == WAFER_NCC_OPERAND_READ0;
+  case WAFER_NCC_EFFECT_WAR:
+    return request->range_relation == WAFER_NCC_RANGE_STRIDED_ENVELOPE &&
+           first == WAFER_NCC_ENGINE_WDMA &&
+           second == WAFER_NCC_ENGINE_RDMA &&
+           request->first_operand == WAFER_NCC_OPERAND_READ0 &&
+           request->second_operand == WAFER_NCC_OPERAND_WRITE;
+  case WAFER_NCC_EFFECT_WAW: {
+    uint64_t chunks =
+        (uint64_t)request->lanes[0].layout_iteration0 *
+        request->lanes[0].layout_iteration1 *
+        request->lanes[0].layout_iteration2;
+    return request->range_relation >= WAFER_NCC_RANGE_EXACT &&
+           request->range_relation <= WAFER_NCC_RANGE_ADJACENT &&
+           (request->range_relation != WAFER_NCC_RANGE_PARTIAL ||
+            chunks > 1) &&
+           first == WAFER_NCC_ENGINE_RDMA &&
+           second == WAFER_NCC_ENGINE_RDMA &&
+           request->first_operand == WAFER_NCC_OPERAND_WRITE &&
+           request->second_operand == WAFER_NCC_OPERAND_WRITE;
+  }
+  case WAFER_NCC_EFFECT_RAR:
+    return request->range_relation == WAFER_NCC_RANGE_STRIDED_ENVELOPE &&
+           first == WAFER_NCC_ENGINE_WDMA &&
+           second == WAFER_NCC_ENGINE_WDMA &&
+           request->first_operand == WAFER_NCC_OPERAND_READ0 &&
+           request->second_operand == WAFER_NCC_OPERAND_READ0;
+  default:
+    return 0;
+  }
 }
 
 static int wafer_ncc_probe_is_constructor_observation(

@@ -19,6 +19,7 @@ def main() -> int:
         "board-observation",
         "static-negative",
         "isolated-deferred",
+        "typed-profile",
     }
     for row in catalog.CATALOG:
         assert row.disposition in allowed
@@ -27,6 +28,11 @@ def main() -> int:
             assert row.reason is None
         elif row.disposition == "isolated-deferred":
             assert not row.evidence
+            assert row.reason
+        elif row.disposition == "typed-profile":
+            assert row.evidence == (
+                "wafer-ct-reduce-pool-capability-catalog-python",
+            )
             assert row.reason
         else:
             assert row.evidence
@@ -37,12 +43,23 @@ def main() -> int:
     counts = Counter(row.disposition for row in catalog.CATALOG)
     assert counts["static-negative"] == 2
     assert counts["isolated-deferred"] == 0
-    assert counts["board-executable"] == 177
-    assert counts["board-observation"] == 8
+    assert counts["board-executable"] == 162
+    assert counts["board-observation"] == 10
+    assert counts["typed-profile"] == 13
     assert catalog.BY_OPCODE[139].evidence[:2] == (
         "ct-op139-convert-int8-fp16-main",
         "ct-op139-convert-int8-fp16-tail",
     )
+    assert all(
+        catalog.BY_OPCODE[opcode].disposition == "typed-profile"
+        for opcode in range(111, 124)
+    )
+    assert catalog.BY_OPCODE[178].disposition == "board-observation"
+    assert catalog.BY_OPCODE[178].evidence == (
+        "peripheral-argmin-f16",
+        "peripheral-argmin-negative-f16-observed",
+    )
+    assert catalog.BY_OPCODE[182].disposition == "board-observation"
     concrete_evidence = {
         case.name for case in catalog.vector_catalog.CATALOG
     } | {
@@ -50,7 +67,7 @@ def main() -> int:
     } | {
         case.name for case in catalog.datamove_catalog.CATALOG
     } | {
-        case.name for case in catalog.datamove_catalog.extended.CATALOG
+        case.name for case in catalog.datamove_catalog.extended.ALL_CASES
     } | {
         case.name for case in instruction_catalog.CATALOG
     } | {
@@ -58,6 +75,7 @@ def main() -> int:
     }
     registered_gate_evidence = {
         "wafer-ct-opcode-disposition-catalog-python",
+        "wafer-ct-reduce-pool-capability-catalog-python",
         "wafer-ct-vector-calibration-catalog-python",
         "wafer-runtime-ct-vector-calibration-probe-no-card",
     }
@@ -92,12 +110,12 @@ def main() -> int:
     assert all(
         row.disposition == "static-negative" for row in static_negative
     )
+    assert not catalog.reduce_pool_catalog.UNKNOWN_ROWS
     bound = positive + observed + static_negative
-    expected = tuple(
+    expected = catalog.reduce_pool_catalog.CATALOG + tuple(
         row
         for row in catalog.CATALOG
-        if row.opcode
-        in catalog._REDUCE_POOL_UNPOOL_PERIPHERAL_OPCODES
+        if row.opcode in catalog._PERIPHERAL_OPCODES
     )
     assert len(bound) == len(set(bound)) == len(expected)
     assert set(bound) == set(expected)

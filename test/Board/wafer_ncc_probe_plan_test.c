@@ -547,6 +547,45 @@ static void test_dma_strided_roundtrip_is_serial_and_bounded(void) {
   assert(wafer_ncc_probe_validate_plan(
              &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
          WAFER_NCC_STATUS_OK);
+
+  WaferNccProbeRequest dependency = plan;
+  dependency.effect_relation = WAFER_NCC_EFFECT_WAR;
+  dependency.lanes[0].engine = WAFER_NCC_ENGINE_WDMA;
+  dependency.lanes[1].engine = WAFER_NCC_ENGINE_RDMA;
+  dependency.first_operand = WAFER_NCC_OPERAND_READ0;
+  dependency.second_operand = WAFER_NCC_OPERAND_WRITE;
+  assert(wafer_ncc_probe_validate_plan(
+             &dependency, adapters,
+             sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
+
+  dependency.effect_relation = WAFER_NCC_EFFECT_RAR;
+  dependency.lanes[1].engine = WAFER_NCC_ENGINE_WDMA;
+  dependency.second_operand = WAFER_NCC_OPERAND_READ0;
+  assert(wafer_ncc_probe_validate_plan(
+             &dependency, adapters,
+             sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
+
+  dependency.effect_relation = WAFER_NCC_EFFECT_WAW;
+  dependency.lanes[0].engine = WAFER_NCC_ENGINE_RDMA;
+  dependency.lanes[1].engine = WAFER_NCC_ENGINE_RDMA;
+  dependency.first_operand = WAFER_NCC_OPERAND_WRITE;
+  dependency.second_operand = WAFER_NCC_OPERAND_WRITE;
+  for (uint32_t relation = WAFER_NCC_RANGE_EXACT;
+       relation <= WAFER_NCC_RANGE_ADJACENT; ++relation) {
+    dependency.range_relation = relation;
+    assert(wafer_ncc_probe_validate_plan(
+               &dependency, adapters,
+               sizeof(adapters) / sizeof(adapters[0])) ==
+           WAFER_NCC_STATUS_OK);
+  }
+  dependency.range_relation = WAFER_NCC_RANGE_STRIDED_ENVELOPE;
+  assert(wafer_ncc_probe_validate_plan(
+             &dependency, adapters,
+             sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+
   plan.range_relation = WAFER_NCC_RANGE_EXACT;
   plan.schedule = WAFER_NCC_SCHEDULE_SERIAL;
   plan.lanes[1].layout_stride0_bytes = 9;

@@ -45,6 +45,13 @@ METADATA = {
     "unused_inputs": [],
 }
 
+ISOLATED_NATIVE_CONCAT_HW_SEQUENCE = (
+    "datamove-raw-concat-c-n2h7w9-c33-c32",
+    "datamove-raw-concat-w-n2h7-w4-w5-c65",
+    "datamove-raw-concat-h-n2-h3-h4-w9-c65",
+    "datamove-raw-concat-hw-n2-2x5-3x7-c65",
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -67,6 +74,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-tile-count", type=int)
     parser.add_argument("--expected-runtime-library-sha256")
     parser.add_argument("--completion-timeout-ms", type=int, default=60000)
+    parser.add_argument("--observation-samples", type=int, default=3)
+    parser.add_argument(
+        "--allow-isolated-native-concat-hw",
+        action="store_true",
+        help=(
+            "authorize only the fixed C/W/H control sequence followed by the "
+            "native HW Concat requalification case"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -75,6 +91,14 @@ def configure_package_support() -> None:
     package_support.PROBE_C = PROBE_C
     package_support.MODULE = MODULE
     package_support.METADATA = METADATA
+
+
+def execution_sample_count(
+    *, exact: bool, observation_samples: int
+) -> int:
+    if observation_samples < 1:
+        raise ValueError("--observation-samples must be positive")
+    return 1 if exact else observation_samples
 
 
 def select_cases(
@@ -111,6 +135,25 @@ def select_cases(
         raise RuntimeError("extended DataMove filters selected no cases")
     if len({case.name for case in selected}) != len(selected):
         raise RuntimeError("extended DataMove selection repeats a case")
+    selected_names = tuple(case.name for case in selected)
+    selects_isolated_hw = any(
+        case in catalog.ISOLATED_CONCAT_CASES for case in selected
+    )
+    if selects_isolated_hw:
+        if not args.allow_isolated_native_concat_hw:
+            raise RuntimeError(
+                "native Concat HW requires the explicit isolated authorization"
+            )
+        if selected_names != ISOLATED_NATIVE_CONCAT_HW_SEQUENCE:
+            raise RuntimeError(
+                "native Concat HW must be the final case after the fixed "
+                "C/W/H control sequence"
+            )
+    elif args.allow_isolated_native_concat_hw:
+        raise RuntimeError(
+            "isolated native Concat HW authorization requires the fixed "
+            "C/W/H/HW case sequence"
+        )
     return selected
 
 
@@ -252,44 +295,58 @@ def execute_cases(
 ) -> None:
     raw_dir = args.work_dir / "raw"
     raw_dir.mkdir()
-    for sample, case in enumerate(cases):
-        built = catalog.build_case_payload(case, sample)
-        request = raw_dir / f"{case.name}.request.raw"
-        payload = raw_dir / f"{case.name}.payload.raw"
-        output = raw_dir / f"{case.name}.output.raw"
-        request.write_bytes(built.request)
-        payload.write_bytes(built.payload)
-        result = package_support.run(
-            package_support.board_command(
-                args, package, resource_ids, request, payload, output
-            ),
-            timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
+    for case in cases:
+        sample_count = execution_sample_count(
+            exact=case.is_exact,
+            observation_samples=args.observation_samples,
         )
-        required = {
-            "board_stage: completion",
-            "board_stage: device-to-host",
-            "board_stage: cleanup",
-            "board_execution: true",
-        }
-        if not required.issubset(set(result.stdout.splitlines())):
-            raise RuntimeError(
-                f"{case.name}: wafer-run omitted lifecycle evidence"
+        for sample in range(sample_count):
+            built = catalog.build_case_payload(case, sample)
+            stem = f"{case.name}.sample-{sample}"
+            request = raw_dir / f"{stem}.request.raw"
+            payload = raw_dir / f"{stem}.payload.raw"
+            output = raw_dir / f"{stem}.output.raw"
+            request.write_bytes(built.request)
+            payload.write_bytes(built.payload)
+            result = package_support.run(
+                package_support.board_command(
+                    args, package, resource_ids, request, payload, output
+                ),
+                timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
             )
-        print(
-            "datamove_extended_calibration: "
-            + json.dumps(
-                validate_output(output, case, built, sample), sort_keys=True
+            required = {
+                "board_stage: completion",
+                "board_stage: device-to-host",
+                "board_stage: cleanup",
+                "board_execution: true",
+            }
+            if not required.issubset(set(result.stdout.splitlines())):
+                raise RuntimeError(
+                    f"{case.name}: wafer-run omitted lifecycle evidence"
+                )
+            print(
+                "datamove_extended_calibration: "
+                + json.dumps(
+                    validate_output(output, case, built, sample),
+                    sort_keys=True,
+                )
             )
-        )
 
 
 def main() -> int:
     args = parse_args()
+    execution_sample_count(
+        exact=False, observation_samples=args.observation_samples
+    )
     if args.list_cases:
         print(
             json.dumps(
                 {
                     "cases": [case.as_dict() for case in catalog.CATALOG],
+                    "isolated_cases": [
+                        case.as_dict()
+                        for case in catalog.ISOLATED_CONCAT_CASES
+                    ],
                     "calibration_leaf_bindings": {
                         key: [case.name for case in cases]
                         for key, cases

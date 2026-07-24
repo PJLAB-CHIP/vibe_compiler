@@ -242,31 +242,67 @@ static uint32_t wafer_nec_decode(const volatile uint64_t *request,
     aux_span =
         wafer_nec_option_aux_span(option, batch, m, n);
   } else if (kind == WAFER_NEC_CONV) {
-    if (lhs_orientation != 0U || rhs_orientation != 0U ||
-        dtype > WAFER_NEC_BF16 || batch != 2U ||
-        lhs_batch != 2U || rhs_batch != 2U ||
-        m != 17U || k != 19U ||
-        (profile != WAFER_NEC_CONV_LARGE &&
-         profile != WAFER_NEC_CONV_HELDOUT) ||
-        (profile == WAFER_NEC_CONV_LARGE && n != 96U) ||
-        (profile == WAFER_NEC_CONV_HELDOUT && n != 65U) ||
-        (profile == WAFER_NEC_CONV_HELDOUT &&
-         option != WAFER_NEC_OPTION_NONE))
+    if (lhs_orientation != 0U || rhs_orientation != 0U)
       return WAFER_NEC_STATUS_UNSUPPORTED_CASE;
     expected_disposition = WAFER_NEC_BOARD_OBSERVED;
-    if (option == WAFER_NEC_OPTION_NONE) {
-      expected_case = WAFER_NEC_CONV_CASE_BASE + dtype * 2U +
-                      (profile == WAFER_NEC_CONV_HELDOUT);
+    if (profile == WAFER_NEC_CONV_FEATURE_INDEX) {
+      if (dtype != WAFER_NEC_F16 || batch != 2U ||
+          lhs_batch != 2U || rhs_batch != 2U ||
+          m != 2U || k != 3U || n != 64U ||
+          option != WAFER_NEC_OPTION_NONE)
+        return WAFER_NEC_STATUS_UNSUPPORTED_CASE;
+      expected_case = WAFER_NEC_CONV_INDEX_CASE_BASE;
+      lhs_span = wafer_nec_physical_span(2U, 2U * 3U, 65U, 2U);
+      rhs_span = wafer_nec_physical_span(1U, 1U * 64U, 65U, 2U);
+      output_span =
+          wafer_nec_physical_span(2U, 2U * 3U, 64U, 2U);
+    } else if (profile == WAFER_NEC_CONV_WEIGHT_INDEX) {
+      if (dtype != WAFER_NEC_F16 || batch != 1U ||
+          lhs_batch != 1U || rhs_batch != 1U ||
+          m != 4U || k != 5U || n != 64U ||
+          option != WAFER_NEC_OPTION_NONE)
+        return WAFER_NEC_STATUS_UNSUPPORTED_CASE;
+      expected_case = WAFER_NEC_CONV_INDEX_CASE_BASE + 1U;
+      lhs_span = wafer_nec_physical_span(1U, 4U * 5U, 65U, 2U);
+      rhs_span = wafer_nec_physical_span(2U, 3U * 64U, 65U, 2U);
+      output_span =
+          wafer_nec_physical_span(1U, 2U * 4U, 64U, 2U);
+    } else if (profile == WAFER_NEC_CONV_OUTPUT_INDEX) {
+      if (dtype != WAFER_NEC_F16 || batch != 2U ||
+          lhs_batch != 2U || rhs_batch != 2U ||
+          m != 2U || k != 3U || n != 65U ||
+          option != WAFER_NEC_OPTION_NONE)
+        return WAFER_NEC_STATUS_UNSUPPORTED_CASE;
+      expected_case = WAFER_NEC_CONV_INDEX_CASE_BASE + 2U;
+      lhs_span = wafer_nec_physical_span(2U, 2U * 3U, 64U, 2U);
+      rhs_span = wafer_nec_physical_span(1U, 1U * 65U, 64U, 2U);
+      output_span =
+          wafer_nec_physical_span(2U, 2U * 3U, 65U, 2U);
+    } else if (dtype <= WAFER_NEC_BF16 && batch == 2U &&
+               lhs_batch == 2U && rhs_batch == 2U &&
+               m == 17U && k == 19U &&
+               (profile == WAFER_NEC_CONV_LARGE ||
+                profile == WAFER_NEC_CONV_HELDOUT) &&
+               ((profile == WAFER_NEC_CONV_LARGE && n == 96U) ||
+                (profile == WAFER_NEC_CONV_HELDOUT && n == 65U)) &&
+               !(profile == WAFER_NEC_CONV_HELDOUT &&
+                 option != WAFER_NEC_OPTION_NONE)) {
+      if (option == WAFER_NEC_OPTION_NONE) {
+        expected_case = WAFER_NEC_CONV_CASE_BASE + dtype * 2U +
+                        (profile == WAFER_NEC_CONV_HELDOUT);
+      } else {
+        expected_case = WAFER_NEC_CONV_OPTION_CASE_BASE +
+                        dtype * 6U + option - 1U;
+      }
+      lhs_span = wafer_nec_physical_span(2U, 17U * 19U, 65U, 2U);
+      rhs_span = wafer_nec_physical_span(1U, 3U * 2U * n, 65U, 2U);
+      output_span =
+          wafer_nec_physical_span(2U, 17U * 10U, n, 2U);
+      aux_span =
+          wafer_nec_option_aux_span(option, 2U, 17U * 10U, n);
     } else {
-      expected_case = WAFER_NEC_CONV_OPTION_CASE_BASE +
-                      dtype * 6U + option - 1U;
+      return WAFER_NEC_STATUS_UNSUPPORTED_CASE;
     }
-    lhs_span = wafer_nec_physical_span(2U, 17U * 19U, 65U, 2U);
-    rhs_span = wafer_nec_physical_span(1U, 3U * 2U * n, 65U, 2U);
-    output_span =
-        wafer_nec_physical_span(2U, 17U * 10U, n, 2U);
-    aux_span =
-        wafer_nec_option_aux_span(option, 2U, 17U * 10U, n);
   } else {
     uint32_t expected_profile =
         kind == WAFER_NEC_DEPTHWISE_CONV
@@ -398,20 +434,69 @@ static uint64_t wafer_nec_issue_conv(const WaferNECCase *selected) {
   Data_Format format = wafer_nec_format(selected->dtype);
   TsmNeInstr instruction = {0};
   TsmConv *conv = TsmNewConv();
+  Data_Shape input_shape;
+  Data_Shape weight_shape;
+  Data_Shape output_shape;
+  uint32_t kernel_x;
+  uint32_t kernel_y;
+  uint32_t stride_x;
+  uint32_t stride_y;
+  uint32_t pad_top;
+  uint32_t pad_bottom;
+  uint32_t pad_left;
+  uint32_t pad_right;
+  if (selected->profile == WAFER_NEC_CONV_FEATURE_INDEX) {
+    input_shape = wafer_nec_shape(2U, 2U, 3U, 65U);
+    weight_shape = wafer_nec_shape(1U, 1U, 64U, 65U);
+    output_shape = wafer_nec_shape(2U, 2U, 3U, 64U);
+    kernel_x = 1U;
+    kernel_y = 1U;
+    stride_x = 1U;
+    stride_y = 1U;
+    pad_top = pad_bottom = pad_left = pad_right = 0U;
+  } else if (selected->profile == WAFER_NEC_CONV_WEIGHT_INDEX) {
+    input_shape = wafer_nec_shape(1U, 4U, 5U, 65U);
+    weight_shape = wafer_nec_shape(2U, 3U, 64U, 65U);
+    output_shape = wafer_nec_shape(1U, 2U, 4U, 64U);
+    kernel_x = 2U;
+    kernel_y = 3U;
+    stride_x = 1U;
+    stride_y = 1U;
+    pad_top = pad_bottom = pad_left = pad_right = 0U;
+  } else if (selected->profile == WAFER_NEC_CONV_OUTPUT_INDEX) {
+    input_shape = wafer_nec_shape(2U, 2U, 3U, 64U);
+    weight_shape = wafer_nec_shape(1U, 1U, 65U, 64U);
+    output_shape = wafer_nec_shape(2U, 2U, 3U, 65U);
+    kernel_x = 1U;
+    kernel_y = 1U;
+    stride_x = 1U;
+    stride_y = 1U;
+    pad_top = pad_bottom = pad_left = pad_right = 0U;
+  } else {
+    input_shape = wafer_nec_shape(2U, 17U, 19U, 65U);
+    weight_shape = wafer_nec_shape(3U, 2U, selected->n, 65U);
+    output_shape = wafer_nec_shape(2U, 17U, 10U, selected->n);
+    kernel_x = 3U;
+    kernel_y = 2U;
+    stride_x = 2U;
+    stride_y = 1U;
+    pad_top = 1U;
+    pad_bottom = 0U;
+    pad_left = 2U;
+    pad_right = 1U;
+  }
   conv->AddInput(&instruction,
                  WAFER_NEC_SPM_A + WAFER_NEC_BODY_OFFSET,
-                 wafer_nec_shape(2U, 17U, 19U, 65U), format);
+                 input_shape, format);
   conv->AddWeight(&instruction,
                   WAFER_NEC_SPM_B + WAFER_NEC_BODY_OFFSET,
-                  wafer_nec_shape(3U, 2U, selected->n, 65U),
-                  format);
+                  weight_shape, format);
   conv->AddBias(&instruction,
                 selected->option == WAFER_NEC_OPTION_BIAS,
                 WAFER_NEC_SPM_AUX + WAFER_NEC_BODY_OFFSET);
   conv->AddOutput(&instruction,
                   WAFER_NEC_SPM_OUTPUT + WAFER_NEC_BODY_OFFSET,
-                  wafer_nec_shape(2U, 17U, 10U, selected->n),
-                  format);
+                  output_shape, format);
   conv->SetOpType(&instruction, 0U);
   conv->SetNegativeAxisScale(
       &instruction,
@@ -428,9 +513,10 @@ static uint64_t wafer_nec_issue_conv(const WaferNECCase *selected) {
                 selected->option == WAFER_NEC_OPTION_PSUM
                     ? format
                     : Fmt_UNUSED);
-  conv->SetPads(&instruction, 1U, 0U, 2U, 1U);
+  conv->SetPads(&instruction, pad_top, pad_bottom, pad_left, pad_right);
   conv->SetUnPads(&instruction, 0U, 0U, 0U, 0U);
-  conv->SetKernelStrides(&instruction, 3U, 2U, 2U, 1U);
+  conv->SetKernelStrides(&instruction, kernel_x, kernel_y,
+                         stride_x, stride_y);
   conv->SetDilations(&instruction, 1U, 1U);
   conv->SetQuant(&instruction, 0, 0, 0, 0);
   if (selected->option == WAFER_NEC_OPTION_RELU)

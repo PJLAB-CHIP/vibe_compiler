@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 
 import wafer_ct_convert_calibration_catalog as convert_catalog
+import wafer_ct_reduce_pool_capability_catalog as reduce_pool_catalog
 import wafer_ct_vector_calibration_catalog as vector_catalog
 import wafer_datamove_calibration_catalog as datamove_catalog
 
@@ -66,17 +67,21 @@ def _negative(
     )
 
 
+def _typed_profile(opcode: int, family: str) -> CTOpcodeDisposition:
+    return CTOpcodeDisposition(
+        opcode,
+        vector_catalog.OPCODE_NAMES[opcode],
+        family,
+        "typed-profile",
+        ("wafer-ct-reduce-pool-capability-catalog-python",),
+        "bare-opcode capability is intentionally not assigned; consult "
+        "(opcode,dtype,axis/layout,geometry) rows",
+    )
+
+
 _REDUCE_POOL = {
-    111: _board(111, "reduce", "reduce-sum-f16"),
-    112: _board(112, "reduce", "reduce-avg-bf16"),
-    113: _board(113, "reduce", "reduce-max-f16"),
-    114: _board(114, "reduce", "reduce-min-bf16"),
-    115: _board(115, "pool", "pool-avg-f16"),
-    116: _board(116, "pool", "pool-sum-f16"),
-    117: _board(117, "pool", "pool-f16", "pool-bf16"),
-    118: _board(118, "pool", "unpool-f16"),
-    119: _board(119, "pool", "pool-min-f16"),
-    120: _board(120, "pool", "pool-indexed-min-f16"),
+    opcode: _typed_profile(opcode, "reduce" if opcode < 115 else "pool")
+    for opcode in range(111, 121)
 }
 
 _PERIPHERAL = {
@@ -91,7 +96,12 @@ _PERIPHERAL = {
         "BitCount scalar writeback is not represented by the current typed IR/CRT contract",
     ),
     177: _board(177, "peripheral", "peripheral-argmax-f16"),
-    178: _board(178, "peripheral", "peripheral-argmin-f16"),
+    178: _observation(
+        178,
+        "peripheral",
+        "peripheral-argmin-f16",
+        "peripheral-argmin-negative-f16-observed",
+    ),
     179: _board(
         179,
         "peripheral",
@@ -107,7 +117,9 @@ _PERIPHERAL = {
         "select-bit2fp-maskmove-f16",
         "select-bit2fp-maskmove-bf16",
     ),
-    182: _board(182, "peripheral", "peripheral-bilinear-f16"),
+    182: _observation(
+        182, "peripheral", "peripheral-bilinear-f16"
+    ),
     183: _board(183, "peripheral", "peripheral-lut16-f16"),
     184: _observation(184, "peripheral", "peripheral-lut32-observed"),
     185: _observation(
@@ -135,6 +147,9 @@ def build_catalog() -> tuple[CTOpcodeDisposition, ...]:
         row.opcode: row for row in datamove_catalog.PUBLIC_DISPOSITIONS
     }
     for opcode in range(121, 139):
+        if opcode < 124:
+            rows.append(_typed_profile(opcode, "unpool"))
+            continue
         movement = datamove_by_opcode[opcode]
         rows.append(
             CTOpcodeDisposition(
@@ -169,26 +184,33 @@ def build_catalog() -> tuple[CTOpcodeDisposition, ...]:
 
 CATALOG = build_catalog()
 BY_OPCODE = {row.opcode: row for row in CATALOG}
-_REDUCE_POOL_UNPOOL_PERIPHERAL_OPCODES = frozenset(
-    range(111, 124)
-) | frozenset(range(175, 187))
+_PERIPHERAL_OPCODES = frozenset(range(175, 187))
 CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
-    "ct-reduce-pool-unpool-peripheral-positive": tuple(
-        row
-        for row in CATALOG
-        if row.opcode in _REDUCE_POOL_UNPOOL_PERIPHERAL_OPCODES
-        and row.disposition == "board-executable"
+    "ct-reduce-pool-unpool-peripheral-positive": (
+        reduce_pool_catalog.BOARD_POSITIVE_ROWS
+        + tuple(
+            row
+            for row in CATALOG
+            if row.opcode in _PERIPHERAL_OPCODES
+            and row.disposition == "board-executable"
+        )
     ),
-    "ct-reduce-pool-unpool-peripheral-observed": tuple(
-        row
-        for row in CATALOG
-        if row.opcode in _REDUCE_POOL_UNPOOL_PERIPHERAL_OPCODES
-        and row.disposition == "board-observation"
+    "ct-reduce-pool-unpool-peripheral-observed": (
+        reduce_pool_catalog.BOARD_OBSERVATION_ROWS
+        + tuple(
+            row
+            for row in CATALOG
+            if row.opcode in _PERIPHERAL_OPCODES
+            and row.disposition == "board-observation"
+        )
     ),
-    "ct-reduce-pool-unpool-peripheral-static-negative": tuple(
-        row
-        for row in CATALOG
-        if row.opcode in _REDUCE_POOL_UNPOOL_PERIPHERAL_OPCODES
-        and row.disposition == "static-negative"
+    "ct-reduce-pool-unpool-peripheral-static-negative": (
+        reduce_pool_catalog.STATIC_NEGATIVE_ROWS
+        + tuple(
+            row
+            for row in CATALOG
+            if row.opcode in _PERIPHERAL_OPCODES
+            and row.disposition == "static-negative"
+        )
     ),
 }

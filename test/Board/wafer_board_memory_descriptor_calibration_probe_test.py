@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import pathlib
+import statistics
 import struct
 import sys
 from collections.abc import Iterable
@@ -64,6 +65,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--oracle", action="append", choices=("exact", "observation")
     )
+    parser.add_argument(
+        "--relative-spm-offset",
+        action="append",
+        type=int,
+        choices=catalog.SPM_PAIR_RELATIVE_OFFSETS,
+        help="select engine-pair rows with this relative SPM offset; repeatable",
+    )
     parser.add_argument("--list-cases", action="store_true")
     parser.add_argument("--no-card", action="store_true")
     parser.add_argument("--device-id", type=int, default=0)
@@ -105,6 +113,14 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.MemoryCase, ...]:
         accepted = {exact[value] for value in args.oracle}
         selected = tuple(
             case for case in selected if case.is_exact in accepted
+        )
+    if args.relative_spm_offset:
+        offsets = set(args.relative_spm_offset)
+        selected = tuple(
+            case
+            for case in selected
+            if case.domain == "spm-bank-engine-pair"
+            and abs(case.spm_b - case.spm_a) in offsets
         )
     if not selected:
         raise RuntimeError("memory descriptor filters selected no cases")
@@ -237,36 +253,120 @@ def execute_cases(
     resource_ids: tuple[int, int, int],
     cases: Iterable[catalog.MemoryCase],
 ) -> None:
+    cases = tuple(cases)
     raw_dir = args.work_dir / "raw"
     raw_dir.mkdir()
-    for sample, case in enumerate(cases):
-        built = catalog.build_case_payload(case, sample)
-        request = raw_dir / f"{case.name}.request.raw"
-        payload = raw_dir / f"{case.name}.payload.raw"
-        output = raw_dir / f"{case.name}.output.raw"
-        request.write_bytes(built.request)
-        payload.write_bytes(built.payload)
-        result = package_support.run(
-            package_support.board_command(
-                args, package, resource_ids, request, payload, output
-            ),
-            timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
-        )
-        required = {
-            "board_stage: completion",
-            "board_stage: device-to-host",
-            "board_stage: cleanup",
-            "board_execution: true",
+    observations: dict[str, list[dict[str, object]]] = {}
+    for case in cases:
+        case_observations = observations.setdefault(case.name, [])
+        for sample in range(case.repetitions):
+            built = catalog.build_case_payload(case, sample)
+            prefix = f"{case.name}.sample-{sample}"
+            request = raw_dir / f"{prefix}.request.raw"
+            payload = raw_dir / f"{prefix}.payload.raw"
+            output = raw_dir / f"{prefix}.output.raw"
+            request.write_bytes(built.request)
+            payload.write_bytes(built.payload)
+            result = package_support.run(
+                package_support.board_command(
+                    args, package, resource_ids, request, payload, output
+                ),
+                timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
+            )
+            required = {
+                "board_stage: completion",
+                "board_stage: device-to-host",
+                "board_stage: cleanup",
+                "board_execution: true",
+            }
+            if not required.issubset(set(result.stdout.splitlines())):
+                raise RuntimeError(
+                    f"{prefix}: wafer-run omitted lifecycle evidence"
+                )
+            observation = validate_output(output, case, built, sample)
+            case_observations.append(observation)
+            print(
+                "memory_descriptor_calibration: "
+                + json.dumps(observation, sort_keys=True)
+            )
+
+    pair_keys = sorted(
+        {
+            (case.engine_a, case.engine_b, case.spm_b - case.spm_a)
+            for case in cases
+            if case.kind == catalog.KIND_ENGINE_PAIR
         }
-        if not required.issubset(set(result.stdout.splitlines())):
-            raise RuntimeError(
-                f"{case.name}: wafer-run omitted lifecycle evidence"
-            )
+    )
+    metric_names = (
+        "ct_execution",
+        "ne_execution",
+        "rdma_execution",
+        "wdma_execution",
+        "tdma_execution",
+        "ct_blocking",
+        "ne_blocking",
+        "rdma_blocking",
+        "wdma_blocking",
+        "tdma_blocking",
+    )
+    for engine_a, engine_b, relative_offset in pair_keys:
+        schedule_cases = {
+            case.schedule: case
+            for case in cases
+            if case.kind == catalog.KIND_ENGINE_PAIR
+            and case.engine_a == engine_a
+            and case.engine_b == engine_b
+            and case.spm_b - case.spm_a == relative_offset
+        }
+        schedule_medians: dict[str, dict[str, int | float]] = {}
+        missing: list[str] = []
+        for schedule, name in (
+            (catalog.SCHEDULE_SERIAL, "serial"),
+            (catalog.SCHEDULE_WINDOW, "window"),
+        ):
+            case = schedule_cases.get(schedule)
+            if case is None:
+                missing.append(name)
+                continue
+            rows = observations[case.name]
+            if len(rows) != case.repetitions:
+                raise RuntimeError(
+                    f"{case.name}: incomplete repeated PMU sample set"
+                )
+            schedule_medians[name] = {
+                metric: statistics.median(
+                    int(row["pmu"][metric]) for row in rows
+                )
+                for metric in metric_names
+            }
+        summary: dict[str, object] = {
+            "engine_pair": [
+                catalog.ENGINE_NAMES[engine_a],
+                catalog.ENGINE_NAMES[engine_b],
+            ],
+            "relative_spm_offset": relative_offset,
+            "samples_per_cell": catalog.SPM_BANK_PMU_REPETITIONS,
+            "correctness": "all-exact",
+            "pmu_medians": schedule_medians,
+            "interpretation": (
+                "raw repeated paired control; no bank/color class inferred"
+            ),
+        }
+        if missing:
+            summary["state"] = "inconclusive"
+            summary["missing_controls"] = missing
+        else:
+            summary["state"] = "raw-paired-observation"
+            summary["window_minus_serial"] = {
+                metric: (
+                    schedule_medians["window"][metric]
+                    - schedule_medians["serial"][metric]
+                )
+                for metric in metric_names
+            }
         print(
-            "memory_descriptor_calibration: "
-            + json.dumps(
-                validate_output(output, case, built, sample), sort_keys=True
-            )
+            "spm_bank_pair_repeat_summary: "
+            + json.dumps(summary, sort_keys=True)
         )
 
 

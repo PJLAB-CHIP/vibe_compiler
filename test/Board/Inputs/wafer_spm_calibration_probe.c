@@ -49,6 +49,11 @@ static const WaferSPMCase wafer_spm_cases[] = {
     {16U, UINT64_C(0x140000), 4096U, 1U, 1U, 8192U},
     {17U, UINT64_C(0x140000), 4096U, 1U, 4U, 8192U},
     {18U, UINT64_C(0x140000), 4096U, 1U, 5U, 8192U},
+    {19U, UINT64_C(0x100040), 4096U, 0U, 1U, 0U},
+    {20U, UINT64_C(0x100080), 4096U, 0U, 1U, 0U},
+    {21U, UINT64_C(0x1000c0), 4096U, 0U, 1U, 0U},
+    {22U, UINT64_C(0x100000), 128U, 0U, 1U, 0U},
+    {23U, UINT64_C(0x100000), 384U, 0U, 1U, 0U},
 };
 
 static void wafer_spm_cache_range(uint64_t begin, uint32_t bytes,

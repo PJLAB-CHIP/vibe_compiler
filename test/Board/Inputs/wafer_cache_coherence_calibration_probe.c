@@ -128,7 +128,7 @@ static uint32_t wafer_cch_decode(const volatile uint64_t *request,
     if (pair_index >= 3U || offset_index >= offsets)
       return WAFER_CCH_STATUS_BAD_REQUEST;
     selected->case_id = case_id;
-    selected->phases = 1U;
+    selected->phases = WAFER_CCH_BANK_PMU_REPETITIONS;
     selected->payload_bytes = WAFER_CCH_BANK_PAYLOAD_BYTES;
     selected->pair_kind = pair_index + 1U;
     selected->schedule = schedule;
@@ -170,29 +170,31 @@ static uint8_t wafer_cch_store_pattern(uint32_t case_id, uint32_t sample,
                    (index >> 7) * 29U + 3U);
 }
 
-static uint8_t wafer_cch_bank_pattern(uint32_t case_id, uint32_t lane,
-                                      uint32_t index) {
-  return (uint8_t)(case_id * 31U + lane * 97U + index * 19U +
-                   (index >> 6) * 11U + 5U);
+static uint8_t wafer_cch_bank_pattern(uint32_t case_id, uint32_t sample,
+                                      uint32_t lane, uint32_t index) {
+  return (uint8_t)(case_id * 31U + (sample + 1U) * 43U + lane * 97U +
+                   index * 19U + (index >> 6) * 11U + 5U);
 }
 
 static void wafer_cch_seed_spm_bank(uint64_t address, uint32_t case_id,
-                                    uint32_t lane) {
+                                    uint32_t sample, uint32_t lane) {
   volatile uint8_t *mapped =
       (volatile uint8_t *)(void *)get_spm_memory_mapping(address);
   for (uint32_t index = 0; index < WAFER_CCH_BANK_PAYLOAD_BYTES; ++index)
-    mapped[index] = wafer_cch_bank_pattern(case_id, lane, index);
+    mapped[index] = wafer_cch_bank_pattern(case_id, sample, lane, index);
   __asm__ volatile("fence iorw, iorw" ::: "memory");
 }
 
 static uint64_t wafer_cch_mismatch_spm_bank(uint64_t address,
                                             uint32_t case_id,
+                                            uint32_t sample,
                                             uint32_t lane) {
   const volatile uint8_t *mapped =
       (const volatile uint8_t *)(const void *)get_spm_memory_mapping(address);
   uint64_t mismatches = 0;
   for (uint32_t index = 0; index < WAFER_CCH_BANK_PAYLOAD_BYTES; ++index)
-    mismatches += mapped[index] != wafer_cch_bank_pattern(case_id, lane, index);
+    mismatches +=
+        mapped[index] != wafer_cch_bank_pattern(case_id, sample, lane, index);
   return mismatches;
 }
 
@@ -363,10 +365,10 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
     wafer_cch_seed_spm(WAFER_CCH_SPM_A);
     wafer_cch_seed_spm(WAFER_CCH_SPM_B);
     if (selected.pair_kind == 2U) {
-      wafer_cch_seed_spm_bank(WAFER_CCH_SPM_A, selected.case_id, 0U);
-      wafer_cch_seed_spm_bank(WAFER_CCH_SPM_B, selected.case_id, 1U);
+      wafer_cch_seed_spm_bank(WAFER_CCH_SPM_A, selected.case_id, sample, 0U);
+      wafer_cch_seed_spm_bank(WAFER_CCH_SPM_B, selected.case_id, sample, 1U);
     } else if (selected.pair_kind == 3U) {
-      wafer_cch_seed_spm_bank(WAFER_CCH_SPM_A, selected.case_id, 0U);
+      wafer_cch_seed_spm_bank(WAFER_CCH_SPM_A, selected.case_id, sample, 0U);
     }
     WaferCCHPMU before = wafer_cch_read_pmu();
 
@@ -374,8 +376,10 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
       wafer_cch_issue_bank_pair(&selected, input, bank_input1, output0,
                                 bank_output1);
       mismatch_after =
-          wafer_cch_mismatch_spm_bank(WAFER_CCH_SPM_A, selected.case_id, 0U) +
-          wafer_cch_mismatch_spm_bank(WAFER_CCH_SPM_B, selected.case_id, 1U);
+          wafer_cch_mismatch_spm_bank(WAFER_CCH_SPM_A, selected.case_id,
+                                      sample, 0U) +
+          wafer_cch_mismatch_spm_bank(WAFER_CCH_SPM_B, selected.case_id,
+                                      sample, 1U);
       cache_control_mask |= WAFER_CCH_MATCHING_LOCAL_FENCE;
     } else {
       switch (selected.case_id) {

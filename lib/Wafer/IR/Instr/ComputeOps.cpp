@@ -131,10 +131,10 @@ static mlir::LogicalResult verifyPoolShapeRelation(
         "target_geometry_mismatch: pool batch and channel dimensions must "
         "match");
   mlir::FailureOr<int64_t> expectedH = computeWindowedOutputDim(
-      op, source[1], kernelStride[0], kernelStride[2], /*dilation=*/1, pad[0],
+      op, source[1], kernelStride[1], kernelStride[3], /*dilation=*/1, pad[0],
       pad[1], /*unpadBefore=*/0, /*unpadAfter=*/0, "pool height");
   mlir::FailureOr<int64_t> expectedW = computeWindowedOutputDim(
-      op, source[2], kernelStride[1], kernelStride[3], /*dilation=*/1, pad[2],
+      op, source[2], kernelStride[0], kernelStride[2], /*dilation=*/1, pad[2],
       pad[3], /*unpadBefore=*/0, /*unpadAfter=*/0, "pool width");
   if (mlir::failed(expectedH) || mlir::failed(expectedW))
     return mlir::failure();
@@ -159,10 +159,10 @@ static mlir::LogicalResult verifyUnpoolShapeRelation(
   int64_t expectedW = 0;
   int64_t scaledH = 0;
   int64_t scaledW = 0;
-  if (!checkedMul(source[1] - 1, kernelStride[2], scaledH) ||
-      !checkedAdd(scaledH, kernelStride[0], expectedH) ||
-      !checkedMul(source[2] - 1, kernelStride[3], scaledW) ||
-      !checkedAdd(scaledW, kernelStride[1], expectedW))
+  if (!checkedMul(source[1] - 1, kernelStride[3], scaledH) ||
+      !checkedAdd(scaledH, kernelStride[1], expectedH) ||
+      !checkedMul(source[2] - 1, kernelStride[2], scaledW) ||
+      !checkedAdd(scaledW, kernelStride[0], expectedW))
     return op->emitOpError(
         "target_range_overflow: unpool spatial geometry overflows int64");
   if (dest[1] != expectedH || dest[2] != expectedW)
@@ -203,6 +203,19 @@ static mlir::LogicalResult verifyAlignedSPMMemRef(mlir::Operation *op,
   std::optional<MemLayout> layout = getWaferLayout(type);
   if (!layout || !isAlignedGemmLayout(*layout))
     return op->emitOpError() << role << " must use cx/ncx SPM layout";
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyNCxSPMMemRef(mlir::Operation *op,
+                                              mlir::Type type,
+                                              llvm::StringRef role) {
+  if (mlir::failed(verifySPMMemRef(op, type, role)))
+    return mlir::failure();
+  if (!hasWaferLayout(type, MemLayout::NCx))
+    return op->emitOpError()
+           << role
+           << " must use ncx SPM layout; native pool/unpool has no layout "
+              "operand and cx requires explicit materialization";
   return mlir::success();
 }
 
@@ -1093,8 +1106,8 @@ static bool isIndexedPoolKind(InstrPoolKind kind) {
 }
 
 mlir::LogicalResult InstrPoolOp::verify() {
-  if (mlir::failed(verifyAlignedSPMMemRef(getOperation(), getInput().getType(),
-                                          "input")) ||
+  if (mlir::failed(verifyNCxSPMMemRef(getOperation(), getInput().getType(),
+                                      "input")) ||
       mlir::failed(verifyI64Array(getOperation(), getSourceShapeAttr(),
                                   "source_shape", 4, /*positive=*/true)) ||
       mlir::failed(verifyI64Array(getOperation(), getDestShapeAttr(),
@@ -1128,7 +1141,7 @@ mlir::LogicalResult InstrPoolOp::verify() {
     return mlir::failure();
   for (auto [index, dest] : llvm::enumerate(getDests())) {
     if (mlir::failed(
-            verifyAlignedSPMMemRef(getOperation(), dest.getType(), "dest")))
+            verifyNCxSPMMemRef(getOperation(), dest.getType(), "dest")))
       return mlir::failure();
     std::optional<mlir::RankedTensorType> destTensor =
         getLogicalTensorType(dest.getType());
@@ -1155,10 +1168,10 @@ mlir::LogicalResult InstrUnpoolOp::verify() {
     return emitOpError(
         "scalar index attr is not supported; use an index memref operand");
 
-  if (mlir::failed(verifyAlignedSPMMemRef(getOperation(), getInput().getType(),
-                                          "input")) ||
-      mlir::failed(verifyAlignedSPMMemRef(getOperation(), getDest().getType(),
-                                          "dest")) ||
+  if (mlir::failed(verifyNCxSPMMemRef(getOperation(), getInput().getType(),
+                                      "input")) ||
+      mlir::failed(verifyNCxSPMMemRef(getOperation(), getDest().getType(),
+                                      "dest")) ||
       mlir::failed(verifyI64Array(getOperation(), getSourceShapeAttr(),
                                   "source_shape", 4, /*positive=*/true)) ||
       mlir::failed(verifyI64Array(getOperation(), getDestShapeAttr(),
@@ -1198,7 +1211,7 @@ mlir::LogicalResult InstrUnpoolOp::verify() {
     if (!index)
       return emitOpError("unpool kind requires index operand");
     if (mlir::failed(
-            verifyAlignedSPMMemRef(getOperation(), index.getType(), "index")))
+            verifyNCxSPMMemRef(getOperation(), index.getType(), "index")))
       return mlir::failure();
     auto indexType = mlir::cast<mlir::MemRefType>(index.getType());
     if (!indexType.getElementType().isInteger(16))

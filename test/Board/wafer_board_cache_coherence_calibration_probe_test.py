@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import pathlib
+import statistics
 import struct
 import sys
 
@@ -240,10 +241,12 @@ def execute_cases(
 ) -> None:
     raw_dir = args.work_dir / "raw"
     raw_dir.mkdir()
+    observations: dict[str, list[dict[str, object]]] = {}
     for case in cases:
-        for sample in range(case.phases):
+        case_observations = observations.setdefault(case.name, [])
+        for sample in range(case.phases * case.repetitions):
             built = catalog.build_case_payload(case, sample)
-            prefix = f"{case.name}.phase-{sample}"
+            prefix = f"{case.name}.sample-{sample}"
             request = raw_dir / f"{prefix}.request.raw"
             payload = raw_dir / f"{prefix}.payload.raw"
             output = raw_dir / f"{prefix}.output.raw"
@@ -265,13 +268,74 @@ def execute_cases(
                 raise RuntimeError(
                     f"{prefix}: wafer-run omitted lifecycle evidence"
                 )
+            observation = validate_output(output, case, built, sample)
+            case_observations.append(observation)
             print(
                 "cache_coherence_calibration: "
-                + json.dumps(
-                    validate_output(output, case, built, sample),
-                    sort_keys=True,
-                )
+                + json.dumps(observation, sort_keys=True)
             )
+
+    pair_keys = sorted(
+        {
+            (case.pair_kind, case.bank_offset)
+            for case in cases
+            if case.kind == "ddr-bank-pair"
+        }
+    )
+    metric_names = ("rdma_execution", "wdma_execution")
+    for pair_kind, bank_offset in pair_keys:
+        schedule_cases = {
+            case.schedule: case
+            for case in cases
+            if case.kind == "ddr-bank-pair"
+            and case.pair_kind == pair_kind
+            and case.bank_offset == bank_offset
+        }
+        schedule_medians: dict[str, dict[str, int | float]] = {}
+        missing: list[str] = []
+        for schedule in ("serial", "window"):
+            case = schedule_cases.get(schedule)
+            if case is None:
+                missing.append(schedule)
+                continue
+            rows = observations[case.name]
+            if len(rows) != case.repetitions:
+                raise RuntimeError(
+                    f"{case.name}: incomplete repeated PMU sample set"
+                )
+            schedule_medians[schedule] = {
+                metric: statistics.median(
+                    int(row["pmu"][metric]) for row in rows
+                )
+                for metric in metric_names
+            }
+        summary: dict[str, object] = {
+            "pair_kind": pair_kind,
+            "bank_offset": bank_offset,
+            "samples_per_cell": catalog.DDR_BANK_PMU_REPETITIONS,
+            "correctness": "all-exact",
+            "pmu_medians": schedule_medians,
+            "interpretation": (
+                "raw repeated paired offset control; no DDR bank/color class "
+                "inferred"
+            ),
+        }
+        if missing:
+            summary["state"] = "inconclusive"
+            summary["missing_controls"] = missing
+        else:
+            summary["state"] = "raw-paired-observation"
+            summary["window_minus_serial"] = {
+                metric: (
+                    schedule_medians["window"][metric]
+                    - schedule_medians["serial"][metric]
+                )
+                for metric in metric_names
+            }
+        print(
+            "ddr_bank_pair_repeat_summary: "
+            + json.dumps(summary, sort_keys=True)
+        )
 
 
 def main() -> int:
@@ -286,6 +350,10 @@ def main() -> int:
                     "deferred_descriptor_dispositions": [
                         case.as_dict()
                         for case in catalog.DDR_LARGE_DESCRIPTOR_DISPOSITIONS
+                    ],
+                    "session_dispositions": [
+                        case.as_dict()
+                        for case in catalog.CACHE_SESSION_DISPOSITIONS
                     ],
                     "calibration_leaf_bindings": {
                         key: [getattr(row, "name", "") for row in rows]

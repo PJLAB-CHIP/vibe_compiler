@@ -1083,6 +1083,32 @@ def validate_arg_extrema_composite_oracles() -> None:
             == result[2:4]
         )
 
+    negative = catalog.CASES_BY_NAME[
+        "peripheral-argmin-negative-f16-observed"
+    ]
+    assert negative.is_observation
+    assert (negative.result_bytes, negative.output_span, negative.aux_span) == (
+        8,
+        8,
+        0,
+    )
+    sources = []
+    for sample, expected_index in enumerate((37, 83, 109)):
+        built = catalog.build_case_payload(negative, sample=sample)
+        source = struct.unpack_from(
+            "<128e", built.payload, catalog.BODY_OFFSET
+        )
+        sources.append(source)
+        assert all(value < 0.0 for value in source)
+        assert source.index(min(source)) == expected_index
+        assert source.count(min(source)) == 1
+        assert min(source) == float(-100 - sample)
+        assert built.expected_output_slot[
+            catalog.BODY_OFFSET :
+            catalog.BODY_OFFSET + negative.output_span
+        ] == _output_seed_padding() * 4
+    assert len(set(sources)) == 3
+
 
 def validate_probe_seed_is_published_and_instruction_local() -> None:
     probe = (
@@ -1231,6 +1257,168 @@ def validate_unpool_rows() -> None:
         assert pool < fence < unpool
         assert opcode in case_body
         assert "(uint32_t)auxiliary" in case_body
+
+
+def validate_unpool_capability_rows() -> None:
+    expected_rows = {
+        "unpool-index-bf16-observed": (236, "BF16", "NO_ORACLE", 512, 512, 256),
+        "unpool-index-f32-observed": (237, "F32", "NO_ORACLE", 1024, 1024, 256),
+        "unpool-avg-bf16": (238, "BF16", "EXACT_BITS", 512, 512, 0),
+        "unpool-avg-f32": (239, "F32", "EXACT_BITS", 1024, 1024, 0),
+        "unpool-mask-bf16": (240, "BF16", "EXACT_COMPOSITE", 512, 512, 256),
+        "unpool-mask-f32": (241, "F32", "EXACT_COMPOSITE", 1024, 1024, 256),
+        "unpool-index-f16-k3x2-s2x1-observed": (
+            242, "F16", "NO_ORACLE", 1920, 2048, 512
+        ),
+        "unpool-avg-f16-k3x2-s2x1-observed": (
+            243, "F16", "NO_ORACLE", 1920, 2048, 0
+        ),
+        "unpool-mask-f16-k3x2-s2x1": (
+            244, "F16", "EXACT_COMPOSITE", 1920, 2048, 512
+        ),
+        "unpool-index-f16-repeated-overlap-observed": (
+            245, "F16", "NO_ORACLE", 1920, 2048, 512
+        ),
+        "unpool-mask-f16-repeated-overlap-observed": (
+            246, "F16", "NO_ORACLE", 1920, 2048, 512
+        ),
+    }
+    for name, expected_row in expected_rows.items():
+        case = catalog.CASES_BY_NAME[name]
+        assert (
+            case.case_id,
+            case.dtype_name,
+            case.oracle_name,
+            case.result_bytes,
+            case.output_span,
+            case.aux_span,
+        ) == expected_row
+        built = catalog.build_case_payload(case)
+        assert built.expected_output_slot[: catalog.BODY_OFFSET] == bytes(
+            [catalog.SLOT_CANARY]
+        ) * catalog.BODY_OFFSET
+        assert built.expected_output_slot[
+            catalog.BODY_OFFSET + case.output_span :
+        ] == bytes([catalog.SLOT_CANARY]) * (
+            catalog.SLOT_BYTES - catalog.BODY_OFFSET - case.output_span
+        )
+
+    for name in ("unpool-avg-bf16", "unpool-avg-f32"):
+        case = catalog.CASES_BY_NAME[name]
+        built = catalog.build_case_payload(case)
+        source = [
+            float(4 * (channel % 16 + 1)) for channel in range(64)
+        ]
+        expected = [
+            source[channel] / 4.0
+            for _position in range(4)
+            for channel in range(64)
+        ]
+        assert built.payload[
+            catalog.BODY_OFFSET :
+            catalog.BODY_OFFSET + len(catalog._fp(case.dtype_name, source))
+        ] == catalog._fp(case.dtype_name, source)
+        assert built.expected_output_slot[
+            catalog.BODY_OFFSET :
+            catalog.BODY_OFFSET + case.result_bytes
+        ] == catalog._fp(case.dtype_name, expected)
+
+    asymmetric = catalog.CASES_BY_NAME[
+        "unpool-mask-f16-k3x2-s2x1"
+    ]
+    built = catalog.build_case_payload(asymmetric)
+    source = struct.unpack_from(
+        "<960e", built.payload, catalog.BODY_OFFSET
+    )
+    expected = struct.unpack_from(
+        "<960e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    nonzero_positions = {
+        (1, 2),
+        (1, 4),
+        (2, 2),
+        (2, 4),
+    }
+    for row in range(3):
+        for column in range(5):
+            for channel in range(64):
+                ordinal = (row * 5 + column) * 64 + channel
+                assert expected[ordinal] == (
+                    source[ordinal]
+                    if (row, column) in nonzero_positions
+                    else 0.0
+                )
+
+    for name in (
+        "unpool-index-f16-repeated-overlap-observed",
+        "unpool-mask-f16-repeated-overlap-observed",
+    ):
+        case = catalog.CASES_BY_NAME[name]
+        built = catalog.build_case_payload(case)
+        source = struct.unpack_from(
+            "<960e", built.payload, catalog.BODY_OFFSET
+        )
+        relative_indices = []
+        global_positions = []
+        for output_row in range(2):
+            for output_column in range(2):
+                window = [
+                    (
+                        source[
+                            ((output_row + kernel_row) * 5
+                             + 2 * output_column + kernel_column) * 64
+                        ],
+                        kernel_row * 3 + kernel_column,
+                        (
+                            output_row + kernel_row,
+                            2 * output_column + kernel_column,
+                        ),
+                    )
+                    for kernel_row in range(2)
+                    for kernel_column in range(3)
+                ]
+                maximum = max(window)
+                relative_indices.append(maximum[1])
+                global_positions.append(maximum[2])
+        assert relative_indices == [5, 3, 2, 0]
+        assert global_positions == [(1, 2)] * 4
+
+    probe = (
+        pathlib.Path(__file__).resolve().parent
+        / "Inputs"
+        / "wafer_instruction_family_probe.c"
+    ).read_text()
+    for symbol, wrapper in (
+        ("UNPOOL_INDEX_BF16_OBSERVED", "wafer_tx81_unpool_unpool"),
+        ("UNPOOL_INDEX_F32_OBSERVED", "wafer_tx81_unpool_unpool"),
+        ("UNPOOL_AVG_BF16", "wafer_tx81_unpool_avg"),
+        ("UNPOOL_AVG_F32", "wafer_tx81_unpool_avg"),
+        ("UNPOOL_MASK_BF16", "wafer_tx81_unpool_mask"),
+        ("UNPOOL_MASK_F32", "wafer_tx81_unpool_mask"),
+        (
+            "UNPOOL_INDEX_F16_ASYMMETRIC_OBSERVED",
+            "wafer_tx81_unpool_unpool",
+        ),
+        (
+            "UNPOOL_AVG_F16_ASYMMETRIC_OBSERVED",
+            "wafer_tx81_unpool_avg",
+        ),
+        ("UNPOOL_MASK_F16_ASYMMETRIC", "wafer_tx81_unpool_mask"),
+        (
+            "UNPOOL_INDEX_F16_REPEATED_OVERLAP_OBSERVED",
+            "wafer_tx81_unpool_unpool",
+        ),
+        (
+            "UNPOOL_MASK_F16_REPEATED_OVERLAP_OBSERVED",
+            "wafer_tx81_unpool_mask",
+        ),
+    ):
+        start = probe.index(f"case WAFER_IFP_CASE_{symbol}:")
+        body = probe[start : probe.index("break;", start)]
+        assert wrapper in body
+        if "AVG" not in symbol:
+            assert "wafer_tx81_pool_indexedmax" in body
+            assert "wafer_tx81_local_fence" in body
 
 
 def validate_conv_oracle() -> None:
@@ -1459,6 +1647,45 @@ def validate_extended_pool_unpool_oracles() -> None:
             assert values[ordinal] == min(window)
             assert indices[ordinal] == window.index(min(window))
 
+    indexed_max = catalog.CASES_BY_NAME[
+        "pool-indexed-max-f16-k3x2-s2x1"
+    ]
+    assert indexed_max.oracle_name == "EXACT_COMPOSITE"
+    assert (
+        indexed_max.result_bytes,
+        indexed_max.output_span,
+    ) == (1024, 1024)
+    built = catalog.build_case_payload(indexed_max)
+    source = struct.unpack_from(
+        "<960e", built.payload, catalog.BODY_OFFSET
+    )
+    values = struct.unpack_from(
+        "<256e", built.expected_output_slot, catalog.BODY_OFFSET
+    )
+    indices = struct.unpack_from(
+        "<256H",
+        built.expected_output_slot,
+        catalog.BODY_OFFSET + 512,
+    )
+    for output_row in range(2):
+        for output_column in range(2):
+            for channel in range(64):
+                ordinal = (
+                    (output_row * 2 + output_column) * 64 + channel
+                )
+                window = tuple(
+                    source[
+                        ((output_row + kernel_y) * 5
+                         + 2 * output_column + kernel_x) * 64
+                        + channel
+                    ]
+                    for kernel_y in range(2)
+                    for kernel_x in range(3)
+                )
+                assert values[ordinal] == max(window)
+                assert indices[ordinal] == 5
+                assert indices[ordinal] == window.index(max(window))
+
     unpool = catalog.CASES_BY_NAME["unpool-avg-f16"]
     built = catalog.build_case_payload(unpool)
     source = struct.unpack_from(
@@ -1472,6 +1699,101 @@ def validate_extended_pool_unpool_oracles() -> None:
         for _position in range(4)
         for channel in range(64)
     )
+
+
+def validate_pool_capability_matrix() -> None:
+    cases = tuple(
+        case
+        for case in catalog.SAFE_CASES
+        if catalog._POOL_SYMMETRIC_BASE
+        <= case.case_id
+        <= catalog._POOL_TIE_END
+    )
+    assert len(cases) == 24
+    assert {case.case_id for case in cases} == {
+        205,
+        206,
+        208,
+        209,
+        212,
+        214,
+        215,
+        217,
+        218,
+        220,
+        221,
+        222,
+        223,
+        224,
+        226,
+        227,
+        228,
+        229,
+        230,
+        231,
+        232,
+        233,
+        234,
+        235,
+    }
+    assert sum(case.is_observation for case in cases) == 8
+    for case in cases:
+        built = catalog.build_case_payload(case)
+        assert case.output_span == case.result_bytes
+        assert case.aux_span == 0
+        assert any(
+            built.payload[
+                catalog.BODY_OFFSET :
+                catalog.BODY_OFFSET + case.result_bytes
+            ]
+        )
+        actual = built.expected_output_slot[
+            catalog.BODY_OFFSET :
+            catalog.BODY_OFFSET + case.result_bytes
+        ]
+        if case.is_observation:
+            assert actual == struct.pack(
+                f"<{case.output_span // 2}e",
+                *([-13.0] * (case.output_span // 2)),
+            )
+        else:
+            assert actual != bytes(case.result_bytes)
+
+    indexed_f32 = catalog.CASES_BY_NAME[
+        "pool-indexed-max-f32-k2x2-s2x2"
+    ]
+    built = catalog.build_case_payload(indexed_f32)
+    indices = struct.unpack_from(
+        "<128H",
+        built.expected_output_slot,
+        catalog.BODY_OFFSET + 512,
+    )
+    assert indices == (3,) * 128
+
+    asymmetric = catalog.CASES_BY_NAME["pool-avg-f16-k3x2-s2x1"]
+    built = catalog.build_case_payload(asymmetric)
+    assert len(
+        built.payload[
+            catalog.BODY_OFFSET : catalog.BODY_OFFSET + 3 * 5 * 64 * 2
+        ]
+    ) == 3 * 5 * 64 * 2
+    assert asymmetric.result_bytes == 2 * 2 * 64 * 2
+
+    tie = catalog.CASES_BY_NAME["pool-indexed-max-f16-tie-observed"]
+    built = catalog.build_case_payload(tie)
+    source = struct.unpack_from(
+        "<512e", built.payload, catalog.BODY_OFFSET
+    )
+    for output_column in range(2):
+        for channel in range(64):
+            window = tuple(
+                source[(row * 4 + column) * 64 + channel]
+                for row in range(2)
+                for column in range(
+                    2 * output_column, 2 * output_column + 2
+                )
+            )
+            assert window[0] == window[3] == max(window)
 
 
 def validate_peripheral_exact_and_observation_rows() -> None:
@@ -1489,7 +1811,14 @@ def validate_peripheral_exact_and_observation_rows() -> None:
 
     observed_names = {
         "unpool-index-f16",
+        "unpool-index-bf16-observed",
+        "unpool-index-f32-observed",
+        "unpool-index-f16-k3x2-s2x1-observed",
+        "unpool-avg-f16-k3x2-s2x1-observed",
+        "unpool-index-f16-repeated-overlap-observed",
+        "unpool-mask-f16-repeated-overlap-observed",
         "peripheral-bilinear-f16",
+        "peripheral-argmin-negative-f16-observed",
         "peripheral-factorize-f32-observed",
         "peripheral-lut32-observed",
         "peripheral-randgen-f16-observed",
@@ -1498,11 +1827,46 @@ def validate_peripheral_exact_and_observation_rows() -> None:
     observed = tuple(
         case for case in catalog.SAFE_CASES if case.is_observation
     )
-    assert {case.name for case in observed} == observed_names
+    assert observed_names.issubset({case.name for case in observed})
+    assert {
+        case.name
+        for case in observed
+        if catalog._POOL_PADDED_BASE
+        <= case.case_id
+        <= catalog._POOL_TIE_END
+    } == {
+        "pool-avg-f16-k3x2-s2x1-padded-observed",
+        "pool-sum-f16-k3x2-s2x1-padded-observed",
+        "pool-max-f16-k3x2-s2x1-padded-observed",
+        "pool-indexed-max-f16-k3x2-s2x1-padded-observed",
+        "pool-min-f16-k3x2-s2x1-padded-observed",
+        "pool-indexed-min-f16-k3x2-s2x1-padded-observed",
+        "pool-indexed-max-f16-tie-observed",
+        "pool-indexed-min-f16-tie-observed",
+    }
     selected = runner.select_cases(
         types.SimpleNamespace(selected_cases=None, suite="observed")
     )
     assert selected == observed
+    ct_capability = runner.select_cases(
+        types.SimpleNamespace(selected_cases=None, suite="ct-capability")
+    )
+    assert len(ct_capability) == 96
+    assert ct_capability[0].name == "pool-indexed-max-f16-k3x2-s2x1"
+    assert {case.case_id for case in ct_capability} == {
+        case.case_id
+        for case in catalog.SAFE_CASES
+        if 143 <= case.case_id <= 246
+    }
+    qualification_regression = runner.select_cases(
+        types.SimpleNamespace(
+            selected_cases=None,
+            suite="qualification-regression",
+        )
+    )
+    assert tuple(case.name for case in qualification_regression) == (
+        runner.QUALIFICATION_REGRESSION_CASES
+    )
 
     case = catalog.CASES_BY_NAME["peripheral-elemmask-f16-observed"]
     built = catalog.build_case_payload(case, sample=2)
@@ -1554,12 +1918,93 @@ def validate_peripheral_exact_and_observation_rows() -> None:
         )
 
 
+def validate_reduce_capability_matrix() -> None:
+    reduce_cases = tuple(
+        case for case in catalog.CATALOG if 144 <= case.case_id <= 203
+    )
+    assert len(reduce_cases) == 60
+    assert sum(not case.is_observation for case in reduce_cases) == 52
+    assert sum(case.is_observation for case in reduce_cases) == 8
+
+    for case in reduce_cases:
+        built = catalog.build_case_payload(case)
+        if case.is_observation:
+            seeded = built.expected_output_slot[
+                catalog.BODY_OFFSET :
+                catalog.BODY_OFFSET + case.output_span
+            ]
+            assert seeded != bytes(case.output_span)
+            continue
+        offsets = catalog.reduce_exact_result_byte_offsets(case)
+        assert len(offsets) == case.result_bytes
+        assert len(set(offsets)) == case.result_bytes
+        assert min(offsets) >= catalog.BODY_OFFSET
+        assert max(offsets) < catalog.BODY_OFFSET + case.output_span
+
+    sum_c = catalog.CASES_BY_NAME[
+        "reduce-sum-f16-c-ncx-n1h2w3c65"
+    ]
+    built = catalog.build_case_payload(sum_c)
+    offsets = catalog.reduce_exact_result_byte_offsets(sum_c)
+    logical = bytes(built.expected_output_slot[offset] for offset in offsets)
+    assert struct.unpack("<6e", logical) == (
+        65.0,
+        130.0,
+        260.0,
+        520.0,
+        1040.0,
+        65.0,
+    )
+    assert offsets != tuple(
+        range(catalog.BODY_OFFSET, catalog.BODY_OFFSET + sum_c.result_bytes)
+    )
+
+    cx = catalog.CASES_BY_NAME["reduce-sum-f16-c-cx-w4c8"]
+    cx_offsets = catalog.reduce_exact_result_byte_offsets(cx)
+    assert cx_offsets == tuple(
+        offset
+        for scalar in (0, 8, 16, 24)
+        for offset in (
+            catalog.BODY_OFFSET + scalar,
+            catalog.BODY_OFFSET + scalar + 1,
+        )
+    )
+
+
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 71
-    assert len(catalog.CATALOG) == 71
+    assert len(catalog.SAFE_CASES) == 168
+    assert len(catalog.CATALOG) == 168
     assert {case.case_id for case in catalog.SAFE_CASES} == (
         set(range(1, 30))
-        | set(range(100, 142))
+        | set(range(100, 144))
+        | set(range(144, 204))
+        | {
+            205,
+            206,
+            208,
+            209,
+            212,
+            214,
+            215,
+            217,
+            218,
+            220,
+            221,
+            222,
+            223,
+            224,
+            226,
+            227,
+            228,
+            229,
+            230,
+            231,
+            232,
+            233,
+            234,
+            235,
+        }
+        | set(range(236, 247))
     )
     assert {
         (case.symbol, case.reason_name)
@@ -1652,9 +2097,12 @@ def main() -> int:
     validate_conv_oracle()
     validate_pool_max_oracle()
     validate_unpool_rows()
+    validate_unpool_capability_rows()
     validate_img2col_oracle()
     validate_lut16_oracle()
+    validate_reduce_capability_matrix()
     validate_extended_pool_unpool_oracles()
+    validate_pool_capability_matrix()
     validate_peripheral_exact_and_observation_rows()
 
     print("wafer_instruction_family_catalog_test: passed")

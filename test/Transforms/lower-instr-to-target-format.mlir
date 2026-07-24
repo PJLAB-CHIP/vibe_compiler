@@ -5,6 +5,10 @@
 // RUN: not wafer-opt --verify-each=false --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/f64.mlir 2>&1 | FileCheck %s --check-prefix=F64
 // RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ct-i16.mlir 2>&1 | FileCheck %s --check-prefix=CT-I16
 // RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ct-bool-add.mlir 2>&1 | FileCheck %s --check-prefix=CT-BOOL
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ct-pool-i8.mlir 2>&1 | FileCheck %s --check-prefix=CT-POOL-I8
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ct-pool-f32.mlir 2>&1 | FileCheck %s --check-prefix=CT-POOL-F32
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ct-unpool-bf16.mlir 2>&1 | FileCheck %s --check-prefix=CT-UNPOOL-BF16
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ct-reduce-f32.mlir 2>&1 | FileCheck %s --check-prefix=CT-REDUCE-F32
 
 //--- supported.mlir
 module {
@@ -120,3 +124,79 @@ module {
 }
 
 // CT-BOOL: CT BOOL is restricted to the registered relation/logic elementwise kinds
+
+//--- ct-pool-i8.mlir
+module {
+  func.func @ct_pool_i8_has_no_typed_evidence() {
+    %input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<1x2x4x64xi8, #wafer.memory<spm, ncx>>
+    %output = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<1x1x2x64xi8, #wafer.memory<spm, ncx>>
+    wafer.instr.pool #wafer.instr_pool_kind<max> %input into %output
+        {source_shape = array<i64: 1, 2, 4, 64>,
+         dest_shape = array<i64: 1, 1, 2, 64>,
+         pads = array<i64: 0, 0, 0, 0>,
+         kernel_strides = array<i64: 2, 2, 2, 2>}
+        : memref<1x2x4x64xi8, #wafer.memory<spm, ncx>>
+      into memref<1x1x2x64xi8, #wafer.memory<spm, ncx>>
+    return
+  }
+}
+
+// CT-POOL-I8: unsupported_target_instr_profile: pool format 'i8' has no closed opcode/kind/format board-evidence tuple
+
+//--- ct-pool-f32.mlir
+module {
+  func.func @ct_pool_f32_has_no_typed_evidence() {
+    %input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<1x2x4x64xf32, #wafer.memory<spm, ncx>>
+    %output = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67584>}
+        : memref<1x1x2x64xf32, #wafer.memory<spm, ncx>>
+    wafer.instr.pool #wafer.instr_pool_kind<max> %input into %output
+        {source_shape = array<i64: 1, 2, 4, 64>,
+         dest_shape = array<i64: 1, 1, 2, 64>,
+         pads = array<i64: 0, 0, 0, 0>,
+         kernel_strides = array<i64: 2, 2, 2, 2>}
+        : memref<1x2x4x64xf32, #wafer.memory<spm, ncx>>
+      into memref<1x1x2x64xf32, #wafer.memory<spm, ncx>>
+    return
+  }
+}
+
+// CT-POOL-F32: unsupported_target_instr_profile: pool format 'f32' has no closed opcode/kind/format board-evidence tuple
+
+//--- ct-unpool-bf16.mlir
+module {
+  func.func @ct_unpool_bf16_has_no_typed_evidence() {
+    %input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<1x1x2x64xbf16, #wafer.memory<spm, ncx>>
+    %output = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<1x2x4x64xbf16, #wafer.memory<spm, ncx>>
+    wafer.instr.unpool #wafer.instr_unpool_kind<avg> %input into %output
+        {source_shape = array<i64: 1, 1, 2, 64>,
+         dest_shape = array<i64: 1, 2, 4, 64>,
+         kernel_strides = array<i64: 2, 2, 2, 2>}
+        : memref<1x1x2x64xbf16, #wafer.memory<spm, ncx>>
+      into memref<1x2x4x64xbf16, #wafer.memory<spm, ncx>>
+    return
+  }
+}
+
+// CT-UNPOOL-BF16: unsupported_target_instr_profile: unpool format 'bf16' has no closed opcode/kind/format board-evidence tuple
+
+//--- ct-reduce-f32.mlir
+module {
+  func.func @ct_reduce_f32_has_no_packet_evidence() {
+    %input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4x64xf32, #wafer.memory<spm, cx>>
+    %output = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66560>}
+        : memref<64xf32, #wafer.memory<spm, cx>>
+    wafer.instr.reduce #wafer.instr_reduce_kind<sum> %input into %output
+        {dim = 1 : i64}
+        : memref<4x64xf32, #wafer.memory<spm, cx>>
+      into memref<64xf32, #wafer.memory<spm, cx>>
+    return
+  }
+}
+
+// CT-REDUCE-F32: unsupported_target_instr_profile: reduce format 'f32' has no closed opcode/kind/format board-evidence tuple

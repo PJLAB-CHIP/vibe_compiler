@@ -11,6 +11,7 @@ import pathlib
 import re
 import shutil
 import shlex
+import statistics
 import struct
 import subprocess
 import sys
@@ -21,17 +22,18 @@ import wafer_transport_pmu_calibration_catalog as transport_catalog
 
 
 RANK_COUNT = 16
-RESOURCE_BYTES = 256
+RESOURCE_BYTES = 8448
 HEADER_BYTES = 128
-INPUT_BYTES = 128
-MAX_PAYLOAD_BYTES = 64
+INPUT_BYTES = 8192
+MAX_PAYLOAD_BYTES = 4096
+PROBE_LOCAL_ELEMENTS = RESOURCE_BYTES // 4
 PAYLOAD_SWEEP = transport_catalog.PAYLOAD_SWEEP
 PAYLOAD_POISON = 0xC3
 OUTPUT_GUARD_BYTES = 32
 OUTPUT_GUARD_VALUE = 0xA5
 MAGIC = 0x3143434E45544457
 CANARY = 0xD7E0CA11D7E0CA11
-SCHEMA = 6
+SCHEMA = 7
 STATUS_SUCCESS = 1
 STATUS_TRANSPORT_ERROR = 2
 DTE_ENABLE_MASK = 0x3
@@ -49,6 +51,14 @@ PROBE_LL = INPUT_DIR / "wafer_dte_ncc_execution_probe.ll"
 MODES = dict(transport_catalog.MODE_NAMES)
 TRANSPORT_PMU_MODES = transport_catalog.TRANSPORT_PMU_MODES
 ERROR_PATH_MODES = transport_catalog.ERROR_PATH_MODES
+ASYNC_SENDER_MODES = transport_catalog.ASYNC_SENDER_MODES
+ASYNC_SENDER_PAYLOAD_BYTES = (
+    transport_catalog.ASYNC_SENDER_PAYLOAD_BYTES
+)
+ASYNC_SENDER_TRANSPORT_BYTES = (
+    transport_catalog.ASYNC_SENDER_TRANSPORT_BYTES
+)
+ASYNC_SENDER_REPETITIONS = transport_catalog.ASYNC_SENDER_REPETITIONS
 MODE_PAYLOADS = transport_catalog.MODE_PAYLOADS
 CONTRACT_STATUS_ERROR = 1 << 0
 CONTRACT_VALID_SEND_EVENT = 1 << 1
@@ -56,6 +66,9 @@ CONTRACT_VALID_RECV_EVENT = 1 << 2
 CONTRACT_REJECTED_SEND_EVENT = 1 << 3
 CONTRACT_REJECTED_RECV_EVENT = 1 << 4
 CONTRACT_UNKNOWN_WAIT_RETURNED = 1 << 5
+CONTRACT_RAW_ASYNC_ISSUED = 1 << 6
+CONTRACT_RAW_ASYNC_COMPLETED = 1 << 7
+RAW_ASYNC_RC_MARKER = 0x4153594E
 EXPECTED_INSTRUCTION_COUNTS = {
     1: (1, 1, 1),
     2: (1, 1, 1),
@@ -66,6 +79,9 @@ EXPECTED_INSTRUCTION_COUNTS = {
     7: (0, 1, 1),
     8: (0, 0, 1),
     9: (0, 0, 1),
+    10: (1, 0, 1),
+    11: (1, 0, 1),
+    12: (0, 1, 1),
 }
 EXPECTED_CONTRACT_EVIDENCE = {
     **{mode: 0 for mode in TRANSPORT_PMU_MODES},
@@ -81,9 +97,23 @@ EXPECTED_CONTRACT_EVIDENCE = {
         | CONTRACT_REJECTED_RECV_EVENT
     ),
     9: CONTRACT_STATUS_ERROR | CONTRACT_UNKNOWN_WAIT_RETURNED,
+    12: (
+        CONTRACT_STATUS_ERROR
+        | CONTRACT_VALID_SEND_EVENT
+        | CONTRACT_VALID_RECV_EVENT
+        | CONTRACT_REJECTED_RECV_EVENT
+    ),
+    **{
+        mode: (
+            CONTRACT_VALID_RECV_EVENT
+            | CONTRACT_RAW_ASYNC_ISSUED
+            | CONTRACT_RAW_ASYNC_COMPLETED
+        )
+        for mode in ASYNC_SENDER_MODES
+    },
 }
-DEFAULT_NO_CARD_TOTAL_TIMEOUT_SECONDS = 300.0
-DEFAULT_BOARD_TOTAL_TIMEOUT_SECONDS = 1200.0
+DEFAULT_NO_CARD_TOTAL_TIMEOUT_SECONDS = 420.0
+DEFAULT_BOARD_TOTAL_TIMEOUT_SECONDS = 1800.0
 _total_deadline: float | None = None
 
 
@@ -207,7 +237,9 @@ def run(
 def compile_package(
     args: argparse.Namespace,
 ) -> tuple[pathlib.Path, pathlib.Path, dict[tuple[int, str, int], int]]:
-    source = production_baseline.write_fixture(args.work_dir)
+    source = production_baseline.write_fixture(
+        args.work_dir, PROBE_LOCAL_ELEMENTS
+    )
     package = args.work_dir / "package"
     result = run(
         [
@@ -224,8 +256,23 @@ def compile_package(
     )
     if "published verified package" not in result.stdout:
         raise RuntimeError("wafer-compile did not publish the seed package")
-    bindings = production_baseline.validate_manifest(package)
+    bindings = production_baseline.validate_manifest(
+        package, PROBE_LOCAL_ELEMENTS
+    )
     manifest = json.loads((package / "manifest.json").read_text())
+    host_resources = (
+        resource
+        for resource in manifest["resources"]
+        if resource.get("host_visible")
+    )
+    if any(
+        resource.get("bytes") != RESOURCE_BYTES
+        for resource in host_resources
+    ):
+        raise RuntimeError(
+            "DTE/NCC probe host resources do not match the bounded "
+            f"{RESOURCE_BYTES}-byte record"
+        )
     module_path = package / manifest["modules"][0]["path"]
     return package, module_path, bindings
 
@@ -281,7 +328,9 @@ def execute_production_baseline(
     package: pathlib.Path,
     bindings: dict[tuple[int, str, int], int],
 ) -> None:
-    resource_args = production_baseline.write_raw_files(args.work_dir, bindings)
+    resource_args = production_baseline.write_raw_files(
+        args.work_dir, bindings, PROBE_LOCAL_ELEMENTS
+    )
     result = run(
         [*board_base_command(args, package), *resource_args],
         timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
@@ -309,6 +358,14 @@ def build_probe(
         / "riscv"
         / "include"
     )
+    peripheral_include = (
+        deps
+        / "tx8-yoc-rt-thread-smp"
+        / "interface"
+        / "op_fw_sim_if"
+        / "peripheral"
+        / "include"
+    )
     tool_bin = deps / TOOLCHAIN_DIR / "bin"
     gcc = tool_bin / "riscv64-unknown-elf-gcc"
     objcopy = tool_bin / "riscv64-unknown-elf-objcopy"
@@ -322,6 +379,8 @@ def build_probe(
         PROBE_C,
         PROBE_LL,
         pmu_register_header,
+        peripheral_include / "direct_dte_and_fsm.h",
+        peripheral_include / "tx81_spm.h",
     )
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
@@ -353,6 +412,7 @@ def build_probe(
             f"-I{args.repo_root / 'include'}",
             f"-I{deps / 'include'}",
             f"-I{kcore_include}",
+            f"-I{peripheral_include}",
             "-mcpu=c908",
             "-mabi=lp64d",
             "-o",
@@ -396,15 +456,33 @@ def f16_payload(rank: int) -> list[float]:
     return [float(rank * 4 + lane + 1) for lane in range(INPUT_BYTES // 2)]
 
 
+def async_sender_pattern(rank: int, count: int) -> bytes:
+    return bytes(
+        (
+            rank * 53
+            + index * 17
+            + (index >> 8) * 29
+            + 7
+        )
+        & 0xFF
+        for index in range(count)
+    )
+
+
 def write_probe_inputs(
     work_dir: pathlib.Path,
     bindings: dict[tuple[int, str, int], int],
     mode: int,
     payload_bytes: int,
+    sample: int = 0,
 ) -> tuple[list[str], dict[int, pathlib.Path]]:
     if payload_bytes not in PAYLOAD_SWEEP:
         raise RuntimeError(f"unsupported transport payload size {payload_bytes}")
-    raw = work_dir / "probe-raw" / f"mode-{mode}-bytes-{payload_bytes}"
+    raw = (
+        work_dir
+        / "probe-raw"
+        / f"mode-{mode}-bytes-{payload_bytes}-sample-{sample}"
+    )
     raw.mkdir(parents=True)
     arguments: list[str] = []
     outputs: dict[int, pathlib.Path] = {}
@@ -445,10 +523,12 @@ def expected_payload(mode: int, rank: int, payload_bytes: int) -> bytes:
     ]
     if mode in (1, 2):
         values = [2.0 * value for value in remote]
-    elif mode in (3, 4, 5, 6, 7):
+    elif mode in (3, 4, 5, 6, 7, 12):
         values = remote
     elif mode in (8, 9):
         return bytes([PAYLOAD_POISON]) * MAX_PAYLOAD_BYTES
+    elif mode in ASYNC_SENDER_MODES:
+        return async_sender_pattern(predecessor, MAX_PAYLOAD_BYTES)
     else:
         raise RuntimeError(f"unsupported DTE/NCC mode {mode}")
     active = struct.pack(f"<{len(values)}e", *values)
@@ -542,14 +622,40 @@ def parse_probe_payload(
             f"rank {rank} mode {mode} device guard/result mismatches "
             f"{device_oracle_mismatches}"
         )
+    raw_async_return_codes: dict[str, int] | None = None
+    if mode in ASYNC_SENDER_MODES:
+        def signed32(value: int) -> int:
+            return value if value < 1 << 31 else value - (1 << 32)
+
+        raw_async_return_codes = {
+            "send_async": signed32(words[6] & 0xFFFFFFFF),
+            "wait_done": signed32((words[6] >> 32) & 0xFFFFFFFF),
+            "release": signed32(words[7] & 0xFFFFFFFF),
+        }
+        marker = words[7] >> 32
+        if marker != RAW_ASYNC_RC_MARKER or any(
+            raw_async_return_codes.values()
+        ):
+            raise RuntimeError(
+                f"rank {rank} mode {mode} has invalid raw async return "
+                f"codes/marker: {raw_async_return_codes} marker=0x{marker:x}"
+            )
     guard_before = payload[
         HEADER_BYTES : HEADER_BYTES + OUTPUT_GUARD_BYTES
     ]
     logical_begin = HEADER_BYTES + OUTPUT_GUARD_BYTES
     logical_end = logical_begin + MAX_PAYLOAD_BYTES
     guard_after = payload[logical_end:]
-    expected_guard = bytes([OUTPUT_GUARD_VALUE]) * OUTPUT_GUARD_BYTES
-    if guard_before != expected_guard or guard_after != expected_guard:
+    expected_guard_before = (
+        bytes([OUTPUT_GUARD_VALUE]) * OUTPUT_GUARD_BYTES
+    )
+    expected_guard_after = bytes([OUTPUT_GUARD_VALUE]) * (
+        RESOURCE_BYTES - logical_end
+    )
+    if (
+        guard_before != expected_guard_before
+        or guard_after != expected_guard_after
+    ):
         raise RuntimeError(
             f"rank {rank} mode {mode} output payload guard changed"
         )
@@ -578,10 +684,16 @@ def parse_probe_payload(
     return {
         "rank": rank,
         "payload_bytes": payload_bytes,
+        "transport_bytes": (
+            ASYNC_SENDER_TRANSPORT_BYTES
+            if mode in ASYNC_SENDER_MODES
+            else payload_bytes
+        ),
         "stable_mask": stable_mask,
         "status": status,
         "contract_status": contract_status,
         "contract_evidence": f"0x{contract_evidence:02x}",
+        "raw_async_return_codes": raw_async_return_codes,
         "ct_count_delta": instruction_counts[0],
         "rdma_count_delta": instruction_counts[1],
         "wdma_count_delta": instruction_counts[2],
@@ -594,8 +706,12 @@ def parse_probe_payload(
         },
         "full_cycles_delta": words[4],
         "ct_cycles_delta": words[5],
-        "rdma_cycles_delta": words[6],
-        "wdma_cycles_delta": words[7],
+        "rdma_cycles_delta": (
+            None if mode in ASYNC_SENDER_MODES else words[6]
+        ),
+        "wdma_cycles_delta": (
+            None if mode in ASYNC_SENDER_MODES else words[7]
+        ),
         "transport_pmu": {
             "measurement_basis": "not_calibrated",
             "sample_state": transport_sample_state,
@@ -654,6 +770,7 @@ def synthetic_probe_payload(
     read_only: bool = True,
     transport_deltas: tuple[int, ...] = (64, 0, 17, 0, 64, 64),
     device_oracle_mismatches: tuple[int, int, int, int] = (0, 0, 0, 0),
+    raw_async_return_codes: tuple[int, int, int] = (0, 0, 0),
 ) -> bytes:
     ct_count, rdma_count, wdma_count = EXPECTED_INSTRUCTION_COUNTS[mode]
     source_guard, receive_guard, compute_guard, compute_result = (
@@ -687,7 +804,19 @@ def synthetic_probe_payload(
         | (compute_guard << 48)
         | (compute_result << 56)
     )
-    words[4:8] = [101, 31, 37, 41]
+    words[4:6] = [101, 31]
+    if mode in ASYNC_SENDER_MODES:
+        send_result, wait_result, release_result = raw_async_return_codes
+        words[6] = (
+            (send_result & 0xFFFFFFFF)
+            | ((wait_result & 0xFFFFFFFF) << 32)
+        )
+        words[7] = (
+            (release_result & 0xFFFFFFFF)
+            | (RAW_ASYNC_RC_MARKER << 32)
+        )
+    else:
+        words[6:8] = [37, 41]
     words[8] = (
         transport_stable_mask
         | (TRANSPORT_STABLE_MASK << 16)
@@ -697,12 +826,18 @@ def synthetic_probe_payload(
     )
     words[9] = dte_enable | (spm_enable << 32)
     words[10:16] = list(transport_deltas)
-    guard = bytes([OUTPUT_GUARD_VALUE]) * OUTPUT_GUARD_BYTES
+    guard_before = bytes([OUTPUT_GUARD_VALUE]) * OUTPUT_GUARD_BYTES
+    guard_after = bytes([OUTPUT_GUARD_VALUE]) * (
+        RESOURCE_BYTES
+        - HEADER_BYTES
+        - OUTPUT_GUARD_BYTES
+        - MAX_PAYLOAD_BYTES
+    )
     return (
         struct.pack("<16Q", *words)
-        + guard
+        + guard_before
         + expected_payload(mode, rank, payload_bytes)
-        + guard
+        + guard_after
     )
 
 
@@ -712,10 +847,13 @@ def run_host_oracle_self_tests() -> None:
             raise RuntimeError(f"DTE/NCC host oracle self-test: {message}")
 
     def require_rejected(
-        payload: bytes, payload_bytes: int, message: str
+        payload: bytes,
+        payload_bytes: int,
+        message: str,
+        mode: int = 1,
     ) -> None:
         try:
-            parse_probe_payload(payload, 1, 0, payload_bytes)
+            parse_probe_payload(payload, mode, 0, payload_bytes)
         except RuntimeError:
             return
         raise RuntimeError(
@@ -737,6 +875,17 @@ def run_host_oracle_self_tests() -> None:
                     f"valid mode {mode} rank {rank} bytes "
                     f"{payload_bytes} was not a raw observation",
                 )
+                if mode in ASYNC_SENDER_MODES:
+                    require(
+                        parsed["raw_async_return_codes"]
+                        == {
+                            "send_async": 0,
+                            "wait_done": 0,
+                            "release": 0,
+                        },
+                        f"valid mode {mode} did not expose all-zero raw "
+                        "async return codes",
+                    )
 
     inconclusive_cases = (
         (
@@ -802,6 +951,17 @@ def run_host_oracle_self_tests() -> None:
             MAX_PAYLOAD_BYTES,
             name,
         )
+    require_rejected(
+        synthetic_probe_payload(
+            ASYNC_SENDER_MODES[1],
+            0,
+            ASYNC_SENDER_PAYLOAD_BYTES,
+            raw_async_return_codes=(0, -1, 0),
+        ),
+        ASYNC_SENDER_PAYLOAD_BYTES,
+        "a failed raw async wait return code",
+        mode=ASYNC_SENDER_MODES[1],
+    )
 
     corrupted_guard = bytearray(
         synthetic_probe_payload(1, 0, MAX_PAYLOAD_BYTES)
@@ -856,66 +1016,84 @@ def execute_probe_modes(
             if payload_bytes not in MODE_PAYLOADS[mode]:
                 continue
             name = MODES[mode]
-            resource_args, outputs = write_probe_inputs(
-                args.work_dir, bindings, mode, payload_bytes
+            repetitions = (
+                ASYNC_SENDER_REPETITIONS
+                if mode in ASYNC_SENDER_MODES
+                else 1
             )
-            result = run(
-                [*board_base_command(args, package), *resource_args],
-                timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
-            )
-            if result.stdout.count("output_capture:") != RANK_COUNT:
-                raise RuntimeError(
-                    f"{name} bytes {payload_bytes} omitted one or more "
-                    "rank output captures"
+            for sample in range(repetitions):
+                resource_args, outputs = write_probe_inputs(
+                    args.work_dir, bindings, mode, payload_bytes, sample
                 )
-            observations = [
-                parse_probe_output(
-                    outputs[rank], mode, rank, payload_bytes
+                result = run(
+                    [*board_base_command(args, package), *resource_args],
+                    timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
                 )
-                for rank in range(RANK_COUNT)
-            ]
-            sweep_observations[mode][payload_bytes] = observations
-            inconclusive_ranks = [
-                observation["rank"]
-                for observation in observations
-                if observation["transport_pmu"]["sample_state"]
-                == "inconclusive"
-            ]
-            print(
-                "dte_ncc_case: "
-                + json.dumps(
-                    {
-                        "case": name,
-                        "payload_bytes": payload_bytes,
-                        "ranks": RANK_COUNT,
-                        "exact": True,
-                        "canary": True,
-                        "guards": {
-                            "source_spm": "exact",
-                            "receive_spm": "exact",
-                            "compute_spm": "exact",
-                            "output_ddr_before_after": "exact",
+                if result.stdout.count("output_capture:") != RANK_COUNT:
+                    raise RuntimeError(
+                        f"{name} bytes {payload_bytes} sample {sample} omitted "
+                        "one or more rank output captures"
+                    )
+                observations = [
+                    parse_probe_output(
+                        outputs[rank], mode, rank, payload_bytes
+                    )
+                    for rank in range(RANK_COUNT)
+                ]
+                for observation in observations:
+                    observation["sample"] = sample
+                sweep_observations[mode].setdefault(
+                    payload_bytes, []
+                ).extend(observations)
+                inconclusive_ranks = [
+                    observation["rank"]
+                    for observation in observations
+                    if observation["transport_pmu"]["sample_state"]
+                    == "inconclusive"
+                ]
+                print(
+                    "dte_ncc_case: "
+                    + json.dumps(
+                        {
+                            "case": name,
+                            "sample": sample,
+                            "payload_bytes": payload_bytes,
+                            "transport_bytes": (
+                                ASYNC_SENDER_TRANSPORT_BYTES
+                                if mode in ASYNC_SENDER_MODES
+                                else payload_bytes
+                            ),
+                            "ranks": RANK_COUNT,
+                            "exact": True,
+                            "canary": True,
+                            "guards": {
+                                "source_spm": "exact",
+                                "receive_spm": "exact",
+                                "compute_spm": "exact",
+                                "output_ddr_before_after": "exact",
+                            },
+                            "transport_status": "success",
+                            "contract_status": (
+                                "transport_error_observed_then_clean_success"
+                                if mode in ERROR_PATH_MODES
+                                else "success"
+                            ),
+                            "ncc_pmu": observations,
+                            "transport_pmu_sample_state": (
+                                "inconclusive"
+                                if inconclusive_ranks
+                                else "raw_observation"
+                            ),
+                            "transport_pmu_inconclusive_ranks": (
+                                inconclusive_ranks
+                            ),
+                            "dte_common_timer": None,
+                            "dte_ncc_overlap": "unknown",
                         },
-                        "transport_status": "success",
-                        "contract_status": (
-                            "transport_error_observed_then_clean_success"
-                            if mode in ERROR_PATH_MODES
-                            else "success"
-                        ),
-                        "ncc_pmu": observations,
-                        "transport_pmu_sample_state": (
-                            "inconclusive"
-                            if inconclusive_ranks
-                            else "raw_observation"
-                        ),
-                        "transport_pmu_inconclusive_ranks": inconclusive_ranks,
-                        "dte_common_timer": None,
-                        "dte_ncc_overlap": "unknown",
-                    },
-                    sort_keys=True,
+                        sort_keys=True,
+                    )
                 )
-            )
-            print(result.stdout, end="")
+                print(result.stdout, end="")
 
     sweep_summary: dict[str, object] = {}
     for mode in selected_modes:
@@ -955,6 +1133,93 @@ def execute_probe_modes(
         )
     )
 
+    if all(
+        mode in sweep_observations
+        and ASYNC_SENDER_PAYLOAD_BYTES in sweep_observations[mode]
+        for mode in ASYNC_SENDER_MODES
+    ):
+        metric_names = (
+            "full_cycles_delta",
+            "ct_cycles_delta",
+            *TRANSPORT_COUNTER_NAMES,
+        )
+
+        def metric(observation: dict[str, object], name: str) -> int:
+            if name in {"full_cycles_delta", "ct_cycles_delta"}:
+                return int(observation[name])
+            return int(
+                observation["transport_pmu"]["raw_counter_deltas"][name]
+            )
+
+        per_mode_rank_medians: dict[
+            int, dict[int, dict[str, int | float]]
+        ] = {}
+        for mode in ASYNC_SENDER_MODES:
+            rows = sweep_observations[mode][ASYNC_SENDER_PAYLOAD_BYTES]
+            per_mode_rank_medians[mode] = {}
+            for rank in range(RANK_COUNT):
+                rank_rows = [
+                    row for row in rows if int(row["rank"]) == rank
+                ]
+                if len(rank_rows) != ASYNC_SENDER_REPETITIONS:
+                    raise RuntimeError(
+                        f"{MODES[mode]} rank {rank} has "
+                        f"{len(rank_rows)} repeated samples, expected "
+                        f"{ASYNC_SENDER_REPETITIONS}"
+                    )
+                per_mode_rank_medians[mode][rank] = {
+                    name: statistics.median(
+                        metric(row, name) for row in rank_rows
+                    )
+                    for name in metric_names
+                }
+        serial_mode, window_mode = ASYNC_SENDER_MODES
+        print(
+            "dte_sender_async_control_summary: "
+            + json.dumps(
+                {
+                    "transport_bytes": ASYNC_SENDER_TRANSPORT_BYTES,
+                    "samples_per_rank": ASYNC_SENDER_REPETITIONS,
+                    "ranks": RANK_COUNT,
+                    "correctness": "all-exact",
+                    "receiver_first": True,
+                    "return_codes": "all-zero",
+                    "safety_completion": (
+                        "wait_done+release+receive-event+local-fence+"
+                        "runtime-terminal"
+                    ),
+                    "raw_rank_median_of_medians": {
+                        label: {
+                            name: statistics.median(
+                                per_mode_rank_medians[mode][rank][name]
+                                for rank in range(RANK_COUNT)
+                            )
+                            for name in metric_names
+                        }
+                        for label, mode in (
+                            ("serial", serial_mode),
+                            ("async_window", window_mode),
+                        )
+                    },
+                    "async_window_minus_serial_paired_rank_median": {
+                        name: statistics.median(
+                            per_mode_rank_medians[window_mode][rank][name]
+                            - per_mode_rank_medians[serial_mode][rank][name]
+                            for rank in range(RANK_COUNT)
+                        )
+                        for name in metric_names
+                    },
+                    "issue_window_observed": True,
+                    "temporal_overlap": "unknown",
+                    "interpretation": (
+                        "raw repeated same-rank control; DTE counters and NCC "
+                        "FU counters have no calibrated common timer"
+                    ),
+                },
+                sort_keys=True,
+            )
+        )
+
 
 def validate_board_args(args: argparse.Namespace) -> None:
     required = (
@@ -984,7 +1249,27 @@ def main() -> int:
     if args.list_cases:
         print(
             json.dumps(
-                [case.as_dict() for case in transport_catalog.CASES],
+                {
+                    "transport_pmu_cases": [
+                        case.as_dict() for case in transport_catalog.CASES
+                    ],
+                    "contract_cases": [
+                        case.as_dict()
+                        for case in transport_catalog.CONTRACT_CASES
+                    ],
+                    "calibration_leaf_bindings": {
+                        key: [
+                            getattr(
+                                case,
+                                "name",
+                                MODES.get(getattr(case, "mode", -1), ""),
+                            )
+                            for case in cases
+                        ]
+                        for key, cases
+                        in CALIBRATION_LEAF_BINDINGS.items()
+                    },
+                },
                 indent=2,
                 sort_keys=True,
             )

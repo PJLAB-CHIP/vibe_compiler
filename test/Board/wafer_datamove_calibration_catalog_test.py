@@ -78,6 +78,11 @@ def main() -> int:
         if row.disposition in {"board-executable", "board-observation"}:
             assert row.evidence
             assert row.reason is None
+        elif row.disposition == "typed-profile":
+            assert row.evidence == (
+                "wafer-ct-reduce-pool-capability-catalog-python",
+            )
+            assert row.reason
         else:
             assert row.reason
         for evidence in catalog._EXISTING_EVIDENCE.get(row.opcode, ()):
@@ -85,6 +90,16 @@ def main() -> int:
                 f"{row.opcode}: evidence {evidence} does not issue this "
                 "public opcode"
             )
+
+    mask_unpool = next(
+        row for row in catalog.PUBLIC_DISPOSITIONS if row.opcode == 123
+    )
+    assert mask_unpool.evidence == (
+        "wafer-ct-reduce-pool-capability-catalog-python",
+    )
+    assert all(
+        "tdma-" not in evidence for evidence in mask_unpool.evidence
+    )
 
     assert len(catalog.INSTRUCTION_LAYOUT_DISPOSITIONS) == 20
     assert {
@@ -196,14 +211,30 @@ def main() -> int:
         "concat-axis-HW",
     }
     assert all(
-        row.disposition == "board-observation"
-        and row.evidence
-        and row.reason is None
-        for row in raw_concat.values()
+        raw_concat[f"concat-axis-{axis}"].disposition
+        == "board-observation"
+        and raw_concat[f"concat-axis-{axis}"].evidence
+        and raw_concat[f"concat-axis-{axis}"].reason is None
+        for axis in ("C", "W", "H")
+    )
+    raw_hw = raw_concat["concat-axis-HW"]
+    assert raw_hw.disposition == "isolated-deferred"
+    assert raw_hw.evidence == tuple(
+        case.name for case in catalog.extended.ISOLATED_CONCAT_CASES
+    )
+    assert raw_hw.reason
+    assert "matching completion" in raw_hw.reason
+    assert (
+        catalog.CALIBRATION_LEAF_BINDINGS["raw-concat-observation"]
+        == tuple(
+            row
+            for row in catalog.RAW_CONCAT_DISPOSITIONS
+            if row.semantic != "concat-axis-HW"
+        )
     )
     assert (
-        catalog.CALIBRATION_LEAF_BINDINGS["raw-concat-disposition"]
-        == catalog.RAW_CONCAT_DISPOSITIONS
+        catalog.CALIBRATION_LEAF_BINDINGS["raw-concat-hw-isolated"]
+        == (raw_hw,)
     )
     materialized_concat = {
         case.semantic_axis
@@ -282,10 +313,16 @@ def main() -> int:
         for row in catalog.PUBLIC_DISPOSITIONS
         if row.disposition == "board-observation"
     } == {131, 133, 136, 137}
+    assert {
+        row.opcode
+        for row in catalog.PUBLIC_DISPOSITIONS
+        if row.disposition == "typed-profile"
+    } == {121, 122, 123}
     print(
         "wafer_datamove_calibration_catalog_test: "
         "base_board_cases=46 public_opcodes=18 layout_combinations=20 "
-        "deferred=0 extended_evidence=18 passed"
+        "raw_concat_observation=3 raw_concat_isolated=1 "
+        "extended_evidence=18 passed"
     )
     return 0
 

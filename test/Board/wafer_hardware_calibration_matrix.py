@@ -972,8 +972,10 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "ct-reduce-pool-unpool-peripheral-observed",
             resource_budget="shared-instruction-family-package",
             reason=(
-                "Factorize, LUT32, RandGen and ElemMask have bounded raw "
-                "capture but no profile-independent numeric oracle"
+                "composite-only IndexedMax, Unpool-index, negative-domain "
+                "ArgMin, Bilinear, Factorize, LUT32, RandGen and ElemMask "
+                "have bounded raw capture but no profile-independent numeric "
+                "oracle"
             ),
         ),
         _non_board_leaf(
@@ -983,8 +985,9 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             CT_DISPOSITION_CATALOG,
             "ct-reduce-pool-unpool-peripheral-static-negative",
             reason=(
-                "entries absent from the typed ABI are rejected before "
-                "packet construction"
+                "reduce axes absent from the public enum, pool/unpool Cx, "
+                "and scalar unpool index forms are rejected before packet "
+                "construction"
             ),
         ),
     ),
@@ -1111,7 +1114,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             bindings=(
                 _catalog_groups(
                     DATAMOVE_CATALOG,
-                    "raw-concat-disposition",
+                    "raw-concat-observation",
                 )
                 + _catalog_groups(
                     DATAMOVE_EXTENDED_CATALOG,
@@ -1130,6 +1133,19 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
                 "raw opcode 131 C/W/H completion and guards are bounded, but "
                 "their numeric semantics are not yet exact-qualified; HW is "
                 "excluded after an isolated completion timeout"
+            ),
+        ),
+        _non_board_leaf(
+            "datamove-native-concat-hw-isolated",
+            "held-out",
+            "isolated-deferred",
+            DATAMOVE_CATALOG,
+            "raw-concat-hw-isolated",
+            reason=(
+                "native dims=HW previously timed out at matching completion; "
+                "it remains outside the default dispatcher and may only be "
+                "selected as the final explicit isolated case after bounded "
+                "C/W/H alternatives"
             ),
         ),
         _board_leaf(
@@ -1328,9 +1344,10 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "ne-conv-large-heldout",
             resource_budget="bounded-ne-shared-package",
             reason=(
-                "the bounded ordinary-Conv rows have completion and physical "
-                "guards, but the current NCx/HWOI host numeric oracle does "
-                "not explain the nontrivial board output"
+                "ordinary-Conv rows retain bounded raw output; three "
+                "one-factor feature/weight/output fingerprints compare "
+                "distinct NCx/Cx physical candidates without promoting an "
+                "unmatched capture to exact semantics"
             ),
         ),
         _observation_leaf(
@@ -1467,15 +1484,27 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "relative-offset-sweep",
             resource_budget="profile-allocatable-spm",
         ),
-        _non_board_leaf(
-            "spm-alignment-negatives",
+        _leaf(
+            "spm-non-preferred-geometry-observation",
             "held-out",
-            "static-negative",
-            SPM_CATALOG,
-            "alignment-negatives",
+            "board-observation",
+            "rank-one-worker0",
+            bindings=_catalog_groups(
+                SPM_CATALOG,
+                "non-preferred-geometry-roundtrip",
+            ),
+            oracle=("independent-expected", "full-result"),
+            guards=("physical-span", "prefix-suffix-canary"),
+            completion=(
+                "matching-completion",
+                "terminal-status",
+                "cleanup",
+            ),
+            resource_budget="profile-allocatable-spm",
             reason=(
-                "alignment combinations not justified by the current ABI "
-                "are rejected by the host planner"
+                "256-byte alignment is preferred rather than statically "
+                "proven legal; bounded exact round-trips observe whether "
+                "64/128/192-byte bases and 128/384-byte lengths execute"
             ),
         ),
         _leaf(
@@ -1624,8 +1653,8 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             ),
             resource_budget="profile-allocatable-spm",
             reason=(
-                "SPM bank pair rows delegate to the fixed serial/window "
-                "memory-descriptor controls"
+                "SPM bank pair rows delegate to serial/window controls at "
+                "three distinct relative offsets per engine pair"
             ),
         ),
         _board_leaf(
@@ -1951,6 +1980,20 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
                 "retains the error before normal terminal cleanup"
             ),
         ),
+        _observation_leaf(
+            "dte-sender-raw-async-controls",
+            "held-out",
+            "full-card-16-rank",
+            DTE_NCC_CATALOG,
+            "direct-dte-sender-async-controls",
+            resource_budget="four-guarded-64k-spm-regions-per-rank",
+            reason=(
+                "receiver-first test-only raw sender controls repeat serial "
+                "and send_async-to-wait_done issue windows without changing "
+                "the production CRT; exact guards, return codes, receiver "
+                "completion and terminal publication gate PMU comparison"
+            ),
+        ),
         _non_board_leaf(
             "dte-receiver-unprepared",
             "held-out",
@@ -2044,13 +2087,18 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         ),
     ),
     "transport-pmu-basis": (
-        _board_leaf(
+        _observation_leaf(
             "dte-spm-counter-payload-sweep",
             "calibration",
             "full-card-16-rank",
             TRANSPORT_PMU_CATALOG,
             "dte-spm-counter-payload-sweep",
             resource_budget="one-64b-slot-per-rank",
+            reason=(
+                "the payload sweep retains raw modulo-2^64 deltas, but the "
+                "counter measurement basis and event units remain "
+                "uncalibrated"
+            ),
         ),
         _non_board_leaf(
             "tmnoc-counter-offset-unavailable",

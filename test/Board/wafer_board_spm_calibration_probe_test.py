@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import pathlib
+import statistics
 import struct
 import sys
 from collections.abc import Iterable
@@ -189,35 +190,74 @@ def execute_cases(
     resource_ids: tuple[int, int, int],
     cases: Iterable[catalog.SPMCase],
 ) -> None:
+    cases = tuple(cases)
     raw_dir = args.work_dir / "raw"
     raw_dir.mkdir()
-    for sample, case in enumerate(cases):
-        built = catalog.build_case_payload(case, sample)
-        request = raw_dir / f"{case.name}.request.raw"
-        payload = raw_dir / f"{case.name}.payload.raw"
-        output = raw_dir / f"{case.name}.output.raw"
-        request.write_bytes(built.request)
-        payload.write_bytes(built.payload)
-        result = package_support.run(
-            package_support.board_command(
-                args, package, resource_ids, request, payload, output
-            ),
-            timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
-        )
-        required = {
-            "board_stage: completion",
-            "board_stage: device-to-host",
-            "board_stage: cleanup",
-            "board_execution: true",
-        }
-        if not required.issubset(set(result.stdout.splitlines())):
+    repeat_observations: dict[str, list[dict[str, object]]] = {}
+    for case in cases:
+        observations = repeat_observations.setdefault(case.name, [])
+        for sample in range(case.repetitions):
+            built = catalog.build_case_payload(case, sample)
+            prefix = f"{case.name}.sample-{sample}"
+            request = raw_dir / f"{prefix}.request.raw"
+            payload = raw_dir / f"{prefix}.payload.raw"
+            output = raw_dir / f"{prefix}.output.raw"
+            request.write_bytes(built.request)
+            payload.write_bytes(built.payload)
+            result = package_support.run(
+                package_support.board_command(
+                    args, package, resource_ids, request, payload, output
+                ),
+                timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
+            )
+            required = {
+                "board_stage: completion",
+                "board_stage: device-to-host",
+                "board_stage: cleanup",
+                "board_execution: true",
+            }
+            if not required.issubset(set(result.stdout.splitlines())):
+                raise RuntimeError(
+                    f"{prefix}: wafer-run omitted lifecycle evidence"
+                )
+            observation = validate_output(output, case, built, sample)
+            observations.append(observation)
+            print(
+                "spm_calibration: "
+                + json.dumps(observation, sort_keys=True)
+            )
+    for case in cases:
+        if case.repetitions <= 1:
+            continue
+        observations = repeat_observations[case.name]
+        if len(observations) != case.repetitions:
             raise RuntimeError(
-                f"{case.name}: wafer-run omitted lifecycle evidence"
+                f"{case.name}: incomplete repeated PMU sample set"
             )
         print(
-            "spm_calibration: "
+            "spm_bank_repeat_summary: "
             + json.dumps(
-                validate_output(output, case, built, sample),
+                {
+                    "case": case.name,
+                    "relative_offset": case.address - catalog.SWEEP_BASE,
+                    "samples": case.repetitions,
+                    "correctness": "all-exact",
+                    "pmu_medians": {
+                        key: statistics.median(
+                            int(observation["pmu"][key])
+                            for observation in observations
+                        )
+                        for key in (
+                            "rdma_execution",
+                            "wdma_execution",
+                            "rdma_blocking",
+                            "wdma_blocking",
+                        )
+                    },
+                    "interpretation": (
+                        "raw repeated control; no bank/color class inferred"
+                    ),
+                },
                 sort_keys=True,
             )
         )

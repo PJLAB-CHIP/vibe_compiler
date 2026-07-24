@@ -420,6 +420,7 @@ V2_HAZARD_UNSELECTED_OFFSETS = (
     (0x8000, 0xA000, 0xC000),
     (0x10000, 0x12000, 0x14000),
 )
+V2_STRIDED_INITIAL_SOURCE_SLOT = ncc_protocol.MAX_ISSUES
 FMT_INT8 = 0
 FMT_FP16 = 2
 FMT_BF16 = 3
@@ -759,7 +760,7 @@ V2_DMA_STRIDE_MATRIX_CASES = tuple(
         V2_DMA_STRIDE_DESCRIPTORS, start=1
     )
 )
-V2_STRIDED_DEPENDENCY_CASES = tuple(
+V2_STRIDED_RAW_CASES = tuple(
     v2_case(
         (
             f"dependency-strided-{dimension}-"
@@ -784,6 +785,95 @@ V2_STRIDED_DEPENDENCY_CASES = tuple(
         ncc_protocol.Schedule.SERIAL,
         ncc_protocol.Schedule.WINDOW,
     )
+)
+V2_STRIDED_READ_CASES = tuple(
+    v2_case(
+        (
+            f"dependency-strided-{dimension}-"
+            f"{effect.name.lower()}-{schedule.name.lower()}-observation"
+        ),
+        (
+            v2_dma_strided_lane(first_engine, descriptor),
+            v2_dma_strided_lane(second_engine, descriptor),
+        ),
+        rounds=1,
+        schedule=schedule,
+        seed=seed_base + index * 0x10 + int(schedule),
+        effect_relation=effect,
+        range_relation=ncc_protocol.RangeRelation.STRIDED_ENVELOPE,
+        first_operand=ncc_protocol.Operand.READ0,
+        second_operand=second_operand,
+    )
+    for (
+        effect,
+        first_engine,
+        second_engine,
+        second_operand,
+        seed_base,
+    ) in (
+        (
+            ncc_protocol.EffectRelation.WAR,
+            ncc_protocol.Engine.WDMA,
+            ncc_protocol.Engine.RDMA,
+            ncc_protocol.Operand.WRITE,
+            0x7400,
+        ),
+        (
+            ncc_protocol.EffectRelation.RAR,
+            ncc_protocol.Engine.WDMA,
+            ncc_protocol.Engine.WDMA,
+            ncc_protocol.Operand.READ0,
+            0x7500,
+        ),
+    )
+    for index, (dimension, descriptor) in enumerate(
+        V2_DMA_STRIDE_DESCRIPTORS, start=1
+    )
+    for schedule in (
+        ncc_protocol.Schedule.SERIAL,
+        ncc_protocol.Schedule.WINDOW,
+    )
+)
+V2_STRIDED_WAW_CASES = tuple(
+    v2_case(
+        (
+            f"dependency-strided-{dimension}-waw-"
+            f"{relation.name.lower()}-{schedule.name.lower()}-observation"
+        ),
+        (
+            v2_dma_strided_lane(ncc_protocol.Engine.RDMA, descriptor),
+            v2_dma_strided_lane(ncc_protocol.Engine.RDMA, descriptor),
+        ),
+        rounds=1,
+        schedule=schedule,
+        seed=(
+            0x7600
+            + index * 0x40
+            + int(relation) * 0x4
+            + int(schedule)
+        ),
+        effect_relation=ncc_protocol.EffectRelation.WAW,
+        range_relation=relation,
+        first_operand=ncc_protocol.Operand.WRITE,
+        second_operand=ncc_protocol.Operand.WRITE,
+    )
+    for index, (dimension, descriptor) in enumerate(
+        V2_DMA_STRIDE_DESCRIPTORS, start=1
+    )
+    for relation in (
+        ncc_protocol.RangeRelation.EXACT,
+        ncc_protocol.RangeRelation.PARTIAL,
+        ncc_protocol.RangeRelation.ADJACENT,
+    )
+    for schedule in (
+        ncc_protocol.Schedule.SERIAL,
+        ncc_protocol.Schedule.WINDOW,
+    )
+)
+V2_STRIDED_DEPENDENCY_CASES = (
+    V2_STRIDED_RAW_CASES
+    + V2_STRIDED_READ_CASES
+    + V2_STRIDED_WAW_CASES
 )
 V2_SINGLE_CASES = tuple(
     v2_case(
@@ -903,6 +993,7 @@ V2_COMPLETION_SCOPE_CASES = tuple(
     for spelling, wait_kind, seed in (
         ("default", ncc_protocol.WaitKind.DEFAULT, 0x6121),
         ("byworker", ncc_protocol.WaitKind.BY_WORKER, 0x6122),
+        ("local-fence", ncc_protocol.WaitKind.LOCAL_FENCE, 0x6123),
     )
 )
 V2_SUBSET_JOIN_CASES = tuple(
@@ -996,6 +1087,37 @@ V2_DEPTH_PLUS_ONE_CASES = tuple(
         rounds=4 if depth == 6 else 3,
         schedule=ncc_protocol.Schedule.WINDOW,
         seed=0x5000 + int(engine),
+        flags=ncc_protocol.TIGHT_DEPTH_PLUS_ONE,
+        issue_limit=depth + 1,
+    )
+    for engine, depth in V2_DOCUMENTED_QUEUE_DEPTHS.items()
+)
+V2_ACTIVE_OCCUPANCY_BYTES = {
+    ncc_protocol.Engine.CT: 16384,
+    ncc_protocol.Engine.NE: V2_NE_LARGE_RESULT_BYTES,
+    ncc_protocol.Engine.RDMA: V2_REPEATED_SLOT_BYTES,
+    ncc_protocol.Engine.WDMA: V2_REPEATED_SLOT_BYTES,
+    ncc_protocol.Engine.TDMA: V2_REPEATED_SLOT_BYTES,
+}
+V2_ACTIVE_OCCUPANCY_CASES = tuple(
+    v2_case(
+        (
+            f"{engine.name.lower()}-large-depth{depth}-plus1-"
+            "tight-occupancy-observation"
+        ),
+        (
+            v2_lane(
+                engine,
+                transfer_bytes=V2_ACTIVE_OCCUPANCY_BYTES[engine],
+            ),
+            v2_lane(
+                engine,
+                transfer_bytes=V2_ACTIVE_OCCUPANCY_BYTES[engine],
+            ),
+        ),
+        rounds=(depth + 2) // 2,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x5010 + int(engine),
         flags=ncc_protocol.TIGHT_DEPTH_PLUS_ONE,
         issue_limit=depth + 1,
     )
@@ -1231,6 +1353,12 @@ V2_LARGE_BACKLOG_CASES = (
             ncc_protocol.Schedule.WINDOW,
         )
     ),
+)
+V2_LARGE_OVERLAP_CASES = tuple(
+    case for case in V2_LARGE_BACKLOG_CASES if len(case.plan.lanes) == 2
+)
+V2_LARGE_BACKLOG_SINGLE_CASES = tuple(
+    case for case in V2_LARGE_BACKLOG_CASES if len(case.plan.lanes) == 1
 )
 V2_PROTOCOL_NEGATIVE_CASES = (
     CalibrationDisposition(
@@ -1476,8 +1604,6 @@ BOARD_ALL_SAFE_CASES = _unique_cases(
     V2_ISSUE_PATH_CASES,
     TDMA_CRT_MANUAL_CASES,
     V2_DMA_STRIDE_MATRIX_CASES,
-    V2_DOCUMENTED_DEPTH_CASES,
-    V2_DEPTH_PLUS_ONE_CASES,
     V2_PRODUCER_CONSUMER_ALL_CASES,
     V2_STRIDED_DEPENDENCY_CASES,
     V2_LARGE_BACKLOG_CASES,
@@ -1485,9 +1611,12 @@ BOARD_ALL_SAFE_CASES = _unique_cases(
 )
 BOARD_ALL_PREFLIGHT_CASES = _unique_cases(
     BOARD_ALL_SAFE_CASES,
+    V2_DOCUMENTED_DEPTH_CASES,
+    V2_DEPTH_PLUS_ONE_CASES,
     V2_CONSTRUCTOR_CASES,
     V2_COMPLETION_SCOPE_CASES,
     V2_SUBSET_JOIN_CASES,
+    V2_ACTIVE_OCCUPANCY_CASES,
 )
 NCC_OBSERVATION_CASE_NAMES = frozenset(
     case.name
@@ -1507,6 +1636,7 @@ SUITES = {
     "hazard-manual": V2_HAZARD_MANUAL_CASES,
     "constructor-observation": V2_CONSTRUCTOR_CASES,
     "completion-scope-manual": V2_COMPLETION_SCOPE_CASES,
+    "active-occupancy-manual": V2_ACTIVE_OCCUPANCY_CASES,
     "cross-worker-boundary-manual": V2_SUBSET_JOIN_CASES,
     "producer-consumer-observation": V2_PRODUCER_CONSUMER_ALL_CASES,
     "strided-dependency-observation": V2_STRIDED_DEPENDENCY_CASES,
@@ -1525,6 +1655,7 @@ CASE_CATALOGS = {
         + V2_DMA_STRIDE_MATRIX_CASES
         + V2_CONSTRUCTOR_CASES
         + V2_COMPLETION_SCOPE_CASES
+        + V2_ACTIVE_OCCUPANCY_CASES
         + V2_SUBSET_JOIN_CASES
         + V2_PRODUCER_CONSUMER_ALL_CASES
         + V2_STRIDED_DEPENDENCY_CASES
@@ -1574,7 +1705,9 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
     "tdma-bool-to-i8-physical-fill": (NO_CARD_PROTOCOL_CASES[1],),
     "five-engine-n1-n2-n4": V2_SINGLE_CASES + V2_MULTI_ISSUE_CASES,
     "documented-depth-manual": V2_DOCUMENTED_DEPTH_CASES,
-    "depth-plus-one-manual": V2_DEPTH_PLUS_ONE_CASES,
+    "depth-plus-one-manual": (
+        V2_DEPTH_PLUS_ONE_CASES + V2_ACTIVE_OCCUPANCY_CASES
+    ),
     "workers012-disjoint-routing": V2_WORKER_CASES,
     "default-byworker-wait-controls": V2_WORKER_CASES,
     "default-wait-nondefault-scope": V2_COMPLETION_SCOPE_CASES,
@@ -1735,6 +1868,10 @@ def validate_no_card_protocol_cases() -> None:
             ncc_protocol.WaitKind.BY_WORKER,
             0x6122,
         ),
+        "ne-worker1-depth6-local-fence-wait-window": (
+            ncc_protocol.WaitKind.LOCAL_FENCE,
+            0x6123,
+        ),
     }
     if {
         case.name for case in V2_COMPLETION_SCOPE_CASES
@@ -1787,13 +1924,37 @@ def validate_no_card_protocol_cases() -> None:
         raise RuntimeError("ordered producer-consumer catalog is malformed")
     if len(V2_KCORE_BOUNDARY_CASES) != 2:
         raise RuntimeError("Kcore completion boundary catalog is malformed")
-    if len(V2_STRIDED_DEPENDENCY_CASES) != 6 or any(
-        not case.plan.is_strided_dependency_observation()
-        for case in V2_STRIDED_DEPENDENCY_CASES
+    strided_effect_counts = {
+        effect: sum(
+            case.plan.effect_relation == effect
+            for case in V2_STRIDED_DEPENDENCY_CASES
+        )
+        for effect in (
+            ncc_protocol.EffectRelation.RAW,
+            ncc_protocol.EffectRelation.WAR,
+            ncc_protocol.EffectRelation.WAW,
+            ncc_protocol.EffectRelation.RAR,
+        )
+    }
+    if (
+        len(V2_STRIDED_DEPENDENCY_CASES) != 36
+        or strided_effect_counts
+        != {
+            ncc_protocol.EffectRelation.RAW: 6,
+            ncc_protocol.EffectRelation.WAR: 6,
+            ncc_protocol.EffectRelation.WAW: 18,
+            ncc_protocol.EffectRelation.RAR: 6,
+        }
+        or any(
+            not case.plan.is_strided_dependency_observation()
+            for case in V2_STRIDED_DEPENDENCY_CASES
+        )
     ):
         raise RuntimeError("strided dependency catalog is malformed")
     if (
         len(V2_LARGE_BACKLOG_CASES) != 12
+        or len(V2_LARGE_BACKLOG_SINGLE_CASES) != 8
+        or len(V2_LARGE_OVERLAP_CASES) != 4
         or not any(
             lane.transfer_bytes == 65536
             for case in V2_LARGE_BACKLOG_CASES
@@ -1884,6 +2045,39 @@ def validate_no_card_protocol_cases() -> None:
             raise RuntimeError(
                 f"{engine.name}: depth-plus-one catalog is malformed"
             )
+    if (
+        len(V2_ACTIVE_OCCUPANCY_CASES) != len(V2_ENGINES)
+        or {
+            case.plan.lanes[0].engine
+            for case in V2_ACTIVE_OCCUPANCY_CASES
+        }
+        != set(V2_ENGINES)
+    ):
+        raise RuntimeError(
+            "active-occupancy catalog must cover every NCC engine"
+        )
+    for case in V2_ACTIVE_OCCUPANCY_CASES:
+        occupancy = case.plan
+        engine = occupancy.lanes[0].engine
+        depth = V2_DOCUMENTED_QUEUE_DEPTHS[engine]
+        if (
+            tuple(lane.engine for lane in occupancy.lanes)
+            != (engine, engine)
+            or any(
+                lane.worker != 0
+                or lane.issue_mode != ncc_protocol.IssueMode.RAW
+                or lane.transfer_bytes
+                != V2_ACTIVE_OCCUPANCY_BYTES[engine]
+                for lane in occupancy.lanes
+            )
+            or occupancy.flags != ncc_protocol.TIGHT_DEPTH_PLUS_ONE
+            or occupancy.issue_limit != depth + 1
+            or len(occupancy.issue_identities()) != depth + 1
+        ):
+            raise RuntimeError(
+                f"{engine.name}: active-occupancy tight plan is malformed"
+            )
+        occupancy.request_words()
     if len(V2_PAIR_CASES) != 64:
         raise RuntimeError("generic catalog lost a disjoint pair control")
     for first, second in itertools.permutations(V2_ENGINES, 2):
@@ -2125,6 +2319,182 @@ def v2_hazard_ranges(
     return first, (second_begin, second_begin + byte_count)
 
 
+def v2_strided_dependency_bases(
+    plan: ncc_protocol.Plan,
+) -> tuple[int, int]:
+    if not plan.is_strided_dependency_observation():
+        raise RuntimeError("plan is not a strided dependency observation")
+    lane = plan.lanes[0]
+    first = V2_SPM_SLOT_BASE + V2_SPM_WRITE_OFFSET
+    if plan.range_relation == ncc_protocol.RangeRelation.PARTIAL:
+        offsets = lane.dma_chunk_offsets()
+        if len(offsets) < 2:
+            raise RuntimeError("partial strided relation needs two chunks")
+        shift = offsets[len(offsets) // 2]
+    elif plan.range_relation == ncc_protocol.RangeRelation.ADJACENT:
+        shift = lane.dma_envelope_bytes()
+    else:
+        shift = 0
+    return first, first + shift
+
+
+def v2_strided_compact_index(
+    lane: ncc_protocol.Lane, base: int, address: int
+) -> int | None:
+    relative = address - base
+    if relative < 0:
+        return None
+    for chunk, offset in enumerate(lane.dma_chunk_offsets()):
+        if offset <= relative < offset + lane.layout_inner_bytes:
+            return (
+                chunk * lane.layout_inner_bytes + relative - offset
+            )
+    return None
+
+
+def v2_strided_final_byte(
+    plan: ncc_protocol.Plan, address: int
+) -> int:
+    lane = plan.lanes[0]
+    first_base, second_base = v2_strided_dependency_bases(plan)
+    first_index = v2_strided_compact_index(lane, first_base, address)
+    second_index = v2_strided_compact_index(lane, second_base, address)
+    if plan.effect_relation == ncc_protocol.EffectRelation.RAW:
+        return (
+            v2_pattern_byte(0, first_index)
+            if first_index is not None
+            else 0xC3
+        )
+    if plan.effect_relation == ncc_protocol.EffectRelation.WAR:
+        return (
+            v2_pattern_byte(ncc_protocol.MAX_ROUNDS, second_index)
+            if second_index is not None
+            else 0xC3
+        )
+    if plan.effect_relation == ncc_protocol.EffectRelation.WAW:
+        if second_index is not None:
+            return v2_pattern_byte(
+                ncc_protocol.MAX_ROUNDS, second_index
+            )
+        return (
+            v2_pattern_byte(0, first_index)
+            if first_index is not None
+            else 0xC3
+        )
+    if plan.effect_relation == ncc_protocol.EffectRelation.RAR:
+        selected_index = (
+            first_index if first_index is not None else second_index
+        )
+        return (
+            v2_pattern_byte(
+                V2_STRIDED_INITIAL_SOURCE_SLOT, selected_index
+            )
+            if selected_index is not None
+            else 0xC3
+        )
+    raise RuntimeError("unsupported strided dependency effect")
+
+
+def v2_strided_expected_result(
+    identity: ncc_protocol.IssueIdentity,
+    lane: ncc_protocol.Lane,
+    plan: ncc_protocol.Plan,
+) -> bytes:
+    if lane.engine == ncc_protocol.Engine.WDMA:
+        source_slot = {
+            ncc_protocol.EffectRelation.RAW: 0,
+            ncc_protocol.EffectRelation.WAR: (
+                V2_STRIDED_INITIAL_SOURCE_SLOT
+            ),
+            ncc_protocol.EffectRelation.RAR: (
+                V2_STRIDED_INITIAL_SOURCE_SLOT
+            ),
+        }.get(plan.effect_relation)
+        if source_slot is None:
+            raise RuntimeError("unsupported strided WDMA sink")
+        return bytes(
+            v2_pattern_byte(source_slot, index)
+            for index in range(lane.transfer_bytes)
+        )
+    if lane.engine != ncc_protocol.Engine.RDMA:
+        raise RuntimeError("strided dependency requires RDMA/WDMA lanes")
+    base = v2_strided_dependency_bases(plan)[identity.lane]
+    return bytes(
+        v2_strided_final_byte(plan, base + offset + byte)
+        for offset in lane.dma_chunk_offsets()
+        for byte in range(lane.layout_inner_bytes)
+    )
+
+
+def v2_strided_dependency_evidence(
+    plan: ncc_protocol.Plan,
+) -> dict[str, object]:
+    first_base, second_base = v2_strided_dependency_bases(plan)
+    lane = plan.lanes[0]
+    first_bytes = {
+        first_base + offset + byte
+        for offset in lane.dma_chunk_offsets()
+        for byte in range(lane.layout_inner_bytes)
+    }
+    second_bytes = {
+        second_base + offset + byte
+        for offset in lane.dma_chunk_offsets()
+        for byte in range(lane.layout_inner_bytes)
+    }
+    exact_waw = (
+        plan.effect_relation == ncc_protocol.EffectRelation.WAW
+        and plan.range_relation == ncc_protocol.RangeRelation.EXACT
+    )
+    return {
+        "effect": plan.effect_relation.name.lower(),
+        "range": plan.range_relation.name.lower(),
+        "independent_ddr_sinks": 2,
+        "scatter_holes_checked": True,
+        "spm_envelope_and_guards_checked": True,
+        "selected_overlap_bytes": len(first_bytes & second_bytes),
+        "first_only_bytes": len(first_bytes - second_bytes),
+        "first_payload_independently_proven": not exact_waw,
+        "command_semantics_sufficient": True,
+        "evidence": (
+            "dual-rdma-count-plus-second-wins-final; "
+            "first-payload-not-independently-observable"
+            if exact_waw
+            else {
+                ncc_protocol.EffectRelation.RAW: (
+                    "producer-final-copy-and-dependent-read-sink"
+                ),
+                ncc_protocol.EffectRelation.WAR: (
+                    "pre-write-read-sink-and-post-write-final-copy"
+                ),
+                ncc_protocol.EffectRelation.WAW: (
+                    "first-only-and-second-wins-final-regions"
+                ),
+                ncc_protocol.EffectRelation.RAR: (
+                    "two-independent-read-sinks"
+                ),
+            }[plan.effect_relation]
+        ),
+    }
+
+
+def v2_waw_evidence(plan: ncc_protocol.Plan) -> dict[str, object]:
+    if plan.effect_relation != ncc_protocol.EffectRelation.WAW:
+        raise RuntimeError("WAW evidence requires a WAW plan")
+    exact = plan.range_relation == ncc_protocol.RangeRelation.EXACT
+    return {
+        "two_write_instruction_counts_required": True,
+        "second_wins_final_checked": True,
+        "first_payload_independently_proven": not exact,
+        "command_semantics_sufficient": True,
+        "evidence": (
+            "dual-write-count-plus-second-wins-final; "
+            "first-payload-not-independently-observable"
+            if exact
+            else "first-only-and-second-wins-final-regions"
+        ),
+    }
+
+
 def v2_hazard_source_value(
     plan: ncc_protocol.Plan,
     round_index: int,
@@ -2210,6 +2580,8 @@ def v2_expected_result(
     lane: ncc_protocol.Lane,
     plan: ncc_protocol.Plan,
 ) -> bytes:
+    if plan.is_strided_dependency_observation():
+        return v2_strided_expected_result(identity, lane, plan)
     if lane.layout_kind == ncc_protocol.LayoutKind.DMA_STRIDED:
         source_slot = identity.round
         return bytes(
@@ -2396,12 +2768,14 @@ def v2_operand_spm_address(
         return v2_spm_address(identity.slot, offsets[operand])
     if (
         plan.is_strided_dependency_observation()
-        and (
-            (identity.lane == 0 and operand == ncc_protocol.Operand.WRITE)
-            or (identity.lane == 1 and operand == ncc_protocol.Operand.READ0)
+        and operand
+        == (
+            plan.first_operand
+            if identity.lane == 0
+            else plan.second_operand
         )
     ):
-        return v2_spm_address(0, V2_SPM_WRITE_OFFSET)
+        return v2_strided_dependency_bases(plan)[identity.lane]
     if plan.effect_relation != ncc_protocol.EffectRelation.NONE:
         selected = (
             plan.first_operand
@@ -2900,13 +3274,22 @@ def parse_record(
                 "completed"
             )
         if (
-            plan.wait_kind == ncc_protocol.WaitKind.DEFAULT
+            plan.wait_kind
+            in (
+                ncc_protocol.WaitKind.DEFAULT,
+                ncc_protocol.WaitKind.LOCAL_FENCE,
+            )
             and not worker0_task_done
         ):
             raise RuntimeError(
-                f"{case.name}: default wait returned before worker0 "
+                f"{case.name}: default/local fence returned before worker0 "
                 "completed"
             )
+        scope_name = (
+            "default"
+            if plan.wait_kind == ncc_protocol.WaitKind.DEFAULT
+            else "local-fence"
+        )
         wait_scope = {
             "wait_cycles": words[rec["WAIT_CYCLES"]],
             "worker0_task_status": words[rec["CONTROL_BOUNDARY"]],
@@ -2924,13 +3307,15 @@ def parse_record(
                 "byworker1-completed-worker1"
                 if plan.wait_kind == ncc_protocol.WaitKind.BY_WORKER
                 else (
-                    "default-returned-before-worker1"
+                    f"{scope_name}-returned-before-worker1"
                     if not (
                         boundary_task_done
                         and boundary_marker == expected_marker
                         and worker1_boundary_exact
                     )
-                    else "default-covered-worker1-or-backlog-drained"
+                    else (
+                        f"{scope_name}-covered-worker1-or-backlog-drained"
+                    )
                 )
             ),
         }
@@ -3016,6 +3401,12 @@ def parse_record(
         result["subset_join"] = subset_join
     if constructor is not None:
         result["constructor"] = constructor
+    if plan.is_strided_dependency_observation():
+        result["strided_dependency"] = (
+            v2_strided_dependency_evidence(plan)
+        )
+    elif plan.effect_relation == ncc_protocol.EffectRelation.WAW:
+        result["waw_evidence"] = v2_waw_evidence(plan)
     if plan.is_double_slot_observation():
         result["double_slot"] = {
             "hardware_observation_only": True,
@@ -3175,6 +3566,31 @@ def validate_hazard_selection(cases: Iterable[GenericProbeCase]) -> None:
         )
 
 
+def case_sample_count(case: GenericProbeCase, repeat: int) -> int:
+    if repeat <= 0:
+        raise ValueError("repeat must be positive")
+    if case in (
+        V2_LARGE_OVERLAP_CASES
+        + V2_ACTIVE_OCCUPANCY_CASES
+        + V2_STRIDED_DEPENDENCY_CASES
+    ):
+        return repeat
+    if case in (
+        V2_DOCUMENTED_DEPTH_CASES
+        + V2_DEPTH_PLUS_ONE_CASES
+        + V2_DMA_STRIDE_MATRIX_CASES
+        + V2_COMPLETION_SCOPE_CASES
+        + V2_WAIT_OVERHEAD_CASES
+        + V2_CONSTRUCTOR_CASES
+        + V2_SUBSET_JOIN_CASES
+        + V2_PRODUCER_CONSUMER_ALL_CASES
+        + V2_LARGE_BACKLOG_SINGLE_CASES
+        + V2_DOUBLE_SLOT_OBSERVATION_CASES
+    ):
+        return 1
+    return repeat if len(case.plan.lanes) > 1 else 1
+
+
 def execute_cases(
     args: argparse.Namespace,
     package: pathlib.Path,
@@ -3185,36 +3601,11 @@ def execute_cases(
     raw.mkdir()
     observations: list[dict[str, object]] = []
     for case in cases:
-        if (
-            case.plan.effect_relation
-            != ncc_protocol.EffectRelation.NONE
-            and not case.plan.is_serial_dma_roundtrip()
-            and not case.plan.is_strided_dependency_observation()
-            and not case.plan.is_ordered_producer_consumer()
-            and hazard_pair_key(case.plan)
-            not in qualified_disjoint_pairs(observations)
-        ):
-            raise RuntimeError(
-                f"{case.name}: its disjoint engine pair has not passed "
-                "the serial/window overlap qualification"
-            )
-        samples = (
-            1
-            if case in (
-                V2_DOCUMENTED_DEPTH_CASES
-                + V2_DEPTH_PLUS_ONE_CASES
-                + V2_DMA_STRIDE_MATRIX_CASES
-                + V2_COMPLETION_SCOPE_CASES
-                + V2_WAIT_OVERHEAD_CASES
-                + V2_CONSTRUCTOR_CASES
-                + V2_SUBSET_JOIN_CASES
-                + V2_PRODUCER_CONSUMER_ALL_CASES
-                + V2_STRIDED_DEPENDENCY_CASES
-                + V2_LARGE_BACKLOG_CASES
-                + V2_DOUBLE_SLOT_OBSERVATION_CASES
-            )
-            else args.repeat if len(case.plan.lanes) > 1 else 1
-        )
+        # Bounded hazard correctness is independent of whether the disjoint
+        # control establishes a performance overlap capability.  The catalog
+        # still requires paired serial/window controls, but zero overlap must
+        # not suppress exact/partial/adjacent result and guard observations.
+        samples = case_sample_count(case, args.repeat)
         for sample in range(samples):
             request = raw / f"{case.name}.{sample}.request.raw"
             payload = raw / f"{case.name}.{sample}.payload.raw"
@@ -3370,6 +3761,50 @@ def report_overlap(
         raise RuntimeError("no multi-engine overlap observations were reported")
 
 
+def report_stable_large_overlap(
+    observations: list[dict[str, object]], expected_repeats: int
+) -> None:
+    expected_names = {case.name for case in V2_LARGE_OVERLAP_CASES}
+    selected: list[dict[str, object]] = []
+    by_name: dict[str, list[dict[str, object]]] = {}
+    for observation in observations:
+        case_record = observation.get("case")
+        if (
+            not isinstance(case_record, dict)
+            or case_record.get("name") not in expected_names
+        ):
+            continue
+        selected.append(observation)
+        by_name.setdefault(str(case_record["name"]), []).append(observation)
+    if set(by_name) != expected_names:
+        raise RuntimeError(
+            "large overlap summary requires every serial/window control"
+        )
+    if any(
+        len(samples) != expected_repeats
+        or {int(sample["sample"]) for sample in samples}
+        != set(range(expected_repeats))
+        for samples in by_name.values()
+    ):
+        raise RuntimeError(
+            "large overlap controls did not retain the requested repeats"
+        )
+    print(
+        "ncc_large_overlap_basis: "
+        + json.dumps(
+            {
+                "case_count": len(expected_names),
+                "repeats_per_case": expected_repeats,
+                "decision": (
+                    "paired serial/window median; correctness already passed"
+                ),
+            },
+            sort_keys=True,
+        )
+    )
+    report_overlap(selected, require_overlap=False)
+
+
 def report_depth_plus_one(
     observations: list[dict[str, object]],
 ) -> None:
@@ -3428,6 +3863,129 @@ def report_depth_plus_one(
                     "completion/count/output/guard prove depth+1 total "
                     "submission; occupancy requires independent evidence"
                 ),
+            },
+            sort_keys=True,
+        )
+    )
+
+
+def report_active_occupancy(
+    observations: list[dict[str, object]],
+    expected_repeats: int,
+) -> None:
+    if (
+        len(observations) != expected_repeats
+        or {
+            int(observation.get("sample", -1))
+            for observation in observations
+        }
+        != set(range(expected_repeats))
+    ):
+        raise RuntimeError(
+            "active-occupancy suite did not retain the requested repeats"
+        )
+    case_names = {
+        case_record.get("name")
+        for observation in observations
+        if isinstance(
+            case_record := observation.get("case"), dict
+        )
+    }
+    if len(case_names) != 1:
+        raise RuntimeError(
+            "active-occupancy observations must select one engine case"
+        )
+    case = next(
+        (
+            candidate
+            for candidate in V2_ACTIVE_OCCUPANCY_CASES
+            if candidate.name in case_names
+        ),
+        None,
+    )
+    if case is None:
+        raise RuntimeError("active-occupancy observation has an unknown case")
+    engine = case.plan.lanes[0].engine
+    engine_name = engine.name.lower()
+    samples: list[dict[str, object]] = []
+    for observation in sorted(
+        observations, key=lambda item: int(item["sample"])
+    ):
+        case_record = observation.get("case")
+        issues = observation.get("issues")
+        blocking = observation.get("blocking_delta")
+        if (
+            not isinstance(case_record, dict)
+            or case_record.get("name") != case.name
+            or not isinstance(issues, list)
+            or not isinstance(blocking, dict)
+        ):
+            raise RuntimeError("active-occupancy observation is malformed")
+        by_slot = {
+            int(issue["identity"]["slot"]): issue
+            for issue in issues
+            if isinstance(issue, dict)
+            and isinstance(issue.get("identity"), dict)
+        }
+        try:
+            ordered = [
+                by_slot[slot] for slot in case.plan.issue_order()
+            ]
+            execute_cycles = [
+                int(issue["execute_cycles"]) for issue in ordered
+            ]
+            control = int(ordered[-1]["control_after_issue"])
+            blocking_cycles = int(
+                blocking[f"worker0.{engine_name}"]
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeError(
+                "active-occupancy issue record is malformed"
+            ) from error
+        samples.append(
+            {
+                "sample": int(observation["sample"]),
+                "control_after_tight_window": control,
+                "active_at_observation": not bool(control & 0x100),
+                "pmu_backpressure_observed": blocking_cycles > 0,
+                "blocking_delta": blocking_cycles,
+                "execute_cycles": execute_cycles,
+                "last_call_cycle_dominates": (
+                    execute_cycles[-1] > max(execute_cycles[:-1])
+                ),
+            }
+        )
+    active_samples = sum(
+        bool(sample["active_at_observation"]) for sample in samples
+    )
+    backpressure_samples = sum(
+        bool(sample["pmu_backpressure_observed"]) for sample in samples
+    )
+    print(
+        "ncc_active_occupancy_decision: "
+        + json.dumps(
+            {
+                "engine": engine_name,
+                "workload": (
+                    "large-gemm"
+                    if engine == ncc_protocol.Engine.NE
+                    else "16k-vector"
+                ),
+                "issue_count": len(ordered),
+                "documented_depth": (
+                    V2_DOCUMENTED_QUEUE_DEPTHS[engine]
+                ),
+                "sample_count": len(samples),
+                "active_samples": active_samples,
+                "backpressure_samples": backpressure_samples,
+                "samples": samples,
+                "queue_full_response": (
+                    f"pmu-backpressure-in-{backpressure_samples}-of-"
+                    f"{len(samples)}-samples"
+                    if backpressure_samples
+                    else "not-observed"
+                ),
+                "resident_count": "not-observable-from-control",
             },
             sort_keys=True,
         )
@@ -3539,6 +4097,7 @@ def main() -> int:
     if args.suite in (
         "documented-depth-manual",
         "depth-plus-one-manual",
+        "active-occupancy-manual",
         "completion-scope-manual",
         "constructor-observation",
         "cross-worker-boundary-manual",
@@ -3606,8 +4165,14 @@ def main() -> int:
         write_qualification(args, package, observations)
     if args.suite == "calibration":
         report_overlap(observations, args.require_overlap)
+    if {case.name for case in V2_LARGE_OVERLAP_CASES}.issubset(
+        {case.name for case in selected_cases}
+    ):
+        report_stable_large_overlap(observations, args.repeat)
     if args.suite == "depth-plus-one-manual":
         report_depth_plus_one(observations)
+    if args.suite == "active-occupancy-manual":
+        report_active_occupancy(observations, args.repeat)
     if args.suite == "wait-overhead-manual":
         report_wait_overhead(observations)
     return 0

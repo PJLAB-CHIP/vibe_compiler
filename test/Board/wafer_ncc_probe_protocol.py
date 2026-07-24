@@ -551,19 +551,13 @@ class Plan:
             "layout_iteration1",
             "layout_iteration2",
         )
-        return (
+        common = (
             self.rounds == 1
-            and self.effect_relation == EffectRelation.RAW
-            and self.range_relation == RangeRelation.STRIDED_ENVELOPE
             and self.schedule in (Schedule.SERIAL, Schedule.WINDOW)
             and self.wait_kind == WaitKind.BY_WORKER
             and self.wait_worker_mask == 1
-            and self.first_operand == Operand.WRITE
-            and self.second_operand == Operand.READ0
             and self.flags == 0
             and self.issue_limit == 0
-            and first.engine == Engine.RDMA
-            and second.engine == Engine.WDMA
             and first.worker == second.worker == 0
             and first.layout_kind == LayoutKind.DMA_STRIDED
             and second.layout_kind == LayoutKind.DMA_STRIDED
@@ -571,6 +565,64 @@ class Plan:
                 getattr(first, field) == getattr(second, field)
                 for field in descriptor_fields
             )
+        )
+        if not common:
+            return False
+        shapes = {
+            EffectRelation.RAW: (
+                Engine.RDMA,
+                Engine.WDMA,
+                Operand.WRITE,
+                Operand.READ0,
+                (RangeRelation.STRIDED_ENVELOPE,),
+            ),
+            EffectRelation.WAR: (
+                Engine.WDMA,
+                Engine.RDMA,
+                Operand.READ0,
+                Operand.WRITE,
+                (RangeRelation.STRIDED_ENVELOPE,),
+            ),
+            EffectRelation.WAW: (
+                Engine.RDMA,
+                Engine.RDMA,
+                Operand.WRITE,
+                Operand.WRITE,
+                (
+                    RangeRelation.EXACT,
+                    RangeRelation.PARTIAL,
+                    RangeRelation.ADJACENT,
+                ),
+            ),
+            EffectRelation.RAR: (
+                Engine.WDMA,
+                Engine.WDMA,
+                Operand.READ0,
+                Operand.READ0,
+                (RangeRelation.STRIDED_ENVELOPE,),
+            ),
+        }
+        shape = shapes.get(self.effect_relation)
+        if shape is None:
+            return False
+        (
+            first_engine,
+            second_engine,
+            first_operand,
+            second_operand,
+            relations,
+        ) = shape
+        if (
+            first.engine != first_engine
+            or second.engine != second_engine
+            or self.first_operand != first_operand
+            or self.second_operand != second_operand
+            or self.range_relation not in relations
+        ):
+            return False
+        return (
+            self.range_relation != RangeRelation.PARTIAL
+            or len(first.dma_chunk_offsets()) > 1
         )
 
     def is_constructor_observation(self) -> bool:
@@ -674,8 +726,8 @@ class Plan:
             or self.is_strided_dependency_observation()
         ):
             raise ValueError(
-                "DMA-strided lanes require one worker0 serial "
-                "RDMA-to-WDMA FP16 roundtrip"
+                "DMA-strided lanes require a bounded worker0 DMA "
+                "roundtrip or dependency observation"
             )
         if len(self.lanes) == 1 and (
             self.effect_relation != EffectRelation.NONE

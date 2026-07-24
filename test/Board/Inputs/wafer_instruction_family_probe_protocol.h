@@ -81,7 +81,7 @@ enum WaferIFPDeferredReason {
  * SYMBOL, id, spelling, disposition, family, dtype, oracle, reason,
  * logical result bytes, allowed output write span, allowed auxiliary span.
  */
-#define WAFER_IFP_CASES(X)                                                     \
+#define WAFER_IFP_BASE_CASES(X)                                                \
   X(CT_NEG_F16, 1, "ct-neg-f16", SAFE, CT_ELEMENTWISE, F16, EXACT_BITS,       \
     REASON_NONE, 256, 256, 0)                                                  \
   X(CT_NEG_BF16, 2, "ct-neg-bf16", SAFE, CT_ELEMENTWISE, BF16, EXACT_BITS,    \
@@ -230,7 +230,301 @@ enum WaferIFPDeferredReason {
     REASON_NONE, 1536, 1536, 0)                                               \
   X(PERIPHERAL_ELEMMASK_F16_OBSERVED, 141,                                   \
     "peripheral-elemmask-f16-observed", SAFE, PERIPHERAL, F16, NO_ORACLE,    \
-    REASON_NONE, 256, 256, 0)
+    REASON_NONE, 256, 256, 0)                                                \
+  /* Negative finite ArgMin has completed before but disagreed with the      \
+   * semantic minimum.  Preserve it as bounded raw evidence rather than      \
+   * extending the positive-finite exact qualification to the whole opcode. */ \
+  X(PERIPHERAL_ARGMIN_NEGATIVE_F16_OBSERVED, 142,                            \
+    "peripheral-argmin-negative-f16-observed", SAFE, PERIPHERAL, F16,       \
+    NO_ORACLE, REASON_NONE, 8, 8, 0)                                         \
+  /* Independent opcode-118 value/index qualification with ABI-ordered      \
+   * Kx=3, Ky=2, Sx=2, Sy=1 geometry.  The asymmetry exposes X/Y swaps. */   \
+  X(POOL_INDEXED_MAX_F16_ASYMMETRIC, 143,                                   \
+    "pool-indexed-max-f16-k3x2-s2x1", SAFE, POOL, F16, EXACT_COMPOSITE,     \
+    REASON_NONE, 1024, 1024, 0)
+
+#define WAFER_IFP_CT_UNPOOL_CAPABILITY_CASES(X)                              \
+  X(UNPOOL_INDEX_BF16_OBSERVED, 236, "unpool-index-bf16-observed", SAFE,    \
+    UNPOOL, BF16, NO_ORACLE, REASON_NONE, 512, 512, 256)                    \
+  X(UNPOOL_INDEX_F32_OBSERVED, 237, "unpool-index-f32-observed", SAFE,      \
+    UNPOOL, F32, NO_ORACLE, REASON_NONE, 1024, 1024, 256)                   \
+  X(UNPOOL_AVG_BF16, 238, "unpool-avg-bf16", SAFE, UNPOOL, BF16,           \
+    EXACT_BITS, REASON_NONE, 512, 512, 0)                                   \
+  X(UNPOOL_AVG_F32, 239, "unpool-avg-f32", SAFE, UNPOOL, F32, EXACT_BITS,  \
+    REASON_NONE, 1024, 1024, 0)                                             \
+  X(UNPOOL_MASK_BF16, 240, "unpool-mask-bf16", SAFE, UNPOOL, BF16,         \
+    EXACT_COMPOSITE, REASON_NONE, 512, 512, 256)                            \
+  X(UNPOOL_MASK_F32, 241, "unpool-mask-f32", SAFE, UNPOOL, F32,            \
+    EXACT_COMPOSITE, REASON_NONE, 1024, 1024, 256)                          \
+  X(UNPOOL_INDEX_F16_ASYMMETRIC_OBSERVED, 242,                              \
+    "unpool-index-f16-k3x2-s2x1-observed", SAFE, UNPOOL, F16, NO_ORACLE,   \
+    REASON_NONE, 1920, 2048, 512)                                           \
+  X(UNPOOL_AVG_F16_ASYMMETRIC_OBSERVED, 243,                                \
+    "unpool-avg-f16-k3x2-s2x1-observed", SAFE, UNPOOL, F16, NO_ORACLE,     \
+    REASON_NONE, 1920, 2048, 0)                                             \
+  X(UNPOOL_MASK_F16_ASYMMETRIC, 244,                                        \
+    "unpool-mask-f16-k3x2-s2x1", SAFE, UNPOOL, F16, EXACT_COMPOSITE,       \
+    REASON_NONE, 1920, 2048, 512)                                           \
+  X(UNPOOL_INDEX_F16_REPEATED_OVERLAP_OBSERVED, 245,                        \
+    "unpool-index-f16-repeated-overlap-observed", SAFE, UNPOOL, F16,       \
+    NO_ORACLE, REASON_NONE, 1920, 2048, 512)                                \
+  X(UNPOOL_MASK_F16_REPEATED_OVERLAP_OBSERVED, 246,                         \
+    "unpool-mask-f16-repeated-overlap-observed", SAFE, UNPOOL, F16,        \
+    NO_ORACLE, REASON_NONE, 1920, 2048, 512)
+
+#define WAFER_IFP_CT_REDUCE_CAPABILITY_CASES(X)                               \
+  X(REDUCE_SUM_F16_C_NCX, 144,                                                \
+    "reduce-sum-f16-c-ncx-n1h2w3c65", SAFE, CT_REDUCE, F16, EXACT_BITS,     \
+    REASON_NONE, 12, 256, 0)                                                  \
+  X(REDUCE_SUM_F16_W_NCX, 145,                                                \
+    "reduce-sum-f16-w-ncx-n1h1w4c64", SAFE, CT_REDUCE, F16, EXACT_BITS,     \
+    REASON_NONE, 128, 256, 0)                                                 \
+  X(REDUCE_SUM_F16_H_NCX, 146,                                                \
+    "reduce-sum-f16-h-ncx-n1h3w2c65", SAFE, CT_REDUCE, F16, EXACT_BITS,     \
+    REASON_NONE, 260, 512, 0)                                                 \
+  X(REDUCE_SUM_F16_HW_NCX, 147,                                               \
+    "reduce-sum-f16-hw-ncx-n1h3w2c65", SAFE, CT_REDUCE, F16, EXACT_BITS,    \
+    REASON_NONE, 130, 256, 0)                                                 \
+  X(REDUCE_SUM_BF16_C_NCX, 148,                                               \
+    "reduce-sum-bf16-c-ncx-n1h2w3c65", SAFE, CT_REDUCE, BF16, EXACT_BITS,   \
+    REASON_NONE, 12, 256, 0)                                                  \
+  X(REDUCE_SUM_BF16_W_NCX, 149,                                               \
+    "reduce-sum-bf16-w-ncx-n1h1w4c64", SAFE, CT_REDUCE, BF16, EXACT_BITS,   \
+    REASON_NONE, 128, 256, 0)                                                 \
+  X(REDUCE_SUM_BF16_H_NCX, 150,                                               \
+    "reduce-sum-bf16-h-ncx-n1h3w2c65", SAFE, CT_REDUCE, BF16, EXACT_BITS,   \
+    REASON_NONE, 260, 512, 0)                                                 \
+  X(REDUCE_SUM_BF16_HW_NCX, 151,                                              \
+    "reduce-sum-bf16-hw-ncx-n1h3w2c65", SAFE, CT_REDUCE, BF16, EXACT_BITS,  \
+    REASON_NONE, 130, 256, 0)                                                 \
+  X(REDUCE_SUM_F32_C_NCX, 152,                                                \
+    "reduce-sum-f32-c-ncx-n1h2w3c65", SAFE, CT_REDUCE, F32, EXACT_BITS,     \
+    REASON_NONE, 24, 256, 0)                                                  \
+  X(REDUCE_SUM_F32_W_NCX, 153,                                                \
+    "reduce-sum-f32-w-ncx-n1h1w4c64", SAFE, CT_REDUCE, F32, EXACT_BITS,     \
+    REASON_NONE, 256, 256, 0)                                                 \
+  X(REDUCE_SUM_F32_H_NCX, 154,                                                \
+    "reduce-sum-f32-h-ncx-n1h3w2c65", SAFE, CT_REDUCE, F32, EXACT_BITS,     \
+    REASON_NONE, 520, 768, 0)                                                 \
+  X(REDUCE_SUM_F32_HW_NCX, 155,                                               \
+    "reduce-sum-f32-hw-ncx-n1h3w2c65", SAFE, CT_REDUCE, F32, EXACT_BITS,    \
+    REASON_NONE, 260, 512, 0)                                                 \
+  X(REDUCE_AVG_F16_C_NCX, 156,                                                \
+    "reduce-avg-f16-c-ncx-n1h2w3c65", SAFE, CT_REDUCE, F16, EXACT_BITS,     \
+    REASON_NONE, 12, 256, 0)                                                  \
+  X(REDUCE_AVG_F16_W_NCX, 157,                                                \
+    "reduce-avg-f16-w-ncx-n1h1w4c64", SAFE, CT_REDUCE, F16, EXACT_BITS,     \
+    REASON_NONE, 128, 256, 0)                                                 \
+  X(REDUCE_AVG_F16_H_NCX, 158,                                                \
+    "reduce-avg-f16-h-ncx-n1h3w2c65", SAFE, CT_REDUCE, F16, EXACT_BITS,     \
+    REASON_NONE, 260, 512, 0)                                                 \
+  X(REDUCE_AVG_F16_HW_NCX, 159,                                               \
+    "reduce-avg-f16-hw-ncx-n1h3w2c65", SAFE, CT_REDUCE, F16, EXACT_BITS,    \
+    REASON_NONE, 130, 256, 0)                                                 \
+  X(REDUCE_AVG_BF16_C_NCX, 160,                                               \
+    "reduce-avg-bf16-c-ncx-n1h2w3c65", SAFE, CT_REDUCE, BF16, EXACT_BITS,   \
+    REASON_NONE, 12, 256, 0)                                                  \
+  X(REDUCE_AVG_BF16_W_NCX, 161,                                               \
+    "reduce-avg-bf16-w-ncx-n1h1w4c64", SAFE, CT_REDUCE, BF16, EXACT_BITS,   \
+    REASON_NONE, 128, 256, 0)                                                 \
+  X(REDUCE_AVG_BF16_H_NCX, 162,                                               \
+    "reduce-avg-bf16-h-ncx-n1h3w2c65", SAFE, CT_REDUCE, BF16, EXACT_BITS,   \
+    REASON_NONE, 260, 512, 0)                                                 \
+  X(REDUCE_AVG_BF16_HW_NCX, 163,                                              \
+    "reduce-avg-bf16-hw-ncx-n1h3w2c65", SAFE, CT_REDUCE, BF16, EXACT_BITS,  \
+    REASON_NONE, 130, 256, 0)                                                 \
+  X(REDUCE_AVG_F32_C_NCX, 164,                                                \
+    "reduce-avg-f32-c-ncx-n1h2w3c65", SAFE, CT_REDUCE, F32, EXACT_BITS,     \
+    REASON_NONE, 24, 256, 0)                                                  \
+  X(REDUCE_AVG_F32_W_NCX, 165,                                                \
+    "reduce-avg-f32-w-ncx-n1h1w4c64", SAFE, CT_REDUCE, F32, EXACT_BITS,     \
+    REASON_NONE, 256, 256, 0)                                                 \
+  X(REDUCE_AVG_F32_H_NCX, 166,                                                \
+    "reduce-avg-f32-h-ncx-n1h3w2c65", SAFE, CT_REDUCE, F32, EXACT_BITS,     \
+    REASON_NONE, 520, 768, 0)                                                 \
+  X(REDUCE_AVG_F32_HW_NCX, 167,                                               \
+    "reduce-avg-f32-hw-ncx-n1h3w2c65", SAFE, CT_REDUCE, F32, EXACT_BITS,    \
+    REASON_NONE, 260, 512, 0)                                                 \
+  X(REDUCE_MAX_F16_C_NCX, 168,                                                \
+    "reduce-max-f16-c-ncx-n1h2w3c65", SAFE, CT_REDUCE, F16, EXACT_BITS,     \
+    REASON_NONE, 12, 256, 0)                                                  \
+  X(REDUCE_MAX_F16_W_NCX, 169,                                                \
+    "reduce-max-f16-w-ncx-n1h1w4c64", SAFE, CT_REDUCE, F16, EXACT_BITS,     \
+    REASON_NONE, 128, 256, 0)                                                 \
+  X(REDUCE_MAX_F16_H_NCX, 170,                                                \
+    "reduce-max-f16-h-ncx-n1h3w2c65", SAFE, CT_REDUCE, F16, EXACT_BITS,     \
+    REASON_NONE, 260, 512, 0)                                                 \
+  X(REDUCE_MAX_F16_HW_NCX, 171,                                               \
+    "reduce-max-f16-hw-ncx-n1h3w2c65", SAFE, CT_REDUCE, F16, EXACT_BITS,    \
+    REASON_NONE, 130, 256, 0)                                                 \
+  X(REDUCE_MAX_BF16_C_NCX, 172,                                               \
+    "reduce-max-bf16-c-ncx-n1h2w3c65", SAFE, CT_REDUCE, BF16, EXACT_BITS,   \
+    REASON_NONE, 12, 256, 0)                                                  \
+  X(REDUCE_MAX_BF16_W_NCX, 173,                                               \
+    "reduce-max-bf16-w-ncx-n1h1w4c64", SAFE, CT_REDUCE, BF16, EXACT_BITS,   \
+    REASON_NONE, 128, 256, 0)                                                 \
+  X(REDUCE_MAX_BF16_H_NCX, 174,                                               \
+    "reduce-max-bf16-h-ncx-n1h3w2c65", SAFE, CT_REDUCE, BF16, EXACT_BITS,   \
+    REASON_NONE, 260, 512, 0)                                                 \
+  X(REDUCE_MAX_BF16_HW_NCX, 175,                                              \
+    "reduce-max-bf16-hw-ncx-n1h3w2c65", SAFE, CT_REDUCE, BF16, EXACT_BITS,  \
+    REASON_NONE, 130, 256, 0)                                                 \
+  X(REDUCE_MAX_F32_C_NCX, 176,                                                \
+    "reduce-max-f32-c-ncx-n1h2w3c65", SAFE, CT_REDUCE, F32, EXACT_BITS,     \
+    REASON_NONE, 24, 256, 0)                                                  \
+  X(REDUCE_MAX_F32_W_NCX, 177,                                                \
+    "reduce-max-f32-w-ncx-n1h1w4c64", SAFE, CT_REDUCE, F32, EXACT_BITS,     \
+    REASON_NONE, 256, 256, 0)                                                 \
+  X(REDUCE_MAX_F32_H_NCX, 178,                                                \
+    "reduce-max-f32-h-ncx-n1h3w2c65", SAFE, CT_REDUCE, F32, EXACT_BITS,     \
+    REASON_NONE, 520, 768, 0)                                                 \
+  X(REDUCE_MAX_F32_HW_NCX, 179,                                               \
+    "reduce-max-f32-hw-ncx-n1h3w2c65", SAFE, CT_REDUCE, F32, EXACT_BITS,    \
+    REASON_NONE, 260, 512, 0)                                                 \
+  X(REDUCE_MIN_F16_C_NCX, 180,                                                \
+    "reduce-min-f16-c-ncx-n1h2w3c65", SAFE, CT_REDUCE, F16, EXACT_BITS,     \
+    REASON_NONE, 12, 256, 0)                                                  \
+  X(REDUCE_MIN_F16_W_NCX, 181,                                                \
+    "reduce-min-f16-w-ncx-n1h1w4c64", SAFE, CT_REDUCE, F16, EXACT_BITS,     \
+    REASON_NONE, 128, 256, 0)                                                 \
+  X(REDUCE_MIN_F16_H_NCX, 182,                                                \
+    "reduce-min-f16-h-ncx-n1h3w2c65", SAFE, CT_REDUCE, F16, EXACT_BITS,     \
+    REASON_NONE, 260, 512, 0)                                                 \
+  X(REDUCE_MIN_F16_HW_NCX, 183,                                               \
+    "reduce-min-f16-hw-ncx-n1h3w2c65", SAFE, CT_REDUCE, F16, EXACT_BITS,    \
+    REASON_NONE, 130, 256, 0)                                                 \
+  X(REDUCE_MIN_BF16_C_NCX, 184,                                               \
+    "reduce-min-bf16-c-ncx-n1h2w3c65", SAFE, CT_REDUCE, BF16, EXACT_BITS,   \
+    REASON_NONE, 12, 256, 0)                                                  \
+  X(REDUCE_MIN_BF16_W_NCX, 185,                                               \
+    "reduce-min-bf16-w-ncx-n1h1w4c64", SAFE, CT_REDUCE, BF16, EXACT_BITS,   \
+    REASON_NONE, 128, 256, 0)                                                 \
+  X(REDUCE_MIN_BF16_H_NCX, 186,                                               \
+    "reduce-min-bf16-h-ncx-n1h3w2c65", SAFE, CT_REDUCE, BF16, EXACT_BITS,   \
+    REASON_NONE, 260, 512, 0)                                                 \
+  X(REDUCE_MIN_BF16_HW_NCX, 187,                                              \
+    "reduce-min-bf16-hw-ncx-n1h3w2c65", SAFE, CT_REDUCE, BF16, EXACT_BITS,  \
+    REASON_NONE, 130, 256, 0)                                                 \
+  X(REDUCE_MIN_F32_C_NCX, 188,                                                \
+    "reduce-min-f32-c-ncx-n1h2w3c65", SAFE, CT_REDUCE, F32, EXACT_BITS,     \
+    REASON_NONE, 24, 256, 0)                                                  \
+  X(REDUCE_MIN_F32_W_NCX, 189,                                                \
+    "reduce-min-f32-w-ncx-n1h1w4c64", SAFE, CT_REDUCE, F32, EXACT_BITS,     \
+    REASON_NONE, 256, 256, 0)                                                 \
+  X(REDUCE_MIN_F32_H_NCX, 190,                                                \
+    "reduce-min-f32-h-ncx-n1h3w2c65", SAFE, CT_REDUCE, F32, EXACT_BITS,     \
+    REASON_NONE, 520, 768, 0)                                                 \
+  X(REDUCE_MIN_F32_HW_NCX, 191,                                               \
+    "reduce-min-f32-hw-ncx-n1h3w2c65", SAFE, CT_REDUCE, F32, EXACT_BITS,    \
+    REASON_NONE, 260, 512, 0)                                                 \
+  X(REDUCE_SUM_F16_C_CX, 192, "reduce-sum-f16-c-cx-w4c8", SAFE,             \
+    CT_REDUCE, F16, EXACT_BITS, REASON_NONE, 8, 256, 0)                       \
+  X(REDUCE_AVG_F16_C_CX, 193, "reduce-avg-f16-c-cx-w4c8", SAFE,             \
+    CT_REDUCE, F16, EXACT_BITS, REASON_NONE, 8, 256, 0)                       \
+  X(REDUCE_MAX_F16_C_CX, 194, "reduce-max-f16-c-cx-w4c8", SAFE,             \
+    CT_REDUCE, F16, EXACT_BITS, REASON_NONE, 8, 256, 0)                       \
+  X(REDUCE_MIN_F16_C_CX, 195, "reduce-min-f16-c-cx-w4c8", SAFE,             \
+    CT_REDUCE, F16, EXACT_BITS, REASON_NONE, 8, 256, 0)                       \
+  X(REDUCE_SUM_F16_N_RAW, 196, "reduce-sum-f16-n-raw-observed", SAFE,       \
+    CT_REDUCE, F16, NO_ORACLE, REASON_NONE, 512, 512, 0)                     \
+  X(REDUCE_SUM_F16_HWC_RAW, 197,                                             \
+    "reduce-sum-f16-hwc-raw-observed", SAFE, CT_REDUCE, F16, NO_ORACLE,     \
+    REASON_NONE, 512, 512, 0)                                                 \
+  X(REDUCE_AVG_F16_N_RAW, 198, "reduce-avg-f16-n-raw-observed", SAFE,       \
+    CT_REDUCE, F16, NO_ORACLE, REASON_NONE, 512, 512, 0)                     \
+  X(REDUCE_AVG_F16_HWC_RAW, 199,                                             \
+    "reduce-avg-f16-hwc-raw-observed", SAFE, CT_REDUCE, F16, NO_ORACLE,     \
+    REASON_NONE, 512, 512, 0)                                                 \
+  X(REDUCE_MAX_F16_N_RAW, 200, "reduce-max-f16-n-raw-observed", SAFE,       \
+    CT_REDUCE, F16, NO_ORACLE, REASON_NONE, 512, 512, 0)                     \
+  X(REDUCE_MAX_F16_HWC_RAW, 201,                                             \
+    "reduce-max-f16-hwc-raw-observed", SAFE, CT_REDUCE, F16, NO_ORACLE,     \
+    REASON_NONE, 512, 512, 0)                                                 \
+  X(REDUCE_MIN_F16_N_RAW, 202, "reduce-min-f16-n-raw-observed", SAFE,       \
+    CT_REDUCE, F16, NO_ORACLE, REASON_NONE, 512, 512, 0)                     \
+  X(REDUCE_MIN_F16_HWC_RAW, 203,                                             \
+    "reduce-min-f16-hwc-raw-observed", SAFE, CT_REDUCE, F16, NO_ORACLE,     \
+    REASON_NONE, 512, 512, 0)
+
+#define WAFER_IFP_CT_POOL_CAPABILITY_CASES(X)                                \
+  X(CT_POOL_AVG_BF16_SYMMETRIC, 205,                                        \
+    "pool-avg-bf16-k2x2-s2x2", SAFE, POOL, BF16, EXACT_BITS,               \
+    REASON_NONE, 256, 256, 0)                                               \
+  X(CT_POOL_AVG_F32_SYMMETRIC, 206,                                         \
+    "pool-avg-f32-k2x2-s2x2", SAFE, POOL, F32, EXACT_BITS,                 \
+    REASON_NONE, 512, 512, 0)                                               \
+  X(CT_POOL_SUM_BF16_SYMMETRIC, 208,                                        \
+    "pool-sum-bf16-k2x2-s2x2", SAFE, POOL, BF16, EXACT_BITS,               \
+    REASON_NONE, 256, 256, 0)                                               \
+  X(CT_POOL_SUM_F32_SYMMETRIC, 209,                                         \
+    "pool-sum-f32-k2x2-s2x2", SAFE, POOL, F32, EXACT_BITS,                 \
+    REASON_NONE, 512, 512, 0)                                               \
+  X(CT_POOL_MAX_F32_SYMMETRIC, 212,                                         \
+    "pool-max-f32-k2x2-s2x2", SAFE, POOL, F32, EXACT_BITS,                 \
+    REASON_NONE, 512, 512, 0)                                               \
+  X(CT_POOL_INDEXEDMAX_BF16_SYMMETRIC, 214,                                 \
+    "pool-indexed-max-bf16-k2x2-s2x2", SAFE, POOL, BF16, EXACT_COMPOSITE,  \
+    REASON_NONE, 512, 512, 0)                                               \
+  X(CT_POOL_INDEXEDMAX_F32_SYMMETRIC, 215,                                  \
+    "pool-indexed-max-f32-k2x2-s2x2", SAFE, POOL, F32, EXACT_COMPOSITE,    \
+    REASON_NONE, 768, 768, 0)                                               \
+  X(CT_POOL_MIN_BF16_SYMMETRIC, 217,                                        \
+    "pool-min-bf16-k2x2-s2x2", SAFE, POOL, BF16, EXACT_BITS,               \
+    REASON_NONE, 256, 256, 0)                                               \
+  X(CT_POOL_MIN_F32_SYMMETRIC, 218,                                         \
+    "pool-min-f32-k2x2-s2x2", SAFE, POOL, F32, EXACT_BITS,                 \
+    REASON_NONE, 512, 512, 0)                                               \
+  X(CT_POOL_INDEXEDMIN_BF16_SYMMETRIC, 220,                                 \
+    "pool-indexed-min-bf16-k2x2-s2x2", SAFE, POOL, BF16, EXACT_COMPOSITE,  \
+    REASON_NONE, 512, 512, 0)                                               \
+  X(CT_POOL_INDEXEDMIN_F32_SYMMETRIC, 221,                                  \
+    "pool-indexed-min-f32-k2x2-s2x2", SAFE, POOL, F32, EXACT_COMPOSITE,    \
+    REASON_NONE, 768, 768, 0)                                               \
+  X(CT_POOL_AVG_F16_ASYMMETRIC, 222,                                        \
+    "pool-avg-f16-k3x2-s2x1", SAFE, POOL, F16, EXACT_BITS,                 \
+    REASON_NONE, 512, 512, 0)                                               \
+  X(CT_POOL_SUM_F16_ASYMMETRIC, 223,                                        \
+    "pool-sum-f16-k3x2-s2x1", SAFE, POOL, F16, EXACT_BITS,                 \
+    REASON_NONE, 512, 512, 0)                                               \
+  X(CT_POOL_MAX_F16_ASYMMETRIC, 224,                                        \
+    "pool-max-f16-k3x2-s2x1", SAFE, POOL, F16, EXACT_BITS,                 \
+    REASON_NONE, 512, 512, 0)                                               \
+  X(CT_POOL_MIN_F16_ASYMMETRIC, 226,                                        \
+    "pool-min-f16-k3x2-s2x1", SAFE, POOL, F16, EXACT_BITS,                 \
+    REASON_NONE, 512, 512, 0)                                               \
+  X(CT_POOL_INDEXEDMIN_F16_ASYMMETRIC, 227,                                 \
+    "pool-indexed-min-f16-k3x2-s2x1", SAFE, POOL, F16, EXACT_COMPOSITE,    \
+    REASON_NONE, 1024, 1024, 0)                                             \
+  X(CT_POOL_AVG_F16_PADDED_OBSERVED, 228,                                   \
+    "pool-avg-f16-k3x2-s2x1-padded-observed", SAFE, POOL, F16,             \
+    NO_ORACLE, REASON_NONE, 512, 512, 0)                                    \
+  X(CT_POOL_SUM_F16_PADDED_OBSERVED, 229,                                   \
+    "pool-sum-f16-k3x2-s2x1-padded-observed", SAFE, POOL, F16,             \
+    NO_ORACLE, REASON_NONE, 512, 512, 0)                                    \
+  X(CT_POOL_MAX_F16_PADDED_OBSERVED, 230,                                   \
+    "pool-max-f16-k3x2-s2x1-padded-observed", SAFE, POOL, F16,             \
+    NO_ORACLE, REASON_NONE, 512, 512, 0)                                    \
+  X(CT_POOL_INDEXEDMAX_F16_PADDED_OBSERVED, 231,                            \
+    "pool-indexed-max-f16-k3x2-s2x1-padded-observed", SAFE, POOL, F16,     \
+    NO_ORACLE, REASON_NONE, 1024, 1024, 0)                                  \
+  X(CT_POOL_MIN_F16_PADDED_OBSERVED, 232,                                   \
+    "pool-min-f16-k3x2-s2x1-padded-observed", SAFE, POOL, F16,             \
+    NO_ORACLE, REASON_NONE, 512, 512, 0)                                    \
+  X(CT_POOL_INDEXEDMIN_F16_PADDED_OBSERVED, 233,                            \
+    "pool-indexed-min-f16-k3x2-s2x1-padded-observed", SAFE, POOL, F16,     \
+    NO_ORACLE, REASON_NONE, 1024, 1024, 0)                                  \
+  X(CT_POOL_INDEXEDMAX_F16_TIE_OBSERVED, 234,                               \
+    "pool-indexed-max-f16-tie-observed", SAFE, POOL, F16, NO_ORACLE,       \
+    REASON_NONE, 512, 512, 0)                                               \
+  X(CT_POOL_INDEXEDMIN_F16_TIE_OBSERVED, 235,                               \
+    "pool-indexed-min-f16-tie-observed", SAFE, POOL, F16, NO_ORACLE,       \
+    REASON_NONE, 512, 512, 0)
+
+#define WAFER_IFP_CASES(X)                                                    \
+  WAFER_IFP_BASE_CASES(X)                                                     \
+  WAFER_IFP_CT_REDUCE_CAPABILITY_CASES(X)                                    \
+  WAFER_IFP_CT_POOL_CAPABILITY_CASES(X)                                      \
+  WAFER_IFP_CT_UNPOOL_CAPABILITY_CASES(X)
 
 enum WaferIFPCase {
 #define WAFER_IFP_ENUM_CASE(SYMBOL, ID, SPELLING, DISPOSITION, FAMILY, DTYPE,  \

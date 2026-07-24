@@ -16,8 +16,10 @@ HARDWARE_END = 0x300000
 RESERVED_BEGIN = ALLOCATABLE_END
 SWEEP_BASE = 0x100000
 TRANSFER_BYTES = 4096
+PMU_REPETITIONS = 3
 DISPOSITIONS = {
     "BOARD_ROUNDTRIP",
+    "BOARD_OBSERVATION",
     "BOARD_LIFETIME",
     "DELEGATED_BOARD_CASE",
     "ISOLATED_DEFERRED",
@@ -82,6 +84,7 @@ class SPMCase:
     effect: str | None = None
     relation: str | None = None
     evidence: tuple[object, ...] = ()
+    repetitions: int = 1
 
     @property
     def end(self) -> int:
@@ -89,7 +92,11 @@ class SPMCase:
 
     @property
     def is_safe(self) -> bool:
-        return self.disposition in {"BOARD_ROUNDTRIP", "BOARD_LIFETIME"}
+        return self.disposition in {
+            "BOARD_ROUNDTRIP",
+            "BOARD_OBSERVATION",
+            "BOARD_LIFETIME",
+        }
 
     @property
     def expected_instructions(self) -> int:
@@ -131,6 +138,7 @@ class SPMCase:
             "address_b": self.address_b,
             "effect": self.effect,
             "relation": self.relation,
+            "repetitions": self.repetitions,
             "relative_offset": self.address - SWEEP_BASE,
             "mod_256": self.address % 256,
             "mod_1024": self.address % 1024,
@@ -201,6 +209,7 @@ ALIGNMENT_CASES = tuple(
         "BOARD_ROUNDTRIP",
         SWEEP_BASE + offset,
         TRANSFER_BYTES,
+        repetitions=PMU_REPETITIONS,
     )
     for offset in ALIGNMENT_OFFSETS
 )
@@ -213,6 +222,7 @@ LARGE_TRANSFER_CASES = (
         0x180000,
         65536,
         kind="roundtrip-large",
+        repetitions=PMU_REPETITIONS,
     ),
 )
 
@@ -246,6 +256,49 @@ LIFETIME_CASES = (
         kind="lifetime",
         iterations=5,
         slot_stride=8192,
+    ),
+)
+
+NON_PREFERRED_GEOMETRY_CASES = (
+    SPMCase(
+        "spm-base-offset-64-observation",
+        "alignment-bank",
+        "BOARD_OBSERVATION",
+        SWEEP_BASE + 64,
+        TRANSFER_BYTES,
+        kind="roundtrip-non-preferred-geometry",
+    ),
+    SPMCase(
+        "spm-base-offset-128-observation",
+        "alignment-bank",
+        "BOARD_OBSERVATION",
+        SWEEP_BASE + 128,
+        TRANSFER_BYTES,
+        kind="roundtrip-non-preferred-geometry",
+    ),
+    SPMCase(
+        "spm-base-offset-192-observation",
+        "alignment-bank",
+        "BOARD_OBSERVATION",
+        SWEEP_BASE + 192,
+        TRANSFER_BYTES,
+        kind="roundtrip-non-preferred-geometry",
+    ),
+    SPMCase(
+        "spm-length-128-observation",
+        "alignment-bank",
+        "BOARD_OBSERVATION",
+        SWEEP_BASE,
+        128,
+        kind="roundtrip-non-preferred-geometry",
+    ),
+    SPMCase(
+        "spm-length-384-observation",
+        "alignment-bank",
+        "BOARD_OBSERVATION",
+        SWEEP_BASE,
+        384,
+        kind="roundtrip-non-preferred-geometry",
     ),
 )
 
@@ -297,46 +350,6 @@ NEGATIVE_CASES = (
         (1 << 64) - 127,
         256,
         "address-overflow",
-    ),
-    SPMCase(
-        "spm-base-misaligned-64",
-        "alignment-bank",
-        "STATIC_NEGATIVE",
-        SWEEP_BASE + 64,
-        TRANSFER_BYTES,
-        "base-not-256-aligned",
-    ),
-    SPMCase(
-        "spm-base-misaligned-128",
-        "alignment-bank",
-        "STATIC_NEGATIVE",
-        SWEEP_BASE + 128,
-        TRANSFER_BYTES,
-        "base-not-256-aligned",
-    ),
-    SPMCase(
-        "spm-base-misaligned-192",
-        "alignment-bank",
-        "STATIC_NEGATIVE",
-        SWEEP_BASE + 192,
-        TRANSFER_BYTES,
-        "base-not-256-aligned",
-    ),
-    SPMCase(
-        "spm-length-misaligned-128",
-        "alignment-bank",
-        "STATIC_NEGATIVE",
-        SWEEP_BASE,
-        128,
-        "length-not-256-aligned",
-    ),
-    SPMCase(
-        "spm-length-non-power-384",
-        "alignment-bank",
-        "STATIC_NEGATIVE",
-        SWEEP_BASE,
-        384,
-        "length-not-supported-alignment",
     ),
 )
 
@@ -456,27 +469,27 @@ FIVE_ENGINE_ACCESS_CASES = tuple(
     for engine in ("CT", "NE", "RDMA", "WDMA", "TDMA")
 )
 
-_ENGINES = ("CT", "NE", "RDMA", "WDMA", "TDMA")
 BANK_ENGINE_PAIR_CASES = tuple(
     SPMCase(
-        f"spm-bank-pair-{left.lower()}-{right.lower()}-{schedule}",
+        case.name,
         "bank-engine-pair",
         "DELEGATED_BOARD_CASE",
-        SWEEP_BASE,
-        TRANSFER_BYTES,
+        case.spm_a,
+        case.descriptor.compact_bytes,
         None,
-        address_b=SWEEP_BASE + 8192,
-        effect=f"{left}-{right}",
-        relation=schedule,
-        evidence=(
-            memory_descriptor.CASES_BY_NAME[
-                f"spm-bank-pair-{left.lower()}-{right.lower()}-{schedule}"
-            ],
+        address_b=case.spm_b,
+        effect=(
+            f"{memory_descriptor.ENGINE_NAMES[case.engine_a]}-"
+            f"{memory_descriptor.ENGINE_NAMES[case.engine_b]}"
         ),
+        relation=(
+            "serial"
+            if case.schedule == memory_descriptor.SCHEDULE_SERIAL
+            else "window"
+        ),
+        evidence=(case,),
     )
-    for left_index, left in enumerate(_ENGINES)
-    for right in _ENGINES[left_index + 1 :]
-    for schedule in ("serial", "window")
+    for case in memory_descriptor.PAIR_CASES
 )
 
 CATALOG = (
@@ -484,6 +497,7 @@ CATALOG = (
     + ALIGNMENT_CASES
     + LARGE_TRANSFER_CASES
     + LIFETIME_CASES
+    + NON_PREFERRED_GEOMETRY_CASES
     + NEGATIVE_CASES
     + ADDRESS_RELATION_CASES
     + PHYSICAL_LAYOUT_CASES
@@ -512,9 +526,7 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
         if case.domain == "capacity-reservation"
     ),
     "relative-offset-sweep": ALIGNMENT_CASES + LARGE_TRANSFER_CASES,
-    "alignment-negatives": tuple(
-        case for case in NEGATIVE_CASES if case.domain == "alignment-bank"
-    ),
+    "non-preferred-geometry-roundtrip": NON_PREFERRED_GEOMETRY_CASES,
     "rdma-wdma-engine-access-delegated": tuple(
         case
         for case in FIVE_ENGINE_ACCESS_CASES

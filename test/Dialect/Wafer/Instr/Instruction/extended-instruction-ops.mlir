@@ -13,6 +13,12 @@ module {
       : () -> memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>
   %pool_idx = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x4x4x64xi16, #wafer.memory<spm, ncx>>
+  %pool_asym_input = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x3x5x64xf16, #wafer.memory<spm, ncx>>
+  %pool_asym_output = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x2x2x64xf16, #wafer.memory<spm, ncx>>
+  %pool_asym_index = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x2x2x64xi16, #wafer.memory<spm, ncx>>
   %tensor = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x8x8x64xf16, #wafer.memory<spm, tensor>>
   %moved = "builtin.unrealized_conversion_cast"()
@@ -55,6 +61,27 @@ module {
         memref<1x4x4x64xi16, #wafer.memory<spm, ncx>>
     into memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
 
+  // kernel_strides is ABI-ordered as [kernel_x, kernel_y, stride_x,
+  // stride_y].  The asymmetric geometry keeps X/Y swaps observable.
+  wafer.instr.pool #wafer.instr_pool_kind<indexedmax> %pool_asym_input
+      into %pool_asym_output, %pool_asym_index
+      {source_shape = array<i64: 1, 3, 5, 64>,
+       dest_shape = array<i64: 1, 2, 2, 64>,
+       pads = array<i64: 0, 0, 0, 0>,
+       kernel_strides = array<i64: 3, 2, 2, 1>}
+      : memref<1x3x5x64xf16, #wafer.memory<spm, ncx>>
+    into memref<1x2x2x64xf16, #wafer.memory<spm, ncx>>,
+         memref<1x2x2x64xi16, #wafer.memory<spm, ncx>>
+
+  wafer.instr.unpool #wafer.instr_unpool_kind<mask>
+      %pool_asym_output, %pool_asym_index into %pool_asym_input
+      {source_shape = array<i64: 1, 2, 2, 64>,
+       dest_shape = array<i64: 1, 3, 5, 64>,
+       kernel_strides = array<i64: 3, 2, 2, 1>}
+      : memref<1x2x2x64xf16, #wafer.memory<spm, ncx>>,
+        memref<1x2x2x64xi16, #wafer.memory<spm, ncx>>
+    into memref<1x3x5x64xf16, #wafer.memory<spm, ncx>>
+
   wafer.instr.tdma_data_move #wafer.instr_data_move_kind<pad> %tensor into %moved
       {source_shape = array<i64: 1, 8, 8, 64>,
        dest_shape = array<i64: 1, 8, 8, 64>,
@@ -84,6 +111,10 @@ module {
 // CHECK: wafer.instr.pool <indexedmax>
 // CHECK: wafer.instr.unpool <mask>
 // CHECK-SAME: %{{.*}}, %{{.*}} into %{{.*}}
+// CHECK: wafer.instr.pool <indexedmax>
+// CHECK-SAME: kernel_strides = array<i64: 3, 2, 2, 1>
+// CHECK: wafer.instr.unpool <mask>
+// CHECK-SAME: kernel_strides = array<i64: 3, 2, 2, 1>
 // CHECK: wafer.instr.tdma_data_move <pad>
 // CHECK-SAME: pads = array<i64: 0, 0, 0, 0>
 // CHECK: wafer.instr.tdma_data_move <img2col>

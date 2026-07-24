@@ -189,8 +189,39 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         steps = RUNNER.CALIBRATION_STEPS
         self.assertEqual(steps[0].ctest_name, RUNNER.HEARTBEAT_CTEST)
         self.assertEqual(steps[-1].ctest_name, RUNNER.HEARTBEAT_CTEST)
-        self.assertEqual(len(steps), 31)
-        self.assertEqual(len({step.ctest_name for step in steps}), 30)
+        self.assertEqual(len(steps), 38)
+        self.assertEqual(len({step.ctest_name for step in steps}), 37)
+        self.assertEqual(len(RUNNER.ALL_CALIBRATION_STEPS), 42)
+        default_keys = {step.key for step in steps}
+        self.assertTrue(
+            {
+                "instruction-family-ct-capability",
+                "instruction-family-regression",
+                "memory-engine-pair-new-offsets",
+                "spm-non-preferred-geometry",
+            }.issubset(default_keys)
+        )
+        self.assertFalse(
+            {
+                "instruction-family-full-replay",
+                "memory-descriptor-full-replay",
+                "spm-full-replay",
+                "datamove-native-concat-hw-isolated",
+            }
+            & default_keys
+        )
+        explicit_keys = {step.key for step in RUNNER.EXPLICIT_ONLY_STEPS}
+        self.assertEqual(
+            explicit_keys,
+            {
+                "instruction-family-full-replay",
+                "memory-descriptor-full-replay",
+                "spm-full-replay",
+                "datamove-native-concat-hw-isolated",
+            },
+        )
+        for step in RUNNER.EXPLICIT_ONLY_STEPS:
+            self.assertNotIn(step, RUNNER.CALIBRATION_STEPS)
         batches = {step.batch for step in steps}
         self.assertTrue(
             {
@@ -204,7 +235,6 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "full-card-runtime",
                 "full-card-barrier",
                 "full-card-dte",
-                "measurement-pmu",
                 "terminal-heartbeat",
             }.issubset(batches)
         )
@@ -214,6 +244,41 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 for step in steps
             )
         )
+
+    def test_explicit_step_selection_keeps_canonical_order_and_heartbeats(
+        self,
+    ) -> None:
+        selected = RUNNER.select_calibration_steps(
+            (
+                "instruction-family-ct-capability",
+                "memory-engine-pair-new-offsets",
+                "spm-non-preferred-geometry",
+                "datamove-native-concat-hw-isolated",
+            )
+        )
+        self.assertEqual(
+            [step.key for step in selected],
+            [
+                "initial-profile-heartbeat",
+                "instruction-family-ct-capability",
+                "memory-engine-pair-new-offsets",
+                "spm-non-preferred-geometry",
+                "datamove-native-concat-hw-isolated",
+                "terminal-heartbeat",
+            ],
+        )
+        with self.assertRaisesRegex(
+            RUNNER.CalibrationRunnerError, "more than once"
+        ):
+            RUNNER.select_calibration_steps(("ct-vector", "ct-vector"))
+        with self.assertRaisesRegex(
+            RUNNER.CalibrationRunnerError, "heartbeat steps are automatic"
+        ):
+            RUNNER.select_calibration_steps(("terminal-heartbeat",))
+        with self.assertRaisesRegex(
+            RUNNER.CalibrationRunnerError, "unknown calibration step"
+        ):
+            RUNNER.select_calibration_steps(("missing-step",))
 
     def test_execute_runs_serially_and_records_per_step_evidence(self) -> None:
         self.assertEqual(self.execute(), 0)
@@ -241,6 +306,42 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             len(list((self.root / "logs").glob("*.junit.xml"))),
             len(self.steps),
         )
+
+    def test_archives_raw_and_json_evidence_with_hash_manifest(self) -> None:
+        work_dir = self.root / "board-work"
+        (work_dir / "raw").mkdir(parents=True)
+        (work_dir / "raw" / "case.request.raw").write_bytes(b"\x01\x02")
+        (work_dir / "result.json").write_text('{"status":"ok"}\n')
+        (work_dir / "ignored.log").write_text("not durable evidence\n")
+        test = RUNNER.RegisteredTest(
+            "wafer-board-artifact-sample",
+            (
+                "python3",
+                "probe.py",
+                "--work-dir",
+                str(work_dir),
+            ),
+            frozenset(("board", "hardware")),
+            30.0,
+            "board-0",
+        )
+        archived = RUNNER.archive_step_artifacts(
+            test, self.root / "archived"
+        )
+        self.assertIsNotNone(archived)
+        assert archived is not None
+        self.assertEqual(archived["file_count"], 2)
+        manifest = json.loads(
+            pathlib.Path(str(archived["manifest"])).read_text()
+        )
+        self.assertEqual(
+            {item["path"] for item in manifest["files"]},
+            {"raw/case.request.raw", "result.json"},
+        )
+        self.assertTrue(
+            all(len(item["sha256"]) == 64 for item in manifest["files"])
+        )
+        self.assertFalse((self.root / "archived" / "ignored.log").exists())
 
     def test_inventory_accepts_unbuilt_non_board_test(self) -> None:
         self.environment["FAKE_TESTS"] = json.dumps(

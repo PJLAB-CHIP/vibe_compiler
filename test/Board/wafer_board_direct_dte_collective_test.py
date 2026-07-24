@@ -68,7 +68,9 @@ def run(
     return result
 
 
-def write_fixture(work_dir: pathlib.Path) -> pathlib.Path:
+def write_fixture(
+    work_dir: pathlib.Path, local_elements: int = LOCAL_ELEMENTS
+) -> pathlib.Path:
     if work_dir.exists():
         shutil.rmtree(work_dir)
     source = work_dir / "source-program"
@@ -78,23 +80,23 @@ def write_fixture(work_dir: pathlib.Path) -> pathlib.Path:
     module = f'''module {{
   wafer.target.topology @default {{card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}}
   wafer.execution.mesh @default_mesh {{topology = @default, axes = ["rank"], shape = array<i64: 16>, policy = "all_available", endpoints = array<i64>}}
-  func.func @main(%arg0: tensor<{RANK_COUNT}x{LOCAL_ELEMENTS}xf32>) -> tensor<{RANK_COUNT}x{LOCAL_ELEMENTS}xf32> {{
+  func.func @main(%arg0: tensor<{RANK_COUNT}x{local_elements}xf32>) -> tensor<{RANK_COUNT}x{local_elements}xf32> {{
     %sharded = stablehlo.custom_call @Sharding(%arg0) {{
       backend_config = "",
       mhlo.sharding = "{{devices=[{RANK_COUNT},1]{devices}}}"
-    }} : (tensor<{RANK_COUNT}x{LOCAL_ELEMENTS}xf32>) -> tensor<{RANK_COUNT}x{LOCAL_ELEMENTS}xf32>
-    %sum = stablehlo.add %sharded, %sharded : tensor<{RANK_COUNT}x{LOCAL_ELEMENTS}xf32>
+    }} : (tensor<{RANK_COUNT}x{local_elements}xf32>) -> tensor<{RANK_COUNT}x{local_elements}xf32>
+    %sum = stablehlo.add %sharded, %sharded : tensor<{RANK_COUNT}x{local_elements}xf32>
     %zero = stablehlo.constant dense<0.0> : tensor<f32>
     %result = "stablehlo.reduce"(%sum, %zero) ({{
     ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
       %value = stablehlo.add %lhs, %rhs : tensor<f32>
       stablehlo.return %value : tensor<f32>
-    }}) {{dimensions = array<i64: 0>}} : (tensor<{RANK_COUNT}x{LOCAL_ELEMENTS}xf32>, tensor<f32>) -> tensor<{LOCAL_ELEMENTS}xf32>
+    }}) {{dimensions = array<i64: 0>}} : (tensor<{RANK_COUNT}x{local_elements}xf32>, tensor<f32>) -> tensor<{local_elements}xf32>
     %broadcast = "stablehlo.broadcast_in_dim"(%result) {{
       broadcast_dimensions = array<i64: 1>
-    }} : (tensor<{LOCAL_ELEMENTS}xf32>) -> tensor<{RANK_COUNT}x{LOCAL_ELEMENTS}xf32>
-    %tagged = stablehlo.add %broadcast, %sharded : tensor<{RANK_COUNT}x{LOCAL_ELEMENTS}xf32>
-    return %tagged : tensor<{RANK_COUNT}x{LOCAL_ELEMENTS}xf32>
+    }} : (tensor<{local_elements}xf32>) -> tensor<{RANK_COUNT}x{local_elements}xf32>
+    %tagged = stablehlo.add %broadcast, %sharded : tensor<{RANK_COUNT}x{local_elements}xf32>
+    return %tagged : tensor<{RANK_COUNT}x{local_elements}xf32>
   }}
 }}
 '''
@@ -102,11 +104,11 @@ def write_fixture(work_dir: pathlib.Path) -> pathlib.Path:
         "name": "forward",
         "stablehlo_version": "0.0.0",
         "input_signature": [
-            {"shape": [RANK_COUNT, LOCAL_ELEMENTS], "dtype": "float32", "dynamic_dims": []}
+            {"shape": [RANK_COUNT, local_elements], "dtype": "float32", "dynamic_dims": []}
         ],
         "output_signature": [
             {
-                "shape": [RANK_COUNT, LOCAL_ELEMENTS],
+                "shape": [RANK_COUNT, local_elements],
                 "dtype": "float32",
                 "dynamic_dims": [],
             }
@@ -123,7 +125,9 @@ def write_fixture(work_dir: pathlib.Path) -> pathlib.Path:
     return source
 
 
-def validate_manifest(package: pathlib.Path) -> dict[tuple[int, str, int], int]:
+def validate_manifest(
+    package: pathlib.Path, local_elements: int = LOCAL_ELEMENTS
+) -> dict[tuple[int, str, int], int]:
     metadata = json.loads((package / "functions" / "forward.meta").read_text())
     boundary = metadata.get("distributed_boundary")
     if not isinstance(boundary, dict) or boundary.get("logical_rank_count") != RANK_COUNT:
@@ -141,7 +145,7 @@ def validate_manifest(package: pathlib.Path) -> dict[tuple[int, str, int], int]:
             "rank": rank,
             "replica_id": 0,
             "offsets": [rank, 0],
-            "sizes": [1, LOCAL_ELEMENTS],
+            "sizes": [1, local_elements],
             "strides": [1, 1],
         }
         for rank in range(RANK_COUNT)
@@ -151,7 +155,7 @@ def validate_manifest(package: pathlib.Path) -> dict[tuple[int, str, int], int]:
             "rank": rank,
             "replica_id": 0,
             "offsets": [rank, 0],
-            "sizes": [1, LOCAL_ELEMENTS],
+            "sizes": [1, local_elements],
             "strides": [1, 1],
         }
         for rank in range(RANK_COUNT)
@@ -159,8 +163,8 @@ def validate_manifest(package: pathlib.Path) -> dict[tuple[int, str, int], int]:
     if input_binding != {
         "argument_index": 0,
         "distribution": "partitioned",
-        "global_shape": [RANK_COUNT, LOCAL_ELEMENTS],
-        "local_shape": [1, LOCAL_ELEMENTS],
+        "global_shape": [RANK_COUNT, local_elements],
+        "local_shape": [1, local_elements],
         "dtype": "float32",
         "ranks": expected_input_ranks,
     }:
@@ -168,8 +172,8 @@ def validate_manifest(package: pathlib.Path) -> dict[tuple[int, str, int], int]:
     if output_binding != {
         "result_index": 0,
         "distribution": "partitioned",
-        "global_shape": [RANK_COUNT, LOCAL_ELEMENTS],
-        "local_shape": [1, LOCAL_ELEMENTS],
+        "global_shape": [RANK_COUNT, local_elements],
+        "local_shape": [1, local_elements],
         "dtype": "float32",
         "ranks": expected_output_ranks,
     }:
@@ -231,8 +235,8 @@ def validate_manifest(package: pathlib.Path) -> dict[tuple[int, str, int], int]:
             if resource.get("host_visible")
         }
         if typed_host_resources != {
-            ("user_input", 0): {"dtype": "f32", "shape": [1, LOCAL_ELEMENTS]},
-            ("output", 0): {"dtype": "f32", "shape": [1, LOCAL_ELEMENTS]},
+            ("user_input", 0): {"dtype": "f32", "shape": [1, local_elements]},
+            ("output", 0): {"dtype": "f32", "shape": [1, local_elements]},
         }:
             raise RuntimeError(f"rank {rank} has invalid typed host resources")
         for resource in rank_resources:
@@ -256,31 +260,33 @@ def validate_manifest(package: pathlib.Path) -> dict[tuple[int, str, int], int]:
 
 
 def write_raw_files(
-    work_dir: pathlib.Path, bindings: dict[tuple[int, str, int], int]
+    work_dir: pathlib.Path,
+    bindings: dict[tuple[int, str, int], int],
+    local_elements: int = LOCAL_ELEMENTS,
 ) -> list[str]:
     raw = work_dir / "raw"
     raw.mkdir()
     arguments: list[str] = []
     values = [
-        [float(rank * 10 + lane) for lane in range(LOCAL_ELEMENTS)]
+        [float(rank * 10 + lane) for lane in range(local_elements)]
         for rank in range(RANK_COUNT)
     ]
     reduced = [
         sum(2.0 * values[rank][lane] for rank in range(RANK_COUNT))
-        for lane in range(LOCAL_ELEMENTS)
+        for lane in range(local_elements)
     ]
     expected_payloads: set[bytes] = set()
     for rank in range(RANK_COUNT):
         expected = [
             reduced[lane] + values[rank][lane]
-            for lane in range(LOCAL_ELEMENTS)
+            for lane in range(local_elements)
         ]
-        expected_bytes = struct.pack(f"<{LOCAL_ELEMENTS}f", *expected)
+        expected_bytes = struct.pack(f"<{local_elements}f", *expected)
         expected_payloads.add(expected_bytes)
         input_path = raw / f"input_{rank:02d}.f32.raw"
         expected_path = raw / f"expected_{rank:02d}.f32.raw"
         input_path.write_bytes(
-            struct.pack(f"<{LOCAL_ELEMENTS}f", *values[rank])
+            struct.pack(f"<{local_elements}f", *values[rank])
         )
         expected_path.write_bytes(expected_bytes)
         arguments.extend(

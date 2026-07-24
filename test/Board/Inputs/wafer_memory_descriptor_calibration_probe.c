@@ -207,13 +207,18 @@ static uint32_t wafer_mdc_validate_kind(const WaferMDCRequest *request) {
         request->spm_a % 256U != 0U)
       return 0U;
   } else if (request->kind == WAFER_MDC_KIND_ENGINE_PAIR) {
+    uint64_t relative_offset = request->spm_b - request->spm_a;
     if (request->engine_a >= WAFER_MDC_ENGINES ||
         request->engine_b >= WAFER_MDC_ENGINES ||
         request->engine_a >= request->engine_b ||
         request->compact_bytes != 256U ||
         request->oracle != WAFER_MDC_ORACLE_EXACT ||
         request->spm_a % 256U != 0U || request->spm_b % 256U != 0U ||
-        request->spm_b != request->spm_a + 8192U)
+        request->spm_b < request->spm_a ||
+        (relative_offset != 4352U && relative_offset != 8192U &&
+         relative_offset != 65536U) ||
+        !wafer_mdc_spm_range(request->spm_a, 4096U) ||
+        !wafer_mdc_spm_range(request->spm_b, 4096U))
       return 0U;
   } else {
     if (request->engine_a >= WAFER_MDC_ENGINES ||

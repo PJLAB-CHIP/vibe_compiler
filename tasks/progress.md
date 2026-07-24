@@ -102,32 +102,44 @@ no-card验证；不能只检查宽泛文件存在、手填`remaining_preparation
 旧版机器索引曾错误报告`28/28 ready`：它只证明28个域绑定了文件和CTest，没有证明每个校准叶子存在。
 该结论已撤回并按叶子重建门禁；Q37继续`doing`，因为实卡执行、held-out成熟度和software-pipeline
 vertical仍未完成。当前28个导航域下面的叶子均由机器索引解析到concrete catalog/contract对象或带理由
-的非执行对象；机器矩阵当前闭合121个叶子：74个`board-positive`、21个`board-observation`、
-6个`delegated-positive`、18个`static-negative`和2个`isolated-deferred`。catalog分组全部被记账，允许共享的
+的非执行对象；机器矩阵当前闭合123个叶子：73个`board-positive`、24个`board-observation`、
+6个`delegated-positive`、17个`static-negative`和3个`isolated-deferred`，且123个叶子全部ready。
+catalog分组全部被记账，允许共享的
 case有显式白名单，其余分组只允许一次引用。`ready`只表示可以按处置执行或跳过，不是板端结论。
-当前实卡前资产覆盖CT vector 653行、convert 204行（158 exact、46 observation，含23个stochastic
-重复采样）和全部187个opcode disposition（177 board-executable、8 board-observation、
-2 static-negative），以及71个
-instruction-family safe case；NE有32 exact、35 observation、3 static-negative，新增I8 quant、
-FP16/BF16 Depthwise/BackwardConv和左右不等batch；DataMove为base 46 + extended默认17个safe case，
-另保留1个只允许显式选择的native `dims=HW` Concat隔离复测case；公开
-`121..138`为14 exact、4 observation、0 deferred，20个instruction-layout组合为8 native、
-3 materialize-then-consume、9 static-negative。memory-descriptor的59个case覆盖DMA/DDR offset、64KiB、
-1D/2D/3D stride、default burst boundary、tail、五类engine access、全部range relation和10个engine pair；
-SPM 84行由19个本地board、15个static-negative和50个concrete delegated组成，0 deferred。cache的
-same-session stale仍因缺生命周期owner隔离；Direct DTE/transport覆盖六种mode × 16/32/64B的18个
-full-card case，并新增source提前复用、invalid FSM、unknown event wait三种有界错误观察；只有
-receiver未prepare因可能永久等待继续隔离。NCC新增constructor nonnull、default/byworker scope、六个subset join、all-direction
-producer/consumer、strided dependency、large backlog和手写double-slot hardware observation。同步、
-barrier、engine pair、multi-worker、依赖和并行叶子均有具体对象。host oracle、target C build/link及
-shared-package no-card准备不等于board evidence，新增case尚未上板；手写double-slot observation也不等于
-production compiler software-pipeline vertical已经完成。统一NCC板前门禁覆盖185个计划，其中176个进入
-单一safe批次，constructor/default-vs-byworker/六个subset join共9个使用独立进程；板端总入口为
-`tools/run_hardware_calibration.py`，串行执行注册CTest、首错或skip即停并保留逐项log/JUnit/session summary。
-NCC prepare record现为每个issue保留callback进入/完成以及raw builder取得、packet物化、builder释放阶段；
-host失败诊断直接给出issue、engine/worker和最后阶段。旧普通request中的constructor address零值是未写字段，
-不能作为空返回证据；同ELF跨独立进程的一次constructor成功也不能证明其它run的heap状态。新schema的host、
-target link和no-card gate已闭合，本批未运行板卡，仍需后续精确实卡重放取得阶段事实。
+当前资产仍覆盖CT vector 653行、convert 204行、168个instruction-family safe case、73个NE row、
+DataMove base 46 + extended默认17个safe case、99个memory-descriptor case、124个SPM row、58个
+cache/coherence case以及NCC、Direct DTE和barrier矩阵。2026-07-24按当前catalog和validator对已保存板端
+产物做了一次离线收口：CT convert 204/204（23个stochastic row按3样本，合计250次）通过各自
+exact/observation gate；DataMove base 46/46 exact；SPM原本地19/19 exact；memory descriptor既有59/59按声明
+oracle通过（39 exact、20 observation）；cache/coherence 58/58通过。SPM的50个delegated row也已有具体
+板端证据：45个由memory-descriptor覆盖，5个physical-layout row由DataMove base中的20个
+Tensor↔Cx/NCx exact case覆盖。新增5个非preferred geometry本地observation及40个多offset pair row尚待板；
+上述结论只复核device record、payload/result、count和guard；旧单样本PMU不能推出稳定bank class、overlap
+或固定cost，20个address-relation observation也不授权compiler重排。
+
+下次重启后的剩余板端批次固定为：先跑一次known-good Add；重跑current CT vector suite（旧批只在前49个
+output后因已修复的legal-count问题停止）；执行新增95个Reduce/Pool/Unpool instruction-family case及此前
+尚未上板的独立IndexedMax case，并复验ArgMin publication、旧Unpool-index poison observation及重新分类的
+Bilinear；完成DataMove extended默认safe
+余项，native `dims=HW` Concat最后单独隔离；复验NE当前schema下的ReLU、ordinary Conv和修正footprint后的
+BackwardConv；执行新增5个SPM non-preferred geometry和40个三offset engine-pair row；先用current NCC
+schema的单case确认prepare阶段，再串行跑`wafer-board-ncc-all-safe-observations`及15个独立NCC case；最后跑
+Direct DTE/transport的30个payload-sweep、4个有界错误和2个sender async对照，共36个尚未取得current
+板端产物的配置。已有证据的SPM 19、memory descriptor 59、
+cache 58、DataMove base 46和CT convert 204不重复上板。所有case仍由
+`tools/run_hardware_calibration.py`或其已注册CTest单进程串行执行，首错/timeout即停，不自动
+retry/reset/power。
+其中新增instruction、SPM和memory offset使用
+`instruction-family-ct-capability`、`instruction-family-regression`、
+`spm-non-preferred-geometry`和`memory-engine-pair-new-offsets`四个focused step；旧全量资产只保留
+显式`*-full-replay`入口，不进入本批冻结清单。
+
+这些结果形成的当前编译器边界是：允许已验证指令的保守单engine lowering、显式layout materialization、
+当前SPM容量/对齐下的packing、matching wait/逐worker join、显式cache publication、有序Direct DTE和
+16-rank full-card barrier；暂不允许由`serial_mode=0`或不同engine直接推导overlap，不用queue depth选择
+pipeline window，不做SPM bank coloring，不用default wait代替跨worker join，也不把native Concat、TDMA BOOL、
+NE ReLU/Conv option或subgroup barrier提升为exact能力。Q37下一轮按“一个case区分一个未决行为模型”排序，
+不再以累计通过数作为校准完成证明。
 当前queue active occupancy与full行为仍在Q37内保持`unknown`：静态depth不直接作为occupancy证据。普通
 calibration只运行1/2/4（TDMA 1/2）。修正builder生命周期和逐issue观察位置后，CT/NE/RDMA/WDMA exact
 `D=6`与TDMA exact `D=4`已分别由单engine、单case、单样本及前后known-good Add heartbeat闭合

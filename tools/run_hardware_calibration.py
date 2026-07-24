@@ -12,11 +12,13 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime
+import hashlib
 import json
 import os
 import pathlib
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -61,10 +63,22 @@ CALIBRATION_STEPS = (
         "qualify the configured rank-one runtime path and establish card health",
     ),
     CalibrationStep(
-        "instruction-family",
+        "pmu-readonly",
+        "preflight-profile-heartbeat",
+        "wafer-board-ncc-pmu-readonly-probe",
+        "qualify read-only PMU enable, scope, split-counter, and delta basis",
+    ),
+    CalibrationStep(
+        "instruction-family-ct-capability",
         "rank-one-instruction",
-        "wafer-board-instruction-family-safe",
-        "typed CT/NE/TDMA instruction-family exact and bounded observations",
+        "wafer-board-instruction-family-ct-capability",
+        "new CT Reduce/Pool/Unpool typed exact and bounded observations",
+    ),
+    CalibrationStep(
+        "instruction-family-regression",
+        "rank-one-instruction",
+        "wafer-board-instruction-family-qualification-regression",
+        "ArgMin, legacy Unpool-index, and Bilinear qualification regressions",
     ),
     CalibrationStep(
         "ct-vector",
@@ -91,10 +105,10 @@ CALIBRATION_STEPS = (
         "concat, broadcast-like materialization, gather, and large-shape cases",
     ),
     CalibrationStep(
-        "memory-descriptor",
+        "memory-engine-pair-new-offsets",
         "rank-one-memory",
-        "wafer-board-memory-descriptor-calibration",
-        "DMA/DDR/SPM offset, stride, tail, boundary, and bank controls",
+        "wafer-board-memory-engine-pair-new-offsets",
+        "new 4352/65536-byte SPM engine-pair serial/window controls",
     ),
     CalibrationStep(
         "cache-coherence",
@@ -121,10 +135,10 @@ CALIBRATION_STEPS = (
         "rank-one tiled GEMM runtime path",
     ),
     CalibrationStep(
-        "spm-calibration",
+        "spm-non-preferred-geometry",
         "rank-one-spm",
-        "wafer-board-spm-calibration",
-        "SPM capacity, alignment, placement, relation, and engine-pair cases",
+        "wafer-board-spm-non-preferred-geometry",
+        "bounded non-preferred SPM base and length observations",
     ),
     CalibrationStep(
         "ncc-all-safe",
@@ -149,6 +163,42 @@ CALIBRATION_STEPS = (
         "rank-one-ncc",
         "wafer-board-ncc-byworker1-completion-control",
         "matching by-worker completion control",
+    ),
+    CalibrationStep(
+        "ncc-local-fence-worker1",
+        "rank-one-ncc",
+        "wafer-board-ncc-local-fence-worker1-boundary",
+        "local-fence boundary with worker-one work and final safety drain",
+    ),
+    CalibrationStep(
+        "ncc-ct-active-occupancy",
+        "rank-one-ncc",
+        "wafer-board-ncc-ct-active-occupancy",
+        "tight long CT depth-plus-one activity and backpressure observation",
+    ),
+    CalibrationStep(
+        "ncc-ne-active-occupancy",
+        "rank-one-ncc",
+        "wafer-board-ncc-ne-active-occupancy",
+        "tight large NE depth-plus-one activity and backpressure observation",
+    ),
+    CalibrationStep(
+        "ncc-rdma-active-occupancy",
+        "rank-one-ncc",
+        "wafer-board-ncc-rdma-active-occupancy",
+        "tight long RDMA depth-plus-one activity and backpressure observation",
+    ),
+    CalibrationStep(
+        "ncc-wdma-active-occupancy",
+        "rank-one-ncc",
+        "wafer-board-ncc-wdma-active-occupancy",
+        "tight long WDMA depth-plus-one activity and backpressure observation",
+    ),
+    CalibrationStep(
+        "ncc-tdma-active-occupancy",
+        "rank-one-ncc",
+        "wafer-board-ncc-tdma-active-occupancy",
+        "tight long TDMA depth-plus-one activity and backpressure observation",
     ),
     *tuple(
         CalibrationStep(
@@ -202,17 +252,47 @@ CALIBRATION_STEPS = (
         "16-rank sharded GEMM production workload",
     ),
     CalibrationStep(
-        "pmu-readonly",
-        "measurement-pmu",
-        "wafer-board-ncc-pmu-readonly-probe",
-        "read-only PMU enable, scope, split-counter, and delta basis",
-    ),
-    CalibrationStep(
         "terminal-heartbeat",
         "terminal-heartbeat",
         HEARTBEAT_CTEST,
         "prove the normal rank-one execution path remains healthy",
     ),
+)
+
+EXPLICIT_ONLY_STEPS = (
+    CalibrationStep(
+        "instruction-family-full-replay",
+        "rank-one-instruction-explicit",
+        "wafer-board-instruction-family-safe",
+        "explicit replay of every instruction-family row, including old evidence",
+    ),
+    CalibrationStep(
+        "memory-descriptor-full-replay",
+        "rank-one-memory-explicit",
+        "wafer-board-memory-descriptor-calibration",
+        "explicit replay of old and new memory descriptor rows",
+    ),
+    CalibrationStep(
+        "spm-full-replay",
+        "rank-one-spm-explicit",
+        "wafer-board-spm-calibration",
+        "explicit replay of old and new SPM rows",
+    ),
+    CalibrationStep(
+        "datamove-native-concat-hw-isolated",
+        "isolated-final",
+        "wafer-board-datamove-native-concat-hw-isolated",
+        (
+            "run bounded native Concat C/W/H controls before the isolated "
+            "native HW requalification case"
+        ),
+    ),
+)
+
+ALL_CALIBRATION_STEPS = (
+    *CALIBRATION_STEPS[:-1],
+    *EXPLICIT_ONLY_STEPS,
+    CALIBRATION_STEPS[-1],
 )
 
 
@@ -232,7 +312,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     mode.add_argument(
         "--execute",
         action="store_true",
-        help="explicitly authorize execution of the complete fail-fast board plan",
+        help=(
+            "explicitly authorize the default fail-fast board plan, or the "
+            "subset named by --step"
+        ),
     )
     parser.add_argument(
         "--build-dir",
@@ -246,6 +329,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "new directory for the session summary, per-step logs, and JUnit "
             "files; defaults below the build directory"
+        ),
+    )
+    parser.add_argument(
+        "--step",
+        action="append",
+        dest="selected_steps",
+        metavar="KEY",
+        help=(
+            "execute/list only this named calibration step; repeatable. "
+            "The initial and terminal known-good heartbeats are added "
+            "automatically, and execution retains canonical order."
         ),
     )
     parser.add_argument("--ctest", default="ctest", help="CTest executable")
@@ -394,6 +488,7 @@ def validate_step_definition(steps: Sequence[CalibrationStep]) -> None:
 
 def validate_default_plan() -> None:
     validate_step_definition(CALIBRATION_STEPS)
+    validate_step_definition(ALL_CALIBRATION_STEPS)
     if (
         CALIBRATION_STEPS[0].key != "initial-profile-heartbeat"
         or CALIBRATION_STEPS[0].ctest_name != HEARTBEAT_CTEST
@@ -403,6 +498,63 @@ def validate_default_plan() -> None:
         raise CalibrationRunnerError(
             "default plan must begin and end with the known-good heartbeat"
         )
+    if (
+        ALL_CALIBRATION_STEPS[0] != CALIBRATION_STEPS[0]
+        or ALL_CALIBRATION_STEPS[-1] != CALIBRATION_STEPS[-1]
+    ):
+        raise CalibrationRunnerError(
+            "selectable plan must retain the default heartbeat boundaries"
+        )
+    default_keys = {step.key for step in CALIBRATION_STEPS}
+    explicit_keys = {step.key for step in EXPLICIT_ONLY_STEPS}
+    if default_keys & explicit_keys:
+        raise CalibrationRunnerError(
+            "explicit-only calibration steps must not enter the default plan"
+        )
+
+
+def select_calibration_steps(
+    selected_keys: Sequence[str] | None,
+) -> tuple[CalibrationStep, ...]:
+    validate_default_plan()
+    if not selected_keys:
+        return CALIBRATION_STEPS
+    duplicates = sorted(
+        key for key, count in Counter(selected_keys).items() if count > 1
+    )
+    if duplicates:
+        raise CalibrationRunnerError(
+            f"calibration steps were selected more than once: {duplicates}"
+        )
+    automatic_keys = {
+        CALIBRATION_STEPS[0].key,
+        CALIBRATION_STEPS[-1].key,
+    }
+    explicitly_automatic = sorted(set(selected_keys) & automatic_keys)
+    if explicitly_automatic:
+        raise CalibrationRunnerError(
+            "heartbeat steps are automatic and cannot be selected explicitly: "
+            f"{explicitly_automatic}"
+        )
+    selectable = {
+        step.key: step for step in ALL_CALIBRATION_STEPS[1:-1]
+    }
+    unknown = sorted(set(selected_keys) - set(selectable))
+    if unknown:
+        raise CalibrationRunnerError(
+            f"unknown calibration step keys: {unknown}"
+        )
+    selected = set(selected_keys)
+    ordered = tuple(
+        step
+        for step in ALL_CALIBRATION_STEPS[1:-1]
+        if step.key in selected
+    )
+    return (
+        CALIBRATION_STEPS[0],
+        *ordered,
+        CALIBRATION_STEPS[-1],
+    )
 
 
 def validate_inventory(
@@ -570,6 +722,75 @@ def ctest_command(
     ]
 
 
+def command_option_value(
+    command: Sequence[str], option: str
+) -> str | None:
+    prefix = option + "="
+    for index, argument in enumerate(command):
+        if argument.startswith(prefix):
+            return argument[len(prefix) :]
+        if argument == option:
+            if index + 1 >= len(command):
+                raise CalibrationRunnerError(
+                    f"CTest command ends after {option}"
+                )
+            return command[index + 1]
+    return None
+
+
+def archive_step_artifacts(
+    test: RegisteredTest,
+    destination: pathlib.Path,
+) -> dict[str, object] | None:
+    raw_work_dir = command_option_value(test.command, "--work-dir")
+    if raw_work_dir is None:
+        return None
+    work_dir = pathlib.Path(raw_work_dir)
+    if not work_dir.is_dir():
+        raise CalibrationRunnerError(
+            f"{test.name}: declared work directory was not produced: {work_dir}"
+        )
+    evidence_files = tuple(
+        path
+        for path in sorted(work_dir.rglob("*"))
+        if path.is_file()
+        and (
+            path.suffix in {".raw", ".json", ".jsonl"}
+            or path.name in {"session.txt", "summary.txt"}
+        )
+    )
+    destination.mkdir(parents=True, exist_ok=False)
+    manifest_files: list[dict[str, object]] = []
+    for source in evidence_files:
+        relative = source.relative_to(work_dir)
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        manifest_files.append(
+            {
+                "path": str(relative),
+                "bytes": target.stat().st_size,
+                "sha256": digest,
+            }
+        )
+    manifest = {
+        "schema_version": 1,
+        "ctest": test.name,
+        "source_work_dir": str(work_dir),
+        "files": manifest_files,
+    }
+    manifest_path = destination / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
+    return {
+        "directory": str(destination),
+        "manifest": str(manifest_path),
+        "file_count": len(manifest_files),
+    }
+
+
 def execute_calibration(
     *,
     build_dir: pathlib.Path,
@@ -577,9 +798,18 @@ def execute_calibration(
     ctest: str,
     cmake: str,
     steps: Sequence[CalibrationStep],
+    inventory_steps: Sequence[CalibrationStep] | None = None,
     environment: Mapping[str, str],
 ) -> int:
     validate_step_definition(steps)
+    audited_steps = steps if inventory_steps is None else inventory_steps
+    validate_step_definition(audited_steps)
+    if not {step.ctest_name for step in steps}.issubset(
+        {step.ctest_name for step in audited_steps}
+    ):
+        raise CalibrationRunnerError(
+            "execution plan contains a CTest outside the audited inventory"
+        )
     if environment.get(ARM_ENVIRONMENT_VARIABLE) != "1":
         raise CalibrationRunnerError(
             f"execution requires {ARM_ENVIRONMENT_VARIABLE}=1"
@@ -587,7 +817,7 @@ def execute_calibration(
     if not build_dir.is_dir():
         raise CalibrationRunnerError(f"build directory does not exist: {build_dir}")
     registered = load_registered_tests(ctest, build_dir, environment)
-    validate_inventory(registered, steps)
+    validate_inventory(registered, audited_steps)
     log_dir.mkdir(parents=True, exist_ok=False)
     summary_path = log_dir / "session.json"
     summary: dict[str, object] = {
@@ -617,7 +847,6 @@ def execute_calibration(
         "wafer-compile",
         "wafer-run",
         "--parallel",
-        "1",
     ]
     print(f"[build] {shlex.join(build_command)}")
     build_started = time.monotonic()
@@ -642,7 +871,7 @@ def execute_calibration(
 
     try:
         registered = load_registered_tests(ctest, build_dir, child_environment)
-        validate_inventory(registered, steps)
+        validate_inventory(registered, audited_steps)
     except CalibrationRunnerError as error:
         summary["status"] = "failed"
         summary["failure"] = str(error)
@@ -700,6 +929,17 @@ def execute_calibration(
             if returncode == 0
             else f"CTest process exited with code {returncode}"
         )
+        artifact_error: str | None = None
+        artifacts: dict[str, object] | None = None
+        try:
+            artifacts = archive_step_artifacts(
+                registered[step.ctest_name],
+                log_dir / "artifacts" / stem,
+            )
+        except (CalibrationRunnerError, OSError) as error:
+            artifact_error = f"failed to archive raw evidence: {error}"
+            if junit_error is None:
+                junit_error = artifact_error
         status = "passed" if junit_error is None else "failed"
         result = {
             "key": step.key,
@@ -714,6 +954,10 @@ def execute_calibration(
             "log": str(log_path),
             "junit": str(junit_path),
         }
+        if artifacts is not None:
+            result["artifacts"] = artifacts
+        if artifact_error is not None:
+            result["artifact_error"] = artifact_error
         if junit_error is not None:
             result["failure"] = junit_error
         step_results.append(result)
@@ -763,12 +1007,13 @@ def main(
     build_dir = args.build_dir.resolve()
     try:
         validate_default_plan()
+        selected_steps = select_calibration_steps(args.selected_steps)
         if args.list:
             registered = load_registered_tests(
                 args.ctest, build_dir, active_environment
             )
-            validate_inventory(registered, CALIBRATION_STEPS)
-            print_plan(registered, CALIBRATION_STEPS)
+            validate_inventory(registered, ALL_CALIBRATION_STEPS)
+            print_plan(registered, selected_steps)
             return 0
 
         if active_environment.get(ARM_ENVIRONMENT_VARIABLE) != "1":
@@ -785,7 +1030,8 @@ def main(
             log_dir=log_dir,
             ctest=args.ctest,
             cmake=args.cmake,
-            steps=CALIBRATION_STEPS,
+            steps=selected_steps,
+            inventory_steps=ALL_CALIBRATION_STEPS,
             environment=active_environment,
         )
     except CalibrationRunnerError as error:

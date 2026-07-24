@@ -827,6 +827,21 @@ verifyTargetInstructionFormat(mlir::Operation *op,
                ? mlir::success()
                : mlir::failure();
   };
+  auto verifyQualifiedCTTuple =
+      [&](mlir::Value value, llvm::StringRef role, bool qualified,
+          llvm::StringRef family) -> mlir::LogicalResult {
+    mlir::FailureOr<LogicalFormat> format =
+        getLogicalFormat(op, value, role);
+    if (mlir::failed(format) ||
+        mlir::failed(getDataFormatCode(op, value, role, targetProfile)))
+      return mlir::failure();
+    if (!qualified)
+      return op->emitError()
+             << "unsupported_target_instr_profile: " << family << " format '"
+             << stringifyLogicalFormat(*format)
+             << "' has no closed opcode/kind/format board-evidence tuple";
+    return mlir::success();
+  };
 
   return llvm::TypeSwitch<mlir::Operation *, mlir::LogicalResult>(op)
       .Case<InstrRDMAOp>(
@@ -865,7 +880,23 @@ verifyTargetInstructionFormat(mlir::Operation *op,
                  "initialization after instruction legalization";
           return mlir::failure();
         }
-        return verify(typedOp.getInput(), "reduce input");
+        mlir::FailureOr<LogicalFormat> format =
+            getLogicalFormat(op, typedOp.getInput(), "reduce input");
+        if (mlir::failed(format))
+          return mlir::failure();
+        bool qualified = false;
+        switch (typedOp.getKind()) {
+        case InstrReduceKind::Sum:
+        case InstrReduceKind::Max:
+          qualified = *format == LogicalFormat::F16;
+          break;
+        case InstrReduceKind::Min:
+        case InstrReduceKind::Avg:
+          qualified = *format == LogicalFormat::BF16;
+          break;
+        }
+        return verifyQualifiedCTTuple(typedOp.getInput(), "reduce input",
+                                      qualified, "reduce");
       })
       .Case<InstrConvertOp>([&](auto typedOp) {
         return verifyTargetConvertRoute(typedOp, targetProfile);
@@ -882,10 +913,24 @@ verifyTargetInstructionFormat(mlir::Operation *op,
       .Case<InstrConvOp>(
           [&](auto typedOp) { return verify(typedOp.getDest(), "conv dest"); })
       .Case<InstrPoolOp>([&](auto typedOp) {
-        return verify(typedOp.getInput(), "pool input");
+        mlir::FailureOr<LogicalFormat> format =
+            getLogicalFormat(op, typedOp.getInput(), "pool input");
+        if (mlir::failed(format))
+          return mlir::failure();
+        bool qualified = *format == LogicalFormat::F16;
+        if (typedOp.getKind() == InstrPoolKind::Max)
+          qualified |= *format == LogicalFormat::BF16;
+        return verifyQualifiedCTTuple(typedOp.getInput(), "pool input",
+                                      qualified, "pool");
       })
       .Case<InstrUnpoolOp>([&](auto typedOp) {
-        return verify(typedOp.getInput(), "unpool input");
+        mlir::FailureOr<LogicalFormat> format =
+            getLogicalFormat(op, typedOp.getInput(), "unpool input");
+        if (mlir::failed(format))
+          return mlir::failure();
+        return verifyQualifiedCTTuple(
+            typedOp.getInput(), "unpool input",
+            *format == LogicalFormat::F16, "unpool");
       })
       .Case<InstrTDMADataMoveOp>([&](auto typedOp) {
         return verify(typedOp.getDest(), "tdma_data_move dest");

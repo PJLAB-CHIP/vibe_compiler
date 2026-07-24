@@ -634,6 +634,80 @@ module {
 // -----
 
 module {
+  %input = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x3x5x64xf16, #wafer.memory<spm, ncx>>
+  %output = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x1x4x64xf16, #wafer.memory<spm, ncx>>
+  // This is the result of incorrectly treating X as H and Y as W.
+  // expected-error @below {{target_geometry_mismatch: pool destination spatial shape does not match source/kernel/stride/pad}}
+  wafer.instr.pool #wafer.instr_pool_kind<max> %input into %output
+      {source_shape = array<i64: 1, 3, 5, 64>,
+       dest_shape = array<i64: 1, 1, 4, 64>,
+       pads = array<i64: 0, 0, 0, 0>,
+       kernel_strides = array<i64: 3, 2, 2, 1>}
+      : memref<1x3x5x64xf16, #wafer.memory<spm, ncx>>
+    into memref<1x1x4x64xf16, #wafer.memory<spm, ncx>>
+}
+
+// -----
+
+module {
+  %input = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x2x2x64xf16, #wafer.memory<spm, ncx>>
+  %index = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x2x2x64xi16, #wafer.memory<spm, ncx>>
+  %output = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x5x3x64xf16, #wafer.memory<spm, ncx>>
+  // This is the result of incorrectly treating X as H and Y as W.
+  // expected-error @below {{target_geometry_mismatch: unpool destination spatial shape does not match source/kernel/stride}}
+  wafer.instr.unpool #wafer.instr_unpool_kind<mask> %input, %index into %output
+      {source_shape = array<i64: 1, 2, 2, 64>,
+       dest_shape = array<i64: 1, 5, 3, 64>,
+       kernel_strides = array<i64: 3, 2, 2, 1>}
+      : memref<1x2x2x64xf16, #wafer.memory<spm, ncx>>,
+        memref<1x2x2x64xi16, #wafer.memory<spm, ncx>>
+    into memref<1x5x3x64xf16, #wafer.memory<spm, ncx>>
+}
+
+// -----
+
+module {
+  %input = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x3x5x64xf16, #wafer.memory<spm, cx>>
+  %output = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x2x2x64xf16, #wafer.memory<spm, cx>>
+  // expected-error @below {{input must use ncx SPM layout; native pool/unpool has no layout operand and cx requires explicit materialization}}
+  wafer.instr.pool #wafer.instr_pool_kind<max> %input into %output
+      {source_shape = array<i64: 1, 3, 5, 64>,
+       dest_shape = array<i64: 1, 2, 2, 64>,
+       pads = array<i64: 0, 0, 0, 0>,
+       kernel_strides = array<i64: 3, 2, 2, 1>}
+      : memref<1x3x5x64xf16, #wafer.memory<spm, cx>>
+    into memref<1x2x2x64xf16, #wafer.memory<spm, cx>>
+}
+
+// -----
+
+module {
+  %input = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x2x2x64xf16, #wafer.memory<spm, cx>>
+  %index = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x2x2x64xi16, #wafer.memory<spm, cx>>
+  %output = "builtin.unrealized_conversion_cast"()
+      : () -> memref<1x3x5x64xf16, #wafer.memory<spm, cx>>
+  // expected-error @below {{input must use ncx SPM layout; native pool/unpool has no layout operand and cx requires explicit materialization}}
+  wafer.instr.unpool #wafer.instr_unpool_kind<mask> %input, %index into %output
+      {source_shape = array<i64: 1, 2, 2, 64>,
+       dest_shape = array<i64: 1, 3, 5, 64>,
+       kernel_strides = array<i64: 3, 2, 2, 1>}
+      : memref<1x2x2x64xf16, #wafer.memory<spm, cx>>,
+        memref<1x2x2x64xi16, #wafer.memory<spm, cx>>
+    into memref<1x3x5x64xf16, #wafer.memory<spm, cx>>
+}
+
+// -----
+
+module {
   %src = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x2x2x4xf16, #wafer.memory<spm, tensor>>
   %dst = "builtin.unrealized_conversion_cast"()

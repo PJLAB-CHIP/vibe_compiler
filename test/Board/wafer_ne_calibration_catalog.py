@@ -30,6 +30,7 @@ SPECIAL_CASE_BASE = 21000
 GEMM_OPTION_CASE_BASE = 22000
 CONV_CASE_BASE = 23000
 CONV_OPTION_CASE_BASE = 23100
+CONV_INDEX_CASE_BASE = 23200
 DEFERRED_CASE_BASE = 24000
 
 DTYPES = {"F16": 0, "BF16": 1, "I8": 2}
@@ -50,6 +51,9 @@ PROFILES = {
     "BF16_NAN": 6,
     "CONV_LARGE": 16,
     "CONV_HELDOUT": 17,
+    "CONV_FEATURE_INDEX": 18,
+    "CONV_WEIGHT_INDEX": 19,
+    "CONV_OUTPUT_INDEX": 20,
     "GEMM_QUANT": 32,
     "GEMM_L1_R2": 33,
     "GEMM_L2_R1": 34,
@@ -65,6 +69,12 @@ OPTIONS = {
     "POSITIVE_AXIS_SCALE": 5,
     "NEGATIVE_AXIS_SCALE": 6,
 }
+CONV_INDEX_PROFILE_ORDER = (
+    "CONV_FEATURE_INDEX",
+    "CONV_WEIGHT_INDEX",
+    "CONV_OUTPUT_INDEX",
+)
+CONV_INDEX_PROFILES = frozenset(CONV_INDEX_PROFILE_ORDER)
 DISPOSITIONS = {
     "BOARD_EXACT": 0,
     "BOARD_OBSERVED": 1,
@@ -263,7 +273,11 @@ class NECase:
             "oracle": (
                 "exact-logical-bits+physical-guard"
                 if self.exact
-                else "raw-logical-bits+physical-guard"
+                else (
+                    "conv-index-candidates+raw-physical-guard"
+                    if self.profile_name in CONV_INDEX_PROFILES
+                    else "raw-logical-bits+physical-guard"
+                )
             ),
         }
 
@@ -525,6 +539,85 @@ def _make_conv_case(
     )
 
 
+def _make_conv_index_case(profile_name: str) -> NECase:
+    if profile_name == "CONV_FEATURE_INDEX":
+        input_shape = (2, 2, 3, 65)
+        weight_shape = (1, 1, 64, 65)
+        output_shape = (2, 2, 3, 64)
+        geometry_name = "feature-index-n2h2w3-i65-o64"
+        batch, m, k, n = 2, 2, 3, 64
+        reason = (
+            "one-factor fingerprint keeps weight/output physical order "
+            "unambiguous while distinguishing NCx from flattened Cx feature "
+            "indexing, including the second N slice after a C0 tail"
+        )
+    elif profile_name == "CONV_WEIGHT_INDEX":
+        input_shape = (1, 4, 5, 65)
+        weight_shape = (2, 3, 64, 65)
+        output_shape = (1, 2, 4, 64)
+        geometry_name = "weight-index-kx2ky3-i65-o64"
+        batch, m, k, n = 1, 4, 5, 64
+        reason = (
+            "one-factor fingerprint keeps feature/output physical order "
+            "unambiguous while distinguishing per-Kx NCx weight slices from "
+            "flattened Cx HWOI indexing across a C0 tail"
+        )
+    elif profile_name == "CONV_OUTPUT_INDEX":
+        input_shape = (2, 2, 3, 64)
+        weight_shape = (1, 1, 65, 64)
+        output_shape = (2, 2, 3, 65)
+        geometry_name = "output-index-n2h2w3-o65"
+        batch, m, k, n = 2, 2, 3, 65
+        reason = (
+            "one-factor fingerprint uses single-block input/weight operands "
+            "and a C0-tail output to distinguish NCx from flattened Cx "
+            "writeback indexing and footprint"
+        )
+    else:
+        raise RuntimeError(f"unknown Conv indexing profile {profile_name}")
+    return NECase(
+        case_id=(
+            CONV_INDEX_CASE_BASE
+            + CONV_INDEX_PROFILE_ORDER.index(profile_name)
+        ),
+        name=(
+            "ne-conv-f16-"
+            + profile_name.removeprefix("CONV_").lower().replace("_", "-")
+            + "-observed"
+        ),
+        dtype_name="F16",
+        geometry_name=geometry_name,
+        orientation_name="NN",
+        batch=batch,
+        m=m,
+        k=k,
+        n=n,
+        kind_name="CONV",
+        profile_name=profile_name,
+        option_name="NONE",
+        disposition_name="BOARD_OBSERVED",
+        reason=reason,
+        lhs_layout="NCx",
+        rhs_layout="NCx",
+        output_layout="NCx",
+        lhs_orientation=0,
+        rhs_orientation=0,
+        lhs_shape=input_shape,
+        rhs_shape=weight_shape,
+        output_shape=output_shape,
+        lhs_span=physical.physical_layout(
+            input_shape, "NCx", 2
+        ).physical_bytes,
+        rhs_span=physical.physical_layout(
+            weight_shape, "NCx", 2
+        ).physical_bytes,
+        output_span=physical.physical_layout(
+            output_shape, "NCx", 2
+        ).physical_bytes,
+        aux_span=0,
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class NEDeferredCase:
     case_id: int
@@ -573,6 +666,10 @@ _CONV_OPTION_CASES = tuple(
     _make_conv_case(dtype, "CONV_LARGE", option)
     for dtype in FLOAT_DTYPES
     for option in tuple(OPTIONS)[1:]
+)
+_CONV_INDEX_CASES = tuple(
+    _make_conv_index_case(profile)
+    for profile in CONV_INDEX_PROFILE_ORDER
 )
 
 
@@ -782,6 +879,7 @@ SAFE_CASES = (
     + _GEMM_OPTION_CASES
     + _CONV_CASES
     + _CONV_OPTION_CASES
+    + _CONV_INDEX_CASES
     + _QUANT_CASES
     + _DEPTHWISE_BACKWARD_CASES
     + _UNEQUAL_BATCH_CASES
@@ -820,7 +918,7 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
     "ne-quant-observed": _QUANT_CASES,
     "ne-sparse-static-negative": _NONEXECUTABLE_CASES[:1],
     "ne-pad-unpad-static-negative": _NONEXECUTABLE_CASES[1:],
-    "ne-conv-large-heldout": _CONV_CASES,
+    "ne-conv-large-heldout": _CONV_CASES + _CONV_INDEX_CASES,
     "ne-depthwise-backward-conv-observed": (
         _DEPTHWISE_BACKWARD_CASES
     ),
@@ -1202,6 +1300,208 @@ def _conv_expected_values(output_channels: int) -> tuple[float, ...]:
     return tuple(values)
 
 
+def _conv_index_inputs(
+    case: NECase,
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    if case.profile_name not in CONV_INDEX_PROFILES:
+        raise RuntimeError(f"{case.name}: not a Conv indexing fingerprint")
+    source = tuple(
+        float(
+            (-1 if (batch * 29 + y * 17 + x * 11 + channel * 5) & 1 else 1)
+            * (
+                1
+                + (
+                    batch * 7
+                    + y * 5
+                    + x * 3
+                    + channel
+                )
+                % 4
+            )
+        )
+        for batch, y, x, channel in physical.coordinates(case.lhs_shape)
+    )
+    input_channels = case.lhs_shape[-1]
+    weight = tuple(
+        float(
+            (
+                -1
+                if (output + kernel_x + kernel_y) % 3 == 0
+                else 1
+            )
+            if channel
+            == (
+                output * 7 + kernel_x * 11 + kernel_y * 13
+            )
+            % input_channels
+            else (
+                -1
+                if input_channels > 64
+                and channel == input_channels - 1
+                and (
+                    output * 7 + kernel_x * 11 + kernel_y * 13
+                )
+                % input_channels
+                != input_channels - 1
+                else 0
+            )
+        )
+        for kernel_x, kernel_y, output, channel in physical.coordinates(
+            case.rhs_shape
+        )
+    )
+    return source, weight
+
+
+def _conv_index_reference(
+    case: NECase,
+    source: tuple[float, ...],
+    weight: tuple[float, ...],
+) -> tuple[float, ...]:
+    input_n, input_h, input_w, input_channels = case.lhs_shape
+    kernel_xs, kernel_ys, output_channels, weight_channels = (
+        case.rhs_shape
+    )
+    output_n, output_h, output_w, output_shape_channels = (
+        case.output_shape
+    )
+    if (
+        input_n != output_n
+        or input_channels != weight_channels
+        or output_channels != output_shape_channels
+        or output_h != input_h - kernel_ys + 1
+        or output_w != input_w - kernel_xs + 1
+    ):
+        raise RuntimeError(f"{case.name}: invalid fingerprint convolution")
+
+    def source_value(
+        batch: int, y: int, x: int, channel: int
+    ) -> float:
+        return source[
+            ((batch * input_h + y) * input_w + x)
+            * input_channels
+            + channel
+        ]
+
+    def weight_value(
+        kernel_x: int, kernel_y: int, output: int, channel: int
+    ) -> float:
+        return weight[
+            (
+                (kernel_x * kernel_ys + kernel_y)
+                * output_channels
+                + output
+            )
+            * input_channels
+            + channel
+        ]
+
+    return tuple(
+        sum(
+            source_value(
+                batch,
+                output_y + kernel_y,
+                output_x + kernel_x,
+                channel,
+            )
+            * weight_value(kernel_x, kernel_y, output, channel)
+            for kernel_x in range(kernel_xs)
+            for kernel_y in range(kernel_ys)
+            for channel in range(input_channels)
+        )
+        for batch in range(output_n)
+        for output_y in range(output_h)
+        for output_x in range(output_w)
+        for output in range(output_channels)
+    )
+
+
+def _decode_f16_scalars(values: tuple[bytes, ...]) -> tuple[float, ...]:
+    return tuple(struct.unpack("<e", value)[0] for value in values)
+
+
+def _payload_slot_values(
+    case: NECase,
+    built: CasePayload,
+    *,
+    slot: int,
+    shape: tuple[int, ...],
+    layout: str,
+) -> tuple[float, ...]:
+    if case.dtype_name != "F16":
+        raise RuntimeError(f"{case.name}: fingerprint requires FP16")
+    span = physical.physical_layout(
+        shape, layout, case.element_bytes
+    ).physical_bytes
+    begin = slot * SLOT_BYTES + BODY_OFFSET
+    encoded = physical.unpack_scalar_bytes(
+        shape,
+        layout,
+        case.element_bytes,
+        built.payload[begin : begin + span],
+    )
+    return _decode_f16_scalars(encoded)
+
+
+def build_conv_index_candidates(
+    case: NECase,
+    built: CasePayload,
+) -> dict[str, bytes]:
+    if case.profile_name == "CONV_FEATURE_INDEX":
+        layouts = (
+            ("feature:ncx", "NCx", "NCx", "NCx"),
+            ("feature:cx", "Cx", "NCx", "NCx"),
+        )
+    elif case.profile_name == "CONV_WEIGHT_INDEX":
+        layouts = (
+            ("weight:ncx", "NCx", "NCx", "NCx"),
+            ("weight:cx", "NCx", "Cx", "NCx"),
+        )
+    elif case.profile_name == "CONV_OUTPUT_INDEX":
+        layouts = (
+            ("output:ncx", "NCx", "NCx", "NCx"),
+            ("output:cx", "NCx", "NCx", "Cx"),
+        )
+    else:
+        raise RuntimeError(f"{case.name}: not a Conv indexing fingerprint")
+    seed_begin = 2 * SLOT_BYTES + BODY_OFFSET
+    initial = built.payload[seed_begin : seed_begin + case.output_span]
+    candidates: dict[str, bytes] = {}
+    for name, lhs_layout, rhs_layout, output_layout in layouts:
+        source = _payload_slot_values(
+            case,
+            built,
+            slot=0,
+            shape=case.lhs_shape,
+            layout=lhs_layout,
+        )
+        weight = _payload_slot_values(
+            case,
+            built,
+            slot=1,
+            shape=case.rhs_shape,
+            layout=rhs_layout,
+        )
+        expected = _conv_index_reference(case, source, weight)
+        packed = physical.pack_scalar_bytes(
+            case.output_shape,
+            output_layout,
+            case.element_bytes,
+            (_encode(case.dtype_name, value) for value in expected),
+            padding=OUTPUT_PADDING,
+        )
+        if len(packed) > case.output_span:
+            raise RuntimeError(
+                f"{case.name}: candidate {name} exceeds bounded output span"
+            )
+        candidate = bytearray(initial)
+        candidate[: len(packed)] = packed
+        candidates[name] = bytes(candidate)
+    if len(set(candidates.values())) != len(candidates):
+        raise RuntimeError(f"{case.name}: fingerprint candidates alias")
+    return candidates
+
+
 def _observed_conv_inputs(
     case: NECase,
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
@@ -1304,6 +1604,12 @@ def build_case_payload(case: NECase, sample: int = 0) -> CasePayload:
         base_expected = _gemm_expected_values(
             case, lhs_logical, rhs_logical
         )
+    elif (
+        case.kind_name == "CONV"
+        and case.profile_name in CONV_INDEX_PROFILES
+    ):
+        lhs_stored, rhs_stored = _conv_index_inputs(case)
+        base_expected = ()
     elif case.kind_name == "CONV":
         lhs_stored = _conv_source_values()
         rhs_stored = _conv_weight_values(case.n)
@@ -1318,12 +1624,22 @@ def build_case_payload(case: NECase, sample: int = 0) -> CasePayload:
         case.lhs_layout,
         case.element_bytes,
         _encoded_operand(case, "lhs", lhs_stored),
+        padding=(
+            OUTPUT_PADDING
+            if case.profile_name in CONV_INDEX_PROFILES
+            else SLOT_CANARY
+        ),
     )
     rhs = physical.pack_scalar_bytes(
         case.rhs_shape,
         case.rhs_layout,
         case.element_bytes,
         _encoded_operand(case, "rhs", rhs_stored),
+        padding=(
+            OUTPUT_PADDING
+            if case.profile_name in CONV_INDEX_PROFILES
+            else SLOT_CANARY
+        ),
     )
     auxiliary_values, auxiliary_shape, auxiliary_layout = (
         _option_auxiliary(case)

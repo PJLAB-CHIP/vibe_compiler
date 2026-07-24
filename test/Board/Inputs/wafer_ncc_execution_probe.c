@@ -356,6 +356,8 @@ wafer_ncc_probe_packet_inter_type(const WaferNccProbeInstruction *instruction) {
 #define WAFER_NCC_V2_HAZARD_SECOND_BASELINE_OFFSET UINT64_C(0x6000)
 #define WAFER_NCC_V2_HAZARD_SLOT_BEGIN_OFFSET UINT64_C(0x3000)
 #define WAFER_NCC_V2_HAZARD_SLOT_END_OFFSET UINT64_C(0x8000)
+#define WAFER_NCC_V2_STRIDED_INITIAL_SOURCE_SLOT \
+  WAFER_NCC_PROTOCOL_MAX_ISSUES
 
 typedef struct WaferNccV2Context {
   uint64_t payload_ddr;
@@ -469,6 +471,35 @@ wafer_ncc_v2_dma_envelope_bytes(const WaferNccProbeLane *lane) {
   return (uint32_t)(last_offset + lane->layout_inner_bytes);
 }
 
+static uint32_t wafer_ncc_v2_dma_chunk_offset(
+    const WaferNccProbeLane *lane, uint32_t wanted_chunk) {
+  uint32_t chunk = 0;
+  for (uint32_t outer = 0; outer < lane->layout_iteration2; ++outer)
+    for (uint32_t middle = 0; middle < lane->layout_iteration1; ++middle)
+      for (uint32_t inner = 0; inner < lane->layout_iteration0; ++inner) {
+        uint32_t offset =
+            outer * lane->layout_stride2_bytes +
+            middle * lane->layout_stride1_bytes +
+            inner * lane->layout_stride0_bytes;
+        if (chunk++ == wanted_chunk)
+          return offset;
+      }
+  return UINT32_MAX;
+}
+
+static uint32_t wafer_ncc_v2_strided_second_shift(
+    const WaferNccProbeRequest *request) {
+  const WaferNccProbeLane *lane = &request->lanes[0];
+  if (request->range_relation == WAFER_NCC_RANGE_PARTIAL) {
+    uint32_t chunks = lane->layout_iteration0 * lane->layout_iteration1 *
+                      lane->layout_iteration2;
+    return wafer_ncc_v2_dma_chunk_offset(lane, chunks / 2U);
+  }
+  if (request->range_relation == WAFER_NCC_RANGE_ADJACENT)
+    return wafer_ncc_v2_dma_envelope_bytes(lane);
+  return 0;
+}
+
 static int
 wafer_ncc_v2_is_dma_roundtrip(const WaferNccProbeRequest *request) {
   return request->lane_count == 2 && request->rounds == 1 &&
@@ -493,31 +524,6 @@ wafer_ncc_v2_is_dma_roundtrip(const WaferNccProbeRequest *request) {
            request->lanes[0].layout_stride1_bytes |
            request->lanes[0].layout_stride2_bytes) &
           UINT32_C(1)) == 0 &&
-         request->first_operand == WAFER_NCC_OPERAND_WRITE &&
-         request->second_operand == WAFER_NCC_OPERAND_READ0 &&
-         wafer_ncc_v2_dma_layout_equal(&request->lanes[0],
-                                       &request->lanes[1]);
-}
-
-static int
-wafer_ncc_v2_is_strided_dependency(const WaferNccProbeRequest *request) {
-  return request->lane_count == 2 && request->rounds == 1 &&
-         request->effect_relation == WAFER_NCC_EFFECT_RAW &&
-         request->range_relation == WAFER_NCC_RANGE_STRIDED_ENVELOPE &&
-         request->schedule <= WAFER_NCC_SCHEDULE_SERIAL &&
-         request->wait_kind == WAFER_NCC_WAIT_BY_WORKER &&
-         request->wait_worker_mask == 1 && request->flags == 0 &&
-         request->issue_limit == 0 &&
-         request->lanes[0].engine == WAFER_NCC_ENGINE_RDMA &&
-         request->lanes[1].engine == WAFER_NCC_ENGINE_WDMA &&
-         request->lanes[0].worker == 0 &&
-         request->lanes[1].worker == 0 &&
-         request->lanes[0].issue_mode == WAFER_NCC_ISSUE_WRAPPER &&
-         request->lanes[1].issue_mode == WAFER_NCC_ISSUE_WRAPPER &&
-         request->lanes[0].element_format ==
-             WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16 &&
-         request->lanes[1].element_format ==
-             WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16 &&
          request->first_operand == WAFER_NCC_OPERAND_WRITE &&
          request->second_operand == WAFER_NCC_OPERAND_READ0 &&
          wafer_ncc_v2_dma_layout_equal(&request->lanes[0],
@@ -700,8 +706,7 @@ static uint32_t wafer_ncc_v2_configure_context(
     context->configured = 1;
     return 0;
   }
-  if (wafer_ncc_v2_is_dma_roundtrip(request) ||
-      wafer_ncc_v2_is_strided_dependency(request)) {
+  if (wafer_ncc_v2_is_dma_roundtrip(request)) {
     uint64_t shared =
         context->operands[0][WAFER_NCC_OPERAND_WRITE];
     uint32_t envelope =
@@ -723,6 +728,45 @@ static uint32_t wafer_ncc_v2_configure_context(
         (WaferNccHazardRange){
             shared + envelope,
             shared + envelope + WAFER_NCC_V2_GUARD_BYTES};
+    context->configured = 1;
+    return 0;
+  }
+  if (wafer_ncc_probe_is_strided_dependency(request)) {
+    const WaferNccProbeLane *lane = &request->lanes[0];
+    uint32_t envelope = wafer_ncc_v2_dma_envelope_bytes(lane);
+    uint32_t second_shift = wafer_ncc_v2_strided_second_shift(request);
+    if (second_shift == UINT32_MAX)
+      return 1;
+    uint64_t first_base = wafer_ncc_v2_write(0);
+    uint64_t second_base = first_base + second_shift;
+    uint32_t second_slot = WAFER_NCC_PROTOCOL_MAX_ROUNDS;
+    context->operands[0][request->first_operand] = first_base;
+    context->operands[second_slot][request->second_operand] = second_base;
+
+    WaferNccHazardComposition *composition = &context->hazards[0];
+    composition->first_operand = request->first_operand;
+    composition->second_operand = request->second_operand;
+    composition->flags = WAFER_NCC_HAZARD_COMPOSITION_ENVELOPE_ONLY;
+    composition->first_range =
+        (WaferNccHazardRange){first_base, first_base + envelope};
+    composition->second_range =
+        (WaferNccHazardRange){second_base, second_base + envelope};
+    composition->overlap =
+        (WaferNccHazardRange){
+            second_base,
+            second_base < first_base + envelope
+                ? first_base + envelope
+                : second_base,
+        };
+    composition->footprint =
+        (WaferNccHazardRange){first_base, second_base + envelope};
+    composition->canary_before =
+        (WaferNccHazardRange){
+            first_base - WAFER_NCC_V2_GUARD_BYTES, first_base};
+    composition->canary_after =
+        (WaferNccHazardRange){
+            second_base + envelope,
+            second_base + envelope + WAFER_NCC_V2_GUARD_BYTES};
     context->configured = 1;
     return 0;
   }
@@ -808,6 +852,104 @@ static uint16_t wafer_ncc_v2_hazard_second_write_f16(uint32_t round) {
 
 static uint8_t wafer_ncc_v2_pattern_byte(uint32_t slot, uint32_t index) {
   return (uint8_t)(((slot + 1U) * 29U + index * 17U) & UINT8_MAX);
+}
+
+static int wafer_ncc_v2_dma_compact_index(
+    const WaferNccProbeLane *lane, uint64_t base, uint64_t address,
+    uint32_t *compact_index) {
+  if (address < base)
+    return 0;
+  uint64_t relative = address - base;
+  uint32_t chunk = 0;
+  for (uint32_t outer = 0; outer < lane->layout_iteration2; ++outer)
+    for (uint32_t middle = 0; middle < lane->layout_iteration1; ++middle)
+      for (uint32_t inner = 0; inner < lane->layout_iteration0; ++inner) {
+        uint32_t offset =
+            outer * lane->layout_stride2_bytes +
+            middle * lane->layout_stride1_bytes +
+            inner * lane->layout_stride0_bytes;
+        if (relative >= offset &&
+            relative < (uint64_t)offset + lane->layout_inner_bytes) {
+          *compact_index =
+              chunk * lane->layout_inner_bytes +
+              (uint32_t)(relative - offset);
+          return 1;
+        }
+        ++chunk;
+      }
+  return 0;
+}
+
+static void wafer_ncc_v2_seed_strided_pattern(
+    uint64_t base, const WaferNccProbeLane *lane, uint32_t source_slot) {
+  volatile uint8_t *destination = wafer_ncc_probe_spm8(base);
+  uint32_t compact_cursor = 0;
+  for (uint32_t outer = 0; outer < lane->layout_iteration2; ++outer)
+    for (uint32_t middle = 0; middle < lane->layout_iteration1; ++middle)
+      for (uint32_t inner = 0; inner < lane->layout_iteration0; ++inner) {
+        uint32_t offset =
+            outer * lane->layout_stride2_bytes +
+            middle * lane->layout_stride1_bytes +
+            inner * lane->layout_stride0_bytes;
+        for (uint32_t byte = 0; byte < lane->layout_inner_bytes; ++byte)
+          destination[offset + byte] = wafer_ncc_v2_pattern_byte(
+              source_slot, compact_cursor + byte);
+        compact_cursor += lane->layout_inner_bytes;
+      }
+}
+
+static uint8_t wafer_ncc_v2_strided_final_byte(
+    const WaferNccV2Context *context,
+    const WaferNccProbeRequest *request, uint64_t address) {
+  const WaferNccProbeLane *lane = &request->lanes[0];
+  const WaferNccHazardComposition *composition = &context->hazards[0];
+  uint32_t first_index = 0;
+  uint32_t second_index = 0;
+  int in_first = wafer_ncc_v2_dma_compact_index(
+      lane, composition->first_range.begin, address, &first_index);
+  int in_second = wafer_ncc_v2_dma_compact_index(
+      lane, composition->second_range.begin, address, &second_index);
+  switch (request->effect_relation) {
+  case WAFER_NCC_EFFECT_RAW:
+    return in_first ? wafer_ncc_v2_pattern_byte(0, first_index)
+                    : UINT8_C(0xc3);
+  case WAFER_NCC_EFFECT_WAR:
+    return in_second
+               ? wafer_ncc_v2_pattern_byte(
+                     WAFER_NCC_PROTOCOL_MAX_ROUNDS, second_index)
+               : UINT8_C(0xc3);
+  case WAFER_NCC_EFFECT_WAW:
+    if (in_second)
+      return wafer_ncc_v2_pattern_byte(
+          WAFER_NCC_PROTOCOL_MAX_ROUNDS, second_index);
+    return in_first ? wafer_ncc_v2_pattern_byte(0, first_index)
+                    : UINT8_C(0xc3);
+  case WAFER_NCC_EFFECT_RAR:
+    return in_first || in_second
+               ? wafer_ncc_v2_pattern_byte(
+                     WAFER_NCC_V2_STRIDED_INITIAL_SOURCE_SLOT,
+                     in_first ? first_index : second_index)
+               : UINT8_C(0xc3);
+  default:
+    return 0;
+  }
+}
+
+static uint64_t wafer_ncc_v2_strided_final_mismatches(
+    const WaferNccV2Context *context,
+    const WaferNccProbeRequest *request) {
+  const WaferNccHazardComposition *composition = &context->hazards[0];
+  const volatile uint8_t *actual =
+      wafer_ncc_probe_spm8(composition->footprint.begin);
+  uint64_t mismatches = 0;
+  uint32_t bytes = (uint32_t)(composition->footprint.end -
+                              composition->footprint.begin);
+  for (uint32_t byte = 0; byte < bytes; ++byte)
+    mismatches +=
+        actual[byte] != wafer_ncc_v2_strided_final_byte(
+                            context, request,
+                            composition->footprint.begin + byte);
+  return mismatches;
 }
 
 static uint64_t wafer_ncc_v2_strided_mismatches(
@@ -959,7 +1101,7 @@ static int wafer_ncc_v2_seed(void *opaque,
       context->hazard_seeded_mask |= bit;
     }
   } else if (wafer_ncc_v2_is_dma_roundtrip(request) ||
-             wafer_ncc_v2_is_strided_dependency(request)) {
+             wafer_ncc_probe_is_strided_dependency(request)) {
     uint32_t bit = UINT32_C(1) << issue->round;
     if ((context->hazard_seeded_mask & bit) == 0) {
       wafer_ncc_v2_seed_region(
@@ -967,6 +1109,13 @@ static int wafer_ncc_v2_seed(void *opaque,
           (uint32_t)(context->hazards[issue->round].footprint.end -
                      context->hazards[issue->round].footprint.begin),
           UINT8_C(0xc3));
+      if (wafer_ncc_probe_is_strided_dependency(request) &&
+          (request->effect_relation == WAFER_NCC_EFFECT_WAR ||
+           request->effect_relation == WAFER_NCC_EFFECT_RAR))
+        wafer_ncc_v2_seed_strided_pattern(
+            context->hazards[issue->round].first_range.begin,
+            &request->lanes[0],
+            WAFER_NCC_V2_STRIDED_INITIAL_SOURCE_SLOT);
       context->hazard_seeded_mask |= bit;
     }
   } else if (context->has_hazard)
@@ -1426,7 +1575,8 @@ static int wafer_ncc_v2_observe(void *opaque,
         observation->read0_begin +
         wafer_ncc_v2_dma_envelope_bytes(issue->lane_spec) - 1U;
     observation->write_begin = write;
-    observation->write_end = write + bytes - 1U;
+    observation->write_end =
+        write + wafer_ncc_v2_dma_envelope_bytes(issue->lane_spec) - 1U;
     observation->flags |=
         WAFER_NCC_ISSUE_READ0_VALID | WAFER_NCC_ISSUE_WRITE_VALID;
     break;
@@ -1545,12 +1695,20 @@ static int wafer_ncc_v2_hazard_oracle(
       context, issue, WAFER_NCC_OPERAND_READ1);
   uint64_t write = wafer_ncc_v2_operand_address(
       context, issue, WAFER_NCC_OPERAND_WRITE);
-  if (wafer_ncc_v2_is_dma_roundtrip(request) ||
-      wafer_ncc_v2_is_strided_dependency(request)) {
+  if (wafer_ncc_v2_is_dma_roundtrip(request)) {
     if (issue->lane == 0) {
       *result_mismatches += wafer_ncc_v2_strided_mismatches(
           context->hazards[issue->round].first_range.begin,
           issue->lane_spec, issue->round);
+      *guard_mismatches += wafer_ncc_v2_hazard_canary_mismatches(
+          &context->hazards[issue->round]);
+    }
+    return 0;
+  }
+  if (wafer_ncc_probe_is_strided_dependency(request)) {
+    if (issue->lane == 0) {
+      *result_mismatches +=
+          wafer_ncc_v2_strided_final_mismatches(context, request);
       *guard_mismatches += wafer_ncc_v2_hazard_canary_mismatches(
           &context->hazards[issue->round]);
     }

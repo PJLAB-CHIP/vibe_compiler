@@ -9,6 +9,8 @@ import re
 import struct
 from collections.abc import Callable, Iterable
 
+import wafer_physical_tensor_codec as physical
+
 
 REQUEST_MAGIC = 0x3151455246494657
 RECORD_MAGIC = 0x3143455246494657
@@ -424,28 +426,269 @@ def _convert(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
     raise RuntimeError(f"{case.name}: unknown convert signature")
 
 
-def _reduce(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
-    values = [
-        float(width + 1 + channel % 4)
-        for width in range(4)
-        for channel in range(64)
-    ]
-    by_channel = [
-        [values[width * 64 + channel] for width in range(4)]
-        for channel in range(64)
-    ]
-    operation = case.name.split("-")[1]
+_REDUCE_MATRIX_BASE = 144
+_REDUCE_MATRIX_END = 191
+_REDUCE_CX_BASE = 192
+_REDUCE_CX_END = 195
+_REDUCE_RAW_BASE = 196
+_REDUCE_RAW_END = 203
+_REDUCE_OPERATIONS = ("sum", "avg", "max", "min")
+_REDUCE_DTYPES = ("F16", "BF16", "F32")
+_REDUCE_AXES = ("C", "W", "H", "HW")
+
+
+def _reduce_config(
+    case: InstructionCase,
+) -> tuple[str, str, str, tuple[int, int, int, int]]:
+    if _REDUCE_MATRIX_BASE <= case.case_id <= _REDUCE_MATRIX_END:
+        offset = case.case_id - _REDUCE_MATRIX_BASE
+        operation = _REDUCE_OPERATIONS[offset // 12]
+        dtype_name = _REDUCE_DTYPES[(offset % 12) // 4]
+        axis = _REDUCE_AXES[offset % 4]
+        shape = {
+            "C": (1, 2, 3, 65),
+            "W": (1, 1, 4, 64),
+            "H": (1, 3, 2, 65),
+            "HW": (1, 3, 2, 65),
+        }[axis]
+        return operation, dtype_name, axis, shape
+    if _REDUCE_CX_BASE <= case.case_id <= _REDUCE_CX_END:
+        return (
+            _REDUCE_OPERATIONS[case.case_id - _REDUCE_CX_BASE],
+            "F16",
+            "C",
+            (1, 1, 4, 8),
+        )
+    if _REDUCE_RAW_BASE <= case.case_id <= _REDUCE_RAW_END:
+        offset = case.case_id - _REDUCE_RAW_BASE
+        axis = ("N", "HWC")[offset % 2]
+        shape = (2, 1, 1, 64) if axis == "N" else (1, 2, 2, 64)
+        return _REDUCE_OPERATIONS[offset // 2], "F16", axis, shape
+    return case.name.split("-")[1], case.dtype_name, "W", (1, 1, 4, 64)
+
+
+def _reduce_element_bytes(dtype_name: str) -> int:
+    return 4 if dtype_name == "F32" else 2
+
+
+def _reduce_layout_name(case: InstructionCase) -> str:
+    return (
+        "Cx"
+        if _REDUCE_CX_BASE <= case.case_id <= _REDUCE_CX_END
+        else "NCx"
+    )
+
+
+def _reduce_physical_shape(
+    case: InstructionCase,
+    axis: str,
+    shape: tuple[int, int, int, int],
+    *,
+    output: bool,
+) -> tuple[int, ...]:
+    n_size, h_size, w_size, c_size = shape
+    if output:
+        if axis == "C":
+            c_size = 1
+        elif axis == "W":
+            w_size = 1
+        elif axis == "H":
+            h_size = 1
+        elif axis == "HW":
+            h_size = 1
+            w_size = 1
+    if _reduce_layout_name(case) == "Cx":
+        return (w_size, c_size)
+    return (n_size, h_size, w_size, c_size)
+
+
+def reduce_exact_result_byte_offsets(
+    case: InstructionCase,
+) -> tuple[int, ...]:
+    """Return exact logical-result bytes inside the output SPM slot.
+
+    Native Reduce retains a four-dimensional result shape and packs it in
+    NCx/Cx storage.  For channel-tail geometries the logical scalars are not a
+    compact prefix of the hardware write span, so exact checking must follow
+    physical offsets while leaving internal padding unconstrained.
+    """
+
+    if not (
+        _REDUCE_MATRIX_BASE <= case.case_id <= _REDUCE_CX_END
+        and case.oracle_name == "EXACT_BITS"
+    ):
+        return tuple(range(BODY_OFFSET, BODY_OFFSET + case.result_bytes))
+
+    _operation, dtype_name, axis, shape = _reduce_config(case)
+    element_bytes = _reduce_element_bytes(dtype_name)
+    output_shape = _reduce_physical_shape(
+        case, axis, shape, output=True
+    )
+    layout_name = _reduce_layout_name(case)
+    layout = physical.physical_layout(
+        output_shape, layout_name, element_bytes
+    )
+    if layout.physical_bytes != case.output_span:
+        raise RuntimeError(
+            f"{case.name}: physical output span {layout.physical_bytes} "
+            f"does not match catalog {case.output_span}"
+        )
+    offsets = tuple(
+        BODY_OFFSET
+        + physical.physical_element_offset(layout, coordinate)
+        * element_bytes
+        + byte
+        for coordinate in physical.coordinates(output_shape)
+        for byte in range(element_bytes)
+    )
+    if len(offsets) != case.result_bytes:
+        raise RuntimeError(
+            f"{case.name}: physical logical byte count {len(offsets)} "
+            f"does not match catalog {case.result_bytes}"
+        )
+    return offsets
+
+
+def _apply_reduce(operation: str, values: list[float]) -> float:
     if operation == "sum":
-        expected = [sum(group) for group in by_channel]
-    elif operation == "avg":
-        expected = [sum(group) / 4.0 for group in by_channel]
-    elif operation == "max":
-        expected = [max(group) for group in by_channel]
-    elif operation == "min":
-        expected = [min(group) for group in by_channel]
+        return sum(values)
+    if operation == "avg":
+        return sum(values) / len(values)
+    if operation == "max":
+        return max(values)
+    if operation == "min":
+        return min(values)
+    raise RuntimeError(f"unknown reduce kind: {operation}")
+
+
+def _reduce(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
+    operation, dtype_name, axis, (n_size, h_size, w_size, c_size) = (
+        _reduce_config(case)
+    )
+    if dtype_name != case.dtype_name:
+        raise RuntimeError(f"{case.name}: encoded dtype and case dtype disagree")
+
+    dimension_sizes = (n_size, h_size, w_size, c_size)
+    reduced_dimensions = {
+        "C": (3,),
+        "W": (2,),
+        "H": (1,),
+        "HW": (1, 2),
+        "N": (0,),
+        "HWC": (1, 2, 3),
+    }[axis]
+    retained_dimensions = tuple(
+        dimension
+        for dimension in range(4)
+        if dimension not in reduced_dimensions
+    )
+
+    def linear_ordinal(
+        coordinate: tuple[int, int, int, int],
+        dimensions: tuple[int, ...],
+    ) -> int:
+        ordinal = 0
+        for dimension in dimensions:
+            ordinal = (
+                ordinal * dimension_sizes[dimension]
+                + coordinate[dimension]
+            )
+        return ordinal
+
+    def value(n: int, h: int, w: int, c: int) -> float:
+        coordinate = (n, h, w, c)
+        base = float(
+            1 << (linear_ordinal(coordinate, retained_dimensions) % 5)
+        )
+        if operation in ("sum", "avg"):
+            # Repeating powers of two keeps every partial sum exact in
+            # f16/bf16/f32, including the C=65 tail geometry.
+            return base
+        return base + linear_ordinal(
+            coordinate, reduced_dimensions
+        ) * 0.25
+
+    values = [
+        value(n, h, w, c)
+        for n in range(n_size)
+        for h in range(h_size)
+        for w in range(w_size)
+        for c in range(c_size)
+    ]
+    groups: list[list[float]] = []
+    if axis == "C":
+        groups = [
+            [value(n, h, w, c) for c in range(c_size)]
+            for n in range(n_size)
+            for h in range(h_size)
+            for w in range(w_size)
+        ]
+    elif axis == "W":
+        groups = [
+            [value(n, h, w, c) for w in range(w_size)]
+            for n in range(n_size)
+            for h in range(h_size)
+            for c in range(c_size)
+        ]
+    elif axis == "H":
+        groups = [
+            [value(n, h, w, c) for h in range(h_size)]
+            for n in range(n_size)
+            for w in range(w_size)
+            for c in range(c_size)
+        ]
+    elif axis == "HW":
+        groups = [
+            [
+                value(n, h, w, c)
+                for h in range(h_size)
+                for w in range(w_size)
+            ]
+            for n in range(n_size)
+            for c in range(c_size)
+        ]
+    elif axis == "N":
+        groups = [
+            [value(n, h, w, c) for n in range(n_size)]
+            for h in range(h_size)
+            for w in range(w_size)
+            for c in range(c_size)
+        ]
+    elif axis == "HWC":
+        groups = [
+            [
+                value(n, h, w, c)
+                for h in range(h_size)
+                for w in range(w_size)
+                for c in range(c_size)
+            ]
+            for n in range(n_size)
+        ]
     else:
-        raise RuntimeError(f"{case.name}: unknown reduce kind")
-    return _fp(case.dtype_name, values), b"", _fp(case.dtype_name, expected)
+        raise RuntimeError(f"{case.name}: unknown reduce axis {axis}")
+    encoded_values = _fp(dtype_name, values)
+    element_bytes = _reduce_element_bytes(dtype_name)
+    logical_scalars = tuple(
+        encoded_values[offset : offset + element_bytes]
+        for offset in range(0, len(encoded_values), element_bytes)
+    )
+    input_shape = _reduce_physical_shape(
+        case,
+        axis,
+        (n_size, h_size, w_size, c_size),
+        output=False,
+    )
+    input_bytes = physical.pack_scalar_bytes(
+        input_shape,
+        _reduce_layout_name(case),
+        element_bytes,
+        logical_scalars,
+        padding=SLOT_CANARY,
+    )
+    if case.is_observation:
+        return input_bytes, b"", bytes(case.result_bytes)
+    expected = [_apply_reduce(operation, group) for group in groups]
+    return input_bytes, b"", _fp(dtype_name, expected)
 
 
 def _select(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
@@ -816,7 +1059,164 @@ def _conv(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
     )
 
 
+_POOL_SYMMETRIC_BASE = 204
+_POOL_SYMMETRIC_END = 221
+_POOL_ASYMMETRIC_BASE = 222
+_POOL_ASYMMETRIC_END = 227
+_POOL_PADDED_BASE = 228
+_POOL_PADDED_END = 233
+_POOL_TIE_BASE = 234
+_POOL_TIE_END = 235
+_POOL_OPERATIONS = (
+    "avg",
+    "sum",
+    "max",
+    "indexedmax",
+    "min",
+    "indexedmin",
+)
+
+
+def _pool_config(
+    case: InstructionCase,
+) -> tuple[str, str, str]:
+    if _POOL_SYMMETRIC_BASE <= case.case_id <= _POOL_SYMMETRIC_END:
+        offset = case.case_id - _POOL_SYMMETRIC_BASE
+        return (
+            _POOL_OPERATIONS[offset // 3],
+            _REDUCE_DTYPES[offset % 3],
+            "symmetric",
+        )
+    if _POOL_ASYMMETRIC_BASE <= case.case_id <= _POOL_ASYMMETRIC_END:
+        return (
+            _POOL_OPERATIONS[case.case_id - _POOL_ASYMMETRIC_BASE],
+            "F16",
+            "asymmetric",
+        )
+    if _POOL_PADDED_BASE <= case.case_id <= _POOL_PADDED_END:
+        return (
+            _POOL_OPERATIONS[case.case_id - _POOL_PADDED_BASE],
+            "F16",
+            "padded",
+        )
+    if _POOL_TIE_BASE <= case.case_id <= _POOL_TIE_END:
+        return (
+            ("indexedmax", "indexedmin")[
+                case.case_id - _POOL_TIE_BASE
+            ],
+            "F16",
+            "tie",
+        )
+    raise RuntimeError(f"{case.name}: not a capability-matrix pool case")
+
+
+def _pool_capability(
+    case: InstructionCase,
+) -> tuple[bytes, bytes, bytes]:
+    operation, dtype_name, geometry = _pool_config(case)
+    if dtype_name != case.dtype_name:
+        raise RuntimeError(f"{case.name}: encoded dtype and case dtype disagree")
+    if geometry in {"symmetric", "tie"}:
+        src_h, src_w, dst_h, dst_w = 2, 4, 1, 2
+        kernel_x, kernel_y, stride_x, stride_y = 2, 2, 2, 2
+        pad_top = pad_left = 0
+    elif geometry == "asymmetric":
+        src_h, src_w, dst_h, dst_w = 3, 5, 2, 2
+        kernel_x, kernel_y, stride_x, stride_y = 3, 2, 2, 1
+        pad_top = pad_left = 0
+    elif geometry == "padded":
+        src_h, src_w, dst_h, dst_w = 2, 3, 2, 2
+        kernel_x, kernel_y, stride_x, stride_y = 3, 2, 2, 1
+        pad_top = pad_left = 1
+    else:
+        raise RuntimeError(f"{case.name}: unknown pool geometry {geometry}")
+
+    source = [0.0] * (src_h * src_w * 64)
+    for row in range(src_h):
+        for column in range(src_w):
+            for channel in range(64):
+                if geometry in {"asymmetric", "padded"}:
+                    value = float(
+                        6 * (1 + row * src_w + column) + channel % 4
+                    )
+                else:
+                    value = float(
+                        4 * (1 + row * src_w + column) + channel % 4
+                    )
+                if operation in {"min", "indexedmin"}:
+                    value = -value
+                source[(row * src_w + column) * 64 + channel] = value
+
+    if geometry == "tie":
+        for output_column in range(dst_w):
+            for channel in range(64):
+                extremum = (
+                    float(100 + channel)
+                    if operation == "indexedmax"
+                    else float(-100 - channel)
+                )
+                for position in (0, 3):
+                    row = position // 2
+                    column = 2 * output_column + position % 2
+                    source[(row * src_w + column) * 64 + channel] = extremum
+
+    expected_values: list[float] = []
+    expected_indices: list[int] = []
+    for output_row in range(dst_h):
+        for output_column in range(dst_w):
+            for channel in range(64):
+                window: list[float] = []
+                for kernel_row in range(kernel_y):
+                    input_row = (
+                        output_row * stride_y + kernel_row - pad_top
+                    )
+                    for kernel_column in range(kernel_x):
+                        input_column = (
+                            output_column * stride_x
+                            + kernel_column
+                            - pad_left
+                        )
+                        if (
+                            input_row < 0
+                            or input_row >= src_h
+                            or input_column < 0
+                            or input_column >= src_w
+                        ):
+                            window.append(0.0)
+                        else:
+                            window.append(
+                                source[
+                                    (input_row * src_w + input_column) * 64
+                                    + channel
+                                ]
+                            )
+                if operation == "avg":
+                    result = sum(window) / len(window)
+                elif operation == "sum":
+                    result = sum(window)
+                elif operation in {"max", "indexedmax"}:
+                    result = max(window)
+                elif operation in {"min", "indexedmin"}:
+                    result = min(window)
+                else:
+                    raise RuntimeError(
+                        f"{case.name}: unknown pool operation {operation}"
+                    )
+                expected_values.append(result)
+                if operation in {"indexedmax", "indexedmin"}:
+                    expected_indices.append(window.index(result))
+
+    expected = _fp(dtype_name, expected_values)
+    if expected_indices:
+        expected += struct.pack(
+            f"<{len(expected_indices)}H", *expected_indices
+        )
+    return _fp(dtype_name, source), b"", expected
+
+
 def _pool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
+    if _POOL_SYMMETRIC_BASE <= case.case_id <= _POOL_TIE_END:
+        return _pool_capability(case)
     if case.symbol in ("POOL_F16", "POOL_BF16"):
         source = [
             float(100 * row + 10 * column + channel % 8)
@@ -885,36 +1285,147 @@ def _pool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
             _f16(expected_values)
             + struct.pack("<128H", *expected_indices),
         )
+    if case.symbol == "POOL_INDEXED_MAX_F16_ASYMMETRIC":
+        source = [
+            float(100 * row + 10 * column + channel % 8)
+            for row in range(3)
+            for column in range(5)
+            for channel in range(64)
+        ]
+        expected_values = [
+            float(100 * (output_row + 1)
+                  + 10 * (2 * output_column + 2)
+                  + channel % 8)
+            for output_row in range(2)
+            for output_column in range(2)
+            for channel in range(64)
+        ]
+        # A 3x2 window is flattened row-major (Y then X); the monotonic
+        # pattern makes its lower-right value uniquely maximal at index 5.
+        expected_indices = [5] * (2 * 2 * 64)
+        return (
+            _f16(source),
+            b"",
+            _f16(expected_values)
+            + struct.pack("<256H", *expected_indices),
+        )
     else:
         raise RuntimeError(f"{case.name}: unknown pool kind")
 
 
 def _unpool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
-    if case.symbol == "UNPOOL_AVG_F16":
+    if case.symbol in {
+        "UNPOOL_AVG_F16",
+        "UNPOOL_AVG_BF16",
+        "UNPOOL_AVG_F32",
+    }:
         source = [float(4 * (channel % 16 + 1)) for channel in range(64)]
         expected = [
             source[channel] / 4.0
             for _position in range(4)
             for channel in range(64)
         ]
+        return (
+            _fp(case.dtype_name, source),
+            b"",
+            _fp(case.dtype_name, expected),
+        )
+
+    if case.symbol in {
+        "UNPOOL_F16",
+        "UNPOOL_INDEX_F16",
+        "UNPOOL_INDEX_BF16_OBSERVED",
+        "UNPOOL_INDEX_F32_OBSERVED",
+        "UNPOOL_MASK_BF16",
+        "UNPOOL_MASK_F32",
+    }:
+        source = [
+            float(
+                128 + channel
+                if position == channel % 4
+                else 1 + position
+            )
+            for position in range(4)
+            for channel in range(64)
+        ]
+        expected = [
+            float(128 + channel if position == channel % 4 else 0)
+            for position in range(4)
+            for channel in range(64)
+        ]
+        return (
+            _fp(case.dtype_name, source),
+            b"",
+            _fp(case.dtype_name, expected),
+        )
+
+    if case.symbol == "UNPOOL_AVG_F16_ASYMMETRIC_OBSERVED":
+        source = [
+            float(6 * (1 + position) + channel % 4)
+            for position in range(4)
+            for channel in range(64)
+        ]
+        expected = [0.0] * (3 * 5 * 64)
+        for source_row in range(2):
+            for source_column in range(2):
+                for kernel_row in range(2):
+                    for kernel_column in range(3):
+                        output_row = source_row + kernel_row
+                        output_column = (
+                            2 * source_column + kernel_column
+                        )
+                        for channel in range(64):
+                            source_index = (
+                                (source_row * 2 + source_column) * 64
+                                + channel
+                            )
+                            output_index = (
+                                (output_row * 5 + output_column) * 64
+                                + channel
+                            )
+                            expected[output_index] += (
+                                source[source_index] / 6.0
+                            )
         return _f16(source), b"", _f16(expected)
-    if case.symbol not in ("UNPOOL_F16", "UNPOOL_INDEX_F16"):
-        raise RuntimeError(f"{case.name}: unknown unpool kind")
-    source = [
-        float(128 + channel if position == channel % 4 else 1 + position)
-        for position in range(4)
-        for channel in range(64)
-    ]
-    expected = [
-        float(128 + channel if position == channel % 4 else 0)
-        for position in range(4)
-        for channel in range(64)
-    ]
-    return _f16(source), b"", _f16(expected)
+
+    asymmetric_symbols = {
+        "UNPOOL_INDEX_F16_ASYMMETRIC_OBSERVED",
+        "UNPOOL_MASK_F16_ASYMMETRIC",
+    }
+    repeated_symbols = {
+        "UNPOOL_INDEX_F16_REPEATED_OVERLAP_OBSERVED",
+        "UNPOOL_MASK_F16_REPEATED_OVERLAP_OBSERVED",
+    }
+    if case.symbol in asymmetric_symbols | repeated_symbols:
+        source = [
+            float(100 * row + 10 * column + channel % 8)
+            for row in range(3)
+            for column in range(5)
+            for channel in range(64)
+        ]
+        expected = [0.0] * (3 * 5 * 64)
+        if case.symbol in asymmetric_symbols:
+            for output_row in range(2):
+                for output_column in range(2):
+                    input_row = output_row + 1
+                    input_column = 2 * output_column + 2
+                    for channel in range(64):
+                        index = (
+                            (input_row * 5 + input_column) * 64 + channel
+                        )
+                        expected[index] = source[index]
+        else:
+            for channel in range(64):
+                index = (1 * 5 + 2) * 64 + channel
+                source[index] = float(1000 + channel)
+        return _f16(source), b"", _f16(expected)
+
+    raise RuntimeError(f"{case.name}: unknown unpool kind")
 
 
 def _peripheral_arg_extrema(
     case: InstructionCase,
+    sample: int,
 ) -> tuple[bytes, bytes, bytes]:
     if case.symbol == "PERIPHERAL_ARGMAX_F16":
         values = [float((index * 17) % 61 - 30) for index in range(128)]
@@ -926,6 +1437,14 @@ def _peripheral_arg_extrema(
         values = [float((index * 17) % 61 + 1) for index in range(128)]
         result_index = 42
         result_value = 0.5
+    elif case.symbol == "PERIPHERAL_ARGMIN_NEGATIVE_F16_OBSERVED":
+        variant = sample % 3
+        values = [
+            -float(((index * 17 + variant * 13) % 61) + 1)
+            for index in range(128)
+        ]
+        result_index = (37, 83, 109)[variant]
+        result_value = float(-100 - variant)
     else:
         raise RuntimeError(f"{case.name}: unknown peripheral extrema kind")
     values[result_index] = result_value
@@ -1000,12 +1519,15 @@ def _peripheral_elemmask_observation() -> tuple[bytes, bytes, bytes]:
     return source, b"", bytes(256)
 
 
-def _peripheral(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
+def _peripheral(
+    case: InstructionCase, sample: int
+) -> tuple[bytes, bytes, bytes]:
     if case.symbol in (
         "PERIPHERAL_ARGMAX_F16",
         "PERIPHERAL_ARGMIN_F16",
+        "PERIPHERAL_ARGMIN_NEGATIVE_F16_OBSERVED",
     ):
-        return _peripheral_arg_extrema(case)
+        return _peripheral_arg_extrema(case, sample)
     if case.symbol == "PERIPHERAL_LUT16_F16":
         return _peripheral_lut16()
     if case.symbol == "PERIPHERAL_BILINEAR_F16":
@@ -1047,7 +1569,7 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
     elif case.family_name == "UNPOOL":
         input_a, input_b, expected = _unpool(case)
     elif case.family_name == "PERIPHERAL":
-        input_a, input_b, expected = _peripheral(case)
+        input_a, input_b, expected = _peripheral(case, sample)
     else:
         raise RuntimeError(f"{case.name}: safe case has no oracle builder")
     if len(expected) != case.result_bytes:
@@ -1077,7 +1599,11 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
     elif case.family_name == "NE_GEMM":
         output_seed = _fp(case.dtype_name, _repeat((-13.0,), 128))
     elif case.family_name == "UNPOOL" and not case.is_observation:
-        output_seed = _f16([0.0] * (case.output_span // 2))
+        seed_element_bytes = 4 if case.dtype_name == "F32" else 2
+        output_seed = _fp(
+            case.dtype_name,
+            [0.0] * (case.output_span // seed_element_bytes),
+        )
     else:
         seed_element_bytes = 4 if case.dtype_name == "F32" else 2
         seed_elements = case.output_span // seed_element_bytes
@@ -1095,7 +1621,14 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
     _put(slots[2], output_seed)
     expected_slot = bytearray(slots[2])
     if not case.is_observation:
-        expected_slot[BODY_OFFSET : BODY_OFFSET + len(expected)] = expected
+        exact_offsets = reduce_exact_result_byte_offsets(case)
+        if len(exact_offsets) != len(expected):
+            raise RuntimeError(
+                f"{case.name}: exact result offset count disagrees with "
+                "logical oracle"
+            )
+        for offset, value in zip(exact_offsets, expected, strict=True):
+            expected_slot[offset] = value
 
     request_words = [0] * REQUEST_WORDS
     request_words[REQ["MAGIC"]] = REQUEST_MAGIC

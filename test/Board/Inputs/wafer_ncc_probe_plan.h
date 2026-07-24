@@ -114,6 +114,9 @@ uint32_t wafer_ncc_probe_validate_plan(
     const WaferNccProbeRequest *request,
     const WaferNccProbeEngineAdapter *adapters, uint32_t adapter_count);
 
+int wafer_ncc_probe_is_strided_dependency(
+    const WaferNccProbeRequest *request);
+
 uint32_t wafer_ncc_probe_execute_plan(
     const WaferNccProbeRequest *request,
     const WaferNccProbeEngineAdapter *adapters, uint32_t adapter_count,
