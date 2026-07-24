@@ -385,11 +385,18 @@ def board_command(
     ]
 
 
-RESOURCE_BYTES = 1048576
 RECORD_BYTES = ncc_protocol.RECORD_WORDS * 8
 V2_OUTPUT_SLOT_BASE = 4096
-V2_OUTPUT_SLOT_STRIDE = 66048
 V2_OUTPUT_GUARD_BYTES = 256
+V2_REPEATED_SLOT_BYTES = 16384
+V2_OUTPUT_SLOT_STRIDE = (
+    V2_REPEATED_SLOT_BYTES + 2 * V2_OUTPUT_GUARD_BYTES
+)
+RESOURCE_BYTES = (
+    V2_OUTPUT_SLOT_BASE
+    + ncc_protocol.MAX_ISSUES * V2_OUTPUT_SLOT_STRIDE
+)
+RESOURCE_ELEMENTS = RESOURCE_BYTES // 4
 V2_RECORD_GUARD = 0xD87C2A916BE4035F
 V2_SPM_SLOT_BASE = 0x10000
 V2_SPM_SLOT_STRIDE = 0x20000
@@ -434,25 +441,25 @@ if len(PMU64_NAMES) != PMU64_COUNTERS:
     raise RuntimeError("NCC PMU name table does not match the wire schema")
 PMU_STABLE_MASK = (1 << PMU64_COUNTERS) - 1
 
-MODULE = """\
-module {
+MODULE = f"""\
+module {{
   func.func @main(
-      %request: tensor<262144xf32>,
-      %payload: tensor<262144xf32>) -> tensor<262144xf32> {
-    %result = stablehlo.add %request, %payload : tensor<262144xf32>
-    return %result : tensor<262144xf32>
-  }
-}
+      %request: tensor<{RESOURCE_ELEMENTS}xf32>,
+      %payload: tensor<{RESOURCE_ELEMENTS}xf32>) -> tensor<{RESOURCE_ELEMENTS}xf32> {{
+    %result = stablehlo.add %request, %payload : tensor<{RESOURCE_ELEMENTS}xf32>
+    return %result : tensor<{RESOURCE_ELEMENTS}xf32>
+  }}
+}}
 """
 METADATA = {
     "name": "forward",
     "stablehlo_version": "0.0.0",
     "input_signature": [
-        {"shape": [262144], "dtype": "float32", "dynamic_dims": []},
-        {"shape": [262144], "dtype": "float32", "dynamic_dims": []},
+        {"shape": [RESOURCE_ELEMENTS], "dtype": "float32", "dynamic_dims": []},
+        {"shape": [RESOURCE_ELEMENTS], "dtype": "float32", "dynamic_dims": []},
     ],
     "output_signature": [
-        {"shape": [262144], "dtype": "float32", "dynamic_dims": []}
+        {"shape": [RESOURCE_ELEMENTS], "dtype": "float32", "dynamic_dims": []}
     ],
     "input_locations": [
         {"type_": "input_arg", "position": 0, "name": "request"},
@@ -1944,6 +1951,33 @@ def validate_no_card_protocol_cases() -> None:
         raise RuntimeError(
             "NCC calibration leaf bindings must reference real catalog objects"
         )
+
+
+def validate_catalog_resource_layout(
+    cases: Iterable[GenericProbeCase],
+) -> None:
+    for case in cases:
+        occupied: list[tuple[int, int]] = []
+        for identity in case.plan.issue_identities():
+            lane = case.plan.lanes[identity.lane]
+            span = lane.dma_envelope_bytes()
+            begin = (
+                V2_OUTPUT_SLOT_BASE
+                + identity.slot * V2_OUTPUT_SLOT_STRIDE
+            )
+            end = begin + 2 * V2_OUTPUT_GUARD_BYTES + span
+            if end > RESOURCE_BYTES:
+                raise RuntimeError(
+                    f"{case.name}: slot {identity.slot} exceeds the "
+                    "shared DDR resource"
+                )
+            if any(begin < other_end and other_begin < end
+                   for other_begin, other_end in occupied):
+                raise RuntimeError(
+                    f"{case.name}: slot {identity.slot} overlaps another "
+                    "shared DDR slot"
+                )
+            occupied.append((begin, end))
 
 
 def write_request(
@@ -3537,6 +3571,7 @@ def main() -> int:
     else:
         validate_no_card_protocol_cases()
 
+    validate_catalog_resource_layout(BOARD_ALL_PREFLIGHT_CASES)
     selected_cases: tuple[GenericProbeCase, ...] = ()
     if args.suite != "build-smoke":
         selected_cases = SUITES[args.suite]

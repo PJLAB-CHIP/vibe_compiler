@@ -1244,16 +1244,37 @@ class ProtocolTest(unittest.TestCase):
                 for lane in case.plan.lanes
             )
         )
-        maximum_ddr_end = (
-            execution_probe.V2_OUTPUT_SLOT_BASE
-            + (protocol.MAX_ISSUES - 1)
-            * execution_probe.V2_OUTPUT_SLOT_STRIDE
-            + execution_probe.V2_OUTPUT_GUARD_BYTES
-            + 65536
-            + execution_probe.V2_OUTPUT_GUARD_BYTES
+        execution_probe.validate_catalog_resource_layout(
+            execution_probe.BOARD_ALL_PREFLIGHT_CASES
         )
-        self.assertLessEqual(
+        maximum_ddr_end = max(
+            execution_probe.V2_OUTPUT_SLOT_BASE
+            + identity.slot * execution_probe.V2_OUTPUT_SLOT_STRIDE
+            + 2 * execution_probe.V2_OUTPUT_GUARD_BYTES
+            + case.plan.lanes[identity.lane].dma_envelope_bytes()
+            for case in execution_probe.BOARD_ALL_PREFLIGHT_CASES
+            for identity in case.plan.issue_identities()
+        )
+        self.assertEqual(
             maximum_ddr_end, execution_probe.RESOURCE_BYTES
+        )
+        self.assertEqual(
+            execution_probe.RESOURCE_BYTES,
+            execution_probe.RESOURCE_ELEMENTS * 4,
+        )
+        self.assertIn(
+            f"tensor<{execution_probe.RESOURCE_ELEMENTS}xf32>",
+            execution_probe.MODULE,
+        )
+        self.assertEqual(
+            {
+                tuple(signature["shape"])
+                for signature in (
+                    *execution_probe.METADATA["input_signature"],
+                    *execution_probe.METADATA["output_signature"],
+                )
+            },
+            {(execution_probe.RESOURCE_ELEMENTS,)},
         )
         self.assertLessEqual(
             execution_probe.V2_NE_LARGE_WRITE_OFFSET
