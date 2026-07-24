@@ -1370,6 +1370,29 @@
   完成，由raw adapter继续记录builder取得、packet物化和builder释放；host从未完成issue及最后阶段生成诊断。
 - 防复发：协议字段必须区分“未观测”和“观测为零”；资源缩放、跨进程成功样本和条件写入字段不能替代同一次
   失败调用的阶段证据。没有该证据前不继续用resource大小调整推断heap根因。
+
+## 2026-07-24 packet字段可编码不等于对应组合可安全执行
+
+- 现象：`TsmDataMove::Concat`的header公开C/W/H/N/HW/HWC编码，raw C/W/H可完成并保持guard，但HW
+  case在completion内未返回并污染后续execution context。
+- 根因：`__datamove_concat`只把调用参数`dims`原样写入`CT_Param+156`，不验证axis与shape组合；旧
+  production `op_concat.c`反而断言只处理最后逻辑维，并把NHWC最后维映射成C。构包成功和enum存在都不是
+  firmware/硬件legality或数值正确性的证明。
+- 修复模式：默认safe catalog只保留已有bounded completion的C/W/H observation，HW只通过精确case名显式
+  隔离复测；compiler V0的任意轴concat继续展开为typed GatherScatter，native lowering等待独立exact资格。
+- 防复发：raw opcode新增维度或mode时，依次验证builder、matching completion、完整physical span/guard和
+  exact语义；任何timeout立即停批，不能从邻近编码或production wrapper的保守范围反向外推硬件能力。
+
+## 2026-07-24 NCC prepare失败也必须释放当前issue的builder
+
+- 现象：raw NCC prepare已取得builder，但packet materialization随后失败；generic cleanup只遍历此前
+  `prepared_count`个成功issue，当前失败issue不在其所有权范围内。
+- 根因：失败分支直接返回，把“当前adapter临时拥有的builder”和“generic已接管的prepared issue”混为一层。
+- 修复模式：raw prepare在packet失败分支先释放当前builder并记录release阶段，再返回失败；generic只清理已经
+  完成prepare并移交所有权的前序issue。
+- 防复发：多阶段prepare为每个acquire定义唯一release owner；mock必须覆盖失败issue自清理、前序issue由
+  generic逆向清理，以及release-before-return顺序。
+
 ## 2026-07-24 NE option语义与BackwardConv footprint不能从通用Conv外推
 
 - 现象：GEMM ReLU request的record、execute和guard均正常，但输出逐bit等于bare baseline且负值未clamp；

@@ -92,8 +92,9 @@ Pipeline position:
 - 当前实卡前资产快照为：CT opcode `0..186`有177 board-executable、8 board-observation、
   2 static-negative；convert
   204行中158 exact、46 observation，23个stochastic row均为可执行重复采样；instruction-family有71个
-  safe case。DataMove为base 46 + extended 18个case，公开`121..138`处置为14 exact、4 observation、
-  0 deferred。NE为32 exact、35 observation、3 static-negative，新增quant、Depthwise/BackwardConv和
+  safe case。DataMove为base 46 + extended默认17个safe case，并保留1个只允许显式选择的native `dims=HW`
+  Concat隔离复测case；公开`121..138`处置为14 exact、4 observation、0 deferred。NE为32 exact、
+  35 observation、3 static-negative，新增quant、Depthwise/BackwardConv和
   左右不等batch。memory-descriptor有59个case，SPM 84行拆为19个本地board、15个static-negative、
   50个concrete delegated、0 deferred。NCC新增constructor nonnull、default/byworker scope、六个subset
   join、all-direction producer/consumer、strided dependency、large backlog与手写double-slot hardware
@@ -302,7 +303,7 @@ Pipeline position:
 - 该向量证明当前profile允许超过documented pending queue depth的总提交数，静态depth不是完整lifetime的
   总提交上限。短CT workload在control观测前已排空，静态`TsmExecute`也没有software queue-full check，
   因而resident数量、queue-full返回和backpressure仍为`unknown`，不能据此扩大production issue window。
-  五类engine的exact documented-depth submission/completion边界均已闭合，但其它engine的`D+1`以及所有
+  五类engine的exact documented-depth和typed tight `D+1` submission/completion边界均已闭合，但所有
   active occupancy/full/backpressure仍未校准；任意更深overflow不执行。
 - 4KiB one-shot/短backlog可被当前wrapper构包间隔完全串行化；同一现象不能外推成硬件不支持并行。
   首版production候选先比较窗口2/4并以真实tile workload选择；prepared issue ABI是否进入首版由纵向收益决定。
@@ -336,8 +337,8 @@ profiling按可证明范围分层使用：
 串行对照、完全disjoint候选、RAW/WAR/WAW/read-read、wait/visibility、Direct DTE/cluster正向的顺序执行。
 恰好documented depth另用单engine、单case、单样本的manual入口，前后均追加一次Add heartbeat；每个case
 独立进程、外层timeout、完整output/canary oracle。CT/NE/RDMA/WDMA `D=6`与TDMA `D=4`均已按该合同闭合。
-typed tight `D+1`也只能使用相同隔离边界；CT `D+1=7`已闭合总提交接受与完成，但未闭合active
-occupancy/full/backpressure，其它engine与任意更深提交不从该向量外推。
+typed tight `D+1`也只能使用相同隔离边界；CT/NE/RDMA/WDMA `D+1=7`与TDMA `D+1=5`已闭合总提交接受
+与完成，但未闭合active occupancy/full/backpressure；任意更深提交不从这些向量外推。
 case或heartbeat timeout后停止该批次，不自动重试、reset或power cycle；`tsm_smi` idle不能解除停止条件。
 板端parameterized probe只回传事实，编译器策略在全部代表维度闭合后决定。当前没有engine pair通过稳定正
 overlap资格门禁，RAW hazard暂不适用且所有pair保持串行；只有未来同方向disjoint serial/window对照稳定达到

@@ -109,7 +109,8 @@ case有显式白名单，其余分组只允许一次引用。`ready`只表示可
 重复采样）和全部187个opcode disposition（177 board-executable、8 board-observation、
 2 static-negative），以及71个
 instruction-family safe case；NE有32 exact、35 observation、3 static-negative，新增I8 quant、
-FP16/BF16 Depthwise/BackwardConv和左右不等batch；DataMove为base 46 + extended 18个case，公开
+FP16/BF16 Depthwise/BackwardConv和左右不等batch；DataMove为base 46 + extended默认17个safe case，
+另保留1个只允许显式选择的native `dims=HW` Concat隔离复测case；公开
 `121..138`为14 exact、4 observation、0 deferred，20个instruction-layout组合为8 native、
 3 materialize-then-consume、9 static-negative。memory-descriptor的59个case覆盖DMA/DDR offset、64KiB、
 1D/2D/3D stride、default burst boundary、tail、五类engine access、全部range relation和10个engine pair；
@@ -169,7 +170,8 @@ span为256B。将四个reduction row修正为`result_bytes=128`、`output_span=2
 `0.5@index42`时通过，value/index分别写入同一slot的`[0:2]`与`[4:8]`，中间2B保持不变。ArgMin负数
 对照会错误返回首元素`-30@index0`而不是`-100@index42`，因此负数域保持unsupported，不由正数case外推。
 当前catalog新增第61个`unpool-index-f16`，以独立118 indexed-max→fence→121 ordinary Unpool路径和
-512B exact oracle修复旧opcode 121由123 mask-unpool代签的问题；已通过host、target和no-card，仍待实卡。
+512B bounded raw/guard/completion observation修复旧opcode 121由123 mask-unpool代签的问题；host以非零
+poison区分no-op与写零，已通过target和no-card，仍待实卡。
 最终Add heartbeat正常。新增CT Add f16/bf16 tail130、finite f32及不含NaN的special-value向量也均逐bit通过：
 tail130分别验证260B logical result、512B physical span与guard；special向量覆盖正负零、正负无穷、
 max-finite、min-normal和min-subnormal。该证据不外推NaN或其它f32 opcode。PoolMax使用

@@ -286,12 +286,12 @@ runtime status正常SUCCESS收尾，避免把预期错误误当成BoardRuntime q
 | packet routing/range | `inter_type`映射、worker编码、begin/end materialization和inclusive end | 五类单engine，执行后读实际register/packet，完整结果 | 11/14 instruction legality | CT/NE/RDMA/WDMA部分`board-observed`；TDMA Memset routing/range `board-observed` |
 | CT numeric/form | opcode 0..186；arithmetic/relation/logic的`VV/VS/VuV/VuVLoop`、value/bool output；f16/bf16/f32、convert pair、rounding、NaN/Inf/subnormal/signed-zero、large-shape tail | opcode/form×dtype typed catalog；至少8192元素普通值、非256B held-out tail、短向量unit/full-tail、完整bit oracle | 10/11/17 numeric capability | 实卡前资产已准备：`0..110`共653个vector row（542 exact、81 tolerance、30 observation），`139..174`共204个convert row（158 exact、46 observation，含23个重复采样的stochastic row）；`0..186`的187个opcode无遗漏处置为177个board-executable、8个board-observation、2个static-negative。instruction-family另有71个safe concrete case。全部新增row仅完成host/target/no-card准备，尚未形成板端证据 |
 | instruction × physical layout | Tensor/NTensor/Cx/NCx原生资格、materialization路径、C0 tail、N-slice步进、padding lane | valid组合exact output/span/canary；需materialize组合重放Tensor↔Cx/NCx movement；非法组合verifier/packet negative | 08/10/11 physical legality | CT/NE/RDMA/WDMA/TDMA × Tensor/NTensor/Cx/NCx共20个组合均已有处置：8个native positive、3个materialize-then-consume concrete positive和9个static-negative；Tensor↔Cx/NCx movement及CT Cx/NCx、NE Tensor materialize→consume composite均已完成no-card准备。current CT production仍只准Tensor/no-invalid-lane |
-| DataMove/layout | mirror/transpose/rotate、NCHW/NHWC、concat、pad、Img2Col、TensorNom、GatherScatter/MaskMove/MaskGather及compiler broadcast materialization | 非对称large-shape、axis-sensitive payload、all-and-only logical point oracle、physical guard | 08/10/11 movement legality | base shared package有46个case，extended package再增加18个有界case；公开`121..138`全部处置为14个exact、4个observation、0 deferred。新增资产含raw Concat C/W/H/HW、两种MaskGather、TensorNom、large Pad/Img2Col、Cx/NCx→CT与Tensor→NE materialize-consume、I8 strided TDMA及FP16/BF16 raw-vs-CRT，均仅完成host/target/no-card准备 |
+| DataMove/layout | mirror/transpose/rotate、NCHW/NHWC、concat、pad、Img2Col、TensorNom、GatherScatter/MaskMove/MaskGather及compiler broadcast materialization | 非对称large-shape、axis-sensitive payload、all-and-only logical point oracle、physical guard | 08/10/11 movement legality | base shared package有46个case，extended默认safe package有17个有界case，并另保留1个只允许显式选择的native `dims=HW` Concat隔离复测case；公开`121..138`全部处置为14个exact、4个observation、0 deferred。raw Concat C/W/H已有bounded completion/guard板端观察但尚无exact语义资格，HW曾timeout；其它新增资产只按各自实际host/target/no-card或板端结果记账 |
 | NE numeric/layout | f16/bf16、accumulation、transpose、C0 tail、padding、K/M/N边界 | 非平凡多项累加GEMM、完整padded range/canary | 08/10/11/17 | 当前70个row为32 exact、35 safe observation、3 static-negative、0 deferred；GEMM PSUM和左右不等batch保持exact。FP16 ReLU观察为no-op，ordinary Conv的current NCx/HWOI oracle未闭合，二者均不再宣称exact；BackwardConv output footprint按type-2 `tfr_1`的weight shape推导。GEMM sparse因typed `TsmGemm`无setter归入static-negative |
 | RDMA/WDMA descriptor | byte/logical-element stride转换、iteration、inclusive range、tail | contiguous + 1/2/3D stride，非零round-trip和guard | 08/11/14 | contiguous与既有large GEMM `supported`；FP16 1/2/3D stride round-trip、holes和guards `board-observed` |
 | TDMA Memset | element count、byte stride、raw logical iteration、inclusive range和dtype packet encoding | whole/128B×32/64B×64 geometry，I8/F16/BF16 raw与CRT，全range和guard | 10/11/14 | 普通dtype descriptor `calibrated`；I8/F16/BF16 vectors `board-observed` |
 | TDMA BOOL fill | native `Fmt_BOOL` completion与bitpacked physical-footprint实现 | native小range timeout隔离；production BOOL→I8 byte fill需独立raw register、全range和guard | 10/11/14 | native `Fmt_BOOL`在当前profile `excluded`；BOOL→I8 held-out已准备136 logical bits→17 physical bytes的全range/guard case，仍须实卡确认 |
-| TDMA movement variants | GatherScatter和其它DataMove的byte count、stride/iteration、range与kind-specific geometry | 每个已准入kind使用能区分错误descriptor的非零pattern、全range和guard | 08/10/11/14 | base 46 + extended 18个DataMove case均可进入实卡suite；既有小Pad/Img2Col证据保留，large Pad/Img2Col、raw Concat、TensorNom、MaskGather、I8 stride及FP16/BF16 raw-vs-CRT均有bounded request、physical guard和completion，不再以缺exact oracle延后 |
+| TDMA movement variants | GatherScatter和其它DataMove的byte count、stride/iteration、range与kind-specific geometry | 每个已准入kind使用能区分错误descriptor的非零pattern、全range和guard | 08/10/11/14 | base 46 + extended默认17个DataMove case可进入普通实卡suite；native `dims=HW` Concat只允许显式隔离选择。既有小Pad/Img2Col证据保留，large Pad/Img2Col、raw Concat C/W/H、TensorNom、MaskGather、I8 stride及FP16/BF16 raw-vs-CRT均有bounded request、physical guard和completion合同 |
 | SPM capacity/reservation | allocatable range和保留区 | boundary-positive与verifier negative；不触碰保留区 | 09/11 | 4个边界/held-out board-positive和6个static-negative已完成catalog、target build与no-card准备；实卡结论仍`unknown` |
 | SPM alignment/bank | 256B legality、非1024-bit访问代价、bank/color映射 | disjoint offset sweep，固定长度/engine pair/serial control | 09 placement与06 cost | 完整SPM inventory有84行：19个本地board case、15个static-negative、50个解析到concrete DataMove/memory-descriptor case的delegated row、0 deferred。50个委托项覆盖20个address relation、5个physical layout、5个engine access和10个engine pair各自的serial/window；均只完成no-card准备，实卡PMU/bank class仍`unknown` |
 | DDR/cache/coherence | host H2D、Kcore cache、DMA completion和host publication是不同域 | Kcore read前invalidate对照、DMA round-trip、matching drain后D2H | 09/12/14/15 | 四方向16KiB单invocation visibility probe与既有54个4KiB bank control保留；新memory-descriptor package另有59个有界case：14个DMA/DDR offset、tail、64KiB、1D/2D/3D stride及default burst-boundary exact，5个single-engine access exact，20个RAW/WAR/WAW/RAR × range relation observation，20个engine-pair serial/window exact。显式可配置burst knob因owned CRT无field为static-negative；只有same-session same-allocation stale/invalidate因缺生命周期owner继续隔离，新增descriptor均尚未上板 |
@@ -397,12 +397,13 @@ pairwise_excess = engine_a_exec + engine_b_exec - fu_union_exec
   负数域保持unsupported。该批只证明catalog中明确列出的value、dtype与geometry组合，不外推未覆盖opcode、
   NaN或其它instruction family。
 - catalog随后新增第61个`unpool-index-f16`：独立执行indexed-max产生index、matching fence和opcode 121
-  ordinary Unpool，并以完整512B output/guard与既有opcode 123 mask-unpool分开记账。该case已通过host
-  oracle、target build/link和shared-package no-card，但尚未取得板端证据，不能并入上述60个历史通过项。
-- 当前instruction-family catalog已扩展到71个safe case；新增Pool Avg/Sum/Min、IndexedMinPool、
-  UnpoolAvg和Bilinear六个exact case，以及Factorize、LUT32、RandGen、ElemMask四个bounded raw
-  observation。它们已有payload、真实device method、physical output envelope/guard、matching completion
-  与host exact/raw runner，并通过target/no-card准备；这十个新增case尚未上板，不能写成历史板端通过。
+  ordinary Unpool，并以完整512B bounded raw/guard/completion observation与既有opcode 123 mask-unpool
+  分开记账。host使用非零poison区分no-op与写零；target build/link和shared-package no-card已通过，但尚未
+  取得板端证据，不能并入上述60个历史通过项。
+- 当前instruction-family catalog已扩展到71个safe case；新增Pool Avg/Sum/Min、IndexedMinPool和
+  UnpoolAvg五个exact case，Bilinear与Factorize、LUT32、RandGen、ElemMask五个bounded raw observation。
+  它们已有payload、真实device method、physical output envelope/guard、matching completion与host
+  exact/raw runner，并通过target/no-card准备；这些新增case尚未上板，不能写成历史板端通过。
 - CT Add新增f16/bf16 logical tail130向量：260B逻辑结果逐bit正确，512B physical output span及suffix
   guard通过；它闭合当前Add packet对该非block-aligned tail的写范围，不外推其它CT opcode。finite f32
   Add的128元素512B结果也逐bit正确，只把当前Add opcode的FP32路径记为`board-observed`。
@@ -645,7 +646,7 @@ compact `C0` tail和256B physical padding使用不同poison。DataMove使用下�
 | Mirror、Rotate90/180/270 | `[2,7,9,65]`，H/W位置编码不同 | H/W轴颠倒、只处理首N、padding被当逻辑值 |
 | Transpose | header定义的固定映射使用非对称H/W/C shape，held-out更换三轴长度 | metadata-only、固定轴映射错误、Cx block步进错误 |
 | NCHW↔NHWC | `[2,65,7,9] ↔ [2,7,9,65]` | 仅改shape未搬数据、C/H/W顺序错误 |
-| raw Concat | vendor公开的C/W/H/HW维度分别使用不等长两输入；C用33+32→65，H/W使用非对称切分 | 两输入反序、轴错误、第二输入tail/padding串扰 |
+| raw Concat | C/W/H分别使用不等长两输入；C用33+32→65，H/W使用非对称切分。三者已有bounded completion/guard观察但仍需exact语义复验；HW只保留显式隔离小case，不能进入默认批次 | 两输入反序、轴错误、第二输入tail/padding串扰；packet可编码不能替代可完成性和数值资格 |
 | compiler concat | N轴或任意raw wrapper不能原生表达的合法concat由typed GatherScatter composite闭合 | 不能把raw Concat可用性外推成全部source语义 |
 | Pad | `[2,5,7,65]`到非对称pad后的`[2,7,10,65]` | top/bottom/left/right次序、pad值、内部physical padding |
 | TensorNom/channelnorm | `[2,7,9,65]`且各channel统计不同 | 归一化轴、统计范围和padding参与错误 |
@@ -663,14 +664,15 @@ DataMove base共享dispatcher有46个board case。除原有large transform和NCH
 C/W/H/HW/N五种source语义分别使用非对称两输入并由有界GatherScatter materialize；broadcast分别覆盖
 scalar、C=65 channel和`W9×C65` row；Cx/NCx覆盖C=63/64/65/127/129的四向转换；gather覆盖contiguous、
 1D/2D/3D holes和16385-element tail。所有case检查all-and-only logical points、完整physical span和slot
-canary；instruction count是case预算而非单指令能力声明。extended dispatcher再增加18个case：raw
-Concat C/W/H/HW、large Pad/Img2Col、MaskGather/MaskGather_bV、TensorNom、Cx/NCx materialize→CT Add、
+canary；instruction count是case预算而非单指令能力声明。extended默认dispatcher增加17个case：raw
+Concat C/W/H、large Pad/Img2Col、MaskGather/MaskGather_bV、TensorNom、Cx/NCx materialize→CT Add、
 Tensor materialize→NE identity GEMM、I8 `128B×32`/`64B×64` strided TDMA，以及FP16/BF16 raw-vs-CRT
 Memset。公开DataMove opcode `121..138`均有处置：14个exact、4个observation、0 deferred；四个
 observation opcode为raw Concat、TensorNom和两种MaskGather，均保留raw result、expected diff、
 physical guard和completion。CT/NE/RDMA/WDMA/TDMA与Tensor/NTensor/Cx/NCx的20个组合分类为8个native
-positive、3个materialize-then-consume positive和9个static-negative，未留空白。新增18个case只完成
-host/target/no-card准备，尚未上板。
+positive、3个materialize-then-consume positive和9个static-negative，未留空白。native `dims=HW` Concat因一次
+completion timeout不进入默认catalog，只保留显式`--case`隔离复测入口。C/W/H已取得raw completion和guard
+板端观察但尚未exact-qualified；其余新增case只按各自实际host/target/no-card或板端结果记账。
 
 ### 5.4 NE FP16/BF16 compute suite
 
@@ -717,8 +719,8 @@ catalog/probe从weight shape和Cx dtype宽度推导8192B，8192B之后的suffix 
 
 | suite | calibration shape | held-out | 目的 |
 | --- | --- | --- | --- |
-| CT compact vector | 8192 logical elements | 8197 elements | 排除启动开销主导并覆盖非256B tail |
-| CT `VuV` | 8192与非2次幂unit | 8197与另一legal unit | 区分unit重复、full/tail |
+| CT compact vector | 8192 logical elements | 8214 elements | 排除启动开销主导并覆盖非256B tail |
+| CT `VuV` | 8192与非2次幂unit | 8214与另一legal unit | 区分unit重复、full/tail |
 | Cx/NCx | `[2,7,9,65]` | C=63/64/127/129族 | 覆盖block、C0 tail、N stride |
 | reduce/pool/movement | 至少数千元素、非对称H/W/C | 独立axis/window/pad | 排除1x1、方阵和全零弱oracle |
 | GEMM | 64×128×128 | 65×129×129、batch2 | 非平凡累加和三维tail |
@@ -864,7 +866,7 @@ compiler常数。
 
 当前机器矩阵覆盖28个导航域和121个叶子：74个`board-positive`、21个`board-observation`、
 6个`delegated-positive`、18个`static-negative`及2个`isolated-deferred`。CT opcode/convert、
-71个instruction-family safe case、base 46 + extended 18个DataMove、
+71个instruction-family safe case、base 46 + extended默认17个DataMove和1个显式隔离`dims=HW` Concat、
 70个NE row、59个memory descriptor、84个SPM row以及新增NCC constructor/wait/subset/all-direction/
 strided/large/double-slot case均已构成实卡请求并完成相应host/target/no-card准备。它们尚未在本轮目标
 profile上执行，不能写成board evidence。准备完成不等于Q37完成，也不提前授权production scheduling变化；
