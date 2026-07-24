@@ -20,7 +20,8 @@ Pipeline position:
   synchronization/visibility、DTE/multi-tile、launch ABI及PMU measurement-basis输入；再从current IR重算
   resource/address dependency DAG，在isolated complete-rank actual clone中物化有限的baseline与overlapped alternatives。
   optimized clone用真实SSA buffer slot、loop-carried rotation、prologue/steady/epilogue、issue token和
-  latest-legal wait/fence表示multi-buffer软件流水；任何变换后重新运行memory、instruction和whole-variant gate。
+  dependency-preserving issue order及latest-legal completion-domain drain/fence表示multi-buffer软件流水；
+  任何变换后重新运行memory、instruction和whole-variant gate。
 - Output artifact / IR:
   仍是唯一accepted instruction/memory/completion program；overlap由body中的多个显式buffer、issue order、
   token/wait/fence和structured control flow直接表达。独立校准文档提供profile-scoped evidence和compiler
@@ -44,7 +45,9 @@ Pipeline position:
   exact-alias、partial-overlap和alignment边界，确认parallel-mode启用、正确性、completion及可观测重叠；
   production source至少物化一个
   非case特化的multi-buffer prologue/steady/epilogue clone，使movement[n+1]、compute[n]和writeback[n-1]
-  在无真实hazard时处于同一issue window，SPM planner接受两个独立slot且wait/fence只位于first true hazard。
+  在无真实hazard时处于同一issue window，SPM planner接受两个独立slot；pure same-worker NCC的
+  RAW/WAR/WAW只形成dependency-preserving issue order，不在每条hazard处插wait，drain/fence只位于
+  NCC→Kcore/Direct DTE、跨worker join、barrier、terminal/host publication等completion-domain boundary。
   baseline和optimized clone经过相同rank/whole-variant、target/package、model与板端exact gate；任何性能结论
   只覆盖实际测得profile，不把结构metric称为cycle或time。
 ```
@@ -97,8 +100,9 @@ Pipeline position:
   DataMove为base 46 + extended默认17个safe case，并保留1个只允许显式选择的native `dims=HW`
   Concat隔离复测case；公开`121..138`处置为14 exact、4 observation、0 deferred。NE为32 exact、
   38 observation、3 static-negative，新增quant、Depthwise/BackwardConv和
-  左右不等batch。memory-descriptor当前有99个case（既有59行加40个多offset pair row），SPM 124行拆为
-  24个本地board、10个static-negative、90个concrete delegated、0 deferred。新增5个非preferred
+  左右不等batch。memory-descriptor当前有121个case（既有59行、40个多offset pair row，以及
+  CT+RDMA代表pair的16个新增bank-phase row和6个新增base-residue row），SPM 146行拆为
+  24个本地board、10个static-negative、112个concrete delegated、0 deferred。新增5个非preferred
   base/length只作bounded legality observation，不提前supported；NCC新增constructor nonnull、
   default/byworker scope、六个subset
   join、all-direction producer/consumer、strided dependency、large backlog与手写double-slot hardware
@@ -124,13 +128,11 @@ Pipeline position:
   才调用`AddVV`并完成packet。新schema已通过host protocol、target link和shared-package no-card，
   本批未运行板卡；后续一次精确实卡重放应直接区分`builder-not-acquired`与更晚的packet/release阶段，
   不再靠缩放DDR resource猜测。
-- 下一重启会话只跑剩余项：current CT vector；新增95个Reduce/Pool/Unpool case、此前尚未上板的独立
-  IndexedMax以及ArgMin、旧Unpool-index和Bilinear的instruction-family复验；DataMove extended余项及最后隔离的native
-  `dims=HW`；NE当前ReLU/Conv/BackwardConv；新增5个SPM non-preferred geometry和40个三offset
-  engine-pair row；current NCC schema单case、safe suite和15个独立case；Direct DTE/transport的30个
-  payload-sweep、4个有界错误和2个sender async对照，共36个尚无current产物的配置。已有证据的SPM 19、
-  memory descriptor 59、cache 58、DataMove base和CT convert
-  不重复跑。
+- 下一重启会话不直接恢复大批次。先用current compiler/CRT重新生成并只执行一次ordinary Add，同时建立
+  会话资格并验证其最终module中的依赖完成顺序；随后用已恢复安全地址的
+  `op013 F32 VuVLoop min tail -> op014 F16 VV Add main`双case重放完整result/span/guard，并以一次
+  后置Add确认上下文未被污染。三步都通过后才继续修正strict oracle后的strided DMA/NCC以及其它剩余项；
+  已有证据不重复跑。任一步timeout或设备异常立即停批，不自动retry/reset/power。
 - 校准矩阵按compiler consumer分层，而不是按vendor API罗列：
   - instruction/encoding：constructor ownership、packet routing、descriptor单位、range materialization、
     alignment/tail、返回值与错误可观察性；
@@ -190,7 +192,9 @@ Pipeline position:
   - wait scope与visibility：`TsmWaitfinish_bywork`、default wait/local fence、Kcore store→NCC read、
     NCC write→Kcore read、WDMA→host publish分别以安全final drain收口；只把可重复观察到的scope写入合同。
   - busytable：RDMA→CT、CT→WDMA、RDMA/WDMA、TDMA/CT覆盖disjoint、exact、partial、adjacent和一个
-    strided-envelope代表；RAW/WAR/WAW/read-read各有至少一个方向，并与显式fence串行对照配对。
+    strided-envelope代表；RAW/WAR/WAW/read-read各有至少一个方向。pure same-worker NCC正向按指定
+    issue order连续发射，不在相邻dependency之间插wait；最终drain只用于离开该completion domain后的
+    result/guard oracle。显式drain control单列为completion开销对照，不能反写成production每条hazard的要求。
     operand角色必须由schema显式传递，不能从engine或buffer名字恢复；有界hazard correctness case不再以
     disjoint正overlap为发射前提，仍须以实际packet range、逐段composition golden、未选operand guard和
     最终safety drain闭环。disjoint serial/window是否稳定正overlap只决定能否把观察提升成compiler并行
@@ -276,13 +280,23 @@ Pipeline position:
   该case只作为BF16 format/current layout基线，不外推累加舍入、transpose或tail。
   BF16 PoolMax与TDMA Img2Col也已沿用对应FP16 geometry逐case串行通过，分别精确验证256B与2048B
   output及guard；这些case闭合BF16 format路径，不新增geometry外推。
-- instruction probe seed完成mapped-SPM cache clean后的最新safe suite在`peripheral-argmin-f16`重新失败：
+- instruction probe曾在`peripheral-argmin-f16`观察到：
   output slot byte 256实际为`0x80`、预期为`0x00`；`0x80`是本case output seed `-13.0`的FP16低字节，
-  且前一ArgMax已通过，因此不是上一case结果或input setup陈旧。该证据重新打开Arg extrema writeback
-  publication gate：`TsmWaitfinish()`后的mapped-SPM CPU store可能停留在Kcore private cache，后续WDMA读到seed。
-  CRT现由ArgMax/ArgMin共享writeback helper在value/index store后clean实际range覆盖的cache line；本批host
-  conformance、instruction catalog、no-card package及最终module C908反汇编已通过，仍需独立板端复验；
-  未复验前不恢复safe suite整体通过状态。
+  且前一ArgMax已通过，因此不是上一case结果或input setup陈旧。此前把它归因为mapped-SPM private
+  cache publication的结论已经撤回：SDK把`get_spm_memory_mapping(offset)`定义为
+  `0x30400000 + offset`，即`KUIPER_L1SPM_UNCACHE_WEAKORDER_BASE`的uncached weak-order alias；该alias只需
+  `fence`/`sync`建立CPU访问顺序，不得作为cacheable地址执行dcache clean/invalidate。只有raw
+  `0x0 + offset` cacheable SPM alias才适用对应cache操作；DDR的Kcore/host publication与readback仍按owned
+  range执行clean/invalidate。Arg extrema剩余问题按completion/ordering独立复验，不恢复旧cache诊断。
+- 干净重启后，CT `op014 F16 VV Add main`隔离执行逐bit exact；同一会话执行
+  `op013 F32 VuVLoop min tail`后紧接`op014`，可稳定复现`op014`仅首128B错误而byte 128之后exact，随后
+  其它CT及known-good Add也可数值错误。128B对应一个CT/SPM 1024-bit beat，不是C908 64B cache line；
+  错误内容也不是canary或完整前一输出。该组证据排除普通cache，但不能单独证明缺少first-conflict
+  `TsmWaitfinish`；pure same-worker NCC的无中间wait dependency向量已确认由issue order和busytable完成，
+  因此该wait假设撤回，op013→op014的唯一根因继续保持Unknown。current `VuVLoop`的base/full等比例整除
+  只是一组已验证矩形geometry，不是硬件必需约束；不等比例、非整除或partial outer geometry均保持
+  Unknown并由compiler fail closed。一次尝试把WDMA目标换到未经证明owned/合法的`0x70000`起始64KiB范围，造成真正
+  completion timeout并使runtime context进入poison/quarantine；该诊断已撤销且不得复用。
 - ordinary Conv verifier已从legacy `[Kh,Kw,I,O]`修正为current wrapper合同
   `[Kx,Ky,O,I]`，kernel/stride/dilation分别为`[Kx,Ky,Sx,Sy]`与`[Dx,Dy]`，并由非对称正反例、
   register-bound axis case和完整target ABI golden验证。对应FP16 Conv以`Sx/Sy=2/1`、
@@ -356,6 +370,8 @@ profiling按可证明范围分层使用：
 typed tight `D+1`也只能使用相同隔离边界；CT/NE/RDMA/WDMA `D+1=7`与TDMA `D+1=5`已闭合总提交接受
 与完成，但未闭合active occupancy/full/backpressure；任意更深提交不从这些向量外推。
 case或heartbeat timeout后停止该批次，不自动重试、reset或power cycle；`tsm_smi` idle不能解除停止条件。
+诊断地址也必须先由当前SPM arena/reservation合同证明整个半开range owned且合法；不能用相邻地址可访问或
+较小CT write成功外推整段WDMA range。`0x70000..0x7ffff`的64KiB WDMA诊断明确禁止复用。
 板端parameterized probe只回传事实，编译器策略在全部代表维度闭合后决定。当前没有engine pair通过稳定正
 overlap资格门禁，RAW hazard暂不适用且所有pair保持串行；只有未来同方向disjoint serial/window对照稳定达到
 median正overlap，才运行对应exact/partial/adjacent composition oracle。
@@ -364,12 +380,25 @@ median正overlap，才运行对应exact/partial/adjacent composition oracle。
 
 - 在physical offset提交前从current instruction SSA/effect构建短生命周期dependency DAG；edge只来自SSA、
   normalized buffer root/view range、typed resource effect、control flow和completion，不依赖op或buffer名字。
+- 在完整Instr IR已经物化、SPM planning尚未提交offset时，从`MemoryEffectOpInterface`和SSA
+  alias/root/view path重算RAW/WAR/WAW dependency。pure same-worker NCC链按这些edge保持issue order，
+  由current verified descriptor域的worker busytable阻止冲突queue head越序；链内不物化local fence，
+  也不把hardware ordering当成删除IR edge或lifetime证明。RAR只在另有resource/control edge时保序。
+- local drain在离开当前completion domain的latest-legal boundary物化并合并：至少包括NCC→Kcore、
+  NCC→Direct DTE、跨worker join、显式barrier、structured completion backedge以及terminal/host publication。
+  Direct DTE仍由精确event/token与`dte_wait`完成，不能被local drain替代。default wait只轮询worker0；
+  worker scope未闭合时按真实participant使用matching wait/join。该规则不匹配case、opcode、shape或buffer名。
 - 只对静态可证明iteration relation与固定slot count生成有限actual clones。第一条纵向使用双buffer，
-  但slot rotation、prologue/steady/epilogue和first-hazard wait/fence由通用loop/issue语义驱动，不匹配GEMM名。
+  但slot rotation、prologue/steady/epilogue、dependency issue order和completion-domain boundary由通用
+  loop/issue语义驱动，不匹配GEMM名。
 - multi-buffer是两个真实allocation/view或明确loop-carried SSA slot；SPM planner只做lifetime、capacity、
   alignment和offset owner，不接收repair recipe，也不在placement后偷偷复制buffer。
-- resource-aware scheduler只移动DAG-ready的指令；不同engine可并行不等于忽略地址hazard。local fence下沉到
-  first consumer/reuse/visibility boundary，DTE token仍由精确`dte_wait`完成。
+- resource-aware scheduler只移动DAG-ready的指令；不同engine可并行不等于忽略地址hazard。same-worker
+  NCC的consumer/reuse只约束issue order，不自动产生wait；local drain下沉到latest-legal
+  completion-domain exit，并与相邻等价boundary合并。
+- target/runtime的local-fence lowering还必须建立issue到completion poll、poll返回到后续issue的机器顺序；
+  当前诊断中`bywork(0)`加default wait只作为保守区分手段，不是长期ABI合同，也不能硬编码成所有worker的
+  completion handshake。最终scope/handshake仍按version-matched实现和逐worker证据收敛。
 
 ## Checkpoint C：选择、验证与板端纵向
 

@@ -92,6 +92,164 @@ def validate_concat_physical_spans() -> None:
     )
 
 
+def validate_large_typed_physical_spans() -> None:
+    cases = (
+        (
+            catalog.CASES_BY_NAME[
+                "datamove-pad-large-n2h5w7c65-to-n2h7w10c65"
+            ],
+            catalog.PAD_SOURCE_SHAPE,
+            catalog.PAD_DESTINATION_SHAPE,
+        ),
+        (
+            catalog.CASES_BY_NAME[
+                "datamove-img2col-large-n2h9w11c65-k3x2-s2x1"
+            ],
+            catalog.IMG2COL_SOURCE_SHAPE,
+            catalog.IMG2COL_DESTINATION_SHAPE,
+        ),
+    )
+    for sample, (case, source_shape, destination_shape) in enumerate(cases):
+        source_layout = catalog.codec.physical_layout(
+            source_shape, "NCx", catalog.FP16_BYTES
+        )
+        destination_layout = catalog.codec.physical_layout(
+            destination_shape, "NCx", catalog.FP16_BYTES
+        )
+        assert case.input_bytes == source_layout.physical_bytes
+        assert case.result_bytes == destination_layout.physical_bytes
+        assert case.output_span == destination_layout.physical_bytes
+        source, expected = catalog.build_input_expected(case, sample + 1)
+        assert catalog.codec.unpack_scalar_bytes(
+            source_shape, "NCx", catalog.FP16_BYTES, source
+        ) == catalog._logical_values(
+            catalog._product(source_shape), sample + 1
+        )
+        logical_expected = catalog.codec.unpack_scalar_bytes(
+            destination_shape,
+            "NCx",
+            catalog.FP16_BYTES,
+            expected,
+        )
+        assert len(logical_expected) == catalog._product(destination_shape)
+        assert (
+            catalog.codec.pack_scalar_bytes(
+                destination_shape,
+                "NCx",
+                catalog.FP16_BYTES,
+                logical_expected,
+                padding=0,
+                batch_padding=(
+                    catalog.SLOT_CANARY
+                    if case.operation == "img2col-large"
+                    else None
+                ),
+            )
+            == expected
+        )
+
+    pad = cases[0][0]
+    old_compact_span = catalog._span(
+        catalog._compact_bytes(catalog.PAD_DESTINATION_SHAPE)
+    )
+    assert old_compact_span == 18432
+    assert pad.output_span == 19456
+    assert pad.output_span - old_compact_span == 1024
+    output_slot = bytearray([catalog.SLOT_CANARY] * catalog.SLOT_BYTES)
+    begin = catalog.BODY_OFFSET
+    output_slot[begin : begin + pad.output_span] = bytes(pad.output_span)
+    assert (
+        runner.output_guard_mismatches(
+            bytes(output_slot), old_compact_span
+        )
+        == 1024
+    )
+    assert (
+        runner.output_guard_mismatches(bytes(output_slot), pad.output_span)
+        == 0
+    )
+
+    img2col = cases[1][0]
+    _, img2col_expected = catalog.build_input_expected(img2col, 2)
+    img2col_layout = catalog.codec.physical_layout(
+        catalog.IMG2COL_DESTINATION_SHAPE,
+        "NCx",
+        catalog.FP16_BYTES,
+    )
+    active_bytes = (
+        img2col_layout.hw_elements
+        * img2col_layout.aligned_c
+        * catalog.FP16_BYTES
+    )
+    batch_bytes = (
+        img2col_layout.batch_elements * catalog.FP16_BYTES
+    )
+    assert active_bytes == 44064
+    assert batch_bytes == 44288
+    for batch in range(catalog.IMG2COL_DESTINATION_SHAPE[0]):
+        begin = batch * batch_bytes + active_bytes
+        end = (batch + 1) * batch_bytes
+        assert img2col_expected[begin:end] == bytes(
+            [catalog.SLOT_CANARY]
+        ) * (end - begin)
+
+
+def validate_tensor_nom_physical_span() -> None:
+    case = catalog.CASES_BY_NAME[
+        "datamove-raw-tensornom-n2h7w9c65"
+    ]
+    layout = catalog.codec.physical_layout(
+        catalog.TENSOR_NOM_SHAPE,
+        "NCx",
+        catalog.FP16_BYTES,
+    )
+    assert not case.is_exact
+    assert case.input_bytes == catalog._compact_bytes(
+        catalog.TENSOR_NOM_SHAPE
+    )
+    assert case.result_bytes == layout.physical_bytes == 17408
+    assert case.output_span == layout.physical_bytes
+
+    source, semantic_expected = catalog.build_input_expected(case, 1)
+    logical = catalog._logical_values(
+        catalog._product(catalog.TENSOR_NOM_SHAPE), 1
+    )
+    assert source == b"".join(logical)
+    assert semantic_expected == catalog.codec.pack_scalar_bytes(
+        catalog.TENSOR_NOM_SHAPE,
+        "NCx",
+        catalog.FP16_BYTES,
+        logical,
+        padding=0,
+    )
+    assert catalog.codec.unpack_scalar_bytes(
+        catalog.TENSOR_NOM_SHAPE,
+        "NCx",
+        catalog.FP16_BYTES,
+        semantic_expected,
+    ) == logical
+
+    old_compact_span = catalog._span(case.input_bytes)
+    assert old_compact_span == 16384
+    output_slot = bytearray([catalog.SLOT_CANARY] * catalog.SLOT_BYTES)
+    begin = catalog.BODY_OFFSET
+    output_slot[
+        begin : begin + case.output_span
+    ] = semantic_expected
+    assert (
+        runner.output_guard_mismatches(
+            bytes(output_slot), old_compact_span
+        )
+        == 1024
+    )
+    assert (
+        runner.output_guard_mismatches(
+            bytes(output_slot), case.output_span
+        )
+        == 0
+    )
+
+
 def validate_resource_canaries() -> None:
     case = catalog.CASES_BY_NAME[
         "datamove-pad-large-n2h5w7c65-to-n2h7w10c65"
@@ -226,6 +384,8 @@ def main() -> int:
         catalog.SLOT_BYTES
     )
     validate_concat_physical_spans()
+    validate_large_typed_physical_spans()
+    validate_tensor_nom_physical_span()
     isolated_built = catalog.build_case_payload(isolated_hw, sample=0)
     assert len(isolated_built.request) == catalog.RESOURCE_BYTES
     assert len(isolated_built.payload) == catalog.RESOURCE_BYTES
@@ -334,11 +494,30 @@ def main() -> int:
     assert "wafer_tx81_tdma_img2col" in probe
     assert "wafer_tx81_elementwise_add" in probe
     assert "wafer_tx81_gemm" in probe
+    entry = probe[
+        probe.index("wafer_tx81_instruction_family_probe(uint64_t request_ddr")
+        :
+    ]
+    assert "get_spm_memory_mapping" not in probe
+    assert "wafer_dmx_fill" not in probe
+    assert "wafer_dmx_guard_mismatches" not in probe
+    input_rdma = entry.index("wafer_tx81_rdma(payload_ddr,")
+    canary_rdma = entry.index(
+        "wafer_tx81_rdma(request_ddr + WAFER_DMX_SLOT_BYTES,"
+    )
+    issue = entry.index("wafer_dmx_issue(&selected, &raw_execute_rc)")
+    wdma = entry.index("wafer_tx81_wdma(", issue)
+    terminal = entry.index("wafer_tx81_local_fence();", wdma)
+    assert input_rdma < canary_rdma < issue < wdma < terminal
+    assert entry.count("wafer_tx81_local_fence();") == 1
     for row in (
         "{0U, 24576U, 16380U, 24576U, 0U, 1U, 0U, 1U}",
         "{1U, 17408U, 16380U, 17408U, 0U, 1U, 0U, 1U}",
         "{2U, 17920U, 16380U, 17920U, 0U, 1U, 0U, 1U}",
         "{3U, 9216U, 8060U, 9216U, 0U, 1U, 0U, 1U}",
+        "{4U, 9728U, 19456U, 19456U, 1U, 0U, 0U, 0U}",
+        "{5U, 27136U, 88576U, 88576U, 1U, 0U, 0U, 0U}",
+        "{8U, 16380U, 17408U, 17408U, 1U, 0U, 0U, 1U}",
     ):
         assert row in probe
     assert "case 1U:" in probe

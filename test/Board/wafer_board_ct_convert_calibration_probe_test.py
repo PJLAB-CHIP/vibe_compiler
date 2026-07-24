@@ -162,7 +162,6 @@ def validate_output(
         "OUTPUT_DDR_OFFSET": catalog.OUTPUT_DDR_OFFSET,
         "SLOT_BYTES": catalog.SLOT_BYTES,
         "BODY_OFFSET": catalog.BODY_OFFSET,
-        "OUTPUT_GUARD_MISMATCHES": 0,
         "CT_INST_DELTA": 1,
         "RECORD_GUARD": catalog.RECORD_GUARD,
     }

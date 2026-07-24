@@ -84,8 +84,13 @@ static void eraseDeadPrivateFills(mlir::ModuleOp module) {
   }
 }
 
+static bool hasCompletedLocalInstructionsBefore(mlir::Operation *operation) {
+  return classifyLocalInstructionCompletion(operation->getPrevNode()) ==
+         LocalInstructionCompletion::BarrierAndComplete;
+}
+
 static mlir::LogicalResult
-materializeStructuredLocalFences(mlir::ModuleOp module) {
+materializeStructuredBoundaryFences(mlir::ModuleOp module) {
   mlir::WalkResult result = module.walk([&](TileRegionOp tileRegion) {
     if (!tileRegion.getBody().hasOneBlock()) {
       tileRegion.emitError()
@@ -101,7 +106,7 @@ materializeStructuredLocalFences(mlir::ModuleOp module) {
                              "terminator for loop-backedge local completion";
         return mlir::WalkResult::interrupt();
       }
-      if (mlir::isa_and_nonnull<SyncLocalFenceOp>(terminator->getPrevNode()))
+      if (hasCompletedLocalInstructionsBefore(terminator))
         return mlir::WalkResult::advance();
 
       mlir::OpBuilder builder(terminator);
@@ -119,7 +124,7 @@ materializeStructuredLocalFences(mlir::ModuleOp module) {
              "terminator for terminal local completion";
       return mlir::WalkResult::interrupt();
     }
-    if (mlir::isa_and_nonnull<SyncLocalFenceOp>(terminator->getPrevNode()))
+    if (hasCompletedLocalInstructionsBefore(terminator))
       return mlir::WalkResult::advance();
 
     mlir::OpBuilder builder(terminator);
@@ -231,5 +236,5 @@ wafer::tile_region_to_instr::convertTileRegionToInstrModule(
     return mlir::failure();
   }
   eraseDeadPrivateFills(module);
-  return materializeStructuredLocalFences(module);
+  return materializeStructuredBoundaryFences(module);
 }

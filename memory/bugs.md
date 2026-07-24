@@ -591,9 +591,11 @@
 - 现象：all-gather收到chunk后又执行slot copy，或all-reduce/reduce-scatter在wait后执行最终elementwise accumulation；
   若直接把result交给resident consumer，SPM lifetime看似闭合但本地movement/compute仍可能未完成。
 - 根因：DTE wait只完成send/recv token，不能消费local movement/compute engine的pending issue。
-- 修复模式：all-gather全部received-slot copy后插入final local fence；reduce-scatter每次accumulation后fence；ring/tree
-  all-reduce的本地accumulation同样在后续DTE read或resident consumer前fence。回归必须检查collective→consumer使用
-  同一SPM accumulator且无DDR round-trip，不能只数DTE wait。
+- 修复模式：all-gather全部received-slot copy后在terminal/publication boundary插入final local drain；
+  reduce-scatter和ring/tree all-reduce的本地accumulation在后续DTE read前drain，因为NCC→Direct DTE跨越
+  completion domain。若后续resident consumer仍是pure same-worker NCC，只保持RAW issue order并由busytable
+  落实，不因consumer本身插wait。回归必须检查collective→consumer使用同一SPM accumulator且无DDR
+  round-trip，并区分NCC chain与DTE/terminal boundary，不能只数DTE wait或local fence。
 
 ## 2026-07-16 无loop的producer fusion worklist必须有严格上游度量
 
@@ -1282,32 +1284,35 @@
 - 防复发：writeback完成、index ABI正确和数值domain正确是三项独立资格门禁。每个reduction/extrema opcode都要
   单独覆盖符号域；某一domain失败时保留最小可复现case，不能降级oracle或把错误值写成expected。
 
-## 2026-07-24 instruction资格probe不能用未独立闭合的异步DMA准备输入
+## 2026-07-24 instruction资格probe不能混入普通Kcore mapped-SPM访问
 
 - 现象：连续执行ArgMax、ArgMin时，ArgMin的host payload是全正有限值，但输出恰好是上一条ArgMax输入的真实
   最小值`-30@index0`；record、output span、writeback value/index位置和guard均正常。
-- 根因：instruction-family probe最初使用RDMA加default local fence准备SPM；改为Kcore volatile byte copy后，
-  若只执行`fence`/`sync`仍可复现，说明mapped-SPM cache line尚未发布给目标CT。该失败属于probe setup
-  dataflow，不是ArgMin oracle、output copyback或已知的ArgMin负数域限制。
-- 修复模式：instruction资格probe以Kcore volatile byte copy把已invalidate的DDR payload写入mapped SPM，
-  随后clean每个完整SPM slot的cache range并执行`fence`/`sync`；RDMA completion与cache语义由各自校准suite
-  独立验证，不能混入目标指令数值资格。
-- 防复发：instruction microcase的setup必须自身同步且不依赖待校准的其它engine；若实际值精确对应上一case的
-  输入，先对照raw payload与前一case语义，再判断oracle或硬件数值能力。
+- 误导来源：probe先使用RDMA加default local fence准备SPM，随后又改成Kcore volatile byte copy；两种路径均
+  出现过异常。后者只证明普通instruction case混入了新的Kcore↔SPM completion域，不能证明mapped alias是
+  正确修复，也不能由单个数值case反推出`TsmWaitfinish`边界。
+- 修复模式：普通instruction资格probe使用host payload的整槽RDMA seed，保持被测NCC链，再整槽WDMA回host，
+  只在terminal/host publication执行一次completion；result和prefix/suffix guard均由host校验。只有专门的
+  completion/coherence A/B probe或ArgMax/ArgMin真实Kcore writeback才访问mapped SPM；前者分别比较
+  pure NCC、NCC→Kcore read和Kcore write→NCC，不能把待验证假设写回普通case。
+- 防复发：instruction microcase不应为seed、guard scan或普通结果oracle调用
+  `get_spm_memory_mapping()`；若实际值精确对应上一case输入，先对照raw payload、issue/completion edge和
+  前一case语义，再判断oracle或硬件数值能力。机械改造后的板端证据必须由clean session重放，旧结果不能
+  自动继承。
 
-## 2026-07-24 mapped-SPM CPU writeback必须发布后才能由NCC DMA消费
+## 2026-07-24 mapped-SPM uncached alias不能执行dcache publication
 
-- 现象：instruction probe已对全部SPM seed执行cache clean后，ArgMax通过而随后的FP16 ArgMin仍在output slot
+- 现象：instruction probe曾对mapped-SPM seed和writeback执行dcache clean；ArgMax通过而随后的FP16 ArgMin仍在output slot
   byte 256得到`0x80`、预期`0x00`。`0x80`正是本case output seed `-13.0`的低字节，不是上一ArgMax输出，
-  说明ArgMin的CPU writeback没有被后续WDMA观察到。
-- 根因：ArgMax/ArgMin共享wrapper在`TsmWaitfinish()`后读取`wb_data0/wb_data1`并通过mapped-SPM执行
-  `volatile` CPU store，但没有clean Kcore private write-back cache。wait只建立目标指令到CPU store的完成关系，
-  `volatile`和fence不能建立CPU store到NCC DMA的cache publication。
-- 修复模式：在两个store完成后，由共享extrema writeback helper按value dtype width和4-byte index width覆盖
-  实际cache line，执行machine `dcache.cipa`或supervisor `dcache.civa`及fence/sync；不要按ArgMin kind特判。
-  source conformance锁定wait→mapped store→publication顺序，目标对象反汇编锁定两种mode的cache opcode。
-- 防复发：Kcore→NCC、NCC→Kcore、Kcore→host是不同可见性方向；完成wait、CPU store、DMA copyback也分别是
-  不同gate。输出精确保留本case seed时，应优先检查producer publication，不能从前一case语义或数值oracle解释。
+  说明后续consumer没有观察到预期writeback，但不能据此判定mapped alias需要cache publication。
+- 根因：SDK明确定义`KUIPER_L1SPM_UNCACHE_WEAKORDER_BASE=0x30400000`，
+  `get_spm_memory_mapping(offset)`返回该uncached weak-order alias。把它当成cacheable SPM地址执行
+  `dcache.cipa/civa/ipa/iva`既不构成正确publication合同，也会掩盖真正的issue/completion ordering问题。
+- 修复模式：mapped alias只做volatile load/store并以`fence iorw,iorw`/`sync`建立顺序；只有raw
+  `0x0 + offset` cacheable SPM alias才使用对应dcache操作。cacheable DDR的device/host publication与readback
+  继续按实际owned cache line clean/invalidate，不能与mapped-SPM共享helper。
+- 防复发：先从地址域定义判断cache属性，再选择ordering或cache操作；数值保留seed时同时审计producer
+  completion、first consumer dependency和consumer copyback，不能用一次dcache尝试证明cache根因。
 
 ## 2026-07-23 1x1 Img2Col case会掩盖wrapper layout合同错误
 
@@ -1404,5 +1409,71 @@
 - 修复模式：有bounded execution/completion/guard但numeric解释未唯一时降为raw observation；共享wrapper
   option不能因一个dtype未执行就伪造exact。physical span从kind-specific packet shape owner、layout和dtype
   推导，BackwardConv按weight shape计算，span外canary仍严格。
+- 复验：修正footprint后的FP16/BF16 BackwardConv各运行3个板端样本，8192B physical span、span外guard和
+  completion全部通过。这证明type-2 shape owner与transfer footprint修复正确，只形成bounded observation；
+  当前raw结果仍未唯一恢复numeric语义，不能升级为BackwardConv exact。
 - 防复发：host回归同时检查disposition不生成expected、kind-specific footprint和corrected span后一字节的
-  suffix guard；已有raw先离线重放并记录可区分事实，不能用record成功替代numeric oracle。
+  suffix guard；板端复验必须把range/guard/completion资格与numeric exact分栏记录，不能用record成功或
+  footprint通过替代numeric oracle。
+
+## 2026-07-24 vendor heap ABI不能由CRT猜测scope后改写
+
+- 现象：NCC builder所在的vendor archive引用一参`rt_malloc/rt_free`，repo-local CRT却先定义同名函数，
+  再固定以scope 0调用三参`csi_kernel_malloc/free`。这样最终module的UND表看似闭合，却把vendor请求改写到
+  未经证明的allocation domain，builder可在prepare阶段得到错误生命周期或失败。
+- 根因：把另一个loader API存在和某些调用点的寄存器值误当成heap ABI等价性。当前匹配Kcore ELF同时有
+  `__rtmsym_rt_malloc/__rtmsym_rt_free`，vendor archive原始一参ABI本就能由loader直接解析，无需CRT桥接。
+- 修复模式：删除repo CRT的heap bridge；versioned loader exact allowlist加入`rt_malloc/rt_free`，link后heap
+  fixture要求这两个symbol原样保留为UND，并拒绝它们被悄悄改写成`csi_kernel_malloc/free`。
+- 防复发：对vendor archive的未定义符号优先与匹配Kcore `__rtmsym_*`做exact closure；只有存在有文档、可验证的
+  ABI适配合同才在CRT桥接，不能从参数默认值、历史module或相邻API猜测scope、ownership和free配对。
+
+## 2026-07-24 same-worker NCC hazard不能误写成first-conflict `TsmWaitfinish`
+
+- 现象：clean reboot后，CT F16 VV Add隔离执行逐bit exact；先执行F32 VuVLoop tail再紧接同一Add时，
+  Add只有首128B错误而byte 128以后exact，随后其它CT和known-good Add也可能数值错误。错误128B等于一个
+  CT/SPM 1024-bit beat，不是C908的64B cache line，也不是canary或完整前一输出。后续接口收口确认该
+  VuVLoop使用的32/37-element unit位于supported合同之外，因此整条序列只保留为历史raw observation。
+- 误判根因：把“地址依赖edge”和“离开completion domain前必须drain”混成一件事，仅凭该相邻case现象就
+  推导RDMA→CT、CT→WDMA的first conflicting consumer前必须调用`TsmWaitfinish`。current有界
+  RAW/WAR/WAW向量已经证明pure same-worker NCC链在没有中间wait时可按issue order与worker busytable正确完成；
+  因此前述现象排除普通cache，却没有证明缺少first-conflict completion，其唯一根因仍为Unknown。
+- 修复模式：完整Instr IR从typed MemoryEffects和SSA alias/root/view path重算RAW/WAR/WAW edge并保持
+  issue order；hardware busytable落实current verified descriptor域的edge，但不替代IR dependency或lifetime。
+  链内不插重复wait。local drain只在NCC→Kcore/Direct DTE、跨worker join、barrier/structured completion
+  backedge、terminal/host publication等completion-domain boundary物化并合并；target/runtime只在这些
+  boundary建立issue→completion poll→boundary consumer的机器顺序。
+- 防复发：回归同时覆盖“same-worker无中间wait的dependency chain”和“离开NCC domain前matching drain”；
+  不能按opcode、shape、case名或first conflict插fence，也不能把`bywork(0)`诊断路径硬编码为通用worker
+  handshake。用于production completion结论的正向packet必须先通过自身接口legality；strided dependency、
+  跨worker同地址及default/local-fence跨worker scope未校准时继续Unknown。
+
+## 2026-07-24 raw hardware observation不能越过`VuVLoop` supported interface
+
+- 现象：历史`VuVLoop unit_elem_count=32/37` raw case曾逐bit exact，因而一度被写成可继续扩展的
+  qualification子域；本次将unit 32作为独立raw case执行时，case在completion内timeout，后置known-good
+  Add也timeout，说明该次历史会话的execution面已被污染；该会话随后终止。
+- 根因：混淆“硬件对某个out-of-contract packet偶然完成”和“compiler/runtime可以支持的接口合同”。
+  current `VuVLoop` supported legality已明确要求`unit_elem_count == 64`且
+  `full_elem_count * unit_elem_count == elem_count * full_unit_elem_count`。历史exact不能反向扩展该合同，
+  单次timeout也不需要再通过更多合同外packet归纳硬件边界。
+- 修复模式：host verifier以扩宽或checked multiplication验证两个关系，违反任一关系时只保留negative
+  diagnostic，不构造或提交raw板端packet。既有unit 32/37 exact统一标为out-of-contract hardware
+  observation，不授权production；本次timeout后停止当前批次，后置Add timeout确认execution面不可信，
+  后续任一干净重启会话都由单次known-good Add重新建立baseline。该timeout只属于已经终止的历史会话，
+  不能被复制成当前卡状态。
+- 防复发：接口合同、production legality和raw hardware observation必须分栏记账；板端正向只能来自合同内
+  packet，合同外输入不以`board-observation`、held-out或隔离复测名义绕过host gate。任何timeout后都按
+  execution context可能poison处理，不以历史exact、管理面idle或更换unit继续试探。
+
+## 2026-07-24 板端诊断地址必须先证明完整range ownership
+
+- 现象：为区分地址相关污染，把WDMA destination切到`0x70000`起始并搬运64KiB；该range未先由当前SPM
+  arena/reservation合同证明合法，执行进入真实completion timeout，BoardRuntime随后将context标记为
+  poison/quarantine。
+- 根因：从相邻地址或较小CT write成功外推整段WDMA可访问，把地址交换当成无害诊断；64KiB半开range可能
+  跨越有效区、保留区或其它owner边界。
+- 修复模式：撤销该地址交换，禁止复用`0x70000..0x7ffff`；任何诊断地址先由同一planner/range validator证明
+  base、length、alignment、reservation和owner，再以最小有界transfer进入板端。
+- 防复发：timeout后立即停当前批次，不自动retry/reset/power；管理面idle不能解除poison判断。恢复由干净
+  重启后的单次known-good heartbeat重新建立，不靠cache flush或换地址继续试探。

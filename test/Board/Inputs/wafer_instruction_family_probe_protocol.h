@@ -21,6 +21,7 @@
 #define WAFER_IFP_SLOT_BYTES 4096U
 #define WAFER_IFP_BODY_OFFSET 256U
 #define WAFER_IFP_OUTPUT_DDR_OFFSET 4096U
+#define WAFER_IFP_AUX_DDR_OFFSET 8192U
 #define WAFER_IFP_SPM_A UINT64_C(0x10000)
 #define WAFER_IFP_SPM_B UINT64_C(0x20000)
 #define WAFER_IFP_SPM_OUTPUT UINT64_C(0x30000)
@@ -75,6 +76,7 @@ enum WaferIFPDeferredReason {
   WAFER_IFP_REASON_ISOLATED_COMPLETION_WRITEBACK_UNQUALIFIED = 1,
   WAFER_IFP_REASON_GEOMETRY_UNQUALIFIED = 2,
   WAFER_IFP_REASON_NUMERIC_UNQUALIFIED = 3,
+  WAFER_IFP_REASON_ISOLATED_POSSIBLE_PERMANENT_WAIT = 4,
 };
 
 /*
@@ -247,7 +249,7 @@ enum WaferIFPDeferredReason {
   X(UNPOOL_INDEX_BF16_OBSERVED, 236, "unpool-index-bf16-observed", SAFE,    \
     UNPOOL, BF16, NO_ORACLE, REASON_NONE, 512, 512, 256)                    \
   X(UNPOOL_INDEX_F32_OBSERVED, 237, "unpool-index-f32-observed", SAFE,      \
-    UNPOOL, F32, NO_ORACLE, REASON_NONE, 1024, 1024, 256)                   \
+    UNPOOL, F32, NO_ORACLE, REASON_NONE, 1024, 1024, 512)                   \
   X(UNPOOL_AVG_BF16, 238, "unpool-avg-bf16", SAFE, UNPOOL, BF16,           \
     EXACT_BITS, REASON_NONE, 512, 512, 0)                                   \
   X(UNPOOL_AVG_F32, 239, "unpool-avg-f32", SAFE, UNPOOL, F32, EXACT_BITS,  \
@@ -255,7 +257,7 @@ enum WaferIFPDeferredReason {
   X(UNPOOL_MASK_BF16, 240, "unpool-mask-bf16", SAFE, UNPOOL, BF16,         \
     EXACT_COMPOSITE, REASON_NONE, 512, 512, 256)                            \
   X(UNPOOL_MASK_F32, 241, "unpool-mask-f32", SAFE, UNPOOL, F32,            \
-    EXACT_COMPOSITE, REASON_NONE, 1024, 1024, 256)                          \
+    NO_ORACLE, REASON_NONE, 1024, 1024, 512)                                \
   X(UNPOOL_INDEX_F16_ASYMMETRIC_OBSERVED, 242,                              \
     "unpool-index-f16-k3x2-s2x1-observed", SAFE, UNPOOL, F16, NO_ORACLE,   \
     REASON_NONE, 1920, 2048, 512)                                           \
@@ -263,7 +265,7 @@ enum WaferIFPDeferredReason {
     "unpool-avg-f16-k3x2-s2x1-observed", SAFE, UNPOOL, F16, NO_ORACLE,     \
     REASON_NONE, 1920, 2048, 0)                                             \
   X(UNPOOL_MASK_F16_ASYMMETRIC, 244,                                        \
-    "unpool-mask-f16-k3x2-s2x1", SAFE, UNPOOL, F16, EXACT_COMPOSITE,       \
+    "unpool-mask-f16-k3x2-s2x1", SAFE, UNPOOL, F16, NO_ORACLE,             \
     REASON_NONE, 1920, 2048, 512)                                           \
   X(UNPOOL_INDEX_F16_REPEATED_OVERLAP_OBSERVED, 245,                        \
     "unpool-index-f16-repeated-overlap-observed", SAFE, UNPOOL, F16,       \
@@ -425,26 +427,34 @@ enum WaferIFPDeferredReason {
     CT_REDUCE, F16, EXACT_BITS, REASON_NONE, 8, 256, 0)                       \
   X(REDUCE_MIN_F16_C_CX, 195, "reduce-min-f16-c-cx-w4c8", SAFE,             \
     CT_REDUCE, F16, EXACT_BITS, REASON_NONE, 8, 256, 0)                       \
-  X(REDUCE_SUM_F16_N_RAW, 196, "reduce-sum-f16-n-raw-observed", SAFE,       \
-    CT_REDUCE, F16, NO_ORACLE, REASON_NONE, 512, 512, 0)                     \
+  /* Historical raw dimensions 3/5 are absent from the version-matched       \
+   * public enum.  An isolated dimension-3 launch exceeded its outer         \
+   * deadline, so the entire N/HWC raw class remains discoverable but cannot \
+   * reach dispatch without a future, separately authorized protocol. */     \
+  X(REDUCE_SUM_F16_N_RAW, 196, "reduce-sum-f16-n-raw-observed", DEFERRED,   \
+    CT_REDUCE, F16, NO_ORACLE, REASON_ISOLATED_POSSIBLE_PERMANENT_WAIT,      \
+    0, 0, 0)                                                                 \
   X(REDUCE_SUM_F16_HWC_RAW, 197,                                             \
-    "reduce-sum-f16-hwc-raw-observed", SAFE, CT_REDUCE, F16, NO_ORACLE,     \
-    REASON_NONE, 512, 512, 0)                                                 \
-  X(REDUCE_AVG_F16_N_RAW, 198, "reduce-avg-f16-n-raw-observed", SAFE,       \
-    CT_REDUCE, F16, NO_ORACLE, REASON_NONE, 512, 512, 0)                     \
+    "reduce-sum-f16-hwc-raw-observed", DEFERRED, CT_REDUCE, F16, NO_ORACLE, \
+    REASON_ISOLATED_POSSIBLE_PERMANENT_WAIT, 0, 0, 0)                        \
+  X(REDUCE_AVG_F16_N_RAW, 198, "reduce-avg-f16-n-raw-observed", DEFERRED,   \
+    CT_REDUCE, F16, NO_ORACLE, REASON_ISOLATED_POSSIBLE_PERMANENT_WAIT,      \
+    0, 0, 0)                                                                 \
   X(REDUCE_AVG_F16_HWC_RAW, 199,                                             \
-    "reduce-avg-f16-hwc-raw-observed", SAFE, CT_REDUCE, F16, NO_ORACLE,     \
-    REASON_NONE, 512, 512, 0)                                                 \
-  X(REDUCE_MAX_F16_N_RAW, 200, "reduce-max-f16-n-raw-observed", SAFE,       \
-    CT_REDUCE, F16, NO_ORACLE, REASON_NONE, 512, 512, 0)                     \
+    "reduce-avg-f16-hwc-raw-observed", DEFERRED, CT_REDUCE, F16, NO_ORACLE, \
+    REASON_ISOLATED_POSSIBLE_PERMANENT_WAIT, 0, 0, 0)                        \
+  X(REDUCE_MAX_F16_N_RAW, 200, "reduce-max-f16-n-raw-observed", DEFERRED,   \
+    CT_REDUCE, F16, NO_ORACLE, REASON_ISOLATED_POSSIBLE_PERMANENT_WAIT,      \
+    0, 0, 0)                                                                 \
   X(REDUCE_MAX_F16_HWC_RAW, 201,                                             \
-    "reduce-max-f16-hwc-raw-observed", SAFE, CT_REDUCE, F16, NO_ORACLE,     \
-    REASON_NONE, 512, 512, 0)                                                 \
-  X(REDUCE_MIN_F16_N_RAW, 202, "reduce-min-f16-n-raw-observed", SAFE,       \
-    CT_REDUCE, F16, NO_ORACLE, REASON_NONE, 512, 512, 0)                     \
+    "reduce-max-f16-hwc-raw-observed", DEFERRED, CT_REDUCE, F16, NO_ORACLE, \
+    REASON_ISOLATED_POSSIBLE_PERMANENT_WAIT, 0, 0, 0)                        \
+  X(REDUCE_MIN_F16_N_RAW, 202, "reduce-min-f16-n-raw-observed", DEFERRED,   \
+    CT_REDUCE, F16, NO_ORACLE, REASON_ISOLATED_POSSIBLE_PERMANENT_WAIT,      \
+    0, 0, 0)                                                                 \
   X(REDUCE_MIN_F16_HWC_RAW, 203,                                             \
-    "reduce-min-f16-hwc-raw-observed", SAFE, CT_REDUCE, F16, NO_ORACLE,     \
-    REASON_NONE, 512, 512, 0)
+    "reduce-min-f16-hwc-raw-observed", DEFERRED, CT_REDUCE, F16, NO_ORACLE, \
+    REASON_ISOLATED_POSSIBLE_PERMANENT_WAIT, 0, 0, 0)
 
 #define WAFER_IFP_CT_POOL_CAPABILITY_CASES(X)                                \
   X(CT_POOL_AVG_BF16_SYMMETRIC, 205,                                        \
@@ -467,7 +477,7 @@ enum WaferIFPDeferredReason {
     REASON_NONE, 512, 512, 0)                                               \
   X(CT_POOL_INDEXEDMAX_F32_SYMMETRIC, 215,                                  \
     "pool-indexed-max-f32-k2x2-s2x2", SAFE, POOL, F32, EXACT_COMPOSITE,    \
-    REASON_NONE, 768, 768, 0)                                               \
+    REASON_NONE, 1024, 1024, 0)                                             \
   X(CT_POOL_MIN_BF16_SYMMETRIC, 217,                                        \
     "pool-min-bf16-k2x2-s2x2", SAFE, POOL, BF16, EXACT_BITS,               \
     REASON_NONE, 256, 256, 0)                                               \
@@ -479,7 +489,7 @@ enum WaferIFPDeferredReason {
     REASON_NONE, 512, 512, 0)                                               \
   X(CT_POOL_INDEXEDMIN_F32_SYMMETRIC, 221,                                  \
     "pool-indexed-min-f32-k2x2-s2x2", SAFE, POOL, F32, EXACT_COMPOSITE,    \
-    REASON_NONE, 768, 768, 0)                                               \
+    REASON_NONE, 1024, 1024, 0)                                             \
   X(CT_POOL_AVG_F16_ASYMMETRIC, 222,                                        \
     "pool-avg-f16-k3x2-s2x1", SAFE, POOL, F16, EXACT_BITS,                 \
     REASON_NONE, 512, 512, 0)                                               \

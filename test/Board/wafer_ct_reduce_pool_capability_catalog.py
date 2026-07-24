@@ -169,6 +169,26 @@ def _deferred(
     )
 
 
+def _isolated_deferred(
+    opcode: int,
+    family: str,
+    dtype: str,
+    axis_layout: str,
+    geometry: str,
+    reason: str,
+) -> CTCapabilityRow:
+    return _row(
+        opcode,
+        family,
+        dtype,
+        axis_layout,
+        geometry,
+        "isolated-deferred",
+        qualification="isolated-timeout",
+        reason=reason,
+    )
+
+
 def _negative(
     opcode: int,
     family: str,
@@ -248,19 +268,18 @@ def _reduce_rows() -> list[CTCapabilityRow]:
         )
         for axis in ("N", "HWC"):
             rows.append(
-                _observation(
+                _isolated_deferred(
                     opcode,
                     "reduce",
                     "f16",
                     f"{axis}/NCx",
                     "public-enum-absent",
-                    f"{OPCODE_NAMES[opcode]}-f16-{axis.lower()}-"
-                    "raw-observed",
-                    "the version-matched third_party/tx8_deps instr_def.h "
-                    "Reduce_Dim enum exposes only C/W/H/HW; historical raw "
-                    "numeric encodings 3/5 therefore remain bounded raw "
-                    "observations rather than typed exact capability",
-                    qualification="pending-board",
+                    "the version-matched Reduce_Dim enum exposes only "
+                    "C/W/H/HW; isolated case 196 using historical raw "
+                    "dimension 3 exceeded its outer completion deadline and "
+                    "may permanently wait.  Raw N/HWC variants are "
+                    "fail-closed until a separately authorized isolated "
+                    "protocol is designed",
                 )
             )
     return rows
@@ -399,13 +418,13 @@ _UNPOOL_TYPED_EVIDENCE = {
     (122, "bf16"): ("unpool-avg-bf16", "exact"),
     (122, "f32"): ("unpool-avg-f32", "exact"),
     (123, "bf16"): ("unpool-mask-bf16", "exact"),
-    (123, "f32"): ("unpool-mask-f32", "exact"),
+    (123, "f32"): ("unpool-mask-f32", "observation"),
 }
 
 _UNPOOL_ASYMMETRIC_EVIDENCE = {
     121: ("unpool-index-f16-k3x2-s2x1-observed", "observation"),
     122: ("unpool-avg-f16-k3x2-s2x1-observed", "observation"),
-    123: ("unpool-mask-f16-k3x2-s2x1", "exact"),
+    123: ("unpool-mask-f16-k3x2-s2x1", "observation"),
 }
 
 _UNPOOL_COLLISION_EVIDENCE = {
@@ -446,6 +465,10 @@ def _unpool_rows() -> list[CTCapabilityRow]:
                     )
                 )
             else:
+                board_observed = (opcode, dtype) in {
+                    (121, "f16"),
+                    (123, "f32"),
+                }
                 rows.append(
                     _observation(
                         opcode,
@@ -454,12 +477,19 @@ def _unpool_rows() -> list[CTCapabilityRow]:
                         axis_layout,
                         symmetric,
                         evidence,
-                        "indexed scatter completed with bounded writes; the "
-                        "numeric contract remains an observation until the "
-                        "new typed vector is executed on board",
+                        (
+                            "mask scatter completed with bounded writes, but "
+                            "the f32 numeric layout differs from the host "
+                            "semantic reference"
+                            if (opcode, dtype) == (123, "f32")
+                            else
+                            "indexed scatter completed with bounded writes; "
+                            "the numeric contract remains an observation "
+                            "until the new typed vector is executed on board"
+                        ),
                         qualification=(
                             "board-observed"
-                            if dtype == "f16"
+                            if board_observed
                             else "pending-board"
                         ),
                     )
@@ -486,9 +516,20 @@ def _unpool_rows() -> list[CTCapabilityRow]:
                     axis_layout,
                     asymmetric,
                     evidence,
-                    "asymmetric X/Y geometry has a bounded board vector but "
-                    "its numeric result remains an observation",
-                    qualification="pending-board",
+                    (
+                        "asymmetric mask scatter completed with bounded "
+                        "writes, but only the final 64-channel source window "
+                        "matched the semantic scatter reference"
+                        if opcode == 123
+                        else
+                        "asymmetric X/Y geometry has a bounded board vector "
+                        "but its numeric result remains an observation"
+                    ),
+                    qualification=(
+                        "board-observed"
+                        if opcode == 123
+                        else "pending-board"
+                    ),
                 )
             )
         rows.append(
@@ -546,6 +587,9 @@ BOARD_OBSERVATION_ROWS = tuple(
 )
 STATIC_NEGATIVE_ROWS = tuple(
     row for row in CATALOG if row.disposition == "static-negative"
+)
+ISOLATED_DEFERRED_ROWS = tuple(
+    row for row in CATALOG if row.disposition == "isolated-deferred"
 )
 UNKNOWN_ROWS = tuple(
     row for row in CATALOG if row.disposition == "unknown"

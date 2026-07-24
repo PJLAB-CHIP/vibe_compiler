@@ -13,29 +13,6 @@ extern int8_t *get_spm_memory_mapping(uint64_t offset);
 extern uint64_t get_tile_spm_addr_base(uint32_t tile_id_1d, int32_t tile_x,
                                        int32_t tile_y);
 
-/*
- * The vendored instruction support archives use RT-Thread's one-argument heap
- * API, while the TX8 Kcore loader exports the scoped CSI heap API.  Keep that
- * compatibility boundary inside the target CRT.  V5.6 dynamic modules use
- * scope 0 for the local-tile DDR heap (the same a0 value used by the vendor
- * TsmNew* call sites); SPM and RTOS scopes are different allocation domains.
- */
-extern void *csi_kernel_malloc(uint8_t scope, int32_t size, void *caller);
-extern void csi_kernel_free(uint8_t scope, void *ptr, void *caller);
-
-enum { WAFER_TX81_LOCAL_TILE_DDR_HEAP_SCOPE = 0 };
-
-void *rt_malloc(size_t size) {
-  if (size > INT32_MAX)
-    return NULL;
-  return csi_kernel_malloc(WAFER_TX81_LOCAL_TILE_DDR_HEAP_SCOPE, (int32_t)size,
-                           NULL);
-}
-
-void rt_free(void *ptr) {
-  csi_kernel_free(WAFER_TX81_LOCAL_TILE_DDR_HEAP_SCOPE, ptr, NULL);
-}
-
 typedef struct {
   uint32_t stride;
   uint32_t iteration;
@@ -408,33 +385,12 @@ static void wafer_store_value(uint64_t addr, uint32_t format, uint64_t value) {
 }
 
 /*
- * Arg extrema results arrive through CPU-visible writeback registers and are
- * stored through the Kcore mapped-SPM window.  A following NCC DMA does not
- * snoop the Kcore's private write-back cache, so publish every cache line
- * touched by those stores before the wrapper returns.
+ * get_spm_memory_mapping() returns the uncached weak-order L1SPM alias.
+ * Complete mapped-SPM accesses before a following NCC command observes the
+ * same storage; cache maintenance is invalid for this address domain.
  */
-static void wafer_publish_spm_range(uint64_t begin, uint32_t bytes) {
-  enum {
-    WAFER_TX81_SUPERVISOR_MODE = 1,
-    WAFER_TX81_MACHINE_MODE = 3,
-    WAFER_TX81_CACHE_LINE_BYTES = 64,
-  };
-  uintptr_t address =
-      (uintptr_t)begin & ~(uintptr_t)(WAFER_TX81_CACHE_LINE_BYTES - 1);
-  uintptr_t end = (uintptr_t)begin + bytes;
-  uintptr_t mode;
-  __asm__ volatile("fence" ::: "memory");
-  __asm__ volatile("sync" ::: "memory");
-  __asm__ volatile("csrr %0, mxstatus" : "=r"(mode));
-  mode = (mode >> 30) & 3U;
-  for (; address < end; address += WAFER_TX81_CACHE_LINE_BYTES) {
-    if (mode == WAFER_TX81_MACHINE_MODE)
-      __asm__ volatile("dcache.cipa %0" : : "r"(address) : "memory");
-    else if (mode == WAFER_TX81_SUPERVISOR_MODE)
-      __asm__ volatile("dcache.civa %0" : : "r"(address) : "memory");
-  }
-  __asm__ volatile("sync.is" ::: "memory");
-  __asm__ volatile("fence" ::: "memory");
+static void wafer_order_mapped_spm(void) {
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
   __asm__ volatile("sync" ::: "memory");
 }
 
@@ -1050,8 +1006,7 @@ static void wafer_arg_writeback(uint64_t value_dst, uint64_t index_dst,
   uint64_t index_addr = wafer_spm_mapped_addr(index_dst);
   wafer_store_value(value_addr, format, instr->param.wb_data0);
   wafer_store_u32(index_addr, (uint32_t)instr->param.wb_data1);
-  wafer_publish_spm_range(value_addr, wafer_format_bytes(format));
-  wafer_publish_spm_range(index_addr, sizeof(uint32_t));
+  wafer_order_mapped_spm();
 }
 
 void wafer_tx81_peripheral_argmax(uint64_t src, uint64_t value_dst,
@@ -1184,4 +1139,21 @@ void wafer_tx81_peripheral_elem_mask(uint64_t src, uint64_t dst, uint32_t kind,
   TsmDeletePeripheral(peripheral);
 }
 
-void wafer_tx81_local_fence(void) { (void)TsmWaitfinish(); }
+/*
+ * TsmExecute publishes NCC work through MMIO while TsmWaitfinish only polls
+ * taskstatus.  Order the issue before polling and the observed completion
+ * before any following issue or memory access.  This does not widen the
+ * default wait's worker scope.
+ */
+static void wafer_order_local_completion(void) {
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+  __asm__ volatile("sync.is" ::: "memory");
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
+}
+
+void wafer_tx81_local_fence(void) {
+  wafer_order_local_completion();
+  (void)TsmWaitfinish();
+  wafer_order_local_completion();
+}

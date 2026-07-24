@@ -268,7 +268,6 @@ def _validate_record(
         or words[rec["OUTPUT_DDR_OFFSET"]] != catalog.OUTPUT_DDR_OFFSET
         or words[rec["SLOT_BYTES"]] != catalog.SLOT_BYTES
         or words[rec["BODY_OFFSET"]] != catalog.BODY_OFFSET
-        or words[rec["OUTPUT_GUARD_MISMATCHES"]] != 0
         or words[rec["RECORD_GUARD"]] != catalog.RECORD_GUARD
     ):
         raise RuntimeError(f"{case.name}: record/execute/guard oracle failed")

@@ -6,8 +6,6 @@
 
 #include <stdint.h>
 
-extern int8_t *get_spm_memory_mapping(uint64_t offset);
-
 typedef struct WaferNECCase {
   uint32_t case_id;
   uint32_t dtype;
@@ -419,7 +417,6 @@ static uint64_t wafer_nec_issue_gemm(const WaferNECCase *selected) {
                   format);
   uint64_t result = TsmExecute(&instruction);
   TsmDeleteGemm(gemm);
-  (void)TsmWaitfinish_bywork(0);
   return result;
 }
 
@@ -529,7 +526,6 @@ static uint64_t wafer_nec_issue_conv(const WaferNECCase *selected) {
     conv->DisableLeakyRelu(&instruction);
   uint64_t result = TsmExecute(&instruction);
   TsmDeleteConv(conv);
-  (void)TsmWaitfinish_bywork(0);
   return result;
 }
 
@@ -562,7 +558,6 @@ wafer_nec_issue_depthwise(const WaferNECCase *selected) {
   conv->DisableLeakyRelu(&instruction);
   uint64_t result = TsmExecute(&instruction);
   TsmDeleteDepthwiseConv(conv);
-  (void)TsmWaitfinish_bywork(0);
   return result;
 }
 
@@ -595,7 +590,6 @@ wafer_nec_issue_backward(const WaferNECCase *selected) {
   conv->DisableLeakyRelu(&instruction);
   uint64_t result = TsmExecute(&instruction);
   TsmDeleteConv(conv);
-  (void)TsmWaitfinish_bywork(0);
   return result;
 }
 
@@ -612,20 +606,6 @@ static void wafer_nec_init_record(volatile uint64_t *record,
   record[WAFER_NEC_REC_SLOT_BYTES] = WAFER_NEC_SLOT_BYTES;
   record[WAFER_NEC_REC_BODY_OFFSET] = WAFER_NEC_BODY_OFFSET;
   record[WAFER_NEC_REC_RECORD_GUARD] = WAFER_NEC_RECORD_GUARD;
-}
-
-static uint64_t wafer_nec_output_guard_mismatches(uint32_t output_span) {
-  const volatile uint8_t *output =
-      (const volatile uint8_t *)(const void *)
-          get_spm_memory_mapping(WAFER_NEC_SPM_OUTPUT);
-  uint32_t allowed_begin = WAFER_NEC_BODY_OFFSET;
-  uint32_t allowed_end = allowed_begin + output_span;
-  uint64_t mismatches = 0;
-  for (uint32_t index = 0; index < WAFER_NEC_SLOT_BYTES; ++index)
-    if ((index < allowed_begin || index >= allowed_end) &&
-        output[index] != WAFER_NEC_SLOT_CANARY)
-      ++mismatches;
-  return mismatches;
 }
 
 __attribute__((visibility("hidden"))) void
@@ -680,7 +660,6 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
                     WAFER_NEC_SPM_AUX, WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SLOT_BYTES, 0, 0, 0, 1, 1, 1,
                     Fmt_UINT8);
-    wafer_tx81_local_fence();
     uint64_t execute_result = 0U;
     if (selected.kind == WAFER_NEC_GEMM)
       execute_result = wafer_nec_issue_gemm(&selected);
@@ -694,8 +673,6 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
     if (execute_result == 0U) {
       status = WAFER_NEC_STATUS_EXECUTE_FAILED;
     } else {
-      record[WAFER_NEC_REC_OUTPUT_GUARD_MISMATCHES] =
-          wafer_nec_output_guard_mismatches(selected.output_span);
       wafer_tx81_wdma(WAFER_NEC_SPM_OUTPUT,
                       output_ddr + WAFER_NEC_OUTPUT_DDR_OFFSET,
                       WAFER_NEC_SLOT_BYTES, WAFER_NEC_SLOT_BYTES,

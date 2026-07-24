@@ -23,10 +23,12 @@ MODE_NAMES = {
     10: "dte-sender-raw-async-serial-control",
     11: "dte-sender-raw-async-window",
     12: "dte-destination-reuse-before-receive-event-error",
+    13: "dte-receiver-unprepared",
 }
 TRANSPORT_PMU_MODES = tuple(range(1, 7))
 ERROR_PATH_MODES = (7, 8, 9, 12)
 ASYNC_SENDER_MODES = (10, 11)
+ISOLATED_DTE_MODES = (13,)
 ASYNC_SENDER_PAYLOAD_BYTES = 64
 ASYNC_SENDER_TRANSPORT_BYTES = 65536
 ASYNC_SENDER_REPETITIONS = 3
@@ -34,6 +36,7 @@ MODE_PAYLOADS = {
     **{mode: PAYLOAD_SWEEP for mode in TRANSPORT_PMU_MODES},
     **{mode: (16,) for mode in ERROR_PATH_MODES},
     **{mode: (ASYNC_SENDER_PAYLOAD_BYTES,) for mode in ASYNC_SENDER_MODES},
+    **{mode: (16,) for mode in ISOLATED_DTE_MODES},
 }
 BOARD_COUNTER_NAMES = (
     "dte_channel0_transfer",
@@ -185,6 +188,8 @@ CONTRACT_CASES = (
             "direct_sync_wait has no bounded device timeout and can "
             "permanently block the card session"
         ),
+        13,
+        16,
     ),
     TransportContractCase(
         "dte-invalid-fsm",

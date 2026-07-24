@@ -99,19 +99,27 @@ def main() -> int:
     static_negative = catalog.CALIBRATION_LEAF_BINDINGS[
         "ct-reduce-pool-unpool-peripheral-static-negative"
     ]
+    isolated_deferred = catalog.CALIBRATION_LEAF_BINDINGS[
+        "ct-reduce-raw-axis-isolated-deferred"
+    ]
     assert set(catalog.CALIBRATION_LEAF_BINDINGS) == {
         "ct-reduce-pool-unpool-peripheral-positive",
         "ct-reduce-pool-unpool-peripheral-observed",
         "ct-reduce-pool-unpool-peripheral-static-negative",
+        "ct-reduce-raw-axis-isolated-deferred",
     }
-    assert positive and observed and static_negative
+    assert positive and observed and static_negative and isolated_deferred
     assert all(row.disposition == "board-executable" for row in positive)
     assert all(row.disposition == "board-observation" for row in observed)
     assert all(
         row.disposition == "static-negative" for row in static_negative
     )
+    assert all(
+        row.disposition == "isolated-deferred"
+        for row in isolated_deferred
+    )
     assert not catalog.reduce_pool_catalog.UNKNOWN_ROWS
-    bound = positive + observed + static_negative
+    bound = positive + observed + static_negative + isolated_deferred
     expected = catalog.reduce_pool_catalog.CATALOG + tuple(
         row
         for row in catalog.CATALOG

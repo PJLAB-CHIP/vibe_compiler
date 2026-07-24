@@ -53,6 +53,7 @@ enum WaferDMCRecordWord {
   WAFER_DMC_REC_OUTPUT_DDR_OFFSET = 10,
   WAFER_DMC_REC_SLOT_BYTES = 11,
   WAFER_DMC_REC_BODY_OFFSET = 12,
+  /* Compatibility slot; the host validates the complete WDMA output slot. */
   WAFER_DMC_REC_OUTPUT_GUARD_MISMATCHES = 13,
   WAFER_DMC_REC_TDMA_INST_DELTA = 14,
   WAFER_DMC_REC_TDMA_EXEC_DELTA = 15,

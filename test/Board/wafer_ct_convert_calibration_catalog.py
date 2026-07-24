@@ -110,6 +110,7 @@ REC = {
     "OUTPUT_DDR_OFFSET": 14,
     "SLOT_BYTES": 15,
     "BODY_OFFSET": 16,
+    # Wire-compatibility slot; host validation uses the complete output slot.
     "OUTPUT_GUARD_MISMATCHES": 17,
     "CT_INST_DELTA": 18,
     "CT_EXEC_DELTA": 19,

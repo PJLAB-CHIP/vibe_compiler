@@ -13,6 +13,41 @@ import wafer_ne_calibration_catalog as catalog
 import wafer_physical_tensor_codec as physical
 
 
+def validate_pure_ncc_probe() -> None:
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    probe = (
+        repo
+        / "test"
+        / "Board"
+        / "Inputs"
+        / "wafer_ne_calibration_probe.c"
+    ).read_text()
+    entry = probe[
+        probe.index("wafer_tx81_instruction_family_probe(uint64_t request_ddr")
+        :
+    ]
+    assert "get_spm_memory_mapping" not in probe
+    assert "wafer_nec_output_guard_mismatches" not in probe
+    assert "TsmWaitfinish" not in probe
+
+    first_rdma = entry.index("wafer_tx81_rdma(payload_ddr,")
+    output_seed = entry.index(
+        "wafer_tx81_rdma(payload_ddr + 2U * WAFER_NEC_SLOT_BYTES,"
+    )
+    aux_rdma = entry.index(
+        "wafer_tx81_rdma(payload_ddr + 3U * WAFER_NEC_SLOT_BYTES,"
+    )
+    execute = entry.index("uint64_t execute_result = 0U;", aux_rdma)
+    wdma = entry.index("wafer_tx81_wdma(", execute)
+    terminal_fence = entry.index("wafer_tx81_local_fence();", wdma)
+    assert first_rdma < output_seed < aux_rdma < execute
+    assert execute < wdma < terminal_fence
+    assert entry.count("wafer_tx81_local_fence();") == 1
+
+    runner_source = pathlib.Path(runner.__file__).read_text()
+    assert "OUTPUT_GUARD_MISMATCHES" not in runner_source
+
+
 def _observation_raw(
     case: catalog.NECase,
     built: catalog.CasePayload,
@@ -48,7 +83,6 @@ def _observation_raw(
         "OUTPUT_DDR_OFFSET": catalog.OUTPUT_DDR_OFFSET,
         "SLOT_BYTES": catalog.SLOT_BYTES,
         "BODY_OFFSET": catalog.BODY_OFFSET,
-        "OUTPUT_GUARD_MISMATCHES": 0,
         "KIND": case.kind,
         "PROFILE": case.profile,
         "OPTION": case.option,
@@ -74,6 +108,7 @@ def _observation_raw(
 
 
 def main() -> int:
+    validate_pure_ncc_probe()
     assert runner.execution_sample_count(
         exact=True, observation_samples=3
     ) == 1
@@ -661,7 +696,6 @@ def main() -> int:
         "OUTPUT_DDR_OFFSET": catalog.OUTPUT_DDR_OFFSET,
         "SLOT_BYTES": catalog.SLOT_BYTES,
         "BODY_OFFSET": catalog.BODY_OFFSET,
-        "OUTPUT_GUARD_MISMATCHES": 0,
         "KIND": backward_case.kind,
         "PROFILE": backward_case.profile,
         "OPTION": backward_case.option,

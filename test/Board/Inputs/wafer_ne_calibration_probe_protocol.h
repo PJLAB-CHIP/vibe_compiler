@@ -132,6 +132,7 @@ enum WaferNECRecordWord {
   WAFER_NEC_REC_OUTPUT_DDR_OFFSET = 17,
   WAFER_NEC_REC_SLOT_BYTES = 18,
   WAFER_NEC_REC_BODY_OFFSET = 19,
+  /* Compatibility slot; the host validates the complete WDMA output slot. */
   WAFER_NEC_REC_OUTPUT_GUARD_MISMATCHES = 20,
   WAFER_NEC_REC_KIND = 21,
   WAFER_NEC_REC_PROFILE = 22,

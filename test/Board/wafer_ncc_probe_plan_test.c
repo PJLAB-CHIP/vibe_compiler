@@ -693,6 +693,102 @@ static void test_observation_flags_and_double_slot_order(void) {
   }
 }
 
+static void test_mapped_spm_kcore_write_control_is_typed(void) {
+  WaferNccProbeRequest plan =
+      request(1, 1, WAFER_NCC_SCHEDULE_WINDOW);
+  plan.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
+  plan.lanes[0].element_format = WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16;
+  plan.flags = WAFER_NCC_REQUEST_MAPPED_SPM_KCORE_WRITE;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
+
+  plan.flags |= WAFER_NCC_REQUEST_PREISSUE_LOCAL_WAIT;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
+
+  plan.flags = WAFER_NCC_REQUEST_PREISSUE_LOCAL_WAIT;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_BAD_REQUEST);
+
+  plan.flags = WAFER_NCC_REQUEST_MAPPED_SPM_KCORE_WRITE;
+  plan.schedule = WAFER_NCC_SCHEDULE_SERIAL;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+}
+
+static void test_tight_kcore_boundary_defers_observation_and_safety_drains(void) {
+  WaferNccProbeRequest plan =
+      request(1, 4, WAFER_NCC_SCHEDULE_WINDOW);
+  plan.lanes[0] = lane(WAFER_NCC_ENGINE_NE, 0);
+  plan.flags = WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY;
+  plan.wait_kind = WAFER_NCC_WAIT_NONE;
+  plan.wait_worker_mask = 0;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
+
+  MockContext context = {0};
+  uint64_t record[WAFER_NCC_PROTOCOL_RECORD_WORDS];
+  assert(wafer_ncc_probe_execute_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0]), &hooks,
+             &context, record) == WAFER_NCC_STATUS_OK);
+  assert(record[WAFER_NCC_REC_ISSUE_COUNT] == 4);
+  assert(record[WAFER_NCC_REC_WAIT_CYCLES] == 0);
+  static const uint32_t expected_slots[] = {0, 1, 2, 3};
+  uint32_t last_issue = find_event(&context, MOCK_ISSUE + 3U);
+  uint32_t boundary_snapshot =
+      find_event(&context, MOCK_SNAPSHOT_BOUNDARY);
+  for (uint32_t index = 0; index < 4; ++index) {
+    assert(find_event(&context, MOCK_ISSUE + expected_slots[index]) <=
+           last_issue);
+    assert(find_event(&context, MOCK_OBSERVE + expected_slots[index]) >
+           boundary_snapshot);
+  }
+  uint32_t requested_wait_count = 0;
+  uint32_t control_count = 0;
+  for (uint32_t index = 0; index < context.event_count; ++index) {
+    requested_wait_count += context.events[index] == MOCK_REQUESTED_WAIT;
+    control_count += context.events[index] >= MOCK_READ_CONTROL &&
+                     context.events[index] < MOCK_OBSERVE;
+  }
+  assert(requested_wait_count == 0);
+  assert(control_count == 0);
+  assert(last_issue < boundary_snapshot);
+  assert(find_event(&context, MOCK_SNAPSHOT_BOUNDARY) <
+         find_event(&context, MOCK_SAFETY_DRAIN));
+  assert(find_event(&context, MOCK_SAFETY_DRAIN) <
+         find_event(&context, MOCK_SNAPSHOT_FINAL));
+  assert(context.safety_drain_calls == 1);
+
+  plan.wait_kind = WAFER_NCC_WAIT_LOCAL_FENCE;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
+  MockContext waited_context = {0};
+  assert(wafer_ncc_probe_execute_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0]), &hooks,
+             &waited_context, record) == WAFER_NCC_STATUS_OK);
+  assert(find_event(&waited_context, MOCK_ISSUE + 3U) <
+         find_event(&waited_context, MOCK_REQUESTED_WAIT));
+  assert(find_event(&waited_context, MOCK_REQUESTED_WAIT) <
+         find_event(&waited_context, MOCK_SNAPSHOT_BOUNDARY));
+  for (uint32_t index = 0; index < 4; ++index)
+    assert(find_event(&waited_context, MOCK_OBSERVE + expected_slots[index]) >
+           find_event(&waited_context, MOCK_SNAPSHOT_BOUNDARY));
+  assert(find_event(&waited_context, MOCK_SNAPSHOT_BOUNDARY) <
+         find_event(&waited_context, MOCK_SAFETY_DRAIN));
+
+  plan.wait_kind = WAFER_NCC_WAIT_BY_WORKER;
+  plan.wait_worker_mask = 1;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+}
+
 static void test_failed_safety_drain_is_not_retried(void) {
   WaferNccProbeRequest plan = request(1, 1, WAFER_NCC_SCHEDULE_WINDOW);
   plan.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
@@ -807,6 +903,8 @@ int main(void) {
   test_wire_decode();
   test_dma_strided_roundtrip_is_serial_and_bounded();
   test_observation_flags_and_double_slot_order();
+  test_mapped_spm_kcore_write_control_is_typed();
+  test_tight_kcore_boundary_defers_observation_and_safety_drains();
   test_failed_safety_drain_is_not_retried();
   test_prepare_failure_retains_exact_issue_stage();
   test_depth_plus_one_is_tight_and_waited();

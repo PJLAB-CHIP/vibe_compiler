@@ -27,15 +27,16 @@ def lane(engine: protocol.Engine, worker: int = 0) -> protocol.Lane:
 
 class ProtocolTest(unittest.TestCase):
     def test_header_is_the_numeric_source(self) -> None:
-        self.assertEqual(protocol.SCHEMA, 5)
+        self.assertEqual(protocol.SCHEMA, 6)
         self.assertEqual(protocol.MAX_LANES, 3)
         self.assertEqual(protocol.MAX_ROUNDS, 4)
         self.assertEqual(protocol.MAX_ISSUES, 12)
         self.assertEqual(protocol.REQUEST_WORDS, 58)
-        self.assertEqual(protocol.RECORD_WORDS, 400)
+        self.assertEqual(protocol.RECORD_WORDS, 401)
         self.assertEqual(protocol.ISSUE_STRIDE, 22)
         self.assertEqual(protocol.WAIT_SAMPLE_BASE, 392)
         self.assertEqual(protocol.MAX_WAIT_SAMPLES, 8)
+        self.assertEqual(protocol.REC["PREISSUE_WAIT_CYCLES"], 400)
         self.assertEqual(protocol.MAX_DMA_ENVELOPE_BYTES, 65536)
         self.assertEqual(
             protocol.WAIT_SAMPLE_BASE,
@@ -198,6 +199,37 @@ class ProtocolTest(unittest.TestCase):
                 for byte in range(lane.layout_inner_bytes)
             }
             self.assertEqual(envelope - len(selected), hole_bytes)
+            rdma_identity, wdma_identity = plan.issue_identities()
+            shared_spm = execution_probe.v2_spm_address(
+                0, execution_probe.V2_SPM_WRITE_OFFSET
+            )
+            self.assertEqual(
+                execution_probe.v2_operand_spm_address(
+                    plan, rdma_identity, protocol.Operand.WRITE
+                ),
+                shared_spm,
+            )
+            self.assertEqual(
+                execution_probe.v2_operand_spm_address(
+                    plan, wdma_identity, protocol.Operand.READ0
+                ),
+                shared_spm,
+            )
+            self.assertEqual(
+                execution_probe.v2_dma_local_compact_index(
+                    plan.lanes[0],
+                    shared_spm,
+                    shared_spm + plan.lanes[0].transfer_bytes - 1,
+                ),
+                plan.lanes[0].transfer_bytes - 1,
+            )
+            self.assertIsNone(
+                execution_probe.v2_dma_local_compact_index(
+                    plan.lanes[0],
+                    shared_spm,
+                    shared_spm + plan.lanes[0].transfer_bytes,
+                )
+            )
 
             with self.subTest(case=case.name):
                 with contextlib.ExitStack() as stack:
@@ -232,7 +264,6 @@ class ProtocolTest(unittest.TestCase):
                     output = bytearray(
                         [0xA5] * execution_probe.RESOURCE_BYTES
                     )
-                    rdma_identity, wdma_identity = plan.issue_identities()
                     rdma_begin = (
                         execution_probe.V2_OUTPUT_SLOT_BASE
                         + rdma_identity.slot
@@ -617,6 +648,30 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(
             set(values[len(values) // 2 :]),
             {execution_probe.v2_half(3)},
+        )
+
+        war_exact = next(
+            case
+            for case in execution_probe.V2_HAZARD_CASES
+            if case.name == "war-ct-tdma-exact-r2-serial"
+        )
+        war_results = tuple(
+            execution_probe.v2_expected_result(
+                identity,
+                war_exact.plan.lanes[identity.lane],
+                war_exact.plan,
+            )
+            for identity in war_exact.plan.issue_identities()
+        )
+        self.assertEqual(
+            tuple(
+                struct.unpack_from("<H", result)[0]
+                for result in war_results
+            ),
+            tuple(
+                execution_probe.v2_half(value)
+                for value in (3, 4, 8, 9)
+            ),
         )
 
     def test_hazard_requires_controls_but_not_positive_overlap(self) -> None:
@@ -1359,6 +1414,143 @@ class ProtocolTest(unittest.TestCase):
             },
         )
 
+    def test_mapped_spm_boundary_pairs_change_one_request_word(self) -> None:
+        expected = (
+            (
+                execution_probe.V2_MAPPED_SPM_PURE_NCC_CASES,
+                protocol.REQ["SCHEDULE"],
+            ),
+            (
+                execution_probe.V2_MAPPED_SPM_NCC_TO_KCORE_CASES,
+                protocol.REQ["WAIT_KIND"],
+            ),
+            (
+                execution_probe.V2_MAPPED_SPM_KCORE_TO_NCC_CASES,
+                protocol.REQ["FLAGS"],
+            ),
+        )
+        self.assertEqual(
+            execution_probe.SUITES["mapped-spm-boundary-observation"],
+            execution_probe.V2_MAPPED_SPM_BOUNDARY_CASES,
+        )
+        for pair, changed_word in expected:
+            first = pair[0].plan.request_words()
+            second = pair[1].plan.request_words()
+            self.assertEqual(
+                {
+                    index
+                    for index, values in enumerate(
+                        zip(first, second, strict=True)
+                    )
+                    if values[0] != values[1]
+                },
+                {changed_word},
+            )
+        self.assertEqual(
+            execution_probe.V2_MAPPED_SPM_PURE_NCC_CASES[0]
+            .plan.issue_order(),
+            (0, 4, 8),
+        )
+        self.assertEqual(
+            execution_probe.V2_MAPPED_SPM_NCC_TO_KCORE_CASES[0]
+            .plan.issue_order(),
+            (0, 1, 2, 3),
+        )
+        for case in execution_probe.V2_MAPPED_SPM_NCC_TO_KCORE_CASES:
+            self.assertTrue(
+                case.plan.is_tight_kcore_boundary_observation()
+            )
+            self.assertEqual(
+                case.plan.flags, protocol.TIGHT_KCORE_BOUNDARY
+            )
+            self.assertEqual(case.plan.issue_limit, 0)
+            self.assertEqual(case.plan.rounds, 4)
+        for case in execution_probe.V2_MAPPED_SPM_KCORE_TO_NCC_CASES:
+            self.assertTrue(
+                case.plan.is_mapped_spm_kcore_write_observation()
+            )
+        source = (
+            pathlib.Path(__file__).resolve().parent
+            / "Inputs"
+            / "wafer_ncc_execution_probe.c"
+        ).read_text()
+        ordered = source.index(
+            '__asm__ volatile("fence iorw, iorw" ::: "memory");'
+        )
+        sync = source.index(
+            '__asm__ volatile("sync" ::: "memory");', ordered
+        )
+        preissue_wait = source.index(
+            "wafer_tx81_local_fence();", sync
+        )
+        issued = source.index(
+            "static int wafer_ncc_v2_issue(", preissue_wait
+        )
+        self.assertLess(ordered, sync)
+        self.assertLess(sync, preissue_wait)
+        self.assertLess(preissue_wait, issued)
+
+    def test_ncc_to_kcore_boundary_classifies_natural_completion(self) -> None:
+        classify = execution_probe.classify_ncc_to_kcore_boundary
+        self.assertEqual(
+            classify(
+                local_wait=False,
+                wait_cycles=0,
+                boundary_done=True,
+                marker_complete=True,
+                boundary_exact=True,
+            ),
+            "naturally-completed-before-snapshot",
+        )
+        self.assertEqual(
+            classify(
+                local_wait=False,
+                wait_cycles=0,
+                boundary_done=False,
+                marker_complete=False,
+                boundary_exact=False,
+            ),
+            "pending-at-snapshot",
+        )
+        self.assertEqual(
+            classify(
+                local_wait=False,
+                wait_cycles=0,
+                boundary_done=True,
+                marker_complete=False,
+                boundary_exact=False,
+            ),
+            "task-done-output-incomplete-at-snapshot",
+        )
+        self.assertEqual(
+            classify(
+                local_wait=True,
+                wait_cycles=1,
+                boundary_done=True,
+                marker_complete=True,
+                boundary_exact=True,
+            ),
+            "local-wait-complete",
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "unexpectedly recorded a wait"
+        ):
+            classify(
+                local_wait=False,
+                wait_cycles=1,
+                boundary_done=True,
+                marker_complete=True,
+                boundary_exact=True,
+            )
+        with self.assertRaisesRegex(RuntimeError, "did not complete"):
+            classify(
+                local_wait=True,
+                wait_cycles=0,
+                boundary_done=True,
+                marker_complete=True,
+                boundary_exact=True,
+            )
+
     def test_strided_dependency_has_serial_window_hole_oracles(self) -> None:
         groups: dict[
             tuple[str, protocol.EffectRelation, protocol.RangeRelation],
@@ -1499,23 +1691,20 @@ class ProtocolTest(unittest.TestCase):
         )
         saw_first_only = False
         saw_second_wins = False
-        cursor = 0
-        for offset in partial.plan.lanes[0].dma_chunk_offsets():
-            for byte in range(partial.plan.lanes[0].layout_inner_bytes):
-                address = first_base + offset + byte
-                second_index = execution_probe.v2_strided_compact_index(
-                    partial.plan.lanes[0], second_base, address
+        for cursor in range(partial.plan.lanes[0].transfer_bytes):
+            address = first_base + cursor
+            second_index = execution_probe.v2_dma_local_compact_index(
+                partial.plan.lanes[0], second_base, address
+            )
+            if second_index is None:
+                saw_first_only = True
+                expected = execution_probe.v2_pattern_byte(0, cursor)
+            else:
+                saw_second_wins = True
+                expected = execution_probe.v2_pattern_byte(
+                    protocol.MAX_ROUNDS, second_index
                 )
-                if second_index is None:
-                    saw_first_only = True
-                    expected = execution_probe.v2_pattern_byte(0, cursor)
-                else:
-                    saw_second_wins = True
-                    expected = execution_probe.v2_pattern_byte(
-                        protocol.MAX_ROUNDS, second_index
-                    )
-                self.assertEqual(first_result[cursor], expected)
-                cursor += 1
+            self.assertEqual(first_result[cursor], expected)
         self.assertTrue(saw_first_only)
         self.assertTrue(saw_second_wins)
         self.assertEqual(
@@ -1542,6 +1731,17 @@ class ProtocolTest(unittest.TestCase):
         self.assertIn(
             "first-payload-not-independently-observable",
             exact_evidence["evidence"],
+        )
+        self.assertEqual(
+            exact_evidence["selected_overlap_bytes"],
+            exact.plan.lanes[0].transfer_bytes,
+        )
+        partial_evidence = (
+            execution_probe.v2_strided_dependency_evidence(partial.plan)
+        )
+        self.assertGreater(
+            partial_evidence["packet_envelope_overlap_bytes"],
+            partial_evidence["selected_overlap_bytes"],
         )
         generic_exact_waw = next(
             case.plan

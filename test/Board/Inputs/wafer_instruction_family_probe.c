@@ -6,8 +6,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-extern int8_t *get_spm_memory_mapping(uint64_t offset);
-
 typedef struct WaferIFPDescriptor {
   uint32_t id;
   uint32_t disposition;
@@ -83,6 +81,22 @@ static uint64_t wafer_ifp_body(uint64_t slot) {
   return slot + WAFER_IFP_BODY_OFFSET;
 }
 
+static void wafer_ifp_wait_worker0_drain(void) {
+  /*
+   * TsmWaitfinish() observes TASK_DONE only.  This probe seeds a four-command
+   * RDMA window, so also require the worker-0 instruction buffer to become
+   * empty before its first consumer is issued.
+   */
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+  __asm__ volatile("sync.is" ::: "memory");
+  while (TsmGetCsrIbcounter() != 0U ||
+         TsmGetCsrTaskstatus() != 1U) {
+  }
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+}
+
 static void wafer_ifp_seed(uint64_t payload_ddr) {
   const uint64_t destinations[] = {
       WAFER_IFP_SPM_A,
@@ -90,32 +104,16 @@ static void wafer_ifp_seed(uint64_t payload_ddr) {
       WAFER_IFP_SPM_OUTPUT,
       WAFER_IFP_SPM_AUX,
   };
-  const volatile uint8_t *source =
-      (const volatile uint8_t *)(uintptr_t)payload_ddr;
-  for (uint32_t slot = 0; slot < 4; ++slot) {
-    volatile uint8_t *destination =
-        (volatile uint8_t *)(void *)get_spm_memory_mapping(destinations[slot]);
-    for (uint32_t index = 0; index < WAFER_IFP_SLOT_BYTES; ++index)
-      destination[index] =
-          source[slot * WAFER_IFP_SLOT_BYTES + index];
-    wafer_ifp_cache_range((uint64_t)(uintptr_t)destination,
-                          WAFER_IFP_SLOT_BYTES, 0);
-  }
-  __asm__ volatile("fence" ::: "memory");
-  __asm__ volatile("sync" ::: "memory");
-}
-
-static uint64_t wafer_ifp_guard_mismatches(uint64_t slot,
-                                           uint32_t allowed_span) {
-  const volatile uint8_t *bytes =
-      (const volatile uint8_t *)(const void *)get_spm_memory_mapping(slot);
-  uint64_t mismatches = 0;
-  uint32_t allowed_end = WAFER_IFP_BODY_OFFSET + allowed_span;
-  for (uint32_t index = 0; index < WAFER_IFP_SLOT_BYTES; ++index)
-    if ((index < WAFER_IFP_BODY_OFFSET || index >= allowed_end) &&
-        bytes[index] != WAFER_IFP_SLOT_CANARY)
-      ++mismatches;
-  return mismatches;
+  for (uint32_t slot = 0; slot < 4; ++slot)
+    wafer_tx81_rdma(payload_ddr + slot * WAFER_IFP_SLOT_BYTES,
+                    destinations[slot], WAFER_IFP_SLOT_BYTES,
+                    WAFER_IFP_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+  /*
+   * The four RDMA seeds and the tested instruction use independent engines.
+   * Complete this real producer-to-consumer boundary before any instruction
+   * reads or overwrites the seeded SPM slots.
+   */
+  wafer_ifp_wait_worker0_drain();
 }
 
 static uint32_t wafer_ifp_fp_format(const WaferIFPDescriptor *descriptor) {
@@ -136,23 +134,6 @@ static uint32_t wafer_ifp_fp_format(const WaferIFPDescriptor *descriptor) {
   }
 }
 
-static uint64_t wafer_ifp_bit2fp_mismatches(uint64_t auxiliary,
-                                            uint32_t format) {
-  const volatile uint16_t *actual =
-      (const volatile uint16_t *)(const void *)get_spm_memory_mapping(auxiliary);
-  uint16_t true_value =
-      format == Fmt_FP16 ? WAFER_IFP_BIT2FP_TRUE_F16
-                         : WAFER_IFP_BIT2FP_TRUE_BF16;
-  uint64_t mismatches = 0;
-  for (uint32_t index = 0; index < 128; ++index) {
-    uint16_t expected = ((index / 8U) & 1U) == 0U
-                            ? true_value
-                            : WAFER_IFP_BIT2FP_FALSE;
-    mismatches += actual[index] != expected;
-  }
-  return mismatches;
-}
-
 static int
 wafer_ifp_dispatch_reduce_capability(const WaferIFPDescriptor *descriptor,
                                      uint64_t input, uint64_t output,
@@ -162,8 +143,6 @@ wafer_ifp_dispatch_reduce_capability(const WaferIFPDescriptor *descriptor,
     WAFER_IFP_REDUCE_MATRIX_END = 191,
     WAFER_IFP_REDUCE_CX_BASE = 192,
     WAFER_IFP_REDUCE_CX_END = 195,
-    WAFER_IFP_REDUCE_RAW_BASE = 196,
-    WAFER_IFP_REDUCE_RAW_END = 203,
   };
   uint32_t operation;
   uint32_t dimension;
@@ -199,20 +178,6 @@ wafer_ifp_dispatch_reduce_capability(const WaferIFPDescriptor *descriptor,
     n = h = 1U;
     w = 4U;
     c = 8U;
-  } else if (descriptor->id >= WAFER_IFP_REDUCE_RAW_BASE &&
-             descriptor->id <= WAFER_IFP_REDUCE_RAW_END) {
-    const uint32_t offset = descriptor->id - WAFER_IFP_REDUCE_RAW_BASE;
-    operation = offset / 2U;
-    dimension = (offset & 1U) == 0U ? 3U : 5U;
-    if (dimension == 3U) {
-      n = 2U;
-      h = w = 1U;
-      c = 64U;
-    } else {
-      n = 1U;
-      h = w = 2U;
-      c = 64U;
-    }
   } else {
     return 0;
   }
@@ -452,10 +417,6 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
   case WAFER_IFP_CASE_SELECT_F16:
   case WAFER_IFP_CASE_SELECT_BF16:
     wafer_tx81_bit2fp(input_b, auxiliary, elements, format);
-    wafer_tx81_local_fence();
-    record[WAFER_IFP_REC_STEP_FLAGS] |= WAFER_IFP_STEP_BIT2FP_COMPLETED;
-    record[WAFER_IFP_REC_BIT2FP_MISMATCHES] =
-        wafer_ifp_bit2fp_mismatches(auxiliary, format);
     wafer_tx81_mask_move(input_a, (uint32_t)auxiliary, output, elements,
                          format);
     record[WAFER_IFP_REC_STEP_FLAGS] |= WAFER_IFP_STEP_MASK_MOVE_ISSUED;
@@ -591,7 +552,6 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
         input_a, input_b, auxiliary,
         OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 2, 2, 64, 1, 1, 1, 64, 0,
         0, 0, 0, 2, 2, 2, 2, format);
-    wafer_tx81_local_fence();
     wafer_tx81_unpool_mask(
         input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_maskunpool,
         (uint32_t)auxiliary, 1, 1, 1, 64, 1, 2, 2, 64, 2, 2, 2, 2, format);
@@ -603,7 +563,6 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
         input_a, input_b, auxiliary,
         OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 2, 2, 64, 1, 1, 1, 64, 0,
         0, 0, 0, 2, 2, 2, 2, format);
-    wafer_tx81_local_fence();
     wafer_tx81_unpool_unpool(
         input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool,
         (uint32_t)auxiliary, 1, 1, 1, 64, 1, 2, 2, 64, 2, 2, 2, 2, format);
@@ -621,7 +580,6 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
         input_a, input_b, auxiliary,
         OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 3, 5, 64, 1, 2, 2, 64, 0,
         0, 0, 0, 3, 2, 2, 1, Fmt_FP16);
-    wafer_tx81_local_fence();
     wafer_tx81_unpool_unpool(
         input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool,
         (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64, 3, 2, 2, 1, Fmt_FP16);
@@ -632,7 +590,6 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
         input_a, input_b, auxiliary,
         OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 3, 5, 64, 1, 2, 2, 64, 0,
         0, 0, 0, 3, 2, 2, 1, Fmt_FP16);
-    wafer_tx81_local_fence();
     wafer_tx81_unpool_mask(
         input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_maskunpool,
         (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64, 3, 2, 2, 1, Fmt_FP16);
@@ -692,8 +649,6 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     return 1;
   }
 wafer_ifp_dispatch_complete:
-  wafer_tx81_local_fence();
-  record[WAFER_IFP_REC_STEP_FLAGS] |= WAFER_IFP_STEP_FINAL_FENCE_COMPLETED;
   return 0;
 }
 
@@ -773,17 +728,20 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
     if (wafer_ifp_dispatch(descriptor, record) != 0) {
       status = WAFER_IFP_STATUS_DISPATCH_FAILED;
     } else {
-      record[WAFER_IFP_REC_OUTPUT_GUARD_MISMATCHES] =
-          wafer_ifp_guard_mismatches(WAFER_IFP_SPM_OUTPUT,
-                                     descriptor->output_span);
-      record[WAFER_IFP_REC_AUX_GUARD_MISMATCHES] =
-          wafer_ifp_guard_mismatches(WAFER_IFP_SPM_AUX,
-                                     descriptor->aux_span);
       wafer_tx81_wdma(WAFER_IFP_SPM_OUTPUT,
                       output_ddr + WAFER_IFP_OUTPUT_DDR_OFFSET,
                       WAFER_IFP_SLOT_BYTES, WAFER_IFP_SLOT_BYTES, 0, 0, 0, 1,
                       1, 1, Fmt_UINT8);
+      wafer_tx81_wdma(WAFER_IFP_SPM_AUX,
+                      output_ddr + WAFER_IFP_AUX_DDR_OFFSET,
+                      WAFER_IFP_SLOT_BYTES, WAFER_IFP_SLOT_BYTES, 0, 0, 0, 1,
+                      1, 1, Fmt_UINT8);
       wafer_tx81_local_fence();
+      record[WAFER_IFP_REC_STEP_FLAGS] |=
+          WAFER_IFP_STEP_FINAL_FENCE_COMPLETED;
+      if (descriptor->family == WAFER_IFP_CT_SELECT_COMPOSITE)
+        record[WAFER_IFP_REC_STEP_FLAGS] |=
+            WAFER_IFP_STEP_BIT2FP_COMPLETED;
     }
     record[WAFER_IFP_REC_STATUS] = status;
   }

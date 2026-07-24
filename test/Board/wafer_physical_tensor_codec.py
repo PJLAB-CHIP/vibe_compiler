@@ -210,6 +210,7 @@ def pack_scalar_bytes(
     logical_values: Iterable[bytes],
     *,
     padding: int = 0xA7,
+    batch_padding: int | None = None,
 ) -> bytes:
     layout = physical_layout(shape, layout_name, element_bytes)
     values = tuple(logical_values)
@@ -218,6 +219,24 @@ def pack_scalar_bytes(
     if any(len(value) != element_bytes for value in values):
         raise ValueError("logical scalar width does not match element width")
     storage = bytearray([padding] * layout.physical_bytes)
+    if batch_padding is not None:
+        if layout.layout not in ("Cx", "NCx"):
+            raise ValueError(
+                "batch padding is only defined for Cx/NCx layouts"
+            )
+        batch_count = 1 if layout.layout == "Cx" else layout.shape[0]
+        active_elements = (
+            layout.outer_elements
+            if layout.layout == "Cx"
+            else layout.hw_elements
+        ) * layout.aligned_c
+        batch_padding_bytes = bytes([batch_padding])
+        for batch in range(batch_count):
+            begin = (
+                batch * layout.batch_elements + active_elements
+            ) * element_bytes
+            end = (batch + 1) * layout.batch_elements * element_bytes
+            storage[begin:end] = batch_padding_bytes * (end - begin)
     for coordinate, value in zip(
         coordinates(layout.shape), values, strict=True
     ):

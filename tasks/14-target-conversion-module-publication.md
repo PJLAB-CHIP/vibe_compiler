@@ -318,10 +318,10 @@ current v1 已验证边界：
 - repo-local CRT 可由 pinned TX8 GCC 编译并参与 device link；
 - required `wafer_tx81_*` symbol 缺失会被 post-link gate 拒绝；
 - 全部 undefined symbols 都经过 `tx8-kcore-loader-v1` exact allowlist，未知非Wafer symbol同样拒绝；
-- vendored instruction archives内部的一参`rt_malloc/rt_free`由repo-local CRT桥接到loader导出的
-  `csi_kernel_malloc(0, size, nullptr)` / `csi_kernel_free(0, ptr, nullptr)`；scope 0是V5.6 dynamic module与官方
-  `TsmNew*`调用点共同使用的local-tile DDR heap，不是SPM或RTOS scope。最终module的undefined heap surface只允许exact
-  `csi_kernel_malloc/free`，不能直接泄漏旧heap调用；
+- vendored instruction archives内部使用RT-Thread一参`rt_malloc/rt_free` ABI；匹配Kcore通过
+  `__rtmsym_rt_malloc/__rtmsym_rt_free`直接导出这两个exact loader symbol，因此repo-local CRT不得猜测heap scope，
+  也不得把它们桥接成三参`csi_kernel_malloc/free`。消费heap的最终module保留exact
+  `rt_malloc/rt_free` undefined surface，由versioned loader allowlist和link后readback逐项验证；
 - CRT使用function/data sections和hidden visibility，static archives通过`--exclude-libs,ALL`隐藏；link后gc删除未被当前
   entry closure消费的operator/CRT代码，不能把整份archive symbol surface发布成module ABI；
 - existing ArgMax/ArgMin writeback在destination store前执行`TsmWaitfinish()`，mapped-SPM CPU store后对value/index
@@ -330,7 +330,7 @@ current v1 已验证边界：
 
 current v1不包含oriented GEMM或Count。`wafer_tx81_gemm`永远只代表v1 normal/normal；
 `wafer_tx81_gemm_oriented_v2`逐字段携带两个orientation且只在v2 runtime ABI解码。symbol存在也不证明
-packet、shape、numeric、completion或board support。heap bridge和link closure同样只证明当前loader surface与module
+packet、shape、numeric、completion或board support。heap loader closure同样只证明当前loader surface与module
 静态闭包，运行时heap初始化仍由tasks/16真实board gate证明。
 
 ## 9. Owner-Backed Target LLVM Bundle

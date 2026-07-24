@@ -23,15 +23,17 @@ RESOURCE_BYTES = 131072
 SLOT_BYTES = 65536
 BODY_OFFSET = 256
 OUTPUT_DDR_OFFSET = 65536
-SLOT_CANARY = 0xA7
+SLOT_CANARY = 0xD3
 REQUEST_GUARD = 0xC7B6A59483726150
 RECORD_GUARD = 0x8F7E6D5C4B3A2910
 MAIN_ELEMENTS = 8192
 TAIL_ELEMENTS = 8214
 MAIN_UNIT_ELEMENTS = 32
 TAIL_UNIT_ELEMENTS = 37
+VUVLOOP_UNIT_ELEMENTS = 64
 MAIN_LOOP_ELEMENTS = 256
-TAIL_LOOP_ELEMENTS = 222
+TAIL_LOOP_FULL_ELEMENTS = 8000
+TAIL_LOOP_ELEMENTS = 320
 
 DISPOSITIONS = {
     "BOARD_EXACT": 0,
@@ -354,6 +356,8 @@ class CTVectorCase:
 
     @property
     def unit_elements(self) -> int:
+        if _is_loop(self.opcode):
+            return VUVLOOP_UNIT_ELEMENTS
         return (
             _shape_unit_elements(self.shape_name)
             if _is_vuv(self.opcode)
@@ -453,6 +457,8 @@ def build_catalog() -> tuple[CTVectorCase, ...]:
                 ("main", MAIN_ELEMENTS),
                 ("tail", TAIL_ELEMENTS),
             ):
+                if _is_loop(opcode) and shape_name == "tail":
+                    elements = TAIL_LOOP_FULL_ELEMENTS
                 result_bytes = (
                     (elements + 7) // 8
                     if _is_bool_output(opcode)
@@ -525,22 +531,25 @@ def build_catalog() -> tuple[CTVectorCase, ...]:
     for case in cases:
         if not _is_vuv(case.opcode):
             continue
-        if not (
-            1 <= case.unit_elements <= 64
-            and case.elem_count % case.unit_elements == 0
-        ):
-            raise RuntimeError(f"{case.name}: illegal VuV base geometry")
         if _is_loop(case.opcode):
             if not (
+                case.unit_elements == VUVLOOP_UNIT_ELEMENTS
+                and
                 case.full_elements % case.elem_count == 0
+                and case.elem_count % case.unit_elements == 0
                 and case.full_unit_elements % case.unit_elements == 0
-                and case.full_elements // case.elem_count
-                == case.full_unit_elements // case.unit_elements
+                and case.full_elements * case.unit_elements
+                == case.elem_count * case.full_unit_elements
                 and case.full_elements // case.elem_count > 1
             ):
                 raise RuntimeError(f"{case.name}: illegal VuVLoop geometry")
-        elif case.full_elements != 0 or case.full_unit_elements != 0:
-            raise RuntimeError(f"{case.name}: non-loop VuV has full counts")
+        elif not (
+            1 <= case.unit_elements <= 64
+            and case.elem_count % case.unit_elements == 0
+            and case.full_elements == 0
+            and case.full_unit_elements == 0
+        ):
+            raise RuntimeError(f"{case.name}: illegal VuV geometry")
     return tuple(cases)
 
 
@@ -745,6 +754,24 @@ def _rhs_index(case: CTVectorCase, element_index: int) -> int:
     outer = element_index // case.elem_count
     inner = element_index % case.elem_count
     return outer * case.unit_elements + inner % case.unit_elements
+
+
+def _bitpacked_vuv_rhs_index(
+    case: CTVectorCase, element_index: int
+) -> int | None:
+    """Map a bitpacked VuV element through its byte-addressed RHS unit."""
+    if case.family_name != "LOGIC_BOOL" or not _is_vuv(case.opcode):
+        raise ValueError(f"{case.name}: not a bitpacked VuV case")
+    if _is_loop(case.opcode):
+        return _rhs_index(case, element_index)
+
+    storage_unit_elements = (case.unit_elements + 7) // 8 * 8
+    covered_elements = (
+        case.elements // storage_unit_elements * storage_unit_elements
+    )
+    if element_index >= covered_elements:
+        return None
+    return element_index % storage_unit_elements
 
 
 def _numeric_rhs_values(
@@ -1045,42 +1072,42 @@ def _logic_expected(
             if case.opcode == 88:
                 value = left ^ 1
             else:
-                right_index = (
-                    _rhs_index(case, index)
-                    if _is_vuv(case.opcode)
-                    else index
-                )
+                if _is_vuv(case.opcode):
+                    right_index = _bitpacked_vuv_rhs_index(case, index)
+                else:
+                    right_index = index
                 right = (
-                    input_b[right_index // 8] >> (right_index % 8)
-                ) & 1
+                    0
+                    if right_index is None
+                    else (
+                        input_b[right_index // 8]
+                        >> (right_index % 8)
+                    )
+                    & 1
+                )
                 value = functions[(case.opcode - 89) % 3](left, right)
             result[index // 8] |= value << (index % 8)
         return bytes(result)
 
-    word_bytes = _dtype_size(case.dtype_name)
-    code = {2: "H", 4: "I"}[word_bytes]
-    lhs = struct.unpack(f"<{len(input_a) // word_bytes}{code}", input_a)
+    lhs = decode_values(case.dtype_name, input_a)
     if case.opcode == 78:
-        mask = (1 << (word_bytes * 8)) - 1
-        values = tuple(value ^ mask for value in lhs)
+        truth = tuple(not bool(value) for value in lhs)
     else:
-        rhs_words = struct.unpack(
-            f"<{len(input_b) // word_bytes}{code}", input_b
-        )
+        rhs = decode_values(case.dtype_name, input_b)
         operation = (case.opcode - 79) % 3
         functions = (
             lambda left, right: left & right,
             lambda left, right: left | right,
             lambda left, right: left ^ right,
         )
-        values = tuple(
+        truth = tuple(
             functions[operation](
-                left,
-                rhs_words[_rhs_index(case, index)],
+                bool(left),
+                bool(rhs[_rhs_index(case, index)]),
             )
             for index, left in enumerate(lhs)
         )
-    return struct.pack(f"<{len(values)}{code}", *values)
+    return _encode(case.dtype_name, (float(value) for value in truth))
 
 
 def build_case_payload(case: CTVectorCase, sample: int = 0) -> CasePayload:

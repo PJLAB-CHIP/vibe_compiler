@@ -134,11 +134,14 @@ static uint32_t wafer_cch_decode(const volatile uint64_t *request,
     selected->schedule = schedule;
     selected->bank_offset = wafer_cch_bank_offsets[offset_index];
     selected->expected_rdma =
-        selected->pair_kind == 1U ? 2U : selected->pair_kind == 3U ? 1U : 0U;
+        WAFER_CCH_BANK_SEED_RDMA_INSTRUCTIONS +
+        (selected->pair_kind == 1U ? 2U
+                                   : selected->pair_kind == 3U ? 1U : 0U);
     selected->expected_wdma =
-        selected->pair_kind == 2U ? 2U : selected->pair_kind == 3U ? 1U : 0U;
-    selected->output_regions =
-        selected->pair_kind == 2U ? 2U : selected->pair_kind == 3U ? 1U : 0U;
+        WAFER_CCH_BANK_READBACK_WDMA_INSTRUCTIONS +
+        (selected->pair_kind == 2U ? 2U
+                                   : selected->pair_kind == 3U ? 1U : 0U);
+    selected->output_regions = 2U;
   }
   *sample = (uint32_t)request[WAFER_CCH_REQ_SAMPLE];
   if (*sample >= selected->phases ||
@@ -168,34 +171,6 @@ static uint8_t wafer_cch_store_pattern(uint32_t case_id, uint32_t sample,
                                        uint32_t index) {
   return (uint8_t)(case_id * 41U + (sample + 101U) * 13U + index * 17U +
                    (index >> 7) * 29U + 3U);
-}
-
-static uint8_t wafer_cch_bank_pattern(uint32_t case_id, uint32_t sample,
-                                      uint32_t lane, uint32_t index) {
-  return (uint8_t)(case_id * 31U + (sample + 1U) * 43U + lane * 97U +
-                   index * 19U + (index >> 6) * 11U + 5U);
-}
-
-static void wafer_cch_seed_spm_bank(uint64_t address, uint32_t case_id,
-                                    uint32_t sample, uint32_t lane) {
-  volatile uint8_t *mapped =
-      (volatile uint8_t *)(void *)get_spm_memory_mapping(address);
-  for (uint32_t index = 0; index < WAFER_CCH_BANK_PAYLOAD_BYTES; ++index)
-    mapped[index] = wafer_cch_bank_pattern(case_id, sample, lane, index);
-  __asm__ volatile("fence iorw, iorw" ::: "memory");
-}
-
-static uint64_t wafer_cch_mismatch_spm_bank(uint64_t address,
-                                            uint32_t case_id,
-                                            uint32_t sample,
-                                            uint32_t lane) {
-  const volatile uint8_t *mapped =
-      (const volatile uint8_t *)(const void *)get_spm_memory_mapping(address);
-  uint64_t mismatches = 0;
-  for (uint32_t index = 0; index < WAFER_CCH_BANK_PAYLOAD_BYTES; ++index)
-    mismatches +=
-        mapped[index] != wafer_cch_bank_pattern(case_id, sample, lane, index);
-  return mismatches;
 }
 
 static void wafer_cch_fill_ddr(uint64_t address, uint32_t bytes,
@@ -333,7 +308,29 @@ static void wafer_cch_issue_bank_pair(const WaferCCHCase *selected,
     wafer_tx81_wdma(WAFER_CCH_SPM_A, output0, selected->payload_bytes,
                     selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
   }
-  wafer_tx81_local_fence();
+}
+
+static void wafer_cch_seed_bank_slots(uint64_t input0, uint64_t input1) {
+  wafer_tx81_rdma(input0 - WAFER_CCH_SPM_GUARD_BYTES,
+                  WAFER_CCH_SPM_A - WAFER_CCH_SPM_GUARD_BYTES,
+                  WAFER_CCH_BANK_SLOT_BYTES, WAFER_CCH_BANK_SLOT_BYTES, 0, 0,
+                  0, 1, 1, 1, Fmt_UINT8);
+  wafer_tx81_rdma(input1 - WAFER_CCH_SPM_GUARD_BYTES,
+                  WAFER_CCH_SPM_B - WAFER_CCH_SPM_GUARD_BYTES,
+                  WAFER_CCH_BANK_SLOT_BYTES, WAFER_CCH_BANK_SLOT_BYTES, 0, 0,
+                  0, 1, 1, 1, Fmt_UINT8);
+}
+
+static void wafer_cch_readback_bank_slots(uint64_t output0,
+                                          uint64_t output1) {
+  wafer_tx81_wdma(WAFER_CCH_SPM_A - WAFER_CCH_SPM_GUARD_BYTES,
+                  output0 - WAFER_CCH_SPM_GUARD_BYTES,
+                  WAFER_CCH_BANK_SLOT_BYTES, WAFER_CCH_BANK_SLOT_BYTES, 0, 0,
+                  0, 1, 1, 1, Fmt_UINT8);
+  wafer_tx81_wdma(WAFER_CCH_SPM_B - WAFER_CCH_SPM_GUARD_BYTES,
+                  output1 - WAFER_CCH_SPM_GUARD_BYTES,
+                  WAFER_CCH_BANK_SLOT_BYTES, WAFER_CCH_BANK_SLOT_BYTES, 0, 0,
+                  0, 1, 1, 1, Fmt_UINT8);
 }
 
 __attribute__((visibility("hidden"))) void
@@ -362,26 +359,32 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
     uint64_t mismatch_before = 0;
     uint64_t mismatch_after = 0;
     uint32_t cache_control_mask = 0;
-    wafer_cch_seed_spm(WAFER_CCH_SPM_A);
-    wafer_cch_seed_spm(WAFER_CCH_SPM_B);
-    if (selected.pair_kind == 2U) {
-      wafer_cch_seed_spm_bank(WAFER_CCH_SPM_A, selected.case_id, sample, 0U);
-      wafer_cch_seed_spm_bank(WAFER_CCH_SPM_B, selected.case_id, sample, 1U);
-    } else if (selected.pair_kind == 3U) {
-      wafer_cch_seed_spm_bank(WAFER_CCH_SPM_A, selected.case_id, sample, 0U);
-    }
-    WaferCCHPMU before = wafer_cch_read_pmu();
+    WaferCCHPMU before;
 
     if (selected.pair_kind != 0U) {
+      /*
+       * Keep the ordinary DDR pair probe entirely in the NCC completion
+       * domain.  The fixed envelope is:
+       *
+       *   host payload -> two RDMA slot seeds -> measured pair
+       *                -> two full-slot WDMA readbacks -> terminal fence
+       *
+       * Exact/guard validation is therefore a host oracle over the two slot
+       * dumps.  The serial schedule retains only its intentional fence
+       * between the measured pair operations; the window schedule has no
+       * intermediate fence.
+       */
+      before = wafer_cch_read_pmu();
+      wafer_cch_seed_bank_slots(input, bank_input1);
       wafer_cch_issue_bank_pair(&selected, input, bank_input1, output0,
                                 bank_output1);
-      mismatch_after =
-          wafer_cch_mismatch_spm_bank(WAFER_CCH_SPM_A, selected.case_id,
-                                      sample, 0U) +
-          wafer_cch_mismatch_spm_bank(WAFER_CCH_SPM_B, selected.case_id,
-                                      sample, 1U);
+      wafer_cch_readback_bank_slots(output0, bank_output1);
+      wafer_tx81_local_fence();
       cache_control_mask |= WAFER_CCH_MATCHING_LOCAL_FENCE;
     } else {
+      wafer_cch_seed_spm(WAFER_CCH_SPM_A);
+      wafer_cch_seed_spm(WAFER_CCH_SPM_B);
+      before = wafer_cch_read_pmu();
       switch (selected.case_id) {
     case 0U:
       wafer_cch_cache_range(input, WAFER_CCH_PAYLOAD_BYTES, 1U);
@@ -454,22 +457,21 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
     record[WAFER_CCH_REC_REQUEST_GUARD] = request[WAFER_CCH_REQ_GUARD];
     record[WAFER_CCH_REC_MISMATCH_BEFORE] = mismatch_before;
     record[WAFER_CCH_REC_MISMATCH_AFTER] = mismatch_after;
-    record[WAFER_CCH_REC_SPM_GUARD_MISMATCHES] =
-        wafer_cch_spm_guard_mismatches_bytes(WAFER_CCH_SPM_A,
-                                             selected.payload_bytes) +
-        wafer_cch_spm_guard_mismatches_bytes(WAFER_CCH_SPM_B,
-                                             selected.payload_bytes);
     if (selected.pair_kind != 0U) {
-      const uint32_t bank_output_offsets[2] = {
-          WAFER_CCH_OUTPUT0_OFFSET,
-          WAFER_CCH_OUTPUT0_OFFSET + WAFER_CCH_BANK_REGION_GAP +
-              selected.bank_offset,
-      };
-      record[WAFER_CCH_REC_OUTPUT_GUARD_MISMATCHES] =
-          wafer_cch_output_guard_mismatches_at(
-              output_ddr, bank_output_offsets, selected.output_regions,
-              selected.payload_bytes);
+      /*
+       * The pair path deliberately performs no Kcore/mapped-SPM scan.  The
+       * host validates both complete slot dumps, including their guards, and
+       * the untouched output canary.  Zero here means no device-side scan was
+       * requested, not that a mapped alias supplied the oracle.
+       */
+      record[WAFER_CCH_REC_SPM_GUARD_MISMATCHES] = 0U;
+      record[WAFER_CCH_REC_OUTPUT_GUARD_MISMATCHES] = 0U;
     } else {
+      record[WAFER_CCH_REC_SPM_GUARD_MISMATCHES] =
+          wafer_cch_spm_guard_mismatches_bytes(WAFER_CCH_SPM_A,
+                                               selected.payload_bytes) +
+          wafer_cch_spm_guard_mismatches_bytes(WAFER_CCH_SPM_B,
+                                               selected.payload_bytes);
       record[WAFER_CCH_REC_OUTPUT_GUARD_MISMATCHES] =
           wafer_cch_output_guard_mismatches(output_ddr,
                                             selected.output_regions);

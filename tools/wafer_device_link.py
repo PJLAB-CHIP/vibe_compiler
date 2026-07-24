@@ -38,6 +38,8 @@ BASE_LOADER_ABI_UNDEFINED_SYMBOLS = frozenset(
         "csi_kernel_malloc",
         "monitor_write_log",
         "rt_thread_mdelay",
+        "rt_free",
+        "rt_malloc",
         "tsm_ep_log",
         "tx8_kernel_printf",
         "tx8_kernel_vprintf",

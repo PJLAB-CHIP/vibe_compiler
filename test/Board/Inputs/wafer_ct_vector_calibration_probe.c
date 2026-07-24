@@ -12,8 +12,6 @@ _Static_assert(WAFER_CTV_F16 == 0 && WAFER_CTV_BF16 == 1 &&
                    WAFER_CTV_F32 == 2 && WAFER_CTV_BOOL == 3,
                "CT calibration dtype wire ids changed");
 
-extern int8_t *get_spm_memory_mapping(uint64_t offset);
-
 typedef struct WaferCTVCase {
   uint32_t case_id;
   uint32_t disposition;
@@ -226,14 +224,18 @@ static uint32_t wafer_ctv_decode(const volatile uint64_t *request,
   uint32_t elements = (uint32_t)request[WAFER_CTV_REQ_ELEMENTS];
   uint32_t domain = (uint32_t)request[WAFER_CTV_REQ_DOMAIN];
   uint32_t logic_bool = opcode >= 88U && opcode <= 97U;
+  uint32_t is_loop = wafer_ctv_loop(opcode);
+  uint32_t tail_elements =
+      is_loop != 0 ? WAFER_CTV_TAIL_LOOP_FULL_ELEMENTS
+                   : WAFER_CTV_TAIL_ELEMENTS;
   if (opcode > 110U || dtype > WAFER_CTV_BOOL ||
       (elements != WAFER_CTV_MAIN_ELEMENTS &&
-       elements != WAFER_CTV_TAIL_ELEMENTS) ||
+       elements != tail_elements) ||
       (logic_bool != 0 && dtype != WAFER_CTV_BOOL) ||
       (logic_bool == 0 && dtype == WAFER_CTV_BOOL))
     return WAFER_CTV_STATUS_UNSUPPORTED_CASE;
 
-  uint32_t shape = elements == WAFER_CTV_TAIL_ELEMENTS;
+  uint32_t shape = elements != WAFER_CTV_MAIN_ELEMENTS;
   uint32_t expected_case = 0U;
   if (domain == WAFER_CTV_DOMAIN_NORMAL) {
     uint32_t dtype_ordinal =
@@ -268,11 +270,12 @@ static uint32_t wafer_ctv_decode(const volatile uint64_t *request,
 
   uint32_t bool_input = family == WAFER_CTV_LOGIC_BOOL;
   uint32_t is_vuv = wafer_ctv_vuv(opcode);
-  uint32_t is_loop = wafer_ctv_loop(opcode);
   uint32_t unit_elements =
-      elements == WAFER_CTV_MAIN_ELEMENTS
-          ? WAFER_CTV_MAIN_UNIT_ELEMENTS
-          : WAFER_CTV_TAIL_UNIT_ELEMENTS;
+      is_loop != 0
+          ? WAFER_CTV_VUVLOOP_UNIT_ELEMENTS
+          : (elements == WAFER_CTV_MAIN_ELEMENTS
+                 ? WAFER_CTV_MAIN_UNIT_ELEMENTS
+                 : WAFER_CTV_TAIL_UNIT_ELEMENTS);
   uint32_t elem_count =
       is_loop == 0
           ? elements
@@ -282,15 +285,20 @@ static uint32_t wafer_ctv_decode(const volatile uint64_t *request,
   uint32_t full_elements = is_loop != 0 ? elements : 0U;
   uint32_t full_unit_elements =
       is_loop != 0 ? elements / elem_count * unit_elements : 0U;
-  if (is_vuv != 0 &&
-      (unit_elements == 0U || unit_elements > 64U ||
-       elem_count % unit_elements != 0U ||
-       (is_loop != 0 &&
-        (full_elements % elem_count != 0U ||
-         full_unit_elements % unit_elements != 0U ||
-         full_elements / elem_count !=
-             full_unit_elements / unit_elements))))
-    return WAFER_CTV_STATUS_UNSUPPORTED_CASE;
+  if (is_vuv != 0) {
+    if (is_loop != 0) {
+      if (unit_elements != WAFER_CTV_VUVLOOP_UNIT_ELEMENTS ||
+          full_elements % elem_count != 0U ||
+          elem_count % unit_elements != 0U ||
+          full_unit_elements % unit_elements != 0U ||
+          (uint64_t)full_elements * unit_elements !=
+              (uint64_t)elem_count * full_unit_elements)
+        return WAFER_CTV_STATUS_UNSUPPORTED_CASE;
+    } else if (unit_elements == 0U || unit_elements > 64U ||
+               elem_count % unit_elements != 0U) {
+      return WAFER_CTV_STATUS_UNSUPPORTED_CASE;
+    }
+  }
 
   uint32_t input_a_bytes =
       bool_input != 0 ? (elements + 7U) / 8U : elements * dtype_bytes;
@@ -328,27 +336,6 @@ static uint32_t wafer_ctv_decode(const volatile uint64_t *request,
   return WAFER_CTV_STATUS_OK;
 }
 
-static void wafer_ctv_fill_output(void) {
-  volatile uint8_t *output = (volatile uint8_t *)(void *)
-      get_spm_memory_mapping(WAFER_CTV_SPM_OUTPUT);
-  for (uint32_t index = 0; index < WAFER_CTV_SLOT_BYTES; ++index)
-    output[index] = WAFER_CTV_SLOT_CANARY;
-}
-
-static uint64_t wafer_ctv_guard_mismatches(const WaferCTVCase *selected) {
-  const volatile uint8_t *output =
-      (const volatile uint8_t *)(const void *)
-          get_spm_memory_mapping(WAFER_CTV_SPM_OUTPUT);
-  uint32_t allowed_begin = WAFER_CTV_BODY_OFFSET;
-  uint32_t allowed_end = allowed_begin + selected->output_span;
-  uint64_t mismatches = 0;
-  for (uint32_t index = 0; index < WAFER_CTV_SLOT_BYTES; ++index)
-    if ((index < allowed_begin || index >= allowed_end) &&
-        output[index] != WAFER_CTV_SLOT_CANARY)
-      ++mismatches;
-  return mismatches;
-}
-
 static uint64_t wafer_ctv_issue(const WaferCTVCase *selected) {
   CT_Param instruction = {0};
   uint32_t output = (uint32_t)(WAFER_CTV_SPM_OUTPUT +
@@ -380,9 +367,7 @@ static uint64_t wafer_ctv_issue(const WaferCTVCase *selected) {
     instruction.param.full_unit_elem_count =
         selected->full_unit_elements;
   }
-  uint64_t result = TsmExecute(&instruction);
-  (void)TsmWaitfinish_bywork(0);
-  return result;
+  return TsmExecute(&instruction);
 }
 
 static void wafer_ctv_init_record(volatile uint64_t *record,
@@ -447,15 +432,20 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
                     WAFER_CTV_SPM_B, WAFER_CTV_SLOT_BYTES,
                     WAFER_CTV_SLOT_BYTES, 0, 0, 0, 1, 1, 1,
                     Fmt_UINT8);
-    wafer_tx81_local_fence();
-    wafer_ctv_fill_output();
+    /*
+     * The request resource's second slot is an all-canary host buffer.  Seed
+     * the output through RDMA so the entire probe remains one NCC issue window;
+     * the host validates the full result and guard after terminal WDMA.
+     */
+    wafer_tx81_rdma(request_ddr + WAFER_CTV_SLOT_BYTES,
+                    WAFER_CTV_SPM_OUTPUT, WAFER_CTV_SLOT_BYTES,
+                    WAFER_CTV_SLOT_BYTES, 0, 0, 0, 1, 1, 1,
+                    Fmt_UINT8);
     uint64_t execute_result = wafer_ctv_issue(&selected);
     record[WAFER_CTV_REC_EXECUTE_RESULT] = execute_result;
     if (execute_result == 0) {
       status = WAFER_CTV_STATUS_EXECUTE_FAILED;
     } else {
-      record[WAFER_CTV_REC_OUTPUT_GUARD_MISMATCHES] =
-          wafer_ctv_guard_mismatches(&selected);
       wafer_tx81_wdma(WAFER_CTV_SPM_OUTPUT,
                       output_ddr + WAFER_CTV_OUTPUT_DDR_OFFSET,
                       WAFER_CTV_SLOT_BYTES, WAFER_CTV_SLOT_BYTES,

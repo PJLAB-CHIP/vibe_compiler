@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import collections
+import contextlib
+import io
 import pathlib
 import struct
+import tempfile
+import types
 
 import wafer_ct_vector_calibration_catalog as catalog
 import wafer_board_ct_vector_calibration_probe_test as runner
@@ -42,10 +46,20 @@ def main() -> int:
         ("TAIL_ELEMENTS", catalog.TAIL_ELEMENTS),
         ("MAIN_UNIT_ELEMENTS", catalog.MAIN_UNIT_ELEMENTS),
         ("TAIL_UNIT_ELEMENTS", catalog.TAIL_UNIT_ELEMENTS),
+        ("VUVLOOP_UNIT_ELEMENTS", catalog.VUVLOOP_UNIT_ELEMENTS),
         ("MAIN_LOOP_ELEMENTS", catalog.MAIN_LOOP_ELEMENTS),
+        (
+            "TAIL_LOOP_FULL_ELEMENTS",
+            catalog.TAIL_LOOP_FULL_ELEMENTS,
+        ),
         ("TAIL_LOOP_ELEMENTS", catalog.TAIL_LOOP_ELEMENTS),
     ):
         assert f"#define WAFER_CTV_{name} {value}U" in protocol
+    assert (
+        "#define WAFER_CTV_SPM_OUTPUT UINT64_C(0x50000)"
+        in protocol
+    )
+    assert "WAFER_CTV_SPM_SCRATCH" not in protocol
     probe = (
         repo
         / "test"
@@ -58,6 +72,186 @@ def main() -> int:
     assert "if (selected->full_elements != 0)" in probe
     assert probe.count("instruction.param.full_elem_count =") == 1
     assert probe.count("instruction.param.full_unit_elem_count =") == 1
+    assert (
+        "is_loop != 0 ? WAFER_CTV_TAIL_LOOP_FULL_ELEMENTS\n"
+        "                   : WAFER_CTV_TAIL_ELEMENTS"
+        in probe
+    )
+    assert "uint32_t shape = elements != WAFER_CTV_MAIN_ELEMENTS;" in probe
+    issue = probe[
+        probe.index("static uint64_t wafer_ctv_issue")
+        : probe.index("static void wafer_ctv_init_record")
+    ]
+    entry = probe[
+        probe.index("wafer_tx81_instruction_family_probe(uint64_t request_ddr")
+        :
+    ]
+    assert "get_spm_memory_mapping" not in probe
+    assert "wafer_ctv_fill_output" not in probe
+    assert "wafer_ctv_guard_mismatches" not in probe
+    assert (
+        "static uint64_t wafer_ctv_issue(const WaferCTVCase *selected)"
+        in issue
+    )
+    assert (
+        "uint32_t output = (uint32_t)(WAFER_CTV_SPM_OUTPUT +\n"
+        "                               WAFER_CTV_BODY_OFFSET);"
+        in issue
+    )
+    assert "return TsmExecute(&instruction);" in issue
+    assert "TsmWaitfinish" not in issue
+    assert "wafer_tx81_local_fence" not in issue
+    entry_parse = entry.index(
+        "wafer_ctv_invalidate(request_ddr, WAFER_CTV_RESOURCE_BYTES);"
+    )
+    first_rdma = entry.index("wafer_tx81_rdma(")
+    assert entry_parse < first_rdma
+    assert "WAFER_CTV_SPM_SCRATCH" not in entry
+    observed = entry.index(
+        "uint64_t execute_result = wafer_ctv_issue(&selected);",
+        first_rdma,
+    )
+    assert probe.count("wafer_ctv_issue(") == 2
+    assert first_rdma < observed
+    second_rdma = entry.index(
+        "wafer_tx81_rdma(payload_ddr + WAFER_CTV_SLOT_BYTES,"
+    )
+    canary_rdma = entry.index(
+        "wafer_tx81_rdma(request_ddr + WAFER_CTV_SLOT_BYTES,"
+    )
+    assert second_rdma < canary_rdma < observed
+    assert "wafer_tx81_local_fence();" not in entry[first_rdma:observed]
+    wdma = entry.index("wafer_tx81_wdma(", observed)
+    output_drain = entry.index("wafer_tx81_local_fence();", wdma)
+    assert wdma < output_drain
+    assert "wafer_tx81_local_fence();" not in entry[observed:wdma]
+    assert entry.count("wafer_tx81_local_fence();") == 1
+
+    selected_for_continue = catalog.CATALOG[:2]
+    original_board_command = runner.package_support.board_command
+    original_run = runner.package_support.run
+    original_validate_output = runner.validate_output
+    run_calls: list[object] = []
+    validation_calls: list[str] = []
+
+    def fake_board_command(*args: object) -> list[str]:
+        return ["wafer-run"]
+
+    def fake_run(command: object, timeout_seconds: float) -> object:
+        run_calls.append((command, timeout_seconds))
+        return types.SimpleNamespace(
+            stdout="\n".join(
+                (
+                    "board_stage: completion",
+                    "board_stage: device-to-host",
+                    "board_stage: cleanup",
+                    "board_execution: true",
+                )
+            )
+        )
+
+    def fake_validate_output(
+        path: pathlib.Path,
+        case: catalog.CTVectorCase,
+        built: catalog.CasePayload,
+        sample: int,
+    ) -> dict[str, object]:
+        del path, built
+        validation_calls.append(case.name)
+        if sample == 0:
+            raise RuntimeError(f"{case.name}: synthetic oracle failure")
+        return {"case": case.name}
+
+    runner.package_support.board_command = fake_board_command
+    runner.package_support.run = fake_run
+    runner.validate_output = fake_validate_output
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = types.SimpleNamespace(
+                work_dir=pathlib.Path(temp_dir),
+                completion_timeout_ms=100,
+                continue_on_validation_failure=True,
+            )
+            stderr = io.StringIO()
+            stdout = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(stderr), (
+                    contextlib.redirect_stdout(stdout)
+                ):
+                    runner.execute_cases(
+                        args,
+                        pathlib.Path("synthetic.package"),
+                        (1, 2, 3),
+                        selected_for_continue,
+                    )
+            except RuntimeError as error:
+                assert "CT vector validation failures" in str(error)
+                assert selected_for_continue[0].name in str(error)
+            else:
+                raise AssertionError("validation failures stopped aggregating")
+            assert len(run_calls) == len(selected_for_continue)
+            assert validation_calls == [
+                case.name for case in selected_for_continue
+            ]
+            assert "ct_vector_calibration_failure:" in stderr.getvalue()
+            assert "ct_vector_calibration:" in stdout.getvalue()
+
+        run_calls.clear()
+        validation_calls.clear()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = types.SimpleNamespace(
+                work_dir=pathlib.Path(temp_dir),
+                completion_timeout_ms=100,
+                continue_on_validation_failure=False,
+            )
+            try:
+                runner.execute_cases(
+                    args,
+                    pathlib.Path("synthetic.package"),
+                    (1, 2, 3),
+                    selected_for_continue,
+                )
+            except RuntimeError as error:
+                assert "synthetic oracle failure" in str(error)
+            else:
+                raise AssertionError("default validation failure did not stop")
+            assert len(run_calls) == 1
+            assert validation_calls == [selected_for_continue[0].name]
+
+        run_calls.clear()
+        validation_calls.clear()
+
+        def fake_incomplete_run(
+            command: object, timeout_seconds: float
+        ) -> object:
+            run_calls.append((command, timeout_seconds))
+            return types.SimpleNamespace(stdout="board_stage: completion")
+
+        runner.package_support.run = fake_incomplete_run
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = types.SimpleNamespace(
+                work_dir=pathlib.Path(temp_dir),
+                completion_timeout_ms=100,
+                continue_on_validation_failure=True,
+            )
+            try:
+                runner.execute_cases(
+                    args,
+                    pathlib.Path("synthetic.package"),
+                    (1, 2, 3),
+                    selected_for_continue,
+                )
+            except RuntimeError as error:
+                assert "omitted complete lifecycle evidence" in str(error)
+            else:
+                raise AssertionError("lifecycle failure was incorrectly caught")
+            assert len(run_calls) == 1
+            assert validation_calls == []
+    finally:
+        runner.package_support.board_command = original_board_command
+        runner.package_support.run = original_run
+        runner.validate_output = original_validate_output
+
     assert collections.Counter(
         case.family_name for case in catalog.CATALOG
     ) == {
@@ -81,10 +275,15 @@ def main() -> int:
         )
         assert {case.dtype_name for case in cases} == expected_dtypes
         assert {case.shape_name for case in cases} == {"main", "tail"}
-        assert {case.elements for case in cases} == {
+        expected_elements = {
             catalog.MAIN_ELEMENTS,
-            catalog.TAIL_ELEMENTS,
+            (
+                catalog.TAIL_LOOP_FULL_ELEMENTS
+                if catalog.form_name(opcode) == "VuVLoop"
+                else catalog.TAIL_ELEMENTS
+            ),
         }
+        assert {case.elements for case in cases} == expected_elements
         assert {case.opcode_name for case in cases} == {
             catalog.OPCODE_NAMES[opcode]
         }
@@ -130,19 +329,21 @@ def main() -> int:
     for case in (
         case for case in catalog.CATALOG if catalog._is_vuv(case.opcode)
     ):
-        assert 1 <= case.unit_elements <= 64
-        assert case.elem_count % case.unit_elements == 0
         if catalog._is_loop(case.opcode):
+            assert case.unit_elements == catalog.VUVLOOP_UNIT_ELEMENTS
             assert case.full_elements == case.elements
             assert case.full_elements % case.elem_count == 0
+            assert case.elem_count % case.unit_elements == 0
             assert case.full_unit_elements % case.unit_elements == 0
             assert (
-                case.full_elements // case.elem_count
-                == case.full_unit_elements // case.unit_elements
-                > 1
+                case.full_elements * case.unit_elements
+                == case.elem_count * case.full_unit_elements
             )
+            assert case.full_elements // case.elem_count > 1
             assert case.rhs_elements == case.full_unit_elements
         else:
+            assert 1 <= case.unit_elements <= 64
+            assert case.elem_count % case.unit_elements == 0
             assert case.elem_count == case.elements
             assert case.full_elements == 0
             assert case.full_unit_elements == 0
@@ -190,6 +391,9 @@ def main() -> int:
     vuv_payload = catalog.build_case_payload(vuv)
     loop_payload = catalog.build_case_payload(loop)
     assert vv_payload.input_b_bytes == catalog.MAIN_ELEMENTS * 2
+    assert catalog.decode_values(
+        vv.dtype_name, vv_payload.expected_result or b""
+    )[:8] == (-6.0, -5.0, 3.0, 1.0, 0.0, 2.5, 11.0, 4.0)
     assert vs_payload.input_b_bytes == 0
     assert vs_payload.scalar_bits == 0x4000
     assert vuv.elem_count == catalog.MAIN_ELEMENTS
@@ -200,16 +404,16 @@ def main() -> int:
         == catalog.MAIN_UNIT_ELEMENTS * 2
     )
     assert loop.elem_count == catalog.TAIL_LOOP_ELEMENTS
-    assert loop.unit_elements == catalog.TAIL_UNIT_ELEMENTS
-    assert loop.full_elements == catalog.TAIL_ELEMENTS
+    assert loop.unit_elements == catalog.VUVLOOP_UNIT_ELEMENTS
+    assert loop.full_elements == catalog.TAIL_LOOP_FULL_ELEMENTS
     assert (
         loop.full_unit_elements
-        == catalog.TAIL_ELEMENTS
+        == catalog.TAIL_LOOP_FULL_ELEMENTS
         // catalog.TAIL_LOOP_ELEMENTS
-        * catalog.TAIL_UNIT_ELEMENTS
+        * catalog.VUVLOOP_UNIT_ELEMENTS
     )
     assert loop_payload.input_b_bytes == loop.full_unit_elements * 2
-    assert loop.elements == catalog.TAIL_ELEMENTS
+    assert loop.elements == catalog.TAIL_LOOP_FULL_ELEMENTS
     loop_rhs = catalog.decode_values(
         loop.dtype_name,
         loop_payload.payload[
@@ -287,7 +491,7 @@ def main() -> int:
     try:
         runner._validate_record(bytes(raw_record), loop, loop_payload, 0)
     except RuntimeError as error:
-        assert "record/execute/SPM guard oracle failed" in str(error)
+        assert "record/execute mirror failed" in str(error)
     else:
         raise AssertionError("raw loop-count mirror stopped being enforced")
     assert len({
@@ -344,14 +548,180 @@ def main() -> int:
             )
         assert actual_truth == expected_truth
 
+    logic_value_cases = tuple(
+        case
+        for case in catalog.CATALOG
+        if case.family_name == "LOGIC_VALUE"
+    )
+    assert len(logic_value_cases) == 60
+    assert {
+        catalog.form_name(case.opcode) for case in logic_value_cases
+    } == {"V", "VV", "VuV", "VuVLoop"}
+    for case in logic_value_cases:
+        built = catalog.build_case_payload(case)
+        assert built.expected_result is not None
+        lhs = catalog.decode_values(
+            case.dtype_name,
+            built.payload[: built.input_a_bytes],
+        )
+        if case.opcode == 78:
+            expected_truth = tuple(not bool(value) for value in lhs)
+        else:
+            rhs = catalog.decode_values(
+                case.dtype_name,
+                built.payload[
+                    catalog.SLOT_BYTES :
+                    catalog.SLOT_BYTES + built.input_b_bytes
+                ],
+            )
+            function = (
+                lambda left, right: left and right,
+                lambda left, right: left or right,
+                lambda left, right: left != right,
+            )[(case.opcode - 79) % 3]
+            expected_truth = tuple(
+                function(
+                    bool(left),
+                    bool(rhs[catalog._rhs_index(case, index)]),
+                )
+                for index, left in enumerate(lhs)
+            )
+        actual_values = catalog.decode_values(
+            case.dtype_name, built.expected_result
+        )
+        assert actual_values == tuple(
+            float(value) for value in expected_truth
+        )
+
+    logic_value_negative = catalog.CASES_BY_NAME[
+        "ct-op078-logicop_v_v_not-f16-tail"
+    ]
+    logic_value_expected = catalog.build_case_payload(
+        logic_value_negative
+    ).expected_result
+    assert logic_value_expected is not None
+    wrong_logic_value = bytearray(logic_value_expected)
+    wrong_logic_value[0] ^= 1
+    try:
+        runner._validate_numeric(
+            logic_value_negative,
+            bytes(wrong_logic_value),
+            logic_value_expected,
+        )
+    except RuntimeError as error:
+        assert "exact result differs at byte 0" in str(error)
+    else:
+        raise AssertionError("logic-value exact oracle stopped rejecting errors")
+
     bool_tail = catalog.CASES_BY_NAME[
         "ct-op097-logicop_bv_bvubv_xor_loop-bool-tail"
     ]
     bool_payload = catalog.build_case_payload(bool_tail)
-    assert bool_tail.result_bytes == (catalog.TAIL_ELEMENTS + 7) // 8
+    assert bool_tail.result_bytes == (bool_tail.elements + 7) // 8
     assert bool_payload.expected_result is not None
-    unused = 8 - catalog.TAIL_ELEMENTS % 8
-    assert bool_payload.expected_result[-1] >> (8 - unused) == 0
+    unused = (-bool_tail.elements) % 8
+    if unused:
+        assert bool_payload.expected_result[-1] >> (8 - unused) == 0
+
+    for opcode in (92, 93, 94):
+        bitpacked_vuv_tail = next(
+            case
+            for case in catalog.CATALOG
+            if case.opcode == opcode and case.shape_name == "tail"
+        )
+        built = catalog.build_case_payload(bitpacked_vuv_tail)
+        expected = built.expected_result
+        assert expected is not None
+        assert bitpacked_vuv_tail.unit_elements == 37
+        assert built.input_b_bytes == 5
+        rhs = built.payload[
+            catalog.SLOT_BYTES :
+            catalog.SLOT_BYTES + built.input_b_bytes
+        ]
+        assert rhs[-1] & 0b1110_0000 == 0
+        assert catalog._bitpacked_vuv_rhs_index(
+            bitpacked_vuv_tail, 36
+        ) == 36
+        assert catalog._bitpacked_vuv_rhs_index(
+            bitpacked_vuv_tail, 37
+        ) == 37
+        assert catalog._bitpacked_vuv_rhs_index(
+            bitpacked_vuv_tail, 39
+        ) == 39
+        assert catalog._bitpacked_vuv_rhs_index(
+            bitpacked_vuv_tail, 40
+        ) == 0
+        covered = bitpacked_vuv_tail.elements // 40 * 40
+        assert covered == 8200
+        assert catalog._bitpacked_vuv_rhs_index(
+            bitpacked_vuv_tail, covered - 1
+        ) == 39
+        assert catalog._bitpacked_vuv_rhs_index(
+            bitpacked_vuv_tail, covered
+        ) is None
+        lhs = built.payload[: built.input_a_bytes]
+        for index in range(covered, bitpacked_vuv_tail.elements):
+            left = (lhs[index // 8] >> (index % 8)) & 1
+            actual = (expected[index // 8] >> (index % 8)) & 1
+            assert actual == (
+                0 if opcode == 92 else left
+            )
+
+    relation_bool_tail = catalog.CASES_BY_NAME[
+        "ct-op031-relaop_bv_vv_eq-f16-tail"
+    ]
+    relation_bool_payload = catalog.build_case_payload(relation_bool_tail)
+    relation_bool_expected = relation_bool_payload.expected_result
+    assert relation_bool_expected is not None
+    relation_bool_actual = bytearray(relation_bool_expected)
+    valid_tail_bits = relation_bool_tail.elements % 8
+    valid_mask = (1 << valid_tail_bits) - 1
+    relation_bool_actual[-1] = (
+        relation_bool_actual[-1] & valid_mask
+    ) | (catalog.SLOT_CANARY & (0xFF ^ valid_mask))
+    assert runner._validate_numeric(
+        relation_bool_tail,
+        bytes(relation_bool_actual),
+        relation_bool_expected,
+    ) == {"mismatches": 0}
+    wrong_bool_value = bytearray(relation_bool_actual)
+    wrong_bool_value[-1] ^= 1
+    try:
+        runner._validate_numeric(
+            relation_bool_tail,
+            bytes(wrong_bool_value),
+            relation_bool_expected,
+        )
+    except RuntimeError as error:
+        assert "exact result differs at byte" in str(error)
+    else:
+        raise AssertionError("bitpacked bool valid-bit oracle weakened")
+    alternate_unused_bits = bytearray(relation_bool_actual)
+    alternate_unused_bits[-1] ^= 0x80
+    assert runner._validate_numeric(
+        relation_bool_tail,
+        bytes(alternate_unused_bits),
+        relation_bool_expected,
+    ) == {"mismatches": 0}
+    relation_bool_slot = bytearray(
+        [catalog.SLOT_CANARY] * catalog.SLOT_BYTES
+    )
+    result_begin = catalog.BODY_OFFSET
+    result_end = result_begin + relation_bool_tail.result_bytes
+    relation_bool_slot[result_begin:result_end] = relation_bool_actual
+    runner._validate_output_guard(
+        relation_bool_tail, bytes(relation_bool_slot)
+    )
+    relation_bool_slot[result_end] ^= 1
+    try:
+        runner._validate_output_guard(
+            relation_bool_tail,
+            bytes(relation_bool_slot),
+        )
+    except RuntimeError as error:
+        assert f"output guard differs at slot byte {result_end}" in str(error)
+    else:
+        raise AssertionError("bitpacked bool post-result guard weakened")
 
     special = catalog.CASES_BY_NAME[
         "ct-op014-arithop_v_vv_add-bf16-special"

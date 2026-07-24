@@ -42,6 +42,10 @@
   static、single-vector observed、calibrated、supported、unknown和excluded；性能观察不能反向扩大semantic
   legality。packet/register字段只能证明请求和路由，完整非零output、全range readback及双侧guard才是
   correctness oracle。
+- 板端结果必须按“已测事实→compiler/runtime消费决策”收口。若descriptor、result、guard、count和completion
+  通过，而PMU尚不能区分bank或overlap，应该分别记录“该geometry有界合法”和“当前不做bank coloring/不启用
+  overlap”，不能把整项笼统写成Unknown。Unknown只保留给确实未被区分的单一机制边界，并同时给出当前保守
+  行为；已经取得bounded observation的case不因缺numeric exact或性能模型退回未测试状态。
 - 每个硬件probe在实现前先写明至少两种仍可能成立的行为解释，以及哪个boundary result、raw sink、
   counter relation或guard能把它们区分开；只证明“请求完成”的smoke不能关闭机制问题。板端结果收口时必须
   同时记录“观察事实、排除的解释、尚未排除的解释、当前compiler/runtime决策、下一种区分性case”，不能只
@@ -54,6 +58,9 @@
   原生能力和layout能力时，重复引用要有精确白名单与引用次数断言，其余分组只允许一次引用。opcode、layout
   或counter inventory不能因缺case而消失。“有明确fail-closed处置”属于准备完成，“由邻近case外推”不属于。
   shared dispatcher/package的target C build/link和host oracle通过只证明上卡资产可用，不得写成board evidence。
+- catalog总数、板端完成数和剩余数按唯一case ID集合求并集；phase/alignment、focused subset或compiler-consumer
+  view可以重叠，不能把各view数量直接相加。状态同步至少同时给出唯一总数、已板集合、仅离线集合以及重叠view
+  的说明，避免把已执行case重新列成待测，或把一个control row重复计为两项完成。
 - 硬件行为未知或没有exact numeric oracle时，优先构造有界`board-observation`，不能直接归入deferred。
   只要owned ABI能表达descriptor/write span，case有prefix/suffix guard、matching completion或最终safety
   drain、外层timeout和正常cleanup，就重复采样并保留raw result、physical span、request echo、execute返回与
@@ -64,11 +71,31 @@
   证明复用同一allocation/handle；若每个phase分别启动进程且cleanup会卸载program、释放allocation，就只能
   各自形成单invocation visibility case，不能把两次结果解释为stale-before/control-after。无法表达同会话
   所有权时应保留`isolated-deferred`，直到runner合同补齐。
+- TX81的`get_spm_memory_mapping(offset)`返回
+  `KUIPER_L1SPM_UNCACHE_WEAKORDER_BASE + offset`（current base `0x30400000`），属于uncached
+  weak-order mapped-SPM alias。通过该alias的CPU load/store用`fence iorw,iorw`/`sync`建立顺序，不能把
+  mapped pointer传给dcache指令。raw `0x0 + offset` cacheable SPM alias和cacheable DDR是不同地址域；
+  DDR publication/readback按实际owned cache line clean/invalidate，不能与mapped-SPM共享flush helper。
+- 普通NCC instruction/descriptor校准不使用mapped-SPM做seed、guard scan或结果oracle：host payload经
+  整槽RDMA进入SPM，NCC结果经整槽WDMA回host后校验result与guard。mapped-SPM只留给真实Kcore数据路径和
+  专门的completion/coherence单变量A/B probe；是否需要`TsmWaitfinish`必须由具体方向和scope的板端对照
+  决定，不能从alias地址属性或单个数值失败推断。
+- local instruction的地址依赖从完整Instr IR重算：以typed MemoryEffects和SSA alias/root/view path建立
+  RAW/WAR/WAW edge，pure same-worker NCC链按edge保持issue order并由current verified descriptor域的
+  worker busytable落实；链内不为first conflict插`TsmWaitfinish`，RAR只在另有resource/control edge时
+  保序。local drain只在NCC→Kcore/Direct DTE、跨worker join、barrier/structured completion backedge、
+  terminal/host publication等completion-domain boundary物化并合并。runtime lowering在这些boundary建立
+  issue→completion poll→boundary consumer的机器顺序；特定worker wait只用于其已证明scope，不能把一次
+  `bywork(0)`诊断硬编码成通用handshake。strided dependency、跨worker同地址和default wait的扩展scope
+  未闭合时继续Unknown。
 - 板端case一旦timeout立即停止当前批次并隔离该execution context，不在同批次自动重试，也不调用
   reset、power或firmware替换。`tsm_smi` idle、0%利用率、memory baseline和无残留进程只证明管理面表面状态，
   不证明execution/completion面健康。发生异常并由用户恢复后，使用一次新进程的known-good Add heartbeat
   重新确认execution/completion面；heartbeat timeout就停止全部板测并由用户决定恢复方式。健康会话中的
   普通case不重复执行heartbeat。
+- 板端诊断地址必须先由当前arena/range validator证明完整半开range的owner、reservation、alignment和
+  legality；相邻地址可访问或较小instruction write成功都不能外推更大DMA range。任何未经证明的地址交换
+  不进入上板诊断；若因此发生timeout，按poisoned context停批，不能靠cache flush或继续换地址恢复。
 - register/header中的NCC queue depth只描述静态storage/register形状，不是可安全连续issue的outstanding上限。
   普通calibration只跑1/2/4，TDMA只跑1/2。恰好documented depth使用独立
   `documented-depth-manual`：packet构造后立即删除`TsmNew` builder，control读取紧随`TsmExecute`，一次只选
@@ -82,8 +109,13 @@
   current version-matched静态反汇编中default wait只轮询worker0，local fence直接复用default wait；非default worker使用
   matching `bywork`，跨worker join逐worker显式完成。短workload即使在default wait后结果正确，也可能只是在
   wait观察前自然排空，不能据此外推default会等待其它worker。逐指令wait相对window末尾单次wait的三轮对照
-  方向一致地更慢，因此compiler应把wait放在latest-legal消费/地址复用/visibility边界并合并相邻wait；不把
-  单轮cycle写成固定cost。
+  方向一致地更慢，因此compiler不在same-worker NCC的每条RAW/WAR/WAW或地址复用edge后等待，只在
+  latest-legal completion-domain exit放置并合并matching drain；不把单轮cycle写成固定cost。
+- CT `VuVLoop`使用显式supported interface gate：`unit_elem_count == 64`且
+  `full_elem_count * unit_elem_count == elem_count * full_unit_elem_count`，乘积关系以扩宽或checked
+  arithmetic验证。违反合同的raw packet只做host negative，不能以hardware observation、held-out或隔离
+  复测名义上板；历史unit 32/37 exact只能保留为out-of-contract hardware observation，不能授权compiler、
+  runtime或production。普通`VuV`的geometry按自身独立合同处理，不能与`VuVLoop`互相外推。
 - PMU parser必须把“counter可读”和“样本有效”分开：split counter先做稳定读取，再验证enable、scope在window
   内未变化和workload至少触发一个相关delta。enable缺失、scope变化或全部delta为零时样本保持
   `inconclusive`；PMU结论不能替代payload、guard和completion正确性。
@@ -496,9 +528,10 @@
   observable use时构造fresh result并延后boundary store。只有旧dest其余use都被证明是unread DPS-init时才可
   direct tile store。`ins + outs` exact SSA必须唯一；不同SSA的physical no-alias由后续typed driver/ABI闭合。
 - async completion按path、task identity和engine分别建模：generic async handle的root provenance与task identity分开，
-  只有覆盖同一路径的terminal await完成task；local compute/movement的全部SPM read/write只由local fence收口，
-  DTE send/recv只由matching token/wait收口，三者不能互相消费。zero-trip loop、分支join和loop-carried handle没有
-  精确proof时拒绝，region/function terminal boundary不得隐式清空pending状态。
+  只有覆盖同一路径的terminal await完成task；local compute/movement的pending SPM effect只在显式
+  completion-domain local drain处收口，same-worker NCC链内依赖仍由issue order+busytable落实；DTE send/recv
+  只由matching token/wait收口，三者不能互相消费。zero-trip loop、分支join和loop-carried handle没有精确
+  proof时拒绝，region/function terminal boundary不得隐式清空pending状态。
 - target undefined-symbol gate使用代码拥有的exact allowlist，并检查全部undefined symbols，而不只检查
   `wafer_*`前缀；prefix/substring命中不能替代精确成员关系。allowlist通过只证明loader ABI surface，不证明
   packet、transport、completion或board正确性。
@@ -609,8 +642,9 @@
   structured task materializer不预切当前rank slot，`wafer.tile.reduce_scatter`显式携带scatter `axis`，
   Direct lowering从full input派生per-target slot `memref.subview`并执行all-to-owner；Ring按topology-derived
   cycle执行`P-1`轮result-sized chunk转发与显式local reduction。两者都在wait后用
-  `wafer.instr.elementwise`累计并在partial复用或resident consumer前local fence；不能形成连续非零typed chunk时
-  只拒绝Ring clone，保留Direct baseline。
+  `wafer.instr.elementwise`累计；下一轮DTE读取该partial前在NCC→Direct DTE boundary做local drain，
+  pure same-worker NCC resident consumer则只保持dependency issue order，不因复用本身插wait。不能形成连续
+  非零typed chunk时只拒绝Ring clone，保留Direct baseline。
 - singleton logical all-gather/reduce-scatter/all-reduce在tensor-program到tile-region入口折叠为resident identity，
   早于channel、combiner、recv allocation和`wafer.tile.*`通信op；Tile communication IR仍只表示group size大于一
   的真实跨rank协议。

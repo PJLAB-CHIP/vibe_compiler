@@ -79,13 +79,15 @@ explicit Count semantic/target/model evidence -> Q3.6 (independent typed writeba
 
 ## 当前实施队列
 
-Q37 compiler-sensitive hardware calibration and multi-engine software pipelining正在执行。第一checkpoint先形成
+Q37 compiler-sensitive hardware calibration and multi-engine software pipelining正在执行；其中
+hardware-calibration checkpoint已经完成，后续不再安排本轮板测。该checkpoint形成
 `docs/tx81-compiler-hardware-calibration.md`独立证据台账，以current硬件资料、vendor header/library与安全板端
 microcase闭合会改变compiler legality、planning、lowering、cost或runtime completion的TX81事实，包括instruction
 packet/数值/layout、SPM/DDR与cache、NCC各engine/worker/queue/address dependency、同步/可见性、Direct DTE/
 multi-tile arrival、launch ABI与PMU measurement basis。每个维度必须得到已验证结论，或得到带保守compiler
 处理的明确Unknown/unsupported边界；这些事实未闭合前不修改production scheduling。随后才在complete instruction
-IR上物化显式multi-buffer、prologue/steady/epilogue、resource-aware issue order和latest-legal wait/fence，并让
+IR上物化显式multi-buffer、prologue/steady/epilogue、resource-aware issue order和completion-domain
+boundary上的latest-legal drain/fence，并让
 每个actual clone重新经过SPM/DDR、instruction、target、package与board correctness gate。计划见
 `tasks/plans/multi-engine-software-pipelining.md`。
 Q37的instruction qualification子阶段先冻结完整case规划，再进入probe实现：CT按公开opcode `0..186`
@@ -100,46 +102,93 @@ instruction/layout默认单tile执行，只有rank-dependent语义才启动多ra
 并绑定payload/oracle、physical span/guard、device dispatcher、资源预算、运行过滤、timeout/cleanup及
 no-card验证；不能只检查宽泛文件存在、手填`remaining_preparation`或由邻近case外推。
 旧版机器索引曾错误报告`28/28 ready`：它只证明28个域绑定了文件和CTest，没有证明每个校准叶子存在。
-该结论已撤回并按叶子重建门禁；Q37继续`doing`，因为实卡执行、held-out成熟度和software-pipeline
-vertical仍未完成。当前28个导航域下面的叶子均由机器索引解析到concrete catalog/contract对象或带理由
-的非执行对象；机器矩阵当前闭合123个叶子：73个`board-positive`、24个`board-observation`、
-6个`delegated-positive`、17个`static-negative`和3个`isolated-deferred`，且123个叶子全部ready。
+该结论已撤回并按叶子重建门禁。当前硬件checkpoint的safe/default、held-out和显式隔离case已经按处置完成；
+Q37整体继续`doing`只因为software-pipeline vertical尚未实现和验证，不再因为缺少板端执行。当前28个导航域
+下面的叶子均由机器索引解析到concrete catalog/contract对象或带理由
+的非执行对象；机器矩阵当前闭合125个叶子：74个`board-positive`、24个`board-observation`、
+6个`delegated-positive`、17个`static-negative`和4个`isolated-deferred`，且125个叶子全部ready。
 catalog分组全部被记账，允许共享的
 case有显式白名单，其余分组只允许一次引用。`ready`只表示可以按处置执行或跳过，不是板端结论。
-当前资产仍覆盖CT vector 653行、convert 204行、168个instruction-family safe case、73个NE row、
-DataMove base 46 + extended默认17个safe case、99个memory-descriptor case、124个SPM row、58个
+当前资产仍覆盖CT vector 653行、convert 204行、168个instruction-family case（160个safe，另8个
+raw N/HWC Reduce fail-closed）、73个NE row、DataMove base 46 + extended默认17个safe case、
+155个memory-descriptor case、146个SPM row、58个
 cache/coherence case以及NCC、Direct DTE和barrier矩阵。2026-07-24按当前catalog和validator对已保存板端
 产物做了一次离线收口：CT convert 204/204（23个stochastic row按3样本，合计250次）通过各自
-exact/observation gate；DataMove base 46/46 exact；SPM原本地19/19 exact；memory descriptor既有59/59按声明
-oracle通过（39 exact、20 observation）；cache/coherence 58/58通过。SPM的50个delegated row也已有具体
+exact/observation gate；DataMove base 46/46 exact；SPM原本地19/19 exact；memory descriptor的
+pre-expanded 121/121均已有板端结果，其中旧59项按声明oracle通过（39 exact、20 observation），后续40个
+general offset pair与22个bank-period/alignment row也通过correctness、guard、count和PMU raw gate；
+26-row parallel-address-sweep分析视图包含其中4个general control row，不重复计数。cache/coherence 58/58
+通过，其中54项是纯NCC DDR pair。SPM的50个delegated row也已有具体
 板端证据：45个由memory-descriptor覆盖，5个physical-layout row由DataMove base中的20个
-Tensor↔Cx/NCx exact case覆盖。新增5个非preferred geometry本地observation及40个多offset pair row尚待板；
-上述结论只复核device record、payload/result、count和guard；旧单样本PMU不能推出稳定bank class、overlap
-或固定cost，20个address-relation observation也不授权compiler重排。
+Tensor↔Cx/NCx exact case覆盖；新增5个非preferred geometry也已取得完整round-trip、guard和completion的
+bounded observation。新增34个steady-state/cross-worker/dependency pair也已全部上板：20个sustained、
+2个cross-worker和12个dependency case各3个样本均通过strict result、双lane guard、count、worker control和
+completion。因此current 155个memory-descriptor case均有板端结果。该证据关闭的是已测descriptor、地址range、
+worker routing、issue order和schedule的有界正确性；record及重复PMU没有形成可授权production overlap的
+global-union关系。compiler直接消费为：允许已测5种nonpreferred geometry，256B只作preferred alignment；
+descriptor effect/range按已测合同建模；expanded dependency继续保留显式SSA/effect edge与issue order；
+当前不据不同engine自动重排或启用overlap。
 
-下次重启后的剩余板端批次固定为：先跑一次known-good Add；重跑current CT vector suite（旧批只在前49个
-output后因已修复的legal-count问题停止）；执行新增95个Reduce/Pool/Unpool instruction-family case及此前
-尚未上板的独立IndexedMax case，并复验ArgMin publication、旧Unpool-index poison observation及重新分类的
-Bilinear；完成DataMove extended默认safe
-余项，native `dims=HW` Concat最后单独隔离；复验NE当前schema下的ReLU、ordinary Conv和修正footprint后的
-BackwardConv；执行新增5个SPM non-preferred geometry和40个三offset engine-pair row；先用current NCC
-schema的单case确认prepare阶段，再串行跑`wafer-board-ncc-all-safe-observations`及15个独立NCC case；最后跑
-Direct DTE/transport的30个payload-sweep、4个有界错误和2个sender async对照，共36个尚未取得current
-板端产物的配置。已有证据的SPM 19、memory descriptor 59、
-cache 58、DataMove base 46和CT convert 204不重复上板。所有case仍由
-`tools/run_hardware_calibration.py`或其已注册CTest单进程串行执行，首错/timeout即停，不自动
-retry/reset/power。
-其中新增instruction、SPM和memory offset使用
-`instruction-family-ct-capability`、`instruction-family-regression`、
-`spm-non-preferred-geometry`和`memory-engine-pair-new-offsets`四个focused step；旧全量资产只保留
-显式`*-full-replay`入口，不进入本批冻结清单。
+SPM legality现明确包含已测`base+64/+128/+192`和`length=128/384`五种geometry，不能再把256B当硬门槛。
+SPM phase raw结果给出两个窄观察：固定8KiB间距时，base phase `0/128`的CT execution中位数为47 cycles，
+`64/192`为50 cycles；4KiB CT+RDMA offset sweep中6144B的六个serial/window样本均高于常见
+280--282 FU cycles，主要来自RDMA execution。但这两种趋势都只覆盖单一workload/engine pair，不能命名bank，
+也没有跨engine/length held-out支持固定cost。DDR单allocation的54个cache pair曾对8192/16384B相对offset形成
+窄raw差异；按同一pair/offset比较serial与window时，WDMA execution median基本只差`-2..+2` cycles，
+RDMA差异方向不一致且约为`-220..+78`，8192B在多个serial样本中的较高RDMA值在window中消失，
+32768B也不一致。该record没有FU union/full counter，不能判overlap。进一步的16-rank tile-offset矩阵显示
+同一相对offset会随actual allocation base和tile在快慢端互换，因此relative offset本身不是稳定DDR class。
+compiler不做SPM/DDR bank placement/coloring，也不写固定offset或serial/window收益。
+
+四个cache/coherence方向也已形成可执行边界，而不是笼统coherent：host H2D→Kcore read在同一invocation
+先invalidate；Kcore store→NCC RDMA在issue前clean+fence；NCC WDMA→Kcore read先matching completion再
+invalidate；WDMA→host D2H先matching completion再由runtime publication/readback。pure NCC链不插cache
+操作，uncached mapped-SPM alias不执行dcache指令；compiler/runtime只在真实Kcore/cacheable DDR与
+NCC/host的domain crossing按owned range物化对应publication。
+
+历史独立`VuVLoop unit_elem_count=32` raw case曾在completion内timeout，随后同一有界生命周期中的后置
+known-good Add也timeout，说明的只是该次execution会话已经污染；该事故会话已经停止，不描述当前卡状态。
+本次干净会话的ordinary Add baseline逐bit exact；随后合同内`unit_elem_count=64`的
+`(128,64,384,192)`与`(192,64,384,128)`两个geometry均通过完整exact result、physical span、guard和
+matching completion，紧随其后的ordinary Add仍exact。
+不再重放任何违反supported `VuVLoop`合同的unit 32/37 raw packet；这类输入只走host negative。恢复
+baseline后完成的3个standalone DMA strict case及36个NCC strided dependency case也全部通过；已有证据
+不重复上板。所有case仍由已注册CTest单进程串行执行，首个timeout或设备异常即停，
+不自动retry/reset/power。
 
 这些结果形成的当前编译器边界是：允许已验证指令的保守单engine lowering、显式layout materialization、
-当前SPM容量/对齐下的packing、matching wait/逐worker join、显式cache publication、有序Direct DTE和
+当前SPM容量/对齐下的packing、pure same-worker NCC链的dependency-preserving issue order与busytable、
+completion-domain boundary上的matching drain/逐worker join、DDR owned-range cache publication、有序Direct DTE和
 16-rank full-card barrier；暂不允许由`serial_mode=0`或不同engine直接推导overlap，不用queue depth选择
 pipeline window，不做SPM bank coloring，不用default wait代替跨worker join，也不把native Concat、TDMA BOOL、
-NE ReLU/Conv option或subgroup barrier提升为exact能力。Q37下一轮按“一个case区分一个未决行为模型”排序，
-不再以累计通过数作为校准完成证明。
+NE ReLU/Conv option或subgroup barrier提升为exact能力。hardware-calibration checkpoint到此完成；
+这些未决机制均已有保守compiler处理，不再继续追加板测。Q37下一步直接消费已闭合能力实现和验证
+multi-buffer software-pipeline，不再以累计通过数推进。
+SDK定义的`get_spm_memory_mapping(offset)`是`0x30400000 + offset`的uncached weak-order SPM alias；
+该alias使用有序load/store与`fence`/`sync`，不得执行dcache clean/invalidate。只有raw cacheable SPM alias
+和cacheable DDR按各自owned range使用cache操作。
+
+2026-07-24本轮保存证据已经同步为行为结论：已验证的same-worker RAW/WAR/WAW由显式IR edge和issue order
+交给busytable落实，链内不插`TsmWaitfinish`；matching completion只在NCC→Kcore/Direct DTE、跨worker join、
+barrier和terminal/host publication等completion-domain出口物化并合并。ArgMin只支持已验证的全正普通值域，
+负数域unsupported；ordinary indexed Unpool的非零poison版本已取得3个板端样本，只闭合bounded
+completion/write-span，不升级numeric exact，FP16 indexed-max→mask-unpool窄组合则为board-observed exact。
+BackwardConv的FP16/BF16 corrected-footprint向量也已各完成3个
+板端样本：8192B physical span、span外guard和completion均通过，只记bounded observation，不升级numeric
+exact。合同内`VuVLoop unit=64`两个exact control及后置Add已闭合，合同外输入继续host-negative。
+3个standalone DMA与36个NCC strided case证明当前1D/2D/3D合同是“DDR endpoint按descriptor stride、
+local SPM endpoint按`transfer_bytes`连续”；same-worker RAW/WAR/WAW继续保持issue order，不能因硬件正确完成
+删除IR dependency。NCC→Kcore depth-4 no-local-wait与local-wait两个case也均通过boundary marker、result和
+guard；前者在无wait snapshot前已经自然完成，后者的matching wait完成，但这组样本没有捕获pending boundary，
+所以不能推出wait不需要或default wait scope扩大，NCC→Kcore completion-domain出口仍保留matching completion。
+
+DDR tile-offset probe在16 rank、每rank两组allocation、RDMA/WDMA、14个`0..1MiB`相对offset和每cell 3样本上
+完成2688次exact guarded transfer，证明当前runtime实际64-bit allocation base加这些相对offset可达。
+独立sparse probe在单个40GiB compiler-managed workspace的`0/4/16/32/38GiB`及`40GiB-768B`六个窗口完成
+exact round-trip和双侧guard；这闭合了workspace allocation-only、超过32-bit的相对地址计算和半开
+allocation-end range。compiler/runtime据此保持i64 base/offset/size与checked `base + offset + length`，
+workspace不做HostToDevice初始化；结果不外推64GiB、其它allocator碎片状态、physical bank/controller/hop或
+并发带宽。整批末尾ordinary Add逐bit exact，确认该clean execution会话正常收口。
 当前queue active occupancy与full行为仍在Q37内保持`unknown`：静态depth不直接作为occupancy证据。普通
 calibration只运行1/2/4（TDMA 1/2）。修正builder生命周期和逐issue观察位置后，CT/NE/RDMA/WDMA exact
 `D=6`与TDMA exact `D=4`已分别由单engine、单case、单样本及前后known-good Add heartbeat闭合
@@ -171,7 +220,7 @@ depth-6 NE向量，都在default wait的boundary观察前自然排空；default�
 default跨worker scope。worker0六条CT的逐条wait与
 末尾单次wait对照独立运行
 三轮，完整结果/guard均正确且三轮都观察到频繁wait的plan cycles更高；该结果只支持latest-legal、合并wait的
-方向，不提供固定cycle常数。
+completion-domain boundary方向，不提供固定cycle常数，也不支持在same-worker NCC dependency之间插wait。
 instruction-family typed catalog原有60个safe case也已全部逐个串行上板通过，覆盖f16/bf16 elementwise、
 convert、reduce、select composite、f16 NE GEMM、f16 TDMA Pad与f16 peripheral ArgMax/ArgMin composite
 writeback、f16 PoolMax/Unpool、peripheral LUT16 raw-offset lookup，以及f16 TDMA Img2Col；每个case均有精确bit
@@ -183,7 +232,8 @@ span为256B。将四个reduction row修正为`result_bytes=128`、`output_span=2
 对照会错误返回首元素`-30@index0`而不是`-100@index42`，因此负数域保持unsupported，不由正数case外推。
 当前catalog新增第61个`unpool-index-f16`，以独立118 indexed-max→fence→121 ordinary Unpool路径和
 512B bounded raw/guard/completion observation修复旧opcode 121由123 mask-unpool代签的问题；host以非零
-poison区分no-op与写零，已通过target和no-card，仍待实卡。
+poison区分no-op与写零；非零poison版本已完成3个板端样本的bounded observation，只取得有界执行资格，
+不升级为ordinary Unpool exact语义。
 最终Add heartbeat正常。新增CT Add f16/bf16 tail130、finite f32及不含NaN的special-value向量也均逐bit通过：
 tail130分别验证260B logical result、512B physical span与guard；special向量覆盖正负零、正负无穷、
 max-finite、min-normal和min-subnormal。该证据不外推NaN或其它f32 opcode。PoolMax使用
@@ -224,7 +274,9 @@ ordinary Conv从logical element 97开始与current NCx/HWOI host oracle不符，
 同一baseline，ordinary Conv bare/option统一保持observation，等待独立physical indexing区分向量。
 BackwardConv的type-2 wrapper由AddWeight full shape写`tfr_1`，因此`[1,1,64,64]` FP16 physical output
 footprint为8192B；旧catalog按AddOutput参数只允许2048B，恰产生6144个guard mismatch。catalog/probe现由
-weight shape推导8192B，span外guard仍严格；本批只做旧raw离线重放与no-card，修正后尚待独立板端复验。
+weight shape推导8192B，span外guard仍严格；修正后的FP16/BF16 focused case已分别运行3个板端样本，
+全部完成且8192B footprint、suffix guard和completion通过。由于当前raw vector仍不能唯一解释numeric
+结果，该结论只关闭range/shape-owner和有界执行，不宣称BackwardConv numeric exact。
 Unpool协议已从错误的scalar `uint32` index attr收敛为显式i16 SPM index memref：indexedmax/min pool的
 第二个结果使用i16，mask/unpool消费该same-shape buffer，avg不消费并在既有ABI槽传0；target lowering只把
 已验证的静态SPM起始地址写入该`uint32_t`槽。FP16板测以indexedmax
@@ -240,12 +292,25 @@ held-out。
 `board-observed`，subgroup仍`unknown`。首轮probe出现Direct DTE terminal status `0xffffffff`的根因是
 手写cluster entry遗漏terminal ABI的`begin_after_prepare`/`finish`；补齐后同一barrier通过，不能把该
 probe错误归因于硬件barrier。
-instruction-family probe完成SPM seed cache clean后的最新safe suite在`peripheral-argmin-f16`失败：
-output slot byte 256实际`0x80`、预期`0x00`，实际字节精确对应本case output seed `-13.0`的FP16低字节；
-前一ArgMax通过，排除上一case输出。host诊断定位到ArgMax/ArgMin共享CRT writeback在`TsmWaitfinish()`后做
-mapped-SPM CPU store但未建立后续WDMA可见的cache publication。共享helper现对value/index实际range执行
-mode-dependent C908 clean-and-invalidate；本批host conformance/instruction catalog、no-card package及最终module
-目标反汇编已通过。板端复验未由本批执行，Q37 instruction-family safe suite保持未重新闭合。
+instruction-family probe在`peripheral-argmin-f16`保留本case output seed的现象此前被误归因为
+mapped-SPM cache publication；该归因已由SDK地址域定义推翻，不能继续用dcache操作修复uncached weak-order alias，
+剩余问题按issue/completion与ordering独立复验。clean reboot下`op014 F16 VV Add main`隔离执行逐bit exact；
+`op013 F32 VuVLoop min tail -> op014`双case曾复现`op014`仅首128B错误，byte 128之后exact，随后其它CT和
+known-good Add也可数值错误。128B是CT/SPM 1024-bit beat而非64B cache line；但该现象不能推出
+first-conflict `TsmWaitfinish`合同。当前已确认的pure same-worker NCC链由完整Instr IR的typed
+MemoryEffects与SSA alias/root/path建立RAW/WAR/WAW edge，并按edge保持issue order；current verified
+descriptor域由worker busytable落实依赖，链内不插入重复wait。local drain只在NCC→Kcore/Direct DTE、
+跨worker join、structured barrier、terminal/host publication等completion-domain boundary物化并尽量合并。
+default/local-fence跨worker scope仍未由区分样本闭合；当前1D/2D/3D DDR-strided/compact-SPM descriptor及
+36个same-worker dependency组合已取得板端资格，超出该descriptor/range的geometry继续fail closed。
+`VuVLoop` supported legality现固定为
+`unit_elem_count == 64`且
+`full_elem_count * unit_elem_count == elem_count * full_unit_elem_count`；违反合同的raw packet只做
+host negative、不再上板。既有unit 32/37逐bit exact与op013→op014异常仅为out-of-contract hardware
+observation，不授权production，也不用于推导first-conflict wait。历史独立unit 32 raw case及其后置Add
+曾timeout；该事故会话已停止。当前clean session的两个unit64 exact control及前后Add均通过。
+一次未经range legality证明、从`0x70000`起执行64KiB WDMA的地址交换诊断造成真正timeout和context
+poison/quarantine；该诊断已撤销并禁止复用，后续会话只由known-good Add重新建立资格。
 
 Q32.N numeric algebraic extension已完成。任务收缩为直接删除pass中不必要的float类型门槛：
 现有algebraic candidate、generic reduction切分、named GEMM K切分和Ring collective均接受支持的
@@ -275,7 +340,7 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q37 | `tx81-compiler-hardware-calibration-and-multi-engine-software-pipelining` | `doing` | Q32、Q6.B + configured board | 先以独立证据台账和安全板端microcase闭合会改变compiler legality/planning/lowering/cost/runtime completion的instruction、数值/layout、memory/cache、engine/worker/queue、address dependency、同步/可见性、DTE/multi-tile、launch与PMU事实；每个未闭合维度保留带保守处理的显式Unknown/unsupported。完成该gate后，才从current instruction SSA/effect/loop事实物化通用multi-buffer软件流水、跨engine issue order及latest-legal wait/fence，经过完整memory/target/package/correctness gate并以板端对照确认实际重叠；aggregate PMU不伪装成cycle-accurate模型。 | 06、08-17；`docs/tx81-compiler-hardware-calibration.md`；`tasks/plans/multi-engine-software-pipelining.md` |
+| Q37 | `tx81-compiler-hardware-calibration-and-multi-engine-software-pipelining` | `doing` | Q32、Q6.B + configured board | hardware-calibration checkpoint已完成：独立证据台账和板端microcase已闭合会改变compiler legality/planning/lowering/cost或runtime completion的instruction、数值/layout、memory/cache、engine/worker/queue、address dependency、同步/可见性、DTE/multi-tile、launch与PMU事实，未闭合机制均有明确保守处理；本轮不再追加板测。当前只剩software-pipeline implementation：完整Instr IR以typed MemoryEffects和SSA alias/root/path建立RAW/WAR/WAW dependency edge；pure same-worker NCC链按edge保持issue order并由current verified descriptor域的busytable落实，链内不插`TsmWaitfinish`；drain/fence只在completion-domain boundary物化并合并。下一步物化通用multi-buffer软件流水、跨engine issue order及latest-legal boundary completion，并经过完整memory/target/package/correctness gate；aggregate PMU不伪装成cycle-accurate模型。 | 06、08-17；`docs/tx81-compiler-hardware-calibration.md`；`tasks/plans/multi-engine-software-pipelining.md` |
 | Q32.N | `numeric-algebraic-extension` | `done` | Q32 | algebraic candidate、generic reduction、named GEMM K切分和Ring collective已删除仅因float或缺少额外fast-math标注而拒绝的分支；f16/bf16无标注正向覆盖actual mutation、frontier和Tile/Instr lowering，integer overflow/no-wrap及真实结构、资源和target负例保持。未新增frontend mode、私有数值policy或IR carrier。 | 05-07、10-11、13、16；`tasks/plans/numeric-algebraic-extension.md` |
 | Q36 | `topology-aware-collective-lowering` | `done` | Q32 | current typed topology/mesh派生rank placement、exact bounded Ring与保持rank_group中序的ordered Tree；collective correctness/completion、singleton identity和final p2p minimum-hop whole-card cost闭合，不声明route/cycle/timing。 | 04、06、11、13、16、18；`tasks/archive/topology-aware-collective-lowering.md` |
 | Q35 | `k-sharded-gemm-board-vertical` | `done` | Q32、Q6.B、Q36 + configured board | full-4096 f16 GEMM由显式row/contracting SPMD形成16份local K=256 GEMM和sum all-reduce；production闭合M/N tiling、SPM/DDR、Direct DTE、shared ELF、no-card与完整板端raw exact。修复CRT GEMM raw orientation及strided RDMA/WDMA element-unit边界后，纯tiling 32 MiB exact，16-rank full case连续两轮16份32 MiB output全部exact并回到设备基线。只形成该case/environment的workload-level evidence，不新增ABI、不完成Q22.C或timing。 | 02、03、05-07、09、10、13-17；`tasks/archive/k-sharded-gemm-board-vertical.md` |

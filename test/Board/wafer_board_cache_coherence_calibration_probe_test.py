@@ -316,8 +316,9 @@ def execute_cases(
             "correctness": "all-exact",
             "pmu_medians": schedule_medians,
             "interpretation": (
-                "raw repeated paired offset control; no DDR bank/color class "
-                "inferred"
+                "raw repeated serial/window control over the same fixed "
+                "RDMA-seed/pair/full-slot-WDMA-readback envelope; no DDR "
+                "bank/color class inferred"
             ),
         }
         if missing:

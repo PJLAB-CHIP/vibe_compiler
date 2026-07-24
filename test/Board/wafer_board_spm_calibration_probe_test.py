@@ -46,6 +46,9 @@ METADATA = {
     "unused_inputs": [],
 }
 
+GUARD_BYTES = 64
+GUARD_READBACK_OFFSET = catalog.RECORD_WORDS * 8
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -109,6 +112,21 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.SPMCase, ...]:
     return selected
 
 
+def guard_addresses(case: catalog.SPMCase) -> tuple[int, ...]:
+    slots = 2 if case.kind == "lifetime" and case.iterations > 1 else 1
+    addresses: list[int] = []
+    for slot in range(slots):
+        address = case.address + slot * case.slot_stride
+        if address >= catalog.ALLOCATABLE_BEGIN + GUARD_BYTES:
+            addresses.append(address - GUARD_BYTES)
+        if (
+            address + case.transfer_bytes + GUARD_BYTES
+            <= catalog.ALLOCATABLE_END
+        ):
+            addresses.append(address + case.transfer_bytes)
+    return tuple(addresses)
+
+
 def validate_output(
     path: pathlib.Path,
     case: catalog.SPMCase,
@@ -123,6 +141,8 @@ def validate_output(
         )
     words = struct.unpack_from(f"<{catalog.RECORD_WORDS}Q", raw)
     rec = catalog.REC
+    guards = guard_addresses(case)
+    expected_ncc_instructions = case.expected_instructions + len(guards)
     if (
         words[rec["MAGIC"]] != catalog.RECORD_MAGIC
         or words[rec["SCHEMA_AND_WORDS"]]
@@ -135,14 +155,18 @@ def validate_output(
         or words[rec["REQUEST_GUARD"]] != catalog.REQUEST_GUARD
         or words[rec["OUTPUT_DDR_OFFSET"]] != catalog.OUTPUT_DDR_OFFSET
         or words[rec["SLOT_BYTES"]] != catalog.SLOT_BYTES
-        or words[rec["SPM_GUARD_MISMATCHES"]] != 0
-        or words[rec["RDMA_INST_DELTA"]] != case.expected_instructions
-        or words[rec["WDMA_INST_DELTA"]] != case.expected_instructions
+        or words[rec["RDMA_INST_DELTA"]] != expected_ncc_instructions
+        or words[rec["WDMA_INST_DELTA"]] != expected_ncc_instructions
         or words[rec["RECORD_GUARD"]] != catalog.RECORD_GUARD
     ):
         raise RuntimeError(
-            f"{case.name}: record/count/SPM guard oracle failed"
+            f"{case.name}: record/count oracle failed"
         )
+    guard_end = GUARD_READBACK_OFFSET + len(guards) * GUARD_BYTES
+    if raw[GUARD_READBACK_OFFSET:guard_end] != bytes(
+        [catalog.OUTPUT_CANARY]
+    ) * (len(guards) * GUARD_BYTES):
+        raise RuntimeError(f"{case.name}: SPM guard readback differs")
     begin = catalog.OUTPUT_DDR_OFFSET
     result_bytes = case.transfer_bytes * case.iterations
     end = begin + result_bytes
@@ -161,6 +185,9 @@ def validate_output(
     mutable[: catalog.RECORD_WORDS * 8] = bytes(
         [catalog.OUTPUT_CANARY]
     ) * (catalog.RECORD_WORDS * 8)
+    mutable[GUARD_READBACK_OFFSET:guard_end] = bytes(
+        [catalog.OUTPUT_CANARY]
+    ) * (len(guards) * GUARD_BYTES)
     mutable[begin:end] = bytes([catalog.OUTPUT_CANARY]) * result_bytes
     if mutable != bytes([catalog.OUTPUT_CANARY]) * catalog.RESOURCE_BYTES:
         mismatch = next(

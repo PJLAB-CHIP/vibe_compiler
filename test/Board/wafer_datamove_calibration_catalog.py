@@ -52,6 +52,7 @@ REC = {
     "OUTPUT_DDR_OFFSET": 10,
     "SLOT_BYTES": 11,
     "BODY_OFFSET": 12,
+    # Wire-compatibility slot; host validation uses the complete output slot.
     "OUTPUT_GUARD_MISMATCHES": 13,
     "TDMA_INST_DELTA": 14,
     "TDMA_EXEC_DELTA": 15,

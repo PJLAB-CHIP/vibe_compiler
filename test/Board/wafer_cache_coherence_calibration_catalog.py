@@ -23,10 +23,14 @@ OUTPUT0_OFFSET = 8192
 OUTPUT1_OFFSET = 32768
 OUTPUT_CANARY = 0xA5
 SPM_GUARD_BYTES = 64
+SPM_GUARD_VALUE = 0x6D
 BANK_PAYLOAD_BYTES = 4096
+BANK_SLOT_BYTES = BANK_PAYLOAD_BYTES + 2 * SPM_GUARD_BYTES
 BANK_REGION_GAP = 8192
 BANK_OFFSETS = (0, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768)
 DDR_BANK_PMU_REPETITIONS = 3
+BANK_SEED_RDMA_INSTRUCTIONS = 2
+BANK_READBACK_WDMA_INSTRUCTIONS = 2
 REQ = {
     "MAGIC": 0,
     "SCHEMA_AND_WORDS": 1,
@@ -93,14 +97,18 @@ class CacheCoherenceCase:
     repetitions: int = 1
 
     def as_dict(self) -> dict[str, object]:
-        oracle = (
-            "single-invocation-invalidate+post-control-exact+guards"
-            if self.case_id == 0 and self.kind == "coherence"
-            else (
+        if self.kind == "ddr-bank-pair":
+            oracle = (
+                "host-payload-rdma-slot-seed+pair+wdma-full-slot-readback+"
+                "host-exact+guards+terminal-completion"
+            )
+        elif self.case_id == 0:
+            oracle = "single-invocation-invalidate+post-control-exact+guards"
+        else:
+            oracle = (
                 "pre-control-observation+post-control-exact+guards+"
                 "matching-completion"
             )
-        )
         return {
             "id": self.case_id,
             "name": self.name,
@@ -172,10 +180,13 @@ CACHE_CASES = (
 def _bank_cases(first_case_id: int) -> tuple[CacheCoherenceCase, ...]:
     rows: list[CacheCoherenceCase] = []
     case_id = first_case_id
+    # PMU and instruction-count deltas cover the same fixed pure-NCC
+    # end-to-end envelope for serial and window controls:
+    #   two RDMA slot seeds + tested pair + two full-slot WDMA readbacks.
     counts = {
-        "rdma-rdma": (2, 0, 0),
-        "wdma-wdma": (0, 2, 2),
-        "rdma-wdma": (1, 1, 1),
+        "rdma-rdma": (4, 2, 2),
+        "wdma-wdma": (2, 4, 2),
+        "rdma-wdma": (3, 3, 2),
     }
     for pair_kind in ("rdma-rdma", "wdma-wdma", "rdma-wdma"):
         expected_rdma, expected_wdma, output_regions = counts[pair_kind]
@@ -190,8 +201,9 @@ def _bank_cases(first_case_id: int) -> tuple[CacheCoherenceCase, ...]:
                         expected_rdma,
                         expected_wdma,
                         (
-                            "same-allocation disjoint ranges; matching local "
-                            f"completion; {schedule} issue order"
+                            "same-allocation disjoint ranges; fixed RDMA-seed/"
+                            "pair/full-slot-WDMA-readback envelope; matching "
+                            f"terminal completion; {schedule} issue order"
                         ),
                         output_regions,
                         kind="ddr-bank-pair",
@@ -296,10 +308,12 @@ CACHE_SESSION_DISPOSITIONS = (
         kind="session-disposition",
         disposition="isolated-deferred",
         reason=(
-            "a stale-cache oracle requires prime, host mutation and "
-            "read-before/invalidate/read-after in one BoardRuntime session "
-            "over the same allocation; separate wafer-run invocations unload "
-            "and free resources"
+            "the current one-shot BoardRuntime frees every allocation after "
+            "one launch, so this state is unreachable and does not block the "
+            "current compiler/runtime.  Reactivate the probe when a persistent "
+            "session can reuse one allocation across launches: prime value A, "
+            "host-overwrite the same address with B, then compare Kcore reads "
+            "before and after invalidate"
         ),
         evidence=(
             CACHE_CASES[0],
@@ -406,18 +420,27 @@ def build_case_payload(
         lane0 = bank_pattern(case.case_id, sample, 0)
         lane1 = bank_pattern(case.case_id, sample, 1)
         second = BODY_OFFSET + BANK_REGION_GAP + case.bank_offset
-        payload[BODY_OFFSET : BODY_OFFSET + BANK_PAYLOAD_BYTES] = lane0
-        payload[second : second + BANK_PAYLOAD_BYTES] = lane1
-        if case.pair_kind == "wdma-wdma":
-            expected_regions = (
-                (OUTPUT0_OFFSET, lane0),
-                (
-                    OUTPUT0_OFFSET + BANK_REGION_GAP + case.bank_offset,
-                    lane1,
-                ),
-            )
-        elif case.pair_kind == "rdma-wdma":
-            expected_regions = ((OUTPUT0_OFFSET, lane0),)
+        guard = bytes([SPM_GUARD_VALUE]) * SPM_GUARD_BYTES
+        slot0 = guard + lane0 + guard
+        slot1 = guard + lane1 + guard
+        payload[
+            BODY_OFFSET - SPM_GUARD_BYTES :
+            BODY_OFFSET + BANK_PAYLOAD_BYTES + SPM_GUARD_BYTES
+        ] = slot0
+        payload[
+            second - SPM_GUARD_BYTES :
+            second + BANK_PAYLOAD_BYTES + SPM_GUARD_BYTES
+        ] = slot1
+        expected_regions = (
+            (OUTPUT0_OFFSET - SPM_GUARD_BYTES, slot0),
+            (
+                OUTPUT0_OFFSET
+                + BANK_REGION_GAP
+                + case.bank_offset
+                - SPM_GUARD_BYTES,
+                slot1,
+            ),
+        )
         input_pattern = lane0
     expected = (
         kcore_store_pattern(case.case_id, sample, case.payload_bytes)

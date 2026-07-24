@@ -990,6 +990,19 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
                 "construction"
             ),
         ),
+        _non_board_leaf(
+            "ct-reduce-raw-axis-isolated-deferred",
+            "held-out",
+            "isolated-deferred",
+            CT_DISPOSITION_CATALOG,
+            "ct-reduce-raw-axis-isolated-deferred",
+            reason=(
+                "historical raw N/HWC dimensions are absent from the "
+                "version-matched public enum; an isolated dimension-3 "
+                "launch exceeded its completion deadline and may "
+                "permanently wait, so all eight variants are fail-closed"
+            ),
+        ),
     ),
     "instruction-physical-layout": (
         _leaf(
@@ -1682,9 +1695,10 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             CACHE_CATALOG,
             "cache-same-session-stale-invalidation",
             reason=(
-                "stale-cache qualification requires one runtime session and "
-                "one allocation across prime, host mutation and invalidate; "
-                "the current runner launches and frees each phase separately"
+                "the current one-shot runtime frees allocations after each "
+                "launch, so the state is unreachable.  Reactivate only with "
+                "persistent-session allocation reuse, where host mutation of "
+                "a cache-primed address creates a real invalidate boundary"
             ),
         ),
         _board_leaf(
@@ -1818,6 +1832,14 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "large-backlog-compute-movement",
             resource_budget="256k-resource-with-64k-and-large-ne-ct-backlogs",
         ),
+        _board_leaf(
+            "multi-engine-sustained-parallel-controls",
+            "held-out",
+            "rank-one-worker0",
+            MEMORY_DESCRIPTOR_CATALOG,
+            "multi-engine-sustained-parallel-controls",
+            resource_budget="2m-memory-descriptor-resource",
+        ),
         _observation_leaf(
             "double-slot-hardware-observation",
             "held-out",
@@ -1889,13 +1911,18 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "ncc-producer-consumer-representative-positive",
             resource_budget="one-producer-consumer-chain",
         ),
-        _board_leaf(
+        _observation_leaf(
             "ncc-producer-consumer-boundaries",
             "held-out",
             "rank-one-worker0",
             NCC_CATALOG,
             "ncc-producer-consumer-all-directions",
             resource_budget="bounded-all-direction-producer-consumer-chains",
+            reason=(
+                "the group includes mapped-SPM boundary controls that prove "
+                "bounded completion and visibility but do not distinguish a "
+                "unique completion-scope mechanism"
+            ),
         ),
     ),
     "cross-worker-join": (

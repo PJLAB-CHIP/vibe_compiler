@@ -364,11 +364,19 @@ families:
 | `V_VV` | `AddVV`, `SubVV`, relation `EqualVV` | `src0`, `src1`, `dst0`, `elem_count`, format, rounding if supported, all three end fields. |
 | `V_VS` | `AddVS`, `MaxVS`, relation scalar variants | `src0` is SPM, `src1` stores the immediate scalar value, not an address; `src1_end` is not an operand range. |
 | `V_VuV` | `AddVuV`, relation/logic unit-vector variants | `src0` uses `elem_count`; `src1` is a short/unit vector using `unit_elem_count`; the documented `unit_elem_count` range is `1..64`. |
-| `V_VuVLoop` | loop unit-vector variants | Also writes `full_elem_count` and `full_unit_elem_count`; end fields are computed from full counts. |
+| `V_VuVLoop` | loop unit-vector variants | Also writes `full_elem_count` and `full_unit_elem_count`; end fields are computed from full counts. Supported packets require `unit_elem_count == 64` and `full_elem_count * unit_elem_count == elem_count * full_unit_elem_count`. |
 | bool relation/logical | `BoolEqualVV`, `BoolAndV` | Output format is bit-packed bool. `elem_count` is logical bool count; storage is `ceil(elem_count/8)`. |
 | tensor shape ops | pool, reduce, unpool, pad-like CT ops | Write `src0_tfr`, `dst_tfr`, `pdr`, `swr`, and `dims` as applicable. Shapes are packed as NHWC 16-bit lanes. |
 | convert | `INT8_FP16`, `FP32_BF16`, etc. | Source format is implied by function group, destination format by opcode; `rnd_mode` is honored where present in signature. |
 | writeback peripheral | `Count`, `ArgMax`, `ArgMin`, `BitCount` | Opcode 175..178 can poll `wb_data0` and optionally `wb_data1` after trigger; valid data is bit 31 of the readback register. |
+
+`V_VuVLoop` uses a fail-closed supported-interface contract. The two relations
+above must be checked with widened or checked multiplication rather than
+truncating integer division. A raw packet that violates either relation is a
+host-side negative and must not be submitted to the board. Historical exact
+results from raw `unit_elem_count=32` or `37` packets are out-of-contract
+hardware observations; they do not extend compiler, runtime, or production
+legality.
 
 CT opcode ranges:
 

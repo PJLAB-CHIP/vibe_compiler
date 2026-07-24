@@ -184,6 +184,15 @@ set_tests_properties(wafer-ct-vector-calibration-catalog-python PROPERTIES
   TIMEOUT 60
 )
 
+add_test(NAME wafer-ct-vuvloop-semantics-catalog-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_ct_vuvloop_semantics_catalog_test.py
+)
+set_tests_properties(wafer-ct-vuvloop-semantics-catalog-python PROPERTIES
+  LABELS "runtime;no-card;instruction;calibration;observation"
+  TIMEOUT 30
+)
+
 add_test(NAME wafer-ct-convert-calibration-catalog-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_ct_convert_calibration_catalog_test.py
@@ -304,6 +313,33 @@ set_tests_properties(wafer-full-card-barrier-contract-python PROPERTIES
   TIMEOUT 30
 )
 
+add_test(NAME wafer-ddr-tile-offset-contract-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_tile_offset_probe_test.py
+    --repo-root ${CMAKE_SOURCE_DIR}
+    --wafer-compile $<TARGET_FILE:wafer-compile>
+    --wafer-run $<TARGET_FILE:wafer-run>
+    --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+    --work-dir
+      ${CMAKE_CURRENT_BINARY_DIR}/runtime-ddr-tile-offset-contract
+    --list-cases
+)
+set_tests_properties(wafer-ddr-tile-offset-contract-python PROPERTIES
+  LABELS "runtime;no-card;all-rank;ddr;allocation;offset;calibration"
+  TIMEOUT 30
+)
+
+add_test(NAME wafer-ddr-sparse-high-offset-contract-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_sparse_high_offset_probe_test.py
+    --workspace-gib 40
+    --list-cases
+)
+set_tests_properties(wafer-ddr-sparse-high-offset-contract-python PROPERTIES
+  LABELS "runtime;no-card;ddr;allocation;offset;calibration"
+  TIMEOUT 30
+)
+
 if(WAFER_ENABLE_IMPORTER_DEPS AND
    WAFER_ENABLE_SPMD_PARTITIONER_DEPS AND
    WAFER_XLA_SPMD_PARTITIONER_HELPER)
@@ -376,6 +412,39 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     wafer-runtime-full-card-barrier-probe-no-card PROPERTIES
     LABELS "runtime;no-card;all-rank;cluster;barrier;probe-build"
     TIMEOUT 330
+  )
+  add_test(NAME wafer-runtime-ddr-tile-offset-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_tile_offset_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-ddr-tile-offset-probe
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-ddr-tile-offset-probe-no-card PROPERTIES
+    LABELS "runtime;no-card;all-rank;cluster;ddr;allocation;offset;probe-build"
+    TIMEOUT 630
+  )
+  add_test(NAME wafer-runtime-ddr-sparse-high-offset-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_sparse_high_offset_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-ddr-sparse-high-offset-probe
+      --workspace-gib 40
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-ddr-sparse-high-offset-probe-no-card PROPERTIES
+    LABELS "runtime;no-card;ddr;allocation;offset;probe-build"
+    TIMEOUT 630
   )
   add_test(NAME wafer-runtime-k-sharded-gemm-no-card
     COMMAND ${Python3_EXECUTABLE}
@@ -484,6 +553,22 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
   set_tests_properties(
     wafer-runtime-ct-vector-calibration-probe-no-card PROPERTIES
     LABELS "runtime;no-card;instruction;calibration;probe-build"
+    TIMEOUT 300
+  )
+  add_test(NAME wafer-runtime-ct-vuvloop-semantics-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ct_vuvloop_semantics_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-ct-vuvloop-semantics-probe
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-ct-vuvloop-semantics-probe-no-card PROPERTIES
+    LABELS "runtime;no-card;instruction;ct;calibration;probe-build"
     TIMEOUT 300
   )
   add_test(NAME wafer-runtime-ct-convert-calibration-probe-no-card
@@ -718,6 +803,34 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     TIMEOUT 32400
   )
 
+  add_test(NAME wafer-board-ncc-mapped-spm-boundary-manual
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ncc_execution_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-ncc-mapped-spm-boundary-manual
+      --suite mapped-spm-boundary-observation
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 30000
+      --repeat 3
+  )
+  set_tests_properties(
+    wafer-board-ncc-mapped-spm-boundary-manual PROPERTIES
+    LABELS "board;hardware;ncc;execution;calibration;observation;manual"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 3600
+  )
+
   function(wafer_add_isolated_ncc_observation test_suffix suite case_name)
     set(_wafer_ncc_observation_repeat 1)
     if(ARGC GREATER 3)
@@ -757,6 +870,62 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     constructor-observation
     ct-constructor-return-address-nonnull
   )
+  wafer_add_isolated_ncc_observation(
+    mapped-spm-ne-depth4-no-local-wait
+    mapped-spm-boundary-observation
+    mapped-spm-ncc-ne-depth4-to-kcore-a-no-local-wait
+  )
+  wafer_add_isolated_ncc_observation(
+    mapped-spm-ne-depth4-local-wait
+    mapped-spm-boundary-observation
+    mapped-spm-ncc-ne-depth4-to-kcore-b-local-wait
+  )
+  set(_wafer_ncc_strided_dependency_cases
+    dependency-strided-1d-serial-observation
+    dependency-strided-1d-window-observation
+    dependency-strided-2d-serial-observation
+    dependency-strided-2d-window-observation
+    dependency-strided-3d-serial-observation
+    dependency-strided-3d-window-observation
+    dependency-strided-1d-war-serial-observation
+    dependency-strided-1d-war-window-observation
+    dependency-strided-2d-war-serial-observation
+    dependency-strided-2d-war-window-observation
+    dependency-strided-3d-war-serial-observation
+    dependency-strided-3d-war-window-observation
+    dependency-strided-1d-rar-serial-observation
+    dependency-strided-1d-rar-window-observation
+    dependency-strided-2d-rar-serial-observation
+    dependency-strided-2d-rar-window-observation
+    dependency-strided-3d-rar-serial-observation
+    dependency-strided-3d-rar-window-observation
+    dependency-strided-1d-waw-exact-serial-observation
+    dependency-strided-1d-waw-exact-window-observation
+    dependency-strided-1d-waw-partial-serial-observation
+    dependency-strided-1d-waw-partial-window-observation
+    dependency-strided-1d-waw-adjacent-serial-observation
+    dependency-strided-1d-waw-adjacent-window-observation
+    dependency-strided-2d-waw-exact-serial-observation
+    dependency-strided-2d-waw-exact-window-observation
+    dependency-strided-2d-waw-partial-serial-observation
+    dependency-strided-2d-waw-partial-window-observation
+    dependency-strided-2d-waw-adjacent-serial-observation
+    dependency-strided-2d-waw-adjacent-window-observation
+    dependency-strided-3d-waw-exact-serial-observation
+    dependency-strided-3d-waw-exact-window-observation
+    dependency-strided-3d-waw-partial-serial-observation
+    dependency-strided-3d-waw-partial-window-observation
+    dependency-strided-3d-waw-adjacent-serial-observation
+    dependency-strided-3d-waw-adjacent-window-observation
+  )
+  foreach(_wafer_ncc_strided_case IN LISTS
+      _wafer_ncc_strided_dependency_cases)
+    wafer_add_isolated_ncc_observation(
+      ${_wafer_ncc_strided_case}
+      strided-dependency-observation
+      ${_wafer_ncc_strided_case}
+    )
+  endforeach()
   wafer_add_isolated_ncc_observation(
     default-wait-worker1-boundary
     completion-scope-manual
@@ -897,6 +1066,31 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     SKIP_RETURN_CODE 77
     TIMEOUT 43200
   )
+  add_test(NAME wafer-board-ct-vuvloop-semantics
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ct_vuvloop_semantics_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-ct-vuvloop-semantics
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 30000
+      --observation-samples 3
+  )
+  set_tests_properties(wafer-board-ct-vuvloop-semantics PROPERTIES
+    LABELS "board;hardware;instruction;ct;calibration;observation;manual"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 1800
+  )
   add_test(NAME wafer-board-ct-convert-calibration
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ct_convert_calibration_probe_test.py
@@ -1027,6 +1221,33 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     SKIP_RETURN_CODE 77
     TIMEOUT 21600
   )
+  add_test(NAME wafer-board-ne-backward-conv-focused
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ne_calibration_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-ne-backward-conv-focused
+      --case ne-backward-conv-f16-observed
+      --case ne-backward-conv-bf16-observed
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 60000
+      --observation-samples 3
+  )
+  set_tests_properties(wafer-board-ne-backward-conv-focused PROPERTIES
+    LABELS "board;hardware;ne;calibration;focused"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 1800
+  )
   add_test(NAME wafer-board-spm-calibration
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_spm_calibration_probe_test.py
@@ -1127,6 +1348,60 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     SKIP_RETURN_CODE 77
     TIMEOUT 21600
   )
+  add_test(NAME wafer-board-memory-descriptor-parallel-expanded
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_memory_descriptor_calibration_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-memory-descriptor-parallel-expanded
+      --parallel-pair-expanded
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 60000
+  )
+  set_tests_properties(
+    wafer-board-memory-descriptor-parallel-expanded PROPERTIES
+    LABELS "board;hardware;memory;parallel;calibration;focused"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 7200
+  )
+  add_test(NAME wafer-board-memory-descriptor-strided-dma-focused
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_memory_descriptor_calibration_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-memory-descriptor-strided-dma-focused
+      --case ddr-large-1d-stride-holes
+      --case ddr-large-2d-stride-holes
+      --case ddr-large-3d-stride-holes
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 60000
+  )
+  set_tests_properties(
+    wafer-board-memory-descriptor-strided-dma-focused PROPERTIES
+    LABELS "board;hardware;memory;dma;ddr;strided;calibration;focused"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 1800
+  )
   add_test(NAME wafer-board-memory-engine-pair-new-offsets
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_memory_descriptor_calibration_probe_test.py
@@ -1155,6 +1430,33 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     SKIP_RETURN_CODE 77
     TIMEOUT 10800
   )
+  add_test(NAME wafer-board-spm-parallel-address-sweep
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_memory_descriptor_calibration_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-spm-parallel-address-sweep
+      --parallel-address-sweep
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 60000
+  )
+  set_tests_properties(
+    wafer-board-spm-parallel-address-sweep PROPERTIES
+    LABELS
+      "board;hardware;memory;spm;bank;alignment;parallel;calibration;manual"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 7200
+  )
   add_test(NAME wafer-board-single-op-add
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_single_op_add_test.py
@@ -1172,6 +1474,27 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
   )
   set_tests_properties(wafer-board-single-op-add PROPERTIES
     LABELS "board;hardware;single-op"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 300
+  )
+  add_test(NAME wafer-board-single-op-add-once
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_single_op_add_test.py
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/board-single-op-add-once
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --repeat 1
+  )
+  set_tests_properties(wafer-board-single-op-add-once PROPERTIES
+    LABELS "board;hardware;single-op;focused"
     RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
     SKIP_RETURN_CODE 77
     TIMEOUT 300
@@ -1361,6 +1684,59 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
       TIMEOUT 630
+    )
+    add_test(NAME wafer-board-ddr-tile-offset-probe
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_tile_offset_probe_test.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-ddr-tile-offset-probe
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 600000
+        --repeat 1
+    )
+    set_tests_properties(wafer-board-ddr-tile-offset-probe PROPERTIES
+      LABELS
+        "board;hardware;cluster;all-rank;ddr;allocation;offset;calibration;manual"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 1500
+    )
+    add_test(NAME wafer-board-ddr-sparse-high-offset-probe
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_sparse_high_offset_probe_test.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-ddr-sparse-high-offset-probe
+        --workspace-gib 40
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 600000
+        --repeat 1
+    )
+    set_tests_properties(
+      wafer-board-ddr-sparse-high-offset-probe PROPERTIES
+      LABELS "board;hardware;ddr;allocation;offset;calibration;manual"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 1500
     )
     add_test(NAME wafer-board-k-sharded-gemm
       COMMAND ${Python3_EXECUTABLE}

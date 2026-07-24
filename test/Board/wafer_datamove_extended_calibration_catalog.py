@@ -220,13 +220,27 @@ LAYOUT_NCX_BYTES = codec.physical_layout(
 
 PAD_SOURCE_SHAPE = (2, 5, 7, 65)
 PAD_DESTINATION_SHAPE = (2, 7, 10, 65)
-PAD_INPUT_BYTES = 2 * 5 * 7 * 65 * 2
-PAD_RESULT_BYTES = 2 * 7 * 10 * 65 * 2
+PAD_INPUT_BYTES = codec.physical_layout(
+    PAD_SOURCE_SHAPE, "NCx", FP16_BYTES
+).physical_bytes
+PAD_RESULT_BYTES = codec.physical_layout(
+    PAD_DESTINATION_SHAPE, "NCx", FP16_BYTES
+).physical_bytes
 
 IMG2COL_SOURCE_SHAPE = (2, 9, 11, 65)
 IMG2COL_DESTINATION_SHAPE = (2, 6, 54, 65)
-IMG2COL_INPUT_BYTES = 2 * 9 * 11 * 65 * 2
-IMG2COL_RESULT_BYTES = 2 * 6 * 54 * 65 * 2
+IMG2COL_INPUT_BYTES = codec.physical_layout(
+    IMG2COL_SOURCE_SHAPE, "NCx", FP16_BYTES
+).physical_bytes
+IMG2COL_RESULT_BYTES = codec.physical_layout(
+    IMG2COL_DESTINATION_SHAPE, "NCx", FP16_BYTES
+).physical_bytes
+
+TENSOR_NOM_SHAPE = (2, 7, 9, 65)
+TENSOR_NOM_INPUT_BYTES = _compact_bytes(TENSOR_NOM_SHAPE)
+TENSOR_NOM_RESULT_BYTES = codec.physical_layout(
+    TENSOR_NOM_SHAPE, "NCx", FP16_BYTES
+).physical_bytes
 
 CONCAT_CASES = (
     _case(
@@ -331,8 +345,8 @@ RAW_OBSERVATION_CASES = (
         "datamove-raw-tensornom-n2h7w9c65",
         "tensor-nom",
         133,
-        16380,
-        16380,
+        TENSOR_NOM_INPUT_BYTES,
+        TENSOR_NOM_RESULT_BYTES,
         tdma=1,
         oracle=ORACLE_OBSERVATION,
     ),
@@ -506,7 +520,7 @@ def _pad_payload(seed: int) -> tuple[bytes, bytes]:
     def source(ni: int, hi: int, wi: int, ci: int) -> bytes:
         return values[((ni * h + hi) * w + wi) * c + ci]
 
-    result = (
+    result = tuple(
         source(ni, hi - 1, wi - 2, ci)
         if 1 <= hi < 6 and 2 <= wi < 9
         else zero
@@ -515,7 +529,22 @@ def _pad_payload(seed: int) -> tuple[bytes, bytes]:
         for wi in range(10)
         for ci in range(65)
     )
-    return b"".join(values), b"".join(result)
+    return (
+        codec.pack_scalar_bytes(
+            PAD_SOURCE_SHAPE,
+            "NCx",
+            FP16_BYTES,
+            values,
+            padding=0,
+        ),
+        codec.pack_scalar_bytes(
+            PAD_DESTINATION_SHAPE,
+            "NCx",
+            FP16_BYTES,
+            result,
+            padding=0,
+        ),
+    )
 
 
 def _img2col_payload(seed: int) -> tuple[bytes, bytes]:
@@ -528,7 +557,7 @@ def _img2col_payload(seed: int) -> tuple[bytes, bytes]:
             return zero
         return values[((ni * h + hi) * w + wi) * c + ci]
 
-    result = (
+    result = tuple(
         source(ni, oh + ky - 1, ow * 2 + kx - 2, ci)
         for ni in range(2)
         for ky in range(2)
@@ -537,7 +566,23 @@ def _img2col_payload(seed: int) -> tuple[bytes, bytes]:
         for ow in range(6)
         for ci in range(65)
     )
-    return b"".join(values), b"".join(result)
+    return (
+        codec.pack_scalar_bytes(
+            IMG2COL_SOURCE_SHAPE,
+            "NCx",
+            FP16_BYTES,
+            values,
+            padding=0,
+        ),
+        codec.pack_scalar_bytes(
+            IMG2COL_DESTINATION_SHAPE,
+            "NCx",
+            FP16_BYTES,
+            result,
+            padding=0,
+            batch_padding=SLOT_CANARY,
+        ),
+    )
 
 
 def _mask_payload(case: ExtendedDataMoveCase, seed: int) -> bytes:
@@ -616,8 +661,17 @@ def build_input_expected(
     if case.operation in {"mask-gather", "mask-gather-bv"}:
         return _mask_payload(case, seed), bytes()
     if case.operation == "tensor-nom":
-        values = _logical_values(case.input_bytes // 2, seed)
-        return b"".join(values), bytes()
+        values = _logical_values(_product(TENSOR_NOM_SHAPE), seed)
+        return (
+            b"".join(values),
+            codec.pack_scalar_bytes(
+                TENSOR_NOM_SHAPE,
+                "NCx",
+                FP16_BYTES,
+                values,
+                padding=0,
+            ),
+        )
     if case.operation in {"cx-materialize-ct", "ncx-materialize-ct"}:
         return _layout_composite_payload(case, seed)
     if case.operation == "tensor-materialize-ne":

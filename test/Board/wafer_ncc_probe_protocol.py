@@ -92,6 +92,15 @@ ORDERED_PRODUCER_CONSUMER = _enumerator(
 DOUBLE_SLOT_OBSERVATION = _enumerator(
     "WAFER_NCC_REQUEST_DOUBLE_SLOT_OBSERVATION"
 )
+MAPPED_SPM_KCORE_WRITE = _enumerator(
+    "WAFER_NCC_REQUEST_MAPPED_SPM_KCORE_WRITE"
+)
+PREISSUE_LOCAL_WAIT = _enumerator(
+    "WAFER_NCC_REQUEST_PREISSUE_LOCAL_WAIT"
+)
+TIGHT_KCORE_BOUNDARY = _enumerator(
+    "WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY"
+)
 
 
 def _typed_enum(
@@ -261,6 +270,7 @@ REC = {
         "SERIAL_WAIT_COUNT",
         "CONSTRUCTOR_ADDRESS",
         "RECORD_GUARD",
+        "PREISSUE_WAIT_CYCLES",
     )
 }
 ISSUE = {
@@ -311,6 +321,9 @@ PREPARE_STAGE_FLAGS = {
 PREPARE_STAGE_MASK = sum(PREPARE_STAGE_FLAGS.values())
 CONSTRUCTOR_CAPTURED = _enumerator(
     "WAFER_NCC_RECORD_CONSTRUCTOR_CAPTURED"
+)
+PREISSUE_LOCAL_WAIT_DONE = _enumerator(
+    "WAFER_NCC_RECORD_PREISSUE_LOCAL_WAIT_DONE"
 )
 ALL_PHASE_FLAGS = sum(
     _enumerator(name)
@@ -695,6 +708,59 @@ class Plan:
             )
         )
 
+    def is_mapped_spm_kcore_write_observation(self) -> bool:
+        if len(self.lanes) != 1:
+            return False
+        (consumer,) = self.lanes
+        return (
+            self.flags
+            in (
+                MAPPED_SPM_KCORE_WRITE,
+                MAPPED_SPM_KCORE_WRITE | PREISSUE_LOCAL_WAIT,
+            )
+            and self.rounds == 1
+            and self.effect_relation == EffectRelation.NONE
+            and self.range_relation == RangeRelation.DISJOINT
+            and self.schedule == Schedule.WINDOW
+            and self.wait_kind == WaitKind.BY_WORKER
+            and self.wait_worker_mask == 1
+            and self.first_operand == Operand.AUTO
+            and self.second_operand == Operand.AUTO
+            and self.issue_limit == 0
+            and consumer.engine == Engine.CT
+            and consumer.worker == 0
+            and consumer.issue_mode == IssueMode.RAW
+            and consumer.element_format == DMA_FORMAT_FP16
+            and consumer.layout_kind == LayoutKind.CONTIGUOUS
+            and consumer.transfer_bytes % 2 == 0
+        )
+
+    def is_tight_kcore_boundary_observation(self) -> bool:
+        if len(self.lanes) != 1:
+            return False
+        (producer,) = self.lanes
+        queue_depths = {
+            Engine.CT: 6,
+            Engine.NE: 6,
+            Engine.RDMA: 6,
+            Engine.WDMA: 6,
+            Engine.TDMA: 4,
+        }
+        return (
+            self.flags == TIGHT_KCORE_BOUNDARY
+            and self.effect_relation == EffectRelation.NONE
+            and self.range_relation == RangeRelation.DISJOINT
+            and self.schedule == Schedule.WINDOW
+            and self.wait_kind in (WaitKind.NONE, WaitKind.LOCAL_FENCE)
+            and self.wait_worker_mask == 0
+            and self.first_operand == Operand.AUTO
+            and self.second_operand == Operand.AUTO
+            and producer.worker == 0
+            and producer.issue_mode == IssueMode.RAW
+            and self.issue_limit == 0
+            and self.rounds <= queue_depths[producer.engine]
+        )
+
     def validate(self) -> None:
         if self.command == Command.QUALIFY:
             if (
@@ -820,6 +886,9 @@ class Plan:
             CONSTRUCTOR_OBSERVATION,
             ORDERED_PRODUCER_CONSUMER,
             DOUBLE_SLOT_OBSERVATION,
+            MAPPED_SPM_KCORE_WRITE,
+            MAPPED_SPM_KCORE_WRITE | PREISSUE_LOCAL_WAIT,
+            TIGHT_KCORE_BOUNDARY,
         ):
             raise ValueError("unknown plan flags are not safe")
         queue_depths = {
@@ -830,6 +899,8 @@ class Plan:
             Engine.TDMA: 4,
         }
         tight_depth_plus_one = self.flags == TIGHT_DEPTH_PLUS_ONE
+        tight_kcore_boundary = self.is_tight_kcore_boundary_observation()
+        tight_submission = tight_depth_plus_one or tight_kcore_boundary
         if tight_depth_plus_one:
             if (
                 len(self.lanes) != 2
@@ -851,9 +922,15 @@ class Plan:
                     "tight depth-plus-one must issue exactly depth+1 raw "
                     "entries on one worker/engine with a matching wait"
                 )
+        elif self.flags == TIGHT_KCORE_BOUNDARY:
+            if not tight_kcore_boundary:
+                raise ValueError(
+                    "tight Kcore boundary must issue a bounded raw window on "
+                    "one worker/engine with no wait or a local fence"
+                )
         elif self.issue_limit:
             raise ValueError(
-                "only tight depth-plus-one consumes issue_limit"
+                "only a typed tight submission consumes issue_limit"
             )
         if (
             self.flags == CONSTRUCTOR_OBSERVATION
@@ -872,7 +949,14 @@ class Plan:
             and not self.is_double_slot_observation()
         ):
             raise ValueError("double-slot observation is malformed")
-        if self.schedule == Schedule.WINDOW and not tight_depth_plus_one:
+        if (
+            self.flags & MAPPED_SPM_KCORE_WRITE
+            and not self.is_mapped_spm_kcore_write_observation()
+        ):
+            raise ValueError(
+                "mapped-SPM Kcore-write observation is malformed"
+            )
+        if self.schedule == Schedule.WINDOW and not tight_submission:
             outstanding: dict[tuple[Engine, int], int] = {}
             for lane in self.lanes:
                 key = (lane.engine, lane.worker)

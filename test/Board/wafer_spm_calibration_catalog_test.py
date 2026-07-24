@@ -10,12 +10,12 @@ import wafer_spm_calibration_catalog as catalog
 
 
 def main() -> int:
-    assert len(catalog.CATALOG) == 124
+    assert len(catalog.CATALOG) == 146
     assert len(catalog.CASES_BY_NAME) == len(catalog.CATALOG)
     assert len(catalog.BOARD_CASES) == 24
     assert len(catalog.STATIC_NEGATIVE_CASES) == 10
     assert len(catalog.DEFERRED_CASES) == 0
-    assert len(catalog.DELEGATED_CASES) == 90
+    assert len(catalog.DELEGATED_CASES) == 112
     assert {case.domain for case in catalog.CATALOG} == {
         "capacity-reservation",
         "alignment-bank",
@@ -137,7 +137,7 @@ def main() -> int:
         "WDMA",
         "TDMA",
     }
-    assert len(catalog.BANK_ENGINE_PAIR_CASES) == 60
+    assert len(catalog.BANK_ENGINE_PAIR_CASES) == 82
     assert {case.relation for case in catalog.BANK_ENGINE_PAIR_CASES} == {
         "serial",
         "window",
@@ -191,6 +191,19 @@ def main() -> int:
         )
         for case in catalog.BOARD_CASES
     )
+    entry = probe[
+        probe.index("wafer_tx81_instruction_family_probe(uint64_t request_ddr")
+        :
+    ]
+    assert "get_spm_memory_mapping" not in probe
+    assert "wafer_spm_seed_guards" in probe
+    assert "wafer_spm_readback_guards" in probe
+    first_rdma = entry.index("wafer_spm_seed_guards(")
+    first_wdma = entry.index("wafer_tx81_wdma(", first_rdma)
+    readback = entry.index("wafer_spm_readback_guards(", first_wdma)
+    terminal = entry.index("wafer_tx81_local_fence();", readback)
+    assert first_rdma < first_wdma < readback < terminal
+    assert entry.count("wafer_tx81_local_fence();") == 1
     print(
         "wafer_spm_calibration_catalog_test: "
         f"cases={len(catalog.CATALOG)} "

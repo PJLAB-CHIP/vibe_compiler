@@ -91,6 +91,7 @@ enum WaferCTCRecordWord {
   WAFER_CTC_REC_OUTPUT_DDR_OFFSET = 14,
   WAFER_CTC_REC_SLOT_BYTES = 15,
   WAFER_CTC_REC_BODY_OFFSET = 16,
+  /* Compatibility slot; the host validates the complete WDMA output slot. */
   WAFER_CTC_REC_OUTPUT_GUARD_MISMATCHES = 17,
   WAFER_CTC_REC_CT_INST_DELTA = 18,
   WAFER_CTC_REC_CT_EXEC_DELTA = 19,

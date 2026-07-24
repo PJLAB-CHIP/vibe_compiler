@@ -3,10 +3,78 @@
 
 from __future__ import annotations
 
+import pathlib
+
 import wafer_cache_coherence_calibration_catalog as catalog
 
 
 def main() -> int:
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    protocol = (
+        repo
+        / "test"
+        / "Board"
+        / "Inputs"
+        / "wafer_cache_coherence_calibration_probe_protocol.h"
+    ).read_text()
+    probe = (
+        repo
+        / "test"
+        / "Board"
+        / "Inputs"
+        / "wafer_cache_coherence_calibration_probe.c"
+    ).read_text()
+    for name, value in (
+        ("SCHEMA", catalog.SCHEMA),
+        ("REQUEST_WORDS", catalog.REQUEST_WORDS),
+        ("RECORD_WORDS", catalog.RECORD_WORDS),
+        (
+            "BANK_SEED_RDMA_INSTRUCTIONS",
+            catalog.BANK_SEED_RDMA_INSTRUCTIONS,
+        ),
+        (
+            "BANK_READBACK_WDMA_INSTRUCTIONS",
+            catalog.BANK_READBACK_WDMA_INSTRUCTIONS,
+        ),
+    ):
+        assert f"#define WAFER_CCH_{name} {value}U" in protocol
+    for field, index in catalog.REQ.items():
+        assert f"WAFER_CCH_REQ_{field} = {index}" in protocol
+    for field, index in catalog.REC.items():
+        assert f"WAFER_CCH_REC_{field} = {index}" in protocol
+    assert "wafer_cch_seed_spm_bank" not in probe
+    assert "wafer_cch_mismatch_spm_bank" not in probe
+    pair_begin = probe.index("if (selected.pair_kind != 0U) {")
+    pair_end = probe.index("} else {", pair_begin)
+    pair_path = probe[pair_begin:pair_end]
+    assert "get_spm_memory_mapping" not in pair_path
+    assert pair_path.count("wafer_tx81_local_fence();") == 1
+    assert (
+        pair_path.index("wafer_cch_seed_bank_slots")
+        < pair_path.index("wafer_cch_issue_bank_pair")
+        < pair_path.index("wafer_cch_readback_bank_slots")
+        < pair_path.index("wafer_tx81_local_fence();")
+    )
+    issue_begin = probe.index("static void wafer_cch_issue_bank_pair")
+    issue_end = probe.index("static void wafer_cch_seed_bank_slots")
+    assert (
+        probe[issue_begin:issue_end].count("wafer_tx81_local_fence();")
+        == 3
+    )
+    seed_begin = issue_end
+    readback_begin = probe.index(
+        "static void wafer_cch_readback_bank_slots"
+    )
+    entry_begin = probe.index(
+        "__attribute__((visibility(\"hidden\")))", readback_begin
+    )
+    assert "wafer_tx81_local_fence();" not in probe[
+        seed_begin:readback_begin
+    ]
+    assert "wafer_tx81_local_fence();" not in probe[
+        readback_begin:entry_begin
+    ]
+
     assert len(catalog.CACHE_CASES) == 4
     assert len(catalog.DDR_BANK_CASES) == 54
     assert len(catalog.CATALOG) == 58
@@ -55,13 +123,19 @@ def main() -> int:
                 }
                 assert case.schedule in {"serial", "window"}
                 assert case.bank_offset in catalog.BANK_OFFSETS
-                assert len(built.expected_regions) == case.output_regions
+                assert len(built.expected_regions) == 2
+                assert case.output_regions == 2
                 for offset, expected in built.expected_regions:
-                    assert offset % 256 == 0
-                    assert len(expected) == catalog.BANK_PAYLOAD_BYTES
+                    assert offset % 64 == 0
+                    assert len(expected) == catalog.BANK_SLOT_BYTES
+                    assert expected[: catalog.SPM_GUARD_BYTES] == bytes(
+                        [catalog.SPM_GUARD_VALUE]
+                    ) * catalog.SPM_GUARD_BYTES
+                    assert expected[-catalog.SPM_GUARD_BYTES :] == bytes(
+                        [catalog.SPM_GUARD_VALUE]
+                    ) * catalog.SPM_GUARD_BYTES
                     assert (
-                        offset + len(expected) + catalog.SPM_GUARD_BYTES
-                        <= catalog.RESOURCE_BYTES
+                        offset + len(expected) <= catalog.RESOURCE_BYTES
                     )
     assert total_phases == (
         len(catalog.CACHE_CASES)
@@ -76,6 +150,18 @@ def main() -> int:
         for pair in ("rdma-rdma", "wdma-wdma", "rdma-wdma")
         for offset in catalog.BANK_OFFSETS
         for schedule in ("serial", "window")
+    }
+    assert {
+        pair: {
+            (case.expected_rdma, case.expected_wdma)
+            for case in catalog.DDR_BANK_CASES
+            if case.pair_kind == pair
+        }
+        for pair in ("rdma-rdma", "wdma-wdma", "rdma-wdma")
+    } == {
+        "rdma-rdma": {(4, 2)},
+        "wdma-wdma": {(2, 4)},
+        "rdma-wdma": {(3, 3)},
     }
     assert all(
         row.disposition == "delegated-board-case"

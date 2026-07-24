@@ -123,7 +123,6 @@ def validate_output(
         "OUTPUT_DDR_OFFSET": catalog.OUTPUT_DDR_OFFSET,
         "SLOT_BYTES": catalog.SLOT_BYTES,
         "BODY_OFFSET": catalog.BODY_OFFSET,
-        "OUTPUT_GUARD_MISMATCHES": 0,
         "TDMA_INST_DELTA": case.expected_instructions,
         "RECORD_GUARD": catalog.RECORD_GUARD,
     }

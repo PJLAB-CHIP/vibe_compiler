@@ -250,6 +250,31 @@ static int wafer_ncc_probe_is_double_slot_observation(
   return 1;
 }
 
+static int wafer_ncc_probe_is_mapped_spm_kcore_write_observation(
+    const WaferNccProbeRequest *request) {
+  uint64_t allowed_flags =
+      WAFER_NCC_REQUEST_MAPPED_SPM_KCORE_WRITE |
+      WAFER_NCC_REQUEST_PREISSUE_LOCAL_WAIT;
+  const WaferNccProbeLane *consumer = &request->lanes[0];
+  return (request->flags == WAFER_NCC_REQUEST_MAPPED_SPM_KCORE_WRITE ||
+          request->flags == allowed_flags) &&
+         request->lane_count == 1 && request->rounds == 1 &&
+         request->effect_relation == WAFER_NCC_EFFECT_NONE &&
+         request->range_relation == WAFER_NCC_RANGE_DISJOINT &&
+         request->schedule == WAFER_NCC_SCHEDULE_WINDOW &&
+         request->wait_kind == WAFER_NCC_WAIT_BY_WORKER &&
+         request->wait_worker_mask == 1 &&
+         request->first_operand == WAFER_NCC_OPERAND_AUTO &&
+         request->second_operand == WAFER_NCC_OPERAND_AUTO &&
+         request->issue_limit == 0 &&
+         consumer->engine == WAFER_NCC_ENGINE_CT &&
+         consumer->worker == 0 &&
+         consumer->issue_mode == WAFER_NCC_ISSUE_RAW &&
+         consumer->element_format == WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16 &&
+         consumer->layout_kind == WAFER_NCC_LAYOUT_CONTIGUOUS &&
+         consumer->transfer_bytes % sizeof(uint16_t) == 0;
+}
+
 static const WaferNccProbeEngineAdapter *
 wafer_ncc_probe_find_adapter(const WaferNccProbeEngineAdapter *adapters,
                              uint32_t adapter_count, uint32_t engine) {
@@ -339,6 +364,30 @@ static void wafer_ncc_probe_write_observation(
   record[base + WAFER_NCC_ISSUE_WRITE_BEGIN] = observation->write_begin;
   record[base + WAFER_NCC_ISSUE_WRITE_END] = observation->write_end;
   record[base + WAFER_NCC_ISSUE_FLAGS] = observation->flags;
+}
+
+static int wafer_ncc_probe_observe_deferred(
+    const WaferNccProbeRequest *request,
+    const WaferNccProbeEngineAdapter *adapters, uint32_t adapter_count,
+    void *context, volatile uint64_t *record, WaferNccProbeIssue *issues,
+    uint32_t issue_count) {
+  for (uint32_t index = 0; index < issue_count; ++index) {
+    WaferNccProbeIssue *issue = &issues[index];
+    const WaferNccProbeEngineAdapter *adapter = wafer_ncc_probe_find_adapter(
+        adapters, adapter_count, issue->engine);
+    if (adapter == NULL)
+      return 1;
+    uint32_t base = wafer_ncc_protocol_issue_word(
+        issue->ordinal, WAFER_NCC_ISSUE_ORDINAL);
+    WaferNccProbeObservation observation;
+    wafer_ncc_probe_zero(&observation, sizeof(observation));
+    observation.execute_rc =
+        record[base + WAFER_NCC_ISSUE_EXECUTE_RC];
+    if (adapter->observe(context, request, issue, &observation) != 0)
+      return 1;
+    wafer_ncc_probe_write_observation(record, issue, &observation);
+  }
+  return 0;
 }
 
 static void wafer_ncc_probe_release_prepared(
@@ -488,7 +537,12 @@ uint32_t wafer_ncc_probe_validate_plan(
        request->flags != WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE &&
        request->flags != WAFER_NCC_REQUEST_CONSTRUCTOR_OBSERVATION &&
        request->flags != WAFER_NCC_REQUEST_ORDERED_PRODUCER_CONSUMER &&
-       request->flags != WAFER_NCC_REQUEST_DOUBLE_SLOT_OBSERVATION))
+       request->flags != WAFER_NCC_REQUEST_DOUBLE_SLOT_OBSERVATION &&
+       request->flags != WAFER_NCC_REQUEST_MAPPED_SPM_KCORE_WRITE &&
+       request->flags != WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY &&
+       request->flags !=
+           (WAFER_NCC_REQUEST_MAPPED_SPM_KCORE_WRITE |
+            WAFER_NCC_REQUEST_PREISSUE_LOCAL_WAIT)))
     return WAFER_NCC_STATUS_BAD_REQUEST;
   if (request->command == WAFER_NCC_COMMAND_QUALIFY) {
     if (request->lane_count != 0 || request->rounds != 0 ||
@@ -653,6 +707,9 @@ uint32_t wafer_ncc_probe_validate_plan(
 
   int tight_depth_plus_one =
       request->flags == WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE;
+  int tight_kcore_boundary =
+      request->flags == WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY;
+  int tight_submission = tight_depth_plus_one || tight_kcore_boundary;
   if (tight_depth_plus_one) {
     const WaferNccProbeLane *first = &request->lanes[0];
     const WaferNccProbeLane *second = &request->lanes[1];
@@ -684,6 +741,23 @@ uint32_t wafer_ncc_probe_validate_plan(
         request->issue_limit <=
             (request->lane_count - 1U) * request->rounds)
       return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
+  } else if (tight_kcore_boundary) {
+    const WaferNccProbeLane *producer = &request->lanes[0];
+    const WaferNccProbeEngineAdapter *adapter =
+        wafer_ncc_probe_find_adapter(adapters, adapter_count,
+                                     producer->engine);
+    if (request->lane_count != 1 ||
+        request->effect_relation != WAFER_NCC_EFFECT_NONE ||
+        request->range_relation != WAFER_NCC_RANGE_DISJOINT ||
+        request->schedule != WAFER_NCC_SCHEDULE_WINDOW ||
+        (request->wait_kind != WAFER_NCC_WAIT_NONE &&
+         request->wait_kind != WAFER_NCC_WAIT_LOCAL_FENCE) ||
+        request->wait_worker_mask != 0U || producer->worker != 0 ||
+        request->first_operand != WAFER_NCC_OPERAND_AUTO ||
+        request->second_operand != WAFER_NCC_OPERAND_AUTO ||
+        producer->issue_mode != WAFER_NCC_ISSUE_RAW || adapter == NULL ||
+        request->rounds > adapter->queue_depth || request->issue_limit != 0)
+      return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
   } else if (request->issue_limit != 0) {
     return WAFER_NCC_STATUS_BAD_REQUEST;
   }
@@ -696,9 +770,12 @@ uint32_t wafer_ncc_probe_validate_plan(
   if (request->flags == WAFER_NCC_REQUEST_DOUBLE_SLOT_OBSERVATION &&
       !wafer_ncc_probe_is_double_slot_observation(request))
     return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
+  if ((request->flags & WAFER_NCC_REQUEST_MAPPED_SPM_KCORE_WRITE) != 0 &&
+      !wafer_ncc_probe_is_mapped_spm_kcore_write_observation(request))
+    return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
 
   if (request->schedule == WAFER_NCC_SCHEDULE_WINDOW &&
-      !tight_depth_plus_one) {
+      !tight_submission) {
     for (uint32_t lane = 0; lane < request->lane_count; ++lane) {
       const WaferNccProbeLane *current = &request->lanes[lane];
       uint32_t outstanding = request->rounds;
@@ -804,8 +881,12 @@ uint32_t wafer_ncc_probe_execute_plan(
         hooks, context, record, issues, prepared_count, 0);
   record[WAFER_NCC_REC_FLAGS] |= WAFER_NCC_RECORD_BEFORE_CAPTURED;
 
-  int tight_submission =
+  int tight_depth_plus_one =
       request->flags == WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE;
+  int tight_kcore_boundary =
+      request->flags == WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY;
+  int tight_submission =
+      tight_depth_plus_one || tight_kcore_boundary;
   int issued_any = 0;
   WaferNccProbeIssue *last_issued = NULL;
   uint64_t plan_cycle_before = hooks->read_cycle(context);
@@ -884,27 +965,17 @@ uint32_t wafer_ncc_probe_execute_plan(
     }
   }
 
-  if (tight_submission) {
+  if (tight_depth_plus_one) {
     uint32_t last_base = wafer_ncc_protocol_issue_word(
         last_issued->ordinal, WAFER_NCC_ISSUE_ORDINAL);
     record[last_base + WAFER_NCC_ISSUE_CONTROL_AFTER_ISSUE] =
         hooks->read_worker_control(context, last_issued->worker);
-    for (uint32_t index = 0; index < issue_count; ++index) {
-      WaferNccProbeIssue *issue = &issues[index];
-      const WaferNccProbeEngineAdapter *adapter = wafer_ncc_probe_find_adapter(
-          adapters, adapter_count, issue->engine);
-      uint32_t base = wafer_ncc_protocol_issue_word(
-          issue->ordinal, WAFER_NCC_ISSUE_ORDINAL);
-      WaferNccProbeObservation observation;
-      wafer_ncc_probe_zero(&observation, sizeof(observation));
-      observation.execute_rc =
-          record[base + WAFER_NCC_ISSUE_EXECUTE_RC];
-      if (adapter->observe(context, request, issue, &observation) != 0)
-        return wafer_ncc_probe_finish_after_failure(
-            WAFER_NCC_STATUS_OBSERVATION_FAILED, request, adapters,
-            adapter_count, hooks, context, record, issues, prepared_count, 1);
-      wafer_ncc_probe_write_observation(record, issue, &observation);
-    }
+    if (wafer_ncc_probe_observe_deferred(
+            request, adapters, adapter_count, context, record, issues,
+            issue_count) != 0)
+      return wafer_ncc_probe_finish_after_failure(
+          WAFER_NCC_STATUS_OBSERVATION_FAILED, request, adapters,
+          adapter_count, hooks, context, record, issues, prepared_count, 1);
     record[last_base + WAFER_NCC_ISSUE_FLAGS] |=
         WAFER_NCC_ISSUE_WINDOW_CONTROL_VALID;
   }
@@ -954,6 +1025,20 @@ uint32_t wafer_ncc_probe_execute_plan(
     record[WAFER_NCC_REC_BOUNDARY_GUARD_MISMATCHES] += guard_mismatches;
   }
   record[WAFER_NCC_REC_FLAGS] |= WAFER_NCC_RECORD_BOUNDARY_ORACLE_DONE;
+
+  /*
+   * Sample worker control, the mapped-SPM marker, and the boundary Kcore read
+   * immediately after the tight NCC window (or its requested local wait).
+   * Packet bookkeeping is deliberately deferred so a short workload cannot
+   * drain merely while the probe records observations.
+   */
+  if (tight_kcore_boundary &&
+      wafer_ncc_probe_observe_deferred(
+          request, adapters, adapter_count, context, record, issues,
+          issue_count) != 0)
+    return wafer_ncc_probe_finish_after_failure(
+        WAFER_NCC_STATUS_OBSERVATION_FAILED, request, adapters, adapter_count,
+        hooks, context, record, issues, prepared_count, issued_any);
 
   uint32_t participant_mask = wafer_ncc_probe_participant_mask(request);
   if (participant_mask != 0 &&

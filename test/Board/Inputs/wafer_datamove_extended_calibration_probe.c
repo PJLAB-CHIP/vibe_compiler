@@ -9,8 +9,6 @@
 #define WAFER_DMX_PMU_BASE UINT64_C(0x590000)
 #define WAFER_DMX_STABLE_RETRIES 8U
 
-extern int8_t *get_spm_memory_mapping(uint64_t offset);
-
 typedef struct WaferDMXCase {
   uint32_t case_id;
   uint32_t input_bytes;
@@ -36,11 +34,11 @@ static const WaferDMXCase wafer_dmx_cases[] = {
     {1U, 17408U, 16380U, 17408U, 0U, 1U, 0U, 1U},
     {2U, 17920U, 16380U, 17920U, 0U, 1U, 0U, 1U},
     {3U, 9216U, 8060U, 9216U, 0U, 1U, 0U, 1U},
-    {4U, 9100U, 18200U, 18432U, 1U, 0U, 0U, 0U},
-    {5U, 25740U, 84240U, 84480U, 1U, 0U, 0U, 0U},
+    {4U, 9728U, 19456U, 19456U, 1U, 0U, 0U, 0U},
+    {5U, 27136U, 88576U, 88576U, 1U, 0U, 0U, 0U},
     {6U, 4608U, 260U, 512U, 0U, 1U, 0U, 1U},
     {7U, 4608U, 260U, 512U, 0U, 1U, 0U, 1U},
-    {8U, 16380U, 16380U, 16384U, 1U, 0U, 0U, 1U},
+    {8U, 16380U, 17408U, 17408U, 1U, 0U, 0U, 1U},
     {9U, 512U, 260U, 512U, 2U, 1U, 0U, 0U},
     {10U, 512U, 260U, 512U, 4U, 1U, 0U, 0U},
     {11U, 4608U, 32U, 256U, 2U, 0U, 1U, 0U},
@@ -138,28 +136,6 @@ static uint32_t wafer_dmx_decode(const volatile uint64_t *request,
       WAFER_DMX_BODY_OFFSET + selected->output_span > WAFER_DMX_SLOT_BYTES)
     return WAFER_DMX_STATUS_BAD_REQUEST;
   return WAFER_DMX_STATUS_OK;
-}
-
-static volatile uint8_t *wafer_dmx_spm8(uint64_t address) {
-  return (volatile uint8_t *)(void *)get_spm_memory_mapping(address);
-}
-
-static void wafer_dmx_fill(uint64_t address, uint32_t bytes, uint8_t value) {
-  volatile uint8_t *mapped = wafer_dmx_spm8(address);
-  for (uint32_t index = 0; index < bytes; ++index)
-    mapped[index] = value;
-  __asm__ volatile("fence iorw, iorw" ::: "memory");
-}
-
-static uint64_t wafer_dmx_guard_mismatches(const WaferDMXCase *selected) {
-  const volatile uint8_t *output = wafer_dmx_spm8(WAFER_DMX_SPM_OUTPUT);
-  uint64_t mismatches = 0;
-  for (uint32_t index = 0; index < WAFER_DMX_BODY_OFFSET; ++index)
-    mismatches += output[index] != WAFER_DMX_SLOT_CANARY;
-  for (uint32_t index = WAFER_DMX_BODY_OFFSET + selected->output_span;
-       index < WAFER_DMX_SLOT_BYTES; ++index)
-    mismatches += output[index] != WAFER_DMX_SLOT_CANARY;
-  return mismatches;
 }
 
 static Data_Shape wafer_dmx_shape(uint32_t n, uint32_t h, uint32_t w,
@@ -289,7 +265,6 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
     wafer_dmx_gather(input, auxiliary0, 256U, 128U, 128U, 2U, 130U, 2U);
     wafer_dmx_gather(input + 256U, auxiliary0 + 128U, 4U, 2U, 8U, 2U, 130U,
                      2U);
-    wafer_tx81_local_fence();
     wafer_tx81_elementwise_add(auxiliary0, auxiliary0, output, 130U,
                                Fmt_FP16);
     break;
@@ -301,18 +276,12 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
                        auxiliary0 + batch * 130U + 128U, 2U, 2U, 0U, 1U, 0U,
                        1U);
     }
-    wafer_tx81_local_fence();
     wafer_tx81_elementwise_add(auxiliary0, auxiliary0, output, 130U,
                                Fmt_FP16);
     break;
   case 11U:
-    wafer_dmx_fill(WAFER_DMX_SPM_AUX0, 256U + WAFER_DMX_BODY_OFFSET,
-                   WAFER_DMX_SLOT_CANARY);
-    wafer_dmx_fill(WAFER_DMX_SPM_AUX1, 512U + WAFER_DMX_BODY_OFFSET,
-                   WAFER_DMX_SLOT_CANARY);
     wafer_dmx_gather(input, auxiliary0, 256U, 256U, 0U, 1U, 0U, 1U);
     wafer_dmx_gather(input + 4096U, auxiliary1, 512U, 512U, 0U, 1U, 0U, 1U);
-    wafer_tx81_local_fence();
     wafer_tx81_gemm(auxiliary0, auxiliary1, output, 1U, 16U, 16U, 1U,
                     Fmt_FP16);
     break;
@@ -345,7 +314,6 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
   default:
     return 0U;
   }
-  wafer_tx81_local_fence();
   return 1U;
 }
 
@@ -391,14 +359,32 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
     uint32_t staged_bytes = WAFER_DMX_BODY_OFFSET + selected.input_bytes;
     wafer_tx81_rdma(payload_ddr, WAFER_DMX_SPM_INPUT, staged_bytes,
                     staged_bytes, 0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8);
-    wafer_tx81_local_fence();
-    wafer_dmx_fill(WAFER_DMX_SPM_OUTPUT, WAFER_DMX_SLOT_BYTES,
-                   WAFER_DMX_SLOT_CANARY);
+    wafer_tx81_rdma(request_ddr + WAFER_DMX_SLOT_BYTES,
+                    WAFER_DMX_SPM_OUTPUT, WAFER_DMX_SLOT_BYTES,
+                    WAFER_DMX_SLOT_BYTES, 0U, 0U, 0U, 1U, 1U, 1U,
+                    Fmt_UINT8);
+    if (selected.case_id == 11U) {
+      wafer_tx81_rdma(request_ddr + WAFER_DMX_SLOT_BYTES,
+                      WAFER_DMX_SPM_AUX0,
+                      WAFER_DMX_BODY_OFFSET + 256U,
+                      WAFER_DMX_BODY_OFFSET + 256U, 0U, 0U, 0U, 1U, 1U, 1U,
+                      Fmt_UINT8);
+      wafer_tx81_rdma(request_ddr + WAFER_DMX_SLOT_BYTES,
+                      WAFER_DMX_SPM_AUX1,
+                      WAFER_DMX_BODY_OFFSET + 512U,
+                      WAFER_DMX_BODY_OFFSET + 512U, 0U, 0U, 0U, 1U, 1U, 1U,
+                      Fmt_UINT8);
+    }
     WaferDMXPMU before = wafer_dmx_read_pmu();
     uint64_t raw_execute_rc = UINT64_MAX;
     if (wafer_dmx_issue(&selected, &raw_execute_rc) == 0U) {
       status = WAFER_DMX_STATUS_EXECUTE_FAILED;
     } else {
+      wafer_tx81_wdma(WAFER_DMX_SPM_OUTPUT,
+                      output_ddr + WAFER_DMX_OUTPUT_DDR_OFFSET,
+                      WAFER_DMX_SLOT_BYTES, WAFER_DMX_SLOT_BYTES, 0U, 0U, 0U,
+                      1U, 1U, 1U, Fmt_UINT8);
+      wafer_tx81_local_fence();
       WaferDMXPMU after = wafer_dmx_read_pmu();
       record[WAFER_DMX_REC_TDMA_INST_DELTA] =
           (uint32_t)(after.tdma_instructions - before.tdma_instructions);
@@ -413,13 +399,6 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
       record[WAFER_DMX_REC_NE_EXEC_DELTA] =
           after.ne_execution - before.ne_execution;
       record[WAFER_DMX_REC_RAW_EXECUTE_RC] = raw_execute_rc;
-      record[WAFER_DMX_REC_OUTPUT_GUARD_MISMATCHES] =
-          wafer_dmx_guard_mismatches(&selected);
-      wafer_tx81_wdma(WAFER_DMX_SPM_OUTPUT,
-                      output_ddr + WAFER_DMX_OUTPUT_DDR_OFFSET,
-                      WAFER_DMX_SLOT_BYTES, WAFER_DMX_SLOT_BYTES, 0U, 0U, 0U,
-                      1U, 1U, 1U, Fmt_UINT8);
-      wafer_tx81_local_fence();
     }
     record[WAFER_DMX_REC_STATUS] = status;
   }

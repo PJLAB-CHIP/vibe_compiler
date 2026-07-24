@@ -301,6 +301,13 @@ def validate_gemm_padding_domain() -> None:
     raw[output_begin : output_begin + catalog.SLOT_BYTES] = (
         built.expected_output_slot
     )
+    expected_aux_slot = built.payload[
+        3 * catalog.SLOT_BYTES : 4 * catalog.SLOT_BYTES
+    ]
+    raw[
+        catalog.AUX_DDR_OFFSET :
+        catalog.AUX_DDR_OFFSET + catalog.SLOT_BYTES
+    ] = expected_aux_slot
 
     padding_index = (
         output_begin + catalog.BODY_OFFSET + case.result_bytes
@@ -310,7 +317,11 @@ def validate_gemm_padding_domain() -> None:
         output = pathlib.Path(directory) / "gemm.raw"
         output.write_bytes(raw)
         runner.validate_output(
-            output, case, built.expected_output_slot, sample=3
+            output,
+            case,
+            built.expected_output_slot,
+            expected_aux_slot,
+            sample=3,
         )
 
         logical = bytearray(raw)
@@ -318,7 +329,11 @@ def validate_gemm_padding_domain() -> None:
         output.write_bytes(logical)
         try:
             runner.validate_output(
-                output, case, built.expected_output_slot, sample=3
+                output,
+                case,
+                built.expected_output_slot,
+                expected_aux_slot,
+                sample=3,
             )
         except RuntimeError as error:
             assert "logical result" in str(error)
@@ -332,7 +347,11 @@ def validate_gemm_padding_domain() -> None:
         output.write_bytes(suffix)
         try:
             runner.validate_output(
-                output, case, built.expected_output_slot, sample=3
+                output,
+                case,
+                built.expected_output_slot,
+                expected_aux_slot,
+                sample=3,
             )
         except RuntimeError as error:
             assert "SPM guard" in str(error)
@@ -1110,7 +1129,7 @@ def validate_arg_extrema_composite_oracles() -> None:
     assert len(set(sources)) == 3
 
 
-def validate_probe_seed_is_published_and_instruction_local() -> None:
+def validate_probe_seed_is_ncc_local_and_completed() -> None:
     probe = (
         pathlib.Path(__file__).resolve().parent
         / "Inputs"
@@ -1118,22 +1137,20 @@ def validate_probe_seed_is_published_and_instruction_local() -> None:
     ).read_text()
     start = probe.index("static void wafer_ifp_seed")
     body = probe[start : probe.index("\n}", start) + 2]
-    assert "get_spm_memory_mapping(destinations[slot])" in body
-    assert "volatile uint8_t *destination" in body
-    assert "const volatile uint8_t *source" in body
-    assert "source[slot * WAFER_IFP_SLOT_BYTES + index]" in body
-    store = body.index(
-        "source[slot * WAFER_IFP_SLOT_BYTES + index]"
+    assert "wafer_tx81_rdma" in body
+    assert "payload_ddr + slot * WAFER_IFP_SLOT_BYTES" in body
+    assert "destinations[slot]" in body
+    assert "get_spm_memory_mapping" not in body
+    assert body.index("wafer_tx81_rdma") < body.index(
+        "wafer_ifp_wait_worker0_drain"
     )
-    clean = body.index(
-        "wafer_ifp_cache_range((uint64_t)(uintptr_t)destination"
-    )
-    assert store < clean
-    assert "WAFER_IFP_SLOT_BYTES, 0);" in body[clean:]
-    assert '__asm__ volatile("fence"' in body
-    assert '__asm__ volatile("sync"' in body
-    assert "wafer_tx81_rdma" not in body
-    assert "wafer_tx81_local_fence" not in body
+    wait_start = probe.index("static void wafer_ifp_wait_worker0_drain")
+    wait_body = probe[
+        wait_start : probe.index("\n}", wait_start) + 2
+    ]
+    assert "TsmGetCsrIbcounter() != 0U" in wait_body
+    assert "TsmGetCsrTaskstatus() != 1U" in wait_body
+    assert "TsmWaitfinish();" not in wait_body
 
 
 def validate_pool_max_oracle() -> None:
@@ -1252,9 +1269,9 @@ def validate_unpool_rows() -> None:
         start = probe.index(f"case WAFER_IFP_CASE_{symbol}:")
         case_body = probe[start : probe.index("break;", start)]
         pool = case_body.index("wafer_tx81_pool_indexedmax")
-        fence = case_body.index("wafer_tx81_local_fence")
         unpool = case_body.index(wrapper)
-        assert pool < fence < unpool
+        assert pool < unpool
+        assert "wafer_tx81_local_fence" not in case_body
         assert opcode in case_body
         assert "(uint32_t)auxiliary" in case_body
 
@@ -1262,11 +1279,11 @@ def validate_unpool_rows() -> None:
 def validate_unpool_capability_rows() -> None:
     expected_rows = {
         "unpool-index-bf16-observed": (236, "BF16", "NO_ORACLE", 512, 512, 256),
-        "unpool-index-f32-observed": (237, "F32", "NO_ORACLE", 1024, 1024, 256),
+        "unpool-index-f32-observed": (237, "F32", "NO_ORACLE", 1024, 1024, 512),
         "unpool-avg-bf16": (238, "BF16", "EXACT_BITS", 512, 512, 0),
         "unpool-avg-f32": (239, "F32", "EXACT_BITS", 1024, 1024, 0),
         "unpool-mask-bf16": (240, "BF16", "EXACT_COMPOSITE", 512, 512, 256),
-        "unpool-mask-f32": (241, "F32", "EXACT_COMPOSITE", 1024, 1024, 256),
+        "unpool-mask-f32": (241, "F32", "NO_ORACLE", 1024, 1024, 512),
         "unpool-index-f16-k3x2-s2x1-observed": (
             242, "F16", "NO_ORACLE", 1920, 2048, 512
         ),
@@ -1274,7 +1291,7 @@ def validate_unpool_capability_rows() -> None:
             243, "F16", "NO_ORACLE", 1920, 2048, 0
         ),
         "unpool-mask-f16-k3x2-s2x1": (
-            244, "F16", "EXACT_COMPOSITE", 1920, 2048, 512
+            244, "F16", "NO_ORACLE", 1920, 2048, 512
         ),
         "unpool-index-f16-repeated-overlap-observed": (
             245, "F16", "NO_ORACLE", 1920, 2048, 512
@@ -1330,9 +1347,12 @@ def validate_unpool_capability_rows() -> None:
     source = struct.unpack_from(
         "<960e", built.payload, catalog.BODY_OFFSET
     )
-    expected = struct.unpack_from(
+    _, _, semantic_bytes = catalog._unpool(asymmetric)
+    semantic = struct.unpack("<960e", semantic_bytes)
+    expected_seed = struct.unpack_from(
         "<960e", built.expected_output_slot, catalog.BODY_OFFSET
     )
+    assert expected_seed == (-13.0,) * 960
     nonzero_positions = {
         (1, 2),
         (1, 4),
@@ -1343,7 +1363,7 @@ def validate_unpool_capability_rows() -> None:
         for column in range(5):
             for channel in range(64):
                 ordinal = (row * 5 + column) * 64 + channel
-                assert expected[ordinal] == (
+                assert semantic[ordinal] == (
                     source[ordinal]
                     if (row, column) in nonzero_positions
                     else 0.0
@@ -1418,7 +1438,7 @@ def validate_unpool_capability_rows() -> None:
         assert wrapper in body
         if "AVG" not in symbol:
             assert "wafer_tx81_pool_indexedmax" in body
-            assert "wafer_tx81_local_fence" in body
+            assert "wafer_tx81_local_fence" not in body
 
 
 def validate_conv_oracle() -> None:
@@ -1759,16 +1779,22 @@ def validate_pool_capability_matrix() -> None:
         else:
             assert actual != bytes(case.result_bytes)
 
-    indexed_f32 = catalog.CASES_BY_NAME[
-        "pool-indexed-max-f32-k2x2-s2x2"
-    ]
-    built = catalog.build_case_payload(indexed_f32)
-    indices = struct.unpack_from(
-        "<128H",
-        built.expected_output_slot,
-        catalog.BODY_OFFSET + 512,
-    )
-    assert indices == (3,) * 128
+    for name in (
+        "pool-indexed-max-f32-k2x2-s2x2",
+        "pool-indexed-min-f32-k2x2-s2x2",
+    ):
+        indexed_f32 = catalog.CASES_BY_NAME[name]
+        assert (indexed_f32.result_bytes, indexed_f32.output_span) == (
+            1024,
+            1024,
+        )
+        built = catalog.build_case_payload(indexed_f32)
+        indices = struct.unpack_from(
+            "<128I",
+            built.expected_output_slot,
+            catalog.BODY_OFFSET + 512,
+        )
+        assert indices == (3,) * 128
 
     asymmetric = catalog.CASES_BY_NAME["pool-avg-f16-k3x2-s2x1"]
     built = catalog.build_case_payload(asymmetric)
@@ -1815,6 +1841,7 @@ def validate_peripheral_exact_and_observation_rows() -> None:
         "unpool-index-f32-observed",
         "unpool-index-f16-k3x2-s2x1-observed",
         "unpool-avg-f16-k3x2-s2x1-observed",
+        "unpool-mask-f16-k3x2-s2x1",
         "unpool-index-f16-repeated-overlap-observed",
         "unpool-mask-f16-repeated-overlap-observed",
         "peripheral-bilinear-f16",
@@ -1851,13 +1878,40 @@ def validate_peripheral_exact_and_observation_rows() -> None:
     ct_capability = runner.select_cases(
         types.SimpleNamespace(selected_cases=None, suite="ct-capability")
     )
-    assert len(ct_capability) == 96
+    assert len(ct_capability) == 88
+    assert sum(not case.is_observation for case in ct_capability) == 72
+    assert sum(case.is_observation for case in ct_capability) == 16
     assert ct_capability[0].name == "pool-indexed-max-f16-k3x2-s2x1"
+    assert not ({case.case_id for case in ct_capability} & set(range(196, 204)))
     assert {case.case_id for case in ct_capability} == {
         case.case_id
         for case in catalog.SAFE_CASES
         if 143 <= case.case_id <= 246
     }
+    raw_reduce_name = "reduce-sum-f16-n-raw-observed"
+    try:
+        runner.select_cases(
+            types.SimpleNamespace(
+                selected_cases=[raw_reduce_name],
+                suite="safe",
+            )
+        )
+    except RuntimeError as error:
+        assert "deferred catalog rows" in str(error)
+        assert raw_reduce_name in str(error)
+    else:
+        raise AssertionError("raw-axis Reduce bypassed host fail-closed selection")
+
+    probe = (
+        pathlib.Path(__file__).resolve().parent
+        / "Inputs"
+        / "wafer_instruction_family_probe.c"
+    ).read_text()
+    assert "get_spm_memory_mapping" not in probe
+    assert "wafer_ifp_guard_mismatches" not in probe
+    assert "output_ddr + WAFER_IFP_AUX_DDR_OFFSET" in probe
+    assert "WAFER_IFP_REDUCE_RAW_BASE" not in probe
+    assert "dimension = (offset & 1U) == 0U ? 3U : 5U" not in probe
     qualification_regression = runner.select_cases(
         types.SimpleNamespace(
             selected_cases=None,
@@ -1900,12 +1954,23 @@ def validate_peripheral_exact_and_observation_rows() -> None:
     struct.pack_into(f"<{catalog.RECORD_WORDS}Q", raw, 0, *words)
     begin = catalog.OUTPUT_DDR_OFFSET
     raw[begin : begin + catalog.SLOT_BYTES] = built.expected_output_slot
+    expected_aux_slot = built.payload[
+        3 * catalog.SLOT_BYTES : 4 * catalog.SLOT_BYTES
+    ]
+    raw[
+        catalog.AUX_DDR_OFFSET :
+        catalog.AUX_DDR_OFFSET + catalog.SLOT_BYTES
+    ] = expected_aux_slot
     with tempfile.TemporaryDirectory() as directory:
         output = pathlib.Path(directory) / "observation.raw"
         output.write_bytes(raw)
         try:
             runner.validate_output(
-                output, case, built.expected_output_slot, sample=2
+                output,
+                case,
+                built.expected_output_slot,
+                expected_aux_slot,
+                sample=2,
             )
         except RuntimeError as error:
             assert "without any bounded writeback" in str(error)
@@ -1914,7 +1979,11 @@ def validate_peripheral_exact_and_observation_rows() -> None:
         raw[begin + catalog.BODY_OFFSET + 7] ^= 0x5A
         output.write_bytes(raw)
         runner.validate_output(
-            output, case, built.expected_output_slot, sample=2
+            output,
+            case,
+            built.expected_output_slot,
+            expected_aux_slot,
+            sample=2,
         )
 
 
@@ -1923,18 +1992,21 @@ def validate_reduce_capability_matrix() -> None:
         case for case in catalog.CATALOG if 144 <= case.case_id <= 203
     )
     assert len(reduce_cases) == 60
-    assert sum(not case.is_observation for case in reduce_cases) == 52
-    assert sum(case.is_observation for case in reduce_cases) == 8
+    assert sum(case.is_safe for case in reduce_cases) == 52
+    assert sum(case.is_observation for case in reduce_cases) == 0
+    deferred = tuple(case for case in reduce_cases if not case.is_safe)
+    assert len(deferred) == 8
+    assert {case.case_id for case in deferred} == set(range(196, 204))
+    assert all(
+        case.reason_name == "REASON_ISOLATED_POSSIBLE_PERMANENT_WAIT"
+        and (case.result_bytes, case.output_span, case.aux_span) == (0, 0, 0)
+        for case in deferred
+    )
 
     for case in reduce_cases:
-        built = catalog.build_case_payload(case)
-        if case.is_observation:
-            seeded = built.expected_output_slot[
-                catalog.BODY_OFFSET :
-                catalog.BODY_OFFSET + case.output_span
-            ]
-            assert seeded != bytes(case.output_span)
+        if not case.is_safe:
             continue
+        built = catalog.build_case_payload(case)
         offsets = catalog.reduce_exact_result_byte_offsets(case)
         assert len(offsets) == case.result_bytes
         assert len(set(offsets)) == case.result_bytes
@@ -1972,12 +2044,12 @@ def validate_reduce_capability_matrix() -> None:
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 168
+    assert len(catalog.SAFE_CASES) == 160
     assert len(catalog.CATALOG) == 168
     assert {case.case_id for case in catalog.SAFE_CASES} == (
         set(range(1, 30))
         | set(range(100, 144))
-        | set(range(144, 204))
+        | set(range(144, 196))
         | {
             205,
             206,
@@ -2010,7 +2082,19 @@ def main() -> int:
         (case.symbol, case.reason_name)
         for case in catalog.CATALOG
         if not case.is_safe
-    } == set()
+    } == {
+        (symbol, "REASON_ISOLATED_POSSIBLE_PERMANENT_WAIT")
+        for symbol in (
+            "REDUCE_SUM_F16_N_RAW",
+            "REDUCE_SUM_F16_HWC_RAW",
+            "REDUCE_AVG_F16_N_RAW",
+            "REDUCE_AVG_F16_HWC_RAW",
+            "REDUCE_MAX_F16_N_RAW",
+            "REDUCE_MAX_F16_HWC_RAW",
+            "REDUCE_MIN_F16_N_RAW",
+            "REDUCE_MIN_F16_HWC_RAW",
+        )
+    }
     for name in (
         "reduce-sum-f16",
         "reduce-max-f16",
@@ -2093,7 +2177,7 @@ def main() -> int:
     validate_gemm_f16_oriented_tt_oracle()
     validate_gemm_f16_psum_oracle()
     validate_arg_extrema_composite_oracles()
-    validate_probe_seed_is_published_and_instruction_local()
+    validate_probe_seed_is_ncc_local_and_completed()
     validate_conv_oracle()
     validate_pool_max_oracle()
     validate_unpool_rows()

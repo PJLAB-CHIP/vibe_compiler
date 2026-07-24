@@ -7,8 +7,6 @@
 #define WAFER_DMC_PMU_BASE UINT64_C(0x590000)
 #define WAFER_DMC_STABLE_RETRIES 8U
 
-extern int8_t *get_spm_memory_mapping(uint64_t offset);
-
 typedef struct WaferDMCCase {
   uint32_t case_id;
   uint32_t input_bytes;
@@ -151,27 +149,6 @@ static uint32_t wafer_dmc_decode(const volatile uint64_t *request,
       WAFER_DMC_BODY_OFFSET + selected->output_span > WAFER_DMC_SLOT_BYTES)
     return WAFER_DMC_STATUS_BAD_REQUEST;
   return WAFER_DMC_STATUS_OK;
-}
-
-static void wafer_dmc_fill_output(void) {
-  volatile uint8_t *output =
-      (volatile uint8_t *)(void *)get_spm_memory_mapping(WAFER_DMC_SPM_OUTPUT);
-  for (uint32_t index = 0; index < WAFER_DMC_SLOT_BYTES; ++index)
-    output[index] = WAFER_DMC_SLOT_CANARY;
-  __asm__ volatile("fence iorw, iorw" ::: "memory");
-}
-
-static uint64_t wafer_dmc_guard_mismatches(const WaferDMCCase *selected) {
-  const volatile uint8_t *output =
-      (const volatile uint8_t *)(const void *)get_spm_memory_mapping(
-          WAFER_DMC_SPM_OUTPUT);
-  uint64_t mismatches = 0;
-  for (uint32_t index = 0; index < WAFER_DMC_BODY_OFFSET; ++index)
-    mismatches += output[index] != WAFER_DMC_SLOT_CANARY;
-  for (uint32_t index = WAFER_DMC_BODY_OFFSET + selected->output_span;
-       index < WAFER_DMC_SLOT_BYTES; ++index)
-    mismatches += output[index] != WAFER_DMC_SLOT_CANARY;
-  return mismatches;
 }
 
 static void wafer_dmc_gather(uint32_t source_offset, uint32_t dest_offset,
@@ -473,7 +450,6 @@ static uint32_t wafer_dmc_issue(const WaferDMCCase *selected) {
   default:
     return 0U;
   }
-  wafer_tx81_local_fence();
   return 1U;
 }
 
@@ -511,14 +487,24 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
     record[WAFER_DMC_REC_SAMPLE] = request[WAFER_DMC_REQ_SAMPLE];
     record[WAFER_DMC_REC_REQUEST_GUARD] = request[WAFER_DMC_REQ_GUARD];
 
+    WaferDMCPMU before = wafer_dmc_read_pmu();
     wafer_tx81_rdma(payload_ddr, WAFER_DMC_SPM_INPUT, WAFER_DMC_SLOT_BYTES,
                     WAFER_DMC_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
-    wafer_tx81_local_fence();
-    wafer_dmc_fill_output();
-    WaferDMCPMU before = wafer_dmc_read_pmu();
+    /*
+     * Keep setup in NCC: the request resource's second slot is all canary and
+     * seeds the complete output before the tested TDMA sequence.
+     */
+    wafer_tx81_rdma(request_ddr + WAFER_DMC_SLOT_BYTES,
+                    WAFER_DMC_SPM_OUTPUT, WAFER_DMC_SLOT_BYTES,
+                    WAFER_DMC_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
     if (wafer_dmc_issue(&selected) == 0U) {
       status = WAFER_DMC_STATUS_EXECUTE_FAILED;
     } else {
+      wafer_tx81_wdma(WAFER_DMC_SPM_OUTPUT,
+                      output_ddr + WAFER_DMC_OUTPUT_DDR_OFFSET,
+                      WAFER_DMC_SLOT_BYTES, WAFER_DMC_SLOT_BYTES, 0, 0, 0, 1, 1,
+                      1, Fmt_UINT8);
+      wafer_tx81_local_fence();
       WaferDMCPMU after = wafer_dmc_read_pmu();
       record[WAFER_DMC_REC_TDMA_INST_DELTA] =
           (uint32_t)(after.instructions - before.instructions);
@@ -526,13 +512,6 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
           after.execution - before.execution;
       record[WAFER_DMC_REC_TDMA_BLOCKING_DELTA] =
           (uint32_t)(after.blocking - before.blocking);
-      record[WAFER_DMC_REC_OUTPUT_GUARD_MISMATCHES] =
-          wafer_dmc_guard_mismatches(&selected);
-      wafer_tx81_wdma(WAFER_DMC_SPM_OUTPUT,
-                      output_ddr + WAFER_DMC_OUTPUT_DDR_OFFSET,
-                      WAFER_DMC_SLOT_BYTES, WAFER_DMC_SLOT_BYTES, 0, 0, 0, 1, 1,
-                      1, Fmt_UINT8);
-      wafer_tx81_local_fence();
     }
     record[WAFER_DMC_REC_STATUS] = status;
   }

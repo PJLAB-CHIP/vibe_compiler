@@ -7,8 +7,6 @@
 #define WAFER_CTC_PMU_BASE UINT64_C(0x590000)
 #define WAFER_CTC_STABLE_RETRIES 8U
 
-extern int8_t *get_spm_memory_mapping(uint64_t offset);
-
 typedef struct WaferCTCCase {
   uint32_t case_id;
   uint32_t opcode;
@@ -252,27 +250,6 @@ static uint32_t wafer_ctc_decode(const volatile uint64_t *request,
   return WAFER_CTC_STATUS_OK;
 }
 
-static void wafer_ctc_fill_output(void) {
-  volatile uint8_t *output =
-      (volatile uint8_t *)(void *)get_spm_memory_mapping(WAFER_CTC_SPM_OUTPUT);
-  for (uint32_t index = 0; index < WAFER_CTC_SLOT_BYTES; ++index)
-    output[index] = WAFER_CTC_SLOT_CANARY;
-  __asm__ volatile("fence iorw, iorw" ::: "memory");
-}
-
-static uint64_t wafer_ctc_guard_mismatches(const WaferCTCCase *selected) {
-  const volatile uint8_t *output =
-      (const volatile uint8_t *)(const void *)get_spm_memory_mapping(
-          WAFER_CTC_SPM_OUTPUT);
-  uint64_t mismatches = 0;
-  for (uint32_t index = 0; index < WAFER_CTC_BODY_OFFSET; ++index)
-    mismatches += output[index] != WAFER_CTC_SLOT_CANARY;
-  for (uint32_t index = WAFER_CTC_BODY_OFFSET + selected->output_span;
-       index < WAFER_CTC_SLOT_BYTES; ++index)
-    mismatches += output[index] != WAFER_CTC_SLOT_CANARY;
-  return mismatches;
-}
-
 #define WAFER_CTC_DISPATCH(OPCODE, SYMBOL)                                     \
   case OPCODE:                                                                 \
     SYMBOL(source, destination, selected->elements, selected->zero_point,      \
@@ -322,7 +299,6 @@ static uint32_t wafer_ctc_issue(const WaferCTCCase *selected) {
   default:
     return 0U;
   }
-  wafer_tx81_local_fence();
   return 1U;
 }
 
@@ -368,27 +344,31 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
     record[WAFER_CTC_REC_DISPOSITION] = selected.disposition;
     record[WAFER_CTC_REC_REQUEST_GUARD] = request[WAFER_CTC_REQ_GUARD];
 
+    WaferCTCPMU before = wafer_ctc_read_pmu();
     wafer_tx81_rdma(payload_ddr, WAFER_CTC_SPM_INPUT, WAFER_CTC_SLOT_BYTES,
                     WAFER_CTC_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
-    wafer_tx81_local_fence();
-    wafer_ctc_fill_output();
-    WaferCTCPMU before = wafer_ctc_read_pmu();
+    /*
+     * The request resource's second slot is host-initialized canary data.
+     * Seed the whole output through NCC so setup, convert, and readback remain
+     * one dependency-ordered issue window.
+     */
+    wafer_tx81_rdma(request_ddr + WAFER_CTC_SLOT_BYTES,
+                    WAFER_CTC_SPM_OUTPUT, WAFER_CTC_SLOT_BYTES,
+                    WAFER_CTC_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
     if (wafer_ctc_issue(&selected) == 0U) {
       status = WAFER_CTC_STATUS_EXECUTE_FAILED;
     } else {
+      wafer_tx81_wdma(WAFER_CTC_SPM_OUTPUT,
+                      output_ddr + WAFER_CTC_OUTPUT_DDR_OFFSET,
+                      WAFER_CTC_SLOT_BYTES, WAFER_CTC_SLOT_BYTES, 0, 0, 0, 1, 1,
+                      1, Fmt_UINT8);
+      wafer_tx81_local_fence();
       WaferCTCPMU after = wafer_ctc_read_pmu();
       record[WAFER_CTC_REC_CT_INST_DELTA] =
           (uint32_t)(after.instructions - before.instructions);
       record[WAFER_CTC_REC_CT_EXEC_DELTA] = after.execution - before.execution;
       record[WAFER_CTC_REC_CT_BLOCKING_DELTA] =
           (uint32_t)(after.blocking - before.blocking);
-      record[WAFER_CTC_REC_OUTPUT_GUARD_MISMATCHES] =
-          wafer_ctc_guard_mismatches(&selected);
-      wafer_tx81_wdma(WAFER_CTC_SPM_OUTPUT,
-                      output_ddr + WAFER_CTC_OUTPUT_DDR_OFFSET,
-                      WAFER_CTC_SLOT_BYTES, WAFER_CTC_SLOT_BYTES, 0, 0, 0, 1, 1,
-                      1, Fmt_UINT8);
-      wafer_tx81_local_fence();
     }
     record[WAFER_CTC_REC_STATUS] = status;
   }

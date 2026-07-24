@@ -22,15 +22,17 @@ import wafer_transport_pmu_calibration_catalog as transport_catalog
 
 
 RANK_COUNT = 16
-RESOURCE_BYTES = 8448
+RESOURCE_BYTES = 264448
 HEADER_BYTES = 128
 INPUT_BYTES = 8192
 MAX_PAYLOAD_BYTES = 4096
+ASYNC_TRANSPORT_BYTES = 65536
+SPM_GUARD_BYTES = 256
+HOST_SLOT_BYTES = ASYNC_TRANSPORT_BYTES + 2 * SPM_GUARD_BYTES
+HOST_SLOT_COUNT = 4
 PROBE_LOCAL_ELEMENTS = RESOURCE_BYTES // 4
 PAYLOAD_SWEEP = transport_catalog.PAYLOAD_SWEEP
-PAYLOAD_POISON = 0xC3
-OUTPUT_GUARD_BYTES = 32
-OUTPUT_GUARD_VALUE = 0xA5
+INITIAL_CANARY = 0xA5
 MAGIC = 0x3143434E45544457
 CANARY = 0xD7E0CA11D7E0CA11
 SCHEMA = 7
@@ -52,6 +54,10 @@ MODES = dict(transport_catalog.MODE_NAMES)
 TRANSPORT_PMU_MODES = transport_catalog.TRANSPORT_PMU_MODES
 ERROR_PATH_MODES = transport_catalog.ERROR_PATH_MODES
 ASYNC_SENDER_MODES = transport_catalog.ASYNC_SENDER_MODES
+ISOLATED_DTE_MODES = transport_catalog.ISOLATED_DTE_MODES
+DEFAULT_SAFE_MODES = tuple(
+    mode for mode in MODES if mode not in ISOLATED_DTE_MODES
+)
 ASYNC_SENDER_PAYLOAD_BYTES = (
     transport_catalog.ASYNC_SENDER_PAYLOAD_BYTES
 )
@@ -70,18 +76,18 @@ CONTRACT_RAW_ASYNC_ISSUED = 1 << 6
 CONTRACT_RAW_ASYNC_COMPLETED = 1 << 7
 RAW_ASYNC_RC_MARKER = 0x4153594E
 EXPECTED_INSTRUCTION_COUNTS = {
-    1: (1, 1, 1),
-    2: (1, 1, 1),
-    3: (1, 2, 1),
-    4: (1, 2, 1),
+    1: (1, 1, 0),
+    2: (1, 1, 0),
+    3: (1, 2, 0),
+    4: (1, 2, 0),
     5: (0, 2, 1),
-    6: (0, 1, 1),
-    7: (0, 1, 1),
-    8: (0, 0, 1),
-    9: (0, 0, 1),
-    10: (1, 0, 1),
-    11: (1, 0, 1),
-    12: (0, 1, 1),
+    6: (0, 1, 0),
+    7: (0, 1, 0),
+    8: (0, 0, 0),
+    9: (0, 0, 0),
+    10: (1, 0, 0),
+    11: (1, 0, 0),
+    12: (0, 1, 0),
 }
 EXPECTED_CONTRACT_EVIDENCE = {
     **{mode: 0 for mode in TRANSPORT_PMU_MODES},
@@ -162,7 +168,7 @@ def require_build_args(args: argparse.Namespace) -> None:
 def select_execution_axes(
     args: argparse.Namespace,
 ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    modes = tuple(dict.fromkeys(args.selected_modes or MODES))
+    modes = tuple(dict.fromkeys(args.selected_modes or DEFAULT_SAFE_MODES))
     payload_bytes = tuple(
         dict.fromkeys(args.selected_payload_bytes or PAYLOAD_SWEEP)
     )
@@ -175,6 +181,12 @@ def select_execution_axes(
     if invalid_payloads:
         raise RuntimeError(
             f"unsupported transport payload sizes {invalid_payloads}"
+        )
+    if any(mode in ISOLATED_DTE_MODES for mode in modes) and (
+        len(modes) != 1 or modes[0] not in ISOLATED_DTE_MODES
+    ):
+        raise RuntimeError(
+            "receiver-unprepared must run as the only isolated DTE mode"
         )
     if not any(
         payload in MODE_PAYLOADS[mode]
@@ -325,11 +337,26 @@ def board_base_command(
 
 def execute_production_baseline(
     args: argparse.Namespace,
-    package: pathlib.Path,
-    bindings: dict[tuple[int, str, int], int],
 ) -> None:
+    baseline_work_dir = args.work_dir / "production-baseline"
+    source = production_baseline.write_fixture(baseline_work_dir)
+    package = baseline_work_dir / "package"
+    run(
+        [
+            str(args.wafer_compile),
+            "--input-program-dir",
+            str(source),
+            "--output-program-dir",
+            str(package),
+            f"--execution-ranks={RANK_COUNT}",
+            "--target-profile=wafer-tx81-single-card-kernel-v1",
+            f"--launch-abi={LAUNCH_ABI}",
+        ],
+        timeout_seconds=300,
+    )
+    bindings = production_baseline.validate_manifest(package)
     resource_args = production_baseline.write_raw_files(
-        args.work_dir, bindings, PROBE_LOCAL_ELEMENTS
+        baseline_work_dir, bindings
     )
     result = run(
         [*board_base_command(args, package), *resource_args],
@@ -469,6 +496,17 @@ def async_sender_pattern(rank: int, count: int) -> bytes:
     )
 
 
+def guarded_host_slot(payload: bytes) -> bytes:
+    if len(payload) > ASYNC_TRANSPORT_BYTES:
+        raise RuntimeError("DTE/NCC host slot payload exceeds 64 KiB")
+    return (
+        bytes([INITIAL_CANARY]) * SPM_GUARD_BYTES
+        + payload
+        + bytes([INITIAL_CANARY])
+        * (ASYNC_TRANSPORT_BYTES - len(payload) + SPM_GUARD_BYTES)
+    )
+
+
 def write_probe_inputs(
     work_dir: pathlib.Path,
     bindings: dict[tuple[int, str, int], int],
@@ -491,13 +529,32 @@ def write_probe_inputs(
         header = struct.pack("<II", mode, payload_bytes) + bytes(
             HEADER_BYTES - 8
         )
-        payload = struct.pack(f"<{len(values[rank])}e", *values[rank])
+        normal_payload = struct.pack(
+            f"<{len(values[rank])}e", *values[rank]
+        )
+        if mode in ASYNC_SENDER_MODES:
+            slots = (
+                guarded_host_slot(
+                    async_sender_pattern(rank, ASYNC_TRANSPORT_BYTES)
+                ),
+                guarded_host_slot(
+                    struct.pack(
+                        f"<{ASYNC_TRANSPORT_BYTES // 2}e",
+                        *([1.0] * (ASYNC_TRANSPORT_BYTES // 2)),
+                    )
+                ),
+            )
+        else:
+            slots = (
+                guarded_host_slot(normal_payload),
+                guarded_host_slot(b""),
+            )
         input_path = raw / f"input-{rank:02d}.raw"
         output_path = raw / f"output-{rank:02d}.raw"
+        input_bytes = header + b"".join(slots)
         input_path.write_bytes(
-            header
-            + payload
-            + bytes(RESOURCE_BYTES - HEADER_BYTES - len(payload))
+            input_bytes
+            + bytes([INITIAL_CANARY]) * (RESOURCE_BYTES - len(input_bytes))
         )
         outputs[rank] = output_path
         arguments.extend(
@@ -509,31 +566,145 @@ def write_probe_inputs(
     return arguments, outputs
 
 
-def expected_payload(mode: int, rank: int, payload_bytes: int) -> bytes:
+def packed_f16_slice(
+    rank: int,
+    first_lane: int,
+    payload_bytes: int,
+    *,
+    doubled: bool = False,
+) -> bytes:
+    values = f16_payload(rank)[
+        first_lane : first_lane + payload_bytes // 2
+    ]
+    if doubled:
+        values = [2.0 * value for value in values]
+    return struct.pack(f"<{len(values)}e", *values)
+
+
+def guarded_capture_slot(active: bytes, region_bytes: int) -> bytes:
+    if len(active) > region_bytes or region_bytes > ASYNC_TRANSPORT_BYTES:
+        raise RuntimeError("DTE/NCC capture exceeds its guarded SPM region")
+    captured = (
+        bytes([INITIAL_CANARY]) * SPM_GUARD_BYTES
+        + active
+        + bytes([INITIAL_CANARY]) * (region_bytes - len(active))
+        + bytes([INITIAL_CANARY]) * SPM_GUARD_BYTES
+    )
+    return captured + bytes([INITIAL_CANARY]) * (
+        HOST_SLOT_BYTES - len(captured)
+    )
+
+
+def expected_capture_slots(
+    mode: int, rank: int, payload_bytes: int
+) -> tuple[bytes, bytes, bytes, bytes]:
     if payload_bytes not in PAYLOAD_SWEEP:
         raise RuntimeError(f"unsupported transport payload size {payload_bytes}")
     predecessor = (rank - 1) % RANK_COUNT
-    first_lane = (
-        MAX_PAYLOAD_BYTES // 2
-        if mode == 5
-        else 0
+    second_predecessor = (rank - 2) % RANK_COUNT
+    second_lane = MAX_PAYLOAD_BYTES // 2
+    empty = guarded_capture_slot(b"", MAX_PAYLOAD_BYTES)
+    local_first = packed_f16_slice(rank, 0, payload_bytes)
+    local_second = packed_f16_slice(rank, second_lane, payload_bytes)
+    remote_first = packed_f16_slice(predecessor, 0, payload_bytes)
+    remote_second = packed_f16_slice(
+        predecessor, second_lane, payload_bytes
     )
-    remote = f16_payload(predecessor)[
-        first_lane : first_lane + payload_bytes // 2
-    ]
-    if mode in (1, 2):
-        values = [2.0 * value for value in remote]
-    elif mode in (3, 4, 5, 6, 7, 12):
-        values = remote
-    elif mode in (8, 9):
-        return bytes([PAYLOAD_POISON]) * MAX_PAYLOAD_BYTES
-    elif mode in ASYNC_SENDER_MODES:
-        return async_sender_pattern(predecessor, MAX_PAYLOAD_BYTES)
-    else:
-        raise RuntimeError(f"unsupported DTE/NCC mode {mode}")
-    active = struct.pack(f"<{len(values)}e", *values)
-    return active + bytes([PAYLOAD_POISON]) * (
-        MAX_PAYLOAD_BYTES - payload_bytes
+
+    if mode == 1:
+        local_doubled = packed_f16_slice(
+            rank, 0, payload_bytes, doubled=True
+        )
+        remote_doubled = packed_f16_slice(
+            predecessor, 0, payload_bytes, doubled=True
+        )
+        return (
+            guarded_capture_slot(local_doubled, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(remote_doubled, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(local_doubled, MAX_PAYLOAD_BYTES),
+            empty,
+        )
+    if mode == 2:
+        remote_doubled = packed_f16_slice(
+            predecessor, 0, payload_bytes, doubled=True
+        )
+        return (
+            guarded_capture_slot(local_first, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(remote_first, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(remote_doubled, MAX_PAYLOAD_BYTES),
+            empty,
+        )
+    if mode in (3, 4):
+        disjoint_input = packed_f16_slice(
+            rank, second_lane, 32
+        )
+        disjoint_output = packed_f16_slice(
+            rank, second_lane, 32, doubled=True
+        )
+        return (
+            guarded_capture_slot(local_first, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(remote_first, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(disjoint_output, 32),
+            guarded_capture_slot(disjoint_input, 32),
+        )
+    if mode == 5:
+        return (
+            guarded_capture_slot(local_second, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(remote_second, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(remote_second, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(remote_first, MAX_PAYLOAD_BYTES),
+        )
+    if mode == 6:
+        return (
+            guarded_capture_slot(local_first, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(remote_first, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(remote_first, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(
+                packed_f16_slice(second_predecessor, 0, payload_bytes),
+                MAX_PAYLOAD_BYTES,
+            ),
+        )
+    if mode in (7, 12):
+        return (
+            guarded_capture_slot(local_first, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(remote_first, MAX_PAYLOAD_BYTES),
+            guarded_capture_slot(remote_first, MAX_PAYLOAD_BYTES),
+            empty,
+        )
+    if mode in (8, 9):
+        return (empty, empty, empty, empty)
+    if mode in ASYNC_SENDER_MODES:
+        ones = struct.pack(
+            f"<{ASYNC_TRANSPORT_BYTES // 2}H",
+            *([0x3C00] * (ASYNC_TRANSPORT_BYTES // 2)),
+        )
+        twos = struct.pack(
+            f"<{ASYNC_TRANSPORT_BYTES // 2}H",
+            *([0x4000] * (ASYNC_TRANSPORT_BYTES // 2)),
+        )
+        return (
+            guarded_capture_slot(
+                async_sender_pattern(rank, ASYNC_TRANSPORT_BYTES),
+                ASYNC_TRANSPORT_BYTES,
+            ),
+            guarded_capture_slot(
+                async_sender_pattern(
+                    predecessor, ASYNC_TRANSPORT_BYTES
+                ),
+                ASYNC_TRANSPORT_BYTES,
+            ),
+            guarded_capture_slot(ones, ASYNC_TRANSPORT_BYTES),
+            guarded_capture_slot(twos, ASYNC_TRANSPORT_BYTES),
+        )
+    raise RuntimeError(f"unsupported DTE/NCC mode {mode}")
+
+
+def expected_capture_blob(
+    mode: int, rank: int, payload_bytes: int
+) -> bytes:
+    slots = b"".join(expected_capture_slots(mode, rank, payload_bytes))
+    return slots + bytes([INITIAL_CANARY]) * (
+        RESOURCE_BYTES - HEADER_BYTES - len(slots)
     )
 
 
@@ -640,29 +811,11 @@ def parse_probe_payload(
                 f"rank {rank} mode {mode} has invalid raw async return "
                 f"codes/marker: {raw_async_return_codes} marker=0x{marker:x}"
             )
-    guard_before = payload[
-        HEADER_BYTES : HEADER_BYTES + OUTPUT_GUARD_BYTES
-    ]
-    logical_begin = HEADER_BYTES + OUTPUT_GUARD_BYTES
-    logical_end = logical_begin + MAX_PAYLOAD_BYTES
-    guard_after = payload[logical_end:]
-    expected_guard_before = (
-        bytes([OUTPUT_GUARD_VALUE]) * OUTPUT_GUARD_BYTES
-    )
-    expected_guard_after = bytes([OUTPUT_GUARD_VALUE]) * (
-        RESOURCE_BYTES - logical_end
-    )
-    if (
-        guard_before != expected_guard_before
-        or guard_after != expected_guard_after
-    ):
+    expected_readback = expected_capture_blob(mode, rank, payload_bytes)
+    if payload[HEADER_BYTES:] != expected_readback:
         raise RuntimeError(
-            f"rank {rank} mode {mode} output payload guard changed"
+            f"rank {rank} mode {mode} guarded SPM readback is not exact"
         )
-    if payload[logical_begin:logical_end] != expected_payload(
-        mode, rank, payload_bytes
-    ):
-        raise RuntimeError(f"rank {rank} mode {mode} payload is not exact")
 
     dte_enable = words[9] & 0xFFFFFFFF
     spm_enable = words[9] >> 32
@@ -697,12 +850,10 @@ def parse_probe_payload(
         "ct_count_delta": instruction_counts[0],
         "rdma_count_delta": instruction_counts[1],
         "wdma_count_delta": instruction_counts[2],
-        "device_oracle": {
-            "source_spm_guard_mismatches": device_oracle_mismatches[0],
-            "receive_spm_guard_mismatches": device_oracle_mismatches[1],
-            "compute_spm_guard_mismatches": device_oracle_mismatches[2],
-            "compute_result_mismatches": device_oracle_mismatches[3],
-            "output_ddr_guards_exact": True,
+        "host_readback_oracle": {
+            "guarded_spm_slots": HOST_SLOT_COUNT,
+            "slot_bytes": HOST_SLOT_BYTES,
+            "exact": True,
         },
         "full_cycles_delta": words[4],
         "ct_cycles_delta": words[5],
@@ -826,18 +977,9 @@ def synthetic_probe_payload(
     )
     words[9] = dte_enable | (spm_enable << 32)
     words[10:16] = list(transport_deltas)
-    guard_before = bytes([OUTPUT_GUARD_VALUE]) * OUTPUT_GUARD_BYTES
-    guard_after = bytes([OUTPUT_GUARD_VALUE]) * (
-        RESOURCE_BYTES
-        - HEADER_BYTES
-        - OUTPUT_GUARD_BYTES
-        - MAX_PAYLOAD_BYTES
-    )
     return (
         struct.pack("<16Q", *words)
-        + guard_before
-        + expected_payload(mode, rank, payload_bytes)
-        + guard_after
+        + expected_capture_blob(mode, rank, payload_bytes)
     )
 
 
@@ -860,7 +1002,7 @@ def run_host_oracle_self_tests() -> None:
             f"DTE/NCC host oracle self-test accepted {message}"
         )
 
-    for mode in MODES:
+    for mode in DEFAULT_SAFE_MODES:
         for payload_bytes in MODE_PAYLOADS[mode]:
             for rank in (0, RANK_COUNT - 1):
                 parsed = parse_probe_payload(
@@ -984,7 +1126,7 @@ def run_host_oracle_self_tests() -> None:
     corrupted_payload = bytearray(
         synthetic_probe_payload(1, 0, MAX_PAYLOAD_BYTES)
     )
-    corrupted_payload[HEADER_BYTES + OUTPUT_GUARD_BYTES] ^= 1
+    corrupted_payload[HEADER_BYTES + SPM_GUARD_BYTES] ^= 1
     require_rejected(
         bytes(corrupted_payload),
         MAX_PAYLOAD_BYTES,
@@ -992,7 +1134,7 @@ def run_host_oracle_self_tests() -> None:
     )
     corrupted_suffix = bytearray(synthetic_probe_payload(1, 0, 16))
     corrupted_suffix[
-        HEADER_BYTES + OUTPUT_GUARD_BYTES + 16
+        HEADER_BYTES + SPM_GUARD_BYTES + 16
     ] ^= 1
     require_rejected(
         bytes(corrupted_suffix),
@@ -1067,10 +1209,8 @@ def execute_probe_modes(
                             "exact": True,
                             "canary": True,
                             "guards": {
-                                "source_spm": "exact",
-                                "receive_spm": "exact",
-                                "compute_spm": "exact",
-                                "output_ddr_before_after": "exact",
+                                "guarded_spm_readback": "exact",
+                                "host_slot_count": HOST_SLOT_COUNT,
                             },
                             "transport_status": "success",
                             "contract_status": (
@@ -1088,7 +1228,9 @@ def execute_probe_modes(
                                 inconclusive_ranks
                             ),
                             "dte_common_timer": None,
-                            "dte_ncc_overlap": "unknown",
+                            "dte_ncc_overlap": (
+                                "not_claimed_by_this_correctness_probe"
+                            ),
                         },
                         sort_keys=True,
                     )
@@ -1210,7 +1352,9 @@ def execute_probe_modes(
                         for name in metric_names
                     },
                     "issue_window_observed": True,
-                    "temporal_overlap": "unknown",
+                    "temporal_overlap": (
+                        "not_claimed_without_a_calibrated_common_timer"
+                    ),
                     "interpretation": (
                         "raw repeated same-rank control; DTE counters and NCC "
                         "FU counters have no calibrated common timer"
@@ -1219,6 +1363,49 @@ def execute_probe_modes(
                 sort_keys=True,
             )
         )
+
+
+def execute_receiver_unprepared(
+    args: argparse.Namespace,
+    package: pathlib.Path,
+    bindings: dict[tuple[int, str, int], int],
+) -> None:
+    mode = ISOLATED_DTE_MODES[0]
+    payload_bytes = MODE_PAYLOADS[mode][0]
+    resource_args, _ = write_probe_inputs(
+        args.work_dir, bindings, mode, payload_bytes, 0
+    )
+    command = [*board_base_command(args, package), *resource_args]
+    timeout_seconds = args.completion_timeout_ms / 1000.0 + 5.0
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as error:
+        print(
+            "dte_receiver_unprepared: outer-timeout; no retry/reset/power",
+            flush=True,
+        )
+        for partial in (error.stdout, error.stderr):
+            if partial:
+                if isinstance(partial, bytes):
+                    partial = partial.decode(errors="replace")
+                print(partial, end="", file=sys.stderr)
+        return
+    print(result.stdout, end="")
+    print(result.stderr, end="", file=sys.stderr)
+    if result.returncode == 0:
+        raise RuntimeError(
+            "receiver-unprepared unexpectedly completed successfully"
+        )
+    print(
+        "dte_receiver_unprepared: provider rejected/timed out; "
+        f"exit={result.returncode}; no retry/reset/power",
+        flush=True,
+    )
 
 
 def validate_board_args(args: argparse.Namespace) -> None:
@@ -1300,20 +1487,25 @@ def main() -> int:
 
     package, module_path, bindings = compile_package(args)
     verify_no_card(args, package)
-    if not args.no_card:
-        execute_production_baseline(args, package, bindings)
+    if not args.no_card and not any(
+        mode in ISOLATED_DTE_MODES for mode in selected_modes
+    ):
+        execute_production_baseline(args)
 
     build_probe(args, package, module_path)
     verify_no_card(args, package)
     print("probe_package_verification: passed")
     if not args.no_card:
-        execute_probe_modes(
-            args,
-            package,
-            bindings,
-            selected_modes,
-            selected_payload_bytes,
-        )
+        if any(mode in ISOLATED_DTE_MODES for mode in selected_modes):
+            execute_receiver_unprepared(args, package, bindings)
+        else:
+            execute_probe_modes(
+                args,
+                package,
+                bindings,
+                selected_modes,
+                selected_payload_bytes,
+            )
     return 0
 
 

@@ -736,6 +736,14 @@ TEST_F(BoardRuntimeTest, ExecutesTypedLifecycleAndCopiesCompleteOutput) {
     EXPECT_EQ(result->outputs.front().bytes[index], index);
   EXPECT_EQ(result->completedStages.back(),
             wafer::runtime::BoardRuntimeStage::Cleanup);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "allocate"),
+            3);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "h2d"), 2);
+  ASSERT_EQ(driver.h2dPayloads.size(), 2u);
+  EXPECT_TRUE(llvm::all_of(driver.h2dPayloads,
+                           [](const auto &bytes) {
+                             return bytes.size() == 64;
+                           }));
   auto unload = std::find_if(
       driver.calls.begin(), driver.calls.end(),
       [](const std::string &call) { return call.find("unload-module:") == 0; });
@@ -797,7 +805,7 @@ TEST_F(BoardRuntimeTest,
     size_t expectedCount;
   };
   const BeforeSubmit beforeSubmit[] = {{"allocate", 48},
-                                       {"h2d", 48},
+                                       {"h2d", 32},
                                        {"load-module", 16},
                                        {"resolve-entry", 16}};
   for (const BeforeSubmit &expected : beforeSubmit) {
@@ -1208,7 +1216,7 @@ TEST_F(BoardRuntimeTest,
   };
   const Scenario scenarios[] = {
       {"allocate", 45, wafer::runtime::BoardRuntimeStage::ResourceAllocation},
-      {"h2d", 45, wafer::runtime::BoardRuntimeStage::HostToDevice},
+      {"h2d", 31, wafer::runtime::BoardRuntimeStage::HostToDevice},
       {"load-module", 15, wafer::runtime::BoardRuntimeStage::ModuleLoad},
       {"resolve-entry", 15, wafer::runtime::BoardRuntimeStage::EntryResolve},
       {"d2h", 15, wafer::runtime::BoardRuntimeStage::DeviceToHost},
@@ -1271,7 +1279,7 @@ TEST_F(BoardRuntimeTest,
   };
   const Scenario scenarios[] = {
       {"allocate", 45, wafer::runtime::BoardRuntimeStage::ResourceAllocation},
-      {"h2d", 45, wafer::runtime::BoardRuntimeStage::HostToDevice},
+      {"h2d", 31, wafer::runtime::BoardRuntimeStage::HostToDevice},
       {"load-module", 15, wafer::runtime::BoardRuntimeStage::ModuleLoad},
       {"resolve-entry", 15, wafer::runtime::BoardRuntimeStage::EntryResolve},
       {"d2h", 15, wafer::runtime::BoardRuntimeStage::DeviceToHost},

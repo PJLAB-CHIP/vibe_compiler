@@ -24,6 +24,7 @@ def main() -> int:
         "board-executable",
         "board-observation",
         "static-negative",
+        "isolated-deferred",
     }
     evidence_names = {
         case.name for case in instruction_catalog.CATALOG
@@ -82,9 +83,11 @@ def main() -> int:
     assert len(raw_reduce) == 8
     assert all(
         row.dtype == "f16"
-        and row.disposition == "board-observation"
-        and row.oracle == "bounded-raw+physical-span+guard"
-        and row.qualification == "pending-board"
+        and row.disposition == "isolated-deferred"
+        and row.oracle is None
+        and not row.evidence
+        and row.qualification == "isolated-timeout"
+        and "may permanently wait" in (row.reason or "")
         for row in raw_reduce
     )
     existing_board_passed = {
@@ -171,7 +174,11 @@ def main() -> int:
         for row in unpool_rows
         if row.disposition == "board-observation"
         and row.qualification == "board-observed"
-    } == {("unpool-index-f16",)}
+    } == {
+        ("unpool-index-f16",),
+        ("unpool-mask-f32",),
+        ("unpool-mask-f16-k3x2-s2x1",),
+    }
     assert sum(
         row.disposition == "board-observation"
         and row.qualification == "pending-board"
@@ -187,10 +194,12 @@ def main() -> int:
 
     counts = Counter(row.disposition for row in catalog.CATALOG)
     assert counts == {
-        "board-executable": 82,
-        "board-observation": 24,
+        "board-executable": 80,
+        "board-observation": 18,
         "static-negative": 11,
+        "isolated-deferred": 8,
     }
+    assert catalog.ISOLATED_DEFERRED_ROWS == raw_reduce
     assert not catalog.UNKNOWN_ROWS
     print(
         "wafer_ct_reduce_pool_capability_catalog_test: "

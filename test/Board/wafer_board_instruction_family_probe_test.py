@@ -483,6 +483,7 @@ def validate_output(
     path: pathlib.Path,
     case: catalog.InstructionCase,
     expected_slot: bytes,
+    expected_aux_slot: bytes,
     sample: int,
 ) -> dict[str, object]:
     raw = path.read_bytes()
@@ -521,15 +522,13 @@ def validate_output(
         != (catalog.SCHEMA << 32) | catalog.RECORD_WORDS
         or words[rec["STATUS"]] != 0
         or actual_mirror != expected_mirror
-        or words[rec["OUTPUT_GUARD_MISMATCHES"]] != 0
-        or words[rec["AUX_GUARD_MISMATCHES"]] != 0
         or words[rec["REQUEST_GUARD"]] != catalog.REQUEST_GUARD
         or words[rec["OUTPUT_DDR_OFFSET"]] != catalog.OUTPUT_DDR_OFFSET
         or words[rec["SLOT_BYTES"]] != catalog.SLOT_BYTES
         or words[rec["BODY_OFFSET"]] != catalog.BODY_OFFSET
         or words[rec["RECORD_GUARD"]] != catalog.RECORD_GUARD
     ):
-        raise RuntimeError(f"{case.name}: record or SPM guard oracle failed")
+        raise RuntimeError(f"{case.name}: record mirror failed")
     select = case.family_name == "CT_SELECT_COMPOSITE"
     expected_steps = (
         catalog.STEP_TARGET_ISSUED
@@ -541,19 +540,19 @@ def validate_output(
             else 0
         )
     )
-    if (
-        words[rec["STEP_FLAGS"]] != expected_steps
-        or words[rec["BIT2FP_MISMATCHES"]] != 0
-    ):
+    if words[rec["STEP_FLAGS"]] != expected_steps:
         raise RuntimeError(
-            f"{case.name}: Bit2FP/MaskMove step oracle failed: "
-            f"flags={words[rec['STEP_FLAGS']]:#x}, "
-            f"bit2fp_mismatches={words[rec['BIT2FP_MISMATCHES']]}"
+            f"{case.name}: instruction step oracle failed: "
+            f"flags={words[rec['STEP_FLAGS']]:#x}"
         )
 
     actual_slot = raw[
         catalog.OUTPUT_DDR_OFFSET :
         catalog.OUTPUT_DDR_OFFSET + catalog.SLOT_BYTES
+    ]
+    actual_aux_slot = raw[
+        catalog.AUX_DDR_OFFSET :
+        catalog.AUX_DDR_OFFSET + catalog.SLOT_BYTES
     ]
     result_offsets = (
         set(catalog.reduce_exact_result_byte_offsets(case))
@@ -605,6 +604,50 @@ def validate_output(
             f"expected=0x{expected_slot[mismatch]:02x}"
         )
 
+    if case.family_name == "CT_SELECT_COMPOSITE":
+        expected_select_aux = bytearray(expected_aux_slot)
+        struct.pack_into(
+            "<128H",
+            expected_select_aux,
+            catalog.BODY_OFFSET,
+            *catalog.bit2fp_expected_words(case),
+        )
+        if actual_aux_slot != bytes(expected_select_aux):
+            mismatch = next(
+                index
+                for index, (actual, expected) in enumerate(
+                    zip(actual_aux_slot, expected_select_aux, strict=True)
+                )
+                if actual != expected
+            )
+            raise RuntimeError(
+                f"{case.name}: Bit2FP/aux guard differs at slot byte "
+                f"{mismatch}: actual=0x{actual_aux_slot[mismatch]:02x}, "
+                f"expected=0x{expected_select_aux[mismatch]:02x}"
+            )
+    else:
+        aux_exact_indices = [
+            *range(0, catalog.BODY_OFFSET),
+            *range(
+                catalog.BODY_OFFSET + case.aux_span,
+                catalog.SLOT_BYTES,
+            ),
+        ]
+        aux_mismatch = next(
+            (
+                index
+                for index in aux_exact_indices
+                if actual_aux_slot[index] != expected_aux_slot[index]
+            ),
+            None,
+        )
+        if aux_mismatch is not None:
+            raise RuntimeError(
+                f"{case.name}: auxiliary SPM guard differs at slot byte "
+                f"{aux_mismatch}: actual=0x{actual_aux_slot[aux_mismatch]:02x}, "
+                f"expected=0x{expected_aux_slot[aux_mismatch]:02x}"
+            )
+
     mutable = bytearray(raw)
     mutable[: catalog.RECORD_WORDS * 8] = bytes(
         [OUTPUT_INITIAL_CANARY]
@@ -612,6 +655,10 @@ def validate_output(
     mutable[
         catalog.OUTPUT_DDR_OFFSET :
         catalog.OUTPUT_DDR_OFFSET + catalog.SLOT_BYTES
+    ] = bytes([OUTPUT_INITIAL_CANARY]) * catalog.SLOT_BYTES
+    mutable[
+        catalog.AUX_DDR_OFFSET :
+        catalog.AUX_DDR_OFFSET + catalog.SLOT_BYTES
     ] = bytes([OUTPUT_INITIAL_CANARY]) * catalog.SLOT_BYTES
     if mutable != bytes([OUTPUT_INITIAL_CANARY]) * catalog.RESOURCE_BYTES:
         mismatch = next(
@@ -643,7 +690,6 @@ def validate_output(
         "case": case.as_dict(),
         "sample": sample,
         "step_flags": words[rec["STEP_FLAGS"]],
-        "bit2fp_mismatches": words[rec["BIT2FP_MISMATCHES"]],
         "output_sha256": hashlib.sha256(actual_slot).hexdigest(),
         "result_sha256": hashlib.sha256(result).hexdigest(),
     }
@@ -686,7 +732,13 @@ def execute_cases(
                     f"{case.name}: wafer-run omitted complete lifecycle evidence"
                 )
             observation = validate_output(
-                output, case, built.expected_output_slot, sample
+                output,
+                case,
+                built.expected_output_slot,
+                built.payload[
+                    3 * catalog.SLOT_BYTES : 4 * catalog.SLOT_BYTES
+                ],
+                sample,
             )
             print(
                 "instruction_family_qualification: "

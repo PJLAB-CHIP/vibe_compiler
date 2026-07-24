@@ -53,6 +53,34 @@ def main() -> int:
         if element not in logical_offsets:
             assert storage[element * 2 : element * 2 + 2] == b"\xa7\xa7"
 
+    split_padding = codec.pack_scalar_bytes(
+        shape,
+        "NCx",
+        2,
+        values,
+        padding=0,
+        batch_padding=0xA7,
+    )
+    assert codec.unpack_scalar_bytes(
+        shape, "NCx", 2, split_padding
+    ) == values
+    active_elements = ncx_layout.hw_elements * ncx_layout.aligned_c
+    for batch in range(shape[0]):
+        batch_begin = batch * ncx_layout.batch_elements
+        active_end = batch_begin + active_elements
+        batch_end = batch_begin + ncx_layout.batch_elements
+        assert split_padding[
+            active_end * 2 : batch_end * 2
+        ] == bytes([0xA7]) * ((batch_end - active_end) * 2)
+        internal_padding = next(
+            element
+            for element in range(batch_begin, active_end)
+            if element not in logical_offsets
+        )
+        assert split_padding[
+            internal_padding * 2 : internal_padding * 2 + 2
+        ] == b"\x00\x00"
+
     compact = codec.pack_scalar_bytes(
         (2, 3, 4), "Tensor", 2, values[:24], padding=0xA7
     )

@@ -11,6 +11,51 @@ import wafer_board_ct_convert_calibration_probe_test as runner
 import wafer_ct_convert_calibration_catalog as catalog
 
 
+def validate_pure_ncc_probe() -> None:
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    probe = (
+        repo
+        / "test"
+        / "Board"
+        / "Inputs"
+        / "wafer_ct_convert_calibration_probe.c"
+    ).read_text()
+    issue = probe[
+        probe.index("static uint32_t wafer_ctc_issue")
+        : probe.index("static void wafer_ctc_init_record")
+    ]
+    entry = probe[
+        probe.index("wafer_tx81_instruction_family_probe(uint64_t request_ddr")
+        :
+    ]
+    assert "get_spm_memory_mapping" not in probe
+    assert "wafer_ctc_fill_output" not in probe
+    assert "wafer_ctc_guard_mismatches" not in probe
+    assert "wafer_tx81_local_fence" not in issue
+
+    before = entry.index("WaferCTCPMU before")
+    input_rdma = entry.index("wafer_tx81_rdma(payload_ddr,", before)
+    canary_rdma = entry.index(
+        "wafer_tx81_rdma(request_ddr + WAFER_CTC_SLOT_BYTES,"
+    )
+    execute = entry.index("wafer_ctc_issue(&selected)", before)
+    wdma = entry.index("wafer_tx81_wdma(", execute)
+    terminal_fence = entry.index("wafer_tx81_local_fence();", wdma)
+    after = entry.index("WaferCTCPMU after", terminal_fence)
+    assert before < input_rdma < canary_rdma < execute
+    assert execute < wdma < terminal_fence < after
+    assert entry.count("wafer_tx81_local_fence();") == 1
+
+    runner_source = pathlib.Path(runner.__file__).read_text()
+    assert "OUTPUT_GUARD_MISMATCHES" not in runner_source
+    built = catalog.build_case_payload(
+        catalog.CASES_BY_NAME["ct-op139-convert-int8-fp16-main"]
+    )
+    assert built.request[
+        catalog.SLOT_BYTES : 2 * catalog.SLOT_BYTES
+    ] == bytes([catalog.SLOT_CANARY]) * catalog.SLOT_BYTES
+
+
 def validate_resource_canaries() -> None:
     case = catalog.CASES_BY_NAME[
         "ct-op139-convert-int8-fp16-main"
@@ -44,7 +89,6 @@ def validate_resource_canaries() -> None:
         "OUTPUT_DDR_OFFSET": catalog.OUTPUT_DDR_OFFSET,
         "SLOT_BYTES": catalog.SLOT_BYTES,
         "BODY_OFFSET": catalog.BODY_OFFSET,
-        "OUTPUT_GUARD_MISMATCHES": 0,
         "CT_INST_DELTA": 1,
         "DOMAIN": case.domain,
         "ZERO_POINT": case.zero_point,
@@ -53,6 +97,8 @@ def validate_resource_canaries() -> None:
     }
     for name, value in expected.items():
         words[catalog.REC[name]] = value
+    # The legacy device guard-count slot is compatibility-only.
+    words[catalog.REC["OUTPUT_GUARD_MISMATCHES"]] = 0xBAD5EED
     raw[: catalog.RECORD_WORDS * 8] = struct.pack(
         f"<{catalog.RECORD_WORDS}Q", *words
     )
@@ -60,6 +106,15 @@ def validate_resource_canaries() -> None:
         output = pathlib.Path(directory) / "output.raw"
         output.write_bytes(raw)
         runner.validate_output(output, case, built, sample=0)
+        raw[catalog.OUTPUT_DDR_OFFSET] ^= 1
+        output.write_bytes(raw)
+        try:
+            runner.validate_output(output, case, built, sample=0)
+        except RuntimeError as error:
+            assert "result/physical guard differs" in str(error)
+        else:
+            raise AssertionError("output slot prefix guard corruption accepted")
+        raw[catalog.OUTPUT_DDR_OFFSET] ^= 1
         raw[catalog.RECORD_WORDS * 8] ^= 1
         output.write_bytes(raw)
         try:
@@ -71,6 +126,7 @@ def validate_resource_canaries() -> None:
 
 
 def main() -> int:
+    validate_pure_ncc_probe()
     assert len(catalog.CATALOG) == 204
     assert len(catalog.SAFE_CASES) == 204
     assert len(catalog.DEFERRED_CASES) == 0

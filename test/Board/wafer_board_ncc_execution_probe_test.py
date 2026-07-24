@@ -194,10 +194,12 @@ def build_probe(
     deps = args.repo_root / "third_party" / "tx8_deps"
     tool_bin = deps / TOOLCHAIN_DIR / "bin"
     gcc = tool_bin / "riscv64-unknown-elf-gcc"
+    nm = tool_bin / "riscv64-unknown-elf-nm"
     objcopy = tool_bin / "riscv64-unknown-elf-objcopy"
     device_linker = args.repo_root / "tools" / "wafer_device_link.py"
     required = (
         gcc,
+        nm,
         objcopy,
         device_linker,
         args.llvm_clangxx,
@@ -230,6 +232,7 @@ def build_probe(
             "-Wall",
             "-Wextra",
             "-Werror",
+            "-Wframe-larger-than=2048",
             "-DCONFIG_NO_PLATFORM_HOOK_H",
             "-DUSING_RISCV",
             f"-I{args.repo_root / 'runtime' / 'wafer_crt' / 'include'}",
@@ -277,6 +280,22 @@ def build_probe(
     staged = module_path.with_name(f".{module_path.name}.ncc-execution-probe")
     shutil.copy2(linked, staged)
     os.replace(staged, module_path)
+    undefined_symbols = {
+        line.split()[-1]
+        for line in run([str(nm), "-u", str(module_path)]).stdout.splitlines()
+        if line.split()
+    }
+    heap_symbols = undefined_symbols & {
+        "rt_malloc",
+        "rt_free",
+        "csi_kernel_malloc",
+        "csi_kernel_free",
+    }
+    if heap_symbols != {"rt_malloc", "rt_free"}:
+        raise RuntimeError(
+            "NCC probe package did not retain the exact Kcore RT-Thread heap "
+            f"loader ABI: {sorted(heap_symbols)}"
+        )
     manifest_path = package / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     module_id = manifest["entries"][0]["module"]
@@ -1278,6 +1297,126 @@ V2_KCORE_BOUNDARY_CASES = (
         seed=0x7411,
     ),
 )
+V2_MAPPED_SPM_PURE_NCC_CASES = (
+    v2_case(
+        "mapped-spm-rdma-ct-wdma-a-terminal-only",
+        (
+            v2_lane(
+                ncc_protocol.Engine.RDMA,
+                transfer_bytes=16384,
+                element_format=FMT_FP16,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.CT,
+                transfer_bytes=16384,
+                element_format=FMT_FP16,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.WDMA,
+                transfer_bytes=16384,
+                element_format=FMT_FP16,
+            ),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x7420,
+        flags=ncc_protocol.DOUBLE_SLOT_OBSERVATION,
+    ),
+    v2_case(
+        "mapped-spm-rdma-ct-wdma-b-serial-drain-control",
+        (
+            v2_lane(
+                ncc_protocol.Engine.RDMA,
+                transfer_bytes=16384,
+                element_format=FMT_FP16,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.CT,
+                transfer_bytes=16384,
+                element_format=FMT_FP16,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.WDMA,
+                transfer_bytes=16384,
+                element_format=FMT_FP16,
+            ),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x7420,
+        flags=ncc_protocol.DOUBLE_SLOT_OBSERVATION,
+    ),
+)
+V2_MAPPED_SPM_NCC_TO_KCORE_CASES = (
+    v2_case(
+        "mapped-spm-ncc-ne-depth4-to-kcore-a-no-local-wait",
+        (
+            v2_lane(
+                ncc_protocol.Engine.NE,
+                transfer_bytes=V2_NE_LARGE_RESULT_BYTES,
+                element_format=FMT_FP16,
+            ),
+        ),
+        rounds=4,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x7421,
+        wait_kind=ncc_protocol.WaitKind.NONE,
+        flags=ncc_protocol.TIGHT_KCORE_BOUNDARY,
+    ),
+    v2_case(
+        "mapped-spm-ncc-ne-depth4-to-kcore-b-local-wait",
+        (
+            v2_lane(
+                ncc_protocol.Engine.NE,
+                transfer_bytes=V2_NE_LARGE_RESULT_BYTES,
+                element_format=FMT_FP16,
+            ),
+        ),
+        rounds=4,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x7421,
+        wait_kind=ncc_protocol.WaitKind.LOCAL_FENCE,
+        flags=ncc_protocol.TIGHT_KCORE_BOUNDARY,
+    ),
+)
+V2_MAPPED_SPM_KCORE_TO_NCC_CASES = (
+    v2_case(
+        "mapped-spm-kcore-to-ncc-ct-a-volatile-fence-sync-only",
+        (
+            v2_lane(
+                ncc_protocol.Engine.CT,
+                transfer_bytes=16384,
+                element_format=FMT_FP16,
+            ),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x7422,
+        flags=ncc_protocol.MAPPED_SPM_KCORE_WRITE,
+    ),
+    v2_case(
+        "mapped-spm-kcore-to-ncc-ct-b-preissue-local-wait-control",
+        (
+            v2_lane(
+                ncc_protocol.Engine.CT,
+                transfer_bytes=16384,
+                element_format=FMT_FP16,
+            ),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x7422,
+        flags=(
+            ncc_protocol.MAPPED_SPM_KCORE_WRITE
+            | ncc_protocol.PREISSUE_LOCAL_WAIT
+        ),
+    ),
+)
+V2_MAPPED_SPM_BOUNDARY_CASES = (
+    V2_MAPPED_SPM_PURE_NCC_CASES
+    + V2_MAPPED_SPM_NCC_TO_KCORE_CASES
+    + V2_MAPPED_SPM_KCORE_TO_NCC_CASES
+)
 V2_PRODUCER_CONSUMER_ALL_CASES = (
     V2_PRODUCER_CONSUMER_CASES + V2_KCORE_BOUNDARY_CASES
 )
@@ -1617,6 +1756,7 @@ BOARD_ALL_PREFLIGHT_CASES = _unique_cases(
     V2_COMPLETION_SCOPE_CASES,
     V2_SUBSET_JOIN_CASES,
     V2_ACTIVE_OCCUPANCY_CASES,
+    V2_MAPPED_SPM_BOUNDARY_CASES,
 )
 NCC_OBSERVATION_CASE_NAMES = frozenset(
     case.name
@@ -1625,6 +1765,7 @@ NCC_OBSERVATION_CASE_NAMES = frozenset(
         + V2_SUBSET_JOIN_CASES
         + V2_STRIDED_DEPENDENCY_CASES
         + V2_DOUBLE_SLOT_OBSERVATION_CASES
+        + V2_MAPPED_SPM_BOUNDARY_CASES
     )
 )
 SUITES = {
@@ -1639,6 +1780,7 @@ SUITES = {
     "active-occupancy-manual": V2_ACTIVE_OCCUPANCY_CASES,
     "cross-worker-boundary-manual": V2_SUBSET_JOIN_CASES,
     "producer-consumer-observation": V2_PRODUCER_CONSUMER_ALL_CASES,
+    "mapped-spm-boundary-observation": V2_MAPPED_SPM_BOUNDARY_CASES,
     "strided-dependency-observation": V2_STRIDED_DEPENDENCY_CASES,
     "large-backlog-observation": V2_LARGE_BACKLOG_CASES,
     "double-slot-observation": V2_DOUBLE_SLOT_OBSERVATION_CASES,
@@ -1658,6 +1800,7 @@ CASE_CATALOGS = {
         + V2_ACTIVE_OCCUPANCY_CASES
         + V2_SUBSET_JOIN_CASES
         + V2_PRODUCER_CONSUMER_ALL_CASES
+        + V2_MAPPED_SPM_BOUNDARY_CASES
         + V2_STRIDED_DEPENDENCY_CASES
         + V2_LARGE_BACKLOG_CASES
         + V2_DOUBLE_SLOT_OBSERVATION_CASES
@@ -1721,8 +1864,9 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
     "five-engine-wait-each-window": V2_WAIT_OVERHEAD_CASES,
     "ncc-producer-consumer-representative-positive": (
         V2_HAZARD_CASES + V2_DMA_STRIDE_MATRIX_CASES
+        + V2_PRODUCER_CONSUMER_ALL_CASES
     ),
-    "ncc-producer-consumer-all-directions": V2_PRODUCER_CONSUMER_ALL_CASES,
+    "ncc-producer-consumer-all-directions": V2_MAPPED_SPM_BOUNDARY_CASES,
     "cross-worker-single-pair-triple-masks": V2_WORKER_CASES,
     "cross-worker-unjoined-boundary": V2_SUBSET_JOIN_CASES,
     "execute-engine-none-static-negative": tuple(
@@ -1924,6 +2068,86 @@ def validate_no_card_protocol_cases() -> None:
         raise RuntimeError("ordered producer-consumer catalog is malformed")
     if len(V2_KCORE_BOUNDARY_CASES) != 2:
         raise RuntimeError("Kcore completion boundary catalog is malformed")
+    mapped_pairs = (
+        (
+            V2_MAPPED_SPM_PURE_NCC_CASES,
+            ncc_protocol.REQ["SCHEDULE"],
+        ),
+        (
+            V2_MAPPED_SPM_NCC_TO_KCORE_CASES,
+            ncc_protocol.REQ["WAIT_KIND"],
+        ),
+        (
+            V2_MAPPED_SPM_KCORE_TO_NCC_CASES,
+            ncc_protocol.REQ["FLAGS"],
+        ),
+    )
+    if len(V2_MAPPED_SPM_BOUNDARY_CASES) != 6:
+        raise RuntimeError("mapped-SPM boundary catalog must contain three A/B pairs")
+    for pair, changed_word in mapped_pairs:
+        if len(pair) != 2:
+            raise RuntimeError("mapped-SPM boundary comparison lost an A/B case")
+        first_words = pair[0].plan.request_words()
+        second_words = pair[1].plan.request_words()
+        differences = {
+            index
+            for index, (first, second) in enumerate(
+                zip(first_words, second_words, strict=True)
+            )
+            if first != second
+        }
+        if differences != {changed_word}:
+            raise RuntimeError(
+                "mapped-SPM A/B requests must change exactly one typed field"
+            )
+    terminal_only, serial_control = V2_MAPPED_SPM_PURE_NCC_CASES
+    if (
+        terminal_only.plan.issue_order() != (0, 4, 8)
+        or serial_control.plan.issue_order() != (0, 4, 8)
+        or terminal_only.plan.wait_kind
+        != ncc_protocol.WaitKind.BY_WORKER
+        or serial_control.plan.wait_kind
+        != ncc_protocol.WaitKind.BY_WORKER
+    ):
+        raise RuntimeError("pure NCC mapped-SPM chain lost its terminal wait")
+    no_wait, local_wait = V2_MAPPED_SPM_NCC_TO_KCORE_CASES
+    if (
+        no_wait.plan.wait_kind != ncc_protocol.WaitKind.NONE
+        or local_wait.plan.wait_kind
+        != ncc_protocol.WaitKind.LOCAL_FENCE
+        or no_wait.plan.wait_worker_mask != 0
+        or local_wait.plan.wait_worker_mask != 0
+        or any(
+            not case.plan.is_tight_kcore_boundary_observation()
+            or case.plan.flags != ncc_protocol.TIGHT_KCORE_BOUNDARY
+            or case.plan.issue_limit != 0
+            or case.plan.issue_order() != (0, 1, 2, 3)
+            or len(case.plan.lanes) != 1
+            or any(
+                lane.engine != ncc_protocol.Engine.NE
+                or lane.worker != 0
+                or lane.issue_mode != ncc_protocol.IssueMode.RAW
+                or lane.element_format != FMT_FP16
+                or lane.transfer_bytes != V2_NE_LARGE_RESULT_BYTES
+                for lane in case.plan.lanes
+            )
+            for case in V2_MAPPED_SPM_NCC_TO_KCORE_CASES
+        )
+    ):
+        raise RuntimeError("NCC-to-Kcore mapped-SPM wait control is malformed")
+    ordered_store, preissue_wait = V2_MAPPED_SPM_KCORE_TO_NCC_CASES
+    if (
+        not ordered_store.plan.is_mapped_spm_kcore_write_observation()
+        or not preissue_wait.plan.is_mapped_spm_kcore_write_observation()
+        or ordered_store.plan.flags
+        != ncc_protocol.MAPPED_SPM_KCORE_WRITE
+        or preissue_wait.plan.flags
+        != (
+            ncc_protocol.MAPPED_SPM_KCORE_WRITE
+            | ncc_protocol.PREISSUE_LOCAL_WAIT
+        )
+    ):
+        raise RuntimeError("Kcore-to-NCC mapped-SPM wait control is malformed")
     strided_effect_counts = {
         effect: sum(
             case.plan.effect_relation == effect
@@ -2327,10 +2551,7 @@ def v2_strided_dependency_bases(
     lane = plan.lanes[0]
     first = V2_SPM_SLOT_BASE + V2_SPM_WRITE_OFFSET
     if plan.range_relation == ncc_protocol.RangeRelation.PARTIAL:
-        offsets = lane.dma_chunk_offsets()
-        if len(offsets) < 2:
-            raise RuntimeError("partial strided relation needs two chunks")
-        shift = offsets[len(offsets) // 2]
+        shift = lane.transfer_bytes // 2
     elif plan.range_relation == ncc_protocol.RangeRelation.ADJACENT:
         shift = lane.dma_envelope_bytes()
     else:
@@ -2341,6 +2562,7 @@ def v2_strided_dependency_bases(
 def v2_strided_compact_index(
     lane: ncc_protocol.Lane, base: int, address: int
 ) -> int | None:
+    """Map an address in the strided DDR descriptor to compact payload."""
     relative = address - base
     if relative < 0:
         return None
@@ -2352,13 +2574,21 @@ def v2_strided_compact_index(
     return None
 
 
+def v2_dma_local_compact_index(
+    lane: ncc_protocol.Lane, base: int, address: int
+) -> int | None:
+    """Map the compact SPM endpoint of an RDMA/WDMA descriptor."""
+    relative = address - base
+    return relative if 0 <= relative < lane.transfer_bytes else None
+
+
 def v2_strided_final_byte(
     plan: ncc_protocol.Plan, address: int
 ) -> int:
     lane = plan.lanes[0]
     first_base, second_base = v2_strided_dependency_bases(plan)
-    first_index = v2_strided_compact_index(lane, first_base, address)
-    second_index = v2_strided_compact_index(lane, second_base, address)
+    first_index = v2_dma_local_compact_index(lane, first_base, address)
+    second_index = v2_dma_local_compact_index(lane, second_base, address)
     if plan.effect_relation == ncc_protocol.EffectRelation.RAW:
         return (
             v2_pattern_byte(0, first_index)
@@ -2420,9 +2650,8 @@ def v2_strided_expected_result(
         raise RuntimeError("strided dependency requires RDMA/WDMA lanes")
     base = v2_strided_dependency_bases(plan)[identity.lane]
     return bytes(
-        v2_strided_final_byte(plan, base + offset + byte)
-        for offset in lane.dma_chunk_offsets()
-        for byte in range(lane.layout_inner_bytes)
+        v2_strided_final_byte(plan, base + byte)
+        for byte in range(lane.transfer_bytes)
     )
 
 
@@ -2431,16 +2660,16 @@ def v2_strided_dependency_evidence(
 ) -> dict[str, object]:
     first_base, second_base = v2_strided_dependency_bases(plan)
     lane = plan.lanes[0]
-    first_bytes = {
-        first_base + offset + byte
-        for offset in lane.dma_chunk_offsets()
-        for byte in range(lane.layout_inner_bytes)
-    }
-    second_bytes = {
-        second_base + offset + byte
-        for offset in lane.dma_chunk_offsets()
-        for byte in range(lane.layout_inner_bytes)
-    }
+    first_bytes = set(range(first_base, first_base + lane.transfer_bytes))
+    second_bytes = set(
+        range(second_base, second_base + lane.transfer_bytes)
+    )
+    envelope = lane.dma_envelope_bytes()
+    envelope_overlap = max(
+        0,
+        min(first_base + envelope, second_base + envelope)
+        - max(first_base, second_base),
+    )
     exact_waw = (
         plan.effect_relation == ncc_protocol.EffectRelation.WAW
         and plan.range_relation == ncc_protocol.RangeRelation.EXACT
@@ -2451,6 +2680,7 @@ def v2_strided_dependency_evidence(
         "independent_ddr_sinks": 2,
         "scatter_holes_checked": True,
         "spm_envelope_and_guards_checked": True,
+        "packet_envelope_overlap_bytes": envelope_overlap,
         "selected_overlap_bytes": len(first_bytes & second_bytes),
         "first_only_bytes": len(first_bytes - second_bytes),
         "first_payload_independently_proven": not exact_waw,
@@ -2500,7 +2730,7 @@ def v2_hazard_source_value(
     round_index: int,
     address: int,
     *,
-    second_read: bool,
+    after_second_write: bool,
 ) -> int:
     first, second = v2_hazard_ranges(plan, round_index)
     if not (
@@ -2516,7 +2746,7 @@ def v2_hazard_source_value(
     ):
         value = 4 + round_index
     if (
-        not second_read
+        after_second_write
         and plan.second_operand == ncc_protocol.Operand.WRITE
         and second[0] <= address < second[1]
     ):
@@ -2537,7 +2767,7 @@ def v2_hazard_result(
                 plan,
                 identity.round,
                 selected[0] + index * 2,
-                second_read=identity.lane == 1,
+                after_second_write=False,
             )
             + 1
             for index in range(lane.transfer_bytes // 2)
@@ -2548,7 +2778,7 @@ def v2_hazard_result(
                 plan,
                 identity.round,
                 selected[0] + index * 2,
-                second_read=True,
+                after_second_write=False,
             )
             for index in range(lane.transfer_bytes // 2)
         )
@@ -2561,7 +2791,7 @@ def v2_hazard_result(
                 plan,
                 identity.round,
                 selected[0] + index * 2,
-                second_read=False,
+                after_second_write=True,
             )
             for index in range(lane.transfer_bytes // 2)
         )
@@ -2767,6 +2997,19 @@ def v2_operand_spm_address(
         )
         return v2_spm_address(identity.slot, offsets[operand])
     if (
+        plan.is_serial_dma_roundtrip()
+        and operand
+        == (
+            plan.first_operand
+            if identity.lane == 0
+            else plan.second_operand
+        )
+    ):
+        # The RDMA destination and WDMA source are one shared physical
+        # envelope.  This is intentionally the ordinary slot-0 write buffer,
+        # not the generic hazard-composition offset used by compute hazards.
+        return v2_spm_address(0, V2_SPM_WRITE_OFFSET)
+    if (
         plan.is_strided_dependency_observation()
         and operand
         == (
@@ -2866,7 +3109,11 @@ def validate_observed_ranges_v2(
             ncc_protocol.PACKET_OBSERVED
             if (
                 lane.issue_mode == ncc_protocol.IssueMode.RAW
-                and plan.flags != ncc_protocol.TIGHT_DEPTH_PLUS_ONE
+                and plan.flags
+                not in (
+                    ncc_protocol.TIGHT_DEPTH_PLUS_ONE,
+                    ncc_protocol.TIGHT_KCORE_BOUNDARY,
+                )
             )
             else 0
         )
@@ -3080,6 +3327,36 @@ def validate_output_payload_v2(
         )
 
 
+def classify_ncc_to_kcore_boundary(
+    *,
+    local_wait: bool,
+    wait_cycles: int,
+    boundary_done: bool,
+    marker_complete: bool,
+    boundary_exact: bool,
+) -> str:
+    if local_wait:
+        if (
+            wait_cycles == 0
+            or not boundary_done
+            or not marker_complete
+            or not boundary_exact
+        ):
+            raise RuntimeError(
+                "local-wait NCC-to-Kcore boundary did not complete"
+            )
+        return "local-wait-complete"
+    if wait_cycles != 0:
+        raise RuntimeError(
+            "no-wait NCC-to-Kcore boundary unexpectedly recorded a wait"
+        )
+    if not boundary_done:
+        return "pending-at-snapshot"
+    if marker_complete and boundary_exact:
+        return "naturally-completed-before-snapshot"
+    return "task-done-output-incomplete-at-snapshot"
+
+
 def parse_record(
     path: pathlib.Path, case: GenericProbeCase, sample: int
 ) -> dict[str, object]:
@@ -3097,7 +3374,17 @@ def parse_record(
     rec = ncc_protocol.REC
     is_wait_scope = case in V2_COMPLETION_SCOPE_CASES
     is_subset_join = case in V2_SUBSET_JOIN_CASES
-    is_boundary_observation = is_wait_scope or is_subset_join
+    is_mapped_pure_ncc = case in V2_MAPPED_SPM_PURE_NCC_CASES
+    is_mapped_ncc_to_kcore = case in V2_MAPPED_SPM_NCC_TO_KCORE_CASES
+    is_mapped_kcore_to_ncc = case in V2_MAPPED_SPM_KCORE_TO_NCC_CASES
+    allows_pending_boundary = (
+        is_wait_scope
+        or is_subset_join
+        or (
+            is_mapped_ncc_to_kcore
+            and plan.wait_kind == ncc_protocol.WaitKind.NONE
+        )
+    )
     if (
         words[rec["OUTPUT_SLOT_BASE"]] != V2_OUTPUT_SLOT_BASE
         or words[rec["OUTPUT_SLOT_STRIDE"]] != V2_OUTPUT_SLOT_STRIDE
@@ -3187,7 +3474,7 @@ def parse_record(
             or observation.final_guard_mismatches
             or (
                 observation.boundary_mismatches
-                and not is_boundary_observation
+                and not allows_pending_boundary
             )
         ):
             raise RuntimeError(
@@ -3368,6 +3655,156 @@ def parse_record(
                 else "unjoined-workers-drained-before-boundary"
             ),
         }
+    mapped_spm_boundary: dict[str, object] | None = None
+    mapped_mismatches = {
+        "boundary_mismatches": sum(
+            observation.boundary_mismatches
+            for observation in observations
+        ),
+        "boundary_guard_mismatches": sum(
+            observation.boundary_guard_mismatches
+            for observation in observations
+        ),
+        "final_mismatches": sum(
+            observation.final_mismatches for observation in observations
+        ),
+        "final_guard_mismatches": sum(
+            observation.final_guard_mismatches
+            for observation in observations
+        ),
+    }
+    if is_mapped_pure_ncc:
+        terminal_only = plan.schedule == ncc_protocol.Schedule.WINDOW
+        if (
+            plan.wait_kind != ncc_protocol.WaitKind.BY_WORKER
+            or words[rec["WAIT_CYCLES"]] == 0
+            or any(
+                observation.boundary_mismatches
+                or observation.boundary_guard_mismatches
+                for observation in observations
+            )
+        ):
+            raise RuntimeError(
+                f"{case.name}: pure NCC terminal boundary is malformed"
+            )
+        mapped_spm_boundary = {
+            "direction": "pure-ncc-rdma-ct-wdma",
+            "variant": (
+                "terminal-only"
+                if terminal_only
+                else "serial-drain-control"
+            ),
+            "issue_order": list(plan.issue_order()),
+            "intermediate_wait_count": serial_wait_count,
+            "intermediate_wait_cycles": words[
+                rec["SERIAL_WAIT_CYCLES"]
+            ],
+            "terminal_wait_cycles": words[rec["WAIT_CYCLES"]],
+            "boundary_exact": True,
+            "final_exact": True,
+            **mapped_mismatches,
+        }
+    elif is_mapped_ncc_to_kcore:
+        expected_marker, expected_marker_address = v2_completion_marker(plan)
+        boundary_exact = all(
+            observation.boundary_mismatches == 0
+            for observation in observations
+        )
+        boundary_done = bool(words[rec["CONTROL_BOUNDARY"]] & 0x100)
+        boundary_marker = words[rec["COMPLETION_MARKER_BOUNDARY"]]
+        local_wait = plan.wait_kind == ncc_protocol.WaitKind.LOCAL_FENCE
+        marker_complete = boundary_marker == expected_marker
+        if (
+            words[rec["COMPLETION_MARKER_EXPECTED"]] != expected_marker
+            or words[rec["COMPLETION_MARKER_ADDRESS"]]
+            != expected_marker_address
+            or words[rec["COMPLETION_MARKER_FINAL"]] != expected_marker
+        ):
+            raise RuntimeError(
+                f"{case.name}: NCC-to-Kcore boundary control is malformed"
+            )
+        try:
+            boundary_state = classify_ncc_to_kcore_boundary(
+                local_wait=local_wait,
+                wait_cycles=words[rec["WAIT_CYCLES"]],
+                boundary_done=boundary_done,
+                marker_complete=marker_complete,
+                boundary_exact=boundary_exact,
+            )
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"{case.name}: NCC-to-Kcore boundary control is malformed"
+            ) from error
+        mapped_spm_boundary = {
+            "direction": "ncc-ne-tight-window-to-kcore-mapped-read",
+            "variant": "local-wait" if local_wait else "no-local-wait",
+            "issue_count": len(observations),
+            "tight_submission": True,
+            "requested_wait_cycles": words[rec["WAIT_CYCLES"]],
+            "boundary_task_done": boundary_done,
+            "boundary_pending_observed": not boundary_done,
+            "boundary_marker_expected": expected_marker,
+            "boundary_marker_actual": boundary_marker,
+            "boundary_marker_complete": marker_complete,
+            "boundary_exact": boundary_exact,
+            "boundary_state": boundary_state,
+            "boundary_control_distinguishing": (
+                boundary_state
+                != "naturally-completed-before-snapshot"
+            ),
+            "boundary_mismatches": sum(
+                observation.boundary_mismatches
+                for observation in observations
+            ),
+            "safety_drain_completed": True,
+            "final_exact": True,
+            **mapped_mismatches,
+        }
+    elif is_mapped_kcore_to_ncc:
+        preissue_wait_requested = bool(
+            plan.flags & ncc_protocol.PREISSUE_LOCAL_WAIT
+        )
+        preissue_wait_done = bool(
+            words[rec["FLAGS"]]
+            & ncc_protocol.PREISSUE_LOCAL_WAIT_DONE
+        )
+        preissue_wait_cycles = words[rec["PREISSUE_WAIT_CYCLES"]]
+        if (
+            preissue_wait_done != preissue_wait_requested
+            or (
+                preissue_wait_requested
+                and preissue_wait_cycles == 0
+            )
+            or (
+                not preissue_wait_requested
+                and preissue_wait_cycles != 0
+            )
+            or plan.wait_kind != ncc_protocol.WaitKind.BY_WORKER
+            or words[rec["WAIT_CYCLES"]] == 0
+            or any(
+                observation.boundary_mismatches
+                or observation.boundary_guard_mismatches
+                for observation in observations
+            )
+        ):
+            raise RuntimeError(
+                f"{case.name}: Kcore-to-NCC boundary control is malformed"
+            )
+        mapped_spm_boundary = {
+            "direction": "kcore-mapped-write-to-ncc-ct-read",
+            "variant": (
+                "preissue-local-wait-control"
+                if preissue_wait_requested
+                else "volatile-fence-sync-only"
+            ),
+            "preissue_local_wait_requested": preissue_wait_requested,
+            "preissue_local_wait_done": preissue_wait_done,
+            "preissue_local_wait_cycles": preissue_wait_cycles,
+            "terminal_wait_cycles": words[rec["WAIT_CYCLES"]],
+            "boundary_exact": True,
+            "final_exact": True,
+            **mapped_mismatches,
+        }
     constructor: dict[str, object] | None = None
     if case in V2_CONSTRUCTOR_CASES:
         address = words[rec["CONSTRUCTOR_ADDRESS"]]
@@ -3399,6 +3836,8 @@ def parse_record(
         result["wait_scope"] = wait_scope
     if subset_join is not None:
         result["subset_join"] = subset_join
+    if mapped_spm_boundary is not None:
+        result["mapped_spm_boundary"] = mapped_spm_boundary
     if constructor is not None:
         result["constructor"] = constructor
     if plan.is_strided_dependency_observation():
@@ -3573,6 +4012,7 @@ def case_sample_count(case: GenericProbeCase, repeat: int) -> int:
         V2_LARGE_OVERLAP_CASES
         + V2_ACTIVE_OCCUPANCY_CASES
         + V2_STRIDED_DEPENDENCY_CASES
+        + V2_MAPPED_SPM_BOUNDARY_CASES
     ):
         return repeat
     if case in (
@@ -4043,6 +4483,45 @@ def report_wait_overhead(
         )
 
 
+def report_mapped_spm_boundaries(
+    observations: list[dict[str, object]],
+) -> None:
+    grouped: dict[
+        tuple[str, int], dict[str, dict[str, object]]
+    ] = {}
+    for observation in observations:
+        case = observation.get("case")
+        boundary = observation.get("mapped_spm_boundary")
+        sample = observation.get("sample")
+        if (
+            not isinstance(case, dict)
+            or not isinstance(boundary, dict)
+            or type(sample) is not int
+        ):
+            raise RuntimeError("mapped-SPM boundary observation is malformed")
+        direction = boundary.get("direction")
+        variant = boundary.get("variant")
+        if not isinstance(direction, str) or not isinstance(variant, str):
+            raise RuntimeError("mapped-SPM boundary identity is malformed")
+        grouped.setdefault((direction, sample), {})[variant] = {
+            "case": case.get("name"),
+            **boundary,
+        }
+    for (direction, sample), variants in sorted(grouped.items()):
+        print(
+            "ncc_mapped_spm_boundary_pair: "
+            + json.dumps(
+                {
+                    "direction": direction,
+                    "sample": sample,
+                    "pair_complete": len(variants) == 2,
+                    "variants": variants,
+                },
+                sort_keys=True,
+            )
+        )
+
+
 def write_qualification(
     args: argparse.Namespace,
     package: pathlib.Path,
@@ -4175,6 +4654,8 @@ def main() -> int:
         report_active_occupancy(observations, args.repeat)
     if args.suite == "wait-overhead-manual":
         report_wait_overhead(observations)
+    if args.suite == "mapped-spm-boundary-observation":
+        report_mapped_spm_boundaries(observations)
     return 0
 
 

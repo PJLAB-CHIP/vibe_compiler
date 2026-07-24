@@ -11,23 +11,31 @@ REQUEST_MAGIC = 0x315145444D454D57
 RECORD_MAGIC = 0x314345444D454D57
 REQUEST_GUARD = 0xB5A4938271605F4E
 RECORD_GUARD = 0x32435465768798A9
-SCHEMA = 1
+SCHEMA = 3
 REQUEST_WORDS = 40
 RECORD_WORDS = 64
-RESOURCE_BYTES = 262144
+RESOURCE_BYTES = 2097152
 PAYLOAD_DATA_OFFSET = 4096
 OUTPUT_DATA_OFFSET = 4096
 OUTPUT_SINK0_OFFSET = 65536
 OUTPUT_SINK1_OFFSET = 73728
+OUTPUT_LAYOUT_ALIGNMENT = 256
 RESOURCE_CANARY = 0xA5
 SPM_GUARD = 0x6D
 SPM_GUARD_BYTES = 64
-SPM_PAIR_SLOT_BYTES = 4096
+SPM_PAIR_SLOT_BYTES = 2560
+SPM_ALLOCATABLE_BEGIN = 0x10000
+SPM_ALLOCATABLE_END = 0x2F0000
+PAYLOAD_SPM_SEED_OFFSET = 135168
+PAYLOAD_SPM_SEED_BYTES = 65536 + 2 * SPM_GUARD_BYTES
+PAYLOAD_SPM_SCRATCH0_OFFSET = 204800
+PAYLOAD_SPM_SCRATCH1_OFFSET = 212992
 
 KIND_DMA = 0
 KIND_ENGINE_ACCESS = 1
 KIND_ADDRESS_RELATION = 2
 KIND_ENGINE_PAIR = 3
+KIND_PARALLEL_PAIR = 4
 
 ENGINE_CT = 0
 ENGINE_NE = 1
@@ -77,8 +85,37 @@ FMT_FP16 = 2
 FMT_UINT8 = 8
 
 SPM_BASE = 0x100000
-SPM_PAIR_RELATIVE_OFFSETS = (8192, 4352, 65536)
+SPM_GENERAL_PAIR_RELATIVE_OFFSETS = (8192, 4352, 65536)
+SPM_BANK_PERIOD_RELATIVE_OFFSETS = tuple(
+    4096 + index * 256 for index in range(9)
+)
+SPM_PAIR_RELATIVE_OFFSETS = tuple(
+    sorted(
+        set(SPM_GENERAL_PAIR_RELATIVE_OFFSETS)
+        | set(SPM_BANK_PERIOD_RELATIVE_OFFSETS)
+    )
+)
+SPM_PARALLEL_ALIGNMENT_PHASES = (0, 64, 128, 192)
+SPM_PARALLEL_ENGINES = (ENGINE_CT, ENGINE_RDMA)
 SPM_BANK_PMU_REPETITIONS = 3
+PERF_MAX_ROUNDS = 4
+PERF_MAX_BUFFERS = 2
+PERF_READ0_OFFSET = 0x100
+PERF_READ1_OFFSET = 0x20100
+PERF_WRITE_OFFSET = 0x40100
+PERF_DISJOINT_A = 0x10100
+PERF_DISJOINT_B = 0x110100
+PERF_PAYLOAD_BASE = 0x20000
+PERF_PAYLOAD_LANE_STRIDE = 0x80000
+PERF_PAYLOAD_READ0_OFFSET = 0
+PERF_PAYLOAD_READ1_OFFSET = 0x20000
+PERF_PAYLOAD_RDMA_OFFSET = 0x40000
+PERF_PAYLOAD_GUARD_SEED_OFFSET = 0x140000
+PERF_OUTPUT_SINK_BASE = 0x10000
+PERF_OUTPUT_RESULT_BASE = 0x90000
+PERF_OUTPUT_LANE_STRIDE = 0x40000
+PERF_OUTPUT_GUARD_BASE = 0x190000
+PERF_OUTPUT_GUARD_LANE_STRIDE = 0x100
 
 REQ = {
     "MAGIC": 0,
@@ -115,6 +152,11 @@ REQ = {
     "RESOURCE_BYTES": 31,
     "PAYLOAD_DATA_OFFSET": 32,
     "OUTPUT_DATA_OFFSET": 33,
+    "WORKER_A": 34,
+    "WORKER_B": 35,
+    "ROUNDS": 36,
+    "BUFFER_COUNT": 37,
+    "ISSUE_ORDER": 38,
     "GUARD": 39,
 }
 REC = {
@@ -164,6 +206,23 @@ REC = {
     "OUTPUT_DATA_OFFSET": 43,
     "REQUEST_GUARD": 44,
     "FLAGS": 45,
+    "FULL_EXEC_DELTA": 46,
+    "PLAN_CYCLES": 47,
+    "PMU_ENABLE": 48,
+    "SERIAL_MODE": 49,
+    "STABLE_BEFORE": 50,
+    "STABLE_AFTER": 51,
+    "WORKER_A": 52,
+    "WORKER_B": 53,
+    "ROUNDS": 54,
+    "BUFFER_COUNT": 55,
+    "ISSUE_ORDER": 56,
+    "LANE_A_WORKER_INST_DELTA": 57,
+    "LANE_B_WORKER_INST_DELTA": 58,
+    "LANE_A_WORKER_BLOCKING_DELTA": 59,
+    "LANE_B_WORKER_BLOCKING_DELTA": 60,
+    "WORKER_MASK": 61,
+    "CONTROL_FINAL": 62,
     "RECORD_GUARD": 63,
 }
 
@@ -228,6 +287,12 @@ class MemoryCase:
     output_bytes: int
     expected_counts: tuple[int, int, int, int, int]
     repetitions: int = 1
+    sweep: str = "general"
+    worker_a: int = 0
+    worker_b: int = 0
+    rounds: int = 1
+    buffer_count: int = 1
+    issue_order: int = 0
 
     @property
     def is_exact(self) -> bool:
@@ -263,6 +328,12 @@ class MemoryCase:
             "spm_a": self.spm_a,
             "spm_b": self.spm_b,
             "relative_spm_offset": self.spm_b - self.spm_a,
+            "spm_base_phase_mod_256": self.spm_a % 256,
+            "sweep": self.sweep,
+            "workers": [self.worker_a, self.worker_b],
+            "rounds": self.rounds,
+            "buffer_count": self.buffer_count,
+            "issue_order": self.issue_order,
             "descriptor": dataclasses.asdict(self.descriptor),
             "compact_bytes": self.descriptor.compact_bytes,
             "envelope_bytes": self.descriptor.envelope_bytes,
@@ -499,10 +570,11 @@ def _pair_case(
         512,
         _counts(engine_a, engine_b),
         repetitions=SPM_BANK_PMU_REPETITIONS,
+        sweep="general-offset",
     )
 
 
-PAIR_CASES = tuple(
+GENERAL_PAIR_CASES = tuple(
     _pair_case(
         39 + offset_index * 20 + pair_index * 2 + schedule,
         engine_a,
@@ -511,7 +583,7 @@ PAIR_CASES = tuple(
         relative_offset,
     )
     for offset_index, relative_offset in enumerate(
-        SPM_PAIR_RELATIVE_OFFSETS
+        SPM_GENERAL_PAIR_RELATIVE_OFFSETS
     )
     for pair_index, (engine_a, engine_b) in enumerate(
         (left, right)
@@ -521,7 +593,283 @@ PAIR_CASES = tuple(
     for schedule in (SCHEDULE_SERIAL, SCHEDULE_WINDOW)
 )
 
-CATALOG = DMA_CASES + ENGINE_ACCESS_CASES + RELATION_CASES + PAIR_CASES
+
+def _focused_pair_case(
+    case_id: int,
+    relative_offset: int,
+    base_phase: int,
+    schedule: int,
+    sweep: str,
+) -> MemoryCase:
+    engine_a, engine_b = SPM_PARALLEL_ENGINES
+    schedule_name = (
+        "serial" if schedule == SCHEDULE_SERIAL else "window"
+    )
+    if sweep == "bank-period":
+        name = (
+            "spm-bank-period-ct-rdma-"
+            f"offset-{relative_offset}-{schedule_name}"
+        )
+    else:
+        name = (
+            "spm-parallel-alignment-ct-rdma-"
+            f"base-mod256-{base_phase}-{schedule_name}"
+        )
+    return MemoryCase(
+        case_id,
+        name,
+        "spm-bank-engine-pair",
+        KIND_ENGINE_PAIR,
+        engine_a,
+        engine_b,
+        schedule,
+        EFFECT_NONE,
+        RELATION_DISJOINT,
+        ORACLE_EXACT,
+        FMT_UINT8,
+        0,
+        0,
+        SPM_BASE + base_phase,
+        SPM_BASE + base_phase + relative_offset,
+        Descriptor(256),
+        512,
+        _counts(engine_a, engine_b),
+        repetitions=SPM_BANK_PMU_REPETITIONS,
+        sweep=sweep,
+    )
+
+
+_GENERAL_CASE_COUNT = (
+    len(DMA_CASES)
+    + len(ENGINE_ACCESS_CASES)
+    + len(RELATION_CASES)
+    + len(GENERAL_PAIR_CASES)
+)
+_ADDITIONAL_BANK_OFFSETS = tuple(
+    offset
+    for offset in SPM_BANK_PERIOD_RELATIVE_OFFSETS
+    if offset not in SPM_GENERAL_PAIR_RELATIVE_OFFSETS
+)
+BANK_PERIOD_PAIR_CASES = tuple(
+    _focused_pair_case(
+        _GENERAL_CASE_COUNT + offset_index * 2 + schedule,
+        relative_offset,
+        0,
+        schedule,
+        "bank-period",
+    )
+    for offset_index, relative_offset in enumerate(_ADDITIONAL_BANK_OFFSETS)
+    for schedule in (SCHEDULE_SERIAL, SCHEDULE_WINDOW)
+)
+_ALIGNMENT_CASE_BASE = _GENERAL_CASE_COUNT + len(BANK_PERIOD_PAIR_CASES)
+ALIGNMENT_PAIR_CASES = tuple(
+    _focused_pair_case(
+        _ALIGNMENT_CASE_BASE + phase_index * 2 + schedule,
+        8192,
+        base_phase,
+        schedule,
+        "alignment-phase",
+    )
+    for phase_index, base_phase in enumerate(
+        phase
+        for phase in SPM_PARALLEL_ALIGNMENT_PHASES
+        if phase != 0
+    )
+    for schedule in (SCHEDULE_SERIAL, SCHEDULE_WINDOW)
+)
+PAIR_CASES = (
+    GENERAL_PAIR_CASES + BANK_PERIOD_PAIR_CASES + ALIGNMENT_PAIR_CASES
+)
+
+
+def _is_parallel_address_sweep_case(case: MemoryCase) -> bool:
+    if (
+        case.kind != KIND_ENGINE_PAIR
+        or (case.engine_a, case.engine_b) != SPM_PARALLEL_ENGINES
+    ):
+        return False
+    relative_offset = case.spm_b - case.spm_a
+    phase = case.spm_a % 256
+    return (
+        phase == 0
+        and relative_offset in SPM_BANK_PERIOD_RELATIVE_OFFSETS
+    ) or (
+        relative_offset == 8192
+        and phase in SPM_PARALLEL_ALIGNMENT_PHASES
+    )
+
+
+PARALLEL_ADDRESS_SWEEP_CASES = tuple(
+    case for case in PAIR_CASES if _is_parallel_address_sweep_case(case)
+)
+
+
+def _parallel_pair_transfer(engine_a: int, engine_b: int) -> int:
+    if ENGINE_NE in (engine_a, engine_b) or ENGINE_CT in (
+        engine_a,
+        engine_b,
+    ):
+        return 16384
+    return 65536
+
+
+def _parallel_pair_case(
+    case_id: int,
+    engine_a: int,
+    engine_b: int,
+    schedule: int,
+    *,
+    transfer: int,
+    relation: int = RELATION_DISJOINT,
+    effect: int = EFFECT_NONE,
+    worker_a: int = 0,
+    worker_b: int = 0,
+    rounds: int = PERF_MAX_ROUNDS,
+    buffer_count: int = PERF_MAX_BUFFERS,
+    issue_order: int = 0,
+    sweep: str = "sustained-pair",
+) -> MemoryCase:
+    schedule_name = (
+        "serial" if schedule == SCHEDULE_SERIAL else "window"
+    )
+    order_name = "a-b" if issue_order == 0 else "b-a"
+    relation_name = RELATION_NAMES[relation]
+    worker_name = (
+        f"workers-{worker_a}-{worker_b}"
+        if worker_a != worker_b
+        else f"worker-{worker_a}"
+    )
+    if relation == RELATION_DISJOINT:
+        spm_b = PERF_DISJOINT_B
+    else:
+        # RDMA lane A writes at WRITE; WDMA lane B reads at READ0.
+        spm_b = (
+            PERF_DISJOINT_A
+            + PERF_WRITE_OFFSET
+            - PERF_READ0_OFFSET
+        )
+        if relation == RELATION_PARTIAL:
+            spm_b += transfer // 2
+    return MemoryCase(
+        case_id,
+        (
+            f"parallel-{ENGINE_NAMES[engine_a].lower()}-"
+            f"{ENGINE_NAMES[engine_b].lower()}-{transfer // 1024}k-"
+            f"{relation_name}-{order_name}-{worker_name}-{schedule_name}"
+        ),
+        "multi-engine-parallel-window",
+        KIND_PARALLEL_PAIR,
+        engine_a,
+        engine_b,
+        schedule,
+        effect,
+        relation,
+        ORACLE_EXACT,
+        (
+            FMT_FP16
+            if ENGINE_CT in (engine_a, engine_b)
+            or ENGINE_NE in (engine_a, engine_b)
+            else FMT_UINT8
+        ),
+        0,
+        0,
+        PERF_DISJOINT_A,
+        spm_b,
+        Descriptor(transfer),
+        2 * rounds * transfer,
+        tuple(
+            rounds * value
+            for value in _counts(engine_a, engine_b)
+        ),
+        repetitions=SPM_BANK_PMU_REPETITIONS,
+        sweep=sweep,
+        worker_a=worker_a,
+        worker_b=worker_b,
+        rounds=rounds,
+        buffer_count=buffer_count,
+        issue_order=issue_order,
+    )
+
+
+_PARALLEL_CASE_BASE = (
+    len(DMA_CASES)
+    + len(ENGINE_ACCESS_CASES)
+    + len(RELATION_CASES)
+    + len(PAIR_CASES)
+)
+_PARALLEL_ENGINE_PAIRS = tuple(
+    (left, right)
+    for left in range(5)
+    for right in range(left + 1, 5)
+)
+SUSTAINED_PARALLEL_PAIR_CASES = tuple(
+    _parallel_pair_case(
+        _PARALLEL_CASE_BASE + pair_index * 2 + schedule,
+        engine_a,
+        engine_b,
+        schedule,
+        transfer=_parallel_pair_transfer(engine_a, engine_b),
+    )
+    for pair_index, (engine_a, engine_b) in enumerate(
+        _PARALLEL_ENGINE_PAIRS
+    )
+    for schedule in (SCHEDULE_SERIAL, SCHEDULE_WINDOW)
+)
+_CROSS_WORKER_CASE_BASE = (
+    _PARALLEL_CASE_BASE + len(SUSTAINED_PARALLEL_PAIR_CASES)
+)
+CROSS_WORKER_PARALLEL_PAIR_CASES = tuple(
+    _parallel_pair_case(
+        _CROSS_WORKER_CASE_BASE + schedule,
+        ENGINE_CT,
+        ENGINE_RDMA,
+        schedule,
+        transfer=16384,
+        worker_a=0,
+        worker_b=1,
+        sweep="cross-worker",
+    )
+    for schedule in (SCHEDULE_SERIAL, SCHEDULE_WINDOW)
+)
+_DEPENDENCY_CASE_BASE = (
+    _CROSS_WORKER_CASE_BASE + len(CROSS_WORKER_PARALLEL_PAIR_CASES)
+)
+DEPENDENCY_PARALLEL_PAIR_CASES = tuple(
+    _parallel_pair_case(
+        _DEPENDENCY_CASE_BASE
+        + relation_index * 4
+        + issue_order * 2
+        + schedule,
+        ENGINE_RDMA,
+        ENGINE_WDMA,
+        schedule,
+        transfer=4096,
+        relation=relation,
+        effect=EFFECT_RAW if issue_order == 0 else EFFECT_WAR,
+        rounds=1,
+        buffer_count=1,
+        issue_order=issue_order,
+        sweep="dependency-control",
+    )
+    for relation_index, relation in enumerate(
+        (RELATION_DISJOINT, RELATION_EXACT, RELATION_PARTIAL)
+    )
+    for issue_order in (0, 1)
+    for schedule in (SCHEDULE_SERIAL, SCHEDULE_WINDOW)
+)
+PARALLEL_PAIR_CASES = (
+    SUSTAINED_PARALLEL_PAIR_CASES
+    + CROSS_WORKER_PARALLEL_PAIR_CASES
+    + DEPENDENCY_PARALLEL_PAIR_CASES
+)
+
+CATALOG = (
+    DMA_CASES
+    + ENGINE_ACCESS_CASES
+    + RELATION_CASES
+    + PAIR_CASES
+    + PARALLEL_PAIR_CASES
+)
 CASES_BY_ID = {case.case_id: case for case in CATALOG}
 CASES_BY_NAME = {case.name: case for case in CATALOG}
 
@@ -613,12 +961,463 @@ class CasePayload:
     exact_ranges: tuple[tuple[int, int], ...]
 
 
+def validate_pair_case(case: MemoryCase) -> None:
+    if case.kind != KIND_ENGINE_PAIR:
+        return
+    relative_offset = case.spm_b - case.spm_a
+    phase = case.spm_a % 256
+    general = (
+        phase == 0
+        and relative_offset in SPM_GENERAL_PAIR_RELATIVE_OFFSETS
+    )
+    bank_period = (
+        (case.engine_a, case.engine_b) == SPM_PARALLEL_ENGINES
+        and phase == 0
+        and relative_offset in SPM_BANK_PERIOD_RELATIVE_OFFSETS
+    )
+    alignment_phase = (
+        (case.engine_a, case.engine_b) == SPM_PARALLEL_ENGINES
+        and relative_offset == 8192
+        and phase in SPM_PARALLEL_ALIGNMENT_PHASES
+    )
+    if (
+        case.engine_a >= case.engine_b
+        or case.descriptor != Descriptor(256)
+        or case.output_bytes != 512
+        or not (general or bank_period or alignment_phase)
+    ):
+        raise RuntimeError(
+            f"{case.name}: unsupported SPM parallel address coordinate"
+        )
+    guarded_ranges = tuple(
+        (
+            base - SPM_GUARD_BYTES,
+            base + SPM_PAIR_SLOT_BYTES + SPM_GUARD_BYTES,
+        )
+        for base in (case.spm_a, case.spm_b)
+    )
+    if any(
+        begin < SPM_ALLOCATABLE_BEGIN
+        or end > SPM_ALLOCATABLE_END
+        or begin >= end
+        for begin, end in guarded_ranges
+    ):
+        raise RuntimeError(
+            f"{case.name}: guarded SPM range leaves the allocatable arena"
+        )
+    if guarded_ranges[0][1] > guarded_ranges[1][0]:
+        raise RuntimeError(
+            f"{case.name}: guarded SPM lane ranges overlap"
+        )
+
+
+def _parallel_active_range(
+    case: MemoryCase, lane: int
+) -> tuple[int, int]:
+    engine = (case.engine_a, case.engine_b)[lane]
+    base = (case.spm_a, case.spm_b)[lane]
+    transfer = case.descriptor.compact_bytes
+    if engine == ENGINE_CT:
+        return (
+            base + PERF_READ0_OFFSET,
+            max(
+                base
+                + PERF_READ1_OFFSET
+                + case.buffer_count * transfer,
+                base + PERF_WRITE_OFFSET + case.rounds * transfer,
+            ),
+        )
+    if engine == ENGINE_NE:
+        return (
+            base + PERF_READ0_OFFSET,
+            max(
+                base + PERF_READ1_OFFSET + 32768,
+                base + PERF_WRITE_OFFSET + case.rounds * transfer,
+            ),
+        )
+    if engine == ENGINE_RDMA:
+        return (
+            base + PERF_WRITE_OFFSET,
+            base + PERF_WRITE_OFFSET + case.rounds * transfer,
+        )
+    if engine == ENGINE_WDMA:
+        return (
+            base + PERF_READ0_OFFSET,
+            base + PERF_READ0_OFFSET + case.buffer_count * transfer,
+        )
+    if engine == ENGINE_TDMA:
+        return (
+            base + PERF_WRITE_OFFSET,
+            base + PERF_WRITE_OFFSET + case.rounds * transfer,
+        )
+    raise RuntimeError(f"{case.name}: invalid parallel engine")
+
+
+def validate_parallel_pair_case(case: MemoryCase) -> None:
+    if case.kind != KIND_PARALLEL_PAIR:
+        return
+    transfer = case.descriptor.compact_bytes
+    if (
+        case.engine_a == case.engine_b
+        or case.engine_a not in ENGINE_NAMES
+        or case.engine_b not in ENGINE_NAMES
+        or case.schedule not in (SCHEDULE_SERIAL, SCHEDULE_WINDOW)
+        or case.oracle != ORACLE_EXACT
+        or transfer not in (4096, 16384, 65536)
+        or not 1 <= case.rounds <= PERF_MAX_ROUNDS
+        or not 1 <= case.buffer_count <= PERF_MAX_BUFFERS
+        or case.issue_order not in (0, 1)
+        or case.worker_a not in range(3)
+        or case.worker_b not in range(3)
+        or case.output_bytes != 2 * case.rounds * transfer
+        or case.expected_counts
+        != tuple(
+            case.rounds * value
+            for value in _counts(case.engine_a, case.engine_b)
+        )
+    ):
+        raise RuntimeError(f"{case.name}: invalid parallel pair contract")
+    if case.sweep == "dependency-control":
+        if (
+            (case.engine_a, case.engine_b)
+            != (ENGINE_RDMA, ENGINE_WDMA)
+            or transfer != 4096
+            or case.rounds != 1
+            or case.buffer_count != 1
+            or case.relation
+            not in (RELATION_DISJOINT, RELATION_EXACT, RELATION_PARTIAL)
+            or case.effect
+            != (EFFECT_RAW if case.issue_order == 0 else EFFECT_WAR)
+        ):
+            raise RuntimeError(
+                f"{case.name}: invalid dependency control"
+            )
+    elif (
+        case.relation != RELATION_DISJOINT
+        or case.effect != EFFECT_NONE
+        or case.issue_order != 0
+        or case.rounds != PERF_MAX_ROUNDS
+        or case.buffer_count != PERF_MAX_BUFFERS
+    ):
+        raise RuntimeError(f"{case.name}: invalid sustained pair contract")
+    active = tuple(_parallel_active_range(case, lane) for lane in range(2))
+    if any(
+        begin < SPM_ALLOCATABLE_BEGIN + SPM_GUARD_BYTES
+        or end + SPM_GUARD_BYTES > SPM_ALLOCATABLE_END
+        or begin >= end
+        for begin, end in active
+    ):
+        raise RuntimeError(f"{case.name}: parallel SPM range is invalid")
+    if (
+        case.relation == RELATION_DISJOINT
+        and active[0][1] + SPM_GUARD_BYTES
+        > active[1][0] - SPM_GUARD_BYTES
+    ):
+        raise RuntimeError(
+            f"{case.name}: disjoint parallel lanes overlap"
+        )
+
+
+def spm_slot_spans(case: MemoryCase) -> tuple[int, ...]:
+    if case.kind == KIND_DMA:
+        return (case.descriptor.compact_bytes,)
+    if case.kind == KIND_ENGINE_ACCESS:
+        return (0x6000 if case.descriptor.compact_bytes > 512 else 0x1000,)
+    if case.kind == KIND_ENGINE_PAIR:
+        return (SPM_PAIR_SLOT_BYTES, SPM_PAIR_SLOT_BYTES)
+    if case.kind == KIND_PARALLEL_PAIR:
+        # Parallel rows capture the two exterior guard bands, not a
+        # multi-megabyte full arena dump.
+        return (0, 0)
+    return (case.output_bytes,)
+
+
+def output_result_ranges(
+    case: MemoryCase,
+) -> tuple[tuple[int, int], ...]:
+    if case.kind == KIND_DMA:
+        begin = OUTPUT_DATA_OFFSET + case.dst_ddr_offset
+        return ((begin, begin + case.descriptor.envelope_bytes),)
+    if case.kind in {KIND_ENGINE_ACCESS, KIND_ENGINE_PAIR}:
+        engines = (
+            (case.engine_a,)
+            if case.kind == KIND_ENGINE_ACCESS
+            else (case.engine_a, case.engine_b)
+        )
+        transfer = (
+            case.descriptor.compact_bytes
+            if case.kind == KIND_ENGINE_ACCESS
+            else 256
+        )
+        ranges: list[tuple[int, int]] = []
+        for lane, engine in enumerate(engines):
+            output_begin = OUTPUT_DATA_OFFSET + (
+                lane * 256 if case.kind == KIND_ENGINE_PAIR else 0
+            )
+            ranges.append((output_begin, output_begin + transfer))
+            if engine == ENGINE_WDMA:
+                sink = (
+                    OUTPUT_SINK0_OFFSET
+                    if lane == 0
+                    else OUTPUT_SINK1_OFFSET
+                )
+                ranges.append((sink, sink + transfer))
+        return tuple(ranges)
+    if case.kind == KIND_PARALLEL_PAIR:
+        transfer = case.descriptor.compact_bytes
+        ranges = []
+        for lane, engine in enumerate((case.engine_a, case.engine_b)):
+            result_begin = (
+                PERF_OUTPUT_RESULT_BASE
+                + lane * PERF_OUTPUT_LANE_STRIDE
+            )
+            ranges.append(
+                (result_begin, result_begin + case.rounds * transfer)
+            )
+            if engine == ENGINE_WDMA:
+                sink_begin = (
+                    PERF_OUTPUT_SINK_BASE
+                    + lane * PERF_OUTPUT_LANE_STRIDE
+                )
+                ranges.append(
+                    (sink_begin, sink_begin + case.rounds * transfer)
+                )
+        return tuple(ranges)
+    ranges = [
+        (OUTPUT_DATA_OFFSET, OUTPUT_DATA_OFFSET + case.output_bytes)
+    ]
+    if case.engine_a == ENGINE_WDMA:
+        ranges.append((OUTPUT_SINK0_OFFSET, OUTPUT_SINK0_OFFSET + 4096))
+    if case.engine_b == ENGINE_WDMA:
+        ranges.append((OUTPUT_SINK1_OFFSET, OUTPUT_SINK1_OFFSET + 4096))
+    return tuple(ranges)
+
+
+def _align_output_offset(offset: int) -> int:
+    return (
+        offset + OUTPUT_LAYOUT_ALIGNMENT - 1
+    ) // OUTPUT_LAYOUT_ALIGNMENT * OUTPUT_LAYOUT_ALIGNMENT
+
+
+def spm_dump_ranges(case: MemoryCase) -> tuple[tuple[int, int], ...]:
+    if case.kind == KIND_PARALLEL_PAIR:
+        return tuple(
+            (
+                PERF_OUTPUT_GUARD_BASE
+                + lane * PERF_OUTPUT_GUARD_LANE_STRIDE,
+                PERF_OUTPUT_GUARD_BASE
+                + lane * PERF_OUTPUT_GUARD_LANE_STRIDE
+                + 2 * SPM_GUARD_BYTES,
+            )
+            for lane in range(2)
+        )
+    occupied = output_result_ranges(case)
+    cursor = _align_output_offset(
+        max(RECORD_WORDS * 8, *(end for _, end in occupied))
+    )
+    ranges: list[tuple[int, int]] = []
+    for span in spm_slot_spans(case):
+        end = cursor + span + 2 * SPM_GUARD_BYTES
+        if end > RESOURCE_BYTES:
+            raise RuntimeError(
+                f"{case.name}: dynamic SPM dump leaves output resource"
+            )
+        ranges.append((cursor, end))
+        cursor = _align_output_offset(end)
+    return tuple(ranges)
+
+
+def _perf_payload_offset(
+    lane: int, section: int, index: int, transfer: int
+) -> int:
+    return (
+        PERF_PAYLOAD_BASE
+        + lane * PERF_PAYLOAD_LANE_STRIDE
+        + section
+        + index * transfer
+    )
+
+
+def _perf_read0_bytes(
+    engine: int, seed: int, lane: int, buffer: int, transfer: int
+) -> bytes:
+    if engine in (ENGINE_CT, ENGINE_NE):
+        value = float(1 + seed + lane + buffer)
+        return struct.pack("<e", value) * (transfer // 2)
+    return _pattern(seed + buffer, 110 + engine * 7 + lane, transfer)
+
+
+def _perf_read1_bytes(
+    engine: int, seed: int, lane: int, buffer: int, transfer: int
+) -> bytes:
+    if engine == ENGINE_CT:
+        value = float(2 + (seed & 1))
+        return struct.pack("<e", value) * (transfer // 2)
+    if engine == ENGINE_NE:
+        identity = bytearray(32768)
+        one = struct.pack("<e", 1.0)
+        for index in range(128):
+            begin = (index * 128 + index) * 2
+            identity[begin : begin + 2] = one
+        return bytes(identity)
+    return bytes(transfer)
+
+
+def _perf_engine_result(
+    engine: int,
+    seed: int,
+    lane: int,
+    round_index: int,
+    buffer: int,
+    transfer: int,
+) -> bytes:
+    if engine == ENGINE_CT:
+        lhs = float(1 + seed + lane + buffer)
+        rhs = float(2 + (seed & 1))
+        return struct.pack("<e", lhs + rhs) * (transfer // 2)
+    if engine == ENGINE_NE:
+        return _perf_read0_bytes(engine, seed, lane, buffer, transfer)
+    if engine == ENGINE_RDMA:
+        return _pattern(
+            seed + round_index, 170 + lane * 11, transfer
+        )
+    if engine == ENGINE_WDMA:
+        return _perf_read0_bytes(engine, seed, lane, buffer, transfer)
+    if engine == ENGINE_TDMA:
+        return bytes([(seed + lane + round_index + 1) & 0xFF]) * transfer
+    raise RuntimeError("invalid parallel engine")
+
+
+def _overlay_range(
+    destination: bytearray,
+    destination_begin: int,
+    source: bytes,
+    source_begin: int,
+) -> None:
+    begin = max(destination_begin, source_begin)
+    end = min(
+        destination_begin + len(destination),
+        source_begin + len(source),
+    )
+    if begin >= end:
+        return
+    destination[begin - destination_begin : end - destination_begin] = (
+        source[begin - source_begin : end - source_begin]
+    )
+
+
+def _build_parallel_payload(
+    case: MemoryCase,
+    seed: int,
+    payload: bytearray,
+    expected: bytearray,
+    allowed: list[tuple[int, int]],
+    exact: list[tuple[int, int]],
+) -> None:
+    transfer = case.descriptor.compact_bytes
+    engines = (case.engine_a, case.engine_b)
+    lane_results: list[list[bytes]] = [[], []]
+    for lane, engine in enumerate(engines):
+        for buffer in range(case.buffer_count):
+            read0 = _perf_read0_bytes(
+                engine, seed, lane, buffer, transfer
+            )
+            begin = _perf_payload_offset(
+                lane, PERF_PAYLOAD_READ0_OFFSET, buffer, transfer
+            )
+            payload[begin : begin + len(read0)] = read0
+            read1 = _perf_read1_bytes(
+                engine, seed, lane, buffer, transfer
+            )
+            read1_index = 0 if engine == ENGINE_NE else buffer
+            if engine == ENGINE_NE and buffer != 0:
+                continue
+            begin = _perf_payload_offset(
+                lane, PERF_PAYLOAD_READ1_OFFSET, read1_index, transfer
+            )
+            payload[begin : begin + len(read1)] = read1
+        for round_index in range(case.rounds):
+            buffer = round_index % case.buffer_count
+            result = _perf_engine_result(
+                engine,
+                seed,
+                lane,
+                round_index,
+                buffer,
+                transfer,
+            )
+            lane_results[lane].append(result)
+            if engine == ENGINE_RDMA:
+                begin = _perf_payload_offset(
+                    lane,
+                    PERF_PAYLOAD_RDMA_OFFSET,
+                    round_index,
+                    transfer,
+                )
+                payload[begin : begin + transfer] = result
+
+    if case.sweep == "dependency-control":
+        rdma = lane_results[0][0]
+        wdma_initial = lane_results[1][0]
+        rdma_begin = case.spm_a + PERF_WRITE_OFFSET
+        wdma_begin = case.spm_b + PERF_READ0_OFFSET
+        wdma_final = bytearray(wdma_initial)
+        _overlay_range(wdma_final, wdma_begin, rdma, rdma_begin)
+        lane_results[1][0] = bytes(wdma_final)
+        sink_value = (
+            bytes(wdma_final)
+            if case.issue_order == 0
+            else wdma_initial
+        )
+    else:
+        sink_value = b""
+
+    for lane, engine in enumerate(engines):
+        result_begin = (
+            PERF_OUTPUT_RESULT_BASE + lane * PERF_OUTPUT_LANE_STRIDE
+        )
+        result = b"".join(lane_results[lane])
+        expected[result_begin : result_begin + len(result)] = result
+        allowed.append((result_begin, result_begin + len(result)))
+        exact.append((result_begin, result_begin + len(result)))
+        if engine == ENGINE_WDMA:
+            sink_begin = (
+                PERF_OUTPUT_SINK_BASE + lane * PERF_OUTPUT_LANE_STRIDE
+            )
+            if case.sweep == "dependency-control":
+                sinks = sink_value
+            else:
+                sinks = b"".join(
+                    _perf_engine_result(
+                        engine,
+                        seed,
+                        lane,
+                        round_index,
+                        round_index % case.buffer_count,
+                        transfer,
+                    )
+                    for round_index in range(case.rounds)
+                )
+            expected[sink_begin : sink_begin + len(sinks)] = sinks
+            allowed.append((sink_begin, sink_begin + len(sinks)))
+            exact.append((sink_begin, sink_begin + len(sinks)))
+
+    for begin, end in spm_dump_ranges(case):
+        expected[begin:end] = bytes([SPM_GUARD]) * (end - begin)
+
+
 def build_case_payload(case: MemoryCase, sample: int = 0) -> CasePayload:
+    validate_pair_case(case)
+    validate_parallel_pair_case(case)
     seed = sample + 1
     payload = bytearray([RESOURCE_CANARY] * RESOURCE_BYTES)
     expected = bytearray([RESOURCE_CANARY] * RESOURCE_BYTES)
     allowed: list[tuple[int, int]] = []
     exact: list[tuple[int, int]] = []
+    payload[
+        PAYLOAD_SPM_SEED_OFFSET :
+        PAYLOAD_SPM_SEED_OFFSET + PAYLOAD_SPM_SEED_BYTES
+    ] = bytes([SPM_GUARD]) * PAYLOAD_SPM_SEED_BYTES
 
     if case.kind == KIND_DMA:
         compact = _pattern(seed, 1, case.descriptor.compact_bytes)
@@ -670,11 +1469,38 @@ def build_case_payload(case: MemoryCase, sample: int = 0) -> CasePayload:
                 expected[sink : sink + transfer] = result[:transfer]
                 allowed.append((sink, sink + transfer))
                 exact.append((sink, sink + transfer))
+    elif case.kind == KIND_PARALLEL_PAIR:
+        payload[
+            PERF_PAYLOAD_GUARD_SEED_OFFSET :
+            PERF_PAYLOAD_GUARD_SEED_OFFSET + 65536
+        ] = bytes([SPM_GUARD]) * 65536
+        _build_parallel_payload(
+            case, seed, payload, expected, allowed, exact
+        )
     else:
+        relation_seed = bytes(
+            (sample * 17 + index * 13 + 5) & 0xFF
+            for index in range(case.output_bytes)
+        )
+        payload[
+            PAYLOAD_SPM_SEED_OFFSET + SPM_GUARD_BYTES :
+            PAYLOAD_SPM_SEED_OFFSET
+            + SPM_GUARD_BYTES
+            + case.output_bytes
+        ] = relation_seed
         for lane in range(2):
             source = _pattern(seed, 80 + lane, 4096)
             begin = PAYLOAD_DATA_OFFSET + lane * 16384
             payload[begin : begin + len(source)] = source
+        if case.relation == RELATION_STRIDED:
+            payload[
+                PAYLOAD_SPM_SCRATCH0_OFFSET :
+                PAYLOAD_SPM_SCRATCH0_OFFSET + 8192
+            ] = bytes([0x39]) * 8192
+            payload[
+                PAYLOAD_SPM_SCRATCH1_OFFSET :
+                PAYLOAD_SPM_SCRATCH1_OFFSET + 8192
+            ] = bytes([0xC7]) * 8192
         allowed.append(
             (OUTPUT_DATA_OFFSET, OUTPUT_DATA_OFFSET + case.output_bytes)
         )
@@ -686,6 +1512,10 @@ def build_case_payload(case: MemoryCase, sample: int = 0) -> CasePayload:
             allowed.append(
                 (OUTPUT_SINK1_OFFSET, OUTPUT_SINK1_OFFSET + 4096)
             )
+    result_ranges = output_result_ranges(case)
+    if tuple(allowed) != result_ranges:
+        raise RuntimeError(f"{case.name}: output range contract drifted")
+    allowed.extend(spm_dump_ranges(case))
 
     words = [0] * REQUEST_WORDS
     counts = case.expected_counts
@@ -724,6 +1554,11 @@ def build_case_payload(case: MemoryCase, sample: int = 0) -> CasePayload:
         "RESOURCE_BYTES": RESOURCE_BYTES,
         "PAYLOAD_DATA_OFFSET": PAYLOAD_DATA_OFFSET,
         "OUTPUT_DATA_OFFSET": OUTPUT_DATA_OFFSET,
+        "WORKER_A": case.worker_a,
+        "WORKER_B": case.worker_b,
+        "ROUNDS": case.rounds,
+        "BUFFER_COUNT": case.buffer_count,
+        "ISSUE_ORDER": case.issue_order,
         "GUARD": REQUEST_GUARD,
     }
     for key, value in values.items():
@@ -745,5 +1580,6 @@ CALIBRATION_LEAF_BINDINGS = {
     "spm-five-engine-access": ENGINE_ACCESS_CASES,
     "spm-exact-partial-adjacent-disjoint-strided": RELATION_CASES,
     "spm-bank-engine-pair-controls": PAIR_CASES,
+    "multi-engine-sustained-parallel-controls": PARALLEL_PAIR_CASES,
     "ddr-configurable-burst-static-boundary": STATIC_BOUNDARIES,
 }

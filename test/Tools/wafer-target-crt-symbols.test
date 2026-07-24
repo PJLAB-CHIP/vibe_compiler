@@ -12,21 +12,48 @@
 # RUN:   --repo-root %wafer_src_root --defined-symbols-stdin
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
 # RUN:   -dr %t.crt.o | FileCheck --check-prefix=LIFECYCLE %s
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
+# RUN:   -dr -M no-aliases --disassemble=wafer_tx81_peripheral_argmax %t.crt.o | FileCheck --check-prefix=ARGMAX %s
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
+# RUN:   -dr -M no-aliases --disassemble=wafer_tx81_peripheral_argmin %t.crt.o | FileCheck --check-prefix=ARGMIN %s
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
+# RUN:   -dr -M no-aliases --disassemble=wafer_tx81_local_fence %t.crt.o | FileCheck --check-prefix=LOCAL-FENCE %s
 
 # SURFACE: checked 111 production wafer_tx81_* CRT symbols from the shared typed target-call registry
 # CONFORMANCE: checked Wafer target CRT conformance rules from compiler and CRT code: formats=13, encoding_rows=65, convert_routes=36, groups=4/23/9
 
-# LIFECYCLE-LABEL: <wafer_arg_writeback>:
-# LIFECYCLE: R_RISCV_CALL_PLT TsmWaitfinish
-# LIFECYCLE: R_RISCV_CALL_PLT get_spm_memory_mapping
-# LIFECYCLE: R_RISCV_CALL_PLT get_spm_memory_mapping
-# LIFECYCLE: sw {{[a-z0-9]+}},0({{[a-z0-9]+}})
-# LIFECYCLE: andi {{[a-z0-9]+}},{{[a-z0-9]+}},-64
-# LIFECYCLE: dcache.civa
-# LIFECYCLE: andi {{[a-z0-9]+}},{{[a-z0-9]+}},-64
-# LIFECYCLE: dcache.civa
-# LIFECYCLE: dcache.cipa
-# LIFECYCLE: dcache.cipa
+# ARGMAX-LABEL: <wafer_tx81_peripheral_argmax>:
+# ARGMAX: R_RISCV_CALL_PLT TsmWaitfinish
+# ARGMAX: R_RISCV_CALL_PLT get_spm_memory_mapping
+# ARGMAX: R_RISCV_CALL_PLT get_spm_memory_mapping
+# ARGMAX: sw {{[a-z0-9]+}},0({{[a-z0-9]+}})
+# ARGMAX: fence iorw,iorw
+# ARGMAX-NEXT: sync
+# ARGMAX-NOT: dcache.
+# ARGMAX: R_RISCV_CALL_PLT TsmDeletePeripheral
+# ARGMIN-LABEL: <wafer_tx81_peripheral_argmin>:
+# ARGMIN: R_RISCV_CALL_PLT TsmWaitfinish
+# ARGMIN: R_RISCV_CALL_PLT get_spm_memory_mapping
+# ARGMIN: R_RISCV_CALL_PLT get_spm_memory_mapping
+# ARGMIN: sw {{[a-z0-9]+}},0({{[a-z0-9]+}})
+# ARGMIN: fence iorw,iorw
+# ARGMIN-NEXT: sync
+# ARGMIN-NOT: dcache.
+# ARGMIN: R_RISCV_CALL_PLT TsmDeletePeripheral
+# LOCAL-FENCE-LABEL: <wafer_tx81_local_fence>:
+# LOCAL-FENCE: fence iorw,iorw
+# LOCAL-FENCE-NEXT: sync
+# LOCAL-FENCE-NEXT: sync.is
+# LOCAL-FENCE-NEXT: fence iorw,iorw
+# LOCAL-FENCE-NEXT: auipc ra,0x0
+# LOCAL-FENCE-NEXT: R_RISCV_CALL_PLT TsmWaitfinish
+# LOCAL-FENCE: jalr ra,0(ra)
+# LOCAL-FENCE-NEXT: fence iorw,iorw
+# LOCAL-FENCE-NEXT: sync
+# LOCAL-FENCE-NEXT: sync.is
+# LOCAL-FENCE-NEXT: fence iorw,iorw
+# LOCAL-FENCE-NOT: R_RISCV_CALL_PLT TsmWaitfinish_bywork
+# LOCAL-FENCE-NOT: dcache.
 # LIFECYCLE-LABEL: <wafer_tx81_direct_dte_begin>:
 # LIFECYCLE: andi {{[a-z0-9]+}},{{[a-z0-9]+}},-64
 # LIFECYCLE: sw zero,0({{[a-z0-9]+}})

@@ -442,6 +442,11 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
 
   for (const LiveAllocation &allocation : allocations) {
     const PackageResourceRecord &resource = *allocation.resource;
+    // Workspace is allocation-only storage.  Materializing a host-sized zero
+    // buffer and uploading it is both semantically unnecessary and
+    // prohibitive for large compiler-managed DDR arenas.
+    if (resource.role == PackageResourceRole::Workspace)
+      continue;
     llvm::ArrayRef<uint8_t> source;
     std::vector<uint8_t> zeros;
     auto binding = bindingsByResource.find(resource.id.getValue());

@@ -213,4 +213,7 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
             and row.disposition == "static-negative"
         )
     ),
+    "ct-reduce-raw-axis-isolated-deferred": (
+        reduce_pool_catalog.ISOLATED_DEFERRED_ROWS
+    ),
 }

@@ -84,6 +84,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-tile-count", type=int)
     parser.add_argument("--expected-runtime-library-sha256")
     parser.add_argument("--completion-timeout-ms", type=int, default=30000)
+    parser.add_argument(
+        "--continue-on-validation-failure",
+        action="store_true",
+        help=(
+            "continue only after host output-validation failures; board "
+            "launch, timeout, and lifecycle failures still stop immediately"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -210,7 +218,6 @@ def _validate_record(
         != (catalog.SCHEMA << 32) | catalog.RECORD_WORDS
         or words[rec["STATUS"]] != 0
         or actual_mirror != expected_mirror
-        or words[rec["OUTPUT_GUARD_MISMATCHES"]] != 0
         or words[rec["EXECUTE_RESULT"]] == 0
         or words[rec["REQUEST_GUARD"]] != catalog.REQUEST_GUARD
         or words[rec["OUTPUT_DDR_OFFSET"]] != catalog.OUTPUT_DDR_OFFSET
@@ -219,7 +226,7 @@ def _validate_record(
         or words[rec["RECORD_GUARD"]] != catalog.RECORD_GUARD
     ):
         raise RuntimeError(
-            f"{case.name}: record/execute/SPM guard oracle failed"
+            f"{case.name}: record/execute mirror failed"
         )
     return words
 
@@ -229,6 +236,37 @@ def _validate_numeric(
     actual: bytes,
     expected: bytes,
 ) -> dict[str, float | int]:
+    if catalog._is_bool_output(case.opcode):
+        full_bytes, valid_tail_bits = divmod(case.elements, 8)
+        if actual[:full_bytes] != expected[:full_bytes]:
+            mismatch = next(
+                index
+                for index, (left, right) in enumerate(
+                    zip(
+                        actual[:full_bytes],
+                        expected[:full_bytes],
+                        strict=True,
+                    )
+                )
+                if left != right
+            )
+            raise RuntimeError(
+                f"{case.name}: exact result differs at byte {mismatch}: "
+                f"actual=0x{actual[mismatch]:02x}, "
+                f"expected=0x{expected[mismatch]:02x}"
+            )
+        if valid_tail_bits:
+            valid_mask = (1 << valid_tail_bits) - 1
+            tail_actual = actual[full_bytes]
+            tail_expected = expected[full_bytes]
+            if tail_actual & valid_mask != tail_expected & valid_mask:
+                raise RuntimeError(
+                    f"{case.name}: exact result differs at byte "
+                    f"{full_bytes}: actual=0x{tail_actual:02x}, "
+                    f"expected=0x{tail_expected:02x}"
+                )
+        return {"mismatches": 0}
+
     if case.exact:
         if actual != expected:
             mismatch = next(
@@ -275,22 +313,15 @@ def _validate_numeric(
     }
 
 
-def validate_output(
-    path: pathlib.Path,
+def _validate_output_guard(
     case: catalog.CTVectorCase,
-    built: catalog.CasePayload,
-    sample: int,
-) -> dict[str, object]:
-    raw = path.read_bytes()
-    words = _validate_record(raw, case, built, sample)
-    slot = raw[
-        catalog.OUTPUT_DDR_OFFSET :
-        catalog.OUTPUT_DDR_OFFSET + catalog.SLOT_BYTES
-    ]
-    result_begin = catalog.BODY_OFFSET
-    result_end = result_begin + case.result_bytes
-    actual_result = slot[result_begin:result_end]
-    suffix_begin = catalog.BODY_OFFSET + case.output_span
+    slot: bytes,
+) -> None:
+    suffix_begin = catalog.BODY_OFFSET + (
+        case.result_bytes
+        if catalog._is_bool_output(case.opcode)
+        else case.output_span
+    )
     for begin, end in (
         (0, catalog.BODY_OFFSET),
         (suffix_begin, catalog.SLOT_BYTES),
@@ -307,6 +338,24 @@ def validate_output(
             raise RuntimeError(
                 f"{case.name}: output guard differs at slot byte {mismatch}"
             )
+
+
+def validate_output(
+    path: pathlib.Path,
+    case: catalog.CTVectorCase,
+    built: catalog.CasePayload,
+    sample: int,
+) -> dict[str, object]:
+    raw = path.read_bytes()
+    words = _validate_record(raw, case, built, sample)
+    slot = raw[
+        catalog.OUTPUT_DDR_OFFSET :
+        catalog.OUTPUT_DDR_OFFSET + catalog.SLOT_BYTES
+    ]
+    result_begin = catalog.BODY_OFFSET
+    result_end = result_begin + case.result_bytes
+    actual_result = slot[result_begin:result_end]
+    _validate_output_guard(case, slot)
 
     numeric: dict[str, float | int] = {}
     if built.expected_result is not None:
@@ -349,6 +398,7 @@ def execute_cases(
 ) -> None:
     raw_dir = args.work_dir / "raw"
     raw_dir.mkdir()
+    validation_failures: list[dict[str, object]] = []
     for sample, case in enumerate(cases):
         built = catalog.build_case_payload(case, sample)
         request = raw_dir / f"{case.name}.request.raw"
@@ -372,10 +422,31 @@ def execute_cases(
             raise RuntimeError(
                 f"{case.name}: wafer-run omitted complete lifecycle evidence"
             )
-        observation = validate_output(output, case, built, sample)
+        try:
+            observation = validate_output(output, case, built, sample)
+        except (RuntimeError, ValueError) as error:
+            if not args.continue_on_validation_failure:
+                raise
+            failure = {
+                "case": case.name,
+                "reason": str(error),
+                "sample": sample,
+            }
+            validation_failures.append(failure)
+            print(
+                "ct_vector_calibration_failure: "
+                + json.dumps(failure, sort_keys=True),
+                file=sys.stderr,
+            )
+            continue
         print(
             "ct_vector_calibration: "
             + json.dumps(observation, sort_keys=True)
+        )
+    if validation_failures:
+        raise RuntimeError(
+            "CT vector validation failures: "
+            + json.dumps(validation_failures, sort_keys=True)
         )
 
 

@@ -233,15 +233,28 @@ def main() -> int:
         / "Inputs"
         / "wafer_dte_ncc_execution_probe.c"
     ).read_text()
-    reuse = probe_source.split(
+    probe_main = probe_source.split(
+        "wafer_tx81_dte_ncc_execution_probe(", maxsplit=1
+    )[1]
+    assert "get_spm_memory_mapping" not in probe_source
+    assert "wafer_probe_seed_guarded_region(" in probe_source
+    assert "wafer_probe_capture_results(output_ddr, mode);" in probe_main
+    reuse = probe_main.split(
         "case WAFER_PROBE_DTE_REUSE_AFTER_EVENTS:", maxsplit=1
     )[1].split(
         "case WAFER_PROBE_DTE_TWO_DESTINATION_BROADCAST:", maxsplit=1
     )[0]
     assert reuse.count("wafer_probe_dte_ring(") == 2
-    assert reuse.index("intermediate_mismatches") < reuse.rindex(
+    assert reuse.index(
+        "wafer_probe_capture_region(output_ddr, 3"
+    ) < reuse.rindex(
         "wafer_probe_dte_ring("
     )
+    assert reuse.index(
+        "wafer_probe_capture_region(output_ddr, 3"
+    ) < reuse.index("wafer_tx81_local_fence();", reuse.index(
+        "wafer_probe_capture_region(output_ddr, 3"
+    ))
     broadcast = probe_source.split(
         "static void wafer_probe_dte_two_destination_broadcast(", maxsplit=1
     )[1].split(
@@ -288,7 +301,7 @@ def main() -> int:
     )[1].split("static void wafer_probe_publish_header", maxsplit=1)[0]
     assert "successor, 4, 0" in invalid_fsm
     assert "predecessor, 4)" in invalid_fsm
-    unknown_wait = probe_source.split(
+    unknown_wait = probe_main.split(
         "case WAFER_PROBE_DTE_WAIT_UNKNOWN_EVENT_ERROR:", maxsplit=1
     )[1].split("}", maxsplit=1)[0]
     assert "wafer_tx81_direct_dte_wait(UINT64_C(0xdeadbeef));" in unknown_wait

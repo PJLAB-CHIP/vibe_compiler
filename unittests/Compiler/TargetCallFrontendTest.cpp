@@ -717,10 +717,10 @@ void expectPayloadFields(
     EXPECT_EQ(value.input, arguments[0]);
     EXPECT_EQ(value.destination, arguments[1]);
     if (*kind == wafer::InstrUnpoolKind::Avg)
-      EXPECT_FALSE(value.index.has_value());
+      EXPECT_FALSE(value.indexAddress.has_value());
     else {
-      ASSERT_TRUE(value.index.has_value());
-      EXPECT_EQ(*value.index, u32(3));
+      ASSERT_TRUE(value.indexAddress.has_value());
+      EXPECT_EQ(*value.indexAddress, u32(3));
     }
     EXPECT_EQ(value.sourceShape, expectedArray<4>(arguments, 4));
     EXPECT_EQ(value.destinationShape, expectedArray<4>(arguments, 8));

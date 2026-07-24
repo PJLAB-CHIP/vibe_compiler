@@ -672,46 +672,36 @@ def check_arg_writeback(
         "uint64_t index_addr = wafer_spm_mapped_addr(index_dst);",
         "wafer_store_value(value_addr, format, instr->param.wb_data0);",
         "wafer_store_u32(index_addr, (uint32_t)instr->param.wb_data1);",
-        "wafer_publish_spm_range(value_addr, wafer_format_bytes(format));",
-        "wafer_publish_spm_range(index_addr, sizeof(uint32_t));",
+        "wafer_order_mapped_spm();",
     ]:
         require_contains(
-            body, needle, "argmax/argmin mapped writeback publication"
+            body, needle, "argmax/argmin mapped writeback ordering"
         )
     require_in_order(
         body,
         [
             "wafer_store_value(value_addr, format, instr->param.wb_data0);",
             "wafer_store_u32(index_addr, (uint32_t)instr->param.wb_data1);",
-            "wafer_publish_spm_range(value_addr, wafer_format_bytes(format));",
-            "wafer_publish_spm_range(index_addr, sizeof(uint32_t));",
+            "wafer_order_mapped_spm();",
         ],
-        "argmax/argmin store-before-publication",
+        "argmax/argmin store-before-ordering",
     )
-    publication = function_body(source_text, "wafer_publish_spm_range")
+    ordering = function_body(source_text, "wafer_order_mapped_spm")
     for needle in [
-        "WAFER_TX81_CACHE_LINE_BYTES = 64",
-        '__asm__ volatile("fence"',
+        '__asm__ volatile("fence iorw, iorw"',
         '__asm__ volatile("sync"',
-        '__asm__ volatile("csrr %0, mxstatus"',
-        '__asm__ volatile("dcache.cipa %0"',
-        '__asm__ volatile("dcache.civa %0"',
-        '__asm__ volatile("sync.is"',
     ]:
         require_contains(
-            publication, needle, "argmax/argmin mapped-SPM cache publication"
+            ordering, needle, "argmax/argmin mapped-SPM weak-order barrier"
         )
-    require_pattern(
-        publication,
-        r"\(uintptr_t\)begin\s*&\s*~\(uintptr_t\)"
-        r"\(WAFER_TX81_CACHE_LINE_BYTES\s*-\s*1\)",
-        "argmax/argmin mapped-SPM cache-line alignment",
-    )
-    require_pattern(
-        publication,
-        r"for\s*\(\s*;\s*address\s*<\s*end\s*;\s*"
-        r"address\s*\+=\s*WAFER_TX81_CACHE_LINE_BYTES\s*\)",
-        "argmax/argmin mapped-SPM cache-range coverage",
+    for forbidden in ["dcache.", "mxstatus", "WAFER_TX81_CACHE_LINE_BYTES"]:
+        require_absent(
+            ordering, forbidden, "argmax/argmin uncached mapped-SPM ordering"
+        )
+    require_absent(
+        source_text,
+        "wafer_publish_spm_range",
+        "legacy mapped-SPM cache publication helper",
     )
     for symbol in [
         "wafer_tx81_peripheral_argmax",
@@ -722,6 +712,38 @@ def check_arg_writeback(
             "wafer_arg_writeback(value_dst, index_dst, format, &instr);",
             f"{symbol} mapped writeback",
         )
+
+
+def check_local_completion_ordering(source_text: str) -> None:
+    ordering = function_body(source_text, "wafer_order_local_completion")
+    sequence = [
+        '__asm__ volatile("fence iorw, iorw"',
+        '__asm__ volatile("sync"',
+        '__asm__ volatile("sync.is"',
+        '__asm__ volatile("fence iorw, iorw"',
+    ]
+    require_in_order(ordering, sequence, "local completion C908 ordering")
+    require_absent(
+        ordering, "dcache.", "local completion must not imply cache publication"
+    )
+
+    local_fence = function_body(source_text, "wafer_tx81_local_fence")
+    require_in_order(
+        local_fence,
+        [
+            "wafer_order_local_completion();",
+            "(void)TsmWaitfinish();",
+            "wafer_order_local_completion();",
+        ],
+        "local fence issue/poll/following-issue ordering",
+    )
+    if local_fence.count("TsmWaitfinish()") != 1:
+        fail("local fence must use exactly one default TsmWaitfinish call")
+    require_absent(
+        local_fence,
+        "TsmWaitfinish_bywork",
+        "local fence must not hard-code a worker-specific wait",
+    )
 
 
 def check_relation_logic_convert(source_text: str) -> None:
@@ -860,6 +882,7 @@ def main() -> int:
     check_dma(source_text)
     check_gather_scatter_and_mask(source_text, header_text, lowering_text)
     check_arg_writeback(source_text, instruction_ops_text, lowering_text)
+    check_local_completion_ordering(source_text)
     check_relation_logic_convert(source_text)
     check_gemm_conv(source_text)
     print(

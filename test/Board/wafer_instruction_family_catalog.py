@@ -21,6 +21,7 @@ RESOURCE_BYTES = 16384
 SLOT_BYTES = 4096
 BODY_OFFSET = 256
 OUTPUT_DDR_OFFSET = 4096
+AUX_DDR_OFFSET = 8192
 SLOT_CANARY = 0xA7
 BIT2FP_TRUE_WORDS = {"F16": 0x3C00, "BF16": 0x3F80}
 BIT2FP_FALSE_WORD = 0x0000
@@ -57,6 +58,7 @@ REASONS = {
     "REASON_ISOLATED_COMPLETION_WRITEBACK_UNQUALIFIED": 1,
     "REASON_GEOMETRY_UNQUALIFIED": 2,
     "REASON_NUMERIC_UNQUALIFIED": 3,
+    "REASON_ISOLATED_POSSIBLE_PERMANENT_WAIT": 4,
 }
 
 REQ = {
@@ -1208,8 +1210,11 @@ def _pool_capability(
 
     expected = _fp(dtype_name, expected_values)
     if expected_indices:
+        # Indexed pool stores one index with the target data-format width:
+        # 16 bits for FP16/BF16 and 32 bits for FP32.
+        index_format = "I" if dtype_name == "F32" else "H"
         expected += struct.pack(
-            f"<{len(expected_indices)}H", *expected_indices
+            f"<{len(expected_indices)}{index_format}", *expected_indices
         )
     return _fp(dtype_name, source), b"", expected
 

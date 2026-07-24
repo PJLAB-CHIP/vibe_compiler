@@ -17,8 +17,8 @@ wafer::classifyLocalInstructionCompletion(mlir::Operation *operation) {
     switch (peripheral.getKindAttr().getValue()) {
     case InstrPeripheralKind::ArgMax:
     case InstrPeripheralKind::ArgMin:
-      // The production CRT issues CT, drains the default worker's local NCC
-      // queues with TsmWaitfinish(), then writes both scalar results to SPM.
+      // The production target wrapper issues CT, drains the default worker's
+      // local queues, then writes both scalar results to SPM.
       return LocalInstructionCompletion::BarrierAndComplete;
     default:
       break;

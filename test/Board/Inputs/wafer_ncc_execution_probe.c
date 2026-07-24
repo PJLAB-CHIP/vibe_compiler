@@ -373,11 +373,24 @@ typedef struct WaferNccV2Context {
   uint32_t ordered_producer_consumer;
   uint32_t double_slot_observation;
   uint32_t constructor_captured;
+  uint32_t preissue_local_wait_done;
   uint64_t constructor_address;
+  uint64_t preissue_local_wait_cycles;
   uint64_t issued_inter_types[WAFER_NCC_PROTOCOL_MAX_ISSUES];
   WaferNccProbeInstruction
       instructions[WAFER_NCC_PROTOCOL_MAX_ISSUES];
 } WaferNccV2Context;
+
+/*
+ * Keep the maximal 12-issue packet window out of the device entry stack.
+ * The current TX81 SDK gives a dynamic module a 2048-byte default stack (and
+ * configures a 4096-byte firmware main stack), while placing this context and
+ * the decoded request in the entry frame alone needs 4112 bytes before the
+ * generic plan executor is called.  This rank-one probe is launched serially,
+ * so one module-local context is sufficient and is explicitly cleared for
+ * every invocation.
+ */
+static WaferNccV2Context wafer_ncc_v2_context;
 
 static uint64_t wafer_ncc_v2_spm_slot(uint32_t slot) {
   return WAFER_NCC_V2_SPM_SLOT_BASE +
@@ -471,30 +484,11 @@ wafer_ncc_v2_dma_envelope_bytes(const WaferNccProbeLane *lane) {
   return (uint32_t)(last_offset + lane->layout_inner_bytes);
 }
 
-static uint32_t wafer_ncc_v2_dma_chunk_offset(
-    const WaferNccProbeLane *lane, uint32_t wanted_chunk) {
-  uint32_t chunk = 0;
-  for (uint32_t outer = 0; outer < lane->layout_iteration2; ++outer)
-    for (uint32_t middle = 0; middle < lane->layout_iteration1; ++middle)
-      for (uint32_t inner = 0; inner < lane->layout_iteration0; ++inner) {
-        uint32_t offset =
-            outer * lane->layout_stride2_bytes +
-            middle * lane->layout_stride1_bytes +
-            inner * lane->layout_stride0_bytes;
-        if (chunk++ == wanted_chunk)
-          return offset;
-      }
-  return UINT32_MAX;
-}
-
 static uint32_t wafer_ncc_v2_strided_second_shift(
     const WaferNccProbeRequest *request) {
   const WaferNccProbeLane *lane = &request->lanes[0];
-  if (request->range_relation == WAFER_NCC_RANGE_PARTIAL) {
-    uint32_t chunks = lane->layout_iteration0 * lane->layout_iteration1 *
-                      lane->layout_iteration2;
-    return wafer_ncc_v2_dma_chunk_offset(lane, chunks / 2U);
-  }
+  if (request->range_relation == WAFER_NCC_RANGE_PARTIAL)
+    return lane->transfer_bytes / 2U;
   if (request->range_relation == WAFER_NCC_RANGE_ADJACENT)
     return wafer_ncc_v2_dma_envelope_bytes(lane);
   return 0;
@@ -735,8 +729,6 @@ static uint32_t wafer_ncc_v2_configure_context(
     const WaferNccProbeLane *lane = &request->lanes[0];
     uint32_t envelope = wafer_ncc_v2_dma_envelope_bytes(lane);
     uint32_t second_shift = wafer_ncc_v2_strided_second_shift(request);
-    if (second_shift == UINT32_MAX)
-      return 1;
     uint64_t first_base = wafer_ncc_v2_write(0);
     uint64_t second_base = first_base + second_shift;
     uint32_t second_slot = WAFER_NCC_PROTOCOL_MAX_ROUNDS;
@@ -854,48 +846,27 @@ static uint8_t wafer_ncc_v2_pattern_byte(uint32_t slot, uint32_t index) {
   return (uint8_t)(((slot + 1U) * 29U + index * 17U) & UINT8_MAX);
 }
 
-static int wafer_ncc_v2_dma_compact_index(
+/*
+ * RDMA/WDMA stride/iteration describes the DDR endpoint.  The local SPM
+ * endpoint is always a compact transfer_bytes span even though the packet's
+ * conservative end register covers the descriptor envelope on both sides.
+ * Keep data-content oracles on the actual compact SPM footprint; DDR
+ * scatter/hole checking is performed by the host readback oracle.
+ */
+static int wafer_ncc_v2_dma_local_compact_index(
     const WaferNccProbeLane *lane, uint64_t base, uint64_t address,
     uint32_t *compact_index) {
-  if (address < base)
+  if (address < base || address - base >= lane->transfer_bytes)
     return 0;
-  uint64_t relative = address - base;
-  uint32_t chunk = 0;
-  for (uint32_t outer = 0; outer < lane->layout_iteration2; ++outer)
-    for (uint32_t middle = 0; middle < lane->layout_iteration1; ++middle)
-      for (uint32_t inner = 0; inner < lane->layout_iteration0; ++inner) {
-        uint32_t offset =
-            outer * lane->layout_stride2_bytes +
-            middle * lane->layout_stride1_bytes +
-            inner * lane->layout_stride0_bytes;
-        if (relative >= offset &&
-            relative < (uint64_t)offset + lane->layout_inner_bytes) {
-          *compact_index =
-              chunk * lane->layout_inner_bytes +
-              (uint32_t)(relative - offset);
-          return 1;
-        }
-        ++chunk;
-      }
-  return 0;
+  *compact_index = (uint32_t)(address - base);
+  return 1;
 }
 
-static void wafer_ncc_v2_seed_strided_pattern(
+static void wafer_ncc_v2_seed_dma_local_pattern(
     uint64_t base, const WaferNccProbeLane *lane, uint32_t source_slot) {
   volatile uint8_t *destination = wafer_ncc_probe_spm8(base);
-  uint32_t compact_cursor = 0;
-  for (uint32_t outer = 0; outer < lane->layout_iteration2; ++outer)
-    for (uint32_t middle = 0; middle < lane->layout_iteration1; ++middle)
-      for (uint32_t inner = 0; inner < lane->layout_iteration0; ++inner) {
-        uint32_t offset =
-            outer * lane->layout_stride2_bytes +
-            middle * lane->layout_stride1_bytes +
-            inner * lane->layout_stride0_bytes;
-        for (uint32_t byte = 0; byte < lane->layout_inner_bytes; ++byte)
-          destination[offset + byte] = wafer_ncc_v2_pattern_byte(
-              source_slot, compact_cursor + byte);
-        compact_cursor += lane->layout_inner_bytes;
-      }
+  for (uint32_t byte = 0; byte < lane->transfer_bytes; ++byte)
+    destination[byte] = wafer_ncc_v2_pattern_byte(source_slot, byte);
 }
 
 static uint8_t wafer_ncc_v2_strided_final_byte(
@@ -905,9 +876,9 @@ static uint8_t wafer_ncc_v2_strided_final_byte(
   const WaferNccHazardComposition *composition = &context->hazards[0];
   uint32_t first_index = 0;
   uint32_t second_index = 0;
-  int in_first = wafer_ncc_v2_dma_compact_index(
+  int in_first = wafer_ncc_v2_dma_local_compact_index(
       lane, composition->first_range.begin, address, &first_index);
-  int in_second = wafer_ncc_v2_dma_compact_index(
+  int in_second = wafer_ncc_v2_dma_local_compact_index(
       lane, composition->second_range.begin, address, &second_index);
   switch (request->effect_relation) {
   case WAFER_NCC_EFFECT_RAW:
@@ -955,34 +926,15 @@ static uint64_t wafer_ncc_v2_strided_final_mismatches(
 static uint64_t wafer_ncc_v2_strided_mismatches(
     uint64_t address, const WaferNccProbeLane *lane, uint32_t source_slot) {
   const volatile uint8_t *actual = wafer_ncc_probe_spm8(address);
-  uint32_t envelope_cursor = 0;
-  uint32_t compact_cursor = 0;
   uint64_t mismatches = 0;
-  for (uint32_t outer = 0; outer < lane->layout_iteration2; ++outer) {
-    for (uint32_t middle = 0; middle < lane->layout_iteration1; ++middle) {
-      for (uint32_t inner = 0; inner < lane->layout_iteration0; ++inner) {
-        uint32_t offset =
-            outer * lane->layout_stride2_bytes +
-            middle * lane->layout_stride1_bytes +
-            inner * lane->layout_stride0_bytes;
-        mismatches += wafer_ncc_probe_mismatch8(
-            actual + envelope_cursor, UINT8_C(0xc3),
-            offset - envelope_cursor);
-        for (uint32_t byte = 0; byte < lane->layout_inner_bytes; ++byte)
-          mismatches +=
-              actual[offset + byte] !=
-              wafer_ncc_v2_pattern_byte(source_slot,
-                                        compact_cursor + byte);
-        compact_cursor += lane->layout_inner_bytes;
-        envelope_cursor = offset + lane->layout_inner_bytes;
-      }
-    }
-  }
+  for (uint32_t byte = 0; byte < lane->transfer_bytes; ++byte)
+    mismatches +=
+        actual[byte] != wafer_ncc_v2_pattern_byte(source_slot, byte);
   uint32_t envelope = wafer_ncc_v2_dma_envelope_bytes(lane);
   mismatches += wafer_ncc_probe_mismatch8(
-      actual + envelope_cursor, UINT8_C(0xc3),
-      envelope - envelope_cursor);
-  return mismatches + (compact_cursor != lane->transfer_bytes);
+      actual + lane->transfer_bytes, UINT8_C(0xc3),
+      envelope - lane->transfer_bytes);
+  return mismatches;
 }
 
 static uint8_t wafer_ncc_v2_tdma_byte(uint32_t slot, uint32_t format,
@@ -995,6 +947,8 @@ static uint8_t wafer_ncc_v2_tdma_byte(uint32_t slot, uint32_t format,
   }
   if ((Data_Format)format == Fmt_BF16)
     return (index & 1U) ? UINT8_C(0x3f) : UINT8_C(0x80);
+  if ((Data_Format)format == Fmt_BOOL)
+    return UINT8_MAX;
   return 0;
 }
 
@@ -1112,7 +1066,7 @@ static int wafer_ncc_v2_seed(void *opaque,
       if (wafer_ncc_probe_is_strided_dependency(request) &&
           (request->effect_relation == WAFER_NCC_EFFECT_WAR ||
            request->effect_relation == WAFER_NCC_EFFECT_RAR))
-        wafer_ncc_v2_seed_strided_pattern(
+        wafer_ncc_v2_seed_dma_local_pattern(
             context->hazards[issue->round].first_range.begin,
             &request->lanes[0],
             WAFER_NCC_V2_STRIDED_INITIAL_SOURCE_SLOT);
@@ -1210,6 +1164,23 @@ static int wafer_ncc_v2_seed(void *opaque,
     return 1;
   }
   __asm__ volatile("fence iorw, iorw" ::: "memory");
+  if ((request->flags & WAFER_NCC_REQUEST_MAPPED_SPM_KCORE_WRITE) != 0) {
+    /*
+     * get_spm_memory_mapping() is the uncached weak-order alias.  Both A/B
+     * variants publish the volatile Kcore stores with the same ordering; the
+     * B control changes only the otherwise-empty local wait before NCC issue.
+     */
+    __asm__ volatile("sync" ::: "memory");
+    if ((request->flags & WAFER_NCC_REQUEST_PREISSUE_LOCAL_WAIT) != 0) {
+      uint64_t cycle_before;
+      uint64_t cycle_after;
+      __asm__ volatile("rdcycle %0" : "=r"(cycle_before));
+      wafer_tx81_local_fence();
+      __asm__ volatile("rdcycle %0" : "=r"(cycle_after));
+      context->preissue_local_wait_cycles = cycle_after - cycle_before;
+      context->preissue_local_wait_done = 1;
+    }
+  }
   return 0;
 }
 
@@ -1363,8 +1334,7 @@ static int wafer_ncc_v2_issue(void *opaque,
   uint64_t write = wafer_ncc_v2_operand_address(
       context, issue, WAFER_NCC_OPERAND_WRITE);
   if (issue->engine == WAFER_NCC_ENGINE_RDMA && bytes != 0) {
-    context->completion_marker_address =
-        write + wafer_ncc_v2_dma_envelope_bytes(issue->lane_spec) - 1U;
+    context->completion_marker_address = write + bytes - 1U;
     context->completion_marker_expected =
         context->double_slot_observation
             ? (uint8_t)(wafer_ncc_v2_positive_integer_f16(
@@ -1530,8 +1500,10 @@ static int wafer_ncc_v2_observe(void *opaque,
       context, issue, WAFER_NCC_OPERAND_WRITE);
   int raw_issue =
       issue->lane_spec->issue_mode == WAFER_NCC_ISSUE_RAW;
-  if (raw_issue &&
-      request->flags != WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE) {
+  int tight_submission =
+      request->flags == WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE ||
+      request->flags == WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY;
+  if (raw_issue && !tight_submission) {
     observation->inter_type = context->issued_inter_types[issue->slot];
     return wafer_ncc_v2_observe_raw_registers(issue, observation);
   }
@@ -1987,6 +1959,11 @@ static int wafer_ncc_v2_snapshot(void *opaque, uint32_t phase,
       record[WAFER_NCC_REC_FLAGS] |=
           WAFER_NCC_RECORD_CONSTRUCTOR_CAPTURED;
     }
+    if (context->preissue_local_wait_done)
+      record[WAFER_NCC_REC_FLAGS] |=
+          WAFER_NCC_RECORD_PREISSUE_LOCAL_WAIT_DONE;
+    record[WAFER_NCC_REC_PREISSUE_WAIT_CYCLES] =
+        context->preissue_local_wait_cycles;
     record[WAFER_NCC_REC_PMU_ENABLE] =
         wafer_ncc_probe_read_pmu32(GR_PMU_EN);
     for (uint32_t worker = 0; worker < WAFER_NCC_PROTOCOL_WORKERS; ++worker)
@@ -2176,13 +2153,15 @@ wafer_tx81_ncc_execution_probe(uint64_t request_ddr, uint64_t payload_ddr,
     return;
   }
 
-  WaferNccV2Context context = {0};
-  context.payload_ddr = payload_ddr;
-  context.output_ddr = output_ddr;
+  WaferNccV2Context *context = &wafer_ncc_v2_context;
+  wafer_ncc_probe_fill8((volatile uint8_t *)(void *)context, 0,
+                        sizeof(*context));
+  context->payload_ddr = payload_ddr;
+  context->output_ddr = output_ddr;
   status = wafer_ncc_probe_execute_plan(
       &request, wafer_ncc_v2_adapters,
       sizeof(wafer_ncc_v2_adapters) / sizeof(wafer_ncc_v2_adapters[0]),
-      &wafer_ncc_v2_hooks, &context, record);
+      &wafer_ncc_v2_hooks, context, record);
   record[WAFER_NCC_REC_OUTPUT_SLOT_BASE] = WAFER_NCC_V2_OUTPUT_SLOT_BASE;
   record[WAFER_NCC_REC_OUTPUT_SLOT_STRIDE] = WAFER_NCC_V2_DDR_SLOT_STRIDE;
   record[WAFER_NCC_REC_OUTPUT_GUARD_BYTES] = WAFER_NCC_V2_GUARD_BYTES;
@@ -2190,6 +2169,6 @@ wafer_tx81_ncc_execution_probe(uint64_t request_ddr, uint64_t payload_ddr,
   record[WAFER_NCC_REC_RECORD_GUARD] = WAFER_NCC_V2_RECORD_GUARD;
   if (status == WAFER_NCC_STATUS_OK &&
       request.command == WAFER_NCC_COMMAND_EXECUTE)
-    wafer_ncc_v2_copy_results(&request, &context);
+    wafer_ncc_v2_copy_results(&request, context);
   wafer_ncc_probe_publish(record);
 }

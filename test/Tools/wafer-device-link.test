@@ -44,7 +44,7 @@
 # RUN:   --llvm-ir %S/Inputs/minimal-target-heap-entry.ll \
 # RUN:   --output %t.heap.so
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm -u %t.heap.so | FileCheck %s --check-prefix=HEAP
-# RUN: %python -c 'import subprocess; command=["%wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm", "-u", "%t.heap.so"]; symbols={line.split()[-1] for line in subprocess.check_output(command, text=True).splitlines() if line.split()}; assert symbols == {"csi_kernel_malloc", "csi_kernel_free"}, symbols'
+# RUN: %python -c 'import subprocess; command=["%wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm", "-u", "%t.heap.so"]; symbols={line.split()[-1] for line in subprocess.check_output(command, text=True).splitlines() if line.split()}; assert symbols == {"rt_malloc", "rt_free"}, symbols'
 # RUN: %python -c 'import subprocess; command=["%wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-readelf", "-d", "%t.heap.so"]; dynamic=subprocess.check_output(command, text=True); assert "(NEEDED)" not in dynamic, dynamic'
 
 # RUN: %python %wafer_src_root/tools/wafer_device_link.py \
@@ -153,10 +153,10 @@
 
 # NOTALLOWED: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-v1: unexpected_loader_hook
 
-# HEAP-DAG: U csi_kernel_free
-# HEAP-DAG: U csi_kernel_malloc
-# HEAP-NOT: rt_free
-# HEAP-NOT: rt_malloc
+# HEAP-DAG: U rt_free
+# HEAP-DAG: U rt_malloc
+# HEAP-NOT: csi_kernel_free
+# HEAP-NOT: csi_kernel_malloc
 
 # GETPID: U __get_pid
 # GETPID-BASE: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-v1: __get_pid

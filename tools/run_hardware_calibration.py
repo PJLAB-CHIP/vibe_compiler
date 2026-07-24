@@ -259,7 +259,104 @@ CALIBRATION_STEPS = (
     ),
 )
 
+STRIDED_DEPENDENCY_CASE_NAMES = (
+    *tuple(
+        f"dependency-strided-{dimension}-{schedule}-observation"
+        for dimension in ("1d", "2d", "3d")
+        for schedule in ("serial", "window")
+    ),
+    *tuple(
+        f"dependency-strided-{dimension}-{effect}-{schedule}-observation"
+        for effect in ("war", "rar")
+        for dimension in ("1d", "2d", "3d")
+        for schedule in ("serial", "window")
+    ),
+    *tuple(
+        "dependency-strided-"
+        f"{dimension}-waw-{relation}-{schedule}-observation"
+        for dimension in ("1d", "2d", "3d")
+        for relation in ("exact", "partial", "adjacent")
+        for schedule in ("serial", "window")
+    ),
+)
+
+
 EXPLICIT_ONLY_STEPS = (
+    CalibrationStep(
+        "ct-vuvloop-semantics",
+        "rank-one-instruction-focused",
+        "wafer-board-ct-vuvloop-semantics",
+        "contract-legal unit-64 VuVLoop semantics and post-case integrity",
+    ),
+    CalibrationStep(
+        "ne-backward-conv-focused-replay",
+        "rank-one-ne-explicit",
+        "wafer-board-ne-backward-conv-focused",
+        "explicit replay of the completed corrected-footprint observations",
+    ),
+    CalibrationStep(
+        "memory-parallel-expanded",
+        "rank-one-memory-focused",
+        "wafer-board-memory-descriptor-parallel-expanded",
+        "expanded sustained, cross-worker, and dependency pair observations",
+    ),
+    CalibrationStep(
+        "memory-strided-dma-focused",
+        "rank-one-memory-focused",
+        "wafer-board-memory-descriptor-strided-dma-focused",
+        "corrected compact-SPM 1D/2D/3D DMA descriptor observations",
+    ),
+    CalibrationStep(
+        "ncc-mapped-spm-ne-depth4-local-wait",
+        "rank-one-ncc-focused",
+        "wafer-board-ncc-mapped-spm-ne-depth4-local-wait",
+        "depth-four NCC-to-Kcore boundary with matching local completion",
+    ),
+    CalibrationStep(
+        "ncc-mapped-spm-ne-depth4-no-local-wait",
+        "rank-one-ncc-focused",
+        "wafer-board-ncc-mapped-spm-ne-depth4-no-local-wait",
+        "depth-four NCC-to-Kcore boundary without local completion",
+    ),
+    CalibrationStep(
+        "ncc-mapped-spm-boundary-replay",
+        "rank-one-ncc-explicit",
+        "wafer-board-ncc-mapped-spm-boundary-manual",
+        "explicit replay of the completed mapped-SPM boundary observations",
+    ),
+    *tuple(
+        CalibrationStep(
+            f"ncc-{case_name}",
+            "rank-one-ncc-strided-focused",
+            f"wafer-board-ncc-{case_name}",
+            f"corrected compact-SPM oracle for {case_name}",
+        )
+        for case_name in STRIDED_DEPENDENCY_CASE_NAMES
+    ),
+    CalibrationStep(
+        "ddr-tile-offset",
+        "full-card-memory-focused",
+        "wafer-board-ddr-tile-offset-probe",
+        "16-rank actual-allocation-base and relative-offset correctness",
+    ),
+    CalibrationStep(
+        "ddr-sparse-high-offset",
+        "rank-one-memory-focused",
+        "wafer-board-ddr-sparse-high-offset-probe",
+        "40-GiB compiler-managed workspace sparse relative-offset correctness",
+    ),
+    CalibrationStep(
+        "spm-parallel-address-sweep-replay",
+        "rank-one-spm-explicit",
+        "wafer-board-spm-parallel-address-sweep",
+        "explicit replay of the completed SPM phase and base-residue sweep",
+    ),
+    CalibrationStep(
+        "single-op-add-once",
+        "rank-one-heartbeat-explicit",
+        "wafer-board-single-op-add-once",
+        "one-shot ordinary Add execution-plane heartbeat",
+    ),
     CalibrationStep(
         "instruction-family-full-replay",
         "rank-one-instruction-explicit",
