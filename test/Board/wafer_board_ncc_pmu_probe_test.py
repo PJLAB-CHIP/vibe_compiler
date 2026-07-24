@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import os
@@ -55,6 +56,46 @@ TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_ncc_pmu_readonly_probe.c"
 PROBE_LL = INPUT_DIR / "wafer_ncc_pmu_readonly_probe.ll"
+
+
+@dataclasses.dataclass(frozen=True)
+class ReadOnlyPmuCalibrationCase:
+    key: str
+    execution_scope: str
+    oracle: str
+    completion: str
+    resource_budget: str
+
+
+READ_ONLY_PMU_CALIBRATION_CASES = (
+    ReadOnlyPmuCalibrationCase(
+        "profile-identity-readonly",
+        "rank-one-read-only",
+        (
+            "runtime version+device name+PCI bus+tile count+runtime library "
+            "SHA-256 and schema-v1 record"
+        ),
+        "bounded process deadline+normal runtime cleanup",
+        "read-only NCC/PMU register snapshot",
+    ),
+    ReadOnlyPmuCalibrationCase(
+        "stable-read-enable-scope",
+        "rank-one-read-only",
+        (
+            "high-low-high split stability+stable PMU enable/scope mask+"
+            "record guard"
+        ),
+        "bounded process deadline+normal runtime cleanup",
+        "read-only NCC/PMU register snapshot",
+    ),
+)
+READ_ONLY_PMU_CASES_BY_KEY = {
+    case.key: case for case in READ_ONLY_PMU_CALIBRATION_CASES
+}
+CALIBRATION_LEAF_BINDINGS = {
+    key: (READ_ONLY_PMU_CASES_BY_KEY[key],)
+    for key in READ_ONLY_PMU_CASES_BY_KEY
+}
 
 
 def parse_args() -> argparse.Namespace:

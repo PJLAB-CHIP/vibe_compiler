@@ -37,11 +37,18 @@
   static、single-vector observed、calibrated、supported、unknown和excluded；性能观察不能反向扩大semantic
   legality。packet/register字段只能证明请求和路由，完整非零output、全range readback及双侧guard才是
   correctness oracle。
-- 大型硬件校准在上卡前使用机器manifest做逐行完备性门禁：文档行名与manifest key一一对应，每行必须
-  `ready`、无剩余准备、至少绑定一个registered no-card gate；可执行行还必须绑定board runner和positive
-  asset，非法或不安全行绑定`static-negative`/带原因的`isolated-deferred`。opcode、layout或counter
-  inventory不能因缺case而消失；“有明确fail-closed处置”属于准备完成，“由邻近case外推”不属于。共享
-  dispatcher/package的target C build/link和host oracle通过只证明上卡资产可用，不得写成board evidence。
+- 大型硬件校准在上卡前使用机器manifest做叶子级完备性门禁。文档大类只作compiler-consumer导航；
+  每个语义叶子必须解析到catalog中的具体case对象或带typed gate及原因的`static-negative`/
+  `isolated-deferred`，并绑定calibration/held-out层、独立oracle、physical guard、matching completion、
+  资源预算和registered no-card gate。大类状态只能从叶子自动汇总，不能由文件存在、测试注册、总case数或
+  手填空`remaining_preparation`变绿。catalog暴露的叶子分组必须全部被manifest记账；同一具体case确需服务
+  原生能力和layout能力时，重复引用要有精确白名单与引用次数断言，其余分组只允许一次引用。opcode、layout
+  或counter inventory不能因缺case而消失。“有明确fail-closed处置”属于准备完成，“由邻近case外推”不属于。
+  shared dispatcher/package的target C build/link和host oracle通过只证明上卡资产可用，不得写成board evidence。
+- cache、slot reuse、resource lifetime等跨phase硬件probe必须由同一个runtime session拥有全部phase，并显式
+  证明复用同一allocation/handle；若每个phase分别启动进程且cleanup会卸载program、释放allocation，就只能
+  各自形成单invocation visibility case，不能把两次结果解释为stale-before/control-after。无法表达同会话
+  所有权时应保留`isolated-deferred`，直到runner合同补齐。
 - 板端case一旦timeout立即停止当前批次并隔离该execution context，不在同批次自动重试，也不调用
   reset、power或firmware替换。`tsm_smi` idle、0%利用率、memory baseline和无残留进程只证明管理面表面状态，
   不证明execution/completion面健康。发生异常并由用户恢复后，使用一次新进程的known-good Add heartbeat

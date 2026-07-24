@@ -19,6 +19,9 @@ typedef struct WaferCTCCase {
   uint32_t result_bytes;
   uint32_t output_span;
   uint32_t rounding_mode;
+  uint32_t zero_point;
+  uint32_t domain;
+  uint32_t disposition;
 } WaferCTCCase;
 
 typedef struct WaferCTCPMU {
@@ -52,6 +55,52 @@ static const uint8_t wafer_ctc_destination_types[36] = {
 };
 
 static const uint8_t wafer_ctc_type_bytes[7] = {1U, 2U, 4U, 2U, 2U, 4U, 4U};
+
+static uint32_t wafer_ctc_zero_point_route(uint32_t route) {
+  return route < 4U;
+}
+
+static uint32_t wafer_ctc_plain_route(uint32_t route) {
+  switch (route) {
+  case 4U:
+  case 12U:
+  case 15U:
+  case 16U:
+  case 17U:
+  case 22U:
+  case 23U:
+  case 33U:
+  case 35U:
+    return 1U;
+  default:
+    return 0U;
+  }
+}
+
+static uint32_t wafer_ctc_rounding_route(uint32_t route) {
+  return wafer_ctc_zero_point_route(route) == 0U &&
+         wafer_ctc_plain_route(route) == 0U;
+}
+
+static uint32_t wafer_ctc_extrema_disposition(uint32_t source_type,
+                                               uint32_t destination_type) {
+  if (destination_type <= WAFER_CTC_INT32)
+    return WAFER_CTC_BOARD_OBSERVED;
+  if (destination_type == WAFER_CTC_FP16 &&
+      (source_type == WAFER_CTC_INT32 ||
+       source_type == WAFER_CTC_BF16 ||
+       source_type == WAFER_CTC_FP32 ||
+       source_type == WAFER_CTC_TF32))
+    return WAFER_CTC_BOARD_OBSERVED;
+  if (destination_type == WAFER_CTC_BF16 &&
+      (source_type == WAFER_CTC_FP32 ||
+       source_type == WAFER_CTC_TF32))
+    return WAFER_CTC_BOARD_OBSERVED;
+  if (destination_type == WAFER_CTC_TF32 &&
+      source_type == WAFER_CTC_FP32)
+    return WAFER_CTC_BOARD_OBSERVED;
+  return WAFER_CTC_BOARD_EXACT;
+}
 
 static void wafer_ctc_cache_range(uint64_t begin, uint32_t bytes,
                                   uint32_t invalidate_only) {
@@ -122,18 +171,51 @@ static uint32_t wafer_ctc_decode(const volatile uint64_t *request,
 
   uint32_t opcode = (uint32_t)request[WAFER_CTC_REQ_OPCODE];
   uint32_t case_id = (uint32_t)request[WAFER_CTC_REQ_CASE];
-  if (opcode < 139U || opcode > 174U || case_id >= 72U ||
-      case_id / 2U != opcode - 139U)
+  if (opcode < 139U || opcode > 174U)
     return WAFER_CTC_STATUS_BAD_REQUEST;
   uint32_t route = opcode - 139U;
   uint32_t elements = (uint32_t)request[WAFER_CTC_REQ_ELEMENTS];
   if (elements != WAFER_CTC_MAIN_ELEMENTS &&
       elements != WAFER_CTC_TAIL_ELEMENTS)
     return WAFER_CTC_STATUS_BAD_REQUEST;
-  if ((case_id & 1U) != (elements == WAFER_CTC_TAIL_ELEMENTS))
-    return WAFER_CTC_STATUS_BAD_REQUEST;
   uint32_t source_type = wafer_ctc_source_types[route];
   uint32_t destination_type = wafer_ctc_destination_types[route];
+  uint32_t domain = (uint32_t)request[WAFER_CTC_REQ_DOMAIN];
+  uint32_t rounding_mode = (uint32_t)request[WAFER_CTC_REQ_ROUNDING];
+  uint32_t zero_point = (uint32_t)request[WAFER_CTC_REQ_ZERO_POINT];
+  uint32_t disposition =
+      (uint32_t)request[WAFER_CTC_REQ_DISPOSITION];
+  uint32_t expected_case = 0U;
+  uint32_t expected_disposition = WAFER_CTC_BOARD_EXACT;
+  if (domain == WAFER_CTC_DOMAIN_NORMAL) {
+    expected_case = route * 2U +
+                    (elements == WAFER_CTC_TAIL_ELEMENTS);
+    if (rounding_mode != RND_NEAREST_EVEN || zero_point != 0U)
+      return WAFER_CTC_STATUS_BAD_REQUEST;
+  } else if (domain == WAFER_CTC_DOMAIN_DIRECTED) {
+    if (wafer_ctc_rounding_route(route) == 0U ||
+        elements != WAFER_CTC_MAIN_ELEMENTS ||
+        rounding_mode < RND_ZERO || rounding_mode > RND_NEG_INF ||
+        zero_point != 0U)
+      return WAFER_CTC_STATUS_BAD_REQUEST;
+    expected_case = 1000U + route * 3U + rounding_mode - 1U;
+  } else if (domain == WAFER_CTC_DOMAIN_ZERO_POINT) {
+    if (wafer_ctc_zero_point_route(route) == 0U ||
+        elements != WAFER_CTC_MAIN_ELEMENTS ||
+        rounding_mode != RND_NEAREST_EVEN || zero_point != 7U)
+      return WAFER_CTC_STATUS_BAD_REQUEST;
+    expected_case = 2000U + route;
+    expected_disposition = WAFER_CTC_BOARD_OBSERVED;
+  } else if (domain == WAFER_CTC_DOMAIN_EXTREMA) {
+    if (elements != WAFER_CTC_MAIN_ELEMENTS ||
+        rounding_mode != RND_NEAREST_EVEN || zero_point != 0U)
+      return WAFER_CTC_STATUS_BAD_REQUEST;
+    expected_case = 3000U + route;
+    expected_disposition =
+        wafer_ctc_extrema_disposition(source_type, destination_type);
+  } else {
+    return WAFER_CTC_STATUS_UNSUPPORTED_CASE;
+  }
   uint32_t input_bytes = elements * wafer_ctc_type_bytes[source_type];
   uint32_t result_bytes = elements * wafer_ctc_type_bytes[destination_type];
   uint32_t output_span = (result_bytes + 255U) & ~UINT32_C(255);
@@ -142,7 +224,8 @@ static uint32_t wafer_ctc_decode(const volatile uint64_t *request,
       request[WAFER_CTC_REQ_INPUT_BYTES] != input_bytes ||
       request[WAFER_CTC_REQ_RESULT_BYTES] != result_bytes ||
       request[WAFER_CTC_REQ_OUTPUT_SPAN] != output_span ||
-      request[WAFER_CTC_REQ_ROUNDING] != RND_NEAREST_EVEN ||
+      case_id != expected_case ||
+      disposition != expected_disposition ||
       WAFER_CTC_BODY_OFFSET + input_bytes > WAFER_CTC_SLOT_BYTES ||
       WAFER_CTC_BODY_OFFSET + output_span > WAFER_CTC_SLOT_BYTES)
     return WAFER_CTC_STATUS_BAD_REQUEST;
@@ -155,7 +238,10 @@ static uint32_t wafer_ctc_decode(const volatile uint64_t *request,
   selected->input_bytes = input_bytes;
   selected->result_bytes = result_bytes;
   selected->output_span = output_span;
-  selected->rounding_mode = RND_NEAREST_EVEN;
+  selected->rounding_mode = rounding_mode;
+  selected->zero_point = zero_point;
+  selected->domain = domain;
+  selected->disposition = disposition;
   return WAFER_CTC_STATUS_OK;
 }
 
@@ -182,7 +268,7 @@ static uint64_t wafer_ctc_guard_mismatches(const WaferCTCCase *selected) {
 
 #define WAFER_CTC_DISPATCH(OPCODE, SYMBOL)                                     \
   case OPCODE:                                                                 \
-    SYMBOL(source, destination, selected->elements, 0U,                        \
+    SYMBOL(source, destination, selected->elements, selected->zero_point,      \
            selected->rounding_mode);                                           \
     break
 
@@ -270,6 +356,9 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
     record[WAFER_CTC_REC_OUTPUT_SPAN] = selected.output_span;
     record[WAFER_CTC_REC_ROUNDING] = selected.rounding_mode;
     record[WAFER_CTC_REC_SAMPLE] = request[WAFER_CTC_REQ_SAMPLE];
+    record[WAFER_CTC_REC_DOMAIN] = selected.domain;
+    record[WAFER_CTC_REC_ZERO_POINT] = selected.zero_point;
+    record[WAFER_CTC_REC_DISPOSITION] = selected.disposition;
     record[WAFER_CTC_REC_REQUEST_GUARD] = request[WAFER_CTC_REQ_GUARD];
 
     wafer_tx81_rdma(payload_ddr, WAFER_CTC_SPM_INPUT, WAFER_CTC_SLOT_BYTES,

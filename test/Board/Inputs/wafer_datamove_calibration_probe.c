@@ -24,14 +24,52 @@ typedef struct WaferDMCPMU {
 } WaferDMCPMU;
 
 static const WaferDMCCase wafer_dmc_cases[] = {
-    {0U, 3922U, 3922U, 4096U, 1U},     {1U, 3922U, 3922U, 4096U, 53U},
-    {2U, 3922U, 3922U, 4096U, 37U},    {3U, 646U, 646U, 768U, 323U},
-    {4U, 3922U, 3922U, 4096U, 53U},    {5U, 6460U, 6460U, 6656U, 2U},
-    {6U, 6460U, 6460U, 6656U, 2U},     {7U, 23256U, 23256U, 23296U, 2U},
-    {8U, 106U, 3922U, 4096U, 1U},      {9U, 74U, 3922U, 4096U, 1U},
-    {10U, 16380U, 17152U, 17152U, 2U}, {11U, 17152U, 16380U, 16384U, 2U},
-    {12U, 16380U, 17408U, 17408U, 4U}, {13U, 17408U, 16380U, 16384U, 4U},
+    {0U, 3922U, 3922U, 4096U, 1U},
+    {1U, 3922U, 3922U, 4096U, 53U},
+    {2U, 3922U, 3922U, 4096U, 37U},
+    {3U, 646U, 646U, 768U, 323U},
+    {4U, 3922U, 3922U, 4096U, 53U},
+    {5U, 6460U, 6460U, 6656U, 2U},
+    {6U, 6460U, 6460U, 6656U, 2U},
+    {7U, 23256U, 23256U, 23296U, 2U},
+    {8U, 106U, 3922U, 4096U, 1U},
+    {9U, 74U, 3922U, 4096U, 1U},
+    {10U, 16380U, 17152U, 17152U, 2U},
+    {11U, 17152U, 16380U, 16384U, 2U},
+    {12U, 16380U, 17408U, 17408U, 4U},
+    {13U, 17408U, 16380U, 16384U, 4U},
     {14U, 8320U, 4224U, 4352U, 1U},
+    {15U, 16380U, 16380U, 16384U, 2U},
+    {16U, 16380U, 16380U, 16384U, 2U},
+    {17U, 16380U, 16380U, 16384U, 2U},
+    {18U, 8060U, 8060U, 8192U, 2U},
+    {19U, 16380U, 16380U, 16384U, 2U},
+    {20U, 2U, 16380U, 16384U, 1U},
+    {21U, 130U, 16380U, 16384U, 1U},
+    {22U, 1170U, 16380U, 16384U, 1U},
+    {23U, 15876U, 16128U, 16128U, 1U},
+    {24U, 16128U, 15876U, 16128U, 1U},
+    {25U, 15876U, 16384U, 16384U, 2U},
+    {26U, 16384U, 15876U, 16128U, 2U},
+    {27U, 16128U, 16128U, 16128U, 1U},
+    {28U, 16128U, 16128U, 16128U, 1U},
+    {29U, 16128U, 16384U, 16384U, 2U},
+    {30U, 16384U, 16128U, 16128U, 2U},
+    {31U, 32004U, 32256U, 32256U, 2U},
+    {32U, 32256U, 32004U, 32256U, 2U},
+    {33U, 32004U, 32256U, 32256U, 4U},
+    {34U, 32256U, 32004U, 32256U, 4U},
+    {35U, 32508U, 33280U, 33280U, 3U},
+    {36U, 33280U, 32508U, 32512U, 3U},
+    {37U, 32508U, 33280U, 33280U, 6U},
+    {38U, 33280U, 32508U, 32512U, 6U},
+    {39U, 32768U, 32768U, 32768U, 1U},
+    {40U, 32768U, 16384U, 16384U, 1U},
+    {41U, 32768U, 16384U, 16384U, 1U},
+    {42U, 53248U, 14336U, 14336U, 1U},
+    {43U, 32770U, 32770U, 33024U, 1U},
+    {44U, 16380U, 16380U, 16384U, 2U},
+    {45U, 16380U, 16380U, 16384U, 2U},
 };
 
 static void wafer_dmc_cache_range(uint64_t begin, uint32_t bytes,
@@ -155,6 +193,121 @@ static void wafer_dmc_gather(uint32_t source_offset, uint32_t dest_offset,
       dest_iteration2);
 }
 
+static void wafer_dmc_concat_materialized(uint32_t left_bytes,
+                                          uint32_t left_chunk,
+                                          uint32_t right_bytes,
+                                          uint32_t right_chunk,
+                                          uint32_t outer) {
+  uint32_t output_chunk = left_chunk + right_chunk;
+  wafer_dmc_gather(0U, 0U, left_bytes, left_chunk, left_chunk, 0U, 0U, outer,
+                   1U, 1U, output_chunk, 0U, 0U, outer, 1U, 1U);
+  wafer_dmc_gather(left_bytes, left_chunk, right_bytes, right_chunk,
+                   right_chunk, 0U, 0U, outer, 1U, 1U, output_chunk, 0U, 0U,
+                   outer, 1U, 1U);
+}
+
+static uint32_t wafer_dmc_tail_width(uint32_t remainder) {
+  if (remainder == 0U)
+    return 0U;
+  if (remainder <= 4U)
+    return 4U;
+  if (remainder <= 8U)
+    return 8U;
+  if (remainder <= 16U)
+    return 16U;
+  if (remainder <= 32U)
+    return 32U;
+  return 0U;
+}
+
+static uint32_t wafer_dmc_align_up(uint32_t value, uint32_t alignment) {
+  return (value + alignment - 1U) / alignment * alignment;
+}
+
+static void wafer_dmc_layout_segment(uint32_t compact_offset,
+                                     uint32_t physical_offset,
+                                     uint32_t logical_bytes,
+                                     uint32_t compact_stride,
+                                     uint32_t physical_stride,
+                                     uint32_t iterations,
+                                     uint32_t physical_to_compact) {
+  if (physical_to_compact != 0U)
+    wafer_dmc_gather(physical_offset, compact_offset,
+                     logical_bytes * iterations, logical_bytes,
+                     physical_stride, 0U, 0U, iterations, 1U, 1U,
+                     compact_stride, 0U, 0U, iterations, 1U, 1U);
+  else
+    wafer_dmc_gather(compact_offset, physical_offset,
+                     logical_bytes * iterations, logical_bytes,
+                     compact_stride, 0U, 0U, iterations, 1U, 1U,
+                     physical_stride, 0U, 0U, iterations, 1U, 1U);
+}
+
+static uint32_t wafer_dmc_layout(uint32_t channels, uint32_t direction) {
+  const uint32_t n = 2U;
+  const uint32_t hw = 63U;
+  const uint32_t outer = n * hw;
+  const uint32_t compact_row = channels * 2U;
+  uint32_t full_blocks = channels / 64U;
+  uint32_t remainder = channels % 64U;
+  uint32_t tail_width = wafer_dmc_tail_width(remainder);
+  if (remainder > 32U) {
+    ++full_blocks;
+    tail_width = 0U;
+  }
+  uint32_t aligned_channels = full_blocks * 64U + tail_width;
+  uint32_t physical_to_compact =
+      direction == 1U || direction == 3U;
+  uint32_t ncx = direction >= 2U;
+  uint32_t instructions = 0U;
+
+  if (ncx == 0U) {
+    for (uint32_t block = 0; block < full_blocks; ++block) {
+      uint32_t channel_begin = block * 64U;
+      uint32_t logical_width =
+          channels - channel_begin < 64U ? channels - channel_begin : 64U;
+      wafer_dmc_layout_segment(channel_begin * 2U,
+                               block * outer * 64U * 2U,
+                               logical_width * 2U, compact_row, 128U, outer,
+                               physical_to_compact);
+      ++instructions;
+    }
+    if (tail_width != 0U) {
+      wafer_dmc_layout_segment(full_blocks * 64U * 2U,
+                               full_blocks * outer * 64U * 2U,
+                               remainder * 2U, compact_row, tail_width * 2U,
+                               outer, physical_to_compact);
+      ++instructions;
+    }
+    return instructions;
+  }
+
+  uint32_t compact_batch = hw * compact_row;
+  uint32_t physical_batch =
+      wafer_dmc_align_up(hw * aligned_channels, 128U) * 2U;
+  for (uint32_t batch = 0; batch < n; ++batch) {
+    for (uint32_t block = 0; block < full_blocks; ++block) {
+      uint32_t channel_begin = block * 64U;
+      uint32_t logical_width =
+          channels - channel_begin < 64U ? channels - channel_begin : 64U;
+      wafer_dmc_layout_segment(
+          batch * compact_batch + channel_begin * 2U,
+          batch * physical_batch + block * hw * 64U * 2U,
+          logical_width * 2U, compact_row, 128U, hw, physical_to_compact);
+      ++instructions;
+    }
+    if (tail_width != 0U) {
+      wafer_dmc_layout_segment(
+          batch * compact_batch + full_blocks * 64U * 2U,
+          batch * physical_batch + full_blocks * hw * 64U * 2U,
+          remainder * 2U, compact_row, tail_width * 2U, hw,
+          physical_to_compact);
+      ++instructions;
+    }
+  }
+  return instructions;
+}
+
 static uint32_t wafer_dmc_issue(const WaferDMCCase *selected) {
   switch (selected->case_id) {
   case 0U:
@@ -217,36 +370,105 @@ static uint32_t wafer_dmc_issue(const WaferDMCCase *selected) {
                      53U, 37U, 1U);
     break;
   case 10U:
-    wafer_dmc_gather(0U, 0U, 16128U, 128U, 130U, 0U, 0U, 126U, 1U, 1U, 128U, 0U,
-                     0U, 126U, 1U, 1U);
-    wafer_dmc_gather(128U, 16128U, 252U, 2U, 130U, 0U, 0U, 126U, 1U, 1U, 8U, 0U,
-                     0U, 126U, 1U, 1U);
-    break;
   case 11U:
-    wafer_dmc_gather(0U, 0U, 16128U, 128U, 128U, 0U, 0U, 126U, 1U, 1U, 130U, 0U,
-                     0U, 126U, 1U, 1U);
-    wafer_dmc_gather(16128U, 128U, 252U, 2U, 8U, 0U, 0U, 126U, 1U, 1U, 130U, 0U,
-                     0U, 126U, 1U, 1U);
-    break;
   case 12U:
-    for (uint32_t batch = 0; batch < 2U; ++batch) {
-      wafer_dmc_gather(batch * 8190U, batch * 8704U, 8064U, 128U, 130U, 0U, 0U,
-                       63U, 1U, 1U, 128U, 0U, 0U, 63U, 1U, 1U);
-      wafer_dmc_gather(batch * 8190U + 128U, batch * 8704U + 8064U, 126U, 2U,
-                       130U, 0U, 0U, 63U, 1U, 1U, 8U, 0U, 0U, 63U, 1U, 1U);
-    }
-    break;
   case 13U:
-    for (uint32_t batch = 0; batch < 2U; ++batch) {
-      wafer_dmc_gather(batch * 8704U, batch * 8190U, 8064U, 128U, 128U, 0U, 0U,
-                       63U, 1U, 1U, 130U, 0U, 0U, 63U, 1U, 1U);
-      wafer_dmc_gather(batch * 8704U + 8064U, batch * 8190U + 128U, 126U, 2U,
-                       8U, 0U, 0U, 63U, 1U, 1U, 130U, 0U, 0U, 63U, 1U, 1U);
-    }
+    if (wafer_dmc_layout(65U, selected->case_id - 10U) !=
+        selected->expected_instructions)
+      return 0U;
     break;
   case 14U:
     wafer_dmc_gather(0U, 0U, 4224U, 2U, 4U, 130U, 0U, 33U, 64U, 1U, 2U, 66U, 0U,
                      33U, 64U, 1U);
+    break;
+  case 15U:
+    wafer_dmc_concat_materialized(8316U, 66U, 8064U, 64U, 126U);
+    break;
+  case 16U:
+    wafer_dmc_concat_materialized(7280U, 520U, 9100U, 650U, 14U);
+    break;
+  case 17U:
+    wafer_dmc_concat_materialized(7020U, 3510U, 9360U, 4680U, 2U);
+    break;
+  case 18U:
+    wafer_dmc_concat_materialized(2600U, 1300U, 5460U, 2730U, 2U);
+    break;
+  case 19U:
+    wafer_dmc_concat_materialized(8190U, 8190U, 8190U, 8190U, 1U);
+    break;
+  case 20U:
+    wafer_dmc_gather(0U, 0U, 16380U, 2U, 0U, 0U, 0U, 8190U, 1U, 1U, 2U,
+                     0U, 0U, 8190U, 1U, 1U);
+    break;
+  case 21U:
+    wafer_dmc_gather(0U, 0U, 16380U, 130U, 0U, 0U, 0U, 126U, 1U, 1U, 130U,
+                     0U, 0U, 126U, 1U, 1U);
+    break;
+  case 22U:
+    wafer_dmc_gather(0U, 0U, 16380U, 1170U, 0U, 0U, 0U, 14U, 1U, 1U, 1170U,
+                     0U, 0U, 14U, 1U, 1U);
+    break;
+  case 23U:
+  case 24U:
+  case 25U:
+  case 26U:
+    if (wafer_dmc_layout(63U, selected->case_id - 23U) !=
+        selected->expected_instructions)
+      return 0U;
+    break;
+  case 27U:
+  case 28U:
+  case 29U:
+  case 30U:
+    if (wafer_dmc_layout(64U, selected->case_id - 27U) !=
+        selected->expected_instructions)
+      return 0U;
+    break;
+  case 31U:
+  case 32U:
+  case 33U:
+  case 34U:
+    if (wafer_dmc_layout(127U, selected->case_id - 31U) !=
+        selected->expected_instructions)
+      return 0U;
+    break;
+  case 35U:
+  case 36U:
+  case 37U:
+  case 38U:
+    if (wafer_dmc_layout(129U, selected->case_id - 35U) !=
+        selected->expected_instructions)
+      return 0U;
+    break;
+  case 39U:
+    wafer_dmc_gather(0U, 0U, 32768U, 32768U, 0U, 0U, 0U, 1U, 1U, 1U, 0U,
+                     0U, 0U, 1U, 1U, 1U);
+    break;
+  case 40U:
+    wafer_dmc_gather(0U, 0U, 16384U, 2U, 4U, 0U, 0U, 8192U, 1U, 1U, 2U, 0U,
+                     0U, 8192U, 1U, 1U);
+    break;
+  case 41U:
+    wafer_dmc_gather(0U, 0U, 16384U, 128U, 256U, 0U, 0U, 128U, 1U, 1U, 128U,
+                     0U, 0U, 128U, 1U, 1U);
+    break;
+  case 42U:
+    wafer_dmc_gather(0U, 0U, 14336U, 128U, 256U, 8192U, 0U, 16U, 7U, 1U,
+                     128U, 2048U, 0U, 16U, 7U, 1U);
+    break;
+  case 43U:
+    wafer_dmc_gather(0U, 0U, 32770U, 32770U, 0U, 0U, 0U, 1U, 1U, 1U, 0U,
+                     0U, 0U, 1U, 1U, 1U);
+    break;
+  case 44U:
+    for (uint32_t batch = 0; batch < 2U; ++batch)
+      wafer_dmc_gather(batch * 8190U, batch * 8190U, 8190U, 2U, 126U, 2U,
+                       18U, 65U, 9U, 7U, 2U, 130U, 1170U, 65U, 9U, 7U);
+    break;
+  case 45U:
+    for (uint32_t batch = 0; batch < 2U; ++batch)
+      wafer_dmc_gather(batch * 8190U, batch * 8190U, 8190U, 2U, 2U, 130U,
+                       1170U, 65U, 9U, 7U, 126U, 2U, 18U, 65U, 9U, 7U);
     break;
   default:
     return 0U;

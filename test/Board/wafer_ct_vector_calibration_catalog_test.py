@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import collections
+import pathlib
 import struct
 
 import wafer_ct_vector_calibration_catalog as catalog
@@ -11,14 +12,45 @@ import wafer_board_ct_vector_calibration_probe_test as runner
 
 
 def main() -> int:
+    repo = pathlib.Path(__file__).resolve().parents[2]
     assert len(catalog.OPCODE_NAMES) == 187
-    assert len(catalog.CATALOG) == 626
+    assert len(catalog.CATALOG) == 653
     assert len(catalog.CASES_BY_NAME) == len(catalog.CATALOG)
+    assert catalog.DTYPES == {
+        "F16": 0,
+        "BF16": 1,
+        "F32": 2,
+        "BOOL": 3,
+    }
+    assert catalog.HARDWARE_FORMATS == {
+        "F16": 2,
+        "BF16": 3,
+        "F32": 5,
+        "BOOL": 7,
+    }
+    protocol = (
+        repo
+        / "test"
+        / "Board"
+        / "Inputs"
+        / "wafer_ct_vector_calibration_probe_protocol.h"
+    ).read_text()
+    for dtype_name, wire_id in catalog.DTYPES.items():
+        assert f"WAFER_CTV_{dtype_name} = {wire_id}" in protocol
+    probe = (
+        repo
+        / "test"
+        / "Board"
+        / "Inputs"
+        / "wafer_ct_vector_calibration_probe.c"
+    ).read_text()
+    assert "_Static_assert(Fmt_BOOL == 7" in probe
+    assert "case WAFER_CTV_BOOL:\n    return Fmt_BOOL;" in probe
     assert collections.Counter(
         case.family_name for case in catalog.CATALOG
     ) == {
-        "UNARY": 36,
-        "BINARY": 144,
+        "UNARY": 54,
+        "BINARY": 153,
         "RELATION": 288,
         "LOGIC_VALUE": 60,
         "LOGIC_BOOL": 20,
@@ -28,10 +60,12 @@ def main() -> int:
 
     for opcode in range(111):
         cases = tuple(
-            case for case in catalog.CATALOG if case.opcode == opcode
+            case
+            for case in catalog.CATALOG
+            if case.opcode == opcode and case.domain_name == "NORMAL"
         )
         expected_dtypes = (
-            {"F16"} if 88 <= opcode <= 97 else set(catalog.DTYPES)
+            {"BOOL"} if 88 <= opcode <= 97 else set(catalog.FLOAT_DTYPES)
         )
         assert {case.dtype_name for case in cases} == expected_dtypes
         assert {case.shape_name for case in cases} == {"main", "tail"}
@@ -55,6 +89,19 @@ def main() -> int:
     assert {
         catalog.form_name(opcode) for opcode in range(30, 78)
     } == expected_forms
+    bool_cases = tuple(
+        case
+        for case in catalog.CATALOG
+        if case.family_name == "LOGIC_BOOL"
+    )
+    assert len(bool_cases) == 20
+    assert {case.dtype_name for case in bool_cases} == {"BOOL"}
+    assert {case.dtype for case in bool_cases} == {catalog.DTYPES["BOOL"]}
+    assert {case.as_dict()["dtype"] for case in bool_cases} == {"bool"}
+    assert all(
+        case.result_bytes == (case.elements + 7) // 8
+        for case in bool_cases
+    )
     assert {
         (
             catalog.form_name(case.opcode),
@@ -83,6 +130,7 @@ def main() -> int:
         assert words[catalog.REQ["ELEMENTS"]] == case.elements
         assert words[catalog.REQ["RESULT_BYTES"]] == case.result_bytes
         assert words[catalog.REQ["OUTPUT_SPAN"]] == case.output_span
+        assert words[catalog.REQ["DOMAIN"]] == case.domain
         assert words[catalog.REQ["SAMPLE"]] == sample
         assert built.input_a_bytes <= catalog.SLOT_BYTES
         assert built.input_b_bytes <= catalog.SLOT_BYTES
@@ -121,14 +169,85 @@ def main() -> int:
         loop_payload.expected_result,
     }) == 4
 
+    for case in (
+        case
+        for case in catalog.CATALOG
+        if case.domain_name == "NORMAL"
+        and case.opcode in (30, 31, 38, 39)
+    ):
+        built = catalog.build_case_payload(case)
+        lhs = catalog.decode_values(
+            case.dtype_name,
+            built.payload[: built.input_a_bytes],
+        )
+        rhs = catalog.decode_values(
+            case.dtype_name,
+            built.payload[
+                catalog.SLOT_BYTES :
+                catalog.SLOT_BYTES + built.input_b_bytes
+            ],
+        )
+        equal_lanes = tuple(
+            left == right for left, right in zip(lhs, rhs, strict=True)
+        )
+        assert set(equal_lanes) == {False, True}
+        expected_truth = tuple(
+            value if case.opcode < 38 else not value
+            for value in equal_lanes
+        )
+        assert built.expected_result is not None
+        if catalog._is_bool_output(case.opcode):
+            actual_truth = tuple(
+                bool(
+                    (
+                        built.expected_result[index // 8]
+                        >> (index % 8)
+                    )
+                    & 1
+                )
+                for index in range(case.elements)
+            )
+        else:
+            actual_truth = tuple(
+                bool(value)
+                for value in catalog.decode_values(
+                    case.dtype_name, built.expected_result
+                )
+            )
+        assert actual_truth == expected_truth
+
     bool_tail = catalog.CASES_BY_NAME[
-        "ct-op097-logicop_bv_bvubv_xor_loop-f16-tail"
+        "ct-op097-logicop_bv_bvubv_xor_loop-bool-tail"
     ]
     bool_payload = catalog.build_case_payload(bool_tail)
     assert bool_tail.result_bytes == (catalog.TAIL_ELEMENTS + 7) // 8
     assert bool_payload.expected_result is not None
     unused = 8 - catalog.TAIL_ELEMENTS % 8
     assert bool_payload.expected_result[-1] >> (8 - unused) == 0
+
+    special = catalog.CASES_BY_NAME[
+        "ct-op014-arithop_v_vv_add-bf16-special"
+    ]
+    qnan = catalog.CASES_BY_NAME[
+        "ct-op014-arithop_v_vv_add-f32-qnan"
+    ]
+    negative_sqrt = catalog.CASES_BY_NAME[
+        "ct-op003-arithop_v_v_sqrt-f16-sqrt-negative"
+    ]
+    assert catalog.build_case_payload(special).expected_result is not None
+    assert catalog.build_case_payload(qnan).expected_result is None
+    assert (
+        catalog.build_case_payload(negative_sqrt).expected_result is None
+    )
+
+    bound = tuple(
+        case
+        for cases in catalog.CALIBRATION_LEAF_BINDINGS.values()
+        for case in cases
+    )
+    assert all(catalog.CALIBRATION_LEAF_BINDINGS.values())
+    assert len(bound) == len(set(bound)) == len(catalog.CATALOG)
+    assert set(bound) == set(catalog.CATALOG)
 
     runner.configure_package_support()
     assert runner.package_support.catalog is catalog

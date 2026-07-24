@@ -23,10 +23,10 @@ OUTPUT_INITIAL_CANARY = 0xA5
 MODULE = """\
 module {
   func.func @main(
-      %request: tensor<65536xf32>,
-      %payload: tensor<65536xf32>) -> tensor<65536xf32> {
-    %result = stablehlo.add %request, %payload : tensor<65536xf32>
-    return %result : tensor<65536xf32>
+      %request: tensor<262144xf32>,
+      %payload: tensor<262144xf32>) -> tensor<262144xf32> {
+    %result = stablehlo.add %request, %payload : tensor<262144xf32>
+    return %result : tensor<262144xf32>
   }
 }
 """
@@ -34,11 +34,11 @@ METADATA = {
     "name": "forward",
     "stablehlo_version": "0.0.0",
     "input_signature": [
-        {"shape": [65536], "dtype": "float32", "dynamic_dims": []},
-        {"shape": [65536], "dtype": "float32", "dynamic_dims": []},
+        {"shape": [262144], "dtype": "float32", "dynamic_dims": []},
+        {"shape": [262144], "dtype": "float32", "dynamic_dims": []},
     ],
     "output_signature": [
-        {"shape": [65536], "dtype": "float32", "dynamic_dims": []}
+        {"shape": [262144], "dtype": "float32", "dynamic_dims": []}
     ],
     "input_locations": [
         {"type_": "input_arg", "position": 0, "name": "request"},
@@ -71,6 +71,31 @@ def parse_args() -> argparse.Namespace:
         action="append",
         choices=tuple(name.lower() for name in catalog.ORIENTATIONS),
     )
+    parser.add_argument(
+        "--kind",
+        action="append",
+        choices=tuple(name.lower() for name in catalog.KINDS),
+    )
+    parser.add_argument(
+        "--profile",
+        action="append",
+        choices=tuple(
+            name.lower().replace("_", "-")
+            for name in catalog.PROFILES
+        ),
+    )
+    parser.add_argument(
+        "--option",
+        action="append",
+        choices=tuple(
+            name.lower().replace("_", "-") for name in catalog.OPTIONS
+        ),
+    )
+    parser.add_argument(
+        "--suite",
+        choices=("exact", "observed", "all"),
+        default="exact",
+    )
     parser.add_argument("--list-cases", action="store_true")
     parser.add_argument("--no-card", action="store_true")
     parser.add_argument("--device-id", type=int, default=0)
@@ -98,8 +123,24 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.NECase, ...]:
         selected = tuple(
             catalog.CASES_BY_NAME[name] for name in args.selected_cases
         )
+        deferred = tuple(case for case in selected if not case.is_safe)
+        if deferred:
+            details = {case.name: case.reason for case in deferred}
+            raise RuntimeError(
+                f"deferred/negative NE cases cannot be issued: {details}"
+            )
     else:
-        selected = catalog.CATALOG
+        selected = catalog.SAFE_CASES
+        if args.suite != "all":
+            disposition = {
+                "exact": "BOARD_EXACT",
+                "observed": "BOARD_OBSERVED",
+            }[args.suite]
+            selected = tuple(
+                case
+                for case in selected
+                if case.disposition_name == disposition
+            )
         if args.dtype:
             dtypes = {name.upper() for name in args.dtype}
             selected = tuple(
@@ -118,6 +159,25 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.NECase, ...]:
                 case
                 for case in selected
                 if case.orientation_name in orientations
+            )
+        if args.kind:
+            kinds = {name.upper() for name in args.kind}
+            selected = tuple(
+                case for case in selected if case.kind_name in kinds
+            )
+        if args.profile:
+            profiles = {
+                name.upper().replace("-", "_") for name in args.profile
+            }
+            selected = tuple(
+                case for case in selected if case.profile_name in profiles
+            )
+        if args.option:
+            options = {
+                name.upper().replace("-", "_") for name in args.option
+            }
+            selected = tuple(
+                case for case in selected if case.option_name in options
             )
     if not selected:
         raise RuntimeError("NE calibration filters selected no cases")
@@ -149,6 +209,11 @@ def _validate_record(
         case.rhs_span,
         case.output_span,
         sample,
+        case.kind,
+        case.profile,
+        case.option,
+        case.aux_span,
+        case.disposition,
     )
     actual = tuple(
         words[rec[name]]
@@ -165,6 +230,11 @@ def _validate_record(
             "RHS_SPAN",
             "OUTPUT_SPAN",
             "SAMPLE",
+            "KIND",
+            "PROFILE",
+            "OPTION",
+            "AUX_SPAN",
+            "DISPOSITION",
         )
     )
     if (
@@ -206,11 +276,14 @@ def validate_output(
     actual_physical = slot[begin:end]
     actual_logical = physical.unpack_scalar_bytes(
         case.output_shape,
-        case.layout,
+        case.output_layout,
         2,
         actual_physical,
     )
-    if actual_logical != built.expected_logical:
+    if (
+        built.expected_logical is not None
+        and actual_logical != built.expected_logical
+    ):
         mismatch = next(
             index
             for index, (left, right) in enumerate(
@@ -221,13 +294,24 @@ def validate_output(
         raise RuntimeError(
             f"{case.name}: logical result differs at element {mismatch}"
         )
-    if actual_physical != built.expected_physical:
+    canonical_physical = (
+        built.expected_physical
+        if built.expected_physical is not None
+        else physical.pack_scalar_bytes(
+            case.output_shape,
+            case.output_layout,
+            2,
+            actual_logical,
+            padding=catalog.SLOT_CANARY,
+        )
+    )
+    if actual_physical != canonical_physical:
         mismatch = next(
             index
             for index, (left, right) in enumerate(
                 zip(
                     actual_physical,
-                    built.expected_physical,
+                    canonical_physical,
                     strict=True,
                 )
             )

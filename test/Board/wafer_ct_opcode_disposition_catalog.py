@@ -79,7 +79,7 @@ _REDUCE_POOL = {
         "SumPool lacks a large-shape exact physical oracle in the current ABI",
     ),
     117: _board(117, "pool", "pool-f16", "pool-bf16"),
-    118: _board(118, "pool", "unpool-f16-index-source"),
+    118: _board(118, "pool", "unpool-f16"),
     119: _deferred(
         119,
         "pool",
@@ -177,7 +177,7 @@ def build_catalog() -> tuple[CTOpcodeDisposition, ...]:
     convert_evidence_by_opcode = {
         opcode: tuple(
             case.name
-            for case in convert_catalog.CATALOG
+            for case in convert_catalog.SAFE_CASES
             if case.opcode == opcode
         )
         for opcode in range(139, 175)
@@ -196,3 +196,26 @@ def build_catalog() -> tuple[CTOpcodeDisposition, ...]:
 
 CATALOG = build_catalog()
 BY_OPCODE = {row.opcode: row for row in CATALOG}
+_REDUCE_POOL_UNPOOL_PERIPHERAL_OPCODES = frozenset(
+    range(111, 124)
+) | frozenset(range(175, 187))
+CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
+    "ct-reduce-pool-unpool-peripheral-positive": tuple(
+        row
+        for row in CATALOG
+        if row.opcode in _REDUCE_POOL_UNPOOL_PERIPHERAL_OPCODES
+        and row.disposition == "board-executable"
+    ),
+    "ct-reduce-pool-unpool-peripheral-deferred": tuple(
+        row
+        for row in CATALOG
+        if row.opcode in _REDUCE_POOL_UNPOOL_PERIPHERAL_OPCODES
+        and row.disposition == "isolated-deferred"
+    ),
+    "ct-reduce-pool-unpool-peripheral-static-negative": tuple(
+        row
+        for row in CATALOG
+        if row.opcode in _REDUCE_POOL_UNPOOL_PERIPHERAL_OPCODES
+        and row.disposition == "static-negative"
+    ),
+}

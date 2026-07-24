@@ -182,6 +182,7 @@ def _validate_record(
         catalog.UNIT_ELEMENTS
         if catalog._is_vuv(case.opcode)
         else 0,
+        case.domain,
     )
     actual_mirror = (
         words[rec["CASE"]],
@@ -197,6 +198,7 @@ def _validate_record(
         words[rec["INPUT_B_BYTES"]],
         words[rec["SCALAR_BITS"]],
         words[rec["UNIT_ELEMENTS"]],
+        words[rec["DOMAIN"]],
     )
     if (
         words[rec["MAGIC"]] != catalog.RECORD_MAGIC

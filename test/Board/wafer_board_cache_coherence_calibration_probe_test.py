@@ -48,6 +48,8 @@ EXPECTED_CACHE_MASK = {
     2: 4 | 8,
     3: 8,
 }
+PAIR_KIND_CODES = {None: 0, "rdma-rdma": 1, "wdma-wdma": 2, "rdma-wdma": 3}
+SCHEDULE_CODES = {None: 0, "serial": 1, "window": 2}
 
 
 def parse_args() -> argparse.Namespace:
@@ -94,6 +96,8 @@ def _classify_before(
     raw: bytes,
     mismatch_before: int,
 ) -> str:
+    if case.kind == "ddr-bank-pair":
+        return "not-sampled"
     if case.case_id == 1:
         observed = raw[
             catalog.OUTPUT0_OFFSET :
@@ -104,7 +108,11 @@ def _classify_before(
         if observed == built.input_pattern:
             return "old-visible-before-clean"
         return "mixed-or-other-before-clean"
-    if case.case_id in (0, 2):
+    if case.case_id == 0:
+        return "post-invalidate-exact" if mismatch_before == 0 else (
+            "post-invalidate-mismatch"
+        )
+    if case.case_id == 2:
         return "new-visible-before-control" if mismatch_before == 0 else (
             "stale-or-mixed-before-control"
         )
@@ -128,7 +136,7 @@ def validate_output(
         "STATUS": 0,
         "CASE": case.case_id,
         "SAMPLE": sample,
-        "PAYLOAD_BYTES": catalog.PAYLOAD_BYTES,
+        "PAYLOAD_BYTES": case.payload_bytes,
         "EXPECTED_RDMA": case.expected_rdma,
         "EXPECTED_WDMA": case.expected_wdma,
         "REQUEST_GUARD": catalog.REQUEST_GUARD,
@@ -139,7 +147,14 @@ def validate_output(
         "OUTPUT_GUARD_MISMATCHES": 0,
         "RDMA_INST_DELTA": case.expected_rdma,
         "WDMA_INST_DELTA": case.expected_wdma,
-        "CACHE_CONTROL_MASK": EXPECTED_CACHE_MASK[case.case_id],
+        "CACHE_CONTROL_MASK": (
+            8
+            if case.kind == "ddr-bank-pair"
+            else EXPECTED_CACHE_MASK[case.case_id]
+        ),
+        "PAIR_KIND": PAIR_KIND_CODES[case.pair_kind],
+        "SCHEDULE": SCHEDULE_CODES[case.schedule],
+        "BANK_OFFSET": case.bank_offset,
         "RECORD_GUARD": catalog.RECORD_GUARD,
     }
     failures = {
@@ -155,25 +170,41 @@ def validate_output(
         [catalog.OUTPUT_CANARY]
     ) * (catalog.RECORD_WORDS * 8)
     before_observation: bytes | None = None
-    if case.output_regions >= 1:
-        begin = catalog.OUTPUT0_OFFSET
-        end = begin + catalog.PAYLOAD_BYTES
-        before_observation = bytes(mutable[begin:end])
-        if case.case_id in (2, 3) and before_observation != built.post_control_expected:
-            raise RuntimeError(f"{case.name}: WDMA output is not host-exact")
-        mutable[begin:end] = bytes([catalog.OUTPUT_CANARY]) * (
-            end - begin
-        )
-    if case.output_regions == 2:
-        begin = catalog.OUTPUT1_OFFSET
-        end = begin + catalog.PAYLOAD_BYTES
-        if bytes(mutable[begin:end]) != built.post_control_expected:
-            raise RuntimeError(
-                f"{case.name}: post-clean NCC snapshot is not exact"
+    if case.kind == "ddr-bank-pair":
+        for begin, expected in built.expected_regions:
+            end = begin + len(expected)
+            if bytes(mutable[begin:end]) != expected:
+                raise RuntimeError(
+                    f"{case.name}: DDR pair output at {begin} is not exact"
+                )
+            mutable[begin:end] = bytes([catalog.OUTPUT_CANARY]) * (
+                end - begin
             )
-        mutable[begin:end] = bytes([catalog.OUTPUT_CANARY]) * (
-            end - begin
-        )
+    else:
+        if case.output_regions >= 1:
+            begin = catalog.OUTPUT0_OFFSET
+            end = begin + catalog.PAYLOAD_BYTES
+            before_observation = bytes(mutable[begin:end])
+            if (
+                case.case_id in (2, 3)
+                and before_observation != built.post_control_expected
+            ):
+                raise RuntimeError(
+                    f"{case.name}: WDMA output is not host-exact"
+                )
+            mutable[begin:end] = bytes([catalog.OUTPUT_CANARY]) * (
+                end - begin
+            )
+        if case.output_regions == 2:
+            begin = catalog.OUTPUT1_OFFSET
+            end = begin + catalog.PAYLOAD_BYTES
+            if bytes(mutable[begin:end]) != built.post_control_expected:
+                raise RuntimeError(
+                    f"{case.name}: post-clean NCC snapshot is not exact"
+                )
+            mutable[begin:end] = bytes([catalog.OUTPUT_CANARY]) * (
+                end - begin
+            )
     if mutable != bytes([catalog.OUTPUT_CANARY]) * catalog.RESOURCE_BYTES:
         mismatch = next(
             index
@@ -189,7 +220,7 @@ def validate_output(
     return {
         "case": case.as_dict(),
         "sample": sample,
-        "pre_control_state": _classify_before(
+        "control_observation_state": _classify_before(
             case, built, raw, mismatch_before
         ),
         "mismatch_before": mismatch_before,
@@ -248,7 +279,20 @@ def main() -> int:
     if args.list_cases:
         print(
             json.dumps(
-                [case.as_dict() for case in catalog.CATALOG],
+                {
+                    "board_cases": [
+                        case.as_dict() for case in catalog.CATALOG
+                    ],
+                    "deferred_descriptor_dispositions": [
+                        case.as_dict()
+                        for case in catalog.DDR_LARGE_DESCRIPTOR_DISPOSITIONS
+                    ],
+                    "calibration_leaf_bindings": {
+                        key: [getattr(row, "name", "") for row in rows]
+                        for key, rows
+                        in catalog.CALIBRATION_LEAF_BINDINGS.items()
+                    },
+                },
                 indent=2,
                 sort_keys=True,
             )

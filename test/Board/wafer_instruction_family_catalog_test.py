@@ -1127,52 +1127,70 @@ def validate_pool_max_oracle() -> None:
 
 
 def validate_unpool_composite_oracle() -> None:
-    case = catalog.CASES_BY_NAME["unpool-f16"]
-    assert case.is_safe
-    assert case.oracle_name == "EXACT_COMPOSITE"
-    assert (case.result_bytes, case.output_span, case.aux_span) == (
-        512,
-        512,
-        256,
-    )
+    for name in ("unpool-f16", "unpool-index-f16"):
+        case = catalog.CASES_BY_NAME[name]
+        assert case.is_safe
+        assert case.oracle_name == "EXACT_COMPOSITE"
+        assert (case.result_bytes, case.output_span, case.aux_span) == (
+            512,
+            512,
+            256,
+        )
 
-    built = catalog.build_case_payload(case)
-    source = struct.unpack_from(
-        "<256e", built.payload, catalog.BODY_OFFSET
-    )
-    assert source == tuple(
-        float(128 + channel if position == channel % 4 else 1 + position)
-        for position in range(4)
-        for channel in range(64)
-    )
-    output_seed = built.payload[
-        2 * catalog.SLOT_BYTES + catalog.BODY_OFFSET :
-        2 * catalog.SLOT_BYTES + catalog.BODY_OFFSET + case.output_span
-    ]
-    assert output_seed == bytes(case.output_span)
-    expected = struct.unpack_from(
-        "<256e", built.expected_output_slot, catalog.BODY_OFFSET
-    )
-    assert expected == tuple(
-        float(128 + channel if position == channel % 4 else 0)
-        for position in range(4)
-        for channel in range(64)
-    )
+        built = catalog.build_case_payload(case)
+        source = struct.unpack_from(
+            "<256e", built.payload, catalog.BODY_OFFSET
+        )
+        assert source == tuple(
+            float(
+                128 + channel
+                if position == channel % 4
+                else 1 + position
+            )
+            for position in range(4)
+            for channel in range(64)
+        )
+        output_seed = built.payload[
+            2 * catalog.SLOT_BYTES + catalog.BODY_OFFSET :
+            2 * catalog.SLOT_BYTES
+            + catalog.BODY_OFFSET
+            + case.output_span
+        ]
+        assert output_seed == bytes(case.output_span)
+        expected = struct.unpack_from(
+            "<256e", built.expected_output_slot, catalog.BODY_OFFSET
+        )
+        assert expected == tuple(
+            float(128 + channel if position == channel % 4 else 0)
+            for position in range(4)
+            for channel in range(64)
+        )
 
     probe = (
         pathlib.Path(__file__).resolve().parent
         / "Inputs"
         / "wafer_instruction_family_probe.c"
     ).read_text()
-    case_body = probe[
-        probe.index("case WAFER_IFP_CASE_UNPOOL_F16:") :
-        probe.index("break;", probe.index("case WAFER_IFP_CASE_UNPOOL_F16:"))
-    ]
-    pool = case_body.index("wafer_tx81_pool_indexedmax")
-    fence = case_body.index("wafer_tx81_local_fence")
-    unpool = case_body.index("wafer_tx81_unpool_mask")
-    assert pool < fence < unpool
-    assert "(uint32_t)auxiliary" in case_body
+    for symbol, wrapper, opcode in (
+        (
+            "UNPOOL_F16",
+            "wafer_tx81_unpool_mask",
+            "OP_FUNC_CGRATensor_DataMoveOp_T_T_maskunpool",
+        ),
+        (
+            "UNPOOL_INDEX_F16",
+            "wafer_tx81_unpool_unpool",
+            "OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool",
+        ),
+    ):
+        start = probe.index(f"case WAFER_IFP_CASE_{symbol}:")
+        case_body = probe[start : probe.index("break;", start)]
+        pool = case_body.index("wafer_tx81_pool_indexedmax")
+        fence = case_body.index("wafer_tx81_local_fence")
+        unpool = case_body.index(wrapper)
+        assert pool < fence < unpool
+        assert opcode in case_body
+        assert "(uint32_t)auxiliary" in case_body
 
 
 def validate_conv_oracle() -> None:
@@ -1343,8 +1361,8 @@ def _output_seed_padding() -> bytes:
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 60
-    assert len(catalog.CATALOG) == 60
+    assert len(catalog.SAFE_CASES) == 61
+    assert len(catalog.CATALOG) == 61
     assert {case.case_id for case in catalog.SAFE_CASES} == (
         set(range(1, 30))
         | {
@@ -1379,6 +1397,7 @@ def main() -> int:
             128,
             129,
             130,
+            131,
         }
     )
     assert {

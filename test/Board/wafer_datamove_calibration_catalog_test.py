@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import pathlib
+
 import wafer_datamove_calibration_catalog as catalog
 
 
 def main() -> int:
-    assert len(catalog.CATALOG) == 15
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    assert len(catalog.CATALOG) == 46
     assert len(catalog.CASES_BY_ID) == len(catalog.CATALOG)
     assert len(catalog.CASES_BY_NAME) == len(catalog.CATALOG)
     assert len(catalog.PUBLIC_DISPOSITIONS) == 18
@@ -18,13 +21,18 @@ def main() -> int:
         row.opcode
         for row in catalog.PUBLIC_DISPOSITIONS
         if row.disposition == "isolated-deferred"
-    } == {122, 136, 137}
+    } == {122, 131, 133, 136, 137}
     for row in catalog.PUBLIC_DISPOSITIONS:
         if row.disposition == "board-executable":
             assert row.evidence
             assert row.reason is None
         else:
             assert row.reason
+        for evidence in catalog._EXISTING_EVIDENCE.get(row.opcode, ()):
+            assert row.opcode in catalog.EXISTING_EVIDENCE_OPCODES[evidence], (
+                f"{row.opcode}: evidence {evidence} does not issue this "
+                "public opcode"
+            )
 
     assert len(catalog.INSTRUCTION_LAYOUT_DISPOSITIONS) == 20
     assert {
@@ -39,9 +47,44 @@ def main() -> int:
         if row.disposition == "static-negative":
             assert not row.evidence
             assert row.reason
+        elif row.disposition == "isolated-deferred":
+            assert row.evidence
+            assert row.reason
         else:
             assert row.evidence
             assert row.reason is None
+    assert set(catalog.INSTRUCTION_LAYOUT_POSITIVE_DISPOSITIONS).isdisjoint(
+        catalog.INSTRUCTION_LAYOUT_COMPOSITE_DEFERRED_DISPOSITIONS
+    )
+    assert set(catalog.INSTRUCTION_LAYOUT_POSITIVE_DISPOSITIONS).isdisjoint(
+        catalog.INSTRUCTION_LAYOUT_NONBOARD_DISPOSITIONS
+    )
+    assert set(
+        catalog.INSTRUCTION_LAYOUT_COMPOSITE_DEFERRED_DISPOSITIONS
+    ).isdisjoint(catalog.INSTRUCTION_LAYOUT_NONBOARD_DISPOSITIONS)
+    assert (
+        set(catalog.INSTRUCTION_LAYOUT_POSITIVE_DISPOSITIONS)
+        | set(catalog.INSTRUCTION_LAYOUT_COMPOSITE_DEFERRED_DISPOSITIONS)
+        | set(catalog.INSTRUCTION_LAYOUT_NONBOARD_DISPOSITIONS)
+    ) == set(catalog.INSTRUCTION_LAYOUT_DISPOSITIONS)
+    assert all(
+        row.disposition == "native-board-executable"
+        for row in catalog.CALIBRATION_LEAF_BINDINGS[
+            "instruction-layout-native-positive"
+        ]
+    )
+    assert all(
+        row.disposition == "isolated-deferred"
+        for row in catalog.CALIBRATION_LEAF_BINDINGS[
+            "instruction-layout-composite-deferred"
+        ]
+    )
+    assert all(
+        row.disposition == "static-negative"
+        for row in catalog.CALIBRATION_LEAF_BINDINGS[
+            "instruction-layout-static-negative"
+        ]
+    )
 
     operations = {case.operation for case in catalog.CATALOG}
     assert {
@@ -60,7 +103,17 @@ def main() -> int:
         "tensor-to-ncx",
         "ncx-to-tensor",
         "gather-scatter-strided",
-    } == operations
+    }.issubset(operations)
+    assert {
+        "broadcast-scalar",
+        "broadcast-channel",
+        "broadcast-row-large",
+        "gather-contiguous-large",
+        "gather-1d-holes-large",
+        "gather-2d-holes-large",
+        "gather-3d-holes-large",
+        "gather-tail-large",
+    }.issubset(operations)
     for case in catalog.CATALOG:
         assert case.input_bytes > 0
         assert case.result_bytes > 0
@@ -84,10 +137,94 @@ def main() -> int:
         )
 
     assert catalog.CX_BYTES != catalog.NCX_BYTES
+    raw_concat = {
+        row.semantic: row for row in catalog.RAW_CONCAT_DISPOSITIONS
+    }
+    assert set(raw_concat) == {
+        "concat-axis-C",
+        "concat-axis-W",
+        "concat-axis-H",
+        "concat-axis-HW",
+    }
+    assert all(
+        row.disposition == "isolated-deferred"
+        and not row.evidence
+        and row.reason
+        for row in raw_concat.values()
+    )
+    assert (
+        catalog.CALIBRATION_LEAF_BINDINGS["raw-concat-disposition"]
+        == catalog.RAW_CONCAT_DISPOSITIONS
+    )
+    materialized_concat = {
+        case.semantic_axis
+        for case in catalog.CATALOG
+        if case.operation == "concat" and case.case_id >= 15
+    }
+    assert materialized_concat == {"C", "W", "H", "HW", "N"}
+    hw_concat = next(
+        case
+        for case in catalog.CATALOG
+        if case.operation == "concat" and case.semantic_axis == "HW"
+    )
+    assert hw_concat.source1_shape is not None
+    assert (
+        hw_concat.source_shape[1] > 1
+        and hw_concat.source1_shape[1] > 1
+        and hw_concat.source_shape[1:3] != hw_concat.source1_shape[1:3]
+        and hw_concat.destination_shape[1] == 1
+        and hw_concat.destination_shape[2]
+        == (
+            hw_concat.source_shape[1] * hw_concat.source_shape[2]
+            + hw_concat.source1_shape[1] * hw_concat.source1_shape[2]
+        )
+    )
+    device_probe = (
+        repo
+        / "test"
+        / "Board"
+        / "Inputs"
+        / "wafer_datamove_calibration_probe.c"
+    ).read_text()
+    assert "{18U, 8060U, 8060U, 8192U, 2U}" in device_probe
+    assert (
+        "wafer_dmc_concat_materialized(2600U, 1300U, "
+        "5460U, 2730U, 2U)"
+    ) in device_probe
+    assert all(
+        case.opcode == 135
+        for case in catalog.CATALOG
+        if case.operation == "concat"
+    )
+    for channels in (63, 64, 65, 127, 129):
+        rows = tuple(
+            row
+            for row in catalog.CALIBRATION_LEAF_BINDINGS[
+                "cx-ncx-channel-boundaries"
+            ]
+            if row.destination_shape == (2, 7, 9, channels)
+        )
+        assert len(rows) == 4
+        assert {row.operation for row in rows} == {
+            "tensor-to-cx",
+            "cx-to-tensor",
+            "tensor-to-ncx",
+            "ncx-to-tensor",
+        }
+    allowed_leaf_objects = set(catalog.CATALOG)
+    allowed_leaf_objects.update(catalog.PUBLIC_DISPOSITIONS)
+    allowed_leaf_objects.update(catalog.INSTRUCTION_LAYOUT_DISPOSITIONS)
+    allowed_leaf_objects.update(catalog.RAW_CONCAT_DISPOSITIONS)
+    allowed_leaf_objects.update(catalog.EXTENDED_DATAMOVE_DISPOSITIONS)
+    assert catalog.CALIBRATION_LEAF_BINDINGS
+    for key, rows in catalog.CALIBRATION_LEAF_BINDINGS.items():
+        assert key
+        assert rows
+        assert all(row in allowed_leaf_objects for row in rows)
     print(
         "wafer_datamove_calibration_catalog_test: "
-        "board_cases=15 public_opcodes=18 layout_combinations=20 "
-        "deferred=3 passed"
+        "board_cases=46 public_opcodes=18 layout_combinations=20 "
+        "deferred=5 passed"
     )
     return 0
 

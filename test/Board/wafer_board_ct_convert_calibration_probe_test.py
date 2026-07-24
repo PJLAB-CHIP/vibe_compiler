@@ -56,6 +56,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--case", action="append", dest="selected_cases")
     parser.add_argument("--opcode", action="append", type=int)
     parser.add_argument("--shape", choices=("main", "tail"))
+    parser.add_argument(
+        "--suite",
+        choices=("exact", "observed", "all"),
+        default="exact",
+    )
     parser.add_argument("--list-cases", action="store_true")
     parser.add_argument("--no-card", action="store_true")
     parser.add_argument("--device-id", type=int, default=0)
@@ -84,7 +89,23 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.CTConvertCase, ...]:
             catalog.CASES_BY_NAME[name] for name in args.selected_cases
         )
     else:
-        selected = catalog.CATALOG
+        selected = catalog.SAFE_CASES
+        if args.suite != "all":
+            disposition = {
+                "exact": "BOARD_EXACT",
+                "observed": "BOARD_OBSERVED",
+            }[args.suite]
+            selected = tuple(
+                case
+                for case in selected
+                if case.disposition_name == disposition
+            )
+    deferred = tuple(case for case in selected if not case.is_safe)
+    if deferred:
+        details = {case.name: case.reason for case in deferred}
+        raise RuntimeError(
+            f"deferred CT convert cases cannot be issued: {details}"
+        )
     if args.opcode:
         opcodes = set(args.opcode)
         invalid = sorted(opcodes - set(range(139, 175)))
@@ -124,6 +145,9 @@ def validate_output(
         "RESULT_BYTES": case.result_bytes,
         "OUTPUT_SPAN": case.output_span,
         "ROUNDING": case.rounding_mode,
+        "DOMAIN": case.domain,
+        "ZERO_POINT": case.zero_point,
+        "DISPOSITION": case.disposition,
         "SAMPLE": sample,
         "REQUEST_GUARD": catalog.REQUEST_GUARD,
         "OUTPUT_DDR_OFFSET": catalog.OUTPUT_DDR_OFFSET,
@@ -144,7 +168,10 @@ def validate_output(
         catalog.OUTPUT_DDR_OFFSET :
         catalog.OUTPUT_DDR_OFFSET + catalog.SLOT_BYTES
     ]
-    if output_slot != built.expected_output_slot:
+    if (
+        built.expected_output_slot is not None
+        and output_slot != built.expected_output_slot
+    ):
         mismatch = next(
             index
             for index, (actual, expected) in enumerate(
@@ -155,6 +182,27 @@ def validate_output(
         raise RuntimeError(
             f"{case.name}: result/physical guard differs at byte {mismatch}"
         )
+    if built.expected_output_slot is None:
+        for begin, end in (
+            (0, catalog.BODY_OFFSET),
+            (
+                catalog.BODY_OFFSET + case.result_bytes,
+                catalog.SLOT_BYTES,
+            ),
+        ):
+            mismatch = next(
+                (
+                    index
+                    for index in range(begin, end)
+                    if output_slot[index] != catalog.SLOT_CANARY
+                ),
+                None,
+            )
+            if mismatch is not None:
+                raise RuntimeError(
+                    f"{case.name}: observed output guard differs at "
+                    f"slot byte {mismatch}"
+                )
     mutable = bytearray(raw[: catalog.OUTPUT_DDR_OFFSET])
     mutable[: catalog.RECORD_WORDS * 8] = bytes(
         [catalog.SLOT_CANARY]

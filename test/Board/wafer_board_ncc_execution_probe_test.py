@@ -507,6 +507,21 @@ class GenericProbeCase:
             ],
         }
 
+
+@dataclasses.dataclass(frozen=True)
+class CalibrationDisposition:
+    """Typed disposition for a calibration leaf that must not be issued."""
+
+    name: str
+    domain: str
+    disposition: str
+    reason: str
+    completion_oracle: str
+
+    def as_dict(self) -> dict[str, object]:
+        return dataclasses.asdict(self)
+
+
 def v2_lane(
     engine: ncc_protocol.Engine,
     *,
@@ -733,6 +748,13 @@ V2_SINGLE_CASES = tuple(
 )
 V2_WORKER_CASES = (
     v2_case(
+        "ct-worker0-raw-single",
+        (v2_lane(ncc_protocol.Engine.CT, worker=0),),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.SERIAL,
+        seed=0x6100,
+    ),
+    v2_case(
         "ct-worker1-raw-single",
         (v2_lane(ncc_protocol.Engine.CT, worker=1),),
         rounds=1,
@@ -747,6 +769,36 @@ V2_WORKER_CASES = (
         seed=0x6102,
     ),
     v2_case(
+        "ct-workers01-disjoint-r1-window",
+        (
+            v2_lane(ncc_protocol.Engine.CT, worker=0),
+            v2_lane(ncc_protocol.Engine.CT, worker=1),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x6110,
+    ),
+    v2_case(
+        "ct-workers02-disjoint-r1-window",
+        (
+            v2_lane(ncc_protocol.Engine.CT, worker=0),
+            v2_lane(ncc_protocol.Engine.CT, worker=2),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x6111,
+    ),
+    v2_case(
+        "ct-workers12-disjoint-r1-window",
+        (
+            v2_lane(ncc_protocol.Engine.CT, worker=1),
+            v2_lane(ncc_protocol.Engine.CT, worker=2),
+        ),
+        rounds=1,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x6112,
+    ),
+    v2_case(
         "ct-workers012-disjoint-r1-window",
         (
             v2_lane(ncc_protocol.Engine.CT, worker=0),
@@ -755,7 +807,7 @@ V2_WORKER_CASES = (
         ),
         rounds=1,
         schedule=ncc_protocol.Schedule.WINDOW,
-        seed=0x6112,
+        seed=0x6113,
     ),
 )
 V2_COMPLETION_SCOPE_CASES = tuple(
@@ -788,23 +840,13 @@ V2_COMPLETION_SCOPE_CASES = tuple(
 )
 V2_WAIT_OVERHEAD_CASES = tuple(
     v2_case(
-        f"ct-worker0-depth6-{spelling}",
-        (
-            v2_lane(
-                ncc_protocol.Engine.CT,
-                worker=0,
-                transfer_bytes=256,
-            ),
-            v2_lane(
-                ncc_protocol.Engine.CT,
-                worker=0,
-                transfer_bytes=256,
-            ),
-        ),
-        rounds=3,
+        f"{engine.name.lower()}-worker0-r2-{spelling}",
+        (v2_lane(engine, worker=0),),
+        rounds=2,
         schedule=schedule,
-        seed=0x6130,
+        seed=0x6130 + int(engine),
     )
+    for engine in V2_ENGINES
     for spelling, schedule in (
         ("wait-each", ncc_protocol.Schedule.SERIAL),
         ("wait-once", ncc_protocol.Schedule.WINDOW),
@@ -812,16 +854,28 @@ V2_WAIT_OVERHEAD_CASES = tuple(
 )
 V2_MULTI_ISSUE_CASES = tuple(
     v2_case(
-        (
-            f"{engine.name.lower()}-raw-"
-            f"rounds{min(4, depth - 2)}-window"
-        ),
+        f"{engine.name.lower()}-raw-rounds{rounds}-window",
         (v2_lane(engine),),
-        rounds=min(4, depth - 2),
+        rounds=rounds,
         schedule=ncc_protocol.Schedule.WINDOW,
-        seed=0x200 + int(engine),
+        seed=0x200 + int(engine) * 0x10 + rounds,
     )
     for engine, depth in V2_DOCUMENTED_QUEUE_DEPTHS.items()
+    for rounds in ((2,) if engine == ncc_protocol.Engine.TDMA else (2, 4))
+)
+V2_ISSUE_PATH_CASES = tuple(
+    v2_case(
+        (
+            f"{engine.name.lower()}-{mode.name.lower()}-"
+            "rounds2-window"
+        ),
+        (v2_lane(engine, mode=mode),),
+        rounds=2,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x2600 + int(engine) * 0x10 + int(mode),
+    )
+    for engine in V2_ENGINES
+    for mode in (ncc_protocol.IssueMode.RAW, ncc_protocol.IssueMode.WRAPPER)
 )
 V2_DOCUMENTED_DEPTH_CASES = tuple(
     v2_case(
@@ -871,11 +925,208 @@ V2_PAIR_CASES = tuple(
         ),
     )
     for first, second in itertools.permutations(V2_ENGINES, 2)
-    for rounds in (2, 4)
+    for rounds in (
+        (2,)
+        if ncc_protocol.Engine.TDMA in (first, second)
+        else (2, 4)
+    )
     for schedule in (
         ncc_protocol.Schedule.SERIAL,
         ncc_protocol.Schedule.WINDOW,
     )
+)
+V2_DEFERRED_CASES = (
+    *(
+        CalibrationDisposition(
+            name=f"ct-workers012-join{mask:03b}-observe-unjoined",
+            domain="cross-worker-join",
+            disposition="isolated-deferred",
+            reason=(
+                "the current bounded probe cannot safely read a worker that "
+                "is intentionally still in flight at the join boundary"
+            ),
+            completion_oracle=(
+                "joined workers are covered by the positive mask case; the "
+                "unjoined worker is never claimed complete"
+            ),
+        )
+        for mask in (0b001, 0b010, 0b100, 0b011, 0b101, 0b110)
+    ),
+    CalibrationDisposition(
+        name="default-wait-cross-worker-scope",
+        domain="worker-specific-wait",
+        disposition="isolated-deferred",
+        reason=(
+            "available short workloads can drain naturally before the "
+            "boundary, so they cannot distinguish default wait scope"
+        ),
+        completion_oracle=(
+            "requires a safely pending worker-specific marker before any "
+            "board-positive conclusion"
+        ),
+    ),
+    CalibrationDisposition(
+        name="dependency-strided-envelope",
+        domain="dependency-under-overlap",
+        disposition="isolated-deferred",
+        reason=(
+            "the device hazard composer currently supports exact, partial, "
+            "and adjacent ranges only"
+        ),
+        completion_oracle=(
+            "requires a typed strided composition golden and a disjoint "
+            "positive-overlap qualification for the same oriented pair"
+        ),
+    ),
+    CalibrationDisposition(
+        name="movement-backlog-at-least-64k",
+        domain="parallel-backlog",
+        disposition="isolated-deferred",
+        reason=(
+            "the current NCC wire/resource slot bounds one movement issue "
+            "to 4KiB; short rows must not be relabeled as a 64KiB backlog"
+        ),
+        completion_oracle=(
+            "requires at least 64KiB exact payload, physical guards, engine "
+            "count, and paired raw/wrapper controls"
+        ),
+    ),
+    CalibrationDisposition(
+        name="ne-large-shape-backlog",
+        domain="parallel-backlog",
+        disposition="isolated-deferred",
+        reason=(
+            "the generic NCC adapter is fixed to the bounded 1x16x16 GEMM "
+            "and cannot represent the required large NE shape"
+        ),
+        completion_oracle=(
+            "requires a large-shape NE payload/oracle rather than repeated "
+            "small identity work"
+        ),
+    ),
+)
+V2_PROTOCOL_NEGATIVE_CASES = (
+    CalibrationDisposition(
+        name="execute-engine-none",
+        domain="ncc-protocol",
+        disposition="static-negative",
+        reason="Engine.NONE is a wire sentinel, never an active lane",
+        completion_oracle="typed Plan validation rejects before serialization",
+    ),
+    CalibrationDisposition(
+        name="execute-worker-out-of-range",
+        domain="ncc-protocol",
+        disposition="static-negative",
+        reason="worker ids outside 0..2 would alias in lower-level firmware",
+        completion_oracle="typed Lane validation rejects before serialization",
+    ),
+    CalibrationDisposition(
+        name="wait-mask-nonparticipant",
+        domain="ncc-protocol",
+        disposition="static-negative",
+        reason="a worker wait mask may name only participating workers",
+        completion_oracle="typed Plan validation rejects before serialization",
+    ),
+    CalibrationDisposition(
+        name="execute-scalar-packet",
+        domain="ncc-protocol",
+        disposition="static-negative",
+        reason="SCALAR is not an ordinary TsmExecute engine lane",
+        completion_oracle="the public Engine enum intentionally has no SCALAR",
+    ),
+    CalibrationDisposition(
+        name="execute-csr-packet",
+        domain="ncc-protocol",
+        disposition="static-negative",
+        reason="CSR is not an ordinary TsmExecute engine lane",
+        completion_oracle="the public Engine enum intentionally has no CSR",
+    ),
+)
+V2_ADDITIONAL_DISPOSITIONS = (
+    CalibrationDisposition(
+        "known-good-heartbeat",
+        "runtime-publication",
+        "isolated-deferred",
+        "heartbeat belongs to the surrounding single-process board sequence",
+        "known-good Add before and after the isolated batch",
+    ),
+    CalibrationDisposition(
+        "constructor-zero-address",
+        "constructor-ownership",
+        "isolated-deferred",
+        "the current record does not publish the constructor return address",
+        "requires an explicit address observation without treating zero as failure",
+    ),
+    CalibrationDisposition(
+        "constructor-builder-release",
+        "constructor-ownership",
+        "board-executable",
+        "the raw path releases every builder immediately after packet materialization",
+        "all issued packets retain exact result, range, count, and guard oracles",
+    ),
+    CalibrationDisposition(
+        "execute-invalid-type-return",
+        "ncc-protocol",
+        "static-negative",
+        "invalid engine types are rejected by the typed host plan",
+        "no invalid packet reaches TsmExecute",
+    ),
+    CalibrationDisposition(
+        "dma-contiguous-64k",
+        "dma-shape",
+        "isolated-deferred",
+        "the current NCC resource slot bounds one issue to 4KiB",
+        "requires a 64KiB exact payload and guard-preserving device adapter",
+    ),
+    CalibrationDisposition(
+        "dma-offset-alignment-tail",
+        "dma-shape",
+        "isolated-deferred",
+        "the generic NCC adapter does not expose independent DDR offset/alignment fields",
+        "requires aligned/misaligned static gates plus an exact tail oracle",
+    ),
+    CalibrationDisposition(
+        "tdma-i8-whole-strided",
+        "tdma-shape",
+        "isolated-deferred",
+        "the current TDMA wrapper leaf covers whole contiguous I8 only",
+        "requires a typed TDMA stride descriptor with hole and tail guards",
+    ),
+    CalibrationDisposition(
+        "tdma-fp16-bf16-raw-crt",
+        "tdma-format",
+        "isolated-deferred",
+        "the raw/wrapper issue-path control currently uses the ordinary I8 lane",
+        "requires paired FP16 and BF16 raw/CRT exact fills",
+    ),
+    CalibrationDisposition(
+        "tdma-native-bool-exclusion",
+        "tdma-format",
+        "static-negative",
+        "native BOOL Memset is excluded on the current profile",
+        "only BOOL-to-I8 physical canonicalization may reach the device",
+    ),
+    CalibrationDisposition(
+        "tdma-contiguous-stride-tail",
+        "tdma-shape",
+        "isolated-deferred",
+        "the existing 1D/2D/3D descriptors exercise RDMA/WDMA, not TDMA",
+        "requires TDMA-specific contiguous, strided, and tail exact leaves",
+    ),
+    CalibrationDisposition(
+        "double-slot-software-pipeline-vertical",
+        "software-pipeline",
+        "isolated-deferred",
+        "the source-level double-slot vertical is not represented by the bounded NCC probe",
+        "requires prologue/steady/epilogue, odd/even, single-iteration, and slot guards",
+    ),
+    CalibrationDisposition(
+        "ncc-producer-consumer-uncovered-directions",
+        "ncc-producer-consumer",
+        "isolated-deferred",
+        "the hazard catalog has representative relations but not every listed engine direction",
+        "requires RDMA-to-CT, CT/NE-to-WDMA, TDMA-to-CT/NE, and Kcore read boundaries",
+    ),
 )
 V2_PIPELINE_CASES = tuple(
     v2_case(
@@ -1008,6 +1259,7 @@ SUITES = {
     "hazard-manual": V2_HAZARD_MANUAL_CASES,
     "completion-scope-manual": V2_COMPLETION_SCOPE_CASES,
     "wait-overhead-manual": V2_WAIT_OVERHEAD_CASES,
+    "issue-path-manual": V2_ISSUE_PATH_CASES,
     "tdma-crt-manual": TDMA_CRT_MANUAL_CASES,
     "dma-stride-matrix-manual": V2_DMA_STRIDE_MATRIX_CASES,
     "documented-depth-manual": V2_DOCUMENTED_DEPTH_CASES,
@@ -1018,6 +1270,109 @@ CASE_CATALOGS = {
         NO_CARD_PROTOCOL_CASES + V2_DMA_STRIDE_MATRIX_CASES
     ),
     **SUITES,
+}
+CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
+    "known-good-heartbeat": (V2_ADDITIONAL_DISPOSITIONS[0],),
+    "constructor-zero-address": (V2_ADDITIONAL_DISPOSITIONS[1],),
+    "constructor-builder-release": (
+        V2_ADDITIONAL_DISPOSITIONS[2],
+        *V2_SINGLE_CASES,
+    ),
+    "execute-success-requires-side-effects": V2_SINGLE_CASES,
+    "execute-invalid-type-return": (V2_ADDITIONAL_DISPOSITIONS[3],),
+    "routing-five-engines-worker0": V2_SINGLE_CASES,
+    "routing-ct-workers012": V2_WORKER_CASES,
+    "range-materialization-ct-ne": tuple(
+        case
+        for case in V2_SINGLE_CASES
+        if case.plan.lanes[0].engine
+        in (ncc_protocol.Engine.CT, ncc_protocol.Engine.NE)
+    ),
+    "range-materialization-rdma-wdma-tdma": tuple(
+        case
+        for case in V2_SINGLE_CASES
+        if case.plan.lanes[0].engine
+        in (
+            ncc_protocol.Engine.RDMA,
+            ncc_protocol.Engine.WDMA,
+            ncc_protocol.Engine.TDMA,
+        )
+    ),
+    "dma-contiguous-64k": (V2_ADDITIONAL_DISPOSITIONS[4],),
+    "dma-1d-2d-3d-stride-holes": V2_DMA_STRIDE_MATRIX_CASES,
+    "dma-offset-alignment-tail": (V2_ADDITIONAL_DISPOSITIONS[5],),
+    "tdma-i8-whole-positive": (NO_CARD_PROTOCOL_CASES[0],),
+    "tdma-i8-strided-deferred": (V2_ADDITIONAL_DISPOSITIONS[6],),
+    "tdma-fp16-bf16-raw-crt": (V2_ADDITIONAL_DISPOSITIONS[7],),
+    "tdma-native-bool-exclusion": (V2_ADDITIONAL_DISPOSITIONS[8],),
+    "tdma-bool-to-i8-physical-fill": (NO_CARD_PROTOCOL_CASES[1],),
+    "tdma-contiguous-stride-tail": (V2_ADDITIONAL_DISPOSITIONS[9],),
+    "five-engine-n1-n2-n4": V2_SINGLE_CASES + V2_MULTI_ISSUE_CASES,
+    "documented-depth-manual": V2_DOCUMENTED_DEPTH_CASES,
+    "depth-plus-one-manual": V2_DEPTH_PLUS_ONE_CASES,
+    "workers012-disjoint-routing": V2_WORKER_CASES,
+    "default-byworker-wait-controls": (
+        V2_WORKER_CASES + V2_COMPLETION_SCOPE_CASES
+    ),
+    "default-wait-nondefault-scope": tuple(
+        case
+        for case in V2_DEFERRED_CASES
+        if case.name == "default-wait-cross-worker-scope"
+    ),
+    "ten-engine-pairs-two-orders-controls": V2_PAIR_CASES,
+    "large-backlog-compute-movement": tuple(
+        case
+        for case in (
+            V2_DEFERRED_CASES + V2_ADDITIONAL_DISPOSITIONS
+        )
+        if case.domain == "parallel-backlog"
+        or case.name in ("dma-contiguous-64k",)
+    ),
+    "double-slot-software-pipeline-vertical": (
+        V2_ADDITIONAL_DISPOSITIONS[10],
+    ),
+    "dependency-raw-war-waw-rar": V2_HAZARD_CASES,
+    "dependency-exact-partial-adjacent": V2_HAZARD_CASES,
+    "dependency-strided-envelope": tuple(
+        case
+        for case in V2_DEFERRED_CASES
+        if case.name == "dependency-strided-envelope"
+    ),
+    "wrapper-prebuilt-same-sequence": V2_ISSUE_PATH_CASES,
+    "five-engine-wait-each-window": V2_WAIT_OVERHEAD_CASES,
+    "ncc-producer-consumer-representative-positive": (
+        V2_HAZARD_CASES + V2_DMA_STRIDE_MATRIX_CASES
+    ),
+    "ncc-producer-consumer-uncovered-deferred": (
+        V2_ADDITIONAL_DISPOSITIONS[11],
+    ),
+    "cross-worker-single-pair-triple-masks": V2_WORKER_CASES,
+    "cross-worker-unjoined-boundary": tuple(
+        case
+        for case in V2_DEFERRED_CASES
+        if case.domain == "cross-worker-join"
+    ),
+    "execute-engine-none-static-negative": tuple(
+        case
+        for case in V2_PROTOCOL_NEGATIVE_CASES
+        if case.name == "execute-engine-none"
+    ),
+    "execute-worker-out-of-range-static-negative": tuple(
+        case
+        for case in V2_PROTOCOL_NEGATIVE_CASES
+        if case.name == "execute-worker-out-of-range"
+    ),
+    "wait-mask-nonparticipant-static-negative": tuple(
+        case
+        for case in V2_PROTOCOL_NEGATIVE_CASES
+        if case.name == "wait-mask-nonparticipant"
+    ),
+    "pmu-workload-delta-basis": V2_SINGLE_CASES + V2_PAIR_CASES,
+    "scalar-csr-ordinary-issue-rejected": tuple(
+        case
+        for case in V2_PROTOCOL_NEGATIVE_CASES
+        if case.name in ("execute-scalar-packet", "execute-csr-packet")
+    ),
 }
 
 
@@ -1068,9 +1423,14 @@ def validate_no_card_protocol_cases() -> None:
                 f"{case.name}: DMA stride matrix lost its serial roundtrip plan"
             )
         plan.request_words()
-    if len(V2_SINGLE_CASES) != 5 or len(V2_MULTI_ISSUE_CASES) != 5:
+    if len(V2_SINGLE_CASES) != 5 or len(V2_MULTI_ISSUE_CASES) != 9:
         raise RuntimeError("generic catalog lost a single/multi-issue case")
     worker_specs = {
+        "ct-worker0-raw-single": (
+            (0,),
+            ncc_protocol.Schedule.SERIAL,
+            0b001,
+        ),
         "ct-worker1-raw-single": (
             (1,),
             ncc_protocol.Schedule.SERIAL,
@@ -1080,6 +1440,21 @@ def validate_no_card_protocol_cases() -> None:
             (2,),
             ncc_protocol.Schedule.SERIAL,
             0b100,
+        ),
+        "ct-workers01-disjoint-r1-window": (
+            (0, 1),
+            ncc_protocol.Schedule.WINDOW,
+            0b011,
+        ),
+        "ct-workers02-disjoint-r1-window": (
+            (0, 2),
+            ncc_protocol.Schedule.WINDOW,
+            0b101,
+        ),
+        "ct-workers12-disjoint-r1-window": (
+            (1, 2),
+            ncc_protocol.Schedule.WINDOW,
+            0b110,
         ),
         "ct-workers012-disjoint-r1-window": (
             (0, 1, 2),
@@ -1158,8 +1533,12 @@ def validate_no_card_protocol_cases() -> None:
             )
         plan.request_words()
     overhead_specs = {
-        "ct-worker0-depth6-wait-each": ncc_protocol.Schedule.SERIAL,
-        "ct-worker0-depth6-wait-once": ncc_protocol.Schedule.WINDOW,
+        f"{engine.name.lower()}-worker0-r2-{spelling}": schedule
+        for engine in V2_ENGINES
+        for spelling, schedule in (
+            ("wait-each", ncc_protocol.Schedule.SERIAL),
+            ("wait-once", ncc_protocol.Schedule.WINDOW),
+        )
     }
     if {
         case.name for case in V2_WAIT_OVERHEAD_CASES
@@ -1168,21 +1547,17 @@ def validate_no_card_protocol_cases() -> None:
     for case in V2_WAIT_OVERHEAD_CASES:
         plan = case.plan
         if (
-            len(plan.lanes) != 2
+            len(plan.lanes) != 1
             or any(
-                lane.engine != ncc_protocol.Engine.CT
-                or lane.worker != 0
+                lane.worker != 0
                 or lane.issue_mode != ncc_protocol.IssueMode.RAW
-                or lane.element_format != FMT_FP16
-                or lane.transfer_bytes != 256
                 for lane in plan.lanes
             )
-            or plan.rounds != 3
+            or plan.rounds != 2
             or plan.schedule != overhead_specs[case.name]
             or plan.wait_kind != ncc_protocol.WaitKind.BY_WORKER
             or plan.wait_worker_mask != 1
-            or plan.seed != 0x6130
-            or plan.issue_order() != (0, 4, 1, 5, 2, 6)
+            or plan.issue_order() != (0, 1)
         ):
             raise RuntimeError(
                 f"{case.name}: wait-overhead protocol is malformed"
@@ -1194,10 +1569,14 @@ def validate_no_card_protocol_cases() -> None:
             for case in V2_MULTI_ISSUE_CASES
             if case.plan.lanes[0].engine == engine
         }
-        if issue_counts != {min(4, depth - 2)}:
+        if issue_counts != (
+            {2}
+            if engine == ncc_protocol.Engine.TDMA
+            else {2, 4}
+        ):
             raise RuntimeError(
-                f"{engine.name}: generic catalog must stay at the "
-                "conservative below-depth backlog"
+                f"{engine.name}: generic catalog must cover ordinary "
+                "N=2 and the engine-safe N=4 boundary"
             )
         depth_cases = [
             case
@@ -1224,7 +1603,7 @@ def validate_no_card_protocol_cases() -> None:
             raise RuntimeError(
                 f"{engine.name}: depth-plus-one catalog is malformed"
             )
-    if len(V2_PAIR_CASES) != 80:
+    if len(V2_PAIR_CASES) != 64:
         raise RuntimeError("generic catalog lost a disjoint pair control")
     for first, second in itertools.permutations(V2_ENGINES, 2):
         schedules = {
@@ -1233,9 +1612,14 @@ def validate_no_card_protocol_cases() -> None:
             if tuple(lane.engine for lane in case.plan.lanes)
             == (first, second)
         }
+        expected_rounds = (
+            (2,)
+            if ncc_protocol.Engine.TDMA in (first, second)
+            else (2, 4)
+        )
         if schedules != {
             (rounds, schedule)
-            for rounds in (2, 4)
+            for rounds in expected_rounds
             for schedule in (
                 ncc_protocol.Schedule.SERIAL,
                 ncc_protocol.Schedule.WINDOW,
@@ -1249,6 +1633,43 @@ def validate_no_card_protocol_cases() -> None:
         raise RuntimeError("generic catalog lost the three-lane controls")
     if len(V2_HAZARD_CASES) != 24:
         raise RuntimeError("generic catalog lost a typed hazard control")
+    if len(V2_ISSUE_PATH_CASES) != 10:
+        raise RuntimeError("generic catalog lost a raw/wrapper issue-path case")
+    for engine in V2_ENGINES:
+        modes = {
+            case.plan.lanes[0].issue_mode
+            for case in V2_ISSUE_PATH_CASES
+            if case.plan.lanes[0].engine == engine
+        }
+        if modes != {
+            ncc_protocol.IssueMode.RAW,
+            ncc_protocol.IssueMode.WRAPPER,
+        }:
+            raise RuntimeError(
+                f"{engine.name}: issue path lacks a raw/wrapper control"
+            )
+    real_objects = {
+        id(case)
+        for case in (
+            NO_CARD_PROTOCOL_CASES
+            + V2_DMA_STRIDE_MATRIX_CASES
+            + tuple(
+                case
+                for cases in SUITES.values()
+                for case in cases
+            )
+            + V2_DEFERRED_CASES
+            + V2_PROTOCOL_NEGATIVE_CASES
+            + V2_ADDITIONAL_DISPOSITIONS
+        )
+    }
+    if not CALIBRATION_LEAF_BINDINGS or any(
+        not cases or any(id(case) not in real_objects for case in cases)
+        for cases in CALIBRATION_LEAF_BINDINGS.values()
+    ):
+        raise RuntimeError(
+            "NCC calibration leaf bindings must reference real catalog objects"
+        )
 
 
 def write_request(
@@ -2465,41 +2886,52 @@ def report_depth_plus_one(
 def report_wait_overhead(
     observations: list[dict[str, object]],
 ) -> None:
-    if len(observations) != 2:
+    if len(observations) != 2 * len(V2_ENGINES):
         raise RuntimeError(
-            "wait-overhead suite requires its serial/window pair"
+            "wait-overhead suite requires one serial/window pair per engine"
         )
-    by_schedule: dict[str, dict[str, object]] = {}
+    by_engine: dict[str, dict[str, dict[str, object]]] = {}
     for observation in observations:
         case = observation.get("case")
         timing = observation.get("timing")
         if not isinstance(case, dict) or not isinstance(timing, dict):
             raise RuntimeError("wait-overhead observation is malformed")
-        by_schedule[str(case["schedule"])] = timing
-    if set(by_schedule) != {"serial", "window"}:
-        raise RuntimeError("wait-overhead serial/window control is incomplete")
-    serial = by_schedule["serial"]
-    window = by_schedule["window"]
-    report = {
-        "workload": "6x ct fp16 elements128 worker0",
-        "wait_each_plan_cycles": int(serial["plan_cycles"]),
-        "wait_once_plan_cycles": int(window["plan_cycles"]),
-        "wait_each_calls": int(serial["serial_wait_count"]),
-        "wait_each_total_cycles": int(serial["serial_wait_cycles"]),
-        "wait_each_average_cycles": serial[
-            "serial_wait_average_cycles"
-        ],
-        "wait_each_cycle_samples": serial["serial_wait_samples"],
-        "empty_wait_cycles": int(serial["requested_wait_cycles"]),
-        "window_final_wait_cycles": int(window["requested_wait_cycles"]),
-        "frequent_wait_extra_plan_cycles": (
-            int(serial["plan_cycles"]) - int(window["plan_cycles"])
-        ),
-    }
-    print(
-        "ncc_wait_overhead_decision: "
-        + json.dumps(report, sort_keys=True)
-    )
+        engines = case.get("engines")
+        if not isinstance(engines, list) or len(engines) != 1:
+            raise RuntimeError("wait-overhead case must contain one engine")
+        by_engine.setdefault(str(engines[0]), {})[
+            str(case["schedule"])
+        ] = timing
+    expected_engines = {engine.name.lower() for engine in V2_ENGINES}
+    if set(by_engine) != expected_engines or any(
+        set(schedules) != {"serial", "window"}
+        for schedules in by_engine.values()
+    ):
+        raise RuntimeError("wait-overhead serial/window controls are incomplete")
+    for engine, by_schedule in sorted(by_engine.items()):
+        serial = by_schedule["serial"]
+        window = by_schedule["window"]
+        report = {
+            "engine": engine,
+            "workload": "2 issues on worker0",
+            "wait_each_plan_cycles": int(serial["plan_cycles"]),
+            "wait_once_plan_cycles": int(window["plan_cycles"]),
+            "wait_each_calls": int(serial["serial_wait_count"]),
+            "wait_each_total_cycles": int(serial["serial_wait_cycles"]),
+            "wait_each_average_cycles": serial[
+                "serial_wait_average_cycles"
+            ],
+            "wait_each_cycle_samples": serial["serial_wait_samples"],
+            "empty_wait_cycles": int(serial["requested_wait_cycles"]),
+            "window_final_wait_cycles": int(window["requested_wait_cycles"]),
+            "frequent_wait_extra_plan_cycles": (
+                int(serial["plan_cycles"]) - int(window["plan_cycles"])
+            ),
+        }
+        print(
+            "ncc_wait_overhead_decision: "
+            + json.dumps(report, sort_keys=True)
+        )
 
 
 def write_qualification(

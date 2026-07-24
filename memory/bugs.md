@@ -1,3 +1,24 @@
+## 2026-07-24 硬件校准大类资产检查产生假绿
+
+- 现象：硬件校准索引报告28个域全部`ready`，但逐条对照case规划后，concat多轴、SPM/DDR bank、
+  multi-worker mask、NE长累加和多个同步/并行叶子并没有具体case。一个宽泛board runner或catalog可以
+  同时让整行通过。
+- 根因：机器门禁的验收单位是大类行，只检查文档标签、文件存在、CTest注册和手填
+  `remaining_preparation`；没有解析具体catalog entry，也没有把oracle、guard、completion与语义叶子绑定。
+- 修复模式：大类只作compiler-consumer导航，状态从叶子自动汇总。每个叶子绑定catalog中的具体对象，
+  明确calibration/held-out层和`board-positive`/`static-negative`/`isolated-deferred`处置；正向项必须有
+  独立expected、physical guard、matching completion和资源预算，负向/延后项必须有typed gate与原因。
+- 防复发：审计测试实际导入每个catalog的叶子分组，要求分组非空、引用具体case对象且全部被manifest
+  记账；确需同时服务原生能力和layout能力的同一组证据必须进入精确共享白名单，其余组只允许一次引用。
+  正向、observation、delegated、negative和deferred分别验证其对象类型、oracle、guard与completion，
+  只增加文件、测试名、总case数或空的“剩余准备”字段不能改变准备状态。oracle还要有反弱化断言：
+  Eq/Ne输入必须同时产生true/false lane，rounding mode输入必须真的区分expected，axis case使用非对称
+  维度。复用其它catalog case作为opcode证据时还必须核对device dispatcher实际发出的opcode，不能只按
+  case名字或相近family关联；GEMM oracle要断言每个输出轴的signature可区分，并用轴置换故障注入证明
+  physical golden会失败。exact/observation处置必须与特殊值的未决语义一致，subnormal/FTZ或NaN
+  propagation未冻结时不能放入exact组。任何跨phase状态型probe必须证明phase位于同一runtime session且复用同一allocation；两个独立
+  launch的输出不能拼成cache coherence或资源生命周期因果oracle。
+
 ## 2026-07-13 multi-rank reference不能硬编码为Direct DTE
 
 - 现象：真实PyTorch/XLA linear-residual MLP以16 rank经过production driver后形成完整replicated rank domain，

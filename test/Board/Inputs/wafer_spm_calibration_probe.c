@@ -15,6 +15,9 @@ typedef struct WaferSPMCase {
   uint32_t case_id;
   uint64_t address;
   uint32_t transfer_bytes;
+  uint32_t kind;
+  uint32_t iterations;
+  uint32_t slot_stride;
 } WaferSPMCase;
 
 typedef struct WaferSPMPMU {
@@ -27,22 +30,25 @@ typedef struct WaferSPMPMU {
 } WaferSPMPMU;
 
 static const WaferSPMCase wafer_spm_cases[] = {
-    {0U, UINT64_C(0x10000), 256U},
-    {1U, UINT64_C(0x10000), 8192U},
-    {2U, UINT64_C(0x2ef000), 4096U},
-    {3U, UINT64_C(0x2eff00), 256U},
-    {4U, UINT64_C(0x100000), 4096U},
-    {5U, UINT64_C(0x100040), 4096U},
-    {6U, UINT64_C(0x100080), 4096U},
-    {7U, UINT64_C(0x1000c0), 4096U},
-    {8U, UINT64_C(0x100100), 4096U},
-    {9U, UINT64_C(0x100140), 4096U},
-    {10U, UINT64_C(0x100200), 4096U},
-    {11U, UINT64_C(0x100300), 4096U},
-    {12U, UINT64_C(0x100400), 4096U},
-    {13U, UINT64_C(0x101000), 4096U},
-    {14U, UINT64_C(0x110000), 4096U},
-    {15U, UINT64_C(0x1100c0), 4096U},
+    {0U, UINT64_C(0x10000), 256U, 0U, 1U, 0U},
+    {1U, UINT64_C(0x10000), 8192U, 0U, 1U, 0U},
+    {2U, UINT64_C(0x2ef000), 4096U, 0U, 1U, 0U},
+    {3U, UINT64_C(0x2eff00), 256U, 0U, 1U, 0U},
+    {4U, UINT64_C(0x100000), 4096U, 0U, 1U, 0U},
+    {5U, UINT64_C(0x100100), 4096U, 0U, 1U, 0U},
+    {6U, UINT64_C(0x100200), 4096U, 0U, 1U, 0U},
+    {7U, UINT64_C(0x100400), 4096U, 0U, 1U, 0U},
+    {8U, UINT64_C(0x100800), 4096U, 0U, 1U, 0U},
+    {9U, UINT64_C(0x101000), 4096U, 0U, 1U, 0U},
+    {10U, UINT64_C(0x102000), 4096U, 0U, 1U, 0U},
+    {11U, UINT64_C(0x104000), 4096U, 0U, 1U, 0U},
+    {12U, UINT64_C(0x108000), 4096U, 0U, 1U, 0U},
+    {13U, UINT64_C(0x110000), 4096U, 0U, 1U, 0U},
+    {14U, UINT64_C(0x110100), 4096U, 0U, 1U, 0U},
+    {15U, UINT64_C(0x180000), 65536U, 0U, 1U, 0U},
+    {16U, UINT64_C(0x140000), 4096U, 1U, 1U, 8192U},
+    {17U, UINT64_C(0x140000), 4096U, 1U, 4U, 8192U},
+    {18U, UINT64_C(0x140000), 4096U, 1U, 5U, 8192U},
 };
 
 static void wafer_spm_cache_range(uint64_t begin, uint32_t bytes,
@@ -122,8 +128,14 @@ static uint32_t wafer_spm_decode(const volatile uint64_t *request,
   if (request[WAFER_SPM_REQ_ADDRESS] != selected->address ||
       request[WAFER_SPM_REQ_TRANSFER_BYTES] != selected->transfer_bytes ||
       selected->transfer_bytes > WAFER_SPM_SLOT_BYTES ||
+      selected->iterations == 0U ||
+      selected->iterations * selected->transfer_bytes > WAFER_SPM_SLOT_BYTES ||
       selected->address < WAFER_SPM_ALLOCATABLE_BEGIN ||
       selected->address + selected->transfer_bytes >
+          WAFER_SPM_ALLOCATABLE_END)
+    return WAFER_SPM_STATUS_BAD_REQUEST;
+  if (selected->kind == 1U &&
+      selected->address + selected->slot_stride + selected->transfer_bytes >
           WAFER_SPM_ALLOCATABLE_END)
     return WAFER_SPM_STATUS_BAD_REQUEST;
   return WAFER_SPM_STATUS_OK;
@@ -138,35 +150,39 @@ static void wafer_spm_fill(uint64_t address, uint32_t bytes, uint8_t value) {
 }
 
 static void wafer_spm_prepare_guards(const WaferSPMCase *selected) {
-  if (selected->address >=
-      WAFER_SPM_ALLOCATABLE_BEGIN + WAFER_SPM_GUARD_BYTES)
-    wafer_spm_fill(selected->address - WAFER_SPM_GUARD_BYTES,
-                   WAFER_SPM_GUARD_BYTES, WAFER_SPM_GUARD_VALUE);
-  if (selected->address + selected->transfer_bytes +
-          WAFER_SPM_GUARD_BYTES <=
-      WAFER_SPM_ALLOCATABLE_END)
-    wafer_spm_fill(selected->address + selected->transfer_bytes,
-                   WAFER_SPM_GUARD_BYTES, WAFER_SPM_GUARD_VALUE);
+  uint32_t slots = selected->kind == 1U && selected->iterations > 1U ? 2U : 1U;
+  for (uint32_t slot = 0; slot < slots; ++slot) {
+    uint64_t address = selected->address + slot * selected->slot_stride;
+    if (address >= WAFER_SPM_ALLOCATABLE_BEGIN + WAFER_SPM_GUARD_BYTES)
+      wafer_spm_fill(address - WAFER_SPM_GUARD_BYTES,
+                     WAFER_SPM_GUARD_BYTES, WAFER_SPM_GUARD_VALUE);
+    if (address + selected->transfer_bytes + WAFER_SPM_GUARD_BYTES <=
+        WAFER_SPM_ALLOCATABLE_END)
+      wafer_spm_fill(address + selected->transfer_bytes,
+                     WAFER_SPM_GUARD_BYTES, WAFER_SPM_GUARD_VALUE);
+  }
 }
 
 static uint64_t wafer_spm_guard_mismatches(const WaferSPMCase *selected) {
   uint64_t mismatches = 0;
-  if (selected->address >=
-      WAFER_SPM_ALLOCATABLE_BEGIN + WAFER_SPM_GUARD_BYTES) {
-    const volatile uint8_t *before =
-        (const volatile uint8_t *)(const void *)get_spm_memory_mapping(
-            selected->address - WAFER_SPM_GUARD_BYTES);
-    for (uint32_t index = 0; index < WAFER_SPM_GUARD_BYTES; ++index)
-      mismatches += before[index] != WAFER_SPM_GUARD_VALUE;
-  }
-  if (selected->address + selected->transfer_bytes +
-          WAFER_SPM_GUARD_BYTES <=
-      WAFER_SPM_ALLOCATABLE_END) {
-    const volatile uint8_t *after =
-        (const volatile uint8_t *)(const void *)get_spm_memory_mapping(
-            selected->address + selected->transfer_bytes);
-    for (uint32_t index = 0; index < WAFER_SPM_GUARD_BYTES; ++index)
-      mismatches += after[index] != WAFER_SPM_GUARD_VALUE;
+  uint32_t slots = selected->kind == 1U && selected->iterations > 1U ? 2U : 1U;
+  for (uint32_t slot = 0; slot < slots; ++slot) {
+    uint64_t address = selected->address + slot * selected->slot_stride;
+    if (address >= WAFER_SPM_ALLOCATABLE_BEGIN + WAFER_SPM_GUARD_BYTES) {
+      const volatile uint8_t *before =
+          (const volatile uint8_t *)(const void *)get_spm_memory_mapping(
+              address - WAFER_SPM_GUARD_BYTES);
+      for (uint32_t index = 0; index < WAFER_SPM_GUARD_BYTES; ++index)
+        mismatches += before[index] != WAFER_SPM_GUARD_VALUE;
+    }
+    if (address + selected->transfer_bytes + WAFER_SPM_GUARD_BYTES <=
+        WAFER_SPM_ALLOCATABLE_END) {
+      const volatile uint8_t *after =
+          (const volatile uint8_t *)(const void *)get_spm_memory_mapping(
+              address + selected->transfer_bytes);
+      for (uint32_t index = 0; index < WAFER_SPM_GUARD_BYTES; ++index)
+        mismatches += after[index] != WAFER_SPM_GUARD_VALUE;
+    }
   }
   return mismatches;
 }
@@ -207,15 +223,23 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
         request[WAFER_SPM_REQ_GUARD];
     wafer_spm_prepare_guards(&selected);
     WaferSPMPMU before = wafer_spm_read_pmu();
-    wafer_tx81_rdma(payload_ddr, selected.address,
-                    selected.transfer_bytes, selected.transfer_bytes,
-                    0, 0, 0, 1, 1, 1, Fmt_UINT8);
-    wafer_tx81_local_fence();
-    wafer_tx81_wdma(selected.address,
-                    output_ddr + WAFER_SPM_OUTPUT_DDR_OFFSET,
-                    selected.transfer_bytes, selected.transfer_bytes,
-                    0, 0, 0, 1, 1, 1, Fmt_UINT8);
-    wafer_tx81_local_fence();
+    for (uint32_t iteration = 0; iteration < selected.iterations;
+         ++iteration) {
+      uint64_t slot =
+          selected.address +
+          (selected.kind == 1U ? iteration % 2U * selected.slot_stride : 0U);
+      uint64_t payload =
+          payload_ddr + (uint64_t)iteration * selected.transfer_bytes;
+      uint64_t output =
+          output_ddr + WAFER_SPM_OUTPUT_DDR_OFFSET +
+          (uint64_t)iteration * selected.transfer_bytes;
+      wafer_tx81_rdma(payload, slot, selected.transfer_bytes,
+                      selected.transfer_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+      wafer_tx81_local_fence();
+      wafer_tx81_wdma(slot, output, selected.transfer_bytes,
+                      selected.transfer_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+      wafer_tx81_local_fence();
+    }
     WaferSPMPMU after = wafer_spm_read_pmu();
     record[WAFER_SPM_REC_RDMA_INST_DELTA] =
         (uint32_t)(after.rdma_instructions - before.rdma_instructions);

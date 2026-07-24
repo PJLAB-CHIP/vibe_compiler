@@ -221,6 +221,21 @@ def main() -> int:
                         row.as_dict()
                         for row in catalog.PUBLIC_DISPOSITIONS
                     ],
+                    "raw_concat_dispositions": [
+                        row.as_dict()
+                        for row in catalog.RAW_CONCAT_DISPOSITIONS
+                    ],
+                    "extended_dispositions": [
+                        row.as_dict()
+                        for row in catalog.EXTENDED_DATAMOVE_DISPOSITIONS
+                    ],
+                    "calibration_leaf_bindings": {
+                        key: [
+                            getattr(row, "name", getattr(row, "opcode_name", ""))
+                            for row in rows
+                        ]
+                        for key, rows in catalog.CALIBRATION_LEAF_BINDINGS.items()
+                    },
                 },
                 indent=2,
                 sort_keys=True,

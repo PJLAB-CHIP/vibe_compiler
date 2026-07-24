@@ -13,11 +13,12 @@ from collections.abc import Callable, Iterable
 
 REQUEST_MAGIC = 0x3151455256544357
 RECORD_MAGIC = 0x3143455256544357
-SCHEMA = 1
+SCHEMA = 2
 REQUEST_WORDS = 16
 RECORD_WORDS = 32
 CASE_BASE = 10000
 CASE_STRIDE = 6
+SPECIAL_CASE_BASE = 12000
 RESOURCE_BYTES = 131072
 SLOT_BYTES = 65536
 BODY_OFFSET = 256
@@ -34,7 +35,10 @@ DISPOSITIONS = {
     "BOARD_TOLERANCE": 1,
     "BOARD_OBSERVED": 2,
 }
-DTYPES = {"F16": 0, "BF16": 1, "F32": 2}
+DTYPES = {"F16": 0, "BF16": 1, "F32": 2, "BOOL": 3}
+FLOAT_DTYPES = ("F16", "BF16", "F32")
+HARDWARE_FORMATS = {"F16": 2, "BF16": 3, "F32": 5, "BOOL": 7}
+_CASE_DTYPE_ORDINAL = {"F16": 0, "BF16": 1, "F32": 2, "BOOL": 0}
 FAMILIES = {
     "UNARY": 0,
     "BINARY": 1,
@@ -43,6 +47,18 @@ FAMILIES = {
     "LOGIC_BOOL": 4,
     "TRANSCENDENTAL": 5,
     "ACTIVATION": 6,
+}
+DOMAINS = {
+    "NORMAL": 0,
+    "RECIP_ZERO": 1,
+    "SQRT_ZERO": 2,
+    "SQRT_NEGATIVE": 3,
+    "RSQRT_ZERO": 4,
+    "RSQRT_NEGATIVE": 5,
+    "SPECIAL": 6,
+    "QNAN": 7,
+    "SNAN": 8,
+    "SIGNED_ZERO": 9,
 }
 REQ = {
     "MAGIC": 0,
@@ -59,6 +75,7 @@ REQ = {
     "RESOURCE_BYTES": 11,
     "SLOT_BYTES": 12,
     "BODY_OFFSET": 13,
+    "DOMAIN": 14,
     "GUARD": 15,
 }
 REC = {
@@ -84,6 +101,7 @@ REC = {
     "INPUT_B_BYTES": 19,
     "SCALAR_BITS": 20,
     "UNIT_ELEMENTS": 21,
+    "DOMAIN": 22,
     "RECORD_GUARD": 31,
 }
 
@@ -97,6 +115,15 @@ _INSTR_DEF = (
 _OPCODE_ROW = re.compile(
     r"OP_FUNC_CGRATensor_([A-Za-z0-9_]+)\s*=\s*(\d+)"
 )
+_FORMAT_ROW = re.compile(
+    r"\b(Fmt_(?:FP16|BF16|FP32|BOOL))\s*=\s*(\d+)"
+)
+_FORMAT_ENUM_NAMES = {
+    "F16": "Fmt_FP16",
+    "BF16": "Fmt_BF16",
+    "F32": "Fmt_FP32",
+    "BOOL": "Fmt_BOOL",
+}
 
 
 def load_opcode_inventory() -> tuple[str, ...]:
@@ -115,6 +142,25 @@ def load_opcode_inventory() -> tuple[str, ...]:
 
 
 OPCODE_NAMES = load_opcode_inventory()
+
+
+def validate_hardware_format_inventory() -> None:
+    rows = {
+        match.group(1): int(match.group(2))
+        for match in _FORMAT_ROW.finditer(_INSTR_DEF.read_text())
+    }
+    actual = {
+        dtype_name: rows.get(enum_name)
+        for dtype_name, enum_name in _FORMAT_ENUM_NAMES.items()
+    }
+    if actual != HARDWARE_FORMATS:
+        raise RuntimeError(
+            "CT catalog Data_Format ids do not match instr_def.h: "
+            f"expected={HARDWARE_FORMATS}, actual={actual}"
+        )
+
+
+validate_hardware_format_inventory()
 
 
 def _family(opcode: int) -> str:
@@ -181,16 +227,52 @@ def _disposition(opcode: int) -> str:
 
 
 def _dtype_size(dtype_name: str) -> int:
-    return 4 if dtype_name == "F32" else 2
+    if dtype_name == "F32":
+        return 4
+    if dtype_name in ("F16", "BF16"):
+        return 2
+    raise ValueError(f"{dtype_name} is not a value dtype")
 
 
 def _case_id(opcode: int, dtype_name: str, shape_name: str) -> int:
     return (
         CASE_BASE
         + opcode * CASE_STRIDE
-        + DTYPES[dtype_name] * 2
+        + _CASE_DTYPE_ORDINAL[dtype_name] * 2
         + (shape_name == "tail")
     )
+
+
+_SPECIAL_CASES = (
+    (1, "RECIP_ZERO"),
+    (3, "SQRT_ZERO"),
+    (3, "SQRT_NEGATIVE"),
+    (4, "RSQRT_ZERO"),
+    (4, "RSQRT_NEGATIVE"),
+    (14, "SPECIAL"),
+    (14, "QNAN"),
+    (14, "SNAN"),
+    (5, "SIGNED_ZERO"),
+)
+
+
+def _special_case_id(
+    opcode: int, dtype_name: str, domain_name: str
+) -> int:
+    ordinal = _SPECIAL_CASES.index((opcode, domain_name))
+    return (
+        SPECIAL_CASE_BASE
+        + ordinal * len(FLOAT_DTYPES)
+        + FLOAT_DTYPES.index(dtype_name)
+    )
+
+
+def _domain_disposition(opcode: int, domain_name: str) -> str:
+    if domain_name == "NORMAL":
+        return _disposition(opcode)
+    if domain_name in ("SQRT_ZERO", "SPECIAL", "SIGNED_ZERO"):
+        return "BOARD_TOLERANCE" if opcode in (3, 4) else "BOARD_EXACT"
+    return "BOARD_OBSERVED"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -202,6 +284,7 @@ class CTVectorCase:
     family_name: str
     dtype_name: str
     disposition_name: str
+    domain_name: str
     shape_name: str
     elements: int
     result_bytes: int
@@ -218,6 +301,10 @@ class CTVectorCase:
     @property
     def dtype(self) -> int:
         return DTYPES[self.dtype_name]
+
+    @property
+    def domain(self) -> int:
+        return DOMAINS[self.domain_name]
 
     @property
     def is_safe(self) -> bool:
@@ -246,6 +333,7 @@ class CTVectorCase:
                 else "value"
             ),
             "disposition": self.disposition_name.lower(),
+            "numeric_domain": self.domain_name.lower().replace("_", "-"),
             "shape": self.shape_name,
             "elements": self.elements,
             "unit_elements": UNIT_ELEMENTS if _is_vuv(self.opcode) else 0,
@@ -283,7 +371,7 @@ def form_name(opcode: int) -> str:
 def build_catalog() -> tuple[CTVectorCase, ...]:
     cases: list[CTVectorCase] = []
     for opcode in range(111):
-        dtype_names = ("F16",) if 88 <= opcode <= 97 else tuple(DTYPES)
+        dtype_names = ("BOOL",) if 88 <= opcode <= 97 else FLOAT_DTYPES
         for dtype_name in dtype_names:
             for shape_name, elements in (
                 ("main", MAIN_ELEMENTS),
@@ -308,12 +396,42 @@ def build_catalog() -> tuple[CTVectorCase, ...]:
                         family_name=_family(opcode),
                         dtype_name=dtype_name,
                         disposition_name=_disposition(opcode),
+                        domain_name="NORMAL",
                         shape_name=shape_name,
                         elements=elements,
                         result_bytes=result_bytes,
                         output_span=output_span,
                     )
                 )
+    for opcode, domain_name in _SPECIAL_CASES:
+        for dtype_name in FLOAT_DTYPES:
+            elements = MAIN_ELEMENTS
+            result_bytes = elements * _dtype_size(dtype_name)
+            cases.append(
+                CTVectorCase(
+                    case_id=_special_case_id(
+                        opcode, dtype_name, domain_name
+                    ),
+                    name=(
+                        f"ct-op{opcode:03d}-"
+                        f"{OPCODE_NAMES[opcode].lower()}-"
+                        f"{dtype_name.lower()}-"
+                        f"{domain_name.lower().replace('_', '-')}"
+                    ),
+                    opcode=opcode,
+                    opcode_name=OPCODE_NAMES[opcode],
+                    family_name=_family(opcode),
+                    dtype_name=dtype_name,
+                    disposition_name=_domain_disposition(
+                        opcode, domain_name
+                    ),
+                    domain_name=domain_name,
+                    shape_name="main",
+                    elements=elements,
+                    result_bytes=result_bytes,
+                    output_span=(result_bytes + 255) // 256 * 256,
+                )
+            )
     ids = {case.case_id for case in cases}
     names = {case.name for case in cases}
     if len(ids) != len(cases) or len(names) != len(cases):
@@ -328,6 +446,80 @@ def build_catalog() -> tuple[CTVectorCase, ...]:
 CATALOG = build_catalog()
 CASES_BY_NAME = {case.name: case for case in CATALOG}
 SAFE_CASES = CATALOG
+CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
+    "ct-vector-forms-main-tail": tuple(
+        case
+        for case in CATALOG
+        if case.domain_name == "NORMAL" and case.family_name == "BINARY"
+    ),
+    "ct-finite-boundaries-all-float-dtypes": tuple(
+        case
+        for case in CATALOG
+        if case.domain_name == "NORMAL" and case.family_name == "UNARY"
+    ),
+    "ct-zero-domain-positive": tuple(
+        case
+        for case in CATALOG
+        if case.domain_name
+        in {
+            "RECIP_ZERO",
+            "SQRT_ZERO",
+            "SQRT_NEGATIVE",
+            "RSQRT_ZERO",
+            "RSQRT_NEGATIVE",
+        }
+        and case.disposition_name != "BOARD_OBSERVED"
+    ),
+    "ct-zero-domain-observed": tuple(
+        case
+        for case in CATALOG
+        if case.domain_name
+        in {
+            "RECIP_ZERO",
+            "SQRT_ZERO",
+            "SQRT_NEGATIVE",
+            "RSQRT_ZERO",
+            "RSQRT_NEGATIVE",
+        }
+        and case.disposition_name == "BOARD_OBSERVED"
+    ),
+    "ct-special-values-positive": tuple(
+        case
+        for case in CATALOG
+        if case.domain_name in {"SPECIAL", "QNAN", "SNAN", "SIGNED_ZERO"}
+        and case.disposition_name != "BOARD_OBSERVED"
+    ),
+    "ct-special-values-observed": tuple(
+        case
+        for case in CATALOG
+        if case.domain_name in {"SPECIAL", "QNAN", "SNAN", "SIGNED_ZERO"}
+        and case.disposition_name == "BOARD_OBSERVED"
+    ),
+    "ct-relation-logic-value-bool": tuple(
+        case
+        for case in CATALOG
+        if case.domain_name == "NORMAL"
+        and case.family_name
+        in {"RELATION", "LOGIC_VALUE", "LOGIC_BOOL"}
+    ),
+    "ct-transcendental-activation": tuple(
+        case
+        for case in CATALOG
+        if case.domain_name == "NORMAL"
+        and (
+            case.family_name == "TRANSCENDENTAL"
+            or (
+                case.family_name == "ACTIVATION"
+                and case.opcode not in {108, 109}
+            )
+        )
+    ),
+    "ct-observed-activation-semantics": tuple(
+        case
+        for case in CATALOG
+        if case.domain_name == "NORMAL" and case.opcode in {108, 109}
+    ),
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -359,6 +551,72 @@ def _encode(dtype_name: str, values: Iterable[float]) -> bytes:
     raise ValueError(f"unknown CT vector dtype {dtype_name}")
 
 
+def _pack_words(dtype_name: str, words: Iterable[int]) -> bytes:
+    values = tuple(words)
+    code = "I" if dtype_name == "F32" else "H"
+    return struct.pack(f"<{len(values)}{code}", *values)
+
+
+def _special_words(dtype_name: str, domain_name: str) -> tuple[int, ...]:
+    if dtype_name == "F16":
+        finite = (
+            0x0000,
+            0x8000,
+            0x7C00,
+            0xFC00,
+            0x7BFF,
+            0xFBFF,
+            0x0400,
+            0x8400,
+            0x0001,
+            0x8001,
+        )
+        qnan = (0x7E01, 0xFE55)
+        snan = (0x7D01, 0xFD55)
+    elif dtype_name == "BF16":
+        finite = (
+            0x0000,
+            0x8000,
+            0x7F80,
+            0xFF80,
+            0x7F7F,
+            0xFF7F,
+            0x0080,
+            0x8080,
+            0x0001,
+            0x8001,
+        )
+        qnan = (0x7FC1, 0xFFC5)
+        snan = (0x7F81, 0xFF85)
+    else:
+        finite = (
+            0x00000000,
+            0x80000000,
+            0x7F800000,
+            0xFF800000,
+            0x7F7FFFFF,
+            0xFF7FFFFF,
+            0x00800000,
+            0x80800000,
+            0x00000001,
+            0x80000001,
+        )
+        qnan = (0x7FC01234, 0xFFC05678)
+        snan = (0x7F801234, 0xFF805678)
+    if domain_name == "SPECIAL":
+        return finite
+    if domain_name == "QNAN":
+        return qnan
+    if domain_name == "SNAN":
+        return snan
+    raise ValueError(f"{domain_name} is not a raw special-value domain")
+
+
+def _repeat_words(words: Iterable[int], count: int) -> tuple[int, ...]:
+    source = tuple(words)
+    return tuple(source[index % len(source)] for index in range(count))
+
+
 def decode_values(dtype_name: str, raw: bytes) -> tuple[float, ...]:
     if dtype_name == "F16":
         return struct.unpack(f"<{len(raw) // 2}e", raw)
@@ -379,6 +637,56 @@ def _repeat(values: Iterable[float], count: int) -> tuple[float, ...]:
 
 
 def _numeric_inputs(case: CTVectorCase) -> tuple[bytes, bytes, int]:
+    if case.domain_name in ("SPECIAL", "QNAN", "SNAN"):
+        lhs = _pack_words(
+            case.dtype_name,
+            _repeat_words(
+                _special_words(case.dtype_name, case.domain_name),
+                case.elements,
+            ),
+        )
+        zero = 0
+        rhs = _pack_words(
+            case.dtype_name, _repeat_words((zero,), case.elements)
+        )
+        return lhs, rhs, 0
+    if case.domain_name == "SIGNED_ZERO":
+        return (
+            _pack_words(
+                case.dtype_name,
+                _repeat_words(
+                    (
+                        0,
+                        0x80000000
+                        if case.dtype_name == "F32"
+                        else 0x8000,
+                    ),
+                    case.elements,
+                ),
+            ),
+            b"",
+            0,
+        )
+    if case.domain_name in ("RECIP_ZERO", "SQRT_ZERO", "RSQRT_ZERO"):
+        return (
+            _pack_words(
+                case.dtype_name,
+                _repeat_words(
+                    (
+                        0,
+                        0x80000000
+                        if case.dtype_name == "F32"
+                        else 0x8000,
+                    ),
+                    case.elements,
+                ),
+            ),
+            b"",
+            0,
+        )
+    if case.domain_name in ("SQRT_NEGATIVE", "RSQRT_NEGATIVE"):
+        lhs = _repeat((-1.0, -4.0, -9.0, -16.0), case.elements)
+        return _encode(case.dtype_name, lhs), b"", 0
     operation = case.opcode_name.rsplit("_", 1)[-1].removesuffix("_loop")
     if case.family_name == "UNARY":
         patterns = {
@@ -416,10 +724,20 @@ def _numeric_inputs(case: CTVectorCase) -> tuple[bytes, bytes, int]:
         case.elements,
     )
     rhs_count = UNIT_ELEMENTS if _is_vuv(case.opcode) else case.elements
-    rhs_values = _repeat(
-        (2.0, -2.0, 4.0, 1.0, -1.0, 0.5, 8.0, -4.0),
-        rhs_count,
-    )
+    if (
+        case.family_name == "RELATION"
+        and 30 <= case.opcode <= 45
+        and form_name(case.opcode) == "VV"
+    ):
+        rhs_values = tuple(
+            value if index % 2 == 0 else value + 0.5
+            for index, value in enumerate(lhs_values)
+        )
+    else:
+        rhs_values = _repeat(
+            (2.0, -2.0, 4.0, 1.0, -1.0, 0.5, 8.0, -4.0),
+            rhs_count,
+        )
     scalar_bits = {
         "F16": 0x4000,
         "BF16": 0x4000,
@@ -643,6 +961,7 @@ def build_case_payload(case: CTVectorCase, sample: int = 0) -> CasePayload:
     request_words[REQ["RESOURCE_BYTES"]] = RESOURCE_BYTES
     request_words[REQ["SLOT_BYTES"]] = SLOT_BYTES
     request_words[REQ["BODY_OFFSET"]] = BODY_OFFSET
+    request_words[REQ["DOMAIN"]] = case.domain
     request_words[REQ["GUARD"]] = REQUEST_GUARD
     request = bytearray([0xD3] * RESOURCE_BYTES)
     struct.pack_into(f"<{REQUEST_WORDS}Q", request, 0, *request_words)

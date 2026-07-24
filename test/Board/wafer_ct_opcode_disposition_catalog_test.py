@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from collections import Counter
 
+import wafer_board_ncc_execution_probe_test as ncc_catalog
 import wafer_ct_opcode_disposition_catalog as catalog
+import wafer_instruction_family_catalog as instruction_catalog
 
 
 def main() -> int:
@@ -32,9 +34,9 @@ def main() -> int:
         assert row.family
 
     counts = Counter(row.disposition for row in catalog.CATALOG)
-    assert counts["board-executable"] == 173
+    assert counts["board-executable"] == 171
     assert counts["static-negative"] == 2
-    assert counts["isolated-deferred"] == 12
+    assert counts["isolated-deferred"] == 14
     assert {
         row.opcode
         for row in catalog.CATALOG
@@ -45,6 +47,8 @@ def main() -> int:
         119,
         120,
         122,
+        131,
+        133,
         136,
         137,
         180,
@@ -53,10 +57,63 @@ def main() -> int:
         185,
         186,
     }
-    assert catalog.BY_OPCODE[139].evidence == (
+    assert catalog.BY_OPCODE[139].evidence[:2] == (
         "ct-op139-convert-int8-fp16-main",
         "ct-op139-convert-int8-fp16-tail",
     )
+    concrete_evidence = {
+        case.name for case in catalog.vector_catalog.CATALOG
+    } | {
+        case.name for case in catalog.convert_catalog.CATALOG
+    } | {
+        case.name for case in catalog.datamove_catalog.CATALOG
+    } | {
+        case.name for case in instruction_catalog.CATALOG
+    } | {
+        case.name for case in ncc_catalog.NO_CARD_PROTOCOL_CASES
+    }
+    registered_gate_evidence = {
+        "wafer-ct-opcode-disposition-catalog-python",
+        "wafer-ct-vector-calibration-catalog-python",
+        "wafer-runtime-ct-vector-calibration-probe-no-card",
+    }
+    unresolved_evidence = {
+        evidence
+        for row in catalog.CATALOG
+        for evidence in row.evidence
+        if evidence not in concrete_evidence
+        and evidence not in registered_gate_evidence
+    }
+    assert not unresolved_evidence, (
+        f"opcode dispositions reference unknown evidence: "
+        f"{sorted(unresolved_evidence)}"
+    )
+    positive = catalog.CALIBRATION_LEAF_BINDINGS[
+        "ct-reduce-pool-unpool-peripheral-positive"
+    ]
+    deferred = catalog.CALIBRATION_LEAF_BINDINGS[
+        "ct-reduce-pool-unpool-peripheral-deferred"
+    ]
+    static_negative = catalog.CALIBRATION_LEAF_BINDINGS[
+        "ct-reduce-pool-unpool-peripheral-static-negative"
+    ]
+    assert positive and deferred and static_negative
+    assert all(row.disposition == "board-executable" for row in positive)
+    assert all(
+        row.disposition == "isolated-deferred" for row in deferred
+    )
+    assert all(
+        row.disposition == "static-negative" for row in static_negative
+    )
+    bound = positive + deferred + static_negative
+    expected = tuple(
+        row
+        for row in catalog.CATALOG
+        if row.opcode
+        in catalog._REDUCE_POOL_UNPOOL_PERIPHERAL_OPCODES
+    )
+    assert len(bound) == len(set(bound)) == len(expected)
+    assert set(bound) == set(expected)
     print(
         "wafer_ct_opcode_disposition_catalog_test: "
         f"opcodes=187 dispositions={dict(sorted(counts.items()))} passed"

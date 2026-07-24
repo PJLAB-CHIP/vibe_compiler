@@ -6,6 +6,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+_Static_assert(Fmt_BOOL == 7,
+               "CT BOOL control must match the vendor Data_Format ABI");
+_Static_assert(WAFER_CTV_F16 == 0 && WAFER_CTV_BF16 == 1 &&
+                   WAFER_CTV_F32 == 2 && WAFER_CTV_BOOL == 3,
+               "CT calibration dtype wire ids changed");
+
 extern int8_t *get_spm_memory_mapping(uint64_t offset);
 
 typedef struct WaferCTVCase {
@@ -21,6 +27,7 @@ typedef struct WaferCTVCase {
   uint32_t input_b_bytes;
   uint32_t scalar_bits;
   uint32_t unit_elements;
+  uint32_t domain;
 } WaferCTVCase;
 
 static void wafer_ctv_cache_range(uint64_t begin, uint32_t bytes,
@@ -65,7 +72,11 @@ static void wafer_ctv_publish(volatile uint64_t *record) {
 }
 
 static uint32_t wafer_ctv_dtype_bytes(uint32_t dtype) {
-  return dtype == WAFER_CTV_F32 ? 4U : 2U;
+  if (dtype == WAFER_CTV_F32)
+    return 4U;
+  if (dtype == WAFER_CTV_F16 || dtype == WAFER_CTV_BF16)
+    return 2U;
+  return 0U;
 }
 
 static uint32_t wafer_ctv_format(uint32_t dtype) {
@@ -76,6 +87,8 @@ static uint32_t wafer_ctv_format(uint32_t dtype) {
     return Fmt_BF16;
   case WAFER_CTV_F32:
     return Fmt_FP32;
+  case WAFER_CTV_BOOL:
+    return Fmt_BOOL;
   default:
     return Fmt_UNUSED;
   }
@@ -106,6 +119,41 @@ static uint32_t wafer_ctv_disposition(uint32_t opcode) {
       (opcode >= 98U && opcode <= 106U) || opcode == 110U)
     return WAFER_CTV_BOARD_TOLERANCE;
   return WAFER_CTV_BOARD_EXACT;
+}
+
+static uint32_t wafer_ctv_special_ordinal(uint32_t opcode,
+                                          uint32_t domain) {
+  if (opcode == 1U && domain == WAFER_CTV_DOMAIN_RECIP_ZERO)
+    return 0U;
+  if (opcode == 3U && domain == WAFER_CTV_DOMAIN_SQRT_ZERO)
+    return 1U;
+  if (opcode == 3U && domain == WAFER_CTV_DOMAIN_SQRT_NEGATIVE)
+    return 2U;
+  if (opcode == 4U && domain == WAFER_CTV_DOMAIN_RSQRT_ZERO)
+    return 3U;
+  if (opcode == 4U && domain == WAFER_CTV_DOMAIN_RSQRT_NEGATIVE)
+    return 4U;
+  if (opcode == 14U && domain == WAFER_CTV_DOMAIN_SPECIAL)
+    return 5U;
+  if (opcode == 14U && domain == WAFER_CTV_DOMAIN_QNAN)
+    return 6U;
+  if (opcode == 14U && domain == WAFER_CTV_DOMAIN_SNAN)
+    return 7U;
+  if (opcode == 5U && domain == WAFER_CTV_DOMAIN_SIGNED_ZERO)
+    return 8U;
+  return UINT32_MAX;
+}
+
+static uint32_t wafer_ctv_domain_disposition(uint32_t opcode,
+                                             uint32_t domain) {
+  if (domain == WAFER_CTV_DOMAIN_NORMAL)
+    return wafer_ctv_disposition(opcode);
+  if (domain == WAFER_CTV_DOMAIN_SQRT_ZERO)
+    return WAFER_CTV_BOARD_TOLERANCE;
+  if (domain == WAFER_CTV_DOMAIN_SPECIAL ||
+      domain == WAFER_CTV_DOMAIN_SIGNED_ZERO)
+    return WAFER_CTV_BOARD_EXACT;
+  return WAFER_CTV_BOARD_OBSERVED;
 }
 
 static uint32_t wafer_ctv_bool_output(uint32_t opcode) {
@@ -163,23 +211,40 @@ static uint32_t wafer_ctv_decode(const volatile uint64_t *request,
   uint32_t opcode = (uint32_t)request[WAFER_CTV_REQ_OPCODE];
   uint32_t dtype = (uint32_t)request[WAFER_CTV_REQ_DTYPE];
   uint32_t elements = (uint32_t)request[WAFER_CTV_REQ_ELEMENTS];
-  if (opcode > 110U || dtype > WAFER_CTV_F32 ||
+  uint32_t domain = (uint32_t)request[WAFER_CTV_REQ_DOMAIN];
+  uint32_t logic_bool = opcode >= 88U && opcode <= 97U;
+  if (opcode > 110U || dtype > WAFER_CTV_BOOL ||
       (elements != WAFER_CTV_MAIN_ELEMENTS &&
        elements != WAFER_CTV_TAIL_ELEMENTS) ||
-      (opcode >= 88U && opcode <= 97U && dtype != WAFER_CTV_F16))
+      (logic_bool != 0 && dtype != WAFER_CTV_BOOL) ||
+      (logic_bool == 0 && dtype == WAFER_CTV_BOOL))
     return WAFER_CTV_STATUS_UNSUPPORTED_CASE;
 
   uint32_t shape = elements == WAFER_CTV_TAIL_ELEMENTS;
-  uint32_t expected_case =
-      WAFER_CTV_CASE_BASE + opcode * WAFER_CTV_CASE_STRIDE +
-      dtype * 2U + shape;
+  uint32_t expected_case = 0U;
+  if (domain == WAFER_CTV_DOMAIN_NORMAL) {
+    uint32_t dtype_ordinal =
+        dtype == WAFER_CTV_BOOL ? WAFER_CTV_F16 : dtype;
+    expected_case =
+        WAFER_CTV_CASE_BASE + opcode * WAFER_CTV_CASE_STRIDE +
+        dtype_ordinal * 2U + shape;
+  } else {
+    uint32_t special_ordinal =
+        wafer_ctv_special_ordinal(opcode, domain);
+    if (special_ordinal == UINT32_MAX ||
+        elements != WAFER_CTV_MAIN_ELEMENTS)
+      return WAFER_CTV_STATUS_UNSUPPORTED_CASE;
+    expected_case = WAFER_CTV_SPECIAL_CASE_BASE +
+                    special_ordinal * 3U + dtype;
+  }
   uint32_t dtype_bytes = wafer_ctv_dtype_bytes(dtype);
   uint32_t bool_output = wafer_ctv_bool_output(opcode);
   uint32_t result_bytes =
       bool_output != 0 ? (elements + 7U) / 8U : elements * dtype_bytes;
   uint32_t output_span = (result_bytes + 255U) & ~UINT32_C(255);
   uint32_t family = wafer_ctv_family(opcode);
-  uint32_t disposition = wafer_ctv_disposition(opcode);
+  uint32_t disposition =
+      wafer_ctv_domain_disposition(opcode, domain);
   if (request[WAFER_CTV_REQ_CASE] != expected_case ||
       request[WAFER_CTV_REQ_FAMILY] != family ||
       request[WAFER_CTV_REQ_DISPOSITION] != disposition ||
@@ -216,6 +281,7 @@ static uint32_t wafer_ctv_decode(const volatile uint64_t *request,
       wafer_ctv_vs(opcode) != 0 ? wafer_ctv_scalar_bits(dtype) : 0;
   decoded->unit_elements =
       wafer_ctv_vuv(opcode) != 0 ? WAFER_CTV_UNIT_ELEMENTS : 0;
+  decoded->domain = domain;
   return WAFER_CTV_STATUS_OK;
 }
 
@@ -326,6 +392,7 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
     record[WAFER_CTV_REC_SCALAR_BITS] = selected.scalar_bits;
     record[WAFER_CTV_REC_UNIT_ELEMENTS] =
         selected.unit_elements;
+    record[WAFER_CTV_REC_DOMAIN] = selected.domain;
 
     wafer_tx81_rdma(payload_ddr, WAFER_CTV_SPM_A,
                     WAFER_CTV_SLOT_BYTES, WAFER_CTV_SLOT_BYTES,

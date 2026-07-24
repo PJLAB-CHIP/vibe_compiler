@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import pathlib
@@ -12,6 +13,29 @@ import subprocess
 import sys
 
 import numpy as np
+
+
+@dataclasses.dataclass(frozen=True)
+class RuntimeLaunchCalibrationCase:
+    key: str
+    rank_count: int
+    launch_abi: str
+    oracle: str
+    completion: str
+
+
+RUNTIME_LAUNCH_CALIBRATION_CASES = (
+    RuntimeLaunchCalibrationCase(
+        "rank-one-per-rank-add",
+        1,
+        "per-rank-pointer-block-v1",
+        "full f32 expected output+schema-v5 unique entry/resource binding",
+        "runtime terminal+D2H+normal cleanup",
+    ),
+)
+CALIBRATION_LEAF_BINDINGS = {
+    "rank-one-per-rank-add": RUNTIME_LAUNCH_CALIBRATION_CASES,
+}
 
 
 MODULE = """\

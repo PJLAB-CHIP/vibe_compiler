@@ -14,8 +14,8 @@ REQUEST_MAGIC = 0x3151455256434357
 RECORD_MAGIC = 0x3143455256434357
 REQUEST_GUARD = 0xE7D6C5B4A3928170
 RECORD_GUARD = 0x0F1E2D3C4B5A6978
-SCHEMA = 1
-REQUEST_WORDS = 16
+SCHEMA = 2
+REQUEST_WORDS = 24
 RECORD_WORDS = 32
 RESOURCE_BYTES = 131072
 SLOT_BYTES = 65536
@@ -25,6 +25,33 @@ SLOT_CANARY = 0xA7
 MAIN_ELEMENTS = 8192
 TAIL_ELEMENTS = 8197
 RND_NEAREST_EVEN = 0
+RND_ZERO = 1
+RND_POS_INF = 2
+RND_NEG_INF = 3
+RND_STOCHASTIC = 4
+ROUNDING_NAMES = {
+    RND_NEAREST_EVEN: "nearest-even",
+    RND_ZERO: "toward-zero",
+    RND_POS_INF: "toward-positive",
+    RND_NEG_INF: "toward-negative",
+    RND_STOCHASTIC: "stochastic",
+}
+DOMAINS = {
+    "NORMAL": 0,
+    "DIRECTED": 1,
+    "ZERO_POINT": 2,
+    "EXTREMA": 3,
+    "STOCHASTIC": 4,
+}
+DISPOSITIONS = {
+    "BOARD_EXACT": 0,
+    "BOARD_OBSERVED": 1,
+    "ISOLATED_DEFERRED": 2,
+}
+DIRECTED_CASE_BASE = 1000
+ZERO_POINT_CASE_BASE = 2000
+EXTREMA_CASE_BASE = 3000
+STOCHASTIC_CASE_BASE = 4000
 
 TYPE_CODES = {
     "int8": 0,
@@ -60,7 +87,10 @@ REQ = {
     "RESOURCE_BYTES": 12,
     "SLOT_BYTES": 13,
     "BODY_OFFSET": 14,
-    "GUARD": 15,
+    "DOMAIN": 15,
+    "ZERO_POINT": 16,
+    "DISPOSITION": 17,
+    "GUARD": 23,
 }
 REC = {
     "MAGIC": 0,
@@ -84,8 +114,23 @@ REC = {
     "CT_INST_DELTA": 18,
     "CT_EXEC_DELTA": 19,
     "CT_BLOCKING_DELTA": 20,
+    "DOMAIN": 21,
+    "ZERO_POINT": 22,
+    "DISPOSITION": 23,
     "RECORD_GUARD": 31,
 }
+
+ZERO_POINT_OPCODES = frozenset(range(139, 143))
+PLAIN_OPCODES = frozenset(
+    (143, 151, 154, 155, 156, 161, 162, 172, 174)
+)
+ROUNDING_OPCODES = frozenset(
+    set(range(139, 175)) - ZERO_POINT_OPCODES - PLAIN_OPCODES
+)
+# Int16 values are all exactly representable in FP32.  The three directed
+# modes are retained as an explicit mode-invariance control, not mislabeled as
+# evidence that the rounding selector changed a result.
+ROUNDING_INVARIANT_OPCODES = frozenset({145})
 
 
 def _parse_route(opcode: int) -> tuple[str, str]:
@@ -111,6 +156,26 @@ class CTConvertCase:
     result_bytes: int
     output_span: int
     rounding_mode: int = RND_NEAREST_EVEN
+    zero_point: int = 0
+    domain_name: str = "NORMAL"
+    disposition_name: str = "BOARD_EXACT"
+    reason: str = ""
+
+    @property
+    def domain(self) -> int:
+        return DOMAINS[self.domain_name]
+
+    @property
+    def disposition(self) -> int:
+        return DISPOSITIONS[self.disposition_name]
+
+    @property
+    def is_safe(self) -> bool:
+        return self.disposition_name != "ISOLATED_DEFERRED"
+
+    @property
+    def exact(self) -> bool:
+        return self.disposition_name == "BOARD_EXACT"
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -124,47 +189,204 @@ class CTConvertCase:
             "destination_type": self.destination_type,
             "shape": self.shape_name,
             "elements": self.elements,
-            "rounding": "nearest-even",
+            "rounding": ROUNDING_NAMES[self.rounding_mode],
+            "zero_point": self.zero_point,
+            "numeric_domain": self.domain_name.lower().replace("_", "-"),
             "input_bytes": self.input_bytes,
             "result_bytes": self.result_bytes,
             "output_span": self.output_span,
-            "disposition": "board-exact",
-            "oracle": "full-result-bits+physical-padding+guard",
+            "disposition": self.disposition_name.lower().replace("_", "-"),
+            "oracle": (
+                "full-result-bits+physical-padding+guard"
+                if self.exact
+                else "raw-result-bits+physical-padding+guard"
+                if self.is_safe
+                else "not-issued"
+            ),
+            "reason": self.reason,
         }
+
+
+def _make_case(
+    *,
+    case_id: int,
+    opcode: int,
+    shape_name: str,
+    elements: int,
+    suffix: str,
+    rounding_mode: int = RND_NEAREST_EVEN,
+    zero_point: int = 0,
+    domain_name: str = "NORMAL",
+    disposition_name: str = "BOARD_EXACT",
+    reason: str = "",
+) -> CTConvertCase:
+    source, destination = _parse_route(opcode)
+    result_bytes = elements * TYPE_BYTES[destination]
+    return CTConvertCase(
+        case_id=case_id,
+        name=(
+            f"ct-op{opcode:03d}-convert-{source}-{destination}-{suffix}"
+        ),
+        opcode=opcode,
+        opcode_name=ct_inventory.OPCODE_NAMES[opcode],
+        source_type=source,
+        destination_type=destination,
+        shape_name=shape_name,
+        elements=elements,
+        input_bytes=elements * TYPE_BYTES[source],
+        result_bytes=result_bytes,
+        output_span=(result_bytes + 255) // 256 * 256,
+        rounding_mode=rounding_mode,
+        zero_point=zero_point,
+        domain_name=domain_name,
+        disposition_name=disposition_name,
+        reason=reason,
+    )
+
+
+def _extrema_disposition(source: str, destination: str) -> str:
+    if destination.startswith("int"):
+        return "BOARD_OBSERVED"
+    if destination == "fp16" and source in {
+        "int32",
+        "bf16",
+        "fp32",
+        "tf32",
+    }:
+        return "BOARD_OBSERVED"
+    if destination == "bf16" and source in {"fp32", "tf32"}:
+        return "BOARD_OBSERVED"
+    if destination == "tf32" and source == "fp32":
+        return "BOARD_OBSERVED"
+    return "BOARD_EXACT"
 
 
 def build_catalog() -> tuple[CTConvertCase, ...]:
     cases: list[CTConvertCase] = []
     for opcode in range(139, 175):
-        source, destination = _parse_route(opcode)
         for shape_index, (shape_name, elements) in enumerate(
             (("main", MAIN_ELEMENTS), ("tail", TAIL_ELEMENTS))
         ):
-            result_bytes = elements * TYPE_BYTES[destination]
             cases.append(
-                CTConvertCase(
+                _make_case(
                     case_id=(opcode - 139) * 2 + shape_index,
-                    name=(
-                        f"ct-op{opcode:03d}-convert-{source}-"
-                        f"{destination}-{shape_name}"
-                    ),
                     opcode=opcode,
-                    opcode_name=ct_inventory.OPCODE_NAMES[opcode],
-                    source_type=source,
-                    destination_type=destination,
                     shape_name=shape_name,
                     elements=elements,
-                    input_bytes=elements * TYPE_BYTES[source],
-                    result_bytes=result_bytes,
-                    output_span=(result_bytes + 255) // 256 * 256,
+                    suffix=shape_name,
                 )
             )
+    for opcode in sorted(ROUNDING_OPCODES):
+        route = opcode - 139
+        for rounding_mode in (RND_ZERO, RND_POS_INF, RND_NEG_INF):
+            cases.append(
+                _make_case(
+                    case_id=(
+                        DIRECTED_CASE_BASE
+                        + route * 3
+                        + rounding_mode
+                        - 1
+                    ),
+                    opcode=opcode,
+                    shape_name="main",
+                    elements=MAIN_ELEMENTS,
+                    suffix=ROUNDING_NAMES[rounding_mode],
+                    rounding_mode=rounding_mode,
+                    domain_name="DIRECTED",
+                )
+            )
+    for opcode in sorted(ZERO_POINT_OPCODES):
+        cases.append(
+            _make_case(
+                case_id=ZERO_POINT_CASE_BASE + opcode - 139,
+                opcode=opcode,
+                shape_name="main",
+                elements=MAIN_ELEMENTS,
+                suffix="zero-point-7",
+                zero_point=7,
+                domain_name="ZERO_POINT",
+                disposition_name="BOARD_OBSERVED",
+                reason=(
+                    "zero-point formula is intentionally calibrated from raw "
+                    "board output and is not yet a production numeric policy"
+                ),
+            )
+        )
+    for opcode in range(139, 175):
+        source, destination = _parse_route(opcode)
+        cases.append(
+            _make_case(
+                case_id=EXTREMA_CASE_BASE + opcode - 139,
+                opcode=opcode,
+                shape_name="main",
+                elements=MAIN_ELEMENTS,
+                suffix="extrema",
+                domain_name="EXTREMA",
+                disposition_name=_extrema_disposition(
+                    source, destination
+                ),
+                reason=(
+                    "overflow/saturation policy is observed rather than "
+                    "assumed"
+                    if _extrema_disposition(source, destination)
+                    == "BOARD_OBSERVED"
+                    else ""
+                ),
+            )
+        )
+    for opcode in sorted(ROUNDING_OPCODES):
+        cases.append(
+            _make_case(
+                case_id=STOCHASTIC_CASE_BASE + opcode - 139,
+                opcode=opcode,
+                shape_name="main",
+                elements=MAIN_ELEMENTS,
+                suffix="stochastic-deferred",
+                rounding_mode=RND_STOCHASTIC,
+                domain_name="STOCHASTIC",
+                disposition_name="ISOLATED_DEFERRED",
+                reason=(
+                    "the ABI exposes stochastic mode but no seed/state or "
+                    "recoverable distribution contract"
+                ),
+            )
+        )
     return tuple(cases)
 
 
 CATALOG = build_catalog()
 CASES_BY_NAME = {case.name: case for case in CATALOG}
 CASES_BY_ID = {case.case_id: case for case in CATALOG}
+SAFE_CASES = tuple(case for case in CATALOG if case.is_safe)
+DEFERRED_CASES = tuple(case for case in CATALOG if not case.is_safe)
+CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
+    "ct-convert-all-routes-main-tail-nearest-even": tuple(
+        case for case in CATALOG if case.domain_name == "NORMAL"
+    ),
+    "ct-convert-halfway-extrema-positive": tuple(
+        case
+        for case in CATALOG
+        if case.domain_name == "EXTREMA"
+        and case.disposition_name == "BOARD_EXACT"
+    ),
+    "ct-convert-halfway-extrema-observed": tuple(
+        case
+        for case in CATALOG
+        if case.domain_name == "EXTREMA"
+        and case.disposition_name == "BOARD_OBSERVED"
+    ),
+    "ct-convert-directed-rounding-positive": tuple(
+        case
+        for case in CATALOG
+        if case.domain_name == "DIRECTED"
+    ),
+    "ct-convert-zero-point-observed": tuple(
+        case for case in CATALOG if case.domain_name == "ZERO_POINT"
+    ),
+    "ct-convert-stochastic-deferred": tuple(
+        case for case in CATALOG if case.domain_name == "STOCHASTIC"
+    ),
+}
 
 
 def _round_to_bf16_bits(value: float) -> int:
@@ -269,37 +491,216 @@ def _source_values(type_name: str, destination_type: str) -> tuple[int | float, 
     return finite + (math.inf, -math.inf)
 
 
+def _directed_source_values(
+    source_type: str, destination_type: str
+) -> tuple[int | float, ...]:
+    """Return source-representable values that distinguish directed modes."""
+    route_values: dict[tuple[str, str], tuple[int | float, ...]] = {
+        ("int32", "fp32"): (
+            -16777219,
+            -16777217,
+            16777217,
+            16777219,
+        ),
+        ("fp16", "bf16"): (
+            -1.01171875,
+            -1.00390625,
+            1.00390625,
+            1.01171875,
+        ),
+        ("fp32", "fp16"): (
+            -1.00146484375,
+            -1.00048828125,
+            1.00048828125,
+            1.00146484375,
+        ),
+        ("fp32", "bf16"): (
+            -1.01171875,
+            -1.00390625,
+            1.00390625,
+            1.01171875,
+        ),
+        ("fp32", "tf32"): (
+            -1.00146484375,
+            -1.00048828125,
+            1.00048828125,
+            1.00146484375,
+        ),
+        ("tf32", "bf16"): (
+            -1.01171875,
+            -1.00390625,
+            1.00390625,
+            1.01171875,
+        ),
+    }
+    return route_values.get(
+        (source_type, destination_type),
+        _source_values(source_type, destination_type),
+    )
+
+
+def _extrema_source_values(type_name: str) -> tuple[int | float, ...]:
+    if type_name == "int8":
+        return (-128, -127, -1, 0, 1, 126, 127)
+    if type_name == "int16":
+        return (-32768, -32767, -129, -128, 127, 128, 32766, 32767)
+    if type_name == "int32":
+        return (
+            -2147483648,
+            -2147483647,
+            -65537,
+            -32769,
+            32768,
+            65536,
+            2147483646,
+            2147483647,
+        )
+    if type_name == "fp16":
+        return (
+            -65504.0,
+            -32769.0,
+            -129.0,
+            -0.0,
+            0.0,
+            127.0,
+            32768.0,
+            65504.0,
+        )
+    return (
+        -3.0e38,
+        -65537.0,
+        -32769.0,
+        -129.0,
+        -0.0,
+        0.0,
+        127.0,
+        32768.0,
+        65536.0,
+        3.0e38,
+        -math.inf,
+        math.inf,
+    )
+
+
+def _step_float_bits(type_name: str, raw: bytes, upward: bool) -> bytes:
+    code = "H" if type_name in ("fp16", "bf16") else "I"
+    bits = struct.unpack(f"<{code}", raw)[0]
+    sign = 1 << (15 if code == "H" else 31)
+    step = 0x2000 if type_name == "tf32" else 1
+    if upward:
+        if bits == sign:
+            bits = step
+        elif bits & sign:
+            bits -= step
+        else:
+            bits += step
+    else:
+        if bits == 0:
+            bits = sign | step
+        elif bits & sign:
+            bits += step
+        else:
+            bits -= step
+    return struct.pack(f"<{code}", bits)
+
+
+def _encode_float_with_rounding(
+    destination_type: str, value: float, rounding_mode: int
+) -> bytes:
+    nearest = _encode_scalar(destination_type, value)
+    if (
+        rounding_mode == RND_NEAREST_EVEN
+        or not math.isfinite(value)
+    ):
+        return nearest
+    rounded = float(_decode_scalar(destination_type, nearest))
+    if rounded == value:
+        return nearest
+    if rounding_mode == RND_ZERO:
+        needs_step = abs(rounded) > abs(value)
+        upward = value < 0.0
+    elif rounding_mode == RND_POS_INF:
+        needs_step = rounded < value
+        upward = True
+    elif rounding_mode == RND_NEG_INF:
+        needs_step = rounded > value
+        upward = False
+    else:
+        raise RuntimeError("stochastic rounding has no exact host oracle")
+    return (
+        _step_float_bits(destination_type, nearest, upward)
+        if needs_step
+        else nearest
+    )
+
+
 def _convert_scalar(
-    source_type: str, destination_type: str, raw: bytes
+    source_type: str,
+    destination_type: str,
+    raw: bytes,
+    rounding_mode: int,
 ) -> bytes:
     value = _decode_scalar(source_type, raw)
     if destination_type.startswith("int"):
         if not math.isfinite(float(value)):
             raise RuntimeError("non-finite value cannot enter exact integer oracle")
-        value = round(float(value))
-    return _encode_scalar(destination_type, value)
+        if rounding_mode == RND_NEAREST_EVEN:
+            value = round(float(value))
+        elif rounding_mode == RND_ZERO:
+            value = math.trunc(float(value))
+        elif rounding_mode == RND_POS_INF:
+            value = math.ceil(float(value))
+        elif rounding_mode == RND_NEG_INF:
+            value = math.floor(float(value))
+        else:
+            raise RuntimeError("stochastic rounding has no exact host oracle")
+        return _encode_scalar(destination_type, value)
+    return _encode_float_with_rounding(
+        destination_type, float(value), rounding_mode
+    )
 
 
 @dataclasses.dataclass(frozen=True)
 class CasePayload:
     request: bytes
     payload: bytes
-    expected_output_slot: bytes
+    expected_output_slot: bytes | None
 
 
 def build_case_payload(case: CTConvertCase, sample: int = 0) -> CasePayload:
-    pattern = _source_values(case.source_type, case.destination_type)
+    if not case.is_safe:
+        raise RuntimeError(
+            f"{case.name}: deferred case cannot produce a board request: "
+            f"{case.reason}"
+        )
+    pattern = (
+        _extrema_source_values(case.source_type)
+        if case.domain_name == "EXTREMA"
+        else _directed_source_values(
+            case.source_type, case.destination_type
+        )
+        if case.domain_name == "DIRECTED"
+        else _source_values(case.source_type, case.destination_type)
+    )
     source_scalars = tuple(
         _encode_scalar(case.source_type, pattern[index % len(pattern)])
         for index in range(case.elements)
     )
-    expected_scalars = tuple(
-        _convert_scalar(case.source_type, case.destination_type, raw)
-        for raw in source_scalars
-    )
     input_raw = b"".join(source_scalars)
-    expected_raw = b"".join(expected_scalars)
-    if len(input_raw) != case.input_bytes or len(expected_raw) != case.result_bytes:
+    expected_raw: bytes | None = None
+    if case.exact:
+        expected_raw = b"".join(
+            _convert_scalar(
+                case.source_type,
+                case.destination_type,
+                raw,
+                case.rounding_mode,
+            )
+            for raw in source_scalars
+        )
+    if len(input_raw) != case.input_bytes or (
+        expected_raw is not None and len(expected_raw) != case.result_bytes
+    ):
         raise RuntimeError(f"{case.name}: scalar codec size mismatch")
 
     words = [0] * REQUEST_WORDS
@@ -318,15 +719,20 @@ def build_case_payload(case: CTConvertCase, sample: int = 0) -> CasePayload:
     words[REQ["RESOURCE_BYTES"]] = RESOURCE_BYTES
     words[REQ["SLOT_BYTES"]] = SLOT_BYTES
     words[REQ["BODY_OFFSET"]] = BODY_OFFSET
+    words[REQ["DOMAIN"]] = case.domain
+    words[REQ["ZERO_POINT"]] = case.zero_point
+    words[REQ["DISPOSITION"]] = case.disposition
     words[REQ["GUARD"]] = REQUEST_GUARD
     request = struct.pack(f"<{REQUEST_WORDS}Q", *words)
 
     payload = bytearray([SLOT_CANARY] * RESOURCE_BYTES)
     payload[BODY_OFFSET : BODY_OFFSET + len(input_raw)] = input_raw
-    expected = bytearray([SLOT_CANARY] * SLOT_BYTES)
-    expected[BODY_OFFSET : BODY_OFFSET + len(expected_raw)] = expected_raw
+    expected: bytearray | None = None
+    if expected_raw is not None:
+        expected = bytearray([SLOT_CANARY] * SLOT_BYTES)
+        expected[BODY_OFFSET : BODY_OFFSET + len(expected_raw)] = expected_raw
     return CasePayload(
         request + bytes([SLOT_CANARY]) * (RESOURCE_BYTES - len(request)),
         bytes(payload),
-        bytes(expected),
+        bytes(expected) if expected is not None else None,
     )

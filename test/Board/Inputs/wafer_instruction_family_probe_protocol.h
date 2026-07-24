@@ -201,7 +201,9 @@ enum WaferIFPDeferredReason {
   X(CT_ADD_SPECIAL_F16, 129, "ct-add-special-f16", SAFE, CT_ELEMENTWISE,    \
     F16, EXACT_BITS, REASON_NONE, 256, 256, 0)                                 \
   X(CT_ADD_SPECIAL_BF16, 130, "ct-add-special-bf16", SAFE, CT_ELEMENTWISE,  \
-    BF16, EXACT_BITS, REASON_NONE, 256, 256, 0)
+    BF16, EXACT_BITS, REASON_NONE, 256, 256, 0)                                \
+  X(UNPOOL_INDEX_F16, 131, "unpool-index-f16", SAFE, UNPOOL, F16,           \
+    EXACT_COMPOSITE, REASON_NONE, 512, 512, 256)
 
 enum WaferIFPCase {
 #define WAFER_IFP_ENUM_CASE(SYMBOL, ID, SPELLING, DISPOSITION, FAMILY, DTYPE,  \

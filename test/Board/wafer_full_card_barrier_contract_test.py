@@ -7,6 +7,30 @@ import wafer_board_full_card_barrier_probe_test as barrier
 
 
 def main() -> int:
+    assert barrier.CALIBRATION_LEAF_BINDINGS
+    assert all(barrier.CALIBRATION_LEAF_BINDINGS.values())
+    real_objects = {
+        id(case)
+        for case in (
+            barrier.BARRIER_POSITIVE_CASES
+            + barrier.BARRIER_NEGATIVE_CASES
+        )
+    }
+    assert all(
+        id(case) in real_objects
+        for cases in barrier.CALIBRATION_LEAF_BINDINGS.values()
+        for case in cases
+    )
+    assert {
+        case.epoch for case in barrier.BARRIER_POSITIVE_CASES
+    } == {None, 1, 2}
+    assert {
+        case.participants for case in barrier.BARRIER_NEGATIVE_CASES
+    } == set(barrier.UNSUPPORTED_PARTICIPANT_COUNTS)
+    assert all(
+        case.disposition == "static-negative"
+        for case in barrier.BARRIER_NEGATIVE_CASES
+    )
     barrier.validate_participant_count(barrier.RANK_COUNT)
     for participants in barrier.UNSUPPORTED_PARTICIPANT_COUNTS:
         try:
@@ -20,8 +44,8 @@ def main() -> int:
     barrier.validate_host_contract()
     print(
         "wafer_full_card_barrier_contract_test: "
-        f"positive={barrier.RANK_COUNT} "
-        f"negative={barrier.UNSUPPORTED_PARTICIPANT_COUNTS} passed"
+        f"positive_leaves={len(barrier.BARRIER_POSITIVE_CASES)} "
+        f"negative_leaves={len(barrier.BARRIER_NEGATIVE_CASES)} passed"
     )
     return 0
 

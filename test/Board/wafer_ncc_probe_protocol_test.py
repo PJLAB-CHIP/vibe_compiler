@@ -297,6 +297,12 @@ class ProtocolTest(unittest.TestCase):
 
     def test_worker_catalog_routes_and_joins_exact_participants(self) -> None:
         expected = {
+            "ct-worker0-raw-single": (
+                (0,),
+                protocol.Schedule.SERIAL,
+                0b001,
+                (0,),
+            ),
             "ct-worker1-raw-single": (
                 (1,),
                 protocol.Schedule.SERIAL,
@@ -308,6 +314,24 @@ class ProtocolTest(unittest.TestCase):
                 protocol.Schedule.SERIAL,
                 0b100,
                 (0,),
+            ),
+            "ct-workers01-disjoint-r1-window": (
+                (0, 1),
+                protocol.Schedule.WINDOW,
+                0b011,
+                (0, 4),
+            ),
+            "ct-workers02-disjoint-r1-window": (
+                (0, 2),
+                protocol.Schedule.WINDOW,
+                0b101,
+                (0, 4),
+            ),
+            "ct-workers12-disjoint-r1-window": (
+                (1, 2),
+                protocol.Schedule.WINDOW,
+                0b110,
+                (0, 4),
             ),
             "ct-workers012-disjoint-r1-window": (
                 (0, 1, 2),
@@ -440,35 +464,35 @@ class ProtocolTest(unittest.TestCase):
         self.assertLess(requested_wait, boundary_oracle)
         self.assertLess(boundary_oracle, safety_drain)
 
-    def test_wait_overhead_cases_share_one_short_ct_workload(self) -> None:
+    def test_wait_overhead_cases_cover_every_engine(self) -> None:
         cases = execution_probe.SUITES["wait-overhead-manual"]
         self.assertIs(cases, execution_probe.V2_WAIT_OVERHEAD_CASES)
         self.assertEqual(
             {case.name for case in cases},
             {
-                "ct-worker0-depth6-wait-each",
-                "ct-worker0-depth6-wait-once",
+                f"{engine.name.lower()}-worker0-r2-{spelling}"
+                for engine in execution_probe.V2_ENGINES
+                for spelling in ("wait-each", "wait-once")
             },
         )
-        plans = [case.plan for case in cases]
-        self.assertEqual(
-            {plan.schedule for plan in plans},
-            {protocol.Schedule.SERIAL, protocol.Schedule.WINDOW},
-        )
-        for plan in plans:
-            self.assertEqual(plan.rounds, 3)
-            self.assertEqual(plan.issue_order(), (0, 4, 1, 5, 2, 6))
+        for engine in execution_probe.V2_ENGINES:
+            engine_cases = tuple(
+                case
+                for case in cases
+                if case.plan.lanes[0].engine == engine
+            )
+            self.assertEqual(
+                {case.plan.schedule for case in engine_cases},
+                {protocol.Schedule.SERIAL, protocol.Schedule.WINDOW},
+            )
+        for case in cases:
+            plan = case.plan
+            self.assertEqual(plan.rounds, 2)
+            self.assertEqual(plan.issue_order(), (0, 1))
             self.assertEqual(plan.wait_kind, protocol.WaitKind.BY_WORKER)
             self.assertEqual(plan.wait_worker_mask, 1)
-            self.assertTrue(
-                all(
-                    lane.engine == protocol.Engine.CT
-                    and lane.worker == 0
-                    and lane.transfer_bytes == 256
-                    and lane.element_format == execution_probe.FMT_FP16
-                    for lane in plan.lanes
-                )
-            )
+            self.assertEqual(len(plan.lanes), 1)
+            self.assertEqual(plan.lanes[0].worker, 0)
             plan.request_words()
         self.assertLess(
             protocol.REC["PLAN_CYCLES"],
@@ -937,8 +961,89 @@ class ProtocolTest(unittest.TestCase):
             issue_counts = {
                 len(case.plan.issue_identities()) for case in cases
             }
-            self.assertEqual(issue_counts, {min(4, depth - 2)})
+            self.assertEqual(
+                issue_counts,
+                {2}
+                if engine == protocol.Engine.TDMA
+                else {2, 4},
+            )
             self.assertTrue(all(count < depth for count in issue_counts))
+
+    def test_issue_paths_and_leaf_bindings_are_concrete(self) -> None:
+        self.assertEqual(len(execution_probe.V2_ISSUE_PATH_CASES), 10)
+        for engine in execution_probe.V2_ENGINES:
+            cases = tuple(
+                case
+                for case in execution_probe.V2_ISSUE_PATH_CASES
+                if case.plan.lanes[0].engine == engine
+            )
+            self.assertEqual(
+                {case.plan.lanes[0].issue_mode for case in cases},
+                {protocol.IssueMode.RAW, protocol.IssueMode.WRAPPER},
+            )
+            self.assertTrue(
+                all(
+                    case.plan.rounds == 2
+                    and case.plan.schedule == protocol.Schedule.WINDOW
+                    for case in cases
+                )
+            )
+        execution_probe.validate_no_card_protocol_cases()
+        self.assertTrue(execution_probe.CALIBRATION_LEAF_BINDINGS)
+        self.assertTrue(
+            all(execution_probe.CALIBRATION_LEAF_BINDINGS.values())
+        )
+        deferred = {
+            case.name: case
+            for case in execution_probe.V2_DEFERRED_CASES
+        }
+        self.assertEqual(
+            deferred["dependency-strided-envelope"].disposition,
+            "isolated-deferred",
+        )
+        self.assertIn(
+            "must not be relabeled",
+            deferred["movement-backlog-at-least-64k"].reason,
+        )
+        protocol_negative_groups = {
+            "execute-engine-none-static-negative": "execute-engine-none",
+            "execute-worker-out-of-range-static-negative": (
+                "execute-worker-out-of-range"
+            ),
+            "wait-mask-nonparticipant-static-negative": (
+                "wait-mask-nonparticipant"
+            ),
+        }
+        for group, name in protocol_negative_groups.items():
+            bound = execution_probe.CALIBRATION_LEAF_BINDINGS[group]
+            self.assertEqual(tuple(case.name for case in bound), (name,))
+            self.assertEqual(bound[0].disposition, "static-negative")
+            self.assertIn("before serialization", bound[0].completion_oracle)
+        with self.assertRaisesRegex(ValueError, "Engine.NONE"):
+            dataclasses.replace(
+                execution_probe.V2_SINGLE_CASES[0].plan,
+                lanes=(
+                    dataclasses.replace(
+                        execution_probe.V2_SINGLE_CASES[0].plan.lanes[0],
+                        engine=protocol.Engine.NONE,
+                    ),
+                ),
+            ).request_words()
+        with self.assertRaisesRegex(ValueError, "worker"):
+            dataclasses.replace(
+                execution_probe.V2_SINGLE_CASES[0].plan,
+                lanes=(
+                    dataclasses.replace(
+                        execution_probe.V2_SINGLE_CASES[0].plan.lanes[0],
+                        worker=3,
+                    ),
+                ),
+            ).request_words()
+        with self.assertRaisesRegex(ValueError, "non-participant"):
+            dataclasses.replace(
+                execution_probe.V2_SINGLE_CASES[0].plan,
+                wait_worker_mask=0b010,
+            ).request_words()
 
     def test_documented_depth_catalog_is_exact_and_one_shot(self) -> None:
         for engine, depth in (

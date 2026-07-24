@@ -20,6 +20,10 @@ typedef struct WaferCCHCase {
   uint32_t expected_rdma;
   uint32_t expected_wdma;
   uint32_t output_regions;
+  uint32_t payload_bytes;
+  uint32_t pair_kind;
+  uint32_t schedule;
+  uint32_t bank_offset;
 } WaferCCHCase;
 
 typedef struct WaferCCHPMU {
@@ -30,10 +34,14 @@ typedef struct WaferCCHPMU {
 } WaferCCHPMU;
 
 static const WaferCCHCase wafer_cch_cases[] = {
-    {0U, 2U, 0U, 0U, 0U},
-    {1U, 1U, 2U, 2U, 2U},
-    {2U, 1U, 1U, 1U, 1U},
-    {3U, 1U, 1U, 1U, 1U},
+    {0U, 1U, 0U, 0U, 0U, WAFER_CCH_PAYLOAD_BYTES, 0U, 0U, 0U},
+    {1U, 1U, 2U, 2U, 2U, WAFER_CCH_PAYLOAD_BYTES, 0U, 0U, 0U},
+    {2U, 1U, 1U, 1U, 1U, WAFER_CCH_PAYLOAD_BYTES, 0U, 0U, 0U},
+    {3U, 1U, 1U, 1U, 1U, WAFER_CCH_PAYLOAD_BYTES, 0U, 0U, 0U},
+};
+
+static const uint32_t wafer_cch_bank_offsets[] = {
+    0U, 256U, 512U, 1024U, 2048U, 4096U, 8192U, 16384U, 32768U,
 };
 
 static void wafer_cch_cache_range(uint64_t begin, uint32_t bytes,
@@ -98,7 +106,6 @@ static uint32_t wafer_cch_decode(const volatile uint64_t *request,
   if (request[WAFER_CCH_REQ_MAGIC] != WAFER_CCH_REQUEST_MAGIC ||
       request[WAFER_CCH_REQ_SCHEMA_AND_WORDS] !=
           (((uint64_t)WAFER_CCH_SCHEMA << 32) | WAFER_CCH_REQUEST_WORDS) ||
-      request[WAFER_CCH_REQ_PAYLOAD_BYTES] != WAFER_CCH_PAYLOAD_BYTES ||
       request[WAFER_CCH_REQ_RESOURCE_BYTES] != WAFER_CCH_RESOURCE_BYTES ||
       request[WAFER_CCH_REQ_BODY_OFFSET] != WAFER_CCH_BODY_OFFSET ||
       request[WAFER_CCH_REQ_OUTPUT0_OFFSET] != WAFER_CCH_OUTPUT0_OFFSET ||
@@ -106,13 +113,47 @@ static uint32_t wafer_cch_decode(const volatile uint64_t *request,
       request[WAFER_CCH_REQ_GUARD] != WAFER_CCH_REQUEST_GUARD)
     return WAFER_CCH_STATUS_BAD_REQUEST;
   uint32_t case_id = (uint32_t)request[WAFER_CCH_REQ_CASE];
-  if (case_id >= sizeof(wafer_cch_cases) / sizeof(wafer_cch_cases[0]))
-    return WAFER_CCH_STATUS_BAD_REQUEST;
-  *selected = wafer_cch_cases[case_id];
+  if (case_id < sizeof(wafer_cch_cases) / sizeof(wafer_cch_cases[0])) {
+    *selected = wafer_cch_cases[case_id];
+  } else {
+    const uint32_t schedules = 2U;
+    const uint32_t offsets =
+        sizeof(wafer_cch_bank_offsets) / sizeof(wafer_cch_bank_offsets[0]);
+    const uint32_t cases_per_pair = offsets * schedules;
+    uint32_t bank_case = case_id - 4U;
+    uint32_t pair_index = bank_case / cases_per_pair;
+    uint32_t within_pair = bank_case % cases_per_pair;
+    uint32_t offset_index = within_pair / schedules;
+    uint32_t schedule = within_pair % schedules + 1U;
+    if (pair_index >= 3U || offset_index >= offsets)
+      return WAFER_CCH_STATUS_BAD_REQUEST;
+    selected->case_id = case_id;
+    selected->phases = 1U;
+    selected->payload_bytes = WAFER_CCH_BANK_PAYLOAD_BYTES;
+    selected->pair_kind = pair_index + 1U;
+    selected->schedule = schedule;
+    selected->bank_offset = wafer_cch_bank_offsets[offset_index];
+    selected->expected_rdma =
+        selected->pair_kind == 1U ? 2U : selected->pair_kind == 3U ? 1U : 0U;
+    selected->expected_wdma =
+        selected->pair_kind == 2U ? 2U : selected->pair_kind == 3U ? 1U : 0U;
+    selected->output_regions =
+        selected->pair_kind == 2U ? 2U : selected->pair_kind == 3U ? 1U : 0U;
+  }
   *sample = (uint32_t)request[WAFER_CCH_REQ_SAMPLE];
   if (*sample >= selected->phases ||
+      request[WAFER_CCH_REQ_PAYLOAD_BYTES] != selected->payload_bytes ||
       request[WAFER_CCH_REQ_EXPECTED_RDMA] != selected->expected_rdma ||
-      request[WAFER_CCH_REQ_EXPECTED_WDMA] != selected->expected_wdma)
+      request[WAFER_CCH_REQ_EXPECTED_WDMA] != selected->expected_wdma ||
+      request[WAFER_CCH_REQ_PAIR_KIND] != selected->pair_kind ||
+      request[WAFER_CCH_REQ_SCHEDULE] != selected->schedule ||
+      request[WAFER_CCH_REQ_BANK_OFFSET] != selected->bank_offset ||
+      WAFER_CCH_BODY_OFFSET + WAFER_CCH_BANK_REGION_GAP +
+              selected->bank_offset + selected->payload_bytes >
+          WAFER_CCH_RESOURCE_BYTES ||
+      WAFER_CCH_OUTPUT0_OFFSET + WAFER_CCH_BANK_REGION_GAP +
+              selected->bank_offset + selected->payload_bytes >
+          WAFER_CCH_RESOURCE_BYTES)
     return WAFER_CCH_STATUS_BAD_REQUEST;
   return WAFER_CCH_STATUS_OK;
 }
@@ -127,6 +168,32 @@ static uint8_t wafer_cch_store_pattern(uint32_t case_id, uint32_t sample,
                                        uint32_t index) {
   return (uint8_t)(case_id * 41U + (sample + 101U) * 13U + index * 17U +
                    (index >> 7) * 29U + 3U);
+}
+
+static uint8_t wafer_cch_bank_pattern(uint32_t case_id, uint32_t lane,
+                                      uint32_t index) {
+  return (uint8_t)(case_id * 31U + lane * 97U + index * 19U +
+                   (index >> 6) * 11U + 5U);
+}
+
+static void wafer_cch_seed_spm_bank(uint64_t address, uint32_t case_id,
+                                    uint32_t lane) {
+  volatile uint8_t *mapped =
+      (volatile uint8_t *)(void *)get_spm_memory_mapping(address);
+  for (uint32_t index = 0; index < WAFER_CCH_BANK_PAYLOAD_BYTES; ++index)
+    mapped[index] = wafer_cch_bank_pattern(case_id, lane, index);
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
+}
+
+static uint64_t wafer_cch_mismatch_spm_bank(uint64_t address,
+                                            uint32_t case_id,
+                                            uint32_t lane) {
+  const volatile uint8_t *mapped =
+      (const volatile uint8_t *)(const void *)get_spm_memory_mapping(address);
+  uint64_t mismatches = 0;
+  for (uint32_t index = 0; index < WAFER_CCH_BANK_PAYLOAD_BYTES; ++index)
+    mismatches += mapped[index] != wafer_cch_bank_pattern(case_id, lane, index);
+  return mismatches;
 }
 
 static void wafer_cch_fill_ddr(uint64_t address, uint32_t bytes,
@@ -184,13 +251,14 @@ static void wafer_cch_seed_spm(uint64_t address) {
   __asm__ volatile("fence iorw, iorw" ::: "memory");
 }
 
-static uint64_t wafer_cch_spm_guard_mismatches(uint64_t address) {
+static uint64_t wafer_cch_spm_guard_mismatches_bytes(uint64_t address,
+                                                     uint32_t payload_bytes) {
   const volatile uint8_t *before =
       (const volatile uint8_t *)(const void *)get_spm_memory_mapping(
           address - WAFER_CCH_SPM_GUARD_BYTES);
   const volatile uint8_t *after =
       (const volatile uint8_t *)(const void *)get_spm_memory_mapping(
-          address + WAFER_CCH_PAYLOAD_BYTES);
+          address + payload_bytes);
   uint64_t mismatches = 0;
   for (uint32_t index = 0; index < WAFER_CCH_SPM_GUARD_BYTES; ++index) {
     mismatches += before[index] != WAFER_CCH_SPM_GUARD_VALUE;
@@ -199,24 +267,31 @@ static uint64_t wafer_cch_spm_guard_mismatches(uint64_t address) {
   return mismatches;
 }
 
-static uint64_t wafer_cch_output_guard_mismatches(uint64_t output_ddr,
-                                                  uint32_t regions) {
+static uint64_t wafer_cch_output_guard_mismatches_at(
+    uint64_t output_ddr, const uint32_t *offsets, uint32_t regions,
+    uint32_t payload_bytes) {
   uint64_t mismatches = 0;
-  const uint32_t offsets[2] = {WAFER_CCH_OUTPUT0_OFFSET,
-                               WAFER_CCH_OUTPUT1_OFFSET};
   for (uint32_t region = 0; region < regions; ++region) {
     const volatile uint8_t *before =
         (const volatile uint8_t *)(uintptr_t)(output_ddr + offsets[region] -
                                               WAFER_CCH_SPM_GUARD_BYTES);
     const volatile uint8_t *after =
         (const volatile uint8_t *)(uintptr_t)(output_ddr + offsets[region] +
-                                              WAFER_CCH_PAYLOAD_BYTES);
+                                              payload_bytes);
     for (uint32_t index = 0; index < WAFER_CCH_SPM_GUARD_BYTES; ++index) {
       mismatches += before[index] != WAFER_CCH_OUTPUT_CANARY;
       mismatches += after[index] != WAFER_CCH_OUTPUT_CANARY;
     }
   }
   return mismatches;
+}
+
+static uint64_t wafer_cch_output_guard_mismatches(uint64_t output_ddr,
+                                                  uint32_t regions) {
+  const uint32_t offsets[2] = {WAFER_CCH_OUTPUT0_OFFSET,
+                               WAFER_CCH_OUTPUT1_OFFSET};
+  return wafer_cch_output_guard_mismatches_at(
+      output_ddr, offsets, regions, WAFER_CCH_PAYLOAD_BYTES);
 }
 
 static void wafer_cch_init_record(volatile uint64_t *record, uint32_t status) {
@@ -229,6 +304,34 @@ static void wafer_cch_init_record(volatile uint64_t *record, uint32_t status) {
   record[WAFER_CCH_REC_OUTPUT0_OFFSET] = WAFER_CCH_OUTPUT0_OFFSET;
   record[WAFER_CCH_REC_OUTPUT1_OFFSET] = WAFER_CCH_OUTPUT1_OFFSET;
   record[WAFER_CCH_REC_RECORD_GUARD] = WAFER_CCH_RECORD_GUARD;
+}
+
+static void wafer_cch_issue_bank_pair(const WaferCCHCase *selected,
+                                      uint64_t input0, uint64_t input1,
+                                      uint64_t output0, uint64_t output1) {
+  if (selected->pair_kind == 1U) {
+    wafer_tx81_rdma(input0, WAFER_CCH_SPM_A, selected->payload_bytes,
+                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+    if (selected->schedule == 1U)
+      wafer_tx81_local_fence();
+    wafer_tx81_rdma(input1, WAFER_CCH_SPM_B, selected->payload_bytes,
+                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+  } else if (selected->pair_kind == 2U) {
+    wafer_tx81_wdma(WAFER_CCH_SPM_A, output0, selected->payload_bytes,
+                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+    if (selected->schedule == 1U)
+      wafer_tx81_local_fence();
+    wafer_tx81_wdma(WAFER_CCH_SPM_B, output1, selected->payload_bytes,
+                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+  } else {
+    wafer_tx81_rdma(input1, WAFER_CCH_SPM_B, selected->payload_bytes,
+                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+    if (selected->schedule == 1U)
+      wafer_tx81_local_fence();
+    wafer_tx81_wdma(WAFER_CCH_SPM_A, output0, selected->payload_bytes,
+                    selected->payload_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8);
+  }
+  wafer_tx81_local_fence();
 }
 
 __attribute__((visibility("hidden"))) void
@@ -248,28 +351,39 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
   wafer_cch_init_record(record, status);
   if (status == WAFER_CCH_STATUS_OK) {
     uint64_t input = payload_ddr + WAFER_CCH_BODY_OFFSET;
+    uint64_t bank_input1 =
+        input + WAFER_CCH_BANK_REGION_GAP + selected.bank_offset;
     uint64_t output0 = output_ddr + WAFER_CCH_OUTPUT0_OFFSET;
     uint64_t output1 = output_ddr + WAFER_CCH_OUTPUT1_OFFSET;
+    uint64_t bank_output1 =
+        output0 + WAFER_CCH_BANK_REGION_GAP + selected.bank_offset;
     uint64_t mismatch_before = 0;
     uint64_t mismatch_after = 0;
     uint32_t cache_control_mask = 0;
     wafer_cch_seed_spm(WAFER_CCH_SPM_A);
     wafer_cch_seed_spm(WAFER_CCH_SPM_B);
+    if (selected.pair_kind == 2U) {
+      wafer_cch_seed_spm_bank(WAFER_CCH_SPM_A, selected.case_id, 0U);
+      wafer_cch_seed_spm_bank(WAFER_CCH_SPM_B, selected.case_id, 1U);
+    } else if (selected.pair_kind == 3U) {
+      wafer_cch_seed_spm_bank(WAFER_CCH_SPM_A, selected.case_id, 0U);
+    }
     WaferCCHPMU before = wafer_cch_read_pmu();
 
-    switch (selected.case_id) {
+    if (selected.pair_kind != 0U) {
+      wafer_cch_issue_bank_pair(&selected, input, bank_input1, output0,
+                                bank_output1);
+      mismatch_after =
+          wafer_cch_mismatch_spm_bank(WAFER_CCH_SPM_A, selected.case_id, 0U) +
+          wafer_cch_mismatch_spm_bank(WAFER_CCH_SPM_B, selected.case_id, 1U);
+      cache_control_mask |= WAFER_CCH_MATCHING_LOCAL_FENCE;
+    } else {
+      switch (selected.case_id) {
     case 0U:
-      if (sample == 0U) {
-        wafer_cch_cache_range(input, WAFER_CCH_PAYLOAD_BYTES, 1U);
-        cache_control_mask |= WAFER_CCH_CACHE_INVALIDATE_INPUT;
-        mismatch_before =
-            wafer_cch_mismatch_ddr(input, selected.case_id, sample, 0U);
-      } else {
-        mismatch_before =
-            wafer_cch_mismatch_ddr(input, selected.case_id, sample, 0U);
-        wafer_cch_cache_range(input, WAFER_CCH_PAYLOAD_BYTES, 1U);
-        cache_control_mask |= WAFER_CCH_CACHE_INVALIDATE_INPUT;
-      }
+      wafer_cch_cache_range(input, WAFER_CCH_PAYLOAD_BYTES, 1U);
+      cache_control_mask |= WAFER_CCH_CACHE_INVALIDATE_INPUT;
+      mismatch_before =
+          wafer_cch_mismatch_ddr(input, selected.case_id, sample, 0U);
       mismatch_after =
           wafer_cch_mismatch_ddr(input, selected.case_id, sample, 0U);
       break;
@@ -324,22 +438,38 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
     default:
       status = WAFER_CCH_STATUS_EXECUTE_FAILED;
       break;
+      }
     }
 
     WaferCCHPMU after = wafer_cch_read_pmu();
     record[WAFER_CCH_REC_CASE] = selected.case_id;
     record[WAFER_CCH_REC_SAMPLE] = sample;
-    record[WAFER_CCH_REC_PAYLOAD_BYTES] = WAFER_CCH_PAYLOAD_BYTES;
+    record[WAFER_CCH_REC_PAYLOAD_BYTES] = selected.payload_bytes;
     record[WAFER_CCH_REC_EXPECTED_RDMA] = selected.expected_rdma;
     record[WAFER_CCH_REC_EXPECTED_WDMA] = selected.expected_wdma;
     record[WAFER_CCH_REC_REQUEST_GUARD] = request[WAFER_CCH_REQ_GUARD];
     record[WAFER_CCH_REC_MISMATCH_BEFORE] = mismatch_before;
     record[WAFER_CCH_REC_MISMATCH_AFTER] = mismatch_after;
     record[WAFER_CCH_REC_SPM_GUARD_MISMATCHES] =
-        wafer_cch_spm_guard_mismatches(WAFER_CCH_SPM_A) +
-        wafer_cch_spm_guard_mismatches(WAFER_CCH_SPM_B);
-    record[WAFER_CCH_REC_OUTPUT_GUARD_MISMATCHES] =
-        wafer_cch_output_guard_mismatches(output_ddr, selected.output_regions);
+        wafer_cch_spm_guard_mismatches_bytes(WAFER_CCH_SPM_A,
+                                             selected.payload_bytes) +
+        wafer_cch_spm_guard_mismatches_bytes(WAFER_CCH_SPM_B,
+                                             selected.payload_bytes);
+    if (selected.pair_kind != 0U) {
+      const uint32_t bank_output_offsets[2] = {
+          WAFER_CCH_OUTPUT0_OFFSET,
+          WAFER_CCH_OUTPUT0_OFFSET + WAFER_CCH_BANK_REGION_GAP +
+              selected.bank_offset,
+      };
+      record[WAFER_CCH_REC_OUTPUT_GUARD_MISMATCHES] =
+          wafer_cch_output_guard_mismatches_at(
+              output_ddr, bank_output_offsets, selected.output_regions,
+              selected.payload_bytes);
+    } else {
+      record[WAFER_CCH_REC_OUTPUT_GUARD_MISMATCHES] =
+          wafer_cch_output_guard_mismatches(output_ddr,
+                                            selected.output_regions);
+    }
     record[WAFER_CCH_REC_RDMA_INST_DELTA] =
         (uint32_t)(after.rdma_instructions - before.rdma_instructions);
     record[WAFER_CCH_REC_WDMA_INST_DELTA] =
@@ -349,6 +479,9 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
         after.rdma_execution - before.rdma_execution;
     record[WAFER_CCH_REC_WDMA_EXEC_DELTA] =
         after.wdma_execution - before.wdma_execution;
+    record[WAFER_CCH_REC_PAIR_KIND] = selected.pair_kind;
+    record[WAFER_CCH_REC_SCHEDULE] = selected.schedule;
+    record[WAFER_CCH_REC_BANK_OFFSET] = selected.bank_offset;
     record[WAFER_CCH_REC_STATUS] = status;
   }
   wafer_cch_cache_range(output_ddr, WAFER_CCH_RECORD_WORDS * sizeof(uint64_t),

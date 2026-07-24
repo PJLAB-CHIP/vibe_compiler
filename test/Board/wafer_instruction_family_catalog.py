@@ -830,7 +830,7 @@ def _pool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
 
 
 def _unpool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
-    if case.symbol != "UNPOOL_F16":
+    if case.symbol not in ("UNPOOL_F16", "UNPOOL_INDEX_F16"):
         raise RuntimeError(f"{case.name}: unknown unpool kind")
     source = [
         float(128 + channel if position == channel % 4 else 1 + position)

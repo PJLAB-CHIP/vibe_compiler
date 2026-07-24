@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import os
@@ -45,6 +46,62 @@ DELAY1_SCALE = 8192
 DELAY2_SCALE = 6144
 STATUS_OK = 1
 ALL_STEPS = 0xFF
+
+
+@dataclasses.dataclass(frozen=True)
+class BarrierCalibrationCase:
+    name: str
+    participants: int
+    disposition: str
+    epoch: int | None
+    oracle: str
+    reason: str
+
+    def as_dict(self) -> dict[str, object]:
+        return dataclasses.asdict(self)
+
+
+BARRIER_POSITIVE_CASES = (
+    BarrierCalibrationCase(
+        "full-card-epoch1-rank-increasing-delay",
+        RANK_COUNT,
+        "board-executable",
+        1,
+        "16 rank-specific markers, zero mismatch and zero crosstalk",
+        "current hrt_barrier contract owns exactly sixteen participant slots",
+    ),
+    BarrierCalibrationCase(
+        "full-card-epoch2-rank-reverse-delay",
+        RANK_COUNT,
+        "board-executable",
+        2,
+        "16 rank-specific markers, zero mismatch and zero crosstalk",
+        "the second epoch reverses delay order and reuses the same barrier",
+    ),
+    BarrierCalibrationCase(
+        "full-card-two-epoch-reuse",
+        RANK_COUNT,
+        "board-executable",
+        None,
+        "both ordered epochs complete in one launch with disjoint markers",
+        "reuse is accepted only when both epoch-specific oracles pass",
+    ),
+)
+BARRIER_NEGATIVE_CASES = tuple(
+    BarrierCalibrationCase(
+        f"subgroup-{participants}-participants",
+        participants,
+        "static-negative",
+        None,
+        "host rejection before compile or device submission",
+        "version-matched hrt_barrier exposes sixteen fixed participant slots",
+    )
+    for participants in UNSUPPORTED_PARTICIPANT_COUNTS
+)
+CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
+    "multi-tile-arrival": BARRIER_POSITIVE_CASES,
+    "barrier-participant-negative": BARRIER_NEGATIVE_CASES,
+}
 
 
 def parse_args() -> argparse.Namespace:

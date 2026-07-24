@@ -56,14 +56,17 @@ Pipeline position:
 - 以`docs/tx81-compiler-hardware-calibration.md`作为唯一profile-scoped校准台账。硬件总览和register-level
   spec继续拥有跨profile静态事实；编号设计继续拥有IR/runtime合同；校准台账只记录probe方法、证据成熟度、
   observed profile、结果和可消费边界，不成为第二份总体架构。
-- Checkpoint A不再以“某类case已经写了一部分”作为阶段完成，而以校准台账第3节的28行矩阵逐行准备
-  完成作为唯一门禁。`test/Board/wafer_hardware_calibration_matrix.py`是机器可审计索引；每一行必须同时
-  绑定positive或typed-negative资产、case catalog、固定payload/独立expected、logical/physical
-  output span与guard、rank/tile/worker scope、resource预算、shared package/device dispatcher、host
-  filter/timeout/cleanup入口和no-card测试。明确不应发送到设备的组合必须落成`static-negative`；
-  随机、无恢复路径或当前ABI无法安全构造的组合必须落成带原因的`isolated-deferred`，不能用空白、
-  `TODO`或其它同类case代替。实卡到位前，28行的`remaining_preparation`必须全部为空；届时唯一允许
-  保留的是按profile执行、记录观测值以及用独立held-out决定是否提升证据成熟度。
+- Checkpoint A不再以“某类case已经写了一部分”作为阶段完成。校准台账第3节的28行只作为稳定
+  compiler-consumer导航；真正验收单位是每行下面可解析到具体catalog entry的叶子需求。
+  `test/Board/wafer_hardware_calibration_matrix.py`为每个叶子记录稳定语义key、calibration/held-out层、
+  `board-positive`/`board-observation`/`delegated-positive`/`static-negative`/`isolated-deferred`
+  处置、具体case绑定、独立expected、
+  logical/physical span与guard、rank/tile/worker scope、资源预算、shared package/device dispatcher、
+  host filter/timeout/cleanup入口和no-card gate。机器审计必须实际导入被绑定catalog并解析case ID，
+  不能只检查某个宽泛文件存在。明确不应发送到设备的组合必须有negative gate；随机、无恢复路径或
+  当前ABI无法安全构造的组合必须带可审计原因，不能用空白、`TODO`、邻近case或整行共用一个资产代替。
+  28行状态从其叶子自动汇总；只有所有叶子均完成实卡前准备时才允许整行`ready`，届时唯一允许保留的
+  是按profile执行、记录观测值以及用独立held-out决定是否提升证据成熟度。
 - 28行按下面的固定批次施工和复核；批次只是执行顺序，不改变矩阵行的独立验收：
   1. 基础协议：profile qualification、constructor ownership、execute result、packet routing/range；
   2. 指令与布局：CT numeric/form、instruction × physical layout、DataMove/layout、NE numeric/layout、
@@ -73,16 +76,17 @@ Pipeline position:
      issue overhead、local completion、cross-worker join；
   5. 集群与runtime：Direct DTE、multi-tile arrival、host launch/runtime；
   6. 测量与负向边界：NCC PMU basis、DTE/SPM/TMNOC PMU、SCALAR/CSR ordinary issue。
-  每批结束都运行矩阵一致性测试；最终复核必须证明文档第3节行名与机器索引严格一一对应、没有重复、
-  没有未绑定资产、没有未注册no-card测试，也没有任何`in-progress`行。
-- 实卡前准备门禁现已闭合为28/28：机器索引全部`ready`且`remaining_preparation`为空。新增资产包括
-  CT `0..110`的626个vector row、`139..174`的72个convert row和`0..186`的187-entry disposition；
-  15个DataMove board case、18-entry movement disposition及五类instruction × 四种layout的20-entry
-  disposition；24个NE FP16/BF16 large/tail/batch/orientation row；22个SPM positive/negative row；
-  DDR/cache四方向五phase；full-card barrier正向和subgroup typed-negative；DTE/SPM PMU四mode ×
-  16/32/64B共12个full-card case及TMNOC static-negative。所有新增可执行族均有shared dispatcher/package、
-  host oracle、target C `-Werror` build/link、运行过滤/timeout/cleanup和no-card CTest；该状态只表示
-  上卡前准备完成，不表示新增硬件结论，也不完成Checkpoint A的实卡证据门禁。
+  每批结束都运行矩阵一致性测试；最终复核必须证明文档第3节行名与机器索引严格一一对应、所有catalog
+  分组均被记账、共享证据只出现在显式白名单中、没有未绑定资产或未注册no-card测试，也没有任何
+  `in-progress`行。
+- 旧版矩阵曾因只检查28行的文件存在、CTest注册和手填`remaining_preparation`，错误报告
+  `28/28 ready`；该结论已经撤回。已有CT、DataMove、NE、SPM、cache、NCC、DTE与barrier资产仍可按
+  各自真实case范围执行，但不能替代未绑定的叶子需求。本轮已把28域拆成115个叶子并由新门禁全部
+  重新计算为实卡前`ready`：61个`board-positive`、7个`board-observation`、2个
+  `delegated-positive`、16个`static-negative`和29个`isolated-deferred`。每个叶子均解析到具体
+  catalog/contract对象，或解析到带理由的非执行对象；host oracle、target build/link、shared-package
+  no-card与矩阵一致性已经闭合。该状态只关闭case准备，不关闭Checkpoint A：目标profile实卡执行、
+  held-out成熟度和software-pipeline vertical仍是后续gate。
 - 校准矩阵按compiler consumer分层，而不是按vendor API罗列：
   - instruction/encoding：constructor ownership、packet routing、descriptor单位、range materialization、
     alignment/tail、返回值与错误可观察性；
@@ -113,7 +117,8 @@ Pipeline position:
 - 同一ABI/resource class共享device dispatcher和package，由typed request选择case；不按row重复编译。
   local instruction/layout资格默认单tile、worker0，worker1/2只用routing代表case；只有Direct DTE、
   multi-tile arrival和其它rank-dependent语义才启动多rank。safe deterministic suite按批次做前后heartbeat，
-  queue/deferred/random/multi-writeback等高风险manual row逐case隔离。
+  queue边界、安全random observation和multi-writeback等高风险board row逐case隔离；
+  `isolated-deferred`不发板。
 - SPM、同步和并行分别使用独立matrix：SPM覆盖capacity/reservation、alignment、relative-offset、
   exact/partial/adjacent/strided range、Tensor/Cx/NCx physical footprint和slot reuse；同步覆盖same-worker、
   `bywork`、cross-worker join、Kcore/cache、DTE event、multi-tile arrival和runtime publication；并行覆盖

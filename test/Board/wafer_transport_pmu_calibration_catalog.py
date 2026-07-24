@@ -15,6 +15,8 @@ MODE_NAMES = {
     2: "dte-recv-wait-ncc-consumer",
     3: "disjoint-local-wait-first",
     4: "disjoint-dte-wait-first",
+    5: "dte-source-destination-reuse-after-events",
+    6: "dte-two-destination-broadcast",
 }
 BOARD_COUNTER_NAMES = (
     "dte_channel0_transfer",
@@ -69,6 +71,87 @@ CASES = tuple(
         for payload_bytes in PAYLOAD_SWEEP
         for mode in MODE_NAMES
     )
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class TransportContractCase:
+    name: str
+    domain: str
+    disposition: str
+    verification_scope: str
+    gate: str
+    reason: str
+
+    def as_dict(self) -> dict[str, object]:
+        return dataclasses.asdict(self)
+
+
+CONTRACT_CASES = (
+    TransportContractCase(
+        "dte-source-reuse-before-send-event",
+        "direct-dte-reuse",
+        "isolated-deferred",
+        "crt-device-state-code-audit",
+        "CRT source audit: sender-active guard publishes a device error",
+        "early reuse is not a host/prelaunch rejection and is never submitted",
+    ),
+    TransportContractCase(
+        "dte-receiver-unprepared",
+        "direct-dte-receiver",
+        "isolated-deferred",
+        "protocol-ordering-code-audit",
+        "positive path audit posts every receive before any sender wait",
+        "no rejecting probe exists; unprepared receive remains unsubmitted",
+    ),
+    TransportContractCase(
+        "dte-invalid-fsm",
+        "direct-dte-routing",
+        "isolated-deferred",
+        "crt-device-state-code-audit",
+        "CRT source audit bounds FSM ids and publishes a device error",
+        "the guard is device-side, not a prelaunch verifier",
+    ),
+    TransportContractCase(
+        "dte-invalid-coordinate",
+        "direct-dte-routing",
+        "static-negative",
+        "host-prelaunch-verifier",
+        "typed IR/host mesh validation rejects out-of-mesh coordinates",
+        "a coordinate outside the qualified 16-tile mesh is never submitted",
+    ),
+    TransportContractCase(
+        "dte-wait-unknown-event",
+        "direct-dte-completion",
+        "isolated-deferred",
+        "crt-device-status-code-audit",
+        "CRT event-decoder audit publishes a device transport error",
+        "unknown tokens are not proven rejected by a host/prelaunch verifier",
+    ),
+    TransportContractCase(
+        "host-readback-before-terminal",
+        "runtime-publication",
+        "static-negative",
+        "host-runtime-lifecycle",
+        "runtime waits for terminal publication before D2H",
+        "management-plane idle is not an execution completion oracle",
+    ),
+    TransportContractCase(
+        "terminal-completion-d2h-cleanup",
+        "runtime-publication",
+        "board-executable",
+        "board-runtime-lifecycle",
+        "runner requires all-rank output capture and normal cleanup",
+        "terminal schema, exact output, and cleanup are one lifecycle leaf",
+    ),
+    TransportContractCase(
+        "outer-timeout-stops-batch",
+        "runtime-publication",
+        "static-negative",
+        "host-runtime-lifecycle",
+        "one-shot outer timeout without retry/reset/power",
+        "a failed or missing terminal publication stops the active batch",
+    ),
 )
 
 
@@ -137,6 +220,41 @@ COUNTER_DISPOSITIONS = (
 )
 COUNTERS_BY_NAME = {
     disposition.name: disposition for disposition in COUNTER_DISPOSITIONS
+}
+CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
+    "direct-dte-ordered-interaction": tuple(
+        case for case in CASES if case.mode in (1, 2, 3, 4)
+    ),
+    "direct-dte-reuse-after-event": tuple(
+        case for case in CASES if case.mode == 5
+    ),
+    "direct-dte-broadcast": tuple(case for case in CASES if case.mode == 6),
+    "direct-dte-host-static-negative": tuple(
+        case
+        for case in CONTRACT_CASES
+        if case.disposition == "static-negative"
+        and case.domain.startswith("direct-dte")
+    ),
+    "direct-dte-device-contract-code-audit": tuple(
+        case
+        for case in CONTRACT_CASES
+        if case.disposition == "isolated-deferred"
+        and case.domain.startswith("direct-dte")
+    ),
+    "runtime-publication-positive": tuple(
+        case
+        for case in CONTRACT_CASES
+        if case.domain == "runtime-publication"
+        and case.disposition == "board-executable"
+    ),
+    "runtime-publication-negative": tuple(
+        case
+        for case in CONTRACT_CASES
+        if case.domain == "runtime-publication"
+        and case.disposition == "static-negative"
+    ),
+    "dte-spm-counter-payload-sweep": CASES,
+    "tmnoc-counter-offset-unavailable": (COUNTERS_BY_NAME["tmnoc"],),
 }
 
 

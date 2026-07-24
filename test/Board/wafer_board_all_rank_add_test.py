@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import pathlib
@@ -13,6 +14,15 @@ import subprocess
 import sys
 
 import numpy as np
+
+
+@dataclasses.dataclass(frozen=True)
+class RuntimeLaunchCalibrationCase:
+    key: str
+    rank_count: int
+    launch_abi: str
+    oracle: str
+    completion: str
 
 
 RANK_COUNT = 16
@@ -35,6 +45,27 @@ LAUNCH_EVIDENCE = {
     MODEL_LAUNCH_ABI: (
         "model-type6-type7",
         "graph-tile-module-map-and-exact-rank-slices",
+    ),
+}
+RUNTIME_LAUNCH_CALIBRATION_CASES = tuple(
+    RuntimeLaunchCalibrationCase(
+        f"rank16-{launch_abi}-add",
+        RANK_COUNT,
+        launch_abi,
+        "all-rank exact slices+full f32 output+schema-v5 rank domain",
+        "all-rank terminal+D2H+normal cleanup",
+    )
+    for launch_abi in LAUNCH_EVIDENCE
+)
+CALIBRATION_LEAF_BINDINGS = {
+    "rank16-kernel-model-add": tuple(
+        case
+        for case in RUNTIME_LAUNCH_CALIBRATION_CASES
+        if case.launch_abi
+        in {
+            "tx81-kernel-grid-pointer-table-v1",
+            "tx81-model-bootparam-v1",
+        }
     ),
 }
 SHARDING = "{devices=[16]0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"

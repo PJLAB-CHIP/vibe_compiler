@@ -21,10 +21,10 @@ PROBE_C = INPUT_DIR / "wafer_spm_calibration_probe.c"
 MODULE = """\
 module {
   func.func @main(
-      %request: tensor<16384xf32>,
-      %payload: tensor<16384xf32>) -> tensor<16384xf32> {
-    %result = stablehlo.add %request, %payload : tensor<16384xf32>
-    return %result : tensor<16384xf32>
+      %request: tensor<32768xf32>,
+      %payload: tensor<32768xf32>) -> tensor<32768xf32> {
+    %result = stablehlo.add %request, %payload : tensor<32768xf32>
+    return %result : tensor<32768xf32>
   }
 }
 """
@@ -32,11 +32,11 @@ METADATA = {
     "name": "forward",
     "stablehlo_version": "0.0.0",
     "input_signature": [
-        {"shape": [16384], "dtype": "float32", "dynamic_dims": []},
-        {"shape": [16384], "dtype": "float32", "dynamic_dims": []},
+        {"shape": [32768], "dtype": "float32", "dynamic_dims": []},
+        {"shape": [32768], "dtype": "float32", "dynamic_dims": []},
     ],
     "output_signature": [
-        {"shape": [16384], "dtype": "float32", "dynamic_dims": []}
+        {"shape": [32768], "dtype": "float32", "dynamic_dims": []}
     ],
     "input_locations": [
         {"type_": "input_arg", "position": 0, "name": "request"},
@@ -57,7 +57,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--domain",
         action="append",
-        choices=("capacity-reservation", "alignment-bank"),
+        choices=(
+            "capacity-reservation",
+            "alignment-bank",
+            "lifetime-reuse",
+        ),
     )
     parser.add_argument("--list-cases", action="store_true")
     parser.add_argument("--no-card", action="store_true")
@@ -131,15 +135,16 @@ def validate_output(
         or words[rec["OUTPUT_DDR_OFFSET"]] != catalog.OUTPUT_DDR_OFFSET
         or words[rec["SLOT_BYTES"]] != catalog.SLOT_BYTES
         or words[rec["SPM_GUARD_MISMATCHES"]] != 0
-        or words[rec["RDMA_INST_DELTA"]] != 1
-        or words[rec["WDMA_INST_DELTA"]] != 1
+        or words[rec["RDMA_INST_DELTA"]] != case.expected_instructions
+        or words[rec["WDMA_INST_DELTA"]] != case.expected_instructions
         or words[rec["RECORD_GUARD"]] != catalog.RECORD_GUARD
     ):
         raise RuntimeError(
             f"{case.name}: record/count/SPM guard oracle failed"
         )
     begin = catalog.OUTPUT_DDR_OFFSET
-    end = begin + case.transfer_bytes
+    result_bytes = case.transfer_bytes * case.iterations
+    end = begin + result_bytes
     if raw[begin:end] != built.expected:
         mismatch = next(
             index
@@ -155,7 +160,7 @@ def validate_output(
     mutable[: catalog.RECORD_WORDS * 8] = bytes(
         [catalog.OUTPUT_CANARY]
     ) * (catalog.RECORD_WORDS * 8)
-    mutable[begin:end] = bytes([catalog.OUTPUT_CANARY]) * case.transfer_bytes
+    mutable[begin:end] = bytes([catalog.OUTPUT_CANARY]) * result_bytes
     if mutable != bytes([catalog.OUTPUT_CANARY]) * catalog.RESOURCE_BYTES:
         mismatch = next(
             index
@@ -223,7 +228,14 @@ def main() -> int:
     if args.list_cases:
         print(
             json.dumps(
-                [case.as_dict() for case in catalog.CATALOG],
+                {
+                    "cases": [case.as_dict() for case in catalog.CATALOG],
+                    "calibration_leaf_bindings": {
+                        key: [getattr(row, "name", "") for row in rows]
+                        for key, rows
+                        in catalog.CALIBRATION_LEAF_BINDINGS.items()
+                    },
+                },
                 indent=2,
                 sort_keys=True,
             )

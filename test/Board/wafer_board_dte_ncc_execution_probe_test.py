@@ -23,7 +23,7 @@ import wafer_transport_pmu_calibration_catalog as transport_catalog
 RANK_COUNT = 16
 RESOURCE_BYTES = 256
 HEADER_BYTES = 128
-INPUT_BYTES = 96
+INPUT_BYTES = 128
 MAX_PAYLOAD_BYTES = 64
 PAYLOAD_SWEEP = transport_catalog.PAYLOAD_SWEEP
 PAYLOAD_POISON = 0xC3
@@ -31,28 +31,28 @@ OUTPUT_GUARD_BYTES = 32
 OUTPUT_GUARD_VALUE = 0xA5
 MAGIC = 0x3143434E45544457
 CANARY = 0xD7E0CA11D7E0CA11
-SCHEMA = 4
+SCHEMA = 5
 STATUS_SUCCESS = 1
 DTE_ENABLE_MASK = 0x3
 SPM_ENABLE_MASK = 0x1F
 TRANSPORT_COUNTER_NAMES = transport_catalog.BOARD_COUNTER_NAMES
 TRANSPORT_STABLE_MASK = (1 << len(TRANSPORT_COUNTER_NAMES)) - 1
+CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = (
+    transport_catalog.CALIBRATION_LEAF_BINDINGS
+)
 LAUNCH_ABI = "tx81-cluster-direct-dte-prepare-main-v1"
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_dte_ncc_execution_probe.c"
 PROBE_LL = INPUT_DIR / "wafer_dte_ncc_execution_probe.ll"
-MODES = {
-    1: "ncc-producer-local-drain-dte",
-    2: "dte-recv-wait-ncc-consumer",
-    3: "disjoint-local-wait-first",
-    4: "disjoint-dte-wait-first",
-}
+MODES = dict(transport_catalog.MODE_NAMES)
 EXPECTED_INSTRUCTION_COUNTS = {
     1: (1, 1, 1),
     2: (1, 1, 1),
     3: (1, 2, 1),
     4: (1, 2, 1),
+    5: (0, 2, 1),
+    6: (0, 1, 1),
 }
 DEFAULT_NO_CARD_TOTAL_TIMEOUT_SECONDS = 300.0
 DEFAULT_BOARD_TOTAL_TIMEOUT_SECONDS = 1200.0
@@ -399,7 +399,14 @@ def expected_payload(mode: int, rank: int, payload_bytes: int) -> bytes:
     if payload_bytes not in PAYLOAD_SWEEP:
         raise RuntimeError(f"unsupported transport payload size {payload_bytes}")
     predecessor = (rank - 1) % RANK_COUNT
-    remote = f16_payload(predecessor)[: payload_bytes // 2]
+    first_lane = (
+        MAX_PAYLOAD_BYTES // 2
+        if mode == 5
+        else 0
+    )
+    remote = f16_payload(predecessor)[
+        first_lane : first_lane + payload_bytes // 2
+    ]
     if mode in (1, 2):
         values = [2.0 * value for value in remote]
     else:
