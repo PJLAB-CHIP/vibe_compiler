@@ -6,6 +6,7 @@ from __future__ import annotations
 import pathlib
 import struct
 import tempfile
+import types
 
 import wafer_board_datamove_extended_calibration_probe_test as runner
 import wafer_datamove_extended_calibration_catalog as catalog
@@ -149,8 +150,9 @@ def validate_resource_canaries() -> None:
 
 def main() -> int:
     assert len(catalog.CATALOG) == 17
-    assert len(catalog.CASES_BY_ID) == len(catalog.CATALOG)
-    assert len(catalog.CASES_BY_NAME) == len(catalog.CATALOG)
+    assert len(catalog.ALL_CASES) == 18
+    assert len(catalog.CASES_BY_ID) == len(catalog.ALL_CASES)
+    assert len(catalog.CASES_BY_NAME) == len(catalog.ALL_CASES)
     assert [case.case_id for case in catalog.CATALOG] == [
         0,
         1,
@@ -172,6 +174,11 @@ def main() -> int:
         "W",
         "H",
     }
+    isolated_hw = catalog.ISOLATED_CONCAT_CASES[0]
+    assert isolated_hw.semantic_axis == "HW"
+    assert isolated_hw not in catalog.CATALOG
+    assert catalog.CASES_BY_NAME[isolated_hw.name] is isolated_hw
+    assert tuple(case.case_id for case in catalog.ALL_CASES) == tuple(range(18))
     assert all(not case.is_exact for case in catalog.CONCAT_CASES)
     assert all(case.is_exact for case in catalog.LARGE_TYPED_CASES)
     assert all(
@@ -184,6 +191,25 @@ def main() -> int:
         catalog.SLOT_BYTES
     )
     validate_concat_physical_spans()
+    isolated_built = catalog.build_case_payload(isolated_hw, sample=0)
+    assert len(isolated_built.request) == catalog.RESOURCE_BYTES
+    assert len(isolated_built.payload) == catalog.RESOURCE_BYTES
+    default_selection = runner.select_cases(
+        types.SimpleNamespace(
+            selected_cases=None,
+            operation=None,
+            oracle=None,
+        )
+    )
+    assert default_selection == catalog.CATALOG
+    explicit_selection = runner.select_cases(
+        types.SimpleNamespace(
+            selected_cases=[isolated_hw.name],
+            operation=None,
+            oracle=None,
+        )
+    )
+    assert explicit_selection == (isolated_hw,)
 
     for sample, case in enumerate(catalog.CATALOG):
         assert case.result_bytes > 0
@@ -242,23 +268,21 @@ def main() -> int:
     assert "wafer_tx81_elementwise_add" in probe
     assert "wafer_tx81_gemm" in probe
     for row in (
-        "{0U, 24576U, 16380U, 24576U, 0U, 1U, 0U, 1U, 1U}",
-        "{1U, 17408U, 16380U, 17408U, 0U, 1U, 0U, 1U, 1U}",
-        "{2U, 17920U, 16380U, 17920U, 0U, 1U, 0U, 1U, 1U}",
-        "{3U, 9216U, 8060U, 9216U, 0U, 1U, 0U, 1U, 0U}",
+        "{0U, 24576U, 16380U, 24576U, 0U, 1U, 0U, 1U}",
+        "{1U, 17408U, 16380U, 17408U, 0U, 1U, 0U, 1U}",
+        "{2U, 17920U, 16380U, 17920U, 0U, 1U, 0U, 1U}",
+        "{3U, 9216U, 8060U, 9216U, 0U, 1U, 0U, 1U}",
     ):
         assert row in probe
-    assert "selected->executable == 0U" in probe
     assert "case 1U:" in probe
     assert "case 2U:" in probe
-    assert "case 3U:" not in probe
-    for source1_offset in (16384, 7680):
+    assert "case 3U:" in probe
+    for source1_offset in (16384, 7680, 3072):
         assert f"input + {source1_offset}U" in probe
-    assert "input + 3072U" not in probe
     validate_resource_canaries()
     print(
         "wafer_datamove_extended_calibration_catalog_test: "
-        "cases=17 exact=11 observation=6 passed"
+        "default=17 all=18 exact=11 observation=6 isolated=1 passed"
     )
     return 0
 

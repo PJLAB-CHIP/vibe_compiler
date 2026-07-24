@@ -267,6 +267,21 @@ CONCAT_CASES = (
     ),
 )
 
+ISOLATED_CONCAT_CASES = (
+    _case(
+        3,
+        "datamove-raw-concat-hw-n2-2x5-3x7-c65",
+        "raw-concat",
+        131,
+        _raw_concat_physical_span("HW"),
+        _compact_bytes(RAW_CONCAT_SPECS["HW"][2]),
+        ct=1,
+        oracle=ORACLE_OBSERVATION,
+        semantic_axis="HW",
+        output_span=_raw_concat_physical_span("HW"),
+    ),
+)
+
 LARGE_TYPED_CASES = (
     _case(
         4,
@@ -431,8 +446,11 @@ CATALOG = (
     + COMPOSITE_CASES
     + TDMA_DESCRIPTOR_CASES
 )
-CASES_BY_ID = {case.case_id: case for case in CATALOG}
-CASES_BY_NAME = {case.name: case for case in CATALOG}
+ALL_CASES = tuple(
+    sorted(CATALOG + ISOLATED_CONCAT_CASES, key=lambda case: case.case_id)
+)
+CASES_BY_ID = {case.case_id: case for case in ALL_CASES}
+CASES_BY_NAME = {case.name: case for case in ALL_CASES}
 
 
 def _f16_bits(value: int) -> bytes:
@@ -654,7 +672,7 @@ def build_case_payload(
 
 
 EVIDENCE_BY_OPCODE = {
-    opcode: tuple(case for case in CATALOG if case.opcode == opcode)
+    opcode: tuple(case for case in ALL_CASES if case.opcode == opcode)
     for opcode in range(121, 139)
 }
 
