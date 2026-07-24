@@ -124,6 +124,25 @@ def _first_mismatch(actual: bytes, expected: bytes) -> int:
     )
 
 
+def output_guard_mismatches(
+    output_slot: bytes, output_span: int
+) -> int:
+    if len(output_slot) != catalog.SLOT_BYTES:
+        raise RuntimeError("invalid output slot size")
+    allowed_end = catalog.BODY_OFFSET + output_span
+    if (
+        output_span < 0
+        or allowed_end < catalog.BODY_OFFSET
+        or allowed_end > catalog.SLOT_BYTES
+    ):
+        raise RuntimeError("invalid output physical span")
+    canary = catalog.SLOT_CANARY
+    return sum(
+        value != canary
+        for value in output_slot[: catalog.BODY_OFFSET]
+    ) + sum(value != canary for value in output_slot[allowed_end:])
+
+
 def validate_output(
     path: pathlib.Path,
     case: catalog.ExtendedDataMoveCase,
@@ -170,13 +189,7 @@ def validate_output(
         catalog.OUTPUT_DDR_OFFSET :
         catalog.OUTPUT_DDR_OFFSET + catalog.SLOT_BYTES
     ]
-    prefix = output_slot[: catalog.BODY_OFFSET]
-    suffix = output_slot[catalog.BODY_OFFSET + case.output_span :]
-    canary = bytes([catalog.SLOT_CANARY])
-    if (
-        prefix != canary * len(prefix)
-        or suffix != canary * len(suffix)
-    ):
+    if output_guard_mismatches(output_slot, case.output_span) != 0:
         raise RuntimeError(f"{case.name}: output slot guard differs")
 
     result = output_slot[

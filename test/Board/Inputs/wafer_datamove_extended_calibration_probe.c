@@ -32,10 +32,10 @@ typedef struct WaferDMXPMU {
 } WaferDMXPMU;
 
 static const WaferDMXCase wafer_dmx_cases[] = {
-    {0U, 16380U, 16380U, 16384U, 0U, 1U, 0U, 1U},
-    {1U, 16380U, 16380U, 16384U, 0U, 1U, 0U, 1U},
-    {2U, 16380U, 16380U, 16384U, 0U, 1U, 0U, 1U},
-    {3U, 8060U, 8060U, 8192U, 0U, 1U, 0U, 1U},
+    {0U, 24576U, 16380U, 24576U, 0U, 1U, 0U, 1U},
+    {1U, 17408U, 16380U, 17408U, 0U, 1U, 0U, 1U},
+    {2U, 17920U, 16380U, 17920U, 0U, 1U, 0U, 1U},
+    {3U, 9216U, 8060U, 9216U, 0U, 1U, 0U, 1U},
     {4U, 9100U, 18200U, 18432U, 1U, 0U, 0U, 0U},
     {5U, 25740U, 84240U, 84480U, 1U, 0U, 0U, 0U},
     {6U, 4608U, 260U, 512U, 0U, 1U, 0U, 1U},
@@ -244,25 +244,25 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
   switch (selected->case_id) {
   case 0U:
     *raw_execute_rc = wafer_dmx_raw_concat(
-        input, wafer_dmx_shape(2U, 7U, 9U, 33U), input + 8316U,
+        input, wafer_dmx_shape(2U, 7U, 9U, 33U), input + 16384U,
         wafer_dmx_shape(2U, 7U, 9U, 32U), output,
         wafer_dmx_shape(2U, 7U, 9U, 65U), 0U);
     break;
   case 1U:
     *raw_execute_rc = wafer_dmx_raw_concat(
-        input, wafer_dmx_shape(2U, 7U, 4U, 65U), input + 7280U,
+        input, wafer_dmx_shape(2U, 7U, 4U, 65U), input + 7680U,
         wafer_dmx_shape(2U, 7U, 5U, 65U), output,
         wafer_dmx_shape(2U, 7U, 9U, 65U), 1U);
     break;
   case 2U:
     *raw_execute_rc = wafer_dmx_raw_concat(
-        input, wafer_dmx_shape(2U, 3U, 9U, 65U), input + 7020U,
+        input, wafer_dmx_shape(2U, 3U, 9U, 65U), input + 7680U,
         wafer_dmx_shape(2U, 4U, 9U, 65U), output,
         wafer_dmx_shape(2U, 7U, 9U, 65U), 2U);
     break;
   case 3U:
     *raw_execute_rc = wafer_dmx_raw_concat(
-        input, wafer_dmx_shape(2U, 2U, 5U, 65U), input + 2600U,
+        input, wafer_dmx_shape(2U, 2U, 5U, 65U), input + 3072U,
         wafer_dmx_shape(2U, 3U, 7U, 65U), output,
         wafer_dmx_shape(2U, 1U, 31U, 65U), 4U);
     break;

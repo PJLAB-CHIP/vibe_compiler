@@ -11,6 +11,80 @@ import wafer_board_datamove_extended_calibration_probe_test as runner
 import wafer_datamove_extended_calibration_catalog as catalog
 
 
+def validate_concat_physical_spans() -> None:
+    expected_spans = {
+        "C": 24576,
+        "W": 17408,
+        "H": 17920,
+        "HW": 9216,
+    }
+    for sample, case in enumerate(catalog.CONCAT_CASES):
+        axis = str(case.semantic_axis)
+        left_shape, right_shape, output_shape, _ = (
+            catalog.RAW_CONCAT_SPECS[axis]
+        )
+        left_span = catalog._raw_concat_operand_span(left_shape)
+        right_span = catalog._raw_concat_operand_span(right_shape)
+        assert case.input_bytes == left_span + right_span
+        assert case.output_span == expected_spans[axis]
+        assert case.output_span == left_span + right_span
+        assert case.result_bytes == catalog._compact_bytes(output_shape)
+
+        source, _ = catalog.build_input_expected(case, sample + 1)
+        left = source[:left_span]
+        right = source[left_span:]
+        assert len(right) == right_span
+        assert catalog.codec.unpack_scalar_bytes(
+            left_shape, "NCx", catalog.FP16_BYTES, left
+        ) == catalog._logical_values(
+            catalog._product(left_shape), sample + 1
+        )
+        assert catalog.codec.unpack_scalar_bytes(
+            right_shape, "NCx", catalog.FP16_BYTES, right
+        ) == catalog._logical_values(
+            catalog._product(right_shape), sample + 42
+        )
+
+    held_out_left = (3, 5, 11, 17)
+    held_out_right = (3, 5, 11, 15)
+    assert (
+        catalog._raw_concat_operand_span(held_out_left)
+        + catalog._raw_concat_operand_span(held_out_right)
+        > catalog._span(
+            catalog._compact_bytes(held_out_left)
+            + catalog._compact_bytes(held_out_right)
+        )
+    )
+
+    concat_c = catalog.CASES_BY_NAME[
+        "datamove-raw-concat-c-n2h7w9-c33-c32"
+    ]
+    output_slot = bytearray([catalog.SLOT_CANARY] * catalog.SLOT_BYTES)
+    begin = catalog.BODY_OFFSET
+    output_slot[begin : begin + concat_c.output_span] = bytes(
+        concat_c.output_span
+    )
+    old_compact_span = catalog._span(concat_c.result_bytes)
+    assert old_compact_span == 16384
+    assert (
+        runner.output_guard_mismatches(bytes(output_slot), old_compact_span)
+        == 8192
+    )
+    assert (
+        runner.output_guard_mismatches(
+            bytes(output_slot), concat_c.output_span
+        )
+        == 0
+    )
+    output_slot[begin + concat_c.output_span] ^= 1
+    assert (
+        runner.output_guard_mismatches(
+            bytes(output_slot), concat_c.output_span
+        )
+        == 1
+    )
+
+
 def validate_resource_canaries() -> None:
     case = catalog.CASES_BY_NAME[
         "datamove-pad-large-n2h5w7c65-to-n2h7w10c65"
@@ -99,6 +173,7 @@ def main() -> int:
     assert catalog.BODY_OFFSET + catalog.IMG2COL_RESULT_BYTES <= (
         catalog.SLOT_BYTES
     )
+    validate_concat_physical_spans()
 
     for sample, case in enumerate(catalog.CATALOG):
         assert case.result_bytes > 0
@@ -156,6 +231,15 @@ def main() -> int:
     assert "wafer_tx81_tdma_img2col" in probe
     assert "wafer_tx81_elementwise_add" in probe
     assert "wafer_tx81_gemm" in probe
+    for row in (
+        "{0U, 24576U, 16380U, 24576U, 0U, 1U, 0U, 1U}",
+        "{1U, 17408U, 16380U, 17408U, 0U, 1U, 0U, 1U}",
+        "{2U, 17920U, 16380U, 17920U, 0U, 1U, 0U, 1U}",
+        "{3U, 9216U, 8060U, 9216U, 0U, 1U, 0U, 1U}",
+    ):
+        assert row in probe
+    for source1_offset in (16384, 7680, 3072):
+        assert f"input + {source1_offset}U" in probe
     validate_resource_canaries()
     print(
         "wafer_datamove_extended_calibration_catalog_test: "

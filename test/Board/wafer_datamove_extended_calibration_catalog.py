@@ -21,6 +21,7 @@ SLOT_BYTES = 131072
 BODY_OFFSET = 512
 OUTPUT_DDR_OFFSET = SLOT_BYTES
 SLOT_CANARY = 0xA7
+FP16_BYTES = 2
 
 REQ = {
     "MAGIC": 0,
@@ -115,6 +116,57 @@ def _span(result_bytes: int) -> int:
     return (result_bytes + 255) // 256 * 256
 
 
+def _product(shape: tuple[int, ...]) -> int:
+    result = 1
+    for dimension in shape:
+        result *= dimension
+    return result
+
+
+def _compact_bytes(shape: tuple[int, ...]) -> int:
+    return _product(shape) * FP16_BYTES
+
+
+def _raw_concat_operand_span(shape: tuple[int, ...]) -> int:
+    return codec.physical_layout(shape, "NCx", FP16_BYTES).physical_bytes
+
+
+RAW_CONCAT_SPECS = {
+    "C": (
+        (2, 7, 9, 33),
+        (2, 7, 9, 32),
+        (2, 7, 9, 65),
+        3,
+    ),
+    "W": (
+        (2, 7, 4, 65),
+        (2, 7, 5, 65),
+        (2, 7, 9, 65),
+        2,
+    ),
+    "H": (
+        (2, 3, 9, 65),
+        (2, 4, 9, 65),
+        (2, 7, 9, 65),
+        1,
+    ),
+    "HW": (
+        (2, 2, 5, 65),
+        (2, 3, 7, 65),
+        (2, 1, 31, 65),
+        1,
+    ),
+}
+
+
+def _raw_concat_physical_span(axis: str) -> int:
+    left_shape, right_shape, _, _ = RAW_CONCAT_SPECS[axis]
+    return (
+        _raw_concat_operand_span(left_shape)
+        + _raw_concat_operand_span(right_shape)
+    )
+
+
 def _case(
     case_id: int,
     name: str,
@@ -173,44 +225,48 @@ CONCAT_CASES = (
         "datamove-raw-concat-c-n2h7w9-c33-c32",
         "raw-concat",
         131,
-        16380,
-        16380,
+        _raw_concat_physical_span("C"),
+        _compact_bytes(RAW_CONCAT_SPECS["C"][2]),
         ct=1,
         oracle=ORACLE_OBSERVATION,
         semantic_axis="C",
+        output_span=_raw_concat_physical_span("C"),
     ),
     _case(
         1,
         "datamove-raw-concat-w-n2h7-w4-w5-c65",
         "raw-concat",
         131,
-        16380,
-        16380,
+        _raw_concat_physical_span("W"),
+        _compact_bytes(RAW_CONCAT_SPECS["W"][2]),
         ct=1,
         oracle=ORACLE_OBSERVATION,
         semantic_axis="W",
+        output_span=_raw_concat_physical_span("W"),
     ),
     _case(
         2,
         "datamove-raw-concat-h-n2-h3-h4-w9-c65",
         "raw-concat",
         131,
-        16380,
-        16380,
+        _raw_concat_physical_span("H"),
+        _compact_bytes(RAW_CONCAT_SPECS["H"][2]),
         ct=1,
         oracle=ORACLE_OBSERVATION,
         semantic_axis="H",
+        output_span=_raw_concat_physical_span("H"),
     ),
     _case(
         3,
         "datamove-raw-concat-hw-n2-2x5-3x7-c65",
         "raw-concat",
         131,
-        8060,
-        8060,
+        _raw_concat_physical_span("HW"),
+        _compact_bytes(RAW_CONCAT_SPECS["HW"][2]),
         ct=1,
         oracle=ORACLE_OBSERVATION,
         semantic_axis="HW",
+        output_span=_raw_concat_physical_span("HW"),
     ),
 )
 
@@ -396,32 +452,35 @@ def _logical_values(count: int, seed: int) -> tuple[bytes, ...]:
 def _concat_payload(
     case: ExtendedDataMoveCase, seed: int
 ) -> tuple[bytes, bytes]:
-    specs = {
-        "C": ((2, 7, 9, 33), (2, 7, 9, 32), 3),
-        "W": ((2, 7, 4, 65), (2, 7, 5, 65), 2),
-        "H": ((2, 3, 9, 65), (2, 4, 9, 65), 1),
-        "HW": ((2, 2, 5, 65), (2, 3, 7, 65), 1),
-    }
-    left_shape, right_shape, axis = specs[str(case.semantic_axis)]
-
-    def product(shape: tuple[int, ...]) -> int:
-        result = 1
-        for dimension in shape:
-            result *= dimension
-        return result
-
-    left = _logical_values(product(left_shape), seed)
-    right = _logical_values(product(right_shape), seed + 41)
-    outer = product(left_shape[:axis])
-    left_chunk = product(left_shape[axis:])
-    right_chunk = product(right_shape[axis:])
+    left_shape, right_shape, _, logical_axis = RAW_CONCAT_SPECS[
+        str(case.semantic_axis)
+    ]
+    left = _logical_values(_product(left_shape), seed)
+    right = _logical_values(_product(right_shape), seed + 41)
+    physical_left = codec.pack_scalar_bytes(
+        left_shape,
+        "NCx",
+        FP16_BYTES,
+        left,
+        padding=SLOT_CANARY,
+    )
+    physical_right = codec.pack_scalar_bytes(
+        right_shape,
+        "NCx",
+        FP16_BYTES,
+        right,
+        padding=SLOT_CANARY,
+    )
+    outer = _product(left_shape[:logical_axis])
+    left_chunk = _product(left_shape[logical_axis:])
+    right_chunk = _product(right_shape[logical_axis:])
     result: list[bytes] = []
     for index in range(outer):
         result.extend(left[index * left_chunk : (index + 1) * left_chunk])
         result.extend(
             right[index * right_chunk : (index + 1) * right_chunk]
         )
-    return b"".join(left + right), b"".join(result)
+    return physical_left + physical_right, b"".join(result)
 
 
 def _pad_payload(seed: int) -> tuple[bytes, bytes]:
