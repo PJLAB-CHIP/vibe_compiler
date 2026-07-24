@@ -68,6 +68,40 @@ def main() -> int:
             assert built.expected_logical is None
             assert built.expected_physical is None
 
+    tail = catalog.CASES_BY_NAME["ne-f16-tail-nn"]
+    tail_built = catalog.build_case_payload(tail)
+    assert tail_built.expected_physical is not None
+    tail_layout = physical.physical_layout(
+        tail.output_shape,
+        tail.output_layout,
+        tail.element_bytes,
+    )
+    logical_output_bytes = set()
+    for coordinate in physical.coordinates(tail.output_shape):
+        begin = (
+            physical.physical_element_offset(tail_layout, coordinate)
+            * tail.element_bytes
+        )
+        logical_output_bytes.update(
+            range(begin, begin + tail.element_bytes)
+        )
+    padding_output_bytes = set(range(tail.output_span)) - logical_output_bytes
+    assert padding_output_bytes
+    assert {
+        tail_built.expected_physical[index]
+        for index in padding_output_bytes
+    } == {catalog.OUTPUT_PADDING}
+    output_seed = tail_built.payload[
+        2 * catalog.SLOT_BYTES
+        + catalog.BODY_OFFSET :
+        2 * catalog.SLOT_BYTES
+        + catalog.BODY_OFFSET
+        + tail.output_span
+    ]
+    assert {
+        output_seed[index] for index in padding_output_bytes
+    } == {catalog.SLOT_CANARY}
+
     for case in catalog.CALIBRATION_LEAF_BINDINGS[
         "ne-gemm-dtype-orientation-main-tail-batch"
     ]:

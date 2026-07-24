@@ -23,6 +23,8 @@ SLOT_BYTES = 262144
 BODY_OFFSET = 256
 OUTPUT_DDR_OFFSET = SLOT_BYTES
 SLOT_CANARY = 0xA7
+# NE owns its complete physical result span and zero-fills invalid lanes.
+OUTPUT_PADDING = 0x00
 CASE_BASE = 20000
 SPECIAL_CASE_BASE = 21000
 GEMM_OPTION_CASE_BASE = 22000
@@ -1309,7 +1311,7 @@ def build_case_payload(case: NECase, sample: int = 0) -> CasePayload:
             case.output_layout,
             case.element_bytes,
             expected_logical,
-            padding=SLOT_CANARY,
+            padding=OUTPUT_PADDING,
         )
 
     slots = [bytearray([SLOT_CANARY] * SLOT_BYTES) for _ in range(4)]

@@ -313,7 +313,7 @@ def validate_output(
             case.output_layout,
             case.element_bytes,
             actual_logical,
-            padding=catalog.SLOT_CANARY,
+            padding=catalog.OUTPUT_PADDING,
         )
     )
     if actual_physical != canonical_physical:
