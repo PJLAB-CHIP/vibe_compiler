@@ -364,12 +364,30 @@ def _option_disposition(option_name: str) -> str:
         "BOARD_OBSERVED"
         if option_name
         in {
+            "BIAS",
             "LEAKY_RELU",
             "POSITIVE_AXIS_SCALE",
             "NEGATIVE_AXIS_SCALE",
         }
         else "BOARD_EXACT"
     )
+
+
+def _option_reason(option_name: str) -> str:
+    if option_name == "BIAS":
+        return (
+            "current FP bias profile has no exact numeric contract: its "
+            "first GEMM calibration produced the base output unchanged "
+            "despite bias_en and a populated bias address; raw output "
+            "records the observed behavior without treating that no-op as "
+            "additive bias semantics"
+        )
+    if _option_disposition(option_name) == "BOARD_OBSERVED":
+        return (
+            "raw output calibrates the option formula without promoting it "
+            "to production numeric support"
+        )
+    return ""
 
 
 def _option_aux_span(
@@ -410,12 +428,7 @@ def _make_gemm_option_case(
         ),
         option_name=option_name,
         disposition_name=_option_disposition(option_name),
-        reason=(
-            "raw output calibrates the option formula without promoting it "
-            "to production numeric support"
-            if _option_disposition(option_name) == "BOARD_OBSERVED"
-            else ""
-        ),
+        reason=_option_reason(option_name),
         aux_span=_option_aux_span(
             option_name,
             base.output_shape,
@@ -474,12 +487,7 @@ def _make_conv_case(
         profile_name=profile_name,
         option_name=option_name,
         disposition_name=disposition,
-        reason=(
-            "raw output calibrates the option formula without promoting it "
-            "to production numeric support"
-            if disposition == "BOARD_OBSERVED"
-            else ""
-        ),
+        reason=_option_reason(option_name),
         lhs_layout=lhs_layout,
         rhs_layout=rhs_layout,
         output_layout=output_layout,

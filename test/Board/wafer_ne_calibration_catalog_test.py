@@ -226,6 +226,41 @@ def main() -> int:
         for case in catalog.SAFE_CASES
         if case.option_name != "NONE"
     } == set(tuple(catalog.OPTIONS)[1:])
+    bias_cases = tuple(
+        case
+        for case in catalog.SAFE_CASES
+        if case.option_name == "BIAS"
+    )
+    assert {
+        (case.kind_name, case.dtype_name) for case in bias_cases
+    } == {
+        (kind, dtype)
+        for kind in ("GEMM", "CONV")
+        for dtype in catalog.FLOAT_DTYPES
+    }
+    for case in bias_cases:
+        assert case.disposition_name == "BOARD_OBSERVED"
+        assert "base output unchanged" in case.reason
+        assert "bias_en" in case.reason
+        bias_built = catalog.build_case_payload(case)
+        assert bias_built.expected_logical is None
+        assert bias_built.expected_physical is None
+    bias = catalog.CASES_BY_NAME["ne-f16-large-nn-bias"]
+    bias_lhs, bias_rhs = catalog._gemm_inputs(bias)
+    bias_base = catalog._gemm_expected_values(
+        bias, bias_lhs, bias_rhs
+    )
+    bias_auxiliary, _, _ = catalog._option_auxiliary(bias)
+    bias_additive = tuple(
+        value + bias_auxiliary[index % bias.n]
+        for index, value in enumerate(bias_base)
+    )
+    assert tuple(
+        catalog._encode(bias.dtype_name, value) for value in bias_base
+    ) != tuple(
+        catalog._encode(bias.dtype_name, value)
+        for value in bias_additive
+    )
     conv_cases = tuple(
         case for case in catalog.SAFE_CASES if case.kind_name == "CONV"
     )
