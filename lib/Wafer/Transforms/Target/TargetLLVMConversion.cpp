@@ -138,7 +138,8 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
                                        TargetLaunchABIId launchABI,
                                        int64_t defaultDDRArenaArgumentIndex,
                                        int64_t logicalRank,
-                                       int64_t transportStatusArgumentIndex) {
+                                       int64_t transportStatusArgumentIndex,
+                                       int64_t profileRecordArgumentIndex) {
   if (mlir::failed(flattenTileRegions(moduleOp)))
     return mlir::failure();
 
@@ -176,9 +177,9 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
   }
 
   DirectCallGraph callGraph;
-  if (mlir::failed(analyzeDirectCallGraph(moduleOp, callGraph,
-                                          defaultDDRArenaArgumentIndex,
-                                          transportStatusArgumentIndex)))
+  if (mlir::failed(analyzeDirectCallGraph(
+          moduleOp, callGraph, defaultDDRArenaArgumentIndex,
+          transportStatusArgumentIndex, profileRecordArgumentIndex)))
     return mlir::failure();
   std::string dteEntrySymbol;
   if (hasDirectDTEContract) {
@@ -196,6 +197,21 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
              << "target_abi_mismatch: Direct DTE status argument index does "
                 "not identify an entry i64 argument";
     dteEntrySymbol = (*entry).getSymName().str();
+  }
+  if (profileRecordArgumentIndex >= 0) {
+    mlir::FailureOr<mlir::func::FuncOp> entry =
+        findUniqueRootFunction(moduleOp, callGraph);
+    if (mlir::failed(entry))
+      return mlir::failure();
+    if (profileRecordArgumentIndex !=
+            static_cast<int64_t>((*entry).getNumArguments()) - 1 ||
+        !(*entry)
+             .getArgument(profileRecordArgumentIndex)
+             .getType()
+             .isInteger(64))
+      return (*entry).emitError()
+             << "target_abi_mismatch: profiler record argument index must "
+                "identify the final entry i64 argument";
   }
   if (mlir::failed(lowerSCFToControlFlow(moduleOp)))
     return mlir::failure();

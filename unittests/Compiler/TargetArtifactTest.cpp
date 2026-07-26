@@ -1,15 +1,18 @@
 //===- TargetArtifactTest.cpp - Linked target readback tests -------------===//
 
+#include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
 #include "../../lib/Wafer/Compiler/PackageInternal.h"
 #include "../../lib/Wafer/Compiler/TargetArtifactInternal.h"
 
 #include "Wafer/Target/TargetProfile.h"
 
+#include "mlir/IR/Builders.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
@@ -91,7 +94,12 @@ static wafer::compiler::KernelABISlot
 makeSlot(int64_t ordinal, wafer::compiler::KernelABISlotRole role,
          llvm::StringRef name) {
   if (role == wafer::compiler::KernelABISlotRole::TransportStatus)
-    return {ordinal, role, 0, name.str(), "u32", wafer::MemLayout::Tensor,
+    return {ordinal,
+            role,
+            0,
+            name.str(),
+            "u32",
+            wafer::MemLayout::Tensor,
             {1},
             WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_BYTES,
             WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_ALIGNMENT};
@@ -189,6 +197,111 @@ makeLaunchABIBundle(wafer::TargetLaunchABIId launchABI,
       *config, std::move(modules));
 }
 
+static wafer::compiler::KernelABISlot
+makeProfilerSlot(int64_t ordinal,
+                 wafer::compiler::detail::ProfileCaptureKind capture) {
+  const int64_t bytes = static_cast<int64_t>(
+      wafer::compiler::detail::getProfileCaptureRecordBytes(capture));
+  return {ordinal,
+          wafer::compiler::KernelABISlotRole::Workspace,
+          1,
+          "tx81_profiler_record",
+          "u8",
+          wafer::MemLayout::Tensor,
+          {bytes},
+          bytes,
+          WAFER_TX81_PROFILER_BUFFER_ALIGNMENT};
+}
+
+static llvm::Expected<wafer::compiler::TargetLLVMModuleBundle>
+makeProfileLaunchABIBundle(
+    wafer::TargetLaunchABIId launchABI,
+    wafer::compiler::detail::ProfileCaptureKind capture) {
+  llvm::Expected<wafer::compiler::ExecutionConfig> config =
+      wafer::compiler::ExecutionConfig::createForSingleCard(16, kProfile,
+                                                            launchABI);
+  if (!config)
+    return config.takeError();
+  const wafer::TargetProfileRecord &profile =
+      wafer::getTargetProfileRecord(kProfile);
+  std::vector<wafer::compiler::TargetLLVMModule> modules;
+  modules.reserve(16);
+  for (int64_t rank = 0; rank < 16; ++rank) {
+    std::vector<wafer::compiler::KernelABISlot> slots;
+    slots.push_back(
+        makeSlot(0, wafer::compiler::KernelABISlotRole::UserInput, "input"));
+    if (launchABI ==
+        wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
+      slots.push_back(
+          makeSlot(1, wafer::compiler::KernelABISlotRole::TransportStatus,
+                   "direct_dte_status"));
+    slots.push_back(makeProfilerSlot(slots.size(), capture));
+
+    auto context = std::make_unique<llvm::LLVMContext>();
+    auto module =
+        std::make_unique<llvm::Module>("profile-launch-entry", *context);
+    llvm::Type *i64 = llvm::Type::getInt64Ty(*context);
+    llvm::SmallVector<llvm::Type *, 4> argumentTypes(slots.size(), i64);
+    llvm::Function *entry = llvm::Function::Create(
+        llvm::FunctionType::get(llvm::Type::getVoidTy(*context), argumentTypes,
+                                /*isVarArg=*/false),
+        llvm::GlobalValue::ExternalLinkage, "main", *module);
+    llvm::IRBuilder<> builder(
+        llvm::BasicBlock::Create(*context, "entry", entry));
+    builder.CreateRetVoid();
+    if (llvm::Error error =
+            wafer::compiler::detail::instrumentProfileTargetModule(
+                *module, "main", capture))
+      return std::move(error);
+    modules.push_back(
+        wafer::compiler::TargetLLVMModuleBundleBuilder::makeModule(
+            rank, "main", kProfile, profile.targetIdentity,
+            profile.kernelRuntimeABI, profile.moduleFormat, std::move(slots),
+            std::move(context), std::move(module)));
+  }
+  return wafer::compiler::TargetLLVMModuleBundleBuilder::makeBundle(
+      *config, std::move(modules));
+}
+
+static llvm::Expected<wafer::compiler::ExecutableBundle>
+makeProfileExecutableBundle(wafer::TargetLaunchABIId launchABI) {
+  llvm::Expected<wafer::compiler::ExecutionConfig> config =
+      wafer::compiler::ExecutionConfig::createForSingleCard(16, kProfile,
+                                                            launchABI);
+  if (!config)
+    return config.takeError();
+  auto context = std::make_shared<mlir::MLIRContext>();
+  std::vector<wafer::compiler::RankExecutable> ranks;
+  ranks.reserve(16);
+  for (int64_t rank = 0; rank < 16; ++rank) {
+    mlir::OpBuilder builder(context.get());
+    mlir::OwningOpRef<mlir::ModuleOp> module =
+        mlir::ModuleOp::create(builder.getUnknownLoc());
+    wafer::compiler::RankProgramBinding binding{};
+    binding.role = wafer::compiler::ProgramResourceRole::UserInput;
+    binding.index = 0;
+    binding.programIndex = 0;
+    binding.name = "input";
+    binding.dtype = "f32";
+    binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
+    binding.globalShape = {4};
+    binding.localShape = {4};
+    binding.slice.logicalRank = rank;
+    binding.slice.replicaId = rank;
+    binding.slice.offsets = {0};
+    binding.slice.sizes = {4};
+    binding.slice.strides = {1};
+    ranks.push_back(wafer::compiler::ExecutableBundleBuilder::makeRank(
+        rank, std::move(module), "main", {std::move(binding)},
+        launchABI ==
+                wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1()
+            ? wafer::compiler::TransportContract::DirectDTE
+            : wafer::compiler::TransportContract::None));
+  }
+  return wafer::compiler::ExecutableBundleBuilder::makeBundle(
+      *config, std::move(context), std::move(ranks));
+}
+
 TEST(TargetArtifactTest, PublicVerifiedModuleCannotBeForgedOrDefaulted) {
   static_assert(
       !std::is_default_constructible_v<wafer::compiler::VerifiedTargetModule>);
@@ -221,6 +334,34 @@ TEST(TargetArtifactTest, PackageSlotLegalityIgnoresDiagnosticNames) {
   workspace.name = "another_workspace_label";
   EXPECT_TRUE(
       wafer::compiler::detail::isValidPackageCompilerManagedSlot(workspace));
+  wafer::compiler::KernelABISlot profileWorkspace{
+      2,
+      wafer::compiler::KernelABISlotRole::Workspace,
+      1,
+      "diagnostic_profile_name",
+      "u8",
+      wafer::MemLayout::Tensor,
+      {WAFER_TX81_PROFILER_MIN_BUFFER_BYTES},
+      WAFER_TX81_PROFILER_MIN_BUFFER_BYTES,
+      WAFER_TX81_PROFILER_BUFFER_ALIGNMENT};
+  EXPECT_TRUE(wafer::compiler::detail::isValidPackageCompilerManagedSlot(
+      profileWorkspace));
+  profileWorkspace.name = "another_diagnostic_profile_name";
+  EXPECT_TRUE(wafer::compiler::detail::isValidPackageCompilerManagedSlot(
+      profileWorkspace));
+  std::vector<wafer::compiler::KernelABISlot> captureSlots = {
+      userInput, workspace, profileWorkspace};
+  EXPECT_FALSE(static_cast<bool>(
+      wafer::compiler::detail::verifyProfileCaptureKernelABISlots(
+          captureSlots, wafer::compiler::detail::ProfileCaptureKind::Summary)));
+  captureSlots.back().name = "renamed_without_changing_typed_identity";
+  EXPECT_FALSE(static_cast<bool>(
+      wafer::compiler::detail::verifyProfileCaptureKernelABISlots(
+          captureSlots, wafer::compiler::detail::ProfileCaptureKind::Summary)));
+  profileWorkspace.byteSize += 1;
+  profileWorkspace.shape = {profileWorkspace.byteSize};
+  EXPECT_FALSE(wafer::compiler::detail::isValidPackageCompilerManagedSlot(
+      profileWorkspace));
 
   wafer::compiler::KernelABISlot status = makeSlot(
       2, wafer::compiler::KernelABISlotRole::TransportStatus, "renamed_status");
@@ -229,6 +370,192 @@ TEST(TargetArtifactTest, PackageSlotLegalityIgnoresDiagnosticNames) {
   status.alignment = 8;
   EXPECT_FALSE(
       wafer::compiler::detail::isValidPackageCompilerManagedSlot(status));
+}
+
+TEST(TargetArtifactTest,
+     ClosedTSMEngineRegistryExcludesFenceAndDirectDTECalls) {
+  llvm::ArrayRef<wafer::TargetCallDescriptor> descriptors =
+      wafer::getTargetCallDescriptors();
+  EXPECT_EQ(llvm::count_if(
+                descriptors,
+                [](const auto &descriptor) {
+                  return wafer::getTargetCallTSMEngine(descriptor).has_value();
+                }),
+            104);
+  EXPECT_EQ(wafer::getTargetCallTSMEngine(
+                wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA)),
+            wafer::TargetCallTSMEngine::RDMA);
+  EXPECT_EQ(wafer::getTargetCallTSMEngine(
+                wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::WDMA)),
+            wafer::TargetCallTSMEngine::WDMA);
+  EXPECT_EQ(wafer::getTargetCallTSMEngine(wafer::getTargetCallDescriptor(
+                wafer::TargetCallBuiltin::GatherScatter)),
+            wafer::TargetCallTSMEngine::TDMA);
+  EXPECT_EQ(wafer::getTargetCallTSMEngine(
+                wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::Gemm)),
+            wafer::TargetCallTSMEngine::NE);
+  EXPECT_EQ(wafer::getTargetCallTSMEngine(wafer::getTargetCallDescriptor(
+                wafer::TargetCallBuiltin::Bit2FP)),
+            wafer::TargetCallTSMEngine::CT);
+  EXPECT_FALSE(wafer::getTargetCallTSMEngine(
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::LocalFence)));
+  EXPECT_FALSE(wafer::getTargetCallTSMEngine(
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::DirectDTEWait)));
+}
+
+TEST(TargetArtifactTest,
+     TraceInstrumentationUsesTheSameDenseActualTSMSiteCollector) {
+  llvm::LLVMContext context;
+  llvm::Module module("profile-target", context);
+  llvm::Type *voidType = llvm::Type::getVoidTy(context);
+  llvm::Type *i64 = llvm::Type::getInt64Ty(context);
+  llvm::Function *entry = llvm::Function::Create(
+      llvm::FunctionType::get(voidType, {i64}, /*isVarArg=*/false),
+      llvm::GlobalValue::ExternalLinkage, "main", module);
+  llvm::IRBuilder<> builder(llvm::BasicBlock::Create(context, "entry", entry));
+
+  auto emitTargetCall = [&](const wafer::TargetCallDescriptor &descriptor) {
+    llvm::SmallVector<llvm::Type *, 32> types;
+    llvm::SmallVector<llvm::Value *, 32> arguments;
+    for (wafer::TargetCallScalarType scalar : descriptor.arguments) {
+      unsigned width = scalar == wafer::TargetCallScalarType::I64 ? 64 : 32;
+      llvm::Type *type = llvm::IntegerType::get(context, width);
+      types.push_back(type);
+      arguments.push_back(llvm::ConstantInt::get(type, arguments.size() + 1));
+    }
+    llvm::FunctionType *type =
+        llvm::FunctionType::get(voidType, types, /*isVarArg=*/false);
+    llvm::FunctionCallee callee =
+        module.getOrInsertFunction(descriptor.symbol, type);
+    builder.CreateCall(callee, arguments);
+  };
+  emitTargetCall(
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::LocalFence));
+  emitTargetCall(
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::Bit2FP));
+  emitTargetCall(
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA));
+  emitTargetCall(
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::DirectDTEWait));
+  emitTargetCall(
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::Gemm));
+  emitTargetCall(
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::WDMA));
+  emitTargetCall(
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::GatherScatter));
+  builder.CreateRetVoid();
+
+  llvm::Function *dead = llvm::Function::Create(
+      llvm::FunctionType::get(voidType, {}, /*isVarArg=*/false),
+      llvm::GlobalValue::InternalLinkage, "dead", module);
+  llvm::IRBuilder<> deadBuilder(
+      llvm::BasicBlock::Create(context, "entry", dead));
+  const wafer::TargetCallDescriptor &wdma =
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::WDMA);
+  llvm::SmallVector<llvm::Type *, 16> wdmaTypes;
+  llvm::SmallVector<llvm::Value *, 16> wdmaArguments;
+  for (wafer::TargetCallScalarType scalar : wdma.arguments) {
+    unsigned width = scalar == wafer::TargetCallScalarType::I64 ? 64 : 32;
+    llvm::Type *type = llvm::IntegerType::get(context, width);
+    wdmaTypes.push_back(type);
+    wdmaArguments.push_back(llvm::ConstantInt::get(type, 0));
+  }
+  deadBuilder.CreateCall(
+      module.getOrInsertFunction(
+          wdma.symbol,
+          llvm::FunctionType::get(voidType, wdmaTypes, /*isVarArg=*/false)),
+      wdmaArguments);
+  deadBuilder.CreateRetVoid();
+
+  auto before =
+      wafer::compiler::detail::collectProfileTSMCallSites(module, "main");
+  ASSERT_TRUE(static_cast<bool>(before)) << llvm::toString(before.takeError());
+  ASSERT_EQ(before->size(), 5u);
+  EXPECT_EQ((*before)[0].siteId, 0u);
+  EXPECT_EQ((*before)[0].engine, wafer::TargetCallTSMEngine::CT);
+  EXPECT_EQ((*before)[1].siteId, 1u);
+  EXPECT_EQ((*before)[1].engine, wafer::TargetCallTSMEngine::RDMA);
+  EXPECT_EQ((*before)[2].siteId, 2u);
+  EXPECT_EQ((*before)[2].engine, wafer::TargetCallTSMEngine::NE);
+  EXPECT_EQ((*before)[3].siteId, 3u);
+  EXPECT_EQ((*before)[3].engine, wafer::TargetCallTSMEngine::WDMA);
+  EXPECT_EQ((*before)[4].siteId, 4u);
+  EXPECT_EQ((*before)[4].engine, wafer::TargetCallTSMEngine::TDMA);
+  std::vector<std::string> correlationKeys;
+  for (const auto &site : *before)
+    correlationKeys.push_back(site.correlationKey);
+
+  if (llvm::Error error =
+          wafer::compiler::detail::instrumentProfileTargetModule(
+              module, "main",
+              wafer::compiler::detail::ProfileCaptureKind::Trace))
+    FAIL() << llvm::toString(std::move(error));
+  EXPECT_FALSE(static_cast<bool>(
+      wafer::compiler::detail::verifyProfileTargetModuleInstrumentation(
+          module, "main", wafer::compiler::detail::ProfileCaptureKind::Trace)));
+  auto after =
+      wafer::compiler::detail::collectProfileTSMCallSites(module, "main");
+  ASSERT_TRUE(static_cast<bool>(after)) << llvm::toString(after.takeError());
+  ASSERT_EQ(after->size(), 5u);
+  for (auto [index, site] : llvm::enumerate(*after))
+    EXPECT_EQ(site.correlationKey, correlationKeys[index]);
+
+  std::string text;
+  llvm::raw_string_ostream output(text);
+  module.print(output, nullptr);
+  output.flush();
+  EXPECT_NE(text.find("call void @wafer_tx81_profile_entry_begin_from_config("
+                      "i64 %0)"),
+            std::string::npos);
+  EXPECT_NE(text.find("call void @wafer_tx81_profile_site_begin(i32 0)"),
+            std::string::npos);
+  EXPECT_NE(text.find("call void @wafer_tx81_profile_site_end(i32 4)"),
+            std::string::npos);
+  EXPECT_NE(text.find("call void @wafer_tx81_profile_entry_end()"),
+            std::string::npos);
+
+  llvm::Function *siteEnd = module.getFunction("wafer_tx81_profile_site_end");
+  ASSERT_NE(siteEnd, nullptr);
+  ASSERT_FALSE(siteEnd->user_empty());
+  auto *missingEnd = llvm::dyn_cast<llvm::CallBase>(*siteEnd->user_begin());
+  ASSERT_NE(missingEnd, nullptr);
+  missingEnd->eraseFromParent();
+  llvm::Error missingSiteError =
+      wafer::compiler::detail::verifyProfileTargetModuleInstrumentation(
+          module, "main", wafer::compiler::detail::ProfileCaptureKind::Trace);
+  ASSERT_TRUE(static_cast<bool>(missingSiteError));
+  EXPECT_NE(llvm::toString(std::move(missingSiteError))
+                .find("does not cover the exact TsmExecute call set"),
+            std::string::npos);
+}
+
+TEST(TargetArtifactTest,
+     ProfileInstrumentationVerifierRejectsDeclarationsWithoutStructure) {
+  llvm::LLVMContext context;
+  llvm::Module module("profile-declarations-only", context);
+  llvm::Type *voidType = llvm::Type::getVoidTy(context);
+  llvm::Type *i64 = llvm::Type::getInt64Ty(context);
+  llvm::Function *entry = llvm::Function::Create(
+      llvm::FunctionType::get(voidType, {i64}, /*isVarArg=*/false),
+      llvm::GlobalValue::ExternalLinkage, "main", module);
+  llvm::IRBuilder<> builder(llvm::BasicBlock::Create(context, "entry", entry));
+  builder.CreateRetVoid();
+  llvm::Function::Create(
+      llvm::FunctionType::get(voidType, {i64}, /*isVarArg=*/false),
+      llvm::GlobalValue::ExternalLinkage,
+      "wafer_tx81_profile_entry_begin_from_config", module);
+  llvm::Function::Create(
+      llvm::FunctionType::get(voidType, {}, /*isVarArg=*/false),
+      llvm::GlobalValue::ExternalLinkage, "wafer_tx81_profile_entry_end",
+      module);
+
+  llvm::Error error =
+      wafer::compiler::detail::verifyProfileTargetModuleInstrumentation(
+          module, "main", wafer::compiler::detail::ProfileCaptureKind::Summary);
+  ASSERT_TRUE(static_cast<bool>(error));
+  EXPECT_NE(llvm::toString(std::move(error))
+                .find("must begin with exactly one record binding call"),
+            std::string::npos);
 }
 
 TEST(TargetArtifactTest,
@@ -697,6 +1024,118 @@ TEST(TargetArtifactTest,
     llvm::SmallString<256> workPath(outputDirectory);
     llvm::sys::path::append(workPath, "work");
     EXPECT_FALSE(llvm::sys::fs::exists(workPath));
+  }
+}
+
+TEST(TargetArtifactTest,
+     ProfileTraceCaptureCompilesAndPackagesEveryQualifiedLaunchABI) {
+  llvm::Expected<wafer::compiler::TargetToolchain> toolchain =
+      makeTestToolchain();
+  ASSERT_TRUE(static_cast<bool>(toolchain))
+      << llvm::toString(toolchain.takeError());
+  llvm::SmallString<256> temporaryDirectory;
+  ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory("wafer-profile-launch-abi",
+                                                    temporaryDirectory));
+  auto cleanup = llvm::make_scope_exit(
+      [&]() { (void)llvm::sys::fs::remove_directories(temporaryDirectory); });
+  llvm::SmallString<256> sourceDirectory =
+      pathInDirectory(temporaryDirectory, "source");
+  ASSERT_FALSE(llvm::sys::fs::create_directories(sourceDirectory));
+
+  constexpr wafer::compiler::detail::ProfileCaptureKind capture =
+      wafer::compiler::detail::ProfileCaptureKind::Trace;
+  for (wafer::TargetLaunchABIId launchABI :
+       {wafer::TargetLaunchABIId::perRankPointerBlockV1(),
+        wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1(),
+        wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1()}) {
+    SCOPED_TRACE(wafer::stringifyTargetLaunchABIId(launchABI).str());
+    llvm::Expected<wafer::compiler::TargetLLVMModuleBundle> targetLLVM =
+        makeProfileLaunchABIBundle(launchABI, capture);
+    ASSERT_TRUE(static_cast<bool>(targetLLVM))
+        << llvm::toString(targetLLVM.takeError());
+    llvm::SmallString<256> artifactDirectory = pathInDirectory(
+        temporaryDirectory, (llvm::Twine("artifacts-") +
+                             wafer::stringifyTargetLaunchABIId(launchABI))
+                                .str());
+    std::string diagnosticsStorage;
+    llvm::raw_string_ostream diagnostics(diagnosticsStorage);
+    llvm::Expected<wafer::compiler::TargetArtifactBundle> artifacts = wafer::
+        compiler::detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
+            *targetLLVM, artifactDirectory, *toolchain, diagnostics, capture);
+    ASSERT_TRUE(static_cast<bool>(artifacts))
+        << diagnosticsStorage << llvm::toString(artifacts.takeError());
+    EXPECT_EQ(artifacts->getModules().size(),
+              launchABI == wafer::TargetLaunchABIId::perRankPointerBlockV1()
+                  ? 16u
+                  : 1u);
+    ASSERT_EQ(artifacts->getRankInterfaces().size(), 16u);
+    for (const wafer::compiler::VerifiedTargetRankInterface &rank :
+         artifacts->getRankInterfaces()) {
+      ASSERT_FALSE(rank.getKernelABISlots().empty());
+      const wafer::compiler::KernelABISlot &profileSlot =
+          rank.getKernelABISlots().back();
+      EXPECT_EQ(profileSlot.role,
+                wafer::compiler::KernelABISlotRole::Workspace);
+      EXPECT_EQ(profileSlot.resourceIndex, 1);
+      EXPECT_EQ(profileSlot.byteSize, WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES);
+      EXPECT_FALSE(static_cast<bool>(
+          wafer::compiler::detail::verifyProfileCaptureKernelABISlots(
+              rank.getKernelABISlots(), capture)));
+    }
+
+    llvm::Expected<wafer::compiler::ExecutableBundle> executable =
+        makeProfileExecutableBundle(launchABI);
+    ASSERT_TRUE(static_cast<bool>(executable))
+        << llvm::toString(executable.takeError());
+    llvm::SmallString<256> packageDirectory = pathInDirectory(
+        temporaryDirectory,
+        (llvm::Twine("package-") + wafer::stringifyTargetLaunchABIId(launchABI))
+            .str());
+    llvm::Expected<wafer::compiler::PackageBundle> package =
+        wafer::compiler::detail::assemblePackageBundleImpl(
+            sourceDirectory, *executable, *artifacts, packageDirectory,
+            diagnostics, std::nullopt);
+    ASSERT_TRUE(static_cast<bool>(package))
+        << diagnosticsStorage << llvm::toString(package.takeError());
+    const wafer::runtime::PackageManifest &manifest =
+        package->getManifest().getManifest();
+    EXPECT_EQ(manifest.launchABI, launchABI);
+    EXPECT_EQ(manifest.rankCount, 16);
+    EXPECT_EQ(manifest.modules.size(),
+              launchABI == wafer::TargetLaunchABIId::perRankPointerBlockV1()
+                  ? 16u
+                  : 1u);
+    ASSERT_EQ(manifest.entries.size(), 16u);
+    EXPECT_EQ(llvm::count_if(
+                  manifest.resources,
+                  [](const wafer::runtime::PackageResourceRecord &resource) {
+                    return resource.role ==
+                               wafer::runtime::PackageResourceRole::Workspace &&
+                           resource.roleIndex == 1 &&
+                           resource.bytes ==
+                               WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES &&
+                           resource.alignment ==
+                               WAFER_TX81_PROFILER_BUFFER_ALIGNMENT &&
+                           !resource.hostVisible;
+                  }),
+              16);
+    for (const wafer::runtime::PackageEntrypointRecord &entry :
+         manifest.entries) {
+      ASSERT_FALSE(entry.slots.empty());
+      const wafer::runtime::ResourceId profileResource =
+          entry.slots.back().resource;
+      ASSERT_LT(profileResource.getValue(), manifest.resources.size());
+      const wafer::runtime::PackageResourceRecord &resource =
+          manifest.resources[profileResource.getValue()];
+      EXPECT_EQ(resource.logicalRank, entry.logicalRank);
+      EXPECT_EQ(resource.role, wafer::runtime::PackageResourceRole::Workspace);
+      EXPECT_EQ(resource.roleIndex, 1);
+      EXPECT_EQ(
+          std::holds_alternative<
+              wafer::runtime::DirectDTETransportRequirements>(entry.transport),
+          launchABI ==
+              wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1());
+    }
   }
 }
 

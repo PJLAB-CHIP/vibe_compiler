@@ -38,6 +38,20 @@ prepareBoardInvocationFiles(const PackageManifest &manifest,
                             llvm::ArrayRef<ResourceFile> expectedFiles,
                             llvm::ArrayRef<ResourceFile> outputFiles);
 
+/// Rebinds one already prepared user invocation to another verified package
+/// using the stable `(logical_rank, role, role_index)` resource identity.
+/// Every host-visible resource contract must match exactly; internal
+/// workspaces are intentionally outside this user-I/O projection.
+llvm::Expected<BoardInvocationFilePlan>
+remapBoardInvocationFilePlan(const BoardInvocationFilePlan &sourcePlan,
+                             const PackageManifest &sourceManifest,
+                             const PackageManifest &targetManifest);
+
+/// Validates all-and-only writable outputs, exact byte counts, and every
+/// supplied expected tensor without publishing any --output file.
+llvm::Error validateBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
+                                 const BoardInvocationFilePlan &plan);
+
 /// Validate the complete provider result before staging any captures. Each
 /// capture is written to an adjacent temporary file, and publication begins
 /// only after every capture has been staged successfully. Each target rename

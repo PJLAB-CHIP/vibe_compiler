@@ -594,6 +594,14 @@ legality/correctness风险，不表示hardware behavior或cost surface完备；�
 均闭合后，才能把与同一候选对齐的device观测发布为calibrated ranking profile；该profile仍只能重排已通过全部exact gate的
 候选。
 
+Q9 profiler foundation只消费本节已经保留的同源reserved baseline和默认winner，不增加新的candidate selector或用户输入。
+`wafer-compile --profile`仍提交逐字节不变的普通winner package，并为两份已通过同一late gate的variant形成未插桩execution
+binding及内部summary/count/trace逻辑capture binding；若两份variant artifact alias，则精确复用同三个物理capture package。
+采集、时钟资格、统计和report均是downstream diagnostic artifact，
+不进入accepted IR，也不在foundation阶段反馈本节Pareto/static policy。当前没有合格clock mapping时保留16条entry-local
+timeline而不做跨tile对齐。TSM trace的事件单位是最终CRT实际调用的`TsmExecute`，不能用planner中的ready-order、token、
+fence或wait代替实际调用，更不能把submit call返回跨度解释成engine完成时间。
+
 ## 9. All-Rank Coordination 和 Atomicity
 
 all-rank coordination保留现有 compiler-level owner，不放入function pass，也不建立跨rank shadow program。每个rank candidate

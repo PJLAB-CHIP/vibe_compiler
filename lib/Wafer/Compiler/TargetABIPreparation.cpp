@@ -125,10 +125,12 @@ mlir::Value resolveOutputAllocation(mlir::Value value) {
 
 mlir::FailureOr<PreparedTargetRank>
 prepareTargetABI(const RankExecutable &rankExecutable,
-                 const ExecutionConfig &executionConfig) {
+                 const ExecutionConfig &executionConfig,
+                 ProfileCaptureKind profileCapture) {
   PreparedTargetRank prepared(executionConfig);
   prepared.module = rankExecutable.getModule().clone();
   prepared.logicalRank = rankExecutable.getLogicalRank();
+  prepared.profileCapture = profileCapture;
   const int64_t defaultDDRAlignment =
       getDefaultWaferTargetPolicy().memory.ddrAlignmentBytes;
 
@@ -285,15 +287,47 @@ prepareTargetABI(const RankExecutable &rankExecutable,
     function.insertArgument(prepared.transportStatusArgumentIndex,
                             mlir::IntegerType::get(function.getContext(), 64),
                             mlir::DictionaryAttr{}, function.getLoc());
+    prepared.slots.push_back(
+        {static_cast<int64_t>(prepared.slots.size()),
+         KernelABISlotRole::TransportStatus,
+         0,
+         "direct_dte_status",
+         "u32",
+         MemLayout::Tensor,
+         {1},
+         WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_BYTES,
+         WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_ALIGNMENT});
+  }
+
+  if (profileCapture != ProfileCaptureKind::None) {
+    if (executionConfig.getRankCount() != WAFER_TX81_PROFILER_TILE_COUNT ||
+        executionConfig.getTargetLaunchABIId() ==
+            TargetLaunchABIId::tx81ModelBootParamV1()) {
+      function.emitError()
+          << "target_abi_mismatch: profiler capture requires the complete "
+             "16-rank pointer-table launch domain";
+      return mlir::failure();
+    }
+    const uint64_t recordBytes = getProfileCaptureRecordBytes(profileCapture);
+    if (recordBytes >
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      function.emitError()
+          << "target_abi_mismatch: profiler record bytes exceed int64";
+      return mlir::failure();
+    }
+    prepared.profileRecordArgumentIndex = function.getNumArguments();
+    function.insertArgument(prepared.profileRecordArgumentIndex,
+                            mlir::IntegerType::get(function.getContext(), 64),
+                            mlir::DictionaryAttr{}, function.getLoc());
     prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()),
-                              KernelABISlotRole::TransportStatus,
-                              0,
-                              "direct_dte_status",
-                              "u32",
+                              KernelABISlotRole::Workspace,
+                              1,
+                              "tx81_profiler_record",
+                              "u8",
                               MemLayout::Tensor,
-                              {1},
-                              WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_BYTES,
-                              WAFER_TX81_DIRECT_DTE_STATUS_V2_STORAGE_ALIGNMENT});
+                              {static_cast<int64_t>(recordBytes)},
+                              static_cast<int64_t>(recordBytes),
+                              WAFER_TX81_PROFILER_BUFFER_ALIGNMENT});
   }
 
   if (mlir::failed(mlir::verify(*prepared.module)))

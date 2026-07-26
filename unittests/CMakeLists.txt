@@ -25,6 +25,8 @@ add_executable(WaferUnitTests
   Pipelines/PipelinesTest.cpp
   Runtime/BoardRuntimeTest.cpp
   Runtime/PackageManifestTest.cpp
+  Runtime/ProfileCompanionTest.cpp
+  Runtime/ProfilerRecordTest.cpp
   Runtime/Tx81ModelABITest.cpp
   Target/FormalNumericTest.cpp
   Target/NumericCodecTest.cpp
@@ -88,7 +90,9 @@ endif()
 add_test(NAME WaferUnitTests COMMAND WaferUnitTests)
 
 add_executable(WaferRunBoardIOUnitTests
+  Runtime/WaferProfileCampaignTest.cpp
   Runtime/WaferRunBoardIOTest.cpp
+  ${CMAKE_SOURCE_DIR}/tools/wafer-run/WaferProfileCampaign.cpp
   ${CMAKE_SOURCE_DIR}/tools/wafer-run/WaferRunBoardIO.cpp
 )
 llvm_update_compile_flags(WaferRunBoardIOUnitTests)

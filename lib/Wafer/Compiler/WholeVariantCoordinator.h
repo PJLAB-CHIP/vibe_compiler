@@ -14,6 +14,7 @@
 #include "mlir/Support/LogicalResult.h"
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace wafer::compiler::detail {
@@ -38,6 +39,15 @@ struct AcceptedWholeVariant {
   std::vector<bool> selectedReservedBaselines;
 };
 
+/// Same-frontier result used by the profiling product. When production selects
+/// the reserved baseline, `reservedBaseline` is absent and both product roles
+/// refer to `production`; no accepted module is cloned after selection.
+struct AcceptedProductionAndBaseline {
+  AcceptedWholeVariant production;
+  std::optional<AcceptedWholeVariant> reservedBaseline;
+  bool productionIsReservedBaseline = false;
+};
+
 /// Selects a complete rank-domain combination from independently planned
 /// frontiers. Every attempted combination must carry one same-generation
 /// stable ordinal and one physical artifact kind across all ranks before it is
@@ -52,6 +62,15 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     WholeVariantSelectionMode selectionMode =
         WholeVariantSelectionMode::Production);
+
+/// Selects the production winner while retaining the already accepted
+/// reserved baseline from the same generated rank frontiers and acceptance
+/// transaction.
+mlir::FailureOr<AcceptedProductionAndBaseline>
+selectAcceptedProductionAndBaseline(
+    const std::vector<RankVariantFrontier> &frontiers,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler::detail
 

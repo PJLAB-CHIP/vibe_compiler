@@ -1,18 +1,453 @@
 //===- TargetPackagePublication.cpp - Staged target/package build -------===//
 
 #include "CompilationInternal.h"
+#include "ExecutableBundleInternal.h"
 #include "PackageInternal.h"
 #include "TargetArtifactInternal.h"
 
+#include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Compiler/Package.h"
+#include "Wafer/Runtime/PackageManifest.h"
+#include "Wafer/Target/TargetCall.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/SHA256.h"
 
+#include <array>
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace wafer::compiler::detail {
+namespace {
+
+static mlir::LogicalResult
+writeJSONFile(llvm::StringRef path,
+              llvm::function_ref<void(llvm::json::OStream &)> write,
+              llvm::raw_ostream &diagnostics) {
+  std::error_code error;
+  llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
+  if (error) {
+    reject(diagnostics,
+           "failed to create profile companion metadata: " + error.message());
+    return mlir::failure();
+  }
+  llvm::json::OStream json(output, /*IndentSize=*/2);
+  write(json);
+  output << "\n";
+  output.close();
+  if (output.has_error()) {
+    reject(diagnostics, "failed to write profile companion metadata");
+    return mlir::failure();
+  }
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> readback =
+      llvm::MemoryBuffer::getFile(path);
+  if (!readback) {
+    reject(diagnostics, "failed to read back profile companion metadata: " +
+                            readback.getError().message());
+    return mlir::failure();
+  }
+  llvm::Expected<llvm::json::Value> parsed =
+      llvm::json::parse((*readback)->getBuffer());
+  if (!parsed || !parsed->getAsObject()) {
+    if (!parsed)
+      llvm::consumeError(parsed.takeError());
+    reject(diagnostics,
+           "profile companion metadata JSON readback verification failed");
+    return mlir::failure();
+  }
+  return mlir::success();
+}
+
+static llvm::Expected<std::string> getFileDigest(llvm::StringRef path) {
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
+      llvm::MemoryBuffer::getFile(path, /*IsText=*/false,
+                                  /*RequiresNullTerminator=*/false);
+  if (!buffer)
+    return llvm::createStringError(buffer.getError(), "failed to digest file");
+  llvm::SHA256 hasher;
+  hasher.update((*buffer)->getBuffer());
+  return "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
+}
+
+static llvm::Expected<std::string>
+getPackageManifestDigest(llvm::StringRef packageDirectory) {
+  llvm::SmallString<256> manifest(packageDirectory);
+  llvm::sys::path::append(manifest, runtime::kPackageManifestFileName);
+  return getFileDigest(manifest);
+}
+
+static mlir::LogicalResult stageExecutablePackage(
+    llvm::StringRef tensorProgramDirectory,
+    const ExecutableBundle &executableBundle,
+    llvm::StringRef stagedTargetArtifacts, llvm::StringRef stagedPackage,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterTargetLogicalRank,
+    std::optional<int64_t> failAfterPackageLogicalRank,
+    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle,
+    ProfileCaptureKind profileCapture = ProfileCaptureKind::None) {
+  llvm::Expected<TargetLLVMModuleBundle> targetLLVMModules =
+      compileExecutableBundleToTargetLLVMModulesImpl(
+          executableBundle, diagnostics, failAfterTargetLogicalRank,
+          profileCapture);
+  if (!targetLLVMModules) {
+    llvm::consumeError(targetLLVMModules.takeError());
+    return mlir::failure();
+  }
+  llvm::Expected<TargetArtifactBundle> targetArtifacts =
+      compileTargetLLVMModuleBundleToTargetArtifactsImpl(
+          *targetLLVMModules, stagedTargetArtifacts, targetToolchain,
+          diagnostics, profileCapture);
+  if (!targetArtifacts) {
+    llvm::consumeError(targetArtifacts.takeError());
+    return mlir::failure();
+  }
+  llvm::Expected<PackageBundle> package = assemblePackageBundleImpl(
+      tensorProgramDirectory, executableBundle, *targetArtifacts, stagedPackage,
+      diagnostics, failAfterPackageLogicalRank);
+  if (!package) {
+    llvm::consumeError(package.takeError());
+    return mlir::failure();
+  }
+  targetLLVMModuleBundle.emplace(std::move(*targetLLVMModules));
+  return mlir::success();
+}
+
+static void writeVariantMetadata(llvm::json::OStream &json, llvm::StringRef id,
+                                 llvm::StringRef role,
+                                 llvm::StringRef packageReference,
+                                 llvm::StringRef manifestDigest,
+                                 std::optional<llvm::StringRef> sameAs) {
+  json.object([&] {
+    json.attribute("id", id);
+    json.attribute("role", role);
+    json.attribute("package_ref", packageReference);
+    json.attribute("manifest_sha256", manifestDigest);
+    if (sameAs)
+      json.attribute("same_as", *sameAs);
+  });
+}
+
+struct ProfileVariantSiteMaps {
+  std::string variantId;
+  std::vector<std::vector<ProfileTSMCallSite>> ranks;
+};
+
+static llvm::Expected<ProfileVariantSiteMaps>
+collectTargetCallSites(llvm::StringRef variantId,
+                       const TargetLLVMModuleBundle &bundle) {
+  ProfileVariantSiteMaps maps;
+  maps.variantId = variantId.str();
+  maps.ranks.reserve(bundle.getModules().size());
+  for (auto [expectedRank, rankModule] : llvm::enumerate(bundle.getModules())) {
+    if (rankModule.getLogicalRank() != static_cast<int64_t>(expectedRank))
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "profile site-map rank domain is not canonical");
+    llvm::Expected<std::vector<ProfileTSMCallSite>> sites =
+        collectProfileTSMCallSites(rankModule.getModule(),
+                                   rankModule.getEntrySymbol());
+    if (!sites)
+      return sites.takeError();
+    for (auto [expectedSite, site] : llvm::enumerate(*sites))
+      if (site.siteId != expectedSite)
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "profile site-map IDs are not rank-local dense");
+    maps.ranks.push_back(std::move(*sites));
+  }
+  return maps;
+}
+
+static void writeTargetCallSites(llvm::json::OStream &json,
+                                 const ProfileVariantSiteMaps &maps) {
+  json.object([&] {
+    json.attribute("variant_id", maps.variantId);
+    json.attributeArray("ranks", [&] {
+      for (auto [logicalRank, sites] : llvm::enumerate(maps.ranks)) {
+        json.object([&] {
+          json.attribute("logical_rank", static_cast<int64_t>(logicalRank));
+          json.attributeArray("sites", [&] {
+            for (const ProfileTSMCallSite &site : sites)
+              json.object([&] {
+                json.attribute("site_id", site.siteId);
+                json.attribute("target_call_ordinal", site.targetCallOrdinal);
+                json.attribute("target_call_symbol", site.targetCallSymbol);
+                json.attribute("engine",
+                               stringifyTargetCallTSMEngine(site.engine));
+                json.attribute("correlation_key", site.correlationKey);
+                json.attribute("function_ordinal", site.functionOrdinal);
+                json.attribute("block_ordinal", site.blockOrdinal);
+                json.attribute("instruction_ordinal", site.instructionOrdinal);
+              });
+          });
+        });
+      }
+    });
+  });
+}
+
+struct ProfileCapturePackageMetadata {
+  ProfileCaptureKind capture = ProfileCaptureKind::None;
+  std::string packageReference;
+  std::string manifestDigest;
+};
+
+struct ProfileVariantCapturePackages {
+  std::string variantId;
+  std::array<ProfileCapturePackageMetadata, 3> captures;
+};
+
+static constexpr std::array<ProfileCaptureKind, 3> kProfileCaptures = {
+    ProfileCaptureKind::Summary, ProfileCaptureKind::Count,
+    ProfileCaptureKind::Trace};
+
+static mlir::LogicalResult stageVariantCapturePackages(
+    llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
+    llvm::StringRef companionRoot, llvm::StringRef variantId,
+    const ExecutableBundle &executableBundle,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
+    ProfileVariantCapturePackages &metadata,
+    std::optional<TargetLLVMModuleBundle> &traceTargetLLVM) {
+  metadata.variantId = variantId.str();
+  for (auto [index, capture] : llvm::enumerate(kProfileCaptures)) {
+    llvm::SmallString<256> package(companionRoot);
+    llvm::sys::path::append(package, "captures", variantId,
+                            stringifyProfileCaptureKind(capture));
+    llvm::SmallString<256> artifacts(transactionRoot);
+    llvm::sys::path::append(artifacts, "profile-capture-target-artifacts",
+                            variantId, stringifyProfileCaptureKind(capture));
+    std::optional<TargetLLVMModuleBundle> targetLLVM;
+    if (mlir::failed(stageExecutablePackage(
+            tensorProgramDirectory, executableBundle, artifacts, package,
+            targetToolchain, diagnostics, std::nullopt, std::nullopt,
+            targetLLVM, capture)))
+      return mlir::failure();
+    if (!targetLLVM) {
+      reject(diagnostics, "profile capture target LLVM bundle is missing");
+      return mlir::failure();
+    }
+    llvm::Expected<std::string> digest = getPackageManifestDigest(package);
+    if (!digest) {
+      reject(diagnostics, llvm::toString(digest.takeError()));
+      return mlir::failure();
+    }
+    llvm::SmallString<128> reference;
+    llvm::sys::path::append(reference, "captures", variantId,
+                            stringifyProfileCaptureKind(capture));
+    metadata.captures[index] = {capture, reference.str().str(), *digest};
+    if (capture == ProfileCaptureKind::Trace)
+      traceTargetLLVM.emplace(std::move(*targetLLVM));
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult writeProfileCompanion(
+    llvm::StringRef companionRoot, llvm::StringRef publishedPackageName,
+    llvm::StringRef productionPackage, llvm::StringRef reservedBaselinePackage,
+    const ProfileExecutableBundles &bundles,
+    const TargetLLVMModuleBundle &productionTraceTargetLLVM,
+    const TargetLLVMModuleBundle *reservedBaselineTraceTargetLLVM,
+    const ProfileVariantCapturePackages &productionCaptures,
+    const ProfileVariantCapturePackages &reservedBaselineCaptures,
+    llvm::raw_ostream &diagnostics) {
+  if (createDirectory(companionRoot, diagnostics))
+    return mlir::failure();
+
+  llvm::Expected<std::string> productionDigest =
+      getPackageManifestDigest(productionPackage);
+  if (!productionDigest) {
+    reject(diagnostics, llvm::toString(productionDigest.takeError()));
+    return mlir::failure();
+  }
+  llvm::Expected<std::string> baselineDigest =
+      bundles.productionIsReservedBaseline
+          ? llvm::Expected<std::string>(*productionDigest)
+          : getPackageManifestDigest(reservedBaselinePackage);
+  if (!baselineDigest) {
+    reject(diagnostics, llvm::toString(baselineDigest.takeError()));
+    return mlir::failure();
+  }
+
+  std::string productionReference = ("../" + publishedPackageName).str();
+  llvm::StringRef baselineReference = bundles.productionIsReservedBaseline
+                                          ? llvm::StringRef(productionReference)
+                                          : llvm::StringRef("baseline-package");
+  llvm::Expected<ProfileVariantSiteMaps> productionSites =
+      collectTargetCallSites("production-winner", productionTraceTargetLLVM);
+  if (!productionSites) {
+    reject(diagnostics, llvm::toString(productionSites.takeError()));
+    return mlir::failure();
+  }
+  std::optional<ProfileVariantSiteMaps> baselineSites;
+  if (reservedBaselineTraceTargetLLVM) {
+    llvm::Expected<ProfileVariantSiteMaps> collected = collectTargetCallSites(
+        "reserved-baseline", *reservedBaselineTraceTargetLLVM);
+    if (!collected) {
+      reject(diagnostics, llvm::toString(collected.takeError()));
+      return mlir::failure();
+    }
+    baselineSites.emplace(std::move(*collected));
+  }
+
+  llvm::SmallString<256> variantsPath(companionRoot);
+  llvm::sys::path::append(variantsPath, "variants.json");
+  if (mlir::failed(writeJSONFile(
+          variantsPath,
+          [&](llvm::json::OStream &json) {
+            json.object([&] {
+              json.attribute("schema", "wafer-profile-variants");
+              json.attribute("schema_version", int64_t(1));
+              json.attribute(
+                  "rank_count",
+                  bundles.production.getExecutionConfig().getRankCount());
+              json.attributeArray("variants", [&] {
+                writeVariantMetadata(json, "production-winner",
+                                     "production-winner", productionReference,
+                                     *productionDigest, std::nullopt);
+                writeVariantMetadata(
+                    json, "reserved-baseline", "reserved-baseline",
+                    baselineReference, *baselineDigest,
+                    bundles.productionIsReservedBaseline
+                        ? std::optional<llvm::StringRef>("production-winner")
+                        : std::nullopt);
+              });
+            });
+          },
+          diagnostics)))
+    return mlir::failure();
+
+  llvm::SmallString<256> siteMapPath(companionRoot);
+  llvm::sys::path::append(siteMapPath, "site-map.json");
+  if (mlir::failed(writeJSONFile(
+          siteMapPath,
+          [&](llvm::json::OStream &json) {
+            json.object([&] {
+              json.attribute("schema", "wafer-profile-target-call-site-map");
+              json.attribute("schema_version", int64_t(1));
+              json.attribute("site_basis",
+                             "verified-target-llvm-entry-reachable-tsm-call-"
+                             "preorder");
+              json.attribute("correlation_basis",
+                             "heuristic-target-call-signature-occurrence-v1");
+              json.attribute(
+                  "target_call_registry_size",
+                  static_cast<int64_t>(getTargetCallDescriptors().size()));
+              json.attributeArray("variants", [&] {
+                writeTargetCallSites(json, *productionSites);
+                if (baselineSites)
+                  writeTargetCallSites(json, *baselineSites);
+                else
+                  json.object([&] {
+                    json.attribute("variant_id", "reserved-baseline");
+                    json.attribute("same_as", "production-winner");
+                  });
+              });
+            });
+          },
+          diagnostics)))
+    return mlir::failure();
+
+  llvm::SmallString<256> planPath(companionRoot);
+  llvm::sys::path::append(planPath, "plan.json");
+  if (mlir::failed(writeJSONFile(
+          planPath,
+          [&](llvm::json::OStream &json) {
+            json.object([&] {
+              json.attribute("schema", "wafer-profile-plan");
+              json.attribute("schema_version", int64_t(1));
+              json.attribute(
+                  "rank_count",
+                  bundles.production.getExecutionConfig().getRankCount());
+              json.attribute("variant_metadata", "variants.json");
+              json.attribute("site_map", "site-map.json");
+              json.attribute("site_identity",
+                             "variant-rank-local-tsm-site-id-and-typed-"
+                             "correlation-key");
+              json.attributeArray("execution_packages", [&] {
+                json.object([&] {
+                  json.attribute("variant_id", "reserved-baseline");
+                  json.attribute("package_ref", baselineReference);
+                  json.attribute("manifest_sha256", *baselineDigest);
+                });
+                json.object([&] {
+                  json.attribute("variant_id", "production-winner");
+                  json.attribute("package_ref", productionReference);
+                  json.attribute("manifest_sha256", *productionDigest);
+                });
+              });
+              json.attributeArray("capture_packages", [&] {
+                auto writeCaptures =
+                    [&](const ProfileVariantCapturePackages &variant) {
+                      for (const ProfileCapturePackageMetadata &capture :
+                           variant.captures)
+                        json.object([&] {
+                          json.attribute("variant_id", variant.variantId);
+                          json.attribute("capture", stringifyProfileCaptureKind(
+                                                        capture.capture));
+                          json.attribute("package_ref",
+                                         capture.packageReference);
+                          json.attribute("manifest_sha256",
+                                         capture.manifestDigest);
+                          json.attribute(
+                              "record_bytes",
+                              getProfileCaptureRecordBytes(capture.capture));
+                        });
+                    };
+                writeCaptures(reservedBaselineCaptures);
+                writeCaptures(productionCaptures);
+              });
+            });
+          },
+          diagnostics)))
+    return mlir::failure();
+
+  llvm::Expected<std::string> planDigest = getFileDigest(planPath);
+  llvm::Expected<std::string> variantsDigest = getFileDigest(variantsPath);
+  llvm::Expected<std::string> siteMapDigest = getFileDigest(siteMapPath);
+  if (!planDigest || !variantsDigest || !siteMapDigest) {
+    if (!planDigest)
+      reject(diagnostics, llvm::toString(planDigest.takeError()));
+    if (!variantsDigest)
+      reject(diagnostics, llvm::toString(variantsDigest.takeError()));
+    if (!siteMapDigest)
+      reject(diagnostics, llvm::toString(siteMapDigest.takeError()));
+    return mlir::failure();
+  }
+
+  // Activation is deliberately the final companion write. Its presence means
+  // all referenced metadata was closed, read back, and bound by byte digest.
+  llvm::SmallString<256> activationPath(companionRoot);
+  llvm::sys::path::append(activationPath, "activation.json");
+  return writeJSONFile(
+      activationPath,
+      [&](llvm::json::OStream &json) {
+        json.object([&] {
+          json.attribute("schema", "wafer-profile-activation");
+          json.attribute("schema_version", int64_t(1));
+          json.attribute("production_manifest_sha256", *productionDigest);
+          json.attributeObject("metadata_sha256", [&] {
+            json.attribute("plan.json", *planDigest);
+            json.attribute("variants.json", *variantsDigest);
+            json.attribute("site-map.json", *siteMapDigest);
+          });
+        });
+      },
+      diagnostics);
+}
+
+} // namespace
 
 mlir::LogicalResult stageTargetPackage(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -35,34 +470,97 @@ mlir::LogicalResult stageTargetPackage(
 
   llvm::SmallString<256> stagedTargetArtifacts(transactionRoot);
   llvm::sys::path::append(stagedTargetArtifacts, "target-artifacts");
-  llvm::Expected<TargetLLVMModuleBundle> targetLLVMModules =
-      compileExecutableBundleToTargetLLVMModulesImpl(
-          *compiledExecutableBundle, diagnostics, failAfterTargetLogicalRank);
-  if (!targetLLVMModules) {
-    llvm::consumeError(targetLLVMModules.takeError());
-    return mlir::failure();
-  }
-  llvm::Expected<TargetArtifactBundle> targetArtifacts =
-      compileTargetLLVMModuleBundleToTargetArtifacts(
-          *targetLLVMModules, stagedTargetArtifacts, targetToolchain,
-          diagnostics);
-  if (!targetArtifacts) {
-    llvm::consumeError(targetArtifacts.takeError());
-    return mlir::failure();
-  }
-
   llvm::SmallString<256> stagedPackage(transactionRoot);
   llvm::sys::path::append(stagedPackage, "package");
-  llvm::Expected<PackageBundle> package = assemblePackageBundleImpl(
-      tensorProgramDirectory, *compiledExecutableBundle, *targetArtifacts,
-      stagedPackage, diagnostics, failAfterPackageLogicalRank);
-  if (!package) {
-    llvm::consumeError(package.takeError());
+  if (mlir::failed(stageExecutablePackage(
+          tensorProgramDirectory, *compiledExecutableBundle,
+          stagedTargetArtifacts, stagedPackage, targetToolchain, diagnostics,
+          failAfterTargetLogicalRank, failAfterPackageLogicalRank,
+          targetLLVMModuleBundle)))
+    return mlir::failure();
+
+  executableBundle.emplace(std::move(*compiledExecutableBundle));
+  return mlir::success();
+}
+
+mlir::LogicalResult stageProfileTargetPackages(
+    llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
+    llvm::StringRef publishedPackageName,
+    const ExecutionConfig &executionConfig,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLogicalRank,
+    std::optional<int64_t> failAfterTargetLogicalRank,
+    std::optional<int64_t> failAfterPackageLogicalRank,
+    std::optional<ExecutableBundle> &executableBundle,
+    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle) {
+  llvm::Expected<ProfileExecutableBundles> compiled =
+      compileTensorProgramToProfileExecutableBundlesImpl(
+          tensorProgramDirectory, executionConfig, diagnostics,
+          failAfterLogicalRank);
+  if (!compiled) {
+    llvm::consumeError(compiled.takeError());
     return mlir::failure();
   }
 
-  executableBundle.emplace(std::move(*compiledExecutableBundle));
-  targetLLVMModuleBundle.emplace(std::move(*targetLLVMModules));
+  llvm::SmallString<256> productionTargetArtifacts(transactionRoot);
+  llvm::sys::path::append(productionTargetArtifacts, "target-artifacts");
+  llvm::SmallString<256> productionPackage(transactionRoot);
+  llvm::sys::path::append(productionPackage, "package");
+  std::optional<TargetLLVMModuleBundle> productionTargetLLVM;
+  if (mlir::failed(stageExecutablePackage(
+          tensorProgramDirectory, compiled->production,
+          productionTargetArtifacts, productionPackage, targetToolchain,
+          diagnostics, failAfterTargetLogicalRank, failAfterPackageLogicalRank,
+          productionTargetLLVM)))
+    return mlir::failure();
+
+  llvm::SmallString<256> companionRoot(transactionRoot);
+  llvm::sys::path::append(companionRoot, "profile-companion");
+  llvm::SmallString<256> baselinePackage(companionRoot);
+  llvm::sys::path::append(baselinePackage, "baseline-package");
+  std::optional<TargetLLVMModuleBundle> baselineTargetLLVM;
+  if (compiled->reservedBaseline) {
+    llvm::SmallString<256> baselineTargetArtifacts(transactionRoot);
+    llvm::sys::path::append(baselineTargetArtifacts,
+                            "profile-baseline-target-artifacts");
+    if (mlir::failed(stageExecutablePackage(
+            tensorProgramDirectory, *compiled->reservedBaseline,
+            baselineTargetArtifacts, baselinePackage, targetToolchain,
+            diagnostics, std::nullopt, std::nullopt, baselineTargetLLVM)))
+      return mlir::failure();
+  }
+
+  ProfileVariantCapturePackages productionCaptures;
+  std::optional<TargetLLVMModuleBundle> productionTraceTargetLLVM;
+  if (mlir::failed(stageVariantCapturePackages(
+          tensorProgramDirectory, transactionRoot, companionRoot,
+          "production-winner", compiled->production, targetToolchain,
+          diagnostics, productionCaptures, productionTraceTargetLLVM)))
+    return mlir::failure();
+
+  ProfileVariantCapturePackages baselineCaptures;
+  std::optional<TargetLLVMModuleBundle> baselineTraceTargetLLVM;
+  if (compiled->reservedBaseline) {
+    if (mlir::failed(stageVariantCapturePackages(
+            tensorProgramDirectory, transactionRoot, companionRoot,
+            "reserved-baseline", *compiled->reservedBaseline, targetToolchain,
+            diagnostics, baselineCaptures, baselineTraceTargetLLVM)))
+      return mlir::failure();
+  } else {
+    baselineCaptures.variantId = "reserved-baseline";
+    baselineCaptures.captures = productionCaptures.captures;
+  }
+
+  if (!productionTargetLLVM || !productionTraceTargetLLVM ||
+      mlir::failed(writeProfileCompanion(
+          companionRoot, publishedPackageName, productionPackage,
+          baselinePackage, *compiled, *productionTraceTargetLLVM,
+          baselineTraceTargetLLVM ? &*baselineTraceTargetLLVM : nullptr,
+          productionCaptures, baselineCaptures, diagnostics)))
+    return mlir::failure();
+
+  executableBundle.emplace(std::move(compiled->production));
+  targetLLVMModuleBundle.emplace(std::move(*productionTargetLLVM));
   return mlir::success();
 }
 

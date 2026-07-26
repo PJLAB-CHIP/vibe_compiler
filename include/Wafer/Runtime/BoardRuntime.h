@@ -120,6 +120,22 @@ struct BoardGraphHandle {
   uintptr_t value = 0;
 };
 
+/// Controls how a provider observes terminal submission state. Ordinary
+/// invocations retain the provider's low-overhead polling cadence. Profiler
+/// campaigns request a higher-resolution cadence so host launch-to-completion
+/// samples can be qualified by the resolution that was actually observed.
+enum class BoardCompletionObservationPolicy {
+  Normal,
+  ProfileHighResolution,
+};
+
+struct BoardCompletionObservation {
+  /// Maximum steady-clock gap between consecutive completion observations for
+  /// any still-live stream. This is measured by the provider; it is never a
+  /// nominal polling constant.
+  uint64_t maximumPollGapNanoseconds = 0;
+};
+
 /// One immutable, already-digest-verified tile module snapshot. Graph loading
 /// must synchronously consume the bytes; it may not retain the ArrayRef.
 struct BoardGraphModuleSnapshot {
@@ -215,9 +231,9 @@ public:
   /// state, and only then submits the shared main function carried by the
   /// canonical rank launches. Both phases retain one module/argument table/
   /// stream and share the deadline passed to waitAll().
-  virtual llvm::Error submitClusterPrepareMain(
-      BoardFunctionHandle prepare,
-      llvm::ArrayRef<BoardRankLaunch> mainLaunches) = 0;
+  virtual llvm::Error
+  submitClusterPrepareMain(BoardFunctionHandle prepare,
+                           llvm::ArrayRef<BoardRankLaunch> mainLaunches) = 0;
 
   /// One txLaunchModel submission owned by a previously loaded graph. The TX
   /// provider alone materializes the qualified BootParam/type-7 wire bytes.
@@ -225,9 +241,12 @@ public:
   submitModel(BoardGraphHandle graph,
               llvm::ArrayRef<BoardModelTensorLaunch> tensors) = 0;
 
-  /// Waits for every submitted rank with a host deadline. Timeout or an
-  /// untrustworthy terminal state must poison the context.
-  virtual llvm::Error waitAll(uint64_t timeoutMilliseconds) = 0;
+  /// Waits for every submitted rank with a host deadline and returns the
+  /// actually observed completion-poll resolution. Timeout or an untrustworthy
+  /// terminal state must poison the context.
+  virtual llvm::Expected<BoardCompletionObservation>
+  waitAll(uint64_t timeoutMilliseconds,
+          BoardCompletionObservationPolicy observationPolicy) = 0;
 
   /// Releases provider-owned submission state after every rank is known
   /// terminal. It must never be called after poison.
@@ -255,8 +274,15 @@ struct BoardRuntimeInvocationRequest {
   uint32_t deviceId = 0;
   uint64_t completionTimeoutMilliseconds =
       kDefaultBoardCompletionTimeoutMilliseconds;
+  BoardCompletionObservationPolicy completionObservationPolicy =
+      BoardCompletionObservationPolicy::Normal;
   BoardDeviceQualification qualification;
   std::vector<BoardRuntimeBinding> bindings;
+  /// Compiler-owned profiler records are the only internal workspace that a
+  /// board invocation may initialize and read back. They are populated by
+  /// wafer-run after exact companion verification; they are never exposed as
+  /// user ResourceId bindings.
+  std::vector<BoardRuntimeBinding> profilerBindings;
 };
 
 struct BoardRuntimeOutput {
@@ -285,8 +311,78 @@ struct BoardRuntimeInvocationResult {
   BoardDeviceInfo device;
   std::vector<BoardRuntimeRankResult> ranks;
   std::vector<BoardRuntimeStage> completedStages;
+  /// Host steady-clock interval from immediately before provider submission
+  /// through successful all-rank completion. This is a campaign-level latency
+  /// observation, not a tile clock and not per-instruction hardware time.
+  uint64_t launchToCompletionNanoseconds = 0;
+  /// Provider-measured maximum gap between completion observations. Profiler
+  /// analysis uses this to reject latency samples whose terminal observation
+  /// cadence is too coarse for the claimed comparison.
+  uint64_t completionObservationResolutionNanoseconds = 0;
   std::vector<BoardRuntimeOutput> outputs;
+  std::vector<BoardRuntimeOutput> profilerOutputs;
 };
+
+/// A capability proving that one concrete driver instance selected and
+/// qualified one device inventory. The constructor is private so callers
+/// cannot manufacture a session by copying qualification text. Moving the
+/// capability invalidates the source; destruction never performs recovery,
+/// reset, power, or another provider call. The concrete driver must outlive
+/// the capability, and one owner must serialize invocations through it.
+class QualifiedBoardRuntimeSession final {
+public:
+  QualifiedBoardRuntimeSession(const QualifiedBoardRuntimeSession &) = delete;
+  QualifiedBoardRuntimeSession &
+  operator=(const QualifiedBoardRuntimeSession &) = delete;
+  QualifiedBoardRuntimeSession(QualifiedBoardRuntimeSession &&other) noexcept;
+  QualifiedBoardRuntimeSession &
+  operator=(QualifiedBoardRuntimeSession &&other) noexcept;
+  ~QualifiedBoardRuntimeSession() = default;
+
+  bool isUsable() const { return usable; }
+
+private:
+  QualifiedBoardRuntimeSession(BoardRuntimeDriver &driver, uint32_t deviceId,
+                               uint32_t qualifiedLogicalRankCount,
+                               BoardDeviceQualification qualification,
+                               BoardDeviceInfo device);
+
+  BoardRuntimeDriver *driver = nullptr;
+  uint32_t deviceId = 0;
+  uint32_t qualifiedLogicalRankCount = 0;
+  BoardDeviceQualification qualification;
+  BoardDeviceInfo device;
+  bool usable = false;
+
+  friend llvm::Expected<QualifiedBoardRuntimeSession>
+  qualifyBoardRuntimeSession(uint32_t, uint32_t,
+                             const BoardDeviceQualification &,
+                             BoardRuntimeDriver &);
+  friend llvm::Expected<BoardRuntimeInvocationResult>
+  executeBoardInvocationInSession(const VerifiedPackageManifest &,
+                                  llvm::StringRef,
+                                  BoardRuntimeInvocationRequest,
+                                  QualifiedBoardRuntimeSession &);
+};
+
+/// Performs device count/selection/inventory queries exactly once and returns
+/// a driver-bound capability. `requiredLogicalRankCount` qualifies the dense
+/// logical domain 0..N-1; profiler campaigns request all 16 tiles.
+llvm::Expected<QualifiedBoardRuntimeSession>
+qualifyBoardRuntimeSession(uint32_t deviceId, uint32_t requiredLogicalRankCount,
+                           const BoardDeviceQualification &qualification,
+                           BoardRuntimeDriver &driver);
+
+/// Executes one complete invocation using a previously qualified capability.
+/// The request must name the same device and qualification, and the package
+/// rank domain must exactly match the qualified domain. Device
+/// count/selection/info are not repeated. A poisoned capability can never be
+/// used again.
+llvm::Expected<BoardRuntimeInvocationResult>
+executeBoardInvocationInSession(const VerifiedPackageManifest &package,
+                                llvm::StringRef packageRoot,
+                                BoardRuntimeInvocationRequest request,
+                                QualifiedBoardRuntimeSession &session);
 
 /// Executes the complete verified logical-rank domain as one owner-backed
 /// provider session. Direct DTE is accepted only through its closed cluster

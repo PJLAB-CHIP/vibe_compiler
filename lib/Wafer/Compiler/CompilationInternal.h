@@ -95,11 +95,22 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<ExecutableBundle> &executableBundle,
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle);
 
+mlir::LogicalResult stageProfileTargetPackages(
+    llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
+    llvm::StringRef publishedPackageName,
+    const ExecutionConfig &executionConfig,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLogicalRank,
+    std::optional<int64_t> failAfterTargetLogicalRank,
+    std::optional<int64_t> failAfterPackageLogicalRank,
+    std::optional<ExecutableBundle> &executableBundle,
+    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle);
+
 mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
-    WholeVariantSelectionMode selectionMode,
+    WholeVariantSelectionMode selectionMode, CompilationOptions options,
     std::optional<int64_t> failAfterLogicalRank,
     std::optional<int64_t> failAfterTargetLogicalRank,
     std::optional<int64_t> failAfterPackageLogicalRank,

@@ -15,10 +15,12 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -65,14 +67,13 @@ llvm::Expected<std::string> normalizeOutputPath(llvm::StringRef path) {
 
   llvm::StringRef filename = llvm::sys::path::filename(absolute);
   llvm::StringRef parent = llvm::sys::path::parent_path(absolute);
-  if (filename.empty() || filename == "." || filename == ".." ||
-      parent.empty())
-    return llvm::createStringError(llvm::errc::invalid_argument,
-                                   "raw output path has no file name or parent");
+  if (filename.empty() || filename == "." || filename == ".." || parent.empty())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "raw output path has no file name or parent");
 
   llvm::SmallString<256> canonicalParent;
-  if (std::error_code error =
-          llvm::sys::fs::real_path(parent, canonicalParent))
+  if (std::error_code error = llvm::sys::fs::real_path(parent, canonicalParent))
     return llvm::createStringError(
         error, "failed to resolve raw output parent directory: " + parent);
 
@@ -90,6 +91,21 @@ struct StagedRawFile {
   std::string target;
   llvm::SmallString<256> temporary;
 };
+
+using SemanticResourceKey = std::tuple<int64_t, PackageResourceRole, int64_t>;
+
+SemanticResourceKey semanticKey(const PackageResourceRecord &resource) {
+  return {resource.logicalRank, resource.role, resource.roleIndex};
+}
+
+bool hasExactUserContract(const PackageResourceRecord &lhs,
+                          const PackageResourceRecord &rhs) {
+  return lhs.logicalRank == rhs.logicalRank && lhs.role == rhs.role &&
+         lhs.roleIndex == rhs.roleIndex && lhs.type.dtype == rhs.type.dtype &&
+         lhs.type.shape == rhs.type.shape && lhs.bytes == rhs.bytes &&
+         lhs.alignment == rhs.alignment && lhs.access == rhs.access &&
+         lhs.hostVisible == rhs.hostVisible;
+}
 
 llvm::Error stageAndPublishRawFiles(
     llvm::ArrayRef<std::pair<llvm::StringRef, llvm::ArrayRef<uint8_t>>>
@@ -161,8 +177,7 @@ prepareBoardInvocationFiles(const PackageManifest &manifest,
 
   std::set<std::string> distinctOutputPaths;
   for (auto &entry : *outputs) {
-    llvm::Expected<std::string> canonical =
-        normalizeOutputPath(entry.second);
+    llvm::Expected<std::string> canonical = normalizeOutputPath(entry.second);
     if (!canonical)
       return canonical.takeError();
     entry.second = std::move(*canonical);
@@ -237,9 +252,8 @@ prepareBoardInvocationFiles(const PackageManifest &manifest,
   return plan;
 }
 
-llvm::Error
-validateAndPublishBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
-                               const BoardInvocationFilePlan &plan) {
+llvm::Error validateBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
+                                 const BoardInvocationFilePlan &plan) {
   llvm::DenseSet<uint64_t> returnedResources;
   for (const BoardRuntimeOutput &output : outputs) {
     const uint64_t resourceId = output.resource.getValue();
@@ -275,6 +289,114 @@ validateAndPublishBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "board result did not return all-and-only writable resources");
+  return llvm::Error::success();
+}
+
+llvm::Expected<BoardInvocationFilePlan>
+remapBoardInvocationFilePlan(const BoardInvocationFilePlan &sourcePlan,
+                             const PackageManifest &sourceManifest,
+                             const PackageManifest &targetManifest) {
+  if (!sourcePlan.request.profilerBindings.empty())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "cannot remap a board invocation that already has profiler bindings");
+
+  std::map<SemanticResourceKey, const PackageResourceRecord *> sourceResources;
+  std::map<SemanticResourceKey, const PackageResourceRecord *> targetResources;
+  llvm::DenseMap<uint64_t, uint64_t> sourceToTarget;
+  auto indexVisible =
+      [](const PackageManifest &manifest,
+         std::map<SemanticResourceKey, const PackageResourceRecord *> &index)
+      -> llvm::Error {
+    for (const PackageResourceRecord &resource : manifest.resources) {
+      if (!resource.hostVisible)
+        continue;
+      if (!index.try_emplace(semanticKey(resource), &resource).second)
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "package contains duplicate host-visible semantic resource");
+    }
+    return llvm::Error::success();
+  };
+  if (llvm::Error error = indexVisible(sourceManifest, sourceResources))
+    return std::move(error);
+  if (llvm::Error error = indexVisible(targetManifest, targetResources))
+    return std::move(error);
+  if (sourceResources.size() != targetResources.size())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "profile package host-visible resource domain differs from the "
+        "production package");
+  for (const auto &[key, source] : sourceResources) {
+    auto target = targetResources.find(key);
+    if (target == targetResources.end() ||
+        !hasExactUserContract(*source, *target->second))
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "profile package host-visible resource contract differs from the "
+          "production package");
+    sourceToTarget[source->id.getValue()] = target->second->id.getValue();
+  }
+
+  auto remapId = [&](uint64_t sourceId) -> llvm::Expected<uint64_t> {
+    auto target = sourceToTarget.find(sourceId);
+    if (target == sourceToTarget.end())
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "prepared board invocation references a non-host-visible or "
+          "unknown production ResourceId");
+    return target->second;
+  };
+
+  BoardInvocationFilePlan targetPlan;
+  targetPlan.request.deviceId = sourcePlan.request.deviceId;
+  targetPlan.request.completionTimeoutMilliseconds =
+      sourcePlan.request.completionTimeoutMilliseconds;
+  targetPlan.request.qualification = sourcePlan.request.qualification;
+  targetPlan.request.bindings.reserve(sourcePlan.request.bindings.size());
+  for (const BoardRuntimeBinding &binding : sourcePlan.request.bindings) {
+    llvm::Expected<uint64_t> target = remapId(binding.resource.getValue());
+    if (!target)
+      return target.takeError();
+    targetPlan.request.bindings.push_back({ResourceId(*target), binding.bytes});
+  }
+
+  auto remapVectorMap =
+      [&](const llvm::DenseMap<uint64_t, std::vector<uint8_t>> &source,
+          llvm::DenseMap<uint64_t, std::vector<uint8_t>> &target)
+      -> llvm::Error {
+    for (const auto &entry : source) {
+      llvm::Expected<uint64_t> targetId = remapId(entry.first);
+      if (!targetId)
+        return targetId.takeError();
+      target[*targetId] = entry.second;
+    }
+    return llvm::Error::success();
+  };
+  if (llvm::Error error =
+          remapVectorMap(sourcePlan.expectedBytes, targetPlan.expectedBytes))
+    return std::move(error);
+
+  for (const auto &entry : sourcePlan.outputPaths) {
+    llvm::Expected<uint64_t> targetId = remapId(entry.first);
+    if (!targetId)
+      return targetId.takeError();
+    targetPlan.outputPaths[*targetId] = entry.second;
+  }
+  for (const auto &entry : sourcePlan.writableResourceBytes) {
+    llvm::Expected<uint64_t> targetId = remapId(entry.first);
+    if (!targetId)
+      return targetId.takeError();
+    targetPlan.writableResourceBytes[*targetId] = entry.second;
+  }
+  return targetPlan;
+}
+
+llvm::Error
+validateAndPublishBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
+                               const BoardInvocationFilePlan &plan) {
+  if (llvm::Error error = validateBoardOutputs(outputs, plan))
+    return error;
 
   std::vector<std::pair<llvm::StringRef, llvm::ArrayRef<uint8_t>>> captures;
   captures.reserve(plan.outputPaths.size());

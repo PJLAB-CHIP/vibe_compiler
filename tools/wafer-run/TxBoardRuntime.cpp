@@ -14,11 +14,12 @@
 
 #include "tx_runtime.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -870,7 +871,9 @@ public:
     return llvm::Error::success();
   }
 
-  llvm::Error waitAll(uint64_t timeoutMilliseconds) override {
+  llvm::Expected<BoardCompletionObservation>
+  waitAll(uint64_t timeoutMilliseconds,
+          BoardCompletionObservationPolicy observationPolicy) override {
     if (llvm::Error error = requireUsable("all-rank completion"))
       return error;
     if (!submissionActive || activeStreams.empty() ||
@@ -881,18 +884,33 @@ public:
       return llvm::createStringError(llvm::errc::invalid_argument,
                                      "TX completion timeout must be positive");
 
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::milliseconds(timeoutMilliseconds);
+    const auto waitBegin = std::chrono::steady_clock::now();
+    const auto deadline =
+        waitBegin + std::chrono::milliseconds(timeoutMilliseconds);
+    std::vector<std::chrono::steady_clock::time_point> lastObservations(
+        activeStreams.size(), waitBegin);
+    uint64_t maximumPollGapNanoseconds = 0;
+    auto recordObservation =
+        [&](size_t streamIndex,
+            std::chrono::steady_clock::time_point observationTime) {
+          const auto observedGap =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  observationTime - lastObservations[streamIndex])
+                  .count();
+          if (observedGap > 0)
+            maximumPollGapNanoseconds = std::max(
+                maximumPollGapNanoseconds, static_cast<uint64_t>(observedGap));
+          lastObservations[streamIndex] = observationTime;
+        };
     auto deadlineExceeded = [&]() -> llvm::Error {
       contextState = BoardRuntimeContextState::Poisoned;
       llvm::StringRef submissionPhase = "all-rank";
       if (providerEnvironment.launchABI ==
           TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
-        submissionPhase = clusterMainFunction != 0 ? "cluster prepare"
-                                                   : "cluster main";
+        submissionPhase =
+            clusterMainFunction != 0 ? "cluster prepare" : "cluster main";
       return llvm::createStringError(
-          llvm::errc::io_error,
-          "TX %s completion exceeded the host deadline",
+          llvm::errc::io_error, "TX %s completion exceeded the host deadline",
           submissionPhase.str().c_str());
     };
     while (true) {
@@ -903,6 +921,8 @@ public:
         if (std::chrono::steady_clock::now() >= deadline)
           return deadlineExceeded();
         txError_t status = api.streamQuery(activeStreams[index]);
+        const auto observationTime = std::chrono::steady_clock::now();
+        recordObservation(index, observationTime);
         if (status == TX_SUCCESS) {
           completedStreams[index] = true;
         } else if (status == TX_ERROR_NOT_READY) {
@@ -913,7 +933,7 @@ public:
         // A completion observation counts only when the query itself returned
         // before the host deadline. Once expired, this local quarantine is the
         // final action and no later stream is queried.
-        if (std::chrono::steady_clock::now() >= deadline)
+        if (observationTime >= deadline)
           return deadlineExceeded();
       }
       if (allComplete) {
@@ -924,9 +944,8 @@ public:
           dim3 gridDim = {16, 1, 1};
           dim3 blockDim = {1, 1, 1};
           txError_t status = api.launchClusterKernel(
-              reinterpret_cast<txFunction_t>(clusterMainFunction),
-              clusterDim, gridDim, blockDim,
-              submissionArgumentBlocks.front().data(),
+              reinterpret_cast<txFunction_t>(clusterMainFunction), clusterDim,
+              gridDim, blockDim, submissionArgumentBlocks.front().data(),
               static_cast<uint32_t>(submissionArgumentBlocks.front().size() *
                                     sizeof(uint64_t)),
               0, activeStreams.front());
@@ -934,11 +953,16 @@ public:
             return txError("txLaunchClusterKernel(main)", status);
           clusterMainFunction = 0;
           completedStreams.assign(1, false);
+          lastObservations.assign(activeStreams.size(),
+                                  std::chrono::steady_clock::now());
           continue;
         }
-        return llvm::Error::success();
+        return BoardCompletionObservation{maximumPollGapNanoseconds};
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      if (observationPolicy == BoardCompletionObservationPolicy::Normal)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      else
+        std::this_thread::yield();
     }
   }
 

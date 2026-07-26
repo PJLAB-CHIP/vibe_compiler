@@ -17,13 +17,18 @@ namespace wafer::compiler::detail {
 llvm::Expected<TargetLLVMModuleBundle>
 compileExecutableBundleToTargetLLVMModulesImpl(
     const ExecutableBundle &executableBundle, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank) {
+    std::optional<int64_t> failAfterLogicalRank,
+    ProfileCaptureKind profileCapture) {
   const std::vector<RankExecutable> &ranks =
       executableBundle.getRankExecutables();
   const ExecutionConfig &executionConfig =
       executableBundle.getExecutionConfig();
   if (ranks.size() != static_cast<size_t>(executionConfig.getRankCount()))
     return fail(diagnostics, "target LLVM rank domain is incomplete");
+  if (profileCapture != ProfileCaptureKind::None &&
+      executionConfig.getRankCount() != WAFER_TX81_PROFILER_TILE_COUNT)
+    return fail(diagnostics,
+                "profile target LLVM requires the complete 16-rank domain");
 
   const TargetProfileRecord &targetProfile =
       getTargetProfileRecord(executionConfig.getTargetProfileId());
@@ -33,11 +38,18 @@ compileExecutableBundleToTargetLLVMModulesImpl(
     if (rank.getLogicalRank() != static_cast<int64_t>(expectedRank))
       return fail(diagnostics, "target LLVM rank domain is not canonical");
     mlir::FailureOr<PreparedTargetRank> prepared =
-        prepareTargetABI(rank, executionConfig);
+        prepareTargetABI(rank, executionConfig, profileCapture);
     if (mlir::failed(prepared))
       return fail(diagnostics,
                   "target ABI preparation failed for logical rank " +
                       std::to_string(expectedRank));
+    if (llvm::Error error =
+            verifyProfileCaptureKernelABISlots(prepared->slots, profileCapture))
+      return fail(diagnostics,
+                  "target ABI profiler slot verification failed for logical "
+                  "rank " +
+                      std::to_string(expectedRank) + ": " +
+                      llvm::toString(std::move(error)));
     if (mlir::failed(lowerToTargetLLVM(*prepared)))
       return fail(diagnostics, "target lowering failed for logical rank " +
                                    std::to_string(expectedRank));

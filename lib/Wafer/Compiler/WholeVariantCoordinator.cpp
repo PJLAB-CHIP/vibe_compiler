@@ -720,11 +720,12 @@ static std::string summarizeAttemptFailure(llvm::ArrayRef<size_t> indices,
 
 } // namespace
 
-mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
+static mlir::FailureOr<AcceptedProductionAndBaseline>
+selectAcceptedWholeVariants(
     const std::vector<RankVariantFrontier> &frontiers,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    WholeVariantSelectionMode selectionMode) {
+    WholeVariantSelectionMode selectionMode, bool retainReservedBaseline) {
   if (program.logicalRankCount != executionConfig.getRankCount()) {
     diagnostics << "wafer-compile: typed program rank domain does not match "
                    "whole-variant ExecutionConfig\n";
@@ -808,7 +809,9 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
   }
   AcceptedWholeVariant baselineAccepted = std::move(*baseline);
   if (selectionMode == WholeVariantSelectionMode::ReservedBaseline)
-    return baselineAccepted;
+    return AcceptedProductionAndBaseline{std::move(baselineAccepted),
+                                         std::nullopt,
+                                         /*productionIsReservedBaseline=*/true};
   const bool characterize =
       isCollectiveCharacterizationSelection(selectionMode);
 
@@ -895,14 +898,50 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
                   << "'\n";
       return mlir::failure();
     }
-    return std::move(*selected);
+    return AcceptedProductionAndBaseline{
+        std::move(*selected), std::nullopt,
+        /*productionIsReservedBaseline=*/false};
   }
-  AcceptedWholeVariant selected = std::move(baselineAccepted);
-  for (AcceptedWholeVariant &candidate : paretoFrontier) {
-    if (isPreferredOver(candidate, selected, selectionPolicy))
-      selected = std::move(candidate);
-  }
-  return selected;
+  AcceptedWholeVariant *selected = &baselineAccepted;
+  for (AcceptedWholeVariant &candidate : paretoFrontier)
+    if (isPreferredOver(candidate, *selected, selectionPolicy))
+      selected = &candidate;
+  if (selected == &baselineAccepted)
+    return AcceptedProductionAndBaseline{std::move(baselineAccepted),
+                                         std::nullopt,
+                                         /*productionIsReservedBaseline=*/true};
+
+  std::optional<AcceptedWholeVariant> retainedBaseline;
+  if (retainReservedBaseline)
+    retainedBaseline.emplace(std::move(baselineAccepted));
+  return AcceptedProductionAndBaseline{std::move(*selected),
+                                       std::move(retainedBaseline),
+                                       /*productionIsReservedBaseline=*/false};
+}
+
+mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
+    const std::vector<RankVariantFrontier> &frontiers,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    WholeVariantSelectionMode selectionMode) {
+  mlir::FailureOr<AcceptedProductionAndBaseline> selected =
+      selectAcceptedWholeVariants(frontiers, program, executionConfig,
+                                  diagnostics, selectionMode,
+                                  /*retainReservedBaseline=*/false);
+  if (mlir::failed(selected))
+    return mlir::failure();
+  return std::move(selected->production);
+}
+
+mlir::FailureOr<AcceptedProductionAndBaseline>
+selectAcceptedProductionAndBaseline(
+    const std::vector<RankVariantFrontier> &frontiers,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics) {
+  return selectAcceptedWholeVariants(frontiers, program, executionConfig,
+                                     diagnostics,
+                                     WholeVariantSelectionMode::Production,
+                                     /*retainReservedBaseline=*/true);
 }
 
 } // namespace wafer::compiler::detail

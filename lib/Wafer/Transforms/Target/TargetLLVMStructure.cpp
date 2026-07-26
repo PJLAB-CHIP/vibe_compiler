@@ -94,10 +94,11 @@ mlir::LogicalResult flattenTileRegions(mlir::ModuleOp moduleOp) {
   }
   return mlir::success();
 }
-mlir::LogicalResult
-analyzeDirectCallGraph(mlir::ModuleOp moduleOp, DirectCallGraph &graph,
-                       int64_t defaultDDRArenaArgumentIndex,
-                       int64_t transportStatusArgumentIndex) {
+mlir::LogicalResult analyzeDirectCallGraph(mlir::ModuleOp moduleOp,
+                                           DirectCallGraph &graph,
+                                           int64_t defaultDDRArenaArgumentIndex,
+                                           int64_t transportStatusArgumentIndex,
+                                           int64_t profileRecordArgumentIndex) {
   llvm::SmallVector<mlir::func::FuncOp, 8> functions;
   for (mlir::func::FuncOp funcOp : moduleOp.getOps<mlir::func::FuncOp>()) {
     if (funcOp.isDeclaration())
@@ -112,6 +113,8 @@ analyzeDirectCallGraph(mlir::ModuleOp moduleOp, DirectCallGraph &graph,
           !(static_cast<int64_t>(index) == defaultDDRArenaArgumentIndex &&
             type.isInteger(64)) &&
           !(static_cast<int64_t>(index) == transportStatusArgumentIndex &&
+            type.isInteger(64)) &&
+          !(static_cast<int64_t>(index) == profileRecordArgumentIndex &&
             type.isInteger(64)))
         return funcOp.emitError()
                << "unsupported_target_function: argument #" << index
@@ -185,14 +188,14 @@ findUniqueRootFunction(mlir::ModuleOp moduleOp, const DirectCallGraph &graph) {
       continue;
     if (root)
       return function.emitError()
-             << "unsupported_target_transport: Direct DTE status ABI "
-                "requires one unique entry function";
+             << "unsupported_target_transport: compiler-managed entry "
+                "arguments require one unique entry function";
     root = function;
   }
   if (!root)
     return moduleOp.emitError()
-           << "unsupported_target_transport: Direct DTE status ABI has no "
-              "entry function";
+           << "unsupported_target_transport: compiler-managed entry "
+              "arguments have no entry function";
   return root;
 }
 

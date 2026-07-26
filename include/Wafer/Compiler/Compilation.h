@@ -90,6 +90,30 @@ private:
   ExecutionConfig executionConfig;
 };
 
+/// Typed orchestration intent for one production compilation transaction.
+/// Profiling is a product request, not source-program semantics, and therefore
+/// remains outside CompilationRequest and the compiler IR.
+class CompilationOptions {
+public:
+  static CompilationOptions standard() {
+    return CompilationOptions(/*profileCompanion=*/false);
+  }
+
+  /// Requests a same-transaction production-winner/reserved-baseline profile
+  /// product. The initial single-card profile contract requires the complete
+  /// 16-rank domain.
+  static llvm::Expected<CompilationOptions>
+  profile(const ExecutionConfig &executionConfig);
+
+  bool shouldProduceProfileCompanion() const { return profileCompanion; }
+
+private:
+  explicit CompilationOptions(bool profileCompanion)
+      : profileCompanion(profileCompanion) {}
+
+  bool profileCompanion;
+};
+
 enum class ProgramResourceRole { UserInput, Parameter, Constant, Output };
 enum class TerminalCompletionKind { EntryReturnAfterLocalDrain };
 enum class TransportContract { None, DirectDTE };
@@ -208,6 +232,18 @@ mlir::FailureOr<ExecutableBundle> compileProgram(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
+/// Runs the production transaction with an explicit typed product request.
+/// When profiling is requested, the ordinary output remains the production
+/// winner package and a verified sibling `<output>.profile` companion is
+/// published only after both winner and reserved-baseline products have
+/// completed their compiler-owned gates.
+mlir::FailureOr<ExecutableBundle>
+compileProgram(CompilationRequest request,
+               llvm::StringRef outputProgramDirectory,
+               llvm::StringRef xlaSpmdPartitionerHelper,
+               const TargetToolchain &targetToolchain,
+               CompilationOptions options, llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler
 

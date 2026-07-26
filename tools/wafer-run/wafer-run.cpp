@@ -2,6 +2,8 @@
 
 #include "Wafer/Runtime/BoardRuntime.h"
 #include "Wafer/Runtime/PackageManifest.h"
+#include "Wafer/Runtime/ProfileCompanion.h"
+#include "WaferProfileCampaign.h"
 #include "WaferRunBoardIO.h"
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
 #include "Wafer/Runtime/TxBoardRuntime.h"
@@ -300,7 +302,9 @@ void printNoCardRankPlan(const wafer::runtime::RuntimeSessionPlan &plan) {
 
 int runNoCard(const Options &options,
               const wafer::runtime::VerifiedPackageManifest &package,
-              const wafer::runtime::PackageEntrypointRecord *selectedEntry) {
+              const wafer::runtime::PackageEntrypointRecord *selectedEntry,
+              const std::optional<wafer::runtime::VerifiedProfileCompanion>
+                  &profileCompanion) {
   const wafer::runtime::PackageManifest &manifest = package.getManifest();
   std::vector<wafer::runtime::RuntimeInvocationBinding> bindings;
   for (const wafer::runtime::PackageResourceRecord &resource :
@@ -312,8 +316,9 @@ int runNoCard(const Options &options,
                         resource.access, true});
   }
   wafer::runtime::RuntimeEnvironment environment{
-      manifest.targetProfile, manifest.targetIdentity, manifest.runtimeABI,
-      manifest.launchABI, manifest.moduleFormat, options.maxResourceBytes};
+      manifest.targetProfile, manifest.targetIdentity,
+      manifest.runtimeABI,    manifest.launchABI,
+      manifest.moduleFormat,  options.maxResourceBytes};
   if (options.directDTEStatusABI) {
     environment.supportsDirectDTE = true;
     environment.directDTEStatusABI = *options.directDTEStatusABI;
@@ -357,13 +362,23 @@ int runNoCard(const Options &options,
       printNoCardRankPlan(rank);
     llvm::outs() << "invocation_ranks: " << invocationPlan->rankCount << "\n";
   }
+  if (profileCompanion)
+    llvm::outs() << "profile_companion: ready schema="
+                 << profileCompanion->getSchemaVersion()
+                 << " ranks=" << profileCompanion->getRankCount()
+                 << " variants=" << profileCompanion->getVariants().size()
+                 << " captures=" << profileCompanion->getCaptures().size()
+                 << " target_call_sites=" << profileCompanion->getSiteCount()
+                 << "\n";
   llvm::outs() << "board_execution: false\n";
   return 0;
 }
 
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
 int runBoard(const Options &options,
-             const wafer::runtime::VerifiedPackageManifest &package) {
+             const wafer::runtime::VerifiedPackageManifest &package,
+             const std::optional<wafer::runtime::VerifiedProfileCompanion>
+                 &profileCompanion) {
   const wafer::runtime::PackageManifest &manifest = package.getManifest();
   wafer::runtime::BoardRuntimeInvocationRequest request;
   request.deviceId = options.deviceId;
@@ -404,10 +419,25 @@ int runBoard(const Options &options,
     llvm::errs().flush();
     std::_Exit(1);
   };
+  wafer::runtime::cli::BoardInvocationFilePlan completedPlan;
+  std::string profileRunDirectory;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
-      wafer::runtime::executeBoardInvocation(package, options.packageDirectory,
-                                             std::move(filePlan->request),
-                                             **driver);
+      [&]() -> llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> {
+    if (profileCompanion) {
+      llvm::Expected<wafer::runtime::cli::BoardProfileCampaignResult> campaign =
+          wafer::runtime::cli::runBoardProfileCampaign(
+              *profileCompanion, manifest, *filePlan, **driver);
+      if (!campaign)
+        return campaign.takeError();
+      completedPlan = std::move(campaign->finalWinnerPlan);
+      profileRunDirectory = std::move(campaign->runDirectory);
+      return std::move(campaign->finalWinnerResult);
+    }
+    completedPlan = std::move(*filePlan);
+    return wafer::runtime::executeBoardInvocation(
+        package, options.packageDirectory, std::move(completedPlan.request),
+        **driver);
+  }();
   if (!result) {
     llvm::Error error = result.takeError();
     bool poisoned = (*driver)->getContextState() ==
@@ -415,7 +445,7 @@ int runBoard(const Options &options,
     return terminateBoardProcess(std::move(error), poisoned);
   }
   if (llvm::Error error = wafer::runtime::cli::validateAndPublishBoardOutputs(
-          result->outputs, *filePlan))
+          result->outputs, completedPlan))
     return terminateBoardProcess(std::move(error), /*poisoned=*/false);
 
   llvm::outs() << "board_device: id=" << result->device.deviceId
@@ -447,11 +477,11 @@ int runBoard(const Options &options,
     llvm::outs() << "board_stage: "
                  << wafer::runtime::stringifyBoardRuntimeStage(stage) << "\n";
   for (const wafer::runtime::BoardRuntimeOutput &output : result->outputs) {
-    if (filePlan->expectedBytes.contains(output.resource.getValue()))
+    if (completedPlan.expectedBytes.contains(output.resource.getValue()))
       llvm::outs() << "output_compare: resource=" << output.resource.getValue()
                    << " bytes=" << output.bytes.size() << " exact=true\n";
-    auto capture = filePlan->outputPaths.find(output.resource.getValue());
-    if (capture != filePlan->outputPaths.end())
+    auto capture = completedPlan.outputPaths.find(output.resource.getValue());
+    if (capture != completedPlan.outputPaths.end())
       llvm::outs() << "output_capture: resource=" << output.resource.getValue()
                    << " bytes=" << output.bytes.size()
                    << " path=" << capture->second << "\n";
@@ -471,8 +501,7 @@ int runBoard(const Options &options,
       llvm::outs() << "launch_pattern: independent-grid1\n";
       llvm::outs() << "logical_tile_execution_basis: none\n";
     } else if (manifest.launchABI ==
-               wafer::TargetLaunchABIId::
-                   tx81KernelGridPointerTableV1()) {
+               wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1()) {
       llvm::outs() << "launch_pattern: kernel-grid-x16\n";
       llvm::outs() << "logical_tile_execution_basis: "
                       "scheduler-pid-x-and-exact-rank-slices\n";
@@ -489,6 +518,10 @@ int runBoard(const Options &options,
     llvm::outs() << "logical_tile_domain: 0..15\n";
     llvm::outs() << "physical_execution_claim: none\n";
   }
+  if (!profileRunDirectory.empty())
+    llvm::outs() << "profile_run: " << profileRunDirectory
+                 << "\nprofile_report: " << profileRunDirectory
+                 << "/index.html\n";
   llvm::outs() << "board_execution: true\n";
   llvm::outs().flush();
   llvm::errs().flush();
@@ -524,10 +557,16 @@ int main(int argc, char **argv) {
         llvm::errc::invalid_argument,
         "multi-rank board execution requires --all-ranks"));
 
-  if (options->noCard)
-    return runNoCard(*options, *package, selectedEntry);
+  llvm::Expected<std::optional<wafer::runtime::VerifiedProfileCompanion>>
+      profileCompanion = wafer::runtime::loadSiblingProfileCompanionIfPresent(
+          options->packageDirectory);
+  if (!profileCompanion)
+    return fail(profileCompanion.takeError());
+  if (options->noCard) {
+    return runNoCard(*options, *package, selectedEntry, *profileCompanion);
+  }
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
-  return runBoard(*options, *package);
+  return runBoard(*options, *package, *profileCompanion);
 #else
   return fail(llvm::createStringError(
       llvm::errc::not_supported,

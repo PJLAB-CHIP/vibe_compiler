@@ -1,0 +1,740 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v1.json",
+  "title": "Wafer 16-tile profile evidence",
+  "description": "Version 1 evidence consumed by wafer_profile_report.py. Launch-to-completion host time is the performance basis; rank-local cycles explain each tile, and cross-tile order is published only when the separate clock mapping is qualified.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "run_id",
+    "identity",
+    "topology",
+    "measurement",
+    "output_validation",
+    "sites",
+    "validity",
+    "experiments"
+  ],
+  "properties": {
+    "schema": {
+      "const": "wafer.profile.evidence"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "run_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "identity": {
+      "$ref": "#/$defs/sharedIdentity"
+    },
+    "topology": {
+      "type": "array",
+      "minItems": 16,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tile", "x", "y"],
+        "properties": {
+          "tile": {
+            "$ref": "#/$defs/tile"
+          },
+          "x": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "y": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocks", "samples"],
+      "properties": {
+        "blocks": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["block", "held_out", "order"],
+            "properties": {
+              "block": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "held_out": {
+                "type": "boolean"
+              },
+              "order": {
+                "enum": ["ABBA", "BAAB"]
+              }
+            }
+          }
+        },
+        "samples": {
+          "type": "array",
+          "minItems": 20,
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/measurementSample"
+          }
+        }
+      }
+    },
+    "output_validation": {
+      "$ref": "#/$defs/outputValidation"
+    },
+    "sites": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/site"
+      }
+    },
+    "validity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "environment",
+        "package_companion",
+        "measurement_basis"
+      ],
+      "properties": {
+        "environment": {
+          "type": "boolean"
+        },
+        "package_companion": {
+          "type": "boolean"
+        },
+        "measurement_basis": {
+          "type": "boolean"
+        }
+      }
+    },
+    "experiments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseline", "winner"],
+      "properties": {
+        "baseline": {
+          "$ref": "#/$defs/experiment"
+        },
+        "winner": {
+          "$ref": "#/$defs/experiment"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tile": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 15
+    },
+    "u64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "u32": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "engine": {
+      "enum": ["CT", "NE", "RDMA", "WDMA", "TDMA"]
+    },
+    "sharedIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "production_manifest_sha256",
+        "profile_companion_schema_version",
+        "target_profile",
+        "launch_abi",
+        "execution_ranks",
+        "baseline_same_as_winner",
+        "site_correlation_basis"
+      ],
+      "properties": {
+        "production_manifest_sha256": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "profile_companion_schema_version": {
+          "const": 1
+        },
+        "target_profile": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "launch_abi": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "execution_ranks": {
+          "const": 16
+        },
+        "baseline_same_as_winner": {
+          "type": "boolean"
+        },
+        "site_correlation_basis": {
+          "const": "heuristic-target-call-signature-occurrence-v1"
+        }
+      }
+    },
+    "outputValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "resources"],
+      "properties": {
+        "mode": {
+          "enum": [
+            "external-exact",
+            "mixed",
+            "same-session-production-winner"
+          ]
+        },
+        "resources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/outputValidationResource"
+          }
+        }
+      }
+    },
+    "outputValidationResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_rank",
+        "role",
+        "role_index",
+        "bytes",
+        "reference_sha256",
+        "external_expected_exact",
+        "production_winner_repeat_exact",
+        "candidate_equivalent_exact"
+      ],
+      "properties": {
+        "logical_rank": {
+          "type": "integer",
+          "minimum": -1
+        },
+        "role": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "role_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "reference_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "external_expected_exact": {
+          "type": ["boolean", "null"]
+        },
+        "production_winner_repeat_exact": {
+          "type": "boolean"
+        },
+        "candidate_equivalent_exact": {
+          "type": "boolean"
+        }
+      }
+    },
+    "artifactIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "target_profile",
+        "launch_abi",
+        "execution_ranks"
+      ],
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "target_profile": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "launch_abi": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "execution_ranks": {
+          "const": 16
+        }
+      }
+    },
+    "site": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate",
+        "tile",
+        "site_id",
+        "correlation_key",
+        "engine",
+        "target_call_ordinal",
+        "target_call_symbol"
+      ],
+      "properties": {
+        "candidate": {
+          "enum": ["baseline", "winner"]
+        },
+        "tile": {
+          "$ref": "#/$defs/tile"
+        },
+        "site_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "correlation_key": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "engine": {
+          "$ref": "#/$defs/engine"
+        },
+        "target_call_ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "target_call_symbol": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "position": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "clockMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tile",
+        "slope",
+        "offset",
+        "uncertainty",
+        "round_trips",
+        "valid",
+        "monotonic"
+      ],
+      "properties": {
+        "tile": {
+          "$ref": "#/$defs/tile"
+        },
+        "slope": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "offset": {
+          "type": "number"
+        },
+        "uncertainty": {
+          "type": "number",
+          "minimum": 0
+        },
+        "round_trips": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "valid": {
+          "type": "boolean"
+        },
+        "monotonic": {
+          "type": "boolean"
+        }
+      }
+    },
+    "entryTiming": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tile", "entry_begin", "entry_end"],
+      "properties": {
+        "tile": {
+          "$ref": "#/$defs/tile"
+        },
+        "entry_begin": {
+          "$ref": "#/$defs/u64"
+        },
+        "entry_end": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    "measurementSample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sample_id",
+        "candidate",
+        "block",
+        "position",
+        "host_elapsed_ns",
+        "completion_observation_resolution_ns"
+      ],
+      "properties": {
+        "sample_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "candidate": {
+          "enum": ["baseline", "winner"]
+        },
+        "block": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "position": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "host_elapsed_ns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "completion_observation_resolution_ns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "site_id",
+        "sub_index",
+        "engine",
+        "begin_cycle",
+        "return_cycle",
+        "raw_result",
+        "valid"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "site_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sub_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "engine": {
+          "$ref": "#/$defs/engine"
+        },
+        "begin_cycle": {
+          "$ref": "#/$defs/u64"
+        },
+        "return_cycle": {
+          "$ref": "#/$defs/u64"
+        },
+        "raw_result": {
+          "$ref": "#/$defs/u64"
+        },
+        "valid": {
+          "type": "boolean"
+        }
+      }
+    },
+    "traceTile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tile",
+        "entry_begin_cycle",
+        "entry_end_cycle",
+        "capacity",
+        "count",
+        "preflight_count",
+        "next_sequence",
+        "dropped_event_count",
+        "record_flags",
+        "trace_state",
+        "overflow",
+        "events"
+      ],
+      "properties": {
+        "tile": {
+          "$ref": "#/$defs/tile"
+        },
+        "entry_begin_cycle": {
+          "$ref": "#/$defs/u64"
+        },
+        "entry_end_cycle": {
+          "$ref": "#/$defs/u64"
+        },
+        "capacity": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "preflight_count": {
+          "$ref": "#/$defs/u64"
+        },
+        "next_sequence": {
+          "$ref": "#/$defs/u64"
+        },
+        "dropped_event_count": {
+          "$ref": "#/$defs/u32"
+        },
+        "record_flags": {
+          "$ref": "#/$defs/u32"
+        },
+        "trace_state": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "overflow": {
+          "type": "boolean"
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/event"
+          }
+        }
+      }
+    },
+    "counterSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "stable", "enabled"],
+      "properties": {
+        "start": {
+          "$ref": "#/$defs/u64"
+        },
+        "end": {
+          "$ref": "#/$defs/u64"
+        },
+        "recovery": {
+          "$ref": "#/$defs/u64"
+        },
+        "stable": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "counterSnapshot32": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "stable", "enabled"],
+      "properties": {
+        "start": {
+          "$ref": "#/$defs/u32"
+        },
+        "end": {
+          "$ref": "#/$defs/u32"
+        },
+        "recovery": {
+          "$ref": "#/$defs/u32"
+        },
+        "stable": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "aggregateCounters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "statistics_window",
+        "fu",
+        "ct",
+        "ne",
+        "rdma",
+        "wdma",
+        "tdma",
+        "scalar"
+      ],
+      "properties": {
+        "statistics_window": {
+          "$ref": "#/$defs/counterSnapshot"
+        },
+        "fu": {
+          "$ref": "#/$defs/counterSnapshot"
+        },
+        "ct": {
+          "$ref": "#/$defs/counterSnapshot"
+        },
+        "ne": {
+          "$ref": "#/$defs/counterSnapshot"
+        },
+        "rdma": {
+          "$ref": "#/$defs/counterSnapshot"
+        },
+        "wdma": {
+          "$ref": "#/$defs/counterSnapshot"
+        },
+        "tdma": {
+          "$ref": "#/$defs/counterSnapshot"
+        },
+        "scalar": {
+          "$ref": "#/$defs/counterSnapshot"
+        }
+      }
+    },
+    "workerEngineCounters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine", "instructions", "blocking"],
+      "properties": {
+        "engine": {
+          "$ref": "#/$defs/engine"
+        },
+        "instructions": {
+          "$ref": "#/$defs/counterSnapshot32"
+        },
+        "blocking": {
+          "$ref": "#/$defs/counterSnapshot32"
+        }
+      }
+    },
+    "workerCounters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worker", "engines"],
+      "properties": {
+        "worker": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "engines": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "$ref": "#/$defs/workerEngineCounters"
+          }
+        }
+      }
+    },
+    "pmuTile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tile", "aggregates", "workers"],
+      "properties": {
+        "tile": {
+          "$ref": "#/$defs/tile"
+        },
+        "aggregates": {
+          "$ref": "#/$defs/aggregateCounters"
+        },
+        "workers": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/workerCounters"
+          }
+        }
+      }
+    },
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact",
+        "clock",
+        "summary",
+        "trace",
+        "pmu"
+      ],
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/artifactIdentity"
+        },
+        "clock": {
+          "type": "array",
+          "minItems": 16,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/clockMapping"
+          }
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tiles"],
+          "properties": {
+            "tiles": {
+              "type": "array",
+              "minItems": 16,
+              "maxItems": 16,
+              "items": {
+                "$ref": "#/$defs/entryTiming"
+              }
+            }
+          }
+        },
+        "trace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["complete", "tiles"],
+          "properties": {
+            "complete": {
+              "type": "boolean"
+            },
+            "tiles": {
+              "type": "array",
+              "minItems": 16,
+              "maxItems": 16,
+              "items": {
+                "$ref": "#/$defs/traceTile"
+              }
+            }
+          }
+        },
+        "pmu": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tiles"],
+          "properties": {
+            "tiles": {
+              "type": "array",
+              "minItems": 16,
+              "maxItems": 16,
+              "items": {
+                "$ref": "#/$defs/pmuTile"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

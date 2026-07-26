@@ -130,6 +130,88 @@ TEST_F(WaferRunBoardIOTest, CaptureOnlyPublishesExactRawBytes) {
   EXPECT_EQ(readBytes(outputPath), actual);
 }
 
+TEST_F(WaferRunBoardIOTest,
+       SemanticRemapReusesPreparedBytesAcrossDifferentResourceIds) {
+  PackageResourceRecord sourceInput =
+      resource(10, PackageResourceRole::UserInput, PackageAccessMode::ReadOnly);
+  sourceInput.name = "input";
+  PackageResourceRecord sourceOutput =
+      resource(11, PackageResourceRole::Output, PackageAccessMode::WriteOnly);
+  sourceOutput.name = "output";
+  PackageManifest source = manifest({sourceInput, sourceOutput});
+
+  PackageResourceRecord internal = resource(20, PackageResourceRole::Workspace,
+                                            PackageAccessMode::ReadWrite);
+  internal.hostVisible = false;
+  internal.name = "internal";
+  PackageResourceRecord targetInput = sourceInput;
+  targetInput.id = ResourceId(21);
+  targetInput.name = "renamed_input";
+  PackageResourceRecord targetOutput = sourceOutput;
+  targetOutput.id = ResourceId(22);
+  targetOutput.name = "renamed_output";
+  PackageManifest target = manifest({internal, targetInput, targetOutput});
+
+  const std::vector<uint8_t> input = {1, 2, 3, 4};
+  const std::vector<uint8_t> expected = {9, 8, 7, 6};
+  const std::string inputPath = path("input.raw");
+  const std::string expectedPath = path("expected.raw");
+  const std::string outputPath = path("output.raw");
+  writeBytes(inputPath, input);
+  writeBytes(expectedPath, expected);
+  llvm::Expected<BoardInvocationFilePlan> sourcePlan = prepare(
+      source, {{10, inputPath}}, {{11, expectedPath}}, {{11, outputPath}});
+  ASSERT_TRUE(static_cast<bool>(sourcePlan))
+      << llvm::toString(sourcePlan.takeError());
+
+  llvm::Expected<BoardInvocationFilePlan> targetPlan =
+      wafer::runtime::cli::remapBoardInvocationFilePlan(*sourcePlan, source,
+                                                        target);
+  ASSERT_TRUE(static_cast<bool>(targetPlan))
+      << llvm::toString(targetPlan.takeError());
+  EXPECT_EQ(binding(*targetPlan, 21).bytes, input);
+  EXPECT_EQ(binding(*targetPlan, 22).bytes,
+            (std::vector<uint8_t>{0xf6, 0xf7, 0xf8, 0xf9}));
+  EXPECT_TRUE(targetPlan->expectedBytes.contains(22));
+  EXPECT_TRUE(targetPlan->outputPaths.contains(22));
+  EXPECT_TRUE(targetPlan->writableResourceBytes.contains(22));
+  EXPECT_FALSE(targetPlan->expectedBytes.contains(11));
+  EXPECT_FALSE(targetPlan->outputPaths.contains(11));
+  EXPECT_FALSE(targetPlan->writableResourceBytes.contains(11));
+
+  ASSERT_FALSE(wafer::runtime::cli::validateBoardOutputs(
+      {{ResourceId(22), expected}}, *targetPlan));
+  EXPECT_FALSE(llvm::sys::fs::exists(outputPath));
+  ASSERT_FALSE(wafer::runtime::cli::validateAndPublishBoardOutputs(
+      {{ResourceId(22), expected}}, *targetPlan));
+  EXPECT_EQ(readBytes(outputPath), expected);
+}
+
+TEST_F(WaferRunBoardIOTest, SemanticRemapRejectsContractDrift) {
+  PackageResourceRecord sourceInput =
+      resource(10, PackageResourceRole::UserInput, PackageAccessMode::ReadOnly);
+  sourceInput.name = "input";
+  PackageManifest source = manifest({sourceInput});
+  PackageResourceRecord targetInput = sourceInput;
+  targetInput.id = ResourceId(20);
+  targetInput.alignment = 2;
+  PackageManifest target = manifest({targetInput});
+
+  const std::string inputPath = path("input.raw");
+  writeBytes(inputPath, {1, 2, 3, 4});
+  llvm::Expected<BoardInvocationFilePlan> sourcePlan =
+      prepare(source, {{10, inputPath}}, {}, {});
+  ASSERT_TRUE(static_cast<bool>(sourcePlan))
+      << llvm::toString(sourcePlan.takeError());
+  llvm::Expected<BoardInvocationFilePlan> targetPlan =
+      wafer::runtime::cli::remapBoardInvocationFilePlan(*sourcePlan, source,
+                                                        target);
+  ASSERT_FALSE(static_cast<bool>(targetPlan));
+  EXPECT_NE(llvm::toString(targetPlan.takeError())
+                .find("host-visible resource contract differs"),
+            std::string::npos);
+}
+
 TEST_F(WaferRunBoardIOTest, DuplicateOutputResourceIsRejected) {
   PackageManifest package = manifest(
       {resource(1, PackageResourceRole::Output, PackageAccessMode::WriteOnly)});
@@ -158,8 +240,7 @@ TEST_F(WaferRunBoardIOTest, LexicalOutputAliasesAreRejected) {
       {resource(1, PackageResourceRole::Output, PackageAccessMode::WriteOnly),
        resource(2, PackageResourceRole::Output, PackageAccessMode::WriteOnly)});
   const std::string outputPath = path("output.raw");
-  const std::string aliasedOutputPath =
-      root.str().str() + "/./output.raw";
+  const std::string aliasedOutputPath = root.str().str() + "/./output.raw";
   llvm::Expected<BoardInvocationFilePlan> plan =
       prepare(package, {}, {}, {{1, outputPath}, {2, aliasedOutputPath}});
   ASSERT_FALSE(static_cast<bool>(plan));
@@ -181,8 +262,8 @@ TEST_F(WaferRunBoardIOTest, ParentSymlinkOutputAliasesAreRejected) {
   llvm::SmallString<256> aliasedOutput(aliasParent);
   llvm::sys::path::append(aliasedOutput, "output.raw");
   llvm::Expected<BoardInvocationFilePlan> plan =
-      prepare(package, {}, {}, {{1, realOutput.str().str()},
-                                {2, aliasedOutput.str().str()}});
+      prepare(package, {}, {},
+              {{1, realOutput.str().str()}, {2, aliasedOutput.str().str()}});
   ASSERT_FALSE(static_cast<bool>(plan));
   EXPECT_NE(llvm::toString(plan.takeError()).find("use the same raw file path"),
             std::string::npos);

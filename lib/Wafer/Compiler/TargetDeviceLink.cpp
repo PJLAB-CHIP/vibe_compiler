@@ -236,11 +236,15 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeDeviceEntryABI(
 llvm::Error writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
                         llvm::ArrayRef<KernelABISlot> slots,
                         TargetLaunchABIId targetLaunchABI, int64_t logicalRank,
-                        int64_t rankCount, llvm::StringRef path) {
+                        int64_t rankCount, llvm::StringRef path,
+                        ProfileCaptureKind profileCapture) {
   if (targetLaunchABI == TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "cluster target modules must use complete-rank aggregation");
+  if (llvm::Error error =
+          verifyProfileCaptureKernelABISlots(slots, profileCapture))
+    return std::move(error);
   llvm::Expected<std::unique_ptr<llvm::Module>> deviceModule =
       materializeDeviceEntryABI(module, entrySymbol, slots, targetLaunchABI,
                                 logicalRank, rankCount);
@@ -266,7 +270,8 @@ llvm::Error writeTargetLLVMIR(const llvm::Module &module,
 llvm::Error runDeviceLink(const TargetToolchain &toolchain,
                           llvm::StringRef llvmIR, llvm::StringRef module,
                           llvm::StringRef object, llvm::StringRef crtObject,
-                          TargetLaunchABIId targetLaunchABI) {
+                          TargetLaunchABIId targetLaunchABI,
+                          ProfileCaptureKind profileCapture) {
   std::string python = toolchain.getPythonExecutable().str();
   std::string script = toolchain.getDeviceLinkerScript().str();
   std::string clangXX = toolchain.getLLVMClangXX().str();
@@ -280,7 +285,7 @@ llvm::Error runDeviceLink(const TargetToolchain &toolchain,
   else if (targetLaunchABI ==
            TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
     loaderABI = "tx8-kcore-loader-cluster-v1";
-  llvm::SmallVector<llvm::StringRef, 15> arguments = {python,
+  llvm::SmallVector<llvm::StringRef, 18> arguments = {python,
                                                       script,
                                                       "--llvm-ir",
                                                       llvmIRStorage,
@@ -294,6 +299,12 @@ llvm::Error runDeviceLink(const TargetToolchain &toolchain,
                                                       crtObjectStorage,
                                                       "--loader-abi",
                                                       loaderABI};
+  std::string captureStorage;
+  if (profileCapture != ProfileCaptureKind::None) {
+    captureStorage = stringifyProfileCaptureKind(profileCapture).str();
+    arguments.push_back("--profile-capture");
+    arguments.push_back(captureStorage);
+  }
   int exitCode = llvm::sys::ExecuteAndWait(python, arguments);
   if (exitCode == 0)
     return llvm::Error::success();

@@ -26,7 +26,7 @@ mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
-    WholeVariantSelectionMode selectionMode,
+    WholeVariantSelectionMode selectionMode, CompilationOptions options,
     std::optional<int64_t> failAfterLogicalRank,
     std::optional<int64_t> failAfterTargetLogicalRank,
     std::optional<int64_t> failAfterPackageLogicalRank,
@@ -38,6 +38,7 @@ mlir::LogicalResult runCompilationTransaction(
   (void)xlaSpmdPartitionerHelper;
   (void)targetToolchain;
   (void)selectionMode;
+  (void)options;
   (void)failAfterLogicalRank;
   (void)failAfterTargetLogicalRank;
   (void)failAfterPackageLogicalRank;
@@ -53,6 +54,17 @@ mlir::LogicalResult runCompilationTransaction(
   }
   if (xlaSpmdPartitionerHelper.empty()) {
     reject(diagnostics, "XLA SPMD partitioner helper path must not be empty");
+    return mlir::failure();
+  }
+  if (options.shouldProduceProfileCompanion() &&
+      selectionMode != WholeVariantSelectionMode::Production) {
+    reject(diagnostics,
+           "profile companion requires production whole-variant selection");
+    return mlir::failure();
+  }
+  if (options.shouldProduceProfileCompanion() &&
+      request.getExecutionConfig().getRankCount() != 16) {
+    reject(diagnostics, "profile compilation requires execution-ranks=16");
     return mlir::failure();
   }
 
@@ -127,6 +139,15 @@ mlir::LogicalResult runCompilationTransaction(
     reject(diagnostics,
            "refusing to replace existing output program directory: '" +
                canonicalOutput.str().str() + "'");
+    return mlir::failure();
+  }
+  llvm::SmallString<256> canonicalProfileOutput(canonicalOutput);
+  canonicalProfileOutput += ".profile";
+  if (options.shouldProduceProfileCompanion() &&
+      pathEntryExists(canonicalProfileOutput)) {
+    reject(diagnostics,
+           "refusing to replace existing profile companion directory: '" +
+               canonicalProfileOutput.str().str() + "'");
     return mlir::failure();
   }
 
@@ -284,17 +305,40 @@ mlir::LogicalResult runCompilationTransaction(
 
   std::optional<ExecutableBundle> executableBundle;
   std::optional<TargetLLVMModuleBundle> targetLLVMModules;
-  if (mlir::failed(stageTargetPackage(
-          tensorProgram, transactionRoot, request.getExecutionConfig(),
-          targetToolchain, diagnostics, selectionMode, failAfterLogicalRank,
-          failAfterTargetLogicalRank, failAfterPackageLogicalRank,
-          executableBundle, targetLLVMModules)))
+  if (options.shouldProduceProfileCompanion()) {
+    if (mlir::failed(stageProfileTargetPackages(
+            tensorProgram, transactionRoot, outputName,
+            request.getExecutionConfig(), targetToolchain, diagnostics,
+            failAfterLogicalRank, failAfterTargetLogicalRank,
+            failAfterPackageLogicalRank, executableBundle, targetLLVMModules)))
+      return mlir::failure();
+  } else if (mlir::failed(stageTargetPackage(
+                 tensorProgram, transactionRoot, request.getExecutionConfig(),
+                 targetToolchain, diagnostics, selectionMode,
+                 failAfterLogicalRank, failAfterTargetLogicalRank,
+                 failAfterPackageLogicalRank, executableBundle,
+                 targetLLVMModules))) {
     return mlir::failure();
+  }
 
   llvm::SmallString<256> stagedPackage(transactionRoot);
   llvm::sys::path::append(stagedPackage, "package");
   if (publishDirectoryNoReplace(stagedPackage, canonicalOutput, diagnostics))
     return mlir::failure();
+  if (options.shouldProduceProfileCompanion()) {
+    llvm::SmallString<256> stagedCompanion(transactionRoot);
+    llvm::sys::path::append(stagedCompanion, "profile-companion");
+    if (publishDirectoryNoReplace(stagedCompanion, canonicalProfileOutput,
+                                  diagnostics)) {
+      if (std::error_code rollbackError =
+              llvm::sys::fs::rename(canonicalOutput, stagedPackage))
+        reject(diagnostics,
+               "failed to roll back package after profile companion "
+               "publication failure: " +
+                   rollbackError.message());
+      return mlir::failure();
+    }
+  }
   if (retainedExecutableBundle)
     retainedExecutableBundle->emplace(std::move(*executableBundle));
   if (retainedTargetLLVMModuleBundle)

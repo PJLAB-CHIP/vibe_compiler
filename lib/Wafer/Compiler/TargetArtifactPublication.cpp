@@ -179,10 +179,10 @@ bool publishTargetArtifactDirectoryNoReplace(llvm::StringRef source,
 namespace wafer::compiler {
 
 llvm::Expected<TargetArtifactBundle>
-compileTargetLLVMModuleBundleToTargetArtifacts(
+detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
     const TargetLLVMModuleBundle &targetLLVMModules,
     llvm::StringRef outputDirectory, const TargetToolchain &toolchain,
-    llvm::raw_ostream &diagnostics) {
+    llvm::raw_ostream &diagnostics, detail::ProfileCaptureKind profileCapture) {
   if (targetLLVMModules.getModules().size() !=
       static_cast<size_t>(
           targetLLVMModules.getExecutionConfig().getRankCount()))
@@ -246,6 +246,19 @@ compileTargetLLVMModuleBundleToTargetArtifacts(
     if (targetLLVMModule.getLogicalRank() != static_cast<int64_t>(expectedRank))
       return detail::fail(diagnostics,
                           "target LLVM bundle rank domain is not canonical");
+    else if (llvm::Error error = detail::verifyProfileCaptureKernelABISlots(
+                 targetLLVMModule.getKernelABISlots(), profileCapture))
+      return detail::fail(diagnostics,
+                          "target LLVM profiler slot verification failed: " +
+                              llvm::toString(std::move(error)));
+    else if (llvm::Error error =
+                 detail::verifyProfileTargetModuleInstrumentation(
+                     targetLLVMModule.getModule(),
+                     targetLLVMModule.getEntrySymbol(), profileCapture))
+      return detail::fail(
+          diagnostics,
+          "target LLVM profiler instrumentation verification failed: " +
+              llvm::toString(std::move(error)));
 
   const ExecutionConfig &config = targetLLVMModules.getExecutionConfig();
   const TargetLaunchABIId launchABI = config.getTargetLaunchABIId();
@@ -283,12 +296,12 @@ compileTargetLLVMModuleBundleToTargetArtifacts(
             ? detail::writeTargetLLVMIR(source, llvmIRPath)
             : detail::writeLLVMIR(source, entrySymbol, slots, launchABI,
                                   logicalRank, config.getRankCount(),
-                                  llvmIRPath);
+                                  llvmIRPath, profileCapture);
     if (writeError)
       return std::move(writeError);
     if (llvm::Error error =
             detail::runDeviceLink(toolchain, llvmIRPath, modulePath, objectPath,
-                                  crtObjectPath, launchABI))
+                                  crtObjectPath, launchABI, profileCapture))
       return std::move(error);
     llvm::Expected<detail::TargetModuleReadback> readback =
         detail::verifyTargetModule(modulePath, exports, targetProfile,
@@ -406,6 +419,16 @@ compileTargetLLVMModuleBundleToTargetArtifacts(
   return TargetArtifactBundleBuilder::makeBundle(
       outputDirectory, targetLLVMModules.getExecutionConfig(),
       std::move(modules), std::move(rankInterfaces));
+}
+
+llvm::Expected<TargetArtifactBundle>
+compileTargetLLVMModuleBundleToTargetArtifacts(
+    const TargetLLVMModuleBundle &targetLLVMModules,
+    llvm::StringRef outputDirectory, const TargetToolchain &toolchain,
+    llvm::raw_ostream &diagnostics) {
+  return detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
+      targetLLVMModules, outputDirectory, toolchain, diagnostics,
+      detail::ProfileCaptureKind::None);
 }
 
 namespace detail {

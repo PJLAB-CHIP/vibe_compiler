@@ -423,6 +423,57 @@ TEST_F(WholeVariantCoordinatorTest,
 }
 
 TEST_F(WholeVariantCoordinatorTest,
+       ProfileSelectionRetainsAcceptedBaselineBesideProductionWinner) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(
+      candidate("    wafer.instr.local_fence", 1, 100, 5, true));
+  frontiers[0].push_back(candidate("", 1, 0, 0));
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto selected = wafer::compiler::detail::selectAcceptedProductionAndBaseline(
+      frontiers, program, *config, diagnostics);
+  ASSERT_TRUE(mlir::succeeded(selected)) << diagnosticText;
+  EXPECT_FALSE(selected->productionIsReservedBaseline);
+  ASSERT_TRUE(selected->reservedBaseline.has_value());
+  EXPECT_EQ(selected->production.selectedStableOrdinals,
+            std::vector<int64_t>({0}));
+  EXPECT_EQ(selected->reservedBaseline->selectedStableOrdinals,
+            std::vector<int64_t>({5}));
+  EXPECT_FALSE(selected->production.selectedReservedBaselines.front());
+  EXPECT_TRUE(selected->reservedBaseline->selectedReservedBaselines.front());
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       ProfileSelectionAliasesRolesWhenBaselineIsTheProductionWinner) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(candidate("", 1, 0, 5, true));
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto selected = wafer::compiler::detail::selectAcceptedProductionAndBaseline(
+      frontiers, program, *config, diagnostics);
+  ASSERT_TRUE(mlir::succeeded(selected)) << diagnosticText;
+  EXPECT_TRUE(selected->productionIsReservedBaseline);
+  EXPECT_FALSE(selected->reservedBaseline.has_value());
+  EXPECT_EQ(selected->production.selectedStableOrdinals,
+            std::vector<int64_t>({5}));
+  EXPECT_TRUE(selected->production.selectedReservedBaselines.front());
+}
+
+TEST_F(WholeVariantCoordinatorTest,
        ReservedBaselineModeBypassesThePreferredProductionWinner) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
@@ -551,13 +602,13 @@ TEST_F(WholeVariantCoordinatorTest,
         /*reservedBaseline=*/true));
   expectRejected(missing, "two accepted ranks omit the requested phase");
 
-  Alternative mixed = {Mode::CharacterizeAllGatherDirect,
-                       "all_gather_direct", "all_gather_ring"};
+  Alternative mixed = {Mode::CharacterizeAllGatherDirect, "all_gather_direct",
+                       "all_gather_ring"};
   std::vector<wafer::compiler::detail::RankVariantFrontier> mixedFrontiers(16);
   for (int64_t rank = 0; rank < 16; ++rank)
-    mixedFrontiers[rank].push_back(candidate(
-        bodyFor(rank, mixed, 201), 16, 0, 0,
-        /*reservedBaseline=*/true));
+    mixedFrontiers[rank].push_back(candidate(bodyFor(rank, mixed, 201), 16, 0,
+                                             0,
+                                             /*reservedBaseline=*/true));
   expectRejected(mixedFrontiers,
                  "every accepted rank mixes direct and ring phases");
 
@@ -569,9 +620,9 @@ TEST_F(WholeVariantCoordinatorTest,
     std::vector<wafer::compiler::detail::RankVariantFrontier>
         unrelatedFrontiers(16);
     for (int64_t rank = 0; rank < 16; ++rank)
-      unrelatedFrontiers[rank].push_back(candidate(
-          bodyFor(rank, unrelated, 202 + static_cast<int64_t>(index)), 16, 0,
-          0, /*reservedBaseline=*/true));
+      unrelatedFrontiers[rank].push_back(
+          candidate(bodyFor(rank, unrelated, 202 + static_cast<int64_t>(index)),
+                    16, 0, 0, /*reservedBaseline=*/true));
     expectRejected(unrelatedFrontiers,
                    "every accepted rank mixes unrelated collective phases");
   }

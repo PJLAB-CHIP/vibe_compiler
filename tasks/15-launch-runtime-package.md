@@ -498,6 +498,45 @@ alignment、mutability、host visibility和alias限制。`RuntimeInvocationPlan`
 records；它是一次invocation的纯计划，不是可由调用方分别执行再拼接的per-entry session vector。board入口只公开完整package
 invocation；rank-count=1兼容入口也委托同一实现。
 
+### 8.3 Profile Companion And Automatic Campaign
+
+profile companion是普通package之外、由同一compiler transaction原子形成的versioned diagnostic artifact。它不升级或复制
+schema-v5 manifest，不改变普通package成员集合，也不是让runtime从opaque sidecar恢复program语义。activation record必须
+以普通production manifest的SHA-256绑定身份，并逐项精确绑定`plan.json`、`variants.json`和`site-map.json`的SHA-256；
+`activation.json`在其它companion成员完整形成后最后写入。missing、partial、stale、metadata key不精确或任一digest mismatch
+均在任何board effect前拒绝。companion包含baseline/winner两个variant的未插桩execution binding，以及每个variant各自的
+summary/count/trace三个内部capture binding，共六个逻辑capture binding。两个variant的最终artifact不同时对应六个物理
+capture package；artifact alias时baseline的三个binding必须精确复用winner的三个已验证物理package及digest，不能复制
+同一artifact，且分析必须保持inconclusive。所有capture binding都不是public launch mode。
+
+用户仍以原`wafer-run`调用提供普通package以及既有ResourceId resource/expected/output binding。runner在发现
+exact-match companion后自动执行一个固定protocol，不增加profile mode、采样参数或新输入：
+
+1. 在一个固定、已完成environment和软硬件identity资格检查的session内，复用同一input bytes。调用方已有external expected
+   时每次都做semantic correctness；缺少external expected的writable resource由首个production-winner warm-up按
+   `(logical_rank, role, role_index)`和exact contract建立同session reference，后续winner/baseline/capture全部逐字节比较。
+   这只证明repeatability/equivalence，absolute correctness明确标为unknown。任一writable output、transport status、
+   profile-record guard、lifecycle或协议异常立即停止，不retry/reset/power；
+2. 对未插桩baseline/winner execution package各自warm-up，随后以交替ABBA/BAAB运行五个四launch block，共20个primary
+   sample，前四个用于分析、第五个held out。每个sample的host steady-clock区间严格从submit到all-rank trusted completion，
+   且只有这些primary launch启用高分辨率completion observation；`max observed poll gap / sample duration`必须逐sample
+   不超过0.25%；
+3. primary完成后另行串行执行每个candidate的summary、count和trace。summary只提供entry-local cycle与单份aggregate PMU；
+   count先给出preflight总数，trace保留`next_sequence`、`dropped_event_count`、raw flags和terminal state。all-and-only
+   16个rank的guard、capacity、overflow、sequence、rank-local site/sub-index、engine与count/trace exact match均须验证；
+   trace storage使用DDR，不占用或改变被测SPM计划；
+4. summary/count/trace是diagnostic launch，其耗时、PMU/cache扰动和entry span不进入primary speed verdict。当前runtime可把
+   affine clock mapping显式发布为invalid/unavailable；此时仍保留全部16个tile-local timeline，但禁止cross-tile order、
+   global overlap或cluster critical-path claim。带uncertainty的qualified mapping只作为未来可选增强；
+5. correctness、environment、identity、measurement basis、clock、counter、summary和trace分别保留validity。raw evidence、
+   analysis JSON和离线HTML先写入run临时目录，完整后原子发布；runner从自身executable-relative installed resources定位report
+   generator，失败时不得留下valid run或改变普通package。
+
+companion内部可以包含baseline/winner的summary/count/trace实现，但它们不是public package、用户选项或长期runtime launch ABI。
+site id按rank解释；跨candidate的`heuristic-target-call-signature-occurrence-v1`只支持关联展示，不证明stable provenance
+或causality。report中的timeline只显示五类实际`TsmExecute` submit调用；begin/return是Kcore submit API interval，
+不是engine execution。fence/wait/ready-order不作为事件，Direct DTE也不进入五类TSM event count。
+
 ## 9. No-Card And Board Evidence
 
 no-card允许证明：

@@ -3,7 +3,16 @@
 # RUN:   --output %t.kernel.so \
 # RUN:   --object-output %t.kernel.o \
 # RUN:   --llvm-clangxx /opt/llvm/bin/clang++ \
-# RUN:   --print-commands | FileCheck %s --implicit-check-not=shim-compile --implicit-check-not=capture-shim --implicit-check-not=third_party/wafer_crt/lib --implicit-check-not=-lvr
+# RUN:   --print-commands | FileCheck %s --implicit-check-not=shim-compile --implicit-check-not=capture-shim --implicit-check-not=third_party/wafer_crt/lib --implicit-check-not=-lvr --implicit-check-not=WAFER_TX81_PROFILE
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/minimal-target-kernel.ll --output %t.summary.so \
+# RUN:   --profile-capture summary --print-commands | FileCheck %s --check-prefix=SUMMARY-CAPTURE
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/minimal-target-kernel.ll --output %t.count.so \
+# RUN:   --profile-capture count --print-commands | FileCheck %s --check-prefix=COUNT-CAPTURE
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/minimal-target-kernel.ll --output %t.trace.so \
+# RUN:   --profile-capture trace --print-commands | FileCheck %s --check-prefix=TRACE-CAPTURE
 
 # RUN: not %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/missing.ll \
@@ -39,6 +48,15 @@
 # RUN:   --object-output %t.success.o \
 # RUN:   --crt-object-output %t.success.crt.o
 # RUN: %python -c 'from pathlib import Path; output = Path("%t.success.so"); assert output.read_bytes().startswith(b"\x7fELF"); assert Path("%t.success.o").stat().st_size > 0; assert Path("%t.success.crt.o").stat().st_size > 0; assert not list(output.parent.glob(f".{output.name}.staging-*"))'
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm --defined-only %t.success.so | FileCheck %s --check-prefix=PRODUCTION-SYMBOLS
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/minimal-profile-summary-target-kernel.ll \
+# RUN:   --output %t.profile-summary.so --profile-capture summary
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm --defined-only %t.profile-summary.so | FileCheck %s --check-prefix=PROFILE-SUMMARY-SYMBOLS
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/minimal-profile-target-kernel.ll \
+# RUN:   --output %t.profile-trace.so --profile-capture trace
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm --defined-only %t.profile-trace.so | FileCheck %s --check-prefix=PROFILE-TRACE-SYMBOLS
 
 # RUN: %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/minimal-target-heap-entry.ll \
@@ -166,3 +184,21 @@
 # CLUSTER-TOPOLOGY-GRID: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-grid-v1: init_tile_id
 
 # DTE-ADDRESS: U get_tile_spm_addr_base
+
+# SUMMARY-CAPTURE-LABEL: compile-crt:
+# SUMMARY-CAPTURE-SAME: -DWAFER_TX81_PROFILE_CRT=1
+# SUMMARY-CAPTURE-NOT: WAFER_TX81_PROFILE_TRACE_CRT
+# COUNT-CAPTURE-LABEL: compile-crt:
+# COUNT-CAPTURE-SAME: -DWAFER_TX81_PROFILE_TRACE_CRT=1
+# TRACE-CAPTURE-LABEL: compile-crt:
+# TRACE-CAPTURE-SAME: -DWAFER_TX81_PROFILE_TRACE_CRT=1
+
+# PRODUCTION-SYMBOLS: kernel_entry
+# PRODUCTION-SYMBOLS-NOT: wafer_tx81_profile_
+# PROFILE-SUMMARY-SYMBOLS-DAG: wafer_tx81_profile_entry_begin_from_config
+# PROFILE-SUMMARY-SYMBOLS-DAG: wafer_tx81_profile_entry_end
+# PROFILE-SUMMARY-SYMBOLS-NOT: wafer_tx81_profile_site_
+# PROFILE-TRACE-SYMBOLS-DAG: wafer_tx81_profile_entry_begin_from_config
+# PROFILE-TRACE-SYMBOLS-DAG: wafer_tx81_profile_entry_end
+# PROFILE-TRACE-SYMBOLS-DAG: wafer_tx81_profile_site_begin
+# PROFILE-TRACE-SYMBOLS-DAG: wafer_tx81_profile_site_end

@@ -1,5 +1,13 @@
 #include "wafer_tx81_crt.h"
 
+#if defined(WAFER_TX81_PROFILE_TRACE_CRT) && !defined(WAFER_TX81_PROFILE_CRT)
+#define WAFER_TX81_PROFILE_CRT 1
+#endif
+
+#ifdef WAFER_TX81_PROFILE_CRT
+#include "wafer_tx81_profiler.h"
+#endif
+
 #ifndef CONFIG_NO_PLATFORM_HOOK_H
 #define CONFIG_NO_PLATFORM_HOOK_H 1
 #endif
@@ -345,12 +353,49 @@ static int32_t wafer_bilinear_scale(uint32_t src, uint32_t dst) {
   return (int32_t)(((uint64_t)src << 16) / dst);
 }
 
-static void wafer_execute_ct(CT_Param *instr) { (void)TsmExecute(instr); }
-static void wafer_execute_ne(TsmNeInstr *instr) { (void)TsmExecute(instr); }
-static void wafer_execute_rdma(TsmRdmaInstr *instr) { (void)TsmExecute(instr); }
-static void wafer_execute_wdma(TsmWdmaInstr *instr) { (void)TsmExecute(instr); }
-static void wafer_execute_td(TsmDataMoveInstr *instr) {
+#ifdef WAFER_TX81_PROFILE_CRT
+#include "wafer_tx81_profiler_impl.inc"
+#endif
+
+static void wafer_execute_ct(CT_Param *instr) {
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
+  (void)wafer_tx81_profile_execute_tsm(instr, instr->inter_type,
+                                       WAFER_TX81_PROFILER_ENGINE_CT);
+#else
   (void)TsmExecute(instr);
+#endif
+}
+static void wafer_execute_ne(TsmNeInstr *instr) {
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
+  (void)wafer_tx81_profile_execute_tsm(instr, instr->inter_type,
+                                       WAFER_TX81_PROFILER_ENGINE_NE);
+#else
+  (void)TsmExecute(instr);
+#endif
+}
+static void wafer_execute_rdma(TsmRdmaInstr *instr) {
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
+  (void)wafer_tx81_profile_execute_tsm(instr, instr->inter_type,
+                                       WAFER_TX81_PROFILER_ENGINE_RDMA);
+#else
+  (void)TsmExecute(instr);
+#endif
+}
+static void wafer_execute_wdma(TsmWdmaInstr *instr) {
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
+  (void)wafer_tx81_profile_execute_tsm(instr, instr->inter_type,
+                                       WAFER_TX81_PROFILER_ENGINE_WDMA);
+#else
+  (void)TsmExecute(instr);
+#endif
+}
+static void wafer_execute_td(TsmDataMoveInstr *instr) {
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
+  (void)wafer_tx81_profile_execute_tsm(instr, instr->inter_type,
+                                       WAFER_TX81_PROFILER_ENGINE_TDMA);
+#else
+  (void)TsmExecute(instr);
+#endif
 }
 
 static uint64_t wafer_spm_mapped_addr(uint64_t offset) {

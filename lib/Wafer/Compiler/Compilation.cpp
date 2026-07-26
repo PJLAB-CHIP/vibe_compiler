@@ -110,8 +110,7 @@ mlir::LogicalResult writeCollectiveCharacterizationReport(
         std::vector<MessageRecord> messages;
         uint64_t sendBytes = 0;
         uint64_t recvBytes = 0;
-        auto record = [&](llvm::StringRef direction, auto op,
-                          uint64_t &bytes) {
+        auto record = [&](llvm::StringRef direction, auto op, uint64_t &bytes) {
           phases.insert(
               stringifyDTEProtocolPhase(op.getMessage().getPhase()).str());
           communicationIds.insert(op.getMessage().getCommunicationId());
@@ -185,29 +184,26 @@ mlir::LogicalResult writeCollectiveCharacterizationReport(
               static_cast<int64_t>(executedBytes),
           });
         };
-        rank.getModule().walk([&](InstrDTESendOp op) {
-          record("send", op, sendBytes);
-        });
-        rank.getModule().walk([&](InstrDTERecvOp op) {
-          record("recv", op, recvBytes);
-        });
+        rank.getModule().walk(
+            [&](InstrDTESendOp op) { record("send", op, sendBytes); });
+        rank.getModule().walk(
+            [&](InstrDTERecvOp op) { record("recv", op, recvBytes); });
         if (sendBytes >
                 static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
             recvBytes >
                 static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
           invalidAccounting = true;
-        std::sort(messages.begin(), messages.end(),
-                  [](const MessageRecord &left, const MessageRecord &right) {
-                    return std::tie(
-                               left.direction, left.peer, left.communicationId,
-                               left.phase, left.round, left.payloadSlice,
-                               left.issueBytes, left.constantLoopMultiplicity) <
-                           std::tie(
-                               right.direction, right.peer,
-                               right.communicationId, right.phase, right.round,
-                               right.payloadSlice, right.issueBytes,
-                               right.constantLoopMultiplicity);
-                  });
+        std::sort(
+            messages.begin(), messages.end(),
+            [](const MessageRecord &left, const MessageRecord &right) {
+              return std::tie(left.direction, left.peer, left.communicationId,
+                              left.phase, left.round, left.payloadSlice,
+                              left.issueBytes, left.constantLoopMultiplicity) <
+                     std::tie(right.direction, right.peer,
+                              right.communicationId, right.phase, right.round,
+                              right.payloadSlice, right.issueBytes,
+                              right.constantLoopMultiplicity);
+            });
 
         json.object([&] {
           json.attribute("rank", rank.getLogicalRank());
@@ -306,6 +302,15 @@ CompilationRequest::create(llvm::StringRef sourceProgramDirectory,
   return CompilationRequest(sourceProgramDirectory, executionConfig);
 }
 
+llvm::Expected<CompilationOptions>
+CompilationOptions::profile(const ExecutionConfig &executionConfig) {
+  if (executionConfig.getRankCount() != 16)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "profile compilation requires execution-ranks=16");
+  return CompilationOptions(/*profileCompanion=*/true);
+}
+
 llvm::Expected<ExecutableBundle>
 compileTensorProgramToExecutableBundle(llvm::StringRef tensorProgramDirectory,
                                        ExecutionConfig executionConfig,
@@ -319,11 +324,22 @@ mlir::FailureOr<ExecutableBundle> compileProgram(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  return compileProgram(std::move(request), outputProgramDirectory,
+                        xlaSpmdPartitionerHelper, targetToolchain,
+                        CompilationOptions::standard(), diagnostics);
+}
+
+mlir::FailureOr<ExecutableBundle>
+compileProgram(CompilationRequest request,
+               llvm::StringRef outputProgramDirectory,
+               llvm::StringRef xlaSpmdPartitionerHelper,
+               const TargetToolchain &targetToolchain,
+               CompilationOptions options, llvm::raw_ostream &diagnostics) {
   std::optional<ExecutableBundle> retainedExecutableBundle;
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics,
-          detail::WholeVariantSelectionMode::Production, std::nullopt,
+          detail::WholeVariantSelectionMode::Production, options, std::nullopt,
           std::nullopt, std::nullopt, &retainedExecutableBundle, nullptr)))
     return mlir::failure();
   if (!retainedExecutableBundle) {
@@ -344,8 +360,9 @@ mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics,
-          detail::WholeVariantSelectionMode::Production, std::nullopt,
-          std::nullopt, std::nullopt, &retainedExecutableBundle,
+          detail::WholeVariantSelectionMode::Production,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle,
           &retainedTargetLLVMModuleBundle)))
     return mlir::failure();
   if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle) {
@@ -372,8 +389,9 @@ mlir::LogicalResult testing::compileProgramWithRankFailure(
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics,
-      detail::WholeVariantSelectionMode::Production, failAfterLogicalRank,
-      std::nullopt, std::nullopt, nullptr, nullptr);
+      detail::WholeVariantSelectionMode::Production,
+      CompilationOptions::standard(), failAfterLogicalRank, std::nullopt,
+      std::nullopt, nullptr, nullptr);
 }
 
 mlir::LogicalResult testing::compileProgramWithTargetRankFailure(
@@ -390,8 +408,9 @@ mlir::LogicalResult testing::compileProgramWithTargetRankFailure(
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics,
-      detail::WholeVariantSelectionMode::Production, std::nullopt,
-      failAfterLogicalRank, std::nullopt, nullptr, nullptr);
+      detail::WholeVariantSelectionMode::Production,
+      CompilationOptions::standard(), std::nullopt, failAfterLogicalRank,
+      std::nullopt, nullptr, nullptr);
 }
 
 mlir::LogicalResult testing::compileProgramWithPackageRankFailure(
@@ -408,7 +427,8 @@ mlir::LogicalResult testing::compileProgramWithPackageRankFailure(
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics,
-      detail::WholeVariantSelectionMode::Production, std::nullopt, std::nullopt,
+      detail::WholeVariantSelectionMode::Production,
+      CompilationOptions::standard(), std::nullopt, std::nullopt,
       failAfterLogicalRank, nullptr, nullptr);
 }
 
@@ -420,8 +440,9 @@ mlir::FailureOr<ExecutableBundle> testing::compileProgramWithReservedBaseline(
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics,
-          detail::WholeVariantSelectionMode::ReservedBaseline, std::nullopt,
-          std::nullopt, std::nullopt, &retainedExecutableBundle, nullptr)))
+          detail::WholeVariantSelectionMode::ReservedBaseline,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle, nullptr)))
     return mlir::failure();
   if (!retainedExecutableBundle) {
     detail::reject(diagnostics,
@@ -453,8 +474,9 @@ testing::compileProgramForCollectiveCharacterization(
   detail::WholeVariantSelectionMode selectionMode = getSelectionMode(algorithm);
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
-          targetToolchain, diagnostics, selectionMode, std::nullopt,
-          std::nullopt, std::nullopt, &retainedExecutableBundle, nullptr)))
+          targetToolchain, diagnostics, selectionMode,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle, nullptr)))
     return mlir::failure();
   if (!retainedExecutableBundle) {
     detail::reject(

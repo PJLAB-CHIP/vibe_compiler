@@ -268,6 +268,12 @@ enum class TargetCallBuiltin : uint8_t {
 enum class TargetCallScalarType : uint8_t { I32, I64 };
 enum class TargetCallResultType : uint8_t { Void, I64 };
 
+/// The real NCC engine reached by one registered target-call implementation.
+/// Absence means that the call does not submit a TsmExecute command. This
+/// closed mapping is shared by profile instrumentation and static site-map
+/// publication; consumers must not recover it from symbol spellings.
+enum class TargetCallTSMEngine : uint8_t { CT, NE, RDMA, WDMA, TDMA };
+
 /// A semantic identity owned by typed compiler enums, never reconstructed
 /// from a symbol spelling by a consumer.
 using TargetCallSemantic =
@@ -295,6 +301,12 @@ llvm::ArrayRef<TargetCallDescriptor> getTargetCallDescriptors();
 const TargetCallDescriptor *findTargetCallDescriptor(llvm::StringRef symbol);
 const TargetCallDescriptor *
 findTargetCallDescriptor(const TargetCallSemantic &semantic);
+
+std::optional<TargetCallTSMEngine>
+getTargetCallTSMEngine(const TargetCallSemantic &semantic);
+std::optional<TargetCallTSMEngine>
+getTargetCallTSMEngine(const TargetCallDescriptor &descriptor);
+llvm::StringRef stringifyTargetCallTSMEngine(TargetCallTSMEngine engine);
 
 const TargetCallDescriptor &getTargetCallDescriptor(TargetCallBuiltin call);
 const TargetCallDescriptor &getTargetCallDescriptor(InstrElementwiseKind kind);

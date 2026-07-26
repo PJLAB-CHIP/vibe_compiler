@@ -6,6 +6,13 @@
 # RUN: not wafer-compile --input-program-dir %t.input --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-INPUT
 # RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-OUTPUT
 # RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-RANKS
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 --profile --profile 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PROFILE-PRODUCT
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.profile-rank1 --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 --profile 2>&1 | FileCheck %s --check-prefix=PROFILE-RANK1
+# RUN: test ! -e %t.profile-rank1
+# RUN: test ! -e %t.profile-rank1.profile
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.profile-model --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 --profile --target-model 2>&1 | FileCheck %s --check-prefix=PROFILE-MODEL
+# RUN: test ! -e %t.profile-model
+# RUN: test ! -e %t.profile-model.profile
 # RUN: rm -rf %t.missing-profile-output %t.unknown-profile-output %t.duplicate-profile-output
 # RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.missing-profile-output --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=MISSING-PROFILE
 # RUN: test ! -e %t.missing-profile-output
@@ -43,6 +50,9 @@
 # DUPLICATE-INPUT: wafer-compile: duplicate option: --input-program-dir
 # DUPLICATE-OUTPUT: wafer-compile: duplicate option: --output-program-dir
 # DUPLICATE-RANKS: wafer-compile: duplicate option: --execution-ranks
+# DUPLICATE-PROFILE-PRODUCT: wafer-compile: duplicate option: --profile
+# PROFILE-RANK1: wafer-compile: profile compilation requires execution-ranks=16
+# PROFILE-MODEL: wafer-compile: --profile cannot be combined with --target-model
 # MISSING-PROFILE: wafer-compile: missing required --target-profile
 # UNKNOWN-PROFILE: wafer-compile: unknown target profile 'not-a-registered-profile'
 # DUPLICATE-PROFILE: wafer-compile: duplicate option: --target-profile

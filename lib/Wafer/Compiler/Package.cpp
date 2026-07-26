@@ -2,6 +2,8 @@
 
 #include "PackageInternal.h"
 
+#include "Wafer/ABI/Tx81ProfilerABI.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
@@ -506,18 +508,26 @@ bool detail::doesPackageSlotMatchProgramBinding(
 }
 
 bool detail::isValidPackageCompilerManagedSlot(const KernelABISlot &slot) {
-  if (slot.resourceIndex != 0 || slot.layout != MemLayout::Tensor ||
-      slot.byteSize <= 0 || slot.alignment <= 0)
+  if (slot.layout != MemLayout::Tensor || slot.byteSize <= 0 ||
+      slot.alignment <= 0)
     return false;
-  if (slot.role == KernelABISlotRole::Workspace)
-    return slot.dtype == "u8" && slot.shape.size() == 1 &&
-           slot.shape.front() == slot.byteSize;
+  if (slot.role == KernelABISlotRole::Workspace) {
+    if (slot.dtype != "u8" || slot.shape.size() != 1 ||
+        slot.shape.front() != slot.byteSize)
+      return false;
+    if (slot.resourceIndex == 0)
+      return true;
+    if (slot.resourceIndex != 1 ||
+        slot.alignment != WAFER_TX81_PROFILER_BUFFER_ALIGNMENT)
+      return false;
+    return slot.byteSize == WAFER_TX81_PROFILER_MIN_BUFFER_BYTES ||
+           slot.byteSize == WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES;
+  }
   if (slot.role == KernelABISlotRole::TransportStatus)
-    return slot.dtype == "u32" && slot.shape == std::vector<int64_t>{1} &&
-           slot.byteSize ==
-               runtime::kDirectDTEStatusStorageBytes &&
-           slot.alignment ==
-               runtime::kDirectDTEStatusStorageAlignment;
+    return slot.resourceIndex == 0 && slot.dtype == "u32" &&
+           slot.shape == std::vector<int64_t>{1} &&
+           slot.byteSize == runtime::kDirectDTEStatusStorageBytes &&
+           slot.alignment == runtime::kDirectDTEStatusStorageAlignment;
   return false;
 }
 

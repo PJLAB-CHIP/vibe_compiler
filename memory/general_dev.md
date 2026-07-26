@@ -905,9 +905,42 @@
 - 成对case的durable archive不能只保存summary JSON：至少保留逐字节相同的source snapshot、两份最终linked ELF和
   manifest、结构/观测JSON、raw payload，以及实际compiler/runtime/objdump路径和digest；否则事后不能重放ELF oracle或
   判断工具身份是否漂移。
-- host wall time受provider、OS和runtime噪声影响，只能记observation。只有PMU measurement basis、counter unit/clear/wrap、
-  workload correlation、重复稳定性和held-out都验证后，Q9才可消费成对device观测校准合法候选排序；correctness结果和
+- 包含allocation/H2D/load/D2H/cleanup的process wall time受provider、OS和runtime噪声影响，只能记observation。
+  profiler的人工作业性能结论只使用同一qualified session中未插桩execution package的host steady-clock
+  submit→all-rank trusted-completion区间，并要求平衡成对block、逐sample poll-gap上界、独立held-out和完整output
+  equivalence。PMU、entry-local cycle、count和trace来自另行launch的diagnostic capture，只能解释变化，不能修正
+  speed verdict。把证据反馈到compiler ranking仍需冻结environment/profile与相应稳定性 gate；correctness结果和
   untimed model都不能直接写入cost常量。
+
+## 16-tile TSM profiler workflow
+
+- profiler是`wafer-compile --profile`的一项compiler功能，不是第二个可执行文件或runtime mode。普通package必须与
+  profile关闭时逐字节一致；companion在临时目录完整形成后最后写`activation.json`，以production manifest SHA-256
+  及`plan.json`、`variants.json`、`site-map.json`的逐项SHA-256作为唯一激活边界。读取侧在解析或board effect前先做
+  exact key/digest验证，不能扫描目录、文件名或resource name猜身份。
+- 一个companion固定拥有baseline/winner两个variant的未插桩execution binding，以及每个variant各自的
+  summary/count/trace内部capture binding，共六个逻辑binding。variant artifact不同时对应六个物理capture package；
+  artifact alias时baseline三个binding精确复用winner三个物理package及digest，并强制inconclusive。runner自动发现并复用
+  普通`wafer-run`的resource、expected、output和board参数；不向用户
+  暴露capture选择或采样参数。缺external expected的writable resource由首个winner warm-up按稳定semantic key建立同session
+  exact reference；它只证明repeatability/equivalence。所有launch留在一个qualified、driver-bound session中单进程串行，
+  首个timeout、device异常、correctness或协议失败立即停止，不retry/reset/power。
+- primary measurement固定为五个交替ABBA/BAAB的四launch block，共20个未插桩submit→all-completion样本，前四个分析、
+  第五个held out；每个样本的高分辨率completion observer必须证明最大poll gap不超过样本时长0.25%。summary/aggregate
+  PMU、count preflight和trace随后独立执行；trace evidence保留preflight count、`next_sequence`、drop count、raw flags和
+  terminal state，任何overflow/drop/gap/mismatch均fail closed。
+- `site_id`只在rank内有效。跨candidate展示使用版本化
+  `heuristic-target-call-signature-occurrence-v1`，它只关联typed target-call signature的同类occurrence，不是稳定IR
+  provenance、SSA identity或causal proof。timeline只记录CT/NE/RDMA/WDMA/TDMA真实`TsmExecute`的call→return submit
+  API interval；fence、wait和planner ready-order不是事件，PMU也不按site分摊。
+- local cycle domain没有资格化mapping时，证据明确把clock标为invalid/unavailable，报告仍显示all-and-only 16个
+  entry-local timeline，但不能声明cross-tile order、overlap或global critical path。带uncertainty的affine mapping是未来
+  可选增强，不应阻塞foundation。external expected给出semantic correctness；否则同session production-winner exact oracle
+  只证明repeatability和candidate/instrumentation equivalence，absolute correctness标为unknown。跨candidate优化结论还要求
+  exact companion/environment/output gate和distinct executable artifact；alias不得解释为优化收益。
+- raw evidence、analysis和HTML在run临时目录中全部成功后再原子发布，report generator按runner executable-relative installed
+  resource定位。no-card只能证明compiler/ABI/decoder/campaign/report协议，未执行且未确认non-skipped的configured live-board
+  gate时，不能把Q9 profiler或ranking calibration标为完成。
 
 ## Hardware characterization与优化资格分栏
 

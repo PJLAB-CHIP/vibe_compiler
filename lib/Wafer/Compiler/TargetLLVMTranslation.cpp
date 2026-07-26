@@ -356,11 +356,12 @@ verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
 }
 
 mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared) {
-  TargetConversionRequest request{
-      prepared.targetProfile, prepared.defaultDDRArenaArgumentIndex,
-      prepared.logicalRank,   prepared.transportStatusArgumentIndex,
-      prepared.launchABI,
-  };
+  TargetConversionRequest request{prepared.targetProfile};
+  request.defaultDDRArenaArgumentIndex = prepared.defaultDDRArenaArgumentIndex;
+  request.logicalRank = prepared.logicalRank;
+  request.transportStatusArgumentIndex = prepared.transportStatusArgumentIndex;
+  request.launchABI = prepared.launchABI;
+  request.profileRecordArgumentIndex = prepared.profileRecordArgumentIndex;
   mlir::PassManager manager(prepared.module->getContext());
   manager.addPass(createLowerInstrToTargetLLVMPass(request));
   return manager.run(*prepared.module);
@@ -398,6 +399,9 @@ translatePreparedTargetRank(PreparedTargetRank prepared,
   llvmModule->setModuleIdentifier(
       llvm::formatv("wafer.target.rank.{0:D5}", prepared.logicalRank).str());
   llvmModule->setTargetTriple(kTargetLLVMTriple);
+  if (llvm::Error error = instrumentProfileTargetModule(
+          *llvmModule, entrySymbol, prepared.profileCapture))
+    return std::move(error);
   attachTargetLLVMMetadata(*llvmModule, prepared, entrySymbol);
   if (llvm::Error error = verifyTargetLLVMModule(
           *llvmModule, prepared.logicalRank, entrySymbol,

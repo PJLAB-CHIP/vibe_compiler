@@ -1,0 +1,1 @@
+# RUN: %python %S/wafer_profile_report_test.py

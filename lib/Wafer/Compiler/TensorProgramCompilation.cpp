@@ -15,10 +15,11 @@
 
 namespace wafer::compiler::detail {
 
-llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
+template <typename ProductT, typename BuilderT>
+static llvm::Expected<ProductT> compileTensorProgram(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLogicalRank,
-    WholeVariantSelectionMode selectionMode) {
+    BuilderT &&builder) {
   auto fail = [&](llvm::StringRef message) -> llvm::Error {
     reject(diagnostics, message);
     return llvm::createStringError(llvm::errc::invalid_argument, "%s",
@@ -68,9 +69,44 @@ llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
     return fail("typed program resources do not cover all parameters and "
                 "constants");
 
-  return detail::buildExecutableBundle(
-      context, *tensorModule, std::move(program), executionConfig, diagnostics,
-      failAfterLogicalRank, selectionMode);
+  return builder(context, *tensorModule, std::move(program), executionConfig,
+                 diagnostics, failAfterLogicalRank);
+}
+
+llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
+    llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
+    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLogicalRank,
+    WholeVariantSelectionMode selectionMode) {
+  return compileTensorProgram<ExecutableBundle>(
+      tensorProgramDirectory, executionConfig, diagnostics,
+      failAfterLogicalRank,
+      [selectionMode](std::shared_ptr<mlir::MLIRContext> &context,
+                      mlir::ModuleOp tensorModule,
+                      frontend::FrontendProgramVerificationResult program,
+                      ExecutionConfig config, llvm::raw_ostream &output,
+                      std::optional<int64_t> failRank) {
+        return buildExecutableBundle(context, tensorModule, std::move(program),
+                                     config, output, failRank, selectionMode);
+      });
+}
+
+llvm::Expected<ProfileExecutableBundles>
+compileTensorProgramToProfileExecutableBundlesImpl(
+    llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
+    llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLogicalRank) {
+  return compileTensorProgram<ProfileExecutableBundles>(
+      tensorProgramDirectory, executionConfig, diagnostics,
+      failAfterLogicalRank,
+      [](std::shared_ptr<mlir::MLIRContext> &context,
+         mlir::ModuleOp tensorModule,
+         frontend::FrontendProgramVerificationResult program,
+         ExecutionConfig config, llvm::raw_ostream &output,
+         std::optional<int64_t> failRank) {
+        return buildProfileExecutableBundles(context, tensorModule,
+                                             std::move(program), config, output,
+                                             failRank);
+      });
 }
 
 } // namespace wafer::compiler::detail

@@ -67,8 +67,8 @@ Q32 -> Q32.N
 active compiler-sensitive hardware evidence、production optimizer paired qualification与multi-engine overlap：
 Q32 + Q6.B + configured board -> Q37
 
-later/external：
-Q32 + Q6.B -> Q9
+active profiler foundation / later ranking calibration：
+Q32 + Q6.B -> Q9 profiler foundation -> validated PMU/timing + held-out -> Q9 ranking calibration
 Q22 + Q32 + Q6.B + configured numeric corpus -> Q22.C
 Q18 + Q22 + Q32 + configured simulator/ISS -> Q22.E
 Q32 + Q22.C + validated PMU/timing environment -> Q22.P
@@ -389,13 +389,14 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 | Q32.G | `physical-dataflow-production-cutover` | `done` | Q32.S | 默认`wafer-compile`已成为唯一production decision owner并原子提交whole-variant winner；旧public scheduling pass/pipeline、scope-prefix、layout/demand影子结构、communication selector/options、scalar-time winner和discovery recovery已删除。rank frontier以semantic generation与physical artifact kind双键约束all-rank correspondence，默认source/bulk SystemC数值纵向通过。证据见`tasks/archive/physical-dataflow-production-cutover.md`。 | 01、06-18；同计划H |
 | Q32 | `physical-dataflow-synthesis` | `done` | Q32.G | current功能面包含implementation、relation/tiling、encoding/view/route、GEMM/batched-GEMM fixed-Cx-NCx absorption、storage/residency、share-vs-recompute、static loop-invariant hoist、全部Q32.M current numeric variants、buffering/resource-aware ready-order、communication、resource-aware selection及Q32.V typed capability；每个choice producer具备production IR mutation、下游exact consumer、whole-variant winner和atomic bundle commit证据，无选择分支的required closure mutation保留在committed winner。rank-count=1/16、Q20/Q21、Q28 fixed-seed/Q31 held-out 7B PyTorch/SystemC和全部SPM/DDR/event/transport/instruction/ABI/package/atomic gates已fresh通过。不含floating reassociation/tree、generic online reduction、non-GEMM FMA contraction、超出current integer-domain exact/modular子集的algebraic distribution/factorization、board性能或timing。证据见`tasks/archive/physical-dataflow-synthesis-completion-audit.md`。 | 01、06-18；`tasks/archive/physical-dataflow-synthesis.md` completion audit |
 
-下列later/external gate不会因Q32完成自动进入主线。
+Q9 profiler foundation已作为显式当前任务进入主线；表中其余later/external gate不会因Q32完成自动进入主线，
+Q9的ranking feedback仍需独立validated PMU/timing与held-out gate。
 
-## Later / External Gates
+## Active Profiler / Later External Gates
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 / 外部 gate | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q9 | `cost-calibration` | `later` | Q32、Q6.B + validated PMU/timing profile environment | 只消费measurement basis有效、与同源候选对齐并有held-out的device观测来校准Q32合法候选排序；host wall time与单winner结果不进入profile，也不改变语义合法性。 | 06、16 |
+| Q9 | `cost-calibration` | `doing` | Q32、Q6.B + configured board；本轮尚无fresh configured live-board run，ranking calibration仍要求冻结的validated environment/evidence | no-card implementation foundation已按唯一`wafer-compile --profile`入口形成：普通package逐字节不变，activation最后写入并exact-hash绑定production manifest/metadata，同源baseline/winner各有未插桩execution和summary/count/trace逻辑binding；artifact alias时复用同三个物理capture并强制inconclusive。五类真实`TsmExecute`使用rank-local site与显式heuristic correlation，自动campaign/analyzer/16-tile report复用普通`wafer-run`输入。板端协议固定为一个qualified session内20个未插桩submit→all-completion primary samples（五个交替ABBA/BAAB block，第五held out），再执行独立summary/aggregate-PMU/count/trace diagnostics；clock mapping无效时只显示entry-local 16行timeline。external expected缺失时winner oracle只证明repeatability/equivalence，不能声称absolute correctness；artifact alias不能声称优化。用户不提供新输入或模式，fence/wait/ready-order不作为事件，TsmExecute返回不冒充engine completion。configured live-board correctness、measurement-basis和held-out尚待fresh执行，因此Q9保持`doing`，foundation证据不得回写candidate ranking。 | 06、14-16；`tasks/plans/board-profiler.md` |
 | Q22.C | `target-model-numeric-correlation` | `later` | Q22、Q32、Q6.B + configured numeric corpus | 按capability row用board区分向量和held-out冻结numeric comparator/profile；Q35可提供large K-sharded GEMM workload-level证据，但不是本gate的硬前置且不能单独满足它。 | 16、17 |
 | Q22.E | `target-model-package-execution` | `later` | Q18、Q22、Q32 + configured simulator/ISS | 原样执行Q32 integrated audit冻结的verified package及all-and-only RISC-V ELF；任何未来schema升级必须先独立完成再作为该gate输入。 | 15、16、17 |
 | Q22.K | `target-model-packet-provenance` | `later` | Q22 + owner-approved vendor package或独立公开规范 | 可选关联repo CRT/packet/MMIO；缺失不阻塞数值CModel。 | 14、16、17 |

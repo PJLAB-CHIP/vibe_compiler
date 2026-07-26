@@ -20,6 +20,7 @@ void printHelp() {
                   "--output-program-dir <dir> --execution-ranks <1|16> "
                   "--target-profile <registered-id> "
                   "--launch-abi <registered-id> "
+                  "[--profile] "
                   "[--target-model "
                   "--model-input <index>=<npy> "
                   "--model-expected <index>=<npy> "
@@ -132,6 +133,14 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       }
       options.targetModel = true;
+      continue;
+    }
+    if (arg == "--profile") {
+      if (options.profile) {
+        llvm::errs() << "wafer-compile: duplicate option: --profile\n";
+        return false;
+      }
+      options.profile = true;
       continue;
     }
     if (arg == "--model-report-numeric-statistics") {

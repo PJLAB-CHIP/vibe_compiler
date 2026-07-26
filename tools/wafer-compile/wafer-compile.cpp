@@ -55,6 +55,11 @@ int main(int argc, char **argv) {
       !requireOption(options.targetProfile, "--target-profile") ||
       !requireOption(options.targetLaunchABI, "--launch-abi"))
     return 1;
+  if (options.profile && options.targetModel) {
+    llvm::errs()
+        << "wafer-compile: --profile cannot be combined with --target-model\n";
+    return 1;
+  }
 
   bool modelInvocationRequested = !options.modelInputs.empty() ||
                                   !options.modelExpected.empty() ||
@@ -257,6 +262,18 @@ int main(int argc, char **argv) {
                  << llvm::toString(executionConfig.takeError()) << "\n";
     return 1;
   }
+  wafer::compiler::CompilationOptions compilationOptions =
+      wafer::compiler::CompilationOptions::standard();
+  if (options.profile) {
+    llvm::Expected<wafer::compiler::CompilationOptions> profileOptions =
+        wafer::compiler::CompilationOptions::profile(*executionConfig);
+    if (!profileOptions) {
+      llvm::errs() << "wafer-compile: "
+                   << llvm::toString(profileOptions.takeError()) << "\n";
+      return 1;
+    }
+    compilationOptions = *profileOptions;
+  }
 
   llvm::Expected<wafer::compiler::CompilationRequest> request =
       wafer::compiler::CompilationRequest::create(
@@ -302,6 +319,12 @@ int main(int argc, char **argv) {
   unsigned failureInjectionCount = (failureRank ? 1u : 0u) +
                                    (targetFailureRank ? 1u : 0u) +
                                    (packageFailureRank ? 1u : 0u);
+  if (options.profile && (failureInjectionCount != 0 || reservedBaseline ||
+                          collectiveAlternative || collectiveReport)) {
+    llvm::errs() << "wafer-compile: --profile cannot be combined with "
+                    "test-only compilation controls\n";
+    return 1;
+  }
   if (failureInjectionCount > 1) {
     llvm::errs() << "wafer-compile: multiple test-only failure injections "
                     "are not allowed\n";
@@ -435,7 +458,7 @@ int main(int argc, char **argv) {
       mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
           wafer::compiler::compileProgram(
               std::move(*request), *options.outputProgramDirectory, helperPath,
-              *targetToolchain, llvm::errs());
+              *targetToolchain, compilationOptions, llvm::errs());
       if (mlir::succeeded(compiledProgram)) {
         executableBundle.emplace(std::move(*compiledProgram));
         compilationStatus = mlir::success();
@@ -448,6 +471,9 @@ int main(int argc, char **argv) {
   llvm::outs() << "wafer-compile: published verified package with "
                   "execution-ranks="
                << rankCount << ": " << *options.outputProgramDirectory << "\n";
+  if (options.profile)
+    llvm::outs() << "wafer-compile: published profile companion: "
+                 << *options.outputProgramDirectory << ".profile\n";
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
   if (options.targetModel) {
     llvm::outs().flush();

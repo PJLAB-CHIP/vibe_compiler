@@ -63,10 +63,9 @@ TEST(CompilationTest, ExecutionConfigEqualityCoversRankProfileAndLaunchABI) {
                 .find("requires execution-ranks=16"),
             std::string::npos);
 
-  auto unqualifiedModel =
-      wafer::compiler::ExecutionConfig::createForSingleCard(
-          16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-          wafer::TargetLaunchABIId::tx81ModelBootParamV1());
+  auto unqualifiedModel = wafer::compiler::ExecutionConfig::createForSingleCard(
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
+      wafer::TargetLaunchABIId::tx81ModelBootParamV1());
   ASSERT_FALSE(static_cast<bool>(unqualifiedModel));
   EXPECT_NE(llvm::toString(unqualifiedModel.takeError()).find("not qualified"),
             std::string::npos);
@@ -139,6 +138,34 @@ TEST(CompilationTest, CompilationRequestRejectsEmptySourceLocator) {
   auto request = wafer::compiler::CompilationRequest::create("", *config);
   ASSERT_FALSE(static_cast<bool>(request));
   EXPECT_FALSE(llvm::toString(request.takeError()).empty());
+}
+
+TEST(CompilationTest, ProfileOptionsRequireCompleteSingleCardRankDomain) {
+  auto rankOne = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+  ASSERT_TRUE(static_cast<bool>(rankOne));
+
+  auto rejected = wafer::compiler::CompilationOptions::profile(*rankOne);
+  ASSERT_FALSE(static_cast<bool>(rejected));
+  EXPECT_NE(
+      llvm::toString(rejected.takeError()).find("requires execution-ranks=16"),
+      std::string::npos);
+
+  for (wafer::TargetLaunchABIId launchABI :
+       {wafer::TargetLaunchABIId::perRankPointerBlockV1(),
+        wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1(),
+        wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1()}) {
+    SCOPED_TRACE(wafer::stringifyTargetLaunchABIId(launchABI).str());
+    auto fullCard = wafer::compiler::ExecutionConfig::createForSingleCard(
+        16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(), launchABI);
+    ASSERT_TRUE(static_cast<bool>(fullCard));
+    auto accepted = wafer::compiler::CompilationOptions::profile(*fullCard);
+    ASSERT_TRUE(static_cast<bool>(accepted));
+    EXPECT_TRUE(accepted->shouldProduceProfileCompanion());
+  }
+  EXPECT_FALSE(wafer::compiler::CompilationOptions::standard()
+                   .shouldProduceProfileCompanion());
 }
 
 } // namespace

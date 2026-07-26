@@ -221,6 +221,69 @@ findTargetCallDescriptor(const TargetCallSemantic &semantic) {
   return nullptr;
 }
 
+std::optional<TargetCallTSMEngine>
+getTargetCallTSMEngine(const TargetCallSemantic &semantic) {
+  if (const auto *builtin = std::get_if<TargetCallBuiltin>(&semantic)) {
+    switch (*builtin) {
+    case TargetCallBuiltin::RDMA:
+      return TargetCallTSMEngine::RDMA;
+    case TargetCallBuiltin::WDMA:
+      return TargetCallTSMEngine::WDMA;
+    case TargetCallBuiltin::GatherScatter:
+    case TargetCallBuiltin::Memset:
+    case TargetCallBuiltin::TDMAPad:
+    case TargetCallBuiltin::TDMAImg2Col:
+      return TargetCallTSMEngine::TDMA;
+    case TargetCallBuiltin::Gemm:
+    case TargetCallBuiltin::GemmOrientedV2:
+      return TargetCallTSMEngine::NE;
+    case TargetCallBuiltin::Bit2FP:
+    case TargetCallBuiltin::MaskMove:
+      return TargetCallTSMEngine::CT;
+    case TargetCallBuiltin::LocalFence:
+    case TargetCallBuiltin::DirectDTEBegin:
+    case TargetCallBuiltin::DirectDTEBeginAfterPrepare:
+    case TargetCallBuiltin::DirectDTESendPrepare:
+    case TargetCallBuiltin::DirectDTERecvPrepare:
+    case TargetCallBuiltin::DirectDTEWait:
+    case TargetCallBuiltin::DirectDTEFinish:
+      return std::nullopt;
+    }
+    llvm_unreachable("unknown target-call builtin");
+  }
+  if (std::holds_alternative<InstrConvKind>(semantic))
+    return TargetCallTSMEngine::NE;
+  if (std::holds_alternative<InstrElementwiseKind>(semantic) ||
+      std::holds_alternative<InstrReduceKind>(semantic) ||
+      std::holds_alternative<InstrConvertKind>(semantic) ||
+      std::holds_alternative<InstrPoolKind>(semantic) ||
+      std::holds_alternative<InstrUnpoolKind>(semantic) ||
+      std::holds_alternative<InstrPeripheralKind>(semantic))
+    return TargetCallTSMEngine::CT;
+  llvm_unreachable("unknown target-call semantic");
+}
+
+std::optional<TargetCallTSMEngine>
+getTargetCallTSMEngine(const TargetCallDescriptor &descriptor) {
+  return getTargetCallTSMEngine(descriptor.semantic);
+}
+
+llvm::StringRef stringifyTargetCallTSMEngine(TargetCallTSMEngine engine) {
+  switch (engine) {
+  case TargetCallTSMEngine::CT:
+    return "CT";
+  case TargetCallTSMEngine::NE:
+    return "NE";
+  case TargetCallTSMEngine::RDMA:
+    return "RDMA";
+  case TargetCallTSMEngine::WDMA:
+    return "WDMA";
+  case TargetCallTSMEngine::TDMA:
+    return "TDMA";
+  }
+  llvm_unreachable("unknown target-call TSM engine");
+}
+
 const TargetCallDescriptor &getTargetCallDescriptor(TargetCallBuiltin call) {
   return getDescriptor(call);
 }

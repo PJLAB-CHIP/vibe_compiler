@@ -1335,6 +1335,59 @@ fake provider或target model结果都不能替代上述fresh hardware evidence�
 package结果做model/board numeric correlation；若被测Q32.V extension consumer采用capability-bearing package，
 还须消费其required-set结果。两者都不能反向替代Q6.B。
 
+### 12.4 16-Tile TSM Profiler Gate
+
+本gate验证一个compiler功能，而不是单独的可视化工具。唯一public入口是正常
+`wafer-compile <existing arguments> --profile`；rank-count不是16、与target-model冲突或profile companion无法完整形成时
+必须在board effect前给出typed failure。相同输入关闭profile时的普通winner package与normal CRT必须逐字节一致，
+不得出现profile branch、slot、symbol或manifest字段。
+
+host/no-card gate至少覆盖：
+
+- 同一verified source、ExecutionConfig、target profile与launch ABI产生reserved baseline/production winner，
+  二者均经过完整target publication；normal package原子发布且关闭profile时逐字节一致。`activation.json`必须最后写入，
+  精确绑定production manifest SHA-256以及`plan.json`、`variants.json`、`site-map.json`各自SHA-256；
+  missing/stale/partial、unknown/missing metadata key、digest mismatch和late-failure负例闭合；
+- companion恰有baseline/winner两个variant的未插桩execution binding和六个逻辑capture binding：
+  每个variant各一个summary/count/trace。最终artifact不同时必须有六个物理capture package；artifact alias时
+  baseline三个binding必须精确复用winner三个物理package及digest，且analyzer只能给出inconclusive。它们不能成为
+  user option、public package mode或新的input contract；
+- 五类CRT helper每个真实`TsmExecute`调用各产生一条固定版本record。one-to-many site使用`sub_index`，rank-local
+  `site_id`和`sequence`连续；跨candidate correlation version必须是
+  `heuristic-target-call-signature-occurrence-v1`，其target-call signature/occurrence匹配不得冒充稳定IR provenance、
+  SSA identity或causal relation；fence、wait、token和planner ready-order不进入event stream；
+- all-and-only 16个header与bounded DDR record buffer的magic/schema/logical-tile/count/capacity/overflow/
+  guard/readback验证；evidence必须保留count preflight、trace `next_sequence`、`dropped_event_count`、raw flags和terminal
+  state。unknown engine/site、sequence gap、count mismatch、drop、非complete state、overflow或guard corruption均invalid；
+- deterministic analyzer对invalid/partial evidence降级，不把`TsmExecute` begin/return画成engine执行条，
+  不把aggregate PMU分摊给site；HTML默认含完整16行timeline、evidence声明的physical topology、五个primary block、
+  engine/PMU/site baseline-winner diff和可回溯finding。clock mapping无效时每行使用entry-local轴并显式禁止跨tile排序。
+
+configured board gate复用原package的ResourceId resource/expected/output和board参数，不要求用户准备profile专用输入或选择mode。
+一次固定qualified session内先分别warm-up未插桩baseline/winner，再以交替ABBA/BAAB完成五个四launch block，共20个
+primary sample；前四个训练、第五个held out。primary sample只计host steady-clock submit到all-rank trusted completion，
+并逐sample要求高分辨率observer的`max observed poll gap / sample duration <= 0.25%`。随后才分别执行summary、
+count和trace diagnostic launch。每次都必须通过all-rank status、D2H writable-output validation、trusted completion和
+cleanup；capture还必须通过record guards、capacity和terminal-state检查。
+timeout/device anomaly或首个正确性/协议异常立即停止，不retry/reset/power。
+
+external expected存在时给出semantic correctness；不存在时，同session production winner exact output只能作为baseline及
+instrumented capture的repeatability/equivalence oracle，absolute correctness必须标为unknown。跨candidate speed/优化
+结论还要求production manifest identity、exact companion、environment和output equivalence全部有效，且两个未插桩
+executable artifact digest不同；alias或逐字节相同artifact不得形成optimization claim。
+
+paired verdict只使用20个未插桩execution-package的submit-to-all-completion样本：前四个block报告paired median effect、
+MAD noise floor和bootstrap 95% interval，effect必须超过`max(1%, 3*MAD noise)`且第五block同方向，才可标
+`improved`或`regressed`；否则为`inconclusive`，协议、correctness或measurement-basis失败为`invalid`。
+summary的entry-local cycles、aggregate PMU及count/trace都只用于diagnostic analysis，profile/cache扰动不得驱动或修正
+speed verdict。
+
+当前foundation允许16个local cycle domain的clock mapping显式为invalid/unavailable；报告此时必须展示all-and-only 16行
+entry-local timeline，并声明不能比较cross-tile先后、overlap或global critical path。未来可增加带uncertainty的qualified
+affine mapping，但它是可选增强而不是本foundation completion gate。finding必须区分`measured`、`correlated`和
+`unresolved`。profiler foundation只发布证据和人工分析；在环境、重复、held-out及适用的counter
+unit/clear/wrap/workload correlation全部闭合并冻结calibrated profile前，不得反馈candidate ranking。
+
 ## 13. CI And Reproducibility
 
 - pinned LLVM/StableHLO/Shardy/XLA/PyTorch-XLA依赖和实际feature写入构建记录；

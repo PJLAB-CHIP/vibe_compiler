@@ -54,6 +54,13 @@
 
 ## 实施计划导航
 
+当前Q9 profiler foundation按`tasks/plans/board-profiler.md`实施：唯一public入口是
+`wafer-compile --profile`，普通package逐字节保持不变；最后写入的activation把production manifest与companion
+metadata exact-hash绑定。`wafer-run`复用既有resource/expected/output binding，在一个qualified session内自动完成同源baseline/winner
+未插桩20-sample成对测量，以及分离的summary/PMU、count和16-tile真实`TsmExecute` trace、分析与离线report。
+tile clock未资格化时只展示16行entry-local timeline，不声称跨tile顺序。它尚不回写candidate cost；动态状态只看
+`tasks/progress.md`。
+
 最新完成任务为Q32.N numeric algebraic extension，实施计划见
 `tasks/plans/numeric-algebraic-extension.md`。它直接删除physical-dataflow algebraic、reduction/GEMM切分和
 Ring collective中不必要的float类型门槛，以无额外标注的f16/bf16覆盖现有production pipeline，不增加

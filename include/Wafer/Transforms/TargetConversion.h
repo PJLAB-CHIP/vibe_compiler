@@ -24,6 +24,7 @@ struct TargetConversionRequest {
   int64_t logicalRank = -1;
   int64_t transportStatusArgumentIndex = -1;
   TargetLaunchABIId launchABI = TargetLaunchABIId::perRankPointerBlockV1();
+  int64_t profileRecordArgumentIndex = -1;
 };
 
 std::unique_ptr<mlir::Pass>

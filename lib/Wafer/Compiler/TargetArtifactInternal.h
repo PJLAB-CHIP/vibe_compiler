@@ -3,7 +3,9 @@
 #ifndef WAFER_COMPILER_TARGETARTIFACTINTERNAL_H
 #define WAFER_COMPILER_TARGETARTIFACTINTERNAL_H
 
+#include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Target/TargetCall.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -76,6 +78,44 @@ namespace detail {
 inline constexpr llvm::StringLiteral kClusterPrepareExportSymbol =
     "__wafer_cluster_prepare";
 
+/// Compiler-internal target capture kinds. They are implementation details of
+/// the single profiling product and are never user-selectable driver modes.
+enum class ProfileCaptureKind : uint8_t { None, Summary, Count, Trace };
+
+llvm::StringRef stringifyProfileCaptureKind(ProfileCaptureKind capture);
+uint64_t getProfileCaptureRecordBytes(ProfileCaptureKind capture);
+llvm::Error
+verifyProfileCaptureKernelABISlots(llvm::ArrayRef<KernelABISlot> slots,
+                                   ProfileCaptureKind capture);
+
+struct ProfileTSMCallSite {
+  uint64_t siteId = 0;
+  uint64_t functionOrdinal = 0;
+  uint64_t blockOrdinal = 0;
+  uint64_t instructionOrdinal = 0;
+  uint64_t targetCallOrdinal = 0;
+  std::string targetCallSymbol;
+  TargetCallTSMEngine engine = TargetCallTSMEngine::CT;
+  std::string correlationKey;
+};
+
+/// Collects all and only entry-reachable registered target calls whose closed
+/// semantic mapping reaches one of the five TsmExecute CRT helpers.
+llvm::Expected<std::vector<ProfileTSMCallSite>>
+collectProfileTSMCallSites(const llvm::Module &module,
+                           llvm::StringRef entrySymbol);
+
+/// Adds profile entry bracketing for every non-None capture and per-site
+/// bracketing only for Trace. Count relies on the trace CRT helper to count the
+/// real TsmExecute calls without carrying per-site branches.
+llvm::Error instrumentProfileTargetModule(llvm::Module &module,
+                                          llvm::StringRef entrySymbol,
+                                          ProfileCaptureKind capture);
+llvm::Error
+verifyProfileTargetModuleInstrumentation(const llvm::Module &module,
+                                         llvm::StringRef entrySymbol,
+                                         ProfileCaptureKind capture);
+
 /// Owns one synthesized LLVM module and its uniquing context. Declaration
 /// order ensures the module is destroyed before its context.
 struct OwnedTargetLLVMModule {
@@ -96,6 +136,8 @@ struct PreparedTargetRank {
   int64_t logicalRank = -1;
   int64_t defaultDDRArenaArgumentIndex = -1;
   int64_t transportStatusArgumentIndex = -1;
+  int64_t profileRecordArgumentIndex = -1;
+  ProfileCaptureKind profileCapture = ProfileCaptureKind::None;
 };
 
 struct TargetModuleReadback {
@@ -108,7 +150,8 @@ bool isRegularTargetFile(llvm::StringRef path);
 
 mlir::FailureOr<PreparedTargetRank>
 prepareTargetABI(const RankExecutable &rankExecutable,
-                 const ExecutionConfig &executionConfig);
+                 const ExecutionConfig &executionConfig,
+                 ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
 mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared);
 mlir::LogicalResult verifyLoweredKernelABI(PreparedTargetRank &prepared,
                                            llvm::StringRef entrySymbol);
@@ -124,20 +167,23 @@ llvm::Error verifyTargetLLVMModule(const llvm::Module &module,
                                    llvm::StringRef expectedModuleFormat,
                                    llvm::ArrayRef<KernelABISlot> expectedSlots);
 
-llvm::Error writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
-                        llvm::ArrayRef<KernelABISlot> slots,
-                        TargetLaunchABIId targetLaunchABI, int64_t logicalRank,
-                        int64_t rankCount, llvm::StringRef path);
+llvm::Error
+writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
+            llvm::ArrayRef<KernelABISlot> slots,
+            TargetLaunchABIId targetLaunchABI, int64_t logicalRank,
+            int64_t rankCount, llvm::StringRef path,
+            ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
 llvm::Error writeTargetLLVMIR(const llvm::Module &module, llvm::StringRef path);
 
 /// Imports the complete rank domain into one context, scopes every supported
 /// definition by rank, links it, and creates typed prepare/main exports.
 llvm::Expected<OwnedTargetLLVMModule>
 buildClusterTargetModule(const TargetLLVMModuleBundle &targetLLVMModules);
-llvm::Error runDeviceLink(const TargetToolchain &toolchain,
-                          llvm::StringRef llvmIR, llvm::StringRef module,
-                          llvm::StringRef object, llvm::StringRef crtObject,
-                          TargetLaunchABIId targetLaunchABI);
+llvm::Error
+runDeviceLink(const TargetToolchain &toolchain, llvm::StringRef llvmIR,
+              llvm::StringRef module, llvm::StringRef object,
+              llvm::StringRef crtObject, TargetLaunchABIId targetLaunchABI,
+              ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
 llvm::Expected<TargetModuleReadback> verifyTargetModule(
     llvm::StringRef path, llvm::ArrayRef<VerifiedTargetExport> expectedExports,
     TargetProfileId expectedProfile, TargetLaunchABIId expectedLaunchABI);
@@ -169,7 +215,14 @@ llvm::Error validateTargetLaunchABIDomainForTesting(
 llvm::Expected<TargetLLVMModuleBundle>
 compileExecutableBundleToTargetLLVMModulesImpl(
     const ExecutableBundle &executableBundle, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank);
+    std::optional<int64_t> failAfterLogicalRank,
+    ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
+
+llvm::Expected<TargetArtifactBundle>
+compileTargetLLVMModuleBundleToTargetArtifactsImpl(
+    const TargetLLVMModuleBundle &targetLLVMModules,
+    llvm::StringRef outputDirectory, const TargetToolchain &toolchain,
+    llvm::raw_ostream &diagnostics, ProfileCaptureKind profileCapture);
 
 llvm::Expected<TargetArtifactBundle>
 compileExecutableBundleToTargetArtifactsImpl(

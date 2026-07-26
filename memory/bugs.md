@@ -1583,3 +1583,24 @@
   逐position统一的zero或seed，slot外guard保持不变。
 - 防复发：每个bounded behavior case都要列出它声称区分的候选模型，并至少有“只改padding”“破坏aux/metadata”
   和“破坏一个semantic target”三类mutation adequacy反例。完整span比较只证明越界保护，不证明被测语义发生。
+
+## 2026-07-26 Profiler CRT跨launch绑定必须显式失效
+
+- 现象：profile CRT把本次record地址缓存为全局绑定；若后续同一已加载module收到非法或缺失config并提前返回，
+  旧绑定可能继续指向上一次launch的DDR buffer，随后hook会污染旧record并制造看似有效的陈旧证据。
+- 根因：只在正常entry begin路径清理全局状态，没有把config解析失败和entry结束视为binding lifetime边界。
+- 修复模式：`entry_begin_from_config`在验证任何字段前先解绑；完整entry end发布terminal状态后再次解绑。非法配置
+  必须保持无绑定，不能沿用上一轮地址。
+- 防复发：所有跨invocation的device-side diagnostic pointer/cache都必须有明确begin/end失效协议，并覆盖
+  “首轮合法、次轮坏config”的连续launch负例；不能依赖module reload或host cleanup隐式清理。
+
+## 2026-07-26 TsmExecute raw返回值不能充当完成或成功判据
+
+- 现象：早期campaign/analyzer把profile record中的`raw_result != 1`判为失败；但当前硬件校准显示同一raw值可同时
+  出现在成功和非法类型观察中，返回值本身没有足够语义区分执行成功。
+- 根因：把submit wrapper的原始adapter observation误升格为terminal status，混淆call return、engine completion
+  和程序正确性三个边界。
+- 修复模式：record原样保存raw result供诊断，不参与trace validity或正确性gate。成功与完成只由既有all-rank
+  trusted completion、transport status、完整writable-output exact validation及record guard/state合同判定。
+- 防复发：未由独立规范和区分向量资格化的raw寄存器/返回值只能作为observation；测试必须包含raw为0但其它
+  completion/output/record合同全部有效的正例，避免再次硬编码“成功值”。

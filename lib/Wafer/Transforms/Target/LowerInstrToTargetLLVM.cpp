@@ -31,6 +31,7 @@ struct LowerInstrToTargetLLVMPass
     defaultDDRArenaArgumentIndex = request.defaultDDRArenaArgumentIndex;
     logicalRank = request.logicalRank;
     transportStatusArgumentIndex = request.transportStatusArgumentIndex;
+    profileRecordArgumentIndex = request.profileRecordArgumentIndex;
   }
 
   void runOnOperation() override {
@@ -104,7 +105,7 @@ struct LowerInstrToTargetLLVMPass
     if (mlir::failed(target_llvm_detail::lowerModuleInPlace(
             *loweredModule, *resolvedProfile, *resolvedLaunchABI,
             defaultDDRArenaArgumentIndex, logicalRank,
-            transportStatusArgumentIndex))) {
+            transportStatusArgumentIndex, profileRecordArgumentIndex))) {
       signalPassFailure();
       return;
     }
@@ -115,6 +116,7 @@ struct LowerInstrToTargetLLVMPass
 
   std::optional<TargetProfileId> typedTargetProfile;
   std::optional<TargetLaunchABIId> typedLaunchABI;
+  int64_t profileRecordArgumentIndex = -1;
 };
 
 } // namespace

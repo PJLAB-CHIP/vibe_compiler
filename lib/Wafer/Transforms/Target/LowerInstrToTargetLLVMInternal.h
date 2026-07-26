@@ -59,9 +59,9 @@ mlir::FailureOr<int64_t> getStaticViewOffsetBytes(mlir::Operation *op,
                                                   llvm::StringRef role);
 mlir::FailureOr<DynamicSubviewAddressPlan>
 analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp);
-mlir::FailureOr<int64_t>
-getStaticUInt32SPMAddress(mlir::Operation *op, mlir::Value value,
-                          llvm::StringRef role);
+mlir::FailureOr<int64_t> getStaticUInt32SPMAddress(mlir::Operation *op,
+                                                   mlir::Value value,
+                                                   llvm::StringRef role);
 mlir::FailureOr<int64_t> getStaticSPMAddress(mlir::Operation *op,
                                              mlir::Value value,
                                              llvm::StringRef role);
@@ -158,10 +158,11 @@ struct DirectCallGraph {
 };
 
 mlir::LogicalResult flattenTileRegions(mlir::ModuleOp moduleOp);
-mlir::LogicalResult
-analyzeDirectCallGraph(mlir::ModuleOp moduleOp, DirectCallGraph &graph,
-                       int64_t defaultDDRArenaArgumentIndex,
-                       int64_t transportStatusArgumentIndex);
+mlir::LogicalResult analyzeDirectCallGraph(mlir::ModuleOp moduleOp,
+                                           DirectCallGraph &graph,
+                                           int64_t defaultDDRArenaArgumentIndex,
+                                           int64_t transportStatusArgumentIndex,
+                                           int64_t profileRecordArgumentIndex);
 mlir::FailureOr<mlir::func::FuncOp>
 findUniqueRootFunction(mlir::ModuleOp moduleOp, const DirectCallGraph &graph);
 mlir::LogicalResult analyzeDDRAliasContracts(
@@ -192,7 +193,8 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
                                        TargetLaunchABIId launchABI,
                                        int64_t defaultDDRArenaArgumentIndex,
                                        int64_t logicalRank,
-                                       int64_t transportStatusArgumentIndex);
+                                       int64_t transportStatusArgumentIndex,
+                                       int64_t profileRecordArgumentIndex);
 
 } // namespace wafer::target_llvm_detail
 

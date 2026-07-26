@@ -5,7 +5,6 @@
 #define WAFER_COMPILER_EXECUTABLEBUNDLEINTERNAL_H
 
 #include "Wafer/Compiler/Compilation.h"
-
 #include "WholeVariantSelection.h"
 
 #include <optional>
@@ -35,6 +34,12 @@ struct ExecutableBundleBuilder {
 
 namespace detail {
 
+struct ProfileExecutableBundles {
+  ExecutableBundle production;
+  std::optional<ExecutableBundle> reservedBaseline;
+  bool productionIsReservedBaseline = false;
+};
+
 mlir::LogicalResult
 verifyExactExecutionConfig(mlir::ModuleOp module,
                            const ExecutionConfig &executionConfig);
@@ -46,6 +51,18 @@ llvm::Expected<ExecutableBundle> buildExecutableBundle(
     std::optional<int64_t> failAfterLogicalRank,
     WholeVariantSelectionMode selectionMode =
         WholeVariantSelectionMode::Production);
+
+llvm::Expected<ProfileExecutableBundles> buildProfileExecutableBundles(
+    std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
+    frontend::FrontendProgramVerificationResult program,
+    ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLogicalRank);
+
+llvm::Expected<ProfileExecutableBundles>
+compileTensorProgramToProfileExecutableBundlesImpl(
+    llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
+    llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLogicalRank);
 
 } // namespace detail
 } // namespace wafer::compiler
