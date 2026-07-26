@@ -293,12 +293,25 @@ int main(int argc, char **argv) {
       std::getenv("WAFER_TEST_FAIL_AFTER_TARGET_LOGICAL_RANK");
   const char *packageFailureRank =
       std::getenv("WAFER_TEST_FAIL_AFTER_PACKAGE_LOGICAL_RANK");
+  const char *reservedBaseline =
+      std::getenv("WAFER_TEST_SELECT_RESERVED_BASELINE");
   unsigned failureInjectionCount = (failureRank ? 1u : 0u) +
                                    (targetFailureRank ? 1u : 0u) +
                                    (packageFailureRank ? 1u : 0u);
   if (failureInjectionCount > 1) {
     llvm::errs() << "wafer-compile: multiple test-only failure injections "
                     "are not allowed\n";
+    return 1;
+  }
+  if (reservedBaseline && failureInjectionCount != 0) {
+    llvm::errs()
+        << "wafer-compile: test-only reserved-baseline selection cannot be "
+           "combined with failure injection\n";
+    return 1;
+  }
+  if (reservedBaseline && llvm::StringRef(reservedBaseline) != "1") {
+    llvm::errs()
+        << "wafer-compile: invalid test-only reserved-baseline selection\n";
     return 1;
   }
   if (failureRank) {
@@ -332,6 +345,20 @@ int main(int argc, char **argv) {
         wafer::compiler::testing::compileProgramWithPackageRankFailure(
             std::move(*request), *options.outputProgramDirectory, helperPath,
             *targetToolchain, parsedFailureRank, llvm::errs());
+  } else if (reservedBaseline) {
+    if (options.targetModel) {
+      llvm::errs() << "wafer-compile: test-only reserved-baseline selection "
+                      "does not support target-model execution\n";
+      return 1;
+    }
+    mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
+        wafer::compiler::testing::compileProgramWithReservedBaseline(
+            std::move(*request), *options.outputProgramDirectory, helperPath,
+            *targetToolchain, llvm::errs());
+    if (mlir::succeeded(compiledProgram)) {
+      executableBundle.emplace(std::move(*compiledProgram));
+      compilationStatus = mlir::success();
+    }
   } else
 #endif
   {

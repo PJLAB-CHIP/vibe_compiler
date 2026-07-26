@@ -564,6 +564,32 @@ recipe与scope policy先分别入列，再优先加入source×recipe、source×p
 materialize。implementation与direct-mapped route等同一task内的可组合参数必须形成同一actual recipe；只生成两个单点不能冒充
 联合覆盖。实现与winner证据见`tasks/archive/bounded-joint-physical-dataflow-selection.md`。
 
+### 8.1 Production optimizer 同源成对资格边界
+
+production package单独通过数值板测，只能证明当前winner在该输入和环境中可执行，不能证明某项优化确实进入最终目标程序，
+也不能证明它相对保守候选更优。compiler-wide资格因此复用coordinator已经保留并通过完整whole-variant gate的唯一
+reserved baseline，与默认production winner形成同源成对输入：
+
+- baseline与winner必须来自同一verified source snapshot、ExecutionConfig、TargetProfileId和host-visible ABI；二者分别从各自
+  accepted Instr IR继续经过target translation、device link、manifest publication和readback，不能通过改source、跳pass或编译
+  两个不同版本伪造对照；
+- compiler-private characterization seam只允许测试入口提交已经被同一late gate接受的all-baseline tuple。它不序列化frontier，
+  不新增公开的强制tile/layout/collective/ordinal选项，也不改变正常source-to-package driver始终提交默认winner的行为；
+- 资格按最终可观察机制合并implementation/tile/physical route、resident/share/recompute、numeric DAG、ready-order和
+  collective algorithm；canonicalization、alias proof、packing reject和verifier negative继续由host exact gate闭合，不按
+  pass数量消耗板卡。当前LICM缺少真实公开source producer，Ring all-gather没有结构不同的production winner，二者明确保留
+  host gate，不以测试旁路或相同package消耗板卡；
+- 对照首先检查host-visible manifest boundary一致，再从最终linked ELF按case读取实际可证明的静态callsite种类/数量、
+  straight-line scheduler顺序、workspace或scheduler-body hash；没有CFG/peer解析的case不得声称动态顺序或完整transport
+  graph。candidate统计、pre-lowering IR标签或producer计数不能替代最终结构证据。随后两份package都必须对同一CPU
+  expected完成全输出、output canary/status和lifecycle验证。
+
+该资格链属于Q37的pre-board/board evidence，不重新打开已经闭合的raw hardware-calibration checkpoint，也不修改Q32完成结论。
+其成对样本在没有可信device measurement basis时只保留为原始observation；host进程wall time、单次样本、untimed model或仅有
+正确性差异都不能改写本节static policy。只有Q9在PMU counter unit、clear/wrap、workload correlation、重复稳定性和held-out
+均闭合后，才能把与同一候选对齐的device观测发布为calibrated ranking profile；该profile仍只能重排已通过全部exact gate的
+候选。
+
 ## 9. All-Rank Coordination 和 Atomicity
 
 all-rank coordination保留现有 compiler-level owner，不放入function pass，也不建立跨rank shadow program。每个rank candidate

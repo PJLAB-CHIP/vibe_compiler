@@ -6,6 +6,8 @@
 
 #include "Wafer/Compiler/Compilation.h"
 
+#include "WholeVariantSelection.h"
+
 #include <optional>
 #include <utility>
 
@@ -41,7 +43,9 @@ llvm::Expected<ExecutableBundle> buildExecutableBundle(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank);
+    std::optional<int64_t> failAfterLogicalRank,
+    WholeVariantSelectionMode selectionMode =
+        WholeVariantSelectionMode::Production);
 
 } // namespace detail
 } // namespace wafer::compiler

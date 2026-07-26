@@ -353,6 +353,58 @@ set_tests_properties(wafer-ddr-sparse-high-offset-contract-python PROPERTIES
 if(WAFER_ENABLE_IMPORTER_DEPS AND
    WAFER_ENABLE_SPMD_PARTITIONER_DEPS AND
    WAFER_XLA_SPMD_PARTITIONER_HELPER)
+  set(_wafer_compiler_optimization_rank_one_cases
+    reciprocal-implementation
+    modular-common-factor
+    resident-fanout-share
+    consumer-local-recompute
+    ready-order-movement-first
+    gemm-aligned-physical-route
+    gemm-tail-physical-route
+  )
+  set(_wafer_compiler_optimization_collective_cases
+    tree-all-reduce
+  )
+  set(_wafer_tx81_objdump
+    ${CMAKE_SOURCE_DIR}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump
+  )
+  if(NOT EXISTS "${_wafer_tx81_objdump}")
+    message(FATAL_ERROR
+      "Compiler optimization package tests require the vendored TX81 objdump")
+  endif()
+  add_test(NAME wafer-compiler-optimization-campaign-catalog-python
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_compiler_optimization_campaign_catalog_test.py
+  )
+  set_tests_properties(
+    wafer-compiler-optimization-campaign-catalog-python PROPERTIES
+    LABELS "runtime;no-card;compiler-optimization;catalog"
+    TIMEOUT 60
+  )
+  foreach(_wafer_compiler_optimization_case IN LISTS
+      _wafer_compiler_optimization_rank_one_cases
+      _wafer_compiler_optimization_collective_cases)
+    add_test(
+      NAME
+        wafer-runtime-compiler-optimization-${_wafer_compiler_optimization_case}-no-card
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_compiler_optimization_campaign_test.py
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-compile-test $<TARGET_FILE:wafer-compile-test>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --tx8-objdump ${_wafer_tx81_objdump}
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-compiler-optimization-${_wafer_compiler_optimization_case}
+        --case ${_wafer_compiler_optimization_case}
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-compiler-optimization-${_wafer_compiler_optimization_case}-no-card
+      PROPERTIES
+      LABELS "runtime;no-card;compiler-optimization;paired"
+      TIMEOUT 1800
+    )
+  endforeach()
   foreach(_wafer_no_card_launch_test IN ITEMS kernel-grid model)
     if(_wafer_no_card_launch_test STREQUAL "kernel-grid")
       set(_wafer_no_card_launch_abi
@@ -1653,6 +1705,39 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     SKIP_RETURN_CODE 77
     TIMEOUT 600
   )
+  foreach(_wafer_compiler_optimization_case IN LISTS
+      _wafer_compiler_optimization_rank_one_cases)
+    add_test(
+      NAME
+        wafer-board-compiler-optimization-${_wafer_compiler_optimization_case}
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_compiler_optimization_campaign_test.py
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-compile-test $<TARGET_FILE:wafer-compile-test>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --tx8-objdump ${_wafer_tx81_objdump}
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-compiler-optimization-${_wafer_compiler_optimization_case}
+        --case ${_wafer_compiler_optimization_case}
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 60000
+        --repeat 3
+    )
+    set_tests_properties(
+      wafer-board-compiler-optimization-${_wafer_compiler_optimization_case}
+      PROPERTIES
+      LABELS "board;hardware;compiler-optimization;paired;rank-one"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 1800
+    )
+  endforeach()
   if(WAFER_BOARD_TEST_EXPECTED_TILE_COUNT EQUAL 16)
     add_test(NAME wafer-board-per-rank-add-smoke
       COMMAND ${Python3_EXECUTABLE}
@@ -1745,6 +1830,41 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       SKIP_RETURN_CODE 77
       TIMEOUT 600
     )
+    foreach(_wafer_compiler_optimization_case IN LISTS
+        _wafer_compiler_optimization_collective_cases)
+      add_test(
+        NAME
+          wafer-board-compiler-optimization-${_wafer_compiler_optimization_case}
+        COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_compiler_optimization_campaign_test.py
+          --wafer-compile $<TARGET_FILE:wafer-compile>
+          --wafer-compile-test $<TARGET_FILE:wafer-compile-test>
+          --wafer-run $<TARGET_FILE:wafer-run>
+          --tx8-objdump ${_wafer_tx81_objdump}
+          --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}/board-compiler-optimization-${_wafer_compiler_optimization_case}
+          --case ${_wafer_compiler_optimization_case}
+          --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+          --expected-runtime-version
+            ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+          --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+          --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+          --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+          --expected-runtime-library-sha256
+            ${_wafer_expected_tx_runtime_library_sha256}
+          --completion-timeout-ms 60000
+          --repeat 3
+      )
+      set_tests_properties(
+        wafer-board-compiler-optimization-${_wafer_compiler_optimization_case}
+        PROPERTIES
+        LABELS
+          "board;hardware;compiler-optimization;paired;all-rank;direct-dte"
+        RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 3600
+      )
+    endforeach()
     add_test(NAME wafer-board-dte-ncc-execution-probe
       COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_dte_ncc_execution_probe_test.py
@@ -1878,6 +1998,10 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
   unset(_wafer_expected_tx_runtime_library_sha256_length)
   unset(_wafer_tx_runtime_library_sha256)
 endif()
+unset(_wafer_compiler_optimization_case)
+unset(_wafer_compiler_optimization_collective_cases)
+unset(_wafer_compiler_optimization_rank_one_cases)
+unset(_wafer_tx81_objdump)
 
 add_test(NAME wafer-numeric-dependency-record-python
   COMMAND ${Python3_EXECUTABLE}

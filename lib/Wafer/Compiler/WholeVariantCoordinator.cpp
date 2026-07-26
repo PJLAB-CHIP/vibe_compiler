@@ -671,7 +671,8 @@ static std::string summarizeAttemptFailure(llvm::ArrayRef<size_t> indices,
 mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
     const std::vector<RankVariantFrontier> &frontiers,
     const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics) {
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    WholeVariantSelectionMode selectionMode) {
   if (program.logicalRankCount != executionConfig.getRankCount()) {
     diagnostics << "wafer-compile: typed program rank domain does not match "
                    "whole-variant ExecutionConfig\n";
@@ -754,6 +755,9 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
     return mlir::failure();
   }
   AcceptedWholeVariant baselineAccepted = std::move(*baseline);
+  if (selectionMode == WholeVariantSelectionMode::ReservedBaseline)
+    return baselineAccepted;
+
   llvm::SmallVector<AcceptedWholeVariant, kWholeVariantParetoLimit>
       paretoFrontier;
   auto retainAccepted = [&](mlir::FailureOr<AcceptedWholeVariant> accepted) {

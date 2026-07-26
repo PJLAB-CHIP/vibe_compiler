@@ -31,6 +31,16 @@ from collections.abc import Mapping, Sequence
 ARM_ENVIRONMENT_VARIABLE = "WAFER_EXECUTE_HARDWARE_TESTS"
 HEARTBEAT_CTEST = "wafer-board-single-op-add"
 SUMMARY_SCHEMA_VERSION = 1
+COMPILER_OPTIMIZATION_PAIRED_CASES = (
+    "reciprocal-implementation",
+    "modular-common-factor",
+    "resident-fanout-share",
+    "consumer-local-recompute",
+    "ready-order-movement-first",
+    "gemm-aligned-physical-route",
+    "gemm-tail-physical-route",
+    "tree-all-reduce",
+)
 
 
 class CalibrationRunnerError(RuntimeError):
@@ -375,6 +385,30 @@ EXPLICIT_ONLY_STEPS = (
         "wafer-board-spm-calibration",
         "explicit replay of old and new SPM rows",
     ),
+    *tuple(
+        CalibrationStep(
+            f"compiler-optimization-{case_name}",
+            "rank-one-compiler-optimization",
+            f"wafer-board-compiler-optimization-{case_name}",
+            (
+                "same-source reserved-baseline versus production-winner "
+                f"correctness and target-structure pair for {case_name}"
+            ),
+        )
+        for case_name in COMPILER_OPTIMIZATION_PAIRED_CASES[:-1]
+    ),
+    CalibrationStep(
+        f"compiler-optimization-{COMPILER_OPTIMIZATION_PAIRED_CASES[-1]}",
+        "full-card-compiler-optimization",
+        (
+            "wafer-board-compiler-optimization-"
+            f"{COMPILER_OPTIMIZATION_PAIRED_CASES[-1]}"
+        ),
+        (
+            "same-source reserved-baseline versus production tree all-reduce "
+            "correctness and final-target communication-work pair"
+        ),
+    ),
     CalibrationStep(
         "datamove-native-concat-hw-isolated",
         "isolated-final",
@@ -390,6 +424,18 @@ ALL_CALIBRATION_STEPS = (
     *CALIBRATION_STEPS[:-1],
     *EXPLICIT_ONLY_STEPS,
     CALIBRATION_STEPS[-1],
+)
+
+SELECTABLE_BATCHES = {
+    "compiler-optimization-paired": tuple(
+        step.key
+        for step in EXPLICIT_ONLY_STEPS
+        if step.key.startswith("compiler-optimization-")
+    ),
+}
+SELECTABLE_BATCHES["compiler-optimization-campaign"] = (
+    "direct-dte-collective",
+    *SELECTABLE_BATCHES["compiler-optimization-paired"],
 )
 
 
@@ -411,7 +457,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "explicitly authorize the default fail-fast board plan, or the "
-            "subset named by --step"
+            "subset named by --step/--batch"
         ),
     )
     parser.add_argument(
@@ -437,6 +483,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "execute/list only this named calibration step; repeatable. "
             "The initial and terminal known-good heartbeats are added "
             "automatically, and execution retains canonical order."
+        ),
+    )
+    parser.add_argument(
+        "--batch",
+        action="append",
+        dest="selected_batches",
+        metavar="NAME",
+        help=(
+            "execute/list every step in this named explicit batch; repeatable. "
+            "The compiler-optimization-paired batch retains canonical order "
+            "between automatic heartbeats."
         ),
     )
     parser.add_argument("--ctest", default="ctest", help="CTest executable")
@@ -612,12 +669,33 @@ def validate_default_plan() -> None:
 
 def select_calibration_steps(
     selected_keys: Sequence[str] | None,
+    selected_batches: Sequence[str] | None = None,
 ) -> tuple[CalibrationStep, ...]:
     validate_default_plan()
-    if not selected_keys:
+    if not selected_keys and not selected_batches:
         return CALIBRATION_STEPS
+    selected_keys = tuple(selected_keys or ())
+    selected_batches = tuple(selected_batches or ())
+    duplicate_batches = sorted(
+        batch
+        for batch, count in Counter(selected_batches).items()
+        if count > 1
+    )
+    if duplicate_batches:
+        raise CalibrationRunnerError(
+            f"calibration batches were selected more than once: "
+            f"{duplicate_batches}"
+        )
+    unknown_batches = sorted(set(selected_batches) - set(SELECTABLE_BATCHES))
+    if unknown_batches:
+        raise CalibrationRunnerError(
+            f"unknown calibration batch names: {unknown_batches}"
+        )
+    expanded_keys = list(selected_keys)
+    for batch in selected_batches:
+        expanded_keys.extend(SELECTABLE_BATCHES[batch])
     duplicates = sorted(
-        key for key, count in Counter(selected_keys).items() if count > 1
+        key for key, count in Counter(expanded_keys).items() if count > 1
     )
     if duplicates:
         raise CalibrationRunnerError(
@@ -627,7 +705,7 @@ def select_calibration_steps(
         CALIBRATION_STEPS[0].key,
         CALIBRATION_STEPS[-1].key,
     }
-    explicitly_automatic = sorted(set(selected_keys) & automatic_keys)
+    explicitly_automatic = sorted(set(expanded_keys) & automatic_keys)
     if explicitly_automatic:
         raise CalibrationRunnerError(
             "heartbeat steps are automatic and cannot be selected explicitly: "
@@ -636,12 +714,12 @@ def select_calibration_steps(
     selectable = {
         step.key: step for step in ALL_CALIBRATION_STEPS[1:-1]
     }
-    unknown = sorted(set(selected_keys) - set(selectable))
+    unknown = sorted(set(expanded_keys) - set(selectable))
     if unknown:
         raise CalibrationRunnerError(
             f"unknown calibration step keys: {unknown}"
         )
-    selected = set(selected_keys)
+    selected = set(expanded_keys)
     ordered = tuple(
         step
         for step in ALL_CALIBRATION_STEPS[1:-1]
@@ -847,12 +925,22 @@ def archive_step_artifacts(
         raise CalibrationRunnerError(
             f"{test.name}: declared work directory was not produced: {work_dir}"
         )
+    durable_suffixes = {".raw", ".json", ".jsonl"}
+    preserves_compiler_artifacts = (
+        "compiler-optimization" in test.labels
+        or test.name == "wafer-board-cluster-direct-dte"
+    )
+    if preserves_compiler_artifacts:
+        # The paired optimizer result is not replayable from its JSON summary
+        # alone. Preserve the exact source snapshots and final linked ELFs used
+        # by the structural oracle as well.
+        durable_suffixes.update({".mlir", ".meta", ".so"})
     evidence_files = tuple(
         path
         for path in sorted(work_dir.rglob("*"))
         if path.is_file()
         and (
-            path.suffix in {".raw", ".json", ".jsonl"}
+            path.suffix in durable_suffixes
             or path.name in {"session.txt", "summary.txt"}
         )
     )
@@ -871,11 +959,37 @@ def archive_step_artifacts(
                 "sha256": digest,
             }
         )
+    tool_options = (
+        "--wafer-compile",
+        "--wafer-compile-test",
+        "--wafer-run",
+        "--tx8-objdump",
+    )
+    tools: list[dict[str, object]] = []
+    for option in tool_options:
+        value = command_option_value(test.command, option)
+        if value is None:
+            continue
+        tool = pathlib.Path(value)
+        if not tool.is_file():
+            raise CalibrationRunnerError(
+                f"{test.name}: {option} tool does not exist: {tool}"
+            )
+        tools.append(
+            {
+                "option": option,
+                "path": str(tool),
+                "bytes": tool.stat().st_size,
+                "sha256": hashlib.sha256(tool.read_bytes()).hexdigest(),
+            }
+        )
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "ctest": test.name,
+        "ctest_command": list(test.command),
         "source_work_dir": str(work_dir),
         "files": manifest_files,
+        "tools": tools,
     }
     manifest_path = destination / "manifest.json"
     manifest_path.write_text(
@@ -936,13 +1050,17 @@ def execute_calibration(
     child_environment["CTEST_OUTPUT_ON_FAILURE"] = "1"
 
     build_log = log_dir / "000-incremental-build.log"
+    build_targets = ["wafer-compile", "wafer-run"]
+    if any(
+        step.key.startswith("compiler-optimization-") for step in steps
+    ):
+        build_targets.append("wafer-compile-test")
     build_command = [
         cmake,
         "--build",
         str(build_dir),
         "--target",
-        "wafer-compile",
-        "wafer-run",
+        *build_targets,
         "--parallel",
     ]
     print(f"[build] {shlex.join(build_command)}")
@@ -1034,7 +1152,7 @@ def execute_calibration(
                 log_dir / "artifacts" / stem,
             )
         except (CalibrationRunnerError, OSError) as error:
-            artifact_error = f"failed to archive raw evidence: {error}"
+            artifact_error = f"failed to archive durable evidence: {error}"
             if junit_error is None:
                 junit_error = artifact_error
         status = "passed" if junit_error is None else "failed"
@@ -1104,7 +1222,9 @@ def main(
     build_dir = args.build_dir.resolve()
     try:
         validate_default_plan()
-        selected_steps = select_calibration_steps(args.selected_steps)
+        selected_steps = select_calibration_steps(
+            args.selected_steps, args.selected_batches
+        )
         if args.list:
             registered = load_registered_tests(
                 args.ctest, build_dir, active_environment

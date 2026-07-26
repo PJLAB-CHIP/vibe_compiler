@@ -8,6 +8,8 @@
 #include "Wafer/Frontend/Program.h"
 #include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 
+#include "WholeVariantSelection.h"
+
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
 
@@ -47,7 +49,9 @@ struct AcceptedWholeVariant {
 mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
     const std::vector<RankVariantFrontier> &frontiers,
     const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics);
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    WholeVariantSelectionMode selectionMode =
+        WholeVariantSelectionMode::Production);
 
 } // namespace wafer::compiler::detail
 

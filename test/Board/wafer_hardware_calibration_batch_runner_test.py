@@ -220,6 +220,8 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "instruction-family-full-replay",
                 "memory-descriptor-full-replay",
                 "spm-full-replay",
+                "compiler-optimization-reciprocal-implementation",
+                "compiler-optimization-tree-all-reduce",
                 "datamove-native-concat-hw-isolated",
             }.issubset(explicit_keys),
         )
@@ -283,6 +285,58 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         ):
             RUNNER.select_calibration_steps(("missing-step",))
 
+    def test_named_compiler_optimization_batch_is_complete_and_ordered(
+        self,
+    ) -> None:
+        selected = RUNNER.select_calibration_steps(
+            None, ("compiler-optimization-paired",)
+        )
+        self.assertEqual(
+            [step.key for step in selected],
+            [
+                "initial-profile-heartbeat",
+                *RUNNER.SELECTABLE_BATCHES["compiler-optimization-paired"],
+                "terminal-heartbeat",
+            ],
+        )
+        self.assertEqual(
+            len(RUNNER.SELECTABLE_BATCHES["compiler-optimization-paired"]),
+            8,
+        )
+        campaign = RUNNER.select_calibration_steps(
+            None, ("compiler-optimization-campaign",)
+        )
+        self.assertEqual(
+            [step.key for step in campaign],
+            [
+                "initial-profile-heartbeat",
+                "direct-dte-collective",
+                *RUNNER.SELECTABLE_BATCHES["compiler-optimization-paired"],
+                "terminal-heartbeat",
+            ],
+        )
+        with self.assertRaisesRegex(
+            RUNNER.CalibrationRunnerError, "batch names"
+        ):
+            RUNNER.select_calibration_steps(None, ("missing-batch",))
+        with self.assertRaisesRegex(
+            RUNNER.CalibrationRunnerError, "batches were selected more than once"
+        ):
+            RUNNER.select_calibration_steps(
+                None,
+                (
+                    "compiler-optimization-paired",
+                    "compiler-optimization-paired",
+                ),
+            )
+        with self.assertRaisesRegex(
+            RUNNER.CalibrationRunnerError, "steps were selected more than once"
+        ):
+            RUNNER.select_calibration_steps(
+                ("compiler-optimization-tree-all-reduce",),
+                ("compiler-optimization-paired",),
+            )
+
     def test_execute_runs_serially_and_records_per_step_evidence(self) -> None:
         self.assertEqual(self.execute(), 0)
         records = self.records()
@@ -315,16 +369,36 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         (work_dir / "raw").mkdir(parents=True)
         (work_dir / "raw" / "case.request.raw").write_bytes(b"\x01\x02")
         (work_dir / "result.json").write_text('{"status":"ok"}\n')
+        (work_dir / "source.mlir").write_text("module {}\n")
+        (work_dir / "module.so").write_bytes(b"ELF")
         (work_dir / "ignored.log").write_text("not durable evidence\n")
+        tools = {}
+        for name in (
+            "wafer-compile",
+            "wafer-compile-test",
+            "wafer-run",
+            "tx8-objdump",
+        ):
+            path = self.root / name
+            path.write_bytes(name.encode())
+            tools[name] = path
         test = RUNNER.RegisteredTest(
-            "wafer-board-artifact-sample",
+            "wafer-board-compiler-optimization-artifact-sample",
             (
                 "python3",
                 "probe.py",
+                "--wafer-compile",
+                str(tools["wafer-compile"]),
+                "--wafer-compile-test",
+                str(tools["wafer-compile-test"]),
+                "--wafer-run",
+                str(tools["wafer-run"]),
+                "--tx8-objdump",
+                str(tools["tx8-objdump"]),
                 "--work-dir",
                 str(work_dir),
             ),
-            frozenset(("board", "hardware")),
+            frozenset(("board", "hardware", "compiler-optimization")),
             30.0,
             "board-0",
         )
@@ -333,16 +407,34 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         )
         self.assertIsNotNone(archived)
         assert archived is not None
-        self.assertEqual(archived["file_count"], 2)
+        self.assertEqual(archived["file_count"], 4)
         manifest = json.loads(
             pathlib.Path(str(archived["manifest"])).read_text()
         )
         self.assertEqual(
             {item["path"] for item in manifest["files"]},
-            {"raw/case.request.raw", "result.json"},
+            {
+                "raw/case.request.raw",
+                "result.json",
+                "source.mlir",
+                "module.so",
+            },
+        )
+        self.assertEqual(manifest["schema_version"], 2)
+        self.assertEqual(
+            {item["option"] for item in manifest["tools"]},
+            {
+                "--wafer-compile",
+                "--wafer-compile-test",
+                "--wafer-run",
+                "--tx8-objdump",
+            },
         )
         self.assertTrue(
             all(len(item["sha256"]) == 64 for item in manifest["files"])
+        )
+        self.assertTrue(
+            all(len(item["sha256"]) == 64 for item in manifest["tools"])
         )
         self.assertFalse((self.root / "archived" / "ignored.log").exists())
 

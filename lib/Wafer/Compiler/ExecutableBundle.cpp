@@ -29,7 +29,8 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank) {
+    std::optional<int64_t> failAfterLogicalRank,
+    WholeVariantSelectionMode selectionMode) {
   auto fail = [&](llvm::StringRef message) -> llvm::Error {
     diagnostics << "wafer-compile: " << message << "\n";
     return llvm::createStringError(llvm::errc::invalid_argument, "%s",
@@ -138,15 +139,14 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
                     "logical rank " +
                     std::to_string(logicalRank));
       imported.push_back({std::move(module), candidate.stableOrdinal,
-                          candidate.artifactKind,
-                          candidate.reservedBaseline});
+                          candidate.artifactKind, candidate.reservedBaseline});
     }
     frontiers.push_back(std::move(imported));
   }
 
   mlir::FailureOr<detail::AcceptedWholeVariant> accepted =
       detail::selectAcceptedWholeVariant(frontiers, program, executionConfig,
-                                         diagnostics);
+                                         diagnostics, selectionMode);
   if (mlir::failed(accepted))
     return fail("whole-variant coordination failed");
   std::vector<RankExecutable> ranks = std::move(accepted->ranks);

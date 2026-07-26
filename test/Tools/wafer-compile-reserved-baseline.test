@@ -1,0 +1,33 @@
+# REQUIRES: stablehlo, shardy, xla-spmd-helper
+
+# RUN: rm -rf %t.input %t.outputs
+# RUN: mkdir -p %t.input/functions %t.outputs
+# RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%one = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    %%0 = stablehlo.divide %%one, %%arg0 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.input/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
+
+# Production selects the accepted reciprocal implementation, while the
+# test-only seam publishes the fully accepted reserved baseline from the same
+# source and transaction.
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/production --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 | FileCheck %s --check-prefix=PUBLISHED
+# RUN: env WAFER_TEST_SELECT_RESERVED_BASELINE=1 %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/baseline --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 | FileCheck %s --check-prefix=PUBLISHED
+# RUN: test -s %t.outputs/production/modules/module_00000.so
+# RUN: test -s %t.outputs/baseline/modules/module_00000.so
+# RUN: not cmp -s %t.outputs/production/modules/module_00000.so %t.outputs/baseline/modules/module_00000.so
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm %t.outputs/production/modules/module_00000.so | FileCheck %s --check-prefix=PRODUCTION
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm %t.outputs/baseline/modules/module_00000.so | FileCheck %s --check-prefix=BASELINE
+
+# The production binary does not consume the private environment seam.
+# RUN: env WAFER_TEST_SELECT_RESERVED_BASELINE=1 wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/production-with-env --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 | FileCheck %s --check-prefix=PUBLISHED
+# RUN: cmp -s %t.outputs/production/modules/module_00000.so %t.outputs/production-with-env/modules/module_00000.so
+
+# Baseline selection is one transaction mode and cannot be combined with a
+# rank, target-rank, or package-rank failure injection.
+# RUN: not env WAFER_TEST_SELECT_RESERVED_BASELINE=1 WAFER_TEST_FAIL_AFTER_LOGICAL_RANK=0 %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/conflicting --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 2>&1 | FileCheck %s --check-prefix=CONFLICT
+# RUN: test ! -e %t.outputs/conflicting
+
+# PUBLISHED: wafer-compile: published verified package with execution-ranks=1:
+# PRODUCTION: wafer_tx81_elementwise_recip
+# PRODUCTION-NOT: wafer_tx81_elementwise_div
+# BASELINE: wafer_tx81_elementwise_div
+# BASELINE-NOT: wafer_tx81_elementwise_recip
+# CONFLICT: wafer-compile: test-only reserved-baseline selection cannot be combined with failure injection

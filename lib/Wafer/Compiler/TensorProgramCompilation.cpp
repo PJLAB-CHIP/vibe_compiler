@@ -17,8 +17,8 @@ namespace wafer::compiler::detail {
 
 llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
-    llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank) {
+    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLogicalRank,
+    WholeVariantSelectionMode selectionMode) {
   auto fail = [&](llvm::StringRef message) -> llvm::Error {
     reject(diagnostics, message);
     return llvm::createStringError(llvm::errc::invalid_argument, "%s",
@@ -68,9 +68,9 @@ llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
     return fail("typed program resources do not cover all parameters and "
                 "constants");
 
-  return detail::buildExecutableBundle(context, *tensorModule,
-                                       std::move(program), executionConfig,
-                                       diagnostics, failAfterLogicalRank);
+  return detail::buildExecutableBundle(
+      context, *tensorModule, std::move(program), executionConfig, diagnostics,
+      failAfterLogicalRank, selectionMode);
 }
 
 } // namespace wafer::compiler::detail

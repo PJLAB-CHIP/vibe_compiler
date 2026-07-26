@@ -1495,3 +1495,21 @@
   base、length、alignment、reservation和owner，再以最小有界transfer进入板端。
 - 防复发：timeout后立即停当前批次，不自动retry/reset/power；管理面idle不能解除poison判断。恢复由干净
   重启后的单次known-good heartbeat重新建立，不靠cache flush或换地址继续试探。
+
+## 2026-07-26 单winner板测不能归因production optimizer
+
+- 现象：production package在板端完成并通过完整CPU output comparison，但该结果只能证明当前winner在tested domain
+  正确；它没有反事实证明目标优化进入最终ELF，也无法区分收益来自candidate选择、其它lowering变化、payload差异或运行噪声。
+  独立raw instruction/memory probe同样不能证明production coordinator选择了对应mechanism。
+- 根因：把“默认winner可执行”“优化结构已生效”和“相对baseline存在硬件收益”合并成一个结论，缺少同一source/profile/ABI
+  下、经过相同late gate的保守候选，以及最终目标结构和成对执行顺序证据。host wall time还混入provider、OS与runtime成本，
+  不能充当device cost。
+- 修复模式：从whole-variant coordinator已经接受的唯一reserved baseline建立compiler-private test seam，分别发布
+  baseline和正常production winner；锁定host-visible manifest语义边界一致，从最终linked ELF按case确认实际可证明的
+  静态callsite数量/种类、workspace、scheduler-body hash或已证straight-line顺序差异，
+  再让两包对同一CPU expected完成output、write-only complement canary、status和lifecycle。板端按A/B、B/A
+  平衡顺序串行并保存原始样本，
+  production入口和公开控制面保持不变。
+- 防复发：compiler优化轴必须明确映射到paired board、existing board、host exact或future production gate。单winner板测
+  只记correctness，no-card/ELF只记pre-board readiness；没有PMU measurement basis、候选相关性、重复和held-out时，不把
+  paired host wall time写成hardware speedup或Q9 ranking参数。

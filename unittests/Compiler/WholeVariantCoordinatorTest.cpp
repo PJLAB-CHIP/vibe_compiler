@@ -423,6 +423,45 @@ TEST_F(WholeVariantCoordinatorTest,
 }
 
 TEST_F(WholeVariantCoordinatorTest,
+       ReservedBaselineModeBypassesThePreferredProductionWinner) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(
+      candidate("    wafer.instr.local_fence", 1, 0, 9, true));
+  frontiers[0].push_back(candidate("", 1, 0, 1));
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string productionDiagnosticText;
+  llvm::raw_string_ostream productionDiagnostics(productionDiagnosticText);
+  auto production = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, productionDiagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::Production);
+  ASSERT_TRUE(mlir::succeeded(production)) << productionDiagnosticText;
+  ASSERT_EQ(production->selectedStableOrdinals.size(), 1u);
+  EXPECT_EQ(production->selectedStableOrdinals.front(), 1);
+  EXPECT_FALSE(production->selectedReservedBaselines.front());
+
+  std::string baselineDiagnosticText;
+  llvm::raw_string_ostream baselineDiagnostics(baselineDiagnosticText);
+  auto baseline = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, baselineDiagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::ReservedBaseline);
+  ASSERT_TRUE(mlir::succeeded(baseline)) << baselineDiagnosticText;
+  ASSERT_EQ(baseline->selectedStableOrdinals.size(), 1u);
+  EXPECT_EQ(baseline->selectedStableOrdinals.front(), 9);
+  EXPECT_TRUE(baseline->selectedReservedBaselines.front());
+
+  unsigned fences = 0;
+  baseline->ranks.front().getModule().walk(
+      [&](wafer::SyncLocalFenceOp) { ++fences; });
+  EXPECT_EQ(fences, 1u);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
        SelectsFinalParetoWinnerInsteadOfFirstBaselineImprovement) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
@@ -957,9 +996,8 @@ module {
   std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  auto accepted =
-      selectProductionVariant(*source, replicated1DProgram(3, 16, "bf16"),
-                              diagnostics, &baselineCost);
+  auto accepted = selectProductionVariant(
+      *source, replicated1DProgram(3, 16, "bf16"), diagnostics, &baselineCost);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_TRUE(baselineCost);
   const auto &winnerCost = accepted->resourceCost.rankCosts.front();
@@ -1536,8 +1574,7 @@ module {
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_TRUE(baselineCost);
   ASSERT_EQ(accepted->ranks.size(), 16u);
-  ASSERT_TRUE(
-      accepted->resourceCost.minimumHopLinkByteDemand.isKnown());
+  ASSERT_TRUE(accepted->resourceCost.minimumHopLinkByteDemand.isKnown());
   EXPECT_EQ(accepted->resourceCost.minimumHopLinkByteDemand.value, 3840u);
   // Both schedules inject 16 * 15 * 16 = 3840 bytes.  On this 4x4 mesh the
   // minimum-hop Hamiltonian ring uses one hop per send, while the direct
@@ -1765,9 +1802,9 @@ module {
       EXPECT_LT(gemm.getN(), fullOutputExtent);
       EXPECT_EQ(gemm.getK(), localContractingExtent);
       EXPECT_TRUE(gemm->getParentOfType<mlir::scf::ForOp>());
-      largestGemmOutputTileBytes = std::max(
-          largestGemmOutputTileBytes,
-          static_cast<int64_t>(gemm.getM() * gemm.getN() * 2));
+      largestGemmOutputTileBytes =
+          std::max(largestGemmOutputTileBytes,
+                   static_cast<int64_t>(gemm.getM() * gemm.getN() * 2));
     });
 
     auto checkDTEIssue = [&](auto issue) {

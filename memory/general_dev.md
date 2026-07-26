@@ -887,3 +887,24 @@
   保持保守。
 - ready-order的buffer hazard必须先沿`ViewLikeOpInterface`追到storage base；base memref与cast/subview/reshape view不是独立
   allocation。exact SSA value比较只适合use-def依赖，不能作为memory alias proof。
+
+## Production optimizer同源成对板测
+
+- 验证优化归因时，用同一source snapshot、payload、ExecutionConfig、target profile和host-visible ABI分别发布
+  coordinator已接受的reserved baseline与默认production winner。baseline选择只能是compiler-private test seam；
+  production driver、公开CLI和package schema保持不变，不能靠改source、关一组pass或编译两个版本构造对照。
+- 两份candidate必须各自重放完整SPM/DDR、instruction、transport、ABI、device-link、manifest和readback gate。先核对
+  manifest resource role/type/shape/bytes/alignment与launch/completion boundary一致，再从最终linked ELF检查目标call的
+  数量、种类、workspace、scheduler-body hash或已证明straight-line body中的顺序差异；没有对应解析器时不外推
+  dynamic CFG、loop归属或peer graph。pre-lowering IR和candidate counter不能代替可执行结构。
+- 板端正确性对baseline和winner使用同一独立CPU expected，完整比较output、write-only complement canary、
+  transport status和lifecycle。
+  一包失败即停止该pair；单winner通过只能证明该winner在tested domain可执行，不能证明优化归因或相对收益。
+- 同一已资格环境中按A/B、B/A平衡顺序单进程串行，初始/终止heartbeat各一次，所有launch有bounded outer timeout。
+  timeout或设备异常立即停批，不自动retry/reset/power。raw sample绑定package、device/runtime/firmware/toolchain identity。
+- 成对case的durable archive不能只保存summary JSON：至少保留逐字节相同的source snapshot、两份最终linked ELF和
+  manifest、结构/观测JSON、raw payload，以及实际compiler/runtime/objdump路径和digest；否则事后不能重放ELF oracle或
+  判断工具身份是否漂移。
+- host wall time受provider、OS和runtime噪声影响，只能记observation。只有PMU measurement basis、counter unit/clear/wrap、
+  workload correlation、重复稳定性和held-out都验证后，Q9才可消费成对device观测校准合法候选排序；correctness结果和
+  untimed model都不能直接写入cost常量。

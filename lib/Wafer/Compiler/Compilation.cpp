@@ -50,7 +50,8 @@ compileTensorProgramToExecutableBundle(llvm::StringRef tensorProgramDirectory,
                                        ExecutionConfig executionConfig,
                                        llvm::raw_ostream &diagnostics) {
   return detail::compileTensorProgramToExecutableBundleImpl(
-      tensorProgramDirectory, executionConfig, diagnostics, std::nullopt);
+      tensorProgramDirectory, executionConfig, diagnostics, std::nullopt,
+      detail::WholeVariantSelectionMode::Production);
 }
 
 mlir::FailureOr<ExecutableBundle> compileProgram(
@@ -60,8 +61,9 @@ mlir::FailureOr<ExecutableBundle> compileProgram(
   std::optional<ExecutableBundle> retainedExecutableBundle;
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
-          targetToolchain, diagnostics, std::nullopt, std::nullopt,
-          std::nullopt, &retainedExecutableBundle, nullptr)))
+          targetToolchain, diagnostics,
+          detail::WholeVariantSelectionMode::Production, std::nullopt,
+          std::nullopt, std::nullopt, &retainedExecutableBundle, nullptr)))
     return mlir::failure();
   if (!retainedExecutableBundle) {
     detail::reject(
@@ -80,8 +82,9 @@ mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
   std::optional<TargetLLVMModuleBundle> retainedTargetLLVMModuleBundle;
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
-          targetToolchain, diagnostics, std::nullopt, std::nullopt,
-          std::nullopt, &retainedExecutableBundle,
+          targetToolchain, diagnostics,
+          detail::WholeVariantSelectionMode::Production, std::nullopt,
+          std::nullopt, std::nullopt, &retainedExecutableBundle,
           &retainedTargetLLVMModuleBundle)))
     return mlir::failure();
   if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle) {
@@ -107,8 +110,9 @@ mlir::LogicalResult testing::compileProgramWithRankFailure(
   }
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
-      targetToolchain, diagnostics, failAfterLogicalRank, std::nullopt,
-      std::nullopt, nullptr, nullptr);
+      targetToolchain, diagnostics,
+      detail::WholeVariantSelectionMode::Production, failAfterLogicalRank,
+      std::nullopt, std::nullopt, nullptr, nullptr);
 }
 
 mlir::LogicalResult testing::compileProgramWithTargetRankFailure(
@@ -124,8 +128,9 @@ mlir::LogicalResult testing::compileProgramWithTargetRankFailure(
   }
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
-      targetToolchain, diagnostics, std::nullopt, failAfterLogicalRank,
-      std::nullopt, nullptr, nullptr);
+      targetToolchain, diagnostics,
+      detail::WholeVariantSelectionMode::Production, std::nullopt,
+      failAfterLogicalRank, std::nullopt, nullptr, nullptr);
 }
 
 mlir::LogicalResult testing::compileProgramWithPackageRankFailure(
@@ -141,8 +146,29 @@ mlir::LogicalResult testing::compileProgramWithPackageRankFailure(
   }
   return detail::runCompilationTransaction(
       std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
-      targetToolchain, diagnostics, std::nullopt, std::nullopt,
+      targetToolchain, diagnostics,
+      detail::WholeVariantSelectionMode::Production, std::nullopt, std::nullopt,
       failAfterLogicalRank, nullptr, nullptr);
+}
+
+mlir::FailureOr<ExecutableBundle> testing::compileProgramWithReservedBaseline(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  std::optional<ExecutableBundle> retainedExecutableBundle;
+  if (mlir::failed(detail::runCompilationTransaction(
+          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          targetToolchain, diagnostics,
+          detail::WholeVariantSelectionMode::ReservedBaseline, std::nullopt,
+          std::nullopt, std::nullopt, &retainedExecutableBundle, nullptr)))
+    return mlir::failure();
+  if (!retainedExecutableBundle) {
+    detail::reject(diagnostics,
+                   "successful reserved-baseline compilation did not retain "
+                   "its executable bundle");
+    return mlir::failure();
+  }
+  return std::move(*retainedExecutableBundle);
 }
 
 } // namespace wafer::compiler

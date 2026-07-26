@@ -46,6 +46,15 @@ mlir::LogicalResult compileProgramWithPackageRankFailure(
     const TargetToolchain &targetToolchain, int64_t failAfterLogicalRank,
     llvm::raw_ostream &diagnostics);
 
+/// Runs the production publication transaction while committing the unique
+/// reserved-baseline member of each rank frontier. The source, lowering,
+/// whole-variant legality, target-artifact and package gates are otherwise
+/// identical to production compilation.
+mlir::FailureOr<ExecutableBundle> compileProgramWithReservedBaseline(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
 } // namespace wafer::compiler::testing
 
 #endif // WAFER_COMPILER_TESTING_H

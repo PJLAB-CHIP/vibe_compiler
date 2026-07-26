@@ -26,6 +26,7 @@ mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
+    WholeVariantSelectionMode selectionMode,
     std::optional<int64_t> failAfterLogicalRank,
     std::optional<int64_t> failAfterTargetLogicalRank,
     std::optional<int64_t> failAfterPackageLogicalRank,
@@ -36,6 +37,7 @@ mlir::LogicalResult runCompilationTransaction(
   (void)outputProgramDirectory;
   (void)xlaSpmdPartitionerHelper;
   (void)targetToolchain;
+  (void)selectionMode;
   (void)failAfterLogicalRank;
   (void)failAfterTargetLogicalRank;
   (void)failAfterPackageLogicalRank;
@@ -211,10 +213,9 @@ mlir::LogicalResult runCompilationTransaction(
       return mlir::failure();
     }
   }
-  if (!isRegularFile(
-          programFile(tensorProgram,
-                      {llvm::StringRef("functions"),
-                       llvm::StringRef("forward.parameter_shards.json")}))) {
+  if (!isRegularFile(programFile(
+          tensorProgram, {llvm::StringRef("functions"),
+                          llvm::StringRef("forward.parameter_shards.json")}))) {
     reject(diagnostics,
            "XLA SPMD partitioner output is missing its partition marker");
     return mlir::failure();
@@ -242,8 +243,8 @@ mlir::LogicalResult runCompilationTransaction(
   }
   if (mlir::failed(verifyStablehloStageOperations(*tensorModule)))
     return mlir::failure();
-  if (mlir::failed(verifyProgramDirectoryMetadata(*tensorModule,
-                                                  tensorProgram, diagnostics)))
+  if (mlir::failed(verifyProgramDirectoryMetadata(*tensorModule, tensorProgram,
+                                                  diagnostics)))
     return mlir::failure();
   if (runPassPipeline(*tensorModule, wafer::buildStablehloToLinalgPipeline))
     return mlir::failure();
@@ -285,7 +286,7 @@ mlir::LogicalResult runCompilationTransaction(
   std::optional<TargetLLVMModuleBundle> targetLLVMModules;
   if (mlir::failed(stageTargetPackage(
           tensorProgram, transactionRoot, request.getExecutionConfig(),
-          targetToolchain, diagnostics, failAfterLogicalRank,
+          targetToolchain, diagnostics, selectionMode, failAfterLogicalRank,
           failAfterTargetLogicalRank, failAfterPackageLogicalRank,
           executableBundle, targetLLVMModules)))
     return mlir::failure();
