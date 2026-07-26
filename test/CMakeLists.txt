@@ -521,6 +521,37 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     LABELS "runtime;no-card;ncc;execution-model;calibration;preflight"
     TIMEOUT 600
   )
+  function(wafer_add_ncc_calibration_preflight test_suffix suite)
+    add_test(NAME wafer-runtime-ncc-${test_suffix}-no-card
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ncc_execution_probe_test.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-ncc-${test_suffix}-no-card
+        --suite ${suite}
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-ncc-${test_suffix}-no-card PROPERTIES
+      LABELS "runtime;no-card;ncc;execution-model;calibration;preflight"
+      TIMEOUT 600
+    )
+  endfunction()
+  wafer_add_ncc_calibration_preflight(
+    queue-saturation
+    queue-saturation-manual
+  )
+  wafer_add_ncc_calibration_preflight(
+    worker-wait-scope
+    worker-wait-scope-manual
+  )
+  wafer_add_ncc_calibration_preflight(
+    worker-subset-scope
+    worker-subset-scope-manual
+  )
   add_test(NAME wafer-runtime-instruction-family-probe-no-card
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_instruction_family_probe_test.py
@@ -684,6 +715,23 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
   set_tests_properties(
     wafer-runtime-memory-descriptor-calibration-probe-no-card PROPERTIES
     LABELS "runtime;no-card;memory;dma;ddr;spm;calibration;probe-build"
+    TIMEOUT 300
+  )
+  add_test(NAME wafer-runtime-spm-conflict-equivalence-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_memory_descriptor_calibration_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-spm-conflict-equivalence-probe
+      --conflict-equivalence
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-spm-conflict-equivalence-probe-no-card PROPERTIES
+    LABELS "runtime;no-card;memory;spm;calibration;preflight"
     TIMEOUT 300
   )
   add_test(NAME wafer-runtime-mn-tiled-gemm-no-card

@@ -540,6 +540,8 @@ uint32_t wafer_ncc_probe_validate_plan(
        request->flags != WAFER_NCC_REQUEST_DOUBLE_SLOT_OBSERVATION &&
        request->flags != WAFER_NCC_REQUEST_MAPPED_SPM_KCORE_WRITE &&
        request->flags != WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY &&
+       request->flags != WAFER_NCC_REQUEST_TIGHT_QUEUE_SATURATION &&
+       request->flags != WAFER_NCC_REQUEST_TIGHT_WORKER_SCOPE &&
        request->flags !=
            (WAFER_NCC_REQUEST_MAPPED_SPM_KCORE_WRITE |
             WAFER_NCC_REQUEST_PREISSUE_LOCAL_WAIT)))
@@ -709,12 +711,23 @@ uint32_t wafer_ncc_probe_validate_plan(
       request->flags == WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE;
   int tight_kcore_boundary =
       request->flags == WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY;
-  int tight_submission = tight_depth_plus_one || tight_kcore_boundary;
-  if (tight_depth_plus_one) {
+  int tight_queue_saturation =
+      request->flags == WAFER_NCC_REQUEST_TIGHT_QUEUE_SATURATION;
+  int tight_worker_scope =
+      request->flags == WAFER_NCC_REQUEST_TIGHT_WORKER_SCOPE;
+  int special_queue_bound =
+      tight_depth_plus_one || tight_kcore_boundary ||
+      tight_queue_saturation;
+  if (tight_depth_plus_one || tight_queue_saturation) {
     const WaferNccProbeLane *first = &request->lanes[0];
     const WaferNccProbeLane *second = &request->lanes[1];
     const WaferNccProbeEngineAdapter *adapter =
         wafer_ncc_probe_find_adapter(adapters, adapter_count, first->engine);
+    int issue_limit_is_expected =
+        adapter != NULL &&
+        (request->issue_limit == adapter->queue_depth + 1U ||
+         (tight_queue_saturation &&
+          request->issue_limit == adapter->queue_depth));
     if (request->lane_count != 2 ||
         request->effect_relation != WAFER_NCC_EFFECT_NONE ||
         request->range_relation != WAFER_NCC_RANGE_DISJOINT ||
@@ -735,8 +748,7 @@ uint32_t wafer_ncc_probe_validate_plan(
         second->layout_iteration0 != first->layout_iteration0 ||
         second->layout_iteration1 != first->layout_iteration1 ||
         second->layout_iteration2 != first->layout_iteration2 ||
-        second->flags != first->flags || adapter == NULL ||
-        request->issue_limit != adapter->queue_depth + 1U ||
+        second->flags != first->flags || !issue_limit_is_expected ||
         request->issue_limit > request->lane_count * request->rounds ||
         request->issue_limit <=
             (request->lane_count - 1U) * request->rounds)
@@ -758,6 +770,18 @@ uint32_t wafer_ncc_probe_validate_plan(
         producer->issue_mode != WAFER_NCC_ISSUE_RAW || adapter == NULL ||
         request->rounds > adapter->queue_depth || request->issue_limit != 0)
       return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
+  } else if (tight_worker_scope) {
+    if (request->lane_count != 3 ||
+        request->effect_relation != WAFER_NCC_EFFECT_NONE ||
+        request->range_relation != WAFER_NCC_RANGE_DISJOINT ||
+        request->schedule != WAFER_NCC_SCHEDULE_WINDOW ||
+        request->wait_kind == WAFER_NCC_WAIT_NONE ||
+        request->issue_limit != 0 ||
+        (participant_mask & (participant_mask - 1U)) == 0)
+      return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
+    for (uint32_t lane = 0; lane < request->lane_count; ++lane)
+      if (request->lanes[lane].issue_mode != WAFER_NCC_ISSUE_RAW)
+        return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
   } else if (request->issue_limit != 0) {
     return WAFER_NCC_STATUS_BAD_REQUEST;
   }
@@ -775,7 +799,7 @@ uint32_t wafer_ncc_probe_validate_plan(
     return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
 
   if (request->schedule == WAFER_NCC_SCHEDULE_WINDOW &&
-      !tight_submission) {
+      !special_queue_bound) {
     for (uint32_t lane = 0; lane < request->lane_count; ++lane) {
       const WaferNccProbeLane *current = &request->lanes[lane];
       uint32_t outstanding = request->rounds;
@@ -885,8 +909,13 @@ uint32_t wafer_ncc_probe_execute_plan(
       request->flags == WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE;
   int tight_kcore_boundary =
       request->flags == WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY;
+  int tight_queue_saturation =
+      request->flags == WAFER_NCC_REQUEST_TIGHT_QUEUE_SATURATION;
+  int tight_worker_scope =
+      request->flags == WAFER_NCC_REQUEST_TIGHT_WORKER_SCOPE;
   int tight_submission =
-      tight_depth_plus_one || tight_kcore_boundary;
+      tight_depth_plus_one || tight_kcore_boundary ||
+      tight_queue_saturation || tight_worker_scope;
   int issued_any = 0;
   WaferNccProbeIssue *last_issued = NULL;
   uint64_t plan_cycle_before = hooks->read_cycle(context);
@@ -979,6 +1008,12 @@ uint32_t wafer_ncc_probe_execute_plan(
     record[last_base + WAFER_NCC_ISSUE_FLAGS] |=
         WAFER_NCC_ISSUE_WINDOW_CONTROL_VALID;
   }
+  if (tight_queue_saturation || tight_worker_scope) {
+    for (uint32_t worker = 0; worker < WAFER_NCC_PROTOCOL_WORKERS; ++worker)
+      record[WAFER_NCC_REC_CONTROL_PRE_WAIT + worker] =
+          hooks->read_worker_control(context, worker);
+    record[WAFER_NCC_REC_FLAGS] |= WAFER_NCC_RECORD_PRE_WAIT_CAPTURED;
+  }
 
   uint64_t plan_cycle_after = 0;
   if (request->wait_kind != WAFER_NCC_WAIT_NONE) {
@@ -1032,7 +1067,8 @@ uint32_t wafer_ncc_probe_execute_plan(
    * Packet bookkeeping is deliberately deferred so a short workload cannot
    * drain merely while the probe records observations.
    */
-  if (tight_kcore_boundary &&
+  if ((tight_kcore_boundary || tight_queue_saturation ||
+       tight_worker_scope) &&
       wafer_ncc_probe_observe_deferred(
           request, adapters, adapter_count, context, record, issues,
           issue_count) != 0)

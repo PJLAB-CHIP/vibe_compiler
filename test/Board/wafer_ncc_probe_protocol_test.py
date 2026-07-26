@@ -27,16 +27,17 @@ def lane(engine: protocol.Engine, worker: int = 0) -> protocol.Lane:
 
 class ProtocolTest(unittest.TestCase):
     def test_header_is_the_numeric_source(self) -> None:
-        self.assertEqual(protocol.SCHEMA, 6)
+        self.assertEqual(protocol.SCHEMA, 7)
         self.assertEqual(protocol.MAX_LANES, 3)
         self.assertEqual(protocol.MAX_ROUNDS, 4)
         self.assertEqual(protocol.MAX_ISSUES, 12)
         self.assertEqual(protocol.REQUEST_WORDS, 58)
-        self.assertEqual(protocol.RECORD_WORDS, 401)
+        self.assertEqual(protocol.RECORD_WORDS, 404)
         self.assertEqual(protocol.ISSUE_STRIDE, 22)
         self.assertEqual(protocol.WAIT_SAMPLE_BASE, 392)
         self.assertEqual(protocol.MAX_WAIT_SAMPLES, 8)
         self.assertEqual(protocol.REC["PREISSUE_WAIT_CYCLES"], 400)
+        self.assertEqual(protocol.REC["CONTROL_PRE_WAIT"], 401)
         self.assertEqual(protocol.MAX_DMA_ENVELOPE_BYTES, 65536)
         self.assertEqual(
             protocol.WAIT_SAMPLE_BASE,
@@ -1234,6 +1235,117 @@ class ProtocolTest(unittest.TestCase):
                 execution_probe.case_sample_count(case, 3), 3
             )
             plan.request_words()
+
+    def test_pending_distinguishing_catalogs_are_typed_and_isolated(
+        self,
+    ) -> None:
+        self.assertEqual(
+            len(execution_probe.V2_QUEUE_SATURATION_CASES), 20
+        )
+        for engine, depth in (
+            execution_probe.V2_DOCUMENTED_QUEUE_DEPTHS.items()
+        ):
+            rows = [
+                case
+                for case in execution_probe.V2_QUEUE_SATURATION_CASES
+                if case.plan.lanes[0].engine == engine
+            ]
+            self.assertEqual(len(rows), 4)
+            self.assertEqual(
+                {
+                    (
+                        case.plan.issue_limit,
+                        case.plan.lanes[0].transfer_bytes,
+                    )
+                    for case in rows
+                },
+                {
+                    (issue_limit, transfer_bytes)
+                    for issue_limit in (depth, depth + 1)
+                    for transfer_bytes in (
+                        (
+                            256
+                            if engine == protocol.Engine.NE
+                            else 4096
+                        ),
+                        execution_probe.V2_ACTIVE_OCCUPANCY_BYTES[engine],
+                    )
+                },
+            )
+            self.assertTrue(
+                all(case.plan.is_tight_queue_saturation() for case in rows)
+            )
+            self.assertEqual(
+                {case.plan.seed for case in rows},
+                {0x5040 + int(engine) * 0x20},
+            )
+
+        self.assertEqual(
+            {
+                case.plan.wait_kind
+                for case in execution_probe.V2_WORKER_WAIT_SCOPE_CASES
+            },
+            {
+                protocol.WaitKind.DEFAULT,
+                protocol.WaitKind.BY_WORKER,
+                protocol.WaitKind.LOCAL_FENCE,
+            },
+        )
+        self.assertTrue(
+            all(
+                case.plan.is_tight_worker_scope()
+                for case in execution_probe.V2_WORKER_WAIT_SCOPE_CASES
+            )
+        )
+        wait_scope_plans = [
+            dataclasses.replace(
+                case.plan,
+                wait_kind=protocol.WaitKind.DEFAULT,
+                wait_worker_mask=0,
+            )
+            for case in execution_probe.V2_WORKER_WAIT_SCOPE_CASES
+        ]
+        self.assertTrue(
+            all(plan == wait_scope_plans[0] for plan in wait_scope_plans)
+        )
+        self.assertEqual(
+            len(execution_probe.V2_WORKER_SUBSET_SCOPE_CASES), 6
+        )
+        for target in range(3):
+            exclude, include = [
+                case
+                for case in execution_probe.V2_WORKER_SUBSET_SCOPE_CASES
+                if case.plan.lanes[-1].worker == target
+            ]
+            if exclude.plan.wait_worker_mask & (1 << target):
+                exclude, include = include, exclude
+            self.assertEqual(
+                dataclasses.replace(
+                    exclude.plan,
+                    wait_worker_mask=include.plan.wait_worker_mask,
+                ),
+                include.plan,
+            )
+            self.assertEqual(
+                include.plan.wait_worker_mask,
+                exclude.plan.wait_worker_mask | (1 << target),
+            )
+
+        pending = (
+            execution_probe.V2_QUEUE_SATURATION_CASES
+            + execution_probe.V2_WORKER_WAIT_SCOPE_CASES
+            + execution_probe.V2_WORKER_SUBSET_SCOPE_CASES
+        )
+        self.assertTrue(
+            all(
+                case not in execution_probe.BOARD_ALL_PREFLIGHT_CASES
+                for case in pending
+            )
+        )
+        self.assertTrue(
+            all(execution_probe.case_sample_count(case, 3) == 3
+                for case in pending)
+        )
 
     def test_depth_plus_one_report_uses_tight_issue_order(self) -> None:
         case = next(

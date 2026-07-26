@@ -896,6 +896,77 @@ static void test_full_depth_window_is_accepted_without_overflow(void) {
          WAFER_NCC_STATUS_UNSAFE_WINDOW);
 }
 
+static void test_pending_calibration_controls_capture_pre_wait_state(void) {
+  WaferNccProbeRequest queue =
+      request(2, 3, WAFER_NCC_SCHEDULE_WINDOW);
+  queue.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
+  queue.lanes[1] = queue.lanes[0];
+  queue.flags = WAFER_NCC_REQUEST_TIGHT_QUEUE_SATURATION;
+  queue.issue_limit = 6;
+  assert(wafer_ncc_probe_validate_plan(
+             &queue, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
+
+  MockContext queue_context = {0};
+  uint64_t record[WAFER_NCC_PROTOCOL_RECORD_WORDS];
+  assert(wafer_ncc_probe_execute_plan(
+             &queue, adapters, sizeof(adapters) / sizeof(adapters[0]), &hooks,
+             &queue_context, record) == WAFER_NCC_STATUS_OK);
+  assert((record[WAFER_NCC_REC_FLAGS] &
+          WAFER_NCC_RECORD_PRE_WAIT_CAPTURED) != 0);
+  for (uint32_t worker = 0; worker < WAFER_NCC_PROTOCOL_WORKERS; ++worker)
+    assert(record[WAFER_NCC_REC_CONTROL_PRE_WAIT + worker] ==
+           (UINT64_C(6) | ((uint64_t)worker << 16)));
+  uint32_t queue_last_issue = find_event(&queue_context, MOCK_ISSUE + 6U);
+  uint32_t queue_wait = find_event(&queue_context, MOCK_REQUESTED_WAIT);
+  uint32_t queue_boundary =
+      find_event(&queue_context, MOCK_SNAPSHOT_BOUNDARY);
+  uint32_t pre_wait_reads = 0;
+  for (uint32_t index = 0; index < queue_context.event_count; ++index) {
+    if (queue_context.events[index] == MOCK_READ_CONTROL + 5U) {
+      assert(queue_last_issue < index);
+      assert(index < queue_wait);
+      ++pre_wait_reads;
+    }
+  }
+  assert(pre_wait_reads == WAFER_NCC_PROTOCOL_WORKERS);
+  assert(queue_wait < queue_boundary);
+  for (uint32_t slot = 0; slot < 7; ++slot)
+    if ((queue_context.issued_mask & (UINT32_C(1) << slot)) != 0)
+      assert(find_event(&queue_context, MOCK_OBSERVE + slot) >
+             queue_boundary);
+
+  WaferNccProbeRequest scope =
+      request(3, 3, WAFER_NCC_SCHEDULE_WINDOW);
+  scope.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
+  scope.lanes[1] = lane(WAFER_NCC_ENGINE_TDMA, 1);
+  scope.lanes[2] = lane(WAFER_NCC_ENGINE_NE, 2);
+  scope.wait_worker_mask = 3;
+  scope.flags = WAFER_NCC_REQUEST_TIGHT_WORKER_SCOPE;
+  assert(wafer_ncc_probe_validate_plan(
+             &scope, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
+  MockContext scope_context = {0};
+  assert(wafer_ncc_probe_execute_plan(
+             &scope, adapters, sizeof(adapters) / sizeof(adapters[0]), &hooks,
+             &scope_context, record) == WAFER_NCC_STATUS_OK);
+  assert((record[WAFER_NCC_REC_FLAGS] &
+          WAFER_NCC_RECORD_PRE_WAIT_CAPTURED) != 0);
+  assert(record[WAFER_NCC_REC_WAIT_WORKER_MASK] == 3);
+  assert(record[WAFER_NCC_REC_SAFETY_WORKER_MASK] == 7);
+  uint32_t scope_boundary =
+      find_event(&scope_context, MOCK_SNAPSHOT_BOUNDARY);
+  for (uint32_t slot = 0; slot < 12; ++slot)
+    if ((scope_context.issued_mask & (UINT32_C(1) << slot)) != 0)
+      assert(find_event(&scope_context, MOCK_OBSERVE + slot) >
+             scope_boundary);
+
+  scope.lanes[2].issue_mode = WAFER_NCC_ISSUE_WRAPPER;
+  assert(wafer_ncc_probe_validate_plan(
+             &scope, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+}
+
 int main(void) {
   test_dual_lane_boundary_order();
   test_three_lane_disjoint_window_and_serial();
@@ -909,5 +980,6 @@ int main(void) {
   test_prepare_failure_retains_exact_issue_stage();
   test_depth_plus_one_is_tight_and_waited();
   test_full_depth_window_is_accepted_without_overflow();
+  test_pending_calibration_controls_capture_pre_wait_state();
   return 0;
 }

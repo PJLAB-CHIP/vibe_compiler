@@ -89,6 +89,14 @@ def parse_args() -> argparse.Namespace:
             "parallel-pair controls"
         ),
     )
+    parser.add_argument(
+        "--conflict-equivalence",
+        action="store_true",
+        help=(
+            "select held-out CT+RDMA common-base translations while "
+            "preserving relative offset and alignment phase"
+        ),
+    )
     parser.add_argument("--list-cases", action="store_true")
     parser.add_argument("--no-card", action="store_true")
     parser.add_argument("--device-id", type=int, default=0)
@@ -112,6 +120,7 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.MemoryCase, ...]:
     parallel_pair_expanded = getattr(
         args, "parallel_pair_expanded", False
     )
+    conflict_equivalence = getattr(args, "conflict_equivalence", False)
     conflicting_expanded_filters = {
         "--case": bool(args.selected_cases),
         "--domain": bool(args.domain),
@@ -120,6 +129,21 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.MemoryCase, ...]:
             getattr(args, "parallel_address_sweep", False)
         ),
     }
+    if conflict_equivalence:
+        conflicting_equivalence_filters = {
+            **conflicting_expanded_filters,
+            "--parallel-pair-expanded": parallel_pair_expanded,
+        }
+        if any(conflicting_equivalence_filters.values()):
+            conflicts = sorted(
+                name
+                for name, enabled in conflicting_equivalence_filters.items()
+                if enabled
+            )
+            raise RuntimeError(
+                "--conflict-equivalence cannot be combined with "
+                + ", ".join(conflicts)
+            )
     if parallel_pair_expanded and any(
         conflicting_expanded_filters.values()
     ):
@@ -132,16 +156,20 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.MemoryCase, ...]:
             "--parallel-pair-expanded cannot be combined with "
             + ", ".join(conflicts)
         )
-    if parallel_pair_expanded:
+    if conflict_equivalence:
+        selected = catalog.CONFLICT_EQUIVALENCE_CASES
+    elif parallel_pair_expanded:
         selected = catalog.PARALLEL_PAIR_CASES
     elif args.selected_cases:
-        unknown = sorted(set(args.selected_cases) - set(catalog.CASES_BY_NAME))
+        unknown = sorted(
+            set(args.selected_cases) - set(catalog.ALL_CASES_BY_NAME)
+        )
         if unknown:
             raise RuntimeError(
                 f"unknown memory descriptor cases: {unknown}"
             )
         selected = tuple(
-            catalog.CASES_BY_NAME[name] for name in args.selected_cases
+            catalog.ALL_CASES_BY_NAME[name] for name in args.selected_cases
         )
     else:
         selected = catalog.CATALOG
@@ -455,7 +483,7 @@ def execute_cases(
                 case.engine_a,
                 case.engine_b,
                 case.spm_b - case.spm_a,
-                case.spm_a % 256,
+                case.spm_a,
             )
             for case in cases
             if case.kind == catalog.KIND_ENGINE_PAIR
@@ -476,7 +504,7 @@ def execute_cases(
         "plan_cycles",
     )
     paired_summaries: list[dict[str, object]] = []
-    for engine_a, engine_b, relative_offset, base_phase in pair_keys:
+    for engine_a, engine_b, relative_offset, spm_base in pair_keys:
         schedule_cases = {
             case.schedule: case
             for case in cases
@@ -484,7 +512,7 @@ def execute_cases(
             and case.engine_a == engine_a
             and case.engine_b == engine_b
             and case.spm_b - case.spm_a == relative_offset
-            and case.spm_a % 256 == base_phase
+            and case.spm_a == spm_base
         }
         schedule_medians: dict[str, dict[str, int | float]] = {}
         missing: list[str] = []
@@ -518,7 +546,11 @@ def execute_cases(
                 catalog.ENGINE_NAMES[engine_b],
             ],
             "relative_spm_offset": relative_offset,
-            "spm_base_phase_mod_256": base_phase,
+            "spm_base": spm_base,
+            "spm_base_translation": (
+                spm_base - catalog.SPM_BASE - spm_base % 256
+            ),
+            "spm_base_phase_mod_256": spm_base % 256,
             "samples_per_cell": catalog.SPM_BANK_PMU_REPETITIONS,
             "correctness": "all-exact-result+full-spm-dump-guard",
             "pmu_medians": schedule_medians,
@@ -756,6 +788,7 @@ def execute_cases(
         "relative_spm_offset",
         lambda summary: (
             summary["engine_pair"] == ["CT", "RDMA"]
+            and summary["spm_base_translation"] == 0
             and summary["spm_base_phase_mod_256"] == 0
             and summary["relative_spm_offset"]
             in catalog.SPM_BANK_PERIOD_RELATIVE_OFFSETS
@@ -767,11 +800,103 @@ def execute_cases(
         "spm_base_phase_mod_256",
         lambda summary: (
             summary["engine_pair"] == ["CT", "RDMA"]
+            and summary["spm_base_translation"] == 0
             and summary["relative_spm_offset"] == 8192
             and summary["spm_base_phase_mod_256"]
             in catalog.SPM_PARALLEL_ALIGNMENT_PHASES
         ),
     )
+
+    if any(
+        case in catalog.PENDING_CONFLICT_EQUIVALENCE_CASES
+        for case in cases
+    ):
+        expected_translations = (
+            0,
+            *catalog.SPM_CONFLICT_EQUIVALENCE_TRANSLATIONS,
+        )
+        metrics = (
+            "plan_cycles",
+            "full_execution",
+            "ct_blocking",
+            "rdma_blocking",
+        )
+        by_coordinate = {
+            (
+                int(summary["spm_base_phase_mod_256"]),
+                int(summary["spm_base_translation"]),
+            ): summary
+            for summary in paired_summaries
+            if (
+                summary["engine_pair"] == ["CT", "RDMA"]
+                and summary["relative_spm_offset"] == 8192
+                and summary["spm_base_phase_mod_256"]
+                in catalog.SPM_PARALLEL_ALIGNMENT_PHASES
+                and summary["spm_base_translation"]
+                in expected_translations
+            )
+        }
+        phase_rows = []
+        all_consistent = True
+        for phase in catalog.SPM_PARALLEL_ALIGNMENT_PHASES:
+            cells = {
+                translation: by_coordinate.get((phase, translation))
+                for translation in expected_translations
+            }
+            missing = [
+                translation
+                for translation, summary in cells.items()
+                if summary is None
+            ]
+            directions: dict[str, list[int]] = {}
+            for metric in metrics:
+                directions[metric] = [
+                    (
+                        0
+                        if int(summary["window_minus_serial"][metric]) == 0
+                        else (
+                            1
+                            if int(summary["window_minus_serial"][metric]) > 0
+                            else -1
+                        )
+                    )
+                    for summary in cells.values()
+                    if summary is not None
+                ]
+            consistent = not missing and all(
+                len(set(values)) == 1 for values in directions.values()
+            )
+            all_consistent &= consistent
+            phase_rows.append(
+                {
+                    "base_phase_mod_256": phase,
+                    "missing_translations": missing,
+                    "window_minus_serial_directions": directions,
+                    "proxy_direction_consistent": consistent,
+                }
+            )
+        print(
+            "spm_conflict_equivalence_summary: "
+            + json.dumps(
+                {
+                    "engine_pair": ["CT", "RDMA"],
+                    "relative_spm_offset": 8192,
+                    "base_translations": list(expected_translations),
+                    "samples_per_cell": catalog.SPM_BANK_PMU_REPETITIONS,
+                    "correctness": (
+                        "all-exact-result+full-spm-dump-guard"
+                    ),
+                    "phase_rows": phase_rows,
+                    "state": (
+                        "heldout-proxy-direction-consistent"
+                        if all_consistent
+                        else "inconclusive-or-direction-flip"
+                    ),
+                    "compiler_use": "no-bank-coloring",
+                },
+                sort_keys=True,
+            )
+        )
 
 
 def main() -> int:
@@ -781,6 +906,9 @@ def main() -> int:
             json.dumps(
                 {
                     "cases": [case.as_dict() for case in catalog.CATALOG],
+                    "pending_cases": [
+                        case.as_dict() for case in catalog.PENDING_CASES
+                    ],
                     "calibration_leaf_bindings": {
                         key: [case.name for case in cases]
                         for key, cases

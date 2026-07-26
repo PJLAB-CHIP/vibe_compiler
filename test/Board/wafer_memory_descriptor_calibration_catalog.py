@@ -97,6 +97,7 @@ SPM_PAIR_RELATIVE_OFFSETS = tuple(
 )
 SPM_PARALLEL_ALIGNMENT_PHASES = (0, 64, 128, 192)
 SPM_PARALLEL_ENGINES = (ENGINE_CT, ENGINE_RDMA)
+SPM_CONFLICT_EQUIVALENCE_TRANSLATIONS = (0x20000, 0x40000)
 SPM_BANK_PMU_REPETITIONS = 3
 PERF_MAX_ROUNDS = 4
 PERF_MAX_BUFFERS = 2
@@ -872,6 +873,59 @@ CATALOG = (
 )
 CASES_BY_ID = {case.case_id: case for case in CATALOG}
 CASES_BY_NAME = {case.name: case for case in CATALOG}
+PENDING_CONFLICT_EQUIVALENCE_CASES = tuple(
+    MemoryCase(
+        len(CATALOG)
+        + translation_index * len(SPM_PARALLEL_ALIGNMENT_PHASES) * 2
+        + phase_index * 2
+        + schedule,
+        (
+            "spm-conflict-equivalence-ct-rdma-"
+            f"translation-{translation}-phase-{phase}-"
+            f"{'serial' if schedule == SCHEDULE_SERIAL else 'window'}"
+        ),
+        "spm-bank-engine-pair",
+        KIND_ENGINE_PAIR,
+        ENGINE_CT,
+        ENGINE_RDMA,
+        schedule,
+        EFFECT_NONE,
+        RELATION_DISJOINT,
+        ORACLE_EXACT,
+        FMT_UINT8,
+        0,
+        0,
+        SPM_BASE + translation + phase,
+        SPM_BASE + translation + phase + 8192,
+        Descriptor(256),
+        512,
+        _counts(ENGINE_CT, ENGINE_RDMA),
+        repetitions=SPM_BANK_PMU_REPETITIONS,
+        sweep="conflict-equivalence",
+    )
+    for translation_index, translation in enumerate(
+        SPM_CONFLICT_EQUIVALENCE_TRANSLATIONS
+    )
+    for phase_index, phase in enumerate(SPM_PARALLEL_ALIGNMENT_PHASES)
+    for schedule in (SCHEDULE_SERIAL, SCHEDULE_WINDOW)
+)
+PENDING_CASES = PENDING_CONFLICT_EQUIVALENCE_CASES
+CONFLICT_EQUIVALENCE_BASELINE_CASES = tuple(
+    case
+    for case in PAIR_CASES
+    if (
+        (case.engine_a, case.engine_b) == SPM_PARALLEL_ENGINES
+        and case.spm_b - case.spm_a == 8192
+        and case.spm_a - SPM_BASE in SPM_PARALLEL_ALIGNMENT_PHASES
+    )
+)
+CONFLICT_EQUIVALENCE_CASES = (
+    CONFLICT_EQUIVALENCE_BASELINE_CASES
+    + PENDING_CONFLICT_EQUIVALENCE_CASES
+)
+ALL_CASES = CATALOG + PENDING_CASES
+ALL_CASES_BY_ID = {case.case_id: case for case in ALL_CASES}
+ALL_CASES_BY_NAME = {case.name: case for case in ALL_CASES}
 
 
 @dataclasses.dataclass(frozen=True)

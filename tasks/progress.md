@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-24
+更新时间：2026-07-26
 
 本文件只记录当前调度状态、前置关系和紧凑完成索引，不保存逐轮测试数字、实现复盘或历史工作日志。
 长期架构与pipeline contract以编号设计文档为准，详细完成证据与实施记录位于`tasks/archive/`，完整导航见
@@ -80,7 +80,12 @@ explicit Count semantic/target/model evidence -> Q3.6 (independent typed writeba
 ## 当前实施队列
 
 Q37 compiler-sensitive hardware calibration and multi-engine software pipelining正在执行；其中
-hardware-calibration checkpoint已经完成，后续不再安排本轮板测。该checkpoint形成
+hardware-calibration checkpoint已经完成，后续不再安排本轮板测。queue saturation response、worker wait
+scope pending exclusion、worker subset join pending exclusion和SPM conflict equivalence四个有区分力的
+case family已经实现typed catalog、device dispatcher、host oracle和独立no-card CTest；板端执行保持
+非阻塞`pending`，不进入默认runner。只有software-pipeline production vertical通过后确认保守fallback
+成为主要瓶颈，或出现新的version-matched只读观测依据时才激活板端批次。
+该checkpoint形成
 `docs/tx81-compiler-hardware-calibration.md`独立证据台账，以current硬件资料、vendor header/library与安全板端
 microcase闭合会改变compiler legality、planning、lowering、cost或runtime completion的TX81事实，包括instruction
 packet/数值/layout、SPM/DDR与cache、NCC各engine/worker/queue/address dependency、同步/可见性、Direct DTE/
@@ -162,7 +167,9 @@ completion-domain boundary上的matching drain/逐worker join、DDR owned-range 
 16-rank full-card barrier；暂不允许由`serial_mode=0`或不同engine直接推导overlap，不用queue depth选择
 pipeline window，不做SPM bank coloring，不用default wait代替跨worker join，也不把native Concat、TDMA BOOL、
 NE ReLU/Conv option或subgroup barrier提升为exact能力。hardware-calibration checkpoint到此完成；
-这些未决机制均已有保守compiler处理，不再继续追加板测。Q37下一步直接消费已闭合能力实现和验证
+这些未决机制均已有保守compiler处理，不再继续追加本轮板测；四个后续区分family的case、dispatcher、
+host oracle和no-card gate已经落地，只按已冻结activation gate保持板端`pending`。Q37下一步直接消费
+已闭合能力实现和验证
 multi-buffer software-pipeline，不再以累计通过数推进。
 SDK定义的`get_spm_memory_mapping(offset)`是`0x30400000 + offset`的uncached weak-order SPM alias；
 该alias使用有序load/store与`fence`/`sync`，不得执行dcache clean/invalidate。只有raw cacheable SPM alias
@@ -340,7 +347,7 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q37 | `tx81-compiler-hardware-calibration-and-multi-engine-software-pipelining` | `doing` | Q32、Q6.B + configured board | hardware-calibration checkpoint已完成：独立证据台账和板端microcase已闭合会改变compiler legality/planning/lowering/cost或runtime completion的instruction、数值/layout、memory/cache、engine/worker/queue、address dependency、同步/可见性、DTE/multi-tile、launch与PMU事实，未闭合机制均有明确保守处理；本轮不再追加板测。当前只剩software-pipeline implementation：完整Instr IR以typed MemoryEffects和SSA alias/root/path建立RAW/WAR/WAW dependency edge；pure same-worker NCC链按edge保持issue order并由current verified descriptor域的busytable落实，链内不插`TsmWaitfinish`；drain/fence只在completion-domain boundary物化并合并。下一步物化通用multi-buffer软件流水、跨engine issue order及latest-legal boundary completion，并经过完整memory/target/package/correctness gate；aggregate PMU不伪装成cycle-accurate模型。 | 06、08-17；`docs/tx81-compiler-hardware-calibration.md`；`tasks/plans/multi-engine-software-pipelining.md` |
+| Q37 | `tx81-compiler-hardware-calibration-and-multi-engine-software-pipelining` | `doing` | Q32、Q6.B + configured board | hardware-calibration checkpoint已完成：独立证据台账和板端microcase已闭合会改变compiler legality/planning/lowering/cost或runtime completion的instruction、数值/layout、memory/cache、engine/worker/queue、address dependency、同步/可见性、DTE/multi-tile、launch与PMU事实，未闭合机制均有明确保守处理；四个更强区分family已实现typed catalog、device dispatcher、host oracle和独立no-card CTest，按activation gate保持板端`pending`，不进入默认runner且不重开本轮板测。当前只剩software-pipeline implementation：完整Instr IR以typed MemoryEffects和SSA alias/root/path建立RAW/WAR/WAW dependency edge；pure same-worker NCC链按edge保持issue order并由current verified descriptor域的busytable落实，链内不插`TsmWaitfinish`；drain/fence只在completion-domain boundary物化并合并。下一步物化通用multi-buffer软件流水、跨engine issue order及latest-legal boundary completion，并经过完整memory/target/package/correctness gate；aggregate PMU不伪装成cycle-accurate模型。 | 06、08-17；`docs/tx81-compiler-hardware-calibration.md`；`tasks/plans/multi-engine-software-pipelining.md` |
 | Q32.N | `numeric-algebraic-extension` | `done` | Q32 | algebraic candidate、generic reduction、named GEMM K切分和Ring collective已删除仅因float或缺少额外fast-math标注而拒绝的分支；f16/bf16无标注正向覆盖actual mutation、frontier和Tile/Instr lowering，integer overflow/no-wrap及真实结构、资源和target负例保持。未新增frontend mode、私有数值policy或IR carrier。 | 05-07、10-11、13、16；`tasks/plans/numeric-algebraic-extension.md` |
 | Q36 | `topology-aware-collective-lowering` | `done` | Q32 | current typed topology/mesh派生rank placement、exact bounded Ring与保持rank_group中序的ordered Tree；collective correctness/completion、singleton identity和final p2p minimum-hop whole-card cost闭合，不声明route/cycle/timing。 | 04、06、11、13、16、18；`tasks/archive/topology-aware-collective-lowering.md` |
 | Q35 | `k-sharded-gemm-board-vertical` | `done` | Q32、Q6.B、Q36 + configured board | full-4096 f16 GEMM由显式row/contracting SPMD形成16份local K=256 GEMM和sum all-reduce；production闭合M/N tiling、SPM/DDR、Direct DTE、shared ELF、no-card与完整板端raw exact。修复CRT GEMM raw orientation及strided RDMA/WDMA element-unit边界后，纯tiling 32 MiB exact，16-rank full case连续两轮16份32 MiB output全部exact并回到设备基线。只形成该case/environment的workload-level evidence，不新增ABI、不完成Q22.C或timing。 | 02、03、05-07、09、10、13-17；`tasks/archive/k-sharded-gemm-board-vertical.md` |

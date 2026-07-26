@@ -434,9 +434,9 @@ software-pipeline候选，不能把“queue可提交”“`serial_mode=0`”或�
    ReLU/Conv option当作exact语义；raw N/HWC Reduce与未进入两个已验证
    `VuVLoop unit=64` geometry的其它numeric/tail组合同样保持fail closed。历史op013→op014是
    out-of-contract observation，不再列为production待重放边界。
-3. **下一轮的目标不是再累计通过数**：每个剩余case必须明确区分一个仍可能成立的行为模型，例如
-   “default wait是否覆盖worker1”“长steady-state是否产生正FU overlap”“Conv究竟采用哪种physical indexing”；
-   不能区分机制的重复smoke不进入优先批次。
+3. **若后续触发第5.10节的pending区分实验，目标也不是再累计通过数**：每个case必须明确区分一个仍可能
+   成立的行为模型，例如“default wait是否覆盖worker1”或“同一SPM冲突分类能否跨base/tile复现”；
+   不能区分机制的重复smoke不进入执行批次。
 
 本轮已经保存的板端证据按“结论而不是通过数”收敛如下；未列为板端结论的新增资产仍只是离线准备：
 
@@ -1069,8 +1069,8 @@ physical bank/controller/hop命名。独立sparse probe又在单个40GiB compile
 | domain/case | producer→consumer与区分向量 | 成功oracle |
 | --- | --- | --- |
 | same-worker NCC dependency | RDMA→CT、CT/NE→WDMA、TDMA→CT/NE及同engine复用；RAW/WAR/WAW按指定issue order连续发射，不插中间wait | 只在序列离开NCC completion domain时drain并检查queue count、逐段composition、result和guard；证明busytable落实issue order，不删除IR edge |
-| worker-specific wait | worker0/1/2各发独立CT pattern，分别调用matching `bywork`；default wait另用能让worker1保持pending的长短workload对照 | 只允许对应worker结果可见；default scope无法区分时保持`unknown` |
-| cross-worker join | w0/w1/w2 disjoint输出，单worker join、两worker mask和三worker mask | join mask覆盖的worker全部完成，未覆盖worker不被伪称完成；最终safety join后全部guard正确 |
+| worker-specific wait | worker0/1/2各发独立CT pattern，分别调用matching `bywork`；现有default/local-fence对照只保留已取得的自然排空事实，真正pending exclusion按第5.10节待触发 | 只允许对应worker结果可见；default/local-fence scope无法区分时保持`unknown` |
+| cross-worker join | w0/w1/w2 disjoint输出，单worker join、两worker mask和三worker mask；mask外worker保持pending的A/B按第5.10节待触发 | join mask覆盖的worker全部完成，未覆盖worker不被伪称完成；最终safety join后全部guard正确 |
 | NCC completion-domain exit | NCC→Kcore、NCC→Direct DTE、structured barrier/backedge及terminal/host publication | 在latest-legal boundary使用matching local drain并合并相邻boundary；boundary返回后立即验证consumer/terminal，不能把最终safety drain代签 |
 | Kcore/cache visibility | host H2D→Kcore read、Kcore store→NCC read、NCC write→Kcore read、WDMA→host D2H | invalidate/clean/fence前后对照、DMA round-trip和host全量expected分别闭合，不能互相替代 |
 | Direct DTE | NCC producer→local drain→DTE send；DTE receive→event wait→NCC consumer；source/destination复用在event后；同步错误路径独立执行 | 正向要求每rank source/receive/compute guard、DDR output、event、terminal与participant正确；错误观察要求shadow status保留TRANSPORT_ERROR且正常runtime terminal/cleanup |
@@ -1220,6 +1220,89 @@ python3 tools/run_hardware_calibration.py --build-dir <board-build> --list \
 
 上述选择自动加首尾heartbeat。旧instruction-family、memory-descriptor和SPM全量重放只保留为
 `*-full-replay`显式步骤，不进入本批默认执行路径。
+
+### 5.10 非阻塞 pending 区分实验
+
+状态：case资产已实现，板端执行`pending`，不阻塞Q37 Checkpoint B/C。NCC侧20个queue saturation、
+3个wait-scope和6个subset-scope case已经进入typed request、device dispatcher、pre-wait/boundary/final
+record及host oracle；SPM侧复用8个既有baseline control并新增16个held-out base-translation row。
+四个独立no-card CTest已完成package、设备C交叉编译和生命周期预检。它们不进入当前125个默认
+calibration leaf或默认runner inventory，本轮不上板，也不改变第7节的保守compiler消费规则。
+
+板端只在software-pipeline production vertical已经通过、且profile结果表明对应保守fallback成为主要
+瓶颈，或version-matched实现新增了必要的只读观测依据时激活。激活时必须先更新本节、
+`tasks/progress.md`和runner inventory，再按普通首错即停规则执行；现有suite必须逐case串行调用，不能
+临时手写packet绕过typed request。
+
+这些实验的artifact边界固定为：消费current profile identity、已验证typed packet/descriptor和owned
+SPM/DDR range；产出raw request、boundary/final record、result/guard、PMU/CSR及profile-scoped行为结论。
+它们不产出新的IR、ABI、side table或scheduler hint。只有满足各自promotion gate的结果才能进入cost或
+completion capability；未执行、自然排空、观测字段缺失或结果相互矛盾都保持现有fail-closed处理。
+
+#### Queue saturation response
+
+- 语义key为`queue-saturation-response`。要区分的不是“总共能否完成`D+1`条”，而是
+  `D+1`提交时是否出现可复现的queue-full/backpressure响应；resident count是更强问题，不能继续从
+  `task_done`反推。
+- 每类engine使用`short-D`、`short-D+1`、`sustained-D`、`sustained-D+1`四格factorial control。
+  packet全部预构并释放builder，使用互不重叠的owned range；同一short/sustained pair只改变单条工作量，
+  同一`D/D+1` pair只增加最后一条issue。紧邻issue之间只允许`rdcycle`，不读MMIO、不做oracle、不wait；
+  最后一条issue后每个worker只读一次control，再进入matching requested wait和safety drain。禁止发送
+  `D+2`或更深overflow。
+- 每格至少保留三次独立样本和首尾ordinary Add。强oracle包括packet/request echo、目标worker/engine
+  instruction delta、每条独立result、双侧guard、final completion、per-issue cycle、blocking delta及
+  stable PMU snapshot；`execute_rc`不能单独判成功。
+- 只有`sustained-D+1`在全部calibration和held-out样本中出现控制组没有的稳定blocking或last-issue
+  threshold信号，且结果/count/guard仍exact，才可记录窄`backpressure-observed`行为。即使该门禁通过，
+  也不能得到resident数量或直接令`pipeline window=D`；后者必须另有version-matched、owner-backed
+  queue head/tail/occupancy只读语义。没有该观测依据时，本family可以关闭full-response问题，但
+  resident count继续`unknown`。
+
+#### Worker wait scope pending exclusion
+
+- 语义key为`worker-wait-scope-exclusion`。worker0先发一个短marker workload，worker1最后发
+  sustained NE/CT backlog；使用tight submission并推迟逐packet观察。requested wait前的唯一control
+  snapshot必须证明worker0可完成且worker1仍pending，否则该样本无区分力，不计入scope结论。
+- A/B/C复用完全相同的packet、地址、issue order和seed，只改变wait kind：
+  default `TsmWaitfinish()`、matching `bywork(1)`和local fence。wait刚返回就读取worker0/1 control、
+  worker1 completion marker及boundary result，然后才对所有participant执行matching safety drain和final
+  exact oracle。
+- `bywork(1)`必须在boundary完成worker1，作为正控制。只有default或local-fence返回后仍稳定观察到
+  worker1 pending，才能证明对应primitive不覆盖worker1；若worker1已完成，只能归类为
+  `covered-or-naturally-drained`，不得据此扩大scope。若在安全资源和timeout内无法让pre-wait snapshot
+  捕获pending，则本family继续`pending`，不通过无限增加workload追求观察。
+
+#### Worker subset join pending exclusion
+
+- 语义key为`worker-subset-join-exclusion`。分别让w0/w1/w2中的一个成为最后提交的sustained backlog，
+  其余worker使用短marker；每个目标worker构造一对只改变join mask的请求：control包含该worker，
+  candidate排除该worker。
+- join前snapshot必须证明目标worker pending。control在boundary必须完成目标worker；candidate只有在
+  mask内worker全部完成、目标worker仍pending时才证明subset exclusion。随后统一safety join并验证三worker
+  的instruction count、完整result和guard。两个请求若都在boundary自然排空，则只保留included-worker
+  正向结论，mask排除性继续`unknown`。
+- 该family只验证disjoint输出和completion scope；跨worker同地址、仲裁公平性或无ordered producer的
+  hazard仍不进入正向板测，也不能由subset结果外推。
+
+#### SPM conflict equivalence
+
+- 语义key为`spm-conflict-equivalence`。目标不是继续收集单点offset latency，而是检验一个预先冻结的
+  conflict分类能否跨absolute base、tile和held-out workload复现；若不能复现，就明确否定当前profile下
+  的compiler bank-coloring输入。
+- 当前可执行矩阵先闭合最容易被absolute-address偶然性混淆的一轴：固定CT→RDMA、256-byte descriptor
+  和8192-byte relative offset，扫描`base mod 256 = 0/64/128/192`；absolute base使用既有
+  translation 0 baseline及`0x20000/0x40000`两个held-out translation，每格保留serial/window和三次
+  样本，共8个既有control加16个新增row。host按absolute base分组，先验证完整result、physical span、
+  双侧guard、instruction count和completion，再比较plan/full-execution/CT-blocking/RDMA-blocking的
+  `window-minus-serial`方向；性能raw不能替代正确性。
+- 该初始矩阵故意不把一个issue order、一个engine pair或一个tile伪装成bank-cost完成证明。若要越过
+  `no-bank-coloring`，激活批次还必须增加已验证的reciprocal issue order、其余bank-period offset、
+  physical-tile和第二种transfer/compute workload held-out；这些扩展当前未进入板端inventory。
+- 当前NCC engine/FU/blocking counter只能作为冲突proxy，SPM PMU未enable时不得命名bank。只有
+  version-matched资料提供owner-backed bank/port映射或只读counter，或者预先冻结的等价分类在全部base
+  translation、held-out tile和held-out workload上保持同一冲突方向，才允许形成窄profile cost feature。
+  任一translation/tile翻转、仅median成立或依赖runtime allocation偶然base，都保持
+  `no-bank-coloring`；即使promotion通过，也只影响已验证候选排序，不改变SPM legality、capacity或lifetime。
 
 ## 6. 明确禁测或保守处理
 

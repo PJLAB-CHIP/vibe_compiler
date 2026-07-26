@@ -1042,6 +1042,87 @@ V2_SUBSET_JOIN_CASES = tuple(
     )
     for mask in (0b001, 0b010, 0b100, 0b011, 0b101, 0b110)
 )
+V2_WORKER_WAIT_SCOPE_CASES = tuple(
+    v2_case(
+        f"worker-wait-scope-ne-worker1-{spelling}-tight-window",
+        (
+            v2_lane(
+                ncc_protocol.Engine.TDMA,
+                worker=0,
+                transfer_bytes=16,
+                element_format=FMT_INT8,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.NE,
+                worker=1,
+                transfer_bytes=V2_NE_LARGE_RESULT_BYTES,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.NE,
+                worker=1,
+                transfer_bytes=V2_NE_LARGE_RESULT_BYTES,
+            ),
+        ),
+        rounds=3,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=seed,
+        wait_kind=wait_kind,
+        wait_worker_mask_override=(
+            0b010
+            if wait_kind == ncc_protocol.WaitKind.BY_WORKER
+            else None
+        ),
+        flags=ncc_protocol.TIGHT_WORKER_SCOPE,
+    )
+    for spelling, wait_kind, seed in (
+        ("default", ncc_protocol.WaitKind.DEFAULT, 0x6250),
+        ("byworker", ncc_protocol.WaitKind.BY_WORKER, 0x6250),
+        ("local-fence", ncc_protocol.WaitKind.LOCAL_FENCE, 0x6250),
+    )
+)
+
+
+def v2_worker_subset_scope_case(
+    target_worker: int, include_target: bool
+) -> GenericProbeCase:
+    other_workers = tuple(
+        worker for worker in range(3) if worker != target_worker
+    )
+    wait_mask = sum(1 << worker for worker in other_workers)
+    if include_target:
+        wait_mask |= 1 << target_worker
+    return v2_case(
+        (
+            f"worker-subset-target{target_worker}-"
+            f"{'include' if include_target else 'exclude'}-tight-window"
+        ),
+        (
+            v2_lane(ncc_protocol.Engine.CT, worker=other_workers[0]),
+            v2_lane(
+                ncc_protocol.Engine.TDMA,
+                worker=other_workers[1],
+                transfer_bytes=16,
+                element_format=FMT_INT8,
+            ),
+            v2_lane(
+                ncc_protocol.Engine.NE,
+                worker=target_worker,
+                transfer_bytes=V2_NE_LARGE_RESULT_BYTES,
+            ),
+        ),
+        rounds=3,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x6260 + target_worker,
+        wait_worker_mask_override=wait_mask,
+        flags=ncc_protocol.TIGHT_WORKER_SCOPE,
+    )
+
+
+V2_WORKER_SUBSET_SCOPE_CASES = tuple(
+    v2_worker_subset_scope_case(target_worker, include_target)
+    for target_worker in range(3)
+    for include_target in (False, True)
+)
 V2_WAIT_OVERHEAD_CASES = tuple(
     v2_case(
         f"{engine.name.lower()}-worker0-r2-{spelling}",
@@ -1141,6 +1222,29 @@ V2_ACTIVE_OCCUPANCY_CASES = tuple(
         issue_limit=depth + 1,
     )
     for engine, depth in V2_DOCUMENTED_QUEUE_DEPTHS.items()
+)
+V2_QUEUE_SATURATION_CASES = tuple(
+    v2_case(
+        (
+            f"queue-saturation-{engine.name.lower()}-{load_name}-"
+            f"depth{issue_limit}-tight-window"
+        ),
+        (
+            v2_lane(engine, transfer_bytes=transfer_bytes),
+            v2_lane(engine, transfer_bytes=transfer_bytes),
+        ),
+        rounds=(issue_limit + 1) // 2,
+        schedule=ncc_protocol.Schedule.WINDOW,
+        seed=0x5040 + int(engine) * 0x20,
+        flags=ncc_protocol.TIGHT_QUEUE_SATURATION,
+        issue_limit=issue_limit,
+    )
+    for engine, depth in V2_DOCUMENTED_QUEUE_DEPTHS.items()
+    for load_name, transfer_bytes in (
+        ("short", 256 if engine == ncc_protocol.Engine.NE else 4096),
+        ("sustained", V2_ACTIVE_OCCUPANCY_BYTES[engine]),
+    )
+    for issue_limit in (depth, depth + 1)
 )
 V2_PAIR_CASES = tuple(
     v2_case(
@@ -1763,6 +1867,9 @@ NCC_OBSERVATION_CASE_NAMES = frozenset(
     for case in (
         V2_COMPLETION_SCOPE_CASES
         + V2_SUBSET_JOIN_CASES
+        + V2_QUEUE_SATURATION_CASES
+        + V2_WORKER_WAIT_SCOPE_CASES
+        + V2_WORKER_SUBSET_SCOPE_CASES
         + V2_STRIDED_DEPENDENCY_CASES
         + V2_DOUBLE_SLOT_OBSERVATION_CASES
         + V2_MAPPED_SPM_BOUNDARY_CASES
@@ -1779,6 +1886,9 @@ SUITES = {
     "completion-scope-manual": V2_COMPLETION_SCOPE_CASES,
     "active-occupancy-manual": V2_ACTIVE_OCCUPANCY_CASES,
     "cross-worker-boundary-manual": V2_SUBSET_JOIN_CASES,
+    "queue-saturation-manual": V2_QUEUE_SATURATION_CASES,
+    "worker-wait-scope-manual": V2_WORKER_WAIT_SCOPE_CASES,
+    "worker-subset-scope-manual": V2_WORKER_SUBSET_SCOPE_CASES,
     "producer-consumer-observation": V2_PRODUCER_CONSUMER_ALL_CASES,
     "mapped-spm-boundary-observation": V2_MAPPED_SPM_BOUNDARY_CASES,
     "strided-dependency-observation": V2_STRIDED_DEPENDENCY_CASES,
@@ -3113,6 +3223,8 @@ def validate_observed_ranges_v2(
                 not in (
                     ncc_protocol.TIGHT_DEPTH_PLUS_ONE,
                     ncc_protocol.TIGHT_KCORE_BOUNDARY,
+                    ncc_protocol.TIGHT_QUEUE_SATURATION,
+                    ncc_protocol.TIGHT_WORKER_SCOPE,
                 )
             )
             else 0
@@ -3372,8 +3484,16 @@ def parse_record(
     plan = case.plan_for_sample(sample)
     observations = ncc_protocol.validate_record(words, plan)
     rec = ncc_protocol.REC
-    is_wait_scope = case in V2_COMPLETION_SCOPE_CASES
-    is_subset_join = case in V2_SUBSET_JOIN_CASES
+    is_wait_scope = case in (
+        V2_COMPLETION_SCOPE_CASES + V2_WORKER_WAIT_SCOPE_CASES
+    )
+    is_subset_join = case in (
+        V2_SUBSET_JOIN_CASES + V2_WORKER_SUBSET_SCOPE_CASES
+    )
+    is_queue_saturation = case in V2_QUEUE_SATURATION_CASES
+    is_tight_worker_scope = case in (
+        V2_WORKER_WAIT_SCOPE_CASES + V2_WORKER_SUBSET_SCOPE_CASES
+    )
     is_mapped_pure_ncc = case in V2_MAPPED_SPM_PURE_NCC_CASES
     is_mapped_ncc_to_kcore = case in V2_MAPPED_SPM_NCC_TO_KCORE_CASES
     is_mapped_kcore_to_ncc = case in V2_MAPPED_SPM_KCORE_TO_NCC_CASES
@@ -3406,6 +3526,24 @@ def parse_record(
         raise RuntimeError(
             f"{case.name}: parallel queue mode is not active: {serial_modes}"
         )
+    pre_wait_controls: dict[int, int] | None = None
+    if is_queue_saturation or is_tight_worker_scope:
+        pre_wait_controls = {
+            worker: words[rec["CONTROL_PRE_WAIT"] + worker]
+            for worker in range(3)
+        }
+    if is_tight_worker_scope:
+        target_worker = (
+            1
+            if case in V2_WORKER_WAIT_SCOPE_CASES
+            else plan.lanes[-1].worker
+        )
+        assert pre_wait_controls is not None
+        if pre_wait_controls[target_worker] & 0x100:
+            raise RuntimeError(
+                f"{case.name}: distinguishing target worker "
+                f"{target_worker} drained before the requested wait"
+            )
     serial_wait_count = words[rec["SERIAL_WAIT_COUNT"]]
     expected_serial_wait_count = (
         len(plan.issue_identities())
@@ -3579,6 +3717,11 @@ def parse_record(
         )
         wait_scope = {
             "wait_cycles": words[rec["WAIT_CYCLES"]],
+            "target_pending_before_wait": (
+                pre_wait_controls is not None
+                and not bool(pre_wait_controls[1] & 0x100)
+            ),
+            "worker_control_before_wait": pre_wait_controls,
             "worker0_task_status": words[rec["CONTROL_BOUNDARY"]],
             "worker0_task_done": worker0_task_done,
             "worker1_task_status": words[
@@ -3638,6 +3781,18 @@ def parse_record(
         subset_join = {
             "wait_worker_mask": plan.wait_worker_mask,
             "safety_worker_mask": words[rec["SAFETY_WORKER_MASK"]],
+            "target_worker": (
+                plan.lanes[-1].worker
+                if case in V2_WORKER_SUBSET_SCOPE_CASES
+                else None
+            ),
+            "target_pending_before_wait": (
+                pre_wait_controls is not None
+                and not bool(
+                    pre_wait_controls[plan.lanes[-1].worker] & 0x100
+                )
+            ),
+            "worker_control_before_wait": pre_wait_controls,
             "worker_boundary_exact": boundary_exact,
             "worker_boundary_done": boundary_done,
             "unjoined_workers": sorted(set(range(3)) - joined),
@@ -3654,6 +3809,45 @@ def parse_record(
                 )
                 else "unjoined-workers-drained-before-boundary"
             ),
+        }
+    queue_saturation: dict[str, object] | None = None
+    if is_queue_saturation:
+        assert pre_wait_controls is not None
+        engine = plan.lanes[0].engine
+        depth = V2_DOCUMENTED_QUEUE_DEPTHS[engine]
+        boundary_task_done = bool(
+            words[rec["CONTROL_BOUNDARY"]] & 0x100
+        )
+        if not boundary_task_done:
+            raise RuntimeError(
+                f"{case.name}: matching worker wait returned before "
+                "worker0 reached task_done"
+            )
+        execute_cycles = [
+            observation.execute_cycles for observation in observations
+        ]
+        queue_saturation = {
+            "engine": engine.name.lower(),
+            "documented_depth": depth,
+            "issue_count": len(observations),
+            "load": (
+                "sustained"
+                if plan.lanes[0].transfer_bytes
+                == V2_ACTIVE_OCCUPANCY_BYTES[engine]
+                else "short"
+            ),
+            "worker0_pending_before_wait": not bool(
+                pre_wait_controls[0] & 0x100
+            ),
+            "worker_control_before_wait": pre_wait_controls,
+            "execute_cycles": execute_cycles,
+            "last_execute_cycles": execute_cycles[-1],
+            "boundary_task_done": boundary_task_done,
+            "boundary_exact": all(
+                observation.boundary_mismatches == 0
+                for observation in observations
+            ),
+            "final_exact": True,
         }
     mapped_spm_boundary: dict[str, object] | None = None
     mapped_mismatches = {
@@ -3836,6 +4030,8 @@ def parse_record(
         result["wait_scope"] = wait_scope
     if subset_join is not None:
         result["subset_join"] = subset_join
+    if queue_saturation is not None:
+        result["queue_saturation"] = queue_saturation
     if mapped_spm_boundary is not None:
         result["mapped_spm_boundary"] = mapped_spm_boundary
     if constructor is not None:
@@ -4011,6 +4207,9 @@ def case_sample_count(case: GenericProbeCase, repeat: int) -> int:
     if case in (
         V2_LARGE_OVERLAP_CASES
         + V2_ACTIVE_OCCUPANCY_CASES
+        + V2_QUEUE_SATURATION_CASES
+        + V2_WORKER_WAIT_SCOPE_CASES
+        + V2_WORKER_SUBSET_SCOPE_CASES
         + V2_STRIDED_DEPENDENCY_CASES
         + V2_MAPPED_SPM_BOUNDARY_CASES
     ):
@@ -4580,6 +4779,9 @@ def main() -> int:
         "completion-scope-manual",
         "constructor-observation",
         "cross-worker-boundary-manual",
+        "queue-saturation-manual",
+        "worker-wait-scope-manual",
+        "worker-subset-scope-manual",
         "producer-consumer-observation",
         "strided-dependency-observation",
         "large-backlog-observation",
@@ -4625,6 +4827,7 @@ def main() -> int:
             selected_cases = tuple(
                 by_name[name] for name in args.selected_cases
             )
+    validate_catalog_resource_layout(selected_cases)
     validate_hazard_selection(selected_cases)
     if args.require_overlap:
         validate_overlap_selection(selected_cases)

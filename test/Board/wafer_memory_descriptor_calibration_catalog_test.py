@@ -31,9 +31,15 @@ def main() -> int:
     assert len(catalog.CROSS_WORKER_PARALLEL_PAIR_CASES) == 2
     assert len(catalog.DEPENDENCY_PARALLEL_PAIR_CASES) == 12
     assert len(catalog.PARALLEL_PAIR_CASES) == 34
+    assert len(catalog.PENDING_CONFLICT_EQUIVALENCE_CASES) == 16
     assert [case.case_id for case in catalog.CATALOG] == list(range(155))
+    assert [case.case_id for case in catalog.PENDING_CASES] == list(
+        range(155, 171)
+    )
     assert len(catalog.CASES_BY_ID) == len(catalog.CATALOG)
     assert len(catalog.CASES_BY_NAME) == len(catalog.CATALOG)
+    assert len(catalog.ALL_CASES_BY_ID) == len(catalog.ALL_CASES) == 171
+    assert len(catalog.ALL_CASES_BY_NAME) == len(catalog.ALL_CASES)
     assert {case.domain for case in catalog.CATALOG} == {
         "dma-ddr-descriptor",
         "spm-engine-access",
@@ -56,6 +62,36 @@ def main() -> int:
     assert {
         abs(case.spm_b - case.spm_a) for case in new_offsets
     } == {4352, 65536}
+    equivalence = runner.select_cases(
+        types.SimpleNamespace(
+            selected_cases=None,
+            domain=None,
+            oracle=None,
+            relative_spm_offset=None,
+            parallel_address_sweep=False,
+            parallel_pair_expanded=False,
+            conflict_equivalence=True,
+        )
+    )
+    assert equivalence == catalog.CONFLICT_EQUIVALENCE_CASES
+    assert len(catalog.CONFLICT_EQUIVALENCE_BASELINE_CASES) == 8
+    held_out = catalog.PENDING_CONFLICT_EQUIVALENCE_CASES
+    assert {
+        case.spm_a - catalog.SPM_BASE - case.spm_a % 256
+        for case in held_out
+    } == set(catalog.SPM_CONFLICT_EQUIVALENCE_TRANSLATIONS)
+    assert {
+        case.spm_a % 256 for case in held_out
+    } == set(catalog.SPM_PARALLEL_ALIGNMENT_PHASES)
+    assert {
+        case.schedule for case in held_out
+    } == {catalog.SCHEDULE_SERIAL, catalog.SCHEDULE_WINDOW}
+    assert all(
+        case.spm_b - case.spm_a == 8192
+        and case.sweep == "conflict-equivalence"
+        and case not in catalog.CATALOG
+        for case in held_out
+    )
     assert all(case.is_exact for case in catalog.PAIR_CASES)
     assert {case.engine_a for case in catalog.ENGINE_ACCESS_CASES} == set(
         range(5)
@@ -518,6 +554,18 @@ def main() -> int:
         assert "unsupported SPM parallel address coordinate" in str(error)
     else:
         raise AssertionError("sub-64-byte base phase reached serialization")
+
+    for sample, case in enumerate(catalog.PENDING_CASES):
+        built = catalog.build_case_payload(case, sample)
+        request_words = struct.unpack_from(
+            f"<{catalog.REQUEST_WORDS}Q", built.request
+        )
+        assert request_words[catalog.REQ["CASE"]] == case.case_id
+        assert request_words[catalog.REQ["SPM_A"]] == case.spm_a
+        assert request_words[catalog.REQ["SPM_B"]] == case.spm_b
+        assert request_words[catalog.REQ["SAMPLE"]] == sample
+        assert built.allowed_ranges
+        assert built.exact_ranges
 
     assert max(
         case.dst_ddr_offset + case.descriptor.envelope_bytes

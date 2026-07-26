@@ -372,9 +372,19 @@ typed tight `D+1`也只能使用相同隔离边界；CT/NE/RDMA/WDMA `D+1=7`与T
 case或heartbeat timeout后停止该批次，不自动重试、reset或power cycle；`tsm_smi` idle不能解除停止条件。
 诊断地址也必须先由当前SPM arena/reservation合同证明整个半开range owned且合法；不能用相邻地址可访问或
 较小CT write成功外推整段WDMA range。`0x70000..0x7ffff`的64KiB WDMA诊断明确禁止复用。
-板端parameterized probe只回传事实，编译器策略在全部代表维度闭合后决定。当前没有engine pair通过稳定正
-overlap资格门禁，RAW hazard暂不适用且所有pair保持串行；只有未来同方向disjoint serial/window对照稳定达到
-median正overlap，才运行对应exact/partial/adjacent composition oracle。
+板端parameterized probe只回传事实，编译器策略在全部代表维度闭合后决定。current expanded矩阵已有10个
+profile/pair/worker/transfer/schedule scoped正overlap cell，可按白名单进入候选；4KiB RDMA+WDMA的六个
+relation/order cell只允许合并issue/wait开销，不计engine overlap收益。未匹配pair/shape仍保持串行，
+RAW/WAR/WAW保留显式IR edge和issue order，不能由disjoint正overlap删除依赖。
+
+hardware-calibration owner另冻结四个非阻塞`pending`区分family：
+`queue-saturation-response`、`worker-wait-scope-exclusion`、
+`worker-subset-join-exclusion`和`spm-conflict-equivalence`。对应typed catalog、device dispatcher、
+pre-wait/boundary/final record、host oracle及四个no-card CTest已经实现；板端执行仍为`pending`，不进入
+默认runner或本轮板端批次，也不重新打开Checkpoint A。只有Checkpoint B/C的production vertical通过后，
+profile证明对应保守fallback是主要瓶颈，或version-matched实现提供新的queue/SPM只读观测依据时，才按
+`docs/tx81-compiler-hardware-calibration.md`第5.10节激活板端执行。未激活前继续使用有界window、
+matching逐worker join和`no-bank-coloring`，主线直接进入Checkpoint B。
 
 ## Checkpoint B：通用 IR 物化
 

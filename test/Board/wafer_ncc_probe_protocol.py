@@ -101,6 +101,12 @@ PREISSUE_LOCAL_WAIT = _enumerator(
 TIGHT_KCORE_BOUNDARY = _enumerator(
     "WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY"
 )
+TIGHT_QUEUE_SATURATION = _enumerator(
+    "WAFER_NCC_REQUEST_TIGHT_QUEUE_SATURATION"
+)
+TIGHT_WORKER_SCOPE = _enumerator(
+    "WAFER_NCC_REQUEST_TIGHT_WORKER_SCOPE"
+)
 
 
 def _typed_enum(
@@ -271,6 +277,7 @@ REC = {
         "CONSTRUCTOR_ADDRESS",
         "RECORD_GUARD",
         "PREISSUE_WAIT_CYCLES",
+        "CONTROL_PRE_WAIT",
     )
 }
 ISSUE = {
@@ -324,6 +331,9 @@ CONSTRUCTOR_CAPTURED = _enumerator(
 )
 PREISSUE_LOCAL_WAIT_DONE = _enumerator(
     "WAFER_NCC_RECORD_PREISSUE_LOCAL_WAIT_DONE"
+)
+PRE_WAIT_CAPTURED = _enumerator(
+    "WAFER_NCC_RECORD_PRE_WAIT_CAPTURED"
 )
 ALL_PHASE_FLAGS = sum(
     _enumerator(name)
@@ -761,6 +771,53 @@ class Plan:
             and self.rounds <= queue_depths[producer.engine]
         )
 
+    def is_tight_queue_saturation(self) -> bool:
+        if len(self.lanes) != 2:
+            return False
+        first, second = self.lanes
+        queue_depths = {
+            Engine.CT: 6,
+            Engine.NE: 6,
+            Engine.RDMA: 6,
+            Engine.WDMA: 6,
+            Engine.TDMA: 4,
+        }
+        depth = queue_depths[first.engine]
+        return (
+            self.flags == TIGHT_QUEUE_SATURATION
+            and first == second
+            and first.worker == 0
+            and first.issue_mode == IssueMode.RAW
+            and self.effect_relation == EffectRelation.NONE
+            and self.range_relation == RangeRelation.DISJOINT
+            and self.schedule == Schedule.WINDOW
+            and self.wait_kind == WaitKind.BY_WORKER
+            and self.wait_worker_mask == 1
+            and self.first_operand == Operand.AUTO
+            and self.second_operand == Operand.AUTO
+            and self.issue_limit in (depth, depth + 1)
+            and self.issue_limit <= len(self.lanes) * self.rounds
+            and self.issue_limit > (len(self.lanes) - 1) * self.rounds
+        )
+
+    def is_tight_worker_scope(self) -> bool:
+        participants = {lane.worker for lane in self.lanes}
+        return (
+            self.flags == TIGHT_WORKER_SCOPE
+            and len(self.lanes) == 3
+            and len(participants) >= 2
+            and all(
+                lane.issue_mode == IssueMode.RAW for lane in self.lanes
+            )
+            and self.effect_relation == EffectRelation.NONE
+            and self.range_relation == RangeRelation.DISJOINT
+            and self.schedule == Schedule.WINDOW
+            and self.wait_kind != WaitKind.NONE
+            and self.first_operand == Operand.AUTO
+            and self.second_operand == Operand.AUTO
+            and self.issue_limit == 0
+        )
+
     def validate(self) -> None:
         if self.command == Command.QUALIFY:
             if (
@@ -889,6 +946,8 @@ class Plan:
             MAPPED_SPM_KCORE_WRITE,
             MAPPED_SPM_KCORE_WRITE | PREISSUE_LOCAL_WAIT,
             TIGHT_KCORE_BOUNDARY,
+            TIGHT_QUEUE_SATURATION,
+            TIGHT_WORKER_SCOPE,
         ):
             raise ValueError("unknown plan flags are not safe")
         queue_depths = {
@@ -900,7 +959,13 @@ class Plan:
         }
         tight_depth_plus_one = self.flags == TIGHT_DEPTH_PLUS_ONE
         tight_kcore_boundary = self.is_tight_kcore_boundary_observation()
-        tight_submission = tight_depth_plus_one or tight_kcore_boundary
+        tight_queue_saturation = self.is_tight_queue_saturation()
+        tight_worker_scope = self.is_tight_worker_scope()
+        special_queue_bound = (
+            tight_depth_plus_one
+            or tight_kcore_boundary
+            or tight_queue_saturation
+        )
         if tight_depth_plus_one:
             if (
                 len(self.lanes) != 2
@@ -927,6 +992,18 @@ class Plan:
                 raise ValueError(
                     "tight Kcore boundary must issue a bounded raw window on "
                     "one worker/engine with no wait or a local fence"
+                )
+        elif self.flags == TIGHT_QUEUE_SATURATION:
+            if not tight_queue_saturation:
+                raise ValueError(
+                    "tight queue saturation must issue exactly depth or "
+                    "depth+1 identical raw entries with a matching worker wait"
+                )
+        elif self.flags == TIGHT_WORKER_SCOPE:
+            if not tight_worker_scope:
+                raise ValueError(
+                    "tight worker scope requires a three-lane raw window "
+                    "across at least two workers and a requested wait"
                 )
         elif self.issue_limit:
             raise ValueError(
@@ -956,7 +1033,7 @@ class Plan:
             raise ValueError(
                 "mapped-SPM Kcore-write observation is malformed"
             )
-        if self.schedule == Schedule.WINDOW and not tight_submission:
+        if self.schedule == Schedule.WINDOW and not special_queue_bound:
             outstanding: dict[tuple[Engine, int], int] = {}
             for lane in self.lanes:
                 key = (lane.engine, lane.worker)
@@ -1191,6 +1268,13 @@ def validate_record(
         raise ValueError("record does not echo the requested typed plan")
     if words[REC["FLAGS"]] & ALL_PHASE_FLAGS != ALL_PHASE_FLAGS:
         raise ValueError("record did not complete every observation phase")
+    needs_pre_wait = plan.flags in (
+        TIGHT_QUEUE_SATURATION,
+        TIGHT_WORKER_SCOPE,
+    )
+    has_pre_wait = bool(words[REC["FLAGS"]] & PRE_WAIT_CAPTURED)
+    if has_pre_wait != needs_pre_wait:
+        raise ValueError("record pre-wait capture does not match the plan")
 
     observations = []
     seen_slots: set[int] = set()

@@ -1502,7 +1502,9 @@ static int wafer_ncc_v2_observe(void *opaque,
       issue->lane_spec->issue_mode == WAFER_NCC_ISSUE_RAW;
   int tight_submission =
       request->flags == WAFER_NCC_REQUEST_TIGHT_DEPTH_PLUS_ONE ||
-      request->flags == WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY;
+      request->flags == WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY ||
+      request->flags == WAFER_NCC_REQUEST_TIGHT_QUEUE_SATURATION ||
+      request->flags == WAFER_NCC_REQUEST_TIGHT_WORKER_SCOPE;
   if (raw_issue && !tight_submission) {
     observation->inter_type = context->issued_inter_types[issue->slot];
     return wafer_ncc_v2_observe_raw_registers(issue, observation);
