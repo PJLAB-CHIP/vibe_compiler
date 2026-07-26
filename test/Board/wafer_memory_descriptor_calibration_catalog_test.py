@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import io
+import json
 import pathlib
 import struct
 import tempfile
@@ -31,14 +34,16 @@ def main() -> int:
     assert len(catalog.CROSS_WORKER_PARALLEL_PAIR_CASES) == 2
     assert len(catalog.DEPENDENCY_PARALLEL_PAIR_CASES) == 12
     assert len(catalog.PARALLEL_PAIR_CASES) == 34
-    assert len(catalog.PENDING_CONFLICT_EQUIVALENCE_CASES) == 16
+    assert len(catalog.PENDING_CONFLICT_EQUIVALENCE_CASES) == 88
+    assert len(catalog.CONFLICT_EQUIVALENCE_PAIRS) == 48
+    assert catalog.CONFLICT_SAMPLES == 4
     assert [case.case_id for case in catalog.CATALOG] == list(range(155))
     assert [case.case_id for case in catalog.PENDING_CASES] == list(
-        range(155, 171)
+        range(155, 243)
     )
     assert len(catalog.CASES_BY_ID) == len(catalog.CATALOG)
     assert len(catalog.CASES_BY_NAME) == len(catalog.CATALOG)
-    assert len(catalog.ALL_CASES_BY_ID) == len(catalog.ALL_CASES) == 171
+    assert len(catalog.ALL_CASES_BY_ID) == len(catalog.ALL_CASES) == 243
     assert len(catalog.ALL_CASES_BY_NAME) == len(catalog.ALL_CASES)
     assert {case.domain for case in catalog.CATALOG} == {
         "dma-ddr-descriptor",
@@ -74,18 +79,142 @@ def main() -> int:
         )
     )
     assert equivalence == catalog.CONFLICT_EQUIVALENCE_CASES
+    try:
+        runner.select_cases(
+            types.SimpleNamespace(
+                selected_cases=[
+                    catalog.PENDING_CONFLICT_EQUIVALENCE_CASES[0].name
+                ],
+                domain=None,
+                oracle=None,
+                relative_spm_offset=None,
+                parallel_address_sweep=False,
+                parallel_pair_expanded=False,
+                conflict_equivalence=False,
+            )
+        )
+    except RuntimeError as error:
+        assert "unknown memory descriptor cases" in str(error)
+    else:
+        raise AssertionError(
+            "pending conflict case bypassed the explicit selector"
+        )
     assert len(catalog.CONFLICT_EQUIVALENCE_BASELINE_CASES) == 8
     held_out = catalog.PENDING_CONFLICT_EQUIVALENCE_CASES
     assert {
         case.spm_a - catalog.SPM_BASE - case.spm_a % 256
         for case in held_out
-    } == set(catalog.SPM_CONFLICT_EQUIVALENCE_TRANSLATIONS)
+    } == {0, *catalog.SPM_CONFLICT_EQUIVALENCE_TRANSLATIONS}
     assert {
         case.spm_a % 256 for case in held_out
     } == set(catalog.SPM_PARALLEL_ALIGNMENT_PHASES)
     assert {
         case.schedule for case in held_out
     } == {catalog.SCHEDULE_SERIAL, catalog.SCHEDULE_WINDOW}
+    assert {
+        case.descriptor.compact_bytes for case in held_out
+    } == set(catalog.SPM_CONFLICT_EQUIVALENCE_TRANSFERS)
+    assert {
+        case.issue_order for case in held_out
+    } == set(catalog.SPM_CONFLICT_EQUIVALENCE_ISSUE_ORDERS)
+    assert {
+        (
+            case.spm_a
+            - catalog.SPM_BASE
+            - case.spm_a % 256,
+            case.spm_a % 256,
+            case.descriptor.compact_bytes,
+            case.issue_order,
+            case.schedule,
+        )
+        for case in catalog.CONFLICT_EQUIVALENCE_CASES
+    } == {
+        (
+            translation,
+            phase,
+            transfer,
+            issue_order,
+            schedule,
+        )
+        for translation in (
+            0,
+            *catalog.SPM_CONFLICT_EQUIVALENCE_TRANSLATIONS,
+        )
+        for phase in catalog.SPM_PARALLEL_ALIGNMENT_PHASES
+        for transfer in catalog.SPM_CONFLICT_EQUIVALENCE_TRANSFERS
+        for issue_order in catalog.SPM_CONFLICT_EQUIVALENCE_ISSUE_ORDERS
+        for schedule in (
+            catalog.SCHEDULE_SERIAL,
+            catalog.SCHEDULE_WINDOW,
+        )
+    }
+    assert {
+        (
+            pair.translation,
+            pair.phase,
+            pair.transfer_bytes,
+            pair.issue_order,
+        )
+        for pair in catalog.CONFLICT_EQUIVALENCE_PAIRS
+    } == {
+        (translation, phase, transfer, issue_order)
+        for translation in (
+            0,
+            *catalog.SPM_CONFLICT_EQUIVALENCE_TRANSLATIONS,
+        )
+        for phase in catalog.SPM_PARALLEL_ALIGNMENT_PHASES
+        for transfer in catalog.SPM_CONFLICT_EQUIVALENCE_TRANSFERS
+        for issue_order in catalog.SPM_CONFLICT_EQUIVALENCE_ISSUE_ORDERS
+    }
+    for pair in catalog.CONFLICT_EQUIVALENCE_PAIRS:
+        first_positions = []
+        for sample in range(catalog.CONFLICT_SAMPLES):
+            invocation = catalog.build_conflict_equivalence_invocation(
+                pair, sample
+            )
+            assert len(invocation.request) == catalog.RESOURCE_BYTES
+            assert len(invocation.payload) == catalog.RESOURCE_BYTES
+            assert (
+                invocation.serial_built.payload
+                == invocation.window_built.payload
+                == invocation.payload
+            )
+            serial_words = struct.unpack_from(
+                f"<{catalog.REQUEST_WORDS}Q",
+                invocation.request,
+                catalog.CONFLICT_SERIAL_REQUEST_WORD * 8,
+            )
+            window_words = struct.unpack_from(
+                f"<{catalog.REQUEST_WORDS}Q",
+                invocation.request,
+                catalog.CONFLICT_WINDOW_REQUEST_WORD * 8,
+            )
+            assert {
+                index
+                for index, (serial, window) in enumerate(
+                    zip(serial_words, window_words, strict=True)
+                )
+                if serial != window
+            } == {catalog.REQ["CASE"], catalog.REQ["SCHEDULE"]}
+            meta = struct.unpack_from(
+                f"<{catalog.CONFLICT_REQUEST_META_WORDS}Q",
+                invocation.request,
+                catalog.CONFLICT_REQUEST_META_WORD * 8,
+            )
+            assert (
+                meta[catalog.CONFLICT_REQ["MAGIC"]]
+                == catalog.CONFLICT_REQUEST_MAGIC
+            )
+            assert meta[catalog.CONFLICT_REQ["COORDINATE"]] == (
+                pair.coordinate_id
+            )
+            assert meta[catalog.CONFLICT_REQ["SAMPLE"]] == sample
+            assert meta[catalog.CONFLICT_REQ["FIRST_SCHEDULE"]] == (
+                invocation.first_schedule
+            )
+            first_positions.append(invocation.first_schedule)
+        assert first_positions.count(catalog.SCHEDULE_SERIAL) == 2
+        assert first_positions.count(catalog.SCHEDULE_WINDOW) == 2
     assert all(
         case.spm_b - case.spm_a == 8192
         and case.sweep == "conflict-equivalence"
@@ -543,6 +672,297 @@ def main() -> int:
         raw[guard_begin] ^= 0xFF
         expect_rejected("SPM guard bytes", raw)
 
+        invocation = catalog.build_conflict_equivalence_invocation(
+            catalog.CONFLICT_EQUIVALENCE_PAIRS[0], 0
+        )
+        conflict_raw = bytearray(
+            [catalog.RESOURCE_CANARY] * catalog.RESOURCE_BYTES
+        )
+        actual_bases = {
+            "REQUEST_DDR": 0x10000000,
+            "PAYLOAD_DDR": 0x20000000,
+            "OUTPUT_DDR": 0x30000000,
+        }
+        for row, (case, built, output_offset) in enumerate(
+            (
+                (
+                    invocation.pair.serial,
+                    invocation.serial_built,
+                    catalog.CONFLICT_SERIAL_OUTPUT_OFFSET,
+                ),
+                (
+                    invocation.pair.window,
+                    invocation.window_built,
+                    catalog.CONFLICT_WINDOW_OUTPUT_OFFSET,
+                ),
+            )
+        ):
+            conflict_raw[
+                output_offset :
+                output_offset + catalog.CONFLICT_OUTPUT_ROW_BYTES
+            ] = built.expected_output[
+                : catalog.CONFLICT_OUTPUT_ROW_BYTES
+            ]
+            for begin, end in catalog.spm_dump_ranges(case):
+                conflict_raw[
+                    output_offset + begin : output_offset + end
+                ] = bytes([catalog.SPM_GUARD]) * (end - begin)
+            record = [0] * catalog.RECORD_WORDS
+            for key, value in runner._expected_record(
+                case, invocation.sample
+            ).items():
+                record[catalog.REC[key]] = value
+            record[catalog.REC["PLAN_CYCLES"]] = row + 1
+            record[catalog.REC["PMU_ENABLE"]] = 1
+            record[catalog.REC["STABLE_BEFORE"]] = (
+                runner.PMU_STABLE_MASK
+            )
+            record[catalog.REC["STABLE_AFTER"]] = (
+                runner.PMU_STABLE_MASK
+            )
+            struct.pack_into(
+                f"<{catalog.RECORD_WORDS}Q",
+                conflict_raw,
+                output_offset,
+                *record,
+            )
+
+            request_word = (
+                catalog.CONFLICT_SERIAL_REQUEST_WORD
+                if row == 0
+                else catalog.CONFLICT_WINDOW_REQUEST_WORD
+            )
+            row_output_ddr = (
+                actual_bases["OUTPUT_DDR"] + output_offset
+            )
+            meta = [0] * catalog.CONFLICT_RECORD_META_WORDS
+            meta_values = {
+                "MAGIC": catalog.CONFLICT_RECORD_MAGIC,
+                "SCHEMA_AND_WORDS": (
+                    catalog.CONFLICT_SCHEMA << 32
+                )
+                | catalog.CONFLICT_RECORD_META_WORDS,
+                "STATUS": 0,
+                "COORDINATE": invocation.pair.coordinate_id,
+                "INNER_CASE": case.case_id,
+                "SCHEDULE": case.schedule,
+                "ISSUE_ORDER": case.issue_order,
+                "SAMPLE": invocation.sample,
+                "EXECUTION_ORDINAL": (
+                    0
+                    if case.schedule == invocation.first_schedule
+                    else 1
+                ),
+                "FIRST_SCHEDULE": invocation.first_schedule,
+                **actual_bases,
+                "INNER_REQUEST_DDR": (
+                    actual_bases["REQUEST_DDR"] + request_word * 8
+                ),
+                "ROW_OUTPUT_DDR": row_output_ddr,
+                "CT_INPUT0_DDR": (
+                    actual_bases["PAYLOAD_DDR"]
+                    + catalog.PAYLOAD_DATA_OFFSET
+                ),
+                "CT_INPUT1_DDR": (
+                    actual_bases["PAYLOAD_DDR"]
+                    + catalog.PAYLOAD_DATA_OFFSET
+                    + 4096
+                ),
+                "RDMA_INPUT_DDR": (
+                    actual_bases["PAYLOAD_DDR"]
+                    + catalog.PAYLOAD_DATA_OFFSET
+                    + 16384
+                    + 8192
+                ),
+                "RESULT_A_DDR": (
+                    row_output_ddr + catalog.OUTPUT_DATA_OFFSET
+                ),
+                "RESULT_B_DDR": (
+                    row_output_ddr
+                    + catalog.OUTPUT_DATA_OFFSET
+                    + case.descriptor.compact_bytes
+                ),
+                "SPM_A": case.spm_a,
+                "SPM_B": case.spm_b,
+                "WINDOW_FLAGS": catalog.CONFLICT_WINDOW_FLAGS,
+                "RECORD_GUARD": catalog.CONFLICT_RECORD_GUARD,
+            }
+            for key, value in meta_values.items():
+                meta[catalog.CONFLICT_REC[key]] = value
+            meta_begin = (
+                catalog.CONFLICT_RECORD_META_WORD
+                + row * catalog.CONFLICT_RECORD_META_STRIDE_WORDS
+            ) * 8
+            struct.pack_into(
+                f"<{catalog.CONFLICT_RECORD_META_WORDS}Q",
+                conflict_raw,
+                meta_begin,
+                *meta,
+            )
+
+        output_path.write_bytes(conflict_raw)
+        conflict_rows = runner.validate_conflict_equivalence_output(
+            output_path, invocation
+        )
+        assert set(conflict_rows) == {"serial", "window"}
+        assert (
+            conflict_rows["serial"]["actual_addresses"]["payload_ddr"]
+            == conflict_rows["window"]["actual_addresses"]["payload_ddr"]
+            == actual_bases["PAYLOAD_DDR"]
+        )
+
+        def expect_conflict_rejected(
+            label: str, candidate: bytearray
+        ) -> None:
+            output_path.write_bytes(candidate)
+            try:
+                runner.validate_conflict_equivalence_output(
+                    output_path, invocation
+                )
+            except RuntimeError:
+                return
+            raise AssertionError(
+                f"conflict host oracle accepted invalid {label}"
+            )
+
+        invalid = bytearray(conflict_raw)
+        window_meta = (
+            catalog.CONFLICT_RECORD_META_WORD
+            + catalog.CONFLICT_RECORD_META_STRIDE_WORDS
+        ) * 8
+        struct.pack_into(
+            "<Q",
+            invalid,
+            window_meta
+            + catalog.CONFLICT_REC["PAYLOAD_DDR"] * 8,
+            actual_bases["PAYLOAD_DDR"] + 4096,
+        )
+        expect_conflict_rejected("shared payload base", invalid)
+        invalid = bytearray(conflict_raw)
+        for row in range(catalog.CONFLICT_ROWS):
+            meta_begin = (
+                catalog.CONFLICT_RECORD_META_WORD
+                + row * catalog.CONFLICT_RECORD_META_STRIDE_WORDS
+            ) * 8
+            for field in ("REQUEST_DDR", "INNER_REQUEST_DDR"):
+                field_offset = (
+                    meta_begin + catalog.CONFLICT_REC[field] * 8
+                )
+                value = struct.unpack_from(
+                    "<Q", invalid, field_offset
+                )[0]
+                struct.pack_into(
+                    "<Q", invalid, field_offset, value + 1
+                )
+        expect_conflict_rejected("unaligned allocation base", invalid)
+        invalid = bytearray(conflict_raw)
+        struct.pack_into(
+            "<Q",
+            invalid,
+            catalog.CONFLICT_RECORD_META_WORD * 8
+            + catalog.CONFLICT_REC["WINDOW_FLAGS"] * 8,
+            0,
+        )
+        expect_conflict_rejected("pair-only PMU window flags", invalid)
+        invalid = bytearray(conflict_raw)
+        invalid[0xA000] ^= 0xFF
+        expect_conflict_rejected("whole-output canary", invalid)
+
+    fake_conflict_observations = {
+        pair.name: [
+            {
+                schedule: {
+                    "plan_cycles": (
+                        100
+                        + pair.coordinate_id
+                        + sample
+                        + (10 if schedule == "window" else 0)
+                    ),
+                    "pmu": {
+                        "full_execution": (
+                            80 + (5 if schedule == "window" else 0)
+                        ),
+                        "ct_execution": 30,
+                        "rdma_execution": 40,
+                        "ct_blocking": (
+                            3 + (1 if schedule == "window" else 0)
+                        ),
+                        "rdma_blocking": (
+                            4 + (1 if schedule == "window" else 0)
+                        ),
+                    },
+                    "actual_addresses": {
+                        "request_ddr": 0x10000000 + sample * 0x100000,
+                        "payload_ddr": 0x20000000 + sample * 0x100000,
+                        "output_ddr": 0x30000000 + sample * 0x100000,
+                    },
+                }
+                for schedule in ("serial", "window")
+            }
+            for sample in range(catalog.CONFLICT_SAMPLES)
+        ]
+        for pair in catalog.CONFLICT_EQUIVALENCE_PAIRS
+    }
+    summary_output = io.StringIO()
+    with contextlib.redirect_stdout(summary_output):
+        runner.emit_conflict_equivalence_summary(
+            fake_conflict_observations
+        )
+    final_summary = json.loads(
+        summary_output.getvalue().split(
+            "spm_conflict_equivalence_summary: "
+        )[-1]
+    )
+    assert final_summary["state"] == (
+        "heldout-proxy-direction-consistent"
+    )
+    assert len(final_summary["phase_rows"]) == (
+        len(catalog.SPM_PARALLEL_ALIGNMENT_PHASES)
+        * len(catalog.SPM_CONFLICT_EQUIVALENCE_TRANSFERS)
+        * len(catalog.SPM_CONFLICT_EQUIVALENCE_ISSUE_ORDERS)
+    )
+    zero_signal_observations = {
+        pair.name: [
+            {
+                schedule: {
+                    "plan_cycles": 100,
+                    "pmu": {
+                        "full_execution": 80,
+                        "ct_execution": 30,
+                        "rdma_execution": 40,
+                        "ct_blocking": 0,
+                        "rdma_blocking": 0,
+                    },
+                    "actual_addresses": {
+                        "request_ddr": 0x10000000 + sample * 0x100000,
+                        "payload_ddr": 0x20000000 + sample * 0x100000,
+                        "output_ddr": 0x30000000 + sample * 0x100000,
+                    },
+                }
+                for schedule in ("serial", "window")
+            }
+            for sample in range(catalog.CONFLICT_SAMPLES)
+        ]
+        for pair in catalog.CONFLICT_EQUIVALENCE_PAIRS
+    }
+    zero_summary_output = io.StringIO()
+    with contextlib.redirect_stdout(zero_summary_output):
+        runner.emit_conflict_equivalence_summary(
+            zero_signal_observations
+        )
+    zero_summary = json.loads(
+        zero_summary_output.getvalue().split(
+            "spm_conflict_equivalence_summary: "
+        )[-1]
+    )
+    assert zero_summary["state"] == (
+        "consistent-but-no-nonzero-cost-signal"
+    )
+    assert not any(
+        row["promotable_proxy_pattern"]
+        for row in zero_summary["phase_rows"]
+    )
+
     invalid_phase = dataclasses.replace(
         catalog.ALIGNMENT_PAIR_CASES[0],
         spm_a=catalog.ALIGNMENT_PAIR_CASES[0].spm_a + 1,
@@ -605,6 +1025,10 @@ def main() -> int:
     assert "wafer_mdc_execute_engines" in probe
     assert "wafer_mdc_execute_relation" in probe
     assert "wafer_mdc_execute_parallel" in probe
+    assert "wafer_mdc_execute_conflict_equivalence" in probe
+    assert "wafer_mdc_ce_write_meta" in probe
+    assert "WAFER_MDC_CE_REC_PAYLOAD_DDR" in probe
+    assert "WAFER_MDC_CE_WINDOW_FLAGS" in probe
     assert "wafer_mdc_prepare_parallel_instruction" in probe
     assert "wafer_mdc_drain_worker" in probe
     assert "WAFER_MDC_REC_LANE_A_WORKER_INST_DELTA" in probe
@@ -622,6 +1046,17 @@ def main() -> int:
     assert "GR_CSR_SERIAL_MODE_ADDR" in probe
     assert "get_spm_memory_mapping" not in probe
     assert "wafer_mdc_guard_mismatches" not in probe
+    engine_window = probe[
+        probe.index("static uint32_t wafer_mdc_execute_engines") :
+        probe.index("static uint32_t wafer_mdc_issue_parallel_lane")
+    ]
+    assert (
+        engine_window.index("wafer_mdc_prepare_engine")
+        < engine_window.index("WaferMDCPMU before")
+        < engine_window.index("wafer_mdc_issue_engine")
+        < engine_window.index("WaferMDCPMU after")
+        < engine_window.index("wafer_mdc_dump_slot")
+    )
     print(
         "wafer_memory_descriptor_calibration_catalog_test: "
         f"cases={len(catalog.CATALOG)} "

@@ -98,6 +98,8 @@ SPM_PAIR_RELATIVE_OFFSETS = tuple(
 SPM_PARALLEL_ALIGNMENT_PHASES = (0, 64, 128, 192)
 SPM_PARALLEL_ENGINES = (ENGINE_CT, ENGINE_RDMA)
 SPM_CONFLICT_EQUIVALENCE_TRANSLATIONS = (0x20000, 0x40000)
+SPM_CONFLICT_EQUIVALENCE_TRANSFERS = (256, 512)
+SPM_CONFLICT_EQUIVALENCE_ISSUE_ORDERS = (0, 1)
 SPM_BANK_PMU_REPETITIONS = 3
 PERF_MAX_ROUNDS = 4
 PERF_MAX_BUFFERS = 2
@@ -117,6 +119,25 @@ PERF_OUTPUT_RESULT_BASE = 0x90000
 PERF_OUTPUT_LANE_STRIDE = 0x40000
 PERF_OUTPUT_GUARD_BASE = 0x190000
 PERF_OUTPUT_GUARD_LANE_STRIDE = 0x100
+
+CONFLICT_REQUEST_MAGIC = 0x314551434D4D5357
+CONFLICT_RECORD_MAGIC = 0x315245434D4D5357
+CONFLICT_REQUEST_GUARD = 0xE7B3D98264A15C0F
+CONFLICT_RECORD_GUARD = 0x19F04CB267D38AE5
+CONFLICT_SCHEMA = 1
+CONFLICT_ROWS = 2
+CONFLICT_SAMPLES = 4
+CONFLICT_SERIAL_REQUEST_WORD = 0
+CONFLICT_WINDOW_REQUEST_WORD = REQUEST_WORDS
+CONFLICT_REQUEST_META_WORD = 2 * REQUEST_WORDS
+CONFLICT_REQUEST_META_WORDS = 20
+CONFLICT_SERIAL_OUTPUT_OFFSET = 0
+CONFLICT_WINDOW_OUTPUT_OFFSET = 0x4000
+CONFLICT_OUTPUT_ROW_BYTES = 0x4000
+CONFLICT_RECORD_META_WORD = 4096
+CONFLICT_RECORD_META_STRIDE_WORDS = 32
+CONFLICT_RECORD_META_WORDS = 24
+CONFLICT_WINDOW_FLAGS = 0x7
 
 REQ = {
     "MAGIC": 0,
@@ -225,6 +246,54 @@ REC = {
     "WORKER_MASK": 61,
     "CONTROL_FINAL": 62,
     "RECORD_GUARD": 63,
+}
+CONFLICT_REQ = {
+    "MAGIC": 0,
+    "SCHEMA_AND_WORDS": 1,
+    "COORDINATE": 2,
+    "SERIAL_CASE": 3,
+    "WINDOW_CASE": 4,
+    "SERIAL_REQUEST_WORD": 5,
+    "WINDOW_REQUEST_WORD": 6,
+    "SPM_A": 7,
+    "SPM_B": 8,
+    "TRANSFER_BYTES": 9,
+    "ISSUE_ORDER": 10,
+    "SAMPLE": 11,
+    "RESOURCE_BYTES": 12,
+    "SERIAL_OUTPUT_OFFSET": 13,
+    "WINDOW_OUTPUT_OFFSET": 14,
+    "OUTPUT_ROW_BYTES": 15,
+    "RECORD_META_WORD": 16,
+    "FIRST_SCHEDULE": 17,
+    "ROWS": 18,
+    "GUARD": 19,
+}
+CONFLICT_REC = {
+    "MAGIC": 0,
+    "SCHEMA_AND_WORDS": 1,
+    "STATUS": 2,
+    "COORDINATE": 3,
+    "INNER_CASE": 4,
+    "SCHEDULE": 5,
+    "ISSUE_ORDER": 6,
+    "SAMPLE": 7,
+    "EXECUTION_ORDINAL": 8,
+    "FIRST_SCHEDULE": 9,
+    "REQUEST_DDR": 10,
+    "INNER_REQUEST_DDR": 11,
+    "PAYLOAD_DDR": 12,
+    "OUTPUT_DDR": 13,
+    "ROW_OUTPUT_DDR": 14,
+    "CT_INPUT0_DDR": 15,
+    "CT_INPUT1_DDR": 16,
+    "RDMA_INPUT_DDR": 17,
+    "RESULT_A_DDR": 18,
+    "RESULT_B_DDR": 19,
+    "SPM_A": 20,
+    "SPM_B": 21,
+    "WINDOW_FLAGS": 22,
+    "RECORD_GUARD": 23,
 }
 
 
@@ -873,15 +942,37 @@ CATALOG = (
 )
 CASES_BY_ID = {case.case_id: case for case in CATALOG}
 CASES_BY_NAME = {case.name: case for case in CATALOG}
+_CONFLICT_EQUIVALENCE_COORDINATES = tuple(
+    (
+        translation,
+        phase,
+        transfer,
+        issue_order,
+        schedule,
+    )
+    for translation in (0, *SPM_CONFLICT_EQUIVALENCE_TRANSLATIONS)
+    for phase in SPM_PARALLEL_ALIGNMENT_PHASES
+    for transfer in SPM_CONFLICT_EQUIVALENCE_TRANSFERS
+    for issue_order in SPM_CONFLICT_EQUIVALENCE_ISSUE_ORDERS
+    for schedule in (SCHEDULE_SERIAL, SCHEDULE_WINDOW)
+)
+_PENDING_CONFLICT_EQUIVALENCE_COORDINATES = tuple(
+    coordinate
+    for coordinate in _CONFLICT_EQUIVALENCE_COORDINATES
+    if not (
+        coordinate[0] == 0
+        and coordinate[2] == 256
+        and coordinate[3] == 0
+    )
+)
 PENDING_CONFLICT_EQUIVALENCE_CASES = tuple(
     MemoryCase(
-        len(CATALOG)
-        + translation_index * len(SPM_PARALLEL_ALIGNMENT_PHASES) * 2
-        + phase_index * 2
-        + schedule,
+        len(CATALOG) + pending_index,
         (
             "spm-conflict-equivalence-ct-rdma-"
             f"translation-{translation}-phase-{phase}-"
+            f"bytes-{transfer}-"
+            f"{'a-b' if issue_order == 0 else 'b-a'}-"
             f"{'serial' if schedule == SCHEDULE_SERIAL else 'window'}"
         ),
         "spm-bank-engine-pair",
@@ -897,17 +988,22 @@ PENDING_CONFLICT_EQUIVALENCE_CASES = tuple(
         0,
         SPM_BASE + translation + phase,
         SPM_BASE + translation + phase + 8192,
-        Descriptor(256),
-        512,
+        Descriptor(transfer),
+        2 * transfer,
         _counts(ENGINE_CT, ENGINE_RDMA),
         repetitions=SPM_BANK_PMU_REPETITIONS,
         sweep="conflict-equivalence",
+        issue_order=issue_order,
     )
-    for translation_index, translation in enumerate(
-        SPM_CONFLICT_EQUIVALENCE_TRANSLATIONS
+    for pending_index, (
+        translation,
+        phase,
+        transfer,
+        issue_order,
+        schedule,
+    ) in enumerate(
+        _PENDING_CONFLICT_EQUIVALENCE_COORDINATES
     )
-    for phase_index, phase in enumerate(SPM_PARALLEL_ALIGNMENT_PHASES)
-    for schedule in (SCHEDULE_SERIAL, SCHEDULE_WINDOW)
 )
 PENDING_CASES = PENDING_CONFLICT_EQUIVALENCE_CASES
 CONFLICT_EQUIVALENCE_BASELINE_CASES = tuple(
@@ -926,6 +1022,94 @@ CONFLICT_EQUIVALENCE_CASES = (
 ALL_CASES = CATALOG + PENDING_CASES
 ALL_CASES_BY_ID = {case.case_id: case for case in ALL_CASES}
 ALL_CASES_BY_NAME = {case.name: case for case in ALL_CASES}
+
+
+@dataclasses.dataclass(frozen=True)
+class ConflictEquivalencePair:
+    coordinate_id: int
+    translation: int
+    phase: int
+    transfer_bytes: int
+    issue_order: int
+    serial: MemoryCase
+    window: MemoryCase
+
+    @property
+    def name(self) -> str:
+        return (
+            "spm-conflict-equivalence-ct-rdma-"
+            f"translation-{self.translation}-phase-{self.phase}-"
+            f"bytes-{self.transfer_bytes}-"
+            f"{'a-b' if self.issue_order == 0 else 'b-a'}"
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "id": self.coordinate_id,
+            "name": self.name,
+            "translation": self.translation,
+            "base_phase_mod_256": self.phase,
+            "relative_spm_offset": self.serial.spm_b - self.serial.spm_a,
+            "transfer_bytes": self.transfer_bytes,
+            "issue_order": "a-b" if self.issue_order == 0 else "b-a",
+            "samples": CONFLICT_SAMPLES,
+            "schedules": {
+                "serial": self.serial.name,
+                "window": self.window.name,
+            },
+            "execution": (
+                "one invocation per sample with paired serial/window rows "
+                "sharing request, payload, and output allocations"
+            ),
+        }
+
+
+def _conflict_pair_key(
+    case: MemoryCase,
+) -> tuple[int, int, int, int]:
+    phase = case.spm_a % 256
+    return (
+        case.spm_a - SPM_BASE - phase,
+        phase,
+        case.descriptor.compact_bytes,
+        case.issue_order,
+    )
+
+
+def _conflict_equivalence_pairs() -> tuple[ConflictEquivalencePair, ...]:
+    grouped: dict[
+        tuple[int, int, int, int], dict[int, MemoryCase]
+    ] = {}
+    for case in CONFLICT_EQUIVALENCE_CASES:
+        schedules = grouped.setdefault(_conflict_pair_key(case), {})
+        if case.schedule in schedules:
+            raise RuntimeError(
+                f"{case.name}: duplicate conflict-equivalence schedule"
+            )
+        schedules[case.schedule] = case
+    result = []
+    for coordinate_id, key in enumerate(sorted(grouped)):
+        schedules = grouped[key]
+        if set(schedules) != {SCHEDULE_SERIAL, SCHEDULE_WINDOW}:
+            raise RuntimeError(
+                f"conflict-equivalence coordinate {key} lacks paired controls"
+            )
+        translation, phase, transfer_bytes, issue_order = key
+        result.append(
+            ConflictEquivalencePair(
+                coordinate_id,
+                translation,
+                phase,
+                transfer_bytes,
+                issue_order,
+                schedules[SCHEDULE_SERIAL],
+                schedules[SCHEDULE_WINDOW],
+            )
+        )
+    return tuple(result)
+
+
+CONFLICT_EQUIVALENCE_PAIRS = _conflict_equivalence_pairs()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1015,6 +1199,17 @@ class CasePayload:
     exact_ranges: tuple[tuple[int, int], ...]
 
 
+@dataclasses.dataclass(frozen=True)
+class ConflictEquivalenceInvocation:
+    pair: ConflictEquivalencePair
+    sample: int
+    first_schedule: int
+    request: bytes
+    payload: bytes
+    serial_built: CasePayload
+    window_built: CasePayload
+
+
 def validate_pair_case(case: MemoryCase) -> None:
     if case.kind != KIND_ENGINE_PAIR:
         return
@@ -1034,11 +1229,22 @@ def validate_pair_case(case: MemoryCase) -> None:
         and relative_offset == 8192
         and phase in SPM_PARALLEL_ALIGNMENT_PHASES
     )
+    conflict_equivalence = (
+        case.sweep == "conflict-equivalence"
+        and alignment_phase
+        and case.descriptor.compact_bytes
+        in SPM_CONFLICT_EQUIVALENCE_TRANSFERS
+        and case.issue_order in SPM_CONFLICT_EQUIVALENCE_ISSUE_ORDERS
+    )
+    legacy_pair = (
+        case.descriptor == Descriptor(256)
+        and case.issue_order == 0
+        and (general or bank_period or alignment_phase)
+    )
     if (
         case.engine_a >= case.engine_b
-        or case.descriptor != Descriptor(256)
-        or case.output_bytes != 512
-        or not (general or bank_period or alignment_phase)
+        or case.output_bytes != 2 * case.descriptor.compact_bytes
+        or not (legacy_pair or conflict_equivalence)
     ):
         raise RuntimeError(
             f"{case.name}: unsupported SPM parallel address coordinate"
@@ -1200,13 +1406,11 @@ def output_result_ranges(
         )
         transfer = (
             case.descriptor.compact_bytes
-            if case.kind == KIND_ENGINE_ACCESS
-            else 256
         )
         ranges: list[tuple[int, int]] = []
         for lane, engine in enumerate(engines):
             output_begin = OUTPUT_DATA_OFFSET + (
-                lane * 256 if case.kind == KIND_ENGINE_PAIR else 0
+                lane * transfer if case.kind == KIND_ENGINE_PAIR else 0
             )
             ranges.append((output_begin, output_begin + transfer))
             if engine == ENGINE_WDMA:
@@ -1500,8 +1704,6 @@ def build_case_payload(case: MemoryCase, sample: int = 0) -> CasePayload:
         for lane, engine in enumerate(engines):
             transfer = (
                 case.descriptor.compact_bytes
-                if case.kind == KIND_ENGINE_ACCESS
-                else 256
             )
             lane_payload, result, exact_bytes = _engine_payload_expected(
                 engine, seed, lane, transfer
@@ -1510,7 +1712,7 @@ def build_case_payload(case: MemoryCase, sample: int = 0) -> CasePayload:
             payload[
                 payload_begin : payload_begin + len(lane_payload)
             ] = lane_payload
-            output_begin = OUTPUT_DATA_OFFSET + lane * 256
+            output_begin = OUTPUT_DATA_OFFSET + lane * transfer
             expected[output_begin : output_begin + len(result)] = result
             allowed.append((output_begin, output_begin + transfer))
             exact.append((output_begin, output_begin + exact_bytes))
@@ -1625,6 +1827,108 @@ def build_case_payload(case: MemoryCase, sample: int = 0) -> CasePayload:
         bytes(expected),
         tuple(allowed),
         tuple(exact),
+    )
+
+
+def build_conflict_equivalence_invocation(
+    pair: ConflictEquivalencePair, sample: int
+) -> ConflictEquivalenceInvocation:
+    if pair not in CONFLICT_EQUIVALENCE_PAIRS:
+        raise RuntimeError(
+            f"{pair.name}: conflict-equivalence pair is not canonical"
+        )
+    if sample not in range(CONFLICT_SAMPLES):
+        raise RuntimeError(
+            f"{pair.name}: conflict-equivalence sample is invalid"
+        )
+    serial_built = build_case_payload(pair.serial, sample)
+    window_built = build_case_payload(pair.window, sample)
+    serial_words = struct.unpack_from(
+        f"<{REQUEST_WORDS}Q", serial_built.request
+    )
+    window_words = struct.unpack_from(
+        f"<{REQUEST_WORDS}Q", window_built.request
+    )
+    differing = {
+        index
+        for index, (serial, window) in enumerate(
+            zip(serial_words, window_words, strict=True)
+        )
+        if serial != window
+    }
+    if (
+        differing != {REQ["CASE"], REQ["SCHEDULE"]}
+        or serial_words[REQ["SCHEDULE"]] != SCHEDULE_SERIAL
+        or window_words[REQ["SCHEDULE"]] != SCHEDULE_WINDOW
+        or serial_built.payload != window_built.payload
+    ):
+        raise RuntimeError(
+            f"{pair.name}: serial/window controls are not a one-factor pair"
+        )
+    for case, built in (
+        (pair.serial, serial_built),
+        (pair.window, window_built),
+    ):
+        row_end = max(
+            RECORD_WORDS * 8,
+            *(end for _, end in built.allowed_ranges),
+        )
+        if row_end > CONFLICT_OUTPUT_ROW_BYTES:
+            raise RuntimeError(
+                f"{case.name}: conflict output row exceeds its slot"
+            )
+
+    first_schedule = (
+        SCHEDULE_SERIAL
+        if (pair.coordinate_id + sample) % 2 == 0
+        else SCHEDULE_WINDOW
+    )
+    request = bytearray(serial_built.request)
+    window_begin = CONFLICT_WINDOW_REQUEST_WORD * 8
+    request[
+        window_begin : window_begin + REQUEST_WORDS * 8
+    ] = window_built.request[: REQUEST_WORDS * 8]
+    meta = [0] * CONFLICT_REQUEST_META_WORDS
+    values = {
+        "MAGIC": CONFLICT_REQUEST_MAGIC,
+        "SCHEMA_AND_WORDS": (
+            CONFLICT_SCHEMA << 32
+        ) | CONFLICT_REQUEST_META_WORDS,
+        "COORDINATE": pair.coordinate_id,
+        "SERIAL_CASE": pair.serial.case_id,
+        "WINDOW_CASE": pair.window.case_id,
+        "SERIAL_REQUEST_WORD": CONFLICT_SERIAL_REQUEST_WORD,
+        "WINDOW_REQUEST_WORD": CONFLICT_WINDOW_REQUEST_WORD,
+        "SPM_A": pair.serial.spm_a,
+        "SPM_B": pair.serial.spm_b,
+        "TRANSFER_BYTES": pair.transfer_bytes,
+        "ISSUE_ORDER": pair.issue_order,
+        "SAMPLE": sample,
+        "RESOURCE_BYTES": RESOURCE_BYTES,
+        "SERIAL_OUTPUT_OFFSET": CONFLICT_SERIAL_OUTPUT_OFFSET,
+        "WINDOW_OUTPUT_OFFSET": CONFLICT_WINDOW_OUTPUT_OFFSET,
+        "OUTPUT_ROW_BYTES": CONFLICT_OUTPUT_ROW_BYTES,
+        "RECORD_META_WORD": CONFLICT_RECORD_META_WORD,
+        "FIRST_SCHEDULE": first_schedule,
+        "ROWS": CONFLICT_ROWS,
+        "GUARD": CONFLICT_REQUEST_GUARD,
+    }
+    for key, value in values.items():
+        meta[CONFLICT_REQ[key]] = value
+    struct.pack_into(
+        f"<{CONFLICT_REQUEST_META_WORDS}Q",
+        request,
+        CONFLICT_REQUEST_META_WORD * 8,
+        *meta,
+    )
+    return ConflictEquivalenceInvocation(
+        pair,
+        sample,
+        first_schedule,
+        bytes(request),
+        serial_built.payload,
+        serial_built,
+        window_built,
     )
 
 

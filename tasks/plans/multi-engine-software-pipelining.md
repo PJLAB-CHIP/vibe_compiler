@@ -377,14 +377,15 @@ profile/pair/worker/transfer/schedule scoped正overlap cell，可按白名单进
 relation/order cell只允许合并issue/wait开销，不计engine overlap收益。未匹配pair/shape仍保持串行，
 RAW/WAR/WAW保留显式IR edge和issue order，不能由disjoint正overlap删除依赖。
 
-hardware-calibration owner另冻结四个非阻塞`pending`区分family：
+hardware-calibration owner另冻结五个非阻塞`pending`区分family：
 `queue-saturation-response`、`worker-wait-scope-exclusion`、
-`worker-subset-join-exclusion`和`spm-conflict-equivalence`。对应typed catalog、device dispatcher、
-pre-wait/boundary/final record、host oracle及四个no-card CTest已经实现；板端执行仍为`pending`，不进入
-默认runner或本轮板端批次，也不重新打开Checkpoint A。只有Checkpoint B/C的production vertical通过后，
-profile证明对应保守fallback是主要瓶颈，或version-matched实现提供新的queue/SPM只读观测依据时，才按
+`worker-subset-join-exclusion`、`spm-conflict-equivalence`和`ddr-conflict-equivalence`。对应typed
+catalog、device dispatcher、pre-wait/boundary/final record、host oracle及独立no-card CTest已经实现；
+板端执行仍为`pending`，不进入默认runner或本轮板端批次，也不重新打开Checkpoint A。只有Checkpoint B/C的
+production vertical通过后，
+profile证明对应保守fallback是主要瓶颈，或version-matched实现提供新的queue/SPM/DDR只读观测依据时，才按
 `docs/tx81-compiler-hardware-calibration.md`第5.10节激活板端执行。未激活前继续使用有界window、
-matching逐worker join和`no-bank-coloring`，主线直接进入Checkpoint B。
+matching逐worker join、`no-bank-coloring`和`no-ddr-bank-coloring`，主线直接进入Checkpoint B。
 
 ## Checkpoint B：通用 IR 物化
 

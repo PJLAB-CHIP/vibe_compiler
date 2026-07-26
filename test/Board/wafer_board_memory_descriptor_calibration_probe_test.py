@@ -93,8 +93,9 @@ def parse_args() -> argparse.Namespace:
         "--conflict-equivalence",
         action="store_true",
         help=(
-            "select held-out CT+RDMA common-base translations while "
-            "preserving relative offset and alignment phase"
+            "select paired same-invocation CT+RDMA common-base controls "
+            "with held-out translations, reciprocal issue order, and "
+            "counterbalanced repetitions"
         ),
     )
     parser.add_argument("--list-cases", action="store_true")
@@ -162,14 +163,14 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.MemoryCase, ...]:
         selected = catalog.PARALLEL_PAIR_CASES
     elif args.selected_cases:
         unknown = sorted(
-            set(args.selected_cases) - set(catalog.ALL_CASES_BY_NAME)
+            set(args.selected_cases) - set(catalog.CASES_BY_NAME)
         )
         if unknown:
             raise RuntimeError(
                 f"unknown memory descriptor cases: {unknown}"
             )
         selected = tuple(
-            catalog.ALL_CASES_BY_NAME[name] for name in args.selected_cases
+            catalog.CASES_BY_NAME[name] for name in args.selected_cases
         )
     else:
         selected = catalog.CATALOG
@@ -259,7 +260,15 @@ def validate_output(
     built: catalog.CasePayload,
     sample: int,
 ) -> dict[str, object]:
-    raw = path.read_bytes()
+    return validate_output_bytes(path.read_bytes(), case, built, sample)
+
+
+def validate_output_bytes(
+    raw: bytes,
+    case: catalog.MemoryCase,
+    built: catalog.CasePayload,
+    sample: int,
+) -> dict[str, object]:
     if len(raw) != catalog.RESOURCE_BYTES:
         raise RuntimeError(f"{case.name}: invalid output resource size")
     words = struct.unpack_from(f"<{catalog.RECORD_WORDS}Q", raw)
@@ -434,6 +443,500 @@ def validate_output(
     return observation
 
 
+def _validate_conflict_row_meta(
+    raw: bytes,
+    invocation: catalog.ConflictEquivalenceInvocation,
+    case: catalog.MemoryCase,
+    row: int,
+) -> dict[str, int]:
+    begin = (
+        catalog.CONFLICT_RECORD_META_WORD
+        + row * catalog.CONFLICT_RECORD_META_STRIDE_WORDS
+    ) * 8
+    words = struct.unpack_from(
+        f"<{catalog.CONFLICT_RECORD_META_WORDS}Q", raw, begin
+    )
+    rec = catalog.CONFLICT_REC
+    expected = {
+        "MAGIC": catalog.CONFLICT_RECORD_MAGIC,
+        "SCHEMA_AND_WORDS": (
+            catalog.CONFLICT_SCHEMA << 32
+        ) | catalog.CONFLICT_RECORD_META_WORDS,
+        "STATUS": 0,
+        "COORDINATE": invocation.pair.coordinate_id,
+        "INNER_CASE": case.case_id,
+        "SCHEDULE": case.schedule,
+        "ISSUE_ORDER": case.issue_order,
+        "SAMPLE": invocation.sample,
+        "EXECUTION_ORDINAL": (
+            0
+            if case.schedule == invocation.first_schedule
+            else 1
+        ),
+        "FIRST_SCHEDULE": invocation.first_schedule,
+        "SPM_A": case.spm_a,
+        "SPM_B": case.spm_b,
+        "WINDOW_FLAGS": catalog.CONFLICT_WINDOW_FLAGS,
+        "RECORD_GUARD": catalog.CONFLICT_RECORD_GUARD,
+    }
+    failures = {
+        key: (words[rec[key]], value)
+        for key, value in expected.items()
+        if words[rec[key]] != value
+    }
+    if failures:
+        raise RuntimeError(
+            f"{case.name}: conflict row metadata failed: {failures}"
+        )
+
+    request_ddr = words[rec["REQUEST_DDR"]]
+    payload_ddr = words[rec["PAYLOAD_DDR"]]
+    output_ddr = words[rec["OUTPUT_DDR"]]
+    request_word = (
+        catalog.CONFLICT_SERIAL_REQUEST_WORD
+        if row == 0
+        else catalog.CONFLICT_WINDOW_REQUEST_WORD
+    )
+    output_offset = (
+        catalog.CONFLICT_SERIAL_OUTPUT_OFFSET
+        if row == 0
+        else catalog.CONFLICT_WINDOW_OUTPUT_OFFSET
+    )
+    row_output_ddr = output_ddr + output_offset
+    address_expected = {
+        "INNER_REQUEST_DDR": request_ddr + request_word * 8,
+        "ROW_OUTPUT_DDR": row_output_ddr,
+        "CT_INPUT0_DDR": payload_ddr + catalog.PAYLOAD_DATA_OFFSET,
+        "CT_INPUT1_DDR": (
+            payload_ddr + catalog.PAYLOAD_DATA_OFFSET + 4096
+        ),
+        "RDMA_INPUT_DDR": (
+            payload_ddr + catalog.PAYLOAD_DATA_OFFSET + 16384 + 8192
+        ),
+        "RESULT_A_DDR": row_output_ddr + catalog.OUTPUT_DATA_OFFSET,
+        "RESULT_B_DDR": (
+            row_output_ddr
+            + catalog.OUTPUT_DATA_OFFSET
+            + case.descriptor.compact_bytes
+        ),
+    }
+    address_failures = {
+        key: (words[rec[key]], value)
+        for key, value in address_expected.items()
+        if words[rec[key]] != value
+    }
+    if address_failures:
+        raise RuntimeError(
+            f"{case.name}: actual DDR address echo failed: "
+            f"{address_failures}"
+        )
+    return {
+        key.lower(): words[rec[key]]
+        for key in (
+            "REQUEST_DDR",
+            "INNER_REQUEST_DDR",
+            "PAYLOAD_DDR",
+            "OUTPUT_DDR",
+            "ROW_OUTPUT_DDR",
+            "CT_INPUT0_DDR",
+            "CT_INPUT1_DDR",
+            "RDMA_INPUT_DDR",
+            "RESULT_A_DDR",
+            "RESULT_B_DDR",
+        )
+    }
+
+
+def validate_conflict_equivalence_output(
+    path: pathlib.Path,
+    invocation: catalog.ConflictEquivalenceInvocation,
+) -> dict[str, dict[str, object]]:
+    raw = path.read_bytes()
+    if len(raw) != catalog.RESOURCE_BYTES:
+        raise RuntimeError(
+            f"{invocation.pair.name}: invalid conflict output resource size"
+        )
+    rows: dict[str, dict[str, object]] = {}
+    mutable = bytearray(raw)
+    for row, (name, case, built, output_offset) in enumerate(
+        (
+            (
+                "serial",
+                invocation.pair.serial,
+                invocation.serial_built,
+                catalog.CONFLICT_SERIAL_OUTPUT_OFFSET,
+            ),
+            (
+                "window",
+                invocation.pair.window,
+                invocation.window_built,
+                catalog.CONFLICT_WINDOW_OUTPUT_OFFSET,
+            ),
+        )
+    ):
+        row_end = output_offset + catalog.CONFLICT_OUTPUT_ROW_BYTES
+        synthetic = bytearray(
+            [catalog.RESOURCE_CANARY] * catalog.RESOURCE_BYTES
+        )
+        synthetic[: catalog.CONFLICT_OUTPUT_ROW_BYTES] = raw[
+            output_offset:row_end
+        ]
+        observation = validate_output_bytes(
+            bytes(synthetic), case, built, invocation.sample
+        )
+        actual_addresses = _validate_conflict_row_meta(
+            raw, invocation, case, row
+        )
+        observation["actual_addresses"] = actual_addresses
+        observation["execution_ordinal"] = (
+            0
+            if case.schedule == invocation.first_schedule
+            else 1
+        )
+        rows[name] = observation
+        mutable[
+            output_offset :
+            output_offset + catalog.RECORD_WORDS * 8
+        ] = bytes([catalog.RESOURCE_CANARY]) * (
+            catalog.RECORD_WORDS * 8
+        )
+        for begin, end in built.allowed_ranges:
+            mutable[
+                output_offset + begin : output_offset + end
+            ] = bytes([catalog.RESOURCE_CANARY]) * (end - begin)
+        meta_begin = (
+            catalog.CONFLICT_RECORD_META_WORD
+            + row * catalog.CONFLICT_RECORD_META_STRIDE_WORDS
+        ) * 8
+        meta_end = (
+            meta_begin + catalog.CONFLICT_RECORD_META_WORDS * 8
+        )
+        mutable[meta_begin:meta_end] = bytes(
+            [catalog.RESOURCE_CANARY]
+        ) * (meta_end - meta_begin)
+
+    serial_addresses = rows["serial"]["actual_addresses"]
+    window_addresses = rows["window"]["actual_addresses"]
+    assert isinstance(serial_addresses, dict)
+    assert isinstance(window_addresses, dict)
+    for key in ("request_ddr", "payload_ddr", "output_ddr"):
+        if serial_addresses[key] != window_addresses[key]:
+            raise RuntimeError(
+                f"{invocation.pair.name}: paired rows do not share "
+                f"the same {key} allocation"
+            )
+    allocation_bases = tuple(
+        int(serial_addresses[key])
+        for key in ("request_ddr", "payload_ddr", "output_ddr")
+    )
+    if (
+        any(base == 0 or base % 256 != 0 for base in allocation_bases)
+        or len(set(allocation_bases)) != len(allocation_bases)
+    ):
+        raise RuntimeError(
+            f"{invocation.pair.name}: actual resource allocations are "
+            "zero, unaligned, or aliased"
+        )
+    if mutable != bytes(
+        [catalog.RESOURCE_CANARY]
+    ) * catalog.RESOURCE_BYTES:
+        mismatch = next(
+            index
+            for index, value in enumerate(mutable)
+            if value != catalog.RESOURCE_CANARY
+        )
+        raise RuntimeError(
+            f"{invocation.pair.name}: conflict output changed outside "
+            f"typed rows at {mismatch}"
+        )
+    return rows
+
+
+def execute_conflict_equivalence(
+    args: argparse.Namespace,
+    package: pathlib.Path,
+    resource_ids: tuple[int, int, int],
+) -> None:
+    raw_dir = args.work_dir / "raw" / "conflict-equivalence"
+    raw_dir.mkdir(parents=True)
+    observations: dict[
+        str, list[dict[str, dict[str, object]]]
+    ] = {}
+    for pair in catalog.CONFLICT_EQUIVALENCE_PAIRS:
+        pair_rows = observations.setdefault(pair.name, [])
+        for sample in range(catalog.CONFLICT_SAMPLES):
+            invocation = catalog.build_conflict_equivalence_invocation(
+                pair, sample
+            )
+            prefix = f"{pair.name}.sample-{sample}"
+            request = raw_dir / f"{prefix}.request.raw"
+            payload = raw_dir / f"{prefix}.payload.raw"
+            output = raw_dir / f"{prefix}.output.raw"
+            request.write_bytes(invocation.request)
+            payload.write_bytes(invocation.payload)
+            result = package_support.run(
+                package_support.board_command(
+                    args, package, resource_ids, request, payload, output
+                ),
+                timeout_seconds=(
+                    args.completion_timeout_ms / 1000.0 + 30.0
+                ),
+            )
+            required = {
+                "board_stage: completion",
+                "board_stage: device-to-host",
+                "board_stage: cleanup",
+                "board_execution: true",
+            }
+            if not required.issubset(set(result.stdout.splitlines())):
+                raise RuntimeError(
+                    f"{prefix}: wafer-run omitted lifecycle evidence"
+                )
+            rows = validate_conflict_equivalence_output(
+                output, invocation
+            )
+            pair_rows.append(rows)
+            for schedule in ("serial", "window"):
+                print(
+                    "memory_descriptor_calibration: "
+                    + json.dumps(rows[schedule], sort_keys=True)
+                )
+    emit_conflict_equivalence_summary(observations)
+
+
+def emit_conflict_equivalence_summary(
+    observations: dict[
+        str, list[dict[str, dict[str, object]]]
+    ],
+) -> None:
+    metric_names = (
+        "full_execution",
+        "ct_execution",
+        "rdma_execution",
+        "ct_blocking",
+        "rdma_blocking",
+        "plan_cycles",
+    )
+
+    def metric(
+        row: dict[str, object], name: str
+    ) -> int:
+        if name == "plan_cycles":
+            return int(row["plan_cycles"])
+        pmu = row["pmu"]
+        assert isinstance(pmu, dict)
+        return int(pmu[name])
+
+    paired_summaries: list[dict[str, object]] = []
+    for pair in catalog.CONFLICT_EQUIVALENCE_PAIRS:
+        invocations = observations.get(pair.name, [])
+        if len(invocations) != catalog.CONFLICT_SAMPLES:
+            raise RuntimeError(
+                f"{pair.name}: incomplete same-invocation sample set"
+            )
+        medians = {
+            schedule: {
+                name: statistics.median(
+                    metric(rows[schedule], name)
+                    for rows in invocations
+                )
+                for name in metric_names
+            }
+            for schedule in ("serial", "window")
+        }
+        paired_deltas = {
+            name: statistics.median(
+                metric(rows["window"], name)
+                - metric(rows["serial"], name)
+                for rows in invocations
+            )
+            for name in metric_names
+        }
+        allocation_evidence = []
+        for rows in invocations:
+            serial_addresses = rows["serial"]["actual_addresses"]
+            window_addresses = rows["window"]["actual_addresses"]
+            assert isinstance(serial_addresses, dict)
+            assert isinstance(window_addresses, dict)
+            allocation_evidence.append(
+                {
+                    "request_ddr": serial_addresses["request_ddr"],
+                    "payload_ddr": serial_addresses["payload_ddr"],
+                    "output_ddr": serial_addresses["output_ddr"],
+                    "same_allocation": all(
+                        serial_addresses[key] == window_addresses[key]
+                        for key in (
+                            "request_ddr",
+                            "payload_ddr",
+                            "output_ddr",
+                        )
+                    ),
+                }
+            )
+        summary: dict[str, object] = {
+            "engine_pair": ["CT", "RDMA"],
+            "relative_spm_offset": pair.serial.spm_b - pair.serial.spm_a,
+            "spm_base": pair.serial.spm_a,
+            "spm_base_translation": pair.translation,
+            "spm_base_phase_mod_256": pair.phase,
+            "transfer_bytes": pair.transfer_bytes,
+            "issue_order": (
+                "a-b" if pair.issue_order == 0 else "b-a"
+            ),
+            "samples_per_cell": catalog.CONFLICT_SAMPLES,
+            "correctness": (
+                "all-exact-result+full-spm-dump-guard+instruction-count"
+            ),
+            "pmu_window": (
+                "pair-only; setup before PMU and readback after PMU"
+            ),
+            "pmu_medians": medians,
+            "window_minus_serial": paired_deltas,
+            "same_invocation_allocations": allocation_evidence,
+            "state": "raw-paired-same-invocation-observation",
+            "interpretation": (
+                "actual resource and instruction addresses are echoed; "
+                "no physical bank identity is inferred"
+            ),
+        }
+        paired_summaries.append(summary)
+        print(
+            "spm_bank_pair_repeat_summary: "
+            + json.dumps(summary, sort_keys=True)
+        )
+
+    expected_translations = (
+        0,
+        *catalog.SPM_CONFLICT_EQUIVALENCE_TRANSLATIONS,
+    )
+    by_coordinate = {
+        (
+            int(summary["spm_base_phase_mod_256"]),
+            int(summary["spm_base_translation"]),
+            int(summary["transfer_bytes"]),
+            0 if summary["issue_order"] == "a-b" else 1,
+        ): summary
+        for summary in paired_summaries
+    }
+    phase_rows = []
+    all_consistent = True
+    all_informative = True
+    for phase in catalog.SPM_PARALLEL_ALIGNMENT_PHASES:
+        for transfer_bytes in catalog.SPM_CONFLICT_EQUIVALENCE_TRANSFERS:
+            for issue_order in (
+                catalog.SPM_CONFLICT_EQUIVALENCE_ISSUE_ORDERS
+            ):
+                cells = {
+                    translation: by_coordinate.get(
+                        (
+                            phase,
+                            translation,
+                            transfer_bytes,
+                            issue_order,
+                        )
+                    )
+                    for translation in expected_translations
+                }
+                missing = [
+                    translation
+                    for translation, summary in cells.items()
+                    if summary is None
+                ]
+                directions = {
+                    metric_name: [
+                        (
+                            0
+                            if int(
+                                summary["window_minus_serial"][
+                                    metric_name
+                                ]
+                            )
+                            == 0
+                            else (
+                                1
+                                if int(
+                                    summary["window_minus_serial"][
+                                        metric_name
+                                    ]
+                                )
+                                > 0
+                                else -1
+                            )
+                        )
+                        for summary in cells.values()
+                        if summary is not None
+                    ]
+                    for metric_name in (
+                        "plan_cycles",
+                        "full_execution",
+                        "ct_blocking",
+                        "rdma_blocking",
+                    )
+                }
+                consistent = not missing and all(
+                    len(set(values)) == 1
+                    for values in directions.values()
+                )
+                informative = any(
+                    directions[metric_name]
+                    and directions[metric_name][0] != 0
+                    for metric_name in ("plan_cycles", "full_execution")
+                )
+                all_consistent &= consistent
+                all_informative &= informative
+                phase_rows.append(
+                    {
+                        "base_phase_mod_256": phase,
+                        "transfer_bytes": transfer_bytes,
+                        "issue_order": (
+                            "a-b" if issue_order == 0 else "b-a"
+                        ),
+                        "missing_translations": missing,
+                        "window_minus_serial_directions": directions,
+                        "proxy_direction_consistent": consistent,
+                        "nonzero_cost_signal": informative,
+                        "promotable_proxy_pattern": (
+                            consistent and informative
+                        ),
+                    }
+                )
+    print(
+        "spm_conflict_equivalence_summary: "
+        + json.dumps(
+            {
+                "engine_pair": ["CT", "RDMA"],
+                "relative_spm_offset": 8192,
+                "base_translations": list(expected_translations),
+                "transfer_bytes": list(
+                    catalog.SPM_CONFLICT_EQUIVALENCE_TRANSFERS
+                ),
+                "issue_orders": ["a-b", "b-a"],
+                "samples_per_cell": catalog.CONFLICT_SAMPLES,
+                "invocation_contract": (
+                    "serial+window share request/payload/output "
+                    "allocations per sample"
+                ),
+                "correctness": (
+                    "all-exact-result+full-spm-dump-guard+"
+                    "instruction-count+actual-address-echo"
+                ),
+                "phase_rows": phase_rows,
+                "state": (
+                    "heldout-proxy-direction-consistent"
+                    if all_consistent and all_informative
+                    else (
+                        "consistent-but-no-nonzero-cost-signal"
+                        if all_consistent
+                        else "inconclusive-or-direction-flip"
+                    )
+                ),
+                "compiler_use": "no-bank-coloring",
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def execute_cases(
     args: argparse.Namespace,
     package: pathlib.Path,
@@ -484,6 +987,8 @@ def execute_cases(
                 case.engine_b,
                 case.spm_b - case.spm_a,
                 case.spm_a,
+                case.descriptor.compact_bytes,
+                case.issue_order,
             )
             for case in cases
             if case.kind == catalog.KIND_ENGINE_PAIR
@@ -504,7 +1009,14 @@ def execute_cases(
         "plan_cycles",
     )
     paired_summaries: list[dict[str, object]] = []
-    for engine_a, engine_b, relative_offset, spm_base in pair_keys:
+    for (
+        engine_a,
+        engine_b,
+        relative_offset,
+        spm_base,
+        transfer_bytes,
+        issue_order,
+    ) in pair_keys:
         schedule_cases = {
             case.schedule: case
             for case in cases
@@ -513,6 +1025,8 @@ def execute_cases(
             and case.engine_b == engine_b
             and case.spm_b - case.spm_a == relative_offset
             and case.spm_a == spm_base
+            and case.descriptor.compact_bytes == transfer_bytes
+            and case.issue_order == issue_order
         }
         schedule_medians: dict[str, dict[str, int | float]] = {}
         missing: list[str] = []
@@ -551,6 +1065,8 @@ def execute_cases(
                 spm_base - catalog.SPM_BASE - spm_base % 256
             ),
             "spm_base_phase_mod_256": spm_base % 256,
+            "transfer_bytes": transfer_bytes,
+            "issue_order": "a-b" if issue_order == 0 else "b-a",
             "samples_per_cell": catalog.SPM_BANK_PMU_REPETITIONS,
             "correctness": "all-exact-result+full-spm-dump-guard",
             "pmu_medians": schedule_medians,
@@ -790,6 +1306,8 @@ def execute_cases(
             summary["engine_pair"] == ["CT", "RDMA"]
             and summary["spm_base_translation"] == 0
             and summary["spm_base_phase_mod_256"] == 0
+            and summary["transfer_bytes"] == 256
+            and summary["issue_order"] == "a-b"
             and summary["relative_spm_offset"]
             in catalog.SPM_BANK_PERIOD_RELATIVE_OFFSETS
         ),
@@ -802,6 +1320,8 @@ def execute_cases(
             summary["engine_pair"] == ["CT", "RDMA"]
             and summary["spm_base_translation"] == 0
             and summary["relative_spm_offset"] == 8192
+            and summary["transfer_bytes"] == 256
+            and summary["issue_order"] == "a-b"
             and summary["spm_base_phase_mod_256"]
             in catalog.SPM_PARALLEL_ALIGNMENT_PHASES
         ),
@@ -825,6 +1345,8 @@ def execute_cases(
             (
                 int(summary["spm_base_phase_mod_256"]),
                 int(summary["spm_base_translation"]),
+                int(summary["transfer_bytes"]),
+                0 if summary["issue_order"] == "a-b" else 1,
             ): summary
             for summary in paired_summaries
             if (
@@ -834,47 +1356,79 @@ def execute_cases(
                 in catalog.SPM_PARALLEL_ALIGNMENT_PHASES
                 and summary["spm_base_translation"]
                 in expected_translations
+                and summary["transfer_bytes"]
+                in catalog.SPM_CONFLICT_EQUIVALENCE_TRANSFERS
+                and (
+                    0 if summary["issue_order"] == "a-b" else 1
+                )
+                in catalog.SPM_CONFLICT_EQUIVALENCE_ISSUE_ORDERS
             )
         }
         phase_rows = []
         all_consistent = True
         for phase in catalog.SPM_PARALLEL_ALIGNMENT_PHASES:
-            cells = {
-                translation: by_coordinate.get((phase, translation))
-                for translation in expected_translations
-            }
-            missing = [
-                translation
-                for translation, summary in cells.items()
-                if summary is None
-            ]
-            directions: dict[str, list[int]] = {}
-            for metric in metrics:
-                directions[metric] = [
-                    (
-                        0
-                        if int(summary["window_minus_serial"][metric]) == 0
-                        else (
-                            1
-                            if int(summary["window_minus_serial"][metric]) > 0
-                            else -1
+            for transfer_bytes in (
+                catalog.SPM_CONFLICT_EQUIVALENCE_TRANSFERS
+            ):
+                for issue_order in (
+                    catalog.SPM_CONFLICT_EQUIVALENCE_ISSUE_ORDERS
+                ):
+                    cells = {
+                        translation: by_coordinate.get(
+                            (
+                                phase,
+                                translation,
+                                transfer_bytes,
+                                issue_order,
+                            )
                         )
+                        for translation in expected_translations
+                    }
+                    missing = [
+                        translation
+                        for translation, summary in cells.items()
+                        if summary is None
+                    ]
+                    directions: dict[str, list[int]] = {}
+                    for metric in metrics:
+                        directions[metric] = [
+                            (
+                                0
+                                if int(
+                                    summary["window_minus_serial"][metric]
+                                )
+                                == 0
+                                else (
+                                    1
+                                    if int(
+                                        summary["window_minus_serial"][
+                                            metric
+                                        ]
+                                    )
+                                    > 0
+                                    else -1
+                                )
+                            )
+                            for summary in cells.values()
+                            if summary is not None
+                        ]
+                    consistent = not missing and all(
+                        len(set(values)) == 1
+                        for values in directions.values()
                     )
-                    for summary in cells.values()
-                    if summary is not None
-                ]
-            consistent = not missing and all(
-                len(set(values)) == 1 for values in directions.values()
-            )
-            all_consistent &= consistent
-            phase_rows.append(
-                {
-                    "base_phase_mod_256": phase,
-                    "missing_translations": missing,
-                    "window_minus_serial_directions": directions,
-                    "proxy_direction_consistent": consistent,
-                }
-            )
+                    all_consistent &= consistent
+                    phase_rows.append(
+                        {
+                            "base_phase_mod_256": phase,
+                            "transfer_bytes": transfer_bytes,
+                            "issue_order": (
+                                "a-b" if issue_order == 0 else "b-a"
+                            ),
+                            "missing_translations": missing,
+                            "window_minus_serial_directions": directions,
+                            "proxy_direction_consistent": consistent,
+                        }
+                    )
         print(
             "spm_conflict_equivalence_summary: "
             + json.dumps(
@@ -882,6 +1436,10 @@ def execute_cases(
                     "engine_pair": ["CT", "RDMA"],
                     "relative_spm_offset": 8192,
                     "base_translations": list(expected_translations),
+                    "transfer_bytes": list(
+                        catalog.SPM_CONFLICT_EQUIVALENCE_TRANSFERS
+                    ),
+                    "issue_orders": ["a-b", "b-a"],
                     "samples_per_cell": catalog.SPM_BANK_PMU_REPETITIONS,
                     "correctness": (
                         "all-exact-result+full-spm-dump-guard"
@@ -908,6 +1466,10 @@ def main() -> int:
                     "cases": [case.as_dict() for case in catalog.CATALOG],
                     "pending_cases": [
                         case.as_dict() for case in catalog.PENDING_CASES
+                    ],
+                    "pending_conflict_equivalence_invocations": [
+                        pair.as_dict()
+                        for pair in catalog.CONFLICT_EQUIVALENCE_PAIRS
                     ],
                     "calibration_leaf_bindings": {
                         key: [case.name for case in cases]
@@ -950,7 +1512,10 @@ def main() -> int:
     package_support.verify_no_card(args, package)
     if args.no_card:
         return 0
-    execute_cases(args, package, resource_ids, selected)
+    if args.conflict_equivalence:
+        execute_conflict_equivalence(args, package, resource_ids)
+    else:
+        execute_cases(args, package, resource_ids, selected)
     return 0
 
 

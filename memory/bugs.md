@@ -1,3 +1,21 @@
+## 2026-07-26 地址冲突case的paired control被allocation和测量envelope污染
+
+- 现象：DDR/SPM地址offset probe具备serial/window、重复采样、result/guard和instruction-count oracle，
+  但仍无法稳定归类bank/conflict equivalence；增加更多offset也不能消除歧义。
+- 根因：serial/window若由独立launch执行，runtime allocation physical base可能变化，比较的并非同一地址对；
+  PMU窗口若同时包含seed、目标pair和readback，固定setup/teardown会稀释或掩盖目标pair差异。固定单向issue、
+  单一transfer和单tile还会把order/workload/tile偶然性误当成地址分类；重复row若覆盖同一archive，则最终
+  payload只能证明最后一次writer，不能替前序repeat提供correctness。跨tile固定rank顺序和固定
+  serial→window顺序还会把physical tile或schedule与执行时序绑定。
+- 修复模式：同一invocation、同一allocation生命周期内执行paired schedule/order control，seed完成后才读取
+  PMU before，目标pair完成后立即读取after，再做readback；record必须echo actual resource base和目标地址。
+  分类同时保留reciprocal issue order、第二workload、base/allocation translation和physical-tile held-out，
+  correctness/result/guard/count先于性能比较。每个repeat要有独立archive或after-PMU逐row exact mismatch；
+  schedule执行位置按repeat交替，跨tile激活至少以forward/reverse rank order成对执行并在record中回显顺序。
+- 防复发：任何address-to-conflict/bank候选只有在paired controls共享actual地址和生命周期、target-only测量窗口
+  完整、held-out轴不翻转时才能形成proxy classification。缺少bank-specific PMU或owner-backed映射时仍只能写
+  conflict equivalence，不能命名物理bank，也不能直接生成compiler bank-coloring规则。
+
 ## 2026-07-24 硬件校准大类资产检查产生假绿
 
 - 现象：硬件校准索引报告28个域全部`ready`，但逐条对照case规划后，concat多轴、SPM/DDR bank、

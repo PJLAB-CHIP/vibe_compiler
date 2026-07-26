@@ -795,7 +795,7 @@ class Plan:
             and self.wait_worker_mask == 1
             and self.first_operand == Operand.AUTO
             and self.second_operand == Operand.AUTO
-            and self.issue_limit in (depth, depth + 1)
+            and self.issue_limit in (depth - 1, depth, depth + 1)
             and self.issue_limit <= len(self.lanes) * self.rounds
             and self.issue_limit > (len(self.lanes) - 1) * self.rounds
         )
@@ -996,8 +996,9 @@ class Plan:
         elif self.flags == TIGHT_QUEUE_SATURATION:
             if not tight_queue_saturation:
                 raise ValueError(
-                    "tight queue saturation must issue exactly depth or "
-                    "depth+1 identical raw entries with a matching worker wait"
+                    "tight queue saturation must issue exactly depth-1, "
+                    "depth, or depth+1 identical raw entries with a matching "
+                    "worker wait"
                 )
         elif self.flags == TIGHT_WORKER_SCOPE:
             if not tight_worker_scope:

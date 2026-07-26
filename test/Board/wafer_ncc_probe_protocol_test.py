@@ -1240,7 +1240,7 @@ class ProtocolTest(unittest.TestCase):
         self,
     ) -> None:
         self.assertEqual(
-            len(execution_probe.V2_QUEUE_SATURATION_CASES), 20
+            len(execution_probe.V2_QUEUE_SATURATION_CASES), 30
         )
         for engine, depth in (
             execution_probe.V2_DOCUMENTED_QUEUE_DEPTHS.items()
@@ -1250,7 +1250,7 @@ class ProtocolTest(unittest.TestCase):
                 for case in execution_probe.V2_QUEUE_SATURATION_CASES
                 if case.plan.lanes[0].engine == engine
             ]
-            self.assertEqual(len(rows), 4)
+            self.assertEqual(len(rows), 6)
             self.assertEqual(
                 {
                     (
@@ -1261,7 +1261,7 @@ class ProtocolTest(unittest.TestCase):
                 },
                 {
                     (issue_limit, transfer_bytes)
-                    for issue_limit in (depth, depth + 1)
+                    for issue_limit in (depth - 1, depth, depth + 1)
                     for transfer_bytes in (
                         (
                             256
@@ -1281,6 +1281,9 @@ class ProtocolTest(unittest.TestCase):
             )
 
         self.assertEqual(
+            len(execution_probe.V2_WORKER_WAIT_SCOPE_CASES), 18
+        )
+        self.assertEqual(
             {
                 case.plan.wait_kind
                 for case in execution_probe.V2_WORKER_WAIT_SCOPE_CASES
@@ -1297,39 +1300,57 @@ class ProtocolTest(unittest.TestCase):
                 for case in execution_probe.V2_WORKER_WAIT_SCOPE_CASES
             )
         )
-        wait_scope_plans = [
-            dataclasses.replace(
-                case.plan,
-                wait_kind=protocol.WaitKind.DEFAULT,
-                wait_worker_mask=0,
-            )
-            for case in execution_probe.V2_WORKER_WAIT_SCOPE_CASES
-        ]
         self.assertTrue(
-            all(plan == wait_scope_plans[0] for plan in wait_scope_plans)
+            all(
+                len(
+                    {
+                        dataclasses.replace(
+                            case.plan,
+                            wait_kind=protocol.WaitKind.DEFAULT,
+                            wait_worker_mask=0,
+                        )
+                        for case in execution_probe.V2_WORKER_WAIT_SCOPE_CASES
+                        if (
+                            case.plan.lanes[-1].worker == target
+                            and case.plan.lanes[-1].engine == engine
+                        )
+                    }
+                )
+                == 1
+                for target in range(3)
+                for engine in (
+                    protocol.Engine.NE,
+                    protocol.Engine.RDMA,
+                )
+            )
         )
         self.assertEqual(
-            len(execution_probe.V2_WORKER_SUBSET_SCOPE_CASES), 6
+            len(execution_probe.V2_WORKER_SUBSET_SCOPE_CASES), 12
         )
         for target in range(3):
-            exclude, include = [
-                case
-                for case in execution_probe.V2_WORKER_SUBSET_SCOPE_CASES
-                if case.plan.lanes[-1].worker == target
-            ]
-            if exclude.plan.wait_worker_mask & (1 << target):
-                exclude, include = include, exclude
-            self.assertEqual(
-                dataclasses.replace(
-                    exclude.plan,
-                    wait_worker_mask=include.plan.wait_worker_mask,
-                ),
-                include.plan,
-            )
-            self.assertEqual(
-                include.plan.wait_worker_mask,
-                exclude.plan.wait_worker_mask | (1 << target),
-            )
+            for engine in (protocol.Engine.NE, protocol.Engine.RDMA):
+                exclude, include = [
+                    case
+                    for case
+                    in execution_probe.V2_WORKER_SUBSET_SCOPE_CASES
+                    if (
+                        case.plan.lanes[-1].worker == target
+                        and case.plan.lanes[-1].engine == engine
+                    )
+                ]
+                if exclude.plan.wait_worker_mask & (1 << target):
+                    exclude, include = include, exclude
+                self.assertEqual(
+                    dataclasses.replace(
+                        exclude.plan,
+                        wait_worker_mask=include.plan.wait_worker_mask,
+                    ),
+                    include.plan,
+                )
+                self.assertEqual(
+                    include.plan.wait_worker_mask,
+                    exclude.plan.wait_worker_mask | (1 << target),
+                )
 
         pending = (
             execution_probe.V2_QUEUE_SATURATION_CASES

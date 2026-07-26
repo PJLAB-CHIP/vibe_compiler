@@ -1223,10 +1223,17 @@ python3 tools/run_hardware_calibration.py --build-dir <board-build> --list \
 
 ### 5.10 非阻塞 pending 区分实验
 
-状态：case资产已实现，板端执行`pending`，不阻塞Q37 Checkpoint B/C。NCC侧20个queue saturation、
-3个wait-scope和6个subset-scope case已经进入typed request、device dispatcher、pre-wait/boundary/final
-record及host oracle；SPM侧复用8个既有baseline control并新增16个held-out base-translation row。
-四个独立no-card CTest已完成package、设备C交叉编译和生命周期预检。它们不进入当前125个默认
+状态：case资产已实现，板端执行`pending`，不阻塞Q37 Checkpoint B/C。NCC侧30个queue saturation、
+18个wait-scope和12个subset-scope case已经进入typed request、device dispatcher、pre-wait/boundary/final
+record及host oracle；SPM单tile侧复用8个既有baseline control并新增88个base-translation、
+reciprocal-order和第二workload schedule模板，组合成48个paired coordinate。每个coordinate用4次
+same-invocation执行serial/window双row，共384个pair-only measurement row。
+DDR rank-one侧新增108个同invocation坐标batch，每批包含serial/window、双issue order和四次重复，
+共1728个pair-only measurement row；
+physical-tile侧新增384个跨16 rank的RDMA/RDMA同allocation坐标组，每个launch共3072个paired
+measurement row；activation要求forward/reverse rank order两次成对launch，因此最小执行6144 row，并由
+显式selector与旧tile-offset runner隔离。
+对应独立no-card CTest已完成package、设备C交叉编译和生命周期预检。它们不进入当前125个默认
 calibration leaf或默认runner inventory，本轮不上板，也不改变第7节的保守compiler消费规则。
 
 板端只在software-pipeline production vertical已经通过、且profile结果表明对应保守fallback成为主要
@@ -1244,7 +1251,8 @@ completion capability；未执行、自然排空、观测字段缺失或结果�
 - 语义key为`queue-saturation-response`。要区分的不是“总共能否完成`D+1`条”，而是
   `D+1`提交时是否出现可复现的queue-full/backpressure响应；resident count是更强问题，不能继续从
   `task_done`反推。
-- 每类engine使用`short-D`、`short-D+1`、`sustained-D`、`sustained-D+1`四格factorial control。
+- 每类engine使用`short/sustained × D-1/D/D+1`六格factorial control。`D-1`是确认阈值信号不会在
+  documented boundary之前出现的负控制，`D`是边界控制，`D+1`才是backpressure candidate。
   packet全部预构并释放builder，使用互不重叠的owned range；同一short/sustained pair只改变单条工作量，
   同一`D/D+1` pair只增加最后一条issue。紧邻issue之间只允许`rdcycle`，不读MMIO、不做oracle、不wait；
   最后一条issue后每个worker只读一次control，再进入matching requested wait和safety drain。禁止发送
@@ -1260,23 +1268,24 @@ completion capability；未执行、自然排空、观测字段缺失或结果�
 
 #### Worker wait scope pending exclusion
 
-- 语义key为`worker-wait-scope-exclusion`。worker0先发一个短marker workload，worker1最后发
-  sustained NE/CT backlog；使用tight submission并推迟逐packet观察。requested wait前的唯一control
-  snapshot必须证明worker0可完成且worker1仍pending，否则该样本无区分力，不计入scope结论。
-- A/B/C复用完全相同的packet、地址、issue order和seed，只改变wait kind：
-  default `TsmWaitfinish()`、matching `bywork(1)`和local fence。wait刚返回就读取worker0/1 control、
-  worker1 completion marker及boundary result，然后才对所有participant执行matching safety drain和final
+- 语义key为`worker-wait-scope-exclusion`。分别让worker0/1/2成为target，并以NE和RDMA两种
+  result-producing sustained backlog做held-out；另一个轮转worker先发短marker。使用tight submission并
+  推迟逐packet观察。requested wait前的唯一control snapshot必须证明target仍pending，否则该样本无区分力，
+  不计入scope结论。
+- 每个`target worker × target engine`的A/B/C复用完全相同的packet、地址、issue order和seed，只改变wait
+  kind：default `TsmWaitfinish()`、matching `bywork(target)`和local fence。wait刚返回就读取全部worker
+  control、target completion marker及boundary result，然后才对所有participant执行matching safety drain和final
   exact oracle。
-- `bywork(1)`必须在boundary完成worker1，作为正控制。只有default或local-fence返回后仍稳定观察到
-  worker1 pending，才能证明对应primitive不覆盖worker1；若worker1已完成，只能归类为
+- `bywork(target)`必须在boundary完成target，作为正控制。只有default或local-fence返回后仍稳定观察到
+  target pending，才能证明对应primitive不覆盖target；若target已完成，只能归类为
   `covered-or-naturally-drained`，不得据此扩大scope。若在安全资源和timeout内无法让pre-wait snapshot
   捕获pending，则本family继续`pending`，不通过无限增加workload追求观察。
 
 #### Worker subset join pending exclusion
 
-- 语义key为`worker-subset-join-exclusion`。分别让w0/w1/w2中的一个成为最后提交的sustained backlog，
-  其余worker使用短marker；每个目标worker构造一对只改变join mask的请求：control包含该worker，
-  candidate排除该worker。
+- 语义key为`worker-subset-join-exclusion`。分别让w0/w1/w2中的一个成为最后提交的NE或RDMA
+  sustained backlog，其余worker使用短marker；每个`目标worker × target engine`构造一对只改变join mask
+  的请求：control包含该worker，candidate排除该worker。
 - join前snapshot必须证明目标worker pending。control在boundary必须完成目标worker；candidate只有在
   mask内worker全部完成、目标worker仍pending时才证明subset exclusion。随后统一safety join并验证三worker
   的instruction count、完整result和guard。两个请求若都在boundary自然排空，则只保留included-worker
@@ -1289,20 +1298,58 @@ completion capability；未执行、自然排空、观测字段缺失或结果�
 - 语义key为`spm-conflict-equivalence`。目标不是继续收集单点offset latency，而是检验一个预先冻结的
   conflict分类能否跨absolute base、tile和held-out workload复现；若不能复现，就明确否定当前profile下
   的compiler bank-coloring输入。
-- 当前可执行矩阵先闭合最容易被absolute-address偶然性混淆的一轴：固定CT→RDMA、256-byte descriptor
-  和8192-byte relative offset，扫描`base mod 256 = 0/64/128/192`；absolute base使用既有
-  translation 0 baseline及`0x20000/0x40000`两个held-out translation，每格保留serial/window和三次
-  样本，共8个既有control加16个新增row。host按absolute base分组，先验证完整result、physical span、
-  双侧guard、instruction count和completion，再比较plan/full-execution/CT-blocking/RDMA-blocking的
+- 当前单tile可执行矩阵固定CT/RDMA和8192-byte relative offset，扫描
+  `base mod 256 = 0/64/128/192`、absolute translation `0/0x20000/0x40000`、
+  `256/512-byte`两种transfer/compute workload、A→B/B→A reciprocal issue order以及serial/window，
+  96个schedule模板组成48个paired coordinate（复用8个既有control，新增88个held-out）。每个coordinate
+  执行4次；每次invocation内serial/window共享同一request、payload和output allocation，执行先后各2次，
+  共384个measurement row。record回显actual allocation、inner request、CT/RDMA source、result和SPM地址；
+  host按absolute base、transfer和issue order分组，先验证逐row完整result、physical span、双侧guard、
+  instruction count、completion及whole-output canary，再比较plan/full-execution/CT-blocking/RDMA-blocking的
   `window-minus-serial`方向；性能raw不能替代正确性。
-- 该初始矩阵故意不把一个issue order、一个engine pair或一个tile伪装成bank-cost完成证明。若要越过
-  `no-bank-coloring`，激活批次还必须增加已验证的reciprocal issue order、其余bank-period offset、
-  physical-tile和第二种transfer/compute workload held-out；这些扩展当前未进入板端inventory。
+- physical-tile轴使用独立16-rank shared package重放一个显式选择的paired coordinate。每个coordinate固定
+  4轮：round 0/2按rank 0→15、round 1/3按15→0逐rank barrier激活，且
+  `first_schedule=(rank+round) mod 2`，使每个rank的serial/window-first各2次。record回显round、
+  rank order/phase、first schedule和execution ordinal；host要求每轮16个physical coordinate唯一、跨轮
+  logical-rank映射稳定，并要求serial/window共享同一allocation。它只检验local-SPM分类是否跨physical tile
+  复现，不测试remote SPM或跨tile并发冲突。其余bank-period offset继续作为既有offset control；
+  任一issue-order、workload、base或tile方向翻转都不能越过`no-bank-coloring`。
 - 当前NCC engine/FU/blocking counter只能作为冲突proxy，SPM PMU未enable时不得命名bank。只有
   version-matched资料提供owner-backed bank/port映射或只读counter，或者预先冻结的等价分类在全部base
-  translation、held-out tile和held-out workload上保持同一冲突方向，才允许形成窄profile cost feature。
+  translation、held-out tile和held-out workload上保持同一冲突方向，且`plan_cycles`或
+  `full_execution`至少有一个预先指定的非零稳定信号，才允许形成窄profile cost feature；全零delta即使
+  方向形式上一致也只能记为`consistent-but-zero-signal`。
   任一translation/tile翻转、仅median成立或依赖runtime allocation偶然base，都保持
   `no-bank-coloring`；即使promotion通过，也只影响已验证候选排序，不改变SPM legality、capacity或lifetime。
+
+#### DDR conflict equivalence
+
+- 语义key为`ddr-conflict-equivalence`。既有54个`ddr-bank-pair` row保留为历史raw candidate：它们覆盖
+  RDMA/RDMA、WDMA/WDMA、RDMA/WDMA、9个offset和serial/window，但每格独立launch且PMU窗口包含seed和
+  readback，不能据此分类或命名DDR bank。
+- 新的rank-one pending矩阵把一个coordinate的serial/window、A→B/B→A和四次重复收进同一invocation，
+  使每个issue order下两种schedule都各处于第一/第二执行位置两次。
+  seed完成后才读取PMU before，目标pair完成后立即读取after，随后才做readback；record回传actual allocation
+  base和A/B地址，每行要求目标pair instruction count及after-PMU payload/guard mismatch exact，并按
+  repetition和issue order交替serial/window执行位置；整个batch再要求最终archive、总count和terminal
+  completion exact。矩阵覆盖RDMA/RDMA与WDMA/WDMA、`256/4096-byte`两种workload、
+  translation `0/4096`和既有9个offset；RDMA另覆盖same-allocation/cross-allocation，WDMA cross-allocation
+  因rank-one ABI只有一个host-visible output allocation而显式defer，不伪造正向oracle。
+- physical-tile held-out复用16-rank cluster package，但使用显式pending selector，不改变旧tile-offset runner。
+  每次barrier phase只激活一个rank；activation必须使用偶数且至少两次launch，由launch parity交替
+  rank 0→15和15→0，每个coordinate的两次样本及launch parity再交替serial/window执行位置，record回显
+  rank order和schedule position。当前矩阵只覆盖RDMA/RDMA同allocation：两个独立allocation分别扫描
+  base `0x20000/0x40000`、relative candidate `0/4096/32768`、`256/4096-byte`、双issue order、
+  serial/window和两次样本；host绑定真实tile coordinate、actual 64-bit address、完整payload/guard/count和
+  pair-only PMU。该路径只形成RDMA同allocation分类的跨tile重复性证据，不把它外推到WDMA或cross-allocation，
+  也不恢复controller/channel/hop或物理bank编号。
+- promotion要求同一coordinate的paired controls共享actual地址生命周期，reciprocal order、workload、
+  allocation/base和已执行的physical-tile held-out上proxy方向不翻转，并且所有correctness oracle通过。
+  全零或仅噪声内可交换的delta不构成有区分度的conflict proxy。
+  只有RDMA/RDMA同allocation轴具备当前physical-tile held-out；WDMA和cross-allocation轴没有该覆盖时不能
+  宣称跨tile promotion。缺少bank-specific PMU或owner-backed地址映射时，结果最多是
+  `conflict-equivalence` cost输入；当前compiler继续
+  `no-ddr-bank-coloring`，也不从timing反推DDR legality、arena assignment或address mapping。
 
 ## 6. 明确禁测或保守处理
 

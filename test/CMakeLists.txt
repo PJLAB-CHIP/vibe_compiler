@@ -329,6 +329,16 @@ set_tests_properties(wafer-ddr-tile-offset-contract-python PROPERTIES
   TIMEOUT 30
 )
 
+add_test(NAME wafer-spm-cross-tile-conflict-contract-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_spm_cross_tile_conflict_probe_contract_test.py
+)
+set_tests_properties(
+  wafer-spm-cross-tile-conflict-contract-python PROPERTIES
+  LABELS "runtime;no-card;all-rank;spm;conflict-equivalence;calibration"
+  TIMEOUT 60
+)
+
 add_test(NAME wafer-ddr-sparse-high-offset-contract-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_sparse_high_offset_probe_test.py
@@ -427,6 +437,24 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
   set_tests_properties(
     wafer-runtime-ddr-tile-offset-probe-no-card PROPERTIES
     LABELS "runtime;no-card;all-rank;cluster;ddr;allocation;offset;probe-build"
+    TIMEOUT 630
+  )
+  add_test(NAME wafer-runtime-ddr-cross-tile-conflict-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_tile_offset_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-ddr-cross-tile-conflict-probe
+      --conflict-equivalence
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-ddr-cross-tile-conflict-probe-no-card PROPERTIES
+    LABELS
+      "runtime;no-card;all-rank;cluster;ddr;conflict-equivalence;preflight"
     TIMEOUT 630
   )
   add_test(NAME wafer-runtime-ddr-sparse-high-offset-probe-no-card
@@ -701,6 +729,23 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     LABELS "runtime;no-card;cache;coherence;calibration;probe-build"
     TIMEOUT 300
   )
+  add_test(NAME wafer-runtime-ddr-conflict-equivalence-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_cache_coherence_calibration_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-ddr-conflict-equivalence-probe
+      --ddr-conflict-equivalence
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-ddr-conflict-equivalence-probe-no-card PROPERTIES
+    LABELS "runtime;no-card;ddr;conflict-equivalence;calibration;preflight"
+    TIMEOUT 300
+  )
   add_test(NAME wafer-runtime-memory-descriptor-calibration-probe-no-card
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_memory_descriptor_calibration_probe_test.py
@@ -733,6 +778,22 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     wafer-runtime-spm-conflict-equivalence-probe-no-card PROPERTIES
     LABELS "runtime;no-card;memory;spm;calibration;preflight"
     TIMEOUT 300
+  )
+  add_test(NAME wafer-runtime-spm-cross-tile-conflict-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_spm_cross_tile_conflict_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-spm-cross-tile-conflict-probe
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-spm-cross-tile-conflict-probe-no-card PROPERTIES
+    LABELS "runtime;no-card;all-rank;spm;conflict-equivalence;preflight"
+    TIMEOUT 600
   )
   add_test(NAME wafer-runtime-mn-tiled-gemm-no-card
     COMMAND ${Python3_EXECUTABLE}

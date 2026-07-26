@@ -906,6 +906,15 @@ static void test_pending_calibration_controls_capture_pre_wait_state(void) {
   assert(wafer_ncc_probe_validate_plan(
              &queue, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
          WAFER_NCC_STATUS_OK);
+  queue.issue_limit = 5;
+  assert(wafer_ncc_probe_validate_plan(
+             &queue, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
+  queue.issue_limit = 4;
+  assert(wafer_ncc_probe_validate_plan(
+             &queue, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+  queue.issue_limit = 6;
 
   MockContext queue_context = {0};
   uint64_t record[WAFER_NCC_PROTOCOL_RECORD_WORDS];

@@ -727,7 +727,8 @@ uint32_t wafer_ncc_probe_validate_plan(
         adapter != NULL &&
         (request->issue_limit == adapter->queue_depth + 1U ||
          (tight_queue_saturation &&
-          request->issue_limit == adapter->queue_depth));
+          (request->issue_limit == adapter->queue_depth ||
+           request->issue_limit + 1U == adapter->queue_depth)));
     if (request->lane_count != 2 ||
         request->effect_relation != WAFER_NCC_EFFECT_NONE ||
         request->range_relation != WAFER_NCC_RANGE_DISJOINT ||

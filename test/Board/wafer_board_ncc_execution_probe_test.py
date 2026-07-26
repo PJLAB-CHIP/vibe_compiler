@@ -1042,48 +1042,61 @@ V2_SUBSET_JOIN_CASES = tuple(
     )
     for mask in (0b001, 0b010, 0b100, 0b011, 0b101, 0b110)
 )
+V2_WORKER_SCOPE_TARGETS = (
+    ("ne", ncc_protocol.Engine.NE, V2_NE_LARGE_RESULT_BYTES),
+    ("rdma", ncc_protocol.Engine.RDMA, V2_REPEATED_SLOT_BYTES),
+)
 V2_WORKER_WAIT_SCOPE_CASES = tuple(
     v2_case(
-        f"worker-wait-scope-ne-worker1-{spelling}-tight-window",
+        (
+            f"worker-wait-scope-{engine_name}-worker{target_worker}-"
+            f"{spelling}-tight-window"
+        ),
         (
             v2_lane(
                 ncc_protocol.Engine.TDMA,
-                worker=0,
+                worker=(target_worker + 1) % 3,
                 transfer_bytes=16,
                 element_format=FMT_INT8,
             ),
             v2_lane(
-                ncc_protocol.Engine.NE,
-                worker=1,
-                transfer_bytes=V2_NE_LARGE_RESULT_BYTES,
+                engine,
+                worker=target_worker,
+                transfer_bytes=transfer_bytes,
             ),
             v2_lane(
-                ncc_protocol.Engine.NE,
-                worker=1,
-                transfer_bytes=V2_NE_LARGE_RESULT_BYTES,
+                engine,
+                worker=target_worker,
+                transfer_bytes=transfer_bytes,
             ),
         ),
         rounds=3,
         schedule=ncc_protocol.Schedule.WINDOW,
-        seed=seed,
+        seed=0x6250 + target_worker * 0x10 + int(engine),
         wait_kind=wait_kind,
         wait_worker_mask_override=(
-            0b010
+            1 << target_worker
             if wait_kind == ncc_protocol.WaitKind.BY_WORKER
             else None
         ),
         flags=ncc_protocol.TIGHT_WORKER_SCOPE,
     )
-    for spelling, wait_kind, seed in (
-        ("default", ncc_protocol.WaitKind.DEFAULT, 0x6250),
-        ("byworker", ncc_protocol.WaitKind.BY_WORKER, 0x6250),
-        ("local-fence", ncc_protocol.WaitKind.LOCAL_FENCE, 0x6250),
+    for target_worker in range(3)
+    for engine_name, engine, transfer_bytes in V2_WORKER_SCOPE_TARGETS
+    for spelling, wait_kind in (
+        ("default", ncc_protocol.WaitKind.DEFAULT),
+        ("byworker", ncc_protocol.WaitKind.BY_WORKER),
+        ("local-fence", ncc_protocol.WaitKind.LOCAL_FENCE),
     )
 )
 
 
 def v2_worker_subset_scope_case(
-    target_worker: int, include_target: bool
+    target_worker: int,
+    target_name: str,
+    target_engine: ncc_protocol.Engine,
+    target_bytes: int,
+    include_target: bool,
 ) -> GenericProbeCase:
     other_workers = tuple(
         worker for worker in range(3) if worker != target_worker
@@ -1093,7 +1106,7 @@ def v2_worker_subset_scope_case(
         wait_mask |= 1 << target_worker
     return v2_case(
         (
-            f"worker-subset-target{target_worker}-"
+            f"worker-subset-{target_name}-target{target_worker}-"
             f"{'include' if include_target else 'exclude'}-tight-window"
         ),
         (
@@ -1105,22 +1118,29 @@ def v2_worker_subset_scope_case(
                 element_format=FMT_INT8,
             ),
             v2_lane(
-                ncc_protocol.Engine.NE,
+                target_engine,
                 worker=target_worker,
-                transfer_bytes=V2_NE_LARGE_RESULT_BYTES,
+                transfer_bytes=target_bytes,
             ),
         ),
         rounds=3,
         schedule=ncc_protocol.Schedule.WINDOW,
-        seed=0x6260 + target_worker,
+        seed=0x6260 + target_worker * 0x10 + int(target_engine),
         wait_worker_mask_override=wait_mask,
         flags=ncc_protocol.TIGHT_WORKER_SCOPE,
     )
 
 
 V2_WORKER_SUBSET_SCOPE_CASES = tuple(
-    v2_worker_subset_scope_case(target_worker, include_target)
+    v2_worker_subset_scope_case(
+        target_worker,
+        target_name,
+        target_engine,
+        target_bytes,
+        include_target,
+    )
     for target_worker in range(3)
+    for target_name, target_engine, target_bytes in V2_WORKER_SCOPE_TARGETS
     for include_target in (False, True)
 )
 V2_WAIT_OVERHEAD_CASES = tuple(
@@ -1244,7 +1264,7 @@ V2_QUEUE_SATURATION_CASES = tuple(
         ("short", 256 if engine == ncc_protocol.Engine.NE else 4096),
         ("sustained", V2_ACTIVE_OCCUPANCY_BYTES[engine]),
     )
-    for issue_limit in (depth, depth + 1)
+    for issue_limit in (depth - 1, depth, depth + 1)
 )
 V2_PAIR_CASES = tuple(
     v2_case(
@@ -3533,11 +3553,7 @@ def parse_record(
             for worker in range(3)
         }
     if is_tight_worker_scope:
-        target_worker = (
-            1
-            if case in V2_WORKER_WAIT_SCOPE_CASES
-            else plan.lanes[-1].worker
-        )
+        target_worker = plan.lanes[-1].worker
         assert pre_wait_controls is not None
         if pre_wait_controls[target_worker] & 0x100:
             raise RuntimeError(
@@ -3661,19 +3677,29 @@ def parse_record(
             )
     wait_scope: dict[str, object] | None = None
     if is_wait_scope:
+        target_worker = (
+            plan.lanes[-1].worker
+            if case in V2_WORKER_WAIT_SCOPE_CASES
+            else 1
+        )
+        control_worker = (
+            plan.lanes[0].worker
+            if case in V2_WORKER_WAIT_SCOPE_CASES
+            else 0
+        )
         expected_marker, expected_marker_address = v2_completion_marker(plan)
         boundary_marker = words[rec["COMPLETION_MARKER_BOUNDARY"]]
         final_marker = words[rec["COMPLETION_MARKER_FINAL"]]
-        boundary_task_done = bool(
-            words[rec["CONTROL_BOUNDARY"] + 1] & 0x100
+        target_task_done = bool(
+            words[rec["CONTROL_BOUNDARY"] + target_worker] & 0x100
         )
-        worker0_task_done = bool(
-            words[rec["CONTROL_BOUNDARY"]] & 0x100
+        control_task_done = bool(
+            words[rec["CONTROL_BOUNDARY"] + control_worker] & 0x100
         )
-        worker1_boundary_exact = all(
+        target_boundary_exact = all(
             observation.boundary_mismatches == 0
             for observation in observations
-            if observation.worker == 1
+            if observation.worker == target_worker
         )
         if (
             words[rec["WAIT_CYCLES"]] == 0
@@ -3689,26 +3715,28 @@ def parse_record(
         if (
             plan.wait_kind == ncc_protocol.WaitKind.BY_WORKER
             and not (
-                boundary_task_done
+                target_task_done
                 and boundary_marker == expected_marker
-                and worker1_boundary_exact
+                and target_boundary_exact
             )
         ):
             raise RuntimeError(
-                f"{case.name}: by-worker wait returned before worker1 "
+                f"{case.name}: by-worker wait returned before worker"
+                f"{target_worker} "
                 "completed"
             )
         if (
-            plan.wait_kind
+            case in V2_COMPLETION_SCOPE_CASES
+            and plan.wait_kind
             in (
                 ncc_protocol.WaitKind.DEFAULT,
                 ncc_protocol.WaitKind.LOCAL_FENCE,
             )
-            and not worker0_task_done
+            and not control_task_done
         ):
             raise RuntimeError(
-                f"{case.name}: default/local fence returned before worker0 "
-                "completed"
+                f"{case.name}: default/local fence returned before control "
+                f"worker{control_worker} completed"
             )
         scope_name = (
             "default"
@@ -3719,32 +3747,37 @@ def parse_record(
             "wait_cycles": words[rec["WAIT_CYCLES"]],
             "target_pending_before_wait": (
                 pre_wait_controls is not None
-                and not bool(pre_wait_controls[1] & 0x100)
+                and not bool(pre_wait_controls[target_worker] & 0x100)
             ),
             "worker_control_before_wait": pre_wait_controls,
-            "worker0_task_status": words[rec["CONTROL_BOUNDARY"]],
-            "worker0_task_done": worker0_task_done,
-            "worker1_task_status": words[
-                rec["CONTROL_BOUNDARY"] + 1
+            "target_worker": target_worker,
+            "target_engine": plan.lanes[-1].engine.name.lower(),
+            "control_worker": control_worker,
+            "control_worker_task_status": words[
+                rec["CONTROL_BOUNDARY"] + control_worker
             ],
-            "worker1_task_done": boundary_task_done,
+            "control_worker_task_done": control_task_done,
+            "target_worker_task_status": words[
+                rec["CONTROL_BOUNDARY"] + target_worker
+            ],
+            "target_worker_task_done": target_task_done,
             "marker_expected": expected_marker,
             "marker_boundary": boundary_marker,
             "marker_final": final_marker,
             "marker_done_at_boundary": boundary_marker == expected_marker,
-            "worker1_results_exact_at_boundary": worker1_boundary_exact,
+            "target_results_exact_at_boundary": target_boundary_exact,
             "interpretation": (
-                "byworker1-completed-worker1"
+                f"byworker{target_worker}-completed-target"
                 if plan.wait_kind == ncc_protocol.WaitKind.BY_WORKER
                 else (
-                    f"{scope_name}-returned-before-worker1"
+                    f"{scope_name}-returned-before-target"
                     if not (
-                        boundary_task_done
+                        target_task_done
                         and boundary_marker == expected_marker
-                        and worker1_boundary_exact
+                        and target_boundary_exact
                     )
                     else (
-                        f"{scope_name}-covered-worker1-or-backlog-drained"
+                        f"{scope_name}-covered-target-or-backlog-drained"
                     )
                 )
             ),
