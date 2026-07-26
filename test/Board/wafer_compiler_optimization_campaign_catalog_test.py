@@ -396,10 +396,20 @@ def main() -> int:
     assert shared_families["resource-aware-order"] == {
         "ready-order-movement-first",
     }
-    assert shared_families["collective-algorithms"] == {
+    assert shared_families["collective-algorithms"] == {"tree-all-reduce"}
+    assert shared_families["direct-dte-transport-evidence"] == {
         "direct-all-reduce",
-        "tree-all-reduce",
     }
+    direct_transport = catalog.CASES_BY_KEY["direct-all-reduce"]
+    assert (
+        direct_transport.pair_requirement
+        == catalog.PackagePairRequirement.EXISTING_SINGLE_PACKAGE_BASELINE
+    )
+    assert not direct_transport.requires_pair
+    assert any(
+        "transport evidence only" in statement
+        for statement in direct_transport.pair_contract
+    )
 
     assert any(
         len(axes) > 1 for axes in catalog.AXES_BY_CASE.values()

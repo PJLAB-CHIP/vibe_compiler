@@ -95,6 +95,15 @@ set_tests_properties(wafer-board-direct-dte-outer-deadline PROPERTIES
   TIMEOUT 30
 )
 
+add_test(NAME wafer-direct-dte-board-evidence-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_direct_dte_board_evidence_test.py
+)
+set_tests_properties(wafer-direct-dte-board-evidence-python PROPERTIES
+  LABELS "runtime;no-card;board;direct-dte;evidence"
+  TIMEOUT 30
+)
+
 add_test(NAME wafer-hardware-calibration-batch-runner-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_hardware_calibration_batch_runner_test.py
@@ -365,6 +374,17 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
   set(_wafer_compiler_optimization_collective_cases
     tree-all-reduce
   )
+  set(_wafer_collective_characterization_cases
+    all-gather-direct-vs-ring-256b
+    all-gather-direct-vs-ring-4096b
+    all-gather-direct-vs-ring-65536b
+    reduce-scatter-direct-vs-ring-256b
+    reduce-scatter-direct-vs-ring-4096b
+    reduce-scatter-direct-vs-ring-65536b
+    all-reduce-ring-vs-tree-256b
+    all-reduce-ring-vs-tree-4096b
+    all-reduce-ring-vs-tree-65536b
+  )
   set(_wafer_tx81_objdump
     ${CMAKE_SOURCE_DIR}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump
   )
@@ -379,6 +399,15 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
   set_tests_properties(
     wafer-compiler-optimization-campaign-catalog-python PROPERTIES
     LABELS "runtime;no-card;compiler-optimization;catalog"
+    TIMEOUT 60
+  )
+  add_test(NAME wafer-collective-characterization-catalog-python
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_collective_hardware_characterization_catalog_test.py
+  )
+  set_tests_properties(
+    wafer-collective-characterization-catalog-python PROPERTIES
+    LABELS "runtime;no-card;collective-characterization;catalog;pending"
     TIMEOUT 60
   )
   foreach(_wafer_compiler_optimization_case IN LISTS
@@ -403,6 +432,29 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
       PROPERTIES
       LABELS "runtime;no-card;compiler-optimization;paired"
       TIMEOUT 1800
+    )
+  endforeach()
+  foreach(_wafer_collective_characterization_case IN LISTS
+      _wafer_collective_characterization_cases)
+    add_test(
+      NAME
+        wafer-runtime-collective-characterization-${_wafer_collective_characterization_case}-no-card
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_collective_characterization_test.py
+        --wafer-compile-test $<TARGET_FILE:wafer-compile-test>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --tx8-objdump ${_wafer_tx81_objdump}
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-collective-characterization-${_wafer_collective_characterization_case}
+        --case ${_wafer_collective_characterization_case}
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-collective-characterization-${_wafer_collective_characterization_case}-no-card
+      PROPERTIES
+      LABELS
+        "runtime;no-card;collective-characterization;paired;all-rank;direct-dte;pending"
+      TIMEOUT 3600
     )
   endforeach()
   foreach(_wafer_no_card_launch_test IN ITEMS kernel-grid model)
@@ -1865,6 +1917,40 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
         TIMEOUT 3600
       )
     endforeach()
+    foreach(_wafer_collective_characterization_case IN LISTS
+        _wafer_collective_characterization_cases)
+      add_test(
+        NAME
+          wafer-board-collective-characterization-${_wafer_collective_characterization_case}
+        COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_collective_characterization_test.py
+          --wafer-compile-test $<TARGET_FILE:wafer-compile-test>
+          --wafer-run $<TARGET_FILE:wafer-run>
+          --tx8-objdump ${_wafer_tx81_objdump}
+          --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}/board-collective-characterization-${_wafer_collective_characterization_case}
+          --case ${_wafer_collective_characterization_case}
+          --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+          --expected-runtime-version
+            ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+          --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+          --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+          --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+          --expected-runtime-library-sha256
+            ${_wafer_expected_tx_runtime_library_sha256}
+          --completion-timeout-ms 60000
+          --repeat 3
+      )
+      set_tests_properties(
+        wafer-board-collective-characterization-${_wafer_collective_characterization_case}
+        PROPERTIES
+        LABELS
+          "board;hardware;collective-characterization;paired;all-rank;direct-dte;pending"
+        RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 3600
+      )
+    endforeach()
     add_test(NAME wafer-board-dte-ncc-execution-probe
       COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_dte_ncc_execution_probe_test.py
@@ -2001,6 +2087,8 @@ endif()
 unset(_wafer_compiler_optimization_case)
 unset(_wafer_compiler_optimization_collective_cases)
 unset(_wafer_compiler_optimization_rank_one_cases)
+unset(_wafer_collective_characterization_case)
+unset(_wafer_collective_characterization_cases)
 unset(_wafer_tx81_objdump)
 
 add_test(NAME wafer-numeric-dependency-record-python

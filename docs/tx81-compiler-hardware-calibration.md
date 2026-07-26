@@ -39,8 +39,9 @@ Pipeline position:
   任意queue overflow或缺失participant的DTE case探索错误行为。
 - Completion gate:
   本文compiler-sensitive矩阵每一项都有可追溯静态合同和板端校准结论，或者有明确Unknown/unsupported、
-  风险及保守compiler处理；校准vector与held-out vector分离，正确性oracle先于性能解释。只有完成该gate后，
-  Q37才进入production multi-buffer和resource-aware scheduling。
+  风险及保守compiler处理；校准vector与held-out vector分离，正确性oracle先于性能解释。已有保守fallback
+  只关闭对应legality/correctness风险，不等价于硬件行为完备；新增可区分case及其pending/board结果持续在
+  本文同一row演进，不另建最终结果文档。
 ```
 
 ## 1. 证据成熟度与profile绑定
@@ -338,6 +339,7 @@ exact，`send_async`、`wait_done`、`release`返回码全0，guard exact且正�
 | local completion | default wait、`bywork`、local fence的范围和visibility | completion-domain boundary返回后立即CSR/Kcore oracle，再做safety drain | 09-11/15 | wait-overhead 5类engine的wait-each/wait-once、raw/wrapper issue各10项均通过；RDMA→CT、CT/NE→WDMA、TDMA→CT/NE的pure same-worker NCC链由issue order+busytable完成，不要求中间wait。CT/NE→Kcore需要在离开NCC completion domain前matching drain；NCC→Direct DTE、跨worker join、barrier与terminal/host publication同样是显式boundary。default/local-fence跨worker scope仍`unknown` |
 | cross-worker join | 多worker并行、仲裁与地址依赖是否跨worker | disjoint w0/w1/w2，逐workerjoin与六个proper-subset mask；同地址不做无序正向 | 10/11/15 | full join与六个proper-subset mask均保证mask内worker在boundary完成；但六例中mask外worker也都已自然排空，未观察到unjoined pending，故只闭合included-worker正向，不证明subset join会等待或排除mask外worker。并行性、仲裁与同地址无序行为仍`unknown/excluded` |
 | Direct DTE | source read、destination visibility、participant、channel/FSM、terminal status | 16-rank receiver-first；producer→DTE、DTE→consumer、disjoint顺序、event后复用、两destination broadcast及同步错误返回 | 13-16 | 修复后的独立64元素production baseline已在16 ranks exact。modes 1--6的16/32/64/256/4096B共30个full-card case全部通过expected、status、guarded SPM readback和cleanup。modes 7、8、9、12的16B同步错误观察均为16-rank exact。modes 10--11的64KiB raw async serial/window各3 samples × 16 ranks exact。mode 13 receiver-unprepared在3s host deadline内未完成并使runtime context进入`poisoned`，直接证明该无匹配receive路径必须fail closed；sender时间重叠仍`unknown` |
+| collective schedule行为 | AG Direct/Ring、RS Direct/Ring、AR Ring/ordered-Tree在真实payload下的正确性、message graph和设备measurement表面；Direct-DTE只是共同transport | 同一post-SPMD structured source的actual accepted clone；16-rank i8，logical payload 256B/4KiB/64KiB；accepted Instr report逐条检查direction/communication/phase/round/peer/slice/issue bytes/loop multiplicity/executed bytes并跨rank匹配，双包normalized manifest一致，全rank exact/status-v2 runtime enforcement/terminal/cleanup；A/B与B/A交替；current package无独立guard resource，故不声称canary/guard readback | 06/13/16与后续Q9 | 9组A/B的双package/no-card资产已通过，真实板端`pending`；现有4KiB AR source/payload复用为Ring/Tree点，不能由ELF prepare数或“tree-all-reduce”名字代签实际算法。现有raw Direct-DTE和Q35大GEMM AR只证明其特定transport/workload正确性，不覆盖AG/RS算法对照，也不形成device cost。AllToAll/Permute当前只有单一Direct schedule，另列语义/traffic行为case，不伪造算法A/B |
 | multi-tile arrival | full-card/subgroup barrier的participant与复用合同 | production 16-rank正向；缺participant/错误坐标不测试 | 13/15 | 两轮反向错峰的16-rank `hrt_barrier`均16/16 marker正确、0 mismatch/crosstalk，full-card复用`board-observed`；version-matched实现固定观察16个slot，故1/2/4/8/15 subgroup已落成compile/submission前typed-negative，不能作为正向发包；未来只有独立participant-aware primitive才能新增subgroup positive |
 | host launch/runtime | kernel/model launch、resource staging/readback、timeout、failure cleanup | 同package schema、exact output、terminal/cleanup | 14-16 | 已有kernel/model与16-rank路径`board-observed/supported`，按owner证据解释 |
 | NCC PMU basis | instruction count、engine exec、global union、worker scope、wrap稳定读取 | 单engine等式、pair union、high-low-high和重复样本 | 16与后续Q9 | worker0 engine/union `calibrated` |
@@ -1350,6 +1352,85 @@ completion capability；未执行、自然排空、观测字段缺失或结果�
   宣称跨tile promotion。缺少bank-specific PMU或owner-backed地址映射时，结果最多是
   `conflict-equivalence` cost输入；当前compiler继续
   `no-ddr-bank-coloring`，也不从timing反推DDR legality、arena assignment或address mapping。
+
+### 5.11 Collective 与后续性能行为 case
+
+本节是新增case、执行状态和最终证据的唯一事实表。`Direct-DTE`列描述所有current collective共同使用的
+transport；`algorithm`列才描述compiler-private schedule。现有名为Direct-DTE的板测不得解释为
+Direct AllReduce；current AllReduce只有Ring和ordered Tree两种schedule。
+
+第一批固定16 rank、i8和相同placement/ABI。`B`表示每rank参与的logical collective payload：
+AllGather输入`B/16`、输出`B`；ReduceScatter输入`B`、输出`B/16`；AllReduce输入/输出`B`。
+sentinel同时编码source rank、目标slice位置和logical lane，modular reduction由CPU独立计算。4KiB AllReduce
+复用现有source/payload，不另建重复case。
+
+sentinel由`rank + logical lane + payload size`进入固定64-bit mixing后折叠为i8，不使用线性mod-256
+序列，也不声称有限i8域内所有lane byte全局唯一。catalog mutation gate逐AllGather source chunk、
+逐reduction source contribution（ReduceScatter按destination segment）及逐ReduceScatter output slice
+检查1/32/256B rotation，要求16个source contribution两两不同、16个ReduceScatter destination output
+两两不同；对每个reduction source逐一删除并以其余每个source替换，每个destination slice都必须改变。
+AllGather另要求16个concat chunk两两不同，且逐source相邻rank swap改变expected。
+
+| case key | collective | algorithm A / B | B | accepted Instr结构oracle | runtime oracle | 状态 / 允许结论 |
+| --- | --- | --- | ---: | --- | --- | --- |
+| `all-gather-direct-vs-ring-256b` | AllGather | Direct / Ring | 256B | Direct逐rank验证15-peer cyclic round和source slice；Ring逐rank验证固定前后继、`P-1`轮、round→forwarded-slice递推及单一16-rank cycle；完整message tuple跨rank一一匹配 | 每rank按rank-group顺序完整concat；共同lifecycle/status合同见表后 | `pending`；不得影响cost |
+| `all-gather-direct-vs-ring-4096b` | AllGather | Direct / Ring | 4096B | 同上 | 同上 | `pending`；不得影响cost |
+| `all-gather-direct-vs-ring-65536b` | AllGather | Direct / Ring | 65536B | 同上 | 同上 | `pending`；不得影响cost |
+| `reduce-scatter-direct-vs-ring-256b` | ReduceScatter | Direct / Ring | 256B | Direct逐rank验证source-round/destination-slice的15-peer owner exchange；Ring验证`P-1`个chunk round、round→slice递推和单一16-rank cycle；完整message tuple跨rank一一匹配 | 每rank只得到自己的destination slice，全部source贡献exact；共同lifecycle/status合同见表后 | `pending`；不得影响cost |
+| `reduce-scatter-direct-vs-ring-4096b` | ReduceScatter | Direct / Ring | 4096B | 同上 | 同上 | `pending`；不得影响cost |
+| `reduce-scatter-direct-vs-ring-65536b` | ReduceScatter | Direct / Ring | 65536B | 同上 | 同上 | `pending`；不得影响cost |
+| `all-reduce-ring-vs-tree-256b` | AllReduce | Ring / ordered Tree | 256B | Ring验证`2(P-1)`轮两阶段round→slice递推、chunk和单一16-rank cycle；Tree验证15条reduce边、broadcast exact reverse、`slice=child`、`round=child depth`、单root/无环/二叉且rank-group inorder；完整message tuple跨rank匹配 | 16个replicated modular exact output；共同lifecycle/status合同见表后 | `pending`；不得影响cost |
+| `all-reduce-ring-vs-tree-4096b` | AllReduce | Ring / ordered Tree | 4096B | 同上；复用原`tree-all-reduce` payload，但Ring必须由actual phase确认，不能由reserved-baseline名字推断 | 同上 | `pending`；不得影响cost |
+| `all-reduce-ring-vs-tree-65536b` | AllReduce | Ring / ordered Tree | 65536B | 同上 | 同上 | `pending`；不得影响cost |
+
+accepted Instr sidecar schema v2为每rank保存排序后的完整message tuple：
+`direction / peer / communication_id / phase / round / payload_slice / issue_bytes /
+constant_loop_multiplicity / executed_bytes`；独立的phase/peer/round/slice集合只作摘要，不承担graph证明。
+send与对端recv必须在除direction外全部字段相同且多重集一一抵消。test-only selector还要求16个execution rank
+逐rank只含请求的collective phase family；缺rank、Direct/Ring或Ring/Tree混合、混入其它collective family均fail closed。
+AllGather输入采用partitioned boundary、输出replicated；ReduceScatter的rank-local contribution输入和destination
+output均采用partitioned boundary，不再把rank-distinct数据标成replicated。
+
+共同transport/lifecycle oracle先从每份schema-v5 manifest验证16个rank各有唯一内部
+`u32[1]`、64B storage/alignment、read-write `transport_status`，entry绑定
+`wafer-direct-dte-status-v2`且`host_watchdog_required=true`，并有恰好16个matching
+`entry_return` terminal completion。真实board command必须是单次`--all-ranks --board`且带有界
+completion timeout；stdout还必须给出按序launch/completion/D2H/cleanup和16条matching terminal。
+current BoardRuntime会在发布user output前D2H读取并要求全部16个status为Success，任一错误或不完整readback均失败并
+quarantine；但`BoardRuntimeInvocationResult`和`wafer-run` stdout尚不导出逐rank raw
+`(resource, status ABI, value)`。因此archive显式保存
+`runtime_all_rank_success_enforced=true`、`observed_all_rank_success=false`及该observation gap，
+不得写成“16条raw Success已独立观察”；若后续promotion要求可重放raw status，必须先扩展runtime output surface。
+
+2026-07-26 pre-board状态：上述9/9 case均已实际生成两种typed package，accepted Instr tuple sidecar、
+normalized manifest、status/watchdog/completion contract、最终ELF结构和双包no-card gate通过；
+真实板端9/9仍为`pending`。首轮RS 256B重放
+发现Direct lowering把同一input root的15个target subview连续send后才group wait，无法通过现有
+one-live-sender/root-isolation gate；修复为逐send matching wait且未放宽gate，随后RS三种payload全部通过。
+64KiB AR会在constant-trip structured loop中分tile，sidecar的send/recv bytes因此按constant loop
+multiplicity加权；否则仅累计静态callsite会把真实执行量误报为一半。初版线性mod-256 sentinel也在
+pre-board mutation审计中因16-rank reduction退化为32B周期而被拒绝，替换为上述hash并重跑9/9后才保留。
+
+每个variant都必须从同一verified post-SPMD structured source生成，经过完整scheduling、SPM/DDR、
+Direct-DTE matching、target ABI和package gate。test-only selector只接受实际phase匹配的accepted clone，
+找不到就fail closed；它不是公开CLI、IR attr或package字段。A/B normalized manifest、host-visible binding、
+source/profile/rank domain必须一致。板端按256B→4KiB→64KiB，pair内A/B、B/A交替至少3次；任一timeout、
+untrusted terminal或设备异常立即停批，不retry/reset/power。host process elapsed只保存为诊断；在device
+cycle/PMU unit、scope、clear/wrap与workload correlation未闭合前，本表不产生winner或latency常数。
+
+第一批不代表完备。以下family与上述已上板raw case不重复，并按compiler消费价值排序：
+
+| 后续family | 区分的硬件行为 | 最小matched case | activation / stop gate | 当前状态 |
+| --- | --- | --- | --- | --- |
+| AllToAll / Permute traffic semantics | 全交换fanin/fanout、cycle与send-only/recv-only/self/unmapped-zero-fill角色 | AllToAll `(src,dst,lane)` sentinel；Permute full cycle和一组稀疏角色；再做同buffer双epoch复用 | 先闭合verified structured source→package纵向；单一schedule只测行为，不伪造算法A/B | `planned` |
+| DTE route/contention | 同bytes不同peer graph、fanin/fanout热点和endpoint distance | nearest/long-distance、disjoint、1/2/4/8/15 fanout及matching fanin；正反向 | 只声明endpoint/min-hop，不声称物理N/E/S/W route；需可信device phase basis | `planned` |
+| single-engine throughput | CT/NE/RDMA/WDMA/TDMA启动成本、tail和steady slope | compute小/steady/tail；movement 256B/4KiB/16KiB/64KiB contiguous + 1 held-out stride | exact/guard/count先过；calibration+held-out同方向才形成窄rate | `planned` |
+| engine-pair stage balance | 现有10个pair的A-bound/balanced/B-bound与方向性 | 每pair A→B/B→A，ratio三点，iteration 2/4/8；same-worker和代表性cross-worker | 复用已通过pair correctness，不重复单一16/64KiB smoke；没有稳定device信号则保持Unknown | `planned` |
+| three-stage software pipeline | RDMA→CT/NE→WDMA的prologue/steady/epilogue、slot数和stage balance | movement/balanced/compute-bound；serial/one-slot/two-slot；iteration 1/2/3/4/8及capacity fallback | 必须由production multi-buffer IR vertical产生；手写16KiB双slot不能代签 | `planned` |
+| worker placement/arbitration | w0/w1/w2吞吐、公平性及backlog progress | 单/双/三worker；same/cross-worker正pair；一个worker backlog时另一engine progress sentinel | matching join和完整result；不再用自然排空样本推断wait scope | `planned` |
+| DDR active-rank contention | RDMA-only、WDMA-only、双向在1/2/4/8/16 active ranks的带宽/拥塞 | 所有16 rank参与lifecycle，仅selected ranks发流；payload slope+stride held-out | 优先于bank猜测；每rankdevice duration与full-card max均需可信basis | `planned` |
+| SPM conflict pilot | matched conflict/non-conflict是否存在可复现差异 | 同invocation `8192` candidate与matched control，4/16KiB sustained，正反schedule | 只有非零稳定信号才扩base/tile/engine；否则停止并保持`no-bank-coloring` | `planned-pilot` |
+| DDR bank/coloring | compiler能否控制稳定physical class | 只允许小pilot绑定actual address/base/tile和专用counter | 若方向随allocation/tile翻转，或无owner-backed mapping/bank counter，立即停止6144-row大矩阵 | `blocked-no-controllable-class` |
 
 ## 6. 明确禁测或保守处理
 

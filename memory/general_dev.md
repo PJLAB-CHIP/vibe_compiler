@@ -908,3 +908,28 @@
 - host wall time受provider、OS和runtime噪声影响，只能记observation。只有PMU measurement basis、counter unit/clear/wrap、
   workload correlation、重复稳定性和held-out都验证后，Q9才可消费成对device观测校准合法候选排序；correctness结果和
   untimed model都不能直接写入cost常量。
+
+## Hardware characterization与优化资格分栏
+
+- production winner/baseline成对资格只回答“当前默认选择是否改变了可执行结构、两包是否正确”，不能代表
+  compiler全部选择空间或硬件性能表面已覆盖。硬件characterization应从compiler实际可选机制和参数轴反推case，
+  已有板端证据做差集去重，并为每个新增case写明正负/matched control、可消费结论和stop gate。
+- Direct-DTE是current collective共同的transport合同，Direct/Ring/Tree是compiler-private collective schedule；
+  名为Direct-DTE的AllReduce纵向不能记成“Direct AllReduce算法”。算法case必须在accepted Instr IR仍保留
+  完整message tuple时做typed确认，不能由baseline/winner名字或最终ELF prepare数量反推。
+- accepted Instr sidecar累计通信bytes时要乘所有constant-trip structured loop的执行multiplicity；大payload可能被
+  planner分tile而只保留一组静态DTE callsite。只数callsite operand bytes会把真实执行量误报为`1/trip_count`，
+  但动态/非constant loop仍应fail closed，不能猜trip。
+- collective graph evidence必须保留每条message的direction、peer、communication、phase、round、payload slice、
+  issue bytes和loop multiplicity tuple，并从tuple重算摘要和跨rankmatching。彼此独立的peer/round/slice集合会丢失
+  关系，不能证明Ring cycle、Tree edge或message identity。
+- i8 collective sentinel不能使用rank/lane线性mod-256序列；多rank modular sum会把系数折叠成短周期，
+  让destination permutation和tile rotation通过exact compare。使用rank/logical-lane/payload-size counter hash，
+  并在不上板的mutation gate中预先证明rank contribution、RS destination、短rotation及source
+  missing/duplicate均可被oracle区分。
+- Direct-DTE板测证据要区分manifest合同、runtime内部fail-closed enforcement和output可独立观察的raw status。
+  current runtime会在发布output前读取并校验16-rank status-v2，但CLI/result未导出逐rank raw值；archive必须显式记录
+  observation gap，不能把terminal completion或成功返回改写成“raw Success已观察”。
+- case定义、pending/board状态、profile身份、raw evidence和最终compiler消费应在同一硬件校准台账逐row演进；
+  实施计划只保存施工依赖。没有可信device measurement basis时，结构和exact execution只形成behavior/correctness
+  evidence，不产生性能winner。

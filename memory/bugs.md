@@ -1513,3 +1513,44 @@
 - 防复发：compiler优化轴必须明确映射到paired board、existing board、host exact或future production gate。单winner板测
   只记correctness，no-card/ELF只记pre-board readiness；没有PMU measurement basis、候选相关性、重复和held-out时，不把
   paired host wall time写成hardware speedup或Q9 ranking参数。
+
+## 2026-07-26 ReduceScatter Direct不能对同root批量issue后再wait
+
+- 现象：新增ReduceScatter Direct/Ring characterization的首个256B no-card在reserved baseline的
+  Direct-DTE acceptance失败：`issue buffer must remain isolated until its matching wait`。这不是板端失败，
+  而是post-SPMD→package纵向首次重放出了既有lowering缺口。
+- 根因：Direct ReduceScatter在本rank作为source的round里，从同一个input allocation的15个target subview连续
+  issue send，最后才group wait。normal Direct-DTE profile只允许每rank block一个live sender，且isolation按
+  storage root保守判断；不同subview range不能绕过同root lifetime合同。
+- 修复模式：每个target send后立即用其唯一token做single wait，再issue下一个send；不放宽Direct-DTE gate，
+  不用静态disjoint range伪造多个sender资源。message phase/round/slice和数值语义保持不变。
+- 防复发：conversion test要求每个Direct ReduceScatter send的下一条op是只消费该token的wait；完整16-rank
+  no-card再重放actual scheduling、SPM/DDR、Direct-DTE matching、target和package gate。
+
+## 2026-07-26 独立message摘要集合不能证明collective graph
+
+- 现象：首版collective characterization report只保存每rank独立的phase、communication、round、peer、
+  payload-slice集合和总bytes。集合均正确时，仍无法知道哪个peer对应哪个round/slice/bytes，也无法重放Ring
+  是否为单一cycle或Tree reduce/broadcast边是否互逆；文档据此声称“精确message字段/Tree边”属于过度结论。
+- 根因：把便于浏览的derived summary当成message identity事实源；聚合在写report时不可逆地丢掉了tuple关系，
+  后续Python oracle再严格也无法恢复。
+- 修复模式：sidecar schema v2逐rank保存排序且唯一的
+  `(direction, peer, communication, phase, round, payload slice, issue bytes,
+  constant-loop multiplicity, executed bytes)`；summary从tuple重算并要求一致，send/recv跨rank按完整tuple
+  多重集匹配，再验证Direct fanout、Ring单一16-rank cycle和ordered Tree graph。
+- 防复发：任何拓扑、消息或调度characterization都先定义可重放的原子observation row；集合、计数、digest和
+  ELF callsite只作派生证据，不能承担它们未编码的关系证明。
+
+## 2026-07-26 线性i8 sentinel会在collective reduction后退化
+
+- 现象：首版payload为rank/lane的线性mod-256序列。16-rank求和后只有32B周期；ReduceScatter 4KiB/64KiB的
+  16个destination expected完全相同，256B也只有两种，AllReduce output同样重复32B block。错误destination、
+  32B对齐slice/tile错位仍可通过所谓full-output exact。
+- 根因：只检查单rank输入“看起来不同”，没有先分析modular reduction后的oracle熵，也没有用错误routing/tile
+  mutation反证oracle区分力。
+- 修复模式：payload改为rank、logical lane和payload size进入固定64-bit mixing后折叠为i8；catalog gate逐AG
+  source chunk、reduction source contribution（RS按destination segment）及RS output slice检查
+  1/32/256B rotation，逐source枚举missing及其余source replacement，同时要求source contribution与
+  RS 16个destination可区分、AG逐source rank swap改变expected。
+- 防复发：数值板测的exact比较先通过mutation adequacy gate；“逐字节比较”只描述比较器，不能证明payload能区分
+  被测错误模式。

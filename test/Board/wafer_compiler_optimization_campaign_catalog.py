@@ -643,8 +643,11 @@ CAMPAIGN_CASES = (
         ),
     ),
     CampaignCase(
+        # Compatibility key retained for existing CTest/runner selections.  This
+        # asset proves the shared Direct-DTE transport vertical; it does not
+        # identify a Direct all-reduce compiler algorithm.
         key="direct-all-reduce",
-        family="collective-algorithms",
+        family="direct-dte-transport-evidence",
         priority="P0",
         disposition=AxisDisposition.EXISTING_BOARD_FAMILY,
         source_kind=SourceKind.STABLEHLO_SOURCE_PROGRAM,
@@ -654,6 +657,7 @@ CAMPAIGN_CASES = (
         pair_requirement=PackagePairRequirement.EXISTING_SINGLE_PACKAGE_BASELINE,
         package_roles=("selected",),
         pair_contract=(
+            "legacy direct-all-reduce key names transport evidence only",
             "existing production source-to-package Direct-DTE vertical",
             "serves as correctness and transport baseline, not a speedup claim",
         ),
@@ -1093,7 +1097,10 @@ OPTIMIZATION_AXES = (
         "all-rank-communication",
         AxisDisposition.EXISTING_BOARD_FAMILY,
         "direct-all-reduce",
-        "The existing production Direct-DTE vertical is the safe collective baseline.",
+        (
+            "The legacy evidence key covers the production Direct-DTE transport "
+            "vertical, not a Direct collective-algorithm choice."
+        ),
         observables=("manifest transport contract", "all-rank status", "full output"),
     ),
     _axis(

@@ -40,6 +40,58 @@ constexpr size_t kCoordinatedPolicyVisitLimit = 64;
 constexpr size_t kWholeVariantParetoLimit = 16;
 constexpr size_t kReportedAttemptLimit = 8;
 
+static std::set<DTEProtocolPhase>
+observeCollectivePhases(const RankExecutable &rank) {
+  std::set<DTEProtocolPhase> phases;
+  rank.getModule().walk(
+      [&](InstrDTESendOp op) { phases.insert(op.getMessage().getPhase()); });
+  rank.getModule().walk(
+      [&](InstrDTERecvOp op) { phases.insert(op.getMessage().getPhase()); });
+  return phases;
+}
+
+static bool
+rankMatchesCollectiveCharacterization(const RankExecutable &rank,
+                                      WholeVariantSelectionMode mode) {
+  std::set<DTEProtocolPhase> expected;
+  switch (mode) {
+  case WholeVariantSelectionMode::CharacterizeAllGatherDirect:
+    expected = {DTEProtocolPhase::AllGatherDirect};
+    break;
+  case WholeVariantSelectionMode::CharacterizeAllGatherRing:
+    expected = {DTEProtocolPhase::AllGatherRing};
+    break;
+  case WholeVariantSelectionMode::CharacterizeReduceScatterDirect:
+    expected = {DTEProtocolPhase::ReduceScatterDirect};
+    break;
+  case WholeVariantSelectionMode::CharacterizeReduceScatterRing:
+    expected = {DTEProtocolPhase::ReduceScatterRing};
+    break;
+  case WholeVariantSelectionMode::CharacterizeAllReduceRing:
+    expected = {DTEProtocolPhase::AllReduceRing};
+    break;
+  case WholeVariantSelectionMode::CharacterizeAllReduceTree:
+    expected = {DTEProtocolPhase::AllReduceTreeReduce,
+                DTEProtocolPhase::AllReduceTreeBroadcast};
+    break;
+  case WholeVariantSelectionMode::Production:
+  case WholeVariantSelectionMode::ReservedBaseline:
+    return false;
+  }
+  return observeCollectivePhases(rank) == expected;
+}
+
+static bool
+matchesCollectiveCharacterization(const AcceptedWholeVariant &variant,
+                                  WholeVariantSelectionMode mode) {
+  if (variant.ranks.empty())
+    return false;
+  for (const RankExecutable &rank : variant.ranks)
+    if (!rankMatchesCollectiveCharacterization(rank, mode))
+      return false;
+  return true;
+}
+
 static mlir::LogicalResult
 verifyAcceptedRankModule(mlir::ModuleOp module, const ExecutionConfig &config,
                          int64_t logicalRank, TransportContract transport) {
@@ -757,12 +809,18 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
   AcceptedWholeVariant baselineAccepted = std::move(*baseline);
   if (selectionMode == WholeVariantSelectionMode::ReservedBaseline)
     return baselineAccepted;
+  const bool characterize =
+      isCollectiveCharacterizationSelection(selectionMode);
 
   llvm::SmallVector<AcceptedWholeVariant, kWholeVariantParetoLimit>
       paretoFrontier;
   auto retainAccepted = [&](mlir::FailureOr<AcceptedWholeVariant> accepted) {
-    if (mlir::succeeded(accepted))
-      insertParetoCandidate(std::move(*accepted), paretoFrontier);
+    if (mlir::failed(accepted))
+      return;
+    if (characterize &&
+        !matchesCollectiveCharacterization(*accepted, selectionMode))
+      return;
+    insertParetoCandidate(std::move(*accepted), paretoFrontier);
   };
 
   size_t visited = 0;
@@ -823,6 +881,22 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
 
   const TargetStaticSelectionPolicy selectionPolicy =
       getDefaultWaferTargetPolicy(TileSearchEffort::Default).staticSelection;
+  if (characterize) {
+    std::optional<AcceptedWholeVariant> selected;
+    if (matchesCollectiveCharacterization(baselineAccepted, selectionMode))
+      selected.emplace(std::move(baselineAccepted));
+    for (AcceptedWholeVariant &candidate : paretoFrontier)
+      if (!selected || isPreferredOver(candidate, *selected, selectionPolicy))
+        selected.emplace(std::move(candidate));
+    if (!selected) {
+      diagnostics << "wafer-compile: no fully accepted whole variant matches "
+                     "test-only collective characterization alternative '"
+                  << getCollectiveCharacterizationAlternative(selectionMode)
+                  << "'\n";
+      return mlir::failure();
+    }
+    return std::move(*selected);
+  }
   AcceptedWholeVariant selected = std::move(baselineAccepted);
   for (AcceptedWholeVariant &candidate : paretoFrontier) {
     if (isPreferredOver(candidate, selected, selectionPolicy))

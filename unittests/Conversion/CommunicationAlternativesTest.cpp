@@ -334,11 +334,9 @@ module {
   unsigned reduceScatterRingMessages = 0;
   module->walk([&](wafer::InstrDTESendOp send) {
     allReduceRingMessages +=
-        send.getMessage().getPhase() ==
-        wafer::DTEProtocolPhase::AllReduceRing;
-    reduceScatterRingMessages +=
-        send.getMessage().getPhase() ==
-        wafer::DTEProtocolPhase::ReduceScatterRing;
+        send.getMessage().getPhase() == wafer::DTEProtocolPhase::AllReduceRing;
+    reduceScatterRingMessages += send.getMessage().getPhase() ==
+                                 wafer::DTEProtocolPhase::ReduceScatterRing;
   });
   EXPECT_EQ(allReduceRingMessages, 6u);
   EXPECT_EQ(reduceScatterRingMessages, 3u);
@@ -403,14 +401,23 @@ module {
 
   unsigned directMessages = 0;
   unsigned ringMessages = 0;
+  unsigned immediatelyCompletedDirectSends = 0;
   module->walk([&](wafer::InstrDTESendOp send) {
     directMessages += send.getMessage().getPhase() ==
                       wafer::DTEProtocolPhase::ReduceScatterDirect;
     ringMessages += send.getMessage().getPhase() ==
                     wafer::DTEProtocolPhase::ReduceScatterRing;
+    auto wait =
+        mlir::dyn_cast_or_null<wafer::InstrDTEWaitOp>(send->getNextNode());
+    if (send.getMessage().getPhase() ==
+            wafer::DTEProtocolPhase::ReduceScatterDirect &&
+        wait && wait.getTokens().size() == 1 &&
+        wait.getTokens().front() == send.getToken())
+      ++immediatelyCompletedDirectSends;
   });
   EXPECT_EQ(directMessages, 16u);
   EXPECT_EQ(ringMessages, 0u);
+  EXPECT_EQ(immediatelyCompletedDirectSends, directMessages);
 }
 
 TEST_F(CommunicationAlternativesTest, MaterializesChunkedRingAllReduceClone) {
@@ -646,15 +653,14 @@ module {
   ringOptions.allReduceSchedule =
       wafer::tile_region_to_instr::AllReduceSchedule::Ring;
   std::string ringFailure;
-  ASSERT_TRUE(
-      mlir::succeeded(
-          wafer::tile_region_to_instr::convertTileRegionToInstrModule(
-              *ringModule, ringOptions, &ringFailure)))
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::tile_region_to_instr::convertTileRegionToInstrModule(
+          *ringModule, ringOptions, &ringFailure)))
       << ringFailure;
   unsigned ringMessages = 0;
   ringModule->walk([&](wafer::InstrDTESendOp send) {
-    ringMessages += send.getMessage().getPhase() ==
-                    wafer::DTEProtocolPhase::AllReduceRing;
+    ringMessages +=
+        send.getMessage().getPhase() == wafer::DTEProtocolPhase::AllReduceRing;
   });
   EXPECT_EQ(ringMessages, 6u);
 }

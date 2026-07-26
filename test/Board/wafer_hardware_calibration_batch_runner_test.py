@@ -222,6 +222,8 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "spm-full-replay",
                 "compiler-optimization-reciprocal-implementation",
                 "compiler-optimization-tree-all-reduce",
+                "collective-characterization-all-gather-direct-vs-ring-256b",
+                "collective-characterization-all-reduce-ring-vs-tree-65536b",
                 "datamove-native-concat-hw-isolated",
             }.issubset(explicit_keys),
         )
@@ -335,6 +337,45 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             RUNNER.select_calibration_steps(
                 ("compiler-optimization-tree-all-reduce",),
                 ("compiler-optimization-paired",),
+            )
+
+    def test_named_collective_characterization_batch_is_complete_and_ordered(
+        self,
+    ) -> None:
+        batch = RUNNER.SELECTABLE_BATCHES["collective-characterization"]
+        self.assertEqual(
+            batch,
+            tuple(
+                f"collective-characterization-{case_name}"
+                for case_name in RUNNER.COLLECTIVE_CHARACTERIZATION_CASES
+            ),
+        )
+        self.assertEqual(len(batch), 9)
+        selected = RUNNER.select_calibration_steps(
+            None, ("collective-characterization",)
+        )
+        self.assertEqual(
+            [step.key for step in selected],
+            [
+                "initial-profile-heartbeat",
+                *batch,
+                "terminal-heartbeat",
+            ],
+        )
+        self.assertTrue(
+            all(
+                step.batch == "full-card-collective-characterization"
+                for step in selected[1:-1]
+            )
+        )
+        self.assertFalse(
+            set(batch) & {step.key for step in RUNNER.CALIBRATION_STEPS}
+        )
+        with self.assertRaisesRegex(
+            RUNNER.CalibrationRunnerError, "steps were selected more than once"
+        ):
+            RUNNER.select_calibration_steps(
+                (batch[0],), ("collective-characterization",)
             )
 
     def test_execute_runs_serially_and_records_per_step_evidence(self) -> None:

@@ -295,6 +295,10 @@ int main(int argc, char **argv) {
       std::getenv("WAFER_TEST_FAIL_AFTER_PACKAGE_LOGICAL_RANK");
   const char *reservedBaseline =
       std::getenv("WAFER_TEST_SELECT_RESERVED_BASELINE");
+  const char *collectiveAlternative =
+      std::getenv("WAFER_TEST_COLLECTIVE_CHARACTERIZATION_ALTERNATIVE");
+  const char *collectiveReport =
+      std::getenv("WAFER_TEST_COLLECTIVE_CHARACTERIZATION_REPORT");
   unsigned failureInjectionCount = (failureRank ? 1u : 0u) +
                                    (targetFailureRank ? 1u : 0u) +
                                    (packageFailureRank ? 1u : 0u);
@@ -307,6 +311,25 @@ int main(int argc, char **argv) {
     llvm::errs()
         << "wafer-compile: test-only reserved-baseline selection cannot be "
            "combined with failure injection\n";
+    return 1;
+  }
+  if (collectiveAlternative && failureInjectionCount != 0) {
+    llvm::errs()
+        << "wafer-compile: test-only collective characterization cannot be "
+           "combined with failure injection\n";
+    return 1;
+  }
+  if (reservedBaseline && collectiveAlternative) {
+    llvm::errs()
+        << "wafer-compile: test-only whole-variant selections are mutually "
+           "exclusive\n";
+    return 1;
+  }
+  if (static_cast<bool>(collectiveAlternative) !=
+      static_cast<bool>(collectiveReport)) {
+    llvm::errs()
+        << "wafer-compile: test-only collective characterization requires "
+           "both alternative and report path\n";
     return 1;
   }
   if (reservedBaseline && llvm::StringRef(reservedBaseline) != "1") {
@@ -355,6 +378,43 @@ int main(int argc, char **argv) {
         wafer::compiler::testing::compileProgramWithReservedBaseline(
             std::move(*request), *options.outputProgramDirectory, helperPath,
             *targetToolchain, llvm::errs());
+    if (mlir::succeeded(compiledProgram)) {
+      executableBundle.emplace(std::move(*compiledProgram));
+      compilationStatus = mlir::success();
+    }
+  } else if (collectiveAlternative) {
+    if (options.targetModel) {
+      llvm::errs()
+          << "wafer-compile: test-only collective characterization does not "
+             "support target-model execution\n";
+      return 1;
+    }
+    using Algorithm =
+        wafer::compiler::testing::CollectiveCharacterizationAlgorithm;
+    std::optional<Algorithm> algorithm;
+    llvm::StringRef alternative(collectiveAlternative);
+    if (alternative == "all-gather-direct")
+      algorithm = Algorithm::AllGatherDirect;
+    else if (alternative == "all-gather-ring")
+      algorithm = Algorithm::AllGatherRing;
+    else if (alternative == "reduce-scatter-direct")
+      algorithm = Algorithm::ReduceScatterDirect;
+    else if (alternative == "reduce-scatter-ring")
+      algorithm = Algorithm::ReduceScatterRing;
+    else if (alternative == "all-reduce-ring")
+      algorithm = Algorithm::AllReduceRing;
+    else if (alternative == "all-reduce-tree")
+      algorithm = Algorithm::AllReduceTree;
+    if (!algorithm) {
+      llvm::errs()
+          << "wafer-compile: invalid test-only collective characterization "
+             "alternative\n";
+      return 1;
+    }
+    mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
+        wafer::compiler::testing::compileProgramForCollectiveCharacterization(
+            std::move(*request), *options.outputProgramDirectory, helperPath,
+            *targetToolchain, *algorithm, collectiveReport, llvm::errs());
     if (mlir::succeeded(compiledProgram)) {
       executableBundle.emplace(std::move(*compiledProgram));
       compilationStatus = mlir::success();

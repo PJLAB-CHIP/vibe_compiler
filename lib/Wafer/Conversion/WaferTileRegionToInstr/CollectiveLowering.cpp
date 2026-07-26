@@ -286,8 +286,7 @@ static std::optional<RingChunking> inferContiguousRingChunking(
 }
 
 static bool supportsRingElementType(mlir::MemRefType type) {
-  return mlir::isa<mlir::IntegerType, mlir::FloatType>(
-      type.getElementType());
+  return mlir::isa<mlir::IntegerType, mlir::FloatType>(type.getElementType());
 }
 
 class AllGatherLowering : public mlir::OpRewritePattern<CommAllGatherOp> {
@@ -690,11 +689,8 @@ public:
     for (int64_t sourceIndex = 0; sourceIndex < groupSize; ++sourceIndex) {
       mlir::Value contribution;
       if (sourceIndex == localRank) {
-        llvm::SmallVector<mlir::Value> sendTokens;
-        sendTokens.reserve(groupSize - 1);
         for (int64_t targetIndex = 0; targetIndex < groupSize; ++targetIndex) {
-          mlir::FailureOr<mlir::Value> sourceSlot =
-              getInputSlot(targetIndex);
+          mlir::FailureOr<mlir::Value> sourceSlot = getInputSlot(targetIndex);
           if (mlir::failed(sourceSlot))
             return mlir::failure();
           if (targetIndex == localRank) {
@@ -703,17 +699,19 @@ public:
           }
           auto message = DTEMessageAttr::get(
               rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
-              DTEProtocolPhase::ReduceScatterDirect, sourceIndex,
-              targetIndex);
+              DTEProtocolPhase::ReduceScatterDirect, sourceIndex, targetIndex);
           auto send = rewriter.create<InstrDTESendOp>(
               op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
-              *sourceSlot,
-              rewriter.getI64IntegerAttr(rankGroup[targetIndex]),
+              *sourceSlot, rewriter.getI64IntegerAttr(rankGroup[targetIndex]),
               rewriter.getI64IntegerAttr(bytes), message,
               DirectDTEBindingAttr());
-          sendTokens.push_back(send.getToken());
+          // The normal Direct-DTE allocation profile permits one live sender
+          // per rank block.  Each target slot is a view of the same gathered
+          // input root, so complete one send before issuing the next instead
+          // of relying on disjoint subview ranges to bypass root isolation.
+          llvm::SmallVector<mlir::Value, 1> sendTokens{send.getToken()};
+          rewriter.create<InstrDTEWaitOp>(op.getLoc(), sendTokens);
         }
-        rewriter.create<InstrDTEWaitOp>(op.getLoc(), sendTokens);
       } else {
         auto message = DTEMessageAttr::get(
             rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
@@ -722,8 +720,7 @@ public:
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
             op.getRecvBuffer(),
             rewriter.getI64IntegerAttr(rankGroup[sourceIndex]),
-            rewriter.getI64IntegerAttr(bytes), message,
-            DirectDTEBindingAttr());
+            rewriter.getI64IntegerAttr(bytes), message, DirectDTEBindingAttr());
         llvm::SmallVector<mlir::Value, 1> recvTokens{recv.getToken()};
         rewriter.create<InstrDTEWaitOp>(op.getLoc(), recvTokens);
         contribution = op.getRecvBuffer();
@@ -802,18 +799,16 @@ public:
         inferContiguousRingChunking(inputType, groupSize, bytes);
     bool ringElementTypeSupported = supportsRingElementType(inputType);
     std::optional<analysis::CollectiveRingOrder> ringOrder;
-    if (schedule != AllReduceSchedule::Tree &&
-        ringElementTypeSupported &&
+    if (schedule != AllReduceSchedule::Tree && ringElementTypeSupported &&
         chunking) {
       mlir::FailureOr<analysis::CollectiveRingOrder> candidateOrder =
           analysis::buildMinimumHopCollectiveRingOrder(op, rankGroup);
       if (mlir::succeeded(candidateOrder))
         ringOrder = std::move(*candidateOrder);
     }
-    bool useTree =
-        schedule == AllReduceSchedule::Tree ||
-        (schedule == AllReduceSchedule::Auto &&
-         (!ringElementTypeSupported || !chunking || !ringOrder));
+    bool useTree = schedule == AllReduceSchedule::Tree ||
+                   (schedule == AllReduceSchedule::Auto &&
+                    (!ringElementTypeSupported || !chunking || !ringOrder));
     if (useTree) {
       mlir::FailureOr<analysis::CollectiveTree> tree =
           analysis::buildMinimumHopCollectiveTree(op, rankGroup);

@@ -1,7 +1,8 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-07-26同步Q37 production optimizer同源成对板测合同；pre-board资产已完成，真实板端执行仍为
-`pending`，不计作board/performance evidence。Q6.B configured-board gate中的rank-one、kernel-grid、model和cluster Direct DTE已按本文
+状态：2026-07-26同步Q37 hardware characterization与production optimizer成对板测合同；optimizer 8+1
+及collective 9组pre-board/no-card资产已完成，真实板端执行均为`pending`，不计作board/performance evidence。
+Q6.B configured-board gate中的rank-one、kernel-grid、model和cluster Direct DTE已按本文
 完成真实板端execution evidence，Q22.C更广板端numeric correlation仍为独立later gate。保留Q32.V typed
 target-capability vertical、Q31标准7B单block多seed数值证据及已完成Q22.N/B/L/H/S/V和Q22 model-only汇总；
 Q32.N已进入当前实施队列；Q32.T与Q3.6 Count保持later独立合同。
@@ -1271,8 +1272,9 @@ p2p/local accumulation、chunk、topology和completion。Q36的静态minimum-hop
 
 ### 12.3 Production Optimizer Paired Evidence Gate
 
-本gate回答“默认production winner相对同源保守候选实际改变了什么、两者在板端是否都正确”，不按pass文件数逐项上板，
-也不重开Q37已经完成的raw instruction/memory/queue校准。每个需要板端区分的mechanism family必须满足：
+本gate回答“默认production winner相对同源保守候选实际改变了什么、两者在板端是否都正确”，不按pass文件数逐项上板。
+已有raw instruction/memory/queue证据不重复执行，但其保守fallback closure不表示hardware behavior或cost surface
+完备；新增case必须能区分真实compiler选择或参数轴，并有matched control。每个需要板端区分的mechanism family必须满足：
 
 - reserved baseline是whole-variant coordinator中已通过与winner相同SPM/DDR、instruction、transport、ABI和package
   eligibility gate的唯一all-baseline tuple；它只通过compiler-private test seam提交。正常production driver、公开CLI、
@@ -1294,8 +1296,12 @@ p2p/local accumulation、chunk、topology和completion。Q36的静态minimum-hop
   hardware speedup、latency improvement或Q9 calibration。
 
 case按最终目标行为合并为tile/physical route、resident/share/recompute、numeric DAG/implementation、ready-order和
-collective等family。当前8个paired case覆盖结构不同的production winner，既有Direct-DTE vertical作为第9个campaign
-case复跑；LICM因公开source链缺少SCF producer、Ring all-gather因production/reserved package相同而留在host exact。
+collective等family。当前8个paired case及既有Direct-DTE vertical只构成production winner qualification，不构成硬件
+行为完备。Direct-DTE是共同transport，不是Direct AllReduce算法。collective characterization另由test-only typed
+selector从actual accepted Instr phase中逐rank精确选择AG Direct/Ring、RS Direct/Ring和AR Ring/Tree，并在
+256B/4KiB/64KiB形成9组同源A/B；逐message direction/communication/phase/round/peer/slice/issue bytes/
+constant-loop multiplicity/executed bytes用于跨rankmatching及Direct/Ring/Tree graph oracle，不能用互相独立的
+摘要集合代签。4KiB AR复用原case。LICM因公开source链缺少SCF producer而留在host exact。
 canonicalization、verifier、alias、capacity reject和atomic failure同样留在host exact gate。尚未实现的software pipeline
 只登记future production gate，不能用手写双buffer packet代签。每个当前优化轴必须在catalog中恰有`paired board`、
 `existing board`、`host exact`或`future production`处置，避免“没上板”和“遗漏”混为一谈。

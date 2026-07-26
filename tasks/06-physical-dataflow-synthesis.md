@@ -577,14 +577,18 @@ reserved baseline，与默认production winner形成同源成对输入：
   不新增公开的强制tile/layout/collective/ordinal选项，也不改变正常source-to-package driver始终提交默认winner的行为；
 - 资格按最终可观察机制合并implementation/tile/physical route、resident/share/recompute、numeric DAG、ready-order和
   collective algorithm；canonicalization、alias proof、packing reject和verifier negative继续由host exact gate闭合，不按
-  pass数量消耗板卡。当前LICM缺少真实公开source producer，Ring all-gather没有结构不同的production winner，二者明确保留
-  host gate，不以测试旁路或相同package消耗板卡；
+  pass数量消耗板卡。当前LICM缺少真实公开source producer，明确保留host gate；production winner
+  qualification没有AG结构不同的默认winner，但独立hardware characterization允许通过test-only typed selector从
+  actual accepted Instr phase选择AG Direct/Ring、RS Direct/Ring和AR Ring/Tree；selector要求每个execution rank只含
+  请求的phase family，sidecar保留逐message tuple供跨rank matching和cycle/tree graph重放，不以相同package、
+  独立field集合或算法名字冒充A/B；
 - 对照首先检查host-visible manifest boundary一致，再从最终linked ELF按case读取实际可证明的静态callsite种类/数量、
   straight-line scheduler顺序、workspace或scheduler-body hash；没有CFG/peer解析的case不得声称动态顺序或完整transport
   graph。candidate统计、pre-lowering IR标签或producer计数不能替代最终结构证据。随后两份package都必须对同一CPU
   expected完成全输出、output canary/status和lifecycle验证。
 
-该资格链属于Q37的pre-board/board evidence，不重新打开已经闭合的raw hardware-calibration checkpoint，也不修改Q32完成结论。
+该资格链属于Q37的pre-board/board evidence，不重复已有raw case，也不修改Q32完成结论。已有保守fallback只关闭对应
+legality/correctness风险，不表示hardware behavior或cost surface完备；新的区分case由统一硬件校准台账管理。
 其成对样本在没有可信device measurement basis时只保留为原始observation；host进程wall time、单次样本、untimed model或仅有
 正确性差异都不能改写本节static policy。只有Q9在PMU counter unit、clear/wrap、workload correlation、重复稳定性和held-out
 均闭合后，才能把与同一候选对齐的device观测发布为calibrated ranking profile；该profile仍只能重排已通过全部exact gate的

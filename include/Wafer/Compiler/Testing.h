@@ -11,6 +11,18 @@
 
 namespace wafer::compiler::testing {
 
+/// Test-only collective implementation requested from the fully accepted
+/// whole-rank frontier. Selection is verified from final instruction DTE
+/// phases; an absent or mixed implementation fails closed.
+enum class CollectiveCharacterizationAlgorithm {
+  AllGatherDirect,
+  AllGatherRing,
+  ReduceScatterDirect,
+  ReduceScatterRing,
+  AllReduceRing,
+  AllReduceTree,
+};
+
 /// Test-only entry to the production all-rank Direct DTE acceptance gate.
 /// Successful calls attach typed bindings; failed calls leave every candidate
 /// issue unbound.
@@ -54,6 +66,17 @@ mlir::FailureOr<ExecutableBundle> compileProgramWithReservedBaseline(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
+/// Runs the production transaction while committing a fully accepted variant
+/// whose final instruction DTE phases identify the requested collective
+/// implementation. All normal lowering, resource, target and package gates
+/// still run; absence or ambiguity is a compilation failure.
+mlir::FailureOr<ExecutableBundle> compileProgramForCollectiveCharacterization(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain,
+    CollectiveCharacterizationAlgorithm algorithm, llvm::StringRef reportPath,
+    llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler::testing
 

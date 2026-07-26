@@ -462,6 +462,144 @@ TEST_F(WholeVariantCoordinatorTest,
 }
 
 TEST_F(WholeVariantCoordinatorTest,
+       CharacterizationModesRequireExactPerRankCollectiveDTEPhases) {
+  using Mode = wafer::compiler::detail::WholeVariantSelectionMode;
+  struct Alternative {
+    Mode mode;
+    llvm::StringRef phase;
+    llvm::StringRef secondPhase;
+  };
+  const Alternative alternatives[] = {
+      {Mode::CharacterizeAllGatherDirect, "all_gather_direct", {}},
+      {Mode::CharacterizeAllGatherRing, "all_gather_ring", {}},
+      {Mode::CharacterizeReduceScatterDirect, "reduce_scatter_direct", {}},
+      {Mode::CharacterizeReduceScatterRing, "reduce_scatter_ring", {}},
+      {Mode::CharacterizeAllReduceRing, "all_reduce_ring", {}},
+      {Mode::CharacterizeAllReduceTree, "all_reduce_tree_reduce",
+       "all_reduce_tree_broadcast"},
+  };
+  auto bodyFor = [](int64_t rank, const Alternative &alternative,
+                    int64_t communication) {
+    std::string body;
+    llvm::raw_string_ostream os(body);
+    os << "    %buffer = memref.alloc() {wafer.spm.offset = "
+          "#wafer.spm_offset<65536>} : memref<4xf32, "
+          "#wafer.memory<spm, tensor>>\n";
+    auto issue = [&](bool send, int64_t peer, llvm::StringRef phase,
+                     int64_t round) {
+      os << "    %token" << round << " = wafer.instr.dte_"
+         << (send ? "send" : "recv") << " %buffer {peer = " << peer
+         << " : i64, bytes = 16 : i64, message = "
+            "#wafer.dte_message<communication = "
+         << communication << ", phase = " << phase << ", round = " << round
+         << ", slice = 0>} : memref<4xf32, "
+            "#wafer.memory<spm, tensor>> -> !async.token\n"
+         << "    wafer.instr.dte_wait %token" << round << " : !async.token\n";
+    };
+    int64_t peer = rank % 2 == 0 ? rank + 1 : rank - 1;
+    issue(/*send=*/rank % 2 == 0, peer, alternative.phase, /*round=*/0);
+    if (!alternative.secondPhase.empty())
+      issue(/*send=*/rank % 2 != 0, peer, alternative.secondPhase,
+            /*round=*/1);
+    return body;
+  };
+
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
+  for (int64_t rank = 0; rank < 16; ++rank)
+    for (auto [ordinal, alternative] : llvm::enumerate(alternatives))
+      frontiers[rank].push_back(candidate(
+          bodyFor(rank, alternative, 100 + static_cast<int64_t>(ordinal)), 16,
+          0, static_cast<int64_t>(ordinal),
+          /*reservedBaseline=*/ordinal == 0));
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 16;
+  for (auto [ordinal, alternative] : llvm::enumerate(alternatives)) {
+    std::string diagnosticText;
+    llvm::raw_string_ostream diagnostics(diagnosticText);
+    auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+        frontiers, program, *config, diagnostics, alternative.mode);
+    ASSERT_TRUE(mlir::succeeded(accepted)) << ordinal << ": " << diagnosticText;
+    ASSERT_EQ(accepted->selectedStableOrdinals.size(), 16u);
+    EXPECT_TRUE(
+        llvm::all_of(accepted->selectedStableOrdinals, [&](int64_t selected) {
+          return selected == static_cast<int64_t>(ordinal);
+        }));
+  }
+
+  auto expectRejected = [&](auto &invalidFrontiers, llvm::StringRef reason) {
+    std::string diagnosticText;
+    llvm::raw_string_ostream diagnostics(diagnosticText);
+    auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+        invalidFrontiers, program, *config, diagnostics,
+        Mode::CharacterizeAllGatherDirect);
+    EXPECT_TRUE(mlir::failed(accepted))
+        << reason.str() << ": " << diagnosticText;
+    EXPECT_NE(diagnosticText.find("no fully accepted whole variant matches"),
+              std::string::npos)
+        << reason.str() << ": " << diagnosticText;
+  };
+
+  std::vector<wafer::compiler::detail::RankVariantFrontier> missing(16);
+  for (int64_t rank = 0; rank < 16; ++rank)
+    missing[rank].push_back(candidate(
+        rank < 14 ? bodyFor(rank, alternatives[0], 200) : "", 16, 0, 0,
+        /*reservedBaseline=*/true));
+  expectRejected(missing, "two accepted ranks omit the requested phase");
+
+  Alternative mixed = {Mode::CharacterizeAllGatherDirect,
+                       "all_gather_direct", "all_gather_ring"};
+  std::vector<wafer::compiler::detail::RankVariantFrontier> mixedFrontiers(16);
+  for (int64_t rank = 0; rank < 16; ++rank)
+    mixedFrontiers[rank].push_back(candidate(
+        bodyFor(rank, mixed, 201), 16, 0, 0,
+        /*reservedBaseline=*/true));
+  expectRejected(mixedFrontiers,
+                 "every accepted rank mixes direct and ring phases");
+
+  const llvm::StringRef unrelatedPhases[] = {
+      "reduce_scatter_direct", "collective_permute", "all_to_all"};
+  for (auto [index, phase] : llvm::enumerate(unrelatedPhases)) {
+    Alternative unrelated = {Mode::CharacterizeAllGatherDirect,
+                             "all_gather_direct", phase};
+    std::vector<wafer::compiler::detail::RankVariantFrontier>
+        unrelatedFrontiers(16);
+    for (int64_t rank = 0; rank < 16; ++rank)
+      unrelatedFrontiers[rank].push_back(candidate(
+          bodyFor(rank, unrelated, 202 + static_cast<int64_t>(index)), 16, 0,
+          0, /*reservedBaseline=*/true));
+    expectRejected(unrelatedFrontiers,
+                   "every accepted rank mixes unrelated collective phases");
+  }
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       CharacterizationModeFailsWhenAcceptedPhaseIsMissing) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(candidate("", 1, 0, 0, true));
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::
+          CharacterizeAllReduceRing);
+  EXPECT_TRUE(mlir::failed(accepted));
+  EXPECT_NE(diagnosticText.find("no fully accepted whole variant matches"),
+            std::string::npos)
+      << diagnosticText;
+}
+
+TEST_F(WholeVariantCoordinatorTest,
        SelectsFinalParetoWinnerInsteadOfFirstBaselineImprovement) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),

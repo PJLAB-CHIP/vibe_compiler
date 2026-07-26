@@ -1,7 +1,9 @@
 # Production Compiler Optimization Board Campaign 实施计划
 
 状态：pre-board资产已完成，真实板端执行`pending`。本文只组织上板前的同源候选对照资产和执行批次，不复制
-`tasks/06-physical-dataflow-synthesis.md`中的candidate语义，也不把板端观测反写成legality。
+`tasks/06-physical-dataflow-synthesis.md`中的candidate语义，也不把板端观测反写成legality。该8+1集合只做
+当前production winner qualification，不代表compiler选择空间或硬件行为完备；独立collective矩阵见
+`tasks/plans/collective-hardware-characterization.md`，所有最终case状态和证据统一归入硬件校准文档。
 
 ## Pipeline Contract
 

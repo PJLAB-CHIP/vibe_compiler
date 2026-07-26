@@ -41,6 +41,17 @@ COMPILER_OPTIMIZATION_PAIRED_CASES = (
     "gemm-tail-physical-route",
     "tree-all-reduce",
 )
+COLLECTIVE_CHARACTERIZATION_CASES = (
+    "all-gather-direct-vs-ring-256b",
+    "all-gather-direct-vs-ring-4096b",
+    "all-gather-direct-vs-ring-65536b",
+    "reduce-scatter-direct-vs-ring-256b",
+    "reduce-scatter-direct-vs-ring-4096b",
+    "reduce-scatter-direct-vs-ring-65536b",
+    "all-reduce-ring-vs-tree-256b",
+    "all-reduce-ring-vs-tree-4096b",
+    "all-reduce-ring-vs-tree-65536b",
+)
 
 
 class CalibrationRunnerError(RuntimeError):
@@ -409,6 +420,18 @@ EXPLICIT_ONLY_STEPS = (
             "correctness and final-target communication-work pair"
         ),
     ),
+    *tuple(
+        CalibrationStep(
+            f"collective-characterization-{case_name}",
+            "full-card-collective-characterization",
+            f"wafer-board-collective-characterization-{case_name}",
+            (
+                "same-source forced collective alternatives with exact "
+                f"all-rank output and pending board observations for {case_name}"
+            ),
+        )
+        for case_name in COLLECTIVE_CHARACTERIZATION_CASES
+    ),
     CalibrationStep(
         "datamove-native-concat-hw-isolated",
         "isolated-final",
@@ -431,6 +454,11 @@ SELECTABLE_BATCHES = {
         step.key
         for step in EXPLICIT_ONLY_STEPS
         if step.key.startswith("compiler-optimization-")
+    ),
+    "collective-characterization": tuple(
+        step.key
+        for step in EXPLICIT_ONLY_STEPS
+        if step.key.startswith("collective-characterization-")
     ),
 }
 SELECTABLE_BATCHES["compiler-optimization-campaign"] = (
@@ -492,8 +520,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="NAME",
         help=(
             "execute/list every step in this named explicit batch; repeatable. "
-            "The compiler-optimization-paired batch retains canonical order "
-            "between automatic heartbeats."
+            "Named batches retain canonical order between automatic "
+            "heartbeats."
         ),
     )
     parser.add_argument("--ctest", default="ctest", help="CTest executable")
@@ -928,6 +956,7 @@ def archive_step_artifacts(
     durable_suffixes = {".raw", ".json", ".jsonl"}
     preserves_compiler_artifacts = (
         "compiler-optimization" in test.labels
+        or "collective-characterization" in test.labels
         or test.name == "wafer-board-cluster-direct-dte"
     )
     if preserves_compiler_artifacts:
@@ -1052,7 +1081,10 @@ def execute_calibration(
     build_log = log_dir / "000-incremental-build.log"
     build_targets = ["wafer-compile", "wafer-run"]
     if any(
-        step.key.startswith("compiler-optimization-") for step in steps
+        step.key.startswith(
+            ("compiler-optimization-", "collective-characterization-")
+        )
+        for step in steps
     ):
         build_targets.append("wafer-compile-test")
     build_command = [
