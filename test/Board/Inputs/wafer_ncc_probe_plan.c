@@ -226,7 +226,7 @@ static int wafer_ncc_probe_is_double_slot_observation(
     const WaferNccProbeRequest *request) {
   if (request->flags != WAFER_NCC_REQUEST_DOUBLE_SLOT_OBSERVATION ||
       request->lane_count != 3 || request->rounds == 0 ||
-      request->rounds > WAFER_NCC_PROTOCOL_MAX_ROUNDS ||
+      request->rounds > WAFER_NCC_PROTOCOL_MAX_THREE_LANE_ROUNDS ||
       request->effect_relation != WAFER_NCC_EFFECT_NONE ||
       request->range_relation != WAFER_NCC_RANGE_DISJOINT ||
       request->schedule > WAFER_NCC_SCHEDULE_SERIAL ||
@@ -248,6 +248,26 @@ static int wafer_ncc_probe_is_double_slot_observation(
         request->lanes[lane].layout_kind != WAFER_NCC_LAYOUT_CONTIGUOUS)
       return 0;
   return 1;
+}
+
+static int wafer_ncc_probe_is_bounded_pair_window(
+    const WaferNccProbeRequest *request) {
+  if (request->flags != WAFER_NCC_REQUEST_BOUNDED_PAIR_WINDOW ||
+      request->lane_count != 2 ||
+      request->rounds != WAFER_NCC_PROTOCOL_MAX_ROUNDS ||
+      request->effect_relation != WAFER_NCC_EFFECT_NONE ||
+      request->range_relation != WAFER_NCC_RANGE_DISJOINT ||
+      request->schedule != WAFER_NCC_SCHEDULE_WINDOW ||
+      request->wait_kind != WAFER_NCC_WAIT_BY_WORKER ||
+      request->first_operand != WAFER_NCC_OPERAND_AUTO ||
+      request->second_operand != WAFER_NCC_OPERAND_AUTO ||
+      request->issue_limit != 0 ||
+      request->lanes[0].engine == request->lanes[1].engine)
+    return 0;
+  uint32_t participants =
+      (UINT32_C(1) << request->lanes[0].worker) |
+      (UINT32_C(1) << request->lanes[1].worker);
+  return request->wait_worker_mask == participants;
 }
 
 static int wafer_ncc_probe_is_mapped_spm_kcore_write_observation(
@@ -324,7 +344,7 @@ static uint32_t wafer_ncc_probe_initialize_issues(
       issue->ordinal = count;
       issue->lane = lane;
       issue->round = round;
-      issue->slot = lane * WAFER_NCC_PROTOCOL_MAX_ROUNDS + round;
+      issue->slot = wafer_ncc_protocol_slot(lane, round, request->rounds);
       issue->engine = request->lanes[lane].engine;
       issue->worker = request->lanes[lane].worker;
       issue->tag = wafer_ncc_probe_issue_tag(request->seed, issue->slot);
@@ -542,6 +562,7 @@ uint32_t wafer_ncc_probe_validate_plan(
        request->flags != WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY &&
        request->flags != WAFER_NCC_REQUEST_TIGHT_QUEUE_SATURATION &&
        request->flags != WAFER_NCC_REQUEST_TIGHT_WORKER_SCOPE &&
+       request->flags != WAFER_NCC_REQUEST_BOUNDED_PAIR_WINDOW &&
        request->flags !=
            (WAFER_NCC_REQUEST_MAPPED_SPM_KCORE_WRITE |
             WAFER_NCC_REQUEST_PREISSUE_LOCAL_WAIT)))
@@ -564,6 +585,8 @@ uint32_t wafer_ncc_probe_validate_plan(
       request->lane_count > WAFER_NCC_PROTOCOL_MAX_LANES ||
       request->rounds == 0 ||
       request->rounds > WAFER_NCC_PROTOCOL_MAX_ROUNDS ||
+      (request->lane_count == 3 &&
+       request->rounds > WAFER_NCC_PROTOCOL_MAX_THREE_LANE_ROUNDS) ||
       request->effect_relation > WAFER_NCC_EFFECT_RAR ||
       request->range_relation > WAFER_NCC_RANGE_STRIDED_ENVELOPE ||
       request->schedule > WAFER_NCC_SCHEDULE_SERIAL ||
@@ -715,9 +738,11 @@ uint32_t wafer_ncc_probe_validate_plan(
       request->flags == WAFER_NCC_REQUEST_TIGHT_QUEUE_SATURATION;
   int tight_worker_scope =
       request->flags == WAFER_NCC_REQUEST_TIGHT_WORKER_SCOPE;
+  int bounded_pair_window =
+      request->flags == WAFER_NCC_REQUEST_BOUNDED_PAIR_WINDOW;
   int special_queue_bound =
       tight_depth_plus_one || tight_kcore_boundary ||
-      tight_queue_saturation;
+      tight_queue_saturation || bounded_pair_window;
   if (tight_depth_plus_one || tight_queue_saturation) {
     const WaferNccProbeLane *first = &request->lanes[0];
     const WaferNccProbeLane *second = &request->lanes[1];
@@ -783,6 +808,9 @@ uint32_t wafer_ncc_probe_validate_plan(
     for (uint32_t lane = 0; lane < request->lane_count; ++lane)
       if (request->lanes[lane].issue_mode != WAFER_NCC_ISSUE_RAW)
         return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
+  } else if (bounded_pair_window) {
+    if (!wafer_ncc_probe_is_bounded_pair_window(request))
+      return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
   } else if (request->issue_limit != 0) {
     return WAFER_NCC_STATUS_BAD_REQUEST;
   }
@@ -914,6 +942,8 @@ uint32_t wafer_ncc_probe_execute_plan(
       request->flags == WAFER_NCC_REQUEST_TIGHT_QUEUE_SATURATION;
   int tight_worker_scope =
       request->flags == WAFER_NCC_REQUEST_TIGHT_WORKER_SCOPE;
+  int bounded_pair_window =
+      request->flags == WAFER_NCC_REQUEST_BOUNDED_PAIR_WINDOW;
   int tight_submission =
       tight_depth_plus_one || tight_kcore_boundary ||
       tight_queue_saturation || tight_worker_scope;
@@ -989,6 +1019,22 @@ uint32_t wafer_ncc_probe_execute_plan(
       record[WAFER_NCC_REC_SERIAL_WAIT_CYCLES] += serial_wait_cycles;
       ++record[WAFER_NCC_REC_SERIAL_WAIT_COUNT];
       if (serial_wait_rc != 0)
+        return wafer_ncc_probe_finish_after_failure(
+            WAFER_NCC_STATUS_DRAIN_FAILED, request, adapters, adapter_count,
+            hooks, context, record, issues, prepared_count, 1);
+    }
+    if (bounded_pair_window &&
+        scheduled + 1U ==
+            request->lane_count *
+                WAFER_NCC_PROTOCOL_MAX_THREE_LANE_ROUNDS) {
+      uint64_t drain_before = hooks->read_cycle(context);
+      int drain_rc =
+          hooks->serial_drain(context, request->wait_worker_mask);
+      uint64_t drain_after = hooks->read_cycle(context);
+      record[WAFER_NCC_REC_BOUNDED_WINDOW_DRAIN_COUNT] = 1;
+      record[WAFER_NCC_REC_BOUNDED_WINDOW_DRAIN_CYCLES] =
+          drain_after - drain_before;
+      if (drain_rc != 0)
         return wafer_ncc_probe_finish_after_failure(
             WAFER_NCC_STATUS_DRAIN_FAILED, request, adapters, adapter_count,
             hooks, context, record, issues, prepared_count, 1);

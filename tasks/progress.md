@@ -83,10 +83,15 @@ Q37 compiler-sensitive hardware calibration、production optimizer paired qualif
 pipelining正在执行。此前所谓raw hardware-calibration checkpoint完成，只表示已有correctness/legality证据足以
 维持保守fallback，不表示硬件行为或性能表面完备。后续不重复已上板的raw case，但继续补充能区分真实compiler
 选择、具有matched control且能形成窄capability/cost输入的case；不通过无控制地扩大descriptor Cartesian matrix
-累计通过数。queue saturation response、worker wait
-scope pending exclusion、worker subset join pending exclusion、SPM conflict equivalence和DDR conflict
-equivalence五个更强区分family已经实现typed catalog、device dispatcher、host oracle和独立no-card
-CTest；它们仍按既有activation gate保持板端`pending`，不进入默认runner。
+累计通过数。Q37 Checkpoint A2已把统一校准文档中所有尚无板端执行证据的语义项收敛到
+`wafer_pending_hardware_calibration_inventory.py`：当前15个可执行family解析到180个互异board CTest，
+由显式`pending-hardware-calibration`批次按资源锁串行、首错即停执行；另5个不可表达family解析到真实host
+negative或fail-closed preparation gate。queue saturation、worker wait/subset、worker placement、SPM/DDR
+conflict与contention、AllToAll/Permute traffic、single/pair engine、NE tail、ArgMin tie/NaN、Unpool重复
+overlap等都已具备typed case、device adapter、强oracle、no-card和runner入口，但真实板端执行仍为
+`pending`，不进入默认runner，也不产生新硬件结论。永久等待、越界、缺ABI setter、缺production IR producer
+或缺owner-backed physical class/counter的项保持host fail-closed；不能再以`planned`文字、宽泛文件存在或
+邻近case代签准备完成。
 
 compiler-wide production optimization board campaign是另一条下游资格链。它从同一Q15 source和target profile分别发布Q32已通过完整late gate的reserved baseline与默认
 production winner，按tile/physical route、resident/share/recompute、numeric DAG/implementation、ready-order、
@@ -186,8 +191,9 @@ completion-domain boundary上的matching drain/逐worker join、DDR owned-range 
 pipeline window，不做SPM bank coloring，不用default wait代替跨worker join，也不把native Concat、TDMA BOOL、
 NE ReLU/Conv option或subgroup barrier提升为exact能力。上述已有raw case对应的correctness checkpoint已闭合，
 这些未决机制均有保守compiler处理；后续只增加能区分真实compiler选择、带matched control且不重复已有证据的
-hardware characterization。五个后续区分family的case、dispatcher、host oracle和no-card gate已经落地并按
-activation gate保持板端`pending`。Q37同时消费
+hardware characterization。校准文档全部未执行语义项的case、dispatcher、host oracle、no-card、board
+CTest和显式runner已经按activation gate落地并保持板端`pending`；不可表达项有typed fail-closed gate。
+Q37同时消费
 已闭合能力实现和验证multi-buffer software-pipeline，并完成独立的production optimizer同源成对资格资产；
 二者都不以raw case累计通过数推进。
 SDK定义的`get_spm_memory_mapping(offset)`是`0x30400000 + offset`的uncached weak-order SPM alias；
@@ -196,9 +202,13 @@ SDK定义的`get_spm_memory_mapping(offset)`是`0x30400000 + offset`的uncached 
 
 2026-07-24本轮保存证据已经同步为行为结论：已验证的same-worker RAW/WAR/WAW由显式IR edge和issue order
 交给busytable落实，链内不插`TsmWaitfinish`；matching completion只在NCC→Kcore/Direct DTE、跨worker join、
-barrier和terminal/host publication等completion-domain出口物化并合并。ArgMin只支持已验证的全正普通值域，
-负数域unsupported；ordinary indexed Unpool的非零poison版本已取得3个板端样本，只闭合bounded
-completion/write-span，不升级numeric exact，FP16 indexed-max→mask-unpool窄组合则为board-observed exact。
+barrier和terminal/host publication等completion-domain出口物化并合并。ArgMin已有FP16正普通值和负有限值
+板端证据，tie/NaN两个三输入区分case保持待上板；未枚举的BF16/F32、正负零、Inf和subnormal由typed gate
+fail closed，不从邻近域外推。ordinary indexed Unpool的非零poison版本已取得3个板端样本，只闭合bounded
+completion/write-span；两个repeated-overlap collision case保持待上板，现以真实`5/3/2/0` aux、按sample
+轮换的四组pooled sentinel及逐channel non-empty source-subset分类拒绝padding-only/aux/target篡改，并保留
+uniform/lane-varying value mask与histogram；FP16 indexed-max→mask-unpool窄组合
+则为board-observed exact。
 BackwardConv的FP16/BF16 corrected-footprint向量也已各完成3个
 板端样本：8192B physical span、span外guard和completion均通过，只记bounded observation，不升级numeric
 exact。合同内`VuVLoop unit=64`两个exact control及后置Add已闭合，合同外输入继续host-negative。
@@ -366,7 +376,7 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q37 | `tx81-compiler-hardware-calibration-and-multi-engine-software-pipelining` | `doing` | Q32、Q6.B + configured board | 已有raw台账闭合对应legality/correctness风险并保留Unknown的保守fallback，但不再称硬件行为完备；已上板case不重复。8+1 production optimizer campaign仍只是winner qualification。新增collective characterization以actual accepted Instr phase逐ranktyped选择AG Direct/Ring、RS Direct/Ring、AR Ring/Tree，在256B/4KiB/64KiB形成9组同源A/B并复用4KiB AR旧case；完整message tuple用于跨rankmatching和cycle/tree graph重放。9/9双package/no-card、catalog、CTest和显式runner批次已通过，真实板端执行保持`pending`。首轮RS纵向发现并修复同root多sender group-wait违反Direct-DTE isolation的问题；64KiB loop-tiled bytes按constant multiplicity记账。不以no-card、ELF数或host wall time冒充board/performance evidence。统一校准文档登记case、status-v2 observation gap和后续AllToAll/Permute、DTE contention、single-engine slope、engine balance、three-stage pipeline、worker placement、DDR active-rank及SPM matched pilot；DDR bank大矩阵在无可控physical class/counter时blocked。software-pipeline仍需在完整Instr IR上以typed MemoryEffects和SSA alias/root/path建立edge、物化multi-buffer和latest-legal completion，并经过完整late gate。 | 06、08-17；`docs/tx81-compiler-hardware-calibration.md`；`tasks/plans/multi-engine-software-pipelining.md`；`tasks/plans/production-optimization-board-campaign.md`；`tasks/plans/collective-hardware-characterization.md` |
+| Q37 | `tx81-compiler-hardware-calibration-and-multi-engine-software-pipelining` | `doing` | Q32、Q6.B + configured board | 已有raw台账闭合对应legality/correctness风险并保留Unknown的保守fallback，但不再称硬件行为完备；已上板case不重复。8+1 production optimizer campaign仍只是winner qualification。新增collective characterization以actual accepted Instr phase逐ranktyped选择AG Direct/Ring、RS Direct/Ring、AR Ring/Tree，在256B/4KiB/64KiB形成9组同源A/B并复用4KiB AR旧case；完整message tuple用于跨rankmatching和cycle/tree graph重放。9/9双package/no-card、catalog、CTest和显式runner批次已通过，真实板端执行保持`pending`。首轮RS纵向发现并修复同root多sender group-wait违反Direct-DTE isolation的问题；64KiB loop-tiled bytes按constant multiplicity记账。不以no-card、ELF数或host wall time冒充board/performance evidence。统一校准文档中全部尚无板证据的语义项现由central inventory绑定：15个可执行family形成180个board CTest及显式串行总批次，5个不可表达family形成host fail-closed gate；AllToAll/Permute、DTE logical traffic、single/pair engine、NE tail、worker placement、DDR active-rank、SPM matched pilot及数值边界均不再只是planned文字。缺device phase/physical route、production three-stage producer、per-worker timestamp、arbiter或bank mapping/counter的项持续blocked。software-pipeline仍需在完整Instr IR上以typed MemoryEffects和SSA alias/root/path建立edge、物化multi-buffer和latest-legal completion，并经过完整late gate。 | 06、08-17；`docs/tx81-compiler-hardware-calibration.md`；`tasks/plans/multi-engine-software-pipelining.md`；`tasks/plans/production-optimization-board-campaign.md`；`tasks/plans/collective-hardware-characterization.md` |
 | Q32.N | `numeric-algebraic-extension` | `done` | Q32 | algebraic candidate、generic reduction、named GEMM K切分和Ring collective已删除仅因float或缺少额外fast-math标注而拒绝的分支；f16/bf16无标注正向覆盖actual mutation、frontier和Tile/Instr lowering，integer overflow/no-wrap及真实结构、资源和target负例保持。未新增frontend mode、私有数值policy或IR carrier。 | 05-07、10-11、13、16；`tasks/plans/numeric-algebraic-extension.md` |
 | Q36 | `topology-aware-collective-lowering` | `done` | Q32 | current typed topology/mesh派生rank placement、exact bounded Ring与保持rank_group中序的ordered Tree；collective correctness/completion、singleton identity和final p2p minimum-hop whole-card cost闭合，不声明route/cycle/timing。 | 04、06、11、13、16、18；`tasks/archive/topology-aware-collective-lowering.md` |
 | Q35 | `k-sharded-gemm-board-vertical` | `done` | Q32、Q6.B、Q36 + configured board | full-4096 f16 GEMM由显式row/contracting SPMD形成16份local K=256 GEMM和sum all-reduce；production闭合M/N tiling、SPM/DDR、Direct DTE、shared ELF、no-card与完整板端raw exact。修复CRT GEMM raw orientation及strided RDMA/WDMA element-unit边界后，纯tiling 32 MiB exact，16-rank full case连续两轮16份32 MiB output全部exact并回到设备基线。只形成该case/environment的workload-level evidence，不新增ABI、不完成Q22.C或timing。 | 02、03、05-07、09、10、13-17；`tasks/archive/k-sharded-gemm-board-vertical.md` |

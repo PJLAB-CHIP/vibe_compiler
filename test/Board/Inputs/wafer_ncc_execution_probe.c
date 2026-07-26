@@ -339,7 +339,7 @@ wafer_ncc_probe_packet_inter_type(const WaferNccProbeInstruction *instruction) {
 #define WAFER_NCC_V2_OUTPUT_SLOT_BASE UINT64_C(4096)
 #define WAFER_NCC_V2_RESOURCE_BYTES                                      \
   (WAFER_NCC_V2_OUTPUT_SLOT_BASE +                                      \
-   WAFER_NCC_PROTOCOL_MAX_ISSUES * WAFER_NCC_V2_DDR_SLOT_STRIDE)
+   (WAFER_NCC_PROTOCOL_MAX_ISSUES + 1U) * WAFER_NCC_V2_DDR_SLOT_STRIDE)
 #define WAFER_NCC_V2_RECORD_GUARD UINT64_C(0xd87c2a916be4035f)
 #define WAFER_NCC_V2_NE_PHYSICAL_BYTES UINT32_C(256)
 #define WAFER_NCC_V2_NE_RHS_BYTES UINT32_C(512)
@@ -382,13 +382,15 @@ typedef struct WaferNccV2Context {
 } WaferNccV2Context;
 
 /*
- * Keep the maximal 12-issue packet window out of the device entry stack.
+ * Keep the expanded issue storage out of the device entry stack.
  * The current TX81 SDK gives a dynamic module a 2048-byte default stack (and
  * configures a 4096-byte firmware main stack), while placing this context and
- * the decoded request in the entry frame alone needs 4112 bytes before the
- * generic plan executor is called.  This rank-one probe is launched serially,
- * so one module-local context is sufficient and is explicitly cleared for
- * every invocation.
+ * the decoded request in the entry frame exceeds that budget before the
+ * generic plan executor is called.  Accepted plans contain at most sixteen
+ * active issues (two lanes by eight rounds, or three lanes by four rounds);
+ * the wire/storage upper bound also leaves slot room for the compact strided
+ * source.  This rank-one probe is launched serially, so one module-local
+ * context is sufficient and is explicitly cleared for every invocation.
  */
 static WaferNccV2Context wafer_ncc_v2_context;
 
@@ -662,7 +664,8 @@ static uint32_t wafer_ncc_v2_configure_context(
       request->flags == WAFER_NCC_REQUEST_DOUBLE_SLOT_OBSERVATION;
   for (uint32_t lane = 0; lane < request->lane_count; ++lane) {
     for (uint32_t round = 0; round < request->rounds; ++round) {
-      uint32_t slot = lane * WAFER_NCC_PROTOCOL_MAX_ROUNDS + round;
+      uint32_t slot =
+          wafer_ncc_protocol_slot(lane, round, request->rounds);
       for (uint32_t operand = 0; operand < 3; ++operand)
         context->operands[slot][operand] = wafer_ncc_v2_default_operand(
             context, &request->lanes[lane], slot, operand);
@@ -674,10 +677,12 @@ static uint32_t wafer_ncc_v2_configure_context(
   if (context->double_slot_observation) {
     for (uint32_t round = 0; round < request->rounds; ++round) {
       uint32_t physical_slot = round & 1U;
-      uint32_t rdma_slot = round;
-      uint32_t ct_slot = WAFER_NCC_PROTOCOL_MAX_ROUNDS + round;
+      uint32_t rdma_slot =
+          wafer_ncc_protocol_slot(0, round, request->rounds);
+      uint32_t ct_slot =
+          wafer_ncc_protocol_slot(1, round, request->rounds);
       uint32_t wdma_slot =
-          2U * WAFER_NCC_PROTOCOL_MAX_ROUNDS + round;
+          wafer_ncc_protocol_slot(2, round, request->rounds);
       uint64_t input = wafer_ncc_v2_read0(physical_slot);
       uint64_t rhs = wafer_ncc_v2_read1(physical_slot);
       uint64_t output = wafer_ncc_v2_write(physical_slot);
@@ -694,7 +699,8 @@ static uint32_t wafer_ncc_v2_configure_context(
     if (!wafer_ncc_v2_ordered_pair_supported(request))
       return 1;
     uint32_t first_slot = 0;
-    uint32_t second_slot = WAFER_NCC_PROTOCOL_MAX_ROUNDS;
+    uint32_t second_slot =
+        wafer_ncc_protocol_slot(1, 0, request->rounds);
     context->operands[second_slot][WAFER_NCC_OPERAND_READ0] =
         context->operands[first_slot][WAFER_NCC_OPERAND_WRITE];
     context->configured = 1;
@@ -705,7 +711,7 @@ static uint32_t wafer_ncc_v2_configure_context(
         context->operands[0][WAFER_NCC_OPERAND_WRITE];
     uint32_t envelope =
         wafer_ncc_v2_dma_envelope_bytes(&request->lanes[0]);
-    context->operands[WAFER_NCC_PROTOCOL_MAX_ROUNDS]
+    context->operands[wafer_ncc_protocol_slot(1, 0, request->rounds)]
                      [WAFER_NCC_OPERAND_READ0] = shared;
     WaferNccHazardComposition *composition = &context->hazards[0];
     composition->first_operand = WAFER_NCC_OPERAND_WRITE;
@@ -731,7 +737,8 @@ static uint32_t wafer_ncc_v2_configure_context(
     uint32_t second_shift = wafer_ncc_v2_strided_second_shift(request);
     uint64_t first_base = wafer_ncc_v2_write(0);
     uint64_t second_base = first_base + second_shift;
-    uint32_t second_slot = WAFER_NCC_PROTOCOL_MAX_ROUNDS;
+    uint32_t second_slot =
+        wafer_ncc_protocol_slot(1, 0, request->rounds);
     context->operands[0][request->first_operand] = first_base;
     context->operands[second_slot][request->second_operand] = second_base;
 
@@ -776,7 +783,10 @@ static uint32_t wafer_ncc_v2_configure_context(
   uint32_t bytes = request->lanes[0].transfer_bytes;
   for (uint32_t round = 0; round < request->rounds; ++round) {
     uint64_t pair_base = wafer_ncc_v2_spm_slot(round);
-    uint32_t slots[2] = {round, WAFER_NCC_PROTOCOL_MAX_ROUNDS + round};
+    uint32_t slots[2] = {
+        wafer_ncc_protocol_slot(0, round, request->rounds),
+        wafer_ncc_protocol_slot(1, round, request->rounds),
+    };
     for (uint32_t lane = 0; lane < 2; ++lane)
       for (uint32_t operand = 0; operand < 3; ++operand)
         if (wafer_ncc_v2_operand_uses_spm(request->lanes[lane].engine,
@@ -887,12 +897,13 @@ static uint8_t wafer_ncc_v2_strided_final_byte(
   case WAFER_NCC_EFFECT_WAR:
     return in_second
                ? wafer_ncc_v2_pattern_byte(
-                     WAFER_NCC_PROTOCOL_MAX_ROUNDS, second_index)
+                     wafer_ncc_protocol_slot(1, 0, request->rounds),
+                     second_index)
                : UINT8_C(0xc3);
   case WAFER_NCC_EFFECT_WAW:
     if (in_second)
       return wafer_ncc_v2_pattern_byte(
-          WAFER_NCC_PROTOCOL_MAX_ROUNDS, second_index);
+          wafer_ncc_protocol_slot(1, 0, request->rounds), second_index);
     return in_first ? wafer_ncc_v2_pattern_byte(0, first_index)
                     : UINT8_C(0xc3);
   case WAFER_NCC_EFFECT_RAR:
@@ -2086,7 +2097,8 @@ static void wafer_ncc_v2_copy_results(const WaferNccProbeRequest *request,
       uint32_t ordinal = lane * request->rounds + round;
       if (request->issue_limit != 0 && ordinal >= request->issue_limit)
         continue;
-      uint32_t slot = lane * WAFER_NCC_PROTOCOL_MAX_ROUNDS + round;
+      uint32_t slot =
+          wafer_ncc_protocol_slot(lane, round, request->rounds);
       WaferNccProbeIssue issue = {
           ordinal,
           lane,

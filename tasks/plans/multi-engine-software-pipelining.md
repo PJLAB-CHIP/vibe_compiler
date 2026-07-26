@@ -387,6 +387,31 @@ profile证明对应保守fallback是主要瓶颈，或version-matched实现提�
 `docs/tx81-compiler-hardware-calibration.md`第5.10节激活板端执行。未激活前继续使用有界window、
 matching逐worker join、`no-bank-coloring`和`no-ddr-bank-coloring`，主线直接进入Checkpoint B。
 
+### Checkpoint A2：校准文档未执行项全量发板准备
+
+用户上板前，以`docs/tx81-compiler-hardware-calibration.md`为唯一最终台账，对其中所有尚无真实板端
+执行证据的语义项建立机器可审计inventory。不能只登记family名：每个可安全执行项必须解析到typed case、
+device dispatcher或production source vertical、固定payload、完整result/span/guard/count/status oracle、
+有界timeout、正常cleanup、board CTest和显式串行runner step；no-card只证明资产准备，不把状态升级为
+`board-observed`。已有板端case按语义key去重，不因新campaign重复发板。
+
+inventory至少覆盖：
+
+- AllToAll/CollectivePermute traffic语义、同buffer双epoch和Direct-DTE endpoint/fanin/fanout对照；
+- 五类single-engine small/steady/tail/held-out slope、十个engine pair的双方向三档stage balance，
+  以及由production multi-buffer IR产生的RDMA→CT/NE→WDMA三阶段纵向；
+- worker placement/arbitration、DDR active-rank contention和SPM matched conflict pilot；
+- 本计划已实现但未注册板端批次的queue saturation、worker wait/subset exclusion、SPM/DDR conflict
+  equivalence；
+- 校准文档仍明确列为“未测试”的数值/shape/layout/communication边界。
+
+会永久等待、越过owned range、要求缺失participant、缺typed ABI setter、缺owner-backed physical class/
+counter或缺production IR producer的项不得伪造成board-positive。它们必须有可执行host negative或
+fail-closed preparation gate，精确说明阻断条件和最近的安全替代；条件将来满足时同一inventory才能转为
+board case。完成门禁为：文档中每个未执行语义key都被inventory唯一解析，所有board-executable项均由
+CTest注册并进入一个显式、资源锁保护、首错即停且不retry/reset/power的runner batch，全部negative/blocked
+项都有实际测试；catalog/no-card/runner一致性测试禁止新增“只写文档”的pending行。
+
 ## Checkpoint B：通用 IR 物化
 
 - 在physical offset提交前从current instruction SSA/effect构建短生命周期dependency DAG；edge只来自SSA、

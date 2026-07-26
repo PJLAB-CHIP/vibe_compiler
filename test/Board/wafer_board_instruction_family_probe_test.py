@@ -26,6 +26,14 @@ INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_instruction_family_probe.c"
 PROBE_LL = INPUT_DIR / "wafer_instruction_family_probe.ll"
 OUTPUT_INITIAL_CANARY = 0xA5
+WORK_DIR_CHILDREN = frozenset(
+    {
+        "source-program",
+        "package",
+        "probe-build",
+        "raw",
+    }
+)
 
 MODULE = """\
 module {
@@ -57,7 +65,7 @@ METADATA = {
 }
 
 CT_CAPABILITY_CASE_ID_MIN = 143
-CT_CAPABILITY_CASE_ID_MAX = 246
+CT_CAPABILITY_CASE_ID_MAX = 248
 QUALIFICATION_REGRESSION_CASES = (
     "peripheral-argmin-f16",
     "peripheral-argmin-negative-f16-observed",
@@ -152,12 +160,33 @@ def require_build_args(args: argparse.Namespace) -> None:
         raise RuntimeError(f"probe build requires: {missing}")
     args.repo_root = args.repo_root.resolve()
     args.work_dir = args.work_dir.resolve()
-    if args.work_dir in {
-        pathlib.Path("/"),
-        args.repo_root,
-        args.repo_root.parent,
-    }:
+    if (
+        args.work_dir == args.repo_root
+        or args.work_dir in args.repo_root.parents
+    ):
         raise RuntimeError("instruction probe work directory is too broad")
+
+
+def prepare_work_dir(args: argparse.Namespace) -> None:
+    """Clear only this driver's known children from a validated work directory."""
+    work_dir = args.work_dir
+    work_dir.mkdir(parents=True, exist_ok=True)
+    unknown = [
+        child.name
+        for child in work_dir.iterdir()
+        if child.name not in WORK_DIR_CHILDREN
+    ]
+    if unknown:
+        raise RuntimeError(
+            "--work-dir contains unknown entries; refusing cleanup: "
+            + ", ".join(sorted(unknown))
+        )
+    for name in sorted(WORK_DIR_CHILDREN):
+        child = work_dir / name
+        if child.is_symlink() or child.is_file():
+            child.unlink()
+        elif child.is_dir():
+            shutil.rmtree(child)
 
 
 def require_board_args(args: argparse.Namespace) -> None:
@@ -234,8 +263,7 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.InstructionCase, ...
 
 
 def write_source_program(args: argparse.Namespace) -> pathlib.Path:
-    if args.work_dir.exists():
-        shutil.rmtree(args.work_dir)
+    prepare_work_dir(args)
     source = args.work_dir / "source-program"
     (source / "functions").mkdir(parents=True)
     (source / "data").mkdir()
@@ -307,6 +335,9 @@ def locate_bindings(
         if isinstance(resource, dict) and isinstance(resource.get("id"), int)
     }
     resource_ids = tuple(slot.get("resource") for slot in slots)
+    terminal_completion = entry.get("terminal_completion")
+    if not isinstance(terminal_completion, int):
+        raise RuntimeError("instruction probe terminal completion is missing")
     expected = (
         ("user_input", "read_only"),
         ("user_input", "read_only"),
@@ -331,6 +362,19 @@ def locate_bindings(
     if not module_path.is_file():
         raise RuntimeError("instruction probe seed module is missing")
     return module_path, resource_ids
+
+
+def rank_one_terminal_completion(package: pathlib.Path) -> int:
+    manifest = json.loads((package / "manifest.json").read_text())
+    entries = manifest.get("entries")
+    if not isinstance(entries, list) or len(entries) != 1:
+        raise RuntimeError(
+            "instruction probe package does not have one rank-one entry"
+        )
+    terminal_completion = entries[0].get("terminal_completion")
+    if not isinstance(terminal_completion, int):
+        raise RuntimeError("instruction probe terminal completion is missing")
+    return terminal_completion
 
 
 def build_probe(
@@ -530,6 +574,7 @@ def validate_output(
     ):
         raise RuntimeError(f"{case.name}: record mirror failed")
     select = case.family_name == "CT_SELECT_COMPOSITE"
+    repeated_unpool = case.symbol in catalog.REPEATED_UNPOOL_SYMBOLS
     expected_steps = (
         catalog.STEP_TARGET_ISSUED
         | catalog.STEP_FINAL_FENCE_COMPLETED
@@ -537,6 +582,11 @@ def validate_output(
             catalog.STEP_BIT2FP_COMPLETED
             | catalog.STEP_MASK_MOVE_ISSUED
             if select
+            else 0
+        )
+        | (
+            catalog.STEP_REPEATED_OVERLAP_VALUES_STAGED
+            if repeated_unpool
             else 0
         )
     )
@@ -625,6 +675,26 @@ def validate_output(
                 f"{mismatch}: actual=0x{actual_aux_slot[mismatch]:02x}, "
                 f"expected=0x{expected_select_aux[mismatch]:02x}"
             )
+    elif repeated_unpool:
+        expected_repeated_aux = catalog.repeated_unpool_expected_aux_slot()
+        if actual_aux_slot != expected_repeated_aux:
+            mismatch = next(
+                index
+                for index, (actual, expected) in enumerate(
+                    zip(
+                        actual_aux_slot,
+                        expected_repeated_aux,
+                        strict=True,
+                    )
+                )
+                if actual != expected
+            )
+            raise RuntimeError(
+                f"{case.name}: repeated-overlap indexed-pool auxiliary "
+                f"differs at slot byte {mismatch}: "
+                f"actual=0x{actual_aux_slot[mismatch]:02x}, "
+                f"expected=0x{expected_repeated_aux[mismatch]:02x}"
+            )
     else:
         aux_exact_indices = [
             *range(0, catalog.BODY_OFFSET),
@@ -686,19 +756,60 @@ def validate_output(
             f"{case.name}: observation completed without any bounded "
             "writeback"
         )
-    return {
+    argmin_observation = catalog.classify_argmin_domain_observation(
+        case, sample, result
+    )
+    semantic_observation = argmin_observation
+    if semantic_observation is None:
+        semantic_observation = catalog.classify_repeated_unpool_observation(
+            case, sample, result
+        )
+    if argmin_observation is not None:
+        expected_padding = expected_slot[
+            catalog.BODY_OFFSET + 2 : catalog.BODY_OFFSET + 4
+        ]
+        if result[2:4] != expected_padding:
+            raise RuntimeError(
+                f"{case.name}: ArgMin internal padding changed: "
+                f"actual={result[2:4].hex()}, "
+                f"expected={expected_padding.hex()}"
+            )
+    observation = {
         "case": case.as_dict(),
         "sample": sample,
         "step_flags": words[rec["STEP_FLAGS"]],
         "output_sha256": hashlib.sha256(actual_slot).hexdigest(),
         "result_sha256": hashlib.sha256(result).hexdigest(),
     }
+    if semantic_observation is not None:
+        observation["semantic_observation"] = semantic_observation
+    return observation
+
+
+def validate_board_lifecycle(stdout: str, terminal_completion: int) -> None:
+    lines = stdout.splitlines()
+    required = {
+        "board_stage: completion",
+        "board_stage: device-to-host",
+        "board_stage: cleanup",
+        "board_execution: true",
+    }
+    if not required.issubset(set(lines)):
+        raise RuntimeError("wafer-run omitted complete lifecycle evidence")
+    terminal = (
+        f"terminal_completion: {terminal_completion} kind=entry_return"
+    )
+    if lines.count(terminal) != 1:
+        raise RuntimeError(
+            "wafer-run omitted the unique matching terminal completion"
+        )
 
 
 def execute_cases(
     args: argparse.Namespace,
     package: pathlib.Path,
     resource_ids: tuple[int, int, int],
+    terminal_completion: int,
     cases: Iterable[catalog.InstructionCase],
 ) -> None:
     raw_dir = args.work_dir / "raw"
@@ -721,16 +832,10 @@ def execute_cases(
                 ),
                 timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
             )
-            required = {
-                "board_stage: completion",
-                "board_stage: device-to-host",
-                "board_stage: cleanup",
-                "board_execution: true",
-            }
-            if not required.issubset(set(result.stdout.splitlines())):
-                raise RuntimeError(
-                    f"{case.name}: wafer-run omitted complete lifecycle evidence"
-                )
+            try:
+                validate_board_lifecycle(result.stdout, terminal_completion)
+            except RuntimeError as error:
+                raise RuntimeError(f"{case.name}: {error}") from error
             observation = validate_output(
                 output,
                 case,
@@ -772,11 +877,14 @@ def main() -> int:
     source = write_source_program(args)
     package = compile_seed_package(args, source)
     module_path, resource_ids = locate_bindings(package)
+    terminal_completion = rank_one_terminal_completion(package)
     build_probe(args, package, module_path)
     verify_no_card(args, package)
     if args.no_card:
         return 0
-    execute_cases(args, package, resource_ids, selected)
+    execute_cases(
+        args, package, resource_ids, terminal_completion, selected
+    )
     return 0
 
 

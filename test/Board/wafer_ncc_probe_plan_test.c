@@ -379,6 +379,72 @@ static void test_three_lane_disjoint_window_and_serial(void) {
   }
 }
 
+static void test_bounded_pair_window_has_one_intermediate_drain(void) {
+  WaferNccProbeRequest plan =
+      request(2, WAFER_NCC_PROTOCOL_MAX_ROUNDS, WAFER_NCC_SCHEDULE_WINDOW);
+  plan.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
+  plan.lanes[1] = lane(WAFER_NCC_ENGINE_TDMA, 1);
+  plan.wait_worker_mask = 3;
+  plan.flags = WAFER_NCC_REQUEST_BOUNDED_PAIR_WINDOW;
+
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
+
+  MockContext context = {0};
+  uint64_t record[WAFER_NCC_PROTOCOL_RECORD_WORDS];
+  assert(wafer_ncc_probe_execute_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0]), &hooks,
+             &context, record) == WAFER_NCC_STATUS_OK);
+  assert(record[WAFER_NCC_REC_ISSUE_COUNT] ==
+         2U * WAFER_NCC_PROTOCOL_MAX_ROUNDS);
+  assert(record[WAFER_NCC_REC_BOUNDED_WINDOW_DRAIN_COUNT] == 1);
+  assert(record[WAFER_NCC_REC_BOUNDED_WINDOW_DRAIN_CYCLES] > 0);
+
+  uint32_t intermediate_drain =
+      find_event(&context, MOCK_SERIAL_DRAIN + plan.wait_worker_mask);
+  uint32_t first_window_last_issue =
+      find_event(&context, MOCK_ISSUE + 11U);
+  uint32_t first_window_last_observation =
+      find_event(&context, MOCK_OBSERVE + 11U);
+  uint32_t second_window_first_issue =
+      find_event(&context, MOCK_ISSUE + 4U);
+  uint32_t requested_wait = find_event(&context, MOCK_REQUESTED_WAIT);
+  assert(first_window_last_issue < first_window_last_observation);
+  assert(first_window_last_observation < intermediate_drain);
+  assert(intermediate_drain < second_window_first_issue);
+  assert(intermediate_drain < requested_wait);
+
+  uint32_t intermediate_drains = 0;
+  for (uint32_t index = 0; index < context.event_count; ++index)
+    intermediate_drains +=
+        context.events[index] == MOCK_SERIAL_DRAIN + plan.wait_worker_mask;
+  assert(intermediate_drains == 1);
+
+  plan.flags = 0;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSAFE_WINDOW);
+
+  plan.flags = WAFER_NCC_REQUEST_BOUNDED_PAIR_WINDOW;
+  plan.lanes[1].engine = plan.lanes[0].engine;
+  assert(wafer_ncc_probe_validate_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+
+  WaferNccProbeRequest too_many_three_lane_rounds =
+      request(3, WAFER_NCC_PROTOCOL_MAX_THREE_LANE_ROUNDS + 1U,
+              WAFER_NCC_SCHEDULE_WINDOW);
+  too_many_three_lane_rounds.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
+  too_many_three_lane_rounds.lanes[1] = lane(WAFER_NCC_ENGINE_TDMA, 1);
+  too_many_three_lane_rounds.lanes[2] = lane(WAFER_NCC_ENGINE_NE, 2);
+  too_many_three_lane_rounds.wait_worker_mask = 7;
+  assert(wafer_ncc_probe_validate_plan(
+             &too_many_three_lane_rounds, adapters,
+             sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_BAD_REQUEST);
+}
+
 static void test_validation_bounds(void) {
   WaferNccProbeRequest unsafe = request(2, 4, WAFER_NCC_SCHEDULE_WINDOW);
   unsafe.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
@@ -979,6 +1045,7 @@ static void test_pending_calibration_controls_capture_pre_wait_state(void) {
 int main(void) {
   test_dual_lane_boundary_order();
   test_three_lane_disjoint_window_and_serial();
+  test_bounded_pair_window_has_one_intermediate_drain();
   test_validation_bounds();
   test_wire_decode();
   test_dma_strided_roundtrip_is_serial_and_bounded();

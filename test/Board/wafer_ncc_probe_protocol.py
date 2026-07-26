@@ -62,6 +62,9 @@ REQUEST_WORDS = _macro("WAFER_NCC_PROTOCOL_REQUEST_WORDS")
 RECORD_WORDS = _macro("WAFER_NCC_PROTOCOL_RECORD_WORDS")
 MAX_LANES = _macro("WAFER_NCC_PROTOCOL_MAX_LANES")
 MAX_ROUNDS = _macro("WAFER_NCC_PROTOCOL_MAX_ROUNDS")
+MAX_THREE_LANE_ROUNDS = _macro(
+    "WAFER_NCC_PROTOCOL_MAX_THREE_LANE_ROUNDS"
+)
 MAX_ISSUES = _macro("WAFER_NCC_PROTOCOL_MAX_ISSUES")
 WORKERS = _macro("WAFER_NCC_PROTOCOL_WORKERS")
 MAX_DMA_ENVELOPE_BYTES = _macro(
@@ -106,6 +109,9 @@ TIGHT_QUEUE_SATURATION = _enumerator(
 )
 TIGHT_WORKER_SCOPE = _enumerator(
     "WAFER_NCC_REQUEST_TIGHT_WORKER_SCOPE"
+)
+BOUNDED_PAIR_WINDOW = _enumerator(
+    "WAFER_NCC_REQUEST_BOUNDED_PAIR_WINDOW"
 )
 
 
@@ -278,6 +284,8 @@ REC = {
         "RECORD_GUARD",
         "PREISSUE_WAIT_CYCLES",
         "CONTROL_PRE_WAIT",
+        "BOUNDED_WINDOW_DRAIN_COUNT",
+        "BOUNDED_WINDOW_DRAIN_CYCLES",
     )
 }
 ISSUE = {
@@ -818,6 +826,25 @@ class Plan:
             and self.issue_limit == 0
         )
 
+    def is_bounded_pair_window(self) -> bool:
+        if len(self.lanes) != 2:
+            return False
+        first, second = self.lanes
+        return (
+            self.flags == BOUNDED_PAIR_WINDOW
+            and self.rounds == 8
+            and first.engine != second.engine
+            and self.effect_relation == EffectRelation.NONE
+            and self.range_relation == RangeRelation.DISJOINT
+            and self.schedule == Schedule.WINDOW
+            and self.wait_kind == WaitKind.BY_WORKER
+            and self.wait_worker_mask
+            == ((1 << first.worker) | (1 << second.worker))
+            and self.first_operand == Operand.AUTO
+            and self.second_operand == Operand.AUTO
+            and self.issue_limit == 0
+        )
+
     def validate(self) -> None:
         if self.command == Command.QUALIFY:
             if (
@@ -839,6 +866,13 @@ class Plan:
             raise ValueError(f"execute plans require 1..{MAX_LANES} lanes")
         if not 1 <= self.rounds <= MAX_ROUNDS:
             raise ValueError(f"rounds must be in [1, {MAX_ROUNDS}]")
+        if (
+            len(self.lanes) == 3
+            and self.rounds > MAX_THREE_LANE_ROUNDS
+        ):
+            raise ValueError(
+                "three-lane plans exceed the qualified four-round slot arena"
+            )
         for lane in self.lanes:
             lane.validate()
         if any(
@@ -948,6 +982,7 @@ class Plan:
             TIGHT_KCORE_BOUNDARY,
             TIGHT_QUEUE_SATURATION,
             TIGHT_WORKER_SCOPE,
+            BOUNDED_PAIR_WINDOW,
         ):
             raise ValueError("unknown plan flags are not safe")
         queue_depths = {
@@ -961,10 +996,12 @@ class Plan:
         tight_kcore_boundary = self.is_tight_kcore_boundary_observation()
         tight_queue_saturation = self.is_tight_queue_saturation()
         tight_worker_scope = self.is_tight_worker_scope()
+        bounded_pair_window = self.is_bounded_pair_window()
         special_queue_bound = (
             tight_depth_plus_one
             or tight_kcore_boundary
             or tight_queue_saturation
+            or bounded_pair_window
         )
         if tight_depth_plus_one:
             if (
@@ -1005,6 +1042,12 @@ class Plan:
                 raise ValueError(
                     "tight worker scope requires a three-lane raw window "
                     "across at least two workers and a requested wait"
+                )
+        elif self.flags == BOUNDED_PAIR_WINDOW:
+            if not bounded_pair_window:
+                raise ValueError(
+                    "bounded pair window requires two different engines, "
+                    "eight rounds, and a matching participant wait"
                 )
         elif self.issue_limit:
             raise ValueError(
@@ -1047,10 +1090,15 @@ class Plan:
     def issue_identities(self) -> tuple[IssueIdentity, ...]:
         self.validate()
         identities = []
+        slot_stride = (
+            MAX_ROUNDS
+            if self.rounds > MAX_THREE_LANE_ROUNDS
+            else MAX_THREE_LANE_ROUNDS
+        )
         for lane_index in range(len(self.lanes)):
             for round_index in range(self.rounds):
                 ordinal = lane_index * self.rounds + round_index
-                slot = lane_index * MAX_ROUNDS + round_index
+                slot = lane_index * slot_stride + round_index
                 tag = (
                     (self.seed * 0x9E3779B97F4A7C15)
                     & 0xFFFFFFFFFFFFFF00
@@ -1276,6 +1324,17 @@ def validate_record(
     has_pre_wait = bool(words[REC["FLAGS"]] & PRE_WAIT_CAPTURED)
     if has_pre_wait != needs_pre_wait:
         raise ValueError("record pre-wait capture does not match the plan")
+    bounded_drain_count = words[REC["BOUNDED_WINDOW_DRAIN_COUNT"]]
+    bounded_drain_cycles = words[REC["BOUNDED_WINDOW_DRAIN_CYCLES"]]
+    if plan.is_bounded_pair_window():
+        if bounded_drain_count != 1 or bounded_drain_cycles == 0:
+            raise ValueError(
+                "bounded pair window omitted its one intermediate drain"
+            )
+    elif bounded_drain_count != 0 or bounded_drain_cycles != 0:
+        raise ValueError(
+            "ordinary plan unexpectedly recorded a bounded-window drain"
+        )
 
     observations = []
     seen_slots: set[int] = set()

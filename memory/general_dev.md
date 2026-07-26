@@ -933,3 +933,27 @@
 - case定义、pending/board状态、profile身份、raw evidence和最终compiler消费应在同一硬件校准台账逐row演进；
   实施计划只保存施工依赖。没有可信device measurement basis时，结构和exact execution只形成behavior/correctness
   evidence，不产生性能winner。
+
+## 未上板校准项的机器化准备
+
+- 文档中的`pending`只有同时绑定typed catalog row、真实device carrier/dispatcher、固定输入、完整结果或有界
+  observation、guard/count/status/lifecycle oracle、no-card、board CTest和显式runner step时才算可发板；文件名、
+  family总数或计划表一行都不能代替这些对象。
+- matched characterization的激活单位是完整execution group，不是单个cell。CTest和runner按group注册，group内共享
+  package/allocation/measurement basis并包含control、方向/顺序轮换、重复和held-out；机器审计同时核对catalog cell、
+  group、CTest与runner四方集合一致。
+- 无owner-backed observable surface时不要为了“每行都有板测”伪造surrogate。建立typed preparation rejection，
+  明确缺失字段、拒绝的替代推断、最近的安全可执行family和解锁条件；ABI/catalog扩展后host gate必须因stale而失败，
+  迫使重新审核。
+- 总发板入口从central inventory自动收集全部`pending-board` CTest，保持单进程、resource lock、bounded timeout、
+  first-failure stop和no retry/reset/power。CPU增量构建可高并发；硬件launch仍串行。no-card与host gate通过只标记
+  pre-board readiness，不升级成`board-observed`。
+- 需要跨CTest合并small/steady/tail或control/experiment时，runner必须为本次execute生成不可复用的session id，
+  archive还要精确绑定target profile、launch ABI、device/runtime身份和runtime library digest；只靠work directory
+  或case名会把旧轮、旧卡或其它profile的结果混进当前分类。
+- matched group按sample-major执行并在sample间轮换condition顺序；涉及physical rank时，baseline和其它condition
+  必须使用同phase的nested active set，避免tile差异伪装成contention slope。只做到equal-mean position的四轮
+  rotation应明确不是完整Latin rotation，不能把顺序平衡程度写得比实际更强。
+- 大型确定性resource先做完整逐字节oracle，再在archive中保存request/record、生成参数和完整输入输出SHA-256；
+  JSON使用同目录临时文件、`flush`/`fsync`和原子replace，成功后才删除经过exact-set与路径校验的raw文件。
+  验证失败或原子发布失败时保留raw，既限制成功批次磁盘峰值，也不丢失失败归因证据。

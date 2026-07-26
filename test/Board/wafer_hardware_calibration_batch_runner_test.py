@@ -84,6 +84,9 @@ with record.open("a") as output:
                 "kind": "ctest",
                 "name": name,
                 "parallel": os.environ.get("CTEST_PARALLEL_LEVEL"),
+                "calibration_session_id": os.environ.get(
+                    "WAFER_CALIBRATION_SESSION_ID"
+                ),
             }
         )
         + "\\n"
@@ -224,6 +227,12 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "compiler-optimization-tree-all-reduce",
                 "collective-characterization-all-gather-direct-vs-ring-256b",
                 "collective-characterization-all-reduce-ring-vs-tree-65536b",
+                "ncc-queue-saturation-ct-short-depth5-tight-window",
+                "ncc-worker-wait-scope-ne-worker0-default-tight-window",
+                "ncc-worker-subset-rdma-target2-include-tight-window",
+                "worker-placement-worker-placement-ct",
+                "spm-conflict-equivalence-rank-one",
+                "ddr-conflict-equivalence-cross-tile",
                 "datamove-native-concat-hw-isolated",
             }.issubset(explicit_keys),
         )
@@ -378,10 +387,143 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 (batch[0],), ("collective-characterization",)
             )
 
+    def test_pending_execution_boundary_batch_is_complete_and_explicit(
+        self,
+    ) -> None:
+        batch = RUNNER.SELECTABLE_BATCHES["pending-execution-boundaries"]
+        self.assertEqual(
+            len(RUNNER.QUEUE_SATURATION_CASE_NAMES),
+            30,
+        )
+        self.assertEqual(
+            len(RUNNER.WORKER_WAIT_SCOPE_CASE_NAMES),
+            18,
+        )
+        self.assertEqual(
+            len(RUNNER.WORKER_SUBSET_SCOPE_CASE_NAMES),
+            12,
+        )
+        self.assertEqual(
+            len(RUNNER.ARGMIN_PENDING_DOMAIN_CASE_NAMES),
+            2,
+        )
+        self.assertEqual(
+            len(RUNNER.UNPOOL_PENDING_COLLISION_CASE_NAMES),
+            2,
+        )
+        self.assertEqual(
+            len(RUNNER.COLLECTIVE_TRAFFIC_BEHAVIOR_CASES),
+            11,
+        )
+        self.assertEqual(
+            len(RUNNER.ENGINE_PIPELINE_BOARD_CELL_KEYS),
+            381,
+        )
+        self.assertEqual(
+            len(RUNNER.ENGINE_PIPELINE_BOARD_GROUP_KEYS),
+            61,
+        )
+        self.assertEqual(
+            RUNNER.ENGINE_PIPELINE_EXTERNAL_GROUP_KEYS,
+            ("single-ne-tail",),
+        )
+        self.assertEqual(
+            len(RUNNER.SPM_SUSTAINED_BOARD_GROUP_KEYS),
+            4,
+        )
+        self.assertEqual(
+            len(RUNNER.DDR_ACTIVE_RANK_CASE_KEYS),
+            45,
+        )
+        self.assertEqual(
+            len(RUNNER.DDR_ACTIVE_RANK_BOARD_GROUP_KEYS),
+            9,
+        )
+        self.assertEqual(
+            len(RUNNER.WORKER_PLACEMENT_CASE_KEYS),
+            32,
+        )
+        self.assertEqual(
+            len(RUNNER.WORKER_PLACEMENT_BOARD_GROUP_KEYS),
+            8,
+        )
+        self.assertEqual(
+            len(batch),
+            (
+                30
+                + 18
+                + 12
+                + 2
+                + 2
+                + 4
+                + 11
+                + 61
+                + 1
+                + 4
+                + 9
+                + 8
+            ),
+        )
+        self.assertEqual(len(set(batch)), len(batch))
+        selected = RUNNER.select_calibration_steps(
+            None, ("pending-execution-boundaries",)
+        )
+        self.assertEqual(
+            [step.key for step in selected],
+            [
+                "initial-profile-heartbeat",
+                *batch,
+                "terminal-heartbeat",
+            ],
+        )
+        self.assertFalse(
+            set(batch) & {step.key for step in RUNNER.CALIBRATION_STEPS}
+        )
+
+    def test_pending_hardware_calibration_batch_exactly_covers_inventory(
+        self,
+    ) -> None:
+        batch = RUNNER.SELECTABLE_BATCHES["pending-hardware-calibration"]
+        explicit_by_key = {
+            step.key: step for step in RUNNER.EXPLICIT_ONLY_STEPS
+        }
+        expected_ctests = {
+            ctest
+            for family in RUNNER.pending_inventory.FAMILIES
+            if (
+                family.disposition
+                == RUNNER.pending_inventory.PENDING_BOARD
+            )
+            for ctest in family.board_ctests
+        }
+        selected_ctests = tuple(
+            explicit_by_key[key].ctest_name for key in batch
+        )
+        self.assertEqual(len(selected_ctests), len(expected_ctests))
+        self.assertEqual(set(selected_ctests), expected_ctests)
+        self.assertEqual(len(set(batch)), len(batch))
+        self.assertEqual(
+            batch[-1],
+            "datamove-native-concat-hw-isolated",
+        )
+        selected = RUNNER.select_calibration_steps(
+            None, ("pending-hardware-calibration",)
+        )
+        self.assertEqual(
+            [step.key for step in selected],
+            [
+                "initial-profile-heartbeat",
+                *batch,
+                "terminal-heartbeat",
+            ],
+        )
+
     def test_execute_runs_serially_and_records_per_step_evidence(self) -> None:
+        self.environment[RUNNER.SESSION_ENVIRONMENT_VARIABLE] = "stale"
         self.assertEqual(self.execute(), 0)
         records = self.records()
         self.assertEqual(records[0]["kind"], "cmake")
+        self.assertEqual(records[0]["argv"][-2:], ["--parallel", "128"])
         ctest_records = [
             record for record in records if record["kind"] == "ctest"
         ]
@@ -393,6 +535,14 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             all(record["parallel"] == "1" for record in ctest_records)
         )
         summary = json.loads((self.root / "logs" / "session.json").read_text())
+        session_ids = {
+            record["calibration_session_id"] for record in ctest_records
+        }
+        self.assertEqual(len(session_ids), 1)
+        session_id = session_ids.pop()
+        self.assertRegex(session_id, r"^[0-9a-f]{32}$")
+        self.assertNotEqual(session_id, "stale")
+        self.assertEqual(summary["calibration_session_id"], session_id)
         self.assertEqual(summary["status"], "passed")
         self.assertEqual(len(summary["steps"]), len(self.steps))
         self.assertTrue(all(step["status"] == "passed" for step in summary["steps"]))
@@ -404,6 +554,64 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             len(list((self.root / "logs").glob("*.junit.xml"))),
             len(self.steps),
         )
+
+    def test_each_execute_uses_a_fresh_calibration_session_id(self) -> None:
+        self.assertEqual(self.execute(), 0)
+        first = json.loads(
+            (self.root / "logs" / "session.json").read_text()
+        )["calibration_session_id"]
+        self.assertEqual(
+            RUNNER.execute_calibration(
+                build_dir=self.build_dir,
+                log_dir=self.root / "logs-second",
+                ctest=str(self.fake_ctest),
+                cmake=str(self.fake_cmake),
+                steps=self.steps,
+                environment=self.environment,
+            ),
+            0,
+        )
+        second = json.loads(
+            (self.root / "logs-second" / "session.json").read_text()
+        )["calibration_session_id"]
+        self.assertRegex(first, r"^[0-9a-f]{32}$")
+        self.assertRegex(second, r"^[0-9a-f]{32}$")
+        self.assertNotEqual(first, second)
+        ctest_records = [
+            record
+            for record in self.records()
+            if record["kind"] == "ctest"
+        ]
+        self.assertEqual(
+            [
+                {
+                    record["calibration_session_id"]
+                    for record in ctest_records[: len(self.steps)]
+                },
+                {
+                    record["calibration_session_id"]
+                    for record in ctest_records[len(self.steps) :]
+                },
+            ],
+            [{first}, {second}],
+        )
+
+    def test_collective_traffic_builds_its_test_compiler(self) -> None:
+        self.steps = (
+            RUNNER.CalibrationStep(
+                "collective-traffic-behavior-alltoall-256b",
+                "full-card-pending-collective-traffic",
+                "wafer-board-collective-traffic-behavior-alltoall-256b",
+                "structured traffic carrier",
+            ),
+        )
+        self.environment["FAKE_TESTS"] = json.dumps(
+            [{"name": self.steps[0].ctest_name}]
+        )
+        self.assertEqual(self.execute(), 0)
+        build = self.records()[0]
+        self.assertEqual(build["kind"], "cmake")
+        self.assertIn("wafer-compile-test", build["argv"])
 
     def test_archives_raw_and_json_evidence_with_hash_manifest(self) -> None:
         work_dir = self.root / "board-work"
@@ -419,6 +627,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             "wafer-compile-test",
             "wafer-run",
             "tx8-objdump",
+            "llvm-clangxx",
         ):
             path = self.root / name
             path.write_bytes(name.encode())
@@ -436,6 +645,8 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 str(tools["wafer-run"]),
                 "--tx8-objdump",
                 str(tools["tx8-objdump"]),
+                "--llvm-clangxx",
+                str(tools["llvm-clangxx"]),
                 "--work-dir",
                 str(work_dir),
             ),
@@ -469,6 +680,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "--wafer-compile-test",
                 "--wafer-run",
                 "--tx8-objdump",
+                "--llvm-clangxx",
             },
         )
         self.assertTrue(
@@ -478,6 +690,83 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             all(len(item["sha256"]) == 64 for item in manifest["tools"])
         )
         self.assertFalse((self.root / "archived" / "ignored.log").exists())
+
+    def test_archives_executable_artifacts_for_every_pending_case(
+        self,
+    ) -> None:
+        work_dir = self.root / "pending-board-work"
+        work_dir.mkdir()
+        (work_dir / "source.mlir").write_text("module {}\n")
+        (work_dir / "request.meta").write_text("{}\n")
+        (work_dir / "device.so").write_bytes(b"ELF")
+        (work_dir / "observations.json").write_text("{}\n")
+        test = RUNNER.RegisteredTest(
+            "wafer-board-pending-artifact-sample",
+            (
+                "python3",
+                "probe.py",
+                "--work-dir",
+                str(work_dir),
+            ),
+            frozenset(("board", "hardware", "ne", "pending")),
+            30.0,
+            "board-0",
+        )
+
+        destination = self.root / "archived-pending"
+        archived = RUNNER.archive_step_artifacts(test, destination)
+
+        self.assertIsNotNone(archived)
+        assert archived is not None
+        self.assertEqual(archived["file_count"], 4)
+        self.assertTrue((destination / "source.mlir").is_file())
+        self.assertTrue((destination / "request.meta").is_file())
+        self.assertTrue((destination / "device.so").is_file())
+        manifest = json.loads(
+            pathlib.Path(str(archived["manifest"])).read_text()
+        )
+        self.assertEqual(
+            {item["path"] for item in manifest["files"]},
+            {
+                "source.mlir",
+                "request.meta",
+                "device.so",
+                "observations.json",
+            },
+        )
+
+    def test_archives_collective_traffic_and_engine_executable_artifacts(
+        self,
+    ) -> None:
+        work_dir = self.root / "board-work"
+        work_dir.mkdir()
+        (work_dir / "source.mlir").write_text("module {}\n")
+        (work_dir / "request.meta").write_text("{}\n")
+        (work_dir / "module.so").write_bytes(b"ELF")
+        for index, labels in enumerate(
+            (
+                frozenset(("board", "hardware", "collective-traffic")),
+                frozenset(("board", "hardware", "engine", "pipeline")),
+            )
+        ):
+            test = RUNNER.RegisteredTest(
+                f"wafer-board-artifact-sample-{index}",
+                (
+                    "python3",
+                    "probe.py",
+                    "--work-dir",
+                    str(work_dir),
+                ),
+                labels,
+                30.0,
+                "board-0",
+            )
+            destination = self.root / f"archived-{index}"
+            archived = RUNNER.archive_step_artifacts(test, destination)
+            self.assertIsNotNone(archived)
+            self.assertTrue((destination / "source.mlir").is_file())
+            self.assertTrue((destination / "request.meta").is_file())
+            self.assertTrue((destination / "module.so").is_file())
 
     def test_inventory_accepts_unbuilt_non_board_test(self) -> None:
         self.environment["FAKE_TESTS"] = json.dumps(

@@ -106,6 +106,16 @@ STEP_TARGET_ISSUED = 1 << 0
 STEP_BIT2FP_COMPLETED = 1 << 1
 STEP_MASK_MOVE_ISSUED = 1 << 2
 STEP_FINAL_FENCE_COMPLETED = 1 << 3
+STEP_REPEATED_OVERLAP_VALUES_STAGED = 1 << 4
+
+REPEATED_UNPOOL_SENTINEL_OFFSET = 2048
+REPEATED_UNPOOL_SENTINEL_BYTES = 4 * 64 * 2
+REPEATED_UNPOOL_TARGET_POSITION = 1 * 5 + 2
+REPEATED_UNPOOL_AUX_INDICES = (5, 3, 2, 0)
+REPEATED_UNPOOL_SYMBOLS = {
+    "UNPOOL_INDEX_F16_REPEATED_OVERLAP_OBSERVED",
+    "UNPOOL_MASK_F16_REPEATED_OVERLAP_OBSERVED",
+}
 
 _HEADER = (
     pathlib.Path(__file__).resolve().parent
@@ -1318,7 +1328,30 @@ def _pool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
         raise RuntimeError(f"{case.name}: unknown pool kind")
 
 
-def _unpool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
+def _repeated_unpool_sentinels(sample: int) -> tuple[tuple[float, ...], ...]:
+    return tuple(
+        tuple(
+            float(256 + ((position + sample) % 4) * 64 + channel)
+            for channel in range(64)
+        )
+        for position in range(4)
+    )
+
+
+def repeated_unpool_expected_aux_slot() -> bytes:
+    slot = _slot()
+    indices = tuple(
+        index
+        for index in REPEATED_UNPOOL_AUX_INDICES
+        for _channel in range(64)
+    )
+    _put(slot, struct.pack("<256H", *indices))
+    return bytes(slot)
+
+
+def _unpool(
+    case: InstructionCase, sample: int = 0
+) -> tuple[bytes, bytes, bytes]:
     if case.symbol in {
         "UNPOOL_AVG_F16",
         "UNPOOL_AVG_BF16",
@@ -1397,11 +1430,7 @@ def _unpool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
         "UNPOOL_INDEX_F16_ASYMMETRIC_OBSERVED",
         "UNPOOL_MASK_F16_ASYMMETRIC",
     }
-    repeated_symbols = {
-        "UNPOOL_INDEX_F16_REPEATED_OVERLAP_OBSERVED",
-        "UNPOOL_MASK_F16_REPEATED_OVERLAP_OBSERVED",
-    }
-    if case.symbol in asymmetric_symbols | repeated_symbols:
+    if case.symbol in asymmetric_symbols | REPEATED_UNPOOL_SYMBOLS:
         source = [
             float(100 * row + 10 * column + channel % 8)
             for row in range(3)
@@ -1423,6 +1452,28 @@ def _unpool(case: InstructionCase) -> tuple[bytes, bytes, bytes]:
             for channel in range(64):
                 index = (1 * 5 + 2) * 64 + channel
                 source[index] = float(1000 + channel)
+            source_bytes = bytearray(_f16(source))
+            sentinel_offset = REPEATED_UNPOOL_SENTINEL_OFFSET
+            if len(source_bytes) > sentinel_offset:
+                raise RuntimeError(
+                    f"{case.name}: repeated-overlap sentinel table overlaps "
+                    "the indexed-pool source"
+                )
+            source_bytes.extend(
+                bytes([SLOT_CANARY]) * (sentinel_offset - len(source_bytes))
+            )
+            sentinel_values = tuple(
+                value
+                for position in _repeated_unpool_sentinels(sample)
+                for value in position
+            )
+            sentinel_bytes = _f16(sentinel_values)
+            if len(sentinel_bytes) != REPEATED_UNPOOL_SENTINEL_BYTES:
+                raise RuntimeError(
+                    f"{case.name}: repeated-overlap sentinel table size drift"
+                )
+            source_bytes.extend(sentinel_bytes)
+            return bytes(source_bytes), b"", _f16(expected)
         return _f16(source), b"", _f16(expected)
 
     raise RuntimeError(f"{case.name}: unknown unpool kind")
@@ -1450,6 +1501,33 @@ def _peripheral_arg_extrema(
         ]
         result_index = (37, 83, 109)[variant]
         result_value = float(-100 - variant)
+    elif case.symbol == "PERIPHERAL_ARGMIN_TIE_F16_OBSERVED":
+        variant = sample % len(ARGMIN_TIE_INDEX_SETS)
+        values = [
+            float(((index * 17 + variant * 11) % 61) + 2)
+            for index in range(128)
+        ]
+        tied_indices = ARGMIN_TIE_INDEX_SETS[variant]
+        for index in tied_indices:
+            values[index] = 0.5
+        result_index = tied_indices[0]
+        result_value = 0.5
+    elif case.symbol == "PERIPHERAL_ARGMIN_NAN_F16_OBSERVED":
+        variant = sample % len(ARGMIN_NAN_VECTORS)
+        nan_index, nan_bits, finite_min_index = ARGMIN_NAN_VECTORS[variant]
+        values = [
+            float(((index * 19 + variant * 7) % 61) + 2)
+            for index in range(128)
+        ]
+        values[finite_min_index] = 0.5
+        source_bits = list(struct.unpack("<128H", _f16(values)))
+        source_bits[nan_index] = nan_bits
+        expected = (
+            _f16((0.5,))
+            + _f16((-13.0,))
+            + struct.pack("<I", finite_min_index)
+        )
+        return _f16_from_bits(source_bits), b"", expected
     else:
         raise RuntimeError(f"{case.name}: unknown peripheral extrema kind")
     values[result_index] = result_value
@@ -1459,6 +1537,228 @@ def _peripheral_arg_extrema(
         + struct.pack("<I", result_index)
     )
     return _f16(values), b"", expected
+
+
+ARGMIN_TIE_INDEX_SETS = (
+    (5, 69),
+    (0, 127),
+    (31, 32, 96),
+)
+ARGMIN_NAN_VECTORS = (
+    (17, 0x7E11, 42),   # positive quiet NaN
+    (64, 0x7D21, 3),    # positive signaling NaN
+    (127, 0xFE35, 95),  # negative quiet NaN
+)
+
+
+def classify_repeated_unpool_observation(
+    case: InstructionCase,
+    sample: int,
+    result: bytes,
+) -> dict[str, object] | None:
+    """Validate a bounded collision result and retain its candidate rule.
+
+    Four distinct pooled values target the same output position.  Every target
+    channel must be explainable by a non-empty subset of those four values.
+    The classification retains both uniform and lane-varying subset outcomes:
+    lane variation is itself useful collision evidence, while any value
+    outside the bounded subset model remains a hard failure.  Every other
+    logical position and the physical tail must remain a uniform zero or the
+    seeded -13 value per 64-channel position.
+    """
+
+    if case.symbol not in REPEATED_UNPOOL_SYMBOLS:
+        return None
+    if len(result) != case.output_span or len(result) % 2 != 0:
+        raise RuntimeError(
+            f"{case.name}: repeated-overlap output span is malformed"
+        )
+
+    words = struct.unpack(f"<{len(result) // 2}H", result)
+    logical_words = case.result_bytes // 2
+    if logical_words != 3 * 5 * 64:
+        raise RuntimeError(
+            f"{case.name}: repeated-overlap logical geometry drifted"
+        )
+    seed_word = struct.unpack("<H", _f16((-13.0,)))[0]
+    zero_words = {0x0000, 0x8000}
+    target_begin = REPEATED_UNPOOL_TARGET_POSITION * 64
+    target_end = target_begin + 64
+
+    non_target_modes: list[str] = []
+    for position in range(3 * 5):
+        begin = position * 64
+        if begin == target_begin:
+            continue
+        position_words = set(words[begin : begin + 64])
+        if position_words.issubset(zero_words):
+            non_target_modes.append("zero")
+        elif position_words == {seed_word}:
+            non_target_modes.append("seed")
+        else:
+            raise RuntimeError(
+                f"{case.name}: repeated-overlap non-target position "
+                f"{position} contains an unbounded write"
+            )
+
+    padding_words = set(words[logical_words:])
+    if padding_words.issubset(zero_words):
+        padding_mode = "zero"
+    elif padding_words == {seed_word}:
+        padding_mode = "seed"
+    else:
+        raise RuntimeError(
+            f"{case.name}: repeated-overlap physical padding contains an "
+            "unbounded write"
+        )
+
+    target = struct.unpack(
+        "<64e", result[target_begin * 2 : target_end * 2]
+    )
+    sentinels = _repeated_unpool_sentinels(sample)
+    channel_masks: list[tuple[int, ...]] = []
+    for channel, actual in enumerate(target):
+        matching_masks = {
+            mask
+            for mask in range(1, 1 << 4)
+            if actual
+            == sum(
+                sentinels[position][channel]
+                for position in range(4)
+                if mask & (1 << position)
+            )
+        }
+        if not matching_masks:
+            raise RuntimeError(
+                f"{case.name}: repeated-overlap target channel {channel} "
+                "is outside every bounded winner/accumulation subset"
+            )
+        channel_masks.append(tuple(sorted(matching_masks)))
+
+    common_masks = set(channel_masks[0])
+    for matching_masks in channel_masks[1:]:
+        common_masks.intersection_update(matching_masks)
+    histogram: dict[tuple[int, ...], int] = {}
+    for matching_masks in channel_masks:
+        histogram[matching_masks] = histogram.get(matching_masks, 0) + 1
+
+    def rotate_mask(mask: int) -> int:
+        rotated = 0
+        for position in range(4):
+            if mask & (1 << position):
+                rotated |= 1 << ((position + sample) % 4)
+        return rotated
+
+    channel_value_masks = tuple(
+        tuple(sorted(rotate_mask(mask) for mask in matching_masks))
+        for matching_masks in channel_masks
+    )
+
+    return {
+        "kind": "unpool-repeated-overlap",
+        "sample_rotation": sample % 4,
+        "classification": (
+            "uniform-candidate-subset"
+            if common_masks
+            else "lane-varying-candidate-subsets"
+        ),
+        "candidate_source_masks": tuple(sorted(common_masks)),
+        "channel_candidate_source_masks": tuple(channel_masks),
+        "channel_candidate_value_masks": channel_value_masks,
+        "candidate_source_mask_histogram": tuple(
+            {
+                "masks": masks,
+                "channels": channels,
+            }
+            for masks, channels in sorted(histogram.items())
+        ),
+        "non_target_zero_positions": non_target_modes.count("zero"),
+        "non_target_seed_positions": non_target_modes.count("seed"),
+        "padding_mode": padding_mode,
+    }
+
+
+def _f16_bits_are_nan(bits: int) -> bool:
+    return bits & 0x7C00 == 0x7C00 and bits & 0x03FF != 0
+
+
+def classify_argmin_domain_observation(
+    case: InstructionCase,
+    sample: int,
+    result: bytes,
+) -> dict[str, object] | None:
+    """Validate and classify an ArgMin tie/NaN bounded observation."""
+
+    if case.symbol not in {
+        "PERIPHERAL_ARGMIN_TIE_F16_OBSERVED",
+        "PERIPHERAL_ARGMIN_NAN_F16_OBSERVED",
+    }:
+        return None
+    if len(result) != 8:
+        raise RuntimeError(
+            f"{case.name}: ArgMin observation returned {len(result)} bytes"
+        )
+    returned_value_bits = struct.unpack_from("<H", result, 0)[0]
+    returned_index = struct.unpack_from("<I", result, 4)[0]
+    if returned_index >= 128:
+        raise RuntimeError(
+            f"{case.name}: ArgMin returned out-of-range index "
+            f"{returned_index}"
+        )
+    source, _, _ = _peripheral_arg_extrema(case, sample)
+    source_bits = struct.unpack("<128H", source)
+    indexed_source_bits = source_bits[returned_index]
+    coherent_value = returned_value_bits == indexed_source_bits
+    quieted_nan = (
+        _f16_bits_are_nan(indexed_source_bits)
+        and _f16_bits_are_nan(returned_value_bits)
+    )
+    if not coherent_value and not quieted_nan:
+        raise RuntimeError(
+            f"{case.name}: ArgMin value/index pair is incoherent: "
+            f"index={returned_index}, source=0x{indexed_source_bits:04x}, "
+            f"value=0x{returned_value_bits:04x}"
+        )
+
+    variant = sample % 3
+    if case.symbol == "PERIPHERAL_ARGMIN_TIE_F16_OBSERVED":
+        tied_indices = ARGMIN_TIE_INDEX_SETS[variant]
+        classification = (
+            "tied-minimum"
+            if returned_index in tied_indices
+            and returned_value_bits == 0x3800
+            else "non-minimum-source"
+        )
+        return {
+            "domain": "positive-finite-tie",
+            "candidate_indices": tied_indices,
+            "returned_index": returned_index,
+            "returned_value_bits": returned_value_bits,
+            "classification": classification,
+        }
+
+    nan_index, nan_bits, finite_min_index = ARGMIN_NAN_VECTORS[variant]
+    if returned_index == finite_min_index and returned_value_bits == 0x3800:
+        classification = "finite-minimum-selected"
+    elif returned_index == nan_index and _f16_bits_are_nan(
+        returned_value_bits
+    ):
+        classification = (
+            "nan-selected-preserved"
+            if returned_value_bits == nan_bits
+            else "nan-selected-transformed"
+        )
+    else:
+        classification = "other-source-selected"
+    return {
+        "domain": "nan-versus-finite-minimum",
+        "nan_index": nan_index,
+        "nan_input_bits": nan_bits,
+        "finite_minimum_index": finite_min_index,
+        "returned_index": returned_index,
+        "returned_value_bits": returned_value_bits,
+        "classification": classification,
+    }
 
 
 def _peripheral_lut16() -> tuple[bytes, bytes, bytes]:
@@ -1531,6 +1831,8 @@ def _peripheral(
         "PERIPHERAL_ARGMAX_F16",
         "PERIPHERAL_ARGMIN_F16",
         "PERIPHERAL_ARGMIN_NEGATIVE_F16_OBSERVED",
+        "PERIPHERAL_ARGMIN_TIE_F16_OBSERVED",
+        "PERIPHERAL_ARGMIN_NAN_F16_OBSERVED",
     ):
         return _peripheral_arg_extrema(case, sample)
     if case.symbol == "PERIPHERAL_LUT16_F16":
@@ -1572,7 +1874,7 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
     elif case.family_name == "POOL":
         input_a, input_b, expected = _pool(case)
     elif case.family_name == "UNPOOL":
-        input_a, input_b, expected = _unpool(case)
+        input_a, input_b, expected = _unpool(case, sample)
     elif case.family_name == "PERIPHERAL":
         input_a, input_b, expected = _peripheral(case, sample)
     else:

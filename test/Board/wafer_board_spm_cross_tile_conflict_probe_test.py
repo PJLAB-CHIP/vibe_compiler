@@ -476,7 +476,10 @@ def select_pair(
         )
     if selected:
         return by_name[selected[0]]
-    return pairs[0]
+    raise RuntimeError(
+        "cross-tile execution requires one explicit --case; use "
+        "--list-cases to inspect the held-out coordinates"
+    )
 
 
 def build_probe(
@@ -1078,6 +1081,9 @@ def execute_board(
             "logical_tile_execution_basis: cluster-pid-and-exact-rank-slices",
             "logical_tile_domain: 0..15",
             "board_execution: true",
+            "board_stage: completion",
+            "board_stage: device-to-host",
+            "board_stage: cleanup",
         }
         if not required.issubset(set(result.stdout.splitlines())):
             raise RuntimeError(

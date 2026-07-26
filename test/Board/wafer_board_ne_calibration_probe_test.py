@@ -268,6 +268,10 @@ def _validate_record(
         or words[rec["OUTPUT_DDR_OFFSET"]] != catalog.OUTPUT_DDR_OFFSET
         or words[rec["SLOT_BYTES"]] != catalog.SLOT_BYTES
         or words[rec["BODY_OFFSET"]] != catalog.BODY_OFFSET
+        or words[rec["PMU_ENABLE"]] == 0
+        or words[rec["NE_INST_DELTA"]] != 1
+        or words[rec["NE_EXEC_DELTA"]] == 0
+        or words[rec["PMU_BASE"]] != catalog.PMU_BASE
         or words[rec["RECORD_GUARD"]] != catalog.RECORD_GUARD
     ):
         raise RuntimeError(f"{case.name}: record/execute/guard oracle failed")
@@ -402,6 +406,19 @@ def validate_output(
             b"".join(actual_logical)
         ).hexdigest(),
         "physical_sha256": hashlib.sha256(actual_physical).hexdigest(),
+        "pmu": {
+            "enable": words[catalog.REC["PMU_ENABLE"]],
+            "ne_instruction_delta": words[
+                catalog.REC["NE_INST_DELTA"]
+            ],
+            "ne_blocking_delta": words[
+                catalog.REC["NE_BLOCKING_DELTA"]
+            ],
+            "ne_execution_delta": words[
+                catalog.REC["NE_EXEC_DELTA"]
+            ],
+            "base": words[catalog.REC["PMU_BASE"]],
+        },
     }
     if candidate_byte_mismatches:
         result["candidate_matches"] = candidate_matches

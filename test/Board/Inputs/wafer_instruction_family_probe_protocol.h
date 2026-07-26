@@ -26,6 +26,8 @@
 #define WAFER_IFP_SPM_B UINT64_C(0x20000)
 #define WAFER_IFP_SPM_OUTPUT UINT64_C(0x30000)
 #define WAFER_IFP_SPM_AUX UINT64_C(0x40000)
+#define WAFER_IFP_REPEATED_SENTINEL_OFFSET 2048U
+#define WAFER_IFP_REPEATED_SENTINEL_BYTES 512U
 #define WAFER_IFP_SLOT_CANARY UINT8_C(0xa7)
 #define WAFER_IFP_BIT2FP_TRUE_F16 UINT16_C(0x3c00)
 #define WAFER_IFP_BIT2FP_TRUE_BF16 UINT16_C(0x3f80)
@@ -273,6 +275,21 @@ enum WaferIFPDeferredReason {
   X(UNPOOL_MASK_F16_REPEATED_OVERLAP_OBSERVED, 246,                         \
     "unpool-mask-f16-repeated-overlap-observed", SAFE, UNPOOL, F16,        \
     NO_ORACLE, REASON_NONE, 1920, 2048, 512)
+
+#define WAFER_IFP_PENDING_NUMERIC_DOMAIN_CASES(X)                            \
+  /* Three positive-finite vectors place equal minima before, across and     \
+   * after the 64-element boundary.  The host records which tied index is    \
+   * selected without assuming first- or last-wins semantics. */             \
+  X(PERIPHERAL_ARGMIN_TIE_F16_OBSERVED, 247,                                 \
+    "peripheral-argmin-tie-f16-observed", SAFE, PERIPHERAL, F16,           \
+    NO_ORACLE, REASON_NONE, 8, 8, 0)                                        \
+  /* Three vectors independently place positive quiet, positive signaling   \
+   * and negative quiet NaNs around a unique finite minimum.  Raw value and  \
+   * index are retained so NaN selection/ignoring and quieting remain        \
+   * distinguishable instead of being folded into finite-domain support. */  \
+  X(PERIPHERAL_ARGMIN_NAN_F16_OBSERVED, 248,                                 \
+    "peripheral-argmin-nan-f16-observed", SAFE, PERIPHERAL, F16,           \
+    NO_ORACLE, REASON_NONE, 8, 8, 0)
 
 #define WAFER_IFP_CT_REDUCE_CAPABILITY_CASES(X)                               \
   X(REDUCE_SUM_F16_C_NCX, 144,                                                \
@@ -534,7 +551,8 @@ enum WaferIFPDeferredReason {
   WAFER_IFP_BASE_CASES(X)                                                     \
   WAFER_IFP_CT_REDUCE_CAPABILITY_CASES(X)                                    \
   WAFER_IFP_CT_POOL_CAPABILITY_CASES(X)                                      \
-  WAFER_IFP_CT_UNPOOL_CAPABILITY_CASES(X)
+  WAFER_IFP_CT_UNPOOL_CAPABILITY_CASES(X)                                    \
+  WAFER_IFP_PENDING_NUMERIC_DOMAIN_CASES(X)
 
 enum WaferIFPCase {
 #define WAFER_IFP_ENUM_CASE(SYMBOL, ID, SPELLING, DISPOSITION, FAMILY, DTYPE,  \
@@ -600,6 +618,7 @@ enum WaferIFPStepFlag {
   WAFER_IFP_STEP_BIT2FP_COMPLETED = UINT32_C(1) << 1,
   WAFER_IFP_STEP_MASK_MOVE_ISSUED = UINT32_C(1) << 2,
   WAFER_IFP_STEP_FINAL_FENCE_COMPLETED = UINT32_C(1) << 3,
+  WAFER_IFP_STEP_REPEATED_OVERLAP_VALUES_STAGED = UINT32_C(1) << 4,
 };
 
 #endif

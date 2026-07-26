@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import pathlib
 import struct
 
@@ -39,6 +40,16 @@ def main() -> int:
     assert actual_keys == expected_keys
     assert len(pairs) == len(expected_keys)
     assert {pair.coordinate_id for pair in pairs} == set(range(len(pairs)))
+    selected = probe.select_pair(
+        argparse.Namespace(selected_cases=[pairs[0].name]), pairs
+    )
+    assert selected == pairs[0]
+    try:
+        probe.select_pair(argparse.Namespace(selected_cases=None), pairs)
+    except RuntimeError as error:
+        assert "explicit --case" in str(error)
+    else:
+        raise AssertionError("implicit cross-tile held-out case was accepted")
     probe.validate_physical_coordinates(
         {rank: (rank % 4, rank // 4) for rank in range(probe.RANK_COUNT)}
     )
@@ -240,6 +251,15 @@ def main() -> int:
     assert "hrt_barrier" in device
     assert "WAFER_SPM_CT_RANK_ORDER_REVERSE" in device
     assert "first_schedule == WAFER_MDC_SCHEDULE_SERIAL" in device
+    driver = pathlib.Path(probe.__file__).read_text()
+    for stage in ("completion", "device-to-host", "cleanup"):
+        assert f'"board_stage: {stage}"' in driver
+    cmake = (ROOT.parent / "CMakeLists.txt").read_text()
+    assert (
+        "--case\n"
+        "          "
+        "spm-physical-tile-ct-rdma-translation-0-phase-0-bytes-256-a-b"
+    ) in cmake
     print(
         "spm cross-tile conflict probe contract tests passed: "
         f"{len(pairs)} paired coordinates"

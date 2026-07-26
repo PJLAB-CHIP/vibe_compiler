@@ -27,17 +27,24 @@ def lane(engine: protocol.Engine, worker: int = 0) -> protocol.Lane:
 
 class ProtocolTest(unittest.TestCase):
     def test_header_is_the_numeric_source(self) -> None:
-        self.assertEqual(protocol.SCHEMA, 7)
+        self.assertEqual(protocol.SCHEMA, 8)
         self.assertEqual(protocol.MAX_LANES, 3)
-        self.assertEqual(protocol.MAX_ROUNDS, 4)
-        self.assertEqual(protocol.MAX_ISSUES, 12)
+        self.assertEqual(protocol.MAX_ROUNDS, 8)
+        self.assertEqual(protocol.MAX_THREE_LANE_ROUNDS, 4)
+        self.assertEqual(protocol.MAX_ISSUES, 16)
         self.assertEqual(protocol.REQUEST_WORDS, 58)
-        self.assertEqual(protocol.RECORD_WORDS, 404)
+        self.assertEqual(protocol.RECORD_WORDS, 496)
         self.assertEqual(protocol.ISSUE_STRIDE, 22)
-        self.assertEqual(protocol.WAIT_SAMPLE_BASE, 392)
+        self.assertEqual(protocol.WAIT_SAMPLE_BASE, 480)
         self.assertEqual(protocol.MAX_WAIT_SAMPLES, 8)
-        self.assertEqual(protocol.REC["PREISSUE_WAIT_CYCLES"], 400)
-        self.assertEqual(protocol.REC["CONTROL_PRE_WAIT"], 401)
+        self.assertEqual(protocol.REC["PREISSUE_WAIT_CYCLES"], 488)
+        self.assertEqual(protocol.REC["CONTROL_PRE_WAIT"], 489)
+        self.assertEqual(
+            protocol.REC["BOUNDED_WINDOW_DRAIN_COUNT"], 492
+        )
+        self.assertEqual(
+            protocol.REC["BOUNDED_WINDOW_DRAIN_CYCLES"], 493
+        )
         self.assertEqual(protocol.MAX_DMA_ENVELOPE_BYTES, 65536)
         self.assertEqual(
             protocol.WAIT_SAMPLE_BASE,
@@ -1994,8 +2001,14 @@ class ProtocolTest(unittest.TestCase):
             for case in execution_probe.BOARD_ALL_PREFLIGHT_CASES
             for identity in case.plan.issue_identities()
         )
-        self.assertEqual(
-            maximum_ddr_end, execution_probe.RESOURCE_BYTES
+        self.assertLess(maximum_ddr_end, execution_probe.RESOURCE_BYTES)
+        self.assertLessEqual(
+            execution_probe.V2_OUTPUT_SLOT_BASE
+            + execution_probe.V2_STRIDED_INITIAL_SOURCE_SLOT
+            * execution_probe.V2_OUTPUT_SLOT_STRIDE
+            + execution_probe.V2_OUTPUT_GUARD_BYTES
+            + execution_probe.V2_REPEATED_SLOT_BYTES,
+            execution_probe.RESOURCE_BYTES,
         )
         self.assertEqual(
             execution_probe.RESOURCE_BYTES,

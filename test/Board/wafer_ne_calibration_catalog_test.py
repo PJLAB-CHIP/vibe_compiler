@@ -37,12 +37,22 @@ def validate_pure_ncc_probe() -> None:
     aux_rdma = entry.index(
         "wafer_tx81_rdma(payload_ddr + 3U * WAFER_NEC_SLOT_BYTES,"
     )
-    execute = entry.index("uint64_t execute_result = 0U;", aux_rdma)
+    pmu_before = entry.index(
+        "WaferNECPMU before = wafer_nec_read_pmu();", aux_rdma
+    )
+    execute = entry.index("uint64_t execute_result = 0U;", pmu_before)
     wdma = entry.index("wafer_tx81_wdma(", execute)
     terminal_fence = entry.index("wafer_tx81_local_fence();", wdma)
+    pmu_after = entry.index(
+        "WaferNECPMU after = wafer_nec_read_pmu();", terminal_fence
+    )
     assert first_rdma < output_seed < aux_rdma < execute
     assert execute < wdma < terminal_fence
+    assert aux_rdma < pmu_before < execute < pmu_after
     assert entry.count("wafer_tx81_local_fence();") == 1
+    assert "GR_PMU_NE_INST_NUMS" in probe
+    assert "GR_PMU_NE_BLOCKING_TIME" in probe
+    assert "GR_PMU_NE_EXE_TIME" in probe
 
     runner_source = pathlib.Path(runner.__file__).read_text()
     assert "OUTPUT_GUARD_MISMATCHES" not in runner_source
@@ -90,6 +100,11 @@ def _observation_raw(
         "DISPOSITION": case.disposition,
         "LHS_BATCH": case.lhs_batch,
         "RHS_BATCH": case.rhs_batch,
+        "PMU_ENABLE": 1,
+        "NE_INST_DELTA": 1,
+        "NE_BLOCKING_DELTA": 0,
+        "NE_EXEC_DELTA": 123,
+        "PMU_BASE": catalog.PMU_BASE,
         "RECORD_GUARD": catalog.RECORD_GUARD,
     }
     for name, value in values.items():
@@ -574,6 +589,11 @@ def main() -> int:
         "DISPOSITION": quant.disposition,
         "LHS_BATCH": quant.lhs_batch,
         "RHS_BATCH": quant.rhs_batch,
+        "PMU_ENABLE": 1,
+        "NE_INST_DELTA": 1,
+        "NE_BLOCKING_DELTA": 0,
+        "NE_EXEC_DELTA": 123,
+        "PMU_BASE": catalog.PMU_BASE,
         "RECORD_GUARD": catalog.RECORD_GUARD,
     }
     for name, value in record_values.items():
@@ -703,6 +723,11 @@ def main() -> int:
         "DISPOSITION": backward_case.disposition,
         "LHS_BATCH": backward_case.lhs_batch,
         "RHS_BATCH": backward_case.rhs_batch,
+        "PMU_ENABLE": 1,
+        "NE_INST_DELTA": 1,
+        "NE_BLOCKING_DELTA": 0,
+        "NE_EXEC_DELTA": 123,
+        "PMU_BASE": catalog.PMU_BASE,
         "RECORD_GUARD": catalog.RECORD_GUARD,
     }
     for name, value in backward_record_values.items():

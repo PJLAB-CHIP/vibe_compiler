@@ -413,7 +413,7 @@ V2_OUTPUT_SLOT_STRIDE = (
 )
 RESOURCE_BYTES = (
     V2_OUTPUT_SLOT_BASE
-    + ncc_protocol.MAX_ISSUES * V2_OUTPUT_SLOT_STRIDE
+    + (ncc_protocol.MAX_ISSUES + 1) * V2_OUTPUT_SLOT_STRIDE
 )
 RESOURCE_ELEMENTS = RESOURCE_BYTES // 4
 V2_RECORD_GUARD = 0xD87C2A916BE4035F
@@ -3603,6 +3603,12 @@ def parse_record(
             if serial_wait_count
             else 0
         ),
+        "bounded_window_drain_count": words[
+            rec["BOUNDED_WINDOW_DRAIN_COUNT"]
+        ],
+        "bounded_window_drain_cycles": words[
+            rec["BOUNDED_WINDOW_DRAIN_CYCLES"]
+        ],
     }
     for observation in observations:
         if (

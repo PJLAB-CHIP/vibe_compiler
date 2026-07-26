@@ -8,21 +8,24 @@
  *
  * This header is the single source of truth for both the device executor and
  * the host-side protocol reader.  The protocol describes execution semantics,
- * not named workloads or particular engine pairs: at most three typed lanes
- * are executed for at most four rounds.  Two lanes cover pair/hazard
- * calibration; a three-lane disjoint window can represent movement + compute +
- * writeback without baking that workload into the schema.  Engine-specific
- * packet construction stays behind WaferNccProbeEngineAdapter.
+ * not named workloads or particular engine pairs: one or two typed lanes may
+ * execute for at most eight rounds, while three-lane plans remain capped at
+ * four rounds so their slot ranges stay inside the qualified SPM arena.  Two
+ * lanes cover pair/hazard calibration; a three-lane disjoint window can
+ * represent movement + compute + writeback without baking that workload into
+ * the schema.  Engine-specific packet construction stays behind
+ * WaferNccProbeEngineAdapter.
  */
 
 #define WAFER_NCC_PROTOCOL_REQUEST_MAGIC UINT64_C(0x3251455243434e57)
 #define WAFER_NCC_PROTOCOL_RECORD_MAGIC UINT64_C(0x3243455843434e57)
-#define WAFER_NCC_PROTOCOL_SCHEMA 7U
+#define WAFER_NCC_PROTOCOL_SCHEMA 8U
 #define WAFER_NCC_PROTOCOL_REQUEST_WORDS 58U
-#define WAFER_NCC_PROTOCOL_RECORD_WORDS 404U
+#define WAFER_NCC_PROTOCOL_RECORD_WORDS 496U
 #define WAFER_NCC_PROTOCOL_MAX_LANES 3U
-#define WAFER_NCC_PROTOCOL_MAX_ROUNDS 4U
-#define WAFER_NCC_PROTOCOL_MAX_ISSUES 12U
+#define WAFER_NCC_PROTOCOL_MAX_ROUNDS 8U
+#define WAFER_NCC_PROTOCOL_MAX_THREE_LANE_ROUNDS 4U
+#define WAFER_NCC_PROTOCOL_MAX_ISSUES 16U
 #define WAFER_NCC_PROTOCOL_WORKERS 3U
 #define WAFER_NCC_PROTOCOL_MAX_DMA_ENVELOPE_BYTES 65536U
 #define WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16 2U
@@ -32,7 +35,7 @@
 #define WAFER_NCC_PROTOCOL_LANE_STRIDE 14U
 #define WAFER_NCC_PROTOCOL_ISSUE_BASE 128U
 #define WAFER_NCC_PROTOCOL_ISSUE_STRIDE 22U
-#define WAFER_NCC_PROTOCOL_WAIT_SAMPLE_BASE 392U
+#define WAFER_NCC_PROTOCOL_WAIT_SAMPLE_BASE 480U
 #define WAFER_NCC_PROTOCOL_MAX_WAIT_SAMPLES 8U
 
 enum WaferNccProtocolCommand {
@@ -130,6 +133,12 @@ enum WaferNccProtocolRequestFlag {
   WAFER_NCC_REQUEST_TIGHT_KCORE_BOUNDARY = UINT32_C(1) << 6,
   WAFER_NCC_REQUEST_TIGHT_QUEUE_SATURATION = UINT32_C(1) << 7,
   WAFER_NCC_REQUEST_TIGHT_WORKER_SCOPE = UINT32_C(1) << 8,
+  /*
+   * Eight-iteration engine-pair characterization is one invocation containing
+   * two safe four-round windows.  The executor drains the participant workers
+   * exactly once between the windows; it never submits D+2 unmatched entries.
+   */
+  WAFER_NCC_REQUEST_BOUNDED_PAIR_WINDOW = UINT32_C(1) << 9,
 };
 
 enum WaferNccProtocolMemoryEffect {
@@ -252,8 +261,10 @@ enum WaferNccProtocolRecordWord {
   WAFER_NCC_REC_SERIAL_WAIT_COUNT = 125,
   WAFER_NCC_REC_CONSTRUCTOR_ADDRESS = 126,
   WAFER_NCC_REC_RECORD_GUARD = 127,
-  WAFER_NCC_REC_PREISSUE_WAIT_CYCLES = 400,
-  WAFER_NCC_REC_CONTROL_PRE_WAIT = 401,
+  WAFER_NCC_REC_PREISSUE_WAIT_CYCLES = 488,
+  WAFER_NCC_REC_CONTROL_PRE_WAIT = 489,
+  WAFER_NCC_REC_BOUNDED_WINDOW_DRAIN_COUNT = 492,
+  WAFER_NCC_REC_BOUNDED_WINDOW_DRAIN_CYCLES = 493,
 };
 
 enum WaferNccProtocolIssueWord {
@@ -291,6 +302,15 @@ static inline uint32_t wafer_ncc_protocol_issue_word(uint32_t issue,
                                                      uint32_t field) {
   return WAFER_NCC_PROTOCOL_ISSUE_BASE +
          issue * WAFER_NCC_PROTOCOL_ISSUE_STRIDE + field;
+}
+
+static inline uint32_t wafer_ncc_protocol_slot(uint32_t lane, uint32_t round,
+                                               uint32_t rounds) {
+  uint32_t stride =
+      rounds > WAFER_NCC_PROTOCOL_MAX_THREE_LANE_ROUNDS
+          ? WAFER_NCC_PROTOCOL_MAX_ROUNDS
+          : WAFER_NCC_PROTOCOL_MAX_THREE_LANE_ROUNDS;
+  return lane * stride + round;
 }
 
 #endif

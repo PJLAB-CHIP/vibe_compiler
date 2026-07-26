@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+extern int8_t *get_spm_memory_mapping(uint64_t offset);
+
 typedef struct WaferIFPDescriptor {
   uint32_t id;
   uint32_t disposition;
@@ -95,6 +97,19 @@ static void wafer_ifp_wait_worker0_drain(void) {
   }
   __asm__ volatile("fence iorw, iorw" ::: "memory");
   __asm__ volatile("sync" ::: "memory");
+}
+
+static void wafer_ifp_copy_spm_bytes(uint64_t destination, uint64_t source,
+                                    uint32_t bytes) {
+  volatile uint8_t *destination_mapping =
+      (volatile uint8_t *)(void *)get_spm_memory_mapping(destination);
+  const volatile uint8_t *source_mapping =
+      (const volatile uint8_t *)(const void *)get_spm_memory_mapping(source);
+  for (uint32_t index = 0; index < bytes; ++index)
+    destination_mapping[index] = source_mapping[index];
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+  __asm__ volatile("sync.is" ::: "memory");
 }
 
 static void wafer_ifp_seed(uint64_t payload_ddr) {
@@ -575,7 +590,6 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
         1, 1, 64, 1, 2, 2, 64, 2, 2, 2, 2, format);
     break;
   case WAFER_IFP_CASE_UNPOOL_INDEX_F16_ASYMMETRIC_OBSERVED:
-  case WAFER_IFP_CASE_UNPOOL_INDEX_F16_REPEATED_OVERLAP_OBSERVED:
     wafer_tx81_pool_indexedmax(
         input_a, input_b, auxiliary,
         OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 3, 5, 64, 1, 2, 2, 64, 0,
@@ -584,12 +598,41 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
         input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool,
         (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64, 3, 2, 2, 1, Fmt_FP16);
     break;
+  case WAFER_IFP_CASE_UNPOOL_INDEX_F16_REPEATED_OVERLAP_OBSERVED:
+    wafer_tx81_pool_indexedmax(
+        input_a, input_b, auxiliary,
+        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 3, 5, 64, 1, 2, 2, 64, 0,
+        0, 0, 0, 3, 2, 2, 1, Fmt_FP16);
+    wafer_ifp_wait_worker0_drain();
+    wafer_ifp_copy_spm_bytes(
+        input_b, input_a + WAFER_IFP_REPEATED_SENTINEL_OFFSET,
+        WAFER_IFP_REPEATED_SENTINEL_BYTES);
+    record[WAFER_IFP_REC_STEP_FLAGS] |=
+        WAFER_IFP_STEP_REPEATED_OVERLAP_VALUES_STAGED;
+    wafer_tx81_unpool_unpool(
+        input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool,
+        (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64, 3, 2, 2, 1, Fmt_FP16);
+    break;
   case WAFER_IFP_CASE_UNPOOL_MASK_F16_ASYMMETRIC:
+    wafer_tx81_pool_indexedmax(
+        input_a, input_b, auxiliary,
+        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 3, 5, 64, 1, 2, 2, 64, 0,
+        0, 0, 0, 3, 2, 2, 1, Fmt_FP16);
+    wafer_tx81_unpool_mask(
+        input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_maskunpool,
+        (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64, 3, 2, 2, 1, Fmt_FP16);
+    break;
   case WAFER_IFP_CASE_UNPOOL_MASK_F16_REPEATED_OVERLAP_OBSERVED:
     wafer_tx81_pool_indexedmax(
         input_a, input_b, auxiliary,
         OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 3, 5, 64, 1, 2, 2, 64, 0,
         0, 0, 0, 3, 2, 2, 1, Fmt_FP16);
+    wafer_ifp_wait_worker0_drain();
+    wafer_ifp_copy_spm_bytes(
+        input_b, input_a + WAFER_IFP_REPEATED_SENTINEL_OFFSET,
+        WAFER_IFP_REPEATED_SENTINEL_BYTES);
+    record[WAFER_IFP_REC_STEP_FLAGS] |=
+        WAFER_IFP_STEP_REPEATED_OVERLAP_VALUES_STAGED;
     wafer_tx81_unpool_mask(
         input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_maskunpool,
         (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64, 3, 2, 2, 1, Fmt_FP16);
@@ -606,6 +649,8 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     break;
   case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_F16:
   case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_NEGATIVE_F16_OBSERVED:
+  case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_TIE_F16_OBSERVED:
+  case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_NAN_F16_OBSERVED:
     wafer_tx81_peripheral_argmin(
         input_a, output, output + 4,
         OP_FUNC_CGRATensor_PeriOp_V_V_argmin, elements, Fmt_FP16, 0, 0, 0, 0);

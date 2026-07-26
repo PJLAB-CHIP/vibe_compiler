@@ -258,6 +258,66 @@ set_tests_properties(wafer-hardware-calibration-matrix-python PROPERTIES
   TIMEOUT 30
 )
 
+add_test(NAME wafer-pending-hardware-calibration-inventory-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_pending_hardware_calibration_inventory_test.py
+)
+set_tests_properties(
+  wafer-pending-hardware-calibration-inventory-python PROPERTIES
+  LABELS "runtime;no-card;hardware;calibration;pending;coverage"
+  TIMEOUT 60
+)
+
+add_test(NAME wafer-ddr-active-rank-contention-contract-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_worker_memory_contention_characterization_test.py
+)
+set_tests_properties(
+  wafer-ddr-active-rank-contention-contract-python PROPERTIES
+  LABELS "runtime;no-card;hardware;ddr;contention;calibration;pending"
+  TIMEOUT 120
+)
+
+add_test(NAME wafer-worker-placement-characterization-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_worker_placement_characterization_test.py
+)
+set_tests_properties(
+  wafer-worker-placement-characterization-python PROPERTIES
+  LABELS "runtime;no-card;hardware;worker;placement;calibration;pending"
+  TIMEOUT 120
+)
+
+add_test(NAME wafer-unrepresentable-hardware-behavior-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_unrepresentable_hardware_behavior_catalog_test.py
+)
+set_tests_properties(
+  wafer-unrepresentable-hardware-behavior-python PROPERTIES
+  LABELS "runtime;no-card;hardware;calibration;fail-closed"
+  TIMEOUT 30
+)
+
+add_test(NAME wafer-engine-pipeline-characterization-catalog-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_engine_pipeline_characterization_catalog_test.py
+)
+set_tests_properties(
+  wafer-engine-pipeline-characterization-catalog-python PROPERTIES
+  LABELS "runtime;no-card;hardware;calibration;engine;pipeline;pending"
+  TIMEOUT 120
+)
+
+add_test(NAME wafer-collective-traffic-behavior-catalog-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_collective_traffic_behavior_catalog_test.py
+)
+set_tests_properties(
+  wafer-collective-traffic-behavior-catalog-python PROPERTIES
+  LABELS "runtime;no-card;hardware;calibration;collective-traffic;pending"
+  TIMEOUT 120
+)
+
 add_test(NAME wafer-physical-tensor-codec-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_physical_tensor_codec_test.py
@@ -273,6 +333,15 @@ add_test(NAME wafer-ne-calibration-catalog-python
 )
 set_tests_properties(wafer-ne-calibration-catalog-python PROPERTIES
   LABELS "runtime;no-card;ne;layout;calibration;oracle"
+  TIMEOUT 60
+)
+
+add_test(NAME wafer-ne-tail-throughput-catalog-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_ne_tail_throughput_catalog_test.py
+)
+set_tests_properties(wafer-ne-tail-throughput-catalog-python PROPERTIES
+  LABELS "runtime;no-card;ne;performance;calibration;pending"
   TIMEOUT 60
 )
 
@@ -348,6 +417,16 @@ set_tests_properties(
   TIMEOUT 60
 )
 
+add_test(NAME wafer-spm-sustained-conflict-contract-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_spm_sustained_conflict_probe_contract_test.py
+)
+set_tests_properties(
+  wafer-spm-sustained-conflict-contract-python PROPERTIES
+  LABELS "runtime;no-card;spm;conflict-equivalence;calibration;pending"
+  TIMEOUT 120
+)
+
 add_test(NAME wafer-ddr-sparse-high-offset-contract-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_sparse_high_offset_probe_test.py
@@ -384,6 +463,19 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     all-reduce-ring-vs-tree-256b
     all-reduce-ring-vs-tree-4096b
     all-reduce-ring-vs-tree-65536b
+  )
+  set(_wafer_collective_traffic_behavior_cases
+    all-to-all-src-dst-lane-256b
+    all-to-all-src-dst-lane-4096b
+    all-to-all-src-dst-lane-65536b
+    collective-permute-cycle-forward-256b
+    collective-permute-cycle-forward-4096b
+    collective-permute-cycle-forward-65536b
+    collective-permute-cycle-reverse-4096b
+    collective-permute-opposite-pairs-4096b
+    collective-permute-disjoint-adjacent-pairs-4096b
+    collective-permute-sparse-roles-4096b
+    collective-permute-two-epoch-chain-4096b
   )
   set(_wafer_tx81_objdump
     ${CMAKE_SOURCE_DIR}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump
@@ -454,6 +546,29 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
       PROPERTIES
       LABELS
         "runtime;no-card;collective-characterization;paired;all-rank;direct-dte;pending"
+      TIMEOUT 3600
+    )
+  endforeach()
+  foreach(_wafer_collective_traffic_case IN LISTS
+      _wafer_collective_traffic_behavior_cases)
+    add_test(
+      NAME
+        wafer-runtime-collective-traffic-behavior-${_wafer_collective_traffic_case}-no-card
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_collective_traffic_behavior_test.py
+        --wafer-compile-test $<TARGET_FILE:wafer-compile-test>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --tx8-objdump ${_wafer_tx81_objdump}
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/runtime-collective-traffic-${_wafer_collective_traffic_case}
+        --case ${_wafer_collective_traffic_case}
+        --no-card
+    )
+    set_tests_properties(
+      wafer-runtime-collective-traffic-behavior-${_wafer_collective_traffic_case}-no-card
+      PROPERTIES
+      LABELS
+        "runtime;no-card;collective-traffic;all-rank;direct-dte;pending"
       TIMEOUT 3600
     )
   endforeach()
@@ -561,6 +676,42 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
       "runtime;no-card;all-rank;cluster;ddr;conflict-equivalence;preflight"
     TIMEOUT 630
   )
+  add_test(NAME wafer-runtime-ddr-active-rank-contention-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_worker_memory_contention_characterization_driver.py
+      --mode no-card
+      --group ddr-contention-rdma-only-4k-contiguous
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-ddr-active-rank-contention
+      --repeat 4
+  )
+  set_tests_properties(
+    wafer-runtime-ddr-active-rank-contention-no-card PROPERTIES
+    LABELS "runtime;no-card;all-rank;cluster;ddr;contention;preflight"
+    TIMEOUT 900
+  )
+  add_test(NAME wafer-runtime-worker-placement-characterization-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_worker_placement_characterization_test.py
+      --group worker-placement-ct
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-worker-placement-characterization
+      --repeat 3
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-worker-placement-characterization-no-card PROPERTIES
+    LABELS "runtime;no-card;ncc;worker;placement;calibration;preflight"
+    TIMEOUT 900
+  )
   add_test(NAME wafer-runtime-ddr-sparse-high-offset-probe-no-card
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_sparse_high_offset_probe_test.py
@@ -652,6 +803,50 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     wafer-runtime-ncc-safe-observations-no-card PROPERTIES
     LABELS "runtime;no-card;ncc;execution-model;calibration;preflight"
     TIMEOUT 600
+  )
+  add_test(NAME wafer-runtime-engine-pipeline-characterization-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_engine_pipeline_characterization_test.py
+      --mode no-card
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-engine-pipeline-characterization
+      --repeat 3
+  )
+  set_tests_properties(
+    wafer-runtime-engine-pipeline-characterization-no-card PROPERTIES
+    LABELS "runtime;no-card;ncc;engine;pipeline;calibration;pending"
+    TIMEOUT 1800
+  )
+  add_test(NAME wafer-runtime-spm-sustained-conflict-probe-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_spm_sustained_conflict_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-spm-sustained-conflict-probe
+      --repeat 4
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-spm-sustained-conflict-probe-no-card PROPERTIES
+    LABELS "runtime;no-card;spm;engine-pair;calibration;pending"
+    TIMEOUT 900
+  )
+  add_test(NAME wafer-engine-pipeline-production-gate-python
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_engine_pipeline_characterization_test.py
+      --mode production-gate
+  )
+  set_tests_properties(
+    wafer-engine-pipeline-production-gate-python PROPERTIES
+    LABELS "runtime;no-card;engine;pipeline;production;fail-closed"
+    TIMEOUT 60
   )
   function(wafer_add_ncc_calibration_preflight test_suffix suite)
     add_test(NAME wafer-runtime-ncc-${test_suffix}-no-card
@@ -801,6 +996,24 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     LABELS "runtime;no-card;ne;layout;calibration;probe-build"
     TIMEOUT 300
   )
+  add_test(NAME wafer-runtime-ne-tail-throughput-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ne_tail_throughput_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-ne-tail-throughput
+      --group single-ne-tail
+      --repeat 3
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-ne-tail-throughput-no-card PROPERTIES
+    LABELS "runtime;no-card;ne;performance;calibration;pending"
+    TIMEOUT 900
+  )
   add_test(NAME wafer-runtime-spm-calibration-probe-no-card
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_spm_calibration_probe_test.py
@@ -892,6 +1105,8 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
       --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
       --work-dir
         ${CMAKE_CURRENT_BINARY_DIR}/runtime-spm-cross-tile-conflict-probe
+      --case
+        spm-physical-tile-ct-rdma-translation-0-phase-0-bytes-256-a-b
       --no-card
   )
   set_tests_properties(
@@ -1191,6 +1406,103 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       workers012-join${_wafer_ncc_join_mask}-observe-unjoined
     )
   endforeach()
+  set(_wafer_pending_ncc_queue_saturation_cases
+    queue-saturation-ct-short-depth5-tight-window
+    queue-saturation-ct-short-depth6-tight-window
+    queue-saturation-ct-short-depth7-tight-window
+    queue-saturation-ct-sustained-depth5-tight-window
+    queue-saturation-ct-sustained-depth6-tight-window
+    queue-saturation-ct-sustained-depth7-tight-window
+    queue-saturation-ne-short-depth5-tight-window
+    queue-saturation-ne-short-depth6-tight-window
+    queue-saturation-ne-short-depth7-tight-window
+    queue-saturation-ne-sustained-depth5-tight-window
+    queue-saturation-ne-sustained-depth6-tight-window
+    queue-saturation-ne-sustained-depth7-tight-window
+    queue-saturation-rdma-short-depth5-tight-window
+    queue-saturation-rdma-short-depth6-tight-window
+    queue-saturation-rdma-short-depth7-tight-window
+    queue-saturation-rdma-sustained-depth5-tight-window
+    queue-saturation-rdma-sustained-depth6-tight-window
+    queue-saturation-rdma-sustained-depth7-tight-window
+    queue-saturation-wdma-short-depth5-tight-window
+    queue-saturation-wdma-short-depth6-tight-window
+    queue-saturation-wdma-short-depth7-tight-window
+    queue-saturation-wdma-sustained-depth5-tight-window
+    queue-saturation-wdma-sustained-depth6-tight-window
+    queue-saturation-wdma-sustained-depth7-tight-window
+    queue-saturation-tdma-short-depth3-tight-window
+    queue-saturation-tdma-short-depth4-tight-window
+    queue-saturation-tdma-short-depth5-tight-window
+    queue-saturation-tdma-sustained-depth3-tight-window
+    queue-saturation-tdma-sustained-depth4-tight-window
+    queue-saturation-tdma-sustained-depth5-tight-window
+  )
+  set(_wafer_pending_ncc_worker_wait_scope_cases
+    worker-wait-scope-ne-worker0-default-tight-window
+    worker-wait-scope-ne-worker0-byworker-tight-window
+    worker-wait-scope-ne-worker0-local-fence-tight-window
+    worker-wait-scope-rdma-worker0-default-tight-window
+    worker-wait-scope-rdma-worker0-byworker-tight-window
+    worker-wait-scope-rdma-worker0-local-fence-tight-window
+    worker-wait-scope-ne-worker1-default-tight-window
+    worker-wait-scope-ne-worker1-byworker-tight-window
+    worker-wait-scope-ne-worker1-local-fence-tight-window
+    worker-wait-scope-rdma-worker1-default-tight-window
+    worker-wait-scope-rdma-worker1-byworker-tight-window
+    worker-wait-scope-rdma-worker1-local-fence-tight-window
+    worker-wait-scope-ne-worker2-default-tight-window
+    worker-wait-scope-ne-worker2-byworker-tight-window
+    worker-wait-scope-ne-worker2-local-fence-tight-window
+    worker-wait-scope-rdma-worker2-default-tight-window
+    worker-wait-scope-rdma-worker2-byworker-tight-window
+    worker-wait-scope-rdma-worker2-local-fence-tight-window
+  )
+  set(_wafer_pending_ncc_worker_subset_scope_cases
+    worker-subset-ne-target0-exclude-tight-window
+    worker-subset-ne-target0-include-tight-window
+    worker-subset-rdma-target0-exclude-tight-window
+    worker-subset-rdma-target0-include-tight-window
+    worker-subset-ne-target1-exclude-tight-window
+    worker-subset-ne-target1-include-tight-window
+    worker-subset-rdma-target1-exclude-tight-window
+    worker-subset-rdma-target1-include-tight-window
+    worker-subset-ne-target2-exclude-tight-window
+    worker-subset-ne-target2-include-tight-window
+    worker-subset-rdma-target2-exclude-tight-window
+    worker-subset-rdma-target2-include-tight-window
+  )
+  foreach(_wafer_ncc_case IN LISTS
+      _wafer_pending_ncc_queue_saturation_cases)
+    wafer_add_isolated_ncc_observation(
+      ${_wafer_ncc_case}
+      queue-saturation-manual
+      ${_wafer_ncc_case}
+      3
+    )
+  endforeach()
+  foreach(_wafer_ncc_case IN LISTS
+      _wafer_pending_ncc_worker_wait_scope_cases)
+    wafer_add_isolated_ncc_observation(
+      ${_wafer_ncc_case}
+      worker-wait-scope-manual
+      ${_wafer_ncc_case}
+      3
+    )
+  endforeach()
+  foreach(_wafer_ncc_case IN LISTS
+      _wafer_pending_ncc_worker_subset_scope_cases)
+    wafer_add_isolated_ncc_observation(
+      ${_wafer_ncc_case}
+      worker-subset-scope-manual
+      ${_wafer_ncc_case}
+      3
+    )
+  endforeach()
+  unset(_wafer_ncc_case)
+  unset(_wafer_pending_ncc_queue_saturation_cases)
+  unset(_wafer_pending_ncc_worker_wait_scope_cases)
+  unset(_wafer_pending_ncc_worker_subset_scope_cases)
   add_test(NAME wafer-board-instruction-family-safe
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_instruction_family_probe_test.py
@@ -1254,6 +1566,329 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       TIMEOUT ${_wafer_instruction_timeout}
     )
   endforeach()
+  set(_wafer_pending_argmin_domain_cases
+    peripheral-argmin-tie-f16-observed
+    peripheral-argmin-nan-f16-observed
+  )
+  foreach(_wafer_argmin_case IN LISTS _wafer_pending_argmin_domain_cases)
+    add_test(
+      NAME wafer-board-instruction-family-${_wafer_argmin_case}
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_instruction_family_probe_test.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-instruction-family-${_wafer_argmin_case}
+        --case ${_wafer_argmin_case}
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 30000
+        --observation-samples 3
+    )
+    set_tests_properties(
+      wafer-board-instruction-family-${_wafer_argmin_case} PROPERTIES
+      LABELS
+        "board;hardware;instruction;ct;argmin;numeric-domain;pending"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 900
+    )
+  endforeach()
+  unset(_wafer_argmin_case)
+  unset(_wafer_pending_argmin_domain_cases)
+  set(_wafer_pending_unpool_collision_cases
+    unpool-index-f16-repeated-overlap-observed
+    unpool-mask-f16-repeated-overlap-observed
+  )
+  foreach(_wafer_unpool_case IN LISTS
+      _wafer_pending_unpool_collision_cases)
+    add_test(
+      NAME wafer-board-instruction-family-${_wafer_unpool_case}
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_instruction_family_probe_test.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-instruction-family-${_wafer_unpool_case}
+        --case ${_wafer_unpool_case}
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 30000
+        --observation-samples 3
+    )
+    set_tests_properties(
+      wafer-board-instruction-family-${_wafer_unpool_case} PROPERTIES
+      LABELS
+        "board;hardware;instruction;ct;unpool;collision;pending"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 900
+    )
+  endforeach()
+  unset(_wafer_unpool_case)
+  unset(_wafer_pending_unpool_collision_cases)
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_engine_pipeline_characterization_test.py
+      --emit-board-group-keys
+    RESULT_VARIABLE _wafer_engine_pipeline_groups_result
+    OUTPUT_VARIABLE _wafer_engine_pipeline_groups_output
+    ERROR_VARIABLE _wafer_engine_pipeline_groups_error
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(NOT _wafer_engine_pipeline_groups_result EQUAL 0)
+    message(FATAL_ERROR
+      "Failed to enumerate engine/pipeline board activation groups: "
+      "${_wafer_engine_pipeline_groups_error}")
+  endif()
+  string(REPLACE "\n" ";"
+    _wafer_engine_pipeline_board_groups
+    "${_wafer_engine_pipeline_groups_output}")
+  foreach(_wafer_engine_pipeline_group IN LISTS
+      _wafer_engine_pipeline_board_groups)
+    add_test(
+      NAME wafer-board-engine-pipeline-${_wafer_engine_pipeline_group}
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_engine_pipeline_characterization_test.py
+        --mode board
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-engine-pipeline-${_wafer_engine_pipeline_group}
+        --group ${_wafer_engine_pipeline_group}
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 30000
+        --repeat 3
+    )
+    set_tests_properties(
+      wafer-board-engine-pipeline-${_wafer_engine_pipeline_group}
+      PROPERTIES
+      LABELS "board;hardware;ncc;engine;pipeline;performance;pending"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 1800
+    )
+  endforeach()
+  unset(_wafer_engine_pipeline_group)
+  unset(_wafer_engine_pipeline_board_groups)
+  unset(_wafer_engine_pipeline_groups_output)
+  unset(_wafer_engine_pipeline_groups_error)
+  unset(_wafer_engine_pipeline_groups_result)
+  add_test(NAME wafer-board-ne-tail-throughput-single-ne-tail
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ne_tail_throughput_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-ne-tail-throughput-single-ne-tail
+      --single-engine-observations
+        ${CMAKE_CURRENT_BINARY_DIR}/board-engine-pipeline-single-engines/engine-pipeline-observations.json
+      --group single-ne-tail
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 60000
+      --repeat 3
+  )
+  set_tests_properties(
+    wafer-board-ne-tail-throughput-single-ne-tail PROPERTIES
+    LABELS "board;hardware;ne;performance;calibration;pending"
+    DEPENDS wafer-board-engine-pipeline-single-engines
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 900
+  )
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_spm_sustained_conflict_probe_test.py
+      --emit-board-case-keys
+    RESULT_VARIABLE _wafer_spm_sustained_groups_result
+    OUTPUT_VARIABLE _wafer_spm_sustained_groups_output
+    ERROR_VARIABLE _wafer_spm_sustained_groups_error
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(NOT _wafer_spm_sustained_groups_result EQUAL 0)
+    message(FATAL_ERROR
+      "Failed to enumerate sustained SPM conflict groups: "
+      "${_wafer_spm_sustained_groups_error}")
+  endif()
+  string(REPLACE "\n" ";"
+    _wafer_spm_sustained_board_groups
+    "${_wafer_spm_sustained_groups_output}")
+  foreach(_wafer_spm_sustained_group IN LISTS
+      _wafer_spm_sustained_board_groups)
+    add_test(
+      NAME wafer-board-spm-sustained-${_wafer_spm_sustained_group}
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_spm_sustained_conflict_probe_test.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-spm-sustained-${_wafer_spm_sustained_group}
+        --case ${_wafer_spm_sustained_group}
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 60000
+        --repeat 4
+    )
+    set_tests_properties(
+      wafer-board-spm-sustained-${_wafer_spm_sustained_group}
+      PROPERTIES
+      LABELS "board;hardware;spm;engine-pair;performance;pending"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 900
+    )
+  endforeach()
+  unset(_wafer_spm_sustained_group)
+  unset(_wafer_spm_sustained_board_groups)
+  unset(_wafer_spm_sustained_groups_output)
+  unset(_wafer_spm_sustained_groups_error)
+  unset(_wafer_spm_sustained_groups_result)
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_worker_memory_contention_characterization_driver.py
+      --emit-board-group-keys
+    RESULT_VARIABLE _wafer_ddr_active_rank_groups_result
+    OUTPUT_VARIABLE _wafer_ddr_active_rank_groups_output
+    ERROR_VARIABLE _wafer_ddr_active_rank_groups_error
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(NOT _wafer_ddr_active_rank_groups_result EQUAL 0)
+    message(FATAL_ERROR
+      "Failed to enumerate DDR active-rank groups: "
+      "${_wafer_ddr_active_rank_groups_error}")
+  endif()
+  string(REPLACE "\n" ";"
+    _wafer_ddr_active_rank_board_groups
+    "${_wafer_ddr_active_rank_groups_output}")
+  foreach(_wafer_ddr_active_rank_group IN LISTS
+      _wafer_ddr_active_rank_board_groups)
+    add_test(
+      NAME wafer-board-ddr-active-rank-${_wafer_ddr_active_rank_group}
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_worker_memory_contention_characterization_driver.py
+        --mode board
+        --group ${_wafer_ddr_active_rank_group}
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-ddr-active-rank-${_wafer_ddr_active_rank_group}
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 180000
+        --repeat 4
+    )
+    set_tests_properties(
+      wafer-board-ddr-active-rank-${_wafer_ddr_active_rank_group}
+      PROPERTIES
+      LABELS "board;hardware;cluster;all-rank;ddr;contention;performance;pending"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 4500
+    )
+  endforeach()
+  unset(_wafer_ddr_active_rank_group)
+  unset(_wafer_ddr_active_rank_board_groups)
+  unset(_wafer_ddr_active_rank_groups_output)
+  unset(_wafer_ddr_active_rank_groups_error)
+  unset(_wafer_ddr_active_rank_groups_result)
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_worker_placement_characterization_test.py
+      --emit-board-group-keys
+    RESULT_VARIABLE _wafer_worker_placement_groups_result
+    OUTPUT_VARIABLE _wafer_worker_placement_groups_output
+    ERROR_VARIABLE _wafer_worker_placement_groups_error
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(NOT _wafer_worker_placement_groups_result EQUAL 0)
+    message(FATAL_ERROR
+      "Failed to enumerate worker placement groups: "
+      "${_wafer_worker_placement_groups_error}")
+  endif()
+  string(REPLACE "\n" ";"
+    _wafer_worker_placement_board_groups
+    "${_wafer_worker_placement_groups_output}")
+  foreach(_wafer_worker_placement_group IN LISTS
+      _wafer_worker_placement_board_groups)
+    add_test(
+      NAME wafer-board-worker-placement-${_wafer_worker_placement_group}
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_worker_placement_characterization_test.py
+        --group ${_wafer_worker_placement_group}
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-worker-placement-${_wafer_worker_placement_group}
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 30000
+        --repeat 3
+    )
+    set_tests_properties(
+      wafer-board-worker-placement-${_wafer_worker_placement_group}
+      PROPERTIES
+      LABELS "board;hardware;ncc;worker;placement;progress;performance;pending"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 1800
+    )
+  endforeach()
+  unset(_wafer_worker_placement_group)
+  unset(_wafer_worker_placement_board_groups)
+  unset(_wafer_worker_placement_groups_output)
+  unset(_wafer_worker_placement_groups_error)
+  unset(_wafer_worker_placement_groups_result)
   add_test(NAME wafer-board-ct-vector-calibration
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ct_vector_calibration_probe_test.py
@@ -1557,6 +2192,58 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
   set_tests_properties(
     wafer-board-memory-descriptor-calibration PROPERTIES
     LABELS "board;hardware;memory;dma;ddr;spm;calibration;manual"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 21600
+  )
+  add_test(NAME wafer-board-spm-conflict-equivalence-rank-one
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_memory_descriptor_calibration_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-spm-conflict-equivalence-rank-one
+      --conflict-equivalence
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 60000
+  )
+  set_tests_properties(
+    wafer-board-spm-conflict-equivalence-rank-one PROPERTIES
+    LABELS "board;hardware;memory;spm;conflict-equivalence;pending"
+    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 21600
+  )
+  add_test(NAME wafer-board-ddr-conflict-equivalence-rank-one
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_cache_coherence_calibration_probe_test.py
+      --repo-root ${CMAKE_SOURCE_DIR}
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/board-ddr-conflict-equivalence-rank-one
+      --ddr-conflict-equivalence
+      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+      --expected-runtime-library-sha256
+        ${_wafer_expected_tx_runtime_library_sha256}
+      --completion-timeout-ms 60000
+  )
+  set_tests_properties(
+    wafer-board-ddr-conflict-equivalence-rank-one PROPERTIES
+    LABELS "board;hardware;memory;ddr;conflict-equivalence;pending"
     RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
     SKIP_RETURN_CODE 77
     TIMEOUT 21600
@@ -1951,6 +2638,40 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
         TIMEOUT 3600
       )
     endforeach()
+    foreach(_wafer_collective_traffic_case IN LISTS
+        _wafer_collective_traffic_behavior_cases)
+      add_test(
+        NAME
+          wafer-board-collective-traffic-behavior-${_wafer_collective_traffic_case}
+        COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_collective_traffic_behavior_test.py
+          --wafer-compile-test $<TARGET_FILE:wafer-compile-test>
+          --wafer-run $<TARGET_FILE:wafer-run>
+          --tx8-objdump ${_wafer_tx81_objdump}
+          --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}/board-collective-traffic-${_wafer_collective_traffic_case}
+          --case ${_wafer_collective_traffic_case}
+          --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+          --expected-runtime-version
+            ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+          --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+          --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+          --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+          --expected-runtime-library-sha256
+            ${_wafer_expected_tx_runtime_library_sha256}
+          --completion-timeout-ms 60000
+          --repeat 3
+      )
+      set_tests_properties(
+        wafer-board-collective-traffic-behavior-${_wafer_collective_traffic_case}
+        PROPERTIES
+        LABELS
+          "board;hardware;collective-traffic;all-rank;direct-dte;pending"
+        RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 3600
+      )
+    endforeach()
     add_test(NAME wafer-board-dte-ncc-execution-probe
       COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_dte_ncc_execution_probe_test.py
@@ -2026,6 +2747,63 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       SKIP_RETURN_CODE 77
       TIMEOUT 1500
     )
+    add_test(NAME wafer-board-ddr-conflict-equivalence-cross-tile
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_tile_offset_probe_test.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-ddr-conflict-equivalence-cross-tile
+        --conflict-equivalence
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 600000
+        --repeat 2
+    )
+    set_tests_properties(
+      wafer-board-ddr-conflict-equivalence-cross-tile PROPERTIES
+      LABELS
+        "board;hardware;cluster;all-rank;ddr;conflict-equivalence;pending"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 7200
+    )
+    add_test(NAME wafer-board-spm-conflict-equivalence-cross-tile
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_spm_cross_tile_conflict_probe_test.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-spm-conflict-equivalence-cross-tile
+        --case
+          spm-physical-tile-ct-rdma-translation-0-phase-0-bytes-256-a-b
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 180000
+        --repeat 4
+    )
+    set_tests_properties(
+      wafer-board-spm-conflict-equivalence-cross-tile PROPERTIES
+      LABELS
+        "board;hardware;cluster;all-rank;spm;conflict-equivalence;pending"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 1800
+    )
     add_test(NAME wafer-board-ddr-sparse-high-offset-probe
       COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ddr_sparse_high_offset_probe_test.py
@@ -2089,6 +2867,8 @@ unset(_wafer_compiler_optimization_collective_cases)
 unset(_wafer_compiler_optimization_rank_one_cases)
 unset(_wafer_collective_characterization_case)
 unset(_wafer_collective_characterization_cases)
+unset(_wafer_collective_traffic_case)
+unset(_wafer_collective_traffic_behavior_cases)
 unset(_wafer_tx81_objdump)
 
 add_test(NAME wafer-numeric-dependency-record-python

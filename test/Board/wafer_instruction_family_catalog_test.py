@@ -13,6 +13,108 @@ import wafer_instruction_family_catalog as catalog
 import wafer_board_instruction_family_probe_test as runner
 
 
+def _build_args(
+    repo: pathlib.Path, work_dir: pathlib.Path
+) -> types.SimpleNamespace:
+    return types.SimpleNamespace(
+        repo_root=repo,
+        wafer_compile=repo / "build/wafer-dev/bin/wafer-compile",
+        wafer_run=repo / "build/wafer-dev/bin/wafer-run",
+        llvm_clangxx=repo / "build/wafer-dev/bin/clang++",
+        work_dir=work_dir,
+    )
+
+
+def validate_work_dir_cleanup_is_bounded() -> None:
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    forbidden = tuple(
+        dict.fromkeys(
+            (
+                repo,
+                *repo.parents,
+            )
+        )
+    )
+    for work_dir in forbidden:
+        args = _build_args(repo, work_dir)
+        try:
+            runner.require_build_args(args)
+        except RuntimeError as error:
+            assert "too broad" in str(error)
+        else:
+            raise AssertionError(f"broad work directory was accepted: {work_dir}")
+
+    with tempfile.TemporaryDirectory() as directory:
+        temporary = pathlib.Path(directory)
+        unknown = temporary / "unknown"
+        unknown.mkdir()
+        preserved = unknown / "preserve.txt"
+        preserved.write_text("user-owned\n", encoding="utf-8")
+        args = _build_args(repo, unknown)
+        runner.require_build_args(args)
+        try:
+            runner.write_source_program(args)
+        except RuntimeError as error:
+            assert "unknown entries" in str(error)
+        else:
+            raise AssertionError("unknown work-dir content was deleted")
+        assert preserved.read_text(encoding="utf-8") == "user-owned\n"
+
+        managed = temporary / "managed"
+        (managed / "source-program").mkdir(parents=True)
+        stale = managed / "source-program" / "stale"
+        stale.write_text("generated\n", encoding="utf-8")
+        external = temporary / "external"
+        external.mkdir()
+        external_file = external / "keep"
+        external_file.write_text("outside\n", encoding="utf-8")
+        (managed / "raw").symlink_to(external, target_is_directory=True)
+        args = _build_args(repo, managed)
+        runner.require_build_args(args)
+        source = runner.write_source_program(args)
+        assert source == managed / "source-program"
+        assert not stale.exists()
+        assert not (managed / "raw").exists()
+        assert external_file.read_text(encoding="utf-8") == "outside\n"
+        assert (source / "functions" / "forward.mlir").is_file()
+        assert (source / "functions" / "forward.meta").is_file()
+
+
+def validate_matching_terminal_completion() -> None:
+    terminal = 7
+    valid = "\n".join(
+        (
+            "board_stage: completion",
+            "board_stage: device-to-host",
+            "board_stage: cleanup",
+            "board_execution: true",
+            f"terminal_completion: {terminal} kind=entry_return",
+        )
+    )
+    runner.validate_board_lifecycle(valid, terminal)
+    for invalid in (
+        valid.replace(
+            f"terminal_completion: {terminal} kind=entry_return", ""
+        ),
+        valid.replace(
+            f"terminal_completion: {terminal} kind=entry_return",
+            f"terminal_completion: {terminal + 1} kind=entry_return",
+        ),
+        valid
+        + "\n"
+        + f"terminal_completion: {terminal} kind=entry_return",
+    ):
+        try:
+            runner.validate_board_lifecycle(invalid, terminal)
+        except RuntimeError as error:
+            assert "matching terminal completion" in str(error)
+        else:
+            raise AssertionError(
+                "missing, mismatched, or duplicate terminal completion "
+                "was accepted"
+            )
+
+
 def _encoded_words(
     dtype_name: str, values: tuple[float, ...] | list[float]
 ) -> tuple[int, ...]:
@@ -1129,6 +1231,90 @@ def validate_arg_extrema_composite_oracles() -> None:
     assert len(set(sources)) == 3
 
 
+def validate_argmin_pending_domain_observations() -> None:
+    tie = catalog.CASES_BY_NAME[
+        "peripheral-argmin-tie-f16-observed"
+    ]
+    nan = catalog.CASES_BY_NAME[
+        "peripheral-argmin-nan-f16-observed"
+    ]
+    assert tie.is_observation and nan.is_observation
+    assert (tie.case_id, nan.case_id) == (247, 248)
+    assert (tie.result_bytes, tie.output_span, tie.aux_span) == (8, 8, 0)
+    assert (nan.result_bytes, nan.output_span, nan.aux_span) == (8, 8, 0)
+
+    tie_sources = []
+    for sample, candidates in enumerate(catalog.ARGMIN_TIE_INDEX_SETS):
+        built = catalog.build_case_payload(tie, sample=sample)
+        source_bits = struct.unpack_from(
+            "<128H", built.payload, catalog.BODY_OFFSET
+        )
+        tie_sources.append(source_bits)
+        assert {
+            index for index, bits in enumerate(source_bits) if bits == 0x3800
+        } == set(candidates)
+        for selected in candidates:
+            result = (
+                struct.pack("<H", 0x3800)
+                + _output_seed_padding()
+                + struct.pack("<I", selected)
+            )
+            classified = catalog.classify_argmin_domain_observation(
+                tie, sample, result
+            )
+            assert classified is not None
+            assert classified["classification"] == "tied-minimum"
+            assert tuple(classified["candidate_indices"]) == candidates
+    assert len(set(tie_sources)) == 3
+
+    nan_sources = []
+    for sample, (
+        nan_index,
+        nan_bits,
+        finite_index,
+    ) in enumerate(catalog.ARGMIN_NAN_VECTORS):
+        built = catalog.build_case_payload(nan, sample=sample)
+        source_bits = struct.unpack_from(
+            "<128H", built.payload, catalog.BODY_OFFSET
+        )
+        nan_sources.append(source_bits)
+        assert source_bits[nan_index] == nan_bits
+        assert source_bits[finite_index] == 0x3800
+        finite_result = (
+            struct.pack("<H", 0x3800)
+            + _output_seed_padding()
+            + struct.pack("<I", finite_index)
+        )
+        finite_class = catalog.classify_argmin_domain_observation(
+            nan, sample, finite_result
+        )
+        assert finite_class is not None
+        assert finite_class["classification"] == "finite-minimum-selected"
+        nan_result = (
+            struct.pack("<H", nan_bits | 0x0200)
+            + _output_seed_padding()
+            + struct.pack("<I", nan_index)
+        )
+        nan_class = catalog.classify_argmin_domain_observation(
+            nan, sample, nan_result
+        )
+        assert nan_class is not None
+        assert nan_class["classification"].startswith("nan-selected-")
+    assert len(set(nan_sources)) == 3
+
+    incoherent = (
+        struct.pack("<H", 0x3800)
+        + _output_seed_padding()
+        + struct.pack("<I", 126)
+    )
+    try:
+        catalog.classify_argmin_domain_observation(nan, 0, incoherent)
+    except RuntimeError as error:
+        assert "incoherent" in str(error)
+    else:
+        raise AssertionError("incoherent ArgMin value/index pair was accepted")
+
+
 def validate_probe_seed_is_ncc_local_and_completed() -> None:
     probe = (
         pathlib.Path(__file__).resolve().parent
@@ -1277,6 +1463,38 @@ def validate_unpool_rows() -> None:
 
 
 def validate_unpool_capability_rows() -> None:
+    protocol = (
+        pathlib.Path(__file__).resolve().parent
+        / "Inputs"
+        / "wafer_instruction_family_probe_protocol.h"
+    ).read_text()
+    assert (
+        "#define WAFER_IFP_REPEATED_SENTINEL_OFFSET 2048U"
+        in protocol
+    )
+    assert (
+        "#define WAFER_IFP_REPEATED_SENTINEL_BYTES 512U"
+        in protocol
+    )
+    assert (
+        "WAFER_IFP_STEP_REPEATED_OVERLAP_VALUES_STAGED = "
+        "UINT32_C(1) << 4"
+        in protocol
+    )
+    assert catalog.REPEATED_UNPOOL_SENTINEL_OFFSET == 2048
+    assert catalog.REPEATED_UNPOOL_SENTINEL_BYTES == 512
+    assert catalog.STEP_REPEATED_OVERLAP_VALUES_STAGED == 1 << 4
+
+    rotations = tuple(
+        catalog._repeated_unpool_sentinels(sample)
+        for sample in range(4)
+    )
+    assert len(set(rotations)) == 4
+    for position in range(4):
+        assert {
+            rotation[position][0] for rotation in rotations
+        } == {256.0, 320.0, 384.0, 448.0}
+
     expected_rows = {
         "unpool-index-bf16-observed": (236, "BF16", "NO_ORACLE", 512, 512, 256),
         "unpool-index-f32-observed": (237, "F32", "NO_ORACLE", 1024, 1024, 512),
@@ -1374,7 +1592,7 @@ def validate_unpool_capability_rows() -> None:
         "unpool-mask-f16-repeated-overlap-observed",
     ):
         case = catalog.CASES_BY_NAME[name]
-        built = catalog.build_case_payload(case)
+        built = catalog.build_case_payload(case, sample=2)
         source = struct.unpack_from(
             "<960e", built.payload, catalog.BODY_OFFSET
         )
@@ -1402,6 +1620,27 @@ def validate_unpool_capability_rows() -> None:
                 global_positions.append(maximum[2])
         assert relative_indices == [5, 3, 2, 0]
         assert global_positions == [(1, 2)] * 4
+        sentinel_begin = (
+            catalog.BODY_OFFSET + catalog.REPEATED_UNPOOL_SENTINEL_OFFSET
+        )
+        sentinels = struct.unpack_from(
+            "<256e", built.payload, sentinel_begin
+        )
+        assert sentinels == tuple(
+            value
+            for position in catalog._repeated_unpool_sentinels(2)
+            for value in position
+        )
+        assert (
+            built.payload[
+                catalog.BODY_OFFSET + case.result_bytes : sentinel_begin
+            ]
+            == bytes([catalog.SLOT_CANARY])
+            * (
+                catalog.REPEATED_UNPOOL_SENTINEL_OFFSET
+                - case.result_bytes
+            )
+        )
 
     probe = (
         pathlib.Path(__file__).resolve().parent
@@ -1439,6 +1678,213 @@ def validate_unpool_capability_rows() -> None:
         if "AVG" not in symbol:
             assert "wafer_tx81_pool_indexedmax" in body
             assert "wafer_tx81_local_fence" not in body
+        if "REPEATED_OVERLAP" in symbol:
+            assert "wafer_ifp_wait_worker0_drain();" in body
+            assert "wafer_ifp_copy_spm_bytes(" in body
+            assert (
+                "WAFER_IFP_STEP_REPEATED_OVERLAP_VALUES_STAGED"
+                in body
+            )
+
+
+def validate_repeated_unpool_bounded_oracle() -> None:
+    for name in (
+        "unpool-index-f16-repeated-overlap-observed",
+        "unpool-mask-f16-repeated-overlap-observed",
+    ):
+        case = catalog.CASES_BY_NAME[name]
+        sample = 1
+        built = catalog.build_case_payload(case, sample=sample)
+        raw = bytearray(
+            [runner.OUTPUT_INITIAL_CANARY] * catalog.RESOURCE_BYTES
+        )
+        words = [0] * catalog.RECORD_WORDS
+        values = {
+            "MAGIC": catalog.RECORD_MAGIC,
+            "SCHEMA_AND_WORDS": (
+                catalog.SCHEMA << 32
+            ) | catalog.RECORD_WORDS,
+            "STATUS": 0,
+            "CASE": case.case_id,
+            "DISPOSITION": case.disposition,
+            "FAMILY": case.family,
+            "DTYPE": case.dtype,
+            "ORACLE": case.oracle,
+            "RESULT_BYTES": case.result_bytes,
+            "OUTPUT_SPAN": case.output_span,
+            "AUX_SPAN": case.aux_span,
+            "SAMPLE": sample,
+            "REQUEST_GUARD": catalog.REQUEST_GUARD,
+            "OUTPUT_DDR_OFFSET": catalog.OUTPUT_DDR_OFFSET,
+            "SLOT_BYTES": catalog.SLOT_BYTES,
+            "BODY_OFFSET": catalog.BODY_OFFSET,
+            "STEP_FLAGS": (
+                catalog.STEP_TARGET_ISSUED
+                | catalog.STEP_FINAL_FENCE_COMPLETED
+                | catalog.STEP_REPEATED_OVERLAP_VALUES_STAGED
+            ),
+            "RECORD_GUARD": catalog.RECORD_GUARD,
+        }
+        for field, value in values.items():
+            words[catalog.REC[field]] = value
+        struct.pack_into(f"<{catalog.RECORD_WORDS}Q", raw, 0, *words)
+
+        output_begin = catalog.OUTPUT_DDR_OFFSET
+        output_slot = bytearray(built.expected_output_slot)
+        logical_begin = catalog.BODY_OFFSET
+        output_slot[
+            logical_begin : logical_begin + case.result_bytes
+        ] = bytes(case.result_bytes)
+        target_begin = (
+            logical_begin
+            + catalog.REPEATED_UNPOOL_TARGET_POSITION * 64 * 2
+        )
+        winner_position = 2
+        struct.pack_into(
+            "<64e",
+            output_slot,
+            target_begin,
+            *catalog._repeated_unpool_sentinels(sample)[winner_position],
+        )
+        raw[output_begin : output_begin + catalog.SLOT_BYTES] = output_slot
+        expected_aux = catalog.repeated_unpool_expected_aux_slot()
+        raw[
+            catalog.AUX_DDR_OFFSET :
+            catalog.AUX_DDR_OFFSET + catalog.SLOT_BYTES
+        ] = expected_aux
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "repeated-unpool.raw"
+            output.write_bytes(raw)
+            observation = runner.validate_output(
+                output,
+                case,
+                built.expected_output_slot,
+                built.payload[
+                    3 * catalog.SLOT_BYTES : 4 * catalog.SLOT_BYTES
+                ],
+                sample,
+            )
+            semantic = observation["semantic_observation"]
+            assert semantic["classification"] == "uniform-candidate-subset"
+            assert semantic["candidate_source_masks"] == (
+                1 << winner_position,
+            )
+            assert set(semantic["channel_candidate_source_masks"]) == {
+                (1 << winner_position,)
+            }
+            assert set(semantic["channel_candidate_value_masks"]) == {
+                (1 << ((winner_position + sample) % 4),)
+            }
+            assert semantic["non_target_zero_positions"] == 14
+            assert semantic["padding_mode"] == "seed"
+
+            heterogeneous = bytearray(raw)
+            sentinels = catalog._repeated_unpool_sentinels(sample)
+            for channel in range(64):
+                position = channel % 4
+                struct.pack_into(
+                    "<e",
+                    heterogeneous,
+                    output_begin + target_begin + channel * 2,
+                    sentinels[position][channel],
+                )
+            output.write_bytes(heterogeneous)
+            heterogeneous_observation = runner.validate_output(
+                output,
+                case,
+                built.expected_output_slot,
+                built.payload[
+                    3 * catalog.SLOT_BYTES : 4 * catalog.SLOT_BYTES
+                ],
+                sample,
+            )["semantic_observation"]
+            assert (
+                heterogeneous_observation["classification"]
+                == "lane-varying-candidate-subsets"
+            )
+            assert (
+                heterogeneous_observation["candidate_source_masks"] == ()
+            )
+            assert {
+                (entry["masks"], entry["channels"])
+                for entry in heterogeneous_observation[
+                    "candidate_source_mask_histogram"
+                ]
+            } == {
+                ((1 << position,), 16) for position in range(4)
+            }
+
+            mutations = (
+                (
+                    output_begin
+                    + catalog.BODY_OFFSET
+                    + case.result_bytes,
+                    "physical padding",
+                ),
+                (
+                    output_begin
+                    + catalog.BODY_OFFSET
+                    + case.output_span,
+                    "SPM guard",
+                ),
+                (
+                    catalog.AUX_DDR_OFFSET + catalog.BODY_OFFSET,
+                    "auxiliary",
+                ),
+                (output_begin + target_begin, "target channel"),
+                (output_begin + catalog.BODY_OFFSET, "non-target position"),
+            )
+            for offset, diagnostic in mutations:
+                corrupted = bytearray(raw)
+                corrupted[offset] ^= 1
+                output.write_bytes(corrupted)
+                try:
+                    runner.validate_output(
+                        output,
+                        case,
+                        built.expected_output_slot,
+                        built.payload[
+                            3 * catalog.SLOT_BYTES :
+                            4 * catalog.SLOT_BYTES
+                        ],
+                        sample,
+                    )
+                except RuntimeError as error:
+                    assert diagnostic in str(error)
+                else:
+                    raise AssertionError(
+                        f"{case.name}: {diagnostic} corruption was accepted"
+                    )
+
+            padding_only = bytearray(raw)
+            padding_only[
+                output_begin :
+                output_begin + catalog.SLOT_BYTES
+            ] = built.expected_output_slot
+            padding_only[
+                output_begin
+                + catalog.BODY_OFFSET
+                + case.result_bytes
+            ] ^= 1
+            output.write_bytes(padding_only)
+            try:
+                runner.validate_output(
+                    output,
+                    case,
+                    built.expected_output_slot,
+                    built.payload[
+                        3 * catalog.SLOT_BYTES :
+                        4 * catalog.SLOT_BYTES
+                    ],
+                    sample,
+                )
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError(
+                    f"{case.name}: padding-only writeback was accepted"
+                )
 
 
 def validate_conv_oracle() -> None:
@@ -1846,6 +2292,8 @@ def validate_peripheral_exact_and_observation_rows() -> None:
         "unpool-mask-f16-repeated-overlap-observed",
         "peripheral-bilinear-f16",
         "peripheral-argmin-negative-f16-observed",
+        "peripheral-argmin-tie-f16-observed",
+        "peripheral-argmin-nan-f16-observed",
         "peripheral-factorize-f32-observed",
         "peripheral-lut32-observed",
         "peripheral-randgen-f16-observed",
@@ -1878,15 +2326,15 @@ def validate_peripheral_exact_and_observation_rows() -> None:
     ct_capability = runner.select_cases(
         types.SimpleNamespace(selected_cases=None, suite="ct-capability")
     )
-    assert len(ct_capability) == 88
+    assert len(ct_capability) == 90
     assert sum(not case.is_observation for case in ct_capability) == 72
-    assert sum(case.is_observation for case in ct_capability) == 16
+    assert sum(case.is_observation for case in ct_capability) == 18
     assert ct_capability[0].name == "pool-indexed-max-f16-k3x2-s2x1"
     assert not ({case.case_id for case in ct_capability} & set(range(196, 204)))
     assert {case.case_id for case in ct_capability} == {
         case.case_id
         for case in catalog.SAFE_CASES
-        if 143 <= case.case_id <= 246
+        if 143 <= case.case_id <= 248
     }
     raw_reduce_name = "reduce-sum-f16-n-raw-observed"
     try:
@@ -1907,7 +2355,8 @@ def validate_peripheral_exact_and_observation_rows() -> None:
         / "Inputs"
         / "wafer_instruction_family_probe.c"
     ).read_text()
-    assert "get_spm_memory_mapping" not in probe
+    assert "get_spm_memory_mapping" in probe
+    assert "wafer_ifp_copy_spm_bytes" in probe
     assert "wafer_ifp_guard_mismatches" not in probe
     assert "output_ddr + WAFER_IFP_AUX_DDR_OFFSET" in probe
     assert "WAFER_IFP_REDUCE_RAW_BASE" not in probe
@@ -2044,8 +2493,8 @@ def validate_reduce_capability_matrix() -> None:
 
 
 def main() -> int:
-    assert len(catalog.SAFE_CASES) == 160
-    assert len(catalog.CATALOG) == 168
+    assert len(catalog.SAFE_CASES) == 162
+    assert len(catalog.CATALOG) == 170
     assert {case.case_id for case in catalog.SAFE_CASES} == (
         set(range(1, 30))
         | set(range(100, 144))
@@ -2076,7 +2525,7 @@ def main() -> int:
             234,
             235,
         }
-        | set(range(236, 247))
+        | set(range(236, 249))
     )
     assert {
         (case.symbol, case.reason_name)
@@ -2177,17 +2626,21 @@ def main() -> int:
     validate_gemm_f16_oriented_tt_oracle()
     validate_gemm_f16_psum_oracle()
     validate_arg_extrema_composite_oracles()
+    validate_argmin_pending_domain_observations()
     validate_probe_seed_is_ncc_local_and_completed()
     validate_conv_oracle()
     validate_pool_max_oracle()
     validate_unpool_rows()
     validate_unpool_capability_rows()
+    validate_repeated_unpool_bounded_oracle()
     validate_img2col_oracle()
     validate_lut16_oracle()
     validate_reduce_capability_matrix()
     validate_extended_pool_unpool_oracles()
     validate_pool_capability_matrix()
     validate_peripheral_exact_and_observation_rows()
+    validate_work_dir_cleanup_is_bounded()
+    validate_matching_terminal_completion()
 
     print("wafer_instruction_family_catalog_test: passed")
     return 0

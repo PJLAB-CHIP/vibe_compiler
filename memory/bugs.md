@@ -1554,3 +1554,32 @@
   RS 16个destination可区分、AG逐source rank swap改变expected。
 - 防复发：数值板测的exact比较先通过mutation adequacy gate；“逐字节比较”只描述比较器，不能证明payload能区分
   被测错误模式。
+
+## 2026-07-26 校准文档planned行和旧synthetic blocker造成假准备
+
+- 现象：校准文档列出了worker placement、DDR active-rank、SPM conflict、engine pipeline等后续项，但部分只有
+  planned表格或synthetic blocked catalog row；即使真实adapter后来落地，旧blocked matrix仍会让inventory同时报告
+  “可执行”和“不可执行”。
+- 根因：文档、domain设计矩阵和真实board execution asset没有共同的semantic-key inventory；将case设计对象误当成
+  package/ELF/wafer-run路径，也没有在新owner接管后删除旧catalog的重复事实源。
+- 修复模式：central inventory逐family绑定真实catalog symbol、board/no-card CTest、runner batch、oracle和activation
+  gate；真实adapter完成后，原generic catalog只保留其仍拥有的可执行case、delegated provenance和真正typed boundary，
+  删除被新owner替代的synthetic blockers。机器测试导入对象并比较四方精确集合。
+- 防复发：新增或改写校准文档pending语义时，同批要求inventory解析成功；板端正向必须可走完整source/package/device
+  ELF/wafer-run链。无法表示的项必须有会实际拒绝serialization的host test，不能只写reason字符串。owner迁移时搜索并
+  清除旧case factory、导出集合和计数断言，避免一项多份状态真相。
+
+## 2026-07-26 bounded writeback不能代替collision区分oracle
+
+- 现象：首版Unpool repeated-overlap case让四个pool window都选中同一global source value，但四份pooled value
+  完全相同；host对`NO_ORACLE`只要求2048B observation span里任一字节变化。只改logical result之后的padding，
+  不产生aux也不触及collision target，仍会被接受。
+- 根因：输入只区分“有没有重叠”，没有区分四个竞争source；同时把bounded range检查误当成semantic observation，
+  未用padding-only、aux corruption和target corruption反例验证判定器。
+- 修复模式：先运行真实indexed-max生成指向同一global位置但local index为`5/3/2/0`的四组aux，等待producer
+  完成后在mapped SPM中注入按sample轮换的四组不同FP16 sentinel，再发射index/mask Unpool。host逐bit检查aux；
+  64个target channel各自必须由候选四组sentinel的非空subset解释，并保留uniform/lane-varying分类、
+  position/value mask和histogram；不能强迫不同channel共享同一赢家集合。非target和physical tail只能保持
+  逐position统一的zero或seed，slot外guard保持不变。
+- 防复发：每个bounded behavior case都要列出它声称区分的候选模型，并至少有“只改padding”“破坏aux/metadata”
+  和“破坏一个semantic target”三类mutation adequacy反例。完整span比较只证明越界保护，不证明被测语义发生。

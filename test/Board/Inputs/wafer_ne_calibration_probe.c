@@ -6,6 +6,9 @@
 
 #include <stdint.h>
 
+#define WAFER_NEC_PMU_BASE UINT64_C(0x590000)
+#define WAFER_NEC_PMU_STABLE_RETRIES 8U
+
 typedef struct WaferNECCase {
   uint32_t case_id;
   uint32_t dtype;
@@ -26,6 +29,39 @@ typedef struct WaferNECCase {
   uint32_t aux_span;
   uint32_t disposition;
 } WaferNECCase;
+
+typedef struct WaferNECPMU {
+  uint32_t enable;
+  uint32_t ne_instructions;
+  uint32_t ne_blocking;
+  uint64_t ne_execution;
+} WaferNECPMU;
+
+static uint32_t wafer_nec_read_pmu32(uint32_t offset) {
+  return *(const volatile uint32_t *)(uintptr_t)(WAFER_NEC_PMU_BASE + offset);
+}
+
+static uint64_t wafer_nec_read_pmu64(uint32_t low_offset) {
+  uint32_t low = 0;
+  uint32_t high_after = 0;
+  for (uint32_t retry = 0; retry < WAFER_NEC_PMU_STABLE_RETRIES; ++retry) {
+    uint32_t high_before = wafer_nec_read_pmu32(low_offset + 4U);
+    low = wafer_nec_read_pmu32(low_offset);
+    high_after = wafer_nec_read_pmu32(low_offset + 4U);
+    if (high_before == high_after)
+      break;
+  }
+  return ((uint64_t)high_after << 32) | low;
+}
+
+static WaferNECPMU wafer_nec_read_pmu(void) {
+  WaferNECPMU result;
+  result.enable = wafer_nec_read_pmu32(GR_PMU_EN);
+  result.ne_instructions = wafer_nec_read_pmu32(GR_PMU_NE_INST_NUMS);
+  result.ne_blocking = wafer_nec_read_pmu32(GR_PMU_NE_BLOCKING_TIME);
+  result.ne_execution = wafer_nec_read_pmu64(GR_PMU_NE_EXE_TIME);
+  return result;
+}
 
 static void wafer_nec_cache_range(uint64_t begin, uint32_t bytes,
                                   uint32_t invalidate_only) {
@@ -660,6 +696,7 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
                     WAFER_NEC_SPM_AUX, WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SLOT_BYTES, 0, 0, 0, 1, 1, 1,
                     Fmt_UINT8);
+    WaferNECPMU before = wafer_nec_read_pmu();
     uint64_t execute_result = 0U;
     if (selected.kind == WAFER_NEC_GEMM)
       execute_result = wafer_nec_issue_gemm(&selected);
@@ -678,6 +715,15 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
                       WAFER_NEC_SLOT_BYTES, WAFER_NEC_SLOT_BYTES,
                       0, 0, 0, 1, 1, 1, Fmt_UINT8);
       wafer_tx81_local_fence();
+      WaferNECPMU after = wafer_nec_read_pmu();
+      record[WAFER_NEC_REC_PMU_ENABLE] = after.enable;
+      record[WAFER_NEC_REC_NE_INST_DELTA] =
+          (uint32_t)(after.ne_instructions - before.ne_instructions);
+      record[WAFER_NEC_REC_NE_BLOCKING_DELTA] =
+          (uint32_t)(after.ne_blocking - before.ne_blocking);
+      record[WAFER_NEC_REC_NE_EXEC_DELTA] =
+          after.ne_execution - before.ne_execution;
+      record[WAFER_NEC_REC_PMU_BASE] = WAFER_NEC_PMU_BASE;
     }
     record[WAFER_NEC_REC_STATUS] = status;
   }
