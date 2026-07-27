@@ -1,9 +1,11 @@
 # Collective Hardware Characterization 实施计划
 
-状态：第一批9组case已统一改为FP16；此前执行的3组I8 AllGather和1组I8 ReduceScatter
-不再作为通信算子资格证据，当前9组FP16 case均须由新构建、新启动和新输出取得板端结论，因此本campaign仍未
-完成。当前9组algorithm与11组AllToAll/Permute的fresh no-card均通过；随后板端批次的唯一资格Add
-首次发射即completion timeout，20个FP16通信case均未发射，设备需重启后再继续。本文只组织case施工和验证；case定义、执行状态、原始
+状态：第一批9组FP16 algorithm case与11组FP16 AllToAll/Permute traffic case已在重启后的合格会话
+fresh串行通过，开场FP16 exact Add资格测试为1/1。此前执行的3组I8 AllGather、1组I8
+ReduceScatter和11组I8 AllToAll/Permute不再作为通信算子资格证据。首次AllGather曾因host oracle仍匹配
+旧cluster launch字符串而被误报；修正后只使用新构建、新启动和新输出重新执行并通过，不回放或重判旧输出。
+当前结论只闭合已测FP16 payload、accepted Instr结构、完整结果、status/completion与既有lifecycle oracle，
+不外推其它shape、dtype、route或production cost。本文只组织case施工和验证；case定义、执行状态、原始
 证据及最终compiler消费结论统一写入`docs/tx81-compiler-hardware-calibration.md`。
 
 ## Pipeline Contract

@@ -1,8 +1,11 @@
 # Production Compiler Optimization Board Campaign 实施计划
 
-状态：pre-board资产已完成；2026-07-27首轮板端执行中reciprocal implementation通过；旧common-factor
-执行使用了错误的数值比较合同，resident fanout暴露signed-zero差异，二者都须按当前FP16合同fresh执行，因此campaign仍未
-完成。本文只组织上板前的同源候选对照资产和执行批次，不复制
+状态：当前8个同源paired case已经按FP16合同fresh串行执行并8/8通过：common-factor、reciprocal、
+resident fanout、consumer-local recompute、ready-order、两个GEMM和tree all-reduce。tree all-reduce
+首次执行被旧`cluster-x16` launch字符串的host oracle误报；修正后由新构建、新启动和新输出fresh复跑通过，
+不回放或重判旧输出。复用的Direct-DTE production vertical也在本轮focused FP16批次fresh通过，因此8+1
+只取得当前输入、结构、数值、guard、completion和既有oracle下的production winner correctness资格；不外推
+未测shape/dtype/route，不据此写入性能收益或production cost。本文只组织上板前的同源候选对照资产和执行批次，不复制
 `tasks/06-physical-dataflow-synthesis.md`中的candidate语义，也不把板端观测反写成legality。该8+1集合只做
 当前production winner qualification，不代表compiler选择空间或硬件行为完备；独立collective矩阵见
 `tasks/plans/collective-hardware-characterization.md`，所有最终case状态和证据统一归入硬件校准文档。
