@@ -1,5 +1,8 @@
 # TX81 Compiler-Hardware Boundary Calibration
 
+状态：Q37已完成。当前profile的可执行校准项已有fresh板端结论；不可执行或仍不可观测的边界以明确
+`unknown/excluded`及保守compiler处理闭合。
+
 本文是TX81硬件行为对Wafer compiler边界的profile-scoped校准台账。它回答三类问题：
 
 1. 哪些硬件事实会改变IR legality、physical planning、instruction lowering、candidate cost或runtime
@@ -1222,10 +1225,11 @@ oracle、no-card CTest、board CTest及runner batch；不可观测项则绑定�
 没有“只有文档记录”的第三种状态。本轮已将其中剩余104个board CTest全部fresh执行通过，结论只按各自
 oracle消费，不把correctness/observation升级成未测cost或通用语义。physical queue
 resident数、SPM/DDR bank identity、absolute per-worker timestamp、physical arbiter policy、8/15源DTE
-fan-in、device phase、physical route、cross-card transport及production three-stage producer缺口由各自
+fan-in、device phase、physical route及cross-card transport由各自
 typed gate保守关闭。历史op013→op014不进入当前安全队列；native `dims=HW` Concat是错误指令用法，
 永久static-negative并从全部测试面删除。准备完成和局部板端证据都不
-等于Q37完成，也不提前授权production scheduling变化。
+自动等于任务完成；本轮剩余合法case已经全部fresh执行，未观测边界也有明确保守处理，因此Q37完成。
+该完成不提前授权Q38 production scheduling变化。
 
 板端统一入口为：
 

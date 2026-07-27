@@ -65,8 +65,11 @@ Q32 + Q6.B + Q36 + configured board -> Q35
 已完成float candidate支持：
 Q32 -> Q32.N
 
-active compiler-sensitive hardware evidence、production optimizer paired qualification与multi-engine overlap：
+已完成compiler-sensitive hardware evidence与production optimizer paired qualification：
 Q32 + Q6.B + configured board -> Q37
+
+active multi-engine software pipelining：
+Q32 + Q6.B + Q37 -> Q38
 
 active profiler foundation / later ranking calibration：
 Q32 + Q6.B -> Q9 profiler foundation -> validated PMU/timing + held-out -> Q9 ranking calibration
@@ -87,8 +90,8 @@ transport lifecycle。旧四值`TargetLaunchABIId`、workload-specific spelling�
 compiler publication、manifest/verifier、no-card、BoardRuntimeDriver和TX provider已重放；旧schema和旧字段只保留
 fail-closed负例。板卡case扩展不再受该边界阻塞。
 
-Q37 compiler-sensitive hardware calibration、production optimizer paired qualification和multi-engine software
-pipelining正在执行。此前所谓raw hardware-calibration checkpoint完成，只表示已有correctness/legality证据足以
+Q37 compiler-sensitive hardware calibration和production optimizer paired qualification已经完成；multi-engine
+software pipelining拆分为Q38继续执行。此前所谓raw hardware-calibration checkpoint完成，只表示已有correctness/legality证据足以
 维持保守fallback，不表示硬件行为或性能表面完备。后续不重复已上板的raw case，但继续补充能区分真实compiler
 选择、具有matched control且能形成窄capability/cost输入的case；不通过无控制地扩大descriptor Cartesian matrix
 累计通过数。Q37 Checkpoint A2已把统一校准文档中所有尚无板端执行证据的合法语义项收敛到
@@ -145,8 +148,8 @@ instruction/layout默认单tile执行，只有rank-dependent语义才启动多ra
 no-card验证；不能只检查宽泛文件存在、手填`remaining_preparation`或由邻近case外推。
 旧版机器索引曾错误报告`28/28 ready`：它只证明28个域绑定了文件和CTest，没有证明每个校准叶子存在。
 该结论已撤回并按叶子重建门禁。当前raw hardware checkpoint的safe/default、held-out和显式隔离case已经按处置完成；
-Q37整体继续`doing`，因为software-pipeline vertical尚未实现和验证，且新增production optimizer paired campaign
-虽已完成pre-board准备，仍待在后续同一合格板端会话执行；这不把raw calibration的累计通过数或未知项重新变成active工作。当前28个导航域
+production optimizer paired campaign及剩余合法inventory也已取得fresh板端结论，Q37据此完成。
+software-pipeline vertical尚未实现和验证的部分只属于Q38；这不把raw calibration的累计通过数或未知项重新变成active工作。当前28个导航域
 下面的叶子均由机器索引解析到concrete catalog/contract对象或带理由
 的非执行对象；机器矩阵当前闭合125个叶子：73个`board-positive`、25个`board-observation`、
 6个`delegated-positive`、18个`static-negative`和3个`isolated-deferred`，且125个叶子全部ready。
@@ -209,9 +212,9 @@ target-illegal。上述已有raw case对应的correctness checkpoint已闭合，
 hardware characterization。校准文档全部未执行语义项的case、dispatcher、host oracle、no-card、board
 CTest和显式runner已经按activation gate落地；首轮合法清单已有79 pass、9个普通失败、91个未执行，
 不可表达项有typed fail-closed gate。
-Q37同时消费
-已闭合能力实现和验证multi-buffer software-pipeline，并完成独立的production optimizer同源成对资格资产；
-二者都不以raw case累计通过数推进。
+Q37以supported、unsupported或明确Unknown加保守compiler处理闭合硬件校准，并完成独立的production
+optimizer同源成对资格资产。Q38消费这些边界实现和验证multi-buffer software-pipeline，不以raw case
+累计通过数推进，也不重跑已有结论的校准case。
 SDK定义的`get_spm_memory_mapping(offset)`是`0x30400000 + offset`的uncached weak-order SPM alias；
 该alias使用有序load/store与`fence`/`sync`，不得执行dcache clean/invalidate。只有raw cacheable SPM alias
 和cacheable DDR按各自owned range使用cache操作。
@@ -242,7 +245,7 @@ exact round-trip和双侧guard；这闭合了workspace allocation-only、超过3
 allocation-end range。compiler/runtime据此保持i64 base/offset/size与checked `base + offset + length`，
 workspace不做HostToDevice初始化；结果不外推64GiB、其它allocator碎片状态、physical bank/controller/hop或
 并发带宽。整批末尾ordinary Add逐bit exact，确认该clean execution会话正常收口。
-当前queue active occupancy与full行为仍在Q37内保持`unknown`：静态depth不直接作为occupancy证据。普通
+Q37对queue active occupancy与full行为的最终结论保持`unknown`并保留保守window：静态depth不直接作为occupancy证据。普通
 calibration只运行1/2/4（TDMA 1/2）。修正builder生命周期和逐issue观察位置后，CT/NE/RDMA/WDMA exact
 `D=6`与TDMA exact `D=4`已分别由单engine、单case、单样本及前后known-good Add heartbeat闭合
 submission/completion/count/output/guard。经显式manual授权，五类engine的typed tight `D+1`也逐项通过：
@@ -397,7 +400,8 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q32.C | `candidate-search-throughput` | `done` | Q32 | candidate domain、rank/whole-variant budget、exact gate和winner语义保持不变；已闭合passing-ordinal early stop、invocation-local bounded executor/context与task parse复用、accepted worker module owner fresh import/recost、exact attempt-plan selective owner parse及fully-gated Pareto前置的late ABI/LLVM。结构回归覆盖ordinal/overshoot、rank 1/16、duplicate/malformed metadata、direct skipped-parse、dominance/equivalence/cap/late failure；修改前同一large-K case的development运行超过10分钟仍未完成，优化后Release单次wall 1.62s，实际长等待问题已经消除；16-rank tiny Llama block wall 46.12s。没有保留或构造修改前二进制性能基线，仅报告优化后absolute wall-time，不计算不能隔离build mode贡献的精确倍数；全部502个unit分片及4条production-shaped lit通过。 | 06、14、16；`tasks/archive/whole-variant-search-throughput.md` |
-| Q37 | `tx81-compiler-hardware-calibration-and-multi-engine-software-pipelining` | `doing` | Q32、Q6.B + configured board | 当前pending inventory中真正剩余的104个board CTest已按普通18项、危险尾部86项串行fresh执行并104/104通过；危险尾部包含SPM sustained 4、queue 30、wait 18、subset 12、worker 14及最后的single-destination source-1D raw shuffle 8。ArgMin旧CSR代次、NE tail旧archive依赖和NE wait/subset转置RHS stride三个fixture问题均先修复并通过no-card，再由新板端输出闭合；不读取、回放或重判旧输出。此前production optimizer 8/8、collective algorithm 9/9、AllToAll/Permute 11/11、generic engine single 1/1和pair 60/60等既有结论保持，不重复上板。raw broadcast/scatter各8/8、shuffle 8/8；shuffle只验证单目的source gather，不解释成multi-destination或AllToAll。native Concat `dims=HW`永久非法且无执行入口。physical queue resident数、SPM/DDR bank identity、per-worker timestamp、physical arbiter、8/15源DTE fan-in、device phase、physical route、跨卡transport及production three-stage producer继续typed fail closed；software-pipeline实现仍未完成，因此Q37保持doing。 | 06、08-17；`docs/tx81-compiler-hardware-calibration.md`；`tasks/plans/multi-engine-software-pipelining.md` |
+| Q37 | `tx81-compiler-hardware-calibration` | `done` | Q32、Q6.B + configured board | 最后104个board CTest按普通18项、危险尾部86项串行fresh执行并104/104通过；三个fixture问题先通过no-card修复，再由新板端输出闭合。此前production optimizer 8/8、collective algorithm 9/9、AllToAll/Permute 11/11、generic engine single 1/1和pair 60/60等既有结论保持且不重复上板；raw broadcast/scatter/shuffle各8/8，shuffle只证明单目的source gather。native Concat `dims=HW`永久非法。physical queue resident数、SPM/DDR bank identity、per-worker timestamp、physical arbiter、8/15源DTE fan-in、device phase、physical route及跨卡transport以明确Unknown/unsupported和保守compiler处理闭合，不阻塞校准完成。 | 06、08-17；`docs/tx81-compiler-hardware-calibration.md` |
+| Q38 | `multi-engine-software-pipelining` | `doing` | Q32、Q6.B、Q37 | 消费Q37已闭合的engine、worker、queue、dependency、completion和overlap边界，在complete-rank actual clone中实现通用multi-buffer、prologue/steady/epilogue、resource-aware issue order及completion-domain latest-legal drain/fence；每个候选重跑SPM/DDR、Instr、Target、package、model和board correctness gate。当前production three-stage producer尚未实现，不以新增或重跑raw校准case代替实现。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
 | Q32.N | `numeric-algebraic-extension` | `done` | Q32 | 支持的floating scalar algebraic candidate默认执行actual mutation并进入frontier，不增加exact/relaxed策略分叉或额外fast-math许可。paired qualification统一signed-zero、finite tolerance和nonfinite合同，每个variant的f16板端数值由`wafer-run`执行同一typed tolerance，结构/长度/guard/index/completion exact。generic reduction、named GEMM K切分和Ring collective继续按各自typed numeric gate覆盖支持float；integer overflow/no-wrap及真实结构、资源和target负例保持。未新增frontend mode或IR carrier。 | 05-07、10-11、13、16；`tasks/plans/numeric-algebraic-extension.md` |
 | Q36 | `topology-aware-collective-lowering` | `done` | Q32 | current typed topology/mesh派生rank placement、exact bounded Ring与保持rank_group中序的ordered Tree；collective correctness/completion、singleton identity和final p2p minimum-hop whole-card cost闭合，不声明route/cycle/timing。 | 04、06、11、13、16、18；`tasks/archive/topology-aware-collective-lowering.md` |
 | Q35 | `k-sharded-gemm-board-vertical` | `done` | Q32、Q6.B、Q36 + configured board | full-4096 f16 GEMM由显式row/contracting SPMD形成16份local K=256 GEMM和sum all-reduce；production闭合M/N tiling、SPM/DDR、Direct DTE、shared ELF、no-card与完整板端raw exact。修复CRT GEMM raw orientation及strided RDMA/WDMA element-unit边界后，纯tiling 32 MiB exact，16-rank full case连续两轮16份32 MiB output全部exact并回到设备基线。只形成该case/environment的workload-level evidence，不新增ABI、不完成Q22.C或timing。 | 02、03、05-07、09、10、13-17；`tasks/archive/k-sharded-gemm-board-vertical.md` |
@@ -474,7 +478,7 @@ Q9的ranking feedback仍需独立validated PMU/timing与held-out gate。
 
 ## 实施计划入口
 
-- 当前active implementation task恢复为Q37；Q32.C compiler throughput已完成并归档为
+- 当前active implementation task为Q38；Q37硬件校准已经完成。Q32.C compiler throughput已完成并归档为
   `tasks/archive/whole-variant-search-throughput.md`。Q9保持`next`，其外部资格条件和pending状态不变。software pipeline计划见
   `tasks/plans/multi-engine-software-pipelining.md`，production optimizer同源成对板测准备见
   `tasks/plans/production-optimization-board-campaign.md`。
