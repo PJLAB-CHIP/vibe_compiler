@@ -45,6 +45,7 @@ struct Options {
   std::optional<std::string> directDTEStatusABI;
   std::vector<wafer::runtime::cli::ResourceFile> resourceFiles;
   std::vector<wafer::runtime::cli::ResourceFile> expectedFiles;
+  std::vector<wafer::runtime::cli::ResourceFile> relaxedF16ExpectedFiles;
   std::vector<wafer::runtime::cli::ResourceFile> outputFiles;
   bool supportsHostWatchdog = false;
   bool noCard = false;
@@ -68,6 +69,7 @@ void printUsage(llvm::raw_ostream &output) {
             "[--completion-timeout-ms <milliseconds>] "
             "--resource <ResourceId=raw-file>... "
             "[--expected <ResourceId=raw-file>]... "
+            "[--expected-f16-relaxed <ResourceId=raw-file>]... "
             "[--output <ResourceId=raw-file>]...\n";
 }
 
@@ -190,7 +192,7 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
       continue;
     }
     if (argument == "--resource" || argument == "--expected" ||
-        argument == "--output") {
+        argument == "--expected-f16-relaxed" || argument == "--output") {
       llvm::Expected<llvm::StringRef> value = requireValue();
       if (!value)
         return value.takeError();
@@ -202,6 +204,8 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
         options.resourceFiles.push_back(std::move(*parsed));
       else if (argument == "--expected")
         options.expectedFiles.push_back(std::move(*parsed));
+      else if (argument == "--expected-f16-relaxed")
+        options.relaxedF16ExpectedFiles.push_back(std::move(*parsed));
       else
         options.outputFiles.push_back(std::move(*parsed));
       continue;
@@ -250,6 +254,7 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
         "wafer-run requires explicit --no-card or --board, but not both");
   if (options.noCard &&
       (!options.resourceFiles.empty() || !options.expectedFiles.empty() ||
+       !options.relaxedF16ExpectedFiles.empty() ||
        !options.outputFiles.empty() || options.expectedRuntimeVersion != 0 ||
        options.expectedTileCount != 0 || options.deviceIdSpecified ||
        !options.expectedDeviceName.empty() ||
@@ -418,7 +423,8 @@ int runBoard(const Options &options,
   llvm::Expected<wafer::runtime::cli::BoardInvocationFilePlan> filePlan =
       wafer::runtime::cli::prepareBoardInvocationFiles(
           manifest, std::move(request), options.resourceFiles,
-          options.expectedFiles, options.outputFiles);
+          options.expectedFiles, options.outputFiles,
+          options.relaxedF16ExpectedFiles);
   if (!filePlan)
     return fail(filePlan.takeError());
 
@@ -505,9 +511,21 @@ int runBoard(const Options &options,
     llvm::outs() << "board_stage: "
                  << wafer::runtime::stringifyBoardRuntimeStage(stage) << "\n";
   for (const wafer::runtime::BoardRuntimeOutput &output : result->outputs) {
-    if (completedPlan.expectedBytes.contains(output.resource.getValue()))
+    auto comparison =
+        completedPlan.expectedComparisons.find(output.resource.getValue());
+    if (comparison != completedPlan.expectedComparisons.end()) {
       llvm::outs() << "output_compare: resource=" << output.resource.getValue()
-                   << " bytes=" << output.bytes.size() << " exact=true\n";
+                   << " bytes=" << output.bytes.size();
+      if (comparison->second ==
+          wafer::runtime::cli::BoardOutputComparisonKind::Exact) {
+        llvm::outs() << " exact=true\n";
+      } else {
+        llvm::outs()
+            << " policy=f16-relaxed abs=0.0009765625 rel=0.001 max_ulp="
+            << wafer::runtime::cli::kRelaxedF16MaximumUlp
+            << " signed_zero_equal=true\n";
+      }
+    }
     auto capture = completedPlan.outputPaths.find(output.resource.getValue());
     if (capture != completedPlan.outputPaths.end())
       llvm::outs() << "output_capture: resource=" << output.resource.getValue()

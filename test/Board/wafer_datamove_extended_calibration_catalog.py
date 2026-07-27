@@ -368,24 +368,24 @@ COMPOSITE_CASES = (
 TDMA_DESCRIPTOR_CASES = (
     _case(
         12,
-        "tdma-raw-i8-strided-128b-x32",
-        "tdma-raw-i8-strided-128",
+        "tdma-fp16-strided-128b-x32",
+        "tdma-fp16-strided-128",
         123,
         0,
         8064,
         tdma=1,
-        dtype="I8",
+        dtype="FP16",
         output_span=8192,
     ),
     _case(
         13,
-        "tdma-raw-i8-strided-64b-x64",
-        "tdma-raw-i8-strided-64",
+        "tdma-bf16-strided-64b-x64",
+        "tdma-bf16-strided-64",
         123,
         0,
         8128,
         tdma=1,
-        dtype="I8",
+        dtype="BF16",
         output_span=8192,
     ),
     _case(
@@ -610,17 +610,19 @@ def _ne_composite_payload(seed: int) -> tuple[bytes, bytes]:
 
 
 def _tdma_fill_expected(case: ExtendedDataMoveCase) -> bytes:
-    if case.operation == "tdma-raw-i8-strided-128":
+    if case.operation == "tdma-fp16-strided-128":
         result = bytearray([SLOT_CANARY] * case.result_bytes)
+        value = struct.pack("<H", 0x3C00)
         for iteration in range(32):
             begin = iteration * 256
-            result[begin : begin + 128] = bytes([0x5A]) * 128
+            result[begin : begin + 128] = value * 64
         return bytes(result)
-    if case.operation == "tdma-raw-i8-strided-64":
+    if case.operation == "tdma-bf16-strided-64":
         result = bytearray([SLOT_CANARY] * case.result_bytes)
+        value = struct.pack("<H", 0x3F80)
         for iteration in range(64):
             begin = iteration * 128
-            result[begin : begin + 64] = bytes([0xC3]) * 64
+            result[begin : begin + 64] = value * 32
         return bytes(result)
     value = 0x3C00 if case.dtype == "FP16" else 0x3F80
     return struct.pack("<H", value) * (case.result_bytes // 2)
@@ -713,6 +715,6 @@ CALIBRATION_LEAF_BINDINGS = {
     "mask-gather-and-bit-vector": RAW_OBSERVATION_CASES[:2],
     "tensor-nom": RAW_OBSERVATION_CASES[2:],
     "materialize-then-consume": COMPOSITE_CASES,
-    "tdma-i8-strided": TDMA_DESCRIPTOR_CASES[:2],
+    "tdma-fp16-bf16-strided": TDMA_DESCRIPTOR_CASES[:2],
     "tdma-fp16-bf16-raw-crt": TDMA_DESCRIPTOR_CASES[2:],
 }

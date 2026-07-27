@@ -26,7 +26,8 @@ PROBE_C = INPUT_DIR / "wafer_ddr_sparse_high_offset_probe.c"
 PROBE_LL = INPUT_DIR / "wafer_ddr_sparse_high_offset_probe.ll"
 
 RESOURCE_BYTES = 0x2000
-LOCAL_ELEMENTS = RESOURCE_BYTES // 4
+ELEMENT_BYTES = 2
+LOCAL_ELEMENTS = RESOURCE_BYTES // ELEMENT_BYTES
 DEFAULT_WORKSPACE_GIB = 40
 MIN_WORKSPACE_GIB = 36
 MAX_WORKSPACE_GIB = 40
@@ -59,10 +60,10 @@ RECORD_BYTES = (HEADER_WORDS + len(OFFSET_NAMES) * ROW_WORDS) * 8
 
 MODULE = f"""\
 module {{
-  func.func @main(%arg0: tensor<{LOCAL_ELEMENTS}xf32>)
-      -> tensor<{LOCAL_ELEMENTS}xf32> {{
-    %result = stablehlo.negate %arg0 : tensor<{LOCAL_ELEMENTS}xf32>
-    return %result : tensor<{LOCAL_ELEMENTS}xf32>
+  func.func @main(%arg0: tensor<{LOCAL_ELEMENTS}xf16>)
+      -> tensor<{LOCAL_ELEMENTS}xf16> {{
+    %result = stablehlo.add %arg0, %arg0 : tensor<{LOCAL_ELEMENTS}xf16>
+    return %result : tensor<{LOCAL_ELEMENTS}xf16>
   }}
 }}
 """
@@ -73,14 +74,14 @@ METADATA = {
     "input_signature": [
         {
             "shape": [LOCAL_ELEMENTS],
-            "dtype": "float32",
+            "dtype": "float16",
             "dynamic_dims": [],
         }
     ],
     "output_signature": [
         {
             "shape": [LOCAL_ELEMENTS],
-            "dtype": "float32",
+            "dtype": "float16",
             "dynamic_dims": [],
         }
     ],
@@ -175,7 +176,7 @@ def validate_static_contract(workspace_size: int) -> None:
         or INPUT_BASE + len(offsets) * SLOT_BYTES > RESOURCE_BYTES
         or ARCHIVE_BASE + len(offsets) * SLOT_BYTES > RESOURCE_BYTES
         or RECORD_BYTES > ARCHIVE_BASE
-        or LOCAL_ELEMENTS * 4 != RESOURCE_BYTES
+        or LOCAL_ELEMENTS * ELEMENT_BYTES != RESOURCE_BYTES
     ):
         raise RuntimeError("sparse high-offset DDR contract is inconsistent")
     required = (PROBE_C, PROBE_LL)
@@ -373,7 +374,7 @@ def prepare_workspace_manifest(
             resource.get("rank") != 0
             or resource.get("role_index") != 0
             or resource.get("type")
-            != {"dtype": "f32", "shape": [LOCAL_ELEMENTS]}
+            != {"dtype": "f16", "shape": [LOCAL_ELEMENTS]}
             or resource.get("bytes") != RESOURCE_BYTES
             or resource.get("alignment") != 256
             or resource.get("access") != access
@@ -640,17 +641,23 @@ def verify_no_card(
 
 
 def pattern_bytes(sample: int, index: int, domain: int) -> bytes:
-    return bytes(
-        (
-            sample * 29
-            + index * 47
-            + domain * 71
-            + lane * 17
-            + (lane >> 4) * 11
-            + 5
+    return b"".join(
+        struct.pack(
+            "<e",
+            float(
+                (
+                    sample * 29
+                    + index * 47
+                    + domain * 71
+                    + lane * 17
+                    + (lane >> 4) * 11
+                    + 5
+                )
+                % 63
+                - 31
+            ),
         )
-        & 0xFF
-        for lane in range(256)
+        for lane in range(PAYLOAD_BYTES // ELEMENT_BYTES)
     )
 
 

@@ -31,6 +31,7 @@ using wafer::runtime::PackageResourceRecord;
 using wafer::runtime::PackageResourceRole;
 using wafer::runtime::ResourceId;
 using wafer::runtime::cli::BoardInvocationFilePlan;
+using wafer::runtime::cli::BoardOutputComparisonKind;
 using wafer::runtime::cli::ResourceFile;
 
 class WaferRunBoardIOTest : public ::testing::Test {
@@ -94,10 +95,11 @@ protected:
   prepare(const PackageManifest &manifest,
           llvm::ArrayRef<ResourceFile> resources,
           llvm::ArrayRef<ResourceFile> expected,
-          llvm::ArrayRef<ResourceFile> outputs) const {
+          llvm::ArrayRef<ResourceFile> outputs,
+          llvm::ArrayRef<ResourceFile> relaxedF16Expected = {}) const {
     return wafer::runtime::cli::prepareBoardInvocationFiles(
         manifest, BoardRuntimeInvocationRequest{}, resources, expected,
-        outputs);
+        outputs, relaxedF16Expected);
   }
 
   const BoardRuntimeBinding &binding(const BoardInvocationFilePlan &plan,
@@ -178,6 +180,8 @@ TEST_F(WaferRunBoardIOTest,
   EXPECT_EQ(binding(*targetPlan, 22).bytes,
             (std::vector<uint8_t>{0xf6, 0xf7, 0xf8, 0xf9}));
   EXPECT_TRUE(targetPlan->expectedBytes.contains(22));
+  EXPECT_EQ(targetPlan->expectedComparisons.lookup(22),
+            BoardOutputComparisonKind::Exact);
   EXPECT_TRUE(targetPlan->outputPaths.contains(22));
   EXPECT_TRUE(targetPlan->writableResourceBytes.contains(22));
   EXPECT_FALSE(targetPlan->expectedBytes.contains(11));
@@ -392,6 +396,91 @@ TEST_F(WaferRunBoardIOTest, ExpectedAndOutputCompareBeforeCapture) {
       << llvm::toString(compareOnly.takeError());
   ASSERT_FALSE(wafer::runtime::cli::validateAndPublishBoardOutputs(
       {{ResourceId(1), expected}}, *compareOnly));
+}
+
+TEST_F(WaferRunBoardIOTest,
+       RelaxedF16ComparisonAcceptsSignedZeroAndOneUlpOnly) {
+  PackageResourceRecord output =
+      resource(1, PackageResourceRole::Output, PackageAccessMode::WriteOnly);
+  output.type = {"f16", {4}};
+  output.bytes = 8;
+  PackageManifest package = manifest({output});
+  const std::vector<uint8_t> expected = {
+      0x00, 0x00, // +0
+      0x00, 0x3c, // +1
+      0x00, 0xc0, // -2
+      0x55, 0x35, // approximately 1/3
+  };
+  const std::vector<uint8_t> accepted = {
+      0x00, 0x80, // -0
+      0x01, 0x3c, // next representable value after +1
+      0x01, 0xc0, // next representable value below -2
+      0x54, 0x35, // previous representable value
+  };
+  const std::string expectedPath = path("expected-f16.raw");
+  writeBytes(expectedPath, expected);
+
+  llvm::Expected<BoardInvocationFilePlan> plan =
+      prepare(package, {}, {}, {}, {{1, expectedPath}});
+  ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
+  EXPECT_EQ(plan->expectedComparisons.lookup(1),
+            BoardOutputComparisonKind::RelaxedF16);
+  ASSERT_FALSE(wafer::runtime::cli::validateBoardOutputs(
+      {{ResourceId(1), accepted}}, *plan));
+
+  std::vector<uint8_t> tooFar = accepted;
+  tooFar[2] = 0x02;
+  llvm::Error mismatch = wafer::runtime::cli::validateBoardOutputs(
+      {{ResourceId(1), tooFar}}, *plan);
+  ASSERT_TRUE(static_cast<bool>(mismatch));
+  std::string mismatchText = llvm::toString(std::move(mismatch));
+  EXPECT_NE(mismatchText.find("at element 1"), std::string::npos);
+  EXPECT_NE(mismatchText.find("ulp=2"), std::string::npos);
+}
+
+TEST_F(WaferRunBoardIOTest,
+       RelaxedF16ComparisonRejectsNonfiniteAndNonF16Resources) {
+  PackageResourceRecord output =
+      resource(1, PackageResourceRole::Output, PackageAccessMode::WriteOnly);
+  output.type = {"f16", {2}};
+  PackageManifest package = manifest({output});
+  const std::string expectedPath = path("expected-f16.raw");
+  writeBytes(expectedPath, {0x00, 0x3c, 0x00, 0x40});
+  llvm::Expected<BoardInvocationFilePlan> plan =
+      prepare(package, {}, {}, {}, {{1, expectedPath}});
+  ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
+
+  llvm::Error nonfinite = wafer::runtime::cli::validateBoardOutputs(
+      {{ResourceId(1), {0x00, 0x7c, 0x00, 0x40}}}, *plan);
+  ASSERT_TRUE(static_cast<bool>(nonfinite));
+  EXPECT_NE(llvm::toString(std::move(nonfinite))
+                .find("contains NaN or infinity"),
+            std::string::npos);
+
+  PackageManifest untyped = manifest(
+      {resource(1, PackageResourceRole::Output, PackageAccessMode::WriteOnly)});
+  llvm::Expected<BoardInvocationFilePlan> invalid =
+      prepare(untyped, {}, {}, {}, {{1, expectedPath}});
+  ASSERT_FALSE(static_cast<bool>(invalid));
+  EXPECT_NE(llvm::toString(invalid.takeError())
+                .find("requires an f16 writable ResourceId"),
+            std::string::npos);
+}
+
+TEST_F(WaferRunBoardIOTest,
+       ExpectedResourceCannotSelectExactAndRelaxedPoliciesTogether) {
+  PackageResourceRecord output =
+      resource(1, PackageResourceRole::Output, PackageAccessMode::WriteOnly);
+  output.type = {"f16", {2}};
+  PackageManifest package = manifest({output});
+  const std::string expectedPath = path("expected-f16.raw");
+  writeBytes(expectedPath, {0x00, 0x3c, 0x00, 0x40});
+  llvm::Expected<BoardInvocationFilePlan> plan =
+      prepare(package, {}, {{1, expectedPath}}, {}, {{1, expectedPath}});
+  ASSERT_FALSE(static_cast<bool>(plan));
+  EXPECT_NE(llvm::toString(plan.takeError())
+                .find("duplicate ResourceId across --expected"),
+            std::string::npos);
 }
 
 TEST_F(WaferRunBoardIOTest, DuplicateAndUnexpectedProviderOutputsAreRejected) {

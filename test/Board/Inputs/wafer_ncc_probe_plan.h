@@ -97,6 +97,12 @@ enum WaferNccProbeSnapshotPhase {
 };
 
 typedef struct WaferNccProbeExecutionHooks {
+  /*
+   * Publish all seed-side memory effects before packet construction or issue.
+   * Device probes use this boundary to make weak-order Kcore SPM stores
+   * visible to NCC; it is deliberately outside the measured issue window.
+   */
+  int (*seed_complete)(void *context);
   int (*snapshot)(void *context, uint32_t phase,
                   volatile uint64_t *record_words);
   int (*serial_drain)(void *context, uint32_t worker_mask);

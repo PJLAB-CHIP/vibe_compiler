@@ -433,6 +433,14 @@ V2_NE_LARGE_RHS_BYTES = 32768
 V2_NE_LARGE_RESULT_BYTES = 16384
 V2_NE_LARGE_READ1_OFFSET = 0x4300
 V2_NE_LARGE_WRITE_OFFSET = 0xC500
+V2_NE_SCOPE_M = 64
+V2_NE_SCOPE_K = 256
+V2_NE_SCOPE_N = 128
+V2_NE_SCOPE_LHS_BYTES = 32768
+V2_NE_SCOPE_RHS_BYTES = 65536
+V2_NE_SCOPE_RESULT_BYTES = 16384
+V2_NE_SCOPE_READ1_OFFSET = 0x8300
+V2_NE_SCOPE_WRITE_OFFSET = 0x18500
 V2_HAZARD_SELECTED_OFFSET = 0x4000
 V2_HAZARD_SECOND_BASELINE_OFFSET = 0x6000
 V2_HAZARD_UNSELECTED_OFFSETS = (
@@ -576,11 +584,9 @@ def v2_lane(
     if transfer_bytes is None:
         transfer_bytes = 256 if engine == ncc_protocol.Engine.NE else 4096
     if element_format is None:
-        element_format = (
-            FMT_FP16
-            if engine in (ncc_protocol.Engine.CT, ncc_protocol.Engine.NE)
-            else FMT_INT8
-        )
+        element_format = FMT_FP16
+    if element_format == FMT_FP16 and transfer_bytes % 2 != 0:
+        raise ValueError("FP16 transfer_bytes must contain whole 2-byte elements")
     return ncc_protocol.Lane(
         engine=engine,
         worker=worker,
@@ -986,7 +992,7 @@ V2_COMPLETION_SCOPE_CASES = tuple(
                 ncc_protocol.Engine.TDMA,
                 worker=0,
                 transfer_bytes=16,
-                element_format=FMT_INT8,
+                element_format=FMT_FP16,
             ),
             v2_lane(
                 ncc_protocol.Engine.NE,
@@ -1043,7 +1049,7 @@ V2_SUBSET_JOIN_CASES = tuple(
     for mask in (0b001, 0b010, 0b100, 0b011, 0b101, 0b110)
 )
 V2_WORKER_SCOPE_TARGETS = (
-    ("ne", ncc_protocol.Engine.NE, V2_NE_LARGE_RESULT_BYTES),
+    ("ne", ncc_protocol.Engine.NE, V2_NE_SCOPE_RESULT_BYTES),
     ("rdma", ncc_protocol.Engine.RDMA, V2_REPEATED_SLOT_BYTES),
 )
 V2_WORKER_WAIT_SCOPE_CASES = tuple(
@@ -1057,7 +1063,7 @@ V2_WORKER_WAIT_SCOPE_CASES = tuple(
                 ncc_protocol.Engine.TDMA,
                 worker=(target_worker + 1) % 3,
                 transfer_bytes=16,
-                element_format=FMT_INT8,
+                element_format=FMT_FP16,
             ),
             v2_lane(
                 engine,
@@ -1115,7 +1121,7 @@ def v2_worker_subset_scope_case(
                 ncc_protocol.Engine.TDMA,
                 worker=other_workers[1],
                 transfer_bytes=16,
-                element_format=FMT_INT8,
+                element_format=FMT_FP16,
             ),
             v2_lane(
                 target_engine,
@@ -1554,7 +1560,7 @@ V2_LARGE_BACKLOG_CASES = (
                     engine,
                     mode=mode,
                     transfer_bytes=65536,
-                    element_format=FMT_INT8,
+                    element_format=FMT_FP16,
                 ),
             ),
             rounds=1,
@@ -1598,7 +1604,7 @@ V2_LARGE_BACKLOG_CASES = (
                 v2_lane(
                     ncc_protocol.Engine.RDMA,
                     transfer_bytes=65536,
-                    element_format=FMT_INT8,
+                    element_format=FMT_FP16,
                 ),
                 v2_lane(
                     compute,
@@ -2158,7 +2164,7 @@ def validate_no_card_protocol_cases() -> None:
             tuple(lane.worker for lane in plan.lanes) != (0, 1, 1)
             or plan.lanes[0].engine != ncc_protocol.Engine.TDMA
             or plan.lanes[0].issue_mode != ncc_protocol.IssueMode.RAW
-            or plan.lanes[0].element_format != FMT_INT8
+            or plan.lanes[0].element_format != FMT_FP16
             or plan.lanes[0].transfer_bytes != 16
             or any(
                 lane.engine != ncc_protocol.Engine.NE
@@ -2606,23 +2612,7 @@ def write_payload(path: pathlib.Path, case: GenericProbeCase) -> None:
 
 
 def v2_half(value: int) -> int:
-    values = (
-        0x0000,
-        0x3C00,
-        0x4000,
-        0x4200,
-        0x4400,
-        0x4500,
-        0x4600,
-        0x4700,
-        0x4800,
-        0x4880,
-        0x4900,
-        0x4980,
-        0x4A00,
-        0x4A80,
-    )
-    return values[value]
+    return ncc_protocol.F16_POSITIVE_INTEGERS[value]
 
 
 def v2_completion_marker(
@@ -3032,36 +3022,66 @@ def v2_is_large_ne_lane(lane: ncc_protocol.Lane) -> bool:
     )
 
 
-def v2_ne_lhs_bytes(lane: ncc_protocol.Lane) -> int:
+def v2_is_scope_ne_lane(
+    plan: ncc_protocol.Plan, lane: ncc_protocol.Lane
+) -> bool:
     return (
-        V2_NE_LARGE_LHS_BYTES
-        if v2_is_large_ne_lane(lane)
-        else V2_NE_PHYSICAL_BYTES
+        lane.engine == ncc_protocol.Engine.NE
+        and lane.transfer_bytes == V2_NE_SCOPE_RESULT_BYTES
+        and plan.flags == ncc_protocol.TIGHT_WORKER_SCOPE
     )
 
 
-def v2_ne_rhs_bytes(lane: ncc_protocol.Lane) -> int:
-    return (
-        V2_NE_LARGE_RHS_BYTES
-        if v2_is_large_ne_lane(lane)
-        else V2_NE_RHS_BYTES
-    )
+def v2_ne_lhs_bytes(
+    plan: ncc_protocol.Plan, lane: ncc_protocol.Lane
+) -> int:
+    if v2_is_scope_ne_lane(plan, lane):
+        return V2_NE_SCOPE_LHS_BYTES
+    if v2_is_large_ne_lane(lane):
+        return V2_NE_LARGE_LHS_BYTES
+    return V2_NE_PHYSICAL_BYTES
+
+
+def v2_ne_rhs_bytes(
+    plan: ncc_protocol.Plan, lane: ncc_protocol.Lane
+) -> int:
+    if v2_is_scope_ne_lane(plan, lane):
+        return V2_NE_SCOPE_RHS_BYTES
+    if v2_is_large_ne_lane(lane):
+        return V2_NE_LARGE_RHS_BYTES
+    return V2_NE_RHS_BYTES
 
 
 def v2_ne_result_bytes(lane: ncc_protocol.Lane) -> int:
-    return (
-        V2_NE_LARGE_RESULT_BYTES
-        if v2_is_large_ne_lane(lane)
-        else V2_NE_RESULT_BYTES
-    )
+    if v2_is_large_ne_lane(lane):
+        return V2_NE_LARGE_RESULT_BYTES
+    return V2_NE_RESULT_BYTES
 
 
 def v2_ne_output_span(lane: ncc_protocol.Lane) -> int:
-    return (
-        V2_NE_LARGE_RESULT_BYTES
-        if v2_is_large_ne_lane(lane)
-        else V2_NE_PHYSICAL_BYTES
-    )
+    if v2_is_large_ne_lane(lane):
+        return V2_NE_LARGE_RESULT_BYTES
+    return V2_NE_PHYSICAL_BYTES
+
+
+def v2_ne_read1_offset(
+    plan: ncc_protocol.Plan, lane: ncc_protocol.Lane
+) -> int:
+    if v2_is_scope_ne_lane(plan, lane):
+        return V2_NE_SCOPE_READ1_OFFSET
+    if v2_is_large_ne_lane(lane):
+        return V2_NE_LARGE_READ1_OFFSET
+    return V2_SPM_READ1_OFFSET
+
+
+def v2_ne_write_offset(
+    plan: ncc_protocol.Plan, lane: ncc_protocol.Lane
+) -> int:
+    if v2_is_scope_ne_lane(plan, lane):
+        return V2_NE_SCOPE_WRITE_OFFSET
+    if v2_is_large_ne_lane(lane):
+        return V2_NE_LARGE_WRITE_OFFSET
+    return V2_SPM_WRITE_OFFSET
 
 
 def v2_operand_uses_spm(
@@ -3115,13 +3135,13 @@ def v2_operand_spm_address(
         offsets = (
             V2_SPM_READ0_OFFSET,
             (
-                V2_NE_LARGE_READ1_OFFSET
-                if v2_is_large_ne_lane(lane)
+                v2_ne_read1_offset(plan, lane)
+                if lane.engine == ncc_protocol.Engine.NE
                 else V2_SPM_READ1_OFFSET
             ),
             (
-                V2_NE_LARGE_WRITE_OFFSET
-                if v2_is_large_ne_lane(lane)
+                v2_ne_write_offset(plan, lane)
+                if lane.engine == ncc_protocol.Engine.NE
                 else V2_SPM_WRITE_OFFSET
             ),
         )
@@ -3170,13 +3190,13 @@ def v2_operand_spm_address(
     offsets = (
         V2_SPM_READ0_OFFSET,
         (
-            V2_NE_LARGE_READ1_OFFSET
-            if v2_is_large_ne_lane(lane)
+            v2_ne_read1_offset(plan, lane)
+            if lane.engine == ncc_protocol.Engine.NE
             else V2_SPM_READ1_OFFSET
         ),
         (
-            V2_NE_LARGE_WRITE_OFFSET
-            if v2_is_large_ne_lane(lane)
+            v2_ne_write_offset(plan, lane)
+            if lane.engine == ncc_protocol.Engine.NE
             else V2_SPM_WRITE_OFFSET
         ),
     )
@@ -3293,10 +3313,10 @@ def validate_observed_ranges_v2(
             check_spm(observation, "write", write, lane.transfer_bytes)
         elif lane.engine == ncc_protocol.Engine.NE:
             check_spm(
-                observation, "read0", read0, v2_ne_lhs_bytes(lane)
+                observation, "read0", read0, v2_ne_lhs_bytes(plan, lane)
             )
             check_spm(
-                observation, "read1", read1, v2_ne_rhs_bytes(lane)
+                observation, "read1", read1, v2_ne_rhs_bytes(plan, lane)
             )
             check_spm(
                 observation, "write", write, v2_ne_output_span(lane)

@@ -56,27 +56,29 @@ def _assert_no_short_period(values: np.ndarray) -> None:
 def _assert_reduction_mutation_adequacy(
     expected: np.ndarray, source_contributions: list[np.ndarray]
 ) -> None:
-    expected_bytes = expected.reshape(-1).view(np.uint8)
-    expected_u16 = expected_bytes.astype(np.uint16)
+    expected_f16 = expected.reshape(-1).astype("<f2", copy=False)
     contributions = [
-        contribution.reshape(-1).view(np.uint8).astype(np.uint16)
+        contribution.reshape(-1).astype(np.float32)
         for contribution in source_contributions
     ]
     assert len(contributions) == 16
-    assert all(contribution.shape == expected_u16.shape for contribution in contributions)
+    assert all(
+        contribution.shape == expected_f16.shape
+        for contribution in contributions
+    )
     assert len({contribution.tobytes() for contribution in contributions}) == 16
+    total = np.sum(np.stack(contributions), axis=0, dtype=np.float32)
+    assert np.array_equal(total.astype("<f2"), expected_f16)
 
     for source_index, source in enumerate(contributions):
         _assert_no_short_period(source)
-        missing_source = ((expected_u16 - source) & 0xFF).astype(np.uint8)
-        assert not np.array_equal(missing_source, expected_bytes)
+        missing_source = (total - source).astype("<f2")
+        assert not np.array_equal(missing_source, expected_f16)
         for replacement_index, replacement in enumerate(contributions):
             if replacement_index == source_index:
                 continue
-            duplicate_source = (
-                (expected_u16 - source + replacement) & 0xFF
-            ).astype(np.uint8)
-            assert not np.array_equal(duplicate_source, expected_bytes)
+            duplicate_source = (total - source + replacement).astype("<f2")
+            assert not np.array_equal(duplicate_source, expected_f16)
 
 
 def main() -> None:
@@ -88,16 +90,7 @@ def main() -> None:
     assert tuple(case.board_order for case in catalog.CASES) == tuple(range(9))
     assert {case.payload_bytes for case in catalog.CASES} == {256, 4096, 65536}
     assert {case.rank_count for case in catalog.CASES} == {16}
-    assert {
-        case.element_type
-        for case in catalog.CASES
-        if case.collective_kind == catalog.CollectiveKind.ALL_GATHER
-    } == {"i8"}
-    assert {
-        case.element_type
-        for case in catalog.CASES
-        if case.collective_kind != catalog.CollectiveKind.ALL_GATHER
-    } == {"f16"}
+    assert {case.element_type for case in catalog.CASES} == {"f16"}
     assert {
         case.disposition for case in catalog.CASES
     } == {
@@ -344,18 +337,18 @@ def main() -> None:
     )
     all_gather_boundary = carrier.collective_boundary(
         '"stablehlo.all_gather"',
-        {"shape": [16], "dtype": "i8"},
-        {"shape": [256], "dtype": "i8"},
+        {"shape": [8], "dtype": "f16"},
+        {"shape": [128], "dtype": "f16"},
         16,
     )
     assert all_gather_boundary["inputs"][0]["distribution"] == "partitioned"
-    assert all_gather_boundary["inputs"][0]["global_shape"] == [256]
-    assert all_gather_boundary["inputs"][0]["local_shape"] == [16]
+    assert all_gather_boundary["inputs"][0]["global_shape"] == [128]
+    assert all_gather_boundary["inputs"][0]["local_shape"] == [8]
     assert all_gather_boundary["inputs"][0]["ranks"][15] == {
         "rank": 15,
         "replica_id": 0,
-        "offsets": [240],
-        "sizes": [16],
+        "offsets": [120],
+        "sizes": [8],
         "strides": [1],
     }
     assert all_gather_boundary["outputs"][0]["distribution"] == "replicated"

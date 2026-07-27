@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile and execute a 16-rank sharded f32 add on a configured TX board."""
+"""Compile and execute a 16-rank sharded f16 add on a configured TX board."""
 
 from __future__ import annotations
 
@@ -28,47 +28,42 @@ class RuntimeLaunchCalibrationCase:
 
 
 RANK_COUNT = 16
-GLOBAL_ELEMENTS = 256
+GLOBAL_ELEMENTS = 512
 LOCAL_ELEMENTS = GLOBAL_ELEMENTS // RANK_COUNT
+ELEMENT_DTYPE = np.dtype("<f2")
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
-MODEL_PROCESS_TIMEOUT_MARGIN_SECONDS = 30
 LAUNCH_EVIDENCE = {
     runtime_launch.KERNEL_LAUNCH_KIND: (
         "kernel-grid-x16",
         "scheduler-pid-x-and-exact-rank-slices",
     ),
-    runtime_launch.MODEL_LAUNCH_KIND: (
-        "model-type6-type7",
-        "graph-tile-module-map-and-exact-rank-slices",
-    ),
 }
 LAUNCH_CONTRACTS = {
     runtime_launch.KERNEL_LAUNCH_KIND: runtime_launch.GRID_KERNEL_LAUNCH,
-    runtime_launch.MODEL_LAUNCH_KIND: runtime_launch.MODEL_LAUNCH,
 }
 RUNTIME_LAUNCH_CALIBRATION_CASES = tuple(
     RuntimeLaunchCalibrationCase(
         f"rank16-{launch_kind}-add",
         RANK_COUNT,
         launch_kind,
-        "all-rank exact slices+full f32 output+schema-v6 rank domain",
+        "all-rank exact slices+full f16 output+schema-v6 rank domain",
         "all-rank terminal+D2H+normal cleanup",
     )
     for launch_kind in LAUNCH_EVIDENCE
 )
 CALIBRATION_LEAF_BINDINGS = {
-    "rank16-kernel-model-add": RUNTIME_LAUNCH_CALIBRATION_CASES,
+    "rank16-kernel-add": RUNTIME_LAUNCH_CALIBRATION_CASES,
 }
 SHARDING = "{devices=[16]0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"
 
 MODULE = f"""\
 module {{
   func.func @main(
-      %lhs: tensor<{GLOBAL_ELEMENTS}xf32> {{mhlo.sharding = "{SHARDING}"}},
-      %rhs: tensor<{GLOBAL_ELEMENTS}xf32> {{mhlo.sharding = "{SHARDING}"}})
-      -> (tensor<{GLOBAL_ELEMENTS}xf32> {{mhlo.sharding = "{SHARDING}"}}) {{
-    %sum = stablehlo.add %lhs, %rhs : tensor<{GLOBAL_ELEMENTS}xf32>
-    return %sum : tensor<{GLOBAL_ELEMENTS}xf32>
+      %lhs: tensor<{GLOBAL_ELEMENTS}xf16> {{mhlo.sharding = "{SHARDING}"}},
+      %rhs: tensor<{GLOBAL_ELEMENTS}xf16> {{mhlo.sharding = "{SHARDING}"}})
+      -> (tensor<{GLOBAL_ELEMENTS}xf16> {{mhlo.sharding = "{SHARDING}"}}) {{
+    %sum = stablehlo.add %lhs, %rhs : tensor<{GLOBAL_ELEMENTS}xf16>
+    return %sum : tensor<{GLOBAL_ELEMENTS}xf16>
   }}
 }}
 """
@@ -77,11 +72,11 @@ METADATA = {
     "name": "forward",
     "stablehlo_version": "0.0.0",
     "input_signature": [
-        {"shape": [GLOBAL_ELEMENTS], "dtype": "float32", "dynamic_dims": []},
-        {"shape": [GLOBAL_ELEMENTS], "dtype": "float32", "dynamic_dims": []},
+        {"shape": [GLOBAL_ELEMENTS], "dtype": "float16", "dynamic_dims": []},
+        {"shape": [GLOBAL_ELEMENTS], "dtype": "float16", "dynamic_dims": []},
     ],
     "output_signature": [
-        {"shape": [GLOBAL_ELEMENTS], "dtype": "float32", "dynamic_dims": []}
+        {"shape": [GLOBAL_ELEMENTS], "dtype": "float16", "dynamic_dims": []}
     ],
     "input_locations": [
         {"type_": "input_arg", "position": 0, "name": "lhs"},
@@ -134,10 +129,9 @@ def run(
                     partial = partial.decode(errors="replace")
                 print(partial, end="", file=sys.stderr)
         raise RuntimeError(
-            "one-shot model process exceeded its outer type-6/type-7 "
-            "deadline; it was killed and this test will not retry or invoke "
-            "reset/power operations; board state requires external "
-            "read-only qualification"
+            "one-shot all-rank process exceeded its outer deadline; it was "
+            "killed and this test will not retry or invoke reset/power "
+            "operations; board state requires external read-only qualification"
         ) from error
     if result.returncode != 0:
         print(result.stdout, end="", file=sys.stderr)
@@ -185,9 +179,9 @@ def require_partitioned_axis0_binding(
         or binding.get("distribution") != "partitioned"
         or binding.get("global_shape") != [GLOBAL_ELEMENTS]
         or binding.get("local_shape") != [LOCAL_ELEMENTS]
-        or binding.get("dtype") != "float32"
+        or binding.get("dtype") != "float16"
     ):
-        raise RuntimeError(f"{name} is not the required axis-0 f32 partition")
+        raise RuntimeError(f"{name} is not the required axis-0 f16 partition")
     ranks = binding.get("ranks")
     if not isinstance(ranks, list) or len(ranks) != RANK_COUNT:
         raise RuntimeError(f"{name} does not describe every logical rank")
@@ -283,12 +277,7 @@ def validate_manifest(
     modules = manifest.get("modules")
     if not isinstance(modules, list):
         raise RuntimeError("modules must be a list")
-    expected_module_count = (
-        1
-        if launch_kind == runtime_launch.KERNEL_LAUNCH_KIND
-        else RANK_COUNT
-    )
-    if len(modules) != expected_module_count:
+    if len(modules) != 1:
         raise RuntimeError("runtime launch has an invalid unique module count")
     module_by_id: dict[int, dict[str, object]] = {}
     for module in modules:
@@ -325,8 +314,8 @@ def validate_manifest(
             or rank >= RANK_COUNT
             or key in bindings
             or not resource.get("host_visible")
-            or resource.get("type") != {"dtype": "f32", "shape": [LOCAL_ELEMENTS]}
-            or resource.get("bytes") != LOCAL_ELEMENTS * np.dtype("<f4").itemsize
+            or resource.get("type") != {"dtype": "f16", "shape": [LOCAL_ELEMENTS]}
+            or resource.get("bytes") != LOCAL_ELEMENTS * ELEMENT_DTYPE.itemsize
         ):
             raise RuntimeError(f"unexpected rank-16 Add resource: {resource}")
         if role == "user_input" and role_index in (0, 1):
@@ -380,16 +369,8 @@ def validate_manifest(
     referenced_modules = {entry["module"] for entry in entries}
     if referenced_modules != set(module_by_id):
         raise RuntimeError("entry-to-module coverage is not all-and-only")
-    if (
-        launch_kind == runtime_launch.KERNEL_LAUNCH_KIND
-        and len(referenced_modules) != 1
-    ):
+    if len(referenced_modules) != 1:
         raise RuntimeError("kernel entries do not share one aggregate module")
-    if (
-        launch_kind == runtime_launch.MODEL_LAUNCH_KIND
-        and len(referenced_modules) != RANK_COUNT
-    ):
-        raise RuntimeError("model entries are not one-to-one with tile modules")
     return bindings
 
 
@@ -403,15 +384,25 @@ def write_rank_payloads(
     indices = np.arange(GLOBAL_ELEMENTS, dtype=np.int32)
     ranks = indices // LOCAL_ELEMENTS
     lanes = indices % LOCAL_ELEMENTS
-    lhs = (ranks * 64 + lanes).astype("<f4")
-    rhs = (1000 + ranks * 32 - lanes * 2).astype("<f4")
-    expected = (lhs + rhs).astype("<f4", copy=False)
+    lhs_i32 = ranks * 32 + lanes
+    rhs_i32 = 512 + ranks * 16 + lanes
+    expected_i32 = lhs_i32 + rhs_i32
+    lhs = lhs_i32.astype(ELEMENT_DTYPE)
+    rhs = rhs_i32.astype(ELEMENT_DTYPE)
+    expected = expected_i32.astype(ELEMENT_DTYPE)
+    if (
+        not np.array_equal(lhs.astype(np.int32), lhs_i32)
+        or not np.array_equal(rhs.astype(np.int32), rhs_i32)
+        or not np.array_equal(expected.astype(np.int32), expected_i32)
+        or not np.array_equal((lhs + rhs).astype(np.int32), expected_i32)
+    ):
+        raise RuntimeError("rank-16 f16 Add sentinels are not exactly representable")
 
     arguments: list[str] = []
     output_ids: set[int] = set()
     lhs_payloads: set[bytes] = set()
     rhs_payloads: set[bytes] = set()
-    reconstructed = np.empty(GLOBAL_ELEMENTS, dtype="<f4")
+    reconstructed = np.empty(GLOBAL_ELEMENTS, dtype=ELEMENT_DTYPE)
     covered = np.zeros(GLOBAL_ELEMENTS, dtype=np.bool_)
     for rank in range(RANK_COUNT):
         rank_slice = slices[rank]
@@ -427,7 +418,7 @@ def write_rank_payloads(
         covered[rank_slice] = True
         reconstructed[rank_slice] = rank_payloads[("output", 0)]
         for (role, role_index), payload in rank_payloads.items():
-            path = raw / f"rank_{rank:05d}.{role}_{role_index}.f32.raw"
+            path = raw / f"rank_{rank:05d}.{role}_{role_index}.f16.raw"
             payload.tofile(path)
             resource_id = bindings[(rank, role, role_index)]
             option = "--resource" if role == "user_input" else "--expected"
@@ -672,13 +663,7 @@ def main() -> int:
         *resource_arguments,
     ]
     for iteration in range(args.repeat):
-        process_timeout_seconds = None
-        if args.launch_kind == runtime_launch.MODEL_LAUNCH_KIND:
-            process_timeout_seconds = (
-                args.completion_timeout_ms / 1000
-                + MODEL_PROCESS_TIMEOUT_MARGIN_SECONDS
-            )
-        result = run(command, timeout_seconds=process_timeout_seconds)
+        result = run(command)
         verify_board_evidence(
             result.stdout,
             args.launch_kind,

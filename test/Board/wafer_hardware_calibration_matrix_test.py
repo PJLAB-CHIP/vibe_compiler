@@ -71,6 +71,17 @@ EXPECTED_SHARED_GROUP_REFERENCES = {
     ): 2,
 }
 
+EXPECTED_RAW_DTE_LEAF_GROUPS = {
+    "dte-raw-four-source-fanin": "direct-dte-four-source-fanin",
+    "dte-raw-broadcast-fanout-layout": "direct-dte-raw-broadcast",
+    "dte-raw-scatter-fanout-layout": "direct-dte-raw-scatter",
+    "dte-raw-shuffle-fanout-layout": "direct-dte-raw-shuffle",
+}
+
+EXPLICIT_RAW_I8_CARRIER_ASSETS = {
+    "test/Board/wafer_direct_dte_board_evidence_test.py",
+}
+
 
 def load_asset_module(
     repo: pathlib.Path,
@@ -93,6 +104,157 @@ def load_asset_module(
     spec.loader.exec_module(module)
     cache[relative] = module
     return module
+
+
+def validate_operator_payload_dtypes(
+    repo: pathlib.Path, cache: dict[str, object]
+) -> None:
+    """Reject generic signed-i8 operator payloads before board registration."""
+
+    collective = load_asset_module(
+        repo,
+        "test/Board/wafer_collective_hardware_characterization_catalog.py",
+        cache,
+    )
+    assert all(
+        str(case.element_type).lower() not in {"i8", "int8"}
+        for case in collective.CASES
+    ), "collective characterization contains a generic i8 operator payload"
+
+    traffic = load_asset_module(
+        repo,
+        "test/Board/wafer_collective_traffic_behavior_catalog.py",
+        cache,
+    )
+    assert all(
+        str(case.element_type).lower() not in {"i8", "int8"}
+        for case in traffic.CASES
+    ), "collective traffic contains a generic i8 operator payload"
+
+    engine = load_asset_module(
+        repo,
+        "test/Board/wafer_engine_pipeline_characterization_catalog.py",
+        cache,
+    )
+    generic_i8_probes = tuple(
+        probe.key
+        for probe in engine.PROBES_BY_KEY.values()
+        if any(
+            lane.element_format == engine.ncc_protocol.DMA_FORMAT_INT8
+            for lane in probe.plan.lanes
+        )
+    )
+    assert not generic_i8_probes, (
+        "generic engine catalog contains signed-i8 operator probes: "
+        f"{generic_i8_probes[:8]}"
+    )
+
+    datamove = load_asset_module(
+        repo,
+        "test/Board/wafer_datamove_calibration_catalog.py",
+        cache,
+    )
+    datamove_source = pathlib.Path(datamove.__file__).read_text()
+    assert not re.search(r"\b(?:i8|int8)\b", datamove_source, re.I), (
+        "generic DataMove catalog contains an i8 operator payload"
+    )
+
+    extended_datamove = load_asset_module(
+        repo,
+        "test/Board/wafer_datamove_extended_calibration_catalog.py",
+        cache,
+    )
+    invalid_extended_i8 = tuple(
+        case.name
+        for case in extended_datamove.ALL_CASES
+        if str(case.dtype).lower() in {"i8", "int8"}
+        and not case.operation.startswith("raw-protocol-")
+    )
+    assert not invalid_extended_i8, (
+        "extended DataMove catalog contains non-protocol i8 operator cases: "
+        f"{invalid_extended_i8}"
+    )
+
+    ne = load_asset_module(
+        repo, "test/Board/wafer_ne_calibration_catalog.py", cache
+    )
+    ne_i8 = tuple(
+        case
+        for case in ne.CATALOG
+        if getattr(case, "dtype_name", "").upper() == "I8"
+    )
+    assert len(ne_i8) == 1, (
+        "NE signed-i8 cases must be the single dedicated quantization row"
+    )
+    quant = ne_i8[0]
+    assert (
+        quant.name == "ne-gemm-quant-observed"
+        and quant.kind_name == "GEMM"
+        and quant.profile_name == "GEMM_QUANT"
+        and quant.disposition_name == "BOARD_OBSERVED"
+        and "zero point" in quant.reason
+        and "raw INT8 output" in quant.reason
+    ), "NE signed-i8 row is not explicitly dedicated quantization"
+
+    instruction = load_asset_module(
+        repo, "test/Board/wafer_instruction_family_catalog.py", cache
+    )
+    invalid_instruction_i8 = tuple(
+        case.name
+        for case in instruction.CATALOG
+        if "I8" in case.dtype_name.upper()
+        and not (
+            case.family_name == "CT_CONVERT"
+            or (
+                case.family_name
+                in {"CT_SELECT_COMPOSITE", "POOL", "UNPOOL"}
+                and any(
+                    marker in case.name.lower()
+                    for marker in ("index", "mask", "bool")
+                )
+            )
+        )
+    )
+    assert not invalid_instruction_i8, (
+        "instruction catalog contains i8 outside explicit "
+        "convert/index/mask/BOOL semantics: "
+        f"{invalid_instruction_i8}"
+    )
+
+    optimization = load_asset_module(
+        repo,
+        "test/Board/wafer_board_compiler_optimization_campaign_test.py",
+        cache,
+    )
+    invalid_optimization_i8 = tuple(
+        case.key
+        for case in optimization.CASES.values()
+        if any(
+            spec.mlir_dtype.lower() in {"i8", "int8"}
+            for spec in (*case.inputs, *case.outputs)
+        )
+    )
+    assert not invalid_optimization_i8, (
+        "production optimization campaign contains i8 operator payloads: "
+        f"{invalid_optimization_i8}"
+    )
+
+    literal_patterns = (
+        re.compile(r"tensor<[^>\n]*xi8\b", re.I),
+        re.compile(
+            r"""["']dtype["']\s*:\s*["'](?:i8|int8)["']""", re.I
+        ),
+    )
+    literal_i8_assets = {
+        str(path.relative_to(repo))
+        for path in (repo / "test" / "Board").glob("wafer_*_test.py")
+        if any(pattern.search(path.read_text()) for pattern in literal_patterns)
+    }
+    assert literal_i8_assets == EXPLICIT_RAW_I8_CARRIER_ASSETS, (
+        "board operator source/metadata gained an unclassified literal i8 "
+        "payload, or the explicit raw carrier disappeared without updating "
+        f"the gate: {sorted(literal_i8_assets)}"
+    )
 
 
 def resolve_binding(
@@ -256,6 +418,19 @@ def main() -> int:
     )
     assert len(matrix.LEAVES_BY_KEY) == len(all_leaves)
     assert len({leaf.key for leaf in all_leaves}) == len(all_leaves)
+    direct_dte_leaves = {
+        leaf.key: leaf
+        for leaf in matrix.CALIBRATION_LEAVES_BY_DOMAIN["direct-dte"]
+    }
+    for leaf_key, group_key in EXPECTED_RAW_DTE_LEAF_GROUPS.items():
+        leaf = direct_dte_leaves[leaf_key]
+        assert leaf.disposition == "board-observation"
+        assert len(leaf.bindings) == 1
+        binding = leaf.bindings[0]
+        assert binding.asset == matrix.TRANSPORT_PMU_CATALOG
+        assert binding.symbol == "CALIBRATION_LEAF_BINDINGS"
+        assert binding.identifiers == (group_key,)
+        assert binding.identifier_field == "@mapping"
 
     labels = {domain.document_label for domain in domains}
     assert len(labels) == len(domains)
@@ -289,6 +464,7 @@ def main() -> int:
         "unknown",
     }
     module_cache: dict[str, object] = {}
+    validate_operator_payload_dtypes(repo, module_cache)
     referenced_groups: Counter[tuple[str, str | int]] = Counter()
     for domain in domains:
         assert domain.preparation in allowed_states
@@ -320,17 +496,7 @@ def main() -> int:
             path = repo / relative
             assert path.is_file(), f"{domain.key}: missing asset {relative}"
         for test_name in domain.no_card_tests:
-            generated_launch_test = test_name in {
-                "wafer-runtime-kernel-grid-add-no-card",
-                "wafer-runtime-model-add-no-card",
-            }
             registered = f"NAME {test_name}" in cmake
-            if generated_launch_test:
-                registered = (
-                    "kernel-grid model" in cmake
-                    and "wafer-runtime-${_wafer_no_card_launch_test}-add-no-card"
-                    in cmake
-                )
             assert registered, (
                 f"{domain.key}: CTest {test_name} is not registered"
             )

@@ -67,28 +67,32 @@ def assert_all_to_all_oracle() -> None:
         lanes_per_peer = payload_bytes // (catalog.RANK_COUNT * 4)
         assert len(inputs) == len(outputs) == catalog.RANK_COUNT
         assert all(
-            rank[0].shape == (16, lanes_per_peer, 4) for rank in inputs
+            rank[0].shape == (16, lanes_per_peer, 2) for rank in inputs
         )
         assert all(
-            rank[0].shape == (1, lanes_per_peer * 16, 4)
+            rank[0].shape == (1, lanes_per_peer * 16, 2)
             for rank in outputs
         )
         assert all(rank[0].nbytes == payload_bytes for rank in inputs)
         assert all(rank[0].nbytes == payload_bytes for rank in outputs)
+        assert all(np.all(np.isfinite(rank[0])) for rank in inputs)
+        assert all(np.all(np.isfinite(rank[0])) for rank in outputs)
 
         lane_samples = sorted({0, 1, lanes_per_peer // 2, lanes_per_peer - 1})
         for destination in range(catalog.RANK_COUNT):
-            expected = outputs[destination][0].view(np.uint8)
+            expected = outputs[destination][0].view(np.uint16)
             for source in range(catalog.RANK_COUNT):
                 for lane in lane_samples:
                     record = expected[
                         0, source * lanes_per_peer + lane
                     ]
                     assert record.tolist() == [
-                        source,
-                        destination,
-                        lane & 0xFF,
-                        lane >> 8,
+                        int(
+                            driver.ALL_TO_ALL_PAIR_BITS_BASE
+                            + source * catalog.RANK_COUNT
+                            + destination
+                        ),
+                        int(driver.ALL_TO_ALL_LANE_BITS_BASE + lane),
                     ]
             assert_array_differs(
                 outputs[destination][0],
@@ -111,18 +115,19 @@ def assert_all_to_all_oracle() -> None:
 
 
 def payload_origin(payload: np.ndarray) -> int | None:
-    bytes_ = payload.view(np.uint8)
-    if not np.any(bytes_):
+    bits = payload.view(np.uint16)
+    if not np.any(bits):
         return None
-    rank = int(bytes_[0, 0])
-    assert np.all(bytes_[:, 0] == rank)
+    rank = int(bits[0, 0] - driver.PERMUTE_RANK_BITS_BASE)
+    assert 0 <= rank < catalog.RANK_COUNT
+    assert np.all(
+        bits[:, 0] == driver.PERMUTE_RANK_BITS_BASE + rank
+    )
     lanes = np.arange(payload.shape[0], dtype=np.uint16)
-    assert np.array_equal(bytes_[:, 1], (lanes & 0xFF).astype(np.uint8))
-    assert np.array_equal(bytes_[:, 2], (lanes >> 8).astype(np.uint8))
-    expected_checksum = (
-        rank * 61 + lanes.astype(np.uint32) * 37 + 0x9D
-    ) & 0xFF
-    assert np.array_equal(bytes_[:, 3], expected_checksum.astype(np.uint8))
+    assert np.array_equal(
+        bits[:, 1],
+        driver.PERMUTE_LANE_BITS_BASE + lanes,
+    )
     return rank
 
 
@@ -175,6 +180,7 @@ def assert_permute_oracles() -> None:
     assert len({payload.tobytes() for payload in rank_inputs}) == catalog.RANK_COUNT
     for payload in rank_inputs:
         assert np.any(payload != 0)
+        assert np.all(np.isfinite(payload))
         for shift in (1, 64, 256):
             assert_array_differs(payload, np.roll(payload, shift, axis=0))
 
@@ -229,8 +235,8 @@ def assert_source_contracts() -> None:
     assert "split_dimension = 0" in module
     assert "concat_dimension = 1" in module
     assert "split_count = 16" in module
-    assert "tensor<16x64x4xi8>" in module
-    assert "tensor<1x1024x4xi8>" in module
+    assert "tensor<16x64x2xf16>" in module
+    assert "tensor<1x1024x2xf16>" in module
     assert carrier.require_supported_module(module) == '"stablehlo.all_to_all"'
 
     double_epoch = driver.runtime_case(
@@ -257,11 +263,11 @@ def assert_source_contracts() -> None:
     binding = carrier.replicated_binding(
         "argument_index",
         0,
-        {"shape": [1024, 4], "dtype": "int8"},
+        {"shape": [1024, 2], "dtype": "float16"},
         catalog.RANK_COUNT,
     )
     assert binding["distribution"] == "replicated"
-    assert binding["global_shape"] == binding["local_shape"] == [1024, 4]
+    assert binding["global_shape"] == binding["local_shape"] == [1024, 2]
     assert [row["replica_id"] for row in binding["ranks"]] == list(
         range(catalog.RANK_COUNT)
     )
@@ -312,6 +318,7 @@ def assert_coverage(repo: pathlib.Path) -> None:
     assert tuple(driver.CASE_KEYS) == EXPECTED_CASE_KEYS
     assert catalog.COVERAGE_KEYS == EXPECTED_COVERAGE_KEYS
     assert tuple(case.board_order for case in catalog.CASES) == tuple(range(11))
+    assert all(case.element_type == "f16" for case in catalog.CASES)
     assert all(
         case.disposition == catalog.CaseDisposition.PENDING_BOARD_CORRECTNESS
         for case in catalog.CASES

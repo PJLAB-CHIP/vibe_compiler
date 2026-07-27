@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import collections
 import dataclasses
+import enum
 import hashlib
 import json
 import os
@@ -45,7 +46,6 @@ class TensorSpec:
     @property
     def element_bytes(self) -> int:
         return {
-            "i8": 1,
             "f16": 2,
             "bf16": 2,
             "f32": 4,
@@ -53,20 +53,28 @@ class TensorSpec:
 
 
 @dataclasses.dataclass(frozen=True)
-class CampaignCase:
-    key: str
-    family: str
-    rank_count: int
-    launch_kind: str
-    inputs: tuple[TensorSpec, ...]
-    outputs: tuple[TensorSpec, ...]
-    module_factory: Callable[[], str]
-    payload_factory: Callable[
-        [], tuple[list[list[np.ndarray]], list[list[np.ndarray]]]
-    ]
-    structural_oracle: Callable[
-        ["TargetStructure", "TargetStructure"], None
-    ]
+class PairedOutputComparisonPolicy:
+    class Kind(enum.Enum):
+        RawExact = enum.auto()
+        FloatingTolerance = enum.auto()
+
+    kind: Kind
+    absolute_tolerance: float = 0.0
+    relative_tolerance: float = 0.0
+    maximum_ulp: int | None = None
+    signed_zero_equal: bool = False
+
+
+RAW_EXACT_OUTPUT = PairedOutputComparisonPolicy(
+    PairedOutputComparisonPolicy.Kind.RawExact
+)
+RELAXED_F16_ALGEBRA_OUTPUT = PairedOutputComparisonPolicy(
+    PairedOutputComparisonPolicy.Kind.FloatingTolerance,
+    absolute_tolerance=0.0009765625,
+    relative_tolerance=0.001,
+    maximum_ulp=1,
+    signed_zero_equal=True,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -81,11 +89,33 @@ class TargetStructure:
         return collections.Counter(self.callsites)
 
 
-F32_8192 = TensorSpec((8192,), "f32", "float32")
+@dataclasses.dataclass(frozen=True)
+class PairedPayloads:
+    inputs: list[list[np.ndarray]]
+    baseline_outputs: list[list[np.ndarray]]
+    winner_outputs: list[list[np.ndarray]]
+
+
+@dataclasses.dataclass(frozen=True)
+class CampaignCase:
+    key: str
+    family: str
+    rank_count: int
+    launch_kind: str
+    inputs: tuple[TensorSpec, ...]
+    outputs: tuple[TensorSpec, ...]
+    module_factory: Callable[[], str]
+    payload_factory: Callable[[], PairedPayloads]
+    structural_oracle: Callable[
+        ["TargetStructure", "TargetStructure"], None
+    ]
+    output_comparison: PairedOutputComparisonPolicy = RAW_EXACT_OUTPUT
+
+
 F16_16384 = TensorSpec((16384,), "f16", "float16")
-F32_16384 = TensorSpec((16384,), "f32", "float32")
-F32_262144 = TensorSpec((262144,), "f32", "float32")
-F32_4096 = TensorSpec((4096,), "f32", "float32")
+F16_32768 = TensorSpec((32768,), "f16", "float16")
+F16_524288 = TensorSpec((524288,), "f16", "float16")
+F16_8192 = TensorSpec((8192,), "f16", "float16")
 F16_4096 = TensorSpec((4096,), "f16", "float16")
 F16_64_128 = TensorSpec((64, 128), "f16", "float16")
 F16_128_128 = TensorSpec((128, 128), "f16", "float16")
@@ -114,11 +144,11 @@ module {{
 
 def reciprocal_module() -> str:
     return elementwise_module(
-        "%input: tensor<8192xf32>",
-        "tensor<8192xf32>",
+        "%input: tensor<8192xf16>",
+        "tensor<8192xf16>",
         """\
-    %one = stablehlo.constant dense<1.000000e+00> : tensor<8192xf32>
-    %result = stablehlo.divide %one, %input : tensor<8192xf32>""",
+    %one = stablehlo.constant dense<1.000000e+00> : tensor<8192xf16>
+    %result = stablehlo.divide %one, %input : tensor<8192xf16>""",
         "%result",
     )
 
@@ -147,37 +177,37 @@ module {
 
 def resident_fanout_module() -> str:
     return elementwise_module(
-        "%input: tensor<16384xf32>",
-        "(tensor<16384xf32>, tensor<16384xf32>, tensor<16384xf32>)",
+        "%input: tensor<32768xf16>",
+        "(tensor<32768xf16>, tensor<32768xf16>, tensor<32768xf16>)",
         """\
-    %producer = stablehlo.multiply %input, %input : tensor<16384xf32>
-    %left = stablehlo.add %producer, %producer : tensor<16384xf32>
-    %right = stablehlo.multiply %producer, %producer : tensor<16384xf32>""",
+    %producer = stablehlo.multiply %input, %input : tensor<32768xf16>
+    %left = stablehlo.add %producer, %producer : tensor<32768xf16>
+    %right = stablehlo.multiply %producer, %producer : tensor<32768xf16>""",
         "%producer, %left, %right",
     )
 
 
 def recompute_module() -> str:
     return elementwise_module(
-        "%input: tensor<262144xf32>, %other: tensor<262144xf32>",
-        "(tensor<262144xf32>, tensor<262144xf32>, tensor<262144xf32>)",
+        "%input: tensor<524288xf16>, %other: tensor<524288xf16>",
+        "(tensor<524288xf16>, tensor<524288xf16>, tensor<524288xf16>)",
         """\
-    %producer = stablehlo.multiply %input, %input : tensor<262144xf32>
-    %left = stablehlo.add %producer, %producer : tensor<262144xf32>
-    %middle = stablehlo.multiply %other, %other : tensor<262144xf32>
-    %right = stablehlo.multiply %producer, %producer : tensor<262144xf32>""",
+    %producer = stablehlo.multiply %input, %input : tensor<524288xf16>
+    %left = stablehlo.add %producer, %producer : tensor<524288xf16>
+    %middle = stablehlo.multiply %other, %other : tensor<524288xf16>
+    %right = stablehlo.multiply %producer, %producer : tensor<524288xf16>""",
         "%left, %middle, %right",
     )
 
 
 def ready_order_module() -> str:
     return elementwise_module(
-        "%a: tensor<4096xf32>, %b: tensor<4096xf32>",
-        "tensor<4096xf32>",
+        "%a: tensor<8192xf16>, %b: tensor<8192xf16>",
+        "tensor<8192xf16>",
         """\
-    %producer = stablehlo.multiply %a, %a : tensor<4096xf32>
-    %left = stablehlo.add %producer, %b : tensor<4096xf32>
-    %result = stablehlo.add %left, %b : tensor<4096xf32>""",
+    %producer = stablehlo.multiply %a, %a : tensor<8192xf16>
+    %left = stablehlo.add %producer, %b : tensor<8192xf16>
+    %result = stablehlo.add %left, %b : tensor<8192xf16>""",
         "%result",
     )
 
@@ -227,64 +257,102 @@ def replicated(payloads: list[np.ndarray]) -> list[list[np.ndarray]]:
     return [payloads]
 
 
-def reciprocal_payloads() -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]]:
+def unchanged_numeric_payloads(
+    inputs: list[list[np.ndarray]], outputs: list[list[np.ndarray]]
+) -> PairedPayloads:
+    return PairedPayloads(
+        inputs,
+        outputs,
+        [[array.copy() for array in arrays] for arrays in outputs],
+    )
+
+
+def reciprocal_payloads() -> PairedPayloads:
     exponents = (np.arange(8192, dtype=np.int32) % 17) - 8
-    signs = np.where(np.arange(8192) % 3 == 0, -1.0, 1.0).astype(np.float32)
-    input_ = np.ldexp(signs, exponents).astype("<f4")
-    expected = (np.float32(1.0) / input_).astype("<f4")
-    return replicated([input_]), replicated([expected])
+    signs = np.where(np.arange(8192) % 3 == 0, -1.0, 1.0).astype(np.float16)
+    input_ = np.ldexp(signs, exponents).astype("<f2")
+    baseline = np.divide(np.float16(1.0), input_).astype("<f2")
+    winner = np.reciprocal(input_).astype("<f2")
+    return PairedPayloads(
+        replicated([input_]), replicated([baseline]), replicated([winner])
+    )
 
 
-def f16_factor_payloads(
-) -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]]:
+def f16_factor_payloads() -> PairedPayloads:
     indices = np.arange(16384, dtype=np.int32)
-    a = (((indices * 5 + 3) % 9) - 4).astype("<f2")
-    b = (((indices * 7 + 1) % 7) - 3).astype("<f2")
-    c = (((indices * 11 + 2) % 7) - 3).astype("<f2")
-    expected = (
-        a.astype(np.float32) * b.astype(np.float32)
-        + a.astype(np.float32) * c.astype(np.float32)
-    ).astype("<f2")
-    return replicated([a, b, c]), replicated([expected])
+    nonzero_factors = np.array((-4, -3, -2, -1, 1, 2, 3, 4), dtype="<f2")
+    a = nonzero_factors[indices % nonzero_factors.size]
+    b = (1 + ((indices * 7 + 1) % 4)).astype("<f2")
+    c = (1 + ((indices * 11 + 2) % 4)).astype("<f2")
+    # Exercise the only intentional raw-bit difference in this paired oracle:
+    # the source DAG produces +0 while the factored DAG produces -0.
+    a[0] = np.float16(0.0)
+    b[0] = np.float16(0.0)
+    c[0] = np.float16(-1.0)
+    lhs = (a * b).astype("<f2")
+    rhs = (a * c).astype("<f2")
+    baseline = (lhs + rhs).astype("<f2")
+    winner = (a * (b + c).astype("<f2")).astype("<f2")
+    expected_i32 = a.astype(np.int32) * (
+        b.astype(np.int32) + c.astype(np.int32)
+    )
+    if not np.array_equal(baseline.astype(np.int32), expected_i32):
+        raise RuntimeError("f16 factor source expression is not exact")
+    if (
+        np.signbit(baseline[0])
+        or not np.signbit(winner[0])
+        or baseline[0] != winner[0]
+    ):
+        raise RuntimeError("f16 factor signed-zero control is ineffective")
+    return PairedPayloads(
+        replicated([a, b, c]),
+        replicated([baseline]),
+        replicated([winner]),
+    )
 
 
-def resident_fanout_payloads(
-) -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]]:
-    input_ = ((np.arange(16384, dtype=np.int32) % 31) - 15).astype("<f4")
-    producer = (input_ * input_).astype("<f4")
-    left = (producer + producer).astype("<f4")
-    right = (producer * producer).astype("<f4")
-    return replicated([input_]), replicated([producer, left, right])
+def resident_fanout_payloads() -> PairedPayloads:
+    input_ = ((np.arange(32768, dtype=np.int32) % 7) - 3).astype("<f2")
+    producer = (input_ * input_).astype("<f2")
+    left = (producer + producer).astype("<f2")
+    right = (producer * producer).astype("<f2")
+    return unchanged_numeric_payloads(
+        replicated([input_]), replicated([producer, left, right])
+    )
 
 
-def recompute_payloads() -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]]:
-    indices = np.arange(262144, dtype=np.int32)
-    input_ = ((indices % 31) - 15).astype("<f4")
-    other = (((indices * 7) % 29) - 14).astype("<f4")
-    producer = (input_ * input_).astype("<f4")
-    left = (producer + producer).astype("<f4")
-    middle = (other * other).astype("<f4")
-    right = (producer * producer).astype("<f4")
-    return replicated([input_, other]), replicated([left, middle, right])
+def recompute_payloads() -> PairedPayloads:
+    indices = np.arange(524288, dtype=np.int32)
+    input_ = ((indices % 7) - 3).astype("<f2")
+    other = (((indices * 5) % 7) - 3).astype("<f2")
+    producer = (input_ * input_).astype("<f2")
+    left = (producer + producer).astype("<f2")
+    middle = (other * other).astype("<f2")
+    right = (producer * producer).astype("<f2")
+    return unchanged_numeric_payloads(
+        replicated([input_, other]), replicated([left, middle, right])
+    )
 
 
-def ready_order_payloads() -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]]:
-    indices = np.arange(4096, dtype=np.int32)
-    a = ((indices % 101) - 50).astype("<f4")
-    b = (((indices * 3) % 97) - 48).astype("<f4")
-    expected = ((a * a + b) + b).astype("<f4")
+def ready_order_payloads() -> PairedPayloads:
+    indices = np.arange(8192, dtype=np.int32)
+    a = ((indices % 15) - 7).astype("<f2")
+    b = (((indices * 3) % 11) - 5).astype("<f2")
+    expected = ((a * a + b) + b).astype("<f2")
     if np.array_equal(expected, b):
         raise RuntimeError("ready-order expected output does not depend on a")
-    changed_a = (a + np.float32(1.0)).astype("<f4")
-    changed_expected = ((changed_a * changed_a + b) + b).astype("<f4")
+    changed_a = (a + np.float16(1.0)).astype("<f2")
+    changed_expected = ((changed_a * changed_a + b) + b).astype("<f2")
     if np.array_equal(expected, changed_expected):
         raise RuntimeError("ready-order a-path sensitivity control is ineffective")
-    return replicated([a, b]), replicated([expected])
+    return unchanged_numeric_payloads(
+        replicated([a, b]), replicated([expected])
+    )
 
 
 def gemm_payloads(
     m: int, k: int, n: int
-) -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]]:
+) -> PairedPayloads:
     k_lanes = np.arange(k, dtype=np.int32)
     lhs = np.zeros((m, k), dtype="<f2")
     lhs[k_lanes % m, k_lanes] = np.float16(1.0)
@@ -303,10 +371,12 @@ def gemm_payloads(
         raise RuntimeError("GEMM payload does not exercise every K lane")
     if not np.array_equal(expected.astype(np.int32), expected_i32):
         raise RuntimeError("GEMM expected values are not exact in f16")
-    return replicated([lhs, rhs]), replicated([expected])
+    return unchanged_numeric_payloads(
+        replicated([lhs, rhs]), replicated([expected])
+    )
 
 
-def all_reduce_payloads() -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]]:
+def all_reduce_payloads() -> PairedPayloads:
     lanes = np.arange(4096, dtype=np.int32)
     inputs = [
         (((lanes * (rank + 3) + rank * 11) % 9) - 4)
@@ -317,7 +387,10 @@ def all_reduce_payloads() -> tuple[list[list[np.ndarray]], list[list[np.ndarray]
     for input_ in inputs:
         total += input_[0].astype(np.float32)
     expected = total.astype("<f2")
-    return [[input_] for input_ in inputs], [[expected] for _ in range(16)]
+    return unchanged_numeric_payloads(
+        [[input_] for input_ in inputs],
+        [[expected] for _ in range(16)],
+    )
 
 
 def require_call(
@@ -505,8 +578,8 @@ CASES = {
             "numeric-dag-implementation",
             1,
             RANK_ONE_LAUNCH_KIND,
-            (F32_8192,),
-            (F32_8192,),
+            (F16_8192,),
+            (F16_8192,),
             reciprocal_module,
             reciprocal_payloads,
             reciprocal_oracle,
@@ -521,14 +594,15 @@ CASES = {
             f16_factor_module,
             f16_factor_payloads,
             f16_factor_oracle,
+            RELAXED_F16_ALGEBRA_OUTPUT,
         ),
         CampaignCase(
             "resident-fanout-share",
             "resident-share-recompute",
             1,
             RANK_ONE_LAUNCH_KIND,
-            (F32_16384,),
-            (F32_16384, F32_16384, F32_16384),
+            (F16_32768,),
+            (F16_32768, F16_32768, F16_32768),
             resident_fanout_module,
             resident_fanout_payloads,
             resident_fanout_oracle,
@@ -538,8 +612,8 @@ CASES = {
             "resident-share-recompute",
             1,
             RANK_ONE_LAUNCH_KIND,
-            (F32_262144, F32_262144),
-            (F32_262144, F32_262144, F32_262144),
+            (F16_524288, F16_524288),
+            (F16_524288, F16_524288, F16_524288),
             recompute_module,
             recompute_payloads,
             recompute_oracle,
@@ -549,8 +623,8 @@ CASES = {
             "ready-order",
             1,
             RANK_ONE_LAUNCH_KIND,
-            (F32_4096, F32_4096),
-            (F32_4096,),
+            (F16_8192, F16_8192),
+            (F16_8192,),
             ready_order_module,
             ready_order_payloads,
             ready_order_oracle,
@@ -1147,45 +1221,222 @@ def module_digests(package: pathlib.Path) -> tuple[str, ...]:
     return digests
 
 
+def floating_ulp_distance(
+    lhs: np.generic, rhs: np.generic, element_bytes: int
+) -> int:
+    if lhs == rhs:
+        return 0
+    unsigned_dtype = np.dtype("<u2" if element_bytes == 2 else "<u4")
+    lhs_bits = int(np.asarray(lhs).view(unsigned_dtype))
+    rhs_bits = int(np.asarray(rhs).view(unsigned_dtype))
+    sign = 1 << (element_bytes * 8 - 1)
+
+    def ordered(bits: int) -> int:
+        return sign - (bits & (sign - 1)) if bits & sign else sign + bits
+
+    return abs(ordered(lhs_bits) - ordered(rhs_bits))
+
+
+def validate_floating_pair(
+    baseline: np.ndarray,
+    winner: np.ndarray,
+    spec: TensorSpec,
+    policy: PairedOutputComparisonPolicy,
+    location: tuple[int, str, int],
+) -> None:
+    if spec.mlir_dtype not in ("f16", "f32"):
+        raise RuntimeError(
+            f"floating comparison policy does not support {spec.mlir_dtype}"
+        )
+    baseline_flat = np.ascontiguousarray(baseline).reshape(-1)
+    winner_flat = np.ascontiguousarray(winner).reshape(-1)
+    nonfinite = np.flatnonzero(
+        ~np.isfinite(baseline_flat) | ~np.isfinite(winner_flat)
+    )
+    if nonfinite.size:
+        element = int(nonfinite[0])
+        raise RuntimeError(
+            "baseline/winner floating oracle contains NaN or infinity for "
+            f"{location} at element {element}"
+        )
+
+    baseline_wide = baseline_flat.astype(np.float64)
+    winner_wide = winner_flat.astype(np.float64)
+    absolute_error = np.abs(baseline_wide - winner_wide)
+    limit = policy.absolute_tolerance + (
+        policy.relative_tolerance * np.abs(baseline_wide)
+    )
+    accepted = absolute_error <= limit
+    if policy.maximum_ulp is not None:
+        accepted &= np.fromiter(
+            (
+                floating_ulp_distance(lhs, rhs, spec.element_bytes)
+                <= policy.maximum_ulp
+                for lhs, rhs in zip(baseline_flat, winner_flat, strict=True)
+            ),
+            dtype=np.bool_,
+            count=baseline_flat.size,
+        )
+
+    opposite_zero = (
+        (baseline_flat == 0)
+        & (winner_flat == 0)
+        & (np.signbit(baseline_flat) != np.signbit(winner_flat))
+    )
+    if policy.signed_zero_equal:
+        accepted |= opposite_zero
+    else:
+        accepted &= ~opposite_zero
+    mismatching = np.flatnonzero(~accepted)
+    if mismatching.size:
+        element = int(mismatching[0])
+        ulp = floating_ulp_distance(
+            baseline_flat[element], winner_flat[element], spec.element_bytes
+        )
+        raise RuntimeError(
+            "baseline/winner floating oracles exceed the numeric policy for "
+            f"{location} at element {element}: "
+            f"baseline={baseline_flat[element]!r} "
+            f"winner={winner_flat[element]!r} "
+            f"abs={absolute_error[element]!r} ulp={ulp}"
+        )
+
+
+def validate_paired_payloads(
+    case: CampaignCase, payloads: PairedPayloads
+) -> None:
+    if (
+        len(payloads.inputs) != case.rank_count
+        or len(payloads.baseline_outputs) != case.rank_count
+        or len(payloads.winner_outputs) != case.rank_count
+    ):
+        raise RuntimeError("payload factory rank domain is invalid")
+    for rank in range(case.rank_count):
+        if len(payloads.inputs[rank]) != len(case.inputs):
+            raise RuntimeError(
+                f"payload factory input tensor domain is invalid at rank {rank}"
+            )
+        for index, (array, spec) in enumerate(
+            zip(payloads.inputs[rank], case.inputs, strict=True)
+        ):
+            if tuple(array.shape) != spec.shape or array.nbytes != (
+                int(np.prod(spec.shape, dtype=np.int64)) * spec.element_bytes
+            ):
+                raise RuntimeError(
+                    f"payload shape/bytes mismatch for "
+                    f"{(rank, 'user_input', index)}"
+                )
+        baseline = payloads.baseline_outputs[rank]
+        winner = payloads.winner_outputs[rank]
+        if len(baseline) != len(case.outputs) or len(winner) != len(case.outputs):
+            raise RuntimeError(
+                f"payload factory output tensor domain is invalid at rank {rank}"
+            )
+        for index, (baseline_array, winner_array, spec) in enumerate(
+            zip(baseline, winner, case.outputs, strict=True)
+        ):
+            expected_bytes = (
+                int(np.prod(spec.shape, dtype=np.int64)) * spec.element_bytes
+            )
+            for variant, array in (
+                ("baseline", baseline_array),
+                ("winner", winner_array),
+            ):
+                if tuple(array.shape) != spec.shape or array.nbytes != expected_bytes:
+                    raise RuntimeError(
+                        f"{variant} payload shape/bytes mismatch for "
+                        f"{(rank, 'output', index)}"
+                    )
+            location = (rank, "output", index)
+            if (
+                case.output_comparison.kind
+                == PairedOutputComparisonPolicy.Kind.FloatingTolerance
+            ):
+                validate_floating_pair(
+                    baseline_array,
+                    winner_array,
+                    spec,
+                    case.output_comparison,
+                    location,
+                )
+                continue
+            baseline_elements = np.ascontiguousarray(baseline_array).view(
+                np.uint8
+            )
+            winner_elements = np.ascontiguousarray(winner_array).view(
+                np.uint8
+            )
+            if not np.array_equal(baseline_elements, winner_elements):
+                differing_byte = int(
+                    np.flatnonzero(baseline_elements != winner_elements)[0]
+                )
+                element = differing_byte // spec.element_bytes
+                raise RuntimeError(
+                    "baseline/winner host oracles are not bit-exact for "
+                    f"{location} at element {element}"
+                )
+
+
 def write_payloads(
     work_dir: pathlib.Path,
     case: CampaignCase,
     bindings_by_variant: dict[str, dict[tuple[int, str, int], int]],
+    payloads: PairedPayloads,
 ) -> dict[str, list[str]]:
-    inputs, outputs = case.payload_factory()
-    if len(inputs) != case.rank_count or len(outputs) != case.rank_count:
-        raise RuntimeError("payload factory rank domain is invalid")
+    inputs = payloads.inputs
+    outputs_by_variant = {
+        "baseline": payloads.baseline_outputs,
+        "winner": payloads.winner_outputs,
+    }
     raw = work_dir / "raw"
     raw.mkdir()
     arguments_by_variant = {
         variant: [] for variant in bindings_by_variant
     }
+    if set(bindings_by_variant) != set(outputs_by_variant):
+        raise RuntimeError("paired payload variants must be baseline and winner")
     for rank in range(case.rank_count):
-        if len(inputs[rank]) != len(case.inputs) or len(outputs[rank]) != len(
-            case.outputs
+        for index, (array, spec) in enumerate(
+            zip(inputs[rank], case.inputs, strict=True)
         ):
-            raise RuntimeError(f"payload factory tensor domain is invalid at rank {rank}")
-        for role, arrays, specs in (
-            ("user_input", inputs[rank], case.inputs),
-            ("output", outputs[rank], case.outputs),
-        ):
-            for index, (array, spec) in enumerate(zip(arrays, specs, strict=True)):
-                if tuple(array.shape) != spec.shape or array.nbytes != (
-                    int(np.prod(spec.shape, dtype=np.int64)) * spec.element_bytes
-                ):
-                    raise RuntimeError(
-                        f"payload shape/bytes mismatch for {(rank, role, index)}"
-                    )
-                path = raw / f"rank_{rank:02d}_{role}_{index}.{spec.mlir_dtype}.raw"
+            path = raw / (
+                f"rank_{rank:02d}_user_input_{index}.{spec.mlir_dtype}.raw"
+            )
+            path.write_bytes(np.ascontiguousarray(array).tobytes())
+            for variant, bindings in bindings_by_variant.items():
+                arguments_by_variant[variant].extend(
+                    [
+                        "--resource",
+                        f"{bindings[(rank, 'user_input', index)]}={path}",
+                    ]
+                )
+        for variant, outputs in outputs_by_variant.items():
+            bindings = bindings_by_variant[variant]
+            for index, (array, spec) in enumerate(
+                zip(outputs[rank], case.outputs, strict=True)
+            ):
+                path = raw / (
+                    f"{variant}_rank_{rank:02d}_output_{index}."
+                    f"{spec.mlir_dtype}.raw"
+                )
                 path.write_bytes(np.ascontiguousarray(array).tobytes())
-                option = "--resource" if role == "user_input" else "--expected"
-                for variant, bindings in bindings_by_variant.items():
-                    arguments_by_variant[variant].extend(
-                        [
-                            option,
-                            f"{bindings[(rank, role, index)]}={path}",
-                        ]
-                    )
+                expected_option = "--expected"
+                if (
+                    case.output_comparison.kind
+                    == PairedOutputComparisonPolicy.Kind.FloatingTolerance
+                ):
+                    if spec.mlir_dtype != "f16":
+                        raise RuntimeError(
+                            "board relaxed output comparison currently "
+                            "supports only f16"
+                        )
+                    expected_option = "--expected-f16-relaxed"
+                arguments_by_variant[variant].extend(
+                    [
+                        expected_option,
+                        f"{bindings[(rank, 'output', index)]}={path}",
+                    ]
+                )
     return arguments_by_variant
 
 
@@ -1257,11 +1508,47 @@ def verify_board_output(
     }
     if not required.issubset(set(stdout.splitlines())):
         raise RuntimeError("paired board output omitted lifecycle evidence")
-    compare_matches = re.findall(
+    exact_compare_matches = re.findall(
         r"^output_compare: resource=(\d+) bytes=\d+ exact=true$",
         stdout,
         re.MULTILINE,
     )
+    relaxed_compare_matches = re.findall(
+        r"^output_compare: resource=(\d+) bytes=\d+ "
+        r"policy=f16-relaxed abs=([0-9.eE+-]+) rel=([0-9.eE+-]+) "
+        r"max_ulp=(\d+) signed_zero_equal=true$",
+        stdout,
+        re.MULTILINE,
+    )
+    if (
+        case.output_comparison.kind
+        == PairedOutputComparisonPolicy.Kind.FloatingTolerance
+    ):
+        if exact_compare_matches:
+            raise RuntimeError(
+                "floating paired board output used raw exact comparison"
+            )
+        for _, absolute, relative, maximum_ulp in relaxed_compare_matches:
+            if (
+                float(absolute) != case.output_comparison.absolute_tolerance
+                or float(relative)
+                != case.output_comparison.relative_tolerance
+                or int(maximum_ulp) != case.output_comparison.maximum_ulp
+                or not case.output_comparison.signed_zero_equal
+            ):
+                raise RuntimeError(
+                    "paired board output used the wrong floating policy"
+                )
+        compare_matches = [
+            resource
+            for resource, _, _, _ in relaxed_compare_matches
+        ]
+    else:
+        if relaxed_compare_matches:
+            raise RuntimeError(
+                "raw-exact paired board output used relaxed comparison"
+            )
+        compare_matches = exact_compare_matches
     actual_output_ids = {int(resource) for resource in compare_matches}
     if (
         len(compare_matches) != len(output_ids)
@@ -1347,6 +1634,8 @@ def main() -> int:
     if not args.no_card and case.rank_count == 16 and args.expected_tile_count != 16:
         raise RuntimeError("collective optimization cases require exactly 16 tiles")
 
+    payloads = case.payload_factory()
+    validate_paired_payloads(case, payloads)
     source = write_source(args.work_dir, case)
     packages = {
         "baseline": args.work_dir / "baseline-package",
@@ -1421,7 +1710,7 @@ def main() -> int:
         json.dumps(structure_record, indent=2, sort_keys=True) + "\n"
     )
     resource_arguments = write_payloads(
-        args.work_dir, case, bindings_by_variant
+        args.work_dir, case, bindings_by_variant, payloads
     )
 
     if args.no_card:

@@ -9,20 +9,25 @@ import os
 import pathlib
 import re
 import shutil
-import struct
 import subprocess
 import sys
+
+import numpy as np
 
 import wafer_runtime_launch_contract as runtime_launch
 
 
 RANK_COUNT = 16
-LOCAL_ELEMENTS = 64
+LOCAL_ELEMENTS = 128
 LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 STATUS_ABI = "wafer-direct-dte-status-v2"
 STATUS_STORAGE_BYTES = 64
 STATUS_STORAGE_ALIGNMENT = 64
 DIRECT_DTE_PROCESS_TIMEOUT_MARGIN_SECONDS = 30
+ELEMENT_TYPES = {
+    "f16": ("float16", np.dtype("<f2")),
+    "f32": ("float32", np.dtype("<f4")),
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,8 +76,13 @@ def run(
 
 
 def write_fixture(
-    work_dir: pathlib.Path, local_elements: int = LOCAL_ELEMENTS
+    work_dir: pathlib.Path,
+    local_elements: int = LOCAL_ELEMENTS,
+    element_type: str = "f16",
 ) -> pathlib.Path:
+    if element_type not in ELEMENT_TYPES:
+        raise RuntimeError(f"unsupported fixture element type {element_type}")
+    metadata_dtype, _ = ELEMENT_TYPES[element_type]
     if work_dir.exists():
         shutil.rmtree(work_dir)
     source = work_dir / "source-program"
@@ -82,23 +92,23 @@ def write_fixture(
     module = f'''module {{
   wafer.target.topology @default {{card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}}
   wafer.execution.mesh @default_mesh {{topology = @default, axes = ["rank"], shape = array<i64: 16>, policy = "all_available", endpoints = array<i64>}}
-  func.func @main(%arg0: tensor<{RANK_COUNT}x{local_elements}xf32>) -> tensor<{RANK_COUNT}x{local_elements}xf32> {{
+  func.func @main(%arg0: tensor<{RANK_COUNT}x{local_elements}x{element_type}>) -> tensor<{RANK_COUNT}x{local_elements}x{element_type}> {{
     %sharded = stablehlo.custom_call @Sharding(%arg0) {{
       backend_config = "",
       mhlo.sharding = "{{devices=[{RANK_COUNT},1]{devices}}}"
-    }} : (tensor<{RANK_COUNT}x{local_elements}xf32>) -> tensor<{RANK_COUNT}x{local_elements}xf32>
-    %sum = stablehlo.add %sharded, %sharded : tensor<{RANK_COUNT}x{local_elements}xf32>
-    %zero = stablehlo.constant dense<0.0> : tensor<f32>
+    }} : (tensor<{RANK_COUNT}x{local_elements}x{element_type}>) -> tensor<{RANK_COUNT}x{local_elements}x{element_type}>
+    %sum = stablehlo.add %sharded, %sharded : tensor<{RANK_COUNT}x{local_elements}x{element_type}>
+    %zero = stablehlo.constant dense<0.0> : tensor<{element_type}>
     %result = "stablehlo.reduce"(%sum, %zero) ({{
-    ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
-      %value = stablehlo.add %lhs, %rhs : tensor<f32>
-      stablehlo.return %value : tensor<f32>
-    }}) {{dimensions = array<i64: 0>}} : (tensor<{RANK_COUNT}x{local_elements}xf32>, tensor<f32>) -> tensor<{local_elements}xf32>
+    ^bb0(%lhs: tensor<{element_type}>, %rhs: tensor<{element_type}>):
+      %value = stablehlo.add %lhs, %rhs : tensor<{element_type}>
+      stablehlo.return %value : tensor<{element_type}>
+    }}) {{dimensions = array<i64: 0>}} : (tensor<{RANK_COUNT}x{local_elements}x{element_type}>, tensor<{element_type}>) -> tensor<{local_elements}x{element_type}>
     %broadcast = "stablehlo.broadcast_in_dim"(%result) {{
       broadcast_dimensions = array<i64: 1>
-    }} : (tensor<{local_elements}xf32>) -> tensor<{RANK_COUNT}x{local_elements}xf32>
-    %tagged = stablehlo.add %broadcast, %sharded : tensor<{RANK_COUNT}x{local_elements}xf32>
-    return %tagged : tensor<{RANK_COUNT}x{local_elements}xf32>
+    }} : (tensor<{local_elements}x{element_type}>) -> tensor<{RANK_COUNT}x{local_elements}x{element_type}>
+    %tagged = stablehlo.add %broadcast, %sharded : tensor<{RANK_COUNT}x{local_elements}x{element_type}>
+    return %tagged : tensor<{RANK_COUNT}x{local_elements}x{element_type}>
   }}
 }}
 '''
@@ -106,12 +116,16 @@ def write_fixture(
         "name": "forward",
         "stablehlo_version": "0.0.0",
         "input_signature": [
-            {"shape": [RANK_COUNT, local_elements], "dtype": "float32", "dynamic_dims": []}
+            {
+                "shape": [RANK_COUNT, local_elements],
+                "dtype": metadata_dtype,
+                "dynamic_dims": [],
+            }
         ],
         "output_signature": [
             {
                 "shape": [RANK_COUNT, local_elements],
-                "dtype": "float32",
+                "dtype": metadata_dtype,
                 "dynamic_dims": [],
             }
         ],
@@ -128,8 +142,13 @@ def write_fixture(
 
 
 def validate_manifest(
-    package: pathlib.Path, local_elements: int = LOCAL_ELEMENTS
+    package: pathlib.Path,
+    local_elements: int = LOCAL_ELEMENTS,
+    element_type: str = "f16",
 ) -> dict[tuple[int, str, int], int]:
+    if element_type not in ELEMENT_TYPES:
+        raise RuntimeError(f"unsupported fixture element type {element_type}")
+    metadata_dtype, element_dtype = ELEMENT_TYPES[element_type]
     metadata = json.loads((package / "functions" / "forward.meta").read_text())
     boundary = metadata.get("distributed_boundary")
     if not isinstance(boundary, dict) or boundary.get("logical_rank_count") != RANK_COUNT:
@@ -167,7 +186,7 @@ def validate_manifest(
         "distribution": "partitioned",
         "global_shape": [RANK_COUNT, local_elements],
         "local_shape": [1, local_elements],
-        "dtype": "float32",
+        "dtype": metadata_dtype,
         "ranks": expected_input_ranks,
     }:
         raise RuntimeError("SPMD helper produced an unexpected input partition")
@@ -176,7 +195,7 @@ def validate_manifest(
         "distribution": "partitioned",
         "global_shape": [RANK_COUNT, local_elements],
         "local_shape": [1, local_elements],
-        "dtype": "float32",
+        "dtype": metadata_dtype,
         "ranks": expected_output_ranks,
     }:
         raise RuntimeError("SPMD helper produced an unexpected output partition")
@@ -241,13 +260,23 @@ def validate_manifest(
             if resource.get("host_visible")
         }
         if typed_host_resources != {
-            ("user_input", 0): {"dtype": "f32", "shape": [1, local_elements]},
-            ("output", 0): {"dtype": "f32", "shape": [1, local_elements]},
+            ("user_input", 0): {
+                "dtype": element_type,
+                "shape": [1, local_elements],
+            },
+            ("output", 0): {
+                "dtype": element_type,
+                "shape": [1, local_elements],
+            },
         }:
             raise RuntimeError(f"rank {rank} has invalid typed host resources")
         for resource in rank_resources:
             if not resource.get("host_visible"):
                 continue
+            if resource.get("bytes") != local_elements * element_dtype.itemsize:
+                raise RuntimeError(
+                    f"rank {rank} host resource byte size is invalid"
+                )
             key = (rank, resource.get("role"), resource.get("role_index"))
             if key in host_bindings or key[1:] not in {
                 ("user_input", 0),
@@ -273,27 +302,37 @@ def write_raw_files(
     raw = work_dir / "raw"
     raw.mkdir()
     arguments: list[str] = []
-    values = [
-        [float(rank * 10 + lane) for lane in range(local_elements)]
+    lanes = np.arange(local_elements, dtype=np.int32)
+    values_i32 = [
+        lanes * 16
+        if rank == 0
+        else np.full(local_elements, rank * 4, dtype=np.int32)
         for rank in range(RANK_COUNT)
     ]
-    reduced = [
-        sum(2.0 * values[rank][lane] for rank in range(RANK_COUNT))
-        for lane in range(local_elements)
-    ]
+    reduced_i32 = np.sum(
+        np.stack(values_i32, axis=0) * 2,
+        axis=0,
+        dtype=np.int32,
+    )
     expected_payloads: set[bytes] = set()
     for rank in range(RANK_COUNT):
-        expected = [
-            reduced[lane] + values[rank][lane]
-            for lane in range(local_elements)
-        ]
-        expected_bytes = struct.pack(f"<{local_elements}f", *expected)
+        input_ = values_i32[rank].astype("<f2")
+        expected_i32 = reduced_i32 + values_i32[rank]
+        expected = expected_i32.astype("<f2")
+        if (
+            not np.array_equal(input_.astype(np.int32), values_i32[rank])
+            or not np.array_equal(expected.astype(np.int32), expected_i32)
+            or not np.all(np.isfinite(input_))
+            or not np.all(np.isfinite(expected))
+        ):
+            raise RuntimeError(
+                "Direct-DTE f16 sentinels are not finite and exact"
+            )
+        expected_bytes = expected.tobytes()
         expected_payloads.add(expected_bytes)
-        input_path = raw / f"input_{rank:02d}.f32.raw"
-        expected_path = raw / f"expected_{rank:02d}.f32.raw"
-        input_path.write_bytes(
-            struct.pack(f"<{local_elements}f", *values[rank])
-        )
+        input_path = raw / f"input_{rank:02d}.f16.raw"
+        expected_path = raw / f"expected_{rank:02d}.f16.raw"
+        input_path.write_bytes(input_.tobytes())
         expected_path.write_bytes(expected_bytes)
         arguments.extend(
             ["--resource", f"{bindings[(rank, 'user_input', 0)]}={input_path}"]
@@ -396,7 +435,7 @@ def main() -> int:
         if not required_evidence.issubset(set(result.stdout.splitlines())):
             raise RuntimeError("board output omitted complete Direct-DTE evidence")
         output_matches = re.findall(
-            rf"^output_compare: resource=(\d+) bytes={LOCAL_ELEMENTS * 4} "
+            rf"^output_compare: resource=(\d+) bytes={LOCAL_ELEMENTS * 2} "
             r"exact=true$",
             result.stdout,
             re.MULTILINE,

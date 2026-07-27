@@ -306,7 +306,9 @@ def compile_package(
     args: argparse.Namespace,
 ) -> tuple[pathlib.Path, pathlib.Path, dict[tuple[int, str, int], int]]:
     source = production_baseline.write_fixture(
-        args.work_dir, PROBE_LOCAL_ELEMENTS
+        args.work_dir,
+        PROBE_LOCAL_ELEMENTS,
+        element_type="f32",
     )
     package = args.work_dir / "package"
     result = run(
@@ -325,7 +327,9 @@ def compile_package(
     if "published verified package" not in result.stdout:
         raise RuntimeError("wafer-compile did not publish the seed package")
     bindings = production_baseline.validate_manifest(
-        package, PROBE_LOCAL_ELEMENTS
+        package,
+        PROBE_LOCAL_ELEMENTS,
+        element_type="f32",
     )
     manifest = json.loads((package / "manifest.json").read_text())
     host_resources = (

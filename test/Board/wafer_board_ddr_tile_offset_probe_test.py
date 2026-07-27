@@ -40,7 +40,8 @@ OFFSET_CLASSES = (
 DIRECTIONS = ("rdma", "wdma")
 CELL_SAMPLES = 3
 RESOURCE_BYTES = 0x200000
-LOCAL_ELEMENTS = RESOURCE_BYTES // 4
+ELEMENT_BYTES = 2
+LOCAL_ELEMENTS = RESOURCE_BYTES // ELEMENT_BYTES
 PAYLOAD_BYTES = 256
 GUARD_BYTES = 256
 SLOT_BYTES = PAYLOAD_BYTES + 2 * GUARD_BYTES
@@ -123,36 +124,36 @@ module {{
   wafer.target.topology @default {{card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}}
   wafer.execution.mesh @default_mesh {{topology = @default, axes = ["rank"], shape = array<i64: 16>, policy = "all_available", endpoints = array<i64>}}
   func.func @main(
-      %arg0: tensor<16x{LOCAL_ELEMENTS}xf32>,
-      %arg1: tensor<16x{LOCAL_ELEMENTS}xf32>)
-      -> (tensor<16x{LOCAL_ELEMENTS}xf32>,
-          tensor<16x{LOCAL_ELEMENTS}xf32>) {{
+      %arg0: tensor<16x{LOCAL_ELEMENTS}xf16>,
+      %arg1: tensor<16x{LOCAL_ELEMENTS}xf16>)
+      -> (tensor<16x{LOCAL_ELEMENTS}xf16>,
+          tensor<16x{LOCAL_ELEMENTS}xf16>) {{
     %sharded0 = stablehlo.custom_call @Sharding(%arg0) {{
       backend_config = "",
       mhlo.sharding = "{SHARDING}"
-    }} : (tensor<16x{LOCAL_ELEMENTS}xf32>) -> tensor<16x{LOCAL_ELEMENTS}xf32>
+    }} : (tensor<16x{LOCAL_ELEMENTS}xf16>) -> tensor<16x{LOCAL_ELEMENTS}xf16>
     %sharded1 = stablehlo.custom_call @Sharding(%arg1) {{
       backend_config = "",
       mhlo.sharding = "{SHARDING}"
-    }} : (tensor<16x{LOCAL_ELEMENTS}xf32>) -> tensor<16x{LOCAL_ELEMENTS}xf32>
+    }} : (tensor<16x{LOCAL_ELEMENTS}xf16>) -> tensor<16x{LOCAL_ELEMENTS}xf16>
     %slice = "stablehlo.slice"(%sharded0) {{
-      start_indices = array<i64: 0, 0>,
-      limit_indices = array<i64: 16, 1>,
+      start_indices = array<i64: 0, {SWEEP_BASE // ELEMENT_BYTES}>,
+      limit_indices = array<i64: 16, {SWEEP_BASE // ELEMENT_BYTES + 1}>,
       strides = array<i64: 1, 1>
-    }} : (tensor<16x{LOCAL_ELEMENTS}xf32>) -> tensor<16x1xf32>
-    %zero = stablehlo.constant dense<0.0> : tensor<f32>
+    }} : (tensor<16x{LOCAL_ELEMENTS}xf16>) -> tensor<16x1xf16>
+    %zero = stablehlo.constant dense<0.0> : tensor<f16>
     %sum = "stablehlo.reduce"(%slice, %zero) ({{
-    ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
-      %value = stablehlo.add %lhs, %rhs : tensor<f32>
-      stablehlo.return %value : tensor<f32>
-    }}) {{dimensions = array<i64: 0>}} : (tensor<16x1xf32>, tensor<f32>) -> tensor<1xf32>
+    ^bb0(%lhs: tensor<f16>, %rhs: tensor<f16>):
+      %value = stablehlo.add %lhs, %rhs : tensor<f16>
+      stablehlo.return %value : tensor<f16>
+    }}) {{dimensions = array<i64: 0>}} : (tensor<16x1xf16>, tensor<f16>) -> tensor<1xf16>
     %broadcast = "stablehlo.broadcast_in_dim"(%sum) {{
       broadcast_dimensions = array<i64: 1>
-    }} : (tensor<1xf32>) -> tensor<16x{LOCAL_ELEMENTS}xf32>
-    %result0 = stablehlo.add %sharded0, %broadcast : tensor<16x{LOCAL_ELEMENTS}xf32>
-    %result1 = stablehlo.add %sharded1, %broadcast : tensor<16x{LOCAL_ELEMENTS}xf32>
-    return %result0, %result1 : tensor<16x{LOCAL_ELEMENTS}xf32>,
-        tensor<16x{LOCAL_ELEMENTS}xf32>
+    }} : (tensor<1xf16>) -> tensor<16x{LOCAL_ELEMENTS}xf16>
+    %result0 = stablehlo.add %sharded0, %broadcast : tensor<16x{LOCAL_ELEMENTS}xf16>
+    %result1 = stablehlo.add %sharded1, %broadcast : tensor<16x{LOCAL_ELEMENTS}xf16>
+    return %result0, %result1 : tensor<16x{LOCAL_ELEMENTS}xf16>,
+        tensor<16x{LOCAL_ELEMENTS}xf16>
   }}
 }}
 """
@@ -162,24 +163,24 @@ METADATA = {
     "input_signature": [
         {
             "shape": [RANK_COUNT, LOCAL_ELEMENTS],
-            "dtype": "float32",
+            "dtype": "float16",
             "dynamic_dims": [],
         },
         {
             "shape": [RANK_COUNT, LOCAL_ELEMENTS],
-            "dtype": "float32",
+            "dtype": "float16",
             "dynamic_dims": [],
         },
     ],
     "output_signature": [
         {
             "shape": [RANK_COUNT, LOCAL_ELEMENTS],
-            "dtype": "float32",
+            "dtype": "float16",
             "dynamic_dims": [],
         },
         {
             "shape": [RANK_COUNT, LOCAL_ELEMENTS],
-            "dtype": "float32",
+            "dtype": "float16",
             "dynamic_dims": [],
         },
     ],
@@ -320,7 +321,7 @@ def validate_static_contract() -> None:
         * SLOT_BYTES
         > CONFLICT_SMALL_ARCHIVE_BASE
         or MAX_RECORD_BYTES > ARCHIVE_BASE
-        or LOCAL_ELEMENTS * 4 != RESOURCE_BYTES
+        or LOCAL_ELEMENTS * ELEMENT_BYTES != RESOURCE_BYTES
         or len(conflict_cases) != expected_conflict_cells
         or CONFLICT_ROW_COUNT
         != expected_conflict_rows_per_rank
@@ -514,7 +515,7 @@ def validate_boundary_binding(
         "distribution": "partitioned",
         "global_shape": [RANK_COUNT, LOCAL_ELEMENTS],
         "local_shape": [1, LOCAL_ELEMENTS],
-        "dtype": "float32",
+        "dtype": "float16",
         "ranks": expected_rank_slices(),
     }:
         raise RuntimeError(
@@ -611,7 +612,7 @@ def validate_manifest(
             or role not in {"user_input", "output"}
             or role_index not in range(ALLOCATION_COUNT)
             or resource.get("type")
-            != {"dtype": "f32", "shape": [1, LOCAL_ELEMENTS]}
+            != {"dtype": "f16", "shape": [1, LOCAL_ELEMENTS]}
             or resource.get("bytes") != RESOURCE_BYTES
             or resource.get("access") != expected_access
             or resource.get("host_visible") is not True
@@ -799,17 +800,23 @@ def verify_no_card(args: argparse.Namespace, package: pathlib.Path) -> None:
 
 
 def pattern_period(rank: int, allocation: int, launch_sample: int) -> bytes:
-    return bytes(
-        (
-            rank * 37
-            + allocation * 83
-            + launch_sample * 29
-            + lane * 17
-            + (lane >> 4) * 11
-            + 5
+    return b"".join(
+        struct.pack(
+            "<e",
+            float(
+                (
+                    rank * 37
+                    + allocation * 83
+                    + launch_sample * 29
+                    + lane * 17
+                    + (lane >> 4) * 11
+                    + 5
+                )
+                % 31
+                - 15
+            ),
         )
-        & 0xFF
-        for lane in range(256)
+        for lane in range(PAYLOAD_BYTES // ELEMENT_BYTES)
     )
 
 
@@ -820,18 +827,29 @@ def conflict_pattern(
     address_offset: int,
     count: int,
 ) -> bytes:
-    return bytes(
-        (
-            rank * 37
-            + allocation * 83
-            + launch_sample * 29
-            + index * 17
-            + (index >> 8) * 11
-            + (index >> 16) * 7
-            + 5
+    if address_offset % ELEMENT_BYTES or count % ELEMENT_BYTES:
+        raise RuntimeError("f16 conflict pattern range is not element-aligned")
+    return b"".join(
+        struct.pack(
+            "<e",
+            float(
+                (
+                    rank * 37
+                    + allocation * 83
+                    + launch_sample * 29
+                    + element * 17
+                    + (element >> 7) * 11
+                    + (element >> 15) * 7
+                    + 5
+                )
+                % 63
+                - 31
+            ),
         )
-        & 0xFF
-        for index in range(address_offset, address_offset + count)
+        for element in range(
+            address_offset // ELEMENT_BYTES,
+            (address_offset + count) // ELEMENT_BYTES,
+        )
     )
 
 

@@ -1344,9 +1344,22 @@
   `dcache.cipa/civa/ipa/iva`既不构成正确publication合同，也会掩盖真正的issue/completion ordering问题。
 - 修复模式：mapped alias只做volatile load/store并以`fence iorw,iorw`/`sync`建立顺序；只有raw
   `0x0 + offset` cacheable SPM alias才使用对应dcache操作。cacheable DDR的device/host publication与readback
-  继续按实际owned cache line clean/invalidate，不能与mapped-SPM共享helper。
+  继续按实际owned cache line clean/invalidate，不能与mapped-SPM共享helper。批量Kcore seed必须在最后一笔
+  store之后、第一条NCC issue之前执行一次显式`fence + sync + sync.is` publication；只有`fence`会让首个
+  consumer读到上一case陈旧SPM内容，不能靠后续issue的自然延迟掩盖。
 - 防复发：先从地址域定义判断cache属性，再选择ordering或cache操作；数值保留seed时同时审计producer
   completion、first consumer dependency和consumer copyback，不能用一次dcache尝试证明cache根因。
+
+## 2026-07-27 ArgMax/ArgMin不能把vendor私有split接口当成CRT合同
+
+- 现象：为排除前一launch的writeback，CRT曾直接组合`instr_adapter_opt.h`私有init、CSR观察、issue和result
+  helper，实卡在第一条ArgMin进入后不再完成；改成私有完整helper仍会让production CRT依赖未拥有的内部ABI。
+- 根因：compiler-owned target call只应依赖repo public CRT；私有helper的中间状态和兼容性都不是该合同的一部分。
+- 修复模式：自有CRT对ArgMax/ArgMin显式设置value/index双请求，经现有profiling-aware普通CT launch发射，
+  `TsmWaitfinish`后再发布mapped-SPM结果。version-matched普通CT反汇编锁定双request、单次issue和两个
+  `DATA_VALID`轮询；source conformance拒绝`instr_adapter_opt.h`及所有`__ct_*`入口。
+- 防复发：需要特殊writeback时先证明普通公开launch的packet/完成语义；不能为了调试代际问题把私有内部函数
+  提升成production ABI，也不能绕过统一profiling/lifecycle路径直接写MMIO。
 
 ## 2026-07-23 1x1 Img2Col case会掩盖wrapper layout合同错误
 
@@ -1593,13 +1606,17 @@
   不产生aux也不触及collision target，仍会被接受。
 - 根因：输入只区分“有没有重叠”，没有区分四个竞争source；同时把bounded range检查误当成semantic observation，
   未用padding-only、aux corruption和target corruption反例验证判定器。
-- 修复模式：先运行真实indexed-max生成指向同一global位置但local index为`5/3/2/0`的四组aux，等待producer
-  完成后在mapped SPM中注入按sample轮换的四组不同FP16 sentinel，再发射index/mask Unpool。host逐bit检查aux；
+- 修复模式：先运行真实indexed-max生成指向同一global位置但local index为`5/3/2/0`的四组aux；producer、
+  aux快照、pooled-value sentinel staging和Unpool保持在same-worker NCC RAW/WAW数据流中，sentinel用compact
+  TDMA搬运，避免在两条NCC指令之间插入依赖一次CSR idle观察的Kcore写。aux输出同时保留consumer前producer
+  快照和consumer后原位值，host分别逐bit检查；
   64个target channel各自必须由候选四组sentinel的非空subset解释，并保留uniform/lane-varying分类、
   position/value mask和histogram；不能强迫不同channel共享同一赢家集合。非target和physical tail只能保持
   逐position统一的zero或seed，slot外guard保持不变。
-- 防复发：每个bounded behavior case都要列出它声称区分的候选模型，并至少有“只改padding”“破坏aux/metadata”
-  和“破坏一个semantic target”三类mutation adequacy反例。完整span比较只证明越界保护，不证明被测语义发生。
+- 防复发：每个bounded behavior case都要列出它声称区分的候选模型，并至少有“只改padding”“破坏producer
+  snapshot”“破坏consumer后aux/metadata”和“破坏一个semantic target”四类mutation adequacy反例。
+  post-consumer aux单点错误与同lane错误scatter只能证明consumer看到了错误index；没有pre-consumer snapshot
+  时不能继续归因为producer几何或consumer修改。完整span比较只证明越界保护，不证明被测语义发生。
 
 ## 2026-07-26 Profiler CRT跨launch绑定必须显式失效
 
@@ -1687,3 +1704,28 @@
 - 防复发：任何多issue板端probe都必须按phase追踪accepted work，并保证全局PMU/cache/transport scope的restore
   晚于可验证cleanup。不能用最终terminal、void wrapper或“后续会统一wait”代替partial-accept error path；
   timeout/设备异常后的第二次drain同样属于禁止的自动retry。
+## 2026-07-27 浮点代数candidate与paired comparator必须共享exact/relaxed合同
+
+- 现象：`(a*b)+(a*c)`的无标注f16 source会产生`a*(b+c)`production candidate；普通有限测试数据可能恰好
+  相同，混入`+0/-0`或舍入敏感值后baseline与winner逐bit不同。
+- 根因：candidate generation没有typed source-algebra policy，而paired fixture把所有输出硬编码为raw-bit
+  exact；这同时让项目已采用的宽松浮点合同失效，并把`+0/-0`差异反复误报。
+- 修复模式：用target profile拥有的`SourceExact`/`Relaxed`显式控制floating algebra candidate；exact保持
+  source DAG，relaxed允许改写且replacement只继承输入op flags交集。paired preflight复用typed comparator：
+  signed zero相等、finite按显式ULP/abs/rel、NaN/Inf单独处理；同一policy必须显式传给`wafer-run`校验
+  每个variant的实际board output，不能只做host预检。结构、长度、guard、index和completion保持exact。
+- 防复发：同一无标注float source必须覆盖exact拒绝和relaxed准入；测试数据主动包含`+0/-0`，并另有超阈值
+  finite负例。不要用规避特殊值的fixture，也不要把raw-bit blanket当成项目数值语义。
+
+## 2026-07-27 板端算子case不能用易比较的I8代替真实工作负载dtype
+
+- 现象：AllGather、AllToAll、CollectivePermute和部分通用engine/DataMove case为了方便生成sentinel与做逐字节
+  oracle而使用I8；即使板端通过，也不能证明大模型主线使用的FP16/BF16算子编译与执行链路。
+- 根因：case设计先优化了fixture便利性，没有先固定用户场景、算子语义和主线dtype，混淆了raw transport字节
+  协议证据与operator qualification。
+- 修复模式：operator-level板测默认使用FP16/BF16并保持实际payload bytes；纯搬运算子可使用finite FP16
+  bit-pattern做exact oracle，归约使用可精确表示且顺序无关的小整数FP16输入。只有明确的F32 numeric/ABI、
+  convert、index、mask、专用量化或raw协议本身具有其它类型语义时才保留对应dtype，并且不得外推为
+  FP16/BF16算子覆盖。
+- 防复发：新增case先写清真实workload dtype与证明对象，再实现payload/oracle；任何因dtype变更而改变的case
+  必须撤销旧板端结论，只接受新构建、新启动和新输出，no-card与旧输出都不能代签。

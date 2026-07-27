@@ -49,7 +49,7 @@ import wafer_ncc_probe_protocol as ncc_protocol
 
 
 FMT_FP16 = ncc_protocol.DMA_FORMAT_FP16
-FMT_INT8 = ncc_protocol.DMA_FORMAT_INT8
+FP16_ELEMENT_BYTES = 2
 MIN_REPEATS = 3
 CALIBRATION_SESSION_ENVIRONMENT = "WAFER_CALIBRATION_SESSION_ID"
 RUNTIME_LIFECYCLE = (
@@ -283,6 +283,10 @@ class ProbeCase:
             "transfer_bytes": [
                 lane.transfer_bytes for lane in self.plan.lanes
             ],
+            "element_counts": [
+                lane.transfer_bytes // FP16_ELEMENT_BYTES
+                for lane in self.plan.lanes
+            ],
             "formats": [lane.element_format for lane in self.plan.lanes],
             "layouts": [
                 {
@@ -422,6 +426,10 @@ def _lane(
     layout_stride0_bytes: int = 0,
     layout_iteration0: int = 0,
 ) -> ncc_protocol.Lane:
+    if transfer_bytes % FP16_ELEMENT_BYTES != 0:
+        raise ValueError(
+            "generic engine characterization requires a whole FP16 element span"
+        )
     return ncc_protocol.Lane(
         engine=ENGINE_TO_PROTOCOL[engine],
         worker=worker,
@@ -431,14 +439,7 @@ def _lane(
             else ncc_protocol.IssueMode.RAW
         ),
         transfer_bytes=transfer_bytes,
-        element_format=(
-            FMT_FP16
-            if (
-                engine in (Engine.CT, Engine.NE)
-                or layout_kind == ncc_protocol.LayoutKind.DMA_STRIDED
-            )
-            else FMT_INT8
-        ),
+        element_format=FMT_FP16,
         layout_kind=layout_kind,
         layout_inner_bytes=layout_inner_bytes,
         layout_stride0_bytes=layout_stride0_bytes,

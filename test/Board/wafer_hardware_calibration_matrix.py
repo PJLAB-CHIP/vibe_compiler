@@ -650,7 +650,6 @@ CALIBRATION_DOMAINS = (
         tests=(
             "wafer-runtime-adapter-python",
             "wafer-runtime-kernel-grid-add-no-card",
-            "wafer-runtime-model-add-no-card",
             "wafer-runtime-cluster-direct-dte-no-card",
         ),
     ),
@@ -708,7 +707,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             RUNTIME_RANK_ONE_CATALOG,
             "rank-one-per-rank-add",
             resource_budget="runtime-owned-rank-one-resources",
-            oracle=("independent-f32-expected", "full-result"),
+            oracle=("independent-f16-expected", "full-result"),
             guards=("schema-v6-resource-binding", "rank-one-domain"),
             completion=("terminal-status", "D2H", "cleanup"),
         ),
@@ -1419,11 +1418,11 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             resource_budget="4k-payload-plus-guards",
         ),
         _board_leaf(
-            "tdma-i8-strided",
+            "tdma-fp16-bf16-strided",
             "held-out",
             "rank-one-worker0",
             DATAMOVE_EXTENDED_CATALOG,
-            "tdma-i8-strided",
+            "tdma-fp16-bf16-strided",
             resource_budget="two-128k-ddr-slots",
         ),
         _board_leaf(
@@ -2020,6 +2019,58 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
                 "completion and terminal publication gate PMU comparison"
             ),
         ),
+        _observation_leaf(
+            "dte-raw-four-source-fanin",
+            "held-out",
+            "full-card-16-rank",
+            DTE_NCC_CATALOG,
+            "direct-dte-four-source-fanin",
+            resource_budget="four-receiver-fsms-and-four-guarded-source-slots",
+            reason=(
+                "the owner-backed raw case classifies four-source fan-in "
+                "correctness and receiver-FSM capacity only; it is not an "
+                "operator collective or a calibrated contention-cost claim"
+            ),
+        ),
+        _observation_leaf(
+            "dte-raw-broadcast-fanout-layout",
+            "held-out",
+            "full-card-16-rank",
+            DTE_NCC_CATALOG,
+            "direct-dte-raw-broadcast",
+            resource_budget="one-guarded-source-and-up-to-fifteen-destinations",
+            reason=(
+                "raw broadcast fanout and destination-count encoding remain "
+                "board observations; exact copies do not qualify an "
+                "operator-level collective or device cost"
+            ),
+        ),
+        _observation_leaf(
+            "dte-raw-scatter-fanout-layout",
+            "held-out",
+            "full-card-16-rank",
+            DTE_NCC_CATALOG,
+            "direct-dte-raw-scatter",
+            resource_budget="one-guarded-source-and-up-to-fifteen-destinations",
+            reason=(
+                "raw scatter fanout, source slicing and destination-count "
+                "encoding remain board observations; they do not qualify "
+                "operator AllToAll semantics or device cost"
+            ),
+        ),
+        _observation_leaf(
+            "dte-raw-shuffle-fanout-layout",
+            "held-out",
+            "full-card-16-rank",
+            DTE_NCC_CATALOG,
+            "direct-dte-raw-shuffle",
+            resource_budget="one-guarded-source-and-up-to-fifteen-destinations",
+            reason=(
+                "raw shuffle fanout, strided source selection and "
+                "destination-count encoding remain board observations; they "
+                "do not qualify an operator collective or device cost"
+            ),
+        ),
         _non_board_leaf(
             "dte-receiver-unprepared",
             "held-out",
@@ -2055,7 +2106,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
     ),
     "host-launch-runtime": (
         _leaf(
-            "kernel-model-rank1-rank16-launch",
+            "kernel-rank1-rank16-launch",
             "calibration",
             "board-positive",
             "rank-one-and-full-card",
@@ -2066,7 +2117,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
                 )
                 + _catalog_groups(
                     RUNTIME_CATALOG,
-                    "rank16-kernel-model-add",
+                    "rank16-kernel-add",
                 )
             ),
             oracle=("independent-expected", "all-rank-full-result"),

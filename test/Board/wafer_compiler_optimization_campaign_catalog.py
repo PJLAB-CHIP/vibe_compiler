@@ -43,6 +43,7 @@ class StructuralOracleKind(str, enum.Enum):
 
 class NumericOracleKind(str, enum.Enum):
     FULL_EXACT = "full-output-exact"
+    FULL_FLOATING_TOLERANCE = "full-output-floating-tolerance"
 
 
 class PerformanceOracleKind(str, enum.Enum):
@@ -61,6 +62,7 @@ class ExecutableEvidenceCapability(str, enum.Enum):
     TARGET_WORKSPACE_RELATION = "target-workspace-relation"
     SCHEDULER_BODY_DIFFERENCE = "scheduler-body-difference"
     FULL_OUTPUT_EXACT = "full-output-exact"
+    FULL_OUTPUT_FLOATING_TOLERANCE = "full-output-floating-tolerance"
     COMPLEMENT_PREFILL_CANARY = "complement-prefill-canary"
     ALL_RANK_STATUS = "all-rank-status"
     BOUNDED_LIFECYCLE = "bounded-lifecycle"
@@ -102,10 +104,18 @@ class OracleContract:
                 ExecutableEvidenceCapability.REPEATED_LIFECYCLE
             ),
         }[self.performance_kind]
+        numeric_evidence = (
+            self.numeric_kind == NumericOracleKind.FULL_EXACT
+            and ExecutableEvidenceCapability.FULL_OUTPUT_EXACT in capabilities
+        ) or (
+            self.numeric_kind
+            == NumericOracleKind.FULL_FLOATING_TOLERANCE
+            and ExecutableEvidenceCapability.FULL_OUTPUT_FLOATING_TOLERANCE
+            in capabilities
+        )
         return (
             bool(capabilities & STRUCTURAL_EVIDENCE_CAPABILITIES)
-            and self.numeric_kind == NumericOracleKind.FULL_EXACT
-            and ExecutableEvidenceCapability.FULL_OUTPUT_EXACT in capabilities
+            and numeric_evidence
             and ExecutableEvidenceCapability.BOUNDED_LIFECYCLE in capabilities
             and required_execution in capabilities
             and not self.performance_is_promotion_evidence
@@ -340,7 +350,12 @@ EXECUTION_CAPABILITY_ANCHORS = {
     ),
     ExecutableEvidenceCapability.FULL_OUTPUT_EXACT: _anchor(
         PAIRED_CAMPAIGN_DRIVER,
-        "option = \"--resource\" if role == \"user_input\" else \"--expected\"",
+        'f"{variant}_rank_{rank:02d}_output_{index}."',
+    ),
+    ExecutableEvidenceCapability.FULL_OUTPUT_FLOATING_TOLERANCE: _anchor(
+        PAIRED_CAMPAIGN_DRIVER,
+        '"--expected-f16-relaxed"',
+        "signed_zero_equal",
     ),
     ExecutableEvidenceCapability.COMPLEMENT_PREFILL_CANARY: _anchor(
         "tools/wafer-run/WaferRunBoardIO.cpp",
@@ -565,20 +580,24 @@ CAMPAIGN_CASES = (
                 "the optimized scheduler bodies have fewer multiply callsites",
                 "the optimized scheduler bodies still contain an add callsite",
             ),
-            NumericOracleKind.FULL_EXACT,
+            NumericOracleKind.FULL_FLOATING_TOLERANCE,
             (
-                "small integer-valued f16 vectors keep both expression forms exact",
-                "full exact output is computed with the source floating semantics",
+                "the full f16 output uses the explicit abs/rel/ULP policy",
+                "signed zero compares numerically while nonfinite values fail",
             ),
             PerformanceOracleKind.BALANCED_HOST_PROCESS_OBSERVATION,
             (
                 "balanced baseline/winner host-process elapsed samples are archived",
                 "the samples are not PMU, device cycles, or promotion evidence",
             ),
-            PAIRED_COMMON_CAPABILITIES
+            (
+                PAIRED_COMMON_CAPABILITIES
+                - {ExecutableEvidenceCapability.FULL_OUTPUT_EXACT}
+            )
             | {
                 ExecutableEvidenceCapability.TARGET_CALL_PRESENCE,
                 ExecutableEvidenceCapability.TARGET_CALL_COUNT_RELATION,
+                ExecutableEvidenceCapability.FULL_OUTPUT_FLOATING_TOLERANCE,
             },
         ),
     ),
@@ -670,7 +689,7 @@ CAMPAIGN_CASES = (
             ),
             NumericOracleKind.FULL_EXACT,
             (
-                "rank-distinct input yields an independently exact full output",
+                "rank-distinct finite f16 input yields an independently exact full output",
                 "all rank outputs and transport status resources are validated",
             ),
             PerformanceOracleKind.REPEATED_LIFECYCLE_OBSERVATION,
@@ -728,7 +747,7 @@ CAMPAIGN_CASES = (
             ),
             NumericOracleKind.FULL_EXACT,
             (
-                "rank-distinct i8 values use an exact modular full-output reference",
+                "rank-distinct f16 values use an exact full-output reference",
                 "all 16 outputs compare against the same exact full result",
             ),
             PerformanceOracleKind.BALANCED_HOST_PROCESS_OBSERVATION,
@@ -1037,8 +1056,12 @@ OPTIMIZATION_AXES = (
         "numeric-candidate-rewrite",
         AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
         "f16-common-factor",
-        "The exact-valued f16 pair changes target multiply count.",
-        observables=("add/multiply count", "exact output", "host observation"),
+        "The relaxed-policy f16 pair changes target multiply count.",
+        observables=(
+            "add/multiply count",
+            "full typed-tolerance output",
+            "host observation",
+        ),
     ),
     _axis(
         "integer-modular-reassociation",
@@ -1123,7 +1146,7 @@ OPTIMIZATION_AXES = (
         "all-rank-communication",
         AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
         "tree-all-reduce",
-        "The pair distinguishes target prepare/workspace work with exact i8 output.",
+        "The pair distinguishes target prepare/workspace work with exact f16 output.",
         observables=("prepare call count", "workspace bytes", "full exact output"),
     ),
     _axis(

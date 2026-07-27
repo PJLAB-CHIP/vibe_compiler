@@ -195,8 +195,8 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             sum(step.ctest_name == RUNNER.HEARTBEAT_CTEST for step in steps),
             1,
         )
-        self.assertEqual(len(steps), 37)
-        self.assertEqual(len({step.ctest_name for step in steps}), 37)
+        self.assertEqual(len(steps), 36)
+        self.assertEqual(len({step.ctest_name for step in steps}), 36)
         self.assertEqual(
             len(RUNNER.ALL_CALIBRATION_STEPS),
             len(RUNNER.CALIBRATION_STEPS)
@@ -493,17 +493,16 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             [
                 "initial-profile-heartbeat",
                 *batch,
-                "terminal-heartbeat",
             ],
         )
         self.assertTrue(
             all(
                 step.batch == "full-card-pending-direct-dte-raw"
-                for step in selected[1:-1]
+                for step in selected[1:]
             )
         )
         self.assertEqual(
-            [step.ctest_name for step in selected[1:-1]],
+            [step.ctest_name for step in selected[1:]],
             [
                 f"wafer-board-{case_name}"
                 for case_name in RUNNER.DTE_PENDING_CASE_NAMES

@@ -65,12 +65,27 @@ def tail_observation(sample: int, cycles: int) -> dict[str, object]:
 
 
 class CatalogShapeTest(unittest.TestCase):
-    def test_dma_formats_come_from_the_probe_abi(self) -> None:
-        self.assertEqual(catalog.FMT_INT8, ncc_protocol.DMA_FORMAT_INT8)
+    def test_generic_engine_workloads_are_fp16(self) -> None:
         self.assertEqual(catalog.FMT_FP16, ncc_protocol.DMA_FORMAT_FP16)
-        self.assertNotEqual(
-            catalog.FMT_INT8, ncc_protocol.DMA_FORMAT_UINT8
-        )
+        self.assertEqual(catalog.FP16_ELEMENT_BYTES, 2)
+        for probe in catalog.BOARD_PROBES:
+            record = probe.as_dict()
+            self.assertEqual(
+                record["formats"],
+                [catalog.FMT_FP16] * len(probe.plan.lanes),
+            )
+            self.assertEqual(
+                record["element_counts"],
+                [
+                    lane.transfer_bytes // catalog.FP16_ELEMENT_BYTES
+                    for lane in probe.plan.lanes
+                ],
+            )
+            for lane in probe.plan.lanes:
+                self.assertEqual(lane.element_format, catalog.FMT_FP16)
+                self.assertEqual(
+                    lane.transfer_bytes % catalog.FP16_ELEMENT_BYTES, 0
+                )
 
     def test_full_typed_inventory(self) -> None:
         self.assertEqual(len(catalog.SINGLE_ENGINE_CELLS), 21)
@@ -93,6 +108,43 @@ class CatalogShapeTest(unittest.TestCase):
             words = probe.request_words(0)
             self.assertEqual(len(words), ncc_protocol.REQUEST_WORDS)
         ncc_driver.validate_catalog_resource_layout(catalog.BOARD_PROBES)
+
+    def test_every_eight_round_pair_has_a_bounded_exact_oracle(self) -> None:
+        probes = tuple(
+            probe
+            for cell in catalog.ENGINE_PAIR_CELLS
+            if cell.dimension("iterations") == 8
+            for probe in cell.probes
+        )
+        self.assertEqual(len(probes), 240)
+        self.assertEqual(
+            max(
+                identity.slot
+                for probe in probes
+                for identity in probe.plan.issue_identities()
+            ),
+            15,
+        )
+        self.assertEqual(
+            ncc_protocol.F16_POSITIVE_INTEGER_MAX,
+            17,
+        )
+        self.assertEqual(
+            ncc_protocol.F16_POSITIVE_INTEGERS[-4:],
+            (0x4B00, 0x4B80, 0x4C00, 0x4C40),
+        )
+        for probe in probes:
+            for identity in probe.plan.issue_identities():
+                lane = probe.plan.lanes[identity.lane]
+                expected = ncc_driver.v2_expected_result(
+                    identity, lane, probe.plan
+                )
+                expected_bytes = (
+                    ncc_driver.v2_ne_result_bytes(lane)
+                    if lane.engine == ncc_protocol.Engine.NE
+                    else lane.transfer_bytes
+                )
+                self.assertEqual(len(expected), expected_bytes)
 
     def test_correctness_and_measurement_oracles_are_strong(self) -> None:
         for probe in catalog.BOARD_PROBES:

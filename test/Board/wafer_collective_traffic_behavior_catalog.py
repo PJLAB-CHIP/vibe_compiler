@@ -113,15 +113,15 @@ def all_to_all_shapes(
         raise ValueError("AllToAll sentinel payload is not record-aligned")
     lanes_per_peer = payload_bytes // (RANK_COUNT * 4)
     return (
-        (RANK_COUNT, lanes_per_peer, 4),
-        (1, lanes_per_peer * RANK_COUNT, 4),
+        (RANK_COUNT, lanes_per_peer, 2),
+        (1, lanes_per_peer * RANK_COUNT, 2),
     )
 
 
 def permute_shape(payload_bytes: int) -> tuple[int, ...]:
     if payload_bytes % 4 != 0:
         raise ValueError("Permute sentinel payload is not record-aligned")
-    return (payload_bytes // 4, 4)
+    return (payload_bytes // 4, 2)
 
 
 def cycle_from_order(order: tuple[int, ...]) -> Epoch:
@@ -198,7 +198,7 @@ class TrafficBehaviorCase:
     board_order: int
     objectives: tuple[str, ...]
     rank_count: int = RANK_COUNT
-    element_type: str = "i8"
+    element_type: str = "f16"
     disposition: CaseDisposition = CaseDisposition.PENDING_BOARD_CORRECTNESS
     numeric_oracle: NumericOracleKind = NumericOracleKind.FULL_OUTPUT_EXACT
     structural_evidence: StructuralEvidenceKind = (
@@ -265,8 +265,8 @@ CASES = (
         collective_kind=CollectiveKind.COLLECTIVE_PERMUTE,
         graph_kind=TrafficGraphKind.FULL_CYCLE_REVERSE,
         epochs=(FULL_CYCLE_REVERSE,),
-        input_shape=(1024, 4),
-        output_shape=(1024, 4),
+        input_shape=permute_shape(4096),
+        output_shape=permute_shape(4096),
         payload_bytes=4096,
         board_order=6,
         objectives=(
@@ -280,8 +280,8 @@ CASES = (
         collective_kind=CollectiveKind.COLLECTIVE_PERMUTE,
         graph_kind=TrafficGraphKind.OPPOSITE_PAIRS,
         epochs=(OPPOSITE_PAIRS,),
-        input_shape=(1024, 4),
-        output_shape=(1024, 4),
+        input_shape=permute_shape(4096),
+        output_shape=permute_shape(4096),
         payload_bytes=4096,
         board_order=7,
         objectives=(
@@ -295,8 +295,8 @@ CASES = (
         collective_kind=CollectiveKind.COLLECTIVE_PERMUTE,
         graph_kind=TrafficGraphKind.DISJOINT_ADJACENT_PAIRS,
         epochs=(DISJOINT_ADJACENT_PAIRS,),
-        input_shape=(1024, 4),
-        output_shape=(1024, 4),
+        input_shape=permute_shape(4096),
+        output_shape=permute_shape(4096),
         payload_bytes=4096,
         board_order=8,
         objectives=(
@@ -310,8 +310,8 @@ CASES = (
         collective_kind=CollectiveKind.COLLECTIVE_PERMUTE,
         graph_kind=TrafficGraphKind.SPARSE_ROLES,
         epochs=(SPARSE_ROLE_PAIRS,),
-        input_shape=(1024, 4),
-        output_shape=(1024, 4),
+        input_shape=permute_shape(4096),
+        output_shape=permute_shape(4096),
         payload_bytes=4096,
         board_order=9,
         objectives=(
@@ -326,8 +326,8 @@ CASES = (
         collective_kind=CollectiveKind.COLLECTIVE_PERMUTE,
         graph_kind=TrafficGraphKind.TWO_EPOCH_CHAIN,
         epochs=TWO_EPOCH_CHAIN,
-        input_shape=(1024, 4),
-        output_shape=(1024, 4),
+        input_shape=permute_shape(4096),
+        output_shape=permute_shape(4096),
         payload_bytes=4096,
         board_order=10,
         objectives=(
@@ -694,7 +694,7 @@ def validate_catalog() -> None:
         if (
             case.rank_count != RANK_COUNT
             or case.payload_bytes not in PAYLOAD_POINTS
-            or case.element_type != "i8"
+            or case.element_type != "f16"
             or case.disposition != CaseDisposition.PENDING_BOARD_CORRECTNESS
             or case.numeric_oracle != NumericOracleKind.FULL_OUTPUT_EXACT
             or case.structural_evidence
@@ -707,10 +707,10 @@ def validate_catalog() -> None:
             or case.proves_same_physical_buffer
         ):
             raise ValueError(f"{case.key}: evidence boundary was weakened")
-        input_bytes = 1
+        input_bytes = 2
         for dimension in case.input_shape:
             input_bytes *= dimension
-        output_bytes = 1
+        output_bytes = 2
         for dimension in case.output_shape:
             output_bytes *= dimension
         if (

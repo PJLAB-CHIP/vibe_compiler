@@ -14,6 +14,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -107,6 +108,74 @@ bool hasExactUserContract(const PackageResourceRecord &lhs,
          lhs.hostVisible == rhs.hostVisible;
 }
 
+uint16_t readLittleEndianU16(llvm::ArrayRef<uint8_t> bytes, size_t offset) {
+  return static_cast<uint16_t>(bytes[offset]) |
+         (static_cast<uint16_t>(bytes[offset + 1]) << 8);
+}
+
+bool isFiniteF16(uint16_t bits) { return ((bits >> 10) & 0x1f) != 0x1f; }
+
+double decodeFiniteF16(uint16_t bits) {
+  const bool negative = (bits & UINT16_C(0x8000)) != 0;
+  const uint16_t exponent = (bits >> 10) & UINT16_C(0x1f);
+  const uint16_t fraction = bits & UINT16_C(0x03ff);
+  double value =
+      exponent == 0
+          ? std::ldexp(static_cast<double>(fraction), -24)
+          : std::ldexp(static_cast<double>(UINT16_C(0x0400) + fraction),
+                       static_cast<int>(exponent) - 25);
+  return negative ? -value : value;
+}
+
+uint32_t orderedF16(uint16_t bits) {
+  constexpr uint32_t sign = UINT32_C(0x8000);
+  return (bits & UINT16_C(0x8000))
+             ? sign - static_cast<uint32_t>(bits & UINT16_C(0x7fff))
+             : sign + static_cast<uint32_t>(bits);
+}
+
+llvm::Error validateRelaxedF16Output(uint64_t resourceId,
+                                     llvm::ArrayRef<uint8_t> expected,
+                                     llvm::ArrayRef<uint8_t> actual) {
+  for (size_t offset = 0; offset < expected.size(); offset += 2) {
+    const uint16_t expectedBits = readLittleEndianU16(expected, offset);
+    const uint16_t actualBits = readLittleEndianU16(actual, offset);
+    const size_t element = offset / 2;
+    if (!isFiniteF16(expectedBits) || !isFiniteF16(actualBits))
+      return llvm::createStringError(
+          llvm::errc::result_out_of_range,
+          "relaxed f16 board output contains NaN or infinity for ResourceId " +
+              std::to_string(resourceId) + " at element " +
+              std::to_string(element));
+
+    const double expectedValue = decodeFiniteF16(expectedBits);
+    const double actualValue = decodeFiniteF16(actualBits);
+    if (expectedValue == actualValue)
+      continue;
+
+    const double absoluteError = std::abs(expectedValue - actualValue);
+    const double limit = kRelaxedF16AbsoluteTolerance +
+                         kRelaxedF16RelativeTolerance *
+                             std::abs(expectedValue);
+    const uint32_t ulpDistance =
+        orderedF16(expectedBits) > orderedF16(actualBits)
+            ? orderedF16(expectedBits) - orderedF16(actualBits)
+            : orderedF16(actualBits) - orderedF16(expectedBits);
+    if (absoluteError <= limit && ulpDistance <= kRelaxedF16MaximumUlp)
+      continue;
+
+    std::string detail;
+    llvm::raw_string_ostream message(detail);
+    message << "relaxed f16 board output differs for ResourceId " << resourceId
+            << " at element " << element << ": expected=" << expectedValue
+            << " actual=" << actualValue << " abs=" << absoluteError
+            << " limit=" << limit << " ulp=" << ulpDistance;
+    return llvm::createStringError(llvm::errc::result_out_of_range,
+                                   message.str());
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error stageAndPublishRawFiles(
     llvm::ArrayRef<std::pair<llvm::StringRef, llvm::ArrayRef<uint8_t>>>
         captures) {
@@ -161,7 +230,9 @@ prepareBoardInvocationFiles(const PackageManifest &manifest,
                             BoardRuntimeInvocationRequest request,
                             llvm::ArrayRef<ResourceFile> resourceFiles,
                             llvm::ArrayRef<ResourceFile> expectedFiles,
-                            llvm::ArrayRef<ResourceFile> outputFiles) {
+                            llvm::ArrayRef<ResourceFile> outputFiles,
+                            llvm::ArrayRef<ResourceFile>
+                                relaxedF16ExpectedFiles) {
   llvm::Expected<llvm::DenseMap<uint64_t, std::string>> resources =
       indexResourceFiles(resourceFiles, "--resource");
   if (!resources)
@@ -170,6 +241,16 @@ prepareBoardInvocationFiles(const PackageManifest &manifest,
       indexResourceFiles(expectedFiles, "--expected");
   if (!expected)
     return expected.takeError();
+  llvm::Expected<llvm::DenseMap<uint64_t, std::string>> relaxedF16Expected =
+      indexResourceFiles(relaxedF16ExpectedFiles, "--expected-f16-relaxed");
+  if (!relaxedF16Expected)
+    return relaxedF16Expected.takeError();
+  for (const auto &entry : *relaxedF16Expected)
+    if (expected->contains(entry.first))
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "duplicate ResourceId across --expected and "
+          "--expected-f16-relaxed");
   llvm::Expected<llvm::DenseMap<uint64_t, std::string>> outputs =
       indexResourceFiles(outputFiles, "--output");
   if (!outputs)
@@ -217,19 +298,37 @@ prepareBoardInvocationFiles(const PackageManifest &manifest,
     if (resource.access != PackageAccessMode::ReadOnly) {
       plan.writableResourceBytes[resourceId] = resource.bytes;
       auto reference = expected->find(resourceId);
+      auto relaxedReference = relaxedF16Expected->find(resourceId);
       auto capture = outputs->find(resourceId);
-      if (reference == expected->end() && capture == outputs->end())
+      if (reference == expected->end() &&
+          relaxedReference == relaxedF16Expected->end() &&
+          capture == outputs->end())
         return llvm::createStringError(
             llvm::errc::invalid_argument,
             "--expected/--output omit writable ResourceId " +
                 std::to_string(resourceId));
-      if (reference != expected->end()) {
+      const bool useRelaxedF16 =
+          relaxedReference != relaxedF16Expected->end();
+      if (useRelaxedF16 &&
+          (resource.type.dtype != "f16" || resource.bytes % 2 != 0))
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "--expected-f16-relaxed requires an f16 writable ResourceId");
+      if (reference != expected->end() || useRelaxedF16) {
+        const std::string &path =
+            useRelaxedF16 ? relaxedReference->second : reference->second;
         llvm::Expected<std::vector<uint8_t>> loaded =
-            readRawFile(reference->second, resource.bytes);
+            readRawFile(path, resource.bytes);
         if (!loaded)
           return loaded.takeError();
         plan.expectedBytes[resourceId] = std::move(*loaded);
-        expected->erase(reference);
+        plan.expectedComparisons[resourceId] =
+            useRelaxedF16 ? BoardOutputComparisonKind::RelaxedF16
+                          : BoardOutputComparisonKind::Exact;
+        if (useRelaxedF16)
+          relaxedF16Expected->erase(relaxedReference);
+        else
+          expected->erase(reference);
       }
       if (capture != outputs->end())
         outputs->erase(capture);
@@ -245,7 +344,8 @@ prepareBoardInvocationFiles(const PackageManifest &manifest,
     }
     plan.request.bindings.push_back({resource.id, std::move(bytes)});
   }
-  if (!resources->empty() || !expected->empty() || !outputs->empty())
+  if (!resources->empty() || !expected->empty() ||
+      !relaxedF16Expected->empty() || !outputs->empty())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "board invocation contains ResourceIds outside the package");
@@ -271,8 +371,22 @@ llvm::Error validateBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
           "board returned a wrong-sized writable ResourceId " +
               std::to_string(resourceId));
     auto reference = plan.expectedBytes.find(resourceId);
-    if (reference != plan.expectedBytes.end() &&
-        reference->second != output.bytes) {
+    if (reference == plan.expectedBytes.end())
+      continue;
+    auto comparison = plan.expectedComparisons.find(resourceId);
+    if (comparison == plan.expectedComparisons.end())
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "board expected output has no typed comparison policy for "
+          "ResourceId " +
+              std::to_string(resourceId));
+    if (comparison->second == BoardOutputComparisonKind::RelaxedF16) {
+      if (llvm::Error error = validateRelaxedF16Output(
+              resourceId, reference->second, output.bytes))
+        return error;
+      continue;
+    }
+    if (reference->second != output.bytes) {
       auto mismatch = llvm::mismatch(reference->second, output.bytes);
       size_t offset =
           static_cast<size_t>(mismatch.first - reference->second.begin());
@@ -376,6 +490,12 @@ remapBoardInvocationFilePlan(const BoardInvocationFilePlan &sourcePlan,
   if (llvm::Error error =
           remapVectorMap(sourcePlan.expectedBytes, targetPlan.expectedBytes))
     return std::move(error);
+  for (const auto &entry : sourcePlan.expectedComparisons) {
+    llvm::Expected<uint64_t> targetId = remapId(entry.first);
+    if (!targetId)
+      return targetId.takeError();
+    targetPlan.expectedComparisons[*targetId] = entry.second;
+  }
 
   for (const auto &entry : sourcePlan.outputPaths) {
     llvm::Expected<uint64_t> targetId = remapId(entry.first);

@@ -15,6 +15,7 @@
 
 enum MockEventKind {
   MOCK_SEED = 1000,
+  MOCK_SEED_COMPLETE = 1500,
   MOCK_PREPARE = 2000,
   MOCK_SNAPSHOT_BEFORE = 3000,
   MOCK_SNAPSHOT_BOUNDARY = 3001,
@@ -35,6 +36,7 @@ typedef struct MockContext {
   uint32_t event_count;
   uint64_t tags[WAFER_NCC_PROTOCOL_MAX_ISSUES];
   uint32_t seeded_mask;
+  uint32_t seed_published;
   uint32_t prepared_mask;
   uint32_t issued_mask;
   uint32_t safety_drain_calls;
@@ -43,6 +45,8 @@ typedef struct MockContext {
   uint64_t fail_prepare_flags;
   uint32_t prepare_cleanup_mask;
   uint32_t release_mask;
+  uint32_t control_workers[32];
+  uint32_t control_worker_count;
   int fail_safety_drain;
 } MockContext;
 
@@ -68,12 +72,24 @@ static int mock_seed(void *opaque, const WaferNccProbeRequest *request,
   return 0;
 }
 
+static int mock_seed_complete(void *opaque) {
+  MockContext *context = (MockContext *)opaque;
+  assert(context->seeded_mask != 0);
+  assert(context->seed_published == 0);
+  assert(context->prepared_mask == 0);
+  assert(context->issued_mask == 0);
+  context->seed_published = 1;
+  mock_event(context, MOCK_SEED_COMPLETE);
+  return 0;
+}
+
 static int mock_prepare(void *opaque, const WaferNccProbeRequest *request,
                         const WaferNccProbeIssue *issue,
                         uint64_t *preparation_flags) {
   (void)request;
   MockContext *context = (MockContext *)opaque;
   uint32_t bit = UINT32_C(1) << issue->slot;
+  assert(context->seed_published == 1);
   assert((context->seeded_mask & bit) != 0);
   assert((context->prepared_mask & bit) == 0);
   if (context->fail_prepare_slot_plus_one == issue->slot + 1U) {
@@ -100,6 +116,7 @@ static int mock_issue(void *opaque, const WaferNccProbeRequest *request,
   (void)request;
   MockContext *context = (MockContext *)opaque;
   uint32_t bit = UINT32_C(1) << issue->slot;
+  assert(context->seed_published == 1);
   assert((context->prepared_mask & bit) != 0);
   assert((context->issued_mask & bit) == 0);
   context->issued_mask |= bit;
@@ -209,11 +226,16 @@ static uint64_t mock_read_worker_control(void *opaque, uint32_t worker) {
   uint32_t issued = 0;
   for (uint32_t slot = 0; slot < WAFER_NCC_PROTOCOL_MAX_ISSUES; ++slot)
     issued += (context->issued_mask >> slot) & 1U;
+  assert(context->control_worker_count <
+         sizeof(context->control_workers) /
+             sizeof(context->control_workers[0]));
+  context->control_workers[context->control_worker_count++] = worker;
   mock_event(context, MOCK_READ_CONTROL + issued - 1U);
   return (uint64_t)(issued & UINT8_MAX) | ((uint64_t)worker << 16);
 }
 
 static const WaferNccProbeExecutionHooks hooks = {
+    mock_seed_complete,
     mock_snapshot,
     mock_serial_drain,
     mock_requested_wait,
@@ -249,7 +271,7 @@ static WaferNccProbeLane lane(uint32_t engine, uint32_t worker) {
   result.worker = worker;
   result.issue_mode = WAFER_NCC_ISSUE_RAW;
   result.transfer_bytes = 4096;
-  result.element_format = 1;
+  result.element_format = WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16;
   result.layout_kind = WAFER_NCC_LAYOUT_CONTIGUOUS;
   return result;
 }
@@ -305,6 +327,18 @@ static void test_dual_lane_boundary_order(void) {
           WAFER_NCC_RECORD_FINAL_CAPTURED |
           WAFER_NCC_RECORD_FINAL_ORACLE_DONE));
 
+  uint32_t seed_complete = find_event(&context, MOCK_SEED_COMPLETE);
+  uint32_t seed_complete_count = 0;
+  for (uint32_t index = 0; index < context.event_count; ++index)
+    seed_complete_count += context.events[index] == MOCK_SEED_COMPLETE;
+  assert(seed_complete_count == 1);
+  for (uint32_t slot = 0; slot < 8; ++slot)
+    assert(find_event(&context, MOCK_SEED + slot) < seed_complete);
+  for (uint32_t slot = 0; slot < 8; ++slot) {
+    assert(seed_complete < find_event(&context, MOCK_PREPARE + slot));
+    assert(seed_complete < find_event(&context, MOCK_ISSUE + slot));
+  }
+
   const uint32_t expected_slots[] = {0, 4, 1, 5, 2, 6, 3, 7};
   uint32_t previous = 0;
   for (uint32_t index = 0;
@@ -342,6 +376,21 @@ static void test_dual_lane_boundary_order(void) {
       assert(seen_tags[previous_tag] != seen_tags[issue]);
   }
   assert(context.prepared_mask == 0);
+}
+
+static void test_seed_publication_boundary_is_mandatory(void) {
+  WaferNccProbeRequest plan =
+      request(1, 1, WAFER_NCC_SCHEDULE_SERIAL);
+  plan.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
+  WaferNccProbeExecutionHooks missing_boundary = hooks;
+  missing_boundary.seed_complete = NULL;
+  MockContext context = {0};
+  uint64_t record[WAFER_NCC_PROTOCOL_RECORD_WORDS] = {0};
+  assert(wafer_ncc_probe_execute_plan(
+             &plan, adapters, sizeof(adapters) / sizeof(adapters[0]),
+             &missing_boundary, &context, record) ==
+         WAFER_NCC_STATUS_BAD_REQUEST);
+  assert(context.event_count == 0);
 }
 
 static void test_three_lane_disjoint_window_and_serial(void) {
@@ -492,6 +541,36 @@ static void test_validation_bounds(void) {
   assert(wafer_ncc_probe_validate_plan(
              &raw, adapters, sizeof(adapters) / sizeof(adapters[0])) ==
          WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+
+  WaferNccProbeRequest non_fp16 =
+      request(1, 1, WAFER_NCC_SCHEDULE_SERIAL);
+  non_fp16.lanes[0] = lane(WAFER_NCC_ENGINE_RDMA, 0);
+  non_fp16.lanes[0].element_format =
+      WAFER_NCC_PROTOCOL_DMA_FORMAT_INT8;
+  assert(wafer_ncc_probe_validate_plan(
+             &non_fp16, adapters,
+             sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+
+  WaferNccProbeRequest partial_fp16 =
+      request(1, 1, WAFER_NCC_SCHEDULE_SERIAL);
+  partial_fp16.lanes[0] = lane(WAFER_NCC_ENGINE_WDMA, 0);
+  partial_fp16.lanes[0].transfer_bytes = 4095;
+  assert(wafer_ncc_probe_validate_plan(
+             &partial_fp16, adapters,
+             sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION);
+
+  WaferNccProbeRequest dedicated_i8 =
+      request(1, 1, WAFER_NCC_SCHEDULE_SERIAL);
+  dedicated_i8.lanes[0] = lane(WAFER_NCC_ENGINE_TDMA, 0);
+  dedicated_i8.lanes[0].transfer_bytes = 16;
+  dedicated_i8.lanes[0].element_format =
+      WAFER_NCC_PROTOCOL_DMA_FORMAT_INT8;
+  assert(wafer_ncc_probe_validate_plan(
+             &dedicated_i8, adapters,
+             sizeof(adapters) / sizeof(adapters[0])) ==
+         WAFER_NCC_STATUS_OK);
 }
 
 static void test_wire_decode(void) {
@@ -1029,6 +1108,10 @@ static void test_pending_calibration_controls_capture_pre_wait_state(void) {
           WAFER_NCC_RECORD_PRE_WAIT_CAPTURED) != 0);
   assert(record[WAFER_NCC_REC_WAIT_WORKER_MASK] == 3);
   assert(record[WAFER_NCC_REC_SAFETY_WORKER_MASK] == 7);
+  assert(scope_context.control_worker_count == WAFER_NCC_PROTOCOL_WORKERS);
+  assert(scope_context.control_workers[0] == scope.lanes[2].worker);
+  assert(scope_context.control_workers[1] == 0);
+  assert(scope_context.control_workers[2] == 1);
   uint32_t scope_boundary =
       find_event(&scope_context, MOCK_SNAPSHOT_BOUNDARY);
   for (uint32_t slot = 0; slot < 12; ++slot)
@@ -1044,6 +1127,7 @@ static void test_pending_calibration_controls_capture_pre_wait_state(void) {
 
 int main(void) {
   test_dual_lane_boundary_order();
+  test_seed_publication_boundary_is_mandatory();
   test_three_lane_disjoint_window_and_serial();
   test_bounded_pair_window_has_one_intermediate_drain();
   test_validation_bounds();

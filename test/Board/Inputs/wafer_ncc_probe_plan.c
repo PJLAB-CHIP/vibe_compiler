@@ -625,6 +625,13 @@ uint32_t wafer_ncc_probe_validate_plan(
         lane_spec->layout_kind > WAFER_NCC_LAYOUT_DMA_STRIDED ||
         lane_spec->flags != 0)
       return WAFER_NCC_STATUS_BAD_REQUEST;
+    if ((lane_spec->engine != WAFER_NCC_ENGINE_TDMA &&
+         lane_spec->element_format !=
+             WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16) ||
+        (lane_spec->element_format ==
+             WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16 &&
+         lane_spec->transfer_bytes % sizeof(uint16_t) != 0))
+      return WAFER_NCC_STATUS_UNSUPPORTED_COMBINATION;
     if (lane_spec->layout_kind != WAFER_NCC_LAYOUT_DMA_STRIDED &&
         (lane_spec->layout_stride0_bytes != 0 ||
          lane_spec->layout_stride1_bytes != 0 ||
@@ -854,6 +861,7 @@ uint32_t wafer_ncc_probe_execute_plan(
     const WaferNccProbeExecutionHooks *hooks, void *context,
     volatile uint64_t *record) {
   if (record == NULL || hooks == NULL || hooks->snapshot == NULL ||
+      hooks->seed_complete == NULL ||
       hooks->serial_drain == NULL || hooks->requested_wait == NULL ||
       hooks->safety_drain == NULL || hooks->read_cycle == NULL ||
       hooks->read_worker_control == NULL)
@@ -910,6 +918,16 @@ uint32_t wafer_ncc_probe_execute_plan(
           WAFER_NCC_STATUS_SEED_FAILED, request, adapters, adapter_count, hooks,
           context, record, issues, prepared_count, 0);
   }
+  /*
+   * Every seed hook may have written operands through a weak-order Kcore
+   * mapping.  One explicit publication boundary after the complete seed set
+   * prevents the first NCC consumer from racing those stores.  Preparation,
+   * PMU snapshots, and the measured issue window all begin afterward.
+   */
+  if (hooks->seed_complete(context) != 0)
+    return wafer_ncc_probe_finish_after_failure(
+        WAFER_NCC_STATUS_SEED_FAILED, request, adapters, adapter_count, hooks,
+        context, record, issues, prepared_count, 0);
   for (uint32_t index = 0; index < issue_count; ++index) {
     WaferNccProbeIssue *issue = &issues[index];
     const WaferNccProbeEngineAdapter *adapter = wafer_ncc_probe_find_adapter(
@@ -949,6 +967,8 @@ uint32_t wafer_ncc_probe_execute_plan(
       tight_queue_saturation || tight_worker_scope;
   int issued_any = 0;
   WaferNccProbeIssue *last_issued = NULL;
+  uint64_t tight_worker_scope_target_control = 0;
+  int tight_worker_scope_target_captured = 0;
   uint64_t plan_cycle_before = hooks->read_cycle(context);
   uint32_t schedule[WAFER_NCC_PROTOCOL_MAX_ISSUES];
   uint32_t schedule_count = 0;
@@ -981,6 +1001,17 @@ uint32_t wafer_ncc_probe_execute_plan(
           WAFER_NCC_STATUS_ISSUE_FAILED, request, adapters, adapter_count,
           hooks, context, record, issues, prepared_count, issued_any);
     uint64_t cycle_after = hooks->read_cycle(context);
+    if (tight_worker_scope && scheduled + 1U == schedule_count) {
+      /*
+       * The final issue belongs to the scope target by construction.  Capture
+       * that worker first, before record bookkeeping or any companion-worker
+       * MMIO, so a bounded target backlog cannot drain merely while the probe
+       * walks unrelated CSR windows.
+       */
+      tight_worker_scope_target_control =
+          hooks->read_worker_control(context, issue->worker);
+      tight_worker_scope_target_captured = 1;
+    }
     issued_any = 1;
 
     uint32_t base = wafer_ncc_protocol_issue_word(
@@ -1056,9 +1087,28 @@ uint32_t wafer_ncc_probe_execute_plan(
         WAFER_NCC_ISSUE_WINDOW_CONTROL_VALID;
   }
   if (tight_queue_saturation || tight_worker_scope) {
-    for (uint32_t worker = 0; worker < WAFER_NCC_PROTOCOL_WORKERS; ++worker)
-      record[WAFER_NCC_REC_CONTROL_PRE_WAIT + worker] =
-          hooks->read_worker_control(context, worker);
+    if (tight_worker_scope) {
+      if (!tight_worker_scope_target_captured || last_issued == NULL)
+        return wafer_ncc_probe_finish_after_failure(
+            WAFER_NCC_STATUS_OBSERVATION_FAILED, request, adapters,
+            adapter_count, hooks, context, record, issues, prepared_count,
+            issued_any);
+      uint32_t target_worker = last_issued->worker;
+      record[WAFER_NCC_REC_CONTROL_PRE_WAIT + target_worker] =
+          tight_worker_scope_target_control;
+      for (uint32_t offset = 1; offset < WAFER_NCC_PROTOCOL_WORKERS;
+           ++offset) {
+        uint32_t worker =
+            (target_worker + offset) % WAFER_NCC_PROTOCOL_WORKERS;
+        record[WAFER_NCC_REC_CONTROL_PRE_WAIT + worker] =
+            hooks->read_worker_control(context, worker);
+      }
+    } else {
+      for (uint32_t worker = 0; worker < WAFER_NCC_PROTOCOL_WORKERS;
+           ++worker)
+        record[WAFER_NCC_REC_CONTROL_PRE_WAIT + worker] =
+            hooks->read_worker_control(context, worker);
+    }
     record[WAFER_NCC_REC_FLAGS] |= WAFER_NCC_RECORD_PRE_WAIT_CAPTURED;
   }
 

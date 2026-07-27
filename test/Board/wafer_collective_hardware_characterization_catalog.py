@@ -77,7 +77,7 @@ class CollectiveCharacterizationCase:
     right_alternative: CollectiveAlternative
     board_order: int
     rank_count: int = 16
-    element_type: str = "i8"
+    element_type: str = "f16"
     disposition: CharacterizationDisposition = (
         CharacterizationDisposition.PENDING_BOARD_CHARACTERIZATION
     )
@@ -135,11 +135,7 @@ CASES = tuple(
         left_alternative=left_alternative,
         right_alternative=right_alternative,
         board_order=pair_index * len(PAYLOAD_BYTES) + payload_index,
-        element_type=(
-            "i8"
-            if collective_kind == CollectiveKind.ALL_GATHER
-            else "f16"
-        ),
+        element_type="f16",
     )
     for pair_index, (
         collective_kind,
@@ -188,16 +184,11 @@ def validate_catalog() -> None:
             raise ValueError(
                 f"{collective_kind.value}: alternative pair is inconsistent"
             )
-        expected_element_type = (
-            "i8"
-            if collective_kind == CollectiveKind.ALL_GATHER
-            else "f16"
-        )
         if any(
             not case.same_source_required
             or case.performance_is_promotion_evidence
             or case.rank_count != 16
-            or case.element_type != expected_element_type
+            or case.element_type != "f16"
             for case in matching
         ):
             raise ValueError(

@@ -1,8 +1,10 @@
 # Numeric Algebraic Extension 实施计划
 
-状态：已完成。当前任务只解除compiler pass中不必要的float类型拒绝，让现有
-physical-dataflow candidate、reduction/GEMM切分和collective实现直接覆盖f16/bf16/f32。
-不新增frontend numeric mode、私有数值policy、额外fast-math协议或Tile/Instr载荷。
+状态：已完成。当前任务让现有physical-dataflow candidate、reduction/GEMM切分和collective实现覆盖
+各自数值合同允许的f16/bf16/f32。2026-07-27纠正scalar algebra边界：
+reassociation、tree balance和distribution/factorization不是bit-exact，因此candidate generation显式消费
+target profile的typed `SourceExact`/`Relaxed`代数策略；前者保持source DAG，后者允许产生候选并由共同的
+typed浮点比较合同资格化。不新增frontend numeric mode或Tile/Instr载荷。
 
 ## Pipeline Contract
 
@@ -13,8 +15,9 @@ Pipeline position:
   明确给出integer、f16、bf16或f32，collective保留rank group、combiner和输入/结果类型。
 - Current stage responsibility:
   physical-dataflow candidate generation和TensorProgram→Tile→Instr lowering对支持的float
-  使用与integer相同的结构、shape、layout和资源检查；删除仅因dtype为float或缺少额外
-  fast-math标注而丢弃candidate的分支。integer overflow/no-wrap规则和真实target能力检查保留。
+  使用与integer相同的结构、shape、layout和资源检查，同时消费target profile的typed numeric-selection
+  policy。scalar algebra rewrite在`SourceExact`下保持原DAG，在`Relaxed`下产生候选且新op只继承
+  原op fast-math flags交集；integer overflow/no-wrap规则和真实target能力检查保留。
 - Output artifact / IR:
   实际改写后的structured clone，以及可由现有下游直接消费的Tile/Instr compute、
   reduction和communication IR；低精度collective提升以显式convert表示。
@@ -24,19 +27,21 @@ Pipeline position:
 - User-level driver / named pipeline:
   现有wafer-compile production pipeline；不增加用户选项，不要求手工拼pass。
 - Explicit non-goals:
-  不设计新的数值语义模式、dot算法attr、fast-math传播框架或runtime ABI；不放宽
+  不设计frontend数值模式、dot算法attr、fast-math传播框架或runtime ABI；不放宽
   不支持的element encoding、shape、layout、SPM容量和target instruction限制；本任务不操作板卡。
 - Completion gate:
-  f16和bf16无额外标注地覆盖代数candidate、generic reduction切分、GEMM K切分和
-  Ring collective，并进入现有frontier/lowering；integer overflow与真实结构/target负例继续通过；
+  f16和bf16的scalar algebra在`SourceExact`下不产生candidate、在`Relaxed`下覆盖actual mutation、
+  frontier、lowering和paired output qualification；generic reduction切分、GEMM K切分和Ring collective按各自现有typed
+  numeric gate覆盖；integer overflow与真实结构/target负例继续通过；
   fresh build、相关unit/lit和全量host测试通过。
 ```
 
 ## 实施边界
 
 - 代数candidate的SSA matcher复用同一结构，只按op family选择`arith.addi/addf`、
-  `subi/subf`和`muli/mulf`。float不需要额外permission；integer仍拒绝带no-wrap
-  promise而改变poison边界的改写。
+  `subi/subf`和`muli/mulf`。float由target profile的typed policy选择exact或relaxed source等价边界；
+  replacement只保留fast-math flags交集，不凭空写入`reassoc`。integer仍拒绝带no-wrap promise而改变
+  poison边界的改写。
 - generic reduction切分继续要求单input、单accumulator和可恢复的exact combiner；
   满足结构条件的float不再因缺少fast-math被拒绝。
 - named matmul/batch-matmul的K切分接受integer和float result element type；dtype之外的
@@ -48,7 +53,11 @@ Pipeline position:
 
 ## 验证
 
-- physical-dataflow rewrite：f16/bf16 reassociate、balance、contract和factor正例；
+- physical-dataflow rewrite：同一无标注f16/bf16输入在`SourceExact`下保持原DAG、在`Relaxed`下产生
+  reassociate、balance、distribution和factor actual mutation，并验证replacement flags交集；
+- paired qualification：`+0/-0`按数值相等，finite按显式ULP/abs/rel阈值，NaN/Inf单独拒绝；
+  每个variant的f16数值输出由`wafer-run`实际执行同一typed tolerance；structure、长度、
+  guard、index、completion仍exact；
 - candidate/lowering：f16/bf16 generic reduction和GEMM K切分正例；
 - communication：无额外标注的floating Ring all-reduce/reduce-scatter正例；
 - selection：至少一个f16或bf16候选实际进入frontier并胜出；

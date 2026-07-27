@@ -68,55 +68,57 @@ class RuntimeCase:
 
         return lambda: payloads(self)
 
+    @property
+    def output_comparison(self):
+        return paired_support.RAW_EXACT_OUTPUT
+
 
 def runtime_case(contract: CollectiveCharacterizationCase) -> RuntimeCase:
     payload_bytes = contract.payload_bytes
-    element_bytes = {"i8": 1, "f16": 2}[contract.element_type]
-    if payload_bytes % element_bytes != 0:
+    if contract.element_type != "f16":
+        raise RuntimeError("collective characterization requires f16")
+    if payload_bytes % 2 != 0:
         raise RuntimeError("collective payload is not element aligned")
-    payload_elements = payload_bytes // element_bytes
+    payload_elements = payload_bytes // 2
     chunk_elements = payload_elements // RANK_COUNT
     if payload_elements % RANK_COUNT != 0:
         raise RuntimeError(
             "collective element count is not divisible by rank count"
         )
-    metadata_dtype = {"i8": "int8", "f16": "float16"}[
-        contract.element_type
-    ]
     if contract.collective_kind == CollectiveKind.ALL_GATHER:
         inputs = (
             paired_support.TensorSpec(
-                (chunk_elements,), contract.element_type, metadata_dtype
+                (chunk_elements,), "f16", "float16"
             ),
         )
         outputs = (
             paired_support.TensorSpec(
-                (payload_elements,), contract.element_type, metadata_dtype
+                (payload_elements,), "f16", "float16"
             ),
         )
     elif contract.collective_kind == CollectiveKind.REDUCE_SCATTER:
         inputs = (
             paired_support.TensorSpec(
-                (payload_elements,), contract.element_type, metadata_dtype
+                (payload_elements,), "f16", "float16"
             ),
         )
         outputs = (
             paired_support.TensorSpec(
-                (chunk_elements,), contract.element_type, metadata_dtype
+                (chunk_elements,), "f16", "float16"
             ),
         )
     elif contract.collective_kind == CollectiveKind.ALL_REDUCE:
         inputs = (
             paired_support.TensorSpec(
                 (1, payload_elements),
-                contract.element_type,
-                metadata_dtype,
+                "f16",
+                "float16",
                 source_shape=(RANK_COUNT, payload_elements),
             ),
         )
         outputs = (
             paired_support.TensorSpec(
-                (payload_elements,), contract.element_type, metadata_dtype
+                (payload_elements,), "f16", "float16"
             ),
         )
     else:
@@ -129,17 +131,18 @@ def rank_group() -> str:
 
 
 def all_gather_module(payload_bytes: int) -> str:
-    chunk_bytes = payload_bytes // RANK_COUNT
+    payload_elements = payload_bytes // 2
+    chunk_elements = payload_elements // RANK_COUNT
     return f"""\
 module {{
-  func.func @main(%input: tensor<{chunk_bytes}xi8>) -> tensor<{payload_bytes}xi8> {{
+  func.func @main(%input: tensor<{chunk_elements}xf16>) -> tensor<{payload_elements}xf16> {{
     %result = "stablehlo.all_gather"(%input) {{
       all_gather_dim = 0 : i64,
       replica_groups = dense<[[{rank_group()}]]> : tensor<1x16xi64>,
       channel_handle = #stablehlo.channel_handle<handle = 47, type = 1>,
       use_global_device_ids
-    }} : (tensor<{chunk_bytes}xi8>) -> tensor<{payload_bytes}xi8>
-    return %result : tensor<{payload_bytes}xi8>
+    }} : (tensor<{chunk_elements}xf16>) -> tensor<{payload_elements}xf16>
+    return %result : tensor<{payload_elements}xf16>
   }}
 }}
 """
@@ -226,7 +229,7 @@ def sentinel_bytes(
     folded = value ^ (value >> np.uint64(32))
     folded ^= folded >> np.uint64(16)
     folded ^= folded >> np.uint64(8)
-    return (folded & np.uint64(0xFF)).astype(np.uint8).view(np.int8)
+    return (folded & np.uint64(0xFF)).astype(np.uint8)
 
 
 def payloads(
@@ -235,17 +238,22 @@ def payloads(
     payload_bytes = case.contract.payload_bytes
     kind = case.contract.collective_kind
     if kind == CollectiveKind.ALL_GATHER:
-        chunk_bytes = payload_bytes // RANK_COUNT
+        payload_elements = payload_bytes // 2
+        chunk_elements = payload_elements // RANK_COUNT
         local_inputs = [
-            sentinel_bytes(
-                rank,
-                np.arange(
-                    rank * chunk_bytes,
-                    (rank + 1) * chunk_bytes,
-                    dtype=np.uint64,
-                ),
-                payload_bytes,
-            )
+            (
+                sentinel_bytes(
+                    rank,
+                    np.arange(
+                        rank * chunk_elements,
+                        (rank + 1) * chunk_elements,
+                        dtype=np.uint64,
+                    ),
+                    payload_bytes,
+                )
+                .astype(np.int16)
+                - 128
+            ).astype("<f2")
             for rank in range(RANK_COUNT)
         ]
         expected = np.concatenate(local_inputs)
@@ -259,7 +267,6 @@ def payloads(
         (
             (
                 sentinel_bytes(rank, lanes, payload_bytes)
-                .view(np.uint8)
                 .astype(np.int16)
                 % 9
             )
@@ -288,6 +295,52 @@ def payloads(
             [[expected] for _ in range(RANK_COUNT)],
         )
     raise RuntimeError(f"unsupported collective kind {kind}")
+
+
+def write_exact_payloads(
+    work_dir: pathlib.Path,
+    case: RuntimeCase,
+    bindings_by_variant: dict[
+        str, dict[tuple[int, str, int], int]
+    ],
+    inputs: list[list[np.ndarray]],
+    outputs: list[list[np.ndarray]],
+) -> dict[str, list[str]]:
+    raw = work_dir / "raw"
+    raw.mkdir()
+    arguments_by_variant = {
+        variant: [] for variant in bindings_by_variant
+    }
+    for rank in range(case.rank_count):
+        for index, (array, spec) in enumerate(
+            zip(inputs[rank], case.inputs, strict=True)
+        ):
+            path = raw / (
+                f"rank_{rank:02d}_user_input_{index}.{spec.mlir_dtype}.raw"
+            )
+            path.write_bytes(np.ascontiguousarray(array).tobytes())
+            for variant, bindings in bindings_by_variant.items():
+                arguments_by_variant[variant].extend(
+                    [
+                        "--resource",
+                        f"{bindings[(rank, 'user_input', index)]}={path}",
+                    ]
+                )
+        for index, (array, spec) in enumerate(
+            zip(outputs[rank], case.outputs, strict=True)
+        ):
+            path = raw / (
+                f"rank_{rank:02d}_output_{index}.{spec.mlir_dtype}.raw"
+            )
+            path.write_bytes(np.ascontiguousarray(array).tobytes())
+            for variant, bindings in bindings_by_variant.items():
+                arguments_by_variant[variant].extend(
+                    [
+                        "--expected",
+                        f"{bindings[(rank, 'output', index)]}={path}",
+                    ]
+                )
+    return arguments_by_variant
 
 
 def parse_args() -> argparse.Namespace:
@@ -323,14 +376,23 @@ def prepare_work_dir(work_dir: pathlib.Path, alternatives: tuple[str, str]) -> N
         known_children.add(f"{alternative}-compiler-report.json")
     work_dir.mkdir(parents=True, exist_ok=True)
     unknown = [
-        child.name for child in work_dir.iterdir() if child.name not in known_children
+        child.name
+        for child in work_dir.iterdir()
+        if child.name not in known_children
+        and not child.name.startswith(".wafer-compile-staging-")
     ]
     if unknown:
         raise RuntimeError(
             "--work-dir contains unknown entries; refusing cleanup: "
             + ", ".join(sorted(unknown))
         )
-    for name in sorted(known_children):
+    cleanup_names = set(known_children)
+    cleanup_names.update(
+        child.name
+        for child in work_dir.iterdir()
+        if child.name.startswith(".wafer-compile-staging-")
+    )
+    for name in sorted(cleanup_names):
         child = work_dir / name
         if child.is_symlink() or child.is_file():
             child.unlink()
@@ -1087,6 +1149,13 @@ def main() -> int:
     args = parse_args()
     contract = CASES_BY_KEY[args.case]
     case = runtime_case(contract)
+    inputs, outputs = case.payload_factory()
+    paired_payloads = paired_support.PairedPayloads(
+        inputs=inputs,
+        baseline_outputs=outputs,
+        winner_outputs=outputs,
+    )
+    paired_support.validate_paired_payloads(case, paired_payloads)
     alternatives = (
         contract.left_alternative.value,
         contract.right_alternative.value,
@@ -1229,8 +1298,12 @@ def main() -> int:
     (args.work_dir / "collective-characterization.json").write_text(
         json.dumps(aggregate_report, indent=2, sort_keys=True) + "\n"
     )
-    resource_arguments = paired_support.write_payloads(
-        args.work_dir, case, bindings_by_variant
+    resource_arguments = write_exact_payloads(
+        args.work_dir,
+        case,
+        bindings_by_variant,
+        inputs,
+        outputs,
     )
 
     if args.no_card:

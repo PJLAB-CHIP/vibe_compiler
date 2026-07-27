@@ -22,11 +22,21 @@ struct ResourceFile {
   std::string path;
 };
 
+enum class BoardOutputComparisonKind {
+  Exact,
+  RelaxedF16,
+};
+
+inline constexpr double kRelaxedF16AbsoluteTolerance = 0.0009765625;
+inline constexpr double kRelaxedF16RelativeTolerance = 0.001;
+inline constexpr uint32_t kRelaxedF16MaximumUlp = 1;
+
 /// Validated file-backed invocation state. The request is ready for the board
 /// executor; the remaining fields validate and publish its typed result.
 struct BoardInvocationFilePlan {
   BoardRuntimeInvocationRequest request;
   llvm::DenseMap<uint64_t, std::vector<uint8_t>> expectedBytes;
+  llvm::DenseMap<uint64_t, BoardOutputComparisonKind> expectedComparisons;
   llvm::DenseMap<uint64_t, std::string> outputPaths;
   llvm::DenseMap<uint64_t, uint64_t> writableResourceBytes;
 };
@@ -36,7 +46,9 @@ prepareBoardInvocationFiles(const PackageManifest &manifest,
                             BoardRuntimeInvocationRequest request,
                             llvm::ArrayRef<ResourceFile> resourceFiles,
                             llvm::ArrayRef<ResourceFile> expectedFiles,
-                            llvm::ArrayRef<ResourceFile> outputFiles);
+                            llvm::ArrayRef<ResourceFile> outputFiles,
+                            llvm::ArrayRef<ResourceFile> relaxedF16ExpectedFiles =
+                                {});
 
 /// Rebinds one already prepared user invocation to another verified package
 /// using the stable `(logical_rank, role, role_index)` resource identity.

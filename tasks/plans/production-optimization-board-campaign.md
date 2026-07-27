@@ -1,7 +1,7 @@
 # Production Compiler Optimization Board Campaign 实施计划
 
-状态：pre-board资产已完成；2026-07-27首轮板端执行中reciprocal implementation通过，modular common-factor
-和resident fanout分别暴露未资格化i8 arithmetic与signed-zero语义问题，其余case未执行，因此campaign仍未
+状态：pre-board资产已完成；2026-07-27首轮板端执行中reciprocal implementation通过；旧common-factor
+执行使用了错误的数值比较合同，resident fanout暴露signed-zero差异，二者都须按当前FP16合同fresh执行，因此campaign仍未
 完成。本文只组织上板前的同源候选对照资产和执行批次，不复制
 `tasks/06-physical-dataflow-synthesis.md`中的candidate语义，也不把板端观测反写成legality。该8+1集合只做
 当前production winner qualification，不代表compiler选择空间或硬件行为完备；独立collective矩阵见
@@ -88,16 +88,16 @@ Pipeline position:
   更重workload correctness；
 - `resident-share-recompute`：fanout-share case要求winner静态RDMA/WDMA callsite减少且三类consumer均保留；
   recompute case要求neg callsite增加、workspace减少并检查三个独立full output；alias/effect/capacity负例留在host；
-- `numeric-dag-implementation`：i8 modular common-factor以multiply callsite减少和full modular exact为oracle，
-  f32 reciprocal以div→recip和power-of-two exact为oracle；其它f16/bf16 algebraic变体继续走既有host/board
-  numeric gate，不由相邻case代签；
+- `numeric-dag-implementation`：f16 common-factor以multiply callsite减少和typed floating tolerance为oracle，
+  f16 reciprocal以div→recip和power-of-two exact为oracle；整数modular变体只走各自host exact gate，
+  不用I8板测代替f16/bf16主线；
 - `ready-order`：final linked scheduler body先证明无条件分支和间接跳转，才比较movement-first call sequence；
   输入/expected对两条source路径均敏感，alias/fence/hazard negative留在host；
 - `loop-invariant`：当前由host production-frontier positive/negative gate覆盖。公开StableHLO
   source-to-package链尚不能把该rewrite消费的SCF loop带到tensor-program stage，因此不为凑板测
   引入测试旁路；未来真实source producer闭合后再按trip=1与trip>1接入同源双包；
 - `collective-algorithm`：现有Direct DTE production vertical在campaign中复跑；Tree all-reduce同源双包只声明
-  final target静态prepare callsite与workspace减少、scheduler body不同，并以i8 modular full output和16条
+  final target静态prepare callsite与workspace减少、scheduler body不同，并以f16 full output和16条
   all-and-only completion/status验证正确性。ordered rank graph由既有host exact gate负责，不能由静态callsite
   反推。Ring all-gather当前公开SPMD boundary只提交reserved baseline，不能拿两个相同package上板冒充A/B。
 

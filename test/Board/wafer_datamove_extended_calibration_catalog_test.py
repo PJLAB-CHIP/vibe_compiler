@@ -365,6 +365,34 @@ def main() -> int:
     )
     assert all(case.is_exact for case in catalog.COMPOSITE_CASES)
     assert all(case.is_exact for case in catalog.TDMA_DESCRIPTOR_CASES)
+    fp16_strided, bf16_strided = catalog.TDMA_DESCRIPTOR_CASES[:2]
+    assert (
+        fp16_strided.name,
+        fp16_strided.dtype,
+        fp16_strided.result_bytes,
+        fp16_strided.output_span,
+    ) == ("tdma-fp16-strided-128b-x32", "FP16", 8064, 8192)
+    assert (
+        bf16_strided.name,
+        bf16_strided.dtype,
+        bf16_strided.result_bytes,
+        bf16_strided.output_span,
+    ) == ("tdma-bf16-strided-64b-x64", "BF16", 8128, 8192)
+    for case, value, chunk_bytes, stride_bytes, iterations in (
+        (fp16_strided, 0x3C00, 128, 256, 32),
+        (bf16_strided, 0x3F80, 64, 128, 64),
+    ):
+        _, expected = catalog.build_input_expected(case, 0)
+        word = struct.pack("<H", value)
+        for iteration in range(iterations):
+            begin = iteration * stride_bytes
+            assert expected[begin : begin + chunk_bytes] == (
+                word * (chunk_bytes // 2)
+            )
+            hole_end = min(begin + stride_bytes, len(expected))
+            assert expected[begin + chunk_bytes : hole_end] == bytes(
+                [catalog.SLOT_CANARY]
+            ) * (hole_end - begin - chunk_bytes)
     assert catalog.IMG2COL_RESULT_BYTES > 65536
     assert catalog.BODY_OFFSET + catalog.IMG2COL_RESULT_BYTES <= (
         catalog.SLOT_BYTES

@@ -385,7 +385,7 @@ software-pipeline候选，不能把“queue可提交”“`serial_mode=0`”或�
 | NE GEMM/options | FP16/BF16 GEMM对main、K/N tail、batch、NN/NT/TN/TT及左右不等batch取得bit oracle；local psum改变并产生独立writeback。bias、ReLU、LeakyReLU和正/负axis-scale在FP16/BF16 large NN三次样本中均与bare输出逐bit相同，说明current wrapper option未产生声明语义 | 当前保存raw重新校验70个NE case/146个样本：32个GEMM exact case；15个GEMM observation各3样本；所有physical padding和slot guard闭合。BF16 signed-zero/subnormal/overflow/NaN与quant raw三次hash稳定但只属observation | GEMM只开放已验证dtype/orientation/tail/batch；psum作为显式aux result规划。上述no-op option不得做fusion或消除独立算子；BF16 special/quant只保存profile behavior，不进入通用数值重写 | 不由FP16推BF16，不由稳定hash推NaN payload、FTZ、accumulator宽度或量化公式，不把local psum当跨tile collective |
 | NE Conv family | ordinary Conv的feature-index与output-index fingerprint各3/3唯一匹配NCx，错误Cx候选分别有604/763 byte mismatch；weight fingerprint对Cx/NCx候选均不匹配（684/678 byte mismatch）。BackwardConv由weight shape拥有`tfr_1`，FP16/BF16各3样本确认8192B bounded footprint；Depthwise与BackwardConv均有独立有界writeback | 19个ordinary Conv observation、2个Depthwise和2个BackwardConv case各3样本，完整physical span、padding、suffix guard与completion已校验 | ordinary Conv的feature/output按NCx规划，weight layout未恢复前Conv保持observation；BackwardConv按weight-owned 8192B footprint分配；三种kind分别建capability，不互相代签 | 不把小非对称Conv exact外推large Conv；不把feature/output的NCx结论外推weight；不把bounded completion升级为通用Conv/Depthwise/BackwardConv numeric exact |
 | DataMove/layout | Tensor↔Cx/NCx在`C=63/64/65/127/129`证明C0 tail、每个N slice的aligned-C和batch stride都是allocation footprint。large Pad/Img2Col/TensorNom分别写到19456B/88576B/17408B，排除compact logical bytes和“整份末尾只对齐一次”。GatherScatter可正确materializeconcat/broadcast/holes/tail。native raw Concat C/W/H只有bounded writeback；`dims=HW`不是可校准能力，而是错误指令用法 | base 46 case、extended安全17 case及large修正case，均检查all-and-only logical point、internal/batch padding、allocation外guard和completion；`dims=HW`只保留static-negative合同，不存在板端case | physical planner与oracle共用layout codec；concat/broadcast统一选择typed GatherScatter composite；native Concat不进入默认lowering；logical result、padding和guard分别规划 | 不把metadata view当搬运，不把C/W/H bounded completion当exact concat，不由Cx/NCx movement外推任意NTensor/native CT/NE consumption；不得以header可编码为理由重新发射`dims=HW` |
-| Pool/Unpool | Pool的16个exact覆盖BF16/F32 symmetric及FP16 asymmetric unpadded；8个padding/tie只形成bounded behavior。indexed Pool的value与index是双writeback，F32 index占u32宽度、完整span 1024B。Unpool的index参数是same-shape i16 SPM buffer地址而非scalar；Avg与已验证symmetric mask组合exact，ordinary indexed及F32/large组合仅bounded，其中large FP16 mask只命中最后64-channel window；重复overlap尚无板端规则 | Pool 24个当前case及既有Unpool exact/observation有板端结果。新增`unpool-index-f16-repeated-overlap-observed`与`unpool-mask-f16-repeated-overlap-observed`两个真实device case：先由indexed-max产生四个都指向同一global位置、local index分别为5/3/2/0的真实aux，再在producer完成后把四组按sample轮换的不同FP16 sentinel写入pooled value；host要求aux逐bit正确、64个collision channel各自由候选四组sentinel的非空subset解释，并分别记录uniform或lane-varying的value mask与histogram；其它logical position与physical tail只取zero/seed并保持slot guard。两个case已经接入逐case CTest与runner但尚未上板 | IR显式携带index SSA buffer及其dtype；Pool按value/index分别分配。Unpool只开放明确exact组合；ordinary indexed、large及新重复overlap在得到板端分类前不进入通用numeric lowering | 不把F32 Pool的u32 index直接接到i16 mask-Unpool，不由完成性或case准备推导collision winner/accumulate规则，不由一个window外推任意padding/tie语义 |
+| Pool/Unpool | Pool的16个exact覆盖BF16/F32 symmetric及FP16 asymmetric unpadded；8个padding/tie只形成bounded behavior。indexed Pool的value与index是双writeback，F32 index占u32宽度、完整span 1024B。Unpool的index参数是same-shape i16 SPM buffer地址而非scalar；Avg与已验证symmetric mask组合exact，ordinary indexed及F32/large组合仅bounded，其中large FP16 mask只命中最后64-channel window；重复overlap尚无板端规则 | Pool 24个当前case及既有Unpool exact/observation有板端结果。`unpool-index-f16-repeated-overlap-observed`与`unpool-mask-f16-repeated-overlap-observed`先由indexed-max产生四个都指向同一global位置、local index分别为5/3/2/0的真实aux，再以same-worker NCC依赖链分别快照producer aux、把四组按sample轮换的不同FP16 sentinel搬入pooled value并发射Unpool；host分别逐bit检查consumer前快照和consumer后aux，64个collision channel各自由候选四组sentinel的非空subset解释，并记录uniform或lane-varying的value mask与histogram。mask首轮执行的一个aux lane从5变0且同一lane错误scatter到position 0，证明consumer实际读到错误index，但旧post-only aux与Kcore staging边界不能区分producer writeback和consumer读取；修正case只完成host/no-card，仍待新板端执行 | IR显式携带index SSA buffer及其dtype；Pool按value/index分别分配。Unpool只开放明确exact组合；ordinary indexed、large及新重复overlap在得到板端分类前不进入通用numeric lowering | 不把F32 Pool的u32 index直接接到i16 mask-Unpool，不由完成性或case准备推导collision winner/accumulate规则，不由一个window外推任意padding/tie语义 |
 
 先给当前profile可以直接执行的硬结论；后文的证据限制不改变这些compiler决策：
 
@@ -604,13 +604,16 @@ pairwise_excess = engine_a_exec + engine_b_exec - fu_union_exec
   FP16 `k3x2/s2x1` large mask的四个64-channel source window中只有最后一窗符合semantic scatter，前三窗为零，
   同样降为bounded observation。它们证明请求有界完成，不证明通用mask/index canonicalization。
   重复overlap不再只是文档待测项：`unpool-index-f16-repeated-overlap-observed`和
-  `unpool-mask-f16-repeated-overlap-observed`先用真实indexed-max生成`5/3/2/0`四组aux，再在明确
-  producer completion后注入按sample轮换的四组不同FP16 sentinel。host逐bit检查aux，要求64个重叠
+  `unpool-mask-f16-repeated-overlap-observed`先用真实indexed-max生成`5/3/2/0`四组aux，再以same-worker
+  NCC RAW/WAW链把producer aux快照到独立区域并用compact TDMA搬入按sample轮换的四组不同FP16 sentinel，
+  不在两条NCC指令之间插Kcore mapped-SPM写。host分别逐bit检查consumer前快照和consumer后aux，要求64个重叠
   target channel各自都能由候选四组sentinel的非空subset解释，并记录uniform或lane-varying的
   position/value mask与histogram；同时限制其它logical position、physical tail、slot guard、matching
   terminal和cleanup；padding-only写入、aux篡改或单个target corruption均有host反例，
-  因而不会再把“任意bounded writeback”冒充collision观察。两个case已经进入逐case CTest及
-  `pending-execution-boundaries` runner batch；当前尚未上板，因此collision winner/覆盖/累加规则仍未知。
+  因而不会再把“任意bounded writeback”冒充collision观察。mask首轮中aux第17个lane从5变0，并在同一
+  channel把对应sentinel错误scatter到position 0；该相关性排除host slot offset和纯readback误判，但旧case
+  只有consumer后aux，不能区分producer writeback与consumer读取。修正case已通过host/no-card，仍需新板端
+  执行后才能形成collision winner/覆盖/累加规则。
   既有Factorize、LUT32、RandGen、ElemMask各3样本bounded observation通过；
   Bilinear曾按旧exact oracle失败；当前3个板端样本已按bounded observation通过，但数值语义仍未取得exact资格。
 - CT Add新增f16/bf16 logical tail130向量：260B逻辑结果逐bit正确，512B physical output span及suffix
@@ -918,7 +921,7 @@ scalar、C=65 channel和`W9×C65` row；Cx/NCx覆盖C=63/64/65/127/129的四向�
 1D/2D/3D holes和16385-element tail。所有case检查all-and-only logical points、完整physical span和slot
 canary；instruction count是case预算而非单指令能力声明。extended默认dispatcher增加17个case：raw
 Concat C/W/H、large Pad/Img2Col、MaskGather/MaskGather_bV、TensorNom、Cx/NCx materialize→CT Add、
-Tensor materialize→NE identity GEMM、I8 `128B×32`/`64B×64` strided TDMA，以及FP16/BF16 raw-vs-CRT
+Tensor materialize→NE identity GEMM、FP16 `128B×32`与BF16 `64B×64` strided TDMA，以及FP16/BF16 raw-vs-CRT
 Memset。公开DataMove opcode `121..138`均有处置：14个exact、4个observation、0 deferred；四个
 observation opcode为raw Concat、TensorNom和两种MaskGather，均保留raw result、expected diff、
 physical guard和completion。CT/NE/RDMA/WDMA/TDMA与Tensor/NTensor/Cx/NCx的20个组合分类为8个native
@@ -1263,13 +1266,17 @@ case同样保持逐CTest串行。native `dims=HW` Concat
 不属于合法pending inventory，且不存在任何board case或runner step。历史板端输出不得作为runner输入，
 已有结论的全量suite不进入runner。
 
+`f16-common-factor`的每个baseline/winner输出都通过显式
+`--expected-f16-relaxed`交给`wafer-run`逐元素比较：`+0/-0`相等，finite同时满足固定abs/rel与1 ULP
+边界，NaN/Inf拒绝；资源dtype/长度、全输出覆盖、lifecycle及其它结构oracle仍严格。host侧oracle预检不能
+替代这一步实际板端output比较。
+
 ### 5.10 区分实验执行台账
 
 #### 2026-07-27 板端批次
 
-本轮绑定TX8110、16 tile、runtime version 1300及同一runtime library identity执行。当前合法pending
-inventory共有15个family、210个互异board CTest和1231个target cell；本轮执行台账仅覆盖远程扩展前的
-179个合法CTest，按互异CTest记账为：
+本轮绑定TX8110、16 tile、runtime version 1300及同一runtime library identity执行。以下数字只记录
+当时进程结果，不是当前operator qualification汇总；dtype已替换的case必须fresh执行：
 
 - `PASS=79`；
 - ordinary failure `=9`，均在结果/oracle边界干净退出；
@@ -1279,19 +1286,24 @@ inventory共有15个family、210个互异board CTest和1231个target cell；本�
 本次远程新增31个CTest、37个target cell尚未进入该轮执行；因此在当前210项清单中，这一检查点共有
 79项通过、9项普通失败和122项未执行。
 
-79个通过项由以下互异CTest组成：production reciprocal 1项，AllGather Direct/Ring三种payload 3项，
-AllToAll/Permute traffic 11项，queue saturation 30项，worker subset 12项，worker
-placement/progress 8项，SPM equivalence/sustained pilot 6项，DDR active-rank contiguous 6项，
-DDR conflict-equivalence 2项。它们只形成各自result、guard、count、completion及已声明proxy合同的板端
-证据；未满足promotion条件的cost、bank/color、resident和scope结论仍保持Unknown。
+此前79个通过项中，3个I8 AllGather与11个I8 AllToAll/Permute只执行了不代表真实训练dtype的
+workload，现已撤销其通信算子覆盖结论；替换后的FP16 case必须重新上板，旧输出不得重判或回放。
+其余65项只保留各自result、guard、count、completion及已声明proxy合同的板端证据；未满足promotion
+条件的cost、bank/color、resident和scope结论仍保持Unknown。
+
+当前operator-level正向workload已统一以FP16/BF16为默认：rank-one/all-rank Add、Direct-DTE
+collective、collective algorithm/traffic、通用single/pair engine、DDR offset、strided TDMA及
+reciprocal/resident/recompute/ready-order均使用FP16或BF16并保持原byte边界。只有明确验证
+model BootParam v1 F32 ABI、I8量化、convert、index/mask或raw字节协议的专项保留对应类型；这些专项
+不得外推为FP16/BF16算子资格。
 
 9个ordinary failure按根因边界分类如下：
 
-1. production common-factor与resident-fanout-share各1项：前者在winner前的INT8 CT算术基线即出现
-   numeric mismatch，后者仅在`Neg(+0)`的signed-zero位上不一致；二者共同暴露“静态可编码”未连接
-   profile-scoped numeric admission，不能据此把优化candidate或精确signed-zero语义准入production。
-2. ReduceScatter Direct 256B的INT8 Add结果不符；同批AllGather transport 3项通过，因此该项保守归入
-   未取得资格的INT8 CT算术域，不归因为DTE transport。
+1. production common-factor与resident-fanout-share各1项：前者使用了错误的旧数值比较合同，后者仅在
+   `Neg(+0)`的signed-zero位上不一致；两者都不能作为当前FP16 paired qualification，须按统一typed
+   tolerance由fresh板端输出重新取得结论。
+2. ReduceScatter Direct 256B使用了无效的I8算子workload；该结果已从当前通信算子结论中删除，
+   不能用于判断FP16 ReduceScatter或DTE transport。
 3. single-engine seed在RDMA起始处返回`SEED_FAILED`；host catalog把`Fmt_INT8`误写成值8，而
    version-matched ABI中INT8为0、值8为UINT8。这是测试枚举事实源错误，不是engine rate证据。
 4. worker wait-scope 1项因后续repeat在pre-wait snapshot前自然排空而被逐样本oracle判失败；已有至少一个
@@ -1378,8 +1390,10 @@ completion capability；未执行、自然排空、观测字段缺失或结果�
 
 - 语义key为`worker-wait-scope-exclusion`。分别让worker0/1/2成为target，并以NE和RDMA两种
   result-producing sustained backlog做held-out；另一个轮转worker先发短marker。使用tight submission并
-  推迟逐packet观察。requested wait前的唯一control snapshot必须证明target仍pending，否则该样本无区分力，
-  不计入scope结论。
+  推迟逐packet观察。NE held-out使用固定slot内的`M=64,K=256,N=128`有界packet，不增加round数；
+  read0/read1/result和guard仍全部位于各自`0x20000` slot。最后一条target issue返回后只经过`rdcycle`，
+  target control必须成为第一条MMIO读取，其余worker control随后在requested wait前补齐。该target采样必须
+  证明仍pending，否则样本无区分力，不计入scope结论。
 - 每个`target worker × target engine`的A/B/C复用完全相同的packet、地址、issue order和seed，只改变wait
   kind：default `TsmWaitfinish()`、matching `bywork(target)`和local fence。wait刚返回就读取全部worker
   control、target completion marker及boundary result，然后才对所有participant执行matching safety drain和final
@@ -1515,17 +1529,17 @@ blocker以本节末表和第5.10节共同为准。`Direct-DTE`列描述所有cur
 `algorithm`列才描述compiler-private schedule。现有名为Direct-DTE的板测不得解释为
 Direct AllReduce；current AllReduce只有Ring和ordered Tree两种schedule。
 
-第一批固定16 rank、i8和相同placement/ABI。`B`表示每rank参与的logical collective payload：
+第一批固定16 rank、FP16和相同placement/ABI。`B`表示每rank参与的logical collective payload：
 AllGather输入`B/16`、输出`B`；ReduceScatter输入`B`、输出`B/16`；AllReduce输入/输出`B`。
-sentinel同时编码source rank、目标slice位置和logical lane，modular reduction由CPU独立计算。4KiB AllReduce
+sentinel同时编码source rank、目标slice位置和logical lane。AllGather使用有限、可精确表示的FP16
+payload；ReduceScatter/AllReduce使用小整数FP16贡献，使16-rank求和仍精确且与归约顺序无关。4KiB AllReduce
 复用现有source/payload，不另建重复case。
 
-sentinel由`rank + logical lane + payload size`进入固定64-bit mixing后折叠为i8，不使用线性mod-256
-序列，也不声称有限i8域内所有lane byte全局唯一。catalog mutation gate逐AllGather source chunk、
-逐reduction source contribution（ReduceScatter按destination segment）及逐ReduceScatter output slice
-检查1/32/256B rotation，要求16个source contribution两两不同、16个ReduceScatter destination output
-两两不同；对每个reduction source逐一删除并以其余每个source替换，每个destination slice都必须改变。
-AllGather另要求16个concat chunk两两不同，且逐source相邻rank swap改变expected。
+catalog mutation gate逐AllGather source chunk、逐reduction source contribution（ReduceScatter按
+destination segment）及逐ReduceScatter output slice检查rotation，要求16个source contribution两两
+不同、16个ReduceScatter destination output两两不同；对每个reduction source逐一删除并以其余每个
+source替换，每个destination slice都必须改变。AllGather另要求16个concat chunk两两不同，且逐source
+相邻rank swap改变expected。
 
 | case key | collective | algorithm A / B | B | accepted Instr结构oracle | runtime oracle | 状态 / 允许结论 |
 | --- | --- | --- | ---: | --- | --- | --- |
@@ -1535,7 +1549,7 @@ AllGather另要求16个concat chunk两两不同，且逐source相邻rank swap改
 | `reduce-scatter-direct-vs-ring-256b` | ReduceScatter | Direct / Ring | 256B | Direct逐rank验证source-round/destination-slice的15-peer owner exchange；Ring验证`P-1`个chunk round、round→slice递推和单一16-rank cycle；完整message tuple跨rank一一匹配 | 每rank只得到自己的destination slice，全部source贡献exact；共同lifecycle/status合同见表后 | `pending`；不得影响cost |
 | `reduce-scatter-direct-vs-ring-4096b` | ReduceScatter | Direct / Ring | 4096B | 同上 | 同上 | `pending`；不得影响cost |
 | `reduce-scatter-direct-vs-ring-65536b` | ReduceScatter | Direct / Ring | 65536B | 同上 | 同上 | `pending`；不得影响cost |
-| `all-reduce-ring-vs-tree-256b` | AllReduce | Ring / ordered Tree | 256B | Ring验证`2(P-1)`轮两阶段round→slice递推、chunk和单一16-rank cycle；Tree验证15条reduce边、broadcast exact reverse、`slice=child`、`round=child depth`、单root/无环/二叉且rank-group inorder；完整message tuple跨rank匹配 | 16个replicated modular exact output；共同lifecycle/status合同见表后 | `pending`；不得影响cost |
+| `all-reduce-ring-vs-tree-256b` | AllReduce | Ring / ordered Tree | 256B | Ring验证`2(P-1)`轮两阶段round→slice递推、chunk和单一16-rank cycle；Tree验证15条reduce边、broadcast exact reverse、`slice=child`、`round=child depth`、单root/无环/二叉且rank-group inorder；完整message tuple跨rank匹配 | 16个replicated FP16 exact output；共同lifecycle/status合同见表后 | `pending`；不得影响cost |
 | `all-reduce-ring-vs-tree-4096b` | AllReduce | Ring / ordered Tree | 4096B | 同上；复用原`tree-all-reduce` payload，但Ring必须由actual phase确认，不能由reserved-baseline名字推断 | 同上 | `pending`；不得影响cost |
 | `all-reduce-ring-vs-tree-65536b` | AllReduce | Ring / ordered Tree | 65536B | 同上 | 同上 | `pending`；不得影响cost |
 
@@ -1559,9 +1573,10 @@ quarantine；但`BoardRuntimeInvocationResult`和`wafer-run` stdout尚不导出�
 `runtime_all_rank_success_enforced=true`、`observed_all_rank_success=false`及该observation gap，
 不得写成“16条raw Success已独立观察”；若后续promotion要求逐rank raw status，必须先扩展runtime output surface。
 
-2026-07-26 pre-board状态：上述9/9 case均已实际生成两种typed package，accepted Instr tuple sidecar、
-normalized manifest、status/watchdog/completion contract、最终ELF结构和双包no-card gate通过；
-真实板端9/9仍为`pending`。首轮RS 256B执行
+此前I8版本的package/no-card与板端输出均不计入当前FP16 case证据。当前9组algorithm与11组
+AllToAll/Permute的fresh package/no-card已通过；紧接的板端批次在唯一资格Add首次发射时completion
+timeout并停止，20个FP16通信case均未发射，不能形成板端结论。资格入口随后已改为FP16 exact Add，
+并通过fresh package/no-card；设备重启后只运行该新入口一次，不回放旧F32输出。旧RS 256B实现曾
 发现Direct lowering把同一input root的15个target subview连续send后才group wait，无法通过现有
 one-live-sender/root-isolation gate；修复为逐send matching wait且未放宽gate，随后RS三种payload全部通过。
 64KiB AR会在constant-trip structured loop中分tile，sidecar的send/recv bytes因此按constant loop
@@ -1580,7 +1595,7 @@ cycle/PMU unit、scope、clear/wrap与workload correlation未闭合前，本表�
 
 | 后续family | 区分的硬件行为 | 最小matched case | activation / stop gate | 当前状态 |
 | --- | --- | --- | --- | --- |
-| AllToAll / Permute traffic semantics | 全交换fanin/fanout、cycle与send-only/recv-only/self/unmapped-zero-fill角色 | 3个AllToAll payload、3个Permute forward-cycle payload，加reverse、opposite-pairs、disjoint-pairs、sparse-roles和two-epoch chain，共11个structured source→package→ELF→wafer-run case | 全rank exact、status-v2、accepted source graph、terminal/cleanup；单一Direct schedule只测traffic behavior，不伪造算法A/B或device cost | `board-ready/pending-board`（11 case、11 CTest/runner step）；ragged AllToAll与same-physical-buffer alias缺少typed surface，host fail closed |
+| AllToAll / Permute traffic semantics | 全交换fanin/fanout、cycle与send-only/recv-only/self/unmapped-zero-fill角色 | 3个AllToAll payload、3个Permute forward-cycle payload，加reverse、opposite-pairs、disjoint-pairs、sparse-roles和two-epoch chain，共11个FP16 structured source→package→ELF→wafer-run case | 全rank exact、status-v2、accepted source graph、terminal/cleanup；单一Direct schedule只测traffic behavior，不伪造算法A/B或device cost | `pending-board`；旧I8执行结论已撤销，FP16版本须fresh执行；ragged AllToAll与same-physical-buffer alias缺少typed surface，host fail closed |
 | DTE raw multidestination / fan-in | broadcast、scatter、shuffle在不同fanout与destination order下的实际payload/mapping，以及current receiver protocol可承载的fanin | raw broadcast/scatter/shuffle × fanout 2/4/8/15 × adjacent/interleaved共24项；另有四源fan-in 1项 | 25项各有独立board CTest/runner step、single-mode process、全payload/guard/nonparticipant/status/cleanup oracle；`dest_num`编码和destination mapping只记录观察，不提前固化ABI或cost | `board-ready/pending-board`（25 case、25 CTest/runner step）；8/15源fan-in受current receiver FSM容量阻断，device phase、physical route与跨卡transport缺可信surface，继续typed fail closed |
 | single-engine throughput | CT/NE/RDMA/WDMA/TDMA启动成本、tail和steady slope | raw dispatcher有20个small/steady/movement cell；NE另有`f16 m65/k129/n129` tail真实source→package case，共21 cell | exact result/padding/guards/count、manifest绑定的唯一terminal、ordered lifecycle与device PMU，至少3次；engine组按sample-major正/反/半程轮转。NE tail只在session id和完整board qualification fingerprint一致时与`single/ne/small`、`single/ne/steady-16k`合并，三点device-PMU方向完整才激活rate | `board-ready/pending-board`：raw cells为1个activation-group CTest，NE tail为独立`single-ne-tail` CTest；无新增板端证据 |
 | engine-pair stage balance | 10个pair的A-bound/balanced/B-bound、A→B/B→A方向、iteration与same/cross-worker | 360个board-executable cell组成60个完整activation group；每组冻结serial/window、ratio、方向和held-out controls | 每个group单进程按sample-major正/反/半程轮转，full result/guard/count、manifest绑定的唯一terminal、三次重复、per-engine/global-union PMU齐全才可分类；host elapsed不作cost | `board-ready/pending-board`（60 group CTest/runner step）；没有稳定device方向则保持Unknown |

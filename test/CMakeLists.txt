@@ -599,30 +599,20 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
       TIMEOUT 3600
     )
   endforeach()
-  foreach(_wafer_no_card_launch_test IN ITEMS kernel-grid model)
-    if(_wafer_no_card_launch_test STREQUAL "kernel-grid")
-      set(_wafer_no_card_launch_kind kernel)
-    else()
-      set(_wafer_no_card_launch_kind model)
-    endif()
-    add_test(NAME wafer-runtime-${_wafer_no_card_launch_test}-add-no-card
-      COMMAND ${Python3_EXECUTABLE}
-        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_all_rank_add_test.py
-        --wafer-compile $<TARGET_FILE:wafer-compile>
-        --wafer-run $<TARGET_FILE:wafer-run>
-        --work-dir
-          ${CMAKE_CURRENT_BINARY_DIR}/runtime-${_wafer_no_card_launch_test}-add
-        --launch-kind ${_wafer_no_card_launch_kind}
-        --no-card
-    )
-    set_tests_properties(
-      wafer-runtime-${_wafer_no_card_launch_test}-add-no-card PROPERTIES
-      LABELS "runtime;no-card;all-rank;single-op;${_wafer_no_card_launch_test}"
-      TIMEOUT 300
-    )
-  endforeach()
-  unset(_wafer_no_card_launch_test)
-  unset(_wafer_no_card_launch_kind)
+  add_test(NAME wafer-runtime-kernel-grid-add-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_all_rank_add_test.py
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/runtime-kernel-grid-add
+      --launch-kind kernel
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-kernel-grid-add-no-card PROPERTIES
+    LABELS "runtime;no-card;all-rank;single-op;kernel-grid"
+    TIMEOUT 300
+  )
   add_test(NAME wafer-runtime-cluster-direct-dte-no-card
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_direct_dte_collective_test.py
@@ -2340,29 +2330,6 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     )
     set_tests_properties(wafer-board-kernel-grid-add PROPERTIES
       LABELS "board;hardware;kernel-grid;all-rank;single-op"
-      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
-      SKIP_RETURN_CODE 77
-      TIMEOUT 600
-    )
-    add_test(NAME wafer-board-model-add
-      COMMAND ${Python3_EXECUTABLE}
-        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_all_rank_add_test.py
-        --wafer-compile $<TARGET_FILE:wafer-compile>
-        --wafer-run $<TARGET_FILE:wafer-run>
-        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/board-model-add
-        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
-        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
-        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
-        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
-        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
-        --expected-runtime-library-sha256
-          ${_wafer_expected_tx_runtime_library_sha256}
-        --launch-kind model
-        --completion-timeout-ms 60000
-        --repeat 2
-    )
-    set_tests_properties(wafer-board-model-add PROPERTIES
-      LABELS "board;hardware;model;all-rank;single-op"
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
       TIMEOUT 600

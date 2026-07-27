@@ -73,6 +73,13 @@ MAX_DMA_ENVELOPE_BYTES = _macro(
 DMA_FORMAT_INT8 = _macro("WAFER_NCC_PROTOCOL_DMA_FORMAT_INT8")
 DMA_FORMAT_FP16 = _macro("WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16")
 DMA_FORMAT_UINT8 = _macro("WAFER_NCC_PROTOCOL_DMA_FORMAT_UINT8")
+F16_POSITIVE_INTEGER_MAX = _macro(
+    "WAFER_NCC_PROTOCOL_F16_POSITIVE_INTEGER_MAX"
+)
+F16_POSITIVE_INTEGERS = tuple(
+    _macro(f"WAFER_NCC_PROTOCOL_F16_POSITIVE_INTEGER_{value}")
+    for value in range(F16_POSITIVE_INTEGER_MAX + 1)
+)
 REQUEST_RESERVED_BASE = _macro(
     "WAFER_NCC_PROTOCOL_REQUEST_RESERVED_BASE"
 )
@@ -383,6 +390,20 @@ class Lane:
             raise ValueError(f"worker must be in [0, {WORKERS})")
         if self.transfer_bytes <= 0:
             raise ValueError("transfer_bytes must be positive")
+        if (
+            self.engine != Engine.TDMA
+            and self.element_format != DMA_FORMAT_FP16
+        ):
+            raise ValueError(
+                "generic CT/NE/RDMA/WDMA lanes require FP16"
+            )
+        if (
+            self.element_format == DMA_FORMAT_FP16
+            and self.transfer_bytes % 2 != 0
+        ):
+            raise ValueError(
+                "FP16 transfer_bytes must contain whole 2-byte elements"
+            )
         if self.flags != 0:
             raise ValueError("unknown lane flags are not safe")
         extra_layout = (

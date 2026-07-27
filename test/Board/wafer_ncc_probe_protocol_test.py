@@ -21,7 +21,7 @@ def lane(engine: protocol.Engine, worker: int = 0) -> protocol.Lane:
         worker=worker,
         issue_mode=protocol.IssueMode.RAW,
         transfer_bytes=4096,
-        element_format=1,
+        element_format=protocol.DMA_FORMAT_FP16,
     )
 
 
@@ -352,6 +352,36 @@ class ProtocolTest(unittest.TestCase):
                 bytes(output), case, plan
             )
 
+    def test_generic_device_cases_are_fp16_with_whole_elements(self) -> None:
+        dedicated_format_cases = {
+            case.name for case in execution_probe.NO_CARD_PROTOCOL_CASES
+        }
+        cases = {
+            case.name: case
+            for suite in execution_probe.SUITES.values()
+            for case in suite
+        }
+        self.assertTrue(dedicated_format_cases.issubset(cases))
+        for name, case in cases.items():
+            if name in dedicated_format_cases:
+                continue
+            for item in case.plan.lanes:
+                self.assertEqual(
+                    item.element_format, execution_probe.FMT_FP16
+                )
+                self.assertEqual(item.transfer_bytes % 2, 0)
+                self.assertGreater(item.transfer_bytes // 2, 0)
+
+        with self.assertRaisesRegex(ValueError, "whole 2-byte elements"):
+            execution_probe.v2_lane(
+                protocol.Engine.RDMA, transfer_bytes=17
+            )
+        with self.assertRaisesRegex(ValueError, "require FP16"):
+            dataclasses.replace(
+                execution_probe.v2_lane(protocol.Engine.WDMA),
+                element_format=execution_probe.FMT_INT8,
+            ).validate()
+
     def test_three_lane_window_is_disjoint_only(self) -> None:
         plan = protocol.Plan(
             lanes=(
@@ -500,7 +530,7 @@ class ProtocolTest(unittest.TestCase):
             )
             self.assertEqual(plan.lanes[0].transfer_bytes, 16)
             self.assertEqual(
-                plan.lanes[0].element_format, execution_probe.FMT_INT8
+                plan.lanes[0].element_format, execution_probe.FMT_FP16
             )
             self.assertTrue(
                 all(
@@ -551,6 +581,35 @@ class ProtocolTest(unittest.TestCase):
         )
         self.assertLess(requested_wait, boundary_oracle)
         self.assertLess(boundary_oracle, safety_drain)
+
+    def test_seeded_spm_is_published_before_prepare_and_issue(self) -> None:
+        plan_source = (
+            pathlib.Path(__file__).resolve().parent
+            / "Inputs"
+            / "wafer_ncc_probe_plan.c"
+        ).read_text()
+        execute = plan_source.split(
+            "uint32_t wafer_ncc_probe_execute_plan(", maxsplit=1
+        )[1]
+        seed_loop = execute.index("adapter->seed(")
+        seed_complete = execute.index("hooks->seed_complete(", seed_loop)
+        prepare_loop = execute.index("adapter->prepare(", seed_complete)
+        issue_loop = execute.index("adapter->issue(", prepare_loop)
+        self.assertLess(seed_loop, seed_complete)
+        self.assertLess(seed_complete, prepare_loop)
+        self.assertLess(seed_complete, issue_loop)
+
+        device_source = (
+            pathlib.Path(__file__).resolve().parent
+            / "Inputs"
+            / "wafer_ncc_execution_probe.c"
+        ).read_text()
+        seed_publish = device_source.split(
+            "static int wafer_ncc_v2_seed_complete(", maxsplit=1
+        )[1].split("\n}", maxsplit=1)[0]
+        self.assertIn('volatile("fence iorw, iorw"', seed_publish)
+        self.assertIn('volatile("sync"', seed_publish)
+        self.assertIn('volatile("sync.is"', seed_publish)
 
     def test_wait_overhead_cases_cover_every_engine(self) -> None:
         cases = execution_probe.SUITES["wait-overhead-manual"]
@@ -1312,6 +1371,41 @@ class ProtocolTest(unittest.TestCase):
                 case.plan.is_tight_worker_scope()
                 for case in execution_probe.V2_WORKER_WAIT_SCOPE_CASES
             )
+        )
+        self.assertTrue(
+            all(
+                case.plan.lanes[-1].transfer_bytes
+                == (
+                    execution_probe.V2_NE_SCOPE_RESULT_BYTES
+                    if case.plan.lanes[-1].engine == protocol.Engine.NE
+                    else execution_probe.V2_REPEATED_SLOT_BYTES
+                )
+                for case in execution_probe.V2_WORKER_WAIT_SCOPE_CASES
+            )
+        )
+        self.assertEqual(
+            execution_probe.V2_NE_SCOPE_LHS_BYTES,
+            2
+            * execution_probe.V2_NE_SCOPE_M
+            * execution_probe.V2_NE_SCOPE_K,
+        )
+        self.assertEqual(
+            execution_probe.V2_NE_SCOPE_RHS_BYTES,
+            2
+            * execution_probe.V2_NE_SCOPE_K
+            * execution_probe.V2_NE_SCOPE_N,
+        )
+        self.assertEqual(
+            execution_probe.V2_NE_SCOPE_RESULT_BYTES,
+            2
+            * execution_probe.V2_NE_SCOPE_M
+            * execution_probe.V2_NE_SCOPE_N,
+        )
+        self.assertLessEqual(
+            execution_probe.V2_NE_SCOPE_WRITE_OFFSET
+            + execution_probe.V2_NE_SCOPE_RESULT_BYTES
+            + execution_probe.V2_OUTPUT_GUARD_BYTES,
+            execution_probe.V2_SPM_SLOT_STRIDE,
         )
         self.assertTrue(
             all(

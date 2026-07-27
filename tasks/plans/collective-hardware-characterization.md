@@ -1,8 +1,9 @@
 # Collective Hardware Characterization 实施计划
 
-状态：第一批9组case与no-card gate已完成；2026-07-27板端AllGather 256B/4KiB/64KiB三组通过，
-ReduceScatter 256B在Direct i8 add暴露未资格化numeric capability，其余五组未执行，因此本campaign仍未
-完成。本文只组织case施工和验证；case定义、执行状态、原始
+状态：第一批9组case已统一改为FP16；此前执行的3组I8 AllGather和1组I8 ReduceScatter
+不再作为通信算子资格证据，当前9组FP16 case均须由新构建、新启动和新输出取得板端结论，因此本campaign仍未
+完成。当前9组algorithm与11组AllToAll/Permute的fresh no-card均通过；随后板端批次的唯一资格Add
+首次发射即completion timeout，20个FP16通信case均未发射，设备需重启后再继续。本文只组织case施工和验证；case定义、执行状态、原始
 证据及最终compiler消费结论统一写入`docs/tx81-compiler-hardware-calibration.md`。
 
 ## Pipeline Contract
@@ -41,13 +42,13 @@ Pipeline position:
 
 ## 第一批矩阵
 
-- logical collective payload统一为`256B / 4096B / 65536B`，固定16 rank、i8 exact：
+- logical collective payload统一为`256B / 4096B / 65536B`，固定16 rank、FP16：
   AllGather每rank输入`B/16`、输出`B`；ReduceScatter每rank输入`B`、输出`B/16`；
   AllReduce每rank输入/输出`B`。
-- payload使用rank/logical-lane/payload-size的确定性64-bit mixing后折叠为i8；mutation gate逐AG source
-  chunk、reduction source contribution（RS按destination segment）与RS output slice检查1/32/256B
-  rotation，并逐reduction source枚举missing及其余source replacement，避免线性mod-256短周期掩盖
-  slice/tile错误。
+- AllGather使用有限、可精确表示且按rank/lane区分的FP16 payload；ReduceScatter/AllReduce使用小整数
+  FP16贡献，使16-rank求和仍可精确表示并与归约顺序无关。mutation gate逐AG source chunk、reduction
+  source contribution（RS按destination segment）与RS output slice检查rotation，并逐reduction source
+  枚举missing及其余source replacement，防止slice/tile错误被弱输入掩盖。
 - AllGather对比Direct all-peer与Ring `P-1`轮；ReduceScatter对比Direct owner exchange与Ring
   `P-1`轮；AllReduce对比Ring `2(P-1)`轮与ordered Tree reduce+broadcast。
 - 现有`tree-all-reduce`的4KiB source/payload复用为AllReduce 4KiB点，不重复创建同义case。

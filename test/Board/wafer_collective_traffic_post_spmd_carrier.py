@@ -124,14 +124,14 @@ def main() -> int:
         raise RuntimeError("carrier requires one input and one output")
     input_shape, input_dtype = tensor_signature(input_signatures[0])
     output_shape, output_dtype = tensor_signature(output_signatures[0])
-    input_bytes = 1
+    input_bytes = 2
     for dimension in input_shape:
         input_bytes *= dimension
-    output_bytes = 1
+    output_bytes = 2
     for dimension in output_shape:
         output_bytes *= dimension
-    if input_dtype != "int8" or output_dtype != "int8":
-        raise RuntimeError("carrier requires int8 traffic payloads")
+    if input_dtype != "float16" or output_dtype != "float16":
+        raise RuntimeError("carrier requires float16 traffic payloads")
     if input_bytes != output_bytes or input_bytes not in PAYLOAD_POINTS:
         raise RuntimeError(
             "carrier requires equal 256/4096/65536-byte local payloads"

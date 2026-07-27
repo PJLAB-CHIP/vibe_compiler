@@ -8,6 +8,9 @@ import inspect
 import pathlib
 import re
 import sys
+import tempfile
+
+import numpy as np
 
 import wafer_board_compiler_optimization_campaign_test as driver
 import wafer_compiler_optimization_campaign_catalog as catalog
@@ -117,6 +120,33 @@ def validate_board_output_parser() -> None:
     else:
         raise AssertionError("duplicate board output comparison was accepted")
 
+    relaxed = driver.CASES["f16-common-factor"]
+    driver.verify_board_output(
+        lifecycle
+        + "output_compare: resource=8 bytes=32768 "
+        + "policy=f16-relaxed abs=0.0009765625 rel=0.001 "
+        + "max_ulp=1 signed_zero_equal=true\n"
+        + "terminal_completion: 4 kind=entry_return\n",
+        relaxed,
+        {8},
+        {(4, 0)},
+    )
+    try:
+        driver.verify_board_output(
+            lifecycle
+            + "output_compare: resource=8 bytes=32768 exact=true\n"
+            + "terminal_completion: 4 kind=entry_return\n",
+            relaxed,
+            {8},
+            {(4, 0)},
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError(
+            "relaxed floating board output accepted a raw exact evidence row"
+        )
+
     collective = driver.CASES["tree-all-reduce"]
     output_ids = set(range(100, 116))
     completions = {(rank + 200, rank) for rank in range(16)}
@@ -139,9 +169,90 @@ def validate_board_output_parser() -> None:
     )
 
 
+def validate_paired_payload_preflight() -> None:
+    for case in driver.CASES.values():
+        driver.validate_paired_payloads(case, case.payload_factory())
+
+    case = driver.CASES["f16-common-factor"]
+    payloads = case.payload_factory()
+    assert len(payloads.inputs) == 1
+    assert len(payloads.baseline_outputs) == 1
+    assert len(payloads.winner_outputs) == 1
+    a, b, c = payloads.inputs[0]
+    baseline = payloads.baseline_outputs[0][0]
+    winner = payloads.winner_outputs[0][0]
+    source = ((a * b).astype("<f2") + (a * c).astype("<f2")).astype("<f2")
+    factored = (a * (b + c).astype("<f2")).astype("<f2")
+    assert a[0] == np.float16(0.0)
+    assert b[0] == np.float16(0.0)
+    assert c[0] == np.float16(-1.0)
+    assert np.array_equal(baseline.view("<u2"), source.view("<u2"))
+    assert np.array_equal(winner.view("<u2"), factored.view("<u2"))
+    assert baseline.view("<u2")[0] == 0x0000
+    assert winner.view("<u2")[0] == 0x8000
+    bindings = {
+        variant: {
+            (0, "user_input", 0): base,
+            (0, "user_input", 1): base + 1,
+            (0, "user_input", 2): base + 2,
+            (0, "output", 0): base + 3,
+        }
+        for variant, base in (("baseline", 10), ("winner", 20))
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        arguments = driver.write_payloads(
+            pathlib.Path(directory), case, bindings, payloads
+        )
+    for variant in ("baseline", "winner"):
+        assert "--expected-f16-relaxed" in arguments[variant]
+        assert "--expected" not in arguments[variant]
+
+    mismatching_baseline = [[baseline.copy()]]
+    mismatching_winner = [[winner.copy()]]
+    mismatching_winner[0][0][2] = (
+        mismatching_baseline[0][0][2] + np.float16(1.0)
+    )
+    try:
+        driver.validate_paired_payloads(
+            case,
+            driver.PairedPayloads(
+                payloads.inputs,
+                mismatching_baseline,
+                mismatching_winner,
+            ),
+        )
+    except RuntimeError as error:
+        assert "exceed the numeric policy" in str(error)
+        assert "element 2" in str(error)
+    else:
+        raise AssertionError(
+            "paired payload preflight accepted an out-of-policy finite mismatch"
+        )
+
+    nonfinite_winner = [[winner.copy()]]
+    nonfinite_winner[0][0][3] = np.float16(np.inf)
+    try:
+        driver.validate_paired_payloads(
+            case,
+            driver.PairedPayloads(
+                payloads.inputs,
+                [[baseline.copy()]],
+                nonfinite_winner,
+            ),
+        )
+    except RuntimeError as error:
+        assert "NaN or infinity" in str(error)
+        assert "element 3" in str(error)
+    else:
+        raise AssertionError(
+            "paired payload preflight accepted a nonfinite oracle"
+        )
+
+
 def main() -> int:
     repo = pathlib.Path(__file__).resolve().parents[2]
     validate_board_output_parser()
+    validate_paired_payload_preflight()
     calibration_runner = load_python_asset(
         repo,
         "tools/run_hardware_calibration.py",
@@ -161,6 +272,14 @@ def main() -> int:
     assert paired_case_keys == set(driver.CASES), (
         "new paired campaign entries must have a concrete executable driver case"
     )
+    for key, executable in driver.CASES.items():
+        dtypes = {
+            spec.mlir_dtype
+            for spec in (*executable.inputs, *executable.outputs)
+        }
+        assert dtypes == {"f16"}, (
+            f"{key}: generic board workloads must use f16"
+        )
     assert set(catalog.AXES_BY_KEY) == EXPECTED_AXIS_KEYS
     assert len(catalog.AXES_BY_KEY) == len(catalog.OPTIMIZATION_AXES)
     assert set(catalog.PRODUCTION_OWNER_BY_AXIS) == EXPECTED_AXIS_KEYS

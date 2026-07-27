@@ -291,13 +291,13 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
     break;
   case 12U:
     *raw_execute_rc =
-        wafer_dmx_raw_memset(output, UINT32_C(0x5a), 128U, 256U, 32U,
-                             Fmt_INT8);
+        wafer_dmx_raw_memset(output, UINT32_C(0x3c00), 64U, 256U, 32U,
+                             Fmt_FP16);
     break;
   case 13U:
     *raw_execute_rc =
-        wafer_dmx_raw_memset(output, UINT32_C(0xc3), 64U, 128U, 64U,
-                             Fmt_INT8);
+        wafer_dmx_raw_memset(output, UINT32_C(0x3f80), 32U, 128U, 64U,
+                             Fmt_BF16);
     break;
   case 14U:
     *raw_execute_rc =

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile and execute a rank-one f32 add on a configured TX board."""
+"""Compile and execute a rank-one f16 add on a configured TX board."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ RUNTIME_LAUNCH_CALIBRATION_CASES = (
         "rank-one-per-rank-add",
         1,
         runtime_launch.KERNEL_LAUNCH_KIND,
-        "full f32 expected output+schema-v6 unique entry/resource binding",
+        "full f16 expected output+schema-v6 unique entry/resource binding",
         "runtime terminal+D2H+normal cleanup",
     ),
 )
@@ -42,9 +42,9 @@ CALIBRATION_LEAF_BINDINGS = {
 
 MODULE = """\
 module {
-  func.func @main(%arg0: tensor<16xf32>, %arg1: tensor<16xf32>) -> tensor<16xf32> {
-    %0 = stablehlo.add %arg0, %arg1 : tensor<16xf32>
-    return %0 : tensor<16xf32>
+  func.func @main(%arg0: tensor<16xf16>, %arg1: tensor<16xf16>) -> tensor<16xf16> {
+    %0 = stablehlo.add %arg0, %arg1 : tensor<16xf16>
+    return %0 : tensor<16xf16>
   }
 }
 """
@@ -53,11 +53,11 @@ METADATA = {
     "name": "forward",
     "stablehlo_version": "0.0.0",
     "input_signature": [
-        {"shape": [16], "dtype": "float32", "dynamic_dims": []},
-        {"shape": [16], "dtype": "float32", "dynamic_dims": []},
+        {"shape": [16], "dtype": "float16", "dynamic_dims": []},
+        {"shape": [16], "dtype": "float16", "dynamic_dims": []},
     ],
     "output_signature": [
-        {"shape": [16], "dtype": "float32", "dynamic_dims": []}
+        {"shape": [16], "dtype": "float16", "dynamic_dims": []}
     ],
     "input_locations": [
         {"type_": "input_arg", "position": 0, "name": "input"},
@@ -104,8 +104,11 @@ def write_fixture(
         json.dumps(METADATA, separators=(",", ":")) + "\n"
     )
 
-    input_tensor = np.arange(-8, 8, dtype=np.float32)
-    weight = np.arange(16, dtype=np.float32) * np.float32(2.0)
+    # Small integers and their sums are exactly representable in binary16, so
+    # this heartbeat keeps exact comparison without conflating launch health
+    # with floating-point tolerance.
+    input_tensor = np.arange(-8, 8, dtype=np.float16)
+    weight = np.arange(16, dtype=np.float16) * np.float16(2.0)
     expected = input_tensor + weight
     with (source / "data" / "weight").open("wb") as output:
         np.save(output, weight)
@@ -113,9 +116,9 @@ def write_fixture(
     raw = work_dir / "raw"
     raw.mkdir()
     paths = {
-        ("user_input", 0): raw / "input.f32.raw",
-        ("parameter", 1): raw / "weight.f32.raw",
-        ("output", 0): raw / "expected.f32.raw",
+        ("user_input", 0): raw / "input.f16.raw",
+        ("parameter", 1): raw / "weight.f16.raw",
+        ("output", 0): raw / "expected.f16.raw",
     }
     input_tensor.tofile(paths[("user_input", 0)])
     weight.tofile(paths[("parameter", 1)])

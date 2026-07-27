@@ -37,6 +37,11 @@ POST_SPMD_CARRIER = pathlib.Path(__file__).with_name(
     "wafer_collective_traffic_post_spmd_carrier.py"
 )
 SOURCE_SNAPSHOT_PATHS = paired_support.SOURCE_SNAPSHOT_PATHS
+F16_DTYPE = np.dtype("<f2")
+ALL_TO_ALL_PAIR_BITS_BASE = np.uint16(0x4400)
+ALL_TO_ALL_LANE_BITS_BASE = np.uint16(0x0800)
+PERMUTE_RANK_BITS_BASE = np.uint16(0x4800)
+PERMUTE_LANE_BITS_BASE = np.uint16(0x0400)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -61,6 +66,10 @@ class RuntimeCase:
     def payload_factory(self):
         return lambda: payloads(self)
 
+    @property
+    def output_comparison(self):
+        return paired_support.RAW_EXACT_OUTPUT
+
 
 @dataclasses.dataclass(frozen=True)
 class PackageEvidence:
@@ -75,14 +84,14 @@ def runtime_case(contract: TrafficBehaviorCase) -> RuntimeCase:
         paired_support.TensorSpec(
             contract.input_shape,
             contract.element_type,
-            "int8",
+            "float16",
         ),
     )
     outputs = (
         paired_support.TensorSpec(
             contract.output_shape,
             contract.element_type,
-            "int8",
+            "float16",
         ),
     )
     return RuntimeCase(contract, inputs, outputs)
@@ -93,7 +102,7 @@ def rank_group() -> str:
 
 
 def tensor_type(shape: tuple[int, ...]) -> str:
-    return "x".join(str(dimension) for dimension in shape) + "xi8"
+    return "x".join(str(dimension) for dimension in shape) + "xf16"
 
 
 def all_to_all_module(case: TrafficBehaviorCase) -> str:
@@ -179,13 +188,14 @@ def all_to_all_payloads(
     lanes_per_peer = case.input_shape[1]
     lanes = np.arange(lanes_per_peer, dtype=np.uint16)
     for source in range(RANK_COUNT):
-        payload = np.empty(case.input_shape, dtype=np.uint8)
+        payload = np.empty(case.input_shape, dtype=F16_DTYPE)
+        bits = payload.view(np.uint16)
         for destination in range(RANK_COUNT):
-            payload[destination, :, 0] = source
-            payload[destination, :, 1] = destination
-            payload[destination, :, 2] = lanes & 0xFF
-            payload[destination, :, 3] = lanes >> 8
-        rank_inputs.append(payload.view(np.int8))
+            bits[destination, :, 0] = (
+                ALL_TO_ALL_PAIR_BITS_BASE + source * RANK_COUNT + destination
+            )
+            bits[destination, :, 1] = ALL_TO_ALL_LANE_BITS_BASE + lanes
+        rank_inputs.append(payload)
     outputs = [
         [
             np.concatenate(
@@ -203,14 +213,11 @@ def all_to_all_payloads(
 
 def permute_rank_payload(rank: int, payload_bytes: int = 4096) -> np.ndarray:
     lanes = np.arange(payload_bytes // 4, dtype=np.uint16)
-    payload = np.empty((payload_bytes // 4, 4), dtype=np.uint8)
-    payload[:, 0] = rank
-    payload[:, 1] = lanes & 0xFF
-    payload[:, 2] = lanes >> 8
-    payload[:, 3] = (
-        rank * 61 + lanes.astype(np.uint32) * 37 + 0x9D
-    ) & 0xFF
-    return payload.view(np.int8)
+    payload = np.empty((payload_bytes // 4, 2), dtype=F16_DTYPE)
+    bits = payload.view(np.uint16)
+    bits[:, 0] = PERMUTE_RANK_BITS_BASE + rank
+    bits[:, 1] = PERMUTE_LANE_BITS_BASE + lanes
+    return payload
 
 
 def simulate_permute_epochs(
@@ -243,6 +250,50 @@ def payloads(
         [[payload] for payload in rank_inputs],
         [[payload] for payload in expected],
     )
+
+
+def write_exact_payloads(
+    work_dir: pathlib.Path,
+    case: RuntimeCase,
+    bindings: dict[tuple[int, str, int], int],
+) -> list[str]:
+    inputs, outputs = payloads(case)
+    raw = work_dir / "raw"
+    raw.mkdir()
+    arguments: list[str] = []
+    for rank in range(case.rank_count):
+        for role, arrays, option in (
+            ("user_input", inputs[rank], "--resource"),
+            ("output", outputs[rank], "--expected"),
+        ):
+            for index, (array, spec) in enumerate(
+                zip(
+                    arrays,
+                    case.inputs if role == "user_input" else case.outputs,
+                    strict=True,
+                )
+            ):
+                if (
+                    array.dtype != F16_DTYPE
+                    or tuple(array.shape) != spec.shape
+                    or array.nbytes != case.contract.payload_bytes
+                    or not np.all(np.isfinite(array))
+                ):
+                    raise RuntimeError(
+                        f"{case.key}: invalid finite f16 payload for "
+                        f"{(rank, role, index)}"
+                    )
+                path = raw / (
+                    f"rank_{rank:02d}_{role}_{index}.{spec.mlir_dtype}.raw"
+                )
+                path.write_bytes(np.ascontiguousarray(array).tobytes())
+                arguments.extend(
+                    [
+                        option,
+                        f"{bindings[(rank, role, index)]}={path}",
+                    ]
+                )
+    return arguments
 
 
 def parse_args() -> argparse.Namespace:
@@ -687,11 +738,11 @@ def main() -> int:
     (args.work_dir / "collective-traffic-behavior.json").write_text(
         json.dumps(behavior_record, indent=2, sort_keys=True) + "\n"
     )
-    resource_arguments = paired_support.write_payloads(
+    resource_arguments = write_exact_payloads(
         args.work_dir,
         case,
-        {"package": package_evidence.bindings},
-    )["package"]
+        package_evidence.bindings,
+    )
 
     if args.no_card:
         result = paired_support.run(
