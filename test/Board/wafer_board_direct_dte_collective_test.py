@@ -426,7 +426,7 @@ def main() -> int:
             ),
         )
         required_evidence = {
-            "launch_pattern: cluster-prepare-main-x16",
+            "launch_pattern: cluster-x16",
             "logical_tile_execution_basis: cluster-pid-and-exact-rank-slices",
             "logical_tile_domain: 0..15",
             "physical_execution_claim: none",

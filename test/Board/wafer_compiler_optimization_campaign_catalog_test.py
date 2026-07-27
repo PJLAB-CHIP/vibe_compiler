@@ -152,7 +152,7 @@ def validate_board_output_parser() -> None:
     completions = {(rank + 200, rank) for rank in range(16)}
     collective_stdout = (
         lifecycle
-        + "launch_pattern: cluster-prepare-main-x16\n"
+        + "launch_pattern: cluster-x16\n"
         + "logical_tile_domain: 0..15\n"
         + "".join(
             f"output_compare: resource={resource} bytes=4096 exact=true\n"

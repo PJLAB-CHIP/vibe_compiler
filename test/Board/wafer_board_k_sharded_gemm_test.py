@@ -494,7 +494,7 @@ def verify_board_evidence(stdout: str, output_ids: set[int]) -> None:
         "board_stage: device-to-host",
         "board_stage: cleanup",
         "invocation_ranks: 16",
-        "launch_pattern: cluster-prepare-main-x16",
+        "launch_pattern: cluster-x16",
         "logical_tile_execution_basis: cluster-pid-and-exact-rank-slices",
         "logical_tile_domain: 0..15",
         "physical_execution_claim: none",

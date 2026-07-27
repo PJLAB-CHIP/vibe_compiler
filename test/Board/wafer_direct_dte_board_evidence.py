@@ -357,7 +357,7 @@ def validate_direct_dte_board_output(
         "board_stage: completion",
         "board_stage: device-to-host",
         "board_stage: cleanup",
-        "launch_pattern: cluster-prepare-main-x16",
+        "launch_pattern: cluster-x16",
         "logical_tile_domain: 0..15",
         f"invocation_ranks: {RANK_COUNT}",
         "board_execution: true",

@@ -1589,7 +1589,7 @@ def verify_board_output(
             for completion, rank in terminal_matches
         }
         if (
-            "launch_pattern: cluster-prepare-main-x16" not in stdout
+            "launch_pattern: cluster-x16" not in stdout
             or "logical_tile_domain: 0..15" not in stdout
             or len(terminal_matches) != 16
             or len(actual_completions) != 16

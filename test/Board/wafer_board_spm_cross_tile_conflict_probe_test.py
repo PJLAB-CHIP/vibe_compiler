@@ -1074,7 +1074,7 @@ def execute_board(
             timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
         )
         required = {
-            "launch_pattern: cluster-prepare-main-x16",
+            "launch_pattern: cluster-x16",
             "logical_tile_execution_basis: cluster-pid-and-exact-rank-slices",
             "logical_tile_domain: 0..15",
             "board_execution: true",

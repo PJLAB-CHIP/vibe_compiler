@@ -121,7 +121,7 @@ def valid_stdout() -> str:
     lines.extend(
         [
             f"invocation_ranks: {evidence.RANK_COUNT}",
-            "launch_pattern: cluster-prepare-main-x16",
+            "launch_pattern: cluster-x16",
             "logical_tile_domain: 0..15",
             "board_execution: true",
         ]

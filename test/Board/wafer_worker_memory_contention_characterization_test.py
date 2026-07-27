@@ -563,7 +563,7 @@ def _validate_board_lifecycle_oracle() -> None:
             for rank in range(driver.RANK_COUNT)
         ],
         f"invocation_ranks: {driver.RANK_COUNT}",
-        "launch_pattern: cluster-prepare-main-x16",
+        "launch_pattern: cluster-x16",
         "logical_tile_execution_basis: "
         "cluster-pid-and-exact-rank-slices",
         "logical_tile_domain: 0..15",

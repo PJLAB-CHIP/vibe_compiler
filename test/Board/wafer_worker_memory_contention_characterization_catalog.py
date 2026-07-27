@@ -377,7 +377,7 @@ class CharacterizationCase:
                         "test/Board/Inputs/"
                         "wafer_ddr_active_rank_contention_probe.c"
                     ),
-                    "lifecycle": "cluster-prepare-main-x16/status-v2",
+                    "lifecycle": "cluster-x16/status-v2",
                 }
                 if self.disposition == Disposition.BOARD_EXECUTABLE
                 else None
