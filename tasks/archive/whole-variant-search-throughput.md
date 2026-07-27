@@ -32,7 +32,7 @@ Pipeline position:
   ordinal 0/1、前置失败、serial/parallel、rank 1/16、多scope、reserved baseline、late ABI failure、
   characterization和profile companion均保持同一winner/accepted IR及failure semantics；计数证明删除重复
   evaluation/import/ABI lowering，large-K GEMM与模型规模production-shaped workload只运行优化后Release入口并给出fresh
-  wall-time；既有历史数据只作标注清楚的参考，不重跑旧二进制长基线。
+  wall-time；本任务不保留或构造修改前二进制性能基线，只记录优化后production测时。
 ```
 
 ## 不变量
@@ -87,7 +87,7 @@ Pipeline position:
 - 增加invocation-local test counters，不进入artifact、CLI或稳定diagnostic schema；
 - 运行相关unit/lit、rank 1/16 determinism、profile baseline/winner和target late-failure回归；
 - 删除large-K测试自身的双production compile后，只对优化后Release入口测一次large-K GEMM和一次固定模型规模case；
-  不为对照重跑旧二进制，不把host wall-time解释成hardware performance。
+  不为对照构造修改前版本，不把host wall-time解释成hardware performance。
 
 ## 完成证据
 
@@ -112,15 +112,19 @@ Pipeline position:
 - dominance、equivalent static order、16-entry cap、characterization、profile companion、baseline target failure和
   optimized late-target failure均由invocation-local target-gate计数及winner断言覆盖。
 
-最终Release验证使用优化后的production入口且不重跑旧二进制：
+最终Release验证只使用优化后的production入口：
 
 | case | fresh结果 | 边界 |
 | --- | ---: | --- |
 | 16-rank full-4096 K-sharded f16 GEMM + all-reduce production whole-variant | test 1.568s，wall 1.62s | 单次source-to-bundle，16个rank executable |
 | 16-rank tiny Llama Megatron block | lit 46.01s，wall 46.12s | 完整compile链到预期V5.6 packet legality失败，未skip |
 
-历史Q32 completion audit记录的完整7B frontier约19.2至19.7分钟只作旧提交/旧环境背景；本任务按用户要求没有
-重新运行旧二进制，因此不计算不可靠的fresh前后加速比。最终分片执行全部502个`WaferUnitTests`均通过
+修改前同一large-K case的development运行超过10分钟仍未完成并被终止；优化后该case已在上述Release
+运行中1.62秒完成，实际长等待问题已经消除。该未完成运行是问题现象记录，不是保留的二进制性能基线，
+也不能单独隔离build mode与搜索改动各自贡献的精确倍数。
+
+本任务没有保留或构造修改前二进制性能基线，因此只报告优化后的absolute wall-time，不计算不可靠的
+fresh前后加速比。最终分片执行全部502个`WaferUnitTests`均通过
 （相关59项、互补442项及large-K单项），4条production-shaped compiler lit通过；Release工具增量构建和
 development focused build均使用128并发。C++格式、diff、IR organization及修复旧profiler源清单后的source
 organization gate通过。
