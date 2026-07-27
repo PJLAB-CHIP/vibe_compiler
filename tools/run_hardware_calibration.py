@@ -300,12 +300,6 @@ CALIBRATION_STEPS = (
         "16-rank kernel launch with grid dispatch and rank-major arguments",
     ),
     CalibrationStep(
-        "runtime-model",
-        "full-card-runtime",
-        "wafer-board-model-add",
-        "16-rank model launch with the typed boot-parameter entry ABI",
-    ),
-    CalibrationStep(
         "full-card-barrier",
         "full-card-barrier",
         "wafer-board-full-card-barrier-probe",

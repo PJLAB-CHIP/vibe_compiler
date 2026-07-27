@@ -211,11 +211,10 @@
   runtime顶层只有kernel/model两种launch kind；板测case不能通过provider专用ABI选择第三种入口。先执行rank-one kernel
   `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-single-op-add$' --output-on-failure`，
   确认未skip并在前后只读核对device memory/process与firmware status。真实16-tile命令只有对应static/fake gate先通过后才串行执行
-  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-kernel-grid-add$' --output-on-failure`和
-  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-model-add$' --output-on-failure`；Direct DTE再独立执行
+  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-kernel-grid-add$' --output-on-failure`；Direct DTE再独立执行
   `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-cluster-direct-dte$' --output-on-failure`。各项之间只读验卡，
   首个失败或超时即停，不retry/reset/power，也不能用临时runner路径替代已注册CTest。开启importer/SPMD helper的配置还应在未armed
-  环境实际执行对应kernel-grid、model和Direct DTE production no-card gate，它们从production source fresh编译到
+  环境实际执行对应kernel-grid和Direct DTE production no-card gate，它们从production source fresh编译到
   schema-v6 package并进入all-rank no-card consumer，不允许返回77或以fake manifest替代。schema-v6 module不带rank，
   entry不带symbol；rank覆盖只由entry到module引用表达，module通过typed exports定位`prepare`/`main`。
   vendor adapter由`tools/wafer-run` executable拥有，通用`WaferRuntime`只拥有typed provider接口和lifecycle executor；

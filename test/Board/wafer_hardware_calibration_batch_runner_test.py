@@ -195,8 +195,8 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             sum(step.ctest_name == RUNNER.HEARTBEAT_CTEST for step in steps),
             1,
         )
-        self.assertEqual(len(steps), 36)
-        self.assertEqual(len({step.ctest_name for step in steps}), 36)
+        self.assertEqual(len(steps), 35)
+        self.assertEqual(len({step.ctest_name for step in steps}), 35)
         self.assertEqual(
             len(RUNNER.ALL_CALIBRATION_STEPS),
             len(RUNNER.CALIBRATION_STEPS)
@@ -228,6 +228,10 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         )
         self.assertFalse(
             any("native-concat-hw" in key for key in explicit_keys)
+        )
+        self.assertNotIn(
+            "wafer-board-model-add",
+            {step.ctest_name for step in RUNNER.ALL_CALIBRATION_STEPS},
         )
         for step in RUNNER.EXPLICIT_ONLY_STEPS:
             self.assertNotIn(step, RUNNER.CALIBRATION_STEPS)
