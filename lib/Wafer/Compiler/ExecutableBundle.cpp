@@ -4,6 +4,7 @@
 
 #include "CompilationInternal.h"
 #include "ScheduledRankFinalization.h"
+#include "WholeVariantAttemptPlan.h"
 #include "WholeVariantCoordinator.h"
 
 #include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
@@ -25,6 +26,63 @@
 
 namespace wafer::compiler {
 
+llvm::Expected<std::vector<detail::RankVariantFrontier>>
+detail::importRankVariantFrontiersIntoOwnerContext(
+    mlir::MLIRContext &ownerContext,
+    llvm::ArrayRef<SerializedRankVariantFrontier> serializedFrontiers,
+    int64_t expectedRankCount) {
+  std::vector<RankVariantMetadataFrontier> frontierMetadata;
+  frontierMetadata.reserve(serializedFrontiers.size());
+  for (const SerializedRankVariantFrontier &frontier : serializedFrontiers) {
+    RankVariantMetadataFrontier metadata;
+    metadata.reserve(frontier.size());
+    for (const SerializedRankVariantCandidate &candidate : frontier)
+      metadata.push_back({candidate.stableOrdinal, candidate.artifactKind,
+                          candidate.reservedBaseline});
+    frontierMetadata.push_back(std::move(metadata));
+  }
+
+  WholeVariantAttemptPlan attemptPlan =
+      buildWholeVariantAttemptPlan(frontierMetadata, expectedRankCount);
+  if (attemptPlan.requiredModuleIndices.size() != serializedFrontiers.size())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "internal rank-frontier import plan has an incomplete rank domain");
+
+  std::vector<RankVariantFrontier> frontiers;
+  frontiers.reserve(serializedFrontiers.size());
+  for (auto [rankIndex, serialized] : llvm::enumerate(serializedFrontiers)) {
+    RankVariantFrontier imported;
+    imported.reserve(serialized.size());
+    std::vector<bool> required(serialized.size(), false);
+    for (size_t index : attemptPlan.requiredModuleIndices[rankIndex]) {
+      if (index >= required.size())
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "internal rank-frontier import plan references an invalid "
+            "candidate slot");
+      required[index] = true;
+    }
+    for (auto [candidateIndex, candidate] : llvm::enumerate(serialized)) {
+      mlir::OwningOpRef<mlir::ModuleOp> module;
+      if (required[candidateIndex]) {
+        module = mlir::parseSourceString<mlir::ModuleOp>(candidate.moduleText,
+                                                         &ownerContext);
+        if (!module)
+          return llvm::createStringError(
+              llvm::errc::invalid_argument,
+              "failed to import a lowered scheduling candidate for logical "
+              "rank %zu",
+              static_cast<size_t>(rankIndex));
+      }
+      imported.push_back({std::move(module), candidate.stableOrdinal,
+                          candidate.artifactKind, candidate.reservedBaseline});
+    }
+    frontiers.push_back(std::move(imported));
+  }
+  return frontiers;
+}
+
 static llvm::Expected<detail::ProfileExecutableBundles> buildExecutableBundles(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
@@ -39,16 +97,9 @@ static llvm::Expected<detail::ProfileExecutableBundles> buildExecutableBundles(
   };
 
   struct RankLoweringResult {
-    struct SerializedCandidate {
-      std::string moduleText;
-      int64_t stableOrdinal = 0;
-      wafer::RankArtifactKind artifactKind = wafer::RankArtifactKind::Spill;
-      bool reservedBaseline = false;
-    };
-
     int64_t logicalRank;
     bool succeeded = false;
-    std::vector<SerializedCandidate> candidates;
+    detail::SerializedRankVariantFrontier candidates;
     std::string diagnostics;
   };
 
@@ -104,7 +155,7 @@ static llvm::Expected<detail::ProfileExecutableBundles> buildExecutableBundles(
 
     result.candidates.reserve(finalized->size());
     for (detail::FinalizedRankCandidate &candidate : *finalized) {
-      RankLoweringResult::SerializedCandidate serialized;
+      detail::SerializedRankVariantCandidate serialized;
       serialized.stableOrdinal = candidate.stableOrdinal;
       serialized.artifactKind = candidate.artifactKind;
       serialized.reservedBaseline = candidate.reservedBaseline;
@@ -116,8 +167,8 @@ static llvm::Expected<detail::ProfileExecutableBundles> buildExecutableBundles(
     result.succeeded = true;
   });
 
-  std::vector<detail::RankVariantFrontier> frontiers;
-  frontiers.reserve(loweringResults.size());
+  std::vector<detail::SerializedRankVariantFrontier> serializedFrontiers;
+  serializedFrontiers.reserve(loweringResults.size());
   for (RankLoweringResult &result : loweringResults) {
     const int64_t logicalRank = result.logicalRank;
     if (!result.succeeded || result.candidates.empty()) {
@@ -128,22 +179,20 @@ static llvm::Expected<detail::ProfileExecutableBundles> buildExecutableBundles(
     if (failAfterLogicalRank && logicalRank == *failAfterLogicalRank)
       return fail("test-only injected failure after logical rank " +
                   std::to_string(logicalRank));
-    detail::RankVariantFrontier imported;
-    imported.reserve(result.candidates.size());
-    for (RankLoweringResult::SerializedCandidate &candidate :
-         result.candidates) {
-      mlir::OwningOpRef<mlir::ModuleOp> module =
-          mlir::parseSourceString<mlir::ModuleOp>(candidate.moduleText,
-                                                  context.get());
-      if (!module)
-        return fail("failed to import a lowered scheduling candidate for "
-                    "logical rank " +
-                    std::to_string(logicalRank));
-      imported.push_back({std::move(module), candidate.stableOrdinal,
-                          candidate.artifactKind, candidate.reservedBaseline});
-    }
-    frontiers.push_back(std::move(imported));
+    serializedFrontiers.push_back(std::move(result.candidates));
   }
+
+  // Reproduce the coordinator's original bounded attempt sequence from cheap
+  // metadata before parsing any finalized module into the bundle-owner
+  // context. The original frontier slots remain intact: only slots referenced
+  // by a correspondence-valid attempted tuple (plus every reserved baseline)
+  // materialize their module.
+  llvm::Expected<std::vector<detail::RankVariantFrontier>> imported =
+      detail::importRankVariantFrontiersIntoOwnerContext(
+          *context, serializedFrontiers, executionConfig.getRankCount());
+  if (!imported)
+    return fail(llvm::toString(imported.takeError()));
+  std::vector<detail::RankVariantFrontier> frontiers = std::move(*imported);
 
   mlir::FailureOr<detail::AcceptedProductionAndBaseline> accepted = [&] {
     if (retainReservedBaseline)

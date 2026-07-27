@@ -5,10 +5,17 @@
 #define WAFER_COMPILER_EXECUTABLEBUNDLEINTERNAL_H
 
 #include "Wafer/Compiler/Compilation.h"
+#include "WholeVariantCoordinator.h"
 #include "WholeVariantSelection.h"
 
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
 #include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace wafer::compiler {
 
@@ -41,6 +48,28 @@ struct ProfileExecutableBundles {
   std::optional<ExecutableBundle> reservedBaseline;
   bool productionIsReservedBaseline = false;
 };
+
+/// Invocation-local cross-context transport for one finalized rank candidate.
+/// The module text is parsed only when the fixed whole-variant attempt plan can
+/// reach this original frontier slot through its correspondence precheck.
+struct SerializedRankVariantCandidate {
+  std::string moduleText;
+  int64_t stableOrdinal = 0;
+  wafer::RankArtifactKind artifactKind = wafer::RankArtifactKind::Spill;
+  bool reservedBaseline = false;
+};
+
+using SerializedRankVariantFrontier =
+    std::vector<SerializedRankVariantCandidate>;
+
+/// Imports exactly the module slots required by the existing bounded
+/// whole-variant attempt sequence. Every original slot and its metadata remain
+/// in the returned frontiers; an unreachable slot retains a null module.
+llvm::Expected<std::vector<RankVariantFrontier>>
+importRankVariantFrontiersIntoOwnerContext(
+    mlir::MLIRContext &ownerContext,
+    llvm::ArrayRef<SerializedRankVariantFrontier> serializedFrontiers,
+    int64_t expectedRankCount);
 
 mlir::LogicalResult
 verifyExactExecutionConfig(mlir::ModuleOp module,

@@ -8,6 +8,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Diagnostics.h"
@@ -63,6 +64,30 @@ protected:
         source, mlir::ParserConfig(context.get()));
     EXPECT_TRUE(module);
     return {std::move(module), stableOrdinal, artifactKind, reservedBaseline};
+  }
+
+  wafer::compiler::detail::RankVariantCandidate
+  candidateWithUnboundEntryArgument(llvm::StringRef body, int64_t rankCount,
+                                    int64_t stableOrdinal,
+                                    bool reservedBaseline = false) {
+    wafer::compiler::detail::RankVariantCandidate result = candidate(
+        body, rankCount, /*legacyCost=*/0, stableOrdinal, reservedBaseline);
+    mlir::func::FuncOp entry;
+    result.module->walk([&](mlir::func::FuncOp function) {
+      if (!entry && function.getSymName() == "main")
+        entry = function;
+    });
+    EXPECT_TRUE(entry);
+    if (!entry)
+      return result;
+    auto memory = wafer::MemoryAttr::get(context.get(), wafer::MemorySpace::DDR,
+                                         wafer::MemLayout::Tensor);
+    auto type =
+        mlir::MemRefType::get({4}, mlir::Float32Type::get(context.get()),
+                              mlir::MemRefLayoutAttrInterface{}, memory);
+    entry.insertArgument(/*argIndex=*/0, type, mlir::DictionaryAttr{},
+                         entry.getLoc());
+    return result;
   }
 
   wafer::frontend::FrontendProgramVerificationResult
@@ -346,6 +371,80 @@ TEST_F(WholeVariantCoordinatorTest,
 }
 
 TEST_F(WholeVariantCoordinatorTest,
+       MetadataOnlyUnattemptableSlotsPreserveTheEagerWinner) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::RuntimeLaunchKind::Kernel);
+  ASSERT_TRUE(static_cast<bool>(config));
+
+  auto makeFrontiers = [&](bool lazy) {
+    std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
+    for (int64_t rank = 0; rank < 16; ++rank) {
+      if (lazy) {
+        frontiers[rank].push_back({mlir::OwningOpRef<mlir::ModuleOp>{},
+                                   100 + rank, wafer::RankArtifactKind::Spill,
+                                   false});
+      } else {
+        frontiers[rank].push_back(candidate("", 16, 0, 100 + rank, false,
+                                            wafer::RankArtifactKind::Spill));
+      }
+      frontiers[rank].push_back(
+          candidate("    wafer.instr.local_fence", 16, 100, 0, true));
+      frontiers[rank].push_back(candidate("", 16, 0, 1));
+    }
+    return frontiers;
+  };
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 16;
+  std::vector<int64_t> eagerOrdinals;
+  {
+    auto eager = makeFrontiers(/*lazy=*/false);
+    std::string diagnosticText;
+    llvm::raw_string_ostream diagnostics(diagnosticText);
+    auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+        eager, program, *config, diagnostics);
+    ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+    eagerOrdinals = accepted->selectedStableOrdinals;
+  }
+
+  auto lazy = makeFrontiers(/*lazy=*/true);
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      lazy, program, *config, diagnostics);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  EXPECT_EQ(accepted->selectedStableOrdinals, eagerOrdinals);
+  EXPECT_TRUE(llvm::all_of(accepted->selectedStableOrdinals,
+                           [](int64_t ordinal) { return ordinal == 1; }));
+}
+
+TEST_F(WholeVariantCoordinatorTest, RejectsMetadataOnlyAttemptableSlot) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::RuntimeLaunchKind::Kernel);
+  ASSERT_TRUE(static_cast<bool>(config));
+
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(candidate("    wafer.instr.local_fence", 1, 0, 9,
+                                   /*reservedBaseline=*/true));
+  frontiers[0].push_back({mlir::OwningOpRef<mlir::ModuleOp>{},
+                          /*stableOrdinal=*/0, wafer::RankArtifactKind::Spill,
+                          /*reservedBaseline=*/false});
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics);
+  EXPECT_TRUE(mlir::failed(accepted));
+  EXPECT_NE(diagnosticText.find("complete canonical rank domain"),
+            std::string::npos)
+      << diagnosticText;
+}
+
+TEST_F(WholeVariantCoordinatorTest,
        RejectsCompleteFrontierWithoutMutatingCandidateBindings) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
@@ -432,13 +531,16 @@ TEST_F(WholeVariantCoordinatorTest,
   frontiers[0].push_back(
       candidate("    wafer.instr.local_fence", 1, 100, 5, true));
   frontiers[0].push_back(candidate("", 1, 0, 0));
+  frontiers[0].push_back(candidate(
+      "    wafer.instr.local_fence\n    wafer.instr.local_fence", 1, 0, 1));
 
   wafer::frontend::FrontendProgramVerificationResult program;
   program.logicalRankCount = 1;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
   auto selected = wafer::compiler::detail::selectAcceptedProductionAndBaseline(
-      frontiers, program, *config, diagnostics);
+      frontiers, program, *config, diagnostics, &statistics);
   ASSERT_TRUE(mlir::succeeded(selected)) << diagnosticText;
   EXPECT_FALSE(selected->productionIsReservedBaseline);
   ASSERT_TRUE(selected->reservedBaseline.has_value());
@@ -448,6 +550,8 @@ TEST_F(WholeVariantCoordinatorTest,
             std::vector<int64_t>({5}));
   EXPECT_FALSE(selected->production.selectedReservedBaselines.front());
   EXPECT_TRUE(selected->reservedBaseline->selectedReservedBaselines.front());
+  EXPECT_EQ(statistics.targetGateInvocations, 2u);
+  EXPECT_EQ(statistics.targetRankGateInvocations, 2u);
 }
 
 TEST_F(WholeVariantCoordinatorTest,
@@ -572,14 +676,20 @@ TEST_F(WholeVariantCoordinatorTest,
   for (auto [ordinal, alternative] : llvm::enumerate(alternatives)) {
     std::string diagnosticText;
     llvm::raw_string_ostream diagnostics(diagnosticText);
+    wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
     auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
-        frontiers, program, *config, diagnostics, alternative.mode);
+        frontiers, program, *config, diagnostics, alternative.mode,
+        &statistics);
     ASSERT_TRUE(mlir::succeeded(accepted)) << ordinal << ": " << diagnosticText;
     ASSERT_EQ(accepted->selectedStableOrdinals.size(), 16u);
     EXPECT_TRUE(
         llvm::all_of(accepted->selectedStableOrdinals, [&](int64_t selected) {
           return selected == static_cast<int64_t>(ordinal);
         }));
+    const uint64_t expectedTargetVariants = ordinal == 0 ? 1 : 2;
+    EXPECT_EQ(statistics.targetGateInvocations, expectedTargetVariants);
+    EXPECT_EQ(statistics.targetRankGateInvocations,
+              expectedTargetVariants * 16);
   }
 
   auto expectRejected = [&](auto &invalidFrontiers, llvm::StringRef reason) {
@@ -670,11 +780,189 @@ TEST_F(WholeVariantCoordinatorTest,
   program.logicalRankCount = 1;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
   auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
-      frontiers, program, *config, diagnostics);
+      frontiers, program, *config, diagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::Production,
+      &statistics);
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_EQ(accepted->selectedStableOrdinals.size(), 1u);
   EXPECT_EQ(accepted->selectedStableOrdinals.front(), 1);
+
+  std::string replayDiagnosticText;
+  llvm::raw_string_ostream replayDiagnostics(replayDiagnosticText);
+  wafer::compiler::detail::WholeVariantSelectionStatistics replayStatistics;
+  auto replay = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, replayDiagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::Production,
+      &replayStatistics);
+  ASSERT_TRUE(mlir::succeeded(replay)) << replayDiagnosticText;
+  EXPECT_EQ(replay->selectedStableOrdinals, accepted->selectedStableOrdinals);
+  EXPECT_EQ(replay->selectedArtifactKinds, accepted->selectedArtifactKinds);
+  EXPECT_EQ(replay->selectedReservedBaselines,
+            accepted->selectedReservedBaselines);
+  EXPECT_EQ(replayStatistics.targetGateInvocations,
+            statistics.targetGateInvocations);
+  EXPECT_EQ(replayStatistics.targetRankGateInvocations,
+            statistics.targetRankGateInvocations);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SkipsTargetGateForParetoRejectedOptimizedCandidates) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::RuntimeLaunchKind::Kernel);
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(
+      candidate("    wafer.instr.local_fence\n    wafer.instr.local_fence\n"
+                "    wafer.instr.local_fence",
+                1, 0, 9, true));
+  frontiers[0].push_back(candidate("", 1, 0, 0));
+  frontiers[0].push_back(candidate("    wafer.instr.local_fence", 1, 0, 1));
+  frontiers[0].push_back(candidate(
+      "    wafer.instr.local_fence\n    wafer.instr.local_fence", 1, 0, 2));
+  frontiers[0].push_back(candidate("", 1, 0, 3));
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::Production,
+      &statistics);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  EXPECT_EQ(accepted->selectedStableOrdinals, std::vector<int64_t>({0}));
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+  EXPECT_EQ(statistics.targetGateInvocations, 2u);
+  EXPECT_EQ(statistics.targetRankGateInvocations, 2u);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SkipsTargetGateForLaterEquivalentStaticOrderCandidate) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::RuntimeLaunchKind::Kernel);
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(
+      candidate("    wafer.instr.local_fence", 1, 0, 9, true));
+  frontiers[0].push_back(candidate("", 1, 0, 0));
+  frontiers[0].push_back(candidate("", 1, 0, 1));
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::Production,
+      &statistics);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  EXPECT_EQ(accepted->selectedStableOrdinals, std::vector<int64_t>({0}));
+  EXPECT_EQ(statistics.targetGateInvocations, 2u);
+  EXPECT_EQ(statistics.targetRankGateInvocations, 2u);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       SkipsTargetGateWhenParetoCapWouldImmediatelyRemoveCandidate) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::RuntimeLaunchKind::Kernel);
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(candidate("", 1, 0, 100, true));
+  for (int64_t ordinal = 0; ordinal < 17; ++ordinal) {
+    std::string body;
+    llvm::raw_string_ostream os(body);
+    const int64_t offset = 65536 + (16 - ordinal) * 256;
+    os << "    %buffer = memref.alloc() {wafer.spm.offset = "
+          "#wafer.spm_offset<"
+       << offset << ">} : memref<4xf32, #wafer.memory<spm, tensor>>\n";
+    for (int64_t fence = 0; fence < ordinal; ++fence)
+      os << "    wafer.instr.local_fence\n";
+    frontiers[0].push_back(candidate(body, 1, 0, ordinal));
+  }
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::Production,
+      &statistics);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  EXPECT_EQ(accepted->selectedStableOrdinals, std::vector<int64_t>({100}));
+  EXPECT_TRUE(accepted->selectedReservedBaselines.front());
+  EXPECT_EQ(statistics.targetGateInvocations, 17u);
+  EXPECT_EQ(statistics.targetRankGateInvocations, 17u);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       LateTargetFailurePreservesBaselineAndContinuesLaterCandidates) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::RuntimeLaunchKind::Kernel);
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(
+      candidate("    wafer.instr.local_fence\n    wafer.instr.local_fence", 1,
+                0, 9, true));
+  frontiers[0].push_back(
+      candidateWithUnboundEntryArgument("", 1, /*stableOrdinal=*/0));
+  frontiers[0].push_back(candidate("    wafer.instr.local_fence", 1, 0, 1));
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::Production,
+      &statistics);
+  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
+  EXPECT_EQ(accepted->selectedStableOrdinals, std::vector<int64_t>({1}));
+  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
+  EXPECT_EQ(statistics.targetGateInvocations, 3u);
+  EXPECT_EQ(statistics.targetRankGateInvocations, 3u);
+}
+
+TEST_F(WholeVariantCoordinatorTest,
+       ReservedBaselineTargetFailureCannotBeMaskedByOptimizedCandidate) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::RuntimeLaunchKind::Kernel);
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
+  frontiers[0].push_back(candidateWithUnboundEntryArgument(
+      "    wafer.instr.local_fence", 1, /*stableOrdinal=*/9,
+      /*reservedBaseline=*/true));
+  frontiers[0].push_back(candidate("", 1, 0, 0));
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::WholeVariantSelectionStatistics statistics;
+  auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
+      frontiers, program, *config, diagnostics,
+      wafer::compiler::detail::WholeVariantSelectionMode::Production,
+      &statistics);
+  EXPECT_TRUE(mlir::failed(accepted));
+  EXPECT_NE(diagnosticText.find("reserved all-baseline variant failed"),
+            std::string::npos)
+      << diagnosticText;
+  EXPECT_NE(diagnosticText.find("gate=target-abi-preparation"),
+            std::string::npos)
+      << diagnosticText;
+  EXPECT_EQ(statistics.targetGateInvocations, 1u);
+  EXPECT_EQ(statistics.targetRankGateInvocations, 1u);
 }
 
 TEST_F(WholeVariantCoordinatorTest,
@@ -1962,11 +2250,15 @@ module {
 
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  auto accepted = selectProductionVariant(*source, program, diagnostics,
-                                          /*baselineCost=*/nullptr,
-                                          /*rankCount=*/16);
-  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
-  ASSERT_EQ(accepted->ranks.size(), 16u);
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::RuntimeLaunchKind::Kernel);
+  ASSERT_TRUE(static_cast<bool>(config));
+  llvm::Expected<wafer::compiler::ExecutableBundle> bundle =
+      buildDefaultBundle(*source, program, *config, diagnostics);
+  ASSERT_TRUE(static_cast<bool>(bundle))
+      << diagnosticText << (bundle ? "" : llvm::toString(bundle.takeError()));
+  ASSERT_EQ(bundle->getRankExecutables().size(), 16u);
 
   constexpr int64_t fullOutputExtent = 4096;
   constexpr int64_t localContractingExtent = 256;
@@ -1977,7 +2269,8 @@ module {
   unsigned totalGemmCount = 0;
   unsigned totalDTEIssueCount = 0;
   unsigned totalSPMAllocationCount = 0;
-  for (const wafer::compiler::RankExecutable &rank : accepted->ranks) {
+  for (const wafer::compiler::RankExecutable &rank :
+       bundle->getRankExecutables()) {
     EXPECT_EQ(rank.getTransportContract(),
               wafer::compiler::TransportContract::DirectDTE);
     mlir::ModuleOp winner = rank.getModule();

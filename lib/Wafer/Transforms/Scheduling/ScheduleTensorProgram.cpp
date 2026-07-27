@@ -507,8 +507,7 @@ getPolicyLabel(const structured_scheduler::ScopeDiscoveryPolicy &policy) {
     os << "dataflow-terminal-full-only-cut";
   else
     os << (policy.allowCrossShapeDataflow ? "dataflow" : "conservative");
-  os << (policy.includeSharedInputPeers ? "/shared-closure"
-                                       : "/root-closure");
+  os << (policy.includeSharedInputPeers ? "/shared-closure" : "/root-closure");
   return label;
 }
 
@@ -799,21 +798,21 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   }
 
   if (!spillFailure)
-    evaluation.alternatives.push_back(
-        {std::move(spillModule), /*promotedHandoffs=*/0,
-         /*readyReordered=*/false});
+    evaluation.alternatives.push_back({std::move(spillModule),
+                                       /*promotedHandoffs=*/0,
+                                       /*readyReordered=*/false});
   if (spillReadyModule && !spillReadyFailure)
-    evaluation.alternatives.push_back(
-        {std::move(spillReadyModule), /*promotedHandoffs=*/0,
-         /*readyReordered=*/true});
+    evaluation.alternatives.push_back({std::move(spillReadyModule),
+                                       /*promotedHandoffs=*/0,
+                                       /*readyReordered=*/true});
   if (promotedHandoffs != 0 && !residentFailure)
-    evaluation.alternatives.push_back(
-        {std::move(residentModule), promotedHandoffs,
-         /*readyReordered=*/false});
+    evaluation.alternatives.push_back({std::move(residentModule),
+                                       promotedHandoffs,
+                                       /*readyReordered=*/false});
   if (residentReadyModule && !residentReadyFailure)
-    evaluation.alternatives.push_back(
-        {std::move(residentReadyModule), promotedHandoffs,
-         /*readyReordered=*/true});
+    evaluation.alternatives.push_back({std::move(residentReadyModule),
+                                       promotedHandoffs,
+                                       /*readyReordered=*/true});
 
   evaluation.module = nullptr;
   evaluation.accepted = true;
@@ -925,8 +924,9 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
   source.walk([&](mlir::Operation *operation) {
     hasAllGather |=
         mlir::isa<LinalgExtCollectiveAllGatherOp, CommAllGatherOp>(operation);
-    hasReduceScatter |= mlir::isa<LinalgExtCollectiveReduceScatterOp,
-                                  CommReduceScatterOp>(operation);
+    hasReduceScatter |=
+        mlir::isa<LinalgExtCollectiveReduceScatterOp, CommReduceScatterOp>(
+            operation);
     hasAllReduce |=
         mlir::isa<LinalgExtCollectiveAllReduceOp, CommAllReduceOp>(operation);
     if (auto interface =
@@ -953,8 +953,7 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
     recipe.allowAutomaticImplementationAlternatives = false;
     recipe.forcedImplementationAlternative = implementation;
     recipe.taskAlternativeOrdinal = taskOrdinal;
-    recipe.useDirectMappedBoundaryTransfer =
-        useDirectMappedBoundaryTransfer;
+    recipe.useDirectMappedBoundaryTransfer = useDirectMappedBoundaryTransfer;
     recipes.push_back(std::move(recipe));
   };
 
@@ -983,8 +982,7 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
     if (hasAllGather)
       addRecipe(CommunicationAlternative::DirectAllGather, implementation, 0);
     if (hasReduceScatter)
-      addRecipe(CommunicationAlternative::RingReduceScatter, implementation,
-                0);
+      addRecipe(CommunicationAlternative::RingReduceScatter, implementation, 0);
     if (hasAllReduce)
       addRecipe(CommunicationAlternative::TreeAllReduce, implementation, 0);
     if (hasAllGather)
@@ -1050,6 +1048,12 @@ buildScheduledRankCandidateFrontier(
   SelectionConfig config(targetPolicy);
   config.logicalRank = frontierConfig.logicalRank;
   config.candidateParallelism = frontierConfig.candidateParallelism;
+  std::unique_ptr<CandidateEvaluationExecutor> evaluationExecutor;
+  if (config.candidateParallelism > 1) {
+    evaluationExecutor = std::make_unique<CandidateEvaluationExecutor>(
+        static_cast<unsigned>(config.candidateParallelism));
+    config.evaluationExecutor = evaluationExecutor.get();
+  }
 
   // Stable ordinals identify invocation-local semantic generations across
   // ranks. RankArtifactKind separately identifies the spill/resident and
@@ -1057,9 +1061,9 @@ buildScheduledRankCandidateFrontier(
   // protocol.
   const structured_scheduler::ScopeDiscoveryPolicy policies[] = {
       {/*includeSharedInputPeers=*/false, /*allowCrossShapeDataflow=*/true,
-         /*cutTerminalFullTraversalOnlyRoots=*/false},
+       /*cutTerminalFullTraversalOnlyRoots=*/false},
       {/*includeSharedInputPeers=*/true, /*allowCrossShapeDataflow=*/true,
-         /*cutTerminalFullTraversalOnlyRoots=*/false},
+       /*cutTerminalFullTraversalOnlyRoots=*/false},
       {/*includeSharedInputPeers=*/false, /*allowCrossShapeDataflow=*/true,
        /*cutTerminalFullTraversalOnlyRoots=*/true},
       {/*includeSharedInputPeers=*/false, /*allowCrossShapeDataflow=*/false,

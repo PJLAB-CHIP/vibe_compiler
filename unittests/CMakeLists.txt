@@ -12,6 +12,7 @@ add_executable(WaferUnitTests
   Compiler/TargetArtifactTest.cpp
   Compiler/TargetCallFrontendTest.cpp
   Compiler/TargetProfileTest.cpp
+  Compiler/WholeVariantAttemptPlanTest.cpp
   Compiler/WholeVariantCoordinatorTest.cpp
   Compiler/WholeVariantResourceAcceptanceTest.cpp
   Conversion/CollectiveCompletionTest.cpp

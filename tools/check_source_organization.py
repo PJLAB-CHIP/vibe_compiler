@@ -183,10 +183,13 @@ PACKAGE_MANIFEST_SOURCES = (
 )
 BOARD_RUNTIME_SOURCES = (
     "BoardRuntime.cpp",
+    "ProfileCompanion.cpp",
+    "ProfilerRecord.cpp",
     "Tx81ModelABI.cpp",
 )
 WAFER_RUN_SOURCES = (
     "TxBoardRuntime.cpp",
+    "WaferProfileCampaign.cpp",
     "WaferRunBoardIO.cpp",
     "wafer-run.cpp",
 )

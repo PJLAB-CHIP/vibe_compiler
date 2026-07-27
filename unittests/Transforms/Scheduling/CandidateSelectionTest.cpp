@@ -2,14 +2,19 @@
 
 #include "Scheduling/ScheduleTensorProgramInternal.h"
 
+#include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
+#include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
+
 #include "gtest/gtest.h"
 
 #include <cstdint>
+#include <memory>
 
 namespace {
 
 using wafer::tensor_program_scheduling::CandidateArtifactSource;
 using wafer::tensor_program_scheduling::CandidateCheckResult;
+using wafer::tensor_program_scheduling::CandidateEvaluationExecutor;
 using wafer::tensor_program_scheduling::CandidateSpec;
 using wafer::tensor_program_scheduling::CandidateStats;
 using wafer::tensor_program_scheduling::estimateTargetSPMRequiredLiveBytes;
@@ -21,7 +26,115 @@ using wafer::tensor_program_scheduling::getRankingCostFailure;
 using wafer::tensor_program_scheduling::getStaticRootReductionRanges;
 using wafer::tensor_program_scheduling::getTraversalComputeRootLinalgOps;
 using wafer::tensor_program_scheduling::getYieldedRootLinalgOps;
+using wafer::tensor_program_scheduling::SelectedCandidate;
 using wafer::tensor_program_scheduling::SelectionConfig;
+
+class CandidateSearchExecutionTest : public ::testing::Test {
+protected:
+  CandidateSearchExecutionTest() {
+    registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                    mlir::bufferization::BufferizationDialect,
+                    mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                    mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                    mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                    wafer::WaferDialect>();
+    mlir::linalg::registerTilingInterfaceExternalModels(registry);
+    mlir::tensor::registerTilingInterfaceExternalModels(registry);
+    wafer::registerTargetImplementationExternalModels(registry);
+    context = std::make_unique<mlir::MLIRContext>(registry);
+    context->loadAllAvailableDialects();
+  }
+
+  struct SelectionRun {
+    mlir::OwningOpRef<mlir::ModuleOp> source;
+    mlir::OwningOpRef<mlir::ModuleOp> taskModule;
+    std::optional<SelectedCandidate> selected;
+  };
+
+  SelectionRun
+  select(unsigned taskAlternativeOrdinal, int64_t candidateParallelism,
+         CandidateEvaluationExecutor *evaluationExecutor = nullptr) {
+    SelectionRun run;
+    run.source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(%lhs: tensor<16x16xf16>,
+                  %rhs: tensor<16x16xf16>) -> tensor<16x16xf16> {
+    %zero = arith.constant 0.0 : f16
+    %out = tensor.empty() : tensor<16x16xf16>
+    %init = linalg.fill ins(%zero : f16)
+        outs(%out : tensor<16x16xf16>) -> tensor<16x16xf16>
+    %result = linalg.matmul
+        ins(%lhs, %rhs : tensor<16x16xf16>, tensor<16x16xf16>)
+        outs(%init : tensor<16x16xf16>) -> tensor<16x16xf16>
+    return %result : tensor<16x16xf16>
+  }
+}
+)mlir",
+                                                         context.get());
+    if (!run.source) {
+      ADD_FAILURE() << "failed to parse candidate-search source";
+      return run;
+    }
+
+    llvm::SmallVector<wafer::structured_scheduler::StructuredSchedulingScope, 1>
+        scopes;
+    if (mlir::failed(
+            wafer::structured_scheduler::discoverStructuredSchedulingScopes(
+                *run.source, scopes)) ||
+        scopes.size() != 1) {
+      ADD_FAILURE() << "failed to discover one scheduling scope";
+      return run;
+    }
+    run.taskModule =
+        wafer::structured_scheduler::cloneScopeToStandaloneModule(scopes[0]);
+    if (!run.taskModule) {
+      ADD_FAILURE() << "failed to clone standalone scheduling task";
+      return run;
+    }
+    mlir::func::FuncOp task =
+        wafer::structured_scheduler::findSingleTaskFunction(*run.taskModule);
+    if (!task) {
+      ADD_FAILURE() << "standalone module has no task";
+      return run;
+    }
+
+    wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
+    SelectionConfig config(policy);
+    config.logicalRank = 0;
+    config.preferredTileSizes = {16, 8, 4, 2, 1};
+    config.maxCandidatesPerDim = 5;
+    config.maxSearchCandidates = 16;
+    config.searchBeamWidth = 8;
+    config.candidateParallelism = candidateParallelism;
+    config.evaluationExecutor = evaluationExecutor;
+    config.taskAlternativeOrdinal = taskAlternativeOrdinal;
+    // The capacity-directed 8x16 seed passes. The queued full tile and the
+    // first deterministic refinement then fail exact placement before the
+    // next refinement passes. This fixes both passing ordinals and the
+    // preceding-failure path without changing queue order.
+    config.spmLimit = config.spmBase + 2048;
+
+    mlir::FailureOr<SelectedCandidate> selected =
+        wafer::tensor_program_scheduling::selectCandidateForScope(
+            scopes[0], task, "main#0", config);
+    if (mlir::failed(selected)) {
+      ADD_FAILURE() << "candidate selection failed";
+      return run;
+    }
+    run.selected.emplace(std::move(*selected));
+    return run;
+  }
+
+  static std::string printModule(mlir::ModuleOp module) {
+    std::string text;
+    llvm::raw_string_ostream os(text);
+    module.print(os);
+    return text;
+  }
+
+  mlir::DialectRegistry registry;
+  std::unique_ptr<mlir::MLIRContext> context;
+};
 
 TEST(CandidateSelectionTest, RejectsUnknownOrUnsupportedRankingDimensions) {
   CandidateStats unknown;
@@ -380,8 +493,8 @@ module {
                     /*reductionSplitSizes=*/{}},
       /*spmAlignment=*/256);
   ASSERT_TRUE(oversized);
-  EXPECT_EQ(*oversized, 3 * 512 * 1024 *
-                            static_cast<int64_t>(sizeof(uint16_t)));
+  EXPECT_EQ(*oversized,
+            3 * 512 * 1024 * static_cast<int64_t>(sizeof(uint16_t)));
   EXPECT_GT(*oversized, 3080192 - 65536);
 
   std::optional<int64_t> fitting = estimateTargetSPMRequiredLiveBytes(
@@ -390,9 +503,89 @@ module {
                     /*reductionSplitSizes=*/{}},
       /*spmAlignment=*/256);
   ASSERT_TRUE(fitting);
-  EXPECT_EQ(*fitting,
-            3 * 512 * 512 * static_cast<int64_t>(sizeof(uint16_t)));
+  EXPECT_EQ(*fitting, 3 * 512 * 512 * static_cast<int64_t>(sizeof(uint16_t)));
   EXPECT_LE(*fitting, 3080192 - 65536);
+}
+
+TEST_F(CandidateSearchExecutionTest,
+       StopsOrdinalZeroAfterOneCompletePassingEvaluation) {
+  SelectionRun serial =
+      select(/*taskAlternativeOrdinal=*/0, /*candidateParallelism=*/1);
+  ASSERT_TRUE(serial.selected);
+  ASSERT_TRUE(serial.selected->module);
+  EXPECT_EQ(serial.selected->candidateCount, 1);
+  EXPECT_EQ(serial.selected->completeEvaluationCount, 1);
+  EXPECT_EQ(serial.selected->rejectedCount, 0);
+  EXPECT_EQ(serial.selected->spec.tileSizes,
+            (llvm::SmallVector<int64_t, 4>{8, 16}));
+
+  SelectionRun parallel =
+      select(/*taskAlternativeOrdinal=*/0, /*candidateParallelism=*/4);
+  ASSERT_TRUE(parallel.selected);
+  ASSERT_TRUE(parallel.selected->module);
+  // The fixed batch also visits the cheap-rejected full tile, but the accepted
+  // worker module is imported rather than lowered a second time on the owner.
+  EXPECT_EQ(parallel.selected->candidateCount, 2);
+  EXPECT_EQ(parallel.selected->completeEvaluationCount, 1);
+  EXPECT_EQ(parallel.selected->rejectedCount, 0);
+  EXPECT_EQ(printModule(*parallel.selected->module),
+            printModule(*serial.selected->module));
+}
+
+TEST_F(CandidateSearchExecutionTest,
+       FindsOrdinalOneAfterEarlierFailureAndMatchesParallelImport) {
+  SelectionRun serial =
+      select(/*taskAlternativeOrdinal=*/1, /*candidateParallelism=*/1);
+  ASSERT_TRUE(serial.selected);
+  ASSERT_TRUE(serial.selected->module);
+  EXPECT_EQ(serial.selected->candidateCount, 4);
+  EXPECT_EQ(serial.selected->completeEvaluationCount, 3);
+  EXPECT_EQ(serial.selected->rejectedCount, 2);
+
+  SelectionRun parallel =
+      select(/*taskAlternativeOrdinal=*/1, /*candidateParallelism=*/4);
+  ASSERT_TRUE(parallel.selected);
+  ASSERT_TRUE(parallel.selected->module);
+  EXPECT_EQ(parallel.selected->rejectedCount, 2);
+  EXPECT_GE(parallel.selected->candidateCount, 3);
+  EXPECT_LE(parallel.selected->candidateCount, 6);
+  EXPECT_GE(parallel.selected->completeEvaluationCount, 2);
+  EXPECT_LE(parallel.selected->completeEvaluationCount, 5);
+  EXPECT_EQ(parallel.selected->spec.tileSizes, serial.selected->spec.tileSizes);
+  EXPECT_EQ(parallel.selected->spec.reductionSplitSizes,
+            serial.selected->spec.reductionSplitSizes);
+  EXPECT_EQ(printModule(*parallel.selected->module),
+            printModule(*serial.selected->module));
+}
+
+TEST_F(CandidateSearchExecutionTest,
+       ReusesBoundedWorkerContextsAcrossTaskSelections) {
+  CandidateEvaluationExecutor executor(/*workerCount=*/2);
+  EXPECT_EQ(executor.getWorkerConstructionCount(), 0u);
+  for (unsigned iteration = 0; iteration < 3; ++iteration) {
+    SelectionRun run = select(/*taskAlternativeOrdinal=*/1,
+                              /*candidateParallelism=*/2, &executor);
+    ASSERT_TRUE(run.selected);
+    ASSERT_TRUE(run.selected->module);
+  }
+
+  EXPECT_EQ(executor.getWorkerCount(), 2u);
+  EXPECT_EQ(executor.getWorkerConstructionCount(), 2u);
+  EXPECT_GE(executor.getContextConstructionCount(), 1u);
+  EXPECT_LE(executor.getContextConstructionCount(), 2u);
+  // Every request above has byte-identical standalone task IR. Each persistent
+  // worker parses it at most once even though three selections and several
+  // fixed batches were evaluated.
+  EXPECT_GE(executor.getTaskParseCount(), 1u);
+  EXPECT_LE(executor.getTaskParseCount(), 2u);
+}
+
+TEST(CandidateSearchExecutorTest, StartsLazilyAndBoundsWorkerResources) {
+  CandidateEvaluationExecutor executor(/*workerCount=*/1000);
+  EXPECT_EQ(executor.getWorkerCount(), 64u);
+  EXPECT_EQ(executor.getWorkerConstructionCount(), 0u);
+  EXPECT_EQ(executor.getContextConstructionCount(), 0u);
+  EXPECT_EQ(executor.getTaskParseCount(), 0u);
 }
 
 } // namespace

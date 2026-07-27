@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-26
+更新时间：2026-07-27
 
 本文件只记录当前调度状态、前置关系和紧凑完成索引，不保存逐轮测试数字、实现复盘或历史工作日志。
 长期架构与pipeline contract以编号设计文档为准，详细完成证据与实施记录位于`tasks/archive/`，完整导航见
@@ -53,6 +53,7 @@ Q22 + Q27 -> Q29 -> Q28 -> Q30 -> Q31
 
 MLIR-native physical-dataflow synthesis：
 Q29 + Q28 + Q30 + Q31 -> Q32.I -> Q32.R -> Q32.B -> Q32.V -> Q32.M -> Q32.S -> Q32.G -> Q32
+Q32 -> Q32.C
 
 configured board runtime（已完成）：
 Q0.L + Q21 + configured board -> Q6.B
@@ -383,6 +384,7 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
+| Q32.C | `candidate-search-throughput` | `done` | Q32 | candidate domain、rank/whole-variant budget、exact gate和winner语义保持不变；已闭合passing-ordinal early stop、invocation-local bounded executor/context与task parse复用、accepted worker module owner fresh import/recost、exact attempt-plan selective owner parse及fully-gated Pareto前置的late ABI/LLVM。结构回归覆盖ordinal/overshoot、rank 1/16、duplicate/malformed metadata、direct skipped-parse、dominance/equivalence/cap/late failure；优化后Release单次large-K GEMM wall 1.62s、16-rank tiny Llama block wall 46.12s。按用户要求未重跑旧二进制，不据历史7B wall计算加速比；全部502个unit分片及4条production-shaped lit通过。 | 06、14、16；`tasks/archive/whole-variant-search-throughput.md` |
 | Q37 | `tx81-compiler-hardware-calibration-and-multi-engine-software-pipelining` | `doing` | Q32、Q6.B + configured board | 已有raw台账闭合对应legality/correctness风险并保留Unknown的保守fallback，但不再称硬件行为完备；已上板case不重复。8+1 production optimizer campaign仍只是winner qualification。新增collective characterization以actual accepted Instr phase逐ranktyped选择AG Direct/Ring、RS Direct/Ring、AR Ring/Tree，在256B/4KiB/64KiB形成9组同源A/B并复用4KiB AR旧case；完整message tuple用于跨rankmatching和cycle/tree graph重放。9/9双package/no-card、catalog、CTest和显式runner批次已通过，真实板端执行保持`pending`。首轮RS纵向发现并修复同root多sender group-wait违反Direct-DTE isolation的问题；64KiB loop-tiled bytes按constant multiplicity记账。不以no-card、ELF数或host wall time冒充board/performance evidence。统一校准文档中全部尚无板证据的语义项现由central inventory绑定：15个可执行family形成180个board CTest及显式串行总批次，5个不可表达family形成host fail-closed gate；AllToAll/Permute、DTE logical traffic、single/pair engine、NE tail、worker placement、DDR active-rank、SPM matched pilot及数值边界均不再只是planned文字。缺device phase/physical route、production three-stage producer、per-worker timestamp、arbiter或bank mapping/counter的项持续blocked。software-pipeline仍需在完整Instr IR上以typed MemoryEffects和SSA alias/root/path建立edge、物化multi-buffer和latest-legal completion，并经过完整late gate。 | 06、08-17；`docs/tx81-compiler-hardware-calibration.md`；`tasks/plans/multi-engine-software-pipelining.md`；`tasks/plans/production-optimization-board-campaign.md`；`tasks/plans/collective-hardware-characterization.md` |
 | Q32.N | `numeric-algebraic-extension` | `done` | Q32 | algebraic candidate、generic reduction、named GEMM K切分和Ring collective已删除仅因float或缺少额外fast-math标注而拒绝的分支；f16/bf16无标注正向覆盖actual mutation、frontier和Tile/Instr lowering，integer overflow/no-wrap及真实结构、资源和target负例保持。未新增frontend mode、私有数值policy或IR carrier。 | 05-07、10-11、13、16；`tasks/plans/numeric-algebraic-extension.md` |
 | Q36 | `topology-aware-collective-lowering` | `done` | Q32 | current typed topology/mesh派生rank placement、exact bounded Ring与保持rank_group中序的ordered Tree；collective correctness/completion、singleton identity和final p2p minimum-hop whole-card cost闭合，不声明route/cycle/timing。 | 04、06、11、13、16、18；`tasks/archive/topology-aware-collective-lowering.md` |
@@ -403,7 +405,7 @@ Q9的ranking feedback仍需独立validated PMU/timing与held-out gate。
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 / 外部 gate | 窄边界 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q9 | `cost-calibration` | `doing` | Q32、Q6.B + configured board；本轮尚无fresh configured live-board run，ranking calibration仍要求冻结的validated environment/evidence | no-card implementation foundation已按唯一`wafer-compile --profile`入口形成：普通package逐字节不变，activation最后写入并exact-hash绑定production manifest/metadata，同源baseline/winner各有未插桩execution和summary/count/trace逻辑binding；artifact alias时复用同三个物理capture并强制inconclusive。五类真实`TsmExecute`使用rank-local site与显式heuristic correlation，自动campaign/analyzer/16-tile report复用普通`wafer-run`输入。板端协议固定为一个qualified session内20个未插桩submit→all-completion primary samples（五个交替ABBA/BAAB block，第五held out），再执行独立summary/aggregate-PMU/count/trace diagnostics；clock mapping无效时只显示entry-local 16行timeline。external expected缺失时winner oracle只证明repeatability/equivalence，不能声称absolute correctness；artifact alias不能声称优化。用户不提供新输入或模式，fence/wait/ready-order不作为事件，TsmExecute返回不冒充engine completion。configured live-board correctness、measurement-basis和held-out尚待fresh执行，因此Q9保持`doing`，foundation证据不得回写candidate ranking。 | 06、14-16；`tasks/plans/board-profiler.md` |
+| Q9 | `cost-calibration` | `next` | Q32、Q6.B + configured board；本轮尚无fresh configured live-board run，ranking calibration仍要求冻结的validated environment/evidence | no-card implementation foundation已按唯一`wafer-compile --profile`入口形成：普通package逐字节不变，activation最后写入并exact-hash绑定production manifest/metadata，同源baseline/winner各有未插桩execution和summary/count/trace逻辑binding；artifact alias时复用同三个物理capture并强制inconclusive。五类真实`TsmExecute`使用rank-local site与显式heuristic correlation，自动campaign/analyzer/16-tile report复用普通`wafer-run`输入。板端协议固定为一个qualified session内20个未插桩submit→all-completion primary samples（五个交替ABBA/BAAB block，第五held out），再执行独立summary/aggregate-PMU/count/trace diagnostics；clock mapping无效时只显示entry-local 16行timeline。external expected缺失时winner oracle只证明repeatability/equivalence，不能声称absolute correctness；artifact alias不能声称优化。用户不提供新输入或模式，fence/wait/ready-order不作为事件，TsmExecute返回不冒充engine completion。configured live-board correctness、measurement-basis和held-out尚待fresh执行，foundation证据不得回写candidate ranking。 | 06、14-16；`tasks/plans/board-profiler.md` |
 | Q22.C | `target-model-numeric-correlation` | `later` | Q22、Q32、Q6.B + configured numeric corpus | 按capability row用board区分向量和held-out冻结numeric comparator/profile；Q35可提供large K-sharded GEMM workload-level证据，但不是本gate的硬前置且不能单独满足它。 | 16、17 |
 | Q22.E | `target-model-package-execution` | `later` | Q18、Q22、Q32 + configured simulator/ISS | 原样执行Q32 integrated audit冻结的verified package及all-and-only RISC-V ELF；任何未来schema升级必须先独立完成再作为该gate输入。 | 15、16、17 |
 | Q22.K | `target-model-packet-provenance` | `later` | Q22 + owner-approved vendor package或独立公开规范 | 可选关联repo CRT/packet/MMIO；缺失不阻塞数值CModel。 | 14、16、17 |
@@ -460,10 +462,12 @@ Q9的ranking feedback仍需独立validated PMU/timing与held-out gate。
 
 ## 实施计划入口
 
-- 当前active implementation task为Q37，software pipeline计划见
+- 当前active implementation task恢复为Q37；Q32.C compiler throughput已完成并归档为
+  `tasks/archive/whole-variant-search-throughput.md`。Q9保持`next`，其外部资格条件和pending状态不变。software pipeline计划见
   `tasks/plans/multi-engine-software-pipelining.md`，production optimizer同源成对板测准备见
   `tasks/plans/production-optimization-board-campaign.md`。
-- 最新完成任务Q35见`tasks/archive/k-sharded-gemm-board-vertical.md`。
+- 最新完成任务Q32.C见`tasks/archive/whole-variant-search-throughput.md`；Q35板端纵向见
+  `tasks/archive/k-sharded-gemm-board-vertical.md`。
 - Q6.B完成计划见`tasks/archive/runtime-board.md`。
 - Completed task：Q32 `physical-dataflow-synthesis`，完成审计见
   `tasks/archive/physical-dataflow-synthesis-completion-audit.md`，实施计划见

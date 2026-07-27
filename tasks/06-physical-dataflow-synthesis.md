@@ -314,6 +314,15 @@ implementation、tile、encoding、route、residency、buffering/order和communi
 determinism来自稳定 IR traversal、固定 proposal insertion order和明确的比较规则，不通过重新序列化完整 IR建立 identity。
 memoization只有在 profiling证明必要，且 key能由局部 immutable value安全构造时才加入；不得缓存带 IR pointer 的 derived analysis。
 
+task recipe只消费稳定passing顺序中的`taskAlternativeOrdinal`，因此收集到
+`taskAlternativeOrdinal + 1`个通过全部rank-local gate的candidate后必须停止继续展开；并行执行可以让已经提交的固定有界batch
+完成，但不得据线程完成顺序提前选择或继续消费后续queue。并行evaluation由一次rank-frontier invocation内的有界worker
+executor承载：每个worker独占并复用一个完整注册的`MLIRContext`，并在输入文本未变化时复用只读standalone task；
+candidate仍在该context内独立materialize。通过gate的
+完整module用仅供本次owner handoff的MLIR文本导入owner context，owner fresh verify并从导入IR重算cost；该临时传输既不建立
+candidate identity/缓存/schema，也不得触发第二次Tile→Instr→SPM→DDR lowering。serial与parallel必须产生相同selected module；
+fixed batch只允许evaluation count有界overshoot，不改变queue order、passing ordinal或winner。
+
 ### 3.6 Selected IR
 
 跨stage保留的事实必须由 typed IR表达：
@@ -427,8 +436,11 @@ Q32不实现独立约束语言或一次性巨型solver，但必须有界组合�
    才按optimization hard cap组合其它complete rank tuples；每个tuple的所有rank必须同时匹配semantic generation与
    spill/spill-ready/resident/resident-ready artifact kind，communication compatibility仅作可重算预筛。每个variant在独立
    clone上依次运行whole-variant DDR placement、post-memory Direct DTE matching/binding、all-rank
-   message/range/completion/resource、ABI和package eligibility，从通过后的bound instruction IR读取validated
-   high-water与final metrics，再做exact Pareto/static-policy selection。成功后一次性提交winner bundle。
+   message/range/completion/resource、accepted-rank/resource projection并读取validated high-water与final metrics。reserved
+   baseline随后完整运行target ABI/LLVM gate；optimized tuple先用与正式Pareto插入完全相同的Unknown/equivalent-dataflow/
+   static-order/frontier-cap规则，相对已经完整target-gated的optimized frontier判断是否会被保留，只有会保留者才运行target
+   ABI/LLVM。target失败不淘汰既有frontier并继续后续tuple；只有完整gate通过的variant能进入frontier、static-policy winner和
+   最终一次性提交的bundle。
 
 条件性producer产生passing clone后仍必须进入相同rank frontier和whole-variant selection；producer内部不得自行把它标成accepted，
 也不得因为局部cost看似更好而绕过baseline、exact Pareto或typed static policy。
@@ -441,9 +453,12 @@ artifact标记为invocation-local reserved baseline，且每rank必须恰有一�
 
 Compiler finalization在function-boundary bufferization后再次从每个candidate的current IR重跑SPM并fresh recost，但不提前写DDR；
 all-rank coordinator先在独立allowance内clone并评估唯一all-baseline tuple，然后才消费optimized visit budget。每次tuple evaluation在
-disposable clones上运行whole-variant DDR placement、Direct DTE、all-rank resource/message/completion和target ABI gate；baseline失败是
-pipeline failure，optimized late failure只丢弃该tuple。winner比较先用全部Known的whole-card exact dimensions做strict Pareto，tradeoff
-再用既有typed target static cost；缺失、相等或不能证明更优时保留baseline。validated SPM high-water参与capacity gate和后续
+disposable clones上运行whole-variant DDR placement、Direct DTE、all-rank resource/message/completion并形成pre-target
+variant。baseline必须立即通过完整target ABI/LLVM gate，否则是pipeline failure；optimized pre-target variant只有按正式插入规则会
+留在当前fully-gated optimized Pareto frontier时才运行同一target gate，late failure只丢弃该tuple且不能先淘汰已有survivor。
+characterization先按最终Instr IR phase过滤，再在该域内执行相同retain→target-gate→insert顺序。winner比较先用全部Known的
+whole-card exact dimensions做strict Pareto，tradeoff再用既有typed target static cost；未完整target-gated的对象不能成为frontier
+member或winner，缺失、相等或不能证明更优时保留baseline。validated SPM high-water参与capacity gate和后续
 resource-aware expansion，但当前target没有“地址高水位越低性能越好”的typed policy，因此不把它伪装成performance Pareto轴。
 Q32.B已开放这条compiler-private seam与resident bring-up alternative，并由默认`wafer-compile`调用现有Scheduling/
 Compiler owner完成纵向取证；它不新增public mode，也不把后续Q32.M producers或Q32.S完整joint search切换为默认
@@ -607,14 +622,22 @@ fence或wait代替实际调用，更不能把submit call返回跨度解释成eng
 all-rank coordination保留现有 compiler-level owner，不放入function pass，也不建立跨rank shadow program。每个rank candidate
 是同一MLIRContext中的完整module clone；coordinator负责：
 
+- rank并行lowering使用独立MLIRContext时，worker只在本次compiler transaction内返回actual finalized module的文本所有权转移
+  载体及既有`(semantic generation ordinal, physical artifact kind, reserved baseline)`元数据；收齐完整rank domain后先仅用
+  元数据精确重放既有reserved allowance、bounded Cartesian positions和coordinated correspondence顺序，始终保留原frontier
+  slot、顺序、重复key及每rank全部reserved-baseline marker，只把会通过correspondence预检的实际attempt所引用module导入
+  bundle-owner context。其余slot只在本次transaction内保留nullable module和原metadata，使attempt index set、budget及winner
+  与eager import严格相同。该预筛不承担legality、cost或winner判断，也不进入ExecutableBundle/package；rank1退化为导入全部
+  实际attempt candidate，任何baseline或结构错误仍交给相同coordinator contract拒绝；
 - 按轻量、IR-derived communication compatibility facts剪掉明显不可能组合；
 - 从每个完整variant的typed instruction IR重新收集message、range、completion和resource，并用canonical rank
   order及current topology/mesh重算minimum-hop demand；
 - 先运行whole-variant DDR placement，再运行post-memory Direct DTE matching/binding、whole-variant resource和
-  ABI/package eligibility；
-- 只从全部gate通过的variant读取validated placement/high-water和final metrics，执行最终Pareto/static-policy selection；
-- all-baseline tuple拥有独立reserved evaluation allowance并先于optimized tuples完成；
-- 失败时丢弃整个variant；
+  accepted-rank/resource projection，形成带validated placement/high-water和final metrics的invocation-local pre-target variant；
+- all-baseline tuple拥有独立reserved evaluation allowance并先完成target ABI/LLVM gate；
+- optimized tuple只相对已经target-gated的optimized frontier精确模拟正式Pareto insertion；不会被保留者跳过target gate，会被保留者
+  通过target ABI/LLVM后才实际插入。characterization在该判断前先按current Instr IR匹配自己的phase域；
+- 任一target late failure丢弃整个当前variant，不改变既有frontier并继续稳定attempt sequence；未fully gated对象不能参与winner；
 - 只有winning variant全部rank通过后才提交offset、binding、source replacement和ExecutableBundle。
 
 不得把 `PlacedRankCompatibilityClaims`、transport signature或canonical candidate bytes作为正确性输入。若为了性能缓存
@@ -740,8 +763,9 @@ Q32完成必须同时满足：
    all-rank attempt和subsystem work均有hard cap，resource exhaustion保留baseline；
 8. resource-aware generation和selection实际读取Q34 validated placement/high-water、DDR/SPM movement、transport、compute、
    descriptor/instruction/event等final-IR facts；allocator不改变candidate；
-9. optimized candidate和baseline运行同一DialectConversion、SPM/DDR/event/transport/instruction/ABI/package gate；all-rank失败不
-   提交partial mutation；
+9. optimized candidate和baseline运行同一DialectConversion、SPM/DDR/event/transport/instruction及最终ABI/package gate；baseline
+   先完整通过，optimized只有在pre-target Pareto retention证明会保留后才延迟执行ABI/LLVM，失败不修改fully-gated frontier，
+   all-rank失败不提交partial mutation；
 10. rank-count=1/16、chain/diamond/partial-fanout/fanin/reduction/broadcast、current communication topology、Q20/Q21、7B scale和
    完整PyTorch/SystemC数值gate通过；
 11. production只保留一个decision owner，旧layout planner、scope-prefix/maximal-resident、communication selector和未校准scalar

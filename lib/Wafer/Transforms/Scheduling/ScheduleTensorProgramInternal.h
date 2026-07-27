@@ -37,6 +37,7 @@
 #include <functional>
 #include <future>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -101,6 +102,7 @@ struct SelectedCandidate {
   CandidateSpec spec;
   CandidateStats stats;
   int64_t candidateCount = 0;
+  int64_t completeEvaluationCount = 0;
   int64_t rejectedCount = 0;
   int64_t representativeCount = 0;
   mlir::OwningOpRef<mlir::ModuleOp> module;
@@ -111,6 +113,8 @@ struct SelectedCandidate {
 struct CandidateWorkItem {
   CandidateSpec spec;
 };
+
+class CandidateEvaluationExecutor;
 
 struct SelectionConfig {
   explicit SelectionConfig(const WaferTargetPolicy &policy)
@@ -131,6 +135,10 @@ struct SelectionConfig {
   int64_t maxSearchCandidates = 0;
   int64_t searchBeamWidth = 0;
   int64_t candidateParallelism = 1;
+  /// Invocation-local execution service owned by the enclosing rank-frontier
+  /// build. It affects only bounded evaluation execution; candidate semantics,
+  /// ordering and accepted artifacts remain in the IR.
+  CandidateEvaluationExecutor *evaluationExecutor = nullptr;
   /// Selects one compiler-private communication rewrite parameter point. The
   /// choice is materialized in an actual clone and never persisted as an IR
   /// attribute or artifact field.
@@ -167,8 +175,39 @@ struct CandidateCheckResult {
   std::string failureReason;
   int64_t representativeCount = 0;
   mlir::OwningOpRef<mlir::ModuleOp> module;
+  /// Invocation-local transport for a fully accepted module produced in a
+  /// worker-owned MLIRContext. This is imported and cleared by the owner; it
+  /// is never an artifact identity, cache key, or serialized frontier.
+  std::string acceptedModuleText;
   CandidateArtifactSource artifactSource =
       CandidateArtifactSource::RepresentativeTile;
+};
+
+/// Bounded rank-frontier executor. Each persistent worker owns one MLIRContext
+/// for the full frontier invocation and reuses the last parsed standalone task
+/// when its text is unchanged. Results are consumed in submission order.
+class CandidateEvaluationExecutor {
+public:
+  explicit CandidateEvaluationExecutor(unsigned workerCount);
+  ~CandidateEvaluationExecutor();
+
+  CandidateEvaluationExecutor(const CandidateEvaluationExecutor &) = delete;
+  CandidateEvaluationExecutor &
+  operator=(const CandidateEvaluationExecutor &) = delete;
+
+  std::future<CandidateCheckResult>
+  submit(std::shared_ptr<const std::string> standaloneTaskModuleText,
+         llvm::ArrayRef<int64_t> traversalShape, const CandidateSpec &candidate,
+         const SelectionConfig &config);
+
+  unsigned getWorkerCount() const;
+  unsigned getWorkerConstructionCount() const;
+  unsigned getContextConstructionCount() const;
+  unsigned getTaskParseCount() const;
+
+private:
+  class Impl;
+  std::unique_ptr<Impl> impl;
 };
 
 struct TileSizeOptions {
@@ -272,6 +311,13 @@ evaluateCandidateOnStandaloneTaskText(llvm::StringRef standaloneTaskModuleText,
                                       llvm::ArrayRef<int64_t> traversalShape,
                                       const CandidateSpec &candidate,
                                       const SelectionConfig &config);
+
+/// Imports a fully accepted worker result into the owner context, then
+/// verifies the imported module and recomputes its ranking facts from that IR.
+/// A failure is recorded on `result` and no partial module is retained.
+mlir::LogicalResult
+importAcceptedCandidateModule(CandidateCheckResult &result,
+                              mlir::MLIRContext &ownerContext);
 
 mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
     const structured_scheduler::StructuredSchedulingScope &scope,

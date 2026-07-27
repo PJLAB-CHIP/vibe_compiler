@@ -287,6 +287,9 @@
   structured-program production gate必须执行统一`wafer-compile`到verified structured tensor program；
   `wafer-compile-spmd-partition.test`和`wafer-compile-structured-tensor-program.test`必须在配置了
   `WAFER_XLA_SPMD_PARTITIONER_HELPER`后实际执行，不能只用`ctest passed`宣称完成。
+- focused Tools lit可能同时解析`wafer-compile`、`wafer-compile-test`和`wafer-run`。只增量构建其中一个target会让
+  同一configured test tree混入旧CLI binary，并以`unknown argument/option`形成假回归；运行前应构建该test的全部直接
+  tool依赖或统一`check-wafer-lit`，出现CLI参数不识别时先核对各binary mtime和target，而不是修改测试预期。
 - optional dependency收口必须保留两个独立build：full-feature配置显式启用StableHLO/Shardy、source-built
   PyTorch/XLA、pinned-XLA helper、numeric、oneDNN和SystemC，要求对应required tests不再因dependency
   unavailable而unsupported；feature-off配置显式关闭这些feature并验证预期unsupported清单及core binary link closure。
@@ -547,6 +550,12 @@
   traversal和legality，rejected clone整体丢弃；debug replay消费同一accepted artifact，不重新运行另一套
   direct lowering。target conversion同样在module clone上运行，full success才替换source；多rank staging由
   外层transaction一次发布，单module成功不等于bundle原子性。
+- task-level alternative按稳定passing ordinal消费时，收齐requested ordinal所需数量后即可停止扩展；parallel只允许已提交的
+  固定有界batch完成，并按submit order消费。executor应由整个rank-frontier invocation持有，每个worker独占并复用
+  `MLIRContext`及相同standalone task parse；不能每个batch重建线程/context，也不能让completion order进入selection。
+- parallel worker通过完整candidate gate后，可用invocation-local MLIR文本把actual module移交owner context；owner只做parse、
+  verifier和从导入IR fresh recost，不再重跑Tile→Instr→SPM→DDR。该文本是跨context ownership transfer，不是candidate
+  identity、缓存、sidecar或可发布artifact。
 - 完整output traversal使用compact `scf.for`并显式覆盖static tail；ordered reduction chunk/terminal op仍用
   checked ceil-div/product和4096个host materialization预算。该上限只防止编译时间/内存失控，不能写成硬件容量、
   IR/workload legality或16-tile topology限制。
@@ -571,6 +580,10 @@
 - rank-local semantic generation和physical derivation是两个不同的correspondence维度：stable ordinal匹配source/recipe/scope，
   artifact kind匹配spill、spill-ready、resident或resident-ready。all-rank tuple必须同时匹配两者；只匹配ordinal会把不同
   physical program拼在一起，即使每个rank单独通过verifier和resource gate也可能破坏collective数值语义。
+- rank worker结果跨context移交时，可先从原frontier slot metadata精确重放reserved baseline、bounded Cartesian和coordinated
+  correspondence attempt sequence，再只parse完整correspondence attempt引用的owner modules。必须保留slot index/order、
+  duplicate key、baseline marker和原attempt budget；worker仍print全部candidate module，malformed metadata保守parse全部并沿用
+  原structural failure。这个plan只优化owner import，不能承担legality、cost、identity或winner判断。
 - scheduler frontier之后的function-boundary bufferization和physical-memory replanning可能改变movement、offset和issue
   count。应逐alternative独立finalize，只过滤later gate失败的alternative，并从final instruction IR fresh recost；
   一个alternative失败不能拒绝仍有survivor的rank，只有finalized frontier为空才失败。
@@ -882,6 +895,10 @@
   不能找到第一个优于baseline的candidate就返回，否则较早share/fusion会遮住DDR movement更低的recompute联合candidate。
   generation/discovery ordinal只用于确定性与跨rank对应，不是语义winner维度；Unknown、overflow或同一priority class双向tradeoff
   保持保守。
+- 昂贵target ABI/LLVM gate可以延迟，但只允许以已经fully target-gated的optimized Pareto frontier作剪枝事实源：
+  pre-target candidate先精确模拟正式insertion的Unknown/dominance、equivalent dataflow、stable order和frontier cap；
+  would-retain者通过target gate后才能淘汰旧项，target失败不能改变frontier且必须继续后续candidate。reserved baseline先完整
+  target-gate，不能用它额外推导可能不具传递性的optimized剪枝。
 - ready-order的buffer hazard必须先沿`ViewLikeOpInterface`追到storage base；base memref与cast/subview/reshape view不是独立
   allocation。exact SSA value比较只适合use-def依赖，不能作为memory alias proof。
 

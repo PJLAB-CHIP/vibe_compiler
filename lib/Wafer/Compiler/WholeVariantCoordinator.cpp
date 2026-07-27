@@ -6,6 +6,7 @@
 #include "DirectDTETransport.h"
 #include "ExecutableBundleInternal.h"
 #include "TargetArtifactInternal.h"
+#include "WholeVariantAttemptPlan.h"
 #include "WholeVariantResourceAcceptance.h"
 
 #include "Wafer/IR/WaferDialect.h"
@@ -25,9 +26,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <limits>
 #include <optional>
-#include <queue>
 #include <set>
 #include <string>
 #include <tuple>
@@ -37,8 +38,6 @@
 namespace wafer::compiler::detail {
 namespace {
 
-constexpr size_t kWholeVariantVisitLimit = 64;
-constexpr size_t kCoordinatedPolicyVisitLimit = 64;
 constexpr size_t kWholeVariantParetoLimit = 16;
 constexpr size_t kReportedAttemptLimit = 8;
 
@@ -122,11 +121,11 @@ rankMatchesCollectiveCharacterization(const RankExecutable &rank,
 }
 
 static bool
-matchesCollectiveCharacterization(const AcceptedWholeVariant &variant,
+matchesCollectiveCharacterization(llvm::ArrayRef<RankExecutable> ranks,
                                   WholeVariantSelectionMode mode) {
-  if (variant.ranks.empty())
+  if (ranks.empty())
     return false;
-  for (const RankExecutable &rank : variant.ranks)
+  for (const RankExecutable &rank : ranks)
     if (!rankMatchesCollectiveCharacterization(rank, mode))
       return false;
   return true;
@@ -293,78 +292,30 @@ buildRankProgramBindings(
   return bindings;
 }
 
-struct Combination {
-  std::vector<size_t> positions;
+/// Disposable complete-rank tuple that has passed every whole-variant gate
+/// through final cost collection, but has not yet passed target ABI/LLVM
+/// lowering. It is never exposed as an accepted artifact or winner.
+struct PreTargetWholeVariant {
+  PreTargetWholeVariant(std::vector<RankExecutable> ranks,
+                        RuntimeLaunchContract runtimeLaunchContract,
+                        analysis::WholeCardInstructionProgramCost resourceCost)
+      : ranks(std::move(ranks)),
+        runtimeLaunchContract(std::move(runtimeLaunchContract)),
+        resourceCost(std::move(resourceCost)) {}
+
+  std::vector<RankExecutable> ranks;
+  RuntimeLaunchContract runtimeLaunchContract;
+  analysis::WholeCardInstructionProgramCost resourceCost;
+  std::vector<int64_t> selectedStableOrdinals;
+  std::vector<wafer::RankArtifactKind> selectedArtifactKinds;
+  std::vector<bool> selectedReservedBaselines;
 };
 
-struct WorseCombination {
-  bool operator()(const Combination &lhs, const Combination &rhs) const {
-    return lhs.positions > rhs.positions;
-  }
-};
-
-using CandidateOrder = std::vector<std::vector<size_t>>;
-
-static mlir::FailureOr<std::vector<size_t>>
-getReservedBaselineIndices(const std::vector<RankVariantFrontier> &frontiers) {
-  std::vector<size_t> indices;
-  indices.reserve(frontiers.size());
-  for (const RankVariantFrontier &frontier : frontiers) {
-    std::optional<size_t> baseline;
-    for (auto [index, candidate] : llvm::enumerate(frontier)) {
-      if (!candidate.reservedBaseline)
-        continue;
-      if (baseline)
-        return mlir::failure();
-      baseline = index;
-    }
-    if (!baseline)
-      return mlir::failure();
-    indices.push_back(*baseline);
-  }
-  return indices;
-}
-
-static mlir::FailureOr<CandidateOrder>
-buildCandidateOrder(const std::vector<RankVariantFrontier> &frontiers,
-                    const ExecutionConfig &executionConfig) {
-  if (frontiers.size() != static_cast<size_t>(executionConfig.getRankCount()))
-    return mlir::failure();
-  CandidateOrder order(frontiers.size());
-  for (auto [rank, frontier] : llvm::enumerate(frontiers)) {
-    if (frontier.empty())
-      return mlir::failure();
-    order[rank].resize(frontier.size());
-    for (size_t index = 0; index < frontier.size(); ++index) {
-      if (!frontier[index].module || frontier[index].stableOrdinal < 0)
-        return mlir::failure();
-      order[rank][index] = index;
-    }
-    llvm::sort(order[rank], [&](size_t lhs, size_t rhs) {
-      const RankVariantCandidate &left = frontier[lhs];
-      const RankVariantCandidate &right = frontier[rhs];
-      return std::tie(left.stableOrdinal, left.artifactKind, lhs) <
-             std::tie(right.stableOrdinal, right.artifactKind, rhs);
-    });
-  }
-  return order;
-}
-
-static std::vector<size_t> getCandidateIndices(llvm::ArrayRef<size_t> positions,
-                                               const CandidateOrder &order) {
-  std::vector<size_t> indices;
-  indices.reserve(positions.size());
-  for (size_t rank = 0; rank < positions.size(); ++rank)
-    indices.push_back(order[rank][positions[rank]]);
-  return indices;
-}
-
-static mlir::FailureOr<AcceptedWholeVariant>
-tryCombination(llvm::ArrayRef<size_t> candidateIndices,
-               const std::vector<RankVariantFrontier> &frontiers,
-               const frontend::FrontendProgramVerificationResult &program,
-               const ExecutionConfig &executionConfig,
-               std::string &failureGate) {
+static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
+    llvm::ArrayRef<size_t> candidateIndices,
+    const std::vector<RankVariantFrontier> &frontiers,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, std::string &failureGate) {
   if (candidateIndices.size() != frontiers.size() || candidateIndices.empty()) {
     failureGate = "rank-candidate-correspondence";
     return mlir::failure();
@@ -394,6 +345,10 @@ tryCombination(llvm::ArrayRef<size_t> candidateIndices,
   moduleViews.reserve(candidateIndices.size());
   for (auto [rank, candidateIndex] : llvm::enumerate(candidateIndices)) {
     const RankVariantCandidate &candidate = frontiers[rank][candidateIndex];
+    if (!candidate.module) {
+      failureGate = "rank-candidate-materialization";
+      return mlir::failure();
+    }
     modules.push_back(
         mlir::cast<mlir::ModuleOp>(candidate.module.get()->clone()));
     mlir::ModuleOp module = *modules.back();
@@ -468,13 +423,39 @@ tryCombination(llvm::ArrayRef<size_t> candidateIndices,
         std::move(*bindings), *transport));
   }
 
-  // Target ABI and target-call legality are candidate gates, not a later
+  PreTargetWholeVariant candidate(std::move(ranks),
+                                  std::move(*runtimeLaunchContract),
+                                  std::move(*resourceCost));
+  candidate.selectedStableOrdinals.reserve(candidateIndices.size());
+  candidate.selectedArtifactKinds.reserve(candidateIndices.size());
+  candidate.selectedReservedBaselines.reserve(candidateIndices.size());
+  for (auto [rank, candidateIndex] : llvm::enumerate(candidateIndices)) {
+    candidate.selectedStableOrdinals.push_back(
+        frontiers[rank][candidateIndex].stableOrdinal);
+    candidate.selectedArtifactKinds.push_back(
+        frontiers[rank][candidateIndex].artifactKind);
+    candidate.selectedReservedBaselines.push_back(
+        frontiers[rank][candidateIndex].reservedBaseline);
+  }
+  return candidate;
+}
+
+static mlir::FailureOr<AcceptedWholeVariant> runTargetGate(
+    PreTargetWholeVariant candidate, const ExecutionConfig &executionConfig,
+    WholeVariantSelectionStatistics *statistics, std::string &failureGate) {
+  if (statistics)
+    ++statistics->targetGateInvocations;
+
+  // Target ABI and target-call legality are whole-variant gates, not a later
   // opportunity to replace one rank after the remaining domain was accepted.
   // Lower on owned clones and discard the results; the target-artifact stage
   // will translate the exact committed rank modules once more for publication.
-  const bool transportPreparedBeforeEntry = llvm::is_contained(
-      runtimeLaunchContract->getPhases(), RuntimeLaunchPhaseRole::Prepare);
-  for (RankExecutable &rank : ranks) {
+  const bool transportPreparedBeforeEntry =
+      llvm::is_contained(candidate.runtimeLaunchContract.getPhases(),
+                         RuntimeLaunchPhaseRole::Prepare);
+  for (RankExecutable &rank : candidate.ranks) {
+    if (statistics)
+      ++statistics->targetRankGateInvocations;
     mlir::FailureOr<PreparedTargetRank> prepared =
         prepareTargetABI(rank, executionConfig, transportPreparedBeforeEntry);
     if (mlir::failed(prepared)) {
@@ -489,20 +470,13 @@ tryCombination(llvm::ArrayRef<size_t> candidateIndices,
     }
   }
 
-  AcceptedWholeVariant accepted(std::move(ranks),
-                                std::move(*runtimeLaunchContract),
-                                std::move(*resourceCost));
-  accepted.selectedStableOrdinals.reserve(candidateIndices.size());
-  accepted.selectedArtifactKinds.reserve(candidateIndices.size());
-  accepted.selectedReservedBaselines.reserve(candidateIndices.size());
-  for (auto [rank, candidateIndex] : llvm::enumerate(candidateIndices)) {
-    accepted.selectedStableOrdinals.push_back(
-        frontiers[rank][candidateIndex].stableOrdinal);
-    accepted.selectedArtifactKinds.push_back(
-        frontiers[rank][candidateIndex].artifactKind);
-    accepted.selectedReservedBaselines.push_back(
-        frontiers[rank][candidateIndex].reservedBaseline);
-  }
+  AcceptedWholeVariant accepted(std::move(candidate.ranks),
+                                std::move(candidate.runtimeLaunchContract),
+                                std::move(candidate.resourceCost));
+  accepted.selectedStableOrdinals = std::move(candidate.selectedStableOrdinals);
+  accepted.selectedArtifactKinds = std::move(candidate.selectedArtifactKinds);
+  accepted.selectedReservedBaselines =
+      std::move(candidate.selectedReservedBaselines);
   return accepted;
 }
 
@@ -695,54 +669,122 @@ static bool isPreferredOver(const AcceptedWholeVariant &candidate,
                                      policy) == ParetoOrder::LeftDominates;
 }
 
-static bool hasEarlierStaticPolicyOrder(const AcceptedWholeVariant &lhs,
-                                        const AcceptedWholeVariant &rhs) {
-  return std::tie(lhs.selectedStableOrdinals, lhs.selectedArtifactKinds,
-                  lhs.selectedReservedBaselines) <
-         std::tie(rhs.selectedStableOrdinals, rhs.selectedArtifactKinds,
-                  rhs.selectedReservedBaselines);
+struct ParetoCandidateView {
+  const analysis::WholeCardInstructionProgramCost *resourceCost = nullptr;
+  const std::vector<int64_t> *selectedStableOrdinals = nullptr;
+  const std::vector<wafer::RankArtifactKind> *selectedArtifactKinds = nullptr;
+  const std::vector<bool> *selectedReservedBaselines = nullptr;
+};
+
+template <typename VariantT>
+static ParetoCandidateView getParetoCandidateView(const VariantT &candidate) {
+  return {&candidate.resourceCost, &candidate.selectedStableOrdinals,
+          &candidate.selectedArtifactKinds,
+          &candidate.selectedReservedBaselines};
 }
 
-static void
-insertParetoCandidate(AcceptedWholeVariant candidate,
-                      llvm::SmallVectorImpl<AcceptedWholeVariant> &frontier) {
+static bool hasEarlierStaticPolicyOrder(ParetoCandidateView lhs,
+                                        ParetoCandidateView rhs) {
+  return std::tie(*lhs.selectedStableOrdinals, *lhs.selectedArtifactKinds,
+                  *lhs.selectedReservedBaselines) <
+         std::tie(*rhs.selectedStableOrdinals, *rhs.selectedArtifactKinds,
+                  *rhs.selectedReservedBaselines);
+}
+
+struct ParetoInsertionPlan {
+  bool retained = false;
   llvm::SmallVector<unsigned, 8> dominatedIndices;
+};
+
+static ParetoInsertionPlan
+planParetoInsertion(ParetoCandidateView candidate,
+                    llvm::ArrayRef<AcceptedWholeVariant> frontier) {
+  ParetoInsertionPlan plan;
   for (auto [index, existing] : llvm::enumerate(frontier)) {
-    switch (compareExactWholeVariantCost(candidate.resourceCost,
-                                         existing.resourceCost)) {
+    ParetoCandidateView existingView = getParetoCandidateView(existing);
+    switch (compareExactWholeVariantCost(*candidate.resourceCost,
+                                         *existingView.resourceCost)) {
     case ParetoOrder::Unknown:
     case ParetoOrder::RightDominates:
-      return;
+      return {};
     case ParetoOrder::Equivalent:
-      switch (compareStaticDataflowPolicy(candidate.resourceCost,
-                                          existing.resourceCost)) {
+      switch (compareStaticDataflowPolicy(*candidate.resourceCost,
+                                          *existingView.resourceCost)) {
       case ParetoOrder::LeftDominates:
-        dominatedIndices.push_back(index);
+        plan.dominatedIndices.push_back(index);
         continue;
       case ParetoOrder::RightDominates:
-        return;
+        return {};
       case ParetoOrder::Equivalent:
       case ParetoOrder::Incomparable:
       case ParetoOrder::Unknown:
         break;
       }
-      if (!hasEarlierStaticPolicyOrder(candidate, existing))
-        return;
-      dominatedIndices.push_back(index);
+      if (!hasEarlierStaticPolicyOrder(candidate, existingView))
+        return {};
+      plan.dominatedIndices.push_back(index);
       break;
     case ParetoOrder::LeftDominates:
-      dominatedIndices.push_back(index);
+      plan.dominatedIndices.push_back(index);
       break;
     case ParetoOrder::Incomparable:
       break;
     }
   }
-  for (unsigned index : llvm::reverse(dominatedIndices))
+
+  // Simulate the exact existing erase/push/sort/cap sequence so a candidate
+  // that would immediately be removed by the 16-entry cap does not pay the
+  // target ABI/LLVM cost. The same view comparator is used by actual insertion
+  // below, including Unknown, equivalent-dataflow, and static-order behavior.
+  struct SimulatedEntry {
+    ParetoCandidateView view;
+    bool isCandidate = false;
+  };
+  llvm::SmallVector<SimulatedEntry, kWholeVariantParetoLimit + 1> simulated;
+  for (auto [index, existing] : llvm::enumerate(frontier)) {
+    if (llvm::is_contained(plan.dominatedIndices, static_cast<unsigned>(index)))
+      continue;
+    simulated.push_back({getParetoCandidateView(existing), false});
+  }
+  simulated.push_back({candidate, true});
+  llvm::sort(simulated,
+             [](const SimulatedEntry &lhs, const SimulatedEntry &rhs) {
+               return hasEarlierStaticPolicyOrder(lhs.view, rhs.view);
+             });
+  if (simulated.size() > kWholeVariantParetoLimit)
+    simulated.pop_back();
+  plan.retained = llvm::any_of(
+      simulated, [](const SimulatedEntry &entry) { return entry.isCandidate; });
+  if (!plan.retained)
+    plan.dominatedIndices.clear();
+  return plan;
+}
+
+static bool
+wouldRetainParetoCandidate(const PreTargetWholeVariant &candidate,
+                           llvm::ArrayRef<AcceptedWholeVariant> frontier) {
+  return planParetoInsertion(getParetoCandidateView(candidate), frontier)
+      .retained;
+}
+
+static bool
+insertParetoCandidate(AcceptedWholeVariant candidate,
+                      llvm::SmallVectorImpl<AcceptedWholeVariant> &frontier) {
+  ParetoInsertionPlan plan =
+      planParetoInsertion(getParetoCandidateView(candidate), frontier);
+  if (!plan.retained)
+    return false;
+  for (unsigned index : llvm::reverse(plan.dominatedIndices))
     frontier.erase(frontier.begin() + index);
   frontier.push_back(std::move(candidate));
-  llvm::sort(frontier, hasEarlierStaticPolicyOrder);
+  llvm::sort(frontier, [](const AcceptedWholeVariant &lhs,
+                          const AcceptedWholeVariant &rhs) {
+    return hasEarlierStaticPolicyOrder(getParetoCandidateView(lhs),
+                                       getParetoCandidateView(rhs));
+  });
   if (frontier.size() > kWholeVariantParetoLimit)
     frontier.pop_back();
+  return true;
 }
 
 static std::string summarizeAttemptFailure(llvm::ArrayRef<size_t> indices,
@@ -774,51 +816,103 @@ selectAcceptedWholeVariants(
     const std::vector<RankVariantFrontier> &frontiers,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    WholeVariantSelectionMode selectionMode, bool retainReservedBaseline) {
+    WholeVariantSelectionMode selectionMode, bool retainReservedBaseline,
+    WholeVariantSelectionStatistics *statistics) {
   if (program.logicalRankCount != executionConfig.getRankCount()) {
     diagnostics << "wafer-compile: typed program rank domain does not match "
                    "whole-variant ExecutionConfig\n";
     return mlir::failure();
   }
-  mlir::FailureOr<CandidateOrder> candidateOrder =
-      buildCandidateOrder(frontiers, executionConfig);
-  if (mlir::failed(candidateOrder)) {
+  std::vector<RankVariantMetadataFrontier> frontierMetadata;
+  frontierMetadata.reserve(frontiers.size());
+  for (const RankVariantFrontier &frontier : frontiers) {
+    RankVariantMetadataFrontier metadata;
+    metadata.reserve(frontier.size());
+    for (const RankVariantCandidate &candidate : frontier)
+      metadata.push_back({candidate.stableOrdinal, candidate.artifactKind,
+                          candidate.reservedBaseline});
+    frontierMetadata.push_back(std::move(metadata));
+  }
+  WholeVariantAttemptPlan attemptPlan = buildWholeVariantAttemptPlan(
+      frontierMetadata, executionConfig.getRankCount());
+  if (attemptPlan.failure == WholeVariantAttemptPlanFailure::CandidateDomain) {
+    diagnostics << "wafer-compile: rank scheduling frontiers do not form the "
+                   "complete canonical rank domain\n";
+    return mlir::failure();
+  }
+  for (auto [rank, requiredIndices] :
+       llvm::enumerate(attemptPlan.requiredModuleIndices))
+    for (size_t index : requiredIndices)
+      if (rank >= frontiers.size() || index >= frontiers[rank].size() ||
+          !frontiers[rank][index].module) {
+        diagnostics
+            << "wafer-compile: rank scheduling frontiers do not form the "
+               "complete canonical rank domain\n";
+        return mlir::failure();
+      }
+
+  mlir::MLIRContext *context = nullptr;
+  for (const RankVariantFrontier &frontier : frontiers)
+    for (const RankVariantCandidate &candidate : frontier)
+      if (candidate.module && !context)
+        context = candidate.module.get().getContext();
+      else if (candidate.module &&
+               candidate.module.get().getContext() != context) {
+        diagnostics << "wafer-compile: rank scheduling frontiers do not share "
+                       "the executable-bundle owner context\n";
+        return mlir::failure();
+      }
+  if (!context) {
     diagnostics << "wafer-compile: rank scheduling frontiers do not form the "
                    "complete canonical rank domain\n";
     return mlir::failure();
   }
 
-  mlir::MLIRContext *context =
-      frontiers.front().front().module.get().getContext();
-  for (const RankVariantFrontier &frontier : frontiers)
-    for (const RankVariantCandidate &candidate : frontier)
-      if (candidate.module.get().getContext() != context) {
-        diagnostics << "wafer-compile: rank scheduling frontiers do not share "
-                       "the executable-bundle owner context\n";
-        return mlir::failure();
-      }
-
-  mlir::FailureOr<std::vector<size_t>> reservedBaselineIndices =
-      getReservedBaselineIndices(frontiers);
-  if (mlir::failed(reservedBaselineIndices)) {
+  if (attemptPlan.failure == WholeVariantAttemptPlanFailure::ReservedBaseline) {
     diagnostics << "wafer-compile: every rank frontier must contain exactly "
                    "one reserved baseline candidate\n";
     return mlir::failure();
   }
 
-  std::set<std::vector<size_t>> enqueuedPositions;
   std::set<std::vector<size_t>> attemptedCandidateIndices;
-  std::priority_queue<Combination, std::vector<Combination>, WorseCombination>
-      queue;
-  std::vector<size_t> initial(frontiers.size(), 0);
-  queue.push({initial});
-  enqueuedPositions.insert(initial);
 
   llvm::SmallVector<std::string, kReportedAttemptLimit> failures;
-  auto attempt = [&](const std::vector<size_t> &candidateIndices)
-      -> mlir::FailureOr<AcceptedWholeVariant> {
+  auto recordFailure = [&](llvm::ArrayRef<size_t> candidateIndices,
+                           llvm::StringRef failureGate,
+                           llvm::StringRef capturedDiagnostics) {
+    std::string summary = summarizeAttemptFailure(candidateIndices, failureGate,
+                                                  capturedDiagnostics);
+    if (failures.size() < kReportedAttemptLimit)
+      failures.push_back(std::move(summary));
+    else
+      failures.back() = std::move(summary);
+  };
+  auto attemptPreTarget = [&](const std::vector<size_t> &candidateIndices)
+      -> mlir::FailureOr<PreTargetWholeVariant> {
     if (!attemptedCandidateIndices.insert(candidateIndices).second)
       return mlir::failure();
+    std::string capturedDiagnostics;
+    std::string failureGate = "unknown";
+    mlir::FailureOr<PreTargetWholeVariant> result = mlir::failure();
+    {
+      mlir::ScopedDiagnosticHandler handler(
+          context, [&](mlir::Diagnostic &diagnostic) {
+            llvm::raw_string_ostream os(capturedDiagnostics);
+            diagnostic.print(os);
+            os << "\n";
+            return mlir::success();
+          });
+      result = tryPreTargetCombination(candidateIndices, frontiers, program,
+                                       executionConfig, failureGate);
+    }
+    if (mlir::succeeded(result))
+      return result;
+    recordFailure(candidateIndices, failureGate, capturedDiagnostics);
+    return mlir::failure();
+  };
+  auto targetGate = [&](const std::vector<size_t> &candidateIndices,
+                        PreTargetWholeVariant candidate)
+      -> mlir::FailureOr<AcceptedWholeVariant> {
     std::string capturedDiagnostics;
     std::string failureGate = "unknown";
     mlir::FailureOr<AcceptedWholeVariant> result = mlir::failure();
@@ -830,25 +924,28 @@ selectAcceptedWholeVariants(
             os << "\n";
             return mlir::success();
           });
-      result = tryCombination(candidateIndices, frontiers, program,
-                              executionConfig, failureGate);
+      result = runTargetGate(std::move(candidate), executionConfig, statistics,
+                             failureGate);
     }
     if (mlir::succeeded(result))
       return result;
-    std::string summary = summarizeAttemptFailure(candidateIndices, failureGate,
-                                                  capturedDiagnostics);
-    if (failures.size() < kReportedAttemptLimit)
-      failures.push_back(std::move(summary));
-    else
-      failures.back() = std::move(summary);
+    recordFailure(candidateIndices, failureGate, capturedDiagnostics);
     return mlir::failure();
+  };
+  auto attemptFullyGated = [&](const std::vector<size_t> &candidateIndices)
+      -> mlir::FailureOr<AcceptedWholeVariant> {
+    mlir::FailureOr<PreTargetWholeVariant> preTarget =
+        attemptPreTarget(candidateIndices);
+    if (mlir::failed(preTarget))
+      return mlir::failure();
+    return targetGate(candidateIndices, std::move(*preTarget));
   };
 
   // The reserved baseline has its own allowance and must pass every late gate
   // before any optimization budget is consumed. Keep the accepted baseline as
   // the conservative fallback while alternatives are evaluated.
   mlir::FailureOr<AcceptedWholeVariant> baseline =
-      attempt(*reservedBaselineIndices);
+      attemptFullyGated(attemptPlan.reservedBaselineIndices);
   if (mlir::failed(baseline)) {
     diagnostics << "wafer-compile: reserved all-baseline variant failed "
                    "whole-variant acceptance\n";
@@ -866,76 +963,39 @@ selectAcceptedWholeVariants(
 
   llvm::SmallVector<AcceptedWholeVariant, kWholeVariantParetoLimit>
       paretoFrontier;
-  auto retainAccepted = [&](mlir::FailureOr<AcceptedWholeVariant> accepted) {
-    if (mlir::failed(accepted))
+  auto retainPreTarget = [&](const std::vector<size_t> &candidateIndices) {
+    mlir::FailureOr<PreTargetWholeVariant> preTarget =
+        attemptPreTarget(candidateIndices);
+    if (mlir::failed(preTarget))
       return;
     if (characterize &&
-        !matchesCollectiveCharacterization(*accepted, selectionMode))
+        !matchesCollectiveCharacterization(preTarget->ranks, selectionMode))
       return;
-    insertParetoCandidate(std::move(*accepted), paretoFrontier);
+    if (!wouldRetainParetoCandidate(*preTarget, paretoFrontier))
+      return;
+    mlir::FailureOr<AcceptedWholeVariant> accepted =
+        targetGate(candidateIndices, std::move(*preTarget));
+    if (mlir::failed(accepted))
+      return;
+    const bool retained =
+        insertParetoCandidate(std::move(*accepted), paretoFrontier);
+    assert(retained &&
+           "target gate cannot change Pareto facts or frontier membership");
   };
 
-  size_t visited = 0;
-  while (!queue.empty() && visited < kWholeVariantVisitLimit) {
-    Combination combination = queue.top();
-    queue.pop();
-    ++visited;
-    std::vector<size_t> candidateIndices =
-        getCandidateIndices(combination.positions, *candidateOrder);
-    retainAccepted(attempt(candidateIndices));
-
-    for (size_t rank = 0; rank < combination.positions.size(); ++rank) {
-      std::vector<size_t> neighbor = combination.positions;
-      if (++neighbor[rank] >= (*candidateOrder)[rank].size())
-        continue;
-      if (!enqueuedPositions.insert(neighbor).second)
-        continue;
-      queue.push({neighbor});
-    }
-  }
-
-  // A same-generation tuple can sit far from the canonical Cartesian corner
-  // of a high-dimensional product. Try each complete correspondence ordinal
-  // after the bounded product walk so cross-rank actual clones generated from
-  // one semantic recipe are evaluated together without reconstructing state.
-  using CorrespondenceKey = std::pair<int64_t, wafer::RankArtifactKind>;
-  std::set<CorrespondenceKey> correspondenceKeys;
-  for (const RankVariantCandidate &candidate : frontiers.front())
-    correspondenceKeys.insert(
-        {candidate.stableOrdinal, candidate.artifactKind});
-  size_t coordinatedVisited = 0;
-  for (CorrespondenceKey key : correspondenceKeys) {
-    if (coordinatedVisited >= kCoordinatedPolicyVisitLimit)
-      break;
-    std::vector<size_t> candidateIndices;
-    candidateIndices.reserve(frontiers.size());
-    bool complete = true;
-    for (const RankVariantFrontier &frontier : frontiers) {
-      std::optional<size_t> match;
-      for (auto [index, candidate] : llvm::enumerate(frontier)) {
-        if (candidate.stableOrdinal != key.first ||
-            candidate.artifactKind != key.second)
-          continue;
-        if (!match || index < *match)
-          match = index;
-      }
-      if (!match) {
-        complete = false;
-        break;
-      }
-      candidateIndices.push_back(*match);
-    }
-    if (!complete || attemptedCandidateIndices.count(candidateIndices))
-      continue;
-    ++coordinatedVisited;
-    retainAccepted(attempt(candidateIndices));
-  }
+  // Replay the exact original bounded Cartesian/coordinated sequence over the
+  // original slot indices. Slots belonging only to correspondence-mismatched
+  // tuples remain metadata-only and fail before any module is inspected.
+  for (const std::vector<size_t> &candidateIndices :
+       attemptPlan.optimizedCandidateIndices)
+    retainPreTarget(candidateIndices);
 
   const TargetStaticSelectionPolicy selectionPolicy =
       getDefaultWaferTargetPolicy(TileSearchEffort::Default).staticSelection;
   if (characterize) {
     std::optional<AcceptedWholeVariant> selected;
-    if (matchesCollectiveCharacterization(baselineAccepted, selectionMode))
+    if (matchesCollectiveCharacterization(baselineAccepted.ranks,
+                                          selectionMode))
       selected.emplace(std::move(baselineAccepted));
     for (AcceptedWholeVariant &candidate : paretoFrontier)
       if (!selected || isPreferredOver(candidate, *selected, selectionPolicy))
@@ -972,11 +1032,12 @@ mlir::FailureOr<AcceptedWholeVariant> selectAcceptedWholeVariant(
     const std::vector<RankVariantFrontier> &frontiers,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    WholeVariantSelectionMode selectionMode) {
+    WholeVariantSelectionMode selectionMode,
+    WholeVariantSelectionStatistics *statistics) {
   mlir::FailureOr<AcceptedProductionAndBaseline> selected =
       selectAcceptedWholeVariants(frontiers, program, executionConfig,
                                   diagnostics, selectionMode,
-                                  /*retainReservedBaseline=*/false);
+                                  /*retainReservedBaseline=*/false, statistics);
   if (mlir::failed(selected))
     return mlir::failure();
   return std::move(selected->production);
@@ -986,11 +1047,12 @@ mlir::FailureOr<AcceptedProductionAndBaseline>
 selectAcceptedProductionAndBaseline(
     const std::vector<RankVariantFrontier> &frontiers,
     const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics) {
-  return selectAcceptedWholeVariants(frontiers, program, executionConfig,
-                                     diagnostics,
-                                     WholeVariantSelectionMode::Production,
-                                     /*retainReservedBaseline=*/true);
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    WholeVariantSelectionStatistics *statistics) {
+  return selectAcceptedWholeVariants(
+      frontiers, program, executionConfig, diagnostics,
+      WholeVariantSelectionMode::Production,
+      /*retainReservedBaseline=*/true, statistics);
 }
 
 } // namespace wafer::compiler::detail

@@ -376,6 +376,7 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
   int64_t rejectedCount = 0;
   std::string lastFailure;
   int64_t visitedCount = 0;
+  int64_t completeEvaluationCount = 0;
   llvm::StringSet<> seen;
   llvm::SmallVector<CandidateWorkItem, 32> queue;
   CandidateSpec initial;
@@ -414,6 +415,7 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
     selected.spec = check.spec;
     selected.stats = check.stats;
     selected.candidateCount = currentVisited;
+    selected.completeEvaluationCount = completeEvaluationCount;
     selected.rejectedCount = rejectedCount;
     selected.representativeCount = check.representativeCount;
     selected.module = std::move(check.module);
@@ -423,6 +425,11 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
   unsigned frontierLimit = static_cast<unsigned>(std::max<int64_t>(
       {1, config.searchBeamWidth,
        static_cast<int64_t>(config.taskAlternativeOrdinal) + 1}));
+  const size_t requiredPassingCandidateCount =
+      static_cast<size_t>(config.taskAlternativeOrdinal) + 1;
+  auto hasRequestedAlternative = [&]() {
+    return candidateFrontier.size() >= requiredPassingCandidateCount;
+  };
   auto insertCandidate = [&](SelectedCandidate selected) {
     if (candidateFrontier.size() < frontierLimit)
       candidateFrontier.push_back(std::move(selected));
@@ -464,36 +471,50 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
           "complete-artifact: candidate passed without complete provenance");
       return;
     }
+    if (!check.module && mlir::failed(importAcceptedCandidateModule(
+                             check, *task.getContext()))) {
+      rejectCandidate(check.spec, check.failureReason);
+      return;
+    }
+    if (!check.module) {
+      rejectCandidate(
+          check.spec,
+          "complete-artifact: candidate passed without accepted module");
+      return;
+    }
     if (std::optional<std::string> failure =
             getRankingCostFailure(check.stats)) {
       rejectCandidate(check.spec, *failure);
       return;
     }
     SelectedCandidate selected = buildSelected(check, visitedCount);
-    if (candidateFrontier.size() < frontierLimit) {
-      if (!selected.module) {
-        CandidateEvaluation accepted =
-            evaluateCompleteCandidate(task, *shape, selected.spec, config);
-        if (!accepted.failureReason.empty()) {
-          rejectCandidate(selected.spec, accepted.failureReason);
-          return;
-        }
-        selected.module = std::move(accepted.module);
-        selected.artifactSource = accepted.artifactSource;
-      }
+    if (candidateFrontier.size() < frontierLimit)
       insertCandidate(std::move(selected));
-    }
+    if (hasRequestedAlternative())
+      return;
     if (supportsTiledTraversal)
       enqueueRefinements(task, check.spec, *reductionRanges, tileSizeOptions,
                          seen, queue, config.searchBeamWidth);
   };
 
   size_t queueIndex = 0;
-  std::string standaloneTaskModuleText;
-  if (config.candidateParallelism > 1)
-    standaloneTaskModuleText = getStandaloneTaskModuleText(task);
+  std::shared_ptr<const std::string> standaloneTaskModuleText;
+  std::unique_ptr<CandidateEvaluationExecutor> fallbackEvaluationExecutor;
+  CandidateEvaluationExecutor *evaluationExecutor = config.evaluationExecutor;
+  if (config.candidateParallelism > 1) {
+    standaloneTaskModuleText =
+        std::make_shared<const std::string>(getStandaloneTaskModuleText(task));
+    if (!evaluationExecutor) {
+      fallbackEvaluationExecutor =
+          std::make_unique<CandidateEvaluationExecutor>(
+              static_cast<unsigned>(config.candidateParallelism));
+      evaluationExecutor = fallbackEvaluationExecutor.get();
+    }
+  }
 
   while (queueIndex < queue.size()) {
+    if (hasRequestedAlternative())
+      break;
     if (config.maxSearchCandidates > 0 &&
         visitedCount >= config.maxSearchCandidates)
       break;
@@ -536,18 +557,18 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
           continue;
         }
         futureSlots.push_back(static_cast<unsigned>(batchOffset));
-        futures.push_back(std::async(
-            std::launch::async,
-            [&standaloneTaskModuleText, shape = *shape, candidate, config]() {
-              return evaluateCandidateOnStandaloneTaskText(
-                  standaloneTaskModuleText, shape, candidate, config);
-            }));
+        ++completeEvaluationCount;
+        futures.push_back(evaluationExecutor->submit(
+            standaloneTaskModuleText, *shape, candidate, config));
       }
       for (auto [futureIndex, slot] : llvm::enumerate(futureSlots))
         results[slot] = futures[futureIndex].get();
       queueIndex += batchSize;
-      for (CandidateCheckResult &result : results)
+      for (CandidateCheckResult &result : results) {
         processCheckResult(result);
+        if (hasRequestedAlternative())
+          break;
+      }
       continue;
     }
 
@@ -572,6 +593,7 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
                       "cheap_bound: minimum SPM bytes exceed planning window");
       continue;
     }
+    ++completeEvaluationCount;
     CandidateCheckResult check =
         evaluateCandidateOnOriginalTask(task, *shape, candidate, config);
     if (!check.failureReason.empty()) {
@@ -591,6 +613,8 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
     }
     SelectedCandidate selected = buildSelected(check, visitedCount);
     insertCandidate(std::move(selected));
+    if (hasRequestedAlternative())
+      break;
     if (supportsTiledTraversal)
       enqueueRefinements(task, candidate, *reductionRanges, tileSizeOptions,
                          seen, queue, config.searchBeamWidth);
@@ -600,19 +624,13 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
     SelectedCandidate selected =
         std::move(candidateFrontier[config.taskAlternativeOrdinal]);
     selected.candidateCount = visitedCount;
+    selected.completeEvaluationCount = completeEvaluationCount;
     selected.rejectedCount = rejectedCount;
     if (!selected.module ||
         !isCompleteArtifactSource(selected.artifactSource)) {
-      CandidateEvaluation accepted =
-          evaluateCompleteCandidate(task, *shape, selected.spec, config);
-      if (!accepted.failureReason.empty()) {
-        anchor->emitError()
-            << "selected task candidate complete artifact failed: "
-            << accepted.failureReason;
-        return mlir::failure();
-      }
-      selected.module = std::move(accepted.module);
-      selected.artifactSource = accepted.artifactSource;
+      anchor->emitError()
+          << "selected task candidate has no imported complete artifact";
+      return mlir::failure();
     }
     return selected;
   }

@@ -1620,3 +1620,24 @@
   trusted completion、transport status、完整writable-output exact validation及record guard/state合同判定。
 - 防复发：未由独立规范和区分向量资格化的raw寄存器/返回值只能作为observation；测试必须包含raw为0但其它
   completion/output/record合同全部有效的正例，避免再次硬编码“成功值”。
+
+## 2026-07-27 whole-variant吞吐优化不能改变搜索域或fully-gated frontier
+
+- 现象：大shape、多rank production compile即使已启用外层并行仍很慢。task selector在已经取得所需passing ordinal后继续扩展；
+  每个并行batch反复创建线程、`MLIRContext`并parse相同task；worker通过完整candidate gate后owner又重跑一次lowering；
+  rank worker输出被全部parse进owner context，即使既有exact tuple walk永远不会引用其中一部分；最终会被Pareto拒绝的tuple也
+  提前重复运行target ABI/LLVM gate。
+- 根因：把“候选语义域、稳定attempt顺序和exact gates不可减少”误解为“所有已生成工作必须重复执行”。同时没有区分
+  cross-context actual-module ownership transfer、metadata可精确证明的不可达owner import，以及只有fully target-gated
+  candidate才有资格修改Pareto frontier这三个边界。
+- 修复模式：selector收齐`taskAlternativeOrdinal + 1`个passing项后停止，parallel只容许固定batch内有界overshoot并按submit
+  order消费；rank-frontier持有persistent bounded executor，每worker独占context并复用同task parse。worker把已经完整gate的
+  actual module文本导入owner，owner fresh verify/recost而不二次lowering。all-rank侧用原slot metadata精确重放既有
+  `WholeVariantAttemptPlan`，保留frontier slot/order/duplicate/baseline和attempt budget，只少parse不可达owner module，
+  worker仍print全部候选。baseline先完整target-gate；optimized pre-target项只有按正式规则会留在当前fully-gated frontier时
+  才运行target gate，通过后才能淘汰旧项，失败保持frontier并继续后续attempt。
+- 防复发：回归分别锁定serial/parallel selected module与前置failure、batch overshoot上界、worker/context/task-parse复用、
+  owner不二次complete lowering、attempt plan与reference sequence逐项一致、malformed metadata保守全import，以及late target
+  failure不会遮蔽后续合法candidate。吞吐对比不能通过降低hard cap、缩小candidate domain、跳过final gate或增加用户可见
+  quick mode取得。executor中会在首次submit扩容的worker容器及其统计getter必须由同一mutex保护；只有独立标量计数可使用
+  atomic，否则“只供测试”的读取同样会与lazy worker construction形成data race。

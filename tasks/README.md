@@ -61,7 +61,11 @@ metadata exact-hash绑定。`wafer-run`复用既有resource/expected/output bind
 tile clock未资格化时只展示16行entry-local timeline，不声称跨tile顺序。它尚不回写candidate cost；动态状态只看
 `tasks/progress.md`。
 
-最新完成任务为Q32.N numeric algebraic extension，实施计划见
+最新完成的compiler throughput收口为Q32.C，记录见
+`tasks/archive/whole-variant-search-throughput.md`。它保持candidate domain、hard cap、exact gate和winner语义，
+删除passing ordinal之后的无消费者评估、逐batch线程/context churn、accepted module二次lowering、不可达owner
+parse及不会进入fully-gated Pareto frontier的ABI/LLVM lowering；性能记录只含优化后Release实测，不重跑旧二进制。
+Q32.N numeric algebraic extension实施计划见
 `tasks/plans/numeric-algebraic-extension.md`。它直接删除physical-dataflow algebraic、reduction/GEMM切分和
 Ring collective中不必要的float类型门槛，以无额外标注的f16/bf16覆盖现有production pipeline，不增加
 frontend mode、私有numeric policy或Tile/Instr carrier。Q36 topology-aware collective lowering已经闭合，
@@ -104,6 +108,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/whole-variant-search-throughput.md` | 已完成Q32.C的passing-ordinal early stop、bounded persistent candidate executor、accepted-module owner import、exact attempt-plan selective parse和fully-gated Pareto前置late ABI/LLVM，并记录优化后Release单次实测 |
 | `tasks/archive/k-sharded-gemm-board-vertical.md` | 已完成Q35 full-4096 f16 K-sharded GEMM的production tiling/SPM/Direct-DTE package、纯tiling隔离及16-rank重复板端raw-exact记录 |
 | `tasks/archive/runtime-board.md` | 已完成Q6.B的typed TX board provider、kernel/model多tile launch、cluster Direct DTE、failure lifecycle及真实板端重复exact记录 |
 | `tasks/archive/physical-dataflow-synthesis-completion-audit.md` | 已完成Q32的七checkpoint证据映射、双配置全量门禁、fixed/held-out 7B scale重放、单一production owner及剩余边界审计 |

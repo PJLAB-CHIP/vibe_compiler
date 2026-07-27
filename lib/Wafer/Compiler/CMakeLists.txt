@@ -35,6 +35,7 @@ add_mlir_library(WaferCompiler
   TargetProfileInstrumentation.cpp
   TargetRankPreflight.cpp
   TargetCallFrontend.cpp
+  WholeVariantAttemptPlan.cpp
   WholeVariantCoordinator.cpp
   WholeVariantResourceAcceptance.cpp
 

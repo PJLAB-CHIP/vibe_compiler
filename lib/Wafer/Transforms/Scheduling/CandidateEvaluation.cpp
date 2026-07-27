@@ -7,6 +7,12 @@
 #include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
 
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
+
 namespace wafer::tensor_program_scheduling {
 
 static std::string
@@ -168,8 +174,7 @@ CandidateEvaluation evaluateCompleteCandidate(
               config.useDirectMappedBoundaryTransfer);
         },
         result);
-    evaluation.artifactSource =
-        CandidateArtifactSource::FullTraversalFallback;
+    evaluation.artifactSource = CandidateArtifactSource::FullTraversalFallback;
   } else {
     diagnostics = takeDiagnostics(
         task.getContext(),
@@ -181,8 +186,7 @@ CandidateEvaluation evaluateCompleteCandidate(
               config.useDirectMappedBoundaryTransfer);
         },
         result);
-    evaluation.artifactSource =
-        CandidateArtifactSource::CompleteTraversalAPI;
+    evaluation.artifactSource = CandidateArtifactSource::CompleteTraversalAPI;
   }
   if (mlir::failed(result) && canUseFullTraversal && !preferFullTraversal) {
     failureReason.clear();
@@ -211,8 +215,7 @@ CandidateEvaluation evaluateCompleteCandidate(
         },
         result);
     if (mlir::succeeded(result))
-      evaluation.artifactSource =
-          CandidateArtifactSource::CompleteTraversalAPI;
+      evaluation.artifactSource = CandidateArtifactSource::CompleteTraversalAPI;
   }
   if (mlir::failed(result)) {
     evaluation.failureReason =
@@ -258,10 +261,15 @@ parseStandaloneTaskModule(llvm::StringRef standaloneTaskModuleText,
   return module;
 }
 
+enum class AcceptedModuleTransfer {
+  RetainInCurrentContext,
+  SerializeForOwnerImport,
+};
+
 static CandidateCheckResult evaluateTaskCandidate(
     mlir::func::FuncOp task, llvm::ArrayRef<int64_t> traversalShape,
     const CandidateSpec &candidate, const SelectionConfig &config,
-    bool retainAcceptedModule) {
+    AcceptedModuleTransfer transfer) {
   CandidateCheckResult result;
   result.spec = candidate;
   llvm::SmallVector<TileInstance, 8> reps =
@@ -291,16 +299,208 @@ static CandidateCheckResult evaluateTaskCandidate(
   }
   result.stats = acceptedEvaluation.stats;
   result.artifactSource = acceptedEvaluation.artifactSource;
-  if (retainAcceptedModule)
+  if (transfer == AcceptedModuleTransfer::RetainInCurrentContext) {
     result.module = std::move(acceptedEvaluation.module);
+  } else {
+    llvm::raw_string_ostream os(result.acceptedModuleText);
+    acceptedEvaluation.module->print(os);
+  }
   return result;
+}
+
+class CandidateEvaluationExecutor::Impl {
+public:
+  explicit Impl(unsigned workerCount)
+      : queueCapacity(std::clamp(workerCount, 1u, kMaximumWorkerCount)) {}
+
+  ~Impl() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      stopping = true;
+    }
+    workAvailable.notify_all();
+    queueSpaceAvailable.notify_all();
+    for (std::thread &worker : workers)
+      worker.join();
+  }
+
+  std::future<CandidateCheckResult>
+  submit(std::shared_ptr<const std::string> standaloneTaskModuleText,
+         llvm::ArrayRef<int64_t> traversalShape, const CandidateSpec &candidate,
+         const SelectionConfig &config) {
+    auto item = std::make_unique<WorkItem>(std::move(standaloneTaskModuleText),
+                                           traversalShape, candidate, config);
+    std::future<CandidateCheckResult> future = item->promise.get_future();
+    {
+      std::unique_lock<std::mutex> lock(mutex);
+      if (!stopping)
+        startWorkersLocked();
+      queueSpaceAvailable.wait(
+          lock, [&]() { return stopping || queue.size() < queueCapacity; });
+      if (stopping) {
+        CandidateCheckResult result;
+        result.spec = candidate;
+        result.failureReason = "candidate-executor: executor is stopping";
+        item->promise.set_value(std::move(result));
+        return future;
+      }
+      queue.push_back(std::move(item));
+    }
+    workAvailable.notify_one();
+    return future;
+  }
+
+  unsigned getWorkerCount() const {
+    return static_cast<unsigned>(queueCapacity);
+  }
+
+  unsigned getWorkerConstructionCount() const {
+    std::lock_guard<std::mutex> lock(mutex);
+    return static_cast<unsigned>(workers.size());
+  }
+
+  unsigned getContextConstructionCount() const {
+    return contextConstructionCount.load(std::memory_order_relaxed);
+  }
+
+  unsigned getTaskParseCount() const {
+    return taskParseCount.load(std::memory_order_relaxed);
+  }
+
+private:
+  static constexpr unsigned kMaximumWorkerCount = 64;
+
+  struct WorkItem {
+    WorkItem(std::shared_ptr<const std::string> standaloneTaskModuleText,
+             llvm::ArrayRef<int64_t> traversalShape,
+             const CandidateSpec &candidate, const SelectionConfig &config)
+        : standaloneTaskModuleText(std::move(standaloneTaskModuleText)),
+          traversalShape(traversalShape.begin(), traversalShape.end()),
+          candidate(candidate), config(config) {
+      this->config.evaluationExecutor = nullptr;
+    }
+
+    std::shared_ptr<const std::string> standaloneTaskModuleText;
+    llvm::SmallVector<int64_t, 4> traversalShape;
+    CandidateSpec candidate;
+    SelectionConfig config;
+    std::promise<CandidateCheckResult> promise;
+  };
+
+  void startWorkersLocked() {
+    if (!workers.empty())
+      return;
+    workers.reserve(queueCapacity);
+    for (unsigned workerIndex = 0; workerIndex < queueCapacity; ++workerIndex)
+      workers.emplace_back([this]() { workerLoop(); });
+  }
+
+  void workerLoop() {
+    std::unique_ptr<mlir::MLIRContext> context;
+    std::string parseFailure;
+    std::string parsedTaskModuleText;
+    bool hasParsedTask = false;
+    mlir::OwningOpRef<mlir::ModuleOp> module;
+    mlir::func::FuncOp task;
+
+    while (true) {
+      std::unique_ptr<WorkItem> item;
+      {
+        std::unique_lock<std::mutex> lock(mutex);
+        workAvailable.wait(lock, [&]() { return stopping || !queue.empty(); });
+        if (queue.empty()) {
+          if (stopping)
+            return;
+          continue;
+        }
+        item = std::move(queue.front());
+        queue.pop_front();
+      }
+      queueSpaceAvailable.notify_one();
+
+      if (!context) {
+        mlir::DialectRegistry registry;
+        registerSelectionEvaluationDialects(registry);
+        context = std::make_unique<mlir::MLIRContext>(registry);
+        context->disableMultithreading();
+        context->loadAllAvailableDialects();
+        contextConstructionCount.fetch_add(1, std::memory_order_relaxed);
+      }
+
+      if (!hasParsedTask ||
+          parsedTaskModuleText != *item->standaloneTaskModuleText) {
+        parsedTaskModuleText = *item->standaloneTaskModuleText;
+        hasParsedTask = true;
+        parseFailure.clear();
+        task = {};
+        module = parseStandaloneTaskModule(parsedTaskModuleText, *context,
+                                           parseFailure);
+        if (module)
+          task = findSingleSelectionTask(*module);
+        if (module && !task)
+          parseFailure =
+              "parse-standalone: standalone module has no scheduling task";
+        taskParseCount.fetch_add(1, std::memory_order_relaxed);
+      }
+
+      CandidateCheckResult result;
+      if (!parseFailure.empty()) {
+        result.spec = item->candidate;
+        result.failureReason = parseFailure;
+      } else {
+        result = evaluateTaskCandidate(
+            task, item->traversalShape, item->candidate, item->config,
+            AcceptedModuleTransfer::SerializeForOwnerImport);
+      }
+      item->promise.set_value(std::move(result));
+    }
+  }
+
+  size_t queueCapacity;
+  std::atomic<unsigned> contextConstructionCount{0};
+  std::atomic<unsigned> taskParseCount{0};
+  mutable std::mutex mutex;
+  std::condition_variable workAvailable;
+  std::condition_variable queueSpaceAvailable;
+  std::deque<std::unique_ptr<WorkItem>> queue;
+  bool stopping = false;
+  std::vector<std::thread> workers;
+};
+
+CandidateEvaluationExecutor::CandidateEvaluationExecutor(unsigned workerCount)
+    : impl(std::make_unique<Impl>(workerCount)) {}
+
+CandidateEvaluationExecutor::~CandidateEvaluationExecutor() = default;
+
+std::future<CandidateCheckResult> CandidateEvaluationExecutor::submit(
+    std::shared_ptr<const std::string> standaloneTaskModuleText,
+    llvm::ArrayRef<int64_t> traversalShape, const CandidateSpec &candidate,
+    const SelectionConfig &config) {
+  return impl->submit(std::move(standaloneTaskModuleText), traversalShape,
+                      candidate, config);
+}
+
+unsigned CandidateEvaluationExecutor::getWorkerCount() const {
+  return impl->getWorkerCount();
+}
+
+unsigned CandidateEvaluationExecutor::getWorkerConstructionCount() const {
+  return impl->getWorkerConstructionCount();
+}
+
+unsigned CandidateEvaluationExecutor::getContextConstructionCount() const {
+  return impl->getContextConstructionCount();
+}
+
+unsigned CandidateEvaluationExecutor::getTaskParseCount() const {
+  return impl->getTaskParseCount();
 }
 
 CandidateCheckResult evaluateCandidateOnOriginalTask(
     mlir::func::FuncOp task, llvm::ArrayRef<int64_t> traversalShape,
     const CandidateSpec &candidate, const SelectionConfig &config) {
   return evaluateTaskCandidate(task, traversalShape, candidate, config,
-                               /*retainAcceptedModule=*/true);
+                               AcceptedModuleTransfer::RetainInCurrentContext);
 }
 
 CandidateCheckResult
@@ -328,7 +528,48 @@ evaluateCandidateOnStandaloneTaskText(llvm::StringRef standaloneTaskModuleText,
     return result;
   }
   return evaluateTaskCandidate(task, traversalShape, candidate, config,
-                               /*retainAcceptedModule=*/false);
+                               AcceptedModuleTransfer::SerializeForOwnerImport);
+}
+
+mlir::LogicalResult
+importAcceptedCandidateModule(CandidateCheckResult &result,
+                              mlir::MLIRContext &ownerContext) {
+  if (!result.failureReason.empty())
+    return mlir::failure();
+  if (result.acceptedModuleText.empty()) {
+    result.failureReason =
+        "owner-import: accepted worker candidate has no module transport";
+    return mlir::failure();
+  }
+
+  mlir::OwningOpRef<mlir::ModuleOp> imported;
+  mlir::LogicalResult parseResult = mlir::success();
+  std::string diagnostics = takeDiagnostics(
+      &ownerContext,
+      [&]() {
+        imported = mlir::parseSourceString<mlir::ModuleOp>(
+            result.acceptedModuleText, &ownerContext);
+        return imported ? mlir::success() : mlir::failure();
+      },
+      parseResult);
+  if (mlir::failed(parseResult) || !imported) {
+    result.failureReason = joinFailure("owner-import", "", diagnostics);
+    return mlir::failure();
+  }
+
+  mlir::LogicalResult verifyResult = mlir::success();
+  diagnostics = takeDiagnostics(
+      &ownerContext, [&]() { return mlir::verify(*imported); }, verifyResult);
+  if (mlir::failed(verifyResult)) {
+    result.failureReason =
+        joinInstructionFailure("owner-verifier", "", diagnostics);
+    return mlir::failure();
+  }
+
+  result.stats = estimateStats(*imported);
+  result.module = std::move(imported);
+  result.acceptedModuleText.clear();
+  return mlir::success();
 }
 
 } // namespace wafer::tensor_program_scheduling
