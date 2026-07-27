@@ -1,8 +1,6 @@
 # Multi-Engine Software Pipelining 实施计划
 
-状态：Q38执行中。Q37硬件校准已经完成，其方法、case、证据和保守边界只由
-`docs/tx81-compiler-hardware-calibration.md`持有。本计划不重复硬件校准，也不以新增raw probe代替
-software-pipeline实现。
+状态：Q38待启动，当前执行顺序以`tasks/progress.md`为准。
 
 ## Pipeline Contract
 
@@ -11,8 +9,8 @@ Pipeline position:
 - Upstream artifact / IR:
   已验证并按logical rank specialize的complete static tile/instruction program；tile traversal、
   structured loop、SSA use-def、buffer/view、MemoryEffectOpInterface、instruction family、async token、
-  wait/fence和target profile均已显式，但SPM/DDR physical offset尚未提交。Q37提供当前profile已闭合的
-  engine、worker、queue、dependency、completion和overlap边界。
+  wait/fence和typed target profile均已显式，但SPM/DDR physical offset尚未提交。target profile提供
+  engine、worker、queue、dependency、completion和overlap的受支持能力与保守边界。
 - Current stage responsibility:
   从current IR重算resource/address dependency DAG，在isolated complete-rank actual clone中物化有限的
   serial baseline和overlapped alternatives。optimized clone使用真实SSA buffer slot、loop-carried
@@ -27,13 +25,13 @@ Pipeline position:
 - User-level driver / named pipeline:
   现有wafer-compile source-to-bundle production pipeline；不增加手工pass拼装或用户numeric/schedule模式。
 - Explicit non-goals:
-  不重做Q37硬件校准，不新增或回放raw board case，不按buffer/op名字恢复依赖，不建立上层raw packet attr，
-  不实现任意dynamic-loop modulo scheduler，不写未经测量的latency常数，也不用local fence替代DTE completion。
+  不按buffer/op名字恢复依赖，不建立上层opaque packet attr，不实现任意dynamic-loop modulo scheduler，
+  不写未经测量的latency常数，也不用local fence替代DTE completion。
 - Completion gate:
   production source至少物化一个非case特化的multi-buffer prologue/steady/epilogue actual clone，使
   movement[n+1]、compute[n]和writeback[n-1]在无真实hazard时进入同一issue window，SPM planner接受至少
   两个独立slot。baseline和optimized clone经过相同rank/whole-variant、SPM/DDR、Instr、Target、package、
-  model/no-card和fresh board correctness gate；unsupported/Unknown硬件边界继续使用Q37冻结的保守处理。
+  model/no-card和fresh board correctness gate；target profile未支持或Unknown的能力不进入候选。
 ```
 
 ## 实现边界
@@ -62,7 +60,7 @@ Pipeline position:
 - drain/fence只在离开当前completion domain的latest-legal boundary物化并合并，包括NCC→Kcore、
   NCC→Direct DTE、跨worker join、显式barrier、structured completion backedge和terminal/host publication。
 - Direct DTE继续由精确event/token与`dte_wait`完成，不能被local drain替代。
-- worker、queue和wait scope直接消费Q37校准文档的profile-scoped边界；Unknown项保持保守实现。
+- worker、queue和wait scope直接消费typed target profile；profile未支持或Unknown的组合不进入候选。
 
 ### 4. Candidate 与选择
 
@@ -80,13 +78,13 @@ Pipeline position:
   跨engine同window issue及latest-legal completion boundary均来自current IR。
 - vertical：至少一个tiled movement+compute+writeback production source通过SPM/DDR、Instr、Target、package、
   model/no-card和完整CPU expected。
-- board：只执行Q38新产生的production vertical，不重跑Q37 raw calibration case；单进程串行、bounded timeout、
-  完整result/guard/status/cleanup，timeout或设备异常后立即停止且不自动retry/reset/power。
+- board：执行Q38新产生的production vertical；单进程串行、bounded timeout、完整result/guard/status/cleanup，
+  timeout或设备异常后立即停止且不自动retry/reset/power。
 - performance：只有相同package schema、workload和设备基线下的serial/overlapped重复样本才能形成窄profile
   排序输入；correctness通过不自动形成性能结论。
 
 ## 收尾
 
-- 同步`tasks/progress.md`中Q38状态以及直接受影响的06、08-17编号合同；不把Q37执行流水复制进本计划。
+- 同步`tasks/progress.md`中Q38状态以及直接受影响的06、08-17编号合同。
 - 可复用实现或调试经验才进入`memory/`，单个case和临时状态不沉淀。
 - 完成后提交实现、验证和必要文档；Q38只有在production multi-buffer vertical真实闭合后才能标记`done`。
