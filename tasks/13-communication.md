@@ -769,7 +769,7 @@ placement共同派生rank endpoint、exact bounded Ring cycle，以及通过inte
 minimum-total-shortest-hop ordered Tree；All-Reduce已展开为真实
 chunked reduce-scatter+all-gather，standalone Reduce-Scatter同时保留Direct baseline与Ring clone。whole-card
 cost从final sends计算minimum-hop link-byte demand并进入统一selection；All-to-All/Collective-Permute completion
-也已补齐。当前fresh gate尚在执行，未通过前Q36仍不能标done。
+也已补齐，fresh host/full-feature gate已经闭合；Q36完成状态和证据入口以`tasks/progress.md`为准。
 
 当前明确限制是：exact Ring cycle搜索和ordered-Tree interval DP都只覆盖不超过16 rank；Ring只接受能形成非零、
 连续、等分typed chunk的静态payload，其reduction element type可为integer或支持的floating type。

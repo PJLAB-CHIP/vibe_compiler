@@ -1,8 +1,9 @@
 # Wafer Compiler Stack Architecture
 
-状态：2026-07-20按当前production public artifacts和MLIR-native physical-dataflow synthesis边界重写。本文是compiler、target artifact、
-package/runtime与target-model分支的主架构入口，只拥有稳定pipeline spine、artifact DAG、跨层不变量和owner索引。动态状态、
-blocked-by与完成记录只看`tasks/progress.md`；专题IR、ABI、算法和验证细节由对应编号文档拥有。
+状态：2026-07-27已同步当前single-card production baseline、topology-aware collective、board RuntimeProvider和
+profile-scoped硬件能力边界。本文是compiler、target artifact、package/runtime与target-model分支的主架构入口，
+只拥有稳定pipeline spine、artifact DAG、跨层不变量和owner索引。动态状态、blocked-by与完成记录只看
+`tasks/progress.md`；专题IR、ABI、算法和验证细节由对应编号文档拥有。
 
 本文使用**Wafer**表示当前目标硬件和软件栈。TX8/TX81只在底层依赖、公开ABI和反向工程事实中保留，不提升为上层IR术语。
 
@@ -14,15 +15,17 @@ blocked-by与完成记录只看`tasks/progress.md`；专题IR、ABI、算法和�
    winning choice必须物化为typed IR；SPM、DDR、completion、transport和target ABI只验证完整候选是否合法。
 3. **physical-dataflow synthesis是唯一decision owner。** implementation、tile、physical encoding、storage realization、
    transfer route、residency、buffering、有限DAG顺序、communication和resource-aware tradeoff联合决定；下游不得另做
-   layout assignment、隐式route fallback、communication reselection或residency修复。
+   layout assignment、隐式route fallback、communication reselection或residency修复。每个选择都必须物化进隔离actual
+   clone并通过同一rank-local/whole-variant gate，不能只存在于analysis摘要。
 4. **fusion不是协议对象。** producer/consumer共享显式SPM SSA physical version时形成resident dataflow；store/load表示spill。
    不创建opaque fused group，也不让region边界自动成为DDR或memory-planning边界。
 5. **artifact原子形成。** 单tile、单region、代表rank或未覆盖当前配置all-and-only rank domain的partial rank/module set
    都不是可发布结果；全部配置rank通过后才形成bundle，所有package成员readback通过后才发布final root。
 6. **同一次target lowering服务两个consumer。** device link与repo-owned TargetCall/SystemC CModel消费同一owner-backed
    `TargetLLVMModuleBundle`，禁止为模型第二次lower或从package反向重建compiler artifact。
-7. **证据不越级。** verifier、no-card、target model、exact package、board、packet和timing是不同证据层；SystemC只提供
-   untimed functional-event容器，不能自动证明vendor packet、hardware numeric、性能或cycle accuracy。
+7. **证据不越级。** verifier、no-card、target model、profile-scoped hardware behavior、exact package、board
+   correctness、packet和timing是不同证据层；SystemC只提供untimed functional-event容器，板端单case也只证明绑定
+   profile与输入域内的行为，二者都不能自动证明vendor packet、通用hardware numeric、性能或cycle accuracy。
 8. **扩展先有consumer。** 当前IR能重算的事实不新增attr/sidecar；新op、type、attr或artifact字段必须有明确creator、
    verifier、lowering和downstream consumer。
 9. **rewrite采用必须有实效。** linked、registered或debug可调用不等于production采用；每种候选rewrite必须由named
@@ -54,7 +57,7 @@ Pipeline position:
   还以move-only TargetCompilationProduct持有原ExecutableBundle和实际用于device publication的TargetLLVMModuleBundle；
   这些owner-backed in-memory artifacts不序列化成sidecar。
 - Downstream consumer:
-  wafer-run/no-card RuntimeSessionPlan、repo-owned TargetCall/SystemC functional-numeric model，以及配置完成后的board
+  wafer-run/no-card RuntimeSessionPlan、repo-owned TargetCall/SystemC functional-numeric model，以及configured board
   RuntimeProvider、exact-package model和独立verification/correlation gates。
 - User-level driver / named pipeline:
   wafer-compile是source-to-package唯一production入口；wafer-opt与IR-local named pipelines只用于开发、调试和focused测试，
@@ -63,15 +66,13 @@ Pipeline position:
   runtime不重新做SPMD、candidate、layout、memory或transport planning；package不复制instruction/search schedule；本架构不
   承诺dynamic-shape/online scheduling、MPMD、多卡、persistent state/KV、streaming weight、vendor-exact packet或cycle accuracy。
 - Completion gate:
-  当前v1 production artifacts、rank-count=1/16、atomic publication、typed package/no-card与repo-owned CModel链保持有效；
-  physical-dataflow synthesis目标完成时，implementation、tile/relation、encoding/view/route、storage/residency、current
-  GEMM/batched-GEMM fixed-Cx-NCx absorption、share-vs-recompute、static loop-invariant hoist、integer-domain
-  exact/modular-proof-gated actual-DAG rewrite、buffering/order、
-  direct/ring/tree communication、resource-aware bounded selection及Q32.V mapped/physical-fill/oriented typed target纵向中，
-  choice producers均有真实production mutation、完整consumer gate、共同frontier winner及默认driver commit证据，required
-  closure的mutation则保留在committed winner；完整PyTorch/SystemC/resource/ABI/package gate全部fresh通过，旧decision
-  owner与公开旁路清零。winner capability projection只在真实package/runtime
-  consumer需要时派生，model/board admission不参与candidate选择。
+  当前v1 production artifacts、rank-count=1/16、atomic publication、typed package/no-card、repo-owned CModel和
+  configured board RuntimeProvider链保持有效。implementation、tile/relation、encoding/view/route、storage/residency、
+  fixed-Cx/NCx absorption、share-vs-recompute、static loop-invariant hoist、supported integer/floating algebra、
+  buffering/order及Direct/Ring/ordered-Tree communication均由真实production mutation表达，经过共同frontier、
+  rank/whole-variant exact gate和默认driver原子提交；required closure的mutation保留在committed winner。
+  winner capability projection只在真实package/runtime consumer需要时派生，model/board admission不参与candidate选择。
+  新的profiling证据或multi-engine software pipeline只有通过自己的production vertical后才能扩展该基线。
 ```
 
 当前production只接受static-ranked program boundary。IR-local bounded/dynamic verifier能力不扩大production source admission；
@@ -108,7 +109,8 @@ ExecutableBundle (all-and-only ranks)
             = package root + ExecutionConfig + VerifiedPackageManifest
        -> atomically published package directory
             ├─ no-card RuntimeSession
-            └─ future RuntimeProvider / exact-package model
+            ├─ configured TX81 RuntimeProvider
+            └─ future exact-package model
 ```
 
 `TargetCompilationProduct`不是第三份program表示；它只是同一transaction中两个owner-backed artifacts的lifetime容器。
@@ -140,7 +142,8 @@ manifest的move-only lifetime/container artifact，不是另一份program或pack
 ## 5. Physical-Dataflow Synthesis 边界
 
 rank-local optimizer-ready structured tensor program是candidate generator的语义输入。required normalization由05拥有；它不能
-依赖generic canonicalizer碰巧收敛，也不能提前作target choice。Q32直接通过Linalg/DPS/Tiling/MemoryEffect和Wafer
+依赖generic canonicalizer碰巧收敛，也不能提前作target choice。physical-dataflow synthesis直接通过
+Linalg/DPS/Tiling/MemoryEffect和Wafer
 OpInterface读取当前IR语义，跨value关系由可失效、可重算的`IndexRelation` analysis提供。
 
 责任严格分层：
@@ -163,7 +166,7 @@ canonical frontier serializer或跨系统query protocol。优化limit耗尽、�
 baseline；driver/process cancellation在任意时点终止整个transaction且不发布partial artifact。
 
 详细算法由`tasks/06-physical-dataflow-synthesis.md`拥有；selected tile-region IR、physical realization和target implementation
-分别由tasks/07、tasks/08、tasks/10拥有。
+分别由`tasks/07-tile-region.md`、`tasks/08-physical-realization.md`和`tasks/10-compute-movement.md`拥有。
 
 ## 6. Selected Execution、Memory、Communication 与 Completion
 
@@ -177,6 +180,8 @@ baseline；driver/process cancellation在任意时点终止整个transaction且�
 - async read/write resource必须活到typed completion；source order、同地址或local fence不能替代未证明的engine/DTE completion。
 - logical collective先保留数学/mesh语义；Direct DTE只有all-rank peer/message/resource/receiver-offset/status合同闭合后才进入
   accepted instruction program。
+- Direct、Ring和ordered-Tree只作为complete-rank clone上的typed rewrite参数；Ring cycle和Tree edge/root从current
+  topology/placement推导。accepted IR只保留展开后的p2p、local work、token/wait/fence，不保存算法名或通信sidecar。
 - `wafer.tile.region`只是structured task/traversal fragment。跨region resident buffer与event通过SSA/structured control flow传递，
   region边界不自动切DDR、分配arena或提交candidate。
 
@@ -207,7 +212,7 @@ consumer分为四条互不冒充的路径：
 2. **repo-owned TargetCall/SystemC model**：消费`TargetCompilationProduct`中的同次lowering artifacts，执行typed calls、
    address spaces、engine/event和numeric semantics；不执行repo CRT、RISC-V ELF或vendor packet。
 3. **board RuntimeProvider**：消费verified package并实际完成allocation/import/H2D/load/submit/wait/status/D2H/cleanup；
-   board capability与numeric evidence按environment独立资格化。
+   current kernel/model、16-rank Direct DTE和production workload vertical按environment/profile独立资格化。
 4. **exact-package model**：只有ISS/vendor simulator同时闭合loader ABI、MMIO/custom instruction、Direct DTE和provider lifecycle时，
    才能原样执行package内all-and-only RISC-V modules。
 
@@ -222,6 +227,7 @@ packet/MMIO provenance和timing calibration是额外证据分支，不是functio
 - atomic bundle/module/package publication与readback；
 - 独立source CPU expected到TargetCall/SystemC完整output differential；
 - configured board execution与board-output numeric correlation；
+- profile-scoped compiler-hardware behavior的`supported`/`board-observed`/`unknown`/`excluded`边界；
 - optional exact-package、packet/MMIO和timing evidence。
 
 任一层失败只证明该层未闭合，不能由更便宜的fixture冒充。late-rank、link、manifest或model failure不发布partial result；
@@ -230,20 +236,21 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 7B block、GEMM/MLP、convolution、attention和branched workload只是通用算法与scale evidence；模型名、shape、parameter位置和
 最终fusion视图不进入IR协议、query key或rewrite规则。
 
-## 10. 当前实现与目标合同
+## 10. 当前发布基线与独立演进边界
 
-| 维度 | 当前production事实 | physical-dataflow目标合同 |
+| 维度 | 当前production事实 | 尚未并入当前基线 |
 | --- | --- | --- |
-| source boundary | static-ranked StableHLO program directory；rank-count显式1/16 | 保持同一用户边界；dynamic/MPMD另行设计 |
-| structured optimization | official legalization、窄residual cleanup和best-effort canonicalization；部分上游tiling/fusion utility已被当前scheduler直接复用 | Q32只在candidate clone中加入有直接correctness gate的rewrite，不建立独立production优化审批层 |
-| decision owner | bounded task/dataflow scheduler，有限scope/residency alternatives | MLIR-native candidate generator在真实clone上有界联合评估implementation/tile/encoding/route/residency/share-recompute/hoist/numeric DAG/buffering/order/communication；所有current producer进入同一frontier并有production winner |
-| physical realization | canonical Tensor/Cx/NCx与显式materialization；compact DMA | attr/type interface解释encoding，analysis/helper选择transfer并立即物化；Q32.M允许current GEMM/batched-GEMM在exact proof下吸收固定Cx/NCx materialization，Q32.V增加typed mapped DMA/physical fill纵向 |
-| GEMM ABI | closed v1 implicit normal/normal及closed v2 explicit orientation | Q32.V已闭合typed source/Instr/TargetCall/ABI/SystemC纵向，Q32.M起由通用candidate owner消费 |
-| package | 当前typed manifest | current schema保持；Q32.V扩展command若真实consumer需要，winner-derived capability requirements由post-selection owner派生 |
-| model | same-lowering TargetCall/SystemC untimed functional-numeric | Q32 candidate复用同一model gate；board predicate独立 |
-| candidate selection | deterministic有限frontier与whole-variant acceptance | actual clones覆盖全部current choice producers；exact Pareto、target static policy、resource-aware metrics和现有all-rank coordinator；按完整增长决定fixed vector/frontier/beam |
+| source boundary | static-ranked StableHLO program directory；rank-count显式1/16 | dynamic shape/state、MPMD、cross-card |
+| decision owner | actual-clone有界联合评估implementation、tile/relation、encoding/route、residency、share/recompute、hoist、numeric DAG、buffering/order和communication；全部current producer进入共同frontier | production multi-buffer prologue/steady/epilogue |
+| numeric transformation | supported integer exact/modular变换，以及f16/bf16/f32 reassociation、tree、distribution/factorization、reduction/GEMM split与floating collective；统一typed comparator验收 | 任意fast-math、未证明FMA contraction、用容差掩盖special value/index/layout/guard错误 |
+| physical realization | typed Tensor/Cx/NCx、mapped/compact movement、physical-footprint fill、fixed-capacity SPM/DDR packing和oriented GEMM | 无typed target/profile依据的encoding、bank coloring或route猜测 |
+| communication | 不超过16 rank的topology-derived Direct/Ring/ordered-Tree，显式p2p/local work/completion和all-rank Direct DTE acceptance | ragged/segmented peer exchange、subgroup full-card barrier替代、cross-card transport |
+| artifact/runtime | all-and-only rank `ExecutableBundle`、same-lowering Target LLVM、schema-v6 verified package、no-card、TargetCall/SystemC和configured TX81 RuntimeProvider | exact-package ISS/vendor simulator |
+| hardware evidence | 当前profile的compiler-sensitive行为按supported/board-observed/unknown/excluded闭合；unknown采用保守compiler策略 | 通用model/board numeric correlation、packet/MMIO provenance、cycle-accurate timing |
+| performance evidence | compiler只消费final IR可证明的静态cost；板端样本不自动回写candidate ranking | production-artifact profiler完成资格化，以及其后独立的hardware-informed ranking |
 
-本表只用于避免把目标合同误写成已实现事实；任务状态和迁移顺序仍只读`tasks/progress.md`及当前实施计划。
+当前队列先完成production-artifact profiler，随后才启动multi-engine software pipelining；二者在各自completion gate
+闭合前都不改变本表的production事实。动态状态和启动前置只读`tasks/progress.md`。
 
 ## 11. Owner 索引
 
@@ -267,6 +274,7 @@ target-model mismatch不回滚已经验证并发布的package。板端不可用�
 | 跨stage verification contract与evidence口径 | 16 |
 | target execution model、numeric/bulk/SystemC与board correlation | 17 |
 | source/build ownership、依赖与测试镜像 | 18 |
+| profile-scoped compiler-hardware行为与外推边界 | `docs/tx81-compiler-hardware-calibration.md` |
 
 编号是owner导航，不表示transform顺序或任务优先级。专题文件路径只从`tasks/README.md`读取，动态前置只从
 `tasks/progress.md`读取；不要在其它文档绑定本文件章节号。
