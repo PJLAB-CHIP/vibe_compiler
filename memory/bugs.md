@@ -1331,7 +1331,7 @@
   pure NCC、NCC→Kcore read和Kcore write→NCC，不能把待验证假设写回普通case。
 - 防复发：instruction microcase不应为seed、guard scan或普通结果oracle调用
   `get_spm_memory_mapping()`；若实际值精确对应上一case输入，先对照raw payload、issue/completion edge和
-  前一case语义，再判断oracle或硬件数值能力。机械改造后的板端证据必须由clean session重放，旧结果不能
+  前一case语义，再判断oracle或硬件数值能力。机械改造后的板端证据必须由clean session新执行，旧结果不能
   自动继承。
 
 ## 2026-07-24 mapped-SPM uncached alias不能执行dcache publication

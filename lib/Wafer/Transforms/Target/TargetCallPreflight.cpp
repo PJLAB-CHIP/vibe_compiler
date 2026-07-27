@@ -6,6 +6,7 @@
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
+#include "Wafer/Target/TargetNumericCapability.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -399,9 +400,9 @@ preflightDynamicDDRSubview(mlir::memref::SubViewOp subviewOp) {
 }
 } // namespace
 
-mlir::FailureOr<int64_t>
-getStaticUInt32SPMAddress(mlir::Operation *op, mlir::Value value,
-                          llvm::StringRef role) {
+mlir::FailureOr<int64_t> getStaticUInt32SPMAddress(mlir::Operation *op,
+                                                   mlir::Value value,
+                                                   llvm::StringRef role) {
   auto viewType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
   if (!viewType || !isWaferSPMMemRefType(viewType))
     return op->emitError() << "target_abi_narrowing: " << role
@@ -830,8 +831,7 @@ verifyTargetInstructionFormat(mlir::Operation *op,
   auto verifyQualifiedCTTuple =
       [&](mlir::Value value, llvm::StringRef role, bool qualified,
           llvm::StringRef family) -> mlir::LogicalResult {
-    mlir::FailureOr<LogicalFormat> format =
-        getLogicalFormat(op, value, role);
+    mlir::FailureOr<LogicalFormat> format = getLogicalFormat(op, value, role);
     if (mlir::failed(format) ||
         mlir::failed(getDataFormatCode(op, value, role, targetProfile)))
       return mlir::failure();
@@ -854,12 +854,42 @@ verifyTargetInstructionFormat(mlir::Operation *op,
           [&](auto) { return mlir::success(); })
       .Case<InstrFillOp>(
           [&](auto typedOp) { return verify(typedOp.getDest(), "fill dest"); })
-      .Case<InstrElementwiseOp>([&](auto typedOp) {
+      .Case<InstrElementwiseOp>([&](auto typedOp) -> mlir::LogicalResult {
+        mlir::Value input = typedOp.getInputs().front();
+        mlir::FailureOr<LogicalFormat> inputFormat =
+            getLogicalFormat(op, input, "elementwise input");
+        if (mlir::failed(inputFormat))
+          return mlir::failure();
         mlir::Value encoded = isTargetRelationElementwiseKind(typedOp.getKind())
-                                  ? typedOp.getInputs().front()
+                                  ? input
                                   : typedOp.getDest();
         if (mlir::failed(verify(encoded, "elementwise format")))
           return mlir::failure();
+        constexpr TargetNumericSemanticRequirement requirement =
+            TargetNumericSemanticRequirement::SourceExact;
+        const TargetCTElementwiseNumericCapabilityRecord *numeric =
+            findTargetCTElementwiseNumericCapability(
+                targetProfile, typedOp.getKind(), *inputFormat, requirement);
+        if (!numeric)
+          return op->emitError()
+                 << "unsupported_target_numeric: profile '"
+                 << stringifyTargetProfileId(targetProfile)
+                 << "', elementwise kind '" << stringifyEnum(typedOp.getKind())
+                 << "', format '" << stringifyLogicalFormat(*inputFormat)
+                 << "', requirement '"
+                 << stringifyTargetNumericSemanticRequirement(requirement)
+                 << "' has no closed numeric capability row";
+        if (!numeric->isSupported())
+          return op->emitError()
+                 << "unsupported_target_numeric: profile '"
+                 << stringifyTargetProfileId(targetProfile)
+                 << "', elementwise kind '" << stringifyEnum(typedOp.getKind())
+                 << "', format '" << stringifyLogicalFormat(*inputFormat)
+                 << "', requirement '"
+                 << stringifyTargetNumericSemanticRequirement(requirement)
+                 << "' is unsupported: "
+                 << stringifyTargetNumericUnsupportedReason(
+                        numeric->unsupportedReason);
         if (typedOp.getDest() != encoded &&
             mlir::cast<mlir::MemRefType>(typedOp.getDest().getType())
                 .getElementType()
@@ -928,9 +958,8 @@ verifyTargetInstructionFormat(mlir::Operation *op,
             getLogicalFormat(op, typedOp.getInput(), "unpool input");
         if (mlir::failed(format))
           return mlir::failure();
-        return verifyQualifiedCTTuple(
-            typedOp.getInput(), "unpool input",
-            *format == LogicalFormat::F16, "unpool");
+        return verifyQualifiedCTTuple(typedOp.getInput(), "unpool input",
+                                      *format == LogicalFormat::F16, "unpool");
       })
       .Case<InstrTDMADataMoveOp>([&](auto typedOp) {
         return verify(typedOp.getDest(), "tdma_data_move dest");

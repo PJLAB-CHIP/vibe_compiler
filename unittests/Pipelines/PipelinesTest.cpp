@@ -102,18 +102,18 @@ module {
       %sum = arith.addf %accumulator, %value : f32
       linalg.yield %sum : f32
     } -> tensor<2xf32>
-    %negated_empty = tensor.empty() : tensor<2x4xf32>
-    %negated = linalg.generic {
+    %squared_empty = tensor.empty() : tensor<2x4xf32>
+    %squared = linalg.generic {
         indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
                          affine_map<(d0, d1) -> (d0, d1)>],
         iterator_types = ["parallel", "parallel"]
       } ins(%converted : tensor<2x4xf32>)
-        outs(%negated_empty : tensor<2x4xf32>) {
+        outs(%squared_empty : tensor<2x4xf32>) {
     ^bb0(%value: f32, %old: f32):
-      %negative = arith.negf %value : f32
-      linalg.yield %negative : f32
+      %square = arith.mulf %value, %value : f32
+      linalg.yield %square : f32
     } -> tensor<2x4xf32>
-    return %negated, %reduced : tensor<2x4xf32>, tensor<2xf32>
+    return %squared, %reduced : tensor<2x4xf32>, tensor<2xf32>
   }
 }
 )mlir",

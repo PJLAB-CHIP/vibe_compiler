@@ -752,28 +752,6 @@ PAIR_CASES = (
 )
 
 
-def _is_parallel_address_sweep_case(case: MemoryCase) -> bool:
-    if (
-        case.kind != KIND_ENGINE_PAIR
-        or (case.engine_a, case.engine_b) != SPM_PARALLEL_ENGINES
-    ):
-        return False
-    relative_offset = case.spm_b - case.spm_a
-    phase = case.spm_a % 256
-    return (
-        phase == 0
-        and relative_offset in SPM_BANK_PERIOD_RELATIVE_OFFSETS
-    ) or (
-        relative_offset == 8192
-        and phase in SPM_PARALLEL_ALIGNMENT_PHASES
-    )
-
-
-PARALLEL_ADDRESS_SWEEP_CASES = tuple(
-    case for case in PAIR_CASES if _is_parallel_address_sweep_case(case)
-)
-
-
 def _parallel_pair_transfer(engine_a: int, engine_b: int) -> int:
     if ENGINE_NE in (engine_a, engine_b) or ENGINE_CT in (
         engine_a,

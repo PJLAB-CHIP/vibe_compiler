@@ -71,7 +71,7 @@ RDMA→CT/NE→WDMA三阶段pipeline、worker placement/arbitration和DDR active
    混合或其它collective phase混入时fail closed。
 2. Python catalog检查9组pair均绑定source、payload、结构/numeric/lifecycle oracle，且existing raw evidence不被
    重复登记。
-3. 每个case双包compile并比较normalized manifest；逐条重放message tuple的跨rankmatching和Direct/Ring/Tree
+3. 每个case双包compile并比较normalized manifest；逐条校验message tuple的跨rankmatching和Direct/Ring/Tree
    graph oracle，并归档characterization report、source、package、ELF、transport contract和digest。
 4. CTest注册no-card与board case；board label持有同一resource lock，runner只在显式
    `collective-characterization`批次串行执行。

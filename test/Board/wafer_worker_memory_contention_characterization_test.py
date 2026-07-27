@@ -31,9 +31,6 @@ def _validate_existing_bindings() -> None:
             ncc.V2_WORKER_SUBSET_SCOPE_CASES
         ),
         "ddr-single-active-rank-tile-offset": len(ddr_tile.matrix_cases()),
-        "spm-short-offset-phase-controls": len(
-            memory_catalog.PARALLEL_ADDRESS_SWEEP_CASES
-        ),
         "spm-sustained-ct-rdma-far-disjoint-control": len(
             memory_catalog.SUSTAINED_PARALLEL_PAIR_CASES
         ),
@@ -202,6 +199,7 @@ def _validate_catalog_and_requests() -> None:
         case
         for case in catalog.DDR_ACTIVE_RANK_CASES
         if case.streams[0].stride_bytes
+        and case.ddr_direction == catalog.DDRDirection.BIDIRECTIONAL
     )
     input0, input1 = driver.rank_inputs(stride, 0, 0)
     assert len(input0) == len(input1) == driver.RESOURCE_BYTES
@@ -224,6 +222,25 @@ def _validate_catalog_and_requests() -> None:
         driver.GUARD_BYTES + inner :
         driver.GUARD_BYTES + stride0
     ] == bytes([driver.CANARY]) * (stride0 - inner)
+    compact = driver._compact_payload_pattern(stride, 0, 0, "rdma")
+    spm = driver._spm_span_pattern(stride, 0, 0, "rdma")
+    assert source == driver._ddr_span_pattern(stride, 0, 0, "rdma")
+    assert source[driver.GUARD_BYTES + inner] == driver.CANARY
+    assert spm[driver.GUARD_BYTES + inner] == compact[inner]
+    assert spm[
+        driver.GUARD_BYTES : driver.GUARD_BYTES + payload
+    ] == compact
+    assert set(
+        spm[
+            driver.GUARD_BYTES + payload :
+            driver.GUARD_BYTES + inner + stride0 * (iteration - 1)
+        ]
+    ) == {driver.CANARY}
+    wdma_spm = driver._spm_span_pattern(stride, 0, 0, "wdma")
+    assert input1[
+        driver.SEED_WDMA_OFFSET :
+        driver.SEED_WDMA_OFFSET + len(wdma_spm)
+    ] == wdma_spm
 
 
 def _record(
@@ -303,13 +320,17 @@ def _synthetic_outputs(
     if rank in driver.active_ranks_for_sample(case, sample):
         assert case.ddr_direction is not None
         if case.ddr_direction != catalog.DDRDirection.WDMA:
-            span = driver._span_pattern(case, rank, sample, "rdma")
+            span = driver._spm_span_pattern(
+                case, rank, sample, "rdma"
+            )
             output0[
                 driver.RDMA_ARCHIVE_OFFSET :
                 driver.RDMA_ARCHIVE_OFFSET + len(span)
             ] = span
         if case.ddr_direction != catalog.DDRDirection.RDMA:
-            span = driver._span_pattern(case, rank, sample, "wdma")
+            span = driver._ddr_span_pattern(
+                case, rank, sample, "wdma"
+            )
             output0[
                 driver.WDMA_TARGET_OFFSET :
                 driver.WDMA_TARGET_OFFSET + len(span)

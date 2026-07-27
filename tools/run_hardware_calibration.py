@@ -49,7 +49,7 @@ HEARTBEAT_CTEST = "wafer-board-single-op-add"
 SUMMARY_SCHEMA_VERSION = 1
 COMPILER_OPTIMIZATION_PAIRED_CASES = (
     "reciprocal-implementation",
-    "modular-common-factor",
+    "f16-common-factor",
     "resident-fanout-share",
     "consumer-local-recompute",
     "ready-order-movement-first",
@@ -329,12 +329,6 @@ CALIBRATION_STEPS = (
         "wafer-board-k-sharded-gemm",
         "16-rank sharded GEMM production workload",
     ),
-    CalibrationStep(
-        "terminal-heartbeat",
-        "terminal-heartbeat",
-        HEARTBEAT_CTEST,
-        "prove the normal rank-one execution path remains healthy",
-    ),
 )
 
 STRIDED_DEPENDENCY_CASE_NAMES = (
@@ -401,12 +395,6 @@ EXPLICIT_ONLY_STEPS = (
         "contract-legal unit-64 VuVLoop semantics and post-case integrity",
     ),
     CalibrationStep(
-        "ne-backward-conv-focused-replay",
-        "rank-one-ne-explicit",
-        "wafer-board-ne-backward-conv-focused",
-        "explicit replay of the completed corrected-footprint observations",
-    ),
-    CalibrationStep(
         "memory-parallel-expanded",
         "rank-one-memory-focused",
         "wafer-board-memory-descriptor-parallel-expanded",
@@ -430,12 +418,6 @@ EXPLICIT_ONLY_STEPS = (
         "wafer-board-ncc-mapped-spm-ne-depth4-no-local-wait",
         "depth-four NCC-to-Kcore boundary without local completion",
     ),
-    CalibrationStep(
-        "ncc-mapped-spm-boundary-replay",
-        "rank-one-ncc-explicit",
-        "wafer-board-ncc-mapped-spm-boundary-manual",
-        "explicit replay of the completed mapped-SPM boundary observations",
-    ),
     *tuple(
         CalibrationStep(
             f"ncc-{case_name}",
@@ -456,36 +438,6 @@ EXPLICIT_ONLY_STEPS = (
         "rank-one-memory-focused",
         "wafer-board-ddr-sparse-high-offset-probe",
         "40-GiB compiler-managed workspace sparse relative-offset correctness",
-    ),
-    CalibrationStep(
-        "spm-parallel-address-sweep-replay",
-        "rank-one-spm-explicit",
-        "wafer-board-spm-parallel-address-sweep",
-        "explicit replay of the completed SPM phase and base-residue sweep",
-    ),
-    CalibrationStep(
-        "single-op-add-once",
-        "rank-one-heartbeat-explicit",
-        "wafer-board-single-op-add-once",
-        "one-shot ordinary Add execution-plane heartbeat",
-    ),
-    CalibrationStep(
-        "instruction-family-full-replay",
-        "rank-one-instruction-explicit",
-        "wafer-board-instruction-family-safe",
-        "explicit replay of every instruction-family row, including old evidence",
-    ),
-    CalibrationStep(
-        "memory-descriptor-full-replay",
-        "rank-one-memory-explicit",
-        "wafer-board-memory-descriptor-calibration",
-        "explicit replay of old and new memory descriptor rows",
-    ),
-    CalibrationStep(
-        "spm-full-replay",
-        "rank-one-spm-explicit",
-        "wafer-board-spm-calibration",
-        "explicit replay of old and new SPM rows",
     ),
     *tuple(
         CalibrationStep(
@@ -691,9 +643,8 @@ EXPLICIT_ONLY_STEPS = (
 )
 
 ALL_CALIBRATION_STEPS = (
-    *CALIBRATION_STEPS[:-1],
+    *CALIBRATION_STEPS,
     *EXPLICIT_ONLY_STEPS,
-    CALIBRATION_STEPS[-1],
 )
 
 SELECTABLE_BATCHES = {
@@ -800,8 +751,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="KEY",
         help=(
             "execute/list only this named calibration step; repeatable. "
-            "The initial and terminal known-good heartbeats are added "
-            "automatically, and execution retains canonical order."
+            "The initial known-good heartbeat is added once automatically, "
+            "and execution retains canonical order."
         ),
     )
     parser.add_argument(
@@ -811,8 +762,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="NAME",
         help=(
             "execute/list every step in this named explicit batch; repeatable. "
-            "Named batches retain canonical order between automatic "
-            "heartbeats."
+            "Named batches retain canonical order after the one automatic "
+            "initial heartbeat."
         ),
     )
     parser.add_argument("--ctest", default="ctest", help="CTest executable")
@@ -952,10 +903,9 @@ def validate_step_definition(steps: Sequence[CalibrationStep]) -> None:
         for name, count in Counter(step.ctest_name for step in steps).items()
         if count > 1
     }
-    expected_duplicates = {HEARTBEAT_CTEST: 2}
-    if duplicates and duplicates != expected_duplicates:
+    if duplicates:
         raise CalibrationRunnerError(
-            f"only the initial/terminal heartbeat may repeat: {duplicates}"
+            f"calibration CTests must not repeat: {duplicates}"
         )
 
 
@@ -965,18 +915,13 @@ def validate_default_plan() -> None:
     if (
         CALIBRATION_STEPS[0].key != "initial-profile-heartbeat"
         or CALIBRATION_STEPS[0].ctest_name != HEARTBEAT_CTEST
-        or CALIBRATION_STEPS[-1].key != "terminal-heartbeat"
-        or CALIBRATION_STEPS[-1].ctest_name != HEARTBEAT_CTEST
     ):
         raise CalibrationRunnerError(
-            "default plan must begin and end with the known-good heartbeat"
+            "default plan must begin with the known-good heartbeat"
         )
-    if (
-        ALL_CALIBRATION_STEPS[0] != CALIBRATION_STEPS[0]
-        or ALL_CALIBRATION_STEPS[-1] != CALIBRATION_STEPS[-1]
-    ):
+    if ALL_CALIBRATION_STEPS[0] != CALIBRATION_STEPS[0]:
         raise CalibrationRunnerError(
-            "selectable plan must retain the default heartbeat boundaries"
+            "selectable plan must retain the initial heartbeat"
         )
     default_keys = {step.key for step in CALIBRATION_STEPS}
     explicit_keys = {step.key for step in EXPLICIT_ONLY_STEPS}
@@ -1020,10 +965,7 @@ def select_calibration_steps(
         raise CalibrationRunnerError(
             f"calibration steps were selected more than once: {duplicates}"
         )
-    automatic_keys = {
-        CALIBRATION_STEPS[0].key,
-        CALIBRATION_STEPS[-1].key,
-    }
+    automatic_keys = {CALIBRATION_STEPS[0].key}
     explicitly_automatic = sorted(set(expanded_keys) & automatic_keys)
     if explicitly_automatic:
         raise CalibrationRunnerError(
@@ -1031,7 +973,7 @@ def select_calibration_steps(
             f"{explicitly_automatic}"
         )
     selectable = {
-        step.key: step for step in ALL_CALIBRATION_STEPS[1:-1]
+        step.key: step for step in ALL_CALIBRATION_STEPS[1:]
     }
     unknown = sorted(set(expanded_keys) - set(selectable))
     if unknown:
@@ -1041,13 +983,12 @@ def select_calibration_steps(
     selected = set(expanded_keys)
     ordered = tuple(
         step
-        for step in ALL_CALIBRATION_STEPS[1:-1]
+        for step in ALL_CALIBRATION_STEPS[1:]
         if step.key in selected
     )
     return (
         CALIBRATION_STEPS[0],
         *ordered,
-        CALIBRATION_STEPS[-1],
     )
 
 
@@ -1255,9 +1196,8 @@ def archive_step_artifacts(
         or test.name == "wafer-board-cluster-direct-dte"
     )
     if preserves_compiler_artifacts:
-        # Pending calibration and paired optimizer results are not replayable
-        # from JSON summaries alone. Preserve the exact source snapshots and
-        # final linked ELFs used by their structural and device oracles.
+        # Preserve the exact source snapshots and final linked ELFs as
+        # read-only audit evidence for pending calibration and paired results.
         durable_suffixes.update({".mlir", ".meta", ".so"})
     evidence_files = tuple(
         path

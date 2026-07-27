@@ -29,7 +29,6 @@ def main() -> int:
     assert len(catalog.BANK_PERIOD_PAIR_CASES) == 16
     assert len(catalog.ALIGNMENT_PAIR_CASES) == 6
     assert len(catalog.PAIR_CASES) == 82
-    assert len(catalog.PARALLEL_ADDRESS_SWEEP_CASES) == 26
     assert len(catalog.SUSTAINED_PARALLEL_PAIR_CASES) == 20
     assert len(catalog.CROSS_WORKER_PARALLEL_PAIR_CASES) == 2
     assert len(catalog.DEPENDENCY_PARALLEL_PAIR_CASES) == 12
@@ -73,7 +72,6 @@ def main() -> int:
             domain=None,
             oracle=None,
             relative_spm_offset=None,
-            parallel_address_sweep=False,
             parallel_pair_expanded=False,
             conflict_equivalence=True,
         )
@@ -88,7 +86,6 @@ def main() -> int:
                 domain=None,
                 oracle=None,
                 relative_spm_offset=None,
-                parallel_address_sweep=False,
                 parallel_pair_expanded=False,
                 conflict_equivalence=False,
             )
@@ -260,17 +257,6 @@ def main() -> int:
         for case in catalog.BANK_PERIOD_PAIR_CASES
         + catalog.ALIGNMENT_PAIR_CASES
     } == {catalog.SPM_PARALLEL_ENGINES}
-    assert {
-        case.spm_b - case.spm_a
-        for case in catalog.PARALLEL_ADDRESS_SWEEP_CASES
-        if case.spm_a % 256 == 0
-        and case.spm_b - case.spm_a <= 6144
-    } == set(catalog.SPM_BANK_PERIOD_RELATIVE_OFFSETS)
-    assert {
-        case.spm_a % 256
-        for case in catalog.PARALLEL_ADDRESS_SWEEP_CASES
-        if case.spm_b - case.spm_a == 8192
-    } == set(catalog.SPM_PARALLEL_ALIGNMENT_PHASES)
     assert all(
         case.spm_b - case.spm_a
         >= catalog.SPM_PAIR_SLOT_BYTES + 2 * catalog.SPM_GUARD_BYTES
@@ -534,23 +520,12 @@ def main() -> int:
                 for outer_begin, outer_end in built.allowed_ranges
             )
 
-    focused = runner.select_cases(
-        types.SimpleNamespace(
-            selected_cases=None,
-            domain=None,
-            oracle=None,
-            relative_spm_offset=None,
-            parallel_address_sweep=True,
-        )
-    )
-    assert focused == catalog.PARALLEL_ADDRESS_SWEEP_CASES
     expanded = runner.select_cases(
         types.SimpleNamespace(
             selected_cases=None,
             domain=None,
             oracle=None,
             relative_spm_offset=None,
-            parallel_address_sweep=False,
             parallel_pair_expanded=True,
         )
     )
@@ -559,7 +534,6 @@ def main() -> int:
         {"selected_cases": [catalog.CATALOG[0].name]},
         {"domain": ["multi-engine-parallel-window"]},
         {"relative_spm_offset": [4352]},
-        {"parallel_address_sweep": True},
     )
     for override in expanded_conflicts:
         arguments = {
@@ -567,7 +541,6 @@ def main() -> int:
             "domain": None,
             "oracle": None,
             "relative_spm_offset": None,
-            "parallel_address_sweep": False,
             "parallel_pair_expanded": True,
         }
         arguments.update(override)

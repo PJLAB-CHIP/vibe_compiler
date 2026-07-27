@@ -16,7 +16,7 @@ Pipeline position:
   rank-local/whole-variant exact gates的reserved baseline和默认winner。
 - Current stage responsibility:
   通过compiler-private test seam让同一source的reserved baseline与默认production winner
-  分别重放完整SPM/DDR、instruction、target ABI和package publication；按会改变真实
+  分别执行完整SPM/DDR、instruction、target ABI和package publication；按会改变真实
   instruction、layout、movement、resource lifetime、issue order或communication的机制组织
   少量区分case，冻结相同payload、CPU expected、最终ELF结构oracle、串行A/B执行顺序和
   bounded timeout。板端首先证明两份package都正确，再保留成对观测；只有可信PMU/timing
@@ -57,7 +57,7 @@ Pipeline position:
 4. ready-order及后续software pipeline改变真实issue order、completion boundary和engine并行；
 5. Direct/Ring/Tree改变all-rank message、hop、event和staging；
 6. normalization、alias proof、packing、capacity reject、atomic failure和verifier negative只走
-   host exact gate；它们不消耗板卡时间，但会由每条source纵向自然重放。
+   host exact gate；它们不消耗板卡时间，但会由每条source纵向自然验证。
 
 每个可执行case必须同时具备：
 
@@ -117,10 +117,11 @@ prologue/steady/epilogue、capacity/alias/loop-carried hazard及DTE/fence负例�
    device resource lock；
 4. 现有hardware runner在默认校准步骤之外提供显式
    `--batch compiler-optimization-campaign`，按canonical order执行既有Direct vertical和8个paired case；
-   `--batch compiler-optimization-paired`只保留8个同源双包子集。二者都放在一次初始heartbeat之后、
-   terminal heartbeat之前，不重复环境qualification；
+   `--batch compiler-optimization-paired`只保留8个同源双包子集。二者都只在本次重启会话开头执行一次
+   初始资格测试，不在结尾或case之间重复环境qualification；
 5. 每个optimizer case归档三份source snapshot、两份最终ELF与manifest、结构/观测JSON、raw payload及
-   `wafer-compile`、`wafer-compile-test`、`wafer-run`、objdump实际路径和digest，保证失败可重放；
+   `wafer-compile`、`wafer-compile-test`、`wafer-run`、objdump实际路径和digest，只用于失败归因和审计，
+   不作为后续测试输入；
 6. 本轮没有配置板卡时只报告`pending board execution`，不能把no-card、ELF或host样本写成板端
    A/B结论。
 

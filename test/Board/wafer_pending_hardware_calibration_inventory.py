@@ -52,7 +52,7 @@ def _binding(
 
 COMPILER_OPTIMIZATION_CASES = (
     "reciprocal-implementation",
-    "modular-common-factor",
+    "f16-common-factor",
     "resident-fanout-share",
     "consumer-local-recompute",
     "ready-order-movement-first",
@@ -838,7 +838,7 @@ FAMILIES = (
         oracle=(
             "sample-rotated-four-source-sentinels",
             "exact-5-3-2-0-indexed-pool-auxiliary",
-            "consistent-nonempty-source-subset-per-64-channel-target",
+            "indexed-zero-fill-baseline-or-mask-nonempty-source-subset",
             "logical-nontarget-physical-tail-slot-guards",
             "matching-terminal-and-cleanup",
         ),

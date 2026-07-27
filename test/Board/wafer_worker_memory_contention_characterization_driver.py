@@ -317,7 +317,29 @@ def request_bytes(
     )
 
 
-def _span_pattern(
+def _compact_payload_pattern(
+    case: catalog.CharacterizationCase,
+    rank: int,
+    sample: int,
+    purpose: str,
+) -> bytes:
+    payload_bytes, _, _, _ = _shape(case)
+    purpose_delta = {"rdma": 0, "wdma": 73}[purpose]
+    return bytes(
+        (
+            case.payload_seed
+            + rank * 37
+            + sample * 29
+            + compact_index * 17
+            + (compact_index >> 8) * 11
+            + purpose_delta
+        )
+        & 0xFF
+        for compact_index in range(payload_bytes)
+    )
+
+
+def _ddr_span_pattern(
     case: catalog.CharacterizationCase,
     rank: int,
     sample: int,
@@ -326,25 +348,33 @@ def _span_pattern(
     payload_bytes, inner_bytes, stride0, iteration0 = _shape(case)
     envelope = inner_bytes + stride0 * (iteration0 - 1)
     result = bytearray([CANARY] * (envelope + 2 * GUARD_BYTES))
-    purpose_delta = {"rdma": 0, "wdma": 73}[purpose]
-    compact_index = 0
+    payload = _compact_payload_pattern(case, rank, sample, purpose)
+    compact_begin = 0
     for iteration in range(iteration0):
         begin = GUARD_BYTES + (
             iteration * stride0 if iteration0 > 1 else 0
         )
-        for lane in range(inner_bytes):
-            value = (
-                case.payload_seed
-                + rank * 37
-                + sample * 29
-                + compact_index * 17
-                + (compact_index >> 8) * 11
-                + purpose_delta
-            )
-            result[begin + lane] = value & 0xFF
-            compact_index += 1
-    if compact_index != payload_bytes:
-        raise AssertionError("span pattern did not consume compact bytes")
+        compact_end = compact_begin + inner_bytes
+        result[begin : begin + inner_bytes] = payload[
+            compact_begin:compact_end
+        ]
+        compact_begin = compact_end
+    if compact_begin != payload_bytes:
+        raise AssertionError("DDR span did not consume compact payload")
+    return bytes(result)
+
+
+def _spm_span_pattern(
+    case: catalog.CharacterizationCase,
+    rank: int,
+    sample: int,
+    purpose: str,
+) -> bytes:
+    payload_bytes, inner_bytes, stride0, iteration0 = _shape(case)
+    envelope = inner_bytes + stride0 * (iteration0 - 1)
+    result = bytearray([CANARY] * (envelope + 2 * GUARD_BYTES))
+    payload = _compact_payload_pattern(case, rank, sample, purpose)
+    result[GUARD_BYTES : GUARD_BYTES + payload_bytes] = payload
     return bytes(result)
 
 
@@ -357,15 +387,18 @@ def rank_inputs(
     input1 = bytearray(RESOURCE_BYTES)
     request = request_bytes(case, rank, sample)
     input0[: len(request)] = request
-    rdma_span = _span_pattern(case, rank, sample, "rdma")
-    wdma_span = _span_pattern(case, rank, sample, "wdma")
-    input0[SOURCE_OFFSET : SOURCE_OFFSET + len(rdma_span)] = rdma_span
+    rdma_ddr_span = _ddr_span_pattern(case, rank, sample, "rdma")
+    rdma_spm_span = _spm_span_pattern(case, rank, sample, "rdma")
+    wdma_spm_span = _spm_span_pattern(case, rank, sample, "wdma")
+    input0[
+        SOURCE_OFFSET : SOURCE_OFFSET + len(rdma_ddr_span)
+    ] = rdma_ddr_span
     input1[
-        SEED_RDMA_OFFSET : SEED_RDMA_OFFSET + len(rdma_span)
-    ] = bytes([CANARY]) * len(rdma_span)
+        SEED_RDMA_OFFSET : SEED_RDMA_OFFSET + len(rdma_spm_span)
+    ] = bytes([CANARY]) * len(rdma_spm_span)
     input1[
-        SEED_WDMA_OFFSET : SEED_WDMA_OFFSET + len(wdma_span)
-    ] = wdma_span
+        SEED_WDMA_OFFSET : SEED_WDMA_OFFSET + len(wdma_spm_span)
+    ] = wdma_spm_span
     return bytes(input0), bytes(input1)
 
 
@@ -511,12 +544,12 @@ def _expected_output0(
     if rank in active_ranks_for_sample(case, sample):
         assert case.ddr_direction is not None
         if case.ddr_direction != catalog.DDRDirection.WDMA:
-            span = _span_pattern(case, rank, sample, "rdma")
+            span = _spm_span_pattern(case, rank, sample, "rdma")
             expected[
                 RDMA_ARCHIVE_OFFSET : RDMA_ARCHIVE_OFFSET + len(span)
             ] = span
         if case.ddr_direction != catalog.DDRDirection.RDMA:
-            span = _span_pattern(case, rank, sample, "wdma")
+            span = _ddr_span_pattern(case, rank, sample, "wdma")
             expected[
                 WDMA_TARGET_OFFSET : WDMA_TARGET_OFFSET + len(span)
             ] = span

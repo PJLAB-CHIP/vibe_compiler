@@ -15,7 +15,7 @@ import wafer_compiler_optimization_campaign_catalog as catalog
 
 EXPECTED_CASE_KEYS = {
     "reciprocal-implementation",
-    "modular-common-factor",
+    "f16-common-factor",
     "resident-fanout-share",
     "consumer-local-recompute",
     "ready-order-movement-first",
@@ -234,7 +234,7 @@ def main() -> int:
         )
     ) == (
         "reciprocal-implementation",
-        "modular-common-factor",
+        "f16-common-factor",
         "resident-fanout-share",
         "consumer-local-recompute",
         "ready-order-movement-first",
@@ -390,7 +390,7 @@ def main() -> int:
         "consumer-local-recompute",
     }
     assert shared_families["numeric-dag-and-implementation"] == {
-        "modular-common-factor",
+        "f16-common-factor",
         "reciprocal-implementation",
     }
     assert shared_families["resource-aware-order"] == {

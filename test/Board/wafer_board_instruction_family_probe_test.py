@@ -579,6 +579,10 @@ def validate_output(
         raise RuntimeError(f"{case.name}: record mirror failed")
     select = case.family_name == "CT_SELECT_COMPOSITE"
     repeated_unpool = case.symbol in catalog.REPEATED_UNPOOL_SYMBOLS
+    argmin_snapshot = case.symbol in {
+        "PERIPHERAL_ARGMIN_TIE_F16_OBSERVED",
+        "PERIPHERAL_ARGMIN_NAN_F16_OBSERVED",
+    }
     expected_steps = (
         catalog.STEP_TARGET_ISSUED
         | catalog.STEP_FINAL_FENCE_COMPLETED
@@ -591,6 +595,11 @@ def validate_output(
         | (
             catalog.STEP_REPEATED_OVERLAP_VALUES_STAGED
             if repeated_unpool
+            else 0
+        )
+        | (
+            catalog.STEP_ARGMIN_INPUT_SNAPSHOTTED
+            if argmin_snapshot
             else 0
         )
     )
@@ -698,6 +707,20 @@ def validate_output(
                 f"differs at slot byte {mismatch}: "
                 f"actual=0x{actual_aux_slot[mismatch]:02x}, "
                 f"expected=0x{expected_repeated_aux[mismatch]:02x}"
+            )
+    elif argmin_snapshot:
+        if actual_aux_slot != expected_aux_slot:
+            mismatch = next(
+                index
+                for index, (actual, expected) in enumerate(
+                    zip(actual_aux_slot, expected_aux_slot, strict=True)
+                )
+                if actual != expected
+            )
+            raise RuntimeError(
+                f"{case.name}: post-ArgMin input snapshot differs at slot "
+                f"byte {mismatch}: actual=0x{actual_aux_slot[mismatch]:02x}, "
+                f"expected=0x{expected_aux_slot[mismatch]:02x}"
             )
     else:
         aux_exact_indices = [

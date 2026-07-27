@@ -109,7 +109,7 @@ production winner，按tile/physical route、resident/share/recompute、numeric 
 collective algorithm等最终可观察机制合并case，并要求同ABI、最终ELF结构差异、两包完整CPU expected与平衡
 A/B顺序。当前35个production优化轴已逐项锚定实际owner并处置为14个board-mapped axis、17个host-exact axis和
 4个future software-pipeline axis；落地8个同源paired case，另复用1个Direct-DTE production vertical。
-compiler-private baseline seam、typed catalog、8/8双包no-card、board CTest、可重放artifact归档和显式串行
+compiler-private baseline seam、typed catalog、8/8双包no-card、board CTest、只读artifact审计归档和显式串行
 `compiler-optimization-campaign`批次均已完成pre-board准备。该8+1集合只做production winner qualification，
 不能代表hardware characterization完备。LICM因公开source链不能产生其消费的SCF loop而保留host gate；
 collective硬件行为另以actual Instr phase选择AG Direct/Ring、RS Direct/Ring和AR Ring/Tree的typed矩阵，
@@ -151,13 +151,12 @@ case有显式白名单，其余分组只允许一次引用。`ready`只表示可
 当前资产仍覆盖CT vector 653行、convert 204行、168个instruction-family case（160个safe，另8个
 raw N/HWC Reduce fail-closed）、73个NE row、DataMove base 46 + extended默认17个safe case、
 155个memory-descriptor case、146个SPM row、58个
-cache/coherence case以及NCC、Direct DTE和barrier矩阵。2026-07-24按当前catalog和validator对已保存板端
-产物做了一次离线收口：CT convert 204/204（23个stochastic row按3样本，合计250次）通过各自
-exact/observation gate；DataMove base 46/46 exact；SPM原本地19/19 exact；memory descriptor的
+cache/coherence case以及NCC、Direct DTE和barrier矩阵。已有板端执行结果包括：CT convert 204/204
+（23个stochastic row按3样本，合计250次）通过各自exact/observation gate；DataMove base 46/46 exact；
+SPM原本地19/19 exact；memory descriptor的
 pre-expanded 121/121均已有板端结果，其中旧59项按声明oracle通过（39 exact、20 observation），后续40个
 general offset pair与22个bank-period/alignment row也通过correctness、guard、count和PMU raw gate；
-26-row parallel-address-sweep分析视图包含其中4个general control row，不重复计数。cache/coherence 58/58
-通过，其中54项是纯NCC DDR pair。SPM的50个delegated row也已有具体
+cache/coherence 58/58通过，其中54项是纯NCC DDR pair。SPM的50个delegated row也已有具体
 板端证据：45个由memory-descriptor覆盖，5个physical-layout row由DataMove base中的20个
 Tensor↔Cx/NCx exact case覆盖；新增5个非preferred geometry也已取得完整round-trip、guard和completion的
 bounded observation。新增34个steady-state/cross-worker/dependency pair也已全部上板：20个sustained、
@@ -190,7 +189,7 @@ known-good Add也timeout，说明的只是该次execution会话已经污染；�
 本次干净会话的ordinary Add baseline逐bit exact；随后合同内`unit_elem_count=64`的
 `(128,64,384,192)`与`(192,64,384,128)`两个geometry均通过完整exact result、physical span、guard和
 matching completion，紧随其后的ordinary Add仍exact。
-不再重放任何违反supported `VuVLoop`合同的unit 32/37 raw packet；这类输入只走host negative。恢复
+不再执行任何违反supported `VuVLoop`合同的unit 32/37 raw packet；这类输入只走host negative。恢复
 baseline后完成的3个standalone DMA strict case及36个NCC strided dependency case也全部通过；已有证据
 不重复上板。所有case仍由已注册CTest单进程串行执行，首个timeout或设备异常即停，
 不自动retry/reset/power。

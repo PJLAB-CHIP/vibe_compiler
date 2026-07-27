@@ -215,9 +215,9 @@ PAIRED_DRIVER_BINDINGS = {
             ),
         ),
     ),
-    "modular-common-factor": DriverOracleBinding(
-        "modular_factor_oracle",
-        "def modular_factor_payloads",
+    "f16-common-factor": DriverOracleBinding(
+        "f16_factor_oracle",
+        "def f16_factor_payloads",
         (
             (
                 ExecutableEvidenceCapability.TARGET_CALL_PRESENCE,
@@ -249,7 +249,7 @@ PAIRED_DRIVER_BINDINGS = {
         (
             (
                 ExecutableEvidenceCapability.TARGET_CALL_COUNT_RELATION,
-                "winner_neg > baseline_neg",
+                "winner_mul > baseline_mul",
             ),
             (
                 ExecutableEvidenceCapability.TARGET_WORKSPACE_RELATION,
@@ -503,7 +503,7 @@ CAMPAIGN_CASES = (
             StructuralOracleKind.PHYSICAL_ROUTE_RELATION,
             (
                 "the optimized scheduler bodies contain fewer RDMA/WDMA callsites",
-                "the optimized target still calls negate, add, and multiply",
+                "the optimized target still calls add and multiply",
             ),
             NumericOracleKind.FULL_EXACT,
             (
@@ -532,7 +532,7 @@ CAMPAIGN_CASES = (
         _oracle(
             StructuralOracleKind.TARGET_CALL_RELATION,
             (
-                "the optimized scheduler bodies contain more negate callsites",
+                "the optimized scheduler bodies contain more multiply callsites",
                 "the optimized manifest publishes fewer workspace bytes",
             ),
             NumericOracleKind.FULL_EXACT,
@@ -553,7 +553,7 @@ CAMPAIGN_CASES = (
         ),
     ),
     _paired_case(
-        "modular-common-factor",
+        "f16-common-factor",
         "numeric-dag-and-implementation",
         SourceKind.STABLEHLO_SOURCE_PROGRAM,
         1,
@@ -567,8 +567,8 @@ CAMPAIGN_CASES = (
             ),
             NumericOracleKind.FULL_EXACT,
             (
-                "boundary-heavy integer vectors exercise modular wrap",
-                "full exact output is computed with the source integer semantics",
+                "small integer-valued f16 vectors keep both expression forms exact",
+                "full exact output is computed with the source floating semantics",
             ),
             PerformanceOracleKind.BALANCED_HOST_PROCESS_OBSERVATION,
             (
@@ -1030,15 +1030,15 @@ OPTIMIZATION_AXES = (
         AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
         "consumer-local-recompute",
         "Recompute trades visible compute for a shorter lifetime and less movement.",
-        observables=("negate call count", "workspace bytes", "full output"),
+        observables=("multiply call count", "workspace bytes", "full output"),
     ),
     _axis(
         "relaxed-f16-bf16-algebra",
         "numeric-candidate-rewrite",
-        AxisDisposition.HOST_ONLY_EXACT_NEGATIVE,
-        "rewrite-exact-negative-gates",
-        "No executable paired board fixture currently provides a strong bf16 oracle.",
-        host_assets=REWRITE_HOST_GATES,
+        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        "f16-common-factor",
+        "The exact-valued f16 pair changes target multiply count.",
+        observables=("add/multiply count", "exact output", "host observation"),
     ),
     _axis(
         "integer-modular-reassociation",
@@ -1067,10 +1067,10 @@ OPTIMIZATION_AXES = (
     _axis(
         "integer-modular-common-factor",
         "numeric-candidate-rewrite",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
-        "modular-common-factor",
-        "The executable common-factor pair changes target multiply count.",
-        observables=("add/multiply count", "exact output", "host observation"),
+        AxisDisposition.HOST_ONLY_EXACT_NEGATIVE,
+        "rewrite-exact-negative-gates",
+        "INT8 CT arithmetic is rejected before target publication.",
+        host_assets=REWRITE_HOST_GATES,
     ),
     _axis(
         "static-loop-invariant-hoist",

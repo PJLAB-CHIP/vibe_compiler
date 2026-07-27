@@ -71,26 +71,53 @@ class RuntimeCase:
 
 def runtime_case(contract: CollectiveCharacterizationCase) -> RuntimeCase:
     payload_bytes = contract.payload_bytes
-    chunk_bytes = payload_bytes // RANK_COUNT
-    if payload_bytes % RANK_COUNT != 0:
-        raise RuntimeError("collective payload is not divisible by rank count")
+    element_bytes = {"i8": 1, "f16": 2}[contract.element_type]
+    if payload_bytes % element_bytes != 0:
+        raise RuntimeError("collective payload is not element aligned")
+    payload_elements = payload_bytes // element_bytes
+    chunk_elements = payload_elements // RANK_COUNT
+    if payload_elements % RANK_COUNT != 0:
+        raise RuntimeError(
+            "collective element count is not divisible by rank count"
+        )
+    metadata_dtype = {"i8": "int8", "f16": "float16"}[
+        contract.element_type
+    ]
     if contract.collective_kind == CollectiveKind.ALL_GATHER:
-        inputs = (paired_support.TensorSpec((chunk_bytes,), "i8", "int8"),)
-        outputs = (paired_support.TensorSpec((payload_bytes,), "i8", "int8"),)
-    elif contract.collective_kind == CollectiveKind.REDUCE_SCATTER:
-        inputs = (paired_support.TensorSpec((payload_bytes,), "i8", "int8"),)
-        outputs = (paired_support.TensorSpec((chunk_bytes,), "i8", "int8"),)
-    elif contract.collective_kind == CollectiveKind.ALL_REDUCE:
         inputs = (
             paired_support.TensorSpec(
-                (1, payload_bytes),
-                "i8",
-                "int8",
-                source_shape=(RANK_COUNT, payload_bytes),
+                (chunk_elements,), contract.element_type, metadata_dtype
             ),
         )
         outputs = (
-            paired_support.TensorSpec((payload_bytes,), "i8", "int8"),
+            paired_support.TensorSpec(
+                (payload_elements,), contract.element_type, metadata_dtype
+            ),
+        )
+    elif contract.collective_kind == CollectiveKind.REDUCE_SCATTER:
+        inputs = (
+            paired_support.TensorSpec(
+                (payload_elements,), contract.element_type, metadata_dtype
+            ),
+        )
+        outputs = (
+            paired_support.TensorSpec(
+                (chunk_elements,), contract.element_type, metadata_dtype
+            ),
+        )
+    elif contract.collective_kind == CollectiveKind.ALL_REDUCE:
+        inputs = (
+            paired_support.TensorSpec(
+                (1, payload_elements),
+                contract.element_type,
+                metadata_dtype,
+                source_shape=(RANK_COUNT, payload_elements),
+            ),
+        )
+        outputs = (
+            paired_support.TensorSpec(
+                (payload_elements,), contract.element_type, metadata_dtype
+            ),
         )
     else:
         raise RuntimeError(f"unsupported collective kind {contract.collective_kind}")
@@ -119,47 +146,47 @@ module {{
 
 
 def reduce_scatter_module(payload_bytes: int) -> str:
-    chunk_bytes = payload_bytes // RANK_COUNT
+    payload_elements = payload_bytes // 2
+    chunk_elements = payload_elements // RANK_COUNT
     return f"""\
 module {{
-  func.func @main(%input: tensor<{payload_bytes}xi8>) -> tensor<{chunk_bytes}xi8> {{
+  func.func @main(%input: tensor<{payload_elements}xf16>) -> tensor<{chunk_elements}xf16> {{
     %result = "stablehlo.reduce_scatter"(%input) ({{
-    ^bb0(%lhs: tensor<i8>, %rhs: tensor<i8>):
-      %sum = stablehlo.add %lhs, %rhs : tensor<i8>
-      "stablehlo.return"(%sum) : (tensor<i8>) -> ()
+    ^bb0(%lhs: tensor<f16>, %rhs: tensor<f16>):
+      %sum = stablehlo.add %lhs, %rhs : tensor<f16>
+      "stablehlo.return"(%sum) : (tensor<f16>) -> ()
     }}) {{
       scatter_dimension = 0 : i64,
       replica_groups = dense<[[{rank_group()}]]> : tensor<1x16xi64>,
       channel_handle = #stablehlo.channel_handle<handle = 53, type = 1>,
       use_global_device_ids
-    }} : (tensor<{payload_bytes}xi8>) -> tensor<{chunk_bytes}xi8>
-    return %result : tensor<{chunk_bytes}xi8>
+    }} : (tensor<{payload_elements}xf16>) -> tensor<{chunk_elements}xf16>
+    return %result : tensor<{chunk_elements}xf16>
   }}
 }}
 """
 
 
 def all_reduce_module(payload_bytes: int) -> str:
-    # At 4096 bytes this intentionally remains source-compatible with the
-    # existing tree-all-reduce optimizer qualification case.
+    payload_elements = payload_bytes // 2
     devices = ",".join(str(rank) for rank in range(RANK_COUNT))
     return f"""\
 module {{
   func.func @main(
-      %input: tensor<16x{payload_bytes}xi8>) -> tensor<{payload_bytes}xi8> {{
+      %input: tensor<16x{payload_elements}xf16>) -> tensor<{payload_elements}xf16> {{
     %sharded = stablehlo.custom_call @Sharding(%input) {{
       backend_config = "",
       mhlo.sharding = "{{devices=[16,1]{devices}}}"
-    }} : (tensor<16x{payload_bytes}xi8>) -> tensor<16x{payload_bytes}xi8>
-    %zero = stablehlo.constant dense<0> : tensor<i8>
+    }} : (tensor<16x{payload_elements}xf16>) -> tensor<16x{payload_elements}xf16>
+    %zero = stablehlo.constant dense<0.000000e+00> : tensor<f16>
     %result = "stablehlo.reduce"(%sharded, %zero) ({{
-    ^bb0(%lhs: tensor<i8>, %rhs: tensor<i8>):
-      %sum = stablehlo.add %lhs, %rhs : tensor<i8>
-      stablehlo.return %sum : tensor<i8>
+    ^bb0(%lhs: tensor<f16>, %rhs: tensor<f16>):
+      %sum = stablehlo.add %lhs, %rhs : tensor<f16>
+      stablehlo.return %sum : tensor<f16>
     }}) {{dimensions = array<i64: 0>}}
-      : (tensor<16x{payload_bytes}xi8>, tensor<i8>)
-        -> tensor<{payload_bytes}xi8>
-    return %result : tensor<{payload_bytes}xi8>
+      : (tensor<16x{payload_elements}xf16>, tensor<f16>)
+        -> tensor<{payload_elements}xf16>
+    return %result : tensor<{payload_elements}xf16>
   }}
 }}
 """
@@ -226,29 +253,36 @@ def payloads(
             [[input_] for input_ in local_inputs],
             [[expected] for _ in range(RANK_COUNT)],
         )
-    lanes = np.arange(payload_bytes, dtype=np.uint64)
+    payload_elements = payload_bytes // 2
+    lanes = np.arange(payload_elements, dtype=np.uint64)
     rank_inputs = [
-        sentinel_bytes(rank, lanes, payload_bytes)
+        (
+            (
+                sentinel_bytes(rank, lanes, payload_bytes)
+                .view(np.uint8)
+                .astype(np.int16)
+                % 9
+            )
+            - 4
+        ).astype("<f2")
         for rank in range(RANK_COUNT)
     ]
     if kind == CollectiveKind.REDUCE_SCATTER:
-        chunk_bytes = payload_bytes // RANK_COUNT
+        chunk_elements = payload_elements // RANK_COUNT
         outputs: list[list[np.ndarray]] = []
         for destination in range(RANK_COUNT):
-            total = np.zeros(chunk_bytes, dtype=np.int64)
-            begin = destination * chunk_bytes
-            end = begin + chunk_bytes
+            total = np.zeros(chunk_elements, dtype=np.float32)
+            begin = destination * chunk_elements
+            end = begin + chunk_elements
             for rank_input in rank_inputs:
-                total += rank_input[begin:end].astype(np.int64)
-            outputs.append(
-                [(total & 0xFF).astype(np.uint8).view(np.int8)]
-            )
+                total += rank_input[begin:end].astype(np.float32)
+            outputs.append([total.astype("<f2")])
         return [[input_] for input_ in rank_inputs], outputs
     if kind == CollectiveKind.ALL_REDUCE:
-        total = np.zeros(payload_bytes, dtype=np.int64)
+        total = np.zeros(payload_elements, dtype=np.float32)
         for rank_input in rank_inputs:
-            total += rank_input.astype(np.int64)
-        expected = (total & 0xFF).astype(np.uint8).view(np.int8)
+            total += rank_input.astype(np.float32)
+        expected = total.astype("<f2")
         return (
             [[input_[None, :]] for input_ in rank_inputs],
             [[expected] for _ in range(RANK_COUNT)],

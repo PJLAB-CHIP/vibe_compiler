@@ -706,16 +706,6 @@ DELEGATED_ASSETS = (
         claims=("ddr-single-active-address-legality",),
     ),
     DelegatedAsset(
-        key="spm-short-offset-phase-controls",
-        domain=Domain.SPM_CONFLICT,
-        disposition=Disposition.DELEGATED_BOARD_OBSERVED,
-        source_file="test/Board/wafer_memory_descriptor_calibration_catalog.py",
-        selector="PARALLEL_ADDRESS_SWEEP_CASES",
-        object_count=26,
-        evidence_scope="256B CT/RDMA offset and base-phase controls",
-        claims=("spm-short-offset-raw-control",),
-    ),
-    DelegatedAsset(
         key="spm-sustained-ct-rdma-far-disjoint-control",
         domain=Domain.SPM_CONFLICT,
         disposition=Disposition.DELEGATED_BOARD_OBSERVED,
@@ -749,7 +739,7 @@ DELEGATED_ASSETS = (
         ),
         selector="conflict_pairs",
         object_count=48,
-        evidence_scope="counterbalanced single-active-rank physical-tile replay",
+        evidence_scope="counterbalanced single-active-rank physical-tile execution",
         claims=("spm-conflict-equivalence-physical-tile",),
     ),
     DelegatedAsset(
@@ -900,7 +890,6 @@ CLAIM_COVERAGE: dict[str, tuple[str, ...]] = {
     "ddr-active-rank-contention": tuple(
         case.key for case in DDR_ACTIVE_RANK_CASES
     ),
-    "spm-short-offset-raw-control": ("spm-short-offset-phase-controls",),
     "spm-sustained-far-disjoint-control": (
         "spm-sustained-ct-rdma-far-disjoint-control",
     ),

@@ -88,7 +88,16 @@ def main() -> None:
     assert tuple(case.board_order for case in catalog.CASES) == tuple(range(9))
     assert {case.payload_bytes for case in catalog.CASES} == {256, 4096, 65536}
     assert {case.rank_count for case in catalog.CASES} == {16}
-    assert {case.element_type for case in catalog.CASES} == {"i8"}
+    assert {
+        case.element_type
+        for case in catalog.CASES
+        if case.collective_kind == catalog.CollectiveKind.ALL_GATHER
+    } == {"i8"}
+    assert {
+        case.element_type
+        for case in catalog.CASES
+        if case.collective_kind != catalog.CollectiveKind.ALL_GATHER
+    } == {"f16"}
     assert {
         case.disposition for case in catalog.CASES
     } == {
@@ -357,21 +366,21 @@ def main() -> None:
 
     reduce_scatter_boundary = carrier.collective_boundary(
         '"stablehlo.reduce_scatter"',
-        {"shape": [256], "dtype": "i8"},
-        {"shape": [16], "dtype": "i8"},
+        {"shape": [128], "dtype": "f16"},
+        {"shape": [8], "dtype": "f16"},
         16,
     )
     assert reduce_scatter_boundary["inputs"][0]["distribution"] == "partitioned"
-    assert reduce_scatter_boundary["inputs"][0]["global_shape"] == [4096]
-    assert reduce_scatter_boundary["inputs"][0]["local_shape"] == [256]
+    assert reduce_scatter_boundary["inputs"][0]["global_shape"] == [2048]
+    assert reduce_scatter_boundary["inputs"][0]["local_shape"] == [128]
     assert reduce_scatter_boundary["outputs"][0]["distribution"] == "partitioned"
-    assert reduce_scatter_boundary["outputs"][0]["global_shape"] == [256]
-    assert reduce_scatter_boundary["outputs"][0]["local_shape"] == [16]
+    assert reduce_scatter_boundary["outputs"][0]["global_shape"] == [128]
+    assert reduce_scatter_boundary["outputs"][0]["local_shape"] == [8]
     assert reduce_scatter_boundary["outputs"][0]["ranks"][15] == {
         "rank": 15,
         "replica_id": 0,
-        "offsets": [240],
-        "sizes": [16],
+        "offsets": [120],
+        "sizes": [8],
         "strides": [1],
     }
 

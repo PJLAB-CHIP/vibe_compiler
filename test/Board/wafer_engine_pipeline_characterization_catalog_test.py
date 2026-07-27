@@ -65,6 +65,13 @@ def tail_observation(sample: int, cycles: int) -> dict[str, object]:
 
 
 class CatalogShapeTest(unittest.TestCase):
+    def test_dma_formats_come_from_the_probe_abi(self) -> None:
+        self.assertEqual(catalog.FMT_INT8, ncc_protocol.DMA_FORMAT_INT8)
+        self.assertEqual(catalog.FMT_FP16, ncc_protocol.DMA_FORMAT_FP16)
+        self.assertNotEqual(
+            catalog.FMT_INT8, ncc_protocol.DMA_FORMAT_UINT8
+        )
+
     def test_full_typed_inventory(self) -> None:
         self.assertEqual(len(catalog.SINGLE_ENGINE_CELLS), 21)
         self.assertEqual(len(catalog.ENGINE_PAIR_CELLS), 360)

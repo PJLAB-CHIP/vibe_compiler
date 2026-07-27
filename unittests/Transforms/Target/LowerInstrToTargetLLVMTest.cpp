@@ -383,4 +383,151 @@ module {
   EXPECT_EQ(rankCount, 16);
 }
 
+TEST(LowerInstrToTargetLLVMTest,
+     NumericPreflightRejectsI8ArithmeticBeforeTargetMutation) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @main() {
+    %lhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<64xi8, #wafer.memory<spm, tensor>>
+    %rhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<64xi8, #wafer.memory<spm, tensor>>
+    %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<64xi8, #wafer.memory<spm, tensor>>
+    wafer.instr.elementwise #wafer.instr_elementwise_kind<add>
+        %lhs, %rhs into %dst
+        : memref<64xi8, #wafer.memory<spm, tensor>>,
+          memref<64xi8, #wafer.memory<spm, tensor>>
+      into memref<64xi8, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+
+  std::string diagnostics;
+  mlir::ScopedDiagnosticHandler handler(
+      &context, [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream stream(diagnostics);
+        diagnostic.print(stream);
+        return mlir::success();
+      });
+  mlir::PassManager manager(&context);
+  wafer::TargetConversionRequest request{
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
+  manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
+  EXPECT_TRUE(mlir::failed(manager.run(*source)));
+  EXPECT_NE(diagnostics.find("unsupported_target_numeric"), std::string::npos)
+      << diagnostics;
+  EXPECT_NE(diagnostics.find("integer-elementwise-policy-unproven"),
+            std::string::npos)
+      << diagnostics;
+  EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*source), 1u);
+  EXPECT_EQ(countOps<mlir::LLVM::LLVMFuncOp>(*source), 0u);
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     NumericPreflightRejectsExactFloatingNegSignedZeroContract) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @main() {
+    %src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<64xf32, #wafer.memory<spm, tensor>>
+    %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<64xf32, #wafer.memory<spm, tensor>>
+    wafer.instr.elementwise #wafer.instr_elementwise_kind<neg> %src into %dst
+        : memref<64xf32, #wafer.memory<spm, tensor>>
+      into memref<64xf32, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+
+  std::string diagnostics;
+  mlir::ScopedDiagnosticHandler handler(
+      &context, [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream stream(diagnostics);
+        diagnostic.print(stream);
+        return mlir::success();
+      });
+  mlir::PassManager manager(&context);
+  wafer::TargetConversionRequest request{
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
+  manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
+  EXPECT_TRUE(mlir::failed(manager.run(*source)));
+  EXPECT_NE(diagnostics.find("exact-signed-zero-policy-unproven"),
+            std::string::npos)
+      << diagnostics;
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     NumericPreflightKeepsQualifiedComputeAndI8MovementIndependent) {
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @main(
+      %input: memref<64xi8, #wafer.memory<ddr, tensor>>,
+      %output: memref<64xi8, #wafer.memory<ddr, tensor>>) {
+    %i8 = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<64xi8, #wafer.memory<spm, tensor>>
+    %lhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<64xf16, #wafer.memory<spm, tensor>>
+    %rhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<64xf16, #wafer.memory<spm, tensor>>
+    %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66304>}
+        : memref<64xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.rdma %input to %i8
+        {byte_count = 64 : i64, inner_bytes = 64 : i64,
+         src_strides = array<i64: 0, 0, 0>,
+         src_iterations = array<i64: 1, 1, 1>}
+        : memref<64xi8, #wafer.memory<ddr, tensor>>
+       to memref<64xi8, #wafer.memory<spm, tensor>>
+    wafer.instr.elementwise #wafer.instr_elementwise_kind<add>
+        %lhs, %rhs into %dst
+        : memref<64xf16, #wafer.memory<spm, tensor>>,
+          memref<64xf16, #wafer.memory<spm, tensor>>
+      into memref<64xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.wdma %i8 to %output
+        {byte_count = 64 : i64, inner_bytes = 64 : i64,
+         dst_strides = array<i64: 0, 0, 0>,
+         dst_iterations = array<i64: 1, 1, 1>}
+        : memref<64xi8, #wafer.memory<spm, tensor>>
+       to memref<64xi8, #wafer.memory<ddr, tensor>>
+    return
+  }
+}
+  )mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+
+  mlir::PassManager manager(&context);
+  wafer::TargetConversionRequest request{
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
+  manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
+  EXPECT_TRUE(mlir::succeeded(manager.run(*source)));
+  EXPECT_EQ(countOps<wafer::InstrRDMAOp>(*source), 0u);
+  EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*source), 0u);
+  EXPECT_EQ(countOps<wafer::InstrWDMAOp>(*source), 0u);
+}
+
 } // namespace

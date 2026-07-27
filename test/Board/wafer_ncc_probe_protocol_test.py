@@ -46,6 +46,12 @@ class ProtocolTest(unittest.TestCase):
             protocol.REC["BOUNDED_WINDOW_DRAIN_CYCLES"], 493
         )
         self.assertEqual(protocol.MAX_DMA_ENVELOPE_BYTES, 65536)
+        self.assertEqual(protocol.DMA_FORMAT_INT8, 0)
+        self.assertEqual(protocol.DMA_FORMAT_FP16, 2)
+        self.assertEqual(protocol.DMA_FORMAT_UINT8, 8)
+        self.assertNotEqual(
+            protocol.DMA_FORMAT_INT8, protocol.DMA_FORMAT_UINT8
+        )
         self.assertEqual(
             protocol.WAIT_SAMPLE_BASE,
             protocol.ISSUE_BASE
@@ -1374,6 +1380,70 @@ class ProtocolTest(unittest.TestCase):
             all(execution_probe.case_sample_count(case, 3) == 3
                 for case in pending)
         )
+
+    def test_worker_wait_scope_aggregates_distinguishing_samples(
+        self,
+    ) -> None:
+        case = execution_probe.V2_WORKER_WAIT_SCOPE_CASES[0]
+        observations = [
+            {
+                "case": case.as_dict(),
+                "sample": 0,
+                "wait_scope": {
+                    "target_pending_before_wait": False,
+                    "distinguishing": False,
+                    "interpretation": (
+                        "non-distinguishing-target-drained-before-wait"
+                    ),
+                },
+            },
+            {
+                "case": case.as_dict(),
+                "sample": 1,
+                "wait_scope": {
+                    "target_pending_before_wait": True,
+                    "distinguishing": True,
+                    "interpretation": "default-covered-target",
+                },
+            },
+        ]
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            execution_probe.report_worker_wait_scope(
+                observations, (case,)
+            )
+        self.assertIn('"decision": "default-covered-target"', stdout.getvalue())
+        self.assertIn('"distinguishing_samples": 1', stdout.getvalue())
+        self.assertIn('"non_distinguishing_samples": 1', stdout.getvalue())
+
+    def test_worker_wait_scope_all_natural_drains_is_inconclusive(
+        self,
+    ) -> None:
+        case = execution_probe.V2_WORKER_WAIT_SCOPE_CASES[0]
+        observations = [
+            {
+                "case": case.as_dict(),
+                "sample": sample,
+                "wait_scope": {
+                    "target_pending_before_wait": False,
+                    "distinguishing": False,
+                    "interpretation": (
+                        "non-distinguishing-target-drained-before-wait"
+                    ),
+                },
+            }
+            for sample in range(3)
+        ]
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "inconclusive; no sample observed the target pending",
+            ):
+                execution_probe.report_worker_wait_scope(
+                    observations, (case,)
+                )
+        self.assertIn('"decision": "inconclusive"', stdout.getvalue())
 
     def test_depth_plus_one_report_uses_tight_issue_order(self) -> None:
         case = next(

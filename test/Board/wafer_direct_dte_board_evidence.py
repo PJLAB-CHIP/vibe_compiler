@@ -34,7 +34,7 @@ STATUS_OBSERVATION_GAP = (
     "wafer-run board stdout and BoardRuntimeInvocationResult do not expose "
     "the 16 per-rank Direct-DTE status resource IDs and raw u32 values; the "
     "successful runtime path enforces all-rank status-v2 Success internally, "
-    "but this output cannot independently replay those readbacks"
+    "but this output cannot independently reconstruct those readbacks"
 )
 
 

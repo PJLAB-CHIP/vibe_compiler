@@ -57,7 +57,7 @@ PIPELINE_CONTRACT = PipelineContract(
         "qualified FP16 non-divisible GEMM-tail request and Cx payload"
     ),
     current_stage_responsibility=(
-        "exact tail replay with a compatible device-PMU measurement window"
+        "exact tail execution with a compatible device-PMU measurement window"
     ),
     output_artifact=(
         "exact result/guard/lifecycle evidence and raw NE PMU deltas"

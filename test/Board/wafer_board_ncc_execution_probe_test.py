@@ -440,8 +440,8 @@ V2_HAZARD_UNSELECTED_OFFSETS = (
     (0x10000, 0x12000, 0x14000),
 )
 V2_STRIDED_INITIAL_SOURCE_SLOT = ncc_protocol.MAX_ISSUES
-FMT_INT8 = 0
-FMT_FP16 = 2
+FMT_INT8 = ncc_protocol.DMA_FORMAT_INT8
+FMT_FP16 = ncc_protocol.DMA_FORMAT_FP16
 FMT_BF16 = 3
 FMT_BOOL = 7
 PMU64_NAMES = (
@@ -3552,14 +3552,6 @@ def parse_record(
             worker: words[rec["CONTROL_PRE_WAIT"] + worker]
             for worker in range(3)
         }
-    if is_tight_worker_scope:
-        target_worker = plan.lanes[-1].worker
-        assert pre_wait_controls is not None
-        if pre_wait_controls[target_worker] & 0x100:
-            raise RuntimeError(
-                f"{case.name}: distinguishing target worker "
-                f"{target_worker} drained before the requested wait"
-            )
     serial_wait_count = words[rec["SERIAL_WAIT_COUNT"]]
     expected_serial_wait_count = (
         len(plan.issue_identities())
@@ -3749,11 +3741,17 @@ def parse_record(
             if plan.wait_kind == ncc_protocol.WaitKind.DEFAULT
             else "local-fence"
         )
+        target_pending_before_wait = (
+            pre_wait_controls is not None
+            and not bool(pre_wait_controls[target_worker] & 0x100)
+        )
         wait_scope = {
             "wait_cycles": words[rec["WAIT_CYCLES"]],
-            "target_pending_before_wait": (
-                pre_wait_controls is not None
-                and not bool(pre_wait_controls[target_worker] & 0x100)
+            "target_pending_before_wait": target_pending_before_wait,
+            "distinguishing": (
+                target_pending_before_wait
+                if case in V2_WORKER_WAIT_SCOPE_CASES
+                else True
             ),
             "worker_control_before_wait": pre_wait_controls,
             "target_worker": target_worker,
@@ -3773,17 +3771,22 @@ def parse_record(
             "marker_done_at_boundary": boundary_marker == expected_marker,
             "target_results_exact_at_boundary": target_boundary_exact,
             "interpretation": (
-                f"byworker{target_worker}-completed-target"
-                if plan.wait_kind == ncc_protocol.WaitKind.BY_WORKER
+                "non-distinguishing-target-drained-before-wait"
+                if (
+                    case in V2_WORKER_WAIT_SCOPE_CASES
+                    and not target_pending_before_wait
+                )
                 else (
-                    f"{scope_name}-returned-before-target"
-                    if not (
-                        target_task_done
-                        and boundary_marker == expected_marker
-                        and target_boundary_exact
-                    )
+                    f"byworker{target_worker}-completed-target"
+                    if plan.wait_kind == ncc_protocol.WaitKind.BY_WORKER
                     else (
-                        f"{scope_name}-covered-target-or-backlog-drained"
+                        f"{scope_name}-returned-before-target"
+                        if not (
+                            target_task_done
+                            and boundary_marker == expected_marker
+                            and target_boundary_exact
+                        )
+                        else f"{scope_name}-covered-target"
                     )
                 )
             ),
@@ -4312,7 +4315,99 @@ def execute_cases(
                 "ncc_execution_sample: "
                 + json.dumps(observation, sort_keys=True)
             )
+    report_worker_wait_scope(observations, cases)
     return observations
+
+
+def report_worker_wait_scope(
+    observations: list[dict[str, object]],
+    cases: Iterable[GenericProbeCase],
+) -> None:
+    expected_names = {
+        case.name for case in cases if case in V2_WORKER_WAIT_SCOPE_CASES
+    }
+    if not expected_names:
+        return
+
+    grouped: dict[str, list[dict[str, object]]] = {
+        name: [] for name in expected_names
+    }
+    for observation in observations:
+        case_record = observation.get("case")
+        wait_scope = observation.get("wait_scope")
+        if not isinstance(case_record, dict):
+            continue
+        name = case_record.get("name")
+        if name not in expected_names:
+            continue
+        if not isinstance(wait_scope, dict):
+            raise RuntimeError(
+                f"{name}: worker wait-scope observation is malformed"
+            )
+        pending = wait_scope.get("target_pending_before_wait")
+        distinguishing = wait_scope.get("distinguishing")
+        interpretation = wait_scope.get("interpretation")
+        if (
+            type(pending) is not bool
+            or type(distinguishing) is not bool
+            or distinguishing != pending
+            or not isinstance(interpretation, str)
+        ):
+            raise RuntimeError(
+                f"{name}: worker wait-scope qualification is malformed"
+            )
+        grouped[str(name)].append(wait_scope)
+
+    for name in sorted(expected_names):
+        samples = grouped[name]
+        distinguishing_samples = [
+            sample for sample in samples if sample["distinguishing"]
+        ]
+        if not distinguishing_samples:
+            print(
+                "ncc_worker_wait_scope_decision: "
+                + json.dumps(
+                    {
+                        "case": name,
+                        "decision": "inconclusive",
+                        "distinguishing_samples": 0,
+                        "non_distinguishing_samples": len(samples),
+                        "reason": (
+                            "target-drained-before-wait-in-every-sample"
+                        ),
+                    },
+                    sort_keys=True,
+                )
+            )
+            raise RuntimeError(
+                f"{name}: worker wait-scope is inconclusive; no sample "
+                "observed the target pending before the requested wait"
+            )
+        decisions = {
+            str(sample["interpretation"])
+            for sample in distinguishing_samples
+        }
+        if len(decisions) != 1:
+            raise RuntimeError(
+                f"{name}: distinguishing worker wait-scope samples "
+                f"disagree: {sorted(decisions)}"
+            )
+        print(
+            "ncc_worker_wait_scope_decision: "
+            + json.dumps(
+                {
+                    "case": name,
+                    "decision": next(iter(decisions)),
+                    "distinguishing_samples": len(
+                        distinguishing_samples
+                    ),
+                    "non_distinguishing_samples": (
+                        len(samples) - len(distinguishing_samples)
+                    ),
+                },
+                sort_keys=True,
+            )
+        )
 
 
 def overlap_metrics(

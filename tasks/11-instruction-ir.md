@@ -1072,6 +1072,11 @@ R3.2d verifier checks only instruction legality:
   target-profile×instruction-family×format `TargetFormatEncodingRecord`并引用tasks/08 layout profile；当前typed convert kind可选择TF32 wrapper与
   RDMA/WDMA/fill/elementwise/reduce/GEMM通用format encoder缺TF32是两个独立legality row。UINT/64-bit direct DMA等
   未有engine encoding证据的row在shared registry闭合前target-illegal。
+- ABI format可编码也不证明数值语义可准入。target preflight还必须查询独立的
+  `TargetCTElementwiseNumericCapabilityRecord`，其key为target profile、instruction kind、logical format和
+  source semantic requirement。当前Instr只表达`source-exact`：I8 CT elementwise、无法保持精确signed-zero的
+  F16/BF16/F32 Neg，以及缺parameter policy的ExpLp/SatRelu/LeakyRelu均在生成target call前fail closed；
+  I8 RDMA/WDMA等纯movement不经过CT numeric gate。
 - NE GEMM and CT reduce require supported aligned layout marker, dtype and rank. current v1 plain GEMM按implicit
   normal/normal relation匹配stored shape与M/K/N/batch；Q32.V oriented tuple只有在typed orientation字段、versioned
   target ABI和capability row同时匹配时合法。每个command tuple还必须唯一映射numeric semantics profile；terminal CT reduce has no init operand/

@@ -107,6 +107,7 @@ STEP_BIT2FP_COMPLETED = 1 << 1
 STEP_MASK_MOVE_ISSUED = 1 << 2
 STEP_FINAL_FENCE_COMPLETED = 1 << 3
 STEP_REPEATED_OVERLAP_VALUES_STAGED = 1 << 4
+STEP_ARGMIN_INPUT_SNAPSHOTTED = 1 << 5
 
 REPEATED_UNPOOL_SENTINEL_OFFSET = 2048
 REPEATED_UNPOOL_SENTINEL_BYTES = 4 * 64 * 2
@@ -1508,10 +1509,11 @@ def _peripheral_arg_extrema(
             for index in range(128)
         ]
         tied_indices = ARGMIN_TIE_INDEX_SETS[variant]
+        tied_value = ARGMIN_TIE_VALUES[variant]
         for index in tied_indices:
-            values[index] = 0.5
+            values[index] = tied_value
         result_index = tied_indices[0]
-        result_value = 0.5
+        result_value = tied_value
     elif case.symbol == "PERIPHERAL_ARGMIN_NAN_F16_OBSERVED":
         variant = sample % len(ARGMIN_NAN_VECTORS)
         nan_index, nan_bits, finite_min_index = ARGMIN_NAN_VECTORS[variant]
@@ -1544,6 +1546,7 @@ ARGMIN_TIE_INDEX_SETS = (
     (0, 127),
     (31, 32, 96),
 )
+ARGMIN_TIE_VALUES = (0.5, 0.25, 0.75)
 ARGMIN_NAN_VECTORS = (
     (17, 0x7E11, 42),   # positive quiet NaN
     (64, 0x7D21, 3),    # positive signaling NaN
@@ -1558,13 +1561,11 @@ def classify_repeated_unpool_observation(
 ) -> dict[str, object] | None:
     """Validate a bounded collision result and retain its candidate rule.
 
-    Four distinct pooled values target the same output position.  Every target
-    channel must be explainable by a non-empty subset of those four values.
-    The classification retains both uniform and lane-varying subset outcomes:
-    lane variation is itself useful collision evidence, while any value
-    outside the bounded subset model remains a hard failure.  Every other
-    logical position and the physical tail must remain a uniform zero or the
-    seeded -13 value per 64-channel position.
+    Four distinct pooled values target the same output position.  Mask-Unpool
+    channels must be explainable by a non-empty subset of those values.
+    Indexed-Unpool additionally admits the previously observed full-span
+    zero-fill/no-scatter baseline, but does not use it as collision evidence.
+    Every other value remains outside the bounded model and is a hard failure.
     """
 
     if case.symbol not in REPEATED_UNPOOL_SYMBOLS:
@@ -1616,11 +1617,14 @@ def classify_repeated_unpool_observation(
         "<64e", result[target_begin * 2 : target_end * 2]
     )
     sentinels = _repeated_unpool_sentinels(sample)
+    admits_drop_all = (
+        case.symbol == "UNPOOL_INDEX_F16_REPEATED_OVERLAP_OBSERVED"
+    )
     channel_masks: list[tuple[int, ...]] = []
     for channel, actual in enumerate(target):
         matching_masks = {
             mask
-            for mask in range(1, 1 << 4)
+            for mask in range(0 if admits_drop_all else 1, 1 << 4)
             if actual
             == sum(
                 sentinels[position][channel]
@@ -1653,15 +1657,27 @@ def classify_repeated_unpool_observation(
         tuple(sorted(rotate_mask(mask) for mask in matching_masks))
         for matching_masks in channel_masks
     )
+    zero_fill_baseline = (
+        admits_drop_all
+        and common_masks == {0}
+        and all(matching_masks == (0,) for matching_masks in channel_masks)
+        and non_target_modes.count("zero") == len(non_target_modes)
+        and padding_mode == "zero"
+    )
 
     return {
         "kind": "unpool-repeated-overlap",
         "sample_rotation": sample % 4,
         "classification": (
-            "uniform-candidate-subset"
-            if common_masks
-            else "lane-varying-candidate-subsets"
+            "zero-fill-no-scatter-baseline"
+            if zero_fill_baseline
+            else (
+                "uniform-candidate-subset"
+                if common_masks
+                else "lane-varying-candidate-subsets"
+            )
         ),
+        "collision_evidence": not zero_fill_baseline,
         "candidate_source_masks": tuple(sorted(common_masks)),
         "channel_candidate_source_masks": tuple(channel_masks),
         "channel_candidate_value_masks": channel_value_masks,
@@ -1723,10 +1739,13 @@ def classify_argmin_domain_observation(
     variant = sample % 3
     if case.symbol == "PERIPHERAL_ARGMIN_TIE_F16_OBSERVED":
         tied_indices = ARGMIN_TIE_INDEX_SETS[variant]
+        tied_value_bits = struct.unpack(
+            "<H", _f16((ARGMIN_TIE_VALUES[variant],))
+        )[0]
         classification = (
             "tied-minimum"
             if returned_index in tied_indices
-            and returned_value_bits == 0x3800
+            and returned_value_bits == tied_value_bits
             else "non-minimum-source"
         )
         return {
@@ -1899,6 +1918,11 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
                 + [-23.0] * 112
             ),
         )
+    if case.symbol in {
+        "PERIPHERAL_ARGMIN_TIE_F16_OBSERVED",
+        "PERIPHERAL_ARGMIN_NAN_F16_OBSERVED",
+    }:
+        _put(slots[3], input_a)
 
     if case.family_name == "CT_SELECT_COMPOSITE":
         false_values = _repeat((-1.0, -2.0, -3.0, -4.0))

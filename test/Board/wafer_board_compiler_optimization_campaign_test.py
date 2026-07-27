@@ -82,18 +82,20 @@ class TargetStructure:
 
 
 F32_8192 = TensorSpec((8192,), "f32", "float32")
-I8_16384 = TensorSpec((16384,), "i8", "int8")
+F16_16384 = TensorSpec((16384,), "f16", "float16")
 F32_16384 = TensorSpec((16384,), "f32", "float32")
 F32_262144 = TensorSpec((262144,), "f32", "float32")
 F32_4096 = TensorSpec((4096,), "f32", "float32")
+F16_4096 = TensorSpec((4096,), "f16", "float16")
 F16_64_128 = TensorSpec((64, 128), "f16", "float16")
 F16_128_128 = TensorSpec((128, 128), "f16", "float16")
 F16_64_128_OUT = TensorSpec((64, 128), "f16", "float16")
 F16_65_129 = TensorSpec((65, 129), "f16", "float16")
 F16_129_129 = TensorSpec((129, 129), "f16", "float16")
 F16_65_129_OUT = TensorSpec((65, 129), "f16", "float16")
-I8_4096 = TensorSpec((1, 4096), "i8", "int8", source_shape=(16, 4096))
-I8_4096_REDUCED = TensorSpec((4096,), "i8", "int8")
+F16_4096_LOCAL = TensorSpec(
+    (1, 4096), "f16", "float16", source_shape=(16, 4096)
+)
 
 
 def elementwise_module(
@@ -121,23 +123,23 @@ def reciprocal_module() -> str:
     )
 
 
-def modular_factor_module() -> str:
+def f16_factor_module() -> str:
     return """\
 module {
   func.func @main(
-      %a: tensor<16384xi8>,
-      %b: tensor<16384xi8>,
-      %c: tensor<16384xi8>) -> tensor<16384xi8> {
+      %a: tensor<16384xf16>,
+      %b: tensor<16384xf16>,
+      %c: tensor<16384xf16>) -> tensor<16384xf16> {
     %result = "stablehlo.map"(%a, %b, %c) ({
-    ^bb0(%av: tensor<i8>, %bv: tensor<i8>, %cv: tensor<i8>):
-      %ab = stablehlo.multiply %av, %bv : tensor<i8>
-      %ac = stablehlo.multiply %av, %cv : tensor<i8>
-      %sum = stablehlo.add %ab, %ac : tensor<i8>
-      stablehlo.return %sum : tensor<i8>
+    ^bb0(%av: tensor<f16>, %bv: tensor<f16>, %cv: tensor<f16>):
+      %ab = stablehlo.multiply %av, %bv : tensor<f16>
+      %ac = stablehlo.multiply %av, %cv : tensor<f16>
+      %sum = stablehlo.add %ab, %ac : tensor<f16>
+      stablehlo.return %sum : tensor<f16>
     }) {dimensions = array<i64: 0>}
-      : (tensor<16384xi8>, tensor<16384xi8>, tensor<16384xi8>)
-        -> tensor<16384xi8>
-    return %result : tensor<16384xi8>
+      : (tensor<16384xf16>, tensor<16384xf16>, tensor<16384xf16>)
+        -> tensor<16384xf16>
+    return %result : tensor<16384xf16>
   }
 }
 """
@@ -148,7 +150,7 @@ def resident_fanout_module() -> str:
         "%input: tensor<16384xf32>",
         "(tensor<16384xf32>, tensor<16384xf32>, tensor<16384xf32>)",
         """\
-    %producer = stablehlo.negate %input : tensor<16384xf32>
+    %producer = stablehlo.multiply %input, %input : tensor<16384xf32>
     %left = stablehlo.add %producer, %producer : tensor<16384xf32>
     %right = stablehlo.multiply %producer, %producer : tensor<16384xf32>""",
         "%producer, %left, %right",
@@ -160,9 +162,9 @@ def recompute_module() -> str:
         "%input: tensor<262144xf32>, %other: tensor<262144xf32>",
         "(tensor<262144xf32>, tensor<262144xf32>, tensor<262144xf32>)",
         """\
-    %producer = stablehlo.negate %input : tensor<262144xf32>
+    %producer = stablehlo.multiply %input, %input : tensor<262144xf32>
     %left = stablehlo.add %producer, %producer : tensor<262144xf32>
-    %middle = stablehlo.negate %other : tensor<262144xf32>
+    %middle = stablehlo.multiply %other, %other : tensor<262144xf32>
     %right = stablehlo.multiply %producer, %producer : tensor<262144xf32>""",
         "%left, %middle, %right",
     )
@@ -173,7 +175,7 @@ def ready_order_module() -> str:
         "%a: tensor<4096xf32>, %b: tensor<4096xf32>",
         "tensor<4096xf32>",
         """\
-    %producer = stablehlo.negate %a : tensor<4096xf32>
+    %producer = stablehlo.multiply %a, %a : tensor<4096xf32>
     %left = stablehlo.add %producer, %b : tensor<4096xf32>
     %result = stablehlo.add %left, %b : tensor<4096xf32>""",
         "%result",
@@ -203,19 +205,19 @@ def all_reduce_module() -> str:
     devices = ",".join(str(rank) for rank in range(16))
     return f"""\
 module {{
-  func.func @main(%input: tensor<16x4096xi8>) -> tensor<4096xi8> {{
+  func.func @main(%input: tensor<16x4096xf16>) -> tensor<4096xf16> {{
     %sharded = stablehlo.custom_call @Sharding(%input) {{
       backend_config = "",
       mhlo.sharding = "{{devices=[16,1]{devices}}}"
-    }} : (tensor<16x4096xi8>) -> tensor<16x4096xi8>
-    %zero = stablehlo.constant dense<0> : tensor<i8>
+    }} : (tensor<16x4096xf16>) -> tensor<16x4096xf16>
+    %zero = stablehlo.constant dense<0.000000e+00> : tensor<f16>
     %result = "stablehlo.reduce"(%sharded, %zero) ({{
-    ^bb0(%lhs: tensor<i8>, %rhs: tensor<i8>):
-      %sum = stablehlo.add %lhs, %rhs : tensor<i8>
-      stablehlo.return %sum : tensor<i8>
+    ^bb0(%lhs: tensor<f16>, %rhs: tensor<f16>):
+      %sum = stablehlo.add %lhs, %rhs : tensor<f16>
+      stablehlo.return %sum : tensor<f16>
     }}) {{dimensions = array<i64: 0>}}
-      : (tensor<16x4096xi8>, tensor<i8>) -> tensor<4096xi8>
-    return %result : tensor<4096xi8>
+      : (tensor<16x4096xf16>, tensor<f16>) -> tensor<4096xf16>
+    return %result : tensor<4096xf16>
   }}
 }}
 """
@@ -233,24 +235,23 @@ def reciprocal_payloads() -> tuple[list[list[np.ndarray]], list[list[np.ndarray]
     return replicated([input_]), replicated([expected])
 
 
-def modular_factor_payloads(
+def f16_factor_payloads(
 ) -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]]:
     indices = np.arange(16384, dtype=np.int32)
-    a = ((indices * 29 + 113) & 0xFF).astype(np.uint8).view(np.int8)
-    b = ((indices * 17 + 47) & 0xFF).astype(np.uint8).view(np.int8)
-    c = ((indices * 31 + 19) & 0xFF).astype(np.uint8).view(np.int8)
-    expected_bits = (
-        a.astype(np.int64) * b.astype(np.int64)
-        + a.astype(np.int64) * c.astype(np.int64)
-    ) & 0xFF
-    expected = expected_bits.astype(np.uint8).view(np.int8)
+    a = (((indices * 5 + 3) % 9) - 4).astype("<f2")
+    b = (((indices * 7 + 1) % 7) - 3).astype("<f2")
+    c = (((indices * 11 + 2) % 7) - 3).astype("<f2")
+    expected = (
+        a.astype(np.float32) * b.astype(np.float32)
+        + a.astype(np.float32) * c.astype(np.float32)
+    ).astype("<f2")
     return replicated([a, b, c]), replicated([expected])
 
 
 def resident_fanout_payloads(
 ) -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]]:
     input_ = ((np.arange(16384, dtype=np.int32) % 31) - 15).astype("<f4")
-    producer = (-input_).astype("<f4")
+    producer = (input_ * input_).astype("<f4")
     left = (producer + producer).astype("<f4")
     right = (producer * producer).astype("<f4")
     return replicated([input_]), replicated([producer, left, right])
@@ -260,9 +261,9 @@ def recompute_payloads() -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]
     indices = np.arange(262144, dtype=np.int32)
     input_ = ((indices % 31) - 15).astype("<f4")
     other = (((indices * 7) % 29) - 14).astype("<f4")
-    producer = (-input_).astype("<f4")
+    producer = (input_ * input_).astype("<f4")
     left = (producer + producer).astype("<f4")
-    middle = (-other).astype("<f4")
+    middle = (other * other).astype("<f4")
     right = (producer * producer).astype("<f4")
     return replicated([input_, other]), replicated([left, middle, right])
 
@@ -271,11 +272,11 @@ def ready_order_payloads() -> tuple[list[list[np.ndarray]], list[list[np.ndarray
     indices = np.arange(4096, dtype=np.int32)
     a = ((indices % 101) - 50).astype("<f4")
     b = (((indices * 3) % 97) - 48).astype("<f4")
-    expected = ((-a + b) + b).astype("<f4")
+    expected = ((a * a + b) + b).astype("<f4")
     if np.array_equal(expected, b):
         raise RuntimeError("ready-order expected output does not depend on a")
     changed_a = (a + np.float32(1.0)).astype("<f4")
-    changed_expected = ((-changed_a + b) + b).astype("<f4")
+    changed_expected = ((changed_a * changed_a + b) + b).astype("<f4")
     if np.array_equal(expected, changed_expected):
         raise RuntimeError("ready-order a-path sensitivity control is ineffective")
     return replicated([a, b]), replicated([expected])
@@ -306,19 +307,16 @@ def gemm_payloads(
 
 
 def all_reduce_payloads() -> tuple[list[list[np.ndarray]], list[list[np.ndarray]]]:
-    lanes = np.arange(4096, dtype=np.int64)
+    lanes = np.arange(4096, dtype=np.int32)
     inputs = [
-        (
-            ((lanes * (rank + 3) + rank * 11) & 0xFF)
-            .astype(np.uint8)
-            .view(np.int8)[None, :]
-        )
+        (((lanes * (rank + 3) + rank * 11) % 9) - 4)
+        .astype("<f2")[None, :]
         for rank in range(16)
     ]
-    total = np.zeros(4096, dtype=np.int64)
+    total = np.zeros(4096, dtype=np.float32)
     for input_ in inputs:
-        total += input_[0].astype(np.int64)
-    expected = (total & 0xFF).astype(np.uint8).view(np.int8)
+        total += input_[0].astype(np.float32)
+    expected = total.astype("<f2")
     return [[input_] for input_ in inputs], [[expected] for _ in range(16)]
 
 
@@ -350,14 +348,14 @@ def reciprocal_oracle(
     require_call(winner.counts, "elementwise_div", present=False)
 
 
-def modular_factor_oracle(
+def f16_factor_oracle(
     baseline: TargetStructure, winner: TargetStructure
 ) -> None:
     baseline_mul = count_fragment(baseline, "elementwise_mul")
     winner_mul = count_fragment(winner, "elementwise_mul")
     if not (winner_mul > 0 and winner_mul < baseline_mul):
         raise RuntimeError(
-            "modular factor winner did not reduce target multiply callsites: "
+            "f16 factor winner did not reduce target multiply callsites: "
             f"baseline={baseline_mul} winner={winner_mul}"
         )
     require_call(winner.counts, "elementwise_add", present=True)
@@ -377,22 +375,22 @@ def resident_fanout_oracle(
             "resident/fusion winner did not remove target DDR callsites: "
             f"baseline={baseline_movement} winner={winner_movement}"
         )
-    for fragment in ("elementwise_neg", "elementwise_add", "elementwise_mul"):
+    for fragment in ("elementwise_add", "elementwise_mul"):
         require_call(winner.counts, fragment, present=True)
 
 
 def recompute_oracle(
     baseline: TargetStructure, winner: TargetStructure
 ) -> None:
-    baseline_neg = count_fragment(baseline, "elementwise_neg")
-    winner_neg = count_fragment(winner, "elementwise_neg")
+    baseline_mul = count_fragment(baseline, "elementwise_mul")
+    winner_mul = count_fragment(winner, "elementwise_mul")
     if not (
-        winner_neg > baseline_neg
+        winner_mul > baseline_mul
         and winner.workspace_bytes < baseline.workspace_bytes
     ):
         raise RuntimeError(
             "recompute winner did not exchange compute for spill storage: "
-            f"neg {baseline_neg}->{winner_neg}, "
+            f"mul {baseline_mul}->{winner_mul}, "
             f"workspace {baseline.workspace_bytes}->{winner.workspace_bytes}"
         )
 
@@ -514,15 +512,15 @@ CASES = {
             reciprocal_oracle,
         ),
         CampaignCase(
-            "modular-common-factor",
+            "f16-common-factor",
             "numeric-dag-implementation",
             1,
             RANK_ONE_LAUNCH_KIND,
-            (I8_16384, I8_16384, I8_16384),
-            (I8_16384,),
-            modular_factor_module,
-            modular_factor_payloads,
-            modular_factor_oracle,
+            (F16_16384, F16_16384, F16_16384),
+            (F16_16384,),
+            f16_factor_module,
+            f16_factor_payloads,
+            f16_factor_oracle,
         ),
         CampaignCase(
             "resident-fanout-share",
@@ -584,8 +582,8 @@ CASES = {
             "collective-algorithm",
             16,
             CLUSTER_LAUNCH_KIND,
-            (I8_4096,),
-            (I8_4096_REDUCED,),
+            (F16_4096_LOCAL,),
+            (F16_4096,),
             all_reduce_module,
             all_reduce_payloads,
             collective_oracle,

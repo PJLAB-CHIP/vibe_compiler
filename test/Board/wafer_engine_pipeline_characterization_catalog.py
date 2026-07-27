@@ -48,8 +48,8 @@ from collections.abc import Iterable, Mapping
 import wafer_ncc_probe_protocol as ncc_protocol
 
 
-FMT_FP16 = 2
-FMT_INT8 = 8
+FMT_FP16 = ncc_protocol.DMA_FORMAT_FP16
+FMT_INT8 = ncc_protocol.DMA_FORMAT_INT8
 MIN_REPEATS = 3
 CALIBRATION_SESSION_ENVIRONMENT = "WAFER_CALIBRATION_SESSION_ID"
 RUNTIME_LIFECYCLE = (
@@ -603,7 +603,7 @@ def _single_cells() -> tuple[MatrixCell, ...]:
             correctness=CORRECTNESS,
             measurement=SINGLE_MEASUREMENT,
             reason=(
-                "the dedicated NE tail throughput adapter replays the exact "
+                "the dedicated NE tail throughput adapter executes the exact "
                 "FP16 M65/K129/N129 GEMM with a compatible device-PMU window; "
                 "its archive is merged with the small/steady raw NCC points "
                 "before any slope activation decision"
@@ -876,7 +876,7 @@ def _pair_cell(
             "Eight-iteration windows are two device-side four-round chunks "
             "with one recorded participant drain, never an unmatched D+2 "
             "submission. Existing sustained smoke evidence remains provenance "
-            "only; this matched campaign replays the cell on the same basis "
+            "only; this matched campaign executes the cell on the same basis "
             "as its ratio and reciprocal controls"
         ),
         delegated=delegated,

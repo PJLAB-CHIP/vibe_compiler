@@ -282,14 +282,14 @@ enum WaferIFPDeferredReason {
    * selected without assuming first- or last-wins semantics. */             \
   X(PERIPHERAL_ARGMIN_TIE_F16_OBSERVED, 247,                                 \
     "peripheral-argmin-tie-f16-observed", SAFE, PERIPHERAL, F16,           \
-    NO_ORACLE, REASON_NONE, 8, 8, 0)                                        \
+    NO_ORACLE, REASON_NONE, 8, 8, 256)                                      \
   /* Three vectors independently place positive quiet, positive signaling   \
    * and negative quiet NaNs around a unique finite minimum.  Raw value and  \
    * index are retained so NaN selection/ignoring and quieting remain        \
    * distinguishable instead of being folded into finite-domain support. */  \
   X(PERIPHERAL_ARGMIN_NAN_F16_OBSERVED, 248,                                 \
     "peripheral-argmin-nan-f16-observed", SAFE, PERIPHERAL, F16,           \
-    NO_ORACLE, REASON_NONE, 8, 8, 0)
+    NO_ORACLE, REASON_NONE, 8, 8, 256)
 
 #define WAFER_IFP_CT_REDUCE_CAPABILITY_CASES(X)                               \
   X(REDUCE_SUM_F16_C_NCX, 144,                                                \
@@ -619,6 +619,7 @@ enum WaferIFPStepFlag {
   WAFER_IFP_STEP_MASK_MOVE_ISSUED = UINT32_C(1) << 2,
   WAFER_IFP_STEP_FINAL_FENCE_COMPLETED = UINT32_C(1) << 3,
   WAFER_IFP_STEP_REPEATED_OVERLAP_VALUES_STAGED = UINT32_C(1) << 4,
+  WAFER_IFP_STEP_ARGMIN_INPUT_SNAPSHOTTED = UINT32_C(1) << 5,
 };
 
 #endif

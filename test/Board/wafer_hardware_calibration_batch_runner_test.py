@@ -185,15 +185,18 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             environment=self.environment if environment is None else environment,
         )
 
-    def test_default_plan_covers_all_board_stages_and_only_repeats_heartbeat(
+    def test_default_plan_covers_all_board_stages_and_qualifies_once(
         self,
     ) -> None:
         RUNNER.validate_default_plan()
         steps = RUNNER.CALIBRATION_STEPS
         self.assertEqual(steps[0].ctest_name, RUNNER.HEARTBEAT_CTEST)
-        self.assertEqual(steps[-1].ctest_name, RUNNER.HEARTBEAT_CTEST)
+        self.assertEqual(
+            sum(step.ctest_name == RUNNER.HEARTBEAT_CTEST for step in steps),
+            1,
+        )
         self.assertEqual(len(steps), 37)
-        self.assertEqual(len({step.ctest_name for step in steps}), 36)
+        self.assertEqual(len({step.ctest_name for step in steps}), 37)
         self.assertEqual(
             len(RUNNER.ALL_CALIBRATION_STEPS),
             len(RUNNER.CALIBRATION_STEPS)
@@ -208,20 +211,9 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "spm-non-preferred-geometry",
             }.issubset(default_keys)
         )
-        self.assertFalse(
-            {
-                "instruction-family-full-replay",
-                "memory-descriptor-full-replay",
-                "spm-full-replay",
-            }
-            & default_keys
-        )
         explicit_keys = {step.key for step in RUNNER.EXPLICIT_ONLY_STEPS}
         self.assertTrue(
             {
-                "instruction-family-full-replay",
-                "memory-descriptor-full-replay",
-                "spm-full-replay",
                 "compiler-optimization-reciprocal-implementation",
                 "compiler-optimization-tree-all-reduce",
                 "collective-characterization-all-gather-direct-vs-ring-256b",
@@ -252,7 +244,6 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "full-card-runtime",
                 "full-card-barrier",
                 "full-card-dte",
-                "terminal-heartbeat",
             }.issubset(batches)
         )
         self.assertFalse(
@@ -262,7 +253,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             )
         )
 
-    def test_explicit_step_selection_keeps_canonical_order_and_heartbeats(
+    def test_explicit_step_selection_keeps_canonical_order_and_one_heartbeat(
         self,
     ) -> None:
         selected = RUNNER.select_calibration_steps(
@@ -279,7 +270,6 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "instruction-family-ct-capability",
                 "memory-engine-pair-new-offsets",
                 "spm-non-preferred-geometry",
-                "terminal-heartbeat",
             ],
         )
         with self.assertRaisesRegex(
@@ -289,7 +279,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         with self.assertRaisesRegex(
             RUNNER.CalibrationRunnerError, "heartbeat steps are automatic"
         ):
-            RUNNER.select_calibration_steps(("terminal-heartbeat",))
+            RUNNER.select_calibration_steps(("initial-profile-heartbeat",))
         with self.assertRaisesRegex(
             RUNNER.CalibrationRunnerError, "unknown calibration step"
         ):
@@ -306,7 +296,6 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             [
                 "initial-profile-heartbeat",
                 *RUNNER.SELECTABLE_BATCHES["compiler-optimization-paired"],
-                "terminal-heartbeat",
             ],
         )
         self.assertEqual(
@@ -322,7 +311,6 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "initial-profile-heartbeat",
                 "direct-dte-collective",
                 *RUNNER.SELECTABLE_BATCHES["compiler-optimization-paired"],
-                "terminal-heartbeat",
             ],
         )
         with self.assertRaisesRegex(
@@ -367,13 +355,12 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             [
                 "initial-profile-heartbeat",
                 *batch,
-                "terminal-heartbeat",
             ],
         )
         self.assertTrue(
             all(
                 step.batch == "full-card-collective-characterization"
-                for step in selected[1:-1]
+                for step in selected[1:]
             )
         )
         self.assertFalse(
@@ -481,7 +468,6 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             [
                 "initial-profile-heartbeat",
                 *batch,
-                "terminal-heartbeat",
             ],
         )
         self.assertFalse(
@@ -555,7 +541,6 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             [
                 "initial-profile-heartbeat",
                 *batch,
-                "terminal-heartbeat",
             ],
         )
 

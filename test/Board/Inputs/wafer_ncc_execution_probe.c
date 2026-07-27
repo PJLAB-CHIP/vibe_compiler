@@ -16,6 +16,13 @@
 #define WAFER_NCC_PROBE_WORKER_PMU_STRIDE UINT32_C(0x30)
 #define WAFER_NCC_PROBE_NE_LOGICAL_DIM 16U
 
+_Static_assert((uint32_t)Fmt_INT8 == WAFER_NCC_PROTOCOL_DMA_FORMAT_INT8,
+               "probe INT8 format must match the active vendor ABI");
+_Static_assert((uint32_t)Fmt_FP16 == WAFER_NCC_PROTOCOL_DMA_FORMAT_FP16,
+               "probe FP16 format must match the active vendor ABI");
+_Static_assert((uint32_t)Fmt_UINT8 == WAFER_NCC_PROTOCOL_DMA_FORMAT_UINT8,
+               "probe UINT8 format must match the active vendor ABI");
+
 extern int8_t *get_spm_memory_mapping(uint64_t offset);
 
 typedef union WaferNccProbePacket {

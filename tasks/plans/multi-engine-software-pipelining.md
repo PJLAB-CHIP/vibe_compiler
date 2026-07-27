@@ -114,7 +114,7 @@ Pipeline position:
   CT convert 204、DataMove
   base 46、SPM原本地19、memory descriptor既有59、cache/coherence 58及SPM原50个delegated row已有对应
   exact/observation证据，不再笼统记为“尚未上板”。本轮新增SPM 5行和pair 40行仍待板；pair current
-  protocol按3 offset × serial/window × 3样本重跑前，旧单样本PMU仍不能形成bank、overlap或固定cost结论。
+  protocol按3 offset × serial/window × 3个新样本执行前，旧单样本PMU仍不能形成bank、overlap或固定cost结论。
 - NCC统一板前门禁当前覆盖196个普通safe case（按oracle采样规则合计468次launch），进入同一串行CTest；
   constructor、default/byworker/local-fence对照、五类engine active-occupancy和六个proper-subset join共
   15个focused CTest以独立进程执行。完整板端执行使用
@@ -127,11 +127,11 @@ Pipeline position:
   `PREPARE_FAILED`也不能跨独立进程推出稳定heap容量。当前ELF反汇编只确认`TsmNewArith`返回
   `csi_kernel_malloc(scope=0, 240, NULL)`的`a0`，raw prepare按该返回值设置owner，空值时失败，非空后
   才调用`AddVV`并完成packet。新schema已通过host protocol、target link和shared-package no-card，
-  本批未运行板卡；后续一次精确实卡重放应直接区分`builder-not-acquired`与更晚的packet/release阶段，
+  本批未运行板卡；后续一次精确实卡执行应直接区分`builder-not-acquired`与更晚的packet/release阶段，
   不再靠缩放DDR resource猜测。
 - 下一重启会话不直接恢复大批次。先用current compiler/CRT重新生成并只执行一次ordinary Add，同时建立
   会话资格并验证其最终module中的依赖完成顺序；随后用已恢复安全地址的
-  `op013 F32 VuVLoop min tail -> op014 F16 VV Add main`双case重放完整result/span/guard，并以一次
+  `op013 F32 VuVLoop min tail -> op014 F16 VV Add main`双case执行完整result/span/guard，并以一次
   后置Add确认上下文未被污染。三步都通过后才继续修正strict oracle后的strided DMA/NCC以及其它剩余项；
   已有证据不重复跑。任一步timeout或设备异常立即停批，不自动retry/reset/power。
 - 校准矩阵按compiler consumer分层，而不是按vendor API罗列：
@@ -151,7 +151,7 @@ Pipeline position:
   - runtime/profiling：kernel/model launch、resource staging/readback、failure cleanup、NCC/DTE/SPM/TMNOC
     PMU可读性、scope、counter unit、wrap和event correlation。
 - 不对明确非法的dtype/layout做raw笛卡尔积；每个公开opcode/form必须有catalog disposition，每个合法
-  dtype/layout等价类必须至少有正向large-shape与独立held-out boundary，需materialize组合必须重放显式
+  dtype/layout等价类必须至少有正向large-shape与独立held-out boundary，需materialize组合必须执行显式
   movement，非法组合必须有negative gate。先用区分能力最强的calibration vectors排除错误语义，再冻结
   独立held-out shape/value/layout。一个维度只有在held-out仍通过且profile identity完整时才能从
   `board-observed`提升为`calibrated/supported`。
@@ -163,8 +163,8 @@ Pipeline position:
   5. 只有held-out和production source纵向都通过，才修改target capability或production legality。
 - 同一ABI/resource class共享device dispatcher和package，由typed request选择case；不按row重复编译。
   local instruction/layout资格默认单tile、worker0，worker1/2只用routing代表case；只有Direct DTE、
-  multi-tile arrival和其它rank-dependent语义才启动多rank。safe deterministic suite按批次做前后heartbeat，
-  queue边界、安全random observation和multi-writeback等高风险board row逐case隔离。全部有界
+  multi-tile arrival和其它rank-dependent语义才启动多rank。同一重启会话只在批次开始时做一次资格测试，
+  queue边界、安全random observation和multi-writeback等board row仍逐case串行执行。全部有界
   observation均发板；`isolated-deferred`只保留不可恢复/无生命周期owner的隔离输入。
 - SPM、同步和并行分别使用独立matrix：SPM覆盖capacity/reservation、alignment、relative-offset、
   exact/partial/adjacent/strided range、Tensor/Cx/NCx physical footprint和slot reuse；同步覆盖same-worker、
@@ -178,7 +178,7 @@ Pipeline position:
   local fence语义；无法从静态资料证明的项进入board矩阵，不以推测补合同。
 - microcase采用固定输入、canary和CPU expected；每个case先做static/fake/no-card，再检查设备空闲状态并用
   正常launch timeout执行。管理面idle、0%利用率或无进程不等于execution/completion面健康；queue边界case
-  必须单进程、单case运行，并在前后各用一次既有known-good Add heartbeat确认健康。任一case或heartbeat
+  必须单进程、单case运行。同一重启会话只在批次开始时用一次known-good Add确认资格；任一case或资格测试
   timeout立即停止；是否恢复由用户决定，测试代码不调用power/reset。
 - 矩阵按正交维度组织，不做所有维度的笛卡尔积：
   - queue routing：worker 0的CT/NE/RDMA/WDMA/TDMA，CT在worker 1/2的代表样本；SCALAR/DTE/CSR若
@@ -186,7 +186,7 @@ Pipeline position:
   - queue occupancy：register/header中的depth只作为静态queue形状，不作为安全outstanding上限。代表样本从
     `N=1`递增，普通calibration只跑1/2/4且TDMA只跑1/2，记录execute返回、逐次IB/control、PMU count、
     完整结果与canary。恰好静态depth只进入独立`documented-depth-manual`：单engine、单case、单样本，
-    前后Add heartbeat，验证连续提交、最终completion、count/output/guard。typed tight `depth+1`只在
+    在已通过开场资格测试的会话中验证连续提交、最终completion、count/output/guard。typed tight `depth+1`只在
     同engine的`D`向量通过且取得显式manual授权后，以相同隔离边界运行；packet builder预先释放，相邻execute之间
     只保留cycle采样，window后统一读control并进入matching wait/full oracle。两种manual gate都不声明active
     occupancy；任意更深overflow继续禁止。
@@ -366,11 +366,11 @@ profiling按可证明范围分层使用：
 版本/ABI/loader/probe ELF的反汇编属于环境或实现签名变化时的一次性qualification，不进入普通板测热路径。
 普通批次先用known-good Add建立execution baseline，然后按保守1/2/4（TDMA 1/2）的单engine baseline、显式fence
 串行对照、完全disjoint候选、RAW/WAR/WAW/read-read、wait/visibility、Direct DTE/cluster正向的顺序执行。
-恰好documented depth另用单engine、单case、单样本的manual入口，前后均追加一次Add heartbeat；每个case
+恰好documented depth另用单engine、单case、单样本的manual入口；每个case
 独立进程、外层timeout、完整output/canary oracle。CT/NE/RDMA/WDMA `D=6`与TDMA `D=4`均已按该合同闭合。
 typed tight `D+1`也只能使用相同隔离边界；CT/NE/RDMA/WDMA `D+1=7`与TDMA `D+1=5`已闭合总提交接受
 与完成，但未闭合active occupancy/full/backpressure；任意更深提交不从这些向量外推。
-case或heartbeat timeout后停止该批次，不自动重试、reset或power cycle；`tsm_smi` idle不能解除停止条件。
+case或开场资格测试timeout后停止该批次，不自动重试、reset或power cycle；`tsm_smi` idle不能解除停止条件。
 诊断地址也必须先由当前SPM arena/reservation合同证明整个半开range owned且合法；不能用相邻地址可访问或
 较小CT write成功外推整段WDMA range。`0x70000..0x7ffff`的64KiB WDMA诊断明确禁止复用。
 板端parameterized probe只回传事实，编译器策略在全部代表维度闭合后决定。current expanded矩阵已有10个

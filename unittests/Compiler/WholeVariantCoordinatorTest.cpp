@@ -1191,7 +1191,7 @@ TEST_F(WholeVariantCoordinatorTest,
 }
 
 TEST_F(WholeVariantCoordinatorTest,
-       SelectsModularReassociationFromProductionFrontier) {
+       RejectsModularReassociationWithoutNumericAdmission) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -1223,43 +1223,18 @@ module {
 )mlir",
                                                         context.get());
   ASSERT_TRUE(source);
-  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto accepted = selectProductionVariant(
-      *source, replicated1DProgram(3, 16, "i8"), diagnostics, &baselineCost);
-  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
-  ASSERT_TRUE(baselineCost);
-  ASSERT_TRUE(baselineCost->dataDependencyDepth.isKnown());
-  ASSERT_TRUE(accepted->resourceCost.maximumRankDataDependencyDepth.isKnown());
-  EXPECT_LT(accepted->resourceCost.maximumRankDataDependencyDepth.value,
-            baselineCost->dataDependencyDepth.value);
-  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
-
-  llvm::DenseMap<mlir::Value, wafer::InstrElementwiseKind> writers;
-  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
-    writers[op.getDest()] = op.getKind();
-  });
-  bool sawReassociatedJoin = false;
-  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
-    if (op.getKind() != wafer::InstrElementwiseKind::Add)
-      return;
-    bool readsMul = false;
-    bool readsAdd = false;
-    for (mlir::Value input : op.getInputs()) {
-      auto found = writers.find(input);
-      if (found == writers.end())
-        continue;
-      readsMul |= found->second == wafer::InstrElementwiseKind::Mul;
-      readsAdd |= found->second == wafer::InstrElementwiseKind::Add;
-    }
-    sawReassociatedJoin |= readsMul && readsAdd;
-  });
-  EXPECT_TRUE(sawReassociatedJoin);
+      *source, replicated1DProgram(3, 16, "i8"), diagnostics);
+  EXPECT_TRUE(mlir::failed(accepted));
+  EXPECT_NE(diagnosticText.find("integer-elementwise-policy-unproven"),
+            std::string::npos)
+      << diagnosticText;
 }
 
 TEST_F(WholeVariantCoordinatorTest,
-       SelectsBalancedModularAdditionTreeFromProductionFrontier) {
+       RejectsBalancedModularAdditionTreeWithoutNumericAdmission) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -1293,40 +1268,18 @@ module {
 )mlir",
                                                         context.get());
   ASSERT_TRUE(source);
-  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto accepted = selectProductionVariant(
-      *source, replicated1DProgram(4, 16, "i8"), diagnostics, &baselineCost);
-  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
-  ASSERT_TRUE(baselineCost);
-  ASSERT_TRUE(baselineCost->dataDependencyDepth.isKnown());
-  ASSERT_TRUE(accepted->resourceCost.maximumRankDataDependencyDepth.isKnown());
-  EXPECT_LT(accepted->resourceCost.maximumRankDataDependencyDepth.value,
-            baselineCost->dataDependencyDepth.value);
-  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
-
-  llvm::DenseMap<mlir::Value, wafer::InstrElementwiseKind> writers;
-  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
-    writers[op.getDest()] = op.getKind();
-  });
-  bool sawBalancedJoin = false;
-  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
-    if (op.getKind() != wafer::InstrElementwiseKind::Add)
-      return;
-    unsigned addInputs = 0;
-    for (mlir::Value input : op.getInputs()) {
-      auto found = writers.find(input);
-      addInputs += found != writers.end() &&
-                   found->second == wafer::InstrElementwiseKind::Add;
-    }
-    sawBalancedJoin |= addInputs == 2;
-  });
-  EXPECT_TRUE(sawBalancedJoin);
+      *source, replicated1DProgram(4, 16, "i8"), diagnostics);
+  EXPECT_TRUE(mlir::failed(accepted));
+  EXPECT_NE(diagnosticText.find("integer-elementwise-policy-unproven"),
+            std::string::npos)
+      << diagnosticText;
 }
 
 TEST_F(WholeVariantCoordinatorTest,
-       SelectsModularDistributiveContractionFromProductionFrontier) {
+       RejectsModularDistributiveContractionWithoutNumericAdmission) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -1358,31 +1311,18 @@ module {
 )mlir",
                                                         context.get());
   ASSERT_TRUE(source);
-  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto accepted = selectProductionVariant(
-      *source, replicated1DProgram(3, 16, "i8"), diagnostics, &baselineCost);
-  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
-  ASSERT_TRUE(baselineCost);
-  const auto &winnerCost = accepted->resourceCost.rankCosts.front();
-  EXPECT_LT(winnerCost.instructionCount.value,
-            baselineCost->instructionCount.value);
-  EXPECT_LT(winnerCost.compute.vectorOtherLogicalOps.value,
-            baselineCost->compute.vectorOtherLogicalOps.value);
-  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
-  unsigned multiplies = 0;
-  unsigned subtracts = 0;
-  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
-    multiplies += op.getKind() == wafer::InstrElementwiseKind::Mul;
-    subtracts += op.getKind() == wafer::InstrElementwiseKind::Sub;
-  });
-  EXPECT_EQ(multiplies, 1u);
-  EXPECT_EQ(subtracts, 1u);
+      *source, replicated1DProgram(3, 16, "i8"), diagnostics);
+  EXPECT_TRUE(mlir::failed(accepted));
+  EXPECT_NE(diagnosticText.find("integer-elementwise-policy-unproven"),
+            std::string::npos)
+      << diagnosticText;
 }
 
 TEST_F(WholeVariantCoordinatorTest,
-       SelectsModularCommonFactorFromProductionFrontier) {
+       RejectsModularCommonFactorWithoutNumericAdmission) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -1414,27 +1354,14 @@ module {
 )mlir",
                                                         context.get());
   ASSERT_TRUE(source);
-  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto accepted = selectProductionVariant(
-      *source, replicated1DProgram(3, 16, "i8"), diagnostics, &baselineCost);
-  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
-  ASSERT_TRUE(baselineCost);
-  const auto &winnerCost = accepted->resourceCost.rankCosts.front();
-  EXPECT_LT(winnerCost.instructionCount.value,
-            baselineCost->instructionCount.value);
-  EXPECT_LT(winnerCost.compute.vectorOtherLogicalOps.value,
-            baselineCost->compute.vectorOtherLogicalOps.value);
-  EXPECT_FALSE(accepted->selectedReservedBaselines.front());
-  unsigned adds = 0;
-  unsigned multiplies = 0;
-  accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
-    adds += op.getKind() == wafer::InstrElementwiseKind::Add;
-    multiplies += op.getKind() == wafer::InstrElementwiseKind::Mul;
-  });
-  EXPECT_EQ(adds, 1u);
-  EXPECT_EQ(multiplies, 1u);
+      *source, replicated1DProgram(3, 16, "i8"), diagnostics);
+  EXPECT_TRUE(mlir::failed(accepted));
+  EXPECT_NE(diagnosticText.find("integer-elementwise-policy-unproven"),
+            std::string::npos)
+      << diagnosticText;
 }
 
 TEST_F(WholeVariantCoordinatorTest,
@@ -1515,7 +1442,7 @@ module {
       ins(%input : tensor<262144xf32>)
       outs(%producer_out : tensor<262144xf32>) {
     ^bb0(%value: f32, %unused: f32):
-      %result = arith.negf %value : f32
+      %result = arith.mulf %value, %value : f32
       linalg.yield %result : f32
     } -> tensor<262144xf32>
     %left_out = tensor.empty() : tensor<262144xf32>
@@ -1535,7 +1462,7 @@ module {
       ins(%other : tensor<262144xf32>)
       outs(%middle_out : tensor<262144xf32>) {
     ^bb0(%value: f32, %unused: f32):
-      %result = arith.negf %value : f32
+      %result = arith.mulf %value, %value : f32
       linalg.yield %result : f32
     } -> tensor<262144xf32>
     %right_out = tensor.empty() : tensor<262144xf32>
@@ -1564,11 +1491,11 @@ module {
   ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
   ASSERT_TRUE(baselineCost);
   EXPECT_FALSE(accepted->selectedReservedBaselines.front());
-  unsigned negations = 0;
+  unsigned multiplies = 0;
   accepted->ranks.front().getModule().walk([&](wafer::InstrElementwiseOp op) {
-    negations += op.getKind() == wafer::InstrElementwiseKind::Neg;
+    multiplies += op.getKind() == wafer::InstrElementwiseKind::Mul;
   });
-  EXPECT_GE(negations, 3u);
+  EXPECT_GE(multiplies, 4u);
   EXPECT_LT(accepted->resourceCost.aggregateDDRReadBytes.value,
             baselineCost->ddrReadBytes.value);
 }
@@ -1593,7 +1520,7 @@ module {
         iterator_types = ["parallel"]}
       ins(%input : tensor<16xf32>) outs(%producer_out : tensor<16xf32>) {
     ^bb0(%value: f32, %unused: f32):
-      %result = arith.negf %value : f32
+      %result = arith.mulf %value, %value : f32
       linalg.yield %result : f32
     } -> tensor<16xf32>
     %left_out = tensor.empty() : tensor<16xf32>
@@ -1634,18 +1561,18 @@ module {
             baselineCost->ddrReadBytes.value);
 
   mlir::ModuleOp winner = accepted->ranks.front().getModule();
-  unsigned negations = 0;
+  unsigned multiplies = 0;
   unsigned fusedResultCount = 0;
   unsigned sharedInputLoads = 0;
   winner.walk([&](wafer::InstrElementwiseOp op) {
-    negations += op.getKind() == wafer::InstrElementwiseKind::Neg;
+    multiplies += op.getKind() == wafer::InstrElementwiseKind::Mul;
   });
   winner.walk([&](wafer::TileRegionOp region) {
     fusedResultCount = std::max(fusedResultCount, region.getNumResults());
     if (region.getNumResults() == 2)
       region.walk([&](wafer::InstrRDMAOp) { ++sharedInputLoads; });
   });
-  EXPECT_EQ(negations, 1u);
+  EXPECT_EQ(multiplies, 2u);
   EXPECT_EQ(fusedResultCount, 2u);
   EXPECT_EQ(sharedInputLoads, 1u);
 }
@@ -1675,8 +1602,8 @@ module {
           iterator_types = ["parallel"]}
         ins(%input : tensor<16xf32>) outs(%empty : tensor<16xf32>) {
       ^bb0(%value: f32, %unused: f32):
-        %negated = arith.negf %value : f32
-        linalg.yield %negated : f32
+        %squared = arith.mulf %value, %value : f32
+        linalg.yield %squared : f32
       } -> tensor<16xf32>
       scf.yield %invariant : tensor<16xf32>
     }
@@ -1687,8 +1614,8 @@ module {
         iterator_types = ["parallel"]}
       ins(%loop : tensor<16xf32>) outs(%final_out : tensor<16xf32>) {
     ^bb0(%value: f32, %unused: f32):
-      %negated = arith.negf %value : f32
-      linalg.yield %negated : f32
+      %squared = arith.mulf %value, %value : f32
+      linalg.yield %squared : f32
     } -> tensor<16xf32>
     return %final : tensor<16xf32>
   }
@@ -1739,8 +1666,8 @@ module {
         iterator_types = ["parallel"]}
       ins(%a : tensor<16xf32>) outs(%producer_out : tensor<16xf32>) {
     ^bb0(%value: f32, %unused: f32):
-      %negated = arith.negf %value : f32
-      linalg.yield %negated : f32
+      %squared = arith.mulf %value, %value : f32
+      linalg.yield %squared : f32
     } -> tensor<16xf32>
     %consumer_out = tensor.empty() : tensor<16xf32>
     %consumer = linalg.generic {
@@ -1821,18 +1748,18 @@ module {
       %sum = arith.addf %accumulator, %value : f32
       linalg.yield %sum : f32
     } -> tensor<2xf32>
-    %negated_empty = tensor.empty() : tensor<2x4xf32>
-    %negated = linalg.generic {
+    %squared_empty = tensor.empty() : tensor<2x4xf32>
+    %squared = linalg.generic {
         indexing_maps = [affine_map<(d0, d1)->(d0, d1)>,
                          affine_map<(d0, d1)->(d0, d1)>],
         iterator_types = ["parallel", "parallel"]}
       ins(%converted : tensor<2x4xf32>)
-      outs(%negated_empty : tensor<2x4xf32>) {
+      outs(%squared_empty : tensor<2x4xf32>) {
     ^bb0(%value: f32, %unused: f32):
-      %negative = arith.negf %value : f32
-      linalg.yield %negative : f32
+      %square = arith.mulf %value, %value : f32
+      linalg.yield %square : f32
     } -> tensor<2x4xf32>
-    return %negated, %reduced : tensor<2x4xf32>, tensor<2xf32>
+    return %squared, %reduced : tensor<2x4xf32>, tensor<2xf32>
   }
 }
 )mlir",
@@ -2079,12 +2006,7 @@ module {
   }
 }
 
-TEST_F(WholeVariantCoordinatorTest,
-       SelectsTreeAllReduceFromProductionAllRankFrontier) {
-  // Keep the reserved Auto candidate and the explicit Tree candidate
-  // genuinely distinct: i8 addition is exactly reassociable and sixteen
-  // elements form one nonzero Ring chunk per rank. Floating-point Auto must
-  // already use the ordered tree and is covered by the lowering tests.
+TEST_F(WholeVariantCoordinatorTest, RejectsI8AllReduceWithoutNumericAdmission) {
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
   wafer.target.topology @default {
@@ -2113,51 +2035,17 @@ module {
                                                         context.get());
   ASSERT_TRUE(source);
 
-  std::optional<wafer::analysis::InstructionProgramCost> baselineCost;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto accepted = selectProductionVariant(
       *source,
       replicated1DProgram(1, 16, "i8", /*outputCount=*/1,
                           /*rankCount=*/16),
-      diagnostics, &baselineCost, /*rankCount=*/16);
-  ASSERT_TRUE(mlir::succeeded(accepted)) << diagnosticText;
-  ASSERT_TRUE(baselineCost);
-  ASSERT_EQ(accepted->ranks.size(), 16u);
-  EXPECT_TRUE(llvm::none_of(accepted->selectedReservedBaselines,
-                            [](bool reserved) { return reserved; }));
-  ASSERT_TRUE(baselineCost->instructionCount.isKnown());
-  ASSERT_TRUE(accepted->resourceCost.aggregateInstructionCount.isKnown());
-  EXPECT_LT(accepted->resourceCost.aggregateInstructionCount.value,
-            baselineCost->instructionCount.value * 16);
-  ASSERT_TRUE(accepted->resourceCost.minimumHopLinkByteDemand.isKnown());
-  EXPECT_EQ(accepted->resourceCost.minimumHopLinkByteDemand.value, 480u);
-  ASSERT_TRUE(
-      accepted->resourceCost.aggregateNoC.aggregateTransmitBytes.isKnown());
-  EXPECT_EQ(accepted->resourceCost.aggregateNoC.aggregateTransmitBytes.value,
-            480u);
-  for (const auto &rank : accepted->ranks) {
-    bool sawTree = false;
-    bool sawRing = false;
-    rank.getModule().walk([&](wafer::InstrDTESendOp send) {
-      sawTree |= send.getMessage().getPhase() ==
-                     wafer::DTEProtocolPhase::AllReduceTreeReduce ||
-                 send.getMessage().getPhase() ==
-                     wafer::DTEProtocolPhase::AllReduceTreeBroadcast;
-      sawRing |= send.getMessage().getPhase() ==
-                 wafer::DTEProtocolPhase::AllReduceRing;
-    });
-    rank.getModule().walk([&](wafer::InstrDTERecvOp recv) {
-      sawTree |= recv.getMessage().getPhase() ==
-                     wafer::DTEProtocolPhase::AllReduceTreeReduce ||
-                 recv.getMessage().getPhase() ==
-                     wafer::DTEProtocolPhase::AllReduceTreeBroadcast;
-      sawRing |= recv.getMessage().getPhase() ==
-                 wafer::DTEProtocolPhase::AllReduceRing;
-    });
-    EXPECT_TRUE(sawTree);
-    EXPECT_FALSE(sawRing);
-  }
+      diagnostics, /*baselineCost=*/nullptr, /*rankCount=*/16);
+  EXPECT_TRUE(mlir::failed(accepted));
+  EXPECT_NE(diagnosticText.find("integer-elementwise-policy-unproven"),
+            std::string::npos)
+      << diagnosticText;
 }
 
 TEST_F(WholeVariantCoordinatorTest,

@@ -36,6 +36,7 @@ add_executable(WaferUnitTests
   Target/NumericSemanticsTest.cpp
   Target/PhysicalTensorCodecTest.cpp
   Target/TargetFormatTest.cpp
+  Target/TargetNumericCapabilityTest.cpp
   Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp
   Transforms/MemoryPlanning/MiniMallocPackingTest.cpp
   Transforms/MemoryPlanning/StaticMemoryPackingTest.cpp

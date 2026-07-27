@@ -74,14 +74,6 @@ def parse_args() -> argparse.Namespace:
         help="select engine-pair rows with this relative SPM offset; repeatable",
     )
     parser.add_argument(
-        "--parallel-address-sweep",
-        action="store_true",
-        help=(
-            "select the representative CT+RDMA nine-point 256-byte-step "
-            "relative-offset and 64-byte common-base phase controls"
-        ),
-    )
-    parser.add_argument(
         "--parallel-pair-expanded",
         action="store_true",
         help=(
@@ -126,9 +118,6 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.MemoryCase, ...]:
         "--case": bool(args.selected_cases),
         "--domain": bool(args.domain),
         "--relative-spm-offset": bool(args.relative_spm_offset),
-        "--parallel-address-sweep": bool(
-            getattr(args, "parallel_address_sweep", False)
-        ),
     }
     if conflict_equivalence:
         conflicting_equivalence_filters = {
@@ -193,9 +182,6 @@ def select_cases(args: argparse.Namespace) -> tuple[catalog.MemoryCase, ...]:
             if case.domain == "spm-bank-engine-pair"
             and abs(case.spm_b - case.spm_a) in offsets
         )
-    if getattr(args, "parallel_address_sweep", False):
-        sweep = set(catalog.PARALLEL_ADDRESS_SWEEP_CASES)
-        selected = tuple(case for case in selected if case in sweep)
     if not selected:
         raise RuntimeError("memory descriptor filters selected no cases")
     if len({case.name for case in selected}) != len(selected):

@@ -649,11 +649,19 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     break;
   case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_F16:
   case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_NEGATIVE_F16_OBSERVED:
+    wafer_tx81_peripheral_argmin(
+        input_a, output, output + 4,
+        OP_FUNC_CGRATensor_PeriOp_V_V_argmin, elements, Fmt_FP16, 0, 0, 0, 0);
+    break;
   case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_TIE_F16_OBSERVED:
   case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_NAN_F16_OBSERVED:
     wafer_tx81_peripheral_argmin(
         input_a, output, output + 4,
         OP_FUNC_CGRATensor_PeriOp_V_V_argmin, elements, Fmt_FP16, 0, 0, 0, 0);
+    wafer_ifp_wait_worker0_drain();
+    wafer_ifp_copy_spm_bytes(auxiliary, input_a, elements * sizeof(uint16_t));
+    record[WAFER_IFP_REC_STEP_FLAGS] |=
+        WAFER_IFP_STEP_ARGMIN_INPUT_SNAPSHOTTED;
     break;
   case WAFER_IFP_CASE_PERIPHERAL_LUT16_F16:
     wafer_tx81_peripheral_lut16(

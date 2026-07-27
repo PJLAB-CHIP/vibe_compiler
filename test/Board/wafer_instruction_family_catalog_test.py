@@ -1240,22 +1240,36 @@ def validate_argmin_pending_domain_observations() -> None:
     ]
     assert tie.is_observation and nan.is_observation
     assert (tie.case_id, nan.case_id) == (247, 248)
-    assert (tie.result_bytes, tie.output_span, tie.aux_span) == (8, 8, 0)
-    assert (nan.result_bytes, nan.output_span, nan.aux_span) == (8, 8, 0)
+    assert (tie.result_bytes, tie.output_span, tie.aux_span) == (8, 8, 256)
+    assert (nan.result_bytes, nan.output_span, nan.aux_span) == (8, 8, 256)
 
     tie_sources = []
     for sample, candidates in enumerate(catalog.ARGMIN_TIE_INDEX_SETS):
         built = catalog.build_case_payload(tie, sample=sample)
+        tied_value_bits = struct.unpack(
+            "<H", struct.pack("<e", catalog.ARGMIN_TIE_VALUES[sample])
+        )[0]
         source_bits = struct.unpack_from(
             "<128H", built.payload, catalog.BODY_OFFSET
         )
         tie_sources.append(source_bits)
         assert {
-            index for index, bits in enumerate(source_bits) if bits == 0x3800
+            index
+            for index, bits in enumerate(source_bits)
+            if bits == tied_value_bits
         } == set(candidates)
+        assert built.payload[
+            3 * catalog.SLOT_BYTES
+            + catalog.BODY_OFFSET :
+            3 * catalog.SLOT_BYTES
+            + catalog.BODY_OFFSET
+            + tie.aux_span
+        ] == built.payload[
+            catalog.BODY_OFFSET : catalog.BODY_OFFSET + tie.aux_span
+        ]
         for selected in candidates:
             result = (
-                struct.pack("<H", 0x3800)
+                struct.pack("<H", tied_value_bits)
                 + _output_seed_padding()
                 + struct.pack("<I", selected)
             )
@@ -1313,6 +1327,96 @@ def validate_argmin_pending_domain_observations() -> None:
         assert "incoherent" in str(error)
     else:
         raise AssertionError("incoherent ArgMin value/index pair was accepted")
+
+    sample = 0
+    built = catalog.build_case_payload(tie, sample=sample)
+    tied_value_bits = struct.unpack(
+        "<H", struct.pack("<e", catalog.ARGMIN_TIE_VALUES[sample])
+    )[0]
+    actual_slot = bytearray(built.expected_output_slot)
+    actual_slot[
+        catalog.BODY_OFFSET : catalog.BODY_OFFSET + tie.result_bytes
+    ] = (
+        struct.pack("<H", tied_value_bits)
+        + _output_seed_padding()
+        + struct.pack("<I", catalog.ARGMIN_TIE_INDEX_SETS[sample][0])
+    )
+    expected_aux_slot = built.payload[
+        3 * catalog.SLOT_BYTES : 4 * catalog.SLOT_BYTES
+    ]
+    raw = bytearray(
+        [runner.OUTPUT_INITIAL_CANARY] * catalog.RESOURCE_BYTES
+    )
+    words = [0] * catalog.RECORD_WORDS
+    rec = catalog.REC
+    values = {
+        "MAGIC": catalog.RECORD_MAGIC,
+        "SCHEMA_AND_WORDS": (
+            catalog.SCHEMA << 32
+        ) | catalog.RECORD_WORDS,
+        "STATUS": 0,
+        "CASE": tie.case_id,
+        "DISPOSITION": tie.disposition,
+        "FAMILY": tie.family,
+        "DTYPE": tie.dtype,
+        "ORACLE": tie.oracle,
+        "RESULT_BYTES": tie.result_bytes,
+        "OUTPUT_SPAN": tie.output_span,
+        "AUX_SPAN": tie.aux_span,
+        "SAMPLE": sample,
+        "REQUEST_GUARD": catalog.REQUEST_GUARD,
+        "OUTPUT_DDR_OFFSET": catalog.OUTPUT_DDR_OFFSET,
+        "SLOT_BYTES": catalog.SLOT_BYTES,
+        "BODY_OFFSET": catalog.BODY_OFFSET,
+        "STEP_FLAGS": (
+            catalog.STEP_TARGET_ISSUED
+            | catalog.STEP_FINAL_FENCE_COMPLETED
+            | catalog.STEP_ARGMIN_INPUT_SNAPSHOTTED
+        ),
+        "RECORD_GUARD": catalog.RECORD_GUARD,
+    }
+    for name, value in values.items():
+        words[rec[name]] = value
+    struct.pack_into(f"<{catalog.RECORD_WORDS}Q", raw, 0, *words)
+    raw[
+        catalog.OUTPUT_DDR_OFFSET :
+        catalog.OUTPUT_DDR_OFFSET + catalog.SLOT_BYTES
+    ] = actual_slot
+    raw[
+        catalog.AUX_DDR_OFFSET :
+        catalog.AUX_DDR_OFFSET + catalog.SLOT_BYTES
+    ] = expected_aux_slot
+    with tempfile.TemporaryDirectory() as directory:
+        output = pathlib.Path(directory) / "argmin.raw"
+        output.write_bytes(raw)
+        observation = runner.validate_output(
+            output,
+            tie,
+            built.expected_output_slot,
+            expected_aux_slot,
+            sample,
+        )
+        assert (
+            observation["semantic_observation"]["classification"]
+            == "tied-minimum"
+        )
+        corrupted = bytearray(raw)
+        corrupted[
+            catalog.AUX_DDR_OFFSET + catalog.BODY_OFFSET
+        ] ^= 1
+        output.write_bytes(corrupted)
+        try:
+            runner.validate_output(
+                output,
+                tie,
+                built.expected_output_slot,
+                expected_aux_slot,
+                sample,
+            )
+        except RuntimeError as error:
+            assert "post-ArgMin input snapshot differs" in str(error)
+        else:
+            raise AssertionError("corrupt post-ArgMin snapshot was accepted")
 
 
 def validate_probe_seed_is_ncc_local_and_completed() -> None:
@@ -1814,6 +1918,56 @@ def validate_repeated_unpool_bounded_oracle() -> None:
             } == {
                 ((1 << position,), 16) for position in range(4)
             }
+
+            if case.symbol == (
+                "UNPOOL_INDEX_F16_REPEATED_OVERLAP_OBSERVED"
+            ):
+                zero_fill = bytearray(raw)
+                zero_fill[
+                    output_begin + catalog.BODY_OFFSET :
+                    output_begin + catalog.BODY_OFFSET + case.output_span
+                ] = bytes(case.output_span)
+                output.write_bytes(zero_fill)
+                zero_observation = runner.validate_output(
+                    output,
+                    case,
+                    built.expected_output_slot,
+                    built.payload[
+                        3 * catalog.SLOT_BYTES :
+                        4 * catalog.SLOT_BYTES
+                    ],
+                    sample,
+                )["semantic_observation"]
+                assert (
+                    zero_observation["classification"]
+                    == "zero-fill-no-scatter-baseline"
+                )
+                assert zero_observation["collision_evidence"] is False
+                assert zero_observation["candidate_source_masks"] == (0,)
+            else:
+                zero_fill = bytearray(raw)
+                zero_fill[
+                    output_begin + catalog.BODY_OFFSET :
+                    output_begin + catalog.BODY_OFFSET + case.output_span
+                ] = bytes(case.output_span)
+                output.write_bytes(zero_fill)
+                try:
+                    runner.validate_output(
+                        output,
+                        case,
+                        built.expected_output_slot,
+                        built.payload[
+                            3 * catalog.SLOT_BYTES :
+                            4 * catalog.SLOT_BYTES
+                        ],
+                        sample,
+                    )
+                except RuntimeError as error:
+                    assert "bounded winner/accumulation subset" in str(error)
+                else:
+                    raise AssertionError(
+                        f"{case.name}: mask-Unpool drop-all was accepted"
+                    )
 
             mutations = (
                 (

@@ -1031,7 +1031,7 @@ def summarize_repeats(
         ),
         "compiler_use": "no-bank-coloring",
         "interpretation": (
-            "local SPM offsets were replayed on each physical tile; this "
+            "local SPM offsets were executed on each physical tile; this "
             "does not test remote SPM or concurrent cross-tile contention"
         ),
     }
