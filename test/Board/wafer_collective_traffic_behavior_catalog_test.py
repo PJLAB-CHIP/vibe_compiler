@@ -38,12 +38,14 @@ EXPECTED_COVERAGE_KEYS = (
     "dte-disjoint-endpoint-graph",
     "dte-fanout-fanin-one-payload-sweep",
     "dte-fanout-fanin-two-payload-sweep",
-    "dte-fanout-fanin-four-concurrent",
-    "dte-fanout-fanin-eight-concurrent",
-    "dte-fanout-fanin-fifteen-concurrent",
+    "dte-native-broadcast-fanout-layout-matrix",
+    "dte-native-scatter-fanout-layout-matrix",
+    "dte-native-shuffle-fanout-layout-matrix",
+    "dte-four-source-fanin",
+    "dte-eight-source-fanin",
+    "dte-fifteen-source-fanin",
     "dte-device-phase-contention-cost",
     "dte-physical-link-route",
-    "dte-native-multicast",
     "dte-cross-card-route",
     "tmnoc-per-link-counter",
 )
@@ -332,14 +334,58 @@ def assert_coverage(repo: pathlib.Path) -> None:
             assert (repo / relative).is_file(), (
                 f"{item.key}: missing evidence reference {relative}"
             )
-    for fanout in ("four", "eight", "fifteen"):
+    raw_names: set[str] = set()
+    for semantic in ("broadcast", "scatter", "shuffle"):
         item = catalog.COVERAGE_BY_KEY[
-            f"dte-fanout-fanin-{fanout}-concurrent"
+            f"dte-native-{semantic}-fanout-layout-matrix"
         ]
-        assert item.disposition == catalog.CoverageDisposition.BLOCKED_FAIL_CLOSED
+        assert (
+            item.disposition
+            == catalog.CoverageDisposition.PENDING_BOARD_EXECUTION
+        )
+        assert (
+            item.execution_gate
+            == catalog.ExecutionGate.QUALIFIED_RAW_DTE_CORRECTNESS
+        )
         assert (
             catalog.PromotionGate.TYPED_CONCURRENT_MULTI_ENDPOINT_GRAPH
             in item.promotion_gates
+        )
+        semantic_cases = tuple(
+            case
+            for case in catalog.raw_dte.RAW_MULTIDEST_CASES
+            if case.semantic == semantic
+        )
+        assert set(item.raw_case_names) == {
+            case.name for case in semantic_cases
+        }
+        assert {
+            (case.fanout, case.target_layout) for case in semantic_cases
+        } == {
+            (fanout, layout)
+            for fanout in (2, 4, 8, 15)
+            for layout in ("adjacent", "interleaved")
+        }
+        raw_names.update(item.raw_case_names)
+    assert raw_names == {
+        case.name for case in catalog.raw_dte.RAW_MULTIDEST_CASES
+    }
+    fanin4 = catalog.COVERAGE_BY_KEY["dte-four-source-fanin"]
+    assert (
+        fanin4.disposition
+        == catalog.CoverageDisposition.PENDING_BOARD_EXECUTION
+    )
+    assert fanin4.raw_case_names == (
+        "dte-four-source-fanin-correctness",
+    )
+    for fanin in ("eight", "fifteen"):
+        item = catalog.COVERAGE_BY_KEY[f"dte-{fanin}-source-fanin"]
+        assert (
+            item.disposition
+            == catalog.CoverageDisposition.BLOCKED_FAIL_CLOSED
+        )
+        assert catalog.PromotionGate.RECEIVER_FSM_CAPACITY in (
+            item.promotion_gates
         )
     assert (
         catalog.COVERAGE_BY_KEY[

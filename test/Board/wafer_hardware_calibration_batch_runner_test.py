@@ -192,8 +192,8 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         steps = RUNNER.CALIBRATION_STEPS
         self.assertEqual(steps[0].ctest_name, RUNNER.HEARTBEAT_CTEST)
         self.assertEqual(steps[-1].ctest_name, RUNNER.HEARTBEAT_CTEST)
-        self.assertEqual(len(steps), 38)
-        self.assertEqual(len({step.ctest_name for step in steps}), 37)
+        self.assertEqual(len(steps), 37)
+        self.assertEqual(len({step.ctest_name for step in steps}), 36)
         self.assertEqual(
             len(RUNNER.ALL_CALIBRATION_STEPS),
             len(RUNNER.CALIBRATION_STEPS)
@@ -416,6 +416,14 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             11,
         )
         self.assertEqual(
+            len(RUNNER.DTE_PENDING_CASE_SPECS),
+            25,
+        )
+        self.assertEqual(
+            len(RUNNER.DTE_PENDING_CASE_NAMES),
+            25,
+        )
+        self.assertEqual(
             len(RUNNER.ENGINE_PIPELINE_BOARD_CELL_KEYS),
             381,
         )
@@ -441,11 +449,11 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         )
         self.assertEqual(
             len(RUNNER.WORKER_PLACEMENT_CASE_KEYS),
-            32,
+            44,
         )
         self.assertEqual(
             len(RUNNER.WORKER_PLACEMENT_BOARD_GROUP_KEYS),
-            8,
+            14,
         )
         self.assertEqual(
             len(batch),
@@ -457,11 +465,12 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 + 2
                 + 4
                 + 11
+                + 25
                 + 61
                 + 1
                 + 4
                 + 9
-                + 8
+                + 14
             ),
         )
         self.assertEqual(len(set(batch)), len(batch))
@@ -478,6 +487,42 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         )
         self.assertFalse(
             set(batch) & {step.key for step in RUNNER.CALIBRATION_STEPS}
+        )
+
+    def test_direct_dte_raw_batch_is_complete_and_isolated(self) -> None:
+        batch = RUNNER.SELECTABLE_BATCHES["direct-dte-raw-behavior"]
+        self.assertEqual(
+            batch,
+            tuple(
+                f"direct-dte-pending-{case_name}"
+                for case_name in RUNNER.DTE_PENDING_CASE_NAMES
+            ),
+        )
+        self.assertEqual(len(batch), 25)
+        self.assertEqual(len(set(batch)), len(batch))
+        selected = RUNNER.select_calibration_steps(
+            None, ("direct-dte-raw-behavior",)
+        )
+        self.assertEqual(
+            [step.key for step in selected],
+            [
+                "initial-profile-heartbeat",
+                *batch,
+                "terminal-heartbeat",
+            ],
+        )
+        self.assertTrue(
+            all(
+                step.batch == "full-card-pending-direct-dte-raw"
+                for step in selected[1:-1]
+            )
+        )
+        self.assertEqual(
+            [step.ctest_name for step in selected[1:-1]],
+            [
+                f"wafer-board-{case_name}"
+                for case_name in RUNNER.DTE_PENDING_CASE_NAMES
+            ],
         )
 
     def test_pending_hardware_calibration_batch_exactly_covers_inventory(

@@ -10,7 +10,7 @@ import statistics
 PAYLOAD_SWEEP = (16, 32, 64, 256, 4096)
 CALIBRATION_PAYLOADS = (16,)
 HELD_OUT_PAYLOADS = (32, 64, 256, 4096)
-MODE_NAMES = {
+BASE_MODE_NAMES = {
     1: "ncc-producer-local-drain-dte",
     2: "dte-recv-wait-ncc-consumer",
     3: "disjoint-local-wait-first",
@@ -24,11 +24,57 @@ MODE_NAMES = {
     11: "dte-sender-raw-async-window",
     12: "dte-destination-reuse-before-receive-event-error",
     13: "dte-receiver-unprepared",
+    14: "dte-four-source-fanin-correctness",
 }
 TRANSPORT_PMU_MODES = tuple(range(1, 7))
 ERROR_PATH_MODES = (7, 8, 9, 12)
 ASYNC_SENDER_MODES = (10, 11)
 ISOLATED_DTE_MODES = (13,)
+FOUR_SOURCE_FANIN_MODE = 14
+RAW_MULTIDEST_FIRST_MODE = 15
+RAW_MULTIDEST_SEMANTICS = ("broadcast", "scatter", "shuffle")
+RAW_MULTIDEST_VARIANTS = (
+    (2, "adjacent"),
+    (2, "interleaved"),
+    (4, "adjacent"),
+    (4, "interleaved"),
+    (8, "adjacent"),
+    (8, "interleaved"),
+    (15, "adjacent"),
+    (15, "interleaved"),
+)
+RAW_MULTIDEST_MODE_CONFIGS = tuple(
+    (
+        RAW_MULTIDEST_FIRST_MODE
+        + semantic_index * len(RAW_MULTIDEST_VARIANTS)
+        + variant_index,
+        semantic,
+        fanout,
+        layout,
+    )
+    for semantic_index, semantic in enumerate(RAW_MULTIDEST_SEMANTICS)
+    for variant_index, (fanout, layout) in enumerate(
+        RAW_MULTIDEST_VARIANTS
+    )
+)
+RAW_MULTIDEST_MODES = tuple(
+    mode for mode, _, _, _ in RAW_MULTIDEST_MODE_CONFIGS
+)
+MODE_NAMES = {
+    **BASE_MODE_NAMES,
+    **{
+        mode: f"dte-raw-{semantic}-fanout{fanout}-{layout}"
+        for mode, semantic, fanout, layout in RAW_MULTIDEST_MODE_CONFIGS
+    },
+}
+FOUR_SOURCE_FANIN_TARGET = 0
+FOUR_SOURCE_FANIN_SOURCES = (1, 2, 3, 4)
+FOUR_SOURCE_FANIN_PAYLOAD_BYTES = 4096
+RAW_MULTIDEST_SOURCE_RANK = 0
+RAW_MULTIDEST_PAYLOAD_BYTES = 4096
+RAW_MULTIDEST_BROADCAST_SCATTER_BYTES = 256
+RAW_MULTIDEST_SHUFFLE_BYTES = 128
+RAW_MULTIDEST_INTERLEAVE_STEP = 7
 ASYNC_SENDER_PAYLOAD_BYTES = 64
 ASYNC_SENDER_TRANSPORT_BYTES = 65536
 ASYNC_SENDER_REPETITIONS = 3
@@ -37,6 +83,11 @@ MODE_PAYLOADS = {
     **{mode: (16,) for mode in ERROR_PATH_MODES},
     **{mode: (ASYNC_SENDER_PAYLOAD_BYTES,) for mode in ASYNC_SENDER_MODES},
     **{mode: (16,) for mode in ISOLATED_DTE_MODES},
+    FOUR_SOURCE_FANIN_MODE: (FOUR_SOURCE_FANIN_PAYLOAD_BYTES,),
+    **{
+        mode: (RAW_MULTIDEST_PAYLOAD_BYTES,)
+        for mode in RAW_MULTIDEST_MODES
+    },
 }
 BOARD_COUNTER_NAMES = (
     "dte_channel0_transfer",
@@ -124,6 +175,98 @@ TRANSPORT_PMU_OBSERVATIONS = tuple(
     )
     for case in CASES
 )
+
+
+def raw_multidest_target_ranks(
+    fanout: int, layout: str
+) -> tuple[int, ...]:
+    """Return the exact destination-slot order serialized by the raw probe."""
+
+    if fanout not in {2, 4, 8, 15}:
+        raise ValueError(f"unsupported raw DTE fanout {fanout}")
+    if layout == "adjacent":
+        return tuple(range(1, fanout + 1))
+    if layout == "interleaved":
+        return tuple(
+            (index * RAW_MULTIDEST_INTERLEAVE_STEP) % 15 + 1
+            for index in range(fanout)
+        )
+    raise ValueError(f"unsupported raw DTE target layout {layout}")
+
+
+@dataclasses.dataclass(frozen=True)
+class RawMultidestCase:
+    name: str
+    mode: int
+    semantic: str
+    raw_mode: int
+    fanout: int
+    target_layout: str
+    target_ranks: tuple[int, ...]
+    per_destination_bytes: int
+    source_span_bytes: int
+    dest_num_register_value: int
+    dest_num_encoding: str = "zero-based-upper-slot-hypothesis"
+    payload_bytes: int = RAW_MULTIDEST_PAYLOAD_BYTES
+    disposition: str = "pending-board-observation"
+    verification_scope: str = "board-device-owner-backed-raw-dte-registers"
+
+    @property
+    def key(self) -> str:
+        """Stable inventory/CTest identifier for this executable case."""
+
+        return self.name
+
+    def as_dict(self) -> dict[str, object]:
+        return {"key": self.key, **dataclasses.asdict(self)}
+
+
+def _raw_multidest_case(
+    mode: int, semantic: str, fanout: int, layout: str
+) -> RawMultidestCase:
+    per_destination_bytes = (
+        RAW_MULTIDEST_SHUFFLE_BYTES
+        if semantic == "shuffle"
+        else RAW_MULTIDEST_BROADCAST_SCATTER_BYTES
+    )
+    if semantic == "broadcast":
+        source_span_bytes = per_destination_bytes
+    elif semantic == "scatter":
+        source_span_bytes = fanout * per_destination_bytes
+    elif semantic == "shuffle":
+        source_span_bytes = (2 * (fanout - 1) + 1) * per_destination_bytes
+    else:
+        raise ValueError(f"unsupported raw DTE semantic {semantic}")
+    if source_span_bytes > RAW_MULTIDEST_PAYLOAD_BYTES:
+        raise ValueError(
+            f"raw DTE source span {source_span_bytes} exceeds guarded payload"
+        )
+    return RawMultidestCase(
+        MODE_NAMES[mode],
+        mode,
+        semantic,
+        {"scatter": 1, "broadcast": 2, "shuffle": 3}[semantic],
+        fanout,
+        layout,
+        raw_multidest_target_ranks(fanout, layout),
+        per_destination_bytes,
+        source_span_bytes,
+        fanout - 1,
+    )
+
+
+RAW_MULTIDEST_CASES = tuple(
+    _raw_multidest_case(mode, semantic, fanout, layout)
+    for mode, semantic, fanout, layout in RAW_MULTIDEST_MODE_CONFIGS
+)
+RAW_MULTIDEST_CASE_BY_MODE = {
+    case.mode: case for case in RAW_MULTIDEST_CASES
+}
+# Stable public names consumed by the pending-board inventory/runner.  Keep the
+# older multidest names as implementation-local compatibility aliases.
+RAW_REMOTE_MODE_IDS = RAW_MULTIDEST_MODES
+RAW_REMOTE_MULTICAST_CASES = RAW_MULTIDEST_CASES
+RAW_REMOTE_MULTICAST_CASE_BY_MODE = RAW_MULTIDEST_CASE_BY_MODE
 
 
 @dataclasses.dataclass(frozen=True)
@@ -265,6 +408,41 @@ CONTRACT_CASES = (
         ASYNC_SENDER_REPETITIONS,
     ),
     TransportContractCase(
+        "dte-four-source-fanin-correctness",
+        "direct-dte-fanin",
+        "pending-board-observation",
+        "board-device-four-receiver-fsm-fanin",
+        (
+            "rank 0 posts FSM0..3 to four disjoint guarded slots before any "
+            "receiver wait; ranks 1..4 each issue one sender with a "
+            "source/lane/checksum-distinguishable payload; require exact "
+            "source-slot order, all guards, all-rank success terminal, and "
+            "normal cleanup"
+        ),
+        (
+            "the raw case proves the four-live-receiver fan-in correctness "
+            "boundary only; it does not claim native fanout, temporal overlap, "
+            "or a calibrated contention cost"
+        ),
+        FOUR_SOURCE_FANIN_MODE,
+        FOUR_SOURCE_FANIN_PAYLOAD_BYTES,
+    ),
+    TransportContractCase(
+        "dte-raw-gather-unencodable",
+        "direct-dte-raw-mode",
+        "static-negative",
+        "host-prelaunch-verifier",
+        (
+            "reject gather before launch because the owner-backed raw register "
+            "mode field is two bits and only encodes unicast/scatter/"
+            "broadcast/shuffle"
+        ),
+        (
+            "RDMA, WDMA, and DDR2DDR software enum values are separate "
+            "transport modes and are not aliases for raw multicast gather"
+        ),
+    ),
+    TransportContractCase(
         "host-readback-before-terminal",
         "runtime-publication",
         "static-negative",
@@ -382,6 +560,20 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
         case
         for case in CONTRACT_CASES
         if case.mode in ASYNC_SENDER_MODES
+    ),
+    "direct-dte-four-source-fanin": tuple(
+        case
+        for case in CONTRACT_CASES
+        if case.mode == FOUR_SOURCE_FANIN_MODE
+    ),
+    "direct-dte-raw-broadcast": tuple(
+        case for case in RAW_MULTIDEST_CASES if case.semantic == "broadcast"
+    ),
+    "direct-dte-raw-scatter": tuple(
+        case for case in RAW_MULTIDEST_CASES if case.semantic == "scatter"
+    ),
+    "direct-dte-raw-shuffle": tuple(
+        case for case in RAW_MULTIDEST_CASES if case.semantic == "shuffle"
     ),
     "direct-dte-unsafe-isolation": tuple(
         case

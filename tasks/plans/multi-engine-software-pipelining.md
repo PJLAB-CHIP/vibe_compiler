@@ -377,15 +377,13 @@ profile/pair/worker/transfer/schedule scoped正overlap cell，可按白名单进
 relation/order cell只允许合并issue/wait开销，不计engine overlap收益。未匹配pair/shape仍保持串行，
 RAW/WAR/WAW保留显式IR edge和issue order，不能由disjoint正overlap删除依赖。
 
-hardware-calibration owner另冻结五个非阻塞`pending`区分family：
+hardware-calibration owner此前冻结的五个非阻塞`pending`区分family：
 `queue-saturation-response`、`worker-wait-scope-exclusion`、
 `worker-subset-join-exclusion`、`spm-conflict-equivalence`和`ddr-conflict-equivalence`。对应typed
-catalog、device dispatcher、pre-wait/boundary/final record、host oracle及独立no-card CTest已经实现；
-板端执行仍为`pending`，不进入默认runner或本轮板端批次，也不重新打开Checkpoint A。只有Checkpoint B/C的
-production vertical通过后，
-profile证明对应保守fallback是主要瓶颈，或version-matched实现提供新的queue/SPM/DDR只读观测依据时，才按
-`docs/tx81-compiler-hardware-calibration.md`第5.10节激活板端执行。未激活前继续使用有界window、
-matching逐worker join、`no-bank-coloring`和`no-ddr-bank-coloring`，主线直接进入Checkpoint B。
+catalog、device dispatcher、pre-wait/boundary/final record、host oracle及独立no-card CTest已经实现并由
+Checkpoint A2 central inventory接入显式`pending-hardware-calibration`批次；它们仍不进入默认runner，
+真实板端执行保持`pending`，也不重新打开已闭合的raw Checkpoint A。板端结果形成前继续使用有界window、
+matching逐worker join、`no-bank-coloring`和`no-ddr-bank-coloring`，主线同时推进Checkpoint B。
 
 ### Checkpoint A2：校准文档未执行项全量发板准备
 
@@ -398,6 +396,8 @@ device dispatcher或production source vertical、固定payload、完整result/sp
 inventory至少覆盖：
 
 - AllToAll/CollectivePermute traffic语义、同buffer双epoch和Direct-DTE endpoint/fanin/fanout对照；
+- Direct-DTE raw broadcast/scatter/shuffle的fanout与destination-order矩阵，以及可由current receiver
+  protocol安全表达的四源fan-in；raw `dest_num`编码和destination mapping只作为观测值；
 - 五类single-engine small/steady/tail/held-out slope、十个engine pair的双方向三档stage balance，
   以及由production multi-buffer IR产生的RDMA→CT/NE→WDMA三阶段纵向；
 - worker placement/arbitration、DDR active-rank contention和SPM matched conflict pilot；
@@ -411,6 +411,19 @@ fail-closed preparation gate，精确说明阻断条件和最近的安全替代�
 board case。完成门禁为：文档中每个未执行语义key都被inventory唯一解析，所有board-executable项均由
 CTest注册并进入一个显式、资源锁保护、首错即停且不retry/reset/power的runner batch，全部negative/blocked
 项都有实际测试；catalog/no-card/runner一致性测试禁止新增“只写文档”的pending行。
+
+当前Checkpoint A2 inventory解析为16个可执行family、211个互异board CTest和1232个pending target；
+另5个family由host negative或fail-closed preparation gate明确阻断。Direct-DTE新增25个逐case CTest/
+runner step：四源fan-in 1项，以及raw broadcast/scatter/shuffle × fanout 2/4/8/15 ×
+adjacent/interleaved共24项；8/15源fan-in、可信device phase、physical route和跨卡transport仍blocked。
+worker characterization现为44个case、14个matched group，其中fixed-total placement 14、bounded
+progress 18、逐worker low/high outstanding 12；oracle固定同一physical sentinel slot，在safety drain前
+捕获observer boundary并交叉核对raw `CONTROL`，同时检查whole-output tail canary、join返回码/最终idle和
+device deadline；partial issue或observation failure以全部attempted worker进入至多一次bounded cleanup，
+cleanup deadline失败即poison并停批，不retry。SPM sustained pilot仍为16个cell、4个matched group，但读取owner-backed port0/6
+T2/T3 counter、执行matched WDMA readback，并在partial accept后先做有界matching-worker safety drain再
+restore/return；它仍没有physical bank/port mapping或bank-specific attribution。上述可执行项均只完成
+pre-board资产，真实板端执行保持`pending`，不产生新hardware/cost结论。
 
 ## Checkpoint B：通用 IR 物化
 

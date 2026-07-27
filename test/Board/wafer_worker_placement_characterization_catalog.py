@@ -6,9 +6,11 @@ Pipeline position:
   Qualified rank-one package ABI, explicit NCC engine/worker routing, owned
   DDR/SPM ranges, matching-worker completion, and stable PMU readback.
 - Current stage responsibility:
-  Characterize fixed-total-work placement and bounded observer progress under
-  a disjoint worker backlog.  Every executable row has an exact guarded
-  result oracle and a target-only device observation window.
+  Characterize fixed-total-work placement, low/high outstanding response, and
+  bounded observer progress under a disjoint worker backlog.  Every
+  executable row has an exact guarded result oracle.  Placement/outstanding
+  rows retain raw per-issue CONTROL/IB_COUNTER samples; progress rows use a
+  tight submit burst followed by a target-only device observation window.
 - Output artifact / IR:
   Test-only request contracts and profile-scoped raw observations.  No case
   name, inferred arbiter identity, or measured number enters compiler IR.
@@ -19,13 +21,15 @@ Pipeline position:
   The normal wafer-compile package path, a test-only linked device adapter,
   and wafer-run's rank-one board lifecycle.
 - Explicit non-goals:
-  Do not infer an absolute per-worker completion timestamp, a physical arbiter
-  algorithm, cross-worker address ordering, or a fixed cycle constant.
+  Do not infer an exact per-worker completion timestamp, priority direction, a
+  physical arbiter algorithm, cross-worker address ordering, or a fixed cycle
+  constant.
 - Completion gate:
-  All 32 cases serialize to the versioned device protocol; each activation
+  All 44 cases serialize to the versioned device protocol; each activation
   group contains its matched controls; board execution checks request echo,
   exact full results, both guards, routing/counts, stable device counters,
-  participant completion, lifecycle, and normal cleanup.
+  participant completion through rotating polling and matching joins,
+  lifecycle, and normal cleanup.
 """
 
 from __future__ import annotations
@@ -38,10 +42,13 @@ WORKERS = 3
 REPEATS = 3
 PLACEMENT_ISSUES = 6
 BACKLOG_ISSUES = 4
+OUTSTANDING_LOW_ISSUES = 2
+OUTSTANDING_HIGH_ISSUES = 6
 PLACEMENT_BYTES = 16384
 RDMA_BACKLOG_BYTES = 65536
 NE_RESULT_BYTES = 16384
 SENTINEL_BYTES = 4096
+LONG_ISSUE_BYTES = 65536
 
 
 class Engine(enum.IntEnum):
@@ -55,6 +62,7 @@ class Kind(enum.IntEnum):
     BACKLOG_ONLY = 1
     SENTINEL_ONLY = 2
     CONCURRENT = 3
+    OUTSTANDING = 4
 
 
 class Layer(str, enum.Enum):
@@ -120,6 +128,26 @@ class WorkerCase:
                     f"{self.key}: placement work is not matched"
                 )
             return
+        if self.kind == Kind.OUTSTANDING:
+            if (
+                self.engine not in {Engine.CT, Engine.RDMA}
+                or self.primary_bytes != LONG_ISSUE_BYTES
+                or self.sentinel_bytes != 0
+                or self.worker_issues[self.target_worker]
+                not in {
+                    OUTSTANDING_LOW_ISSUES,
+                    OUTSTANDING_HIGH_ISSUES,
+                }
+                or any(
+                    count
+                    for worker, count in enumerate(self.worker_issues)
+                    if worker != self.target_worker
+                )
+            ):
+                raise RuntimeError(
+                    f"{self.key}: malformed outstanding-response workload"
+                )
+            return
         expected_primary = (
             NE_RESULT_BYTES
             if self.engine == Engine.NE
@@ -179,7 +207,12 @@ class WorkerCase:
                 "prefix/suffix guards",
                 "request/routing/instruction-count echo",
                 "stable PMU and worker controls",
-                "terminal participant completion",
+                (
+                    "tight progress submission, or per-issue "
+                    "CONTROL/IB_COUNTER for placement/outstanding"
+                ),
+                "rotating first-observed task-done polling",
+                "matching participant joins and terminal completion",
             ],
         }
 
@@ -301,6 +334,7 @@ def _progress_cases() -> tuple[WorkerCase, ...]:
                         claims=(
                             "bounded-observer-progress",
                             "backlog-and-sentinel-matched-controls",
+                            "tight-submit-without-per-issue-control-reads",
                             "target-pending-before-safety-drain-classification",
                         ),
                     )
@@ -308,7 +342,50 @@ def _progress_cases() -> tuple[WorkerCase, ...]:
     return tuple(cases)
 
 
-CASES = _placement_cases() + _progress_cases()
+def _outstanding_cases() -> tuple[WorkerCase, ...]:
+    cases: list[WorkerCase] = []
+    for engine, layer in (
+        (Engine.CT, Layer.CALIBRATION),
+        (Engine.RDMA, Layer.HELD_OUT),
+    ):
+        for worker in range(WORKERS):
+            observer = (worker + 1) % WORKERS
+            group = (
+                f"worker-outstanding-{engine.name.lower()}-w{worker}"
+            )
+            for level, issues in (
+                ("low", OUTSTANDING_LOW_ISSUES),
+                ("high", OUTSTANDING_HIGH_ISSUES),
+            ):
+                counts = [0, 0, 0]
+                counts[worker] = issues
+                cases.append(
+                    WorkerCase(
+                        key=f"{group}-{level}",
+                        group=group,
+                        kind=Kind.OUTSTANDING,
+                        engine=engine,
+                        layer=layer,
+                        worker_issues=tuple(counts),
+                        target_worker=worker,
+                        observer_worker=observer,
+                        primary_bytes=LONG_ISSUE_BYTES,
+                        sentinel_bytes=0,
+                        claims=(
+                            "matched-low-high-outstanding-response",
+                            "per-issue-control-and-ib-counter",
+                            "same-worker-long-operation-control",
+                        ),
+                    )
+                )
+    return tuple(cases)
+
+
+CASES = (
+    _placement_cases()
+    + _progress_cases()
+    + _outstanding_cases()
+)
 CASES_BY_KEY = {case.key: case for case in CASES}
 GROUPS = tuple(sorted({case.group for case in CASES}))
 GROUP_CASES = {
@@ -329,8 +406,9 @@ BOUNDARIES = (
             "cost field"
         ),
         safe_alternative=(
-            "run fixed-total placement with rotated issue/join order and "
-            "retain raw global cycles, per-worker blocking, and controls"
+            "run fixed-total placement with rotated issue order and rotating "
+            "task-done polling; retain first-observed cycles, poll gaps, raw "
+            "global cycles, per-worker blocking, and controls"
         ),
     ),
     TypedBoundary(
@@ -352,18 +430,30 @@ BOUNDARIES_BY_KEY = {boundary.key: boundary for boundary in BOUNDARIES}
 
 
 def validate_catalog() -> None:
-    if len(CASES) != 32 or len(CASES_BY_KEY) != len(CASES):
-        raise RuntimeError("worker catalog must contain 32 unique cases")
+    if len(CASES) != 44 or len(CASES_BY_KEY) != len(CASES):
+        raise RuntimeError("worker catalog must contain 44 unique cases")
     for case in CASES:
         case.validate()
     for boundary in BOUNDARIES:
         boundary.validate()
-    if len(GROUPS) != 8:
-        raise RuntimeError("worker catalog must contain eight matched groups")
+    if len(GROUPS) != 14:
+        raise RuntimeError("worker catalog must contain 14 matched groups")
     for group, cases in GROUP_CASES.items():
         if group.startswith("worker-placement-"):
             if len(cases) != 7:
                 raise RuntimeError(f"{group}: incomplete placement matrix")
+        elif group.startswith("worker-outstanding-"):
+            if (
+                len(cases) != 2
+                or {case.issue_count for case in cases}
+                != {
+                    OUTSTANDING_LOW_ISSUES,
+                    OUTSTANDING_HIGH_ISSUES,
+                }
+            ):
+                raise RuntimeError(
+                    f"{group}: incomplete outstanding pair"
+                )
         else:
             if {case.kind for case in cases} != {
                 Kind.BACKLOG_ONLY,

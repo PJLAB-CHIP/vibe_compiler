@@ -5,7 +5,7 @@ declare i32 @init_tile_id(i32, i32)
 declare void @direct_sync_init(i32)
 declare void @wafer_tx81_full_card_barrier_probe(i32, i64, i64, i64, i64)
 
-define void @__wafer_cluster_prepare(ptr %rank_major_slots) {
+define void @__wafer_kernel_prepare(ptr %rank_major_slots) {
 entry:
   %pid = call i32 @__get_pid(i32 0)
   %unused = call i32 @init_tile_id(i32 %pid, i32 4)

@@ -38,6 +38,7 @@ import wafer_collective_traffic_behavior_catalog as collective_traffic_catalog
 import wafer_engine_pipeline_characterization_catalog as engine_pipeline_catalog
 import wafer_pending_hardware_calibration_inventory as pending_inventory
 import wafer_spm_sustained_conflict_catalog as spm_sustained_catalog
+import wafer_transport_pmu_calibration_catalog as transport_catalog
 import wafer_worker_memory_contention_characterization_catalog as contention_catalog
 import wafer_worker_placement_characterization_catalog as worker_placement_catalog
 
@@ -69,6 +70,21 @@ COLLECTIVE_CHARACTERIZATION_CASES = (
 )
 COLLECTIVE_TRAFFIC_BEHAVIOR_CASES = tuple(
     collective_traffic_catalog.CASE_KEYS
+)
+DTE_PENDING_CASE_SPECS = (
+    (
+        transport_catalog.FOUR_SOURCE_FANIN_MODE,
+        transport_catalog.MODE_NAMES[
+            transport_catalog.FOUR_SOURCE_FANIN_MODE
+        ],
+    ),
+    *tuple(
+        (case.mode, case.key)
+        for case in transport_catalog.RAW_REMOTE_MULTICAST_CASES
+    ),
+)
+DTE_PENDING_CASE_NAMES = tuple(
+    case_name for _, case_name in DTE_PENDING_CASE_SPECS
 )
 UNPOOL_PENDING_COLLISION_CASE_NAMES = (
     "unpool-index-f16-repeated-overlap-observed",
@@ -521,6 +537,18 @@ EXPLICIT_ONLY_STEPS = (
     ),
     *tuple(
         CalibrationStep(
+            f"direct-dte-pending-{case_name}",
+            "full-card-pending-direct-dte-raw",
+            f"wafer-board-{case_name}",
+            (
+                "isolated owner-backed raw DTE correctness observation for "
+                f"{case_name}"
+            ),
+        )
+        for case_name in DTE_PENDING_CASE_NAMES
+    ),
+    *tuple(
+        CalibrationStep(
             f"engine-pipeline-{group_key}",
             "rank-one-pending-engine-pipeline",
             f"wafer-board-engine-pipeline-{group_key}",
@@ -692,6 +720,11 @@ SELECTABLE_BATCHES = {
         step.key
         for step in EXPLICIT_ONLY_STEPS
         if step.key.startswith("collective-traffic-behavior-")
+    ),
+    "direct-dte-raw-behavior": tuple(
+        step.key
+        for step in EXPLICIT_ONLY_STEPS
+        if step.key.startswith("direct-dte-pending-")
     ),
     "engine-pipeline-characterization": tuple(
         step.key

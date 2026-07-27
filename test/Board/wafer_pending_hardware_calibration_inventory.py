@@ -8,6 +8,7 @@ import dataclasses
 import wafer_collective_traffic_behavior_catalog as collective_traffic
 import wafer_engine_pipeline_characterization_catalog as engine_pipeline
 import wafer_spm_sustained_conflict_catalog as spm_sustained
+import wafer_transport_pmu_calibration_catalog as transport
 import wafer_unrepresentable_hardware_behavior_catalog as unrepresentable
 import wafer_worker_memory_contention_characterization_catalog as contention
 import wafer_worker_placement_characterization_catalog as worker_placement
@@ -109,6 +110,23 @@ UNPOOL_COLLISION_CASES = (
     "unpool-mask-f16-repeated-overlap-observed",
 )
 COLLECTIVE_TRAFFIC_CASES = tuple(collective_traffic.CASE_KEYS)
+DTE_FOUR_SOURCE_FANIN_CASE_KEYS = (
+    transport.MODE_NAMES[transport.FOUR_SOURCE_FANIN_MODE],
+)
+DTE_RAW_REMOTE_CASE_KEYS = tuple(
+    case.key for case in transport.RAW_REMOTE_MULTICAST_CASES
+)
+PENDING_DTE_CASE_KEYS = (
+    *DTE_FOUR_SOURCE_FANIN_CASE_KEYS,
+    *DTE_RAW_REMOTE_CASE_KEYS,
+)
+PENDING_DTE_CASE_SPECS = (
+    (transport.FOUR_SOURCE_FANIN_MODE, DTE_FOUR_SOURCE_FANIN_CASE_KEYS[0]),
+    *tuple(
+        (case.mode, case.key)
+        for case in transport.RAW_REMOTE_MULTICAST_CASES
+    ),
+)
 COLLECTIVE_TRAFFIC_BLOCKED_COVERAGE_KEYS = tuple(
     item.key
     for item in collective_traffic.COVERAGE_ITEMS
@@ -267,6 +285,46 @@ FAMILIES = (
         ),
     ),
     PendingCalibrationFamily(
+        key="direct-dte-raw-multidestination-and-fanin",
+        disposition=PENDING_BOARD,
+        execution_scope="full-card-isolated-per-case",
+        bindings=(
+            _binding(
+                "test/Board/wafer_transport_pmu_calibration_catalog.py",
+                "CONTRACT_CASES",
+                DTE_FOUR_SOURCE_FANIN_CASE_KEYS,
+            ),
+            _binding(
+                "test/Board/wafer_transport_pmu_calibration_catalog.py",
+                "RAW_REMOTE_MULTICAST_CASES",
+                DTE_RAW_REMOTE_CASE_KEYS,
+                "key",
+            ),
+        ),
+        board_ctests=tuple(
+            f"wafer-board-{case}" for case in PENDING_DTE_CASE_KEYS
+        ),
+        no_card_ctests=(
+            "wafer-runtime-dte-ncc-execution-probe-no-card",
+            *tuple(
+                f"wafer-runtime-{case}-no-card"
+                for case in PENDING_DTE_CASE_KEYS
+            ),
+        ),
+        runner_batch="pending-execution-boundaries",
+        oracle=(
+            "owner-backed-raw-dte-register-programming",
+            "full-rank-exact-or-semantics-classified-output-and-guards",
+            "accepted-send-receive-counts-terminal-and-cleanup",
+            "final-elf-register-store-and-launch-contract",
+        ),
+        activation_gate=(
+            "one-mode-per-process",
+            "four-source-fanin-and-raw-fanout-two-four-eight-fifteen",
+            "raw-destination-count-encoding-remains-board-observation",
+        ),
+    ),
+    PendingCalibrationFamily(
         key="collective-traffic-unsupported-surfaces",
         disposition=BLOCKED_EXTERNAL,
         execution_scope="host-fail-closed",
@@ -290,8 +348,10 @@ FAMILIES = (
         ),
         activation_gate=("host-gate-only", "promotion-surface-required"),
         blocker=(
-            "concurrent 4/8/15-way endpoint ABI, device phase basis, physical "
-            "route report, native multicast or multi-card transport is absent"
+            "eight/fifteen-source fan-in exceeds the current receive-state "
+            "surface; device phase basis, physical route report, ragged/"
+            "same-buffer collective surfaces, and multi-card transport "
+            "remain absent"
         ),
     ),
     PendingCalibrationFamily(
@@ -468,11 +528,13 @@ FAMILIES = (
             "full-output-prefix-suffix-guards-and-routing-counts",
             "per-worker-instruction-blocking-and-global-pmu",
             "observer-boundary-target-safety-drain-terminal-and-cleanup",
+            "partial-accept-single-bounded-cleanup-or-poisoned-stop",
         ),
         activation_gate=(
             "one-complete-matched-group-per-ctest",
             "three-serial-repeats",
             "no-absolute-worker-timestamp-or-arbiter-name",
+            "no-retry-after-cleanup-deadline",
         ),
     ),
     PendingCalibrationFamily(
@@ -573,11 +635,13 @@ FAMILIES = (
             "four-way-execution-order-rotation",
             "full-owned-spm-and-gap-canary-exact",
             "pair-only-pmu-count-completion-address-and-lifecycle",
+            "partial-accept-single-bounded-cleanup-before-pmu-restore",
         ),
         activation_gate=(
             "one-complete-matched-group-per-ctest",
             "stable-nonzero-heldout-required-for-cost",
             "no-physical-bank-name-from-offset-equivalence",
+            "cleanup-timeout-poisons-batch-without-retry",
         ),
     ),
     PendingCalibrationFamily(
@@ -717,9 +781,10 @@ FAMILIES = (
         ),
         blocker=(
             "the current NCC record has no queue resident occupancy field, "
-            "and the SPM contract has no physical bank/port mapping or "
-            "bank-specific counter; ArgMin domains outside the four explicit "
-            "F16 rows have no typed case or coherent value/index oracle"
+            "and the owner-backed SPM port counters have no physical bank/"
+            "port mapping or bank-specific attribution; ArgMin domains "
+            "outside the four explicit F16 rows have no typed case or "
+            "coherent value/index oracle"
         ),
     ),
     PendingCalibrationFamily(

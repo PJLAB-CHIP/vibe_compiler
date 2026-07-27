@@ -186,6 +186,34 @@ def _expected_row_record(
         "OTHER_INST_DELTA": 0,
         "WORKER_CT_INST_DELTA": cell.expected_instruction_count,
         "WORKER_RDMA_INST_DELTA": cell.expected_instruction_count,
+        "SPM_PORT_PMU_BASE": catalog.SPM_PORT_PMU_BASE,
+        "SPM_PORT_PMU_REQUIRED_ENABLE": (
+            catalog.SPM_PORT_PMU_REQUIRED_ENABLE
+        ),
+        "WDMA_INST_DELTA": cell.expected_instruction_count,
+        "WDMA_OTHER_INST_DELTA": 0,
+        "WORKER_WDMA_INST_DELTA": cell.expected_instruction_count,
+        "PORT_READBACK_OFFSET": (
+            catalog.PORT_RESPONSE_BASE
+            + row * catalog.PORT_RESPONSE_STRIDE
+        ),
+        "PORT_READBACK_BYTES": cell.work_bytes,
+        "SPM_PORT_PMU_SCOPE_FLAGS": catalog.SPM_PORT_PMU_SCOPE_MASK,
+        "PORT_RESPONSE_GUARD": catalog.PORT_RESPONSE_GUARD,
+        "SETUP_ACCEPTED": cell.expected_setup_accepted,
+        "SETUP_PENDING_AFTER": 0,
+        "SETUP_FINAL_CONTROL": 0x100,
+        "MEASURED_PAIR_ACCEPTED": 2 * cell.rounds,
+        "MEASURED_PAIR_PENDING_AFTER": 0,
+        "MATCHED_WDMA_ACCEPTED": cell.rounds,
+        "MATCHED_WDMA_PENDING_AFTER": 0,
+        "ARCHIVE_ACCEPTED": cell.expected_archive_accepted,
+        "ARCHIVE_PENDING_AFTER": 0,
+        "ARCHIVE_FINAL_CONTROL": 0x100,
+        "CLEANUP_ATTEMPTED_MASK": 0,
+        "CLEANUP_SUCCEEDED_MASK": 0,
+        "POISONED_PHASE_MASK": 0,
+        "CLEANUP_RECORD_GUARD": catalog.CLEANUP_RECORD_GUARD,
         "FLAGS": catalog.REQUIRED_FLAGS,
         "REQUEST_GUARD": catalog.REQUEST_GUARD,
         "ROW_GUARD": catalog.ROW_GUARD,
@@ -218,6 +246,20 @@ def _validate_actual_addresses(
         )
 
 
+def _validate_completion_control(
+    control: int, context: str
+) -> None:
+    if control & 0xFF or not control & 0x100:
+        raise RuntimeError(
+            f"{context}: bounded completion control is invalid: "
+            f"{control:#x}"
+        )
+
+
+def _counter_delta(after: int, before: int) -> int:
+    return (after - before) & ((1 << 64) - 1)
+
+
 def validate_output_bytes(
     raw: bytes,
     invocation: catalog.InvocationPayload,
@@ -229,6 +271,14 @@ def validate_output_bytes(
     global_words = struct.unpack_from(
         f"<{catalog.RECORD_WORDS}Q", raw
     )
+    if (
+        global_words[catalog.REC["STATUS"]]
+        == catalog.STATUS_CLEANUP_FAILED
+    ):
+        raise RuntimeError(
+            f"{invocation.group.key}: matching-worker cleanup failed; "
+            "the board batch is poisoned and must stop"
+        )
     failures = _record_failures(
         global_words,
         catalog.REC,
@@ -260,6 +310,19 @@ def validate_output_bytes(
         row_words = struct.unpack_from(
             f"<{catalog.ROW_RECORD_WORDS}Q", raw, begin
         )
+        poisoned_phase_mask = row_words[
+            catalog.ROW_REC["POISONED_PHASE_MASK"]
+        ]
+        if (
+            row_words[catalog.ROW_REC["STATUS"]]
+            == catalog.STATUS_CLEANUP_FAILED
+            or poisoned_phase_mask
+        ):
+            raise RuntimeError(
+                f"{cell.key}: matching-worker cleanup failed for phase "
+                f"mask {poisoned_phase_mask:#x}; the board batch is "
+                "poisoned and must stop"
+            )
         row_failures = _record_failures(
             row_words,
             catalog.ROW_REC,
@@ -287,11 +350,56 @@ def validate_output_bytes(
             raise RuntimeError(
                 f"{cell.key}: PMU/parallel-mode basis is invalid"
             )
-        control = row_words[catalog.ROW_REC["FINAL_CONTROL"]]
-        if control & 0xFF or not control & 0x100:
+        _validate_completion_control(
+            row_words[catalog.ROW_REC["FINAL_CONTROL"]],
+            cell.key,
+        )
+        _validate_completion_control(
+            row_words[catalog.ROW_REC["WDMA_FINAL_CONTROL"]],
+            f"{cell.key} matched WDMA",
+        )
+        _validate_completion_control(
+            row_words[catalog.ROW_REC["SETUP_FINAL_CONTROL"]],
+            f"{cell.key} setup",
+        )
+        _validate_completion_control(
+            row_words[catalog.ROW_REC["ARCHIVE_FINAL_CONTROL"]],
+            f"{cell.key} archive",
+        )
+        original_port_enable = row_words[
+            catalog.ROW_REC["SPM_PORT_PMU_ENABLE_ORIGINAL"]
+        ]
+        enabled_samples = tuple(
+            row_words[catalog.ROW_REC[key]]
+            for key in (
+                "SPM_PORT_PMU_ENABLE_BEFORE",
+                "SPM_PORT_PMU_ENABLE_BOUNDARY",
+                "SPM_PORT_PMU_ENABLE_AFTER",
+            )
+        )
+        stable_samples = tuple(
+            row_words[catalog.ROW_REC[key]]
+            for key in (
+                "SPM_PORT_PMU_STABLE_BEFORE",
+                "SPM_PORT_PMU_STABLE_BOUNDARY",
+                "SPM_PORT_PMU_STABLE_AFTER",
+            )
+        )
+        if (
+            original_port_enable >> 32
+            or row_words[
+                catalog.ROW_REC["SPM_PORT_PMU_ENABLE_RESTORED"]
+            ]
+            != original_port_enable
+            or enabled_samples
+            != (catalog.SPM_PORT_PMU_REQUIRED_ENABLE,) * 3
+            or stable_samples
+            != (catalog.SPM_PORT_PMU_STABLE_MASK,) * 3
+        ):
             raise RuntimeError(
-                f"{cell.key}: bounded completion control is invalid: "
-                f"{control:#x}"
+                f"{cell.key}: SPM port-PMU scope/restore is invalid: "
+                f"original={original_port_enable:#x}, "
+                f"enabled={enabled_samples}, stable={stable_samples}"
             )
 
         archive_begin = (
@@ -323,6 +431,77 @@ def validate_output_bytes(
         mutable[archive_begin:archive_end] = bytes(
             [catalog.RESOURCE_CANARY]
         ) * cell.owned_spm_bytes
+
+        response_begin = row_words[
+            catalog.ROW_REC["PORT_READBACK_OFFSET"]
+        ]
+        response_end = response_begin + row_words[
+            catalog.ROW_REC["PORT_READBACK_BYTES"]
+        ]
+        actual_response = raw[response_begin:response_end]
+        if actual_response != invocation.expected_port_readback:
+            mismatch = next(
+                index
+                for index, (actual, expected) in enumerate(
+                    zip(
+                        actual_response,
+                        invocation.expected_port_readback,
+                        strict=True,
+                    )
+                )
+                if actual != expected
+            )
+            raise RuntimeError(
+                f"{cell.key}: matched WDMA readback differs at byte "
+                f"{mismatch}: actual=0x{actual_response[mismatch]:02x}, "
+                "expected="
+                f"0x{invocation.expected_port_readback[mismatch]:02x}"
+            )
+        mutable[response_begin:response_end] = bytes(
+            [catalog.RESOURCE_CANARY]
+        ) * len(actual_response)
+
+        port_counters = {
+            "port0_t2": (
+                "SPM_PORT0_T2_BEFORE",
+                "SPM_PORT0_T2_BOUNDARY",
+                "SPM_PORT0_T2_AFTER",
+            ),
+            "port0_t3": (
+                "SPM_PORT0_T3_BEFORE",
+                "SPM_PORT0_T3_BOUNDARY",
+                "SPM_PORT0_T3_AFTER",
+            ),
+            "port6_t2": (
+                "SPM_PORT6_T2_BEFORE",
+                "SPM_PORT6_T2_BOUNDARY",
+                "SPM_PORT6_T2_AFTER",
+            ),
+            "port6_t3": (
+                "SPM_PORT6_T3_BEFORE",
+                "SPM_PORT6_T3_BOUNDARY",
+                "SPM_PORT6_T3_AFTER",
+            ),
+        }
+        raw_port_counters: dict[str, dict[str, int]] = {}
+        pair_window: dict[str, int] = {}
+        matched_readback_window: dict[str, int] = {}
+        for counter_name, field_names in port_counters.items():
+            before_value, boundary_value, after_value = (
+                row_words[catalog.ROW_REC[field_name]]
+                for field_name in field_names
+            )
+            raw_port_counters[counter_name] = {
+                "before": before_value,
+                "boundary": boundary_value,
+                "after": after_value,
+            }
+            pair_window[counter_name] = _counter_delta(
+                boundary_value, before_value
+            )
+            matched_readback_window[counter_name] = _counter_delta(
+                after_value, boundary_value
+            )
         row_observations[cell.key] = {
             "cell": cell.as_dict(),
             "sample": invocation.sample,
@@ -338,8 +517,12 @@ def validate_output_bytes(
                 actual_snapshot
             ).hexdigest(),
             "correctness": (
-                "full-owned-SPM-exact+all-gap/prefix/suffix-canary"
+                "full-owned-SPM-exact+matched-WDMA-exact+"
+                "all-gap/prefix/suffix-canary+phase-cleanup-evidence"
             ),
+            "port_response_sha256": hashlib.sha256(
+                actual_response
+            ).hexdigest(),
             "plan_cycles": row_words[
                 catalog.ROW_REC["PLAN_CYCLES"]
             ],
@@ -359,6 +542,76 @@ def validate_output_bytes(
                 "rdma_blocking": row_words[
                     catalog.ROW_REC["RDMA_BLOCKING_DELTA"]
                 ],
+            },
+            "spm_port_response": {
+                "enable_original": original_port_enable,
+                "enable_restored": row_words[
+                    catalog.ROW_REC[
+                        "SPM_PORT_PMU_ENABLE_RESTORED"
+                    ]
+                ],
+                "raw": raw_port_counters,
+                "pair_window": pair_window,
+                "matched_readback_window": matched_readback_window,
+                "counter_unit": "unclassified",
+                "bank_identity": "not-observed",
+            },
+            "completion_cleanup": {
+                "setup": {
+                    "accepted": row_words[
+                        catalog.ROW_REC["SETUP_ACCEPTED"]
+                    ],
+                    "pending_after": row_words[
+                        catalog.ROW_REC["SETUP_PENDING_AFTER"]
+                    ],
+                    "final_control": row_words[
+                        catalog.ROW_REC["SETUP_FINAL_CONTROL"]
+                    ],
+                },
+                "measured_pair": {
+                    "accepted": row_words[
+                        catalog.ROW_REC["MEASURED_PAIR_ACCEPTED"]
+                    ],
+                    "pending_after": row_words[
+                        catalog.ROW_REC[
+                            "MEASURED_PAIR_PENDING_AFTER"
+                        ]
+                    ],
+                    "final_control": row_words[
+                        catalog.ROW_REC["FINAL_CONTROL"]
+                    ],
+                },
+                "matched_wdma": {
+                    "accepted": row_words[
+                        catalog.ROW_REC["MATCHED_WDMA_ACCEPTED"]
+                    ],
+                    "pending_after": row_words[
+                        catalog.ROW_REC[
+                            "MATCHED_WDMA_PENDING_AFTER"
+                        ]
+                    ],
+                    "final_control": row_words[
+                        catalog.ROW_REC["WDMA_FINAL_CONTROL"]
+                    ],
+                },
+                "archive": {
+                    "accepted": row_words[
+                        catalog.ROW_REC["ARCHIVE_ACCEPTED"]
+                    ],
+                    "pending_after": row_words[
+                        catalog.ROW_REC["ARCHIVE_PENDING_AFTER"]
+                    ],
+                    "final_control": row_words[
+                        catalog.ROW_REC["ARCHIVE_FINAL_CONTROL"]
+                    ],
+                },
+                "cleanup_attempted_mask": row_words[
+                    catalog.ROW_REC["CLEANUP_ATTEMPTED_MASK"]
+                ],
+                "cleanup_succeeded_mask": row_words[
+                    catalog.ROW_REC["CLEANUP_SUCCEEDED_MASK"]
+                ],
+                "poisoned_phase_mask": poisoned_phase_mask,
             },
         }
     if mutable != bytes(
@@ -390,6 +643,22 @@ def validate_output(
 def _metric(row: dict[str, object], name: str) -> int:
     if name == "plan_cycles":
         return int(row[name])
+    if name.startswith("spm_port_pair_"):
+        response = row["spm_port_response"]
+        assert isinstance(response, dict)
+        pair_window = response["pair_window"]
+        assert isinstance(pair_window, dict)
+        return int(pair_window[name.removeprefix("spm_port_pair_")])
+    if name.startswith("spm_port_readback_"):
+        response = row["spm_port_response"]
+        assert isinstance(response, dict)
+        readback_window = response["matched_readback_window"]
+        assert isinstance(readback_window, dict)
+        return int(
+            readback_window[
+                name.removeprefix("spm_port_readback_")
+            ]
+        )
     pmu = row["pmu"]
     assert isinstance(pmu, dict)
     return int(pmu[name])
@@ -430,9 +699,18 @@ def summarize_group(
         "full_execution",
         "ct_blocking",
         "rdma_blocking",
+        "spm_port_pair_port0_t2",
+        "spm_port_pair_port0_t3",
+        "spm_port_pair_port6_t2",
+        "spm_port_pair_port6_t3",
+        "spm_port_readback_port0_t2",
+        "spm_port_readback_port0_t3",
+        "spm_port_readback_port6_t2",
+        "spm_port_readback_port6_t3",
     )
     matched_rows: list[dict[str, object]] = []
     informative = False
+    port_informative = False
     for schedule in catalog.Schedule:
         candidate = next(
             cell
@@ -474,7 +752,18 @@ def summarize_group(
             and directions[name] != {0}
             for name in ("plan_cycles", "full_execution")
         )
+        stable_nonzero_port = any(
+            len(directions[name]) == 1
+            and directions[name] != {0}
+            for name in (
+                "spm_port_pair_port0_t2",
+                "spm_port_pair_port0_t3",
+                "spm_port_readback_port6_t2",
+                "spm_port_readback_port6_t3",
+            )
+        )
         informative |= stable_nonzero
+        port_informative |= stable_nonzero_port
         matched_rows.append(
             {
                 "schedule": schedule.value,
@@ -485,19 +774,27 @@ def summarize_group(
                     for name, values in directions.items()
                 },
                 "stable_nonzero_plan_or_full": stable_nonzero,
+                "stable_nonzero_raw_port_response": (
+                    stable_nonzero_port
+                ),
             }
         )
     return {
         "group": group.as_dict(),
         "correctness": (
-            "all-four-rows-full-owned-SPM-exact+count+completion"
+            "all-four-rows-full-owned-SPM-and-matched-WDMA-exact+"
+            "count+completion+phase-cleanup+port-PMU-scope-restore"
         ),
         "samples": catalog.COUNTERBALANCED_REPEATS,
         "matched_rows": matched_rows,
         "state": (
-            "nonzero-signal-requires-heldout-review"
-            if informative
-            else "consistent-or-noisy-zero-signal"
+            "raw-port-signal-requires-heldout-review"
+            if port_informative
+            else (
+                "aggregate-signal-without-stable-port-response"
+                if informative
+                else "consistent-or-noisy-zero-signal"
+            )
         ),
         "compiler_use": "no-bank-coloring",
     }

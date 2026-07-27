@@ -198,7 +198,8 @@ def prepare_selection(key: str) -> dict[str, object]:
 
 def selected_cases(args: argparse.Namespace) -> tuple[catalog.WorkerCase, ...]:
     if args.case:
-        return (catalog.CASES_BY_KEY[args.case],)
+        selected = catalog.CASES_BY_KEY[args.case]
+        return catalog.GROUP_CASES[selected.group]
     if args.group:
         return catalog.GROUP_CASES[args.group]
     if args.no_card:
@@ -509,10 +510,16 @@ def validate_board_lifecycle(
         )
 
 
-def pattern(case: catalog.WorkerCase, sample: int, slot: int, index: int) -> int:
+def pattern(
+    case: catalog.WorkerCase, sample: int, spm_slot: int, index: int
+) -> int:
     del case
     return (
-        0x51 + sample * 13 + slot * 29 + index * 17 + (index >> 8) * 7
+        0x51
+        + sample * 13
+        + spm_slot * 29
+        + index * 17
+        + (index >> 8) * 7
     ) & 0xFF
 
 
@@ -535,9 +542,12 @@ def write_payload(
     for issue in protocol.issues_for_case(case, sample):
         if issue.engine != catalog.Engine.RDMA:
             continue
-        begin = issue.slot * protocol.OUTPUT_SLOT_STRIDE + protocol.GUARD_BYTES
+        begin = (
+            issue.spm_slot * protocol.OUTPUT_SLOT_STRIDE
+            + protocol.GUARD_BYTES
+        )
         payload[begin : begin + issue.output_bytes] = bytes(
-            pattern(case, sample, issue.slot, index)
+            pattern(case, sample, issue.spm_slot, index)
             for index in range(issue.output_bytes)
         )
     path.write_bytes(payload)
@@ -551,7 +561,7 @@ def expected_result(
     if issue.engine == catalog.Engine.NE:
         return struct.pack("<H", 0x3C00) * (issue.output_bytes // 2)
     return bytes(
-        pattern(case, sample, issue.slot, index)
+        pattern(case, sample, issue.spm_slot, index)
         for index in range(issue.output_bytes)
     )
 
@@ -567,14 +577,21 @@ def parse_output(
         )
     words = struct.unpack_from(f"<{protocol.RECORD_WORDS}Q", output)
     observation = protocol.validate_record(words, case, sample)
+    record_bytes = protocol.RECORD_WORDS * 8
+    expected_tail = bytearray(
+        [protocol.OUTPUT_CANARY]
+    ) * (protocol.RESOURCE_BYTES - record_bytes)
     for issue in protocol.issues_for_case(case, sample):
         slot_begin = (
             protocol.OUTPUT_SLOT_BASE
-            + issue.slot * protocol.OUTPUT_SLOT_STRIDE
+            + issue.ordinal * protocol.OUTPUT_SLOT_STRIDE
         )
         result_begin = slot_begin + protocol.GUARD_BYTES
         result_end = result_begin + issue.output_bytes
         expected = expected_result(case, sample, issue)
+        expected_tail[
+            result_begin - record_bytes : result_end - record_bytes
+        ] = expected
         actual = output[result_begin:result_end]
         if actual != expected:
             mismatch = next(
@@ -583,9 +600,12 @@ def parse_output(
                 if left != right
             )
             raise RuntimeError(
-                f"{case.key}: slot {issue.slot} differs at byte {mismatch}"
+                f"{case.key}: issue ordinal {issue.ordinal} differs at "
+                f"byte {mismatch}"
             )
-        guard = bytes([0xA5]) * protocol.GUARD_BYTES
+        guard = bytes(
+            [protocol.OUTPUT_CANARY]
+        ) * protocol.GUARD_BYTES
         if (
             output[slot_begin:result_begin] != guard
             or output[
@@ -594,8 +614,22 @@ def parse_output(
             != guard
         ):
             raise RuntimeError(
-                f"{case.key}: slot {issue.slot} archive guard changed"
+                f"{case.key}: issue ordinal {issue.ordinal} archive "
+                "guard changed"
             )
+    actual_tail = output[record_bytes:]
+    if actual_tail != expected_tail:
+        mismatch = next(
+            index
+            for index, (actual, expected) in enumerate(
+                zip(actual_tail, expected_tail, strict=True)
+            )
+            if actual != expected
+        )
+        raise RuntimeError(
+            f"{case.key}: output tail canary changed at byte "
+            f"{record_bytes + mismatch}"
+        )
     return observation
 
 
@@ -609,7 +643,7 @@ def ordered_cases_for_sample(
         raise RuntimeError("worker execution plan has a negative sample")
     rotation = sample % len(ordered)
     rotated = ordered[rotation:] + ordered[:rotation]
-    if sample & 1:
+    if sample & 1 and len(ordered) > 2:
         rotated = tuple(reversed(rotated))
     return rotated
 
@@ -669,6 +703,21 @@ def report_group(
     observations: list[dict[str, object]],
     repeat: int,
 ) -> None:
+    groups = {case.group for case in cases}
+    if len(groups) != 1:
+        raise RuntimeError(
+            "worker matched decision requires exactly one complete group"
+        )
+    group = next(iter(groups))
+    expected_group = catalog.GROUP_CASES[group]
+    if (
+        len(cases) != len(expected_group)
+        or {case.key for case in cases}
+        != {case.key for case in expected_group}
+    ):
+        raise RuntimeError(
+            f"{group}: matched decision requires the complete group"
+        )
     by_case = {
         case.key: [
             observation
@@ -684,6 +733,14 @@ def report_group(
         for samples in by_case.values()
     ):
         raise RuntimeError("worker activation group lost a repeat")
+
+    def max_observed_ib(
+        sample: dict[str, object], worker: int
+    ) -> int:
+        maxima = sample["observed_max_ib_counter_by_worker"]
+        assert isinstance(maxima, list)
+        return int(maxima[worker])
+
     if all(case.kind == catalog.Kind.PLACEMENT for case in cases):
         rows = []
         for case in cases:
@@ -723,16 +780,98 @@ def report_group(
                     "per_worker_blocking_samples": [
                         sample["blocking_delta"] for sample in samples
                     ],
+                    "matching_join_cycle_samples": [
+                        sample["matching_join_cycles"]
+                        for sample in samples
+                    ],
                 }
             )
         decision = {
             "group": cases[0].group,
             "fixed_total_issues": catalog.PLACEMENT_ISSUES,
-            "rotated_issue_and_join_order": True,
+            "rotated_issue_and_poll_order": True,
             "rows": rows,
             "interpretation": (
-                "raw placement scaling and blocking imbalance only; no "
-                "absolute per-worker completion-cycle or arbiter policy"
+                "raw placement, participant-join, and blocking-imbalance "
+                "response only; no exact per-worker completion-cycle or "
+                "arbiter policy"
+            ),
+        }
+    elif all(case.kind == catalog.Kind.OUTSTANDING for case in cases):
+        rows = []
+        maxima_by_submission_count: dict[int, list[int]] = {}
+        for case in cases:
+            samples = by_case[case.key]
+            observed_maxima = [
+                max_observed_ib(sample, case.target_worker)
+                for sample in samples
+            ]
+            maxima_by_submission_count[case.issue_count] = observed_maxima
+            rows.append(
+                {
+                    "case": case.key,
+                    "submitted_issue_count": case.issue_count,
+                    "operation_bytes": case.primary_bytes,
+                    "median_plan_cycles": statistics.median(
+                        int(sample["plan_cycles"]) for sample in samples
+                    ),
+                    "median_full_execution_cycles": statistics.median(
+                        int(sample["pmu64_delta"][1])
+                        for sample in samples
+                    ),
+                    "max_observed_ib_counter_samples": observed_maxima,
+                    "first_observed_done_cycle_samples": [
+                        sample["first_observed_completion_cycles"][
+                            case.target_worker
+                        ]
+                        for sample in samples
+                    ],
+                    "poll_count_samples": [
+                        sample["task_done_poll_counts"][
+                            case.target_worker
+                        ]
+                        for sample in samples
+                    ],
+                    "max_poll_gap_samples": [
+                        sample["task_done_max_poll_gaps"][
+                            case.target_worker
+                        ]
+                        for sample in samples
+                    ],
+                    "matching_join_cycle_samples": [
+                        sample["matching_join_cycles"][
+                            case.target_worker
+                        ]
+                        for sample in samples
+                    ],
+                }
+            )
+        low_maxima = maxima_by_submission_count[
+            catalog.OUTSTANDING_LOW_ISSUES
+        ]
+        high_maxima = maxima_by_submission_count[
+            catalog.OUTSTANDING_HIGH_ISSUES
+        ]
+        ib_counter_distinguishing = min(high_maxima) > max(low_maxima)
+        decision = {
+            "group": cases[0].group,
+            "matched_submitted_issue_counts": [
+                catalog.OUTSTANDING_LOW_ISSUES,
+                catalog.OUTSTANDING_HIGH_ISSUES,
+            ],
+            "same_engine_worker_and_operation_bytes": True,
+            "ib_counter_distinguishing": ib_counter_distinguishing,
+            "classification": (
+                "distinguishing-observed-ib-response"
+                if ib_counter_distinguishing
+                else "inconclusive-no-distinguishing-ib-response"
+            ),
+            "rows": rows,
+            "interpretation": (
+                "submitted issue count and maximum observed "
+                "CONTROL/IB_COUNTER are separate observations; absent a "
+                "strictly separated low/high response this group is "
+                "inconclusive, never queue-residency evidence"
             ),
         }
     else:
@@ -742,6 +881,13 @@ def report_group(
         concurrent_samples = by_case[concurrent.key]
         variant_cycles = {
             case.kind.name.lower().replace("_", "-"): {
+                "submitted_issue_count": case.issue_count,
+                "target_max_observed_ib_counter_samples": [
+                    sample["observed_max_ib_counter_by_worker"][
+                        case.target_worker
+                    ]
+                    for sample in by_case[case.key]
+                ],
                 "median_plan_cycles": statistics.median(
                     int(sample["plan_cycles"])
                     for sample in by_case[case.key]
@@ -760,6 +906,10 @@ def report_group(
                 "sentinel-only",
                 "concurrent",
             ],
+            "sentinel_physical_spm_slot": (
+                protocol.PROGRESS_SENTINEL_SPM_SLOT
+            ),
+            "tight_submit_without_per_issue_control_reads": True,
             "repeat_count": repeat,
             "observer_completed_samples": sum(
                 bool(sample["observer_done_at_boundary"])
@@ -770,6 +920,13 @@ def report_group(
                 for sample in concurrent_samples
             ),
             "variant_device_cycles": variant_cycles,
+            "matching_join_cycle_samples": {
+                case.kind.name.lower().replace("_", "-"): [
+                    sample["matching_join_cycles"]
+                    for sample in by_case[case.key]
+                ]
+                for case in cases
+            },
             "classification": (
                 "observer-progress-before-target-drain-observed"
                 if any(
@@ -809,13 +966,14 @@ def validate_static_contract() -> None:
             for issue in issues:
                 end = (
                     protocol.OUTPUT_SLOT_BASE
-                    + issue.slot * protocol.OUTPUT_SLOT_STRIDE
+                    + issue.ordinal * protocol.OUTPUT_SLOT_STRIDE
                     + 2 * protocol.GUARD_BYTES
                     + issue.output_bytes
                 )
                 if end > protocol.RESOURCE_BYTES:
                     raise RuntimeError(
-                        f"{case.key}: issue {issue.slot} exceeds resource"
+                        f"{case.key}: issue ordinal {issue.ordinal} "
+                        "exceeds resource"
                     )
     for boundary in catalog.BOUNDARIES:
         try:

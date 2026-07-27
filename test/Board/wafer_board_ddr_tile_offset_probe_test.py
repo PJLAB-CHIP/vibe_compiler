@@ -570,10 +570,9 @@ def validate_manifest(
     ):
         raise RuntimeError("DDR tile/offset package domains are incomplete")
     module = modules[0]
-    if module.get("exports") != [
-        {"role": "prepare", "symbol": "__wafer_cluster_prepare"},
-        {"role": "main", "symbol": "main"},
-    ]:
+    if module.get("exports") != runtime_launch.expected_kernel_module_exports(
+        runtime_launch.CLUSTER_KERNEL_LAUNCH
+    ):
         raise RuntimeError("DDR tile/offset shared module exports are wrong")
     module_path = package / module["path"]
     if not module_path.is_file():

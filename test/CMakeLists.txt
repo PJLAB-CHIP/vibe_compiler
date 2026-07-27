@@ -477,6 +477,33 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     collective-permute-sparse-roles-4096b
     collective-permute-two-epoch-chain-4096b
   )
+  set(_wafer_pending_dte_case_specs
+    "14:dte-four-source-fanin-correctness"
+    "15:dte-raw-broadcast-fanout2-adjacent"
+    "16:dte-raw-broadcast-fanout2-interleaved"
+    "17:dte-raw-broadcast-fanout4-adjacent"
+    "18:dte-raw-broadcast-fanout4-interleaved"
+    "19:dte-raw-broadcast-fanout8-adjacent"
+    "20:dte-raw-broadcast-fanout8-interleaved"
+    "21:dte-raw-broadcast-fanout15-adjacent"
+    "22:dte-raw-broadcast-fanout15-interleaved"
+    "23:dte-raw-scatter-fanout2-adjacent"
+    "24:dte-raw-scatter-fanout2-interleaved"
+    "25:dte-raw-scatter-fanout4-adjacent"
+    "26:dte-raw-scatter-fanout4-interleaved"
+    "27:dte-raw-scatter-fanout8-adjacent"
+    "28:dte-raw-scatter-fanout8-interleaved"
+    "29:dte-raw-scatter-fanout15-adjacent"
+    "30:dte-raw-scatter-fanout15-interleaved"
+    "31:dte-raw-shuffle-fanout2-adjacent"
+    "32:dte-raw-shuffle-fanout2-interleaved"
+    "33:dte-raw-shuffle-fanout4-adjacent"
+    "34:dte-raw-shuffle-fanout4-interleaved"
+    "35:dte-raw-shuffle-fanout8-adjacent"
+    "36:dte-raw-shuffle-fanout8-interleaved"
+    "37:dte-raw-shuffle-fanout15-adjacent"
+    "38:dte-raw-shuffle-fanout15-interleaved"
+  )
   set(_wafer_tx81_objdump
     ${CMAKE_SOURCE_DIR}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump
   )
@@ -625,6 +652,31 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     LABELS "runtime;no-card;all-rank;cluster;direct-dte;ncc;probe-build"
     TIMEOUT 450
   )
+  foreach(_wafer_pending_dte_case_spec IN LISTS
+      _wafer_pending_dte_case_specs)
+    string(REPLACE ":" ";" _wafer_pending_dte_case_parts
+      "${_wafer_pending_dte_case_spec}")
+    list(GET _wafer_pending_dte_case_parts 0 _wafer_pending_dte_mode)
+    list(GET _wafer_pending_dte_case_parts 1 _wafer_pending_dte_case)
+    add_test(
+      NAME wafer-runtime-${_wafer_pending_dte_case}-no-card
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_dte_ncc_execution_probe_test.py
+        --host-contract-only
+        --mode ${_wafer_pending_dte_mode}
+        --payload-bytes 4096
+    )
+    set_tests_properties(
+      wafer-runtime-${_wafer_pending_dte_case}-no-card PROPERTIES
+      LABELS
+        "runtime;no-card;all-rank;direct-dte;host-contract;pending"
+      TIMEOUT 30
+    )
+  endforeach()
+  unset(_wafer_pending_dte_case_spec)
+  unset(_wafer_pending_dte_case_parts)
+  unset(_wafer_pending_dte_mode)
+  unset(_wafer_pending_dte_case)
   add_test(NAME wafer-runtime-full-card-barrier-probe-no-card
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_full_card_barrier_probe_test.py
@@ -2673,6 +2725,48 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       SKIP_RETURN_CODE 77
       TIMEOUT 1830
     )
+    foreach(_wafer_pending_dte_case_spec IN LISTS
+        _wafer_pending_dte_case_specs)
+      string(REPLACE ":" ";" _wafer_pending_dte_case_parts
+        "${_wafer_pending_dte_case_spec}")
+      list(GET _wafer_pending_dte_case_parts 0 _wafer_pending_dte_mode)
+      list(GET _wafer_pending_dte_case_parts 1 _wafer_pending_dte_case)
+      add_test(
+        NAME wafer-board-${_wafer_pending_dte_case}
+        COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_dte_ncc_execution_probe_test.py
+          --repo-root ${CMAKE_SOURCE_DIR}
+          --wafer-compile $<TARGET_FILE:wafer-compile>
+          --wafer-run $<TARGET_FILE:wafer-run>
+          --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
+          --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}/board-${_wafer_pending_dte_case}
+          --mode ${_wafer_pending_dte_mode}
+          --payload-bytes 4096
+          --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+          --expected-runtime-version
+            ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+          --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+          --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+          --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+          --expected-runtime-library-sha256
+            ${_wafer_expected_tx_runtime_library_sha256}
+          --completion-timeout-ms 60000
+          --total-timeout-seconds 420
+      )
+      set_tests_properties(
+        wafer-board-${_wafer_pending_dte_case} PROPERTIES
+        LABELS
+          "board;hardware;cluster;all-rank;direct-dte;single-case;pending"
+        RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 450
+      )
+    endforeach()
+    unset(_wafer_pending_dte_case_spec)
+    unset(_wafer_pending_dte_case_parts)
+    unset(_wafer_pending_dte_mode)
+    unset(_wafer_pending_dte_case)
     add_test(NAME wafer-board-full-card-barrier-probe
       COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_full_card_barrier_probe_test.py

@@ -19,6 +19,56 @@ def main() -> int:
     }
     assert catalog.ERROR_PATH_MODES == (7, 8, 9, 12)
     assert catalog.ASYNC_SENDER_MODES == (10, 11)
+    assert catalog.RAW_REMOTE_MODE_IDS == tuple(range(15, 39))
+    assert (
+        catalog.RAW_REMOTE_MULTICAST_CASES
+        is catalog.RAW_MULTIDEST_CASES
+    )
+    assert (
+        catalog.RAW_REMOTE_MULTICAST_CASE_BY_MODE
+        is catalog.RAW_MULTIDEST_CASE_BY_MODE
+    )
+    raw_cases = catalog.RAW_REMOTE_MULTICAST_CASES
+    assert len(raw_cases) == 24
+    assert len({case.key for case in raw_cases}) == 24
+    assert len({case.mode for case in raw_cases}) == 24
+    assert {case.semantic for case in raw_cases} == {
+        "broadcast",
+        "scatter",
+        "shuffle",
+    }
+    for semantic in catalog.RAW_MULTIDEST_SEMANTICS:
+        semantic_cases = tuple(
+            case for case in raw_cases if case.semantic == semantic
+        )
+        assert {
+            (case.fanout, case.target_layout) for case in semantic_cases
+        } == {
+            (fanout, layout)
+            for fanout in (2, 4, 8, 15)
+            for layout in ("adjacent", "interleaved")
+        }
+        assert {case.disposition for case in semantic_cases} == {
+            "pending-board-observation"
+        }
+        assert {
+            case.verification_scope for case in semantic_cases
+        } == {"board-device-owner-backed-raw-dte-registers"}
+    assert {
+        case.semantic: case.raw_mode for case in raw_cases
+    } == {"broadcast": 2, "scatter": 1, "shuffle": 3}
+    assert all(
+        len(case.target_ranks) == case.fanout
+        and len(set(case.target_ranks)) == case.fanout
+        and 0 not in case.target_ranks
+        and case.source_span_bytes <= catalog.RAW_MULTIDEST_PAYLOAD_BYTES
+        and case.dest_num_register_value == case.fanout - 1
+        and case.dest_num_encoding == "zero-based-upper-slot-hypothesis"
+        and case.as_dict()["key"] == case.name
+        for case in raw_cases
+    )
+    assert catalog.raw_multidest_target_ranks(4, "adjacent") == (1, 2, 3, 4)
+    assert catalog.raw_multidest_target_ranks(4, "interleaved") == (1, 8, 15, 7)
     assert {
         (case.mode, case.payload_bytes)
         for case in catalog.CONTRACT_CASES
@@ -94,6 +144,24 @@ def main() -> int:
             "direct-dte-broadcast"
         ]
     } == {6}
+    assert {
+        case.mode
+        for case in catalog.CALIBRATION_LEAF_BINDINGS[
+            "direct-dte-four-source-fanin"
+        ]
+    } == {catalog.FOUR_SOURCE_FANIN_MODE}
+    assert {
+        key: len(catalog.CALIBRATION_LEAF_BINDINGS[key])
+        for key in (
+            "direct-dte-raw-broadcast",
+            "direct-dte-raw-scatter",
+            "direct-dte-raw-shuffle",
+        )
+    } == {
+        "direct-dte-raw-broadcast": 8,
+        "direct-dte-raw-scatter": 8,
+        "direct-dte-raw-shuffle": 8,
+    }
     assert catalog.CALIBRATION_LEAF_BINDINGS
     assert all(catalog.CALIBRATION_LEAF_BINDINGS.values())
     real_objects = {
@@ -103,6 +171,7 @@ def main() -> int:
             + catalog.TRANSPORT_PMU_OBSERVATIONS
             + catalog.CONTRACT_CASES
             + catalog.COUNTER_DISPOSITIONS
+            + catalog.RAW_REMOTE_MULTICAST_CASES
         )
     }
     assert all(
@@ -117,6 +186,7 @@ def main() -> int:
     }
     assert static_negative_names == {
         "dte-invalid-coordinate",
+        "dte-raw-gather-unencodable",
         "host-readback-before-terminal",
         "outer-timeout-stops-batch",
     }
@@ -124,7 +194,8 @@ def main() -> int:
         "direct-dte-host-static-negative"
     ]
     assert {case.name for case in direct_host_negative} == {
-        "dte-invalid-coordinate"
+        "dte-invalid-coordinate",
+        "dte-raw-gather-unencodable",
     }
     assert {case.verification_scope for case in direct_host_negative} == {
         "host-prelaunch-verifier"
@@ -184,6 +255,37 @@ def main() -> int:
     assert "inventing offsets" in tmnoc.reason
 
     repo = pathlib.Path(__file__).resolve().parents[2]
+    cmake = (repo / "test" / "CMakeLists.txt").read_text()
+    pending_cmake_specs = tuple(
+        (int(mode), name)
+        for mode, name in re.findall(
+            r'^\s*"(\d+):(dte-(?:four-source-fanin-correctness|'
+            r'raw-(?:broadcast|scatter|shuffle)-fanout\d+-(?:adjacent|'
+            r'interleaved)))"$',
+            cmake,
+            re.M,
+        )
+    )
+    assert pending_cmake_specs == (
+        (
+            catalog.FOUR_SOURCE_FANIN_MODE,
+            catalog.MODE_NAMES[catalog.FOUR_SOURCE_FANIN_MODE],
+        ),
+        *tuple(
+            (case.mode, case.name)
+            for case in catalog.RAW_REMOTE_MULTICAST_CASES
+        ),
+    )
+    assert "wafer-runtime-${_wafer_pending_dte_case}-no-card" in cmake
+    assert "wafer-board-${_wafer_pending_dte_case}" in cmake
+    assert "--host-contract-only" in cmake
+    assert cmake.count("--mode ${_wafer_pending_dte_mode}") == 2
+    assert 'RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"' in (
+        cmake.split(
+            "foreach(_wafer_pending_dte_case_spec IN LISTS",
+            maxsplit=2,
+        )[2]
+    )
     pmu_header = (
         repo
         / "third_party"
@@ -233,12 +335,26 @@ def main() -> int:
         / "Inputs"
         / "wafer_dte_ncc_execution_probe.c"
     ).read_text()
+    host_driver_source = (
+        repo
+        / "test"
+        / "Board"
+        / "wafer_board_dte_ncc_execution_probe_test.py"
+    ).read_text()
+    assert 'parser.add_argument("--host-contract-only"' in host_driver_source
+    assert "mode not in (*ISOLATED_DTE_MODES, *PENDING_DTE_MODES)" in (
+        host_driver_source
+    )
+    assert "each pending fan-in/raw-multidestination case must run alone" in (
+        host_driver_source
+    )
+    assert "raw_multidest_elf_verification: passed" in host_driver_source
     probe_main = probe_source.split(
         "wafer_tx81_dte_ncc_execution_probe(", maxsplit=1
     )[1]
     assert "get_spm_memory_mapping" not in probe_source
     assert "wafer_probe_seed_guarded_region(" in probe_source
-    assert "wafer_probe_capture_results(output_ddr, mode);" in probe_main
+    assert "wafer_probe_capture_results(output_ddr, mode, rank);" in probe_main
     reuse = probe_main.split(
         "case WAFER_PROBE_DTE_REUSE_AFTER_EVENTS:", maxsplit=1
     )[1].split(
@@ -258,7 +374,7 @@ def main() -> int:
     broadcast = probe_source.split(
         "static void wafer_probe_dte_two_destination_broadcast(", maxsplit=1
     )[1].split(
-        "static uint32_t wafer_probe_dte_reuse_before_send_event", maxsplit=1
+        "static uint64_t wafer_probe_dte_fanin_destination", maxsplit=1
     )[0]
     assert broadcast.count("wafer_tx81_direct_dte_recv_prepare(") == 2
     assert broadcast.count("wafer_tx81_direct_dte_send_prepare(") == 2
@@ -317,7 +433,7 @@ def main() -> int:
     raw_async = probe_source.split(
         "wafer_probe_dte_sender_raw_async(", maxsplit=1
     )[1].split(
-        "static void wafer_probe_dte_two_destination_broadcast(", maxsplit=1
+        "wafer_probe_raw_multidest_user_id(", maxsplit=1
     )[0]
     assert raw_async.index(
         "wafer_tx81_direct_dte_recv_prepare("
@@ -350,6 +466,65 @@ def main() -> int:
         raw_async
     )
     assert "WAFER_PROBE_RAW_ASYNC_RC_MARKER" in probe_source
+    assert '#include "dte/dte_cfg.h"' in probe_source
+    assert '#include "dte/mod_dte.h"' in probe_source
+    for owner_offset in (
+        "offsetof(sct_dte_cfg_s, src_addr) == 0U",
+        "offsetof(sct_dte_cfg_s, dst_addr_0) == 8U",
+        "offsetof(sct_dte_cfg_s, user_id_0) == 16U",
+        "offsetof(sct_dte_cfg_s, sct_dte_block_mode) == 20U",
+        "offsetof(sct_dte_cfg_s, sct_dte_block_length) == 24U",
+        "offsetof(sct_dte_cfg_s, sct_dte_block_dest_num) == 28U",
+        "offsetof(sct_dte_cfg_s, dst_addr_others) == 80U",
+        "offsetof(sct_dte_cfg_s, user_id_others) == 328U",
+    ):
+        assert owner_offset in probe_source
+    raw_multidest_program = probe_source.split(
+        "wafer_probe_raw_multidest_program(", maxsplit=1
+    )[1].split(
+        "wafer_probe_dte_raw_multidest(", maxsplit=1
+    )[0]
+    assert "DirectDTESendInfo" not in raw_multidest_program
+    assert "for (uint32_t index = 0; index < fanout; ++index)" in (
+        raw_multidest_program
+    )
+    assert "node->dst_cfg[index].dst_addr = destination;" in (
+        raw_multidest_program
+    )
+    assert "node->dst_cfg[index].dst_id = user_id;" in raw_multidest_program
+    assert "GR_DTE_MODE, raw_mode" in raw_multidest_program
+    assert "GR_DTE_LENGTH, bytes" in raw_multidest_program
+    assert "GR_DTE_DEST_NUM, fanout - 1U" in raw_multidest_program
+    assert "zero-based final-slot hypothesis" in probe_source
+    assert "instr_def.h says one for even modes and 1..31 otherwise" in (
+        probe_source
+    )
+    assert "GR_DTE_STRIDE0" in raw_multidest_program
+    assert "GR_DTE_ITERATION0" in raw_multidest_program
+    assert "GR_DTE_CMD_VALID, UINT32_C(1)" in raw_multidest_program
+    raw_multidest_execution = probe_source.split(
+        "wafer_probe_dte_raw_multidest(", maxsplit=1
+    )[1].split(
+        "static void wafer_probe_dte_two_destination_broadcast(", maxsplit=1
+    )[0]
+    assert raw_multidest_execution.index("direct_sync_wait(") < (
+        raw_multidest_execution.index("direct_dte_attach(")
+    )
+    assert "wait_info.dte_node = node;" in raw_multidest_execution
+    assert "direct_dte_wait_done(&wait_info)" in raw_multidest_execution
+    assert "mod_kuiper_dte_trig_send" not in raw_multidest_execution
+    assert "mod_kuiper_dte_check_send_status" not in raw_multidest_execution
+    assert "direct_dte_release(node)" in raw_multidest_execution
+    assert "WAFER_PROBE_RAW_MULTIDEST_RC_MARKER" in probe_source
+    fanin = probe_source.split(
+        "static uint32_t wafer_probe_dte_four_source_fanin(", maxsplit=1
+    )[1].split(
+        "static uint32_t wafer_probe_dte_reuse_before_send_event(", maxsplit=1
+    )[0]
+    assert fanin.count("wafer_tx81_direct_dte_recv_prepare(") == 4
+    assert fanin.count("wafer_tx81_direct_dte_wait(receive") == 4
+    assert "WAFER_PROBE_FANIN_SOURCE_COUNT" in fanin
+    assert "wafer_tx81_direct_dte_send_prepare(" in fanin
     split_read = probe_source.split(
         "static uint64_t wafer_probe_mmio_read64(", maxsplit=1
     )[1].split("static WaferProbePmu wafer_probe_read_pmu", maxsplit=1)[0]
@@ -434,9 +609,10 @@ def main() -> int:
 
     print(
         "wafer_transport_pmu_calibration_catalog_test: "
-        "cases=30 contracts=11 direct_host_negative=1 "
+        "cases=30 contracts=13 direct_host_negative=2 "
         "direct_error_observation=4 sender_async_controls=2 "
-        "unsafe_isolation=1 board_counters=6 wrap_boundaries=5 "
+        "fanin=1 raw_remote_multicast=24 unsafe_isolation=1 "
+        "board_counters=6 wrap_boundaries=5 "
         "tmnoc_static_negative=1 passed"
     )
     return 0

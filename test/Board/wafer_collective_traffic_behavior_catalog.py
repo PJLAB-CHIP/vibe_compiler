@@ -27,6 +27,8 @@ import dataclasses
 import enum
 from collections import Counter
 
+import wafer_transport_pmu_calibration_catalog as raw_dte
+
 
 RANK_COUNT = 16
 PAYLOAD_POINTS = (256, 4096, 65536)
@@ -74,6 +76,7 @@ class CoverageDisposition(str, enum.Enum):
 
 class ExecutionGate(str, enum.Enum):
     QUALIFIED_BOARD_CORRECTNESS = "qualified-board-correctness"
+    QUALIFIED_RAW_DTE_CORRECTNESS = "qualified-raw-dte-correctness"
     ALREADY_EXECUTED_REFERENCE = "already-executed-reference"
     BLOCKED_MISSING_TYPED_SURFACE = "blocked-missing-typed-surface"
     BLOCKED_UNSUPPORTED_ABI = "blocked-unsupported-abi"
@@ -348,10 +351,12 @@ class CoverageItem:
     evidence_refs: tuple[str, ...]
     promotion_gates: tuple[PromotionGate, ...]
     evidence_boundary: str
+    raw_case_names: tuple[str, ...] = ()
 
 
 RAW_DTE_DRIVER = "test/Board/wafer_board_dte_ncc_execution_probe_test.py"
 RAW_DTE_CATALOG = "test/Board/wafer_transport_pmu_calibration_catalog.py"
+RAW_DTE_PROBE = "test/Board/Inputs/wafer_dte_ncc_execution_probe.c"
 
 
 COVERAGE_ITEMS = (
@@ -513,23 +518,56 @@ COVERAGE_ITEMS = (
             "receive behavior; its sequential send waits are not contention."
         ),
     ),
-    CoverageItem(
-        key="dte-fanout-fanin-four-concurrent",
-        disposition=CoverageDisposition.BLOCKED_FAIL_CLOSED,
-        execution_gate=ExecutionGate.BLOCKED_MISSING_TYPED_SURFACE,
-        case_keys=(),
-        evidence_refs=(),
-        promotion_gates=(
-            PromotionGate.TYPED_CONCURRENT_MULTI_ENDPOINT_GRAPH,
-            PromotionGate.DEVICE_PHASE_BASIS,
-        ),
-        evidence_boundary=(
-            "Four sequential sends or four separate Permute operations would "
-            "not test a concurrent hotspot and are rejected as a surrogate."
-        ),
+    *tuple(
+        CoverageItem(
+            key=f"dte-native-{semantic}-fanout-layout-matrix",
+            disposition=CoverageDisposition.PENDING_BOARD_EXECUTION,
+            execution_gate=ExecutionGate.QUALIFIED_RAW_DTE_CORRECTNESS,
+            case_keys=(),
+            evidence_refs=(
+                RAW_DTE_DRIVER,
+                RAW_DTE_CATALOG,
+                RAW_DTE_PROBE,
+            ),
+            promotion_gates=(
+                PromotionGate.NATIVE_MULTICAST_ABI,
+                PromotionGate.TYPED_CONCURRENT_MULTI_ENDPOINT_GRAPH,
+            ),
+            evidence_boundary=(
+                f"The owner-backed raw DTE {semantic} rows separately cover "
+                "fanout 2/4/8/15 and adjacent/interleaved destination order. "
+                "Exact destination payloads, inactive ranks, guards, raw mode/"
+                "dest_num/user-id echo, completion and cleanup are required; "
+                "the result does not establish device cost or physical route."
+            ),
+            raw_case_names=tuple(
+                case.name
+                for case in raw_dte.RAW_MULTIDEST_CASES
+                if case.semantic == semantic
+            ),
+        )
+        for semantic in raw_dte.RAW_MULTIDEST_SEMANTICS
     ),
     CoverageItem(
-        key="dte-fanout-fanin-eight-concurrent",
+        key="dte-four-source-fanin",
+        disposition=CoverageDisposition.PENDING_BOARD_EXECUTION,
+        execution_gate=ExecutionGate.QUALIFIED_RAW_DTE_CORRECTNESS,
+        case_keys=(),
+        evidence_refs=(RAW_DTE_DRIVER, RAW_DTE_CATALOG, RAW_DTE_PROBE),
+        promotion_gates=(
+            PromotionGate.TYPED_CONCURRENT_MULTI_ENDPOINT_GRAPH,
+            PromotionGate.RECEIVER_FSM_CAPACITY,
+        ),
+        evidence_boundary=(
+            "Four source ranks issue to four receiver FSMs and disjoint guarded "
+            "slots on one target. Exact source-slot identity and lifecycle can "
+            "establish four-source fan-in correctness, but not timing overlap "
+            "or a contention cost."
+        ),
+        raw_case_names=("dte-four-source-fanin-correctness",),
+    ),
+    CoverageItem(
+        key="dte-eight-source-fanin",
         disposition=CoverageDisposition.BLOCKED_FAIL_CLOSED,
         execution_gate=ExecutionGate.BLOCKED_UNSUPPORTED_ABI,
         case_keys=(),
@@ -537,15 +575,14 @@ COVERAGE_ITEMS = (
         promotion_gates=(
             PromotionGate.TYPED_CONCURRENT_MULTI_ENDPOINT_GRAPH,
             PromotionGate.RECEIVER_FSM_CAPACITY,
-            PromotionGate.DEVICE_PHASE_BASIS,
         ),
         evidence_boundary=(
-            "The current receiver FSM domain and one-live-sender helper cannot "
-            "represent an eight-way concurrent hotspot."
+            "The qualified receiver helper exposes only four FSM ids, so an "
+            "eight-source fan-in cannot be prepared safely."
         ),
     ),
     CoverageItem(
-        key="dte-fanout-fanin-fifteen-concurrent",
+        key="dte-fifteen-source-fanin",
         disposition=CoverageDisposition.BLOCKED_FAIL_CLOSED,
         execution_gate=ExecutionGate.BLOCKED_UNSUPPORTED_ABI,
         case_keys=(),
@@ -553,11 +590,11 @@ COVERAGE_ITEMS = (
         promotion_gates=(
             PromotionGate.TYPED_CONCURRENT_MULTI_ENDPOINT_GRAPH,
             PromotionGate.RECEIVER_FSM_CAPACITY,
-            PromotionGate.DEVICE_PHASE_BASIS,
         ),
         evidence_boundary=(
-            "AllToAll reaches fifteen peers sequentially; that is not a "
-            "fifteen-way concurrent fanout/fanin measurement."
+            "AllToAll reaches fifteen sources through separate exchanges; the "
+            "four-FSM receiver surface cannot represent fifteen live sources "
+            "to one target."
         ),
     ),
     CoverageItem(
@@ -592,17 +629,6 @@ COVERAGE_ITEMS = (
         evidence_boundary=(
             "Logical endpoints and minimum-hop demand do not identify physical "
             "N/E/S/W links, arbitration, or per-link load."
-        ),
-    ),
-    CoverageItem(
-        key="dte-native-multicast",
-        disposition=CoverageDisposition.BLOCKED_FAIL_CLOSED,
-        execution_gate=ExecutionGate.BLOCKED_UNSUPPORTED_ABI,
-        case_keys=(),
-        evidence_refs=(),
-        promotion_gates=(PromotionGate.NATIVE_MULTICAST_ABI,),
-        evidence_boundary=(
-            "Repeated unicast sends cannot be relabeled as native multicast."
         ),
     ),
     CoverageItem(
@@ -731,6 +757,22 @@ def validate_catalog() -> None:
             f"missing={sorted(expected_cases - referenced_cases)} "
             f"unknown={sorted(referenced_cases - expected_cases)}"
         )
+    expected_raw_cases = {
+        case.name for case in raw_dte.RAW_MULTIDEST_CASES
+    } | {"dte-four-source-fanin-correctness"}
+    referenced_raw_cases = Counter(
+        name for item in COVERAGE_ITEMS for name in item.raw_case_names
+    )
+    if (
+        set(referenced_raw_cases) != expected_raw_cases
+        or any(count != 1 for count in referenced_raw_cases.values())
+    ):
+        raise ValueError(
+            "raw DTE coverage rows are incomplete or duplicated: "
+            f"missing={sorted(expected_raw_cases - set(referenced_raw_cases))} "
+            f"unknown={sorted(set(referenced_raw_cases) - expected_raw_cases)} "
+            f"duplicates={sorted(name for name, count in referenced_raw_cases.items() if count != 1)}"
+        )
     for item in COVERAGE_ITEMS:
         if any(case_key not in CASES_BY_KEY for case_key in item.case_keys):
             raise ValueError(f"{item.key}: coverage refers to an unknown case")
@@ -742,11 +784,20 @@ def validate_catalog() -> None:
             ):
                 raise ValueError(f"{item.key}: existing evidence is incomplete")
         elif item.disposition == CoverageDisposition.PENDING_BOARD_EXECUTION:
-            if (
+            structured_pending = (
                 item.execution_gate
-                != ExecutionGate.QUALIFIED_BOARD_CORRECTNESS
-                or not item.case_keys
-            ):
+                == ExecutionGate.QUALIFIED_BOARD_CORRECTNESS
+                and bool(item.case_keys)
+                and not item.raw_case_names
+            )
+            raw_pending = (
+                item.execution_gate
+                == ExecutionGate.QUALIFIED_RAW_DTE_CORRECTNESS
+                and bool(item.raw_case_names)
+                and not item.case_keys
+                and bool(item.evidence_refs)
+            )
+            if not structured_pending and not raw_pending:
                 raise ValueError(f"{item.key}: pending execution has no case")
         elif item.disposition == CoverageDisposition.EXISTING_STATIC_NEGATIVE:
             if (

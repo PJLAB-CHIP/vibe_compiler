@@ -38,6 +38,31 @@ MODEL_LAUNCH: dict[str, Any] = {
     "phases": ["main"],
 }
 
+KERNEL_PREPARE_EXPORT = {
+    "role": "prepare",
+    "symbol": "__wafer_kernel_prepare",
+}
+KERNEL_MAIN_EXPORT = {"role": "main", "symbol": "main"}
+
+
+def expected_kernel_module_exports(
+    launch: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    """Return the canonical module exports for one kernel launch contract."""
+
+    if launch.get("kind") != KERNEL_LAUNCH_KIND:
+        raise RuntimeError("kernel module exports require a kernel launch")
+    phases = launch.get("phases")
+    if not isinstance(phases, list):
+        raise RuntimeError("kernel launch phases must be a list")
+    exports_by_phase = {
+        "prepare": KERNEL_PREPARE_EXPORT,
+        "main": KERNEL_MAIN_EXPORT,
+    }
+    if any(phase not in exports_by_phase for phase in phases):
+        raise RuntimeError("kernel launch contains an unsupported phase")
+    return [dict(exports_by_phase[phase]) for phase in phases]
+
 
 def require_manifest_launch(
     manifest: Mapping[str, Any],

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Typed 4/16 KiB sustained CT/RDMA SPM conflict pilot.
+"""Typed sustained CT/RDMA SPM pilot with matched port-PMU response.
 
 Pipeline position:
 - Upstream artifact / IR:
@@ -7,10 +7,13 @@ Pipeline position:
   characterization group selected by work size and reciprocal issue order.
 - Current stage responsibility:
   Materialize four same-invocation matched rows (8192/control-4352 times
-  serial/window) from compact, disjoint 4 KiB CT/RDMA operand cells.
+  serial/window) from compact, disjoint 4 KiB CT/RDMA operand cells.  For
+  each row, read back the RDMA-written range with the same number of WDMA
+  packets and bytes while sampling the owner-backed SPM port-0/port-6 PMU.
 - Output artifact / IR:
   Exact full-SPM snapshots plus versioned device records containing actual
-  resource addresses, instruction counts, completion state, and pair-only PMU.
+  resource addresses, instruction counts, completion state, pair-only NCC
+  PMU, and stable raw SPM port-counter snapshots with restored enable scope.
 - Downstream consumer:
   The hardware-calibration evidence ledger and, only after a stable non-zero
   held-out signal, a narrow target-profile cost feature.
@@ -18,11 +21,16 @@ Pipeline position:
   ``wafer_board_spm_sustained_conflict_probe_test.py``.
 - Explicit non-goals:
   This catalog does not name physical banks, infer coloring from offsets,
-  permit overlapping operand ranges, or treat no-card output as board evidence.
+  infer a counter unit or bank conflict from port response, duplicate the
+  existing Direct-DTE port-8 probe, permit overlapping operand ranges, or
+  treat no-card output as board evidence.
 - Completion gate:
   Every one of the 16 cells belongs to one of four matched groups; each group
   executes all four rows in one invocation for four counterbalanced repeats
-  with exact full-footprint, guard, count, completion, and PMU validation.
+  with exact full-footprint and matched WDMA readback, guard, per-window
+  count, completion, SPM-PMU enable/restore, stable split-read validation, and
+  phase-scoped accepted/pending cleanup evidence that poisons the board batch
+  when a bounded safety drain cannot restore the matching worker to idle.
 """
 
 from __future__ import annotations
@@ -38,10 +46,12 @@ ROW_MAGIC = 0x31575253504D5357
 REQUEST_GUARD = 0x6F4A31C9E2B587D0
 RECORD_GUARD = 0x91D8B42E63CA705F
 ROW_GUARD = 0x38C5E719A46DB20F
-SCHEMA = 1
-REQUEST_WORDS = 32
+PORT_RESPONSE_GUARD = 0x5A1CE07D93B2468F
+CLEANUP_RECORD_GUARD = 0xC47A029D6E18B35F
+SCHEMA = 3
+REQUEST_WORDS = 36
 RECORD_WORDS = 32
-ROW_RECORD_WORDS = 48
+ROW_RECORD_WORDS = 86
 ROW_COUNT = 4
 COUNTERBALANCED_REPEATS = 4
 RESOURCE_BYTES = 2 * 1024 * 1024
@@ -49,6 +59,7 @@ RESOURCE_CANARY = 0xA5
 SPM_CANARY = 0x6D
 
 TRANSFER_BYTES = 4096
+MAX_DMA_CHUNK = 65536
 SPM_BASE = 0x80000
 SPM_CELL_STRIDE = 0x8000
 SPM_READ0_OFFSET = 0x100
@@ -68,10 +79,18 @@ PAYLOAD_CANARY_OFFSET = 0x50000
 PAYLOAD_CANARY_BYTES = 65536
 OUTPUT_ARCHIVE_BASE = 0x10000
 OUTPUT_ARCHIVE_STRIDE = 0x20000
+PORT_RESPONSE_BASE = 0x100000
+PORT_RESPONSE_STRIDE = 0x10000
 ROW_RECORD_BASE_WORD = RECORD_WORDS
 OUTPUT_RECORD_BYTES = (
     ROW_RECORD_BASE_WORD + ROW_COUNT * ROW_RECORD_WORDS
 ) * 8
+
+SPM_PORT_PMU_BASE = 0x580000
+SPM_PORT_PMU_REQUIRED_ENABLE = 0x1F
+SPM_PORT_PMU_COUNTERS = 4
+SPM_PORT_PMU_STABLE_MASK = (1 << SPM_PORT_PMU_COUNTERS) - 1
+SPM_PORT_PMU_SCOPE_MASK = (1 << 5) - 1
 
 STATUS_OK = 0
 FLAG_PREPARED = 1 << 0
@@ -80,6 +99,10 @@ FLAG_COMPLETED = 1 << 2
 FLAG_PMU_RECORDED = 1 << 3
 FLAG_READBACK = 1 << 4
 FLAG_EXACT_OWNED_RANGE = 1 << 5
+FLAG_PORT_PMU_RECORDED = 1 << 6
+FLAG_PORT_MATCHED_READBACK = 1 << 7
+FLAG_PORT_ENABLE_RESTORED = 1 << 8
+FLAG_CLEANUP_EVIDENCE = 1 << 9
 REQUIRED_FLAGS = (
     FLAG_PREPARED
     | FLAG_ISSUED
@@ -87,8 +110,23 @@ REQUIRED_FLAGS = (
     | FLAG_PMU_RECORDED
     | FLAG_READBACK
     | FLAG_EXACT_OWNED_RANGE
+    | FLAG_PORT_PMU_RECORDED
+    | FLAG_PORT_MATCHED_READBACK
+    | FLAG_PORT_ENABLE_RESTORED
+    | FLAG_CLEANUP_EVIDENCE
 )
 PMU_STABLE_MASK = (1 << 6) - 1
+STATUS_CLEANUP_FAILED = 6
+CLEANUP_SETUP = 1 << 0
+CLEANUP_MEASURED_PAIR = 1 << 1
+CLEANUP_MATCHED_WDMA = 1 << 2
+CLEANUP_ARCHIVE = 1 << 3
+CLEANUP_PHASE_MASK = (
+    CLEANUP_SETUP
+    | CLEANUP_MEASURED_PAIR
+    | CLEANUP_MATCHED_WDMA
+    | CLEANUP_ARCHIVE
+)
 
 
 class AddressClass(str, enum.Enum):
@@ -155,6 +193,16 @@ class SustainedConflictCell:
     def expected_instruction_count(self) -> int:
         return self.rounds
 
+    @property
+    def expected_archive_accepted(self) -> int:
+        return (
+            self.owned_spm_bytes + MAX_DMA_CHUNK - 1
+        ) // MAX_DMA_CHUNK
+
+    @property
+    def expected_setup_accepted(self) -> int:
+        return self.expected_archive_accepted + 2 * self.rounds
+
     def active_ranges(self) -> tuple[ActiveRange, ...]:
         ranges: list[ActiveRange] = []
         for round_index in range(self.rounds):
@@ -215,8 +263,28 @@ class SustainedConflictCell:
             ),
             "oracle": (
                 "full-owned-SPM-exact+gap/prefix/suffix-canary+"
-                "instruction-count+bounded-completion+pair-only-PMU"
+                "matched-rdma/wdma-readback+per-window-instruction-count+"
+                "bounded-completion+pair-only-NCC-PMU+raw-port-response+"
+                "partial-accept-safety-drain-or-poison"
             ),
+            "spm_port_response": {
+                "mmio_base": SPM_PORT_PMU_BASE,
+                "rdma_port": 0,
+                "wdma_port": 6,
+                "pair_window": {
+                    "ct_packets": self.rounds,
+                    "rdma_packets": self.rounds,
+                    "rdma_requested_bytes": self.work_bytes,
+                    "ct_counter_unit": "unclassified",
+                },
+                "matched_readback_window": {
+                    "wdma_packets": self.rounds,
+                    "wdma_requested_bytes": self.work_bytes,
+                },
+                "split_read": "high-low-high",
+                "counter_unit": "unclassified",
+                "bank_identity": "not-observed",
+            },
             "disposition": "pending-board-execution",
             "compiler_use": "no-bank-coloring-until-stable-nonzero-heldout",
         }
@@ -344,7 +412,11 @@ REQ = {
     "RESOURCE_CANARY": 28,
     "SPM_CANARY": 29,
     "GUARD": 30,
-    "RESERVED": 31,
+    "PORT_RESPONSE_BASE": 31,
+    "PORT_RESPONSE_STRIDE": 32,
+    "SPM_PORT_PMU_BASE": 33,
+    "SPM_PORT_PMU_REQUIRED_ENABLE": 34,
+    "RESERVED": 35,
 }
 
 REC = {
@@ -413,6 +485,50 @@ ROW_REC = {
     "FLAGS": 39,
     "REQUEST_GUARD": 40,
     "ROW_GUARD": 41,
+    "SPM_PORT_PMU_BASE": 42,
+    "SPM_PORT_PMU_REQUIRED_ENABLE": 43,
+    "SPM_PORT_PMU_ENABLE_ORIGINAL": 44,
+    "SPM_PORT_PMU_ENABLE_BEFORE": 45,
+    "SPM_PORT_PMU_ENABLE_BOUNDARY": 46,
+    "SPM_PORT_PMU_ENABLE_AFTER": 47,
+    "SPM_PORT_PMU_ENABLE_RESTORED": 48,
+    "SPM_PORT_PMU_STABLE_BEFORE": 49,
+    "SPM_PORT_PMU_STABLE_BOUNDARY": 50,
+    "SPM_PORT_PMU_STABLE_AFTER": 51,
+    "SPM_PORT0_T2_BEFORE": 52,
+    "SPM_PORT0_T2_BOUNDARY": 53,
+    "SPM_PORT0_T2_AFTER": 54,
+    "SPM_PORT0_T3_BEFORE": 55,
+    "SPM_PORT0_T3_BOUNDARY": 56,
+    "SPM_PORT0_T3_AFTER": 57,
+    "SPM_PORT6_T2_BEFORE": 58,
+    "SPM_PORT6_T2_BOUNDARY": 59,
+    "SPM_PORT6_T2_AFTER": 60,
+    "SPM_PORT6_T3_BEFORE": 61,
+    "SPM_PORT6_T3_BOUNDARY": 62,
+    "SPM_PORT6_T3_AFTER": 63,
+    "WDMA_INST_DELTA": 64,
+    "WDMA_OTHER_INST_DELTA": 65,
+    "WORKER_WDMA_INST_DELTA": 66,
+    "WDMA_FINAL_CONTROL": 67,
+    "PORT_READBACK_OFFSET": 68,
+    "PORT_READBACK_BYTES": 69,
+    "SPM_PORT_PMU_SCOPE_FLAGS": 70,
+    "PORT_RESPONSE_GUARD": 71,
+    "SETUP_ACCEPTED": 72,
+    "SETUP_PENDING_AFTER": 73,
+    "SETUP_FINAL_CONTROL": 74,
+    "MEASURED_PAIR_ACCEPTED": 75,
+    "MEASURED_PAIR_PENDING_AFTER": 76,
+    "MATCHED_WDMA_ACCEPTED": 77,
+    "MATCHED_WDMA_PENDING_AFTER": 78,
+    "ARCHIVE_ACCEPTED": 79,
+    "ARCHIVE_PENDING_AFTER": 80,
+    "ARCHIVE_FINAL_CONTROL": 81,
+    "CLEANUP_ATTEMPTED_MASK": 82,
+    "CLEANUP_SUCCEEDED_MASK": 83,
+    "POISONED_PHASE_MASK": 84,
+    "CLEANUP_RECORD_GUARD": 85,
 }
 
 
@@ -423,6 +539,7 @@ class InvocationPayload:
     request: bytes
     payload: bytes
     expected_snapshots: dict[int, bytes]
+    expected_port_readback: bytes
 
 
 def _pattern(sample: int, round_index: int, length: int) -> bytes:
@@ -471,6 +588,15 @@ def expected_snapshot(
     return bytes(snapshot)
 
 
+def expected_port_readback(
+    group: SustainedConflictGroup, sample: int
+) -> bytes:
+    return b"".join(
+        _pattern(sample, round_index, TRANSFER_BYTES)
+        for round_index in range(group.rounds)
+    )
+
+
 def build_invocation(
     group: SustainedConflictGroup, sample: int
 ) -> InvocationPayload:
@@ -510,6 +636,10 @@ def build_invocation(
         "RESOURCE_CANARY": RESOURCE_CANARY,
         "SPM_CANARY": SPM_CANARY,
         "GUARD": REQUEST_GUARD,
+        "PORT_RESPONSE_BASE": PORT_RESPONSE_BASE,
+        "PORT_RESPONSE_STRIDE": PORT_RESPONSE_STRIDE,
+        "SPM_PORT_PMU_BASE": SPM_PORT_PMU_BASE,
+        "SPM_PORT_PMU_REQUIRED_ENABLE": SPM_PORT_PMU_REQUIRED_ENABLE,
         "RESERVED": 0,
     }
     for key, value in values.items():
@@ -544,6 +674,7 @@ def build_invocation(
             )
             for relative_offset in RELATIVE_OFFSETS
         },
+        expected_port_readback=expected_port_readback(group, sample),
     )
 
 
@@ -561,7 +692,11 @@ def validate_static_contract() -> None:
         )
         or OUTPUT_ARCHIVE_BASE
         + ROW_COUNT * OUTPUT_ARCHIVE_STRIDE
+        > PORT_RESPONSE_BASE
+        or PORT_RESPONSE_BASE
+        + ROW_COUNT * PORT_RESPONSE_STRIDE
         > RESOURCE_BYTES
+        or max(WORK_BYTES) > PORT_RESPONSE_STRIDE
         or OUTPUT_RECORD_BYTES > OUTPUT_ARCHIVE_BASE
         or PAYLOAD_CANARY_OFFSET + PAYLOAD_CANARY_BYTES
         > RESOURCE_BYTES
@@ -591,10 +726,14 @@ def validate_static_contract() -> None:
             cell.relative_offset,
             0,
         )
+        port_readback = expected_port_readback(
+            GROUPS_BY_KEY[cell.group_key], 0
+        )
         if (
             len(snapshot) != cell.owned_spm_bytes
             or snapshot[:64] != bytes([SPM_CANARY]) * 64
             or snapshot[-64:] != bytes([SPM_CANARY]) * 64
+            or len(port_readback) != cell.work_bytes
         ):
             raise RuntimeError(f"{cell.key}: full snapshot guard is invalid")
 

@@ -16,11 +16,12 @@ EXPECTED_PENDING_BOARD_COUNTS = {
     "production-optimizer-paired-qualification": (8, 8),
     "collective-algorithm-characterization": (9, 9),
     "collective-traffic-semantics": (11, 11),
+    "direct-dte-raw-multidestination-and-fanin": (25, 25),
     "single-engine-and-engine-pair-characterization": (62, 381),
     "queue-saturation-response": (30, 30),
     "worker-wait-scope-exclusion": (18, 18),
     "worker-subset-join-exclusion": (12, 12),
-    "worker-placement-and-bounded-progress": (8, 32),
+    "worker-placement-and-bounded-progress": (14, 44),
     "spm-conflict-equivalence": (2, 136),
     "spm-sustained-conflict-pilot": (4, 16),
     "ddr-conflict-equivalence": (2, 492),
@@ -118,10 +119,10 @@ def main() -> None:
     assert resolved_pending_counts == EXPECTED_PENDING_BOARD_COUNTS
     assert sum(
         ctests for ctests, _ in resolved_pending_counts.values()
-    ) == 180
+    ) == 211
     assert sum(
         cells for _, cells in resolved_pending_counts.values()
-    ) == 1195
+    ) == 1232
 
     memory = _load_module(
         repo,
@@ -174,6 +175,13 @@ def main() -> None:
     assert _cmake_set(
         cmake, "_wafer_pending_unpool_collision_cases"
     ) == inventory.UNPOOL_COLLISION_CASES
+    assert tuple(
+        token.strip('"')
+        for token in _cmake_set(cmake, "_wafer_pending_dte_case_specs")
+    ) == tuple(
+        f"{mode}:{case_name}"
+        for mode, case_name in inventory.PENDING_DTE_CASE_SPECS
+    )
     assert _cmake_set(
         cmake, "_wafer_collective_traffic_behavior_cases"
     ) == inventory.COLLECTIVE_TRAFFIC_CASES
@@ -222,8 +230,11 @@ def main() -> None:
         "wafer-runtime-worker-placement-characterization-no-card",
         "wafer-worker-placement-characterization-python",
         "wafer-unrepresentable-hardware-behavior-python",
+        "wafer-runtime-dte-ncc-execution-probe-no-card",
     ):
         assert f"NAME {ctest}" in cmake, f"missing CTest {ctest}"
+    assert "NAME wafer-runtime-${_wafer_pending_dte_case}-no-card" in cmake
+    assert "NAME wafer-board-${_wafer_pending_dte_case}" in cmake
     for ctest in (
         "wafer-board-spm-conflict-equivalence-rank-one",
         "wafer-board-spm-conflict-equivalence-cross-tile",
@@ -273,6 +284,12 @@ def main() -> None:
     )
     assert tuple(runner.COLLECTIVE_TRAFFIC_BEHAVIOR_CASES) == (
         inventory.COLLECTIVE_TRAFFIC_CASES
+    )
+    assert tuple(runner.DTE_PENDING_CASE_SPECS) == (
+        inventory.PENDING_DTE_CASE_SPECS
+    )
+    assert tuple(runner.DTE_PENDING_CASE_NAMES) == (
+        inventory.PENDING_DTE_CASE_KEYS
     )
     assert tuple(runner.ENGINE_PIPELINE_BOARD_CELL_KEYS) == (
         inventory.ENGINE_PIPELINE_BOARD_CELL_KEYS

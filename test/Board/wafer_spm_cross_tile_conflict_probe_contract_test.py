@@ -238,7 +238,7 @@ def main() -> int:
     protocol = (
         INPUTS / "wafer_spm_cross_tile_conflict_probe_protocol.h"
     ).read_text()
-    assert "define void @__wafer_cluster_prepare" in llvm_ir
+    assert "define void @__wafer_kernel_prepare" in llvm_ir
     assert "call void @direct_sync_init(i32 16)" in llvm_ir
     assert "%row = mul i64 %pid64, 5" in llvm_ir
     assert "wafer_tx81_spm_cross_tile_conflict_probe" in llvm_ir

@@ -55,8 +55,14 @@ TRANSPORT_PMU_MODES = transport_catalog.TRANSPORT_PMU_MODES
 ERROR_PATH_MODES = transport_catalog.ERROR_PATH_MODES
 ASYNC_SENDER_MODES = transport_catalog.ASYNC_SENDER_MODES
 ISOLATED_DTE_MODES = transport_catalog.ISOLATED_DTE_MODES
+FOUR_SOURCE_FANIN_MODE = transport_catalog.FOUR_SOURCE_FANIN_MODE
+RAW_MULTIDEST_MODES = transport_catalog.RAW_MULTIDEST_MODES
+RAW_MULTIDEST_CASE_BY_MODE = transport_catalog.RAW_MULTIDEST_CASE_BY_MODE
+PENDING_DTE_MODES = (FOUR_SOURCE_FANIN_MODE, *RAW_MULTIDEST_MODES)
 DEFAULT_SAFE_MODES = tuple(
-    mode for mode in MODES if mode not in ISOLATED_DTE_MODES
+    mode
+    for mode in MODES
+    if mode not in (*ISOLATED_DTE_MODES, *PENDING_DTE_MODES)
 )
 ASYNC_SENDER_PAYLOAD_BYTES = (
     transport_catalog.ASYNC_SENDER_PAYLOAD_BYTES
@@ -75,6 +81,7 @@ CONTRACT_UNKNOWN_WAIT_RETURNED = 1 << 5
 CONTRACT_RAW_ASYNC_ISSUED = 1 << 6
 CONTRACT_RAW_ASYNC_COMPLETED = 1 << 7
 RAW_ASYNC_RC_MARKER = 0x4153594E
+RAW_MULTIDEST_RC_MARKER = 0x4D445445
 EXPECTED_INSTRUCTION_COUNTS = {
     1: (1, 1, 0),
     2: (1, 1, 0),
@@ -88,6 +95,8 @@ EXPECTED_INSTRUCTION_COUNTS = {
     10: (1, 0, 0),
     11: (1, 0, 0),
     12: (0, 1, 0),
+    14: (0, 0, 0),
+    **{mode: (0, 0, 0) for mode in RAW_MULTIDEST_MODES},
 }
 EXPECTED_CONTRACT_EVIDENCE = {
     **{mode: 0 for mode in TRANSPORT_PMU_MODES},
@@ -118,6 +127,46 @@ EXPECTED_CONTRACT_EVIDENCE = {
         for mode in ASYNC_SENDER_MODES
     },
 }
+
+
+def expected_contract_evidence(mode: int, rank: int) -> int:
+    if mode == FOUR_SOURCE_FANIN_MODE:
+        if rank == transport_catalog.FOUR_SOURCE_FANIN_TARGET:
+            return (
+                CONTRACT_VALID_RECV_EVENT
+                | CONTRACT_RAW_ASYNC_ISSUED
+                | CONTRACT_RAW_ASYNC_COMPLETED
+            )
+        if rank in transport_catalog.FOUR_SOURCE_FANIN_SOURCES:
+            return CONTRACT_VALID_SEND_EVENT | CONTRACT_RAW_ASYNC_COMPLETED
+        return 0
+    if mode in RAW_MULTIDEST_MODES:
+        case = RAW_MULTIDEST_CASE_BY_MODE[mode]
+        if rank == transport_catalog.RAW_MULTIDEST_SOURCE_RANK:
+            return (
+                CONTRACT_VALID_SEND_EVENT
+                | CONTRACT_RAW_ASYNC_ISSUED
+                | CONTRACT_RAW_ASYNC_COMPLETED
+            )
+        if rank in case.target_ranks:
+            return CONTRACT_VALID_RECV_EVENT | CONTRACT_RAW_ASYNC_COMPLETED
+        return 0
+    return EXPECTED_CONTRACT_EVIDENCE[mode]
+
+
+def transport_bytes_for_mode(mode: int, payload_bytes: int) -> int:
+    if mode in ASYNC_SENDER_MODES:
+        return ASYNC_SENDER_TRANSPORT_BYTES
+    if mode == FOUR_SOURCE_FANIN_MODE:
+        return (
+            len(transport_catalog.FOUR_SOURCE_FANIN_SOURCES) * payload_bytes
+        )
+    if mode in RAW_MULTIDEST_MODES:
+        case = RAW_MULTIDEST_CASE_BY_MODE[mode]
+        return case.fanout * case.per_destination_bytes
+    return payload_bytes
+
+
 DEFAULT_NO_CARD_TOTAL_TIMEOUT_SECONDS = 420.0
 DEFAULT_BOARD_TOTAL_TIMEOUT_SECONDS = 1800.0
 _total_deadline: float | None = None
@@ -138,6 +187,7 @@ def parse_args() -> argparse.Namespace:
         dest="selected_payload_bytes",
     )
     parser.add_argument("--list-cases", action="store_true")
+    parser.add_argument("--host-contract-only", action="store_true")
     parser.add_argument("--no-card", action="store_true")
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--expected-runtime-version", type=int)
@@ -187,6 +237,12 @@ def select_execution_axes(
     ):
         raise RuntimeError(
             "receiver-unprepared must run as the only isolated DTE mode"
+        )
+    if any(mode in PENDING_DTE_MODES for mode in modes) and (
+        len(modes) != 1 or modes[0] not in PENDING_DTE_MODES
+    ):
+        raise RuntimeError(
+            "each pending fan-in/raw-multidestination case must run alone"
         )
     if not any(
         payload in MODE_PAYLOADS[mode]
@@ -390,19 +446,31 @@ def build_probe(
         / "peripheral"
         / "include"
     )
+    board_config_include = (
+        deps
+        / "tx8-yoc-rt-thread-smp"
+        / "include"
+        / "bsp"
+        / "xuantie_riscv_tx81"
+        / "board_riscv_tx81"
+        / "include"
+    )
     tool_bin = deps / TOOLCHAIN_DIR / "bin"
     gcc = tool_bin / "riscv64-unknown-elf-gcc"
     objcopy = tool_bin / "riscv64-unknown-elf-objcopy"
+    objdump = tool_bin / "riscv64-unknown-elf-objdump"
     device_linker = args.repo_root / "tools" / "wafer_device_link.py"
     pmu_register_header = kcore_include / "pmu" / "pmu_reg.h"
     required = (
         gcc,
         objcopy,
+        objdump,
         device_linker,
         args.llvm_clangxx,
         PROBE_C,
         PROBE_LL,
         pmu_register_header,
+        board_config_include / "tx8_config.h",
         peripheral_include / "direct_dte_and_fsm.h",
         peripheral_include / "tx81_spm.h",
     )
@@ -411,7 +479,7 @@ def build_probe(
         raise RuntimeError(f"DTE/NCC probe build dependencies are missing: {missing}")
 
     build = args.work_dir / "probe-build"
-    build.mkdir()
+    build.mkdir(exist_ok=True)
     helper = build / "wafer_dte_ncc_execution_probe.o"
     linked = build / "wafer_dte_ncc_execution_probe.so"
     run(
@@ -437,6 +505,7 @@ def build_probe(
             f"-I{deps / 'include'}",
             f"-I{kcore_include}",
             f"-I{peripheral_include}",
+            f"-I{board_config_include}",
             "-mcpu=c908",
             "-mabi=lp64d",
             "-o",
@@ -461,6 +530,44 @@ def build_probe(
         ],
         timeout_seconds=120,
     )
+    raw_program_disassembly = run(
+        [
+            str(objdump),
+            "-dr",
+            "--disassemble=wafer_probe_raw_multidest_program",
+            str(linked),
+        ]
+    ).stdout
+    if "<wafer_probe_raw_multidest_program>:" not in raw_program_disassembly:
+        raise RuntimeError(
+            "final probe ELF dropped the owner-backed raw DTE program"
+        )
+    required_register_stores = {
+        "mode": 20,
+        "length": 24,
+        "dest_num": 28,
+        "cmd_valid": 56,
+    }
+    missing_register_stores = [
+        name
+        for name, offset in required_register_stores.items()
+        if re.search(
+            rf"\bsw\s+[^,\n]+,\s*{offset}\([^)\n]+\)",
+            raw_program_disassembly,
+        )
+        is None
+    ]
+    if missing_register_stores:
+        raise RuntimeError(
+            "final probe ELF does not materialize raw DTE register stores: "
+            + ", ".join(missing_register_stores)
+        )
+    if len(re.findall(r"\bsw\s+", raw_program_disassembly)) < 12:
+        raise RuntimeError(
+            "final probe ELF does not retain multidestination address/user "
+            "register programming"
+        )
+    print("raw_multidest_elf_verification: passed")
 
     staged = module_path.with_name(f".{module_path.name}.dte-ncc-probe")
     shutil.copy2(linked, staged)
@@ -491,6 +598,24 @@ def async_sender_pattern(rank: int, count: int) -> bytes:
         & 0xFF
         for index in range(count)
     )
+
+
+def raw_multidest_pattern(rank: int, count: int) -> bytes:
+    """Byte-exact records that make every aligned source slice identifiable."""
+
+    if count % 4:
+        raise RuntimeError("raw multidestination pattern requires 4-byte records")
+    records = bytearray()
+    for record in range(count // 4):
+        records.extend(
+            (
+                rank & 0xFF,
+                record & 0xFF,
+                (record >> 8) & 0xFF,
+                (rank * 37 + record * 29 + 0x5B) & 0xFF,
+            )
+        )
+    return bytes(records)
 
 
 def guarded_host_slot(payload: bytes) -> bytes:
@@ -540,6 +665,13 @@ def write_probe_inputs(
                         *([1.0] * (ASYNC_TRANSPORT_BYTES // 2)),
                     )
                 ),
+            )
+        elif mode in RAW_MULTIDEST_MODES:
+            slots = (
+                guarded_host_slot(
+                    raw_multidest_pattern(rank, MAX_PAYLOAD_BYTES)
+                ),
+                guarded_host_slot(b""),
             )
         else:
             slots = (
@@ -608,6 +740,44 @@ def expected_capture_slots(
         predecessor, second_lane, payload_bytes
     )
 
+    if mode == FOUR_SOURCE_FANIN_MODE:
+        if rank == transport_catalog.FOUR_SOURCE_FANIN_TARGET:
+            return tuple(
+                guarded_capture_slot(
+                    packed_f16_slice(source_rank, 0, payload_bytes),
+                    MAX_PAYLOAD_BYTES,
+                )
+                for source_rank in transport_catalog.FOUR_SOURCE_FANIN_SOURCES
+            )
+        return (
+            guarded_capture_slot(local_first, MAX_PAYLOAD_BYTES),
+            empty,
+            empty,
+            empty,
+        )
+    if mode in RAW_MULTIDEST_MODES:
+        case = RAW_MULTIDEST_CASE_BY_MODE[mode]
+        receive = b""
+        if rank in case.target_ranks:
+            destination_index = case.target_ranks.index(rank)
+            source_offset = (
+                0
+                if case.semantic == "broadcast"
+                else raw_multidest_reference_offsets(mode)[destination_index]
+            )
+            receive = raw_multidest_pattern(
+                transport_catalog.RAW_MULTIDEST_SOURCE_RANK,
+                MAX_PAYLOAD_BYTES,
+            )[source_offset : source_offset + case.per_destination_bytes]
+        return (
+            guarded_capture_slot(
+                raw_multidest_pattern(rank, MAX_PAYLOAD_BYTES),
+                MAX_PAYLOAD_BYTES,
+            ),
+            guarded_capture_slot(receive, MAX_PAYLOAD_BYTES),
+            empty,
+            empty,
+        )
     if mode == 1:
         local_doubled = packed_f16_slice(
             rank, 0, payload_bytes, doubled=True
@@ -705,6 +875,168 @@ def expected_capture_blob(
     )
 
 
+def raw_multidest_reference_offsets(mode: int) -> tuple[int, ...]:
+    """Stimulus reference only; the board oracle does not assume this mapping."""
+
+    case = RAW_MULTIDEST_CASE_BY_MODE[mode]
+    if case.semantic == "broadcast":
+        return (0,)
+    stride = (
+        2 * case.per_destination_bytes
+        if case.semantic == "shuffle"
+        else case.per_destination_bytes
+    )
+    return tuple(index * stride for index in range(case.fanout))
+
+
+def validate_raw_multidest_capture(
+    payload: bytes, mode: int, rank: int
+) -> dict[str, object]:
+    case = RAW_MULTIDEST_CASE_BY_MODE[mode]
+    capture = payload[HEADER_BYTES:]
+    slots = tuple(
+        capture[index * HOST_SLOT_BYTES : (index + 1) * HOST_SLOT_BYTES]
+        for index in range(HOST_SLOT_COUNT)
+    )
+    trailing = capture[HOST_SLOT_COUNT * HOST_SLOT_BYTES :]
+    expected_local = guarded_capture_slot(
+        raw_multidest_pattern(rank, MAX_PAYLOAD_BYTES),
+        MAX_PAYLOAD_BYTES,
+    )
+    empty = guarded_capture_slot(b"", MAX_PAYLOAD_BYTES)
+    if slots[0] != expected_local:
+        raise RuntimeError(
+            f"rank {rank} mode {mode} raw source/local guarded slot is not exact"
+        )
+    if slots[2] != empty or slots[3] != empty or trailing != bytes(
+        [INITIAL_CANARY]
+    ) * len(trailing):
+        raise RuntimeError(
+            f"rank {rank} mode {mode} raw inactive guarded slots changed"
+        )
+
+    is_target = rank in case.target_ranks
+    if not is_target:
+        if slots[1] != empty:
+            raise RuntimeError(
+                f"rank {rank} mode {mode} received outside selective fanout"
+            )
+        return {
+            "role": (
+                "source"
+                if rank == transport_catalog.RAW_MULTIDEST_SOURCE_RANK
+                else "nonparticipant"
+            ),
+            "source_offset_bytes": None,
+        }
+
+    source = raw_multidest_pattern(
+        transport_catalog.RAW_MULTIDEST_SOURCE_RANK, MAX_PAYLOAD_BYTES
+    )
+    matches = tuple(
+        (offset, received_bytes)
+        for received_bytes in range(case.per_destination_bytes, 0, -4)
+        for offset in range(
+            0,
+            MAX_PAYLOAD_BYTES - received_bytes + 1,
+            4,
+        )
+        if slots[1]
+        == guarded_capture_slot(
+            source[offset : offset + received_bytes],
+            MAX_PAYLOAD_BYTES,
+        )
+    )
+    if slots[1] == empty:
+        matches = ((0, 0),)
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"rank {rank} mode {mode} raw receive is not one exact guarded "
+            f"source slice; matching offset/length pairs={matches}"
+        )
+    return {
+        "role": "target",
+        "destination_slot": case.target_ranks.index(rank),
+        "source_offset_bytes": matches[0][0],
+        "received_bytes": matches[0][1],
+    }
+
+
+def summarize_raw_multidest_observations(
+    mode: int, observations: list[dict[str, object]]
+) -> dict[str, object]:
+    case = RAW_MULTIDEST_CASE_BY_MODE[mode]
+    target_rows = {
+        int(row["rank"]): row["raw_multidest"]
+        for row in observations
+        if row["raw_multidest"]["role"] == "target"
+    }
+    if set(target_rows) != set(case.target_ranks):
+        raise RuntimeError(
+            f"{case.name} did not observe exactly its configured target ranks"
+        )
+    mapping = {
+        rank: (
+            int(target_rows[rank]["source_offset_bytes"]),
+            int(target_rows[rank]["received_bytes"]),
+        )
+        for rank in case.target_ranks
+    }
+    offsets = tuple(mapping[rank][0] for rank in case.target_ranks)
+    received_lengths = tuple(
+        mapping[rank][1] for rank in case.target_ranks
+    )
+    reference_offsets = raw_multidest_reference_offsets(mode)
+    reference_mapping = (
+        (0,) * case.fanout
+        if case.semantic == "broadcast"
+        else reference_offsets
+    )
+    unique_offsets = len(set(offsets))
+    if unique_offsets == 1:
+        observed_mapping_class = "all-targets-same-source-slice"
+    elif unique_offsets == case.fanout:
+        observed_mapping_class = "all-targets-distinct-source-slices"
+    else:
+        observed_mapping_class = "partially-duplicated-source-slices"
+    return {
+        "semantic": case.semantic,
+        "raw_mode": case.raw_mode,
+        "fanout": case.fanout,
+        "target_layout": case.target_layout,
+        "dest_num_register_value": case.dest_num_register_value,
+        "dest_num_encoding": case.dest_num_encoding,
+        "target_to_source_offset_bytes": {
+            str(rank): {
+                "source_offset_bytes": mapping[rank][0],
+                "received_bytes": mapping[rank][1],
+            }
+            for rank in case.target_ranks
+        },
+        "observed_mapping_class": observed_mapping_class,
+        "distinct_source_slice_count": unique_offsets,
+        "observed_received_bytes": received_lengths,
+        "observed_delivered_bytes": sum(received_lengths),
+        "all_targets_received_configured_length": (
+            received_lengths
+            == (case.per_destination_bytes,) * case.fanout
+        ),
+        "stimulus_reference_mapping_match": offsets == reference_mapping,
+        "reference_capability_match": (
+            received_lengths
+            == (case.per_destination_bytes,) * case.fanout
+            and offsets == reference_mapping
+        ),
+        "mapping_policy": (
+            "classify observed owner-backed behavior; do not assume the "
+            "scatter/shuffle source-slice order or dest_num ABI"
+        ),
+        "all_selected_targets_exact": True,
+        "all_nonparticipants_untouched": True,
+        "all_guards_and_inactive_suffixes_exact": True,
+    }
+
+
 def parse_probe_payload(
     payload: bytes, mode: int, rank: int, payload_bytes: int
 ) -> dict[str, object]:
@@ -767,17 +1099,17 @@ def parse_probe_payload(
     expected_contract_status = (
         STATUS_TRANSPORT_ERROR if mode in ERROR_PATH_MODES else STATUS_SUCCESS
     )
-    expected_contract_evidence = EXPECTED_CONTRACT_EVIDENCE[mode]
+    expected_contract_evidence_value = expected_contract_evidence(mode, rank)
     if (
         contract_status != expected_contract_status
-        or contract_evidence != expected_contract_evidence
+        or contract_evidence != expected_contract_evidence_value
     ):
         raise RuntimeError(
             f"rank {rank} mode {mode} has invalid Direct-DTE error-path "
             f"evidence: status={contract_status} "
             f"evidence=0x{contract_evidence:02x} expected_status="
             f"{expected_contract_status} expected_evidence="
-            f"0x{expected_contract_evidence:02x}"
+            f"0x{expected_contract_evidence_value:02x}"
         )
     expected_counts = EXPECTED_INSTRUCTION_COUNTS.get(mode)
     if expected_counts is None or instruction_counts != expected_counts:
@@ -791,28 +1123,40 @@ def parse_probe_payload(
             f"{device_oracle_mismatches}"
         )
     raw_async_return_codes: dict[str, int] | None = None
-    if mode in ASYNC_SENDER_MODES:
+    raw_multidest_return_codes: dict[str, int] | None = None
+    if mode in (*ASYNC_SENDER_MODES, *RAW_MULTIDEST_MODES):
         def signed32(value: int) -> int:
             return value if value < 1 << 31 else value - (1 << 32)
 
-        raw_async_return_codes = {
+        return_codes = {
             "send_async": signed32(words[6] & 0xFFFFFFFF),
             "wait_done": signed32((words[6] >> 32) & 0xFFFFFFFF),
             "release": signed32(words[7] & 0xFFFFFFFF),
         }
         marker = words[7] >> 32
-        if marker != RAW_ASYNC_RC_MARKER or any(
-            raw_async_return_codes.values()
-        ):
-            raise RuntimeError(
-                f"rank {rank} mode {mode} has invalid raw async return "
-                f"codes/marker: {raw_async_return_codes} marker=0x{marker:x}"
-            )
-    expected_readback = expected_capture_blob(mode, rank, payload_bytes)
-    if payload[HEADER_BYTES:] != expected_readback:
-        raise RuntimeError(
-            f"rank {rank} mode {mode} guarded SPM readback is not exact"
+        expected_marker = (
+            RAW_MULTIDEST_RC_MARKER
+            if mode in RAW_MULTIDEST_MODES
+            else RAW_ASYNC_RC_MARKER
         )
+        if marker != expected_marker or any(return_codes.values()):
+            raise RuntimeError(
+                f"rank {rank} mode {mode} has invalid raw DTE return "
+                f"codes/marker: {return_codes} marker=0x{marker:x}"
+            )
+        if mode in RAW_MULTIDEST_MODES:
+            raw_multidest_return_codes = return_codes
+        else:
+            raw_async_return_codes = return_codes
+    raw_multidest: dict[str, object] | None = None
+    if mode in RAW_MULTIDEST_MODES:
+        raw_multidest = validate_raw_multidest_capture(payload, mode, rank)
+    else:
+        expected_readback = expected_capture_blob(mode, rank, payload_bytes)
+        if payload[HEADER_BYTES:] != expected_readback:
+            raise RuntimeError(
+                f"rank {rank} mode {mode} guarded SPM readback is not exact"
+            )
 
     dte_enable = words[9] & 0xFFFFFFFF
     spm_enable = words[9] >> 32
@@ -834,16 +1178,14 @@ def parse_probe_payload(
     return {
         "rank": rank,
         "payload_bytes": payload_bytes,
-        "transport_bytes": (
-            ASYNC_SENDER_TRANSPORT_BYTES
-            if mode in ASYNC_SENDER_MODES
-            else payload_bytes
-        ),
+        "transport_bytes": transport_bytes_for_mode(mode, payload_bytes),
         "stable_mask": stable_mask,
         "status": status,
         "contract_status": contract_status,
         "contract_evidence": f"0x{contract_evidence:02x}",
         "raw_async_return_codes": raw_async_return_codes,
+        "raw_multidest_return_codes": raw_multidest_return_codes,
+        "raw_multidest": raw_multidest,
         "ct_count_delta": instruction_counts[0],
         "rdma_count_delta": instruction_counts[1],
         "wdma_count_delta": instruction_counts[2],
@@ -855,10 +1197,14 @@ def parse_probe_payload(
         "full_cycles_delta": words[4],
         "ct_cycles_delta": words[5],
         "rdma_cycles_delta": (
-            None if mode in ASYNC_SENDER_MODES else words[6]
+            None
+            if mode in (*ASYNC_SENDER_MODES, *RAW_MULTIDEST_MODES)
+            else words[6]
         ),
         "wdma_cycles_delta": (
-            None if mode in ASYNC_SENDER_MODES else words[7]
+            None
+            if mode in (*ASYNC_SENDER_MODES, *RAW_MULTIDEST_MODES)
+            else words[7]
         ),
         "transport_pmu": {
             "measurement_basis": "not_calibrated",
@@ -953,7 +1299,7 @@ def synthetic_probe_payload(
         | (compute_result << 56)
     )
     words[4:6] = [101, 31]
-    if mode in ASYNC_SENDER_MODES:
+    if mode in (*ASYNC_SENDER_MODES, *RAW_MULTIDEST_MODES):
         send_result, wait_result, release_result = raw_async_return_codes
         words[6] = (
             (send_result & 0xFFFFFFFF)
@@ -961,7 +1307,14 @@ def synthetic_probe_payload(
         )
         words[7] = (
             (release_result & 0xFFFFFFFF)
-            | (RAW_ASYNC_RC_MARKER << 32)
+            | (
+                (
+                    RAW_MULTIDEST_RC_MARKER
+                    if mode in RAW_MULTIDEST_MODES
+                    else RAW_ASYNC_RC_MARKER
+                )
+                << 32
+            )
         )
     else:
         words[6:8] = [37, 41]
@@ -970,7 +1323,7 @@ def synthetic_probe_payload(
         | (TRANSPORT_STABLE_MASK << 16)
         | (scope_change << 32)
         | ((1 if read_only else 0) << 40)
-        | (EXPECTED_CONTRACT_EVIDENCE[mode] << 48)
+        | (expected_contract_evidence(mode, rank) << 48)
     )
     words[9] = dte_enable | (spm_enable << 32)
     words[10:16] = list(transport_deltas)
@@ -999,15 +1352,22 @@ def run_host_oracle_self_tests() -> None:
             f"DTE/NCC host oracle self-test accepted {message}"
         )
 
-    for mode in DEFAULT_SAFE_MODES:
+    for mode in (*DEFAULT_SAFE_MODES, *PENDING_DTE_MODES):
         for payload_bytes in MODE_PAYLOADS[mode]:
-            for rank in (0, RANK_COUNT - 1):
+            ranks = (
+                range(RANK_COUNT)
+                if mode in PENDING_DTE_MODES
+                else (0, RANK_COUNT - 1)
+            )
+            parsed_rows: list[dict[str, object]] = []
+            for rank in ranks:
                 parsed = parse_probe_payload(
                     synthetic_probe_payload(mode, rank, payload_bytes),
                     mode,
                     rank,
                     payload_bytes,
                 )
+                parsed_rows.append(parsed)
                 require(
                     parsed["transport_pmu"]["sample_state"]
                     == "raw_observation",
@@ -1025,6 +1385,25 @@ def run_host_oracle_self_tests() -> None:
                         f"valid mode {mode} did not expose all-zero raw "
                         "async return codes",
                     )
+                if mode in RAW_MULTIDEST_MODES:
+                    require(
+                        parsed["raw_multidest_return_codes"]
+                        == {
+                            "send_async": 0,
+                            "wait_done": 0,
+                            "release": 0,
+                        },
+                        f"valid mode {mode} did not expose all-zero "
+                        "owner-backed raw DTE return codes",
+                    )
+            if mode in RAW_MULTIDEST_MODES:
+                summary = summarize_raw_multidest_observations(
+                    mode, parsed_rows
+                )
+                require(
+                    summary["all_nonparticipants_untouched"] is True,
+                    f"valid mode {mode} did not preserve nonparticipants",
+                )
 
     inconclusive_cases = (
         (
@@ -1138,6 +1517,135 @@ def run_host_oracle_self_tests() -> None:
         16,
         "a changed inactive payload suffix",
     )
+    raw_mode = RAW_MULTIDEST_MODES[0]
+    raw_nonparticipant = next(
+        rank
+        for rank in range(RANK_COUNT)
+        if rank
+        not in (
+            transport_catalog.RAW_MULTIDEST_SOURCE_RANK,
+            *RAW_MULTIDEST_CASE_BY_MODE[raw_mode].target_ranks,
+        )
+    )
+    corrupted_raw_nonparticipant = bytearray(
+        synthetic_probe_payload(
+            raw_mode,
+            raw_nonparticipant,
+            transport_catalog.RAW_MULTIDEST_PAYLOAD_BYTES,
+        )
+    )
+    corrupted_raw_nonparticipant[
+        HEADER_BYTES + HOST_SLOT_BYTES + SPM_GUARD_BYTES
+    ] ^= 1
+    try:
+        parse_probe_payload(
+            bytes(corrupted_raw_nonparticipant),
+            raw_mode,
+            raw_nonparticipant,
+            transport_catalog.RAW_MULTIDEST_PAYLOAD_BYTES,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError(
+            "DTE/NCC host oracle self-test accepted a write to an "
+            "unselected raw multicast rank"
+        )
+
+    divergent_mode = next(
+        mode
+        for mode in RAW_MULTIDEST_MODES
+        if RAW_MULTIDEST_CASE_BY_MODE[mode].semantic == "scatter"
+        and RAW_MULTIDEST_CASE_BY_MODE[mode].fanout == 2
+    )
+    divergent_case = RAW_MULTIDEST_CASE_BY_MODE[divergent_mode]
+    divergent_target = divergent_case.target_ranks[0]
+    divergent_rows: list[dict[str, object]] = []
+    for rank in range(RANK_COUNT):
+        row_payload = bytearray(
+            synthetic_probe_payload(
+                divergent_mode,
+                rank,
+                transport_catalog.RAW_MULTIDEST_PAYLOAD_BYTES,
+            )
+        )
+        if rank == divergent_target:
+            alternate_offset = 512
+            source = raw_multidest_pattern(
+                transport_catalog.RAW_MULTIDEST_SOURCE_RANK,
+                MAX_PAYLOAD_BYTES,
+            )
+            alternate_slot = guarded_capture_slot(
+                source[
+                    alternate_offset : alternate_offset
+                    + divergent_case.per_destination_bytes
+                ],
+                MAX_PAYLOAD_BYTES,
+            )
+            slot_start = HEADER_BYTES + HOST_SLOT_BYTES
+            row_payload[
+                slot_start : slot_start + HOST_SLOT_BYTES
+            ] = alternate_slot
+        divergent_rows.append(
+            parse_probe_payload(
+                bytes(row_payload),
+                divergent_mode,
+                rank,
+                transport_catalog.RAW_MULTIDEST_PAYLOAD_BYTES,
+            )
+        )
+    divergent_summary = summarize_raw_multidest_observations(
+        divergent_mode, divergent_rows
+    )
+    require(
+        divergent_summary["stimulus_reference_mapping_match"] is False
+        and divergent_summary["all_selected_targets_exact"] is True,
+        "raw observation classifier did not preserve a valid divergent "
+        "target/source mapping",
+    )
+
+
+def run_pending_host_contract(
+    mode: int, payload_bytes: int
+) -> dict[str, object]:
+    if mode not in PENDING_DTE_MODES:
+        raise RuntimeError(
+            "--host-contract-only requires one pending fan-in/raw mode"
+        )
+    if payload_bytes not in MODE_PAYLOADS[mode]:
+        raise RuntimeError(
+            f"mode {mode} does not support payload size {payload_bytes}"
+        )
+    observations = [
+        parse_probe_payload(
+            synthetic_probe_payload(mode, rank, payload_bytes),
+            mode,
+            rank,
+            payload_bytes,
+        )
+        for rank in range(RANK_COUNT)
+    ]
+    return {
+        "case": MODES[mode],
+        "mode": mode,
+        "payload_bytes": payload_bytes,
+        "single_mode_isolation": True,
+        "all_rank_exact_oracle": True,
+        "raw_multidest": (
+            summarize_raw_multidest_observations(mode, observations)
+            if mode in RAW_MULTIDEST_MODES
+            else None
+        ),
+        "four_source_fanin": (
+            {
+                "target_rank": transport_catalog.FOUR_SOURCE_FANIN_TARGET,
+                "source_ranks": transport_catalog.FOUR_SOURCE_FANIN_SOURCES,
+                "four_disjoint_guarded_slots_exact": True,
+            }
+            if mode == FOUR_SOURCE_FANIN_MODE
+            else None
+        ),
+    }
 
 
 def execute_probe_modes(
@@ -1181,6 +1689,11 @@ def execute_probe_modes(
                 ]
                 for observation in observations:
                     observation["sample"] = sample
+                raw_multidest_summary = (
+                    summarize_raw_multidest_observations(mode, observations)
+                    if mode in RAW_MULTIDEST_MODES
+                    else None
+                )
                 sweep_observations[mode].setdefault(
                     payload_bytes, []
                 ).extend(observations)
@@ -1197,10 +1710,8 @@ def execute_probe_modes(
                             "case": name,
                             "sample": sample,
                             "payload_bytes": payload_bytes,
-                            "transport_bytes": (
-                                ASYNC_SENDER_TRANSPORT_BYTES
-                                if mode in ASYNC_SENDER_MODES
-                                else payload_bytes
+                            "transport_bytes": transport_bytes_for_mode(
+                                mode, payload_bytes
                             ),
                             "ranks": RANK_COUNT,
                             "exact": True,
@@ -1227,6 +1738,20 @@ def execute_probe_modes(
                             "dte_common_timer": None,
                             "dte_ncc_overlap": (
                                 "not_claimed_by_this_correctness_probe"
+                            ),
+                            "raw_multidest": raw_multidest_summary,
+                            "four_source_fanin": (
+                                {
+                                    "target_rank": (
+                                        transport_catalog.FOUR_SOURCE_FANIN_TARGET
+                                    ),
+                                    "source_ranks": (
+                                        transport_catalog.FOUR_SOURCE_FANIN_SOURCES
+                                    ),
+                                    "four_disjoint_guarded_slots_exact": True,
+                                }
+                                if mode == FOUR_SOURCE_FANIN_MODE
+                                else None
                             ),
                         },
                         sort_keys=True,
@@ -1441,6 +1966,10 @@ def main() -> int:
                         case.as_dict()
                         for case in transport_catalog.CONTRACT_CASES
                     ],
+                    "raw_remote_multicast_cases": [
+                        case.as_dict()
+                        for case in transport_catalog.RAW_REMOTE_MULTICAST_CASES
+                    ],
                     "calibration_leaf_bindings": {
                         key: [
                             getattr(
@@ -1455,6 +1984,23 @@ def main() -> int:
                     },
                 },
                 indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.host_contract_only:
+        selected_modes, selected_payload_bytes = select_execution_axes(args)
+        if len(selected_modes) != 1 or len(selected_payload_bytes) != 1:
+            raise RuntimeError(
+                "--host-contract-only requires exactly one --mode and one "
+                "--payload-bytes"
+            )
+        print(
+            "pending_dte_host_contract: "
+            + json.dumps(
+                run_pending_host_contract(
+                    selected_modes[0], selected_payload_bytes[0]
+                ),
                 sort_keys=True,
             )
         )
@@ -1485,7 +2031,8 @@ def main() -> int:
     package, module_path, bindings = compile_package(args)
     verify_no_card(args, package)
     if not args.no_card and not any(
-        mode in ISOLATED_DTE_MODES for mode in selected_modes
+        mode in (*ISOLATED_DTE_MODES, *PENDING_DTE_MODES)
+        for mode in selected_modes
     ):
         execute_production_baseline(args)
 

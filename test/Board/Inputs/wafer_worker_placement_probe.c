@@ -20,7 +20,6 @@
 #define WAFER_WP_F16_ONE UINT16_C(0x3c00)
 #define WAFER_WP_F16_TWO UINT16_C(0x4000)
 #define WAFER_WP_F16_THREE UINT16_C(0x4200)
-#define WAFER_WP_CANARY UINT8_C(0xa5)
 
 extern int8_t *get_spm_memory_mapping(uint64_t offset);
 
@@ -34,7 +33,8 @@ typedef struct WaferWPInstruction {
   uint32_t engine;
   uint32_t worker;
   uint32_t output_bytes;
-  uint32_t slot;
+  uint32_t ordinal;
+  uint32_t spm_slot;
   WaferWPPacket packet;
 } WaferWPInstruction;
 
@@ -149,6 +149,217 @@ static void wafer_wp_controls(volatile uint64_t *record, uint32_t base) {
     record[base + worker] = get_ncc_reg(worker, GR_CSR_CONTROL_ADDR);
 }
 
+static void wafer_wp_controls_rotated(volatile uint64_t *record,
+                                      uint32_t base, uint32_t rotation) {
+  for (uint32_t offset = 0; offset < WAFER_WP_WORKERS; ++offset) {
+    uint32_t worker = (rotation + offset) % WAFER_WP_WORKERS;
+    record[base + worker] = get_ncc_reg(worker, GR_CSR_CONTROL_ADDR);
+  }
+}
+
+static void wafer_wp_mmio_fence(void) {
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
+}
+
+static uint32_t wafer_wp_control_is_idle(uint64_t control) {
+  return (control & UINT64_C(0xff)) == 0U &&
+         (control & WAFER_WP_TASK_DONE) != 0U;
+}
+
+static uint32_t wafer_wp_controls_are_idle(
+    const volatile uint64_t *record, uint32_t base) {
+  for (uint32_t worker = 0; worker < WAFER_WP_WORKERS; ++worker) {
+    uint64_t control = record[base + worker];
+    if (!wafer_wp_control_is_idle(control))
+      return 0U;
+  }
+  return 1U;
+}
+
+static uint32_t wafer_wp_pending_mask(
+    const volatile uint64_t *record, uint32_t base,
+    uint32_t participant_mask) {
+  uint32_t pending = 0U;
+  for (uint32_t worker = 0; worker < WAFER_WP_WORKERS; ++worker) {
+    uint32_t worker_bit = UINT32_C(1) << worker;
+    if ((participant_mask & worker_bit) != 0U &&
+        !wafer_wp_control_is_idle(record[base + worker]))
+      pending |= worker_bit;
+  }
+  return pending;
+}
+
+static uint32_t wafer_wp_bounded_failure_cleanup(
+    volatile uint64_t *record, const WaferWPRequest *request,
+    uint32_t participant_mask) {
+  if (record[WAFER_WP_REC_CLEANUP_ATTEMPT_COUNT] != 0U) {
+    record[WAFER_WP_REC_CLEANUP_FLAGS] |=
+        WAFER_WP_CLEANUP_POISONED;
+    return 0U;
+  }
+  record[WAFER_WP_REC_CLEANUP_ATTEMPT_COUNT] = 1U;
+  record[WAFER_WP_REC_CLEANUP_FLAGS] =
+      WAFER_WP_CLEANUP_ATTEMPTED;
+  uint64_t start = wafer_wp_cycle();
+  record[WAFER_WP_REC_CLEANUP_START_CYCLE] = start;
+  uint32_t pending = participant_mask;
+  uint32_t round = 0U;
+  while (pending != 0U) {
+    uint32_t rotation =
+        (request->join_rotation + round) % WAFER_WP_WORKERS;
+    ++round;
+    for (uint32_t offset = 0; offset < WAFER_WP_WORKERS; ++offset) {
+      uint32_t worker = (rotation + offset) % WAFER_WP_WORKERS;
+      uint32_t worker_bit = UINT32_C(1) << worker;
+      if ((pending & worker_bit) == 0U)
+        continue;
+      uint64_t control =
+          get_ncc_reg(worker, GR_CSR_CONTROL_ADDR);
+      uint64_t now = wafer_wp_cycle();
+      if (now - start > WAFER_WP_CLEANUP_DEADLINE_CYCLES) {
+        record[WAFER_WP_REC_CLEANUP_TIMEOUT_MASK] = pending;
+        record[WAFER_WP_REC_CLEANUP_END_CYCLE] = now;
+        record[WAFER_WP_REC_CLEANUP_FLAGS] |=
+            WAFER_WP_CLEANUP_POISONED;
+        wafer_wp_controls_rotated(
+            record, WAFER_WP_REC_CONTROL_FINAL, rotation);
+        return 0U;
+      }
+      if (wafer_wp_control_is_idle(control))
+        pending &= ~worker_bit;
+    }
+  }
+  wafer_wp_controls_rotated(record, WAFER_WP_REC_CONTROL_FINAL,
+                            request->join_rotation);
+  record[WAFER_WP_REC_CLEANUP_END_CYCLE] = wafer_wp_cycle();
+  uint32_t final_pending = wafer_wp_pending_mask(
+      record, WAFER_WP_REC_CONTROL_FINAL, participant_mask);
+  if (final_pending != 0U) {
+    record[WAFER_WP_REC_CLEANUP_TIMEOUT_MASK] = final_pending;
+    record[WAFER_WP_REC_CLEANUP_FLAGS] |=
+        WAFER_WP_CLEANUP_POISONED;
+    return 0U;
+  }
+  record[WAFER_WP_REC_CLEANUP_FLAGS] |=
+      WAFER_WP_CLEANUP_SUCCEEDED;
+  return 1U;
+}
+
+static void wafer_wp_capture_boundary(
+    volatile uint64_t *record, const WaferWPRequest *request,
+    uint32_t rotation) {
+  wafer_wp_controls_rotated(record, WAFER_WP_REC_CONTROL_BOUNDARY,
+                            rotation);
+  record[WAFER_WP_REC_OBSERVER_BOUNDARY_CYCLE] = wafer_wp_cycle();
+  record[WAFER_WP_REC_OBSERVER_DONE_BOUNDARY] =
+      wafer_wp_control_is_idle(
+          record[WAFER_WP_REC_CONTROL_BOUNDARY +
+                 request->observer_worker]);
+  record[WAFER_WP_REC_TARGET_PENDING_BOUNDARY] =
+      !wafer_wp_control_is_idle(
+          record[WAFER_WP_REC_CONTROL_BOUNDARY +
+                 request->target_worker]);
+  record[WAFER_WP_REC_FLAGS] |= WAFER_WP_RECORD_BOUNDARY_CAPTURED;
+}
+
+typedef struct WaferWPPollState {
+  uint64_t last_poll_cycle[WAFER_WP_WORKERS];
+  uint32_t done_mask;
+  uint32_t rounds;
+} WaferWPPollState;
+
+static void wafer_wp_init_poll_state(
+    WaferWPPollState *state, uint64_t after_issue_cycle) {
+  state->done_mask = 0U;
+  state->rounds = 0U;
+  for (uint32_t worker = 0; worker < WAFER_WP_WORKERS; ++worker)
+    state->last_poll_cycle[worker] = after_issue_cycle;
+}
+
+static uint32_t wafer_wp_observe_completions(
+    volatile uint64_t *record, const WaferWPRequest *request,
+    WaferWPPollState *state, uint32_t goal_mask) {
+  while ((state->done_mask & goal_mask) != goal_mask) {
+    uint32_t rotation =
+        (request->join_rotation + state->rounds) % WAFER_WP_WORKERS;
+    ++state->rounds;
+    record[WAFER_WP_REC_POLL_ROUNDS] = state->rounds;
+    for (uint32_t offset = 0; offset < WAFER_WP_WORKERS; ++offset) {
+      uint32_t worker = (rotation + offset) % WAFER_WP_WORKERS;
+      uint32_t worker_bit = UINT32_C(1) << worker;
+      if ((goal_mask & worker_bit) == 0U ||
+          (state->done_mask & worker_bit) != 0U)
+        continue;
+      uint64_t control = get_ncc_reg(worker, GR_CSR_CONTROL_ADDR);
+      uint64_t now = wafer_wp_cycle();
+      if (now - record[WAFER_WP_REC_AFTER_ISSUE_CYCLE] >
+          WAFER_WP_OBSERVATION_DEADLINE_CYCLES) {
+        record[WAFER_WP_REC_OBSERVATION_TIMEOUT_MASK] =
+            goal_mask & ~state->done_mask;
+        record[WAFER_WP_REC_OBSERVATION_TIMEOUT_CYCLE] = now;
+        return 0U;
+      }
+      uint64_t gap = now - state->last_poll_cycle[worker];
+      if (gap > record[WAFER_WP_REC_MAX_POLL_GAP_BASE + worker])
+        record[WAFER_WP_REC_MAX_POLL_GAP_BASE + worker] = gap;
+      state->last_poll_cycle[worker] = now;
+      ++record[WAFER_WP_REC_POLL_COUNT_BASE + worker];
+      if (wafer_wp_control_is_idle(control)) {
+        state->done_mask |= worker_bit;
+        record[WAFER_WP_REC_FIRST_DONE_CYCLE_BASE + worker] = now;
+      }
+    }
+  }
+  return 1U;
+}
+
+static void wafer_wp_finish_poll_evidence(
+    volatile uint64_t *record, const WaferWPRequest *request) {
+  if ((request->worker_mask &
+       (UINT32_C(1) << request->observer_worker)) != 0U)
+    record[WAFER_WP_REC_OBSERVER_FIRST_DONE_CYCLES] =
+        record[WAFER_WP_REC_FIRST_DONE_CYCLE_BASE +
+               request->observer_worker] -
+        record[WAFER_WP_REC_START_CYCLE];
+  if ((request->worker_mask &
+       (UINT32_C(1) << request->target_worker)) != 0U)
+    record[WAFER_WP_REC_TARGET_FIRST_DONE_CYCLES] =
+        record[WAFER_WP_REC_FIRST_DONE_CYCLE_BASE +
+               request->target_worker] -
+        record[WAFER_WP_REC_START_CYCLE];
+}
+
+static void wafer_wp_confirm_matching_joins(
+    volatile uint64_t *record, const WaferWPRequest *request) {
+  uint32_t joined_mask = 0U;
+  uint32_t joins_are_valid = 1U;
+  for (uint32_t offset = 0; offset < WAFER_WP_WORKERS; ++offset) {
+    uint32_t worker =
+        (request->join_rotation + offset) % WAFER_WP_WORKERS;
+    uint32_t worker_bit = UINT32_C(1) << worker;
+    if ((request->worker_mask & worker_bit) == 0U)
+      continue;
+    uint64_t before = wafer_wp_cycle();
+    uint8_t rc = TsmWaitfinish_bywork(worker);
+    uint64_t after = wafer_wp_cycle();
+    record[WAFER_WP_REC_MATCHING_JOIN_CYCLE_BASE + worker] =
+        after - before;
+    record[WAFER_WP_REC_MATCHING_JOIN_RC_BASE + worker] = rc;
+    uint64_t control =
+        get_ncc_reg(worker, GR_CSR_CONTROL_ADDR);
+    record[WAFER_WP_REC_MATCHING_JOIN_CONTROL_BASE + worker] =
+        control;
+    if (rc != WAFER_WP_WAIT_SUCCESS ||
+        !wafer_wp_control_is_idle(control))
+      joins_are_valid = 0U;
+    joined_mask |= worker_bit;
+  }
+  record[WAFER_WP_REC_MATCHING_JOIN_MASK] = joined_mask;
+  if (joined_mask == request->worker_mask && joins_are_valid)
+    record[WAFER_WP_REC_FLAGS] |=
+        WAFER_WP_RECORD_MATCHING_JOIN_CONFIRMED;
+}
+
 static void wafer_wp_cache_range(uint64_t begin, uint32_t bytes,
                                  uint32_t invalidate) {
   enum {
@@ -183,6 +394,27 @@ static void wafer_wp_cache_range(uint64_t begin, uint32_t bytes,
 static void wafer_wp_publish_record(volatile uint64_t *record) {
   wafer_wp_cache_range((uint64_t)(uintptr_t)record,
                        WAFER_WP_RECORD_WORDS * sizeof(uint64_t), 0U);
+}
+
+static void wafer_wp_publish_launch_failure(
+    volatile uint64_t *record, const WaferWPRequest *request,
+    uint32_t primary_status) {
+  record[WAFER_WP_REC_PRIMARY_FAILURE_STATUS] = primary_status;
+  uint32_t cleanup_participant_mask =
+      (uint32_t)record[WAFER_WP_REC_ATTEMPTED_WORKER_MASK];
+  record[WAFER_WP_REC_CLEANUP_PARTICIPANT_MASK] =
+      cleanup_participant_mask;
+  uint32_t cleanup_succeeded = 1U;
+  if (cleanup_participant_mask != 0U)
+    cleanup_succeeded = wafer_wp_bounded_failure_cleanup(
+        record, request, cleanup_participant_mask);
+  else
+    wafer_wp_controls_rotated(record, WAFER_WP_REC_CONTROL_FINAL,
+                              request->join_rotation);
+  record[WAFER_WP_REC_STATUS] =
+      cleanup_succeeded ? primary_status
+                        : WAFER_WP_STATUS_CLEANUP_POISONED;
+  wafer_wp_publish_record(record);
 }
 
 static int wafer_wp_decode_u32(const volatile uint64_t *words,
@@ -271,7 +503,7 @@ static uint32_t wafer_wp_decode_request(const volatile uint64_t *words,
     if (!wafer_wp_decode_u32(words, indices[field], fields[field]))
       return WAFER_WP_STATUS_BAD_REQUEST;
   if (words[WAFER_WP_REQ_RESOURCE_BYTES] != WAFER_WP_RESOURCE_BYTES ||
-      request->kind > WAFER_WP_KIND_CONCURRENT ||
+      request->kind > WAFER_WP_KIND_OUTSTANDING ||
       request->engine > WAFER_WP_ENGINE_RDMA ||
       request->target_worker >= WAFER_WP_WORKERS ||
       request->observer_worker >= WAFER_WP_WORKERS ||
@@ -289,6 +521,22 @@ static uint32_t wafer_wp_decode_request(const volatile uint64_t *words,
                    wafer_wp_placement_counts_are_valid(request)
                ? WAFER_WP_STATUS_OK
                : WAFER_WP_STATUS_BAD_REQUEST;
+
+  if (request->kind == WAFER_WP_KIND_OUTSTANDING) {
+    uint32_t target = request->worker_issues[request->target_worker];
+    if ((request->engine != WAFER_WP_ENGINE_CT &&
+         request->engine != WAFER_WP_ENGINE_RDMA) ||
+        request->primary_bytes != WAFER_WP_LONG_ISSUE_BYTES ||
+        request->sentinel_bytes != 0U ||
+        (target != WAFER_WP_OUTSTANDING_LOW_ISSUES &&
+         target != WAFER_WP_OUTSTANDING_HIGH_ISSUES))
+      return WAFER_WP_STATUS_BAD_REQUEST;
+    for (uint32_t worker = 0; worker < WAFER_WP_WORKERS; ++worker)
+      if (worker != request->target_worker &&
+          request->worker_issues[worker] != 0U)
+        return WAFER_WP_STATUS_BAD_REQUEST;
+    return WAFER_WP_STATUS_OK;
+  }
 
   if ((request->engine != WAFER_WP_ENGINE_NE &&
        request->engine != WAFER_WP_ENGINE_RDMA) ||
@@ -325,40 +573,41 @@ static volatile uint16_t *wafer_wp_spm16(uint64_t offset) {
   return (volatile uint16_t *)(void *)get_spm_memory_mapping(offset);
 }
 
-static uint64_t wafer_wp_slot(uint32_t slot) {
+static uint64_t wafer_wp_slot(uint32_t spm_slot) {
   return WAFER_WP_SPM_SLOT_BASE +
-         (uint64_t)slot * WAFER_WP_SPM_SLOT_STRIDE;
+         (uint64_t)spm_slot * WAFER_WP_SPM_SLOT_STRIDE;
 }
 
-static uint64_t wafer_wp_read0(uint32_t slot) {
-  return wafer_wp_slot(slot) + WAFER_WP_SPM_READ0_OFFSET;
+static uint64_t wafer_wp_read0(uint32_t spm_slot) {
+  return wafer_wp_slot(spm_slot) + WAFER_WP_SPM_READ0_OFFSET;
 }
 
-static uint64_t wafer_wp_read1(uint32_t slot) {
-  return wafer_wp_slot(slot) + WAFER_WP_SPM_READ1_OFFSET;
+static uint64_t wafer_wp_read1(uint32_t spm_slot) {
+  return wafer_wp_slot(spm_slot) + WAFER_WP_SPM_READ1_OFFSET;
 }
 
-static uint64_t wafer_wp_write(uint32_t slot) {
-  return wafer_wp_slot(slot) + WAFER_WP_SPM_WRITE_OFFSET;
+static uint64_t wafer_wp_write(uint32_t spm_slot) {
+  return wafer_wp_slot(spm_slot) + WAFER_WP_SPM_WRITE_OFFSET;
 }
 
 static uint64_t wafer_wp_payload(const WaferWPContext *context,
-                                 uint32_t slot) {
+                                 uint32_t spm_slot) {
   return context->payload_ddr +
-         (uint64_t)slot * WAFER_WP_OUTPUT_SLOT_STRIDE +
+         (uint64_t)spm_slot * WAFER_WP_OUTPUT_SLOT_STRIDE +
          WAFER_WP_GUARD_BYTES;
 }
 
 static uint64_t wafer_wp_archive(const WaferWPContext *context,
-                                 uint32_t slot) {
+                                 uint32_t ordinal) {
   return context->output_ddr + WAFER_WP_OUTPUT_SLOT_BASE +
-         (uint64_t)slot * WAFER_WP_OUTPUT_SLOT_STRIDE;
+         (uint64_t)ordinal * WAFER_WP_OUTPUT_SLOT_STRIDE;
 }
 
-static uint8_t wafer_wp_pattern(const WaferWPRequest *request, uint32_t slot,
-                                uint32_t index) {
-  return (uint8_t)(UINT32_C(0x51) + request->sample * 13U + slot * 29U +
-                   index * 17U + (index >> 8) * 7U);
+static uint8_t wafer_wp_pattern(const WaferWPRequest *request,
+                                uint32_t spm_slot, uint32_t index) {
+  return (uint8_t)(UINT32_C(0x51) + request->sample * 13U +
+                   spm_slot * 29U + index * 17U +
+                   (index >> 8) * 7U);
 }
 
 static void wafer_wp_set_worker(uint32_t *inter_type, uint32_t worker) {
@@ -396,9 +645,10 @@ static uint32_t wafer_wp_prepare_ct(WaferWPInstruction *instruction) {
   TsmArith *arith = TsmNewArith();
   if (arith == NULL)
     return 0U;
-  arith->AddVV(&instruction->packet.ct, wafer_wp_read0(instruction->slot),
-               wafer_wp_read1(instruction->slot),
-               wafer_wp_write(instruction->slot),
+  arith->AddVV(&instruction->packet.ct,
+               wafer_wp_read0(instruction->spm_slot),
+               wafer_wp_read1(instruction->spm_slot),
+               wafer_wp_write(instruction->spm_slot),
                instruction->output_bytes / sizeof(uint16_t),
                RND_NEAREST_EVEN, Fmt_FP16);
   wafer_wp_set_worker(&instruction->packet.ct.inter_type,
@@ -412,8 +662,8 @@ static uint32_t wafer_wp_prepare_ne(WaferWPInstruction *instruction) {
   if (gemm == NULL)
     return 0U;
   gemm->AddInput(&instruction->packet.ne,
-                 wafer_wp_read0(instruction->slot),
-                 wafer_wp_read1(instruction->slot), Fmt_FP16);
+                 wafer_wp_read0(instruction->spm_slot),
+                 wafer_wp_read1(instruction->spm_slot), Fmt_FP16);
   gemm->ConfigMKN(&instruction->packet.ne, WAFER_WP_NE_M, WAFER_WP_NE_K,
                   WAFER_WP_NE_N);
   gemm->ConfigBatch(&instruction->packet.ne, 1, 1);
@@ -426,7 +676,7 @@ static uint32_t wafer_wp_prepare_ne(WaferWPInstruction *instruction) {
   gemm->DisableRelu(&instruction->packet.ne);
   gemm->DisableLeakyRelu(&instruction->packet.ne);
   gemm->AddOutput(&instruction->packet.ne,
-                  wafer_wp_write(instruction->slot), Fmt_FP16);
+                  wafer_wp_write(instruction->spm_slot), Fmt_FP16);
   wafer_wp_set_worker(&instruction->packet.ne.inter_type,
                       instruction->worker);
   TsmDeleteGemm(gemm);
@@ -439,8 +689,8 @@ static uint32_t wafer_wp_prepare_rdma(WaferWPContext *context,
   if (rdma == NULL)
     return 0U;
   rdma->AddSrcDst(&instruction->packet.rdma,
-                  wafer_wp_payload(context, instruction->slot),
-                  wafer_wp_write(instruction->slot), Fmt_UINT8);
+                  wafer_wp_payload(context, instruction->spm_slot),
+                  wafer_wp_write(instruction->spm_slot), Fmt_UINT8);
   rdma->ConfigStrideIteration(&instruction->packet.rdma,
                               instruction->output_bytes, 0, 1, 0, 1, 0, 1);
   wafer_wp_set_worker(&instruction->packet.rdma.inter_type,
@@ -451,27 +701,31 @@ static uint32_t wafer_wp_prepare_rdma(WaferWPContext *context,
 
 static uint32_t wafer_wp_seed_and_prepare(
     WaferWPContext *context, WaferWPInstruction *instruction) {
-  uint64_t write = wafer_wp_write(instruction->slot);
+  uint64_t write = wafer_wp_write(instruction->spm_slot);
   wafer_wp_fill8(wafer_wp_spm8(write - WAFER_WP_GUARD_BYTES),
-                 WAFER_WP_CANARY,
+                 WAFER_WP_OUTPUT_CANARY,
                  instruction->output_bytes + 2U * WAFER_WP_GUARD_BYTES);
   if (instruction->engine == WAFER_WP_ENGINE_CT) {
-    wafer_wp_fill16(wafer_wp_spm16(wafer_wp_read0(instruction->slot)),
-                    WAFER_WP_F16_ONE,
-                    instruction->output_bytes / sizeof(uint16_t));
-    wafer_wp_fill16(wafer_wp_spm16(wafer_wp_read1(instruction->slot)),
-                    WAFER_WP_F16_TWO,
-                    instruction->output_bytes / sizeof(uint16_t));
+    wafer_wp_fill16(
+        wafer_wp_spm16(wafer_wp_read0(instruction->spm_slot)),
+        WAFER_WP_F16_ONE,
+        instruction->output_bytes / sizeof(uint16_t));
+    wafer_wp_fill16(
+        wafer_wp_spm16(wafer_wp_read1(instruction->spm_slot)),
+        WAFER_WP_F16_TWO,
+        instruction->output_bytes / sizeof(uint16_t));
     return wafer_wp_prepare_ct(instruction);
   }
   if (instruction->engine == WAFER_WP_ENGINE_NE) {
-    wafer_wp_fill16(wafer_wp_spm16(wafer_wp_read0(instruction->slot)),
-                    WAFER_WP_F16_ONE,
-                    WAFER_WP_NE_LHS_BYTES / sizeof(uint16_t));
-    wafer_wp_fill16(wafer_wp_spm16(wafer_wp_read1(instruction->slot)), 0,
-                    WAFER_WP_NE_RHS_BYTES / sizeof(uint16_t));
+    wafer_wp_fill16(
+        wafer_wp_spm16(wafer_wp_read0(instruction->spm_slot)),
+        WAFER_WP_F16_ONE,
+        WAFER_WP_NE_LHS_BYTES / sizeof(uint16_t));
+    wafer_wp_fill16(
+        wafer_wp_spm16(wafer_wp_read1(instruction->spm_slot)), 0,
+        WAFER_WP_NE_RHS_BYTES / sizeof(uint16_t));
     volatile uint16_t *rhs =
-        wafer_wp_spm16(wafer_wp_read1(instruction->slot));
+        wafer_wp_spm16(wafer_wp_read1(instruction->spm_slot));
     for (uint32_t index = 0; index < WAFER_WP_NE_N; ++index)
       rhs[index * WAFER_WP_NE_N + index] = WAFER_WP_F16_ONE;
     return wafer_wp_prepare_ne(instruction);
@@ -483,12 +737,14 @@ static uint32_t wafer_wp_seed_and_prepare(
 
 static uint32_t wafer_wp_append_issue(WaferWPContext *context,
                                       uint32_t worker, uint32_t engine,
-                                      uint32_t bytes) {
+                                      uint32_t bytes,
+                                      uint32_t spm_slot) {
   if (context->issue_count >= WAFER_WP_MAX_ISSUES)
     return 0U;
   WaferWPInstruction *instruction =
       &context->instructions[context->issue_count];
-  instruction->slot = context->issue_count;
+  instruction->ordinal = context->issue_count;
+  instruction->spm_slot = spm_slot;
   instruction->worker = worker;
   instruction->engine = engine;
   instruction->output_bytes = bytes;
@@ -498,11 +754,14 @@ static uint32_t wafer_wp_append_issue(WaferWPContext *context,
 
 static uint32_t wafer_wp_build_issues(WaferWPContext *context) {
   const WaferWPRequest *request = &context->request;
-  if (request->kind == WAFER_WP_KIND_PLACEMENT) {
+  if (request->kind == WAFER_WP_KIND_PLACEMENT ||
+      request->kind == WAFER_WP_KIND_OUTSTANDING) {
     uint32_t remaining[WAFER_WP_WORKERS] = {
         request->worker_issues[0], request->worker_issues[1],
         request->worker_issues[2]};
-    uint32_t total = WAFER_WP_PLACEMENT_ISSUES;
+    uint32_t total = request->worker_issues[0] +
+                     request->worker_issues[1] +
+                     request->worker_issues[2];
     while (total != 0U) {
       uint32_t progressed = 0U;
       for (uint32_t offset = 0; offset < WAFER_WP_WORKERS; ++offset) {
@@ -510,8 +769,9 @@ static uint32_t wafer_wp_build_issues(WaferWPContext *context) {
             (request->issue_rotation + offset) % WAFER_WP_WORKERS;
         if (remaining[worker] == 0U)
           continue;
-        if (!wafer_wp_append_issue(context, worker, request->engine,
-                                   request->primary_bytes))
+        if (!wafer_wp_append_issue(
+                context, worker, request->engine, request->primary_bytes,
+                context->issue_count))
           return 0U;
         --remaining[worker];
         --total;
@@ -524,14 +784,15 @@ static uint32_t wafer_wp_build_issues(WaferWPContext *context) {
   }
   if (request->kind != WAFER_WP_KIND_SENTINEL_ONLY)
     for (uint32_t index = 0; index < WAFER_WP_BACKLOG_ISSUES; ++index)
-      if (!wafer_wp_append_issue(context, request->target_worker,
-                                 request->engine,
-                                 request->primary_bytes))
+      if (!wafer_wp_append_issue(
+              context, request->target_worker, request->engine,
+              request->primary_bytes, context->issue_count))
         return 0U;
   if (request->kind != WAFER_WP_KIND_BACKLOG_ONLY &&
-      !wafer_wp_append_issue(context, request->observer_worker,
-                             WAFER_WP_ENGINE_CT,
-                             request->sentinel_bytes))
+      !wafer_wp_append_issue(
+          context, request->observer_worker, WAFER_WP_ENGINE_CT,
+          request->sentinel_bytes,
+          WAFER_WP_PROGRESS_SENTINEL_SPM_SLOT))
     return 0U;
   return 1U;
 }
@@ -539,12 +800,12 @@ static uint32_t wafer_wp_build_issues(WaferWPContext *context) {
 static uint64_t wafer_wp_mismatch(const WaferWPContext *context,
                                   const WaferWPInstruction *instruction) {
   const volatile uint8_t *actual =
-      wafer_wp_spm8(wafer_wp_write(instruction->slot));
+      wafer_wp_spm8(wafer_wp_write(instruction->spm_slot));
   uint64_t mismatches = 0;
   if (instruction->engine == WAFER_WP_ENGINE_RDMA) {
     for (uint32_t index = 0; index < instruction->output_bytes; ++index)
       mismatches += actual[index] != wafer_wp_pattern(
-          &context->request, instruction->slot, index);
+          &context->request, instruction->spm_slot, index);
     return mismatches;
   }
   uint16_t expected = instruction->engine == WAFER_WP_ENGINE_NE
@@ -562,25 +823,15 @@ static uint64_t wafer_wp_guard_mismatch(
     const WaferWPInstruction *instruction) {
   uint64_t mismatches = 0;
   const volatile uint8_t *before = wafer_wp_spm8(
-      wafer_wp_write(instruction->slot) - WAFER_WP_GUARD_BYTES);
+      wafer_wp_write(instruction->spm_slot) - WAFER_WP_GUARD_BYTES);
   const volatile uint8_t *after = wafer_wp_spm8(
-      wafer_wp_write(instruction->slot) + instruction->output_bytes);
+      wafer_wp_write(instruction->spm_slot) +
+      instruction->output_bytes);
   for (uint32_t index = 0; index < WAFER_WP_GUARD_BYTES; ++index) {
-    mismatches += before[index] != WAFER_WP_CANARY;
-    mismatches += after[index] != WAFER_WP_CANARY;
+    mismatches += before[index] != WAFER_WP_OUTPUT_CANARY;
+    mismatches += after[index] != WAFER_WP_OUTPUT_CANARY;
   }
   return mismatches;
-}
-
-static void wafer_wp_wait_worker(volatile uint64_t *record, uint32_t worker,
-                                 uint32_t cycle_index,
-                                 uint32_t duration_index) {
-  uint64_t before = wafer_wp_cycle();
-  (void)TsmWaitfinish_bywork(worker);
-  uint64_t after = wafer_wp_cycle();
-  record[cycle_index + worker] = after - before;
-  if (duration_index != UINT32_MAX)
-    record[duration_index] += after - before;
 }
 
 static void wafer_wp_echo_record(volatile uint64_t *record,
@@ -603,12 +854,18 @@ static void wafer_wp_echo_record(volatile uint64_t *record,
   record[WAFER_WP_REC_OUTPUT_SLOT_STRIDE] =
       WAFER_WP_OUTPUT_SLOT_STRIDE;
   record[WAFER_WP_REC_OUTPUT_GUARD_BYTES] = WAFER_WP_GUARD_BYTES;
+  record[WAFER_WP_REC_OBSERVATION_DEADLINE_CYCLES] =
+      WAFER_WP_OBSERVATION_DEADLINE_CYCLES;
+  record[WAFER_WP_REC_CLEANUP_DEADLINE_CYCLES] =
+      WAFER_WP_CLEANUP_DEADLINE_CYCLES;
 }
 
 static void wafer_wp_archive_outputs(WaferWPContext *context,
                                      volatile uint64_t *record) {
-  for (uint32_t slot = 0; slot < context->issue_count; ++slot) {
-    WaferWPInstruction *instruction = &context->instructions[slot];
+  for (uint32_t ordinal = 0; ordinal < context->issue_count;
+       ++ordinal) {
+    WaferWPInstruction *instruction =
+        &context->instructions[ordinal];
     uint32_t owned_bytes =
         instruction->output_bytes + 2U * WAFER_WP_GUARD_BYTES;
     uint32_t cursor = 0U;
@@ -619,17 +876,18 @@ static void wafer_wp_archive_outputs(WaferWPContext *context,
               ? WAFER_WP_OUTPUT_SLOT_DATA_BYTES
               : remaining;
       wafer_tx81_wdma(
-          wafer_wp_write(slot) - WAFER_WP_GUARD_BYTES + cursor,
-          wafer_wp_archive(context, slot) + cursor, chunk, chunk, 0, 0, 0,
-          1, 1, 1, Fmt_UINT8);
+          wafer_wp_write(instruction->spm_slot) -
+              WAFER_WP_GUARD_BYTES + cursor,
+          wafer_wp_archive(context, ordinal) + cursor, chunk, chunk, 0, 0,
+          0, 1, 1, 1, Fmt_UINT8);
       wafer_tx81_local_fence();
       cursor += chunk;
     }
-    record[WAFER_WP_REC_OUTPUT_BYTES_BASE + slot] =
+    record[WAFER_WP_REC_OUTPUT_BYTES_BASE + ordinal] =
         instruction->output_bytes;
-    record[WAFER_WP_REC_OUTPUT_OFFSET_BASE + slot] =
+    record[WAFER_WP_REC_OUTPUT_OFFSET_BASE + ordinal] =
         WAFER_WP_OUTPUT_SLOT_BASE +
-        (uint64_t)slot * WAFER_WP_OUTPUT_SLOT_STRIDE +
+        (uint64_t)ordinal * WAFER_WP_OUTPUT_SLOT_STRIDE +
         WAFER_WP_GUARD_BYTES;
   }
   record[WAFER_WP_REC_FLAGS] |= WAFER_WP_RECORD_OUTPUT_ARCHIVED;
@@ -648,6 +906,15 @@ wafer_tx81_worker_placement_probe(uint64_t request_ddr,
       (volatile uint64_t *)(uintptr_t)output_ddr;
   for (uint32_t index = 0; index < WAFER_WP_RECORD_WORDS; ++index)
     record[index] = 0;
+  uint32_t record_bytes =
+      WAFER_WP_RECORD_WORDS * sizeof(uint64_t);
+  wafer_wp_fill8(
+      (volatile uint8_t *)(uintptr_t)(output_ddr + record_bytes),
+      WAFER_WP_OUTPUT_CANARY,
+      WAFER_WP_RESOURCE_BYTES - record_bytes);
+  wafer_wp_cache_range(
+      output_ddr + record_bytes,
+      WAFER_WP_RESOURCE_BYTES - record_bytes, 0U);
 
   WaferWPContext *context = &wafer_wp_context;
   wafer_wp_zero(context, sizeof(*context));
@@ -668,72 +935,163 @@ wafer_tx81_worker_placement_probe(uint64_t request_ddr,
   }
   record[WAFER_WP_REC_ISSUE_COUNT] = context->issue_count;
 
-  for (uint32_t slot = 0; slot < context->issue_count; ++slot) {
-    WaferWPInstruction *instruction = &context->instructions[slot];
+  const WaferWPRequest *request = &context->request;
+  wafer_wp_mmio_fence();
+  record[WAFER_WP_REC_PMU_ENABLE] = wafer_wp_read_pmu32(GR_PMU_EN);
+  for (uint32_t worker = 0; worker < WAFER_WP_WORKERS; ++worker)
+    record[WAFER_WP_REC_SERIAL_MODE_BASE + worker] =
+        get_ncc_reg(worker, GR_CSR_SERIAL_MODE_ADDR);
+  wafer_wp_controls(record, WAFER_WP_REC_CONTROL_BEFORE);
+  if (!wafer_wp_controls_are_idle(record,
+                                  WAFER_WP_REC_CONTROL_BEFORE)) {
+    record[WAFER_WP_REC_STATUS] = WAFER_WP_STATUS_WAIT_FAILED;
+    wafer_wp_publish_record(record);
+    return;
+  }
+
+  for (uint32_t ordinal = 0; ordinal < context->issue_count;
+       ++ordinal) {
+    WaferWPInstruction *instruction =
+        &context->instructions[ordinal];
+    record[WAFER_WP_REC_ISSUE_ORDINAL_BASE + ordinal] =
+        instruction->ordinal;
+    record[WAFER_WP_REC_ISSUE_SPM_SLOT_BASE + ordinal] =
+        instruction->spm_slot;
+    record[WAFER_WP_REC_ISSUE_READ0_ADDRESS_BASE + ordinal] =
+        wafer_wp_read0(instruction->spm_slot);
+    record[WAFER_WP_REC_ISSUE_READ1_ADDRESS_BASE + ordinal] =
+        wafer_wp_read1(instruction->spm_slot);
+    record[WAFER_WP_REC_ISSUE_WRITE_ADDRESS_BASE + ordinal] =
+        wafer_wp_write(instruction->spm_slot);
     if (!wafer_wp_seed_and_prepare(context, instruction)) {
       record[WAFER_WP_REC_STATUS] = WAFER_WP_STATUS_PREPARE_FAILED;
       wafer_wp_publish_record(record);
       return;
     }
-    record[WAFER_WP_REC_ISSUE_WORKER_BASE + slot] =
+    record[WAFER_WP_REC_ISSUE_WORKER_BASE + ordinal] =
         instruction->worker;
-    record[WAFER_WP_REC_ISSUE_ENGINE_BASE + slot] =
+    record[WAFER_WP_REC_ISSUE_ENGINE_BASE + ordinal] =
         instruction->engine;
-    record[WAFER_WP_REC_ISSUE_BYTES_BASE + slot] =
+    record[WAFER_WP_REC_ISSUE_BYTES_BASE + ordinal] =
         instruction->output_bytes;
-    record[WAFER_WP_REC_ISSUE_INTER_TYPE_BASE + slot] =
+    record[WAFER_WP_REC_ISSUE_INTER_TYPE_BASE + ordinal] =
         wafer_wp_packet_inter_type(instruction);
   }
-  __asm__ volatile("fence iorw, iorw" ::: "memory");
-  record[WAFER_WP_REC_PMU_ENABLE] = wafer_wp_read_pmu32(GR_PMU_EN);
-  for (uint32_t worker = 0; worker < WAFER_WP_WORKERS; ++worker)
-    record[WAFER_WP_REC_SERIAL_MODE_BASE + worker] =
-        get_ncc_reg(worker, GR_CSR_SERIAL_MODE_ADDR);
   wafer_wp_snapshot(record, WAFER_WP_REC_PMU64_BEFORE,
                     WAFER_WP_REC_INSTRUCTION_BEFORE,
                     WAFER_WP_REC_BLOCKING_BEFORE,
                     WAFER_WP_REC_STABLE_BEFORE);
   record[WAFER_WP_REC_FLAGS] |= WAFER_WP_RECORD_BEFORE_CAPTURED;
   record[WAFER_WP_REC_START_CYCLE] = wafer_wp_cycle();
-  for (uint32_t slot = 0; slot < context->issue_count; ++slot) {
-    uint64_t rc = TsmExecute(wafer_wp_packet(&context->instructions[slot]));
-    record[WAFER_WP_REC_ISSUE_RC_BASE + slot] = rc;
-    if (rc != 1U) {
-      status = WAFER_WP_STATUS_ISSUE_FAILED;
-      break;
+
+  uint64_t issue_rcs[WAFER_WP_MAX_ISSUES] = {0};
+  uint32_t attempted_issue_count = 0U;
+  uint32_t accepted_issue_count = 0U;
+  uint32_t accepted_worker_mask = 0U;
+  uint32_t accepted_by_worker[WAFER_WP_WORKERS] = {0};
+  uint32_t progress_kind =
+      request->kind == WAFER_WP_KIND_BACKLOG_ONLY ||
+      request->kind == WAFER_WP_KIND_SENTINEL_ONLY ||
+      request->kind == WAFER_WP_KIND_CONCURRENT;
+  if (progress_kind) {
+    for (uint32_t ordinal = 0; ordinal < context->issue_count;
+         ++ordinal) {
+      issue_rcs[ordinal] =
+          TsmExecute(wafer_wp_packet(
+              &context->instructions[ordinal]));
+      attempted_issue_count = ordinal + 1U;
+      if (issue_rcs[ordinal] != 1U) {
+        status = WAFER_WP_STATUS_ISSUE_FAILED;
+        break;
+      }
+    }
+  } else {
+    for (uint32_t ordinal = 0; ordinal < context->issue_count;
+         ++ordinal) {
+      uint64_t rc = TsmExecute(
+          wafer_wp_packet(&context->instructions[ordinal]));
+      attempted_issue_count = ordinal + 1U;
+      record[WAFER_WP_REC_ISSUE_RC_BASE + ordinal] = rc;
+      record[WAFER_WP_REC_ISSUE_CYCLE_BASE + ordinal] =
+          wafer_wp_cycle();
+      wafer_wp_controls_rotated(
+          record,
+          WAFER_WP_REC_CONTROL_PER_ISSUE_BASE +
+              ordinal * WAFER_WP_WORKERS,
+          (request->issue_rotation + ordinal) %
+              WAFER_WP_WORKERS);
+      if (rc == 1U) {
+        uint32_t worker = context->instructions[ordinal].worker;
+        ++accepted_issue_count;
+        ++accepted_by_worker[worker];
+        accepted_worker_mask |= UINT32_C(1) << worker;
+      } else {
+        status = WAFER_WP_STATUS_ISSUE_FAILED;
+        break;
+      }
     }
   }
   record[WAFER_WP_REC_AFTER_ISSUE_CYCLE] = wafer_wp_cycle();
-  record[WAFER_WP_REC_FLAGS] |= WAFER_WP_RECORD_ISSUES_SUBMITTED;
-  wafer_wp_controls(record, WAFER_WP_REC_CONTROL_AFTER_ISSUE);
-
-  const WaferWPRequest *request = &context->request;
-  if (request->kind == WAFER_WP_KIND_PLACEMENT) {
-    for (uint32_t offset = 0; offset < WAFER_WP_WORKERS; ++offset) {
-      uint32_t worker =
-          (request->join_rotation + offset) % WAFER_WP_WORKERS;
-      if ((request->worker_mask & (UINT32_C(1) << worker)) != 0U)
-        wafer_wp_wait_worker(record, worker, WAFER_WP_REC_JOIN_CYCLE_BASE,
-                             UINT32_MAX);
+  if (progress_kind) {
+    for (uint32_t ordinal = 0; ordinal < context->issue_count;
+         ++ordinal)
+      record[WAFER_WP_REC_ISSUE_RC_BASE + ordinal] =
+          issue_rcs[ordinal];
+    for (uint32_t ordinal = 0; ordinal < attempted_issue_count;
+         ++ordinal) {
+      if (issue_rcs[ordinal] != 1U)
+        continue;
+      uint32_t worker = context->instructions[ordinal].worker;
+      ++accepted_issue_count;
+      ++accepted_by_worker[worker];
+      accepted_worker_mask |= UINT32_C(1) << worker;
     }
-  } else if (request->kind == WAFER_WP_KIND_BACKLOG_ONLY) {
-    wafer_wp_wait_worker(record, request->target_worker,
-                         WAFER_WP_REC_JOIN_CYCLE_BASE,
-                         WAFER_WP_REC_TARGET_WAIT_CYCLES);
-  } else {
-    wafer_wp_wait_worker(record, request->observer_worker,
-                         WAFER_WP_REC_JOIN_CYCLE_BASE,
-                         WAFER_WP_REC_OBSERVER_WAIT_CYCLES);
   }
-  wafer_wp_controls(record, WAFER_WP_REC_CONTROL_BOUNDARY);
-  record[WAFER_WP_REC_OBSERVER_BOUNDARY_CYCLE] = wafer_wp_cycle();
-  record[WAFER_WP_REC_OBSERVER_DONE_BOUNDARY] =
-      (record[WAFER_WP_REC_CONTROL_BOUNDARY +
-              request->observer_worker] &
-       WAFER_WP_TASK_DONE) != 0U;
-  record[WAFER_WP_REC_TARGET_PENDING_BOUNDARY] =
-      (record[WAFER_WP_REC_CONTROL_BOUNDARY + request->target_worker] &
-       WAFER_WP_TASK_DONE) == 0U;
+  uint32_t attempted_worker_mask = 0U;
+  for (uint32_t ordinal = 0; ordinal < attempted_issue_count;
+       ++ordinal)
+    attempted_worker_mask |=
+        UINT32_C(1) << context->instructions[ordinal].worker;
+  record[WAFER_WP_REC_ACCEPTED_ISSUE_COUNT] =
+      accepted_issue_count;
+  record[WAFER_WP_REC_ACCEPTED_WORKER_MASK] =
+      accepted_worker_mask;
+  for (uint32_t worker = 0; worker < WAFER_WP_WORKERS; ++worker)
+    record[WAFER_WP_REC_ACCEPTED_ISSUES_BY_WORKER_BASE + worker] =
+        accepted_by_worker[worker];
+  record[WAFER_WP_REC_ATTEMPTED_ISSUE_COUNT] =
+      attempted_issue_count;
+  record[WAFER_WP_REC_ATTEMPTED_WORKER_MASK] =
+      attempted_worker_mask;
+  if (accepted_issue_count == context->issue_count)
+    record[WAFER_WP_REC_FLAGS] |=
+        WAFER_WP_RECORD_ISSUES_SUBMITTED;
+  wafer_wp_controls_rotated(record, WAFER_WP_REC_CONTROL_AFTER_ISSUE,
+                            request->join_rotation);
+  record[WAFER_WP_REC_PENDING_WORKER_MASK] =
+      wafer_wp_pending_mask(
+          record, WAFER_WP_REC_CONTROL_AFTER_ISSUE,
+          attempted_worker_mask);
+  if (status != WAFER_WP_STATUS_OK) {
+    wafer_wp_publish_launch_failure(record, request, status);
+    return;
+  }
+  WaferWPPollState poll_state;
+  wafer_wp_init_poll_state(
+      &poll_state, record[WAFER_WP_REC_AFTER_ISSUE_CYCLE]);
+  uint32_t boundary_mask =
+      request->kind == WAFER_WP_KIND_SENTINEL_ONLY ||
+              request->kind == WAFER_WP_KIND_CONCURRENT
+          ? UINT32_C(1) << request->observer_worker
+          : request->worker_mask;
+  if (!wafer_wp_observe_completions(record, request, &poll_state,
+                                    boundary_mask)) {
+    wafer_wp_publish_launch_failure(
+        record, request, WAFER_WP_STATUS_OBSERVATION_TIMEOUT);
+    return;
+  }
+  wafer_wp_capture_boundary(record, request,
+                            request->join_rotation);
   if (request->kind == WAFER_WP_KIND_SENTINEL_ONLY ||
       request->kind == WAFER_WP_KIND_CONCURRENT) {
     uint32_t sentinel_slot = context->issue_count - 1U;
@@ -741,20 +1099,24 @@ wafer_tx81_worker_placement_probe(uint64_t request_ddr,
         wafer_wp_mismatch(context, &context->instructions[sentinel_slot]) +
         wafer_wp_guard_mismatch(&context->instructions[sentinel_slot]);
   }
-  record[WAFER_WP_REC_FLAGS] |= WAFER_WP_RECORD_BOUNDARY_CAPTURED;
-
-  if (request->kind == WAFER_WP_KIND_CONCURRENT)
-    wafer_wp_wait_worker(record, request->target_worker,
-                         WAFER_WP_REC_JOIN_CYCLE_BASE,
-                         WAFER_WP_REC_TARGET_WAIT_CYCLES);
-  for (uint32_t worker = 0; worker < WAFER_WP_WORKERS; ++worker)
-    if ((request->worker_mask & (UINT32_C(1) << worker)) != 0U &&
-        (get_ncc_reg(worker, GR_CSR_CONTROL_ADDR) & WAFER_WP_TASK_DONE) ==
-            0U)
-      wafer_wp_wait_worker(record, worker, WAFER_WP_REC_JOIN_CYCLE_BASE,
-                           UINT32_MAX);
-  record[WAFER_WP_REC_FLAGS] |= WAFER_WP_RECORD_SAFETY_DRAINED;
-  wafer_wp_controls(record, WAFER_WP_REC_CONTROL_FINAL);
+  record[WAFER_WP_REC_BOUNDARY_ORACLE_CYCLE] =
+      wafer_wp_cycle();
+  if (!wafer_wp_observe_completions(record, request, &poll_state,
+                                    request->worker_mask)) {
+    wafer_wp_publish_launch_failure(
+        record, request, WAFER_WP_STATUS_OBSERVATION_TIMEOUT);
+    return;
+  }
+  wafer_wp_finish_poll_evidence(record, request);
+  wafer_wp_confirm_matching_joins(record, request);
+  if ((record[WAFER_WP_REC_FLAGS] &
+       WAFER_WP_RECORD_MATCHING_JOIN_CONFIRMED) == 0U)
+    status = WAFER_WP_STATUS_WAIT_FAILED;
+  else
+    record[WAFER_WP_REC_FLAGS] |=
+        WAFER_WP_RECORD_SAFETY_DRAINED;
+  wafer_wp_controls_rotated(record, WAFER_WP_REC_CONTROL_FINAL,
+                            request->join_rotation);
   wafer_wp_snapshot(record, WAFER_WP_REC_PMU64_AFTER,
                     WAFER_WP_REC_INSTRUCTION_AFTER,
                     WAFER_WP_REC_BLOCKING_AFTER,
@@ -764,13 +1126,14 @@ wafer_tx81_worker_placement_probe(uint64_t request_ddr,
 
   uint64_t final_mismatches = 0;
   uint64_t final_guard_mismatches = 0;
-  for (uint32_t slot = 0; slot < context->issue_count; ++slot) {
+  for (uint32_t ordinal = 0; ordinal < context->issue_count;
+       ++ordinal) {
     uint64_t mismatches =
-        wafer_wp_mismatch(context, &context->instructions[slot]);
+        wafer_wp_mismatch(context, &context->instructions[ordinal]);
     uint64_t guard_mismatches =
-        wafer_wp_guard_mismatch(&context->instructions[slot]);
-    record[WAFER_WP_REC_SLOT_MISMATCH_BASE + slot] = mismatches;
-    record[WAFER_WP_REC_SLOT_GUARD_MISMATCH_BASE + slot] =
+        wafer_wp_guard_mismatch(&context->instructions[ordinal]);
+    record[WAFER_WP_REC_SLOT_MISMATCH_BASE + ordinal] = mismatches;
+    record[WAFER_WP_REC_SLOT_GUARD_MISMATCH_BASE + ordinal] =
         guard_mismatches;
     final_mismatches += mismatches;
     final_guard_mismatches += guard_mismatches;
@@ -784,8 +1147,8 @@ wafer_tx81_worker_placement_probe(uint64_t request_ddr,
     status = WAFER_WP_STATUS_ORACLE_FAILED;
   for (uint32_t worker = 0; worker < WAFER_WP_WORKERS; ++worker)
     if ((request->worker_mask & (UINT32_C(1) << worker)) != 0U &&
-        (record[WAFER_WP_REC_CONTROL_FINAL + worker] &
-         WAFER_WP_TASK_DONE) == 0U)
+        !wafer_wp_control_is_idle(
+            record[WAFER_WP_REC_CONTROL_FINAL + worker]))
       status = WAFER_WP_STATUS_WAIT_FAILED;
 
   wafer_wp_archive_outputs(context, record);

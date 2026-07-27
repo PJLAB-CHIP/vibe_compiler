@@ -197,10 +197,9 @@ def validate_manifest(
     if not isinstance(modules, list) or len(modules) != 1:
         raise RuntimeError("Direct-DTE case must publish one shared module")
     module = modules[0]
-    if module.get("exports") != [
-        {"role": "prepare", "symbol": "__wafer_cluster_prepare"},
-        {"role": "main", "symbol": "main"},
-    ] or not (package / module["path"]).is_file():
+    if module.get("exports") != runtime_launch.expected_kernel_module_exports(
+        runtime_launch.CLUSTER_KERNEL_LAUNCH
+    ) or not (package / module["path"]).is_file():
         raise RuntimeError("Direct-DTE shared module exports are invalid")
 
     resources = manifest.get("resources")

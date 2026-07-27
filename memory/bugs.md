@@ -1641,3 +1641,48 @@
   failure不会遮蔽后续合法candidate。吞吐对比不能通过降低hard cap、缩小candidate domain、跳过final gate或增加用户可见
   quick mode取得。executor中会在首次submit扩容的worker容器及其统计getter必须由同一mutex保护；只有独立标量计数可使用
   atomic，否则“只供测试”的读取同样会与lazy worker construction形成data race。
+
+## 2026-07-27 板端module export不能复制旧launch symbol
+
+- 现象：runtime launch合同收口为`kernel`/`model`两类后，几个手写full-card probe LLVM fixture和
+  manifest validator仍保存旧`__wafer_cluster_prepare`及手写exports数组；主线compiler已发布
+  `__wafer_kernel_prepare`，导致probe的final-ELF/no-card gate与canonical package合同错位。
+- 根因：测试把历史cluster/DTE case spelling当成独立launch ABI事实源，没有从kernel launch的typed
+  `phases`派生module exports；同一语义在compiler、fixture和Python validator里重复硬编码。
+- 修复模式：所有cluster kernel fixture统一导出`__wafer_kernel_prepare`；Python validator通过共享
+  `expected_kernel_module_exports(CLUSTER_KERNEL_LAUNCH)`生成prepare/main列表，再用全仓搜索清除旧symbol。
+  Direct DTE只保留entry transport lifecycle，不产生第三种runtime launch kind或case-specific prepare入口。
+- 防复发：新增板端probe时只选择canonical kernel/model launch contract；module exports必须从其phase顺序
+  派生并由final linked ELF验证，不能复制另一个case的symbol数组或重新引入workload-specific launch id。
+
+## 2026-07-27 characterization boundary必须先于safety drain
+
+- 现象：worker progress probe初版在保存observer boundary前先drain target，且把issue ordinal同时当作
+  physical SPM slot，使sentinel-only与concurrent control落到不同地址；只看最终完成仍可能把自然排空或
+  地址差异误报为bounded progress。
+- 根因：混淆“保证板卡恢复idle的cleanup artifact”和“用于区分硬件行为的boundary artifact”，同时没有把
+  logical issue identity与physical resource identity分开建模。
+- 修复模式：record显式分离issue ordinal与SPM slot，matched sentinel control固定同一physical slot；
+  tight issue后先保存observer result/guard、target pending与raw `CONTROL`及boundary cycle，再执行matching
+  safety join。join必须同时满足返回码、post-join idle和device deadline；host还完整检查output tail canary。
+- error path另按attempted prefix记录rc==1的accepted count与全部attempted worker mask；partial issue或
+  observation deadline失败只进入一次独立bounded `CONTROL` cleanup，不调用无界`TsmWaitfinish`。cleanup
+  deadline失败直接记录poison并停批，不重复poll/wait；host区分primary failure与cleanup poison。
+- 防复发：每个并发characterization先冻结“哪一时刻的哪些字段承担区分结论”，再定义cleanup；任何wait/drain
+  都不能发生在该boundary之前。matched control除逻辑变量外必须共享地址、slot、payload、seed和issue order，
+  不能只靠相同总bytes或case名声称匹配。submit返回失败不能证明当前worker未入队，cleanup participant必须
+  保守覆盖全部attempted issue；cleanup observation与正常completion record不得共用成功flag。
+
+## 2026-07-27 partial accept失败必须在恢复全局测量状态前drain
+
+- 现象：SPM sustained probe的setup、measured pair、matched WDMA或archive阶段若只接受部分
+  `TsmExecute`后失败，旧路径可能直接恢复PMU enable并返回，让已接受worker traffic在错误测量scope下继续运行。
+- 根因：void helper丢弃submit返回值，protocol没有逐phase accepted/pending/final-control状态，异常清理只覆盖
+  happy path之后的正常drain。
+- 修复模式：直接构造并提交packet，只有明确accepted的work进入phase tracker；constructor或submit在首次
+  drain前失败时，对已接受work执行一次bounded matching-worker safety drain。若正常drain本身已经失败，
+  该次尝试就是唯一cleanup，不得再次调用drain；直接记录pending/final `CONTROL`、cleanup attempted和
+  poison mask，再restore PMU并返回独立cleanup-failed status。host标记board batch poisoned并立即停止。
+- 防复发：任何多issue板端probe都必须按phase追踪accepted work，并保证全局PMU/cache/transport scope的restore
+  晚于可验证cleanup。不能用最终terminal、void wrapper或“后续会统一wait”代替partial-accept error path；
+  timeout/设备异常后的第二次drain同样属于禁止的自动retry。

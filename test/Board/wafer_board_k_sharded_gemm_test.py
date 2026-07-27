@@ -276,10 +276,9 @@ def validate_manifest(
         not isinstance(modules, list)
         or len(modules) != 1
         or modules[0].get("exports")
-        != [
-            {"role": "prepare", "symbol": "__wafer_cluster_prepare"},
-            {"role": "main", "symbol": "main"},
-        ]
+        != runtime_launch.expected_kernel_module_exports(
+            runtime_launch.CLUSTER_KERNEL_LAUNCH
+        )
         or not (package / modules[0].get("path", "")).is_file()
     ):
         raise RuntimeError("full-4096 GEMM must publish one cluster shared ELF")
