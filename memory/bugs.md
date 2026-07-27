@@ -1729,3 +1729,29 @@
   FP16/BF16算子覆盖。
 - 防复发：新增case先写清真实workload dtype与证明对象，再实现payload/oracle；任何因dtype变更而改变的case
   必须撤销旧板端结论，只接受新构建、新启动和新输出，no-card与旧输出都不能代签。
+
+## 2026-07-27 手写Direct-DTE寄存器必须逐字段对齐owner路径
+
+- 现象：raw multidestination首个broadcast case使cluster无法terminal，随后known-good Add也timeout。
+- 根因：receiver使用SPM stream 60，但手写DTE user ID错误设置`switch_ddr=1`；同组scatter还只写
+  `mode=1`，遗漏owner路径要求的`sg_flag=1`。修正这两项后，raw writer仍把
+  `get_tile_spm_addr_base()+offset`直接写入硬件destination slot，遗漏owner对remote-SPM执行的
+  `dst |= (dst << 17) & 0x00ffff0000000000` route编码；这会影响全部24个raw multidestination
+  case。vendor wait又会在DTE error后重新进入无界轮询，因此非法descriptor表现为整轮卡死。走CRT
+  helper的四源fan-in不受影响。
+- 修复模式：remote-SPM user ID与version-matched `kuiper_dte_init_reg`/`direct_dte_send_async`逐bit对齐，
+  保持`switch_ddr=0`；scatter的mode寄存器写为`0x101`，broadcast/shuffle保持`sg_flag=0`；每个
+  destination在写硬件slot和owner node前统一补齐上述route编码。
+- 防复发：raw寄存器probe必须把stream memory class、user ID route bits和mode side bits作为独立host gate。
+  source gate还要检查每个slot都先经过route helper，no-card最终ELF必须保留route shift和destination
+  store。`dest_num`按Direct-DTE文档的`dst_num - 1`编码；
+  缺raw mode 1/2/3实现佐证的payload-to-destination mapping继续只作板端观察，不猜测性提升为ABI。
+
+## 2026-07-27 板端fixture必须绑定本轮代次、shape和matched session
+
+- 多sample CSR结果不能只看`DATA_VALID=1`：issue前保存value/index pair，本轮必须观察到新代次且与本轮
+  input coherent，drain后再重读确认，否则会把前一launch的ArgMin结果当成本轮完成。
+- NE `transB=1`时物理B是`N×K`，对角seed的行stride必须使用`K`而不是`N`；shape从`K=N`扩为
+  `K!=N`后必须用独立M/K/N字段生成fixture，不能复用旧方阵索引。
+- 需要same-session matched control的case必须在单个CTest内fresh生成control和candidate；不能依赖CMake
+  `DEPENDS`替runner补执行，也不能从固定work-dir读取旧session archive。

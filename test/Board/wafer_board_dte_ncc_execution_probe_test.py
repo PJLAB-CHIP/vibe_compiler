@@ -566,6 +566,13 @@ def build_probe(
             "final probe ELF does not materialize raw DTE register stores: "
             + ", ".join(missing_register_stores)
         )
+    if re.search(
+        r"\bslli\s+[^,\n]+,\s*[^,\n]+,\s*0x11\b",
+        raw_program_disassembly,
+    ) is None:
+        raise RuntimeError(
+            "final probe ELF dropped the remote-SPM route transform"
+        )
     if len(re.findall(r"\bsw\s+", raw_program_disassembly)) < 12:
         raise RuntimeError(
             "final probe ELF does not retain multidestination address/user "
@@ -763,16 +770,28 @@ def expected_capture_slots(
         case = RAW_MULTIDEST_CASE_BY_MODE[mode]
         receive = b""
         if rank in case.target_ranks:
-            destination_index = case.target_ranks.index(rank)
-            source_offset = (
-                0
-                if case.semantic == "broadcast"
-                else raw_multidest_reference_offsets(mode)[destination_index]
-            )
-            receive = raw_multidest_pattern(
+            source = raw_multidest_pattern(
                 transport_catalog.RAW_MULTIDEST_SOURCE_RANK,
                 MAX_PAYLOAD_BYTES,
-            )[source_offset : source_offset + case.per_destination_bytes]
+            )
+            if case.semantic == "shuffle":
+                receive = b"".join(
+                    source[offset : offset + case.element_bytes]
+                    for offset in raw_shuffle_source_offsets(mode)
+                )
+            else:
+                destination_index = case.target_ranks.index(rank)
+                source_offset = (
+                    0
+                    if case.semantic == "broadcast"
+                    else raw_multidest_reference_offsets(mode)[
+                        destination_index
+                    ]
+                )
+                receive = source[
+                    source_offset : source_offset
+                    + case.per_destination_bytes
+                ]
         return (
             guarded_capture_slot(
                 raw_multidest_pattern(rank, MAX_PAYLOAD_BYTES),
@@ -883,14 +902,24 @@ def raw_multidest_reference_offsets(mode: int) -> tuple[int, ...]:
     """Stimulus reference only; the board oracle does not assume this mapping."""
 
     case = RAW_MULTIDEST_CASE_BY_MODE[mode]
+    if case.semantic == "shuffle":
+        raise RuntimeError("shuffle uses source-section offsets")
     if case.semantic == "broadcast":
         return (0,)
-    stride = (
-        2 * case.per_destination_bytes
-        if case.semantic == "shuffle"
-        else case.per_destination_bytes
+    return tuple(
+        index * case.per_destination_bytes
+        for index in range(case.fanout)
     )
-    return tuple(index * stride for index in range(case.fanout))
+
+
+def raw_shuffle_source_offsets(mode: int) -> tuple[int, ...]:
+    case = RAW_MULTIDEST_CASE_BY_MODE[mode]
+    if case.semantic != "shuffle":
+        raise RuntimeError("source-section offsets require shuffle mode")
+    return tuple(
+        index * 2 * case.element_bytes
+        for index in range(case.shuffle_sections)
+    )
 
 
 def validate_raw_multidest_capture(
@@ -937,6 +966,26 @@ def validate_raw_multidest_capture(
     source = raw_multidest_pattern(
         transport_catalog.RAW_MULTIDEST_SOURCE_RANK, MAX_PAYLOAD_BYTES
     )
+    if case.semantic == "shuffle":
+        source_offsets = raw_shuffle_source_offsets(mode)
+        expected_receive = b"".join(
+            source[offset : offset + case.element_bytes]
+            for offset in source_offsets
+        )
+        if slots[1] != guarded_capture_slot(
+            expected_receive, MAX_PAYLOAD_BYTES
+        ):
+            raise RuntimeError(
+                f"rank {rank} mode {mode} raw source shuffle is not exact"
+            )
+        return {
+            "role": "target",
+            "destination_slot": 0,
+            "source_offset_bytes": source_offsets[0],
+            "source_offsets_bytes": source_offsets,
+            "received_bytes": len(expected_receive),
+        }
+
     matches = tuple(
         (offset, received_bytes)
         for received_bytes in range(case.per_destination_bytes, 0, -4)
@@ -979,6 +1028,38 @@ def summarize_raw_multidest_observations(
         raise RuntimeError(
             f"{case.name} did not observe exactly its configured target ranks"
         )
+    if case.semantic == "shuffle":
+        target_rank = case.target_ranks[0]
+        target = target_rows[target_rank]
+        source_offsets = tuple(
+            int(offset) for offset in target["source_offsets_bytes"]
+        )
+        received_bytes = int(target["received_bytes"])
+        return {
+            "semantic": case.semantic,
+            "raw_mode": case.raw_mode,
+            "fanout": 1,
+            "target_layout": case.target_layout,
+            "target_rank": target_rank,
+            "shuffle_sections": case.shuffle_sections,
+            "element_bytes": case.element_bytes,
+            "source_stride_bytes": 2 * case.element_bytes,
+            "source_offsets_bytes": source_offsets,
+            "received_bytes": received_bytes,
+            "dest_num_register_value": case.dest_num_register_value,
+            "dest_num_encoding": case.dest_num_encoding,
+            "reference_capability_match": (
+                source_offsets == raw_shuffle_source_offsets(mode)
+                and received_bytes == case.per_destination_bytes
+            ),
+            "mapping_policy": (
+                "single-destination source-side 1D shuffle; no "
+                "multi-destination or collective claim"
+            ),
+            "all_selected_targets_exact": True,
+            "all_nonparticipants_untouched": True,
+        }
+
     mapping = {
         rank: (
             int(target_rows[rank]["source_offset_bytes"]),

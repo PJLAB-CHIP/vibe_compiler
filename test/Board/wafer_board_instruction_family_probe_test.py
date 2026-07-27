@@ -527,6 +527,83 @@ def board_command(
     ]
 
 
+def decode_argmin_diagnostic(
+    words: tuple[int, ...], status: int
+) -> dict[str, int | bool]:
+    rec = catalog.REC
+    flags = words[rec["ARGMIN_DIAGNOSTIC_FLAGS"]]
+    value_raw = words[rec["ARGMIN_VALUE_RAW"]]
+    index_raw = words[rec["ARGMIN_INDEX_RAW"]]
+    arrival = words[rec["ARGMIN_ARRIVAL_POLLS"]]
+    value_poll = arrival & 0xFFFFFFFF
+    index_poll = arrival >> 32
+    writeback_polls = words[rec["ARGMIN_WRITEBACK_POLLS"]]
+    state_polls = words[rec["ARGMIN_STATE_POLLS"]]
+    taskstatus = words[rec["ARGMIN_TASKSTATUS_FIRST_LAST"]]
+    ibcounter = words[rec["ARGMIN_IBCOUNTER_FIRST_LAST"]]
+    taskstatus_last = taskstatus >> 32
+    ibcounter_last = ibcounter >> 32
+    value_valid = bool(flags & catalog.ARGMIN_VALUE_VALID)
+    index_valid = bool(flags & catalog.ARGMIN_INDEX_VALID)
+    task_drained = bool(flags & catalog.ARGMIN_TASK_DRAINED)
+    if (
+        words[rec["ARGMIN_WRITEBACK_BUDGET"]]
+        != catalog.ARGMIN_WRITEBACK_POLL_BUDGET
+        or words[rec["ARGMIN_STATE_BUDGET"]]
+        != catalog.ARGMIN_STATE_POLL_BUDGET
+        or not 1 <= writeback_polls <= catalog.ARGMIN_WRITEBACK_POLL_BUDGET
+        or not 1 <= state_polls <= catalog.ARGMIN_STATE_POLL_BUDGET
+    ):
+        raise RuntimeError("ArgMin diagnostic poll budget record is invalid")
+    for name, valid, raw, arrival_poll in (
+        ("value", value_valid, value_raw, value_poll),
+        ("index", index_valid, index_raw, index_poll),
+    ):
+        if valid != bool(raw & (1 << 32)):
+            raise RuntimeError(
+                f"ArgMin diagnostic {name} DATA_VALID flag disagrees with raw"
+            )
+        if valid != (arrival_poll != 0):
+            raise RuntimeError(
+                f"ArgMin diagnostic {name} arrival poll is inconsistent"
+            )
+        if arrival_poll > writeback_polls:
+            raise RuntimeError(
+                f"ArgMin diagnostic {name} arrival exceeds poll count"
+            )
+    if task_drained != (taskstatus_last == 1 and ibcounter_last == 0):
+        raise RuntimeError("ArgMin diagnostic worker-drain record is inconsistent")
+    writeback_exhausted = bool(
+        flags & catalog.ARGMIN_WRITEBACK_BUDGET_EXHAUSTED
+    )
+    state_exhausted = bool(flags & catalog.ARGMIN_STATE_BUDGET_EXHAUSTED)
+    if writeback_exhausted != (not value_valid or not index_valid):
+        raise RuntimeError("ArgMin diagnostic writeback exhaustion is inconsistent")
+    if state_exhausted != (not task_drained):
+        raise RuntimeError("ArgMin diagnostic state exhaustion is inconsistent")
+    if status == 0:
+        if not value_valid or not index_valid or not task_drained:
+            raise RuntimeError("completed ArgMin diagnostic lacks bounded evidence")
+    elif status == catalog.STATUS_DIAGNOSTIC_BOUNDED:
+        if not writeback_exhausted and not state_exhausted:
+            raise RuntimeError("bounded ArgMin diagnostic did not exhaust a budget")
+    else:
+        raise RuntimeError(f"unexpected ArgMin diagnostic status {status}")
+    return {
+        "value_valid": value_valid,
+        "index_valid": index_valid,
+        "task_drained": task_drained,
+        "value": value_raw & 0xFFFFFFFF,
+        "index": index_raw & 0xFFFFFFFF,
+        "value_arrival_poll": value_poll,
+        "index_arrival_poll": index_poll,
+        "writeback_polls": writeback_polls,
+        "state_polls": state_polls,
+        "writeback_budget_exhausted": writeback_exhausted,
+        "state_budget_exhausted": state_exhausted,
+    }
+
+
 def validate_output(
     path: pathlib.Path,
     case: catalog.InstructionCase,
@@ -564,11 +641,19 @@ def validate_output(
         words[rec["AUX_SPAN"]],
         words[rec["SAMPLE"]],
     )
+    argmin_diagnostic = case.symbol in {
+        "PERIPHERAL_ARGMIN_TIE_F16_OBSERVED",
+        "PERIPHERAL_ARGMIN_NAN_F16_OBSERVED",
+    }
+    status = words[rec["STATUS"]]
+    valid_status = status == 0 or (
+        argmin_diagnostic and status == catalog.STATUS_DIAGNOSTIC_BOUNDED
+    )
     if (
         words[rec["MAGIC"]] != catalog.RECORD_MAGIC
         or words[rec["SCHEMA_AND_WORDS"]]
         != (catalog.SCHEMA << 32) | catalog.RECORD_WORDS
-        or words[rec["STATUS"]] != 0
+        or not valid_status
         or actual_mirror != expected_mirror
         or words[rec["REQUEST_GUARD"]] != catalog.REQUEST_GUARD
         or words[rec["OUTPUT_DDR_OFFSET"]] != catalog.OUTPUT_DDR_OFFSET
@@ -585,7 +670,11 @@ def validate_output(
     }
     expected_steps = (
         catalog.STEP_TARGET_ISSUED
-        | catalog.STEP_FINAL_FENCE_COMPLETED
+        | (
+            catalog.STEP_FINAL_FENCE_COMPLETED
+            if status == 0
+            else 0
+        )
         | (
             catalog.STEP_BIT2FP_COMPLETED
             | catalog.STEP_MASK_MOVE_ISSUED
@@ -594,12 +683,18 @@ def validate_output(
         )
         | (
             catalog.STEP_REPEATED_OVERLAP_VALUES_STAGED
+            | catalog.STEP_REPEATED_OVERLAP_AUX_SNAPSHOTTED
             if repeated_unpool
             else 0
         )
         | (
             catalog.STEP_ARGMIN_INPUT_SNAPSHOTTED
-            if argmin_snapshot
+            if argmin_snapshot and status == 0
+            else 0
+        )
+        | (
+            catalog.STEP_ARGMIN_DIAGNOSTIC_RETURNED
+            if argmin_diagnostic
             else 0
         )
     )
@@ -617,6 +712,35 @@ def validate_output(
         catalog.AUX_DDR_OFFSET :
         catalog.AUX_DDR_OFFSET + catalog.SLOT_BYTES
     ]
+    diagnostic_observation = (
+        decode_argmin_diagnostic(words, status)
+        if argmin_diagnostic
+        else None
+    )
+    if status == catalog.STATUS_DIAGNOSTIC_BOUNDED:
+        bounded = bytearray(raw)
+        bounded[: catalog.RECORD_WORDS * 8] = bytes(
+            [OUTPUT_INITIAL_CANARY]
+        ) * (catalog.RECORD_WORDS * 8)
+        if bounded != bytes([OUTPUT_INITIAL_CANARY]) * catalog.RESOURCE_BYTES:
+            mismatch = next(
+                index
+                for index, value in enumerate(bounded)
+                if value != OUTPUT_INITIAL_CANARY
+            )
+            raise RuntimeError(
+                f"{case.name}: bounded diagnostic wrote outside its record "
+                f"at byte {mismatch}"
+            )
+        return {
+            "case": case.as_dict(),
+            "sample": sample,
+            "step_flags": words[rec["STEP_FLAGS"]],
+            "semantic_observation": {
+                "classification": "bounded-diagnostic",
+                **diagnostic_observation,
+            },
+        }
     result_offsets = (
         set(catalog.reduce_exact_result_byte_offsets(case))
         if not case.is_observation
@@ -690,6 +814,27 @@ def validate_output(
             )
     elif repeated_unpool:
         expected_repeated_aux = catalog.repeated_unpool_expected_aux_slot()
+        snapshot_begin = (
+            catalog.BODY_OFFSET
+            + catalog.REPEATED_UNPOOL_AUX_SNAPSHOT_OFFSET
+        )
+        snapshot_end = snapshot_begin + catalog.REPEATED_UNPOOL_AUX_BYTES
+        snapshot_mismatch = next(
+            (
+                index
+                for index in range(snapshot_begin, snapshot_end)
+                if actual_aux_slot[index] != expected_repeated_aux[index]
+            ),
+            None,
+        )
+        if snapshot_mismatch is not None:
+            raise RuntimeError(
+                f"{case.name}: repeated-overlap indexed-pool "
+                f"pre-consumer auxiliary snapshot differs at slot byte "
+                f"{snapshot_mismatch}: "
+                f"actual=0x{actual_aux_slot[snapshot_mismatch]:02x}, "
+                f"expected=0x{expected_repeated_aux[snapshot_mismatch]:02x}"
+            )
         if actual_aux_slot != expected_repeated_aux:
             mismatch = next(
                 index
@@ -703,8 +848,8 @@ def validate_output(
                 if actual != expected
             )
             raise RuntimeError(
-                f"{case.name}: repeated-overlap indexed-pool auxiliary "
-                f"differs at slot byte {mismatch}: "
+                f"{case.name}: repeated-overlap post-consumer auxiliary "
+                f"or guard differs at slot byte {mismatch}: "
                 f"actual=0x{actual_aux_slot[mismatch]:02x}, "
                 f"expected=0x{expected_repeated_aux[mismatch]:02x}"
             )
@@ -801,6 +946,17 @@ def validate_output(
                 f"actual={result[2:4].hex()}, "
                 f"expected={expected_padding.hex()}"
             )
+        if diagnostic_observation is None:
+            raise RuntimeError("ArgMin result omitted its diagnostic record")
+        result_value = struct.unpack_from("<H", result)[0]
+        result_index = struct.unpack_from("<I", result, 4)[0]
+        if (
+            diagnostic_observation["value"] & 0xFFFF != result_value
+            or diagnostic_observation["index"] != result_index
+        ):
+            raise RuntimeError(
+                f"{case.name}: ArgMin result disagrees with bounded CSR record"
+            )
     observation = {
         "case": case.as_dict(),
         "sample": sample,
@@ -810,6 +966,8 @@ def validate_output(
     }
     if semantic_observation is not None:
         observation["semantic_observation"] = semantic_observation
+    if diagnostic_observation is not None:
+        observation["argmin_diagnostic"] = diagnostic_observation
     return observation
 
 

@@ -2059,16 +2059,16 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             ),
         ),
         _observation_leaf(
-            "dte-raw-shuffle-fanout-layout",
+            "dte-raw-shuffle-source-stride",
             "held-out",
             "full-card-16-rank",
             DTE_NCC_CATALOG,
             "direct-dte-raw-shuffle",
-            resource_budget="one-guarded-source-and-up-to-fifteen-destinations",
+            resource_budget="one-guarded-source-and-one-destination",
             reason=(
-                "raw shuffle fanout, strided source selection and "
-                "destination-count encoding remain board observations; they "
-                "do not qualify an operator collective or device cost"
+                "raw shuffle covers one remote destination and source-side "
+                "1D strided gather only; it does not qualify "
+                "multi-destination communication, a collective, or cost"
             ),
         ),
         _non_board_leaf(

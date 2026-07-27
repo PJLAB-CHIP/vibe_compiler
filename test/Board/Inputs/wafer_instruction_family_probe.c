@@ -112,6 +112,201 @@ static void wafer_ifp_copy_spm_bytes(uint64_t destination, uint64_t source,
   __asm__ volatile("sync.is" ::: "memory");
 }
 
+static void wafer_ifp_copy_spm_bytes_ncc(uint64_t destination,
+                                        uint64_t source, uint32_t bytes) {
+  /*
+   * Keep producer, snapshot, sentinel staging, and consumer in one NCC
+   * dependency graph.  A Kcore copy after a single CSR-idle observation would
+   * add an ambiguous NCC-to-Kcore completion boundary to the collision case.
+   */
+  wafer_tx81_gather_scatter(source, destination, bytes, bytes, 0U, 0U, 0U, 1U,
+                            1U, 1U, 0U, 0U, 0U, 1U, 1U, 1U);
+}
+
+static uint64_t wafer_ifp_pack_first_last(uint32_t first, uint32_t last) {
+  return (uint64_t)first | ((uint64_t)last << 32);
+}
+
+static uint32_t wafer_ifp_argmin_f16_is_nan(uint16_t value) {
+  return (value & UINT16_C(0x7c00)) == UINT16_C(0x7c00) &&
+         (value & UINT16_C(0x03ff)) != 0;
+}
+
+static uint32_t
+wafer_ifp_argmin_pair_is_coherent(uint64_t input, uint32_t elements,
+                                  uint32_t format, uint64_t value_raw,
+                                  uint64_t index_raw) {
+  uint32_t index = (uint32_t)index_raw;
+  if (index >= elements || format != Fmt_FP16)
+    return 0;
+  const volatile uint16_t *mapping =
+      (const volatile uint16_t *)(const void *)get_spm_memory_mapping(input);
+  uint16_t source = mapping[index];
+  uint16_t value = (uint16_t)value_raw;
+  return source == value ||
+         (wafer_ifp_argmin_f16_is_nan(source) &&
+          wafer_ifp_argmin_f16_is_nan(value));
+}
+
+static uint32_t
+wafer_ifp_argmin_pair_is_fresh(uint64_t prelaunch_value_raw,
+                              uint64_t prelaunch_index_raw,
+                              uint64_t value_raw, uint64_t index_raw,
+                              uint32_t observed_invalid_pair) {
+  if ((value_raw & WAFER_IFP_ARGMIN_DATA_VALID) == 0 ||
+      (index_raw & WAFER_IFP_ARGMIN_DATA_VALID) == 0)
+    return 0;
+  return observed_invalid_pair ||
+         (uint32_t)value_raw != (uint32_t)prelaunch_value_raw ||
+         (uint32_t)index_raw != (uint32_t)prelaunch_index_raw;
+}
+
+static void wafer_ifp_store_argmin_result(uint64_t output, uint32_t format,
+                                          uint32_t value, uint32_t index) {
+  volatile uint8_t *mapping =
+      (volatile uint8_t *)(void *)get_spm_memory_mapping(output);
+  if (format == Fmt_FP16 || format == Fmt_BF16 || format == Fmt_INT16 ||
+      format == Fmt_UINT16)
+    *(volatile uint16_t *)(void *)mapping = (uint16_t)value;
+  else
+    *(volatile uint32_t *)(void *)mapping = value;
+  *(volatile uint32_t *)(void *)(mapping + 4) = index;
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
+  __asm__ volatile("sync" ::: "memory");
+}
+
+/*
+ * Diagnostic-only ArgMin launch.  Clearing the packet writeback fields keeps
+ * the public TsmExecute path from entering its unbounded software waits; the
+ * CT command still programs both hardware writeback CSRs before issue.  This
+ * probe then observes both channels and worker state with fixed budgets.
+ */
+static uint32_t
+wafer_ifp_argmin_bounded(uint64_t input, uint64_t output,
+                         uint32_t elements, uint32_t format,
+                         volatile uint64_t *record) {
+  TsmPeripheralInstr instruction = {0};
+  TsmPeripheral *peripheral = TsmNewPeripheral();
+  peripheral->ArgMin(&instruction, input, elements, (Data_Format)format);
+  instruction.param.wb_data0 = 0;
+  instruction.param.wb_data1 = 0;
+  record[WAFER_IFP_REC_ARGMIN_WRITEBACK_BUDGET] =
+      WAFER_IFP_ARGMIN_WRITEBACK_POLL_BUDGET;
+  record[WAFER_IFP_REC_ARGMIN_STATE_BUDGET] =
+      WAFER_IFP_ARGMIN_STATE_POLL_BUDGET;
+  uint64_t prelaunch_value_raw = getreg(WAFER_IFP_ARGMIN_VALUE_CSR);
+  uint64_t prelaunch_index_raw = getreg(WAFER_IFP_ARGMIN_INDEX_CSR);
+  (void)TsmExecute(&instruction);
+  TsmDeletePeripheral(peripheral);
+
+  uint64_t value_raw = 0;
+  uint64_t index_raw = 0;
+  uint32_t value_poll = 0;
+  uint32_t index_poll = 0;
+  uint32_t writeback_polls = 0;
+  uint32_t observed_invalid_pair = 0;
+  for (uint32_t poll = 1; poll <= WAFER_IFP_ARGMIN_WRITEBACK_POLL_BUDGET;
+       ++poll) {
+    writeback_polls = poll;
+    uint64_t value_observation = getreg(WAFER_IFP_ARGMIN_VALUE_CSR);
+    uint64_t index_observation = getreg(WAFER_IFP_ARGMIN_INDEX_CSR);
+    if ((value_observation & WAFER_IFP_ARGMIN_DATA_VALID) == 0 ||
+        (index_observation & WAFER_IFP_ARGMIN_DATA_VALID) == 0) {
+      observed_invalid_pair = 1;
+      continue;
+    }
+    if (wafer_ifp_argmin_pair_is_fresh(
+            prelaunch_value_raw, prelaunch_index_raw, value_observation,
+            index_observation, observed_invalid_pair) &&
+        wafer_ifp_argmin_pair_is_coherent(input, elements, format,
+                                          value_observation,
+                                          index_observation)) {
+      value_raw = value_observation;
+      value_poll = poll;
+      index_raw = index_observation;
+      index_poll = poll;
+      break;
+    }
+  }
+
+  uint32_t diagnostic_flags = 0;
+  uint32_t taskstatus_first = 0;
+  uint32_t taskstatus_last = 0;
+  uint32_t ibcounter_first = 0;
+  uint32_t ibcounter_last = 0;
+  uint32_t state_polls = 0;
+  for (uint32_t poll = 1; poll <= WAFER_IFP_ARGMIN_STATE_POLL_BUDGET;
+       ++poll) {
+    uint32_t taskstatus = TsmGetCsrTaskstatus();
+    uint32_t ibcounter = TsmGetCsrIbcounter();
+    if (poll == 1) {
+      taskstatus_first = taskstatus;
+      ibcounter_first = ibcounter;
+    }
+    taskstatus_last = taskstatus;
+    ibcounter_last = ibcounter;
+    state_polls = poll;
+    if (taskstatus == 1U && ibcounter == 0U) {
+      diagnostic_flags |= WAFER_IFP_ARGMIN_TASK_DRAINED;
+      break;
+    }
+  }
+
+  if ((diagnostic_flags & WAFER_IFP_ARGMIN_TASK_DRAINED) != 0 &&
+      value_poll != 0 && index_poll != 0) {
+    uint64_t final_value_raw = getreg(WAFER_IFP_ARGMIN_VALUE_CSR);
+    uint64_t final_index_raw = getreg(WAFER_IFP_ARGMIN_INDEX_CSR);
+    if (wafer_ifp_argmin_pair_is_fresh(
+            prelaunch_value_raw, prelaunch_index_raw, final_value_raw,
+            final_index_raw, observed_invalid_pair) &&
+        wafer_ifp_argmin_pair_is_coherent(input, elements, format,
+                                          final_value_raw,
+                                          final_index_raw)) {
+      value_raw = final_value_raw;
+      index_raw = final_index_raw;
+    } else {
+      value_raw = 0;
+      index_raw = 0;
+      value_poll = 0;
+      index_poll = 0;
+    }
+  }
+
+  if (value_poll != 0)
+    diagnostic_flags |= WAFER_IFP_ARGMIN_VALUE_VALID;
+  if (index_poll != 0)
+    diagnostic_flags |= WAFER_IFP_ARGMIN_INDEX_VALID;
+  if (value_poll == 0 || index_poll == 0)
+    diagnostic_flags |= WAFER_IFP_ARGMIN_WRITEBACK_BUDGET_EXHAUSTED;
+  if ((diagnostic_flags & WAFER_IFP_ARGMIN_TASK_DRAINED) == 0)
+    diagnostic_flags |= WAFER_IFP_ARGMIN_STATE_BUDGET_EXHAUSTED;
+
+  record[WAFER_IFP_REC_ARGMIN_DIAGNOSTIC_FLAGS] = diagnostic_flags;
+  record[WAFER_IFP_REC_ARGMIN_WRITEBACK_POLLS] = writeback_polls;
+  record[WAFER_IFP_REC_ARGMIN_VALUE_RAW] = value_raw;
+  record[WAFER_IFP_REC_ARGMIN_INDEX_RAW] = index_raw;
+  record[WAFER_IFP_REC_ARGMIN_ARRIVAL_POLLS] =
+      wafer_ifp_pack_first_last(value_poll, index_poll);
+  record[WAFER_IFP_REC_ARGMIN_TASKSTATUS_FIRST_LAST] =
+      wafer_ifp_pack_first_last(taskstatus_first, taskstatus_last);
+  record[WAFER_IFP_REC_ARGMIN_IBCOUNTER_FIRST_LAST] =
+      wafer_ifp_pack_first_last(ibcounter_first, ibcounter_last);
+  record[WAFER_IFP_REC_ARGMIN_STATE_POLLS] = state_polls;
+  record[WAFER_IFP_REC_STEP_FLAGS] |=
+      WAFER_IFP_STEP_ARGMIN_DIAGNOSTIC_RETURNED;
+
+  if ((diagnostic_flags &
+       (WAFER_IFP_ARGMIN_VALUE_VALID | WAFER_IFP_ARGMIN_INDEX_VALID |
+        WAFER_IFP_ARGMIN_TASK_DRAINED)) !=
+      (WAFER_IFP_ARGMIN_VALUE_VALID | WAFER_IFP_ARGMIN_INDEX_VALID |
+       WAFER_IFP_ARGMIN_TASK_DRAINED))
+    return 0;
+
+  wafer_ifp_store_argmin_result(output, format, (uint32_t)value_raw,
+                                (uint32_t)index_raw);
+  return 1;
+}
+
 static void wafer_ifp_seed(uint64_t payload_ddr) {
   const uint64_t destinations[] = {
       WAFER_IFP_SPM_A,
@@ -603,8 +798,12 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
         input_a, input_b, auxiliary,
         OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 3, 5, 64, 1, 2, 2, 64, 0,
         0, 0, 0, 3, 2, 2, 1, Fmt_FP16);
-    wafer_ifp_wait_worker0_drain();
-    wafer_ifp_copy_spm_bytes(
+    wafer_ifp_copy_spm_bytes_ncc(
+        auxiliary + WAFER_IFP_REPEATED_AUX_SNAPSHOT_OFFSET, auxiliary,
+        WAFER_IFP_REPEATED_AUX_BYTES);
+    record[WAFER_IFP_REC_STEP_FLAGS] |=
+        WAFER_IFP_STEP_REPEATED_OVERLAP_AUX_SNAPSHOTTED;
+    wafer_ifp_copy_spm_bytes_ncc(
         input_b, input_a + WAFER_IFP_REPEATED_SENTINEL_OFFSET,
         WAFER_IFP_REPEATED_SENTINEL_BYTES);
     record[WAFER_IFP_REC_STEP_FLAGS] |=
@@ -627,8 +826,12 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
         input_a, input_b, auxiliary,
         OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 3, 5, 64, 1, 2, 2, 64, 0,
         0, 0, 0, 3, 2, 2, 1, Fmt_FP16);
-    wafer_ifp_wait_worker0_drain();
-    wafer_ifp_copy_spm_bytes(
+    wafer_ifp_copy_spm_bytes_ncc(
+        auxiliary + WAFER_IFP_REPEATED_AUX_SNAPSHOT_OFFSET, auxiliary,
+        WAFER_IFP_REPEATED_AUX_BYTES);
+    record[WAFER_IFP_REC_STEP_FLAGS] |=
+        WAFER_IFP_STEP_REPEATED_OVERLAP_AUX_SNAPSHOTTED;
+    wafer_ifp_copy_spm_bytes_ncc(
         input_b, input_a + WAFER_IFP_REPEATED_SENTINEL_OFFSET,
         WAFER_IFP_REPEATED_SENTINEL_BYTES);
     record[WAFER_IFP_REC_STEP_FLAGS] |=
@@ -655,10 +858,8 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     break;
   case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_TIE_F16_OBSERVED:
   case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_NAN_F16_OBSERVED:
-    wafer_tx81_peripheral_argmin(
-        input_a, output, output + 4,
-        OP_FUNC_CGRATensor_PeriOp_V_V_argmin, elements, Fmt_FP16, 0, 0, 0, 0);
-    wafer_ifp_wait_worker0_drain();
+    if (!wafer_ifp_argmin_bounded(input_a, output, elements, Fmt_FP16, record))
+      return 2;
     wafer_ifp_copy_spm_bytes(auxiliary, input_a, elements * sizeof(uint16_t));
     record[WAFER_IFP_REC_STEP_FLAGS] |=
         WAFER_IFP_STEP_ARGMIN_INPUT_SNAPSHOTTED;
@@ -778,8 +979,11 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
 
   if (status == WAFER_IFP_STATUS_OK) {
     wafer_ifp_seed(payload_ddr);
-    if (wafer_ifp_dispatch(descriptor, record) != 0) {
+    int dispatch_result = wafer_ifp_dispatch(descriptor, record);
+    if (dispatch_result == 1) {
       status = WAFER_IFP_STATUS_DISPATCH_FAILED;
+    } else if (dispatch_result == 2) {
+      status = WAFER_IFP_STATUS_DIAGNOSTIC_BOUNDED;
     } else {
       wafer_tx81_wdma(WAFER_IFP_SPM_OUTPUT,
                       output_ddr + WAFER_IFP_OUTPUT_DDR_OFFSET,

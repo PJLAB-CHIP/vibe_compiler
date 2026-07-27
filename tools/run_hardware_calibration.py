@@ -86,6 +86,16 @@ DTE_PENDING_CASE_SPECS = (
 DTE_PENDING_CASE_NAMES = tuple(
     case_name for _, case_name in DTE_PENDING_CASE_SPECS
 )
+DTE_SHUFFLE_CASE_NAMES = tuple(
+    case_name
+    for case_name in DTE_PENDING_CASE_NAMES
+    if "dte-raw-shuffle-" in case_name
+)
+DTE_NON_SHUFFLE_CASE_NAMES = tuple(
+    case_name
+    for case_name in DTE_PENDING_CASE_NAMES
+    if case_name not in DTE_SHUFFLE_CASE_NAMES
+)
 UNPOOL_PENDING_COLLISION_CASE_NAMES = (
     "unpool-index-f16-repeated-overlap-observed",
     "unpool-mask-f16-repeated-overlap-observed",
@@ -491,7 +501,7 @@ EXPLICIT_ONLY_STEPS = (
                 f"{case_name}"
             ),
         )
-        for case_name in DTE_PENDING_CASE_NAMES
+        for case_name in DTE_NON_SHUFFLE_CASE_NAMES
     ),
     *tuple(
         CalibrationStep(
@@ -510,9 +520,84 @@ EXPLICIT_ONLY_STEPS = (
         "rank-one-pending-engine-pipeline",
         "wafer-board-ne-tail-throughput-single-ne-tail",
         (
-            "exact non-divisible NE GEMM tail with device PMU; merge with "
-            "same-session NE small/steady points before rate activation"
+            "fresh same-session NE small/steady controls followed by exact "
+            "non-divisible NE GEMM tail and merged device-PMU activation"
         ),
+    ),
+    *tuple(
+        CalibrationStep(
+            f"instruction-family-{case_name}",
+            "rank-one-pending-numeric-domain",
+            f"wafer-board-instruction-family-{case_name}",
+            (
+                "bounded ArgMin value/index classification with three "
+                f"domain-discriminating samples for {case_name}"
+            ),
+        )
+        for case_name in ARGMIN_PENDING_DOMAIN_CASE_NAMES
+    ),
+    *tuple(
+        CalibrationStep(
+            f"instruction-family-{case_name}",
+            "rank-one-pending-unpool-collision",
+            f"wafer-board-instruction-family-{case_name}",
+            (
+                "bounded repeated-overlap Unpool collision observation for "
+                f"{case_name}"
+            ),
+        )
+        for case_name in UNPOOL_PENDING_COLLISION_CASE_NAMES
+    ),
+    CalibrationStep(
+        "spm-conflict-equivalence-rank-one",
+        "rank-one-pending-spm-conflict",
+        "wafer-board-spm-conflict-equivalence-rank-one",
+        "same-invocation SPM base/workload/order matched conflict controls",
+    ),
+    CalibrationStep(
+        "spm-conflict-equivalence-cross-tile",
+        "full-card-pending-spm-conflict",
+        "wafer-board-spm-conflict-equivalence-cross-tile",
+        "held-out physical-tile SPM conflict-equivalence control",
+    ),
+    *tuple(
+        CalibrationStep(
+            f"ddr-active-rank-{group_key}",
+            "full-card-pending-ddr-active-rank",
+            f"wafer-board-ddr-active-rank-{group_key}",
+            (
+                "one/two/four/eight/sixteen active-rank matched device-cycle "
+                f"sweep for {group_key}"
+            ),
+        )
+        for group_key in DDR_ACTIVE_RANK_BOARD_GROUP_KEYS
+    ),
+    CalibrationStep(
+        "ddr-conflict-equivalence-rank-one",
+        "rank-one-pending-ddr-conflict",
+        "wafer-board-ddr-conflict-equivalence-rank-one",
+        "same-invocation DDR address/order/schedule equivalence controls",
+    ),
+    CalibrationStep(
+        "ddr-conflict-equivalence-cross-tile",
+        "full-card-pending-ddr-conflict",
+        "wafer-board-ddr-conflict-equivalence-cross-tile",
+        "actual-allocation and physical-tile DDR equivalence held-out",
+    ),
+    # Session-risk tail.  These cases can intentionally fill queues, observe
+    # pending work, require bounded partial-accept cleanup, or exercise raw
+    # instruction programming.  Keep them after ordinary board observations.
+    *tuple(
+        CalibrationStep(
+            f"spm-sustained-{group_key}",
+            "rank-one-pending-spm-sustained",
+            f"wafer-board-spm-sustained-{group_key}",
+            (
+                "matched candidate/control and serial/window sustained SPM "
+                f"conflict observation for {group_key}"
+            ),
+        )
+        for group_key in SPM_SUSTAINED_BOARD_GROUP_KEYS
     ),
     *tuple(
         CalibrationStep(
@@ -564,76 +649,34 @@ EXPLICIT_ONLY_STEPS = (
     ),
     *tuple(
         CalibrationStep(
-            f"instruction-family-{case_name}",
-            "rank-one-pending-numeric-domain",
-            f"wafer-board-instruction-family-{case_name}",
+            f"direct-dte-pending-{case_name}",
+            "full-card-pending-direct-dte-raw",
+            f"wafer-board-{case_name}",
             (
-                "bounded ArgMin value/index classification with three "
-                f"domain-discriminating samples for {case_name}"
-            ),
-        )
-        for case_name in ARGMIN_PENDING_DOMAIN_CASE_NAMES
-    ),
-    *tuple(
-        CalibrationStep(
-            f"instruction-family-{case_name}",
-            "rank-one-pending-unpool-collision",
-            f"wafer-board-instruction-family-{case_name}",
-            (
-                "bounded repeated-overlap Unpool collision observation for "
+                "isolated owner-backed raw DTE correctness observation for "
                 f"{case_name}"
             ),
         )
-        for case_name in UNPOOL_PENDING_COLLISION_CASE_NAMES
+        for case_name in DTE_SHUFFLE_CASE_NAMES
     ),
-    CalibrationStep(
-        "spm-conflict-equivalence-rank-one",
-        "rank-one-pending-spm-conflict",
-        "wafer-board-spm-conflict-equivalence-rank-one",
-        "same-invocation SPM base/workload/order matched conflict controls",
-    ),
-    CalibrationStep(
-        "spm-conflict-equivalence-cross-tile",
-        "full-card-pending-spm-conflict",
-        "wafer-board-spm-conflict-equivalence-cross-tile",
-        "held-out physical-tile SPM conflict-equivalence control",
-    ),
-    *tuple(
-        CalibrationStep(
-            f"spm-sustained-{group_key}",
+)
+
+SESSION_RISK_STEP_KEYS = tuple(
+    step.key
+    for step in EXPLICIT_ONLY_STEPS
+    if (
+        step.batch
+        in {
             "rank-one-pending-spm-sustained",
-            f"wafer-board-spm-sustained-{group_key}",
-            (
-                "matched candidate/control and serial/window sustained SPM "
-                f"conflict observation for {group_key}"
-            ),
+            "rank-one-pending-queue-saturation",
+            "rank-one-pending-worker-wait-scope",
+            "rank-one-pending-worker-subset-scope",
+            "rank-one-pending-worker-placement",
+        }
+        or any(
+            case_name in step.key for case_name in DTE_SHUFFLE_CASE_NAMES
         )
-        for group_key in SPM_SUSTAINED_BOARD_GROUP_KEYS
-    ),
-    *tuple(
-        CalibrationStep(
-            f"ddr-active-rank-{group_key}",
-            "full-card-pending-ddr-active-rank",
-            f"wafer-board-ddr-active-rank-{group_key}",
-            (
-                "one/two/four/eight/sixteen active-rank matched device-cycle "
-                f"sweep for {group_key}"
-            ),
-        )
-        for group_key in DDR_ACTIVE_RANK_BOARD_GROUP_KEYS
-    ),
-    CalibrationStep(
-        "ddr-conflict-equivalence-rank-one",
-        "rank-one-pending-ddr-conflict",
-        "wafer-board-ddr-conflict-equivalence-rank-one",
-        "same-invocation DDR address/order/schedule equivalence controls",
-    ),
-    CalibrationStep(
-        "ddr-conflict-equivalence-cross-tile",
-        "full-card-pending-ddr-conflict",
-        "wafer-board-ddr-conflict-equivalence-cross-tile",
-        "actual-allocation and physical-tile DDR equivalence held-out",
-    ),
+    )
 )
 
 ALL_CALIBRATION_STEPS = (
@@ -698,6 +741,13 @@ SELECTABLE_BATCHES["pending-hardware-calibration"] = tuple(
     for step in EXPLICIT_ONLY_STEPS
     if step.ctest_name in _pending_board_ctests
 )
+if SELECTABLE_BATCHES["pending-hardware-calibration"][
+    -len(SESSION_RISK_STEP_KEYS) :
+] != SESSION_RISK_STEP_KEYS:
+    raise RuntimeError(
+        "potentially session-poisoning board cases must remain at the end "
+        "of pending-hardware-calibration"
+    )
 del _missing_pending_ctests
 del _pending_steps_by_ctest
 del _pending_board_ctests

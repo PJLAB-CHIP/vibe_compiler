@@ -495,14 +495,14 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     "28:dte-raw-scatter-fanout8-interleaved"
     "29:dte-raw-scatter-fanout15-adjacent"
     "30:dte-raw-scatter-fanout15-interleaved"
-    "31:dte-raw-shuffle-fanout2-adjacent"
-    "32:dte-raw-shuffle-fanout2-interleaved"
-    "33:dte-raw-shuffle-fanout4-adjacent"
-    "34:dte-raw-shuffle-fanout4-interleaved"
-    "35:dte-raw-shuffle-fanout8-adjacent"
-    "36:dte-raw-shuffle-fanout8-interleaved"
-    "37:dte-raw-shuffle-fanout15-adjacent"
-    "38:dte-raw-shuffle-fanout15-interleaved"
+    "31:dte-raw-shuffle-source1d-sections2-target1"
+    "32:dte-raw-shuffle-source1d-sections2-target8"
+    "33:dte-raw-shuffle-source1d-sections4-target1"
+    "34:dte-raw-shuffle-source1d-sections4-target8"
+    "35:dte-raw-shuffle-source1d-sections8-target1"
+    "36:dte-raw-shuffle-source1d-sections8-target8"
+    "37:dte-raw-shuffle-source1d-sections15-target1"
+    "38:dte-raw-shuffle-source1d-sections15-target8"
   )
   set(_wafer_tx81_objdump
     ${CMAKE_SOURCE_DIR}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump
@@ -1692,8 +1692,6 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
       --work-dir
         ${CMAKE_CURRENT_BINARY_DIR}/board-ne-tail-throughput-single-ne-tail
-      --single-engine-observations
-        ${CMAKE_CURRENT_BINARY_DIR}/board-engine-pipeline-single-engines/engine-pipeline-observations.json
       --group single-ne-tail
       --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
       --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
@@ -1708,7 +1706,6 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
   set_tests_properties(
     wafer-board-ne-tail-throughput-single-ne-tail PROPERTIES
     LABELS "board;hardware;ne;performance;calibration;pending"
-    DEPENDS wafer-board-engine-pipeline-single-engines
     RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
     SKIP_RETURN_CODE 77
     TIMEOUT 900

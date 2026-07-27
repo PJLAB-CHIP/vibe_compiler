@@ -24,9 +24,9 @@ Pipeline position:
   Three serial board launches, exact logical and physical output, unchanged
   prefix/suffix and out-of-record guards, exactly one NE instruction,
   positive NE execution delta, exact manifest-matched terminal completion, and
-  complete runtime lifecycle each time.  The merged small/steady/tail direction
-  must come from one runner session and identical board-qualification profile,
-  then activate before the board group passes.
+  complete runtime lifecycle each time.  The same CTest invocation must first
+  execute fresh small/steady controls under the same runner session and
+  board-qualification profile; only the merged direction may activate.
 """
 
 from __future__ import annotations
@@ -74,6 +74,7 @@ PIPELINE_CONTRACT = PipelineContract(
         "exact logical and physical output with all guards",
         "one NE instruction and positive NE execution delta",
         "exact manifest-matched terminal completion and ordered lifecycle",
+        "fresh small/steady controls in the same CTest invocation",
         "same runner session and exact board-qualification profile",
         "merged small/steady/tail activation direction",
     ),

@@ -75,7 +75,7 @@ EXPECTED_RAW_DTE_LEAF_GROUPS = {
     "dte-raw-four-source-fanin": "direct-dte-four-source-fanin",
     "dte-raw-broadcast-fanout-layout": "direct-dte-raw-broadcast",
     "dte-raw-scatter-fanout-layout": "direct-dte-raw-scatter",
-    "dte-raw-shuffle-fanout-layout": "direct-dte-raw-shuffle",
+    "dte-raw-shuffle-source-stride": "direct-dte-raw-shuffle",
 }
 
 EXPLICIT_RAW_I8_CARRIER_ASSETS = {

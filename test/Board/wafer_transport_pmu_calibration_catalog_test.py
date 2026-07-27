@@ -41,13 +41,31 @@ def main() -> int:
         semantic_cases = tuple(
             case for case in raw_cases if case.semantic == semantic
         )
-        assert {
-            (case.fanout, case.target_layout) for case in semantic_cases
-        } == {
-            (fanout, layout)
-            for fanout in (2, 4, 8, 15)
-            for layout in ("adjacent", "interleaved")
-        }
+        if semantic == "shuffle":
+            assert {case.fanout for case in semantic_cases} == {1}
+            assert {
+                (case.shuffle_sections, case.target_layout)
+                for case in semantic_cases
+            } == {
+                (sections, layout)
+                for sections in (2, 4, 8, 15)
+                for layout in ("adjacent", "interleaved")
+            }
+            assert {
+                case.target_ranks for case in semantic_cases
+            } == {(1,), (8,)}
+            assert {
+                case.dest_num_register_value for case in semantic_cases
+            } == {0}
+        else:
+            assert {
+                (case.fanout, case.target_layout)
+                for case in semantic_cases
+            } == {
+                (fanout, layout)
+                for fanout in (2, 4, 8, 15)
+                for layout in ("adjacent", "interleaved")
+            }
         assert {case.disposition for case in semantic_cases} == {
             "pending-board-observation"
         }
@@ -57,13 +75,17 @@ def main() -> int:
     assert {
         case.semantic: case.raw_mode for case in raw_cases
     } == {"broadcast": 2, "scatter": 1, "shuffle": 3}
+    assert {
+        case.semantic: case.mode_register_value for case in raw_cases
+    } == {"broadcast": 2, "scatter": 0x101, "shuffle": 3}
     assert all(
         len(case.target_ranks) == case.fanout
         and len(set(case.target_ranks)) == case.fanout
         and 0 not in case.target_ranks
         and case.source_span_bytes <= catalog.RAW_MULTIDEST_PAYLOAD_BYTES
+        and case.element_bytes > 0
         and case.dest_num_register_value == case.fanout - 1
-        and case.dest_num_encoding == "zero-based-upper-slot-hypothesis"
+        and case.dest_num_encoding == "zero-based-final-active-slot"
         and case.as_dict()["key"] == case.name
         for case in raw_cases
     )
@@ -260,8 +282,8 @@ def main() -> int:
         (int(mode), name)
         for mode, name in re.findall(
             r'^\s*"(\d+):(dte-(?:four-source-fanin-correctness|'
-            r'raw-(?:broadcast|scatter|shuffle)-fanout\d+-(?:adjacent|'
-            r'interleaved)))"$',
+            r'raw-(?:(?:broadcast|scatter)-fanout\d+-(?:adjacent|'
+            r'interleaved)|shuffle-source1d-sections\d+-target\d+)))"$',
             cmake,
             re.M,
         )
@@ -349,6 +371,10 @@ def main() -> int:
         host_driver_source
     )
     assert "raw_multidest_elf_verification: passed" in host_driver_source
+    assert (
+        "final probe ELF dropped the remote-SPM route transform"
+        in host_driver_source
+    )
     probe_main = probe_source.split(
         "wafer_tx81_dte_ncc_execution_probe(", maxsplit=1
     )[1]
@@ -484,21 +510,58 @@ def main() -> int:
     )[1].split(
         "wafer_probe_dte_raw_multidest(", maxsplit=1
     )[0]
+    raw_multidest_route = probe_source.split(
+        "wafer_probe_raw_multidest_route_destination(", maxsplit=1
+    )[1].split(
+        "wafer_probe_raw_multidest_program(", maxsplit=1
+    )[0]
+    assert "(mapped_destination << 17U)" in raw_multidest_route
+    assert "UINT64_C(0x00ffff0000000000)" in raw_multidest_route
     assert "DirectDTESendInfo" not in raw_multidest_program
     assert "for (uint32_t index = 0; index < fanout; ++index)" in (
         raw_multidest_program
+    )
+    route_call = (
+        "wafer_probe_raw_multidest_route_destination(destination);"
+    )
+    assert route_call in raw_multidest_program
+    assert raw_multidest_program.index(route_call) < (
+        raw_multidest_program.index(
+            "node->dst_cfg[index].dst_addr = destination;"
+        )
     )
     assert "node->dst_cfg[index].dst_addr = destination;" in (
         raw_multidest_program
     )
     assert "node->dst_cfg[index].dst_id = user_id;" in raw_multidest_program
-    assert "GR_DTE_MODE, raw_mode" in raw_multidest_program
-    assert "GR_DTE_LENGTH, bytes" in raw_multidest_program
-    assert "GR_DTE_DEST_NUM, fanout - 1U" in raw_multidest_program
-    assert "zero-based final-slot hypothesis" in probe_source
-    assert "instr_def.h says one for even modes and 1..31 otherwise" in (
-        probe_source
+    raw_multidest_user_id = probe_source.split(
+        "wafer_probe_raw_multidest_user_id(", maxsplit=1
+    )[1].split(
+        "wafer_probe_raw_multidest_program(", maxsplit=1
+    )[0]
+    assert "user_id.field.tgt_npu = 1;" in raw_multidest_user_id
+    assert "user_id.field.switch_ddr = 0;" in raw_multidest_user_id
+    assert "user_id.field.switch_ddr = 1;" not in raw_multidest_user_id
+    raw_multidest_mode = probe_source.split(
+        "wafer_probe_raw_multidest_mode_register(", maxsplit=1
+    )[1].split(
+        "static uint32_t wafer_probe_raw_multidest_fanout(", maxsplit=1
+    )[0]
+    assert "register_mode.field.mode = raw_mode;" in raw_multidest_mode
+    assert "register_mode.field.sg_flag = raw_mode == 1U ? 1U : 0U;" in (
+        raw_multidest_mode
     )
+    assert "GR_DTE_MODE, mode_register" in raw_multidest_program
+    assert "GR_DTE_LENGTH, element_bytes" in raw_multidest_program
+    assert "GR_DTE_DEST_NUM, fanout - 1U" in raw_multidest_program
+    assert "raw_mode == 3U ? fanout != 1U : fanout < 2U" in (
+        raw_multidest_program
+    )
+    assert "shuffle_sections - 1U" in raw_multidest_program
+    assert "wafer_probe_raw_dte_receive_bytes(mode)" in probe_source
+    assert "zero-based final active slot encoding" in probe_source
+    assert "keeps software dst_cnt" in probe_source
+    assert "writes zero to this five-bit register" in probe_source
     assert "GR_DTE_STRIDE0" in raw_multidest_program
     assert "GR_DTE_ITERATION0" in raw_multidest_program
     assert "GR_DTE_CMD_VALID, UINT32_C(1)" in raw_multidest_program

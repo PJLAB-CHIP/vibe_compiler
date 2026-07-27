@@ -8,9 +8,11 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import sys
 from collections.abc import Iterable, Mapping
 
+import wafer_board_engine_pipeline_characterization_test as engine_driver
 import wafer_board_ne_calibration_probe_test as ne_driver
 import wafer_engine_pipeline_characterization_catalog as engine_catalog
 import wafer_ne_calibration_catalog as ne_catalog
@@ -25,14 +27,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wafer-run", type=pathlib.Path)
     parser.add_argument("--llvm-clangxx", type=pathlib.Path)
     parser.add_argument("--work-dir", type=pathlib.Path)
-    parser.add_argument(
-        "--single-engine-observations",
-        type=pathlib.Path,
-        help=(
-            "engine-pipeline-observations.json from the same calibration "
-            "session; required for board activation"
-        ),
-    )
     parser.add_argument(
         "--group",
         choices=(catalog.GROUP_KEY,),
@@ -224,47 +218,26 @@ def require_exact_board_completion(
         )
 
 
-def load_single_engine_observations(
-    path: pathlib.Path | None,
-    calibration_session_id: str,
-    qualification: Mapping[str, object],
-) -> tuple[Mapping[str, object], ...]:
-    if path is None:
+def fresh_ne_prerequisite_probes() -> tuple[engine_catalog.ProbeCase, ...]:
+    cell_keys = engine_catalog.single_activation_cell_keys(
+        engine_catalog.Engine.NE
+    )
+    expected = catalog.CASES[0].activation_prerequisite_cells
+    if cell_keys != expected:
         raise RuntimeError(
-            "NE tail activation requires --single-engine-observations"
+            "NE tail fresh prerequisite cells differ from the activation "
+            "contract"
         )
-    resolved = path.resolve()
-    if not resolved.is_file():
+    probes = tuple(
+        probe
+        for cell_key in cell_keys
+        for probe in engine_catalog.CELLS_BY_KEY[cell_key].probes
+    )
+    if len(probes) != len(cell_keys):
         raise RuntimeError(
-            f"NE tail activation prerequisite archive is missing: {resolved}"
+            "NE tail fresh prerequisite cells do not map one-to-one to probes"
         )
-    archive = json.loads(resolved.read_text())
-    if not isinstance(archive, dict):
-        raise RuntimeError(
-            "NE tail activation prerequisite archive has an incompatible "
-            "schema"
-        )
-    observations = archive.get("observations")
-    if (
-        archive.get("schema_version") != 1
-        or not isinstance(observations, list)
-        or any(not isinstance(row, Mapping) for row in observations)
-    ):
-        raise RuntimeError(
-            "NE tail activation prerequisite archive has an incompatible "
-            "schema"
-        )
-    if archive.get("calibration_session_id") != calibration_session_id:
-        raise RuntimeError(
-            "NE tail activation prerequisite archive is stale or belongs to "
-            "another calibration session"
-        )
-    if archive.get("board_qualification") != dict(qualification):
-        raise RuntimeError(
-            "NE tail activation prerequisite board qualification differs "
-            "from the current target/runtime/device profile"
-        )
-    return tuple(observations)
+    return probes
 
 
 def require_complete_ne_prerequisites(
@@ -282,6 +255,50 @@ def require_complete_ne_prerequisites(
             "NE tail activation prerequisite observations are incomplete: "
             + "; ".join(decision.reasons or ("unexpected tail evidence",))
         )
+
+
+def _with_work_dir(
+    args: argparse.Namespace, work_dir: pathlib.Path
+) -> argparse.Namespace:
+    copied = argparse.Namespace(**vars(args))
+    copied.work_dir = work_dir
+    return copied
+
+
+def reset_work_dir(args: argparse.Namespace) -> pathlib.Path:
+    if args.repo_root is None or args.work_dir is None:
+        raise RuntimeError(
+            "NE tail execution requires --repo-root and --work-dir"
+        )
+    resolved = engine_driver.ncc_driver.validate_work_dir(
+        args.repo_root, args.work_dir
+    )
+    if resolved.exists():
+        shutil.rmtree(resolved)
+    resolved.mkdir(parents=True)
+    args.work_dir = resolved
+    return resolved
+
+
+def prepare_fresh_ne_prerequisites(
+    args: argparse.Namespace,
+) -> tuple[
+    argparse.Namespace,
+    pathlib.Path,
+    tuple[int, int, int],
+    int,
+    tuple[engine_catalog.ProbeCase, ...],
+]:
+    prerequisite_args = _with_work_dir(
+        args, args.work_dir / "ne-small-steady"
+    )
+    prerequisite_args.mode = "no-card" if args.no_card else "board"
+    engine_driver._require_execution_args(prerequisite_args)
+    probes = fresh_ne_prerequisite_probes()
+    raw_args, package, resource_ids, terminal_completion = (
+        engine_driver.prepare_probe_package(prerequisite_args, probes)
+    )
+    return raw_args, package, resource_ids, terminal_completion, probes
 
 
 def prepare_package(
@@ -381,17 +398,31 @@ def main() -> int:
         ne_driver.package_support.require_board_args(args)
         calibration_session_id = require_calibration_session(os.environ)
         qualification = board_qualification(args)
-    prerequisite_observations: tuple[Mapping[str, object], ...] = ()
-    if not args.no_card:
-        assert calibration_session_id is not None
-        assert qualification is not None
-        prerequisite_observations = load_single_engine_observations(
-            args.single_engine_observations,
-            calibration_session_id,
-            qualification,
+    reset_work_dir(args)
+    (
+        prerequisite_args,
+        prerequisite_package,
+        prerequisite_resource_ids,
+        prerequisite_terminal_completion,
+        prerequisite_probes,
+    ) = prepare_fresh_ne_prerequisites(args)
+    prerequisite_observations: tuple[Mapping[str, object], ...]
+    if args.no_card:
+        prerequisite_observations = ()
+    else:
+        prerequisite_observations = tuple(
+            engine_driver.execute_probes(
+                args,
+                prerequisite_args,
+                prerequisite_package,
+                prerequisite_resource_ids,
+                prerequisite_probes,
+                prerequisite_terminal_completion,
+            )
         )
         require_complete_ne_prerequisites(prerequisite_observations)
-    package, resource_ids, terminal_completion = prepare_package(args)
+    tail_args = _with_work_dir(args, args.work_dir / "tail")
+    package, resource_ids, terminal_completion = prepare_package(tail_args)
     if args.no_card:
         print(
             "ne_tail_throughput_no_card: "
@@ -400,6 +431,8 @@ def main() -> int:
                     "activation_group": catalog.GROUP_KEY,
                     "board_execution": False,
                     "case_count": len(cases),
+                    "prerequisite_case_count": len(prerequisite_probes),
+                    "prerequisite_package": str(prerequisite_package),
                     "package": str(package),
                     "terminal_completion": terminal_completion,
                 },
@@ -408,7 +441,7 @@ def main() -> int:
         )
         return 0
     observations = execute_cases(
-        args, package, resource_ids, cases, terminal_completion
+        tail_args, package, resource_ids, cases, terminal_completion
     )
     activation = engine_catalog.evaluate_single_engine_activation(
         engine_catalog.Engine.NE,
@@ -423,9 +456,8 @@ def main() -> int:
         "activation_group": catalog.GROUP_KEY,
         "repeat": args.repeat,
         "terminal_completion": terminal_completion,
-        "single_engine_observations": str(
-            args.single_engine_observations.resolve()
-        ),
+        "prerequisite_generation": "fresh-invocation",
+        "prerequisite_observations": prerequisite_observations,
         "observations": observations,
         "activation_decision": activation.as_dict(),
         "interpretation": (

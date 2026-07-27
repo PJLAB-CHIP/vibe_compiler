@@ -413,6 +413,8 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             len(RUNNER.DTE_PENDING_CASE_NAMES),
             25,
         )
+        self.assertEqual(len(RUNNER.DTE_SHUFFLE_CASE_NAMES), 8)
+        self.assertEqual(len(RUNNER.DTE_NON_SHUFFLE_CASE_NAMES), 17)
         self.assertEqual(
             len(RUNNER.ENGINE_PIPELINE_BOARD_CELL_KEYS),
             381,
@@ -473,6 +475,18 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "initial-profile-heartbeat",
                 *batch,
             ],
+        )
+        self.assertEqual(len(RUNNER.SESSION_RISK_STEP_KEYS), 86)
+        self.assertEqual(
+            batch[-len(RUNNER.SESSION_RISK_STEP_KEYS) :],
+            RUNNER.SESSION_RISK_STEP_KEYS,
+        )
+        self.assertEqual(
+            batch[-len(RUNNER.DTE_SHUFFLE_CASE_NAMES) :],
+            tuple(
+                f"direct-dte-pending-{case_name}"
+                for case_name in RUNNER.DTE_SHUFFLE_CASE_NAMES
+            ),
         )
         self.assertFalse(
             set(batch) & {step.key for step in RUNNER.CALIBRATION_STEPS}

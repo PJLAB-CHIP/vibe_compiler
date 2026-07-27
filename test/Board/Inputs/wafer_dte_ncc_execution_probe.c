@@ -226,14 +226,33 @@ static uint32_t wafer_probe_raw_multidest_kind(uint32_t mode) {
   return family < 3U ? raw_modes[family] : 0U;
 }
 
+static uint32_t wafer_probe_raw_multidest_mode_register(uint32_t mode) {
+  uint32_t raw_mode = wafer_probe_raw_multidest_kind(mode);
+  sct_dte_block_mode_s register_mode = {.value = 0};
+  register_mode.field.mode = raw_mode;
+  register_mode.field.sg_flag = raw_mode == 1U ? 1U : 0U;
+  return register_mode.value;
+}
+
 static uint32_t wafer_probe_raw_multidest_fanout(uint32_t mode) {
   static const uint32_t fanouts[] = {2, 2, 4, 4, 8, 8, 15, 15};
+  if (wafer_probe_raw_multidest_kind(mode) == 3U)
+    return 1U;
   return fanouts[wafer_probe_raw_multidest_variant(mode)];
+}
+
+static uint32_t wafer_probe_raw_shuffle_sections(uint32_t mode) {
+  static const uint32_t sections[] = {2, 2, 4, 4, 8, 8, 15, 15};
+  return wafer_probe_raw_multidest_kind(mode) == 3U
+             ? sections[wafer_probe_raw_multidest_variant(mode)]
+             : 1U;
 }
 
 static uint32_t wafer_probe_raw_multidest_target(uint32_t mode,
                                                  uint32_t destination_index) {
   uint32_t variant = wafer_probe_raw_multidest_variant(mode);
+  if (wafer_probe_raw_multidest_kind(mode) == 3U)
+    return (variant & 1U) == 0U ? 1U : 8U;
   if ((variant & 1U) == 0U)
     return destination_index + 1U;
   return (destination_index * WAFER_PROBE_RAW_MULTIDEST_INTERLEAVE_STEP) %
@@ -250,10 +269,15 @@ static int32_t wafer_probe_raw_multidest_destination_index(uint32_t mode,
   return -1;
 }
 
-static uint32_t wafer_probe_raw_multidest_bytes(uint32_t mode) {
+static uint32_t wafer_probe_raw_dte_element_bytes(uint32_t mode) {
   return wafer_probe_raw_multidest_kind(mode) == 3U
              ? WAFER_PROBE_RAW_SHUFFLE_BYTES
              : WAFER_PROBE_RAW_BROADCAST_SCATTER_BYTES;
+}
+
+static uint32_t wafer_probe_raw_dte_receive_bytes(uint32_t mode) {
+  return wafer_probe_raw_dte_element_bytes(mode) *
+         wafer_probe_raw_shuffle_sections(mode);
 }
 
 static int wafer_probe_payload_bytes_are_valid(uint32_t payload_bytes) {
@@ -638,11 +662,28 @@ wafer_probe_raw_multidest_user_id(uint32_t local_fsm_id) {
       WAFER_PROBE_REMOTE_SPM_STREAM_BASE + local_fsm_id;
   user_id.field.early_comp = 1;
   user_id.field.tgt_npu = 1;
-  user_id.field.switch_ddr = 1;
+  /*
+   * Stream IDs 32..63 target SRAM.  Match kuiper_dte_init_reg()'s
+   * remote-SPM user ID instead of selecting the DDR switch path.
+   */
+  user_id.field.switch_ddr = 0;
   user_id.field.rv_n = 1;
   user_id.field.packet_id = 0;
   user_id.field.stream_txn = 1;
   return user_id;
+}
+
+static uint64_t
+wafer_probe_raw_multidest_route_destination(uint64_t mapped_destination) {
+  /*
+   * get_tile_spm_addr_base() returns the peer CPU-mapped SPM address.
+   * direct_dte_send_async() additionally copies its x/y coordinates into the
+   * DTE destination route field for remote-SPM streams.  Raw register
+   * programming bypasses that owner transform, so apply it to every slot.
+   */
+  return mapped_destination |
+         ((mapped_destination << 17U) &
+          UINT64_C(0x00ffff0000000000));
 }
 
 /*
@@ -652,23 +693,29 @@ wafer_probe_raw_multidest_user_id(uint32_t local_fsm_id) {
  * register block and mirrors the same destinations into the allocated node so
  * completion/release retains the vendor lifecycle.
  *
- * dest_num deliberately tests the zero-based final-slot hypothesis.  The
- * version-matched evidence is not conclusive: direct_dte_send_async writes zero
- * for one destination and the register has five bits beside 32 destination
- * slots, while instr_def.h says one for even modes and 1..31 otherwise.  These
- * cases therefore remain raw board observations; fanout-1 and the observed
- * target/source mapping must not be promoted to an ABI contract from no-card
- * verification alone.
+ * dest_num uses the zero-based final active slot encoding.  The
+ * version-matched direct_dte_send_async implementation keeps software dst_cnt
+ * at one but writes zero to this five-bit register beside 32 destination
+ * slots, establishing the one-destination baseline and distinguishing the two
+ * fields.  Modes 1/2 use the destination array; mode 3 follows the vendor raw
+ * writer's single-destination source-shuffle contract.  Payload mapping is
+ * still a board observation and must not be promoted to an ABI contract from
+ * no-card verification alone.
  */
 __attribute__((visibility("hidden"), noinline, used)) int32_t
 wafer_probe_raw_multidest_program(mod_kuiper_dte_node_t *node, uint32_t mode,
                                   uint64_t source_spm) {
   uint32_t fanout = wafer_probe_raw_multidest_fanout(mode);
   uint32_t raw_mode = wafer_probe_raw_multidest_kind(mode);
-  uint32_t bytes = wafer_probe_raw_multidest_bytes(mode);
+  uint32_t mode_register =
+      wafer_probe_raw_multidest_mode_register(mode);
+  uint32_t element_bytes = wafer_probe_raw_dte_element_bytes(mode);
+  uint32_t receive_bytes = wafer_probe_raw_dte_receive_bytes(mode);
+  uint32_t shuffle_sections = wafer_probe_raw_shuffle_sections(mode);
   uint64_t register_base;
 
-  if (node == NULL || fanout < 2U || fanout > 15U ||
+  if (node == NULL || fanout > 15U ||
+      (raw_mode == 3U ? fanout != 1U : fanout < 2U) ||
       (raw_mode != 1U && raw_mode != 2U && raw_mode != 3U))
     return -1;
 
@@ -677,7 +724,7 @@ wafer_probe_raw_multidest_program(mod_kuiper_dte_node_t *node, uint32_t mode,
       (uint64_t)node->dte_index * WAFER_PROBE_DTE_REG_STRIDE;
   node->mode = (kuiper_dte_mode_t)raw_mode;
   node->src_addr = source_spm;
-  node->data_len = bytes;
+  node->data_len = receive_bytes;
   node->dst_cnt = (uint8_t)fanout;
   node->src_dim = NULL;
   node->dest_dim = NULL;
@@ -699,6 +746,8 @@ wafer_probe_raw_multidest_program(mod_kuiper_dte_node_t *node, uint32_t mode,
         index == 0U ? GR_DTE_USER_ID_0
                     : GR_DTE_USER_ID_1 + (index - 1U) * 4U;
 
+    destination =
+        wafer_probe_raw_multidest_route_destination(destination);
     node->dst_cfg[index].dst_addr = destination;
     node->dst_cfg[index].dst_id = user_id;
     node->dst_cfg[index].dst_tile = (uint16_t)target;
@@ -708,22 +757,22 @@ wafer_probe_raw_multidest_program(mod_kuiper_dte_node_t *node, uint32_t mode,
                              (uint32_t)(destination >> 32));
     wafer_probe_mmio_write32(register_base, user_offset, user_id.value);
   }
-  wafer_probe_mmio_write32(register_base, GR_DTE_MODE, raw_mode);
-  wafer_probe_mmio_write32(register_base, GR_DTE_LENGTH, bytes);
+  wafer_probe_mmio_write32(register_base, GR_DTE_MODE, mode_register);
+  wafer_probe_mmio_write32(register_base, GR_DTE_LENGTH, element_bytes);
   wafer_probe_mmio_write32(register_base, GR_DTE_DEST_NUM, fanout - 1U);
   wafer_probe_mmio_write32(
       register_base, GR_DTE_STRIDE0,
-      raw_mode == 3U ? 2U * WAFER_PROBE_RAW_SHUFFLE_BYTES : 0U);
+      raw_mode == 3U ? 2U * element_bytes : 0U);
   wafer_probe_mmio_write32(register_base, GR_DTE_ITERATION0,
-                           raw_mode == 3U ? fanout - 1U : 0U);
+                           raw_mode == 3U ? shuffle_sections - 1U : 0U);
   wafer_probe_mmio_write32(register_base, GR_DTE_STRIDE1, 0U);
   wafer_probe_mmio_write32(register_base, GR_DTE_ITERATION1, 0U);
   wafer_probe_mmio_write32(register_base, GR_DTE_STRIDE2, 0U);
   wafer_probe_mmio_write32(register_base, GR_DTE_ITERATION2, 0U);
   __asm__ volatile("fence iorw, iorw" ::: "memory");
 
-  if (wafer_probe_mmio_read32(register_base, GR_DTE_MODE) != raw_mode ||
-      wafer_probe_mmio_read32(register_base, GR_DTE_LENGTH) != bytes ||
+  if (wafer_probe_mmio_read32(register_base, GR_DTE_MODE) != mode_register ||
+      wafer_probe_mmio_read32(register_base, GR_DTE_LENGTH) != element_bytes ||
       wafer_probe_mmio_read32(register_base, GR_DTE_DEST_NUM) != fanout - 1U)
     return -2;
   wafer_probe_mmio_write32(register_base, GR_DTE_CMD_VALID, UINT32_C(1));
@@ -742,7 +791,7 @@ wafer_probe_dte_raw_multidest(uint32_t rank, uint32_t mode,
   };
   int32_t destination_index =
       wafer_probe_raw_multidest_destination_index(mode, rank);
-  uint32_t bytes = wafer_probe_raw_multidest_bytes(mode);
+  uint32_t receive_bytes = wafer_probe_raw_dte_receive_bytes(mode);
 
   if (rank == WAFER_PROBE_RAW_MULTIDEST_SOURCE_RANK) {
     uint32_t fanout = wafer_probe_raw_multidest_fanout(mode);
@@ -771,7 +820,7 @@ wafer_probe_dte_raw_multidest(uint32_t rank, uint32_t mode,
 
   if (destination_index >= 0) {
     uint64_t receive = wafer_tx81_direct_dte_recv_prepare(
-        WAFER_PROBE_SPM_DTE_RECV, bytes, rank,
+        WAFER_PROBE_SPM_DTE_RECV, receive_bytes, rank,
         WAFER_PROBE_RAW_MULTIDEST_SOURCE_RANK, 0);
     if (receive == UINT64_C(0x200))
       result.evidence |= WAFER_PROBE_CONTRACT_VALID_RECV_EVENT;

@@ -63,7 +63,12 @@ RAW_MULTIDEST_MODES = tuple(
 MODE_NAMES = {
     **BASE_MODE_NAMES,
     **{
-        mode: f"dte-raw-{semantic}-fanout{fanout}-{layout}"
+        mode: (
+            f"dte-raw-shuffle-source1d-sections{fanout}-"
+            f"target{1 if layout == 'adjacent' else 8}"
+            if semantic == "shuffle"
+            else f"dte-raw-{semantic}-fanout{fanout}-{layout}"
+        )
         for mode, semantic, fanout, layout in RAW_MULTIDEST_MODE_CONFIGS
     },
 }
@@ -200,13 +205,16 @@ class RawMultidestCase:
     mode: int
     semantic: str
     raw_mode: int
+    mode_register_value: int
     fanout: int
     target_layout: str
     target_ranks: tuple[int, ...]
+    element_bytes: int
     per_destination_bytes: int
     source_span_bytes: int
+    shuffle_sections: int
     dest_num_register_value: int
-    dest_num_encoding: str = "zero-based-upper-slot-hypothesis"
+    dest_num_encoding: str = "zero-based-final-active-slot"
     payload_bytes: int = RAW_MULTIDEST_PAYLOAD_BYTES
     disposition: str = "pending-board-observation"
     verification_scope: str = "board-device-owner-backed-raw-dte-registers"
@@ -224,17 +232,33 @@ class RawMultidestCase:
 def _raw_multidest_case(
     mode: int, semantic: str, fanout: int, layout: str
 ) -> RawMultidestCase:
-    per_destination_bytes = (
+    element_bytes = (
         RAW_MULTIDEST_SHUFFLE_BYTES
         if semantic == "shuffle"
         else RAW_MULTIDEST_BROADCAST_SCATTER_BYTES
     )
     if semantic == "broadcast":
-        source_span_bytes = per_destination_bytes
+        destination_count = fanout
+        target_ranks = raw_multidest_target_ranks(fanout, layout)
+        shuffle_sections = 1
+        per_destination_bytes = element_bytes
+        source_span_bytes = element_bytes
     elif semantic == "scatter":
-        source_span_bytes = fanout * per_destination_bytes
+        destination_count = fanout
+        target_ranks = raw_multidest_target_ranks(fanout, layout)
+        shuffle_sections = 1
+        per_destination_bytes = element_bytes
+        source_span_bytes = fanout * element_bytes
     elif semantic == "shuffle":
-        source_span_bytes = (2 * (fanout - 1) + 1) * per_destination_bytes
+        # Raw mode 3 is a single-destination 3D gather.  Exercise one source
+        # dimension with a real gap; the old fanout value is the section count.
+        destination_count = 1
+        target_ranks = (1 if layout == "adjacent" else 8,)
+        shuffle_sections = fanout
+        per_destination_bytes = shuffle_sections * element_bytes
+        source_span_bytes = (
+            2 * (shuffle_sections - 1) + 1
+        ) * element_bytes
     else:
         raise ValueError(f"unsupported raw DTE semantic {semantic}")
     if source_span_bytes > RAW_MULTIDEST_PAYLOAD_BYTES:
@@ -246,12 +270,18 @@ def _raw_multidest_case(
         mode,
         semantic,
         {"scatter": 1, "broadcast": 2, "shuffle": 3}[semantic],
-        fanout,
+        (
+            {"scatter": 1, "broadcast": 2, "shuffle": 3}[semantic]
+            | (1 << 8 if semantic == "scatter" else 0)
+        ),
+        destination_count,
         layout,
-        raw_multidest_target_ranks(fanout, layout),
+        target_ranks,
+        element_bytes,
         per_destination_bytes,
         source_span_bytes,
-        fanout - 1,
+        shuffle_sections,
+        destination_count - 1,
     )
 
 

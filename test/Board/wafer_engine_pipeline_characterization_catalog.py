@@ -606,8 +606,8 @@ def _single_cells() -> tuple[MatrixCell, ...]:
             reason=(
                 "the dedicated NE tail throughput adapter executes the exact "
                 "FP16 M65/K129/N129 GEMM with a compatible device-PMU window; "
-                "its archive is merged with the small/steady raw NCC points "
-                "before any slope activation decision"
+                "the same CTest first executes fresh small/steady raw NCC "
+                "points before any slope activation decision"
             ),
             delegated=(
                 EvidenceReference(
@@ -624,8 +624,8 @@ def _single_cells() -> tuple[MatrixCell, ...]:
                     "CASES",
                     ("single/ne/tail/f16-m65-k129-n129",),
                     (
-                        "external board-executable PMU tail group; merge with "
-                        "the raw small/steady points before activation"
+                        "external board-executable PMU tail group; fresh raw "
+                        "small/steady points run in the same invocation"
                     ),
                 ),
             ),

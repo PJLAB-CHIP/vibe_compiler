@@ -145,8 +145,11 @@ def validate_protocol_and_real_execution_chain() -> None:
     assert "rank_one_terminal_completion" in board_driver
     assert "require_exact_board_completion" in board_driver
     assert "runtime_terminal_completion" in board_driver
-    assert "--single-engine-observations" in cmake
-    assert "DEPENDS wafer-board-engine-pipeline-single-engines" in cmake
+    assert "prepare_fresh_ne_prerequisites" in board_driver
+    assert "fresh_ne_prerequisite_probes" in board_driver
+    assert "reset_work_dir" in board_driver
+    assert "--single-engine-observations" not in cmake
+    assert "DEPENDS wafer-board-engine-pipeline-single-engines" not in cmake
 
 
 def validate_strong_host_oracle() -> None:
@@ -208,6 +211,16 @@ def validate_repeat_and_selection_gates() -> None:
         assert "requires >= 3 repeats" in str(error)
     else:
         raise AssertionError("under-sampled NE tail run was accepted")
+    with tempfile.TemporaryDirectory() as directory:
+        root = pathlib.Path(directory)
+        work_dir = root / "work"
+        work_dir.mkdir()
+        stale = work_dir / "stale-board-output.raw"
+        stale.write_bytes(b"historical")
+        args = argparse.Namespace(repo_root=root, work_dir=work_dir)
+        assert tail_driver.reset_work_dir(args) == work_dir
+        assert work_dir.is_dir()
+        assert not stale.exists()
 
 
 def rank_one_stdout(terminal_completion: int) -> str:
@@ -281,14 +294,16 @@ def validate_small_steady_tail_merge_gate() -> None:
         "single/ne/small": 100,
         "single/ne/steady-16k": 1000,
     }
-    for cell_key in engine_catalog.single_activation_cell_keys(
-        engine_catalog.Engine.NE
-    ):
-        probe = engine_catalog.CELLS_BY_KEY[cell_key].probes[0]
+    prerequisite_probes = tail_driver.fresh_ne_prerequisite_probes()
+    assert tuple(probe.cell_key for probe in prerequisite_probes) == (
+        "single/ne/small",
+        "single/ne/steady-16k",
+    )
+    for probe in prerequisite_probes:
         for sample in range(3):
             prerequisite_rows.append(
                 raw_ne_observation(
-                    probe, sample, cycles_by_cell[cell_key] + sample
+                    probe, sample, cycles_by_cell[probe.cell_key] + sample
                 )
             )
     with tempfile.TemporaryDirectory() as directory:
@@ -313,44 +328,12 @@ def validate_small_steady_tail_merge_gate() -> None:
             )
             == session_id
         )
-        archive_path = pathlib.Path(directory) / "engine.json"
-        archive_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "calibration_session_id": session_id,
-                    "board_qualification": qualification,
-                    "observations": prerequisite_rows,
-                }
-            )
-        )
-        loaded = tail_driver.load_single_engine_observations(
-            archive_path, session_id, qualification
-        )
-        assert len(loaded) == 6
+        assert len(prerequisite_rows) == 6
+        tail_driver.require_complete_ne_prerequisites(prerequisite_rows)
         try:
-            tail_driver.load_single_engine_observations(
-                archive_path, "b" * 32, qualification
+            tail_driver.require_complete_ne_prerequisites(
+                prerequisite_rows[:-1]
             )
-        except RuntimeError as error:
-            assert "stale" in str(error)
-        else:
-            raise AssertionError("stale NE prerequisite archive was accepted")
-        mismatched = dict(qualification)
-        mismatched["expected_tile_count"] = 8
-        try:
-            tail_driver.load_single_engine_observations(
-                archive_path, session_id, mismatched
-            )
-        except RuntimeError as error:
-            assert "qualification differs" in str(error)
-        else:
-            raise AssertionError(
-                "mismatched NE prerequisite qualification was accepted"
-            )
-        tail_driver.require_complete_ne_prerequisites(loaded)
-        try:
-            tail_driver.require_complete_ne_prerequisites(loaded[:-1])
         except RuntimeError as error:
             assert "prerequisite observations are incomplete" in str(error)
         else:
@@ -375,27 +358,18 @@ def validate_small_steady_tail_merge_gate() -> None:
                 )
             )
         activated = engine_catalog.evaluate_single_engine_activation(
-            engine_catalog.Engine.NE, (*loaded, *tail_rows)
+            engine_catalog.Engine.NE, (*prerequisite_rows, *tail_rows)
         )
         assert activated.activated, activated.reasons
         incomplete = engine_catalog.evaluate_single_engine_activation(
-            engine_catalog.Engine.NE, (*loaded, *tail_rows[:-1])
+            engine_catalog.Engine.NE,
+            (*prerequisite_rows, *tail_rows[:-1]),
         )
         assert not incomplete.activated
         assert any(
             "distinct external samples" in reason
             for reason in incomplete.reasons
         )
-    try:
-        tail_driver.load_single_engine_observations(
-            None, "a" * 32, qualification
-        )
-    except RuntimeError as error:
-        assert "--single-engine-observations" in str(error)
-    else:
-        raise AssertionError("missing NE prerequisite archive was accepted")
-
-
 def main() -> int:
     validate_shape_and_pipeline_contract()
     validate_protocol_and_real_execution_chain()

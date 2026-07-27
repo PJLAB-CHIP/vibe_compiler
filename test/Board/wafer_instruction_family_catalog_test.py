@@ -1244,6 +1244,7 @@ def validate_argmin_pending_domain_observations() -> None:
     assert (nan.result_bytes, nan.output_span, nan.aux_span) == (8, 8, 256)
 
     tie_sources = []
+    tie_source_pairs = []
     for sample, candidates in enumerate(catalog.ARGMIN_TIE_INDEX_SETS):
         built = catalog.build_case_payload(tie, sample=sample)
         tied_value_bits = struct.unpack(
@@ -1253,6 +1254,9 @@ def validate_argmin_pending_domain_observations() -> None:
             "<128H", built.payload, catalog.BODY_OFFSET
         )
         tie_sources.append(source_bits)
+        tie_source_pairs.append(
+            {(bits, index) for index, bits in enumerate(source_bits)}
+        )
         assert {
             index
             for index, bits in enumerate(source_bits)
@@ -1280,8 +1284,27 @@ def validate_argmin_pending_domain_observations() -> None:
             assert classified["classification"] == "tied-minimum"
             assert tuple(classified["candidate_indices"]) == candidates
     assert len(set(tie_sources)) == 3
+    assert all(
+        tie_source_pairs[lhs].isdisjoint(tie_source_pairs[rhs])
+        for lhs in range(3)
+        for rhs in range(lhs + 1, 3)
+    )
+    stale_sample_zero = (
+        struct.pack("<H", 0x3800)
+        + _output_seed_padding()
+        + struct.pack("<I", 5)
+    )
+    try:
+        catalog.classify_argmin_domain_observation(
+            tie, 1, stale_sample_zero
+        )
+    except RuntimeError as error:
+        assert "incoherent" in str(error)
+    else:
+        raise AssertionError("stale prior-sample ArgMin pair was accepted")
 
     nan_sources = []
+    nan_source_pairs = []
     for sample, (
         nan_index,
         nan_bits,
@@ -1292,6 +1315,9 @@ def validate_argmin_pending_domain_observations() -> None:
             "<128H", built.payload, catalog.BODY_OFFSET
         )
         nan_sources.append(source_bits)
+        nan_source_pairs.append(
+            {(bits, index) for index, bits in enumerate(source_bits)}
+        )
         assert source_bits[nan_index] == nan_bits
         assert source_bits[finite_index] == 0x3800
         finite_result = (
@@ -1315,6 +1341,11 @@ def validate_argmin_pending_domain_observations() -> None:
         assert nan_class is not None
         assert nan_class["classification"].startswith("nan-selected-")
     assert len(set(nan_sources)) == 3
+    assert all(
+        nan_source_pairs[lhs].isdisjoint(nan_source_pairs[rhs])
+        for lhs in range(3)
+        for rhs in range(lhs + 1, 3)
+    )
 
     incoherent = (
         struct.pack("<H", 0x3800)
@@ -1372,7 +1403,24 @@ def validate_argmin_pending_domain_observations() -> None:
             catalog.STEP_TARGET_ISSUED
             | catalog.STEP_FINAL_FENCE_COMPLETED
             | catalog.STEP_ARGMIN_INPUT_SNAPSHOTTED
+            | catalog.STEP_ARGMIN_DIAGNOSTIC_RETURNED
         ),
+        "ARGMIN_DIAGNOSTIC_FLAGS": (
+            catalog.ARGMIN_VALUE_VALID
+            | catalog.ARGMIN_INDEX_VALID
+            | catalog.ARGMIN_TASK_DRAINED
+        ),
+        "ARGMIN_WRITEBACK_POLLS": 1,
+        "ARGMIN_VALUE_RAW": (1 << 32) | tied_value_bits,
+        "ARGMIN_INDEX_RAW": (
+            (1 << 32) | catalog.ARGMIN_TIE_INDEX_SETS[sample][0]
+        ),
+        "ARGMIN_ARRIVAL_POLLS": (1 << 32) | 1,
+        "ARGMIN_TASKSTATUS_FIRST_LAST": (1 << 32) | 1,
+        "ARGMIN_IBCOUNTER_FIRST_LAST": 0,
+        "ARGMIN_STATE_POLLS": 1,
+        "ARGMIN_WRITEBACK_BUDGET": catalog.ARGMIN_WRITEBACK_POLL_BUDGET,
+        "ARGMIN_STATE_BUDGET": catalog.ARGMIN_STATE_POLL_BUDGET,
         "RECORD_GUARD": catalog.RECORD_GUARD,
     }
     for name, value in values.items():
@@ -1418,6 +1466,46 @@ def validate_argmin_pending_domain_observations() -> None:
         else:
             raise AssertionError("corrupt post-ArgMin snapshot was accepted")
 
+        bounded = bytearray(
+            [runner.OUTPUT_INITIAL_CANARY] * catalog.RESOURCE_BYTES
+        )
+        bounded_words = [0] * catalog.RECORD_WORDS
+        bounded_values = {
+            **values,
+            "STATUS": catalog.STATUS_DIAGNOSTIC_BOUNDED,
+            "STEP_FLAGS": (
+                catalog.STEP_TARGET_ISSUED
+                | catalog.STEP_ARGMIN_DIAGNOSTIC_RETURNED
+            ),
+            "ARGMIN_DIAGNOSTIC_FLAGS": (
+                catalog.ARGMIN_VALUE_VALID
+                | catalog.ARGMIN_WRITEBACK_BUDGET_EXHAUSTED
+                | catalog.ARGMIN_TASK_DRAINED
+            ),
+            "ARGMIN_WRITEBACK_POLLS": (
+                catalog.ARGMIN_WRITEBACK_POLL_BUDGET
+            ),
+            "ARGMIN_INDEX_RAW": 0,
+            "ARGMIN_ARRIVAL_POLLS": 1,
+        }
+        for name, value in bounded_values.items():
+            bounded_words[rec[name]] = value
+        struct.pack_into(
+            f"<{catalog.RECORD_WORDS}Q", bounded, 0, *bounded_words
+        )
+        output.write_bytes(bounded)
+        bounded_observation = runner.validate_output(
+            output,
+            tie,
+            built.expected_output_slot,
+            expected_aux_slot,
+            sample,
+        )
+        assert (
+            bounded_observation["semantic_observation"]["classification"]
+            == "bounded-diagnostic"
+        )
+
 
 def validate_probe_seed_is_ncc_local_and_completed() -> None:
     probe = (
@@ -1441,6 +1529,53 @@ def validate_probe_seed_is_ncc_local_and_completed() -> None:
     assert "TsmGetCsrIbcounter() != 0U" in wait_body
     assert "TsmGetCsrTaskstatus() != 1U" in wait_body
     assert "TsmWaitfinish();" not in wait_body
+
+
+def validate_argmin_bounded_probe_protocol() -> None:
+    root = pathlib.Path(__file__).resolve().parent
+    probe = (root / "Inputs" / "wafer_instruction_family_probe.c").read_text()
+    protocol = (
+        root / "Inputs" / "wafer_instruction_family_probe_protocol.h"
+    ).read_text()
+    start = probe.index("wafer_ifp_argmin_bounded")
+    body = probe[start : probe.index("\n}", start) + 2]
+    for required in (
+        "instruction.param.wb_data0 = 0;",
+        "instruction.param.wb_data1 = 0;",
+        "prelaunch_value_raw = getreg(WAFER_IFP_ARGMIN_VALUE_CSR)",
+        "prelaunch_index_raw = getreg(WAFER_IFP_ARGMIN_INDEX_CSR)",
+        "(void)TsmExecute(&instruction);",
+        "getreg(WAFER_IFP_ARGMIN_VALUE_CSR)",
+        "getreg(WAFER_IFP_ARGMIN_INDEX_CSR)",
+        "observed_invalid_pair",
+        "wafer_ifp_argmin_pair_is_fresh",
+        "wafer_ifp_argmin_pair_is_coherent",
+        "poll <= WAFER_IFP_ARGMIN_WRITEBACK_POLL_BUDGET",
+        "poll <= WAFER_IFP_ARGMIN_STATE_POLL_BUDGET",
+        "TsmGetCsrTaskstatus()",
+        "TsmGetCsrIbcounter()",
+        "WAFER_IFP_STEP_ARGMIN_DIAGNOSTIC_RETURNED",
+    ):
+        assert required in body
+    assert body.index("prelaunch_value_raw = getreg") < body.index(
+        "(void)TsmExecute(&instruction);"
+    )
+    assert body.index("prelaunch_index_raw = getreg") < body.index(
+        "(void)TsmExecute(&instruction);"
+    )
+    for forbidden in (
+        "__execute_ct_argmaxmin",
+        "__ct_init_argmaxmin",
+        "__ct_execute_argmaxmin",
+        "__ct_get_argmaxmin_result",
+        "TsmWaitfinish",
+        "while (",
+    ):
+        assert forbidden not in body
+    assert "#define WAFER_IFP_SCHEMA 2U" in protocol
+    assert "WAFER_IFP_REC_ARGMIN_VALUE_RAW = 22" in protocol
+    assert "WAFER_IFP_REC_ARGMIN_INDEX_RAW = 23" in protocol
+    assert "WAFER_IFP_REC_ARGMIN_ARRIVAL_POLLS = 24" in protocol
 
 
 def validate_pool_max_oracle() -> None:
@@ -1581,13 +1716,29 @@ def validate_unpool_capability_rows() -> None:
         in protocol
     )
     assert (
+        "#define WAFER_IFP_REPEATED_AUX_BYTES 512U"
+        in protocol
+    )
+    assert (
+        "#define WAFER_IFP_REPEATED_AUX_SNAPSHOT_OFFSET 512U"
+        in protocol
+    )
+    assert (
         "WAFER_IFP_STEP_REPEATED_OVERLAP_VALUES_STAGED = "
         "UINT32_C(1) << 4"
         in protocol
     )
+    assert (
+        "WAFER_IFP_STEP_REPEATED_OVERLAP_AUX_SNAPSHOTTED = "
+        "UINT32_C(1) << 6"
+        in protocol
+    )
     assert catalog.REPEATED_UNPOOL_SENTINEL_OFFSET == 2048
     assert catalog.REPEATED_UNPOOL_SENTINEL_BYTES == 512
+    assert catalog.REPEATED_UNPOOL_AUX_BYTES == 512
+    assert catalog.REPEATED_UNPOOL_AUX_SNAPSHOT_OFFSET == 512
     assert catalog.STEP_REPEATED_OVERLAP_VALUES_STAGED == 1 << 4
+    assert catalog.STEP_REPEATED_OVERLAP_AUX_SNAPSHOTTED == 1 << 6
 
     rotations = tuple(
         catalog._repeated_unpool_sentinels(sample)
@@ -1616,10 +1767,10 @@ def validate_unpool_capability_rows() -> None:
             244, "F16", "NO_ORACLE", 1920, 2048, 512
         ),
         "unpool-index-f16-repeated-overlap-observed": (
-            245, "F16", "NO_ORACLE", 1920, 2048, 512
+            245, "F16", "NO_ORACLE", 1920, 2048, 1024
         ),
         "unpool-mask-f16-repeated-overlap-observed": (
-            246, "F16", "NO_ORACLE", 1920, 2048, 512
+            246, "F16", "NO_ORACLE", 1920, 2048, 1024
         ),
     }
     for name, expected_row in expected_rows.items():
@@ -1783,10 +1934,22 @@ def validate_unpool_capability_rows() -> None:
             assert "wafer_tx81_pool_indexedmax" in body
             assert "wafer_tx81_local_fence" not in body
         if "REPEATED_OVERLAP" in symbol:
-            assert "wafer_ifp_wait_worker0_drain();" in body
-            assert "wafer_ifp_copy_spm_bytes(" in body
+            assert "wafer_ifp_wait_worker0_drain();" not in body
+            assert "wafer_ifp_copy_spm_bytes(" not in body
+            assert body.count("wafer_ifp_copy_spm_bytes_ncc(") == 2
+            pool = body.index("wafer_tx81_pool_indexedmax")
+            snapshot = body.index(
+                "WAFER_IFP_REPEATED_AUX_SNAPSHOT_OFFSET"
+            )
+            stage = body.index("WAFER_IFP_REPEATED_SENTINEL_OFFSET")
+            unpool = body.index(wrapper)
+            assert pool < snapshot < stage < unpool
             assert (
                 "WAFER_IFP_STEP_REPEATED_OVERLAP_VALUES_STAGED"
+                in body
+            )
+            assert (
+                "WAFER_IFP_STEP_REPEATED_OVERLAP_AUX_SNAPSHOTTED"
                 in body
             )
 
@@ -1826,6 +1989,7 @@ def validate_repeated_unpool_bounded_oracle() -> None:
                 catalog.STEP_TARGET_ISSUED
                 | catalog.STEP_FINAL_FENCE_COMPLETED
                 | catalog.STEP_REPEATED_OVERLAP_VALUES_STAGED
+                | catalog.STEP_REPEATED_OVERLAP_AUX_SNAPSHOTTED
             ),
             "RECORD_GUARD": catalog.RECORD_GUARD,
         }
@@ -1984,7 +2148,13 @@ def validate_repeated_unpool_bounded_oracle() -> None:
                 ),
                 (
                     catalog.AUX_DDR_OFFSET + catalog.BODY_OFFSET,
-                    "auxiliary",
+                    "post-consumer auxiliary",
+                ),
+                (
+                    catalog.AUX_DDR_OFFSET
+                    + catalog.BODY_OFFSET
+                    + catalog.REPEATED_UNPOOL_AUX_SNAPSHOT_OFFSET,
+                    "pre-consumer auxiliary snapshot",
                 ),
                 (output_begin + target_begin, "target channel"),
                 (output_begin + catalog.BODY_OFFSET, "non-target position"),
@@ -2782,6 +2952,7 @@ def main() -> int:
     validate_arg_extrema_composite_oracles()
     validate_argmin_pending_domain_observations()
     validate_probe_seed_is_ncc_local_and_completed()
+    validate_argmin_bounded_probe_protocol()
     validate_conv_oracle()
     validate_pool_max_oracle()
     validate_unpool_rows()

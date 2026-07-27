@@ -519,6 +519,15 @@ wafer_ncc_v2_ne_n(const WaferNccProbeLane *lane) {
              : WAFER_NCC_PROBE_NE_LOGICAL_DIM;
 }
 
+static uint32_t wafer_ncc_v2_ne_k(
+    const WaferNccV2Context *context, const WaferNccProbeLane *lane) {
+  if (wafer_ncc_v2_is_scope_ne_lane(context, lane))
+    return WAFER_NCC_V2_NE_SCOPE_K;
+  if (wafer_ncc_v2_is_large_ne_lane(lane))
+    return WAFER_NCC_V2_NE_LARGE_K;
+  return WAFER_NCC_PROBE_NE_LOGICAL_DIM;
+}
+
 static int wafer_ncc_v2_dma_layout_equal(const WaferNccProbeLane *lhs,
                                          const WaferNccProbeLane *rhs) {
   return lhs->layout_kind == WAFER_NCC_LAYOUT_DMA_STRIDED &&
@@ -1212,8 +1221,9 @@ static int wafer_ncc_v2_seed(void *opaque,
     wafer_ncc_v2_seed_region(write, output_span, UINT8_C(0xc3));
     volatile uint16_t *rhs = wafer_ncc_probe_spm16(read1);
     uint32_t logical_dim = wafer_ncc_v2_ne_n(issue->lane_spec);
+    uint32_t rhs_stride = wafer_ncc_v2_ne_k(context, issue->lane_spec);
     for (uint32_t index = 0; index < logical_dim; ++index)
-      rhs[index * logical_dim + index] =
+      rhs[index * rhs_stride + index] =
           UINT16_C(0x3c00);
     break;
   }
