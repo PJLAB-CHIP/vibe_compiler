@@ -16,6 +16,8 @@ import struct
 import subprocess
 import sys
 
+import wafer_runtime_launch_contract as runtime_launch
+
 
 MODULE = """\
 module {
@@ -46,7 +48,7 @@ METADATA = {
 }
 
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
-LAUNCH_ABI = "per-rank-pointer-block-v1"
+LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 PROBE_BYTES = 256
 PROBE_WORDS = 32
 PROBE_MAGIC = 0x3130554D50464157
@@ -167,7 +169,7 @@ def compile_seed_package(args: argparse.Namespace, source: pathlib.Path) -> path
             str(package),
             "--execution-ranks=1",
             f"--target-profile={TARGET_PROFILE}",
-            f"--launch-abi={LAUNCH_ABI}",
+            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )
@@ -185,12 +187,15 @@ def validate_manifest(
     modules = manifest.get("modules")
     entries = manifest.get("entries")
     resources = manifest.get("resources")
+    runtime_launch.require_manifest_launch(
+        manifest,
+        runtime_launch.RANK_ONE_KERNEL_LAUNCH,
+        context="PMU probe seed",
+    )
     if (
-        manifest.get("schema_version") != 5
-        or manifest.get("rank_count") != 1
+        manifest.get("rank_count") != 1
         or not isinstance(target, dict)
         or target.get("profile") != TARGET_PROFILE
-        or target.get("launch_abi") != LAUNCH_ABI
         or not isinstance(modules, list)
         or len(modules) != 1
         or not isinstance(entries, list)

@@ -1590,7 +1590,7 @@ def production_pipeline_preparation_gate(
 ) -> ProductionPreparationDecision:
     """Reject until production exposes authenticated accepted-Instr structure.
 
-    The current schema-v5 manifest can authenticate modules and resources, but
+    The current schema-v6 manifest can authenticate modules and resources, but
     it has no field that binds an accepted Instr schedule or its multi-buffer
     structure.  Consequently even a numerically correct package cannot prove
     this family, and a separately supplied JSON/handwritten raw request is
@@ -1622,9 +1622,9 @@ def production_pipeline_preparation_gate(
             else:
                 if not isinstance(manifest, dict):
                     reasons.append("production package manifest is not an object")
-                elif manifest.get("schema_version") == 5:
+                elif manifest.get("schema_version") == 6:
                     reasons.append(
-                        "schema-v5 package manifest exposes no authenticated "
+                        "schema-v6 package manifest exposes no authenticated "
                         "accepted-Instr structural evidence"
                     )
                 else:

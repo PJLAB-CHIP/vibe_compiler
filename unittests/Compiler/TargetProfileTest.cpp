@@ -1,11 +1,12 @@
 //===- TargetProfileTest.cpp - Closed target profile registry tests -------===//
 
 #include "Wafer/Target/TargetProfile.h"
-#include "Wafer/Target/TargetLaunchABI.h"
+#include "Wafer/Target/RuntimeLaunchContract.h"
 
 #include "llvm/Support/Error.h"
 #include "gtest/gtest.h"
 
+#include <array>
 #include <string>
 #include <type_traits>
 
@@ -79,51 +80,150 @@ TEST(TargetProfileTest, UnknownAndEmptySpellingsHaveNoFallback) {
             std::string::npos);
 }
 
-TEST(TargetLaunchABITest, RegistryIsClosedCanonicalAndRoundTrips) {
-  static_assert(!std::is_default_constructible_v<wafer::TargetLaunchABIId>);
-  llvm::ArrayRef<wafer::TargetLaunchABIRecord> records =
-      wafer::getRegisteredTargetLaunchABIs();
-  ASSERT_EQ(records.size(), 4u);
-  EXPECT_EQ(records[0].canonicalSpelling, "per-rank-pointer-block-v1");
-  EXPECT_EQ(records[1].canonicalSpelling, "tx81-kernel-grid-pointer-table-v1");
-  EXPECT_EQ(records[2].canonicalSpelling, "tx81-model-bootparam-v1");
-  EXPECT_EQ(records[3].canonicalSpelling,
-            "tx81-cluster-direct-dte-prepare-main-v1");
-  for (const wafer::TargetLaunchABIRecord &record : records) {
-    llvm::Expected<wafer::TargetLaunchABIId> parsed =
-        wafer::parseTargetLaunchABIId(record.canonicalSpelling);
-    ASSERT_TRUE(static_cast<bool>(parsed))
-        << llvm::toString(parsed.takeError());
-    EXPECT_EQ(*parsed, record.id);
-    EXPECT_EQ(wafer::stringifyTargetLaunchABIId(*parsed),
-              record.canonicalSpelling);
+TEST(RuntimeLaunchContractTest, ComponentsHaveCanonicalClosedSpellings) {
+  static_assert(!std::is_default_constructible_v<wafer::RuntimeLaunchContract>);
+
+  llvm::Expected<wafer::RuntimeLaunchKind> kernel =
+      wafer::parseRuntimeLaunchKind("kernel");
+  ASSERT_TRUE(static_cast<bool>(kernel));
+  EXPECT_EQ(*kernel, wafer::RuntimeLaunchKind::Kernel);
+  EXPECT_EQ(wafer::stringifyRuntimeLaunchKind(*kernel), "kernel");
+
+  llvm::Expected<wafer::RuntimeLaunchKind> model =
+      wafer::parseRuntimeLaunchKind("model");
+  ASSERT_TRUE(static_cast<bool>(model));
+  EXPECT_EQ(*model, wafer::RuntimeLaunchKind::Model);
+  EXPECT_EQ(wafer::stringifyRuntimeLaunchKind(*model), "model");
+
+  for (auto [spelling, expected] :
+       std::array<std::pair<llvm::StringRef, wafer::KernelLaunchForm>, 3>{
+           std::pair{"per-rank", wafer::KernelLaunchForm::PerRank},
+           std::pair{"grid", wafer::KernelLaunchForm::Grid},
+           std::pair{"cluster", wafer::KernelLaunchForm::Cluster}}) {
+    llvm::Expected<wafer::KernelLaunchForm> parsed =
+        wafer::parseKernelLaunchForm(spelling);
+    ASSERT_TRUE(static_cast<bool>(parsed));
+    EXPECT_EQ(*parsed, expected);
+    EXPECT_EQ(wafer::stringifyKernelLaunchForm(*parsed), spelling);
   }
 
-  llvm::Expected<wafer::TargetLaunchABIId> unknown =
-      wafer::parseTargetLaunchABIId("unknown-launch-abi");
-  ASSERT_FALSE(static_cast<bool>(unknown));
-  EXPECT_NE(
-      llvm::toString(unknown.takeError()).find("unknown target launch ABI"),
-      std::string::npos);
+  for (auto [spelling, expected] :
+       std::array<std::pair<llvm::StringRef, wafer::KernelEntryABI>, 2>{
+           std::pair{"rank-local-pointer-block-v1",
+                     wafer::KernelEntryABI::RankLocalPointerBlockV1},
+           std::pair{"rank-major-pointer-table-v1",
+                     wafer::KernelEntryABI::RankMajorPointerTableV1}}) {
+    llvm::Expected<wafer::KernelEntryABI> parsed =
+        wafer::parseKernelEntryABI(spelling);
+    ASSERT_TRUE(static_cast<bool>(parsed));
+    EXPECT_EQ(*parsed, expected);
+    EXPECT_EQ(wafer::stringifyKernelEntryABI(*parsed), spelling);
+  }
 
-  EXPECT_TRUE(wafer::isTargetLaunchABICompatible(
-      wafer::TargetLaunchABIId::perRankPointerBlockV1(),
-      wafer::TargetProfileId::waferTx81SingleCardKernelV2()));
-  EXPECT_TRUE(wafer::isTargetLaunchABICompatible(
-      wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1(),
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
-  EXPECT_TRUE(wafer::isTargetLaunchABICompatible(
-      wafer::TargetLaunchABIId::tx81ModelBootParamV1(),
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
-  EXPECT_TRUE(wafer::isTargetLaunchABICompatible(
-      wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1(),
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
-  EXPECT_FALSE(wafer::isTargetLaunchABICompatible(
-      wafer::TargetLaunchABIId::tx81ModelBootParamV1(),
-      wafer::TargetProfileId::waferTx81SingleCardKernelV2()));
-  EXPECT_FALSE(wafer::isTargetLaunchABICompatible(
-      wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1(),
-      wafer::TargetProfileId::waferTx81SingleCardKernelV2()));
+  llvm::Expected<wafer::ModelEntryABI> modelABI =
+      wafer::parseModelEntryABI("tx81-model-bootparam-v1");
+  ASSERT_TRUE(static_cast<bool>(modelABI));
+  EXPECT_EQ(*modelABI, wafer::ModelEntryABI::Tx81ModelBootParamV1);
+  EXPECT_EQ(wafer::stringifyModelEntryABI(*modelABI),
+            "tx81-model-bootparam-v1");
+
+  for (auto [spelling, expected] :
+       std::array<std::pair<llvm::StringRef, wafer::RuntimeLaunchPhaseRole>, 2>{
+           std::pair{"prepare", wafer::RuntimeLaunchPhaseRole::Prepare},
+           std::pair{"main", wafer::RuntimeLaunchPhaseRole::Main}}) {
+    llvm::Expected<wafer::RuntimeLaunchPhaseRole> parsed =
+        wafer::parseRuntimeLaunchPhaseRole(spelling);
+    ASSERT_TRUE(static_cast<bool>(parsed));
+    EXPECT_EQ(*parsed, expected);
+    EXPECT_EQ(wafer::stringifyRuntimeLaunchPhaseRole(*parsed), spelling);
+  }
+
+  auto expectRejected = [](auto parsed) {
+    EXPECT_FALSE(static_cast<bool>(parsed));
+    if (!parsed)
+      llvm::consumeError(parsed.takeError());
+  };
+  expectRejected(wafer::parseRuntimeLaunchKind("unknown-launch-kind"));
+  expectRejected(wafer::parseRuntimeLaunchKind("direct-dte"));
+  expectRejected(wafer::parseRuntimeLaunchKind("cluster"));
+  expectRejected(wafer::parseRuntimeLaunchKind("grid"));
+  expectRejected(wafer::parseRuntimeLaunchKind("per-rank"));
+  expectRejected(wafer::parseKernelLaunchForm("unknown-form"));
+  expectRejected(wafer::parseKernelEntryABI("unknown-entry-abi"));
+  expectRejected(wafer::parseModelEntryABI("unknown-model-abi"));
+  expectRejected(wafer::parseRuntimeLaunchPhaseRole("unknown-phase"));
+}
+
+TEST(RuntimeLaunchContractTest, FactoriesAdmitOnlySupportedCrossProducts) {
+  constexpr std::array main{wafer::RuntimeLaunchPhaseRole::Main};
+  constexpr std::array prepareMain{wafer::RuntimeLaunchPhaseRole::Prepare,
+                                   wafer::RuntimeLaunchPhaseRole::Main};
+
+  llvm::Expected<wafer::RuntimeLaunchContract> perRank =
+      wafer::RuntimeLaunchContract::createKernel(
+          wafer::KernelLaunchForm::PerRank,
+          wafer::KernelEntryABI::RankLocalPointerBlockV1, main);
+  ASSERT_TRUE(static_cast<bool>(perRank));
+  ASSERT_NE(perRank->getKernel(), nullptr);
+  EXPECT_EQ(perRank->getKind(), wafer::RuntimeLaunchKind::Kernel);
+  EXPECT_EQ(perRank->getKernel()->form, wafer::KernelLaunchForm::PerRank);
+  EXPECT_EQ(perRank->getPhases(), llvm::ArrayRef(main));
+
+  llvm::Expected<wafer::RuntimeLaunchContract> grid =
+      wafer::RuntimeLaunchContract::createKernel(
+          wafer::KernelLaunchForm::Grid,
+          wafer::KernelEntryABI::RankMajorPointerTableV1, main);
+  ASSERT_TRUE(static_cast<bool>(grid));
+  EXPECT_EQ(grid->getKernel()->form, wafer::KernelLaunchForm::Grid);
+
+  llvm::Expected<wafer::RuntimeLaunchContract> cluster =
+      wafer::RuntimeLaunchContract::createKernel(
+          wafer::KernelLaunchForm::Cluster,
+          wafer::KernelEntryABI::RankMajorPointerTableV1, prepareMain);
+  ASSERT_TRUE(static_cast<bool>(cluster));
+  EXPECT_EQ(cluster->getPhases(), llvm::ArrayRef(prepareMain));
+
+  llvm::Expected<wafer::RuntimeLaunchContract> model =
+      wafer::RuntimeLaunchContract::createModel(
+          wafer::ModelEntryABI::Tx81ModelBootParamV1, main);
+  ASSERT_TRUE(static_cast<bool>(model));
+  EXPECT_EQ(model->getKind(), wafer::RuntimeLaunchKind::Model);
+  ASSERT_NE(model->getModel(), nullptr);
+
+  auto expectRejected = [](auto contract) {
+    EXPECT_FALSE(static_cast<bool>(contract));
+    if (!contract)
+      llvm::consumeError(contract.takeError());
+  };
+  expectRejected(wafer::RuntimeLaunchContract::createKernel(
+      wafer::KernelLaunchForm::PerRank,
+      wafer::KernelEntryABI::RankMajorPointerTableV1, main));
+  expectRejected(wafer::RuntimeLaunchContract::createKernel(
+      wafer::KernelLaunchForm::Grid,
+      wafer::KernelEntryABI::RankLocalPointerBlockV1, main));
+  expectRejected(wafer::RuntimeLaunchContract::createKernel(
+      wafer::KernelLaunchForm::Grid,
+      wafer::KernelEntryABI::RankMajorPointerTableV1, prepareMain));
+  expectRejected(wafer::RuntimeLaunchContract::createKernel(
+      wafer::KernelLaunchForm::Cluster,
+      wafer::KernelEntryABI::RankMajorPointerTableV1, main));
+  expectRejected(wafer::RuntimeLaunchContract::createModel(
+      wafer::ModelEntryABI::Tx81ModelBootParamV1, prepareMain));
+
+  EXPECT_TRUE(wafer::isRuntimeLaunchContractCompatible(
+      *perRank, wafer::TargetProfileId::waferTx81SingleCardKernelV2()));
+  EXPECT_TRUE(wafer::isRuntimeLaunchContractCompatible(
+      *grid, wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+  EXPECT_TRUE(wafer::isRuntimeLaunchContractCompatible(
+      *cluster, wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+  EXPECT_TRUE(wafer::isRuntimeLaunchContractCompatible(
+      *model, wafer::TargetProfileId::waferTx81SingleCardKernelV1()));
+  EXPECT_FALSE(wafer::isRuntimeLaunchContractCompatible(
+      *grid, wafer::TargetProfileId::waferTx81SingleCardKernelV2()));
+  EXPECT_FALSE(wafer::isRuntimeLaunchContractCompatible(
+      *cluster, wafer::TargetProfileId::waferTx81SingleCardKernelV2()));
+  EXPECT_FALSE(wafer::isRuntimeLaunchContractCompatible(
+      *model, wafer::TargetProfileId::waferTx81SingleCardKernelV2()));
 }
 
 } // namespace

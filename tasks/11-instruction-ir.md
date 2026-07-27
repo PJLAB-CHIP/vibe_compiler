@@ -154,7 +154,7 @@ Pipeline position:
 - Explicit non-goals:
   不新增第二套 storage/buffer IR，不决定 scheduling boundary、tile shape、implementation/layout/transfer/residency proposal、SPM offset、
   DDR planning result、raw register packet field、DTE/FSM resource id、Tsm wrapper call、target CRT
-  symbol 或 launch ABI。SCALAR 仍是 reserved/stub；CSR helper/sync 若进入主线，必须作为明确
+  symbol 或 runtime launch contract。SCALAR 仍是 reserved/stub；CSR helper/sync 若进入主线，必须作为明确
   instruction/sync family 另行定义，不能混入 CT/NE/RDMA/WDMA/TDMA 或 DTE op。
   本层也不按 task/rank 部分提交，不允许 `DirectFullShape` 或 representative tile 绕过完整 gates，
   不把 hardware `busytable` 解释为 completion event，也不依据presumed rank equivalence省略或合并

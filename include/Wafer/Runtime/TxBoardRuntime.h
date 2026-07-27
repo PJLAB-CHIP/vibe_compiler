@@ -12,8 +12,7 @@ namespace wafer::runtime {
 /// Creates the provider backed by the public TX runtime API selected by the
 /// board-enabled build. Availability is still checked at invocation time.
 llvm::Expected<std::unique_ptr<BoardRuntimeDriver>>
-createTxBoardRuntimeDriver(llvm::StringRef expectedRuntimeLibraryDigest,
-                           TargetLaunchABIId launchABI);
+createTxBoardRuntimeDriver(llvm::StringRef expectedRuntimeLibraryDigest);
 
 } // namespace wafer::runtime
 

@@ -32,13 +32,24 @@ compileExecutableBundleToTargetLLVMModulesImpl(
 
   const TargetProfileRecord &targetProfile =
       getTargetProfileRecord(executionConfig.getTargetProfileId());
+  const RuntimeLaunchContract &runtimeLaunchContract =
+      executableBundle.getRuntimeLaunchContract();
+  if (runtimeLaunchContract.getKind() !=
+          executionConfig.getRuntimeLaunchKind() ||
+      !isRuntimeLaunchContractCompatible(runtimeLaunchContract,
+                                         executionConfig.getTargetProfileId()))
+    return fail(diagnostics,
+                "executable runtime launch contract does not match the "
+                "execution configuration");
+  const bool transportPreparedBeforeEntry = llvm::is_contained(
+      runtimeLaunchContract.getPhases(), RuntimeLaunchPhaseRole::Prepare);
   std::vector<PreparedTargetRank> preparedRanks;
   preparedRanks.reserve(ranks.size());
   for (auto [expectedRank, rank] : llvm::enumerate(ranks)) {
     if (rank.getLogicalRank() != static_cast<int64_t>(expectedRank))
       return fail(diagnostics, "target LLVM rank domain is not canonical");
-    mlir::FailureOr<PreparedTargetRank> prepared =
-        prepareTargetABI(rank, executionConfig, profileCapture);
+    mlir::FailureOr<PreparedTargetRank> prepared = prepareTargetABI(
+        rank, executionConfig, transportPreparedBeforeEntry, profileCapture);
     if (mlir::failed(prepared))
       return fail(diagnostics,
                   "target ABI preparation failed for logical rank " +
@@ -59,7 +70,8 @@ compileExecutableBundleToTargetLLVMModulesImpl(
                       std::to_string(expectedRank));
     if (prepared->logicalRank != static_cast<int64_t>(expectedRank) ||
         prepared->targetProfile != targetProfile.id ||
-        prepared->launchABI != executionConfig.getTargetLaunchABIId() ||
+        prepared->transportPreparedBeforeEntry !=
+            transportPreparedBeforeEntry ||
         prepared->targetIdentity != targetProfile.targetIdentity ||
         prepared->kernelRuntimeABI != targetProfile.kernelRuntimeABI ||
         prepared->moduleFormat != targetProfile.moduleFormat)
@@ -87,18 +99,8 @@ compileExecutableBundleToTargetLLVMModulesImpl(
                       std::to_string(expectedRank));
   }
 
-  return TargetLLVMModuleBundleBuilder::makeBundle(executionConfig,
-                                                   std::move(modules));
-}
-
-mlir::LogicalResult
-lowerTargetABIForTesting(const RankExecutable &rankExecutable,
-                         const ExecutionConfig &executionConfig) {
-  mlir::FailureOr<PreparedTargetRank> prepared =
-      prepareTargetABI(rankExecutable, executionConfig);
-  if (mlir::failed(prepared) || mlir::failed(lowerToTargetLLVM(*prepared)))
-    return mlir::failure();
-  return verifyLoweredKernelABI(*prepared, rankExecutable.getEntrySymbol());
+  return TargetLLVMModuleBundleBuilder::makeBundle(
+      executionConfig, runtimeLaunchContract, std::move(modules));
 }
 
 llvm::Error

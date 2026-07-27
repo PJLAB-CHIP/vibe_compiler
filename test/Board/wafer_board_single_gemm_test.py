@@ -14,6 +14,8 @@ import sys
 
 import numpy as np
 
+import wafer_runtime_launch_contract as runtime_launch
+
 
 GEMM_CASE_SHAPES = {
     "single-tile": (256, 256, 512),
@@ -22,7 +24,7 @@ GEMM_CASE_SHAPES = {
 M, K, N = GEMM_CASE_SHAPES["single-tile"]
 F16_BYTES = np.dtype("<f2").itemsize
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
-LAUNCH_ABI = "per-rank-pointer-block-v1"
+LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 PROCESS_TIMEOUT_MARGIN_SECONDS = 30
 
 
@@ -153,12 +155,15 @@ def validate_structured_program(package: pathlib.Path) -> None:
 def validate_manifest(package: pathlib.Path) -> tuple[dict[tuple[str, int], int], int]:
     manifest = json.loads((package / "manifest.json").read_text())
     target = manifest.get("target")
+    runtime_launch.require_manifest_launch(
+        manifest,
+        runtime_launch.RANK_ONE_KERNEL_LAUNCH,
+        context="standalone GEMM",
+    )
     if (
-        manifest.get("schema_version") != 5
-        or manifest.get("rank_count") != 1
+        manifest.get("rank_count") != 1
         or not isinstance(target, dict)
         or target.get("profile") != TARGET_PROFILE
-        or target.get("launch_abi") != LAUNCH_ABI
     ):
         raise RuntimeError("standalone GEMM package target contract is invalid")
 
@@ -283,10 +288,9 @@ def write_payloads(
 
 def verify_no_card_evidence(stdout: str) -> None:
     required = {
-        "package: id=0 schema=5 ranks=1",
-        "target: wafer-tx81-single-card runtime_abi=wafer-tx81-kernel-v1 "
-        f"launch_abi={LAUNCH_ABI} module_format=elf-riscv64",
-        "entry: 0 rank=0 symbol=main",
+        "package: id=0 schema=6 ranks=1",
+        "entry: 0 rank=0",
+        "launch_phase: role=main symbol=main",
         "board_execution: false",
     }
     if not required.issubset(set(stdout.splitlines())):
@@ -351,7 +355,7 @@ def main() -> int:
             str(package),
             "--execution-ranks=1",
             f"--target-profile={TARGET_PROFILE}",
-            f"--launch-abi={LAUNCH_ABI}",
+            f"--launch-kind={LAUNCH_KIND}",
         ]
     )
     if "published verified package with execution-ranks=1" not in compile_result.stdout:

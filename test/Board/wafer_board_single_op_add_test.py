@@ -14,12 +14,14 @@ import sys
 
 import numpy as np
 
+import wafer_runtime_launch_contract as runtime_launch
+
 
 @dataclasses.dataclass(frozen=True)
 class RuntimeLaunchCalibrationCase:
     key: str
     rank_count: int
-    launch_abi: str
+    launch_kind: str
     oracle: str
     completion: str
 
@@ -28,8 +30,8 @@ RUNTIME_LAUNCH_CALIBRATION_CASES = (
     RuntimeLaunchCalibrationCase(
         "rank-one-per-rank-add",
         1,
-        "per-rank-pointer-block-v1",
-        "full f32 expected output+schema-v5 unique entry/resource binding",
+        runtime_launch.KERNEL_LAUNCH_KIND,
+        "full f32 expected output+schema-v6 unique entry/resource binding",
         "runtime terminal+D2H+normal cleanup",
     ),
 )
@@ -125,8 +127,13 @@ def invocation_arguments(
     manifest_path: pathlib.Path, raw_paths: dict[tuple[str, int], pathlib.Path]
 ) -> list[str]:
     manifest = json.loads(manifest_path.read_text())
-    if manifest.get("schema_version") != 5 or manifest.get("rank_count") != 1:
-        raise RuntimeError("single-op board gate requires a schema-v5 rank-one package")
+    runtime_launch.require_manifest_launch(
+        manifest,
+        runtime_launch.RANK_ONE_KERNEL_LAUNCH,
+        context="single-op board gate",
+    )
+    if manifest.get("rank_count") != 1:
+        raise RuntimeError("single-op board gate requires a schema-v6 rank-one package")
     entries = manifest.get("entries", [])
     if len(entries) != 1 or entries[0].get("id") != 0:
         raise RuntimeError("single-op board gate requires the unique entry ID 0")
@@ -176,7 +183,7 @@ def main() -> int:
             str(package),
             "--execution-ranks=1",
             "--target-profile=wafer-tx81-single-card-kernel-v1",
-            "--launch-abi=per-rank-pointer-block-v1",
+            "--launch-kind=kernel",
         ]
     )
     if "published verified package" not in compile_result.stdout:

@@ -35,8 +35,10 @@ struct TargetLLVMModuleBundleBuilder {
 
   static TargetLLVMModuleBundle
   makeBundle(ExecutionConfig executionConfig,
+             RuntimeLaunchContract runtimeLaunchContract,
              std::vector<TargetLLVMModule> modules) {
-    return TargetLLVMModuleBundle(executionConfig, std::move(modules));
+    return TargetLLVMModuleBundle(
+        executionConfig, std::move(runtimeLaunchContract), std::move(modules));
   }
 };
 
@@ -66,17 +68,19 @@ struct TargetArtifactBundleBuilder {
 
   static TargetArtifactBundle
   makeBundle(llvm::StringRef rootDirectory, ExecutionConfig executionConfig,
+             RuntimeLaunchContract runtimeLaunchContract,
              std::vector<VerifiedTargetModule> modules,
              std::vector<VerifiedTargetRankInterface> rankInterfaces) {
     return TargetArtifactBundle(rootDirectory, executionConfig,
+                                std::move(runtimeLaunchContract),
                                 std::move(modules), std::move(rankInterfaces));
   }
 };
 
 namespace detail {
 
-inline constexpr llvm::StringLiteral kClusterPrepareExportSymbol =
-    "__wafer_cluster_prepare";
+inline constexpr llvm::StringLiteral kKernelPrepareExportSymbol =
+    "__wafer_kernel_prepare";
 
 /// Compiler-internal target capture kinds. They are implementation details of
 /// the single profiling product and are never user-selectable driver modes.
@@ -124,12 +128,13 @@ struct OwnedTargetLLVMModule {
 };
 
 struct PreparedTargetRank {
-  explicit PreparedTargetRank(const ExecutionConfig &executionConfig);
+  PreparedTargetRank(const ExecutionConfig &executionConfig,
+                     bool transportPreparedBeforeEntry);
 
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::vector<KernelABISlot> slots;
   TargetProfileId targetProfile;
-  TargetLaunchABIId launchABI;
+  bool transportPreparedBeforeEntry = false;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId kernelRuntimeABI;
   std::string moduleFormat;
@@ -151,6 +156,7 @@ bool isRegularTargetFile(llvm::StringRef path);
 mlir::FailureOr<PreparedTargetRank>
 prepareTargetABI(const RankExecutable &rankExecutable,
                  const ExecutionConfig &executionConfig,
+                 bool transportPreparedBeforeEntry,
                  ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
 mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared);
 mlir::LogicalResult verifyLoweredKernelABI(PreparedTargetRank &prepared,
@@ -170,46 +176,42 @@ llvm::Error verifyTargetLLVMModule(const llvm::Module &module,
 llvm::Error
 writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
             llvm::ArrayRef<KernelABISlot> slots,
-            TargetLaunchABIId targetLaunchABI, int64_t logicalRank,
-            int64_t rankCount, llvm::StringRef path,
+            const RuntimeLaunchContract &runtimeLaunchContract,
+            int64_t logicalRank, int64_t rankCount, llvm::StringRef path,
             ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
 llvm::Error writeTargetLLVMIR(const llvm::Module &module, llvm::StringRef path);
 
 /// Imports the complete rank domain into one context, scopes every supported
-/// definition by rank, links it, and creates typed prepare/main exports.
-llvm::Expected<OwnedTargetLLVMModule>
-buildClusterTargetModule(const TargetLLVMModuleBundle &targetLLVMModules);
+/// definition by rank, links it, and creates the contract's ordered exports.
+llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
+    const TargetLLVMModuleBundle &targetLLVMModules);
 llvm::Error
 runDeviceLink(const TargetToolchain &toolchain, llvm::StringRef llvmIR,
               llvm::StringRef module, llvm::StringRef object,
-              llvm::StringRef crtObject, TargetLaunchABIId targetLaunchABI,
+              llvm::StringRef crtObject,
+              const RuntimeLaunchContract &runtimeLaunchContract,
               ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
-llvm::Expected<TargetModuleReadback> verifyTargetModule(
-    llvm::StringRef path, llvm::ArrayRef<VerifiedTargetExport> expectedExports,
-    TargetProfileId expectedProfile, TargetLaunchABIId expectedLaunchABI);
-
-/// Runs production entry-only ABI preparation, target lowering, and lowered
-/// entry verification on an owned clone. This narrow hook lets unit tests
-/// prove accepted multi-function closure handling without invoking the
-/// external object/link toolchain.
-mlir::LogicalResult
-lowerTargetABIForTesting(const RankExecutable &rankExecutable,
-                         const ExecutionConfig &executionConfig);
+llvm::Expected<TargetModuleReadback>
+verifyTargetModule(llvm::StringRef path,
+                   llvm::ArrayRef<VerifiedTargetExport> expectedExports,
+                   TargetProfileId expectedProfile,
+                   const RuntimeLaunchContract &expectedLaunch);
 
 /// Verifies a genuinely linked module with the production ELF readback path
 /// and exposes the immutable typed facts that production stores per module.
 llvm::Expected<VerifiedTargetModule> verifyLinkedTargetModuleForTesting(
     llvm::StringRef path, llvm::StringRef entrySymbol,
-    TargetProfileId targetProfile, TargetLaunchABIId targetLaunchABI);
+    TargetProfileId targetProfile,
+    const RuntimeLaunchContract &runtimeLaunchContract);
 
 /// Re-runs the production target LLVM module readback against the immutable
 /// typed facts stored by the owner-backed entry.
 llvm::Error
 verifyTargetLLVMModuleForTesting(const TargetLLVMModule &targetModule);
 
-/// Runs the side-effect-free all-rank launch-ABI domain preflight used before
-/// publication creates its private staging directory.
-llvm::Error validateTargetLaunchABIDomainForTesting(
+/// Runs the side-effect-free all-rank runtime-launch contract preflight used
+/// before publication creates its private staging directory.
+llvm::Error validateRuntimeLaunchContractDomainForTesting(
     const TargetLLVMModuleBundle &targetLLVMModules);
 
 llvm::Expected<TargetLLVMModuleBundle>

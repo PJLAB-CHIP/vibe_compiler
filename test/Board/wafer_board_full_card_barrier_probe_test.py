@@ -23,7 +23,7 @@ RANK_COUNT = 16
 UNSUPPORTED_PARTICIPANT_COUNTS = (1, 2, 4, 8, 15)
 RESOURCE_BYTES = 256
 SLOTS_PER_RANK = 3
-LAUNCH_ABI = "tx81-cluster-direct-dte-prepare-main-v1"
+LAUNCH_KIND = "kernel"
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_full_card_barrier_probe.c"
@@ -210,7 +210,7 @@ def compile_package(
             str(package),
             f"--execution-ranks={RANK_COUNT}",
             "--target-profile=wafer-tx81-single-card-kernel-v1",
-            f"--launch-abi={LAUNCH_ABI}",
+            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )
@@ -406,11 +406,8 @@ def verify_no_card(args: argparse.Namespace, package: pathlib.Path) -> None:
             "--supports-host-watchdog",
         ]
     )
-    if (
-        "board_execution: false" not in result.stdout
-        or f"launch_abi={LAUNCH_ABI}" not in result.stdout
-    ):
-        raise RuntimeError("no-card output omitted the cluster launch contract")
+    if "board_execution: false" not in result.stdout:
+        raise RuntimeError("no-card output omitted the kernel invocation")
     print("full_card_barrier_probe_no_card: passed")
 
 

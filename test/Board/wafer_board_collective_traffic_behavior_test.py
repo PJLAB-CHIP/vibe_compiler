@@ -17,6 +17,7 @@ import numpy as np
 
 import wafer_board_compiler_optimization_campaign_test as paired_support
 import wafer_direct_dte_board_evidence as direct_dte_evidence
+import wafer_runtime_launch_contract as runtime_launch
 from wafer_collective_traffic_behavior_catalog import (
     CASE_KEYS,
     CASES_BY_KEY,
@@ -28,7 +29,7 @@ from wafer_collective_traffic_behavior_catalog import (
 
 
 TARGET_PROFILE = paired_support.TARGET_PROFILE
-LAUNCH_ABI = paired_support.CLUSTER_LAUNCH_ABI
+LAUNCH_KIND = paired_support.CLUSTER_LAUNCH_KIND
 STATUS_ABI = paired_support.DIRECT_DTE_STATUS_ABI
 PROCESS_TIMEOUT_MARGIN_SECONDS = paired_support.PROCESS_TIMEOUT_MARGIN_SECONDS
 SPMD_HELPER_ENVIRONMENT_VARIABLE = "WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER"
@@ -53,8 +54,8 @@ class RuntimeCase:
         return self.contract.rank_count
 
     @property
-    def launch_abi(self) -> str:
-        return LAUNCH_ABI
+    def launch_kind(self) -> str:
+        return LAUNCH_KIND
 
     @property
     def payload_factory(self):
@@ -328,7 +329,7 @@ def compile_package(
             str(output),
             f"--execution-ranks={RANK_COUNT}",
             f"--target-profile={TARGET_PROFILE}",
-            f"--launch-abi={LAUNCH_ABI}",
+            f"--launch-kind={LAUNCH_KIND}",
         ],
         environment=environment,
     )
@@ -401,11 +402,14 @@ def validate_package(
 ) -> PackageEvidence:
     validate_distributed_boundary(package, case)
     manifest = json.loads((package / "manifest.json").read_text())
+    runtime_launch.require_manifest_launch(
+        manifest,
+        runtime_launch.CLUSTER_KERNEL_LAUNCH,
+        context="collective traffic",
+    )
     if (
-        manifest.get("schema_version") != 5
-        or manifest.get("rank_count") != RANK_COUNT
+        manifest.get("rank_count") != RANK_COUNT
         or manifest.get("target", {}).get("profile") != TARGET_PROFILE
-        or manifest.get("target", {}).get("launch_abi") != LAUNCH_ABI
     ):
         raise RuntimeError("collective traffic package target contract is invalid")
     transport = direct_dte_evidence.validate_direct_dte_manifest(manifest)
@@ -632,7 +636,7 @@ def main() -> int:
         "payload_bytes_per_rank": case.contract.payload_bytes,
         "rank_count": RANK_COUNT,
         "target_profile": TARGET_PROFILE,
-        "launch_abi": LAUNCH_ABI,
+        "launch": runtime_launch.CLUSTER_KERNEL_LAUNCH,
         "source_mode": "explicit-post-spmd-traffic-carrier",
         "source_snapshots_sha256": {
             str(relative): hashlib.sha256(

@@ -770,7 +770,8 @@ pairwise_excess = engine_a_exec + engine_b_exec - fu_union_exec
   entry声明了transport status resource，却遗漏
   `wafer_tx81_direct_dte_begin_after_prepare()`/`wafer_tx81_direct_dte_finish()`，不是
   `hrt_barrier`超时。补齐terminal publication ABI后同一两轮barrier通过；手写cluster probe必须把
-  status begin/finish视为launch ABI，而不能用未发布的poison status判断硬件同步失败。
+  status begin/finish视为entry transport lifecycle，而不能把它提升为新launch kind，或用未发布的poison
+  status判断硬件同步失败。
 
 ## 5. 校准 case 规划与执行批次
 
@@ -1232,7 +1233,7 @@ WAFER_EXECUTE_HARDWARE_TESTS=1 \
 runner先审计已注册的`board;hardware` CTest与manifest完全一致，再做一次串行增量构建；随后逐CTest单进程
 执行，首个failure、timeout或skip立即停止，不自动retry/reset/power。每项保存log和JUnit，session级
 `session.json`增量记录未执行项与失败位置；每次`--execute`生成新的32位hex session id并只向该轮build/CTest
-子进程传递。跨CTest合并的engine/NE archive必须同时匹配该session id、target profile、launch ABI、device id、
+子进程传递。跨CTest合并的engine/NE archive必须同时匹配该session id、target profile、完整runtime launch contract、device id、
 runtime version/device name/PCI/tile count/runtime library SHA；旧轮或其它profile的archive在发板前fail closed。
 首尾各执行一次known-good Add heartbeat。
 已有证据不需重放时使用可重复的`--step`或`--batch`冻结精确子集。本批全部待板端case的单一机器可审计入口为：
@@ -1473,7 +1474,8 @@ send与对端recv必须在除direction外全部字段相同且多重集一一抵
 AllGather输入采用partitioned boundary、输出replicated；ReduceScatter的rank-local contribution输入和destination
 output均采用partitioned boundary，不再把rank-distinct数据标成replicated。
 
-共同transport/lifecycle oracle先从每份schema-v5 manifest验证16个rank各有唯一内部
+共同transport/lifecycle oracle先从每份schema-v6 manifest验证顶层`kind=kernel`、当前已解析的nested
+kernel form/entry ABI/ordered phases，并验证16个rank各有唯一内部
 `u32[1]`、64B storage/alignment、read-write `transport_status`，entry绑定
 `wafer-direct-dte-status-v2`且`host_watchdog_required=true`，并有恰好16个matching
 `entry_return` terminal completion。真实board command必须是单次`--all-ranks --board`且带有界

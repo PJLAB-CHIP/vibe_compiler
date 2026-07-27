@@ -33,7 +33,7 @@ from typing import Any
 
 
 SCHEMA_NAME = "wafer.profile.evidence"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ANALYSIS_SCHEMA_NAME = "wafer.profile.analysis"
 ANALYSIS_SCHEMA_VERSION = 1
 TILES = tuple(range(16))
@@ -79,7 +79,7 @@ MAX_COMPLETION_RESOLUTION_FRACTION = 0.0025
 
 
 class EvidenceError(ValueError):
-    """The evidence does not conform to the v1 structural contract."""
+    """The evidence does not conform to the v2 structural contract."""
 
 
 def _fail(path: str, message: str) -> None:
@@ -181,6 +181,63 @@ def _tile_rows(
     return rows
 
 
+def _validate_runtime_launch(
+    value: object, path: str
+) -> Mapping[str, Any]:
+    launch = _mapping(value, path)
+    kind = _string(launch.get("kind"), f"{path}.kind")
+    if kind == "kernel":
+        _exact_keys(
+            launch,
+            {"kind", "form", "entry_abi", "phases"},
+            path,
+        )
+        form = _string(launch["form"], f"{path}.form")
+        entry_abi = _string(launch["entry_abi"], f"{path}.entry_abi")
+        phases = tuple(
+            _string(phase, f"{path}.phases[{index}]")
+            for index, phase in enumerate(
+                _sequence(launch["phases"], f"{path}.phases")
+            )
+        )
+        canonical = {
+            "per-rank": ("rank-local-pointer-block-v1", ("main",)),
+            "grid": ("rank-major-pointer-table-v1", ("main",)),
+            "cluster": (
+                "rank-major-pointer-table-v1",
+                ("prepare", "main"),
+            ),
+        }
+        expected = canonical.get(form)
+        if expected is None:
+            _fail(f"{path}.form", "unknown kernel launch form")
+        if (entry_abi, phases) != expected:
+            _fail(
+                path,
+                "kernel form, entry ABI and ordered phases are incompatible",
+            )
+        return launch
+    if kind == "model":
+        _exact_keys(launch, {"kind", "entry_abi", "phases"}, path)
+        entry_abi = _string(launch["entry_abi"], f"{path}.entry_abi")
+        phases = tuple(
+            _string(phase, f"{path}.phases[{index}]")
+            for index, phase in enumerate(
+                _sequence(launch["phases"], f"{path}.phases")
+            )
+        )
+        if (
+            entry_abi != "tx81-model-bootparam-v1"
+            or phases != ("main",)
+        ):
+            _fail(
+                path,
+                "model entry ABI and ordered phases are incompatible",
+            )
+        return launch
+    _fail(f"{path}.kind", "must be either 'kernel' or 'model'")
+
+
 def _validate_identity(evidence: Mapping[str, Any]) -> None:
     identity = _mapping(evidence["identity"], "identity")
     _exact_keys(
@@ -189,7 +246,7 @@ def _validate_identity(evidence: Mapping[str, Any]) -> None:
             "production_manifest_sha256",
             "profile_companion_schema_version",
             "target_profile",
-            "launch_abi",
+            "launch",
             "execution_ranks",
             "baseline_same_as_winner",
             "site_correlation_basis",
@@ -208,17 +265,17 @@ def _validate_identity(evidence: Mapping[str, Any]) -> None:
     if version != 1:
         _fail(
             "identity.profile_companion_schema_version",
-            "profiler v1 requires companion schema version 1",
+            "profiler v2 requires companion schema version 1",
         )
     _string(identity["target_profile"], "identity.target_profile")
-    _string(identity["launch_abi"], "identity.launch_abi")
+    _validate_runtime_launch(identity["launch"], "identity.launch")
     ranks = _integer(
         identity["execution_ranks"],
         "identity.execution_ranks",
         minimum=1,
     )
     if ranks != len(TILES):
-        _fail("identity.execution_ranks", "profiler v1 requires exactly 16 ranks")
+        _fail("identity.execution_ranks", "profiler v2 requires exactly 16 ranks")
     _boolean(
         identity["baseline_same_as_winner"],
         "identity.baseline_same_as_winner",
@@ -230,7 +287,7 @@ def _validate_identity(evidence: Mapping[str, Any]) -> None:
     if correlation_basis != "heuristic-target-call-signature-occurrence-v1":
         _fail(
             "identity.site_correlation_basis",
-            "profiler v1 requires the declared heuristic correlation basis",
+            "profiler v2 requires the declared heuristic correlation basis",
         )
 
 
@@ -684,7 +741,7 @@ def _validate_trace(
         if record_flags & ~TRACE_KNOWN_FLAGS:
             _fail(
                 f"{path}.record_flags",
-                "contains flags unknown to profiler evidence v1",
+                "contains flags unknown to profiler evidence v2",
             )
         trace_state = _integer(
             row["trace_state"],
@@ -933,13 +990,16 @@ def _validate_candidate(
         {
             "digest",
             "target_profile",
-            "launch_abi",
+            "launch",
             "execution_ranks",
         },
         f"{candidate_path}.artifact",
     )
-    for field in ("digest", "target_profile", "launch_abi"):
+    for field in ("digest", "target_profile"):
         _string(artifact[field], f"{candidate_path}.artifact.{field}")
+    _validate_runtime_launch(
+        artifact["launch"], f"{candidate_path}.artifact.launch"
+    )
     ranks = _integer(
         artifact["execution_ranks"],
         f"{candidate_path}.artifact.execution_ranks",
@@ -948,7 +1008,7 @@ def _validate_candidate(
     if ranks != len(TILES):
         _fail(
             f"{candidate_path}.artifact.execution_ranks",
-            "profiler v1 requires exactly 16 ranks",
+            "profiler v2 requires exactly 16 ranks",
         )
     clock = _validate_clock(candidate, candidate_name)
     _validate_summary(candidate, candidate_name, clock)
@@ -957,7 +1017,7 @@ def _validate_candidate(
 
 
 def validate_evidence(value: object) -> Mapping[str, Any]:
-    """Return structurally valid v1 evidence or raise :class:`EvidenceError`."""
+    """Return structurally valid v2 evidence or raise :class:`EvidenceError`."""
 
     evidence = _mapping(value, "evidence")
     _exact_keys(
@@ -1160,7 +1220,7 @@ def _identity_validity(
         artifact = evidence["experiments"][candidate_name]["artifact"]
         for field in (
             "target_profile",
-            "launch_abi",
+            "launch",
             "execution_ranks",
         ):
             if artifact[field] != identity[field]:
@@ -2321,7 +2381,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                 "message": (
                     "maximum completion-observation gap is "
                     f"{maximum_resolution_fraction * 100.0:.3f}% of its "
-                    "sample latency; profiler v1 requires at most "
+                    "sample latency; profiler v2 requires at most "
                     f"{MAX_COMPLETION_RESOLUTION_FRACTION * 100.0:.2f}%"
                 ),
             }

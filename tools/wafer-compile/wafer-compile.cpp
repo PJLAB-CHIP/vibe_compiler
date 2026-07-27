@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
       !requireOption(options.outputProgramDirectory, "--output-program-dir") ||
       !requireOption(options.executionRanks, "--execution-ranks") ||
       !requireOption(options.targetProfile, "--target-profile") ||
-      !requireOption(options.targetLaunchABI, "--launch-abi"))
+      !requireOption(options.runtimeLaunchKind, "--launch-kind"))
     return 1;
   if (options.profile && options.targetModel) {
     llvm::errs()
@@ -246,17 +246,17 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  llvm::Expected<wafer::TargetLaunchABIId> targetLaunchABI =
-      wafer::parseTargetLaunchABIId(*options.targetLaunchABI);
-  if (!targetLaunchABI) {
+  llvm::Expected<wafer::RuntimeLaunchKind> runtimeLaunchKind =
+      wafer::parseRuntimeLaunchKind(*options.runtimeLaunchKind);
+  if (!runtimeLaunchKind) {
     llvm::errs() << "wafer-compile: "
-                 << llvm::toString(targetLaunchABI.takeError()) << "\n";
+                 << llvm::toString(runtimeLaunchKind.takeError()) << "\n";
     return 1;
   }
 
   llvm::Expected<wafer::compiler::ExecutionConfig> executionConfig =
       wafer::compiler::ExecutionConfig::createForSingleCard(
-          rankCount, *targetProfile, *targetLaunchABI);
+          rankCount, *targetProfile, *runtimeLaunchKind);
   if (!executionConfig) {
     llvm::errs() << "wafer-compile: "
                  << llvm::toString(executionConfig.takeError()) << "\n";

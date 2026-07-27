@@ -105,16 +105,23 @@ public:
   TargetLLVMModuleBundle &operator=(const TargetLLVMModuleBundle &) = delete;
 
   const ExecutionConfig &getExecutionConfig() const { return executionConfig; }
+  const RuntimeLaunchContract &getRuntimeLaunchContract() const {
+    return runtimeLaunchContract;
+  }
   const std::vector<TargetLLVMModule> &getModules() const { return modules; }
 
 private:
   friend struct TargetLLVMModuleBundleBuilder;
 
   TargetLLVMModuleBundle(ExecutionConfig executionConfig,
+                         RuntimeLaunchContract runtimeLaunchContract,
                          std::vector<TargetLLVMModule> modules)
-      : executionConfig(executionConfig), modules(std::move(modules)) {}
+      : executionConfig(executionConfig),
+        runtimeLaunchContract(std::move(runtimeLaunchContract)),
+        modules(std::move(modules)) {}
 
   ExecutionConfig executionConfig;
+  RuntimeLaunchContract runtimeLaunchContract;
   std::vector<TargetLLVMModule> modules;
 };
 
@@ -221,7 +228,8 @@ private:
 };
 
 /// Semantic role of one externally visible target-module function. Symbol
-/// spelling is only a loader locator; the closed launch ABI interprets roles.
+/// spelling is only a loader locator; the runtime launch contract interprets
+/// roles.
 enum class TargetExportRole { Prepare, Main };
 
 class VerifiedTargetExport {
@@ -308,6 +316,9 @@ public:
 
   llvm::StringRef getRootDirectory() const { return rootDirectory; }
   const ExecutionConfig &getExecutionConfig() const { return executionConfig; }
+  const RuntimeLaunchContract &getRuntimeLaunchContract() const {
+    return runtimeLaunchContract;
+  }
   const std::vector<VerifiedTargetModule> &getModules() const {
     return modules;
   }
@@ -320,21 +331,24 @@ private:
 
   TargetArtifactBundle(llvm::StringRef rootDirectory,
                        ExecutionConfig executionConfig,
+                       RuntimeLaunchContract runtimeLaunchContract,
                        std::vector<VerifiedTargetModule> modules,
                        std::vector<VerifiedTargetRankInterface> rankInterfaces)
       : rootDirectory(rootDirectory.str()), executionConfig(executionConfig),
+        runtimeLaunchContract(std::move(runtimeLaunchContract)),
         modules(std::move(modules)), rankInterfaces(std::move(rankInterfaces)) {
   }
 
   std::string rootDirectory;
   ExecutionConfig executionConfig;
+  RuntimeLaunchContract runtimeLaunchContract;
   std::vector<VerifiedTargetModule> modules;
   std::vector<VerifiedTargetRankInterface> rankInterfaces;
 };
 
-/// Materializes the launch-ABI module topology from the exact verified LLVM
-/// rank domain and publishes it atomically. This consumer never re-runs ABI
-/// preparation, target lowering, or LLVM translation.
+/// Materializes the runtime-launch module topology from the exact verified
+/// LLVM rank domain and publishes it atomically. This consumer never re-runs
+/// ABI preparation, target lowering, or LLVM translation.
 llvm::Expected<TargetArtifactBundle>
 compileTargetLLVMModuleBundleToTargetArtifacts(
     const TargetLLVMModuleBundle &targetLLVMModules,

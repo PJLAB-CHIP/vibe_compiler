@@ -278,22 +278,16 @@ CALIBRATION_STEPS = (
         for mask in ("001", "010", "100", "011", "101", "110")
     ),
     CalibrationStep(
-        "runtime-per-rank",
-        "full-card-runtime",
-        "wafer-board-per-rank-add-smoke",
-        "16-rank per-rank pointer-block launch ABI",
-    ),
-    CalibrationStep(
         "runtime-kernel-grid",
         "full-card-runtime",
         "wafer-board-kernel-grid-add",
-        "16-rank kernel-grid pointer-table launch ABI",
+        "16-rank kernel launch with grid dispatch and rank-major arguments",
     ),
     CalibrationStep(
         "runtime-model",
         "full-card-runtime",
         "wafer-board-model-add",
-        "16-rank model boot-parameter launch ABI",
+        "16-rank model launch with the typed boot-parameter entry ABI",
     ),
     CalibrationStep(
         "full-card-barrier",

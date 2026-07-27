@@ -15,6 +15,8 @@ import sys
 
 import numpy as np
 
+import wafer_runtime_launch_contract as runtime_launch
+
 
 RANK_COUNT = 16
 M = 4096
@@ -30,7 +32,7 @@ RHS_BYTES = LOCAL_K * N * F16_BYTES
 OUTPUT_BYTES = M * N * F16_BYTES
 EXPECTED_SHA256 = "f82ced1cea5d133a8f4640a527025333a80cbf2e49e7a529dc9c7c941e20360f"
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
-LAUNCH_ABI = "tx81-cluster-direct-dte-prepare-main-v1"
+LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 STATUS_ABI = "wafer-direct-dte-status-v2"
 STATUS_STORAGE_BYTES = 64
 STATUS_STORAGE_ALIGNMENT = 64
@@ -259,11 +261,14 @@ def validate_manifest(
     package: pathlib.Path,
 ) -> tuple[dict[tuple[int, str, int], int], set[int]]:
     manifest = json.loads((package / "manifest.json").read_text())
+    runtime_launch.require_manifest_launch(
+        manifest,
+        runtime_launch.CLUSTER_KERNEL_LAUNCH,
+        context="full-4096 GEMM",
+    )
     if (
-        manifest.get("schema_version") != 5
-        or manifest.get("rank_count") != RANK_COUNT
+        manifest.get("rank_count") != RANK_COUNT
         or manifest.get("target", {}).get("profile") != TARGET_PROFILE
-        or manifest.get("target", {}).get("launch_abi") != LAUNCH_ABI
     ):
         raise RuntimeError("full-4096 GEMM package target contract is invalid")
     modules = manifest.get("modules")
@@ -469,9 +474,7 @@ def write_payloads(
 
 def verify_no_card_evidence(stdout: str) -> None:
     required = {
-        "package: id=0 schema=5 ranks=16",
-        "target: wafer-tx81-single-card runtime_abi=wafer-tx81-kernel-v1 "
-        f"launch_abi={LAUNCH_ABI} module_format=elf-riscv64",
+        "package: id=0 schema=6 ranks=16",
         "invocation_ranks: 16",
         "board_execution: false",
     }
@@ -554,7 +557,7 @@ def main() -> int:
             str(package),
             f"--execution-ranks={RANK_COUNT}",
             f"--target-profile={TARGET_PROFILE}",
-            f"--launch-abi={LAUNCH_ABI}",
+            f"--launch-kind={LAUNCH_KIND}",
         ]
     )
     if (

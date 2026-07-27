@@ -172,7 +172,7 @@ protected:
     auto executionConfig =
         wafer::compiler::ExecutionConfig::createForSingleCard(
             rankCount, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-            wafer::TargetLaunchABIId::perRankPointerBlockV1());
+            wafer::RuntimeLaunchKind::Kernel);
     if (!executionConfig)
       return mlir::failure();
     auto accepted = wafer::compiler::detail::selectAcceptedWholeVariant(
@@ -238,7 +238,7 @@ TEST_F(WholeVariantCoordinatorTest,
        UsesCoordinatedFallbackBeyondTheBestFirstVisitBound) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
@@ -288,7 +288,7 @@ TEST_F(WholeVariantCoordinatorTest,
        DoesNotMixDistinctGenerationOrdinalsAcrossRanks) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
@@ -316,7 +316,7 @@ TEST_F(WholeVariantCoordinatorTest,
        DoesNotMixPhysicalArtifactKindsAcrossRanks) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
@@ -349,7 +349,7 @@ TEST_F(WholeVariantCoordinatorTest,
        RejectsCompleteFrontierWithoutMutatingCandidateBindings) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
 
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
@@ -379,7 +379,7 @@ TEST_F(WholeVariantCoordinatorTest,
 TEST_F(WholeVariantCoordinatorTest, RetainsBaselineWhenExactCostsAreEqual) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(candidate("", 1, 0, 3, true));
@@ -402,7 +402,7 @@ TEST_F(WholeVariantCoordinatorTest,
        SelectsStrictlyDominatingAlternativeAfterBaselineAcceptance) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(
@@ -426,7 +426,7 @@ TEST_F(WholeVariantCoordinatorTest,
        ProfileSelectionRetainsAcceptedBaselineBesideProductionWinner) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(
@@ -454,7 +454,7 @@ TEST_F(WholeVariantCoordinatorTest,
        ProfileSelectionAliasesRolesWhenBaselineIsTheProductionWinner) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(candidate("", 1, 0, 5, true));
@@ -477,7 +477,7 @@ TEST_F(WholeVariantCoordinatorTest,
        ReservedBaselineModeBypassesThePreferredProductionWinner) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(
@@ -557,7 +557,7 @@ TEST_F(WholeVariantCoordinatorTest,
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(16);
   for (int64_t rank = 0; rank < 16; ++rank)
@@ -632,7 +632,7 @@ TEST_F(WholeVariantCoordinatorTest,
        CharacterizationModeFailsWhenAcceptedPhaseIsMissing) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(candidate("", 1, 0, 0, true));
@@ -654,7 +654,7 @@ TEST_F(WholeVariantCoordinatorTest,
        SelectsFinalParetoWinnerInsteadOfFirstBaselineImprovement) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   frontiers[0].push_back(
@@ -681,7 +681,7 @@ TEST_F(WholeVariantCoordinatorTest,
        UsesValidatedSPMHighWaterInExactParetoSelection) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   constexpr llvm::StringLiteral highWater = R"mlir(
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<131072>} : memref<4xf32, #wafer.memory<spm, tensor>>
@@ -708,7 +708,7 @@ TEST_F(WholeVariantCoordinatorTest,
        StaticPolicyAcceptsKnownExecutionGainWithinSPMCapacity) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   constexpr llvm::StringLiteral lowWaterWithFence = R"mlir(
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<4xf32, #wafer.memory<spm, tensor>>
@@ -813,7 +813,7 @@ module {
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   wafer::frontend::FrontendProgramVerificationResult program;
   program.logicalRankCount = 1;
@@ -881,7 +881,7 @@ TEST_F(WholeVariantCoordinatorTest,
        DoesNotUseAlternativeToMaskReservedBaselineFailure) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::vector<wafer::compiler::detail::RankVariantFrontier> frontiers(1);
   constexpr llvm::StringLiteral oversizedSPM = R"mlir(

@@ -479,12 +479,12 @@ class ProductionGateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             package = pathlib.Path(temporary)
             (package / "manifest.json").write_text(
-                json.dumps({"schema_version": 5}) + "\n"
+                json.dumps({"schema_version": 6}) + "\n"
             )
             current = catalog.production_pipeline_preparation_gate(package)
         self.assertFalse(current.ready)
         self.assertTrue(
-            any("schema-v5" in reason for reason in current.reasons)
+            any("schema-v6" in reason for reason in current.reasons)
         )
 
     def test_driver_group_parser_preserves_execution_boundaries(self) -> None:
@@ -555,7 +555,7 @@ class DriverEvidenceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             package = pathlib.Path(temporary)
             manifest = {
-                "schema_version": 5,
+                "schema_version": 6,
                 "rank_count": 1,
                 "entries": [
                     {
@@ -622,7 +622,12 @@ class DriverEvidenceTest(unittest.TestCase):
             qualification,
             {
                 "target_profile": ncc_driver.TARGET_PROFILE,
-                "launch_abi": ncc_driver.LAUNCH_ABI,
+                "launch": {
+                    "kind": "kernel",
+                    "form": "per-rank",
+                    "entry_abi": "rank-local-pointer-block-v1",
+                    "phases": ["main"],
+                },
                 "device_id": 0,
                 "expected_runtime_version": 17,
                 "expected_device_name": "tx81",

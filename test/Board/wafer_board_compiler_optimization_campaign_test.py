@@ -19,10 +19,12 @@ from collections.abc import Callable
 
 import numpy as np
 
+import wafer_runtime_launch_contract as runtime_launch
+
 
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
-RANK_ONE_LAUNCH_ABI = "per-rank-pointer-block-v1"
-CLUSTER_LAUNCH_ABI = "tx81-cluster-direct-dte-prepare-main-v1"
+RANK_ONE_LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
+CLUSTER_LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 DIRECT_DTE_STATUS_ABI = "wafer-direct-dte-status-v2"
 PROCESS_TIMEOUT_MARGIN_SECONDS = 30
 BASELINE_ENVIRONMENT_VARIABLE = "WAFER_TEST_SELECT_RESERVED_BASELINE"
@@ -55,7 +57,7 @@ class CampaignCase:
     key: str
     family: str
     rank_count: int
-    launch_abi: str
+    launch_kind: str
     inputs: tuple[TensorSpec, ...]
     outputs: tuple[TensorSpec, ...]
     module_factory: Callable[[], str]
@@ -504,7 +506,7 @@ CASES = {
             "reciprocal-implementation",
             "numeric-dag-implementation",
             1,
-            RANK_ONE_LAUNCH_ABI,
+            RANK_ONE_LAUNCH_KIND,
             (F32_8192,),
             (F32_8192,),
             reciprocal_module,
@@ -515,7 +517,7 @@ CASES = {
             "modular-common-factor",
             "numeric-dag-implementation",
             1,
-            RANK_ONE_LAUNCH_ABI,
+            RANK_ONE_LAUNCH_KIND,
             (I8_16384, I8_16384, I8_16384),
             (I8_16384,),
             modular_factor_module,
@@ -526,7 +528,7 @@ CASES = {
             "resident-fanout-share",
             "resident-share-recompute",
             1,
-            RANK_ONE_LAUNCH_ABI,
+            RANK_ONE_LAUNCH_KIND,
             (F32_16384,),
             (F32_16384, F32_16384, F32_16384),
             resident_fanout_module,
@@ -537,7 +539,7 @@ CASES = {
             "consumer-local-recompute",
             "resident-share-recompute",
             1,
-            RANK_ONE_LAUNCH_ABI,
+            RANK_ONE_LAUNCH_KIND,
             (F32_262144, F32_262144),
             (F32_262144, F32_262144, F32_262144),
             recompute_module,
@@ -548,7 +550,7 @@ CASES = {
             "ready-order-movement-first",
             "ready-order",
             1,
-            RANK_ONE_LAUNCH_ABI,
+            RANK_ONE_LAUNCH_KIND,
             (F32_4096, F32_4096),
             (F32_4096,),
             ready_order_module,
@@ -559,7 +561,7 @@ CASES = {
             "gemm-aligned-physical-route",
             "tile-physical-route",
             1,
-            RANK_ONE_LAUNCH_ABI,
+            RANK_ONE_LAUNCH_KIND,
             (F16_64_128, F16_128_128),
             (F16_64_128_OUT,),
             lambda: gemm_module(64, 128, 128),
@@ -570,7 +572,7 @@ CASES = {
             "gemm-tail-physical-route",
             "tile-physical-route",
             1,
-            RANK_ONE_LAUNCH_ABI,
+            RANK_ONE_LAUNCH_KIND,
             (F16_65_129, F16_129_129),
             (F16_65_129_OUT,),
             lambda: gemm_module(65, 129, 129),
@@ -581,7 +583,7 @@ CASES = {
             "tree-all-reduce",
             "collective-algorithm",
             16,
-            CLUSTER_LAUNCH_ABI,
+            CLUSTER_LAUNCH_KIND,
             (I8_4096,),
             (I8_4096_REDUCED,),
             all_reduce_module,
@@ -739,7 +741,7 @@ def compile_package(
             str(output),
             f"--execution-ranks={case.rank_count}",
             f"--target-profile={TARGET_PROFILE}",
-            f"--launch-abi={case.launch_abi}",
+            f"--launch-kind={case.launch_kind}",
         ],
         environment=environment,
     )
@@ -831,11 +833,19 @@ def validate_paired_packages(
     output_ids_by_variant: dict[str, set[int]] = {}
     completion_evidence_by_variant: dict[str, set[tuple[int, int]]] = {}
     for variant, manifest in manifests.items():
+        expected_launch = (
+            runtime_launch.RANK_ONE_KERNEL_LAUNCH
+            if case.rank_count == 1
+            else runtime_launch.CLUSTER_KERNEL_LAUNCH
+        )
+        runtime_launch.require_manifest_launch(
+            manifest,
+            expected_launch,
+            context=f"paired {variant}",
+        )
         if (
-            manifest.get("schema_version") != 5
-            or manifest.get("rank_count") != case.rank_count
+            manifest.get("rank_count") != case.rank_count
             or manifest.get("target", {}).get("profile") != TARGET_PROFILE
-            or manifest.get("target", {}).get("launch_abi") != case.launch_abi
         ):
             raise RuntimeError("paired package target contract is invalid")
         resources = manifest.get("resources")
@@ -1377,7 +1387,11 @@ def main() -> int:
             for relative in SOURCE_SNAPSHOT_PATHS
         },
         "target_profile": TARGET_PROFILE,
-        "launch_abi": case.launch_abi,
+        "launch": (
+            runtime_launch.RANK_ONE_KERNEL_LAUNCH
+            if case.rank_count == 1
+            else runtime_launch.CLUSTER_KERNEL_LAUNCH
+        ),
         "rank_count": case.rank_count,
         "module_digests": {
             name: list(module_digests(package))

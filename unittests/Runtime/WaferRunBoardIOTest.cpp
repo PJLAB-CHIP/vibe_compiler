@@ -6,6 +6,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -79,7 +80,11 @@ protected:
         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     PackageManifest manifest(
         target.id, target.targetIdentity, target.kernelRuntimeABI,
-        wafer::TargetLaunchABIId::perRankPointerBlockV1(), target.moduleFormat);
+        llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
+            wafer::KernelLaunchForm::PerRank,
+            wafer::KernelEntryABI::RankLocalPointerBlockV1,
+            {wafer::RuntimeLaunchPhaseRole::Main})),
+        target.moduleFormat);
     manifest.rankCount = 1;
     manifest.resources = std::move(resources);
     return manifest;

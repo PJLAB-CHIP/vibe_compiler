@@ -189,6 +189,11 @@ buildManifest(const ExecutableBundle &executableBundle,
               const TargetArtifactBundle &targetArtifacts,
               llvm::raw_ostream &diagnostics) {
   const ExecutionConfig &config = executableBundle.getExecutionConfig();
+  if (executableBundle.getRuntimeLaunchContract() !=
+      targetArtifacts.getRuntimeLaunchContract())
+    return fail(diagnostics,
+                "package runtime launch contract does not match executable "
+                "and target artifact bundles");
   if (targetArtifacts.getExecutionConfig() != config ||
       executableBundle.getRankExecutables().size() !=
           targetArtifacts.getRankInterfaces().size() ||
@@ -215,21 +220,22 @@ buildManifest(const ExecutableBundle &executableBundle,
   runtime::PackageManifest manifest(firstTargetModule.getTargetProfileId(),
                                     firstTargetModule.getTargetIdentityId(),
                                     firstTargetModule.getKernelRuntimeABIId(),
-                                    config.getTargetLaunchABIId(),
+                                    targetArtifacts.getRuntimeLaunchContract(),
                                     firstTargetModule.getModuleFormat());
   manifest.program = runtime::ProgramId(0);
   manifest.rankCount = config.getRankCount();
 
-  const TargetLaunchABIId launchABI = config.getTargetLaunchABIId();
+  const KernelRuntimeLaunchContract *kernelLaunch =
+      targetArtifacts.getRuntimeLaunchContract().getKernel();
   const bool sharedModule =
-      launchABI == TargetLaunchABIId::tx81KernelGridPointerTableV1() ||
-      launchABI == TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+      kernelLaunch && kernelLaunch->form != KernelLaunchForm::PerRank;
   const bool hasPrepare =
-      launchABI == TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+      llvm::is_contained(targetArtifacts.getRuntimeLaunchContract().getPhases(),
+                         RuntimeLaunchPhaseRole::Prepare);
   if (targetArtifacts.getModules().size() !=
       (sharedModule ? 1u : static_cast<size_t>(config.getRankCount())))
-    return fail(diagnostics,
-                "package target module topology does not match launch ABI");
+    return fail(diagnostics, "package target module topology does not match "
+                             "runtime launch contract");
 
   for (auto [expectedModuleId, target] :
        llvm::enumerate(targetArtifacts.getModules())) {
@@ -261,8 +267,9 @@ buildManifest(const ExecutableBundle &executableBundle,
     }
     if (!seenMain || seenPrepare != hasPrepare ||
         module.exports.size() != (hasPrepare ? 2u : 1u))
-      return fail(diagnostics,
-                  "package target module exports do not match launch ABI");
+      return fail(
+          diagnostics,
+          "package target module exports do not match runtime launch contract");
     manifest.modules.push_back(std::move(module));
   }
 
@@ -604,7 +611,7 @@ detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
       readbackManifest.targetProfile != targetReadback.getTargetProfileId() ||
       readbackManifest.targetIdentity != targetReadback.getTargetIdentityId() ||
       readbackManifest.runtimeABI != targetReadback.getKernelRuntimeABIId() ||
-      readbackManifest.launchABI != executionConfig.getTargetLaunchABIId() ||
+      readbackManifest.launch != targetArtifacts.getRuntimeLaunchContract() ||
       readbackManifest.moduleFormat != targetReadback.getModuleFormat() ||
       readbackManifest.targetProfile != executionConfig.getTargetProfileId())
     return fail(diagnostics,

@@ -9,7 +9,7 @@ candidate、target publication、runtime/package 和 verification 合同分别�
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  同一 verified source snapshot、ExecutionConfig、TargetProfileId 和 launch ABI 形成的
+  同一 verified source snapshot、ExecutionConfig、TargetProfileId 和完整runtime launch contract形成的
   reserved conservative baseline、production winner、final Instr / TargetCall 及 verified package。
 - Current stage responsibility:
   wafer-compile 在不改变普通 production package 的前提下，为同源 baseline / winner 形成

@@ -87,9 +87,10 @@ def LowerInstrToTargetLLVMPass
            "transport-status-argument-index", "int64_t", /*default=*/"-1",
            "Entry i64 argument carrying the launch-observable Direct DTE "
            "status address; its presence is the Direct DTE lifecycle contract">,
-    Option<"targetLaunchABI", "target-launch-abi", "std::string",
-           /*default=*/"\"per-rank-pointer-block-v1\"",
-           "Registered launch ABI controlling target lifecycle lowering">
+    Option<"transportPreparedBeforeEntry",
+           "transport-prepared-before-entry", "bool", /*default=*/"false",
+           "Debug direct-lowering projection stating that transport "
+           "initialization completed in an earlier launch phase">
   ];
 }
 

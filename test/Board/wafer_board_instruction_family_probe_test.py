@@ -17,10 +17,11 @@ import sys
 from collections.abc import Iterable
 
 import wafer_instruction_family_catalog as catalog
+import wafer_runtime_launch_contract as runtime_launch
 
 
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
-LAUNCH_ABI = "per-rank-pointer-block-v1"
+LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_instruction_family_probe.c"
@@ -287,7 +288,7 @@ def compile_seed_package(
             str(package),
             "--execution-ranks=1",
             f"--target-profile={TARGET_PROFILE}",
-            f"--launch-abi={LAUNCH_ABI}",
+            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )
@@ -304,12 +305,15 @@ def locate_bindings(
     modules = manifest.get("modules")
     resources = manifest.get("resources")
     target = manifest.get("target")
+    runtime_launch.require_manifest_launch(
+        manifest,
+        runtime_launch.RANK_ONE_KERNEL_LAUNCH,
+        context="instruction probe seed",
+    )
     if (
-        manifest.get("schema_version") != 5
-        or manifest.get("rank_count") != 1
+        manifest.get("rank_count") != 1
         or not isinstance(target, dict)
         or target.get("profile") != TARGET_PROFILE
-        or target.get("launch_abi") != LAUNCH_ABI
         or not isinstance(entries, list)
         or len(entries) != 1
         or not isinstance(modules, list)

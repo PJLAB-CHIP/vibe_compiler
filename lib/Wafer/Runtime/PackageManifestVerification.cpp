@@ -125,38 +125,31 @@ bool expectedHostVisible(PackageResourceRole role) {
          role != PackageResourceRole::TransportStatus;
 }
 
-llvm::Error verifyLaunchABIContract(const PackageManifest &manifest) {
-  const bool perRank =
-      manifest.launchABI == TargetLaunchABIId::perRankPointerBlockV1();
-  const bool kernelGrid = manifest.launchABI ==
-                          TargetLaunchABIId::tx81KernelGridPointerTableV1();
-  const bool model =
-      manifest.launchABI == TargetLaunchABIId::tx81ModelBootParamV1();
-  const bool cluster =
-      manifest.launchABI ==
-      TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
-  if (!perRank && !kernelGrid && !model && !cluster)
-    return invalid("package target launch ABI is not registered");
-  if (!perRank &&
-      (manifest.rankCount != 16 || manifest.entries.size() != 16))
-    return invalid("multi-tile launch ABI requires a complete 16-rank domain");
+llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
+  const KernelRuntimeLaunchContract *kernel = manifest.launch.getKernel();
+  const ModelRuntimeLaunchContract *model = manifest.launch.getModel();
+  const bool perRank = kernel && kernel->form == KernelLaunchForm::PerRank;
+  const bool kernelGrid = kernel && kernel->form == KernelLaunchForm::Grid;
+  const bool cluster = kernel && kernel->form == KernelLaunchForm::Cluster;
+  if (!perRank && (manifest.rankCount != 16 || manifest.entries.size() != 16))
+    return invalid(
+        "grid, cluster and model launches require a complete 16-rank domain");
 
-  std::vector<const PackageEntrypointRecord *> entriesByRank(
-      manifest.rankCount, nullptr);
+  std::vector<const PackageEntrypointRecord *> entriesByRank(manifest.rankCount,
+                                                             nullptr);
   for (const PackageEntrypointRecord &entry : manifest.entries)
     entriesByRank[entry.logicalRank] = &entry;
   const PackageEntrypointRecord &first = *entriesByRank.front();
   const PackageModuleRecord *firstModule =
       findModule(manifest.modules, first.module);
   if (!firstModule)
-    return invalid("launch ABI entry references a missing module");
+    return invalid("runtime launch entry references a missing module");
 
   llvm::DenseMap<uint64_t, uint64_t> moduleReferenceCount;
   for (const PackageEntrypointRecord &entry : manifest.entries)
     ++moduleReferenceCount[entry.module.getValue()];
   if (perRank || model) {
-    if (manifest.modules.size() !=
-        static_cast<size_t>(manifest.rankCount))
+    if (manifest.modules.size() != static_cast<size_t>(manifest.rankCount))
       return invalid(
           "per-rank/model launch requires one module per logical rank");
     if (llvm::any_of(manifest.modules, [&](const auto &module) {
@@ -170,113 +163,109 @@ llvm::Error verifyLaunchABIContract(const PackageManifest &manifest) {
           return entry.module != first.module;
         }))
       return invalid(
-          "shared launch ABI requires one module referenced by all ranks");
+          "grid/cluster launch requires one module referenced by all ranks");
   }
 
-  auto hasOnlyMain = [](const PackageModuleRecord &module) {
-    return module.exports.size() == 1 &&
-           module.exports.front().role == PackageModuleExportRole::Main;
+  auto exportRoleForPhase = [](RuntimeLaunchPhaseRole phase) {
+    return phase == RuntimeLaunchPhaseRole::Prepare
+               ? PackageModuleExportRole::Prepare
+               : PackageModuleExportRole::Main;
   };
-  if (cluster) {
-    const PackageModuleExportRecord *prepare = detail::findModuleExport(
-        *firstModule, PackageModuleExportRole::Prepare);
-    const PackageModuleExportRecord *main = detail::findModuleExport(
-        *firstModule, PackageModuleExportRole::Main);
-    if (firstModule->exports.size() != 2 || !prepare || !main ||
-        prepare->symbol == main->symbol)
+  for (const PackageModuleRecord &module : manifest.modules) {
+    if (module.exports.size() != manifest.launch.getPhases().size())
       return invalid(
-          "cluster Direct DTE module requires distinct prepare/main exports");
-  } else if (llvm::any_of(manifest.modules, [&](const auto &module) {
-               return !hasOnlyMain(module);
-             })) {
-    return invalid("launch ABI module must expose exactly one typed main");
+          "package module exports do not match the runtime launch phases");
+    for (auto [index, phase] : llvm::enumerate(manifest.launch.getPhases()))
+      if (module.exports[index].role != exportRoleForPhase(phase))
+        return invalid(
+            "package module export order does not match the runtime launch "
+            "phases");
   }
 
   if (perRank) {
     for (const PackageEntrypointRecord &entry : manifest.entries) {
-      if (entry.slots.size() >
-          kTx81KernelArgumentBytesMax / sizeof(uint64_t))
+      if (entry.slots.size() > kTx81KernelArgumentBytesMax / sizeof(uint64_t))
         return invalid(
             "per-rank kernel argument block exceeds the qualified V5.6 "
             "packet limit");
-      if (!std::holds_alternative<NoTransportRequirements>(entry.transport))
-        return invalid(
-            "per-rank launch ABI does not support transport requirements");
     }
-    return llvm::Error::success();
   }
 
   if (kernelGrid || cluster) {
     if (first.slots.empty())
       return invalid("shared launch requires at least one typed ABI slot");
-    const uint64_t argumentBytesMax =
-        cluster ? kTx81ClusterKernelArgumentBytesMax
-                : kTx81KernelArgumentBytesMax;
-    if (first.slots.size() >
-        argumentBytesMax / sizeof(uint64_t) / 16)
+    const uint64_t argumentBytesMax = cluster
+                                          ? kTx81ClusterKernelArgumentBytesMax
+                                          : kTx81KernelArgumentBytesMax;
+    if (first.slots.size() > argumentBytesMax / sizeof(uint64_t) / 16)
       return invalid(
           "shared rank-major argument table exceeds the qualified V5.6 "
           "packet limit");
   }
-  const PackageModuleExportRecord *firstMain = detail::findModuleExport(
-      *firstModule, PackageModuleExportRole::Main);
+  const PackageModuleExportRecord *firstMain =
+      detail::findModuleExport(*firstModule, PackageModuleExportRole::Main);
   if (model && (!firstMain || firstMain->symbol.size() >= 128))
     return invalid(
         "model launch entry symbol must fit the 128-byte loader field");
 
   std::vector<Tx81ModelTensorDescriptor> modelTensors;
-
-  for (int64_t rank = 0; rank < 16; ++rank) {
+  const size_t firstTransportKind = first.transport.index();
+  for (int64_t rank = 0; rank < manifest.rankCount; ++rank) {
     const PackageEntrypointRecord &entry = *entriesByRank[rank];
     const PackageModuleRecord *module =
         findModule(manifest.modules, entry.module);
     const PackageModuleExportRecord *main =
-        module ? detail::findModuleExport(*module,
-                                          PackageModuleExportRole::Main)
-               : nullptr;
-    if (!module || !main || entry.slots.size() != first.slots.size())
+        module
+            ? detail::findModuleExport(*module, PackageModuleExportRole::Main)
+            : nullptr;
+    if (!module || !main)
+      return invalid("runtime launch entry has no typed main export");
+    if (entry.transport.index() != firstTransportKind)
+      return invalid("runtime launch ranks have mixed transport contracts");
+    if ((kernelGrid || cluster || model) &&
+        entry.slots.size() != first.slots.size())
       return invalid("multi-tile launch entries have different slot counts");
     if (model && (!firstMain || main->symbol != firstMain->symbol))
       return invalid("model launch modules have different main symbols");
-    if (cluster) {
-      const auto *requirements =
-          std::get_if<DirectDTETransportRequirements>(&entry.transport);
+    if (const auto *requirements =
+            std::get_if<DirectDTETransportRequirements>(&entry.transport)) {
       const auto *firstRequirements =
           std::get_if<DirectDTETransportRequirements>(&first.transport);
-      if (!requirements || !firstRequirements ||
+      if (!firstRequirements ||
           requirements->statusABI != firstRequirements->statusABI ||
           requirements->hostWatchdogRequired !=
               firstRequirements->hostWatchdogRequired)
         return invalid(
-            "cluster Direct DTE ranks have inconsistent transport contracts");
-    } else if (!std::holds_alternative<NoTransportRequirements>(
-                   entry.transport)) {
-      return invalid("multi-tile launch ABI does not support transport slots");
+            "Direct DTE ranks have inconsistent transport contracts");
     }
     for (size_t slotIndex = 0; slotIndex < entry.slots.size(); ++slotIndex) {
       const PackageResourceRecord *resource =
           findResource(manifest.resources, entry.slots[slotIndex].resource);
-      const PackageResourceRecord *reference = findResource(
-          manifest.resources, first.slots[slotIndex].resource);
-      if (!resource || !reference || resource->role != reference->role ||
-          resource->roleIndex != reference->roleIndex ||
-          resource->type.dtype != reference->type.dtype ||
-          resource->type.shape != reference->type.shape ||
-          resource->bytes != reference->bytes ||
-          resource->alignment != reference->alignment ||
-          resource->access != reference->access)
+      const PackageResourceRecord *reference =
+          findResource(manifest.resources, first.slots[slotIndex].resource);
+      if (!resource || !reference)
+        return invalid("runtime launch slot references a missing resource");
+      if ((kernelGrid || cluster || model) &&
+          (resource->role != reference->role ||
+           resource->roleIndex != reference->roleIndex ||
+           resource->type.dtype != reference->type.dtype ||
+           resource->type.shape != reference->type.shape ||
+           resource->bytes != reference->bytes ||
+           resource->alignment != reference->alignment ||
+           resource->access != reference->access))
         return invalid("multi-tile launch rank slot schemas are inconsistent");
-      if (model &&
-          (resource->role != PackageResourceRole::UserInput &&
-           resource->role != PackageResourceRole::Output))
+      if (model && (resource->role != PackageResourceRole::UserInput &&
+                    resource->role != PackageResourceRole::Output))
         return invalid(
-            "model launch ABI accepts only user-input and output resources");
+            "model launch contract accepts only user-input and output "
+            "resources");
       if (model &&
           (resource->type.dtype != "f32" || resource->type.shape.empty() ||
            resource->type.shape.size() > 6 ||
            resource->alignment < alignof(float)))
         return invalid(
-            "model launch ABI accepts only aligned rank-1..6 f32 tensors");
+            "model launch contract accepts only aligned rank-1..6 f32 "
+            "tensors");
       if (model) {
         Tx81ModelTensorClass tensorClass =
             resource->role == PackageResourceRole::UserInput
@@ -355,15 +344,18 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
       manifest.runtimeABI != targetProfile.kernelRuntimeABI ||
       manifest.moduleFormat != targetProfile.moduleFormat)
     return invalid("package target profile mapping is inconsistent");
-  if (!isTargetLaunchABICompatible(manifest.launchABI,
-                                   manifest.targetProfile))
+  if (!isRuntimeLaunchContractCompatible(manifest.launch,
+                                         manifest.targetProfile))
     return invalid(
-        "package launch ABI is not qualified for its target profile");
+        "package runtime launch contract is not qualified for its target "
+        "profile");
   if (manifest.rankCount != 1 && manifest.rankCount != 16)
     return invalid("package rank_count must be exactly 1 or 16");
-  if (manifest.launchABI != TargetLaunchABIId::perRankPointerBlockV1() &&
+  const KernelRuntimeLaunchContract *kernel = manifest.launch.getKernel();
+  if ((!kernel || kernel->form != KernelLaunchForm::PerRank) &&
       manifest.rankCount != 16)
-    return invalid("multi-tile package launch ABI requires rank_count=16");
+    return invalid(
+        "grid, cluster and model package launches require rank_count=16");
   uint64_t totalRecords = manifest.resources.size() + manifest.modules.size() +
                           manifest.entries.size() + manifest.completions.size();
   if (totalRecords > limits.maxRecords)
@@ -476,8 +468,7 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
         findModule(manifest.modules, entry.module);
     const PackageCompletionRecord *completion =
         findCompletion(manifest.completions, entry.terminalCompletion);
-    if (!module || !completion ||
-        completion->logicalRank != entry.logicalRank)
+    if (!module || !completion || completion->logicalRank != entry.logicalRank)
       return invalid("package entry module/completion relation is invalid");
     ++referencedModules[entry.module.getValue()];
     llvm::sort(entry.slots, [](const auto &lhs, const auto &rhs) {
@@ -536,7 +527,7 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
         return referencedModules.lookup(module.id.getValue()) == 0;
       }))
     return invalid("package contains an unreferenced module");
-  if (llvm::Error error = verifyLaunchABIContract(manifest))
+  if (llvm::Error error = verifyRuntimeLaunchContract(manifest))
     return std::move(error);
 
   std::vector<bool> seenCompletionRank(manifest.rankCount, false);

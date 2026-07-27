@@ -79,6 +79,13 @@ explicit Count semantic/target/model evidence -> Q3.6 (independent typed writeba
 
 ## 当前实施队列
 
+Q15 launch/runtime边界已重新关闭：产品runtime用户入口只有`wafer-run`，canonical runtime launch kind只允许
+`kernel`和`model`；普通kernel、grid kernel以及provider内部`txLaunchClusterKernel`都属于kernel，pointer block、
+rank-major table、BootParam和prepare/main只属于compiler-owned tagged launch contract，Direct DTE只属于独立entry
+transport lifecycle。旧四值`TargetLaunchABIId`、workload-specific spelling和`--launch-abi`已删除，schema-v6
+compiler publication、manifest/verifier、no-card、BoardRuntimeDriver和TX provider已重放；旧schema和旧字段只保留
+fail-closed负例。板卡case扩展不再受该边界阻塞。
+
 Q37 compiler-sensitive hardware calibration、production optimizer paired qualification和multi-engine software
 pipelining正在执行。此前所谓raw hardware-calibration checkpoint完成，只表示已有correctness/legality证据足以
 维持保守fallback，不表示硬件行为或性能表面完备。后续不重复已上板的raw case，但继续补充能区分真实compiler
@@ -111,7 +118,7 @@ raw checkpoint形成
 `docs/tx81-compiler-hardware-calibration.md`独立证据台账，以current硬件资料、vendor header/library与安全板端
 microcase闭合会改变compiler legality、planning、lowering、cost或runtime completion的TX81事实，包括instruction
 packet/数值/layout、SPM/DDR与cache、NCC各engine/worker/queue/address dependency、同步/可见性、Direct DTE/
-multi-tile arrival、launch ABI与PMU measurement basis。每个维度必须得到已验证结论，或得到带保守compiler
+multi-tile arrival、runtime launch contract与PMU measurement basis。每个维度必须得到已验证结论，或得到带保守compiler
 处理的明确Unknown/unsupported边界；这些事实未闭合前不修改production scheduling。随后才在complete instruction
 IR上物化显式multi-buffer、prologue/steady/epilogue、resource-aware issue order和completion-domain
 boundary上的latest-legal drain/fence，并让
@@ -383,7 +390,7 @@ simulator/ISS、packet provenance和timing所需外部事实仍只保留在Later
 | Q32.I | `mlir-native-implementation-relation-foundation` | `done` | Q29、Q28、Q30、Q31 | source OpInterface/external models已让generic division与target reciprocal两种真实implementation进入complete clone；MLIR Affine/Presburger/ValueBounds IndexRelation foundation与precision/failure/property gate闭合；重复DPS/Tiling语义的WaferTilingInterface已删除。证据见`tasks/archive/mlir-native-implementation-relation-foundation.md`。 | 01、06、08、10、13、16、18；`tasks/archive/physical-dataflow-synthesis.md` A/B |
 | Q32.R | `physical-relation-realization` | `done` | Q32.I | rich IndexRelation查询、physical encoding attr interface、TransferRealizability、destination-style StorageLoad和relation-backed resident handoff已闭合；非7B source删除真实中间WDMA/RDMA，标准7B source选择26条handoff并通过fresh TP16 package/SystemC/PyTorch gate。证据见`tasks/archive/physical-relation-realization.md`。 | 06-11、16、18；同计划C |
 | Q32.B | `physical-dataflow-test-seam-vertical` | `done` | Q32.R、Q34 | compiler-private production-shaped seam已让conservative spill唯一reserved baseline与spill/resident optimized actual clones共同进入rank frontier；rank只做SPM，all-rank disposable tuple重做DDR及全部late gate，1/16-rank与标准7B source-to-package/SystemC/PyTorch及determinism/atomic gate通过。证据见`tasks/archive/physical-dataflow-test-seam-vertical.md`。 | 01、06-18；同计划D |
-| Q32.V | `typed-target-capability-vertical` | `done` | Q32.B | mapped DMA/WDMA双端root-relative offset与descriptor、physical-footprint fill的padding/tail/bitpacked domain及oriented GEMM source/Tile/Instr/v2 TargetCall/CRT/formal/SystemC纵向已闭合；v1 ABI保持不变，Q32.V完成当时因无真实逐row consumer而保持schema v3，后续Q6.B launch ABI consumer已独立升级为当前schema v5。证据见`tasks/archive/typed-target-capability-vertical.md`。 | 06、08、10、11、14-18；同计划E |
+| Q32.V | `typed-target-capability-vertical` | `done` | Q32.B | mapped DMA/WDMA双端root-relative offset与descriptor、physical-footprint fill的padding/tail/bitpacked domain及oriented GEMM source/Tile/Instr/v2 TargetCall/CRT/formal/SystemC纵向已闭合；v1 ABI保持不变，Q32.V完成当时因无真实逐row consumer而保持schema v3，后续Q6.B曾因真实launch consumer升级到历史schema v5；当前Q15正独立收口为schema v6两值runtime launch contract。证据见`tasks/archive/typed-target-capability-vertical.md`。 | 06、08、10、11、14-18；同计划E |
 | Q32.M | `physical-mechanism-choice-closure` | `done` | Q32.V | shared candidate owner已从verified source独立产生recompute、static LICM和integer modular reassociation/tree/distribution/factorization actual clones；partial fanout保留DDR spill并增加maximal-compatible SPM SSA result，spill/resident与movement-first ready-order分别形成完整rank alternatives；communication从同一tile parent产生ring/ring、direct/ring和ring/tree完整clone并逐个重跑Instr/SPM/DDR/verifier/cost。layout/resource与collective consumers已迁到typed op、value-associated standard effects、custom resources和SSA token/fence，重复layout/resource/collective-info/verifyInstructionContract合同及public communication selector已删除。证据见`tasks/archive/physical-mechanism-choice-closure.md`。 | 05-13、16、18；同计划F |
 | Q32.S | `bounded-joint-physical-dataflow-selection` | `done` | Q32.M | source/recipe/scope-policy与spill/resident/ready-order均以actual clone有界组合；reserved baseline独立于source 16、recipe 12、rank evaluation 64、rank frontier 256、whole tuple 64+64及whole Pareto 16等optimization caps。validated placement/high-water及final DDR/SPM/NoC/collective/compute/instruction/event/dataflow facts进入whole-card exact Pareto与target-owned static policy；最终winner不读scalar time或producer计数。implementation、fusion/share/recompute、LICM、各current integer variant、fixed-Cx direct mapped route、resident reuse、ready-order及direct/tree collective均有production-shaped whole winner。证据见`tasks/archive/bounded-joint-physical-dataflow-selection.md`。 | 06-13、16、18；同计划G |
 | Q32.G | `physical-dataflow-production-cutover` | `done` | Q32.S | 默认`wafer-compile`已成为唯一production decision owner并原子提交whole-variant winner；旧public scheduling pass/pipeline、scope-prefix、layout/demand影子结构、communication selector/options、scalar-time winner和discovery recovery已删除。rank frontier以semantic generation与physical artifact kind双键约束all-rank correspondence，默认source/bulk SystemC数值纵向通过。证据见`tasks/archive/physical-dataflow-production-cutover.md`。 | 01、06-18；同计划H |
@@ -417,7 +424,7 @@ Q9的ranking feedback仍需独立validated PMU/timing与held-out gate。
 | Q14 | `architecture-baseline` | `done` | 当前单卡纵向架构、事实优先级和历史计划边界已重基线。 | 01、14、15、16；`tasks/archive/12-architecture-evidence-reset.md` |
 | Q0 | `target-correctness` | `done` | target conversion、结构保持、physical legality和原子失败窄边界闭合。 | 06、07、09、11、14、16 |
 | Q5.C | `workload-corpus` | `done` | 固定PyTorch/XLA source/config/payload/expected corpus及独立CPU oracle。 | 02、16 |
-| Q15 | `compiler-driver` | `done` | source到verified rank-local structured tensor program directory及原子发布闭合。 | 01-06、16 |
+| Q15 | `compiler-driver` | `done` | source到verified rank-local structured tensor program directory及原子发布闭合；runtime只保留kernel/model两种launch kind，完整launch contract由accepted IR形成一次并由ExecutableBundle持有，旧四值ABI/CLI/schema正向路径删除，compiler→package→wafer-run gate已重放。 | 01-06、14-16 |
 | Q16 | `executable-bundle` | `done` | all-and-only rank executable与move-only bundle闭合。 | 03、04、06、09、12、13、16 |
 | Q17 | `target-artifact-bundle` | `done` | single-lowering target module、device link及原子artifact发布闭合。 | 14、16 |
 | Q18 | `manifest-runtime` | `done` | typed manifest、package readback和no-card preflight闭合。 | 15、16 |

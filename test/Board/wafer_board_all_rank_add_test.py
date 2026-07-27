@@ -15,12 +15,14 @@ import sys
 
 import numpy as np
 
+import wafer_runtime_launch_contract as runtime_launch
+
 
 @dataclasses.dataclass(frozen=True)
 class RuntimeLaunchCalibrationCase:
     key: str
     rank_count: int
-    launch_abi: str
+    launch_kind: str
     oracle: str
     completion: str
 
@@ -29,44 +31,33 @@ RANK_COUNT = 16
 GLOBAL_ELEMENTS = 256
 LOCAL_ELEMENTS = GLOBAL_ELEMENTS // RANK_COUNT
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
-PER_RANK_LAUNCH_ABI = "per-rank-pointer-block-v1"
-KERNEL_GRID_LAUNCH_ABI = "tx81-kernel-grid-pointer-table-v1"
-MODEL_LAUNCH_ABI = "tx81-model-bootparam-v1"
 MODEL_PROCESS_TIMEOUT_MARGIN_SECONDS = 30
 LAUNCH_EVIDENCE = {
-    PER_RANK_LAUNCH_ABI: (
-        "independent-grid1",
-        "none",
-    ),
-    KERNEL_GRID_LAUNCH_ABI: (
+    runtime_launch.KERNEL_LAUNCH_KIND: (
         "kernel-grid-x16",
         "scheduler-pid-x-and-exact-rank-slices",
     ),
-    MODEL_LAUNCH_ABI: (
+    runtime_launch.MODEL_LAUNCH_KIND: (
         "model-type6-type7",
         "graph-tile-module-map-and-exact-rank-slices",
     ),
 }
+LAUNCH_CONTRACTS = {
+    runtime_launch.KERNEL_LAUNCH_KIND: runtime_launch.GRID_KERNEL_LAUNCH,
+    runtime_launch.MODEL_LAUNCH_KIND: runtime_launch.MODEL_LAUNCH,
+}
 RUNTIME_LAUNCH_CALIBRATION_CASES = tuple(
     RuntimeLaunchCalibrationCase(
-        f"rank16-{launch_abi}-add",
+        f"rank16-{launch_kind}-add",
         RANK_COUNT,
-        launch_abi,
-        "all-rank exact slices+full f32 output+schema-v5 rank domain",
+        launch_kind,
+        "all-rank exact slices+full f32 output+schema-v6 rank domain",
         "all-rank terminal+D2H+normal cleanup",
     )
-    for launch_abi in LAUNCH_EVIDENCE
+    for launch_kind in LAUNCH_EVIDENCE
 )
 CALIBRATION_LEAF_BINDINGS = {
-    "rank16-kernel-model-add": tuple(
-        case
-        for case in RUNTIME_LAUNCH_CALIBRATION_CASES
-        if case.launch_abi
-        in {
-            "tx81-kernel-grid-pointer-table-v1",
-            "tx81-model-bootparam-v1",
-        }
-    ),
+    "rank16-kernel-model-add": RUNTIME_LAUNCH_CALIBRATION_CASES,
 }
 SHARDING = "{devices=[16]0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"
 
@@ -111,9 +102,9 @@ def parse_args() -> argparse.Namespace:
         help="compile and validate the complete no-card launch pipeline",
     )
     parser.add_argument(
-        "--launch-abi",
+        "--launch-kind",
         choices=tuple(LAUNCH_EVIDENCE),
-        default=PER_RANK_LAUNCH_ABI,
+        default=runtime_launch.KERNEL_LAUNCH_KIND,
     )
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--expected-runtime-version", type=int)
@@ -271,27 +262,34 @@ def load_boundary_slices(package: pathlib.Path) -> dict[int, slice]:
 
 
 def validate_manifest(
-    package: pathlib.Path, launch_abi: str
+    package: pathlib.Path, launch_kind: str
 ) -> dict[tuple[int, str, int], int]:
     manifest = json.loads((package / "manifest.json").read_text())
     target = manifest.get("target")
+    runtime_launch.require_manifest_launch(
+        manifest,
+        LAUNCH_CONTRACTS[launch_kind],
+        context="all-rank board gate",
+    )
     if (
-        manifest.get("schema_version") != 5
-        or manifest.get("rank_count") != RANK_COUNT
+        manifest.get("rank_count") != RANK_COUNT
         or not isinstance(target, dict)
         or target.get("profile") != TARGET_PROFILE
-        or target.get("launch_abi") != launch_abi
     ):
         raise RuntimeError(
-            "all-rank board gate requires a schema-v5 rank-16 TX package"
+            "all-rank board gate requires a schema-v6 rank-16 TX package"
         )
 
     modules = manifest.get("modules")
     if not isinstance(modules, list):
         raise RuntimeError("modules must be a list")
-    expected_module_count = 1 if launch_abi == KERNEL_GRID_LAUNCH_ABI else RANK_COUNT
+    expected_module_count = (
+        1
+        if launch_kind == runtime_launch.KERNEL_LAUNCH_KIND
+        else RANK_COUNT
+    )
     if len(modules) != expected_module_count:
-        raise RuntimeError("launch ABI has an invalid unique module count")
+        raise RuntimeError("runtime launch has an invalid unique module count")
     module_by_id: dict[int, dict[str, object]] = {}
     for module in modules:
         if not isinstance(module, dict) or not isinstance(module.get("id"), int):
@@ -382,10 +380,16 @@ def validate_manifest(
     referenced_modules = {entry["module"] for entry in entries}
     if referenced_modules != set(module_by_id):
         raise RuntimeError("entry-to-module coverage is not all-and-only")
-    if launch_abi == KERNEL_GRID_LAUNCH_ABI and len(referenced_modules) != 1:
-        raise RuntimeError("kernel-grid entries do not share one module")
-    if launch_abi != KERNEL_GRID_LAUNCH_ABI and len(referenced_modules) != RANK_COUNT:
-        raise RuntimeError("rank-local launch entries are not one-to-one with modules")
+    if (
+        launch_kind == runtime_launch.KERNEL_LAUNCH_KIND
+        and len(referenced_modules) != 1
+    ):
+        raise RuntimeError("kernel entries do not share one aggregate module")
+    if (
+        launch_kind == runtime_launch.MODEL_LAUNCH_KIND
+        and len(referenced_modules) != RANK_COUNT
+    ):
+        raise RuntimeError("model entries are not one-to-one with tile modules")
     return bindings
 
 
@@ -450,12 +454,12 @@ def write_rank_payloads(
 
 def verify_board_evidence(
     stdout: str,
-    launch_abi: str,
+    launch_kind: str,
     output_ids: set[int],
     entry_evidence: set[tuple[int, int, int]],
     completion_evidence: set[tuple[int, int]],
 ) -> None:
-    launch_pattern, logical_tile_basis = LAUNCH_EVIDENCE[launch_abi]
+    launch_pattern, logical_tile_basis = LAUNCH_EVIDENCE[launch_kind]
     required = (
         "board_stage: preflight",
         "board_stage: device-selection",
@@ -538,12 +542,9 @@ def verify_board_evidence(
         raise RuntimeError("board result did not prove all 16 exact output comparisons")
 
 
-def verify_no_card_evidence(stdout: str, launch_abi: str) -> None:
+def verify_no_card_evidence(stdout: str) -> None:
     required = (
-        "package: id=0 schema=5 ranks=16",
-        "target: wafer-tx81-single-card "
-        "runtime_abi=wafer-tx81-kernel-v1 "
-        f"launch_abi={launch_abi} module_format=elf-riscv64",
+        "package: id=0 schema=6 ranks=16",
         f"invocation_ranks: {RANK_COUNT}",
         "board_execution: false",
     )
@@ -555,7 +556,7 @@ def verify_no_card_evidence(stdout: str, launch_abi: str) -> None:
     entry_ranks = sorted(
         int(rank)
         for rank in re.findall(
-            r"^entry: \d+ rank=(\d+) symbol=\S+$", stdout, re.MULTILINE
+            r"^entry: \d+ rank=(\d+)$", stdout, re.MULTILINE
         )
     )
     completion_ids = sorted(
@@ -616,7 +617,7 @@ def main() -> int:
             str(package),
             f"--execution-ranks={RANK_COUNT}",
             f"--target-profile={TARGET_PROFILE}",
-            f"--launch-abi={args.launch_abi}",
+            f"--launch-kind={args.launch_kind}",
         ]
     )
     if (
@@ -626,7 +627,7 @@ def main() -> int:
         raise RuntimeError("wafer-compile did not report a verified rank-16 package")
 
     slices = load_boundary_slices(package)
-    bindings = validate_manifest(package, args.launch_abi)
+    bindings = validate_manifest(package, args.launch_kind)
     if args.no_card:
         result = run(
             [
@@ -637,8 +638,8 @@ def main() -> int:
                 "--no-card",
             ]
         )
-        verify_no_card_evidence(result.stdout, args.launch_abi)
-        print(f"no_card_launch_abi: {args.launch_abi}")
+        verify_no_card_evidence(result.stdout)
+        print(f"no_card_launch_kind: {args.launch_kind}")
         print(result.stdout, end="")
         return 0
 
@@ -672,7 +673,7 @@ def main() -> int:
     ]
     for iteration in range(args.repeat):
         process_timeout_seconds = None
-        if args.launch_abi == MODEL_LAUNCH_ABI:
+        if args.launch_kind == runtime_launch.MODEL_LAUNCH_KIND:
             process_timeout_seconds = (
                 args.completion_timeout_ms / 1000
                 + MODEL_PROCESS_TIMEOUT_MARGIN_SECONDS
@@ -680,14 +681,14 @@ def main() -> int:
         result = run(command, timeout_seconds=process_timeout_seconds)
         verify_board_evidence(
             result.stdout,
-            args.launch_abi,
+            args.launch_kind,
             output_ids,
             entry_evidence,
             completion_evidence,
         )
         print(
             "board_all_rank_add_iteration: "
-            f"{iteration + 1}/{args.repeat} launch_abi={args.launch_abi}"
+            f"{iteration + 1}/{args.repeat} launch_kind={args.launch_kind}"
         )
         print(result.stdout, end="")
     return 0

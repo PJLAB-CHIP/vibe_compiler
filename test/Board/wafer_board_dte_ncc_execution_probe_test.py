@@ -45,7 +45,7 @@ TRANSPORT_STABLE_MASK = (1 << len(TRANSPORT_COUNTER_NAMES)) - 1
 CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = (
     transport_catalog.CALIBRATION_LEAF_BINDINGS
 )
-LAUNCH_ABI = "tx81-cluster-direct-dte-prepare-main-v1"
+LAUNCH_KIND = "kernel"
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_dte_ncc_execution_probe.c"
@@ -262,7 +262,7 @@ def compile_package(
             str(package),
             f"--execution-ranks={RANK_COUNT}",
             "--target-profile=wafer-tx81-single-card-kernel-v1",
-            f"--launch-abi={LAUNCH_ABI}",
+            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )
@@ -302,11 +302,8 @@ def verify_no_card(args: argparse.Namespace, package: pathlib.Path) -> None:
             "--supports-host-watchdog",
         ]
     )
-    if (
-        "board_execution: false" not in result.stdout
-        or f"launch_abi={LAUNCH_ABI}" not in result.stdout
-    ):
-        raise RuntimeError("no-card verification omitted the cluster launch contract")
+    if "board_execution: false" not in result.stdout:
+        raise RuntimeError("no-card verification omitted the kernel invocation")
 
 
 def board_base_command(
@@ -350,7 +347,7 @@ def execute_production_baseline(
             str(package),
             f"--execution-ranks={RANK_COUNT}",
             "--target-profile=wafer-tx81-single-card-kernel-v1",
-            f"--launch-abi={LAUNCH_ABI}",
+            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )

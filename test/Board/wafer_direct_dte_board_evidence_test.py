@@ -91,7 +91,14 @@ def valid_manifest() -> dict[str, object]:
         )
     return {
         "schema_version": evidence.SCHEMA_VERSION,
-        "target": {"launch_abi": evidence.CLUSTER_LAUNCH_ABI},
+        "target": {
+            "launch": {
+                "kind": "kernel",
+                "form": "cluster",
+                "entry_abi": "rank-major-pointer-table-v1",
+                "phases": ["prepare", "main"],
+            }
+        },
         "rank_count": evidence.RANK_COUNT,
         "resources": resources,
         "entries": entries,

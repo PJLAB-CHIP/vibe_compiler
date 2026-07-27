@@ -16,6 +16,8 @@ import struct
 import subprocess
 import sys
 
+import wafer_runtime_launch_contract as runtime_launch
+
 
 RANK_COUNT = 16
 ALLOCATION_COUNT = 2
@@ -105,7 +107,7 @@ MAX_RECORD_BYTES = max(
 )
 MODE_OFFSET = 0
 MODE_CONFLICT_EQUIVALENCE = 1
-LAUNCH_ABI = "tx81-cluster-direct-dte-prepare-main-v1"
+LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 STATUS_ABI = "wafer-direct-dte-status-v2"
 STATUS_STORAGE_BYTES = 64
 STATUS_STORAGE_ALIGNMENT = 64
@@ -546,10 +548,13 @@ def validate_manifest(
         validate_boundary_binding(binding, "result_index", index)
 
     manifest = json.loads((package / "manifest.json").read_text())
+    runtime_launch.require_manifest_launch(
+        manifest,
+        runtime_launch.CLUSTER_KERNEL_LAUNCH,
+        context="DDR tile/offset",
+    )
     if (
-        manifest.get("schema_version") != 5
-        or manifest.get("rank_count") != RANK_COUNT
-        or manifest.get("target", {}).get("launch_abi") != LAUNCH_ABI
+        manifest.get("rank_count") != RANK_COUNT
     ):
         raise RuntimeError("DDR tile/offset package launch contract is wrong")
     modules = manifest.get("modules")
@@ -673,7 +678,7 @@ def compile_package(
             str(package),
             f"--execution-ranks={RANK_COUNT}",
             "--target-profile=wafer-tx81-single-card-kernel-v1",
-            f"--launch-abi={LAUNCH_ABI}",
+            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=600,
     )
@@ -785,7 +790,6 @@ def verify_no_card(args: argparse.Namespace, package: pathlib.Path) -> None:
     )
     if (
         "board_execution: false" not in result.stdout
-        or f"launch_abi={LAUNCH_ABI}" not in result.stdout
     ):
         raise RuntimeError("DDR tile/offset no-card launch evidence is incomplete")
     print(

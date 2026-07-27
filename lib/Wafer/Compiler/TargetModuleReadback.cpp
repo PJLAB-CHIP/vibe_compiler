@@ -4,6 +4,7 @@
 
 #include "Wafer/Support/TargetPolicy.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Object/ELFObjectFile.h"
@@ -216,9 +217,11 @@ llvm::Error verifyExportedFunction(const llvm::object::ObjectFile &object,
 
 } // namespace
 
-llvm::Expected<TargetModuleReadback> verifyTargetModule(
-    llvm::StringRef path, llvm::ArrayRef<VerifiedTargetExport> expectedExports,
-    TargetProfileId expectedProfile, TargetLaunchABIId expectedLaunchABI) {
+llvm::Expected<TargetModuleReadback>
+verifyTargetModule(llvm::StringRef path,
+                   llvm::ArrayRef<VerifiedTargetExport> expectedExports,
+                   TargetProfileId expectedProfile,
+                   const RuntimeLaunchContract &expectedLaunch) {
   const TargetProfileRecord &profile = getTargetProfileRecord(expectedProfile);
   constexpr llvm::StringLiteral kDetectedRiscv64ELF = "elf-riscv64";
   if (profile.moduleFormat != kDetectedRiscv64ELF)
@@ -271,15 +274,16 @@ llvm::Expected<TargetModuleReadback> verifyTargetModule(
                                                    targetExport.getSymbol()))
       return std::move(error);
   }
-  const bool cluster = expectedLaunchABI ==
-                       TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
-  if (!seenMain || seenPrepare != cluster ||
-      expectedExports.size() != (cluster ? 2u : 1u))
+  const bool hasPrepare = llvm::is_contained(expectedLaunch.getPhases(),
+                                             RuntimeLaunchPhaseRole::Prepare);
+  if (!seenMain || seenPrepare != hasPrepare ||
+      expectedExports.size() != (hasPrepare ? 2u : 1u))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "target module export roles do not match the closed launch ABI");
+        "target module export roles do not match the runtime launch "
+        "contract");
 
-  if (expectedLaunchABI == TargetLaunchABIId::tx81ModelBootParamV1())
+  if (expectedLaunch.getModel())
     if (llvm::Error error =
             verifyModelDynamicExport(*(*object).getBinary(), mainSymbol))
       return std::move(error);
@@ -293,12 +297,13 @@ llvm::Expected<TargetModuleReadback> verifyTargetModule(
 
 llvm::Expected<VerifiedTargetModule> verifyLinkedTargetModuleForTesting(
     llvm::StringRef path, llvm::StringRef entrySymbol,
-    TargetProfileId targetProfile, TargetLaunchABIId targetLaunchABI) {
+    TargetProfileId targetProfile,
+    const RuntimeLaunchContract &runtimeLaunchContract) {
   std::vector<VerifiedTargetExport> exports;
   exports.push_back(TargetArtifactBundleBuilder::makeExport(
       TargetExportRole::Main, entrySymbol));
   llvm::Expected<TargetModuleReadback> readback =
-      verifyTargetModule(path, exports, targetProfile, targetLaunchABI);
+      verifyTargetModule(path, exports, targetProfile, runtimeLaunchContract);
   if (!readback)
     return readback.takeError();
   const TargetProfileRecord &profile = getTargetProfileRecord(targetProfile);

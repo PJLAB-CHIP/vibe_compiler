@@ -135,7 +135,7 @@ resolveDirectDTEContractRankCount(mlir::ModuleOp moduleOp) {
 
 mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
                                        TargetProfileId targetProfile,
-                                       TargetLaunchABIId launchABI,
+                                       bool transportPreparedBeforeEntry,
                                        int64_t defaultDDRArenaArgumentIndex,
                                        int64_t logicalRank,
                                        int64_t transportStatusArgumentIndex,
@@ -263,7 +263,7 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
               "failed";
 
   TargetCallBuiltin dteBeginBuiltin =
-      launchABI == TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1()
+      transportPreparedBeforeEntry
           ? TargetCallBuiltin::DirectDTEBeginAfterPrepare
           : TargetCallBuiltin::DirectDTEBegin;
   if (hasDirectDTEContract &&

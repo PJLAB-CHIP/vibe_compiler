@@ -190,7 +190,7 @@ injectDirectDTEStatusLifecycle(mlir::ModuleOp moduleOp,
 
 mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
                                        TargetProfileId targetProfile,
-                                       TargetLaunchABIId launchABI,
+                                       bool transportPreparedBeforeEntry,
                                        int64_t defaultDDRArenaArgumentIndex,
                                        int64_t logicalRank,
                                        int64_t transportStatusArgumentIndex,

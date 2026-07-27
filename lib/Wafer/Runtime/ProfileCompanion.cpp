@@ -1081,7 +1081,7 @@ llvm::Error verifyPackageContractsMatch(const PackageManifest &reference,
   if (reference.targetProfile != candidate.targetProfile ||
       reference.targetIdentity != candidate.targetIdentity ||
       reference.runtimeABI != candidate.runtimeABI ||
-      reference.launchABI != candidate.launchABI ||
+      reference.launch != candidate.launch ||
       reference.moduleFormat != candidate.moduleFormat)
     return invalid("profile variant target/ABI contracts differ");
   if (reference.rankCount != kProfileCompanionRankCount ||
@@ -1140,7 +1140,7 @@ llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
   if (execution.targetProfile != capture.targetProfile ||
       execution.targetIdentity != capture.targetIdentity ||
       execution.runtimeABI != capture.runtimeABI ||
-      execution.launchABI != capture.launchABI ||
+      execution.launch != capture.launch ||
       execution.moduleFormat != capture.moduleFormat)
     return invalid("profile capture target/ABI contract differs from its "
                    "execution package");

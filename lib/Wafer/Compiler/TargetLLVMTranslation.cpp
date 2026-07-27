@@ -360,7 +360,7 @@ mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared) {
   request.defaultDDRArenaArgumentIndex = prepared.defaultDDRArenaArgumentIndex;
   request.logicalRank = prepared.logicalRank;
   request.transportStatusArgumentIndex = prepared.transportStatusArgumentIndex;
-  request.launchABI = prepared.launchABI;
+  request.transportPreparedBeforeEntry = prepared.transportPreparedBeforeEntry;
   request.profileRecordArgumentIndex = prepared.profileRecordArgumentIndex;
   mlir::PassManager manager(prepared.module->getContext());
   manager.addPass(createLowerInstrToTargetLLVMPass(request));

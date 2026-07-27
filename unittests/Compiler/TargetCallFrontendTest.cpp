@@ -150,7 +150,7 @@ module {
   program.distributedOutputs = {boundary(0)};
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
@@ -165,10 +165,7 @@ module {
 }
 
 llvm::Expected<wafer::compiler::TargetLLVMModuleBundle>
-buildDirectDTETargetBundle(
-    std::string &diagnosticText,
-    wafer::TargetLaunchABIId launchABI =
-        wafer::TargetLaunchABIId::perRankPointerBlockV1()) {
+buildDirectDTETargetBundle(std::string &diagnosticText) {
   auto context = createCompilerContext();
   auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -198,7 +195,8 @@ module {
   program.distributedInputs = {partitionedBoundary(0)};
   program.distributedOutputs = {partitionedBoundary(0)};
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(), launchABI);
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::RuntimeLaunchKind::Kernel);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
@@ -1024,12 +1022,11 @@ TEST(TargetCallFrontendTest, ExecutesAllRanksWithExplicitDTEOpaqueEvents) {
 TEST(TargetCallFrontendTest,
      ClusterAggregationConsumesProductionDirectDTERankModules) {
   std::string diagnostics;
-  auto bundle = buildDirectDTETargetBundle(
-      diagnostics,
-      wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1());
+  auto bundle = buildDirectDTETargetBundle(diagnostics);
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
-  auto aggregate = wafer::compiler::detail::buildClusterTargetModule(*bundle);
+  auto aggregate =
+      wafer::compiler::detail::buildKernelAggregateTargetModule(*bundle);
   ASSERT_TRUE(static_cast<bool>(aggregate))
       << llvm::toString(aggregate.takeError());
 
@@ -1038,7 +1035,7 @@ TEST(TargetCallFrontendTest,
   size_t directSyncInitCalls = 0;
   size_t initTileIdCalls = 0;
   for (const llvm::Function &function : aggregate->module->functions()) {
-    if (function.getName().starts_with("__wafer_cluster_rank_") &&
+    if (function.getName().starts_with("__wafer_kernel_rank_") &&
         function.getName().ends_with("_main_body"))
       ++rankBodyCount;
     for (const llvm::BasicBlock &block : function)

@@ -19,10 +19,12 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <optional>
 #include <queue>
@@ -39,6 +41,44 @@ constexpr size_t kWholeVariantVisitLimit = 64;
 constexpr size_t kCoordinatedPolicyVisitLimit = 64;
 constexpr size_t kWholeVariantParetoLimit = 16;
 constexpr size_t kReportedAttemptLimit = 8;
+
+static llvm::Expected<RuntimeLaunchContract> formAcceptedRuntimeLaunchContract(
+    const ExecutionConfig &executionConfig,
+    llvm::ArrayRef<mlir::ModuleOp> acceptedRankModules) {
+  constexpr std::array main{RuntimeLaunchPhaseRole::Main};
+  constexpr std::array prepareMain{RuntimeLaunchPhaseRole::Prepare,
+                                   RuntimeLaunchPhaseRole::Main};
+  bool requiresRuntimePrepare = false;
+  for (mlir::ModuleOp module : acceptedRankModules)
+    module.walk([&](mlir::Operation *operation) {
+      if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(operation))
+        requiresRuntimePrepare = true;
+    });
+
+  if (executionConfig.getRuntimeLaunchKind() == RuntimeLaunchKind::Model) {
+    if (executionConfig.getRankCount() != 16 || requiresRuntimePrepare)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "model runtime launch requires 16 ranks without a prepare phase");
+    return RuntimeLaunchContract::createModel(
+        ModelEntryABI::Tx81ModelBootParamV1, main);
+  }
+  if (executionConfig.getRankCount() == 1) {
+    if (requiresRuntimePrepare)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "rank-one kernel runtime launch does not support a prepare phase");
+    return RuntimeLaunchContract::createKernel(
+        KernelLaunchForm::PerRank, KernelEntryABI::RankLocalPointerBlockV1,
+        main);
+  }
+  if (requiresRuntimePrepare)
+    return RuntimeLaunchContract::createKernel(
+        KernelLaunchForm::Cluster, KernelEntryABI::RankMajorPointerTableV1,
+        prepareMain);
+  return RuntimeLaunchContract::createKernel(
+      KernelLaunchForm::Grid, KernelEntryABI::RankMajorPointerTableV1, main);
+}
 
 static std::set<DTEProtocolPhase>
 observeCollectivePhases(const RankExecutable &rank) {
@@ -386,6 +426,13 @@ tryCombination(llvm::ArrayRef<size_t> candidateIndices,
     failureGate = "direct-dte";
     return mlir::failure();
   }
+  llvm::Expected<RuntimeLaunchContract> runtimeLaunchContract =
+      formAcceptedRuntimeLaunchContract(executionConfig, moduleViews);
+  if (!runtimeLaunchContract) {
+    llvm::consumeError(runtimeLaunchContract.takeError());
+    failureGate = "runtime-launch-contract";
+    return mlir::failure();
+  }
   mlir::FailureOr<analysis::WholeCardInstructionProgramCost> resourceCost =
       acceptWholeVariantResources(moduleViews, executionConfig);
   if (mlir::failed(resourceCost)) {
@@ -425,9 +472,11 @@ tryCombination(llvm::ArrayRef<size_t> candidateIndices,
   // opportunity to replace one rank after the remaining domain was accepted.
   // Lower on owned clones and discard the results; the target-artifact stage
   // will translate the exact committed rank modules once more for publication.
+  const bool transportPreparedBeforeEntry = llvm::is_contained(
+      runtimeLaunchContract->getPhases(), RuntimeLaunchPhaseRole::Prepare);
   for (RankExecutable &rank : ranks) {
     mlir::FailureOr<PreparedTargetRank> prepared =
-        prepareTargetABI(rank, executionConfig);
+        prepareTargetABI(rank, executionConfig, transportPreparedBeforeEntry);
     if (mlir::failed(prepared)) {
       failureGate = "target-abi-preparation";
       return mlir::failure();
@@ -440,9 +489,9 @@ tryCombination(llvm::ArrayRef<size_t> candidateIndices,
     }
   }
 
-  AcceptedWholeVariant accepted;
-  accepted.ranks = std::move(ranks);
-  accepted.resourceCost = std::move(*resourceCost);
+  AcceptedWholeVariant accepted(std::move(ranks),
+                                std::move(*runtimeLaunchContract),
+                                std::move(*resourceCost));
   accepted.selectedStableOrdinals.reserve(candidateIndices.size());
   accepted.selectedArtifactKinds.reserve(candidateIndices.size());
   accepted.selectedReservedBaselines.reserve(candidateIndices.size());

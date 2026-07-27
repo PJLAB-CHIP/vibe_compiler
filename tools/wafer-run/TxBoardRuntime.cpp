@@ -26,6 +26,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <sys/stat.h>
 #include <system_error>
@@ -62,21 +63,35 @@ struct TxApi {
   decltype(&txStreamQuery) streamQuery = nullptr;
 };
 
-RuntimeEnvironment makeTxProviderEnvironment(TargetLaunchABIId launchABI) {
+RuntimeEnvironment makeTxProviderEnvironment() {
   const TargetProfileRecord &profile =
       getTargetProfileRecord(TargetProfileId::waferTx81SingleCardKernelV1());
   RuntimeEnvironment environment(profile.id, profile.targetIdentity,
                                  profile.kernelRuntimeABI,
-                                 launchABI,
                                  profile.moduleFormat);
+  environment.supportedKernelLaunchForms = {
+      KernelLaunchForm::PerRank,
+      KernelLaunchForm::Grid,
+      KernelLaunchForm::Cluster,
+  };
+  environment.supportedKernelEntryABIs = {
+      KernelEntryABI::RankLocalPointerBlockV1,
+      KernelEntryABI::RankMajorPointerTableV1,
+  };
+  environment.supportedModelEntryABIs = {
+      ModelEntryABI::Tx81ModelBootParamV1,
+  };
+  environment.supportsDirectDTE = true;
+  environment.directDTEStatusABI = kDirectDTEStatusABI.str();
   environment.supportsHostWatchdog = true;
-  if (launchABI ==
-      TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1()) {
-    environment.supportsDirectDTE = true;
-    environment.directDTEStatusABI = kDirectDTEStatusABI.str();
-  }
   return environment;
 }
+
+enum class SubmissionKind {
+  None,
+  Kernel,
+  Model,
+};
 
 class ScopedFD {
 public:
@@ -150,9 +165,9 @@ llvm::Expected<std::string> hashOpenRuntimeLibrary(int descriptor) {
 llvm::Error writeGraphModuleFile(llvm::StringRef path,
                                  llvm::ArrayRef<uint8_t> bytes) {
   std::string storage = path.str();
-  int descriptor = open(storage.c_str(),
-                        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-                        0600);
+  int descriptor =
+      open(storage.c_str(),
+           O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
   if (descriptor < 0)
     return llvm::createStringError(
         std::error_code(errno, std::generic_category()),
@@ -184,8 +199,8 @@ struct StagedGraphDirectory {
   int descriptor = -1;
 };
 
-llvm::Expected<StagedGraphDirectory> stageGraphModules(
-    llvm::ArrayRef<BoardGraphModuleSnapshot> modules) {
+llvm::Expected<StagedGraphDirectory>
+stageGraphModules(llvm::ArrayRef<BoardGraphModuleSnapshot> modules) {
   if (modules.size() != 16)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
@@ -213,9 +228,9 @@ llvm::Expected<StagedGraphDirectory> stageGraphModules(
           "TX graph module snapshots have an invalid tile domain or size"));
     aggregateModuleBytes += module.bytes.size();
     llvm::SHA256 hasher;
-    hasher.update(llvm::StringRef(
-        reinterpret_cast<const char *>(module.bytes.data()),
-        module.bytes.size()));
+    hasher.update(
+        llvm::StringRef(reinterpret_cast<const char *>(module.bytes.data()),
+                        module.bytes.size()));
     std::string digest =
         "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
     if (digest != module.digest)
@@ -223,8 +238,7 @@ llvm::Expected<StagedGraphDirectory> stageGraphModules(
           llvm::errc::invalid_argument,
           "TX graph module snapshot digest does not match its bytes"));
     llvm::SmallString<256> tileDirectory(pattern);
-    llvm::sys::path::append(tileDirectory,
-                            "tile" + std::to_string(tile));
+    llvm::sys::path::append(tileDirectory, "tile" + std::to_string(tile));
     std::string tileStorage = tileDirectory.str().str();
     if (::mkdir(tileStorage.c_str(), 0700) != 0)
       return fail(llvm::createStringError(
@@ -249,26 +263,25 @@ llvm::Expected<StagedGraphDirectory> stageGraphModules(
         std::error_code(errno, std::generic_category()),
         "failed to create invocation-private TX graph identity directory"));
 
-  int descriptor = open(pattern.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC |
-                                             O_NOFOLLOW);
+  int descriptor =
+      open(pattern.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
   if (descriptor < 0)
     return fail(llvm::createStringError(
         std::error_code(errno, std::generic_category()),
         "failed to pin invocation-private TX graph directory"));
-  return StagedGraphDirectory{
-      pattern,
-      "/proc/self/fd/" + std::to_string(descriptor) + "/" + identity + "/..",
-      descriptor};
+  return StagedGraphDirectory{pattern,
+                              "/proc/self/fd/" + std::to_string(descriptor) +
+                                  "/" + identity + "/..",
+                              descriptor};
 }
 
 class TxBoardRuntimeDriver final : public BoardRuntimeDriver {
 public:
   TxBoardRuntimeDriver(void *library, TxApi api,
-                       std::string runtimeLibraryDigest,
-                       TargetLaunchABIId launchABI)
+                       std::string runtimeLibraryDigest)
       : library(library), api(api),
         runtimeLibraryDigest(std::move(runtimeLibraryDigest)),
-        providerEnvironment(makeTxProviderEnvironment(launchABI)) {}
+        providerEnvironment(makeTxProviderEnvironment()) {}
 
   // The board CLI is a one-shot process and exits with std::_Exit after the
   // explicit TX lifecycle. The handle intentionally remains process-owned so
@@ -393,12 +406,9 @@ public:
   loadModule(llvm::ArrayRef<uint8_t> moduleBytes) override {
     if (llvm::Error error = requireUsable("txModuleLoad"))
       return std::move(error);
-    if (providerEnvironment.launchABI ==
-            TargetLaunchABIId::tx81ModelBootParamV1() ||
-        !api.moduleLoad)
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "TX module loading is unavailable for the selected launch ABI");
+    if (!api.moduleLoad)
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "TX module loading is unavailable");
     if (moduleBytes.empty() ||
         moduleBytes.size() > std::numeric_limits<uint32_t>::max())
       return llvm::createStringError(
@@ -439,12 +449,9 @@ public:
   llvm::Error unloadModule(BoardModuleHandle module) override {
     if (llvm::Error error = requireUsable("txModuleUnload"))
       return error;
-    if (providerEnvironment.launchABI ==
-            TargetLaunchABIId::tx81ModelBootParamV1() ||
-        !api.moduleUnload)
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "TX module unloading is unavailable for the selected launch ABI");
+    if (!api.moduleUnload)
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "TX module unloading is unavailable");
     auto iterator = moduleOwnership.find(module.value);
     if (iterator == moduleOwnership.end())
       return poisonContractViolation(
@@ -465,12 +472,10 @@ public:
   resolveEntry(BoardModuleHandle module, llvm::StringRef symbol) override {
     if (llvm::Error error = requireUsable("txModuleGetFunction"))
       return std::move(error);
-    if (providerEnvironment.launchABI ==
-            TargetLaunchABIId::tx81ModelBootParamV1() ||
-        !api.moduleGetFunction || symbol.empty() || symbol.contains('\0'))
+    if (!api.moduleGetFunction || symbol.empty() || symbol.contains('\0'))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "TX module entry resolution has an invalid launch ABI or symbol");
+          "TX module entry resolution has an invalid symbol");
     txFunction_t function = nullptr;
     std::string ownedSymbol = symbol.str();
     txError_t status = api.moduleGetFunction(
@@ -489,12 +494,9 @@ public:
             llvm::StringRef symbol) override {
     if (llvm::Error error = requireUsable("txLoadGraph"))
       return std::move(error);
-    if (providerEnvironment.launchABI !=
-            TargetLaunchABIId::tx81ModelBootParamV1() ||
-        !api.loadGraph)
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "TX graph loading requires the model BootParam launch ABI");
+    if (!api.loadGraph)
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "TX graph loading is unavailable");
     if (!graphs.empty() || symbol.empty() || symbol.size() >= 128 ||
         symbol.contains('\0'))
       return llvm::createStringError(
@@ -516,8 +518,8 @@ public:
     uintptr_t handle = nextGraphHandle++;
     if (handle == 0)
       return poisonContractViolation("TX graph handle identity overflowed");
-    std::string moduleName = std::to_string(
-        std::hash<std::string>{}(staged->providerPath));
+    std::string moduleName =
+        std::to_string(std::hash<std::string>{}(staged->providerPath));
     graphs.emplace(handle,
                    GraphOwnership{std::move(staged->root),
                                   std::move(staged->providerPath),
@@ -528,12 +530,9 @@ public:
   llvm::Error unloadGraph(BoardGraphHandle graph) override {
     if (llvm::Error error = requireUsable("txUnloadGraph"))
       return error;
-    if (providerEnvironment.launchABI !=
-            TargetLaunchABIId::tx81ModelBootParamV1() ||
-        !api.unloadGraph)
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "TX graph unloading is unavailable for the selected launch ABI");
+    if (!api.unloadGraph)
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "TX graph unloading is unavailable");
     if (submissionActive)
       return poisonContractViolation(
           "TX graph unload was requested with a live submission");
@@ -557,207 +556,163 @@ public:
     return llvm::Error::success();
   }
 
-  llvm::Error submitAll(llvm::ArrayRef<BoardRankLaunch> launches) override {
-    if (llvm::Error error = requireUsable("all-rank submission"))
-      return error;
-    if (providerEnvironment.launchABI !=
-            TargetLaunchABIId::perRankPointerBlockV1() ||
-        !api.launchKernel)
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "TX per-rank submission is unavailable for the selected launch ABI");
-    if (submissionActive || !activeStreams.empty() ||
-        !submissionArgumentBlocks.empty())
-      return poisonContractViolation(
-          "TX provider already owns a live all-rank submission");
-    if (launches.empty())
-      return llvm::createStringError(llvm::errc::invalid_argument,
-                                     "all-rank submission is empty");
-
-    for (const BoardRankLaunch &launch : launches) {
-      if (launch.logicalRank < 0 || !launch.entry.isValid() ||
-          launch.function.value == 0)
-        return llvm::createStringError(
-            llvm::errc::invalid_argument,
-            "all-rank submission contains invalid rank/function identity");
-      if (launch.arguments.size() >
-          kTx81KernelArgumentBytesMax / sizeof(uint64_t))
-        return llvm::createStringError(llvm::errc::invalid_argument,
-                                       "TX launch argument block exceeds the "
-                                       "qualified V5.6 packet limit");
-    }
-
-    submissionArgumentBlocks.reserve(launches.size());
-    for (const BoardRankLaunch &launch : launches)
-      submissionArgumentBlocks.emplace_back(launch.arguments.begin(),
-                                            launch.arguments.end());
-
-    activeStreams.reserve(launches.size());
-    completedStreams.assign(launches.size(), false);
-    for (size_t index = 0; index < launches.size(); ++index) {
-      txStream_t stream = nullptr;
-      txError_t status = api.streamCreate(&stream);
-      if (status != TX_SUCCESS)
-        return txError("txStreamCreate", status);
-      if (!stream)
-        return poisonContractViolation(
-            "txStreamCreate returned success with a null stream");
-      activeStreams.push_back(stream);
-    }
-
-    dim3 gridDim = {1, 1, 1};
-    dim3 blockDim = {1, 1, 1};
-    for (auto [index, launch] : llvm::enumerate(launches)) {
-      txError_t status = api.launchKernel(
-          reinterpret_cast<txFunction_t>(launch.function.value), gridDim,
-          blockDim, submissionArgumentBlocks[index].data(),
-          static_cast<uint32_t>(submissionArgumentBlocks[index].size() *
-                                sizeof(uint64_t)),
-          0, activeStreams[index]);
-      if (status != TX_SUCCESS)
-        return txError("txLaunchKernel(all-rank)", status);
-    }
-    submissionActive = true;
-    return llvm::Error::success();
-  }
-
   llvm::Error
-  submitKernelGrid(llvm::ArrayRef<BoardRankLaunch> launches) override {
-    if (llvm::Error error = requireUsable("kernel-grid submission"))
+  submitKernelPhase(KernelLaunchForm form, RuntimeLaunchPhaseRole phaseRole,
+                    llvm::ArrayRef<BoardRankLaunch> launches) override {
+    if (llvm::Error error = requireUsable("kernel phase submission"))
       return error;
-    if (providerEnvironment.launchABI !=
-            TargetLaunchABIId::tx81KernelGridPointerTableV1() ||
-        !api.launchKernel)
+    const bool perRank = form == KernelLaunchForm::PerRank;
+    const bool cluster = form == KernelLaunchForm::Cluster;
+    if ((cluster && !api.launchClusterKernel) ||
+        (!cluster && !api.launchKernel))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "TX kernel-grid submission requires its explicit launch ABI");
-    if (submissionActive || !activeStreams.empty() ||
-        !submissionArgumentBlocks.empty() || launches.size() != 16)
+          "TX %s kernel launch form is unavailable",
+          stringifyKernelLaunchForm(form).str().c_str());
+    if (launches.empty() ||
+        launches.size() > std::numeric_limits<uint32_t>::max())
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "TX kernel phase requires a nonempty uint32_t rank domain");
+
+    const bool firstPhase = !submissionActive;
+    if (firstPhase) {
+      if (submissionKind != SubmissionKind::None || phaseSubmitted ||
+          activeKernelForm || activeKernelPhase || !activeStreams.empty() ||
+          !completedStreams.empty() || !submissionArgumentBlocks.empty() ||
+          !submissionEntries.empty() || !submissionMetadata.empty())
+        return poisonContractViolation(
+            "TX provider has stale state before a kernel submission");
+    } else if (submissionKind != SubmissionKind::Kernel || !activeKernelForm ||
+               *activeKernelForm != form || phaseSubmitted ||
+               activeStreams.empty() ||
+               completedStreams.size() != activeStreams.size() ||
+               !llvm::all_of(completedStreams,
+                             [](bool complete) { return complete; })) {
       return poisonContractViolation(
-          "TX kernel-grid provider has invalid submission ownership");
-
-    const uintptr_t function = launches.front().function.value;
-    const size_t slotsPerRank = launches.front().arguments.size();
-    if (function == 0 || slotsPerRank == 0)
-      return llvm::createStringError(llvm::errc::invalid_argument,
-                                     "TX kernel-grid launch is empty");
-    if (slotsPerRank > kTx81KernelArgumentBytesMax / sizeof(uint64_t) /
-                           launches.size())
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "TX kernel-grid rank-major argument table exceeds the qualified "
-          "V5.6 packet limit");
-
-    std::vector<uint64_t> arguments;
-    arguments.reserve(slotsPerRank * launches.size());
-    for (auto [rank, launch] : llvm::enumerate(launches)) {
-      if (launch.logicalRank != static_cast<int64_t>(rank) ||
-          !launch.entry.isValid() || launch.function.value != function ||
-          launch.arguments.size() != slotsPerRank)
-        return llvm::createStringError(
-            llvm::errc::invalid_argument,
-            "TX kernel-grid launches are not a canonical shared-function "
-            "rank domain");
-      arguments.insert(arguments.end(), launch.arguments.begin(),
-                       launch.arguments.end());
+          "TX later kernel phase requires a terminal prior phase with the "
+          "same launch form");
     }
 
-    txStream_t stream = nullptr;
-    txError_t status = api.streamCreate(&stream);
-    if (status != TX_SUCCESS)
-      return txError("txStreamCreate(kernel-grid)", status);
-    if (!stream)
-      return poisonContractViolation(
-          "txStreamCreate(kernel-grid) returned a null stream");
-    activeStreams.push_back(stream);
-    completedStreams.assign(1, false);
-    // V5.6 queues the caller's host pointer and copies the argument bytes only
-    // when the asynchronous command is submitted. Keep this rank-major table
-    // alive through terminal completion and stream destruction.
-    submissionArgumentBlocks.push_back(std::move(arguments));
+    const uintptr_t sharedFunction = launches.front().function.value;
+    const size_t sharedSlotCount = launches.front().arguments.size();
+    std::vector<std::vector<uint64_t>> argumentBlocks;
+    if (perRank)
+      argumentBlocks.reserve(launches.size());
+    else
+      argumentBlocks.emplace_back();
 
-    dim3 gridDim = {16, 1, 1};
-    dim3 blockDim = {1, 1, 1};
-    status = api.launchKernel(
-        reinterpret_cast<txFunction_t>(function), gridDim, blockDim,
-        submissionArgumentBlocks.front().data(),
-        static_cast<uint32_t>(submissionArgumentBlocks.front().size() *
-                              sizeof(uint64_t)),
-        0, stream);
-    if (status != TX_SUCCESS)
-      return txError("txLaunchKernel(grid.x=16)", status);
-    submissionActive = true;
-    return llvm::Error::success();
-  }
-
-  llvm::Error submitClusterPrepareMain(
-      BoardFunctionHandle prepare,
-      llvm::ArrayRef<BoardRankLaunch> mainLaunches) override {
-    if (llvm::Error error = requireUsable("cluster prepare submission"))
-      return error;
-    if (providerEnvironment.launchABI !=
-            TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1() ||
-        !api.launchClusterKernel)
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "TX cluster submission requires its explicit Direct-DTE launch "
-          "ABI");
-    if (submissionActive || !activeStreams.empty() ||
-        !submissionArgumentBlocks.empty() || clusterMainFunction != 0 ||
-        mainLaunches.size() != 16)
-      return poisonContractViolation(
-          "TX cluster provider has invalid submission ownership");
-
-    const uintptr_t mainFunction = mainLaunches.front().function.value;
-    const size_t slotsPerRank = mainLaunches.front().arguments.size();
-    if (prepare.value == 0 || mainFunction == 0 || slotsPerRank == 0)
-      return llvm::createStringError(llvm::errc::invalid_argument,
-                                     "TX cluster launch is empty");
-    if (slotsPerRank > kTx81ClusterKernelArgumentBytesMax / sizeof(uint64_t) /
-                           mainLaunches.size())
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "TX cluster rank-major argument table exceeds the qualified V5.6 "
-          "C-INS packet limit");
-
-    std::vector<uint64_t> arguments;
-    arguments.reserve(slotsPerRank * mainLaunches.size());
-    for (auto [rank, launch] : llvm::enumerate(mainLaunches)) {
-      if (launch.logicalRank != static_cast<int64_t>(rank) ||
-          !launch.entry.isValid() || launch.function.value != mainFunction ||
-          launch.arguments.size() != slotsPerRank)
+    for (auto [rankIndex, launch] : llvm::enumerate(launches)) {
+      if (launch.logicalRank != static_cast<int64_t>(rankIndex) ||
+          !launch.entry.isValid() || launch.function.value == 0)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "TX cluster launches are not a canonical shared-function rank "
-            "domain");
-      arguments.insert(arguments.end(), launch.arguments.begin(),
-                       launch.arguments.end());
+            "TX kernel phase is not a canonical rank/function domain");
+      if (!perRank && (launch.function.value != sharedFunction ||
+                       launch.arguments.size() != sharedSlotCount))
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "TX shared kernel phase does not use one function and slot shape");
+      if (perRank) {
+        if (launch.arguments.size() >
+            kTx81KernelArgumentBytesMax / sizeof(uint64_t))
+          return llvm::createStringError(
+              llvm::errc::invalid_argument,
+              "TX per-rank argument block exceeds the qualified packet limit");
+        argumentBlocks.emplace_back(launch.arguments.begin(),
+                                    launch.arguments.end());
+      } else {
+        argumentBlocks.front().insert(argumentBlocks.front().end(),
+                                      launch.arguments.begin(),
+                                      launch.arguments.end());
+      }
     }
 
-    txStream_t stream = nullptr;
-    txError_t status = api.streamCreate(&stream);
-    if (status != TX_SUCCESS)
-      return txError("txStreamCreate(cluster)", status);
-    if (!stream)
-      return poisonContractViolation(
-          "txStreamCreate(cluster) returned a null stream");
-    activeStreams.push_back(stream);
-    completedStreams.assign(1, false);
-    submissionArgumentBlocks.push_back(std::move(arguments));
-    clusterMainFunction = mainFunction;
+    if (!perRank) {
+      const uint64_t byteLimit = cluster ? kTx81ClusterKernelArgumentBytesMax
+                                         : kTx81KernelArgumentBytesMax;
+      if (argumentBlocks.front().size() > byteLimit / sizeof(uint64_t))
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "TX shared rank-major argument table exceeds the qualified packet "
+            "limit");
+    }
 
-    dim3 clusterDim = {1, 1, 1};
-    dim3 gridDim = {16, 1, 1};
+    if (firstPhase) {
+      submissionArgumentBlocks = argumentBlocks;
+      submissionEntries.reserve(launches.size());
+      for (const BoardRankLaunch &launch : launches)
+        submissionEntries.push_back(launch.entry);
+
+      const size_t streamCount = perRank ? launches.size() : 1;
+      activeStreams.reserve(streamCount);
+      for (size_t index = 0; index < streamCount; ++index) {
+        txStream_t stream = nullptr;
+        txError_t status = api.streamCreate(&stream);
+        if (status != TX_SUCCESS)
+          return txError("txStreamCreate(kernel)", status);
+        if (!stream)
+          return poisonContractViolation(
+              "txStreamCreate(kernel) returned a null stream");
+        activeStreams.push_back(stream);
+      }
+      submissionKind = SubmissionKind::Kernel;
+      activeKernelForm = form;
+      submissionActive = true;
+    } else {
+      if (submissionEntries.size() != launches.size() ||
+          submissionArgumentBlocks != argumentBlocks)
+        return poisonContractViolation(
+            "TX later kernel phase changed rank identity or argument storage");
+      for (auto [index, launch] : llvm::enumerate(launches))
+        if (submissionEntries[index] != launch.entry)
+          return poisonContractViolation(
+              "TX later kernel phase changed rank entry identity");
+    }
+
+    completedStreams.assign(activeStreams.size(), false);
+    activeKernelPhase = phaseRole;
+    phaseSubmitted = true;
+    const std::string phaseName =
+        stringifyRuntimeLaunchPhaseRole(phaseRole).str();
     dim3 blockDim = {1, 1, 1};
-    status = api.launchClusterKernel(
-        reinterpret_cast<txFunction_t>(prepare.value), clusterDim, gridDim,
-        blockDim, submissionArgumentBlocks.front().data(),
-        static_cast<uint32_t>(submissionArgumentBlocks.front().size() *
-                              sizeof(uint64_t)),
-        0, stream);
-    if (status != TX_SUCCESS)
-      return txError("txLaunchClusterKernel(prepare)", status);
-    submissionActive = true;
+    if (perRank) {
+      dim3 gridDim = {1, 1, 1};
+      for (auto [index, launch] : llvm::enumerate(launches)) {
+        txError_t status = api.launchKernel(
+            reinterpret_cast<txFunction_t>(launch.function.value), gridDim,
+            blockDim, submissionArgumentBlocks[index].data(),
+            static_cast<uint32_t>(submissionArgumentBlocks[index].size() *
+                                  sizeof(uint64_t)),
+            0, activeStreams[index]);
+        if (status != TX_SUCCESS)
+          return txError("txLaunchKernel(per-rank:" + phaseName + ")", status);
+      }
+      return llvm::Error::success();
+    }
+
+    dim3 gridDim = {static_cast<uint32_t>(launches.size()), 1, 1};
+    txError_t status;
+    if (cluster) {
+      dim3 clusterDim = {1, 1, 1};
+      status = api.launchClusterKernel(
+          reinterpret_cast<txFunction_t>(sharedFunction), clusterDim, gridDim,
+          blockDim, submissionArgumentBlocks.front().data(),
+          static_cast<uint32_t>(submissionArgumentBlocks.front().size() *
+                                sizeof(uint64_t)),
+          0, activeStreams.front());
+      if (status != TX_SUCCESS)
+        return txError("txLaunchClusterKernel(" + phaseName + ")", status);
+    } else {
+      status = api.launchKernel(
+          reinterpret_cast<txFunction_t>(sharedFunction), gridDim, blockDim,
+          submissionArgumentBlocks.front().data(),
+          static_cast<uint32_t>(submissionArgumentBlocks.front().size() *
+                                sizeof(uint64_t)),
+          0, activeStreams.front());
+      if (status != TX_SUCCESS)
+        return txError("txLaunchKernel(grid:" + phaseName + ")", status);
+    }
     return llvm::Error::success();
   }
 
@@ -766,14 +721,14 @@ public:
               llvm::ArrayRef<BoardModelTensorLaunch> tensors) override {
     if (llvm::Error error = requireUsable("model submission"))
       return error;
-    if (providerEnvironment.launchABI !=
-            TargetLaunchABIId::tx81ModelBootParamV1() ||
-        !api.launchModel)
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "TX model submission requires its explicit launch ABI");
-    if (submissionActive || !activeStreams.empty() ||
-        !submissionArgumentBlocks.empty() || !submissionMetadata.empty())
+    if (!api.launchModel)
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "TX model submission is unavailable");
+    if (submissionActive || submissionKind != SubmissionKind::None ||
+        phaseSubmitted || activeKernelForm || activeKernelPhase ||
+        !activeStreams.empty() || !completedStreams.empty() ||
+        !submissionArgumentBlocks.empty() || !submissionEntries.empty() ||
+        !submissionMetadata.empty())
       return poisonContractViolation(
           "TX model provider already owns submission state");
     auto graphIterator = graphs.find(graph.value);
@@ -817,26 +772,25 @@ public:
       return validation.takeError();
 
     auto upload = [&](llvm::ArrayRef<uint8_t> bytes,
-                      llvm::StringRef operation)
-        -> llvm::Expected<uint64_t> {
+                      llvm::StringRef operation) -> llvm::Expected<uint64_t> {
       void *pointer = nullptr;
       txError_t status = api.malloc(&pointer, bytes.size());
       if (status != TX_SUCCESS)
         return txError((operation + " txMalloc").str(), status);
-      if (!pointer || reinterpret_cast<uintptr_t>(pointer) %
-                              alignof(uint64_t) !=
-                          0)
+      if (!pointer ||
+          reinterpret_cast<uintptr_t>(pointer) % alignof(uint64_t) != 0)
         return poisonContractViolation(
             (operation + " txMalloc returned null or misaligned").str());
-      status = api.memcpy(pointer, bytes.data(), bytes.size(),
-                          txMemcpyHostToDevice);
+      status =
+          api.memcpy(pointer, bytes.data(), bytes.size(), txMemcpyHostToDevice);
       if (status != TX_SUCCESS)
         return txError((operation + " txMemcpy(H2D)").str(), status);
       submissionMetadata.push_back(pointer);
       return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(pointer));
     };
 
-    llvm::Expected<uint64_t> dynModsAddress = upload(*dynMods, "type-7 DynMods");
+    llvm::Expected<uint64_t> dynModsAddress =
+        upload(*dynMods, "type-7 DynMods");
     if (!dynModsAddress)
       return dynModsAddress.takeError();
     llvm::Expected<std::vector<uint8_t>> tlv =
@@ -864,29 +818,27 @@ public:
           "txStreamCreate(model) returned a null stream");
     activeStreams.push_back(stream);
     completedStreams.assign(1, false);
+    submissionKind = SubmissionKind::Model;
+    phaseSubmitted = true;
+    submissionActive = true;
     status = api.launchModel(*bootParamAddress, stream);
     if (status != TX_SUCCESS)
       return txError("txLaunchModel(type-7)", status);
-    submissionActive = true;
     return llvm::Error::success();
   }
 
-  llvm::Expected<BoardCompletionObservation>
-  waitAll(uint64_t timeoutMilliseconds,
-          BoardCompletionObservationPolicy observationPolicy) override {
-    if (llvm::Error error = requireUsable("all-rank completion"))
+  llvm::Expected<BoardCompletionObservation> waitCurrentSubmission(
+      BoardCompletionDeadline deadline,
+      BoardCompletionObservationPolicy observationPolicy) override {
+    if (llvm::Error error = requireUsable("submission phase completion"))
       return error;
-    if (!submissionActive || activeStreams.empty() ||
+    if (!submissionActive || submissionKind == SubmissionKind::None ||
+        !phaseSubmitted || activeStreams.empty() ||
         completedStreams.size() != activeStreams.size())
       return poisonContractViolation(
-          "TX all-rank completion has no live submission");
-    if (timeoutMilliseconds == 0)
-      return llvm::createStringError(llvm::errc::invalid_argument,
-                                     "TX completion timeout must be positive");
+          "TX phase completion has no live submitted phase");
 
     const auto waitBegin = std::chrono::steady_clock::now();
-    const auto deadline =
-        waitBegin + std::chrono::milliseconds(timeoutMilliseconds);
     std::vector<std::chrono::steady_clock::time_point> lastObservations(
         activeStreams.size(), waitBegin);
     uint64_t maximumPollGapNanoseconds = 0;
@@ -904,14 +856,15 @@ public:
         };
     auto deadlineExceeded = [&]() -> llvm::Error {
       contextState = BoardRuntimeContextState::Poisoned;
-      llvm::StringRef submissionPhase = "all-rank";
-      if (providerEnvironment.launchABI ==
-          TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
-        submissionPhase =
-            clusterMainFunction != 0 ? "cluster prepare" : "cluster main";
+      std::string submissionPhase = "model";
+      if (submissionKind == SubmissionKind::Kernel && activeKernelForm &&
+          activeKernelPhase)
+        submissionPhase = (stringifyKernelLaunchForm(*activeKernelForm) + ":" +
+                           stringifyRuntimeLaunchPhaseRole(*activeKernelPhase))
+                              .str();
       return llvm::createStringError(
           llvm::errc::io_error, "TX %s completion exceeded the host deadline",
-          submissionPhase.str().c_str());
+          submissionPhase.c_str());
     };
     while (true) {
       bool allComplete = true;
@@ -937,26 +890,7 @@ public:
           return deadlineExceeded();
       }
       if (allComplete) {
-        if (clusterMainFunction != 0) {
-          if (std::chrono::steady_clock::now() >= deadline)
-            return deadlineExceeded();
-          dim3 clusterDim = {1, 1, 1};
-          dim3 gridDim = {16, 1, 1};
-          dim3 blockDim = {1, 1, 1};
-          txError_t status = api.launchClusterKernel(
-              reinterpret_cast<txFunction_t>(clusterMainFunction), clusterDim,
-              gridDim, blockDim, submissionArgumentBlocks.front().data(),
-              static_cast<uint32_t>(submissionArgumentBlocks.front().size() *
-                                    sizeof(uint64_t)),
-              0, activeStreams.front());
-          if (status != TX_SUCCESS)
-            return txError("txLaunchClusterKernel(main)", status);
-          clusterMainFunction = 0;
-          completedStreams.assign(1, false);
-          lastObservations.assign(activeStreams.size(),
-                                  std::chrono::steady_clock::now());
-          continue;
-        }
+        phaseSubmitted = false;
         return BoardCompletionObservation{maximumPollGapNanoseconds};
       }
       if (observationPolicy == BoardCompletionObservationPolicy::Normal)
@@ -969,10 +903,10 @@ public:
   llvm::Error releaseSubmission() override {
     if (llvm::Error error = requireUsable("txStreamDestroy"))
       return error;
-    if (!submissionActive ||
+    if (!submissionActive || phaseSubmitted ||
         !llvm::all_of(completedStreams, [](bool complete) { return complete; }))
       return poisonContractViolation(
-          "TX submission release requires all ranks to be terminal");
+          "TX submission release requires a terminal current phase");
     while (!activeStreams.empty()) {
       if (llvm::Error error =
               check("txStreamDestroy", api.streamDestroy(activeStreams.back())))
@@ -980,15 +914,18 @@ public:
       activeStreams.pop_back();
     }
     while (!submissionMetadata.empty()) {
-      if (llvm::Error error =
-              check("txFree(model-metadata)",
-                    api.free(submissionMetadata.back())))
+      if (llvm::Error error = check("txFree(model-metadata)",
+                                    api.free(submissionMetadata.back())))
         return error;
       submissionMetadata.pop_back();
     }
     submissionArgumentBlocks.clear();
+    submissionEntries.clear();
     completedStreams.clear();
-    clusterMainFunction = 0;
+    activeKernelForm.reset();
+    activeKernelPhase.reset();
+    submissionKind = SubmissionKind::None;
+    phaseSubmitted = false;
     submissionActive = false;
     return llvm::Error::success();
   }
@@ -1043,23 +980,19 @@ private:
   std::vector<txStream_t> activeStreams;
   std::vector<bool> completedStreams;
   std::vector<std::vector<uint64_t>> submissionArgumentBlocks;
+  std::vector<EntryId> submissionEntries;
   std::vector<void *> submissionMetadata;
-  uintptr_t clusterMainFunction = 0;
+  SubmissionKind submissionKind = SubmissionKind::None;
+  std::optional<KernelLaunchForm> activeKernelForm;
+  std::optional<RuntimeLaunchPhaseRole> activeKernelPhase;
+  bool phaseSubmitted = false;
   bool submissionActive = false;
 };
 
 } // namespace
 
 llvm::Expected<std::unique_ptr<BoardRuntimeDriver>>
-createTxBoardRuntimeDriver(llvm::StringRef expectedRuntimeLibraryDigest,
-                           TargetLaunchABIId launchABI) {
-  if (launchABI != TargetLaunchABIId::perRankPointerBlockV1() &&
-      launchABI != TargetLaunchABIId::tx81KernelGridPointerTableV1() &&
-      launchABI != TargetLaunchABIId::tx81ModelBootParamV1() &&
-      launchABI !=
-          TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
-    return llvm::createStringError(llvm::errc::invalid_argument,
-                                   "TX launch ABI is not registered");
+createTxBoardRuntimeDriver(llvm::StringRef expectedRuntimeLibraryDigest) {
   llvm::StringRef configuredLibrary = WAFER_TX_RUNTIME_LIBRARY_PATH;
   int descriptor =
       open(configuredLibrary.str().c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
@@ -1130,26 +1063,20 @@ createTxBoardRuntimeDriver(llvm::StringRef expectedRuntimeLibraryDigest,
   WAFER_RESOLVE_TX_API(malloc, txMalloc);
   WAFER_RESOLVE_TX_API(free, txFree);
   WAFER_RESOLVE_TX_API(memcpy, txMemcpy);
-  if (launchABI == TargetLaunchABIId::tx81ModelBootParamV1()) {
-    WAFER_RESOLVE_TX_API(loadGraph, txLoadGraph);
-    WAFER_RESOLVE_TX_API(unloadGraph, txUnloadGraph);
-    WAFER_RESOLVE_TX_API(launchModel, txLaunchModel);
-  } else {
-    WAFER_RESOLVE_TX_API(moduleLoad, txModuleLoad);
-    WAFER_RESOLVE_TX_API(moduleUnload, txModuleUnload);
-    WAFER_RESOLVE_TX_API(moduleGetFunction, txModuleGetFunction);
-    if (launchABI ==
-        TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
-      WAFER_RESOLVE_TX_API(launchClusterKernel, txLaunchClusterKernel);
-    else
-      WAFER_RESOLVE_TX_API(launchKernel, txLaunchKernel);
-  }
+  WAFER_RESOLVE_TX_API(moduleLoad, txModuleLoad);
+  WAFER_RESOLVE_TX_API(moduleUnload, txModuleUnload);
+  WAFER_RESOLVE_TX_API(moduleGetFunction, txModuleGetFunction);
+  WAFER_RESOLVE_TX_API(launchKernel, txLaunchKernel);
+  WAFER_RESOLVE_TX_API(launchClusterKernel, txLaunchClusterKernel);
+  WAFER_RESOLVE_TX_API(loadGraph, txLoadGraph);
+  WAFER_RESOLVE_TX_API(unloadGraph, txUnloadGraph);
+  WAFER_RESOLVE_TX_API(launchModel, txLaunchModel);
   WAFER_RESOLVE_TX_API(streamCreate, txStreamCreate);
   WAFER_RESOLVE_TX_API(streamDestroy, txStreamDestroy);
   WAFER_RESOLVE_TX_API(streamQuery, txStreamQuery);
 #undef WAFER_RESOLVE_TX_API
   return std::make_unique<TxBoardRuntimeDriver>(library, api,
-                                                std::move(*digest), launchABI);
+                                                std::move(*digest));
 }
 
 } // namespace wafer::runtime

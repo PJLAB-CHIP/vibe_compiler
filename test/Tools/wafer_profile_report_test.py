@@ -145,9 +145,12 @@ def _test_semantic_invalidity(module: object) -> None:
     )
 
     identity = make_evidence()
-    identity["experiments"]["baseline"]["artifact"][
-        "launch_abi"
-    ] = "wrong-abi"
+    identity["experiments"]["baseline"]["artifact"]["launch"] = {
+        "kind": "kernel",
+        "form": "per-rank",
+        "entry_abi": "rank-local-pointer-block-v1",
+        "phases": ["main"],
+    }
     analysis = module.analyze_evidence(identity)
     assert analysis["verdict"] == "invalid"
     assert not analysis["validity"]["identity"]
@@ -472,6 +475,28 @@ def _test_structural_rejection(module: object) -> None:
     unknown_key["opaque_payload"] = {}
     _must_reject(module, unknown_key, "unknown keys")
 
+    legacy_launch = make_evidence()
+    legacy_launch["identity"]["launch_abi"] = legacy_launch["identity"].pop(
+        "launch"
+    )
+    _must_reject(module, legacy_launch, "launch")
+
+    invalid_kernel_contract = make_evidence()
+    invalid_kernel_contract["identity"]["launch"]["form"] = "cluster"
+    _must_reject(
+        module,
+        invalid_kernel_contract,
+        "kernel form, entry ABI and ordered phases are incompatible",
+    )
+
+    third_launch_kind = make_evidence()
+    third_launch_kind["identity"]["launch"]["kind"] = "direct-dte"
+    _must_reject(
+        module,
+        third_launch_kind,
+        "must be either 'kernel' or 'model'",
+    )
+
     output_mode = make_evidence()
     output_mode["output_validation"]["resources"][0][
         "external_expected_exact"
@@ -611,7 +636,7 @@ def _test_report_and_cli(module: object, repo: pathlib.Path) -> None:
         assert 'href="analysis.json"' in generated_html
 
         rejected = copy.deepcopy(evidence)
-        rejected["schema_version"] = 2
+        rejected["schema_version"] = 1
         rejected_path = root / "rejected.json"
         rejected_path.write_text(json.dumps(rejected), encoding="utf-8")
         completed = subprocess.run(
@@ -638,7 +663,8 @@ def _test_machine_schema(repo: pathlib.Path) -> None:
         )
     )
     assert schema["properties"]["schema"]["const"] == "wafer.profile.evidence"
-    assert schema["properties"]["schema_version"]["const"] == 1
+    assert schema["properties"]["schema_version"]["const"] == 2
+    assert "runtimeLaunch" in schema["$defs"]
     assert schema["$defs"]["sharedIdentity"]["properties"][
         "execution_ranks"
     ]["const"] == 16

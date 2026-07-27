@@ -17,7 +17,7 @@ Pipeline position:
 - Current stage responsibility:
   先从version-matched hardware资料、vendor header/library和独立板端microcase形成目标侧可验证的instruction
   packet/数值/layout、SPM/DDR/cache、engine/worker/queue、address-range dependency、alignment、
-  synchronization/visibility、DTE/multi-tile、launch ABI及PMU measurement-basis输入；再从current IR重算
+  synchronization/visibility、DTE/multi-tile、runtime launch contract及PMU measurement-basis输入；再从current IR重算
   resource/address dependency DAG，在isolated complete-rank actual clone中物化有限的baseline与overlapped alternatives。
   optimized clone用真实SSA buffer slot、loop-carried rotation、prologue/steady/epilogue、issue token和
   dependency-preserving issue order及latest-legal completion-domain drain/fence表示multi-buffer软件流水；
@@ -40,7 +40,7 @@ Pipeline position:
   独立校准台账中的compiler-sensitive矩阵每一项都由静态证据与重复板端microcase形成已验证结论，或形成
   明确的Unknown/unsupported及其保守compiler处理。覆盖范围至少包括packet/descriptor/数值/layout、
   SPM/DDR/cache、NCC typed queue/worker、queue occupancy、local drain、SPM/DDR address hazard、
-  Kcore可见性、Direct DTE prepare/issue/wait、跨tile arrival、terminal status、launch ABI及PMU basis；
+  Kcore可见性、Direct DTE prepare/issue/wait、跨tile arrival、terminal status、runtime launch contract及PMU basis；
   不把local fence、DTE completion与cluster barrier互相替代。代表性不同NCC engine还要覆盖disjoint、
   exact-alias、partial-overlap和alignment边界，确认parallel-mode启用、正确性、completion及可观测重叠；
   production source至少物化一个

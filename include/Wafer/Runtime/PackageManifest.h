@@ -4,7 +4,7 @@
 #define WAFER_RUNTIME_PACKAGEMANIFEST_H
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
-#include "Wafer/Target/TargetLaunchABI.h"
+#include "Wafer/Target/RuntimeLaunchContract.h"
 #include "Wafer/Target/TargetProfile.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -20,7 +20,7 @@
 
 namespace wafer::runtime {
 
-inline constexpr uint32_t kPackageManifestSchemaVersion = 5;
+inline constexpr uint32_t kPackageManifestSchemaVersion = 6;
 inline constexpr llvm::StringLiteral kPackageManifestFileName = "manifest.json";
 inline constexpr llvm::StringLiteral kDirectDTEStatusABIV1 =
     WAFER_TX81_DIRECT_DTE_STATUS_ABI_V1;
@@ -157,11 +157,10 @@ struct PackageCompletionRecord {
 struct PackageManifest {
   PackageManifest(TargetProfileId targetProfile,
                   TargetIdentityId targetIdentity,
-                  KernelRuntimeABIId runtimeABI,
-                  TargetLaunchABIId launchABI,
+                  KernelRuntimeABIId runtimeABI, RuntimeLaunchContract launch,
                   llvm::StringRef moduleFormat)
       : targetProfile(targetProfile), targetIdentity(targetIdentity),
-        runtimeABI(runtimeABI), launchABI(launchABI),
+        runtimeABI(runtimeABI), launch(std::move(launch)),
         moduleFormat(moduleFormat.str()) {}
 
   uint32_t schemaVersion = kPackageManifestSchemaVersion;
@@ -169,7 +168,7 @@ struct PackageManifest {
   TargetProfileId targetProfile;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId runtimeABI;
-  TargetLaunchABIId launchABI;
+  RuntimeLaunchContract launch;
   std::string moduleFormat;
   int64_t rankCount = 0;
   std::vector<PackageResourceRecord> resources;
@@ -236,20 +235,20 @@ struct RuntimeInvocationBinding {
 struct RuntimeEnvironment {
   RuntimeEnvironment(
       TargetProfileId targetProfile, TargetIdentityId targetIdentity,
-      KernelRuntimeABIId runtimeABI, TargetLaunchABIId launchABI,
-      llvm::StringRef moduleFormat,
+      KernelRuntimeABIId runtimeABI, llvm::StringRef moduleFormat,
       uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max())
       : targetProfile(targetProfile), targetIdentity(targetIdentity),
-        runtimeABI(runtimeABI), launchABI(launchABI),
-        moduleFormat(moduleFormat.str()),
+        runtimeABI(runtimeABI), moduleFormat(moduleFormat.str()),
         maxResourceBytes(maxResourceBytes) {}
 
   TargetProfileId targetProfile;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId runtimeABI;
-  TargetLaunchABIId launchABI;
   std::string moduleFormat;
   uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max();
+  std::vector<KernelLaunchForm> supportedKernelLaunchForms;
+  std::vector<KernelEntryABI> supportedKernelEntryABIs;
+  std::vector<ModelEntryABI> supportedModelEntryABIs;
   bool supportsDirectDTE = false;
   std::string directDTEStatusABI;
   bool supportsHostWatchdog = false;
@@ -264,12 +263,17 @@ struct PlannedRuntimeResource {
   bool externallyBound = false;
 };
 
+struct PlannedRuntimeLaunchPhase {
+  RuntimeLaunchPhaseRole role = RuntimeLaunchPhaseRole::Main;
+  std::string symbol;
+};
+
 struct RuntimeSessionPlan {
   EntryId entry;
   int64_t logicalRank = -1;
   ModuleId module;
   std::string modulePath;
-  std::string mainSymbol;
+  std::vector<PlannedRuntimeLaunchPhase> phases;
   CompletionId terminalCompletion;
   std::vector<PlannedRuntimeResource> resources;
   std::vector<ResourceId> launchOrder;

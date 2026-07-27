@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic v1 evidence fixture for the offline profile analyzer."""
+"""Deterministic v2 evidence fixture for the offline profile analyzer."""
 
 from __future__ import annotations
 
@@ -7,6 +7,15 @@ from typing import Any
 
 
 ENGINES = ("CT", "NE", "RDMA", "WDMA", "TDMA")
+
+
+def _kernel_launch() -> dict[str, Any]:
+    return {
+        "kind": "kernel",
+        "form": "grid",
+        "entry_abi": "rank-major-pointer-table-v1",
+        "phases": ["main"],
+    }
 
 
 def _counter(delta: int) -> dict[str, int | bool]:
@@ -186,7 +195,6 @@ def make_evidence(
     """
 
     target_profile = "wafer-tx81-single-card-kernel-v1"
-    launch_abi = "wafer-tx81-kernel-runtime-v1"
     blocks = [
         {
             "block": block,
@@ -269,7 +277,7 @@ def make_evidence(
             "artifact": {
                 "digest": f"sha256:{candidate}-fixture",
                 "target_profile": target_profile,
-                "launch_abi": launch_abi,
+                "launch": _kernel_launch(),
                 "execution_ranks": 16,
             },
             "clock": [
@@ -304,13 +312,13 @@ def make_evidence(
 
     return {
         "schema": "wafer.profile.evidence",
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": "fixture-improved",
         "identity": {
             "production_manifest_sha256": "sha256:winner-fixture",
             "profile_companion_schema_version": 1,
             "target_profile": target_profile,
-            "launch_abi": launch_abi,
+            "launch": _kernel_launch(),
             "execution_ranks": 16,
             "baseline_same_as_winner": False,
             "site_correlation_basis": (

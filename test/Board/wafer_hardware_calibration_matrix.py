@@ -709,7 +709,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "rank-one-per-rank-add",
             resource_budget="runtime-owned-rank-one-resources",
             oracle=("independent-f32-expected", "full-result"),
-            guards=("schema-v5-resource-binding", "rank-one-domain"),
+            guards=("schema-v6-resource-binding", "rank-one-domain"),
             completion=("terminal-status", "D2H", "cleanup"),
         ),
     ),

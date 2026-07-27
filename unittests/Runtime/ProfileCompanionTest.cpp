@@ -22,6 +22,20 @@
 
 namespace {
 
+wafer::RuntimeLaunchContract makePerRankLaunch() {
+  return llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
+      wafer::KernelLaunchForm::PerRank,
+      wafer::KernelEntryABI::RankLocalPointerBlockV1,
+      {wafer::RuntimeLaunchPhaseRole::Main}));
+}
+
+wafer::RuntimeLaunchContract makeGridLaunch() {
+  return llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
+      wafer::KernelLaunchForm::Grid,
+      wafer::KernelEntryABI::RankMajorPointerTableV1,
+      {wafer::RuntimeLaunchPhaseRole::Main}));
+}
+
 class ProfileCompanionTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -106,11 +120,11 @@ protected:
     ASSERT_FALSE(output.has_error());
   }
 
-  static void
-  writePackage(llvm::StringRef package, uint64_t outputBytes,
-               uint64_t recordBytes,
-               llvm::StringRef profilerName = "tx81_profiler_record",
-               llvm::StringRef resourceNamePrefix = "") {
+  static void writePackage(
+      llvm::StringRef package, uint64_t outputBytes, uint64_t recordBytes,
+      llvm::StringRef profilerName = "tx81_profiler_record",
+      llvm::StringRef resourceNamePrefix = "",
+      wafer::KernelLaunchForm launchForm = wafer::KernelLaunchForm::PerRank) {
     using namespace wafer::runtime;
     llvm::SmallString<256> modules(package);
     llvm::sys::path::append(modules, "modules");
@@ -120,7 +134,9 @@ protected:
         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     PackageManifest manifest(
         target.id, target.targetIdentity, target.kernelRuntimeABI,
-        wafer::TargetLaunchABIId::perRankPointerBlockV1(), target.moduleFormat);
+        launchForm == wafer::KernelLaunchForm::Grid ? makeGridLaunch()
+                                                    : makePerRankLaunch(),
+        target.moduleFormat);
     manifest.program = ProgramId(0);
     manifest.rankCount = 16;
     for (int64_t rank = 0; rank < 16; ++rank) {
@@ -129,8 +145,12 @@ protected:
           "rank_" + std::string(5 - rankText.size(), '0') + rankText + ".so";
       llvm::SmallString<256> modulePath(modules);
       llvm::sys::path::append(modulePath, moduleName);
-      writeText(modulePath, llvm::StringRef("\x7f"
-                                            "ELFprofile-companion-test"));
+      if (launchForm == wafer::KernelLaunchForm::PerRank || rank == 0) {
+        writeText(modulePath, llvm::StringRef("\x7f"
+                                              "ELFprofile-companion-test"));
+      } else if (llvm::sys::fs::exists(modulePath)) {
+        ASSERT_FALSE(llvm::sys::fs::remove(modulePath));
+      }
 
       uint64_t resourcesPerRank = recordBytes == 0 ? 2 : 3;
       ResourceId input(static_cast<uint64_t>(rank) * resourcesPerRank);
@@ -155,11 +175,13 @@ protected:
                                     4,
                                     PackageAccessMode::WriteOnly,
                                     true});
-      manifest.modules.push_back({ModuleId(rank),
-                                  "modules/" + moduleName,
-                                  moduleDigest(),
-                                  target.moduleFormat.str(),
-                                  {{PackageModuleExportRole::Main, "main"}}});
+      if (launchForm == wafer::KernelLaunchForm::PerRank || rank == 0)
+        manifest.modules.push_back(
+            {ModuleId(launchForm == wafer::KernelLaunchForm::Grid ? 0 : rank),
+             "modules/" + moduleName,
+             moduleDigest(),
+             target.moduleFormat.str(),
+             {{PackageModuleExportRole::Main, "main"}}});
       std::vector<PackageABISlotBinding> slots = {
           {0, input, PackageAccessMode::ReadOnly},
           {1, output, PackageAccessMode::WriteOnly}};
@@ -178,8 +200,10 @@ protected:
              false});
         slots.push_back({2, profiler, PackageAccessMode::ReadWrite});
       }
-      manifest.entries.push_back({EntryId(rank), rank, ModuleId(rank),
-                                  std::move(slots), CompletionId(rank)});
+      manifest.entries.push_back(
+          {EntryId(rank), rank,
+           ModuleId(launchForm == wafer::KernelLaunchForm::Grid ? 0 : rank),
+           std::move(slots), CompletionId(rank)});
       manifest.completions.push_back(
           {CompletionId(rank), rank, "entry_return"});
     }
@@ -429,6 +453,20 @@ TEST_F(ProfileCompanionTest, RejectsStaleManifestDigest) {
   ASSERT_FALSE(static_cast<bool>(loaded));
   EXPECT_NE(llvm::toString(loaded.takeError()).find("digest mismatch"),
             std::string::npos);
+}
+
+TEST_F(ProfileCompanionTest, RejectsDifferentRuntimeLaunchContract) {
+  ASSERT_NO_FATAL_FAILURE(
+      writePackage(production, /*outputBytes=*/4, /*recordBytes=*/0,
+                   /*profilerName=*/"tx81_profiler_record",
+                   /*resourceNamePrefix=*/"", wafer::KernelLaunchForm::Grid));
+  ASSERT_NO_FATAL_FAILURE(writeCompanion());
+  auto loaded =
+      wafer::runtime::loadVerifiedProfileCompanion(companion, production);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(
+      llvm::toString(loaded.takeError()).find("target/ABI contract differs"),
+      std::string::npos);
 }
 
 TEST_F(ProfileCompanionTest, RejectsUnknownPlanField) {

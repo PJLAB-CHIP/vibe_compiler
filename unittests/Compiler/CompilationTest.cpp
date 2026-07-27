@@ -19,7 +19,7 @@ TEST(CompilationTest, ExecutionConfigAcceptsOnlyCurrentSingleCardDomains) {
   for (int64_t accepted : {int64_t{1}, int64_t{16}}) {
     auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
         accepted, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-        wafer::TargetLaunchABIId::perRankPointerBlockV1());
+        wafer::RuntimeLaunchKind::Kernel);
     ASSERT_TRUE(static_cast<bool>(config));
     EXPECT_EQ(config->getRankCount(), accepted);
   }
@@ -29,43 +29,42 @@ TEST(CompilationTest, ExecutionConfigAcceptsOnlyCurrentSingleCardDomains) {
                            int64_t{17}, std::numeric_limits<int64_t>::max()}) {
     auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
         rejected, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-        wafer::TargetLaunchABIId::perRankPointerBlockV1());
+        wafer::RuntimeLaunchKind::Kernel);
     ASSERT_FALSE(static_cast<bool>(config));
     EXPECT_FALSE(llvm::toString(config.takeError()).empty());
   }
 }
 
-TEST(CompilationTest, ExecutionConfigEqualityCoversRankProfileAndLaunchABI) {
+TEST(CompilationTest, ExecutionConfigEqualityCoversRankProfileAndLaunchKind) {
   wafer::TargetProfileId profile =
       wafer::TargetProfileId::waferTx81SingleCardKernelV1();
   auto first = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, profile, wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      1, profile, wafer::RuntimeLaunchKind::Kernel);
   auto same = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, profile, wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      1, profile, wafer::RuntimeLaunchKind::Kernel);
   auto differentRank = wafer::compiler::ExecutionConfig::createForSingleCard(
-      16, profile, wafer::TargetLaunchABIId::perRankPointerBlockV1());
-  auto differentLaunchABI =
+      16, profile, wafer::RuntimeLaunchKind::Kernel);
+  auto differentLaunchKind =
       wafer::compiler::ExecutionConfig::createForSingleCard(
-          16, profile,
-          wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1());
+          16, profile, wafer::RuntimeLaunchKind::Model);
   ASSERT_TRUE(static_cast<bool>(first));
   ASSERT_TRUE(static_cast<bool>(same));
   ASSERT_TRUE(static_cast<bool>(differentRank));
-  ASSERT_TRUE(static_cast<bool>(differentLaunchABI));
+  ASSERT_TRUE(static_cast<bool>(differentLaunchKind));
   EXPECT_EQ(*first, *same);
   EXPECT_NE(*first, *differentRank);
-  EXPECT_NE(*differentRank, *differentLaunchABI);
+  EXPECT_NE(*differentRank, *differentLaunchKind);
 
-  auto invalidGrid = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, profile, wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1());
-  ASSERT_FALSE(static_cast<bool>(invalidGrid));
-  EXPECT_NE(llvm::toString(invalidGrid.takeError())
-                .find("requires execution-ranks=16"),
+  auto invalidModel = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, profile, wafer::RuntimeLaunchKind::Model);
+  ASSERT_FALSE(static_cast<bool>(invalidModel));
+  EXPECT_NE(llvm::toString(invalidModel.takeError())
+                .find("model runtime launch requires execution-ranks=16"),
             std::string::npos);
 
   auto unqualifiedModel = wafer::compiler::ExecutionConfig::createForSingleCard(
       16, wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
-      wafer::TargetLaunchABIId::tx81ModelBootParamV1());
+      wafer::RuntimeLaunchKind::Model);
   ASSERT_FALSE(static_cast<bool>(unqualifiedModel));
   EXPECT_NE(llvm::toString(unqualifiedModel.takeError()).find("not qualified"),
             std::string::npos);
@@ -115,7 +114,7 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::string source = "/tmp/source.program";
   auto request =
@@ -126,14 +125,14 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
   EXPECT_EQ(request->getExecutionConfig().getRankCount(), 1);
   EXPECT_EQ(request->getExecutionConfig().getTargetProfileId(),
             wafer::TargetProfileId::waferTx81SingleCardKernelV1());
-  EXPECT_EQ(request->getExecutionConfig().getTargetLaunchABIId(),
-            wafer::TargetLaunchABIId::perRankPointerBlockV1());
+  EXPECT_EQ(request->getExecutionConfig().getRuntimeLaunchKind(),
+            wafer::RuntimeLaunchKind::Kernel);
 }
 
 TEST(CompilationTest, CompilationRequestRejectsEmptySourceLocator) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   auto request = wafer::compiler::CompilationRequest::create("", *config);
   ASSERT_FALSE(static_cast<bool>(request));
@@ -143,27 +142,31 @@ TEST(CompilationTest, CompilationRequestRejectsEmptySourceLocator) {
 TEST(CompilationTest, ProfileOptionsRequireCompleteSingleCardRankDomain) {
   auto rankOne = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(rankOne));
 
   auto rejected = wafer::compiler::CompilationOptions::profile(*rankOne);
   ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(
-      llvm::toString(rejected.takeError()).find("requires execution-ranks=16"),
-      std::string::npos);
+  EXPECT_NE(llvm::toString(rejected.takeError()).find("16-rank kernel launch"),
+            std::string::npos);
 
-  for (wafer::TargetLaunchABIId launchABI :
-       {wafer::TargetLaunchABIId::perRankPointerBlockV1(),
-        wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1(),
-        wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1()}) {
-    SCOPED_TRACE(wafer::stringifyTargetLaunchABIId(launchABI).str());
-    auto fullCard = wafer::compiler::ExecutionConfig::createForSingleCard(
-        16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(), launchABI);
-    ASSERT_TRUE(static_cast<bool>(fullCard));
-    auto accepted = wafer::compiler::CompilationOptions::profile(*fullCard);
-    ASSERT_TRUE(static_cast<bool>(accepted));
-    EXPECT_TRUE(accepted->shouldProduceProfileCompanion());
-  }
+  auto fullCard = wafer::compiler::ExecutionConfig::createForSingleCard(
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::RuntimeLaunchKind::Kernel);
+  ASSERT_TRUE(static_cast<bool>(fullCard));
+  auto accepted = wafer::compiler::CompilationOptions::profile(*fullCard);
+  ASSERT_TRUE(static_cast<bool>(accepted));
+  EXPECT_TRUE(accepted->shouldProduceProfileCompanion());
+
+  auto model = wafer::compiler::ExecutionConfig::createForSingleCard(
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::RuntimeLaunchKind::Model);
+  ASSERT_TRUE(static_cast<bool>(model));
+  auto rejectedModel = wafer::compiler::CompilationOptions::profile(*model);
+  ASSERT_FALSE(static_cast<bool>(rejectedModel));
+  EXPECT_NE(
+      llvm::toString(rejectedModel.takeError()).find("16-rank kernel launch"),
+      std::string::npos);
   EXPECT_FALSE(wafer::compiler::CompilationOptions::standard()
                    .shouldProduceProfileCompanion());
 }

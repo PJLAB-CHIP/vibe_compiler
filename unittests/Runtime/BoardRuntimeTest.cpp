@@ -39,12 +39,39 @@ llvm::Error injected(llvm::StringRef operation) {
                                  operation.str().c_str());
 }
 
+enum class TestLaunchContractCase {
+  PerRank,
+  Grid,
+  Cluster,
+  Model,
+};
+
+wafer::RuntimeLaunchContract
+makeLaunchContract(TestLaunchContractCase launchCase) {
+  using namespace wafer;
+  switch (launchCase) {
+  case TestLaunchContractCase::PerRank:
+    return llvm::cantFail(RuntimeLaunchContract::createKernel(
+        KernelLaunchForm::PerRank, KernelEntryABI::RankLocalPointerBlockV1,
+        {RuntimeLaunchPhaseRole::Main}));
+  case TestLaunchContractCase::Grid:
+    return llvm::cantFail(RuntimeLaunchContract::createKernel(
+        KernelLaunchForm::Grid, KernelEntryABI::RankMajorPointerTableV1,
+        {RuntimeLaunchPhaseRole::Main}));
+  case TestLaunchContractCase::Cluster:
+    return llvm::cantFail(RuntimeLaunchContract::createKernel(
+        KernelLaunchForm::Cluster, KernelEntryABI::RankMajorPointerTableV1,
+        {RuntimeLaunchPhaseRole::Prepare, RuntimeLaunchPhaseRole::Main}));
+  case TestLaunchContractCase::Model:
+    return llvm::cantFail(RuntimeLaunchContract::createModel(
+        ModelEntryABI::Tx81ModelBootParamV1, {RuntimeLaunchPhaseRole::Main}));
+  }
+  llvm_unreachable("unknown test launch contract case");
+}
+
 class FakeBoardDriver final : public wafer::runtime::BoardRuntimeDriver {
 public:
-  explicit FakeBoardDriver(
-      wafer::TargetLaunchABIId launchABI =
-          wafer::TargetLaunchABIId::perRankPointerBlockV1())
-      : providerEnvironment(makeProviderEnvironment(launchABI)) {}
+  FakeBoardDriver() : providerEnvironment(makeProviderEnvironment()) {}
 
   wafer::runtime::BoardRuntimeContextState getContextState() const override {
     return contextState;
@@ -218,95 +245,61 @@ public:
     return llvm::Error::success();
   }
 
-  llvm::Error
-  submitAll(llvm::ArrayRef<wafer::runtime::BoardRankLaunch> launches) override {
-    calls.push_back("submit-all");
-    submitEntered = std::chrono::steady_clock::now();
-    if (submitDelay.count() != 0)
-      std::this_thread::sleep_for(submitDelay);
-    if (shouldFail("submit-all"))
-      return injectedFailure();
-    if (submissionLive || launches.empty())
-      return injected("invalid-submit-state");
-    submittedLaunches.assign(launches.begin(), launches.end());
-    for (auto [index, launch] : llvm::enumerate(launches)) {
-      if (launch.logicalRank != static_cast<int64_t>(index) ||
-          launch.function.value == 0 || launch.arguments.size() != 3)
-        return injected("invalid-canonical-submit");
-      auto input = find(launch.arguments[0]);
-      auto output = find(launch.arguments[1]);
-      auto workspace = find(launch.arguments[2]);
-      if (input == allocations.end() || output == allocations.end() ||
-          workspace == allocations.end() ||
-          input->bytes.size() != output->bytes.size())
-        return injected("invalid-submit-buffers");
-      for (size_t byte = 0; byte < input->bytes.size(); ++byte)
-        output->bytes[byte] =
-            input->bytes[byte] ^ static_cast<uint8_t>(launch.logicalRank);
-    }
-    submissionLive = true;
-    return llvm::Error::success();
-  }
-
-  llvm::Error submitKernelGrid(
+  llvm::Error submitKernelPhase(
+      wafer::KernelLaunchForm form, wafer::RuntimeLaunchPhaseRole phaseRole,
       llvm::ArrayRef<wafer::runtime::BoardRankLaunch> launches) override {
-    calls.push_back("submit-kernel-grid");
-    submitEntered = std::chrono::steady_clock::now();
+    const std::string operation =
+        (llvm::Twine("submit-kernel-phase:") +
+         wafer::stringifyKernelLaunchForm(form) + ":" +
+         wafer::stringifyRuntimeLaunchPhaseRole(phaseRole))
+            .str();
+    calls.push_back(operation);
+    if (submitEntered == std::chrono::steady_clock::time_point{})
+      submitEntered = std::chrono::steady_clock::now();
     if (submitDelay.count() != 0)
       std::this_thread::sleep_for(submitDelay);
-    if (shouldFail("submit-kernel-grid"))
+    if (shouldFail(operation))
       return injectedFailure();
-    if (submissionLive || launches.size() != 16)
-      return injected("invalid-kernel-grid-state");
+    if (launches.empty() || phaseSubmitted ||
+        (submissionLive && activeKernelForm != form))
+      return injected("invalid-kernel-phase-state");
+    if (!submissionLive) {
+      submissionLive = true;
+      activeKernelForm = form;
+    }
+
     submittedLaunches.assign(launches.begin(), launches.end());
+    submittedKernelPhases.push_back(phaseRole);
     const uintptr_t sharedFunction = launches.front().function.value;
     for (auto [rank, launch] : llvm::enumerate(launches)) {
       if (launch.logicalRank != static_cast<int64_t>(rank) ||
-          sharedFunction == 0 || launch.function.value != sharedFunction ||
-          launch.arguments.size() < 2)
-        return injected("invalid-kernel-grid-launch");
+          launch.function.value == 0 || launch.arguments.size() < 2 ||
+          (form != wafer::KernelLaunchForm::PerRank &&
+           launch.function.value != sharedFunction))
+        return injected("invalid-canonical-kernel-phase");
       auto input = find(launch.arguments[0]);
       auto output = find(launch.arguments[1]);
       if (input == allocations.end() || output == allocations.end() ||
           input->bytes.size() != output->bytes.size())
-        return injected("invalid-kernel-grid-buffers");
+        return injected("invalid-kernel-phase-buffers");
+      if (phaseRole != wafer::RuntimeLaunchPhaseRole::Main)
+        continue;
       for (size_t byte = 0; byte < input->bytes.size(); ++byte)
         output->bytes[byte] = input->bytes[byte] ^ static_cast<uint8_t>(rank);
-    }
-    submissionLive = true;
-    return llvm::Error::success();
-  }
-
-  llvm::Error submitClusterPrepareMain(
-      wafer::runtime::BoardFunctionHandle prepare,
-      llvm::ArrayRef<wafer::runtime::BoardRankLaunch> launches) override {
-    calls.push_back("submit-cluster-prepare-main");
-    if (shouldFail("submit-cluster-prepare-main"))
-      return injectedFailure();
-    if (submissionLive || launches.size() != 16 || prepare.value != 0x8000)
-      return injected("invalid-cluster-state");
-    submittedLaunches.assign(launches.begin(), launches.end());
-    for (auto [rank, launch] : llvm::enumerate(launches)) {
-      if (launch.logicalRank != static_cast<int64_t>(rank) ||
-          launch.function.value != 0x9000 || launch.arguments.size() < 3)
-        return injected("invalid-cluster-launch");
-      auto input = find(launch.arguments[0]);
-      auto output = find(launch.arguments[1]);
       auto status = find(launch.arguments.back());
-      if (input == allocations.end() || output == allocations.end() ||
-          status == allocations.end() ||
-          input->bytes.size() != output->bytes.size() ||
-          status->bytes.size() != wafer::runtime::kDirectDTEStatusStorageBytes)
-        return injected("invalid-cluster-buffers");
-      for (size_t byte = 0; byte < input->bytes.size(); ++byte)
-        output->bytes[byte] = input->bytes[byte] ^ static_cast<uint8_t>(rank);
-      const uint32_t terminalStatus = clusterStatusOverride.value_or(
-          static_cast<uint32_t>(wafer::runtime::DirectDTEStatusValue::Success));
-      std::memcpy(status->bytes.data() +
-                      wafer::runtime::kDirectDTEStatusValueOffset,
-                  &terminalStatus, sizeof(terminalStatus));
+      if (status != allocations.end() && launch.arguments.size() >= 4 &&
+          status->bytes.size() ==
+              wafer::runtime::kDirectDTEStatusStorageBytes) {
+        const uint32_t terminalStatus =
+            transportStatusOverride.value_or(static_cast<uint32_t>(
+                wafer::runtime::DirectDTEStatusValue::Success));
+        std::memcpy(status->bytes.data() +
+                        wafer::runtime::kDirectDTEStatusValueOffset,
+                    &terminalStatus, sizeof(terminalStatus));
+      }
     }
-    submissionLive = true;
+    phaseSubmitted = true;
+    activeKernelPhase = phaseRole;
     return llvm::Error::success();
   }
 
@@ -316,8 +309,8 @@ public:
     calls.push_back("submit-model");
     if (shouldFail("submit-model"))
       return injectedFailure();
-    if (submissionLive || !graphLive || graph.value != 0xa000 ||
-        tensors.empty())
+    if (submissionLive || phaseSubmitted || !graphLive ||
+        graph.value != 0xa000 || tensors.empty())
       return injected("invalid-model-submit-state");
     submittedModelTensors.assign(tensors.begin(), tensors.end());
     for (int64_t rank = 0; rank < 16; ++rank) {
@@ -342,19 +335,25 @@ public:
             inputAllocation->bytes[byte] ^ static_cast<uint8_t>(rank);
     }
     submissionLive = true;
+    phaseSubmitted = true;
+    activeKernelPhase.reset();
     return llvm::Error::success();
   }
 
   llvm::Expected<wafer::runtime::BoardCompletionObservation>
-  waitAll(uint64_t timeoutMilliseconds,
-          wafer::runtime::BoardCompletionObservationPolicy observationPolicy)
-      override {
-    calls.push_back("wait-all");
-    observedTimeoutMilliseconds = timeoutMilliseconds;
+  waitCurrentSubmission(wafer::runtime::BoardCompletionDeadline deadline,
+                        wafer::runtime::BoardCompletionObservationPolicy
+                            observationPolicy) override {
+    calls.push_back("wait-current-submission");
+    observedDeadlines.push_back(deadline);
     observedCompletionObservationPolicy = observationPolicy;
-    if (shouldFail("wait-all"))
-      return injectedFailure();
-    if (!submissionLive)
+    if (shouldFail("wait-current-submission")) {
+      llvm::Error error = injectedFailure();
+      if (contextState == wafer::runtime::BoardRuntimeContextState::Usable)
+        phaseSubmitted = false;
+      return error;
+    }
+    if (!submissionLive || !phaseSubmitted)
       return injected("wait-without-submit");
     const auto waitBegin = std::chrono::steady_clock::now();
     if (waitDelay.count() != 0)
@@ -364,6 +363,7 @@ public:
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             completionObserved - waitBegin)
             .count();
+    phaseSubmitted = false;
     return wafer::runtime::BoardCompletionObservation{
         resolution > 0 ? static_cast<uint64_t>(resolution) : 0};
   }
@@ -375,9 +375,11 @@ public:
         submissionLive = false;
       return injectedFailure();
     }
-    if (!submissionLive)
+    if (!submissionLive || phaseSubmitted)
       return injected("release-without-submit");
     submissionLive = false;
+    activeKernelForm.reset();
+    activeKernelPhase.reset();
     return llvm::Error::success();
   }
 
@@ -391,8 +393,9 @@ public:
   std::vector<uintptr_t> unloadedHandles;
   std::vector<std::vector<uint8_t>> h2dPayloads;
   std::vector<wafer::runtime::BoardRankLaunch> submittedLaunches;
+  std::vector<wafer::RuntimeLaunchPhaseRole> submittedKernelPhases;
   std::vector<wafer::runtime::BoardModelTensorLaunch> submittedModelTensors;
-  uint64_t observedTimeoutMilliseconds = 0;
+  std::vector<wafer::runtime::BoardCompletionDeadline> observedDeadlines;
   wafer::runtime::BoardCompletionObservationPolicy
       observedCompletionObservationPolicy =
           wafer::runtime::BoardCompletionObservationPolicy::Normal;
@@ -406,23 +409,26 @@ public:
   std::chrono::steady_clock::time_point completionObserved;
   std::string runtimeLibraryDigest =
       "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-  std::optional<uint32_t> clusterStatusOverride;
+  std::optional<uint32_t> transportStatusOverride;
 
 private:
-  static wafer::runtime::RuntimeEnvironment
-  makeProviderEnvironment(wafer::TargetLaunchABIId launchABI) {
+  static wafer::runtime::RuntimeEnvironment makeProviderEnvironment() {
     const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     wafer::runtime::RuntimeEnvironment environment{
-        target.id, target.targetIdentity, target.kernelRuntimeABI, launchABI,
+        target.id, target.targetIdentity, target.kernelRuntimeABI,
         target.moduleFormat};
-    if (launchABI ==
-        wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1()) {
-      environment.supportsDirectDTE = true;
-      environment.directDTEStatusABI =
-          wafer::runtime::kDirectDTEStatusABI.str();
-      environment.supportsHostWatchdog = true;
-    }
+    environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::PerRank,
+                                              wafer::KernelLaunchForm::Grid,
+                                              wafer::KernelLaunchForm::Cluster};
+    environment.supportedKernelEntryABIs = {
+        wafer::KernelEntryABI::RankLocalPointerBlockV1,
+        wafer::KernelEntryABI::RankMajorPointerTableV1};
+    environment.supportedModelEntryABIs = {
+        wafer::ModelEntryABI::Tx81ModelBootParamV1};
+    environment.supportsDirectDTE = true;
+    environment.directDTEStatusABI = wafer::runtime::kDirectDTEStatusABI.str();
+    environment.supportsHostWatchdog = true;
     return environment;
   }
 
@@ -455,6 +461,9 @@ private:
   std::vector<uintptr_t> liveModules;
   bool graphLive = false;
   bool submissionLive = false;
+  bool phaseSubmitted = false;
+  std::optional<wafer::KernelLaunchForm> activeKernelForm;
+  std::optional<wafer::RuntimeLaunchPhaseRole> activeKernelPhase;
   size_t matchingFailureCall = 0;
   wafer::runtime::RuntimeEnvironment providerEnvironment;
   wafer::runtime::BoardRuntimeContextState contextState =
@@ -487,7 +496,8 @@ protected:
     hasher.update(moduleBytes);
     PackageManifest manifest(
         target.id, target.targetIdentity, target.kernelRuntimeABI,
-        wafer::TargetLaunchABIId::perRankPointerBlockV1(), target.moduleFormat);
+        makeLaunchContract(TestLaunchContractCase::PerRank),
+        target.moduleFormat);
     manifest.program = ProgramId(0);
     manifest.rankCount = 1;
     manifest.resources = {{ResourceId(0),
@@ -559,25 +569,23 @@ protected:
     return "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
   }
 
-  wafer::runtime::PackageManifest
-  makeRank16Manifest(wafer::TargetLaunchABIId launchABI =
-                         wafer::TargetLaunchABIId::perRankPointerBlockV1(),
-                     bool withProfiler = false) const {
+  wafer::runtime::PackageManifest makeRank16Manifest(
+      TestLaunchContractCase launchCase = TestLaunchContractCase::PerRank,
+      bool withProfiler = false,
+      std::optional<bool> directDTEOverride = std::nullopt) const {
     using namespace wafer::runtime;
     const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
-    PackageManifest manifest(target.id, target.targetIdentity,
-                             target.kernelRuntimeABI, launchABI,
-                             target.moduleFormat);
+    PackageManifest manifest(
+        target.id, target.targetIdentity, target.kernelRuntimeABI,
+        makeLaunchContract(launchCase), target.moduleFormat);
     manifest.program = ProgramId(0);
     manifest.rankCount = 16;
-    const bool sharedModule =
-        launchABI == wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1() ||
-        launchABI ==
-            wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
-    const bool cluster =
-        launchABI ==
-        wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+    const bool sharedModule = launchCase == TestLaunchContractCase::Grid ||
+                              launchCase == TestLaunchContractCase::Cluster;
+    const bool cluster = launchCase == TestLaunchContractCase::Cluster;
+    const bool model = launchCase == TestLaunchContractCase::Model;
+    const bool directDTE = directDTEOverride.value_or(cluster);
 
     uint64_t nextResource = 0;
     for (int64_t rank = 0; rank < 16; ++rank) {
@@ -627,7 +635,7 @@ protected:
                   PackageAccessMode::ReadOnly, true);
       addResource(PackageResourceRole::Output, "output", "f32", {16}, 64,
                   PackageAccessMode::WriteOnly, true);
-      if (launchABI != wafer::TargetLaunchABIId::tx81ModelBootParamV1())
+      if (!model)
         addResource(PackageResourceRole::Workspace, "workspace", "u8", {512},
                     512, PackageAccessMode::ReadWrite, false);
       if (withProfiler)
@@ -637,7 +645,7 @@ protected:
                     PackageAccessMode::ReadWrite, false,
                     WAFER_TX81_PROFILER_BUFFER_ALIGNMENT, /*roleIndex=*/1);
       TransportRequirements transport = NoTransportRequirements{};
-      if (cluster) {
+      if (directDTE) {
         ResourceId status(nextResource++);
         manifest.resources.push_back(
             {status,
@@ -668,14 +676,12 @@ protected:
     return manifest;
   }
 
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest>
-  verifyRank16(wafer::TargetLaunchABIId launchABI =
-                   wafer::TargetLaunchABIId::perRankPointerBlockV1(),
-               bool withProfiler = false) const {
-    const bool sharedModule =
-        launchABI == wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1() ||
-        launchABI ==
-            wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> verifyRank16(
+      TestLaunchContractCase launchCase = TestLaunchContractCase::PerRank,
+      bool withProfiler = false,
+      std::optional<bool> directDTEOverride = std::nullopt) const {
+    const bool sharedModule = launchCase == TestLaunchContractCase::Grid ||
+                              launchCase == TestLaunchContractCase::Cluster;
     if (sharedModule) {
       for (int64_t rank = 1; rank < 16; ++rank) {
         std::string rankText = std::to_string(rank);
@@ -690,7 +696,7 @@ protected:
       createRankModules(16);
     }
     return wafer::runtime::verifyPackageManifest(
-        makeRank16Manifest(launchABI, withProfiler), root);
+        makeRank16Manifest(launchCase, withProfiler, directDTEOverride), root);
   }
 
   static uint8_t rankInputByte(int64_t rank, size_t byte) {
@@ -837,12 +843,14 @@ TEST_F(BoardRuntimeTest,
   }
   EXPECT_EQ(result->completedStages.back(),
             wafer::runtime::BoardRuntimeStage::Cleanup);
-  EXPECT_EQ(driver.observedTimeoutMilliseconds, 4321u);
+  ASSERT_EQ(driver.observedDeadlines.size(), 1u);
+  EXPECT_GT(driver.observedDeadlines.front(), driver.submitEntered);
 
-  auto submit =
-      std::find(driver.calls.begin(), driver.calls.end(), "submit-all");
+  auto submit = std::find(driver.calls.begin(), driver.calls.end(),
+                          "submit-kernel-phase:per-rank:main");
   ASSERT_NE(submit, driver.calls.end());
-  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "submit-all"),
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "submit-kernel-phase:per-rank:main"),
             1);
   struct BeforeSubmit {
     llvm::StringRef operation;
@@ -885,16 +893,13 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest,
        KernelGridLoadsOneSharedModuleAndSubmitsOneCanonicalGrid) {
-  using wafer::TargetLaunchABIId;
-  const TargetLaunchABIId launchABI =
-      TargetLaunchABIId::tx81KernelGridPointerTableV1();
   createRankModules(16);
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
-      verifyRank16(launchABI);
+      verifyRank16(TestLaunchContractCase::Grid);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   const wafer::runtime::PackageManifest &manifest = package->getManifest();
-  FakeBoardDriver driver(launchABI);
+  FakeBoardDriver driver;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
           *package, root, makeRank16Request(manifest), driver);
@@ -905,9 +910,10 @@ TEST_F(BoardRuntimeTest,
   EXPECT_EQ(
       std::count(driver.calls.begin(), driver.calls.end(), "resolve-entry"), 1);
   EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
-                       "submit-kernel-grid"),
+                       "submit-kernel-phase:grid:main"),
             1);
-  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "submit-all"),
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "submit-kernel-phase:per-rank:main"),
             0);
   EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "load-graph"),
             0);
@@ -934,11 +940,9 @@ TEST_F(BoardRuntimeTest,
 TEST_F(BoardRuntimeTest,
        ProfilerWorkspaceIsInitializedAndReturnedOutsideUserOutputs) {
   using namespace wafer::runtime;
-  const wafer::TargetLaunchABIId launchABI =
-      wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1();
   createRankModules(16);
   llvm::Expected<VerifiedPackageManifest> package =
-      verifyRank16(launchABI, /*withProfiler=*/true);
+      verifyRank16(TestLaunchContractCase::Grid, /*withProfiler=*/true);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
 
@@ -955,7 +959,7 @@ TEST_F(BoardRuntimeTest,
   }
   ASSERT_EQ(request.profilerBindings.size(), 16u);
 
-  FakeBoardDriver driver(launchABI);
+  FakeBoardDriver driver;
   llvm::Expected<BoardRuntimeInvocationResult> result =
       executeBoardInvocation(*package, root, std::move(request), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
@@ -991,11 +995,9 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest, ProfilerWorkspaceRequiresAllSixteenTiles) {
   using namespace wafer::runtime;
-  const wafer::TargetLaunchABIId launchABI =
-      wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1();
   createRankModules(16);
   llvm::Expected<VerifiedPackageManifest> package =
-      verifyRank16(launchABI, /*withProfiler=*/true);
+      verifyRank16(TestLaunchContractCase::Grid, /*withProfiler=*/true);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
 
@@ -1010,7 +1012,7 @@ TEST_F(BoardRuntimeTest, ProfilerWorkspaceRequiresAllSixteenTiles) {
   }
   request.profilerBindings.pop_back();
 
-  FakeBoardDriver driver(launchABI);
+  FakeBoardDriver driver;
   llvm::Expected<BoardRuntimeInvocationResult> result =
       executeBoardInvocation(*package, root, std::move(request), driver);
   ASSERT_FALSE(static_cast<bool>(result));
@@ -1021,10 +1023,8 @@ TEST_F(BoardRuntimeTest, ProfilerWorkspaceRequiresAllSixteenTiles) {
 
 TEST_F(BoardRuntimeTest, ProfilerWorkspaceRequiresExactRecordByteCount) {
   using namespace wafer::runtime;
-  const wafer::TargetLaunchABIId launchABI =
-      wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1();
   llvm::Expected<VerifiedPackageManifest> package =
-      verifyRank16(launchABI, /*withProfiler=*/true);
+      verifyRank16(TestLaunchContractCase::Grid, /*withProfiler=*/true);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
 
@@ -1040,7 +1040,7 @@ TEST_F(BoardRuntimeTest, ProfilerWorkspaceRequiresExactRecordByteCount) {
   ASSERT_EQ(request.profilerBindings.size(), 16u);
   request.profilerBindings.front().bytes.pop_back();
 
-  FakeBoardDriver driver(launchABI);
+  FakeBoardDriver driver;
   llvm::Expected<BoardRuntimeInvocationResult> result =
       executeBoardInvocation(*package, root, std::move(request), driver);
   ASSERT_FALSE(static_cast<bool>(result));
@@ -1051,11 +1051,9 @@ TEST_F(BoardRuntimeTest, ProfilerWorkspaceRequiresExactRecordByteCount) {
 
 TEST_F(BoardRuntimeTest, ProfilerWorkspaceRejectsUnregisteredAlignedSize) {
   using namespace wafer::runtime;
-  const wafer::TargetLaunchABIId launchABI =
-      wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1();
   createRankModules(1);
   PackageManifest manifest =
-      makeRank16Manifest(launchABI, /*withProfiler=*/true);
+      makeRank16Manifest(TestLaunchContractCase::Grid, /*withProfiler=*/true);
   const uint64_t unregisteredBytes = WAFER_TX81_PROFILER_MIN_BUFFER_BYTES +
                                      WAFER_TX81_PROFILER_BUFFER_ALIGNMENT;
   for (PackageResourceRecord &resource : manifest.resources) {
@@ -1080,7 +1078,7 @@ TEST_F(BoardRuntimeTest, ProfilerWorkspaceRejectsUnregisteredAlignedSize) {
           {resource.id, std::vector<uint8_t>(resource.bytes)});
   }
 
-  FakeBoardDriver driver(launchABI);
+  FakeBoardDriver driver;
   llvm::Expected<BoardRuntimeInvocationResult> result =
       executeBoardInvocation(*package, root, std::move(request), driver);
   ASSERT_FALSE(static_cast<bool>(result));
@@ -1120,15 +1118,14 @@ TEST_F(BoardRuntimeTest,
 TEST_F(BoardRuntimeTest,
        QualifiedSessionReusesOneInventoryAcrossSerialInvocations) {
   using namespace wafer::runtime;
-  const wafer::TargetLaunchABIId launchABI =
-      wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1();
-  llvm::Expected<VerifiedPackageManifest> package = verifyRank16(launchABI);
+  llvm::Expected<VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Grid);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   BoardRuntimeInvocationRequest seed =
       makeRank16Request(package->getManifest());
 
-  FakeBoardDriver driver(launchABI);
+  FakeBoardDriver driver;
   driver.waitDelay = std::chrono::milliseconds(1);
   llvm::Expected<QualifiedBoardRuntimeSession> qualified =
       qualifyBoardRuntimeSession(seed.deviceId, /*requiredLogicalRankCount=*/16,
@@ -1167,18 +1164,18 @@ TEST_F(BoardRuntimeTest,
   EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "device-info"),
             1);
   EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
-                       "submit-kernel-grid"),
+                       "submit-kernel-phase:grid:main"),
             2);
-  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "wait-all"),
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "wait-current-submission"),
             2);
 }
 
 TEST_F(BoardRuntimeTest,
        ProfileCompletionObservationCoversSubmitAndForwardsHighResolution) {
   using namespace wafer::runtime;
-  const wafer::TargetLaunchABIId launchABI =
-      wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1();
-  llvm::Expected<VerifiedPackageManifest> package = verifyRank16(launchABI);
+  llvm::Expected<VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Grid);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   BoardRuntimeInvocationRequest request =
@@ -1186,7 +1183,7 @@ TEST_F(BoardRuntimeTest,
   request.completionObservationPolicy =
       BoardCompletionObservationPolicy::ProfileHighResolution;
 
-  FakeBoardDriver driver(launchABI);
+  FakeBoardDriver driver;
   driver.submitDelay = std::chrono::milliseconds(2);
   driver.waitDelay = std::chrono::milliseconds(2);
   llvm::Expected<BoardRuntimeInvocationResult> result =
@@ -1254,7 +1251,7 @@ TEST_F(BoardRuntimeTest,
   ASSERT_TRUE(static_cast<bool>(session))
       << llvm::toString(session.takeError());
 
-  driver.failOperation = "wait-all";
+  driver.failOperation = "wait-current-submission";
   driver.poisonOnFailure = true;
   llvm::Expected<BoardRuntimeInvocationResult> failed =
       executeBoardInvocationInSession(
@@ -1262,7 +1259,7 @@ TEST_F(BoardRuntimeTest,
   ASSERT_FALSE(static_cast<bool>(failed));
   llvm::consumeError(failed.takeError());
   ASSERT_FALSE(driver.calls.empty());
-  EXPECT_EQ(driver.calls.back(), "wait-all");
+  EXPECT_EQ(driver.calls.back(), "wait-current-submission");
   EXPECT_FALSE(session->isUsable());
   const size_t callsAfterPoison = driver.calls.size();
 
@@ -1304,15 +1301,12 @@ TEST_F(BoardRuntimeTest, QualifiedSessionRequiresCompleteLogicalTileDomain) {
 
 TEST_F(BoardRuntimeTest,
        ClusterDirectDTEUsesTypedPrepareMainAndChecksStatusBeforeOutputs) {
-  using wafer::TargetLaunchABIId;
-  const TargetLaunchABIId launchABI =
-      TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
-      verifyRank16(launchABI);
+      verifyRank16(TestLaunchContractCase::Cluster);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   const wafer::runtime::PackageManifest &manifest = package->getManifest();
-  FakeBoardDriver driver(launchABI);
+  FakeBoardDriver driver;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
           *package, root, makeRank16Request(manifest), driver);
@@ -1323,8 +1317,29 @@ TEST_F(BoardRuntimeTest,
   EXPECT_EQ(
       std::count(driver.calls.begin(), driver.calls.end(), "resolve-entry"), 2);
   EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
-                       "submit-cluster-prepare-main"),
+                       "submit-kernel-phase:cluster:prepare"),
             1);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "submit-kernel-phase:cluster:main"),
+            1);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "wait-current-submission"),
+            2);
+  ASSERT_EQ(driver.observedDeadlines.size(), 2u);
+  EXPECT_EQ(driver.observedDeadlines[0], driver.observedDeadlines[1]);
+  const std::vector<std::string> phaseSequence = {
+      "resolve-entry",
+      "submit-kernel-phase:cluster:prepare",
+      "wait-current-submission",
+      "resolve-entry",
+      "submit-kernel-phase:cluster:main",
+      "wait-current-submission"};
+  auto call = driver.calls.begin();
+  for (const std::string &expected : phaseSequence) {
+    call = std::find(call, driver.calls.end(), expected);
+    ASSERT_NE(call, driver.calls.end()) << expected;
+    ++call;
+  }
   EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "d2h"), 32);
   EXPECT_EQ(
       std::count_if(driver.h2dPayloads.begin(), driver.h2dPayloads.end(),
@@ -1352,16 +1367,84 @@ TEST_F(BoardRuntimeTest,
 }
 
 TEST_F(BoardRuntimeTest,
-       ClusterDirectDTEBadStatusQuarantinesBeforeAnyUserOutputReadback) {
-  using wafer::TargetLaunchABIId;
-  const TargetLaunchABIId launchABI =
-      TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+       ClusterMainSubmitFailureIsLaunchStageAfterPrepareTerminal) {
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
-      verifyRank16(launchABI);
+      verifyRank16(TestLaunchContractCase::Cluster);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
-  FakeBoardDriver driver(launchABI);
-  driver.clusterStatusOverride =
+  FakeBoardDriver driver;
+  driver.failOperation = "submit-kernel-phase:cluster:main";
+  llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
+      wafer::runtime::executeBoardInvocation(
+          *package, root, makeRank16Request(package->getManifest()), driver);
+  ASSERT_FALSE(static_cast<bool>(result));
+  bool sawLaunchFailure = false;
+  llvm::handleAllErrors(
+      result.takeError(), [&](const wafer::runtime::BoardRuntimeError &error) {
+        sawLaunchFailure = true;
+        EXPECT_EQ(error.getStage(), wafer::runtime::BoardRuntimeStage::Launch);
+        EXPECT_EQ(error.getContextState(),
+                  wafer::runtime::BoardRuntimeContextState::Usable);
+      });
+  EXPECT_TRUE(sawLaunchFailure);
+  const std::vector<std::string> phaseSequence = {
+      "submit-kernel-phase:cluster:prepare", "wait-current-submission",
+      "submit-kernel-phase:cluster:main", "release-submission"};
+  auto call = driver.calls.begin();
+  for (const std::string &expected : phaseSequence) {
+    call = std::find(call, driver.calls.end(), expected);
+    ASSERT_NE(call, driver.calls.end()) << expected;
+    ++call;
+  }
+  ASSERT_EQ(driver.observedDeadlines.size(), 1u);
+}
+
+TEST_F(BoardRuntimeTest, DirectDTEStatusHandlingIsIndependentOfGridLaunchForm) {
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Grid, /*withProfiler=*/false,
+                   /*directDTEOverride=*/true);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  FakeBoardDriver driver;
+  llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
+      wafer::runtime::executeBoardInvocation(
+          *package, root, makeRank16Request(package->getManifest()), driver);
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "submit-kernel-phase:grid:main"),
+            1);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "d2h"), 32);
+}
+
+TEST_F(BoardRuntimeTest,
+       ClusterLaunchWithoutDirectDTEHasNoTransportStatusReadback) {
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Cluster, /*withProfiler=*/false,
+                   /*directDTEOverride=*/false);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  FakeBoardDriver driver;
+  llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
+      wafer::runtime::executeBoardInvocation(
+          *package, root, makeRank16Request(package->getManifest()), driver);
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "submit-kernel-phase:cluster:prepare"),
+            1);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "submit-kernel-phase:cluster:main"),
+            1);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "d2h"), 16);
+}
+
+TEST_F(BoardRuntimeTest,
+       ClusterDirectDTEBadStatusQuarantinesBeforeAnyUserOutputReadback) {
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Cluster);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  FakeBoardDriver driver;
+  driver.transportStatusOverride =
       static_cast<uint32_t>(wafer::runtime::DirectDTEStatusValue::Pending);
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
@@ -1389,14 +1472,11 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest,
        ClusterDirectDTEStatusReadbackFailureQuarantinesWithoutCleanup) {
-  using wafer::TargetLaunchABIId;
-  const TargetLaunchABIId launchABI =
-      TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
-      verifyRank16(launchABI);
+      verifyRank16(TestLaunchContractCase::Cluster);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
-  FakeBoardDriver driver(launchABI);
+  FakeBoardDriver driver;
   driver.failOperation = "d2h";
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
@@ -1415,14 +1495,11 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest,
        ClusterDirectDTEOutputReadbackFailureQuarantinesWithoutCleanup) {
-  using wafer::TargetLaunchABIId;
-  const TargetLaunchABIId launchABI =
-      TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
-      verifyRank16(launchABI);
+      verifyRank16(TestLaunchContractCase::Cluster);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
-  FakeBoardDriver driver(launchABI);
+  FakeBoardDriver driver;
   driver.failOperation = "d2h";
   driver.failIndex = 16;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
@@ -1442,15 +1519,13 @@ TEST_F(BoardRuntimeTest,
 }
 
 TEST_F(BoardRuntimeTest, ModelLoadsCompleteGraphAndSubmitsTypedTensorDomain) {
-  using wafer::TargetLaunchABIId;
-  const TargetLaunchABIId launchABI = TargetLaunchABIId::tx81ModelBootParamV1();
   createRankModules(16);
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
-      verifyRank16(launchABI);
+      verifyRank16(TestLaunchContractCase::Model);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   const wafer::runtime::PackageManifest &manifest = package->getManifest();
-  FakeBoardDriver driver(launchABI);
+  FakeBoardDriver driver;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
           *package, root, makeRank16Request(manifest), driver);
@@ -1464,7 +1539,8 @@ TEST_F(BoardRuntimeTest, ModelLoadsCompleteGraphAndSubmitsTypedTensorDomain) {
             0);
   EXPECT_EQ(
       std::count(driver.calls.begin(), driver.calls.end(), "resolve-entry"), 0);
-  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "submit-all"),
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "submit-kernel-phase:per-rank:main"),
             0);
   ASSERT_EQ(driver.submittedModelTensors.size(), 32u);
   for (int64_t rank = 0; rank < 16; ++rank)
@@ -1502,24 +1578,23 @@ TEST_F(BoardRuntimeTest, ModelLoadsCompleteGraphAndSubmitsTypedTensorDomain) {
 }
 
 TEST_F(BoardRuntimeTest, MultiTilePoisonedProviderFailureIsTheFinalDriverCall) {
-  using wafer::TargetLaunchABIId;
   struct Scenario {
-    TargetLaunchABIId launchABI;
+    TestLaunchContractCase launchCase;
     llvm::StringLiteral operation;
   };
   const Scenario scenarios[] = {
-      {TargetLaunchABIId::tx81KernelGridPointerTableV1(), "submit-kernel-grid"},
-      {TargetLaunchABIId::tx81ModelBootParamV1(), "load-graph"},
-      {TargetLaunchABIId::tx81ModelBootParamV1(), "submit-model"},
+      {TestLaunchContractCase::Grid, "submit-kernel-phase:grid:main"},
+      {TestLaunchContractCase::Model, "load-graph"},
+      {TestLaunchContractCase::Model, "submit-model"},
   };
   createRankModules(16);
   for (const Scenario &scenario : scenarios) {
     SCOPED_TRACE(scenario.operation.str());
     llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
-        verifyRank16(scenario.launchABI);
+        verifyRank16(scenario.launchCase);
     ASSERT_TRUE(static_cast<bool>(package))
         << llvm::toString(package.takeError());
-    FakeBoardDriver driver(scenario.launchABI);
+    FakeBoardDriver driver;
     driver.failOperation = scenario.operation.str();
     driver.poisonOnFailure = true;
     llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
@@ -1546,9 +1621,7 @@ TEST_F(BoardRuntimeTest, MultiTilePoisonedProviderFailureIsTheFinalDriverCall) {
 
 TEST_F(BoardRuntimeTest,
        ModelManifestRejectsUnqualifiedBootParamBeforeDriverCreation) {
-  using wafer::TargetLaunchABIId;
   using wafer::runtime::PackageManifest;
-  const TargetLaunchABIId launchABI = TargetLaunchABIId::tx81ModelBootParamV1();
   createRankModules(16);
 
   auto expectRejected = [&](PackageManifest manifest) {
@@ -1559,29 +1632,33 @@ TEST_F(BoardRuntimeTest,
       llvm::consumeError(package.takeError());
   };
 
-  PackageManifest zeroExtent = makeRank16Manifest(launchABI);
+  PackageManifest zeroExtent =
+      makeRank16Manifest(TestLaunchContractCase::Model);
   for (auto &resource : zeroExtent.resources)
     if (resource.role == wafer::runtime::PackageResourceRole::UserInput)
       resource.type.shape = {0};
   expectRejected(std::move(zeroExtent));
 
-  PackageManifest byteMismatch = makeRank16Manifest(launchABI);
+  PackageManifest byteMismatch =
+      makeRank16Manifest(TestLaunchContractCase::Model);
   for (auto &resource : byteMismatch.resources)
     if (resource.role == wafer::runtime::PackageResourceRole::UserInput)
       resource.bytes -= sizeof(float);
   expectRejected(std::move(byteMismatch));
 
-  PackageManifest insufficientAlignment = makeRank16Manifest(launchABI);
+  PackageManifest insufficientAlignment =
+      makeRank16Manifest(TestLaunchContractCase::Model);
   for (auto &resource : insufficientAlignment.resources)
     resource.alignment = 1;
   expectRejected(std::move(insufficientAlignment));
 
-  PackageManifest longSymbol = makeRank16Manifest(launchABI);
+  PackageManifest longSymbol =
+      makeRank16Manifest(TestLaunchContractCase::Model);
   for (auto &module : longSymbol.modules)
     module.exports.front().symbol.assign(128, 'm');
   expectRejected(std::move(longSymbol));
 
-  PackageManifest nulSymbol = makeRank16Manifest(launchABI);
+  PackageManifest nulSymbol = makeRank16Manifest(TestLaunchContractCase::Model);
   for (auto &module : nulSymbol.modules)
     module.exports.front().symbol = std::string("ma\0in", 5);
   expectRejected(std::move(nulSymbol));
@@ -1748,8 +1825,10 @@ TEST_F(BoardRuntimeTest,
     bool expectsRelease;
   };
   const Scenario scenarios[] = {
-      {"submit-all", wafer::runtime::BoardRuntimeStage::Launch, false},
-      {"wait-all", wafer::runtime::BoardRuntimeStage::Completion, true},
+      {"submit-kernel-phase:per-rank:main",
+       wafer::runtime::BoardRuntimeStage::Launch, false},
+      {"wait-current-submission", wafer::runtime::BoardRuntimeStage::Completion,
+       true},
   };
   for (const Scenario &scenario : scenarios) {
     SCOPED_TRACE(scenario.operation.str());
@@ -1783,7 +1862,7 @@ TEST_F(BoardRuntimeTest, Rank16PoisonedWaitIsTheFinalProviderCall) {
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   FakeBoardDriver driver;
-  driver.failOperation = "wait-all";
+  driver.failOperation = "wait-current-submission";
   driver.poisonOnFailure = true;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
@@ -1791,7 +1870,7 @@ TEST_F(BoardRuntimeTest, Rank16PoisonedWaitIsTheFinalProviderCall) {
   ASSERT_FALSE(static_cast<bool>(result));
   llvm::consumeError(result.takeError());
   ASSERT_FALSE(driver.calls.empty());
-  EXPECT_EQ(driver.calls.back(), "wait-all");
+  EXPECT_EQ(driver.calls.back(), "wait-current-submission");
   EXPECT_EQ(std::find(driver.calls.begin(), driver.calls.end(), "d2h"),
             driver.calls.end());
   EXPECT_EQ(
@@ -1866,7 +1945,8 @@ TEST_F(BoardRuntimeTest, ResolveFailureSuppressesLaunchAndCleansInReverse) {
                   wafer::runtime::BoardRuntimeStage::EntryResolve);
       });
   EXPECT_TRUE(sawTypedError);
-  EXPECT_EQ(std::find(driver.calls.begin(), driver.calls.end(), "submit-all"),
+  EXPECT_EQ(std::find(driver.calls.begin(), driver.calls.end(),
+                      "submit-kernel-phase:per-rank:main"),
             driver.calls.end());
   EXPECT_NE(std::find_if(driver.calls.begin(), driver.calls.end(),
                          [](const std::string &call) {
@@ -1913,7 +1993,7 @@ TEST_F(BoardRuntimeTest, PoisonedCompletionFailureStopsAllProviderCalls) {
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   FakeBoardDriver driver;
-  driver.failOperation = "wait-all";
+  driver.failOperation = "wait-current-submission";
   driver.poisonOnFailure = true;
   llvm::Expected<wafer::runtime::BoardRuntimeResult> result =
       wafer::runtime::executeBoardEntry(*package, root, makeRequest(), driver);
@@ -1929,7 +2009,7 @@ TEST_F(BoardRuntimeTest, PoisonedCompletionFailureStopsAllProviderCalls) {
       });
   EXPECT_TRUE(sawTypedError);
   ASSERT_FALSE(driver.calls.empty());
-  EXPECT_EQ(driver.calls.back(), "wait-all");
+  EXPECT_EQ(driver.calls.back(), "wait-current-submission");
   EXPECT_EQ(std::find(driver.calls.begin(), driver.calls.end(), "d2h"),
             driver.calls.end());
   EXPECT_EQ(std::find_if(driver.calls.begin(), driver.calls.end(),
@@ -1964,14 +2044,14 @@ TEST_F(BoardRuntimeTest, PoisonedLaunchFailureIsLastProviderCall) {
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   FakeBoardDriver driver;
-  driver.failOperation = "submit-all";
+  driver.failOperation = "submit-kernel-phase:per-rank:main";
   driver.poisonOnFailure = true;
   llvm::Expected<wafer::runtime::BoardRuntimeResult> result =
       wafer::runtime::executeBoardEntry(*package, root, makeRequest(), driver);
   ASSERT_FALSE(static_cast<bool>(result));
   llvm::consumeError(result.takeError());
   ASSERT_FALSE(driver.calls.empty());
-  EXPECT_EQ(driver.calls.back(), "submit-all");
+  EXPECT_EQ(driver.calls.back(), "submit-kernel-phase:per-rank:main");
 }
 
 TEST_F(BoardRuntimeTest, PoisonedDeviceToHostFailureIsLastProviderCall) {

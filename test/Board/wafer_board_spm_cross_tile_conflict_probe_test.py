@@ -37,7 +37,7 @@ RECORD_META_WORDS = 21
 REQUEST_META_BEGIN = REQUEST_META_WORD * 8
 RECORD_META_BEGIN = RECORD_META_WORD * 8
 RECORD_META_END = (RECORD_META_WORD + RECORD_META_WORDS) * 8
-LAUNCH_ABI = "tx81-cluster-direct-dte-prepare-main-v1"
+LAUNCH_KIND = "kernel"
 STATUS_ABI = "wafer-direct-dte-status-v2"
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
@@ -599,10 +599,7 @@ def verify_no_card(
             "--supports-host-watchdog",
         ]
     )
-    if (
-        "board_execution: false" not in result.stdout
-        or f"launch_abi={LAUNCH_ABI}" not in result.stdout
-    ):
+    if "board_execution: false" not in result.stdout:
         raise RuntimeError(
             "cross-tile no-card launch evidence is incomplete"
         )

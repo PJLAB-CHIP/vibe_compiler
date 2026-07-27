@@ -8,8 +8,8 @@
 # Production selects the accepted reciprocal implementation, while the
 # test-only seam publishes the fully accepted reserved baseline from the same
 # source and transaction.
-# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/production --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 | FileCheck %s --check-prefix=PUBLISHED
-# RUN: env WAFER_TEST_SELECT_RESERVED_BASELINE=1 %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/baseline --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 | FileCheck %s --check-prefix=PUBLISHED
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/production --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
+# RUN: env WAFER_TEST_SELECT_RESERVED_BASELINE=1 %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/baseline --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
 # RUN: test -s %t.outputs/production/modules/module_00000.so
 # RUN: test -s %t.outputs/baseline/modules/module_00000.so
 # RUN: not cmp -s %t.outputs/production/modules/module_00000.so %t.outputs/baseline/modules/module_00000.so
@@ -17,12 +17,12 @@
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm %t.outputs/baseline/modules/module_00000.so | FileCheck %s --check-prefix=BASELINE
 
 # The production binary does not consume the private environment seam.
-# RUN: env WAFER_TEST_SELECT_RESERVED_BASELINE=1 wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/production-with-env --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 | FileCheck %s --check-prefix=PUBLISHED
+# RUN: env WAFER_TEST_SELECT_RESERVED_BASELINE=1 wafer-compile --input-program-dir %t.input --output-program-dir %t.outputs/production-with-env --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
 # RUN: cmp -s %t.outputs/production/modules/module_00000.so %t.outputs/production-with-env/modules/module_00000.so
 
 # Baseline selection is one transaction mode and cannot be combined with a
 # rank, target-rank, or package-rank failure injection.
-# RUN: not env WAFER_TEST_SELECT_RESERVED_BASELINE=1 WAFER_TEST_FAIL_AFTER_LOGICAL_RANK=0 %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/conflicting --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=per-rank-pointer-block-v1 2>&1 | FileCheck %s --check-prefix=CONFLICT
+# RUN: not env WAFER_TEST_SELECT_RESERVED_BASELINE=1 WAFER_TEST_FAIL_AFTER_LOGICAL_RANK=0 %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/conflicting --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=CONFLICT
 # RUN: test ! -e %t.outputs/conflicting
 
 # PUBLISHED: wafer-compile: published verified package with execution-ranks=1:

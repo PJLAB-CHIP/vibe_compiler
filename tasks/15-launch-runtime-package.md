@@ -1,12 +1,12 @@
 # Wafer Typed Manifest、RuntimeSession 和 Launch Boundary
 
-状态：当前production wire form为schema v5，由唯一typed C++ manifest model、semantic verifier、canonical
-JSON、atomic package publication和side-effect-free no-card RuntimeSession preflight共同拥有。schema v5保留必填typed
-launch ABI，并把payload module与rank interface解耦：entry rank到`ModuleId`的显式引用关系是rank-local/shared
-的唯一事实源；module不再复制rank/scope，typed export role区分`prepare`/`main`。这使per-rank、
-kernel-grid、model BootParam和cluster Direct DTE prepare/main四种发射边界都不能被provider按路径、
-digest、symbol或rank数静默重解释。Q32 physical-dataflow cutover本身不要求升级package；本次升级来自
-真实cluster board launch consumer。
+状态：launch/runtime边界已从错误的四值`TargetLaunchABIId`收口为两值runtime launch kind。production
+wire form已升级为schema v6，由唯一typed C++ manifest model、semantic verifier、canonical JSON、
+atomic package publication和side-effect-free no-card RuntimeSession preflight共同拥有。schema v6只序列化
+`kernel`或`model`；pointer block、rank-major table、BootParam、prepare/main、transport status以及provider内部
+选择`txLaunchKernel`或`txLaunchClusterKernel`均不再冒充runtime launch kind。payload module与rank interface
+继续解耦，entry rank到`ModuleId`的显式引用关系和typed export role共同形成kernel/model程序结构的唯一事实源。
+旧schema v5及workload-specific `tx81-cluster-direct-dte-prepare-main-v1`明确拒绝，不保留兼容alias。
 
 Mapped DMA、physical-footprint fill和oriented target ABI已由Q32.V闭合typed compiler/formal/SystemC vertical；
 `RequiredCapabilitySet`和package schema upgrade只在这些扩展的真实runtime/model consumer需要逐row preflight时从winner
@@ -40,16 +40,16 @@ Pipeline position:
   Q16 atomic、profile-bearing ExecutableBundle中的typed resources、ABI slots、terminal completion和完整
   `ExecutionConfig`；Q17 atomic TargetArtifactBundle中的逐字段相同config、unique payload modules、typed
   prepare/main exports、all-and-only rank interface到module引用、content digest、target profile、identity、Kernel Runtime
-  ABI、launch ABI、module format和ordered typed ABI slots。
+  ABI、runtime launch kind、module format和ordered typed ABI slots。
 - Current stage responsibility:
   逐字段核对Q16/Q17 config和完整rank domain；由tasks/14 target-profile registry把`TargetProfileId`唯一映射为
   typed `TargetIdentityId`、`KernelRuntimeABIId`和module format，并按closed compatibility table核对
-  `TargetLaunchABIId`；构造schema-v5 `PackageManifest`，执行唯一C++
+  两值`RuntimeLaunchKind`；构造schema-v6 `PackageManifest`，执行唯一C++
   semantic verification并序列化canonical JSON。在Q18 staging内复制、复核all-and-only package members后原子
   发布。runtime重新解析并验证同一typed model，再结合invocation bindings和`RuntimeEnvironment`形成
   side-effect-free `RuntimeSessionPlan`。
 - Output artifact / IR:
-  move-only `PackageBundle(package root, ExecutionConfig, VerifiedPackageManifest)`、schema-v5 canonical package
+  move-only `PackageBundle(package root, ExecutionConfig, VerifiedPackageManifest)`、schema-v6 canonical package
   JSON/published directory和no-card `RuntimeSessionPlan`。`PackageBundle`只拥有已验证root/config/manifest的
   lifetime，不复制program、instruction command list或形成package外sidecar。
 - Downstream consumer:
@@ -66,8 +66,49 @@ Pipeline position:
   load/allocate前失败；任一manifest/package publication late failure不发布partial Q18 package，且不改变已验证
   Q17 target artifact bundle。Q0.L另要求profile/config逐字段join、registered target/runtime-ABI映射和readback正反例；
   当前宽泛常量不能绕过该映射。rank-count=1/16 production package、Direct DTE transport requirement和no-card
-  preflight均保持schema-v5闭合；Q32改写candidate或winner变化不改变该package合同。
+  preflight均保持schema-v6闭合；Q32改写candidate或winner变化不改变该package合同。
 ```
+
+### 2.1 两种 Runtime Launch Kind
+
+本合同的首要不变量是：产品runtime只有一个用户入口`wafer-run`，TX81 runtime launch kind只有
+`kernel`和`model`两种。case、collective、Direct DTE、profiling或其它compiler pass都必须通过其中一种执行，
+不能新增case-specific入口、provider或launch kind。
+
+schema-v6和compiler artifact使用closed tagged `RuntimeLaunchContract`，其顶层kind只能是：
+
+- `kernel`：rank-one普通kernel以及完整16-rank kernel程序。nested kernel contract显式携带parameter layout、
+  rank binding和ordered phases；每个phase携带通用standard/cluster command geometry。16-rank kernel统一发布
+  一个typed aggregate module；只有`main` export时形成一个phase，存在typed `prepare`/`main` exports时形成
+  同一次kernel invocation中的两个有序phase。provider据此调用`txLaunchKernel`或`txLaunchClusterKernel`，
+  但command geometry不是第三种runtime launch kind；
+- `model`：完整16-rank tile module集合，经graph load和一个model launch执行。BootParam是model provider从
+  verified entry slots机械构造的参数合同，不是独立launch kind。
+
+当前compiler在完整accepted IR domain仍可检查时，从`ExecutionConfig`中的两值kind、rank domain和显式
+entry-preparation需求一次性形成不可变launch contract；transport acceptance与该步骤并列，不作为runtime的
+launch选择器。rank-one kernel为rank-local pointer slots/fixed rank/main standard；16-rank普通kernel为
+rank-major pointer table/pid-x/main standard；需要entry前prepare的16-rank kernel为rank-major/pid-x/
+prepare cluster→main cluster；model为typed BootParam descriptor layout。package必须序列化该contract并与
+rank→module拓扑、export role、slot schema和transport union逐项交叉验证，不能从workload名、symbol拼写、路径、
+rank数或测试case恢复遗漏字段。
+
+`BoardRuntimeDriver`只暴露两个提交面：
+
+```cpp
+Error submitKernelPhase(KernelLaunchForm form,
+                        RuntimeLaunchPhaseRole phase,
+                        ArrayRef<BoardRankLaunch> ranks);
+Error submitModel(BoardGraphHandle graph,
+                  ArrayRef<BoardModelTensorLaunch> tensors);
+```
+
+BoardRuntime按verified ordered phases调用`submitKernelPhase`，每个phase单独等待terminal并把submit失败归到
+launch stage；全部phase共用一个absolute deadline，最后才release submission。TX provider在首phase建立并拥有
+stream/argument storage，后续phase只能在前一phase terminal后复用，不能再把main submit藏进`waitAll`。
+kernel phase参数不能携带Direct DTE等workload identity。manifest schema v6把原
+`target.launch_abi`替换为必填tagged `target.launch`，其中`kind`只能是`kernel`/`model`；parser不迁移
+schema v5，防止旧四值模型继续成为隐式事实源。
 
 ## 3. 已删除的 Prototype
 
@@ -83,16 +124,16 @@ Q18实施前存在四份相互分叉的事实：
 version、model ABI和module format等Python规则。
 
 Q18已删除Python exporter/validator和独立C++ `HostRuntime`；旧prototype也曾使用数字2，但与后来的
-typed schema-v2没有兼容或继承关系。Q0.L加入必填profile后曾形成schema v3；真实launch consumer加入必填
-launch ABI后曾形成schema v4；shared cluster payload与typed prepare/main export闭合后，当前canonical wire form为
-schema v5。prototype、typed schema v2、schema v3和schema v4输入都必须明确拒绝。
+typed schema-v2没有兼容或继承关系。Q0.L加入必填profile后曾形成schema v3；历史实现又先后形成
+schema v4/v5，并错误地把参数布局和Direct DTE prepare/main提升为launch ABI。当前canonical wire form为
+schema v6，只保留kernel/model launch kind。prototype及schema v2-v5输入都必须明确拒绝。
 `wafer_runtime_adapter.py`只转发C++
 `wafer-run`进程，不解释schema、enum或cross-field legality。旧schema只作为“缺少typed manifest必须拒绝”的
 negative边界，不再作为迁移输入或production fixture。
 
 ## 4. Typed C++ Manifest Model
 
-当前public model只有一个schema-v5 `PackageManifest`，没有并行版本variant：
+当前public model只有一个schema-v6 `PackageManifest`，没有并行版本variant：
 
 ```cpp
 struct PackageResourceRecord {
@@ -150,12 +191,12 @@ struct PackageEntrypointRecord {
 };
 
 struct PackageManifest {
-  uint32_t schemaVersion = 5;
+  uint32_t schemaVersion = 6;
   ProgramId program;
   TargetProfileId targetProfile;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId runtimeABI;
-  TargetLaunchABIId launchABI;
+  RuntimeLaunchContract launch;
   std::string moduleFormat;
   int64_t rankCount;
   std::vector<PackageResourceRecord> resources;
@@ -170,17 +211,18 @@ ID由当前bundle内唯一owner分配；`TargetProfileId`及其到`TargetIdentit
 format的closed mapping只由tasks/14 target-profile registry拥有。JSON中的canonical spelling是typed value的
 delivery form，不是自由字符串或第二registry；文件路径、symbol文本和vector index不承担semantic identity。
 module payload本身不存logical rank或scope；`entry.logicalRank -> entry.module`引用拓扑是rank-local/shared的
-唯一事实源。module export role在module内唯一，`(launchABI, role)`唯一决定calling convention与
-submit phase，symbol只用于ELF lookup。
+唯一事实源。module export role在module内唯一；完整 `target.launch` contract、rank→module拓扑和export role
+共同决定calling convention与submit phase，symbol只用于ELF lookup。entry transport是独立合同，只决定对应
+transport capability、status和watchdog生命周期，不反向选择或改写launch contract。
 
-schema-v5 `target` object显式包含必填`profile`和`launch_abi`。parser先解析typed profile，再要求`identity`、
-`runtime_abi`、`launch_abi`和`module_format`逐项满足closed registry及兼容表，不能只证明各字符串分别属于
-supported set。`RuntimeEnvironment`携带相同五项typed事实，并在任何runtime provider effect前exact-match。schema-v2、schema-v3、schema-v4和其它
-version直接拒绝，不静默补profile、不选择宽泛struct，也不接受`unknown`占位。
+schema-v6 `target` object显式包含必填`profile`和tagged `launch`。parser先解析typed profile，再要求`identity`、
+`runtime_abi`、launch contract和`module_format`逐项满足closed registry及兼容表，不能只证明各字符串分别属于
+supported set。`RuntimeEnvironment`携带相同五项typed事实，并在任何runtime provider effect前exact-match。
+schema-v2至schema-v5和其它version直接拒绝，不静默补profile、不选择宽泛struct，也不接受`unknown`占位。
 
 当前manifest没有per-row capability集合。Q32 candidate改变instruction body时，package只观察最终Q16/Q17已经拥有的
 resources、typed ABI slots、module digest、entry、completion和transport requirement；只要target profile、Kernel
-Runtime ABI和launch ABI没有独立变化，schema-v5合同保持不变。RuntimeSession只验证typed resource slot、bytes、alignment、
+Runtime ABI和launch kind没有独立变化，schema-v6合同保持不变。RuntimeSession只验证typed resource slot、bytes、alignment、
 capacity、selected target profile和transport requirement，不重放physical-dataflow、descriptor cover或candidate选择。
 
 当前Kernel ABI摘要就是Q17导出的完整ordered typed slots；Q18逐slot与Q16 resource核对并原样序列化，不再增加一份
@@ -213,23 +255,24 @@ manifest明确不含：
 
 必须证明：
 
-- schema version恰为5，target profile、identity、runtime ABI、launch ABI和module format满足closed registry与兼容表；
+- schema version恰为6，target profile、identity、runtime ABI、完整runtime launch contract和module format满足closed registry与兼容表；
 - ResourceId/ModuleId/EntryId/CompletionId在各自domain唯一；
 - rank-count恰为1或16，且bundle rank domain all-and-only一致；
 - 每个entry引用存在的module，entry的rank domain all-and-only；每个module至少被一个entry引用，
   entry→module引用拓扑是payload覆盖域的唯一事实源；
 - module relative path不能逃逸package root，digest与实际file一致；module export role非空且唯一，
-  symbol合法，required roles与`TargetLaunchABIId`精确匹配；
+  symbol合法，required roles与完整runtime launch contract及rank→module拓扑精确匹配；transport另行独立验证；
 - slots从0开始连续、无重复，每个resource按正确role/access/type/bytes/alignment绑定；
 - 当前input/output/parameter/workspace/transport-status没有遗漏或多绑；Direct DTE entry恰有一个内部read/write
   `u32[1]` status resource，且current v2的storage bytes/alignment恰为`64/64`，`None` entry不得携带该slot；
-- per-rank只接受rank→module一一映射且每module只有`main`；kernel-grid只接受完整16-rank
-  共同引用一个只含`main`的module、一致slot schema、`transport:none`和不超过`0x7dc` bytes的rank-major
-  参数表；model只接受完整16-rank到16个typed module的一一映射、共享`main` symbol、`transport:none`及
+- kernel rank-one只接受一个entry引用一个只含`main`的module，pointer slot block不超过`0x7dc` bytes；
+  kernel完整16-rank只接受全部entry共同引用一个aggregate module和一致slot schema；module exports必须精确
+  对应launch contract的ordered phases，grid/main rank-major table不超过`0x7dc` bytes，cluster
+  prepare/main rank-major table不超过`0x7d0` bytes；
+- model只接受完整16-rank到16个typed module的一一映射、共享`main` symbol、`transport:none`及
   parameter-free、shape/bytes精确匹配、对齐的rank-1..6 f32 user-input/output tensor domain；
-- cluster Direct DTE只接受完整16-rank共同引用一个module，exports恰为互异symbol的`prepare`和
-  `main`，16个entry全为同一status ABI/host-watchdog要求的Direct DTE，slot schema一致，16行rank-major
-  pointer table不超过C-INS packet的`0x7d0` bytes；
+- Direct DTE entry要求同一status ABI/host-watchdog requirement和每entry唯一transport-status slot；多rank
+  domain中的transport合同必须一致。它不约束kernel form、entry ABI、ordered phases或module拓扑，也不产生新launch kind；
 - Q17 ordered ABI slots与Q16 resource role/index/name/type/access all-and-only一致；
 - 每rank唯一terminal completion存在且为当前supported `entry_return`；
 - unknown/deprecated field和无法解释的extension被拒绝。
@@ -295,33 +338,32 @@ functional-numeric链；它不调用repo CRT、不构造Tsm packet，也不属�
 ABI/MMIO/Direct DTE并完成上述生命周期时，才作为target model `RuntimeProvider`。provider选择属于typed runtime
 environment/session policy，不进入compiler planning，也不能增加module内instruction schedule或transport旁路。执行只产出
 invocation-local typed result/status/diagnostic，不修改或回写package。Q18 `RuntimeSessionPlan`保留单entry/rank pure no-card
-component preflight；Q6.B已经materialize完整rank domain的`RuntimeInvocationPlan`和owner-backed session，其中16×grid1只形成
-provider生命周期smoke，单次kernel-grid、model和cluster Direct DTE分别拥有独立aggregate发射合同。rank-one兼容入口委托同一invocation实现，
-调用方不能顺序循环single-entry session后拼接结果，也不能为此把module内message/packet schedule复制到manifest。
-kernel-grid SPMD、model SPMD和cluster Direct DTE必须从typed artifact/launch ABI建立各自的aggregate submit，
-而不是从rank数、路径或symbol猜测。Direct DTE exact provider必须复用同一完整rank-domain session边界。
-schema-v5 launch ABI将四条submit strategy显式带到artifact、package readback和runtime provider；它没有把
-invocation-local stream、BootParam device address或module ownership序列化进package。
+component preflight；Q6.B materialize完整rank domain的`RuntimeInvocationPlan`和owner-backed session。rank-one兼容入口
+委托同一invocation实现，调用方不能顺序循环single-entry session后拼接结果，也不能为此把module内message/packet
+schedule复制到manifest。schema-v6在artifact、package readback和runtime provider之间传递完整tagged launch contract；
+kernel内部是一个普通command还是有序prepare/main phases，直接由其中的typed form和ordered phases声明，并与module
+topology及export role交叉验证，不从transport、rank数、路径、symbol拼写或workload名猜测。Direct DTE exact provider仍
+复用同一完整rank-domain session边界。
 Q22.C board numeric correlation是独立verification evidence，不是第四个runtime/artifact执行边界，也不消费或改写
 package；可选packet/MMIO correlation同样只增加packet provenance claim。
 
 ### 8.1 All-Rank Provider Session Contract
 
-该owner-backed all-rank session合同由Q6.B materialize为四条typed分支：per-rank multi-launch smoke、单次
-kernel-grid submit、type-6/type-7 model submit和cluster Direct DTE prepare/wait/main。它们共享aggregate preflight、
-ownership、progress、错误域和原子结果发布，但保留不同loader/entry/wire ABI。schema-v5 package显式声明选择，
-provider不得按rank数、路径或symbol猜测。
+该owner-backed all-rank session合同只在kernel和model两个runtime launch kind间分支。kernel invocation包含
+manifest已经验证的typed phase/command plan；rank-one是一个普通command，完整16-rank为一个aggregate command，
+有序phase由launch contract自身声明而不由transport推导。model invocation为type-6 graph load加type-7 model submit。二者共享aggregate preflight、
+ownership、progress、错误域和原子结果发布；schema-v6显式声明launch kind，phase plan由已验证结构形成。
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  Q32 integrated audit之后由launch consumer升级的Q18 schema-v5 VerifiedPackageManifest及其all-and-only
+  Q32 integrated audit之后由launch consumer升级的Q18 schema-v6 VerifiedPackageManifest及其all-and-only
   entries/modules/resources/completions/transport requirements；调用方提供
   按ResourceId和global/local slice闭合的all-rank invocation bindings，以及已验证的typed provider environment。
 - Current stage responsibility:
-  先对完整rank domain和显式launch ABI做side-effect-free capability/binding preflight，再建立provider-owned context、
-  allocation/import、H2D、exact module或graph load、aggregate submit/progress/wait/status和D2H。kernel per-rank multi-launch、
-  一次kernel-grid launch和一次model launch是不同submit strategy，但共享同一owner/failure域。成功或cleanup-safe失败才逆序
+  先对完整rank domain和显式runtime launch kind做side-effect-free capability/binding preflight，再建立provider-owned context、
+  allocation/import、H2D、exact module或graph load、aggregate submit/progress/wait/status和D2H。kernel和model
+  共享同一owner/failure域，kernel内部phase boundary由typed invocation plan拥有。成功或cleanup-safe失败才逆序
   cleanup；任一rank使context poisoned后整个session立即quarantine，不再调用低层provider API。Direct DTE ranks属于一个执行域，
   不能从per-entry vector顺序恢复progress。
 - Output artifact / IR:
@@ -337,15 +379,16 @@ Pipeline position:
   恢复transport identity；runtime不解析StableHLO/算子、shape、resource名或test path，不构造case input/
   expected/canary，不根据workload内容修改output。这些只属于`test/`和`unittests/`。
 - Completion gate:
-  rank-one kernel bootstrap、kernel-grid SPMD和model SPMD的all-and-only bindings、entries/modules或graph modules均经历完整
-  provider lifecycle；kernel-grid/model gate以限定版本下的静态logical-tile映射、单次aggregate launch、预填非结果值和16个
+  rank-one kernel bootstrap、16-rank kernel SPMD和model SPMD的all-and-only bindings、entries/modules或graph modules均经历完整
+  provider lifecycle；kernel/model gate以限定版本下的静态logical-tile映射、单次aggregate launch、预填非结果值和16个
   互斥exact rank slice形成logical tile 0..15参与依据，不声明physical coordinate映射。NoTransport路径和Direct DTE路径分别按自身transport requirement
   验收，不能互相替代；每阶段failure
   injection保证descendant suppression、wait/status失败无copyback、cleanup-safe失败逆序释放、poisoned失败不再调用低层
   provider API，任一rank失败无partial result。
 ```
 
-cluster Direct DTE分支的invocation plan以closed variant持有唯一`ModuleId`、typed `prepare`/`main` exports和
+当前production compiler为需要预初始化logical tile与Direct DTE状态的kernel选择cluster prepare/main contract；该
+kernel invocation plan持有唯一`ModuleId`、typed `prepare`/`main` exports和
 16个rank-major slot rows；不从16个per-rank plan的顺序或symbol spelling拼phase。provider读取、hash、load
 该module各一次，保持同一module handle、argument table和custom stream：先提交`prepare`，以host query
 观测其共同terminal，再提交`main`，两段共用一个absolute deadline。prepare先由当前full-16 C-INS pid执行
@@ -360,8 +403,8 @@ main terminal后，runtime先逐rank读回64-byte internal transport status stor
 
 ### 8.2 Q6.B TX Board RuntimeProvider Contract
 
-Q6.B在configured TX board上实现第三层`RuntimeProvider`。schema-v5 package显式拥有per-rank kernel pointer block、
-kernel-grid rank-major pointer table、model BootParam和cluster Direct DTE prepare/main四种closed launch ABI；provider只接受同一
+Q6.B在configured TX board上实现第三层`RuntimeProvider`。schema-v6 package只显式拥有kernel/model launch kind；
+kernel pointer block、rank-major pointer table及可选prepare/main由typed program结构验证，model BootParam由provider机械构造。provider只接受同一
 typed verifier重新加载的fresh package、显式device
 identity和按`ResourceId`绑定的host buffers；文件名、resource name、参数顺序和测试case不能恢复binding语义。kernel entry slot
 顺序由manifest中的typed `PackageABISlotBinding`唯一拥有，provider机械构造dense 64-bit device-address参数块；model entry则从
@@ -370,10 +413,10 @@ typed graph I/O ordinal机械构造BootParam head、dyninfo和type-7 payload，�
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  Q0.L/Q21之后由production wafer-compile fresh发布并重新验证的kernel package，或后续显式model-launch ABI发布的tile-specific
+  Q0.L/Q21之后由production wafer-compile fresh发布并重新验证的kernel package，或显式model launch kind发布的tile-specific
   graph artifact；typed RuntimeEnvironment、按ResourceId all-and-only绑定的invocation buffers和configured TX board inventory。
 - Current stage responsibility:
-  在任何provider调用前完成package、launch ABI和binding静态preflight；显式选择device并读取只读inventory后，在allocation、load和launch
+  在任何provider调用前完成package、runtime launch kind和binding静态preflight；显式选择device并读取只读inventory后，在allocation、load和launch
   前完成live environment identity、public runtime library digest及aggregate free-memory admission。随后通过TX runtime实际
   执行allocation、必要H2D；kernel分支执行exact ELF load、entry resolve和kernel launch，model分支执行16份tile module
   staging、type-6 graph load与type-7 model launch；随后统一执行trusted completion/status、D2H和逆序cleanup。
@@ -397,8 +440,8 @@ Pipeline position:
   fresh rank-one kernel package先闭合环境和单算子；单次grid16 kernel SPMD Add与type-6 load + type-7/BPM model SPMD Add分别
   以限定V5.6/full-good静态映射、单次aggregate launch、`~expected` output预填、16个互斥rank slice和完整CPU exact
   证明logical tile 0..15参与且重复稳定，不声明physical coordinate映射。failure injection分别覆盖cleanup-safe逆序释放与poisoned首错即停。
-  既有16×grid1 multi-launch只关闭provider session增量；独立Direct DTE package还必须以16-rank transport status、receiver
-  readiness、共同completion和完整CPU exact证明真实placement/readiness/completion。
+  Direct DTE kernel package还必须以16-rank transport status、receiver readiness、共同completion和完整CPU exact
+  证明真实placement/readiness/completion；不能再注册16×grid1这类用户可选的第三种launch来代签。
   对应board CTest必须实际注册并执行成功且确认未skip；unsupported/skipped/no-card/fake/host target model均不计完成。
 ```
 
@@ -418,16 +461,16 @@ result返回后做逐字节比较；`--output`只在all-and-only writable result
 任何目标；staging全部成功后才以逐文件atomic rename发布。duplicate ResourceId、package外或read-only capture及多个
 ResourceId指向同一output path均在provider effect前拒绝。
 
-当前TX public runtime存在四种必须分开的closed launch语义，不能把command queue、grid block、tile placement和package rank混为一谈：
+当前TX public runtime只有kernel和model两种launch kind，不能把command queue、grid block、tile placement、package rank、
+kernel command geometry或transport phase误写成新的runtime launch种类：
 
-- 既有`NoTransportRequirements` multi-launch为完整rank domain创建16个stream，再各自提交一次
-  `txLaunchKernel(grid=(1,1,1))`。stream只是command queue；当前V5.6 AP/Kcore按固定logical tile id 0..15划分总block，因此每次唯一block均由
-  tile0取得。该路径证明16份package entry/module/argument block、aggregate ownership、deadline和完整数值比较，不证明多tile。
-- 普通kernel本身支持多tile。当前full-good设备上，一次`txLaunchKernel(grid=(16,1,1), block=(1,1,1))`静态分配为每个logical
-  tile一个block；Kcore为每次调用设置block pid，device entry可用`__get_pid(0)`选择全局Add的互不重叠slice。该路径必须发布一个
-  共享module/function和rank-major argument table。`~expected`预填使任一未写或部分写slice必然失败；结合固定scheduler映射、
-  full-good inventory和16个互斥exact slice，只声明logical tile 0..15参与，不声明physical coordinate；它只作为
-  kernel单算子qualification，不替代最终model发射。
+- kernel rank-one用一个普通`txLaunchKernel(grid=(1,1,1))` command；完整16-rank kernel统一发布一个aggregate
+  module/function和rank-major argument table，并以`txLaunchKernel(grid=(16,1,1), block=(1,1,1))`执行。
+  Kcore为每次调用设置block pid，device entry用`__get_pid(0)`选择对应rank body和argument row。transport需要runtime
+  prepare时，同一个kernel invocation增加先于main terminal的prepare phase；TX provider可在内部用
+  `txLaunchClusterKernel`承载这两个kernel commands，但它不产生第三种launch kind。`~expected`预填使任一未写或部分写
+  slice必然失败；结合固定scheduler映射、full-good inventory和16个互斥exact slice，只声明logical tile 0..15参与，
+  不声明physical coordinate；
 - current V5.6 `txLoadGraph(path, symbol)`固定读取`tile0..tile15/kcore_fw.so`，通过外层model command同步执行内层type-6
   `DYNLIB_LOAD`；它只完成动态库加载，不执行一次inference。AP把同一BootParam地址广播到active tiles，Kcore按本tile id选择
   `module_addr[tile]/module_size[tile]`并用共享symbol注册。后续type-7 `DYNLIB_RUN`按module name查找本地entry并精确调用
@@ -460,12 +503,12 @@ ResourceId指向同一output path均在provider effect前拒绝。
 - 当前runtime会按code-object digest复用module handle。adapter必须给重复handle维护logical ownership计数；同handle且同digest
   只在最后一个logical owner释放时调用一次真实unload，同handle却对应不同digest视为provider contract violation并quarantine。
 
-上述四条launch分支均已形成独立可重放证据：aggregate kernel、model和Direct DTE均从production source/schema-v5 package
+上述两种launch kind及kernel内的transport-prepared path均已有可重放历史证据；迁移后必须从production source/schema-v6 package
 进入已注册且未skip的真实板端gate，完成logical tile `0..15`、完整CPU exact、transport status/cleanup和重复稳定性；不声明
 physical coordinate。具体hardware日期、payload、轮次、环境identity和资源基线只由tasks/16 §12及归档实施计划记录，避免重复事实源。
 同一链路另由非hardware production no-card gate持续重放，不以code 77跳过。
-任何新增launch ABI仍必须显式升级typed artifact/package合同，不能把invocation-local stream、BootParam或module ownership序列化成
-opaque sidecar。
+未来不得新增case或workload launch kind；若kernel/model自身合同演进，必须显式升级typed artifact/package schema，不能把
+invocation-local stream、BootParam、command geometry或module ownership序列化成opaque sidecar。
 
 最小API语义：
 
@@ -501,7 +544,7 @@ invocation；rank-count=1兼容入口也委托同一实现。
 ### 8.3 Profile Companion And Automatic Campaign
 
 profile companion是普通package之外、由同一compiler transaction原子形成的versioned diagnostic artifact。它不升级或复制
-schema-v5 manifest，不改变普通package成员集合，也不是让runtime从opaque sidecar恢复program语义。activation record必须
+schema-v6 manifest，不改变普通package成员集合，也不是让runtime从opaque sidecar恢复program语义。activation record必须
 以普通production manifest的SHA-256绑定身份，并逐项精确绑定`plan.json`、`variants.json`和`site-map.json`的SHA-256；
 `activation.json`在其它companion成员完整形成后最后写入。missing、partial、stale、metadata key不精确或任一digest mismatch
 均在任何board effect前拒绝。companion包含baseline/winner两个variant的未插桩execution binding，以及每个variant各自的
@@ -532,7 +575,7 @@ exact-match companion后自动执行一个固定protocol，不增加profile mode
    analysis JSON和离线HTML先写入run临时目录，完整后原子发布；runner从自身executable-relative installed resources定位report
    generator，失败时不得留下valid run或改变普通package。
 
-companion内部可以包含baseline/winner的summary/count/trace实现，但它们不是public package、用户选项或长期runtime launch ABI。
+companion内部可以包含baseline/winner的summary/count/trace实现，但它们不是public package、用户选项或新的runtime launch kind。
 site id按rank解释；跨candidate的`heuristic-target-call-signature-occurrence-v1`只支持关联展示，不证明stable provenance
 或causality。report中的timeline只显示五类实际`TsmExecute` submit调用；begin/return是Kcore submit API interval，
 不是engine execution。fence/wait/ready-order不作为事件，Direct DTE也不进入五类TSM event count。
@@ -572,7 +615,7 @@ target model均不能替代hardware gate。
 
 必须覆盖：
 
-- unknown schema version/field、bogus ABI/module format；
+- unknown schema version/field、bogus runtime launch kind/runtime ABI/module format，以及旧`launch_abi`字段和四个历史spelling；
 - duplicate/missing IDs和slots、slot gap、wrong role/access/type/bytes/alignment；
 - parameter/workspace遗漏，重复resource alias错误；
 - path traversal、digest mismatch、missing/extra file；
@@ -582,19 +625,19 @@ target model均不能替代hardware gate。
 - transaction中compile/link/manifest/write/fsync/rename每个late failure；
 - board raw capture的正向bytes、duplicate/unknown/read-only ResourceId、readable/write-only/read-write组合、
   `--expected`与`--output`并存、provider duplicate/missing/wrong-size output，以及staging失败不覆盖既有目标；
-- single-tile和16-rank真实compiler bundle直接进入schema-v5 manifest/runtime；
+- single-tile和16-rank真实compiler bundle直接进入schema-v6 manifest/runtime；
 - target profile、identity、Kernel Runtime ABI和module format逐字段registry mapping及
   `RuntimeEnvironment` exact-match；wrong profile、mixed-rank target facts和module/profile冲突均在provider effect前拒绝；
-- Q32 baseline和optimized winner都继续生成schema-v5 package，candidate改变只反映在已验证module digest、resource/slot或
+- Q32 baseline和optimized winner都继续生成schema-v6 package，candidate改变只反映在已验证module digest、resource/slot或
   transport事实中，不产生planner字段或隐式wire升级。
 
 Q16.T启用`DirectDTE`分支时还必须覆盖：typed union canonical roundtrip、unsupported environment在任何provider
 副作用前拒绝、status/error/completion ABI requirement核对，以及manifest中不存在p2p body、message/binding attr或
 channel/FSM allocation副本；rank-15 transport requirement assembly/readback失败不得发布partial package。
 
-旧schema-v2 fixture只证明legacy输入被拒绝，不能作为production package完成证明。
+旧schema-v2至schema-v5 fixture只证明legacy输入被拒绝，不能作为production package完成证明。
 
-当前schema-v5完成证据要求真实rank-count=1/16 program由同一`wafer-compile`产出typed package并进入no-card
+当前schema-v6完成证据要求真实rank-count=1/16 program由同一`wafer-compile`产出typed package并进入no-card
 consumer，rank-15 package assembly注入失败无final/staging。任何未来target/package扩展必须在自己的任务中新增
 对应positive、negative、roundtrip、late-failure和provider pre-effect gate，不能借用旧schema-v3结果宣称完成。
 
@@ -602,13 +645,13 @@ consumer，rank-15 package assembly注入失败无final/staging。任何未来ta
 
 - Q32.V target capability extensions：mapped DMA、physical-footprint fill和oriented GEMM已有真实typed
   Instr/TargetCall、target conversion、closed target-profile/Kernel Runtime ABI mapping及repo-owned model consumer。
-  当前consumer直接消费exact TargetCall/profile/ABI，不需要package逐row集合；schema v5中的shared module/typed export
+  当前consumer直接消费exact TargetCall/profile/ABI，不需要package逐row集合；schema v6中的shared module/typed export
   升级仅由cluster launch consumer驱动。
   若后续consumer确实需要逐row capability，再从winner派生
   `RequiredCapabilitySet`并独立确定字段、canonical encoding、limits、migration和provider preflight；当前不预先冻结新schema
   结构，也不允许无consumer schema阻塞前三项typed compiler/model纵向；
 - Q3.6 Count writeback：只在明确predicate、wrapper/target/model consumer evidence存在后，另行实现typed instruction、effect/completion、
-  ABI/CRT symbol、target model、package readback和provider admission。当前schema-v5不声明Count、不增加Count field或
+  ABI/CRT symbol、target model、package readback和provider admission。当前schema-v6不声明Count、不增加Count field或
   capability key，成功完成Q32/Q18也不构成Count语义、model或board证据；
 - exact target model provider：等待vendor simulator或RV64 ISS、loader ABI、MMIO/Direct DTE和all-rank lifecycle闭合；
   不以host重新lower/重编译module替代package中的exact ELF；

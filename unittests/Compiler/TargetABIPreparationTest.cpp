@@ -128,7 +128,7 @@ module {
   program.distributedOutputs = {shapedBoundary(0, {4})};
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-      wafer::TargetLaunchABIId::perRankPointerBlockV1());
+      wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
@@ -166,7 +166,8 @@ module {
   plannedDDRAllocations.push_back(workspace);
 
   mlir::FailureOr<wafer::compiler::detail::PreparedTargetRank> prepared =
-      wafer::compiler::detail::prepareTargetABI(rank, *config);
+      wafer::compiler::detail::prepareTargetABI(
+          rank, *config, /*transportPreparedBeforeEntry=*/false);
   ASSERT_TRUE(mlir::succeeded(prepared));
   unsigned workspaceSlots = 0;
   for (const wafer::compiler::KernelABISlot &slot : prepared->slots) {
@@ -188,7 +189,8 @@ module {
         return mlir::success();
       });
   mlir::FailureOr<wafer::compiler::detail::PreparedTargetRank> overflow =
-      wafer::compiler::detail::prepareTargetABI(rank, *config);
+      wafer::compiler::detail::prepareTargetABI(
+          rank, *config, /*transportPreparedBeforeEntry=*/false);
   EXPECT_TRUE(mlir::failed(overflow));
   EXPECT_NE(overflowDiagnostics.find(
                 "combined default DDR arena alignment is invalid or exceeds "

@@ -32,7 +32,7 @@ constexpr uint64_t kModelDynInfoBytes = 72;
 
 llvm::Error validateEntryInputs(llvm::Function &body,
                                 llvm::ArrayRef<KernelABISlot> slots,
-                                TargetLaunchABIId launchABI,
+                                const RuntimeLaunchContract &launch,
                                 int64_t logicalRank, int64_t rankCount) {
   if (body.isVarArg() || !body.getReturnType()->isVoidTy() ||
       body.arg_size() != slots.size() ||
@@ -48,14 +48,20 @@ llvm::Error validateEntryInputs(llvm::Function &body,
           llvm::errc::invalid_argument,
           "target device entry slots are not in canonical ordinal order");
 
-  if (launchABI == TargetLaunchABIId::perRankPointerBlockV1())
+  const KernelRuntimeLaunchContract *kernel = launch.getKernel();
+  if (kernel && kernel->form == KernelLaunchForm::PerRank) {
+    if (rankCount != 1 || logicalRank != 0)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "rank-local target device entry requires the rank-one domain");
     return llvm::Error::success();
+  }
   if (rankCount != kTx81TileCount || logicalRank < 0 ||
       logicalRank >= rankCount)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "multi-tile target device entry requires the complete 16-rank domain");
-  if (launchABI != TargetLaunchABIId::tx81ModelBootParamV1())
+  if (!launch.getModel())
     return llvm::Error::success();
   for (const KernelABISlot &slot : slots)
     if ((slot.role != KernelABISlotRole::UserInput &&
@@ -154,17 +160,19 @@ getModelDescriptorIndices(llvm::ArrayRef<KernelABISlot> slots,
   return indices;
 }
 
-llvm::Expected<std::unique_ptr<llvm::Module>> materializeDeviceEntryABI(
-    const llvm::Module &module, llvm::StringRef entrySymbol,
-    llvm::ArrayRef<KernelABISlot> slots, TargetLaunchABIId targetLaunchABI,
-    int64_t logicalRank, int64_t rankCount) {
+llvm::Expected<std::unique_ptr<llvm::Module>>
+materializeDeviceEntryABI(const llvm::Module &module,
+                          llvm::StringRef entrySymbol,
+                          llvm::ArrayRef<KernelABISlot> slots,
+                          const RuntimeLaunchContract &runtimeLaunchContract,
+                          int64_t logicalRank, int64_t rankCount) {
   std::unique_ptr<llvm::Module> deviceModule = llvm::CloneModule(module);
   llvm::Function *body = deviceModule->getFunction(entrySymbol);
   if (!body || body->isDeclaration())
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "target device entry body is missing");
-  if (llvm::Error error = validateEntryInputs(*body, slots, targetLaunchABI,
-                                              logicalRank, rankCount))
+  if (llvm::Error error = validateEntryInputs(
+          *body, slots, runtimeLaunchContract, logicalRank, rankCount))
     return std::move(error);
   llvm::LLVMContext &context = deviceModule->getContext();
   llvm::Type *i64 = llvm::Type::getInt64Ty(context);
@@ -178,15 +186,13 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeDeviceEntryABI(
   llvm::Function *entry =
       llvm::Function::Create(entryType, llvm::GlobalValue::ExternalLinkage,
                              entrySymbol, *deviceModule);
-  entry->getArg(0)->setName(targetLaunchABI ==
-                                    TargetLaunchABIId::tx81ModelBootParamV1()
-                                ? "boot_parameter"
-                                : "slots");
+  const bool modelLaunch = runtimeLaunchContract.getModel() != nullptr;
+  entry->getArg(0)->setName(modelLaunch ? "boot_parameter" : "slots");
   llvm::BasicBlock *block = llvm::BasicBlock::Create(context, "entry", entry);
   llvm::IRBuilder<> builder(block);
   llvm::SmallVector<llvm::Value *, 16> arguments;
   arguments.reserve(slots.size());
-  if (targetLaunchABI == TargetLaunchABIId::tx81ModelBootParamV1()) {
+  if (modelLaunch) {
     llvm::Expected<llvm::SmallVector<uint64_t, 16>> descriptorIndices =
         getModelDescriptorIndices(slots, logicalRank, rankCount);
     if (!descriptorIndices)
@@ -202,28 +208,15 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeDeviceEntryABI(
       arguments.push_back(address);
     }
   } else {
-    llvm::Value *rankOffset = llvm::ConstantInt::get(i64, 0);
-    if (targetLaunchABI == TargetLaunchABIId::tx81KernelGridPointerTableV1()) {
-      llvm::Type *i32 = llvm::Type::getInt32Ty(context);
-      llvm::FunctionCallee getPid = deviceModule->getOrInsertFunction(
-          "__get_pid", llvm::FunctionType::get(i32, {i32}, false));
-      llvm::Value *pid =
-          builder.CreateCall(getPid, llvm::ConstantInt::get(i32, 0), "pid.x");
-      llvm::Value *pid64 = builder.CreateZExt(pid, i64, "pid.x.i64");
-      rankOffset = builder.CreateMul(
-          pid64, llvm::ConstantInt::get(i64, slots.size()), "rank.offset");
-    }
     for (size_t index = 0; index < slots.size(); ++index) {
-      llvm::Value *slotIndex = builder.CreateAdd(
-          rankOffset, llvm::ConstantInt::get(i64, index), "slot.index");
-      llvm::Value *slot =
-          builder.CreateInBoundsGEP(i64, entry->getArg(0), slotIndex);
+      llvm::Value *slot = builder.CreateInBoundsGEP(
+          i64, entry->getArg(0), llvm::ConstantInt::get(i64, index));
       arguments.push_back(builder.CreateLoad(i64, slot));
     }
   }
   builder.CreateCall(body, arguments);
   builder.CreateRetVoid();
-  if (targetLaunchABI == TargetLaunchABIId::tx81ModelBootParamV1())
+  if (modelLaunch)
     retainModelDynamicExport(*deviceModule, *entry, entrySymbol);
   if (llvm::verifyModule(*deviceModule))
     return llvm::createStringError(llvm::errc::invalid_argument,
@@ -235,19 +228,22 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeDeviceEntryABI(
 
 llvm::Error writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
                         llvm::ArrayRef<KernelABISlot> slots,
-                        TargetLaunchABIId targetLaunchABI, int64_t logicalRank,
-                        int64_t rankCount, llvm::StringRef path,
+                        const RuntimeLaunchContract &runtimeLaunchContract,
+                        int64_t logicalRank, int64_t rankCount,
+                        llvm::StringRef path,
                         ProfileCaptureKind profileCapture) {
-  if (targetLaunchABI == TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
+  if (const auto *kernel = runtimeLaunchContract.getKernel();
+      kernel && kernel->form != KernelLaunchForm::PerRank)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "cluster target modules must use complete-rank aggregation");
+        "rank-major kernel target modules must use complete-rank "
+        "aggregation");
   if (llvm::Error error =
           verifyProfileCaptureKernelABISlots(slots, profileCapture))
     return std::move(error);
   llvm::Expected<std::unique_ptr<llvm::Module>> deviceModule =
-      materializeDeviceEntryABI(module, entrySymbol, slots, targetLaunchABI,
-                                logicalRank, rankCount);
+      materializeDeviceEntryABI(module, entrySymbol, slots,
+                                runtimeLaunchContract, logicalRank, rankCount);
   if (!deviceModule)
     return deviceModule.takeError();
   return writeTargetLLVMIR(**deviceModule, path);
@@ -270,7 +266,7 @@ llvm::Error writeTargetLLVMIR(const llvm::Module &module,
 llvm::Error runDeviceLink(const TargetToolchain &toolchain,
                           llvm::StringRef llvmIR, llvm::StringRef module,
                           llvm::StringRef object, llvm::StringRef crtObject,
-                          TargetLaunchABIId targetLaunchABI,
+                          const RuntimeLaunchContract &runtimeLaunchContract,
                           ProfileCaptureKind profileCapture) {
   std::string python = toolchain.getPythonExecutable().str();
   std::string script = toolchain.getDeviceLinkerScript().str();
@@ -280,11 +276,12 @@ llvm::Error runDeviceLink(const TargetToolchain &toolchain,
   std::string objectStorage = object.str();
   std::string crtObjectStorage = crtObject.str();
   std::string loaderABI = "tx8-kcore-loader-v1";
-  if (targetLaunchABI == TargetLaunchABIId::tx81KernelGridPointerTableV1())
-    loaderABI = "tx8-kcore-loader-grid-v1";
-  else if (targetLaunchABI ==
-           TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1())
-    loaderABI = "tx8-kcore-loader-cluster-v1";
+  if (const auto *kernel = runtimeLaunchContract.getKernel()) {
+    if (kernel->form == KernelLaunchForm::Grid)
+      loaderABI = "tx8-kcore-loader-grid-v1";
+    else if (kernel->form == KernelLaunchForm::Cluster)
+      loaderABI = "tx8-kcore-loader-cluster-v1";
+  }
   llvm::SmallVector<llvm::StringRef, 18> arguments = {python,
                                                       script,
                                                       "--llvm-ir",

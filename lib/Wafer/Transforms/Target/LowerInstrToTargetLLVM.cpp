@@ -26,11 +26,11 @@ struct LowerInstrToTargetLLVMPass
       LowerInstrToTargetLLVMPass>::LowerInstrToTargetLLVMPassBase;
 
   explicit LowerInstrToTargetLLVMPass(const TargetConversionRequest &request)
-      : typedTargetProfile(request.targetProfile),
-        typedLaunchABI(request.launchABI) {
+      : typedTargetProfile(request.targetProfile) {
     defaultDDRArenaArgumentIndex = request.defaultDDRArenaArgumentIndex;
     logicalRank = request.logicalRank;
     transportStatusArgumentIndex = request.transportStatusArgumentIndex;
+    transportPreparedBeforeEntry = request.transportPreparedBeforeEntry;
     profileRecordArgumentIndex = request.profileRecordArgumentIndex;
   }
 
@@ -54,25 +54,6 @@ struct LowerInstrToTargetLLVMPass
         return;
       }
       resolvedProfile = *parsed;
-    }
-    std::optional<TargetLaunchABIId> resolvedLaunchABI = typedLaunchABI;
-    if (!resolvedLaunchABI) {
-      llvm::Expected<TargetLaunchABIId> parsed =
-          parseTargetLaunchABIId(targetLaunchABI.getValue());
-      if (!parsed) {
-        moduleOp.emitError()
-            << "invalid target-launch-abi for target LLVM conversion: "
-            << llvm::toString(parsed.takeError());
-        signalPassFailure();
-        return;
-      }
-      resolvedLaunchABI = *parsed;
-    }
-    if (!isTargetLaunchABICompatible(*resolvedLaunchABI, *resolvedProfile)) {
-      moduleOp.emitError()
-          << "target launch ABI is incompatible with target profile";
-      signalPassFailure();
-      return;
     }
     if (mlir::failed(target_llvm_detail::preflightTargetAddresses(moduleOp)) ||
         mlir::failed(target_llvm_detail::preflightTargetFormats(
@@ -103,7 +84,7 @@ struct LowerInstrToTargetLLVMPass
       return;
     }
     if (mlir::failed(target_llvm_detail::lowerModuleInPlace(
-            *loweredModule, *resolvedProfile, *resolvedLaunchABI,
+            *loweredModule, *resolvedProfile, transportPreparedBeforeEntry,
             defaultDDRArenaArgumentIndex, logicalRank,
             transportStatusArgumentIndex, profileRecordArgumentIndex))) {
       signalPassFailure();
@@ -115,7 +96,6 @@ struct LowerInstrToTargetLLVMPass
   }
 
   std::optional<TargetProfileId> typedTargetProfile;
-  std::optional<TargetLaunchABIId> typedLaunchABI;
   int64_t profileRecordArgumentIndex = -1;
 };
 

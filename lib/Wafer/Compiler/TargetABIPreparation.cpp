@@ -25,9 +25,10 @@
 
 namespace wafer::compiler::detail {
 
-PreparedTargetRank::PreparedTargetRank(const ExecutionConfig &executionConfig)
+PreparedTargetRank::PreparedTargetRank(const ExecutionConfig &executionConfig,
+                                       bool transportPreparedBeforeEntry)
     : targetProfile(executionConfig.getTargetProfileId()),
-      launchABI(executionConfig.getTargetLaunchABIId()),
+      transportPreparedBeforeEntry(transportPreparedBeforeEntry),
       targetIdentity(getTargetProfileRecord(targetProfile).targetIdentity),
       kernelRuntimeABI(getTargetProfileRecord(targetProfile).kernelRuntimeABI),
       moduleFormat(getTargetProfileRecord(targetProfile).moduleFormat.str()) {}
@@ -126,8 +127,9 @@ mlir::Value resolveOutputAllocation(mlir::Value value) {
 mlir::FailureOr<PreparedTargetRank>
 prepareTargetABI(const RankExecutable &rankExecutable,
                  const ExecutionConfig &executionConfig,
+                 bool transportPreparedBeforeEntry,
                  ProfileCaptureKind profileCapture) {
-  PreparedTargetRank prepared(executionConfig);
+  PreparedTargetRank prepared(executionConfig, transportPreparedBeforeEntry);
   prepared.module = rankExecutable.getModule().clone();
   prepared.logicalRank = rankExecutable.getLogicalRank();
   prepared.profileCapture = profileCapture;
@@ -301,8 +303,7 @@ prepareTargetABI(const RankExecutable &rankExecutable,
 
   if (profileCapture != ProfileCaptureKind::None) {
     if (executionConfig.getRankCount() != WAFER_TX81_PROFILER_TILE_COUNT ||
-        executionConfig.getTargetLaunchABIId() ==
-            TargetLaunchABIId::tx81ModelBootParamV1()) {
+        executionConfig.getRuntimeLaunchKind() == RuntimeLaunchKind::Model) {
       function.emitError()
           << "target_abi_mismatch: profiler capture requires the complete "
              "16-rank pointer-table launch domain";

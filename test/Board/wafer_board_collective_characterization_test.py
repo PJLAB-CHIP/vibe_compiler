@@ -18,6 +18,7 @@ import numpy as np
 
 import wafer_board_compiler_optimization_campaign_test as paired_support
 import wafer_direct_dte_board_evidence as direct_dte_evidence
+import wafer_runtime_launch_contract as runtime_launch
 from wafer_collective_hardware_characterization_catalog import (
     CASE_KEYS,
     CASES_BY_KEY,
@@ -28,7 +29,7 @@ from wafer_collective_hardware_characterization_catalog import (
 
 
 TARGET_PROFILE = paired_support.TARGET_PROFILE
-LAUNCH_ABI = paired_support.CLUSTER_LAUNCH_ABI
+LAUNCH_KIND = paired_support.CLUSTER_LAUNCH_KIND
 STATUS_ABI = paired_support.DIRECT_DTE_STATUS_ABI
 RANK_COUNT = 16
 ALTERNATIVE_ENVIRONMENT_VARIABLE = (
@@ -58,8 +59,8 @@ class RuntimeCase:
         return self.contract.rank_count
 
     @property
-    def launch_abi(self) -> str:
-        return LAUNCH_ABI
+    def launch_kind(self) -> str:
+        return LAUNCH_KIND
 
     @property
     def payload_factory(self):
@@ -349,7 +350,7 @@ def compile_package(
             str(output),
             f"--execution-ranks={RANK_COUNT}",
             f"--target-profile={TARGET_PROFILE}",
-            f"--launch-abi={LAUNCH_ABI}",
+            f"--launch-kind={LAUNCH_KIND}",
         ],
         environment=environment,
     )
@@ -1145,7 +1146,7 @@ def main() -> int:
         "element_type": contract.element_type,
         "rank_count": RANK_COUNT,
         "target_profile": TARGET_PROFILE,
-        "launch_abi": LAUNCH_ABI,
+        "launch": runtime_launch.CLUSTER_KERNEL_LAUNCH,
         "source_mode": (
             "explicit-post-spmd-carrier"
             if contract.collective_kind

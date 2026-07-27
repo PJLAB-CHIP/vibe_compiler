@@ -23,7 +23,7 @@ import wafer_ncc_probe_protocol as ncc_protocol
 
 
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
-LAUNCH_ABI = "per-rank-pointer-block-v1"
+LAUNCH_KIND = "kernel"
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_ncc_execution_probe.c"
@@ -119,7 +119,7 @@ def compile_seed_package(
             str(package),
             "--execution-ranks=1",
             f"--target-profile={TARGET_PROFILE}",
-            f"--launch-abi={LAUNCH_ABI}",
+            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )

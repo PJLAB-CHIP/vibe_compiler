@@ -20,10 +20,31 @@ llvm::Error validateRuntimeEnvironment(const PackageManifest &manifest,
   if (environment.targetProfile != manifest.targetProfile ||
       environment.targetIdentity != manifest.targetIdentity ||
       environment.runtimeABI != manifest.runtimeABI ||
-      environment.launchABI != manifest.launchABI ||
       environment.moduleFormat != manifest.moduleFormat)
     return invalid("runtime environment is incompatible with package target");
+  if (const auto *kernel = manifest.launch.getKernel()) {
+    if (!llvm::is_contained(environment.supportedKernelLaunchForms,
+                            kernel->form) ||
+        !llvm::is_contained(environment.supportedKernelEntryABIs,
+                            kernel->entryABI))
+      return invalid(
+          "runtime environment does not support the package kernel launch "
+          "contract");
+  } else {
+    const auto *model = manifest.launch.getModel();
+    if (!llvm::is_contained(environment.supportedModelEntryABIs,
+                            model->entryABI))
+      return invalid(
+          "runtime environment does not support the package model launch "
+          "contract");
+  }
   return llvm::Error::success();
+}
+
+PackageModuleExportRole exportRoleForPhase(RuntimeLaunchPhaseRole phase) {
+  return phase == RuntimeLaunchPhaseRole::Prepare
+             ? PackageModuleExportRole::Prepare
+             : PackageModuleExportRole::Main;
 }
 
 } // namespace
@@ -44,11 +65,6 @@ llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
       findModule(manifest.modules, entry.module);
   if (!module)
     return invalid("runtime entry references a missing module");
-  const PackageModuleExportRecord *mainExport =
-      findModuleExport(*module, PackageModuleExportRole::Main);
-  if (!mainExport)
-    return invalid("runtime entry module has no typed main export");
-
   std::vector<const RuntimeInvocationBinding *> bindingsByResource(
       manifest.resources.size(), nullptr);
   for (const RuntimeInvocationBinding &binding : invocationBindings) {
@@ -65,7 +81,14 @@ llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
   plan.logicalRank = entry.logicalRank;
   plan.module = module->id;
   plan.modulePath = module->relativePath;
-  plan.mainSymbol = mainExport->symbol;
+  for (RuntimeLaunchPhaseRole phase : manifest.launch.getPhases()) {
+    const PackageModuleExportRecord *moduleExport =
+        findModuleExport(*module, exportRoleForPhase(phase));
+    if (!moduleExport)
+      return invalid(
+          "runtime entry module is missing a required typed launch phase");
+    plan.phases.push_back({phase, moduleExport->symbol});
+  }
   plan.terminalCompletion = entry.terminalCompletion;
   plan.transport = entry.transport;
   if (auto *requirements =

@@ -968,17 +968,33 @@
 - 防复发：测试必须覆盖外层timeout的退出诊断和“不执行下一轮”；不能以更长的stream timeout、signal handler内调用vendor API或自动
   device reset冒充安全取消。
 
+## 2026-07-27 不要把kernel内部协议提升为runtime launch种类
+
+- 现象：旧接口把rank-local pointer block、rank-major grid、model BootParam和Direct DTE
+  `prepare/main`分别注册为四个`TargetLaunchABIId`，并要求用户通过`--launch-abi`选择。结果是同一个kernel
+  runtime入口被伪装成多个case-specific入口，provider还会从该值推导transport和lifecycle。
+- 根因：把四个正交事实混在同一枚举：产品级kernel/model分派、kernel command geometry、entry参数布局和
+  ordered phases；又把Direct DTE workload/transport identity编码进枚举名字。
+- 修复模式：用户入口保持唯一`wafer-run`，顶层`RuntimeLaunchKind`只允许`kernel`/`model`。
+  compiler在完整rank/module/transport事实存在后形成tagged `RuntimeLaunchContract`；kernel内部显式携带
+  form、entry ABI和ordered phases，Direct DTE只存在于entry transport union。Board driver只暴露
+  kernel phase submit与model submit，所有phase共享一个absolute deadline，submit不能藏在wait中。
+- 防复发：删除旧registry、CLI、wire字段和兼容alias；schema升级后拒绝旧版本。测试必须覆盖第三种kind、
+  非法nested组合、旧spelling、transport/status与launch字段的独立校验，以及prepare/main分别submit/wait的
+  stage归因。provider capability描述支持的kernel/model内部合同，不能要求package选择一个provider专用入口。
+
 ## 2026-07-22 Direct DTE初始化必须先形成全tile phase boundary
 
 - 现象：每个rank进入main后各自执行`direct_sync_init(16)`；较晚rank可能清掉较早peer已经post的ready token，使peer永久等待。
   只有本地含DTE op的rank注入status lifecycle时，无本地通信但属于同一transport contract的rank也没有可观察terminal。
 - 根因：把card-wide transport初始化降成了rank-local函数序言，并从本地op存在性推导invocation transport责任；异步rank启动顺序
   不能提供全tile happens-before。
-- 修复模式：cluster launch ABI显式发布typed `prepare`/`main` exports。`prepare`在16 tile上执行一次初始化并等待共同terminal，
+- 修复模式：kernel runtime launch contract显式发布typed `prepare`/`main` phases和exports。`prepare`在16 tile上执行一次初始化并等待共同terminal，
   host随后在同一stream、参数表和deadline内发`main`；main使用不重复初始化的`begin_after_prepare`，所有transport-contract rank
   均写status。main terminal后先D2H并验证16个status，全部success后才允许读取用户output。
-- 防复发：launch ABI而不是symbol/name选择两阶段lifecycle；module export role、entry到shared module覆盖和`0x7d0`参数上限由
-  schema verifier闭合。status pending/error/unknown或status D2H失败立即sticky quarantine，之后不cleanup、retry、reset或power。
+- 防复发：ordered phase role而不是symbol/name或Direct DTE case名选择两阶段lifecycle；module export role、
+  entry到shared module覆盖和`0x7d0`参数上限由schema verifier闭合。status pending/error/unknown或status D2H
+  失败立即sticky quarantine，之后不cleanup、retry、reset或power。
 
 ## 2026-07-22 C-Intrinsic Direct DTE必须初始化tile拓扑状态
 

@@ -45,11 +45,14 @@ Pipeline position:
   SPM/DDR planning、transport binding及completion verification的selected typed wafer.instr/SCF/CF/func IR。
   每个rank已有accepted SPM/DDR offsets、typed views、physical geometry和ordered Kernel ABI resources。
 - Current stage responsibility:
-  从 ExecutionConfig 读取 TargetProfileId和TargetLaunchABIId；用当前closed target-profile/format/target-call contracts
+  从 ExecutionConfig 读取 TargetProfileId和两值RuntimeLaunchKind；在ExecutableBundle已有all-rank transport事实后，
+  由compiler resolver一次性形成typed RuntimeLaunchContract（kernel/model kind、kernel form、entry ABI和ordered phases）；
+  用当前closed target-profile/format/target-call contracts
   映射 TargetIdentityId、KernelRuntimeABIId、module format和exact CRT signatures；从selected typed IR
   验证geometry、range、effect/completion和narrow fields。在module clone上执行structure-preserving
   DialectConversion，全部成功后翻译成由独立LLVMContext拥有的llvm::Module。Q17随后直接消费该
-  TargetLLVMModuleBundle做launch-specific entry wrapper、CRT compile/device link、symbol/entry/ELF/identity/ABI-slot/digest readback，
+  TargetLLVMModuleBundle及其resolved launch contract做entry wrapper、aggregate kernel publication、CRT compile/device link、
+  symbol/entry/ELF/identity/ABI-slot/digest readback，
   并在all-rank成功后原子发布TargetArtifactBundle。
 - Output artifact / IR:
   move-only、不可序列化的TargetLLVMModuleBundle：ExecutionConfig和all-and-only rank modules；每个module
@@ -62,7 +65,7 @@ Pipeline position:
   Q17 RISC-V device link、repo-owned target-call/SystemC frontend直接消费同一个TargetLLVMModuleBundle；
   package transaction消费TargetArtifactBundle并逐字段readback。runtime/module loader只消费verified package。
 - User-level driver / named pipeline:
-  production wafer-compile要求显式--target-profile=<registered-id>与--launch-abi=<registered-id>，在all-rank ExecutableBundle完成后自动
+  production wafer-compile要求显式--target-profile=<registered-id>与--launch-kind=<kernel|model>，在all-rank ExecutableBundle完成后自动
   进入target conversion/publication。focused C++ tests可直接构造typed request；没有profile default，
   也不提供从中间调度IR直达target LLVM的兼容pipeline。
 - Explicit non-goals:
@@ -72,8 +75,9 @@ Pipeline position:
 - Completion gate:
   当前v1：normal/normal GEMM、现有compact RDMA/WDMA、GS、compute、peripheral、sync和已闭合Direct DTE
   family通过geometry/range/narrowing/full-conversion；任一失败source module byte-identical。
-  TargetProfileId和TargetLaunchABIId从CompilationRequest/ExecutionConfig贯穿ExecutableBundle、TargetLLVMModuleBundle、
-  TargetArtifactBundle和package readback且没有default；closed compatibility table拒绝未资格化组合；111-symbol CRT conformance、rank-count=1/16
+  TargetProfileId和两值RuntimeLaunchKind从CompilationRequest/ExecutionConfig进入ExecutableBundle；完整RuntimeLaunchContract
+  从唯一compiler resolver贯穿TargetLLVMModuleBundle、TargetArtifactBundle和package readback且没有default；closed
+  compatibility table拒绝未资格化组合；111-symbol CRT conformance、rank-count=1/16
   owner lifetime、all-and-only module/ABI-slot/digest、late-rank atomic failure和真实production driver通过。
   Q32.V/Q3.6各自拥有独立completion gate，不反向改写current v1证据；Q32.V新增typed profile/ABI row由
   Q32.M/S通用candidate owner消费。
@@ -114,10 +118,11 @@ v1 key 含义。
 
 普通 instruction-to-target conversion只用`TargetProfileId`取得target identity、runtime
 ABI、module format、logical-format encoding 和 exact call signature，并与 selected typed IR 交叉验证。它不读取
-model profile、board environment、admission status或planner上下文。Q17 device-entry materialization另从同一
-`ExecutionConfig`读取`TargetLaunchABIId`，选择per-rank pointer block、kernel-grid pid/rank-major table、model
-BootParam wrapper或cluster Direct DTE prepare/main rank-major table。cluster只对完整16-rank Direct DTE contract开放，
-`prepare`与`main`是typed export role，symbol只是locator；该选择不能由symbol、module path、digest或rank数恢复。
+model profile、board environment、admission status或planner上下文。lowering只接收它实际消费的
+transport-initialization-point投影，不接收完整runtime launch contract。Q17 device-entry materialization消费
+compiler-owned resolved contract：rank-local pointer block、rank-major pointer table或model BootParam属于entry ABI；
+per-rank/grid/cluster属于kernel form；`prepare`与`main`属于ordered phase/export role。Direct DTE仍是独立transport
+contract，不能进入launch kind、form或entry ABI名字；任何字段都不能由symbol、module path、digest、rank数或workload名恢复。
 
 model semantics/evidence 由 `tasks/17-target-execution-model.md` 拥有；package/runtime/board admission 由
 `tasks/15-launch-runtime-package.md` 拥有。二者可以拒绝 compiler 已能发射的 module，但不能反向扩大
@@ -387,7 +392,14 @@ scope或slot schema：
 ExecutionConfig {
   execution_rank_count
   TargetProfileId
-  TargetLaunchABIId
+  RuntimeLaunchKind             // kernel | model
+}
+
+RuntimeLaunchContract {
+  kind                          // kernel | model
+  kernel_form                   // per-rank | grid | cluster, only for kernel
+  entry_abi
+  ordered_phase_roles
 }
 
 KernelABISlot {
@@ -439,19 +451,20 @@ rank interface all-and-only覆盖 `[0, rank_count)`，每个interface只引用�
 interface引用；该引用拓扑是rank-local/shared payload的唯一事实源，不再另存module scope。target
 profile/identity/runtime ABI/module format必须逐module与`ExecutionConfig`及closed profile mapping一致。
 `VerifiedTargetExport.role`在module内唯一，symbol只是ELF locator；具体calling convention和submit语义由
-`(TargetLaunchABIId, role)`的唯一closed registry解释，不增加平行entry-ABI事实源。
+resolved `RuntimeLaunchContract`与role共同解释，package verifier再与rank→module拓扑、slot schema和transport
+contract交叉验证，不从这些邻近事实反推缺失launch字段。
 
-per-rank为rank interface到module的一一映射且每个module只有`main`；model保持16个rank-local
-payload、`main`导出及现有BootParam gate。kernel-grid在16-rank slot schema一致且最终module byte-identical后只
-发布一个被16个rank interface共同引用的payload，并使用只对该ABI放行`__get_pid`的loader symbol
-closure。`tx81-cluster-direct-dte-prepare-main-v1`也只发布一个共享payload，但它从16个已验证的
-rank-specialized LLVM body构造：在同一LLVM context中确定性重命名/内部化definitions，link后生成
-`__get_pid(0)` dispatch的`main`；`prepare`以同一pid调用`init_tile_id(pid, 4)`建立TX81单卡4×4拓扑状态，再调用
-`direct_sync_init(16)`。cluster loader closure只额外放行`__get_pid`和`init_tile_id`。聚合前对COMDAT、alias/
+rank-one kernel为rank interface到module的一一映射且module只有`main`；model保持16个rank-local
+payload、`main`导出及现有BootParam gate。完整16-rank kernel统一从16个已验证的rank-specialized LLVM body
+构造一个aggregate payload：在同一LLVM context中确定性重命名/内部化definitions，link后生成
+`__get_pid(0)` dispatch的`main`。resolved phases含`prepare`时另生成typed prepare export；当前Direct DTE
+producer的prepare以同一pid调用`init_tile_id(pid, 4)`建立TX81单卡4×4拓扑状态，再调用`direct_sync_init(16)`。
+loader closure按kernel form与entry ABI选择所需`__get_pid`/`init_tile_id`，不按transport或workload名字选择。聚合前对COMDAT、alias/
 ifunc、ctor/dtor/appending global等未闭合链接语义fail closed；不从callee名、路径或digest推断phase。
-cluster的16个rank-major pointer row不得超过当前V5.6 C-INS packet的`0x7d0`-byte argument上限。
+cluster form的16个rank-major pointer row不得超过当前V5.6 C-INS packet的`0x7d0`-byte argument上限；
+standard grid form使用普通kernel packet的`0x7dc`上限。
 
-每个 `VerifiedTargetModule` 从input `TargetLLVMModuleBundle`、typed launch ABI、link output和readback逐字段构造；
+每个 `VerifiedTargetModule` 从input `TargetLLVMModuleBundle`、typed runtime launch contract、link output和readback逐字段构造；
 `VerifiedTargetRankInterface`直接投影同一bundle的rank和ordered slots。Q17不回读`ExecutableBundle`，也不用
 path、symbol scan或manifest补typed fields。relative path只负责定位publication root下的bytes，由content digest约束。
 

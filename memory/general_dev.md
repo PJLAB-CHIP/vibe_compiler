@@ -207,19 +207,16 @@
   `tx_runtime.h`和完整所需symbol的`libhpgr`，否则fail closed。这个开关只构建能力，adapter只在`--board`路径按需加载DSO；
   no-card路径不加载vendor library。board loader必须以同一个open fd完成hash和`/proc/self/fd` load，并按dev/inode核对全部
   dlsym provider；不能分两次按path读取。先用`ctest --test-dir <board-build> -LE hardware --output-on-failure`验证host closure。
-  live test还需显式配置默认关闭的`WAFER_ENABLE_BOARD_TEST_EXECUTION=ON`及预期runtime digest/version/PCI/device/tile；现有
-  rank-one与per-rank multi-launch smoke可先后用
-  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-single-op-add$' --output-on-failure`和
-  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-per-rank-add-smoke$' --output-on-failure`，每次确认未skip，
-  并在前后只读核对device memory/process与firmware status；前一gate失败时不执行后一gate。`wafer-board-per-rank-add-smoke`是
-  16×grid1 provider lifecycle smoke，current V5.6静态确认都由tile0执行；它不再作为16-tile gate。真实多tile命令只有对应
-  static/fake gate先通过后才串行执行
+  live test还需显式配置默认关闭的`WAFER_ENABLE_BOARD_TEST_EXECUTION=ON`及预期runtime digest/version/PCI/device/tile。
+  runtime顶层只有kernel/model两种launch kind；板测case不能通过provider专用ABI选择第三种入口。先执行rank-one kernel
+  `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-single-op-add$' --output-on-failure`，
+  确认未skip并在前后只读核对device memory/process与firmware status。真实16-tile命令只有对应static/fake gate先通过后才串行执行
   `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-kernel-grid-add$' --output-on-failure`和
   `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-model-add$' --output-on-failure`；Direct DTE再独立执行
   `WAFER_EXECUTE_HARDWARE_TESTS=1 ctest --test-dir <board-build> -R '^wafer-board-cluster-direct-dte$' --output-on-failure`。各项之间只读验卡，
   首个失败或超时即停，不retry/reset/power，也不能用临时runner路径替代已注册CTest。开启importer/SPMD helper的配置还应在未armed
   环境实际执行对应kernel-grid、model和Direct DTE production no-card gate，它们从production source fresh编译到
-  schema-v5 package并进入all-rank no-card consumer，不允许返回77或以fake manifest替代。schema-v5 module不带rank，
+  schema-v6 package并进入all-rank no-card consumer，不允许返回77或以fake manifest替代。schema-v6 module不带rank，
   entry不带symbol；rank覆盖只由entry到module引用表达，module通过typed exports定位`prepare`/`main`。
   vendor adapter由`tools/wafer-run` executable拥有，通用`WaferRuntime`只拥有typed provider接口和lifecycle executor；
   不把`tx_runtime` header/library依赖放进compiler或通用runtime library。
@@ -982,7 +979,7 @@
   first-failure stop和no retry/reset/power。CPU增量构建可高并发；硬件launch仍串行。no-card与host gate通过只标记
   pre-board readiness，不升级成`board-observed`。
 - 需要跨CTest合并small/steady/tail或control/experiment时，runner必须为本次execute生成不可复用的session id，
-  archive还要精确绑定target profile、launch ABI、device/runtime身份和runtime library digest；只靠work directory
+  archive还要精确绑定target profile、完整runtime launch contract、device/runtime身份和runtime library digest；只靠work directory
   或case名会把旧轮、旧卡或其它profile的结果混进当前分类。
 - matched group按sample-major执行并在sample间轮换condition顺序；涉及physical rank时，baseline和其它condition
   必须使用同phase的nested active set，避免tile差异伪装成contention slope。只做到equal-mean position的四轮

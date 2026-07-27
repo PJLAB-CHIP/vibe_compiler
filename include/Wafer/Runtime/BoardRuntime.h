@@ -8,6 +8,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -136,6 +137,8 @@ struct BoardCompletionObservation {
   uint64_t maximumPollGapNanoseconds = 0;
 };
 
+using BoardCompletionDeadline = std::chrono::steady_clock::time_point;
+
 /// One immutable, already-digest-verified tile module snapshot. Graph loading
 /// must synchronously consume the bytes; it may not retain the ArrayRef.
 struct BoardGraphModuleSnapshot {
@@ -215,25 +218,14 @@ public:
             llvm::StringRef symbol) = 0;
   virtual llvm::Error unloadGraph(BoardGraphHandle graph) = 0;
 
-  /// Establishes one provider-owned submission for the complete logical-rank
-  /// domain. A failure after an unknown or non-empty accepted subset must
-  /// poison the context. A usable failure guarantees that no submission state
-  /// remains live.
-  virtual llvm::Error submitAll(llvm::ArrayRef<BoardRankLaunch> launches) = 0;
-
-  /// One txLaunchKernel grid.x=rank_count submission. All launches must refer
-  /// to the same verified function and carry canonical rank-major slots.
+  /// Submits exactly one typed kernel phase for the complete logical-rank
+  /// domain. The first phase establishes provider-owned stream and argument
+  /// storage; a later phase may only reuse that state after the previous phase
+  /// reached terminal. A failure after an unknown or non-empty accepted subset
+  /// must poison the context.
   virtual llvm::Error
-  submitKernelGrid(llvm::ArrayRef<BoardRankLaunch> launches) = 0;
-
-  /// Establishes the closed two-phase TX81 cluster Direct-DTE submission.
-  /// The provider first submits `prepare`, observes its all-tile terminal
-  /// state, and only then submits the shared main function carried by the
-  /// canonical rank launches. Both phases retain one module/argument table/
-  /// stream and share the deadline passed to waitAll().
-  virtual llvm::Error
-  submitClusterPrepareMain(BoardFunctionHandle prepare,
-                           llvm::ArrayRef<BoardRankLaunch> mainLaunches) = 0;
+  submitKernelPhase(KernelLaunchForm form, RuntimeLaunchPhaseRole phaseRole,
+                    llvm::ArrayRef<BoardRankLaunch> launches) = 0;
 
   /// One txLaunchModel submission owned by a previously loaded graph. The TX
   /// provider alone materializes the qualified BootParam/type-7 wire bytes.
@@ -241,12 +233,12 @@ public:
   submitModel(BoardGraphHandle graph,
               llvm::ArrayRef<BoardModelTensorLaunch> tensors) = 0;
 
-  /// Waits for every submitted rank with a host deadline and returns the
-  /// actually observed completion-poll resolution. Timeout or an untrustworthy
-  /// terminal state must poison the context.
+  /// Waits for the current submitted phase to become terminal. Every phase of
+  /// one invocation receives the same absolute host deadline. Timeout or an
+  /// untrustworthy terminal state must poison the context.
   virtual llvm::Expected<BoardCompletionObservation>
-  waitAll(uint64_t timeoutMilliseconds,
-          BoardCompletionObservationPolicy observationPolicy) = 0;
+  waitCurrentSubmission(BoardCompletionDeadline deadline,
+                        BoardCompletionObservationPolicy observationPolicy) = 0;
 
   /// Releases provider-owned submission state after every rank is known
   /// terminal. It must never be called after poison.
@@ -385,8 +377,9 @@ executeBoardInvocationInSession(const VerifiedPackageManifest &package,
                                 QualifiedBoardRuntimeSession &session);
 
 /// Executes the complete verified logical-rank domain as one owner-backed
-/// provider session. Direct DTE is accepted only through its closed cluster
-/// prepare/main launch ABI and is otherwise rejected before device effects.
+/// provider session. The manifest selects exactly one kernel or model
+/// submission path. Entry transport requirements, including Direct DTE, are
+/// verified independently and never select another runtime entry point.
 llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
     const VerifiedPackageManifest &package, llvm::StringRef packageRoot,
     BoardRuntimeInvocationRequest request, BoardRuntimeDriver &driver);

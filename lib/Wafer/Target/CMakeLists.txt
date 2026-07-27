@@ -20,10 +20,10 @@ add_mlir_library(WaferTarget
   NumericProfiles.cpp
   NumericSemanticsInternal.cpp
   PhysicalTensorCodec.cpp
+  RuntimeLaunchContract.cpp
   TargetCall.cpp
   TargetCallDecoder.cpp
   TargetFormat.cpp
-  TargetLaunchABI.cpp
   TargetProfile.cpp
 
   LINK_LIBS PUBLIC

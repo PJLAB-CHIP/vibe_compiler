@@ -360,8 +360,7 @@ module {
       wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
   request.logicalRank = 15;
   request.transportStatusArgumentIndex = 0;
-  request.launchABI =
-      wafer::TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+  request.transportPreparedBeforeEntry = true;
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
 
   ASSERT_TRUE(mlir::succeeded(manager.run(*source)));

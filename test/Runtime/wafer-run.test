@@ -20,19 +20,21 @@
 # RUN: not wafer-run --package-dir %t.bad-package --entry-id 0 --no-card 2>&1 | FileCheck %s --check-prefix=DIGEST
 # RUN: not wafer-run --package-dir %S/../Tools --entry-id 0 --no-card 2>&1 | FileCheck %s --check-prefix=LEGACY
 
-# PLAN: package: id=0 schema=5 ranks=1
+# PLAN: package: id=0 schema=6 ranks=1
 # PLAN: target_profile: wafer-tx81-single-card-kernel-v1
-# PLAN: target: wafer-tx81-single-card runtime_abi=wafer-tx81-kernel-v1 launch_abi=per-rank-pointer-block-v1 module_format=elf-riscv64
-# PLAN: entry: 0 rank=0 symbol=main
+# PLAN: target: wafer-tx81-single-card runtime_abi=wafer-tx81-kernel-v1 module_format=elf-riscv64
+# PLAN: launch: kind=kernel form=per-rank entry_abi=rank-local-pointer-block-v1 phases=main
+# PLAN: entry: 0 rank=0
 # PLAN: module: 0 path=modules/rank_00000.so
+# PLAN: launch_phase: role=main symbol=main
 # PLAN: launch_slot: 0 resource=0 role=user_input bytes=64 alignment=256 access=read_only externally_bound=true
 # PLAN: launch_slot: 1 resource=1 role=output bytes=64 alignment=256 access=write_only externally_bound=true
 # PLAN: launch_slot: 2 resource=2 role=workspace bytes=512 alignment=256 access=read_write externally_bound=false
 # PLAN: terminal_completion: 0 kind=entry_return
 # PLAN: board_execution: false
 
-# ALL-RANKS: package: id=0 schema=5 ranks=1
-# ALL-RANKS: entry: 0 rank=0 symbol=main
+# ALL-RANKS: package: id=0 schema=6 ranks=1
+# ALL-RANKS: entry: 0 rank=0
 # ALL-RANKS: invocation_ranks: 1
 # ALL-RANKS: board_execution: false
 

@@ -172,8 +172,9 @@ static llvm::Expected<detail::ProfileExecutableBundles> buildExecutableBundles(
     for (auto [expectedRank, rank] : llvm::enumerate(ranks))
       if (rank.getLogicalRank() != static_cast<int64_t>(expectedRank))
         return fail("executable bundle rank domain is not canonical");
-    return ExecutableBundleBuilder::makeBundle(executionConfig, context,
-                                               std::move(ranks));
+    return ExecutableBundleBuilder::makeBundle(
+        executionConfig, std::move(variant.runtimeLaunchContract), context,
+        std::move(ranks));
   };
 
   llvm::Expected<ExecutableBundle> production =

@@ -130,7 +130,7 @@ module {
       wafer::compiler::ExecutionConfig::createForSingleCard(
           /*executionRankCount=*/1,
           wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
-          wafer::TargetLaunchABIId::perRankPointerBlockV1());
+          wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(executionConfig));
 
   std::string diagnosticsText;

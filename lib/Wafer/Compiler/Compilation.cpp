@@ -275,21 +275,22 @@ mlir::LogicalResult writeCollectiveCharacterizationReport(
 llvm::Expected<ExecutionConfig>
 ExecutionConfig::createForSingleCard(int64_t executionRankCount,
                                      TargetProfileId targetProfile,
-                                     TargetLaunchABIId targetLaunchABI) {
+                                     RuntimeLaunchKind runtimeLaunchKind) {
   if (executionRankCount != 1 && executionRankCount != 16)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "execution-ranks must be exactly 1 or 16 for the single-card compiler");
-  if (targetLaunchABI != TargetLaunchABIId::perRankPointerBlockV1() &&
-      executionRankCount != 16)
+  if (runtimeLaunchKind == RuntimeLaunchKind::Model && executionRankCount != 16)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "multi-tile target launch ABI requires execution-ranks=16");
-  if (!isTargetLaunchABICompatible(targetLaunchABI, targetProfile))
+        "model runtime launch requires execution-ranks=16");
+  if (runtimeLaunchKind == RuntimeLaunchKind::Model &&
+      targetProfile != TargetProfileId::waferTx81SingleCardKernelV1())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "target launch ABI is not qualified for the selected target profile");
-  return ExecutionConfig(executionRankCount, targetProfile, targetLaunchABI);
+        "model runtime launch is not qualified for the selected target "
+        "profile");
+  return ExecutionConfig(executionRankCount, targetProfile, runtimeLaunchKind);
 }
 
 llvm::Expected<CompilationRequest>
@@ -304,10 +305,11 @@ CompilationRequest::create(llvm::StringRef sourceProgramDirectory,
 
 llvm::Expected<CompilationOptions>
 CompilationOptions::profile(const ExecutionConfig &executionConfig) {
-  if (executionConfig.getRankCount() != 16)
+  if (executionConfig.getRankCount() != 16 ||
+      executionConfig.getRuntimeLaunchKind() != RuntimeLaunchKind::Kernel)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "profile compilation requires execution-ranks=16");
+        "profile compilation requires a 16-rank kernel launch");
   return CompilationOptions(/*profileCompanion=*/true);
 }
 

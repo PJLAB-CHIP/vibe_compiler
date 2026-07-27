@@ -28,8 +28,22 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
                      stringifyTargetIdentityId(manifest.targetIdentity));
       json.attribute("runtime_abi",
                      stringifyKernelRuntimeABIId(manifest.runtimeABI));
-      json.attribute("launch_abi",
-                     stringifyTargetLaunchABIId(manifest.launchABI));
+      json.attributeObject("launch", [&] {
+        json.attribute("kind",
+                       stringifyRuntimeLaunchKind(manifest.launch.getKind()));
+        if (const auto *kernel = manifest.launch.getKernel()) {
+          json.attribute("form", stringifyKernelLaunchForm(kernel->form));
+          json.attribute("entry_abi",
+                         stringifyKernelEntryABI(kernel->entryABI));
+        } else {
+          const auto *model = manifest.launch.getModel();
+          json.attribute("entry_abi", stringifyModelEntryABI(model->entryABI));
+        }
+        json.attributeArray("phases", [&] {
+          for (RuntimeLaunchPhaseRole phase : manifest.launch.getPhases())
+            json.value(stringifyRuntimeLaunchPhaseRole(phase));
+        });
+      });
       json.attribute("module_format", manifest.moduleFormat);
     });
     json.attribute("rank_count", manifest.rankCount);
@@ -62,12 +76,10 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
           json.attribute("digest", module.digest);
           json.attribute("format", module.format);
           json.attributeArray("exports", [&] {
-            for (const PackageModuleExportRecord &moduleExport :
-                 module.exports)
+            for (const PackageModuleExportRecord &moduleExport : module.exports)
               json.object([&] {
-                json.attribute(
-                    "role",
-                    stringifyPackageModuleExportRole(moduleExport.role));
+                json.attribute("role", stringifyPackageModuleExportRole(
+                                           moduleExport.role));
                 json.attribute("symbol", moduleExport.symbol);
               });
           });

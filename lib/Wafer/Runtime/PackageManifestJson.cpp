@@ -153,6 +153,94 @@ parseModuleExportRole(llvm::StringRef role) {
   return invalid("unsupported package module export role '" + role + "'");
 }
 
+llvm::Expected<std::vector<RuntimeLaunchPhaseRole>>
+parseRuntimeLaunchPhases(const llvm::json::Object &object,
+                         llvm::StringRef context,
+                         const PackageParseLimits &limits) {
+  llvm::Expected<const llvm::json::Array *> phases =
+      requireArray(object, "phases", context);
+  if (!phases)
+    return phases.takeError();
+  if ((*phases)->empty() || (*phases)->size() > 2)
+    return invalid(context + ".phases must contain one or two ordered roles");
+
+  std::vector<RuntimeLaunchPhaseRole> result;
+  result.reserve((*phases)->size());
+  for (auto [index, value] : llvm::enumerate(**phases)) {
+    std::optional<llvm::StringRef> spelling = value.getAsString();
+    const std::string phaseContext =
+        (context + ".phases[" + llvm::Twine(index) + "]").str();
+    if (!spelling)
+      return invalid(phaseContext + " must be a string");
+    if (spelling->empty() || spelling->size() > limits.maxStringBytes)
+      return invalid(phaseContext + " has invalid length");
+    llvm::Expected<RuntimeLaunchPhaseRole> phase =
+        parseRuntimeLaunchPhaseRole(*spelling);
+    if (!phase)
+      return phase.takeError();
+    result.push_back(*phase);
+  }
+  return result;
+}
+
+llvm::Expected<RuntimeLaunchContract>
+parseRuntimeLaunchContract(const llvm::json::Object &object,
+                           llvm::StringRef context,
+                           const PackageParseLimits &limits) {
+  llvm::Expected<std::string> kindSpelling =
+      requireString(object, "kind", context, limits);
+  if (!kindSpelling)
+    return kindSpelling.takeError();
+  llvm::Expected<RuntimeLaunchKind> kind =
+      parseRuntimeLaunchKind(*kindSpelling);
+  if (!kind)
+    return kind.takeError();
+
+  if (*kind == RuntimeLaunchKind::Kernel) {
+    if (llvm::Error error = requireExactFields(
+            object, {"kind", "form", "entry_abi", "phases"}, context))
+      return std::move(error);
+    llvm::Expected<std::string> formSpelling =
+        requireString(object, "form", context, limits);
+    if (!formSpelling)
+      return formSpelling.takeError();
+    llvm::Expected<KernelLaunchForm> form =
+        parseKernelLaunchForm(*formSpelling);
+    if (!form)
+      return form.takeError();
+    llvm::Expected<std::string> entryABISpelling =
+        requireString(object, "entry_abi", context, limits);
+    if (!entryABISpelling)
+      return entryABISpelling.takeError();
+    llvm::Expected<KernelEntryABI> entryABI =
+        parseKernelEntryABI(*entryABISpelling);
+    if (!entryABI)
+      return entryABI.takeError();
+    llvm::Expected<std::vector<RuntimeLaunchPhaseRole>> phases =
+        parseRuntimeLaunchPhases(object, context, limits);
+    if (!phases)
+      return phases.takeError();
+    return RuntimeLaunchContract::createKernel(*form, *entryABI, *phases);
+  }
+
+  if (llvm::Error error =
+          requireExactFields(object, {"kind", "entry_abi", "phases"}, context))
+    return std::move(error);
+  llvm::Expected<std::string> entryABISpelling =
+      requireString(object, "entry_abi", context, limits);
+  if (!entryABISpelling)
+    return entryABISpelling.takeError();
+  llvm::Expected<ModelEntryABI> entryABI =
+      parseModelEntryABI(*entryABISpelling);
+  if (!entryABI)
+    return entryABI.takeError();
+  llvm::Expected<std::vector<RuntimeLaunchPhaseRole>> phases =
+      parseRuntimeLaunchPhases(object, context, limits);
+  if (!phases)
+    return phases.takeError();
+  return RuntimeLaunchContract::createModel(*entryABI, *phases);
+}
+
 llvm::Expected<PackageResourceRecord>
 parseResource(const llvm::json::Value &value, uint64_t index,
               const PackageParseLimits &limits) {
@@ -278,8 +366,11 @@ parseModuleRecord(const llvm::json::Value &value, uint64_t index,
   if ((*exports)->size() > limits.maxRecords)
     return invalid(context + ".exports exceeds record limit");
 
-  PackageModuleRecord record{ModuleId(*id), std::move(*path),
-                             std::move(*digest), std::move(*format), {}};
+  PackageModuleRecord record{ModuleId(*id),
+                             std::move(*path),
+                             std::move(*digest),
+                             std::move(*format),
+                             {}};
   for (auto [exportIndex, exportValue] : llvm::enumerate(**exports)) {
     const llvm::json::Object *moduleExport = exportValue.getAsObject();
     std::string exportContext =
@@ -372,11 +463,10 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
   std::string context = "entries[" + std::to_string(index) + "]";
   if (!object)
     return invalid(context + " must be an object");
-  if (llvm::Error error =
-          requireExactFields(*object,
-                             {"id", "rank", "module", "slots",
-                              "terminal_completion", "transport"},
-                             context))
+  if (llvm::Error error = requireExactFields(
+          *object,
+          {"id", "rank", "module", "slots", "terminal_completion", "transport"},
+          context))
     return std::move(error);
   llvm::Expected<uint64_t> id = requireUnsigned(*object, "id", context);
   if (!id)
@@ -466,6 +556,8 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
       requireUnsigned(*root, "schema_version", "manifest");
   if (!schemaVersion)
     return schemaVersion.takeError();
+  if (*schemaVersion != kPackageManifestSchemaVersion)
+    return invalid("unsupported package manifest schema_version");
   llvm::Expected<const llvm::json::Object *> program =
       requireObject(*root, "program", "manifest");
   if (!program)
@@ -504,8 +596,7 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
     return std::move(error);
   if (llvm::Error error = requireExactFields(
           **target,
-          {"profile", "identity", "runtime_abi", "launch_abi",
-           "module_format"},
+          {"profile", "identity", "runtime_abi", "launch", "module_format"},
           "manifest.target"))
     return std::move(error);
   llvm::Expected<uint64_t> programId =
@@ -524,10 +615,10 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
       requireString(**target, "runtime_abi", "manifest.target", limits);
   if (!runtimeABI)
     return runtimeABI.takeError();
-  llvm::Expected<std::string> launchABI =
-      requireString(**target, "launch_abi", "manifest.target", limits);
-  if (!launchABI)
-    return launchABI.takeError();
+  llvm::Expected<const llvm::json::Object *> launch =
+      requireObject(**target, "launch", "manifest.target");
+  if (!launch)
+    return launch.takeError();
   llvm::Expected<std::string> moduleFormat =
       requireString(**target, "module_format", "manifest.target", limits);
   if (!moduleFormat)
@@ -545,15 +636,14 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
       parseKernelRuntimeABIId(*runtimeABI);
   if (!parsedRuntimeABI)
     return parsedRuntimeABI.takeError();
-  llvm::Expected<TargetLaunchABIId> parsedLaunchABI =
-      parseTargetLaunchABIId(*launchABI);
-  if (!parsedLaunchABI)
-    return parsedLaunchABI.takeError();
+  llvm::Expected<RuntimeLaunchContract> parsedLaunch =
+      parseRuntimeLaunchContract(**launch, "manifest.target.launch", limits);
+  if (!parsedLaunch)
+    return parsedLaunch.takeError();
   PackageManifest manifest(*parsedTargetProfile, *parsedTargetIdentity,
-                           *parsedRuntimeABI, *parsedLaunchABI, *moduleFormat);
+                           *parsedRuntimeABI, std::move(*parsedLaunch),
+                           *moduleFormat);
 
-  if (*schemaVersion > std::numeric_limits<uint32_t>::max())
-    return invalid("manifest.schema_version exceeds uint32");
   manifest.schemaVersion = static_cast<uint32_t>(*schemaVersion);
   manifest.program = ProgramId(*programId);
   manifest.rankCount = *rankCount;

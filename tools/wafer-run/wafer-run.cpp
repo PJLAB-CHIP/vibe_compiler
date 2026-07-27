@@ -280,12 +280,34 @@ int fail(llvm::Error error) {
   return 1;
 }
 
+void printRuntimeLaunchContract(const wafer::RuntimeLaunchContract &launch) {
+  llvm::outs() << "launch: kind="
+               << wafer::stringifyRuntimeLaunchKind(launch.getKind());
+  if (const auto *kernel = launch.getKernel())
+    llvm::outs() << " form=" << wafer::stringifyKernelLaunchForm(kernel->form)
+                 << " entry_abi="
+                 << wafer::stringifyKernelEntryABI(kernel->entryABI);
+  else
+    llvm::outs() << " entry_abi="
+                 << wafer::stringifyModelEntryABI(launch.getModel()->entryABI);
+  llvm::outs() << " phases=";
+  for (auto [index, phase] : llvm::enumerate(launch.getPhases())) {
+    if (index != 0)
+      llvm::outs() << ",";
+    llvm::outs() << wafer::stringifyRuntimeLaunchPhaseRole(phase);
+  }
+  llvm::outs() << "\n";
+}
+
 void printNoCardRankPlan(const wafer::runtime::RuntimeSessionPlan &plan) {
   llvm::outs() << "entry: " << plan.entry.getValue()
-               << " rank=" << plan.logicalRank << " symbol=" << plan.mainSymbol
-               << "\n";
+               << " rank=" << plan.logicalRank << "\n";
   llvm::outs() << "module: " << plan.module.getValue()
                << " path=" << plan.modulePath << "\n";
+  for (const wafer::runtime::PlannedRuntimeLaunchPhase &phase : plan.phases)
+    llvm::outs() << "launch_phase: role="
+                 << wafer::stringifyRuntimeLaunchPhaseRole(phase.role)
+                 << " symbol=" << phase.symbol << "\n";
   for (auto [ordinal, resource] : llvm::enumerate(plan.resources)) {
     llvm::outs() << "launch_slot: " << ordinal
                  << " resource=" << resource.resource.getValue() << " role="
@@ -316,9 +338,15 @@ int runNoCard(const Options &options,
                         resource.access, true});
   }
   wafer::runtime::RuntimeEnvironment environment{
-      manifest.targetProfile, manifest.targetIdentity,
-      manifest.runtimeABI,    manifest.launchABI,
-      manifest.moduleFormat,  options.maxResourceBytes};
+      manifest.targetProfile, manifest.targetIdentity, manifest.runtimeABI,
+      manifest.moduleFormat, options.maxResourceBytes};
+  if (const auto *kernel = manifest.launch.getKernel()) {
+    environment.supportedKernelLaunchForms.push_back(kernel->form);
+    environment.supportedKernelEntryABIs.push_back(kernel->entryABI);
+  } else {
+    environment.supportedModelEntryABIs.push_back(
+        manifest.launch.getModel()->entryABI);
+  }
   if (options.directDTEStatusABI) {
     environment.supportsDirectDTE = true;
     environment.directDTEStatusABI = *options.directDTEStatusABI;
@@ -352,9 +380,8 @@ int runNoCard(const Options &options,
                << wafer::stringifyTargetIdentityId(manifest.targetIdentity)
                << " runtime_abi="
                << wafer::stringifyKernelRuntimeABIId(manifest.runtimeABI)
-               << " launch_abi="
-               << wafer::stringifyTargetLaunchABIId(manifest.launchABI)
                << " module_format=" << manifest.moduleFormat << "\n";
+  printRuntimeLaunchContract(manifest.launch);
   if (selectedEntry) {
     printNoCardRankPlan(*selectedPlan);
   } else {
@@ -397,7 +424,7 @@ int runBoard(const Options &options,
 
   llvm::Expected<std::unique_ptr<wafer::runtime::BoardRuntimeDriver>> driver =
       wafer::runtime::createTxBoardRuntimeDriver(
-          options.expectedRuntimeLibraryDigest, manifest.launchABI);
+          options.expectedRuntimeLibraryDigest);
   if (!driver) {
     llvm::errs() << "wafer-run: " << llvm::toString(driver.takeError())
                  << "\nwafer-run: ending TX provider setup without running "
@@ -458,6 +485,7 @@ int runBoard(const Options &options,
                << " total_memory_bytes=" << result->device.totalMemoryBytes
                << " runtime_library_digest="
                << result->device.runtimeLibraryDigest << "\n";
+  printRuntimeLaunchContract(manifest.launch);
   for (const auto &tile : result->device.tiles)
     llvm::outs() << "board_tile: logical=" << tile.logicalIndex
                  << " available=" << (tile.available ? "true" : "false")
@@ -496,26 +524,26 @@ int runBoard(const Options &options,
                    << rank.terminalCompletion.getValue()
                    << " kind=entry_return rank=" << rank.logicalRank << "\n";
     llvm::outs() << "invocation_ranks: " << result->ranks.size() << "\n";
-    if (manifest.launchABI ==
-        wafer::TargetLaunchABIId::perRankPointerBlockV1()) {
+    const auto *kernel = manifest.launch.getKernel();
+    if (kernel && kernel->form == wafer::KernelLaunchForm::PerRank) {
       llvm::outs() << "launch_pattern: independent-grid1\n";
       llvm::outs() << "logical_tile_execution_basis: none\n";
-    } else if (manifest.launchABI ==
-               wafer::TargetLaunchABIId::tx81KernelGridPointerTableV1()) {
-      llvm::outs() << "launch_pattern: kernel-grid-x16\n";
+    } else if (kernel && kernel->form == wafer::KernelLaunchForm::Grid) {
+      llvm::outs() << "launch_pattern: kernel-grid-x" << manifest.rankCount
+                   << "\n";
       llvm::outs() << "logical_tile_execution_basis: "
                       "scheduler-pid-x-and-exact-rank-slices\n";
-    } else if (manifest.launchABI ==
-               wafer::TargetLaunchABIId::tx81ModelBootParamV1()) {
+    } else if (manifest.launch.getModel()) {
       llvm::outs() << "launch_pattern: model-type6-type7\n";
       llvm::outs() << "logical_tile_execution_basis: "
                       "graph-tile-module-map-and-exact-rank-slices\n";
     } else {
-      llvm::outs() << "launch_pattern: cluster-prepare-main-x16\n";
+      llvm::outs() << "launch_pattern: cluster-x" << manifest.rankCount << "\n";
       llvm::outs() << "logical_tile_execution_basis: "
                       "cluster-pid-and-exact-rank-slices\n";
     }
-    llvm::outs() << "logical_tile_domain: 0..15\n";
+    llvm::outs() << "logical_tile_domain: 0.." << manifest.rankCount - 1
+                 << "\n";
     llvm::outs() << "physical_execution_claim: none\n";
   }
   if (!profileRunDirectory.empty())

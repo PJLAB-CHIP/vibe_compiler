@@ -19,7 +19,7 @@ void printHelp() {
   llvm::outs() << "usage: wafer-compile --input-program-dir <dir> "
                   "--output-program-dir <dir> --execution-ranks <1|16> "
                   "--target-profile <registered-id> "
-                  "--launch-abi <registered-id> "
+                  "--launch-kind <kernel|model> "
                   "[--profile] "
                   "[--target-model "
                   "--model-input <index>=<npy> "
@@ -121,9 +121,9 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       continue;
     }
-    if (arg == "--launch-abi" || arg.starts_with("--launch-abi=")) {
-      if (parseValueOption(argc, argv, index, arg, "--launch-abi",
-                           options.targetLaunchABI))
+    if (arg == "--launch-kind" || arg.starts_with("--launch-kind=")) {
+      if (parseValueOption(argc, argv, index, arg, "--launch-kind",
+                           options.runtimeLaunchKind))
         return false;
       continue;
     }

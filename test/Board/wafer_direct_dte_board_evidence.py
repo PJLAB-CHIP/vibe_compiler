@@ -18,10 +18,12 @@ import dataclasses
 import re
 from collections.abc import Iterable, Mapping, Sequence
 
+import wafer_runtime_launch_contract as runtime_launch
 
-SCHEMA_VERSION = 5
+
+SCHEMA_VERSION = runtime_launch.PACKAGE_SCHEMA_VERSION
 RANK_COUNT = 16
-CLUSTER_LAUNCH_ABI = "tx81-cluster-direct-dte-prepare-main-v1"
+CLUSTER_LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 DIRECT_DTE_STATUS_ABI = "wafer-direct-dte-status-v2"
 DIRECT_DTE_STATUS_BYTES = 64
 DIRECT_DTE_STATUS_ALIGNMENT = 64
@@ -115,17 +117,20 @@ def _records_by_dense_rank(
 def validate_direct_dte_manifest(
     manifest: Mapping[str, object],
 ) -> DirectDTEManifestEvidence:
-    """Validate the status-v2/watchdog/completion slice of schema-v5."""
+    """Validate the status-v2/watchdog/completion slice of schema-v6."""
 
     target = manifest.get("target")
+    runtime_launch.require_manifest_launch(
+        manifest,
+        runtime_launch.CLUSTER_KERNEL_LAUNCH,
+        context="Direct-DTE",
+    )
     if (
-        manifest.get("schema_version") != SCHEMA_VERSION
-        or manifest.get("rank_count") != RANK_COUNT
+        manifest.get("rank_count") != RANK_COUNT
         or not isinstance(target, Mapping)
-        or target.get("launch_abi") != CLUSTER_LAUNCH_ABI
     ):
         raise RuntimeError(
-            "Direct-DTE package does not use the closed schema-v5 "
+            "Direct-DTE package does not use the closed schema-v6 "
             "16-rank cluster launch contract"
         )
 

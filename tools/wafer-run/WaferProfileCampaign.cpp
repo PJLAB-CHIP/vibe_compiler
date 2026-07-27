@@ -463,15 +463,31 @@ void emitCounter(llvm::json::OStream &json, T start, T end, T recovery,
   });
 }
 
+void emitRuntimeLaunch(llvm::json::OStream &json,
+                       const RuntimeLaunchContract &launch) {
+  json.attribute("kind", stringifyRuntimeLaunchKind(launch.getKind()));
+  if (const KernelRuntimeLaunchContract *kernel = launch.getKernel()) {
+    json.attribute("form", stringifyKernelLaunchForm(kernel->form));
+    json.attribute("entry_abi", stringifyKernelEntryABI(kernel->entryABI));
+  } else {
+    json.attribute("entry_abi",
+                   stringifyModelEntryABI(launch.getModel()->entryABI));
+  }
+  json.attributeArray("phases", [&] {
+    for (RuntimeLaunchPhaseRole phase : launch.getPhases())
+      json.value(stringifyRuntimeLaunchPhaseRole(phase));
+  });
+}
+
 void emitCandidateEvidence(llvm::json::OStream &json,
                            const CandidateState &candidate,
                            llvm::StringRef targetProfile,
-                           llvm::StringRef launchABI) {
+                           const RuntimeLaunchContract &launch) {
   json.object([&] {
     json.attributeObject("artifact", [&] {
       json.attribute("digest", candidate.variant->getManifestDigest());
       json.attribute("target_profile", targetProfile);
-      json.attribute("launch_abi", launchABI);
+      json.attributeObject("launch", [&] { emitRuntimeLaunch(json, launch); });
       json.attribute("execution_ranks",
                      int64_t(WAFER_TX81_PROFILER_TILE_COUNT));
     });
@@ -601,14 +617,12 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
       candidates[kWinnerIndex].variant->getPackage().getManifest();
   const std::string targetProfile =
       stringifyTargetProfileId(winnerManifest.targetProfile).str();
-  const std::string launchABI =
-      stringifyTargetLaunchABIId(winnerManifest.launchABI).str();
   std::string storage;
   llvm::raw_string_ostream output(storage);
   llvm::json::OStream json(output, 2);
   json.object([&] {
     json.attribute("schema", "wafer.profile.evidence");
-    json.attribute("schema_version", int64_t(1));
+    json.attribute("schema_version", int64_t(2));
     json.attribute("run_id", runId);
     json.attributeObject("identity", [&] {
       json.attribute("production_manifest_sha256",
@@ -619,7 +633,8 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
           "baseline_same_as_winner",
           candidates[kBaselineIndex].variant->getSameAs().has_value());
       json.attribute("target_profile", targetProfile);
-      json.attribute("launch_abi", launchABI);
+      json.attributeObject(
+          "launch", [&] { emitRuntimeLaunch(json, winnerManifest.launch); });
       json.attribute("execution_ranks",
                      int64_t(WAFER_TX81_PROFILER_TILE_COUNT));
       json.attribute("site_correlation_basis", kProfileSiteCorrelationBasis);
@@ -715,11 +730,15 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
     json.attributeObject("experiments", [&] {
       json.attributeBegin("baseline");
       emitCandidateEvidence(json, candidates[kBaselineIndex], targetProfile,
-                            launchABI);
+                            candidates[kBaselineIndex]
+                                .variant->getPackage()
+                                .getManifest()
+                                .launch);
       json.attributeEnd();
       json.attributeBegin("winner");
-      emitCandidateEvidence(json, candidates[kWinnerIndex], targetProfile,
-                            launchABI);
+      emitCandidateEvidence(
+          json, candidates[kWinnerIndex], targetProfile,
+          candidates[kWinnerIndex].variant->getPackage().getManifest().launch);
       json.attributeEnd();
     });
   });

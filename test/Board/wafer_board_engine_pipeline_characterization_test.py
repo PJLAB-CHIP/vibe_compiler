@@ -14,6 +14,7 @@ from collections.abc import Iterable, Mapping
 
 import wafer_board_ncc_execution_probe_test as ncc_driver
 import wafer_engine_pipeline_characterization_catalog as catalog
+import wafer_runtime_launch_contract as runtime_launch
 
 
 def parse_args() -> argparse.Namespace:
@@ -230,7 +231,7 @@ def board_qualification(args: argparse.Namespace) -> dict[str, object]:
     digest = str(args.expected_runtime_library_sha256).lower()
     qualification = {
         "target_profile": ncc_driver.TARGET_PROFILE,
-        "launch_abi": ncc_driver.LAUNCH_ABI,
+        "launch": runtime_launch.RANK_ONE_KERNEL_LAUNCH,
         "device_id": args.device_id,
         "expected_runtime_version": args.expected_runtime_version,
         "expected_device_name": args.expected_device_name,
@@ -257,7 +258,7 @@ def rank_one_terminal_completion(package: pathlib.Path) -> int:
     entries = manifest.get("entries")
     completions = manifest.get("completions")
     if (
-        manifest.get("schema_version") != 5
+        manifest.get("schema_version") != 6
         or manifest.get("rank_count") != 1
         or not isinstance(entries, list)
         or len(entries) != 1

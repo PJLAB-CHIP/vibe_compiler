@@ -3,7 +3,7 @@
 # RUN: rm -rf %t.input.program %t.compiled.program
 # RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-hf-megatron-transformer-block --hf-config-json %wafer_src_root/test/Tools/Inputs/hf/tiny-random-llama-config.json --sequence-length 4 --output-program-dir %t.input.program
 # RUN: FileCheck %s --input-file=%t.input.program/functions/forward.mlir --check-prefix=INPUT
-# RUN: not wafer-compile --input-program-dir %t.input.program --output-program-dir %t.compiled.program --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-abi=tx81-cluster-direct-dte-prepare-main-v1 2>&1 | FileCheck %s --check-prefix=PACKET
+# RUN: not wafer-compile --input-program-dir %t.input.program --output-program-dir %t.compiled.program --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=PACKET
 
 # INPUT: func.func @main
 # INPUT: mhlo.sharding = "{devices=
@@ -13,4 +13,4 @@
 # V5.6 cluster ABI therefore cannot carry its 16-row rank-major table in one
 # C-INS packet; the full compiler chain must reach and preserve that target
 # legality failure instead of weakening the hardware limit.
-# PACKET: wafer-compile: target launch ABI verification failed: multi-tile rank-major argument table exceeds the qualified V5.6 packet limit
+# PACKET: wafer-compile: runtime launch contract verification failed: multi-tile rank-major argument table exceeds the qualified V5.6 packet limit

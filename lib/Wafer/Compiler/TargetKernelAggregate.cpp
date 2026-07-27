@@ -1,7 +1,8 @@
-//===- TargetClusterArtifact.cpp - Aggregate cluster target module -------===//
+//===- TargetKernelAggregate.cpp - Aggregate kernel target module --------===//
 
 #include "TargetArtifactInternal.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -30,8 +31,8 @@
 namespace wafer::compiler::detail {
 namespace {
 
-constexpr int64_t kClusterRankCount = 16;
-constexpr int64_t kClusterRowLength = 4;
+constexpr int64_t kKernelAggregateRankCount = 16;
+constexpr int64_t kKernelAggregateRowLength = 4;
 
 bool haveSameKernelABISchema(llvm::ArrayRef<KernelABISlot> lhs,
                              llvm::ArrayRef<KernelABISlot> rhs) {
@@ -50,7 +51,7 @@ bool haveSameKernelABISchema(llvm::ArrayRef<KernelABISlot> lhs,
 llvm::Error unsupportedLinkConstruct(llvm::StringRef detail) {
   return llvm::createStringError(
       llvm::errc::invalid_argument,
-      "cluster target aggregation does not support %s", detail.str().c_str());
+      "kernel target aggregation does not support %s", detail.str().c_str());
 }
 
 bool hasSupportedDefinitionLinkage(const llvm::GlobalValue &value) {
@@ -103,13 +104,13 @@ importIntoContext(const llvm::Module &source, llvm::LLVMContext &context,
   llvm::WriteBitcodeToFile(source, output);
   llvm::StringRef bytes(storage.data(), storage.size());
   llvm::MemoryBufferRef buffer(
-      bytes, llvm::formatv("wafer.cluster.rank.{0:D5}", logicalRank).str());
+      bytes, llvm::formatv("wafer.kernel.rank.{0:D5}", logicalRank).str());
   llvm::Expected<std::unique_ptr<llvm::Module>> imported =
       llvm::parseBitcodeFile(buffer, context);
   if (!imported)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "failed to import logical rank %lld for cluster aggregation: %s",
+        "failed to import logical rank %lld for kernel aggregation: %s",
         static_cast<long long>(logicalRank),
         llvm::toString(imported.takeError()).c_str());
   return imported;
@@ -131,10 +132,10 @@ llvm::Expected<std::string> scopeRankDefinitions(llvm::Module &module,
   llvm::Function *entry = module.getFunction(entrySymbol);
   if (!entry || entry->isDeclaration())
     return llvm::createStringError(llvm::errc::invalid_argument,
-                                   "cluster rank entry body is missing");
+                                   "kernel rank entry body is missing");
 
   const std::string prefix =
-      llvm::formatv("__wafer_cluster_rank_{0:D5}", logicalRank).str();
+      llvm::formatv("__wafer_kernel_rank_{0:D5}", logicalRank).str();
   const std::string bodyName = prefix + "_main_body";
   uint64_t functionOrdinal = 0;
   for (llvm::Function &function : module.functions()) {
@@ -164,7 +165,7 @@ llvm::Expected<std::string> scopeRankDefinitions(llvm::Module &module,
 }
 
 void internalizeScopedDefinitions(llvm::Module &module) {
-  constexpr llvm::StringLiteral prefix = "__wafer_cluster_rank_";
+  constexpr llvm::StringLiteral prefix = "__wafer_kernel_rank_";
   for (llvm::Function &function : module.functions())
     if (!function.isDeclaration() && function.getName().starts_with(prefix))
       function.setLinkage(llvm::GlobalValue::InternalLinkage);
@@ -180,7 +181,7 @@ getOrInsertExactDeclaration(llvm::Module &module, llvm::StringRef symbol,
     if (!function->isDeclaration() || function->getFunctionType() != type)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "cluster runtime declaration '%s' has an incompatible definition or "
+          "kernel runtime declaration '%s' has an incompatible definition or "
           "type",
           symbol.str().c_str());
     return function;
@@ -189,10 +190,11 @@ getOrInsertExactDeclaration(llvm::Module &module, llvm::StringRef symbol,
                                 symbol, module);
 }
 
-llvm::Error createClusterExports(llvm::Module &module,
-                                 llvm::ArrayRef<std::string> bodyNames,
-                                 llvm::StringRef mainSymbol,
-                                 uint64_t slotsPerRank) {
+llvm::Error createKernelAggregateExports(llvm::Module &module,
+                                         llvm::ArrayRef<std::string> bodyNames,
+                                         llvm::StringRef mainSymbol,
+                                         uint64_t slotsPerRank,
+                                         bool includePrepare) {
   llvm::LLVMContext &context = module.getContext();
   llvm::Type *voidType = llvm::Type::getVoidTy(context);
   llvm::IntegerType *i32 = llvm::Type::getInt32Ty(context);
@@ -202,10 +204,11 @@ llvm::Error createClusterExports(llvm::Module &module,
       llvm::FunctionType::get(voidType, {pointer}, /*isVarArg=*/false);
 
   if (module.getNamedValue(mainSymbol) ||
-      module.getNamedValue(kClusterPrepareExportSymbol))
+      (includePrepare && module.getNamedValue(kKernelPrepareExportSymbol)))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "cluster export symbol collides with an imported declaration");
+        "kernel aggregate export symbol collides with an imported "
+        "declaration");
 
   llvm::FunctionType *pidType =
       llvm::FunctionType::get(i32, {i32}, /*isVarArg=*/false);
@@ -213,35 +216,39 @@ llvm::Error createClusterExports(llvm::Module &module,
       getOrInsertExactDeclaration(module, "__get_pid", pidType);
   if (!getPid)
     return getPid.takeError();
-  llvm::FunctionType *initTileType =
-      llvm::FunctionType::get(i32, {i32, i32}, /*isVarArg=*/false);
-  llvm::Expected<llvm::Function *> initTileId =
-      getOrInsertExactDeclaration(module, "init_tile_id", initTileType);
-  if (!initTileId)
-    return initTileId.takeError();
-  llvm::FunctionType *syncType =
-      llvm::FunctionType::get(voidType, {i32}, /*isVarArg=*/false);
-  llvm::Expected<llvm::Function *> directSyncInit =
-      getOrInsertExactDeclaration(module, "direct_sync_init", syncType);
-  if (!directSyncInit)
-    return directSyncInit.takeError();
+  if (includePrepare) {
+    llvm::FunctionType *initTileType =
+        llvm::FunctionType::get(i32, {i32, i32}, /*isVarArg=*/false);
+    llvm::Expected<llvm::Function *> initTileId =
+        getOrInsertExactDeclaration(module, "init_tile_id", initTileType);
+    if (!initTileId)
+      return initTileId.takeError();
+    llvm::FunctionType *syncType =
+        llvm::FunctionType::get(voidType, {i32}, /*isVarArg=*/false);
+    llvm::Expected<llvm::Function *> directSyncInit =
+        getOrInsertExactDeclaration(module, "direct_sync_init", syncType);
+    if (!directSyncInit)
+      return directSyncInit.takeError();
 
-  llvm::Function *prepare =
-      llvm::Function::Create(wrapperType, llvm::GlobalValue::ExternalLinkage,
-                             kClusterPrepareExportSymbol, module);
-  prepare->getArg(0)->setName("rank_major_slots");
-  llvm::IRBuilder<> prepareBuilder(
-      llvm::BasicBlock::Create(context, "entry", prepare));
-  llvm::Value *preparePid = prepareBuilder.CreateCall(
-      *getPid, llvm::ConstantInt::get(i32, 0), "pid.x");
-  prepareBuilder.CreateCall(
-      *initTileId,
-      {preparePid, llvm::ConstantInt::get(
-                       i32, static_cast<uint64_t>(kClusterRowLength))});
-  prepareBuilder.CreateCall(
-      *directSyncInit,
-      llvm::ConstantInt::get(i32, static_cast<uint64_t>(kClusterRankCount)));
-  prepareBuilder.CreateRetVoid();
+    llvm::Function *prepare =
+        llvm::Function::Create(wrapperType, llvm::GlobalValue::ExternalLinkage,
+                               kKernelPrepareExportSymbol, module);
+    prepare->getArg(0)->setName("rank_major_slots");
+    llvm::IRBuilder<> prepareBuilder(
+        llvm::BasicBlock::Create(context, "entry", prepare));
+    llvm::Value *preparePid = prepareBuilder.CreateCall(
+        *getPid, llvm::ConstantInt::get(i32, 0), "pid.x");
+    prepareBuilder.CreateCall(
+        *initTileId,
+        {preparePid,
+         llvm::ConstantInt::get(
+             i32, static_cast<uint64_t>(kKernelAggregateRowLength))});
+    prepareBuilder.CreateCall(
+        *directSyncInit,
+        llvm::ConstantInt::get(
+            i32, static_cast<uint64_t>(kKernelAggregateRankCount)));
+    prepareBuilder.CreateRetVoid();
+  }
 
   llvm::Function *main = llvm::Function::Create(
       wrapperType, llvm::GlobalValue::ExternalLinkage, mainSymbol, module);
@@ -255,9 +262,9 @@ llvm::Error createClusterExports(llvm::Module &module,
   llvm::Value *pid =
       builder.CreateCall(*getPid, llvm::ConstantInt::get(i32, 0), "pid.x");
   llvm::SwitchInst *dispatch =
-      builder.CreateSwitch(pid, defaultBlock, kClusterRankCount);
+      builder.CreateSwitch(pid, defaultBlock, kKernelAggregateRankCount);
 
-  for (int64_t rank = 0; rank < kClusterRankCount; ++rank) {
+  for (int64_t rank = 0; rank < kKernelAggregateRankCount; ++rank) {
     llvm::Function *body = module.getFunction(bodyNames[rank]);
     if (!body || body->isDeclaration() || body->isVarArg() ||
         !body->getReturnType()->isVoidTy() ||
@@ -267,7 +274,7 @@ llvm::Error createClusterExports(llvm::Module &module,
         }))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "cluster rank %lld body '%s' does not match the common typed slot "
+          "kernel rank %lld body '%s' does not match the common typed slot "
           "schema (present=%d declaration=%d vararg=%d arguments=%llu)",
           static_cast<long long>(rank), bodyNames[rank].c_str(),
           body != nullptr, body ? body->isDeclaration() : 0,
@@ -302,52 +309,57 @@ llvm::Error createClusterExports(llvm::Module &module,
   if (llvm::verifyModule(module, &verification))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "cluster target module verification failed: %s",
+        "kernel aggregate target module verification failed: %s",
         verification.str().c_str());
   return llvm::Error::success();
 }
 
 } // namespace
 
-llvm::Expected<OwnedTargetLLVMModule>
-buildClusterTargetModule(const TargetLLVMModuleBundle &targetLLVMModules) {
+llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
+    const TargetLLVMModuleBundle &targetLLVMModules) {
   const ExecutionConfig &config = targetLLVMModules.getExecutionConfig();
-  if (config.getTargetLaunchABIId() !=
-          TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1() ||
-      config.getRankCount() != kClusterRankCount ||
-      targetLLVMModules.getModules().size() != kClusterRankCount)
+  const KernelRuntimeLaunchContract *kernel =
+      targetLLVMModules.getRuntimeLaunchContract().getKernel();
+  if (!kernel || kernel->form == KernelLaunchForm::PerRank ||
+      kernel->entryABI != KernelEntryABI::RankMajorPointerTableV1 ||
+      config.getRankCount() != kKernelAggregateRankCount ||
+      targetLLVMModules.getModules().size() != kKernelAggregateRankCount)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "cluster target aggregation requires the complete typed 16-rank "
+        "kernel target aggregation requires the complete typed 16-rank "
         "launch domain");
 
   const TargetLLVMModule &first = targetLLVMModules.getModules().front();
+  const uint64_t packetBytes = kernel->form == KernelLaunchForm::Cluster
+                                   ? kTx81ClusterKernelArgumentBytesMax
+                                   : kTx81KernelArgumentBytesMax;
   if (first.getKernelABISlots().empty() ||
-      first.getKernelABISlots().size() > kTx81ClusterKernelArgumentBytesMax /
-                                             sizeof(uint64_t) /
-                                             kClusterRankCount)
+      first.getKernelABISlots().size() >
+          packetBytes / sizeof(uint64_t) / kKernelAggregateRankCount)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "cluster rank-major argument table exceeds the qualified V5.6 C-INS "
-        "packet limit");
-  if (llvm::count_if(first.getKernelABISlots(), [](const KernelABISlot &slot) {
+        "kernel rank-major argument table exceeds the qualified V5.6 packet "
+        "limit");
+  const size_t transportStatusSlots =
+      llvm::count_if(first.getKernelABISlots(), [](const KernelABISlot &slot) {
         return slot.role == KernelABISlotRole::TransportStatus;
-      }) != 1)
+      });
+  if (transportStatusSlots > 1)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "cluster Direct DTE launch requires exactly one transport status slot "
-        "per rank");
+        "kernel aggregate has more than one typed transport status slot");
 
   auto context = std::make_unique<llvm::LLVMContext>();
   auto aggregate =
-      std::make_unique<llvm::Module>("wafer.cluster.aggregate", *context);
+      std::make_unique<llvm::Module>("wafer.kernel.aggregate", *context);
   aggregate->setTargetTriple(first.getModule().getTargetTriple());
   aggregate->setDataLayout(first.getModule().getDataLayoutStr());
   llvm::Linker linker(*aggregate);
   std::vector<std::string> bodyNames;
-  bodyNames.reserve(kClusterRankCount);
+  bodyNames.reserve(kKernelAggregateRankCount);
 
-  for (int64_t rank = 0; rank < kClusterRankCount; ++rank) {
+  for (int64_t rank = 0; rank < kKernelAggregateRankCount; ++rank) {
     const TargetLLVMModule &source = targetLLVMModules.getModules()[rank];
     if (source.getLogicalRank() != rank ||
         source.getEntrySymbol() != first.getEntrySymbol() ||
@@ -363,7 +375,7 @@ buildClusterTargetModule(const TargetLLVMModuleBundle &targetLLVMModules) {
                                  first.getKernelABISlots()))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "cluster target rank domain has inconsistent typed module facts");
+          "kernel target rank domain has inconsistent typed module facts");
     if (llvm::Error error = validateLinkConstructs(source.getModule()))
       return std::move(error);
     llvm::Expected<std::unique_ptr<llvm::Module>> imported = importIntoContext(
@@ -377,19 +389,22 @@ buildClusterTargetModule(const TargetLLVMModuleBundle &targetLLVMModules) {
       return bodyName.takeError();
     bodyNames.push_back(std::move(*bodyName));
     (*imported)->setModuleIdentifier(
-        llvm::formatv("wafer.cluster.rank.{0:D5}", rank).str());
+        llvm::formatv("wafer.kernel.rank.{0:D5}", rank).str());
     (*imported)->setSourceFileName("");
     if (linker.linkInModule(std::move(*imported)))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "cluster target rank modules could not be linked into one closed "
+          "kernel target rank modules could not be linked into one closed "
           "module");
   }
 
   internalizeScopedDefinitions(*aggregate);
-  if (llvm::Error error =
-          createClusterExports(*aggregate, bodyNames, first.getEntrySymbol(),
-                               first.getKernelABISlots().size()))
+  const bool hasPrepare = llvm::is_contained(
+      targetLLVMModules.getRuntimeLaunchContract().getPhases(),
+      RuntimeLaunchPhaseRole::Prepare);
+  if (llvm::Error error = createKernelAggregateExports(
+          *aggregate, bodyNames, first.getEntrySymbol(),
+          first.getKernelABISlots().size(), hasPrepare))
     return std::move(error);
   return OwnedTargetLLVMModule{std::move(context), std::move(aggregate)};
 }

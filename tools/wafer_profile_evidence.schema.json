@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v1.json",
+  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v2.json",
   "title": "Wafer 16-tile profile evidence",
-  "description": "Version 1 evidence consumed by wafer_profile_report.py. Launch-to-completion host time is the performance basis; rank-local cycles explain each tile, and cross-tile order is published only when the separate clock mapping is qualified.",
+  "description": "Version 2 evidence consumed by wafer_profile_report.py. Runtime launch is a tagged kernel/model contract; launch-to-completion host time is the performance basis, rank-local cycles explain each tile, and cross-tile order is published only when the separate clock mapping is qualified.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -22,7 +22,7 @@
       "const": "wafer.profile.evidence"
     },
     "schema_version": {
-      "const": 1
+      "const": 2
     },
     "run_id": {
       "$ref": "#/$defs/nonEmptyString"
@@ -156,6 +156,53 @@
     "engine": {
       "enum": ["CT", "NE", "RDMA", "WDMA", "TDMA"]
     },
+    "runtimeLaunch": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "form", "entry_abi", "phases"],
+          "properties": {
+            "kind": {"const": "kernel"},
+            "form": {"const": "per-rank"},
+            "entry_abi": {"const": "rank-local-pointer-block-v1"},
+            "phases": {"const": ["main"]}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "form", "entry_abi", "phases"],
+          "properties": {
+            "kind": {"const": "kernel"},
+            "form": {"const": "grid"},
+            "entry_abi": {"const": "rank-major-pointer-table-v1"},
+            "phases": {"const": ["main"]}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "form", "entry_abi", "phases"],
+          "properties": {
+            "kind": {"const": "kernel"},
+            "form": {"const": "cluster"},
+            "entry_abi": {"const": "rank-major-pointer-table-v1"},
+            "phases": {"const": ["prepare", "main"]}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "entry_abi", "phases"],
+          "properties": {
+            "kind": {"const": "model"},
+            "entry_abi": {"const": "tx81-model-bootparam-v1"},
+            "phases": {"const": ["main"]}
+          }
+        }
+      ]
+    },
     "sharedIdentity": {
       "type": "object",
       "additionalProperties": false,
@@ -163,7 +210,7 @@
         "production_manifest_sha256",
         "profile_companion_schema_version",
         "target_profile",
-        "launch_abi",
+        "launch",
         "execution_ranks",
         "baseline_same_as_winner",
         "site_correlation_basis"
@@ -178,8 +225,8 @@
         "target_profile": {
           "$ref": "#/$defs/nonEmptyString"
         },
-        "launch_abi": {
-          "$ref": "#/$defs/nonEmptyString"
+        "launch": {
+          "$ref": "#/$defs/runtimeLaunch"
         },
         "execution_ranks": {
           "const": 16
@@ -264,7 +311,7 @@
       "required": [
         "digest",
         "target_profile",
-        "launch_abi",
+        "launch",
         "execution_ranks"
       ],
       "properties": {
@@ -274,8 +321,8 @@
         "target_profile": {
           "$ref": "#/$defs/nonEmptyString"
         },
-        "launch_abi": {
-          "$ref": "#/$defs/nonEmptyString"
+        "launch": {
+          "$ref": "#/$defs/runtimeLaunch"
         },
         "execution_ranks": {
           "const": 16

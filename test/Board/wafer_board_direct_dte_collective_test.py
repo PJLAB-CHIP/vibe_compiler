@@ -13,10 +13,12 @@ import struct
 import subprocess
 import sys
 
+import wafer_runtime_launch_contract as runtime_launch
+
 
 RANK_COUNT = 16
 LOCAL_ELEMENTS = 64
-LAUNCH_ABI = "tx81-cluster-direct-dte-prepare-main-v1"
+LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 STATUS_ABI = "wafer-direct-dte-status-v2"
 STATUS_STORAGE_BYTES = 64
 STATUS_STORAGE_ALIGNMENT = 64
@@ -180,12 +182,17 @@ def validate_manifest(
         raise RuntimeError("SPMD helper produced an unexpected output partition")
 
     manifest = json.loads((package / "manifest.json").read_text())
+    runtime_launch.require_manifest_launch(
+        manifest,
+        runtime_launch.CLUSTER_KERNEL_LAUNCH,
+        context="Direct-DTE case",
+    )
     if (
-        manifest.get("schema_version") != 5
-        or manifest.get("rank_count") != RANK_COUNT
-        or manifest.get("target", {}).get("launch_abi") != LAUNCH_ABI
+        manifest.get("rank_count") != RANK_COUNT
     ):
-        raise RuntimeError("Direct-DTE case did not produce the closed schema-v5 launch ABI")
+        raise RuntimeError(
+            "Direct-DTE case did not produce the closed schema-v6 kernel launch"
+        )
     modules = manifest.get("modules")
     if not isinstance(modules, list) or len(modules) != 1:
         raise RuntimeError("Direct-DTE case must publish one shared module")
@@ -319,7 +326,7 @@ def main() -> int:
             str(package),
             f"--execution-ranks={RANK_COUNT}",
             "--target-profile=wafer-tx81-single-card-kernel-v1",
-            f"--launch-abi={LAUNCH_ABI}",
+            f"--launch-kind={LAUNCH_KIND}",
         ]
     )
     bindings = validate_manifest(package)
@@ -337,8 +344,8 @@ def main() -> int:
                 "--supports-host-watchdog",
             ]
         )
-        if f"launch_abi={LAUNCH_ABI}" not in result.stdout:
-            raise RuntimeError("no-card output omitted the Direct-DTE launch ABI")
+        if "board_execution: false" not in result.stdout:
+            raise RuntimeError("no-card output omitted Direct-DTE validation")
         print("direct_dte_no_card: verified")
         return 0
 

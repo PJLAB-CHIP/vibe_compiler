@@ -230,7 +230,7 @@ def validate_exact_terminal_completion_gate() -> None:
     with tempfile.TemporaryDirectory() as directory:
         package = pathlib.Path(directory)
         manifest = {
-            "schema_version": 5,
+            "schema_version": 6,
             "rank_count": 1,
             "entries": [
                 {"id": 0, "rank": 0, "terminal_completion": 31}

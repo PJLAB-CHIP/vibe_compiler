@@ -16,6 +16,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SHA256.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <limits>
@@ -273,15 +274,8 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     bool *qualifiedSessionUsable) {
   const PackageManifest &manifest = package.getManifest();
   const EntryId noEntry;
-  const bool perRankLaunch =
-      manifest.launchABI == TargetLaunchABIId::perRankPointerBlockV1();
-  const bool kernelGridLaunch =
-      manifest.launchABI == TargetLaunchABIId::tx81KernelGridPointerTableV1();
-  const bool modelLaunch =
-      manifest.launchABI == TargetLaunchABIId::tx81ModelBootParamV1();
-  const bool clusterDirectDTELaunch =
-      manifest.launchABI ==
-      TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+  const KernelRuntimeLaunchContract *kernelLaunch = manifest.launch.getKernel();
+  const bool modelLaunch = manifest.launch.getModel() != nullptr;
   if (!hasCompleteQualification(request.qualification))
     return boardError(BoardRuntimeStage::Preflight, -1, noEntry,
                       "board execution requires complete explicit device "
@@ -292,15 +286,12 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     return boardError(BoardRuntimeStage::Preflight, -1, noEntry,
                       "board completion timeout is outside the supported "
                       "range");
-  for (const PackageEntrypointRecord &entry : manifest.entries) {
-    const bool directDTE =
-        std::holds_alternative<DirectDTETransportRequirements>(entry.transport);
-    if (directDTE != clusterDirectDTELaunch)
-      return boardError(
-          BoardRuntimeStage::Preflight, entry.logicalRank, entry.id,
-          "TX board Direct DTE requires the closed cluster prepare/main "
-          "launch ABI");
-  }
+
+  llvm::DenseSet<int64_t> directDTERanks;
+  for (const PackageEntrypointRecord &entry : manifest.entries)
+    if (std::holds_alternative<DirectDTETransportRequirements>(entry.transport))
+      directDTERanks.insert(entry.logicalRank);
+  const bool hasDirectDTETransport = !directDTERanks.empty();
 
   llvm::DenseMap<uint64_t, BoardRuntimeBinding *> bindingsByResource;
   for (BoardRuntimeBinding &binding : request.bindings) {
@@ -629,7 +620,19 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   }
   result.completedStages.push_back(BoardRuntimeStage::HostToDevice);
 
+  llvm::ArrayRef<RuntimeLaunchPhaseRole> launchPhases =
+      manifest.launch.getPhases();
+  if (capacityPlan->ranks.empty() || launchPhases.empty())
+    return fail(BoardRuntimeStage::Preflight, -1, noEntry,
+                detail::invalid("runtime launch has no planned rank or phase"));
+
   if (modelLaunch) {
+    const RuntimeSessionPlan &firstRank = capacityPlan->ranks.front();
+    if (firstRank.phases.size() != launchPhases.size() ||
+        firstRank.phases.front().role != launchPhases.front())
+      return fail(
+          BoardRuntimeStage::Preflight, firstRank.logicalRank, firstRank.entry,
+          detail::invalid("model launch phase plan does not match manifest"));
     std::vector<BoardGraphModuleSnapshot> graphModules;
     graphModules.reserve(capacityPlan->ranks.size());
     for (size_t index = 0; index < capacityPlan->ranks.size(); ++index) {
@@ -644,7 +647,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                               rank.module, module->digest, snapshot->bytes});
     }
     llvm::Expected<BoardGraphHandle> loaded =
-        driver.loadGraph(graphModules, capacityPlan->ranks.front().mainSymbol);
+        driver.loadGraph(graphModules, firstRank.phases.front().symbol);
     if (!loaded)
       return fail(BoardRuntimeStage::ModuleLoad, -1, noEntry,
                   loaded.takeError());
@@ -661,57 +664,12 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   }
   result.completedStages.push_back(BoardRuntimeStage::ModuleLoad);
 
-  llvm::DenseMap<uint64_t, BoardFunctionHandle> mainFunctionsByModule;
-  std::optional<BoardFunctionHandle> clusterPrepareFunction;
-  if (!modelLaunch) {
-    for (const LiveModule &liveModule : liveModules) {
-      auto firstRank =
-          llvm::find_if(capacityPlan->ranks, [&](const auto &rank) {
-            return rank.module == liveModule.moduleRecord->id;
-          });
-      if (firstRank == capacityPlan->ranks.end())
-        return fail(
-            BoardRuntimeStage::EntryResolve, -1, noEntry,
-            detail::invalid("loaded module has no typed rank interface"));
-      llvm::Expected<BoardFunctionHandle> function =
-          driver.resolveEntry(liveModule.module, firstRank->mainSymbol);
-      if (!function)
-        return fail(BoardRuntimeStage::EntryResolve, firstRank->logicalRank,
-                    firstRank->entry, function.takeError());
-      mainFunctionsByModule[liveModule.moduleRecord->id.getValue()] = *function;
-      if (clusterDirectDTELaunch) {
-        const PackageModuleExportRecord *prepare = detail::findModuleExport(
-            *liveModule.moduleRecord, PackageModuleExportRole::Prepare);
-        if (!prepare)
-          return fail(
-              BoardRuntimeStage::EntryResolve, firstRank->logicalRank,
-              firstRank->entry,
-              detail::invalid("cluster module has no typed prepare export"));
-        llvm::Expected<BoardFunctionHandle> resolvedPrepare =
-            driver.resolveEntry(liveModule.module, prepare->symbol);
-        if (!resolvedPrepare)
-          return fail(BoardRuntimeStage::EntryResolve, firstRank->logicalRank,
-                      firstRank->entry, resolvedPrepare.takeError());
-        clusterPrepareFunction = *resolvedPrepare;
-      }
-    }
-  }
-  result.completedStages.push_back(BoardRuntimeStage::EntryResolve);
-
-  std::vector<BoardRankLaunch> launches;
-  launches.reserve(capacityPlan->ranks.size());
+  std::vector<BoardRankLaunch> baseLaunches;
+  baseLaunches.reserve(capacityPlan->ranks.size());
   for (const RuntimeSessionPlan &rank : capacityPlan->ranks) {
     BoardRankLaunch launch;
     launch.logicalRank = rank.logicalRank;
     launch.entry = rank.entry;
-    if (!modelLaunch) {
-      auto function = mainFunctionsByModule.find(rank.module.getValue());
-      if (function == mainFunctionsByModule.end())
-        return fail(BoardRuntimeStage::EntryResolve, rank.logicalRank,
-                    rank.entry,
-                    detail::invalid("rank main export was not resolved"));
-      launch.function = function->second;
-    }
     launch.arguments.reserve(rank.launchOrder.size());
     for (ResourceId resource : rank.launchOrder) {
       auto memory = memoryByResource.find(resource.getValue());
@@ -720,73 +678,129 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                     detail::invalid("launch slot has no device allocation"));
       launch.arguments.push_back(static_cast<uint64_t>(memory->second.value));
     }
-    launches.push_back(std::move(launch));
+    baseLaunches.push_back(std::move(launch));
   }
-  std::chrono::steady_clock::time_point submissionBegin;
-  llvm::Error submissionError = [&]() -> llvm::Error {
-    if (perRankLaunch) {
-      submissionBegin = std::chrono::steady_clock::now();
-      return driver.submitAll(launches);
-    }
-    if (kernelGridLaunch) {
-      submissionBegin = std::chrono::steady_clock::now();
-      return driver.submitKernelGrid(launches);
-    }
-    if (clusterDirectDTELaunch) {
-      if (!clusterPrepareFunction)
-        return detail::invalid("cluster prepare export was not resolved");
-      submissionBegin = std::chrono::steady_clock::now();
-      return driver.submitClusterPrepareMain(*clusterPrepareFunction, launches);
-    }
-    if (modelLaunch) {
-      std::vector<BoardModelTensorLaunch> tensors;
-      for (const RuntimeSessionPlan &rank : capacityPlan->ranks)
-        for (auto [slotOrdinal, resourceId] :
-             llvm::enumerate(rank.launchOrder)) {
-          const PackageResourceRecord *resource =
-              detail::findResource(manifest.resources, resourceId);
-          auto memory = memoryByResource.find(resourceId.getValue());
-          if (!resource || memory == memoryByResource.end())
-            return detail::invalid(
-                "model launch slot has no typed resource allocation");
-          tensors.push_back({rank.logicalRank, slotOrdinal, resource->role,
-                             memory->second, resource->bytes,
-                             resource->type.dtype, resource->type.shape});
-        }
-      submissionBegin = std::chrono::steady_clock::now();
-      return driver.submitModel(*liveGraph, tensors);
-    }
-    return detail::invalid("package has an unknown launch ABI");
-  }();
-  if (submissionError)
-    return fail(BoardRuntimeStage::Launch, -1, noEntry,
-                std::move(submissionError));
-  submissionLive = true;
-  result.completedStages.push_back(BoardRuntimeStage::Launch);
 
-  llvm::Expected<BoardCompletionObservation> completionObservation =
-      driver.waitAll(request.completionTimeoutMilliseconds,
-                     request.completionObservationPolicy);
-  if (!completionObservation)
-    return fail(BoardRuntimeStage::Completion, -1, noEntry,
-                completionObservation.takeError());
+  std::optional<std::chrono::steady_clock::time_point> submissionBegin;
+  std::optional<BoardCompletionDeadline> deadline;
+  auto beginSubmissionWindow = [&] {
+    if (submissionBegin)
+      return;
+    submissionBegin = std::chrono::steady_clock::now();
+    deadline = *submissionBegin +
+               std::chrono::milliseconds(request.completionTimeoutMilliseconds);
+  };
+  uint64_t maximumPollGapNanoseconds = 0;
+  if (kernelLaunch) {
+    for (auto [phaseIndex, phaseRole] : llvm::enumerate(launchPhases)) {
+      llvm::DenseMap<uint64_t, BoardFunctionHandle> functionsByModule;
+      for (const LiveModule &liveModule : liveModules) {
+        auto firstRank =
+            llvm::find_if(capacityPlan->ranks, [&](const auto &rank) {
+              return rank.module == liveModule.moduleRecord->id;
+            });
+        if (firstRank == capacityPlan->ranks.end())
+          return fail(
+              BoardRuntimeStage::EntryResolve, -1, noEntry,
+              detail::invalid("loaded module has no typed rank interface"));
+        if (firstRank->phases.size() != launchPhases.size() ||
+            firstRank->phases[phaseIndex].role != phaseRole)
+          return fail(BoardRuntimeStage::EntryResolve, firstRank->logicalRank,
+                      firstRank->entry,
+                      detail::invalid(
+                          "rank launch phase plan does not match manifest"));
+        llvm::Expected<BoardFunctionHandle> function = driver.resolveEntry(
+            liveModule.module, firstRank->phases[phaseIndex].symbol);
+        if (!function)
+          return fail(BoardRuntimeStage::EntryResolve, firstRank->logicalRank,
+                      firstRank->entry, function.takeError());
+        functionsByModule[liveModule.moduleRecord->id.getValue()] = *function;
+      }
+
+      std::vector<BoardRankLaunch> phaseLaunches = baseLaunches;
+      for (auto [rankIndex, rank] : llvm::enumerate(capacityPlan->ranks)) {
+        if (rank.phases.size() != launchPhases.size() ||
+            rank.phases[phaseIndex].role != phaseRole)
+          return fail(BoardRuntimeStage::EntryResolve, rank.logicalRank,
+                      rank.entry,
+                      detail::invalid(
+                          "rank launch phase plan does not match manifest"));
+        auto function = functionsByModule.find(rank.module.getValue());
+        if (function == functionsByModule.end())
+          return fail(BoardRuntimeStage::EntryResolve, rank.logicalRank,
+                      rank.entry,
+                      detail::invalid("rank phase export was not resolved"));
+        phaseLaunches[rankIndex].function = function->second;
+      }
+
+      beginSubmissionWindow();
+      if (llvm::Error error = driver.submitKernelPhase(
+              kernelLaunch->form, phaseRole, phaseLaunches))
+        return fail(BoardRuntimeStage::Launch, -1, noEntry, std::move(error));
+      submissionLive = true;
+      llvm::Expected<BoardCompletionObservation> observation =
+          driver.waitCurrentSubmission(*deadline,
+                                       request.completionObservationPolicy);
+      if (!observation)
+        return fail(BoardRuntimeStage::Completion, -1, noEntry,
+                    observation.takeError());
+      maximumPollGapNanoseconds = std::max(
+          maximumPollGapNanoseconds, observation->maximumPollGapNanoseconds);
+    }
+  } else if (modelLaunch) {
+    std::vector<BoardModelTensorLaunch> tensors;
+    for (const RuntimeSessionPlan &rank : capacityPlan->ranks)
+      for (auto [slotOrdinal, resourceId] : llvm::enumerate(rank.launchOrder)) {
+        const PackageResourceRecord *resource =
+            detail::findResource(manifest.resources, resourceId);
+        auto memory = memoryByResource.find(resourceId.getValue());
+        if (!resource || memory == memoryByResource.end())
+          return fail(
+              BoardRuntimeStage::Launch, rank.logicalRank, rank.entry,
+              detail::invalid(
+                  "model launch slot has no typed resource allocation"));
+        tensors.push_back({rank.logicalRank, slotOrdinal, resource->role,
+                           memory->second, resource->bytes,
+                           resource->type.dtype, resource->type.shape});
+      }
+    beginSubmissionWindow();
+    if (llvm::Error error = driver.submitModel(*liveGraph, tensors))
+      return fail(BoardRuntimeStage::Launch, -1, noEntry, std::move(error));
+    submissionLive = true;
+    llvm::Expected<BoardCompletionObservation> observation =
+        driver.waitCurrentSubmission(*deadline,
+                                     request.completionObservationPolicy);
+    if (!observation)
+      return fail(BoardRuntimeStage::Completion, -1, noEntry,
+                  observation.takeError());
+    maximumPollGapNanoseconds = observation->maximumPollGapNanoseconds;
+  } else {
+    return fail(BoardRuntimeStage::Launch, -1, noEntry,
+                detail::invalid("package has an unknown runtime launch kind"));
+  }
+
+  if (!submissionBegin)
+    return fail(BoardRuntimeStage::Launch, -1, noEntry,
+                detail::invalid("runtime launch did not submit any phase"));
   const auto completionEnd = std::chrono::steady_clock::now();
   const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                           completionEnd - submissionBegin)
+                           completionEnd - *submissionBegin)
                            .count();
   if (elapsed < 0)
     return fail(BoardRuntimeStage::Completion, -1, noEntry,
                 detail::invalid("host steady clock moved backwards"));
   result.launchToCompletionNanoseconds = static_cast<uint64_t>(elapsed);
-  result.completionObservationResolutionNanoseconds =
-      completionObservation->maximumPollGapNanoseconds;
+  result.completionObservationResolutionNanoseconds = maximumPollGapNanoseconds;
+  result.completedStages.push_back(BoardRuntimeStage::EntryResolve);
+  result.completedStages.push_back(BoardRuntimeStage::Launch);
   result.completedStages.push_back(BoardRuntimeStage::Completion);
 
-  if (clusterDirectDTELaunch) {
+  if (hasDirectDTETransport) {
     size_t observedStatuses = 0;
     for (const LiveAllocation &allocation : allocations) {
       const PackageResourceRecord &resource = *allocation.resource;
-      if (resource.role != PackageResourceRole::TransportStatus)
+      if (resource.role != PackageResourceRole::TransportStatus ||
+          !directDTERanks.contains(resource.logicalRank))
         continue;
       ++observedStatuses;
       std::vector<uint8_t> statusBytes(resource.bytes);
@@ -809,7 +823,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                             llvm::Twine(status)));
       }
     }
-    if (observedStatuses != static_cast<size_t>(manifest.rankCount)) {
+    if (observedStatuses != directDTERanks.size()) {
       driver.quarantine();
       return fail(
           BoardRuntimeStage::Completion, -1, noEntry,
@@ -825,7 +839,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                               std::vector<uint8_t>(resource.bytes)};
     if (llvm::Error error =
             driver.copyDeviceToHost(output.bytes, allocation.memory)) {
-      if (clusterDirectDTELaunch)
+      if (directDTERanks.contains(resource.logicalRank))
         driver.quarantine();
       return fail(BoardRuntimeStage::DeviceToHost, resource.logicalRank,
                   allocation.entry, std::move(error));
@@ -840,7 +854,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                               std::vector<uint8_t>(resource.bytes)};
     if (llvm::Error error =
             driver.copyDeviceToHost(output.bytes, allocation.memory)) {
-      if (clusterDirectDTELaunch)
+      if (directDTERanks.contains(resource.logicalRank))
         driver.quarantine();
       return fail(BoardRuntimeStage::DeviceToHost, resource.logicalRank,
                   allocation.entry, std::move(error));

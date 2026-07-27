@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace wafer::compiler::detail {
@@ -32,7 +33,15 @@ struct RankVariantCandidate {
 using RankVariantFrontier = std::vector<RankVariantCandidate>;
 
 struct AcceptedWholeVariant {
+  AcceptedWholeVariant(std::vector<RankExecutable> ranks,
+                       RuntimeLaunchContract runtimeLaunchContract,
+                       analysis::WholeCardInstructionProgramCost resourceCost)
+      : ranks(std::move(ranks)),
+        runtimeLaunchContract(std::move(runtimeLaunchContract)),
+        resourceCost(std::move(resourceCost)) {}
+
   std::vector<RankExecutable> ranks;
+  RuntimeLaunchContract runtimeLaunchContract;
   analysis::WholeCardInstructionProgramCost resourceCost;
   std::vector<int64_t> selectedStableOrdinals;
   std::vector<wafer::RankArtifactKind> selectedArtifactKinds;

@@ -50,11 +50,24 @@ bool haveSameKernelABISchema(llvm::ArrayRef<KernelABISlot> lhs,
   return true;
 }
 
-llvm::Error
-validateTargetLaunchABIDomain(const TargetLLVMModuleBundle &targetLLVMModules) {
+llvm::Error validateRuntimeLaunchContractDomain(
+    const TargetLLVMModuleBundle &targetLLVMModules) {
   const ExecutionConfig &config = targetLLVMModules.getExecutionConfig();
-  TargetLaunchABIId launchABI = config.getTargetLaunchABIId();
-  if (launchABI == TargetLaunchABIId::perRankPointerBlockV1()) {
+  const RuntimeLaunchContract &launch =
+      targetLLVMModules.getRuntimeLaunchContract();
+  if (launch.getKind() != config.getRuntimeLaunchKind() ||
+      !isRuntimeLaunchContractCompatible(launch, config.getTargetProfileId()))
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "runtime launch contract does not match the execution configuration");
+
+  const KernelRuntimeLaunchContract *kernel = launch.getKernel();
+  if (kernel && kernel->form == KernelLaunchForm::PerRank) {
+    if (config.getRankCount() != 1 ||
+        targetLLVMModules.getModules().size() != 1)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "rank-local kernel launch requires the rank-one target domain");
     for (const TargetLLVMModule &module : targetLLVMModules.getModules())
       if (module.getKernelABISlots().size() >
           kTx81KernelArgumentBytesMax / sizeof(uint64_t))
@@ -68,20 +81,18 @@ validateTargetLaunchABIDomain(const TargetLLVMModuleBundle &targetLLVMModules) {
       targetLLVMModules.getModules().size() != 16)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "multi-tile target launch ABI requires the complete 16-rank domain");
+        "multi-tile runtime launch requires the complete 16-rank domain");
 
   const TargetLLVMModule &first = targetLLVMModules.getModules().front();
-  if (launchABI == TargetLaunchABIId::tx81KernelGridPointerTableV1() ||
-      launchABI == TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1()) {
+  if (kernel) {
     if (first.getKernelABISlots().empty())
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "multi-tile pointer-table launch requires at least one typed ABI "
           "slot");
-    const uint64_t packetBytes =
-        launchABI == TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1()
-            ? kTx81ClusterKernelArgumentBytesMax
-            : kTx81KernelArgumentBytesMax;
+    const uint64_t packetBytes = kernel->form == KernelLaunchForm::Cluster
+                                     ? kTx81ClusterKernelArgumentBytesMax
+                                     : kTx81KernelArgumentBytesMax;
     if (first.getKernelABISlots().size() >
         packetBytes / sizeof(uint64_t) /
             static_cast<uint64_t>(config.getRankCount()))
@@ -89,36 +100,35 @@ validateTargetLaunchABIDomain(const TargetLLVMModuleBundle &targetLLVMModules) {
           llvm::errc::invalid_argument,
           "multi-tile rank-major argument table exceeds the qualified V5.6 "
           "packet limit");
-    if (launchABI == TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1() &&
-        llvm::count_if(first.getKernelABISlots(),
-                       [](const KernelABISlot &slot) {
-                         return slot.role == KernelABISlotRole::TransportStatus;
-                       }) != 1)
+    const size_t transportStatusSlots = llvm::count_if(
+        first.getKernelABISlots(), [](const KernelABISlot &slot) {
+          return slot.role == KernelABISlotRole::TransportStatus;
+        });
+    if (transportStatusSlots > 1)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "cluster Direct DTE launch requires exactly one transport status "
-          "slot per rank");
+          "kernel launch has more than one typed transport status slot");
   }
   for (const TargetLLVMModule &module : targetLLVMModules.getModules()) {
     if (module.getEntrySymbol() != first.getEntrySymbol())
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "multi-tile target launch ABI requires one shared entry symbol");
+          "multi-tile runtime launch requires one shared entry symbol");
     if (!haveSameKernelABISchema(module.getKernelABISlots(),
                                  first.getKernelABISlots()))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "multi-tile target launch ABI requires identical all-rank slot "
+          "multi-tile runtime launch requires identical all-rank slot "
           "schemas");
   }
-  if (launchABI == TargetLaunchABIId::tx81ModelBootParamV1())
+  if (launch.getModel())
     for (const KernelABISlot &slot : first.getKernelABISlots())
       if ((slot.role != KernelABISlotRole::UserInput &&
            slot.role != KernelABISlotRole::Output) ||
           slot.dtype != "f32" || slot.shape.empty() || slot.shape.size() > 6)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "model target launch ABI only supports rank-1..6 f32 user-input "
+            "model runtime launch only supports rank-1..6 f32 user-input "
             "and output slots");
   return llvm::Error::success();
 }
@@ -137,9 +147,9 @@ bool isRegularTargetFile(llvm::StringRef path) {
          llvm::sys::fs::file_type::regular_file;
 }
 
-llvm::Error validateTargetLaunchABIDomainForTesting(
+llvm::Error validateRuntimeLaunchContractDomainForTesting(
     const TargetLLVMModuleBundle &targetLLVMModules) {
-  return validateTargetLaunchABIDomain(targetLLVMModules);
+  return validateRuntimeLaunchContractDomain(targetLLVMModules);
 }
 
 namespace {
@@ -189,9 +199,10 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
     return detail::fail(diagnostics,
                         "target LLVM bundle rank domain is incomplete");
   if (llvm::Error error =
-          detail::validateTargetLaunchABIDomain(targetLLVMModules))
-    return detail::fail(diagnostics, "target launch ABI verification failed: " +
-                                         llvm::toString(std::move(error)));
+          detail::validateRuntimeLaunchContractDomain(targetLLVMModules))
+    return detail::fail(diagnostics,
+                        "runtime launch contract verification failed: " +
+                            llvm::toString(std::move(error)));
   if (outputDirectory.empty())
     return detail::fail(diagnostics,
                         "target artifact directory must not be empty");
@@ -261,17 +272,20 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
               llvm::toString(std::move(error)));
 
   const ExecutionConfig &config = targetLLVMModules.getExecutionConfig();
-  const TargetLaunchABIId launchABI = config.getTargetLaunchABIId();
-  const bool isKernelGrid =
-      launchABI == TargetLaunchABIId::tx81KernelGridPointerTableV1();
-  const bool isCluster =
-      launchABI == TargetLaunchABIId::tx81ClusterDirectDTEPrepareMainV1();
+  const RuntimeLaunchContract &runtimeLaunchContract =
+      targetLLVMModules.getRuntimeLaunchContract();
+  const KernelRuntimeLaunchContract *kernelLaunch =
+      runtimeLaunchContract.getKernel();
+  const bool isAggregateKernel =
+      kernelLaunch && kernelLaunch->form != KernelLaunchForm::PerRank;
+  const bool hasPrepare = llvm::is_contained(runtimeLaunchContract.getPhases(),
+                                             RuntimeLaunchPhaseRole::Prepare);
 
   auto makeExports = [&](llvm::StringRef mainSymbol) {
     std::vector<VerifiedTargetExport> exports;
-    if (isCluster)
+    if (hasPrepare)
       exports.push_back(TargetArtifactBundleBuilder::makeExport(
-          TargetExportRole::Prepare, detail::kClusterPrepareExportSymbol));
+          TargetExportRole::Prepare, detail::kKernelPrepareExportSymbol));
     exports.push_back(TargetArtifactBundleBuilder::makeExport(
         TargetExportRole::Main, mainSymbol));
     return exports;
@@ -283,7 +297,7 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
           llvm::StringRef workStem, llvm::StringRef modulePath,
           llvm::ArrayRef<VerifiedTargetExport> exports,
           TargetProfileId targetProfile, llvm::StringRef expectedFormat,
-          bool hasMaterializedLaunchABI)
+          bool hasMaterializedEntryABI)
       -> llvm::Expected<detail::TargetModuleReadback> {
     llvm::SmallString<256> llvmIRPath(workDirectory);
     llvm::sys::path::append(llvmIRPath, workStem + ".ll");
@@ -292,20 +306,21 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
     llvm::SmallString<256> crtObjectPath(workDirectory);
     llvm::sys::path::append(crtObjectPath, workStem + ".wafer_crt.o");
     llvm::Error writeError =
-        hasMaterializedLaunchABI
+        hasMaterializedEntryABI
             ? detail::writeTargetLLVMIR(source, llvmIRPath)
-            : detail::writeLLVMIR(source, entrySymbol, slots, launchABI,
-                                  logicalRank, config.getRankCount(),
-                                  llvmIRPath, profileCapture);
+            : detail::writeLLVMIR(source, entrySymbol, slots,
+                                  runtimeLaunchContract, logicalRank,
+                                  config.getRankCount(), llvmIRPath,
+                                  profileCapture);
     if (writeError)
       return std::move(writeError);
-    if (llvm::Error error =
-            detail::runDeviceLink(toolchain, llvmIRPath, modulePath, objectPath,
-                                  crtObjectPath, launchABI, profileCapture))
+    if (llvm::Error error = detail::runDeviceLink(
+            toolchain, llvmIRPath, modulePath, objectPath, crtObjectPath,
+            runtimeLaunchContract, profileCapture))
       return std::move(error);
     llvm::Expected<detail::TargetModuleReadback> readback =
         detail::verifyTargetModule(modulePath, exports, targetProfile,
-                                   launchABI);
+                                   runtimeLaunchContract);
     if (!readback)
       return readback.takeError();
     if (readback->moduleFormat != expectedFormat)
@@ -317,15 +332,15 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
   };
 
   std::vector<VerifiedTargetModule> modules;
-  modules.reserve(
-      isKernelGrid || isCluster ? 1 : targetLLVMModules.getModules().size());
+  modules.reserve(isAggregateKernel ? 1
+                                    : targetLLVMModules.getModules().size());
   std::vector<VerifiedTargetRankInterface> rankInterfaces;
   rankInterfaces.reserve(targetLLVMModules.getModules().size());
 
-  if (isCluster) {
+  if (isAggregateKernel) {
     const TargetLLVMModule &first = targetLLVMModules.getModules().front();
     llvm::Expected<detail::OwnedTargetLLVMModule> aggregate =
-        detail::buildClusterTargetModule(targetLLVMModules);
+        detail::buildKernelAggregateTargetModule(targetLLVMModules);
     if (!aggregate)
       return detail::fail(diagnostics,
                           "target_module_verification_failed: " +
@@ -339,7 +354,7 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
         *aggregate->module, first.getEntrySymbol(), first.getKernelABISlots(),
         /*logicalRank=*/0, stem, modulePath, exports,
         first.getTargetProfileId(), first.getModuleFormat(),
-        /*hasMaterializedLaunchABI=*/true);
+        /*hasMaterializedEntryABI=*/true);
     if (!readback)
       return detail::fail(diagnostics,
                           "target_module_verification_failed: " +
@@ -354,14 +369,12 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
       rankInterfaces.push_back(TargetArtifactBundleBuilder::makeRankInterface(
           rank.getLogicalRank(), moduleId, rank.getKernelABISlots()));
   } else {
-    std::optional<std::string> kernelGridModuleDigest;
     for (auto [expectedRank, targetLLVMModule] :
          llvm::enumerate(targetLLVMModules.getModules())) {
-      const TargetArtifactModuleId moduleId(isKernelGrid ? 0 : expectedRank);
+      const TargetArtifactModuleId moduleId(expectedRank);
       const std::string stem =
           llvm::formatv("module_{0:D5}", expectedRank).str();
-      llvm::SmallString<256> modulePath(
-          isKernelGrid && expectedRank != 0 ? workDirectory : modulesDirectory);
+      llvm::SmallString<256> modulePath(modulesDirectory);
       llvm::sys::path::append(modulePath, stem + ".so");
       std::vector<VerifiedTargetExport> exports =
           makeExports(targetLLVMModule.getEntrySymbol());
@@ -371,36 +384,19 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
           targetLLVMModule.getLogicalRank(), stem, modulePath, exports,
           targetLLVMModule.getTargetProfileId(),
           targetLLVMModule.getModuleFormat(),
-          /*hasMaterializedLaunchABI=*/false);
+          /*hasMaterializedEntryABI=*/false);
       if (!readback)
         return detail::fail(diagnostics,
                             "target_module_verification_failed: " +
                                 llvm::toString(readback.takeError()));
-      if (isKernelGrid) {
-        if (!kernelGridModuleDigest) {
-          kernelGridModuleDigest = readback->contentDigest;
-          modules.push_back(TargetArtifactBundleBuilder::makeModule(
-              moduleId, "modules/module_00000.so", readback->contentDigest,
-              targetLLVMModule.getTargetProfileId(),
-              targetLLVMModule.getTargetIdentityId(),
-              targetLLVMModule.getKernelRuntimeABIId(), readback->moduleFormat,
-              std::move(exports)));
-        } else if (*kernelGridModuleDigest != readback->contentDigest) {
-          return detail::fail(
-              diagnostics,
-              "target launch ABI verification failed: kernel-grid modules "
-              "are not byte-identical across the complete rank domain");
-        }
-      } else {
-        const std::string relativePath =
-            (llvm::Twine("modules/") + stem + ".so").str();
-        modules.push_back(TargetArtifactBundleBuilder::makeModule(
-            moduleId, relativePath, readback->contentDigest,
-            targetLLVMModule.getTargetProfileId(),
-            targetLLVMModule.getTargetIdentityId(),
-            targetLLVMModule.getKernelRuntimeABIId(), readback->moduleFormat,
-            std::move(exports)));
-      }
+      const std::string relativePath =
+          (llvm::Twine("modules/") + stem + ".so").str();
+      modules.push_back(TargetArtifactBundleBuilder::makeModule(
+          moduleId, relativePath, readback->contentDigest,
+          targetLLVMModule.getTargetProfileId(),
+          targetLLVMModule.getTargetIdentityId(),
+          targetLLVMModule.getKernelRuntimeABIId(), readback->moduleFormat,
+          std::move(exports)));
       rankInterfaces.push_back(TargetArtifactBundleBuilder::makeRankInterface(
           targetLLVMModule.getLogicalRank(), moduleId,
           targetLLVMModule.getKernelABISlots()));
@@ -418,7 +414,8 @@ detail::compileTargetLLVMModuleBundleToTargetArtifactsImpl(
   cleanup.release();
   return TargetArtifactBundleBuilder::makeBundle(
       outputDirectory, targetLLVMModules.getExecutionConfig(),
-      std::move(modules), std::move(rankInterfaces));
+      targetLLVMModules.getRuntimeLaunchContract(), std::move(modules),
+      std::move(rankInterfaces));
 }
 
 llvm::Expected<TargetArtifactBundle>

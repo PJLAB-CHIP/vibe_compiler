@@ -87,7 +87,11 @@ protected:
         wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     PackageManifest package(
         target.id, target.targetIdentity, target.kernelRuntimeABI,
-        wafer::TargetLaunchABIId::perRankPointerBlockV1(), target.moduleFormat);
+        llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
+            wafer::KernelLaunchForm::PerRank,
+            wafer::KernelEntryABI::RankLocalPointerBlockV1,
+            {wafer::RuntimeLaunchPhaseRole::Main})),
+        target.moduleFormat);
     package.rankCount = 2;
     // Deliberately non-canonical manifest order.
     package.resources = {

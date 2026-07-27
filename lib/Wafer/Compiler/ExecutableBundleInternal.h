@@ -24,11 +24,13 @@ struct ExecutableBundleBuilder {
                           std::move(programBindings), transportContract);
   }
 
-  static ExecutableBundle makeBundle(ExecutionConfig executionConfig,
-                                     std::shared_ptr<mlir::MLIRContext> context,
-                                     std::vector<RankExecutable> ranks) {
-    return ExecutableBundle(executionConfig, std::move(context),
-                            std::move(ranks));
+  static ExecutableBundle
+  makeBundle(ExecutionConfig executionConfig,
+             RuntimeLaunchContract runtimeLaunchContract,
+             std::shared_ptr<mlir::MLIRContext> context,
+             std::vector<RankExecutable> ranks) {
+    return ExecutableBundle(executionConfig, std::move(runtimeLaunchContract),
+                            std::move(context), std::move(ranks));
   }
 };
 

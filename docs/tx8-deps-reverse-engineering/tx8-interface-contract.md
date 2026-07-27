@@ -1227,13 +1227,14 @@ profiling config, group data dump, `D_DteCfgList`, `TileMappingTable`,
 Evidence boundary: the structures and call chain above are statically closed
 for the qualified V5.6 binary and cross-checked against legacy builders and
 installed device modules. The public header still provides no BPM builder or
-layout-version contract. Wafer current schema-v5 publication (the model
+layout-version contract. Wafer current schema-v6 publication (the model
 BootParam ABI was first introduced in schema-v4) and its board provider
 now materialize typed graph I/O ordinals, checked sizes/offsets, nested
 allocation lifetimes, module-name identity, and artifact export/readback as
-the explicit `tx81-model-bootparam-v1` launch ABI. That ABI remains qualified
-only for the pinned V5.6 runtime digest; it is neither an opaque sidecar nor a
-silent substitute for either kernel launch ABI.
+the explicit nested `entry_abi=tx81-model-bootparam-v1` under the sole
+top-level `kind=model`. That entry ABI remains qualified only for the pinned
+V5.6 runtime digest; it is neither an opaque sidecar nor a silent substitute
+for `kind=kernel`.
 
 ## 15. Evidence-to-Design Handoff
 

@@ -2,7 +2,7 @@
 
 状态：2026-07-26同步Q37 hardware characterization与production optimizer成对板测合同；optimizer 8+1
 及collective 9组pre-board/no-card资产已完成，真实板端执行均为`pending`，不计作board/performance evidence。
-Q6.B configured-board gate中的rank-one、kernel-grid、model和cluster Direct DTE已按本文
+Q6.B configured-board gate中的rank-one kernel、16-rank kernel、model和kernel内Direct DTE prepared phases已按本文
 完成真实板端execution evidence，Q22.C更广板端numeric correlation仍为独立later gate。保留Q32.V typed
 target-capability vertical、Q31标准7B单block多seed数值证据及已完成Q22.N/B/L/H/S/V和Q22 model-only汇总；
 Q32.N已进入当前实施队列；Q32.T与Q3.6 Count保持later独立合同。
@@ -516,9 +516,10 @@ Q32.T保持later，不阻塞Q32。当前没有需要rank-local Transform control
 
 ### 8.1 Typed Manifest
 
-当前Q18 wire form为schema v5：在schema v4 closed launch ABI合同上删除module rank和entry symbol重复事实源，并增加
-module typed exports，以表达shared cluster payload的`prepare`/`main`。Q32 candidate cutover本身不改变package schema；
-v2/v3/v4输入均作为legacy明确拒绝，不能静默补字段。
+当前Q18 wire form迁移为schema v6：删除错误四值`launch_abi`，改用top-level kind仅为kernel/model的tagged
+RuntimeLaunchContract；kernel form、entry ABI和ordered phases为其正交typed字段，module exports只做phase role到
+ELF symbol的绑定，Direct DTE保持独立transport union。Q32 candidate cutover本身不改变package schema；
+v2-v5输入均作为legacy明确拒绝，不能静默补字段或保留旧spelling alias。
 后续若Q32.V/Q3.6的真实consumer再引入新的closed package revision，必须在独立target/package任务中增加以下gate：
 
 - canonical serialize/parse byte-identical；
@@ -530,8 +531,9 @@ v2/v3/v4输入均作为legacy明确拒绝，不能静默补字段。
 - missing/extra payload和digest mismatch；
 - completion missing、rank mismatch或unsupported terminal；
 - production JSON含`instructions`直接拒绝。
-- target profile、identity、runtime ABI、launch ABI和module format五项exact；missing/unknown/unqualified launch ABI拒绝；
-- kernel-grid完整16-rank、共享symbol/slot schema、final module byte identity和`0x7dc` packet上限；model完整16-rank、
+- target profile、identity、runtime ABI、完整runtime launch contract和module format五项exact；missing/unknown/unqualified
+  kind/form/entry-ABI/phase或旧`launch_abi`拒绝；
+- 16-rank grid/cluster kernel完整rank domain、共享aggregate module/slot schema及各自`0x7dc`/`0x7d0` packet上限；model完整16-rank、
   共享symbol、tile modules、parameter-free aligned f32 rank-1..6 shape/bytes、export record/relocation与BootParam pre-effect验证；
 - 若Q32.V的真实consumer确需`required_capabilities`，当批冻结的typed keys/encoding必须与Q16 winner、Q17
   owner-backed module/artifact和package readback all-and-only一致；missing/extra/noncanonical/tampered或late-rank union
@@ -544,7 +546,7 @@ Python wrapper和C++必须走同一verifier；不能再有不同acceptance。
 
 - entry selection和invocation binding all-and-only；
 - module/resource/completion resolution确定性；
-- schema-v5 target profile、runtime ABI、launch ABI、typed module exports、transport requirement和environment compatibility在任何side effect前精确匹配；
+- schema-v6 target profile、runtime ABI、runtime launch contract、typed module exports、transport requirement和environment capability在任何side effect前精确匹配；
 - repeated preflight相同输入产生相同plan；
 - metadata buffer释放后verified typed value仍可安全使用；
 - no-card输出明确标记未执行board。
@@ -554,9 +556,10 @@ projection，其结构和package readback由8.1验证，真正的model/board逐�
 
 ### 8.3 Provider And Board Gate
 
-Q6.B已materialize TX rank-one、rank-count=16 `transport:none` multi-launch、单次grid16 kernel、type-6/type-7 model和
-cluster Direct DTE provider。当前V5.6静态调度确认16次`grid=(1,1,1)`均由tile0执行，所以该分支只作为aggregate lifecycle smoke；
-后三条aggregate launch的typed artifact/provider/static/fake/no-card和真实板端重复gate已经分别闭合。Q22.E exact-module provider
+Q6.B已materialize TX kernel与model两个runtime launch kind。kernel内由typed form/entry ABI/ordered phases表达
+rank-one、grid16及cluster prepare/main；Direct DTE由独立transport requirement选择其status/readiness gate，不再命名
+launch kind。既有typed artifact/provider/static/fake/no-card和真实板端重复gate提供历史证据，迁移后必须由schema-v6
+fresh replay保持。Q22.E exact-module provider
 仍是独立later gate。
 以下验证不属于Q18 no-card完成条件，provider/board推进时必须实际执行，不能用打印trace替代：
 
@@ -1093,7 +1096,7 @@ Q22.P不在近期numeric correctness范围内；只有另行恢复并配置可�
 ## 12. Board Gate
 
 configured board suite只消费Q0.L完成后fresh replay形成的Gate C同一verified artifact/package，不允许用Q0.L前旧package、
-另造fixture或provider-specific旁路。kernel-grid与model graph需要新的launch ABI时，必须先由compiler artifact、package readback
+另造fixture或provider-specific旁路。kernel contract或model graph变化时，必须先由compiler artifact、package readback
 和runtime verifier显式拥有，不能让test脚本临时拼私有结构。必须实际执行：
 
 - allocation/import/copy；kernel分支执行module load/entry resolve，model分支执行type-6 graph load和tile-local symbol registration；
@@ -1109,11 +1112,6 @@ board-capable `wafer-run`必须至少重复两次真实allocation→load→launc
 runtime-library digest/runtime version/PCI/device/tile qualification才注册，并且运行时还须显式设置
 `WAFER_EXECUTE_HARDWARE_TESTS=1`。普通CTest必须skip或不注册，不得触卡；Q6.B证据必须确认hardware CTest未skip。
 
-既有16-rank `transport:none` Add继续作为multi-launch回归：全局输入按axis-0形成16个互不重叠且完整覆盖的rank-local slice，
-完整rank domain先pure preflight，再完成aggregate admission、allocation/H2D/load/resolve、16 stream共同submit、deadline、D2H和
-逆序cleanup。它必须继续逐ResourceId exact，输出明确报告independent-grid1且不发布physical execution claim；当前快照tile0结论由
-独立静态资格证据拥有，不把版本特定映射硬编码进通用CLI。该回归不再作为16-tile bootstrap。
-
 真实kernel SPMD gate使用一次普通`txLaunchKernel`：`grid=(16,1,1)`、`block=(1,1,1)`、一个共享module/function和rank-major argument table。
 device entry按Kcore提供的block pid选择16个不重叠且完整覆盖的全局Add slice。host在执行前以非结果值填充全部output；
 当前实现以每byte `~expected`预填，任一未写或部分写都会失败。限定V5.6/full-good inventory下，固定logical scheduler
@@ -1126,7 +1124,7 @@ type-7 payload，以一次`txLaunchModel`触发16个tile本地`entry(head)`。�
 slice；同样以`~expected`预填、固定type-6 tile0..15映射、单次type-7 aggregate launch和16个互斥exact slice形成
 logical tile 0..15参与依据，并要求完整CPU exact和至少两次重复。type-6同步调用没有安全的进程内cancel，gate以one-shot外层
 deadline约束；超时后终止测试、不重试、不调用reset/power，并报告需要外部只读资格检查。只有该gate才验证最终模型发射边界，
-kernel-grid或16×grid1结果不能替代。
+kernel结果不能替代model gate。
 
 2026-07-22 fresh hardware evidence：在driver `V5.6.0.1231`、SMI/ML `V5.6.0.1231.01`、runtime `1.3.0`、
 `TX8110-256-00`、full-good logical tile `0..15`和钉死`libhpgr.so` digest
@@ -1136,14 +1134,15 @@ kernel-grid或16×grid1结果不能替代。
 `model-type6-type7`/`graph-tile-module-map-and-exact-rank-slices`，均只声明logical domain `0..15`和
 `physical_execution_claim: none`。执行前、两项之间及执行后SMI memory均为`9248M / 65536M`、NPU utilization为0、无运行进程，
 device online且heartbeat持续推进；没有调用retry/reset/power。对应非hardware production纵向已迁移到当前wire form，
-`wafer-runtime-kernel-grid-add-no-card`与`wafer-runtime-model-add-no-card`实际编译fresh source、验证schema-v5/16-rank
+`wafer-runtime-kernel-grid-add-no-card`与`wafer-runtime-model-add-no-card`实际编译fresh source；迁移后验证schema-v6/16-rank
 entry-completion domain并进入`wafer-run --all-ranks --no-card`，不依赖hardware arm或skip；收尾fresh package与live package逐文件
 byte-identical。
 
 两条真实SPMD gate本身不关闭Direct DTE真实receiver readiness、timeout和board completion要求；Q6.B还必须满足下述独立gate。
 
-Direct DTE board gate使用schema-v5 `tx81-cluster-direct-dte-prepare-main-v1`，不复用普通kernel-grid
-launch。静态和no-card gate必须先证明：16个rank-specialized target body被确定性聚合成一个ELF；16个
+Direct DTE board gate使用schema-v6 kernel contract：`kind=kernel`、`form=cluster`、rank-major entry ABI和
+`prepare→main` ordered phases；Direct DTE只存在于独立transport requirement。静态和no-card gate必须先证明：
+16个rank-specialized target body被确定性聚合成一个ELF；16个
 rank entry共同引用同一`ModuleId`；module typed exports恰为互异symbol的`prepare`/`main`；main用
 `__get_pid(0)`选择rank body和rank-major row；16行参数表不超过`0x7d0` bytes；所有Direct DTE contract
 rank都有begin/finish status lifecycle，即使本地body没有send/recv。current
@@ -1171,8 +1170,10 @@ board子进程还须由大于provider共同deadline的外层deadline约束：外
 不进入下一轮且不调用reset/power。最少连续两次fresh allocation/invocation通过，并覆盖所有logical tile的send和receive角色。仅
 `entry_return`、stream terminal、manifest报告或NoTransport Add都不能替代该placement/readiness/completion gate。
 
-2026-07-22 fresh Direct DTE evidence：在与上文kernel/model gate相同的driver、runtime、device和钉死library digest下，
-`wafer-board-cluster-direct-dte`以current schema-v5/status-v2实际注册并执行，未skip/unsupported。production pre-SPMD
+2026-07-22 fresh Direct DTE evidence是旧schema-v5生命周期的历史板端证据：在与当时kernel/model gate相同的
+driver、runtime、device和钉死library digest下，`wafer-board-cluster-direct-dte`实际注册并执行，未skip/unsupported。
+该结果保留硬件行为参考，但不能代签当前schema-v6两值launch contract；迁移后的下一次合格板端会话必须重放同一gate。
+production pre-SPMD
 StableHLO source经默认compiler链生成16-rank tree reduction+broadcast package；每rank payload为64个f32（256 bytes），每个
 transport status resource为`u32[1]`、64-byte storage/alignment。两次fresh invocation中，16个rank的transport
 status offset-0值均为`SUCCESS=1`，16个256-byte user output均与独立CPU expected逐字节exact；all-rank send/receive角色、rank-specific
@@ -1195,7 +1196,7 @@ rank partial与all-reduce边界；M/N traversal必须覆盖全部4096x4096 outpu
 本case每rank的2 MiB lhs shard与2 MiB rhs shard不能同时作为完整SPM resident工作集，32 MiB output也不能作为完整
 SPM resident buffer；compiler成功只在complete traversal、fixed-capacity SPM planning和post-memory Direct DTE
 acceptance均通过时成立。验证必须从current
-StableHLO program directory经`wafer-compile`完整形成schema-v5/status-v2、one-shared-ELF cluster package，并证明：
+StableHLO program directory经`wafer-compile`完整形成schema-v6/status-v2、one-shared-ELF kernel package，并证明：
 
 - 16个K slice无重叠、无缺口且完整覆盖global K；output boundary为16份replicated完整tensor；
 - terminal all-reduce由其`TilingInterface`产生与local GEMM output一致的M/N tile；complete compact traversal覆盖
@@ -1214,7 +1215,7 @@ StableHLO program directory经`wafer-compile`完整形成schema-v5/status-v2、o
 - outer timeout只终止当前one-shot进程并停止后续device effect；不retry、不自动reset/power。trusted completion、D2H和
   cleanup后的clean numeric mismatch只记compiler/runtime correctness失败，不要求重启。
 
-该证据只覆盖冻结shape、dtype、payload和绑定environment的workload-level board execution。它不新增model launch ABI，
+该证据只覆盖冻结shape、dtype、payload和绑定environment的workload-level board execution。它不新增runtime launch kind，
 不声明type-6/type-7 model+Direct DTE、physical tile coordinate、通用GEMM numeric profile、Q22.C完成、性能或timing。
 稳定pipeline contract和完成checkpoint见`tasks/archive/k-sharded-gemm-board-vertical.md`。
 
@@ -1344,7 +1345,7 @@ package结果做model/board numeric correlation；若被测Q32.V extension consu
 
 host/no-card gate至少覆盖：
 
-- 同一verified source、ExecutionConfig、target profile与launch ABI产生reserved baseline/production winner，
+- 同一verified source、ExecutionConfig、target profile与完整runtime launch contract产生reserved baseline/production winner，
   二者均经过完整target publication；normal package原子发布且关闭profile时逐字节一致。`activation.json`必须最后写入，
   精确绑定production manifest SHA-256以及`plan.json`、`variants.json`、`site-map.json`各自SHA-256；
   missing/stale/partial、unknown/missing metadata key、digest mismatch和late-failure负例闭合；
