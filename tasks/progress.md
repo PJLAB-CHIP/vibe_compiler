@@ -90,22 +90,14 @@ transport lifecycle。旧四值`TargetLaunchABIId`、workload-specific spelling�
 compiler publication、manifest/verifier、no-card、BoardRuntimeDriver和TX provider已重放；旧schema和旧字段只保留
 fail-closed负例。板卡case扩展不再受该边界阻塞。
 
-Q37 compiler-sensitive hardware calibration和production optimizer paired qualification已经完成；multi-engine
-software pipelining拆分为Q38继续执行。此前所谓raw hardware-calibration checkpoint完成，只表示已有correctness/legality证据足以
-维持保守fallback，不表示硬件行为或性能表面完备。后续不重复已上板的raw case，但继续补充能区分真实compiler
-选择、具有matched control且能形成窄capability/cost输入的case；不通过无控制地扩大descriptor Cartesian matrix
-累计通过数。Q37 Checkpoint A2已把统一校准文档中所有尚无板端执行证据的合法语义项收敛到
-`wafer_pending_hardware_calibration_inventory.py`：当前15个可执行family解析到210个互异board CTest和
-1231个pending target cell，由显式`pending-hardware-calibration`批次按资源锁串行、首错即停执行；另5个
-不可表达family解析到真实host negative或fail-closed preparation gate。2026-07-27首轮串行campaign覆盖
-远程扩展前的179个合法CTest，取得79 pass、9个普通失败和91个未执行；本次远程新增31个CTest、37个target
-cell尚未进入该轮执行台账。旧180项清单曾错误纳入native Concat `dims=HW`：该组合是已决非法指令，已经从
-catalog、CTest、inventory和runner全部删除，只保留static-negative结论，永远不再发板。queue saturation、
-worker wait/subset、worker placement、SPM/DDR conflict与contention、AllToAll/Permute traffic、
-Direct-DTE raw broadcast/scatter/shuffle及四源fan-in、single/pair engine、NE tail、ArgMin tie/NaN、
-Unpool重复overlap等都已具备typed case、device adapter、强oracle、no-card和runner入口；未实际执行的
-case不产生硬件结论。永久等待、越界、缺ABI setter、缺production IR producer或缺owner-backed physical
-class/counter的项保持host fail-closed；不能再以`planned`文字、宽泛文件存在或邻近case代签准备完成。
+Q37 compiler-sensitive hardware calibration和production optimizer paired qualification已经完成；
+multi-engine software pipelining拆分为Q38继续执行。当前profile中，所有能安全执行且会改变compiler决策的
+校准项均已有fresh板端结论；最后一组此前无结论的104个CTest以104/104闭合。queue resident/full、
+wait排他scope、physical SPM/DDR topology、absolute worker timestamp、DTE device phase/route及跨卡
+transport等当前接口不可观测的事实，已用明确`unknown`和保守compiler策略闭合，不再保留pending板端批次。
+具体实验、硬件行为、compiler价值和外推边界只由
+`docs/tx81-compiler-hardware-calibration.md`的统一结论表拥有；任务队列中的Q37说明只作为完成背景，
+不得再作为当前pending状态或硬件结论的第二事实源。
 
 compiler-wide production optimization board campaign是另一条下游资格链。它从同一Q15 source和target profile分别发布Q32已通过完整late gate的reserved baseline与默认
 production winner，按tile/physical route、resident/share/recompute、numeric DAG/implementation、ready-order、
@@ -208,10 +200,9 @@ completion-domain boundary上的matching drain/逐worker join、DDR owned-range 
 pipeline window，不做SPM bank coloring，不用default wait代替跨worker join，也不把native Concat W/H、
 TDMA BOOL、NE ReLU/Conv option或subgroup barrier提升为exact能力；native Concat `dims=HW`则直接永久
 target-illegal。上述已有raw case对应的correctness checkpoint已闭合，
-这些未决机制均有保守compiler处理；后续只增加能区分真实compiler选择、带matched control且不重复已有证据的
-hardware characterization。校准文档全部未执行语义项的case、dispatcher、host oracle、no-card、board
-CTest和显式runner已经按activation gate落地；首轮合法清单已有79 pass、9个普通失败、91个未执行，
-不可表达项有typed fail-closed gate。
+这些未决机制均有保守compiler处理；Q37不再增加或重跑raw calibration case。只有新的production producer
+或新的owner-backed观测面出现时，才建立能区分新compiler选择的纵向case；不可表达项继续由typed
+fail-closed gate处理。
 Q37以supported、unsupported或明确Unknown加保守compiler处理闭合硬件校准，并完成独立的production
 optimizer同源成对资格资产。Q38消费这些边界实现和验证multi-buffer software-pipeline，不以raw case
 累计通过数推进，也不重跑已有结论的校准case。
@@ -219,16 +210,15 @@ SDK定义的`get_spm_memory_mapping(offset)`是`0x30400000 + offset`的uncached 
 该alias使用有序load/store与`fence`/`sync`，不得执行dcache clean/invalidate。只有raw cacheable SPM alias
 和cacheable DDR按各自owned range使用cache操作。
 
-2026-07-24本轮保存证据已经同步为行为结论：已验证的same-worker RAW/WAR/WAW由显式IR edge和issue order
+已保存证据已经同步为行为结论：已验证的same-worker RAW/WAR/WAW由显式IR edge和issue order
 交给busytable落实，链内不插`TsmWaitfinish`；matching completion只在NCC→Kcore/Direct DTE、跨worker join、
-barrier和terminal/host publication等completion-domain出口物化并合并。ArgMin已有FP16正普通值和负有限值
-板端证据，tie/NaN两个三输入区分case保持待上板；未枚举的BF16/F32、正负零、Inf和subnormal由typed gate
-fail closed，不从邻近域外推。ordinary indexed Unpool的非零poison版本已取得3个板端样本，只闭合bounded
-completion/write-span；两个repeated-overlap collision case保持待新板端执行，现以same-worker NCC链生成并
-快照真实`5/3/2/0` aux、按sample轮换的四组pooled sentinel及逐channel non-empty source-subset分类拒绝
-padding-only/producer-snapshot/post-consumer-aux/target篡改，并保留
-uniform/lane-varying value mask与histogram；FP16 indexed-max→mask-unpool窄组合
-则为board-observed exact。
+barrier和terminal/host publication等completion-domain出口物化并合并。ArgMin已有FP16正普通值、负有限值、
+tie和NaN板端证据：全正普通值exact，负数域错误，tie/NaN只形成coherent value/index observation；
+未枚举的BF16/F32、正负零、Inf和subnormal由typed gate fail closed，不从邻近域外推。ordinary indexed
+Unpool只闭合bounded completion/write-span；两个repeated-overlap collision case已用same-worker NCC链、
+真实`5/3/2/0` aux、按sample轮换的四组pooled sentinel和逐channel non-empty source-subset完成2/2板端
+bounded observation，仍不定义collision winner、覆盖或累加；FP16 indexed-max→mask-unpool窄组合为
+board-observed exact。
 BackwardConv的FP16/BF16 corrected-footprint向量也已各完成3个
 板端样本：8192B physical span、span外guard和completion均通过，只记bounded observation，不升级numeric
 exact。合同内`VuVLoop unit=64`两个exact control及后置Add已闭合，合同外输入继续host-negative。
