@@ -276,12 +276,10 @@ def main() -> int:
         for axis in ("C", "W", "H")
     )
     raw_hw = raw_concat["concat-axis-HW"]
-    assert raw_hw.disposition == "isolated-deferred"
-    assert raw_hw.evidence == tuple(
-        case.name for case in catalog.extended.ISOLATED_CONCAT_CASES
-    )
+    assert raw_hw.disposition == "static-negative"
+    assert raw_hw.evidence == ()
     assert raw_hw.reason
-    assert "matching completion" in raw_hw.reason
+    assert "invalid instruction use" in raw_hw.reason
     assert (
         catalog.CALIBRATION_LEAF_BINDINGS["raw-concat-observation"]
         == tuple(
@@ -291,7 +289,7 @@ def main() -> int:
         )
     )
     assert (
-        catalog.CALIBRATION_LEAF_BINDINGS["raw-concat-hw-isolated"]
+        catalog.CALIBRATION_LEAF_BINDINGS["raw-concat-hw-static-negative"]
         == (raw_hw,)
     )
     materialized_concat = {
@@ -379,7 +377,7 @@ def main() -> int:
     print(
         "wafer_datamove_calibration_catalog_test: "
         "base_board_cases=46 public_opcodes=18 layout_combinations=20 "
-        "raw_concat_observation=3 raw_concat_isolated=1 "
+        "raw_concat_observation=3 raw_concat_static_negative=1 "
         "extended_evidence=18 passed"
     )
     return 0

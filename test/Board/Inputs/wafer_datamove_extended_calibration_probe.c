@@ -33,7 +33,6 @@ static const WaferDMXCase wafer_dmx_cases[] = {
     {0U, 24576U, 16380U, 24576U, 0U, 1U, 0U, 1U},
     {1U, 17408U, 16380U, 17408U, 0U, 1U, 0U, 1U},
     {2U, 17920U, 16380U, 17920U, 0U, 1U, 0U, 1U},
-    {3U, 9216U, 8060U, 9216U, 0U, 1U, 0U, 1U},
     {4U, 9728U, 19456U, 19456U, 1U, 0U, 0U, 0U},
     {5U, 27136U, 88576U, 88576U, 1U, 0U, 0U, 0U},
     {6U, 4608U, 260U, 512U, 0U, 1U, 0U, 1U},
@@ -121,9 +120,18 @@ static uint32_t wafer_dmx_decode(const volatile uint64_t *request,
       request[WAFER_DMX_REQ_GUARD] != WAFER_DMX_REQUEST_GUARD)
     return WAFER_DMX_STATUS_BAD_REQUEST;
   uint32_t case_id = (uint32_t)request[WAFER_DMX_REQ_CASE];
-  if (case_id >= sizeof(wafer_dmx_cases) / sizeof(wafer_dmx_cases[0]))
+  const WaferDMXCase *matched = 0;
+  for (uint32_t index = 0U;
+       index < sizeof(wafer_dmx_cases) / sizeof(wafer_dmx_cases[0]);
+       ++index) {
+    if (wafer_dmx_cases[index].case_id == case_id) {
+      matched = &wafer_dmx_cases[index];
+      break;
+    }
+  }
+  if (matched == 0)
     return WAFER_DMX_STATUS_BAD_REQUEST;
-  *selected = wafer_dmx_cases[case_id];
+  *selected = *matched;
   if (request[WAFER_DMX_REQ_INPUT_BYTES] != selected->input_bytes ||
       request[WAFER_DMX_REQ_RESULT_BYTES] != selected->result_bytes ||
       request[WAFER_DMX_REQ_OUTPUT_SPAN] != selected->output_span ||
@@ -161,6 +169,8 @@ static uint64_t wafer_dmx_raw_concat(uint64_t source0, Data_Shape shape0,
                                      uint64_t destination,
                                      Data_Shape destination_shape,
                                      uint32_t dimension) {
+  if (dimension > 2U)
+    return 0U;
   TsmMoveInstr instruction = {0};
   TsmDataMove *move = TsmNewDataMove();
   move->Concat(&instruction, source0, shape0, source1, shape1, destination,
@@ -235,12 +245,6 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
         input, wafer_dmx_shape(2U, 3U, 9U, 65U), input + 7680U,
         wafer_dmx_shape(2U, 4U, 9U, 65U), output,
         wafer_dmx_shape(2U, 7U, 9U, 65U), 2U);
-    break;
-  case 3U:
-    *raw_execute_rc = wafer_dmx_raw_concat(
-        input, wafer_dmx_shape(2U, 2U, 5U, 65U), input + 3072U,
-        wafer_dmx_shape(2U, 3U, 7U, 65U), output,
-        wafer_dmx_shape(2U, 1U, 31U, 65U), 4U);
     break;
   case 4U:
     wafer_tx81_tdma_pad(input, output, 2U, 5U, 7U, 65U, 2U, 7U, 10U, 65U,

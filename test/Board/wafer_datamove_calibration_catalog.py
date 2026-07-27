@@ -639,25 +639,20 @@ RAW_CONCAT_DISPOSITIONS = tuple(
         (
             "board-observation"
             if axis in extended.NATIVE_CONCAT_AXES
-            else "isolated-deferred"
+            else "static-negative"
         ),
         tuple(
             case.name
-            for case in (
-                extended.CONCAT_CASES
-                if axis in extended.NATIVE_CONCAT_AXES
-                else extended.ISOLATED_CONCAT_CASES
-            )
+            for case in extended.CONCAT_CASES
             if case.semantic_axis == axis
         ),
         (
             None
             if axis in extended.NATIVE_CONCAT_AXES
             else (
-                "native dims=HW previously timed out at matching completion; "
-                "exclude it from the default dispatcher and allow only an "
-                "explicit final isolated selection after the bounded C/W/H "
-                "alternatives"
+                "native dims=HW is an invalid instruction use; reject it "
+                "statically and lower legal HW-axis concat through typed "
+                "GatherScatter"
             )
         ),
     )
@@ -863,10 +858,10 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
         for row in RAW_CONCAT_DISPOSITIONS
         if row.disposition == "board-observation"
     ),
-    "raw-concat-hw-isolated": tuple(
+    "raw-concat-hw-static-negative": tuple(
         row
         for row in RAW_CONCAT_DISPOSITIONS
-        if row.disposition == "isolated-deferred"
+        if row.disposition == "static-negative"
     ),
     "compiler-concat-materialization": _cases_with(
         operation="concat", semantic_axis="N"

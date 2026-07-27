@@ -848,31 +848,6 @@ FAMILIES = (
             "no-unspecified-winner-rule",
         ),
     ),
-    PendingCalibrationFamily(
-        key="native-concat-hw-isolated-requalification",
-        disposition=PENDING_BOARD,
-        execution_scope="rank-one-isolated-final",
-        bindings=(
-            _binding(
-                "test/Board/"
-                "wafer_datamove_extended_calibration_catalog.py",
-                "CASES_BY_NAME",
-                ("datamove-raw-concat-hw-n2-2x5-3x7-c65",),
-                "@mapping",
-            ),
-        ),
-        board_ctests=("wafer-board-datamove-native-concat-hw-isolated",),
-        no_card_ctests=(
-            "wafer-runtime-datamove-extended-calibration-probe-no-card",
-        ),
-        runner_batch=None,
-        oracle=(
-            "native-c-w-h-controls-first",
-            "bounded-output-span-and-guards",
-            "terminal-and-cleanup",
-        ),
-        activation_gate=("must-run-last", "stop-on-timeout"),
-    ),
 )
 
 

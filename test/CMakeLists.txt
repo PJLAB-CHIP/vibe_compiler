@@ -2064,37 +2064,6 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
     SKIP_RETURN_CODE 77
     TIMEOUT 3600
   )
-  add_test(NAME wafer-board-datamove-native-concat-hw-isolated
-    COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_datamove_extended_calibration_probe_test.py
-      --repo-root ${CMAKE_SOURCE_DIR}
-      --wafer-compile $<TARGET_FILE:wafer-compile>
-      --wafer-run $<TARGET_FILE:wafer-run>
-      --llvm-clangxx ${LLVM_TOOLS_BINARY_DIR}/clang++
-      --work-dir
-        ${CMAKE_CURRENT_BINARY_DIR}/board-datamove-native-concat-hw-isolated
-      --case datamove-raw-concat-c-n2h7w9-c33-c32
-      --case datamove-raw-concat-w-n2h7-w4-w5-c65
-      --case datamove-raw-concat-h-n2-h3-h4-w9-c65
-      --case datamove-raw-concat-hw-n2-2x5-3x7-c65
-      --allow-isolated-native-concat-hw
-      --observation-samples 3
-      --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
-      --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
-      --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
-      --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
-      --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
-      --expected-runtime-library-sha256
-        ${_wafer_expected_tx_runtime_library_sha256}
-      --completion-timeout-ms 60000
-  )
-  set_tests_properties(
-    wafer-board-datamove-native-concat-hw-isolated PROPERTIES
-    LABELS "board;hardware;instruction;datamove;layout;calibration;isolated"
-    RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
-    SKIP_RETURN_CODE 77
-    TIMEOUT 1200
-  )
   add_test(NAME wafer-board-ne-calibration
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_ne_calibration_probe_test.py

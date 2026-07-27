@@ -97,8 +97,9 @@ Pipeline position:
   204行中158 exact、46 observation，23个stochastic row均为可执行重复采样；instruction-family有168个
   safe case，其中139个exact、29个bounded observation。Reduce/Pool/Unpool的117个typed capability row
   已全部落到82个board-executable、24个board-observation或11个static-negative，0 Unknown。
-  DataMove为base 46 + extended默认17个safe case，并保留1个只允许显式选择的native `dims=HW`
-  Concat隔离复测case；公开`121..138`处置为14 exact、4 observation、0 deferred。NE为32 exact、
+  DataMove为base 46 + extended默认17个safe case；native Concat `dims=HW`已经确定为错误/非法指令，
+  从catalog、CTest、inventory和runner删除，只保留host static-negative，永远不发板。公开`121..138`
+  处置为14 exact、4 observation、0 deferred。NE为32 exact、
   38 observation、3 static-negative，新增quant、Depthwise/BackwardConv和
   左右不等batch。memory-descriptor当前有121个case（既有59行、40个多offset pair row，以及
   CT+RDMA代表pair的16个新增bank-phase row和6个新增base-residue row），SPM 146行拆为
@@ -108,7 +109,7 @@ Pipeline position:
   join、all-direction producer/consumer、strided dependency、large backlog与手写double-slot hardware
   observation。Direct DTE另有source提前复用、destination提前复用、invalid FSM与unknown event wait
   四种同步错误观察；receiver未prepare因可能进入无设备timeout的永久等待而继续隔离。机器矩阵当前共
-  123个叶子：73个board positive、24个board observation、6个delegated positive、17个static negative和
+  125个叶子：73个board positive、25个board observation、6个delegated positive、18个static negative和
   3个isolated deferred，全部ready。2026-07-24已按当前catalog/validator核对保存板端产物：
   CT convert 204、DataMove
   base 46、SPM原本地19、memory descriptor既有59、cache/coherence 58及SPM原50个delegated row已有对应
@@ -393,6 +394,11 @@ device dispatcher或production source vertical、固定payload、完整result/sp
 有界timeout、正常cleanup、board CTest和显式串行runner step；no-card只证明资产准备，不把状态升级为
 `board-observed`。已有板端case按语义key去重，不因新campaign重复发板。
 
+当前inventory只统计可合法发板的14个family、179个互异board CTest和1194个pending target cell。旧清单
+曾把native Concat `dims=HW`误算为第180项；该非法组合已经删除全部board入口，不属于pending、held-out或
+后续资格化对象。2026-07-27首轮串行campaign在179项合法清单中取得79 pass、9个普通失败、91个未执行；
+失败归因与剩余执行继续按本计划的fail-closed和板端停止合同推进，Q37不因此完成。
+
 inventory至少覆盖：
 
 - AllToAll/CollectivePermute traffic语义、同buffer双epoch和Direct-DTE endpoint/fanin/fanout对照；
@@ -408,7 +414,8 @@ inventory至少覆盖：
 会永久等待、越过owned range、要求缺失participant、缺typed ABI setter、缺owner-backed physical class/
 counter或缺production IR producer的项不得伪造成board-positive。它们必须有可执行host negative或
 fail-closed preparation gate，精确说明阻断条件和最近的安全替代；条件将来满足时同一inventory才能转为
-board case。完成门禁为：文档中每个未执行语义key都被inventory唯一解析，所有board-executable项均由
+board case。native Concat `dims=HW`不属于这种暂缺条件的对象；它是永久static-negative，任何后续profile
+都不得把它转回board case。完成门禁为：文档中每个未执行语义key都被inventory唯一解析，所有board-executable项均由
 CTest注册并进入一个显式、资源锁保护、首错即停且不retry/reset/power的runner batch，全部negative/blocked
 项都有实际测试；catalog/no-card/runner一致性测试禁止新增“只写文档”的pending行。
 

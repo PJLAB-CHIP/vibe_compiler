@@ -322,12 +322,12 @@ exact，`send_async`、`wait_done`、`release`返回码全0，guard exact且正�
 | packet routing/range | `inter_type`映射、worker编码、begin/end materialization和inclusive end | 五类单engine，执行后读实际register/packet，完整结果 | 11/14 instruction legality | CT/NE/RDMA/WDMA部分`board-observed`；TDMA Memset routing/range `board-observed` |
 | CT numeric/form | opcode 0..186；arithmetic/relation/logic的`VV/VS/VuV/VuVLoop`、value/bool output；f16/bf16/f32、convert pair、rounding、NaN/Inf/subnormal/signed-zero、large-shape tail | opcode/form×dtype typed catalog；至少8192元素普通值、非256B held-out tail、短向量unit/full-tail、完整bit oracle；`VuVLoop`先过supported interface host legality | 10/11/17 numeric capability | convert 204/204已按当前catalog完成板端gate。instruction-family保留160个safe case，raw N/HWC Reduce八项因隔离timeout改为fail-closed `isolated-deferred`。Pool当前16个exact与8个bounded observation均有板端结论；Unpool按实际numeric行为分exact与observation。本轮CT vector为op010 tail与op011--013共23项保存了板端结果，但其中`VuVLoop unit=32/37` exact只算out-of-contract hardware observation。合同内`unit=64`的两个区分geometry已在clean session通过exact result、guard和completion，前后ordinary Add也通过。违反`unit==64`或base/full乘积关系的packet一律host negative，不再上板 |
 | instruction × physical layout | Tensor/NTensor/Cx/NCx原生资格、materialization路径、C0 tail、N-slice步进、padding lane | valid组合exact output/span/canary；需materialize组合重放Tensor↔Cx/NCx movement；非法组合verifier/packet negative | 08/10/11 physical legality | CT/NE/RDMA/WDMA/TDMA × Tensor/NTensor/Cx/NCx共20个组合均已有处置：8个native positive、3个materialize-then-consume concrete positive和9个static-negative；Tensor↔Cx/NCx movement及CT Cx/NCx、NE Tensor materialize→consume composite均已完成no-card准备。current CT production仍只准Tensor/no-invalid-lane |
-| DataMove/layout | mirror/transpose/rotate、NCHW/NHWC、concat、pad、Img2Col、TensorNom、GatherScatter/MaskMove/MaskGather及compiler broadcast materialization | 非对称large-shape、axis-sensitive payload、all-and-only logical point oracle、physical guard | 08/10/11 movement legality | base与extended安全路径已有板端结论。large Pad/Img2Col及TensorNom证明NCx footprint不能由compact logical bytes或单次末尾对齐代替：每个N slice都服从aligned-C与batch stride，internal/batch padding和外部guard分别记账。raw Concat C/W/H只有bounded completion/guard，HW曾timeout并继续隔离；通用concat仍走typed GatherScatter |
+| DataMove/layout | mirror/transpose/rotate、NCHW/NHWC、concat、pad、Img2Col、TensorNom、GatherScatter/MaskMove/MaskGather及compiler broadcast materialization | 非对称large-shape、axis-sensitive payload、all-and-only logical point oracle、physical guard | 08/10/11 movement legality | base与extended安全路径已有板端结论。large Pad/Img2Col及TensorNom证明NCx footprint不能由compact logical bytes或单次末尾对齐代替：每个N slice都服从aligned-C与batch stride，internal/batch padding和外部guard分别记账。raw Concat C/W/H只有bounded completion/guard；native `dims=HW`是错误指令用法，永久`static-negative`且测试面不得发射。合法source-level HW concat继续走typed GatherScatter |
 | NE numeric/layout | f16/bf16、accumulation、transpose、C0 tail、padding、K/M/N边界 | 非平凡多项累加GEMM、完整padded range/canary | 08/10/11/17 | 当前73个row为32 exact、38 safe observation、3 static-negative、0 deferred；GEMM PSUM和左右不等batch保持exact。FP16 ReLU观察为no-op，ordinary Conv的current NCx/HWOI oracle未闭合，二者均不再宣称exact。修正schema的BackwardConv FP16/BF16各3个板端样本均按8192B footprint完成，request/result echo、完整physical span、suffix guard和completion通过；它取得bounded observation，但不升级尚无唯一numeric oracle的通用BackwardConv exact资格。GEMM sparse因typed `TsmGemm`无setter归入static-negative |
 | RDMA/WDMA descriptor | byte/logical-element stride转换、iteration、inclusive range、tail；DDR descriptor与local SPM footprint分域 | contiguous + 1/2/3D stride，非零round-trip、DDR holes、compact SPM和guard | 08/11/14 | contiguous与既有large GEMM `supported`。修正oracle后的3个standalone DMA strict compact-SPM case及36个NCC strided dependency case全部通过板端result/composition、DDR holes、SPM/output guard、count和completion；确认stride只作用DDR endpoint，local SPM endpoint连续使用`transfer_bytes`。旧mismatch来自错误oracle，不是mapped-SPM cache问题 |
 | TDMA Memset | element count、byte stride、raw logical iteration、inclusive range和dtype packet encoding | whole/128B×32/64B×64 geometry，I8/F16/BF16 raw与CRT，全range和guard | 10/11/14 | 普通dtype descriptor `calibrated`；I8/F16/BF16 vectors `board-observed` |
 | TDMA BOOL fill | native `Fmt_BOOL` completion与bitpacked physical-footprint实现 | native小range timeout隔离；production BOOL→I8 byte fill需独立raw register、全range和guard | 10/11/14 | native `Fmt_BOOL`在当前profile `excluded`；直接I8 physical16与BOOL→I8的136 logical bits→17 physical bytes held-out均完整readback/guard通过，替代路径在完整physical-footprint域`board-observed` |
-| TDMA movement variants | GatherScatter和其它DataMove的byte count、stride/iteration、range与kind-specific geometry | 每个已准入kind使用能区分错误descriptor的非零pattern、全range和guard | 08/10/11/14 | base 46与extended默认17项均按各自exact/observation合同取得板端结论；large Pad/Img2Col、TensorNom使用修正后的NCx physical footprint。native `dims=HW` Concat只允许显式隔离选择；raw C/W/H、MaskGather等仍只消费bounded observation，不由完成性外推语义 |
+| TDMA movement variants | GatherScatter和其它DataMove的byte count、stride/iteration、range与kind-specific geometry | 每个已准入kind使用能区分错误descriptor的非零pattern、全range和guard | 08/10/11/14 | base 46与extended默认17项均按各自exact/observation合同取得板端结论；large Pad/Img2Col、TensorNom使用修正后的NCx physical footprint。native `dims=HW` Concat永久`static-negative`，不得生成packet、board CTest、runner step或其它执行入口；raw C/W/H、MaskGather等仍只消费bounded observation，不由完成性外推语义 |
 | SPM capacity/reservation | allocatable range和保留区 | boundary-positive与verifier negative；不触碰保留区 | 09/11 | 4个boundary/held-out positive均已板端exact，count、result与guard通过；6个越界/保留区项保持static-negative |
 | SPM alignment/bank | 256B preferred alignment、非1024-bit访问资格/代价、bank/color映射 | bounded非preferred geometry round-trip、disjoint offset sweep、多offset engine-pair serial/window control | 09 placement与06 cost | 当前SPM inventory有146行：原19个本地case及新增5个`base+64/+128/+192`、`length=128/384`均已有板端证据。用于性能区分的16个sustained cell已组成4个同invocation matched board group；probe保存并设置owner-backed PMU enable，按high-low-high读取port0/6 T2/T3，执行matched WDMA readback，并在partial accept失败时先做matching-worker safety drain。完整SPM/canary、count、address、PMU、readback和lifecycle oracle当前仅为`board-ready/pending-board`。physical bank/color identity仍没有owner-backed bank/port mapping或bank-specific attribution；offset、port counter或aggregate execution方向都不得代签bank编号 |
 | DDR/cache/coherence | host H2D、Kcore cache、DMA completion和host publication是不同域 | Kcore read前invalidate对照、DMA round-trip、matching drain后D2H | 09/12/14/15 | memory-descriptor 155行、独立cache 58行、16-rank tile-offset与40GiB sparse probe已有板端证据。新增DDR active-rank contention为RDMA-only、WDMA-only、双向三类 × 4KiB/64KiB/64KiB-stride三种workload × active rank 1/2/4/8/16，共45个真实case、9个五点matched board group；完整active/inactive rank oracle和16-rank lifecycle已接入runner，当前`board-ready/pending-board`，不形成bank/controller结论 |
@@ -384,7 +384,7 @@ software-pipeline候选，不能把“queue可提交”“`serial_mode=0`”或�
 | CT | Tensor vector对已测FP16/BF16/FP32 unary、`VV/VS/VuV` main/tail按current exact oracle完成；合同内两个`VuVLoop unit=64` geometry exact。reduce的128B logical result实际写满256B physical block。ArgMin全正普通值返回`0.5@index42`，负数输入稳定返回错误结果；tie/NaN尚无板端结论 | current catalog 653项现已全部通过result、span、guard、record和lifecycle oracle，`PASS=653, FAIL=0, MISSING=0`。旧审计的63项mismatch来自host oracle语义错误：op78--87的value logic不是对FP bit-pattern做位运算，而是先把每个数值解释为truth，执行NOT/AND/OR/XOR后写回数值0/1；op92--94的bitpacked BOOL VuV按byte-addressed RHS storage工作，logical unit 37占5 bytes、物理周期为40 bits，最后不足一个物理周期的tail对RHS按0补齐。修正后目录`board-ct-vector-corrected63-v2`中id `10468..10527,10553,10559,10565`全部`execute_result=1, mismatches=0`且process exit 0。另有convert 204-row gate、reduce/pool/peripheral focused raw及clean-session `VuVLoop` A/B。新增F16 tie/NaN各一个真实board case，每个含3个区分输入、coherent value/index分类、padding/guard和lifecycle oracle，已经接入逐case CTest与runner但尚未上板 | 已有653个row按其实际板端证据消费；`VuVLoop`只接受unit64和checked base/full关系；ArgMin仍只开放已验证全正普通值，负数拒绝；tie/NaN等待board observation，不预设winner/NaN规则 | 不由已有CT special-value或F16四域外推BF16/F32、signed zero、Inf、subnormal或其它ArgMin域；这些未列域由`argmin-unqualified-domain` typed host gate拒绝，必须先新增独立typed row |
 | NE GEMM/options | FP16/BF16 GEMM对main、K/N tail、batch、NN/NT/TN/TT及左右不等batch取得bit oracle；local psum改变并产生独立writeback。bias、ReLU、LeakyReLU和正/负axis-scale在FP16/BF16 large NN三次样本中均与bare输出逐bit相同，说明current wrapper option未产生声明语义 | 当前保存raw重新校验70个NE case/146个样本：32个GEMM exact case；15个GEMM observation各3样本；所有physical padding和slot guard闭合。BF16 signed-zero/subnormal/overflow/NaN与quant raw三次hash稳定但只属observation | GEMM只开放已验证dtype/orientation/tail/batch；psum作为显式aux result规划。上述no-op option不得做fusion或消除独立算子；BF16 special/quant只保存profile behavior，不进入通用数值重写 | 不由FP16推BF16，不由稳定hash推NaN payload、FTZ、accumulator宽度或量化公式，不把local psum当跨tile collective |
 | NE Conv family | ordinary Conv的feature-index与output-index fingerprint各3/3唯一匹配NCx，错误Cx候选分别有604/763 byte mismatch；weight fingerprint对Cx/NCx候选均不匹配（684/678 byte mismatch）。BackwardConv由weight shape拥有`tfr_1`，FP16/BF16各3样本确认8192B bounded footprint；Depthwise与BackwardConv均有独立有界writeback | 19个ordinary Conv observation、2个Depthwise和2个BackwardConv case各3样本，完整physical span、padding、suffix guard与completion已校验 | ordinary Conv的feature/output按NCx规划，weight layout未恢复前Conv保持observation；BackwardConv按weight-owned 8192B footprint分配；三种kind分别建capability，不互相代签 | 不把小非对称Conv exact外推large Conv；不把feature/output的NCx结论外推weight；不把bounded completion升级为通用Conv/Depthwise/BackwardConv numeric exact |
-| DataMove/layout | Tensor↔Cx/NCx在`C=63/64/65/127/129`证明C0 tail、每个N slice的aligned-C和batch stride都是allocation footprint。large Pad/Img2Col/TensorNom分别写到19456B/88576B/17408B，排除compact logical bytes和“整份末尾只对齐一次”。GatherScatter可正确materializeconcat/broadcast/holes/tail。native raw Concat C/W/H只有bounded writeback，HW路径曾不完成 | base 46 case、extended安全17 case及large修正case，均检查all-and-only logical point、internal/batch padding、allocation外guard和completion | physical planner与oracle共用layout codec；concat/broadcast统一选择typed GatherScatter composite；native Concat不进入默认lowering；logical result、padding和guard分别规划 | 不把metadata view当搬运，不把C/W/H bounded completion当exact concat，不由Cx/NCx movement外推任意NTensor/native CT/NE consumption |
+| DataMove/layout | Tensor↔Cx/NCx在`C=63/64/65/127/129`证明C0 tail、每个N slice的aligned-C和batch stride都是allocation footprint。large Pad/Img2Col/TensorNom分别写到19456B/88576B/17408B，排除compact logical bytes和“整份末尾只对齐一次”。GatherScatter可正确materializeconcat/broadcast/holes/tail。native raw Concat C/W/H只有bounded writeback；`dims=HW`不是可校准能力，而是错误指令用法 | base 46 case、extended安全17 case及large修正case，均检查all-and-only logical point、internal/batch padding、allocation外guard和completion；`dims=HW`只保留static-negative合同，不存在板端case | physical planner与oracle共用layout codec；concat/broadcast统一选择typed GatherScatter composite；native Concat不进入默认lowering；logical result、padding和guard分别规划 | 不把metadata view当搬运，不把C/W/H bounded completion当exact concat，不由Cx/NCx movement外推任意NTensor/native CT/NE consumption；不得以header可编码为理由重新发射`dims=HW` |
 | Pool/Unpool | Pool的16个exact覆盖BF16/F32 symmetric及FP16 asymmetric unpadded；8个padding/tie只形成bounded behavior。indexed Pool的value与index是双writeback，F32 index占u32宽度、完整span 1024B。Unpool的index参数是same-shape i16 SPM buffer地址而非scalar；Avg与已验证symmetric mask组合exact，ordinary indexed及F32/large组合仅bounded，其中large FP16 mask只命中最后64-channel window；重复overlap尚无板端规则 | Pool 24个当前case及既有Unpool exact/observation有板端结果。新增`unpool-index-f16-repeated-overlap-observed`与`unpool-mask-f16-repeated-overlap-observed`两个真实device case：先由indexed-max产生四个都指向同一global位置、local index分别为5/3/2/0的真实aux，再在producer完成后把四组按sample轮换的不同FP16 sentinel写入pooled value；host要求aux逐bit正确、64个collision channel各自由候选四组sentinel的非空subset解释，并分别记录uniform或lane-varying的value mask与histogram；其它logical position与physical tail只取zero/seed并保持slot guard。两个case已经接入逐case CTest与runner但尚未上板 | IR显式携带index SSA buffer及其dtype；Pool按value/index分别分配。Unpool只开放明确exact组合；ordinary indexed、large及新重复overlap在得到板端分类前不进入通用numeric lowering | 不把F32 Pool的u32 index直接接到i16 mask-Unpool，不由完成性或case准备推导collision winner/accumulate规则，不由一个window外推任意padding/tie语义 |
 
 先给当前profile可以直接执行的硬结论；后文的证据限制不改变这些compiler决策：
@@ -400,7 +400,7 @@ software-pipeline候选，不能把“queue可提交”“`serial_mode=0`”或�
 | mapped-SPM是否需要dcache操作 | **不需要且不允许。** `0x30400000+offset`是uncached weak-order alias | mapped-SPM只用有序load/store与fence/sync；cacheable DDR按owned range clean/invalidate |
 | ArgMin是否支持浮点负数 | **不支持当前负数域。** 全正普通值exact，负数对照稳定给出错误结果；F16 tie/NaN的两个区分case为`board-ready/pending-board` | 只准已验证全正普通值域；负数域由capability/verifier拒绝；tie/NaN等待真实board observation，其它dtype/domain由typed host gate拒绝 |
 | Unpool是否通用exact | **不是。** 已列Avg和symmetric mask组合exact；ordinary indexed及其它已有组合只取得bounded observation；index/mask两条重复overlap case为`board-ready/pending-board` | 只对明确exact组合开放numeric资格；重复overlap未上板前不定义winner、覆盖或累加语义 |
-| native Concat/BOOL是否进入production | **不进入。** native HW Concat和native TDMA BOOL没有可靠completion | concat继续lower为typed GatherScatter；BOOL physical fill使用已验证I8替代路径 |
+| native Concat/BOOL是否进入production | **不进入。** native `dims=HW` Concat是错误指令用法，永久static-negative；native TDMA BOOL没有可靠completion | 合法source-level HW concat继续lower为typed GatherScatter，且不得为native `dims=HW`建立任何执行入口；BOOL physical fill使用已验证I8替代路径 |
 | DTE与barrier怎么用 | **只用已验证的有序DTE和16-rank full-card barrier** | 保留显式event/wait；subgroup和sender overlap不进入production |
 | timeout后是否继续试卡 | **不继续。** timeout后的管理面idle不代表execution健康 | 首个timeout立即停批，不retry/reset/power；新会话只由known-good Add重新建立资格 |
 
@@ -417,13 +417,13 @@ software-pipeline候选，不能把“queue可提交”“`serial_mode=0`”或�
 | wait与worker scope | `bywork`对matching worker有效；静态实现显示default wait只轮询worker0。default/local-fence与bywork对照返回时worker1均已完成，且六个proper-subset join返回时mask外worker也均已排空，因此这些样本不能区分跨worker scope。wait-each与wait-once方向性样本确认频繁wait增加plan cycles | pure same-worker NCC地址依赖不插wait；只在NCC→Kcore/Direct DTE、跨worker join、barrier、terminal/host publication等completion-domain exit放置并合并matching drain。每个跨worker boundary显式join真实participant | 18个wait-scope与12个subset include/exclude真实case已接入runner并要求pre-boundary pending，当前待板端；若仍自然排空则继续Unknown，不扩大scope |
 | completion与cache visibility | SDK的`0x30400000 + offset`是uncached weak-order mapped-SPM alias，使用有序load/store与`fence`/`sync`，不得执行dcache操作；cacheable DDR的Kcore/host publication仍需按owned range clean/invalidate。depth-4 no-local-wait和local-wait在boundary snapshot前都已自然完成，marker/result/guard均exact，故这对样本不区分wait scope或必要性 | 完整Instr IR以typed MemoryEffects和SSA alias/root/path建立RAW/WAR/WAW dependency issue order，不在first conflict物化local fence；runtime仍在NCC→Kcore completion-domain boundary建立matching completion，且不把诊断用`bywork(0)`硬编码成长期handshake | default/local-fence跨worker scope及最小可靠completion handshake仍未由区分观察闭合。same-session DDR stale对照不阻塞当前一次性runtime；未来引入persistent session并跨launch复用同一allocation时重新启用 |
 | SPM容量、alignment与reuse | allocatable boundary、64KiB transfer、5个nonpreferred geometry及1--4 iteration双slot均完成。256B CT+RDMA phase/offset sweep的window `Ea+Eb-FU≈0`、blocking=0，与16KiB稳定正overlap形成明确size effect；base phase和offset主要落在相近常态但夹杂单样本长尾，6144三次相对较慢也没有形成周期 | 256B作为preferred而非hard alignment；双slot由真实allocation/view、SSA lifetime与completion edge表达。短256B pair不计overlap；planner不做bank coloring，cost不写固定phase penalty | 4/16KiB sustained candidate/control共16个cell、4组已board-ready待执行；probe读取owner-backed port0/6 T2/T3并做matched WDMA readback，partial accept后先安全drain。它们最多形成offset-equivalence proxy；缺的是physical bank/port mapping与bank-specific attribution，不是port counter本身 |
-| physical layout与DataMove | base movement、Tensor↔Cx/NCx以及large Pad/Img2Col/TensorNom闭合了logical points与NCx physical footprint：aligned-C padding和每个N slice的batch stride都是allocation的一部分。native Concat C/W/H只有bounded completion，HW曾不返回 | physical planner从layout codec计算每个slice与整份span；logical result、internal/batch padding和外部guard分开。通用concat继续lower为typed GatherScatter，不选择native Concat | 不外推任意shape/dtype、NTensor或CT/NE native consumption；native HW只能按隔离case继续校准 |
+| physical layout与DataMove | base movement、Tensor↔Cx/NCx以及large Pad/Img2Col/TensorNom闭合了logical points与NCx physical footprint：aligned-C padding和每个N slice的batch stride都是allocation的一部分。native Concat C/W/H只有bounded completion；native `dims=HW`是错误指令用法 | physical planner从layout codec计算每个slice与整份span；logical result、internal/batch padding和外部guard分开。合法source-level HW concat继续lower为typed GatherScatter，不选择native Concat | 不外推任意shape/dtype、NTensor或CT/NE native consumption；native `dims=HW`永久static-negative，测试和runner不得包含该packet |
 | CT数值与physical write | current 653项catalog全部通过current exact result/span/guard/record oracle，0 missing；全部launch/lifecycle正常。旧63项mismatch已由corrected oracle重跑为63/63 `execute_result=1, mismatches=0`：op78--87使用数值truth逻辑，op92--94的BOOL VuV使用byte-addressed 40-bit physical RHS周期并对末尾RHS zero-fill。reduction另表明logical result 128B时硬件仍写256B physical block。raw N/HWC轴不在version-matched enum且首个隔离case未完成，现已从dispatcher移除 | legality按opcode/form/dtype/numeric-domain/shape逐项消费653个通过row；value logic和bitpacked BOOL VuV的logical/physical合同进入共享oracle与lowering。result bytes、physical output span和suffix guard独立建模；`VuVLoop`仅在`unit_elem_count==64`且checked base/full乘积关系成立时supported | 40-bit RHS周期与zero-fill只对已验证BOOL VuV合同成立；不能外推其它unit/layout/form。历史unit32/37 VuVLoop observation与raw N/HWC Reduce不进入production |
 | NE数值与option | FP16/BF16 GEMM已覆盖非平凡累加、tail、batch、orientation和local psum。ReLU实际等于bare且保留负值；large ordinary Conv与当前host physical indexing不符。修正schema的BackwardConv FP16/BF16各3个样本均按8192B footprint完成，physical span、suffix guard和completion通过 | 只对已验证GEMM组合给exact资格；ReLU和ordinary Conv保持observation，不把wrapper enable bit当语义；BackwardConv按weight-owned shape和8192B footprint保护range，允许bounded observation但不宣称通用numeric exact | BackwardConv/ordinary Conv已有真实bounded board row；缺唯一typed NCx/HWOI numeric oracle时catalog保持observation/fail closed，不把另一个无oraclecase登记为待上板 |
 | Pool/Unpool与peripheral | Pool的16个exact向量闭合当前BF16/F32 symmetric与FP16 asymmetric unpadded geometry；8个padding/tie向量只取得bounded observation。indexed F32的value后跟同format宽度的u32 indices，完整span为1024B。Unpool证明index参数是i16 SPM buffer地址而非scalar；F32 mask与large asymmetric FP16 mask虽有界完成，但数值分别存在producer/consumer宽度不一致与只命中最后64-channel window。ArgMin全正普通值域exact，负数域错误；Bilinear已有3样本bounded observation | Pool按value/index各自dtype宽度规划双writeback；IR用same-shape i16 SSA buffer连接已验证indexed pool/unpool。ArgMin tie/NaN各1个case与Unpool index/mask repeated-overlap各1个case已经真实接入board CTest和runner，当前均`pending-board` | F32 index/u32与i16 Unpool producer-consumer宽度不一致由IR verifier拒绝；large Unpool和Bilinear已有bounded板端证据但不能升级为通用exact语义。只有重复overlap规则及ArgMin tie/NaN仍待本批板端分类；其它ArgMin dtype/domain由typed gate fail closed |
 | Direct DTE与barrier | 有序producer→DTE、DTE→consumer、两种disjoint顺序、event后复用和两destination broadcast均完成payload矩阵；四种同步错误观察得到预期transport error后clean success；raw async serial/window各3×16 exact且返回码全0；full-card barrier两个反向错峰epoch均16/16正确 | DTE以显式event/token和wait表达；raw async允许在send/wait之间发射独立CT，但正确性证据不等于时间重叠收益；当前只准16-rank full-card barrier，subgroup在发包前拒绝 | 25个raw multidestination/fan-in case已接入board CTest：broadcast/scatter/shuffle的2/4/8/15 fanout各测adjacent/interleaved，另测四源fan-in；均仍pending，`dest_num`/mapping只作观察。8/15源fan-in、可信device phase、physical route和跨卡transport继续typed fail closed |
 | PMU与cost | NCC per-engine count可用于确认实际发射；只有稳定的FU union关系可判overlap。单次execution delta、blocking=0或offset sweep不能成为固定latency | PMU先用于资格和归因；只有重复、同scope、counter enable稳定且correctness通过的对照才能进入cost model | DTE saved mode仍缺可信device phase basis；SPM sustained probe已有owner-backed port0/6 T2/T3读取，但缺physical bank/port mapping与bank-specific attribution，不能据此命名bank或直接写cost。TMNOC无decoded只读offset，保持static-negative |
-| timeout与设备上下文 | native BOOL和Concat HW表明“header可编码”不等于matching completion；timeout后管理面idle也不能证明execution context健康。独立clean session中的合同内`VuVLoop unit=64`及前后Add均正常 | 这类危险packet在current profile excluded；首个timeout即停批，不自动retry/reset/power，也不从邻近enum外推能力 | 无动态恢复动作；新session只用一次ordinary Add建立执行资格，危险packet保持excluded |
+| timeout与设备上下文 | native BOOL表明“header可编码”不等于matching completion；错误发射native `dims=HW`也曾触发timeout。timeout后管理面idle不能证明execution context健康。独立clean session中的合同内`VuVLoop unit=64`及前后Add均正常 | native `dims=HW`不是待恢复能力，而是永久static-negative；其它危险packet在current profile excluded。首个timeout即停批，不自动retry/reset/power，也不从邻近enum外推能力 | 无动态恢复动作；新session只用一次ordinary Add建立执行资格；native `dims=HW`永不发射，其它危险packet保持excluded |
 
 由上述行为模型直接得到当前策略：
 
@@ -447,11 +447,11 @@ software-pipeline候选，不能把“queue可提交”“`serial_mode=0`”或�
 | --- | --- | --- | --- |
 | CT / peripheral | current CT catalog 653/653通过current exact oracle；旧63项mismatch在修正value-truth及BOOL VuV 40-bit physical period/tail zero-fill oracle后全部重跑为`execute_result=1, mismatches=0`。合同内`VuVLoop unit=64`的两个区分geometry及其前后Add已闭合；ArgMin只在全正普通值域得到`0.5@index42` exact，负数域返回错误结果；普通indexed Unpool只得到有界执行观察，FP16 indexed-max→mask-unpool组合得到exact | 按实际已有板端证据准入；ArgMin tie/NaN两个case及Unpool index/mask repeated-overlap两个case已接入board CTest和runner但尚未上板，不能混入本列“已经得到的结论” | BOOL VuV 40-bit周期不外推其它unit/layout/form；ArgMin tie/NaN和Unpool repeated-overlap待板端分类；其它ArgMin dtype/domain由typed gate fail closed |
 | NE | FP16/BF16 GEMM的main、K/N tail、batch、orientation和FP16 psum已经闭合各自bit oracle；BackwardConv修正footprint后的FP16/BF16各3个样本已闭合bounded span/guard/completion；ReLU没有表现出clamp，普通Conv只允许消费已由非对称vector恢复的窄合同 | GEMM只开放已验证组合；BackwardConv按weight-owned 8192B footprint规划并允许bounded observation；ReLU与未唯一恢复physical indexing的Conv option保持observation | BackwardConv与ordinary Conv已有真实bounded board case；缺唯一typed numeric/physical oracle的组合由catalog disposition保持observation/fail closed，不伪造成另一组无oracle板测 |
-| DataMove / layout | base与extended安全路径、Tensor↔Cx/NCx、Pad、Img2Col和TensorNom已经区分logical span、physical padding及batch stride；native Concat C/W/H只证明有界完成，HW曾timeout | 通用concat继续使用typed GatherScatter；layout planner必须按真实physical codec规划padding和跨N步进 | native HW Concat只允许末尾隔离复测，不进入默认批次 |
+| DataMove / layout | base与extended安全路径、Tensor↔Cx/NCx、Pad、Img2Col和TensorNom已经区分logical span、physical padding及batch stride；native Concat C/W/H只证明有界完成；native `dims=HW`是错误指令用法 | 合法source-level HW concat继续使用typed GatherScatter；layout planner必须按真实physical codec规划padding和跨N步进 | native `dims=HW`永久static-negative，测试面不保留任何执行入口 |
 | SPM / DDR / cache | SPM 24个本地board row、5个DataMove-backed delegated row及107个memory-backed delegated row均有current-schema证据；memory 155行已按current 2MiB schema全量重放通过。独立cache 58行、16-rank tile-offset矩阵和40GiB sparse workspace有各自板端结果 | 256B仍是preferred alignment而非硬限制；mapped-SPM只使用有序访问，cacheable DDR按owned range做publication；只让已验证row进入当前资格 | SPM sustained 16 cell/4 group、DDR active-rank 45 case/9 group及SPM/DDR equivalence CTest均已board-ready待执行。SPM probe已有owner-backed port0/6 T2/T3与matched WDMA readback，但physical bank/port mapping和bank-specific attribution仍typed fail closed；DDR physical bank/controller/hop同样未闭合 |
 | NCC / 同步 / 并行 | 五类engine的documented depth、tight `D+1`、same-worker依赖链、逐worker join、wait-each/wait-once、large backlog、手写双slot及34个expanded pair均通过各自count/result/guard。3个DMA和36个NCC strided case亦通过。expanded中十个disjoint sustained cell取得三次重复正FU excess，4KiB RDMA+WDMA六个cell excess恒为0但plan更低。depth-4 A/B都exact，但snapshot前已自然完成，未区分wait | RAW/WAR/WAW保持显式edge和issue order；正excess cell可生成窄overlap candidate，4KiB RDMA+WDMA只合并issue/wait而不计engine overlap；NCC→Kcore等completion-domain exit仍物化matching completion | queue response 30、wait scope 18、subset scope 12和worker characterization 44个case/14组均已board-ready待执行；worker oracle在drain前捕获boundary并交叉核对`CONTROL`，同时检查同slot sentinel、tail canary、join RC/idle与deadline。resident数、absolute worker timestamp及arbiter policy为typed fail-closed |
 | DTE / barrier | 修复后的64元素production baseline为16-rank exact；modes 1--6的30个full-card payload case全部通过expected/status/SPM guard/cleanup；modes 7、8、9、12的16B错误观察均得到预期transport error后clean success、exact guard和正常cleanup；modes 10--11的64KiB raw async serial/window各3×16 exact、返回码全0、guard与cleanup正常；至此modes 1--12均通过各自oracle。16-rank full-card barrier也已闭合。DTE channel0 transfer raw只取得严格payload单调与1×/2×相对scale；execution非单调；这些历史mode没有启用SPM PMU | 保留显式event/wait，只支持当前16-rank full-card participant合同；已验证同步错误必须由shadow status保留错误并由runtime clean owner正常收尾；raw async window只开放调用顺序正确性，不据此写时间重叠收益；DTE transfer raw只作profile内相对量证据，不写绝对单位或latency cost | 25个raw multidestination/fan-in case已board-ready但尚未上板；`dest_num`/mapping只记录观察。8/15源fan-in、device phase、physical route和跨卡transport保持fail closed；subgroup继续typed-negative |
-| failure boundary | out-of-contract `VuVLoop unit=32` timeout后，后置Add也timeout；native BOOL、Concat HW和未证明SPM range的诊断也出现过不可靠completion。独立clean session中的合同内`unit=64`及前后Add均正常 | 任一timeout立即停批；不retry/reset/power。合同外VuVLoop永不发板；每个新session只用一次ordinary Add建立执行资格 | 无待恢复动作；危险packet保持excluded，安全合同按独立结果消费 |
+| failure boundary | out-of-contract `VuVLoop unit=32` timeout后，后置Add也timeout；native BOOL、错误发射的native `dims=HW`和未证明SPM range的诊断也出现过不可靠completion。独立clean session中的合同内`unit=64`及前后Add均正常 | 任一timeout立即停批；不retry/reset/power。合同外VuVLoop与native `dims=HW`永不发板；每个新session只用一次ordinary Add建立执行资格 | 无待恢复动作；native `dims=HW`保持static-negative，其它危险packet保持excluded，安全合同按独立结果消费 |
 
 因此当前结论不是“硬件已经可以全面并行”，而是：保守单engine lowering、显式依赖顺序和
 completion-domain boundary继续作为正确性基线，同时十个expanded cell允许进入production候选选择；
@@ -898,7 +898,7 @@ compact `C0` tail和256B physical padding使用不同poison。DataMove使用下�
 | Mirror、Rotate90/180/270 | `[2,7,9,65]`，H/W位置编码不同 | H/W轴颠倒、只处理首N、padding被当逻辑值 |
 | Transpose | header定义的固定映射使用非对称H/W/C shape，held-out更换三轴长度 | metadata-only、固定轴映射错误、Cx block步进错误 |
 | NCHW↔NHWC | `[2,65,7,9] ↔ [2,7,9,65]` | 仅改shape未搬数据、C/H/W顺序错误 |
-| raw Concat | C/W/H分别使用不等长两输入；C用33+32→65，H/W使用非对称切分。三者已有bounded completion/guard板端观察，catalog保持observation且production走GatherScatter；HW只保留已接入runner末尾的显式隔离requalification，不能进入默认批次 | 两输入反序、轴错误、第二输入tail/padding串扰；packet可编码不能替代可完成性和数值资格 |
+| raw Concat | C/W/H分别使用不等长两输入；C用33+32→65，H/W使用非对称切分。三者已有bounded completion/guard板端观察，catalog保持observation且production走GatherScatter；native `dims=HW`是错误指令用法，永久static-negative，不生成packet或执行case | 两输入反序、轴错误、第二输入tail/padding串扰；packet可编码不能替代合法性、可完成性和数值资格 |
 | compiler concat | N轴或任意raw wrapper不能原生表达的合法concat由typed GatherScatter composite闭合 | 不能把raw Concat可用性外推成全部source语义 |
 | Pad | `[2,5,7,65]`到非对称pad后的`[2,7,10,65]` | top/bottom/left/right次序、pad值、内部physical padding |
 | TensorNom/channelnorm | `[2,7,9,65]`且各channel统计不同 | 归一化轴、统计范围和padding参与错误 |
@@ -922,9 +922,10 @@ Tensor materialize→NE identity GEMM、I8 `128B×32`/`64B×64` strided TDMA，�
 Memset。公开DataMove opcode `121..138`均有处置：14个exact、4个observation、0 deferred；四个
 observation opcode为raw Concat、TensorNom和两种MaskGather，均保留raw result、expected diff、
 physical guard和completion。CT/NE/RDMA/WDMA/TDMA与Tensor/NTensor/Cx/NCx的20个组合分类为8个native
-positive、3个materialize-then-consume positive和9个static-negative，未留空白。native `dims=HW` Concat因一次
-completion timeout不进入默认catalog，只保留显式`--case`隔离复测入口。C/W/H已取得raw completion和guard
-板端观察但尚未exact-qualified；extended安全路径按各自exact/observation合同完成板端校验。
+positive、3个materialize-then-consume positive和9个static-negative，未留空白。native `dims=HW` Concat
+是错误指令用法，永久归入static-negative：catalog、dispatcher、CTest和runner均不得保留任何发射或重新资格
+入口。C/W/H已取得raw completion和guard板端观察但尚未exact-qualified；合法source-level HW concat由
+typed GatherScatter闭合，extended安全路径按各自exact/observation合同完成板端校验。
 
 large NCx case还闭合了不能从logical bytes推导physical span的三个反例：Pad
 `N2H5W7C65→N2H7W10C65`使用9728B source和19456B destination；Img2Col
@@ -1221,8 +1222,9 @@ contention、collective algorithm/traffic、Direct-DTE raw multidestination/fan-
 Unpool repeated-overlap、single-engine rate和engine-pair balance仍不能写成硬件事实。physical queue
 resident数、SPM/DDR bank identity、absolute per-worker timestamp、physical arbiter policy、8/15源DTE
 fan-in、device phase、physical route、cross-card transport及production three-stage producer缺口由各自
-typed gate保守关闭。历史op013→op014与native `dims=HW` Concat不进入当前安全队列。准备完成和局部板端
-证据都不等于Q37完成，也不提前授权production scheduling变化。
+typed gate保守关闭。历史op013→op014不进入当前安全队列；native `dims=HW` Concat是错误指令用法，
+永久static-negative并从全部测试面删除。准备完成和局部板端证据都不
+等于Q37完成，也不提前授权production scheduling变化。
 
 板端统一入口为：
 
@@ -1248,40 +1250,88 @@ WAFER_EXECUTE_HARDWARE_TESTS=1 \
   --batch pending-hardware-calibration
 ```
 
-该master batch由pending inventory反向绑定16个family的全部211个互异board CTest和1232个已解析
-pending target，并校验每个CTest恰有runner step。归一化后的pending target参数无重复；同invocation中为漂移、
-session或危险case健康检查而重跑的既有baseline不计入1232个pending target，例如SPM equivalence的
+该master batch由pending inventory反向绑定15个family的全部210个互异board CTest和1231个pending target
+cell，并校验每个CTest恰有runner step。归一化后的pending target参数无重复；同invocation中为漂移、
+session或危险case健康检查而执行的既有baseline不计入1231个pending target，例如SPM equivalence的
 `8 baseline + 88 held-out`仍作为完整matched invocation执行；
 `compiler-optimization-paired`、`collective-characterization`、`collective-traffic-behavior`、
 `engine-pipeline-characterization`和`pending-execution-boundaries`只是可重复选择的语义子批次，彼此存在
 有意重叠，不应在同一命令中机械叠加。选择master batch后自动加首尾heartbeat；每个group CTest在单一
 进程中按冻结顺序执行其matched cells，不把381个engine cell、
 44个worker cell、45个active-rank cell或16个SPM sustained cell拆成并发板测；25个Direct-DTE raw
-case同样保持逐CTest串行。native Concat HW的末尾
-隔离case在master batch中保持冻结末尾位置。旧instruction-family、memory-descriptor和SPM全量重放只保留
-为`*-full-replay`显式步骤，不进入本批待执行路径。
+case同样保持逐CTest串行。native `dims=HW` Concat
+不属于合法pending inventory，且不存在任何board case或runner step。旧instruction-family、
+memory-descriptor和SPM全量重放只保留为`*-full-replay`显式步骤，不进入本批待执行路径。
 
-### 5.10 待上板区分实验（真实case已接入）
+### 5.10 区分实验执行台账
 
-状态：以下可执行case资产均已实现并接入board CTest与`pending-execution-boundaries` runner batch，
-板端执行统一为`pending`；本节没有把catalog/no-card准备记成板端证据。NCC侧30个queue saturation、
-18个wait-scope和12个subset-scope case已经进入typed request、device dispatcher、pre-wait/boundary/final
-record及host oracle；SPM单tile侧复用8个既有baseline control并新增88个base-translation、
-reciprocal-order和第二workload schedule模板，组合成48个paired coordinate。每个coordinate用4次
-same-invocation执行serial/window双row，共384个pair-only measurement row。
-DDR rank-one侧新增108个同invocation坐标batch，每批包含serial/window、双issue order和四次重复，
-共1728个pair-only measurement row；
-physical-tile侧新增384个跨16 rank的RDMA/RDMA同allocation坐标组，每个launch共3072个paired
-measurement row；activation要求forward/reverse rank order两次成对launch，因此最小执行6144 row，并由
-显式selector与旧tile-offset runner隔离。
-此外，worker characterization的44个case按14个matched group执行：fixed-total placement 14、
-bounded progress 18、逐worker low/high outstanding 12；SPM sustained pilot的16个cell按4个matched
-group执行；DDR active-rank的45个case按9个五点matched group执行；Direct-DTE新增25个
-逐case项：四源fan-in 1项，以及raw broadcast/scatter/shuffle × fanout 2/4/8/15 ×
-adjacent/interleaved共24项；ArgMin tie/NaN与Unpool index/mask repeated-overlap各有2个逐case项。
-对应package/ELF/wafer-run、强oracle、no-card/host contract、
-board CTest和runner step均已存在。本轮没有执行这些board CTest；用户后续可直接选择上述batch，仍按
-首错即停、单进程串行、bounded timeout且不retry/reset/power的合同执行。
+#### 2026-07-27 板端批次
+
+本轮绑定TX8110、16 tile、runtime version 1300及同一runtime library identity执行。当前合法pending
+inventory共有15个family、210个互异board CTest和1231个target cell；本轮执行台账仅覆盖远程扩展前的
+179个合法CTest，按互异CTest记账为：
+
+- `PASS=79`；
+- ordinary failure `=9`，均在结果/oracle边界干净退出；
+- `UNEXECUTED=91`；
+- 10次runner invocation的initial known-good Add heartbeat全部通过。
+
+本次远程新增31个CTest、37个target cell尚未进入该轮执行；因此在当前210项清单中，这一检查点共有
+79项通过、9项普通失败和122项未执行。
+
+79个通过项由以下互异CTest组成：production reciprocal 1项，AllGather Direct/Ring三种payload 3项，
+AllToAll/Permute traffic 11项，queue saturation 30项，worker subset 12项，worker
+placement/progress 8项，SPM equivalence/sustained pilot 6项，DDR active-rank contiguous 6项，
+DDR conflict-equivalence 2项。它们只形成各自result、guard、count、completion及已声明proxy合同的板端
+证据；未满足promotion条件的cost、bank/color、resident和scope结论仍保持Unknown。
+
+9个ordinary failure按根因边界分类如下：
+
+1. production common-factor与resident-fanout-share各1项：前者在winner前的INT8 CT算术基线即出现
+   numeric mismatch，后者仅在`Neg(+0)`的signed-zero位上不一致；二者共同暴露“静态可编码”未连接
+   profile-scoped numeric admission，不能据此把优化candidate或精确signed-zero语义准入production。
+2. ReduceScatter Direct 256B的INT8 Add结果不符；同批AllGather transport 3项通过，因此该项保守归入
+   未取得资格的INT8 CT算术域，不归因为DTE transport。
+3. single-engine seed在RDMA起始处返回`SEED_FAILED`；host catalog把`Fmt_INT8`误写成值8，而
+   version-matched ABI中INT8为0、值8为UINT8。这是测试枚举事实源错误，不是engine rate证据。
+4. worker wait-scope 1项因后续repeat在pre-wait snapshot前自然排空而被逐样本oracle判失败；已有至少一个
+   repeat在目标pending时完成区分。修复方向是聚合distinguishing repeats，不能把自然排空当硬件失败或
+   扩大default wait scope。
+5. ArgMin tie 1项在第二个区分输入上重复了前一launch的value/index组合；coherence失败保持有效，但当前
+   fixture尚不能区分result writeback stale与input consumption stale，不能放宽tie资格。
+6. Unpool index repeated-overlap 1项得到全零writeback；host bounded-subset oracle遗漏drop-all/zero-fill
+   baseline，故该case不能承担collision winner区分，也不能由此升级ordinary indexed Unpool。
+7. DDR active-rank RDMA-only stride及RDMA+WDMA stride各1项在同一host假定hole处失败；descriptor实际把
+   DDR strided endpoint gather到compact SPM，按DDR envelope与SPM compact footprint分域重算后全span
+   无差异。这两项是fixture/oracle复用了错误布局codec，不是硬件descriptor错误。
+
+此前遗留的native `dims=HW` Concat执行case不属于合法能力：它是错误指令用法，本应永久
+static-negative并从测试面删除，却被错误纳入旧批次并在发射后触发completion timeout。该项不计入上述
+旧批次179个合法CTest、9个ordinary failure或1194个target cell。timeout后立即停止全部板测，没有执行terminal
+heartbeat，也没有retry、reset或power；只读管理面idle不恢复execution资格。当前catalog、dispatcher、
+CTest、inventory和runner均不得存在该指令的任何执行入口；合法source-level HW concat继续由typed
+GatherScatter materialize。
+
+旧批次其余91个合法CTest及本次远程新增31个CTest均未执行，必须在新的合格会话中按当前inventory继续，
+不能把catalog/no-card准备记成板端
+证据。NCC wait-scope剩余项、collective剩余算法、ArgMin NaN、Unpool mask、engine其余组和DDR
+WDMA-only stride等均仍按各自保守gate处理。runner继续遵守单进程串行、bounded timeout、普通failure
+停止当前invocation并转入host归因、任一timeout或设备异常停止全部板测且不retry/reset/power。
+
+本节其余段落描述仍存在的case资产与promotion合同。NCC侧30个queue saturation、18个wait-scope和
+12个subset-scope case已经进入typed request、device dispatcher、pre-wait/boundary/final record及host
+oracle；SPM单tile侧复用8个既有baseline control并新增88个base-translation、reciprocal-order和第二
+workload schedule模板，组合成48个paired coordinate。每个coordinate用4次same-invocation执行
+serial/window双row，共384个pair-only measurement row。DDR rank-one侧新增108个同invocation坐标batch，
+每批包含serial/window、双issue order和四次重复，共1728个pair-only measurement row；physical-tile侧
+新增384个跨16 rank的RDMA/RDMA同allocation坐标组，每个launch共3072个paired measurement row；
+activation要求forward/reverse rank order两次成对launch，因此最小执行6144 row，并由显式selector与旧
+tile-offset runner隔离。worker characterization的44个case按14个matched group执行：fixed-total
+placement 14、bounded progress 18、逐worker low/high outstanding 12；SPM sustained pilot的16个cell按
+4个matched group执行；DDR active-rank的45个case按9个五点matched group执行；Direct-DTE新增25个逐case项：
+四源fan-in 1项，以及raw broadcast/scatter/shuffle × fanout 2/4/8/15 × adjacent/interleaved共24项；
+ArgMin tie/NaN与Unpool index/mask repeated-overlap各有2个逐case项。对应package/ELF/wafer-run、强oracle、
+no-card/host contract、board CTest和runner step的实际执行状态以上述本轮台账为准。
 
 master runner对所有带`pending`标签的case归档source MLIR/meta、最终linked module、manifest、JSON/raw证据
 及实际compiler/runtime/objdump/clang路径与SHA-256，不再按family名称漏掉NE、memory或numeric case。
@@ -1547,6 +1597,9 @@ cycle/PMU unit、scope、clear/wrap与workload correlation未闭合前，本表�
   drain和正常lifecycle。同一software/runtime身份的合格会话只由总runner做首尾heartbeat，不为每个case重复资格化。
   除这个精确`D+1`向量外，任意更深或未证明occupancy/full的overflow仍不执行。
 - 不发射SCALAR、DTE或CSR raw packet到`TsmExecute`。
+- 不发射native `dims=HW` Concat。该组合是错误指令用法，永久`static-negative`；不得创建packet、
+  board CTest、runner step或任何其它执行入口。合法source-level HW concat只允许materialize为typed
+  GatherScatter。
 - 当前profile不发射TDMA Memset native `Fmt_BOOL` packet；BOOL full-footprint只允许先canonicalize为I8
   byte fill，logical-valid BOOL fill保持fail closed。
 - 当前profile不发射历史raw dimension 3/5的N/HWC Reduce；version-matched enum没有该语义，首个隔离

@@ -1,6 +1,8 @@
 # Collective Hardware Characterization 实施计划
 
-状态：第一批9组case与no-card gate已完成，真实板端执行`pending`。本文只组织case施工和验证；case定义、执行状态、原始
+状态：第一批9组case与no-card gate已完成；2026-07-27板端AllGather 256B/4KiB/64KiB三组通过，
+ReduceScatter 256B在Direct i8 add暴露未资格化numeric capability，其余五组未执行，因此本campaign仍未
+完成。本文只组织case施工和验证；case定义、执行状态、原始
 证据及最终compiler消费结论统一写入`docs/tx81-compiler-hardware-calibration.md`。
 
 ## Pipeline Contract

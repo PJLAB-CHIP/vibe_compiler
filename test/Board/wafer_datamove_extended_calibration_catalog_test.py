@@ -6,7 +6,6 @@ from __future__ import annotations
 import pathlib
 import struct
 import tempfile
-import types
 
 import wafer_board_datamove_extended_calibration_probe_test as runner
 import wafer_datamove_extended_calibration_catalog as catalog
@@ -17,14 +16,13 @@ def validate_concat_physical_spans() -> None:
         "C": 24576,
         "W": 17408,
         "H": 17920,
-        "HW": 9216,
     }
     assert {
         axis: catalog._raw_concat_physical_span(axis)
         for axis in catalog.RAW_CONCAT_SPECS
     } == expected_spans
     assert catalog.NATIVE_CONCAT_AXES == {"C", "W", "H"}
-    assert catalog.UNQUALIFIED_NATIVE_CONCAT_AXES == {"HW"}
+    assert catalog.INVALID_NATIVE_CONCAT_AXES == {"HW"}
     for sample, case in enumerate(catalog.CONCAT_CASES):
         axis = str(case.semantic_axis)
         left_shape, right_shape, output_shape, _ = (
@@ -310,22 +308,8 @@ def main() -> int:
     cmake = (
         pathlib.Path(__file__).resolve().parents[1] / "CMakeLists.txt"
     ).read_text()
-    assert "NAME wafer-board-datamove-native-concat-hw-isolated" in cmake
-    assert "--allow-isolated-native-concat-hw" in cmake
-    isolated_ctest = cmake[
-        cmake.index("NAME wafer-board-datamove-native-concat-hw-isolated") :
-        cmake.index(
-            "add_test(NAME wafer-board-ne-calibration",
-            cmake.index(
-                "NAME wafer-board-datamove-native-concat-hw-isolated"
-            ),
-        )
-    ]
-    positions = [
-        isolated_ctest.index(name)
-        for name in runner.ISOLATED_NATIVE_CONCAT_HW_SEQUENCE
-    ]
-    assert positions == sorted(positions)
+    assert "wafer-board-datamove-native-concat-hw" not in cmake
+    assert "--allow-isolated-native-concat-hw" not in cmake
     assert runner.execution_sample_count(
         exact=True, observation_samples=3
     ) == 1
@@ -341,9 +325,9 @@ def main() -> int:
     else:
         raise AssertionError(
             "zero DataMove observation sample count was accepted"
-        )
+    )
     assert len(catalog.CATALOG) == 17
-    assert len(catalog.ALL_CASES) == 18
+    assert len(catalog.ALL_CASES) == 17
     assert len(catalog.CASES_BY_ID) == len(catalog.ALL_CASES)
     assert len(catalog.CASES_BY_NAME) == len(catalog.ALL_CASES)
     assert [case.case_id for case in catalog.CATALOG] == [
@@ -367,11 +351,13 @@ def main() -> int:
         "W",
         "H",
     }
-    isolated_hw = catalog.ISOLATED_CONCAT_CASES[0]
-    assert isolated_hw.semantic_axis == "HW"
-    assert isolated_hw not in catalog.CATALOG
-    assert catalog.CASES_BY_NAME[isolated_hw.name] is isolated_hw
-    assert tuple(case.case_id for case in catalog.ALL_CASES) == tuple(range(18))
+    assert all(case.semantic_axis != "HW" for case in catalog.ALL_CASES)
+    assert tuple(case.case_id for case in catalog.ALL_CASES) == (
+        0,
+        1,
+        2,
+        *range(4, 18),
+    )
     assert all(not case.is_exact for case in catalog.CONCAT_CASES)
     assert all(case.is_exact for case in catalog.LARGE_TYPED_CASES)
     assert all(
@@ -386,58 +372,6 @@ def main() -> int:
     validate_concat_physical_spans()
     validate_large_typed_physical_spans()
     validate_tensor_nom_physical_span()
-    isolated_built = catalog.build_case_payload(isolated_hw, sample=0)
-    assert len(isolated_built.request) == catalog.RESOURCE_BYTES
-    assert len(isolated_built.payload) == catalog.RESOURCE_BYTES
-    default_selection = runner.select_cases(
-        types.SimpleNamespace(
-            selected_cases=None,
-            operation=None,
-            oracle=None,
-            allow_isolated_native_concat_hw=False,
-        )
-    )
-    assert default_selection == catalog.CATALOG
-    try:
-        runner.select_cases(
-            types.SimpleNamespace(
-                selected_cases=[isolated_hw.name],
-                operation=None,
-                oracle=None,
-                allow_isolated_native_concat_hw=False,
-            )
-        )
-    except RuntimeError as error:
-        assert "explicit isolated authorization" in str(error)
-    else:
-        raise AssertionError("native HW Concat bypassed isolated authorization")
-    explicit_selection = runner.select_cases(
-        types.SimpleNamespace(
-            selected_cases=list(
-                runner.ISOLATED_NATIVE_CONCAT_HW_SEQUENCE
-            ),
-            operation=None,
-            oracle=None,
-            allow_isolated_native_concat_hw=True,
-        )
-    )
-    assert tuple(case.name for case in explicit_selection) == (
-        runner.ISOLATED_NATIVE_CONCAT_HW_SEQUENCE
-    )
-    try:
-        runner.select_cases(
-            types.SimpleNamespace(
-                selected_cases=[isolated_hw.name],
-                operation=None,
-                oracle=None,
-                allow_isolated_native_concat_hw=True,
-            )
-        )
-    except RuntimeError as error:
-        assert "fixed C/W/H control sequence" in str(error)
-    else:
-        raise AssertionError("native HW Concat ran without fixed controls")
-
     for sample, case in enumerate(catalog.CATALOG):
         assert case.result_bytes > 0
         assert case.output_span % 256 == 0
@@ -490,6 +424,7 @@ def main() -> int:
     assert "move->Concat" in probe
     assert "move->TensorNom" in probe
     assert "move->MaskGather" in probe
+    assert "if (dimension > 2U)" in probe
     assert "wafer_tx81_tdma_pad" in probe
     assert "wafer_tx81_tdma_img2col" in probe
     assert "wafer_tx81_elementwise_add" in probe
@@ -514,7 +449,6 @@ def main() -> int:
         "{0U, 24576U, 16380U, 24576U, 0U, 1U, 0U, 1U}",
         "{1U, 17408U, 16380U, 17408U, 0U, 1U, 0U, 1U}",
         "{2U, 17920U, 16380U, 17920U, 0U, 1U, 0U, 1U}",
-        "{3U, 9216U, 8060U, 9216U, 0U, 1U, 0U, 1U}",
         "{4U, 9728U, 19456U, 19456U, 1U, 0U, 0U, 0U}",
         "{5U, 27136U, 88576U, 88576U, 1U, 0U, 0U, 0U}",
         "{8U, 16380U, 17408U, 17408U, 1U, 0U, 0U, 1U}",
@@ -522,13 +456,17 @@ def main() -> int:
         assert row in probe
     assert "case 1U:" in probe
     assert "case 2U:" in probe
-    assert "case 3U:" in probe
-    for source1_offset in (16384, 7680, 3072):
+    assert "case 3U:" not in probe
+    assert "{3U, 9216U, 8060U, 9216U" not in probe
+    assert "wafer_dmx_shape(2U, 1U, 31U, 65U)" not in probe
+    for source1_offset in (16384, 7680):
         assert f"input + {source1_offset}U" in probe
+    assert "input + 3072U" not in probe
     validate_resource_canaries()
     print(
         "wafer_datamove_extended_calibration_catalog_test: "
-        "default=17 all=18 exact=11 observation=6 isolated=1 passed"
+        "default=17 all=17 exact=11 observation=6 native_hw=static-negative "
+        "passed"
     )
     return 0
 

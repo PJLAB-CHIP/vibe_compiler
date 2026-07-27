@@ -688,15 +688,6 @@ EXPLICIT_ONLY_STEPS = (
         "wafer-board-ddr-conflict-equivalence-cross-tile",
         "actual-allocation and physical-tile DDR equivalence held-out",
     ),
-    CalibrationStep(
-        "datamove-native-concat-hw-isolated",
-        "isolated-final",
-        "wafer-board-datamove-native-concat-hw-isolated",
-        (
-            "run bounded native Concat C/W/H controls before the isolated "
-            "native HW requalification case"
-        ),
-    ),
 )
 
 ALL_CALIBRATION_STEPS = (

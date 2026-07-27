@@ -28,7 +28,6 @@ EXPECTED_PENDING_BOARD_COUNTS = {
     "ddr-active-rank-contention": (9, 45),
     "argmin-tie-and-nan-domain": (2, 2),
     "unpool-repeated-overlap-collision": (2, 2),
-    "native-concat-hw-isolated-requalification": (1, 1),
 }
 
 
@@ -119,10 +118,10 @@ def main() -> None:
     assert resolved_pending_counts == EXPECTED_PENDING_BOARD_COUNTS
     assert sum(
         ctests for ctests, _ in resolved_pending_counts.values()
-    ) == 211
+    ) == 210
     assert sum(
         cells for _, cells in resolved_pending_counts.values()
-    ) == 1232
+    ) == 1231
 
     memory = _load_module(
         repo,
@@ -332,7 +331,7 @@ def main() -> None:
     )
     assert len(selected_ctests) == len(pending_ctests)
     assert set(selected_ctests) == pending_ctests
-    assert master_batch[-1] == "datamove-native-concat-hw-isolated"
+    assert all("native-concat-hw" not in key for key in master_batch)
 
 
 if __name__ == "__main__":

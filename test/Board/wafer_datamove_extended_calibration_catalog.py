@@ -150,22 +150,14 @@ RAW_CONCAT_SPECS = {
         (2, 7, 9, 65),
         1,
     ),
-    "HW": (
-        (2, 2, 5, 65),
-        (2, 3, 7, 65),
-        (2, 1, 31, 65),
-        1,
-    ),
 }
 # The legacy op_concat production wrapper asserts axis == rank - 1 and maps
 # that logical last dimension to native dims=0 (C).  This is a conservative
 # production contract, not proof that hardware rejects every other encoding:
-# W/H have bounded completion+guard observations.  HW remains isolated after a
-# completion timeout and is not part of the default executable catalog.
+# W/H have bounded completion+guard observations.  Native dims=HW is an invalid
+# instruction use and must never become an executable catalog case.
 NATIVE_CONCAT_AXES = frozenset({"C", "W", "H"})
-UNQUALIFIED_NATIVE_CONCAT_AXES = frozenset(
-    set(RAW_CONCAT_SPECS) - NATIVE_CONCAT_AXES
-)
+INVALID_NATIVE_CONCAT_AXES = frozenset({"HW"})
 
 
 def _raw_concat_physical_span(axis: str) -> int:
@@ -278,21 +270,6 @@ CONCAT_CASES = (
         oracle=ORACLE_OBSERVATION,
         semantic_axis="H",
         output_span=_raw_concat_physical_span("H"),
-    ),
-)
-
-ISOLATED_CONCAT_CASES = (
-    _case(
-        3,
-        "datamove-raw-concat-hw-n2-2x5-3x7-c65",
-        "raw-concat",
-        131,
-        _raw_concat_physical_span("HW"),
-        _compact_bytes(RAW_CONCAT_SPECS["HW"][2]),
-        ct=1,
-        oracle=ORACLE_OBSERVATION,
-        semantic_axis="HW",
-        output_span=_raw_concat_physical_span("HW"),
     ),
 )
 
@@ -461,7 +438,7 @@ CATALOG = (
     + TDMA_DESCRIPTOR_CASES
 )
 ALL_CASES = tuple(
-    sorted(CATALOG + ISOLATED_CONCAT_CASES, key=lambda case: case.case_id)
+    sorted(CATALOG, key=lambda case: case.case_id)
 )
 CASES_BY_ID = {case.case_id: case for case in ALL_CASES}
 CASES_BY_NAME = {case.name: case for case in ALL_CASES}

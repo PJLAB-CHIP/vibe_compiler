@@ -1410,17 +1410,18 @@
 - 防复发：协议字段必须区分“未观测”和“观测为零”；资源缩放、跨进程成功样本和条件写入字段不能替代同一次
   失败调用的阶段证据。没有该证据前不继续用resource大小调整推断heap根因。
 
-## 2026-07-24 packet字段可编码不等于对应组合可安全执行
+## 2026-07-24 native Concat `dims=HW`是永久非法指令
 
-- 现象：`TsmDataMove::Concat`的header公开C/W/H/N/HW/HWC编码，raw C/W/H可完成并保持guard，但HW
-  case在completion内未返回并污染后续execution context。
+- 现象：`TsmDataMove::Concat`的header虽然公开C/W/H/N/HW/HWC编码，但native `dims=HW`不是可执行能力，
+  不能因为enum存在或builder可构包就纳入板端正向矩阵。
 - 根因：`__datamove_concat`只把调用参数`dims`原样写入`CT_Param+156`，不验证axis与shape组合；旧
-  production `op_concat.c`反而断言只处理最后逻辑维，并把NHWC最后维映射成C。构包成功和enum存在都不是
-  firmware/硬件legality或数值正确性的证明。
-- 修复模式：默认safe catalog只保留已有bounded completion的C/W/H observation，HW只通过精确case名显式
-  隔离复测；compiler V0的任意轴concat继续展开为typed GatherScatter，native lowering等待独立exact资格。
-- 防复发：raw opcode新增维度或mode时，依次验证builder、matching completion、完整physical span/guard和
-  exact语义；任何timeout立即停批，不能从邻近编码或production wrapper的保守范围反向外推硬件能力。
+  production `op_concat.c`只处理最后逻辑维，并把NHWC最后维映射成C。静态可编码性不能替代
+  firmware/硬件legality。
+- 修复模式：把native Concat `dims=HW`固定为static-negative，从catalog、CTest、inventory和runner删除全部
+  board入口；compiler source-level任意轴concat一律展开为typed `gather_scatter`，不得生成该native packet。
+- 防复发：该组合不保留board case、复测开关或重新资格化入口。新增raw mode必须先有独立静态legality来源，
+  header enum和packet builder不能自动生成board-positive；已决非法组合只保留host拒绝和compiler lowering
+  gate。
 
 ## 2026-07-24 NCC prepare失败也必须释放当前issue的builder
 

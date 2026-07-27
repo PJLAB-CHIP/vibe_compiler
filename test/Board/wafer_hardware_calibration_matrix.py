@@ -1144,21 +1144,20 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             resource_budget="two-128k-ddr-slots",
             reason=(
                 "raw opcode 131 C/W/H completion and guards are bounded, but "
-                "their numeric semantics are not yet exact-qualified; HW is "
-                "excluded after an isolated completion timeout"
+                "their numeric semantics are not yet exact-qualified; native "
+                "dims=HW is statically invalid"
             ),
         ),
         _non_board_leaf(
-            "datamove-native-concat-hw-isolated",
+            "datamove-native-concat-hw-static-negative",
             "held-out",
-            "isolated-deferred",
+            "static-negative",
             DATAMOVE_CATALOG,
-            "raw-concat-hw-isolated",
+            "raw-concat-hw-static-negative",
             reason=(
-                "native dims=HW previously timed out at matching completion; "
-                "it remains outside the default dispatcher and may only be "
-                "selected as the final explicit isolated case after bounded "
-                "C/W/H alternatives"
+                "native dims=HW is an invalid instruction use and must never "
+                "be emitted or executed; legal HW-axis concat lowers through "
+                "typed GatherScatter"
             ),
         ),
         _board_leaf(

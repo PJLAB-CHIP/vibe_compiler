@@ -213,7 +213,6 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "instruction-family-full-replay",
                 "memory-descriptor-full-replay",
                 "spm-full-replay",
-                "datamove-native-concat-hw-isolated",
             }
             & default_keys
         )
@@ -233,8 +232,10 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "worker-placement-worker-placement-ct",
                 "spm-conflict-equivalence-rank-one",
                 "ddr-conflict-equivalence-cross-tile",
-                "datamove-native-concat-hw-isolated",
             }.issubset(explicit_keys),
+        )
+        self.assertFalse(
+            any("native-concat-hw" in key for key in explicit_keys)
         )
         for step in RUNNER.EXPLICIT_ONLY_STEPS:
             self.assertNotIn(step, RUNNER.CALIBRATION_STEPS)
@@ -269,7 +270,6 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "instruction-family-ct-capability",
                 "memory-engine-pair-new-offsets",
                 "spm-non-preferred-geometry",
-                "datamove-native-concat-hw-isolated",
             )
         )
         self.assertEqual(
@@ -279,7 +279,6 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "instruction-family-ct-capability",
                 "memory-engine-pair-new-offsets",
                 "spm-non-preferred-geometry",
-                "datamove-native-concat-hw-isolated",
                 "terminal-heartbeat",
             ],
         )
@@ -547,10 +546,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         self.assertEqual(len(selected_ctests), len(expected_ctests))
         self.assertEqual(set(selected_ctests), expected_ctests)
         self.assertEqual(len(set(batch)), len(batch))
-        self.assertEqual(
-            batch[-1],
-            "datamove-native-concat-hw-isolated",
-        )
+        self.assertFalse(any("native-concat-hw" in key for key in batch))
         selected = RUNNER.select_calibration_steps(
             None, ("pending-hardware-calibration",)
         )

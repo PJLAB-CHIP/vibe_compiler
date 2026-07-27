@@ -45,14 +45,6 @@ METADATA = {
     "unused_inputs": [],
 }
 
-ISOLATED_NATIVE_CONCAT_HW_SEQUENCE = (
-    "datamove-raw-concat-c-n2h7w9-c33-c32",
-    "datamove-raw-concat-w-n2h7-w4-w5-c65",
-    "datamove-raw-concat-h-n2-h3-h4-w9-c65",
-    "datamove-raw-concat-hw-n2-2x5-3x7-c65",
-)
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=pathlib.Path)
@@ -75,14 +67,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-runtime-library-sha256")
     parser.add_argument("--completion-timeout-ms", type=int, default=60000)
     parser.add_argument("--observation-samples", type=int, default=3)
-    parser.add_argument(
-        "--allow-isolated-native-concat-hw",
-        action="store_true",
-        help=(
-            "authorize only the fixed C/W/H control sequence followed by the "
-            "native HW Concat requalification case"
-        ),
-    )
     return parser.parse_args()
 
 
@@ -135,25 +119,6 @@ def select_cases(
         raise RuntimeError("extended DataMove filters selected no cases")
     if len({case.name for case in selected}) != len(selected):
         raise RuntimeError("extended DataMove selection repeats a case")
-    selected_names = tuple(case.name for case in selected)
-    selects_isolated_hw = any(
-        case in catalog.ISOLATED_CONCAT_CASES for case in selected
-    )
-    if selects_isolated_hw:
-        if not args.allow_isolated_native_concat_hw:
-            raise RuntimeError(
-                "native Concat HW requires the explicit isolated authorization"
-            )
-        if selected_names != ISOLATED_NATIVE_CONCAT_HW_SEQUENCE:
-            raise RuntimeError(
-                "native Concat HW must be the final case after the fixed "
-                "C/W/H control sequence"
-            )
-    elif args.allow_isolated_native_concat_hw:
-        raise RuntimeError(
-            "isolated native Concat HW authorization requires the fixed "
-            "C/W/H/HW case sequence"
-        )
     return selected
 
 
@@ -342,10 +307,6 @@ def main() -> int:
             json.dumps(
                 {
                     "cases": [case.as_dict() for case in catalog.CATALOG],
-                    "isolated_cases": [
-                        case.as_dict()
-                        for case in catalog.ISOLATED_CONCAT_CASES
-                    ],
                     "calibration_leaf_bindings": {
                         key: [case.name for case in cases]
                         for key, cases
