@@ -95,6 +95,16 @@ set_tests_properties(wafer-board-direct-dte-outer-deadline PROPERTIES
   TIMEOUT 30
 )
 
+add_test(NAME wafer-board-all-rank-add-profile-contract-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_all_rank_add_profile_test.py
+)
+set_tests_properties(
+  wafer-board-all-rank-add-profile-contract-python PROPERTIES
+  LABELS "runtime;no-card;board;all-rank;profiler;safety;evidence"
+  TIMEOUT 30
+)
+
 add_test(NAME wafer-direct-dte-board-evidence-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_direct_dte_board_evidence_test.py
@@ -612,6 +622,22 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     wafer-runtime-kernel-grid-add-no-card PROPERTIES
     LABELS "runtime;no-card;all-rank;single-op;kernel-grid"
     TIMEOUT 300
+  )
+  add_test(NAME wafer-runtime-kernel-grid-add-profile-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_all_rank_add_test.py
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-kernel-grid-add-profile
+      --launch-kind kernel
+      --profile
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-kernel-grid-add-profile-no-card PROPERTIES
+    LABELS "runtime;no-card;all-rank;single-op;kernel-grid;profiler"
+    TIMEOUT 600
   )
   add_test(NAME wafer-runtime-cluster-direct-dte-no-card
     COMMAND ${Python3_EXECUTABLE}
@@ -2330,6 +2356,31 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
       TIMEOUT 600
+    )
+    add_test(NAME wafer-board-kernel-grid-add-profile
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_all_rank_add_test.py
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-kernel-grid-add-profile
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --launch-kind kernel
+        --completion-timeout-ms 60000
+        --profile
+        --repeat 1
+    )
+    set_tests_properties(wafer-board-kernel-grid-add-profile PROPERTIES
+      LABELS "board;hardware;kernel-grid;all-rank;single-op;profiler"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 1800
     )
     add_test(NAME wafer-board-cluster-direct-dte
       COMMAND ${Python3_EXECUTABLE}

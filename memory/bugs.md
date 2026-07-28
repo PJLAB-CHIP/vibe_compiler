@@ -1778,3 +1778,10 @@
   同时覆盖“wait有效/raw无效”正例及缺wait、torn raw、动态SSA换线负例。host完成证明必须包含实际profile publication、
   C++ campaign、Python analyzer/schema、普通package byte-equivalence和带板依赖的no-card构建；这些全部通过仍不能
   代替本轮新构建、新启动、新输出的串行板端gate。
+- 板端replay封装本身也必须fail closed：普通correctness pre-gate和固定campaign分别设置独立进程级deadline；
+  默认hardware calibration用profile gate替代旧Add槽位，不能把旧Add和profile内置普通gate叠加执行；成功归档要从
+  受管`runs/current`验证三成员和`run_id`后完整保存HTML与两份JSON。host fake test至少锁定外层只执行一次普通
+  invocation和一次campaign invocation，并覆盖权限、负cycle和报告成员负例。
+- `completion_resolution`未达到high-resolution标签不等于整体耗时无效。只要environment、package/measurement
+  identity、trusted completion和逐次输出等价仍成立，submit→completion样本继续qualified，报告应保留实际poll-gap
+  warning和全部原始样本；不能恢复笼统的`Measurement invalid`，也不能为消除离群样本自动重跑板卡。

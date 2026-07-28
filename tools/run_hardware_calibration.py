@@ -304,10 +304,13 @@ CALIBRATION_STEPS = (
         for mask in ("001", "010", "100", "011", "101", "110")
     ),
     CalibrationStep(
-        "runtime-kernel-grid",
+        "runtime-kernel-grid-profile",
         "full-card-runtime",
-        "wafer-board-kernel-grid-add",
-        "16-rank kernel launch with grid dispatch and rank-major arguments",
+        "wafer-board-kernel-grid-add-profile",
+        (
+            "16-rank Add correctness and final-artifact profiler campaign "
+            "over the same production package"
+        ),
     ),
     CalibrationStep(
         "full-card-barrier",
@@ -392,6 +395,15 @@ ARGMIN_PENDING_DOMAIN_CASE_NAMES = (
 
 
 EXPLICIT_ONLY_STEPS = (
+    CalibrationStep(
+        "runtime-kernel-grid",
+        "full-card-runtime-smoke",
+        "wafer-board-kernel-grid-add",
+        (
+            "standalone legacy 16-rank kernel-grid Add smoke; superseded by "
+            "the default final-artifact profiler gate"
+        ),
+    ),
     CalibrationStep(
         "ct-vuvloop-semantics",
         "rank-one-instruction-focused",
@@ -1217,6 +1229,66 @@ def command_option_value(
     return None
 
 
+def profile_report_members(
+    test: RegisteredTest, work_dir: pathlib.Path
+) -> tuple[pathlib.Path, ...]:
+    if "profiler" not in test.labels:
+        return ()
+
+    runs = work_dir / "package.profile" / "runs"
+    current = runs / "current"
+    if not current.is_symlink():
+        raise CalibrationRunnerError(
+            f"{test.name}: profiler did not publish a managed current report"
+        )
+    try:
+        canonical_runs = runs.resolve(strict=True)
+        run_directory = current.resolve(strict=True)
+    except OSError as error:
+        raise CalibrationRunnerError(
+            f"{test.name}: profiler current report cannot be resolved: {error}"
+        ) from error
+    if run_directory.parent != canonical_runs:
+        raise CalibrationRunnerError(
+            f"{test.name}: profiler current report escapes its runs directory"
+        )
+    if not run_directory.is_dir() or run_directory.is_symlink():
+        raise CalibrationRunnerError(
+            f"{test.name}: profiler current target is not a real directory"
+        )
+
+    expected_names = {"evidence.json", "analysis.json", "index.html"}
+    actual_members = tuple(run_directory.iterdir())
+    if (
+        {path.name for path in actual_members} != expected_names
+        or len(actual_members) != len(expected_names)
+        or any(not path.is_file() or path.is_symlink() for path in actual_members)
+    ):
+        raise CalibrationRunnerError(
+            f"{test.name}: profiler current report is not the complete "
+            "three-file public artifact group"
+        )
+    evidence_path = run_directory / "evidence.json"
+    try:
+        evidence = json.loads(evidence_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise CalibrationRunnerError(
+            f"{test.name}: profiler evidence is not readable JSON: {error}"
+        ) from error
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("run_id") != run_directory.name
+    ):
+        raise CalibrationRunnerError(
+            f"{test.name}: profiler evidence run_id does not match current "
+            "report directory"
+        )
+    return tuple(
+        run_directory / name
+        for name in ("evidence.json", "analysis.json", "index.html")
+    )
+
+
 def archive_step_artifacts(
     test: RegisteredTest,
     destination: pathlib.Path,
@@ -1243,13 +1315,21 @@ def archive_step_artifacts(
         # Preserve the exact source snapshots and final linked ELFs as
         # read-only audit evidence for pending calibration and paired results.
         durable_suffixes.update({".mlir", ".meta", ".so"})
+    required_profile_report = profile_report_members(test, work_dir)
     evidence_files = tuple(
-        path
-        for path in sorted(work_dir.rglob("*"))
-        if path.is_file()
-        and (
-            path.suffix in durable_suffixes
-            or path.name in {"session.txt", "summary.txt"}
+        sorted(
+            {
+                *required_profile_report,
+                *(
+                    path
+                    for path in work_dir.rglob("*")
+                    if path.is_file()
+                    and (
+                        path.suffix in durable_suffixes
+                        or path.name in {"session.txt", "summary.txt"}
+                    )
+                ),
+            }
         )
     )
     destination.mkdir(parents=True, exist_ok=False)

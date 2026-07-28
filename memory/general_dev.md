@@ -261,7 +261,9 @@
   `WAFER_EXECUTE_HARDWARE_TESTS=1 python3 tools/run_hardware_calibration.py --build-dir <board-build> --execute`
   执行。入口只做一次增量构建，随后单进程串行、首个失败或skip即停，并保存逐项log、JUnit和增量
   `session.json`；它不retry、reset或power，也不把case构建/no-card通过记作板端证据。新增或删除board CTest时必须同步
-  runner manifest和inventory测试。
+  runner manifest和inventory测试。默认full-card Add槽位使用production-artifact profile gate，旧kernel-grid Add只作
+  显式smoke，不能在默认批次中重复运行；profile归档必须经`runs/current`和`run_id`身份校验后完整保留
+  `evidence.json`、`analysis.json`、`index.html`三文件组。
 - TX81 C-Intrinsic Direct DTE不能只调用`direct_sync_init`。vendor生成entry先执行`init_tile_id(logic_id, row_length)`；
   `direct_sync_post`从SPM `0x2f0458`读取row length来计算peer SPM base。当前full-16、offset=0时可用
   `init_tile_id(__get_pid(0), 4)`，其中4来自单卡4×4 target topology；subset cluster的pid不是通用logical tile id，必须显式消费offset映射。

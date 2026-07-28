@@ -113,6 +113,10 @@ Pipeline position:
   穿越/读取，三文件权限为`0777`；回收旧目标前必须用evidence中的`run_id`验证目录身份，不能只凭`run-*`名字递归删。
   同一companion的campaign/publication由runner单进程串行拥有；跨进程并发替换current是显式非目标，不额外发布
   可能残留的锁文件或第四份marker。内部capture package不作为用户报告产物。
+- 统一hardware calibration的默认full-card Add槽位直接消费上述profile gate；旧kernel-grid Add只保留为显式
+  独立smoke，不在默认队列中先于profile重复执行，默认步骤总数保持不增。profile CTest成功后的session归档必须
+  解析受管`runs/current`，验证目标仍位于同一`runs`目录且`evidence.run_id`匹配目录身份，再把
+  `evidence.json`、`analysis.json`和`index.html`作为不可拆分的三文件组保留；任一缺失或多出成员都使归档失败。
 
 ## 实施 checkpoints
 
@@ -127,3 +131,25 @@ Pipeline position:
 5. **Completion replay**：完整 host build/unit/lit/no-card；用户重启一次后，以本轮新 build、
    新 package、新 launch 和新 output 串行完成板端 gate。没有 fresh live-board 结果时 Q9 保持
    `doing`。
+
+## Fresh completion replay（2026-07-28）
+
+- host侧重新构建当前`wafer-compile`/`wafer-run`，profile companion no-card、普通Add no-card、
+  live gate的fake调用/timeout/report合同、hardware calibration inventory和三文件归档测试均通过；
+  profiler/runtime与campaign/publication相关单元测试也重新通过。
+- configured board在本轮重启会话中先通过一次普通single-op Add资格门禁；随后从同一fresh source分别
+  构建普通与`--profile` package并确认production package逐字节相同。额外普通16-rank grid Add的
+  16份输出均exact，随后固定14-launch profile campaign一次完成，10个最终production artifact样本的
+  median为638947 ns，范围597433–10058660 ns；其中一次10058660 ns的高值样本原样保留，
+  不删除、不重试，也不把10个样本误写成10个最终结论。
+- 本轮报告的environment、package companion、measurement basis、output equivalence、summary、trace和
+  PMU均有效；16个tile都取得非负entry span。timeline包含每tile一段CT、两段RDMA和一段WDMA活动，
+  CT busy均为46 cycles；NE、TDMA和Direct-DTE在该Add中没有实际活动。`runs`、current目标目录及
+  `evidence.json`、`analysis.json`、`index.html`均为`0777`，current目标只含这三个文件。
+- overall latency仍为qualified；一次样本的最大completion poll gap占比超过high-resolution标签阈值，
+  因此报告保留`completion_resolution_too_coarse` warning而不显示旧式`Measurement invalid`。
+  16个tile时钟尚未取得可用alignment，所以只展示各tile自己的entry-local timeline，不声明cross-tile
+  顺序。
+- Q9继续保持`doing`：Add已经证明最终产物总耗时、16-tile CT/RDMA/WDMA活动、报告和生命周期，但它不含
+  Direct-DTE call。下一块板端完成证据必须来自含真实Direct-DTE wait的final-only production artifact；
+  不能用当前Add中的零活动行代签，也不能回到baseline/winner成对campaign。

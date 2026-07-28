@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-27
+更新时间：2026-07-28
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -24,7 +24,7 @@ Q32 + Q6.B + Q9 -> Q38 multi-engine software pipelining     [next]
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q9 | `production-artifact-profiler` | `doing` | Q32、Q6.B、configured board | 修复production-artifact profiler基本合同：只报告最终普通产物的submit→trusted completion、per-tile entry span和CT/NE/RDMA/WDMA/TDMA/Direct-DTE硬件活动；不生成baseline/winner比较。完成要求是fresh host gate，以及同一qualified session中新构建、新启动、新输出的串行板端correctness、timing和16-tile engine evidence。Ranking feedback仍是后续独立门禁。 | 06、14-16；`tasks/plans/board-profiler.md` |
+| Q9 | `production-artifact-profiler` | `doing` | Q32、Q6.B、configured board | 修复production-artifact profiler基本合同：只报告最终普通产物的submit→trusted completion、per-tile entry span和CT/NE/RDMA/WDMA/TDMA/Direct-DTE硬件活动；不生成baseline/winner比较。fresh Add已闭合correctness、timing和16-tile NCC/timeline板端门禁；尚需含真实Direct-DTE wait的最终产物完成对应板端活动门禁。Ranking feedback仍是后续独立门禁。 | 06、14-16；`tasks/plans/board-profiler.md` |
 | Q38 | `multi-engine-software-pipelining` | `next` | Q32、Q6.B、Q9 | 在complete-rank actual clone中实现真实multi-buffer、prologue/steady/epilogue、resource-aware issue order和latest-legal completion；每个候选重新通过SPM/DDR、Instr、Target、package、model和board correctness gate。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
 
 ## Later / External Gates

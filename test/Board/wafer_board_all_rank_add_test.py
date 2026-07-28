@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import os
 import pathlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -32,6 +34,12 @@ GLOBAL_ELEMENTS = 512
 LOCAL_ELEMENTS = GLOBAL_ELEMENTS // RANK_COUNT
 ELEMENT_DTYPE = np.dtype("<f2")
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
+PROFILE_COMPANION_READY = (
+    "profile_companion: ready schema=2 ranks=16 variants=1 captures=3"
+)
+PROFILE_CAMPAIGN_LAUNCH_COUNT = 14
+PROFILE_MEASUREMENT_SAMPLE_COUNT = 10
+BOARD_PROCESS_TIMEOUT_MARGIN_SECONDS = 120.0
 LAUNCH_EVIDENCE = {
     runtime_launch.KERNEL_LAUNCH_KIND: (
         "kernel-grid-x16",
@@ -97,6 +105,15 @@ def parse_args() -> argparse.Namespace:
         help="compile and validate the complete no-card launch pipeline",
     )
     parser.add_argument(
+        "--profile",
+        action="store_true",
+        help=(
+            "compile byte-identical ordinary/profile packages, run the "
+            "ordinary correctness gate first, then execute one fixed profile "
+            "campaign"
+        ),
+    )
+    parser.add_argument(
         "--launch-kind",
         choices=tuple(LAUNCH_EVIDENCE),
         default=runtime_launch.KERNEL_LAUNCH_KIND,
@@ -153,6 +170,63 @@ def write_source_program(work_dir: pathlib.Path) -> pathlib.Path:
         json.dumps(METADATA, separators=(",", ":")) + "\n"
     )
     return source
+
+
+def compile_package(
+    args: argparse.Namespace,
+    source: pathlib.Path,
+    package: pathlib.Path,
+    *,
+    profile: bool,
+) -> None:
+    command = [
+        str(args.wafer_compile),
+        "--input-program-dir",
+        str(source),
+        "--output-program-dir",
+        str(package),
+        f"--execution-ranks={RANK_COUNT}",
+        f"--target-profile={TARGET_PROFILE}",
+        f"--launch-kind={args.launch_kind}",
+    ]
+    if profile:
+        command.append("--profile")
+    result = run(command)
+    if (
+        "published verified package with execution-ranks=16"
+        not in result.stdout
+    ):
+        raise RuntimeError(
+            "wafer-compile did not report a verified rank-16 package"
+        )
+    published_companion = "wafer-compile: published profile companion:"
+    if profile and published_companion not in result.stdout:
+        raise RuntimeError(
+            "wafer-compile did not publish the requested profile companion"
+        )
+    if not profile and published_companion in result.stdout:
+        raise RuntimeError(
+            "ordinary wafer-compile unexpectedly published a profile companion"
+        )
+
+
+def require_byte_identical_packages(
+    ordinary: pathlib.Path, profiled: pathlib.Path
+) -> None:
+    def file_digests(root: pathlib.Path) -> dict[pathlib.Path, str]:
+        files = {
+            path.relative_to(root): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+        if not files:
+            raise RuntimeError(f"compiled package is empty: {root}")
+        return files
+
+    if file_digests(ordinary) != file_digests(profiled):
+        raise RuntimeError(
+            "ordinary and --profile production packages are not byte-identical"
+        )
 
 
 def require_rank_domain(records: object, name: str) -> list[dict[str, object]]:
@@ -376,6 +450,7 @@ def validate_manifest(
 
 def write_rank_payloads(
     work_dir: pathlib.Path,
+    package: pathlib.Path,
     slices: dict[int, slice],
     bindings: dict[tuple[int, str, int], int],
 ) -> tuple[list[str], set[int], set[tuple[int, int, int]], set[tuple[int, int]]]:
@@ -433,7 +508,7 @@ def write_rank_payloads(
             "rank output slices do not reconstruct the global CPU result"
         )
 
-    manifest = json.loads((work_dir / "package" / "manifest.json").read_text())
+    manifest = json.loads((package / "manifest.json").read_text())
     entry_evidence = {
         (entry["id"], entry["rank"], entry["module"]) for entry in manifest["entries"]
     }
@@ -564,6 +639,154 @@ def verify_no_card_evidence(stdout: str) -> None:
         raise RuntimeError("no-card launch invocation omitted a terminal completion")
 
 
+def verify_profile_report(
+    package: pathlib.Path, stdout: str
+) -> tuple[int | float, int, int, pathlib.Path]:
+    companion = pathlib.Path(f"{package}.profile")
+    runs = companion / "runs"
+    current = runs / "current"
+    if not current.is_symlink():
+        raise RuntimeError("profile report current entry is not a symlink")
+    run_directory = current.resolve(strict=True)
+    if run_directory.parent != runs.resolve(strict=True):
+        raise RuntimeError("profile report current entry escapes its runs directory")
+    entries = tuple(run_directory.iterdir())
+    if len(entries) != 3 or any(not path.is_file() for path in entries):
+        raise RuntimeError(
+            "profile report does not contain exactly three regular files"
+        )
+    members = {
+        path.name: path
+        for path in entries
+    }
+    if set(members) != {"evidence.json", "analysis.json", "index.html"}:
+        raise RuntimeError(
+            "profile report does not contain exactly the three public artifacts"
+        )
+    for path in (runs, run_directory, *members.values()):
+        if stat.S_IMODE(path.stat().st_mode) != 0o777:
+            raise RuntimeError(f"profile report permission is not 0777: {path}")
+
+    evidence = json.loads(members["evidence.json"].read_text())
+    analysis = json.loads(members["analysis.json"].read_text())
+    html = members["index.html"].read_text()
+    if (
+        evidence.get("schema") != "wafer.profile.evidence"
+        or evidence.get("schema_version") != 4
+        or evidence.get("run_id") != run_directory.name
+    ):
+        raise RuntimeError("profile evidence identity is invalid")
+    samples = evidence.get("measurement", {}).get("samples")
+    trace = evidence.get("experiment", {}).get("trace", {})
+    trace_tiles = trace.get("tiles")
+    if (
+        not isinstance(samples, list)
+        or len(samples) != PROFILE_MEASUREMENT_SAMPLE_COUNT
+        or trace.get("complete") is not True
+        or not isinstance(trace_tiles, list)
+        or len(trace_tiles) != RANK_COUNT
+    ):
+        raise RuntimeError(
+            "profile evidence does not contain 10 samples and 16 trace tiles"
+        )
+
+    final = analysis.get("final_artifact")
+    if not isinstance(final, dict):
+        raise RuntimeError("profile analysis omitted the final artifact")
+    latency = final.get("latency")
+    output = final.get("output")
+    tiles = final.get("tiles")
+    validity = analysis.get("validity")
+    expected_engines = {
+        "CT",
+        "NE",
+        "RDMA",
+        "WDMA",
+        "TDMA",
+        "DIRECT_DTE",
+    }
+    if (
+        not isinstance(latency, dict)
+        or latency.get("sample_count") != PROFILE_MEASUREMENT_SAMPLE_COUNT
+        or not latency.get("qualified")
+        or not isinstance(output, dict)
+        or not output.get("production_repeats_exact")
+        or not output.get("diagnostic_captures_exact")
+        or not isinstance(validity, dict)
+        or not validity.get("summary")
+        or not validity.get("trace")
+        or not validity.get("pmu")
+        or not isinstance(tiles, list)
+        or len(tiles) != RANK_COUNT
+    ):
+        raise RuntimeError(
+            "profile analysis failed latency, output, or tile qualification"
+        )
+    for tile in tiles:
+        if (
+            not isinstance(tile, dict)
+            or tile.get("summary_entry_cycles") is None
+            or tile.get("summary_entry_cycles") < 0
+            or tile.get("trace_entry_cycles") is None
+            or tile.get("trace_entry_cycles") < 0
+            or {
+                engine.get("engine")
+                for engine in tile.get("engines", [])
+                if isinstance(engine, dict)
+            }
+            != expected_engines
+        ):
+            raise RuntimeError(
+                "profile analysis has an invalid tile span or engine domain"
+            )
+        for engine in tile["engines"]:
+            for key in (
+                "busy_cycles",
+                "wait_window_cycles",
+                "raw_pmu_activity",
+            ):
+                value = engine.get(key)
+                if value is not None and value < 0:
+                    raise RuntimeError(
+                        f"profile analysis contains a negative {key}"
+                    )
+        ct = next(
+            engine
+            for engine in tile["engines"]
+            if engine["engine"] == "CT"
+        )
+        if (
+            not ct.get("busy_cycles_valid")
+            or ct.get("busy_cycles") is None
+            or ct["busy_cycles"] <= 0
+            or ct.get("activity_window_count", 0) <= 0
+        ):
+            raise RuntimeError(
+                "profile analysis did not capture real CT activity on every tile"
+            )
+    if any(
+        event.get("activity_window_cycles", -1) < 0
+        or event.get("trace_entry_offset_begin", -1) < 0
+        or event.get("trace_entry_offset_end", -1) < 0
+        for event in final.get("timeline_events", [])
+        if isinstance(event, dict)
+    ):
+        raise RuntimeError("profile timeline contains a negative cycle value")
+    for legacy in ("Measurement invalid", "ABBA", "BAAB", "speedup"):
+        if legacy in html:
+            raise RuntimeError(f"profile HTML retains legacy content: {legacy}")
+
+    expected_report = current / "index.html"
+    if f"profile_report: {expected_report}" not in stdout:
+        raise RuntimeError("wafer-run did not publish the stable profile report path")
+    return (
+        latency["median_ns"],
+        latency["minimum_ns"],
+        latency["maximum_ns"],
+        expected_report,
+    )
+
+
 def main() -> int:
     args = parse_args()
     if not args.no_card and os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
@@ -590,7 +813,9 @@ def main() -> int:
                 "hardware execution requires explicit qualification options: "
                 + ", ".join(missing)
             )
-        if args.repeat < 2:
+        if args.profile and args.repeat != 1:
+            raise RuntimeError("--profile requires exactly one fixed campaign")
+        if not args.profile and args.repeat < 2:
             raise RuntimeError("--repeat must be at least 2")
         if args.completion_timeout_ms <= 0:
             raise RuntimeError("--completion-timeout-ms must be positive")
@@ -599,39 +824,44 @@ def main() -> int:
 
     source = write_source_program(args.work_dir)
     package = args.work_dir / "package"
-    compile_result = run(
-        [
-            str(args.wafer_compile),
-            "--input-program-dir",
-            str(source),
-            "--output-program-dir",
-            str(package),
-            f"--execution-ranks={RANK_COUNT}",
-            f"--target-profile={TARGET_PROFILE}",
-            f"--launch-kind={args.launch_kind}",
-        ]
-    )
-    if (
-        "published verified package with execution-ranks=16"
-        not in compile_result.stdout
-    ):
-        raise RuntimeError("wafer-compile did not report a verified rank-16 package")
+    ordinary_package = package
+    if args.profile:
+        ordinary_package = args.work_dir / "ordinary-package"
+        compile_package(
+            args, source, ordinary_package, profile=False
+        )
+        compile_package(args, source, package, profile=True)
+        require_byte_identical_packages(ordinary_package, package)
+    else:
+        compile_package(args, source, package, profile=False)
 
     slices = load_boundary_slices(package)
     bindings = validate_manifest(package, args.launch_kind)
     if args.no_card:
-        result = run(
-            [
+        no_card_packages = (
+            (ordinary_package, package)
+            if args.profile
+            else (package,)
+        )
+        for no_card_package in no_card_packages:
+            result = run([
                 str(args.wafer_run),
                 "--package-dir",
-                str(package),
+                str(no_card_package),
                 "--all-ranks",
                 "--no-card",
-            ]
-        )
-        verify_no_card_evidence(result.stdout)
+            ])
+            verify_no_card_evidence(result.stdout)
+            companion_ready = PROFILE_COMPANION_READY in result.stdout
+            if companion_ready != (
+                args.profile and no_card_package == package
+            ):
+                raise RuntimeError(
+                    "no-card launch did not prove the exact profile companion "
+                    "activation boundary"
+                )
         print(f"no_card_launch_kind: {args.launch_kind}")
-        print(result.stdout, end="")
+        print(f"no_card_profile: {str(args.profile).lower()}")
         return 0
 
     (
@@ -639,11 +869,8 @@ def main() -> int:
         output_ids,
         entry_evidence,
         completion_evidence,
-    ) = write_rank_payloads(args.work_dir, slices, bindings)
-    command = [
-        str(args.wafer_run),
-        "--package-dir",
-        str(package),
+    ) = write_rank_payloads(args.work_dir, package, slices, bindings)
+    command_tail = [
         "--all-ranks",
         "--board",
         "--device-id",
@@ -661,6 +888,72 @@ def main() -> int:
         "--completion-timeout-ms",
         str(args.completion_timeout_ms),
         *resource_arguments,
+    ]
+    if args.profile:
+        ordinary_result = run(
+            [
+                str(args.wafer_run),
+                "--package-dir",
+                str(ordinary_package),
+                *command_tail,
+            ],
+            timeout_seconds=(
+                args.completion_timeout_ms / 1000.0
+                + BOARD_PROCESS_TIMEOUT_MARGIN_SECONDS
+            ),
+        )
+        verify_board_evidence(
+            ordinary_result.stdout,
+            args.launch_kind,
+            output_ids,
+            entry_evidence,
+            completion_evidence,
+        )
+        print("board_profile_ordinary_gate: pass")
+        print(ordinary_result.stdout, end="")
+
+        profile_result = run(
+            [
+                str(args.wafer_run),
+                "--package-dir",
+                str(package),
+                *command_tail,
+            ],
+            timeout_seconds=max(
+                300.0,
+                (
+                    PROFILE_CAMPAIGN_LAUNCH_COUNT
+                    * args.completion_timeout_ms
+                    / 1000.0
+                    + BOARD_PROCESS_TIMEOUT_MARGIN_SECONDS
+                ),
+            ),
+        )
+        verify_board_evidence(
+            profile_result.stdout,
+            args.launch_kind,
+            output_ids,
+            entry_evidence,
+            completion_evidence,
+        )
+        median, minimum, maximum, report = verify_profile_report(
+            package, profile_result.stdout
+        )
+        print(
+            "board_profile_campaign: pass "
+            f"launches={PROFILE_CAMPAIGN_LAUNCH_COUNT} "
+            f"samples={PROFILE_MEASUREMENT_SAMPLE_COUNT}"
+        )
+        print(f"board_profile_latency_ns: median={median} range={minimum}..{maximum}")
+        print(f"board_profile_report: {report}")
+        print(profile_result.stdout, end="")
+        return 0
+
+    command = [
+        str(args.wafer_run),
+        "--package-dir",
+        str(package),
+        *command_tail,
     ]
     for iteration in range(args.repeat):
         result = run(command)

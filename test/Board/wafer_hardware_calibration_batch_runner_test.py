@@ -208,10 +208,24 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "instruction-family-ct-capability",
                 "instruction-family-regression",
                 "memory-engine-pair-new-offsets",
+                "runtime-kernel-grid-profile",
                 "spm-non-preferred-geometry",
             }.issubset(default_keys)
         )
+        self.assertNotIn("runtime-kernel-grid", default_keys)
+        self.assertNotIn(
+            "wafer-board-kernel-grid-add",
+            {step.ctest_name for step in steps},
+        )
         explicit_keys = {step.key for step in RUNNER.EXPLICIT_ONLY_STEPS}
+        self.assertIn("runtime-kernel-grid", explicit_keys)
+        self.assertIn(
+            "wafer-board-kernel-grid-add",
+            {
+                step.ctest_name
+                for step in RUNNER.EXPLICIT_ONLY_STEPS
+            },
+        )
         self.assertTrue(
             {
                 "compiler-optimization-reciprocal-implementation",
@@ -733,6 +747,104 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             all(len(item["sha256"]) == 64 for item in manifest["tools"])
         )
         self.assertFalse((self.root / "archived" / "ignored.log").exists())
+
+    def test_archives_complete_fresh_profiler_report_group(self) -> None:
+        work_dir = self.root / "profile-work"
+        report = (
+            work_dir
+            / "package.profile"
+            / "runs"
+            / "run-fresh-profile"
+        )
+        report.mkdir(parents=True)
+        (report / "evidence.json").write_text(
+            '{"run_id":"run-fresh-profile"}\n'
+        )
+        (report / "analysis.json").write_text('{"status":"valid"}\n')
+        (report / "index.html").write_text("<!doctype html>\n")
+        (report.parent / "current").symlink_to(report)
+        test = RUNNER.RegisteredTest(
+            "wafer-board-kernel-grid-add-profile",
+            (
+                "python3",
+                "probe.py",
+                "--work-dir",
+                str(work_dir),
+            ),
+            frozenset(
+                (
+                    "board",
+                    "hardware",
+                    "kernel-grid",
+                    "profiler",
+                )
+            ),
+            30.0,
+            "board-0",
+        )
+
+        destination = self.root / "archived-profile"
+        archived = RUNNER.archive_step_artifacts(test, destination)
+
+        self.assertIsNotNone(archived)
+        assert archived is not None
+        self.assertEqual(archived["file_count"], 3)
+        relative_report = pathlib.Path(
+            "package.profile/runs/run-fresh-profile"
+        )
+        self.assertEqual(
+            {
+                path.name
+                for path in (destination / relative_report).iterdir()
+            },
+            {"evidence.json", "analysis.json", "index.html"},
+        )
+        manifest = json.loads(
+            pathlib.Path(str(archived["manifest"])).read_text()
+        )
+        self.assertEqual(
+            {item["path"] for item in manifest["files"]},
+            {
+                str(relative_report / "evidence.json"),
+                str(relative_report / "analysis.json"),
+                str(relative_report / "index.html"),
+            },
+        )
+
+    def test_rejects_incomplete_profiler_report_group(self) -> None:
+        work_dir = self.root / "incomplete-profile-work"
+        report = (
+            work_dir
+            / "package.profile"
+            / "runs"
+            / "run-incomplete-profile"
+        )
+        report.mkdir(parents=True)
+        (report / "evidence.json").write_text(
+            '{"run_id":"run-incomplete-profile"}\n'
+        )
+        (report / "analysis.json").write_text("{}\n")
+        (report.parent / "current").symlink_to(report)
+        test = RUNNER.RegisteredTest(
+            "wafer-board-kernel-grid-add-profile",
+            (
+                "python3",
+                "probe.py",
+                "--work-dir",
+                str(work_dir),
+            ),
+            frozenset(("board", "hardware", "profiler")),
+            30.0,
+            "board-0",
+        )
+        destination = self.root / "archived-incomplete-profile"
+
+        with self.assertRaisesRegex(
+            RUNNER.CalibrationRunnerError,
+            "complete three-file public artifact group",
+        ):
+            RUNNER.archive_step_artifacts(test, destination)
+        self.assertFalse(destination.exists())
 
     def test_archives_executable_artifacts_for_every_pending_case(
         self,
