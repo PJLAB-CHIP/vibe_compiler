@@ -54,7 +54,7 @@
 
 ## 实施计划导航
 
-当前Q9 profiler foundation按`tasks/plans/board-profiler.md`实施：唯一public入口是
+Q9 profiler foundation已按`tasks/archive/board-profiler.md`完成：唯一public入口是
 `wafer-compile --profile`，普通package逐字节保持不变；最后写入的activation把production manifest与companion
 metadata exact-hash绑定。`wafer-run`复用既有resource/expected/output binding，在一个qualified session内固定执行一次
 未插桩Primary、一次Count和一次Trace；只把Primary的submit→trusted-completion作为总耗时，Trace header同时提供

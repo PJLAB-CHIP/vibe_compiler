@@ -45,6 +45,8 @@ BoardProfileProtocolObservation
 validObservation(const BoardProfileProtocolStep &step) {
   BoardProfileProtocolObservation observation;
   if (step.launch == BoardProfileProtocolLaunch::Primary) {
+    observation.deviceExecutionNanoseconds = 800;
+    observation.hostSubmitNanoseconds = 200;
     observation.launchToCompletionNanoseconds = 1000;
     observation.completionObservationResolutionNanoseconds = 2;
   }
@@ -382,7 +384,10 @@ TEST(WaferProfileCampaignTest, FixedOrderRunsOnePrimaryThenCountAndTrace) {
                                          "unexpected sample domain");
         EXPECT_EQ(samples[0].id, "primary");
         EXPECT_EQ(samples[0].sampleIndex, 0u);
-        EXPECT_EQ(samples[0].elapsedNanoseconds, 1000u);
+        EXPECT_EQ(samples[0].deviceElapsedNanoseconds, 800u);
+        EXPECT_EQ(samples[0].deviceTimerKind, "tx-stream-events");
+        EXPECT_EQ(samples[0].hostSubmitNanoseconds, 200u);
+        EXPECT_EQ(samples[0].hostLaunchToCompletionNanoseconds, 1000u);
         EXPECT_EQ(samples[0].completionObservationResolutionNanoseconds, 2u);
         return llvm::Error::success();
       });
@@ -692,7 +697,7 @@ TEST(WaferProfileCampaignTest,
 }
 
 TEST(WaferProfileCampaignTest,
-     ZeroPrimaryObservationResolutionStopsBeforeLaterLaunches) {
+     QuantizedZeroPrimaryObservationResolutionIsRetained) {
   size_t calls = 0;
   bool finalized = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
@@ -705,18 +710,20 @@ TEST(WaferProfileCampaignTest,
           observation.completionObservationResolutionNanoseconds = 0;
         return observation;
       },
-      [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>) {
+      [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>
+              samples) {
         finalized = true;
+        EXPECT_EQ(samples.front().completionObservationResolutionNanoseconds,
+                  0u);
         return llvm::Error::success();
       });
-  ASSERT_FALSE(static_cast<bool>(result));
-  EXPECT_EQ(calls, 1u);
-  EXPECT_FALSE(finalized);
-  EXPECT_NE(llvm::toString(result.takeError()).find("resolution"),
-            std::string::npos);
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+  EXPECT_EQ(calls, 3u);
+  EXPECT_TRUE(finalized);
 }
 
-TEST(WaferProfileCampaignTest, ZeroPrimaryElapsedTimeStopsBeforeLaterLaunches) {
+TEST(WaferProfileCampaignTest,
+     MissingPrimaryDeviceTimingStopsBeforeLaterLaunches) {
   size_t calls = 0;
   bool finalized = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
@@ -726,7 +733,7 @@ TEST(WaferProfileCampaignTest, ZeroPrimaryElapsedTimeStopsBeforeLaterLaunches) {
         ++calls;
         BoardProfileProtocolObservation observation = validObservation(step);
         if (step.launch == BoardProfileProtocolLaunch::Primary)
-          observation.launchToCompletionNanoseconds = 0;
+          observation.deviceExecutionNanoseconds.reset();
         return observation;
       },
       [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>) {
@@ -736,8 +743,82 @@ TEST(WaferProfileCampaignTest, ZeroPrimaryElapsedTimeStopsBeforeLaterLaunches) {
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_EQ(calls, 1u);
   EXPECT_FALSE(finalized);
-  EXPECT_NE(llvm::toString(result.takeError()).find("launch-to-completion"),
+  EXPECT_NE(llvm::toString(result.takeError()).find("device execution timing"),
             std::string::npos);
+}
+
+TEST(WaferProfileCampaignTest, QuantizedZeroPrimaryDeviceTimeIsAccepted) {
+  bool finalized = false;
+  auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
+      /*traceCapacity=*/8,
+      [&](const BoardProfileProtocolStep &step)
+          -> llvm::Expected<BoardProfileProtocolObservation> {
+        BoardProfileProtocolObservation observation = validObservation(step);
+        if (step.launch == BoardProfileProtocolLaunch::Primary)
+          observation.deviceExecutionNanoseconds = 0;
+        return observation;
+      },
+      [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>
+              samples) {
+        finalized = true;
+        EXPECT_EQ(samples.front().deviceElapsedNanoseconds, 0u);
+        return llvm::Error::success();
+      });
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+  EXPECT_TRUE(finalized);
+}
+
+TEST(WaferProfileCampaignTest,
+     HostSubmitOutsidePrimaryEnvelopeStopsBeforeLaterLaunches) {
+  size_t calls = 0;
+  bool finalized = false;
+  auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
+      /*traceCapacity=*/8,
+      [&](const BoardProfileProtocolStep &step)
+          -> llvm::Expected<BoardProfileProtocolObservation> {
+        ++calls;
+        BoardProfileProtocolObservation observation = validObservation(step);
+        if (step.launch == BoardProfileProtocolLaunch::Primary)
+          observation.hostSubmitNanoseconds =
+              observation.launchToCompletionNanoseconds + 1;
+        return observation;
+      },
+      [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>) {
+        finalized = true;
+        return llvm::Error::success();
+      });
+  ASSERT_FALSE(static_cast<bool>(result));
+  EXPECT_EQ(calls, 1u);
+  EXPECT_FALSE(finalized);
+  EXPECT_NE(llvm::toString(result.takeError()).find("exceeds"),
+            std::string::npos);
+}
+
+TEST(WaferProfileCampaignTest, QuantizedZeroPrimaryHostEnvelopeIsRetained) {
+  size_t calls = 0;
+  bool finalized = false;
+  auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
+      /*traceCapacity=*/8,
+      [&](const BoardProfileProtocolStep &step)
+          -> llvm::Expected<BoardProfileProtocolObservation> {
+        ++calls;
+        BoardProfileProtocolObservation observation = validObservation(step);
+        if (step.launch == BoardProfileProtocolLaunch::Primary) {
+          observation.hostSubmitNanoseconds = 0;
+          observation.launchToCompletionNanoseconds = 0;
+        }
+        return observation;
+      },
+      [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>
+              samples) {
+        finalized = true;
+        EXPECT_EQ(samples.front().hostSubmitNanoseconds, 0u);
+        EXPECT_EQ(samples.front().hostLaunchToCompletionNanoseconds, 0u);
+        return llvm::Error::success();
+      });
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+  EXPECT_EQ(calls, 3u);
+  EXPECT_TRUE(finalized);
 }
 
 TEST(WaferProfileCampaignTest, CountCapacityFailurePreventsTraceLaunch) {

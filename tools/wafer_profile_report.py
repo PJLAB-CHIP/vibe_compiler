@@ -16,13 +16,47 @@ from typing import Any
 
 
 SCHEMA_NAME = "wafer.profile.evidence"
-SCHEMA_VERSION = 5
-COMPANION_SCHEMA_VERSION = 3
+SCHEMA_VERSION = 7
+COMPANION_SCHEMA_VERSION = 4
+RECORD_ABI = "wafer-tx81-profiler-record-v3"
 ANALYSIS_SCHEMA_NAME = "wafer.profile.analysis"
-ANALYSIS_SCHEMA_VERSION = 3
+ANALYSIS_SCHEMA_VERSION = 5
 TILES = tuple(range(16))
 NCC_ENGINES = ("CT", "NE", "RDMA", "WDMA", "TDMA")
 ENGINES = NCC_ENGINES + ("DIRECT_DTE",)
+EVENT_ENGINES = ENGINES
+SITE_KINDS = (
+    "ncc-command",
+    "ncc-completion",
+    "direct-dte-control",
+    "direct-dte-wait",
+)
+EVENT_KINDS = (
+    "ncc-command",
+    "ncc-completion-wait",
+    "direct-dte-wait",
+    "direct-dte-peer-ready-wait",
+    "direct-dte-setup-issue",
+    "direct-dte-completion-wait",
+    "direct-dte-cleanup",
+    "target-site",
+)
+OBSERVATION_STATUSES = (
+    "engine-delta-bounded",
+    "counter-no-change",
+    "attribution-ambiguous",
+    "counter-unavailable",
+)
+COST_SUMMARY_FIELDS = (
+    "ncc_pmu_sample_cycles",
+    "dte_pmu_sample_cycles",
+    "event_bookkeeping_cycles",
+    "status_poll_cycles",
+    "site_hook_cycles",
+    "completion_loop_bookkeeping_cycles",
+    "entry_setup_cycles",
+    "entry_teardown_cycles",
+)
 AGGREGATE_COUNTERS = (
     "statistics_window",
     "fu",
@@ -208,6 +242,7 @@ def _validate_identity(evidence: Mapping[str, Any]) -> None:
             "launch",
             "execution_ranks",
             "site_correlation_basis",
+            "record_abi",
         },
         "identity",
     )
@@ -232,8 +267,10 @@ def _validate_identity(evidence: Mapping[str, Any]) -> None:
         identity["site_correlation_basis"],
         "identity.site_correlation_basis",
     )
-    if basis != "heuristic-target-call-signature-occurrence-v1":
+    if basis != "typed-target-call-ordinal-ssa-identity-occurrence-v1":
         _fail("identity.site_correlation_basis", "unknown correlation basis")
+    if _string(identity["record_abi"], "identity.record_abi") != RECORD_ABI:
+        _fail("identity.record_abi", f"must be {RECORD_ABI!r}")
 
 
 def _validate_topology(evidence: Mapping[str, Any]) -> None:
@@ -268,7 +305,10 @@ def _validate_measurement(evidence: Mapping[str, Any]) -> None:
             {
                 "sample_id",
                 "sample_index",
-                "host_elapsed_ns",
+                "device_elapsed_ns",
+                "device_timer_kind",
+                "host_submit_ns",
+                "host_launch_to_completion_ns",
                 "completion_observation_resolution_ns",
             },
             path,
@@ -279,15 +319,40 @@ def _validate_measurement(evidence: Mapping[str, Any]) -> None:
         if _integer(row["sample_index"], f"{path}.sample_index", minimum=0) != 0:
             _fail(f"{path}.sample_index", "must be 0")
         _integer(
-            row["host_elapsed_ns"],
-            f"{path}.host_elapsed_ns",
-            minimum=1,
+            row["device_elapsed_ns"],
+            f"{path}.device_elapsed_ns",
+            minimum=0,
             maximum=UINT64_MAX,
         )
+        timer_kind = _string(
+            row["device_timer_kind"], f"{path}.device_timer_kind"
+        )
+        if timer_kind != "tx-stream-events":
+            _fail(
+                f"{path}.device_timer_kind",
+                "must be 'tx-stream-events'",
+            )
+        _integer(
+            row["host_submit_ns"],
+            f"{path}.host_submit_ns",
+            minimum=0,
+            maximum=UINT64_MAX,
+        )
+        host_envelope = _integer(
+            row["host_launch_to_completion_ns"],
+            f"{path}.host_launch_to_completion_ns",
+            minimum=0,
+            maximum=UINT64_MAX,
+        )
+        if row["host_submit_ns"] > host_envelope:
+            _fail(
+                f"{path}.host_submit_ns",
+                "must not exceed host_launch_to_completion_ns",
+            )
         _integer(
             row["completion_observation_resolution_ns"],
             f"{path}.completion_observation_resolution_ns",
-            minimum=1,
+            minimum=0,
             maximum=UINT64_MAX,
         )
 def _validate_output(evidence: Mapping[str, Any]) -> None:
@@ -381,6 +446,7 @@ def _validate_sites(
         required = {
             "tile",
             "site_id",
+            "site_kind",
             "correlation_key",
             "engine",
             "target_call_ordinal",
@@ -396,9 +462,28 @@ def _validate_sites(
         if key in sites:
             _fail(path, f"duplicate tile/site key {key}")
         _string(row["correlation_key"], f"{path}.correlation_key")
-        engine = _string(row["engine"], f"{path}.engine")
-        if engine not in ENGINES:
-            _fail(f"{path}.engine", f"must be one of {list(ENGINES)}")
+        site_kind = _string(row["site_kind"], f"{path}.site_kind")
+        if site_kind not in SITE_KINDS:
+            _fail(f"{path}.site_kind", f"must be one of {list(SITE_KINDS)}")
+        engine = row["engine"]
+        if engine is not None:
+            engine = _string(engine, f"{path}.engine")
+            if engine not in ENGINES:
+                _fail(f"{path}.engine", f"must be null or one of {list(ENGINES)}")
+        if site_kind == "ncc-command" and engine not in NCC_ENGINES:
+            _fail(f"{path}.engine", "an NCC command must name its NCC engine")
+        if site_kind == "ncc-completion" and engine is not None:
+            _fail(f"{path}.engine", "an NCC completion site must use null engine")
+        if site_kind == "direct-dte-wait" and engine != "DIRECT_DTE":
+            _fail(
+                f"{path}.engine",
+                "a Direct-DTE wait site must name the DIRECT_DTE engine",
+            )
+        if site_kind == "direct-dte-control" and engine is not None:
+            _fail(
+                f"{path}.engine",
+                "a Direct-DTE control site must use null engine",
+            )
         _integer(
             row["target_call_ordinal"],
             f"{path}.target_call_ordinal",
@@ -478,6 +563,7 @@ def _validate_experiment(
                 "record_flags",
                 "trace_state",
                 "overflow",
+                "cost_summary",
                 "events",
             },
             path,
@@ -493,9 +579,21 @@ def _validate_experiment(
             _integer(row[key], f"{path}.{key}", minimum=0, maximum=UINT32_MAX)
         _integer(row["trace_state"], f"{path}.trace_state", minimum=0, maximum=4)
         _boolean(row["overflow"], f"{path}.overflow")
-        for event_index, event_value in enumerate(
-            _sequence(row["events"], f"{path}.events")
-        ):
+        cost_summary = _mapping(row["cost_summary"], f"{path}.cost_summary")
+        _exact_keys(
+            cost_summary, set(COST_SUMMARY_FIELDS), f"{path}.cost_summary"
+        )
+        for field in COST_SUMMARY_FIELDS:
+            _integer(
+                cost_summary[field],
+                f"{path}.cost_summary.{field}",
+                minimum=0,
+                maximum=UINT64_MAX,
+            )
+        trace_events = _sequence(row["events"], f"{path}.events")
+        active_site_container: Mapping[str, Any] | None = None
+        next_site_sub_index = 0
+        for event_index, event_value in enumerate(trace_events):
             event = _mapping(event_value, f"{path}.events[{event_index}]")
             event_path = f"{path}.events[{event_index}]"
             _exact_keys(
@@ -505,10 +603,24 @@ def _validate_experiment(
                     "site_id",
                     "sub_index",
                     "engine",
+                    "kind",
                     "observed_begin_cycle",
                     "observed_end_cycle",
                     "counter_delta",
-                    "activity_valid",
+                    "site_begin_cycle",
+                    "site_end_cycle",
+                    "operation_begin_cycle",
+                    "operation_end_cycle",
+                    "observation_count",
+                    "observed_span_valid",
+                    "site_span_valid",
+                    "operation_span_valid",
+                    "positive_delta",
+                    "attribution_ambiguous",
+                    "ncc_counter_valid",
+                    "observation_status",
+                    "worker",
+                    "wait_scope",
                     "dte_role",
                     "dte_counter_valid",
                 },
@@ -519,35 +631,169 @@ def _validate_experiment(
                 event["site_id"], f"{event_path}.site_id", minimum=0
             )
             _integer(event["sub_index"], f"{event_path}.sub_index", minimum=0)
-            engine = _string(event["engine"], f"{event_path}.engine")
-            if engine not in ENGINES:
-                _fail(f"{event_path}.engine", f"must be one of {list(ENGINES)}")
+            engine = event["engine"]
+            if engine is not None:
+                engine = _string(engine, f"{event_path}.engine")
+                if engine not in EVENT_ENGINES:
+                    _fail(
+                        f"{event_path}.engine",
+                        f"must be null or one of {list(EVENT_ENGINES)}",
+                    )
+            kind = _string(event["kind"], f"{event_path}.kind")
+            if kind not in EVENT_KINDS:
+                _fail(f"{event_path}.kind", f"must be one of {list(EVENT_KINDS)}")
             site = sites.get((tile, site_id))
             if site is None:
                 _fail(f"{event_path}.site_id", "does not map to a final site")
-            if site["engine"] != engine:
+            expected_site_kinds = {
+                "ncc-command": {
+                    "target-site",
+                    "ncc-command",
+                    "ncc-completion-wait",
+                },
+                "ncc-completion": {"target-site", "ncc-completion-wait"},
+                "direct-dte-control": {"target-site"},
+                "direct-dte-wait": {
+                    "target-site",
+                    "direct-dte-wait",
+                    "direct-dte-peer-ready-wait",
+                    "direct-dte-setup-issue",
+                    "direct-dte-completion-wait",
+                    "direct-dte-cleanup",
+                },
+            }
+            if (
+                kind not in ("ncc-completion-wait", "target-site")
+                and site["engine"] is not None
+                and site["engine"] != engine
+            ):
                 _fail(f"{event_path}.engine", "conflicts with the site engine")
-            _integer(
-                event["observed_begin_cycle"],
-                f"{event_path}.observed_begin_cycle",
-                minimum=0,
-                maximum=UINT64_MAX,
-            )
-            _integer(
-                event["observed_end_cycle"],
-                f"{event_path}.observed_end_cycle",
-                minimum=0,
-                maximum=UINT64_MAX,
-            )
+            if kind not in expected_site_kinds[site["site_kind"]]:
+                _fail(f"{event_path}.kind", "conflicts with the site kind")
+            for field in (
+                "observed_begin_cycle",
+                "observed_end_cycle",
+                "site_begin_cycle",
+                "site_end_cycle",
+                "operation_begin_cycle",
+                "operation_end_cycle",
+            ):
+                _integer(
+                    event[field],
+                    f"{event_path}.{field}",
+                    minimum=0,
+                    maximum=UINT64_MAX,
+                )
             raw = _integer(
                 event["counter_delta"],
                 f"{event_path}.counter_delta",
                 minimum=0,
                 maximum=UINT64_MAX,
             )
-            activity_valid = _boolean(
-                event["activity_valid"], f"{event_path}.activity_valid"
+            _integer(
+                event["observation_count"],
+                f"{event_path}.observation_count",
+                minimum=0,
+                maximum=UINT32_MAX,
             )
+            observed_valid = _boolean(
+                event["observed_span_valid"],
+                f"{event_path}.observed_span_valid",
+            )
+            site_valid = _boolean(
+                event["site_span_valid"], f"{event_path}.site_span_valid"
+            )
+            operation_valid = _boolean(
+                event["operation_span_valid"],
+                f"{event_path}.operation_span_valid",
+            )
+            positive_delta = _boolean(
+                event["positive_delta"], f"{event_path}.positive_delta"
+            )
+            ambiguous = _boolean(
+                event["attribution_ambiguous"],
+                f"{event_path}.attribution_ambiguous",
+            )
+            ncc_counter_valid = event["ncc_counter_valid"]
+            status = event["observation_status"]
+            if kind == "ncc-command":
+                ncc_counter_valid = _boolean(
+                    ncc_counter_valid,
+                    f"{event_path}.ncc_counter_valid",
+                )
+                status = _string(status, f"{event_path}.observation_status")
+                if status not in OBSERVATION_STATUSES:
+                    _fail(
+                        f"{event_path}.observation_status",
+                        f"must be one of {list(OBSERVATION_STATUSES)}",
+                    )
+                expected_status = (
+                    "counter-unavailable"
+                    if not ncc_counter_valid
+                    else "attribution-ambiguous"
+                    if ambiguous
+                    else "engine-delta-bounded"
+                    if positive_delta
+                    else "counter-no-change"
+                )
+                if status != expected_status:
+                    _fail(
+                        f"{event_path}.observation_status",
+                        f"must be {expected_status!r} for its metadata",
+                    )
+                if ncc_counter_valid != observed_valid:
+                    _fail(
+                        f"{event_path}.ncc_counter_valid",
+                        "must agree with NCC observation-span availability",
+                    )
+                if not ncc_counter_valid and (
+                    raw != 0 or event["observation_count"] != 0
+                ):
+                    _fail(
+                        event_path,
+                        "an unavailable NCC counter must not retain a delta or sample count",
+                    )
+            else:
+                if ncc_counter_valid is not None:
+                    _fail(
+                        f"{event_path}.ncc_counter_valid",
+                        "must be null outside an NCC command",
+                    )
+                if status is not None:
+                    _fail(
+                        f"{event_path}.observation_status",
+                        "must be null for a Kcore/DTE phase",
+                    )
+            if positive_delta != (raw > 0):
+                _fail(
+                    f"{event_path}.positive_delta",
+                    "must agree with whether counter_delta is positive",
+                )
+            worker = event["worker"]
+            if worker is not None:
+                _integer(worker, f"{event_path}.worker", minimum=0, maximum=2)
+            wait_scope = event["wait_scope"]
+            if wait_scope is not None and wait_scope not in ("local", "worker"):
+                _fail(f"{event_path}.wait_scope", "must be null, local, or worker")
+            if observed_valid and (
+                event["observed_end_cycle"] < event["observed_begin_cycle"]
+            ):
+                _fail(
+                    f"{event_path}.observed_end_cycle",
+                    "must not precede a valid observed span",
+                )
+            if site_valid and event["site_end_cycle"] < event["site_begin_cycle"]:
+                _fail(
+                    f"{event_path}.site_end_cycle",
+                    "must not precede a valid site span",
+                )
+            if operation_valid and (
+                event["operation_end_cycle"] < event["operation_begin_cycle"]
+            ):
+                _fail(
+                    f"{event_path}.operation_end_cycle",
+                    "must not precede a valid operation span",
+                )
             if engine == "DIRECT_DTE":
                 dte_role = event["dte_role"]
                 if not isinstance(dte_role, str) or dte_role not in (
@@ -555,25 +801,72 @@ def _validate_experiment(
                     "receive",
                 ):
                     _fail(f"{event_path}.dte_role", "must be send or receive")
-                if not activity_valid:
-                    _fail(
-                        f"{event_path}.activity_valid",
-                        "must be true for a completed Direct-DTE wait window",
+                if kind == "direct-dte-wait":
+                    valid = _boolean(
+                        event["dte_counter_valid"],
+                        f"{event_path}.dte_counter_valid",
                     )
-                valid = _boolean(
-                    event["dte_counter_valid"],
-                    f"{event_path}.dte_counter_valid",
-                )
-                if not valid and raw != 0:
+                    if not valid and raw != 0:
+                        _fail(
+                            f"{event_path}.counter_delta",
+                            "must be zero when the DTE counter is unusable",
+                        )
+                elif event["dte_counter_valid"] is not None:
                     _fail(
-                        f"{event_path}.counter_delta",
-                        "must be zero when the DTE counter is unusable",
+                        f"{event_path}.dte_counter_valid",
+                        "must be null outside a Direct-DTE wait",
                     )
             elif event["dte_role"] is not None or event["dte_counter_valid"] is not None:
                 _fail(
                     event_path,
-                    "NCC activity must carry null DTE role and counter validity",
+                    "a non-DTE-wait event must carry null DTE role and counter validity",
                 )
+            if kind == "target-site":
+                if (
+                    engine is not None
+                    or not site_valid
+                    or observed_valid
+                    or operation_valid
+                    or raw != 0
+                    or event["observation_count"] != 0
+                    or ambiguous
+                    or worker is not None
+                    or wait_scope is not None
+                ):
+                    _fail(
+                        event_path,
+                        "a target-site container may carry only its typed site span",
+                    )
+                if int(event["sub_index"]) != 0:
+                    _fail(
+                        f"{event_path}.sub_index",
+                        "a target-site container must be sub-index zero",
+                    )
+                active_site_container = event
+                next_site_sub_index = 1
+            else:
+                if active_site_container is None:
+                    _fail(
+                        event_path,
+                        "a dynamic event must follow its target-site container",
+                    )
+                if (
+                    int(active_site_container["site_id"]) != site_id
+                    or int(active_site_container["site_begin_cycle"])
+                    != int(event["site_begin_cycle"])
+                    or int(active_site_container["site_end_cycle"])
+                    != int(event["site_end_cycle"])
+                ):
+                    _fail(
+                        event_path,
+                        "a dynamic event must match its target-site container",
+                    )
+                if int(event["sub_index"]) != next_site_sub_index:
+                    _fail(
+                        f"{event_path}.sub_index",
+                        "dynamic site sub-indexes must be contiguous",
+                    )
+                next_site_sub_index += 1
 
     pmu = _mapping(experiment["pmu"], "experiment.pmu")
     _exact_keys(pmu, {"tiles"}, "experiment.pmu")
@@ -727,9 +1020,299 @@ def _counter_value(counter: Mapping[str, Any]) -> tuple[int | None, str | None]:
     )
     if end < start:
         return None, "counter end precedes start"
-    if recovery < end:
-        return None, "counter recovery precedes end"
+    if recovery != end:
+        return None, "counter recovery does not match the terminal end value"
     return end - start, None
+
+
+def _event_span(
+    event: Mapping[str, Any], name: str, lower: int, upper: int
+) -> tuple[int, int] | None:
+    if not event[f"{name}_span_valid"]:
+        return None
+    begin = int(event[f"{name}_begin_cycle"])
+    end = int(event[f"{name}_end_cycle"])
+    if begin < lower or end < begin or end > upper:
+        return None
+    return begin, end
+
+
+def _operation_cost_contract(kind: str) -> tuple[str, str, str, str]:
+    if kind == "ncc-command":
+        return (
+            "ncc-submit",
+            "yes",
+            "proxy",
+            "reduce descriptor preparation and issue-path serialization",
+        )
+    if kind == "ncc-completion-wait":
+        return (
+            "completion-wait-proxy",
+            "yes",
+            "proxy",
+            "move joins later, overlap independent work, or reduce polling",
+        )
+    dte_categories = {
+        "direct-dte-peer-ready-wait": "dte-peer-ready-wait",
+        "direct-dte-setup-issue": "dte-setup-issue",
+        "direct-dte-completion-wait": "dte-completion-wait",
+        "direct-dte-cleanup": "dte-cleanup",
+        "direct-dte-wait": "dte-wait-aggregate-fallback",
+    }
+    return (
+        dte_categories[kind],
+        "yes",
+        "proxy",
+        "coalesce transfers and overlap DTE phases with independent NCC work",
+    )
+
+
+def _site_ref(
+    site: Mapping[str, Any], instance_sequence: int
+) -> dict[str, Any]:
+    return {
+        "site_id": int(site["site_id"]),
+        "instance_sequence": instance_sequence,
+        "site_kind": str(site["site_kind"]),
+        "target_call_symbol": str(site["target_call_symbol"]),
+        "target_call_ordinal": int(site["target_call_ordinal"]),
+        "correlation_key": str(site["correlation_key"]),
+        "position": site.get("position"),
+    }
+
+
+def _site_label(site: Mapping[str, Any] | None) -> str:
+    if site is None:
+        return "none"
+    return (
+        f"site-{site['site_id']}/instance-{site['instance_sequence']}/"
+        f"{site['site_kind']}/{site['target_call_symbol']}"
+    )
+
+
+def _semantic_segments(
+    lower: int,
+    upper: int,
+    sites: Sequence[Mapping[str, Any]],
+    operations: Sequence[tuple[int, int, str, int, Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Build an exclusive, source-attributed partition of one Trace entry."""
+    boundaries = {lower, upper}
+    for site in sites:
+        boundaries.update((int(site["begin_cycle"]), int(site["end_cycle"])))
+    for begin, end, _, _, _ in operations:
+        boundaries.update((begin, end))
+    ordered_sites = sorted(
+        sites,
+        key=lambda site: (
+            int(site["begin_cycle"]),
+            int(site["end_cycle"]),
+            int(site["ref"]["instance_sequence"]),
+        ),
+    )
+    first_site = ordered_sites[0] if ordered_sites else None
+    last_site = (
+        max(
+            ordered_sites,
+            key=lambda site: (
+                int(site["end_cycle"]),
+                int(site["ref"]["instance_sequence"]),
+            ),
+        )
+        if ordered_sites
+        else None
+    )
+    result: list[dict[str, Any]] = []
+    ordered = sorted(boundaries)
+    for begin, end in zip(ordered, ordered[1:]):
+        if end <= begin:
+            continue
+        operation_claims = [
+            (kind, sequence, site_ref)
+            for op_begin, op_end, kind, sequence, site_ref in operations
+            if op_begin < end and op_end > begin
+        ]
+        site_claims = [
+            site
+            for site in ordered_sites
+            if int(site["begin_cycle"]) < end and int(site["end_cycle"]) > begin
+        ]
+        previous_site = next(
+            (
+                site["ref"]
+                for site in reversed(ordered_sites)
+                if int(site["end_cycle"]) <= begin
+            ),
+            None,
+        )
+        next_site = next(
+            (
+                site["ref"]
+                for site in ordered_sites
+                if int(site["begin_cycle"]) >= end
+            ),
+            None,
+        )
+        reason: str | None = None
+        event_kind: str | None = None
+        source_event_sequence: int | None = None
+        containing_site: Mapping[str, Any] | None = None
+        claimant_sites: list[Mapping[str, Any]] = []
+        if len(operation_claims) > 1:
+            category = "capture-boundary-residual"
+            reason = "overlapping-operation-spans"
+            primary = relation = "unknown"
+            optimization = "inspect overlapping operation instrumentation"
+            claimant_sites = [claim[2] for claim in operation_claims]
+        elif operation_claims:
+            event_kind, source_event_sequence, containing_site = operation_claims[0]
+            reason = (
+                f"{event_kind}@{_site_label(containing_site)}"
+                f"/event-{source_event_sequence}"
+            )
+            category, primary, relation, optimization = _operation_cost_contract(
+                event_kind
+            )
+        elif len(site_claims) > 1:
+            category = "capture-boundary-residual"
+            reason = "overlapping-site-spans"
+            primary = relation = "unknown"
+            optimization = "inspect nested or overlapping target-call sites"
+            claimant_sites = [site["ref"] for site in site_claims]
+        elif site_claims:
+            category = "site-control"
+            containing_site = site_claims[0]["ref"]
+            source_event_sequence = int(containing_site["instance_sequence"])
+            reason = (
+                "inside-site-outside-operation@"
+                f"{_site_label(containing_site)}"
+            )
+            primary, relation = "mixed", "mixed/proxy"
+            optimization = (
+                "inspect this target-call wrapper, descriptor/setup work and "
+                "synchronization; use the aggregate Trace-cost overlay to "
+                "separate instrumentation"
+            )
+        elif first_site is None:
+            category = "capture-boundary-residual"
+            reason = "no-valid-site-boundaries"
+            primary = relation = "unknown"
+            optimization = "restore site-boundary capture before optimizing"
+        elif end <= int(first_site["begin_cycle"]):
+            category = "entry-prologue"
+            reason = f"before-first-{_site_label(first_site['ref'])}"
+            primary, relation = "mixed", "mixed/proxy"
+            optimization = (
+                "inspect entry ABI/pointer/descriptor preparation; Trace setup "
+                "remains separately visible in the non-additive overlay"
+            )
+        elif begin >= int(last_site["end_cycle"]):
+            category = "entry-epilogue"
+            reason = f"after-last-{_site_label(last_site['ref'])}"
+            primary, relation = "mixed", "mixed/proxy"
+            optimization = (
+                "inspect final completion, output publication and return; Trace "
+                "teardown remains separately visible outside the entry axis"
+            )
+        else:
+            category = "between-site-gap"
+            reason = (
+                f"between-{_site_label(previous_site)}-and-"
+                f"{_site_label(next_site)}"
+            )
+            primary, relation = "mixed", "mixed/proxy"
+            optimization = (
+                "inspect the preceding-to-next data/control dependency, join or "
+                "wait before deciding whether reordering is legal"
+            )
+        row = {
+            "category": category,
+            "reason": reason,
+            "event_kind": event_kind,
+            "source_event_sequence": source_event_sequence,
+            "containing_site": containing_site,
+            "previous_site": previous_site,
+            "next_site": next_site,
+            "claimant_sites": claimant_sites,
+            "begin_cycle": begin,
+            "end_cycle": end,
+            "cycles": end - begin,
+            "counts_in_primary_device_elapsed": primary,
+            "magnitude_relation": relation,
+            "optimization_entry": optimization,
+        }
+        merge_keys = (
+            "category",
+            "reason",
+            "event_kind",
+            "source_event_sequence",
+            "containing_site",
+            "previous_site",
+            "next_site",
+            "claimant_sites",
+            "counts_in_primary_device_elapsed",
+            "magnitude_relation",
+            "optimization_entry",
+        )
+        if (
+            result
+            and result[-1]["end_cycle"] == begin
+            and all(result[-1][key] == row[key] for key in merge_keys)
+        ):
+            result[-1]["end_cycle"] = end
+            result[-1]["cycles"] += end - begin
+        else:
+            result.append(row)
+    return result
+
+
+def _semantic_cost_rows(
+    segments: Sequence[Mapping[str, Any]], total: int
+) -> list[dict[str, Any]]:
+    groups: dict[
+        tuple[str, str | None, str | None, int | None], dict[str, Any]
+    ] = {}
+    for segment in segments:
+        key = (
+            str(segment["category"]),
+            segment.get("reason"),
+            segment.get("event_kind"),
+            segment.get("source_event_sequence"),
+        )
+        row = groups.setdefault(
+            key,
+            {
+                "category": key[0],
+                "reason": key[1],
+                "event_kind": key[2],
+                "source_event_sequence": key[3],
+                "containing_site": segment.get("containing_site"),
+                "previous_site": segment.get("previous_site"),
+                "next_site": segment.get("next_site"),
+                "claimant_sites": segment.get("claimant_sites", []),
+                "cycles": 0,
+                "interval_count": 0,
+                "counts_in_primary_device_elapsed": segment[
+                    "counts_in_primary_device_elapsed"
+                ],
+                "magnitude_relation": segment["magnitude_relation"],
+                "optimization_entry": segment["optimization_entry"],
+                "accounting_scope": "semantic-partition",
+            },
+        )
+        row["cycles"] += int(segment["cycles"])
+        row["interval_count"] += 1
+    rows = list(groups.values())
+    for row in rows:
+        row["share_of_trace_entry"] = int(row["cycles"]) / total if total else 0.0
+    return sorted(
+        rows,
+        key=lambda row: (
+            -int(row["cycles"]),
+            str(row["category"]),
+            str(row["reason"]),
+        ),
+    )
 
 
 def analyze_evidence(value: object) -> dict[str, Any]:
@@ -756,8 +1339,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         diagnostics.append(row)
 
     source_validity = evidence["validity"]
-    output = evidence["output_validation"]
-    resources = tuple(output["resources"])
+    resources = tuple(evidence["output_validation"]["resources"])
     production_validated = all(
         row["production_execution_validated"] for row in resources
     )
@@ -765,20 +1347,14 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         row["diagnostic_captures_match_primary"] for row in resources
     )
     output_equivalence = production_validated and captures_match_primary
-    if not output_equivalence:
-        diagnose(
-            "error",
-            "output_equivalence_failed",
-            "the primary production execution failed validation or a "
-            "diagnostic capture differs from its primary output",
-        )
     comparisons = [row["external_expected_comparison"] for row in resources]
-    all_expected = all(value is not None for value in comparisons)
-    any_expected = any(value is not None for value in comparisons)
+    any_expected = any(item is not None for item in comparisons)
+    all_expected = all(item is not None for item in comparisons)
+    all_exact = all(item == "exact" for item in comparisons)
     if not production_validated:
         semantic_correctness: bool | None = False
         correctness_status = "production-validation-failed"
-    elif all_expected and all(value == "exact" for value in comparisons):
+    elif all_expected and all_exact:
         semantic_correctness = True
         correctness_status = "expected-exact"
     elif all_expected:
@@ -792,16 +1368,49 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         correctness_status = "primary-validated"
 
     sample = evidence["measurement"]["samples"][0]
-    elapsed = int(sample["host_elapsed_ns"])
+    device_elapsed = int(sample["device_elapsed_ns"])
+    host_submit = int(sample["host_submit_ns"])
+    host_envelope = int(sample["host_launch_to_completion_ns"])
     resolution = int(sample["completion_observation_resolution_ns"])
-    resolution_fraction = resolution / elapsed
-    high_resolution = resolution_fraction <= MAX_COMPLETION_RESOLUTION_FRACTION
-    if not high_resolution:
+    host_envelope_available = host_envelope > 0
+    resolution_fraction = (
+        resolution / host_envelope if host_envelope_available else None
+    )
+    high_resolution = bool(
+        host_envelope_available
+        and resolution_fraction is not None
+        and resolution_fraction <= MAX_COMPLETION_RESOLUTION_FRACTION
+    )
+    device_zero = device_elapsed == 0
+    host_submit_zero = host_submit == 0
+    if device_zero:
+        diagnose(
+            "warning",
+            "device_event_elapsed_quantized_zero",
+            "the TX stream-event timer returned zero; the device execution "
+            "remains measured but is at or below the effective timer resolution",
+        )
+    if host_submit_zero:
+        diagnose(
+            "warning",
+            "host_submit_quantized_zero",
+            "the host provider-submit measurement returned zero and is at or "
+            "below the host clock's effective resolution",
+        )
+    if not host_envelope_available:
+        diagnose(
+            "warning",
+            "host_completion_envelope_unavailable",
+            "the host completion envelope is zero/quantized and unavailable; "
+            "Primary same-stream device elapsed remains independently usable",
+        )
+    elif not high_resolution:
         diagnose(
             "warning",
             "completion_resolution_too_coarse",
-            "the primary host duration remains usable, but completion "
-            "observation resolution is too coarse for the high-resolution label",
+            "the device stream-event duration remains independent and usable, "
+            "but host completion observation is coarse relative to the host "
+            "launch-to-completion envelope",
         )
     qualified = bool(
         source_validity["environment"]
@@ -818,10 +1427,13 @@ def analyze_evidence(value: object) -> dict[str, Any]:
     trace = _by_tile(experiment["trace"]["tiles"])
     pmu = _by_tile(experiment["pmu"]["tiles"])
     clocks = _by_tile(experiment["clock"])
-    sites = {(int(row["tile"]), int(row["site_id"])): row for row in evidence["sites"]}
+    sites = {
+        (int(row["tile"]), int(row["site_id"])): row for row in evidence["sites"]
+    }
     timeline_events: list[dict[str, Any]] = []
     tile_rows: list[dict[str, Any]] = []
     trace_all = bool(experiment["trace"]["complete"])
+    accounting_all = True
     pmu_all = True
 
     for tile in TILES:
@@ -852,137 +1464,501 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                 tile=tile,
             )
         trace_status = (
-            "Bounded"
+            "Measured"
             if protocol_ok
             else "Invalid"
             if trace_axis is None
             else "Incomplete"
         )
-
-        usable_events: list[dict[str, Any]] = []
-        dte_source_event_count = sum(
-            event["engine"] == "DIRECT_DTE" for event in trace_row["events"]
-        )
+        axis = int(trace_axis or 0)
+        site_instances: list[dict[str, Any]] = []
+        operation_candidates: list[
+            tuple[
+                int,
+                int,
+                str,
+                int,
+                int | None,
+                int | None,
+                Mapping[str, Any],
+            ]
+        ] = []
+        tile_events: list[dict[str, Any]] = []
+        dte_source_count = 0
         dte_windows_valid = protocol_ok
+        current_site_ref: Mapping[str, Any] | None = None
+
         for event in trace_row["events"]:
-            begin = int(event["observed_begin_cycle"])
-            end = int(event["observed_end_cycle"])
-            engine = str(event["engine"])
-            site = sites.get((tile, int(event["site_id"])))
-            window_ok = bool(
-                protocol_ok
-                and event["activity_valid"]
-                and end >= begin
-                and begin >= trace_begin
-                and end <= trace_end
-                and site is not None
-                and site["engine"] == engine
+            if not protocol_ok:
+                continue
+            engine = event["engine"]
+            kind = str(event["kind"])
+            site_id = (
+                None if event["site_id"] is None else int(event["site_id"])
             )
-            if engine in NCC_ENGINES and int(event["counter_delta"]) == 0:
-                window_ok = False
-            if not window_ok:
-                if engine == "DIRECT_DTE":
-                    dte_windows_valid = False
-                if event["activity_valid"]:
+            site = (
+                sites[(tile, site_id)]
+                if site_id is not None
+                else {
+                    "site_kind": "ncc-completion",
+                    "engine": None,
+                    "correlation_key": "runtime.ncc-completion",
+                    "target_call_ordinal": None,
+                    "target_call_symbol": "runtime-completion-phase",
+                }
+            )
+            site_span = (
+                _event_span(event, "site", trace_begin, trace_end)
+                if protocol_ok
+                else None
+            )
+            operation_span = (
+                _event_span(event, "operation", trace_begin, trace_end)
+                if protocol_ok
+                else None
+            )
+            observed_span = (
+                _event_span(event, "observed", trace_begin, trace_end)
+                if protocol_ok
+                else None
+            )
+            scope = (
+                f"site:{site_id}:{event['sub_index']}"
+                if site_id is not None
+                else "runtime:ncc-completion"
+            )
+            if event["site_span_valid"] and site_span is None:
+                trace_all = False
+                diagnose(
+                    "warning",
+                    "site_capture_span_unusable",
+                    "site capture span is reversed or outside the trace entry",
+                    tile=tile,
+                    scope=scope,
+                )
+            if event["operation_span_valid"] and operation_span is None:
+                trace_all = False
+                diagnose(
+                    "warning",
+                    "operation_span_unusable",
+                    "operation span is reversed or outside the trace entry",
+                    tile=tile,
+                    scope=scope,
+                )
+            if event["observed_span_valid"] and observed_span is None:
+                trace_all = False
+                diagnose(
+                    "warning",
+                    "observation_span_unusable",
+                    "observation span is reversed or outside the trace entry",
+                    tile=tile,
+                    scope=scope,
+                )
+            if kind == "target-site" and site_id is not None:
+                current_site_ref = _site_ref(site, int(event["sequence"]))
+                if site_span:
+                    site_instances.append(
+                        {
+                            "begin_cycle": site_span[0],
+                            "end_cycle": site_span[1],
+                            "ref": current_site_ref,
+                        }
+                    )
+            if operation_span:
+                if current_site_ref is None:
+                    raise AssertionError(
+                        "validated operation has no target-site container"
+                    )
+                operation_candidates.append(
+                    (
+                        *operation_span,
+                        kind,
+                        int(event["sequence"]),
+                        site_id,
+                        (
+                            None
+                            if event["sub_index"] is None
+                            else int(event["sub_index"])
+                        ),
+                        current_site_ref,
+                    )
+                )
+                if site_span and not (
+                    site_span[0] <= operation_span[0]
+                    and operation_span[1] <= site_span[1]
+                ):
                     trace_all = False
                     diagnose(
                         "warning",
-                        (
-                            "direct_dte_wait_window_unusable"
-                            if engine == "DIRECT_DTE"
-                            else "ncc_activity_window_unusable"
-                        ),
-                        "activity observation is reversed, outside the trace "
-                        "entry span, or inconsistent with its site",
+                        "operation_outside_site_span",
+                        "operation span is not contained by its site capture span",
                         tile=tile,
-                        scope=f"site:{event['site_id']}:{event['sub_index']}",
+                        scope=scope,
                     )
-                continue
-            axis = int(trace_axis)
-            offset_begin = begin - trace_begin
-            offset_end = end - trace_begin
-            is_direct_dte = engine == "DIRECT_DTE"
-            base = {
+
+            ncc = kind == "ncc-command"
+            dte_event = kind.startswith("direct-dte-")
+            dte_wait = kind == "direct-dte-wait"
+            target_site = kind == "target-site"
+            positive = bool(event["positive_delta"])
+            ambiguous = bool(event["attribution_ambiguous"])
+            ncc_counter_valid = (
+                bool(event["ncc_counter_valid"]) if ncc else None
+            )
+            if dte_wait:
+                dte_source_count += 1
+                if operation_span is None:
+                    dte_windows_valid = False
+            if ncc and not ncc_counter_valid:
+                duration_status = counter_status = "Unavailable"
+            elif ambiguous:
+                duration_status = counter_status = "Attribution ambiguous"
+            elif ncc and positive and observed_span:
+                duration_status, counter_status = "Bounded", "Measured"
+            elif ncc:
+                duration_status, counter_status = "Zero-delta marker", "Zero delta"
+            elif dte_wait and operation_span:
+                duration_status = "Measured"
+                counter_status = (
+                    "Sampled" if event["dte_counter_valid"] else "Unavailable"
+                )
+            elif dte_event and operation_span:
+                duration_status, counter_status = "Measured", "Unavailable"
+            elif target_site and site_span:
+                duration_status, counter_status = "Measured", "Unavailable"
+            elif operation_span:
+                duration_status, counter_status = "Measured", "Unavailable"
+            else:
+                duration_status = counter_status = "Unavailable"
+            if ncc and ncc_counter_valid and positive and not observed_span:
+                trace_all = False
+                diagnose(
+                    "warning",
+                    "ncc_activity_window_unusable",
+                    "a positive NCC delta has no usable bounded observation span",
+                    tile=tile,
+                    scope=scope,
+                )
+            if ncc and not ncc_counter_valid:
+                diagnose(
+                    "warning",
+                    "ncc_event_counter_unavailable",
+                    "the exact target site and TsmExecute submit span are "
+                    "retained, but this engine event crossed an unstable PMU "
+                    "sample and has no counter delta or activity bound",
+                    tile=tile,
+                    scope=scope,
+                )
+            if ambiguous:
+                diagnose(
+                    "warning",
+                    "ncc_site_attribution_ambiguous",
+                    "same-engine activity overlaps this observation; its delta "
+                    "is retained but not assigned as exact site work",
+                    tile=tile,
+                    scope=scope,
+                )
+
+            plot_span = (
+                observed_span
+                if ncc
+                and ncc_counter_valid
+                and positive
+                and not ambiguous
+                and observed_span
+                else operation_span
+                if operation_span
+                else site_span
+            )
+            marker_cycle = plot_span[0] if plot_span else trace_begin
+            marker = bool(
+                not plot_span
+                or ambiguous
+                or (ncc and (not ncc_counter_valid or not positive))
+            )
+            direct_raw = (
+                int(event["counter_delta"])
+                if dte_wait and event["dte_counter_valid"]
+                else None
+            )
+            row = {
                 "tile": tile,
                 "sequence": int(event["sequence"]),
-                "site_id": int(event["site_id"]),
-                "sub_index": int(event["sub_index"]),
+                "site_id": site_id,
+                "sub_index": (
+                    None
+                    if event["sub_index"] is None
+                    else int(event["sub_index"])
+                ),
+                "site_kind": site["site_kind"],
+                "site_instance_sequence": (
+                    None
+                    if current_site_ref is None
+                    else int(current_site_ref["instance_sequence"])
+                ),
                 "engine": engine,
+                "kind": kind,
                 "correlation_key": site["correlation_key"],
-                "target_call_ordinal": int(site["target_call_ordinal"]),
+                "target_call_ordinal": (
+                    None
+                    if site["target_call_ordinal"] is None
+                    else int(site["target_call_ordinal"])
+                ),
                 "target_call_symbol": site["target_call_symbol"],
                 "position": site.get("position"),
-                "trace_entry_offset_begin": offset_begin,
-                "trace_entry_offset_end": offset_end,
-                "activity_window_cycles": end - begin,
-                "duration_status": "Measured" if is_direct_dte else "Bounded",
-                "counter_status": (
-                    "Sampled"
-                    if is_direct_dte and event["dte_counter_valid"]
+                "observation_status": event["observation_status"],
+                "observation_count": int(event["observation_count"]),
+                "site_span_declared": bool(event["site_span_valid"]),
+                "operation_span_declared": bool(event["operation_span_valid"]),
+                "observed_span_declared": bool(event["observed_span_valid"]),
+                "ncc_counter_valid": ncc_counter_valid,
+                "attribution_ambiguous": ambiguous,
+                "zero_delta_marker": bool(
+                    ncc
+                    and ncc_counter_valid
+                    and not positive
+                    and not ambiguous
+                ),
+                "marker": marker,
+                "marker_cycle_offset": marker_cycle - trace_begin,
+                "trace_entry_offset_begin_cpu_cycles": (
+                    plot_span[0] - trace_begin if plot_span else marker_cycle - trace_begin
+                ),
+                "trace_entry_offset_end_cpu_cycles": (
+                    plot_span[1] - trace_begin if plot_span else marker_cycle - trace_begin
+                ),
+                "activity_window_cpu_cycles": (
+                    observed_span[1] - observed_span[0] if observed_span else None
+                ),
+                "activity_window_status": (
+                    "Bounded"
+                    if ncc
+                    and ncc_counter_valid
+                    and positive
+                    and not ambiguous
+                    and observed_span
+                    else "Attribution ambiguous"
+                    if ncc and ambiguous
+                    else "Zero delta"
+                    if ncc and ncc_counter_valid and not positive
                     else "Unavailable"
-                    if is_direct_dte
-                    else "Sampled"
                 ),
+                "site_capture_window_cpu_cycles": (
+                    site_span[1] - site_span[0] if site_span else None
+                ),
+                "site_capture_status": (
+                    "Measured"
+                    if site_span
+                    else "Invalid"
+                    if event["site_span_valid"]
+                    else "Unavailable"
+                ),
+                "operation_window_cpu_cycles": (
+                    operation_span[1] - operation_span[0] if operation_span else None
+                ),
+                "operation_window_status": (
+                    "Measured"
+                    if operation_span
+                    else "Invalid"
+                    if event["operation_span_valid"]
+                    else "Unavailable"
+                ),
+                "duration_status": duration_status,
+                "counter_status": counter_status,
                 "timeline_scope": "tile-local",
-                "plot_begin_fraction": offset_begin / axis if axis else 0.0,
-                "plot_end_fraction": offset_end / axis if axis else 0.0,
+                "plot_begin_fraction": (
+                    (plot_span[0] - trace_begin) / axis if axis and plot_span else 0.0
+                ),
+                "plot_end_fraction": (
+                    (plot_span[1] - trace_begin) / axis if axis and plot_span else 0.0
+                ),
                 "dte_role": event["dte_role"],
-                "ncc_busy_cycles": (
-                    int(event["counter_delta"]) if engine in NCC_ENGINES else None
-                ),
-                "direct_dte_wait_cycles": (
-                    end - begin if engine == "DIRECT_DTE" else None
-                ),
-                "direct_dte_raw_pmu_activity": (
+                "ncc_engine_execution_time_ns": (
                     int(event["counter_delta"])
-                    if engine == "DIRECT_DTE" and event["dte_counter_valid"]
+                    if ncc
+                    and ncc_counter_valid
+                    and positive
+                    and not ambiguous
                     else None
                 ),
+                "direct_dte_wait_cpu_cycles": (
+                    operation_span[1] - operation_span[0]
+                    if dte_wait and operation_span
+                    else None
+                ),
+                "direct_dte_raw_pmu_activity": direct_raw,
                 "direct_dte_raw_pmu_valid": (
-                    bool(event["dte_counter_valid"])
-                    if engine == "DIRECT_DTE"
-                    else None
+                    bool(event["dte_counter_valid"]) if dte_wait else None
                 ),
+                "worker": event["worker"],
+                "wait_scope": event["wait_scope"],
+                "engine_lane_visible": ncc or dte_wait,
             }
-            timeline_events.append(base)
-            usable_events.append(base)
-            if engine == "DIRECT_DTE" and not event["dte_counter_valid"]:
+            timeline_events.append(row)
+            tile_events.append(row)
+            if dte_wait and not event["dte_counter_valid"]:
                 diagnose(
                     "warning",
                     "direct_dte_raw_pmu_unusable",
-                    "Direct-DTE wait window is usable, but its uncalibrated raw "
-                    "PMU activity is unavailable",
+                    "Direct-DTE operation span is usable, but its uncalibrated "
+                    "raw PMU activity is unavailable",
                     tile=tile,
-                    scope=f"site:{event['site_id']}:{event['sub_index']}",
+                    scope=scope,
                 )
 
-        engine_rows: list[dict[str, Any]] = []
+        dte_leaf_intervals = [
+            (begin, end)
+            for begin, end, kind, _, _, _, _ in operation_candidates
+            if kind.startswith("direct-dte-") and kind != "direct-dte-wait"
+        ]
+        operation_spans: list[
+            tuple[int, int, str, int, Mapping[str, Any]]
+        ] = []
+        for begin, end, kind, sequence, _, _, site_ref in operation_candidates:
+            if kind == "direct-dte-wait" and any(
+                leaf_begin < end and leaf_end > begin
+                for leaf_begin, leaf_end in dte_leaf_intervals
+            ):
+                continue
+            operation_spans.append((begin, end, kind, sequence, site_ref))
+        semantic = (
+            _semantic_segments(
+                trace_begin, trace_end, site_instances, operation_spans
+            )
+            if trace_axis is not None
+            else []
+        )
+        for segment in semantic:
+            segment["plot_begin_fraction"] = (
+                (int(segment["begin_cycle"]) - trace_begin) / axis if axis else 0.0
+            )
+            segment["plot_end_fraction"] = (
+                (int(segment["end_cycle"]) - trace_begin) / axis if axis else 0.0
+            )
+        semantic_cycles = sum(int(row["cycles"]) for row in semantic)
+        semantic_valid = trace_axis is not None and semantic_cycles == axis
+        if not semantic_valid:
+            accounting_all = trace_all = False
+            diagnose(
+                "error",
+                "semantic_partition_not_exclusive",
+                "exclusive semantic Kcore partition does not equal the trace entry span",
+                tile=tile,
+            )
+
+        overlay_rows: list[dict[str, Any]] = []
+        for field in COST_SUMMARY_FIELDS:
+            cycles = int(trace_row["cost_summary"][field])
+            outside_entry = field in (
+                "entry_setup_cycles",
+                "entry_teardown_cycles",
+            )
+            primary_relation = "no"
+            magnitude_relation = "trace-only"
+            if field in (
+                "status_poll_cycles",
+                "completion_loop_bookkeeping_cycles",
+            ):
+                optimization_entry = (
+                    "Trace replaces production TsmWaitfinish with this sampled "
+                    "poll loop; optimize the production completion semantic "
+                    "from its proxy row, not from this instrumentation cost"
+                )
+            else:
+                optimization_entry = (
+                    "reduce profiler sampling/bookkeeping only; this does "
+                    "not optimize the production artifact"
+                )
+            overlay_rows.append(
+                {
+                    "category": "trace-run-cost-overlay",
+                    "reason": field.removesuffix("_cycles").replace("_", "-"),
+                    "cycles": cycles,
+                    "share_of_trace_entry": (
+                        None
+                        if outside_entry
+                        else cycles / axis
+                        if axis
+                        else 0.0
+                    ),
+                    "counts_in_primary_device_elapsed": primary_relation,
+                    "magnitude_relation": magnitude_relation,
+                    "optimization_entry": optimization_entry,
+                    "accounting_scope": "trace-overhead-overlay",
+                    "location_granularity": (
+                        "before-entry"
+                        if field == "entry_setup_cycles"
+                        else "after-entry"
+                        if field == "entry_teardown_cycles"
+                        else "inside-entry-unpositioned"
+                    ),
+                    "non_additive_to_semantic_partition": True,
+                }
+            )
+        overlay_cycles = sum(int(row["cycles"]) for row in overlay_rows)
+        inside_overlay_cycles = sum(
+            int(row["cycles"])
+            for row in overlay_rows
+            if row["location_granularity"] == "inside-entry-unpositioned"
+        )
+        outside_overlay_cycles = overlay_cycles - inside_overlay_cycles
+
         aggregate = pmu[tile]["aggregates"]
+        statistics_window, statistics_reason = _counter_value(
+            aggregate["statistics_window"]
+        )
+        statistics_valid = statistics_window is not None
+        if not statistics_valid:
+            diagnose(
+                "warning",
+                "statistics_window_unusable",
+                statistics_reason or "statistics-window counter is unavailable",
+                tile=tile,
+                scope="statistics_window",
+            )
+        engine_rows: list[dict[str, Any]] = []
         for engine in NCC_ENGINES:
-            busy, reason = _counter_value(aggregate[engine.lower()])
-            valid = busy is not None
+            execution, reason = _counter_value(aggregate[engine.lower()])
+            valid = execution is not None
             pmu_all = pmu_all and valid
             if not valid:
                 diagnose(
                     "warning",
-                    "ncc_busy_counter_unusable",
-                    reason or "NCC busy counter is unavailable",
+                    "ncc_engine_execution_time_unusable",
+                    reason or "NCC execution-time counter is unavailable",
                     tile=tile,
                     scope=engine,
                 )
+            events = [
+                row
+                for row in tile_events
+                if row["engine"] == engine and row["kind"] == "ncc-command"
+            ]
             engine_rows.append(
                 {
                     "engine": engine,
-                    "measurement_kind": "ncc-hardware-busy-cycles",
-                    "busy_cycles": busy,
-                    "busy_cycles_valid": valid,
-                    "busy_cycles_status": "Measured" if valid else "Unavailable",
+                    "measurement_kind": "ncc-engine-execution-time-ns",
+                    "engine_execution_time_ns": execution,
+                    "engine_execution_time_valid": valid,
+                    "engine_execution_time_status": (
+                        "Measured" if valid else "Unavailable"
+                    ),
                     "activity_window_count": sum(
-                        row["engine"] == engine for row in usable_events
+                        row["duration_status"] == "Bounded" for row in events
+                    ),
+                    "zero_delta_marker_count": sum(
+                        row["zero_delta_marker"] for row in events
+                    ),
+                    "ambiguous_attribution_count": sum(
+                        row["attribution_ambiguous"] for row in events
                     ),
                     "activity_window_status": (
                         "Bounded"
-                        if any(row["engine"] == engine for row in usable_events)
+                        if any(row["duration_status"] == "Bounded" for row in events)
+                        else "Ambiguous"
+                        if any(row["attribution_ambiguous"] for row in events)
+                        else "Zero delta"
+                        if events
                         else "Incomplete"
                         if not protocol_ok
                         else "Unavailable"
@@ -991,46 +1967,53 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             )
 
         dte_events = [
-            row for row in usable_events if row["engine"] == "DIRECT_DTE"
+            row
+            for row in tile_events
+            if row["kind"] == "direct-dte-wait"
         ]
-        raw_values = [
-            row["direct_dte_raw_pmu_activity"] for row in dte_events
-        ]
+        raw_values = [row["direct_dte_raw_pmu_activity"] for row in dte_events]
         raw_valid = bool(
             dte_windows_valid
             and dte_events
-            and all(value is not None for value in raw_values)
+            and all(item is not None for item in raw_values)
         )
-        wait_status = (
-            "Measured"
-            if dte_windows_valid
-            else "Invalid"
-            if trace_axis is None
-            else "Incomplete"
+        dte_intervals = sorted(
+            (
+                int(row["trace_entry_offset_begin_cpu_cycles"]),
+                int(row["trace_entry_offset_end_cpu_cycles"]),
+            )
+            for row in dte_events
+            if row["direct_dte_wait_cpu_cycles"] is not None
         )
+        dte_union = 0
+        union_end = -1
+        for begin, end in dte_intervals:
+            if end > max(begin, union_end):
+                dte_union += end - max(begin, union_end)
+            union_end = max(union_end, end)
         engine_rows.append(
             {
                 "engine": "DIRECT_DTE",
                 "measurement_kind": "direct-dte-wait-completion-windows",
-                "wait_window_cycles": (
-                    sum(
-                        int(row["direct_dte_wait_cycles"])
-                        for row in dte_events
-                    )
-                    if dte_windows_valid
-                    else None
-                ),
+                "wait_window_cpu_cycles": dte_union if dte_windows_valid else None,
                 "wait_windows_valid": dte_windows_valid,
-                "wait_window_status": wait_status,
-                "wait_window_count": dte_source_event_count,
+                "wait_window_status": (
+                    "Measured"
+                    if dte_windows_valid
+                    else "Invalid"
+                    if trace_axis is None
+                    else "Incomplete"
+                ),
+                "wait_window_count": dte_source_count,
                 "raw_pmu_activity": (
-                    sum(int(value) for value in raw_values) if raw_valid else None
+                    sum(int(item) for item in raw_values) if raw_valid else None
                 ),
                 "raw_pmu_activity_valid": raw_valid,
-                "raw_pmu_activity_status": (
-                    "Sampled" if raw_valid else "Unavailable"
+                "raw_pmu_activity_status": "Sampled" if raw_valid else "Unavailable",
+                "activity_window_count": sum(
+                    row["direct_dte_wait_cpu_cycles"] is not None
+                    for row in dte_events
                 ),
-                "activity_window_count": len(dte_events),
             }
         )
         topology_row = topology[tile]
@@ -1041,8 +2024,8 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                 "tile": tile,
                 "x": int(topology_row["x"]),
                 "y": int(topology_row["y"]),
-                "trace_entry_cycles": trace_axis,
-                "timeline_axis": "trace-capture-entry-span",
+                "trace_entry_cpu_cycles": trace_axis,
+                "timeline_axis": "kcore-rdcycle-entry-span",
                 "timeline_scope": "tile-local",
                 "trace_status": trace_status,
                 "clock_status": "Measured" if clock_valid else "Unavailable",
@@ -1053,6 +2036,28 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                     "round_trips": int(clock_row["round_trips"]),
                     "valid": clock_valid,
                 },
+                "statistics_window_raw_ticks": statistics_window,
+                "statistics_window_valid": statistics_valid,
+                "statistics_window_status": (
+                    "Measured" if statistics_valid else "Unavailable"
+                ),
+                "semantic_timeline_segments": semantic,
+                "semantic_partition": {
+                    "entry_cycles": trace_axis,
+                    "exclusive_cycles": semantic_cycles,
+                    "exclusive_accounting_valid": semantic_valid,
+                    "rows": _semantic_cost_rows(semantic, axis),
+                },
+                "trace_overhead_overlay": {
+                    "exclusive_component_cycles": overlay_cycles,
+                    "inside_entry_known_overhead_cycles": inside_overlay_cycles,
+                    "outside_entry_overhead_cycles": outside_overlay_cycles,
+                    "components_exclusive": True,
+                    "non_additive_to_semantic_partition": True,
+                    "positioning": "aggregate-only",
+                    "coverage": "measured-categories-only",
+                    "rows": overlay_rows,
+                },
                 "engines": engine_rows,
             }
         )
@@ -1060,33 +2065,78 @@ def analyze_evidence(value: object) -> dict[str, Any]:
     clock_alignment = all(
         row["valid"] and row["monotonic"] for row in clocks.values()
     )
-    event_counts = Counter(
-        (int(row["tile"]), int(row["site_id"])) for row in timeline_events
+    site_instance_counts = Counter(
+        (int(row["tile"]), int(row["site_id"]))
+        for row in timeline_events
+        if row["kind"] == "target-site"
     )
+    site_capture_statuses: dict[tuple[int, int], set[str]] = {}
+    for event in timeline_events:
+        if event["kind"] != "target-site" or event["site_id"] is None:
+            continue
+        site_capture_statuses.setdefault(
+            (int(event["tile"]), int(event["site_id"])), set()
+        ).add(str(event["site_capture_status"]))
+    activity_event_counts = Counter(
+        (int(row["tile"]), int(row["site_id"]))
+        for row in timeline_events
+        if row["kind"] != "target-site"
+    )
+    statuses: dict[tuple[int, int], set[str | None]] = {}
+    for event in timeline_events:
+        if event["site_id"] is None:
+            continue
+        if event["kind"] == "target-site":
+            continue
+        statuses.setdefault(
+            (int(event["tile"]), int(event["site_id"])), set()
+        ).add(event["observation_status"])
     site_rows: list[dict[str, Any]] = []
     for (tile, site_id), site in sorted(sites.items()):
-        event_count = event_counts[(tile, site_id)]
+        instance_count = site_instance_counts[(tile, site_id)]
+        event_count = activity_event_counts[(tile, site_id)]
+        site_status = statuses.get((tile, site_id), set())
+        capture_status = site_capture_statuses.get((tile, site_id), set())
+        observation_status = (
+            "Unavailable"
+            if "counter-unavailable" in site_status
+            else "Attribution ambiguous"
+            if "attribution-ambiguous" in site_status
+            else "Bounded"
+            if "engine-delta-bounded" in site_status
+            else "Zero delta"
+            if "counter-no-change" in site_status
+            else "Measured"
+            if event_count
+            else "Unavailable"
+        )
         site_rows.append(
             {
                 "tile": tile,
                 "site_id": site_id,
+                "site_kind": site["site_kind"],
                 "engine": site["engine"],
                 "correlation_key": site["correlation_key"],
                 "target_call_ordinal": int(site["target_call_ordinal"]),
                 "target_call_symbol": site["target_call_symbol"],
                 "position": site.get("position"),
-                "event_count": event_count,
-                "observation_status": (
-                    "Measured"
-                    if event_count and site["engine"] == "DIRECT_DTE"
-                    else "Bounded"
-                    if event_count
+                "site_instance_count": instance_count,
+                "site_capture_status": (
+                    "Invalid"
+                    if "Invalid" in capture_status
+                    else "Measured"
+                    if "Measured" in capture_status
                     else "Unavailable"
                 ),
+                "event_count": event_count,
+                "engine_observation_status": observation_status,
+                "observation_status": observation_status,
             }
         )
-    direct_dte_events = [
-        row for row in timeline_events if row["engine"] == "DIRECT_DTE"
+    dte_events = [
+        row
+        for row in timeline_events
+        if row["kind"] == "direct-dte-wait"
     ]
     validity = {
         "identity": True,
@@ -1095,8 +2145,9 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         "environment": bool(source_validity["environment"]),
         "package_companion": bool(source_validity["package_companion"]),
         "measurement_basis": bool(source_validity["measurement_basis"]),
-        "completion_resolution": high_resolution,
+        "host_completion_resolution": high_resolution,
         "trace": trace_all,
+        "cost_accounting": accounting_all,
         "pmu": pmu_all,
         "clock_alignment": clock_alignment,
     }
@@ -1104,6 +2155,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         "schema": ANALYSIS_SCHEMA_NAME,
         "schema_version": ANALYSIS_SCHEMA_VERSION,
         "run_id": evidence["run_id"],
+        "record_abi": evidence["identity"]["record_abi"],
         "valid": qualified,
         "validity": validity,
         "final_artifact": {
@@ -1112,10 +2164,17 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             "duration": {
                 "sample_id": "primary",
                 "sample_index": 0,
-                "host_elapsed_ns": elapsed,
+                "device_elapsed_ns": device_elapsed,
+                "device_timer_kind": sample["device_timer_kind"],
+                "device_elapsed_quantized_zero": device_zero,
+                "host_submit_ns": host_submit,
+                "host_submit_quantized_zero": host_submit_zero,
+                "host_launch_to_completion_ns": host_envelope,
+                "host_non_submit_envelope_ns": host_envelope - host_submit,
+                "host_envelope_available": host_envelope_available,
                 "completion_observation_resolution_ns": resolution,
                 "completion_observation_fraction": resolution_fraction,
-                "high_resolution": high_resolution,
+                "host_completion_high_resolution": high_resolution,
                 "qualified": qualified,
                 "status": "Measured" if qualified else "Invalid",
             },
@@ -1132,15 +2191,13 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             "sites": site_rows,
             "timeline_events": timeline_events,
             "communication": {
-                "direct_dte_event_count": len(direct_dte_events),
-                "send_count": sum(
-                    row["dte_role"] == "send" for row in direct_dte_events
-                ),
+                "direct_dte_event_count": len(dte_events),
+                "send_count": sum(row["dte_role"] == "send" for row in dte_events),
                 "receive_count": sum(
-                    row["dte_role"] == "receive" for row in direct_dte_events
+                    row["dte_role"] == "receive" for row in dte_events
                 ),
                 "tiles_with_activity": sorted(
-                    {int(row["tile"]) for row in direct_dte_events}
+                    {int(row["tile"]) for row in dte_events}
                 ),
                 "timeline_scope": "tile-local",
                 "cross_tile_order_available": False,
@@ -1148,17 +2205,23 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         },
         "diagnostics": diagnostics,
         "method": {
-            "primary_duration": "one primary production execution: host steady-clock first submit through all-rank trusted completion",
-            "timeline_axis": "trace capture per-tile entry span",
+            "device_execution_time": "one uninstrumented primary production execution measured by same-stream TX start/end events; it includes device-side Kcore control, submits, waits, DTE lifecycle, and scheduling gaps",
+            "host_submit_time": "host steady-clock provider submit path, including provider argument preparation and stream/event setup where applicable; not pure TX API time",
+            "host_envelope_time": "host steady-clock first submit through all-rank trusted completion; diagnostic envelope, not kernel execution time",
+            "host_envelope_ledger": "host envelope is partitioned only on its own clock into host submit and host non-submit envelope; the latter includes host waiting/polling/phase control concurrent with device execution, is not pure overhead, and is never reduced by device elapsed",
+            "queue_delay": "unavailable; no queue-delay value is inferred by subtracting host and device measurements",
+            "timeline_axis": "tile-local Kcore rdcycle entry span partitioned into named semantic costs; every cycle has an explicit category or reason-specific capture-boundary residual",
             "timeline_scope": "tile-local only; no cross-tile order is inferred",
-            "ncc_engine_time": "Measured per-tile aggregate hardware PMU busy cycles; engines may overlap",
-            "ncc_activity_window": "Bounded observation only; never presented as an exact execution interval",
-            "direct_dte_time": "Measured wait/completion windows, separate from raw PMU activity",
-            "direct_dte_raw_pmu": "Sampled uncalibrated activity only; never interpreted as elapsed time",
+            "semantic_partition": "exclusive interval-union/subtraction accounting over the trace entry; categories sum exactly once to the entry span",
+            "primary_inclusion_labels": "yes means the production semantic phase is inside the Primary device event; mixed means the trace interval combines production-common control with nested trace-only work that is measured only in the separate overhead overlay; unknown means current evidence cannot establish the production correspondence; no is trace-only",
+            "trace_overhead_overlay": "eight mutually exclusive Trace-run rdcycle instrumentation components; status-poll and completion-loop bookkeeping belong to the sampled replacement for production TsmWaitfinish, while the production-common wait semantic is represented separately by its proxy operation row; all eight are trace-only, aggregate-positioned, and never added to the semantic partition",
+            "ncc_engine_time": "per-tile NCC engine execution-time work volume in nanoseconds from vendor PMU counters; asynchronous engines/tiles may overlap and these values are never added to Kcore cycles or Primary elapsed",
+            "statistics_window": "aggregate statistics_window is a raw PMU tick delta, not the rdcycle timeline axis and not converted to elapsed time",
+            "ncc_activity_window": "positive per-event deltas carry only bounded observation windows; zero deltas remain markers and ambiguous deltas are not assigned as exact site work",
+            "direct_dte_time": "measured operation windows in tile-local Kcore rdcycle, separate from raw PMU activity",
+            "direct_dte_raw_pmu": "sampled uncalibrated activity only; never interpreted as elapsed time",
         },
     }
-
-
 
 
 _REPORT_TEMPLATE = r"""<!doctype html>
@@ -1197,10 +2260,11 @@ button{color:inherit}
 h1{font-size:23px;margin:3px 0 2px;line-height:1.2}.run-id{color:var(--muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
 .artifact-links{display:flex;gap:7px}.artifact-links a{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--accent);text-decoration:none;font-size:11px}
 .view{display:none}.view.active{display:block}
-.section-head{display:flex;align-items:end;justify-content:space-between;gap:16px;margin:0 0 10px}
+.section-head{display:flex;align-items:end;justify-content:space-between;gap:16px;margin:0 0 10px}.section-head>*{min-width:0}
 .section-head h2{font-size:17px;margin:0}.section-head p{margin:2px 0 0;color:var(--muted);font-size:11px}
 .grid{display:flex;flex-wrap:wrap;display:grid;gap:10px}.grid>*{min-width:0}.kpis{grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:10px}.kpis>.card{flex:1 1 210px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.overview-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}
+.card{min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
 .metric-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;font-weight:700}
 .metric-value{font-size:24px;font-weight:760;margin:5px 0 2px;white-space:nowrap}.metric-value.primary{font-size:31px;color:var(--accent)}
 .metric-note{font-size:11px;color:var(--muted)}
@@ -1231,18 +2295,29 @@ h1{font-size:23px;margin:3px 0 2px;line-height:1.2}.run-id{color:var(--muted);fo
 .event{position:absolute;top:3px;height:14px;min-width:3px;border:0;border-radius:3px;cursor:pointer;opacity:.92;box-shadow:0 0 0 1px rgba(0,0,0,.07)}
 .event:hover,.event.selected{outline:2px solid #17212b;outline-offset:1px;z-index:2}
 .event-CT{background:var(--ct)}.event-NE{background:var(--ne)}.event-RDMA{background:var(--rdma)}.event-WDMA{background:var(--wdma)}.event-TDMA{background:var(--tdma)}.event-DIRECT_DTE{background:var(--dte)}
+.event.marker{width:3px!important;min-width:3px;border-radius:0;box-shadow:0 0 0 1px #fff,0 0 0 2px currentColor}
+.event.ambiguous{background:#a45b06}.event.zero{background:#667085}
+.cost-segment{position:absolute;inset:2px auto 2px 0;border:0;border-radius:2px;cursor:pointer;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)}
+.cost-segment:hover,.cost-segment.selected{outline:2px solid #17212b;outline-offset:1px;z-index:3}
+.cost-ncc-submit{background:#8fb7f7}.cost-completion-wait-proxy{background:#d8b4fe}.cost-dte-peer-ready-wait{background:#b9ddd8}.cost-dte-setup-issue{background:#94cec6}.cost-dte-completion-wait{background:#69b8ad}.cost-dte-cleanup{background:#a7d7d0}.cost-dte-wait-aggregate-fallback{background:#4c9c92}.cost-site-control{background:#d7dee7}.cost-between-site-gap{background:#eef1f4}.cost-entry-prologue,.cost-entry-epilogue{background:#f3f5f7}
+.cost-capture-boundary-residual{background-color:#fff2d6;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M-2 8L8-2M2 10L10 2' stroke='%23b26a00' stroke-width='1'/%3E%3C/svg%3E")}
+.trace-cost{background:#f4b7ad}.lane-production{background:#fbfcfd}.lane-separator{border-top:2px solid var(--line-strong)}
+.overlay-stack{display:flex;min-height:28px;margin:2px 0 10px;border:1px solid var(--line);border-radius:5px;overflow:hidden;background:var(--soft)}.overlay-part{min-width:3px;border:0;border-right:1px solid rgba(255,255,255,.8);background:#f4b7ad;cursor:pointer}.overlay-part:nth-child(even){background:#e99387}.overlay-part:hover,.overlay-part.selected{outline:2px solid #17212b;outline-offset:-2px;z-index:2}
+.cost-tables{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:10px;margin-top:10px}.cost-tables>*{min-width:0}.cost-tables .table-wrap{max-width:100%;max-height:310px}
 .detail{min-height:210px}.detail h3{font-size:13px;margin:0 0 10px}.kv{display:grid;grid-template-columns:110px 1fr;gap:5px 8px;font-size:11px}.kv dt{color:var(--muted)}.kv dd{margin:0;overflow-wrap:anywhere}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 table{width:100%;border-collapse:collapse;background:var(--panel);font-size:11px}th{position:sticky;top:0;background:#f6f8fa;color:#5a6675;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em}
 th,td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .interactive-row{cursor:pointer}.interactive-row:hover,.interactive-row:focus{background:var(--accent-soft);outline:none}.interactive-row:focus-visible{box-shadow:inset 3px 0 var(--accent)}
 .table-wrap{overflow:auto;max-height:calc(100vh - 180px);border:1px solid var(--line);border-radius:9px}.empty{padding:28px;text-align:center;color:var(--muted)}
-.diag{display:grid;grid-template-columns:74px 220px 70px 1fr;gap:8px;padding:8px;border-bottom:1px solid var(--line);font-size:11px}.diag:last-child{border:0}.severity-error{color:var(--bad)}.severity-warning{color:var(--warn)}
+.communication-table{min-width:1080px}
+.evidence-role{display:inline-flex;border:1px solid var(--line-strong);border-radius:999px;padding:2px 7px;background:var(--soft);color:var(--muted);font-size:10px;font-weight:700;white-space:nowrap}
+.diag{display:grid;grid-template-columns:74px 220px 70px minmax(0,1fr);gap:8px;padding:8px;border-bottom:1px solid var(--line);font-size:11px}.diag>*{min-width:0;overflow-wrap:anywhere}.diag:last-child{border:0}.severity-error{color:var(--bad)}.severity-warning{color:var(--warn)}
 .raw-tabs{display:flex;gap:5px;margin:12px 0 7px}.raw-tabs button{border:1px solid var(--line);border-radius:6px;background:#fff;padding:5px 8px;cursor:pointer}.raw-tabs button.active{background:var(--accent);border-color:var(--accent);color:#fff}
 pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;border-radius:8px;padding:12px;font:10px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
 .notice{border-left:3px solid var(--accent);background:var(--accent-soft);padding:8px 10px;color:#344054;font-size:11px;margin-bottom:9px}
 @supports(display:grid){.split>*:last-child{margin-left:0}.tile-card{margin:0}}
-@media(max-width:1050px){.sidebar{flex-basis:220px;width:220px}.kpis{grid-template-columns:repeat(2,1fr)}.split{grid-template-columns:1fr;flex-direction:column}.split>*:last-child{width:100%;margin:10px 0 0}}
-@media(max-width:720px){.shell{display:block}.sidebar{position:static;width:auto;height:auto}.tree{display:none}.main{padding:14px}.nav{grid-template-columns:repeat(2,1fr)}.kpis{grid-template-columns:1fr}.tile-grid{grid-template-columns:repeat(2,1fr)}.tile-card{flex-basis:calc(50% - 6px)}.topbar{display:block}.artifact-links{margin-top:10px}}
+@media(max-width:1050px){.sidebar{flex-basis:220px;width:220px}.kpis,.overview-kpis{grid-template-columns:repeat(2,1fr)}.split,.cost-tables{grid-template-columns:1fr;flex-direction:column}.split>*:last-child{width:100%;margin:10px 0 0}}
+@media(max-width:720px){.shell{display:block}.sidebar{position:static;width:auto;height:auto}.tree{display:none}.main{padding:14px}.nav{grid-template-columns:repeat(2,1fr)}.kpis{grid-template-columns:1fr}.tile-grid{grid-template-columns:repeat(2,1fr)}.tile-card{flex-basis:calc(50% - 6px)}.topbar{display:block}.artifact-links{margin-top:10px}.diag{grid-template-columns:64px minmax(0,1fr);gap:3px 8px}.diag>:nth-child(3){grid-column:1}.diag>:nth-child(4){grid-column:2}}
 </style>
 </head>
 <body>
@@ -1269,22 +2344,26 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
     <section id="view-overview" class="view active" data-view-panel="overview">
       <div class="section-head"><div><h2>Overview</h2><p>单次 primary production execution；不是多轮统计，也没有 winner/baseline。</p></div></div>
       <div id="statusLegend" class="legend"></div>
-      <div class="grid kpis">
-        <div class="card"><div class="metric-label">Primary duration</div><div id="primaryDuration" class="metric-value primary"></div><div id="primaryResolution" class="metric-note"></div></div>
-        <div class="card"><div class="metric-label">Measurement status</div><div id="measurementStatus" class="metric-value"></div><div class="metric-note">Host first-submit → all-rank trusted completion</div></div>
+      <div class="metric-note status-glossary"><b>Measured</b>：边界和值均由对应计时源直接取得；<b>Sampled</b>：采样 counter；<b>Bounded</b>：只知道活动发生在保守观测窗内，不代表整段持续 busy；<b>Unavailable / Incomplete / Invalid</b>：分别表示该局部证据缺失、采集未闭合或协议不合法。</div>
+      <div class="grid kpis overview-kpis">
+        <div class="card"><div class="metric-label">Device execution</div><div id="deviceDuration" class="metric-value primary"></div><div id="deviceDurationNote" class="metric-note"></div></div>
+        <div class="card"><div class="metric-label">Host submit path</div><div id="hostSubmitDuration" class="metric-value"></div><div id="hostSubmitNote" class="metric-note"></div></div>
+        <div class="card"><div class="metric-label">Host completion envelope</div><div id="hostEnvelopeDuration" class="metric-value"></div><div id="hostEnvelopeResolution" class="metric-note"></div></div>
+        <div class="card"><div class="metric-label">Measurement status</div><div id="measurementStatus" class="metric-value"></div><div class="metric-note">Uninstrumented primary · device event timing</div></div>
         <div class="card"><div class="metric-label">Output validation</div><div id="outputStatus" class="metric-value"></div><div id="outputNote" class="metric-note"></div></div>
         <div class="card"><div class="metric-label">Trace coverage</div><div id="traceCoverage" class="metric-value"></div><div id="traceNote" class="metric-note"></div></div>
       </div>
+      <div class="card" style="margin-bottom:10px"><div class="section-head"><div><h2>Timing breakdown</h2><p>Device、provider submit 与 host completion envelope 分开；不通过相减虚构 queue delay。</p></div></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Scope</th><th>Clock / source</th><th class="num">Duration</th><th class="num">Nanoseconds</th><th>Status</th><th>Interpretation</th></tr></thead><tbody id="timingRows"></tbody></table></div></div>
       <div class="split">
         <div class="card"><div class="section-head"><div><h2>Card 0 · Tile map</h2><p>点击 tile 进入本地 engine timeline。</p></div></div><div id="overviewTiles" class="tile-grid"></div></div>
         <div class="card"><div class="section-head"><div><h2>Measurement contract</h2></div></div><div id="methodList" class="method-list"></div></div>
       </div>
-      <div class="card" style="margin-top:10px"><div class="section-head"><div><h2>Engine summary</h2><p>跨 tile 求和是 derived activity volume，不是全卡 elapsed duration；Direct-DTE wait 单独列示。</p></div></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Engine</th><th>Metric</th><th class="num">Derived sum</th><th class="num">Tiles</th><th class="num">Windows</th><th>Status</th></tr></thead><tbody id="overviewEngineRows"></tbody></table></div></div>
+      <div class="card" style="margin-top:10px"><div class="section-head"><div><h2>Engine summary</h2><p>NCC 跨 tile 求和是 execution-time work volume (ns)，不是全卡 elapsed duration；Direct-DTE rdcycle wait 单独列示。</p></div></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Engine</th><th>Metric</th><th class="num">Derived sum</th><th class="num">Tiles</th><th class="num">Windows</th><th>Status</th></tr></thead><tbody id="overviewEngineRows"></tbody></table></div></div>
     </section>
 
     <section id="view-timeline" class="view" data-view-panel="timeline">
-      <div class="section-head"><div><h2>Trace Timeline</h2><p>六条 engine lane；横轴始终是所选 tile 的 trace entry span。</p></div></div>
-      <div class="notice">Tile-local clock domain。报告不推断跨 tile 的先后关系；NCC 矩形仅是 <b>Bounded observation window</b>，不是精确执行起止。</div>
+      <div class="section-head"><div><h2>Trace Timeline</h2><p>Trace-run Kcore ledger 与 engine evidence 分层；横轴是所选 tile 的 rdcycle entry span。</p></div></div>
+      <div class="notice">Trace-run Kcore ledger 对 entry span 做排他 interval union/subtraction；它仍包含嵌套的 trace instrumentation，因此不能直接相减得到 Primary 各项成本。In Primary 的 yes 表示同一语义阶段存在于 Primary，mixed 表示 production control 与无法定位的 Trace-only 工作混合，unknown 表示当前证据不足，no 表示纯插桩。Primary same-stream elapsed 包含设备侧控制、等待和真实 idle，但不含 Trace-only instrumentation。Trace-run cost overlay 只在独立 aggregate bar 中显示，绝不伪造时间位置或与 ledger 相加；NCC engine ns 是异步 work volume。Engine lane 的空背景只表示当前没有 observation window，不等于 engine idle，也不用于补算 Primary。</div>
       <div class="toolbar">
         <label>Tile <select id="timelineTile"></select></label>
         <span id="engineFilters"></span>
@@ -1296,25 +2375,29 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
         <div class="timeline-shell"><div id="timelineCanvas" class="timeline-canvas"><div id="timelineRuler"></div><div id="timelineLanes"></div></div></div>
         <aside id="eventDetail" class="card detail" aria-live="polite"></aside>
       </div>
+      <div class="cost-tables">
+        <div class="card"><div class="section-head"><div><h2>Trace-run Kcore ledger</h2><p>排他分区，合计必须等于 trace entry span；不是 Primary 的可减成本表。</p></div></div><div class="table-wrap"><table><thead><tr><th>Cost / reason</th><th class="num">Cycles</th><th class="num">Share</th><th>In Primary</th><th>Representativeness</th><th>Optimization entry</th></tr></thead><tbody id="semanticCostRows"></tbody></table></div></div>
+        <div class="card"><div class="section-head"><div><h2>Trace-run cost overlay</h2><p>已测到的互斥成本类别；与 ledger 嵌套且不可相加，也不伪造它们在 entry 内的精确位置。</p></div></div><div class="metric-note">Inside entry · aggregate / not positioned</div><div id="traceOverheadBar" class="overlay-stack" aria-label="Inside-entry aggregate Trace-run cost overlay breakdown"></div><div class="metric-note">Outside entry · setup / teardown</div><div id="traceOutsideBar" class="overlay-stack" aria-label="Outside-entry Trace-run cost overlay breakdown"></div><div class="table-wrap"><table><thead><tr><th>Cost component</th><th class="num">Cycles</th><th class="num">Entry share</th><th>Location</th><th>In Primary</th></tr></thead><tbody id="traceCostRows"></tbody></table></div></div>
+      </div>
     </section>
 
     <section id="view-engines" class="view" data-view-panel="engines">
-      <div class="section-head"><div><h2>Tile / Engine</h2><p>Aggregate PMU busy 是 Measured；activity window 只作 Bounded 证据。</p></div></div>
+      <div class="section-head"><div><h2>Tile / Engine</h2><p>NCC aggregate execution time (ns) 是 Measured；activity window 只作 Kcore rdcycle Bounded 证据。</p></div></div>
       <div class="toolbar"><label>Tile <select id="engineTile"></select></label><span id="engineTileMeta"></span></div>
-      <div class="table-wrap"><table><thead><tr><th>Engine</th><th>Metric</th><th class="num">Cycles / raw</th><th class="num">Windows</th><th>Status</th><th>Interpretation</th></tr></thead><tbody id="engineRows"></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Engine</th><th>Metric</th><th class="num">ns / CPU cycles / raw</th><th class="num">Windows</th><th>Status</th><th>Interpretation</th></tr></thead><tbody id="engineRows"></tbody></table></div>
     </section>
 
     <section id="view-sites" class="view" data-view-panel="sites">
       <div class="section-head"><div><h2>Program / Sites</h2><p>从 trace event 下钻到 compiler-published correlation identity。</p></div></div>
       <div class="toolbar"><label>Search <input id="siteSearch" type="search" placeholder="symbol, correlation, position"></label><label>Engine <select id="siteEngine"><option value="">All engines</option></select></label><span id="siteCount" class="spacer"></span></div>
-      <div class="table-wrap"><table><thead><tr><th>Tile</th><th>Site</th><th>Engine</th><th>Correlation</th><th>Target call</th><th>Position</th><th class="num">Events</th><th>Status</th></tr></thead><tbody id="siteRows"></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Tile</th><th>Site</th><th>Kind</th><th>Engine</th><th>Correlation</th><th>Target call</th><th>Position</th><th class="num">Instances</th><th>Site capture</th><th class="num">Activity events</th><th>Engine / phase evidence</th></tr></thead><tbody id="siteRows"></tbody></table></div>
     </section>
 
     <section id="view-communication" class="view" data-view-panel="communication">
-      <div class="section-head"><div><h2>Communication / Direct-DTE</h2><p>wait/completion duration 与未校准 raw PMU activity 分开显示。</p></div></div>
-      <div class="notice">每一行只属于自身 tile-local clock domain；不同 tile 的位置和 duration 不组成全局通信序列。</div>
+      <div class="section-head"><div><h2>Communication / Direct-DTE</h2><p>aggregate wait、peer-ready、setup/issue、completion wait、cleanup 与未校准 raw PMU activity 分开显示。</p></div></div>
+      <div class="notice">每一行只属于自身 tile-local clock domain；不同 tile 的位置和 duration 不组成全局通信序列。Aggregate wait 是不与 leaf phase 相加的容器；raw PMU 只属于 aggregate row。</div>
       <div id="communicationSummary" class="grid kpis"></div>
-      <div class="table-wrap"><table><thead><tr><th>Tile</th><th>Role</th><th>Site / symbol</th><th class="num">Wait cycles</th><th>Wait status</th><th class="num">Raw PMU</th><th>Raw status</th></tr></thead><tbody id="communicationRows"></tbody></table></div>
+      <div class="table-wrap"><table class="communication-table"><thead><tr><th>Tile</th><th>Role</th><th>Phase / kind</th><th>Evidence role</th><th>Site / symbol</th><th class="num">Operation CPU cycles</th><th>Duration status</th><th class="num">Raw PMU</th><th>Raw status</th></tr></thead><tbody id="communicationRows"></tbody></table></div>
     </section>
 
     <section id="view-diagnostics" class="view" data-view-panel="diagnostics">
@@ -1334,15 +2417,28 @@ const analysis=__ANALYSIS__;
 const evidence=__EVIDENCE__;
 const finalArtifact=analysis.final_artifact;
 const ENGINES=["CT","NE","RDMA","WDMA","TDMA","DIRECT_DTE"];
-const STATES=["Measured","Sampled","Bounded","Unavailable","Incomplete","Invalid"];
-const state={view:"overview",tile:0,zoom:1,engines:new Set(ENGINES),selectedEvent:null,raw:"analysis"};
+const DTE_PHASES={
+  "direct-dte-wait":"Aggregate wait",
+  "direct-dte-peer-ready-wait":"Peer ready",
+  "direct-dte-setup-issue":"Setup / issue",
+  "direct-dte-completion-wait":"Completion wait",
+  "direct-dte-cleanup":"Cleanup"
+};
+const STATES=["Measured","Sampled","Bounded","Zero delta","Attribution ambiguous","Unavailable","Incomplete","Invalid"];
+const state={view:"overview",tile:0,zoom:1,engines:new Set(ENGINES),selectedEvent:null,selectedCost:null,raw:"analysis"};
 const q=(selector,root)=>(root||document).querySelector(selector);
 const qa=(selector,root)=>Array.prototype.slice.call((root||document).querySelectorAll(selector));
 const escapeHtml=value=>String(value==null?"—":value).replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
 const number=value=>value==null?"—":Number(value).toLocaleString();
-const milliseconds=value=>(Number(value)/1e6).toFixed(3)+" ms";
+const durationText=value=>{
+  const ns=Number(value);
+  if(ns<1000)return `${number(ns)} ns`;
+  if(ns<1e6)return `${(ns/1000).toFixed(3)} µs`;
+  return `${(ns/1e6).toFixed(3)} ms`;
+};
 const tileLabel=tile=>"T"+(Number(tile)<10?"0":"")+String(tile);
-const statusBadge=value=>`<span class="status status-${escapeHtml(value)}">${escapeHtml(value)}</span>`;
+const statusBadge=value=>`<span class="status status-${escapeHtml(String(value).replace(/[^A-Za-z0-9_-]/g,"-"))}">${escapeHtml(value)}</span>`;
+const siteRefText=site=>site==null?"—":`#${site.site_id} / instance ${site.instance_sequence} · ${site.site_kind} · ${site.target_call_symbol}`;
 const selectedTile=()=>finalArtifact.tiles.find(row=>row.tile===state.tile);
 const tileEvents=()=>finalArtifact.timeline_events.filter(row=>row.tile===state.tile);
 
@@ -1360,18 +2456,22 @@ function navigate(view){
 
 function selectTile(tile,view="timeline",engine=null){
   state.tile=Number(tile);
+  state.selectedEvent=null;
+  state.selectedCost=null;
   if(engine){state.engines=new Set([engine]);renderEngineFilters()}
   q("#timelineTile").value=String(state.tile);
   q("#engineTile").value=String(state.tile);
   navigate(view);
 }
 
-function focusEvent(tile,siteId,engine){
-  const event=finalArtifact.timeline_events.find(row=>row.tile===Number(tile)&&row.site_id===Number(siteId)&&row.engine===engine);
+function focusEvent(tile,siteId,engine,sequence=null){
+  const selectedSequence=sequence==null||sequence===""?null:Number(sequence);
+  const event=finalArtifact.timeline_events.find(row=>row.tile===Number(tile)&&row.site_id===Number(siteId)&&(engine==null||engine===""||engine==="null"||row.engine===engine)&&(selectedSequence==null||row.sequence===selectedSequence));
   if(!event)return;
   state.tile=Number(tile);
   state.selectedEvent=event;
-  state.engines.add(engine);
+  state.selectedCost=null;
+  if(ENGINES.includes(engine))state.engines.add(engine);
   renderEngineFilters();
   q("#timelineTile").value=String(state.tile);
   q("#engineTile").value=String(state.tile);
@@ -1380,7 +2480,7 @@ function focusEvent(tile,siteId,engine){
 
 function bindEventLinks(selector){
   qa(selector).forEach(node=>{
-    const activate=()=>focusEvent(node.dataset.eventTile,node.dataset.eventSite,node.dataset.eventEngine);
+    const activate=()=>focusEvent(node.dataset.eventTile,node.dataset.eventSite,node.dataset.eventEngine,node.dataset.eventSequence);
     node.addEventListener("click",activate);
     node.addEventListener("keydown",event=>{
       if(event.key==="Enter"||event.key===" "){event.preventDefault();activate()}
@@ -1396,28 +2496,38 @@ function buildResourceTree(){
 function renderOverview(){
   const duration=finalArtifact.duration;
   q("#statusLegend").innerHTML=STATES.map(statusBadge).join("");
-  q("#primaryDuration").textContent=milliseconds(duration.host_elapsed_ns);
-  q("#primaryResolution").textContent=`completion observation ≤ ${number(duration.completion_observation_resolution_ns)} ns · primary`;
+  q("#deviceDuration").textContent=durationText(duration.device_elapsed_ns);
+  q("#deviceDurationNote").textContent=duration.device_elapsed_quantized_zero?`${duration.device_timer_kind} · at/below effective timer resolution`:duration.device_timer_kind;
+  q("#hostSubmitDuration").textContent=durationText(duration.host_submit_ns);
+  q("#hostSubmitNote").textContent=duration.host_submit_quantized_zero?"provider path · at/below host clock resolution":"provider preparation + submit";
+  q("#hostEnvelopeDuration").textContent=durationText(duration.host_launch_to_completion_ns);
+  q("#hostEnvelopeResolution").textContent=duration.host_envelope_available?`non-submit envelope ${durationText(duration.host_non_submit_envelope_ns)} · completion observation ≤ ${number(duration.completion_observation_resolution_ns)} ns`:"host completion diagnostic unavailable / quantized zero";
   q("#measurementStatus").innerHTML=statusBadge(duration.status);
+  q("#timingRows").innerHTML=[
+    ["Device execution",duration.device_timer_kind,duration.device_elapsed_ns,duration.status,"Same-stream Primary kernel/model elapsed: Kcore control, NCC submit/drain, DTE lifecycle and device scheduling gaps; excludes host submit and Trace-only instrumentation."],
+    ["Host submit path","host steady_clock",duration.host_submit_ns,"Measured","Provider argument preparation, stream/event setup, and submit path; not pure TX API time."],
+    ["Host non-submit envelope","host steady_clock",duration.host_non_submit_envelope_ns,duration.host_envelope_available?"Measured":"Unavailable","Host wait, completion polling and phase control after submit. It overlaps device execution, is not pure overhead, and is never reduced by device elapsed."],
+    ["Host completion envelope","host steady_clock",duration.host_launch_to_completion_ns,duration.host_envelope_available?"Measured":"Unavailable",duration.host_envelope_available?`First submit through trusted completion; observation gap ≤ ${number(duration.completion_observation_resolution_ns)} ns.`:"Quantized/unavailable host diagnostic; does not invalidate device event elapsed."]
+  ].map(row=>`<tr><td><b>${escapeHtml(row[0])}</b></td><td class="mono">${escapeHtml(row[1])}</td><td class="num">${durationText(row[2])}</td><td class="num">${number(row[2])}</td><td>${statusBadge(row[3])}</td><td>${escapeHtml(row[4])}</td></tr>`).join("");
   q("#outputStatus").innerHTML=statusBadge(analysis.validity.output_equivalence?"Measured":"Invalid");
   q("#outputNote").textContent=`${finalArtifact.output.resource_count} resources · ${finalArtifact.output.correctness_status}`;
-  const completeTiles=finalArtifact.tiles.filter(tile=>tile.trace_status==="Bounded").length;
+  const completeTiles=finalArtifact.tiles.filter(tile=>tile.trace_status==="Measured").length;
   q("#traceCoverage").textContent=`${completeTiles} / ${finalArtifact.tiles.length}`;
   q("#traceNote").textContent="tile-local complete trace spans";
-  q("#overviewTiles").innerHTML=[...finalArtifact.tiles].sort((left,right)=>left.y-right.y||left.x-right.x).map(tile=>`<button class="tile-card" data-overview-tile="${tile.tile}" type="button"><b>${tileLabel(tile.tile)} ${statusBadge(tile.trace_status)}</b><small>${number(tile.trace_entry_cycles)} cycles · (${tile.x},${tile.y})</small></button>`).join("");
+  q("#overviewTiles").innerHTML=[...finalArtifact.tiles].sort((left,right)=>left.y-right.y||left.x-right.x).map(tile=>`<button class="tile-card" data-overview-tile="${tile.tile}" type="button"><b>${tileLabel(tile.tile)} ${statusBadge(tile.trace_status)}</b><small>${number(tile.trace_entry_cpu_cycles)} Kcore CPU cycles · (${tile.x},${tile.y})</small></button>`).join("");
   qa("[data-overview-tile]").forEach(node=>node.addEventListener("click",()=>selectTile(node.dataset.overviewTile)));
-  const methodLabels={primary_duration:"Primary duration",timeline_axis:"Timeline axis",timeline_scope:"Clock/order",ncc_engine_time:"NCC busy",ncc_activity_window:"NCC window",direct_dte_time:"Direct-DTE wait",direct_dte_raw_pmu:"Direct-DTE raw"};
+  const methodLabels={device_execution_time:"Device execution",host_submit_time:"Host submit path",host_envelope_time:"Host envelope",host_envelope_ledger:"Host envelope ledger",queue_delay:"Queue delay",timeline_axis:"Timeline axis",timeline_scope:"Clock/order",semantic_partition:"Semantic partition",trace_overhead_overlay:"Trace-run cost overlay",ncc_engine_time:"NCC execution",statistics_window:"Statistics window",ncc_activity_window:"NCC window",direct_dte_time:"Direct-DTE wait",direct_dte_raw_pmu:"Direct-DTE raw"};
   q("#methodList").innerHTML=Object.keys(analysis.method).map(key=>`<div class="method-row"><b>${escapeHtml(methodLabels[key]||key)}</b><span>${escapeHtml(analysis.method[key])}</span></div>`).join("");
   q("#overviewEngineRows").innerHTML=ENGINES.map(engine=>{
     const rows=finalArtifact.tiles.map(tile=>tile.engines.find(item=>item.engine===engine));
     const direct=engine==="DIRECT_DTE";
-    const values=rows.map(row=>direct?row.wait_window_cycles:row.busy_cycles);
+    const values=rows.map(row=>direct?row.wait_window_cpu_cycles:row.engine_execution_time_ns);
     const available=values.filter(value=>value!=null);
     const derived=available.reduce((sum,value)=>sum+Number(value),0);
     const windows=rows.reduce((sum,row)=>sum+Number(row.activity_window_count||0),0);
-    const states=rows.map(row=>direct?row.wait_window_status:row.busy_cycles_status);
+    const states=rows.map(row=>direct?row.wait_window_status:row.engine_execution_time_status);
     const aggregateStatus=states.every(value=>value==="Measured")?"Measured":states.some(value=>value==="Invalid")?"Invalid":states.some(value=>value==="Incomplete")?"Incomplete":"Unavailable";
-    return `<tr><td><b>${engine}</b></td><td>${direct?"Tile-local wait cycles":"Aggregate PMU busy cycles"}</td><td class="num">${available.length?number(derived):"—"}</td><td class="num">${available.length} / ${rows.length}</td><td class="num">${windows}</td><td>${statusBadge(aggregateStatus)}</td></tr>`;
+    return `<tr><td><b>${engine}</b></td><td>${direct?"Tile-local wait (Kcore CPU cycles)":"Engine execution time (ns)"}</td><td class="num">${available.length?number(derived):"—"}</td><td class="num">${available.length} / ${rows.length}</td><td class="num">${windows}</td><td>${statusBadge(aggregateStatus)}</td></tr>`;
   }).join("");
 }
 
@@ -1438,7 +2548,7 @@ function renderEngineFilters(){
 
 function renderRuler(axis){
   const ticks=Array.from({length:6},(_,index)=>({fraction:index/5,value:axis==null?null:Math.round(axis*index/5)}));
-  q("#timelineRuler").innerHTML=`<div class="ruler"><span class="metric-note">local cycles</span><div class="ruler-track">${ticks.map(tick=>`<i class="tick" style="left:${tick.fraction*100}%"><span>${number(tick.value)}</span></i>`).join("")}</div></div>`;
+  q("#timelineRuler").innerHTML=`<div class="ruler"><span class="metric-note">Kcore rdcycle</span><div class="ruler-track">${ticks.map(tick=>`<i class="tick" style="left:${tick.fraction*100}%"><span>${number(tick.value)}</span></i>`).join("")}</div></div>`;
 }
 
 function renderTimeline(){
@@ -1446,44 +2556,83 @@ function renderTimeline(){
   if(!tile)return;
   q("#timelineTile").value=String(state.tile);
   q("#timelineCanvas").style.minWidth=`${Math.max(100,state.zoom*100)}%`;
-  renderRuler(tile.trace_entry_cycles);
+  renderRuler(tile.trace_entry_cpu_cycles);
   const events=tileEvents();
-  q("#timelineLanes").innerHTML=ENGINES.map(engine=>{
+  const gridlines=[20,40,60,80].map(position=>`<i class="lane-gridline" style="left:${position}%"></i>`).join("");
+  const semanticMarks=tile.semantic_timeline_segments.map((segment,index)=>`<button class="cost-segment cost-${escapeHtml(segment.category)}${state.selectedCost&&state.selectedCost.scope==="semantic"&&state.selectedCost.index===index?" selected":""}" data-cost-index="${index}" style="left:${segment.plot_begin_fraction*100}%;width:${Math.max(.15,(segment.plot_end_fraction-segment.plot_begin_fraction)*100)}%" title="${escapeHtml(segment.category)} · ${escapeHtml(segment.reason)} · ${number(segment.cycles)} cycles" aria-label="${escapeHtml(segment.category)} · ${escapeHtml(segment.reason)} · ${number(segment.cycles)} cycles" type="button"></button>`).join("");
+  const traceRows=tile.trace_overhead_overlay.rows;
+  const traceMarks=(location)=>traceRows.map((row,index)=>({row,index})).filter(item=>location==="outside-entry"?item.row.location_granularity==="before-entry"||item.row.location_granularity==="after-entry":item.row.location_granularity===location).map(item=>`<button class="overlay-part${state.selectedCost&&state.selectedCost.scope==="trace"&&state.selectedCost.index===item.index?" selected":""}" data-trace-cost-index="${item.index}" style="flex:${Math.max(1,item.row.cycles)} 1 0" title="${escapeHtml(item.row.reason)} · ${number(item.row.cycles)} cycles · aggregate-only / non-additive" aria-label="Trace-run cost overlay · ${escapeHtml(item.row.reason)} · ${number(item.row.cycles)} cycles" type="button"></button>`).join("");
+  const semanticLane=`<div class="lane lane-production" data-lane-engine="Trace-run Kcore ledger"><div class="lane-label"><b>Trace-run Kcore ledger</b><span>${number(tile.semantic_partition.exclusive_cycles)} cyc</span></div><div class="lane-track">${gridlines}${semanticMarks}</div></div>`;
+  const engineLanes=ENGINES.map(engine=>{
     const visible=state.engines.has(engine);
-    const engineEvents=events.filter(event=>event.engine===engine);
-    const marks=visible?engineEvents.map(event=>`<button class="event event-${engine}${state.selectedEvent&&state.selectedEvent.tile===event.tile&&state.selectedEvent.sequence===event.sequence&&state.selectedEvent.site_id===event.site_id?" selected":""}" data-event-sequence="${event.sequence}" data-event-site="${event.site_id}" style="left:${event.plot_begin_fraction*100}%;width:${Math.max(.2,(event.plot_end_fraction-event.plot_begin_fraction)*100)}%" title="${escapeHtml(engine)} · ${escapeHtml(event.duration_status)} · ${number(event.activity_window_cycles)} cycles" type="button"></button>`).join(""):"";
-    const gridlines=[20,40,60,80].map(position=>`<i class="lane-gridline" style="left:${position}%"></i>`).join("");
+    const engineEvents=events.filter(event=>event.engine_lane_visible&&event.engine===engine);
+    const marks=visible?engineEvents.map(event=>`<button class="event event-${engine}${event.marker?" marker":""}${event.attribution_ambiguous?" ambiguous":""}${event.zero_delta_marker?" zero":""}${state.selectedEvent&&state.selectedEvent.tile===event.tile&&state.selectedEvent.sequence===event.sequence&&state.selectedEvent.site_id===event.site_id?" selected":""}" data-event-sequence="${event.sequence}" data-event-site="${event.site_id}" style="left:${event.plot_begin_fraction*100}%;width:${event.marker?".2":Math.max(.2,(event.plot_end_fraction-event.plot_begin_fraction)*100)}%" title="${escapeHtml(engine)} · ${escapeHtml(event.duration_status)} · ${number(event.activity_window_cpu_cycles)} Kcore CPU cycles" aria-label="${escapeHtml(engine)} · ${escapeHtml(event.kind)} · ${escapeHtml(event.duration_status)}" type="button"></button>`).join(""):"";
     return `<div class="lane" data-lane-engine="${engine}"><div class="lane-label"><b>${engine}</b><span>${engineEvents.length}</span></div><div class="lane-track">${gridlines}${marks}</div></div>`;
   }).join("");
+  q("#timelineLanes").innerHTML=semanticLane+`<div class="lane-separator"></div>`+engineLanes;
+  q("#traceOverheadBar").innerHTML=traceMarks("inside-entry-unpositioned");
+  q("#traceOutsideBar").innerHTML=traceMarks("outside-entry");
+  qa("[data-cost-index]").forEach(node=>node.addEventListener("click",()=>{
+    state.selectedEvent=null;
+    state.selectedCost={scope:"semantic",index:Number(node.dataset.costIndex)};
+    renderTimeline();
+  }));
+  qa("[data-trace-cost-index]").forEach(node=>node.addEventListener("click",()=>{
+    state.selectedEvent=null;
+    state.selectedCost={scope:"trace",index:Number(node.dataset.traceCostIndex)};
+    renderTimeline();
+  }));
   qa("[data-event-sequence]").forEach(node=>node.addEventListener("click",()=>{
     const event=events.find(row=>row.sequence===Number(node.dataset.eventSequence)&&row.site_id===Number(node.dataset.eventSite));
     state.selectedEvent=event||null;
+    state.selectedCost=null;
     renderEventDetail();
     qa(".event").forEach(mark=>mark.classList.toggle("selected",mark===node));
   }));
-  if(!state.selectedEvent||state.selectedEvent.tile!==state.tile)state.selectedEvent=events[0]||null;
-  renderEventDetail();
+  if(state.selectedCost)renderCostDetail();
+  else{
+    if(!state.selectedEvent||state.selectedEvent.tile!==state.tile)state.selectedEvent=events.find(event=>event.engine_lane_visible)||events[0]||null;
+    renderEventDetail();
+  }
+  q("#semanticCostRows").innerHTML=tile.semantic_partition.rows.map(row=>`<tr><td><b>${escapeHtml(row.category)}</b>${row.reason?`<br><span class="mono">${escapeHtml(row.reason)}</span>`:""}${row.event_kind?`<br><span class="mono">${escapeHtml(row.event_kind)}</span>`:""}</td><td class="num">${number(row.cycles)}</td><td class="num">${(row.share_of_trace_entry*100).toFixed(1)}%</td><td>${escapeHtml(row.counts_in_primary_device_elapsed)}</td><td>${escapeHtml(row.magnitude_relation)}</td><td>${escapeHtml(row.optimization_entry)}</td></tr>`).join("");
+  q("#traceCostRows").innerHTML=tile.trace_overhead_overlay.rows.map(row=>`<tr><td><b>${escapeHtml(row.reason)}</b></td><td class="num">${number(row.cycles)}</td><td class="num">${row.share_of_trace_entry==null?"axis 外":(row.share_of_trace_entry*100).toFixed(1)+"%"}</td><td>${escapeHtml(row.location_granularity)}</td><td>${escapeHtml(row.counts_in_primary_device_elapsed)}</td></tr>`).join("");
+}
+
+function renderCostDetail(){
+  const tile=selectedTile();
+  const selection=state.selectedCost;
+  if(!tile||!selection)return;
+  const row=selection.scope==="semantic"?tile.semantic_timeline_segments[selection.index]:tile.trace_overhead_overlay.rows[selection.index];
+  if(!row)return;
+  const semantic=selection.scope==="semantic";
+  const share=row.share_of_trace_entry==null?"axis 外 / not applicable":(row.share_of_trace_entry*100).toFixed(1)+"%";
+  const sourceContext=semantic?`<dt>Containing site</dt><dd>${escapeHtml(siteRefText(row.containing_site))}</dd><dt>Previous site</dt><dd>${escapeHtml(siteRefText(row.previous_site))}</dd><dt>Next site</dt><dd>${escapeHtml(siteRefText(row.next_site))}</dd><dt>Source event</dt><dd>${number(row.source_event_sequence)}</dd>`:"";
+  q("#eventDetail").innerHTML=`<h3>${semantic?"Trace-run Kcore ledger":"Trace-run cost overlay"}</h3><dl class="kv"><dt>Cost</dt><dd><b>${escapeHtml(semantic?row.category:"Trace-run cost overlay")}</b></dd><dt>Reason</dt><dd class="mono">${escapeHtml(row.reason)}</dd><dt>Cycles</dt><dd>${number(row.cycles)} Kcore CPU cycles</dd><dt>Entry share</dt><dd>${share}</dd><dt>Counts in Primary</dt><dd>${escapeHtml(row.counts_in_primary_device_elapsed)}</dd><dt>Representativeness</dt><dd>${escapeHtml(row.magnitude_relation)}</dd><dt>Location</dt><dd>${escapeHtml(row.location_granularity||(number(row.begin_cycle)+" → "+number(row.end_cycle)))}</dd>${sourceContext}<dt>Optimization entry</dt><dd>${escapeHtml(row.optimization_entry)}</dd>${semantic?"<dt>Accounting</dt><dd>Exclusive trace-run partition; includes nested instrumentation and is not directly subtractable from Primary.</dd>":`<dt>Accounting</dt><dd>Non-additive aggregate overlay; never sum with semantic partition.</dd>`}</dl>`;
 }
 
 function renderEventDetail(){
   const event=state.selectedEvent;
   if(!event){q("#eventDetail").innerHTML=`<h3>Event details</h3><div class="empty">No usable event on this tile.</div>`;return}
-  const counterLabel=event.engine==="DIRECT_DTE"?"Raw DTE PMU":"Observed counter delta";
-  const counterValue=event.engine==="DIRECT_DTE"?event.direct_dte_raw_pmu_activity:event.ncc_busy_cycles;
-  q("#eventDetail").innerHTML=`<h3>${escapeHtml(tileLabel(event.tile)+" · "+event.engine)} ${statusBadge(event.duration_status)}</h3><dl class="kv"><dt>Local interval</dt><dd class="mono">${number(event.trace_entry_offset_begin)} → ${number(event.trace_entry_offset_end)} cycles</dd><dt>Window</dt><dd>${number(event.activity_window_cycles)} cycles · ${statusBadge(event.duration_status)}</dd><dt>${counterLabel}</dt><dd>${number(counterValue)} · ${statusBadge(event.counter_status)}</dd><dt>Site</dt><dd class="mono">${event.site_id}:${event.sub_index}</dd><dt>Correlation</dt><dd>${escapeHtml(event.correlation_key)}</dd><dt>Target call</dt><dd class="mono">#${number(event.target_call_ordinal)} ${escapeHtml(event.target_call_symbol)}</dd><dt>Position</dt><dd class="mono">${escapeHtml(event.position)}</dd><dt>DTE role</dt><dd>${escapeHtml(event.dte_role)}</dd><dt>Scope</dt><dd>tile-local only</dd></dl>`;
+  const direct=event.engine==="DIRECT_DTE";
+  const counterLabel=direct?"Raw DTE PMU":"Attributed engine work";
+  const counterValue=direct?event.direct_dte_raw_pmu_activity:event.ncc_engine_execution_time_ns;
+  const counterUnit=direct?"":" ns";
+  const attribution=event.kind==="ncc-command"&&event.ncc_counter_valid===false?"Counter unavailable; exact submit span is retained without engine attribution":event.attribution_ambiguous?"Ambiguous; not presented as exact site duration":event.zero_delta_marker?"Zero-delta marker retained":"Usable under stated status";
+  q("#eventDetail").innerHTML=`<h3>${escapeHtml(tileLabel(event.tile)+" · "+(event.engine||"Kcore"))} ${statusBadge(event.duration_status)}</h3><dl class="kv"><dt>Event kind</dt><dd class="mono">${escapeHtml(event.kind)}</dd><dt>Display interval</dt><dd class="mono">${number(event.trace_entry_offset_begin_cpu_cycles)} → ${number(event.trace_entry_offset_end_cpu_cycles)} Kcore CPU cycles</dd><dt>Operation span</dt><dd>${number(event.operation_window_cpu_cycles)} Kcore CPU cycles · ${statusBadge(event.operation_window_status)}</dd><dt>Engine observation</dt><dd>${number(event.activity_window_cpu_cycles)} Kcore CPU cycles · ${statusBadge(event.activity_window_status)} · ${escapeHtml(event.observation_status)}</dd><dt>${counterLabel}</dt><dd>${number(counterValue)}${counterUnit} · ${statusBadge(event.counter_status)}</dd><dt>Attribution</dt><dd>${escapeHtml(attribution)}</dd><dt>Site</dt><dd class="mono">${event.site_id}:${event.sub_index} · instance ${number(event.site_instance_sequence)} · ${escapeHtml(event.site_kind)}</dd><dt>Correlation</dt><dd>${escapeHtml(event.correlation_key)}</dd><dt>Target call</dt><dd class="mono">#${number(event.target_call_ordinal)} ${escapeHtml(event.target_call_symbol)}</dd><dt>Position</dt><dd class="mono">${escapeHtml(event.position)}</dd><dt>DTE role</dt><dd>${escapeHtml(event.dte_role)}</dd><dt>Scope</dt><dd>tile-local only</dd></dl>`;
 }
 
 function renderEngines(){
   state.tile=Number(q("#engineTile").value||state.tile);
   const tile=selectedTile();
   q("#engineTile").value=String(state.tile);
-  q("#engineTileMeta").innerHTML=`${statusBadge(tile.trace_status)} · trace ${number(tile.trace_entry_cycles)} cycles · clock ${statusBadge(tile.clock_status)}`;
-  q("#engineRows").innerHTML=tile.engines.map(engine=>{
+  q("#engineTileMeta").innerHTML=`${statusBadge(tile.trace_status)} · trace ${number(tile.trace_entry_cpu_cycles)} Kcore CPU cycles · clock ${statusBadge(tile.clock_status)}`;
+  const statisticsRow=`<tr><td><b>STATISTICS_WINDOW</b></td><td>Aggregate PMU window (raw ticks)</td><td class="num">${number(tile.statistics_window_raw_ticks)}</td><td class="num">—</td><td>${statusBadge(tile.statistics_window_status)}</td><td>Auxiliary raw PMU tick delta; not the rdcycle timeline axis and not elapsed time.</td></tr>`;
+  q("#engineRows").innerHTML=statisticsRow+tile.engines.map(engine=>{
     if(engine.engine==="DIRECT_DTE")return[
-      `<tr><td><b>DIRECT_DTE</b></td><td>Wait / completion</td><td class="num">${number(engine.wait_window_cycles)}</td><td class="num">${engine.wait_window_count}</td><td>${statusBadge(engine.wait_window_status)}</td><td>Measured wait interval; not raw PMU.</td></tr>`,
+      `<tr><td><b>DIRECT_DTE</b></td><td>Wait / completion (Kcore CPU cycles)</td><td class="num">${number(engine.wait_window_cpu_cycles)}</td><td class="num">${engine.wait_window_count}</td><td>${statusBadge(engine.wait_window_status)}</td><td>Measured tile-local rdcycle interval; frequency conversion unavailable.</td></tr>`,
       `<tr><td></td><td>Raw PMU activity</td><td class="num">${number(engine.raw_pmu_activity)}</td><td class="num">${engine.activity_window_count}</td><td>${statusBadge(engine.raw_pmu_activity_status)}</td><td>Sampled and uncalibrated; never elapsed time.</td></tr>`
     ].join("");
-    return `<tr><td><b>${engine.engine}</b></td><td>Aggregate hardware busy</td><td class="num">${number(engine.busy_cycles)}</td><td class="num">${engine.activity_window_count}</td><td>${statusBadge(engine.busy_cycles_status)}</td><td>Measured PMU busy cycles. Activity windows are ${escapeHtml(engine.activity_window_status)} only.</td></tr>`;
+    return `<tr><td><b>${engine.engine}</b></td><td>Engine execution time (ns)</td><td class="num">${number(engine.engine_execution_time_ns)}</td><td class="num">${engine.activity_window_count}</td><td>${statusBadge(engine.engine_execution_time_status)}</td><td>Vendor PMU execution-time delta in ns. Activity windows are ${escapeHtml(engine.activity_window_status)} Kcore rdcycle bounds only.</td></tr>`;
   }).join("");
 }
 
@@ -1492,15 +2641,25 @@ function renderSites(){
   const engine=q("#siteEngine").value;
   const rows=finalArtifact.sites.filter(site=>(!engine||site.engine===engine)&&(!query||[site.correlation_key,site.target_call_symbol,site.position,site.site_id,site.tile].some(value=>String(value==null?"":value).toLowerCase().indexOf(query)!==-1)));
   q("#siteCount").textContent=`${rows.length} / ${finalArtifact.sites.length} sites`;
-  q("#siteRows").innerHTML=rows.length?rows.map(site=>`<tr${site.event_count?` class="interactive-row" tabindex="0" title="Open correlated timeline event" data-event-tile="${site.tile}" data-event-site="${site.site_id}" data-event-engine="${site.engine}"`:""}><td>${tileLabel(site.tile)}</td><td class="mono">${site.site_id}</td><td>${site.engine}</td><td>${escapeHtml(site.correlation_key)}</td><td class="mono">#${site.target_call_ordinal} ${escapeHtml(site.target_call_symbol)}</td><td class="mono">${escapeHtml(site.position)}</td><td class="num">${site.event_count}</td><td>${statusBadge(site.observation_status)}</td></tr>`).join(""):`<tr><td colspan="8" class="empty">No matching sites.</td></tr>`;
+  q("#siteRows").innerHTML=rows.length?rows.map(site=>`<tr${site.site_instance_count?` class="interactive-row" tabindex="0" title="Open correlated timeline event" data-event-tile="${site.tile}" data-event-site="${site.site_id}" data-event-engine="${site.engine}"`:""}><td>${tileLabel(site.tile)}</td><td class="mono">${site.site_id}</td><td class="mono">${escapeHtml(site.site_kind)}</td><td>${escapeHtml(site.engine)}</td><td>${escapeHtml(site.correlation_key)}</td><td class="mono">#${site.target_call_ordinal} ${escapeHtml(site.target_call_symbol)}</td><td class="mono">${escapeHtml(site.position)}</td><td class="num">${site.site_instance_count}</td><td>${statusBadge(site.site_capture_status)}</td><td class="num">${site.event_count}</td><td>${statusBadge(site.engine_observation_status)}</td></tr>`).join(""):`<tr><td colspan="11" class="empty">No matching sites.</td></tr>`;
   bindEventLinks("#siteRows [data-event-site]");
 }
 
 function renderCommunication(){
-  const events=finalArtifact.timeline_events.filter(event=>event.engine==="DIRECT_DTE");
+  const phaseOrder=Object.keys(DTE_PHASES);
+  const events=finalArtifact.timeline_events
+    .filter(event=>Object.prototype.hasOwnProperty.call(DTE_PHASES,event.kind))
+    .sort((left,right)=>left.tile-right.tile||left.site_id-right.site_id||phaseOrder.indexOf(left.kind)-phaseOrder.indexOf(right.kind)||left.sequence-right.sequence);
+  const leafEvents=events.filter(event=>event.kind!=="direct-dte-wait");
   const communication=finalArtifact.communication;
-  q("#communicationSummary").innerHTML=`<div class="card"><div class="metric-label">DTE waits</div><div class="metric-value">${communication.direct_dte_event_count}</div><div class="metric-note">Measured tile-local windows</div></div><div class="card"><div class="metric-label">Send / receive</div><div class="metric-value">${communication.send_count} / ${communication.receive_count}</div></div><div class="card"><div class="metric-label">Active tiles</div><div class="metric-value">${communication.tiles_with_activity.length}</div></div><div class="card"><div class="metric-label">Cross-tile order</div><div class="metric-value">${statusBadge("Unavailable")}</div><div class="metric-note">No inferred global timeline</div></div>`;
-  q("#communicationRows").innerHTML=events.length?events.map(event=>`<tr class="interactive-row" tabindex="0" title="Open correlated timeline event" data-event-tile="${event.tile}" data-event-site="${event.site_id}" data-event-engine="${event.engine}"><td>${tileLabel(event.tile)}</td><td>${escapeHtml(event.dte_role)}</td><td><span class="mono">${event.site_id}</span> · ${escapeHtml(event.target_call_symbol)}</td><td class="num">${number(event.direct_dte_wait_cycles)}</td><td>${statusBadge(event.duration_status)}</td><td class="num">${number(event.direct_dte_raw_pmu_activity)}</td><td>${statusBadge(event.counter_status)}</td></tr>`).join(""):`<tr><td colspan="7" class="empty">No Direct-DTE wait was observed.</td></tr>`;
+  q("#communicationSummary").innerHTML=`<div class="card"><div class="metric-label">DTE aggregates</div><div class="metric-value">${communication.direct_dte_event_count}</div><div class="metric-note">Non-additive wait containers · ${leafEvents.length} leaf phases</div></div><div class="card"><div class="metric-label">Send / receive</div><div class="metric-value">${communication.send_count} / ${communication.receive_count}</div></div><div class="card"><div class="metric-label">Active tiles</div><div class="metric-value">${communication.tiles_with_activity.length}</div></div><div class="card"><div class="metric-label">Cross-tile order</div><div class="metric-value">${statusBadge("Unavailable")}</div><div class="metric-note">No inferred global timeline</div></div>`;
+  q("#communicationRows").innerHTML=events.length?events.map(event=>{
+    const aggregate=event.kind==="direct-dte-wait";
+    const evidenceRole=aggregate?"Aggregate container · non-additive":"Leaf phase";
+    const rawValue=aggregate?number(event.direct_dte_raw_pmu_activity):"—";
+    const rawStatus=aggregate?statusBadge(event.counter_status):`<span class="evidence-role">Aggregate only</span>`;
+    return `<tr class="interactive-row" tabindex="0" title="Open exact correlated phase" data-event-tile="${event.tile}" data-event-site="${event.site_id}" data-event-engine="${event.engine}" data-event-sequence="${event.sequence}" data-event-kind="${escapeHtml(event.kind)}"><td>${tileLabel(event.tile)}</td><td>${escapeHtml(event.dte_role)}</td><td><b>${escapeHtml(DTE_PHASES[event.kind])}</b><br><span class="mono">${escapeHtml(event.kind)}</span></td><td><span class="evidence-role">${escapeHtml(evidenceRole)}</span></td><td><span class="mono">${event.site_id}</span> · ${escapeHtml(event.target_call_symbol)}</td><td class="num">${number(event.operation_window_cpu_cycles)}</td><td>${statusBadge(event.duration_status)}</td><td class="num">${rawValue}</td><td>${rawStatus}</td></tr>`;
+  }).join(""):`<tr><td colspan="9" class="empty">No Direct-DTE operation was observed.</td></tr>`;
   bindEventLinks("#communicationRows [data-event-site]");
 }
 
@@ -1512,7 +2671,7 @@ function renderDiagnostics(){
 }
 
 qa("[data-view]").forEach(node=>node.addEventListener("click",()=>navigate(node.dataset.view)));
-q("#timelineTile").addEventListener("change",event=>{state.tile=Number(event.target.value);state.selectedEvent=null;renderTimeline()});
+q("#timelineTile").addEventListener("change",event=>{state.tile=Number(event.target.value);state.selectedEvent=null;state.selectedCost=null;renderTimeline()});
 q("#engineTile").addEventListener("change",event=>{state.tile=Number(event.target.value);renderEngines()});
 q("#timelineZoom").addEventListener("input",event=>{state.zoom=Number(event.target.value);renderTimeline()});
 q("#timelineFit").addEventListener("click",()=>{state.zoom=1;q("#timelineZoom").value="1";renderTimeline()});

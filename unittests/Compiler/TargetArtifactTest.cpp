@@ -434,6 +434,20 @@ TEST(TargetArtifactTest, ClosedProfileEngineRegistryIncludesDirectDTEWait) {
                   return wafer::getTargetCallTSMEngine(descriptor).has_value();
                 }),
             105);
+  auto siteKindCount = [&](wafer::runtime::ProfileTargetSiteKind kind) {
+    return llvm::count_if(descriptors, [&](const auto &descriptor) {
+      return wafer::runtime::getProfileTargetSiteKind(descriptor) == kind;
+    });
+  };
+  EXPECT_EQ(siteKindCount(wafer::runtime::ProfileTargetSiteKind::NCCCommand),
+            104);
+  EXPECT_EQ(siteKindCount(wafer::runtime::ProfileTargetSiteKind::NCCCompletion),
+            1);
+  EXPECT_EQ(
+      siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEControl),
+      5);
+  EXPECT_EQ(siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEWait),
+            1);
   EXPECT_EQ(wafer::getTargetCallTSMEngine(
                 wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA)),
             wafer::TargetCallTSMEngine::RDMA);
@@ -457,7 +471,7 @@ TEST(TargetArtifactTest, ClosedProfileEngineRegistryIncludesDirectDTEWait) {
 }
 
 TEST(TargetArtifactTest,
-     TraceInstrumentationUsesTheSameDenseEngineActivitySiteCollector) {
+     CountAndTraceInstrumentationUseTheSameDenseTypedTargetSiteCollector) {
   llvm::LLVMContext context;
   llvm::Module module("profile-target", context);
   llvm::Type *voidType = llvm::Type::getVoidTy(context);
@@ -489,14 +503,24 @@ TEST(TargetArtifactTest,
         arguments.push_back(
             llvm::ConstantInt::get(type, arguments.size() + 1));
     }
+    llvm::Type *resultType =
+        descriptor.result == wafer::TargetCallResultType::I64 ? i64 : voidType;
     llvm::FunctionType *type =
-        llvm::FunctionType::get(voidType, types, /*isVarArg=*/false);
+        llvm::FunctionType::get(resultType, types, /*isVarArg=*/false);
     llvm::FunctionCallee callee =
         module.getOrInsertFunction(descriptor.symbol, type);
     builder.CreateCall(callee, arguments);
   };
   emitTargetCall(
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::LocalFence));
+  emitTargetCall(wafer::getTargetCallDescriptor(
+      wafer::TargetCallBuiltin::DirectDTEBegin));
+  emitTargetCall(wafer::getTargetCallDescriptor(
+      wafer::TargetCallBuiltin::DirectDTEBeginAfterPrepare));
+  emitTargetCall(wafer::getTargetCallDescriptor(
+      wafer::TargetCallBuiltin::DirectDTESendPrepare));
+  emitTargetCall(wafer::getTargetCallDescriptor(
+      wafer::TargetCallBuiltin::DirectDTERecvPrepare));
   emitTargetCall(
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::Bit2FP));
   emitTargetCall(
@@ -509,6 +533,8 @@ TEST(TargetArtifactTest,
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::WDMA));
   emitTargetCall(
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::GatherScatter));
+  emitTargetCall(wafer::getTargetCallDescriptor(
+      wafer::TargetCallBuiltin::DirectDTEFinish));
   builder.CreateRetVoid();
 
   llvm::Function *dead = llvm::Function::Create(
@@ -534,25 +560,69 @@ TEST(TargetArtifactTest,
   deadBuilder.CreateRetVoid();
 
   auto before =
-      wafer::compiler::detail::collectProfileTSMCallSites(module, "main");
+      wafer::compiler::detail::collectProfileTargetCallSites(module, "main");
   ASSERT_TRUE(static_cast<bool>(before)) << llvm::toString(before.takeError());
   std::unique_ptr<llvm::Module> productionModule = llvm::CloneModule(module);
-  ASSERT_EQ(before->size(), 6u);
+  ASSERT_EQ(before->size(), 12u);
   EXPECT_EQ((*before)[0].siteId, 0u);
-  EXPECT_EQ((*before)[0].engine, wafer::TargetCallTSMEngine::CT);
+  EXPECT_EQ((*before)[0].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::NCCCompletion);
+  EXPECT_FALSE((*before)[0].engine);
   EXPECT_EQ((*before)[1].siteId, 1u);
-  EXPECT_EQ((*before)[1].engine, wafer::TargetCallTSMEngine::RDMA);
+  EXPECT_EQ((*before)[1].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEControl);
+  EXPECT_FALSE((*before)[1].engine);
   EXPECT_EQ((*before)[2].siteId, 2u);
-  EXPECT_EQ((*before)[2].engine, wafer::TargetCallTSMEngine::DirectDTE);
+  EXPECT_EQ((*before)[2].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEControl);
+  EXPECT_FALSE((*before)[2].engine);
   EXPECT_EQ((*before)[3].siteId, 3u);
-  EXPECT_EQ((*before)[3].engine, wafer::TargetCallTSMEngine::NE);
+  EXPECT_EQ((*before)[3].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEControl);
+  EXPECT_FALSE((*before)[3].engine);
   EXPECT_EQ((*before)[4].siteId, 4u);
-  EXPECT_EQ((*before)[4].engine, wafer::TargetCallTSMEngine::WDMA);
-  EXPECT_EQ((*before)[5].siteId, 5u);
-  EXPECT_EQ((*before)[5].engine, wafer::TargetCallTSMEngine::TDMA);
+  EXPECT_EQ((*before)[4].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEControl);
+  EXPECT_FALSE((*before)[4].engine);
+  EXPECT_EQ((*before)[5].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::NCCCommand);
+  EXPECT_EQ((*before)[5].engine, wafer::TargetCallTSMEngine::CT);
+  EXPECT_EQ((*before)[6].engine, wafer::TargetCallTSMEngine::RDMA);
+  EXPECT_EQ((*before)[7].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEWait);
+  EXPECT_EQ((*before)[7].engine, wafer::TargetCallTSMEngine::DirectDTE);
+  EXPECT_EQ((*before)[8].engine, wafer::TargetCallTSMEngine::NE);
+  EXPECT_EQ((*before)[9].engine, wafer::TargetCallTSMEngine::WDMA);
+  EXPECT_EQ((*before)[10].engine, wafer::TargetCallTSMEngine::TDMA);
+  EXPECT_EQ((*before)[11].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEControl);
+  EXPECT_FALSE((*before)[11].engine);
   std::vector<std::string> correlationKeys;
   for (const auto &site : *before)
     correlationKeys.push_back(site.correlationKey);
+
+  std::unique_ptr<llvm::Module> countModule =
+      llvm::CloneModule(*productionModule);
+  if (llvm::Error error =
+          wafer::compiler::detail::instrumentProfileTargetModule(
+              *countModule, "main",
+              wafer::compiler::detail::ProfileCaptureKind::Count))
+    FAIL() << llvm::toString(std::move(error));
+  EXPECT_FALSE(static_cast<bool>(
+      wafer::compiler::detail::verifyProfileTargetModuleInstrumentation(
+          *countModule, "main",
+          wafer::compiler::detail::ProfileCaptureKind::Count)));
+  EXPECT_FALSE(static_cast<bool>(
+      wafer::compiler::detail::verifyProfileTargetCallSiteIdentity(
+          *productionModule, "main", *countModule, "main")));
+  llvm::Function *countSiteBegin =
+      countModule->getFunction("wafer_tx81_profile_site_begin");
+  llvm::Function *countSiteEnd =
+      countModule->getFunction("wafer_tx81_profile_site_end");
+  ASSERT_NE(countSiteBegin, nullptr);
+  ASSERT_NE(countSiteEnd, nullptr);
+  EXPECT_EQ(countSiteBegin->getNumUses(), before->size());
+  EXPECT_EQ(countSiteEnd->getNumUses(), before->size());
 
   if (llvm::Error error =
           wafer::compiler::detail::instrumentProfileTargetModule(
@@ -566,9 +636,9 @@ TEST(TargetArtifactTest,
       wafer::compiler::detail::verifyProfileTargetCallSiteIdentity(
           *productionModule, "main", module, "main")));
   auto after =
-      wafer::compiler::detail::collectProfileTSMCallSites(module, "main");
+      wafer::compiler::detail::collectProfileTargetCallSites(module, "main");
   ASSERT_TRUE(static_cast<bool>(after)) << llvm::toString(after.takeError());
-  ASSERT_EQ(after->size(), 6u);
+  ASSERT_EQ(after->size(), 12u);
   for (auto [index, site] : llvm::enumerate(*after)) {
     EXPECT_EQ(site.correlationKey, correlationKeys[index]);
     EXPECT_NE(site.instructionOrdinal, (*before)[index].instructionOrdinal);
@@ -632,7 +702,7 @@ TEST(TargetArtifactTest,
             std::string::npos);
   EXPECT_NE(text.find("call void @wafer_tx81_profile_site_begin(i32 0)"),
             std::string::npos);
-  EXPECT_NE(text.find("call void @wafer_tx81_profile_site_end(i32 5)"),
+  EXPECT_NE(text.find("call void @wafer_tx81_profile_site_end(i32 11)"),
             std::string::npos);
   EXPECT_NE(text.find("call void @wafer_tx81_profile_entry_end()"),
             std::string::npos);
@@ -648,7 +718,7 @@ TEST(TargetArtifactTest,
           module, "main", wafer::compiler::detail::ProfileCaptureKind::Trace);
   ASSERT_TRUE(static_cast<bool>(missingSiteError));
   EXPECT_NE(llvm::toString(std::move(missingSiteError))
-                .find("does not cover the exact engine activity call set"),
+                .find("does not cover the exact typed target-call site set"),
             std::string::npos);
 }
 

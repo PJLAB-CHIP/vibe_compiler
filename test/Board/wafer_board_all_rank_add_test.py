@@ -35,7 +35,7 @@ LOCAL_ELEMENTS = GLOBAL_ELEMENTS // RANK_COUNT
 ELEMENT_DTYPE = np.dtype("<f2")
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
 PROFILE_COMPANION_READY = (
-    "profile_companion: ready schema=3 ranks=16 variants=1 captures=2"
+    "profile_companion: ready schema=4 ranks=16 variants=1 captures=2"
 )
 PROFILE_CAMPAIGN_LAUNCH_COUNT = 3
 PROFILE_PRIMARY_EXECUTION_COUNT = 1
@@ -685,7 +685,7 @@ def verify_profile_report(
     html = members["index.html"].read_text()
     if (
         evidence.get("schema") != "wafer.profile.evidence"
-        or evidence.get("schema_version") != 5
+        or evidence.get("schema_version") != 7
         or evidence.get("run_id") != run_directory.name
     ):
         raise RuntimeError("profile evidence identity is invalid")
@@ -697,6 +697,21 @@ def verify_profile_report(
         or len(samples) != PROFILE_PRIMARY_EXECUTION_COUNT
         or samples[0].get("sample_id") != "primary"
         or samples[0].get("sample_index") != 0
+        or not isinstance(samples[0].get("device_elapsed_ns"), int)
+        or samples[0]["device_elapsed_ns"] < 0
+        or samples[0].get("device_timer_kind") != "tx-stream-events"
+        or not isinstance(samples[0].get("host_submit_ns"), int)
+        or samples[0]["host_submit_ns"] < 0
+        or not isinstance(
+            samples[0].get("host_launch_to_completion_ns"), int
+        )
+        or samples[0]["host_launch_to_completion_ns"] < 0
+        or samples[0]["host_submit_ns"]
+        > samples[0]["host_launch_to_completion_ns"]
+        or not isinstance(
+            samples[0].get("completion_observation_resolution_ns"), int
+        )
+        or samples[0]["completion_observation_resolution_ns"] < 0
         or trace.get("complete") is not True
         or not isinstance(trace_tiles, list)
         or len(trace_tiles) != RANK_COUNT
@@ -724,8 +739,24 @@ def verify_profile_report(
         not isinstance(duration, dict)
         or duration.get("sample_id") != "primary"
         or duration.get("sample_index") != 0
-        or not isinstance(duration.get("host_elapsed_ns"), int)
-        or duration["host_elapsed_ns"] <= 0
+        or not isinstance(duration.get("device_elapsed_ns"), int)
+        or duration["device_elapsed_ns"] < 0
+        or duration.get("device_timer_kind") != "tx-stream-events"
+        or duration["device_elapsed_ns"] != samples[0]["device_elapsed_ns"]
+        or not isinstance(duration.get("host_submit_ns"), int)
+        or duration["host_submit_ns"] < 0
+        or duration["host_submit_ns"] != samples[0]["host_submit_ns"]
+        or not isinstance(
+            duration.get("host_launch_to_completion_ns"), int
+        )
+        or duration["host_launch_to_completion_ns"] < 0
+        or duration["host_launch_to_completion_ns"]
+        != samples[0]["host_launch_to_completion_ns"]
+        or not isinstance(
+            duration.get("completion_observation_resolution_ns"), int
+        )
+        or duration["completion_observation_resolution_ns"]
+        != samples[0]["completion_observation_resolution_ns"]
         or not duration.get("qualified")
         or not isinstance(output, dict)
         or not output.get("production_execution_validated")
@@ -742,8 +773,8 @@ def verify_profile_report(
     for tile in tiles:
         if (
             not isinstance(tile, dict)
-            or tile.get("trace_entry_cycles") is None
-            or tile.get("trace_entry_cycles") < 0
+            or tile.get("trace_entry_cpu_cycles") is None
+            or tile.get("trace_entry_cpu_cycles") < 0
             or {
                 engine.get("engine")
                 for engine in tile.get("engines", [])
@@ -756,8 +787,8 @@ def verify_profile_report(
             )
         for engine in tile["engines"]:
             for key in (
-                "busy_cycles",
-                "wait_window_cycles",
+                "engine_execution_time_ns",
+                "wait_window_cpu_cycles",
                 "raw_pmu_activity",
             ):
                 value = engine.get(key)
@@ -771,22 +802,39 @@ def verify_profile_report(
             if engine["engine"] == "CT"
         )
         if (
-            not ct.get("busy_cycles_valid")
-            or ct.get("busy_cycles") is None
-            or ct["busy_cycles"] <= 0
+            not ct.get("engine_execution_time_valid")
+            or ct.get("engine_execution_time_ns") is None
+            or ct["engine_execution_time_ns"] <= 0
             or ct.get("activity_window_count", 0) <= 0
         ):
             raise RuntimeError(
                 "profile analysis did not capture real CT activity on every tile"
             )
-    if any(
-        event.get("activity_window_cycles", -1) < 0
-        or event.get("trace_entry_offset_begin", -1) < 0
-        or event.get("trace_entry_offset_end", -1) < 0
-        for event in final.get("timeline_events", [])
-        if isinstance(event, dict)
-    ):
-        raise RuntimeError("profile timeline contains a negative cycle value")
+    for event in final.get("timeline_events", []):
+        if not isinstance(event, dict):
+            continue
+        activity_window = event.get("activity_window_cpu_cycles")
+        if activity_window is not None and (
+            not isinstance(activity_window, int)
+            or isinstance(activity_window, bool)
+            or activity_window < 0
+        ):
+            raise RuntimeError(
+                "profile timeline contains an invalid activity-window cycle value"
+            )
+        for key in (
+            "trace_entry_offset_begin_cpu_cycles",
+            "trace_entry_offset_end_cpu_cycles",
+        ):
+            offset = event.get(key)
+            if (
+                not isinstance(offset, int)
+                or isinstance(offset, bool)
+                or offset < 0
+            ):
+                raise RuntimeError(
+                    f"profile timeline contains an invalid {key}"
+                )
     for legacy in ("Measurement invalid", "ABBA", "BAAB", "speedup"):
         if legacy in html:
             raise RuntimeError(f"profile HTML retains legacy content: {legacy}")
@@ -794,7 +842,7 @@ def verify_profile_report(
     expected_report = current / "index.html"
     if f"profile_report: {expected_report}" not in stdout:
         raise RuntimeError("wafer-run did not publish the stable profile report path")
-    return duration["host_elapsed_ns"], expected_report
+    return duration["device_elapsed_ns"], expected_report
 
 
 def main() -> int:
@@ -925,7 +973,7 @@ def main() -> int:
             entry_evidence,
             completion_evidence,
         )
-        duration, report = verify_profile_report(
+        device_duration, report = verify_profile_report(
             package, profile_result.stdout
         )
         print(
@@ -933,7 +981,7 @@ def main() -> int:
             f"launches={PROFILE_CAMPAIGN_LAUNCH_COUNT} "
             f"primary={PROFILE_PRIMARY_EXECUTION_COUNT}"
         )
-        print(f"board_profile_duration_ns: {duration}")
+        print(f"board_profile_device_duration_ns: {device_duration}")
         print(f"board_profile_report: {report}")
         print(profile_result.stdout, end="")
         return 0

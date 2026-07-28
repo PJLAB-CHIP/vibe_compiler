@@ -86,15 +86,19 @@ def _test_final_artifact(module: object) -> None:
     first = module.analyze_evidence(evidence)
     second = module.analyze_evidence(copy.deepcopy(evidence))
     assert first == second
-    assert first["schema_version"] == 3
+    assert first["schema_version"] == 5
+    assert first["record_abi"] == "wafer-tx81-profiler-record-v3"
 
     final = first["final_artifact"]
     duration = final["duration"]
     assert duration["sample_id"] == "primary"
     assert duration["sample_index"] == 0
-    assert duration["host_elapsed_ns"] == 1_018_000
+    assert duration["device_elapsed_ns"] == 8_400
+    assert duration["device_timer_kind"] == "tx-stream-events"
+    assert duration["host_submit_ns"] == 260_000
+    assert duration["host_launch_to_completion_ns"] == 1_018_000
     assert duration["qualified"]
-    assert duration["high_resolution"]
+    assert duration["host_completion_high_resolution"]
     assert duration["status"] == "Measured"
     assert "latency" not in final
     assert "samples_ns" not in json.dumps(first)
@@ -103,29 +107,73 @@ def _test_final_artifact(module: object) -> None:
     assert final["output"]["correctness_status"] == "expected-exact"
     assert len(final["tiles"]) == 16
     assert len(final["timeline_events"]) > 0
-    assert len(final["sites"]) == 16 * 6
+    assert len(final["sites"]) == 16 * 9
     assert final["communication"]["direct_dte_event_count"] == 16
     assert not final["communication"]["cross_tile_order_available"]
     assert {
         (tile["x"], tile["y"]) for tile in final["tiles"]
     } == {(x, y) for y in range(4) for x in range(4)}
     for tile in final["tiles"]:
-        assert tile["trace_entry_cycles"] >= 0
-        assert tile["timeline_axis"] == "trace-capture-entry-span"
+        assert tile["trace_entry_cpu_cycles"] >= 0
+        assert tile["timeline_axis"] == "kcore-rdcycle-entry-span"
         assert tile["timeline_scope"] == "tile-local"
-        assert tile["trace_status"] == "Bounded"
+        assert tile["trace_status"] == "Measured"
+        assert tile["statistics_window_raw_ticks"] == 820 + tile["tile"]
+        assert tile["statistics_window_valid"]
+        assert tile["statistics_window_status"] == "Measured"
+        semantic = tile["semantic_partition"]
+        assert semantic["exclusive_accounting_valid"]
+        assert semantic["exclusive_cycles"] == tile["trace_entry_cpu_cycles"]
+        assert sum(row["cycles"] for row in semantic["rows"]) == semantic[
+            "entry_cycles"
+        ]
+        assert {
+            "entry-prologue",
+            "entry-epilogue",
+            "between-site-gap",
+            "site-control",
+        }.issubset({row["category"] for row in semantic["rows"]})
+        assert all(
+            row["previous_site"] is not None
+            and row["next_site"] is not None
+            for row in semantic["rows"]
+            if row["category"] == "between-site-gap"
+        )
+        overlay = tile["trace_overhead_overlay"]
+        assert overlay["components_exclusive"]
+        assert overlay["non_additive_to_semantic_partition"]
+        assert overlay["coverage"] == "measured-categories-only"
+        assert len(overlay["rows"]) == 8
+        assert overlay["inside_entry_known_overhead_cycles"] == 57
+        assert overlay["outside_entry_overhead_cycles"] == 14
+        assert all(
+            row["share_of_trace_entry"] is None
+            for row in overlay["rows"]
+            if row["location_granularity"] == "outside-entry"
+        )
+        overlay_by_reason = {
+            row["reason"]: row for row in overlay["rows"]
+        }
+        assert all(
+            row["counts_in_primary_device_elapsed"] == "no"
+            and row["magnitude_relation"] == "trace-only"
+            for row in overlay_by_reason.values()
+        )
         assert {
             engine["engine"] for engine in tile["engines"]
         } == {"CT", "NE", "RDMA", "WDMA", "TDMA", "DIRECT_DTE"}
         for engine in tile["engines"]:
             if engine["engine"] == "DIRECT_DTE":
-                assert engine["wait_window_cycles"] >= 0
+                assert engine["wait_window_cpu_cycles"] >= 0
                 assert engine["raw_pmu_activity"] is None
                 assert engine["wait_window_status"] == "Measured"
                 assert engine["raw_pmu_activity_status"] == "Unavailable"
                 continue
-            assert engine["busy_cycles"] is None or engine["busy_cycles"] >= 0
-            assert engine["busy_cycles_status"] == "Measured"
+            assert (
+                engine["engine_execution_time_ns"] is None
+                or engine["engine_execution_time_ns"] >= 0
+            )
+            assert engine["engine_execution_time_status"] == "Measured"
             assert engine["activity_window_status"] == "Bounded"
     assert all(
         0.0 <= event["plot_begin_fraction"]
@@ -134,8 +182,8 @@ def _test_final_artifact(module: object) -> None:
         for event in final["timeline_events"]
     )
     assert all(
-        event["trace_entry_offset_end"]
-        <= final["tiles"][event["tile"]]["trace_entry_cycles"]
+        event["trace_entry_offset_end_cpu_cycles"]
+        <= final["tiles"][event["tile"]]["trace_entry_cpu_cycles"]
         for event in final["timeline_events"]
     )
     assert all(event["timeline_scope"] == "tile-local" for event in final["timeline_events"])
@@ -143,16 +191,63 @@ def _test_final_artifact(module: object) -> None:
         event for event in final["timeline_events"] if event["engine"] == "CT"
     )
     assert ncc_event["duration_status"] == "Bounded"
-    assert ncc_event["counter_status"] == "Sampled"
+    assert ncc_event["operation_window_status"] == "Measured"
+    assert ncc_event["activity_window_status"] == "Bounded"
+    assert ncc_event["counter_status"] == "Measured"
+    assert ncc_event["ncc_engine_execution_time_ns"] > 0
     assert ncc_event["correlation_key"] == "compute.ct"
     assert ncc_event["target_call_symbol"] == "wafer_tx81_tsm_ct_execute"
+    completion_event = next(
+        event
+        for event in final["timeline_events"]
+        if event["kind"] == "ncc-completion-wait"
+    )
+    assert completion_event["duration_status"] == "Measured"
+    assert completion_event["counter_status"] == "Unavailable"
     dte_event = next(
         event
         for event in final["timeline_events"]
-        if event["engine"] == "DIRECT_DTE"
+        if event["kind"] == "direct-dte-wait"
     )
     assert dte_event["duration_status"] == "Measured"
     assert dte_event["counter_status"] == "Unavailable"
+    dte_phase_events = [
+        event
+        for event in final["timeline_events"]
+        if event["tile"] == 0 and event["kind"].startswith("direct-dte-")
+    ]
+    assert {event["kind"] for event in dte_phase_events} == {
+        "direct-dte-wait",
+        "direct-dte-peer-ready-wait",
+        "direct-dte-setup-issue",
+        "direct-dte-completion-wait",
+        "direct-dte-cleanup",
+    }
+    assert all(
+        event["operation_window_cpu_cycles"] > 0
+        and event["duration_status"] == "Measured"
+        for event in dte_phase_events
+    )
+    assert all(
+        event["direct_dte_raw_pmu_activity"] is None
+        and event["counter_status"] == "Unavailable"
+        for event in dte_phase_events
+        if event["kind"] != "direct-dte-wait"
+    )
+    assert all(
+        site["observation_status"]
+        in {
+            "Measured",
+            "Sampled",
+            "Bounded",
+            "Zero delta",
+            "Attribution ambiguous",
+            "Unavailable",
+            "Incomplete",
+            "Invalid",
+        }
+        for site in final["sites"]
+    )
     serialized = json.dumps(first, sort_keys=True)
     for legacy in (
         "baseline",
@@ -170,15 +265,31 @@ def _test_final_artifact(module: object) -> None:
     report = module.render_report(evidence, first)
     for text in (
         "最终编译产物板卡 Profile",
-        "Primary duration",
+        "Device execution",
+        "Host submit path",
+        "Host completion envelope",
+        "Timing breakdown",
+        "Trace-run Kcore ledger",
+        "Trace-run cost overlay",
+        "capture-boundary residual",
+        "inside-site-outside-operation",
+        "between-site-gap",
         "Trace Timeline",
         "Tile / Engine",
         "Program / Sites",
         "Communication / DTE",
+        "Aggregate container",
+        "Leaf phase",
+        "Peer ready",
+        "Setup / issue",
+        "Completion wait",
+        "Cleanup",
+        "Operation CPU cycles",
+        "Aggregate only",
         "Diagnostics / Raw",
         "Resource tree",
         "Engine summary",
-        "derived activity volume",
+        "execution-time work volume",
         "DIRECT_DTE",
         "Measured",
         "Sampled",
@@ -186,15 +297,26 @@ def _test_final_artifact(module: object) -> None:
         "Unavailable",
         "Incomplete",
         "Invalid",
+        "Zero delta",
+        "Attribution ambiguous",
         "tile-local",
         "index.html · analysis.json · evidence.json",
     ):
         assert text in report
+    assert "只知道活动发生在保守观测窗内" in report
     assert "Measurement invalid" not in report
+    assert "Trace-only overhead" not in report
+    assert "Control span" not in report
+    assert "Not applicable" not in report
     assert "中位数" not in report
     assert "范围 " not in report
     assert "gradient" not in report.lower()
     assert "grid-template-columns:repeat(4" in report
+    assert ".cost-tables>*{min-width:0}" in report
+    assert (
+        ".diag{grid-template-columns:64px minmax(0,1fr)"
+        in report
+    )
     _test_dom_contract(report)
 
 
@@ -224,6 +346,10 @@ def _test_dom_contract(report: str) -> None:
         "timelineRuler",
         "timelineLanes",
         "eventDetail",
+        "semanticCostRows",
+        "traceCostRows",
+        "traceOverheadBar",
+        "traceOutsideBar",
         "engineTile",
         "engineRows",
         "siteSearch",
@@ -240,13 +366,17 @@ def _test_dom_contract(report: str) -> None:
         'addEventListener("input"',
         "data-lane-engine",
         "data-event-sequence",
+        "node.dataset.eventSequence",
         "data-event-tile",
+        "DTE_PHASES",
+        "operation_window_cpu_cycles",
         'addEventListener("keydown"',
         "data-tree-tile",
         "window.__waferProfileUI",
         "focusEvent",
         "renderTimeline",
         "renderEventDetail",
+        "renderCostDetail",
         "renderSites",
         "renderCommunication",
     ):
@@ -263,15 +393,19 @@ def _test_dom_contract(report: str) -> None:
 
 def _test_direct_dte(module: object) -> None:
     evidence = make_evidence()
-    event = evidence["experiment"]["trace"]["tiles"][0]["events"][-1]
+    event = next(
+        row
+        for row in evidence["experiment"]["trace"]["tiles"][0]["events"]
+        if row["kind"] == "direct-dte-wait"
+    )
     analysis = module.analyze_evidence(evidence)
     direct = next(
         row
         for row in analysis["final_artifact"]["tiles"][0]["engines"]
         if row["engine"] == "DIRECT_DTE"
     )
-    assert direct["wait_window_cycles"] == (
-        event["observed_end_cycle"] - event["observed_begin_cycle"]
+    assert direct["wait_window_cpu_cycles"] == (
+        event["operation_end_cycle"] - event["operation_begin_cycle"]
     )
     assert direct["measurement_kind"] == (
         "direct-dte-wait-completion-windows"
@@ -289,9 +423,14 @@ def _test_direct_dte(module: object) -> None:
     )
 
     raw_available = make_evidence()
-    raw_event = raw_available["experiment"]["trace"]["tiles"][0]["events"][-1]
+    raw_event = next(
+        row
+        for row in raw_available["experiment"]["trace"]["tiles"][0]["events"]
+        if row["kind"] == "direct-dte-wait"
+    )
     raw_event["counter_delta"] = 17
     raw_event["dte_counter_valid"] = True
+    raw_event["positive_delta"] = True
     raw_analysis = module.analyze_evidence(raw_available)
     raw_direct = next(
         row
@@ -299,9 +438,9 @@ def _test_direct_dte(module: object) -> None:
         if row["engine"] == "DIRECT_DTE"
     )
     assert raw_direct["wait_windows_valid"]
-    assert raw_direct["wait_window_cycles"] == (
-        raw_event["observed_end_cycle"]
-        - raw_event["observed_begin_cycle"]
+    assert raw_direct["wait_window_cpu_cycles"] == (
+        raw_event["operation_end_cycle"]
+        - raw_event["operation_begin_cycle"]
     )
     assert raw_direct["raw_pmu_activity"] == 17
     assert raw_direct["raw_pmu_activity_valid"]
@@ -310,19 +449,243 @@ def _test_direct_dte(module: object) -> None:
     raw_timeline_event = next(
         row
         for row in raw_timeline
-        if row["tile"] == 0 and row["engine"] == "DIRECT_DTE"
+        if row["tile"] == 0
+        and row["kind"] == "direct-dte-wait"
     )
     assert raw_timeline_event["counter_status"] == "Sampled"
 
 
+def _test_cost_attribution(module: object) -> None:
+    base = module.analyze_evidence(make_evidence())
+    base_partition = base["final_artifact"]["tiles"][0]["semantic_partition"]
+    categories = {row["category"] for row in base_partition["rows"]}
+    assert {
+        "dte-peer-ready-wait",
+        "dte-setup-issue",
+        "dte-completion-wait",
+        "dte-cleanup",
+    }.issubset(categories)
+    assert "dte-wait-aggregate-fallback" not in categories
+    assert not any(
+        row["reason"] in (
+            "overlapping-site-spans",
+            "overlapping-operation-spans",
+        )
+        for row in base_partition["rows"]
+    )
+    explicit = [
+        row
+        for row in base_partition["rows"]
+        if row["event_kind"] is not None
+    ]
+    assert explicit
+    assert all(
+        row["counts_in_primary_device_elapsed"] == "yes"
+        and row["magnitude_relation"] == "proxy"
+        for row in explicit
+    )
+    mixed_control = [
+        row
+        for row in base_partition["rows"]
+        if row["category"] in (
+            "site-control",
+            "between-site-gap",
+            "entry-prologue",
+            "entry-epilogue",
+        )
+    ]
+    assert mixed_control
+    assert all(
+        row["counts_in_primary_device_elapsed"] == "mixed"
+        and row["magnitude_relation"] == "mixed/proxy"
+        and row["reason"]
+        and row["optimization_entry"]
+        for row in mixed_control
+    )
+    assert all(
+        row["reason"].startswith("inside-site-outside-operation@")
+        and row["containing_site"] is not None
+        for row in mixed_control
+        if row["category"] == "site-control"
+    )
+    assert all(
+        row["reason"].startswith("between-site-")
+        and row["previous_site"] is not None
+        and row["next_site"] is not None
+        for row in mixed_control
+        if row["category"] == "between-site-gap"
+    )
+    assert any(
+        row["category"] == "entry-prologue"
+        and row["next_site"] is not None
+        for row in mixed_control
+    )
+    assert any(
+        row["category"] == "entry-epilogue"
+        and row["previous_site"] is not None
+        for row in mixed_control
+    )
+
+    nested = make_evidence()
+    events = nested["experiment"]["trace"]["tiles"][0]["events"]
+    commands = [event for event in events if event["kind"] == "ncc-command"]
+    first, second = commands[:2]
+    for event in events:
+        if event["site_id"] == second["site_id"]:
+            event["site_begin_cycle"] = first["site_begin_cycle"]
+            event["site_end_cycle"] = first["site_end_cycle"]
+    second["operation_begin_cycle"] = first["operation_begin_cycle"] + 2
+    second["operation_end_cycle"] = first["operation_end_cycle"] - 2
+    analysis = module.analyze_evidence(nested)
+    tile = analysis["final_artifact"]["tiles"][0]
+    partition = tile["semantic_partition"]
+    assert partition["exclusive_accounting_valid"]
+    assert partition["exclusive_cycles"] == partition["entry_cycles"]
+    assert sum(row["cycles"] for row in partition["rows"]) == partition[
+        "entry_cycles"
+    ]
+    overlap = next(
+        row
+        for row in partition["rows"]
+        if row["reason"] == "overlapping-operation-spans"
+    )
+    assert overlap["category"] == "capture-boundary-residual"
+    assert overlap["counts_in_primary_device_elapsed"] == "unknown"
+    assert overlap["magnitude_relation"] == "unknown"
+
+    observations = make_evidence()
+    observation_events = observations["experiment"]["trace"]["tiles"][0][
+        "events"
+    ]
+    commands = [
+        event for event in observation_events if event["kind"] == "ncc-command"
+    ]
+    zero, ambiguous = commands[:2]
+    zero["counter_delta"] = 0
+    zero["positive_delta"] = False
+    zero["observation_status"] = "counter-no-change"
+    ambiguous["attribution_ambiguous"] = True
+    ambiguous["observation_status"] = "attribution-ambiguous"
+    result = module.analyze_evidence(observations)
+    zero_row = next(
+        row
+        for row in result["final_artifact"]["timeline_events"]
+        if row["tile"] == 0 and row["sequence"] == zero["sequence"]
+    )
+    ambiguous_row = next(
+        row
+        for row in result["final_artifact"]["timeline_events"]
+        if row["tile"] == 0 and row["sequence"] == ambiguous["sequence"]
+    )
+    assert zero_row["zero_delta_marker"]
+    assert zero_row["marker"]
+    assert zero_row["ncc_engine_execution_time_ns"] is None
+    assert zero_row["counter_status"] == "Zero delta"
+    assert ambiguous_row["attribution_ambiguous"]
+    assert ambiguous_row["marker"]
+    assert ambiguous_row["ncc_engine_execution_time_ns"] is None
+    assert ambiguous_row["duration_status"] == "Attribution ambiguous"
+
+    unavailable = make_evidence()
+    unavailable_event = next(
+        event
+        for event in unavailable["experiment"]["trace"]["tiles"][0]["events"]
+        if event["kind"] == "ncc-command"
+    )
+    unavailable_event["observed_begin_cycle"] = 0
+    unavailable_event["observed_end_cycle"] = 0
+    unavailable_event["counter_delta"] = 0
+    unavailable_event["observation_count"] = 0
+    unavailable_event["observed_span_valid"] = False
+    unavailable_event["positive_delta"] = False
+    unavailable_event["ncc_counter_valid"] = False
+    unavailable_event["observation_status"] = "counter-unavailable"
+    unavailable_analysis = module.analyze_evidence(unavailable)
+    unavailable_row = next(
+        row
+        for row in unavailable_analysis["final_artifact"]["timeline_events"]
+        if row["tile"] == 0
+        and row["sequence"] == unavailable_event["sequence"]
+    )
+    assert unavailable_analysis["validity"]["trace"]
+    assert unavailable_row["counter_status"] == "Unavailable"
+    assert unavailable_row["duration_status"] == "Unavailable"
+    assert unavailable_row["operation_window_status"] == "Measured"
+    assert unavailable_row["activity_window_status"] == "Unavailable"
+    assert unavailable_row["marker"]
+    assert not unavailable_row["zero_delta_marker"]
+    assert any(
+        row["code"] == "ncc_event_counter_unavailable"
+        for row in unavailable_analysis["diagnostics"]
+    )
+    unavailable_site = next(
+        row
+        for row in unavailable_analysis["final_artifact"]["sites"]
+        if row["tile"] == 0 and row["site_id"] == unavailable_event["site_id"]
+    )
+    assert unavailable_site["site_capture_status"] == "Measured"
+    assert unavailable_site["engine_observation_status"] == "Unavailable"
+
+    invalid_site_capture = make_evidence()
+    target_site = next(
+        event
+        for event in invalid_site_capture["experiment"]["trace"]["tiles"][0][
+            "events"
+        ]
+        if event["kind"] == "target-site"
+    )
+    invalid_site_begin = (
+        invalid_site_capture["experiment"]["trace"]["tiles"][0][
+            "entry_begin_cycle"
+        ]
+        - 1
+    )
+    for event in invalid_site_capture["experiment"]["trace"]["tiles"][0]["events"]:
+        if event["site_id"] == target_site["site_id"]:
+            event["site_begin_cycle"] = invalid_site_begin
+    invalid_site_analysis = module.analyze_evidence(invalid_site_capture)
+    invalid_site = next(
+        row
+        for row in invalid_site_analysis["final_artifact"]["sites"]
+        if row["tile"] == 0 and row["site_id"] == target_site["site_id"]
+    )
+    assert invalid_site["site_capture_status"] == "Invalid"
+
+    unit_isolation = make_evidence()
+    baseline = module.analyze_evidence(unit_isolation)
+    ct_counter = unit_isolation["experiment"]["pmu"]["tiles"][0]["aggregates"][
+        "ct"
+    ]
+    ct_counter["end"] += 1_000_000
+    ct_counter["recovery"] += 1_000_000
+    changed = module.analyze_evidence(unit_isolation)
+    assert (
+        changed["final_artifact"]["duration"]["device_elapsed_ns"]
+        == baseline["final_artifact"]["duration"]["device_elapsed_ns"]
+    )
+    assert (
+        changed["final_artifact"]["tiles"][0]["semantic_partition"]
+        == baseline["final_artifact"]["tiles"][0]["semantic_partition"]
+    )
+    assert (
+        changed["final_artifact"]["tiles"][0]["engines"][0][
+            "engine_execution_time_ns"
+        ]
+        > baseline["final_artifact"]["tiles"][0]["engines"][0][
+            "engine_execution_time_ns"
+        ]
+    )
+
 def _test_validity(module: object) -> None:
     coarse = make_evidence()
     sample = coarse["measurement"]["samples"][0]
-    sample["completion_observation_resolution_ns"] = sample["host_elapsed_ns"] // 2
+    sample["completion_observation_resolution_ns"] = (
+        sample["host_launch_to_completion_ns"] // 2
+    )
     analysis = module.analyze_evidence(coarse)
     duration = analysis["final_artifact"]["duration"]
     assert duration["qualified"]
-    assert not duration["high_resolution"]
+    assert not duration["host_completion_high_resolution"]
     assert duration["status"] == "Measured"
     warning = next(
         row
@@ -331,7 +694,58 @@ def _test_validity(module: object) -> None:
     )
     assert warning["severity"] == "warning"
     report = module.render_report(coarse, analysis)
-    assert "completion observation resolution is too coarse" in report
+    assert "host completion observation is coarse" in report
+
+    quantized = make_evidence()
+    quantized["measurement"]["samples"][0]["device_elapsed_ns"] = 0
+    analysis = module.analyze_evidence(quantized)
+    duration = analysis["final_artifact"]["duration"]
+    assert duration["qualified"]
+    assert duration["status"] == "Measured"
+    assert duration["device_elapsed_quantized_zero"]
+    warning = next(
+        row
+        for row in analysis["diagnostics"]
+        if row["code"] == "device_event_elapsed_quantized_zero"
+    )
+    assert warning["severity"] == "warning"
+    assert "at/below effective timer resolution" in module.render_report(
+        quantized, analysis
+    )
+
+    zero_submit = make_evidence()
+    zero_submit["measurement"]["samples"][0]["host_submit_ns"] = 0
+    analysis = module.analyze_evidence(zero_submit)
+    duration = analysis["final_artifact"]["duration"]
+    assert duration["qualified"]
+    assert duration["status"] == "Measured"
+    assert duration["host_submit_quantized_zero"]
+    assert any(
+        row["code"] == "host_submit_quantized_zero"
+        for row in analysis["diagnostics"]
+    )
+    assert "at/below host clock resolution" in module.render_report(
+        zero_submit, analysis
+    )
+
+    zero_host_envelope = make_evidence()
+    sample = zero_host_envelope["measurement"]["samples"][0]
+    sample["host_submit_ns"] = 0
+    sample["host_launch_to_completion_ns"] = 0
+    sample["completion_observation_resolution_ns"] = 0
+    analysis = module.analyze_evidence(zero_host_envelope)
+    duration = analysis["final_artifact"]["duration"]
+    assert duration["qualified"]
+    assert duration["status"] == "Measured"
+    assert duration["device_elapsed_ns"] == 8_400
+    assert not duration["host_envelope_available"]
+    assert duration["host_non_submit_envelope_ns"] == 0
+    assert duration["completion_observation_fraction"] is None
+    assert not analysis["validity"]["host_completion_resolution"]
+    assert any(
+        row["code"] == "host_completion_envelope_unavailable"
+        for row in analysis["diagnostics"]
+    )
 
     mismatch = make_evidence()
     mismatch["output_validation"]["resources"][0][
@@ -364,9 +778,43 @@ def _test_validity(module: object) -> None:
         for row in analysis["final_artifact"]["tiles"][3]["engines"]
         if row["engine"] == "NE"
     )
-    assert not ne["busy_cycles_valid"]
-    assert ne["busy_cycles"] is None
-    assert ne["busy_cycles_status"] == "Unavailable"
+    assert not ne["engine_execution_time_valid"]
+    assert ne["engine_execution_time_ns"] is None
+    assert ne["engine_execution_time_status"] == "Unavailable"
+
+    unrecovered = make_evidence()
+    counter = unrecovered["experiment"]["pmu"]["tiles"][2]["aggregates"]["ct"]
+    counter["recovery"] = counter["end"] + 1
+    analysis = module.analyze_evidence(unrecovered)
+    ct = next(
+        row
+        for row in analysis["final_artifact"]["tiles"][2]["engines"]
+        if row["engine"] == "CT"
+    )
+    assert not ct["engine_execution_time_valid"]
+    assert any(
+        row["code"] == "ncc_engine_execution_time_unusable"
+        and row.get("tile") == 2
+        and "terminal end" in row["message"]
+        for row in analysis["diagnostics"]
+    )
+
+    bad_statistics_window = make_evidence()
+    statistics = bad_statistics_window["experiment"]["pmu"]["tiles"][5][
+        "aggregates"
+    ]["statistics_window"]
+    statistics["end"] = statistics["start"] - 1
+    statistics["recovery"] = statistics["end"]
+    analysis = module.analyze_evidence(bad_statistics_window)
+    tile = analysis["final_artifact"]["tiles"][5]
+    assert tile["statistics_window_raw_ticks"] is None
+    assert not tile["statistics_window_valid"]
+    assert tile["statistics_window_status"] == "Unavailable"
+    assert analysis["validity"]["pmu"]
+    assert any(
+        row["code"] == "statistics_window_unusable" and row.get("tile") == 5
+        for row in analysis["diagnostics"]
+    )
 
     empty = make_evidence()
     empty["sites"] = []
@@ -389,7 +837,10 @@ def _test_validity(module: object) -> None:
     tile["entry_end_cycle"] = tile["entry_begin_cycle"] - 1
     analysis = module.analyze_evidence(reversed_trace)
     assert not analysis["validity"]["trace"]
-    assert analysis["final_artifact"]["tiles"][4]["trace_entry_cycles"] is None
+    assert (
+        analysis["final_artifact"]["tiles"][4]["trace_entry_cpu_cycles"]
+        is None
+    )
     assert analysis["final_artifact"]["tiles"][4]["trace_status"] == "Invalid"
     assert not any(
         event["tile"] == 4
@@ -399,7 +850,7 @@ def _test_validity(module: object) -> None:
 
 def _test_rejections(module: object) -> None:
     old = make_evidence()
-    old["schema_version"] = 4
+    old["schema_version"] = 5
     _must_reject(module, old, "schema_version")
 
     old_companion = make_evidence()
@@ -417,8 +868,21 @@ def _test_rejections(module: object) -> None:
     _must_reject(module, wrong_primary, "must be 'primary'")
 
     missing = make_evidence()
-    del missing["measurement"]["samples"][0]["host_elapsed_ns"]
+    del missing["measurement"]["samples"][0]["device_elapsed_ns"]
     _must_reject(module, missing, "missing keys")
+
+    wrong_timer = make_evidence()
+    wrong_timer["measurement"]["samples"][0]["device_timer_kind"] = "host-clock"
+    _must_reject(module, wrong_timer, "tx-stream-events")
+
+    reversed_host_timing = make_evidence()
+    reversed_host_timing["measurement"]["samples"][0]["host_submit_ns"] = (
+        reversed_host_timing["measurement"]["samples"][0][
+            "host_launch_to_completion_ns"
+        ]
+        + 1
+    )
+    _must_reject(module, reversed_host_timing, "must not exceed")
 
     malformed_digest = make_evidence()
     malformed_digest["identity"]["production_manifest_sha256"] = "sha256:no"
@@ -504,33 +968,56 @@ def _test_rejections(module: object) -> None:
     ] = ["exact"]
     _must_reject(module, invalid_comparison_type, "must be null")
 
-    missing_dte_window = make_evidence()
-    dte_event = missing_dte_window["experiment"]["trace"]["tiles"][0][
-        "events"
-    ][-1]
-    dte_event["activity_valid"] = False
+    invalid_dte_observation_status = make_evidence()
+    dte_event = next(
+        row
+        for row in invalid_dte_observation_status["experiment"]["trace"][
+            "tiles"
+        ][0]["events"]
+        if row["kind"] == "direct-dte-wait"
+    )
+    dte_event["observation_status"] = "counter-no-change"
     _must_reject(
         module,
-        missing_dte_window,
-        "completed Direct-DTE wait window",
+        invalid_dte_observation_status,
+        "must be null for a Kcore/DTE phase",
+    )
+
+    missing_site_container = make_evidence()
+    trace_tile = missing_site_container["experiment"]["trace"]["tiles"][0]
+    trace_tile["events"].pop(0)
+    for sequence, event in enumerate(trace_tile["events"]):
+        event["sequence"] = sequence
+    trace_tile["count"] = len(trace_tile["events"])
+    trace_tile["preflight_count"] = len(trace_tile["events"])
+    trace_tile["next_sequence"] = len(trace_tile["events"])
+    _must_reject(
+        module,
+        missing_site_container,
+        "must follow its target-site container",
     )
 
     negative_window = make_evidence()
-    event = negative_window["experiment"]["trace"]["tiles"][0]["events"][0]
-    event["observed_end_cycle"] = event["observed_begin_cycle"] - 1
-    analysis = module.analyze_evidence(negative_window)
-    assert not analysis["validity"]["trace"]
-    assert any(
-        row["code"] == "ncc_activity_window_unusable"
-        for row in analysis["diagnostics"]
+    event = next(
+        row
+        for row in negative_window["experiment"]["trace"]["tiles"][0][
+            "events"
+        ]
+        if row["kind"] == "ncc-command"
     )
+    event["observed_end_cycle"] = event["observed_begin_cycle"] - 1
+    _must_reject(module, negative_window, "must not precede")
 
     reversed_dte_window = make_evidence()
-    dte_event = reversed_dte_window["experiment"]["trace"]["tiles"][0][
-        "events"
-    ][-1]
-    dte_event["dte_counter_valid"] = True
-    dte_event["observed_end_cycle"] = dte_event["observed_begin_cycle"] - 1
+    dte_event = next(
+        row
+        for row in reversed_dte_window["experiment"]["trace"]["tiles"][0][
+            "events"
+        ]
+        if row["kind"] == "direct-dte-wait"
+    )
+    dte_event["operation_span_valid"] = False
+    dte_event["operation_end_cycle"] = dte_event["operation_begin_cycle"] - 1
     dte_analysis = module.analyze_evidence(reversed_dte_window)
     dte_row = next(
         row
@@ -538,7 +1025,7 @@ def _test_rejections(module: object) -> None:
         if row["engine"] == "DIRECT_DTE"
     )
     assert not dte_row["wait_windows_valid"]
-    assert dte_row["wait_window_cycles"] is None
+    assert dte_row["wait_window_cpu_cycles"] is None
     assert dte_row["wait_window_count"] == 1
     assert dte_row["activity_window_count"] == 0
 
@@ -567,7 +1054,7 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
         analysis = json.loads(
             analysis_path.read_text(encoding="utf-8")
         )
-        assert analysis["schema_version"] == 3
+        assert analysis["schema_version"] == 5
         assert analysis["final_artifact"]["duration"]["qualified"]
 
         command = [
@@ -586,12 +1073,12 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
             encoding="utf-8"
         )
     )
-    assert schema["properties"]["schema_version"]["const"] == 5
+    assert schema["properties"]["schema_version"]["const"] == 7
     assert (
         schema["$defs"]["sharedIdentity"]["properties"][
             "profile_companion_schema_version"
         ]["const"]
-        == 3
+        == 4
     )
     assert "experiment" in schema["required"]
     assert "experiments" not in schema["required"]
@@ -607,6 +1094,9 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
     sample = schema["$defs"]["measurementSample"]["properties"]
     assert sample["sample_id"]["const"] == "primary"
     assert sample["sample_index"]["const"] == 0
+    assert sample["device_elapsed_ns"]["minimum"] == 0
+    assert sample["device_timer_kind"]["const"] == "tx-stream-events"
+    assert sample["host_submit_ns"]["minimum"] == 0
     output_resource = schema["$defs"]["outputValidationResource"]
     assert "production_execution_validated" in output_resource["required"]
     assert "diagnostic_captures_match_primary" in output_resource["required"]
@@ -614,6 +1104,12 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
     assert "recovery" in schema["$defs"]["counterSnapshot"]["required"]
     assert "recovery" in schema["$defs"]["counterSnapshot32"]["required"]
     assert schema["$defs"]["event"]["allOf"]
+    assert "cost_summary" in schema["$defs"]["traceTile"]["required"]
+    assert "site_kind" in schema["$defs"]["site"]["required"]
+    assert (
+        schema["$defs"]["sharedIdentity"]["properties"]["record_abi"]["const"]
+        == "wafer-tx81-profiler-record-v3"
+    )
     assert (
         schema["$defs"]["sharedIdentity"]["properties"][
             "production_manifest_sha256"
@@ -631,6 +1127,7 @@ def main() -> int:
     module = _load_report_module(repo)
     _test_final_artifact(module)
     _test_direct_dte(module)
+    _test_cost_attribution(module)
     _test_validity(module)
     _test_rejections(module)
     _test_publication(repo, module)

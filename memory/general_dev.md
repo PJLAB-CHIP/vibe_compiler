@@ -921,11 +921,12 @@
   manifest、结构/观测JSON、raw payload，以及实际compiler/runtime/objdump路径和digest；否则事后不能重放ELF oracle或
   判断工具身份是否漂移。
 - 包含allocation/H2D/load/D2H/cleanup的process wall time受provider、OS和runtime噪声影响，只能记observation。
-  profiler的人工作业耗时只使用同一qualified session中未插桩最终production package的host steady-clock
-  submit→all-rank trusted-completion区间，并保留逐sample poll-gap上界和完整output validation。PMU、
-  entry-local cycle、count和trace来自另行launch的diagnostic capture，只解释最终artifact的engine activity，
-  不能改写总体耗时。把证据反馈到compiler ranking仍是独立后续任务，需要另行冻结environment/profile、比较对象和
-  稳定性gate；profiler foundation本身不构造candidate、baseline、winner或speed verdict。
+  profiler的主耗时只使用同一qualified session中未插桩最终production package在TX device stream上的start/end
+  event elapsed time；多phase时按phase求和。host submit调用耗时、submit→all-rank trusted-completion envelope和
+  poll-gap上界分别保留为diagnostic，并继续要求完整output validation。PMU、entry-local `rdcycle`、count和trace来自
+  另行launch的diagnostic capture，只解释最终artifact的engine activity，不能改写主耗时。把证据反馈到compiler
+  ranking仍是独立后续任务，需要另行冻结environment/profile、比较对象和稳定性gate；profiler foundation本身
+  不构造candidate、baseline、winner或speed verdict。
 
 ## 16-tile TSM profiler workflow
 
@@ -940,17 +941,36 @@
   它只证明本轮diagnostic capture与Primary等价。所有launch留在一个qualified、driver-bound session中单进程串行，
   首个timeout、device异常、correctness或协议失败立即停止，不retry/reset/power。
 - fixed protocol是一次未插桩最终production package的高分辨率Primary，再各执行一次Count和Trace，共三次launch。
-  Primary的submit→all-completion是唯一用户级耗时，不自动warm-up、不默认重复benchmark，也不计算median/range。
+  Primary的TX same-stream event elapsed time是唯一用户级kernel/model主耗时；host submit、host
+  launch-to-completion和completion observer resolution分栏显示为diagnostic。不自动warm-up、不默认重复benchmark，
+  也不计算median/range。
   Trace header已同时携带该次entry span和aggregate PMU，因此不另建重复事实的summary capture。Count只为固定trace
   buffer提供动态容量预检；trace evidence保留preflight count、`next_sequence`、drop count、raw flags、terminal
   state和record guard，任何overflow/drop/gap/mismatch都fail closed。
 - profile CRT必须保持普通completion语义：非trace路径继续调用真实`TsmWaitfinish()`，trace poll同样只在
   `TASK_DONE == 1`时结束并在等待期间采样。只有trace临时enable/restore Direct-DTE PMU；split counter不稳定时显式
   标记raw delta不可用。target测试要验证宏展开后的predicate和fallback，不能只看宏、源码else分支或符号存在。
-- `site_id`只在rank内有效，canonical site map来自未插桩final target LLVM。NCC event是累计PMU增长所在的有界
-  observation window；同engine多条异步issue时，按最近event关联只是一种局部解释，不能声称逐命令零误差起止。
-  Direct-DTE event则是实际wait/completion wrapper窗口，raw DTE PMU只作未校准活动证据。timeline只能使用Trace
-  自身entry-local横轴，不能把Primary host时间或其它tile的local cycle混入同一绝对轴。
+- `site_id`只在rank内有效，canonical site map来自未插桩final target LLVM；运行时用
+  `TARGET_SITE` container sequence建立唯一动态实例，container固定`sub_index=0`，child共享site
+  ID/envelope并从1连续递增。NCC command/completion与Direct-DTE aggregate/leaf event挂在实例下而不重复
+  造site。NCC event是累计PMU增长所在的
+  有界observation window；CT/NE/RDMA/WDMA/TDMA execution delta按vendor producer/parser合同直接是nanoseconds，
+  window的begin/end则是Kcore `rdcycle` CPU cycles。sample必须在counter reads前后各取一次cycle；zero delta保留
+  `counter-no-change`，same-engine outstanding标`attribution-ambiguous`，不能再把所有后续delta绑给latest site。
+  单个engine counter不可用只降级该`(tile, engine)`字段，不传播成全局measurement invalid。
+  Direct-DTE event是排除PMU split-read后的实际wait/completion wrapper窗口；aggregate只作container和raw PMU
+  归属点，peer-ready、setup/issue、completion wait、cleanup是exclusive叶子phase，有叶子时不得再加aggregate。
+  raw DTE PMU只作未校准活动证据。Trace entry、site envelope和operation span的成对`rdcycle`是`Measured`，
+  NCC PMU activity window是`Bounded`，counter失效只令engine observation为`Unavailable`；状态不能按整条event
+  传播。Direct-DTE板端gate按manifest participant逐tile要求正值source/aggregate/`Measured` phase。
+  timeline只能使用Trace自身entry-local `rdcycle`横轴，同tile不同engine可显示
+  overlap。Kcore主ledger显式覆盖带`prev/next`的entry-prologue、动态site、between-site-gap和entry-epilogue；
+  site envelope减去叶子operation union后得到site-control，不能再留下泛化`unobserved`空白或推断idle。
+  所有Trace语义区间的数值只可标proxy或mixed/proxy；PMU sample、event/site bookkeeping、status poll和DTE probe
+  作为不计入Primary、也不参与主ledger求和的Trace-only overlay。entry setup/teardown位于entry横轴外单列；
+  completion wait等production语义phase虽计入Primary，其Trace cycle仍不能冒充Primary精确成本。
+  `statistics_window`保留raw ticks，`tile_clock`仅保留为metadata，不能据此把raw ticks或`rdcycle`换算成ns；
+  也不能把Primary device/host时间或其它tile的local cycle混入同一绝对轴。
 - local cycle domain没有资格化mapping时，报告仍显示all-and-only 16个逐tile、六engine timeline，但不能声明cross-tile
   order、overlap或global critical path。external expected显式记录`exact`或`relaxed-f16` comparison policy；否则同session
   exact reference只证明repeatability，不能谎称bit-exact semantic correctness。

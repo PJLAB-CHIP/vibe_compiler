@@ -57,6 +57,9 @@ Pipeline position:
   winner-derived RequiredCapabilitySet，则同一package还须先通过其独立readback gate；
   vendor-exact packet只在有独立packet/MMIO
   evidence时增加provenance claim。exact package provider和deferred timing calibration保持独立更高gate。
+  Q9 profiler foundation独立要求未插桩final artifact的TX same-stream device-event主耗时、分离host诊断、
+  Count/Trace各一次、正确性、all-and-only tile/engine/DTE evidence、单位合同和三文件`0777`发布；旧host
+  envelope、no-card或历史板端输出不能代签该configured-board gate。
 ```
 
 ## 2. Evidence Levels
@@ -1372,42 +1375,61 @@ host/no-card gate至少覆盖：
   并经过完整target publication；normal package原子发布且关闭profile时逐字节一致。`activation.json`必须最后写入，
   精确绑定production manifest SHA-256以及`plan.json`、`variants.json`、`site-map.json`各自SHA-256；
   missing/stale/partial、unknown/missing metadata key、digest mismatch和late-failure负例闭合；
-- companion恰有一个`final-artifact`未插桩execution binding和count/trace两个物理capture binding；
+- companion恰有一个`final-artifact`未插桩execution binding和count/trace两个物理capture binding；每个capture
+  同时绑定record bytes和record ABI，旧schema/旧CRT即使trace bytes相同也必须在provider effect前拒绝；
   schema拒绝`same_as`、第二个variant、重复capture或旧baseline/winner字段。它们不能成为user option、public package mode
   或新的input contract；
-- 五类CRT helper每个真实`TsmExecute`调用各产生一条固定版本record。one-to-many site使用`sub_index`，rank-local
-  `site_id`和`sequence`连续；site map只解释final artifact的typed target-call registry ordinal和结构位置，不从名字恢复语义；
-  fence、token和planner ready-order不进入NCC event stream，Direct-DTE wait是独立typed engine site；
+- 五类CRT helper每个真实`TsmExecute`调用各产生一条固定版本`ncc-command` record，同时保存typed site envelope、
+  紧贴调用的submit span、严格sample bound、observation count和execution-counter delta。completion wait与Direct-DTE
+  wait/phase使用独立typed event kind；one-to-many site使用`sub_index`，rank-local `site_id`和`sequence`连续；
+  site map只按typed semantic/registry ordinal解释NCC command、LocalFence completion及Direct-DTE control/wait，
+  不从名字恢复语义；
 - all-and-only 16个header与bounded DDR record buffer的magic/schema/logical-tile/count/capacity/overflow/
   guard/readback验证；evidence必须保留count preflight、trace `next_sequence`、`dropped_event_count`、raw flags和terminal
   state。unknown engine/site、sequence gap、count mismatch、drop、非complete state、overflow或guard corruption均invalid；
-- deterministic analyzer对invalid/partial evidence按counter降级，不把`TsmExecute` begin/return画成engine执行条，
+- deterministic analyzer对invalid/partial evidence按counter降级；`TsmExecute` begin/return只画在Kcore submit lane，
+  不得画成engine执行条，
   不把aggregate PMU分摊给site；statistics-window不稳定不能连带抹掉独立稳定的engine counter。HTML首屏必须直接回答
-  final production artifact的总耗时、16个tile entry span、每tile六类engine duration及所选tile的六lane timeline。
+  final production artifact的TX stream device-event总耗时、16个tile entry span、每tile五类NCC engine
+  execution nanoseconds/Direct-DTE诊断及所选tile的Kcore production-common、Trace-only和六engine timeline；
+  host submit和host launch-to-completion只能作为分离的diagnostic。
   不显示A/B、winner、baseline、speedup或负cycle；issue/site和raw diagnostic折叠。clock mapping无效时每个tile使用自己的
   entry-local轴并显式禁止跨tile排序。一次成功run通过稳定`runs/current`入口访问，目标目录恰有
   `evidence.json`、`analysis.json`和`index.html`；`runs`和目标目录可由其它用户穿越，三文件均为`0777`。回收旧目标
   必须验证其evidence `run_id`与目录身份，不能仅按名称删除。
 
 configured board gate复用原package的ResourceId resource/expected/output和board参数，不要求用户准备profile专用输入或选择mode。
-一次固定qualified session内先执行一个未插桩final artifact Primary；它只计host steady-clock submit到all-rank trusted
-completion，并记录高分辨率observer的实际最大poll gap。随后依次执行一次Count和一次Trace diagnostic launch，总计固定
-三次launch。每次都必须通过all-rank status、D2H writable-output validation、
+一次固定qualified session内先执行一个未插桩final artifact Primary；provider必须为每个production phase在同一TX device
+stream上记录有序start/end event pair，并把各phase elapsed time之和作为Primary device execution time。host steady-clock
+submit调用耗时、首次submit到all-rank trusted completion的envelope以及高分辨率observer实际最大poll gap必须分别记录，
+不得替代主耗时。随后依次执行一次Count和一次Trace diagnostic launch，总计固定三次launch。每次都必须通过all-rank status、
+D2H writable-output validation、
 trusted completion和cleanup；capture还必须通过record guards、capacity和terminal-state检查。
 timeout/device anomaly或首个正确性/协议异常立即停止，不retry/reset/power。
 
 external expected存在时给出semantic correctness；不存在时，本次Primary exact output只作为Count/Trace的同session
-equivalence oracle，absolute correctness必须标为unknown。最终报告只给一个Primary submit-to-all-completion本次观测值，
-不称为稳态统计，也不形成跨candidate speed/优化结论。Trace header的entry-local cycles、aggregate PMU以及Count/Trace
-event evidence只用于per-tile/per-engine diagnostic analysis，profile/cache扰动不得进入总耗时。
+equivalence oracle，absolute correctness必须标为unknown。最终报告只给一个Primary device-event本次观测值作为主耗时，
+不称为稳态统计，也不形成跨candidate speed/优化结论；host submit/envelope只显示在诊断区。Trace header的entry-local
+Kcore `rdcycle`、aggregate PMU以及Count/Trace event evidence只用于per-tile/per-engine diagnostic analysis，
+profile/cache扰动不得进入主耗时。
 
 当前foundation允许16个local cycle domain的clock mapping显式为invalid/unavailable；报告此时必须为所选tile展示
-CT/NE/RDMA/WDMA/TDMA/Direct-DTE六条共享entry-local轴的lane，并声明不能比较不同tile的先后、overlap或global
-critical path。五类NCC lane只接受cumulative hardware execution counter实际增长的采样窗口；窗口保留观测gap，
-不能声明单指令零误差起止。Direct-DTE必须记录真实`direct_dte_wait`/completion窗口并读取DTE channel 0/1 PMU；
+Kcore production-common、Trace-only和CT/NE/RDMA/WDMA/TDMA/Direct-DTE lane共享entry-local `rdcycle`轴，并声明
+不能比较不同tile的先后、overlap或global critical path。Kcore phase必须至少分出NCC submit、completion wait proxy、
+Direct-DTE peer-ready/setup/completion/cleanup、site control和between-site control；Trace PMU read、event/site
+bookkeeping、status poll、DTE probe、entry setup/teardown成本必须独立列出并标为不计入Primary。五类NCC aggregate
+execution delta按vendor producer/parser合同以nanoseconds验收；每条engine lane的begin/end仍是Kcore `rdcycle`
+CPU cycles，只接受cumulative hardware execution counter的严格bounded采样窗口。同tile不同engine窗口可展示overlap；
+zero-delta必须保留为counter-no-change，same-engine outstanding必须标attribution-ambiguous。interval补集必须形成
+带reason、cycles/share和优化入口的residual，不能再显示无来源空白、推断idle或声明单指令零误差起止。
+`statistics_window`只能作为raw ticks，`tile_clock`只能作为identity/environment metadata，二者均不得用于把
+`rdcycle`或其它raw counter换算成nanoseconds。Direct-DTE必须记录真实`direct_dte_wait`/completion窗口并读取DTE channel 0/1 PMU；
 即使raw delta为零也保留已验证的wait窗口，raw delta只作为未校准活动量，不能命名为busy duration。未来可增加带
 uncertainty的qualified affine mapping，但它是可选增强。finding必须区分`Measured`、`Sampled`、`Bounded`、
 `Derived`、`Unavailable`、`Incomplete`和`Invalid`。
+每项Kcore cost还必须分别发布`counts_in_primary_device_elapsed`和`magnitude_relation`；production-common phase在
+语义上由Primary event包围，但Trace clone的cycle幅度通常只是proxy。禁止用Primary ns减engine ns、用host envelope减
+device time推导queue delay、跨单位互减或跨tile汇总local cycle。
 profiler foundation只发布证据和人工分析；在环境、重复、held-out及适用的counter unit/clear/wrap/workload
 correlation全部闭合并冻结calibrated profile前，不得反馈candidate ranking。
 

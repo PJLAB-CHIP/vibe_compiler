@@ -139,7 +139,7 @@ static void writeVariantMetadata(llvm::json::OStream &json, llvm::StringRef id,
 
 struct ProfileVariantSiteMaps {
   std::string variantId;
-  std::vector<std::vector<ProfileTSMCallSite>> ranks;
+  std::vector<std::vector<ProfileTargetCallSite>> ranks;
 };
 
 static llvm::Expected<ProfileVariantSiteMaps>
@@ -153,9 +153,9 @@ collectTargetCallSites(llvm::StringRef variantId,
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "profile site-map rank domain is not canonical");
-    llvm::Expected<std::vector<ProfileTSMCallSite>> sites =
-        collectProfileTSMCallSites(rankModule.getModule(),
-                                   rankModule.getEntrySymbol());
+    llvm::Expected<std::vector<ProfileTargetCallSite>> sites =
+        collectProfileTargetCallSites(rankModule.getModule(),
+                                      rankModule.getEntrySymbol());
     if (!sites)
       return sites.takeError();
     for (auto [expectedSite, site] : llvm::enumerate(*sites))
@@ -177,13 +177,17 @@ static void writeTargetCallSites(llvm::json::OStream &json,
         json.object([&] {
           json.attribute("logical_rank", static_cast<int64_t>(logicalRank));
           json.attributeArray("sites", [&] {
-            for (const ProfileTSMCallSite &site : sites)
+            for (const ProfileTargetCallSite &site : sites)
               json.object([&] {
                 json.attribute("site_id", site.siteId);
                 json.attribute("target_call_ordinal", site.targetCallOrdinal);
                 json.attribute("target_call_symbol", site.targetCallSymbol);
-                json.attribute("engine",
-                               stringifyTargetCallTSMEngine(site.engine));
+                json.attribute(
+                    "site_kind",
+                    runtime::stringifyProfileTargetSiteKind(site.siteKind));
+                if (site.engine)
+                  json.attribute("engine",
+                                 stringifyTargetCallTSMEngine(*site.engine));
                 json.attribute("correlation_key", site.correlationKey);
                 json.attribute("function_ordinal", site.functionOrdinal);
                 json.attribute("block_ordinal", site.blockOrdinal);
@@ -336,10 +340,10 @@ static mlir::LogicalResult writeProfileCompanion(
                   "schema_version",
                   int64_t(runtime::kProfileCompanionSchemaVersion));
               json.attribute("site_basis",
-                             "verified-target-llvm-entry-reachable-tsm-call-"
-                             "preorder");
+                             "verified-target-llvm-entry-reachable-profile-"
+                             "target-call-preorder");
               json.attribute("correlation_basis",
-                             "heuristic-target-call-signature-occurrence-v1");
+                             runtime::kProfileSiteCorrelationBasis);
               json.attribute(
                   "target_call_registry_size",
                   static_cast<int64_t>(getTargetCallDescriptors().size()));
@@ -367,7 +371,7 @@ static mlir::LogicalResult writeProfileCompanion(
               json.attribute("variant_metadata", "variants.json");
               json.attribute("site_map", "site-map.json");
               json.attribute("site_identity",
-                             "final-rank-local-engine-site-id-and-typed-"
+                             "final-rank-local-typed-target-site-id-and-"
                              "correlation-key");
               json.attributeArray("execution_packages", [&] {
                 json.object([&] {
@@ -389,6 +393,7 @@ static mlir::LogicalResult writeProfileCompanion(
                                    capture.packageReference);
                     json.attribute("manifest_sha256",
                                    capture.manifestDigest);
+                    json.attribute("record_abi", runtime::kProfileRecordABI);
                     json.attribute(
                         "record_bytes",
                         getProfileCaptureRecordBytes(capture.capture));

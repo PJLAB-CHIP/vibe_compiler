@@ -1769,8 +1769,9 @@
   又在已有submission生命周期内延迟解析。
 - 修复模式：非trace、count、null或非法binding一律执行真实`TsmWaitfinish()`，只有合法trace以
   `TASK_DONE == 1`为结束条件采样，并独立拥有/恢复DTE PMU；Direct-DTE wait窗口必须有效，raw split-read另用
-  `dte_counter_valid`表达。site map来自未插桩final LLVM，trace clone用稳定SSA坐标交叉验证。summary和trace各保留
-  自己的entry span，timeline只用trace-local轴；倒序counter/window局部置不可用，永不做signed减法。
+  `dte_counter_valid`表达。site map来自未插桩final LLVM，trace clone用稳定SSA坐标交叉验证。过去由summary和trace
+  各自保留的重复entry span必须删除，entry span和aggregate PMU由同一次Trace header拥有，timeline只用trace-local轴；
+  倒序counter/window局部置不可用，永不做signed减法。
   evidence只表达final artifact，schema、serializer、fixture和analyzer共同锁定版本及条件字段。runtime在首个submit前
   解析全部phase；报告通过`runs/current`原子发布，`runs`、目标目录和三文件均可访问，旧run删除前校验三成员与
   evidence `run_id`，删除失败显式报错。
@@ -1789,16 +1790,49 @@
   全部目录和regular file设为`0777`；任一失败直接丢弃transaction。profile no-card/live gate要在任何board effect前
   检查整个companion树，collision/race负例还要证明不会chmod已存在的竞争目标。
 - `completion_resolution`未达到high-resolution标签不等于整体耗时无效。只要environment、package/measurement
-  identity、trusted completion和Primary输出校验仍成立，单次submit→completion观测继续qualified，报告应保留实际
-  poll-gap warning；不能恢复笼统的`Measurement invalid`，也不能为消除离群自动重跑板卡。
+  identity、trusted completion和Primary输出校验仍成立，TX same-stream event pair的device elapsed time继续
+  qualified；host submit→completion envelope只保留实际poll-gap warning。不能用host observer分辨率抹掉独立的
+  device event、输出或PMU证据，不能恢复笼统的`Measurement invalid`，也不能为消除离群自动重跑板卡。
 - 默认profiler曾把一次warm-up、十次production measurement和summary/count/trace硬编码进campaign与schema，导致用户
   面对一组median/range而看不到“本次最终产物到底耗时多少”，同时多出重复package和launch。根因是把benchmark统计策略
   混进profiler基础合同，并在Trace header已经携带entry/aggregate PMU时仍保留summary重复采集。修复为固定
-  Primary→Count→Trace：Primary是唯一未插桩最终产物及唯一用户级duration，Count只做动态容量预检，Trace承载entry、
+  Primary→Count→Trace：Primary是唯一未插桩最终产物，TX stream device-event elapsed time是唯一用户级
+  kernel/model duration；host submit和host launch-to-completion只是分离诊断。Count只做动态容量预检，Trace承载entry、
   aggregate PMU、site event和DTE证据。防复发要求每个默认capture必须拥有不可由其它capture安全替代的证据职责；
   重复benchmark只能是显式独立workflow，不能再次改变profiler的默认耗时语义。
+- 旧实现还把CT/NE/RDMA/WDMA/TDMA execution delta、`statistics_window`和Kcore `rdcycle`统称为cycle，并尝试用
+  `tile_clock`解释时间，导致真实engine execution time缺失、单位错标和负cycle。修复必须锁定单位矩阵：
+  vendor NCC execution delta直接是nanoseconds；`statistics_window`是raw ticks；event/entry begin/end来自Kcore
+  `rdcycle`，是tile-local CPU cycles；`tile_clock`只是metadata，不能参与换算。per-engine nanoseconds与其
+  `rdcycle` bounded window分别展示，同tile不同engine窗口可重叠；窗口补集必须继续做成本归因，不能仅改名为
+  unobserved gap。unsigned倒序只局部invalid，不能做signed subtraction，也不能连带使Primary device time失效。
 - profiler UI不能把所有字段平铺成互不联动的表格。Overview只给Primary结论和关键质量状态；Timeline按
   Card→Tile→Engine组织resource track，event选择必须联动详情与typed site；Tile/Engine、Program/Sites、
   Communication/DTE和Diagnostics/Raw分别承载聚合、compiler correlation、通信和原始诊断。Measured、Sampled、
   Bounded、Derived、Unavailable、Incomplete、Invalid必须同时用文字表达；空白不等于idle，跨tile无clock mapping
   时不绘制伪全局时间轴，多engine activity不得求和冒充wall time。
+- 仅把timeline空白改名为`unobserved`仍会掩盖采集协议错误。旧NCC sampler先顺序读取五个counter、最后才取
+  `rdcycle`，却把上一轮read-end当下一窗口begin；counter在前次read与该cycle之间增长时，所报矩形不能包住真实
+  activity。每engine只保存latest event又会在连续same-engine issue时覆盖前一归属，zero-delta event还会被report
+  静默丢弃。修复必须把sample read-begin/read-end作为严格外包边界，保留observation count和counter-no-change，
+  same-engine outstanding显式标ambiguous并在completion boundary关闭epoch；不能用彩色矩形或空白推断持续busy/idle。
+- production event pair内的Kcore control、NCC submit/completion wait、Direct-DTE lifecycle和真实空转，与Trace-only
+  PMU MMIO、event/site记账、DTE PMU开关和替代polling是两类成本。record必须显式保存site、submit、completion及
+  Direct-DTE子阶段span，并把PMU/event/site/poll/setup/teardown overhead按tile-local cycle细分；analyzer只在同一
+  Trace tile的`rdcycle`域用interval union/subtraction形成exclusive accounting。每项分别说明是否被Primary包围和
+  Trace幅度是否可代表production；所有Trace语义cost只能标proxy或mixed/proxy，Trace-only cost只能作不参与主ledger
+  求和的overlay。residual必须有reason、cycles/share及优化入口，不能再次退化成无来源空白。
+- 静态site map和动态event不能按“一条event就是一个site”展开，否则NCC command/completion或Direct-DTE
+  aggregate/leaf会重复计算同一site envelope。稳定做法是让`TARGET_SITE` container sequence唯一标识动态
+  实例，container使用`sub_index=0`，child共享site ID/envelope并从1连续递增；entry首尾分别保留带相邻
+  site身份的prologue/epilogue，相邻实例间的gap保留
+  `prev/next`，site envelope减去叶子operation union后才得到site-control。Direct-DTE aggregate是container和raw
+  PMU归属点，有叶子phase时不得再次计入；peer-ready、setup/issue、completion wait、cleanup才形成exclusive分解。
+  这些Trace区间都不是Primary精确成本，也不能把gap解释成硬件idle。
+- 辅助PMU validity必须局部传播。一个tile的单个NCC engine split counter不稳定、恢复失败或不可用，只降级该
+  `(tile, engine)`字段并保留diagnostic；不能抹掉Primary device elapsed、结果校验、其它engine counter或Trace Kcore
+  ledger。只有共享identity、capture lifecycle、overflow/terminal和输出门禁失败才允许整次capture fail closed。
+  report状态同样按字段隔离：成对`rdcycle` operation仍是`Measured`，engine observation才是`Bounded`或
+  `Unavailable`；完整Trace entry不能因为内部含bounded observation就整体误标`Bounded`。
+- 多participant通信的板端profile gate不能只验证全卡`any(positive phase)`。应按manifest participant集合逐tile
+  对齐raw source event、analysis aggregate与`Measured` phase，否则单tile活动会掩盖其它rank漏执行。

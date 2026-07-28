@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic v5 final-artifact evidence for the offline analyzer."""
+"""Deterministic v7 final-artifact evidence for the offline analyzer."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any
 
 NCC_ENGINES = ("CT", "NE", "RDMA", "WDMA", "TDMA")
 FINAL_DIGEST = "sha256:" + "f" * 64
+RECORD_ABI = "wafer-tx81-profiler-record-v3"
 
 
 def _kernel_launch() -> dict[str, Any]:
@@ -65,27 +66,185 @@ def _pmu_tile(tile: int) -> dict[str, Any]:
 def _trace_tile(tile: int) -> dict[str, Any]:
     entry_begin = 4_900 + tile * 100
     events: list[dict[str, Any]] = []
-    for sequence, engine in enumerate((*NCC_ENGINES, "DIRECT_DTE")):
-        begin = entry_begin + 100 + sequence * 41
-        direct_dte = engine == "DIRECT_DTE"
-        events.append(
+
+    def append_event(event: dict[str, Any]) -> None:
+        event["sequence"] = len(events)
+        events.append(event)
+
+    def append_site(site_id: int, site_begin: int, site_end: int) -> None:
+        append_event(
             {
-                "sequence": sequence,
-                "site_id": sequence,
+                "site_id": site_id,
                 "sub_index": 0,
-                "engine": engine,
-                "observed_begin_cycle": begin,
-                "observed_end_cycle": begin + 7 + sequence,
-                "counter_delta": 0 if direct_dte else 1 + sequence,
-                "activity_valid": True,
-                "dte_counter_valid": False if direct_dte else None,
-                "dte_role": (
-                    ("send" if tile % 2 == 0 else "receive")
-                    if direct_dte
-                    else None
-                ),
+                "engine": None,
+                "kind": "target-site",
+                "observed_begin_cycle": 0,
+                "observed_end_cycle": 0,
+                "counter_delta": 0,
+                "site_begin_cycle": site_begin,
+                "site_end_cycle": site_end,
+                "operation_begin_cycle": 0,
+                "operation_end_cycle": 0,
+                "observation_count": 0,
+                "observed_span_valid": False,
+                "site_span_valid": True,
+                "operation_span_valid": False,
+                "positive_delta": False,
+                "attribution_ambiguous": False,
+                "ncc_counter_valid": None,
+                "observation_status": None,
+                "worker": None,
+                "wait_scope": None,
+                "dte_counter_valid": None,
+                "dte_role": None,
             }
         )
+
+    for site_id, engine in enumerate(NCC_ENGINES):
+        site_begin = entry_begin + 60 + site_id * 42
+        operation_begin = site_begin + 6
+        observed_begin = operation_begin + 3
+        append_site(site_id, site_begin, site_begin + 31)
+        append_event(
+            {
+                "site_id": site_id,
+                "sub_index": 1,
+                "engine": engine,
+                "kind": "ncc-command",
+                "observed_begin_cycle": observed_begin,
+                "observed_end_cycle": observed_begin + 7 + site_id,
+                "counter_delta": 1 + site_id,
+                "site_begin_cycle": site_begin,
+                "site_end_cycle": site_begin + 31,
+                "operation_begin_cycle": operation_begin,
+                "operation_end_cycle": operation_begin + 11,
+                "observation_count": 2 + site_id,
+                "observed_span_valid": True,
+                "site_span_valid": True,
+                "operation_span_valid": True,
+                "positive_delta": True,
+                "attribution_ambiguous": False,
+                "ncc_counter_valid": True,
+                "observation_status": "engine-delta-bounded",
+                "worker": 0,
+                "wait_scope": None,
+                "dte_counter_valid": None,
+                "dte_role": None,
+            }
+        )
+
+    completion_site_begin = entry_begin + 278
+    completion_site_end = entry_begin + 312
+    append_site(5, completion_site_begin, completion_site_end)
+    append_event(
+        {
+            "site_id": 5,
+            "sub_index": 1,
+            "engine": None,
+            "kind": "ncc-completion-wait",
+            "observed_begin_cycle": 0,
+            "observed_end_cycle": 0,
+            "counter_delta": 0,
+            "site_begin_cycle": completion_site_begin,
+            "site_end_cycle": completion_site_end,
+            "operation_begin_cycle": entry_begin + 283,
+            "operation_end_cycle": entry_begin + 307,
+            "observation_count": 4,
+            "observed_span_valid": False,
+            "site_span_valid": True,
+            "operation_span_valid": True,
+            "positive_delta": False,
+            "attribution_ambiguous": False,
+            "ncc_counter_valid": None,
+            "observation_status": None,
+            "worker": 0,
+            "wait_scope": "worker",
+            "dte_counter_valid": None,
+            "dte_role": None,
+        }
+    )
+
+    append_site(6, entry_begin + 316, entry_begin + 322)
+
+    dte_site_begin = entry_begin + 326
+    dte_site_end = entry_begin + 446
+    dte_role = "send" if tile % 2 == 0 else "receive"
+    append_site(7, dte_site_begin, dte_site_end)
+    append_event(
+        {
+            "site_id": 7,
+            "sub_index": 1,
+            "engine": "DIRECT_DTE",
+            "kind": "direct-dte-wait",
+            "observed_begin_cycle": dte_site_begin,
+            "observed_end_cycle": dte_site_end,
+            "counter_delta": 0,
+            "site_begin_cycle": dte_site_begin,
+            "site_end_cycle": dte_site_end,
+            "operation_begin_cycle": entry_begin + 331,
+            "operation_end_cycle": entry_begin + 441,
+            "observation_count": 2,
+            "observed_span_valid": True,
+            "site_span_valid": True,
+            "operation_span_valid": True,
+            "positive_delta": False,
+            "attribution_ambiguous": False,
+            "ncc_counter_valid": None,
+            "observation_status": None,
+            "worker": None,
+            "wait_scope": None,
+            "dte_counter_valid": False,
+            "dte_role": dte_role,
+        }
+    )
+    phase_specs = (
+        (
+            "direct-dte-peer-ready-wait",
+            entry_begin + 331,
+            entry_begin + 345,
+        ),
+        ("direct-dte-setup-issue", entry_begin + 350, entry_begin + 365),
+        (
+            "direct-dte-completion-wait",
+            entry_begin + 370,
+            entry_begin + 420,
+        ),
+        ("direct-dte-cleanup", entry_begin + 425, entry_begin + 440),
+    )
+    if dte_role == "receive":
+        phase_specs = phase_specs[2:]
+    for sub_index, (kind, operation_begin, operation_end) in enumerate(
+        phase_specs, start=2
+    ):
+        append_event(
+            {
+                "site_id": 7,
+                "sub_index": sub_index,
+                "engine": "DIRECT_DTE",
+                "kind": kind,
+                "observed_begin_cycle": 0,
+                "observed_end_cycle": 0,
+                "counter_delta": 0,
+                "site_begin_cycle": dte_site_begin,
+                "site_end_cycle": dte_site_end,
+                "operation_begin_cycle": operation_begin,
+                "operation_end_cycle": operation_end,
+                "observation_count": 0,
+                "observed_span_valid": False,
+                "site_span_valid": True,
+                "operation_span_valid": True,
+                "positive_delta": False,
+                "attribution_ambiguous": False,
+                "ncc_counter_valid": None,
+                "observation_status": None,
+                "worker": None,
+                "wait_scope": None,
+                "dte_counter_valid": None,
+                "dte_role": dte_role,
+            }
+        )
+
+    append_site(8, entry_begin + 450, entry_begin + 460)
     entry_end = entry_begin + 500
     return {
         "tile": tile,
@@ -99,25 +258,57 @@ def _trace_tile(tile: int) -> dict[str, Any]:
         "record_flags": 71,
         "trace_state": 2,
         "overflow": False,
+        "cost_summary": {
+            "ncc_pmu_sample_cycles": 12,
+            "dte_pmu_sample_cycles": 7,
+            "event_bookkeeping_cycles": 9,
+            "status_poll_cycles": 13,
+            "site_hook_cycles": 11,
+            "completion_loop_bookkeeping_cycles": 5,
+            "entry_setup_cycles": 8,
+            "entry_teardown_cycles": 6,
+        },
         "events": events,
     }
+
+
 def _sites() -> list[dict[str, Any]]:
     specifications = (
-        ("CT", "compute.ct", "wafer_tx81_tsm_ct_execute"),
-        ("NE", "compute.gemm", "wafer_tx81_tsm_ne_execute"),
-        ("RDMA", "input.read", "wafer_tx81_tsm_rdma_execute"),
-        ("WDMA", "output.write", "wafer_tx81_tsm_wdma_execute"),
-        ("TDMA", "workspace.move", "wafer_tx81_tsm_tdma_execute"),
+        ("ncc-command", "CT", "compute.ct", "wafer_tx81_tsm_ct_execute"),
+        ("ncc-command", "NE", "compute.gemm", "wafer_tx81_tsm_ne_execute"),
+        ("ncc-command", "RDMA", "input.read", "wafer_tx81_tsm_rdma_execute"),
+        ("ncc-command", "WDMA", "output.write", "wafer_tx81_tsm_wdma_execute"),
+        ("ncc-command", "TDMA", "workspace.move", "wafer_tx81_tsm_tdma_execute"),
         (
+            "ncc-completion",
+            None,
+            "completion.ncc",
+            "wafer_tx81_ncc_join",
+        ),
+        (
+            "direct-dte-control",
+            None,
+            "communication.direct-dte.setup",
+            "wafer_tx81_direct_dte_setup",
+        ),
+        (
+            "direct-dte-wait",
             "DIRECT_DTE",
-            "communication.direct-dte",
+            "communication.direct-dte.wait",
             "wafer_tx81_direct_dte_wait",
+        ),
+        (
+            "direct-dte-control",
+            None,
+            "communication.direct-dte.cleanup",
+            "wafer_tx81_direct_dte_cleanup",
         ),
     )
     return [
         {
             "tile": tile,
             "site_id": site_id,
+            "site_kind": site_kind,
             "correlation_key": correlation,
             "engine": engine,
             "target_call_ordinal": 10 + site_id,
@@ -125,7 +316,9 @@ def _sites() -> list[dict[str, Any]]:
             "position": f"fixture.mlir:{10 + site_id * 4}:3",
         }
         for tile in range(16)
-        for site_id, (engine, correlation, symbol) in enumerate(specifications)
+        for site_id, (site_kind, engine, correlation, symbol) in enumerate(
+            specifications
+        )
     ]
 
 
@@ -160,16 +353,17 @@ def make_evidence() -> dict[str, Any]:
     }
     return {
         "schema": "wafer.profile.evidence",
-        "schema_version": 5,
+        "schema_version": 7,
         "run_id": "fixture-final-artifact",
         "identity": {
             "production_manifest_sha256": FINAL_DIGEST,
-            "profile_companion_schema_version": 3,
+            "profile_companion_schema_version": 4,
+            "record_abi": RECORD_ABI,
             "target_profile": target_profile,
             "launch": _kernel_launch(),
             "execution_ranks": 16,
             "site_correlation_basis": (
-                "heuristic-target-call-signature-occurrence-v1"
+                "typed-target-call-ordinal-ssa-identity-occurrence-v1"
             ),
         },
         "topology": [
@@ -181,7 +375,10 @@ def make_evidence() -> dict[str, Any]:
                 {
                     "sample_id": "primary",
                     "sample_index": 0,
-                    "host_elapsed_ns": 1_018_000,
+                    "device_elapsed_ns": 8_400,
+                    "device_timer_kind": "tx-stream-events",
+                    "host_submit_ns": 260_000,
+                    "host_launch_to_completion_ns": 1_018_000,
                     "completion_observation_resolution_ns": 100,
                 }
             ]

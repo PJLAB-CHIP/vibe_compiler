@@ -105,6 +105,16 @@ set_tests_properties(
   TIMEOUT 30
 )
 
+add_test(NAME wafer-board-direct-dte-profile-contract-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_direct_dte_profile_test.py
+)
+set_tests_properties(
+  wafer-board-direct-dte-profile-contract-python PROPERTIES
+  LABELS "runtime;no-card;board;all-rank;direct-dte;profiler;safety;evidence"
+  TIMEOUT 30
+)
+
 add_test(NAME wafer-direct-dte-board-evidence-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_direct_dte_board_evidence_test.py
@@ -650,6 +660,22 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
   set_tests_properties(wafer-runtime-cluster-direct-dte-no-card PROPERTIES
     LABELS "runtime;no-card;all-rank;cluster;direct-dte"
     TIMEOUT 300
+  )
+  add_test(NAME wafer-runtime-cluster-direct-dte-profile-no-card
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_direct_dte_collective_test.py
+      --wafer-compile $<TARGET_FILE:wafer-compile>
+      --wafer-run $<TARGET_FILE:wafer-run>
+      --work-dir
+        ${CMAKE_CURRENT_BINARY_DIR}/runtime-cluster-direct-dte-profile
+      --profile
+      --repeat 1
+      --no-card
+  )
+  set_tests_properties(
+    wafer-runtime-cluster-direct-dte-profile-no-card PROPERTIES
+    LABELS "runtime;no-card;all-rank;cluster;direct-dte;profiler"
+    TIMEOUT 600
   )
   add_test(NAME wafer-runtime-dte-ncc-execution-probe-no-card
     COMMAND ${Python3_EXECUTABLE}
@@ -2403,6 +2429,30 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
       TIMEOUT 600
+    )
+    add_test(NAME wafer-board-cluster-direct-dte-profile
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Board/wafer_board_direct_dte_collective_test.py
+        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-run $<TARGET_FILE:wafer-run>
+        --work-dir
+          ${CMAKE_CURRENT_BINARY_DIR}/board-cluster-direct-dte-profile
+        --device-id ${WAFER_BOARD_TEST_DEVICE_ID}
+        --expected-runtime-version ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_VERSION}
+        --expected-device-name ${WAFER_BOARD_TEST_EXPECTED_DEVICE_NAME}
+        --expected-pci-bus-id ${WAFER_BOARD_TEST_EXPECTED_PCI_BUS_ID}
+        --expected-tile-count ${WAFER_BOARD_TEST_EXPECTED_TILE_COUNT}
+        --expected-runtime-library-sha256
+          ${_wafer_expected_tx_runtime_library_sha256}
+        --completion-timeout-ms 60000
+        --profile
+        --repeat 1
+    )
+    set_tests_properties(wafer-board-cluster-direct-dte-profile PROPERTIES
+      LABELS "board;hardware;cluster;all-rank;direct-dte;profiler"
+      RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 1800
     )
     foreach(_wafer_compiler_optimization_case IN LISTS
         _wafer_compiler_optimization_collective_cases)

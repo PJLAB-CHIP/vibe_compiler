@@ -35,12 +35,13 @@ constexpr llvm::StringLiteral kActivationSchema = "wafer-profile-activation";
 constexpr llvm::StringLiteral kSiteMapSchema =
     "wafer-profile-target-call-site-map";
 constexpr llvm::StringLiteral kSiteBasis =
-    "verified-target-llvm-entry-reachable-tsm-call-preorder";
+    "verified-target-llvm-entry-reachable-profile-target-call-preorder";
 constexpr llvm::StringLiteral kSiteIdentity =
-    "final-rank-local-engine-site-id-and-typed-correlation-key";
+    "final-rank-local-typed-target-site-id-and-correlation-key";
 constexpr llvm::StringLiteral kFinalArtifact = "final-artifact";
 constexpr uint64_t kCountRecordBytes = WAFER_TX81_PROFILER_MIN_BUFFER_BYTES;
-constexpr uint64_t kTraceRecordBytes = 1024 * 1024;
+constexpr uint64_t kTraceRecordBytes =
+    WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES;
 
 llvm::Error invalid(llvm::Twine message) {
   return llvm::createStringError(llvm::errc::invalid_argument, "%s",
@@ -197,6 +198,7 @@ struct RawCapturePackage {
   ProfileCaptureKind capture = ProfileCaptureKind::Count;
   std::string packageReference;
   std::string manifestDigest;
+  std::string recordABI;
   uint64_t recordBytes = 0;
 };
 
@@ -217,7 +219,7 @@ llvm::Expected<ProfileCaptureKind> parseCaptureKind(llvm::StringRef value,
 uint64_t expectedRecordBytes(ProfileCaptureKind capture) {
   switch (capture) {
   case ProfileCaptureKind::Summary:
-    llvm_unreachable("summary is not a profile companion v3 capture");
+    llvm_unreachable("summary is not a profile companion v4 capture");
   case ProfileCaptureKind::Count:
     return kCountRecordBytes;
   case ProfileCaptureKind::Trace:
@@ -400,7 +402,7 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
     if (llvm::Error error =
             requireFields(**object,
                           {"variant_id", "capture", "package_ref",
-                           "manifest_sha256", "record_bytes"},
+                           "manifest_sha256", "record_abi", "record_bytes"},
                           {}, context))
       return std::move(error);
     llvm::Expected<std::string> id =
@@ -423,6 +425,10 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
         requireString(**object, "manifest_sha256", context, limits);
     if (!digest)
       return digest.takeError();
+    llvm::Expected<std::string> recordABI =
+        requireString(**object, "record_abi", context, limits);
+    if (!recordABI)
+      return recordABI.takeError();
     llvm::Expected<uint64_t> recordBytes =
         requireUnsigned(**object, "record_bytes", context);
     if (!recordBytes)
@@ -433,8 +439,10 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
                      "variant/capture order");
     if (*recordBytes != expectedRecordBytes(*capture))
       return invalid(context + ".record_bytes is not the capture contract");
+    if (*recordABI != kProfileRecordABI)
+      return invalid(context + ".record_abi is not the capture contract");
     plan.capturePackages.push_back(
-        {*id, *capture, *reference, *digest, *recordBytes});
+        {*id, *capture, *reference, *digest, *recordABI, *recordBytes});
   }
   return plan;
 }
@@ -516,6 +524,19 @@ llvm::Expected<ProfileTSMEngine> parseEngine(llvm::StringRef value,
   return invalid(context + " is not a supported profile engine");
 }
 
+llvm::Expected<ProfileTargetSiteKind>
+parseSiteKind(llvm::StringRef value, llvm::StringRef context) {
+  if (value == "ncc-command")
+    return ProfileTargetSiteKind::NCCCommand;
+  if (value == "ncc-completion")
+    return ProfileTargetSiteKind::NCCCompletion;
+  if (value == "direct-dte-control")
+    return ProfileTargetSiteKind::DirectDTEControl;
+  if (value == "direct-dte-wait")
+    return ProfileTargetSiteKind::DirectDTEWait;
+  return invalid(context + " is not a supported profile target site kind");
+}
+
 std::optional<ProfileTSMEngine>
 getDescriptorEngine(const TargetCallDescriptor &descriptor) {
   std::optional<TargetCallTSMEngine> engine =
@@ -550,6 +571,23 @@ parseOptionalUnsigned(const llvm::json::Object &object, llvm::StringRef field,
   return std::optional<uint64_t>(*value);
 }
 
+llvm::Expected<std::optional<ProfileTSMEngine>>
+parseOptionalEngine(const llvm::json::Object &object, llvm::StringRef context,
+                    const PackageParseLimits &limits) {
+  if (object.find("engine") == object.end())
+    return std::optional<ProfileTSMEngine>();
+  llvm::Expected<std::string> value =
+      requireString(object, "engine", context, limits);
+  if (!value)
+    return value.takeError();
+  std::string engineContext = (context + ".engine").str();
+  llvm::Expected<ProfileTSMEngine> engine =
+      parseEngine(*value, engineContext);
+  if (!engine)
+    return engine.takeError();
+  return std::optional<ProfileTSMEngine>(*engine);
+}
+
 llvm::Expected<ProfileTargetCallSite>
 parseSite(const llvm::json::Value &value, uint64_t index,
           const PackageParseLimits &limits, llvm::StringRef rankContext) {
@@ -561,9 +599,10 @@ parseSite(const llvm::json::Value &value, uint64_t index,
     return object.takeError();
   if (llvm::Error error = requireFields(
           **object,
-          {"site_id", "target_call_ordinal", "target_call_symbol", "engine",
+          {"site_id", "target_call_ordinal", "target_call_symbol", "site_kind",
            "correlation_key"},
-          {"function_ordinal", "block_ordinal", "instruction_ordinal"},
+          {"engine", "function_ordinal", "block_ordinal",
+           "instruction_ordinal"},
           context))
     return std::move(error);
 
@@ -580,12 +619,16 @@ parseSite(const llvm::json::Value &value, uint64_t index,
       requireString(**object, "target_call_symbol", context, limits);
   if (!symbol)
     return symbol.takeError();
-  llvm::Expected<std::string> engineText =
-      requireString(**object, "engine", context, limits);
-  if (!engineText)
-    return engineText.takeError();
-  llvm::Expected<ProfileTSMEngine> engine =
-      parseEngine(*engineText, context + ".engine");
+  llvm::Expected<std::string> siteKindText =
+      requireString(**object, "site_kind", context, limits);
+  if (!siteKindText)
+    return siteKindText.takeError();
+  llvm::Expected<ProfileTargetSiteKind> siteKind =
+      parseSiteKind(*siteKindText, context + ".site_kind");
+  if (!siteKind)
+    return siteKind.takeError();
+  llvm::Expected<std::optional<ProfileTSMEngine>> engine =
+      parseOptionalEngine(**object, context, limits);
   if (!engine)
     return engine.takeError();
   llvm::Expected<std::string> correlationKey =
@@ -608,21 +651,39 @@ parseSite(const llvm::json::Value &value, uint64_t index,
   llvm::ArrayRef<TargetCallDescriptor> descriptors = getTargetCallDescriptors();
   if (*targetCallOrdinal >= descriptors.size())
     return invalid(context + ".target_call_ordinal is outside the registry");
-  if (descriptors[*targetCallOrdinal].symbol != *symbol)
+  const TargetCallDescriptor &descriptor = descriptors[*targetCallOrdinal];
+  if (descriptor.symbol != *symbol)
     return invalid(context +
                    " target-call registry ordinal/symbol do not agree");
+  const ProfileTargetSiteKind descriptorKind =
+      getProfileTargetSiteKind(descriptor);
+  if (descriptorKind != *siteKind)
+    return invalid(context + " target-call registry semantic/site_kind do not "
+                             "agree");
   std::optional<ProfileTSMEngine> descriptorEngine =
-      getDescriptorEngine(descriptors[*targetCallOrdinal]);
-  if (!descriptorEngine)
-    return invalid(context +
-                   " names a target call that does not submit to an NCC engine");
-  if (*descriptorEngine != *engine)
+      getDescriptorEngine(descriptor);
+  const bool kindRequiresEngine =
+      *siteKind == ProfileTargetSiteKind::NCCCommand ||
+      *siteKind == ProfileTargetSiteKind::DirectDTEWait;
+  if (kindRequiresEngine && (!descriptorEngine || !*engine))
+    return invalid(context + " site_kind requires its typed engine");
+  if (!kindRequiresEngine && (descriptorEngine || *engine))
+    return invalid(context + " site_kind must not carry an engine");
+  if (descriptorEngine != *engine)
     return invalid(context + " target-call registry semantic/engine do not "
                              "agree");
+  if (*siteKind == ProfileTargetSiteKind::NCCCommand &&
+      **engine == ProfileTSMEngine::DirectDTE)
+    return invalid(context +
+                   " ncc-command must name a CT/NE/RDMA/WDMA/TDMA engine");
+  if (*siteKind == ProfileTargetSiteKind::DirectDTEWait &&
+      **engine != ProfileTSMEngine::DirectDTE)
+    return invalid(context + " direct-dte-wait must name DIRECT_DTE");
 
   site.siteId = *siteId;
   site.targetCallOrdinal = *targetCallOrdinal;
   site.targetCallSymbol = *symbol;
+  site.siteKind = *siteKind;
   site.engine = *engine;
   site.correlationKey = *correlationKey;
   site.functionOrdinal = *functionOrdinal;
@@ -1113,6 +1174,8 @@ loadCapturePackage(const RawCapturePackage &capture,
                    const PackageParseLimits &limits) {
   if (!isLowercaseSHA256(capture.manifestDigest))
     return invalid("profile capture manifest_sha256 is malformed");
+  if (capture.recordABI != kProfileRecordABI)
+    return invalid("profile capture record_abi is inconsistent");
   if (capture.recordBytes != expectedRecordBytes(capture.capture))
     return invalid("profile capture record_bytes is inconsistent");
   llvm::Expected<std::string> packageDirectory =
@@ -1134,11 +1197,49 @@ loadCapturePackage(const RawCapturePackage &capture,
     return std::move(error);
   return ProfileCapturePackage(capture.variantId, capture.capture,
                                capture.packageReference, capture.manifestDigest,
-                               capture.recordBytes, *packageDirectory,
+                               capture.recordABI, capture.recordBytes,
+                               *packageDirectory,
                                std::move(*package));
 }
 
 } // namespace
+
+ProfileTargetSiteKind
+getProfileTargetSiteKind(const TargetCallDescriptor &descriptor) {
+  if (std::optional<TargetCallTSMEngine> engine =
+          getTargetCallTSMEngine(descriptor))
+    return *engine == TargetCallTSMEngine::DirectDTE
+               ? ProfileTargetSiteKind::DirectDTEWait
+               : ProfileTargetSiteKind::NCCCommand;
+
+  const auto *builtin = std::get_if<TargetCallBuiltin>(&descriptor.semantic);
+  if (!builtin)
+    llvm_unreachable(
+        "non-builtin target call without an NCC issue-domain engine");
+  switch (*builtin) {
+  case TargetCallBuiltin::LocalFence:
+    return ProfileTargetSiteKind::NCCCompletion;
+  case TargetCallBuiltin::DirectDTEBegin:
+  case TargetCallBuiltin::DirectDTEBeginAfterPrepare:
+  case TargetCallBuiltin::DirectDTESendPrepare:
+  case TargetCallBuiltin::DirectDTERecvPrepare:
+  case TargetCallBuiltin::DirectDTEFinish:
+    return ProfileTargetSiteKind::DirectDTEControl;
+  case TargetCallBuiltin::RDMA:
+  case TargetCallBuiltin::WDMA:
+  case TargetCallBuiltin::GatherScatter:
+  case TargetCallBuiltin::Memset:
+  case TargetCallBuiltin::Bit2FP:
+  case TargetCallBuiltin::MaskMove:
+  case TargetCallBuiltin::Gemm:
+  case TargetCallBuiltin::GemmOrientedV2:
+  case TargetCallBuiltin::TDMAPad:
+  case TargetCallBuiltin::TDMAImg2Col:
+  case TargetCallBuiltin::DirectDTEWait:
+    llvm_unreachable("engine target call lost its typed issue domain");
+  }
+  llvm_unreachable("unknown target-call builtin");
+}
 
 ProfileVariantPackage::ProfileVariantPackage(
     std::string id, ProfileVariantRole role, std::string packageReference,
@@ -1154,12 +1255,14 @@ ProfileCapturePackage::ProfileCapturePackage(std::string variantId,
                                              ProfileCaptureKind capture,
                                              std::string packageReference,
                                              std::string manifestDigest,
+                                             std::string recordABI,
                                              uint64_t recordBytes,
                                              std::string packageDirectory,
                                              VerifiedPackageManifest package)
     : variantId(std::move(variantId)), capture(capture),
       packageReference(std::move(packageReference)),
-      manifestDigest(std::move(manifestDigest)), recordBytes(recordBytes),
+      manifestDigest(std::move(manifestDigest)),
+      recordABI(std::move(recordABI)), recordBytes(recordBytes),
       packageDirectory(std::move(packageDirectory)),
       package(std::move(package)) {}
 
@@ -1199,6 +1302,20 @@ llvm::StringRef stringifyProfileTSMEngine(ProfileTSMEngine engine) {
     return "DIRECT_DTE";
   }
   llvm_unreachable("unknown profile TSM engine");
+}
+
+llvm::StringRef stringifyProfileTargetSiteKind(ProfileTargetSiteKind kind) {
+  switch (kind) {
+  case ProfileTargetSiteKind::NCCCommand:
+    return "ncc-command";
+  case ProfileTargetSiteKind::NCCCompletion:
+    return "ncc-completion";
+  case ProfileTargetSiteKind::DirectDTEControl:
+    return "direct-dte-control";
+  case ProfileTargetSiteKind::DirectDTEWait:
+    return "direct-dte-wait";
+  }
+  llvm_unreachable("unknown profile target site kind");
 }
 
 const ProfileVariantPackage *

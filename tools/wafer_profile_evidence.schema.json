@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v5.json",
+  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v7.json",
   "title": "Wafer 16-tile profile evidence",
-  "description": "Version 5 final-artifact-only evidence consumed by wafer_profile_report.py. One primary production execution supplies the launch-to-completion host duration. The same trace launch supplies rank-local NCC PMU counters, bounded activity observations, and Direct-DTE wait/raw observations without inventing cross-tile order.",
+  "description": "Version 7 final-artifact evidence. Primary same-stream device elapsed, host submit, and host completion remain separate. Record ABI v3 separates Kcore site/operation spans from bounded NCC observations and publishes eight mutually-exclusive trace-only overhead counters. The analyzer forms an exclusive semantic rdcycle partition and a non-additive trace-overhead overlay; asynchronous NCC nanosecond work volume is never summed with either.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -22,7 +22,7 @@
       "const": "wafer.profile.evidence"
     },
     "schema_version": {
-      "const": 5
+      "const": 7
     },
     "run_id": {
       "$ref": "#/$defs/nonEmptyString"
@@ -187,14 +187,15 @@
         "target_profile",
         "launch",
         "execution_ranks",
-        "site_correlation_basis"
+        "site_correlation_basis",
+        "record_abi"
       ],
       "properties": {
         "production_manifest_sha256": {
           "$ref": "#/$defs/sha256"
         },
         "profile_companion_schema_version": {
-          "const": 3
+          "const": 4
         },
         "target_profile": {
           "$ref": "#/$defs/nonEmptyString"
@@ -206,7 +207,10 @@
           "const": 16
         },
         "site_correlation_basis": {
-          "const": "heuristic-target-call-signature-occurrence-v1"
+          "const": "typed-target-call-ordinal-ssa-identity-occurrence-v1"
+        },
+        "record_abi": {
+          "const": "wafer-tx81-profiler-record-v3"
         }
       }
     },
@@ -306,6 +310,7 @@
       "required": [
         "tile",
         "site_id",
+        "site_kind",
         "correlation_key",
         "engine",
         "target_call_ordinal",
@@ -319,11 +324,22 @@
           "type": "integer",
           "minimum": 0
         },
+        "site_kind": {
+          "enum": [
+            "ncc-command",
+            "ncc-completion",
+            "direct-dte-control",
+            "direct-dte-wait"
+          ]
+        },
         "correlation_key": {
           "$ref": "#/$defs/nonEmptyString"
         },
         "engine": {
-          "$ref": "#/$defs/engine"
+          "anyOf": [
+            {"$ref": "#/$defs/engine"},
+            {"type": "null"}
+          ]
         },
         "target_call_ordinal": {
           "type": "integer",
@@ -335,7 +351,34 @@
         "position": {
           "$ref": "#/$defs/nonEmptyString"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"site_kind": {"const": "ncc-command"}},
+            "required": ["site_kind"]
+          },
+          "then": {"properties": {"engine": {"$ref": "#/$defs/nccEngine"}}}
+        },
+        {
+          "if": {
+            "properties": {
+              "site_kind": {
+                "enum": ["ncc-completion", "direct-dte-control"]
+              }
+            },
+            "required": ["site_kind"]
+          },
+          "then": {"properties": {"engine": {"type": "null"}}}
+        },
+        {
+          "if": {
+            "properties": {"site_kind": {"const": "direct-dte-wait"}},
+            "required": ["site_kind"]
+          },
+          "then": {"properties": {"engine": {"const": "DIRECT_DTE"}}}
+        }
+      ]
     },
     "clockMapping": {
       "type": "object",
@@ -382,7 +425,10 @@
       "required": [
         "sample_id",
         "sample_index",
-        "host_elapsed_ns",
+        "device_elapsed_ns",
+        "device_timer_kind",
+        "host_submit_ns",
+        "host_launch_to_completion_ns",
         "completion_observation_resolution_ns"
       ],
       "properties": {
@@ -392,14 +438,27 @@
         "sample_index": {
           "const": 0
         },
-        "host_elapsed_ns": {
+        "device_elapsed_ns": {
           "type": "integer",
-          "minimum": 1,
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "device_timer_kind": {
+          "const": "tx-stream-events"
+        },
+        "host_submit_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "host_launch_to_completion_ns": {
+          "type": "integer",
+          "minimum": 0,
           "maximum": 18446744073709551615
         },
         "completion_observation_resolution_ns": {
           "type": "integer",
-          "minimum": 1,
+          "minimum": 0,
           "maximum": 18446744073709551615
         }
       }
@@ -412,10 +471,24 @@
         "site_id",
         "sub_index",
         "engine",
+        "kind",
         "observed_begin_cycle",
         "observed_end_cycle",
         "counter_delta",
-        "activity_valid",
+        "site_begin_cycle",
+        "site_end_cycle",
+        "operation_begin_cycle",
+        "operation_end_cycle",
+        "observation_count",
+        "observed_span_valid",
+        "site_span_valid",
+        "operation_span_valid",
+        "positive_delta",
+        "attribution_ambiguous",
+        "ncc_counter_valid",
+        "observation_status",
+        "worker",
+        "wait_scope",
         "dte_counter_valid",
         "dte_role"
       ],
@@ -433,19 +506,86 @@
           "minimum": 0
         },
         "engine": {
-          "$ref": "#/$defs/engine"
+          "anyOf": [
+            {"$ref": "#/$defs/engine"},
+            {"type": "null"}
+          ]
+        },
+        "kind": {
+          "enum": [
+            "ncc-command",
+            "ncc-completion-wait",
+            "direct-dte-wait",
+            "direct-dte-peer-ready-wait",
+            "direct-dte-setup-issue",
+            "direct-dte-completion-wait",
+            "direct-dte-cleanup",
+            "target-site"
+          ]
         },
         "observed_begin_cycle": {
-          "$ref": "#/$defs/u64"
+          "$ref": "#/$defs/u64",
+          "description": "Tile-local Kcore CPU cycle sampled with rdcycle."
         },
         "observed_end_cycle": {
-          "$ref": "#/$defs/u64"
+          "$ref": "#/$defs/u64",
+          "description": "Tile-local Kcore CPU cycle sampled with rdcycle."
         },
         "counter_delta": {
+          "$ref": "#/$defs/u64",
+          "description": "For NCC engines, vendor PMU engine execution time in nanoseconds. For DIRECT_DTE, uncalibrated raw channel-PMU activity when dte_counter_valid is true."
+        },
+        "site_begin_cycle": {
           "$ref": "#/$defs/u64"
         },
-        "activity_valid": {
+        "site_end_cycle": {
+          "$ref": "#/$defs/u64"
+        },
+        "operation_begin_cycle": {
+          "$ref": "#/$defs/u64"
+        },
+        "operation_end_cycle": {
+          "$ref": "#/$defs/u64"
+        },
+        "observation_count": {
+          "$ref": "#/$defs/u32"
+        },
+        "observed_span_valid": {
           "type": "boolean"
+        },
+        "site_span_valid": {
+          "type": "boolean"
+        },
+        "operation_span_valid": {
+          "type": "boolean"
+        },
+        "positive_delta": {
+          "type": "boolean"
+        },
+        "attribution_ambiguous": {
+          "type": "boolean"
+        },
+        "ncc_counter_valid": {
+          "type": ["boolean", "null"]
+        },
+        "observation_status": {
+          "type": ["string", "null"],
+          "enum": [
+            "engine-delta-bounded",
+            "counter-no-change",
+            "attribution-ambiguous",
+            "counter-unavailable",
+            null
+          ]
+        },
+        "worker": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 2
+        },
+        "wait_scope": {
+          "type": ["string", "null"],
+          "enum": ["local", "worker", null]
         },
         "dte_counter_valid": {
           "type": ["boolean", "null"]
@@ -459,56 +599,224 @@
         {
           "if": {
             "properties": {
-              "engine": {
-                "const": "DIRECT_DTE"
+              "kind": {
+                "const": "ncc-command"
               }
             },
-            "required": ["engine"]
+            "required": ["kind"]
           },
           "then": {
             "properties": {
-              "activity_valid": {
-                "const": true
+              "engine": {"$ref": "#/$defs/nccEngine"},
+              "observation_status": {
+                "enum": [
+                  "engine-delta-bounded",
+                  "counter-no-change",
+                  "attribution-ambiguous",
+                  "counter-unavailable"
+                ]
               },
-              "dte_counter_valid": {
-                "type": "boolean"
-              },
-              "dte_role": {
-                "enum": ["send", "receive"]
-              }
+              "ncc_counter_valid": {"type": "boolean"},
+              "dte_counter_valid": {"type": "null"},
+              "dte_role": {"type": "null"}
             },
             "allOf": [
               {
                 "if": {
                   "properties": {
-                    "dte_counter_valid": {
-                      "const": false
-                    }
+                    "ncc_counter_valid": {"const": false}
                   },
-                  "required": ["dte_counter_valid"]
+                  "required": ["ncc_counter_valid"]
                 },
                 "then": {
                   "properties": {
-                    "counter_delta": {
-                      "const": 0
-                    }
+                    "observed_begin_cycle": {"const": 0},
+                    "observed_end_cycle": {"const": 0},
+                    "counter_delta": {"const": 0},
+                    "observation_count": {"const": 0},
+                    "observed_span_valid": {"const": false},
+                    "positive_delta": {"const": false},
+                    "observation_status": {"const": "counter-unavailable"}
                   }
+                },
+                "else": {
+                  "properties": {
+                    "observation_count": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 4294967295
+                    },
+                    "observed_span_valid": {"const": true}
+                  },
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "attribution_ambiguous": {"const": true}
+                        },
+                        "required": ["attribution_ambiguous"]
+                      },
+                      "then": {
+                        "properties": {
+                          "observation_status": {
+                            "const": "attribution-ambiguous"
+                          }
+                        }
+                      },
+                      "else": {
+                        "if": {
+                          "properties": {
+                            "positive_delta": {"const": true}
+                          },
+                          "required": ["positive_delta"]
+                        },
+                        "then": {
+                          "properties": {
+                            "observation_status": {
+                              "const": "engine-delta-bounded"
+                            }
+                          }
+                        },
+                        "else": {
+                          "properties": {
+                            "observation_status": {
+                              "const": "counter-no-change"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "positive_delta": {"const": true}
+                        },
+                        "required": ["positive_delta"]
+                      },
+                      "then": {
+                        "properties": {
+                          "counter_delta": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 18446744073709551615
+                          }
+                        }
+                      },
+                      "else": {
+                        "properties": {
+                          "counter_delta": {"const": 0}
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             ]
           },
           "else": {
             "properties": {
-              "dte_counter_valid": {
-                "type": "null"
-              },
-              "dte_role": {
-                "type": "null"
+              "observation_status": {"type": "null"},
+              "ncc_counter_valid": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "engine": {"const": "DIRECT_DTE"}
+            },
+            "required": ["engine"]
+          },
+          "then": {
+            "properties": {
+              "dte_role": {"enum": ["send", "receive"]}
+            }
+          },
+          "else": {
+            "properties": {
+              "dte_role": {"type": "null"},
+              "dte_counter_valid": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "direct-dte-wait"
               }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "dte_counter_valid": {"type": "boolean"}
+            }
+          },
+          "else": {
+            "properties": {
+              "dte_counter_valid": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "target-site"
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "sub_index": {"const": 0},
+              "engine": {"type": "null"},
+              "observed_begin_cycle": {"const": 0},
+              "observed_end_cycle": {"const": 0},
+              "counter_delta": {"const": 0},
+              "operation_begin_cycle": {"const": 0},
+              "operation_end_cycle": {"const": 0},
+              "observation_count": {"const": 0},
+              "observed_span_valid": {"const": false},
+              "site_span_valid": {"const": true},
+              "operation_span_valid": {"const": false},
+              "positive_delta": {"const": false},
+              "attribution_ambiguous": {"const": false},
+              "ncc_counter_valid": {"type": "null"},
+              "observation_status": {"type": "null"},
+              "worker": {"type": "null"},
+              "wait_scope": {"type": "null"},
+              "dte_counter_valid": {"type": "null"},
+              "dte_role": {"type": "null"}
             }
           }
         }
       ]
+    },
+    "costSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ncc_pmu_sample_cycles",
+        "dte_pmu_sample_cycles",
+        "event_bookkeeping_cycles",
+        "status_poll_cycles",
+        "site_hook_cycles",
+        "completion_loop_bookkeeping_cycles",
+        "entry_setup_cycles",
+        "entry_teardown_cycles"
+      ],
+      "properties": {
+        "ncc_pmu_sample_cycles": {"$ref": "#/$defs/u64"},
+        "dte_pmu_sample_cycles": {"$ref": "#/$defs/u64"},
+        "event_bookkeeping_cycles": {"$ref": "#/$defs/u64"},
+        "status_poll_cycles": {"$ref": "#/$defs/u64"},
+        "site_hook_cycles": {"$ref": "#/$defs/u64"},
+        "completion_loop_bookkeeping_cycles": {"$ref": "#/$defs/u64"},
+        "entry_setup_cycles": {"$ref": "#/$defs/u64"},
+        "entry_teardown_cycles": {"$ref": "#/$defs/u64"}
+      }
     },
     "traceTile": {
       "type": "object",
@@ -525,6 +833,7 @@
         "record_flags",
         "trace_state",
         "overflow",
+        "cost_summary",
         "events"
       ],
       "properties": {
@@ -532,10 +841,12 @@
           "$ref": "#/$defs/tile"
         },
         "entry_begin_cycle": {
-          "$ref": "#/$defs/u64"
+          "$ref": "#/$defs/u64",
+          "description": "Tile-local Kcore CPU cycle sampled with rdcycle."
         },
         "entry_end_cycle": {
-          "$ref": "#/$defs/u64"
+          "$ref": "#/$defs/u64",
+          "description": "Tile-local Kcore CPU cycle sampled with rdcycle."
         },
         "capacity": {
           "type": "integer",
@@ -564,6 +875,9 @@
         },
         "overflow": {
           "type": "boolean"
+        },
+        "cost_summary": {
+          "$ref": "#/$defs/costSummary"
         },
         "events": {
           "type": "array",
@@ -632,7 +946,8 @@
       ],
       "properties": {
         "statistics_window": {
-          "$ref": "#/$defs/counterSnapshot"
+          "$ref": "#/$defs/counterSnapshot",
+          "description": "Unconverted aggregate PMU statistics-window tick counter; not the rdcycle timeline axis."
         },
         "fu": {
           "$ref": "#/$defs/counterSnapshot"

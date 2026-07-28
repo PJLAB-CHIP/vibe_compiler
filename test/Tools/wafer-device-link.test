@@ -55,6 +55,10 @@
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm --defined-only %t.profile-summary.so | FileCheck %s --check-prefix=PROFILE-SUMMARY-SYMBOLS
 # RUN: %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/minimal-profile-target-kernel.ll \
+# RUN:   --output %t.profile-count.so --profile-capture count
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm --defined-only %t.profile-count.so | FileCheck %s --check-prefix=PROFILE-COUNT-SYMBOLS
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/minimal-profile-target-kernel.ll \
 # RUN:   --output %t.profile-trace.so --profile-capture trace
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm --defined-only %t.profile-trace.so | FileCheck %s --check-prefix=PROFILE-TRACE-SYMBOLS
 
@@ -198,6 +202,10 @@
 # PROFILE-SUMMARY-SYMBOLS-DAG: wafer_tx81_profile_entry_begin_from_config
 # PROFILE-SUMMARY-SYMBOLS-DAG: wafer_tx81_profile_entry_end
 # PROFILE-SUMMARY-SYMBOLS-NOT: wafer_tx81_profile_site_
+# PROFILE-COUNT-SYMBOLS-DAG: wafer_tx81_profile_entry_begin_from_config
+# PROFILE-COUNT-SYMBOLS-DAG: wafer_tx81_profile_entry_end
+# PROFILE-COUNT-SYMBOLS-DAG: wafer_tx81_profile_site_begin
+# PROFILE-COUNT-SYMBOLS-DAG: wafer_tx81_profile_site_end
 # PROFILE-TRACE-SYMBOLS-DAG: wafer_tx81_profile_entry_begin_from_config
 # PROFILE-TRACE-SYMBOLS-DAG: wafer_tx81_profile_entry_end
 # PROFILE-TRACE-SYMBOLS-DAG: wafer_tx81_profile_site_begin

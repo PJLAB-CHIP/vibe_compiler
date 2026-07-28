@@ -16,6 +16,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -288,9 +289,9 @@ protected:
                        int64_t(wafer::runtime::kProfileCompanionSchemaVersion));
         json.attribute(
             "site_basis",
-            "verified-target-llvm-entry-reachable-tsm-call-preorder");
+            "verified-target-llvm-entry-reachable-profile-target-call-preorder");
         json.attribute("correlation_basis",
-                       "heuristic-target-call-signature-occurrence-v1");
+                       wafer::runtime::kProfileSiteCorrelationBasis);
         json.attribute("target_call_registry_size",
                        static_cast<int64_t>(descriptors.size()));
         json.attributeArray("variants", [&] {
@@ -301,20 +302,49 @@ protected:
                 json.object([&] {
                   json.attribute("logical_rank", rank);
                   json.attributeArray("sites", [&] {
-                    json.object([&] {
-                      json.attribute("site_id", int64_t(0));
-                      json.attribute("function_ordinal", int64_t(0));
-                      json.attribute("block_ordinal", int64_t(0));
-                      json.attribute("instruction_ordinal", int64_t(0));
-                      json.attribute("target_call_ordinal", int64_t(0));
-                      json.attribute("target_call_symbol",
-                                     badSiteSymbol
-                                         ? "wafer_invalid_target_call"
-                                         : descriptors.front().symbol);
-                      json.attribute("engine", "RDMA");
-                      json.attribute("correlation_key",
-                                     "registry:0:structural-occurrence:0");
-                    });
+                    struct SiteFixture {
+                      wafer::TargetCallBuiltin builtin;
+                      llvm::StringRef kind;
+                      std::optional<llvm::StringRef> engine;
+                    };
+                    const std::array<SiteFixture, 4> sites = {{
+                        {wafer::TargetCallBuiltin::RDMA, "ncc-command", "RDMA"},
+                        {wafer::TargetCallBuiltin::LocalFence,
+                         "ncc-completion", std::nullopt},
+                        {wafer::TargetCallBuiltin::DirectDTEBegin,
+                         "direct-dte-control", std::nullopt},
+                        {wafer::TargetCallBuiltin::DirectDTEWait,
+                         "direct-dte-wait", "DIRECT_DTE"},
+                    }};
+                    for (auto [siteId, site] : llvm::enumerate(sites)) {
+                      const wafer::TargetCallDescriptor &descriptor =
+                          wafer::getTargetCallDescriptor(site.builtin);
+                      const auto *begin = descriptors.data();
+                      const uint64_t ordinal =
+                          static_cast<uint64_t>(&descriptor - begin);
+                      json.object([&] {
+                        json.attribute("site_id",
+                                       static_cast<int64_t>(siteId));
+                        json.attribute("function_ordinal", int64_t(0));
+                        json.attribute("block_ordinal", int64_t(0));
+                        json.attribute("instruction_ordinal",
+                                       static_cast<int64_t>(siteId));
+                        json.attribute("target_call_ordinal",
+                                       static_cast<int64_t>(ordinal));
+                        json.attribute(
+                            "target_call_symbol",
+                            badSiteSymbol && siteId == 0
+                                ? "wafer_invalid_target_call"
+                                : descriptor.symbol);
+                        json.attribute("site_kind", site.kind);
+                        if (site.engine)
+                          json.attribute("engine", *site.engine);
+                        json.attribute(
+                            "correlation_key",
+                            "registry:" + std::to_string(ordinal) +
+                                ":structural-occurrence:0");
+                      });
+                    }
                   });
                 });
               }
@@ -342,7 +372,7 @@ protected:
         json.attribute("site_map", "site-map.json");
         json.attribute(
             "site_identity",
-            "final-rank-local-engine-site-id-and-typed-correlation-key");
+            "final-rank-local-typed-target-site-id-and-correlation-key");
         json.attributeArray("execution_packages", [&] {
           json.object([&] {
             json.attribute("variant_id", "final-artifact");
@@ -357,6 +387,7 @@ protected:
               json.attribute("capture", capture.name);
               json.attribute("package_ref", capture.reference);
               json.attribute("manifest_sha256", capture.digest);
+              json.attribute("record_abi", wafer::runtime::kProfileRecordABI);
               json.attribute("record_bytes",
                              static_cast<int64_t>(capture.recordBytes));
             });
@@ -383,7 +414,7 @@ TEST_F(ProfileCompanionTest, LoadsExactBoundCompanionAndSixteenRankSiteMap) {
   EXPECT_EQ(loaded->getVariants().size(), 1u);
   EXPECT_EQ(loaded->getCaptures().size(), 2u);
   EXPECT_EQ(loaded->getSiteMaps().size(), 1u);
-  EXPECT_EQ(loaded->getSiteCount(), 16u);
+  EXPECT_EQ(loaded->getSiteCount(), 64u);
   const auto *final =
       loaded->findVariant(wafer::runtime::ProfileVariantRole::FinalArtifact);
   ASSERT_NE(final, nullptr);
@@ -392,6 +423,7 @@ TEST_F(ProfileCompanionTest, LoadsExactBoundCompanionAndSixteenRankSiteMap) {
       "final-artifact", wafer::runtime::ProfileCaptureKind::Trace);
   ASSERT_NE(trace, nullptr);
   EXPECT_EQ(trace->getRecordBytes(), UINT64_C(1024) * 1024);
+  EXPECT_EQ(trace->getRecordABI(), wafer::runtime::kProfileRecordABI);
   for (wafer::runtime::ProfileCaptureKind capture :
        {wafer::runtime::ProfileCaptureKind::Count,
         wafer::runtime::ProfileCaptureKind::Trace}) {
@@ -404,9 +436,21 @@ TEST_F(ProfileCompanionTest, LoadsExactBoundCompanionAndSixteenRankSiteMap) {
   const auto *siteMap = loaded->findSiteMap("final-artifact");
   ASSERT_NE(siteMap, nullptr);
   ASSERT_EQ(siteMap->ranks.size(), 16u);
-  ASSERT_EQ(siteMap->ranks.front().sites.size(), 1u);
-  EXPECT_EQ(siteMap->ranks.front().sites.front().engine,
+  ASSERT_EQ(siteMap->ranks.front().sites.size(), 4u);
+  EXPECT_EQ(siteMap->ranks.front().sites[0].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::NCCCommand);
+  EXPECT_EQ(siteMap->ranks.front().sites[0].engine,
             wafer::runtime::ProfileTSMEngine::RDMA);
+  EXPECT_EQ(siteMap->ranks.front().sites[1].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::NCCCompletion);
+  EXPECT_FALSE(siteMap->ranks.front().sites[1].engine);
+  EXPECT_EQ(siteMap->ranks.front().sites[2].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEControl);
+  EXPECT_FALSE(siteMap->ranks.front().sites[2].engine);
+  EXPECT_EQ(siteMap->ranks.front().sites[3].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEWait);
+  EXPECT_EQ(siteMap->ranks.front().sites[3].engine,
+            wafer::runtime::ProfileTSMEngine::DirectDTE);
   EXPECT_FALSE(siteMap->ranks.front().sites.front().correlationKey.empty());
 }
 
@@ -462,7 +506,96 @@ TEST_F(ProfileCompanionTest, RejectsUnknownPlanField) {
             std::string::npos);
 }
 
-TEST_F(ProfileCompanionTest, RejectsSummaryCaptureInVersionThree) {
+TEST_F(ProfileCompanionTest, RejectsLegacyRecordABIWithCurrentRecordBytes) {
+  llvm::SmallString<256> planPath(companion);
+  llvm::sys::path::append(planPath,
+                          wafer::runtime::kProfileCompanionPlanFileName);
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> existing =
+      llvm::MemoryBuffer::getFile(planPath);
+  ASSERT_TRUE(static_cast<bool>(existing));
+  std::string corrupted = (*existing)->getBuffer().str();
+  size_t recordABI = corrupted.find(wafer::runtime::kProfileRecordABI);
+  ASSERT_NE(recordABI, std::string::npos);
+  corrupted.replace(recordABI, wafer::runtime::kProfileRecordABI.size(),
+                    "wafer-tx81-profiler-record-v2");
+  ASSERT_NO_FATAL_FAILURE(writeText(planPath, corrupted));
+  ASSERT_NO_FATAL_FAILURE(writeActivation());
+
+  auto loaded =
+      wafer::runtime::loadVerifiedProfileCompanion(companion, production);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(llvm::toString(loaded.takeError()).find("record_abi"),
+            std::string::npos);
+}
+
+TEST_F(ProfileCompanionTest, RejectsVersionThreeActivation) {
+  llvm::SmallString<256> activationPath(companion);
+  llvm::sys::path::append(
+      activationPath, wafer::runtime::kProfileCompanionActivationFileName);
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> existing =
+      llvm::MemoryBuffer::getFile(activationPath);
+  ASSERT_TRUE(static_cast<bool>(existing));
+  std::string corrupted = (*existing)->getBuffer().str();
+  const std::string current = "\"schema_version\": 4";
+  size_t version = corrupted.find(current);
+  ASSERT_NE(version, std::string::npos);
+  corrupted.replace(version, current.size(), "\"schema_version\": 3");
+  ASSERT_NO_FATAL_FAILURE(writeText(activationPath, corrupted));
+
+  auto loaded =
+      wafer::runtime::loadVerifiedProfileCompanion(companion, production);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(llvm::toString(loaded.takeError())
+                .find("schema_version is not supported"),
+            std::string::npos);
+}
+
+TEST_F(ProfileCompanionTest, RejectsEngineOnCompletionSite) {
+  llvm::SmallString<256> siteMapPath(companion);
+  llvm::sys::path::append(siteMapPath,
+                          wafer::runtime::kProfileCompanionSiteMapFileName);
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> existing =
+      llvm::MemoryBuffer::getFile(siteMapPath);
+  ASSERT_TRUE(static_cast<bool>(existing));
+  std::string corrupted = (*existing)->getBuffer().str();
+  const std::string completion = "\"site_kind\": \"ncc-completion\",";
+  size_t position = corrupted.find(completion);
+  ASSERT_NE(position, std::string::npos);
+  position += completion.size();
+  corrupted.insert(position, "\n                      \"engine\": \"CT\",");
+  ASSERT_NO_FATAL_FAILURE(writeText(siteMapPath, corrupted));
+  ASSERT_NO_FATAL_FAILURE(writeActivation());
+
+  auto loaded =
+      wafer::runtime::loadVerifiedProfileCompanion(companion, production);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(llvm::toString(loaded.takeError()).find("must not carry an engine"),
+            std::string::npos);
+}
+
+TEST_F(ProfileCompanionTest, RejectsMissingEngineOnNCCCommandSite) {
+  llvm::SmallString<256> siteMapPath(companion);
+  llvm::sys::path::append(siteMapPath,
+                          wafer::runtime::kProfileCompanionSiteMapFileName);
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> existing =
+      llvm::MemoryBuffer::getFile(siteMapPath);
+  ASSERT_TRUE(static_cast<bool>(existing));
+  std::string corrupted = (*existing)->getBuffer().str();
+  const std::string engine = "\"engine\": \"RDMA\",\n";
+  size_t position = corrupted.find(engine);
+  ASSERT_NE(position, std::string::npos);
+  corrupted.erase(position, engine.size());
+  ASSERT_NO_FATAL_FAILURE(writeText(siteMapPath, corrupted));
+  ASSERT_NO_FATAL_FAILURE(writeActivation());
+
+  auto loaded =
+      wafer::runtime::loadVerifiedProfileCompanion(companion, production);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(llvm::toString(loaded.takeError()).find("requires its typed engine"),
+            std::string::npos);
+}
+
+TEST_F(ProfileCompanionTest, RejectsSummaryCaptureInVersionFour) {
   llvm::SmallString<256> planPath(companion);
   llvm::sys::path::append(planPath,
                           wafer::runtime::kProfileCompanionPlanFileName);

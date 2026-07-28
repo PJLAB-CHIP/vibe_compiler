@@ -47,11 +47,14 @@ Pipeline position:
   两值`RuntimeLaunchKind`；构造schema-v6 `PackageManifest`，执行唯一C++
   semantic verification并序列化canonical JSON。在Q18 staging内复制、复核all-and-only package members后原子
   发布。runtime重新解析并验证同一typed model，再结合invocation bindings和`RuntimeEnvironment`形成
-  side-effect-free `RuntimeSessionPlan`。
+  side-effect-free `RuntimeSessionPlan`。启用`--profile`时，普通production package保持逐字节不变，只从其
+  final artifact原子派生versioned Count/Trace companion；board runtime在同一qualified session执行一次未插桩
+  Primary及各一次Count/Trace，并用TX same-stream event pair产生Primary device execution time。
 - Output artifact / IR:
   move-only `PackageBundle(package root, ExecutionConfig, VerifiedPackageManifest)`、schema-v6 canonical package
   JSON/published directory和no-card `RuntimeSessionPlan`。`PackageBundle`只拥有已验证root/config/manifest的
-  lifetime，不复制program、instruction command list或形成package外sidecar。
+  lifetime，不复制program、instruction command list或形成package外sidecar。可选profile输出是与production
+  manifest digest精确绑定的companion，以及一次campaign原子发布的evidence/analysis/HTML三文件。
 - Downstream consumer:
   wafer-run/no-card inspection、target execution model/board integration、target module loader和invocation API。
 - User-level driver / named pipeline:
@@ -60,13 +63,16 @@ Pipeline position:
 - Explicit non-goals:
   不复制per-command instruction schedule、orientation或movement descriptor；不解析printer text，不允许
   Python/C++双validator，不在runtime重新planning、恢复planner决策或按module contents猜ABI revision；不把条件性
-  capability集合或package wire升级作为Q32 planner输入或Q32.V无consumer时的完成前置。
+  capability集合或package wire升级作为Q32 planner输入或Q32.V无consumer时的完成前置；不把host submit/envelope、
+  Trace插桩耗时或raw counter冒充final artifact device execution time。
 - Completion gate:
   manifest all-and-only覆盖bundle ranks/modules/entries/resources/slots；canonical roundtrip稳定；invalid package在
   load/allocate前失败；任一manifest/package publication late failure不发布partial Q18 package，且不改变已验证
   Q17 target artifact bundle。Q0.L另要求profile/config逐字段join、registered target/runtime-ABI映射和readback正反例；
   当前宽泛常量不能绕过该映射。rank-count=1/16 production package、Direct DTE transport requirement和no-card
-  preflight均保持schema-v6闭合；Q32改写candidate或winner变化不改变该package合同。
+  preflight均保持schema-v6闭合；Q32改写candidate或winner变化不改变该package合同。profile completion另要求
+  production byte-equivalence、companion digest/权限闭合，以及一次Primary→Count→Trace campaign中的device event
+  main time、分离host diagnostics、correctness、capacity和per-tile/engine evidence全部通过。
 ```
 
 ### 2.1 两种 Runtime Launch Kind
@@ -98,14 +104,21 @@ rank数或测试case恢复遗漏字段。
 ```cpp
 Error submitKernelPhase(KernelLaunchForm form,
                         RuntimeLaunchPhaseRole phase,
-                        ArrayRef<BoardRankLaunch> ranks);
+                        ArrayRef<BoardRankLaunch> ranks,
+                        BoardDeviceTimingPolicy timingPolicy);
 Error submitModel(BoardGraphHandle graph,
-                  ArrayRef<BoardModelTensorLaunch> tensors);
+                  ArrayRef<BoardModelTensorLaunch> tensors,
+                  BoardDeviceTimingPolicy timingPolicy);
 ```
 
 BoardRuntime按verified ordered phases调用`submitKernelPhase`，每个phase单独等待terminal并把submit失败归到
 launch stage；全部phase共用一个absolute deadline，最后才release submission。TX provider在首phase建立并拥有
 stream/argument storage，后续phase只能在前一phase terminal后复用，不能再把main submit藏进`waitAll`。
+`StreamEvents`要求被测phase只有一个device stream：grid、cluster、model以及单rank per-rank满足该边界；
+multi-rank per-rank必须由BoardRuntime在qualification、allocation、H2D、module/graph load等provider/device
+effect前拒绝，TX submit入口保留同一防御性检查。`Disabled`只关闭本次invocation的event创建和计时，不降低当前
+digest-qualified TX target provider的exact ABI基线；`txEventCreate/Destroy/Record/Query/ElapsedTime`与stream、
+kernel/model API一样是构建探测和动态符号解析的必需成员。
 kernel phase参数不能携带Direct DTE等workload identity。manifest schema v6把原
 `target.launch_abi`替换为必填tagged `target.launch`，其中`kind`只能是`kernel`/`model`；parser不迁移
 schema v5，防止旧四值模型继续成为隐式事实源。
@@ -549,24 +562,29 @@ schema-v6 manifest，不改变普通package成员集合，也不是让runtime从
 `activation.json`在其它companion成员完整形成后最后写入。missing、partial、stale、metadata key不精确或任一digest mismatch
 均在任何board effect前拒绝。companion只包含一个`final-artifact`未插桩execution binding，以及它的count/trace
 两个内部capture binding；不存在summary、reserved baseline、winner alias、第二份execution package或候选比较。所有capture
-binding都不是public launch mode。
+binding都不是public launch mode。capture binding必须同时精确绑定record bytes和record ABI；旧CRT即使仍使用相同
+1 MiB trace buffer，也必须在provider/device effect前因ABI不匹配被拒绝。
 
 用户仍以原`wafer-run`调用提供普通package以及既有ResourceId resource/expected/output binding。runner在发现
 exact-match companion后自动执行一个固定protocol，不增加profile mode、采样参数或新输入：
 
 1. 在一个固定、已完成environment和软硬件identity资格检查的session内，复用同一input bytes，先执行一次未插桩
-   final artifact Primary。该次执行启用高分辨率completion observation；唯一用户级总耗时是host steady-clock从
-   submit到all-rank trusted completion的本次观测值，不自动warm-up、重复或计算median/range；
+   final artifact Primary。TX provider在每个production phase的同一device stream上用start/end event pair包围
+   submission，所有phase的device-event elapsed time之和是唯一用户级kernel/model主耗时。该次执行另启用高分辨率
+   completion observation，分别记录host submit调用耗时、host steady-clock从首次submit到all-rank trusted
+   completion的envelope和实际最大poll gap；三者只是host诊断，不自动warm-up、重复或计算median/range；
 2. Primary必须通过全部writable output校验，并按`(logical_rank, role, role_index)`和exact contract建立同session
    reference。调用方已有external expected时每次都做semantic correctness；没有external expected时只能声明后续
    diagnostic capture与本次Primary等价，absolute correctness明确为unknown；
 3. Primary完成后依次执行count和trace。count给出动态event容量preflight；trace header同时保留entry-local cycle、
    aggregate PMU、`next_sequence`、`dropped_event_count`、raw flags、terminal state和typed events。all-and-only
-   16个rank的guard、capacity、overflow、sequence、rank-local site/sub-index、engine与count/trace exact match均须验证；
+   16个rank的guard、capacity、overflow、sequence、rank-local site/sub-index、typed phase kind与count/trace exact
+   match均须验证；
    trace storage使用DDR，不占用或改变被测SPM计划；
-4. count/trace是correlated diagnostic launch，其耗时、PMU/cache扰动和entry span不进入Primary
-   submit-to-all-completion总耗时。trace clone在真实issue边界和profile-only local-completion轮询中采样hardware
-   execution counter；NCC只发布counter实际增长的engine activity window及其观测分辨率；Direct-DTE发布真实
+4. count/trace是correlated diagnostic launch，其耗时、PMU/cache扰动和entry span不进入Primary device-event
+   elapsed time。trace clone在真实issue边界和profile-only local-completion轮询中采样hardware execution
+   counter；CT/NE/RDMA/WDMA/TDMA execution delta按vendor producer/parser合同直接解释为nanoseconds，
+   其Kcore `rdcycle` begin/end只发布counter观测的tile-local CPU-cycle bounded window；Direct-DTE发布真实
    `direct_dte_wait`/completion窗口，并将DTE PMU delta标为未校准raw activity。当前runtime可把
    affine clock mapping显式发布为invalid/unavailable；此时仍保留全部16个tile-local timeline，但禁止cross-tile order、
    global overlap或cluster critical-path claim。带uncertainty的qualified mapping只作为未来可选增强；
@@ -577,9 +595,16 @@ exact-match companion后自动执行一个固定protocol，不增加profile mode
    generator，失败时不得留下valid run或改变普通package。
 
 companion内部两个capture都只解释同一个final artifact，它们不是public package、用户选项或新的runtime launch kind。
-site id按rank解释。report中的execution timeline不得显示`TsmExecute` submit调用跨度；begin/return只能进入折叠的issue
-diagnostic。CT/NE/RDMA/WDMA/TDMA lane来自NCC PMU activity window；Direct-DTE lane来自真实
-`direct_dte_wait`/completion窗口，DTE PMU delta单独显示为raw activity而不是耗时。fence/ready-order本身不作为engine事件。
+site id按rank解释，typed site kind覆盖NCC command、LocalFence/NCCJoin completion和Direct-DTE control/wait。
+report把同一tile的Kcore phase、Trace-only overhead和engine activity分层：`TsmExecute` submit、completion wait、
+Direct-DTE peer-ready/setup/completion/cleanup都可作为Kcore span显示，但不得冒充engine activity。
+CT/NE/RDMA/WDMA/TDMA lane的高度/标签来自NCC PMU execution nanoseconds，位置来自严格包围counter read的
+Trace entry-local Kcore `rdcycle` bounded window；不同engine可重叠。zero delta保留为counter-no-change marker，
+same-engine outstanding标为attribution-ambiguous，不能继续静默绑定latest site。Kcore interval union的补集必须分成
+site-control、between-site-control和带reason的capture-boundary residual并用斜纹显示，不能再留成没有来源的空白。
+Trace PMU sample、event/site bookkeeping、status poll、DTE probe和entry setup/teardown另给exclusive cycle cost，
+并明确不计入Primary。`statistics_window`保持raw ticks，Kcore `rdcycle`保持CPU cycles，`tile_clock`只作metadata且
+不得用于换算。DTE PMU delta单独显示为raw activity而不是耗时。
 
 ## 9. No-Card And Board Evidence
 

@@ -33,9 +33,9 @@ constexpr llvm::StringLiteral kSiteBeginSymbol =
     "wafer_tx81_profile_site_begin";
 constexpr llvm::StringLiteral kSiteEndSymbol = "wafer_tx81_profile_site_end";
 
-struct CollectedProfileTSMCallSite {
+struct CollectedProfileTargetCallSite {
   const llvm::CallBase *call = nullptr;
-  ProfileTSMCallSite record;
+  ProfileTargetCallSite record;
 };
 
 struct ProfileValueIdentityIndex {
@@ -86,7 +86,7 @@ llvm::Expected<std::string> getTargetCallArgumentSignature(
     if (!operand->getType()->isIntegerTy(width))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "profile TSM target call argument does not match its typed descriptor");
+          "profile target call argument does not match its typed descriptor");
     if (const auto *constant = llvm::dyn_cast<llvm::ConstantInt>(operand)) {
       output << "constant:0x"
              << llvm::utohexstr(constant->getZExtValue(),
@@ -135,9 +135,9 @@ llvm::Expected<std::string> getTargetCallArgumentSignature(
   return llvm::toHex(hasher.final(), /*LowerCase=*/true);
 }
 
-llvm::Expected<std::vector<CollectedProfileTSMCallSite>>
-collectProfileTSMCallSitesImpl(const llvm::Module &module,
-                               llvm::StringRef entrySymbol) {
+llvm::Expected<std::vector<CollectedProfileTargetCallSite>>
+collectProfileTargetCallSitesImpl(const llvm::Module &module,
+                                  llvm::StringRef entrySymbol) {
   const llvm::Function *entry = module.getFunction(entrySymbol);
   if (!entry || entry->isDeclaration())
     return llvm::createStringError(
@@ -163,7 +163,7 @@ collectProfileTSMCallSitesImpl(const llvm::Module &module,
   ProfileValueIdentityIndex valueIdentity =
       buildProfileValueIdentityIndex(reachable);
   llvm::StringMap<uint64_t> occurrences;
-  std::vector<CollectedProfileTSMCallSite> sites;
+  std::vector<CollectedProfileTargetCallSite> sites;
   for (auto [functionOrdinal, function] : llvm::enumerate(reachable)) {
     uint64_t blockOrdinal = 0;
     for (const llvm::BasicBlock &block : *function) {
@@ -178,20 +178,14 @@ collectProfileTSMCallSitesImpl(const llvm::Module &module,
           ++instructionOrdinal;
           continue;
         }
-        std::optional<TargetCallTSMEngine> engine =
-            getTargetCallTSMEngine(*descriptor);
-        if (!engine) {
-          ++instructionOrdinal;
-          continue;
-        }
         if (!llvm::isa<llvm::CallInst>(call))
           return llvm::createStringError(
               llvm::errc::invalid_argument,
-              "profile TSM target call must lower to a direct call");
+              "profile target call must lower to a direct call");
         if (call->arg_size() != descriptor->arguments.size())
           return llvm::createStringError(
               llvm::errc::invalid_argument,
-              "profile TSM target call does not match its typed descriptor");
+              "profile target call does not match its typed descriptor");
 
         const uint64_t descriptorOrdinal =
             static_cast<uint64_t>(descriptor - descriptors.data());
@@ -207,14 +201,15 @@ collectProfileTSMCallSitesImpl(const llvm::Module &module,
             llvm::formatv("target-call:{0}:arguments:{1}:occurrence:{2}",
                           descriptorOrdinal, *signature, occurrence)
                 .str();
-        ProfileTSMCallSite record;
+        ProfileTargetCallSite record;
         record.siteId = sites.size();
         record.functionOrdinal = functionOrdinal;
         record.blockOrdinal = blockOrdinal;
         record.instructionOrdinal = instructionOrdinal;
         record.targetCallOrdinal = descriptorOrdinal;
         record.targetCallSymbol = descriptor->symbol;
-        record.engine = *engine;
+        record.siteKind = runtime::getProfileTargetSiteKind(*descriptor);
+        record.engine = getTargetCallTSMEngine(*descriptor);
         record.correlationKey = std::move(correlationKey);
         sites.push_back({call, std::move(record)});
         ++instructionOrdinal;
@@ -301,16 +296,16 @@ verifyProfileCaptureKernelABISlots(llvm::ArrayRef<KernelABISlot> slots,
   return llvm::Error::success();
 }
 
-llvm::Expected<std::vector<ProfileTSMCallSite>>
-collectProfileTSMCallSites(const llvm::Module &module,
-                           llvm::StringRef entrySymbol) {
-  llvm::Expected<std::vector<CollectedProfileTSMCallSite>> collected =
-      collectProfileTSMCallSitesImpl(module, entrySymbol);
+llvm::Expected<std::vector<ProfileTargetCallSite>>
+collectProfileTargetCallSites(const llvm::Module &module,
+                              llvm::StringRef entrySymbol) {
+  llvm::Expected<std::vector<CollectedProfileTargetCallSite>> collected =
+      collectProfileTargetCallSitesImpl(module, entrySymbol);
   if (!collected)
     return collected.takeError();
-  std::vector<ProfileTSMCallSite> sites;
+  std::vector<ProfileTargetCallSite> sites;
   sites.reserve(collected->size());
-  for (CollectedProfileTSMCallSite &site : *collected)
+  for (CollectedProfileTargetCallSite &site : *collected)
     sites.push_back(std::move(site.record));
   return sites;
 }
@@ -318,12 +313,12 @@ collectProfileTSMCallSites(const llvm::Module &module,
 llvm::Error verifyProfileTargetCallSiteIdentity(
     const llvm::Module &productionModule, llvm::StringRef productionEntrySymbol,
     const llvm::Module &traceModule, llvm::StringRef traceEntrySymbol) {
-  llvm::Expected<std::vector<ProfileTSMCallSite>> production =
-      collectProfileTSMCallSites(productionModule, productionEntrySymbol);
+  llvm::Expected<std::vector<ProfileTargetCallSite>> production =
+      collectProfileTargetCallSites(productionModule, productionEntrySymbol);
   if (!production)
     return production.takeError();
-  llvm::Expected<std::vector<ProfileTSMCallSite>> trace =
-      collectProfileTSMCallSites(traceModule, traceEntrySymbol);
+  llvm::Expected<std::vector<ProfileTargetCallSite>> trace =
+      collectProfileTargetCallSites(traceModule, traceEntrySymbol);
   if (!trace)
     return trace.takeError();
   if (production->size() != trace->size())
@@ -332,13 +327,14 @@ llvm::Error verifyProfileTargetCallSiteIdentity(
         "profile trace target-call site count differs from final production");
 
   for (auto [index, pair] : llvm::enumerate(llvm::zip(*production, *trace))) {
-    const ProfileTSMCallSite &finalSite = std::get<0>(pair);
-    const ProfileTSMCallSite &traceSite = std::get<1>(pair);
+    const ProfileTargetCallSite &finalSite = std::get<0>(pair);
+    const ProfileTargetCallSite &traceSite = std::get<1>(pair);
     if (finalSite.siteId != index || traceSite.siteId != index ||
         finalSite.functionOrdinal != traceSite.functionOrdinal ||
         finalSite.blockOrdinal != traceSite.blockOrdinal ||
         finalSite.targetCallOrdinal != traceSite.targetCallOrdinal ||
         finalSite.targetCallSymbol != traceSite.targetCallSymbol ||
+        finalSite.siteKind != traceSite.siteKind ||
         finalSite.engine != traceSite.engine ||
         finalSite.correlationKey != traceSite.correlationKey)
       return llvm::createStringError(
@@ -362,8 +358,8 @@ llvm::Error instrumentProfileTargetModule(llvm::Module &module,
         llvm::errc::invalid_argument,
         "profile target entry is missing its final i64 record address");
 
-  llvm::Expected<std::vector<CollectedProfileTSMCallSite>> sites =
-      collectProfileTSMCallSitesImpl(module, entrySymbol);
+  llvm::Expected<std::vector<CollectedProfileTargetCallSite>> sites =
+      collectProfileTargetCallSitesImpl(module, entrySymbol);
   if (!sites)
     return sites.takeError();
 
@@ -399,7 +395,8 @@ llvm::Error instrumentProfileTargetModule(llvm::Module &module,
     returnBuilder.CreateCall(*entryEnd);
   }
 
-  if (capture == ProfileCaptureKind::Trace) {
+  if (capture == ProfileCaptureKind::Count ||
+      capture == ProfileCaptureKind::Trace) {
     llvm::Expected<llvm::Function *> siteBegin = getOrInsertExactDeclaration(
         module, kSiteBeginSymbol,
         llvm::FunctionType::get(voidType, {i32}, /*isVarArg=*/false));
@@ -410,7 +407,7 @@ llvm::Error instrumentProfileTargetModule(llvm::Module &module,
         llvm::FunctionType::get(voidType, {i32}, /*isVarArg=*/false));
     if (!siteEnd)
       return siteEnd.takeError();
-    for (const CollectedProfileTSMCallSite &site : *sites) {
+    for (const CollectedProfileTargetCallSite &site : *sites) {
       auto *call = const_cast<llvm::CallBase *>(site.call);
       llvm::Value *siteId =
           llvm::ConstantInt::get(i32, site.record.siteId, /*isSigned=*/false);
@@ -420,7 +417,7 @@ llvm::Error instrumentProfileTargetModule(llvm::Module &module,
       if (!next)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "profile TSM target call has no continuation");
+            "profile target call has no continuation");
       llvm::IRBuilder<> after(next);
       after.CreateCall(*siteEnd, siteId);
     }
@@ -546,7 +543,8 @@ verifyProfileTargetModuleInstrumentation(const llvm::Module &module,
           "profile target entry return is not immediately bracketed");
   }
 
-  const bool expectsSites = capture == ProfileCaptureKind::Trace;
+  const bool expectsSites = capture == ProfileCaptureKind::Count ||
+                            capture == ProfileCaptureKind::Trace;
   if (hasSiteBegin != expectsSites || hasSiteEnd != expectsSites)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
@@ -573,17 +571,17 @@ verifyProfileTargetModuleInstrumentation(const llvm::Module &module,
   if (!siteEndCalls)
     return siteEndCalls.takeError();
 
-  llvm::Expected<std::vector<CollectedProfileTSMCallSite>> sites =
-      collectProfileTSMCallSitesImpl(module, entrySymbol);
+  llvm::Expected<std::vector<CollectedProfileTargetCallSite>> sites =
+      collectProfileTargetCallSitesImpl(module, entrySymbol);
   if (!sites)
     return sites.takeError();
   if (siteBeginCalls->size() != sites->size() ||
       siteEndCalls->size() != sites->size())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "profile trace site bracketing does not cover the exact engine "
-        "activity call set");
-  for (const CollectedProfileTSMCallSite &site : *sites) {
+        "profile trace site bracketing does not cover the exact typed "
+        "target-call site set");
+  for (const CollectedProfileTargetCallSite &site : *sites) {
     const auto *beginCall =
         llvm::dyn_cast_or_null<llvm::CallBase>(site.call->getPrevNode());
     const auto *endCall =
@@ -603,8 +601,8 @@ verifyProfileTargetModuleInstrumentation(const llvm::Module &module,
         endId->getZExtValue() != site.record.siteId)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "profile trace site IDs do not densely bracket the exact "
-          "NCC engine command set");
+          "profile trace site IDs do not densely bracket the exact typed "
+          "target-call site set");
   }
   return llvm::Error::success();
 }

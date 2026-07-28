@@ -5,6 +5,7 @@
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Runtime/ProfileCompanion.h"
 #include "Wafer/Target/TargetCall.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -92,23 +93,25 @@ llvm::Error
 verifyProfileCaptureKernelABISlots(llvm::ArrayRef<KernelABISlot> slots,
                                    ProfileCaptureKind capture);
 
-struct ProfileTSMCallSite {
+struct ProfileTargetCallSite {
   uint64_t siteId = 0;
   uint64_t functionOrdinal = 0;
   uint64_t blockOrdinal = 0;
   uint64_t instructionOrdinal = 0;
   uint64_t targetCallOrdinal = 0;
   std::string targetCallSymbol;
-  TargetCallTSMEngine engine = TargetCallTSMEngine::CT;
+  runtime::ProfileTargetSiteKind siteKind =
+      runtime::ProfileTargetSiteKind::NCCCommand;
+  std::optional<TargetCallTSMEngine> engine;
   std::string correlationKey;
 };
 
-/// Collects all and only entry-reachable registered target calls whose closed
-/// semantic mapping reaches one of the five NCC execution helpers or the
-/// Direct-DTE wait/completion helper.
-llvm::Expected<std::vector<ProfileTSMCallSite>>
-collectProfileTSMCallSites(const llvm::Module &module,
-                           llvm::StringRef entrySymbol);
+/// Collects all and only entry-reachable registered target calls. Their site
+/// kind and optional engine come from the closed descriptor semantic; names
+/// are retained only for diagnostics and never recover the typed identity.
+llvm::Expected<std::vector<ProfileTargetCallSite>>
+collectProfileTargetCallSites(const llvm::Module &module,
+                              llvm::StringRef entrySymbol);
 
 /// Verifies that a trace clone preserves the final production artifact's
 /// rank-local site order and exact typed target-call identity. Instrumentation

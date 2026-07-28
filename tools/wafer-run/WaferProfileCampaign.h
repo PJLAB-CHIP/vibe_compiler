@@ -39,6 +39,8 @@ struct BoardProfileTraceTileAudit {
 };
 
 struct BoardProfileProtocolObservation {
+  std::optional<uint64_t> deviceExecutionNanoseconds;
+  uint64_t hostSubmitNanoseconds = 0;
   uint64_t launchToCompletionNanoseconds = 0;
   uint64_t completionObservationResolutionNanoseconds = 0;
   std::array<uint64_t, 16> countSequences{};
@@ -48,7 +50,10 @@ struct BoardProfileProtocolObservation {
 struct BoardProfileMeasurementSample {
   std::string id;
   uint32_t sampleIndex = 0;
-  uint64_t elapsedNanoseconds = 0;
+  uint64_t deviceElapsedNanoseconds = 0;
+  std::string deviceTimerKind;
+  uint64_t hostSubmitNanoseconds = 0;
+  uint64_t hostLaunchToCompletionNanoseconds = 0;
   uint64_t completionObservationResolutionNanoseconds = 0;
 };
 

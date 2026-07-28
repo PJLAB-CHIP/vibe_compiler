@@ -247,13 +247,15 @@ public:
 
   llvm::Error submitKernelPhase(
       wafer::KernelLaunchForm form, wafer::RuntimeLaunchPhaseRole phaseRole,
-      llvm::ArrayRef<wafer::runtime::BoardRankLaunch> launches) override {
+      llvm::ArrayRef<wafer::runtime::BoardRankLaunch> launches,
+      wafer::runtime::BoardDeviceTimingPolicy timingPolicy) override {
     const std::string operation =
         (llvm::Twine("submit-kernel-phase:") +
          wafer::stringifyKernelLaunchForm(form) + ":" +
          wafer::stringifyRuntimeLaunchPhaseRole(phaseRole))
             .str();
     calls.push_back(operation);
+    observedDeviceTimingPolicies.push_back(timingPolicy);
     if (submitEntered == std::chrono::steady_clock::time_point{})
       submitEntered = std::chrono::steady_clock::now();
     if (submitDelay.count() != 0)
@@ -305,8 +307,10 @@ public:
 
   llvm::Error submitModel(
       wafer::runtime::BoardGraphHandle graph,
-      llvm::ArrayRef<wafer::runtime::BoardModelTensorLaunch> tensors) override {
+      llvm::ArrayRef<wafer::runtime::BoardModelTensorLaunch> tensors,
+      wafer::runtime::BoardDeviceTimingPolicy timingPolicy) override {
     calls.push_back("submit-model");
+    observedDeviceTimingPolicies.push_back(timingPolicy);
     if (shouldFail("submit-model"))
       return injectedFailure();
     if (submissionLive || phaseSubmitted || !graphLive ||
@@ -364,8 +368,14 @@ public:
             completionObserved - waitBegin)
             .count();
     phaseSubmitted = false;
+    const size_t observationIndex = observedDeadlines.size() - 1;
+    std::optional<uint64_t> deviceExecutionNanoseconds;
+    if (observationIndex < deviceExecutionNanosecondsByWait.size())
+      deviceExecutionNanoseconds =
+          deviceExecutionNanosecondsByWait[observationIndex];
     return wafer::runtime::BoardCompletionObservation{
-        resolution > 0 ? static_cast<uint64_t>(resolution) : 0};
+        resolution > 0 ? static_cast<uint64_t>(resolution) : 0,
+        deviceExecutionNanoseconds};
   }
 
   llvm::Error releaseSubmission() override {
@@ -396,6 +406,9 @@ public:
   std::vector<wafer::RuntimeLaunchPhaseRole> submittedKernelPhases;
   std::vector<wafer::runtime::BoardModelTensorLaunch> submittedModelTensors;
   std::vector<wafer::runtime::BoardCompletionDeadline> observedDeadlines;
+  std::vector<wafer::runtime::BoardDeviceTimingPolicy>
+      observedDeviceTimingPolicies;
+  std::vector<std::optional<uint64_t>> deviceExecutionNanosecondsByWait;
   wafer::runtime::BoardCompletionObservationPolicy
       observedCompletionObservationPolicy =
           wafer::runtime::BoardCompletionObservationPolicy::Normal;
@@ -1324,6 +1337,176 @@ TEST_F(BoardRuntimeTest,
             static_cast<uint64_t>(providerSubmitThroughCompletion));
   EXPECT_GE(result->launchToCompletionNanoseconds,
             result->completionObservationResolutionNanoseconds);
+}
+
+TEST_F(BoardRuntimeTest,
+       StreamEventTimingSeparatesDeviceSubmitAndHostEnvelope) {
+  using namespace wafer::runtime;
+  llvm::Expected<VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Grid);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  BoardRuntimeInvocationRequest request =
+      makeRank16Request(package->getManifest());
+  request.deviceTimingPolicy = BoardDeviceTimingPolicy::StreamEvents;
+
+  FakeBoardDriver driver;
+  driver.submitDelay = std::chrono::milliseconds(2);
+  driver.waitDelay = std::chrono::milliseconds(2);
+  driver.deviceExecutionNanosecondsByWait = {750000};
+  llvm::Expected<BoardRuntimeInvocationResult> result =
+      executeBoardInvocation(*package, root, std::move(request), driver);
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+
+  ASSERT_TRUE(result->deviceExecutionNanoseconds.has_value());
+  EXPECT_EQ(*result->deviceExecutionNanoseconds, 750000u);
+  EXPECT_GE(result->hostSubmitNanoseconds, 2000000u);
+  EXPECT_GE(result->launchToCompletionNanoseconds,
+            result->hostSubmitNanoseconds);
+  ASSERT_EQ(driver.observedDeviceTimingPolicies.size(), 1u);
+  EXPECT_EQ(driver.observedDeviceTimingPolicies.front(),
+            BoardDeviceTimingPolicy::StreamEvents);
+}
+
+TEST_F(BoardRuntimeTest,
+       StreamEventTimingRejectsMultiRankPerRankBeforeProviderEffect) {
+  using namespace wafer::runtime;
+  llvm::Expected<VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::PerRank);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  BoardRuntimeInvocationRequest request =
+      makeRank16Request(package->getManifest());
+  request.deviceTimingPolicy = BoardDeviceTimingPolicy::StreamEvents;
+
+  FakeBoardDriver driver;
+  llvm::Expected<BoardRuntimeInvocationResult> result =
+      executeBoardInvocation(*package, root, std::move(request), driver);
+  ASSERT_FALSE(static_cast<bool>(result));
+  const std::string message = llvm::toString(result.takeError());
+  EXPECT_NE(message.find("board runtime preflight failed"), std::string::npos);
+  EXPECT_NE(
+      message.find(
+          "same-stream device timing does not support a multi-rank per-rank "
+          "launch"),
+      std::string::npos);
+  EXPECT_TRUE(driver.calls.empty());
+  EXPECT_TRUE(driver.observedDeviceTimingPolicies.empty());
+  EXPECT_TRUE(driver.allocatedAddresses.empty());
+  EXPECT_EQ(driver.selectedDevice, std::numeric_limits<uint32_t>::max());
+}
+
+TEST_F(BoardRuntimeTest, StreamEventTimingSupportsSingleRankPerRank) {
+  using namespace wafer::runtime;
+  llvm::Expected<VerifiedPackageManifest> package = verify();
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  BoardRuntimeInvocationRequest request =
+      makeRank16Request(package->getManifest());
+  request.deviceTimingPolicy = BoardDeviceTimingPolicy::StreamEvents;
+
+  FakeBoardDriver driver;
+  driver.deviceExecutionNanosecondsByWait = {125};
+  llvm::Expected<BoardRuntimeInvocationResult> result =
+      executeBoardInvocation(*package, root, std::move(request), driver);
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+
+  ASSERT_TRUE(result->deviceExecutionNanoseconds.has_value());
+  EXPECT_EQ(*result->deviceExecutionNanoseconds, 125u);
+  ASSERT_EQ(driver.observedDeviceTimingPolicies.size(), 1u);
+  EXPECT_EQ(driver.observedDeviceTimingPolicies.front(),
+            BoardDeviceTimingPolicy::StreamEvents);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "submit-kernel-phase:per-rank:main"),
+            1);
+}
+
+TEST_F(BoardRuntimeTest, StreamEventTimingSumsEveryKernelPhase) {
+  using namespace wafer::runtime;
+  llvm::Expected<VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Cluster);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  BoardRuntimeInvocationRequest request =
+      makeRank16Request(package->getManifest());
+  request.deviceTimingPolicy = BoardDeviceTimingPolicy::StreamEvents;
+
+  FakeBoardDriver driver;
+  driver.deviceExecutionNanosecondsByWait = {250, 750};
+  llvm::Expected<BoardRuntimeInvocationResult> result =
+      executeBoardInvocation(*package, root, std::move(request), driver);
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+
+  ASSERT_TRUE(result->deviceExecutionNanoseconds.has_value());
+  EXPECT_EQ(*result->deviceExecutionNanoseconds, 1000u);
+  ASSERT_EQ(driver.observedDeviceTimingPolicies.size(), 2u);
+  EXPECT_TRUE(llvm::all_of(
+      driver.observedDeviceTimingPolicies, [](BoardDeviceTimingPolicy policy) {
+        return policy == BoardDeviceTimingPolicy::StreamEvents;
+      }));
+}
+
+TEST_F(BoardRuntimeTest,
+       StreamEventTimingPropagatesQuantizedZeroThroughModelSubmission) {
+  using namespace wafer::runtime;
+  llvm::Expected<VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Model);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  BoardRuntimeInvocationRequest request =
+      makeRank16Request(package->getManifest());
+  request.deviceTimingPolicy = BoardDeviceTimingPolicy::StreamEvents;
+
+  FakeBoardDriver driver;
+  driver.deviceExecutionNanosecondsByWait = {0};
+  llvm::Expected<BoardRuntimeInvocationResult> result =
+      executeBoardInvocation(*package, root, std::move(request), driver);
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+
+  ASSERT_TRUE(result->deviceExecutionNanoseconds.has_value());
+  EXPECT_EQ(*result->deviceExecutionNanoseconds, 0u);
+  ASSERT_EQ(driver.observedDeviceTimingPolicies.size(), 1u);
+  EXPECT_EQ(driver.observedDeviceTimingPolicies.front(),
+            BoardDeviceTimingPolicy::StreamEvents);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "submit-model"),
+            1);
+}
+
+TEST_F(BoardRuntimeTest, StreamEventTimingRejectsMissingProviderObservation) {
+  using namespace wafer::runtime;
+  llvm::Expected<VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Grid);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  BoardRuntimeInvocationRequest request =
+      makeRank16Request(package->getManifest());
+  request.deviceTimingPolicy = BoardDeviceTimingPolicy::StreamEvents;
+
+  FakeBoardDriver driver;
+  llvm::Expected<BoardRuntimeInvocationResult> result =
+      executeBoardInvocation(*package, root, std::move(request), driver);
+  ASSERT_FALSE(static_cast<bool>(result));
+  EXPECT_NE(llvm::toString(result.takeError())
+                .find("omitted requested same-stream device timing"),
+            std::string::npos);
+}
+
+TEST_F(BoardRuntimeTest, DisabledTimingRejectsUnexpectedProviderObservation) {
+  using namespace wafer::runtime;
+  llvm::Expected<VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Grid);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+
+  FakeBoardDriver driver;
+  driver.deviceExecutionNanosecondsByWait = {1};
+  llvm::Expected<BoardRuntimeInvocationResult> result =
+      executeBoardInvocation(*package, root,
+                             makeRank16Request(package->getManifest()), driver);
+  ASSERT_FALSE(static_cast<bool>(result));
+  EXPECT_NE(llvm::toString(result.takeError())
+                .find("device timing when disabled"),
+            std::string::npos);
 }
 
 TEST_F(BoardRuntimeTest,

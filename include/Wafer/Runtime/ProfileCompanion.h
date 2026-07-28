@@ -3,6 +3,7 @@
 #ifndef WAFER_RUNTIME_PROFILECOMPANION_H
 #define WAFER_RUNTIME_PROFILECOMPANION_H
 
+#include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Runtime/PackageManifest.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -14,12 +15,18 @@
 #include <string>
 #include <vector>
 
-namespace wafer::runtime {
+namespace wafer {
 
-inline constexpr uint32_t kProfileCompanionSchemaVersion = 3;
+struct TargetCallDescriptor;
+
+namespace runtime {
+
+inline constexpr uint32_t kProfileCompanionSchemaVersion = 4;
 inline constexpr int64_t kProfileCompanionRankCount = 16;
 inline constexpr llvm::StringLiteral kProfileSiteCorrelationBasis =
-    "heuristic-target-call-signature-occurrence-v1";
+    "typed-target-call-ordinal-ssa-identity-occurrence-v1";
+inline constexpr llvm::StringLiteral kProfileRecordABI =
+    WAFER_TX81_PROFILER_RECORD_ABI_V3;
 inline constexpr llvm::StringLiteral kProfileCompanionActivationFileName =
     "activation.json";
 inline constexpr llvm::StringLiteral kProfileCompanionPlanFileName =
@@ -48,11 +55,21 @@ enum class ProfileTSMEngine {
   DirectDTE,
 };
 
+enum class ProfileTargetSiteKind {
+  NCCCommand,
+  NCCCompletion,
+  DirectDTEControl,
+  DirectDTEWait,
+};
+
 struct ProfileTargetCallSite {
   uint64_t siteId = 0;
   uint64_t targetCallOrdinal = 0;
   std::string targetCallSymbol;
-  ProfileTSMEngine engine = ProfileTSMEngine::CT;
+  ProfileTargetSiteKind siteKind = ProfileTargetSiteKind::NCCCommand;
+  /// Present only for NCCCommand (one of the five NCC engines) and
+  /// DirectDTEWait (DirectDTE). Completion/control sites have no engine.
+  std::optional<ProfileTSMEngine> engine;
   std::string correlationKey;
   std::optional<uint64_t> functionOrdinal;
   std::optional<uint64_t> blockOrdinal;
@@ -101,7 +118,8 @@ class ProfileCapturePackage {
 public:
   ProfileCapturePackage(std::string variantId, ProfileCaptureKind capture,
                         std::string packageReference,
-                        std::string manifestDigest, uint64_t recordBytes,
+                        std::string manifestDigest, std::string recordABI,
+                        uint64_t recordBytes,
                         std::string packageDirectory,
                         VerifiedPackageManifest package);
   ProfileCapturePackage(ProfileCapturePackage &&) = default;
@@ -113,6 +131,7 @@ public:
   ProfileCaptureKind getCaptureKind() const { return capture; }
   llvm::StringRef getPackageReference() const { return packageReference; }
   llvm::StringRef getManifestDigest() const { return manifestDigest; }
+  llvm::StringRef getRecordABI() const { return recordABI; }
   uint64_t getRecordBytes() const { return recordBytes; }
   llvm::StringRef getPackageDirectory() const { return packageDirectory; }
   const VerifiedPackageManifest &getPackage() const { return package; }
@@ -122,6 +141,7 @@ private:
   ProfileCaptureKind capture;
   std::string packageReference;
   std::string manifestDigest;
+  std::string recordABI;
   uint64_t recordBytes;
   std::string packageDirectory;
   VerifiedPackageManifest package;
@@ -178,6 +198,13 @@ private:
 llvm::StringRef stringifyProfileVariantRole(ProfileVariantRole role);
 llvm::StringRef stringifyProfileCaptureKind(ProfileCaptureKind capture);
 llvm::StringRef stringifyProfileTSMEngine(ProfileTSMEngine engine);
+llvm::StringRef stringifyProfileTargetSiteKind(ProfileTargetSiteKind kind);
+
+/// Returns the profiler site semantic owned by one closed target-call
+/// descriptor. Every descriptor in the public target-call registry maps to
+/// exactly one site kind; this function never recovers semantics from symbols.
+ProfileTargetSiteKind
+getProfileTargetSiteKind(const TargetCallDescriptor &descriptor);
 
 /// Loads and fail-closed verifies one compiler-published profiler companion.
 /// `productionPackageRoot` is the ordinary package selected by the user; the
@@ -194,6 +221,7 @@ llvm::Expected<std::optional<VerifiedProfileCompanion>>
 loadSiblingProfileCompanionIfPresent(llvm::StringRef productionPackageRoot,
                                      const PackageParseLimits &limits = {});
 
-} // namespace wafer::runtime
+} // namespace runtime
+} // namespace wafer
 
 #endif // WAFER_RUNTIME_PROFILECOMPANION_H

@@ -332,6 +332,28 @@ llvm::StringRef stringifyEventEngine(uint8_t engine) {
   return kEngineNames[engine];
 }
 
+llvm::StringRef stringifyEventKind(uint8_t kind) {
+  switch (kind) {
+  case WAFER_TX81_PROFILER_EVENT_NCC_COMMAND:
+    return "ncc-command";
+  case WAFER_TX81_PROFILER_EVENT_NCC_COMPLETION_WAIT:
+    return "ncc-completion-wait";
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT:
+    return "direct-dte-wait";
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT:
+    return "direct-dte-peer-ready-wait";
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE:
+    return "direct-dte-setup-issue";
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_COMPLETION_WAIT:
+    return "direct-dte-completion-wait";
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_CLEANUP:
+    return "direct-dte-cleanup";
+  case WAFER_TX81_PROFILER_EVENT_TARGET_SITE:
+    return "target-site";
+  }
+  llvm_unreachable("decoded profiler event has an unknown kind");
+}
+
 bool engineMatches(ProfileTSMEngine expected, uint8_t actual) {
   switch (expected) {
   case ProfileTSMEngine::CT:
@@ -350,6 +372,30 @@ bool engineMatches(ProfileTSMEngine expected, uint8_t actual) {
   llvm_unreachable("unknown profile site engine");
 }
 
+bool eventMatchesSite(const ProfileTargetCallSite &site,
+                      const WaferTx81ProfilerTSMCallEvent &event) {
+  switch (event.kind) {
+  case WAFER_TX81_PROFILER_EVENT_NCC_COMMAND:
+    return site.siteKind == ProfileTargetSiteKind::NCCCommand && site.engine &&
+           engineMatches(*site.engine, event.engine);
+  case WAFER_TX81_PROFILER_EVENT_NCC_COMPLETION_WAIT:
+    return (site.siteKind == ProfileTargetSiteKind::NCCCommand ||
+            site.siteKind == ProfileTargetSiteKind::NCCCompletion) &&
+           event.engine == WAFER_TX81_PROFILER_ENGINE_NONE;
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT:
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT:
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE:
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_COMPLETION_WAIT:
+  case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_CLEANUP:
+    return site.siteKind == ProfileTargetSiteKind::DirectDTEWait &&
+           site.engine &&
+           engineMatches(*site.engine, event.engine);
+  case WAFER_TX81_PROFILER_EVENT_TARGET_SITE:
+    return event.engine == WAFER_TX81_PROFILER_ENGINE_NONE;
+  }
+  return false;
+}
+
 llvm::Error validateTraceSites(const VerifiedProfileCompanion &companion,
                                const CandidateState &candidate) {
   if (candidate.trace.size() != WAFER_TX81_PROFILER_TILE_COUNT)
@@ -365,11 +411,12 @@ llvm::Error validateTraceSites(const VerifiedProfileCompanion &companion,
       return invalid(
           "profile typed trace/site-map rank domain is not canonical");
     for (const WaferTx81ProfilerTSMCallEvent &event : trace.events) {
+      if (!isTx81ProfilerSiteValid(event))
+        return invalid("profile trace event has no final-artifact typed site");
       if (event.site_id >= rankMap.sites.size())
         return invalid("profile trace event references an unknown typed site");
       const ProfileTargetCallSite &site = rankMap.sites[event.site_id];
-      if (site.siteId != event.site_id ||
-          !engineMatches(site.engine, event.engine))
+      if (site.siteId != event.site_id || !eventMatchesSite(site, event))
         return invalid("profile trace event conflicts with its typed site");
     }
   }
@@ -525,13 +572,68 @@ void emitCandidateEvidence(llvm::json::OStream &json,
                   json.attribute("sequence", event.sequence);
                   json.attribute("site_id", int64_t(event.site_id));
                   json.attribute("sub_index", int64_t(event.sub_index));
-                  json.attribute("engine", stringifyEventEngine(event.engine));
-                  json.attribute("observed_begin_cycle", event.begin_cycle);
-                  json.attribute("observed_end_cycle", event.end_cycle);
-                  json.attribute("counter_delta", event.raw_return);
-                  json.attribute("activity_valid",
-                                 isTx81ProfilerActivityValid(event));
-                  if (event.engine == WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE)
+                  if (event.engine == WAFER_TX81_PROFILER_ENGINE_NONE)
+                    json.attribute("engine", llvm::json::Value(nullptr));
+                  else
+                    json.attribute("engine",
+                                   stringifyEventEngine(event.engine));
+                  json.attribute("kind", stringifyEventKind(event.kind));
+                  json.attribute("observed_begin_cycle",
+                                 event.observed_begin_cycle);
+                  json.attribute("observed_end_cycle",
+                                 event.observed_end_cycle);
+                  json.attribute("counter_delta", event.counter_delta);
+                  json.attribute("site_begin_cycle", event.site_begin_cycle);
+                  json.attribute("site_end_cycle", event.site_end_cycle);
+                  json.attribute("operation_begin_cycle",
+                                 event.operation_begin_cycle);
+                  json.attribute("operation_end_cycle",
+                                 event.operation_end_cycle);
+                  json.attribute("observation_count",
+                                 int64_t(event.observation_count));
+                  json.attribute("observed_span_valid",
+                                 isTx81ProfilerObservationSpanValid(event));
+                  json.attribute("site_span_valid",
+                                 isTx81ProfilerSiteSpanValid(event));
+                  json.attribute("operation_span_valid",
+                                 isTx81ProfilerOperationSpanValid(event));
+                  json.attribute("positive_delta",
+                                 isTx81ProfilerCounterDeltaPositive(event));
+                  json.attribute("attribution_ambiguous",
+                                 isTx81ProfilerSameEngineAmbiguous(event));
+                  if (event.kind == WAFER_TX81_PROFILER_EVENT_NCC_COMMAND) {
+                    json.attribute("ncc_counter_valid",
+                                   isTx81ProfilerNCCCounterValid(event));
+                    if (!isTx81ProfilerNCCCounterValid(event))
+                      json.attribute("observation_status",
+                                     "counter-unavailable");
+                    else if (isTx81ProfilerSameEngineAmbiguous(event))
+                      json.attribute("observation_status",
+                                     "attribution-ambiguous");
+                    else if (isTx81ProfilerCounterDeltaPositive(event))
+                      json.attribute("observation_status",
+                                     "engine-delta-bounded");
+                    else
+                      json.attribute("observation_status",
+                                     "counter-no-change");
+                  } else {
+                    json.attribute("ncc_counter_valid",
+                                   llvm::json::Value(nullptr));
+                    json.attribute("observation_status",
+                                   llvm::json::Value(nullptr));
+                  }
+                  if (isTx81ProfilerWorkerValid(event))
+                    json.attribute("worker",
+                                   int64_t(getTx81ProfilerWorker(event)));
+                  else
+                    json.attribute("worker", llvm::json::Value(nullptr));
+                  if (isTx81ProfilerLocalWait(event))
+                    json.attribute("wait_scope", "local");
+                  else if (isTx81ProfilerWorkerWait(event))
+                    json.attribute("wait_scope", "worker");
+                  else
+                    json.attribute("wait_scope", llvm::json::Value(nullptr));
+                  if (event.kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT)
                     json.attribute("dte_counter_valid",
                                    isTx81ProfilerDirectDTECounterValid(event));
                   else
@@ -544,6 +646,23 @@ void emitCandidateEvidence(llvm::json::OStream &json,
                   else
                     json.attribute("dte_role", llvm::json::Value(nullptr));
                 });
+            });
+            const WaferTx81ProfilerCostSummary &cost =
+                record.header.cost_summary;
+            json.attributeObject("cost_summary", [&] {
+              json.attribute("ncc_pmu_sample_cycles",
+                             cost.ncc_pmu_sample_cycles);
+              json.attribute("dte_pmu_sample_cycles",
+                             cost.dte_pmu_sample_cycles);
+              json.attribute("event_bookkeeping_cycles",
+                             cost.event_bookkeeping_cycles);
+              json.attribute("status_poll_cycles", cost.status_poll_cycles);
+              json.attribute("site_hook_cycles", cost.site_hook_cycles);
+              json.attribute("completion_loop_bookkeeping_cycles",
+                             cost.completion_loop_bookkeeping_cycles);
+              json.attribute("entry_setup_cycles", cost.entry_setup_cycles);
+              json.attribute("entry_teardown_cycles",
+                             cost.entry_teardown_cycles);
             });
           });
       });
@@ -619,7 +738,7 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
   llvm::json::OStream json(output, 2);
   json.object([&] {
     json.attribute("schema", "wafer.profile.evidence");
-    json.attribute("schema_version", int64_t(5));
+    json.attribute("schema_version", int64_t(7));
     json.attribute("run_id", runId);
     json.attributeObject("identity", [&] {
       json.attribute("production_manifest_sha256",
@@ -633,6 +752,7 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
       json.attribute("execution_ranks",
                      int64_t(WAFER_TX81_PROFILER_TILE_COUNT));
       json.attribute("site_correlation_basis", kProfileSiteCorrelationBasis);
+      json.attribute("record_abi", kProfileRecordABI);
     });
     json.attributeObject("output_validation", [&] {
       json.attribute("mode", stringifyBoardProfileOutputValidationMode(
@@ -681,7 +801,12 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
           json.object([&] {
             json.attribute("sample_id", sample.id);
             json.attribute("sample_index", int64_t(sample.sampleIndex));
-            json.attribute("host_elapsed_ns", sample.elapsedNanoseconds);
+            json.attribute("device_elapsed_ns",
+                           sample.deviceElapsedNanoseconds);
+            json.attribute("device_timer_kind", sample.deviceTimerKind);
+            json.attribute("host_submit_ns", sample.hostSubmitNanoseconds);
+            json.attribute("host_launch_to_completion_ns",
+                           sample.hostLaunchToCompletionNanoseconds);
             json.attribute("completion_observation_resolution_ns",
                            sample.completionObservationResolutionNanoseconds);
           });
@@ -695,8 +820,13 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
           json.object([&] {
             json.attribute("tile", rank.logicalRank);
             json.attribute("site_id", site.siteId);
+            json.attribute("site_kind",
+                           stringifyProfileTargetSiteKind(site.siteKind));
             json.attribute("correlation_key", site.correlationKey);
-            json.attribute("engine", stringifyProfileTSMEngine(site.engine));
+            if (site.engine)
+              json.attribute("engine", stringifyProfileTSMEngine(*site.engine));
+            else
+              json.attribute("engine", llvm::json::Value(nullptr));
             json.attribute("target_call_ordinal", site.targetCallOrdinal);
             json.attribute("target_call_symbol", site.targetCallSymbol);
             std::string position = formatSitePosition(site);
@@ -1344,15 +1474,23 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
       invoke(BoardProfileProtocolLaunch::Primary);
   if (!primary)
     return primary.takeError();
-  if (primary->launchToCompletionNanoseconds == 0)
-    return invalid("primary board launch-to-completion observation is zero");
-  if (primary->completionObservationResolutionNanoseconds == 0)
-    return invalid("primary board completion-observation resolution is zero");
+  if (!primary->deviceExecutionNanoseconds)
+    return invalid("primary board device execution timing is unavailable");
+  if (primary->hostSubmitNanoseconds >
+      primary->launchToCompletionNanoseconds)
+    return invalid("primary board host submit observation exceeds the "
+                   "launch-to-completion envelope");
 
   BoardProfileProtocolResult result;
-  result.samples.push_back(
-      {"primary", /*sampleIndex=*/0, primary->launchToCompletionNanoseconds,
-       primary->completionObservationResolutionNanoseconds});
+  result.samples.push_back({
+      "primary",
+      /*sampleIndex=*/0,
+      *primary->deviceExecutionNanoseconds,
+      "tx-stream-events",
+      primary->hostSubmitNanoseconds,
+      primary->launchToCompletionNanoseconds,
+      primary->completionObservationResolutionNanoseconds,
+  });
   result.primarySampleId = "primary";
 
   llvm::Expected<BoardProfileProtocolObservation> count =
@@ -1446,10 +1584,12 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
   auto execute = [&](const VerifiedPackageManifest &package,
                      llvm::StringRef packageRoot,
                      const BoardInvocationFilePlan &plan, bool profilerExpected,
-                     BoardCompletionObservationPolicy observationPolicy)
+                     BoardCompletionObservationPolicy observationPolicy,
+                     BoardDeviceTimingPolicy deviceTimingPolicy)
       -> llvm::Expected<BoardRuntimeInvocationResult> {
     BoardRuntimeInvocationRequest request = plan.request;
     request.completionObservationPolicy = observationPolicy;
+    request.deviceTimingPolicy = deviceTimingPolicy;
     llvm::Expected<BoardRuntimeInvocationResult> result = [&]() {
       if (session)
         return executeBoardInvocationInSession(package, packageRoot,
@@ -1496,7 +1636,8 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
                   candidate.variant->getPackageDirectory(),
                   candidate.executionPlan,
                   /*profilerExpected=*/false,
-                  BoardCompletionObservationPolicy::ProfileHighResolution);
+                  BoardCompletionObservationPolicy::ProfileHighResolution,
+                  BoardDeviceTimingPolicy::StreamEvents);
               if (!result)
                 return result.takeError();
               if (llvm::Error error =
@@ -1504,6 +1645,10 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
                           candidate.variant->getPackage().getManifest(),
                           candidate.executionPlan, result->outputs))
                 return std::move(error);
+              observation.deviceExecutionNanoseconds =
+                  result->deviceExecutionNanoseconds;
+              observation.hostSubmitNanoseconds =
+                  result->hostSubmitNanoseconds;
               observation.launchToCompletionNanoseconds =
                   result->launchToCompletionNanoseconds;
               observation.completionObservationResolutionNanoseconds =
@@ -1517,7 +1662,8 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
                           candidate.countPackage->getPackageDirectory(),
                           candidate.countPlan,
                           /*profilerExpected=*/true,
-                          BoardCompletionObservationPolicy::Normal);
+                          BoardCompletionObservationPolicy::Normal,
+                          BoardDeviceTimingPolicy::Disabled);
               if (!result)
                 return result.takeError();
               if (llvm::Error error =
@@ -1542,7 +1688,8 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
                           candidate.tracePackage->getPackageDirectory(),
                           candidate.tracePlan,
                           /*profilerExpected=*/true,
-                          BoardCompletionObservationPolicy::Normal);
+                          BoardCompletionObservationPolicy::Normal,
+                          BoardDeviceTimingPolicy::Disabled);
               if (!result)
                 return result.takeError();
               if (llvm::Error error =

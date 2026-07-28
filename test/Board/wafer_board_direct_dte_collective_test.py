@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -20,10 +22,18 @@ import wafer_runtime_launch_contract as runtime_launch
 RANK_COUNT = 16
 LOCAL_ELEMENTS = 128
 LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
+TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
 STATUS_ABI = "wafer-direct-dte-status-v2"
 STATUS_STORAGE_BYTES = 64
 STATUS_STORAGE_ALIGNMENT = 64
 DIRECT_DTE_PROCESS_TIMEOUT_MARGIN_SECONDS = 30
+PROFILE_COMPANION_READY = (
+    "profile_companion: ready schema=4 ranks=16 variants=1 captures=2"
+)
+PROFILE_CAMPAIGN_LAUNCH_COUNT = 3
+PROFILE_PRIMARY_EXECUTION_COUNT = 1
+PROFILE_EVIDENCE_SCHEMA_VERSION = 7
+PROFILE_ANALYSIS_SCHEMA_VERSION = 5
 ELEMENT_TYPES = {
     "f16": ("float16", np.dtype("<f2")),
     "f32": ("float32", np.dtype("<f4")),
@@ -36,6 +46,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wafer-run", type=pathlib.Path, required=True)
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
     parser.add_argument("--no-card", action="store_true")
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help=(
+            "compile byte-identical ordinary/profile packages, then execute "
+            "one fixed Primary->Count->Trace campaign"
+        ),
+    )
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--expected-runtime-version", type=int)
     parser.add_argument("--expected-device-name")
@@ -73,6 +91,80 @@ def run(
         print(result.stderr, end="", file=sys.stderr)
         raise RuntimeError(f"command failed with exit code {result.returncode}: {command}")
     return result
+
+
+def compile_package(
+    args: argparse.Namespace,
+    source: pathlib.Path,
+    package: pathlib.Path,
+    *,
+    profile: bool,
+) -> None:
+    command = [
+        str(args.wafer_compile),
+        "--input-program-dir",
+        str(source),
+        "--output-program-dir",
+        str(package),
+        f"--execution-ranks={RANK_COUNT}",
+        f"--target-profile={TARGET_PROFILE}",
+        f"--launch-kind={LAUNCH_KIND}",
+    ]
+    if profile:
+        command.append("--profile")
+    result = run(command)
+    if (
+        f"published verified package with execution-ranks={RANK_COUNT}"
+        not in result.stdout
+    ):
+        raise RuntimeError(
+            "wafer-compile did not report a verified rank-16 package"
+        )
+    published_companion = "wafer-compile: published profile companion:"
+    if profile and published_companion not in result.stdout:
+        raise RuntimeError(
+            "wafer-compile did not publish the requested profile companion"
+        )
+    if not profile and published_companion in result.stdout:
+        raise RuntimeError(
+            "ordinary wafer-compile unexpectedly published a profile companion"
+        )
+
+
+def require_byte_identical_packages(
+    ordinary: pathlib.Path, profiled: pathlib.Path
+) -> None:
+    def file_digests(root: pathlib.Path) -> dict[pathlib.Path, str]:
+        files = {
+            path.relative_to(root): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+        if not files:
+            raise RuntimeError(f"compiled package is empty: {root}")
+        return files
+
+    if file_digests(ordinary) != file_digests(profiled):
+        raise RuntimeError(
+            "ordinary and --profile production packages are not byte-identical"
+        )
+
+
+def require_profile_companion_permissions(package: pathlib.Path) -> None:
+    companion = pathlib.Path(f"{package}.profile")
+    if not companion.is_dir() or companion.is_symlink():
+        raise RuntimeError("profile companion is not a real directory")
+    for path in (companion, *companion.rglob("*")):
+        if path.is_symlink():
+            continue
+        if not path.is_dir() and not path.is_file():
+            raise RuntimeError(
+                f"profile companion contains a non-regular member: {path}"
+            )
+        if stat.S_IMODE(path.stat().st_mode) != 0o777:
+            raise RuntimeError(
+                f"profile companion permission is not 0777: {path}"
+            )
 
 
 def write_fixture(
@@ -345,46 +437,382 @@ def write_raw_files(
     return arguments
 
 
+def verify_no_card_evidence(stdout: str, *, companion_expected: bool) -> None:
+    required = {
+        "package: id=0 schema=6 ranks=16",
+        f"invocation_ranks: {RANK_COUNT}",
+        "board_execution: false",
+    }
+    output_lines = set(stdout.splitlines())
+    if not required.issubset(output_lines):
+        raise RuntimeError("no-card output omitted Direct-DTE validation")
+    companion_ready = PROFILE_COMPANION_READY in stdout
+    if companion_ready != companion_expected:
+        raise RuntimeError(
+            "no-card launch did not prove the exact profile companion "
+            "activation boundary"
+        )
+
+
+def verify_board_evidence(
+    stdout: str,
+    bindings: dict[tuple[int, str, int], int],
+) -> None:
+    required_evidence = {
+        "board_stage: launch",
+        "board_stage: completion",
+        "board_stage: device-to-host",
+        "board_stage: cleanup",
+        f"invocation_ranks: {RANK_COUNT}",
+        "launch_pattern: cluster-x16",
+        "logical_tile_execution_basis: cluster-pid-and-exact-rank-slices",
+        "logical_tile_domain: 0..15",
+        "physical_execution_claim: none",
+        "board_execution: true",
+    }
+    if not required_evidence.issubset(set(stdout.splitlines())):
+        raise RuntimeError("board output omitted complete Direct-DTE evidence")
+    output_matches = re.findall(
+        rf"^output_compare: resource=(\d+) bytes={LOCAL_ELEMENTS * 2} "
+        r"exact=true$",
+        stdout,
+        re.MULTILINE,
+    )
+    expected_output_ids = {
+        bindings[(rank, "output", 0)] for rank in range(RANK_COUNT)
+    }
+    if len(output_matches) != RANK_COUNT or {
+        int(resource) for resource in output_matches
+    } != expected_output_ids:
+        raise RuntimeError("board output omitted exact rank output evidence")
+    # BoardRuntime checks every typed Direct-DTE status resource for Success
+    # before it publishes DeviceToHost/Cleanup. Reaching both stages therefore
+    # retains the existing exact 16-rank status gate without inventing a second
+    # host-visible status protocol in this harness.
+
+
+def verify_profile_report(
+    package: pathlib.Path, stdout: str
+) -> tuple[int, pathlib.Path]:
+    require_profile_companion_permissions(package)
+    companion = pathlib.Path(f"{package}.profile")
+    runs = companion / "runs"
+    current = runs / "current"
+    if not current.is_symlink():
+        raise RuntimeError("profile report current entry is not a symlink")
+    run_directory = current.resolve(strict=True)
+    if run_directory.parent != runs.resolve(strict=True):
+        raise RuntimeError("profile report current entry escapes its runs directory")
+    entries = tuple(run_directory.iterdir())
+    if len(entries) != 3 or any(not path.is_file() for path in entries):
+        raise RuntimeError(
+            "profile report does not contain exactly three regular files"
+        )
+    members = {path.name: path for path in entries}
+    if set(members) != {"evidence.json", "analysis.json", "index.html"}:
+        raise RuntimeError(
+            "profile report does not contain exactly the three public artifacts"
+        )
+
+    evidence = json.loads(members["evidence.json"].read_text())
+    analysis = json.loads(members["analysis.json"].read_text())
+    if (
+        evidence.get("schema") != "wafer.profile.evidence"
+        or evidence.get("schema_version") != PROFILE_EVIDENCE_SCHEMA_VERSION
+        or evidence.get("run_id") != run_directory.name
+    ):
+        raise RuntimeError("profile evidence identity is invalid")
+    samples = evidence.get("measurement", {}).get("samples")
+    trace = evidence.get("experiment", {}).get("trace")
+    trace_tiles = trace.get("tiles") if isinstance(trace, dict) else None
+    if (
+        not isinstance(samples, list)
+        or len(samples) != PROFILE_PRIMARY_EXECUTION_COUNT
+        or samples[0].get("sample_id") != "primary"
+        or samples[0].get("sample_index") != 0
+        or not isinstance(samples[0].get("device_elapsed_ns"), int)
+        or samples[0]["device_elapsed_ns"] < 0
+        or samples[0].get("device_timer_kind") != "tx-stream-events"
+        or not isinstance(samples[0].get("host_submit_ns"), int)
+        or samples[0]["host_submit_ns"] < 0
+        or not isinstance(
+            samples[0].get("host_launch_to_completion_ns"), int
+        )
+        or samples[0]["host_launch_to_completion_ns"] < 0
+        or samples[0]["host_submit_ns"]
+        > samples[0]["host_launch_to_completion_ns"]
+        or not isinstance(
+            samples[0].get("completion_observation_resolution_ns"), int
+        )
+        or samples[0]["completion_observation_resolution_ns"] < 0
+        or not isinstance(trace, dict)
+        or trace.get("complete") is not True
+        or not isinstance(trace_tiles, list)
+        or len(trace_tiles) != RANK_COUNT
+        or sorted(tile.get("tile") for tile in trace_tiles) != list(
+            range(RANK_COUNT)
+        )
+    ):
+        raise RuntimeError(
+            "profile evidence does not contain one Primary and 16 trace tiles"
+        )
+    direct_dte_source_tiles = {
+        int(tile["tile"])
+        for tile in trace_tiles
+        for event in tile.get("events", [])
+        if isinstance(event, dict)
+        and event.get("engine") == "DIRECT_DTE"
+        and event.get("kind")
+        in ("direct-dte-wait", "direct-dte-completion-wait")
+        and event.get("operation_span_valid") is True
+        and isinstance(event.get("operation_begin_cycle"), int)
+        and isinstance(event.get("operation_end_cycle"), int)
+        and event["operation_end_cycle"] > event["operation_begin_cycle"]
+    }
+    if direct_dte_source_tiles != set(range(RANK_COUNT)):
+        raise RuntimeError(
+            "profile trace omitted a real positive Direct-DTE phase event "
+            "for one or more tiles"
+        )
+
+    final = analysis.get("final_artifact")
+    validity = analysis.get("validity")
+    if (
+        analysis.get("schema") != "wafer.profile.analysis"
+        or analysis.get("schema_version") != PROFILE_ANALYSIS_SCHEMA_VERSION
+        or analysis.get("run_id") != run_directory.name
+        or not analysis.get("valid")
+        or not isinstance(validity, dict)
+        or validity.get("trace") is not True
+        or validity.get("cost_accounting") is not True
+        or not isinstance(final, dict)
+    ):
+        raise RuntimeError("profile analysis identity or trace validity is invalid")
+    duration = final.get("duration")
+    output = final.get("output")
+    tiles = final.get("tiles")
+    host_submit = samples[0]["host_submit_ns"]
+    host_envelope = samples[0]["host_launch_to_completion_ns"]
+    resolution = samples[0]["completion_observation_resolution_ns"]
+    host_envelope_available = host_envelope > 0
+    completion_fraction = (
+        duration.get("completion_observation_fraction")
+        if isinstance(duration, dict)
+        else None
+    )
+    expected_completion_fraction = (
+        resolution / host_envelope if host_envelope_available else None
+    )
+    if (
+        not isinstance(duration, dict)
+        or duration.get("sample_id") != "primary"
+        or duration.get("sample_index") != 0
+        or duration.get("device_elapsed_ns")
+        != samples[0]["device_elapsed_ns"]
+        or duration.get("device_timer_kind") != "tx-stream-events"
+        or duration.get("host_submit_ns") != samples[0]["host_submit_ns"]
+        or duration.get("host_launch_to_completion_ns")
+        != samples[0]["host_launch_to_completion_ns"]
+        or duration.get("completion_observation_resolution_ns")
+        != samples[0]["completion_observation_resolution_ns"]
+        or duration.get("host_non_submit_envelope_ns")
+        != host_envelope - host_submit
+        or duration.get("host_envelope_available")
+        is not host_envelope_available
+        or (
+            host_envelope_available
+            and (
+                isinstance(completion_fraction, bool)
+                or not isinstance(completion_fraction, (int, float))
+                or abs(
+                    completion_fraction - expected_completion_fraction
+                )
+                > 1e-15
+            )
+        )
+        or (
+            not host_envelope_available
+            and completion_fraction is not None
+        )
+        or not isinstance(
+            duration.get("host_completion_high_resolution"), bool
+        )
+        or (
+            not host_envelope_available
+            and duration.get("host_completion_high_resolution") is not False
+        )
+        or not duration.get("qualified")
+        or not isinstance(output, dict)
+        or not output.get("production_execution_validated")
+        or not output.get("diagnostic_captures_match_primary")
+        or not isinstance(tiles, list)
+        or len(tiles) != RANK_COUNT
+        or sorted(tile.get("tile") for tile in tiles) != list(range(RANK_COUNT))
+    ):
+        raise RuntimeError(
+            "profile analysis failed latency, output, or tile qualification"
+        )
+
+    for tile in tiles:
+        entry_cycles = tile.get("trace_entry_cpu_cycles")
+        partition = tile.get("semantic_partition")
+        segments = tile.get("semantic_timeline_segments")
+        overhead = tile.get("trace_overhead_overlay")
+        overhead_rows = (
+            overhead.get("rows") if isinstance(overhead, dict) else None
+        )
+        overlay_cycles = (
+            overhead.get("exclusive_component_cycles")
+            if isinstance(overhead, dict)
+            else None
+        )
+        inside_overlay_cycles = (
+            overhead.get("inside_entry_known_overhead_cycles")
+            if isinstance(overhead, dict)
+            else None
+        )
+        outside_overlay_cycles = (
+            overhead.get("outside_entry_overhead_cycles")
+            if isinstance(overhead, dict)
+            else None
+        )
+        if (
+            not isinstance(entry_cycles, int)
+            or entry_cycles < 0
+            or not isinstance(partition, dict)
+            or partition.get("exclusive_accounting_valid") is not True
+            or partition.get("entry_cycles") != entry_cycles
+            or partition.get("exclusive_cycles") != entry_cycles
+            or not isinstance(segments, list)
+            or any(
+                not isinstance(segment, dict)
+                or not isinstance(segment.get("cycles"), int)
+                or segment["cycles"] < 0
+                for segment in segments
+            )
+            or not isinstance(overhead, dict)
+            or not isinstance(overhead_rows, list)
+            or not isinstance(overlay_cycles, int)
+            or overlay_cycles < 0
+            or not isinstance(inside_overlay_cycles, int)
+            or inside_overlay_cycles < 0
+            or not isinstance(outside_overlay_cycles, int)
+            or outside_overlay_cycles < 0
+            or overlay_cycles
+            != inside_overlay_cycles + outside_overlay_cycles
+            or any(
+                not isinstance(row, dict)
+                or not isinstance(row.get("cycles"), int)
+                or row["cycles"] < 0
+                for row in overhead_rows
+            )
+            or overlay_cycles
+            != sum(row["cycles"] for row in overhead_rows)
+            or overhead.get("components_exclusive") is not True
+            or overhead.get("non_additive_to_semantic_partition") is not True
+            or overhead.get("positioning") != "aggregate-only"
+            or overhead.get("coverage") != "measured-categories-only"
+        ):
+            raise RuntimeError(
+                "profile analysis contains invalid or negative Kcore cost"
+            )
+        direct_dte = next(
+            (
+                engine
+                for engine in tile.get("engines", [])
+                if isinstance(engine, dict)
+                and engine.get("engine") == "DIRECT_DTE"
+            ),
+            None,
+        )
+        if direct_dte is None:
+            raise RuntimeError("profile analysis omitted a Direct-DTE aggregate")
+        wait_cycles = direct_dte.get("wait_window_cpu_cycles")
+        if not (
+            direct_dte.get("wait_windows_valid") is True
+            and isinstance(wait_cycles, int)
+            and wait_cycles > 0
+            and direct_dte.get("wait_window_count", 0) > 0
+        ):
+            raise RuntimeError(
+                "profile analysis omitted a real Direct-DTE aggregate "
+                f"for tile {tile.get('tile')}"
+            )
+    timeline_events = final.get("timeline_events")
+    positive_direct_dte_phase_tiles = {
+        int(event["tile"])
+        for event in timeline_events
+        if isinstance(event, dict)
+        and isinstance(event.get("tile"), int)
+        and event.get("engine") == "DIRECT_DTE"
+        and event.get("kind")
+        in ("direct-dte-wait", "direct-dte-completion-wait")
+        and isinstance(event.get("operation_window_cpu_cycles"), int)
+        and event["operation_window_cpu_cycles"] > 0
+        and event.get("duration_status") == "Measured"
+    } if isinstance(timeline_events, list) else set()
+    if positive_direct_dte_phase_tiles != set(range(RANK_COUNT)):
+        raise RuntimeError(
+            "profile analysis omitted a real measured Direct-DTE phase "
+            "for one or more tiles"
+        )
+
+    expected_report = current / "index.html"
+    if f"profile_report: {expected_report}" not in stdout:
+        raise RuntimeError("wafer-run did not publish the stable profile report path")
+    return samples[0]["device_elapsed_ns"], expected_report
+
+
 def main() -> int:
     args = parse_args()
     if args.repeat < 1 or args.completion_timeout_ms < 1:
         raise RuntimeError("repeat and completion timeout must be positive")
+    if args.profile and args.repeat != 1:
+        raise RuntimeError("--profile requires exactly one fixed campaign")
     if not args.no_card and os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
         print("Direct-DTE hardware execution is not armed", file=sys.stderr)
         return 77
 
     source = write_fixture(args.work_dir)
     package = args.work_dir / "package"
-    run(
-        [
-            str(args.wafer_compile),
-            "--input-program-dir",
-            str(source),
-            "--output-program-dir",
-            str(package),
-            f"--execution-ranks={RANK_COUNT}",
-            "--target-profile=wafer-tx81-single-card-kernel-v1",
-            f"--launch-kind={LAUNCH_KIND}",
-        ]
-    )
+    ordinary_package = package
+    if args.profile:
+        ordinary_package = args.work_dir / "ordinary-package"
+        compile_package(
+            args, source, ordinary_package, profile=False
+        )
+        compile_package(args, source, package, profile=True)
+        require_byte_identical_packages(ordinary_package, package)
+        require_profile_companion_permissions(package)
+    else:
+        compile_package(args, source, package, profile=False)
+
     bindings = validate_manifest(package)
-    resource_args = write_raw_files(args.work_dir, bindings)
     if args.no_card:
-        result = run(
-            [
+        no_card_packages = (
+            (ordinary_package, package)
+            if args.profile
+            else (package,)
+        )
+        for no_card_package in no_card_packages:
+            result = run([
                 str(args.wafer_run),
                 "--package-dir",
-                str(package),
+                str(no_card_package),
                 "--all-ranks",
                 "--no-card",
                 "--direct-dte-status-abi",
                 STATUS_ABI,
                 "--supports-host-watchdog",
-            ]
-        )
-        if "board_execution: false" not in result.stdout:
-            raise RuntimeError("no-card output omitted Direct-DTE validation")
+            ])
+            verify_no_card_evidence(
+                result.stdout,
+                companion_expected=(
+                    args.profile and no_card_package == package
+                ),
+            )
         print("direct_dte_no_card: verified")
+        print(f"direct_dte_no_card_profile: {str(args.profile).lower()}")
         return 0
 
     required = [
@@ -396,57 +824,68 @@ def main() -> int:
     ]
     if any(value is None for value in required):
         raise RuntimeError("board execution requires complete qualification arguments")
+    if args.expected_tile_count != RANK_COUNT:
+        raise RuntimeError(f"--expected-tile-count must be {RANK_COUNT}")
+
+    resource_args = write_raw_files(args.work_dir, bindings)
+    command = [
+        str(args.wafer_run),
+        "--package-dir",
+        str(package),
+        "--all-ranks",
+        "--board",
+        "--device-id",
+        str(args.device_id),
+        "--expected-runtime-version",
+        str(args.expected_runtime_version),
+        "--expected-device-name",
+        args.expected_device_name,
+        "--expected-pci-bus-id",
+        args.expected_pci_bus_id,
+        "--expected-tile-count",
+        str(args.expected_tile_count),
+        "--expected-runtime-library-sha256",
+        args.expected_runtime_library_sha256,
+        "--completion-timeout-ms",
+        str(args.completion_timeout_ms),
+        *resource_args,
+    ]
+    if args.profile:
+        result = run(
+            command,
+            timeout_seconds=(
+                max(
+                    300.0,
+                    PROFILE_CAMPAIGN_LAUNCH_COUNT
+                    * args.completion_timeout_ms
+                    / 1000.0
+                    + DIRECT_DTE_PROCESS_TIMEOUT_MARGIN_SECONDS,
+                )
+            ),
+        )
+        verify_board_evidence(result.stdout, bindings)
+        device_duration, report = verify_profile_report(
+            package, result.stdout
+        )
+        print(
+            "direct_dte_profile_campaign: pass "
+            f"launches={PROFILE_CAMPAIGN_LAUNCH_COUNT} "
+            f"primary={PROFILE_PRIMARY_EXECUTION_COUNT}"
+        )
+        print(f"direct_dte_profile_device_duration_ns: {device_duration}")
+        print(f"direct_dte_profile_report: {report}")
+        print(result.stdout, end="")
+        return 0
+
     for iteration in range(args.repeat):
         result = run(
-            [
-                str(args.wafer_run),
-                "--package-dir",
-                str(package),
-                "--all-ranks",
-                "--board",
-                "--device-id",
-                str(args.device_id),
-                "--expected-runtime-version",
-                str(args.expected_runtime_version),
-                "--expected-device-name",
-                args.expected_device_name,
-                "--expected-pci-bus-id",
-                args.expected_pci_bus_id,
-                "--expected-tile-count",
-                str(args.expected_tile_count),
-                "--expected-runtime-library-sha256",
-                args.expected_runtime_library_sha256,
-                "--completion-timeout-ms",
-                str(args.completion_timeout_ms),
-                *resource_args,
-            ],
+            command,
             timeout_seconds=(
                 args.completion_timeout_ms / 1000
                 + DIRECT_DTE_PROCESS_TIMEOUT_MARGIN_SECONDS
             ),
         )
-        required_evidence = {
-            "launch_pattern: cluster-x16",
-            "logical_tile_execution_basis: cluster-pid-and-exact-rank-slices",
-            "logical_tile_domain: 0..15",
-            "physical_execution_claim: none",
-            "board_execution: true",
-        }
-        if not required_evidence.issubset(set(result.stdout.splitlines())):
-            raise RuntimeError("board output omitted complete Direct-DTE evidence")
-        output_matches = re.findall(
-            rf"^output_compare: resource=(\d+) bytes={LOCAL_ELEMENTS * 2} "
-            r"exact=true$",
-            result.stdout,
-            re.MULTILINE,
-        )
-        expected_output_ids = {
-            bindings[(rank, "output", 0)] for rank in range(RANK_COUNT)
-        }
-        if len(output_matches) != RANK_COUNT or {
-            int(resource) for resource in output_matches
-        } != expected_output_ids:
-            raise RuntimeError("board output omitted exact rank output evidence")
+        verify_board_evidence(result.stdout, bindings)
         print(f"direct_dte_iteration: {iteration + 1}/{args.repeat} exact=true")
         print(result.stdout, end="")
     return 0

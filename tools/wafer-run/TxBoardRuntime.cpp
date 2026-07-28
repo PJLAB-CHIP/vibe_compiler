@@ -18,6 +18,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -61,6 +62,11 @@ struct TxApi {
   decltype(&txStreamCreate) streamCreate = nullptr;
   decltype(&txStreamDestroy) streamDestroy = nullptr;
   decltype(&txStreamQuery) streamQuery = nullptr;
+  decltype(&txEventCreate) eventCreate = nullptr;
+  decltype(&txEventDestroy) eventDestroy = nullptr;
+  decltype(&txEventRecord) eventRecord = nullptr;
+  decltype(&txEventQuery) eventQuery = nullptr;
+  decltype(&txEventElapsedTime) eventElapsedTime = nullptr;
 };
 
 RuntimeEnvironment makeTxProviderEnvironment() {
@@ -558,11 +564,18 @@ public:
 
   llvm::Error
   submitKernelPhase(KernelLaunchForm form, RuntimeLaunchPhaseRole phaseRole,
-                    llvm::ArrayRef<BoardRankLaunch> launches) override {
+                    llvm::ArrayRef<BoardRankLaunch> launches,
+                    BoardDeviceTimingPolicy timingPolicy) override {
     if (llvm::Error error = requireUsable("kernel phase submission"))
       return error;
     const bool perRank = form == KernelLaunchForm::PerRank;
     const bool cluster = form == KernelLaunchForm::Cluster;
+    if (perRank && launches.size() > 1 &&
+        timingPolicy == BoardDeviceTimingPolicy::StreamEvents)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "TX same-stream device timing does not support the multi-stream "
+          "per-rank launch form");
     if ((cluster && !api.launchClusterKernel) ||
         (!cluster && !api.launchKernel))
       return llvm::createStringError(
@@ -580,11 +593,14 @@ public:
       if (submissionKind != SubmissionKind::None || phaseSubmitted ||
           activeKernelForm || activeKernelPhase || !activeStreams.empty() ||
           !completedStreams.empty() || !submissionArgumentBlocks.empty() ||
-          !submissionEntries.empty() || !submissionMetadata.empty())
+          !submissionEntries.empty() || !submissionMetadata.empty() ||
+          activeDeviceTimingPolicy || timingStartEvent || timingEndEvent)
         return poisonContractViolation(
             "TX provider has stale state before a kernel submission");
     } else if (submissionKind != SubmissionKind::Kernel || !activeKernelForm ||
                *activeKernelForm != form || phaseSubmitted ||
+               !activeDeviceTimingPolicy ||
+               *activeDeviceTimingPolicy != timingPolicy ||
                activeStreams.empty() ||
                completedStreams.size() != activeStreams.size() ||
                !llvm::all_of(completedStreams,
@@ -656,6 +672,9 @@ public:
               "txStreamCreate(kernel) returned a null stream");
         activeStreams.push_back(stream);
       }
+      if (llvm::Error error =
+              initializeDeviceTiming(timingPolicy, "kernel"))
+        return error;
       submissionKind = SubmissionKind::Kernel;
       activeKernelForm = form;
       submissionActive = true;
@@ -676,6 +695,9 @@ public:
     const std::string phaseName =
         stringifyRuntimeLaunchPhaseRole(phaseRole).str();
     dim3 blockDim = {1, 1, 1};
+    if (llvm::Error error =
+            recordDeviceTimingStart(activeStreams.front(), "kernel"))
+      return error;
     if (perRank) {
       dim3 gridDim = {1, 1, 1};
       for (auto [index, launch] : llvm::enumerate(launches)) {
@@ -688,6 +710,9 @@ public:
         if (status != TX_SUCCESS)
           return txError("txLaunchKernel(per-rank:" + phaseName + ")", status);
       }
+      if (llvm::Error error =
+              recordDeviceTimingEnd(activeStreams.front(), "kernel"))
+        return error;
       return llvm::Error::success();
     }
 
@@ -713,12 +738,16 @@ public:
       if (status != TX_SUCCESS)
         return txError("txLaunchKernel(grid:" + phaseName + ")", status);
     }
+    if (llvm::Error error =
+            recordDeviceTimingEnd(activeStreams.front(), "kernel"))
+      return error;
     return llvm::Error::success();
   }
 
   llvm::Error
   submitModel(BoardGraphHandle graph,
-              llvm::ArrayRef<BoardModelTensorLaunch> tensors) override {
+              llvm::ArrayRef<BoardModelTensorLaunch> tensors,
+              BoardDeviceTimingPolicy timingPolicy) override {
     if (llvm::Error error = requireUsable("model submission"))
       return error;
     if (!api.launchModel)
@@ -728,7 +757,8 @@ public:
         phaseSubmitted || activeKernelForm || activeKernelPhase ||
         !activeStreams.empty() || !completedStreams.empty() ||
         !submissionArgumentBlocks.empty() || !submissionEntries.empty() ||
-        !submissionMetadata.empty())
+        !submissionMetadata.empty() || activeDeviceTimingPolicy ||
+        timingStartEvent || timingEndEvent)
       return poisonContractViolation(
           "TX model provider already owns submission state");
     auto graphIterator = graphs.find(graph.value);
@@ -817,13 +847,19 @@ public:
       return poisonContractViolation(
           "txStreamCreate(model) returned a null stream");
     activeStreams.push_back(stream);
+    if (llvm::Error error = initializeDeviceTiming(timingPolicy, "model"))
+      return error;
     completedStreams.assign(1, false);
     submissionKind = SubmissionKind::Model;
     phaseSubmitted = true;
     submissionActive = true;
+    if (llvm::Error error = recordDeviceTimingStart(stream, "model"))
+      return error;
     status = api.launchModel(*bootParamAddress, stream);
     if (status != TX_SUCCESS)
       return txError("txLaunchModel(type-7)", status);
+    if (llvm::Error error = recordDeviceTimingEnd(stream, "model"))
+      return error;
     return llvm::Error::success();
   }
 
@@ -834,13 +870,24 @@ public:
       return error;
     if (!submissionActive || submissionKind == SubmissionKind::None ||
         !phaseSubmitted || activeStreams.empty() ||
-        completedStreams.size() != activeStreams.size())
+        completedStreams.size() != activeStreams.size() ||
+        !activeDeviceTimingPolicy)
       return poisonContractViolation(
           "TX phase completion has no live submitted phase");
+    const bool deviceTimingEnabled =
+        *activeDeviceTimingPolicy == BoardDeviceTimingPolicy::StreamEvents;
+    const bool deviceTimingStateIsValid =
+        deviceTimingEnabled ? timingStartEvent && timingEndEvent
+                            : !timingStartEvent && !timingEndEvent;
+    if (!deviceTimingStateIsValid)
+      return poisonContractViolation(
+          "TX phase completion has inconsistent device-timing state");
 
     const auto waitBegin = std::chrono::steady_clock::now();
     std::vector<std::chrono::steady_clock::time_point> lastObservations(
         activeStreams.size(), waitBegin);
+    std::optional<std::chrono::steady_clock::time_point>
+        lastTimingObservation;
     uint64_t maximumPollGapNanoseconds = 0;
     auto recordObservation =
         [&](size_t streamIndex,
@@ -890,8 +937,47 @@ public:
           return deadlineExceeded();
       }
       if (allComplete) {
-        phaseSubmitted = false;
-        return BoardCompletionObservation{maximumPollGapNanoseconds};
+        if (!deviceTimingEnabled) {
+          phaseSubmitted = false;
+          return BoardCompletionObservation{maximumPollGapNanoseconds,
+                                            std::nullopt};
+        }
+        if (std::chrono::steady_clock::now() >= deadline)
+          return deadlineExceeded();
+        txError_t status = api.eventQuery(timingEndEvent);
+        const auto observationTime = std::chrono::steady_clock::now();
+        if (lastTimingObservation) {
+          const auto observedGap =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  observationTime - *lastTimingObservation)
+                  .count();
+          if (observedGap > 0)
+            maximumPollGapNanoseconds =
+                std::max(maximumPollGapNanoseconds,
+                         static_cast<uint64_t>(observedGap));
+        }
+        lastTimingObservation = observationTime;
+        if (status == TX_SUCCESS) {
+          llvm::Expected<std::optional<uint64_t>> deviceTiming =
+              readDeviceTiming();
+          if (!deviceTiming)
+            return deviceTiming.takeError();
+          if (!deviceTiming->has_value())
+            return poisonContractViolation(
+                "TX stream-event completion omitted device timing");
+          if (std::chrono::steady_clock::now() >= deadline)
+            return deadlineExceeded();
+          phaseSubmitted = false;
+          return BoardCompletionObservation{maximumPollGapNanoseconds,
+                                            **deviceTiming};
+        }
+        if (status == TX_ERROR_NOT_READY) {
+          allComplete = false;
+        } else {
+          return txError("txEventQuery(end)", status);
+        }
+        if (observationTime >= deadline)
+          return deadlineExceeded();
       }
       if (observationPolicy == BoardCompletionObservationPolicy::Normal)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -905,6 +991,8 @@ public:
         !llvm::all_of(completedStreams, [](bool complete) { return complete; }))
       return poisonContractViolation(
           "TX submission release requires a terminal current phase");
+    if (llvm::Error error = destroyDeviceTiming())
+      return error;
     while (!activeStreams.empty()) {
       if (llvm::Error error =
               check("txStreamDestroy", api.streamDestroy(activeStreams.back())))
@@ -929,6 +1017,129 @@ public:
   }
 
 private:
+  llvm::Error initializeDeviceTiming(BoardDeviceTimingPolicy timingPolicy,
+                                     llvm::StringRef operation) {
+    if (activeDeviceTimingPolicy || timingStartEvent || timingEndEvent)
+      return poisonContractViolation(
+          "TX provider has stale device-timing state");
+    activeDeviceTimingPolicy = timingPolicy;
+    if (timingPolicy == BoardDeviceTimingPolicy::Disabled)
+      return llvm::Error::success();
+
+    txError_t status = api.eventCreate(&timingStartEvent);
+    if (status != TX_SUCCESS)
+      return txError((operation + " txEventCreate(start)").str(), status);
+    if (!timingStartEvent)
+      return poisonContractViolation(
+          (operation + " txEventCreate(start) returned a null event").str());
+    status = api.eventCreate(&timingEndEvent);
+    if (status != TX_SUCCESS)
+      return txError((operation + " txEventCreate(end)").str(), status);
+    if (!timingEndEvent)
+      return poisonContractViolation(
+          (operation + " txEventCreate(end) returned a null event").str());
+    return llvm::Error::success();
+  }
+
+  llvm::Error recordDeviceTimingStart(txStream_t stream,
+                                      llvm::StringRef operation) {
+    if (!activeDeviceTimingPolicy)
+      return poisonContractViolation(
+          "TX device-timing policy is missing before submission");
+    if (*activeDeviceTimingPolicy == BoardDeviceTimingPolicy::Disabled) {
+      if (timingStartEvent || timingEndEvent)
+        return poisonContractViolation(
+            "TX disabled device timing owns event handles");
+      return llvm::Error::success();
+    }
+    if (!timingStartEvent || !timingEndEvent)
+      return poisonContractViolation(
+          "TX stream-event timing is missing event handles");
+    txError_t status = api.eventRecord(timingStartEvent, stream);
+    if (status != TX_SUCCESS)
+      return txError((operation + " txEventRecord(start)").str(), status);
+    return llvm::Error::success();
+  }
+
+  llvm::Error recordDeviceTimingEnd(txStream_t stream,
+                                    llvm::StringRef operation) {
+    if (!activeDeviceTimingPolicy)
+      return poisonContractViolation(
+          "TX device-timing policy is missing after submission");
+    if (*activeDeviceTimingPolicy == BoardDeviceTimingPolicy::Disabled)
+      return llvm::Error::success();
+    if (!timingStartEvent || !timingEndEvent)
+      return poisonContractViolation(
+          "TX stream-event timing is missing event handles");
+    txError_t status = api.eventRecord(timingEndEvent, stream);
+    if (status != TX_SUCCESS)
+      return txError((operation + " txEventRecord(end)").str(), status);
+    return llvm::Error::success();
+  }
+
+  llvm::Expected<std::optional<uint64_t>> readDeviceTiming() {
+    if (!activeDeviceTimingPolicy)
+      return poisonContractViolation(
+          "TX device-timing policy is missing at completion");
+    if (*activeDeviceTimingPolicy == BoardDeviceTimingPolicy::Disabled) {
+      if (timingStartEvent || timingEndEvent)
+        return poisonContractViolation(
+            "TX disabled device timing owns event handles");
+      return std::optional<uint64_t>();
+    }
+    if (!timingStartEvent || !timingEndEvent)
+      return poisonContractViolation(
+          "TX stream-event timing is missing event handles");
+
+    float elapsedMilliseconds = 0.0f;
+    txError_t status = api.eventElapsedTime(
+        &elapsedMilliseconds, timingStartEvent, timingEndEvent);
+    if (status != TX_SUCCESS)
+      return txError("txEventElapsedTime", status);
+    if (!std::isfinite(elapsedMilliseconds) || elapsedMilliseconds < 0.0f)
+      return poisonContractViolation(
+          "txEventElapsedTime returned a non-finite or negative duration");
+
+    // The TX event API reports float milliseconds. Round to the nearest
+    // integer nanosecond after checking the full long-double conversion
+    // domain. A valid 0.0f remains a valid, resolution-quantized zero sample.
+    const long double elapsedNanoseconds =
+        static_cast<long double>(elapsedMilliseconds) * 1000000.0L;
+    const long double roundedNanoseconds = std::round(elapsedNanoseconds);
+    const long double uint64UpperExclusive = std::ldexp(1.0L, 64);
+    if (roundedNanoseconds >= uint64UpperExclusive)
+      return poisonContractViolation(
+          "txEventElapsedTime duration overflows nanoseconds");
+    return std::optional<uint64_t>{
+        static_cast<uint64_t>(roundedNanoseconds)};
+  }
+
+  llvm::Error destroyDeviceTiming() {
+    if (!activeDeviceTimingPolicy)
+      return poisonContractViolation(
+          "TX submission release is missing device-timing state");
+    if (*activeDeviceTimingPolicy == BoardDeviceTimingPolicy::Disabled) {
+      if (timingStartEvent || timingEndEvent)
+        return poisonContractViolation(
+            "TX disabled device timing owns event handles");
+      activeDeviceTimingPolicy.reset();
+      return llvm::Error::success();
+    }
+    if (!timingStartEvent || !timingEndEvent)
+      return poisonContractViolation(
+          "TX stream-event timing is missing event handles");
+    if (llvm::Error error =
+            check("txEventDestroy(end)", api.eventDestroy(timingEndEvent)))
+      return error;
+    timingEndEvent = nullptr;
+    if (llvm::Error error =
+            check("txEventDestroy(start)", api.eventDestroy(timingStartEvent)))
+      return error;
+    timingStartEvent = nullptr;
+    activeDeviceTimingPolicy.reset();
+    return llvm::Error::success();
+  }
+
   llvm::Error requireUsable(llvm::StringRef operation) const {
     if (contextState == BoardRuntimeContextState::Usable)
       return llvm::Error::success();
@@ -983,6 +1194,9 @@ private:
   SubmissionKind submissionKind = SubmissionKind::None;
   std::optional<KernelLaunchForm> activeKernelForm;
   std::optional<RuntimeLaunchPhaseRole> activeKernelPhase;
+  std::optional<BoardDeviceTimingPolicy> activeDeviceTimingPolicy;
+  txEvent_t timingStartEvent = nullptr;
+  txEvent_t timingEndEvent = nullptr;
   bool phaseSubmitted = false;
   bool submissionActive = false;
 };
@@ -1072,6 +1286,11 @@ createTxBoardRuntimeDriver(llvm::StringRef expectedRuntimeLibraryDigest) {
   WAFER_RESOLVE_TX_API(streamCreate, txStreamCreate);
   WAFER_RESOLVE_TX_API(streamDestroy, txStreamDestroy);
   WAFER_RESOLVE_TX_API(streamQuery, txStreamQuery);
+  WAFER_RESOLVE_TX_API(eventCreate, txEventCreate);
+  WAFER_RESOLVE_TX_API(eventDestroy, txEventDestroy);
+  WAFER_RESOLVE_TX_API(eventRecord, txEventRecord);
+  WAFER_RESOLVE_TX_API(eventQuery, txEventQuery);
+  WAFER_RESOLVE_TX_API(eventElapsedTime, txEventElapsedTime);
 #undef WAFER_RESOLVE_TX_API
   return std::make_unique<TxBoardRuntimeDriver>(library, api,
                                                 std::move(*digest));

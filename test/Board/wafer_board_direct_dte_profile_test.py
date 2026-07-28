@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-only contract tests for the live-board Add profiler gate."""
+"""Host-only contract tests for the Direct-DTE profiler board gate."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import io
 import json
 import os
 import pathlib
-import stat
 import subprocess
 import sys
 import tempfile
@@ -19,129 +18,130 @@ from unittest import mock
 
 
 BOARD_DIR = pathlib.Path(__file__).resolve().parent
-HARNESS_PATH = BOARD_DIR / "wafer_board_all_rank_add_test.py"
+HARNESS_PATH = BOARD_DIR / "wafer_board_direct_dte_collective_test.py"
 sys.path.insert(0, str(BOARD_DIR))
 SPEC = importlib.util.spec_from_file_location(
-    "wafer_board_all_rank_add_harness", HARNESS_PATH
+    "wafer_board_direct_dte_profile_harness", HARNESS_PATH
 )
 if SPEC is None or SPEC.loader is None:
-    raise RuntimeError(f"cannot load Add profiler harness: {HARNESS_PATH}")
+    raise RuntimeError(f"cannot load Direct-DTE harness: {HARNESS_PATH}")
 HARNESS = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = HARNESS
 SPEC.loader.exec_module(HARNESS)
 
 
-def engine_rows() -> list[dict[str, object]]:
-    rows = []
-    for engine in ("CT", "NE", "RDMA", "WDMA", "TDMA"):
-        rows.append(
-            {
-                "engine": engine,
-                "engine_execution_time_ns": 8 if engine == "CT" else 0,
-                "engine_execution_time_valid": True,
-                "activity_window_count": 1 if engine == "CT" else 0,
-                "wait_window_cpu_cycles": None,
-                "raw_pmu_activity": 8 if engine == "CT" else 0,
-            }
-        )
-    rows.append(
-        {
-            "engine": "DIRECT_DTE",
-            "engine_execution_time_ns": None,
-            "wait_window_cpu_cycles": 0,
-            "wait_window_count": 0,
-            "wait_windows_valid": True,
-            "raw_pmu_activity": 0,
-        }
-    )
-    return rows
-
-
 class ProfileReportFixture:
     def __init__(self, root: pathlib.Path) -> None:
         self.package = root / "package"
-        self.run_id = "run-fresh-host-fixture"
+        self.run_id = "run-direct-dte-host-fixture"
         self.runs = pathlib.Path(f"{self.package}.profile") / "runs"
         self.run_directory = self.runs / self.run_id
         self.run_directory.mkdir(parents=True)
         (self.runs / "current").symlink_to(self.run_directory)
+
+        trace_tiles = []
+        analysis_tiles = []
+        for tile in range(HARNESS.RANK_COUNT):
+            event = {
+                "engine": "DIRECT_DTE",
+                "kind": "direct-dte-wait",
+                "operation_span_valid": True,
+                "operation_begin_cycle": 110,
+                "operation_end_cycle": 118,
+            }
+            trace_tiles.append({"tile": tile, "events": [event]})
+            analysis_tiles.append(
+                {
+                    "tile": tile,
+                    "trace_entry_cpu_cycles": 20,
+                    "semantic_partition": {
+                        "entry_cycles": 20,
+                        "exclusive_cycles": 20,
+                        "exclusive_accounting_valid": True,
+                    },
+                    "semantic_timeline_segments": [
+                        {"category": "dte-completion-wait", "cycles": 20}
+                    ],
+                    "trace_overhead_overlay": {
+                        "exclusive_component_cycles": 2,
+                        "inside_entry_known_overhead_cycles": 2,
+                        "outside_entry_overhead_cycles": 0,
+                        "components_exclusive": True,
+                        "non_additive_to_semantic_partition": True,
+                        "positioning": "aggregate-only",
+                        "coverage": "measured-categories-only",
+                        "rows": [
+                            {
+                                "category": "trace-run-cost-overlay",
+                                "cycles": 2,
+                            }
+                        ]
+                    },
+                    "engines": [
+                        {
+                            "engine": "DIRECT_DTE",
+                            "wait_windows_valid": True,
+                            "wait_window_cpu_cycles": 8,
+                            "wait_window_count": 1,
+                        }
+                    ],
+                }
+            )
+
+        sample = {
+            "sample_id": "primary",
+            "sample_index": 0,
+            "device_elapsed_ns": 8400,
+            "device_timer_kind": "tx-stream-events",
+            "host_submit_ns": 2600,
+            "host_launch_to_completion_ns": 18000,
+            "completion_observation_resolution_ns": 20,
+        }
         evidence = {
             "schema": "wafer.profile.evidence",
             "schema_version": 7,
             "run_id": self.run_id,
-            "measurement": {
-                "samples": [
-                    {
-                        "sample_id": "primary",
-                        "sample_index": 0,
-                        "device_elapsed_ns": 512,
-                        "device_timer_kind": "tx-stream-events",
-                        "host_submit_ns": 128,
-                        "host_launch_to_completion_ns": 1024,
-                        "completion_observation_resolution_ns": 8,
-                    }
-                ]
-            },
+            "measurement": {"samples": [sample]},
             "experiment": {
-                "trace": {
-                    "complete": True,
-                    "tiles": [
-                        {"tile": tile}
-                        for tile in range(HARNESS.RANK_COUNT)
-                    ],
-                }
+                "trace": {"complete": True, "tiles": trace_tiles}
             },
         }
         analysis = {
             "schema": "wafer.profile.analysis",
             "schema_version": 5,
             "run_id": self.run_id,
-            "validity": {"trace": True, "pmu": True},
+            "valid": True,
+            "validity": {"trace": True, "cost_accounting": True},
             "final_artifact": {
                 "duration": {
-                    "sample_id": "primary",
-                    "sample_index": 0,
+                    **sample,
+                    "host_non_submit_envelope_ns": 15400,
+                    "host_envelope_available": True,
+                    "completion_observation_fraction": 20 / 18000,
+                    "host_completion_high_resolution": True,
                     "qualified": True,
-                    "device_elapsed_ns": 512,
-                    "device_timer_kind": "tx-stream-events",
-                    "host_submit_ns": 128,
-                    "host_launch_to_completion_ns": 1024,
-                    "completion_observation_resolution_ns": 8,
                 },
                 "output": {
                     "production_execution_validated": True,
                     "diagnostic_captures_match_primary": True,
                 },
-                "tiles": [
-                    {
-                        "tile": tile,
-                        "trace_entry_cpu_cycles": 12,
-                        "engines": engine_rows(),
-                    }
-                    for tile in range(HARNESS.RANK_COUNT)
-                ],
+                "tiles": analysis_tiles,
                 "timeline_events": [
                     {
                         "tile": tile,
-                        "engine": "CT",
-                        "activity_window_cpu_cycles": (
-                            None if tile == 0 else 8
-                        ),
-                        "trace_entry_offset_begin_cpu_cycles": 1,
-                        "trace_entry_offset_end_cpu_cycles": 9,
+                        "engine": "DIRECT_DTE",
+                        "kind": "direct-dte-wait",
+                        "operation_window_cpu_cycles": 8,
+                        "duration_status": "Measured",
                     }
                     for tile in range(HARNESS.RANK_COUNT)
                 ],
             },
         }
-        (self.run_directory / "evidence.json").write_text(
-            json.dumps(evidence)
-        )
-        (self.run_directory / "analysis.json").write_text(
-            json.dumps(analysis)
-        )
+        (self.run_directory / "evidence.json").write_text(json.dumps(evidence))
+        (self.run_directory / "analysis.json").write_text(json.dumps(analysis))
         (self.run_directory / "index.html").write_text(
-            "<!doctype html><title>Final artifact profile</title>"
+            "<!doctype html><title>Direct-DTE profile</title>"
         )
         for path in (
             pathlib.Path(f"{self.package}.profile"),
@@ -156,7 +156,7 @@ class ProfileReportFixture:
         return f"profile_report: {self.runs / 'current' / 'index.html'}\n"
 
 
-class AllRankAddProfileGateTest(unittest.TestCase):
+class DirectDTEProfileGateTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temporary.name)
@@ -164,44 +164,56 @@ class AllRankAddProfileGateTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def test_accepts_complete_nonnegative_report(self) -> None:
+    def test_accepts_real_direct_dte_phase_and_nonnegative_cost(self) -> None:
         fixture = ProfileReportFixture(self.root)
-
-        result = HARNESS.verify_profile_report(
-            fixture.package, fixture.stdout
-        )
 
         self.assertEqual(
-            result,
-            (
-                512,
-                fixture.runs / "current" / "index.html",
-            ),
+            HARNESS.verify_profile_report(fixture.package, fixture.stdout),
+            (8400, fixture.runs / "current" / "index.html"),
         )
 
-    def test_rejects_bad_permissions_and_negative_measurements(self) -> None:
+    def test_accepts_zero_quantized_host_completion_diagnostics(self) -> None:
         fixture = ProfileReportFixture(self.root)
-        html = fixture.run_directory / "index.html"
-        html.chmod(0o755)
-        with self.assertRaisesRegex(
-            RuntimeError, "permission is not 0777"
-        ):
-            HARNESS.verify_profile_report(fixture.package, fixture.stdout)
+        evidence_path = fixture.run_directory / "evidence.json"
+        analysis_path = fixture.run_directory / "analysis.json"
+        evidence = json.loads(evidence_path.read_text())
+        analysis = json.loads(analysis_path.read_text())
+        sample = evidence["measurement"]["samples"][0]
+        sample["host_submit_ns"] = 0
+        sample["host_launch_to_completion_ns"] = 0
+        sample["completion_observation_resolution_ns"] = 0
+        duration = analysis["final_artifact"]["duration"]
+        duration.update(sample)
+        duration["host_non_submit_envelope_ns"] = 0
+        duration["host_envelope_available"] = False
+        duration["completion_observation_fraction"] = None
+        duration["host_completion_high_resolution"] = False
+        evidence_path.write_text(json.dumps(evidence))
+        analysis_path.write_text(json.dumps(analysis))
 
-        html.chmod(0o777)
+        self.assertEqual(
+            HARNESS.verify_profile_report(fixture.package, fixture.stdout),
+            (8400, fixture.runs / "current" / "index.html"),
+        )
+
+    def test_rejects_missing_tile_direct_dte_phase(self) -> None:
+        fixture = ProfileReportFixture(self.root)
         analysis_path = fixture.run_directory / "analysis.json"
         analysis = json.loads(analysis_path.read_text())
-        analysis["final_artifact"]["tiles"][0]["engines"][0][
-            "engine_execution_time_ns"
-        ] = -1
+        analysis["final_artifact"]["timeline_events"] = [
+            event
+            for event in analysis["final_artifact"]["timeline_events"]
+            if event["tile"] != HARNESS.RANK_COUNT - 1
+        ]
         analysis_path.write_text(json.dumps(analysis))
-        analysis_path.chmod(0o777)
+
         with self.assertRaisesRegex(
-            RuntimeError, "negative engine_execution_time_ns"
+            RuntimeError,
+            "measured Direct-DTE phase for one or more tiles",
         ):
             HARNESS.verify_profile_report(fixture.package, fixture.stdout)
 
-    def test_profile_board_path_has_one_bounded_campaign(self) -> None:
+    def test_profile_board_path_has_exactly_one_board_runner(self) -> None:
         work_dir = self.root / "work"
         arguments = argparse.Namespace(
             wafer_compile=self.root / "wafer-compile",
@@ -209,7 +221,6 @@ class AllRankAddProfileGateTest(unittest.TestCase):
             work_dir=work_dir,
             no_card=False,
             profile=True,
-            launch_kind="kernel",
             device_id=0,
             expected_runtime_version=1300,
             expected_device_name="/dev/accel/dev-0",
@@ -234,29 +245,24 @@ class AllRankAddProfileGateTest(unittest.TestCase):
                     HARNESS, "parse_args", return_value=arguments
                 )
             )
-            write_source = stack.enter_context(
+            write_fixture = stack.enter_context(
                 mock.patch.object(
                     HARNESS,
-                    "write_source_program",
+                    "write_fixture",
                     return_value=work_dir / "source-program",
                 )
             )
             compile_package = stack.enter_context(
                 mock.patch.object(HARNESS, "compile_package")
             )
-            stack.enter_context(
+            compare = stack.enter_context(
                 mock.patch.object(
                     HARNESS, "require_byte_identical_packages"
                 )
             )
-            stack.enter_context(
+            permissions = stack.enter_context(
                 mock.patch.object(
                     HARNESS, "require_profile_companion_permissions"
-                )
-            )
-            stack.enter_context(
-                mock.patch.object(
-                    HARNESS, "load_boundary_slices", return_value={}
                 )
             )
             stack.enter_context(
@@ -266,25 +272,18 @@ class AllRankAddProfileGateTest(unittest.TestCase):
             )
             stack.enter_context(
                 mock.patch.object(
-                    HARNESS,
-                    "write_rank_payloads",
-                    return_value=(
-                        [],
-                        {2},
-                        {(0, 0, 0)},
-                        {(0, 0)},
-                    ),
+                    HARNESS, "write_raw_files", return_value=[]
                 )
             )
             verify_board = stack.enter_context(
                 mock.patch.object(HARNESS, "verify_board_evidence")
             )
-            stack.enter_context(
+            verify_report = stack.enter_context(
                 mock.patch.object(
                     HARNESS,
                     "verify_profile_report",
                     return_value=(
-                        1024,
+                        8400,
                         work_dir / "package.profile/runs/current/index.html",
                     ),
                 )
@@ -299,7 +298,7 @@ class AllRankAddProfileGateTest(unittest.TestCase):
                 result = HARNESS.main()
 
         self.assertEqual(result, 0)
-        write_source.assert_called_once_with(work_dir)
+        write_fixture.assert_called_once_with(work_dir)
         self.assertEqual(
             compile_package.call_args_list,
             [
@@ -317,25 +316,29 @@ class AllRankAddProfileGateTest(unittest.TestCase):
                 ),
             ],
         )
+        compare.assert_called_once_with(
+            work_dir / "ordinary-package", work_dir / "package"
+        )
+        permissions.assert_called_once_with(work_dir / "package")
         run.assert_called_once()
-        campaign = run.call_args
         self.assertEqual(
-            campaign.args[0][1:3],
+            run.call_args.args[0][1:3],
             ["--package-dir", str(work_dir / "package")],
         )
         self.assertEqual(
-            campaign.kwargs["timeout_seconds"],
+            run.call_args.kwargs["timeout_seconds"],
             max(
                 300.0,
                 (
                     HARNESS.PROFILE_CAMPAIGN_LAUNCH_COUNT * 60.0
-                    + HARNESS.BOARD_PROCESS_TIMEOUT_MARGIN_SECONDS
+                    + HARNESS.DIRECT_DTE_PROCESS_TIMEOUT_MARGIN_SECONDS
                 ),
             ),
         )
         verify_board.assert_called_once()
+        verify_report.assert_called_once()
         self.assertIn(
-            "board_profile_campaign: pass launches=3 primary=1",
+            "direct_dte_profile_campaign: pass launches=3 primary=1",
             output.getvalue(),
         )
 

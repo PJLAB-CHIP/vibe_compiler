@@ -13,11 +13,11 @@
 
 namespace wafer::runtime {
 
-/// One structurally decoded per-tile profiler record. In schema v2 the fixed
-/// event field named raw_return contains an exact NCC busy-cycle delta or, only
-/// when isTx81ProfilerDirectDTECounterValid is true, an uncalibrated
-/// Direct-DTE PMU delta. begin/end bound the NCC observation or the real
-/// Direct-DTE wait/completion window.
+/// One structurally decoded per-tile profiler record. Schema v3 separates
+/// conservative PMU observation, typed-site and exact target-operation spans.
+/// NCC counter_delta is the vendor execution-time counter delta in nanoseconds;
+/// Direct-DTE counter_delta remains raw and is usable only when its validity
+/// bit is set.
 struct Tx81ProfilerRecord {
   WaferTx81ProfilerRecordHeader header{};
   std::vector<WaferTx81ProfilerTSMCallEvent> events;
@@ -45,9 +45,10 @@ llvm::Expected<Tx81ProfilerRecord>
 decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes);
 
 /// Requires all-and-only tile ids 0..15, a common record contract and
-/// complete, non-overflowing records. Trace records additionally require a
-/// valid static site identity on every stored event. Worker attribution
-/// remains optional and is governed solely by the event validity bit.
+/// complete, non-overflowing records. Every stored event requires a static
+/// final-artifact site identity; an unbracketed completion wait is an
+/// instrumentation-contract failure rather than anonymous evidence. Worker
+/// attribution remains optional and is governed solely by validity bits.
 llvm::Error
 verifyTx81ProfilerTileDomain(llvm::ArrayRef<Tx81ProfilerRecord> records);
 
@@ -66,9 +67,44 @@ isTx81ProfilerSiteValid(const WaferTx81ProfilerTSMCallEvent &event) {
   return (event.metadata & WAFER_TX81_PROFILER_EVENT_SITE_VALID) != 0;
 }
 
+inline bool isTx81ProfilerObservationSpanValid(
+    const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata &
+          WAFER_TX81_PROFILER_EVENT_OBSERVATION_SPAN_VALID) != 0;
+}
+
 inline bool
-isTx81ProfilerActivityValid(const WaferTx81ProfilerTSMCallEvent &event) {
-  return (event.metadata & WAFER_TX81_PROFILER_EVENT_ACTIVITY_VALID) != 0;
+isTx81ProfilerSiteSpanValid(const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata & WAFER_TX81_PROFILER_EVENT_SITE_SPAN_VALID) != 0;
+}
+
+inline bool
+isTx81ProfilerOperationSpanValid(const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata &
+          WAFER_TX81_PROFILER_EVENT_OPERATION_SPAN_VALID) != 0;
+}
+
+inline bool
+isTx81ProfilerCounterDeltaPositive(
+    const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata &
+          WAFER_TX81_PROFILER_EVENT_COUNTER_DELTA_POSITIVE) != 0;
+}
+
+inline bool isTx81ProfilerSameEngineAmbiguous(
+    const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata &
+          WAFER_TX81_PROFILER_EVENT_SAME_ENGINE_AMBIGUOUS) != 0;
+}
+
+inline bool
+isTx81ProfilerLocalWait(const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata & WAFER_TX81_PROFILER_EVENT_WAIT_LOCAL) != 0;
+}
+
+inline bool
+isTx81ProfilerWorkerWait(const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata & WAFER_TX81_PROFILER_EVENT_WAIT_WORKER) != 0;
 }
 
 inline bool
@@ -85,6 +121,12 @@ inline bool
 isTx81ProfilerDirectDTECounterValid(
     const WaferTx81ProfilerTSMCallEvent &event) {
   return (event.metadata & WAFER_TX81_PROFILER_EVENT_DTE_COUNTER_VALID) != 0;
+}
+
+inline bool
+isTx81ProfilerNCCCounterValid(
+    const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata & WAFER_TX81_PROFILER_EVENT_NCC_COUNTER_VALID) != 0;
 }
 
 } // namespace wafer::runtime

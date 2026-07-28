@@ -89,8 +89,17 @@ if(WAFER_ENABLE_BOARD_RUNTIME)
       volatile auto p14 = &txStreamCreate;
       volatile auto p15 = &txStreamDestroy;
       volatile auto p16 = &txStreamQuery;
+      // Event timing is part of the exact target-provider ABI baseline.
+      // Per-invocation Disabled policy suppresses event use, not symbol
+      // qualification of the configured digest-pinned runtime.
+      volatile auto p17 = &txEventCreate;
+      volatile auto p18 = &txEventDestroy;
+      volatile auto p19 = &txEventRecord;
+      volatile auto p20 = &txEventQuery;
+      volatile auto p21 = &txEventElapsedTime;
       return !(p0 && p1 && p2 && p3 && p4 && p5 && p6 && p7 && p8 && p9 &&
-               p10 && p11 && p12 && p13 && p14 && p15 && p16);
+               p10 && p11 && p12 && p13 && p14 && p15 && p16 && p17 && p18 &&
+               p19 && p20 && p21);
     }
   ]] WAFER_TX_RUNTIME_HAS_REQUIRED_SYMBOLS)
   cmake_pop_check_state()

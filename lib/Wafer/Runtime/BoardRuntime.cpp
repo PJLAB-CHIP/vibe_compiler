@@ -286,6 +286,13 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     return boardError(BoardRuntimeStage::Preflight, -1, noEntry,
                       "board completion timeout is outside the supported "
                       "range");
+  if (request.deviceTimingPolicy == BoardDeviceTimingPolicy::StreamEvents &&
+      kernelLaunch && kernelLaunch->form == KernelLaunchForm::PerRank &&
+      manifest.rankCount > 1)
+    return boardError(
+        BoardRuntimeStage::Preflight, -1, noEntry,
+        "same-stream device timing does not support a multi-rank per-rank "
+        "launch");
 
   llvm::DenseSet<int64_t> directDTERanks;
   for (const PackageEntrypointRecord &entry : manifest.entries)
@@ -691,6 +698,45 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                std::chrono::milliseconds(request.completionTimeoutMilliseconds);
   };
   uint64_t maximumPollGapNanoseconds = 0;
+  uint64_t hostSubmitNanoseconds = 0;
+  std::optional<uint64_t> deviceExecutionNanoseconds;
+  if (request.deviceTimingPolicy == BoardDeviceTimingPolicy::StreamEvents)
+    deviceExecutionNanoseconds = 0;
+  auto accumulateHostSubmit =
+      [&](std::chrono::steady_clock::time_point submitBegin,
+          std::chrono::steady_clock::time_point submitEnd) -> llvm::Error {
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             submitEnd - submitBegin)
+                             .count();
+    if (elapsed < 0)
+      return detail::invalid(
+          "host steady clock moved backwards during provider submission");
+    const uint64_t elapsedNanoseconds = static_cast<uint64_t>(elapsed);
+    if (elapsedNanoseconds >
+        std::numeric_limits<uint64_t>::max() - hostSubmitNanoseconds)
+      return detail::invalid("aggregate provider submission time overflows");
+    hostSubmitNanoseconds += elapsedNanoseconds;
+    return llvm::Error::success();
+  };
+  auto accumulateDeviceTiming =
+      [&](const BoardCompletionObservation &observation) -> llvm::Error {
+    const bool requested =
+        request.deviceTimingPolicy == BoardDeviceTimingPolicy::StreamEvents;
+    if (requested != observation.deviceExecutionNanoseconds.has_value())
+      return detail::invalid(
+          requested
+              ? "provider omitted requested same-stream device timing"
+              : "provider returned same-stream device timing when disabled");
+    if (!requested)
+      return llvm::Error::success();
+    if (*observation.deviceExecutionNanoseconds >
+        std::numeric_limits<uint64_t>::max() -
+            *deviceExecutionNanoseconds)
+      return detail::invalid("aggregate device execution time overflows");
+    *deviceExecutionNanoseconds +=
+        *observation.deviceExecutionNanoseconds;
+    return llvm::Error::success();
+  };
   if (kernelLaunch) {
     std::vector<llvm::DenseMap<uint64_t, BoardFunctionHandle>>
         functionsByPhase;
@@ -746,10 +792,19 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
 
     for (auto [phaseIndex, phaseRole] : llvm::enumerate(launchPhases)) {
       beginSubmissionWindow();
-      if (llvm::Error error = driver.submitKernelPhase(
-              kernelLaunch->form, phaseRole, launchesByPhase[phaseIndex]))
-        return fail(BoardRuntimeStage::Launch, -1, noEntry, std::move(error));
+      const auto submitBegin = std::chrono::steady_clock::now();
+      llvm::Error submitError = driver.submitKernelPhase(
+          kernelLaunch->form, phaseRole, launchesByPhase[phaseIndex],
+          request.deviceTimingPolicy);
+      const auto submitEnd = std::chrono::steady_clock::now();
+      if (submitError)
+        return fail(BoardRuntimeStage::Launch, -1, noEntry,
+                    std::move(submitError));
       submissionLive = true;
+      if (llvm::Error error = accumulateHostSubmit(submitBegin, submitEnd)) {
+        driver.quarantine();
+        return fail(BoardRuntimeStage::Launch, -1, noEntry, std::move(error));
+      }
       llvm::Expected<BoardCompletionObservation> observation =
           driver.waitCurrentSubmission(*deadline,
                                        request.completionObservationPolicy);
@@ -758,6 +813,9 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                     observation.takeError());
       maximumPollGapNanoseconds = std::max(
           maximumPollGapNanoseconds, observation->maximumPollGapNanoseconds);
+      if (llvm::Error error = accumulateDeviceTiming(*observation))
+        return fail(BoardRuntimeStage::Completion, -1, noEntry,
+                    std::move(error));
     }
   } else if (modelLaunch) {
     std::vector<BoardModelTensorLaunch> tensors;
@@ -776,9 +834,18 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                            resource->type.dtype, resource->type.shape});
       }
     beginSubmissionWindow();
-    if (llvm::Error error = driver.submitModel(*liveGraph, tensors))
-      return fail(BoardRuntimeStage::Launch, -1, noEntry, std::move(error));
+    const auto submitBegin = std::chrono::steady_clock::now();
+    llvm::Error submitError =
+        driver.submitModel(*liveGraph, tensors, request.deviceTimingPolicy);
+    const auto submitEnd = std::chrono::steady_clock::now();
+    if (submitError)
+      return fail(BoardRuntimeStage::Launch, -1, noEntry,
+                  std::move(submitError));
     submissionLive = true;
+    if (llvm::Error error = accumulateHostSubmit(submitBegin, submitEnd)) {
+      driver.quarantine();
+      return fail(BoardRuntimeStage::Launch, -1, noEntry, std::move(error));
+    }
     llvm::Expected<BoardCompletionObservation> observation =
         driver.waitCurrentSubmission(*deadline,
                                      request.completionObservationPolicy);
@@ -786,6 +853,9 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       return fail(BoardRuntimeStage::Completion, -1, noEntry,
                   observation.takeError());
     maximumPollGapNanoseconds = observation->maximumPollGapNanoseconds;
+    if (llvm::Error error = accumulateDeviceTiming(*observation))
+      return fail(BoardRuntimeStage::Completion, -1, noEntry,
+                  std::move(error));
   } else {
     return fail(BoardRuntimeStage::Launch, -1, noEntry,
                 detail::invalid("package has an unknown runtime launch kind"));
@@ -802,6 +872,8 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     return fail(BoardRuntimeStage::Completion, -1, noEntry,
                 detail::invalid("host steady clock moved backwards"));
   result.launchToCompletionNanoseconds = static_cast<uint64_t>(elapsed);
+  result.hostSubmitNanoseconds = hostSubmitNanoseconds;
+  result.deviceExecutionNanoseconds = deviceExecutionNanoseconds;
   result.completionObservationResolutionNanoseconds = maximumPollGapNanoseconds;
   result.completedStages.push_back(BoardRuntimeStage::EntryResolve);
   result.completedStages.push_back(BoardRuntimeStage::Launch);

@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -131,11 +132,23 @@ enum class BoardCompletionObservationPolicy {
   ProfileHighResolution,
 };
 
+/// Controls whether the provider brackets one submitted phase with
+/// same-stream device events. This is intentionally separate from host
+/// completion observation: stream events measure device execution while the
+/// host clock measures submission and terminal-observation latency.
+enum class BoardDeviceTimingPolicy {
+  Disabled,
+  StreamEvents,
+};
+
 struct BoardCompletionObservation {
   /// Maximum steady-clock gap between consecutive completion observations for
   /// any still-live stream. This is measured by the provider; it is never a
   /// nominal polling constant.
   uint64_t maximumPollGapNanoseconds = 0;
+  /// Same-stream device-event duration for exactly the submitted phase.
+  /// Providers must leave this empty when device timing was disabled.
+  std::optional<uint64_t> deviceExecutionNanoseconds;
 };
 
 using BoardCompletionDeadline = std::chrono::steady_clock::time_point;
@@ -226,13 +239,15 @@ public:
   /// must poison the context.
   virtual llvm::Error
   submitKernelPhase(KernelLaunchForm form, RuntimeLaunchPhaseRole phaseRole,
-                    llvm::ArrayRef<BoardRankLaunch> launches) = 0;
+                    llvm::ArrayRef<BoardRankLaunch> launches,
+                    BoardDeviceTimingPolicy timingPolicy) = 0;
 
   /// One txLaunchModel submission owned by a previously loaded graph. The TX
   /// provider alone materializes the qualified BootParam/type-7 wire bytes.
   virtual llvm::Error
   submitModel(BoardGraphHandle graph,
-              llvm::ArrayRef<BoardModelTensorLaunch> tensors) = 0;
+              llvm::ArrayRef<BoardModelTensorLaunch> tensors,
+              BoardDeviceTimingPolicy timingPolicy) = 0;
 
   /// Waits for the current submitted phase to become terminal. Every phase of
   /// one invocation receives the same absolute host deadline. Timeout or an
@@ -269,6 +284,8 @@ struct BoardRuntimeInvocationRequest {
       kDefaultBoardCompletionTimeoutMilliseconds;
   BoardCompletionObservationPolicy completionObservationPolicy =
       BoardCompletionObservationPolicy::Normal;
+  BoardDeviceTimingPolicy deviceTimingPolicy =
+      BoardDeviceTimingPolicy::Disabled;
   BoardDeviceQualification qualification;
   std::vector<BoardRuntimeBinding> bindings;
   /// Compiler-owned profiler records are the only internal workspace that a
@@ -308,6 +325,12 @@ struct BoardRuntimeInvocationResult {
   /// through successful all-rank completion. This is a campaign-level latency
   /// observation, not a tile clock and not per-instruction hardware time.
   uint64_t launchToCompletionNanoseconds = 0;
+  /// Host steady-clock time spent strictly inside provider submission calls,
+  /// summed across every launch phase.
+  uint64_t hostSubmitNanoseconds = 0;
+  /// Sum of provider-observed same-stream device-event durations across every
+  /// launch phase. Present exactly when StreamEvents timing was requested.
+  std::optional<uint64_t> deviceExecutionNanoseconds;
   /// Provider-measured maximum gap between completion observations. Profiler
   /// analysis uses this to reject latency samples whose terminal observation
   /// cadence is too coarse for the claimed comparison.

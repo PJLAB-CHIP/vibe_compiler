@@ -747,6 +747,7 @@ def check_local_completion_ordering(source_text: str) -> None:
     )
 
 
+
 def check_expanded_profile_completion(expanded_source_text: str) -> None:
     trace_predicate = function_body(
         expanded_source_text, "wafer_profile_is_trace_capture"
@@ -771,6 +772,32 @@ def check_expanded_profile_completion(expanded_source_text: str) -> None:
         "each profile binding must begin without DTE PMU restore ownership",
     )
 
+    site_begin = function_body(
+        expanded_source_text, "wafer_tx81_profile_site_begin"
+    )
+    require_pattern(
+        site_begin,
+        r"WAFER_TX81_PROFILER_RECORD_COUNT_ONLY.*"
+        r"active_site_depth\s*=\s*1\s*;.*"
+        r"\+\+wafer_profile_header->next_sequence\s*;.*"
+        r"return\s*;.*"
+        r"hook_begin_cycle\s*=\s*wafer_profile_cycle\(\)",
+        "expanded Count site-container capacity preflight without Trace cost",
+    )
+    site_end = function_body(
+        expanded_source_text, "wafer_tx81_profile_site_end"
+    )
+    require_pattern(
+        site_end,
+        r"WAFER_TX81_PROFILER_RECORD_COUNT_ONLY.*"
+        r"active_site_id\s*=\s*"
+        r"(?:WAFER_TX81_PROFILER_INVALID_SITE_ID|\(\s*0xffffffffU\s*\))\s*;.*"
+        r"active_site_depth\s*=\s*0\s*;.*"
+        r"return\s*;.*"
+        r"site_end_cycle\s*=\s*wafer_profile_cycle\(\)",
+        "expanded Count site-container close without Trace cost",
+    )
+
     wait = function_body(
         expanded_source_text, "wafer_profile_wait_local_completion"
     )
@@ -786,8 +813,10 @@ def check_expanded_profile_completion(expanded_source_text: str) -> None:
     )
     require_pattern(
         wait,
-        r"do\s*\{.*wafer_profile_observe_ncc_activity\(\);.*\}\s*while\s*"
-        r"\(\s*TsmGetCsrTaskstatus\(\)\s*!=\s*1U\s*\)\s*;",
+        r"for\s*\(\s*;\s*;\s*\)\s*\{.*"
+        r"wafer_profile_observe_ncc_activity\(\);.*"
+        r"done\s*=\s*TsmGetCsrTaskstatus\(\)\s*;.*"
+        r"if\s*\(\s*done\s*==\s*1U\s*\)\s*break\s*;",
         "expanded profile TASK_DONE polarity and drain sampling",
     )
     require_absent(
@@ -808,6 +837,7 @@ def check_expanded_profile_completion(expanded_source_text: str) -> None:
             "TsmWaitfinish();",
             f"expanded {function_name} must use the checked profile helper",
         )
+
 
     entry_begin = function_body(
         expanded_source_text, "wafer_tx81_profile_entry_begin"
