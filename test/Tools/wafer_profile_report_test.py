@@ -7,6 +7,7 @@ import copy
 import importlib.util
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -191,8 +192,19 @@ def _test_final_artifact(module: object) -> None:
         event for event in final["timeline_events"] if event["engine"] == "CT"
     )
     assert ncc_event["duration_status"] == "Bounded"
+    assert ncc_event["display_interval_role"] == "command-submit"
     assert ncc_event["operation_window_status"] == "Measured"
     assert ncc_event["activity_window_status"] == "Bounded"
+    assert (
+        ncc_event["trace_entry_offset_end_cpu_cycles"]
+        - ncc_event["trace_entry_offset_begin_cpu_cycles"]
+        == ncc_event["operation_window_cpu_cycles"]
+    )
+    assert (
+        ncc_event["activity_trace_entry_offset_end_cpu_cycles"]
+        - ncc_event["activity_trace_entry_offset_begin_cpu_cycles"]
+        == ncc_event["activity_window_cpu_cycles"]
+    )
     assert ncc_event["counter_status"] == "Measured"
     assert ncc_event["ncc_engine_execution_time_ns"] > 0
     assert ncc_event["correlation_key"] == "compute.ct"
@@ -210,6 +222,7 @@ def _test_final_artifact(module: object) -> None:
         if event["kind"] == "direct-dte-wait"
     )
     assert dte_event["duration_status"] == "Measured"
+    assert dte_event["display_interval_role"] == "operation-window"
     assert dte_event["counter_status"] == "Unavailable"
     dte_phase_events = [
         event
@@ -262,6 +275,49 @@ def _test_final_artifact(module: object) -> None:
     ):
         assert legacy not in serialized
 
+    overlapping = make_evidence()
+    overlapping_events = overlapping["experiment"]["trace"]["tiles"][0][
+        "events"
+    ]
+    overlap_ct = next(
+        event
+        for event in overlapping_events
+        if event["kind"] == "ncc-command" and event["engine"] == "CT"
+    )
+    overlap_wdma = next(
+        event
+        for event in overlapping_events
+        if event["kind"] == "ncc-command" and event["engine"] == "WDMA"
+    )
+    shared_sample_end = overlap_wdma["observed_end_cycle"]
+    overlap_ct["observed_end_cycle"] = shared_sample_end
+    overlap_ct_analysis = module.analyze_evidence(overlapping)
+    overlap_rows = overlap_ct_analysis["final_artifact"]["timeline_events"]
+    overlap_ct_row = next(
+        event
+        for event in overlap_rows
+        if event["tile"] == 0 and event["engine"] == "CT"
+    )
+    overlap_wdma_row = next(
+        event
+        for event in overlap_rows
+        if event["tile"] == 0 and event["engine"] == "WDMA"
+    )
+    assert (
+        overlap_ct_row["activity_trace_entry_offset_begin_cpu_cycles"]
+        < overlap_wdma_row["activity_trace_entry_offset_end_cpu_cycles"]
+        and overlap_wdma_row["activity_trace_entry_offset_begin_cpu_cycles"]
+        < overlap_ct_row["activity_trace_entry_offset_end_cpu_cycles"]
+    )
+    assert (
+        overlap_ct_row["trace_entry_offset_end_cpu_cycles"]
+        <= overlap_wdma_row["trace_entry_offset_begin_cpu_cycles"]
+    )
+    assert overlap_ct_row["activity_window_status"] == "Bounded"
+    assert overlap_wdma_row["activity_window_status"] == "Bounded"
+    assert overlap_ct_row["display_interval_role"] == "command-submit"
+    assert overlap_wdma_row["display_interval_role"] == "command-submit"
+
     report = module.render_report(evidence, first)
     for text in (
         "最终编译产物板卡 Profile",
@@ -278,14 +334,15 @@ def _test_final_artifact(module: object) -> None:
         "Tile / Engine",
         "Program / Sites",
         "Communication / DTE",
-        "Aggregate container",
-        "Leaf phase",
-        "Peer ready",
-        "Setup / issue",
-        "Completion wait",
-        "Cleanup",
+        "术语说明",
+        "整次通信等待（总计）",
+        "通信内部步骤",
+        "等待 DTE 对端就绪",
+        "配置并发起 DTE",
+        "等待 DTE 传输完成",
+        "收尾",
         "Operation CPU cycles",
-        "Aggregate only",
+        "仅“整次通信等待”行提供",
         "Diagnostics / Raw",
         "Resource tree",
         "Engine summary",
@@ -304,6 +361,141 @@ def _test_final_artifact(module: object) -> None:
     ):
         assert text in report
     assert "只知道活动发生在保守观测窗内" in report
+    assert "实心块</b>：精确 command submit / DTE operation 区间" in report
+    assert "浅色虚线框</b>：PMU 活动保守观测范围" in report
+    assert "范围重叠不证明 engine 同时执行" in report
+    assert 'data-interval-role="observation-bound"' in report
+    assert 'data-interval-role="${escapeHtml(role)}"' in report
+    for raw_key, display_name in (
+        ("site-control", "调用点内控制与准备"),
+        ("between-site-gap", "调用点之间的控制/等待"),
+        ("ncc-submit", "NCC 指令提交"),
+        ("completion-wait-proxy", "等待 NCC 完成（Trace 代理）"),
+        ("entry-prologue", "入口准备区间"),
+        ("entry-epilogue", "结束收尾区间"),
+        ("ncc-pmu-sample", "NCC PMU 采样"),
+        ("dte-pmu-sample", "DTE PMU 采样"),
+        ("event-bookkeeping", "Trace 事件记录"),
+        ("status-poll", "完成状态轮询"),
+        ("site-hook", "调用点钩子"),
+        ("completion-loop-bookkeeping", "完成循环记录"),
+        ("entry-setup", "Trace 入口初始化"),
+        ("entry-teardown", "Trace 退出收尾"),
+        ("Bounded", "仅确定活动范围"),
+        ("trace-only", "仅插桩值"),
+    ):
+        assert f'"{raw_key}":{{label:"{display_name}"' in report
+    catalog_keys = {
+        "semantic": {
+            row["category"]
+            for tile in final["tiles"]
+            for row in tile["semantic_partition"]["rows"]
+        }
+        | {
+            "capture-boundary-residual",
+            "dte-wait-aggregate-fallback",
+        },
+        "trace": {
+            row["reason"]
+            for tile in final["tiles"]
+            for row in tile["trace_overhead_overlay"]["rows"]
+        },
+        "status": {
+            "Measured",
+            "Sampled",
+            "Bounded",
+            "Derived",
+            "Zero delta",
+            "Zero-delta marker",
+            "Ambiguous",
+            "Attribution ambiguous",
+            "Unavailable",
+            "Incomplete",
+            "Invalid",
+            "Passed",
+            "Gate unmet",
+            "Not assessed",
+        },
+        "accounting": {
+            "yes",
+            "mixed",
+            "unknown",
+            "no",
+        },
+        "magnitude": {
+            "proxy",
+            "mixed/proxy",
+            "unknown",
+            "trace-only",
+        },
+        "interval": {
+            "command-submit",
+            "operation-window",
+            "observation-bound",
+            "site-envelope",
+            "marker",
+        },
+        "location": {
+            "inside-entry-unpositioned",
+            "before-entry",
+            "after-entry",
+        },
+        "event": set(module.EVENT_KINDS),
+        "site": set(module.SITE_KINDS),
+        "engine": set(module.ENGINES),
+        "role": {"send", "receive"},
+        "evidence": {"aggregate", "leaf"},
+        "reason": {
+            "overlapping-operation-spans",
+            "overlapping-site-spans",
+            "no-valid-site-boundaries",
+            "operation@site/event",
+            "inside-site-outside-operation",
+            "before-first-site",
+            "after-last-site",
+            "between-sites",
+        },
+        "correctness": {
+            "production-validation-failed",
+            "expected-exact",
+            "expected-relaxed-f16",
+            "partially-expected",
+            "primary-validated",
+        },
+        "structure": {
+            "trace-run-cost-overlay",
+            "semantic-partition",
+            "trace-overhead-overlay",
+        },
+        "validity": set(first["validity"]),
+    }
+    meta_body = report.split("const TERM_META={", 1)[1].split("\n};", 1)[0]
+    guidance_body = report.split("const TERM_GUIDANCE={", 1)[1].split(
+        "\n};", 1
+    )[0]
+    for group, keys in catalog_keys.items():
+        group_body = report.split(f"  {group}:{{", 1)[1].split(
+            "\n  },", 1
+        )[0]
+        missing = []
+        incomplete = []
+        for key in keys:
+            prefix = f'"{key}":{{label:'
+            if prefix not in group_body:
+                missing.append(key)
+                continue
+            entry = re.search(
+                rf'"{re.escape(key)}":\{{label:"[^"]+",'
+                rf'definition:"[^"]+"(?:,meta:"[^"]+")?,'
+                rf'not:"[^"]+"\}}',
+                group_body,
+            )
+            if entry is None:
+                incomplete.append(key)
+        assert not missing, (group, sorted(missing))
+        assert not incomplete, (group, sorted(incomplete))
+        assert f"  {group}:" in meta_body
+        assert f"  {group}:" in guidance_body
     assert "Measurement invalid" not in report
     assert "Trace-only overhead" not in report
     assert "Control span" not in report
@@ -312,6 +504,7 @@ def _test_final_artifact(module: object) -> None:
     assert "范围 " not in report
     assert "gradient" not in report.lower()
     assert "grid-template-columns:repeat(4" in report
+    assert ".ruler{display:grid;grid-template-columns:128px 1fr" in report
     assert ".cost-tables>*{min-width:0}" in report
     assert (
         ".diag{grid-template-columns:64px minmax(0,1fr)"
@@ -329,6 +522,7 @@ def _test_dom_contract(report: str) -> None:
         "engines",
         "sites",
         "communication",
+        "glossary",
         "diagnostics",
     }
     assert not parser.duplicate_ids
@@ -356,6 +550,8 @@ def _test_dom_contract(report: str) -> None:
         "siteEngine",
         "siteRows",
         "communicationRows",
+        "timelineOverlapNotice",
+        "glossaryRows",
         "diagnosticRows",
         "rawPayload",
     }.issubset(parser.ids)
@@ -366,6 +562,8 @@ def _test_dom_contract(report: str) -> None:
         'addEventListener("input"',
         "data-lane-engine",
         "data-event-sequence",
+        "data-interval-role",
+        "observation-bound",
         "node.dataset.eventSequence",
         "data-event-tile",
         "DTE_PHASES",
@@ -379,6 +577,9 @@ def _test_dom_contract(report: str) -> None:
         "renderCostDetail",
         "renderSites",
         "renderCommunication",
+        "renderGlossary",
+        "crossEngineBoundOverlaps",
+        "termCell",
     ):
         assert interaction in script
     assert all(f'"{engine}"' in script for engine in (
@@ -767,6 +968,23 @@ def _test_validity(module: object) -> None:
         == "production-validation-failed"
     )
     assert not analysis["final_artifact"]["duration"]["qualified"]
+
+    unassessed = make_evidence()
+    unassessed["output_validation"]["mode"] = "same-session-production"
+    for resource in unassessed["output_validation"]["resources"]:
+        resource["external_expected_comparison"] = None
+    analysis = module.analyze_evidence(unassessed)
+    assert analysis["validity"]["semantic_correctness"] is None
+    assert (
+        analysis["final_artifact"]["output"]["correctness_status"]
+        == "primary-validated"
+    )
+    unassessed_report = module.render_report(unassessed, analysis)
+    assert '"semantic_correctness":null' in unassessed_report
+    assert (
+        'value===true?"Passed":value===false?"Gate unmet":"Not assessed"'
+        in unassessed_report
+    )
 
     backwards = make_evidence()
     counter = backwards["experiment"]["pmu"]["tiles"][3]["aggregates"]["ne"]

@@ -180,23 +180,30 @@ device elapsed time、Primary 输出或局部 counter 证据。
 
 ## Report information architecture
 
-一个离线 `index.html` 提供六个相互链接的视图，不增加公开文件：
+一个离线 `index.html` 提供七个相互链接的视图，不增加公开文件：
 
 1. **Overview**：Primary TX stream device duration、结果校验、capture 状态、4×4 tile 热图、六 engine
    聚合和关键 warning；host submit/envelope 放在次级诊断，不与主耗时并列命名为 kernel time。
 2. **Trace Timeline**：Card→Tile→Engine resource tree、tile-local ruler、Trace-run Kcore语义ledger、
    非加和Trace-only overlay和六engine lane、filter/zoom/event detail；entry-prologue/epilogue、
    site-control和带`prev/next`的between-site-gap均画成可点击区间并解释优化入口，而不是留白；
-   counter-no-change / ambiguous用marker，默认不画跨tile绝对时间轴。
+   NCC engine lane以实心同色系变体画精确`TsmExecute` submit span，以浅色虚线框叠加PMU bounded
+   observation envelope；bounded窗口重叠不声明engine并行，真实engine execution ns只作无精确位置的
+   work duration。counter-no-change / ambiguous用marker，默认不画跨tile绝对时间轴。
 3. **Tile / Engine**：所选 tile 的 measured NCC execution nanoseconds、`rdcycle` bounded window、
    Kcore exclusive cost table、是否计入 Primary、Trace magnitude relation、Direct-DTE phase/raw
    activity、`statistics_window` raw ticks、worker counter 和明确单位。
 4. **Program / Sites**：target-call ordinal、symbol、position、correlation key 与 runtime event 的 typed
    下钻。
-5. **Communication / DTE**：send/receive role、aggregate container、peer-ready、setup/issue、
-   completion wait、cleanup、raw PMU和已知/未知correlation；aggregate与叶子phase不重复求和，没有DTE
-   活动时显示measured zero/empty，不伪造消息。
-6. **Diagnostics / Raw**：identity、clock domain、poll resolution、capacity/drop/guard、counter
+5. **Communication / DTE**：主界面以“整次通信等待（总计）”和“通信内部步骤”分别展示
+   peer-ready、setup/issue、completion wait、cleanup、send/receive role、raw PMU和correlation；
+   总计与内部步骤不重复求和，机器字段`aggregate`/`leaf`只在次行保留供审计，没有DTE活动时显示
+   measured zero/empty，不伪造消息。
+6. **术语说明**：以单一展示词典覆盖全部语义成本、Trace-only成本、measurement status/marker、
+   Primary accounting、representativeness、interval role、location、event/site/engine、通信粒度、
+   output correctness和validity gate；主视图显示人话名称，同时保留`analysis.json`机器字段。每项说明
+   计时边界、单位、是否计入Primary、能否代表engine busy和优化入口。
+7. **Diagnostics / Raw**：identity、clock domain、poll resolution、capacity/drop/guard、counter
    before/after/recovery、capture 方法和原始 JSON 入口。
 
 状态词固定使用 `Measured`、`Sampled`、`Bounded`、`Derived`、`Unavailable`、`Incomplete`、`Invalid`；
@@ -275,3 +282,15 @@ entry teardown，全部明确为不计入Primary且不与语义partition加和�
 两个`<package>.profile`全树非symlink目录和普通文件均为`0777`，每个`runs/current`目标目录恰含
 `evidence.json`、`analysis.json`和`index.html`。相关Host unit、report、no-card、device-link /
 target-CRT以及SystemC gate均通过；SystemC include-path旧问题本轮未复现，因此没有无依据修改。
+
+## Post-completion timeline clarity repair
+
+Add报告中CT与WDMA的PMU bounded observation envelope共享completion采样上界，因此保守窗口相交；
+这不是多buffer证据，也不证明同一SPM上的两个engine真实并行。界面主时间轴改用精确command submit /
+operation span，PMU bound只作浅色虚线辅助层，PMU execution ns继续作为无精确起止坐标的measured work
+duration。一个engine内的不同事件使用同一engine色系的多档明度、独立边框和site/event详情，不再连成
+无法分辨的大色块。机器字段和analysis schema语义保持不变，新增展示角色及operation/activity显式offset
+只用于避免UI混淆。每种cost、event、site、engine、status、accounting、reason、correctness和validity均由
+同一展示词典驱动；cost卡片给出定义、禁止误读、边界、Primary关系和optimization entry，semantic reason
+还显示前后site或边界冲突claimant。Diagnostics对三态semantic correctness使用“通过 / 门禁未满足 /
+尚未独立判定”，不再把没有完整independent expected覆盖的`null`误写成`Invalid`。

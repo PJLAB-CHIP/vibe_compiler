@@ -1659,17 +1659,18 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                     scope=scope,
                 )
 
-            plot_span = (
-                observed_span
-                if ncc
-                and ncc_counter_valid
-                and positive
-                and not ambiguous
-                and observed_span
-                else operation_span
-                if operation_span
-                else site_span
-            )
+            if ncc and operation_span:
+                plot_span = operation_span
+                display_interval_role = "command-submit"
+            elif operation_span:
+                plot_span = operation_span
+                display_interval_role = "operation-window"
+            elif site_span:
+                plot_span = site_span
+                display_interval_role = "site-envelope"
+            else:
+                plot_span = None
+                display_interval_role = "marker"
             marker_cycle = plot_span[0] if plot_span else trace_begin
             marker = bool(
                 not plot_span
@@ -1720,6 +1721,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                     and not ambiguous
                 ),
                 "marker": marker,
+                "display_interval_role": display_interval_role,
                 "marker_cycle_offset": marker_cycle - trace_begin,
                 "trace_entry_offset_begin_cpu_cycles": (
                     plot_span[0] - trace_begin if plot_span else marker_cycle - trace_begin
@@ -1729,6 +1731,22 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                 ),
                 "activity_window_cpu_cycles": (
                     observed_span[1] - observed_span[0] if observed_span else None
+                ),
+                "activity_trace_entry_offset_begin_cpu_cycles": (
+                    observed_span[0] - trace_begin if observed_span else None
+                ),
+                "activity_trace_entry_offset_end_cpu_cycles": (
+                    observed_span[1] - trace_begin if observed_span else None
+                ),
+                "activity_plot_begin_fraction": (
+                    (observed_span[0] - trace_begin) / axis
+                    if axis and observed_span
+                    else None
+                ),
+                "activity_plot_end_fraction": (
+                    (observed_span[1] - trace_begin) / axis
+                    if axis and observed_span
+                    else None
                 ),
                 "activity_window_status": (
                     "Bounded"
@@ -1755,6 +1773,12 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                 ),
                 "operation_window_cpu_cycles": (
                     operation_span[1] - operation_span[0] if operation_span else None
+                ),
+                "operation_trace_entry_offset_begin_cpu_cycles": (
+                    operation_span[0] - trace_begin if operation_span else None
+                ),
+                "operation_trace_entry_offset_end_cpu_cycles": (
+                    operation_span[1] - trace_begin if operation_span else None
                 ),
                 "operation_window_status": (
                     "Measured"
@@ -2272,6 +2296,7 @@ h1{font-size:23px;margin:3px 0 2px;line-height:1.2}.run-id{color:var(--muted);fo
 .status::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor}
 .status-Measured{color:#087a55;background:#edf9f4}.status-Sampled{color:#175cd3;background:#eef4ff}.status-Bounded{color:#6e4fc4;background:#f5f1ff}
 .status-Unavailable{color:#667085;background:#f2f4f7}.status-Incomplete{color:#a45b06;background:#fff7e8}.status-Invalid{color:#b42318;background:#fff1f0}
+.status-Passed{color:#087a55;background:#edf9f4}.status-Gate-unmet{color:#b42318;background:#fff1f0}.status-Not-assessed{color:#667085;background:#f2f4f7}
 .legend{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
 .split{display:flex;align-items:flex-start;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:10px}.split>*:first-child{flex:1 1 auto;min-width:0}.split>*:last-child{flex:0 0 300px;margin-left:10px}
 .tile-grid{display:flex;flex-wrap:wrap;display:grid;grid-template-columns:repeat(4,minmax(68px,1fr));gap:5px}
@@ -2285,18 +2310,31 @@ h1{font-size:23px;margin:3px 0 2px;line-height:1.2}.run-id{color:var(--muted);fo
 .engine-toggle{display:inline-flex!important;padding:3px 6px;border:1px solid var(--line);border-radius:5px;background:var(--soft);color:var(--ink)!important}
 .timeline-shell{overflow:auto;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
 .timeline-canvas{min-width:720px;padding:12px 14px 16px;transition:min-width .15s ease}
-.ruler{display:grid;grid-template-columns:92px 1fr;gap:8px;align-items:end;margin-bottom:5px}
+.ruler{display:grid;grid-template-columns:128px 1fr;gap:8px;align-items:end;margin-bottom:5px}
 .ruler-track{position:relative;height:24px;border-bottom:1px solid var(--line-strong)}
 .tick{position:absolute;bottom:-1px;height:6px;border-left:1px solid var(--line-strong)}
 .tick span{position:absolute;bottom:8px;transform:translateX(-50%);color:var(--muted);font:9px ui-monospace,SFMono-Regular,monospace}
-.lane{display:grid;grid-template-columns:92px 1fr;gap:8px;align-items:center;min-height:33px;border-top:1px solid #edf0f3}
+.lane{display:grid;grid-template-columns:128px 1fr;gap:8px;align-items:center;min-height:37px;border-top:1px solid #edf0f3}
 .lane-label{display:flex;align-items:center;justify-content:space-between;font-size:11px}.lane-track{position:relative;height:20px;background:#f6f8fa;border-left:1px solid var(--line);border-right:1px solid var(--line)}
 .lane-gridline{position:absolute;inset:0 auto 0 0;border-left:1px solid #e7ebef;pointer-events:none}
-.event{position:absolute;top:3px;height:14px;min-width:3px;border:0;border-radius:3px;cursor:pointer;opacity:.92;box-shadow:0 0 0 1px rgba(0,0,0,.07)}
+.lane-track{height:24px}
+.event,.observation-bound{--event-stroke:#475467;--event-fill-0:#f2f4f7;--event-fill-1:#e4e7ec;--event-fill-2:#f8fafc;--event-solid-0:#475467;--event-solid-1:#344054;--event-solid-2:#667085}
+.event-CT,.observation-CT{--event-stroke:var(--ct);--event-fill-0:#dbeafe;--event-fill-1:#bfdbfe;--event-fill-2:#eff6ff;--event-solid-0:#2563eb;--event-solid-1:#1d4ed8;--event-solid-2:#60a5fa}
+.event-NE,.observation-NE{--event-stroke:var(--ne);--event-fill-0:#ede9fe;--event-fill-1:#ddd6fe;--event-fill-2:#f5f3ff;--event-solid-0:#7c3aed;--event-solid-1:#6d28d9;--event-solid-2:#a78bfa}
+.event-RDMA,.observation-RDMA{--event-stroke:var(--rdma);--event-fill-0:#ccfbf1;--event-fill-1:#99f6e4;--event-fill-2:#f0fdfa;--event-solid-0:#07857e;--event-solid-1:#0f766e;--event-solid-2:#2dd4bf}
+.event-WDMA,.observation-WDMA{--event-stroke:var(--wdma);--event-fill-0:#dcfce7;--event-fill-1:#bbf7d0;--event-fill-2:#f0fdf4;--event-solid-0:#368147;--event-solid-1:#166534;--event-solid-2:#4ade80}
+.event-TDMA,.observation-TDMA{--event-stroke:var(--tdma);--event-fill-0:#ffedd5;--event-fill-1:#fed7aa;--event-fill-2:#fff7ed;--event-solid-0:#c4600c;--event-solid-1:#9a3412;--event-solid-2:#fb923c}
+.event-DIRECT_DTE,.observation-DIRECT_DTE{--event-stroke:var(--dte);--event-fill-0:#e4e7ec;--event-fill-1:#d0d5dd;--event-fill-2:#f2f4f7;--event-solid-0:#475467;--event-solid-1:#344054;--event-solid-2:#667085}
+.event{position:absolute;top:8px;height:8px;min-width:3px;border:1px solid #fff;border-radius:3px;cursor:pointer;z-index:2;box-shadow:0 0 0 1px var(--event-stroke)}
+.event-v0{background:var(--event-solid-0)}.event-v1{background:var(--event-solid-1)}.event-v2{background:var(--event-solid-2)}
+.observation-bound{position:absolute;top:2px;height:20px;min-width:3px;border:1px dashed var(--event-stroke);border-radius:4px;z-index:1;pointer-events:none;opacity:.78}
+.observation-bound.event-v0{background:var(--event-fill-0)}.observation-bound.event-v1{background:var(--event-fill-1)}.observation-bound.event-v2{background:var(--event-fill-2)}
+.observation-bound.ambiguous{border-color:#a45b06;background:#fff7e8}.observation-bound.zero{border-color:#667085;background:#f2f4f7}
 .event:hover,.event.selected{outline:2px solid #17212b;outline-offset:1px;z-index:2}
-.event-CT{background:var(--ct)}.event-NE{background:var(--ne)}.event-RDMA{background:var(--rdma)}.event-WDMA{background:var(--wdma)}.event-TDMA{background:var(--tdma)}.event-DIRECT_DTE{background:var(--dte)}
 .event.marker{width:3px!important;min-width:3px;border-radius:0;box-shadow:0 0 0 1px #fff,0 0 0 2px currentColor}
-.event.ambiguous{background:#a45b06}.event.zero{background:#667085}
+.event.ambiguous{box-shadow:0 0 0 2px #a45b06}.event.zero{box-shadow:0 0 0 2px #667085}
+.timeline-key{display:flex;flex-wrap:wrap;gap:12px;margin:0 0 9px;color:var(--muted);font-size:11px}.timeline-key span{display:inline-flex;align-items:center;gap:6px}.key-swatch{display:inline-block;width:28px;height:10px;border-radius:3px}.key-submit{background:var(--ct);box-shadow:0 0 0 1px #1d4ed8}.key-bound{height:16px;background:#dbeafe;border:1px dashed var(--ct)}.key-pmu{width:auto;height:auto;font-weight:700;color:var(--ink)}
+.observation-notice[hidden]{display:none}
 .cost-segment{position:absolute;inset:2px auto 2px 0;border:0;border-radius:2px;cursor:pointer;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)}
 .cost-segment:hover,.cost-segment.selected{outline:2px solid #17212b;outline-offset:1px;z-index:3}
 .cost-ncc-submit{background:#8fb7f7}.cost-completion-wait-proxy{background:#d8b4fe}.cost-dte-peer-ready-wait{background:#b9ddd8}.cost-dte-setup-issue{background:#94cec6}.cost-dte-completion-wait{background:#69b8ad}.cost-dte-cleanup{background:#a7d7d0}.cost-dte-wait-aggregate-fallback{background:#4c9c92}.cost-site-control{background:#d7dee7}.cost-between-site-gap{background:#eef1f4}.cost-entry-prologue,.cost-entry-epilogue{background:#f3f5f7}
@@ -2330,6 +2368,7 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
       <button data-view="engines">Tile / Engine</button>
       <button data-view="sites">Program / Sites</button>
       <button data-view="communication">Communication / DTE</button>
+      <button data-view="glossary">术语说明</button>
       <button data-view="diagnostics">Diagnostics / Raw</button>
     </nav>
     <div class="side-heading">Resource tree</div>
@@ -2364,6 +2403,12 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
     <section id="view-timeline" class="view" data-view-panel="timeline">
       <div class="section-head"><div><h2>Trace Timeline</h2><p>Trace-run Kcore ledger 与 engine evidence 分层；横轴是所选 tile 的 rdcycle entry span。</p></div></div>
       <div class="notice">Trace-run Kcore ledger 对 entry span 做排他 interval union/subtraction；它仍包含嵌套的 trace instrumentation，因此不能直接相减得到 Primary 各项成本。In Primary 的 yes 表示同一语义阶段存在于 Primary，mixed 表示 production control 与无法定位的 Trace-only 工作混合，unknown 表示当前证据不足，no 表示纯插桩。Primary same-stream elapsed 包含设备侧控制、等待和真实 idle，但不含 Trace-only instrumentation。Trace-run cost overlay 只在独立 aggregate bar 中显示，绝不伪造时间位置或与 ledger 相加；NCC engine ns 是异步 work volume。Engine lane 的空背景只表示当前没有 observation window，不等于 engine idle，也不用于补算 Primary。</div>
+      <div class="timeline-key" aria-label="Timeline interval legend">
+        <span><i class="key-swatch key-submit"></i><b>实心块</b>：精确 command submit / DTE operation 区间</span>
+        <span><i class="key-swatch key-bound"></i><b>浅色虚线框</b>：PMU 活动保守观测范围，不是持续 busy</span>
+        <span><i class="key-swatch key-pmu">ns</i><b>Engine work</b>：PMU 测得耗时，但没有精确起止位置</span>
+      </div>
+      <div id="timelineOverlapNotice" class="notice observation-notice" hidden></div>
       <div class="toolbar">
         <label>Tile <select id="timelineTile"></select></label>
         <span id="engineFilters"></span>
@@ -2394,10 +2439,22 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
     </section>
 
     <section id="view-communication" class="view" data-view-panel="communication">
-      <div class="section-head"><div><h2>Communication / Direct-DTE</h2><p>aggregate wait、peer-ready、setup/issue、completion wait、cleanup 与未校准 raw PMU activity 分开显示。</p></div></div>
-      <div class="notice">每一行只属于自身 tile-local clock domain；不同 tile 的位置和 duration 不组成全局通信序列。Aggregate wait 是不与 leaf phase 相加的容器；raw PMU 只属于 aggregate row。</div>
+      <div class="section-head"><div><h2>Communication / Direct-DTE</h2><p>整次通信等待与等待对端、配置发起、等待完成、收尾等内部步骤分开显示。</p></div></div>
+      <div class="notice">每一行只属于自身 tile-local clock domain；不同 tile 的位置和 duration 不组成全局通信序列。“整次通信等待（总计）”和“通信内部步骤”是同一件事的两种粒度，不能重复相加；未校准 raw PMU 只记录在总计行。</div>
       <div id="communicationSummary" class="grid kpis"></div>
       <div class="table-wrap"><table class="communication-table"><thead><tr><th>Tile</th><th>Role</th><th>Phase / kind</th><th>Evidence role</th><th>Site / symbol</th><th class="num">Operation CPU cycles</th><th>Duration status</th><th class="num">Raw PMU</th><th>Raw status</th></tr></thead><tbody id="communicationRows"></tbody></table></div>
+    </section>
+
+    <section id="view-glossary" class="view" data-view-panel="glossary">
+      <div class="section-head"><div><h2>术语说明</h2><p>界面使用人话名称，机器字段保持不变，便于与 analysis.json 对照。</p></div></div>
+      <div class="grid kpis">
+        <div class="card"><div class="metric-label">Primary device execution</div><div class="metric-note">未插桩最终产物在同一 TX stream event pair 之间的设备 wall time，单位 ns；这是主耗时。</div></div>
+        <div class="card"><div class="metric-label">Command submit</div><div class="metric-note">Kcore 调用 TsmExecute 的精确提交区间，单位 rdcycle；不是 engine busy duration。</div></div>
+        <div class="card"><div class="metric-label">PMU activity bound</div><div class="metric-note">只证明 counter 增量发生在保守窗口内；窗口重叠不证明两个 engine 同时执行。</div></div>
+        <div class="card"><div class="metric-label">Engine work duration</div><div class="metric-note">Vendor PMU execution-time delta，单位 ns；有真实工作量，但当前没有精确起止坐标。</div></div>
+      </div>
+      <div class="notice">读图顺序：先看实心 submit / operation 块，再看浅色虚线 PMU bound，最后到 Tile / Engine 查看 measured ns。三者不能互相替代，也不能把多个 engine 的 ns 相加成 Primary wall time。</div>
+      <div class="table-wrap" style="max-height:none"><table><thead><tr><th>分组</th><th>界面名称</th><th>机器字段</th><th>具体指什么</th><th>单位 / Primary</th><th>不能这样理解</th><th>怎么看 / 优化入口</th></tr></thead><tbody id="glossaryRows"></tbody></table></div>
     </section>
 
     <section id="view-diagnostics" class="view" data-view-panel="diagnostics">
@@ -2417,14 +2474,178 @@ const analysis=__ANALYSIS__;
 const evidence=__EVIDENCE__;
 const finalArtifact=analysis.final_artifact;
 const ENGINES=["CT","NE","RDMA","WDMA","TDMA","DIRECT_DTE"];
-const DTE_PHASES={
-  "direct-dte-wait":"Aggregate wait",
-  "direct-dte-peer-ready-wait":"Peer ready",
-  "direct-dte-setup-issue":"Setup / issue",
-  "direct-dte-completion-wait":"Completion wait",
-  "direct-dte-cleanup":"Cleanup"
+const TERMS={
+  semantic:{
+    "ncc-submit":{label:"NCC 指令提交",definition:"Kcore 调用 TsmExecute 的精确提交区间。",not:"不是 engine 真正执行区间，也不是 PMU execution ns。"},
+    "completion-wait-proxy":{label:"等待 NCC 完成（Trace 代理）",definition:"Trace clone 中等待 NCC completion 的 measured operation 区间。",not:"数值受 Trace 采集方式影响，不能直接从 Primary 扣除。"},
+    "dte-peer-ready-wait":{label:"等待 DTE 对端就绪",definition:"Direct-DTE 发送前等待接收端 ready 的 tile-local operation 区间。",not:"不是全卡同步时间，也不能跨 tile 比较先后。"},
+    "dte-setup-issue":{label:"DTE 配置与发起",definition:"准备 Direct-DTE 描述符并发起传输的 tile-local operation 区间。",not:"不是完整传输耗时。"},
+    "dte-completion-wait":{label:"等待 DTE 完成",definition:"等待 Direct-DTE completion 的 tile-local operation 区间。",not:"不是 calibrated DTE engine busy time。"},
+    "dte-cleanup":{label:"DTE 收尾",definition:"Direct-DTE 完成后的状态清理与资源释放区间。",not:"不是传输 payload 时间。"},
+    "dte-wait-aggregate-fallback":{label:"整次 DTE 通信等待（缺少分步数据时使用）",definition:"没有可用内部步骤时，用整次 Direct-DTE wait operation 表示这次通信等待。",not:"一旦已有内部步骤，就不能再把这行与它们重复相加。"},
+    "site-control":{label:"调用点内控制与准备",definition:"一个动态 target-call site 包络内，扣除已识别 operation 后的剩余区间；可能包含 wrapper、descriptor、同步和 Trace 记录。",not:"不是纯硬件控制、纯软件开销或 engine idle。"},
+    "between-site-gap":{label:"调用点之间的控制/等待",definition:"相邻动态 target-call site 之间的 Trace 区间，详情保留前后 site。",not:"不能直接称为硬件空闲；可能混有依赖、等待、控制和插桩。"},
+    "entry-prologue":{label:"入口准备区间",definition:"Trace entry 起点到首个动态 site 之前的 entry-local 区间。",not:"不同于 entry-setup；后者是 entry 轴外的纯 Trace 初始化。"},
+    "entry-epilogue":{label:"结束收尾区间",definition:"最后一个动态 site 结束到 Trace entry 返回之间的区间。",not:"不同于 entry-teardown；后者是 entry 轴外的纯 Trace 收尾。"},
+    "capture-boundary-residual":{label:"未解析的采集边界区间",definition:"只有边界不完整或区间关系非法时才产生的保守 residual。",not:"不是正常 idle，也不应出现在有效 exclusive partition 中。"}
+  },
+  trace:{
+    "ncc-pmu-sample":{label:"NCC PMU 采样",definition:"读取 NCC engine PMU counter 的 Trace-only 成本。",not:"Primary 不包含，不能与语义 ledger 相加。"},
+    "dte-pmu-sample":{label:"DTE PMU 采样",definition:"启用、读取或恢复 Direct-DTE PMU 的 Trace-only 成本。",not:"Primary 不包含，也不是 DTE 传输耗时。"},
+    "event-bookkeeping":{label:"Trace 事件记录",definition:"写入 profiler event record 和维护序号的 Trace-only 成本。",not:"不是被测 target-call 自身耗时。"},
+    "status-poll":{label:"完成状态轮询",definition:"Trace completion loop 读取任务状态的采样成本。",not:"不能冒充 production completion wait；后者在语义 ledger 单列。"},
+    "site-hook":{label:"调用点钩子",definition:"进入/退出 TARGET_SITE 记录边界的 Trace-only 成本。",not:"Primary 不包含。"},
+    "completion-loop-bookkeeping":{label:"完成循环记录",definition:"Trace completion loop 中除状态读取外的记录与控制成本。",not:"不能与 completion-wait-proxy 重复计算。"},
+    "entry-setup":{label:"Trace 入口初始化",definition:"Trace entry 时间轴开始前初始化 record/PMU 的成本。",not:"在 entry 轴外，不是 entry-prologue。"},
+    "entry-teardown":{label:"Trace 退出收尾",definition:"Trace entry 时间轴结束后恢复状态和封口 record 的成本。",not:"在 entry 轴外，不是 entry-epilogue。"}
+  },
+  status:{
+    "Measured":{label:"已测得",definition:"边界和值由对应计时源直接取得。",not:"仍需结合该字段的计时源和单位解释。"},
+    "Sampled":{label:"采样值",definition:"来自 PMU 或其它离散采样 counter。",not:"不自动等于 elapsed time。"},
+    "Bounded":{label:"仅确定活动范围",definition:"只知道正增量发生在保守观测窗口内。",not:"窗口长度不等于持续 busy；两个窗口重叠不证明 engine 同时执行。"},
+    "Derived":{label:"派生值",definition:"由已验证字段确定性计算得到。",not:"不是独立硬件计时源。"},
+    "Zero delta":{label:"计数未变化",definition:"本次 PMU 观测没有检测到 counter 增量。",not:"不等于证明 engine 从未活动。"},
+    "Zero-delta marker":{label:"计数未变化标记",definition:"保留一次没有正增量的 NCC 观测位置。",not:"不是零耗时 operation。"},
+    "Ambiguous":{label:"聚合归属混杂",definition:"这个 engine 的聚合活动窗口包含无法唯一归属的事件。",not:"不能把聚合窗口数量或宽度当作精确 engine busy。"},
+    "Attribution ambiguous":{label:"归属不唯一",definition:"同 engine outstanding activity 无法唯一归到当前 site。",not:"不能作为精确 site work。"},
+    "Passed":{label:"通过",definition:"这项资格检查已经满足。",not:"只代表这一项，不替代其它检查。"},
+    "Gate unmet":{label:"门禁未满足",definition:"这项资格要求没有满足，因此不能据此形成完整性能结论。",not:"不一定表示协议损坏；应查看该检查的具体定义。"},
+    "Not assessed":{label:"尚未独立判定",definition:"当前证据没有对这项语义做独立判定。",not:"不是失败，也不是已经证明正确。"},
+    "Unavailable":{label:"无可用证据",definition:"该局部字段没有可用计时或 counter 证据。",not:"不会自动抹掉同一事件其它有效字段。"},
+    "Incomplete":{label:"采集未闭合",definition:"采集生命周期、容量或 terminal 状态没有完整闭合。",not:"不能作为完整 profile。"},
+    "Invalid":{label:"协议无效",definition:"字段关系或协议约束不合法。",not:"不能用于性能结论。"}
+  },
+  accounting:{
+    "yes":{label:"生产执行包含该语义",definition:"同一语义阶段位于未插桩 Primary device event pair 内。",not:"Trace 数值仍不等于 Primary 中该阶段的精确耗时。"},
+    "mixed":{label:"生产控制与 Trace 影响混合",definition:"区间包含 production control，也可能混有当前无法定位的 Trace 影响。",not:"不能直接从 Primary 扣除。"},
+    "unknown":{label:"是否计入尚不可判定",definition:"当前证据不足以判断与 Primary 的关系。",not:"不能当作零或 idle。"},
+    "no":{label:"仅 Trace 插桩",definition:"该成本只由 Count/Trace 诊断执行产生。",not:"不计入未插桩 Primary。"}
+  },
+  magnitude:{
+    "proxy":{label:"Trace 代理值",definition:"语义对应 Primary，但数值来自另一轮 Trace clone。",not:"不是 Primary 的精确分项。"},
+    "mixed/proxy":{label:"混合代理值",definition:"数值来自 Trace clone，且 production 与插桩影响无法完全剥离。",not:"不能解释成单一硬件成本。"},
+    "unknown":{label:"代表关系未知",definition:"当前边界或归属不完整，无法说明该数值怎样代表 production execution。",not:"不能当作零、Primary 分项或 Trace-only 成本。"},
+    "trace-only":{label:"仅插桩值",definition:"只描述 Trace instrumentation 本身。",not:"不计入 Primary，也不能与语义 ledger 相加。"}
+  },
+  interval:{
+    "command-submit":{label:"精确指令提交区间",definition:"Kcore 进入到返回 TsmExecute 的 measured rdcycle 区间。",not:"不是 engine 真正执行起止。"},
+    "operation-window":{label:"精确 operation 区间",definition:"对应 runtime operation 的 measured tile-local rdcycle 区间。",not:"不能跨 tile 建立全局顺序。"},
+    "observation-bound":{label:"PMU 活动保守范围",definition:"PMU positive delta 的保守采样包络。",not:"不是持续 busy；与其它范围重叠不证明并行。"},
+    "site-envelope":{label:"调用点包络",definition:"一个动态 TARGET_SITE 的 measured begin/end。",not:"包含 operation 与调用点内其它工作。"},
+    "marker":{label:"观测标记",definition:"没有可画区间时保留的事件位置。",not:"不是 duration。"}
+  },
+  location:{
+    "inside-entry-unpositioned":{label:"入口轴内，未定位",definition:"成本在 entry 内测得，但没有足够证据放到某个具体区间。",not:"不能从任意 gap 或 site-control 中扣除。"},
+    "before-entry":{label:"入口轴之前",definition:"发生在 Trace entry 时间轴开始之前。",not:"不是 entry-prologue。"},
+    "after-entry":{label:"入口轴之后",definition:"发生在 Trace entry 时间轴结束之后。",not:"不是 entry-epilogue。"}
+  },
+  event:{
+    "ncc-command":{label:"NCC engine 指令提交事件",definition:"一次已关联 target-call 的 TsmExecute 提交，以及独立的 PMU 观测证据。",not:"事件条的提交区间不是 engine busy 起止；PMU bound 重叠也不证明并行。"},
+    "ncc-completion-wait":{label:"NCC 完成等待事件",definition:"Trace clone 中等待 NCC completion 的 operation 事件。",not:"不是某一个 engine 的执行时长，也不是 Host 等待。"},
+    "direct-dte-wait":{label:"整次 Direct-DTE 通信等待",definition:"从这次 Direct-DTE 等待开始到结束的总计行，可携带未校准 raw PMU。",not:"不能再与同一次通信的内部步骤重复相加。"},
+    "direct-dte-peer-ready-wait":{label:"等待 DTE 对端就绪",definition:"通信内部先等待接收端 ready 的一步。",not:"不是全卡 barrier，也不能跨 tile 排序。"},
+    "direct-dte-setup-issue":{label:"配置并发起 DTE",definition:"通信内部配置描述符并发起传输的一步。",not:"不是完整通信耗时。"},
+    "direct-dte-completion-wait":{label:"等待 DTE 传输完成",definition:"通信内部等待 Direct-DTE completion 的一步。",not:"不是已校准的 DTE engine busy time。"},
+    "direct-dte-cleanup":{label:"DTE 收尾事件",definition:"Direct-DTE completion 后的状态和资源清理 operation。",not:"不是 payload 传输区间。"},
+    "target-site":{label:"动态 target-call 调用点包络",definition:"一次静态 target-call site 的动态进入/退出容器，用于关联内部 operation。",not:"不是额外 engine 工作，也不能与内部 operation 再相加。"}
+  },
+  site:{
+    "ncc-command":{label:"NCC 指令调用点",definition:"会向 CT/NE/RDMA/WDMA/TDMA 之一提交 TsmExecute 的静态 target-call site。",not:"site 包络不是对应 engine 的持续执行时间。"},
+    "ncc-completion":{label:"NCC 完成调用点",definition:"观察或等待 NCC completion 的静态 target-call site。",not:"不是多 tile barrier，也不专属于某一个 engine。"},
+    "direct-dte-control":{label:"Direct-DTE 控制调用点",definition:"Direct-DTE ready、配置、发起或清理类控制 operation 的静态 site。",not:"不是整次通信等待。"},
+    "direct-dte-wait":{label:"Direct-DTE 通信等待调用点",definition:"承载一次整次 Direct-DTE 通信等待及其内部步骤的静态 site。",not:"总计与内部步骤不能重复求和。"}
+  },
+  engine:{
+    "CT":{label:"CT / CGRA 执行部件",definition:"执行算术、逻辑、激活、转换、reduce/pool 及部分 data-move/peripheral packet 的 NCC engine。",not:"CT PMU ns 没有精确起止坐标，也不能与其它 engine ns 相加成 Primary。"},
+    "NE":{label:"NE 神经网络执行部件",definition:"执行 Conv、DepthwiseConv、GEMM 等 NE packet 的 NCC engine。",not:"NE PMU ns 不是 tile-local timeline 区间。"},
+    "RDMA":{label:"RDMA：DDR / 外部地址到 SPM",definition:"LSU 中把外部或 DDR 数据读入 SPM 的 NCC movement engine。",not:"独立 queue 不等于必然与其它 engine 并行。"},
+    "WDMA":{label:"WDMA：SPM 到 DDR / 外部地址",definition:"LSU 中把 SPM 数据写回外部或 DDR 的 NCC movement engine。",not:"与 CT 共用或冲突的 SPM 资源不能由 PMU bound 重叠判断。"},
+    "TDMA":{label:"TDMA：SPM 内搬运 / 变换",definition:"LSU 中执行 local move、mirror、pad、img2col、gatherscatter、memset 等 packet 的 NCC engine。",not:"TDMA 名称不涵盖所有历史 data-move helper。"},
+    "DIRECT_DTE":{label:"Direct-DTE 通信路径",definition:"跨 tile / 节点 Direct-DTE 通信的 runtime operation lane。",meta:"operation 使用 tile-local Kcore rdcycle；raw PMU 未校准且不是 elapsed time；是否属于 Primary 由对应成本行说明。",not:"raw PMU activity 不是 ns/cycles，也不能与 NCC PMU ns 比较。"}
+  },
+  role:{
+    "send":{label:"发送侧",definition:"当前 tile 在这次 Direct-DTE operation 中承担发送角色。",not:"不提供跨 tile 的绝对先后关系。"},
+    "receive":{label:"接收侧",definition:"当前 tile 在这次 Direct-DTE operation 中承担接收角色。",not:"不表示接收端全程 busy。"}
+  },
+  evidence:{
+    "aggregate":{label:"整次通信等待（总计）",definition:"覆盖一次完整 Direct-DTE wait，从开始等待到结束，并承载只在总计行记录的 raw PMU。",not:"不能与等待对端、配置发起、等待完成、收尾这些内部步骤求和。"},
+    "leaf":{label:"通信内部步骤",definition:"整次 Direct-DTE 通信等待中的一个具体步骤。",not:"单个步骤不是完整通信耗时。"}
+  },
+  reason:{
+    "overlapping-operation-spans":{label:"两个 operation 区间互相覆盖",definition:"同一段 Kcore rdcycle 同时被多个 operation 声明，分析器无法排他归属。",not:"不是已经证明两个 hardware engine 并行。"},
+    "overlapping-site-spans":{label:"两个调用点区间互相覆盖",definition:"同一段 Kcore rdcycle 同时落在多个动态 target-call site 中。",not:"不是可优化的正常重叠；应先检查插桩边界。"},
+    "no-valid-site-boundaries":{label:"没有可用的调用点边界",definition:"Trace entry 存在，但没有足够的 site begin/end 来做语义分项。",not:"不能把整段当作 idle 或某个 engine 的成本。"},
+    "operation@site/event":{label:"已关联到具体调用点的 operation",definition:"reason 后半段给出 event kind、site、动态 instance 和 event sequence。",not:"reason 是来源定位，不是另一笔可相加成本。"},
+    "inside-site-outside-operation":{label:"调用点内、已识别 operation 之外",definition:"位于具体 target-call site 内，但不属于已识别 submit/wait/DTE operation 的剩余区间。",not:"不能直接叫做硬件空闲或纯软件开销。"},
+    "before-first-site":{label:"首个调用点之前",definition:"Trace entry 开始后、第一次动态 target-call 之前的准备区间。",not:"不是 Trace entry-setup；后者在 entry 轴外单列。"},
+    "after-last-site":{label:"最后调用点之后",definition:"最后一次动态 target-call 结束后、Trace entry 返回前的收尾区间。",not:"不是 Trace entry-teardown；后者在 entry 轴外单列。"},
+    "between-sites":{label:"两个调用点之间",definition:"reason 明确列出前一个和后一个动态 site，用于定位依赖、等待或控制来源。",not:"不能直接称为 engine idle。"}
+  },
+  correctness:{
+    "production-validation-failed":{label:"最终产物结果校验失败",definition:"至少一个 production execution 输出没有通过结果/guard 校验。",not:"不能用于性能结论。"},
+    "expected-exact":{label:"全部输出与独立期望值精确一致",definition:"所有输出资源都有 independent expected，并按 exact 规则通过 production validation。",not:"不替代 profiler capture 一致性和其它资格门禁。"},
+    "expected-relaxed-f16":{label:"全部输出按 FP16 容差通过",definition:"所有输出资源都有 independent expected，并按允许的 FP16 容差通过 production validation。",not:"不是 bitwise exact。"},
+    "partially-expected":{label:"仅部分输出有独立期望值",definition:"production 结果校验通过，但只有一部分资源覆盖 independent expected comparison。",not:"不能声称完整的独立语义正确性。"},
+    "primary-validated":{label:"生产结果已校验，未提供独立期望值",definition:"production validation 和 guard 已通过，但没有 external independent expected comparison。",not:"不是独立 semantic oracle。"}
+  },
+  structure:{
+    "trace-run-cost-overlay":{label:"Trace 插桩成本分组",definition:"八种 Trace-only 成本行的结构容器；各行互斥，但整体与语义时间轴嵌套。",not:"不能与语义分项相加。"},
+    "semantic-partition":{label:"Trace entry 排他语义分项",definition:"把当前 tile 的 Trace entry rdcycle 轴不重不漏地划分为语义成本。",not:"它来自 Trace clone，不能直接还原 Primary 精确分项。"},
+    "trace-overhead-overlay":{label:"Trace-only 成本附加层",definition:"单独记录 profiler 采样和记账成本，避免伪造时间位置。",not:"不是 Primary 的组成部分。"}
+  },
+  validity:{
+    "identity":{label:"证据身份与 schema",definition:"evidence schema、ABI 和身份字段已通过验证。",not:"不代表板端环境、输出或 PMU 同时有效。"},
+    "output_equivalence":{label:"Primary 与诊断执行输出一致",definition:"production 输出校验通过，且 Count/Trace captures 与 Primary 结果一致。",not:"不等于已有完整 independent expected oracle。"},
+    "semantic_correctness":{label:"独立语义期望值覆盖",definition:"有完整 independent expected 时为通过/失败；没有完整覆盖时保持尚未独立判定。",not:"尚未判定不等于 Invalid。"},
+    "environment":{label:"板卡环境资格",definition:"本次 evidence 声明的硬件、driver/runtime 与环境门禁已满足。",not:"不能由历史报告替代本次证据。"},
+    "package_companion":{label:"产物与 profiler companion 匹配",definition:"最终 package 和同源 profiler companion 的身份/版本关系有效。",not:"不允许混用旧 companion 或另一份产物。"},
+    "measurement_basis":{label:"Primary 计时基础",definition:"未插桩最终产物的 same-stream device event 计时基础满足合同。",not:"不包含 Host submit，也不等于 Trace clone duration。"},
+    "host_completion_resolution":{label:"Host 完成观测分辨率",definition:"Host completion polling 的观测间隔足够细，可作为次级诊断 envelope。",not:"未满足时不否定 device event elapsed，但 Host envelope 不能作高分辨率结论。"},
+    "trace":{label:"Trace 采集完整性",definition:"所有 tile 的 Trace 生命周期、容量、terminal 和区间关系闭合。",not:"不自动证明每个 PMU counter 都可归属。"},
+    "cost_accounting":{label:"成本分项会计闭合",definition:"每个 tile 的语义分项排他并覆盖完整 Trace entry，Trace-only overlay 独立。",not:"不表示这些 Trace 数值可以从 Primary 直接相减。"},
+    "pmu":{label:"PMU 计数资格",definition:"需要使用的 NCC/DTE/aggregate counter 读取稳定且生命周期闭合。",not:"PMU bound 仍不是精确 engine 起止。"},
+    "clock_alignment":{label:"Tile-local 时钟有效",definition:"每个 tile 自己的 Kcore rdcycle 关系有效且单调。",not:"不建立不同 tile 之间的绝对时钟对齐。"}
+  }
 };
-const STATES=["Measured","Sampled","Bounded","Zero delta","Attribution ambiguous","Unavailable","Incomplete","Invalid"];
+const GLOSSARY_GROUPS={semantic:"语义成本",trace:"Trace 插桩成本",status:"测量状态/标记",accounting:"与 Primary 的关系",magnitude:"数值代表性",interval:"时间区间角色",location:"Trace 成本位置",event:"Timeline 事件类型",site:"Target-call site 类型",engine:"Engine 类型",role:"Direct-DTE 角色",evidence:"通信证据粒度",reason:"成本来源原因",correctness:"输出正确性",structure:"成本结构",validity:"资格检查"};
+const TERM_META={
+  semantic:"单位为 tile-local Kcore rdcycle；是否属于 Primary 和数值代表性由该实例的 accounting 字段说明。",
+  trace:"单位为 tile-local Kcore rdcycle；Primary=no；只属于 Count/Trace 诊断执行。",
+  status:"无独立单位；它修饰相邻数值或区间，不能脱离计时源解释。",
+  accounting:"无独立单位；说明语义是否存在于未插桩 Primary，不能证明 Trace 数值等于 Primary 分项。",
+  magnitude:"无独立单位；说明当前数值与生产执行之间的代表关系。",
+  interval:"横轴单位为当前 tile 的 Kcore rdcycle；不建立跨 tile 全局时间。",
+  location:"相对当前 tile Trace entry 的位置；Primary 关系另看 accounting。",
+  event:"operation 区间使用 tile-local Kcore rdcycle；NCC PMU work 另用 ns；Primary 关系看对应语义成本。",
+  site:"site begin/end 使用 tile-local Kcore rdcycle；site 容器本身不额外计账。",
+  engine:"NCC engine work 使用 vendor PMU ns，提交/operation 横轴使用 Kcore rdcycle；不能跨单位相加。",
+  role:"无独立单位；只描述当前 tile 在 Direct-DTE operation 中的角色。",
+  evidence:"operation 使用 tile-local Kcore rdcycle；整次通信行的 raw PMU 没有校准时间单位。",
+  reason:"无独立单位；它解释一行成本来自哪一段边界或哪个动态 site/event。",
+  correctness:"无独立单位；说明 production output validation 与 independent expected 的覆盖程度。",
+  structure:"结构术语本身无单位；其行内数值通常为 tile-local Kcore rdcycle。",
+  validity:"无独立单位；每一项都是独立资格门禁，三态为通过、门禁未满足或尚未独立判定。"
+};
+const TERM_GUIDANCE={
+  semantic:"点击 Timeline 的对应成本块查看该实例边界、Primary 关系和精确 optimization_entry。",
+  trace:"只在 profiler 自身开销过大时优化；不要把它当成 production artifact 优化收益。",
+  status:"先确认该状态修饰的是 submit、PMU bound、PMU work 还是 capture，再决定是否可用于结论。",
+  accounting:"用它判断能否讨论 Primary 语义；不要用它把不同实验轮次的数字直接相减。",
+  magnitude:"proxy 用于定位方向，不用于精确拆分 Primary；trace-only 只用于控制观测成本。",
+  interval:"实心块看精确 submit/operation，虚线框只看活动可能范围，PMU ns 到 Tile / Engine 查看。",
+  location:"结合相邻 site 和点击详情定位来源；未定位项不能武断归入某个 gap。",
+  event:"点击事件查看 submit/operation、PMU bound、PMU work 三层证据，再进入对应成本卡片定位优化。",
+  site:"用 site id、target-call symbol 和前后 site 定位 wrapper、依赖或等待来源。",
+  engine:"先按 engine 类型筛选，再分别比较 submit/operation、PMU work 与 Primary；禁止把各 engine ns 求和。",
+  role:"发送/接收要成对理解，但当前报告不构造跨 tile 绝对时间轴。",
+  evidence:"按“整次通信等待（总计）”看完整生命周期，按“通信内部步骤”定位分项；两种粒度不重复求和。",
+  reason:"先用人话原因定位前后 site 或冲突边界，再查看该成本行的 optimization_entry。",
+  correctness:"先确认是否有完整 independent expected；部分覆盖或无覆盖时不要夸大语义正确性结论。",
+  structure:"用语义分项优化 production，用 Trace-only 附加层控制 profiler 自身开销；两层不相加。",
+  validity:"未通过项要看具体门禁定义；尚未独立判定应补 oracle，而不是当成失败。"
+};
+const DTE_PHASES=Object.fromEntries(["direct-dte-wait","direct-dte-peer-ready-wait","direct-dte-setup-issue","direct-dte-completion-wait","direct-dte-cleanup"].map(key=>[key,TERMS.event[key].label]));
+const STATES=["Measured","Sampled","Bounded","Zero delta","Zero-delta marker","Ambiguous","Attribution ambiguous","Unavailable","Incomplete","Invalid"];
 const state={view:"overview",tile:0,zoom:1,engines:new Set(ENGINES),selectedEvent:null,selectedCost:null,raw:"analysis"};
 const q=(selector,root)=>(root||document).querySelector(selector);
 const qa=(selector,root)=>Array.prototype.slice.call((root||document).querySelectorAll(selector));
@@ -2437,8 +2658,22 @@ const durationText=value=>{
   return `${(ns/1e6).toFixed(3)} ms`;
 };
 const tileLabel=tile=>"T"+(Number(tile)<10?"0":"")+String(tile);
-const statusBadge=value=>`<span class="status status-${escapeHtml(String(value).replace(/[^A-Za-z0-9_-]/g,"-"))}">${escapeHtml(value)}</span>`;
-const siteRefText=site=>site==null?"—":`#${site.site_id} / instance ${site.instance_sequence} · ${site.site_kind} · ${site.target_call_symbol}`;
+const term=(group,value)=>TERMS[group]&&TERMS[group][value]?TERMS[group][value]:{label:String(value),definition:"尚无展示说明。",not:"请查看原始字段。"};
+const termCell=(group,value)=>{const item=term(group,value);return `<b>${escapeHtml(item.label)}</b><br><span class="mono">${escapeHtml(value)}</span>`};
+const termValue=(group,value)=>{const item=term(group,value);return `${escapeHtml(item.label)} <span class="mono">(${escapeHtml(value)})</span>`};
+const statusBadge=value=>{const item=term("status",value);return `<span class="status status-${escapeHtml(String(value).replace(/[^A-Za-z0-9_-]/g,"-"))}" title="${escapeHtml(value)}">${escapeHtml(item.label)}</span>`};
+const validityBadge=value=>statusBadge(value===true?"Passed":value===false?"Gate unmet":"Not assessed");
+const semanticReason=value=>{
+  if(TERMS.reason[value])return TERMS.reason[value];
+  const text=String(value==null?"":value);
+  if(text.startsWith("inside-site-outside-operation@"))return TERMS.reason["inside-site-outside-operation"];
+  if(text.startsWith("before-first-"))return TERMS.reason["before-first-site"];
+  if(text.startsWith("after-last-"))return TERMS.reason["after-last-site"];
+  if(text.startsWith("between-")&&text.includes("-and-"))return TERMS.reason["between-sites"];
+  if(text.includes("@site-")&&text.includes("/event-"))return TERMS.reason["operation@site/event"];
+  return {label:text||"—",definition:"尚无展示说明。",not:"请查看原始字段。"};
+};
+const siteRefText=site=>site==null?"—":`#${site.site_id} / instance ${site.instance_sequence} · ${term("site",site.site_kind).label} (${site.site_kind}) · ${site.target_call_symbol}`;
 const selectedTile=()=>finalArtifact.tiles.find(row=>row.tile===state.tile);
 const tileEvents=()=>finalArtifact.timeline_events.filter(row=>row.tile===state.tile);
 
@@ -2451,6 +2686,7 @@ function navigate(view){
   if(view==="engines")renderEngines();
   if(view==="sites")renderSites();
   if(view==="communication")renderCommunication();
+  if(view==="glossary")renderGlossary();
   if(view==="diagnostics")renderDiagnostics();
 }
 
@@ -2510,7 +2746,7 @@ function renderOverview(){
     ["Host completion envelope","host steady_clock",duration.host_launch_to_completion_ns,duration.host_envelope_available?"Measured":"Unavailable",duration.host_envelope_available?`First submit through trusted completion; observation gap ≤ ${number(duration.completion_observation_resolution_ns)} ns.`:"Quantized/unavailable host diagnostic; does not invalidate device event elapsed."]
   ].map(row=>`<tr><td><b>${escapeHtml(row[0])}</b></td><td class="mono">${escapeHtml(row[1])}</td><td class="num">${durationText(row[2])}</td><td class="num">${number(row[2])}</td><td>${statusBadge(row[3])}</td><td>${escapeHtml(row[4])}</td></tr>`).join("");
   q("#outputStatus").innerHTML=statusBadge(analysis.validity.output_equivalence?"Measured":"Invalid");
-  q("#outputNote").textContent=`${finalArtifact.output.resource_count} resources · ${finalArtifact.output.correctness_status}`;
+  q("#outputNote").innerHTML=`${finalArtifact.output.resource_count} resources · ${termValue("correctness",finalArtifact.output.correctness_status)}`;
   const completeTiles=finalArtifact.tiles.filter(tile=>tile.trace_status==="Measured").length;
   q("#traceCoverage").textContent=`${completeTiles} / ${finalArtifact.tiles.length}`;
   q("#traceNote").textContent="tile-local complete trace spans";
@@ -2551,6 +2787,21 @@ function renderRuler(axis){
   q("#timelineRuler").innerHTML=`<div class="ruler"><span class="metric-note">Kcore rdcycle</span><div class="ruler-track">${ticks.map(tick=>`<i class="tick" style="left:${tick.fraction*100}%"><span>${number(tick.value)}</span></i>`).join("")}</div></div>`;
 }
 
+function crossEngineBoundOverlaps(events){
+  const bounded=events.filter(event=>event.activity_window_status==="Bounded"&&event.activity_trace_entry_offset_begin_cpu_cycles!=null&&event.activity_trace_entry_offset_end_cpu_cycles!=null);
+  const overlaps=[];
+  for(let left=0;left<bounded.length;left+=1){
+    for(let right=left+1;right<bounded.length;right+=1){
+      const first=bounded[left],second=bounded[right];
+      if(first.engine===second.engine)continue;
+      const begin=Math.max(first.activity_trace_entry_offset_begin_cpu_cycles,second.activity_trace_entry_offset_begin_cpu_cycles);
+      const end=Math.min(first.activity_trace_entry_offset_end_cpu_cycles,second.activity_trace_entry_offset_end_cpu_cycles);
+      if(begin<end)overlaps.push({first,second,begin,end,cycles:end-begin});
+    }
+  }
+  return overlaps;
+}
+
 function renderTimeline(){
   const tile=selectedTile();
   if(!tile)return;
@@ -2558,16 +2809,34 @@ function renderTimeline(){
   q("#timelineCanvas").style.minWidth=`${Math.max(100,state.zoom*100)}%`;
   renderRuler(tile.trace_entry_cpu_cycles);
   const events=tileEvents();
+  const overlaps=crossEngineBoundOverlaps(events);
+  const overlapNotice=q("#timelineOverlapNotice");
+  overlapNotice.hidden=overlaps.length===0;
+  if(overlaps.length){
+    const pairs=Array.from(new Set(overlaps.map(item=>`${item.first.engine}/${item.second.engine}`))).join("、");
+    overlapNotice.innerHTML=`<b>${tileLabel(tile.tile)} 有 ${overlaps.length} 组跨 engine PMU 观测范围相交（${escapeHtml(pairs)}）。</b>浅色虚线框只是 conservative activity bound，常因多个 outstanding event 共用 completion 采样上界而重叠；这不证明 engine 同时执行。实心块才是精确 command submit / operation 区间。`;
+  }
   const gridlines=[20,40,60,80].map(position=>`<i class="lane-gridline" style="left:${position}%"></i>`).join("");
-  const semanticMarks=tile.semantic_timeline_segments.map((segment,index)=>`<button class="cost-segment cost-${escapeHtml(segment.category)}${state.selectedCost&&state.selectedCost.scope==="semantic"&&state.selectedCost.index===index?" selected":""}" data-cost-index="${index}" style="left:${segment.plot_begin_fraction*100}%;width:${Math.max(.15,(segment.plot_end_fraction-segment.plot_begin_fraction)*100)}%" title="${escapeHtml(segment.category)} · ${escapeHtml(segment.reason)} · ${number(segment.cycles)} cycles" aria-label="${escapeHtml(segment.category)} · ${escapeHtml(segment.reason)} · ${number(segment.cycles)} cycles" type="button"></button>`).join("");
+  const semanticMarks=tile.semantic_timeline_segments.map((segment,index)=>`<button class="cost-segment cost-${escapeHtml(segment.category)}${state.selectedCost&&state.selectedCost.scope==="semantic"&&state.selectedCost.index===index?" selected":""}" data-cost-index="${index}" style="left:${segment.plot_begin_fraction*100}%;width:${Math.max(.15,(segment.plot_end_fraction-segment.plot_begin_fraction)*100)}%" title="${escapeHtml(term("semantic",segment.category).label)} · ${escapeHtml(segment.reason)} · ${number(segment.cycles)} cycles" aria-label="${escapeHtml(term("semantic",segment.category).label)} · ${number(segment.cycles)} cycles" type="button"></button>`).join("");
   const traceRows=tile.trace_overhead_overlay.rows;
-  const traceMarks=(location)=>traceRows.map((row,index)=>({row,index})).filter(item=>location==="outside-entry"?item.row.location_granularity==="before-entry"||item.row.location_granularity==="after-entry":item.row.location_granularity===location).map(item=>`<button class="overlay-part${state.selectedCost&&state.selectedCost.scope==="trace"&&state.selectedCost.index===item.index?" selected":""}" data-trace-cost-index="${item.index}" style="flex:${Math.max(1,item.row.cycles)} 1 0" title="${escapeHtml(item.row.reason)} · ${number(item.row.cycles)} cycles · aggregate-only / non-additive" aria-label="Trace-run cost overlay · ${escapeHtml(item.row.reason)} · ${number(item.row.cycles)} cycles" type="button"></button>`).join("");
+  const traceMarks=(location)=>traceRows.map((row,index)=>({row,index})).filter(item=>location==="outside-entry"?item.row.location_granularity==="before-entry"||item.row.location_granularity==="after-entry":item.row.location_granularity===location).map(item=>`<button class="overlay-part${state.selectedCost&&state.selectedCost.scope==="trace"&&state.selectedCost.index===item.index?" selected":""}" data-trace-cost-index="${item.index}" style="flex:${Math.max(1,item.row.cycles)} 1 0" title="${escapeHtml(term("trace",item.row.reason).label)} · ${number(item.row.cycles)} cycles · aggregate-only / non-additive" aria-label="${escapeHtml(term("trace",item.row.reason).label)} · ${number(item.row.cycles)} cycles" type="button"></button>`).join("");
   const semanticLane=`<div class="lane lane-production" data-lane-engine="Trace-run Kcore ledger"><div class="lane-label"><b>Trace-run Kcore ledger</b><span>${number(tile.semantic_partition.exclusive_cycles)} cyc</span></div><div class="lane-track">${gridlines}${semanticMarks}</div></div>`;
   const engineLanes=ENGINES.map(engine=>{
     const visible=state.engines.has(engine);
     const engineEvents=events.filter(event=>event.engine_lane_visible&&event.engine===engine);
-    const marks=visible?engineEvents.map(event=>`<button class="event event-${engine}${event.marker?" marker":""}${event.attribution_ambiguous?" ambiguous":""}${event.zero_delta_marker?" zero":""}${state.selectedEvent&&state.selectedEvent.tile===event.tile&&state.selectedEvent.sequence===event.sequence&&state.selectedEvent.site_id===event.site_id?" selected":""}" data-event-sequence="${event.sequence}" data-event-site="${event.site_id}" style="left:${event.plot_begin_fraction*100}%;width:${event.marker?".2":Math.max(.2,(event.plot_end_fraction-event.plot_begin_fraction)*100)}%" title="${escapeHtml(engine)} · ${escapeHtml(event.duration_status)} · ${number(event.activity_window_cpu_cycles)} Kcore CPU cycles" aria-label="${escapeHtml(engine)} · ${escapeHtml(event.kind)} · ${escapeHtml(event.duration_status)}" type="button"></button>`).join(""):"";
-    return `<div class="lane" data-lane-engine="${engine}"><div class="lane-label"><b>${engine}</b><span>${engineEvents.length}</span></div><div class="lane-track">${gridlines}${marks}</div></div>`;
+    const engineSummary=tile.engines.find(row=>row.engine===engine);
+    const metric=engine==="DIRECT_DTE"?`${number(engineSummary&&engineSummary.wait_window_cpu_cycles)} cyc`:`${number(engineSummary&&engineSummary.engine_execution_time_ns)} ns`;
+    const marks=visible?engineEvents.map((event,index)=>{
+      const variant=`event-v${index%3}`;
+      const bound=event.activity_window_status==="Bounded"&&event.activity_plot_begin_fraction!=null&&event.activity_plot_end_fraction!=null?`<span class="observation-bound observation-${engine} ${variant}${event.attribution_ambiguous?" ambiguous":""}${event.zero_delta_marker?" zero":""}" data-interval-role="observation-bound" style="left:${event.activity_plot_begin_fraction*100}%;width:${Math.max(.2,(event.activity_plot_end_fraction-event.activity_plot_begin_fraction)*100)}%" title="${escapeHtml(engine)} · PMU 正增量发生在此保守范围内的某处；不代表持续 busy 或精确执行起止"></span>`:"";
+      const selected=state.selectedEvent&&state.selectedEvent.tile===event.tile&&state.selectedEvent.sequence===event.sequence&&state.selectedEvent.site_id===event.site_id;
+      const role=event.display_interval_role;
+      const roleLabel=term("interval",role).label;
+      const pointRole=role==="marker";
+      const main=`<button class="event event-${engine} ${variant}${pointRole?" marker":""}${event.attribution_ambiguous?" ambiguous":""}${event.zero_delta_marker?" zero":""}${selected?" selected":""}" data-interval-role="${escapeHtml(role)}" data-event-sequence="${event.sequence}" data-event-site="${event.site_id}" style="left:${event.plot_begin_fraction*100}%;width:${pointRole?".2":Math.max(.2,(event.plot_end_fraction-event.plot_begin_fraction)*100)}%" title="${escapeHtml(engine)} · ${escapeHtml(roleLabel)} · ${number(event.operation_window_cpu_cycles)} Kcore CPU cycles" aria-label="${escapeHtml(engine)} · ${escapeHtml(roleLabel)} · site ${event.site_id}" type="button"></button>`;
+      return bound+main;
+    }).join(""):"";
+    return `<div class="lane" data-lane-engine="${engine}"><div class="lane-label"><b title="${escapeHtml(term("engine",engine).definition)}">${engine}</b><span>${metric} · ${engineEvents.length}</span></div><div class="lane-track">${gridlines}${marks}</div></div>`;
   }).join("");
   q("#timelineLanes").innerHTML=semanticLane+`<div class="lane-separator"></div>`+engineLanes;
   q("#traceOverheadBar").innerHTML=traceMarks("inside-entry-unpositioned");
@@ -2594,8 +2863,11 @@ function renderTimeline(){
     if(!state.selectedEvent||state.selectedEvent.tile!==state.tile)state.selectedEvent=events.find(event=>event.engine_lane_visible)||events[0]||null;
     renderEventDetail();
   }
-  q("#semanticCostRows").innerHTML=tile.semantic_partition.rows.map(row=>`<tr><td><b>${escapeHtml(row.category)}</b>${row.reason?`<br><span class="mono">${escapeHtml(row.reason)}</span>`:""}${row.event_kind?`<br><span class="mono">${escapeHtml(row.event_kind)}</span>`:""}</td><td class="num">${number(row.cycles)}</td><td class="num">${(row.share_of_trace_entry*100).toFixed(1)}%</td><td>${escapeHtml(row.counts_in_primary_device_elapsed)}</td><td>${escapeHtml(row.magnitude_relation)}</td><td>${escapeHtml(row.optimization_entry)}</td></tr>`).join("");
-  q("#traceCostRows").innerHTML=tile.trace_overhead_overlay.rows.map(row=>`<tr><td><b>${escapeHtml(row.reason)}</b></td><td class="num">${number(row.cycles)}</td><td class="num">${row.share_of_trace_entry==null?"axis 外":(row.share_of_trace_entry*100).toFixed(1)+"%"}</td><td>${escapeHtml(row.location_granularity)}</td><td>${escapeHtml(row.counts_in_primary_device_elapsed)}</td></tr>`).join("");
+  q("#semanticCostRows").innerHTML=tile.semantic_partition.rows.map(row=>{
+    const reason=semanticReason(row.reason);
+    return `<tr><td>${termCell("semantic",row.category)}${row.reason?`<br><span title="${escapeHtml(reason.definition)}">${escapeHtml(reason.label)}</span><br><span class="mono">${escapeHtml(row.reason)}</span>`:""}${row.event_kind?`<br>${termCell("event",row.event_kind)}`:""}</td><td class="num">${number(row.cycles)}</td><td class="num">${(row.share_of_trace_entry*100).toFixed(1)}%</td><td>${termValue("accounting",row.counts_in_primary_device_elapsed)}</td><td>${termValue("magnitude",row.magnitude_relation)}</td><td>${escapeHtml(row.optimization_entry)}</td></tr>`;
+  }).join("");
+  q("#traceCostRows").innerHTML=tile.trace_overhead_overlay.rows.map(row=>`<tr><td>${termCell("trace",row.reason)}</td><td class="num">${number(row.cycles)}</td><td class="num">${row.share_of_trace_entry==null?"axis 外":(row.share_of_trace_entry*100).toFixed(1)+"%"}</td><td>${termValue("location",row.location_granularity)}</td><td>${termValue("accounting",row.counts_in_primary_device_elapsed)}</td></tr>`).join("");
 }
 
 function renderCostDetail(){
@@ -2605,20 +2877,32 @@ function renderCostDetail(){
   const row=selection.scope==="semantic"?tile.semantic_timeline_segments[selection.index]:tile.trace_overhead_overlay.rows[selection.index];
   if(!row)return;
   const semantic=selection.scope==="semantic";
+  const group=semantic?"semantic":"trace";
+  const rawKey=semantic?row.category:row.reason;
+  const explanation=term(group,rawKey);
+  const reasonExplanation=semantic?semanticReason(row.reason):null;
   const share=row.share_of_trace_entry==null?"axis 外 / not applicable":(row.share_of_trace_entry*100).toFixed(1)+"%";
   const sourceContext=semantic?`<dt>Containing site</dt><dd>${escapeHtml(siteRefText(row.containing_site))}</dd><dt>Previous site</dt><dd>${escapeHtml(siteRefText(row.previous_site))}</dd><dt>Next site</dt><dd>${escapeHtml(siteRefText(row.next_site))}</dd><dt>Source event</dt><dd>${number(row.source_event_sequence)}</dd>`:"";
-  q("#eventDetail").innerHTML=`<h3>${semantic?"Trace-run Kcore ledger":"Trace-run cost overlay"}</h3><dl class="kv"><dt>Cost</dt><dd><b>${escapeHtml(semantic?row.category:"Trace-run cost overlay")}</b></dd><dt>Reason</dt><dd class="mono">${escapeHtml(row.reason)}</dd><dt>Cycles</dt><dd>${number(row.cycles)} Kcore CPU cycles</dd><dt>Entry share</dt><dd>${share}</dd><dt>Counts in Primary</dt><dd>${escapeHtml(row.counts_in_primary_device_elapsed)}</dd><dt>Representativeness</dt><dd>${escapeHtml(row.magnitude_relation)}</dd><dt>Location</dt><dd>${escapeHtml(row.location_granularity||(number(row.begin_cycle)+" → "+number(row.end_cycle)))}</dd>${sourceContext}<dt>Optimization entry</dt><dd>${escapeHtml(row.optimization_entry)}</dd>${semantic?"<dt>Accounting</dt><dd>Exclusive trace-run partition; includes nested instrumentation and is not directly subtractable from Primary.</dd>":`<dt>Accounting</dt><dd>Non-additive aggregate overlay; never sum with semantic partition.</dd>`}</dl>`;
+  const claimantContext=semantic&&row.claimant_sites&&row.claimant_sites.length?`<dt>边界冲突涉及</dt><dd>${row.claimant_sites.map(site=>escapeHtml(siteRefText(site))).join("<br>")}</dd>`:"";
+  const location=semantic?`${number(row.begin_cycle)} → ${number(row.end_cycle)} Kcore rdcycle`:termValue("location",row.location_granularity);
+  q("#eventDetail").innerHTML=`<h3>${escapeHtml(explanation.label)}</h3><dl class="kv"><dt>机器字段</dt><dd class="mono">${escapeHtml(rawKey)}</dd><dt>具体含义</dt><dd>${escapeHtml(explanation.definition)}</dd><dt>不能这样理解</dt><dd>${escapeHtml(explanation.not)}</dd><dt>来源原因</dt><dd>${semantic?`<b>${escapeHtml(reasonExplanation.label)}</b><br>${escapeHtml(reasonExplanation.definition)}<br><span class="metric-note">不能这样理解：${escapeHtml(reasonExplanation.not)}</span><br><span class="mono">${escapeHtml(row.reason)}</span>`:`${escapeHtml(explanation.label)}<br><span class="mono">${escapeHtml(row.reason)}</span>`}</dd><dt>耗时</dt><dd>${number(row.cycles)} Kcore CPU cycles</dd><dt>Entry 占比</dt><dd>${share}</dd><dt>是否属于 Primary</dt><dd>${termValue("accounting",row.counts_in_primary_device_elapsed)}</dd><dt>数值代表性</dt><dd>${termValue("magnitude",row.magnitude_relation)}</dd><dt>计时边界/位置</dt><dd>${location}</dd>${sourceContext}${claimantContext}<dt>优化入口</dt><dd>${escapeHtml(row.optimization_entry)}</dd>${semantic?"<dt>会计关系</dt><dd>Trace-run entry 的排他分区；包含嵌套插桩影响，不能直接从 Primary 相减。</dd>":`<dt>会计关系</dt><dd>非加和 Trace-only overlay；不能与语义 ledger 相加。</dd>`}</dl>`;
 }
 
 function renderEventDetail(){
   const event=state.selectedEvent;
   if(!event){q("#eventDetail").innerHTML=`<h3>Event details</h3><div class="empty">No usable event on this tile.</div>`;return}
   const direct=event.engine==="DIRECT_DTE";
+  const eventType=term("event",event.kind);
+  const siteType=term("site",event.site_kind);
+  const engineType=event.engine==null?null:term("engine",event.engine);
+  const dteRole=event.dte_role==null?null:term("role",event.dte_role);
   const counterLabel=direct?"Raw DTE PMU":"Attributed engine work";
   const counterValue=direct?event.direct_dte_raw_pmu_activity:event.ncc_engine_execution_time_ns;
   const counterUnit=direct?"":" ns";
-  const attribution=event.kind==="ncc-command"&&event.ncc_counter_valid===false?"Counter unavailable; exact submit span is retained without engine attribution":event.attribution_ambiguous?"Ambiguous; not presented as exact site duration":event.zero_delta_marker?"Zero-delta marker retained":"Usable under stated status";
-  q("#eventDetail").innerHTML=`<h3>${escapeHtml(tileLabel(event.tile)+" · "+(event.engine||"Kcore"))} ${statusBadge(event.duration_status)}</h3><dl class="kv"><dt>Event kind</dt><dd class="mono">${escapeHtml(event.kind)}</dd><dt>Display interval</dt><dd class="mono">${number(event.trace_entry_offset_begin_cpu_cycles)} → ${number(event.trace_entry_offset_end_cpu_cycles)} Kcore CPU cycles</dd><dt>Operation span</dt><dd>${number(event.operation_window_cpu_cycles)} Kcore CPU cycles · ${statusBadge(event.operation_window_status)}</dd><dt>Engine observation</dt><dd>${number(event.activity_window_cpu_cycles)} Kcore CPU cycles · ${statusBadge(event.activity_window_status)} · ${escapeHtml(event.observation_status)}</dd><dt>${counterLabel}</dt><dd>${number(counterValue)}${counterUnit} · ${statusBadge(event.counter_status)}</dd><dt>Attribution</dt><dd>${escapeHtml(attribution)}</dd><dt>Site</dt><dd class="mono">${event.site_id}:${event.sub_index} · instance ${number(event.site_instance_sequence)} · ${escapeHtml(event.site_kind)}</dd><dt>Correlation</dt><dd>${escapeHtml(event.correlation_key)}</dd><dt>Target call</dt><dd class="mono">#${number(event.target_call_ordinal)} ${escapeHtml(event.target_call_symbol)}</dd><dt>Position</dt><dd class="mono">${escapeHtml(event.position)}</dd><dt>DTE role</dt><dd>${escapeHtml(event.dte_role)}</dd><dt>Scope</dt><dd>tile-local only</dd></dl>`;
+  const attribution=event.kind==="ncc-command"&&event.ncc_counter_valid===false?"PMU counter 不可用；精确 submit 仍保留，但没有 engine work 归属":event.attribution_ambiguous?"同 engine 活动归属不唯一，不能作为精确 site work":event.zero_delta_marker?"保留 zero-delta 观测；不等于 operation 零耗时":"在当前局部状态下可用";
+  const interval=term("interval",event.display_interval_role);
+  const observation=event.activity_trace_entry_offset_begin_cpu_cycles==null?"无可用 PMU 活动范围":`${number(event.activity_trace_entry_offset_begin_cpu_cycles)} → ${number(event.activity_trace_entry_offset_end_cpu_cycles)}；宽度 ${number(event.activity_window_cpu_cycles)} Kcore CPU cycles`;
+  q("#eventDetail").innerHTML=`<h3>${escapeHtml(tileLabel(event.tile)+" · "+(event.engine||"Kcore"))} ${statusBadge(event.operation_window_status)}</h3><dl class="kv"><dt>事件类型</dt><dd><b>${escapeHtml(eventType.label)}</b><br><span class="mono">${escapeHtml(event.kind)}</span><br>${escapeHtml(eventType.definition)}<br><span class="metric-note">不能这样理解：${escapeHtml(eventType.not)}</span></dd><dt>Engine 类型</dt><dd>${engineType?`<b>${escapeHtml(engineType.label)}</b><br><span class="mono">${escapeHtml(event.engine)}</span><br>${escapeHtml(engineType.definition)}`:"Kcore / no engine lane"}</dd><dt>实心块含义</dt><dd><b>${escapeHtml(interval.label)}</b><br><span class="mono">${escapeHtml(event.display_interval_role)}</span><br>${escapeHtml(interval.definition)}<br><span class="metric-note">不能这样理解：${escapeHtml(interval.not)}</span></dd><dt>精确提交/operation</dt><dd class="mono">${number(event.operation_trace_entry_offset_begin_cpu_cycles)} → ${number(event.operation_trace_entry_offset_end_cpu_cycles)}；${number(event.operation_window_cpu_cycles)} Kcore CPU cycles · ${statusBadge(event.operation_window_status)}</dd><dt>PMU 活动保守范围</dt><dd>${observation} · ${statusBadge(event.activity_window_status)}<br><span class="metric-note">范围重叠不证明 engine 同时执行。</span></dd><dt>${counterLabel}</dt><dd>${number(counterValue)}${counterUnit} · ${statusBadge(event.counter_status)}<br><span class="metric-note">${direct?"未校准 raw activity，不是 elapsed time。":"Vendor PMU measured work duration；没有精确起止坐标。"}</span></dd><dt>归属质量</dt><dd>${escapeHtml(attribution)}</dd><dt>Site 类型</dt><dd><b>${escapeHtml(siteType.label)}</b><br><span class="mono">${escapeHtml(event.site_kind)}</span><br>${escapeHtml(siteType.definition)}</dd><dt>Site 实例</dt><dd class="mono">${event.site_id}:${event.sub_index} · instance ${number(event.site_instance_sequence)}</dd><dt>Correlation</dt><dd>${escapeHtml(event.correlation_key)}</dd><dt>Target call</dt><dd class="mono">#${number(event.target_call_ordinal)} ${escapeHtml(event.target_call_symbol)}</dd><dt>Position</dt><dd class="mono">${escapeHtml(event.position)}</dd><dt>DTE role</dt><dd>${dteRole?`<b>${escapeHtml(dteRole.label)}</b> <span class="mono">(${escapeHtml(event.dte_role)})</span><br>${escapeHtml(dteRole.definition)}`:"—"}</dd><dt>怎么看 / 优化入口</dt><dd>${escapeHtml(TERM_GUIDANCE.event)}</dd><dt>Scope</dt><dd>仅当前 tile；不能建立跨 tile 全局顺序</dd></dl>`;
 }
 
 function renderEngines(){
@@ -2632,7 +2916,7 @@ function renderEngines(){
       `<tr><td><b>DIRECT_DTE</b></td><td>Wait / completion (Kcore CPU cycles)</td><td class="num">${number(engine.wait_window_cpu_cycles)}</td><td class="num">${engine.wait_window_count}</td><td>${statusBadge(engine.wait_window_status)}</td><td>Measured tile-local rdcycle interval; frequency conversion unavailable.</td></tr>`,
       `<tr><td></td><td>Raw PMU activity</td><td class="num">${number(engine.raw_pmu_activity)}</td><td class="num">${engine.activity_window_count}</td><td>${statusBadge(engine.raw_pmu_activity_status)}</td><td>Sampled and uncalibrated; never elapsed time.</td></tr>`
     ].join("");
-    return `<tr><td><b>${engine.engine}</b></td><td>Engine execution time (ns)</td><td class="num">${number(engine.engine_execution_time_ns)}</td><td class="num">${engine.activity_window_count}</td><td>${statusBadge(engine.engine_execution_time_status)}</td><td>Vendor PMU execution-time delta in ns. Activity windows are ${escapeHtml(engine.activity_window_status)} Kcore rdcycle bounds only.</td></tr>`;
+    return `<tr><td>${termCell("engine",engine.engine)}</td><td>Engine execution time (ns)</td><td class="num">${number(engine.engine_execution_time_ns)}</td><td class="num">${engine.activity_window_count}</td><td>${statusBadge(engine.engine_execution_time_status)}</td><td>Vendor PMU execution-time delta in ns. Activity windows: ${termValue("status",engine.activity_window_status)}；仅为 Kcore rdcycle bounds。</td></tr>`;
   }).join("");
 }
 
@@ -2641,7 +2925,7 @@ function renderSites(){
   const engine=q("#siteEngine").value;
   const rows=finalArtifact.sites.filter(site=>(!engine||site.engine===engine)&&(!query||[site.correlation_key,site.target_call_symbol,site.position,site.site_id,site.tile].some(value=>String(value==null?"":value).toLowerCase().indexOf(query)!==-1)));
   q("#siteCount").textContent=`${rows.length} / ${finalArtifact.sites.length} sites`;
-  q("#siteRows").innerHTML=rows.length?rows.map(site=>`<tr${site.site_instance_count?` class="interactive-row" tabindex="0" title="Open correlated timeline event" data-event-tile="${site.tile}" data-event-site="${site.site_id}" data-event-engine="${site.engine}"`:""}><td>${tileLabel(site.tile)}</td><td class="mono">${site.site_id}</td><td class="mono">${escapeHtml(site.site_kind)}</td><td>${escapeHtml(site.engine)}</td><td>${escapeHtml(site.correlation_key)}</td><td class="mono">#${site.target_call_ordinal} ${escapeHtml(site.target_call_symbol)}</td><td class="mono">${escapeHtml(site.position)}</td><td class="num">${site.site_instance_count}</td><td>${statusBadge(site.site_capture_status)}</td><td class="num">${site.event_count}</td><td>${statusBadge(site.engine_observation_status)}</td></tr>`).join(""):`<tr><td colspan="11" class="empty">No matching sites.</td></tr>`;
+  q("#siteRows").innerHTML=rows.length?rows.map(site=>`<tr${site.site_instance_count?` class="interactive-row" tabindex="0" title="Open correlated timeline event" data-event-tile="${site.tile}" data-event-site="${site.site_id}" data-event-engine="${site.engine}"`:""}><td>${tileLabel(site.tile)}</td><td class="mono">${site.site_id}</td><td>${termCell("site",site.site_kind)}</td><td>${site.engine==null?"—":termCell("engine",site.engine)}</td><td>${escapeHtml(site.correlation_key)}</td><td class="mono">#${site.target_call_ordinal} ${escapeHtml(site.target_call_symbol)}</td><td class="mono">${escapeHtml(site.position)}</td><td class="num">${site.site_instance_count}</td><td>${statusBadge(site.site_capture_status)}</td><td class="num">${site.event_count}</td><td>${statusBadge(site.engine_observation_status)}</td></tr>`).join(""):`<tr><td colspan="11" class="empty">No matching sites.</td></tr>`;
   bindEventLinks("#siteRows [data-event-site]");
 }
 
@@ -2652,19 +2936,29 @@ function renderCommunication(){
     .sort((left,right)=>left.tile-right.tile||left.site_id-right.site_id||phaseOrder.indexOf(left.kind)-phaseOrder.indexOf(right.kind)||left.sequence-right.sequence);
   const leafEvents=events.filter(event=>event.kind!=="direct-dte-wait");
   const communication=finalArtifact.communication;
-  q("#communicationSummary").innerHTML=`<div class="card"><div class="metric-label">DTE aggregates</div><div class="metric-value">${communication.direct_dte_event_count}</div><div class="metric-note">Non-additive wait containers · ${leafEvents.length} leaf phases</div></div><div class="card"><div class="metric-label">Send / receive</div><div class="metric-value">${communication.send_count} / ${communication.receive_count}</div></div><div class="card"><div class="metric-label">Active tiles</div><div class="metric-value">${communication.tiles_with_activity.length}</div></div><div class="card"><div class="metric-label">Cross-tile order</div><div class="metric-value">${statusBadge("Unavailable")}</div><div class="metric-note">No inferred global timeline</div></div>`;
+  q("#communicationSummary").innerHTML=`<div class="card"><div class="metric-label">整次通信等待</div><div class="metric-value">${communication.direct_dte_event_count}</div><div class="metric-note">总计行 · ${leafEvents.length} 个通信内部步骤；两者不重复相加</div></div><div class="card"><div class="metric-label">发送侧 / 接收侧</div><div class="metric-value">${communication.send_count} / ${communication.receive_count}</div></div><div class="card"><div class="metric-label">有活动的 tile</div><div class="metric-value">${communication.tiles_with_activity.length}</div></div><div class="card"><div class="metric-label">跨 tile 顺序</div><div class="metric-value">${statusBadge("Unavailable")}</div><div class="metric-note">不推断全局 timeline</div></div>`;
   q("#communicationRows").innerHTML=events.length?events.map(event=>{
     const aggregate=event.kind==="direct-dte-wait";
-    const evidenceRole=aggregate?"Aggregate container · non-additive":"Leaf phase";
+    const evidenceRole=aggregate?"aggregate":"leaf";
     const rawValue=aggregate?number(event.direct_dte_raw_pmu_activity):"—";
-    const rawStatus=aggregate?statusBadge(event.counter_status):`<span class="evidence-role">Aggregate only</span>`;
-    return `<tr class="interactive-row" tabindex="0" title="Open exact correlated phase" data-event-tile="${event.tile}" data-event-site="${event.site_id}" data-event-engine="${event.engine}" data-event-sequence="${event.sequence}" data-event-kind="${escapeHtml(event.kind)}"><td>${tileLabel(event.tile)}</td><td>${escapeHtml(event.dte_role)}</td><td><b>${escapeHtml(DTE_PHASES[event.kind])}</b><br><span class="mono">${escapeHtml(event.kind)}</span></td><td><span class="evidence-role">${escapeHtml(evidenceRole)}</span></td><td><span class="mono">${event.site_id}</span> · ${escapeHtml(event.target_call_symbol)}</td><td class="num">${number(event.operation_window_cpu_cycles)}</td><td>${statusBadge(event.duration_status)}</td><td class="num">${rawValue}</td><td>${rawStatus}</td></tr>`;
+    const rawStatus=aggregate?statusBadge(event.counter_status):`<span class="evidence-role">仅“整次通信等待”行提供</span>`;
+    return `<tr class="interactive-row" tabindex="0" title="Open exact correlated phase" data-event-tile="${event.tile}" data-event-site="${event.site_id}" data-event-engine="${event.engine}" data-event-sequence="${event.sequence}" data-event-kind="${escapeHtml(event.kind)}"><td>${tileLabel(event.tile)}</td><td>${termCell("role",event.dte_role)}</td><td><b>${escapeHtml(DTE_PHASES[event.kind])}</b><br><span class="mono">${escapeHtml(event.kind)}</span></td><td><span class="evidence-role">${termCell("evidence",evidenceRole)}</span></td><td><span class="mono">${event.site_id}</span> · ${escapeHtml(event.target_call_symbol)}</td><td class="num">${number(event.operation_window_cpu_cycles)}</td><td>${statusBadge(event.duration_status)}</td><td class="num">${rawValue}</td><td>${rawStatus}</td></tr>`;
   }).join(""):`<tr><td colspan="9" class="empty">No Direct-DTE operation was observed.</td></tr>`;
   bindEventLinks("#communicationRows [data-event-site]");
 }
 
+function renderGlossary(){
+  q("#glossaryRows").innerHTML=Object.keys(GLOSSARY_GROUPS).flatMap(group=>Object.keys(TERMS[group]).map(key=>{
+    const item=TERMS[group][key];
+    return `<tr><td>${escapeHtml(GLOSSARY_GROUPS[group])}</td><td><b>${escapeHtml(item.label)}</b></td><td class="mono">${escapeHtml(key)}</td><td>${escapeHtml(item.definition)}</td><td>${escapeHtml(item.meta||TERM_META[group])}</td><td>${escapeHtml(item.not)}</td><td>${escapeHtml(item.guide||TERM_GUIDANCE[group])}</td></tr>`;
+  })).join("");
+}
+
 function renderDiagnostics(){
-  q("#validityMatrix").innerHTML=Object.keys(analysis.validity).map(key=>`<span>${escapeHtml(key)} ${statusBadge(analysis.validity[key]?"Measured":"Invalid")}</span>`).join("");
+  q("#validityMatrix").innerHTML=Object.keys(analysis.validity).map(key=>{
+    const item=term("validity",key);
+    return `<span title="${escapeHtml(item.definition)}"><b>${escapeHtml(item.label)}</b> <span class="mono">${escapeHtml(key)}</span> ${validityBadge(analysis.validity[key])}</span>`;
+  }).join("");
   q("#diagnosticRows").innerHTML=analysis.diagnostics.length?analysis.diagnostics.map(row=>`<div class="diag"><b class="severity-${escapeHtml(row.severity)}">${escapeHtml(row.severity)}</b><span class="mono">${escapeHtml(row.code)}</span><span>${row.tile==null?"global":tileLabel(row.tile)}</span><span>${escapeHtml(row.message)}</span></div>`).join(""):`<div class="empty">No analyzer diagnostics.</div>`;
   q("#rawPayload").textContent=JSON.stringify(state.raw==="analysis"?analysis:evidence,null,2);
   qa("[data-raw-target]").forEach(node=>node.classList.toggle("active",node.dataset.rawTarget===state.raw));
@@ -2687,8 +2981,9 @@ renderTimeline();
 renderEngines();
 renderSites();
 renderCommunication();
+renderGlossary();
 renderDiagnostics();
-window.__waferProfileUI={analysis,evidence,state,navigate,selectTile,focusEvent,renderTimeline};
+window.__waferProfileUI={analysis,evidence,state,navigate,selectTile,focusEvent,renderTimeline,renderGlossary,crossEngineBoundOverlaps};
 </script>
 </body>
 </html>"""

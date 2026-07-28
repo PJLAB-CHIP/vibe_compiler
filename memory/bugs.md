@@ -1816,6 +1816,11 @@
   activity。每engine只保存latest event又会在连续same-engine issue时覆盖前一归属，zero-delta event还会被report
   静默丢弃。修复必须把sample read-begin/read-end作为严格外包边界，保留observation count和counter-no-change，
   same-engine outstanding显式标ambiguous并在completion boundary关闭epoch；不能用彩色矩形或空白推断持续busy/idle。
+- PMU bounded observation window不能画成实心engine执行条。多个outstanding event在completion polling中可能共享
+  同一个采样上界，使CT/WDMA等不同engine的保守窗口相交；这种相交既不证明并行，也不证明同一SPM资源同时使用。
+  主timeline应以实心块画精确`TsmExecute` submit或DTE operation span，以浅色虚线框画PMU bound，并把vendor PMU
+  execution ns作为没有精确起止位置的独立work duration。三类证据的单位、边界和可推导结论必须分别说明；同一engine
+  多事件使用可区分的同色系变体，不能连成一块造成连续busy错觉。
 - production event pair内的Kcore control、NCC submit/completion wait、Direct-DTE lifecycle和真实空转，与Trace-only
   PMU MMIO、event/site记账、DTE PMU开关和替代polling是两类成本。record必须显式保存site、submit、completion及
   Direct-DTE子阶段span，并把PMU/event/site/poll/setup/teardown overhead按tile-local cycle细分；analyzer只在同一
@@ -1834,5 +1839,11 @@
   ledger。只有共享identity、capture lifecycle、overflow/terminal和输出门禁失败才允许整次capture fail closed。
   report状态同样按字段隔离：成对`rdcycle` operation仍是`Measured`，engine observation才是`Bounded`或
   `Unavailable`；完整Trace entry不能因为内部含bounded observation就整体误标`Bounded`。
+- profiler正常界面不能只显示schema机器词。semantic/Trace cost、reason、event、site、engine、measurement status、
+  Primary accounting、数值代表性、通信粒度、output correctness和validity gate应由同一展示词典驱动，保留机器字段
+  作为次级审计信息；每项至少说明定义、单位/Primary关系、禁止误读和查看/优化入口。通信界面用“整次通信等待
+  （总计）/通信内部步骤”解释`aggregate/leaf`，明确两种粒度不能重复求和。validity若含`true/false/null`三态，
+  UI必须分别显示“通过/门禁未满足/尚未独立判定”；不能用truthy判断把没有independent expected覆盖的`null`画成
+  `Invalid`。
 - 多participant通信的板端profile gate不能只验证全卡`any(positive phase)`。应按manifest participant集合逐tile
   对齐raw source event、analysis aggregate与`Measured` phase，否则单tile活动会掩盖其它rank漏执行。
