@@ -30,8 +30,8 @@ class RuntimeLaunchCalibrationCase:
 
 
 RANK_COUNT = 16
-GLOBAL_ELEMENTS = 512
-LOCAL_ELEMENTS = GLOBAL_ELEMENTS // RANK_COUNT
+LOCAL_ELEMENTS = 458752
+GLOBAL_ELEMENTS = RANK_COUNT * LOCAL_ELEMENTS
 ELEMENT_DTYPE = np.dtype("<f2")
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
 PROFILE_COMPANION_READY = (
@@ -475,8 +475,8 @@ def write_rank_payloads(
     indices = np.arange(GLOBAL_ELEMENTS, dtype=np.int32)
     ranks = indices // LOCAL_ELEMENTS
     lanes = indices % LOCAL_ELEMENTS
-    lhs_i32 = ranks * 32 + lanes
-    rhs_i32 = 512 + ranks * 16 + lanes
+    lhs_i32 = ranks * 32 + lanes % 32
+    rhs_i32 = 512 + ranks * 16 + lanes % 16
     expected_i32 = lhs_i32 + rhs_i32
     lhs = lhs_i32.astype(ELEMENT_DTYPE)
     rhs = rhs_i32.astype(ELEMENT_DTYPE)
@@ -574,7 +574,8 @@ def verify_board_evidence(
         re.MULTILINE,
     )
     output_matches = re.findall(
-        r"^output_compare: resource=(\d+) bytes=64 exact=true$",
+        rf"^output_compare: resource=(\d+) "
+        rf"bytes={LOCAL_ELEMENTS * ELEMENT_DTYPE.itemsize} exact=true$",
         stdout,
         re.MULTILINE,
     )

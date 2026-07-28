@@ -20,7 +20,7 @@ import wafer_runtime_launch_contract as runtime_launch
 
 
 RANK_COUNT = 16
-LOCAL_ELEMENTS = 128
+LOCAL_ELEMENTS = 458752
 LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
 STATUS_ABI = "wafer-direct-dte-status-v2"
@@ -396,7 +396,7 @@ def write_raw_files(
     arguments: list[str] = []
     lanes = np.arange(local_elements, dtype=np.int32)
     values_i32 = [
-        lanes * 16
+        (lanes % 16) * 16
         if rank == 0
         else np.full(local_elements, rank * 4, dtype=np.int32)
         for rank in range(RANK_COUNT)
