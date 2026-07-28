@@ -20,7 +20,7 @@ SCHEMA_VERSION = 7
 COMPANION_SCHEMA_VERSION = 4
 RECORD_ABI = "wafer-tx81-profiler-record-v3"
 ANALYSIS_SCHEMA_NAME = "wafer.profile.analysis"
-ANALYSIS_SCHEMA_VERSION = 5
+ANALYSIS_SCHEMA_VERSION = 6
 TILES = tuple(range(16))
 NCC_ENGINES = ("CT", "NE", "RDMA", "WDMA", "TDMA")
 ENGINES = NCC_ENGINES + ("DIRECT_DTE",)
@@ -1025,6 +1025,106 @@ def _counter_value(counter: Mapping[str, Any]) -> tuple[int | None, str | None]:
     return end - start, None
 
 
+def _engine_active_time_summary(
+    tile_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Build a non-latency summary from per-tile NCC PMU execution time."""
+
+    expected_tiles = len(TILES)
+
+    def status(available: int) -> str:
+        if available == expected_tiles:
+            return "Measured"
+        if available:
+            return "Incomplete"
+        return "Unavailable"
+
+    def statistics(values: Sequence[int]) -> dict[str, int | float | None]:
+        if not values:
+            return {
+                "minimum_ns": None,
+                "average_ns": None,
+                "maximum_ns": None,
+                "work_volume_ns": None,
+            }
+        work_volume = sum(values)
+        return {
+            "minimum_ns": min(values),
+            "average_ns": work_volume / len(values),
+            "maximum_ns": max(values),
+            "work_volume_ns": work_volume,
+        }
+
+    by_engine: list[dict[str, Any]] = []
+    for engine in NCC_ENGINES:
+        values: list[int] = []
+        for tile in tile_rows:
+            row = next(
+                item for item in tile["engines"] if item["engine"] == engine
+            )
+            if (
+                row["engine_execution_time_valid"]
+                and row["engine_execution_time_ns"] is not None
+            ):
+                values.append(int(row["engine_execution_time_ns"]))
+        summary = statistics(values)
+        by_engine.append(
+            {
+                "engine": engine,
+                "measurement_kind": "trace-pmu-engine-active-time",
+                "available_tile_count": len(values),
+                "active_tile_count": sum(value > 0 for value in values),
+                "minimum_per_tile_ns": summary["minimum_ns"],
+                "average_per_tile_ns": summary["average_ns"],
+                "maximum_per_tile_ns": summary["maximum_ns"],
+                "sum_across_tiles_work_ns": summary["work_volume_ns"],
+                "status": status(len(values)),
+            }
+        )
+
+    complete_tile_values: list[int] = []
+    for tile in tile_rows:
+        engine_rows = [
+            item for item in tile["engines"] if item["engine"] in NCC_ENGINES
+        ]
+        if len(engine_rows) != len(NCC_ENGINES) or any(
+            not item["engine_execution_time_valid"]
+            or item["engine_execution_time_ns"] is None
+            for item in engine_rows
+        ):
+            continue
+        complete_tile_values.append(
+            sum(int(item["engine_execution_time_ns"]) for item in engine_rows)
+        )
+
+    tile_summary = statistics(complete_tile_values)
+    return {
+        "measurement_kind": "trace-pmu-engine-active-time",
+        "source_capture": "trace",
+        "measurement_run": "trace-diagnostic",
+        "relation_to_primary": "separate-run-proxy",
+        "unit": "ns",
+        "scope": "per-tile-per-ncc-engine",
+        "additive_to_kernel_launch_envelope": False,
+        "cross_tile_sum_role": "work-volume-not-wall-time",
+        "card_wide_engine_elapsed_ns": None,
+        "card_wide_engine_elapsed_status": "Unavailable",
+        "card_wide_engine_elapsed_reason": (
+            "per-tile engines may overlap and have no qualified global "
+            "activity start/end alignment"
+        ),
+        "per_tile_work_volume": {
+            "available_tile_count": len(complete_tile_values),
+            "minimum_per_tile_total_work_ns": tile_summary["minimum_ns"],
+            "average_per_tile_total_work_ns": tile_summary["average_ns"],
+            "maximum_per_tile_total_work_ns": tile_summary["maximum_ns"],
+            "sum_across_tiles_work_ns": tile_summary["work_volume_ns"],
+            "status": status(len(complete_tile_values)),
+        },
+        "by_engine": by_engine,
+    }
+
+
 def _event_span(
     event: Mapping[str, Any], name: str, lower: int, upper: int
 ) -> tuple[int, int] | None:
@@ -1387,7 +1487,8 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         diagnose(
             "warning",
             "device_event_elapsed_quantized_zero",
-            "the TX stream-event timer returned zero; the device execution "
+            "the TX stream-event timer returned zero; the launch-to-completion "
+            "device envelope "
             "remains measured but is at or below the effective timer resolution",
         )
     if host_submit_zero:
@@ -2162,6 +2263,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         for row in timeline_events
         if row["kind"] == "direct-dte-wait"
     ]
+    engine_active_time = _engine_active_time_summary(tile_rows)
     validity = {
         "identity": True,
         "output_equivalence": output_equivalence,
@@ -2188,6 +2290,15 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             "duration": {
                 "sample_id": "primary",
                 "sample_index": 0,
+                "measurement_kind": (
+                    "tx-stream-kernel-launch-to-completion-envelope"
+                ),
+                "scope": "production-launch-to-stream-completion",
+                "is_engine_only": False,
+                "includes_device_control_wait_and_scheduling": True,
+                "includes_host_submit": False,
+                "includes_host_completion_polling": False,
+                "includes_trace_instrumentation": False,
                 "device_elapsed_ns": device_elapsed,
                 "device_timer_kind": sample["device_timer_kind"],
                 "device_elapsed_quantized_zero": device_zero,
@@ -2202,6 +2313,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                 "qualified": qualified,
                 "status": "Measured" if qualified else "Invalid",
             },
+            "engine_active_time": engine_active_time,
             "output": {
                 "resource_count": len(resources),
                 "production_execution_validated": production_validated,
@@ -2229,17 +2341,17 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         },
         "diagnostics": diagnostics,
         "method": {
-            "device_execution_time": "one uninstrumented primary production execution measured by same-stream TX start/end events; it includes device-side Kcore control, submits, waits, DTE lifecycle, and scheduling gaps",
+            "kernel_launch_to_completion": "one uninstrumented Primary production launch measured by same-stream TX start/end events; this launch-to-completion envelope includes device-side dispatch, Kcore control, submits, waits, DTE lifecycle, scheduling gaps, and retirement; it is not engine-only time",
             "host_submit_time": "host steady-clock provider submit path, including provider argument preparation and stream/event setup where applicable; not pure TX API time",
             "host_envelope_time": "host steady-clock first submit through all-rank trusted completion; diagnostic envelope, not kernel execution time",
-            "host_envelope_ledger": "host envelope is partitioned only on its own clock into host submit and host non-submit envelope; the latter includes host waiting/polling/phase control concurrent with device execution, is not pure overhead, and is never reduced by device elapsed",
+            "host_envelope_ledger": "host envelope is partitioned only on its own clock into host submit and host non-submit envelope; the latter includes host waiting/polling/phase control concurrent with the Primary TX stream envelope, is not pure overhead, and is never reduced by device elapsed",
             "queue_delay": "unavailable; no queue-delay value is inferred by subtracting host and device measurements",
             "timeline_axis": "tile-local Kcore rdcycle entry span partitioned into named semantic costs; every cycle has an explicit category or reason-specific capture-boundary residual",
             "timeline_scope": "tile-local only; no cross-tile order is inferred",
             "semantic_partition": "exclusive interval-union/subtraction accounting over the trace entry; categories sum exactly once to the entry span",
             "primary_inclusion_labels": "yes means the production semantic phase is inside the Primary device event; mixed means the trace interval combines production-common control with nested trace-only work that is measured only in the separate overhead overlay; unknown means current evidence cannot establish the production correspondence; no is trace-only",
             "trace_overhead_overlay": "eight mutually exclusive Trace-run rdcycle instrumentation components; status-poll and completion-loop bookkeeping belong to the sampled replacement for production TsmWaitfinish, while the production-common wait semantic is represented separately by its proxy operation row; all eight are trace-only, aggregate-positioned, and never added to the semantic partition",
-            "ncc_engine_time": "per-tile NCC engine execution-time work volume in nanoseconds from vendor PMU counters; asynchronous engines/tiles may overlap and these values are never added to Kcore cycles or Primary elapsed",
+            "engine_active_time": "separate Trace diagnostic-run vendor PMU execution time in nanoseconds for each tile and NCC engine; min/average/max are per-tile distributions and cross-tile sums are work volume only; asynchronous engines/tiles may overlap, so no card-wide engine elapsed is inferred or subtracted from the Primary envelope",
             "statistics_window": "aggregate statistics_window is a raw PMU tick delta, not the rdcycle timeline axis and not converted to elapsed time",
             "ncc_activity_window": "positive per-event deltas carry only bounded observation windows; zero deltas remain markers and ambiguous deltas are not assigned as exact site work",
             "direct_dte_time": "measured operation windows in tile-local Kcore rdcycle, separate from raw PMU activity",
@@ -2381,28 +2493,29 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
     </header>
 
     <section id="view-overview" class="view active" data-view-panel="overview">
-      <div class="section-head"><div><h2>Overview</h2><p>单次 primary production execution；不是多轮统计，也没有 winner/baseline。</p></div></div>
+      <div class="section-head"><div><h2>Overview</h2><p>单次Primary production launch；kernel包络、Host诊断和Trace PMU engine active time分域展示。</p></div></div>
       <div id="statusLegend" class="legend"></div>
       <div class="metric-note status-glossary"><b>Measured</b>：边界和值均由对应计时源直接取得；<b>Sampled</b>：采样 counter；<b>Bounded</b>：只知道活动发生在保守观测窗内，不代表整段持续 busy；<b>Unavailable / Incomplete / Invalid</b>：分别表示该局部证据缺失、采集未闭合或协议不合法。</div>
       <div class="grid kpis overview-kpis">
-        <div class="card"><div class="metric-label">Device execution</div><div id="deviceDuration" class="metric-value primary"></div><div id="deviceDurationNote" class="metric-note"></div></div>
-        <div class="card"><div class="metric-label">Host submit path</div><div id="hostSubmitDuration" class="metric-value"></div><div id="hostSubmitNote" class="metric-note"></div></div>
-        <div class="card"><div class="metric-label">Host completion envelope</div><div id="hostEnvelopeDuration" class="metric-value"></div><div id="hostEnvelopeResolution" class="metric-note"></div></div>
+        <div class="card"><div class="metric-label">Kernel launch → completion</div><div id="deviceDuration" class="metric-value primary"></div><div id="deviceDurationNote" class="metric-note"></div></div>
+        <div class="card"><div class="metric-label">NCC engine active work / Tile</div><div id="engineActiveRange" class="metric-value"></div><div id="engineActiveRangeNote" class="metric-note"></div></div>
+        <div class="card"><div class="metric-label">Host submit</div><div id="hostSubmitDuration" class="metric-value"></div><div id="hostSubmitNote" class="metric-note"></div></div>
+        <div class="card"><div class="metric-label">Host launch → trusted completion</div><div id="hostEnvelopeDuration" class="metric-value"></div><div id="hostEnvelopeResolution" class="metric-note"></div></div>
         <div class="card"><div class="metric-label">Measurement status</div><div id="measurementStatus" class="metric-value"></div><div class="metric-note">Uninstrumented primary · device event timing</div></div>
         <div class="card"><div class="metric-label">Output validation</div><div id="outputStatus" class="metric-value"></div><div id="outputNote" class="metric-note"></div></div>
         <div class="card"><div class="metric-label">Trace coverage</div><div id="traceCoverage" class="metric-value"></div><div id="traceNote" class="metric-note"></div></div>
       </div>
-      <div class="card" style="margin-bottom:10px"><div class="section-head"><div><h2>Timing breakdown</h2><p>Device、provider submit 与 host completion envelope 分开；不通过相减虚构 queue delay。</p></div></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Scope</th><th>Clock / source</th><th class="num">Duration</th><th class="num">Nanoseconds</th><th>Status</th><th>Interpretation</th></tr></thead><tbody id="timingRows"></tbody></table></div></div>
+      <div class="card" style="margin-bottom:10px"><div class="section-head"><div><h2>Timing domains · not additive</h2><p>TX stream包络、Host submit与Host completion使用不同边界；不通过相减虚构queue delay或engine-only时间。</p></div></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Scope</th><th>Clock / source</th><th class="num">Duration</th><th class="num">Nanoseconds</th><th>Status</th><th>Interpretation</th></tr></thead><tbody id="timingRows"></tbody></table></div></div>
       <div class="split">
         <div class="card"><div class="section-head"><div><h2>Card 0 · Tile map</h2><p>点击 tile 进入本地 engine timeline。</p></div></div><div id="overviewTiles" class="tile-grid"></div></div>
         <div class="card"><div class="section-head"><div><h2>Measurement contract</h2></div></div><div id="methodList" class="method-list"></div></div>
       </div>
-      <div class="card" style="margin-top:10px"><div class="section-head"><div><h2>Engine summary</h2><p>NCC 跨 tile 求和是 execution-time work volume (ns)，不是全卡 elapsed duration；Direct-DTE rdcycle wait 单独列示。</p></div></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Engine</th><th>Metric</th><th class="num">Derived sum</th><th class="num">Tiles</th><th class="num">Windows</th><th>Status</th></tr></thead><tbody id="overviewEngineRows"></tbody></table></div></div>
+      <div class="card" style="margin-top:10px"><div class="section-head"><div><h2>NCC engine active time · Trace PMU</h2><p>五类NCC engine均为另一轮Trace diagnostic的per-tile PMU ns。最小/平均/最大用于看Tile分布；Σ仅是work volume，不是wall time。Direct-DTE没有calibrated engine ns，单独在Communication展示。</p></div></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Engine</th><th>Source / unit</th><th class="num">Min / Tile</th><th class="num">Avg / Tile</th><th class="num">Max / Tile</th><th class="num">Active Tiles</th><th class="num">Available Tiles</th><th class="num">Σ Tile Work</th><th>Status</th></tr></thead><tbody id="overviewEngineRows"></tbody></table></div></div>
     </section>
 
     <section id="view-timeline" class="view" data-view-panel="timeline">
       <div class="section-head"><div><h2>Trace Timeline</h2><p>Trace-run Kcore ledger 与 engine evidence 分层；横轴是所选 tile 的 rdcycle entry span。</p></div></div>
-      <div class="notice">Trace-run Kcore ledger 对 entry span 做排他 interval union/subtraction；它仍包含嵌套的 trace instrumentation，因此不能直接相减得到 Primary 各项成本。In Primary 的 yes 表示同一语义阶段存在于 Primary，mixed 表示 production control 与无法定位的 Trace-only 工作混合，unknown 表示当前证据不足，no 表示纯插桩。Primary same-stream elapsed 包含设备侧控制、等待和真实 idle，但不含 Trace-only instrumentation。Trace-run cost overlay 只在独立 aggregate bar 中显示，绝不伪造时间位置或与 ledger 相加；NCC engine ns 是异步 work volume。Engine lane 的空背景只表示当前没有 observation window，不等于 engine idle，也不用于补算 Primary。</div>
+      <div class="notice">Trace-run Kcore ledger 对 entry span 做排他 interval union/subtraction；它仍包含嵌套的 trace instrumentation，因此不能直接相减得到 Primary 各项成本。In Primary 的 yes 表示同一语义阶段存在于 Primary，mixed 表示 production control 与无法定位的 Trace-only 工作混合，unknown 表示当前证据不足，no 表示纯插桩。Primary TX stream launch envelope包含设备侧控制、等待和真实idle，但不含Trace-only instrumentation。Trace-run cost overlay只在独立aggregate bar中显示，绝不伪造时间位置或与ledger相加；NCC engine ns来自另一轮Trace，只是异步work volume。Engine lane的空背景只表示当前没有observation window，不等于engine idle，也不用于补算Primary。</div>
       <div class="timeline-key" aria-label="Timeline interval legend">
         <span><i class="key-swatch key-submit"></i><b>实心块</b>：精确 command submit / DTE operation 区间</span>
         <span><i class="key-swatch key-bound"></i><b>浅色虚线框</b>：PMU 活动保守观测范围，不是持续 busy</span>
@@ -2427,7 +2540,7 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
     </section>
 
     <section id="view-engines" class="view" data-view-panel="engines">
-      <div class="section-head"><div><h2>Tile / Engine</h2><p>NCC aggregate execution time (ns) 是 Measured；activity window 只作 Kcore rdcycle Bounded 证据。</p></div></div>
+      <div class="section-head"><div><h2>Tile / Engine</h2><p>Per-tile NCC engine active time来自Trace PMU ns；activity window只作Kcore rdcycle Bounded证据，二者都不是Primary包络。</p></div></div>
       <div class="toolbar"><label>Tile <select id="engineTile"></select></label><span id="engineTileMeta"></span></div>
       <div class="table-wrap"><table><thead><tr><th>Engine</th><th>Metric</th><th class="num">ns / CPU cycles / raw</th><th class="num">Windows</th><th>Status</th><th>Interpretation</th></tr></thead><tbody id="engineRows"></tbody></table></div>
     </section>
@@ -2448,10 +2561,10 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
     <section id="view-glossary" class="view" data-view-panel="glossary">
       <div class="section-head"><div><h2>术语说明</h2><p>界面使用人话名称，机器字段保持不变，便于与 analysis.json 对照。</p></div></div>
       <div class="grid kpis">
-        <div class="card"><div class="metric-label">Primary device execution</div><div class="metric-note">未插桩最终产物在同一 TX stream event pair 之间的设备 wall time，单位 ns；这是主耗时。</div></div>
+        <div class="card"><div class="metric-label">Kernel launch → completion</div><div class="metric-note">未插桩最终产物在同一TX stream event pair之间的设备包络，单位ns；包含device control/wait/engine/retirement，不是纯engine时间。</div></div>
         <div class="card"><div class="metric-label">Command submit</div><div class="metric-note">Kcore 调用 TsmExecute 的精确提交区间，单位 rdcycle；不是 engine busy duration。</div></div>
         <div class="card"><div class="metric-label">PMU activity bound</div><div class="metric-note">只证明 counter 增量发生在保守窗口内；窗口重叠不证明两个 engine 同时执行。</div></div>
-        <div class="card"><div class="metric-label">Engine work duration</div><div class="metric-note">Vendor PMU execution-time delta，单位 ns；有真实工作量，但当前没有精确起止坐标。</div></div>
+        <div class="card"><div class="metric-label">Engine active time · Trace PMU</div><div class="metric-note">另一轮Trace diagnostic的vendor PMU execution-time delta，单位ns；是per-tile/per-engine active work，没有精确起止坐标，也不是Primary的同次分项。</div></div>
       </div>
       <div class="notice">读图顺序：先看实心 submit / operation 块，再看浅色虚线 PMU bound，最后到 Tile / Engine 查看 measured ns。三者不能互相替代，也不能把多个 engine 的 ns 相加成 Primary wall time。</div>
       <div class="table-wrap" style="max-height:none"><table><thead><tr><th>分组</th><th>界面名称</th><th>机器字段</th><th>具体指什么</th><th>单位 / Primary</th><th>不能这样理解</th><th>怎么看 / 优化入口</th></tr></thead><tbody id="glossaryRows"></tbody></table></div>
@@ -2618,7 +2731,7 @@ const TERM_META={
   location:"相对当前 tile Trace entry 的位置；Primary 关系另看 accounting。",
   event:"operation 区间使用 tile-local Kcore rdcycle；NCC PMU work 另用 ns；Primary 关系看对应语义成本。",
   site:"site begin/end 使用 tile-local Kcore rdcycle；site 容器本身不额外计账。",
-  engine:"NCC engine work 使用 vendor PMU ns，提交/operation 横轴使用 Kcore rdcycle；不能跨单位相加。",
+  engine:"NCC engine active work来自另一轮Trace diagnostic的vendor PMU ns，提交/operation横轴使用Kcore rdcycle；不能跨单位相加，也不能与Primary包络相减。",
   role:"无独立单位；只描述当前 tile 在 Direct-DTE operation 中的角色。",
   evidence:"operation 使用 tile-local Kcore rdcycle；整次通信行的 raw PMU 没有校准时间单位。",
   reason:"无独立单位；它解释一行成本来自哪一段边界或哪个动态 site/event。",
@@ -2657,6 +2770,7 @@ const durationText=value=>{
   if(ns<1e6)return `${(ns/1000).toFixed(3)} µs`;
   return `${(ns/1e6).toFixed(3)} ms`;
 };
+const durationRange=(minimum,maximum)=>minimum==null||maximum==null?"—":minimum===maximum?durationText(minimum):`${durationText(minimum)} – ${durationText(maximum)}`;
 const tileLabel=tile=>"T"+(Number(tile)<10?"0":"")+String(tile);
 const term=(group,value)=>TERMS[group]&&TERMS[group][value]?TERMS[group][value]:{label:String(value),definition:"尚无展示说明。",not:"请查看原始字段。"};
 const termCell=(group,value)=>{const item=term(group,value);return `<b>${escapeHtml(item.label)}</b><br><span class="mono">${escapeHtml(value)}</span>`};
@@ -2731,19 +2845,23 @@ function buildResourceTree(){
 
 function renderOverview(){
   const duration=finalArtifact.duration;
+  const engineActive=finalArtifact.engine_active_time;
+  const tileWork=engineActive.per_tile_work_volume;
   q("#statusLegend").innerHTML=STATES.map(statusBadge).join("");
   q("#deviceDuration").textContent=durationText(duration.device_elapsed_ns);
-  q("#deviceDurationNote").textContent=duration.device_elapsed_quantized_zero?`${duration.device_timer_kind} · at/below effective timer resolution`:duration.device_timer_kind;
+  q("#deviceDurationNote").textContent=duration.device_elapsed_quantized_zero?`${duration.device_timer_kind} · at/below effective timer resolution`:`${duration.device_timer_kind} · TX stream device envelope, not engine-only`;
+  q("#engineActiveRange").textContent=durationRange(tileWork.minimum_per_tile_total_work_ns,tileWork.maximum_per_tile_total_work_ns);
+  q("#engineActiveRangeNote").innerHTML=`average ${tileWork.average_per_tile_total_work_ns==null?"—":durationText(tileWork.average_per_tile_total_work_ns)} · ${number(tileWork.available_tile_count)} / ${finalArtifact.tiles.length} complete tiles · five-engine work volume, not latency · ${statusBadge(tileWork.status)}`;
   q("#hostSubmitDuration").textContent=durationText(duration.host_submit_ns);
-  q("#hostSubmitNote").textContent=duration.host_submit_quantized_zero?"provider path · at/below host clock resolution":"provider preparation + submit";
+  q("#hostSubmitNote").textContent=duration.host_submit_quantized_zero?"separate host diagnostic · at/below host clock resolution":"separate host diagnostic · provider preparation + submit";
   q("#hostEnvelopeDuration").textContent=durationText(duration.host_launch_to_completion_ns);
-  q("#hostEnvelopeResolution").textContent=duration.host_envelope_available?`non-submit envelope ${durationText(duration.host_non_submit_envelope_ns)} · completion observation ≤ ${number(duration.completion_observation_resolution_ns)} ns`:"host completion diagnostic unavailable / quantized zero";
+  q("#hostEnvelopeResolution").textContent=duration.host_envelope_available?`separate host-clock envelope · non-submit ${durationText(duration.host_non_submit_envelope_ns)} · completion observation ≤ ${number(duration.completion_observation_resolution_ns)} ns`:"host completion diagnostic unavailable / quantized zero";
   q("#measurementStatus").innerHTML=statusBadge(duration.status);
   q("#timingRows").innerHTML=[
-    ["Device execution",duration.device_timer_kind,duration.device_elapsed_ns,duration.status,"Same-stream Primary kernel/model elapsed: Kcore control, NCC submit/drain, DTE lifecycle and device scheduling gaps; excludes host submit and Trace-only instrumentation."],
-    ["Host submit path","host steady_clock",duration.host_submit_ns,"Measured","Provider argument preparation, stream/event setup, and submit path; not pure TX API time."],
-    ["Host non-submit envelope","host steady_clock",duration.host_non_submit_envelope_ns,duration.host_envelope_available?"Measured":"Unavailable","Host wait, completion polling and phase control after submit. It overlaps device execution, is not pure overhead, and is never reduced by device elapsed."],
-    ["Host completion envelope","host steady_clock",duration.host_launch_to_completion_ns,duration.host_envelope_available?"Measured":"Unavailable",duration.host_envelope_available?`First submit through trusted completion; observation gap ≤ ${number(duration.completion_observation_resolution_ns)} ns.`:"Quantized/unavailable host diagnostic; does not invalidate device event elapsed."]
+    ["Kernel launch → completion","Primary TX stream events",duration.device_elapsed_ns,duration.status,"Uninstrumented production launch envelope: device dispatch, Kcore control, NCC/DTE execution and waits, scheduling gaps, and retirement. Excludes Host and Trace-only work; not engine-only time."],
+    ["Host submit","host steady_clock",duration.host_submit_ns,"Measured","Provider argument preparation, stream/event setup, and submit path. Separate Host diagnostic; not pure TX API time."],
+    ["Host non-submit envelope","host steady_clock",duration.host_non_submit_envelope_ns,duration.host_envelope_available?"Measured":"Unavailable","Host wait, completion polling and phase control after submit. It overlaps the Primary TX stream envelope, is not pure overhead, and is never reduced by device elapsed."],
+    ["Host launch → trusted completion","host steady_clock",duration.host_launch_to_completion_ns,duration.host_envelope_available?"Measured":"Unavailable",duration.host_envelope_available?`First submit through trusted completion; separate Host-clock envelope; observation gap ≤ ${number(duration.completion_observation_resolution_ns)} ns.`:"Quantized/unavailable host diagnostic; does not invalidate TX stream event elapsed."]
   ].map(row=>`<tr><td><b>${escapeHtml(row[0])}</b></td><td class="mono">${escapeHtml(row[1])}</td><td class="num">${durationText(row[2])}</td><td class="num">${number(row[2])}</td><td>${statusBadge(row[3])}</td><td>${escapeHtml(row[4])}</td></tr>`).join("");
   q("#outputStatus").innerHTML=statusBadge(analysis.validity.output_equivalence?"Measured":"Invalid");
   q("#outputNote").innerHTML=`${finalArtifact.output.resource_count} resources · ${termValue("correctness",finalArtifact.output.correctness_status)}`;
@@ -2752,18 +2870,10 @@ function renderOverview(){
   q("#traceNote").textContent="tile-local complete trace spans";
   q("#overviewTiles").innerHTML=[...finalArtifact.tiles].sort((left,right)=>left.y-right.y||left.x-right.x).map(tile=>`<button class="tile-card" data-overview-tile="${tile.tile}" type="button"><b>${tileLabel(tile.tile)} ${statusBadge(tile.trace_status)}</b><small>${number(tile.trace_entry_cpu_cycles)} Kcore CPU cycles · (${tile.x},${tile.y})</small></button>`).join("");
   qa("[data-overview-tile]").forEach(node=>node.addEventListener("click",()=>selectTile(node.dataset.overviewTile)));
-  const methodLabels={device_execution_time:"Device execution",host_submit_time:"Host submit path",host_envelope_time:"Host envelope",host_envelope_ledger:"Host envelope ledger",queue_delay:"Queue delay",timeline_axis:"Timeline axis",timeline_scope:"Clock/order",semantic_partition:"Semantic partition",trace_overhead_overlay:"Trace-run cost overlay",ncc_engine_time:"NCC execution",statistics_window:"Statistics window",ncc_activity_window:"NCC window",direct_dte_time:"Direct-DTE wait",direct_dte_raw_pmu:"Direct-DTE raw"};
+  const methodLabels={kernel_launch_to_completion:"Kernel launch → completion",host_submit_time:"Host submit",host_envelope_time:"Host launch → trusted completion",host_envelope_ledger:"Host envelope ledger",queue_delay:"Queue delay",timeline_axis:"Timeline axis",timeline_scope:"Clock/order",semantic_partition:"Semantic partition",trace_overhead_overlay:"Trace-run cost overlay",engine_active_time:"NCC engine active time",statistics_window:"Statistics window",ncc_activity_window:"NCC window",direct_dte_time:"Direct-DTE wait",direct_dte_raw_pmu:"Direct-DTE raw"};
   q("#methodList").innerHTML=Object.keys(analysis.method).map(key=>`<div class="method-row"><b>${escapeHtml(methodLabels[key]||key)}</b><span>${escapeHtml(analysis.method[key])}</span></div>`).join("");
-  q("#overviewEngineRows").innerHTML=ENGINES.map(engine=>{
-    const rows=finalArtifact.tiles.map(tile=>tile.engines.find(item=>item.engine===engine));
-    const direct=engine==="DIRECT_DTE";
-    const values=rows.map(row=>direct?row.wait_window_cpu_cycles:row.engine_execution_time_ns);
-    const available=values.filter(value=>value!=null);
-    const derived=available.reduce((sum,value)=>sum+Number(value),0);
-    const windows=rows.reduce((sum,row)=>sum+Number(row.activity_window_count||0),0);
-    const states=rows.map(row=>direct?row.wait_window_status:row.engine_execution_time_status);
-    const aggregateStatus=states.every(value=>value==="Measured")?"Measured":states.some(value=>value==="Invalid")?"Invalid":states.some(value=>value==="Incomplete")?"Incomplete":"Unavailable";
-    return `<tr><td><b>${engine}</b></td><td>${direct?"Tile-local wait (Kcore CPU cycles)":"Engine execution time (ns)"}</td><td class="num">${available.length?number(derived):"—"}</td><td class="num">${available.length} / ${rows.length}</td><td class="num">${windows}</td><td>${statusBadge(aggregateStatus)}</td></tr>`;
+  q("#overviewEngineRows").innerHTML=engineActive.by_engine.map(row=>{
+    return `<tr><td>${termCell("engine",row.engine)}</td><td>Trace diagnostic PMU<br><span class="mono">ns · separate-run proxy</span></td><td class="num">${row.minimum_per_tile_ns==null?"—":durationText(row.minimum_per_tile_ns)}</td><td class="num">${row.average_per_tile_ns==null?"—":durationText(row.average_per_tile_ns)}</td><td class="num">${row.maximum_per_tile_ns==null?"—":durationText(row.maximum_per_tile_ns)}</td><td class="num">${number(row.active_tile_count)} / ${finalArtifact.tiles.length}</td><td class="num">${number(row.available_tile_count)} / ${finalArtifact.tiles.length}</td><td class="num">${row.sum_across_tiles_work_ns==null?"—":durationText(row.sum_across_tiles_work_ns)}<br><span class="metric-note">not wall time</span></td><td>${statusBadge(row.status)}</td></tr>`;
   }).join("");
 }
 
@@ -2916,7 +3026,7 @@ function renderEngines(){
       `<tr><td><b>DIRECT_DTE</b></td><td>Wait / completion (Kcore CPU cycles)</td><td class="num">${number(engine.wait_window_cpu_cycles)}</td><td class="num">${engine.wait_window_count}</td><td>${statusBadge(engine.wait_window_status)}</td><td>Measured tile-local rdcycle interval; frequency conversion unavailable.</td></tr>`,
       `<tr><td></td><td>Raw PMU activity</td><td class="num">${number(engine.raw_pmu_activity)}</td><td class="num">${engine.activity_window_count}</td><td>${statusBadge(engine.raw_pmu_activity_status)}</td><td>Sampled and uncalibrated; never elapsed time.</td></tr>`
     ].join("");
-    return `<tr><td>${termCell("engine",engine.engine)}</td><td>Engine execution time (ns)</td><td class="num">${number(engine.engine_execution_time_ns)}</td><td class="num">${engine.activity_window_count}</td><td>${statusBadge(engine.engine_execution_time_status)}</td><td>Vendor PMU execution-time delta in ns. Activity windows: ${termValue("status",engine.activity_window_status)}；仅为 Kcore rdcycle bounds。</td></tr>`;
+    return `<tr><td>${termCell("engine",engine.engine)}</td><td>Per-tile engine active time (Trace PMU ns)</td><td class="num">${number(engine.engine_execution_time_ns)}</td><td class="num">${engine.activity_window_count}</td><td>${statusBadge(engine.engine_execution_time_status)}</td><td>来自另一轮Trace diagnostic的vendor PMU execution-time delta；没有精确起止坐标，不能与Primary包络相减。Activity windows: ${termValue("status",engine.activity_window_status)}；仅为Kcore rdcycle bounds。</td></tr>`;
   }).join("");
 }
 

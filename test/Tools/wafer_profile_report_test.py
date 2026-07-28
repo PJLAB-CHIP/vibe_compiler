@@ -87,7 +87,7 @@ def _test_final_artifact(module: object) -> None:
     first = module.analyze_evidence(evidence)
     second = module.analyze_evidence(copy.deepcopy(evidence))
     assert first == second
-    assert first["schema_version"] == 5
+    assert first["schema_version"] == 6
     assert first["record_abi"] == "wafer-tx81-profiler-record-v3"
 
     final = first["final_artifact"]
@@ -98,11 +98,57 @@ def _test_final_artifact(module: object) -> None:
     assert duration["device_timer_kind"] == "tx-stream-events"
     assert duration["host_submit_ns"] == 260_000
     assert duration["host_launch_to_completion_ns"] == 1_018_000
+    assert (
+        duration["measurement_kind"]
+        == "tx-stream-kernel-launch-to-completion-envelope"
+    )
+    assert duration["scope"] == "production-launch-to-stream-completion"
+    assert not duration["is_engine_only"]
+    assert duration["includes_device_control_wait_and_scheduling"]
+    assert not duration["includes_host_submit"]
+    assert not duration["includes_host_completion_polling"]
+    assert not duration["includes_trace_instrumentation"]
     assert duration["qualified"]
     assert duration["host_completion_high_resolution"]
     assert duration["status"] == "Measured"
     assert "latency" not in final
     assert "samples_ns" not in json.dumps(first)
+    engine_active = final["engine_active_time"]
+    assert engine_active["source_capture"] == "trace"
+    assert engine_active["measurement_run"] == "trace-diagnostic"
+    assert engine_active["relation_to_primary"] == "separate-run-proxy"
+    assert engine_active["unit"] == "ns"
+    assert engine_active["scope"] == "per-tile-per-ncc-engine"
+    assert not engine_active["additive_to_kernel_launch_envelope"]
+    assert engine_active["cross_tile_sum_role"] == "work-volume-not-wall-time"
+    assert engine_active["card_wide_engine_elapsed_ns"] is None
+    assert engine_active["card_wide_engine_elapsed_status"] == "Unavailable"
+    assert {
+        row["engine"] for row in engine_active["by_engine"]
+    } == {"CT", "NE", "RDMA", "WDMA", "TDMA"}
+    assert all(
+        row["measurement_kind"] == "trace-pmu-engine-active-time"
+        and row["available_tile_count"] == 16
+        and row["active_tile_count"] == 16
+        and row["status"] == "Measured"
+        for row in engine_active["by_engine"]
+    )
+    ct_summary = next(
+        row for row in engine_active["by_engine"] if row["engine"] == "CT"
+    )
+    assert ct_summary["minimum_per_tile_ns"] == 84
+    assert ct_summary["average_per_tile_ns"] == 91.5
+    assert ct_summary["maximum_per_tile_ns"] == 99
+    assert ct_summary["sum_across_tiles_work_ns"] == 1_464
+    tile_work = engine_active["per_tile_work_volume"]
+    assert tile_work == {
+        "available_tile_count": 16,
+        "minimum_per_tile_total_work_ns": 530,
+        "average_per_tile_total_work_ns": 567.5,
+        "maximum_per_tile_total_work_ns": 605,
+        "sum_across_tiles_work_ns": 9_080,
+        "status": "Measured",
+    }
     assert final["output"]["production_execution_validated"]
     assert final["output"]["diagnostic_captures_match_primary"]
     assert final["output"]["correctness_status"] == "expected-exact"
@@ -321,10 +367,11 @@ def _test_final_artifact(module: object) -> None:
     report = module.render_report(evidence, first)
     for text in (
         "最终编译产物板卡 Profile",
-        "Device execution",
-        "Host submit path",
-        "Host completion envelope",
-        "Timing breakdown",
+        "Kernel launch → completion",
+        "NCC engine active work / Tile",
+        "Host submit",
+        "Host launch → trusted completion",
+        "Timing domains · not additive",
         "Trace-run Kcore ledger",
         "Trace-run cost overlay",
         "capture-boundary residual",
@@ -345,8 +392,11 @@ def _test_final_artifact(module: object) -> None:
         "仅“整次通信等待”行提供",
         "Diagnostics / Raw",
         "Resource tree",
-        "Engine summary",
-        "execution-time work volume",
+        "NCC engine active time · Trace PMU",
+        "Σ Tile Work",
+        "separate-run proxy",
+        "not wall time",
+        "Per-tile engine active time (Trace PMU ns)",
         "DIRECT_DTE",
         "Measured",
         "Sampled",
@@ -360,6 +410,10 @@ def _test_final_artifact(module: object) -> None:
         "index.html · analysis.json · evidence.json",
     ):
         assert text in report
+    assert "Device execution" not in report
+    assert "Engine summary" not in report
+    assert "Derived sum" not in report
+    assert "Direct-DTE没有calibrated engine ns" in report
     assert "只知道活动发生在保守观测窗内" in report
     assert "实心块</b>：精确 command submit / DTE operation 区间" in report
     assert "浅色虚线框</b>：PMU 活动保守观测范围" in report
@@ -999,6 +1053,34 @@ def _test_validity(module: object) -> None:
     assert not ne["engine_execution_time_valid"]
     assert ne["engine_execution_time_ns"] is None
     assert ne["engine_execution_time_status"] == "Unavailable"
+    ne_summary = next(
+        row
+        for row in analysis["final_artifact"]["engine_active_time"]["by_engine"]
+        if row["engine"] == "NE"
+    )
+    assert ne_summary["available_tile_count"] == 15
+    assert ne_summary["active_tile_count"] == 15
+    assert ne_summary["status"] == "Incomplete"
+    tile_work = analysis["final_artifact"]["engine_active_time"][
+        "per_tile_work_volume"
+    ]
+    assert tile_work["available_tile_count"] == 15
+    assert tile_work["status"] == "Incomplete"
+
+    zero_active = make_evidence()
+    counter = zero_active["experiment"]["pmu"]["tiles"][0]["aggregates"]["ct"]
+    counter["end"] = counter["start"]
+    counter["recovery"] = counter["end"]
+    analysis = module.analyze_evidence(zero_active)
+    ct_summary = next(
+        row
+        for row in analysis["final_artifact"]["engine_active_time"]["by_engine"]
+        if row["engine"] == "CT"
+    )
+    assert ct_summary["available_tile_count"] == 16
+    assert ct_summary["active_tile_count"] == 15
+    assert ct_summary["minimum_per_tile_ns"] == 0
+    assert ct_summary["status"] == "Measured"
 
     unrecovered = make_evidence()
     counter = unrecovered["experiment"]["pmu"]["tiles"][2]["aggregates"]["ct"]
@@ -1272,7 +1354,7 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
         analysis = json.loads(
             analysis_path.read_text(encoding="utf-8")
         )
-        assert analysis["schema_version"] == 5
+        assert analysis["schema_version"] == 6
         assert analysis["final_artifact"]["duration"]["qualified"]
 
         command = [

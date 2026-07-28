@@ -1,6 +1,6 @@
 # 16-Tile Production Artifact Profiler 实施计划
 
-状态：Q9 profiler foundation 实施中。本文只定义当前施工边界和验证 checkpoint；稳定的
+状态：Q9 profiler foundation 已完成，后续修复继续受本文合同约束。本文只定义 profiler 边界和验证 checkpoint；稳定的
 physical-dataflow、target publication、runtime/package 和 verification 合同分别仍由 `tasks/06`、
 `tasks/14`、`tasks/15` 和 `tasks/16` 拥有。
 
@@ -16,7 +16,7 @@ Pipeline position:
   两种 profile-only diagnostic clone；wafer-run 在一个 qualified board session 中先执行一次未插桩
   Primary，再串行执行 Count 和 Trace，三次均复用普通 package 的 ResourceId 输入、expected 和 output
   binding。Primary 的 production phase 由 TX runtime 在同一 device stream 上用 start/end event pair
-  包围，event elapsed time 是最终 kernel/model artifact 的主耗时；host submit 和 host
+  包围，event elapsed time 是最终 kernel/model artifact 的launch-to-completion设备包络；host submit 和 host
   launch-to-trusted-completion 只作为分离的诊断量。
 - Output artifact / IR:
   普通 production package，以及与其 production manifest SHA-256 精确绑定的 final-artifact profile
@@ -38,7 +38,7 @@ Pipeline position:
   逐字节一致；configured board 重启后由本轮新构建、新 package、新 launch、新 output 串行完成一次
   Primary、一次 Count、一次 Trace；Primary 必须取得同 stream、同 production phase 的有效 TX event pair
   和 device elapsed time，并分别保留有效 host submit、host launch-to-completion 及 completion observer
-  resolution；同时闭合正确性、容量、all-and-only 16 tile、六 engine 和 Direct-DTE 活动门禁。
+  resolution；同时闭合正确性、容量、all-and-only 16 tile、五类NCC engine和Direct-DTE活动门禁。
 ```
 
 ## Artifact 和接口边界
@@ -69,7 +69,8 @@ Pipeline position:
 status、record guard 或 terminal state 错误立即停批，不 retry/reset/power：
 
 1. **Primary**：执行一次未插桩 final production artifact，启用高分辨率 completion observer。唯一用户级
-   主耗时是 TX runtime 在 production phase 的同一 device stream 上记录的 start/end event elapsed time；
+   主延迟是 TX runtime 在 production phase 的同一 device stream 上记录的start/end event
+   launch-to-completion包络；
    多 phase invocation 对各 phase 的 device elapsed time 求和。host steady-clock submit 调用耗时、
    从第一次 submit 到 all-rank trusted completion 的 envelope 和实际最大 poll gap 分别保留为诊断，
    不得替代 device elapsed time；不再自动 warm-up，不计算 median/range，也不把单次值称为稳态统计。
@@ -182,10 +183,11 @@ device elapsed time、Primary 输出或局部 counter 证据。
 
 一个离线 `index.html` 提供七个相互链接的视图，不增加公开文件：
 
-1. **Overview**：Primary TX stream device duration、结果校验、capture 状态、4×4 tile 热图、六 engine
-   聚合和关键 warning；host submit/envelope 放在次级诊断，不与主耗时并列命名为 kernel time。
+1. **Overview**：Primary TX stream launch-to-completion包络、结果校验、capture状态、4×4 tile热图、
+   五类NCC engine active-work摘要、独立Direct-DTE诊断和关键warning；host submit/envelope放在次级诊断，
+   不把该包络或engine work含糊命名为纯kernel执行时间。
 2. **Trace Timeline**：Card→Tile→Engine resource tree、tile-local ruler、Trace-run Kcore语义ledger、
-   非加和Trace-only overlay和六engine lane、filter/zoom/event detail；entry-prologue/epilogue、
+   非加和Trace-only overlay、五条NCC engine lane与一条Direct-DTE lane、filter/zoom/event detail；entry-prologue/epilogue、
    site-control和带`prev/next`的between-site-gap均画成可点击区间并解释优化入口，而不是留白；
    NCC engine lane以实心同色系变体画精确`TsmExecute` submit span，以浅色虚线框叠加PMU bounded
    observation envelope；bounded窗口重叠不声明engine并行，真实engine execution ns只作无精确位置的
@@ -238,9 +240,10 @@ device elapsed time、Primary 输出或局部 counter 证据。
    exclusive profiler overhead；Count/Trace terminal protocol和decoder negative闭合。
 3. **Runtime campaign**：固定三次 launch、Primary 首门槛、Count capacity、Trace exact audit、每次 output
    校验、timeout stop、三文件原子发布。
-4. **Analyzer/report**：单次 Primary device duration及分离的host diagnostics、16 tile、六 engine
-   execution nanoseconds、per-tile Kcore/Trace/engine timeline、exclusive cost/residual、site/DTE
-   下钻、单位矩阵、partial validity 和无负 cycle。
+4. **Analyzer/report**：单次Primary TX stream launch-to-completion包络及分离的host diagnostics、
+   16 tile、五类NCC engine execution nanoseconds、Direct-DTE phase cycles/raw activity、
+   per-tile Kcore/Trace/engine timeline、exclusive cost/residual、site/DTE下钻、单位矩阵、
+   partial validity和无负cycle。
 5. **Completion replay**：完整 host build/unit/lit/no-card；实现和host门禁稳定后，用户明确要求板测时才以
    本轮新 build、新 package、新 launch 和新 output 串行完成板端 gate。
 
@@ -294,3 +297,36 @@ duration。一个engine内的不同事件使用同一engine色系的多档明度
 同一展示词典驱动；cost卡片给出定义、禁止误读、边界、Primary关系和optimization entry，semantic reason
 还显示前后site或边界冲突claimant。Diagnostics对三态semantic correctness使用“通过 / 门禁未满足 /
 尚未独立判定”，不再把没有完整independent expected覆盖的`null`误写成`Invalid`。
+
+## Post-completion timing-domain clarity repair
+
+Overview 不再用含糊的 `Device execution` 表示 Primary。主耗时固定展示为
+`Kernel launch → completion`，机器语义是未插桩 production launch 前后的同一 TX stream event
+包络；它包含 device-visible dispatch、Kcore control、engine执行、等待、调度空隙和retirement，但不包含
+host submit、host completion polling或Trace-only插桩。Host submit与Host launch→trusted completion继续
+作为独立host-clock诊断展示，不能与该包络相减生成queue delay。
+
+NCC engine执行时间在`analysis.json`中形成独立、可机读的`per-tile/per-engine` PMU摘要。每种engine展示
+可用tile数、非零活动tile数和每tile最小/平均/最大execution ns；跨tile总和只命名为work volume。Overview
+同时给出每tile五种NCC engine execution ns之和的最小/平均/最大范围，明确它仍是work volume而不是wall
+time。原始逐tile逐engine值继续由Tile / Engine视图提供。由于engine与tile可异步重叠，当前合同不生成
+card-wide“纯engine elapsed”或把任意engine总和冒充kernel latency；缺少全局对齐起止坐标时必须明确标为
+不可获得，而不是填入推测值。
+
+Pipeline position:
+- Upstream artifact / IR:
+  已验证的Primary timing evidence、Trace aggregate PMU和逐tile局部有效性。
+- Current stage responsibility:
+  analyzer把Primary device包络、host诊断和NCC engine active work派生为三个不混用的展示域，并生成
+  可验证的engine分布摘要；report使用相同机器字段和术语。
+- Output artifact / IR:
+  版本化`analysis.json`及其离线`index.html`，不修改production package、accepted IR或raw evidence。
+- Downstream consumer:
+  用户和自动化工具分别读取kernel launch→completion latency、host诊断及per-tile/per-engine PMU ns。
+- User-level driver / named pipeline:
+  现有`wafer-compile --profile`与普通`wafer-run`入口不变。
+- Explicit non-goals:
+  不新增launch、不重新测量历史结果、不推导跨tile engine wall time、不把PMU work volume与Primary相减。
+- Completion gate:
+  analyzer fixture覆盖完整、部分和零值PMU；HTML锁定三个时间域标签、engine最小/平均/最大及work-volume
+  警告；focused report测试和资源发布验证通过。真实板端数值只有用户另行要求新运行时才更新。

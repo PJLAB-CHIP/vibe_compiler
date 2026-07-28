@@ -94,7 +94,7 @@ class ProfileReportFixture:
         }
         analysis = {
             "schema": "wafer.profile.analysis",
-            "schema_version": 5,
+            "schema_version": 6,
             "run_id": self.run_id,
             "validity": {"trace": True, "pmu": True},
             "final_artifact": {

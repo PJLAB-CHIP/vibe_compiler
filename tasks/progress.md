@@ -24,7 +24,7 @@ Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [doing]
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
 | --- | --- | --- | --- | --- | --- |
-| Q9 | `production-artifact-profiler` | `done` | Q32、Q6.B、configured board | 未插桩Primary TX stream device elapsed、分离的host diagnostics、Count/Trace、16-tile engine/DTE timeline、exclusive语义成本与非加和Trace-only成本、exact output、三文件专业UI和profile全树`0777`均由fresh Add及Direct-DTE最终产物板端门禁闭合。Ranking feedback保留为后续独立门禁。 | 06、14-16；`tasks/archive/board-profiler.md` |
+| Q9 | `production-artifact-profiler` | `done` | Q32、Q6.B、configured board | 未插桩Primary TX stream launch-to-completion设备包络、分离的host diagnostics、Trace来源的五类NCC per-tile engine active ns/work-volume摘要、独立Direct-DTE cycles/raw activity、Count/Trace、16-tile timeline、exclusive语义成本与非加和Trace-only成本、exact output、三文件专业UI和profile全树`0777`均闭合；不构造card-wide纯engine elapsed。Ranking feedback保留为后续独立门禁。 | 06、14-16；`tasks/archive/board-profiler.md` |
 | Q38 | `multi-engine-software-pipelining` | `doing` | Q32、Q6.B、Q37 | 从complete-rank unplaced actual clone生成legality-safe issue window、真实fixed-slot multi-buffer、prologue/steady/epilogue、zero-avoidable/zero-steady-state waitfinish normal form及typed worker alternatives；same-worker跨迭代RAW/WAR/WAW只保留issue edge，minimum-strength join仅用于真实domain exit。通用relation-backed redundant-transfer normalization及reserved spill事务性回退checkpoint已落地；drain-elision与pair/group overlap独立qualification；每个候选重过host exact late gates，板端只执行fully gated同源qualification与最终normal production winner。Q9只观测最终产物，不是IR实现前置。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
 
 ## Later / External Gates

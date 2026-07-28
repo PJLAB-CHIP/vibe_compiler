@@ -57,8 +57,9 @@
 Q9 profiler foundation已按`tasks/archive/board-profiler.md`完成：唯一public入口是
 `wafer-compile --profile`，普通package逐字节保持不变；最后写入的activation把production manifest与companion
 metadata exact-hash绑定。`wafer-run`复用既有resource/expected/output binding，在一个qualified session内固定执行一次
-未插桩Primary、一次Count和一次Trace；只把Primary的submit→trusted-completion作为总耗时，Trace header同时提供
-entry-local span、aggregate PMU和16-tile typed engine/DTE event。
+未插桩Primary、一次Count和一次Trace；Primary主延迟是production launch前后同一TX stream event pair的
+launch-to-completion设备包络，host submit与host launch→trusted-completion只作独立诊断。Trace header同时提供
+entry-local span、五类NCC engine aggregate PMU和16-tile typed engine/DTE event。
 tile clock未资格化时只展示16行entry-local timeline，不声称跨tile顺序。它尚不回写candidate cost；动态状态只看
 `tasks/progress.md`。
 
