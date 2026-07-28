@@ -1363,54 +1363,52 @@ package结果做model/board numeric correlation；若被测Q32.V extension consu
 
 本gate验证一个compiler功能，而不是单独的可视化工具。唯一public入口是正常
 `wafer-compile <existing arguments> --profile`；rank-count不是16、与target-model冲突或profile companion无法完整形成时
-必须在board effect前给出typed failure。相同输入关闭profile时的普通winner package与normal CRT必须逐字节一致，
+必须在board effect前给出typed failure。相同输入关闭profile时的普通final package与normal CRT必须逐字节一致，
 不得出现profile branch、slot、symbol或manifest字段。
 
 host/no-card gate至少覆盖：
 
-- 同一verified source、ExecutionConfig、target profile与完整runtime launch contract产生reserved baseline/production winner，
-  二者均经过完整target publication；normal package原子发布且关闭profile时逐字节一致。`activation.json`必须最后写入，
+- 同一verified source、ExecutionConfig、target profile与完整runtime launch contract只产生一个final production artifact，
+  并经过完整target publication；normal package原子发布且关闭profile时逐字节一致。`activation.json`必须最后写入，
   精确绑定production manifest SHA-256以及`plan.json`、`variants.json`、`site-map.json`各自SHA-256；
   missing/stale/partial、unknown/missing metadata key、digest mismatch和late-failure负例闭合；
-- companion恰有baseline/winner两个variant的未插桩execution binding和六个逻辑capture binding：
-  每个variant各一个summary/count/trace。最终artifact不同时必须有六个物理capture package；artifact alias时
-  baseline三个binding必须精确复用winner三个物理package及digest，且analyzer只能给出inconclusive。它们不能成为
-  user option、public package mode或新的input contract；
+- companion恰有一个`final-artifact`未插桩execution binding和summary/count/trace三个物理capture binding；
+  schema拒绝`same_as`、第二个variant、重复capture或旧baseline/winner字段。它们不能成为user option、public package mode
+  或新的input contract；
 - 五类CRT helper每个真实`TsmExecute`调用各产生一条固定版本record。one-to-many site使用`sub_index`，rank-local
-  `site_id`和`sequence`连续；跨candidate correlation version必须是
-  `heuristic-target-call-signature-occurrence-v1`，其target-call signature/occurrence匹配不得冒充稳定IR provenance、
-  SSA identity或causal relation；fence、wait、token和planner ready-order不进入event stream；
+  `site_id`和`sequence`连续；site map只解释final artifact的typed target-call registry ordinal和结构位置，不从名字恢复语义；
+  fence、token和planner ready-order不进入NCC event stream，Direct-DTE wait是独立typed engine site；
 - all-and-only 16个header与bounded DDR record buffer的magic/schema/logical-tile/count/capacity/overflow/
   guard/readback验证；evidence必须保留count preflight、trace `next_sequence`、`dropped_event_count`、raw flags和terminal
   state。unknown engine/site、sequence gap、count mismatch、drop、非complete state、overflow或guard corruption均invalid；
-- deterministic analyzer对invalid/partial evidence降级，不把`TsmExecute` begin/return画成engine执行条，
-  不把aggregate PMU分摊给site；HTML默认含完整16行timeline、evidence声明的physical topology、五个primary block、
-  engine/PMU/site baseline-winner diff和可回溯finding。clock mapping无效时每行使用entry-local轴并显式禁止跨tile排序。
+- deterministic analyzer对invalid/partial evidence按counter降级，不把`TsmExecute` begin/return画成engine执行条，
+  不把aggregate PMU分摊给site；statistics-window不稳定不能连带抹掉独立稳定的engine counter。HTML首屏必须直接回答
+  final production artifact的总耗时、16个tile entry span、每tile六类engine duration及所选tile的六lane timeline。
+  不显示A/B、winner、baseline、speedup或负cycle；issue/site和raw diagnostic折叠。clock mapping无效时每个tile使用自己的
+  entry-local轴并显式禁止跨tile排序。一次成功run通过稳定`runs/current`入口访问，目标目录恰有
+  `evidence.json`、`analysis.json`和`index.html`；`runs`和目标目录可由其它用户穿越，三文件均为`0777`。回收旧目标
+  必须验证其evidence `run_id`与目录身份，不能仅按名称删除。
 
 configured board gate复用原package的ResourceId resource/expected/output和board参数，不要求用户准备profile专用输入或选择mode。
-一次固定qualified session内先分别warm-up未插桩baseline/winner，再以交替ABBA/BAAB完成五个四launch block，共20个
-primary sample；前四个训练、第五个held out。primary sample只计host steady-clock submit到all-rank trusted completion，
-并逐sample要求高分辨率observer的`max observed poll gap / sample duration <= 0.25%`。随后才分别执行summary、
-count和trace diagnostic launch。每次都必须通过all-rank status、D2H writable-output validation、trusted completion和
-cleanup；capture还必须通过record guards、capacity和terminal-state检查。
+一次固定qualified session内先warm-up同一个未插桩final artifact，再串行完成10个primary sample；primary sample只计host
+steady-clock submit到all-rank trusted completion，并记录高分辨率observer的实际最大poll gap。随后才分别执行一次summary、
+count和trace diagnostic launch，总计固定14次launch。每次都必须通过all-rank status、D2H writable-output validation、
+trusted completion和cleanup；capture还必须通过record guards、capacity和terminal-state检查。
 timeout/device anomaly或首个正确性/协议异常立即停止，不retry/reset/power。
 
-external expected存在时给出semantic correctness；不存在时，同session production winner exact output只能作为baseline及
-instrumented capture的repeatability/equivalence oracle，absolute correctness必须标为unknown。跨candidate speed/优化
-结论还要求production manifest identity、exact companion、environment和output equivalence全部有效，且两个未插桩
-executable artifact digest不同；alias或逐字节相同artifact不得形成optimization claim。
+external expected存在时给出semantic correctness；不存在时，同session warm-up exact output只能作为10次primary及
+instrumented capture的repeatability/equivalence oracle，absolute correctness必须标为unknown。最终报告只给10个
+submit-to-all-completion样本的median、range和逐次值，不形成跨candidate speed/优化结论。summary的entry-local cycles、
+aggregate PMU及count/trace都只用于per-tile/per-engine diagnostic analysis，profile/cache扰动不得进入总耗时统计。
 
-paired verdict只使用20个未插桩execution-package的submit-to-all-completion样本：前四个block报告paired median effect、
-MAD noise floor和bootstrap 95% interval，effect必须超过`max(1%, 3*MAD noise)`且第五block同方向，才可标
-`improved`或`regressed`；否则为`inconclusive`，协议、correctness或measurement-basis失败为`invalid`。
-summary的entry-local cycles、aggregate PMU及count/trace都只用于diagnostic analysis，profile/cache扰动不得驱动或修正
-speed verdict。
-
-当前foundation允许16个local cycle domain的clock mapping显式为invalid/unavailable；报告此时必须展示all-and-only 16行
-entry-local timeline，并声明不能比较cross-tile先后、overlap或global critical path。未来可增加带uncertainty的qualified
-affine mapping，但它是可选增强而不是本foundation completion gate。finding必须区分`measured`、`correlated`和
-`unresolved`。profiler foundation只发布证据和人工分析；在环境、重复、held-out及适用的counter
-unit/clear/wrap/workload correlation全部闭合并冻结calibrated profile前，不得反馈candidate ranking。
+当前foundation允许16个local cycle domain的clock mapping显式为invalid/unavailable；报告此时必须为所选tile展示
+CT/NE/RDMA/WDMA/TDMA/Direct-DTE六条共享entry-local轴的lane，并声明不能比较不同tile的先后、overlap或global
+critical path。五类NCC lane只接受cumulative hardware execution counter实际增长的采样窗口；窗口保留观测gap，
+不能声明单指令零误差起止。Direct-DTE必须记录真实`direct_dte_wait`/completion窗口并读取DTE channel 0/1 PMU；
+即使raw delta为零也保留已验证的wait窗口，raw delta只作为未校准活动量，不能命名为busy duration。未来可增加带
+uncertainty的qualified affine mapping，但它是可选增强。finding必须区分`measured`、`correlated`和`unresolved`。
+profiler foundation只发布证据和人工分析；在环境、重复、held-out及适用的counter unit/clear/wrap/workload
+correlation全部闭合并冻结calibrated profile前，不得反馈candidate ranking。
 
 ## 13. CI And Reproducibility
 

@@ -3,14 +3,16 @@
 # RUN: rm -rf %t.input.program %t.compiled.program
 # RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-hf-megatron-transformer-block --hf-config-json %wafer_src_root/test/Tools/Inputs/hf/tiny-random-llama-config.json --sequence-length 4 --output-program-dir %t.input.program
 # RUN: FileCheck %s --input-file=%t.input.program/functions/forward.mlir --check-prefix=INPUT
-# RUN: not wafer-compile --input-program-dir %t.input.program --output-program-dir %t.compiled.program --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=PACKET
+# RUN: not wafer-compile --input-program-dir %t.input.program --output-program-dir %t.compiled.program --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=NUMERIC
 
 # INPUT: func.func @main
 # INPUT: mhlo.sharding = "{devices=
 # INPUT: mhlo.sharding = "{replicated}"
 
-# The captured block has more than 15 pointer slots per rank. The qualified
-# V5.6 cluster ABI therefore cannot carry its 16-row rank-major table in one
-# C-INS packet; the full compiler chain must reach and preserve that target
-# legality failure instead of weakening the hardware limit.
-# PACKET: wafer-compile: runtime launch contract verification failed: multi-tile rank-major argument table exceeds the qualified V5.6 packet limit
+# The captured float32 block contains an exact-source negation. The target
+# numeric contract cannot preserve signed zero for that operation, so the
+# whole-variant gate must reject it before package or board effects.
+# NUMERIC: diagnostic=unsupported_target_numeric:
+# NUMERIC-SAME: elementwise kind 'neg'
+# NUMERIC-SAME: format 'f32'
+# NUMERIC-SAME: exact-signed-zero-policy-unproven

@@ -7,12 +7,16 @@
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
-#include <array>
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <set>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -25,9 +29,9 @@ using wafer::runtime::PackageResourceRecord;
 using wafer::runtime::PackageResourceRole;
 using wafer::runtime::ResourceId;
 using wafer::runtime::cli::BoardInvocationFilePlan;
+using wafer::runtime::cli::BoardOutputComparisonKind;
 using wafer::runtime::cli::BoardProfileOutputValidationMode;
 using wafer::runtime::cli::BoardProfileOutputValidationState;
-using wafer::runtime::cli::BoardProfileProtocolCandidate;
 using wafer::runtime::cli::BoardProfileProtocolLaunch;
 using wafer::runtime::cli::BoardProfileProtocolObservation;
 using wafer::runtime::cli::BoardProfileProtocolStep;
@@ -74,7 +78,7 @@ protected:
             PackageResourceRole::Output,
             roleIndex,
             name.str(),
-            {"u8", {4}},
+            {"f16", {2}},
             4,
             4,
             PackageAccessMode::WriteOnly,
@@ -113,16 +117,22 @@ protected:
   BoardInvocationFilePlan
   plan(const PackageManifest &package,
        const std::set<int64_t> &externallyExpectedRoleIndices,
-       llvm::StringRef unusedPathPrefix) const {
+       llvm::StringRef unusedPathPrefix,
+       const std::set<int64_t> &relaxedF16RoleIndices = {}) const {
     BoardInvocationFilePlan result;
     for (const PackageResourceRecord &resource : package.resources) {
       const uint64_t id = resource.id.getValue();
       result.writableResourceBytes[id] = resource.bytes;
-      if (externallyExpectedRoleIndices.count(resource.roleIndex) != 0)
+      if (externallyExpectedRoleIndices.count(resource.roleIndex) != 0) {
         result.expectedBytes[id] = bytesFor(resource);
-      else
+        result.expectedComparisons[id] =
+            relaxedF16RoleIndices.count(resource.roleIndex) != 0
+                ? BoardOutputComparisonKind::RelaxedF16
+                : BoardOutputComparisonKind::Exact;
+      } else {
         result.outputPaths[id] =
             (unusedPathPrefix + llvm::Twine("-") + llvm::Twine(id)).str();
+      }
     }
     return result;
   }
@@ -138,11 +148,238 @@ protected:
   llvm::SmallString<256> root;
 };
 
-TEST(WaferProfileCampaignTest, FixedOrderUsesOneSerialProtocolAndFinalWinner) {
+llvm::Error writeProfileReportMember(llvm::StringRef directory,
+                                     llvm::StringRef name,
+                                     llvm::StringRef contents) {
+  llvm::SmallString<256> path(directory);
+  llvm::sys::path::append(path, name);
+  std::error_code error;
+  llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
+  if (error)
+    return llvm::createStringError(error, "failed to create test report file");
+  output << contents;
+  output.close();
+  if (output.has_error())
+    return llvm::createStringError(output.error(),
+                                   "failed to write test report file");
+  return llvm::Error::success();
+}
+
+class WaferProfilePublicationTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory(
+        "wafer-profile-publication-test", root));
+  }
+
+  void TearDown() override { llvm::sys::fs::remove_directories(root); }
+
+  llvm::Error stageValidReport(llvm::StringRef runId,
+                               llvm::StringRef stagingDirectory) const {
+    std::string evidence =
+        "{\"run_id\":\"" + runId.str() + "\"}\n";
+    if (llvm::Error error = writeProfileReportMember(
+            stagingDirectory, "evidence.json", evidence))
+      return error;
+    if (llvm::Error error = writeProfileReportMember(
+            stagingDirectory, "analysis.json", "{}\n"))
+      return error;
+    return writeProfileReportMember(stagingDirectory, "index.html",
+                                    "<!doctype html>\n");
+  }
+
+  static std::error_code removeManagedRun(llvm::StringRef runDirectory) {
+    return llvm::sys::fs::remove_directories(runDirectory,
+                                              /*IgnoreErrors=*/false);
+  }
+
+  void expectMode0777(llvm::StringRef path) const {
+    llvm::sys::fs::file_status status;
+    ASSERT_FALSE(llvm::sys::fs::status(path, status));
+    EXPECT_EQ(status.permissions() & llvm::sys::fs::all_all,
+              llvm::sys::fs::all_all);
+  }
+
+  llvm::SmallString<256> root;
+};
+
+TEST_F(WaferProfilePublicationTest,
+       ReplacesCurrentWithExactlyThreeWorldAccessibleArtifacts) {
+  auto stage = [&](llvm::StringRef runId,
+                   llvm::StringRef stagingDirectory) {
+    return stageValidReport(runId, stagingDirectory);
+  };
+  auto first =
+      wafer::runtime::cli::testing::publishProfileReportForTesting(
+          root, stage, removeManagedRun);
+  ASSERT_TRUE(static_cast<bool>(first))
+      << llvm::toString(first.takeError());
+  const std::string firstRunDirectory = first->runDirectory;
+
+  auto second =
+      wafer::runtime::cli::testing::publishProfileReportForTesting(
+          root, stage, removeManagedRun);
+  ASSERT_TRUE(static_cast<bool>(second))
+      << llvm::toString(second.takeError());
+  EXPECT_FALSE(llvm::sys::fs::exists(firstRunDirectory));
+
+  llvm::SmallString<256> runs(root);
+  llvm::sys::path::append(runs, "runs");
+  expectMode0777(runs);
+  expectMode0777(second->runDirectory);
+
+  llvm::SmallString<256> current(runs);
+  llvm::sys::path::append(current, "current");
+  EXPECT_EQ(llvm::sys::fs::get_file_type(current, /*Follow=*/false),
+            llvm::sys::fs::file_type::symlink_file);
+  llvm::SmallString<256> resolved;
+  ASSERT_FALSE(llvm::sys::fs::real_path(current, resolved));
+  EXPECT_EQ(resolved, second->runDirectory);
+
+  std::set<std::string> members;
+  std::error_code walkError;
+  for (llvm::sys::fs::directory_iterator
+           iterator(second->runDirectory, walkError,
+                    /*follow_symlinks=*/false),
+       end;
+       iterator != end; iterator.increment(walkError)) {
+    ASSERT_FALSE(walkError);
+    members.insert(llvm::sys::path::filename(iterator->path()).str());
+    expectMode0777(iterator->path());
+  }
+  ASSERT_FALSE(walkError);
+  EXPECT_EQ(members,
+            (std::set<std::string>{"analysis.json", "evidence.json",
+                                   "index.html"}));
+}
+
+TEST_F(WaferProfilePublicationTest,
+       OldRunRemovalFailureIsReturnedAfterNewCurrentActivation) {
+  auto first =
+      wafer::runtime::cli::testing::publishProfileReportForTesting(
+          root,
+          [&](llvm::StringRef runId, llvm::StringRef stagingDirectory) {
+            return stageValidReport(runId, stagingDirectory);
+          },
+          removeManagedRun);
+  ASSERT_TRUE(static_cast<bool>(first))
+      << llvm::toString(first.takeError());
+
+  size_t removalCalls = 0;
+  std::string removedDirectory;
+  std::string secondRunId;
+  auto second =
+      wafer::runtime::cli::testing::publishProfileReportForTesting(
+          root,
+          [&](llvm::StringRef runId, llvm::StringRef stagingDirectory) {
+            secondRunId = runId.str();
+            return stageValidReport(runId, stagingDirectory);
+          },
+          [&](llvm::StringRef runDirectory) {
+            ++removalCalls;
+            removedDirectory = runDirectory.str();
+            return std::make_error_code(std::errc::permission_denied);
+          });
+  ASSERT_FALSE(static_cast<bool>(second));
+  std::string message = llvm::toString(second.takeError());
+  EXPECT_NE(message.find("previous managed run could not be removed"),
+            std::string::npos);
+  EXPECT_EQ(removalCalls, 1u);
+  EXPECT_EQ(removedDirectory, first->runDirectory);
+  EXPECT_TRUE(llvm::sys::fs::exists(first->runDirectory));
+
+  llvm::SmallString<256> current(root);
+  llvm::sys::path::append(current, "runs", "current");
+  llvm::SmallString<256> resolved;
+  ASSERT_FALSE(llvm::sys::fs::real_path(current, resolved));
+  EXPECT_EQ(llvm::sys::path::filename(resolved), secondRunId);
+}
+
+TEST_F(WaferProfilePublicationTest,
+       MismatchedEvidenceIdentityRejectsCurrentBeforeStagingOrDeletion) {
+  llvm::SmallString<256> runs(root);
+  llvm::sys::path::append(runs, "runs");
+  ASSERT_FALSE(llvm::sys::fs::create_directory(runs));
+  llvm::SmallString<256> forged(runs);
+  llvm::sys::path::append(forged, "run-forged");
+  ASSERT_FALSE(llvm::sys::fs::create_directory(forged));
+  ASSERT_FALSE(static_cast<bool>(writeProfileReportMember(
+      forged, "evidence.json", "{\"run_id\":\"run-other\"}\n")));
+  ASSERT_FALSE(static_cast<bool>(
+      writeProfileReportMember(forged, "analysis.json", "{}\n")));
+  ASSERT_FALSE(static_cast<bool>(
+      writeProfileReportMember(forged, "index.html", "<!doctype html>\n")));
+  llvm::SmallString<256> current(runs);
+  llvm::sys::path::append(current, "current");
+  ASSERT_FALSE(llvm::sys::fs::create_link(forged, current));
+
+  bool staged = false;
+  bool removed = false;
+  auto result =
+      wafer::runtime::cli::testing::publishProfileReportForTesting(
+          root,
+          [&](llvm::StringRef, llvm::StringRef) {
+            staged = true;
+            return llvm::Error::success();
+          },
+          [&](llvm::StringRef) {
+            removed = true;
+            return std::error_code();
+          });
+  ASSERT_FALSE(static_cast<bool>(result));
+  EXPECT_NE(llvm::toString(result.takeError()).find("run_id"),
+            std::string::npos);
+  EXPECT_FALSE(staged);
+  EXPECT_FALSE(removed);
+  EXPECT_TRUE(llvm::sys::fs::exists(forged));
+}
+
+TEST_F(WaferProfilePublicationTest,
+       UnexpectedCurrentMemberRejectsRecursiveDeletion) {
+  llvm::SmallString<256> runs(root);
+  llvm::sys::path::append(runs, "runs");
+  ASSERT_FALSE(llvm::sys::fs::create_directory(runs));
+  llvm::SmallString<256> prior(runs);
+  llvm::sys::path::append(prior, "run-prior");
+  ASSERT_FALSE(llvm::sys::fs::create_directory(prior));
+  ASSERT_FALSE(static_cast<bool>(writeProfileReportMember(
+      prior, "evidence.json", "{\"run_id\":\"run-prior\"}\n")));
+  ASSERT_FALSE(static_cast<bool>(
+      writeProfileReportMember(prior, "analysis.json", "{}\n")));
+  ASSERT_FALSE(static_cast<bool>(
+      writeProfileReportMember(prior, "index.html", "<!doctype html>\n")));
+  ASSERT_FALSE(static_cast<bool>(
+      writeProfileReportMember(prior, "unexpected.txt", "do not delete\n")));
+  llvm::SmallString<256> current(runs);
+  llvm::sys::path::append(current, "current");
+  ASSERT_FALSE(llvm::sys::fs::create_link(prior, current));
+
+  bool staged = false;
+  bool removed = false;
+  auto result =
+      wafer::runtime::cli::testing::publishProfileReportForTesting(
+          root,
+          [&](llvm::StringRef, llvm::StringRef) {
+            staged = true;
+            return llvm::Error::success();
+          },
+          [&](llvm::StringRef) {
+            removed = true;
+            return std::error_code();
+          });
+  ASSERT_FALSE(static_cast<bool>(result));
+  EXPECT_NE(llvm::toString(result.takeError()).find("unexpected public"),
+            std::string::npos);
+  EXPECT_FALSE(staged);
+  EXPECT_FALSE(removed);
+  EXPECT_TRUE(llvm::sys::fs::exists(prior));
+}
+
+TEST(WaferProfileCampaignTest, FixedOrderProfilesOnlyTheFinalArtifact) {
   std::vector<BoardProfileProtocolStep> steps;
   bool finalized = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
-      {/*baseline=*/8, /*winner=*/8},
+      /*traceCapacity=*/8,
       [&](const BoardProfileProtocolStep &step)
           -> llvm::Expected<BoardProfileProtocolObservation> {
         steps.push_back(step);
@@ -151,99 +388,122 @@ TEST(WaferProfileCampaignTest, FixedOrderUsesOneSerialProtocolAndFinalWinner) {
       [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>
               samples) {
         finalized = true;
-        EXPECT_EQ(samples.size(), 20u);
-        for (const auto &sample : samples)
-          EXPECT_EQ(sample.completionObservationResolutionNanoseconds, 2u);
+        EXPECT_EQ(samples.size(), 10u);
+        for (uint32_t index = 0; index < samples.size(); ++index) {
+          EXPECT_EQ(samples[index].id,
+                    ("final-s" + llvm::Twine(index)).str());
+          EXPECT_EQ(samples[index].sampleIndex, index);
+          EXPECT_EQ(samples[index].elapsedNanoseconds, 1000u);
+          EXPECT_EQ(
+              samples[index].completionObservationResolutionNanoseconds, 2u);
+        }
         return llvm::Error::success();
       });
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
-  ASSERT_EQ(steps.size(), 28u);
-  EXPECT_EQ(steps[0].candidate, BoardProfileProtocolCandidate::Winner);
-  EXPECT_EQ(steps[0].launch, BoardProfileProtocolLaunch::Warmup);
-  EXPECT_EQ(steps[1].candidate, BoardProfileProtocolCandidate::Baseline);
-  EXPECT_EQ(steps[1].launch, BoardProfileProtocolLaunch::Warmup);
-  const char *orders[] = {"ABBA", "BAAB", "ABBA", "BAAB", "ABBA"};
-  for (size_t block = 0; block < 5; ++block)
-    for (size_t position = 0; position < 4; ++position) {
-      const BoardProfileProtocolStep &step = steps[2 + block * 4 + position];
-      EXPECT_EQ(step.launch, BoardProfileProtocolLaunch::Measurement);
-      EXPECT_EQ(step.block, static_cast<int32_t>(block));
-      EXPECT_EQ(step.position, static_cast<int32_t>(position));
-      EXPECT_EQ(step.candidate, orders[block][position] == 'A'
-                                    ? BoardProfileProtocolCandidate::Baseline
-                                    : BoardProfileProtocolCandidate::Winner);
-    }
-  EXPECT_EQ(steps[22].launch, BoardProfileProtocolLaunch::Summary);
-  EXPECT_EQ(steps[23].launch, BoardProfileProtocolLaunch::Summary);
-  EXPECT_EQ(steps[24].launch, BoardProfileProtocolLaunch::Count);
-  EXPECT_EQ(steps[25].launch, BoardProfileProtocolLaunch::Count);
-  EXPECT_EQ(steps[26].launch, BoardProfileProtocolLaunch::Trace);
-  EXPECT_EQ(steps[27].launch, BoardProfileProtocolLaunch::Trace);
+  ASSERT_EQ(steps.size(), 14u);
+  EXPECT_EQ(steps.front().launch, BoardProfileProtocolLaunch::Warmup);
+  for (uint32_t index = 0; index < 10; ++index) {
+    EXPECT_EQ(steps[index + 1].launch,
+              BoardProfileProtocolLaunch::Measurement);
+    EXPECT_EQ(steps[index + 1].sampleIndex, index);
+  }
+  EXPECT_EQ(steps[11].launch, BoardProfileProtocolLaunch::Summary);
+  EXPECT_EQ(steps[12].launch, BoardProfileProtocolLaunch::Count);
+  EXPECT_EQ(steps[13].launch, BoardProfileProtocolLaunch::Trace);
   EXPECT_TRUE(finalized);
-  EXPECT_EQ(result->finalWinnerSampleId, "winner-b4-p2");
+  EXPECT_EQ(result->finalSampleId, "final-s9");
 }
 
 TEST_F(WaferProfileOutputValidationTest,
-       AllExpectedUsesExternalExactAndCanonicalSemanticKeys) {
-  PackageManifest winner = manifest(101, 102, "winner");
-  BoardInvocationFilePlan winnerPlan =
-      plan(winner, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-winner-output");
+       AllExpectedPreservesComparisonPolicyAndCanonicalSemanticKeys) {
+  PackageManifest production = manifest(101, 102, "production");
+  BoardInvocationFilePlan productionPlan = plan(
+      production, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-output",
+      {/*relaxedF16RoleIndex=*/7});
   BoardProfileOutputValidationState validation(root.str().str());
-  ASSERT_FALSE(validation.establishProductionWinnerReference(winner, winnerPlan,
-                                                             outputs(winner)));
+  ASSERT_FALSE(validation.establishProductionReference(
+      production, productionPlan, outputs(production)));
   EXPECT_EQ(validation.getMode(),
-            BoardProfileOutputValidationMode::ExternalExact);
+            BoardProfileOutputValidationMode::ExternalExpected);
   ASSERT_EQ(validation.getResources().size(), 2u);
   EXPECT_EQ(validation.getResources()[0].logicalRank, 0);
   EXPECT_EQ(validation.getResources()[0].roleIndex, 3);
   EXPECT_EQ(validation.getResources()[1].logicalRank, 1);
   EXPECT_EQ(validation.getResources()[1].roleIndex, 7);
+  ASSERT_TRUE(
+      validation.getResources()[0].externalExpectedComparison.has_value());
+  EXPECT_EQ(
+      *validation.getResources()[0].externalExpectedComparison,
+      BoardOutputComparisonKind::Exact);
+  ASSERT_TRUE(
+      validation.getResources()[1].externalExpectedComparison.has_value());
+  EXPECT_EQ(
+      *validation.getResources()[1].externalExpectedComparison,
+      BoardOutputComparisonKind::RelaxedF16);
   for (const auto &resource : validation.getResources()) {
-    ASSERT_TRUE(resource.externalExpectedExact.has_value());
-    EXPECT_TRUE(*resource.externalExpectedExact);
     EXPECT_TRUE(
         llvm::StringRef(resource.referenceSha256).starts_with("sha256:"));
     EXPECT_EQ(resource.referenceSha256.size(), 71u);
   }
 
-  ASSERT_FALSE(validation.validateProductionWinnerRepeat(winner, winnerPlan,
-                                                         outputs(winner)));
-  PackageManifest baseline = manifest(901, 902, "renamed-baseline");
-  BoardInvocationFilePlan baselinePlan =
-      plan(baseline, {/*roleIndex=*/3, /*roleIndex=*/7},
-           "/different-unused-baseline-output");
-  ASSERT_FALSE(validation.validateCandidateEquivalent(baseline, baselinePlan,
-                                                      outputs(baseline)));
+  ASSERT_FALSE(validation.validateProductionRepeat(
+      production, productionPlan, outputs(production)));
+  PackageManifest capture = manifest(901, 902, "capture");
+  BoardInvocationFilePlan capturePlan = plan(
+      capture, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-capture",
+      {/*relaxedF16RoleIndex=*/7});
+  ASSERT_FALSE(validation.validateDiagnosticCapture(
+      capture, capturePlan, outputs(capture)));
   ASSERT_FALSE(validation.finalizeAndRemoveReferences());
   for (const auto &resource : validation.getResources()) {
-    EXPECT_TRUE(resource.productionWinnerRepeatExact);
-    EXPECT_TRUE(resource.candidateEquivalentExact);
+    EXPECT_TRUE(resource.productionRepeatsExact);
+    EXPECT_TRUE(resource.diagnosticCapturesExact);
   }
 }
 
 TEST_F(WaferProfileOutputValidationTest,
-       OutputOnlyUsesSameSessionReferenceAcrossIdsNamesAndPaths) {
-  PackageManifest winner = manifest(11, 12, "winner");
-  BoardInvocationFilePlan winnerPlan =
-      plan(winner, {}, "/path-that-must-not-be-read-or-written");
+       ComparisonPolicyChangeIsRejectedEvenWhenCoverageIsUnchanged) {
+  PackageManifest production = manifest(111, 112, "production");
+  BoardInvocationFilePlan productionPlan =
+      plan(production, {/*roleIndex=*/3}, "/unused-output");
   BoardProfileOutputValidationState validation(root.str().str());
-  ASSERT_FALSE(validation.establishProductionWinnerReference(winner, winnerPlan,
-                                                             outputs(winner)));
-  EXPECT_EQ(validation.getMode(),
-            BoardProfileOutputValidationMode::SameSessionProductionWinner);
-  for (const auto &resource : validation.getResources())
-    EXPECT_FALSE(resource.externalExpectedExact.has_value());
+  ASSERT_FALSE(validation.establishProductionReference(
+      production, productionPlan, outputs(production)));
 
-  ASSERT_FALSE(validation.validateProductionWinnerRepeat(winner, winnerPlan,
-                                                         outputs(winner)));
+  PackageManifest capture = manifest(211, 212, "capture");
+  BoardInvocationFilePlan capturePlan =
+      plan(capture, {/*roleIndex=*/3}, "/unused-capture",
+           {/*relaxedF16RoleIndex=*/3});
+  llvm::Error error = validation.validateDiagnosticCapture(
+      capture, capturePlan, outputs(capture));
+  ASSERT_TRUE(static_cast<bool>(error));
+  EXPECT_NE(llvm::toString(std::move(error)).find("policy changed"),
+            std::string::npos);
+}
+
+TEST_F(WaferProfileOutputValidationTest,
+       OutputOnlyUsesSameSessionReferenceAcrossIdsNamesAndPaths) {
+  PackageManifest production = manifest(11, 12, "production");
+  BoardInvocationFilePlan productionPlan =
+      plan(production, {}, "/path-that-must-not-be-read-or-written");
+  BoardProfileOutputValidationState validation(root.str().str());
+  ASSERT_FALSE(validation.establishProductionReference(
+      production, productionPlan, outputs(production)));
+  EXPECT_EQ(validation.getMode(),
+            BoardProfileOutputValidationMode::SameSessionProduction);
+  for (const auto &resource : validation.getResources())
+    EXPECT_FALSE(resource.externalExpectedComparison.has_value());
+
+  ASSERT_FALSE(validation.validateProductionRepeat(
+      production, productionPlan, outputs(production)));
   PackageManifest capture = manifest(501, 502, "different-names");
   BoardInvocationFilePlan capturePlan =
       plan(capture, {}, "/completely-different-unused-path");
-  ASSERT_FALSE(validation.validateCandidateEquivalent(capture, capturePlan,
-                                                      outputs(capture)));
+  ASSERT_FALSE(validation.validateDiagnosticCapture(
+      capture, capturePlan, outputs(capture)));
   ASSERT_FALSE(validation.finalizeAndRemoveReferences());
 
-  for (const auto &entry : winnerPlan.outputPaths)
+  for (const auto &entry : productionPlan.outputPaths)
     EXPECT_FALSE(llvm::sys::fs::exists(entry.second));
   for (const auto &entry : capturePlan.outputPaths)
     EXPECT_FALSE(llvm::sys::fs::exists(entry.second));
@@ -251,38 +511,41 @@ TEST_F(WaferProfileOutputValidationTest,
 
 TEST_F(WaferProfileOutputValidationTest,
        PartialExpectedUsesMixedPerResourceCoverage) {
-  PackageManifest winner = manifest(21, 22, "winner");
-  BoardInvocationFilePlan winnerPlan =
-      plan(winner, {/*roleIndex=*/7}, "/unused-winner-output");
+  PackageManifest production = manifest(21, 22, "production");
+  BoardInvocationFilePlan productionPlan =
+      plan(production, {/*roleIndex=*/7}, "/unused-output");
   BoardProfileOutputValidationState validation(root.str().str());
-  ASSERT_FALSE(validation.establishProductionWinnerReference(winner, winnerPlan,
-                                                             outputs(winner)));
+  ASSERT_FALSE(validation.establishProductionReference(
+      production, productionPlan, outputs(production)));
   EXPECT_EQ(validation.getMode(), BoardProfileOutputValidationMode::Mixed);
   ASSERT_EQ(validation.getResources().size(), 2u);
-  EXPECT_FALSE(validation.getResources()[0].externalExpectedExact.has_value());
-  ASSERT_TRUE(validation.getResources()[1].externalExpectedExact.has_value());
-  EXPECT_TRUE(*validation.getResources()[1].externalExpectedExact);
+  EXPECT_FALSE(
+      validation.getResources()[0].externalExpectedComparison.has_value());
+  ASSERT_TRUE(
+      validation.getResources()[1].externalExpectedComparison.has_value());
+  EXPECT_EQ(*validation.getResources()[1].externalExpectedComparison,
+            BoardOutputComparisonKind::Exact);
 
-  ASSERT_FALSE(validation.validateProductionWinnerRepeat(winner, winnerPlan,
-                                                         outputs(winner)));
-  PackageManifest baseline = manifest(71, 72, "baseline");
-  BoardInvocationFilePlan baselinePlan =
-      plan(baseline, {/*roleIndex=*/7}, "/unused-baseline-output");
-  ASSERT_FALSE(validation.validateCandidateEquivalent(baseline, baselinePlan,
-                                                      outputs(baseline)));
+  ASSERT_FALSE(validation.validateProductionRepeat(
+      production, productionPlan, outputs(production)));
+  PackageManifest capture = manifest(71, 72, "capture");
+  BoardInvocationFilePlan capturePlan =
+      plan(capture, {/*roleIndex=*/7}, "/unused-capture");
+  ASSERT_FALSE(validation.validateDiagnosticCapture(
+      capture, capturePlan, outputs(capture)));
   ASSERT_FALSE(validation.finalizeAndRemoveReferences());
 }
 
 TEST_F(WaferProfileOutputValidationTest,
        ExternalExpectedMismatchPrecedesSameSessionReference) {
-  PackageManifest winner = manifest(31, 32, "winner");
-  BoardInvocationFilePlan winnerPlan =
-      plan(winner, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-output");
-  std::vector<BoardRuntimeOutput> actual = outputs(winner);
+  PackageManifest production = manifest(31, 32, "production");
+  BoardInvocationFilePlan productionPlan =
+      plan(production, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-output");
+  std::vector<BoardRuntimeOutput> actual = outputs(production);
   actual.front().bytes[1] ^= UINT8_C(0xff);
   BoardProfileOutputValidationState validation(root.str().str());
-  llvm::Error error =
-      validation.establishProductionWinnerReference(winner, winnerPlan, actual);
+  llvm::Error error = validation.establishProductionReference(
+      production, productionPlan, actual);
   ASSERT_TRUE(static_cast<bool>(error));
   EXPECT_NE(llvm::toString(std::move(error))
                 .find("complete board output differs for ResourceId"),
@@ -290,45 +553,43 @@ TEST_F(WaferProfileOutputValidationTest,
 }
 
 TEST_F(WaferProfileOutputValidationTest,
-       WinnerBaselineAndCaptureMismatchStopAtFirstLaunch) {
+       OutputMismatchStopsAtTheFirstAffectedLaunch) {
   enum class FailureKind {
-    BaselineWarmup,
-    WinnerRepeat,
+    ProductionRepeat,
     SummaryCapture,
     CountCapture,
     TraceCapture,
   };
   for (auto [failure, expectedCalls] :
-       {std::pair(FailureKind::BaselineWarmup, size_t(2)),
-        std::pair(FailureKind::WinnerRepeat, size_t(4)),
-        std::pair(FailureKind::SummaryCapture, size_t(23)),
-        std::pair(FailureKind::CountCapture, size_t(25)),
-        std::pair(FailureKind::TraceCapture, size_t(27))}) {
+       {std::pair(FailureKind::ProductionRepeat, size_t(2)),
+        std::pair(FailureKind::SummaryCapture, size_t(12)),
+        std::pair(FailureKind::CountCapture, size_t(13)),
+        std::pair(FailureKind::TraceCapture, size_t(14))}) {
     SCOPED_TRACE(static_cast<int>(failure));
-    PackageManifest winner = manifest(41, 42, "winner");
-    PackageManifest baseline = manifest(81, 82, "baseline");
-    BoardInvocationFilePlan winnerPlan =
-        plan(winner, {}, "/unused-winner-output");
-    BoardInvocationFilePlan baselinePlan =
-        plan(baseline, {}, "/unused-baseline-output");
+    PackageManifest production = manifest(41, 42, "production");
+    PackageManifest capture = manifest(81, 82, "capture");
+    BoardInvocationFilePlan productionPlan =
+        plan(production, {}, "/unused-output");
+    BoardInvocationFilePlan capturePlan =
+        plan(capture, {}, "/unused-capture");
     BoardProfileOutputValidationState validation(root.str().str());
     size_t calls = 0;
     bool finalized = false;
     auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
-        {8, 8},
+        /*traceCapacity=*/8,
         [&](const BoardProfileProtocolStep &step)
             -> llvm::Expected<BoardProfileProtocolObservation> {
           ++calls;
-          const bool useWinner =
-              step.candidate == BoardProfileProtocolCandidate::Winner;
-          const PackageManifest &package = useWinner ? winner : baseline;
+          const bool productionLaunch =
+              step.launch == BoardProfileProtocolLaunch::Warmup ||
+              step.launch == BoardProfileProtocolLaunch::Measurement;
+          const PackageManifest &package =
+              productionLaunch ? production : capture;
           const BoardInvocationFilePlan &invocation =
-              useWinner ? winnerPlan : baselinePlan;
+              productionLaunch ? productionPlan : capturePlan;
           std::vector<BoardRuntimeOutput> actual = outputs(package);
           const bool corrupt =
-              (failure == FailureKind::BaselineWarmup && !useWinner &&
-               step.launch == BoardProfileProtocolLaunch::Warmup) ||
-              (failure == FailureKind::WinnerRepeat && useWinner &&
+              (failure == FailureKind::ProductionRepeat &&
                step.launch == BoardProfileProtocolLaunch::Measurement) ||
               (failure == FailureKind::SummaryCapture &&
                step.launch == BoardProfileProtocolLaunch::Summary) ||
@@ -340,15 +601,14 @@ TEST_F(WaferProfileOutputValidationTest,
             actual.front().bytes[2] ^= UINT8_C(0xff);
 
           llvm::Error outputError = [&]() -> llvm::Error {
-            if (useWinner && step.launch == BoardProfileProtocolLaunch::Warmup)
-              return validation.establishProductionWinnerReference(
+            if (step.launch == BoardProfileProtocolLaunch::Warmup)
+              return validation.establishProductionReference(
                   package, invocation, actual);
-            if (useWinner &&
-                step.launch == BoardProfileProtocolLaunch::Measurement)
-              return validation.validateProductionWinnerRepeat(
-                  package, invocation, actual);
-            return validation.validateCandidateEquivalent(package, invocation,
-                                                          actual);
+            if (step.launch == BoardProfileProtocolLaunch::Measurement)
+              return validation.validateProductionRepeat(package, invocation,
+                                                         actual);
+            return validation.validateDiagnosticCapture(package, invocation,
+                                                        actual);
           }();
           if (outputError)
             return std::move(outputError);
@@ -369,11 +629,11 @@ TEST_F(WaferProfileOutputValidationTest,
 
 TEST(WaferProfileCampaignTest, FirstLaunchErrorStopsEveryLaterCall) {
   for (size_t failureIndex :
-       {size_t(0), size_t(7), size_t(22), size_t(24), size_t(26)}) {
+       {size_t(0), size_t(7), size_t(11), size_t(12), size_t(13)}) {
     size_t calls = 0;
     bool finalized = false;
     auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
-        {8, 8},
+        /*traceCapacity=*/8,
         [&](const BoardProfileProtocolStep &step)
             -> llvm::Expected<BoardProfileProtocolObservation> {
           const size_t index = calls++;
@@ -395,11 +655,53 @@ TEST(WaferProfileCampaignTest, FirstLaunchErrorStopsEveryLaterCall) {
 }
 
 TEST(WaferProfileCampaignTest,
+     WarmupHostGateFailureDestroysLocalSessionAndMakesNoLaterLaunch) {
+  struct LocalSession {
+    explicit LocalSession(bool &destroyed) : destroyed(destroyed) {}
+    ~LocalSession() { destroyed = true; }
+    bool &destroyed;
+  };
+
+  size_t providerLaunches = 0;
+  bool sessionDestroyed = false;
+  bool finalized = false;
+  auto runCampaign = [&]()
+      -> llvm::Expected<wafer::runtime::cli::BoardProfileProtocolResult> {
+    std::optional<LocalSession> session;
+    return wafer::runtime::cli::runFixedBoardProfileProtocol(
+        /*traceCapacity=*/8,
+        [&](const BoardProfileProtocolStep &step)
+            -> llvm::Expected<BoardProfileProtocolObservation> {
+          ++providerLaunches;
+          EXPECT_EQ(step.launch, BoardProfileProtocolLaunch::Warmup);
+          session.emplace(sessionDestroyed);
+          // Models the host output/topology gate after the first successful
+          // provider invocation has created the campaign-local session.
+          return llvm::createStringError(llvm::errc::invalid_argument,
+                                         "warm-up host output gate failed");
+        },
+        [&](llvm::ArrayRef<
+            wafer::runtime::cli::BoardProfileMeasurementSample>) {
+          finalized = true;
+          return llvm::Error::success();
+        });
+  };
+
+  auto result = runCampaign();
+  ASSERT_FALSE(static_cast<bool>(result));
+  EXPECT_EQ(providerLaunches, 1u);
+  EXPECT_TRUE(sessionDestroyed);
+  EXPECT_FALSE(finalized);
+  EXPECT_NE(llvm::toString(result.takeError()).find("warm-up host output"),
+            std::string::npos);
+}
+
+TEST(WaferProfileCampaignTest,
      ZeroMeasurementObservationResolutionStopsBeforeLaterLaunches) {
   size_t calls = 0;
   bool finalized = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
-      {8, 8},
+      /*traceCapacity=*/8,
       [&](const BoardProfileProtocolStep &step)
           -> llvm::Expected<BoardProfileProtocolObservation> {
         ++calls;
@@ -413,18 +715,18 @@ TEST(WaferProfileCampaignTest,
         return llvm::Error::success();
       });
   ASSERT_FALSE(static_cast<bool>(result));
-  EXPECT_EQ(calls, 3u);
+  EXPECT_EQ(calls, 2u);
   EXPECT_FALSE(finalized);
   EXPECT_NE(llvm::toString(result.takeError()).find("resolution"),
             std::string::npos);
 }
 
-TEST(WaferProfileCampaignTest, CountCapacityFailurePreventsEveryTraceLaunch) {
+TEST(WaferProfileCampaignTest, CountCapacityFailurePreventsTraceLaunch) {
   size_t calls = 0;
   size_t traceCalls = 0;
   bool finalized = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
-      {/*baseline=*/2, /*winner=*/8},
+      /*traceCapacity=*/2,
       [&](const BoardProfileProtocolStep &step)
           -> llvm::Expected<BoardProfileProtocolObservation> {
         ++calls;
@@ -437,28 +739,26 @@ TEST(WaferProfileCampaignTest, CountCapacityFailurePreventsEveryTraceLaunch) {
         return llvm::Error::success();
       });
   ASSERT_FALSE(static_cast<bool>(result));
-  EXPECT_EQ(calls, 26u);
+  EXPECT_EQ(calls, 13u);
   EXPECT_EQ(traceCalls, 0u);
   EXPECT_FALSE(finalized);
   EXPECT_NE(llvm::toString(result.takeError()).find("exceeds"),
             std::string::npos);
 }
 
-TEST(WaferProfileCampaignTest,
-     TraceMismatchStopsBeforeWinnerTraceAndReportPublication) {
+TEST(WaferProfileCampaignTest, TraceMismatchStopsBeforeReportPublication) {
   size_t calls = 0;
   size_t traceCalls = 0;
   bool finalized = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
-      {8, 8},
+      /*traceCapacity=*/8,
       [&](const BoardProfileProtocolStep &step)
           -> llvm::Expected<BoardProfileProtocolObservation> {
         ++calls;
         BoardProfileProtocolObservation observation = validObservation(step);
         if (step.launch == BoardProfileProtocolLaunch::Trace) {
           ++traceCalls;
-          if (step.candidate == BoardProfileProtocolCandidate::Baseline)
-            observation.trace[7].nextSequence = 4;
+          observation.trace[7].nextSequence = 4;
         }
         return observation;
       },
@@ -467,7 +767,7 @@ TEST(WaferProfileCampaignTest,
         return llvm::Error::success();
       });
   ASSERT_FALSE(static_cast<bool>(result));
-  EXPECT_EQ(calls, 27u);
+  EXPECT_EQ(calls, 14u);
   EXPECT_EQ(traceCalls, 1u);
   EXPECT_FALSE(finalized);
   EXPECT_NE(llvm::toString(result.takeError()).find("audit"),

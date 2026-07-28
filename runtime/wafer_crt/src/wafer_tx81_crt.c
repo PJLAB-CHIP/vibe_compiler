@@ -79,6 +79,11 @@ static WaferDirectDTESenderState wafer_direct_dte_sender;
 static WaferDirectDTEReceiverState
     wafer_direct_dte_receivers[WAFER_DIRECT_DTE_MAX_RECEIVERS];
 
+#ifdef WAFER_TX81_PROFILE_CRT
+static void wafer_profile_direct_dte_begin(uint64_t direct_event);
+static void wafer_profile_direct_dte_end(void);
+#endif
+
 /*
  * Kernel arguments and txMalloc resources are cacheable device-DDR
  * addresses.  The firmware invalidates the argument table before entering a
@@ -87,15 +92,14 @@ static WaferDirectDTEReceiverState
  * sequence used by the firmware's rt_hw_cpu_dcache_ops(FLUSH) path so a host
  * D2H observes the terminal value rather than the pre-launch poison word.
  */
-static void
-wafer_direct_dte_flush_status(volatile uint32_t *status) {
+static void wafer_direct_dte_flush_status(volatile uint32_t *status) {
   enum {
     WAFER_TX81_SUPERVISOR_MODE = 1,
     WAFER_TX81_MACHINE_MODE = 3,
   };
-  uintptr_t address = (uintptr_t)status &
-                      ~(uintptr_t)(
-                          WAFER_TX81_DIRECT_DTE_STATUS_V2_CACHE_LINE_BYTES - 1);
+  uintptr_t address =
+      (uintptr_t)status &
+      ~(uintptr_t)(WAFER_TX81_DIRECT_DTE_STATUS_V2_CACHE_LINE_BYTES - 1);
   uintptr_t mode;
   __asm__ volatile("fence" ::: "memory");
   __asm__ volatile("sync" ::: "memory");
@@ -119,8 +123,7 @@ static void wafer_direct_dte_publish_status(uint32_t value) {
 }
 
 static void wafer_direct_dte_set_error(void) {
-  wafer_direct_dte_publish_status(
-      WAFER_TX81_DIRECT_DTE_STATUS_TRANSPORT_ERROR);
+  wafer_direct_dte_publish_status(WAFER_TX81_DIRECT_DTE_STATUS_TRANSPORT_ERROR);
 }
 
 static void wafer_direct_dte_reset_state(uint64_t status_addr) {
@@ -203,10 +206,13 @@ uint64_t wafer_tx81_direct_dte_recv_prepare(uint64_t dst, uint32_t byte_count,
 }
 
 void wafer_tx81_direct_dte_wait(uint64_t event) {
+#ifdef WAFER_TX81_PROFILE_CRT
+  wafer_profile_direct_dte_begin(event);
+#endif
   if (event == WAFER_DIRECT_DTE_SEND_EVENT) {
     if (!wafer_direct_dte_sender.active) {
       wafer_direct_dte_set_error();
-      return;
+      goto done;
     }
     WaferDirectDTESendInfo *info = &wafer_direct_dte_sender.info;
     direct_sync_wait(info->tile_this, info->dst_tile);
@@ -219,7 +225,7 @@ void wafer_tx81_direct_dte_wait(uint64_t event) {
     if (info->dte_node && direct_dte_release(info->dte_node) != 0)
       wafer_direct_dte_set_error();
     wafer_direct_dte_sender.active = false;
-    return;
+    goto done;
   }
 
   if (event >= WAFER_DIRECT_DTE_RECV_EVENT_BASE &&
@@ -229,16 +235,22 @@ void wafer_tx81_direct_dte_wait(uint64_t event) {
     WaferDirectDTEReceiverState *receiver = &wafer_direct_dte_receivers[fsm_id];
     if (!receiver->active) {
       wafer_direct_dte_set_error();
-      return;
+      goto done;
     }
     direct_fsm_monitor_receive(receiver->local_tile, receiver->remote_tile,
                                receiver->handle);
     if (direct_fsm_monitor_deinit(receiver->handle) != 0)
       wafer_direct_dte_set_error();
     receiver->active = false;
-    return;
+    goto done;
   }
   wafer_direct_dte_set_error();
+
+done:
+  (void)0;
+#ifdef WAFER_TX81_PROFILE_CRT
+  wafer_profile_direct_dte_end();
+#endif
 }
 
 void wafer_tx81_direct_dte_finish(void) {
@@ -359,40 +371,40 @@ static int32_t wafer_bilinear_scale(uint32_t src, uint32_t dst) {
 
 static void wafer_execute_ct(CT_Param *instr) {
 #ifdef WAFER_TX81_PROFILE_TRACE_CRT
-  (void)wafer_tx81_profile_execute_tsm(instr, instr->inter_type,
-                                       WAFER_TX81_PROFILER_ENGINE_CT);
+  (void)wafer_profile_execute_ncc(instr, instr->inter_type,
+                                  WAFER_TX81_PROFILER_ENGINE_CT);
 #else
   (void)TsmExecute(instr);
 #endif
 }
 static void wafer_execute_ne(TsmNeInstr *instr) {
 #ifdef WAFER_TX81_PROFILE_TRACE_CRT
-  (void)wafer_tx81_profile_execute_tsm(instr, instr->inter_type,
-                                       WAFER_TX81_PROFILER_ENGINE_NE);
+  (void)wafer_profile_execute_ncc(instr, instr->inter_type,
+                                  WAFER_TX81_PROFILER_ENGINE_NE);
 #else
   (void)TsmExecute(instr);
 #endif
 }
 static void wafer_execute_rdma(TsmRdmaInstr *instr) {
 #ifdef WAFER_TX81_PROFILE_TRACE_CRT
-  (void)wafer_tx81_profile_execute_tsm(instr, instr->inter_type,
-                                       WAFER_TX81_PROFILER_ENGINE_RDMA);
+  (void)wafer_profile_execute_ncc(instr, instr->inter_type,
+                                  WAFER_TX81_PROFILER_ENGINE_RDMA);
 #else
   (void)TsmExecute(instr);
 #endif
 }
 static void wafer_execute_wdma(TsmWdmaInstr *instr) {
 #ifdef WAFER_TX81_PROFILE_TRACE_CRT
-  (void)wafer_tx81_profile_execute_tsm(instr, instr->inter_type,
-                                       WAFER_TX81_PROFILER_ENGINE_WDMA);
+  (void)wafer_profile_execute_ncc(instr, instr->inter_type,
+                                  WAFER_TX81_PROFILER_ENGINE_WDMA);
 #else
   (void)TsmExecute(instr);
 #endif
 }
 static void wafer_execute_td(TsmDataMoveInstr *instr) {
 #ifdef WAFER_TX81_PROFILE_TRACE_CRT
-  (void)wafer_tx81_profile_execute_tsm(instr, instr->inter_type,
-                                       WAFER_TX81_PROFILER_ENGINE_TDMA);
+  (void)wafer_profile_execute_ncc(instr, instr->inter_type,
+                                  WAFER_TX81_PROFILER_ENGINE_TDMA);
 #else
   (void)TsmExecute(instr);
 #endif
@@ -456,9 +468,9 @@ void wafer_tx81_rdma(uint64_t src, uint64_t dst, uint32_t byte_count,
   TsmRdmaInstr instr = {0};
   TsmRdma *rdma = TsmNewRdma();
   rdma->AddSrcDst(&instr, src, dst, wafer_format(format));
-  rdma->ConfigStrideIteration(
-      &instr, inner_elements, stride0_elements, iteration0, stride1_elements,
-      iteration1, stride2_elements, iteration2);
+  rdma->ConfigStrideIteration(&instr, inner_elements, stride0_elements,
+                              iteration0, stride1_elements, iteration1,
+                              stride2_elements, iteration2);
   wafer_execute_rdma(&instr);
   TsmDeleteRdma(rdma);
 }
@@ -480,9 +492,9 @@ void wafer_tx81_wdma(uint64_t src, uint64_t dst, uint32_t byte_count,
   TsmWdmaInstr instr = {0};
   TsmWdma *wdma = TsmNewWdma();
   wdma->AddSrcDst(&instr, src, dst, wafer_format(format));
-  wdma->ConfigStrideIteration(
-      &instr, inner_elements, stride0_elements, iteration0, stride1_elements,
-      iteration1, stride2_elements, iteration2);
+  wdma->ConfigStrideIteration(&instr, inner_elements, stride0_elements,
+                              iteration0, stride1_elements, iteration1,
+                              stride2_elements, iteration2);
   wafer_execute_wdma(&instr);
   TsmDeleteWdma(wdma);
 }
@@ -527,9 +539,7 @@ void wafer_tx81_memset(uint64_t dst, uint32_t value, uint32_t elem_count,
   TsmDataMoveInstr instr = {0};
   TsmPeripheral *peripheral = TsmNewPeripheral();
   St_StrideIteration si = {
-      span_bytes, 1,
-      0,          1,
-      0,          1,
+      span_bytes, 1, 0, 1, 0, 1,
   };
   peripheral->Memset(&instr, dst, packet_value, packet_elem_count, &si,
                      wafer_format(packet_format));
@@ -1046,7 +1056,11 @@ void wafer_tx81_tdma_img2col(uint64_t src, uint64_t dst, uint32_t src_n,
 
 static void wafer_arg_writeback(uint64_t value_dst, uint64_t index_dst,
                                 uint32_t format, TsmPeripheralInstr *instr) {
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
+  (void)wafer_profile_wait_local_completion();
+#else
   (void)TsmWaitfinish();
+#endif
   uint64_t value_addr = wafer_spm_mapped_addr(value_dst);
   uint64_t index_addr = wafer_spm_mapped_addr(index_dst);
   wafer_store_value(value_addr, format, instr->param.wb_data0);
@@ -1199,6 +1213,10 @@ static void wafer_order_local_completion(void) {
 
 void wafer_tx81_local_fence(void) {
   wafer_order_local_completion();
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
+  (void)wafer_profile_wait_local_completion();
+#else
   (void)TsmWaitfinish();
+#endif
   wafer_order_local_completion();
 }

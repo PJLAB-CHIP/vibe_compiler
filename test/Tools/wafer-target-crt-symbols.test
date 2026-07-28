@@ -1,6 +1,16 @@
 # RUN: %python %wafer_src_root/tools/check_target_crt_symbols.py --repo-root %wafer_src_root | FileCheck --check-prefix=SURFACE %s
 # RUN: %python %wafer_src_root/tools/check_target_crt_conformance.py --repo-root %wafer_src_root | FileCheck --check-prefix=CONFORMANCE %s
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-gcc \
+# RUN:   -E -P -DCONFIG_NO_PLATFORM_HOOK_H -DUSING_RISCV \
+# RUN:   -DWAFER_TX81_PROFILE_TRACE_CRT=1 \
+# RUN:   -I%wafer_src_root/runtime/wafer_crt/include \
+# RUN:   -I%wafer_src_root/include \
+# RUN:   -I%wafer_src_root/third_party/tx8_deps/include \
+# RUN:   %wafer_src_root/runtime/wafer_crt/src/wafer_tx81_crt.c -o %t.profile-expanded.c
+# RUN: %python %wafer_src_root/tools/check_target_crt_conformance.py \
+# RUN:   --repo-root %wafer_src_root \
+# RUN:   --expanded-profile-crt %t.profile-expanded.c | FileCheck --check-prefix=CONFORMANCE %s
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-gcc \
 # RUN:   -O2 -c -fPIC -DCONFIG_NO_PLATFORM_HOOK_H -DUSING_RISCV \
 # RUN:   -mcpu=c908 -mabi=lp64d \
 # RUN:   -I%wafer_src_root/runtime/wafer_crt/include \

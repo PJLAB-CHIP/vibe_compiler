@@ -83,13 +83,12 @@ detail::importRankVariantFrontiersIntoOwnerContext(
   return frontiers;
 }
 
-static llvm::Expected<detail::ProfileExecutableBundles> buildExecutableBundles(
+static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLogicalRank,
-    detail::WholeVariantSelectionMode selectionMode,
-    bool retainReservedBaseline) {
+    detail::WholeVariantSelectionMode selectionMode) {
   auto fail = [&](llvm::StringRef message) -> llvm::Error {
     diagnostics << "wafer-compile: " << message << "\n";
     return llvm::createStringError(llvm::errc::invalid_argument, "%s",
@@ -194,22 +193,9 @@ static llvm::Expected<detail::ProfileExecutableBundles> buildExecutableBundles(
     return fail(llvm::toString(imported.takeError()));
   std::vector<detail::RankVariantFrontier> frontiers = std::move(*imported);
 
-  mlir::FailureOr<detail::AcceptedProductionAndBaseline> accepted = [&] {
-    if (retainReservedBaseline)
-      return detail::selectAcceptedProductionAndBaseline(
-          frontiers, program, executionConfig, diagnostics);
-    mlir::FailureOr<detail::AcceptedWholeVariant> selected =
-        detail::selectAcceptedWholeVariant(frontiers, program, executionConfig,
-                                           diagnostics, selectionMode);
-    if (mlir::failed(selected))
-      return mlir::FailureOr<detail::AcceptedProductionAndBaseline>(
-          mlir::failure());
-    const bool selectedReservedBaseline =
-        selectionMode == detail::WholeVariantSelectionMode::ReservedBaseline;
-    return mlir::FailureOr<detail::AcceptedProductionAndBaseline>(
-        detail::AcceptedProductionAndBaseline{
-            std::move(*selected), std::nullopt, selectedReservedBaseline});
-  }();
+  mlir::FailureOr<detail::AcceptedWholeVariant> accepted =
+      detail::selectAcceptedWholeVariant(frontiers, program, executionConfig,
+                                         diagnostics, selectionMode);
   if (mlir::failed(accepted))
     return fail("whole-variant coordination failed");
 
@@ -226,21 +212,7 @@ static llvm::Expected<detail::ProfileExecutableBundles> buildExecutableBundles(
         std::move(ranks));
   };
 
-  llvm::Expected<ExecutableBundle> production =
-      makeBundle(std::move(accepted->production));
-  if (!production)
-    return production.takeError();
-  std::optional<ExecutableBundle> reservedBaseline;
-  if (accepted->reservedBaseline) {
-    llvm::Expected<ExecutableBundle> builtBaseline =
-        makeBundle(std::move(*accepted->reservedBaseline));
-    if (!builtBaseline)
-      return builtBaseline.takeError();
-    reservedBaseline.emplace(std::move(*builtBaseline));
-  }
-  return detail::ProfileExecutableBundles{
-      std::move(*production), std::move(reservedBaseline),
-      accepted->productionIsReservedBaseline};
+  return makeBundle(std::move(*accepted));
 }
 
 llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
@@ -249,25 +221,9 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
     ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLogicalRank,
     WholeVariantSelectionMode selectionMode) {
-  llvm::Expected<ProfileExecutableBundles> bundles = buildExecutableBundles(
+  return buildExecutableBundleImpl(
       context, tensorModule, std::move(program), executionConfig, diagnostics,
-      failAfterLogicalRank, selectionMode,
-      /*retainReservedBaseline=*/false);
-  if (!bundles)
-    return bundles.takeError();
-  return std::move(bundles->production);
-}
-
-llvm::Expected<detail::ProfileExecutableBundles>
-detail::buildProfileExecutableBundles(
-    std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
-    frontend::FrontendProgramVerificationResult program,
-    ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank) {
-  return buildExecutableBundles(
-      context, tensorModule, std::move(program), executionConfig, diagnostics,
-      failAfterLogicalRank, WholeVariantSelectionMode::Production,
-      /*retainReservedBaseline=*/true);
+      failAfterLogicalRank, selectionMode);
 }
 
 } // namespace wafer::compiler

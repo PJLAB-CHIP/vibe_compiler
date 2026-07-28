@@ -366,13 +366,28 @@ def assert_coverage(repo: pathlib.Path) -> None:
         assert set(item.raw_case_names) == {
             case.name for case in semantic_cases
         }
-        assert {
-            (case.fanout, case.target_layout) for case in semantic_cases
-        } == {
-            (fanout, layout)
-            for fanout in (2, 4, 8, 15)
-            for layout in ("adjacent", "interleaved")
-        }
+        if semantic == "shuffle":
+            # Raw mode 3 is a one-destination strided source gather.  The
+            # varying dimension is source-section count, not destination
+            # fanout; the two layouts select target rank 1 or 8.
+            assert {
+                (case.shuffle_sections, case.target_layout)
+                for case in semantic_cases
+            } == {
+                (sections, layout)
+                for sections in (2, 4, 8, 15)
+                for layout in ("adjacent", "interleaved")
+            }
+            assert {case.fanout for case in semantic_cases} == {1}
+        else:
+            assert {
+                (case.fanout, case.target_layout)
+                for case in semantic_cases
+            } == {
+                (fanout, layout)
+                for fanout in (2, 4, 8, 15)
+                for layout in ("adjacent", "interleaved")
+            }
         raw_names.update(item.raw_case_names)
     assert raw_names == {
         case.name for case in catalog.raw_dte.RAW_MULTIDEST_CASES

@@ -104,14 +104,23 @@ struct ProfileTSMCallSite {
 };
 
 /// Collects all and only entry-reachable registered target calls whose closed
-/// semantic mapping reaches one of the five TsmExecute CRT helpers.
+/// semantic mapping reaches one of the five NCC execution helpers or the
+/// Direct-DTE wait/completion helper.
 llvm::Expected<std::vector<ProfileTSMCallSite>>
 collectProfileTSMCallSites(const llvm::Module &module,
                            llvm::StringRef entrySymbol);
 
+/// Verifies that a trace clone preserves the final production artifact's
+/// rank-local site order and exact typed target-call identity. Instrumentation
+/// may shift LLVM instruction ordinals, so only the production module owns the
+/// canonical source position written to the companion.
+llvm::Error verifyProfileTargetCallSiteIdentity(
+    const llvm::Module &productionModule, llvm::StringRef productionEntrySymbol,
+    const llvm::Module &traceModule, llvm::StringRef traceEntrySymbol);
+
 /// Adds profile entry bracketing for every non-None capture and per-site
-/// bracketing only for Trace. Count relies on the trace CRT helper to count the
-/// real TsmExecute calls without carrying per-site branches.
+/// bracketing only for Trace. Count relies on the profile CRT helpers to count
+/// the real NCC issue and Direct-DTE wait calls without per-site branches.
 llvm::Error instrumentProfileTargetModule(llvm::Module &module,
                                           llvm::StringRef entrySymbol,
                                           ProfileCaptureKind capture);

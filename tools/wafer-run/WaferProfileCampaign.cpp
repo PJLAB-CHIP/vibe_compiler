@@ -15,6 +15,7 @@
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/SHA256.h"
@@ -34,15 +35,11 @@
 namespace wafer::runtime::cli {
 namespace {
 
-constexpr size_t kBaselineIndex = 0;
-constexpr size_t kWinnerIndex = 1;
-constexpr llvm::StringLiteral kCandidateLabels[] = {"baseline", "winner"};
-constexpr llvm::StringLiteral kBlockOrders[] = {"ABBA", "BAAB", "ABBA", "BAAB",
-                                                "ABBA"};
+constexpr uint32_t kMeasurementSampleCount = 10;
 constexpr llvm::StringLiteral kAggregateNames[] = {
     "statistics_window", "fu", "ct", "ne", "rdma", "wdma", "tdma", "scalar"};
-constexpr llvm::StringLiteral kEngineNames[] = {"CT", "NE", "RDMA", "WDMA",
-                                                "TDMA"};
+constexpr llvm::StringLiteral kEngineNames[] = {"CT",   "NE",   "RDMA",
+                                                "WDMA", "TDMA", "DIRECT_DTE"};
 constexpr uint32_t kExpectedTraceFlags =
     WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED |
     WAFER_TX81_PROFILER_RECORD_ENTRY_BEGUN |
@@ -104,7 +101,7 @@ bool sameExactOutputContract(const ExactOutputContract &lhs,
 struct IndexedOutput {
   const PackageResourceRecord *resource = nullptr;
   const BoardRuntimeOutput *output = nullptr;
-  bool hasExternalExpected = false;
+  std::optional<BoardOutputComparisonKind> externalExpectedComparison;
 };
 
 llvm::Expected<std::map<SemanticOutputKey, IndexedOutput>>
@@ -123,13 +120,21 @@ indexValidatedOutputs(const PackageManifest &manifest,
     if (resource == manifest.resources.end() || !resource->hostVisible ||
         resource->access == PackageAccessMode::ReadOnly)
       return invalid("profile output is not a host-visible writable resource");
+    const uint64_t resourceId = output.resource.getValue();
+    std::optional<BoardOutputComparisonKind> expectedComparison;
+    if (plan.expectedBytes.contains(resourceId)) {
+      auto comparison = plan.expectedComparisons.find(resourceId);
+      if (comparison == plan.expectedComparisons.end())
+        return invalid("profile output external expected comparison is missing");
+      expectedComparison = comparison->second;
+    }
     if (!indexed
              .try_emplace(
                  semanticOutputKey(*resource),
                  IndexedOutput{
                      &*resource,
                      &output,
-                     plan.expectedBytes.contains(output.resource.getValue()),
+                     expectedComparison,
                  })
              .second)
       return invalid("profile output has a duplicate semantic resource key");
@@ -193,7 +198,7 @@ llvm::Error compareReferenceFile(llvm::StringRef path,
       auto mismatch = llvm::mismatch(reference, actualChunk);
       const uint64_t mismatchOffset =
           offset + static_cast<uint64_t>(mismatch.first - reference.begin());
-      return invalid("profile output differs from the production-winner "
+      return invalid("profile output differs from the production-artifact "
                      "reference for " +
                      formatSemanticOutputKey(key) + " at byte " +
                      llvm::Twine(mismatchOffset));
@@ -322,14 +327,7 @@ decodeProfilerOutputs(const ProfileCapturePackage &capture,
 const ProfileVariantSiteMap *
 resolveSiteMap(const VerifiedProfileCompanion &companion,
                llvm::StringRef variantId) {
-  const ProfileVariantSiteMap *map = companion.findSiteMap(variantId);
-  llvm::DenseSet<llvm::StringRef> visited;
-  while (map && map->sameAs) {
-    if (!visited.insert(map->variantId).second)
-      return nullptr;
-    map = companion.findSiteMap(*map->sameAs);
-  }
-  return map;
+  return companion.findSiteMap(variantId);
 }
 
 llvm::StringRef stringifyEventEngine(uint8_t engine) {
@@ -350,6 +348,8 @@ bool engineMatches(ProfileTSMEngine expected, uint8_t actual) {
     return actual == WAFER_TX81_PROFILER_ENGINE_WDMA;
   case ProfileTSMEngine::TDMA:
     return actual == WAFER_TX81_PROFILER_ENGINE_TDMA;
+  case ProfileTSMEngine::DirectDTE:
+    return actual == WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE;
   }
   llvm_unreachable("unknown profile site engine");
 }
@@ -540,12 +540,25 @@ void emitCandidateEvidence(llvm::json::OStream &json,
                   json.attribute("site_id", int64_t(event.site_id));
                   json.attribute("sub_index", int64_t(event.sub_index));
                   json.attribute("engine", stringifyEventEngine(event.engine));
-                  json.attribute("begin_cycle", event.begin_cycle);
-                  json.attribute("return_cycle", event.end_cycle);
-                  json.attribute("raw_result", event.raw_return);
-                  // TsmExecute raw return values are observational only.
-                  // Validity here means the record/site/engine relation passed.
-                  json.attribute("valid", true);
+                  json.attribute("observed_begin_cycle", event.begin_cycle);
+                  json.attribute("observed_end_cycle", event.end_cycle);
+                  json.attribute("counter_delta", event.raw_return);
+                  json.attribute("activity_valid",
+                                 isTx81ProfilerActivityValid(event));
+                  if (event.engine ==
+                      WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE)
+                    json.attribute(
+                        "dte_counter_valid",
+                        isTx81ProfilerDirectDTECounterValid(event));
+                  else
+                    json.attribute("dte_counter_valid",
+                                   llvm::json::Value(nullptr));
+                  if (isTx81ProfilerDirectDTESend(event))
+                    json.attribute("dte_role", "send");
+                  else if (isTx81ProfilerDirectDTEReceive(event))
+                    json.attribute("dte_role", "receive");
+                  else
+                    json.attribute("dte_role", llvm::json::Value(nullptr));
                 });
             });
           });
@@ -609,32 +622,30 @@ llvm::Expected<std::string>
 serializeEvidence(const VerifiedProfileCompanion &companion,
                   llvm::StringRef runId, const BoardDeviceInfo &device,
                   llvm::ArrayRef<BoardProfileMeasurementSample> samples,
-                  llvm::ArrayRef<CandidateState> candidates,
+                  const CandidateState &candidate,
                   const BoardProfileOutputValidationState &outputValidation) {
-  if (candidates.size() != 2 || samples.size() != 20)
+  if (samples.size() != kMeasurementSampleCount)
     return invalid("profile evidence inputs are incomplete");
-  const PackageManifest &winnerManifest =
-      candidates[kWinnerIndex].variant->getPackage().getManifest();
+  const PackageManifest &productionManifest =
+      candidate.variant->getPackage().getManifest();
   const std::string targetProfile =
-      stringifyTargetProfileId(winnerManifest.targetProfile).str();
+      stringifyTargetProfileId(productionManifest.targetProfile).str();
   std::string storage;
   llvm::raw_string_ostream output(storage);
   llvm::json::OStream json(output, 2);
   json.object([&] {
     json.attribute("schema", "wafer.profile.evidence");
-    json.attribute("schema_version", int64_t(2));
+    json.attribute("schema_version", int64_t(4));
     json.attribute("run_id", runId);
     json.attributeObject("identity", [&] {
       json.attribute("production_manifest_sha256",
                      companion.getProductionManifestDigest());
       json.attribute("profile_companion_schema_version",
                      int64_t(companion.getSchemaVersion()));
-      json.attribute(
-          "baseline_same_as_winner",
-          candidates[kBaselineIndex].variant->getSameAs().has_value());
       json.attribute("target_profile", targetProfile);
       json.attributeObject(
-          "launch", [&] { emitRuntimeLaunch(json, winnerManifest.launch); });
+          "launch",
+          [&] { emitRuntimeLaunch(json, productionManifest.launch); });
       json.attribute("execution_ranks",
                      int64_t(WAFER_TX81_PROFILER_TILE_COUNT));
       json.attribute("site_correlation_basis", kProfileSiteCorrelationBasis);
@@ -651,16 +662,20 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
             json.attribute("role_index", resource.roleIndex);
             json.attribute("bytes", int64_t(resource.bytes));
             json.attribute("reference_sha256", resource.referenceSha256);
-            if (resource.externalExpectedExact)
-              json.attribute("external_expected_exact",
-                             *resource.externalExpectedExact);
+            if (resource.externalExpectedComparison)
+              json.attribute(
+                  "external_expected_comparison",
+                  *resource.externalExpectedComparison ==
+                          BoardOutputComparisonKind::Exact
+                      ? "exact"
+                      : "relaxed-f16");
             else
-              json.attribute("external_expected_exact",
+              json.attribute("external_expected_comparison",
                              llvm::json::Value(nullptr));
-            json.attribute("production_winner_repeat_exact",
-                           resource.productionWinnerRepeatExact);
-            json.attribute("candidate_equivalent_exact",
-                           resource.candidateEquivalentExact);
+            json.attribute("production_repeats_exact",
+                           resource.productionRepeatsExact);
+            json.attribute("diagnostic_captures_exact",
+                           resource.diagnosticCapturesExact);
           });
       });
     });
@@ -678,23 +693,11 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
       }
     });
     json.attributeObject("measurement", [&] {
-      json.attributeArray("blocks", [&] {
-        for (uint32_t block = 0; block < std::size(kBlockOrders); ++block)
-          json.object([&] {
-            json.attribute("block", int64_t(block));
-            json.attribute("held_out", block == 4);
-            json.attribute("order", kBlockOrders[block]);
-          });
-      });
       json.attributeArray("samples", [&] {
         for (const BoardProfileMeasurementSample &sample : samples)
           json.object([&] {
             json.attribute("sample_id", sample.id);
-            json.attribute(
-                "candidate",
-                kCandidateLabels[static_cast<size_t>(sample.candidate)]);
-            json.attribute("block", int64_t(sample.block));
-            json.attribute("position", int64_t(sample.position));
+            json.attribute("sample_index", int64_t(sample.sampleIndex));
             json.attribute("host_elapsed_ns", sample.elapsedNanoseconds);
             json.attribute("completion_observation_resolution_ns",
                            sample.completionObservationResolutionNanoseconds);
@@ -702,45 +705,31 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
       });
     });
     json.attributeArray("sites", [&] {
-      for (size_t candidateIndex = 0; candidateIndex < candidates.size();
-           ++candidateIndex) {
-        const ProfileVariantSiteMap *siteMap = resolveSiteMap(
-            companion, candidates[candidateIndex].variant->getId());
-        for (const ProfileRankSiteMap &rank : siteMap->ranks)
-          for (const ProfileTargetCallSite &site : rank.sites)
-            json.object([&] {
-              json.attribute("candidate", kCandidateLabels[candidateIndex]);
-              json.attribute("tile", rank.logicalRank);
-              json.attribute("site_id", site.siteId);
-              json.attribute("correlation_key", site.correlationKey);
-              json.attribute("engine", stringifyProfileTSMEngine(site.engine));
-              json.attribute("target_call_ordinal", site.targetCallOrdinal);
-              json.attribute("target_call_symbol", site.targetCallSymbol);
-              std::string position = formatSitePosition(site);
-              if (!position.empty())
-                json.attribute("position", position);
-            });
-      }
+      const ProfileVariantSiteMap *siteMap =
+          resolveSiteMap(companion, candidate.variant->getId());
+      for (const ProfileRankSiteMap &rank : siteMap->ranks)
+        for (const ProfileTargetCallSite &site : rank.sites)
+          json.object([&] {
+            json.attribute("tile", rank.logicalRank);
+            json.attribute("site_id", site.siteId);
+            json.attribute("correlation_key", site.correlationKey);
+            json.attribute("engine", stringifyProfileTSMEngine(site.engine));
+            json.attribute("target_call_ordinal", site.targetCallOrdinal);
+            json.attribute("target_call_symbol", site.targetCallSymbol);
+            std::string position = formatSitePosition(site);
+            if (!position.empty())
+              json.attribute("position", position);
+          });
     });
     json.attributeObject("validity", [&] {
       json.attribute("environment", true);
       json.attribute("package_companion", true);
       json.attribute("measurement_basis", true);
     });
-    json.attributeObject("experiments", [&] {
-      json.attributeBegin("baseline");
-      emitCandidateEvidence(json, candidates[kBaselineIndex], targetProfile,
-                            candidates[kBaselineIndex]
-                                .variant->getPackage()
-                                .getManifest()
-                                .launch);
-      json.attributeEnd();
-      json.attributeBegin("winner");
-      emitCandidateEvidence(
-          json, candidates[kWinnerIndex], targetProfile,
-          candidates[kWinnerIndex].variant->getPackage().getManifest().launch);
-      json.attributeEnd();
-    });
+    json.attributeBegin("experiment");
+    emitCandidateEvidence(json, candidate, targetProfile,
+                          productionManifest.launch);
+    json.attributeEnd();
   });
   output << "\n";
   return output.str();
@@ -771,7 +760,100 @@ llvm::Error ensureRunsDirectory(llvm::StringRef companionRoot,
   if (canonical != expected)
     return invalid("profile runs directory escapes the verified companion");
   runs.assign(canonical.begin(), canonical.end());
+  if (error =
+          llvm::sys::fs::setPermissions(runs, llvm::sys::fs::all_all))
+    return llvm::createStringError(
+        error, "failed to set profile runs directory permissions");
   return llvm::Error::success();
+}
+
+llvm::Error validateProfileReportMembers(llvm::StringRef directory) {
+  size_t publicMemberCount = 0;
+  std::error_code walkError;
+  for (llvm::sys::fs::directory_iterator
+           iterator(directory, walkError, /*follow_symlinks=*/false),
+       end;
+       iterator != end; iterator.increment(walkError)) {
+    if (walkError)
+      return llvm::createStringError(
+          walkError, "failed to inspect profile report members");
+    const llvm::StringRef name =
+        llvm::sys::path::filename(iterator->path());
+    if (iterator->type() != llvm::sys::fs::file_type::regular_file ||
+        (name != "evidence.json" && name != "analysis.json" &&
+         name != "index.html"))
+      return invalid("profile report contains an unexpected public artifact");
+    ++publicMemberCount;
+  }
+  if (walkError)
+    return llvm::createStringError(
+        walkError, "failed to inspect profile report members");
+  if (publicMemberCount != 3)
+    return invalid("profile report public artifact domain is incomplete");
+  return llvm::Error::success();
+}
+
+llvm::Error validateProfileEvidenceRunId(llvm::StringRef directory,
+                                        llvm::StringRef expectedRunId) {
+  llvm::SmallString<256> evidencePath(directory);
+  llvm::sys::path::append(evidencePath, "evidence.json");
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> evidence =
+      llvm::MemoryBuffer::getFile(evidencePath, /*IsText=*/true);
+  if (!evidence)
+    return llvm::createStringError(
+        evidence.getError(), "failed to read managed profile evidence");
+  llvm::Expected<llvm::json::Value> parsed =
+      llvm::json::parse((*evidence)->getBuffer());
+  if (!parsed)
+    return invalid("managed profile evidence is not valid JSON: " +
+                   llvm::toString(parsed.takeError()));
+  llvm::json::Object *object = parsed->getAsObject();
+  if (!object)
+    return invalid("managed profile evidence root is not an object");
+  std::optional<llvm::StringRef> runId = object->getString("run_id");
+  if (!runId)
+    return invalid("managed profile evidence is missing run_id");
+  if (*runId != expectedRunId)
+    return invalid("managed profile evidence run_id does not match its "
+                   "directory basename");
+  return llvm::Error::success();
+}
+
+llvm::Error validateManagedProfileRun(llvm::StringRef directory,
+                                      llvm::StringRef expectedRunId) {
+  if (llvm::Error reportError = validateProfileReportMembers(directory))
+    return reportError;
+  return validateProfileEvidenceRunId(directory, expectedRunId);
+}
+
+llvm::Expected<std::optional<std::string>>
+resolveCurrentProfileRun(llvm::StringRef runsDirectory) {
+  llvm::SmallString<256> current(runsDirectory);
+  llvm::sys::path::append(current, "current");
+  llvm::sys::fs::file_status status;
+  std::error_code error =
+      llvm::sys::fs::status(current, status, /*follow=*/false);
+  if (error == std::errc::no_such_file_or_directory)
+    return std::optional<std::string>();
+  if (error)
+    return llvm::createStringError(
+        error, "failed to inspect current profile report entry");
+  if (status.type() != llvm::sys::fs::file_type::symlink_file)
+    return invalid("current profile report entry is not a managed link");
+
+  llvm::SmallString<256> resolved;
+  if (error = llvm::sys::fs::real_path(current, resolved))
+    return llvm::createStringError(
+        error, "failed to resolve current profile report entry");
+  if (llvm::sys::path::parent_path(resolved) != runsDirectory ||
+      !llvm::sys::path::filename(resolved).starts_with("run-") ||
+      llvm::sys::fs::get_file_type(resolved, /*Follow=*/false) !=
+          llvm::sys::fs::file_type::directory_file)
+    return invalid("current profile report entry does not name a managed run");
+  if (llvm::Error reportError = validateManagedProfileRun(
+          resolved, llvm::sys::path::filename(resolved)))
+    return std::move(reportError);
+  return std::optional<std::string>(resolved.str().str());
 }
 
 llvm::Expected<std::string> findProfileResource(llvm::StringRef name) {
@@ -821,6 +903,9 @@ struct PreparedProfilePublication {
   std::string runId;
   std::string stagingDirectory;
   std::string finalDirectory;
+  std::string runsDirectory;
+  std::string currentEntry;
+  std::optional<std::string> previousRunDirectory;
   std::string python;
   std::string reportScript;
 };
@@ -844,15 +929,101 @@ prepareProfilePublication(llvm::StringRef companionRoot) {
     return schema.takeError();
   (void)schema;
 
+  llvm::SmallString<256> runs;
+  if (llvm::Error error = ensureRunsDirectory(companionRoot, runs))
+    return std::move(error);
+  llvm::Expected<std::optional<std::string>> previous =
+      resolveCurrentProfileRun(runs);
+  if (!previous)
+    return previous.takeError();
   llvm::Expected<std::pair<std::string, std::string>> run =
       createStagingRun(companionRoot);
   if (!run)
     return run.takeError();
   llvm::SmallString<256> finalPath(companionRoot);
   llvm::sys::path::append(finalPath, "runs", run->first);
+  llvm::SmallString<256> current(runs);
+  llvm::sys::path::append(current, "current");
   return PreparedProfilePublication{run->first, run->second,
-                                    finalPath.str().str(), *python,
-                                    std::move(*report)};
+                                    finalPath.str().str(), runs.str().str(),
+                                    current.str().str(), std::move(*previous),
+                                    *python, std::move(*report)};
+}
+
+using RemoveManagedProfileRun =
+    llvm::function_ref<std::error_code(llvm::StringRef)>;
+
+llvm::Expected<std::string>
+activateProfilePublication(PreparedProfilePublication &publication,
+                           RemoveManagedProfileRun removeManagedRun) {
+  for (llvm::StringRef name :
+       {llvm::StringRef("evidence.json"), llvm::StringRef("analysis.json"),
+        llvm::StringRef("index.html")}) {
+    llvm::SmallString<256> path(publication.stagingDirectory);
+    llvm::sys::path::append(path, name);
+    if (llvm::sys::fs::get_file_type(path, /*Follow=*/false) !=
+        llvm::sys::fs::file_type::regular_file)
+      return invalid("profile report generator omitted " + name);
+    if (std::error_code error =
+            llvm::sys::fs::setPermissions(path, llvm::sys::fs::all_all))
+      return llvm::createStringError(
+          error, "failed to set profile report artifact permissions");
+  }
+  if (llvm::Error reportError = validateManagedProfileRun(
+          publication.stagingDirectory, publication.runId))
+    return std::move(reportError);
+  if (std::error_code error = llvm::sys::fs::setPermissions(
+          publication.stagingDirectory, llvm::sys::fs::all_all))
+    return llvm::createStringError(
+        error, "failed to set profile report directory permissions");
+
+  if (std::error_code error = llvm::sys::fs::rename(
+          publication.stagingDirectory, publication.finalDirectory))
+    return llvm::createStringError(error,
+                                   "failed to publish profile run atomically");
+  publication.stagingDirectory.clear();
+  bool currentPublished = false;
+  llvm::SmallString<256> temporaryCurrent(publication.runsDirectory);
+  llvm::sys::path::append(temporaryCurrent,
+                          ".current-" + publication.runId);
+  auto rollbackNewRun = llvm::make_scope_exit([&] {
+    (void)llvm::sys::fs::remove(temporaryCurrent);
+    if (!currentPublished)
+      (void)llvm::sys::fs::remove_directories(publication.finalDirectory);
+  });
+  if (std::error_code error = llvm::sys::fs::create_link(
+          publication.finalDirectory, temporaryCurrent))
+    return llvm::createStringError(
+        error, "failed to create atomic current profile report entry");
+
+  llvm::Expected<std::optional<std::string>> observedPrevious =
+      resolveCurrentProfileRun(publication.runsDirectory);
+  if (!observedPrevious)
+    return observedPrevious.takeError();
+  if (*observedPrevious != publication.previousRunDirectory)
+    return invalid("current profile report changed during this campaign");
+  if (std::error_code error = llvm::sys::fs::rename(
+          temporaryCurrent, publication.currentEntry))
+    return llvm::createStringError(
+        error, "failed to activate current profile report atomically");
+  currentPublished = true;
+  rollbackNewRun.release();
+
+  if (publication.previousRunDirectory &&
+      *publication.previousRunDirectory != publication.finalDirectory) {
+    llvm::StringRef previousRunId =
+        llvm::sys::path::filename(*publication.previousRunDirectory);
+    if (llvm::Error identityError = validateManagedProfileRun(
+            *publication.previousRunDirectory, previousRunId))
+      return std::move(identityError);
+    if (std::error_code error =
+            removeManagedRun(*publication.previousRunDirectory))
+      return llvm::createStringError(
+          error,
+          "profile report was activated, but the previous managed run could "
+          "not be removed");
+  }
+  return publication.currentEntry;
 }
 
 llvm::Expected<std::string>
@@ -860,11 +1031,11 @@ publishReport(PreparedProfilePublication &publication,
               const VerifiedProfileCompanion &companion,
               const BoardDeviceInfo &device,
               llvm::ArrayRef<BoardProfileMeasurementSample> samples,
-              llvm::ArrayRef<CandidateState> candidates,
+              const CandidateState &candidate,
               const BoardProfileOutputValidationState &outputValidation) {
   llvm::Expected<std::string> evidence =
       serializeEvidence(companion, publication.runId, device, samples,
-                        candidates, outputValidation);
+                        candidate, outputValidation);
   if (!evidence)
     return evidence.takeError();
   llvm::SmallString<256> evidencePath(publication.stagingDirectory);
@@ -901,25 +1072,68 @@ publishReport(PreparedProfilePublication &publication,
              ? llvm::Twine(" with exit code ") + llvm::Twine(exitCode)
              : llvm::Twine(": ") + executionError));
 
-  for (llvm::StringRef name :
-       {llvm::StringRef("evidence.json"), llvm::StringRef("analysis.json"),
-        llvm::StringRef("index.html")}) {
-    llvm::SmallString<256> path(publication.stagingDirectory);
-    llvm::sys::path::append(path, name);
-    if (llvm::sys::fs::get_file_type(path, /*Follow=*/false) !=
-        llvm::sys::fs::file_type::regular_file)
-      return invalid("profile report generator omitted " + name);
-  }
-
-  if (std::error_code error = llvm::sys::fs::rename(
-          publication.stagingDirectory, publication.finalDirectory))
-    return llvm::createStringError(error,
-                                   "failed to publish profile run atomically");
-  publication.stagingDirectory.clear();
-  return publication.finalDirectory;
+  return activateProfilePublication(
+      publication, [](llvm::StringRef runDirectory) {
+        return llvm::sys::fs::remove_directories(
+            runDirectory, /*IgnoreErrors=*/false);
+      });
 }
 
 } // namespace
+
+#if defined(WAFER_PROFILE_CAMPAIGN_TESTING)
+namespace testing {
+
+llvm::Expected<ProfileReportPublicationResult>
+publishProfileReportForTesting(
+    llvm::StringRef companionRoot,
+    llvm::function_ref<llvm::Error(llvm::StringRef runId,
+                                  llvm::StringRef stagingDirectory)>
+        stage,
+    llvm::function_ref<std::error_code(llvm::StringRef)> removeManagedRun) {
+  llvm::SmallString<256> runs;
+  if (llvm::Error error = ensureRunsDirectory(companionRoot, runs))
+    return std::move(error);
+  llvm::Expected<std::optional<std::string>> previous =
+      resolveCurrentProfileRun(runs);
+  if (!previous)
+    return previous.takeError();
+  llvm::Expected<std::pair<std::string, std::string>> run =
+      createStagingRun(companionRoot);
+  if (!run)
+    return run.takeError();
+
+  llvm::SmallString<256> finalPath(runs);
+  llvm::sys::path::append(finalPath, run->first);
+  llvm::SmallString<256> current(runs);
+  llvm::sys::path::append(current, "current");
+  PreparedProfilePublication publication{
+      run->first,
+      run->second,
+      finalPath.str().str(),
+      runs.str().str(),
+      current.str().str(),
+      std::move(*previous),
+      /*python=*/"",
+      /*reportScript=*/""};
+  auto cleanupStaging = llvm::make_scope_exit([&] {
+    if (!publication.stagingDirectory.empty())
+      (void)llvm::sys::fs::remove_directories(
+          publication.stagingDirectory);
+  });
+  if (llvm::Error error =
+          stage(publication.runId, publication.stagingDirectory))
+    return std::move(error);
+  llvm::Expected<std::string> activated =
+      activateProfilePublication(publication, removeManagedRun);
+  if (!activated)
+    return activated.takeError();
+  return ProfileReportPublicationResult{
+      publication.runId, publication.finalDirectory, std::move(*activated)};
+}
+
+} // namespace testing
+#endif
 
 struct BoardProfileOutputValidationState::Impl {
   struct Reference {
@@ -933,11 +1147,11 @@ struct BoardProfileOutputValidationState::Impl {
 
   std::string stagingDirectory;
   BoardProfileOutputValidationMode mode =
-      BoardProfileOutputValidationMode::SameSessionProductionWinner;
+      BoardProfileOutputValidationMode::SameSessionProduction;
   bool established = false;
   bool referencesReleased = false;
-  bool sawProductionWinnerRepeat = false;
-  bool sawCandidateEquivalent = false;
+  bool sawProductionRepeat = false;
+  bool sawDiagnosticCapture = false;
   std::vector<BoardProfileOutputValidationResource> resources;
   std::vector<Reference> references;
   std::map<SemanticOutputKey, size_t> referenceIndices;
@@ -946,12 +1160,12 @@ struct BoardProfileOutputValidationState::Impl {
 llvm::StringRef stringifyBoardProfileOutputValidationMode(
     BoardProfileOutputValidationMode mode) {
   switch (mode) {
-  case BoardProfileOutputValidationMode::ExternalExact:
-    return "external-exact";
+  case BoardProfileOutputValidationMode::ExternalExpected:
+    return "external-expected";
   case BoardProfileOutputValidationMode::Mixed:
     return "mixed";
-  case BoardProfileOutputValidationMode::SameSessionProductionWinner:
-    return "same-session-production-winner";
+  case BoardProfileOutputValidationMode::SameSessionProduction:
+    return "same-session-production";
   }
   llvm_unreachable("unknown board profile output validation mode");
 }
@@ -984,11 +1198,11 @@ BoardProfileOutputValidationState &BoardProfileOutputValidationState::operator=(
 }
 
 llvm::Error
-BoardProfileOutputValidationState::establishProductionWinnerReference(
+BoardProfileOutputValidationState::establishProductionReference(
     const PackageManifest &manifest, const BoardInvocationFilePlan &plan,
     llvm::ArrayRef<BoardRuntimeOutput> outputs) {
   if (impl->established)
-    return invalid("production-winner output reference is already established");
+    return invalid("production-artifact output reference is already established");
   if (impl->stagingDirectory.empty() ||
       llvm::sys::fs::get_file_type(impl->stagingDirectory,
                                    /*Follow=*/false) !=
@@ -1043,16 +1257,16 @@ BoardProfileOutputValidationState::establishProductionWinnerReference(
         {output.resource->logicalRank, output.resource->role,
          output.resource->roleIndex, output.resource->bytes,
          hashOutputBytes(output.output->bytes),
-         output.hasExternalExpected ? std::optional<bool>(true) : std::nullopt,
+         output.externalExpectedComparison,
          false, false});
-    if (output.hasExternalExpected)
+    if (output.externalExpectedComparison)
       ++externalExpectedCount;
   }
 
   if (externalExpectedCount == resources.size())
-    impl->mode = BoardProfileOutputValidationMode::ExternalExact;
+    impl->mode = BoardProfileOutputValidationMode::ExternalExpected;
   else if (externalExpectedCount == 0)
-    impl->mode = BoardProfileOutputValidationMode::SameSessionProductionWinner;
+    impl->mode = BoardProfileOutputValidationMode::SameSessionProduction;
   else
     impl->mode = BoardProfileOutputValidationMode::Mixed;
   impl->resources = std::move(resources);
@@ -1065,9 +1279,9 @@ BoardProfileOutputValidationState::establishProductionWinnerReference(
 
 llvm::Error BoardProfileOutputValidationState::validateAgainstReference(
     const PackageManifest &manifest, const BoardInvocationFilePlan &plan,
-    llvm::ArrayRef<BoardRuntimeOutput> outputs, bool productionWinnerRepeat) {
+    llvm::ArrayRef<BoardRuntimeOutput> outputs, bool productionRepeat) {
   if (!impl->established)
-    return invalid("production-winner output reference is not established");
+    return invalid("production-artifact output reference is not established");
   if (impl->referencesReleased)
     return invalid("profile output references were already removed");
 
@@ -1090,48 +1304,48 @@ llvm::Error BoardProfileOutputValidationState::validateAgainstReference(
                                  exactOutputContract(*output.resource)))
       return invalid("profile output typed resource contract changed for " +
                      formatSemanticOutputKey(key));
-    if (impl->resources[index].externalExpectedExact.has_value() !=
-        output.hasExternalExpected)
-      return invalid("profile output external expected coverage changed for " +
+    if (impl->resources[index].externalExpectedComparison !=
+        output.externalExpectedComparison)
+      return invalid("profile output external expected policy changed for " +
                      formatSemanticOutputKey(key));
     if (llvm::Error error =
             compareReferenceFile(reference.path, output.output->bytes, key))
       return error;
   }
 
-  if (productionWinnerRepeat) {
-    impl->sawProductionWinnerRepeat = true;
+  if (productionRepeat) {
+    impl->sawProductionRepeat = true;
     for (BoardProfileOutputValidationResource &resource : impl->resources)
-      resource.productionWinnerRepeatExact = true;
+      resource.productionRepeatsExact = true;
   } else {
-    impl->sawCandidateEquivalent = true;
+    impl->sawDiagnosticCapture = true;
     for (BoardProfileOutputValidationResource &resource : impl->resources)
-      resource.candidateEquivalentExact = true;
+      resource.diagnosticCapturesExact = true;
   }
   return llvm::Error::success();
 }
 
-llvm::Error BoardProfileOutputValidationState::validateProductionWinnerRepeat(
+llvm::Error BoardProfileOutputValidationState::validateProductionRepeat(
     const PackageManifest &manifest, const BoardInvocationFilePlan &plan,
     llvm::ArrayRef<BoardRuntimeOutput> outputs) {
   return validateAgainstReference(manifest, plan, outputs,
-                                  /*productionWinnerRepeat=*/true);
+                                  /*productionRepeat=*/true);
 }
 
-llvm::Error BoardProfileOutputValidationState::validateCandidateEquivalent(
+llvm::Error BoardProfileOutputValidationState::validateDiagnosticCapture(
     const PackageManifest &manifest, const BoardInvocationFilePlan &plan,
     llvm::ArrayRef<BoardRuntimeOutput> outputs) {
   return validateAgainstReference(manifest, plan, outputs,
-                                  /*productionWinnerRepeat=*/false);
+                                  /*productionRepeat=*/false);
 }
 
 llvm::Error BoardProfileOutputValidationState::finalizeAndRemoveReferences() {
   if (!impl->established)
-    return invalid("production-winner output reference is not established");
-  if (!impl->sawProductionWinnerRepeat)
-    return invalid("production-winner output repeat was not validated");
-  if (!impl->sawCandidateEquivalent)
-    return invalid("candidate output equivalence was not validated");
+    return invalid("production-artifact output reference is not established");
+  if (!impl->sawProductionRepeat)
+    return invalid("production-artifact output repeat was not validated");
+  if (!impl->sawDiagnosticCapture)
+    return invalid("diagnostic capture output equivalence was not validated");
   if (impl->referencesReleased)
     return invalid("profile output references were already removed");
   for (Impl::Reference &reference : impl->references) {
@@ -1155,106 +1369,73 @@ BoardProfileOutputValidationState::getResources() const {
 }
 
 llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
-    const std::array<uint64_t, 2> &traceCapacities,
+    uint64_t traceCapacity,
     llvm::function_ref<llvm::Expected<BoardProfileProtocolObservation>(
         const BoardProfileProtocolStep &)>
         execute,
     llvm::function_ref<
         llvm::Error(llvm::ArrayRef<BoardProfileMeasurementSample>)>
         finalize) {
-  auto candidateIndex = [](BoardProfileProtocolCandidate candidate) {
-    return static_cast<size_t>(candidate);
-  };
-  auto invoke = [&](BoardProfileProtocolCandidate candidate,
-                    BoardProfileProtocolLaunch launch, int32_t block = -1,
-                    int32_t position =
-                        -1) -> llvm::Expected<BoardProfileProtocolObservation> {
-    return execute({candidate, launch, block, position});
+  auto invoke = [&](BoardProfileProtocolLaunch launch,
+                    uint32_t sampleIndex = 0)
+      -> llvm::Expected<BoardProfileProtocolObservation> {
+    return execute({launch, sampleIndex});
   };
 
-  for (BoardProfileProtocolCandidate candidate :
-       {BoardProfileProtocolCandidate::Winner,
-        BoardProfileProtocolCandidate::Baseline}) {
-    llvm::Expected<BoardProfileProtocolObservation> warmup =
-        invoke(candidate, BoardProfileProtocolLaunch::Warmup);
-    if (!warmup)
-      return warmup.takeError();
-  }
+  llvm::Expected<BoardProfileProtocolObservation> warmup =
+      invoke(BoardProfileProtocolLaunch::Warmup);
+  if (!warmup)
+    return warmup.takeError();
 
   BoardProfileProtocolResult result;
-  result.samples.reserve(20);
-  for (uint32_t block = 0; block < std::size(kBlockOrders); ++block) {
-    llvm::StringRef order = kBlockOrders[block];
-    for (uint32_t position = 0; position < order.size(); ++position) {
-      BoardProfileProtocolCandidate candidate =
-          order[position] == 'A' ? BoardProfileProtocolCandidate::Baseline
-                                 : BoardProfileProtocolCandidate::Winner;
-      llvm::Expected<BoardProfileProtocolObservation> observation = invoke(
-          candidate, BoardProfileProtocolLaunch::Measurement, block, position);
-      if (!observation)
-        return observation.takeError();
-      if (observation->launchToCompletionNanoseconds == 0)
-        return invalid("board launch-to-completion sample is zero");
-      if (observation->completionObservationResolutionNanoseconds == 0)
-        return invalid("board completion-observation resolution is zero");
-      std::string id = (kCandidateLabels[candidateIndex(candidate)] + "-b" +
-                        llvm::Twine(block) + "-p" + llvm::Twine(position))
-                           .str();
-      result.samples.push_back(
-          {id, candidate, block, position,
-           observation->launchToCompletionNanoseconds,
-           observation->completionObservationResolutionNanoseconds});
-      if (candidate == BoardProfileProtocolCandidate::Winner)
-        result.finalWinnerSampleId = id;
-    }
+  result.samples.reserve(kMeasurementSampleCount);
+  for (uint32_t sampleIndex = 0; sampleIndex < kMeasurementSampleCount;
+       ++sampleIndex) {
+    llvm::Expected<BoardProfileProtocolObservation> observation =
+        invoke(BoardProfileProtocolLaunch::Measurement, sampleIndex);
+    if (!observation)
+      return observation.takeError();
+    if (observation->launchToCompletionNanoseconds == 0)
+      return invalid("board launch-to-completion sample is zero");
+    if (observation->completionObservationResolutionNanoseconds == 0)
+      return invalid("board completion-observation resolution is zero");
+    std::string id = ("final-s" + llvm::Twine(sampleIndex)).str();
+    result.samples.push_back(
+        {id, sampleIndex, observation->launchToCompletionNanoseconds,
+         observation->completionObservationResolutionNanoseconds});
+    result.finalSampleId = id;
   }
 
-  for (BoardProfileProtocolCandidate candidate :
-       {BoardProfileProtocolCandidate::Baseline,
-        BoardProfileProtocolCandidate::Winner}) {
-    llvm::Expected<BoardProfileProtocolObservation> summary =
-        invoke(candidate, BoardProfileProtocolLaunch::Summary);
-    if (!summary)
-      return summary.takeError();
+  llvm::Expected<BoardProfileProtocolObservation> summary =
+      invoke(BoardProfileProtocolLaunch::Summary);
+  if (!summary)
+    return summary.takeError();
+
+  llvm::Expected<BoardProfileProtocolObservation> count =
+      invoke(BoardProfileProtocolLaunch::Count);
+  if (!count)
+    return count.takeError();
+  for (uint64_t sequence : count->countSequences)
+    if (sequence > traceCapacity)
+      return invalid("profile count exceeds the fixed trace package capacity");
+
+  llvm::Expected<BoardProfileProtocolObservation> trace =
+      invoke(BoardProfileProtocolLaunch::Trace);
+  if (!trace)
+    return trace.takeError();
+  for (uint32_t tile = 0; tile < WAFER_TX81_PROFILER_TILE_COUNT; ++tile) {
+    const BoardProfileTraceTileAudit &audit = trace->trace[tile];
+    if (audit.preflightCount != count->countSequences[tile] ||
+        audit.preflightCount != audit.nextSequence ||
+        audit.nextSequence != audit.storedEventCount ||
+        audit.droppedEventCount != 0 ||
+        audit.recordFlags != kExpectedTraceFlags ||
+        audit.traceState != WAFER_TX81_PROFILER_TRACE_COMPLETE)
+      return invalid("profile trace audit differs from count preflight");
   }
 
-  std::array<std::array<uint64_t, WAFER_TX81_PROFILER_TILE_COUNT>, 2> counts{};
-  for (BoardProfileProtocolCandidate candidate :
-       {BoardProfileProtocolCandidate::Baseline,
-        BoardProfileProtocolCandidate::Winner}) {
-    llvm::Expected<BoardProfileProtocolObservation> count =
-        invoke(candidate, BoardProfileProtocolLaunch::Count);
-    if (!count)
-      return count.takeError();
-    counts[candidateIndex(candidate)] = count->countSequences;
-  }
-  for (size_t candidate = 0; candidate < counts.size(); ++candidate)
-    for (uint64_t count : counts[candidate])
-      if (count > traceCapacities[candidate])
-        return invalid("profile count exceeds the fixed trace package "
-                       "capacity");
-
-  for (BoardProfileProtocolCandidate candidate :
-       {BoardProfileProtocolCandidate::Baseline,
-        BoardProfileProtocolCandidate::Winner}) {
-    llvm::Expected<BoardProfileProtocolObservation> trace =
-        invoke(candidate, BoardProfileProtocolLaunch::Trace);
-    if (!trace)
-      return trace.takeError();
-    const size_t index = candidateIndex(candidate);
-    for (uint32_t tile = 0; tile < WAFER_TX81_PROFILER_TILE_COUNT; ++tile) {
-      const BoardProfileTraceTileAudit &audit = trace->trace[tile];
-      if (audit.preflightCount != counts[index][tile] ||
-          audit.preflightCount != audit.nextSequence ||
-          audit.nextSequence != audit.storedEventCount ||
-          audit.droppedEventCount != 0 ||
-          audit.recordFlags != kExpectedTraceFlags ||
-          audit.traceState != WAFER_TX81_PROFILER_TRACE_COMPLETE)
-        return invalid("profile trace audit differs from count preflight");
-    }
-  }
-
-  if (result.samples.size() != 20 || result.finalWinnerSampleId.empty())
+  if (result.samples.size() != kMeasurementSampleCount ||
+      result.finalSampleId.empty())
     return invalid("profile measurement schedule is incomplete");
   if (llvm::Error error = finalize(result.samples))
     return std::move(error);
@@ -1269,57 +1450,50 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
   if (productionManifest.rankCount != WAFER_TX81_PROFILER_TILE_COUNT)
     return invalid("profile campaign requires the complete 16-rank package");
 
-  std::array<CandidateState, 2> candidates;
-  candidates[kBaselineIndex].variant =
-      companion.findVariant(ProfileVariantRole::ReservedBaseline);
-  candidates[kWinnerIndex].variant =
-      companion.findVariant(ProfileVariantRole::ProductionWinner);
-  if (!candidates[kBaselineIndex].variant || !candidates[kWinnerIndex].variant)
-    return invalid("profile companion has no complete candidate pair");
+  CandidateState candidate;
+  candidate.variant =
+      companion.findVariant(ProfileVariantRole::FinalArtifact);
+  if (!candidate.variant)
+    return invalid("profile companion has no production artifact");
 
-  for (CandidateState &candidate : candidates) {
-    llvm::Expected<BoardInvocationFilePlan> execution =
-        remapBoardInvocationFilePlan(
-            productionPlan, productionManifest,
-            candidate.variant->getPackage().getManifest());
-    if (!execution)
-      return execution.takeError();
-    candidate.executionPlan = std::move(*execution);
-    candidate.summaryPackage = companion.findCapture(
-        candidate.variant->getId(), ProfileCaptureKind::Summary);
-    candidate.countPackage = companion.findCapture(candidate.variant->getId(),
-                                                   ProfileCaptureKind::Count);
-    candidate.tracePackage = companion.findCapture(candidate.variant->getId(),
-                                                   ProfileCaptureKind::Trace);
-    if (!candidate.summaryPackage || !candidate.countPackage ||
-        !candidate.tracePackage)
-      return invalid("profile companion has no complete capture package set");
-    llvm::Expected<BoardInvocationFilePlan> summary = makeCapturePlan(
-        productionPlan, productionManifest, *candidate.summaryPackage);
-    if (!summary)
-      return summary.takeError();
-    candidate.summaryPlan = std::move(*summary);
-    llvm::Expected<BoardInvocationFilePlan> count = makeCapturePlan(
-        productionPlan, productionManifest, *candidate.countPackage);
-    if (!count)
-      return count.takeError();
-    candidate.countPlan = std::move(*count);
-    llvm::Expected<BoardInvocationFilePlan> trace = makeCapturePlan(
-        productionPlan, productionManifest, *candidate.tracePackage);
-    if (!trace)
-      return trace.takeError();
-    candidate.tracePlan = std::move(*trace);
-  }
+  llvm::Expected<BoardInvocationFilePlan> execution =
+      remapBoardInvocationFilePlan(
+          productionPlan, productionManifest,
+          candidate.variant->getPackage().getManifest());
+  if (!execution)
+    return execution.takeError();
+  candidate.executionPlan = std::move(*execution);
+  candidate.summaryPackage = companion.findCapture(
+      candidate.variant->getId(), ProfileCaptureKind::Summary);
+  candidate.countPackage = companion.findCapture(
+      candidate.variant->getId(), ProfileCaptureKind::Count);
+  candidate.tracePackage = companion.findCapture(
+      candidate.variant->getId(), ProfileCaptureKind::Trace);
+  if (!candidate.summaryPackage || !candidate.countPackage ||
+      !candidate.tracePackage)
+    return invalid("profile companion has no complete capture package set");
+  llvm::Expected<BoardInvocationFilePlan> summary = makeCapturePlan(
+      productionPlan, productionManifest, *candidate.summaryPackage);
+  if (!summary)
+    return summary.takeError();
+  candidate.summaryPlan = std::move(*summary);
+  llvm::Expected<BoardInvocationFilePlan> count = makeCapturePlan(
+      productionPlan, productionManifest, *candidate.countPackage);
+  if (!count)
+    return count.takeError();
+  candidate.countPlan = std::move(*count);
+  llvm::Expected<BoardInvocationFilePlan> trace = makeCapturePlan(
+      productionPlan, productionManifest, *candidate.tracePackage);
+  if (!trace)
+    return trace.takeError();
+  candidate.tracePlan = std::move(*trace);
 
-  std::array<uint64_t, 2> traceCapacities{};
-  for (size_t index = 0; index < candidates.size(); ++index) {
-    const uint64_t eventStorage =
-        candidates[index].tracePackage->getRecordBytes() -
-        WAFER_TX81_PROFILER_EVENTS_OFFSET -
-        WAFER_TX81_PROFILER_BUFFER_GUARD_BYTES;
-    traceCapacities[index] =
-        eventStorage / WAFER_TX81_PROFILER_TSM_CALL_EVENT_BYTES;
-  }
+  const uint64_t eventStorage =
+      candidate.tracePackage->getRecordBytes() -
+      WAFER_TX81_PROFILER_EVENTS_OFFSET -
+      WAFER_TX81_PROFILER_BUFFER_GUARD_BYTES;
+  const uint64_t traceCapacity =
+      eventStorage / WAFER_TX81_PROFILER_TSM_CALL_EVENT_BYTES;
 
   // All host publication dependencies and a writable atomic staging
   // directory are qualified before the first device/provider call.
@@ -1334,13 +1508,7 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
   BoardProfileOutputValidationState outputValidation(
       publication->stagingDirectory);
 
-  llvm::Expected<QualifiedBoardRuntimeSession> session =
-      qualifyBoardRuntimeSession(productionPlan.request.deviceId,
-                                 WAFER_TX81_PROFILER_TILE_COUNT,
-                                 productionPlan.request.qualification, driver);
-  if (!session)
-    return session.takeError();
-
+  std::optional<QualifiedBoardRuntimeSession> session;
   std::optional<BoardDeviceInfo> device;
   auto execute = [&](const VerifiedPackageManifest &package,
                      llvm::StringRef packageRoot,
@@ -1349,9 +1517,21 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
       -> llvm::Expected<BoardRuntimeInvocationResult> {
     BoardRuntimeInvocationRequest request = plan.request;
     request.completionObservationPolicy = observationPolicy;
-    llvm::Expected<BoardRuntimeInvocationResult> result =
-        executeBoardInvocationInSession(package, packageRoot,
-                                        std::move(request), *session);
+    llvm::Expected<BoardRuntimeInvocationResult> result = [&]() {
+      if (session)
+        return executeBoardInvocationInSession(
+            package, packageRoot, std::move(request), *session);
+      llvm::Expected<std::pair<BoardRuntimeInvocationResult,
+                               QualifiedBoardRuntimeSession>>
+          started = executeBoardInvocationAndStartSession(
+              package, packageRoot, std::move(request), driver);
+      if (!started)
+        return llvm::Expected<BoardRuntimeInvocationResult>(
+            started.takeError());
+      session.emplace(std::move(started->second));
+      return llvm::Expected<BoardRuntimeInvocationResult>(
+          std::move(started->first));
+    }();
     if (!result)
       return result.takeError();
     if (profilerExpected != !result->profilerOutputs.empty())
@@ -1368,15 +1548,13 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
     return result;
   };
 
-  std::optional<BoardRuntimeInvocationResult> finalWinner;
+  std::optional<BoardRuntimeInvocationResult> finalResult;
   std::string profileRunDirectory;
   llvm::Expected<BoardProfileProtocolResult> protocol =
       runFixedBoardProfileProtocol(
-          traceCapacities,
+          traceCapacity,
           [&](const BoardProfileProtocolStep &step)
               -> llvm::Expected<BoardProfileProtocolObservation> {
-            const size_t candidateIndex = static_cast<size_t>(step.candidate);
-            CandidateState &candidate = candidates[candidateIndex];
             BoardProfileProtocolObservation observation;
             switch (step.launch) {
             case BoardProfileProtocolLaunch::Warmup:
@@ -1392,17 +1570,15 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
               if (!result)
                 return result.takeError();
               llvm::Error outputError = [&]() -> llvm::Error {
-                if (step.launch == BoardProfileProtocolLaunch::Warmup &&
-                    candidateIndex == kWinnerIndex)
-                  return outputValidation.establishProductionWinnerReference(
+                if (step.launch == BoardProfileProtocolLaunch::Warmup)
+                  return outputValidation.establishProductionReference(
                       candidate.variant->getPackage().getManifest(),
                       candidate.executionPlan, result->outputs);
-                if (step.launch == BoardProfileProtocolLaunch::Measurement &&
-                    candidateIndex == kWinnerIndex)
-                  return outputValidation.validateProductionWinnerRepeat(
+                if (step.launch == BoardProfileProtocolLaunch::Measurement)
+                  return outputValidation.validateProductionRepeat(
                       candidate.variant->getPackage().getManifest(),
                       candidate.executionPlan, result->outputs);
-                return outputValidation.validateCandidateEquivalent(
+                return outputValidation.validateDiagnosticCapture(
                     candidate.variant->getPackage().getManifest(),
                     candidate.executionPlan, result->outputs);
               }();
@@ -1413,9 +1589,8 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
               if (step.launch == BoardProfileProtocolLaunch::Measurement)
                 observation.completionObservationResolutionNanoseconds =
                     result->completionObservationResolutionNanoseconds;
-              if (step.launch == BoardProfileProtocolLaunch::Measurement &&
-                  candidateIndex == kWinnerIndex)
-                finalWinner = std::move(*result);
+              if (step.launch == BoardProfileProtocolLaunch::Measurement)
+                finalResult = std::move(*result);
               return observation;
             }
             case BoardProfileProtocolLaunch::Summary: {
@@ -1428,7 +1603,7 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
               if (!result)
                 return result.takeError();
               if (llvm::Error error =
-                      outputValidation.validateCandidateEquivalent(
+                      outputValidation.validateDiagnosticCapture(
                           candidate.summaryPackage->getPackage().getManifest(),
                           candidate.summaryPlan, result->outputs))
                 return std::move(error);
@@ -1449,7 +1624,7 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
               if (!result)
                 return result.takeError();
               if (llvm::Error error =
-                      outputValidation.validateCandidateEquivalent(
+                      outputValidation.validateDiagnosticCapture(
                           candidate.countPackage->getPackage().getManifest(),
                           candidate.countPlan, result->outputs))
                 return std::move(error);
@@ -1474,7 +1649,7 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
               if (!result)
                 return result.takeError();
               if (llvm::Error error =
-                      outputValidation.validateCandidateEquivalent(
+                      outputValidation.validateDiagnosticCapture(
                           candidate.tracePackage->getPackage().getManifest(),
                           candidate.tracePlan, result->outputs))
                 return std::move(error);
@@ -1513,7 +1688,7 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
               return std::move(error);
             llvm::Expected<std::string> published =
                 publishReport(*publication, companion, *device, samples,
-                              candidates, outputValidation);
+                              candidate, outputValidation);
             if (!published)
               return published.takeError();
             profileRunDirectory = std::move(*published);
@@ -1521,13 +1696,13 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
           });
   if (!protocol)
     return protocol.takeError();
-  if (!finalWinner)
-    return invalid("profile campaign produced no winner output");
+  if (!finalResult)
+    return invalid("profile campaign produced no final output");
   cleanupPublication.release();
 
   return BoardProfileCampaignResult{
-      std::move(*finalWinner),
-      std::move(candidates[kWinnerIndex].executionPlan),
+      std::move(*finalResult),
+      std::move(candidate.executionPlan),
       std::move(profileRunDirectory),
   };
 }

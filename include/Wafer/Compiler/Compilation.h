@@ -99,9 +99,9 @@ public:
     return CompilationOptions(/*profileCompanion=*/false);
   }
 
-  /// Requests a same-transaction production-winner/reserved-baseline profile
-  /// product. The initial single-card profile contract requires the complete
-  /// 16-rank domain.
+  /// Requests a final-artifact profile companion. The ordinary package is
+  /// compiled exactly once; the companion contains profile-only captures for
+  /// that same accepted 16-rank artifact.
   static llvm::Expected<CompilationOptions>
   profile(const ExecutionConfig &executionConfig);
 
@@ -242,9 +242,9 @@ mlir::FailureOr<ExecutableBundle> compileProgram(
 
 /// Runs the production transaction with an explicit typed product request.
 /// When profiling is requested, the ordinary output remains the production
-/// winner package and a verified sibling `<output>.profile` companion is
-/// published only after both winner and reserved-baseline products have
-/// completed their compiler-owned gates.
+/// final production package and a verified sibling `<output>.profile`
+/// companion is published only after the ordinary artifact and its
+/// profile-only captures have completed their compiler-owned gates.
 mlir::FailureOr<ExecutableBundle>
 compileProgram(CompilationRequest request,
                llvm::StringRef outputProgramDirectory,

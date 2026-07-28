@@ -43,12 +43,6 @@ struct ExecutableBundleBuilder {
 
 namespace detail {
 
-struct ProfileExecutableBundles {
-  ExecutableBundle production;
-  std::optional<ExecutableBundle> reservedBaseline;
-  bool productionIsReservedBaseline = false;
-};
-
 /// Invocation-local cross-context transport for one finalized rank candidate.
 /// The module text is parsed only when the fixed whole-variant attempt plan can
 /// reach this original frontier slot through its correspondence precheck.
@@ -82,18 +76,6 @@ llvm::Expected<ExecutableBundle> buildExecutableBundle(
     std::optional<int64_t> failAfterLogicalRank,
     WholeVariantSelectionMode selectionMode =
         WholeVariantSelectionMode::Production);
-
-llvm::Expected<ProfileExecutableBundles> buildProfileExecutableBundles(
-    std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
-    frontend::FrontendProgramVerificationResult program,
-    ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank);
-
-llvm::Expected<ProfileExecutableBundles>
-compileTensorProgramToProfileExecutableBundlesImpl(
-    llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
-    llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank);
 
 } // namespace detail
 } // namespace wafer::compiler

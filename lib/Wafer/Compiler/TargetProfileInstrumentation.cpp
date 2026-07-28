@@ -2,6 +2,7 @@
 
 #include "TargetArtifactInternal.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -37,24 +38,96 @@ struct CollectedProfileTSMCallSite {
   ProfileTSMCallSite record;
 };
 
-std::string getConstantArgumentSignature(const llvm::CallBase &call,
-                                         const TargetCallDescriptor &descriptor,
-                                         uint64_t targetCallOrdinal) {
+struct ProfileValueIdentityIndex {
+  llvm::DenseMap<const llvm::Function *, uint64_t> functionOrdinals;
+  llvm::DenseMap<const llvm::BasicBlock *, uint64_t> blockOrdinals;
+  llvm::DenseMap<const llvm::Instruction *, uint64_t> instructionOrdinals;
+};
+
+bool isProfileInstrumentationCall(const llvm::Instruction &instruction) {
+  const auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
+  const llvm::Function *callee = call ? call->getCalledFunction() : nullptr;
+  if (!callee)
+    return false;
+  llvm::StringRef symbol = callee->getName();
+  return symbol == kEntryBeginSymbol || symbol == kEntryEndSymbol ||
+         symbol == kSiteBeginSymbol || symbol == kSiteEndSymbol;
+}
+
+ProfileValueIdentityIndex buildProfileValueIdentityIndex(
+    llvm::ArrayRef<const llvm::Function *> reachable) {
+  ProfileValueIdentityIndex index;
+  for (auto [functionOrdinal, function] : llvm::enumerate(reachable)) {
+    index.functionOrdinals.try_emplace(function, functionOrdinal);
+    for (auto [blockOrdinal, block] : llvm::enumerate(*function)) {
+      index.blockOrdinals.try_emplace(&block, blockOrdinal);
+      uint64_t instructionOrdinal = 0;
+      for (const llvm::Instruction &instruction : block) {
+        if (isProfileInstrumentationCall(instruction))
+          continue;
+        index.instructionOrdinals.try_emplace(&instruction,
+                                              instructionOrdinal++);
+      }
+    }
+  }
+  return index;
+}
+
+llvm::Expected<std::string> getTargetCallArgumentSignature(
+    const llvm::CallBase &call, const TargetCallDescriptor &descriptor,
+    uint64_t targetCallOrdinal, const ProfileValueIdentityIndex &identity) {
   std::string storage;
   llvm::raw_string_ostream output(storage);
   output << "target-call=" << targetCallOrdinal;
   for (auto [index, scalar] : llvm::enumerate(descriptor.arguments)) {
     const unsigned width = scalar == TargetCallScalarType::I64 ? 64 : 32;
     output << ";arg" << index << ":i" << width << "=";
-    const auto *constant =
-        llvm::dyn_cast<llvm::ConstantInt>(call.getArgOperand(index));
-    if (!constant) {
-      output << "dynamic";
+    const llvm::Value *operand = call.getArgOperand(index);
+    if (!operand->getType()->isIntegerTy(width))
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "profile TSM target call argument does not match its typed descriptor");
+    if (const auto *constant = llvm::dyn_cast<llvm::ConstantInt>(operand)) {
+      output << "constant:0x"
+             << llvm::utohexstr(constant->getZExtValue(),
+                                /*LowerCase=*/true);
       continue;
     }
-    output << "0x"
-           << llvm::utohexstr(constant->getZExtValue(),
-                              /*LowerCase=*/true);
+    if (const auto *argument = llvm::dyn_cast<llvm::Argument>(operand)) {
+      auto function = identity.functionOrdinals.find(argument->getParent());
+      if (function == identity.functionOrdinals.end())
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "profile target-call argument is outside the reachable function "
+            "identity");
+      output << "argument:function:" << function->second
+             << ":index:" << argument->getArgNo();
+      continue;
+    }
+    if (const auto *instruction = llvm::dyn_cast<llvm::Instruction>(operand)) {
+      auto function =
+          identity.functionOrdinals.find(instruction->getFunction());
+      auto block = identity.blockOrdinals.find(instruction->getParent());
+      auto ordinal = identity.instructionOrdinals.find(instruction);
+      if (function == identity.functionOrdinals.end() ||
+          block == identity.blockOrdinals.end() ||
+          ordinal == identity.instructionOrdinals.end())
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "profile target-call SSA operand has no stable reachable identity");
+      output << "instruction:function:" << function->second
+             << ":block:" << block->second << ":index:" << ordinal->second
+             << ":opcode:" << instruction->getOpcodeName();
+      continue;
+    }
+    if (llvm::isa<llvm::Constant>(operand)) {
+      output << "constant-expression:";
+      operand->printAsOperand(output, /*PrintType=*/false);
+      continue;
+    }
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "profile target-call argument has an unsupported SSA identity");
   }
   output.flush();
   llvm::SHA256 hasher;
@@ -87,6 +160,8 @@ collectProfileTSMCallSitesImpl(const llvm::Module &module,
   }
 
   llvm::ArrayRef<TargetCallDescriptor> descriptors = getTargetCallDescriptors();
+  ProfileValueIdentityIndex valueIdentity =
+      buildProfileValueIdentityIndex(reachable);
   llvm::StringMap<uint64_t> occurrences;
   std::vector<CollectedProfileTSMCallSite> sites;
   for (auto [functionOrdinal, function] : llvm::enumerate(reachable)) {
@@ -120,14 +195,17 @@ collectProfileTSMCallSitesImpl(const llvm::Module &module,
 
         const uint64_t descriptorOrdinal =
             static_cast<uint64_t>(descriptor - descriptors.data());
-        std::string signature =
-            getConstantArgumentSignature(*call, *descriptor, descriptorOrdinal);
+        llvm::Expected<std::string> signature =
+            getTargetCallArgumentSignature(*call, *descriptor,
+                                           descriptorOrdinal, valueIdentity);
+        if (!signature)
+          return signature.takeError();
         std::string occurrenceKey =
-            llvm::formatv("{0}:{1}", descriptorOrdinal, signature).str();
+            llvm::formatv("{0}:{1}", descriptorOrdinal, *signature).str();
         uint64_t occurrence = occurrences[occurrenceKey]++;
         std::string correlationKey =
-            llvm::formatv("target-call:{0}:constants:{1}:occurrence:{2}",
-                          descriptorOrdinal, signature, occurrence)
+            llvm::formatv("target-call:{0}:arguments:{1}:occurrence:{2}",
+                          descriptorOrdinal, *signature, occurrence)
                 .str();
         ProfileTSMCallSite record;
         record.siteId = sites.size();
@@ -235,6 +313,41 @@ collectProfileTSMCallSites(const llvm::Module &module,
   for (CollectedProfileTSMCallSite &site : *collected)
     sites.push_back(std::move(site.record));
   return sites;
+}
+
+llvm::Error verifyProfileTargetCallSiteIdentity(
+    const llvm::Module &productionModule, llvm::StringRef productionEntrySymbol,
+    const llvm::Module &traceModule, llvm::StringRef traceEntrySymbol) {
+  llvm::Expected<std::vector<ProfileTSMCallSite>> production =
+      collectProfileTSMCallSites(productionModule, productionEntrySymbol);
+  if (!production)
+    return production.takeError();
+  llvm::Expected<std::vector<ProfileTSMCallSite>> trace =
+      collectProfileTSMCallSites(traceModule, traceEntrySymbol);
+  if (!trace)
+    return trace.takeError();
+  if (production->size() != trace->size())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "profile trace target-call site count differs from final production");
+
+  for (auto [index, pair] : llvm::enumerate(llvm::zip(*production, *trace))) {
+    const ProfileTSMCallSite &finalSite = std::get<0>(pair);
+    const ProfileTSMCallSite &traceSite = std::get<1>(pair);
+    if (finalSite.siteId != index || traceSite.siteId != index ||
+        finalSite.functionOrdinal != traceSite.functionOrdinal ||
+        finalSite.blockOrdinal != traceSite.blockOrdinal ||
+        finalSite.targetCallOrdinal != traceSite.targetCallOrdinal ||
+        finalSite.targetCallSymbol != traceSite.targetCallSymbol ||
+        finalSite.engine != traceSite.engine ||
+        finalSite.correlationKey != traceSite.correlationKey)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "profile trace target-call site identity differs from final "
+          "production at rank-local site %llu",
+          static_cast<unsigned long long>(index));
+  }
+  return llvm::Error::success();
 }
 
 llvm::Error instrumentProfileTargetModule(llvm::Module &module,
@@ -468,8 +581,8 @@ verifyProfileTargetModuleInstrumentation(const llvm::Module &module,
       siteEndCalls->size() != sites->size())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "profile trace site bracketing does not cover the exact TsmExecute "
-        "call set");
+        "profile trace site bracketing does not cover the exact engine "
+        "activity call set");
   for (const CollectedProfileTSMCallSite &site : *sites) {
     const auto *beginCall =
         llvm::dyn_cast_or_null<llvm::CallBase>(site.call->getPrevNode());
@@ -491,7 +604,7 @@ verifyProfileTargetModuleInstrumentation(const llvm::Module &module,
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "profile trace site IDs do not densely bracket the exact "
-          "TsmExecute call set");
+          "NCC engine command set");
   }
   return llvm::Error::success();
 }

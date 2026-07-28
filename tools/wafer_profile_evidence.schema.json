@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v2.json",
+  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v4.json",
   "title": "Wafer 16-tile profile evidence",
-  "description": "Version 2 evidence consumed by wafer_profile_report.py. Runtime launch is a tagged kernel/model contract; launch-to-completion host time is the performance basis, rank-local cycles explain each tile, and cross-tile order is published only when the separate clock mapping is qualified.",
+  "description": "Version 4 final-artifact-only evidence consumed by wafer_profile_report.py. The production artifact's launch-to-completion host time is the top-level result; rank-local NCC and Direct-DTE hardware busy counters plus bounded activity observations explain each tile without inventing cross-tile order.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -15,14 +15,14 @@
     "output_validation",
     "sites",
     "validity",
-    "experiments"
+    "experiment"
   ],
   "properties": {
     "schema": {
       "const": "wafer.profile.evidence"
     },
     "schema_version": {
-      "const": 2
+      "const": 4
     },
     "run_id": {
       "$ref": "#/$defs/nonEmptyString"
@@ -56,34 +56,12 @@
     "measurement": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["blocks", "samples"],
+      "required": ["samples"],
       "properties": {
-        "blocks": {
-          "type": "array",
-          "minItems": 5,
-          "maxItems": 5,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["block", "held_out", "order"],
-            "properties": {
-              "block": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "held_out": {
-                "type": "boolean"
-              },
-              "order": {
-                "enum": ["ABBA", "BAAB"]
-              }
-            }
-          }
-        },
         "samples": {
           "type": "array",
-          "minItems": 20,
-          "maxItems": 20,
+          "minItems": 10,
+          "maxItems": 10,
           "items": {
             "$ref": "#/$defs/measurementSample"
           }
@@ -119,24 +97,18 @@
         }
       }
     },
-    "experiments": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["baseline", "winner"],
-      "properties": {
-        "baseline": {
-          "$ref": "#/$defs/experiment"
-        },
-        "winner": {
-          "$ref": "#/$defs/experiment"
-        }
-      }
+    "experiment": {
+      "$ref": "#/$defs/experiment"
     }
   },
   "$defs": {
     "nonEmptyString": {
       "type": "string",
       "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "tile": {
       "type": "integer",
@@ -154,6 +126,9 @@
       "maximum": 4294967295
     },
     "engine": {
+      "enum": ["CT", "NE", "RDMA", "WDMA", "TDMA", "DIRECT_DTE"]
+    },
+    "nccEngine": {
       "enum": ["CT", "NE", "RDMA", "WDMA", "TDMA"]
     },
     "runtimeLaunch": {
@@ -212,15 +187,14 @@
         "target_profile",
         "launch",
         "execution_ranks",
-        "baseline_same_as_winner",
         "site_correlation_basis"
       ],
       "properties": {
         "production_manifest_sha256": {
-          "$ref": "#/$defs/nonEmptyString"
+          "$ref": "#/$defs/sha256"
         },
         "profile_companion_schema_version": {
-          "const": 1
+          "const": 2
         },
         "target_profile": {
           "$ref": "#/$defs/nonEmptyString"
@@ -230,9 +204,6 @@
         },
         "execution_ranks": {
           "const": 16
-        },
-        "baseline_same_as_winner": {
-          "type": "boolean"
         },
         "site_correlation_basis": {
           "const": "heuristic-target-call-signature-occurrence-v1"
@@ -246,9 +217,9 @@
       "properties": {
         "mode": {
           "enum": [
-            "external-exact",
+            "external-expected",
             "mixed",
-            "same-session-production-winner"
+            "same-session-production"
           ]
         },
         "resources": {
@@ -269,9 +240,9 @@
         "role_index",
         "bytes",
         "reference_sha256",
-        "external_expected_exact",
-        "production_winner_repeat_exact",
-        "candidate_equivalent_exact"
+        "external_expected_comparison",
+        "production_repeats_exact",
+        "diagnostic_captures_exact"
       ],
       "properties": {
         "logical_rank": {
@@ -291,16 +262,16 @@
           "maximum": 18446744073709551615
         },
         "reference_sha256": {
-          "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
+          "$ref": "#/$defs/sha256"
         },
-        "external_expected_exact": {
-          "type": ["boolean", "null"]
+        "external_expected_comparison": {
+          "type": ["string", "null"],
+          "enum": ["exact", "relaxed-f16", null]
         },
-        "production_winner_repeat_exact": {
+        "production_repeats_exact": {
           "type": "boolean"
         },
-        "candidate_equivalent_exact": {
+        "diagnostic_captures_exact": {
           "type": "boolean"
         }
       }
@@ -316,7 +287,7 @@
       ],
       "properties": {
         "digest": {
-          "$ref": "#/$defs/nonEmptyString"
+          "$ref": "#/$defs/sha256"
         },
         "target_profile": {
           "$ref": "#/$defs/nonEmptyString"
@@ -333,7 +304,6 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "candidate",
         "tile",
         "site_id",
         "correlation_key",
@@ -342,9 +312,6 @@
         "target_call_symbol"
       ],
       "properties": {
-        "candidate": {
-          "enum": ["baseline", "winner"]
-        },
         "tile": {
           "$ref": "#/$defs/tile"
         },
@@ -430,9 +397,7 @@
       "additionalProperties": false,
       "required": [
         "sample_id",
-        "candidate",
-        "block",
-        "position",
+        "sample_index",
         "host_elapsed_ns",
         "completion_observation_resolution_ns"
       ],
@@ -440,17 +405,10 @@
         "sample_id": {
           "$ref": "#/$defs/nonEmptyString"
         },
-        "candidate": {
-          "enum": ["baseline", "winner"]
-        },
-        "block": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "position": {
+        "sample_index": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 3
+          "maximum": 9
         },
         "host_elapsed_ns": {
           "type": "integer",
@@ -472,10 +430,12 @@
         "site_id",
         "sub_index",
         "engine",
-        "begin_cycle",
-        "return_cycle",
-        "raw_result",
-        "valid"
+        "observed_begin_cycle",
+        "observed_end_cycle",
+        "counter_delta",
+        "activity_valid",
+        "dte_counter_valid",
+        "dte_role"
       ],
       "properties": {
         "sequence": {
@@ -493,19 +453,80 @@
         "engine": {
           "$ref": "#/$defs/engine"
         },
-        "begin_cycle": {
+        "observed_begin_cycle": {
           "$ref": "#/$defs/u64"
         },
-        "return_cycle": {
+        "observed_end_cycle": {
           "$ref": "#/$defs/u64"
         },
-        "raw_result": {
+        "counter_delta": {
           "$ref": "#/$defs/u64"
         },
-        "valid": {
+        "activity_valid": {
           "type": "boolean"
+        },
+        "dte_counter_valid": {
+          "type": ["boolean", "null"]
+        },
+        "dte_role": {
+          "type": ["string", "null"],
+          "enum": ["send", "receive", null]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "engine": {
+                "const": "DIRECT_DTE"
+              }
+            },
+            "required": ["engine"]
+          },
+          "then": {
+            "properties": {
+              "activity_valid": {
+                "const": true
+              },
+              "dte_counter_valid": {
+                "type": "boolean"
+              },
+              "dte_role": {
+                "enum": ["send", "receive"]
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "dte_counter_valid": {
+                      "const": false
+                    }
+                  },
+                  "required": ["dte_counter_valid"]
+                },
+                "then": {
+                  "properties": {
+                    "counter_delta": {
+                      "const": 0
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "else": {
+            "properties": {
+              "dte_counter_valid": {
+                "type": "null"
+              },
+              "dte_role": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
     },
     "traceTile": {
       "type": "object",
@@ -573,7 +594,7 @@
     "counterSnapshot": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["start", "end", "stable", "enabled"],
+      "required": ["start", "end", "recovery", "stable", "enabled"],
       "properties": {
         "start": {
           "$ref": "#/$defs/u64"
@@ -595,7 +616,7 @@
     "counterSnapshot32": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["start", "end", "stable", "enabled"],
+      "required": ["start", "end", "recovery", "stable", "enabled"],
       "properties": {
         "start": {
           "$ref": "#/$defs/u32"
@@ -660,7 +681,7 @@
       "required": ["engine", "instructions", "blocking"],
       "properties": {
         "engine": {
-          "$ref": "#/$defs/engine"
+          "$ref": "#/$defs/nccEngine"
         },
         "instructions": {
           "$ref": "#/$defs/counterSnapshot32"

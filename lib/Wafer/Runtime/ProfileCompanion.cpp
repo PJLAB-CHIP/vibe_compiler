@@ -37,10 +37,8 @@ constexpr llvm::StringLiteral kSiteMapSchema =
 constexpr llvm::StringLiteral kSiteBasis =
     "verified-target-llvm-entry-reachable-tsm-call-preorder";
 constexpr llvm::StringLiteral kSiteIdentity =
-    "variant-rank-local-tsm-site-id-and-typed-correlation-key";
-constexpr llvm::StringLiteral kProductionWinner = "production-winner";
-constexpr llvm::StringLiteral kReservedBaseline = "reserved-baseline";
-constexpr llvm::StringLiteral kBaselinePackageDirectory = "baseline-package";
+    "final-rank-local-engine-site-id-and-typed-correlation-key";
+constexpr llvm::StringLiteral kFinalArtifact = "final-artifact";
 constexpr uint64_t kSummaryRecordBytes = WAFER_TX81_PROFILER_MIN_BUFFER_BYTES;
 constexpr uint64_t kCountRecordBytes = WAFER_TX81_PROFILER_MIN_BUFFER_BYTES;
 constexpr uint64_t kTraceRecordBytes = 1024 * 1024;
@@ -187,7 +185,6 @@ struct RawVariant {
   std::string role;
   std::string packageReference;
   std::string manifestDigest;
-  std::optional<std::string> sameAs;
 };
 
 struct RawExecutionPackage {
@@ -349,8 +346,8 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
       requireArray(root, "execution_packages", "profile plan");
   if (!packages)
     return packages.takeError();
-  if ((*packages)->size() != 2)
-    return invalid("profile plan must contain exactly two execution packages");
+  if ((*packages)->size() != 1)
+    return invalid("profile plan must contain exactly one execution package");
   if (llvm::Error error =
           accountRecords((*packages)->size(), totalRecords, limits))
     return std::move(error);
@@ -386,19 +383,16 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
       requireArray(root, "capture_packages", "profile plan");
   if (!captures)
     return captures.takeError();
-  if ((*captures)->size() != 6)
-    return invalid("profile plan must contain exactly six capture packages");
+  if ((*captures)->size() != 3)
+    return invalid("profile plan must contain exactly three capture packages");
   if (llvm::Error error =
           accountRecords((*captures)->size(), totalRecords, limits))
     return std::move(error);
-  const std::array<std::pair<llvm::StringRef, ProfileCaptureKind>, 6>
+  const std::array<std::pair<llvm::StringRef, ProfileCaptureKind>, 3>
       expectedOrder = {{
-          {kReservedBaseline, ProfileCaptureKind::Summary},
-          {kReservedBaseline, ProfileCaptureKind::Count},
-          {kReservedBaseline, ProfileCaptureKind::Trace},
-          {kProductionWinner, ProfileCaptureKind::Summary},
-          {kProductionWinner, ProfileCaptureKind::Count},
-          {kProductionWinner, ProfileCaptureKind::Trace},
+          {kFinalArtifact, ProfileCaptureKind::Summary},
+          {kFinalArtifact, ProfileCaptureKind::Count},
+          {kFinalArtifact, ProfileCaptureKind::Trace},
       }};
   for (auto [index, value] : llvm::enumerate(**captures)) {
     std::string context =
@@ -464,8 +458,8 @@ parseVariants(const llvm::json::Object &root, const PackageParseLimits &limits,
       requireArray(root, "variants", "profile variants");
   if (!variants)
     return variants.takeError();
-  if ((*variants)->size() != 2)
-    return invalid("profile variants must contain exactly two variants");
+  if ((*variants)->size() != 1)
+    return invalid("profile variants must contain exactly one final artifact");
   if (llvm::Error error =
           accountRecords((*variants)->size(), totalRecords, limits))
     return std::move(error);
@@ -479,8 +473,8 @@ parseVariants(const llvm::json::Object &root, const PackageParseLimits &limits,
     if (!object)
       return object.takeError();
     if (llvm::Error error = requireFields(
-            **object, {"id", "role", "package_ref", "manifest_sha256"},
-            {"same_as"}, context))
+            **object, {"id", "role", "package_ref", "manifest_sha256"}, {},
+            context))
       return std::move(error);
 
     RawVariant variant;
@@ -504,13 +498,6 @@ parseVariants(const llvm::json::Object &root, const PackageParseLimits &limits,
     variant.role = *role;
     variant.packageReference = *reference;
     variant.manifestDigest = *digest;
-    if ((*object)->find("same_as") != (*object)->end()) {
-      llvm::Expected<std::string> sameAs =
-          requireString(**object, "same_as", context, limits);
-      if (!sameAs)
-        return sameAs.takeError();
-      variant.sameAs = *sameAs;
-    }
     result.push_back(std::move(variant));
   }
   return result;
@@ -528,7 +515,9 @@ llvm::Expected<ProfileTSMEngine> parseEngine(llvm::StringRef value,
     return ProfileTSMEngine::WDMA;
   if (value == "TDMA")
     return ProfileTSMEngine::TDMA;
-  return invalid(context + " is not a supported TsmExecute engine");
+  if (value == "DIRECT_DTE")
+    return ProfileTSMEngine::DirectDTE;
+  return invalid(context + " is not a supported profile engine");
 }
 
 std::optional<ProfileTSMEngine>
@@ -548,8 +537,10 @@ getDescriptorEngine(const TargetCallDescriptor &descriptor) {
     return ProfileTSMEngine::WDMA;
   case TargetCallTSMEngine::TDMA:
     return ProfileTSMEngine::TDMA;
+  case TargetCallTSMEngine::DirectDTE:
+    return ProfileTSMEngine::DirectDTE;
   }
-  llvm_unreachable("unknown target-call TsmExecute engine");
+  llvm_unreachable("unknown target-call NCC engine");
 }
 
 llvm::Expected<std::optional<uint64_t>>
@@ -628,7 +619,7 @@ parseSite(const llvm::json::Value &value, uint64_t index,
       getDescriptorEngine(descriptors[*targetCallOrdinal]);
   if (!descriptorEngine)
     return invalid(context +
-                   " names a target call that does not reach TsmExecute");
+                   " names a target call that does not submit to an NCC engine");
   if (*descriptorEngine != *engine)
     return invalid(context + " target-call registry semantic/engine do not "
                              "agree");
@@ -728,8 +719,9 @@ parseSiteMaps(const llvm::json::Object &root, const PackageParseLimits &limits,
       requireArray(root, "variants", "profile site map");
   if (!variants)
     return variants.takeError();
-  if ((*variants)->size() != 2)
-    return invalid("profile site map must contain exactly two variants");
+  if ((*variants)->size() != 1)
+    return invalid(
+        "profile site map must contain exactly one final artifact");
   if (llvm::Error error =
           accountRecords((*variants)->size(), totalRecords, limits))
     return std::move(error);
@@ -742,13 +734,9 @@ parseSiteMaps(const llvm::json::Object &root, const PackageParseLimits &limits,
         requireObject(value, context);
     if (!object)
       return object.takeError();
-    if (llvm::Error error = requireFields(**object, {"variant_id"},
-                                          {"same_as", "ranks"}, context))
+    if (llvm::Error error =
+            requireFields(**object, {"variant_id", "ranks"}, {}, context))
       return std::move(error);
-    const bool hasSameAs = (*object)->find("same_as") != (*object)->end();
-    const bool hasRanks = (*object)->find("ranks") != (*object)->end();
-    if (hasSameAs == hasRanks)
-      return invalid(context + " must contain exactly one of same_as or ranks");
 
     ProfileVariantSiteMap variant;
     llvm::Expected<std::string> id =
@@ -756,35 +744,27 @@ parseSiteMaps(const llvm::json::Object &root, const PackageParseLimits &limits,
     if (!id)
       return id.takeError();
     variant.variantId = *id;
-    if (hasSameAs) {
-      llvm::Expected<std::string> sameAs =
-          requireString(**object, "same_as", context, limits);
-      if (!sameAs)
-        return sameAs.takeError();
-      variant.sameAs = *sameAs;
-    } else {
-      llvm::Expected<const llvm::json::Array *> ranks =
-          requireArray(**object, "ranks", context);
-      if (!ranks)
-        return ranks.takeError();
-      if ((*ranks)->size() != static_cast<size_t>(kProfileCompanionRankCount))
-        return invalid(context + " must contain all and only 16 ranks");
-      variant.ranks.reserve((*ranks)->size());
-      for (auto [rankIndex, rankValue] : llvm::enumerate(**ranks)) {
-        llvm::Expected<ProfileRankSiteMap> rank = parseRankSiteMap(
-            rankValue, rankIndex, limits, totalRecords, context);
-        if (!rank)
-          return rank.takeError();
-        variant.ranks.push_back(std::move(*rank));
-      }
-      llvm::sort(variant.ranks, [](const auto &lhs, const auto &rhs) {
-        return lhs.logicalRank < rhs.logicalRank;
-      });
-      for (auto [rankIndex, rank] : llvm::enumerate(variant.ranks))
-        if (rank.logicalRank != static_cast<int64_t>(rankIndex))
-          return invalid(context +
-                         " must contain each logical rank exactly once");
+    llvm::Expected<const llvm::json::Array *> ranks =
+        requireArray(**object, "ranks", context);
+    if (!ranks)
+      return ranks.takeError();
+    if ((*ranks)->size() != static_cast<size_t>(kProfileCompanionRankCount))
+      return invalid(context + " must contain all and only 16 ranks");
+    variant.ranks.reserve((*ranks)->size());
+    for (auto [rankIndex, rankValue] : llvm::enumerate(**ranks)) {
+      llvm::Expected<ProfileRankSiteMap> rank = parseRankSiteMap(
+          rankValue, rankIndex, limits, totalRecords, context);
+      if (!rank)
+        return rank.takeError();
+      variant.ranks.push_back(std::move(*rank));
     }
+    llvm::sort(variant.ranks, [](const auto &lhs, const auto &rhs) {
+      return lhs.logicalRank < rhs.logicalRank;
+    });
+    for (auto [rankIndex, rank] : llvm::enumerate(variant.ranks))
+      if (rank.logicalRank != static_cast<int64_t>(rankIndex))
+        return invalid(context +
+                       " must contain each logical rank exactly once");
     result.push_back(std::move(variant));
   }
   return result;
@@ -816,24 +796,21 @@ llvm::Expected<std::string> digestManifest(llvm::StringRef packageRoot) {
   return "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
 }
 
-bool isSafePackageReferenceSyntax(llvm::StringRef reference,
-                                  bool productionWinner) {
+bool isSafePackageReferenceSyntax(llvm::StringRef reference) {
   if (reference.empty() || llvm::sys::path::is_absolute(reference) ||
       reference.contains('\\'))
     return false;
   llvm::SmallVector<llvm::StringRef, 4> components;
   reference.split(components, '/', /*MaxSplit=*/-1, /*KeepEmpty=*/true);
-  if (productionWinner)
-    return components.size() == 2 && components[0] == ".." &&
-           !components[1].empty() && components[1] != "." &&
-           components[1] != "..";
-  return components.size() == 1 && components[0] == kBaselinePackageDirectory;
+  return components.size() == 2 && components[0] == ".." &&
+         !components[1].empty() && components[1] != "." &&
+         components[1] != "..";
 }
 
 llvm::Expected<std::string>
 resolvePackageReference(llvm::StringRef companionRoot,
-                        llvm::StringRef reference, bool productionWinner) {
-  if (!isSafePackageReferenceSyntax(reference, productionWinner))
+                        llvm::StringRef reference) {
+  if (!isSafePackageReferenceSyntax(reference))
     return invalid("profile variant package_ref is not a safe canonical "
                    "relative reference");
   llvm::SmallString<256> candidate(companionRoot);
@@ -863,8 +840,7 @@ resolveCapturePackageReference(llvm::StringRef companionRoot,
   llvm::SmallVector<llvm::StringRef, 4> components;
   reference.split(components, '/', /*MaxSplit=*/-1, /*KeepEmpty=*/true);
   if (components.size() != 3 || components[0] != "captures" ||
-      (components[1] != kProductionWinner &&
-       components[1] != kReservedBaseline) ||
+      components[1] != kFinalArtifact ||
       (components[2] != "summary" && components[2] != "count" &&
        components[2] != "trace"))
     return invalid("profile capture package_ref is not canonical");
@@ -916,87 +892,42 @@ findRawSiteMap(llvm::ArrayRef<ProfileVariantSiteMap> maps, llvm::StringRef id) {
 llvm::Error verifyVariantGraph(llvm::ArrayRef<RawVariant> variants,
                                const RawPlan &plan,
                                llvm::ArrayRef<ProfileVariantSiteMap> siteMaps) {
-  const RawVariant *winner = findRawVariant(variants, kProductionWinner);
-  const RawVariant *baseline = findRawVariant(variants, kReservedBaseline);
-  if (!winner || !baseline || winner == baseline)
-    return invalid("profile companion must define one production winner and "
-                   "one reserved baseline");
-  if (winner->role != kProductionWinner || baseline->role != kReservedBaseline)
-    return invalid("profile variant id and role do not agree");
-  if (winner->sameAs)
-    return invalid("production winner cannot alias another variant");
-  if (baseline->sameAs && *baseline->sameAs != kProductionWinner)
-    return invalid("reserved baseline same_as must name production-winner");
-  if (baseline->sameAs &&
-      (baseline->packageReference != winner->packageReference ||
-       baseline->manifestDigest != winner->manifestDigest))
-    return invalid("aliased reserved baseline package identity differs from "
-                   "production winner");
+  const RawVariant *finalArtifact =
+      findRawVariant(variants, kFinalArtifact);
+  if (!finalArtifact || variants.size() != 1 ||
+      finalArtifact->role != kFinalArtifact)
+    return invalid(
+        "profile companion must define exactly one final artifact");
 
-  const RawExecutionPackage *winnerExecution =
-      findExecutionPackage(plan.executionPackages, kProductionWinner);
-  const RawExecutionPackage *baselineExecution =
-      findExecutionPackage(plan.executionPackages, kReservedBaseline);
-  if (!winnerExecution || !baselineExecution ||
-      winnerExecution == baselineExecution)
-    return invalid("profile plan execution package IDs are not unique");
-  for (const auto &[variant, execution] :
-       {std::pair<const RawVariant *, const RawExecutionPackage *>(
-            winner, winnerExecution),
-        std::pair<const RawVariant *, const RawExecutionPackage *>(
-            baseline, baselineExecution)}) {
-    if (variant->packageReference != execution->packageReference ||
-        variant->manifestDigest != execution->manifestDigest)
-      return invalid("profile plan and variant package identities disagree");
-  }
+  const RawExecutionPackage *execution =
+      findExecutionPackage(plan.executionPackages, kFinalArtifact);
+  if (!execution || plan.executionPackages.size() != 1)
+    return invalid(
+        "profile plan must bind exactly one final execution package");
+  if (finalArtifact->packageReference != execution->packageReference ||
+      finalArtifact->manifestDigest != execution->manifestDigest)
+    return invalid("profile plan and final artifact identities disagree");
+
   for (ProfileCaptureKind capture :
        {ProfileCaptureKind::Summary, ProfileCaptureKind::Count,
         ProfileCaptureKind::Trace}) {
-    const RawCapturePackage *winnerCapture =
-        findCapturePackage(plan.capturePackages, kProductionWinner, capture);
-    const RawCapturePackage *baselineCapture =
-        findCapturePackage(plan.capturePackages, kReservedBaseline, capture);
-    if (!winnerCapture || !baselineCapture || winnerCapture == baselineCapture)
-      return invalid("profile plan capture package identities are incomplete");
+    const RawCapturePackage *capturePackage =
+        findCapturePackage(plan.capturePackages, kFinalArtifact, capture);
+    if (!capturePackage)
+      return invalid("profile plan final capture packages are incomplete");
     std::string captureName = stringifyProfileCaptureKind(capture).str();
-    std::string winnerReference =
-        ("captures/" + kProductionWinner + "/" + captureName).str();
-    if (winnerCapture->packageReference != winnerReference)
-      return invalid("production capture package_ref is not canonical");
-    if (baseline->sameAs) {
-      if (baselineCapture->packageReference !=
-              winnerCapture->packageReference ||
-          baselineCapture->manifestDigest != winnerCapture->manifestDigest ||
-          baselineCapture->recordBytes != winnerCapture->recordBytes)
-        return invalid("aliased baseline capture identity differs from "
-                       "production winner capture");
-    } else {
-      std::string baselineReference =
-          ("captures/" + kReservedBaseline + "/" + captureName).str();
-      if (baselineCapture->packageReference != baselineReference)
-        return invalid("baseline capture package_ref is not canonical");
-    }
+    std::string reference =
+        ("captures/" + kFinalArtifact + "/" + captureName).str();
+    if (capturePackage->packageReference != reference)
+      return invalid("final capture package_ref is not canonical");
   }
 
-  const ProfileVariantSiteMap *winnerMap =
-      findRawSiteMap(siteMaps, kProductionWinner);
-  const ProfileVariantSiteMap *baselineMap =
-      findRawSiteMap(siteMaps, kReservedBaseline);
-  if (!winnerMap || !baselineMap || winnerMap == baselineMap)
-    return invalid("profile site-map variant IDs are not unique");
-  if (winnerMap->sameAs || winnerMap->ranks.size() !=
-                               static_cast<size_t>(kProfileCompanionRankCount))
-    return invalid("production winner site map must contain all 16 ranks");
-  if (baseline->sameAs) {
-    if (!baselineMap->sameAs || *baselineMap->sameAs != kProductionWinner ||
-        !baselineMap->ranks.empty())
-      return invalid("aliased reserved baseline site map is inconsistent");
-  } else if (baselineMap->sameAs ||
-             baselineMap->ranks.size() !=
-                 static_cast<size_t>(kProfileCompanionRankCount)) {
-    return invalid("distinct reserved baseline site map must contain all 16 "
-                   "ranks");
-  }
+  const ProfileVariantSiteMap *siteMap =
+      findRawSiteMap(siteMaps, kFinalArtifact);
+  if (!siteMap || siteMaps.size() != 1 ||
+      siteMap->ranks.size() !=
+          static_cast<size_t>(kProfileCompanionRankCount))
+    return invalid("final artifact site map must contain all 16 ranks");
   return llvm::Error::success();
 }
 
@@ -1044,82 +975,6 @@ bool sameTransport(const PackageManifest &lhsManifest,
          lhsDirect->statusABI == rhsDirect->statusABI &&
          lhsDirect->hostWatchdogRequired == rhsDirect->hostWatchdogRequired &&
          sameSemanticResource(*lhsStatus, *rhsStatus);
-}
-
-std::vector<const PackageResourceRecord *>
-getHostVisibleResources(const PackageManifest &manifest) {
-  std::vector<const PackageResourceRecord *> resources;
-  for (const PackageResourceRecord &resource : manifest.resources)
-    if (resource.hostVisible)
-      resources.push_back(&resource);
-  llvm::sort(resources, [](const auto *lhs, const auto *rhs) {
-    return std::tuple(lhs->logicalRank, static_cast<int>(lhs->role),
-                      lhs->roleIndex) < std::tuple(rhs->logicalRank,
-                                                   static_cast<int>(rhs->role),
-                                                   rhs->roleIndex);
-  });
-  return resources;
-}
-
-llvm::Expected<std::vector<const PackageResourceRecord *>>
-getEntryHostVisibleSlots(const PackageManifest &manifest,
-                         const PackageEntrypointRecord &entry) {
-  std::vector<const PackageResourceRecord *> result;
-  for (const PackageABISlotBinding &slot : entry.slots) {
-    const PackageResourceRecord *resource =
-        findResource(manifest, slot.resource);
-    if (!resource)
-      return invalid("profile variant entry references a missing resource");
-    if (resource->hostVisible)
-      result.push_back(resource);
-  }
-  return result;
-}
-
-llvm::Error verifyPackageContractsMatch(const PackageManifest &reference,
-                                        const PackageManifest &candidate) {
-  if (reference.targetProfile != candidate.targetProfile ||
-      reference.targetIdentity != candidate.targetIdentity ||
-      reference.runtimeABI != candidate.runtimeABI ||
-      reference.launch != candidate.launch ||
-      reference.moduleFormat != candidate.moduleFormat)
-    return invalid("profile variant target/ABI contracts differ");
-  if (reference.rankCount != kProfileCompanionRankCount ||
-      candidate.rankCount != kProfileCompanionRankCount)
-    return invalid("profile variant packages must each contain 16 ranks");
-  std::vector<const PackageResourceRecord *> referenceResources =
-      getHostVisibleResources(reference);
-  std::vector<const PackageResourceRecord *> candidateResources =
-      getHostVisibleResources(candidate);
-  if (referenceResources.size() != candidateResources.size())
-    return invalid("profile variant host-visible resource contracts differ");
-  for (auto [lhs, rhs] : llvm::zip(referenceResources, candidateResources))
-    if (!sameSemanticResource(*lhs, *rhs))
-      return invalid("profile variant host-visible resource contracts differ");
-
-  if (reference.entries.size() != candidate.entries.size())
-    return invalid("profile variant entry ABI contracts differ");
-  for (int64_t rank = 0; rank < kProfileCompanionRankCount; ++rank) {
-    const PackageEntrypointRecord *lhs = findEntryForRank(reference, rank);
-    const PackageEntrypointRecord *rhs = findEntryForRank(candidate, rank);
-    if (!lhs || !rhs ||
-        !sameTransport(reference, lhs->transport, candidate, rhs->transport))
-      return invalid("profile variant entry ABI contracts differ");
-    llvm::Expected<std::vector<const PackageResourceRecord *>> lhsSlots =
-        getEntryHostVisibleSlots(reference, *lhs);
-    if (!lhsSlots)
-      return lhsSlots.takeError();
-    llvm::Expected<std::vector<const PackageResourceRecord *>> rhsSlots =
-        getEntryHostVisibleSlots(candidate, *rhs);
-    if (!rhsSlots)
-      return rhsSlots.takeError();
-    if (lhsSlots->size() != rhsSlots->size())
-      return invalid("profile variant entry ABI contracts differ");
-    for (auto [lhsResource, rhsResource] : llvm::zip(*lhsSlots, *rhsSlots))
-      if (!sameSemanticResource(*lhsResource, *rhsResource))
-        return invalid("profile variant entry ABI contracts differ");
-  }
-  return llvm::Error::success();
 }
 
 bool isProfilerRecordResource(const PackageResourceRecord &resource,
@@ -1229,22 +1084,17 @@ llvm::Expected<ProfileVariantPackage>
 loadVariantPackage(const RawVariant &variant, llvm::StringRef companionRoot,
                    llvm::StringRef productionPackageRoot,
                    const PackageParseLimits &limits) {
-  const bool isWinner = variant.id == kProductionWinner;
-  const bool referencesProduction = isWinner || variant.sameAs.has_value();
+  if (variant.id != kFinalArtifact || variant.role != kFinalArtifact)
+    return invalid("profile variant is not the final artifact");
   if (!isLowercaseSHA256(variant.manifestDigest))
     return invalid("profile variant manifest_sha256 is malformed");
   llvm::Expected<std::string> packageDirectory = resolvePackageReference(
-      companionRoot, variant.packageReference, referencesProduction);
+      companionRoot, variant.packageReference);
   if (!packageDirectory)
     return packageDirectory.takeError();
-  if (referencesProduction) {
-    if (*packageDirectory != productionPackageRoot)
-      return invalid("profile production package reference does not name the "
-                     "selected ordinary package");
-  } else if (!variant.sameAs &&
-             !isPathWithin(*packageDirectory, companionRoot)) {
-    return invalid("profile reserved baseline escapes the companion root");
-  }
+  if (*packageDirectory != productionPackageRoot)
+    return invalid("profile final artifact reference does not name the "
+                   "selected ordinary package");
 
   llvm::Expected<std::string> digest = digestManifest(*packageDirectory);
   if (!digest)
@@ -1256,10 +1106,9 @@ loadVariantPackage(const RawVariant &variant, llvm::StringRef companionRoot,
   if (!package)
     return package.takeError();
 
-  ProfileVariantRole role = isWinner ? ProfileVariantRole::ProductionWinner
-                                     : ProfileVariantRole::ReservedBaseline;
-  return ProfileVariantPackage(variant.id, role, variant.packageReference,
-                               variant.manifestDigest, variant.sameAs,
+  return ProfileVariantPackage(variant.id, ProfileVariantRole::FinalArtifact,
+                               variant.packageReference,
+                               variant.manifestDigest,
                                *packageDirectory, std::move(*package));
 }
 
@@ -1299,11 +1148,11 @@ loadCapturePackage(const RawCapturePackage &capture,
 
 ProfileVariantPackage::ProfileVariantPackage(
     std::string id, ProfileVariantRole role, std::string packageReference,
-    std::string manifestDigest, std::optional<std::string> sameAs,
-    std::string packageDirectory, VerifiedPackageManifest package)
+    std::string manifestDigest, std::string packageDirectory,
+    VerifiedPackageManifest package)
     : id(std::move(id)), role(role),
       packageReference(std::move(packageReference)),
-      manifestDigest(std::move(manifestDigest)), sameAs(std::move(sameAs)),
+      manifestDigest(std::move(manifestDigest)),
       packageDirectory(std::move(packageDirectory)),
       package(std::move(package)) {}
 
@@ -1322,10 +1171,8 @@ ProfileCapturePackage::ProfileCapturePackage(std::string variantId,
 
 llvm::StringRef stringifyProfileVariantRole(ProfileVariantRole role) {
   switch (role) {
-  case ProfileVariantRole::ProductionWinner:
-    return kProductionWinner;
-  case ProfileVariantRole::ReservedBaseline:
-    return kReservedBaseline;
+  case ProfileVariantRole::FinalArtifact:
+    return kFinalArtifact;
   }
   llvm_unreachable("unknown profile variant role");
 }
@@ -1354,6 +1201,8 @@ llvm::StringRef stringifyProfileTSMEngine(ProfileTSMEngine engine) {
     return "WDMA";
   case ProfileTSMEngine::TDMA:
     return "TDMA";
+  case ProfileTSMEngine::DirectDTE:
+    return "DIRECT_DTE";
   }
   llvm_unreachable("unknown profile TSM engine");
 }
@@ -1479,18 +1328,9 @@ loadVerifiedProfileCompanion(llvm::StringRef companionRoot,
       return package.takeError();
     packages.push_back(std::move(*package));
   }
-  const auto winner = llvm::find_if(packages, [](const auto &variant) {
-    return variant.getRole() == ProfileVariantRole::ProductionWinner;
-  });
-  const auto baseline = llvm::find_if(packages, [](const auto &variant) {
-    return variant.getRole() == ProfileVariantRole::ReservedBaseline;
-  });
-  if (winner == packages.end() || baseline == packages.end())
-    return invalid("profile companion variant roles are incomplete");
-  if (llvm::Error error =
-          verifyPackageContractsMatch(winner->getPackage().getManifest(),
-                                      baseline->getPackage().getManifest()))
-    return std::move(error);
+  if (packages.size() != 1 ||
+      packages.front().getRole() != ProfileVariantRole::FinalArtifact)
+    return invalid("profile companion final artifact is incomplete");
 
   std::vector<ProfileCapturePackage> captures;
   captures.reserve(plan->capturePackages.size());

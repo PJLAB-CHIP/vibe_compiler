@@ -16,7 +16,7 @@
 
 namespace wafer::runtime {
 
-inline constexpr uint32_t kProfileCompanionSchemaVersion = 1;
+inline constexpr uint32_t kProfileCompanionSchemaVersion = 2;
 inline constexpr int64_t kProfileCompanionRankCount = 16;
 inline constexpr llvm::StringLiteral kProfileSiteCorrelationBasis =
     "heuristic-target-call-signature-occurrence-v1";
@@ -30,8 +30,7 @@ inline constexpr llvm::StringLiteral kProfileCompanionSiteMapFileName =
     "site-map.json";
 
 enum class ProfileVariantRole {
-  ProductionWinner,
-  ReservedBaseline,
+  FinalArtifact,
 };
 
 enum class ProfileCaptureKind {
@@ -46,6 +45,7 @@ enum class ProfileTSMEngine {
   RDMA,
   WDMA,
   TDMA,
+  DirectDTE,
 };
 
 struct ProfileTargetCallSite {
@@ -66,7 +66,6 @@ struct ProfileRankSiteMap {
 
 struct ProfileVariantSiteMap {
   std::string variantId;
-  std::optional<std::string> sameAs;
   std::vector<ProfileRankSiteMap> ranks;
 };
 
@@ -75,7 +74,6 @@ public:
   ProfileVariantPackage(std::string id, ProfileVariantRole role,
                         std::string packageReference,
                         std::string manifestDigest,
-                        std::optional<std::string> sameAs,
                         std::string packageDirectory,
                         VerifiedPackageManifest package);
   ProfileVariantPackage(ProfileVariantPackage &&) = default;
@@ -87,7 +85,6 @@ public:
   ProfileVariantRole getRole() const { return role; }
   llvm::StringRef getPackageReference() const { return packageReference; }
   llvm::StringRef getManifestDigest() const { return manifestDigest; }
-  const std::optional<std::string> &getSameAs() const { return sameAs; }
   llvm::StringRef getPackageDirectory() const { return packageDirectory; }
   const VerifiedPackageManifest &getPackage() const { return package; }
 
@@ -96,7 +93,6 @@ private:
   ProfileVariantRole role;
   std::string packageReference;
   std::string manifestDigest;
-  std::optional<std::string> sameAs;
   std::string packageDirectory;
   VerifiedPackageManifest package;
 };
@@ -185,7 +181,7 @@ llvm::StringRef stringifyProfileTSMEngine(ProfileTSMEngine engine);
 
 /// Loads and fail-closed verifies one compiler-published profiler companion.
 /// `productionPackageRoot` is the ordinary package selected by the user; the
-/// production-winner reference in the companion must resolve to exactly it.
+/// final-artifact reference in the companion must resolve to exactly it.
 llvm::Expected<VerifiedProfileCompanion>
 loadVerifiedProfileCompanion(llvm::StringRef companionRoot,
                              llvm::StringRef productionPackageRoot,

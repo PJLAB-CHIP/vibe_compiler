@@ -5,7 +5,7 @@
 #include "Wafer/InitAll.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
-#include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
+#include "Wafer/Compiler/ExecutableBundleInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"

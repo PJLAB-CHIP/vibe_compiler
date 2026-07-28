@@ -13,8 +13,11 @@
 
 namespace wafer::runtime {
 
-/// One structurally decoded per-tile profiler record. Raw TsmExecute return
-/// values remain uninterpreted submission-adapter observations.
+/// One structurally decoded per-tile profiler record. In schema v2 the fixed
+/// event field named raw_return contains an exact NCC busy-cycle delta or, only
+/// when isTx81ProfilerDirectDTECounterValid is true, an uncalibrated
+/// Direct-DTE PMU delta. begin/end bound the NCC observation or the real
+/// Direct-DTE wait/completion window.
 struct Tx81ProfilerRecord {
   WaferTx81ProfilerRecordHeader header{};
   std::vector<WaferTx81ProfilerTSMCallEvent> events;
@@ -61,6 +64,27 @@ getTx81ProfilerWorker(const WaferTx81ProfilerTSMCallEvent &event) {
 inline bool
 isTx81ProfilerSiteValid(const WaferTx81ProfilerTSMCallEvent &event) {
   return (event.metadata & WAFER_TX81_PROFILER_EVENT_SITE_VALID) != 0;
+}
+
+inline bool
+isTx81ProfilerActivityValid(const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata & WAFER_TX81_PROFILER_EVENT_ACTIVITY_VALID) != 0;
+}
+
+inline bool
+isTx81ProfilerDirectDTESend(const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata & WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SEND) != 0;
+}
+
+inline bool
+isTx81ProfilerDirectDTEReceive(const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata & WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_RECV) != 0;
+}
+
+inline bool
+isTx81ProfilerDirectDTECounterValid(
+    const WaferTx81ProfilerTSMCallEvent &event) {
+  return (event.metadata & WAFER_TX81_PROFILER_EVENT_DTE_COUNTER_VALID) != 0;
 }
 
 } // namespace wafer::runtime

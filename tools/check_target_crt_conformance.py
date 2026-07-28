@@ -37,16 +37,15 @@ def read_text(path: pathlib.Path) -> str:
 
 def function_body(text: str, name: str) -> str:
     match = re.search(
-        r"\b(?:static\s+)?(?:void|bool|uint64_t)\s+"
+        r"\b(?:static\s+)?(?:void|bool|uint32_t|uint64_t)\s+"
         + re.escape(name)
-        + r"\s*\(",
+        + r"\s*\([^;{}]*\)\s*\{",
         text,
+        re.DOTALL,
     )
     if not match:
         fail(f"cannot find function {name}")
-    start = text.find("{", match.end())
-    if start == -1:
-        fail(f"cannot find body for function {name}")
+    start = match.end() - 1
     depth = 0
     for index in range(start, len(text)):
         char = text[index]
@@ -560,9 +559,10 @@ def check_dma(source_text: str) -> None:
             f"!wafer_elem_count_from_bytes(stride{index}, format, &stride{index}_elements)",
             f"RDMA checked stride{index} byte to element conversion",
         )
-    require_contains(
+    require_pattern(
         rdma,
-        "&instr, inner_elements, stride0_elements, iteration0, stride1_elements",
+        r"&instr,\s*inner_elements,\s*stride0_elements,\s*iteration0,\s*"
+        r"stride1_elements",
         "RDMA checked element geometry",
     )
 
@@ -580,9 +580,10 @@ def check_dma(source_text: str) -> None:
             f"!wafer_elem_count_from_bytes(stride{index}, format, &stride{index}_elements)",
             f"WDMA checked stride{index} byte to element conversion",
         )
-    require_contains(
+    require_pattern(
         wdma,
-        "&instr, inner_elements, stride0_elements, iteration0, stride1_elements",
+        r"&instr,\s*inner_elements,\s*stride0_elements,\s*iteration0,\s*"
+        r"stride1_elements",
         "WDMA checked element geometry",
     )
 
@@ -746,6 +747,103 @@ def check_local_completion_ordering(source_text: str) -> None:
     )
 
 
+def check_expanded_profile_completion(expanded_source_text: str) -> None:
+    trace_predicate = function_body(
+        expanded_source_text, "wafer_profile_is_trace_capture"
+    )
+    for needle in [
+        "wafer_profile_header !=",
+        "WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED",
+        "WAFER_TX81_PROFILER_RECORD_COUNT_ONLY",
+        "== 0U",
+        "WAFER_TX81_PROFILER_TRACE_RECORDING",
+    ]:
+        require_contains(
+            trace_predicate,
+            needle,
+            "expanded trace predicate must reject null, count, and invalid trace capture",
+        )
+
+    reset = function_body(expanded_source_text, "wafer_profile_reset_binding")
+    require_contains(
+        reset,
+        "wafer_profile_dte_enable_owned = 0",
+        "each profile binding must begin without DTE PMU restore ownership",
+    )
+
+    wait = function_body(
+        expanded_source_text, "wafer_profile_wait_local_completion"
+    )
+    require_contains(
+        wait,
+        "wafer_profile_is_trace_capture()",
+        "expanded profile count/header-null completion fallback",
+    )
+    require_contains(
+        wait,
+        "return TsmWaitfinish();",
+        "expanded profile count/header-null completion fallback",
+    )
+    require_pattern(
+        wait,
+        r"do\s*\{.*wafer_profile_observe_ncc_activity\(\);.*\}\s*while\s*"
+        r"\(\s*TsmGetCsrTaskstatus\(\)\s*!=\s*1U\s*\)\s*;",
+        "expanded profile TASK_DONE polarity and drain sampling",
+    )
+    require_absent(
+        wait,
+        "TsmGetCsrTaskstatus() != 0U",
+        "expanded profile TASK_DONE polarity",
+    )
+
+    for function_name in ("wafer_arg_writeback", "wafer_tx81_local_fence"):
+        body = function_body(expanded_source_text, function_name)
+        require_contains(
+            body,
+            "wafer_profile_wait_local_completion();",
+            f"expanded {function_name} profile completion route",
+        )
+        require_absent(
+            body,
+            "TsmWaitfinish();",
+            f"expanded {function_name} must use the checked profile helper",
+        )
+
+    entry_begin = function_body(
+        expanded_source_text, "wafer_tx81_profile_entry_begin"
+    )
+    require_in_order(
+        entry_begin,
+        [
+            "wafer_profile_mark_protocol_error();",
+            "if (wafer_profile_is_trace_capture())",
+            "wafer_profile_dte_enable_owned = 1U;",
+        ],
+        "invalid trace configuration must be rejected before DTE PMU ownership",
+    )
+    require_pattern(
+        entry_begin,
+        r"if\s*\(\s*wafer_profile_is_trace_capture\(\)\s*\)\s*\{.*"
+        r"wafer_profile_dte_enable_before\s*=\s*"
+        r"wafer_profile_read_dte_pmu32\s*\(.*"
+        r"wafer_profile_dte_enable_before\s*\|\s*"
+        r"(?:UINT32_C\s*\(\s*0x3\s*\)|0x3U)",
+        "expanded trace-only DTE PMU enable",
+    )
+    entry_end = function_body(expanded_source_text, "wafer_tx81_profile_entry_end")
+    require_pattern(
+        entry_end,
+        r"if\s*\(\s*wafer_profile_dte_enable_owned\s*!=\s*0U\s*\).*"
+        r"\*\s*\(.*\)\s*=\s*wafer_profile_dte_enable_before\s*;",
+        "expanded owned trace-only DTE PMU restore",
+    )
+    require_absent(
+        entry_end,
+        "if (wafer_profile_is_trace_capture())",
+        "invalid trace configuration must not acquire a DTE PMU restore",
+    )
+
+
 def check_relation_logic_convert(source_text: str) -> None:
     for macro in [
         "WAFER_DEFINE_RELATION",
@@ -832,6 +930,13 @@ def check_gemm_conv(source_text: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", default=".")
+    parser.add_argument(
+        "--expanded-profile-crt",
+        help=(
+            "preprocessed CRT built with WAFER_TX81_PROFILE_TRACE_CRT; "
+            "verifies the actual macro-expanded completion route"
+        ),
+    )
     args = parser.parse_args()
 
     repo_root = pathlib.Path(args.repo_root).resolve()
@@ -883,6 +988,10 @@ def main() -> int:
     check_gather_scatter_and_mask(source_text, header_text, lowering_text)
     check_arg_writeback(source_text, instruction_ops_text, lowering_text)
     check_local_completion_ordering(source_text)
+    if args.expanded_profile_crt:
+        check_expanded_profile_completion(
+            read_text(pathlib.Path(args.expanded_profile_crt))
+        )
     check_relation_logic_convert(source_text)
     check_gemm_conv(source_text)
     print(

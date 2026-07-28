@@ -462,9 +462,9 @@ int runBoard(const Options &options,
               *profileCompanion, manifest, *filePlan, **driver);
       if (!campaign)
         return campaign.takeError();
-      completedPlan = std::move(campaign->finalWinnerPlan);
+      completedPlan = std::move(campaign->finalPlan);
       profileRunDirectory = std::move(campaign->runDirectory);
-      return std::move(campaign->finalWinnerResult);
+      return std::move(campaign->finalResult);
     }
     completedPlan = std::move(*filePlan);
     return wafer::runtime::executeBoardInvocation(
@@ -604,15 +604,18 @@ int main(int argc, char **argv) {
         "multi-rank board execution requires --all-ranks"));
 
   llvm::Expected<std::optional<wafer::runtime::VerifiedProfileCompanion>>
-      profileCompanion = wafer::runtime::loadSiblingProfileCompanionIfPresent(
+      loaded = wafer::runtime::loadSiblingProfileCompanionIfPresent(
           options->packageDirectory);
-  if (!profileCompanion)
-    return fail(profileCompanion.takeError());
+  if (!loaded)
+    return fail(loaded.takeError());
+  std::optional<wafer::runtime::VerifiedProfileCompanion> profileCompanion;
+  if (*loaded)
+    profileCompanion.emplace(std::move(**loaded));
   if (options->noCard) {
-    return runNoCard(*options, *package, selectedEntry, *profileCompanion);
+    return runNoCard(*options, *package, selectedEntry, profileCompanion);
   }
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
-  return runBoard(*options, *package, *profileCompanion);
+  return runBoard(*options, *package, profileCompanion);
 #else
   return fail(llvm::createStringError(
       llvm::errc::not_supported,

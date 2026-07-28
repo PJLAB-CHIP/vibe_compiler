@@ -90,23 +90,4 @@ llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
       });
 }
 
-llvm::Expected<ProfileExecutableBundles>
-compileTensorProgramToProfileExecutableBundlesImpl(
-    llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
-    llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank) {
-  return compileTensorProgram<ProfileExecutableBundles>(
-      tensorProgramDirectory, executionConfig, diagnostics,
-      failAfterLogicalRank,
-      [](std::shared_ptr<mlir::MLIRContext> &context,
-         mlir::ModuleOp tensorModule,
-         frontend::FrontendProgramVerificationResult program,
-         ExecutionConfig config, llvm::raw_ostream &output,
-         std::optional<int64_t> failRank) {
-        return buildProfileExecutableBundles(context, tensorModule,
-                                             std::move(program), config, output,
-                                             failRank);
-      });
-}
-
 } // namespace wafer::compiler::detail

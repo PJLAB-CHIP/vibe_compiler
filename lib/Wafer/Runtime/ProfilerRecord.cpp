@@ -56,9 +56,14 @@ constexpr uint32_t kKnownSummaryValidity =
     WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_STABLE |
     WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERED;
 
-constexpr uint8_t kKnownEventMetadata = WAFER_TX81_PROFILER_EVENT_WORKER_MASK |
-                                        WAFER_TX81_PROFILER_EVENT_WORKER_VALID |
-                                        WAFER_TX81_PROFILER_EVENT_SITE_VALID;
+constexpr uint8_t kKnownEventMetadata =
+    WAFER_TX81_PROFILER_EVENT_WORKER_MASK |
+    WAFER_TX81_PROFILER_EVENT_WORKER_VALID |
+    WAFER_TX81_PROFILER_EVENT_SITE_VALID |
+    WAFER_TX81_PROFILER_EVENT_ACTIVITY_VALID |
+    WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SEND |
+    WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_RECV |
+    WAFER_TX81_PROFILER_EVENT_DTE_COUNTER_VALID;
 
 bool snapshotStableMaskIsValid(const WaferTx81ProfilerPMUSnapshot &snapshot) {
   constexpr uint32_t known =
@@ -261,7 +266,7 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
       return invalid("TX81 profiler stored event sequence is not contiguous");
     if (event.end_cycle < event.begin_cycle)
       return invalid("TX81 profiler event cycle interval is reversed");
-    if (event.engine > WAFER_TX81_PROFILER_ENGINE_TDMA)
+    if (event.engine > WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE)
       return invalid("TX81 profiler event engine is invalid");
     if (!hasOnlyBits(event.metadata, kKnownEventMetadata))
       return invalid("TX81 profiler event metadata contains unknown bits");
@@ -278,6 +283,34 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
                event.sub_index != WAFER_TX81_PROFILER_INVALID_SUB_INDEX) {
       return invalid("TX81 profiler invalid site does not use sentinels");
     }
+    const bool directSend = isTx81ProfilerDirectDTESend(event);
+    const bool directReceive = isTx81ProfilerDirectDTEReceive(event);
+    const bool directCounterValid =
+        isTx81ProfilerDirectDTECounterValid(event);
+    if (event.engine == WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE) {
+      if (directSend == directReceive || isTx81ProfilerWorkerValid(event))
+        return invalid(
+            "TX81 profiler Direct-DTE event role or worker is invalid");
+      if (!isTx81ProfilerActivityValid(event))
+        return invalid("TX81 profiler Direct-DTE event has no wait window");
+    } else if (directSend || directReceive) {
+      return invalid("TX81 profiler NCC event contains a Direct-DTE role");
+    } else if (directCounterValid) {
+      return invalid("TX81 profiler NCC event contains Direct-DTE validity");
+    }
+    if (isTx81ProfilerActivityValid(event)) {
+      if (event.end_cycle == event.begin_cycle)
+        return invalid("TX81 profiler valid activity is empty");
+      if (event.engine != WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE &&
+          event.raw_return == 0)
+        return invalid("TX81 profiler valid NCC activity has zero busy cycles");
+    } else if (event.raw_return != 0) {
+      return invalid("TX81 profiler invalid activity has nonzero PMU delta");
+    }
+    if (event.engine == WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE &&
+        !directCounterValid && event.raw_return != 0)
+      return invalid(
+          "TX81 profiler invalid Direct-DTE counter has nonzero PMU delta");
   }
   if (!traceEnabled && !countOnly &&
       (!record.events.empty() || header.next_sequence != 0))

@@ -340,7 +340,9 @@ def main() -> int:
     wait_body = crt_source.split(
         "void wafer_tx81_direct_dte_wait(uint64_t event)", maxsplit=1
     )[1].split("void wafer_tx81_direct_dte_finish", maxsplit=1)[0]
-    assert wait_body.rstrip().endswith("wafer_direct_dte_set_error();\n}")
+    wait_behavior, wait_epilogue = wait_body.split("\ndone:", maxsplit=1)
+    assert wait_behavior.rstrip().endswith("wafer_direct_dte_set_error();")
+    assert "wafer_profile_direct_dte_end();" in wait_epilogue
     send_wait = wait_body.split(
         "if (event == WAFER_DIRECT_DTE_SEND_EVENT)", maxsplit=1
     )[1].split(

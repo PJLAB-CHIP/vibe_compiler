@@ -1755,3 +1755,26 @@
   `K!=N`后必须用独立M/K/N字段生成fixture，不能复用旧方阵索引。
 - 需要same-session matched control的case必须在单个CTest内fresh生成control和candidate；不能依赖CMake
   `DEPENDS`替runner补执行，也不能从固定work-dir读取旧session archive。
+
+## 2026-07-28 profiler采集、时间轴和发布必须分别闭合
+
+- 现象：旧profile报告可能出现负cycle、summary与trace位置不一致、Direct-DTE raw counter冒充耗时、
+  `Measurement invalid`掩盖局部有效证据，以及报告文件虽改成`0777`但父目录不可穿越、重复run不断累积。
+  更严重时，count或无效trace binding绕过真实completion wait，或runtime在prepare/main submission之间继续解析
+  provider entry，都会让diagnostic launch偏离普通production生命周期；这类host合同错误可能表现为板端timeout，
+  但在fresh板测确认前不能直接写成硬件根因。
+- 根因：采集模式只按单个flag分支，没有把合法trace状态作为完整predicate；DTE split PMU稳定性与wait窗口共用
+  一个validity；C++ serializer、JSON schema和Python validator各自复制版本/字段；analyzer把两次独立capture的
+  entry span混成一条轴，并保留旧candidate比较模型；发布只chmod叶子文件且按目录名递归清理；cluster phase handle
+  又在已有submission生命周期内延迟解析。
+- 修复模式：非trace、count、null或非法binding一律执行真实`TsmWaitfinish()`，只有合法trace以
+  `TASK_DONE == 1`为结束条件采样，并独立拥有/恢复DTE PMU；Direct-DTE wait窗口必须有效，raw split-read另用
+  `dte_counter_valid`表达。site map来自未插桩final LLVM，trace clone用稳定SSA坐标交叉验证。summary和trace各保留
+  自己的entry span，timeline只用trace-local轴；倒序counter/window局部置不可用，永不做signed减法。
+  evidence只表达final artifact，schema、serializer、fixture和analyzer共同锁定版本及条件字段。runtime在首个submit前
+  解析全部phase；报告通过`runs/current`原子发布，`runs`、目标目录和三文件均可访问，旧run删除前校验三成员与
+  evidence `run_id`，删除失败显式报错。
+- 防复发：target conformance必须检查宏展开后的非法flag fallback、TASK_DONE极性和PMU ownership；decoder/schema
+  同时覆盖“wait有效/raw无效”正例及缺wait、torn raw、动态SSA换线负例。host完成证明必须包含实际profile publication、
+  C++ campaign、Python analyzer/schema、普通package byte-equivalence和带板依赖的no-card构建；这些全部通过仍不能
+  代替本轮新构建、新启动、新输出的串行板端gate。

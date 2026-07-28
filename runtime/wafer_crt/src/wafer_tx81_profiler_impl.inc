@@ -5,8 +5,10 @@
  */
 
 #define WAFER_PROFILE_PMU_BASE UINT64_C(0x590000)
+#define WAFER_PROFILE_DTE_PMU_BASE UINT64_C(0x400000)
 #define WAFER_PROFILE_PMU_WORKER_STRIDE UINT32_C(0x30)
 #define WAFER_PROFILE_PMU_STABLE_RETRIES 8U
+#define WAFER_PROFILE_NCC_ENGINE_COUNT 5U
 
 static const uint32_t
     wafer_profile_pmu64_offsets[WAFER_TX81_PROFILER_PMU64_COUNTERS] = {
@@ -31,11 +33,34 @@ static const uint32_t
 static volatile WaferTx81ProfilerRecordHeader *wafer_profile_header;
 static volatile WaferTx81ProfilerTSMCallEvent *wafer_profile_events;
 static volatile uint64_t *wafer_profile_buffer_guard;
+static uint64_t
+    wafer_profile_last_engine_counters[WAFER_PROFILE_NCC_ENGINE_COUNT];
+static uint32_t
+    wafer_profile_latest_engine_events[WAFER_PROFILE_NCC_ENGINE_COUNT];
+static uint64_t wafer_profile_last_observation_cycle;
+static uint32_t wafer_profile_direct_event_index;
+static uint64_t wafer_profile_direct_begin_cycle;
+static uint64_t wafer_profile_direct_start_counters[2];
+static uint32_t wafer_profile_direct_start_valid_mask;
+static uint32_t wafer_profile_dte_enable_before;
+static uint32_t wafer_profile_dte_enable_owned;
 
 static void wafer_profile_reset_binding(void) {
   wafer_profile_header = NULL;
   wafer_profile_events = NULL;
   wafer_profile_buffer_guard = NULL;
+  wafer_profile_last_observation_cycle = 0;
+  wafer_profile_direct_event_index = UINT32_MAX;
+  wafer_profile_direct_begin_cycle = 0;
+  wafer_profile_direct_start_counters[0] = 0;
+  wafer_profile_direct_start_counters[1] = 0;
+  wafer_profile_direct_start_valid_mask = 0;
+  wafer_profile_dte_enable_before = 0;
+  wafer_profile_dte_enable_owned = 0;
+  for (uint32_t engine = 0; engine < WAFER_PROFILE_NCC_ENGINE_COUNT; ++engine) {
+    wafer_profile_last_engine_counters[engine] = 0;
+    wafer_profile_latest_engine_events[engine] = UINT32_MAX;
+  }
 }
 
 static uint64_t wafer_profile_cycle(void) {
@@ -47,6 +72,28 @@ static uint64_t wafer_profile_cycle(void) {
 static uint32_t wafer_profile_read_pmu32(uint32_t offset) {
   return *(const volatile uint32_t *)(uintptr_t)(WAFER_PROFILE_PMU_BASE +
                                                  offset);
+}
+
+static uint32_t wafer_profile_read_dte_pmu32(uint32_t offset) {
+  return *(const volatile uint32_t *)(uintptr_t)(WAFER_PROFILE_DTE_PMU_BASE +
+                                                 offset);
+}
+
+static uint64_t wafer_profile_read_dte_pmu64(uint32_t low_offset,
+                                             uint32_t validity_bit,
+                                             uint32_t *valid_mask) {
+  uint32_t low = 0;
+  uint32_t high_after = 0;
+  for (uint32_t retry = 0; retry < WAFER_PROFILE_PMU_STABLE_RETRIES; ++retry) {
+    uint32_t high_before = wafer_profile_read_dte_pmu32(low_offset + 4U);
+    low = wafer_profile_read_dte_pmu32(low_offset);
+    high_after = wafer_profile_read_dte_pmu32(low_offset + 4U);
+    if (high_before == high_after) {
+      *valid_mask |= validity_bit;
+      break;
+    }
+  }
+  return ((uint64_t)high_after << 32) | low;
 }
 
 static uint64_t wafer_profile_read_pmu64(uint32_t offset, uint32_t index,
@@ -139,6 +186,113 @@ static void wafer_profile_mark_protocol_error(void) {
   wafer_profile_header->trace_state = WAFER_TX81_PROFILER_TRACE_INVALID;
 }
 
+static uint32_t wafer_profile_is_trace_capture(void) {
+  return wafer_profile_header != NULL &&
+         (wafer_profile_header->flags &
+          WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED) != 0U &&
+         (wafer_profile_header->flags &
+          WAFER_TX81_PROFILER_RECORD_COUNT_ONLY) == 0U &&
+         wafer_profile_header->trace_state ==
+             WAFER_TX81_PROFILER_TRACE_RECORDING;
+}
+
+static uint16_t wafer_profile_take_sub_index(uint32_t *site_id,
+                                             uint8_t *metadata) {
+  uint16_t sub_index = WAFER_TX81_PROFILER_INVALID_SUB_INDEX;
+  *site_id = WAFER_TX81_PROFILER_INVALID_SITE_ID;
+  if (wafer_profile_header->active_site_depth != 1U)
+    return sub_index;
+  *site_id = wafer_profile_header->active_site_id;
+  sub_index = wafer_profile_header->next_sub_index;
+  *metadata |= WAFER_TX81_PROFILER_EVENT_SITE_VALID;
+  if (sub_index == WAFER_TX81_PROFILER_INVALID_SUB_INDEX) {
+    wafer_profile_header->flags |=
+        WAFER_TX81_PROFILER_RECORD_SUB_INDEX_OVERFLOW;
+    *metadata &= (uint8_t)~WAFER_TX81_PROFILER_EVENT_SITE_VALID;
+    *site_id = WAFER_TX81_PROFILER_INVALID_SITE_ID;
+  } else {
+    ++wafer_profile_header->next_sub_index;
+  }
+  return sub_index;
+}
+
+static uint32_t wafer_profile_allocate_activity_event(uint8_t engine,
+                                                      uint8_t metadata) {
+  uint64_t sequence = wafer_profile_header->next_sequence++;
+  uint32_t site_id = WAFER_TX81_PROFILER_INVALID_SITE_ID;
+  uint16_t sub_index = wafer_profile_take_sub_index(&site_id, &metadata);
+  uint32_t count = wafer_profile_header->event_count;
+  if (count >= wafer_profile_header->event_capacity) {
+    ++wafer_profile_header->dropped_event_count;
+    wafer_profile_header->flags |= WAFER_TX81_PROFILER_RECORD_OVERFLOW;
+    if (wafer_profile_header->trace_state != WAFER_TX81_PROFILER_TRACE_INVALID)
+      wafer_profile_header->trace_state = WAFER_TX81_PROFILER_TRACE_OVERFLOW;
+    return UINT32_MAX;
+  }
+
+  volatile WaferTx81ProfilerTSMCallEvent *event = &wafer_profile_events[count];
+  uint64_t observation = wafer_profile_cycle();
+  event->sequence = sequence;
+  event->begin_cycle = observation;
+  event->end_cycle = observation;
+  event->raw_return = 0;
+  event->site_id = site_id;
+  event->sub_index = sub_index;
+  event->engine = engine;
+  event->metadata = metadata;
+  wafer_profile_header->event_count = count + 1U;
+  return count;
+}
+
+/*
+ * Each observation brackets five stable hardware execution-counter reads.
+ * A delta proves that the corresponding engine was busy somewhere inside the
+ * observation window.  The event keeps that honest window and the exact busy
+ * counter delta; it does not invent a zero-error instruction start time.
+ */
+static void wafer_profile_observe_ncc_activity(void) {
+  if (!wafer_profile_is_trace_capture())
+    return;
+
+  uint64_t counters[WAFER_PROFILE_NCC_ENGINE_COUNT];
+  uint32_t ignored_stable_mask = 0;
+  for (uint32_t engine = 0; engine < WAFER_PROFILE_NCC_ENGINE_COUNT; ++engine)
+    counters[engine] = wafer_profile_read_pmu64(
+        wafer_profile_pmu64_offsets[engine + 2U], engine, &ignored_stable_mask);
+  if (ignored_stable_mask !=
+      (UINT32_C(1) << WAFER_PROFILE_NCC_ENGINE_COUNT) - 1U) {
+    wafer_profile_mark_protocol_error();
+    return;
+  }
+  uint64_t observation_cycle = wafer_profile_cycle();
+  for (uint32_t engine = 0; engine < WAFER_PROFILE_NCC_ENGINE_COUNT; ++engine) {
+    uint64_t previous = wafer_profile_last_engine_counters[engine];
+    uint64_t current = counters[engine];
+    if (current < previous) {
+      wafer_profile_mark_protocol_error();
+      continue;
+    }
+    uint64_t delta = current - previous;
+    uint32_t event_index = wafer_profile_latest_engine_events[engine];
+    if (delta != 0U && event_index != UINT32_MAX &&
+        event_index < wafer_profile_header->event_count) {
+      volatile WaferTx81ProfilerTSMCallEvent *event =
+          &wafer_profile_events[event_index];
+      if ((event->metadata & WAFER_TX81_PROFILER_EVENT_ACTIVITY_VALID) == 0U)
+        event->begin_cycle = wafer_profile_last_observation_cycle;
+      event->end_cycle = observation_cycle;
+      if (event->raw_return > UINT64_MAX - delta) {
+        wafer_profile_mark_protocol_error();
+      } else {
+        event->raw_return += delta;
+        event->metadata |= WAFER_TX81_PROFILER_EVENT_ACTIVITY_VALID;
+      }
+    }
+    wafer_profile_last_engine_counters[engine] = current;
+  }
+  wafer_profile_last_observation_cycle = observation_cycle;
+}
+
 void wafer_tx81_profile_entry_begin(uint64_t buffer_address,
                                     uint64_t buffer_bytes, uint32_t tile_id,
                                     uint32_t flags) {
@@ -202,6 +356,23 @@ void wafer_tx81_profile_entry_begin(uint64_t buffer_address,
     wafer_profile_header->summary_validity |=
         WAFER_TX81_PROFILER_SUMMARY_PMU_BEFORE_STABLE;
   wafer_profile_header->entry_begin_cycle = wafer_profile_cycle();
+  wafer_profile_last_observation_cycle =
+      wafer_profile_header->entry_begin_cycle;
+  for (uint32_t engine = 0; engine < WAFER_PROFILE_NCC_ENGINE_COUNT; ++engine)
+    wafer_profile_last_engine_counters[engine] =
+        wafer_profile_header->pmu_before.counters[engine + 2U];
+
+  /*
+   * Summary and count are observational captures and must not change DTE PMU
+   * state. Trace alone owns the temporary channel-enable mutation and restores
+   * the exact prior value at entry_end.
+   */
+  if (wafer_profile_is_trace_capture()) {
+    wafer_profile_dte_enable_before = wafer_profile_read_dte_pmu32(DTE_PMU_EN);
+    *(volatile uint32_t *)(uintptr_t)(WAFER_PROFILE_DTE_PMU_BASE + DTE_PMU_EN) =
+        wafer_profile_dte_enable_before | UINT32_C(0x3);
+    wafer_profile_dte_enable_owned = 1U;
+  }
 }
 
 void wafer_tx81_profile_entry_begin_from_config(uint64_t buffer_address) {
@@ -272,9 +443,9 @@ static uint8_t wafer_profile_worker_metadata(uint32_t inter_type) {
   return (uint8_t)worker | WAFER_TX81_PROFILER_EVENT_WORKER_VALID;
 }
 
-static uint64_t wafer_tx81_profile_execute_tsm(void *instruction,
-                                               uint32_t inter_type,
-                                               uint8_t engine) {
+static uint64_t wafer_profile_execute_ncc(void *instruction,
+                                          uint32_t inter_type,
+                                          uint8_t engine) {
   if (wafer_profile_header == NULL)
     return TsmExecute(instruction);
   if ((wafer_profile_header->flags & WAFER_TX81_PROFILER_RECORD_COUNT_ONLY) !=
@@ -282,52 +453,113 @@ static uint64_t wafer_tx81_profile_execute_tsm(void *instruction,
     ++wafer_profile_header->next_sequence;
     return TsmExecute(instruction);
   }
-  if ((wafer_profile_header->flags &
-       WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED) == 0U)
+  if (!wafer_profile_is_trace_capture())
     return TsmExecute(instruction);
 
-  uint64_t sequence = wafer_profile_header->next_sequence++;
-  uint32_t site_id = WAFER_TX81_PROFILER_INVALID_SITE_ID;
-  uint16_t sub_index = WAFER_TX81_PROFILER_INVALID_SUB_INDEX;
-  uint8_t metadata = wafer_profile_worker_metadata(inter_type);
-  if (wafer_profile_header->active_site_depth == 1U) {
-    site_id = wafer_profile_header->active_site_id;
-    sub_index = wafer_profile_header->next_sub_index;
-    metadata |= WAFER_TX81_PROFILER_EVENT_SITE_VALID;
-    if (sub_index == WAFER_TX81_PROFILER_INVALID_SUB_INDEX) {
-      wafer_profile_header->flags |=
-          WAFER_TX81_PROFILER_RECORD_SUB_INDEX_OVERFLOW;
-      metadata &= (uint8_t)~WAFER_TX81_PROFILER_EVENT_SITE_VALID;
-      site_id = WAFER_TX81_PROFILER_INVALID_SITE_ID;
-    } else {
-      ++wafer_profile_header->next_sub_index;
+  wafer_profile_observe_ncc_activity();
+  uint32_t event_index = wafer_profile_allocate_activity_event(
+      engine, wafer_profile_worker_metadata(inter_type));
+  if (engine < WAFER_PROFILE_NCC_ENGINE_COUNT)
+    wafer_profile_latest_engine_events[engine] = event_index;
+  uint64_t raw_return = TsmExecute(instruction);
+  wafer_profile_observe_ncc_activity();
+  return raw_return;
+}
+
+/*
+ * Profile-only local completion polling samples execution counters while the
+ * real engines drain.  Production CRT keeps using the untouched
+ * TsmWaitfinish path.
+ */
+static uint32_t wafer_profile_wait_local_completion(void) {
+  /*
+   * Count capture and a rejected/unbound profile header must retain the exact
+   * production completion primitive. Only a valid trace capture replaces it
+   * with equivalent TASK_DONE polling so PMU observations can be sampled
+   * while the engines drain.
+   */
+  if (!wafer_profile_is_trace_capture())
+    return TsmWaitfinish();
+  do {
+    wafer_profile_observe_ncc_activity();
+  } while (TsmGetCsrTaskstatus() != 1U);
+  wafer_profile_observe_ncc_activity();
+  return 1U;
+}
+
+static void wafer_profile_direct_dte_begin(uint64_t direct_event) {
+  if (wafer_profile_header == NULL)
+    return;
+  if ((wafer_profile_header->flags & WAFER_TX81_PROFILER_RECORD_COUNT_ONLY) !=
+      0U) {
+    ++wafer_profile_header->next_sequence;
+    return;
+  }
+  if (!wafer_profile_is_trace_capture())
+    return;
+  if (wafer_profile_direct_event_index != UINT32_MAX) {
+    wafer_profile_mark_protocol_error();
+    return;
+  }
+  wafer_profile_observe_ncc_activity();
+  uint8_t role = 0;
+  if (direct_event == WAFER_DIRECT_DTE_SEND_EVENT)
+    role = WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SEND;
+  else if (direct_event >= WAFER_DIRECT_DTE_RECV_EVENT_BASE &&
+           direct_event < WAFER_DIRECT_DTE_RECV_EVENT_BASE +
+                              WAFER_DIRECT_DTE_MAX_RECEIVERS)
+    role = WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_RECV;
+  wafer_profile_direct_event_index = wafer_profile_allocate_activity_event(
+      WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE, role);
+  wafer_profile_direct_begin_cycle = wafer_profile_cycle();
+  wafer_profile_direct_start_valid_mask = 0;
+  wafer_profile_direct_start_counters[0] =
+      wafer_profile_read_dte_pmu64(DTE_PMU_CH0_L_EXE_TIME, UINT32_C(1) << 0,
+                                   &wafer_profile_direct_start_valid_mask);
+  wafer_profile_direct_start_counters[1] =
+      wafer_profile_read_dte_pmu64(DTE_PMU_CH1_L_EXE_TIME, UINT32_C(1) << 1,
+                                   &wafer_profile_direct_start_valid_mask);
+}
+
+static void wafer_profile_direct_dte_end(void) {
+  if (wafer_profile_header == NULL ||
+      wafer_profile_direct_event_index == UINT32_MAX)
+    return;
+  uint32_t end_valid_mask = 0;
+  uint64_t end_counters[2] = {
+      wafer_profile_read_dte_pmu64(DTE_PMU_CH0_L_EXE_TIME, UINT32_C(1) << 0,
+                                   &end_valid_mask),
+      wafer_profile_read_dte_pmu64(DTE_PMU_CH1_L_EXE_TIME, UINT32_C(1) << 1,
+                                   &end_valid_mask)};
+  uint64_t end_cycle = wafer_profile_cycle();
+  if (wafer_profile_direct_event_index < wafer_profile_header->event_count) {
+    volatile WaferTx81ProfilerTSMCallEvent *event =
+        &wafer_profile_events[wafer_profile_direct_event_index];
+    /*
+     * The Direct-DTE interval is always the real wait/completion window. Raw
+     * PMU evidence remains independently unavailable unless every split read
+     * was stable and both channels are monotonic.
+     */
+    event->begin_cycle = wafer_profile_direct_begin_cycle;
+    event->end_cycle = end_cycle;
+    event->raw_return = 0;
+    event->metadata |= WAFER_TX81_PROFILER_EVENT_ACTIVITY_VALID;
+    if (wafer_profile_direct_start_valid_mask == UINT32_C(0x3) &&
+        end_valid_mask == UINT32_C(0x3) &&
+        end_counters[0] >= wafer_profile_direct_start_counters[0] &&
+        end_counters[1] >= wafer_profile_direct_start_counters[1]) {
+      uint64_t channel0_delta =
+          end_counters[0] - wafer_profile_direct_start_counters[0];
+      uint64_t channel1_delta =
+          end_counters[1] - wafer_profile_direct_start_counters[1];
+      if (channel0_delta <= UINT64_MAX - channel1_delta) {
+        event->raw_return = channel0_delta + channel1_delta;
+        event->metadata |= WAFER_TX81_PROFILER_EVENT_DTE_COUNTER_VALID;
+      }
     }
   }
-
-  uint64_t begin_cycle = wafer_profile_cycle();
-  uint64_t raw_return = TsmExecute(instruction);
-  uint64_t end_cycle = wafer_profile_cycle();
-
-  uint32_t count = wafer_profile_header->event_count;
-  if (count < wafer_profile_header->event_capacity) {
-    volatile WaferTx81ProfilerTSMCallEvent *event =
-        &wafer_profile_events[count];
-    event->sequence = sequence;
-    event->begin_cycle = begin_cycle;
-    event->end_cycle = end_cycle;
-    event->raw_return = raw_return;
-    event->site_id = site_id;
-    event->sub_index = sub_index;
-    event->engine = engine;
-    event->metadata = metadata;
-    wafer_profile_header->event_count = count + 1U;
-  } else {
-    ++wafer_profile_header->dropped_event_count;
-    wafer_profile_header->flags |= WAFER_TX81_PROFILER_RECORD_OVERFLOW;
-    if (wafer_profile_header->trace_state != WAFER_TX81_PROFILER_TRACE_INVALID)
-      wafer_profile_header->trace_state = WAFER_TX81_PROFILER_TRACE_OVERFLOW;
-  }
-  return raw_return;
+  wafer_profile_direct_event_index = UINT32_MAX;
+  wafer_profile_observe_ncc_activity();
 }
 
 void wafer_tx81_profile_entry_end(void) {
@@ -335,7 +567,10 @@ void wafer_tx81_profile_entry_end(void) {
     return;
   if (wafer_profile_header->active_site_depth != 0U)
     wafer_profile_mark_protocol_error();
+  if (wafer_profile_direct_event_index != UINT32_MAX)
+    wafer_profile_mark_protocol_error();
 
+  wafer_profile_observe_ncc_activity();
   wafer_profile_header->entry_end_cycle = wafer_profile_cycle();
   wafer_profile_snapshot(&wafer_profile_header->pmu_after);
   wafer_profile_header->summary_validity |=
@@ -395,6 +630,9 @@ void wafer_tx81_profile_entry_end(void) {
           wafer_profile_header->pmu_recovery.enable)
     wafer_profile_header->summary_validity |=
         WAFER_TX81_PROFILER_SUMMARY_PMU_ENABLE_UNCHANGED;
+  if (wafer_profile_dte_enable_owned != 0U)
+    *(volatile uint32_t *)(uintptr_t)(WAFER_PROFILE_DTE_PMU_BASE + DTE_PMU_EN) =
+        wafer_profile_dte_enable_before;
   wafer_profile_cache_range(wafer_profile_header->buffer_address,
                             wafer_profile_header->buffer_bytes, 0U);
   wafer_profile_reset_binding();
@@ -402,4 +640,6 @@ void wafer_tx81_profile_entry_end(void) {
 
 #undef WAFER_PROFILE_PMU_STABLE_RETRIES
 #undef WAFER_PROFILE_PMU_WORKER_STRIDE
+#undef WAFER_PROFILE_NCC_ENGINE_COUNT
+#undef WAFER_PROFILE_DTE_PMU_BASE
 #undef WAFER_PROFILE_PMU_BASE

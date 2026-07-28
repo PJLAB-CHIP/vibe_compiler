@@ -333,7 +333,7 @@ add_test(NAME wafer-ne-calibration-catalog-python
 )
 set_tests_properties(wafer-ne-calibration-catalog-python PROPERTIES
   LABELS "runtime;no-card;ne;layout;calibration;oracle"
-  TIMEOUT 60
+  TIMEOUT 120
 )
 
 add_test(NAME wafer-ne-tail-throughput-catalog-python

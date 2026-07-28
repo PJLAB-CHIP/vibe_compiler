@@ -895,8 +895,6 @@ public:
       }
       if (observationPolicy == BoardCompletionObservationPolicy::Normal)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      else
-        std::this_thread::yield();
     }
   }
 

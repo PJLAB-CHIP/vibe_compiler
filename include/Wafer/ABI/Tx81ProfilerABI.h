@@ -11,26 +11,27 @@
  * - Upstream artifact / IR: a profiling-only target module, its accepted
  *   instruction sites, and one owned per-tile DDR output allocation.
  * - Current stage responsibility: preserve raw Kcore cycle samples, NCC PMU
- *   snapshots, and the five real CRT TsmExecute call observations.
+ *   snapshots, five NCC engine activity observations, and Direct-DTE
+ *   completion observations.
  * - Output artifact / IR: a versioned per-tile byte record.  It is evidence,
  *   not compiler IR, a scheduler hint, or a target package side channel.
  * - Downstream consumer: the host decoder and profile-scoped calibration.
  * - User-level driver / named pipeline: an explicitly selected profiling
  *   target-artifact build followed by the normal board runtime lifecycle.
- * - Explicit non-goals: no hardware-completion meaning for TsmExecute return,
- *   no fence events, no cross-tile clock alignment, and no production-CRT
- *   instrumentation.
+ * - Explicit non-goals: no completion meaning for an NCC submit return,
+ *   no vendor-profiler dependency, no cross-tile clock alignment, and no
+ *   production-CRT instrumentation.
  * - Completion gate: structural decode, guards, exact terminal lifecycle, and
  *   separately qualified counter semantics must all succeed before analysis.
  */
 
-#define WAFER_TX81_PROFILER_RECORD_ABI_V1 "wafer-tx81-profiler-record-v1"
+#define WAFER_TX81_PROFILER_RECORD_ABI_V2 "wafer-tx81-profiler-record-v2"
 
 #define WAFER_TX81_PROFILER_RECORD_MAGIC UINT64_C(0x3152464f52505757)
 #define WAFER_TX81_PROFILER_HEADER_GUARD UINT64_C(0xa3d95f672cb184e0)
 #define WAFER_TX81_PROFILER_BUFFER_GUARD UINT64_C(0x6e2ac4d13975bf08)
 
-#define WAFER_TX81_PROFILER_SCHEMA_VERSION 1U
+#define WAFER_TX81_PROFILER_SCHEMA_VERSION 2U
 #define WAFER_TX81_PROFILER_LAUNCH_CONFIG_MAGIC UINT64_C(0x3147464352505757)
 #define WAFER_TX81_PROFILER_LAUNCH_CONFIG_GUARD UINT64_C(0xd28c4f6173a950be)
 #define WAFER_TX81_PROFILER_LAUNCH_CONFIG_BYTES 64U
@@ -58,6 +59,7 @@ enum WaferTx81ProfilerEngine {
   WAFER_TX81_PROFILER_ENGINE_RDMA = 2,
   WAFER_TX81_PROFILER_ENGINE_WDMA = 3,
   WAFER_TX81_PROFILER_ENGINE_TDMA = 4,
+  WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE = 5,
 };
 
 enum WaferTx81ProfilerTraceState {
@@ -100,6 +102,10 @@ enum WaferTx81ProfilerEventMetadata {
   WAFER_TX81_PROFILER_EVENT_WORKER_MASK = UINT8_C(0x03),
   WAFER_TX81_PROFILER_EVENT_WORKER_VALID = UINT8_C(1) << 2,
   WAFER_TX81_PROFILER_EVENT_SITE_VALID = UINT8_C(1) << 3,
+  WAFER_TX81_PROFILER_EVENT_ACTIVITY_VALID = UINT8_C(1) << 4,
+  WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SEND = UINT8_C(1) << 5,
+  WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_RECV = UINT8_C(1) << 6,
+  WAFER_TX81_PROFILER_EVENT_DTE_COUNTER_VALID = UINT8_C(1) << 7,
 };
 
 /*
@@ -137,9 +143,20 @@ typedef struct WaferTx81ProfilerPMUSnapshot {
 } WaferTx81ProfilerPMUSnapshot;
 
 /*
- * One event brackets exactly one CRT call to TsmExecute.  raw_return is the
- * submission API's raw return value; it is not a hardware completion marker.
- * The worker bits are meaningful only when WORKER_VALID is set.
+ * One event is allocated for each typed NCC issue or Direct-DTE wait site.
+ * For NCC, begin/end bound the observations over which that engine's hardware
+ * execution counter actually increased; raw_return stores the exact cumulative
+ * counter delta and ACTIVITY_VALID states that such an increase was observed.
+ * Direct-DTE uses the real wait/completion call bounds. ACTIVITY_VALID states
+ * that the wait interval was captured, not that the raw DTE counter is a
+ * latency. DTE_COUNTER_VALID separately requires stable begin/end split reads,
+ * monotonic channels and a non-overflowing sum; only then does raw_return
+ * preserve that uncalibrated channel-0/channel-1 PMU delta. The field retains
+ * its v1 spelling only to preserve the fixed 40-byte layout; it no longer
+ * contains the NCC submission return value.
+ *
+ * The worker bits are meaningful only when WORKER_VALID is set.  Direct-DTE
+ * role bits are meaningful only for the DIRECT_DTE engine.
  */
 typedef struct WaferTx81ProfilerTSMCallEvent {
   uint64_t sequence;
@@ -199,7 +216,7 @@ WAFER_TX81_PROFILER_STATIC_ASSERT(
 WAFER_TX81_PROFILER_STATIC_ASSERT(
     sizeof(WaferTx81ProfilerTSMCallEvent) ==
         WAFER_TX81_PROFILER_TSM_CALL_EVENT_BYTES,
-    "TX81 profiler TsmExecute event ABI size changed");
+    "TX81 profiler engine event ABI size changed");
 WAFER_TX81_PROFILER_STATIC_ASSERT(sizeof(WaferTx81ProfilerRecordHeader) ==
                                       WAFER_TX81_PROFILER_HEADER_BYTES,
                                   "TX81 profiler header ABI size changed");

@@ -240,12 +240,13 @@ getTargetCallTSMEngine(const TargetCallSemantic &semantic) {
     case TargetCallBuiltin::Bit2FP:
     case TargetCallBuiltin::MaskMove:
       return TargetCallTSMEngine::CT;
+    case TargetCallBuiltin::DirectDTEWait:
+      return TargetCallTSMEngine::DirectDTE;
     case TargetCallBuiltin::LocalFence:
     case TargetCallBuiltin::DirectDTEBegin:
     case TargetCallBuiltin::DirectDTEBeginAfterPrepare:
     case TargetCallBuiltin::DirectDTESendPrepare:
     case TargetCallBuiltin::DirectDTERecvPrepare:
-    case TargetCallBuiltin::DirectDTEWait:
     case TargetCallBuiltin::DirectDTEFinish:
       return std::nullopt;
     }
@@ -280,6 +281,8 @@ llvm::StringRef stringifyTargetCallTSMEngine(TargetCallTSMEngine engine) {
     return "WDMA";
   case TargetCallTSMEngine::TDMA:
     return "TDMA";
+  case TargetCallTSMEngine::DirectDTE:
+    return "DIRECT_DTE";
   }
   llvm_unreachable("unknown target-call TSM engine");
 }

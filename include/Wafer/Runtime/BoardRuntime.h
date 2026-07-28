@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace wafer::runtime {
@@ -355,6 +356,12 @@ private:
                                   llvm::StringRef,
                                   BoardRuntimeInvocationRequest,
                                   QualifiedBoardRuntimeSession &);
+  friend llvm::Expected<
+      std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
+  executeBoardInvocationAndStartSession(const VerifiedPackageManifest &,
+                                        llvm::StringRef,
+                                        BoardRuntimeInvocationRequest,
+                                        BoardRuntimeDriver &);
 };
 
 /// Performs device count/selection/inventory queries exactly once and returns
@@ -375,6 +382,17 @@ executeBoardInvocationInSession(const VerifiedPackageManifest &package,
                                 llvm::StringRef packageRoot,
                                 BoardRuntimeInvocationRequest request,
                                 QualifiedBoardRuntimeSession &session);
+
+/// Executes the first invocation through the ordinary one-shot path with the
+/// normal completion observer, then returns a capability for later
+/// invocations on that already-qualified device. Qualification is performed
+/// exactly once. Failure returns no session capability.
+llvm::Expected<
+    std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
+executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,
+                                      llvm::StringRef packageRoot,
+                                      BoardRuntimeInvocationRequest request,
+                                      BoardRuntimeDriver &driver);
 
 /// Executes the complete verified logical-rank domain as one owner-backed
 /// provider session. The manifest selects exactly one kernel or model

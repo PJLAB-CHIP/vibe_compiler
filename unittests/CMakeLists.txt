@@ -98,6 +98,9 @@ add_executable(WaferRunBoardIOUnitTests
   ${CMAKE_SOURCE_DIR}/tools/wafer-run/WaferRunBoardIO.cpp
 )
 llvm_update_compile_flags(WaferRunBoardIOUnitTests)
+target_compile_definitions(WaferRunBoardIOUnitTests PRIVATE
+  WAFER_PROFILE_CAMPAIGN_TESTING=1
+)
 target_include_directories(WaferRunBoardIOUnitTests PRIVATE
   ${CMAKE_SOURCE_DIR}/tools/wafer-run
 )
@@ -249,6 +252,9 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     Model/SystemCTargetModelTestSupport.cpp
   )
   llvm_update_compile_flags(WaferSystemCModelTestSupport)
+  target_include_directories(WaferSystemCModelTestSupport PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib
+  )
   target_link_libraries(WaferSystemCModelTestSupport
     PUBLIC
     WaferCompiler
@@ -269,6 +275,9 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     Model/SystemCTargetModelIntegrationTest.cpp
   )
   llvm_update_compile_flags(WaferSystemCModelIntegrationTest)
+  target_include_directories(WaferSystemCModelIntegrationTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib
+  )
   target_link_libraries(WaferSystemCModelIntegrationTest
     PRIVATE
     WaferSystemCModel
@@ -294,6 +303,9 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     Model/SystemCTargetModelBatchedGemmIntegrationTest.cpp
   )
   llvm_update_compile_flags(WaferSystemCModelBatchedGemmIntegrationTest)
+  target_include_directories(WaferSystemCModelBatchedGemmIntegrationTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib
+  )
   target_link_libraries(WaferSystemCModelBatchedGemmIntegrationTest
     PRIVATE
     WaferSystemCModel
@@ -319,6 +331,9 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     Model/SystemCTargetModelOrientedGemmIntegrationTest.cpp
   )
   llvm_update_compile_flags(WaferSystemCModelOrientedGemmIntegrationTest)
+  target_include_directories(WaferSystemCModelOrientedGemmIntegrationTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib
+  )
   target_link_libraries(WaferSystemCModelOrientedGemmIntegrationTest
     PRIVATE
     WaferSystemCModel

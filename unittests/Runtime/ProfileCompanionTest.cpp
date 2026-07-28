@@ -107,7 +107,8 @@ protected:
     llvm::json::OStream json(output, 2);
     json.object([&] {
       json.attribute("schema", "wafer-profile-activation");
-      json.attribute("schema_version", int64_t(1));
+      json.attribute("schema_version",
+                     int64_t(wafer::runtime::kProfileCompanionSchemaVersion));
       json.attribute("production_manifest_sha256", manifestDigest(production));
       json.attributeObject("metadata_sha256", [&] {
         json.attribute("plan.json", digestFile(planPath));
@@ -217,12 +218,12 @@ protected:
   }
 
   void writeCompanion(bool badSiteSymbol = false,
-                      llvm::StringRef winnerDigestOverride = {},
+                      llvm::StringRef finalDigestOverride = {},
                       llvm::StringRef profilerName = "tx81_profiler_record",
                       llvm::StringRef resourceNamePrefix = "") {
-    std::string digest = winnerDigestOverride.empty()
+    std::string digest = finalDigestOverride.empty()
                              ? manifestDigest(production)
-                             : winnerDigestOverride.str();
+                             : finalDigestOverride.str();
     llvm::StringRef packageReference = "../package";
     struct CaptureFixture {
       llvm::StringRef name;
@@ -236,7 +237,7 @@ protected:
              {{"summary", WAFER_TX81_PROFILER_MIN_BUFFER_BYTES},
               {"count", WAFER_TX81_PROFILER_MIN_BUFFER_BYTES},
               {"trace", 1024 * 1024}}}) {
-      std::string reference = ("captures/production-winner/" + name).str();
+      std::string reference = ("captures/final-artifact/" + name).str();
       llvm::SmallString<256> capturePath(companion);
       llvm::sys::path::append(capturePath, reference);
       ASSERT_FALSE(llvm::sys::fs::create_directories(capturePath));
@@ -257,21 +258,15 @@ protected:
       llvm::json::OStream json(output, 2);
       json.object([&] {
         json.attribute("schema", "wafer-profile-variants");
-        json.attribute("schema_version", int64_t(1));
+        json.attribute("schema_version",
+                       int64_t(wafer::runtime::kProfileCompanionSchemaVersion));
         json.attribute("rank_count", int64_t(16));
         json.attributeArray("variants", [&] {
           json.object([&] {
-            json.attribute("id", "production-winner");
-            json.attribute("role", "production-winner");
+            json.attribute("id", "final-artifact");
+            json.attribute("role", "final-artifact");
             json.attribute("package_ref", packageReference);
             json.attribute("manifest_sha256", digest);
-          });
-          json.object([&] {
-            json.attribute("id", "reserved-baseline");
-            json.attribute("role", "reserved-baseline");
-            json.attribute("package_ref", packageReference);
-            json.attribute("manifest_sha256", digest);
-            json.attribute("same_as", "production-winner");
           });
         });
       });
@@ -290,7 +285,8 @@ protected:
           wafer::getTargetCallDescriptors();
       json.object([&] {
         json.attribute("schema", "wafer-profile-target-call-site-map");
-        json.attribute("schema_version", int64_t(1));
+        json.attribute("schema_version",
+                       int64_t(wafer::runtime::kProfileCompanionSchemaVersion));
         json.attribute(
             "site_basis",
             "verified-target-llvm-entry-reachable-tsm-call-preorder");
@@ -300,7 +296,7 @@ protected:
                        static_cast<int64_t>(descriptors.size()));
         json.attributeArray("variants", [&] {
           json.object([&] {
-            json.attribute("variant_id", "production-winner");
+            json.attribute("variant_id", "final-artifact");
             json.attributeArray("ranks", [&] {
               for (int64_t rank = 0; rank < 16; ++rank) {
                 json.object([&] {
@@ -325,10 +321,6 @@ protected:
               }
             });
           });
-          json.object([&] {
-            json.attribute("variant_id", "reserved-baseline");
-            json.attribute("same_as", "production-winner");
-          });
         });
       });
       output << "\n";
@@ -344,37 +336,31 @@ protected:
       llvm::json::OStream json(output, 2);
       json.object([&] {
         json.attribute("schema", "wafer-profile-plan");
-        json.attribute("schema_version", int64_t(1));
+        json.attribute("schema_version",
+                       int64_t(wafer::runtime::kProfileCompanionSchemaVersion));
         json.attribute("rank_count", int64_t(16));
         json.attribute("variant_metadata", "variants.json");
         json.attribute("site_map", "site-map.json");
         json.attribute(
             "site_identity",
-            "variant-rank-local-tsm-site-id-and-typed-correlation-key");
+            "final-rank-local-engine-site-id-and-typed-correlation-key");
         json.attributeArray("execution_packages", [&] {
           json.object([&] {
-            json.attribute("variant_id", "reserved-baseline");
-            json.attribute("package_ref", packageReference);
-            json.attribute("manifest_sha256", digest);
-          });
-          json.object([&] {
-            json.attribute("variant_id", "production-winner");
+            json.attribute("variant_id", "final-artifact");
             json.attribute("package_ref", packageReference);
             json.attribute("manifest_sha256", digest);
           });
         });
         json.attributeArray("capture_packages", [&] {
-          for (llvm::StringRef variant : {llvm::StringRef("reserved-baseline"),
-                                          llvm::StringRef("production-winner")})
-            for (const CaptureFixture &capture : captures)
-              json.object([&] {
-                json.attribute("variant_id", variant);
-                json.attribute("capture", capture.name);
-                json.attribute("package_ref", capture.reference);
-                json.attribute("manifest_sha256", capture.digest);
-                json.attribute("record_bytes",
-                               static_cast<int64_t>(capture.recordBytes));
-              });
+          for (const CaptureFixture &capture : captures)
+            json.object([&] {
+              json.attribute("variant_id", "final-artifact");
+              json.attribute("capture", capture.name);
+              json.attribute("package_ref", capture.reference);
+              json.attribute("manifest_sha256", capture.digest);
+              json.attribute("record_bytes",
+                             static_cast<int64_t>(capture.recordBytes));
+            });
         });
       });
       output << "\n";
@@ -391,44 +377,29 @@ TEST_F(ProfileCompanionTest, LoadsExactBoundCompanionAndSixteenRankSiteMap) {
   llvm::Expected<wafer::runtime::VerifiedProfileCompanion> loaded =
       wafer::runtime::loadVerifiedProfileCompanion(companion, production);
   ASSERT_TRUE(static_cast<bool>(loaded)) << llvm::toString(loaded.takeError());
-  EXPECT_EQ(loaded->getSchemaVersion(), 1u);
+  EXPECT_EQ(loaded->getSchemaVersion(),
+            wafer::runtime::kProfileCompanionSchemaVersion);
   EXPECT_EQ(loaded->getProductionManifestDigest(), manifestDigest(production));
   EXPECT_EQ(loaded->getRankCount(), 16);
-  EXPECT_EQ(loaded->getVariants().size(), 2u);
-  EXPECT_EQ(loaded->getCaptures().size(), 6u);
-  EXPECT_EQ(loaded->getSiteMaps().size(), 2u);
+  EXPECT_EQ(loaded->getVariants().size(), 1u);
+  EXPECT_EQ(loaded->getCaptures().size(), 3u);
+  EXPECT_EQ(loaded->getSiteMaps().size(), 1u);
   EXPECT_EQ(loaded->getSiteCount(), 16u);
-  const auto *winner =
-      loaded->findVariant(wafer::runtime::ProfileVariantRole::ProductionWinner);
-  const auto *baseline =
-      loaded->findVariant(wafer::runtime::ProfileVariantRole::ReservedBaseline);
-  ASSERT_NE(winner, nullptr);
-  ASSERT_NE(baseline, nullptr);
-  ASSERT_TRUE(baseline->getSameAs().has_value());
-  EXPECT_EQ(*baseline->getSameAs(), winner->getId());
-  EXPECT_EQ(winner->getPackage().getManifest().rankCount, 16);
+  const auto *final =
+      loaded->findVariant(wafer::runtime::ProfileVariantRole::FinalArtifact);
+  ASSERT_NE(final, nullptr);
+  EXPECT_EQ(final->getPackage().getManifest().rankCount, 16);
   const auto *trace = loaded->findCapture(
-      "production-winner", wafer::runtime::ProfileCaptureKind::Trace);
+      "final-artifact", wafer::runtime::ProfileCaptureKind::Trace);
   ASSERT_NE(trace, nullptr);
   EXPECT_EQ(trace->getRecordBytes(), UINT64_C(1024) * 1024);
   for (wafer::runtime::ProfileCaptureKind capture :
        {wafer::runtime::ProfileCaptureKind::Summary,
         wafer::runtime::ProfileCaptureKind::Count,
         wafer::runtime::ProfileCaptureKind::Trace}) {
-    const auto *winnerCapture =
-        loaded->findCapture("production-winner", capture);
-    const auto *baselineCapture =
-        loaded->findCapture("reserved-baseline", capture);
-    ASSERT_NE(winnerCapture, nullptr);
-    ASSERT_NE(baselineCapture, nullptr);
-    EXPECT_EQ(baselineCapture->getPackageReference(),
-              winnerCapture->getPackageReference());
-    EXPECT_EQ(baselineCapture->getManifestDigest(),
-              winnerCapture->getManifestDigest());
-    EXPECT_EQ(baselineCapture->getPackageDirectory(),
-              winnerCapture->getPackageDirectory());
+    ASSERT_NE(loaded->findCapture("final-artifact", capture), nullptr);
   }
-  const auto *siteMap = loaded->findSiteMap("production-winner");
+  const auto *siteMap = loaded->findSiteMap("final-artifact");
   ASSERT_NE(siteMap, nullptr);
   ASSERT_EQ(siteMap->ranks.size(), 16u);
   ASSERT_EQ(siteMap->ranks.front().sites.size(), 1u);
@@ -529,13 +500,13 @@ TEST_F(ProfileCompanionTest, RejectsTargetCallOrdinalSymbolDisagreement) {
 
 TEST_F(ProfileCompanionTest, AcceptsRenamedTypedProfilerWorkspaceAndResources) {
   ASSERT_NO_FATAL_FAILURE(writeCompanion(
-      /*badSiteSymbol=*/false, /*winnerDigestOverride=*/{},
+      /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
       /*profilerName=*/"diagnostic_name_only",
       /*resourceNamePrefix=*/"renamed_"));
   auto loaded =
       wafer::runtime::loadVerifiedProfileCompanion(companion, production);
   ASSERT_TRUE(static_cast<bool>(loaded)) << llvm::toString(loaded.takeError());
-  EXPECT_EQ(loaded->getCaptures().size(), 6u);
+  EXPECT_EQ(loaded->getCaptures().size(), 3u);
 }
 
 TEST_F(ProfileCompanionTest, RejectsProductionReferenceBoundToAnotherPackage) {

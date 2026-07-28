@@ -692,6 +692,9 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   };
   uint64_t maximumPollGapNanoseconds = 0;
   if (kernelLaunch) {
+    std::vector<llvm::DenseMap<uint64_t, BoardFunctionHandle>>
+        functionsByPhase;
+    functionsByPhase.reserve(launchPhases.size());
     for (auto [phaseIndex, phaseRole] : llvm::enumerate(launchPhases)) {
       llvm::DenseMap<uint64_t, BoardFunctionHandle> functionsByModule;
       for (const LiveModule &liveModule : liveModules) {
@@ -716,7 +719,12 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                       firstRank->entry, function.takeError());
         functionsByModule[liveModule.moduleRecord->id.getValue()] = *function;
       }
+      functionsByPhase.push_back(std::move(functionsByModule));
+    }
 
+    std::vector<std::vector<BoardRankLaunch>> launchesByPhase;
+    launchesByPhase.reserve(launchPhases.size());
+    for (auto [phaseIndex, phaseRole] : llvm::enumerate(launchPhases)) {
       std::vector<BoardRankLaunch> phaseLaunches = baseLaunches;
       for (auto [rankIndex, rank] : llvm::enumerate(capacityPlan->ranks)) {
         if (rank.phases.size() != launchPhases.size() ||
@@ -725,17 +733,21 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                       rank.entry,
                       detail::invalid(
                           "rank launch phase plan does not match manifest"));
-        auto function = functionsByModule.find(rank.module.getValue());
-        if (function == functionsByModule.end())
+        auto function =
+            functionsByPhase[phaseIndex].find(rank.module.getValue());
+        if (function == functionsByPhase[phaseIndex].end())
           return fail(BoardRuntimeStage::EntryResolve, rank.logicalRank,
                       rank.entry,
                       detail::invalid("rank phase export was not resolved"));
         phaseLaunches[rankIndex].function = function->second;
       }
+      launchesByPhase.push_back(std::move(phaseLaunches));
+    }
 
+    for (auto [phaseIndex, phaseRole] : llvm::enumerate(launchPhases)) {
       beginSubmissionWindow();
       if (llvm::Error error = driver.submitKernelPhase(
-              kernelLaunch->form, phaseRole, phaseLaunches))
+              kernelLaunch->form, phaseRole, launchesByPhase[phaseIndex]))
         return fail(BoardRuntimeStage::Launch, -1, noEntry, std::move(error));
       submissionLive = true;
       llvm::Expected<BoardCompletionObservation> observation =
@@ -946,6 +958,35 @@ executeBoardInvocationInSession(const VerifiedPackageManifest &package,
   return executeBoardInvocationImpl(
       package, packageRoot, std::move(request), *session.driver,
       &session.device, session.qualifiedLogicalRankCount, &session.usable);
+}
+
+llvm::Expected<
+    std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
+executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,
+                                      llvm::StringRef packageRoot,
+                                      BoardRuntimeInvocationRequest request,
+                                      BoardRuntimeDriver &driver) {
+  if (request.completionObservationPolicy !=
+      BoardCompletionObservationPolicy::Normal)
+    return boardError(
+        BoardRuntimeStage::Preflight, -1, EntryId(),
+        "the first qualified-session invocation must use the ordinary "
+        "completion observation policy");
+  const uint32_t deviceId = request.deviceId;
+  const uint32_t rankCount =
+      static_cast<uint32_t>(package.getManifest().rankCount);
+  BoardDeviceQualification qualification = request.qualification;
+  llvm::Expected<BoardRuntimeInvocationResult> result =
+      executeBoardInvocationImpl(package, packageRoot, std::move(request),
+                                 driver, /*qualifiedDevice=*/nullptr,
+                                 /*qualifiedLogicalRankCount=*/0,
+                                 /*qualifiedSessionUsable=*/nullptr);
+  if (!result)
+    return result.takeError();
+  QualifiedBoardRuntimeSession session(driver, deviceId, rankCount,
+                                       std::move(qualification),
+                                       result->device);
+  return std::pair(std::move(*result), std::move(session));
 }
 
 llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(

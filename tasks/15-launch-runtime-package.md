@@ -547,38 +547,41 @@ profile companion是普通package之外、由同一compiler transaction原子形
 schema-v6 manifest，不改变普通package成员集合，也不是让runtime从opaque sidecar恢复program语义。activation record必须
 以普通production manifest的SHA-256绑定身份，并逐项精确绑定`plan.json`、`variants.json`和`site-map.json`的SHA-256；
 `activation.json`在其它companion成员完整形成后最后写入。missing、partial、stale、metadata key不精确或任一digest mismatch
-均在任何board effect前拒绝。companion包含baseline/winner两个variant的未插桩execution binding，以及每个variant各自的
-summary/count/trace三个内部capture binding，共六个逻辑capture binding。两个variant的最终artifact不同时对应六个物理
-capture package；artifact alias时baseline的三个binding必须精确复用winner的三个已验证物理package及digest，不能复制
-同一artifact，且分析必须保持inconclusive。所有capture binding都不是public launch mode。
+均在任何board effect前拒绝。companion只包含一个`final-artifact`未插桩execution binding，以及它的summary/count/trace
+三个内部capture binding；不存在reserved baseline、winner alias、第二份execution package或候选比较。所有capture
+binding都不是public launch mode。
 
 用户仍以原`wafer-run`调用提供普通package以及既有ResourceId resource/expected/output binding。runner在发现
 exact-match companion后自动执行一个固定protocol，不增加profile mode、采样参数或新输入：
 
 1. 在一个固定、已完成environment和软硬件identity资格检查的session内，复用同一input bytes。调用方已有external expected
-   时每次都做semantic correctness；缺少external expected的writable resource由首个production-winner warm-up按
-   `(logical_rank, role, role_index)`和exact contract建立同session reference，后续winner/baseline/capture全部逐字节比较。
-   这只证明repeatability/equivalence，absolute correctness明确标为unknown。任一writable output、transport status、
+   时每次都做semantic correctness；缺少external expected的writable resource由首个普通production warm-up按
+   `(logical_rank, role, role_index)`和exact contract建立同session reference，后续10次production测量和三个capture
+   全部逐字节比较。这只证明repeatability/equivalence，absolute correctness明确标为unknown。任一writable output、transport status、
    profile-record guard、lifecycle或协议异常立即停止，不retry/reset/power；
-2. 对未插桩baseline/winner execution package各自warm-up，随后以交替ABBA/BAAB运行五个四launch block，共20个primary
-   sample，前四个用于分析、第五个held out。每个sample的host steady-clock区间严格从submit到all-rank trusted completion，
-   且只有这些primary launch启用高分辨率completion observation；`max observed poll gap / sample duration`必须逐sample
-   不超过0.25%；
-3. primary完成后另行串行执行每个candidate的summary、count和trace。summary只提供entry-local cycle与单份aggregate PMU；
+2. 普通warm-up通过后，对同一未插桩final artifact串行执行10个primary sample。每个sample的host steady-clock区间严格从
+   submit到all-rank trusted completion，且只有这些primary launch启用高分辨率completion observation并记录实际最大poll
+   gap；poll resolution作为独立资格和诊断展示，不抹掉其它已通过的硬件证据；
+3. primary完成后另行串行执行final artifact的summary、count和trace。summary只提供entry-local cycle与单份aggregate PMU；
    count先给出preflight总数，trace保留`next_sequence`、`dropped_event_count`、raw flags和terminal state。all-and-only
    16个rank的guard、capacity、overflow、sequence、rank-local site/sub-index、engine与count/trace exact match均须验证；
    trace storage使用DDR，不占用或改变被测SPM计划；
-4. summary/count/trace是diagnostic launch，其耗时、PMU/cache扰动和entry span不进入primary speed verdict。当前runtime可把
+4. summary/count/trace是diagnostic launch，其耗时、PMU/cache扰动和entry span不进入final production artifact的host
+   submit-to-all-completion总耗时。trace clone在真实issue边界和profile-only local-completion轮询中采样hardware
+   execution counter；NCC只发布counter实际增长的engine activity window及其观测分辨率；Direct-DTE发布真实
+   `direct_dte_wait`/completion窗口，并将DTE PMU delta标为未校准raw activity。当前runtime可把
    affine clock mapping显式发布为invalid/unavailable；此时仍保留全部16个tile-local timeline，但禁止cross-tile order、
    global overlap或cluster critical-path claim。带uncertainty的qualified mapping只作为未来可选增强；
 5. correctness、environment、identity、measurement basis、clock、counter、summary和trace分别保留validity。raw evidence、
-   analysis JSON和离线HTML先写入run临时目录，完整后原子发布；runner从自身executable-relative installed resources定位report
+   analysis JSON和离线HTML先写入run临时目录，完整后通过稳定`runs/current`入口原子发布；`runs`、current目标目录及三个
+   公开文件均须允许其它用户穿越/读取，三个文件权限为`0777`。旧current目标只有在其三成员和evidence `run_id`均与目录
+   basename一致时才可回收，删除失败必须显式报错；runner从自身executable-relative installed resources定位report
    generator，失败时不得留下valid run或改变普通package。
 
-companion内部可以包含baseline/winner的summary/count/trace实现，但它们不是public package、用户选项或新的runtime launch kind。
-site id按rank解释；跨candidate的`heuristic-target-call-signature-occurrence-v1`只支持关联展示，不证明stable provenance
-或causality。report中的timeline只显示五类实际`TsmExecute` submit调用；begin/return是Kcore submit API interval，
-不是engine execution。fence/wait/ready-order不作为事件，Direct DTE也不进入五类TSM event count。
+companion内部三个capture都只解释同一个final artifact，它们不是public package、用户选项或新的runtime launch kind。
+site id按rank解释。report中的execution timeline不得显示`TsmExecute` submit调用跨度；begin/return只能进入折叠的issue
+diagnostic。CT/NE/RDMA/WDMA/TDMA lane来自NCC PMU activity window；Direct-DTE lane来自真实
+`direct_dte_wait`/completion窗口，DTE PMU delta单独显示为raw activity而不是耗时。fence/ready-order本身不作为engine事件。
 
 ## 9. No-Card And Board Evidence
 

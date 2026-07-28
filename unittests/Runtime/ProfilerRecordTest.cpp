@@ -55,12 +55,12 @@ std::vector<uint8_t> makeRecord(uint32_t tile, bool trace = true) {
     event.sequence = 0;
     event.begin_cycle = 120;
     event.end_cycle = 130;
-    // This remains an opaque adapter result, not a completion assertion.
-    event.raw_return = UINT64_C(0x123456789abcdef0);
+    event.raw_return = 7;
     event.site_id = 7;
     event.sub_index = 2;
     event.engine = WAFER_TX81_PROFILER_ENGINE_RDMA;
-    event.metadata = WAFER_TX81_PROFILER_EVENT_SITE_VALID;
+    event.metadata = WAFER_TX81_PROFILER_EVENT_SITE_VALID |
+                     WAFER_TX81_PROFILER_EVENT_ACTIVITY_VALID;
     std::memcpy(bytes.data() + WAFER_TX81_PROFILER_EVENTS_OFFSET, &event,
                 sizeof(event));
   }
@@ -113,16 +113,82 @@ TEST(ProfilerRecordTest, CountOnlyCarriesRequiredCapacityWithoutEvents) {
             std::string::npos);
 }
 
-TEST(ProfilerRecordTest, DecodesRawEventAndPreservesUnknownWorker) {
+TEST(ProfilerRecordTest, DecodesHardwareActivityAndPreservesUnknownWorker) {
   auto decoded = wafer::runtime::decodeTx81ProfilerRecord(makeRecord(3));
   ASSERT_TRUE(static_cast<bool>(decoded))
       << llvm::toString(decoded.takeError());
   ASSERT_EQ(decoded->events.size(), 1u);
   const auto &event = decoded->events.front();
-  EXPECT_EQ(event.raw_return, UINT64_C(0x123456789abcdef0));
+  EXPECT_EQ(event.raw_return, 7u);
+  EXPECT_TRUE(wafer::runtime::isTx81ProfilerActivityValid(event));
   EXPECT_TRUE(wafer::runtime::isTx81ProfilerSiteValid(event));
   EXPECT_FALSE(wafer::runtime::isTx81ProfilerWorkerValid(event));
   EXPECT_EQ(wafer::runtime::getTx81ProfilerWorker(event), 0u);
+}
+
+TEST(ProfilerRecordTest, ValidatesDirectDTERoleAndActivity) {
+  std::vector<uint8_t> bytes = makeRecord(3);
+  auto *event = reinterpret_cast<WaferTx81ProfilerTSMCallEvent *>(
+      bytes.data() + WAFER_TX81_PROFILER_EVENTS_OFFSET);
+  event->engine = WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE;
+  event->metadata |= WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SEND |
+                     WAFER_TX81_PROFILER_EVENT_DTE_COUNTER_VALID;
+  auto decoded = wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  ASSERT_TRUE(static_cast<bool>(decoded))
+      << llvm::toString(decoded.takeError());
+  EXPECT_TRUE(
+      wafer::runtime::isTx81ProfilerDirectDTESend(decoded->events.front()));
+  EXPECT_TRUE(wafer::runtime::isTx81ProfilerDirectDTECounterValid(
+      decoded->events.front()));
+
+  event->raw_return = 0;
+  auto zeroRawCounter = wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  ASSERT_TRUE(static_cast<bool>(zeroRawCounter))
+      << llvm::toString(zeroRawCounter.takeError());
+  EXPECT_TRUE(wafer::runtime::isTx81ProfilerActivityValid(
+      zeroRawCounter->events.front()));
+  EXPECT_TRUE(wafer::runtime::isTx81ProfilerDirectDTECounterValid(
+      zeroRawCounter->events.front()));
+
+  event->raw_return = 7;
+  event->metadata |= WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_RECV;
+  auto bothRoles = wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  ASSERT_FALSE(static_cast<bool>(bothRoles));
+  EXPECT_NE(llvm::toString(bothRoles.takeError()).find("role or worker"),
+            std::string::npos);
+
+  event->metadata &=
+      static_cast<uint8_t>(~WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_RECV);
+  event->metadata &=
+      static_cast<uint8_t>(~WAFER_TX81_PROFILER_EVENT_ACTIVITY_VALID);
+  event->metadata &=
+      static_cast<uint8_t>(~WAFER_TX81_PROFILER_EVENT_DTE_COUNTER_VALID);
+  auto nonzeroInvalid = wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  ASSERT_FALSE(static_cast<bool>(nonzeroInvalid));
+  EXPECT_NE(llvm::toString(nonzeroInvalid.takeError()).find("wait window"),
+            std::string::npos);
+
+  event->raw_return = 0;
+  auto missingWaitWindow = wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  ASSERT_FALSE(static_cast<bool>(missingWaitWindow));
+  EXPECT_NE(llvm::toString(missingWaitWindow.takeError()).find("wait window"),
+            std::string::npos);
+
+  event->metadata |= WAFER_TX81_PROFILER_EVENT_ACTIVITY_VALID;
+  event->metadata &=
+      static_cast<uint8_t>(~WAFER_TX81_PROFILER_EVENT_DTE_COUNTER_VALID);
+  auto unavailableCounter = wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  ASSERT_TRUE(static_cast<bool>(unavailableCounter))
+      << llvm::toString(unavailableCounter.takeError());
+  EXPECT_FALSE(wafer::runtime::isTx81ProfilerDirectDTECounterValid(
+      unavailableCounter->events.front()));
+
+  event->raw_return = 9;
+  auto tornCounter = wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  ASSERT_FALSE(static_cast<bool>(tornCounter));
+  EXPECT_NE(llvm::toString(tornCounter.takeError())
+                .find("invalid Direct-DTE counter"),
+            std::string::npos);
 }
 
 TEST(ProfilerRecordTest, RejectsGuardCorruption) {

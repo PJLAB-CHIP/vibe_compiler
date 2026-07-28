@@ -127,15 +127,12 @@ static mlir::LogicalResult stageExecutablePackage(
 static void writeVariantMetadata(llvm::json::OStream &json, llvm::StringRef id,
                                  llvm::StringRef role,
                                  llvm::StringRef packageReference,
-                                 llvm::StringRef manifestDigest,
-                                 std::optional<llvm::StringRef> sameAs) {
+                                 llvm::StringRef manifestDigest) {
   json.object([&] {
     json.attribute("id", id);
     json.attribute("role", role);
     json.attribute("package_ref", packageReference);
     json.attribute("manifest_sha256", manifestDigest);
-    if (sameAs)
-      json.attribute("same_as", *sameAs);
   });
 }
 
@@ -255,12 +252,11 @@ static mlir::LogicalResult stageVariantCapturePackages(
 
 static mlir::LogicalResult writeProfileCompanion(
     llvm::StringRef companionRoot, llvm::StringRef publishedPackageName,
-    llvm::StringRef productionPackage, llvm::StringRef reservedBaselinePackage,
-    const ProfileExecutableBundles &bundles,
+    llvm::StringRef productionPackage,
+    const ExecutableBundle &productionBundle,
+    const TargetLLVMModuleBundle &productionTargetLLVM,
     const TargetLLVMModuleBundle &productionTraceTargetLLVM,
-    const TargetLLVMModuleBundle *reservedBaselineTraceTargetLLVM,
     const ProfileVariantCapturePackages &productionCaptures,
-    const ProfileVariantCapturePackages &reservedBaselineCaptures,
     llvm::raw_ostream &diagnostics) {
   if (createDirectory(companionRoot, diagnostics))
     return mlir::failure();
@@ -271,34 +267,39 @@ static mlir::LogicalResult writeProfileCompanion(
     reject(diagnostics, llvm::toString(productionDigest.takeError()));
     return mlir::failure();
   }
-  llvm::Expected<std::string> baselineDigest =
-      bundles.productionIsReservedBaseline
-          ? llvm::Expected<std::string>(*productionDigest)
-          : getPackageManifestDigest(reservedBaselinePackage);
-  if (!baselineDigest) {
-    reject(diagnostics, llvm::toString(baselineDigest.takeError()));
-    return mlir::failure();
-  }
 
   std::string productionReference = ("../" + publishedPackageName).str();
-  llvm::StringRef baselineReference = bundles.productionIsReservedBaseline
-                                          ? llvm::StringRef(productionReference)
-                                          : llvm::StringRef("baseline-package");
+  if (productionTargetLLVM.getModules().size() !=
+      productionTraceTargetLLVM.getModules().size()) {
+    reject(diagnostics,
+           "profile trace rank domain differs from final production");
+    return mlir::failure();
+  }
+  for (auto [expectedRank, pair] :
+       llvm::enumerate(llvm::zip(productionTargetLLVM.getModules(),
+                                productionTraceTargetLLVM.getModules()))) {
+    const TargetLLVMModule &finalRank = std::get<0>(pair);
+    const TargetLLVMModule &traceRank = std::get<1>(pair);
+    if (finalRank.getLogicalRank() != static_cast<int64_t>(expectedRank) ||
+        traceRank.getLogicalRank() != static_cast<int64_t>(expectedRank) ||
+        finalRank.getEntrySymbol() != traceRank.getEntrySymbol()) {
+      reject(diagnostics,
+             "profile trace rank or entry identity differs from final "
+             "production");
+      return mlir::failure();
+    }
+    if (llvm::Error error = verifyProfileTargetCallSiteIdentity(
+            finalRank.getModule(), finalRank.getEntrySymbol(),
+            traceRank.getModule(), traceRank.getEntrySymbol())) {
+      reject(diagnostics, llvm::toString(std::move(error)));
+      return mlir::failure();
+    }
+  }
   llvm::Expected<ProfileVariantSiteMaps> productionSites =
-      collectTargetCallSites("production-winner", productionTraceTargetLLVM);
+      collectTargetCallSites("final-artifact", productionTargetLLVM);
   if (!productionSites) {
     reject(diagnostics, llvm::toString(productionSites.takeError()));
     return mlir::failure();
-  }
-  std::optional<ProfileVariantSiteMaps> baselineSites;
-  if (reservedBaselineTraceTargetLLVM) {
-    llvm::Expected<ProfileVariantSiteMaps> collected = collectTargetCallSites(
-        "reserved-baseline", *reservedBaselineTraceTargetLLVM);
-    if (!collected) {
-      reject(diagnostics, llvm::toString(collected.takeError()));
-      return mlir::failure();
-    }
-    baselineSites.emplace(std::move(*collected));
   }
 
   llvm::SmallString<256> variantsPath(companionRoot);
@@ -308,20 +309,14 @@ static mlir::LogicalResult writeProfileCompanion(
           [&](llvm::json::OStream &json) {
             json.object([&] {
               json.attribute("schema", "wafer-profile-variants");
-              json.attribute("schema_version", int64_t(1));
+              json.attribute("schema_version", int64_t(2));
               json.attribute(
                   "rank_count",
-                  bundles.production.getExecutionConfig().getRankCount());
+                  productionBundle.getExecutionConfig().getRankCount());
               json.attributeArray("variants", [&] {
-                writeVariantMetadata(json, "production-winner",
-                                     "production-winner", productionReference,
-                                     *productionDigest, std::nullopt);
-                writeVariantMetadata(
-                    json, "reserved-baseline", "reserved-baseline",
-                    baselineReference, *baselineDigest,
-                    bundles.productionIsReservedBaseline
-                        ? std::optional<llvm::StringRef>("production-winner")
-                        : std::nullopt);
+                writeVariantMetadata(json, "final-artifact",
+                                     "final-artifact", productionReference,
+                                     *productionDigest);
               });
             });
           },
@@ -335,7 +330,7 @@ static mlir::LogicalResult writeProfileCompanion(
           [&](llvm::json::OStream &json) {
             json.object([&] {
               json.attribute("schema", "wafer-profile-target-call-site-map");
-              json.attribute("schema_version", int64_t(1));
+              json.attribute("schema_version", int64_t(2));
               json.attribute("site_basis",
                              "verified-target-llvm-entry-reachable-tsm-call-"
                              "preorder");
@@ -346,13 +341,6 @@ static mlir::LogicalResult writeProfileCompanion(
                   static_cast<int64_t>(getTargetCallDescriptors().size()));
               json.attributeArray("variants", [&] {
                 writeTargetCallSites(json, *productionSites);
-                if (baselineSites)
-                  writeTargetCallSites(json, *baselineSites);
-                else
-                  json.object([&] {
-                    json.attribute("variant_id", "reserved-baseline");
-                    json.attribute("same_as", "production-winner");
-                  });
               });
             });
           },
@@ -366,47 +354,39 @@ static mlir::LogicalResult writeProfileCompanion(
           [&](llvm::json::OStream &json) {
             json.object([&] {
               json.attribute("schema", "wafer-profile-plan");
-              json.attribute("schema_version", int64_t(1));
+              json.attribute("schema_version", int64_t(2));
               json.attribute(
                   "rank_count",
-                  bundles.production.getExecutionConfig().getRankCount());
+                  productionBundle.getExecutionConfig().getRankCount());
               json.attribute("variant_metadata", "variants.json");
               json.attribute("site_map", "site-map.json");
               json.attribute("site_identity",
-                             "variant-rank-local-tsm-site-id-and-typed-"
+                             "final-rank-local-engine-site-id-and-typed-"
                              "correlation-key");
               json.attributeArray("execution_packages", [&] {
                 json.object([&] {
-                  json.attribute("variant_id", "reserved-baseline");
-                  json.attribute("package_ref", baselineReference);
-                  json.attribute("manifest_sha256", *baselineDigest);
-                });
-                json.object([&] {
-                  json.attribute("variant_id", "production-winner");
+                  json.attribute("variant_id", "final-artifact");
                   json.attribute("package_ref", productionReference);
                   json.attribute("manifest_sha256", *productionDigest);
                 });
               });
               json.attributeArray("capture_packages", [&] {
-                auto writeCaptures =
-                    [&](const ProfileVariantCapturePackages &variant) {
-                      for (const ProfileCapturePackageMetadata &capture :
-                           variant.captures)
-                        json.object([&] {
-                          json.attribute("variant_id", variant.variantId);
-                          json.attribute("capture", stringifyProfileCaptureKind(
-                                                        capture.capture));
-                          json.attribute("package_ref",
-                                         capture.packageReference);
-                          json.attribute("manifest_sha256",
-                                         capture.manifestDigest);
-                          json.attribute(
-                              "record_bytes",
-                              getProfileCaptureRecordBytes(capture.capture));
-                        });
-                    };
-                writeCaptures(reservedBaselineCaptures);
-                writeCaptures(productionCaptures);
+                for (const ProfileCapturePackageMetadata &capture :
+                     productionCaptures.captures)
+                  json.object([&] {
+                    json.attribute("variant_id",
+                                   productionCaptures.variantId);
+                    json.attribute(
+                        "capture",
+                        stringifyProfileCaptureKind(capture.capture));
+                    json.attribute("package_ref",
+                                   capture.packageReference);
+                    json.attribute("manifest_sha256",
+                                   capture.manifestDigest);
+                    json.attribute(
+                        "record_bytes",
+                        getProfileCaptureRecordBytes(capture.capture));
+                  });
               });
             });
           },
@@ -435,7 +415,7 @@ static mlir::LogicalResult writeProfileCompanion(
       [&](llvm::json::OStream &json) {
         json.object([&] {
           json.attribute("schema", "wafer-profile-activation");
-          json.attribute("schema_version", int64_t(1));
+          json.attribute("schema_version", int64_t(2));
           json.attribute("production_manifest_sha256", *productionDigest);
           json.attributeObject("metadata_sha256", [&] {
             json.attribute("plan.json", *planDigest);
@@ -493,10 +473,10 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<int64_t> failAfterPackageLogicalRank,
     std::optional<ExecutableBundle> &executableBundle,
     std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle) {
-  llvm::Expected<ProfileExecutableBundles> compiled =
-      compileTensorProgramToProfileExecutableBundlesImpl(
+  llvm::Expected<ExecutableBundle> compiled =
+      compileTensorProgramToExecutableBundleImpl(
           tensorProgramDirectory, executionConfig, diagnostics,
-          failAfterLogicalRank);
+          failAfterLogicalRank, WholeVariantSelectionMode::Production);
   if (!compiled) {
     llvm::consumeError(compiled.takeError());
     return mlir::failure();
@@ -508,7 +488,7 @@ mlir::LogicalResult stageProfileTargetPackages(
   llvm::sys::path::append(productionPackage, "package");
   std::optional<TargetLLVMModuleBundle> productionTargetLLVM;
   if (mlir::failed(stageExecutablePackage(
-          tensorProgramDirectory, compiled->production,
+          tensorProgramDirectory, *compiled,
           productionTargetArtifacts, productionPackage, targetToolchain,
           diagnostics, failAfterTargetLogicalRank, failAfterPackageLogicalRank,
           productionTargetLLVM)))
@@ -516,50 +496,23 @@ mlir::LogicalResult stageProfileTargetPackages(
 
   llvm::SmallString<256> companionRoot(transactionRoot);
   llvm::sys::path::append(companionRoot, "profile-companion");
-  llvm::SmallString<256> baselinePackage(companionRoot);
-  llvm::sys::path::append(baselinePackage, "baseline-package");
-  std::optional<TargetLLVMModuleBundle> baselineTargetLLVM;
-  if (compiled->reservedBaseline) {
-    llvm::SmallString<256> baselineTargetArtifacts(transactionRoot);
-    llvm::sys::path::append(baselineTargetArtifacts,
-                            "profile-baseline-target-artifacts");
-    if (mlir::failed(stageExecutablePackage(
-            tensorProgramDirectory, *compiled->reservedBaseline,
-            baselineTargetArtifacts, baselinePackage, targetToolchain,
-            diagnostics, std::nullopt, std::nullopt, baselineTargetLLVM)))
-      return mlir::failure();
-  }
 
   ProfileVariantCapturePackages productionCaptures;
   std::optional<TargetLLVMModuleBundle> productionTraceTargetLLVM;
   if (mlir::failed(stageVariantCapturePackages(
           tensorProgramDirectory, transactionRoot, companionRoot,
-          "production-winner", compiled->production, targetToolchain,
+          "final-artifact", *compiled, targetToolchain,
           diagnostics, productionCaptures, productionTraceTargetLLVM)))
     return mlir::failure();
-
-  ProfileVariantCapturePackages baselineCaptures;
-  std::optional<TargetLLVMModuleBundle> baselineTraceTargetLLVM;
-  if (compiled->reservedBaseline) {
-    if (mlir::failed(stageVariantCapturePackages(
-            tensorProgramDirectory, transactionRoot, companionRoot,
-            "reserved-baseline", *compiled->reservedBaseline, targetToolchain,
-            diagnostics, baselineCaptures, baselineTraceTargetLLVM)))
-      return mlir::failure();
-  } else {
-    baselineCaptures.variantId = "reserved-baseline";
-    baselineCaptures.captures = productionCaptures.captures;
-  }
 
   if (!productionTargetLLVM || !productionTraceTargetLLVM ||
       mlir::failed(writeProfileCompanion(
           companionRoot, publishedPackageName, productionPackage,
-          baselinePackage, *compiled, *productionTraceTargetLLVM,
-          baselineTraceTargetLLVM ? &*baselineTraceTargetLLVM : nullptr,
-          productionCaptures, baselineCaptures, diagnostics)))
+          *compiled, *productionTargetLLVM, *productionTraceTargetLLVM,
+          productionCaptures, diagnostics)))
     return mlir::failure();
 
-  executableBundle.emplace(std::move(compiled->production));
+  executableBundle.emplace(std::move(*compiled));
   targetLLVMModuleBundle.emplace(std::move(*productionTargetLLVM));
   return mlir::success();
 }

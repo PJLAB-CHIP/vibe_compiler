@@ -60,16 +60,18 @@ module {
 // CHECK: %[[SEND0:.+]] = wafer.instr.dte_send %[[SLOT0]]
 // CHECK-SAME: message = #wafer.dte_message<communication = 18, phase = reduce_scatter_direct, round = 1, slice = 0>
 // CHECK-SAME: peer = 0 : i64
+// CHECK-NEXT: wafer.instr.dte_wait %[[SEND0]]
 // CHECK: %[[LOCAL_SLOT:.+]] = memref.subview %[[INPUT]][4] [4] [1]
 // CHECK: %[[SLOT2:.+]] = memref.subview %[[INPUT]][8] [4] [1]
 // CHECK: %[[SEND1:.+]] = wafer.instr.dte_send %[[SLOT2]]
 // CHECK-SAME: message = #wafer.dte_message<communication = 18, phase = reduce_scatter_direct, round = 1, slice = 2>
 // CHECK-SAME: peer = 2 : i64
+// CHECK-NEXT: wafer.instr.dte_wait %[[SEND1]]
 // CHECK: %[[SLOT3:.+]] = memref.subview %[[INPUT]][12] [4] [1]
 // CHECK: %[[SEND2:.+]] = wafer.instr.dte_send %[[SLOT3]]
 // CHECK-SAME: message = #wafer.dte_message<communication = 18, phase = reduce_scatter_direct, round = 1, slice = 3>
 // CHECK-SAME: peer = 3 : i64
-// CHECK: wafer.instr.dte_wait %[[SEND0]], %[[SEND1]], %[[SEND2]]
+// CHECK-NEXT: wafer.instr.dte_wait %[[SEND2]]
 // CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[LOCAL_SLOT]] into %[[ACC]]
 // CHECK-NEXT: wafer.instr.local_fence
 // CHECK: %[[RECV1:.+]] = wafer.instr.dte_recv %[[RECV]]

@@ -1172,6 +1172,118 @@ TEST_F(BoardRuntimeTest,
 }
 
 TEST_F(BoardRuntimeTest,
+       StartSessionFirstInvocationIsTheOrdinaryNormalOneShotPath) {
+  using namespace wafer::runtime;
+  llvm::Expected<VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Grid);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+
+  FakeBoardDriver ordinaryDriver;
+  llvm::Expected<BoardRuntimeInvocationResult> ordinary =
+      executeBoardInvocation(*package, root,
+                             makeRank16Request(package->getManifest()),
+                             ordinaryDriver);
+  ASSERT_TRUE(static_cast<bool>(ordinary))
+      << llvm::toString(ordinary.takeError());
+
+  FakeBoardDriver sessionDriver;
+  llvm::Expected<
+      std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
+      started = executeBoardInvocationAndStartSession(
+          *package, root, makeRank16Request(package->getManifest()),
+          sessionDriver);
+  ASSERT_TRUE(static_cast<bool>(started))
+      << llvm::toString(started.takeError());
+  EXPECT_TRUE(started->second.isUsable());
+  EXPECT_EQ(sessionDriver.observedCompletionObservationPolicy,
+            BoardCompletionObservationPolicy::Normal);
+  EXPECT_EQ(sessionDriver.calls, ordinaryDriver.calls);
+  EXPECT_EQ(started->first.completedStages, ordinary->completedStages);
+  EXPECT_EQ(started->first.ranks.size(), ordinary->ranks.size());
+  EXPECT_EQ(started->first.outputs.size(), ordinary->outputs.size());
+  EXPECT_EQ(
+      std::count(sessionDriver.calls.begin(), sessionDriver.calls.end(),
+                 "get-device-count"),
+      1);
+  EXPECT_EQ(std::count(sessionDriver.calls.begin(), sessionDriver.calls.end(),
+                       "select-device"),
+            1);
+  EXPECT_EQ(std::count(sessionDriver.calls.begin(), sessionDriver.calls.end(),
+                       "device-info"),
+            1);
+}
+
+TEST_F(BoardRuntimeTest,
+       StartSessionRejectsNonNormalFirstObservationBeforeProviderCalls) {
+  using namespace wafer::runtime;
+  llvm::Expected<VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Grid);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  BoardRuntimeInvocationRequest request =
+      makeRank16Request(package->getManifest());
+  request.completionObservationPolicy =
+      BoardCompletionObservationPolicy::ProfileHighResolution;
+
+  FakeBoardDriver driver;
+  llvm::Expected<
+      std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
+      started = executeBoardInvocationAndStartSession(
+          *package, root, std::move(request), driver);
+  ASSERT_FALSE(static_cast<bool>(started));
+  EXPECT_NE(llvm::toString(started.takeError()).find("ordinary"),
+            std::string::npos);
+  EXPECT_TRUE(driver.calls.empty());
+}
+
+TEST_F(BoardRuntimeTest,
+       StartSessionFailureReturnsNoCapabilityAndPoisonStopsLaterCalls) {
+  using namespace wafer::runtime;
+  llvm::Expected<VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Grid);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+
+  FakeBoardDriver firstFailureDriver;
+  firstFailureDriver.failOperation = "wait-current-submission";
+  llvm::Expected<
+      std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
+      failed = executeBoardInvocationAndStartSession(
+          *package, root, makeRank16Request(package->getManifest()),
+          firstFailureDriver);
+  ASSERT_FALSE(static_cast<bool>(failed));
+  llvm::consumeError(failed.takeError());
+
+  FakeBoardDriver driver;
+  llvm::Expected<
+      std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
+      started = executeBoardInvocationAndStartSession(
+          *package, root, makeRank16Request(package->getManifest()), driver);
+  ASSERT_TRUE(static_cast<bool>(started))
+      << llvm::toString(started.takeError());
+  QualifiedBoardRuntimeSession session = std::move(started->second);
+  driver.failOperation = "wait-current-submission";
+  driver.poisonOnFailure = true;
+  llvm::Expected<BoardRuntimeInvocationResult> poisoned =
+      executeBoardInvocationInSession(
+          *package, root, makeRank16Request(package->getManifest()), session);
+  ASSERT_FALSE(static_cast<bool>(poisoned));
+  llvm::consumeError(poisoned.takeError());
+  EXPECT_FALSE(session.isUsable());
+  const size_t callsAfterPoison = driver.calls.size();
+
+  driver.failOperation.clear();
+  driver.poisonOnFailure = false;
+  llvm::Expected<BoardRuntimeInvocationResult> rejected =
+      executeBoardInvocationInSession(
+          *package, root, makeRank16Request(package->getManifest()), session);
+  ASSERT_FALSE(static_cast<bool>(rejected));
+  llvm::consumeError(rejected.takeError());
+  EXPECT_EQ(driver.calls.size(), callsAfterPoison);
+}
+
+TEST_F(BoardRuntimeTest,
        ProfileCompletionObservationCoversSubmitAndForwardsHighResolution) {
   using namespace wafer::runtime;
   llvm::Expected<VerifiedPackageManifest> package =
@@ -1329,9 +1441,9 @@ TEST_F(BoardRuntimeTest,
   EXPECT_EQ(driver.observedDeadlines[0], driver.observedDeadlines[1]);
   const std::vector<std::string> phaseSequence = {
       "resolve-entry",
+      "resolve-entry",
       "submit-kernel-phase:cluster:prepare",
       "wait-current-submission",
-      "resolve-entry",
       "submit-kernel-phase:cluster:main",
       "wait-current-submission"};
   auto call = driver.calls.begin();
@@ -1414,6 +1526,38 @@ TEST_F(BoardRuntimeTest, DirectDTEStatusHandlingIsIndependentOfGridLaunchForm) {
                        "submit-kernel-phase:grid:main"),
             1);
   EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "d2h"), 32);
+}
+
+TEST_F(BoardRuntimeTest,
+       ClusterResolvesEveryPhaseBeforeTheFirstProviderSubmission) {
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+      verifyRank16(TestLaunchContractCase::Cluster);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  FakeBoardDriver driver;
+  driver.failOperation = "resolve-entry";
+  driver.failIndex = 1;
+  llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
+      wafer::runtime::executeBoardInvocation(
+          *package, root, makeRank16Request(package->getManifest()), driver);
+  ASSERT_FALSE(static_cast<bool>(result));
+  bool sawResolveFailure = false;
+  llvm::handleAllErrors(
+      result.takeError(), [&](const wafer::runtime::BoardRuntimeError &error) {
+        sawResolveFailure = true;
+        EXPECT_EQ(error.getStage(),
+                  wafer::runtime::BoardRuntimeStage::EntryResolve);
+      });
+  EXPECT_TRUE(sawResolveFailure);
+  EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
+                       "resolve-entry"),
+            2);
+  EXPECT_EQ(std::find(driver.calls.begin(), driver.calls.end(),
+                      "submit-kernel-phase:cluster:prepare"),
+            driver.calls.end());
+  EXPECT_EQ(std::find(driver.calls.begin(), driver.calls.end(),
+                      "submit-kernel-phase:cluster:main"),
+            driver.calls.end());
 }
 
 TEST_F(BoardRuntimeTest,

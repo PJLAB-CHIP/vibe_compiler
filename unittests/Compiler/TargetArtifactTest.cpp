@@ -28,6 +28,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "gtest/gtest.h"
 
 #include <array>
@@ -424,8 +425,7 @@ TEST(TargetArtifactTest, PackageSlotLegalityIgnoresDiagnosticNames) {
       wafer::compiler::detail::isValidPackageCompilerManagedSlot(status));
 }
 
-TEST(TargetArtifactTest,
-     ClosedTSMEngineRegistryExcludesFenceAndDirectDTECalls) {
+TEST(TargetArtifactTest, ClosedProfileEngineRegistryIncludesDirectDTEWait) {
   llvm::ArrayRef<wafer::TargetCallDescriptor> descriptors =
       wafer::getTargetCallDescriptors();
   EXPECT_EQ(llvm::count_if(
@@ -433,7 +433,7 @@ TEST(TargetArtifactTest,
                 [](const auto &descriptor) {
                   return wafer::getTargetCallTSMEngine(descriptor).has_value();
                 }),
-            104);
+            105);
   EXPECT_EQ(wafer::getTargetCallTSMEngine(
                 wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA)),
             wafer::TargetCallTSMEngine::RDMA);
@@ -451,29 +451,43 @@ TEST(TargetArtifactTest,
             wafer::TargetCallTSMEngine::CT);
   EXPECT_FALSE(wafer::getTargetCallTSMEngine(
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::LocalFence)));
-  EXPECT_FALSE(wafer::getTargetCallTSMEngine(
-      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::DirectDTEWait)));
+  EXPECT_EQ(wafer::getTargetCallTSMEngine(wafer::getTargetCallDescriptor(
+                wafer::TargetCallBuiltin::DirectDTEWait)),
+            wafer::TargetCallTSMEngine::DirectDTE);
 }
 
 TEST(TargetArtifactTest,
-     TraceInstrumentationUsesTheSameDenseActualTSMSiteCollector) {
+     TraceInstrumentationUsesTheSameDenseEngineActivitySiteCollector) {
   llvm::LLVMContext context;
   llvm::Module module("profile-target", context);
   llvm::Type *voidType = llvm::Type::getVoidTy(context);
   llvm::Type *i64 = llvm::Type::getInt64Ty(context);
   llvm::Function *entry = llvm::Function::Create(
-      llvm::FunctionType::get(voidType, {i64}, /*isVarArg=*/false),
+      llvm::FunctionType::get(voidType, {i64, i64}, /*isVarArg=*/false),
       llvm::GlobalValue::ExternalLinkage, "main", module);
   llvm::IRBuilder<> builder(llvm::BasicBlock::Create(context, "entry", entry));
+  llvm::Value *dynamicA =
+      builder.CreateAdd(entry->getArg(0), llvm::ConstantInt::get(i64, 1),
+                        "dynamic.a");
+  builder.CreateAdd(entry->getArg(0), llvm::ConstantInt::get(i64, 2),
+                    "dynamic.b");
+  const wafer::TargetCallDescriptor &directDTEWait =
+      wafer::getTargetCallDescriptor(
+          wafer::TargetCallBuiltin::DirectDTEWait);
 
   auto emitTargetCall = [&](const wafer::TargetCallDescriptor &descriptor) {
     llvm::SmallVector<llvm::Type *, 32> types;
     llvm::SmallVector<llvm::Value *, 32> arguments;
-    for (wafer::TargetCallScalarType scalar : descriptor.arguments) {
+    for (auto [argumentIndex, scalar] :
+         llvm::enumerate(descriptor.arguments)) {
       unsigned width = scalar == wafer::TargetCallScalarType::I64 ? 64 : 32;
       llvm::Type *type = llvm::IntegerType::get(context, width);
       types.push_back(type);
-      arguments.push_back(llvm::ConstantInt::get(type, arguments.size() + 1));
+      if (descriptor.symbol == directDTEWait.symbol && argumentIndex == 0)
+        arguments.push_back(dynamicA);
+      else
+        arguments.push_back(
+            llvm::ConstantInt::get(type, arguments.size() + 1));
     }
     llvm::FunctionType *type =
         llvm::FunctionType::get(voidType, types, /*isVarArg=*/false);
@@ -488,7 +502,7 @@ TEST(TargetArtifactTest,
   emitTargetCall(
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA));
   emitTargetCall(
-      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::DirectDTEWait));
+      directDTEWait);
   emitTargetCall(
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::Gemm));
   emitTargetCall(
@@ -522,17 +536,20 @@ TEST(TargetArtifactTest,
   auto before =
       wafer::compiler::detail::collectProfileTSMCallSites(module, "main");
   ASSERT_TRUE(static_cast<bool>(before)) << llvm::toString(before.takeError());
-  ASSERT_EQ(before->size(), 5u);
+  std::unique_ptr<llvm::Module> productionModule = llvm::CloneModule(module);
+  ASSERT_EQ(before->size(), 6u);
   EXPECT_EQ((*before)[0].siteId, 0u);
   EXPECT_EQ((*before)[0].engine, wafer::TargetCallTSMEngine::CT);
   EXPECT_EQ((*before)[1].siteId, 1u);
   EXPECT_EQ((*before)[1].engine, wafer::TargetCallTSMEngine::RDMA);
   EXPECT_EQ((*before)[2].siteId, 2u);
-  EXPECT_EQ((*before)[2].engine, wafer::TargetCallTSMEngine::NE);
+  EXPECT_EQ((*before)[2].engine, wafer::TargetCallTSMEngine::DirectDTE);
   EXPECT_EQ((*before)[3].siteId, 3u);
-  EXPECT_EQ((*before)[3].engine, wafer::TargetCallTSMEngine::WDMA);
+  EXPECT_EQ((*before)[3].engine, wafer::TargetCallTSMEngine::NE);
   EXPECT_EQ((*before)[4].siteId, 4u);
-  EXPECT_EQ((*before)[4].engine, wafer::TargetCallTSMEngine::TDMA);
+  EXPECT_EQ((*before)[4].engine, wafer::TargetCallTSMEngine::WDMA);
+  EXPECT_EQ((*before)[5].siteId, 5u);
+  EXPECT_EQ((*before)[5].engine, wafer::TargetCallTSMEngine::TDMA);
   std::vector<std::string> correlationKeys;
   for (const auto &site : *before)
     correlationKeys.push_back(site.correlationKey);
@@ -545,23 +562,77 @@ TEST(TargetArtifactTest,
   EXPECT_FALSE(static_cast<bool>(
       wafer::compiler::detail::verifyProfileTargetModuleInstrumentation(
           module, "main", wafer::compiler::detail::ProfileCaptureKind::Trace)));
+  EXPECT_FALSE(static_cast<bool>(
+      wafer::compiler::detail::verifyProfileTargetCallSiteIdentity(
+          *productionModule, "main", module, "main")));
   auto after =
       wafer::compiler::detail::collectProfileTSMCallSites(module, "main");
   ASSERT_TRUE(static_cast<bool>(after)) << llvm::toString(after.takeError());
-  ASSERT_EQ(after->size(), 5u);
-  for (auto [index, site] : llvm::enumerate(*after))
+  ASSERT_EQ(after->size(), 6u);
+  for (auto [index, site] : llvm::enumerate(*after)) {
     EXPECT_EQ(site.correlationKey, correlationKeys[index]);
+    EXPECT_NE(site.instructionOrdinal, (*before)[index].instructionOrdinal);
+  }
+
+  std::unique_ptr<llvm::Module> driftedTrace = llvm::CloneModule(module);
+  llvm::Function *bit2FP = driftedTrace->getFunction(
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::Bit2FP).symbol);
+  ASSERT_NE(bit2FP, nullptr);
+  ASSERT_FALSE(bit2FP->user_empty());
+  auto *driftedCall = llvm::dyn_cast<llvm::CallBase>(*bit2FP->user_begin());
+  ASSERT_NE(driftedCall, nullptr);
+  ASSERT_FALSE(driftedCall->arg_empty());
+  auto *constant =
+      llvm::dyn_cast<llvm::ConstantInt>(driftedCall->getArgOperand(0));
+  ASSERT_NE(constant, nullptr);
+  driftedCall->setArgOperand(
+      0, llvm::ConstantInt::get(constant->getType(),
+                                constant->getZExtValue() + 1));
+  llvm::Error drift =
+      wafer::compiler::detail::verifyProfileTargetCallSiteIdentity(
+          *productionModule, "main", *driftedTrace, "main");
+  ASSERT_TRUE(static_cast<bool>(drift));
+  EXPECT_NE(llvm::toString(std::move(drift))
+                .find("differs from final production"),
+            std::string::npos);
+
+  std::unique_ptr<llvm::Module> dynamicallyDriftedTrace =
+      llvm::CloneModule(module);
+  llvm::Function *driftedWait =
+      dynamicallyDriftedTrace->getFunction(directDTEWait.symbol);
+  ASSERT_NE(driftedWait, nullptr);
+  ASSERT_FALSE(driftedWait->user_empty());
+  auto *driftedWaitCall =
+      llvm::dyn_cast<llvm::CallBase>(*driftedWait->user_begin());
+  ASSERT_NE(driftedWaitCall, nullptr);
+  llvm::Function *driftedEntry =
+      dynamicallyDriftedTrace->getFunction("main");
+  ASSERT_NE(driftedEntry, nullptr);
+  llvm::Instruction *replacement = nullptr;
+  for (llvm::BasicBlock &block : *driftedEntry)
+    for (llvm::Instruction &instruction : block)
+      if (instruction.getName() == "dynamic.b")
+        replacement = &instruction;
+  ASSERT_NE(replacement, nullptr);
+  driftedWaitCall->setArgOperand(0, replacement);
+  llvm::Error dynamicDrift =
+      wafer::compiler::detail::verifyProfileTargetCallSiteIdentity(
+          *productionModule, "main", *dynamicallyDriftedTrace, "main");
+  ASSERT_TRUE(static_cast<bool>(dynamicDrift));
+  EXPECT_NE(llvm::toString(std::move(dynamicDrift))
+                .find("differs from final production"),
+            std::string::npos);
 
   std::string text;
   llvm::raw_string_ostream output(text);
   module.print(output, nullptr);
   output.flush();
   EXPECT_NE(text.find("call void @wafer_tx81_profile_entry_begin_from_config("
-                      "i64 %0)"),
+                      "i64 %1)"),
             std::string::npos);
   EXPECT_NE(text.find("call void @wafer_tx81_profile_site_begin(i32 0)"),
             std::string::npos);
-  EXPECT_NE(text.find("call void @wafer_tx81_profile_site_end(i32 4)"),
+  EXPECT_NE(text.find("call void @wafer_tx81_profile_site_end(i32 5)"),
             std::string::npos);
   EXPECT_NE(text.find("call void @wafer_tx81_profile_entry_end()"),
             std::string::npos);
@@ -577,7 +648,7 @@ TEST(TargetArtifactTest,
           module, "main", wafer::compiler::detail::ProfileCaptureKind::Trace);
   ASSERT_TRUE(static_cast<bool>(missingSiteError));
   EXPECT_NE(llvm::toString(std::move(missingSiteError))
-                .find("does not cover the exact TsmExecute call set"),
+                .find("does not cover the exact engine activity call set"),
             std::string::npos);
 }
 
