@@ -9,10 +9,15 @@
 - Direct-DTE profile case 的本地轴为 `458752` 个 `f16` 元素。
 - 候选轴按近似减半生成：
   `458752 -> 229376 -> 114688 -> 57344`。
-- 前三个候选不是因为 SPM 放不下而失败；它们超过 reduction/GEMM traversal dimension 的
-  `uint16_t` target geometry 上限 `65535`。`57344` 是第一个通过 geometry gate 的候选。
+- 前三个候选不是因为 SPM 放不下而失败；当前 compiler cheap geometry gate 只因 fused scope
+  含有 high-level reduction，就把全部 traversal dimension 统一限制为 `uint16_t`。`57344`
+  是第一个通过该 compiler gate 的候选。
 - complete traversal 因此物化 `scf.for 0..458752 step 57344`，整除后正好动态执行 8 次。
 - 当前冗余传输优化只接受 root path；循环体内的完整 GatherScatter 会因 path/alias 门禁保守保留。
+- Vendor instr ABI 并不存在统一的 `65535` 限制：真实 CT `AddVV` 的 `elem_count` 是
+  `uint32_t`；只有真实 CT `Reduce*` 使用的 `Data_Shape.n/h/w/c` 和 NE GEMM 的相关维度字段
+  是 `uint16_t`。本 case 最终发射 CT Add + Direct DTE，没有发射 CT Reduce，因此把
+  reduction shape ABI 限制施加到其 traversal 长轴属于错误的提前约束。
 
 ## 待实现
 
@@ -29,6 +34,8 @@ loop-invariant compiler-owned roots、完整连续 unit-descriptor、read-only d
   destination write、source overwrite、copy 前 destination access 和跨 backedge 的未完成 DTE。
 - fresh 定向单测证明 movement/dead allocation 仅在证明成立时删除；production late gates 重新计算
   completion、lifetime、SPM、descriptor、cost 和 target legality。
-- 增加一个 planner 回归，锁定大于 `uint16_t` traversal 经候选细化得到合法 tile count，避免把
-  geometry rejection 误诊为 SPM capacity failure。
-
+- 把 cheap geometry gate 改为只检查最终选中指令实际编码的字段；CT elementwise 使用
+  `uint32_t elem_count`，CT Reduce 和 NE GEMM 分别按各自 vendor ABI 字段验证。增加本
+  Add + Direct-DTE case 的回归，证明 high-level reduction wrapper 不会误触发 CT Reduce
+  的 `uint16_t Data_Shape` 限制；若后续仍因 SPM 或其它真实指令字段分块，诊断必须报告
+  对应的精确门禁，不能再归因于统一 traversal geometry。
