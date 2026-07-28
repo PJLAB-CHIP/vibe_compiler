@@ -39,6 +39,7 @@ Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [doing]
 | Q22.K | `target-model-packet-provenance` | `later` | Q22、owner-approved vendor package或公开规范 | 建立可引用的CRT/packet/MMIO provenance；缺失不阻塞functional CModel。 | 14、16、17 |
 | Q22.P | `target-model-timing-calibration` | `later` | Q32、Q22.C、validated PMU/timing environment | 校准LT/AT；没有RTL/vendor cycle证据不声明cycle accuracy。 | 16、17 |
 | Q32.T | `compiler-transform-control` | `later` | Q32、明确的external control-plane consumer | 复用现有rewrite/conversion；Transform IR不保存frontier、不替代all-rank coordinator。 | 01、05-08、10、16、18 |
+| Q39 | `noc-resident-tile-dataflow` | `later` | Q38闭合真实Direct-DTE issue/exact wait/release和generic fixed-slot pipeline | 从typed global/local rank slice、Tiling/PartialReduction interface、IndexRelation、SSA/effect与mesh通用合成input、intermediate、partial和output tile的DDR owner、peer fan-out/forward/reduce、SPM residency及writeback；accepted complete-rank IR直接表达owner-only load、peer send/recv、compute/reduce、token/wait和SCF pipeline，不保留owner/channel/shadow plan。至少两个compute family、一个compound source、一个large contraction和一个复杂case通过同源baseline/winner完整late gates及fresh board correctness，证明DDR transaction真实下降且NoC traffic显式。 | 02-13、16-17；`tasks/plans/noc-resident-tile-dataflow.md` |
 | Q3.6 | `crt-writeback-scalar` | `later` | 明确Count predicate及wrapper/target/model evidence | 独立闭合typed instruction、effect/completion、ABI/CRT、model和必要package readback。 | 11、14-17 |
 
 不在当前DAG中的model/distributed/executable dialect、MPMD/rank class、跨卡coherent variant、
@@ -103,7 +104,8 @@ WCRE/global registry、capability lease、跨model state migration、共享weigh
 
 ## 导航
 
-- 当前计划：`tasks/plans/multi-engine-software-pipelining.md`。
+- 当前计划：`tasks/plans/multi-engine-software-pipelining.md`；Q39后续设计：
+  `tasks/plans/noc-resident-tile-dataflow.md`。
 - Q9完成证据：`tasks/archive/board-profiler.md`。
 - 编号设计与归档导航：`tasks/README.md`。
 - 硬件校准结论：`docs/tx81-compiler-hardware-calibration.md`。

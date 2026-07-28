@@ -210,6 +210,11 @@ stable ID、digest、byte serialization或独立verifier。
 relation 本身只描述 logical indexes，不包含 physical offset、route、descriptor、engine 或 cost。physical
 offset 必须通过两端 encoding interface 另行计算。
 
+跨rank NoC-resident candidate还需要把rank-local `IndexRelation`与frontend verifier给出的typed global/local
+rank slice组合，证明两个rank的boundary或intermediate view覆盖同一global logical region。组合结果仍是当前
+all-rank transformation epoch内的analysis value，不写入rank-local op；rewrite成功后只保留actual subview、
+peer movement和required boundary movement，whole-variant acceptance从这些IR与原program boundary重证coverage。
+
 ### 4.3 失效规则
 
 任意可能改变 op、indexing map、shape、view chain、SSA use-def、encoding、allocation root 或 effect 的
@@ -399,6 +404,7 @@ planner 尝试一种 route 的方式是：clone 当前 IR，运行对应 proof �
 | metadata alias/view | standard memref view 或 typed Wafer view；无 movement |
 | mapped DDR→SPM | typed destination-style `wafer.tile.load` |
 | mapped SPM→DDR | typed destination-style `wafer.tile.store` |
+| peer SPM→SPM | target-abstract `wafer.tile.peer_send` / `wafer.tile.peer_recv`及显式两端view；physical binding后置 |
 | local encoding change | `wafer.tile.materialize_layout` 或 route-specific typed movement op |
 | staged movement | explicit temporary、DMA、GS、fill/mask 和 event/completion graph |
 | spill/reload | explicit storage root、store/load 和 completion |
@@ -457,7 +463,26 @@ Verifier 至少检查：
 该 op 不保存 cost、失败原因、替代路线或 descriptor list。若同一 generic op 不能唯一决定真实 engine/effect，
 应拆成语义明确的 typed movement op 或增加必要 typed field。
 
-### 8.3 Immutable Storage
+### 8.3 Peer Transfer
+
+普通boundary、intermediate或partial tile的cross-rank movement使用target-abstract peer pair：
+
+```text
+wafer.tile.peer_send %source_spm to logical_peer
+wafer.tile.peer_recv from logical_peer into %destination_spm
+```
+
+op只携带lowering与all-rank matching必须区分的logical peer、fixed bytes和typed communication identity；source/
+destination allocation、view、encoding、valid domain与effect由operands和current IR解释。它不携带owner kind、
+collective algorithm、physical endpoint、route、FSM、pipeline stage、slot或cost。tile-to-instruction conversion
+必须生成真实Direct-DTE issue/token/wait，memory planning后由all-rank acceptance提交physical binding。
+
+peer transfer只有在global logical region、两端physical segment cover、sender completion、receiver visibility与
+lifetime均可证明时合法。相同bytes不证明相同tile；broadcast fanout也不能只保留一个带隐式receiver集合的op。
+未经typed target capability闭合，fanout物化为多个send或receive-then-forward，reduction物化为recv、local
+compute和forward。
+
+### 8.4 Immutable Storage
 
 immutable prepack 只有在 IR/package 已能 typed 表达以下事实时才合法：
 

@@ -194,12 +194,18 @@ Q32.M已完成后续native-interface reuse closure：layout requirement由typed 
 `WaferResourceEffectInterface`及其重复record已删除。证据见
 `tasks/archive/physical-mechanism-choice-closure.md`。
 
-structured traversal root的切块能力同样必须消费current op的`TilingInterface`，不能把全部logical collective长期
-归为whole-tensor-only。shape-preserving `all_reduce`和`collective_permute`允许沿任意result tensor维切块；
-`all_gather`、`reduce_scatter`和`all_to_all`只允许接口证明不跨越其gather/scatter/split/concat受限轴的tile。
-候选物化必须从terminal collective result tile反向融合同尺寸producer slice，并把每个tile的compute、communication和
-writeback保留在同一complete compact traversal中；接口拒绝的tile只拒绝该候选，不能靠op名放宽，也不能把可切root
-降级成一次full-buffer尝试。
+structured traversal的切块能力同样必须消费current op的标准interface，不能把全部logical collective长期
+归为whole-tensor-only，也不能把traversal永久限制成从output root反推。通用机制包含三条可组合路径：
+
+- result-driven pull通过`TilingInterface`从result tile反推iteration domain和producer dependent region；
+- operand-driven push通过`TilingInterface`从已经resident或到达的operand tile映射到实际consumer iteration/result tile；
+- reduction只有在`PartialReductionOpInterface`和numeric contract允许时才物化partial accumulator与merge。
+
+input、intermediate、partial/reduction和output不是固定op分类；这些角色由当前boundary、SSA use-def和tile relation派生。
+shape-preserving `all_reduce`和`collective_permute`允许沿任意result tensor维切块；`all_gather`、
+`reduce_scatter`和`all_to_all`只允许接口证明不跨越其gather/scatter/split/concat受限轴的tile。候选物化必须把
+每个tile的实际load/receive、compute/reduce、send和required writeback保留在同一complete compact traversal中；
+接口拒绝的tile只拒绝该候选，不能靠op名放宽，也不能把可切root降级成一次full-buffer尝试。
 
 Q35 production enablement只开放verifier已证明shape-preserving、单输入单输出的`all_reduce`作为terminal tiled root；
 其它collective虽然已有接口级tile mapping，仍保持`FullTraversalOnly`，直到各自的producer fusion、受限轴、control-instance
@@ -286,6 +292,12 @@ baseline不运行该可选rewrite，保证任何后续rank/whole-variant/target 
 logical collective语义只由当前 collective op/interface表达。topology/target helper可以枚举少量 typed algorithm parameters，
 例如 direct/ring/tree 及必要 chunk 参数；每个 alternative必须直接在 complete-rank clones 中展开为真实 p2p、local compute、
 staging、token和wait IR。
+
+physical-dataflow peer movement与logical collective是两个不同来源。verified global/local rank slice、
+structured tile relation和current complete-rank tuple可以证明普通boundary input、intermediate或partial tile只由一个rank
+从DDR取得或生产，再由显式target-abstract peer send/recv转交其它rank；这不会凭空创建一个logical collective，也不能复用
+collective op掩盖owner、buffer、range或completion。此类跨rank ownership rewrite必须原子物化完整rank tuple；rank-local
+candidate不得独立删除自己的load/store后等待coordinator猜测对应peer。
 
 all-rank correctness继续由现有 coordinator从当前 instruction IR收集 message、buffer range、completion和binding并重算。允许用
 一个从 typed collective/message IR 派生的轻量 grouping key减少不可能组合，但它不承担 correctness，也不复制完整 message
@@ -485,6 +497,11 @@ candidate增长要求frontier/beam，则在相同actual-clone语义上增加。�
 tile domain由op interface、static shape、target geometry和现有policy提供的少量候选构成。第一版不枚举全部因子，也不把每维
 tile笛卡尔积交给通用solver。consumer tile通过exact IndexRelation求producer dependent region；无法精确反推时保留原边界。
 
+tile seed可以来自result，也可以来自已经resident或刚由boundary/peer到达的operand。compute tile、沿SSA edge的数据tile、
+一次transport覆盖的physical segment和software-pipeline work quantum是四个独立粒度；candidate可以在exact relation、
+descriptor、capacity和hard cap允许时聚合或拆分transport，但不能为了通信方便静默改变compute coverage或把work quantum
+写回tensor语义。
+
 resident dataflow是selected IR的数据流结果，不是预先枚举的fusion partition：
 
 - producer result由consumer通过同一SPM root/view和SSA use-def直接消费时，形成resident edge；
@@ -492,9 +509,16 @@ resident dataflow是selected IR的数据流结果，不是预先枚举的fusion 
 - fanout按exact relation、encoding、effect和lifetime形成stable maximal-compatible subsets；在hard cap内物化少量partial-reuse
   clones，而不是一个不兼容use使全部use回退，也不枚举所有subset；
 - collective是completion/transport boundary，不自动成为DDR boundary；
+- replicated或partitioned boundary input只有在typed global/local rank slice证明相同global region及合法owner后，才可把
+  多rank重复DDR load改写为owner-only load和显式peer fanout/forward；intermediate、partial和output tile适用相同
+  relation/effect/lifetime规则；
 - buffering slot、ready order和overlap必须由实际buffer SSA、loop-carried value、issue token、wait/fence与resource effect表达；
   unknown completion保守串行。dynamic multi-instance ping-pong仍是later，但current static buffering/order必须进入Q32非回退和
   candidate gate。
+
+NoC-resident扩展只负责创造上述actual dataflow；跨DTE、NCC/Kcore和movement engine的prologue/steady/epilogue由下游
+generic multi-engine software pipeline从current instruction SSA/effect/token重建。真实DTE issue、exact wait/release和
+fixed-slot legality未闭合前，不能把形状上交错的IR称为compute/communication overlap。
 
 physical encoding或route选择不能作为事后layout修补。rewrite在clone中建立所需typed encoding/view/movement，08与11从IR重新
 证明physical footprint、valid lanes、descriptor cover和instruction geometry。
@@ -543,6 +567,10 @@ legality先于cost。candidate只有完成lowering、placement和所有当前sco
 `InstructionProgramCost` typed C++结构，从final IR至少收集：validated SPM/DDR high-water、DDR read/write、SPM movement、
 transport bytes/messages、compute logical work、descriptor/command/issue、temporary、event/fence/wait、padding work和immutable
 payload。Known zero与Unknown分开；overflow或无法扫描为Unknown，不能伪造为0。
+
+NoC-resident tile dataflow进入candidate owner前，还必须让同一final-IR collector精确区分DDR transactions、
+full-shape/intermediate materialization、reduction/recompute work和terminal drain；否则owner-load、peer-forward与
+baseline的关键tradeoff保持Unknown，该producer不得进入production selection。
 
 communication的whole-variant metric还必须消费current `wafer.target.topology`、`wafer.execution.mesh`和final
 `dte_send.peer`。payload injected bytes保持独立维度；另以graph shortest-path distance计算
@@ -639,6 +667,9 @@ header同时提供entry span、aggregate PMU和event stream。三个launch互不
 all-rank coordination保留现有 compiler-level owner，不放入function pass，也不建立跨rank shadow program。每个rank candidate
 是同一MLIRContext中的完整module clone；coordinator负责：
 
+- 对需要改变boundary ownership、peer fanout/forward或cross-rank reduction placement的后续candidate，消费frontend
+  verifier给出的typed global/local rank slice与共同post-SPMD source snapshot，在一次transaction中物化correspondence一致的
+  complete-rank tuple；任一rank的relation、coverage或rewrite失败都丢弃整个tuple，不能先提交rank-local load/store消除；
 - rank并行lowering使用独立MLIRContext时，worker只在本次compiler transaction内返回actual finalized module的文本所有权转移
   载体及既有`(semantic generation ordinal, physical artifact kind, reserved baseline)`元数据；收齐完整rank domain后先仅用
   元数据精确重放既有reserved allowance、bounded Cartesian positions和coordinated correspondence顺序，始终保留原frontier

@@ -4,7 +4,9 @@
 `tasks/progress.md` 为准。当前主线覆盖 typed logical collective、rank-local explicit unicast
 communication、SPM/event planning、完整 rank domain 上的 Direct DTE acceptance、target lowering 和
 runtime-observable completion/error。configured TX81上的真实板端completion由tasks/16作为下游证据闭合；segmented peer
-exchange、跨卡 route和raw non-unicast DTE仍是独立扩展，不能反向改变本文的 logical collective 语义。
+exchange、跨卡 route和raw non-unicast DTE仍是独立扩展，不能反向改变本文的 logical collective 语义。普通input、
+intermediate、partial或output tile的NoC-resident peer movement是独立的physical-dataflow来源；它复用本层
+Direct-DTE instruction与acceptance合同，但不伪装成logical collective。
 
 本文的核心原则只有一条：**通信语义、已展开执行和物理绑定分别由当前层的 typed IR 表达，不在 IR
 外复制另一份计划。**
@@ -172,7 +174,24 @@ terminal collective作为complete traversal root时，每个rank必须执行相�
 current SCF、token、wait和message IR验证这一关系；不得把loop ordinal编码进旁路表，也不得仅因静态send/recv
 各出现一次就推定dynamic instance匹配。
 
-### 2.3 Buffer-level collective op
+该current限制同样适用于physical-dataflow peer movement。只有generic multi-engine software pipeline已经闭合真实
+Direct-DTE issue、matching exact wait/release、fixed slots和dynamic instance legality后，才能让tile `i`的DTE与其它
+engine处理tile `i+1`并行；仅把wait文本后移或把send/recv放进loop不构成overlap。
+
+### 2.3 Physical-dataflow peer tile
+
+`wafer.tile.peer_send`和`wafer.tile.peer_recv`承载普通SPM tile在两个logical rank之间的target-abstract
+movement。它们可以来自boundary input owner fanout、intermediate forwarding、partial/reduction aggregation或
+required output handoff；来源由current boundary、SSA use-def、typed global/local rank slice和tile relation证明，
+不能从operator、tensor名或相同bytes恢复。
+
+peer op只保留显式source/destination SPM view、logical peer、fixed bytes和typed communication identity。它们不拥有
+collective group/algorithm、physical endpoint、route、DTE/FSM、stage、slot或cost；tile-to-instruction conversion
+必须把pair改写为`wafer.instr.dte_send/recv/wait`，随后复用本层memory planning和all-rank Direct-DTE acceptance。
+第一次扩展的fanout物化为多个send或receive-then-forward，reduction物化为recv、local NCC reduce和forward；raw
+broadcast/scatter/source-gather/fan-in只有在独立typed target capability闭合后才可成为lowering alternative。
+
+### 2.4 Buffer-level collective op
 
 现有`wafer.tile.all_gather`、`wafer.tile.reduce_scatter`和`wafer.tile.all_reduce`可继续作为
 rank-specialization与instruction expansion之间的短生命周期typed conversion op。它们只保存buffer-level
@@ -189,7 +208,7 @@ communication identity。
 
 这保留了已有bufferization cut，又避免把中间op升级成第二个planner IR层。
 
-### 2.4 Logical effect
+### 2.5 Logical effect
 
 logical collective尚未issue硬件命令，但不是pure/speculatable op。终态通过标准
 `MemoryEffectOpInterface`在`WaferCommunicationResource`上提供保守write barrier，使generic CSE、DCE、
@@ -518,6 +537,7 @@ movement。physical transport acceptance必须发生在planning之后，因为re
 | IR对象 | 标准/详细effect | completion语义 |
 | --- | --- | --- |
 | logical collective | Communication保守write | 仅阻止非法generic motion，不表示硬件完成 |
+| tile peer send/recv | 读取source SPM或写入destination SPM，并报告Communication effect | 本层不隐含完成；lowering必须产生matching DTE token/wait |
 | DTE send | 读source SPM；Communication issue | token覆盖source不可复用区间 |
 | DTE recv | 写destination SPM；Communication issue | token覆盖destination不可读区间 |
 | DTE wait | Communication barrier；沿token派生send source read或recv destination completion write | 完成对应issue，不完成后续local movement/compute |
@@ -650,6 +670,13 @@ buffer-level collective：
 - storage memory space、shape、bytes、rank group、group-local rank、axis/reduction kind一致；
 - 不含physical endpoint、offset、DTE/FSM或算法attr；
 - candidate expansion结束时无残留。
+
+buffer-level peer movement：
+
+- source/destination是显式SPM root/view，peer落在execution mesh domain；
+- fixed bytes与view physical segment cover一致，communication identity可一一匹配；
+- 不含collective algorithm、owner kind、physical endpoint/route/FSM或pipeline stage；
+- tile-to-instruction conversion结束时无残留，并生成matching issue token与exact wait。
 
 p2p instruction：
 
@@ -787,9 +814,12 @@ ragged/segmented路径尚未实现；equal-split All-to-All的网络payload已�
 现有`MoveInsertSlice` lowering仍会为每个slot复制完整累计result，这个local movement问题必须在后续独立任务
 通过可验证的in-place/subview表示消除，不能把它写成collective网络最优。
 
-后续独立扩展包括segmented peer exchange、cross-card collective、raw non-unicast DTE和经硬件证据校准的
-compute/communication overlap cost。它们必须通过新的typed IR、verifier、lowering和consumer进入，不得修改
-本文“logical collective → direct clone rewrite → current instruction IR acceptance”的单一事实链。
+后续独立扩展包括NoC-resident input/intermediate/partial/output tile dataflow、segmented peer exchange、
+cross-card collective、raw non-unicast DTE和经硬件证据校准的compute/communication overlap cost。NoC-resident
+dataflow从typed global/local rank slice与standard tiling/reduction interface生成physical peer movement，再复用
+本文“current tile/instruction IR → Direct-DTE acceptance”的后半段；它不能修改
+“logical collective → direct clone rewrite”的语义链，也不能在Q38真实DTE issue/exact wait与fixed-slot pipeline
+闭合前宣称细粒度overlap。
 
 ## 14. 与其它设计的关系
 
