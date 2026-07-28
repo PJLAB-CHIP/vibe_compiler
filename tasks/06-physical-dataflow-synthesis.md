@@ -618,8 +618,9 @@ legality/correctness风险，不表示hardware behavior或cost surface完备；�
 均闭合后，才能把与同一候选对齐的device观测发布为calibrated ranking profile；该profile仍只能重排已通过全部exact gate的
 候选。
 
-Q9 production-artifact profiler不增加新的candidate selector或用户输入。`wafer-compile --profile`仍提交逐字节不变的
-普通最终production package；profile companion只绑定该最终artifact及其count/trace两个诊断clone，不生成
+Q9 production-artifact profiler不增加新的candidate selector或用户输入。`wafer-compile --profile`只提交一个未插桩
+最终production artifact；profile companion绑定该artifact及其count/trace两个诊断clone，不另编关闭profile的ordinary
+package做逐字节对照，也不生成
 reserved baseline、第二个execution variant或候选比较。采集、时钟资格、统计和report均是downstream diagnostic
 artifact，不进入accepted IR，也不在foundation阶段反馈本节Pareto/static policy。若后续ranking calibration需要成对
 qualification，必须使用本节独立的compiler-private characterization合同，不能复用或扩写基础profiler的公开产物。

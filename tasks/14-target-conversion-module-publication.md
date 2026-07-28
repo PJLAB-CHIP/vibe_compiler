@@ -648,8 +648,9 @@ execution admission或package schema反写成Q32 candidate生成输入。
 ### 12.8 Profile-Only Target Publication
 
 `wafer-compile --profile`在同一次compile transaction中只构造一次通过全部late gate的最终production artifact。
-普通`TargetLLVMModuleBundle`、CRT和`TargetArtifactBundle`按本文件现有合同发布且必须与未开启profile时逐字节一致；
-profiling不得给normal module插入分支、计数器、ABI slot或额外symbol。profile companion内部的count/trace
+普通`TargetLLVMModuleBundle`、CRT和`TargetArtifactBundle`按本文件现有合同发布；该transaction不另编一个未开启
+profile的ordinary artifact做字节对照。profiling不得给Primary normal module插入分支、计数器、ABI slot或额外symbol，
+由normal target verifier和companion对Primary manifest/artifact digest的单点绑定证明其production身份。profile companion内部的count/trace
 module均从该最终artifact派生，是诊断clone，不属于normal package schema，也不是新的accepted IR。
 
 profile-only conversion/publication承担三项稳定责任：

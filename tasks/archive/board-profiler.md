@@ -12,8 +12,8 @@ Pipeline position:
   同一 verified source snapshot、ExecutionConfig、TargetProfileId 和完整 runtime launch contract
   形成的最终 Instr / TargetCall、target LLVM bundle 和 verified production package。
 - Current stage responsibility:
-  wafer-compile 保持普通 production package 逐字节不变，并从该最终 artifact 只派生 count、trace
-  两种 profile-only diagnostic clone；wafer-run 在一个 qualified board session 中先执行一次未插桩
+  wafer-compile 只发布一个由normal verifier接受的未插桩 production package，并从该最终 artifact
+  派生 count、trace两种 profile-only diagnostic clone；wafer-run 在一个 qualified board session 中先执行一次未插桩
   Primary，再串行执行 Count 和 Trace，三次均复用普通 package 的 ResourceId 输入、expected 和 output
   binding。Primary 的 production phase 由 TX runtime 在同一 device stream 上用 start/end event pair
   包围，event elapsed time 是最终 kernel/model artifact 的launch-to-completion设备包络；host submit 和 host
@@ -34,9 +34,9 @@ Pipeline position:
   耗时冒充 Primary，不把 host envelope、`statistics_window`、Kcore `rdcycle`、`tile_clock` metadata
   或未校准 Direct-DTE raw counter 换算/冒充 device elapsed time，不自动回写 compiler cost。
 - Completion gate:
-  fresh host build/unit/lit/no-card 全部通过；相同 source 的普通 package 与 --profile production package
-  逐字节一致；configured board 重启后由本轮新构建、新 package、新 launch、新 output 串行完成一次
-  Primary、一次 Count、一次 Trace；Primary 必须取得同 stream、同 production phase 的有效 TX event pair
+  fresh host build/unit/lit/no-card 全部通过；Primary由normal verifier及manifest/artifact digest单点绑定，
+  不另编关闭profile的ordinary package作字节对照；configured board重启后由本轮新构建、新package、新launch、
+  新output串行完成一次Primary、一次 Count、一次 Trace；Primary 必须取得同 stream、同 production phase 的有效 TX event pair
   和 device elapsed time，并分别保留有效 host submit、host launch-to-completion 及 completion observer
   resolution；同时闭合正确性、容量、all-and-only 16 tile、五类NCC engine和Direct-DTE活动门禁。
 ```
@@ -233,8 +233,8 @@ device elapsed time、Primary 输出或局部 counter 证据。
 
 ## 实施 checkpoints
 
-1. **Count/Trace companion**：普通 package byte-equivalence；一个 execution binding；Count/Trace
-   两个 capture；activation/digest/readback/failure atomicity。
+1. **Count/Trace companion**：Primary normal-verifier/manifest/artifact identity；一个 execution binding；
+   Count/Trace两个 capture；activation/digest/readback/failure atomicity。
 2. **Record 和 instrumentation**：record ABI 显式携带 typed phase kind、production-correlated /
    trace-only count、site/submit/wait/DTE span、严格 sample bounds、zero-delta/ambiguous 状态和
    exclusive profiler overhead；Count/Trace terminal protocol和decoder negative闭合。

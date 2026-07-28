@@ -47,9 +47,9 @@ Pipeline position:
   两值`RuntimeLaunchKind`；构造schema-v6 `PackageManifest`，执行唯一C++
   semantic verification并序列化canonical JSON。在Q18 staging内复制、复核all-and-only package members后原子
   发布。runtime重新解析并验证同一typed model，再结合invocation bindings和`RuntimeEnvironment`形成
-  side-effect-free `RuntimeSessionPlan`。启用`--profile`时，普通production package保持逐字节不变，只从其
+  side-effect-free `RuntimeSessionPlan`。启用`--profile`时只发布一个未插桩Primary production package，并从其
   final artifact原子派生versioned Count/Trace companion；companion还携带从accepted final Instr IR派生并与
-  manifest绑定的exact per-rank静态work及target policy峰值率。board runtime在同一qualified session执行一次
+  manifest绑定的exact per-rank静态work及target policy峰值率；不另编关闭profile的ordinary package做字节对照。board runtime在同一qualified session执行一次
   未插桩Primary及各一次Count/Trace，并用TX same-stream event pair产生Primary device execution time。
 - Output artifact / IR:
   move-only `PackageBundle(package root, ExecutionConfig, VerifiedPackageManifest)`、schema-v6 canonical package
@@ -72,7 +72,7 @@ Pipeline position:
   Q17 target artifact bundle。Q0.L另要求profile/config逐字段join、registered target/runtime-ABI映射和readback正反例；
   当前宽泛常量不能绕过该映射。rank-count=1/16 production package、Direct DTE transport requirement和no-card
   preflight均保持schema-v6闭合；Q32改写candidate或winner变化不改变该package合同。profile completion另要求
-  production byte-equivalence、companion digest/权限闭合，以及一次Primary→Count→Trace campaign中的device event
+  Primary normal-verifier/manifest/artifact identity与companion digest/权限闭合，以及一次Primary→Count→Trace campaign中的device event
   main time、分离host diagnostics、correctness、capacity和per-tile/engine evidence全部通过。
 ```
 

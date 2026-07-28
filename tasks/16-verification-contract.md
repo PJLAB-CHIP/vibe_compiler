@@ -1,6 +1,6 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-07-26同步Q37 hardware characterization与production optimizer成对板测合同；optimizer 8+1
+状态：2026-07-28同步Q37 hardware characterization、轻量板端执行合同与production optimizer成对板测合同；optimizer 8+1
 及collective 9组pre-board/no-card资产已完成，真实板端执行均为`pending`，不计作board/performance evidence。
 Q6.B configured-board gate中的rank-one kernel、16-rank kernel、model和kernel内Direct DTE prepared phases已按本文
 完成真实板端execution evidence，Q22.C更广板端numeric correlation仍为独立later gate。保留Q32.V typed
@@ -19,8 +19,8 @@ Pipeline position:
 - Current stage responsibility:
   为每层定义positive/negative/atomicity gate，并用真实纵向链证明上游输出被下游直接消费；严格区分
   IR legality、reference semantics、target artifact、repo-owned target-call/SystemC untimed numeric、可选CRT/packet/MMIO
-  provenance、board numeric、exact-module model、
-  no-card runtime和board evidence。
+  provenance、board numeric、exact-module model、no-card runtime和board evidence。真实板端只执行本轮产物所需的
+  最小launch/correctness/lifecycle协议；环境资格、host contract审计和设备执行不在每个case中重复。
 - Output artifact / IR:
   可重复test suites、source/config/digest、accepted artifacts、reference/model/correlation结果、unsupported/skipped清单和
   外部gate状态。
@@ -32,7 +32,8 @@ Pipeline position:
   provider由wafer-run重放同一verified package。wafer-opt/pass tests只补局部覆盖。
 - Explicit non-goals:
   不用FileCheck/JSON/symbol/no-card/reference/target-model component冒充更下游证据；不因board不可用跳过
-  compiler correctness。
+  compiler correctness；不把ordinary/profile双编译字节对照、旧manifest、固定resource数量、反汇编、重复环境状态或
+  no-card oracle塞入默认板端gate。
 - Completion gate:
   各owner独立验收：Q0闭合既有conversion/legality/formal traversal/completion/atomic negative；Q0.L另闭合typed target
   profile、engine×format legality及reduce/indexing-map无丢义；Q15闭合typed
@@ -1123,32 +1124,60 @@ Q22.P不在近期numeric correctness范围内；只有另行恢复并配置可�
 
 configured board suite只消费Q0.L完成后fresh replay形成的Gate C同一verified artifact/package，不允许用Q0.L前旧package、
 另造fixture或provider-specific旁路。kernel contract或model graph变化时，必须先由compiler artifact、package readback
-和runtime verifier显式拥有，不能让test脚本临时拼私有结构。必须实际执行：
+和runtime verifier显式拥有，不能让test脚本临时拼私有结构。
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  本轮source/config经当前compiler发布并由normal verifier接受的verified package、case输入与必要expected/guard，
+  以及同一重启会话中已经完成一次软硬件identity/environment资格的board session。
+- Current stage responsibility:
+  增量构建当前产物，按协议所需次数单进程串行launch，并在bounded timeout内验证必要output/guard、
+  trusted completion/status和正常lifecycle。普通case默认一次launch；profile的Primary、Count、Trace各一次是
+  采集协议本身，不是三次环境资格或重复正确性审计。
+- Output artifact / IR:
+  只由本轮fresh launch产生的typed completion/status、必要output/guard结果、timeout/lifecycle disposition；
+  profile另产出与本轮Primary绑定的Count/Trace evidence。
+- Downstream consumer:
+  board correctness gate、Q22.C numeric correlation、Q9 profiler analysis及明确排期的hardware characterization。
+- User-level driver / named pipeline:
+  configured hardware CTest或正常`wafer-run`完整package invocation；测试脚本不另造provider-specific launch mode。
+- Explicit non-goals:
+  不读取、回放或重新判定历史板端输出；不另编ordinary package与profile package做字节一致比较；不以旧manifest、
+  固定resource数量、反汇编、重复version/status/heartbeat、no-card oracle或host ABI深诊断作为每case前置。
+  这些静态/host检查属于各自独立suite，只在实现变化或板端异常需要归因时按需运行；不自动retry/reset/power。
+- Completion gate:
+  同一重启且软硬件identity未变化时环境资格只做一次。每个case只以本轮构建、本轮launch和本轮输出闭合其声明的
+  correctness/lifecycle；timeout或设备异常立即停止当前批次。旧测试若仍强制双编译、历史manifest、固定resource计数、
+  每case反汇编/no-card或无协议理由的重复launch，属于尚待删除的旧gate，不能提升为当前合同。
+```
+
+以下是板端实际执行的最小共同面：
 
 - allocation/import/copy；kernel分支执行module load/entry resolve，model分支执行type-6 graph load和tile-local symbol registration；
 - launch及manifest实际声明的transport；
 - trusted completion/status/timeout/error；
-- copyback和完整输出CPU comparison；
-- cleanup和重复invocation。
+- 与case区分能力相匹配的必要output/guard comparison；
+- 正常cleanup；只有测量或通信协议明确要求时才增加launch次数。
 
 Q6.B的第一条bootstrap gate固定为production `wafer-compile` fresh发布的rank-one f32 `stablehlo.add` kernel package：两个
 非平凡且不同的16-element输入按manifest `ResourceId` all-and-only绑定，独立NumPy/CPU加法生成完整expected raw bytes；
-board-capable `wafer-run`必须至少重复两次真实allocation→load→launch→trusted completion→copyback→cleanup，并报告全部stage
+board-capable `wafer-run`默认执行一次真实allocation→load→launch→trusted completion→copyback→cleanup，并报告必要stage
 和`exact=true`。`WAFER_ENABLE_BOARD_RUNTIME`只构建能力；hardware test只有通过默认关闭的独立execution配置、完整预期
-runtime-library digest/runtime version/PCI/device/tile qualification才注册，并且运行时还须显式设置
+runtime-library digest/runtime version/PCI/device/tile资格才注册；该资格在同一重启会话只完成一次，并且运行时还须显式设置
 `WAFER_EXECUTE_HARDWARE_TESTS=1`。普通CTest必须skip或不注册，不得触卡；Q6.B证据必须确认hardware CTest未skip。
 
 真实kernel SPMD gate使用一次普通`txLaunchKernel`：`grid=(16,1,1)`、`block=(1,1,1)`、一个共享module/function和rank-major argument table。
 device entry按Kcore提供的block pid选择16个不重叠且完整覆盖的全局Add slice。host在执行前以非结果值填充全部output；
 当前实现以每byte `~expected`预填，任一未写或部分写都会失败。限定V5.6/full-good inventory下，固定logical scheduler
 映射、单次aggregate launch与16个互斥且完整覆盖的exact slice共同形成logical tile 0..15参与依据；不声明physical coordinate，
-也不把manifest-derived entry/completion打印当作逐tile观测。该gate至少重复两次，只证明kernel单算子qualification。
+也不把manifest-derived entry/completion打印当作逐tile观测。该gate默认单次执行，只证明kernel单算子qualification。
 
 真实model SPMD gate消费compiler-owned all-rank target artifact：`txLoadGraph`先对`tile0..tile15/kcore_fw.so`执行type-6 load，
 不得把该同步model command误写成一次计算；随后provider从typed graph I/O构造56-byte head、72-byte input/output dyninfo和
 type-7 payload，以一次`txLaunchModel`触发16个tile本地`entry(head)`。每个tile-specific entry只处理自己的全局Add slice并写唯一
 slice；同样以`~expected`预填、固定type-6 tile0..15映射、单次type-7 aggregate launch和16个互斥exact slice形成
-logical tile 0..15参与依据，并要求完整CPU exact和至少两次重复。type-6同步调用没有安全的进程内cancel，gate以one-shot外层
+logical tile 0..15参与依据，并要求完整CPU exact。该gate默认单次执行；type-6同步调用没有安全的进程内cancel，gate以one-shot外层
 deadline约束；超时后终止测试、不重试、不调用reset/power，并报告需要外部只读资格检查。只有该gate才验证最终模型发射边界，
 kernel结果不能替代model gate。
 
@@ -1167,7 +1196,8 @@ byte-identical。
 两条真实SPMD gate本身不关闭Direct DTE真实receiver readiness、timeout和board completion要求；Q6.B还必须满足下述独立gate。
 
 Direct DTE board gate使用schema-v6 kernel contract：`kind=kernel`、`form=cluster`、rank-major entry ABI和
-`prepare→main` ordered phases；Direct DTE只存在于独立transport requirement。静态和no-card gate必须先证明：
+`prepare→main` ordered phases；Direct DTE只存在于独立transport requirement。独立host/static suite拥有以下证明，
+board case只消费当前normal verifier接受的package，不把它们作为每轮launch前的no-card或manifest重审：
 16个rank-specialized target body被确定性聚合成一个ELF；16个
 rank entry共同引用同一`ModuleId`；module typed exports恰为互异symbol的`prepare`/`main`；main用
 `__get_pid(0)`选择rank body和rank-major row；16行参数表不超过`0x7d0` bytes；所有Direct DTE contract
@@ -1182,10 +1212,10 @@ deadline。必须注入prepare/main timeout、query error、status pending/trans
 status/output D2H失败；首个不可信结果立即sticky quarantine，此后不得调用D2H/unload/free/destroy，
 不得reset/power/retry。
 
-静态module gate还必须反汇编证明：prepare依次执行`__get_pid(0)`、`init_tile_id(pid,4)`和`direct_sync_init(16)`；
+静态module gate可在独立host suite中反汇编证明：prepare依次执行`__get_pid(0)`、`init_tile_id(pid,4)`和`direct_sync_init(16)`；
 sender prepare调用`get_tile_spm_addr_base(remote_tile,4,4)`并把返回base与accepted remote receiver offset相加；
 receiver FSM直接消费本地planned SPM offset。全部动态imports须由同版本Kcore export surface满足。只检查symbol存在、
-只检查offset常量或把本地offset统一转换成`get_spm_memory_mapping`都不满足该gate。
+只检查offset常量或把本地offset统一转换成`get_spm_memory_mapping`都不满足该host gate；board case不重复该反汇编。
 
 真实最小case从production StableHLO出发，以Direct DTE collective/permutation产生非平凡256-byte payload，
 并保留rank-specific Add/passthrough sentinel证明16个pid/body/argument row均执行。所有user output先以
@@ -1193,7 +1223,7 @@ receiver FSM直接消费本地planned SPM offset。全部动态imports须由同�
 instruction order保证每个recv destination在对应wait后才被movement/compute消费、每个send source在对应wait前不被覆盖。
 main stream terminal后16个status全为`SUCCESS=1`，所有sentinel和DTE output完整CPU exact。每个one-shot
 board子进程还须由大于provider共同deadline的外层deadline约束：外层超时只kill/wait该子进程，立即终止gate，
-不进入下一轮且不调用reset/power。最少连续两次fresh allocation/invocation通过，并覆盖所有logical tile的send和receive角色。仅
+不进入下一轮且不调用reset/power。默认一次fresh allocation/invocation须覆盖所有logical tile的send和receive角色。仅
 `entry_return`、stream terminal、manifest报告或NoTransport Add都不能替代该placement/readiness/completion gate。
 
 2026-07-22 fresh Direct DTE evidence是旧schema-v5生命周期的历史板端证据：在与当时kernel/model gate相同的
@@ -1236,8 +1266,10 @@ StableHLO program directory经`wafer-compile`完整形成schema-v6/status-v2、o
   `A=(rank+1+(m mod 17))/4096`、`B=1+(n mod 19)`；17/19与selected tile stride互素且周期大于对应
   tile数，使每个rank和tile起点都可区分，漏掉、重复或错配任一rank/tile必然改变output；
   冻结expected对16份完整32 MiB output逐字节比较，不以rank 0、抽样、hash或容差代替；
-- production no-card先通过，armed hardware CTest再执行至少两次fresh allocation/invocation；每次16个status-v2均为
-  `SUCCESS=1`、16份output exact、cleanup完整，执行后只读resource/inventory回到前置基线；
+- production no-card与package结构由独立host suite拥有，不作为armed hardware case的每轮前置；hardware CTest默认执行
+  一次fresh allocation/invocation，本轮16个status-v2均为`SUCCESS=1`、必要output/guard正确且cleanup完整。
+  Q35冻结workload的完成证据仍要求16份output exact，但普通/profile复跑不得额外编译ordinary对照包、回放旧manifest或
+  固定resource数量；执行后只读resource/inventory回到同一session前置基线；
 - outer timeout只终止当前one-shot进程并停止后续device effect；不retry、不自动reset/power。trusted completion、D2H和
   cleanup后的clean numeric mismatch只记compiler/runtime correctness失败，不要求重启。
 
@@ -1366,13 +1398,14 @@ package结果做model/board numeric correlation；若被测Q32.V extension consu
 
 本gate验证一个compiler功能，而不是单独的可视化工具。唯一public入口是正常
 `wafer-compile <existing arguments> --profile`；rank-count不是16、与target-model冲突或profile companion无法完整形成时
-必须在board effect前给出typed failure。相同输入关闭profile时的普通final package与normal CRT必须逐字节一致，
-不得出现profile branch、slot、symbol或manifest字段。
+必须在board effect前给出typed failure。profile transaction只发布一个由normal verifier接受的未插桩Primary
+production artifact；activation对其manifest/artifact digest做单点绑定。不得为了证明这一点另编相同输入的关闭profile
+ordinary package做逐字节比较；Primary自身不得出现profile branch、slot、symbol或manifest字段。
 
 host/no-card gate至少覆盖：
 
-- 同一verified source、ExecutionConfig、target profile与完整runtime launch contract只产生一个final production artifact，
-  并经过完整target publication；normal package原子发布且关闭profile时逐字节一致。`activation.json`必须最后写入，
+- 同一verified source、ExecutionConfig、target profile与完整runtime launch contract只产生一个未插桩final production artifact，
+  并经过完整normal target verifier/publication；不生成第二个ordinary artifact作对照。`activation.json`必须最后写入，
   精确绑定production manifest SHA-256以及`plan.json`、`variants.json`、`site-map.json`各自SHA-256；
   missing/stale/partial、unknown/missing metadata key、digest mismatch和late-failure负例闭合；
 - companion恰有一个`final-artifact`未插桩execution binding和count/trace两个物理capture binding；每个capture
@@ -1406,6 +1439,9 @@ submit调用耗时、首次submit到all-rank trusted completion的envelope以及
 D2H writable-output validation、
 trusted completion和cleanup；capture还必须通过record guards、capacity和terminal-state检查。
 timeout/device anomaly或首个正确性/协议异常立即停止，不retry/reset/power。
+Primary→Count→Trace三次launch是profile采集协议必需次数，不是三次qualification；同一重启会话的environment/identity
+只确认一次。该board case不执行ordinary/profile双编译比较、旧manifest/固定resource计数、反汇编、重复状态检查或
+no-card oracle。
 
 external expected存在时给出semantic correctness；不存在时，本次Primary exact output只作为Count/Trace的同session
 equivalence oracle，absolute correctness必须标为unknown。最终报告只给一个Primary device-event本次观测值作为主耗时，
@@ -1432,6 +1468,43 @@ uncertainty的qualified affine mapping，但它是可选增强。finding必须�
 device time推导queue delay、跨单位互减或跨tile汇总local cycle。
 profiler foundation只发布证据和人工分析；在环境、重复、held-out及适用的counter unit/clear/wrap/workload
 correlation全部闭合并冻结calibrated profile前，不得反馈candidate ranking。
+
+### 12.5 Profile Publication Overhead Follow-Up
+
+Q9的Primary/Count/Trace采集与测量语义已经完成；Q9.R只收口run publication的空间、生成时间和打开成本，不重开
+采集协议。一个4096³、16-rank K-sharded GEMM run暴露了当前实现缺陷：约47,968条timeline event被展开为携带
+长metadata的宽对象，`tiles`又重复保存semantic segments和partition rows；pretty-printed `analysis.json`为
+423,914,223 bytes，内嵌完整analysis与evidence的`index.html`为332,779,035 bytes，独立`evidence.json`为
+47,572,705 bytes，总计约768 MiB。该数字只定位当前实现的放大来源，不冻结case shape、事件数、JSON字段或目标文件大小。
+同一case的16×32 MiB output readback共512 MiB，是runtime correctness/copyback的独立开销，不能计入report package，
+也不能用减少report字段掩盖。
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  已通过Q9 capture validity的versioned raw evidence、typed site/event identity、static-work dictionary、measurement
+  validity和run identity；board output只以correctness状态/digest引用进入publication，不复制output payload。
+- Current stage responsibility:
+  让raw evidence只有一个canonical owner；analysis用稳定ID和共享dictionary引用site/symbol/metadata，只物化UI和诊断
+  需要的摘要。summary与raw分离，HTML是可缓存的展示壳而不是第二份全量数据库；大数组按需读取并使用versioned压缩表示，
+  同一semantic segment、partition row或timeline event不在多个公开artifact中展开复制。
+- Output artifact / IR:
+  与run identity/digest原子绑定、可由其它用户读取的versioned summary、单份canonical raw evidence及按需加载的HTML/assets。
+  wire文件划分可在Q9.R实现时版本化，但每项事实必须有唯一owner和明确readback。
+- Downstream consumer:
+  profiler Overview/Timeline/Diagnostics UI、离线审计、run retention及dense-fixture publication-size regression。
+- User-level driver / named pipeline:
+  正常`wafer-run`完成Primary→Count→Trace后自动发布`runs/current`；不增加用户profile mode、第二次board campaign或
+  case-specific conversion工具。
+- Explicit non-goals:
+  不改变Primary/Count/Trace次数、counter/clock语义、correctness gate或candidate ranking；不丢弃审计所需raw event；
+  不把512 MiB output readback等runtime数据搬进report，也不以gzip一个仍含多份重复事实的单页HTML冒充结构收口。
+- Completion gate:
+  analyzer/UI从single-owner publication重建现有Q9语义并通过invalid/partial/readback负例；dense synthetic fixture验证
+  artifact规模随事件数线性增长，设置同时约束总publication、analysis summary和HTML shell的size gate，并验证按需/压缩
+  raw加载。生成失败仍原子保留旧current，权限和run identity闭合。当前generator及测试仍保留宽对象、pretty JSON、
+  HTML全量内嵌和旧publication size行为，因此Q9.R状态为later、尚未实现，不能把本节写成已完成优化。
+```
 
 ## 13. CI And Reproducibility
 

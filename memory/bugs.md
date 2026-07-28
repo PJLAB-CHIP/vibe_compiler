@@ -1777,12 +1777,14 @@
   evidence `run_id`，删除失败显式报错。
 - 防复发：target conformance必须检查宏展开后的非法flag fallback、TASK_DONE极性和PMU ownership；decoder/schema
   同时覆盖“wait有效/raw无效”正例及缺wait、torn raw、动态SSA换线负例。host完成证明必须包含实际profile publication、
-  C++ campaign、Python analyzer/schema、普通package byte-equivalence和带板依赖的no-card构建；这些全部通过仍不能
+  C++ campaign、Python analyzer/schema、Primary normal-verifier/manifest/artifact identity和独立no-card构建；不另编
+  ordinary package做字节对照。这些全部通过仍不能
   代替本轮新构建、新启动、新输出的串行板端gate。
-- 板端replay封装本身也必须fail closed：普通correctness pre-gate和固定campaign分别设置独立进程级deadline；
-  默认hardware calibration用profile gate替代旧Add槽位，不能把旧Add和profile内置普通gate叠加执行；成功归档要从
-  受管`runs/current`验证三成员和`run_id`后完整保存HTML与两份JSON。普通包与profile production包继续做逐字节
-  一致检查，但live profile gate只启动一次内部固定为Primary→Count→Trace的campaign；host fake test锁定单一
+- 板端replay封装本身也必须fail closed：只对本轮固定campaign设置进程级deadline，不再叠加独立ordinary
+  correctness pre-gate；默认hardware calibration用profile gate替代旧Add槽位，不能把旧Add和profile内置Primary叠加执行；成功归档要从
+  受管`runs/current`验证三成员和`run_id`后完整保存HTML与两份JSON。Primary由normal verifier及manifest/artifact
+  digest绑定证明production身份，不再另编ordinary包做逐字节检查；live profile gate只启动一次内部固定为
+  Primary→Count→Trace的campaign，host fake test锁定单一
   bounded process，并覆盖权限、负cycle和报告成员负例。
 - 只把`runs`、run目录和三份报告chmod为`0777`仍不够：compiler transaction受umask影响时，
   `<package>.profile`根和内部capture目录可能是`0750`，导致非root用户连companion都无法进入。修复必须在
@@ -1923,3 +1925,45 @@
 - 防复发：activity event不能冒充额外调用，调用rdcycle不能冒充engine busy；任何bandwidth→time换算必须有当前target合同中的唯一速率和
   正确scope，共享DDR不能当per-tile独占，未知SPM/issue/route参数不能用单case校准常数补齐，模型不得与Primary相加
   或进入candidate ranking。
+
+## 2026-07-28 板端case不能重复承担host合同审计
+
+- 现象：普通或profile上板case在真正launch之外，又编译ordinary对照包、比较ordinary/profile package bytes、
+  回放旧manifest并锁定固定resource数量，还重复执行反汇编、version/status/heartbeat和no-card oracle。设备执行本身很快，
+  测试wall time却由与本轮板端结果无关的资格和contract检查主导，旧artifact还可能错误拒绝当前合法package。
+- 根因：测试把compiler/package的静态host gate、session级环境资格和case级device correctness混成一条脚本，
+  并把历史产物或实现偶然结构当成每次launch的oracle。profile的Primary/Count/Trace三次协议也容易被误写成三次环境资格或
+  ordinary/profile双编译证明。
+- 修复模式：同一重启且软硬件identity未变化时只做一次environment qualification。每个case只执行本轮增量构建、
+  单进程串行的协议必需launch、bounded timeout、必要output/guard/status和正常lifecycle；普通case默认一次，
+  profile的Primary/Count/Trace各一次只因采集协议需要。manifest/ABI/反汇编/no-card属于独立host suite，
+  仅在实现变化或板端异常归因时按需调用；历史raw/report只作审计记录。
+- 防复发：board test的wall-time分项必须区分build、session qualification、device launch和copyback/validation；
+  gate review拒绝旧manifest、固定resource计数、第二份ordinary package字节对照、每case重复状态检查及无协议理由的重复launch。
+  timeout或设备异常后停止批次，不自动retry/reset/power。
+
+## 2026-07-28 profiler publication不能复制展开同一份raw evidence
+
+- 现象：一个4096³、16-rank K-sharded GEMM profile run的约47,968条timeline event被展开后，
+  `analysis.json`达到423,914,223 bytes，内嵌完整analysis/evidence的`index.html`达到332,779,035 bytes，
+  独立`evidence.json`为47,572,705 bytes，总publication约768 MiB，生成、传输和打开均远重于采集本身。
+  该case另有16×32 MiB、共512 MiB output readback；这是runtime correctness/copyback开销，不是report package。
+- 根因：timeline event使用重复长site/symbol/correlation metadata的宽对象，`tiles`同时展开semantic segments和
+  partition rows，analysis使用pretty JSON，HTML又内嵌全量analysis与evidence；同一事实没有canonical owner。
+- 修复模式：raw evidence只保留一个versioned canonical owner；site/symbol/metadata用ID和共享dictionary引用，
+  analysis只物化摘要，summary与raw分离，HTML作为展示壳按需加载压缩raw/assets，不重复内嵌全量JSON。
+  output payload不进入publication，只保留必要correctness状态或digest引用。
+- 防复发：使用dense synthetic fixture分别约束总publication、analysis summary和HTML shell大小，并验证规模随事件数线性增长、
+  压缩/按需readback和run原子发布。单纯压缩仍含重复事实的单页HTML不算修复；性能数字只作当前缺陷证据，
+  不把特定shape、事件数或文件大小固化为长期协议。
+
+## 2026-07-28 大GEMM整体包络受搬运和collective主导
+
+- Fresh profile：`4096³` f16、16-rank K-shard的Primary为`36.135 ms`，但每Tile NE active约
+  `1.092 ms`，接近`8 TOPS/tile`对应的`1.074 ms`下界；`M=N=4096,K=1024`的16-rank M-shard、
+  无collective对照为`5.329 ms`，16份输出均exact。
+- 结论：当前问题不在NE算力，而在重复DDR/SPM搬运、collective、blocking completion和未流水化空洞。
+  Engine active work允许重叠，不能相加或从Primary相减；厂商整体时间来自循环barrier区间写入SPM，
+  也不是engine active求和。
+- 后续：检查并消除重复搬运和非必要`TsmWaitfinish*`，推进movement/compute/collective流水；上述单次样本
+  只记录问题，不进入通用cost或scheduler。
