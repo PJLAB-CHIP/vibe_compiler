@@ -108,9 +108,8 @@ def parse_args() -> argparse.Namespace:
         "--profile",
         action="store_true",
         help=(
-            "compile byte-identical ordinary/profile packages, run the "
-            "ordinary correctness gate first, then execute one fixed profile "
-            "campaign"
+            "compile byte-identical ordinary/profile packages, then execute "
+            "one fixed Primary->Count->Trace campaign"
         ),
     )
     parser.add_argument(
@@ -902,28 +901,6 @@ def main() -> int:
         *resource_arguments,
     ]
     if args.profile:
-        ordinary_result = run(
-            [
-                str(args.wafer_run),
-                "--package-dir",
-                str(ordinary_package),
-                *command_tail,
-            ],
-            timeout_seconds=(
-                args.completion_timeout_ms / 1000.0
-                + BOARD_PROCESS_TIMEOUT_MARGIN_SECONDS
-            ),
-        )
-        verify_board_evidence(
-            ordinary_result.stdout,
-            args.launch_kind,
-            output_ids,
-            entry_evidence,
-            completion_evidence,
-        )
-        print("board_profile_ordinary_gate: pass")
-        print(ordinary_result.stdout, end="")
-
         profile_result = run(
             [
                 str(args.wafer_run),

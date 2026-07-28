@@ -147,3 +147,17 @@ candidate、winner、baseline、speedup 或多样本统计。
 
 旧 companion v2 / evidence v4 的 14-launch Add 输出只保留为历史审计记录，不能为本合同的
 companion v3 / evidence v5 代签。Q9 在含真实 Direct-DTE wait 的新协议板端 gate 完成前保持 `doing`。
+
+## Fresh Add verification boundary
+
+2026-07-28 使用本轮新构建、新 package、新 launch 和新 output 串行执行一次固定 campaign，实际只有
+Primary、Count、Trace 三次板端 launch，未重试或复位。Primary 的单次
+submit→all-rank trusted-completion观测为`1,029,187 ns`，状态为`Measured`且输出16个resource全部
+expected-exact；该值是本次最终产物耗时，不是median或稳态benchmark。Count与Trace输出均与Primary一致，
+16个tile完整，timeline共64个event；每tile CT busy为46 cycles，RDMA busy范围394–749 cycles，
+WDMA busy范围102–155 cycles，NE与TDMA为measured zero。completion observer分辨率为11,905 ns，
+因此保留`completion_resolution_too_coarse` warning，但不使Primary失效。
+
+companion根、内部capture、`runs`、current目标目录和全部regular file均重新逐项验证为`0777`；
+current目标仍恰含`index.html`、`analysis.json`、`evidence.json`。该Add没有Direct-DTE wait，不能用
+measured zero替代Direct-DTE活动门禁，因此Q9仍为`doing`。

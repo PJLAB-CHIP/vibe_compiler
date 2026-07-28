@@ -1780,8 +1780,9 @@
   代替本轮新构建、新启动、新输出的串行板端gate。
 - 板端replay封装本身也必须fail closed：普通correctness pre-gate和固定campaign分别设置独立进程级deadline；
   默认hardware calibration用profile gate替代旧Add槽位，不能把旧Add和profile内置普通gate叠加执行；成功归档要从
-  受管`runs/current`验证三成员和`run_id`后完整保存HTML与两份JSON。host fake test至少锁定外层只执行一次普通
-  invocation和一次campaign invocation，并覆盖权限、负cycle和报告成员负例。
+  受管`runs/current`验证三成员和`run_id`后完整保存HTML与两份JSON。普通包与profile production包继续做逐字节
+  一致检查，但live profile gate只启动一次内部固定为Primary→Count→Trace的campaign；host fake test锁定单一
+  bounded process，并覆盖权限、负cycle和报告成员负例。
 - 只把`runs`、run目录和三份报告chmod为`0777`仍不够：compiler transaction受umask影响时，
   `<package>.profile`根和内部capture目录可能是`0750`，导致非root用户连companion都无法进入。修复必须在
   `activation.json`完成后、最终原子rename前，对私有staging companion做不跟随symlink的递归类型检查并把根、

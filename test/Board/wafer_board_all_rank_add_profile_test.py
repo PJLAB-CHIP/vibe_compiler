@@ -182,7 +182,7 @@ class AllRankAddProfileGateTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "negative busy_cycles"):
             HARNESS.verify_profile_report(fixture.package, fixture.stdout)
 
-    def test_profile_board_path_has_two_bounded_processes(self) -> None:
+    def test_profile_board_path_has_one_bounded_campaign(self) -> None:
         work_dir = self.root / "work"
         arguments = argparse.Namespace(
             wafer_compile=self.root / "wafer-compile",
@@ -272,7 +272,7 @@ class AllRankAddProfileGateTest(unittest.TestCase):
             )
             run = stack.enter_context(
                 mock.patch.object(
-                    HARNESS, "run", side_effect=(completed, completed)
+                    HARNESS, "run", return_value=completed
                 )
             )
             output = io.StringIO()
@@ -298,19 +298,11 @@ class AllRankAddProfileGateTest(unittest.TestCase):
                 ),
             ],
         )
-        self.assertEqual(run.call_count, 2)
-        ordinary, campaign = run.call_args_list
-        self.assertEqual(
-            ordinary.args[0][1:3],
-            ["--package-dir", str(work_dir / "ordinary-package")],
-        )
+        run.assert_called_once()
+        campaign = run.call_args
         self.assertEqual(
             campaign.args[0][1:3],
             ["--package-dir", str(work_dir / "package")],
-        )
-        self.assertEqual(
-            ordinary.kwargs["timeout_seconds"],
-            60.0 + HARNESS.BOARD_PROCESS_TIMEOUT_MARGIN_SECONDS,
         )
         self.assertEqual(
             campaign.kwargs["timeout_seconds"],
@@ -322,7 +314,7 @@ class AllRankAddProfileGateTest(unittest.TestCase):
                 ),
             ),
         )
-        self.assertEqual(verify_board.call_count, 2)
+        verify_board.assert_called_once()
         self.assertIn(
             "board_profile_campaign: pass launches=3 primary=1",
             output.getvalue(),
