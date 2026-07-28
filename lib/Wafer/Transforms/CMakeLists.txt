@@ -7,6 +7,7 @@ add_mlir_library(WaferTransforms
   Scheduling/CandidateEvaluation.cpp
   Scheduling/CandidateSelection.cpp
   Scheduling/FullBufferHandoff.cpp
+  Scheduling/RedundantTransferElimination.cpp
   Scheduling/ScheduleTensorProgram.cpp
   Scheduling/StructuredSchedulingScope.cpp
   DDR/PlanDDRMemory.cpp

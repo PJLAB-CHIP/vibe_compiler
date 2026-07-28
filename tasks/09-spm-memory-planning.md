@@ -64,8 +64,12 @@ Pipeline position:
 - Upstream artifact / IR:
   whole-variant evaluation clone 中所有 static rank entries 的完整 instruction-level
   `wafer.instr.*` structured program，已经完成 candidate DDR tile-view materialization 和 instruction
-  legalization；全部selected task fragments已进入完整rank clone并完成candidate-local rewrite，相关
-  alias/effect/lifetime analysis已从改写后的当前IR失效重算。SPM planner
+  legalization；对optimized sibling，08 的 relation-backed redundant-transfer normalization 已在该
+  unplaced actual clone 上删除可由 same-root/standard view 表达的完整 movement、dead destination
+  allocation，并把被合并 cross-encoding destination 的 alignment 要求提升到 compiler-owned source
+  root。全部selected task fragments已进入完整rank clone并完成candidate-local rewrite，相关
+  alias/effect/lifetime analysis已从改写后的当前IR失效重算；显式reserved spill baseline跳过可选
+  coalescing但仍从自身IR走同一completion/lifetime/SPM gate。SPM planner
   每次只接收candidate generator已经显式物化的一份完整whole-rank clone；candidate可以来自当前spill/resident基线，也可以
   来自MLIR-native rewrite有界组合的implementation/encoding/physical-version/transfer/residency/buffering/order alternative。task/region/loop间的SPM value和event已由显式SSA/control-flow连接，包含actual DDR
   tile views、unplaced `memref<..., #wafer.memory<spm, layout>>` values，以及selected physical encodings、
@@ -107,7 +111,8 @@ Pipeline position:
   不把任一region/task的offset独立提交，也不把hardware `busytable`当作completion/lifetime语义；
   full-shape initial candidate与其它tiled candidates运行同一whole-rank planning和whole-variant gate，不设bypass；
   不依据presumed rank equivalence复用或跳过任何rank plan；allocator不决定哪些handoff应resident，不生成
-  implementation/transfer/physical-version/per-edge frontier，也不把某个unsafe consumer拆成partial promotion；
+  implementation/transfer/physical-version/per-edge frontier，也不通过给两个distinct roots分配同一offset来
+  模拟copy消除，不把某个unsafe consumer拆成partial promotion；
   allocator本身不拥有candidate objective、不生成IIS，不让solver trace或pressure witness成为accepted attr/side table。
   Q32.S可以在独立optimization budget内以不同capacity调用同一owner-private pure primitive收紧shortlist quality区间，但
   选择、邻居生成和stop policy仍由06拥有，09不返回repair或跨candidate state。
@@ -532,6 +537,8 @@ SPM stage嵌入现有candidate transaction：
 ```text
 complete rank candidate clone with selected typed IR
   -> instruction legalization and function-boundary bufferization
+  -> relation-backed redundant physical transfer normalization
+  -> fresh completion / alias / effect / lifetime derivation
   -> fresh BufferDemand / lifetime / effect collection
   -> fixed-capacity SPM solve + independent placement validation
   -> atomic offset apply to this clone

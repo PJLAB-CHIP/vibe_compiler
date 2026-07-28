@@ -45,6 +45,7 @@ add_executable(WaferUnitTests
   Transforms/Scheduling/CandidateSelectionTest.cpp
   Transforms/Scheduling/FullBufferHandoffTest.cpp
   Transforms/Scheduling/RankCandidateFrontierTest.cpp
+  Transforms/Scheduling/RedundantTransferEliminationTest.cpp
   Transforms/Scheduling/StructuredSchedulingScopeTest.cpp
   Transforms/Target/LowerInstrToTargetLLVMTest.cpp
 )

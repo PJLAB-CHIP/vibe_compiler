@@ -271,7 +271,15 @@ Q32.R已把`StorageLoadOp`迁移为显式DDR source + 已创建SPM destination�
 materializer先创建allocation/view再发load，tile-to-instruction conversion直接消费这两个typed operands。
 同批`TransferRealizability`从两端memref、encoding和`IndexRelation`现场证明current metadata view、compact DMA、
 GS与staged route；relation-backed full-buffer rewrite把producer SPM root通过tile-region SSA交给consumer并删除真实
-WDMA/RDMA。它们已贯通非7B source和标准7B exact gate，但尚未替代Q32.B之后的共同candidate owner与frontier。
+WDMA/RDMA。该resident promotion只闭合跨tile-region的DDR spill/reload边界，不代表consumer lowering随后物化的
+SPM GatherScatter天然必要：resident promotion自身会把已存在的consumer RDMA改写成local GS，instruction lowering
+也可能因其它operator产生完整local copy。complete-rank unplaced actual clone统一交给08的通用full-value
+storage-coalescing normalization，对所有operator来源重证physical-map与storage identity；能用same-root/view
+表达时删除movement和dead allocation，不能证明时保留显式copy。当前落地范围是zero-offset、完整、连续、
+unit-descriptor的`wafer.instr.gather_scatter`及canonical static reshape；相同的非紧凑physical map也可合并，
+但partial、general descriptor或physical-map不等价的strided relation仍保持显式movement。显式reserved spill
+baseline不运行该可选rewrite，保证任何后续rank/whole-variant/target gate拒绝优化candidate时仍有原始copy回退。
+它们已贯通非7B source和标准7B exact gate，但尚未替代Q32.B之后的共同candidate owner与frontier。
 
 ### 3.4 Communication planning
 
@@ -464,7 +472,8 @@ Q32.B已开放这条compiler-private seam与resident bring-up alternative，并�
 Compiler owner完成纵向取证；它不新增public mode，也不把后续Q32.M producers或Q32.S完整joint search切换为默认
 production owner。实现与fresh gate归档在`tasks/archive/physical-dataflow-test-seam-vertical.md`。
 
-施工最先打通dependent tiling + resident handoff，随后补relation/view、fanout reuse、movement elimination、implementation、
+施工最先打通dependent tiling + resident handoff，随后补relation/view、fanout reuse、通用于compute、movement和
+communication来源的movement elimination、implementation、
 encoding/route、buffering/order和current communication alternatives。前两条rewrite只是bring-up checkpoint；只有§1.1和§4.1
 功能矩阵全部进入上述流程，Q32.S才可收口。
 

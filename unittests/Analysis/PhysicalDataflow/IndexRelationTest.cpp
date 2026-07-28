@@ -223,6 +223,23 @@ TEST(IndexRelationTest, ProvesCurrentViewDmaGatherScatterAndStagedRoutes) {
   EXPECT_TRUE(mlir::succeeded(TransferRealizability::proveGatherScatter(
       encoded, encodedReshape, *reshape.get())));
 
+  auto transposedStrides = mlir::StridedLayoutAttr::get(&context, 0, {1, 2});
+  mlir::MemRefType compact2x2 = makeType({2, 2}, spmTensor);
+  mlir::MemRefType transposed2x2 =
+      mlir::MemRefType::get({2, 2}, f16, transposedStrides, spmTensor);
+  IndexRelationResult identity2x2 = IndexRelation::identity({2, 2});
+  ASSERT_TRUE(identity2x2.isExact());
+  EXPECT_TRUE(mlir::failed(TransferRealizability::proveMetadataView(
+      compact2x2, transposed2x2, *identity2x2.get(),
+      /*destinationMayWrite=*/false)));
+
+  auto offsetLayout = mlir::StridedLayoutAttr::get(&context, 1, {2, 1});
+  mlir::MemRefType offset2x2 =
+      mlir::MemRefType::get({2, 2}, f16, offsetLayout, spmTensor);
+  EXPECT_TRUE(mlir::failed(TransferRealizability::proveMetadataView(
+      compact2x2, offset2x2, *identity2x2.get(),
+      /*destinationMayWrite=*/false)));
+
   mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
   mlir::AffineExpr d1 = mlir::getAffineDimExpr(1, &context);
   IndexRelationResult permutation = IndexRelation::fromAffineMap(

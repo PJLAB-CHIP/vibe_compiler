@@ -23,6 +23,7 @@
 
 #include "gtest/gtest.h"
 
+#include <optional>
 #include <set>
 
 namespace {
@@ -88,6 +89,8 @@ module {
   EXPECT_LE(frontier->size(), 257u);
 
   unsigned baselineCount = 0;
+  std::optional<unsigned> baselineGatherScatterCount;
+  std::optional<unsigned> optimizedMinimumGatherScatterCount;
   bool sawResidentAlternative = false;
   bool sawRingAllReduce = false;
   bool sawTreeReduce = false;
@@ -100,8 +103,16 @@ module {
   };
   for (wafer::ScheduledRankCandidate &candidate : *frontier) {
     baselineCount += candidate.reservedBaseline;
-    if (candidate.reservedBaseline)
+    unsigned gatherScatterCount = 0;
+    candidate.module->walk(
+        [&](wafer::InstrGatherScatterOp) { ++gatherScatterCount; });
+    if (candidate.reservedBaseline) {
       EXPECT_EQ(candidate.artifactKind, wafer::RankArtifactKind::Spill);
+      baselineGatherScatterCount = gatherScatterCount;
+    } else if (!optimizedMinimumGatherScatterCount ||
+               gatherScatterCount < *optimizedMinimumGatherScatterCount) {
+      optimizedMinimumGatherScatterCount = gatherScatterCount;
+    }
     bool candidateResident = false;
     candidate.module->walk([&](wafer::TileRegionOp region) {
       candidateResident |=
@@ -127,6 +138,9 @@ module {
     });
   }
   EXPECT_EQ(baselineCount, 1u);
+  ASSERT_TRUE(baselineGatherScatterCount.has_value());
+  ASSERT_TRUE(optimizedMinimumGatherScatterCount.has_value());
+  EXPECT_GT(*baselineGatherScatterCount, *optimizedMinimumGatherScatterCount);
   EXPECT_TRUE(sawResidentAlternative);
   EXPECT_TRUE(sawRingAllReduce);
   EXPECT_TRUE(sawTreeReduce);

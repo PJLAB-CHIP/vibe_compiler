@@ -99,6 +99,56 @@ Pipeline position:
   才能继续 lowering。
 ```
 
+### 2.3 Relation-backed Redundant Physical Transfer Normalization
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  已完成 instruction legalization 以及 candidate-specific implementation、encoding、route 和 residency
+  物化的 complete-rank unplaced actual clone。source/destination root、view chain、typed encoding、
+  same-space movement descriptor、effect 和 completion 均在当前 IR 中显式；SPM/DDR offset 与 transport
+  binding 尚未提交。spill、resident 以及不同 operator family 使用同一入口。
+- Current stage responsibility:
+  对zero-offset、完整、连续、unit-descriptor的same-space GatherScatter，从当前
+  source/destination root、view、type、encoding、descriptor
+  和 SSA use-def 重建 exact IndexRelation，并用 TransferRealizability 证明完整 relation coverage、
+  functional/injective 条件和逐 logical point physical segment 等价；随后另行证明 destination 是由该
+  movement 首次定义的 compiler-owned storage，source同样来自compiler-owned allocation且到transfer
+  operand的view provenance不改变base address；外部/未知source、非零或动态view offset、任一侧显式
+  deallocation均fail closed。root/view alias、effect、lifetime、alignment、
+  valid/padding、snapshot 语义和Direct DTE exact-wait区间允许 storage coalescing。证明成功时直接把
+  destination consumers 改写到 source root 或标准 metadata view，删除 movement 与 dead allocation；
+  标准 view 保留 source storage 的 memory-space/encoding 类型，只有 replacement consumer 的完整 IR
+  verifier 仍合法时才提交；若被合并 destination 要求更强 alignment，则提升 compiler-owned source
+  allocation 的显式 alignment。每次 applied rewrite 后丢弃旧 relation/alias/effect/lifetime 事实并从
+  修改后的 IR 重建。rewrite后必须另行运行whole-rank completion normalization/verifier，重新证明NCC
+  participant frontier与cross-worker closure；局部rewrite不旁路该全程序门禁。production只在独立优化
+  sibling上提交该rewrite，未改写的reserved spill baseline持续通过相同late gates并提供target回退。
+- Output artifact / IR:
+  同层级的 complete-rank unplaced instruction actual clone。被消除的 movement 由 same-root SSA 或
+  verifier-legal 标准 view 表达，仍有语义作用的 movement 保持显式；不新增 relation attr、proof
+  sidecar、route id 或 shadow allocation plan。
+- Downstream consumer:
+  fresh whole-rank completion normalization/verifier、dependency DAG、ready-order 与 fixed-slot candidate
+  derivation、whole-rank lifetime/SPM fixed-capacity planning、fresh final-IR cost 和 target lowering。
+- User-level driver / named pipeline:
+  现有 wafer-compile source-to-bundle production pipeline；局部测试调用同一 transformation library，
+  不增加用户开关、operator-specific mode 或手工 pass 协议。
+- Explicit non-goals:
+  不按 operator 名、通信协议、rank 数、shape、size-1 轴、地址、case 或 fixture 匹配；不把相同 byte
+  count 当作等价证明；不消除真实 permutation/broadcast/layout conversion、partial materialization、
+  padding 定义变化、snapshot/publication、跨 completion-domain transfer、arithmetic/reduction work，
+  或存在不安全独立观察/写入的 copy。SPM allocator 不反向决定 alias。
+- Completion gate:
+  多个 operator 来源、same-shape、相同非紧凑physical map以及无 size-1 轴的 rank/shape-changing
+  canonical relation 正例真实删除 movement 并形成标准 view；partial/general descriptor、
+  physical-map不等价的strided/permutation/broadcast、encoding/tail/padding 不等价、source 后续
+  overwrite、destination snapshot 分叉、external/unknown source、显式deallocation、非零view offset、
+  escape/unknown alias、未完成 DTE 访问和 unsupported control flow 负例均保留 movement。optimized
+  spill 与 resident actual clone 都执行本规范化，reserved spill保持原始copy；rewrite 后 completion、
+  lifetime、SPM、descriptor、cost 与 target gates 全部 fresh 通过。
+```
+
 ## 3. 对象所有权
 
 | 事实或行为 | 所属对象 | 生命周期 |
@@ -273,6 +323,26 @@ metadata view 必须证明没有 real data movement。给定 source view `S`、d
 4. destination 可达 range 位于 root allocation 内，dynamic bounds 由 ValueBounds/Presburger 证明；
 5. view 不扩大有效内容，不把 source padding 重新解释为已定义 logical data；
 6. lifetime、alignment 和 overlapping write 均合法。
+
+`proveMetadataView` 只证明 relation/type/physical-map 层面的可共享性；它不能单独把两个独立 allocation
+宣布为同一 storage。若当前 IR 已经先物化为 `source -> destination` 的完整 copy，删除 copy 还必须证明：
+
+- destination allocation 由该 copy 首次定义，copy 前没有可观察 access；
+- destination 的全部 alias/use 都可被 source root 或同一标准 view 替换；
+- read-only sharing 下 source 不会在 destination 的观察期内被改写；
+- writable donation 下 source 在 copy 后没有独立观察或未完成异步访问，destination 的写不会破坏
+  snapshot 语义；
+- Direct DTE buffer access 延长到 exact wait，NCC access/completion 由 rewrite 后的 typed worker DAG
+  重新建立；unknown escape、unsupported control flow 或不能闭合的 completion 一律保留 copy。
+- 只可沿保持base address的`memref.cast`、static collapse/expand、zero-offset subview/reinterpret/view
+  provenance回溯compiler-owned root；dynamic或非零offset以及其它无法恢复exact transfer source的view
+  不能借此变成full-value storage alias。
+- cross-encoding view 不能让标准 memref op 改变 memory-space attr；replacement view 保留 source storage
+  encoding，并以原 destination encoding 的 physical-map proof 和 replacement consumer verifier 双重闭合。
+  compiler-owned source allocation 可显式提高 alignment，非 owned storage 的 alignment 不足则保留 copy。
+
+上述 storage-coalescing proof 成功后，IR 才从两个 distinct roots 变为一个 root 加标准 view。仅让 SPM
+planner 给两个 allocation 分配相同 offset 既不能表达 value identity，也不能替代此证明。
 
 证明成功后必须创建标准 `memref.subview`、reinterpret/collapse/expand 等合适的标准 op，或语义更强的
 typed Wafer view op。只改变 type、插入 cast 或记录 relation attr 都不算 view materialization。
@@ -505,11 +575,15 @@ cleanup 只是 proof-preserving canonicalization/rewrite：
 
 - physical map、root、valid domain 和 effect 完全相同的 no-op materialization 删除；
 - 无 use 且无 observable effect/completion 的 movement 删除；
+- exact relation、physical-map 与 storage-coalescing proof 已把 destination 改写为 source root/view 的
+  完整 same-space movement 和 dead allocation 删除；
 - `A -> B -> A` 在中间值无其它 use、range/lifetime/event 均不改变时消除；
 - 同 source、destination map、logical domain 和 completion 的重复 materialization 在不延长 lifetime 时合并。
 
-cleanup 不得 hoist/sink conversion cut、改变 encoding、改 route、插 prepack、增加 physical version 或改变
-spill/buffering/order。需要这些变化时，必须从另一个 isolated clone 重新尝试并通过完整 gates。
+cleanup 不得 hoist/sink conversion cut、创造current source/destination type和consumer verifier之外的新
+encoding、改变已经证明相同的logical-to-physical map、改route、插prepack、增加physical version或改变
+spill/buffering/order。允许删除physical-map等价且consumer可直接接受source encoding的冗余destination
+materialization；需要其它encoding或route变化时，必须从另一个isolated clone重新尝试并通过完整gates。
 
 ## 13. Failure Contract
 
@@ -549,14 +623,18 @@ accepted physical-realization IR 至少验证：
 1. **encoding interface tests**：random shape/dtype/index、full/tail、checked arithmetic、Cx/NCx/BOOL；
 2. **relation tests**：identity、permutation、reshape、broadcast、slice、piecewise relation 和 dynamic bounds；
 3. **view tests**：same-root offset equality、negative alias/range、Cx/NCx tail 非 view；
-4. **fixed-encoding absorption tests**：direct Cx/NCx GEMM/batched-GEMM与显式materialize/GS baseline的logical value、numeric
+4. **storage-coalescing tests**：跨 operator 的 same-shape 与非 singleton reshape 正例、read-only fanout 和
+   writable last-use donation；partial/permutation/broadcast、encoding/padding 不等价、source/destination
+   snapshot 分叉、unknown escape、unsupported control flow，以及 DTE issue 到 exact wait 之间的 in-flight
+   read/write 负例；
+5. **fixed-encoding absorption tests**：direct Cx/NCx GEMM/batched-GEMM与显式materialize/GS baseline的logical value、numeric
    result及所有consumer-observable defined physical bytes一致；两条路径分别满足同一consumer precondition，unobservable padding的
    `InvalidLaneState`可以不同。只有共同consumer contract要求padding可观察且defined（例如KnownSplat/full-fill）时才逐byte比较，
    canary始终不变；tasks/06 Q32.S/G与tasks/16集成证据证明winner final IR中对应movement真实消失；
-5. **descriptor tests**：one/multi-command RDMA/WDMA、GS、field overflow、alignment、range、broadcast read；
-6. **invalid-lane tests**：unknown、known splat、fill + segmented write、mask、negative consumer observation；
-7. **IR tests**：clone 内 materialization、DialectConversion legality、canonicalization、atomic rejection；
-8. **integrated tests**：whole-rank SPM、whole-variant DDR、event、instruction 和 SystemC logical round trip。
+6. **descriptor tests**：one/multi-command RDMA/WDMA、GS、field overflow、alignment、range、broadcast read；
+7. **invalid-lane tests**：unknown、known splat、fill + segmented write、mask、negative consumer observation；
+8. **IR tests**：clone 内 materialization、DialectConversion legality、canonicalization、atomic rejection；
+9. **integrated tests**：whole-rank SPM、whole-variant DDR、event、instruction 和 SystemC logical round trip。
 
 property tests 使用独立慢 oracle 与 interface/descriptor fast path differential。慢 oracle 可以逐元素；生产
 路径不能。

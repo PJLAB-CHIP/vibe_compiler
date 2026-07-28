@@ -14,8 +14,12 @@ Pipeline position:
   当前TargetProfileId显式传入rank-frontier；不能在scheduler内选择默认profile。现行production Instr/
   TargetCall尚无worker identity，这一事实不能由硬件校准side table补写。
 - Current stage responsibility:
-  从current unplaced IR重算address/resource/completion dependency DAG，在isolated complete-rank actual
-  clone中生成有限serial、issue-window、multi-buffer和worker-placement alternatives。optimized clone用
+  对每个optimized spill/resident storage-realization actual clone先运行08的通用full-value
+  storage-coalescing normalization，并在任何DAG/window derivation前fresh重建whole-rank completion；
+  唯一reserved conservative spill保持未优化copy并独立走相同late gates，作为任何后续target拒绝的
+  事务性回退。随后从current unplaced IR重算address/resource/completion dependency DAG，在isolated
+  complete-rank actual clone中生成有限serial、issue-window、multi-buffer和worker-placement alternatives。
+  optimized clone用
   固定普通allocation root、loop-carried slot rotation、prologue/steady/epilogue、DAG-legal issue order和
   waitfinish-free same-worker ordered stream直接表达steady-state软件流水；只有不能由issue order、exact
   event或同域placement落实的handoff/publication才物化latest-unavoidable typed join。legality capability与
@@ -54,6 +58,11 @@ Pipeline position:
 
 - current rank frontier已在unplaced complete-rank clone上生成spill/resident和ready-order alternatives，
   并为每个clone重跑SPM、verifier和cost；这里是software-pipeline derivation的唯一施工切口。
+- optimized spill/resident actual clone在ready-order和placement之前统一运行08 relation-backed
+  redundant-transfer normalization；它从IndexRelation、physical map、root/view alias、effect/lifetime、
+  alignment及DTE exact wait证明storage coalescing，不按operator、通信协议、shape或size-1轴匹配。
+  每次删除movement后先fresh重建completion；reserved spill保持原copy并在rank/whole-variant/target
+  任一late gate拒绝优化sibling时提供回退。
 - current ready-order只按`movement < DTE < compute`硬编码优先级移动独立指令。它已处理SSA、
   root-normalized view、RAW/WAR/WAW、fence和DTE token，但不是target-profile capability或软件流水模型。
 - Tile→Instr当前会在WDMA后及`scf.for` backedge、`tile.region` exit放置保守`local_fence`。这些fence是
@@ -387,6 +396,11 @@ late gate决定。需要早期Kcore/DTE观察的短链可隔离到独立worker�
   profitability Unknown候选集合不变但normal selection不同。
 - DAG：SSA、exact/partial/adjacent/disjoint range、DDR strided envelope、compact SPM、RAW/WAR/WAW/RAR、
   view alias、mapped-SPM/cacheable DDR publication和DTE token。
+- redundant transfer：跨operator same-shape、相同非紧凑physical map、无singleton轴reshape、
+  metadata-only cast、read-only fanout、writable last-use donation、cross-encoding alignment提升和
+  DTE exact wait后复用正例；partial/permutation/broadcast、physical-map不等价strided、snapshot分叉、
+  external/unknown source、显式deallocation、非零view offset、unknown escape、unsupported control flow
+  及DTE issue到exact wait区间负例；reserved baseline与优化sibling的GS inventory必须不同。
 - loop：1/2/3/4/奇/偶trip、stage不足、prologue/steady/epilogue、slot permutation、tail、loop-carried
   distance、body allocation escape和nested/dynamic拒绝。
 - completion：逐edge wait消除、NCC→Kcore、NCC→DTE、DTE→NCC、source/destination early reuse、

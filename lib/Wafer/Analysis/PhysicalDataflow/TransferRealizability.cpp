@@ -131,6 +131,18 @@ static bool isCompactCanonicalPhysicalMap(mlir::MemRefType type) {
       (memory.getLayout() != MemLayout::Tensor &&
        memory.getLayout() != MemLayout::NTensor))
     return false;
+  llvm::SmallVector<int64_t, 4> strides;
+  int64_t offset = 0;
+  if (mlir::failed(mlir::getStridesAndOffset(type, strides, offset)) ||
+      offset != 0 || strides.size() != static_cast<size_t>(type.getRank()))
+    return false;
+  int64_t expectedStride = 1;
+  for (int64_t index = type.getRank() - 1; index >= 0; --index) {
+    int64_t dim = type.getDimSize(index);
+    if (dim < 0 || strides[index] != expectedStride ||
+        llvm::MulOverflow(expectedStride, dim, expectedStride))
+      return false;
+  }
   mlir::FailureOr<WaferPhysicalElementSpan> first =
       getRepresentativeSpan(type, /*last=*/false);
   mlir::FailureOr<int64_t> footprint = encoding.getPhysicalFootprintBytes(type);
@@ -225,9 +237,19 @@ mlir::LogicalResult TransferRealizability::proveMetadataView(
     const TransferRealizabilityLimits &limits) {
   MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
   MemoryAttr destMemory = getWaferMemoryAttr(destType);
+  llvm::SmallVector<int64_t, 4> sourceStrides;
+  llvm::SmallVector<int64_t, 4> destStrides;
+  int64_t sourceOffset = 0;
+  int64_t destOffset = 0;
   if (!sourceMemory || !destMemory ||
       sourceMemory.getSpace() != destMemory.getSpace() ||
       sourceType.getElementType() != destType.getElementType() ||
+      mlir::failed(
+          mlir::getStridesAndOffset(sourceType, sourceStrides, sourceOffset)) ||
+      mlir::failed(
+          mlir::getStridesAndOffset(destType, destStrides, destOffset)) ||
+      mlir::ShapedType::isDynamic(sourceOffset) ||
+      mlir::ShapedType::isDynamic(destOffset) || sourceOffset != destOffset ||
       mlir::failed(verifyExactCoveredRelation(sourceType, destType, relation,
                                               destinationMayWrite)))
     return mlir::failure();

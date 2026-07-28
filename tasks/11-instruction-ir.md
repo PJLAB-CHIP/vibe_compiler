@@ -131,9 +131,11 @@ Pipeline position:
   `#wafer.memory<space, layout>` + `wafer.instr.*` + explicit token/wait/fence；或结构化
   legalization failure reason。单个 task/traversal fragment/tile 不是可提交 artifact。
 - Downstream consumer:
-  whole-rank SPM planning、whole-variant DDR planning、event/physical-transport/all-rank transport/
-  target-entry verification 和
-  closed-loop whole-variant candidate driver；atomic commit 后才由 target LLVM、package 和 runtime 消费。
+  08 relation-backed redundant physical transfer normalization先在complete-rank unplaced actual clone上
+  证明并删除可由same-root/standard view表达的完整movement，随后运行fresh whole-rank completion
+  normalization/verifier，再由whole-rank SPM planning、whole-variant DDR planning、
+  event/physical-transport/all-rank transport/target-entry verification 和closed-loop whole-variant
+  candidate driver消费；atomic commit 后才由 target LLVM、package 和 runtime 消费。
 - User-level driver / named pipeline:
   Q16以后由同一
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=<registered-id>`
@@ -255,6 +257,12 @@ physical byte offset 映射是否变化，以及 result 是否需要新的 mater
 `common_tensor_info_generate_i64` 口径实现 INT8/UINT8 block 128、其它 dtype block 64、tail
 retain/fold、tail align 和 256B bank padding。若该 helper 不能给出真实 mapping，R3.2d lowering
 不能用局部 `ceil(C/64)` 近似来证明 reshape identity 或 descriptor 合法性。
+
+instruction lowering 可以先保守物化一个完整 GatherScatter，但这不把该copy升级为最终硬件动作。
+complete-rank unplaced actual clone在placement前由08从IndexRelation、两端physical map、root/view
+alias、effect/lifetime、alignment、snapshot和completion重新证明storage coalescing；证明成功后改成
+same-root或标准view并删除GS，证明不闭合时才保留真实movement。该规范化对所有operator来源一致，
+不按reduce、collective、shape或size-1轴匹配。
 
 ### 2.2 Generic MemRef Op Boundary
 

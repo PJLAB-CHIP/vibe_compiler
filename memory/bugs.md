@@ -1847,3 +1847,28 @@
   `Invalid`。
 - 多participant通信的板端profile gate不能只验证全卡`any(positive phase)`。应按manifest participant集合逐tile
   对齐raw source event、analysis aggregate与`Measured` phase，否则单tile活动会掩盖其它rank漏执行。
+
+## 2026-07-28 resident handoff之后仍需通用storage-coalescing proof
+
+- 现象：DDR spill/reload已被resident handoff删除后，instruction lowering仍可能在compute、reduce、
+  movement或communication来源之间留下完整SPM GatherScatter；最终产物虽然正确，但会执行没有改变
+  logical payload或physical map的TDMA copy。只看shape、byte count或某个通信case无法安全判断哪些可删。
+- 根因：resident promotion只闭合跨region的DDR边界，没有拥有后续instruction-level storage identity；
+  `IndexRelation`/`proveMetadataView`又只证明两种view的logical-to-physical映射等价，不能单独证明两个
+  allocation可合并。metadata-only `memref.cast`把静态offset放宽为dynamic以及cross-encoding destination
+  的更强alignment要求，还会让本来合法的full-buffer alias被误拒绝；标准reinterpret cast也不能改变
+  memref memory-space attr。
+- 修复模式：在complete-rank unplaced actual clone上统一识别exact full descriptor，从current
+  root/view/type/encoding重建`IndexRelation`并证明physical map；另行证明destination first definition、
+  compiler-owned source/destination origin、base-preserving view provenance、alias/effect/lifetime、
+  snapshot、alignment和DTE issue-to-exact-wait区间。成功后让标准view保留source storage encoding、
+  提升compiler-owned source allocation alignment、重写consumer并删除movement/dead allocation；每次
+  rewrite后fresh重建completion、alias/lifetime、SPM和cost。任何external/unknown source、非零view
+  offset、显式deallocation、Unknown、partial、permutation、escape或consumer verifier失败都保留copy。
+  production只优化独立sibling，reserved spill不运行可选rewrite并持续通过同一late gates，不能让优化
+  candidate的normalization/finalize/target失败吃掉baseline。
+- 防复发：正例必须跨operator来源并覆盖无singleton轴reshape、metadata-only cast、read-only fanout、
+  writable last-use donation和cross-encoding alignment；负例覆盖partial/permutation、snapshot分叉、
+  explicit deallocation、unsupported control flow和DTE in-flight interval。最终是否删除只能从本轮
+  normalized final Instr IR及TargetCall/ELF inventory重证；site map只是绑定到同一final artifact的审计投影，
+  不能从lowering意图、历史产物或相同byte count推断。

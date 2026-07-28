@@ -619,7 +619,8 @@ checkRankTerminalBudget(mlir::ModuleOp stagedModule,
 static mlir::LogicalResult evaluateRankVariantImpl(
     mlir::ModuleOp sourceModule, const SelectionConfig &config,
     const structured_scheduler::ScopeDiscoveryPolicy &policy,
-    llvm::StringSet<> &seenPartitions, RankVariantEvaluation &evaluation) {
+    llvm::StringSet<> &seenPartitions, bool enableTransferElision,
+    RankVariantEvaluation &evaluation) {
   evaluation.label = getPolicyLabel(policy);
   evaluation.module = mlir::cast<mlir::ModuleOp>(sourceModule->clone());
   outlineRankDenseTensorConstants(*evaluation.module);
@@ -745,12 +746,19 @@ static mlir::LogicalResult evaluateRankVariantImpl(
 
   // The committed, unplaced module is the generation parent. Spill and
   // resident alternatives are evaluated on separate clones, so placement and
-  // cost observations can never flow back into either generation path.
+  // cost observations can never flow back into either generation path. The
+  // single reserved conservative evaluation disables optional transfer
+  // elision, preserving a fully gated fallback if an optimized sibling is
+  // rejected by a later rank or whole-variant gate.
   mlir::OwningOpRef<mlir::ModuleOp> spillModule =
       mlir::cast<mlir::ModuleOp>((*evaluation.module)->clone());
+  if (enableTransferElision)
+    elideRedundantFullBufferTransfers(*spillModule);
   mlir::OwningOpRef<mlir::ModuleOp> residentGeneration =
       mlir::cast<mlir::ModuleOp>((*evaluation.module)->clone());
   unsigned promotedHandoffs = promoteFullBufferHandoffs(*residentGeneration);
+  if (enableTransferElision)
+    elideRedundantFullBufferTransfers(*residentGeneration);
   mlir::OwningOpRef<mlir::ModuleOp> residentModule;
   if (promotedHandoffs != 0)
     residentModule = mlir::cast<mlir::ModuleOp>((*residentGeneration)->clone());
@@ -761,7 +769,7 @@ static mlir::LogicalResult evaluateRankVariantImpl(
   mlir::OwningOpRef<mlir::ModuleOp> spillReadyModule;
   {
     mlir::OwningOpRef<mlir::ModuleOp> candidate =
-        mlir::cast<mlir::ModuleOp>((*evaluation.module)->clone());
+        mlir::cast<mlir::ModuleOp>((*spillModule)->clone());
     if (scheduleIndependentInstructionsByReadyOrder(
             candidate->getOperation()) != 0)
       spillReadyModule = std::move(candidate);
@@ -822,7 +830,8 @@ static mlir::LogicalResult evaluateRankVariantImpl(
 static RankVariantEvaluation
 evaluateRankVariant(mlir::ModuleOp sourceModule, const SelectionConfig &config,
                     const structured_scheduler::ScopeDiscoveryPolicy &policy,
-                    llvm::StringSet<> &seenPartitions) {
+                    llvm::StringSet<> &seenPartitions,
+                    bool enableTransferElision = true) {
   RankVariantEvaluation evaluation;
   std::string diagnostics;
   mlir::LogicalResult result = mlir::success();
@@ -834,8 +843,9 @@ evaluateRankVariant(mlir::ModuleOp sourceModule, const SelectionConfig &config,
           os << "\n";
           return mlir::success();
         });
-    result = evaluateRankVariantImpl(sourceModule, config, policy,
-                                     seenPartitions, evaluation);
+    result =
+        evaluateRankVariantImpl(sourceModule, config, policy, seenPartitions,
+                                enableTransferElision, evaluation);
   }
   if (mlir::failed(result)) {
     llvm::StringRef captured = llvm::StringRef(diagnostics).trim();
@@ -1111,7 +1121,8 @@ buildScheduledRankCandidateFrontier(
   llvm::StringSet<> reservedSeenPartitions;
   RankVariantEvaluation reserved = evaluateRankVariant(
       generationSources.front(), recipes.front(),
-      policies[conservativePolicyIndex], reservedSeenPartitions);
+      policies[conservativePolicyIndex], reservedSeenPartitions,
+      /*enableTransferElision=*/false);
   if (reserved.noScopes) {
     clearCandidateEvaluationFacts(*reserved.module);
     frontier.emplace_back(std::move(reserved.module),

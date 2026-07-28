@@ -337,4 +337,12 @@ mlir::LogicalResult accumulateStaticTerminalOperations(mlir::Operation *root,
 /// for whole-rank resource planning and for retaining a spill fallback.
 unsigned promoteFullBufferHandoffs(mlir::ModuleOp module);
 
+/// Coalesces a movement-defined SPM allocation with its exact source storage
+/// only when relation, physical encoding, alias/effect, snapshot, alignment,
+/// base-preserving view provenance, ownership, and completion facts all prove
+/// that no observable state is lost. Unknown or unsupported cases retain their
+/// explicit movement. Production callers apply this only to optional sibling
+/// clones and preserve the conservative spill fallback.
+unsigned elideRedundantFullBufferTransfers(mlir::ModuleOp module);
+
 } // namespace wafer::tensor_program_scheduling
