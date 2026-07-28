@@ -300,6 +300,19 @@ WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
     addNoCCost(result.aggregateNoC, rankCost.noc);
     addMetric(result.aggregateInstructionCount, rankCost.instructionCount);
     addMetric(result.aggregateEventCount, rankCost.eventCount);
+    addMetric(result.aggregateNCCJoinCount, rankCost.nccJoinCount);
+    addMetric(result.aggregateSteadyStateNCCJoinCount,
+              rankCost.steadyStateNCCJoinCount);
+    addMetric(result.aggregateNonTerminalNCCJoinCount,
+              rankCost.nonTerminalNCCJoinCount);
+    addMetric(result.aggregateNCCParticipantWaitCount,
+              rankCost.nccParticipantWaitCount);
+    addMetric(result.aggregateSteadyStateNCCParticipantWaitCount,
+              rankCost.steadyStateNCCParticipantWaitCount);
+    addMetric(result.aggregateNonTerminalNCCParticipantWaitCount,
+              rankCost.nonTerminalNCCParticipantWaitCount);
+    addMetric(result.aggregateIntrinsicNCCDrainCount,
+              rankCost.intrinsicNCCDrainCount);
     maximizeMetric(result.maximumRankDataDependencyDepth,
                    rankCost.dataDependencyDepth);
     addMetric(result.aggregateReadyOrderPriorityInversions,

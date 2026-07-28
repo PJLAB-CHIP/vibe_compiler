@@ -38,7 +38,8 @@ detail::importRankVariantFrontiersIntoOwnerContext(
     metadata.reserve(frontier.size());
     for (const SerializedRankVariantCandidate &candidate : frontier)
       metadata.push_back({candidate.stableOrdinal, candidate.artifactKind,
-                          candidate.reservedBaseline});
+                          candidate.reservedBaseline, candidate.bufferingKind,
+                          candidate.bufferingPlanOrdinal});
     frontierMetadata.push_back(std::move(metadata));
   }
 
@@ -76,7 +77,9 @@ detail::importRankVariantFrontiersIntoOwnerContext(
               static_cast<size_t>(rankIndex));
       }
       imported.push_back({std::move(module), candidate.stableOrdinal,
-                          candidate.artifactKind, candidate.reservedBaseline});
+                          candidate.artifactKind, candidate.reservedBaseline,
+                          candidate.bufferingKind,
+                          candidate.bufferingPlanOrdinal});
     }
     frontiers.push_back(std::move(imported));
   }
@@ -141,6 +144,7 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
     wafer::TensorProgramSchedulingConfig schedulingConfig;
     schedulingConfig.logicalRank = result.logicalRank;
     schedulingConfig.candidateParallelism = 4;
+    schedulingConfig.targetProfile = executionConfig.getTargetProfileId();
     mlir::FailureOr<std::vector<wafer::ScheduledRankCandidate>> frontier =
         wafer::buildScheduledRankCandidateFrontier(*sourceModule,
                                                    schedulingConfig);
@@ -148,7 +152,8 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
       return;
 
     mlir::FailureOr<std::vector<detail::FinalizedRankCandidate>> finalized =
-        detail::finalizeScheduledRankCandidateFrontier(std::move(*frontier));
+        detail::finalizeScheduledRankCandidateFrontier(
+            std::move(*frontier), executionConfig.getTargetProfileId());
     if (mlir::failed(finalized))
       return;
 
@@ -158,6 +163,8 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
       serialized.stableOrdinal = candidate.stableOrdinal;
       serialized.artifactKind = candidate.artifactKind;
       serialized.reservedBaseline = candidate.reservedBaseline;
+      serialized.bufferingKind = candidate.bufferingKind;
+      serialized.bufferingPlanOrdinal = candidate.bufferingPlanOrdinal;
       llvm::raw_string_ostream moduleStream(serialized.moduleText);
       candidate.module->print(moduleStream);
       moduleStream.flush();
@@ -221,9 +228,9 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
     ExecutionConfig executionConfig, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLogicalRank,
     WholeVariantSelectionMode selectionMode) {
-  return buildExecutableBundleImpl(
-      context, tensorModule, std::move(program), executionConfig, diagnostics,
-      failAfterLogicalRank, selectionMode);
+  return buildExecutableBundleImpl(context, tensorModule, std::move(program),
+                                   executionConfig, diagnostics,
+                                   failAfterLogicalRank, selectionMode);
 }
 
 } // namespace wafer::compiler

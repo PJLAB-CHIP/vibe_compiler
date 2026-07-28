@@ -71,6 +71,21 @@ static bool isStaticallyNonEmpty(mlir::scf::ForOp loop) {
   return lower && upper && step && *step > 0 && *lower < *upper;
 }
 
+static bool hasPossibleBackedge(mlir::scf::ForOp loop) {
+  std::optional<int64_t> lower =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getLowerBound()));
+  std::optional<int64_t> upper =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getUpperBound()));
+  std::optional<int64_t> step =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getStep()));
+  if (!lower || !upper || !step || *step <= 0)
+    return true;
+  if (*lower >= *upper)
+    return false;
+  __int128 next = static_cast<__int128>(*lower) + static_cast<__int128>(*step);
+  return next < static_cast<__int128>(*upper);
+}
+
 static mlir::scf::YieldOp getSingleBlockYield(mlir::Region &region) {
   if (region.empty())
     return {};
@@ -84,6 +99,81 @@ static bool isNestedIn(mlir::Operation *operation, mlir::Operation *ancestor) {
       return true;
   return false;
 }
+
+static bool isUnconditionallyNestedInStaticFor(mlir::Operation *operation,
+                                               mlir::scf::ForOp outer) {
+  for (mlir::Operation *parent = operation ? operation->getParentOp() : nullptr;
+       parent; parent = parent->getParentOp()) {
+    if (parent == outer)
+      return true;
+    auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(parent);
+    if (!nestedFor || !isStaticallyNonEmpty(nestedFor))
+      return false;
+  }
+  return false;
+}
+
+static uint32_t getNCCIssueWorkerMask(const NCCCompletionContract &completion) {
+  if (!completion.issueWorker)
+    return 0;
+  uint32_t worker = static_cast<uint32_t>(*completion.issueWorker);
+  if (worker >= kNCCWorkerCount)
+    return 0;
+  return uint32_t{1} << worker;
+}
+
+static bool hasOnlyWitnessedRootlessStorageEffects(mlir::Operation *op) {
+  auto effectInterface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
+  if (!effectInterface)
+    return false;
+
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
+  effectInterface.getEffects(effects);
+  for (const mlir::MemoryEffects::EffectInstance &effect : effects) {
+    if (effect.getValue())
+      continue;
+
+    mlir::SideEffects::Resource *resource = effect.getResource();
+    if (resource == WaferComputeResource::get() ||
+        resource == WaferMovementResource::get())
+      continue;
+
+    std::optional<MemorySpace> memorySpace;
+    if (resource == WaferSPMResource::get())
+      memorySpace = MemorySpace::SPM;
+    else if (resource == WaferDDRResource::get())
+      memorySpace = MemorySpace::DDR;
+    if (!memorySpace)
+      return false;
+
+    bool rootlessRead =
+        llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
+    bool rootlessWrite =
+        llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect());
+    if (!rootlessRead && !rootlessWrite)
+      return false;
+
+    bool witnessed = llvm::any_of(
+        effects, [&](const mlir::MemoryEffects::EffectInstance &candidate) {
+          mlir::Value value = candidate.getValue();
+          auto type = value ? mlir::dyn_cast<mlir::MemRefType>(value.getType())
+                            : mlir::MemRefType{};
+          MemoryAttr memory = type ? getWaferMemoryAttr(type) : MemoryAttr{};
+          if (!memory || memory.getSpace() != *memorySpace)
+            return false;
+          return (rootlessRead && llvm::isa<mlir::MemoryEffects::Read>(
+                                      candidate.getEffect())) ||
+                 (rootlessWrite &&
+                  llvm::isa<mlir::MemoryEffects::Write>(candidate.getEffect()));
+        });
+    if (!witnessed)
+      return false;
+  }
+  return true;
+}
+
+static constexpr unsigned kUnresolvedRootIndex =
+    std::numeric_limits<unsigned>::max();
 
 static bool
 collectCalleeFormalAliases(mlir::Value value, mlir::func::FuncOp callee,
@@ -737,8 +827,7 @@ LifetimeDataflow::rootsAt(mlir::Value value, PathCondition usePath) const {
             appendAt(yield.getResults()[index], timeline.lookup(yield));
       } else if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(def)) {
         unsigned index = result.getResultNumber();
-        if (!isStaticallyNonEmpty(forOp) &&
-            index < forOp.getInitArgs().size())
+        if (!isStaticallyNonEmpty(forOp) && index < forOp.getInitArgs().size())
           appendAt(forOp.getInitArgs()[index], timeline.lookup(forOp));
         mlir::scf::YieldOp yield = mlir::dyn_cast<mlir::scf::YieldOp>(
             forOp.getBody()->getTerminator());
@@ -858,8 +947,7 @@ LifetimeDataflow::originsAt(mlir::Value value, PathCondition usePath) const {
       } else if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(def)) {
         hasAliasSemantics = true;
         unsigned index = result.getResultNumber();
-        if (!isStaticallyNonEmpty(forOp) &&
-            index < forOp.getInitArgs().size())
+        if (!isStaticallyNonEmpty(forOp) && index < forOp.getInitArgs().size())
           appendAt(forOp.getInitArgs()[index], timeline.lookup(forOp));
         mlir::scf::YieldOp yield = mlir::dyn_cast<mlir::scf::YieldOp>(
             forOp.getBody()->getTerminator());
@@ -1550,8 +1638,7 @@ LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
     llvm::SmallVector<ValueOriginRef, 2> initialOrigins;
     if (index < forOp.getInitArgs().size()) {
       initialRefs = rootsAt(forOp.getInitArgs()[index], loopPoint->path);
-      initialOrigins =
-          originsAt(forOp.getInitArgs()[index], loopPoint->path);
+      initialOrigins = originsAt(forOp.getInitArgs()[index], loopPoint->path);
     }
     llvm::SmallVector<RootRef, 2> backedgeRefs;
     llvm::SmallVector<ValueOriginRef, 2> backedgeOrigins;
@@ -1569,8 +1656,7 @@ LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
                            allocation);
         return mlir::failure();
       }
-      backedgeOrigins =
-          originsAt(yield.getResults()[index], yieldPoint->path);
+      backedgeOrigins = originsAt(yield.getResults()[index], yieldPoint->path);
     }
 
     llvm::SmallVector<RootRef, 2> recurrenceRefs = initialRefs;
@@ -1594,13 +1680,11 @@ LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
       if (ref.demandIndex < demands.size())
         demands[ref.demandIndex].segments.push_back(
             LiveSegment{loopPoint->event, *loopEnd, ref.path});
-    if (!recurrenceRefs.empty() &&
-        index < forOp.getRegionIterArgs().size())
+    if (!recurrenceRefs.empty() && index < forOp.getRegionIterArgs().size())
       valueRefs[normalize(forOp.getRegionIterArgs()[index])] = recurrenceRefs;
     if (!resultRefs.empty())
       valueRefs[normalize(result)] = std::move(resultRefs);
-    if (!recurrenceOrigins.empty() &&
-        index < forOp.getRegionIterArgs().size())
+    if (!recurrenceOrigins.empty() && index < forOp.getRegionIterArgs().size())
       valueOrigins[normalize(forOp.getRegionIterArgs()[index])] =
           recurrenceOrigins;
     if (!resultOrigins.empty())
@@ -1652,8 +1736,8 @@ LifetimeDataflow::processBlock(mlir::Block &block,
       if (mlir::failed(
               processRegion(forOp.getRegion(), localCompletion, failure)))
         return mlir::failure();
-      if (localCompletion &&
-          mlir::failed(localCompletion->verifyLoopBackedge(&op, failure)))
+      if (localCompletion && mlir::failed(localCompletion->verifyLoopBackedge(
+                                 &op, *this, failure)))
         return mlir::failure();
       if (mlir::failed(mapForResultsAndBackedge(&op, failure)))
         return mlir::failure();
@@ -1794,37 +1878,301 @@ LifetimeDataflow::run(mlir::Operation *scope,
   return finishAsyncTasks(failure);
 }
 
+LocalCompletionTracker::AccessCollection
+LocalCompletionTracker::collectAccesses(mlir::Operation *op, ProgramPoint point,
+                                        uint32_t workerMask,
+                                        LifetimeDataflow &dataflow) const {
+  AccessCollection collected;
+  // Region bodies are visited at their own program points. Treating the
+  // containing control-flow op's recursive effects as another observer would
+  // reject a branch whose every path already completes the pending issue.
+  if (op->getNumRegions() != 0)
+    return collected;
+
+  auto effectInterface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
+  if (!effectInterface) {
+    collected.hasUnknownObserverEffect = !mlir::isMemoryEffectFree(op);
+    return collected;
+  }
+
+  // Rootless storage effects are admissible only when a value-associated
+  // effect witnesses the same Wafer memory domain and direction. Otherwise a
+  // pending NCC access has no address proof against this observer.
+  collected.hasUnknownObserverEffect =
+      !hasOnlyWitnessedRootlessStorageEffects(op);
+
+  // Keep only identity-preserving container edges transparent. View-like
+  // results intentionally retain their own identity: two views of one root
+  // are not an exact range proof merely because they share an allocation.
+  llvm::DenseSet<mlir::Value> activeIdentities;
+  std::function<mlir::Value(mlir::Value)> resolveIdentity =
+      [&](mlir::Value value) -> mlir::Value {
+    value = dataflow.normalize(value);
+    if (!value || !activeIdentities.insert(value).second)
+      return {};
+    auto finish = [&](mlir::Value identity) {
+      activeIdentities.erase(value);
+      return identity;
+    };
+    auto resolveSame = [&](mlir::Value lhs, mlir::Value rhs) -> mlir::Value {
+      mlir::Value lhsIdentity = resolveIdentity(lhs);
+      mlir::Value rhsIdentity = resolveIdentity(rhs);
+      if (!lhsIdentity || lhsIdentity != rhsIdentity)
+        return {};
+      return lhsIdentity;
+    };
+
+    if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+      mlir::Block *owner = blockArg.getOwner();
+      mlir::Operation *parent = owner ? owner->getParentOp() : nullptr;
+      if (auto tileRegion = mlir::dyn_cast_or_null<TileRegionOp>(parent)) {
+        unsigned index = blockArg.getArgNumber();
+        if (owner == &tileRegion.getBody().front() &&
+            index < tileRegion.getInputs().size())
+          return finish(resolveIdentity(tileRegion.getInputs()[index]));
+      }
+      if (auto forOp = mlir::dyn_cast_or_null<mlir::scf::ForOp>(parent)) {
+        if (owner == forOp.getBody() && blockArg.getArgNumber() > 0) {
+          unsigned index = blockArg.getArgNumber() - 1;
+          auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(
+              forOp.getBody()->getTerminator());
+          if (index < forOp.getInitArgs().size() && yield &&
+              index < yield.getResults().size()) {
+            mlir::Value initialIdentity =
+                resolveIdentity(forOp.getInitArgs()[index]);
+            mlir::Value yielded = yield.getResults()[index];
+            mlir::Value yieldedIdentity = yielded == blockArg
+                                              ? initialIdentity
+                                              : resolveIdentity(yielded);
+            if (initialIdentity && initialIdentity == yieldedIdentity)
+              return finish(initialIdentity);
+            return finish({});
+          }
+        }
+      }
+      return finish(value);
+    }
+
+    auto result = mlir::dyn_cast<mlir::OpResult>(value);
+    if (!result)
+      return finish(value);
+    mlir::Operation *def = result.getOwner();
+    if (auto toMemref = mlir::dyn_cast<mlir::bufferization::ToMemrefOp>(def))
+      return finish(resolveIdentity(toMemref.getTensor()));
+    if (auto toTensor = mlir::dyn_cast<mlir::bufferization::ToTensorOp>(def))
+      return finish(resolveIdentity(toTensor.getMemref()));
+    if (auto select = mlir::dyn_cast<mlir::SelectLikeOpInterface>(def))
+      return finish(resolveSame(select.getTrueValue(), select.getFalseValue()));
+    if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(def)) {
+      unsigned index = result.getResultNumber();
+      mlir::scf::YieldOp thenYield = getSingleBlockYield(ifOp.getThenRegion());
+      mlir::scf::YieldOp elseYield = getSingleBlockYield(ifOp.getElseRegion());
+      if (!thenYield || !elseYield || index >= thenYield.getResults().size() ||
+          index >= elseYield.getResults().size())
+        return finish({});
+      return finish(resolveSame(thenYield.getResults()[index],
+                                elseYield.getResults()[index]));
+    }
+    if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(def)) {
+      unsigned index = result.getResultNumber();
+      auto yield =
+          mlir::dyn_cast<mlir::scf::YieldOp>(forOp.getBody()->getTerminator());
+      if (index >= forOp.getInitArgs().size() || !yield ||
+          index >= yield.getResults().size())
+        return finish({});
+      mlir::Value initialIdentity = resolveIdentity(forOp.getInitArgs()[index]);
+      mlir::Value yielded = yield.getResults()[index];
+      mlir::Value iterArg = index < forOp.getRegionIterArgs().size()
+                                ? forOp.getRegionIterArgs()[index]
+                                : mlir::Value{};
+      mlir::Value yieldedIdentity =
+          yielded == iterArg ? initialIdentity : resolveIdentity(yielded);
+      if (initialIdentity && initialIdentity == yieldedIdentity)
+        return finish(initialIdentity);
+      return finish({});
+    }
+    if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(def)) {
+      unsigned index = result.getResultNumber();
+      if (tileRegion.getBody().empty())
+        return finish({});
+      auto yield = mlir::dyn_cast<TileYieldOp>(
+          tileRegion.getBody().front().getTerminator());
+      if (!yield || index >= yield.getValues().size())
+        return finish({});
+      return finish(resolveIdentity(yield.getValues()[index]));
+    }
+    return finish(value);
+  };
+
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
+  effectInterface.getEffects(effects);
+  for (const mlir::MemoryEffects::EffectInstance &effect : effects) {
+    mlir::Value value = effect.getValue();
+    bool reads = llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
+    bool writes =
+        llvm::isa<mlir::MemoryEffects::Write, mlir::MemoryEffects::Free>(
+            effect.getEffect());
+    if (value && !reads && !writes &&
+        !llvm::isa<mlir::MemoryEffects::Allocate>(effect.getEffect()))
+      collected.hasUnknownObserverEffect = true;
+    if (!value || (!reads && !writes) || !dataflow.isTrackedType ||
+        !dataflow.isTrackedType(value.getType()))
+      continue;
+
+    collected.hasTrackedEffect = true;
+    collected.hasWrite |= writes;
+    mlir::Value identity = resolveIdentity(value);
+    llvm::SmallVector<RootRef, 2> roots = dataflow.rootsAt(value, point.path);
+    llvm::SmallVector<ValueOriginRef, 2> origins =
+        dataflow.originsAt(value, point.path);
+    // A canonical slot permutation intentionally gives one iter_arg a finite
+    // union of loop-external allocation roots. That is still a resolved
+    // hardware address domain: the issued runtime range selects one root, and
+    // the same-worker busytable orders an actual overlap. Requiring one stable
+    // SSA identity would turn every real multi-buffer backedge into a heavy
+    // join. Rootless/unresolved effects and ambiguous origin-only values
+    // remain fail-closed.
+    bool hasResolvedRoots =
+        !roots.empty() && llvm::all_of(roots, [](RootRef root) {
+          return root.demandIndex != kUnresolvedRootIndex;
+        });
+    // A value-associated memref origin is a resolved runtime address domain
+    // even when it is caller-owned or may alias another origin. The same-worker
+    // busytable compares the actual issued ranges: overlap is ordered and
+    // disjoint ranges need no edge. Empty origins and rootless resource effects
+    // remain fail-closed.
+    bool hasResolvedAddressOrigins = roots.empty() && !origins.empty();
+    if (!hasResolvedRoots && !hasResolvedAddressOrigins)
+      collected.allResolved = false;
+    if (roots.empty()) {
+      if (origins.empty()) {
+        collected.accesses.push_back(PendingAccess{
+            op, RootRef{kUnresolvedRootIndex, point.path}, workerMask,
+            /*logicalRoot=*/{}, identity, writes});
+        continue;
+      }
+      for (ValueOriginRef origin : origins)
+        collected.accesses.push_back(
+            PendingAccess{op, RootRef{kUnresolvedRootIndex, origin.path},
+                          workerMask, origin.root, identity, writes});
+      continue;
+    }
+    mlir::Value logicalRoot =
+        origins.size() == 1 ? origins.front().root : mlir::Value{};
+    for (RootRef root : roots)
+      collected.accesses.push_back(
+          PendingAccess{op, root, workerMask, logicalRoot, identity, writes});
+  }
+  return collected;
+}
+
+mlir::LogicalResult LocalCompletionTracker::verifyPendingObservers(
+    mlir::Operation *op, ProgramPoint point,
+    const NCCCompletionContract &contract, const AccessCollection &current,
+    LifetimeFailure *failure) const {
+  auto reachablePending = llvm::find_if(
+      pendingAccesses, [&](const PendingAccess &pending) {
+        return pending.root.path.intersect(point.path).has_value();
+      });
+  if (reachablePending != pendingAccesses.end() &&
+      current.hasUnknownObserverEffect) {
+    setLifetimeFailure(failure, LifetimeFailureKind::MissingLocalCompletion,
+                       reachablePending->origin ? reachablePending->origin
+                                                : op);
+    return mlir::failure();
+  }
+  if (!current.hasTrackedEffect)
+    return mlir::success();
+
+  for (const PendingAccess &pending : pendingAccesses) {
+    for (const PendingAccess &access : current.accesses) {
+      if (!pending.root.path.intersect(access.root.path) ||
+          (!pending.write && !access.write))
+        continue;
+
+      bool pendingRootResolved =
+          pending.root.demandIndex != kUnresolvedRootIndex;
+      bool currentRootResolved =
+          access.root.demandIndex != kUnresolvedRootIndex;
+      if (pendingRootResolved && currentRootResolved &&
+          pending.root.demandIndex != access.root.demandIndex)
+        continue;
+      if ((!pendingRootResolved || !currentRootResolved) &&
+          pending.logicalRoot && access.logicalRoot &&
+          pending.logicalRoot != access.logicalRoot &&
+          mlir::isa_and_nonnull<mlir::memref::AllocOp>(
+              pending.logicalRoot.getDefiningOp()) &&
+          mlir::isa_and_nonnull<mlir::memref::AllocOp>(
+              access.logicalRoot.getDefiningOp()))
+        continue;
+
+      bool exactRange = pending.accessIdentity && access.accessIdentity &&
+                        pending.accessIdentity == access.accessIdentity;
+      // The target busytable compares the issued physical ranges. For two
+      // value-associated accesses in one worker, a possible overlap is
+      // therefore sufficient: an actual overlap creates RAW/WAR/WAW order,
+      // while disjoint runtime ranges need no dependency. Resource-only or
+      // otherwise rootless effects remain fail-closed.
+      bool hasKnownAddressDomain =
+          exactRange || (pendingRootResolved && currentRootResolved) ||
+          (pending.logicalRoot && access.logicalRoot);
+      bool sameWorkerOrdered =
+          hasKnownAddressDomain &&
+          contract.behavior == LocalInstructionCompletion::OrderedPending &&
+          pending.workerMask != 0 && pending.workerMask == access.workerMask;
+      if (sameWorkerOrdered)
+        continue;
+
+      setLifetimeFailure(failure, LifetimeFailureKind::MissingLocalCompletion,
+                         pending.origin ? pending.origin : op);
+      return mlir::failure();
+    }
+  }
+  return mlir::success();
+}
+
 void LocalCompletionTracker::processFence(ProgramPoint fencePoint,
+                                          uint32_t participantMask,
                                           LifetimeDataflow &dataflow) {
   llvm::SmallVector<PendingIssue, 8> remainingIssues;
   for (PendingIssue issue : pendingIssues) {
-    if (!issue.path.intersect(fencePoint.path)) {
+    if ((issue.workerMask & participantMask) == 0 ||
+        !issue.path.intersect(fencePoint.path)) {
       remainingIssues.push_back(issue);
       continue;
     }
     llvm::SmallVector<PathCondition, 2> remainingPaths;
     issue.path.subtract(fencePoint.path, remainingPaths);
     for (PathCondition path : remainingPaths)
-      remainingIssues.push_back(PendingIssue{issue.origin, path});
+      remainingIssues.push_back(
+          PendingIssue{issue.origin, path, issue.workerMask,
+                       issue.accessOrderResolved, issue.hasWrite});
   }
   pendingIssues = std::move(remainingIssues);
 
   llvm::SmallVector<PendingAccess, 8> remainingAccesses;
   for (PendingAccess access : pendingAccesses) {
+    if ((access.workerMask & participantMask) == 0) {
+      remainingAccesses.push_back(access);
+      continue;
+    }
     std::optional<PathCondition> completedPath =
         access.root.path.intersect(fencePoint.path);
     if (!completedPath) {
       remainingAccesses.push_back(access);
       continue;
     }
-    dataflow.extendTo(RootRef{access.root.demandIndex, *completedPath},
-                      ProgramPoint{fencePoint.event, *completedPath});
+    if (access.root.demandIndex != kUnresolvedRootIndex)
+      dataflow.extendTo(RootRef{access.root.demandIndex, *completedPath},
+                        ProgramPoint{fencePoint.event, *completedPath});
 
     llvm::SmallVector<PathCondition, 2> remainingPaths;
     access.root.path.subtract(fencePoint.path, remainingPaths);
     for (PathCondition path : remainingPaths)
       remainingAccesses.push_back(
-          PendingAccess{access.origin, RootRef{access.root.demandIndex, path}});
+          PendingAccess{access.origin, RootRef{access.root.demandIndex, path},
+                        access.workerMask, access.logicalRoot,
+                        access.accessIdentity, access.write});
   }
   pendingAccesses = std::move(remainingAccesses);
 }
@@ -1836,46 +2184,252 @@ mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
   if (!point)
     return mlir::success();
 
-  LocalInstructionCompletion completion =
-      classifyLocalInstructionCompletion(op);
-  if (completion == LocalInstructionCompletion::BarrierAndComplete)
-    processFence(*point, dataflow);
-  if (completion != LocalInstructionCompletion::PendingUntilFence)
+  NCCCompletionContract contract = getNCCCompletionContract(op);
+  if (contract.behavior == LocalInstructionCompletion::ParticipantJoin ||
+      contract.behavior == LocalInstructionCompletion::SynchronousWriteback)
+    processFence(*point, contract.participantMask, dataflow);
+
+  uint32_t workerMask = getNCCIssueWorkerMask(contract);
+  AccessCollection current = collectAccesses(op, *point, workerMask, dataflow);
+  if (mlir::failed(
+          verifyPendingObservers(op, *point, contract, current, failure)))
+    return mlir::failure();
+  if (contract.behavior != LocalInstructionCompletion::OrderedPending ||
+      !current.hasTrackedEffect)
     return mlir::success();
 
-  auto effectInterface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
-  if (!effectInterface)
-    return mlir::success();
-  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
-  effectInterface.getEffects(effects);
-  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> trackedEffects;
-  llvm::copy_if(
-      effects, std::back_inserter(trackedEffects), [&](const auto &effect) {
-        mlir::Value value = effect.getValue();
-        return value &&
-               (llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect()) ||
-                llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect())) &&
-               dataflow.isTrackedType &&
-               dataflow.isTrackedType(value.getType());
-      });
-  if (trackedEffects.empty())
-    return mlir::success();
-
-  pendingIssues.push_back(PendingIssue{op, point->path});
-  for (const auto &effect : trackedEffects) {
-    mlir::Value value = effect.getValue();
-    for (RootRef root : dataflow.rootsAt(value, point->path))
-      pendingAccesses.push_back(PendingAccess{op, root});
-  }
-  (void)failure;
+  pendingIssues.push_back(PendingIssue{
+      op, point->path, workerMask,
+      current.allResolved && !current.accesses.empty(), current.hasWrite});
+  pendingAccesses.append(current.accesses.begin(), current.accesses.end());
   return mlir::success();
+}
+
+bool LocalCompletionTracker::provesLoopBackedgeOrder(
+    const PendingIssue &issue, mlir::Operation *loop,
+    LifetimeDataflow &dataflow) const {
+  auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(loop);
+  if (!forOp || issue.workerMask == 0 || !issue.accessOrderResolved)
+    return false;
+
+  std::optional<ProgramPoint> bodyPoint =
+      dataflow.timeline.lookup(forOp.getBody()->getTerminator());
+  if (!bodyPoint || !issue.path.implies(bodyPoint->path))
+    return false;
+
+  llvm::SmallVector<const PendingAccess *, 4> issueAccesses;
+  for (const PendingAccess &access : pendingAccesses) {
+    if (access.origin != issue.origin ||
+        !access.root.path.intersect(issue.path))
+      continue;
+    issueAccesses.push_back(&access);
+  }
+  if (issueAccesses.empty())
+    return false;
+
+  auto accessesMayConflict = [](const PendingAccess &pending,
+                               const PendingAccess &access) {
+    if (!pending.root.path.intersect(access.root.path) ||
+        (!pending.write && !access.write))
+      return false;
+
+    bool pendingRootResolved =
+        pending.root.demandIndex != kUnresolvedRootIndex;
+    bool currentRootResolved =
+        access.root.demandIndex != kUnresolvedRootIndex;
+    if (pendingRootResolved && currentRootResolved &&
+        pending.root.demandIndex != access.root.demandIndex)
+      return false;
+    if ((!pendingRootResolved || !currentRootResolved) &&
+        pending.logicalRoot && access.logicalRoot &&
+        pending.logicalRoot != access.logicalRoot &&
+        mlir::isa_and_nonnull<mlir::memref::AllocOp>(
+            pending.logicalRoot.getDefiningOp()) &&
+        mlir::isa_and_nonnull<mlir::memref::AllocOp>(
+            access.logicalRoot.getDefiningOp()))
+      return false;
+    return true;
+  };
+
+  // A structured loop whose complete effectful stream consists only of
+  // value-associated, resolved NCC issues is ordered directly by the hardware
+  // busytable across every dynamic backedge. Dependency-related accesses must
+  // stay on the issue's worker; typed streams on provably disjoint allocation
+  // roots may use another worker without a completion edge. Canonical
+  // fixed-slot rotation intentionally changes the SSA identity and may produce
+  // a finite union of external allocation origins; actual overlapping issued
+  // ranges order, while disjoint slots require no dependency. Statically
+  // non-empty nested scf.for bodies are part of that same stream. Any observer,
+  // unknown effect, unwitnessed rootless storage, conditional/possibly-empty
+  // region or cross-worker conflict rejects this whole-stream proof.
+  std::function<bool(mlir::Block &)> provesStructuredOrderedStream;
+  provesStructuredOrderedStream = [&](mlir::Block &block) {
+    for (mlir::Operation &candidate : block.without_terminator()) {
+      if (auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(candidate)) {
+        if (!isStaticallyNonEmpty(nestedFor) ||
+            !provesStructuredOrderedStream(*nestedFor.getBody()))
+          return false;
+        continue;
+      }
+      if (candidate.getNumRegions() != 0)
+        return false;
+
+      std::optional<ProgramPoint> candidatePoint =
+          dataflow.timeline.lookup(&candidate);
+      if (!candidatePoint)
+        return mlir::isMemoryEffectFree(&candidate);
+      if (mlir::isMemoryEffectFree(&candidate))
+        continue;
+      if (auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(candidate)) {
+        // Allocation establishes ownership; it does not observe an earlier NCC
+        // access. A placement invocation must own the tracked demand; the
+        // separate completion-only precheck intentionally has no demands and
+        // relies on the later placement run to revalidate physical reuse.
+        bool tracked = dataflow.isTrackedType &&
+                       dataflow.isTrackedType(allocation.getResult().getType());
+        if (tracked && !dataflow.demands.empty() &&
+            llvm::none_of(dataflow.demands, [&](LifetimeDemand demand) {
+              return demand.allocation == allocation;
+            }))
+          return false;
+        continue;
+      }
+      if (!hasOnlyWitnessedRootlessStorageEffects(&candidate))
+        return false;
+
+      NCCCompletionContract candidateContract =
+          getNCCCompletionContract(&candidate);
+      uint32_t candidateWorkerMask = getNCCIssueWorkerMask(candidateContract);
+      AccessCollection current = collectAccesses(
+          &candidate, *candidatePoint, candidateWorkerMask, dataflow);
+      if (!candidatePoint->path.implies(bodyPoint->path) ||
+          !mlir::isa<WaferNCCIssueOpInterface>(&candidate) ||
+          candidateContract.behavior !=
+              LocalInstructionCompletion::OrderedPending ||
+          candidateWorkerMask == 0)
+        return false;
+      if (!current.hasTrackedEffect) {
+        // An NCC issue that touches only another witnessed storage domain is
+        // transparent to this domain's backedge proof.
+        continue;
+      }
+      if (!current.allResolved || current.accesses.empty())
+        return false;
+      bool conflictsWithIssue = llvm::any_of(
+          issueAccesses, [&](const PendingAccess *pending) {
+            return llvm::any_of(
+                current.accesses, [&](const PendingAccess &access) {
+                  return accessesMayConflict(*pending, access);
+                });
+          });
+      if (conflictsWithIssue && candidateWorkerMask != issue.workerMask)
+        return false;
+    }
+    return true;
+  };
+  bool resolvedOrderedStream =
+      provesStructuredOrderedStream(*forOp.getBody());
+  if (resolvedOrderedStream)
+    return true;
+
+  llvm::SmallVector<mlir::Operation *, 16> nextIteration;
+  forOp.getRegion().walk([&](mlir::Operation *candidate) {
+    if (dataflow.timeline.lookup(candidate))
+      nextIteration.push_back(candidate);
+  });
+  llvm::sort(nextIteration, [&](mlir::Operation *lhs, mlir::Operation *rhs) {
+    return dataflow.timeline.lookup(lhs)->event <
+           dataflow.timeline.lookup(rhs)->event;
+  });
+
+  for (mlir::Operation *candidate : nextIteration) {
+    std::optional<ProgramPoint> candidatePoint =
+        dataflow.timeline.lookup(candidate);
+    if (!candidatePoint ||
+        !candidatePoint->path.compatibleWith(bodyPoint->path))
+      continue;
+    bool unconditionalInBody =
+        candidatePoint->path.implies(bodyPoint->path) &&
+        isUnconditionallyNestedInStaticFor(candidate, forOp);
+    NCCCompletionContract candidateContract =
+        getNCCCompletionContract(candidate);
+    bool coversIssue =
+        (candidateContract.behavior ==
+             LocalInstructionCompletion::ParticipantJoin ||
+         candidateContract.behavior ==
+             LocalInstructionCompletion::SynchronousWriteback) &&
+        (candidateContract.participantMask & issue.workerMask) != 0;
+    if (coversIssue) {
+      if (unconditionalInBody)
+        return true;
+      // A conditional completion is safe on the path where it executes, but
+      // cannot prove the other next-iteration paths.
+      continue;
+    }
+
+    if (auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(candidate)) {
+      if (isStaticallyNonEmpty(nestedFor) &&
+          isUnconditionallyNestedInStaticFor(candidate, forOp))
+        continue;
+      return false;
+    }
+    if (mlir::isMemoryEffectFree(candidate))
+      continue;
+    if (auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(candidate)) {
+      bool tracked = dataflow.isTrackedType &&
+                     dataflow.isTrackedType(allocation.getResult().getType());
+      if (!tracked || dataflow.demands.empty() ||
+          llvm::any_of(dataflow.demands, [&](LifetimeDemand demand) {
+            return demand.allocation == allocation;
+          }))
+        continue;
+      return false;
+    }
+    if (!hasOnlyWitnessedRootlessStorageEffects(candidate))
+      return false;
+
+    uint32_t candidateWorkerMask = getNCCIssueWorkerMask(candidateContract);
+    AccessCollection current = collectAccesses(candidate, *candidatePoint,
+                                               candidateWorkerMask, dataflow);
+    if (!current.hasTrackedEffect)
+      continue;
+    for (const PendingAccess *pending : issueAccesses) {
+      for (const PendingAccess &access : current.accesses) {
+        if (!accessesMayConflict(*pending, access))
+          continue;
+
+        // A typed same-worker successor is itself ordered for every overlapping
+        // range, so it is not an observer that forces a host-side completion.
+        // It does not by itself complete a multi-access predecessor: keep
+        // scanning until an unconditional participant join covers all
+        // remaining accesses. DTE, cross-worker and conditional successors
+        // still fail closed here.
+        bool orderedSuccessor =
+            unconditionalInBody &&
+            mlir::isa<WaferNCCIssueOpInterface>(candidate) &&
+            candidateContract.behavior ==
+                LocalInstructionCompletion::OrderedPending &&
+            candidateWorkerMask == issue.workerMask && current.allResolved &&
+            !current.accesses.empty();
+        if (!orderedSuccessor)
+          return false;
+      }
+    }
+  }
+  return false;
 }
 
 mlir::LogicalResult
 LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
+                                           LifetimeDataflow &dataflow,
                                            LifetimeFailure *failure) const {
+  auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(loop);
+  if (forOp && !hasPossibleBackedge(forOp))
+    return mlir::success();
   for (const PendingIssue &issue : pendingIssues) {
     if (!isNestedIn(issue.origin, loop) || issue.origin == loop)
+      continue;
+    if (provesLoopBackedgeOrder(issue, loop, dataflow))
       continue;
     setLifetimeFailure(failure, LifetimeFailureKind::LoopBackedgeCompletion,
                        issue.origin);
@@ -1887,6 +2441,12 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
 mlir::LogicalResult
 LocalCompletionTracker::finish(mlir::Operation *scope,
                                LifetimeFailure *failure) const {
+  // A tile region is a scheduling/lifetime container, not an externally
+  // observable completion cut. Its enclosing function analysis reconstructs
+  // these pending issues and requires a typed join before a real observer or
+  // terminal boundary.
+  if (mlir::isa_and_nonnull<TileRegionOp>(scope))
+    return mlir::success();
   if (!pendingIssues.empty()) {
     setLifetimeFailure(failure, LifetimeFailureKind::MissingLocalCompletion,
                        pendingIssues.front().origin);

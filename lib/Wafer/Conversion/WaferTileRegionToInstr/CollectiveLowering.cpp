@@ -348,7 +348,6 @@ public:
             rewriter, op.getLoc(), op, localCommSlot.getResult(), *localSlot,
             failureReason, "tile.all_gather local slot copy")))
       return mlir::failure();
-    rewriter.create<SyncLocalFenceOp>(op.getLoc());
 
     int64_t bytes = op.getBytesAttr().getInt();
     if (schedule == AllGatherSchedule::Direct) {
@@ -393,10 +392,6 @@ public:
           return mlir::failure();
       }
 
-      // DTE wait completes each direct receive. Any fallback copy into a
-      // non-contiguous gathered slot is a separate movement-engine issue;
-      // complete all providers before a resident consumer reads gatherBuffer.
-      rewriter.create<SyncLocalFenceOp>(op.getLoc());
       rewriter.eraseOp(op);
       return mlir::success();
     }
@@ -457,7 +452,6 @@ public:
       sendSlot = recvCommSlot.getResult();
     }
 
-    rewriter.create<SyncLocalFenceOp>(op.getLoc());
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -604,9 +598,6 @@ public:
       int64_t nextPeer = rankGroup[nextPeerIndex];
       int64_t prevPeer = rankGroup[prevPeerIndex];
 
-      // The first message reads a view of the original local contribution.
-      // Complete any preceding resident producer before DTE observes it.
-      rewriter.create<SyncLocalFenceOp>(op.getLoc());
       mlir::Value sendBuffer;
       for (int64_t step = 0; step < groupSize - 1; ++step) {
         int64_t sendPayloadSlice =
@@ -652,10 +643,8 @@ public:
         llvm::SmallVector<mlir::Value, 2> inputs{*localInputSlot,
                                                  op.getRecvBuffer()};
         rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
-                                            inputs, *accumulator);
-        // Completes the partial chunk before it is forwarded in the next
-        // round, and publishes the final local scatter slot after the last.
-        rewriter.create<SyncLocalFenceOp>(op.getLoc());
+                                            inputs, *accumulator,
+                                            getDefaultNCCWorkerAttr(rewriter));
       }
 
       rewriter.replaceOp(op, *accumulator);
@@ -685,7 +674,6 @@ public:
     // ranks during round s; its own destination uses the local slice.  This
     // implements StableHLO reduce_scatter as ordered all_reduce followed by
     // split, while remaining independent of the bounded topology-ring search.
-    rewriter.create<SyncLocalFenceOp>(op.getLoc());
     for (int64_t sourceIndex = 0; sourceIndex < groupSize; ++sourceIndex) {
       mlir::Value contribution;
       if (sourceIndex == localRank) {
@@ -734,11 +722,9 @@ public:
       } else {
         llvm::SmallVector<mlir::Value, 2> inputs{*accumulator, contribution};
         rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
-                                            inputs, *accumulator);
+                                            inputs, *accumulator,
+                                            getDefaultNCCWorkerAttr(rewriter));
       }
-      // The accumulator and reused receive buffer are execution dependencies,
-      // not merely operations ordered in a block.
-      rewriter.create<SyncLocalFenceOp>(op.getLoc());
     }
 
     rewriter.replaceOp(op, *accumulator);
@@ -820,8 +806,6 @@ public:
           op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
       if (mlir::failed(accumulator))
         return mlir::failure();
-      rewriter.create<SyncLocalFenceOp>(op.getLoc());
-
       llvm::ArrayRef<int64_t> children =
           tree->childGroupIndices[static_cast<size_t>(localRank)];
       if (children.size() > 2)
@@ -853,8 +837,6 @@ public:
       // StableHLO requires the reduction tree's inorder traversal to match
       // rank_group.  Build this node as
       //   left-subtree result, local operand, right-subtree result.
-      // The explicit fences are execution dependencies for the reused receive
-      // and accumulator buffers.
       if (leftChild) {
         int64_t childRank = *leftChild;
         auto message = DTEMessageAttr::get(
@@ -872,14 +854,13 @@ public:
         llvm::SmallVector<mlir::Value, 2> inputs{op.getRecvBuffer(),
                                                  op.getInput()};
         rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
-                                            inputs, *accumulator);
-        rewriter.create<SyncLocalFenceOp>(op.getLoc());
+                                            inputs, *accumulator,
+                                            getDefaultNCCWorkerAttr(rewriter));
       } else {
         if (mlir::failed(createContiguousSPMCopy(
                 rewriter, op.getLoc(), op, op.getInput(), *accumulator,
                 failureReason, "tile.all_reduce accumulator init")))
           return mlir::failure();
-        rewriter.create<SyncLocalFenceOp>(op.getLoc());
       }
 
       if (rightChild) {
@@ -899,8 +880,8 @@ public:
         llvm::SmallVector<mlir::Value, 2> inputs{*accumulator,
                                                  op.getRecvBuffer()};
         rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
-                                            inputs, *accumulator);
-        rewriter.create<SyncLocalFenceOp>(op.getLoc());
+                                            inputs, *accumulator,
+                                            getDefaultNCCWorkerAttr(rewriter));
       }
       if (localRank != tree->rootGroupIndex) {
         int64_t parentRank =
@@ -980,8 +961,6 @@ public:
             rewriter, op.getLoc(), op, op.getInput(), *accumulator,
             failureReason, "tile.all_reduce accumulator init")))
       return mlir::failure();
-    rewriter.create<SyncLocalFenceOp>(op.getLoc());
-
     llvm::SmallVector<mlir::Value> accumulatorChunks(groupSize);
     llvm::SmallVector<mlir::Value> recvChunks(groupSize);
     auto getChunk = [&](mlir::Value fullBuffer,
@@ -1008,8 +987,8 @@ public:
     // Reduce-scatter.  The accumulator starts with this rank's full input.
     // Each round forwards one partial chunk and reduces the predecessor's
     // contribution into the next chunk.  The wait completes DTE before local
-    // compute, and the local fence completes that compute before the chunk can
-    // be forwarded in the following round.
+    // compute. Same-worker issue order carries the local dependency until the
+    // chunk crosses into the DTE domain.
     for (int64_t step = 0; step < groupSize - 1; ++step) {
       int64_t sendPayloadSlice =
           orderedGroupIndices[(*ringPosition + groupSize - step) % groupSize];
@@ -1048,8 +1027,8 @@ public:
 
       llvm::SmallVector<mlir::Value, 2> inputs{*accumulatorChunk, *recvChunk};
       rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
-                                          inputs, *accumulatorChunk);
-      rewriter.create<SyncLocalFenceOp>(op.getLoc());
+                                          inputs, *accumulatorChunk,
+                                          getDefaultNCCWorkerAttr(rewriter));
     }
 
     // All-gather.  Reduce-scatter leaves rank r owning reduced chunk r + 1
@@ -1095,20 +1074,13 @@ public:
       rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
 
       // Direct DTE requires both issue roots to remain isolated until the
-      // joint wait.  Receive into the dedicated communication buffer, then
-      // publish the completed chunk into its final accumulator slot.  The
-      // fence also makes that slot available for forwarding next round.
+      // joint wait. Receive into the dedicated communication buffer, then
+      // publish the completed chunk into its final accumulator slot.
       if (mlir::failed(createContiguousSPMCopy(
               rewriter, op.getLoc(), op, *recvChunk, *accumulatorChunk,
               failureReason, "tile.all_reduce ring all-gather receive copy")))
         return mlir::failure();
-      rewriter.create<SyncLocalFenceOp>(op.getLoc());
     }
-
-    // Every receive has completed, and every local reduction was fenced
-    // before reuse.  Publish the complete accumulator to a following resident
-    // consumer.
-    rewriter.create<SyncLocalFenceOp>(op.getLoc());
 
     rewriter.replaceOp(op, *accumulator);
     return mlir::success();

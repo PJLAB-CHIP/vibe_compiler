@@ -247,8 +247,9 @@ private:
 
 /// Extends tracked local-engine accesses through path-covering completion
 /// barriers. An asynchronous issue is tracked only when its centralized local
-/// completion contract is PendingUntilFence and it has a value-associated
-/// read/write effect on a tracked root.
+/// completion contract is OrderedPending and it has a value-associated
+/// storage effect on a tracked root. While such an access is pending,
+/// deallocation and operations without a complete effect contract fail closed.
 class LocalCompletionTracker {
 public:
   LocalCompletionTracker() = default;
@@ -256,7 +257,7 @@ public:
   mlir::LogicalResult observe(mlir::Operation *op, LifetimeDataflow &dataflow,
                               LifetimeFailure *failure = nullptr);
   mlir::LogicalResult
-  verifyLoopBackedge(mlir::Operation *loop,
+  verifyLoopBackedge(mlir::Operation *loop, LifetimeDataflow &dataflow,
                      LifetimeFailure *failure = nullptr) const;
   mlir::LogicalResult finish(mlir::Operation *scope,
                              LifetimeFailure *failure = nullptr) const;
@@ -265,13 +266,39 @@ private:
   struct PendingIssue {
     mlir::Operation *origin = nullptr;
     PathCondition path = PathCondition::root();
+    uint32_t workerMask = 0;
+    bool accessOrderResolved = false;
+    bool hasWrite = false;
   };
   struct PendingAccess {
     mlir::Operation *origin = nullptr;
     RootRef root;
+    uint32_t workerMask = 0;
+    mlir::Value logicalRoot;
+    mlir::Value accessIdentity;
+    bool write = false;
+  };
+  struct AccessCollection {
+    llvm::SmallVector<PendingAccess, 4> accesses;
+    bool hasTrackedEffect = false;
+    bool hasUnknownObserverEffect = false;
+    bool allResolved = true;
+    bool hasWrite = false;
   };
 
-  void processFence(ProgramPoint fencePoint, LifetimeDataflow &dataflow);
+  AccessCollection collectAccesses(mlir::Operation *op,
+                                   ProgramPoint point, uint32_t workerMask,
+                                   LifetimeDataflow &dataflow) const;
+  mlir::LogicalResult
+  verifyPendingObservers(mlir::Operation *op, ProgramPoint point,
+                         const NCCCompletionContract &contract,
+                         const AccessCollection &current,
+                         LifetimeFailure *failure) const;
+  bool provesLoopBackedgeOrder(const PendingIssue &issue,
+                               mlir::Operation *loop,
+                               LifetimeDataflow &dataflow) const;
+  void processFence(ProgramPoint fencePoint, uint32_t participantMask,
+                    LifetimeDataflow &dataflow);
 
   llvm::SmallVector<PendingIssue, 8> pendingIssues;
   llvm::SmallVector<PendingAccess, 8> pendingAccesses;

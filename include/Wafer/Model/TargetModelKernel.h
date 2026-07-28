@@ -85,7 +85,7 @@ private:
 
 enum class TargetModelControlAction : uint8_t {
   None,
-  LocalFence,
+  NCCJoin,
   DirectDTEBegin,
   DirectDTESend,
   DirectDTEReceive,

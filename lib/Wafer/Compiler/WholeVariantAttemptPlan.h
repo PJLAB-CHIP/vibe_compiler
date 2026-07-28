@@ -20,6 +20,8 @@ struct RankVariantSlotMetadata {
   int64_t stableOrdinal = 0;
   wafer::RankArtifactKind artifactKind = wafer::RankArtifactKind::Spill;
   bool reservedBaseline = false;
+  wafer::RankBufferingKind bufferingKind = wafer::RankBufferingKind::Single;
+  uint32_t bufferingPlanOrdinal = 0;
 };
 
 using RankVariantMetadataFrontier = std::vector<RankVariantSlotMetadata>;

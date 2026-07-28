@@ -24,6 +24,132 @@ func.func @plan_compiler_managed_ddr_range() {
 // CHECK-LABEL: func.func @plan_compiler_managed_ddr_range
 // CHECK: memref.alloc() {wafer.ddr.offset = #wafer.ddr_offset<0>} : memref<2x3xf16, #wafer.memory<ddr, tensor>>
 
+func.func @plan_stage_shifted_loop_ddr_view() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c4 = arith.constant 4 : index
+  %ddr = memref.alloc()
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+  %spm = memref.alloc()
+      {wafer.spm.offset = #wafer.spm_offset<65536>}
+      : memref<1xf16, #wafer.memory<spm, tensor>>
+  scf.for %iv = %c0 to %c4 step %c1 {
+    %stage_displacement = arith.muli %c1, %c2 : index
+    %shifted_iv = arith.addi %iv, %stage_displacement : index
+    %tile = memref.subview %ddr[%shifted_iv] [1] [1]
+        : memref<8xf16, #wafer.memory<ddr, tensor>>
+       to memref<1xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+    wafer.instr.rdma %tile to %spm
+        {byte_count = 2 : i64, inner_bytes = 2 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<1xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+       to memref<1xf16, #wafer.memory<spm, tensor>>
+  }
+  wafer.instr.ncc_join [0]
+  return
+}
+
+// CHECK-LABEL: func.func @plan_stage_shifted_loop_ddr_view
+// CHECK: memref.alloc() {wafer.ddr.offset = #wafer.ddr_offset<0>} : memref<8xf16, #wafer.memory<ddr, tensor>>
+// CHECK: %[[SHIFTED:.+]] = arith.addi %{{.+}}, %{{.+}} : index
+// CHECK: memref.subview %{{.+}}[%[[SHIFTED]]]
+
+func.func @plan_identity_carried_ddr_view() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c7 = arith.constant 7 : index
+  %ddr = memref.alloc()
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+  %init = memref.subview %ddr[%c7] [1] [1]
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+     to memref<1xf16, strided<[1], offset: ?>,
+               #wafer.memory<ddr, tensor>>
+  %spm = memref.alloc()
+      {wafer.spm.offset = #wafer.spm_offset<65536>}
+      : memref<1xf16, #wafer.memory<spm, tensor>>
+  %result = scf.for %iv = %c0 to %c2 step %c1
+      iter_args(%carried = %init)
+      -> (memref<1xf16, strided<[1], offset: ?>,
+                    #wafer.memory<ddr, tensor>>) {
+    wafer.instr.rdma %carried to %spm
+        {byte_count = 2 : i64, inner_bytes = 2 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<1xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+       to memref<1xf16, #wafer.memory<spm, tensor>>
+    scf.yield %carried
+        : memref<1xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+  }
+  wafer.instr.ncc_join [0]
+  return
+}
+
+// CHECK-LABEL: func.func @plan_identity_carried_ddr_view
+// CHECK: memref.alloc() {wafer.ddr.offset = #wafer.ddr_offset<0>} : memref<8xf16, #wafer.memory<ddr, tensor>>
+// CHECK: scf.for
+// CHECK: wafer.instr.rdma
+
+func.func @plan_finite_rotating_carried_ddr_views() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %slot0 = memref.alloc()
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+  %slot1 = memref.alloc()
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+  %slot2 = memref.alloc()
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+  %spm = memref.alloc()
+      {wafer.spm.offset = #wafer.spm_offset<65536>}
+      : memref<1xf16, #wafer.memory<spm, tensor>>
+  scf.for %iv = %c0 to %c4 step %c1
+      iter_args(%carried0 = %slot0,
+                %carried1 = %slot1,
+                %carried2 = %slot2)
+      -> (memref<8xf16, #wafer.memory<ddr, tensor>>,
+          memref<8xf16, #wafer.memory<ddr, tensor>>,
+          memref<8xf16, #wafer.memory<ddr, tensor>>) {
+    %tile = memref.subview %carried0[%iv] [1] [1]
+        : memref<8xf16, #wafer.memory<ddr, tensor>>
+       to memref<1xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+    wafer.instr.rdma %tile to %spm
+        {byte_count = 2 : i64, inner_bytes = 2 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<1xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+       to memref<1xf16, #wafer.memory<spm, tensor>>
+    %next0 = memref.cast %carried1
+        : memref<8xf16, #wafer.memory<ddr, tensor>>
+       to memref<8xf16, #wafer.memory<ddr, tensor>>
+    %next1 = memref.cast %carried2
+        : memref<8xf16, #wafer.memory<ddr, tensor>>
+       to memref<8xf16, #wafer.memory<ddr, tensor>>
+    %next2 = memref.cast %carried0
+        : memref<8xf16, #wafer.memory<ddr, tensor>>
+       to memref<8xf16, #wafer.memory<ddr, tensor>>
+    scf.yield %next0, %next1, %next2
+        : memref<8xf16, #wafer.memory<ddr, tensor>>,
+          memref<8xf16, #wafer.memory<ddr, tensor>>,
+          memref<8xf16, #wafer.memory<ddr, tensor>>
+  }
+  wafer.instr.ncc_join [0]
+  return
+}
+
+// CHECK-LABEL: func.func @plan_finite_rotating_carried_ddr_views
+// CHECK-COUNT-3: memref.alloc() {{.*}}wafer.ddr.offset =
+// CHECK: scf.for
+// CHECK: wafer.instr.rdma
+
 func.func @keep_overlapping_ddr_ranges_distinct() {
   %ddr0 = memref.alloc()
       : memref<2x3xf16, #wafer.memory<ddr, tensor>>

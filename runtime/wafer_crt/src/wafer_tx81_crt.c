@@ -1279,3 +1279,17 @@ void wafer_tx81_local_fence(void) {
 #endif
   wafer_order_local_completion();
 }
+
+void wafer_tx81_ncc_join(uint32_t participant_mask) {
+  wafer_order_local_completion();
+  for (uint32_t worker = 0; worker < WAFER_TX81_NCC_WORKER_COUNT; ++worker) {
+    if ((participant_mask & (UINT32_C(1) << worker)) == 0U)
+      continue;
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
+    (void)wafer_profile_wait_ncc_worker_completion(worker);
+#else
+    (void)TsmWaitfinish_bywork(worker);
+#endif
+  }
+  wafer_order_local_completion();
+}

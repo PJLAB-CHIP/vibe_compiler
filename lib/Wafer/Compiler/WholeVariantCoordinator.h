@@ -21,12 +21,13 @@
 namespace wafer::compiler::detail {
 
 /// One compiler-private member of a rank-local scheduling frontier. Stable
-/// ordinal plus artifact kind form the cross-rank correspondence key; the
-/// module remains the sole semantic artifact. During invocation-local context
-/// transfer, a slot that cannot occur in the already-fixed bounded attempt
-/// sequence may keep a null module so its original index and metadata still
-/// reproduce that sequence. Such a slot can only be observed by the
-/// correspondence precheck and never crosses the accepted-bundle boundary.
+/// ordinal, artifact kind, buffering kind, and buffering plan ordinal form the
+/// cross-rank correspondence key; the module remains the sole semantic
+/// artifact. During invocation-local context transfer, a slot that cannot
+/// occur in the already-fixed bounded attempt sequence may keep a null module
+/// so its original index and metadata still reproduce that sequence. Such a
+/// slot can only be observed by the correspondence precheck and never crosses
+/// the accepted-bundle boundary.
 struct RankVariantCandidate {
   /// Nullable only for an invocation-local, non-attemptable context-transfer
   /// slot. Every correspondence-valid attempted tuple requires a real module.
@@ -34,6 +35,8 @@ struct RankVariantCandidate {
   int64_t stableOrdinal = 0;
   wafer::RankArtifactKind artifactKind = wafer::RankArtifactKind::Spill;
   bool reservedBaseline = false;
+  wafer::RankBufferingKind bufferingKind = wafer::RankBufferingKind::Single;
+  uint32_t bufferingPlanOrdinal = 0;
 };
 
 using RankVariantFrontier = std::vector<RankVariantCandidate>;
@@ -52,6 +55,8 @@ struct AcceptedWholeVariant {
   std::vector<int64_t> selectedStableOrdinals;
   std::vector<wafer::RankArtifactKind> selectedArtifactKinds;
   std::vector<bool> selectedReservedBaselines;
+  std::vector<wafer::RankBufferingKind> selectedBufferingKinds;
+  std::vector<uint32_t> selectedBufferingPlanOrdinals;
 };
 
 /// Same-frontier result used by the profiling product. When production selects

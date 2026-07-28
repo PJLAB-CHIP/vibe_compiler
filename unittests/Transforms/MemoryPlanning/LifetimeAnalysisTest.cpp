@@ -812,6 +812,102 @@ module {
 }
 
 TEST_F(LifetimeAnalysisTest,
+       NCCJoinForDifferentWorkerDoesNotCompletePendingIssue) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %ddr = memref.alloc()
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+    %spm = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.wdma %spm to %ddr
+        {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
+         dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+       to memref<128xf16, #wafer.memory<ddr, tensor>>
+    wafer.instr.ncc_join [1]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp ddrAllocation;
+  wafer::InstrWDMAOp issue;
+  function.walk([&](mlir::memref::AllocOp op) {
+    if (wafer::isWaferDDRMemRefType(op.getType()))
+      ddrAllocation = op;
+  });
+  function.walk([&](wafer::InstrWDMAOp op) { issue = op; });
+  ASSERT_TRUE(ddrAllocation);
+  ASSERT_TRUE(issue);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{ddrAllocation, 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferDDRMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
+  EXPECT_EQ(failure.kind, LifetimeFailureKind::MissingLocalCompletion);
+  EXPECT_EQ(failure.origin, issue.getOperation());
+}
+
+TEST_F(LifetimeAnalysisTest, NCCJoinCompletesParticipatingWorker) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %ddr = memref.alloc()
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+    %spm = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.wdma %spm to %ddr
+        {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
+         dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+       to memref<128xf16, #wafer.memory<ddr, tensor>>
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp ddrAllocation;
+  wafer::SyncNCCJoinOp join;
+  function.walk([&](mlir::memref::AllocOp op) {
+    if (wafer::isWaferDDRMemRefType(op.getType()))
+      ddrAllocation = op;
+  });
+  function.walk([&](wafer::SyncNCCJoinOp op) { join = op; });
+  ASSERT_TRUE(ddrAllocation);
+  ASSERT_TRUE(join);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{ddrAllocation, 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferDDRMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  ASSERT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+
+  std::optional<ProgramPoint> joinPoint = timeline->lookup(join);
+  ASSERT_TRUE(joinPoint);
+  EXPECT_TRUE(
+      llvm::any_of(demands.front().segments, [&](const LiveSegment &segment) {
+        return segment.endEvent == joinPoint->event;
+      }));
+}
+
+TEST_F(LifetimeAnalysisTest,
        ArgWritebackBarrierCompletesPriorLocalIssueAndItself) {
   auto module = parse(R"mlir(
 module {
@@ -860,9 +956,9 @@ module {
     ASSERT_TRUE(physical);
     if (wafer::isWaferDDRMemRefType(allocation.getType()))
       ddrDemandIndex = index;
-    demands.push_back(LifetimeDemand{
-        allocation, physical->physicalBytes, /*alignment=*/1,
-        static_cast<unsigned>(index)});
+    demands.push_back(LifetimeDemand{allocation, physical->physicalBytes,
+                                     /*alignment=*/1,
+                                     static_cast<unsigned>(index)});
   }
   LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
     return wafer::isWaferSPMMemRefType(type) ||
@@ -874,10 +970,10 @@ module {
 
   std::optional<ProgramPoint> barrierPoint = timeline->lookup(barrier);
   ASSERT_TRUE(barrierPoint);
-  EXPECT_TRUE(llvm::any_of(
-      demands[ddrDemandIndex].segments, [&](const LiveSegment &segment) {
-        return segment.endEvent == barrierPoint->event;
-      }));
+  EXPECT_TRUE(llvm::any_of(demands[ddrDemandIndex].segments,
+                           [&](const LiveSegment &segment) {
+                             return segment.endEvent == barrierPoint->event;
+                           }));
 }
 
 TEST_F(LifetimeAnalysisTest, ExternalDDRLocalIssueStillRequiresFence) {
@@ -916,7 +1012,46 @@ module {
   EXPECT_EQ(failure.origin, issue.getOperation());
 }
 
-TEST_F(LifetimeAnalysisTest, LoopBodyIssueMustCompleteBeforeBackedge) {
+TEST_F(LifetimeAnalysisTest,
+       SameWorkerPotentialDDRViewAliasUsesHardwareIssueOrder) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(
+      %input: memref<128xf16, #wafer.memory<ddr, tensor>>,
+      %output: memref<128xf16, #wafer.memory<ddr, tensor>>) {
+    %spm = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.rdma %input to %spm
+        {byte_count = 256 : i64, inner_bytes = 256 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+       to memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.wdma %spm to %output
+        {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
+         dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+       to memref<128xf16, #wafer.memory<ddr, tensor>>
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 0> demands;
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferDDRMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+}
+
+TEST_F(LifetimeAnalysisTest, SameWorkerWAWOrdersLoopBackedgeWithoutInnerJoin) {
   auto module = parse(R"mlir(
 module {
   func.func @main() {
@@ -934,7 +1069,7 @@ module {
           : memref<128xf16, #wafer.memory<spm, tensor>>
          to memref<128xf16, #wafer.memory<ddr, tensor>>
     }
-    wafer.instr.local_fence
+    wafer.instr.ncc_join [0]
     return
   }
 }
@@ -961,9 +1096,458 @@ module {
   });
   LocalCompletionTracker completion;
   LifetimeFailure failure;
+  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+}
+
+TEST_F(LifetimeAnalysisTest,
+       SameWorkerOrdersNestedStaticLoopStreamWithoutInnerJoin) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %spm = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    scf.for %outer = %c0 to %c2 step %c1 {
+      scf.for %inner = %c0 to %c2 step %c1 {
+        wafer.instr.fill %spm, %zero
+            : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+      }
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp allocation;
+  function.walk([&](mlir::memref::AllocOp op) { allocation = op; });
+  ASSERT_TRUE(allocation);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{allocation, 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+}
+
+TEST_F(LifetimeAnalysisTest,
+       NestedStaticLoopCrossWorkerConflictFailsClosed) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %ddr = memref.alloc()
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+    %spm = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    scf.for %outer = %c0 to %c2 step %c1 {
+      scf.for %inner = %c0 to %c2 step %c1 {
+        wafer.instr.wdma %spm to %ddr
+            {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
+             dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64,
+             worker = #wafer.ncc_worker<worker1>}
+            : memref<128xf16, #wafer.memory<spm, tensor>>
+           to memref<128xf16, #wafer.memory<ddr, tensor>>
+        wafer.instr.fill %spm, %zero
+            : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+      }
+    }
+    wafer.instr.ncc_join [0, 1]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp spmAllocation;
+  wafer::InstrFillOp issue;
+  function.walk([&](mlir::memref::AllocOp op) {
+    if (wafer::isWaferSPMMemRefType(op.getType()))
+      spmAllocation = op;
+  });
+  function.walk([&](wafer::InstrFillOp op) { issue = op; });
+  ASSERT_TRUE(spmAllocation);
+  ASSERT_TRUE(issue);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{spmAllocation, 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
+  EXPECT_NE(failure.origin, nullptr);
+}
+
+TEST_F(LifetimeAnalysisTest,
+       DisjointMultiWorkerStreamsDoNotNeedLoopBodyJoin) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %worker0 = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %worker1 = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    scf.for %iteration = %c0 to %c2 step %c1 {
+      wafer.instr.fill %worker0, %zero
+          {worker = #wafer.ncc_worker<worker0>}
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.instr.fill %worker1, %zero
+          {worker = #wafer.ncc_worker<worker1>}
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    }
+    wafer.instr.ncc_join [0, 1]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  llvm::SmallVector<mlir::memref::AllocOp, 2> allocations;
+  function.walk([&](mlir::memref::AllocOp op) {
+    allocations.push_back(op);
+  });
+  ASSERT_EQ(allocations.size(), 2u);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 2> demands{
+      LifetimeDemand{allocations[0], 256, 256, 0},
+      LifetimeDemand{allocations[1], 256, 256, 1}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+}
+
+TEST_F(LifetimeAnalysisTest,
+       ConflictingMultiWorkerStreamsStillRequireCompletion) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %shared = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    scf.for %iteration = %c0 to %c2 step %c1 {
+      wafer.instr.fill %shared, %zero
+          {worker = #wafer.ncc_worker<worker0>}
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.instr.fill %shared, %zero
+          {worker = #wafer.ncc_worker<worker1>}
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    }
+    wafer.instr.ncc_join [0, 1]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp allocation;
+  function.walk([&](mlir::memref::AllocOp op) { allocation = op; });
+  ASSERT_TRUE(allocation);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{allocation, 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
+  EXPECT_NE(failure.origin, nullptr);
+}
+
+TEST_F(LifetimeAnalysisTest,
+       SameWorkerSPMComputeIsTransparentToDDRBackedgeProof) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %ddr = memref.alloc()
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+    %spm = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      wafer.instr.elementwise #wafer.instr_elementwise_kind<add>
+          %spm, %spm into %spm
+          : memref<128xf16, #wafer.memory<spm, tensor>>,
+            memref<128xf16, #wafer.memory<spm, tensor>>
+        into memref<128xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.wdma %spm to %ddr
+          {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+         to memref<128xf16, #wafer.memory<ddr, tensor>>
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp ddrAllocation;
+  function.walk([&](mlir::memref::AllocOp op) {
+    if (wafer::isWaferDDRMemRefType(op.getType()))
+      ddrAllocation = op;
+  });
+  ASSERT_TRUE(ddrAllocation);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{ddrAllocation, 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferDDRMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+}
+
+TEST_F(LifetimeAnalysisTest,
+       TrackedLoopLocalAllocationIsStructuralInSameWorkerStream) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    scf.for %iteration = %c0 to %c2 step %c1 {
+      %slot = memref.alloc()
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.fill %slot, %zero
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp allocation;
+  function.walk([&](mlir::memref::AllocOp op) { allocation = op; });
+  ASSERT_TRUE(allocation);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{allocation, 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+
+  // Tile-region completion is checked once before placement demands are
+  // constructed. The static allocation site remains a resolved address
+  // domain in that precheck; final packing reruns the same proof with roots.
+  llvm::SmallVector<LifetimeDemand, 0> noPlacementDemands;
+  LifetimeDataflow completionOnly(
+      *timeline, noPlacementDemands,
+      [](mlir::Type type) { return wafer::isWaferSPMMemRefType(type); });
+  LocalCompletionTracker completionOnlyTracker;
+  LifetimeFailure completionOnlyFailure;
+  EXPECT_TRUE(mlir::succeeded(completionOnly.run(
+      function, &completionOnlyTracker, &completionOnlyFailure)));
+}
+
+TEST_F(LifetimeAnalysisTest,
+       ExactSuccessorForOneRangeDoesNotCompleteMultiAccessIssue) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %input = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %value = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %secondary = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %tertiary = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    scf.for %iteration = %c0 to %c2 step %c1 {
+      wafer.instr.fill %value, %zero
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+      %observer = memref.load %secondary[%c0]
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.peripheral #wafer.instr_peripheral_kind<factorize>
+          %input into %value, %secondary, %tertiary {elem_count = 128 : i64}
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+        into memref<128xf16, #wafer.memory<spm, tensor>>,
+             memref<128xf16, #wafer.memory<spm, tensor>>,
+             memref<128xf16, #wafer.memory<spm, tensor>>
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  llvm::SmallVector<mlir::memref::AllocOp, 4> allocations;
+  function.walk([&](mlir::memref::AllocOp op) { allocations.push_back(op); });
+  ASSERT_EQ(allocations.size(), 4u);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 4> demands;
+  for (auto [ordinal, allocation] : llvm::enumerate(allocations))
+    demands.push_back(
+        LifetimeDemand{allocation, 256, 256, static_cast<unsigned>(ordinal)});
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
   EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
   EXPECT_EQ(failure.kind, LifetimeFailureKind::LoopBackedgeCompletion);
-  EXPECT_EQ(failure.origin, issue.getOperation());
+}
+
+TEST_F(LifetimeAnalysisTest,
+       UnwitnessedRootlessStorageEffectCannotBeTransparentIssue) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %tracked = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %foreign = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %ddr_type = memref.alloc()
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+    scf.for %iteration = %c0 to %c2 step %c1 {
+      wafer.instr.elementwise #wafer.instr_elementwise_kind<add>
+          %foreign, %foreign into %foreign
+          : memref<128xf16, #wafer.memory<spm, tensor>>,
+            memref<128xf16, #wafer.memory<spm, tensor>>
+        into memref<128xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.fill %tracked, %zero
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  llvm::SmallVector<mlir::memref::AllocOp, 3> allocations;
+  function.walk([&](mlir::memref::AllocOp op) { allocations.push_back(op); });
+  ASSERT_EQ(allocations.size(), 3u);
+
+  // Deliberately break the otherwise verified elementwise storage-space
+  // relation after parsing. Lifetime analysis must still fail closed instead
+  // of treating its rootless SPM effects as a transparent DDR-valued issue.
+  allocations[1].getResult().setType(allocations[2].getType());
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{allocations[0], 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
+  EXPECT_EQ(failure.kind, LifetimeFailureKind::LoopBackedgeCompletion);
+}
+
+TEST_F(LifetimeAnalysisTest,
+       SameWorkerOrdersResolvedRotatingSlotUnionWithoutInnerJoin) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c4 = arith.constant 4 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %slot0 = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %slot1 = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %result:2 = scf.for %index = %c0 to %c4 step %c1
+        iter_args(%current = %slot0, %next = %slot1)
+        -> (memref<128xf16, #wafer.memory<spm, tensor>>,
+            memref<128xf16, #wafer.memory<spm, tensor>>) {
+      wafer.instr.fill %current, %zero
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+      scf.yield %next, %current
+          : memref<128xf16, #wafer.memory<spm, tensor>>,
+            memref<128xf16, #wafer.memory<spm, tensor>>
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  llvm::SmallVector<mlir::memref::AllocOp, 2> allocations;
+  function.walk([&](mlir::memref::AllocOp allocation) {
+    allocations.push_back(allocation);
+  });
+  ASSERT_EQ(allocations.size(), 2u);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 2> demands{
+      LifetimeDemand{allocations[0], 256, 256, 0},
+      LifetimeDemand{allocations[1], 256, 256, 1}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
 }
 
 TEST_F(LifetimeAnalysisTest,
@@ -990,11 +1574,13 @@ module {
     %spm = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
     scf.for %index = %c0 to %c2 step %c1 {
-      wafer.instr.wdma %spm to %ddr
-          {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
-           dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
-          : memref<128xf16, #wafer.memory<spm, tensor>>
-         to memref<128xf16, #wafer.memory<ddr, tensor>>
+      scf.if %condition {
+        wafer.instr.wdma %spm to %ddr
+            {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
+             dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
+            : memref<128xf16, #wafer.memory<spm, tensor>>
+           to memref<128xf16, #wafer.memory<ddr, tensor>>
+      }
     }
     wafer.instr.local_fence
     return
@@ -1027,6 +1613,328 @@ module {
   LifetimeFailure failure;
   EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
   EXPECT_EQ(failure.kind, LifetimeFailureKind::LoopBackedgeCompletion);
+  EXPECT_EQ(failure.origin, issue.getOperation());
+}
+
+TEST_F(LifetimeAnalysisTest,
+       DirectDTEObserverBeforeNextSameWorkerIssueRequiresJoin) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %spm = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      %token = wafer.instr.dte_send %spm
+          {peer = 1 : i64, bytes = 256 : i64,
+           message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+          : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %token : !async.token
+      wafer.instr.fill %spm, %zero
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp allocation;
+  wafer::InstrFillOp issue;
+  function.walk([&](mlir::memref::AllocOp op) { allocation = op; });
+  function.walk([&](wafer::InstrFillOp op) { issue = op; });
+  ASSERT_TRUE(allocation);
+  ASSERT_TRUE(issue);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{allocation, 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
+  EXPECT_EQ(failure.kind, LifetimeFailureKind::LoopBackedgeCompletion);
+  EXPECT_EQ(failure.origin, issue.getOperation());
+}
+
+TEST_F(LifetimeAnalysisTest,
+       NestedSameWorkerSuccessorCanReachJoinBeforeDTEObserver) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %input = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %output = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    scf.for %outer = %c0 to %c2 step %c1 {
+      scf.for %inner = %c0 to %c2 step %c1 {
+        wafer.instr.gather_scatter %input to %output
+          {byte_count = 256 : i64,
+           dst_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           inner_bytes = 256 : i64,
+           src_iterations = array<i64: 1, 1, 1>,
+           src_strides = array<i64: 0, 0, 0>}
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+         to memref<128xf16, #wafer.memory<spm, tensor>>
+        wafer.instr.ncc_join [0]
+        %token = wafer.instr.dte_send %input
+          {peer = 1 : i64, bytes = 256 : i64,
+           message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+          : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
+        wafer.instr.dte_wait %token : !async.token
+        wafer.instr.gather_scatter %input to %output
+          {byte_count = 256 : i64,
+           dst_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           inner_bytes = 256 : i64,
+           src_iterations = array<i64: 1, 1, 1>,
+           src_strides = array<i64: 0, 0, 0>}
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+         to memref<128xf16, #wafer.memory<spm, tensor>>
+      }
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  llvm::SmallVector<mlir::memref::AllocOp, 2> allocations;
+  function.walk([&](mlir::memref::AllocOp op) {
+    allocations.push_back(op);
+  });
+  ASSERT_EQ(allocations.size(), 2u);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 2> demands{
+      LifetimeDemand{allocations[0], 256, 256, 0},
+      LifetimeDemand{allocations[1], 256, 256, 1}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+}
+
+TEST_F(LifetimeAnalysisTest,
+       OrdinaryObserverBeforeNextSameWorkerIssueRequiresJoin) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %spm = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      %unused = memref.load %spm[%c0]
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.fill %spm, %zero
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp allocation;
+  wafer::InstrFillOp issue;
+  function.walk([&](mlir::memref::AllocOp op) { allocation = op; });
+  function.walk([&](wafer::InstrFillOp op) { issue = op; });
+  ASSERT_TRUE(allocation);
+  ASSERT_TRUE(issue);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{allocation, 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
+  EXPECT_EQ(failure.kind, LifetimeFailureKind::LoopBackedgeCompletion);
+  EXPECT_EQ(failure.origin, issue.getOperation());
+}
+
+TEST_F(LifetimeAnalysisTest,
+       DifferentWorkerObserverBeforeNextIssueRequiresJoin) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %ddr = memref.alloc()
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+    %spm = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      wafer.instr.wdma %spm to %ddr
+          {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64,
+           worker = #wafer.ncc_worker<worker1>}
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+         to memref<128xf16, #wafer.memory<ddr, tensor>>
+      wafer.instr.ncc_join [1]
+      wafer.instr.fill %spm, %zero
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp spmAllocation;
+  wafer::InstrFillOp issue;
+  function.walk([&](mlir::memref::AllocOp op) {
+    if (wafer::isWaferSPMMemRefType(op.getType()))
+      spmAllocation = op;
+  });
+  function.walk([&](wafer::InstrFillOp op) { issue = op; });
+  ASSERT_TRUE(spmAllocation);
+  ASSERT_TRUE(issue);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{spmAllocation, 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
+  EXPECT_EQ(failure.kind, LifetimeFailureKind::LoopBackedgeCompletion);
+  EXPECT_EQ(failure.origin, issue.getOperation());
+}
+
+TEST_F(LifetimeAnalysisTest,
+       PendingIssueCrossesTileRegionIntoSameWorkerSuccessor) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %zero = arith.constant 0.000000e+00 : f16
+    %resident = wafer.tile.region(%zero : f16) ->
+        (memref<128xf16, #wafer.memory<spm, tensor>>) {
+    ^bb0(%value: f16):
+      %buffer = memref.alloc()
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.fill %buffer, %value
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.tile.yield %buffer
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+    }
+    %done = wafer.tile.region(%resident, %zero
+        : memref<128xf16, #wafer.memory<spm, tensor>>, f16) -> (f16) {
+    ^bb0(%buffer: memref<128xf16, #wafer.memory<spm, tensor>>,
+         %value: f16):
+      wafer.instr.fill %buffer, %value
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.instr.ncc_join [0]
+      wafer.tile.yield %value : f16
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp allocation;
+  function.walk([&](mlir::memref::AllocOp op) { allocation = op; });
+  ASSERT_TRUE(allocation);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{allocation, 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+}
+
+TEST_F(LifetimeAnalysisTest,
+       DirectDTECannotObservePendingIssueAcrossTileRegion) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %zero = arith.constant 0.000000e+00 : f16
+    %resident = wafer.tile.region(%zero : f16) ->
+        (memref<128xf16, #wafer.memory<spm, tensor>>) {
+    ^bb0(%value: f16):
+      %buffer = memref.alloc()
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.fill %buffer, %value
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+      wafer.tile.yield %buffer
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+    }
+    %done = wafer.tile.region(%resident, %zero
+        : memref<128xf16, #wafer.memory<spm, tensor>>, f16) -> (f16) {
+    ^bb0(%buffer: memref<128xf16, #wafer.memory<spm, tensor>>,
+         %value: f16):
+      %token = wafer.instr.dte_send %buffer
+          {peer = 1 : i64, bytes = 256 : i64,
+           message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+          : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %token : !async.token
+      wafer.instr.ncc_join [0]
+      wafer.tile.yield %value : f16
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  mlir::memref::AllocOp allocation;
+  wafer::InstrFillOp issue;
+  function.walk([&](mlir::memref::AllocOp op) { allocation = op; });
+  function.walk([&](wafer::InstrFillOp op) { issue = op; });
+  ASSERT_TRUE(allocation);
+  ASSERT_TRUE(issue);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 1> demands{
+      LifetimeDemand{allocation, 256, 256, 0}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::failed(dataflow.run(function, &completion, &failure)));
+  EXPECT_EQ(failure.kind, LifetimeFailureKind::MissingLocalCompletion);
   EXPECT_EQ(failure.origin, issue.getOperation());
 }
 

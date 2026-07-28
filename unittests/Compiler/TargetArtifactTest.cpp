@@ -442,7 +442,7 @@ TEST(TargetArtifactTest, ClosedProfileEngineRegistryIncludesDirectDTEWait) {
   EXPECT_EQ(siteKindCount(wafer::runtime::ProfileTargetSiteKind::NCCCommand),
             104);
   EXPECT_EQ(siteKindCount(wafer::runtime::ProfileTargetSiteKind::NCCCompletion),
-            1);
+            2);
   EXPECT_EQ(
       siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEControl),
       5);
@@ -513,6 +513,8 @@ TEST(TargetArtifactTest,
   };
   emitTargetCall(
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::LocalFence));
+  emitTargetCall(
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::NCCJoin));
   emitTargetCall(wafer::getTargetCallDescriptor(
       wafer::TargetCallBuiltin::DirectDTEBegin));
   emitTargetCall(wafer::getTargetCallDescriptor(
@@ -563,14 +565,14 @@ TEST(TargetArtifactTest,
       wafer::compiler::detail::collectProfileTargetCallSites(module, "main");
   ASSERT_TRUE(static_cast<bool>(before)) << llvm::toString(before.takeError());
   std::unique_ptr<llvm::Module> productionModule = llvm::CloneModule(module);
-  ASSERT_EQ(before->size(), 12u);
+  ASSERT_EQ(before->size(), 13u);
   EXPECT_EQ((*before)[0].siteId, 0u);
   EXPECT_EQ((*before)[0].siteKind,
             wafer::runtime::ProfileTargetSiteKind::NCCCompletion);
   EXPECT_FALSE((*before)[0].engine);
   EXPECT_EQ((*before)[1].siteId, 1u);
   EXPECT_EQ((*before)[1].siteKind,
-            wafer::runtime::ProfileTargetSiteKind::DirectDTEControl);
+            wafer::runtime::ProfileTargetSiteKind::NCCCompletion);
   EXPECT_FALSE((*before)[1].engine);
   EXPECT_EQ((*before)[2].siteId, 2u);
   EXPECT_EQ((*before)[2].siteKind,
@@ -584,19 +586,23 @@ TEST(TargetArtifactTest,
   EXPECT_EQ((*before)[4].siteKind,
             wafer::runtime::ProfileTargetSiteKind::DirectDTEControl);
   EXPECT_FALSE((*before)[4].engine);
+  EXPECT_EQ((*before)[5].siteId, 5u);
   EXPECT_EQ((*before)[5].siteKind,
-            wafer::runtime::ProfileTargetSiteKind::NCCCommand);
-  EXPECT_EQ((*before)[5].engine, wafer::TargetCallTSMEngine::CT);
-  EXPECT_EQ((*before)[6].engine, wafer::TargetCallTSMEngine::RDMA);
-  EXPECT_EQ((*before)[7].siteKind,
-            wafer::runtime::ProfileTargetSiteKind::DirectDTEWait);
-  EXPECT_EQ((*before)[7].engine, wafer::TargetCallTSMEngine::DirectDTE);
-  EXPECT_EQ((*before)[8].engine, wafer::TargetCallTSMEngine::NE);
-  EXPECT_EQ((*before)[9].engine, wafer::TargetCallTSMEngine::WDMA);
-  EXPECT_EQ((*before)[10].engine, wafer::TargetCallTSMEngine::TDMA);
-  EXPECT_EQ((*before)[11].siteKind,
             wafer::runtime::ProfileTargetSiteKind::DirectDTEControl);
-  EXPECT_FALSE((*before)[11].engine);
+  EXPECT_FALSE((*before)[5].engine);
+  EXPECT_EQ((*before)[6].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::NCCCommand);
+  EXPECT_EQ((*before)[6].engine, wafer::TargetCallTSMEngine::CT);
+  EXPECT_EQ((*before)[7].engine, wafer::TargetCallTSMEngine::RDMA);
+  EXPECT_EQ((*before)[8].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEWait);
+  EXPECT_EQ((*before)[8].engine, wafer::TargetCallTSMEngine::DirectDTE);
+  EXPECT_EQ((*before)[9].engine, wafer::TargetCallTSMEngine::NE);
+  EXPECT_EQ((*before)[10].engine, wafer::TargetCallTSMEngine::WDMA);
+  EXPECT_EQ((*before)[11].engine, wafer::TargetCallTSMEngine::TDMA);
+  EXPECT_EQ((*before)[12].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEControl);
+  EXPECT_FALSE((*before)[12].engine);
   std::vector<std::string> correlationKeys;
   for (const auto &site : *before)
     correlationKeys.push_back(site.correlationKey);
@@ -638,7 +644,7 @@ TEST(TargetArtifactTest,
   auto after =
       wafer::compiler::detail::collectProfileTargetCallSites(module, "main");
   ASSERT_TRUE(static_cast<bool>(after)) << llvm::toString(after.takeError());
-  ASSERT_EQ(after->size(), 12u);
+  ASSERT_EQ(after->size(), 13u);
   for (auto [index, site] : llvm::enumerate(*after)) {
     EXPECT_EQ(site.correlationKey, correlationKeys[index]);
     EXPECT_NE(site.instructionOrdinal, (*before)[index].instructionOrdinal);
@@ -702,7 +708,7 @@ TEST(TargetArtifactTest,
             std::string::npos);
   EXPECT_NE(text.find("call void @wafer_tx81_profile_site_begin(i32 0)"),
             std::string::npos);
-  EXPECT_NE(text.find("call void @wafer_tx81_profile_site_end(i32 11)"),
+  EXPECT_NE(text.find("call void @wafer_tx81_profile_site_end(i32 12)"),
             std::string::npos);
   EXPECT_NE(text.find("call void @wafer_tx81_profile_entry_end()"),
             std::string::npos);

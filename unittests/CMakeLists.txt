@@ -43,6 +43,7 @@ add_executable(WaferUnitTests
   Transforms/PhysicalDataflow/CandidateRewritesTest.cpp
   Transforms/PhysicalDataflow/ReadyOrderTest.cpp
   Transforms/Scheduling/CandidateSelectionTest.cpp
+  Transforms/Scheduling/FixedSlotPipelineTest.cpp
   Transforms/Scheduling/FullBufferHandoffTest.cpp
   Transforms/Scheduling/RankCandidateFrontierTest.cpp
   Transforms/Scheduling/RedundantTransferEliminationTest.cpp
@@ -300,6 +301,34 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   add_test(NAME WaferSystemCModelIntegrationTest
     COMMAND WaferSystemCModelIntegrationTest)
 
+  add_executable(WaferSystemCModelFixedSlotIntegrationTest
+    Model/SystemCTargetModelFixedSlotIntegrationTest.cpp
+  )
+  llvm_update_compile_flags(WaferSystemCModelFixedSlotIntegrationTest)
+  target_include_directories(WaferSystemCModelFixedSlotIntegrationTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib
+  )
+  target_link_libraries(WaferSystemCModelFixedSlotIntegrationTest
+    PRIVATE
+    WaferSystemCModel
+    WaferCompiler
+    WaferIR
+    MLIRArithDialect
+    MLIRBufferizationDialect
+    MLIRControlFlowDialect
+    MLIRFuncDialect
+    MLIRLinalgDialect
+    MLIRLLVMDialect
+    MLIRMathDialect
+    MLIRMemRefDialect
+    MLIRSCFDialect
+    MLIRTensorDialect
+    SystemC::systemc
+    GTest::gtest
+  )
+  add_test(NAME WaferSystemCModelFixedSlotIntegrationTest
+    COMMAND WaferSystemCModelFixedSlotIntegrationTest)
+
   add_executable(WaferSystemCModelBatchedGemmIntegrationTest
     Model/SystemCTargetModelBatchedGemmIntegrationTest.cpp
   )
@@ -370,6 +399,20 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   add_test(NAME WaferSystemCModelDTEIntegrationTest
     COMMAND WaferSystemCModelDTEIntegrationTest)
 
+  add_executable(WaferSystemCModelNCCVisibilityTest
+    Model/SystemCTargetModelNCCVisibilityTest.cpp
+  )
+  llvm_update_compile_flags(WaferSystemCModelNCCVisibilityTest)
+  target_link_libraries(WaferSystemCModelNCCVisibilityTest
+    PRIVATE
+    WaferSystemCModel
+    WaferSystemCModelTestSupport
+    SystemC::systemc
+    GTest::gtest
+  )
+  add_test(NAME WaferSystemCModelNCCVisibilityTest
+    COMMAND WaferSystemCModelNCCVisibilityTest)
+
   add_executable(WaferSystemCModelDTEMismatchTest
     Model/SystemCTargetModelDTEMismatchTest.cpp
   )
@@ -414,9 +457,11 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
 
   set_tests_properties(
     WaferSystemCModelIntegrationTest
+    WaferSystemCModelFixedSlotIntegrationTest
     WaferSystemCModelBatchedGemmIntegrationTest
     WaferSystemCModelOrientedGemmIntegrationTest
     WaferSystemCModelDTEIntegrationTest
+    WaferSystemCModelNCCVisibilityTest
     WaferSystemCModelDTEMismatchTest
     WaferSystemCModelNoProgressTest
     WaferSystemCModelEventFailureTest
@@ -431,6 +476,9 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
       $<TARGET_FILE:WaferSystemCModelIntegrationTest>
     COMMAND ${CMAKE_COMMAND} -E env
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
+      $<TARGET_FILE:WaferSystemCModelFixedSlotIntegrationTest>
+    COMMAND ${CMAKE_COMMAND} -E env
+      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
       $<TARGET_FILE:WaferSystemCModelBatchedGemmIntegrationTest>
     COMMAND ${CMAKE_COMMAND} -E env
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
@@ -438,6 +486,9 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     COMMAND ${CMAKE_COMMAND} -E env
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
       $<TARGET_FILE:WaferSystemCModelDTEIntegrationTest>
+    COMMAND ${CMAKE_COMMAND} -E env
+      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
+      $<TARGET_FILE:WaferSystemCModelNCCVisibilityTest>
     COMMAND ${CMAKE_COMMAND} -E env
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
       $<TARGET_FILE:WaferSystemCModelDTEMismatchTest>
@@ -449,9 +500,11 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
       $<TARGET_FILE:WaferSystemCModelEventFailureTest>
     DEPENDS
       WaferSystemCModelIntegrationTest
+      WaferSystemCModelFixedSlotIntegrationTest
       WaferSystemCModelBatchedGemmIntegrationTest
       WaferSystemCModelOrientedGemmIntegrationTest
       WaferSystemCModelDTEIntegrationTest
+      WaferSystemCModelNCCVisibilityTest
       WaferSystemCModelDTEMismatchTest
       WaferSystemCModelNoProgressTest
       WaferSystemCModelEventFailureTest

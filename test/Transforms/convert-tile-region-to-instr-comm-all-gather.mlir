@@ -50,9 +50,9 @@ module {
 // CHECK-SAME: byte_count = 16 : i64
 // CHECK: wafer.instr.gather_scatter %[[LOCAL_COMM]] to %[[SLOT1]]
 // CHECK-SAME: byte_count = 16 : i64
-// CHECK: wafer.instr.local_fence
 // CHECK: %[[SLOT0:.+]] = memref.subview %[[GATHER]][0] [4] [1]
 // CHECK: %[[RECV0_BUF:.+]] = memref.alloc
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK: %[[SEND0:.+]] = wafer.instr.dte_send %[[LOCAL_COMM]]
 // CHECK-SAME: message = #wafer.dte_message<communication = 12, phase = all_gather_ring, round = 0, slice = 1>
 // CHECK-SAME: peer = 2 : i64
@@ -77,7 +77,8 @@ module {
 // CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND2]], %[[RECV2]]
 // CHECK: wafer.instr.gather_scatter %[[RECV2_BUF]] to %[[SLOT2]]
-// CHECK-NEXT: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
+// CHECK-NOT: wafer.instr.local_fence
 // CHECK-NOT: wafer.tile.all_gather
 
 // SPM-LABEL: func.func @all_gather_ring

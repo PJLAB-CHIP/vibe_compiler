@@ -64,7 +64,7 @@ TEST(PipelinesTest, ScheduledRankFinalizationDoesNotSelectAnotherCandidate) {
 }
 
 TEST(PipelinesTest,
-     StructuredProgramSelectsResidentHandoffAndLowersTheSameArtifactToTarget) {
+     StructuredProgramLowersDrainMinimizedWinnerToTarget) {
   mlir::DialectRegistry registry;
   wafer::compiler::detail::registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
@@ -152,7 +152,7 @@ module {
   llvm::SmallVector<wafer::TileRegionOp, 2> regions;
   scheduled.walk(
       [&](wafer::TileRegionOp region) { regions.push_back(region); });
-  ASSERT_EQ(regions.size(), 3u);
+  ASSERT_EQ(regions.size(), 2u);
   bool hasSPMResult = false;
   bool hasSPMOperand = false;
   for (wafer::TileRegionOp region : regions) {
@@ -161,10 +161,14 @@ module {
     for (mlir::Value operand : region.getOperands())
       hasSPMOperand |= wafer::isWaferSPMMemRefType(operand.getType());
   }
-  EXPECT_TRUE(hasSPMResult);
-  EXPECT_TRUE(hasSPMOperand);
-  EXPECT_EQ(countOps<wafer::InstrRDMAOp>(scheduled), 1u);
+  EXPECT_FALSE(hasSPMResult);
+  EXPECT_FALSE(hasSPMOperand);
+  EXPECT_EQ(countOps<wafer::InstrRDMAOp>(scheduled), 2u);
   EXPECT_EQ(countOps<wafer::InstrWDMAOp>(scheduled), 2u);
+  EXPECT_EQ(countOps<wafer::SyncLocalFenceOp>(scheduled), 0u);
+  // Each independently selected task currently retains its own terminal
+  // participant join. Cross-task join sinking is a separate optimization.
+  EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(scheduled), 2u);
 
   llvm::Expected<wafer::compiler::TargetLLVMModuleBundle> target =
       wafer::compiler::compileExecutableBundleToTargetLLVMModules(*executable,

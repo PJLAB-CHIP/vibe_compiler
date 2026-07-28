@@ -624,3 +624,13 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
 InstrFamily InstrTDMADataMoveOp::getInstructionFamily() {
   return InstrFamily::TDMA;
 }
+
+#define WAFER_DEFINE_NCC_ISSUE_WORKER(OP)                                  \
+  NCCWorker OP::getIssueWorker() { return getWorker(); }
+
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrRDMAOp)
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrWDMAOp)
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrGatherScatterOp)
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrTDMADataMoveOp)
+
+#undef WAFER_DEFINE_NCC_ISSUE_WORKER

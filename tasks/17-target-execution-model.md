@@ -1,6 +1,7 @@
 # Wafer Target Execution Model（CModel）
 
-状态：2026-07-20已完成Q22.N/L/B/H/S/V、Q22 model-only functional-numeric profile、Q28标准7B单block scale vertical、
+状态：2026-07-28同步typed NCC worker/participant completion；此前已完成Q22.N/L/B/H/S/V、
+Q22 model-only functional-numeric profile、Q28标准7B单block scale vertical、
 Q31多seed数值表征及Q32.V typed target vertical。mapped DMA、physical-footprint fill和v2 oriented GEMM已经通过
 exact TargetCall、formal和SystemC gate；Q32.M的fixed Cx/NCx encoding absorption只消费现有
 profile/encoding/shape/tail事实，不增加可编程vector-width或packing参数。`RequiredCapabilitySet`/package schema upgrade只在真实
@@ -78,7 +79,10 @@ Pipeline position:
   `ModelProfileId`均明确支持；host materialize并执行同一target LLVM，由共享typed
   target-call registry和exact-signature bridge形成invocation/rank-bound `TargetTransaction`，交给SystemC
   tile/engine/memory/fabric modules执行rank/tile address spaces、CT/NE/RDMA/WDMA/TDMA、local completion和
-  Direct DTE/FSM event。当前target-call ABI没有worker identity，近期模型只发布单一保守logical issue domain。
+  Direct DTE/FSM event。registry descriptor与frontend transaction已携带typed NCC worker和completion behavior；
+  model维护三个worker pending watermark，participant join只完成mask覆盖的NCC worker，Direct DTE仍由独立event
+  完成。current ordinary operator call ABI只兑现worker0 issue，非零worker在target preflight失败；模型不据此
+  猜测物理queue、occupancy或仲裁。
   Q32.V对mapped DMA、physical fill与额外GEMM orientation执行repo-owned exact-signature、
   formal/SystemC语义验证；采用扩展package capability集合的consumer再做all-and-only readback。external model
   provider或board preflight只决定该consumer能否执行已选程序，不返回planner、不过滤或重排compiler candidates。
@@ -132,7 +136,10 @@ Pipeline position:
   transport和terminal completion；target model不得重新选择candidate或重算跨rankbinding。
 - tasks/14现有per-rank transaction-local target preparation已完成entry output/workspace/status ABI preparation，随后把
   instruction结构保持地lower为fixed `void(i64...)` target LLVM CRT calls；RISC-V device link在该lowering之后发生。
-- 当前Wafer CRT header、lowering、source和checker形成111个production symbol的闭合surface。CRT源码通过
+- 当前Wafer CRT header、lowering、source和checker形成112个production symbol的闭合surface；新增项是带
+  canonical participant mask的typed NCC join。frontend只从closed descriptor的engine/worker metadata建立
+  transaction issue domain，不从symbol spelling恢复；model identity为
+  `untimed-delta-worker-aware-ncc-v2`。CRT源码通过
   `TsmNew*`/operator function table填写`Tsm*Instr`并调用`TsmExecute`，而不是直接写模型结果；symbol存在仍只证明
   ABI closure，不证明packet、numeric或hardware completion。
 - plain `wafer_tx81_gemm`没有orientation字段，模型继续发布implicit normal/normal canonical row；v2
@@ -194,13 +201,13 @@ ABI preparation、full conversion和readback后才能交给device link或host mo
 
 | 范围 | 已确认事实 | 初版可声明 | 仍不可声明 |
 | --- | --- | --- | --- |
-| topology/memory | 当前目标单卡4×4、16 tile；每tile 3 MiB SPM，末64 KiB有Kcore/runtime占用证据；另有SPM alias和多个consumer-specific DDR mapping/address-view线索 | 当前profile的rank/tile隔离、SPM reservation和byte-level model window；DDR只按typed resource注册 | 所有SKU容量、bad-tile/PG行为或单一静态DDR范围可硬编码 |
+| topology/memory | 当前目标单卡4×4、16 tile；每tile 3 MiB SPM，ordinary allocation只使用`[0x10000, 0x2F0000)`，末64 KiB有Kcore/runtime占用证据；另有SPM alias和多个consumer-specific DDR mapping/address-view线索 | 当前profile的rank/tile隔离、half-open SPM reservation和byte-level model window；DDR只按typed resource注册 | 所有SKU容量、bad-tile/PG行为、64 KiB粒度等价于bank，或单一静态DDR范围可硬编码 |
 | physical layout | compiler当前accepted compact、Cx/NCx规则可由typed layout重算；Cx/NCx是block-major而不是普通dense stride，INT8/UINT8 full block为128 lane、其它格式为64 lane，并存在compact C0 tail；hardware helper另有256B alignment/footprint证据 | source-backed accepted layout的logical coordinate到physical byte offset及越界检查 | Cx/NCx可直接表示成oneDNN stride；名称或256B规则是所有dtype/op的通用硬件layout |
 | dtype/storage | `Data_Format`公开13种有效格式：INT8/16/32、UINT8/16/32、INT64/UINT64、FP16/BF16/FP32/TF32和bitpacked BOOL；storage width为1/2/4/8 byte，BOOL为1 bit/element | 13种logical raw codec；tasks/08拥有bit/byte footprint和layout geometry，tasks/14只对有证据的target-profile×engine×format发布ABI/register encoding legality | enum存在即证明每个engine都能搬运或计算该dtype；当前DMA helper只有0..7编码却把8..12当作已支持；把BOOL scalar helper的byte store当作bitpacked硬件合同 |
 | compute/convert | 当前CRT公开INT8/INT16/INT32/FP16/BF16/FP32/TF32七种格式间36条convert route；代码检查显示typed convert lowering可选择含TF32的wrapper，但还没有target-lowering integration正例；`RND_MODE`有nearest-even、zero、positive-infinity、negative-infinity、stochastic五种值 | 七种格式的logical numeric descriptor、36条route结构和四种确定性rounding的model candidate；每条op另按完整语义profile和engine-specific format legality准入 | 通用format-bearing op已能发射TF32；code-reachable convert即已被集成验证；UINT/INT64 compute、任意op×dtype笛卡尔积、INT8-source zero-point公式或stochastic随机状态已由ABI证明 |
 | packet/ABI | CT、NE、RDMA、WDMA、TDMA packet字段、worker window、trigger和range/end字段已有证据，但近期frontend不消费vendor packet | typed target-call descriptor/range conformance；packet只作Q22.K future oracle | repo-owned target-call已验证packet字段、worker或vendor CRT一致性 |
 | movement | contiguous/strided RDMA/WDMA、基础TDMA/gather-scatter/memset的混合单位和descriptor字段已恢复；element count、byte stride、iteration-minus-one及byte-count字段按family区分 | 受支持descriptor的功能执行和逐字段单位检查 | 把所有count当byte、所有alignment/stride组合的性能公式 |
-| local issue | 每tile三个worker window；`serial_mode=0`语义把accepted CT/NE/RDMA/WDMA/TDMA分成五个逻辑NCC issue class并存在range/busytable依赖，但target-call ABI没有worker字段 | 单一保守logical issue domain内区分五个engine family；local drain与event ordering分离 | worker identity、`3×5`物理queue实例、provider逐worker配置、queue容量、多发射、精确仲裁和worker物理独立性 |
+| local issue | 每tile三个worker window；`serial_mode=0`语义把accepted CT/NE/RDMA/WDMA/TDMA分成五个逻辑NCC issue class并存在range/busytable依赖 | typed descriptor/transaction区分engine与worker，model维护三个worker pending watermark；current operator call只发worker0，typed participant join独立于DTE event | worker1/2 ordinary command编码与production candidate、`3×5`物理queue occupancy、provider逐worker配置、多发射、精确仲裁和worker物理独立性 |
 | Direct DTE | raw DTE register含模式/多目的字段；public helper只证明single-destination setup、receiver-ready、issue、busy/done/error、wait/release生命周期及部分resource限制 | 当前accepted single-destination profile的功能/event模型 | raw broadcast/gather等完整模式及精确contention |
 | PMU | DTE/SPM/NCC base、record种类和counter shape已知；现有helper的worker scope不一致 | 保留raw counter、记录实际register/worker provenance并建立校准实验 | 所有counter均per-worker，或单位、wrap、workload correlation已证明 |
 
@@ -213,12 +220,15 @@ geometry/ABI定义或生成的typed定义，不能把本文表格复制成第二
 以下缺口要求初版fail closed、保守event关系或明确的model-only profile：
 
 - per-op/dtype/shape latency、throughput、pipeline depth和clock-domain关系；
-- queue depth、同queue多发射、cross-queue arbitration和三个worker的真实共享资源拓扑；
+- header/register给出的CT/NE/RDMA/WDMA `D=6`、TDMA `D=4` queue shape之外的resident/full/outstanding
+  capacity、同queue多发射、cross-queue arbitration和三个worker的真实共享资源拓扑；D或D+1总提交可完成
+  不等于pipeline window；
 - exact SPM address-to-bank函数、RAM_ACC replay成本、LSU/NoC/DDR arbitration和route/hop contention；
 - DTE setup、packet、alignment、route和并发传输周期函数；
 - PMU单位、enable/clear边界、wrap/saturation和host/device时间相关性；
 - 浮点NaN/Inf/subnormal/overflow、部分fused optional field、zero-point公式、stochastic seed/state/推进合同；
-- provider/firmware实际初始化的`serial_mode`和错误恢复行为。
+- `serial_mode=0`之外的调度语义、其它profile初始化和错误恢复行为；current三个worker的只读值0只进入
+  profile identity，不证明任意engine并行或乱序。
 
 历史allocator使用的64 KiB coloring粒度目前只是heuristic，不是SPM bank或hard ABI；它与Kcore占用SPM末尾
 64 KiB这一真实reservation是两个不同事实。公开峰值只可作上界检查，不得直接成为模型延迟或带宽参数。
@@ -272,7 +282,7 @@ NVDLA的官方virtual platform是register-accurate SystemC/TLM-2.0平台，QEMU 
 模型是普通C函数或单个SystemC process。因而SystemC提供的是模块、并发、离散事件、simulation time和组件互联，不自动
 提供numeric、packet、bit或cycle accuracy；定宽类型本身也不决定舍入、饱和和累加语义。LT通常用blocking transport和较少
 timing point，AT通常用non-blocking phase表达更多timing point，但二者是coding style而不是自动精度等级，TLM-2.0不定义
-cycle-accurate coding style。本文选择SystemC主架构来自Wafer当前确有16 tile、三个worker window、条件化五个逻辑NCC
+cycle-accurate coding style。本文选择SystemC主架构来自Wafer当前确有16 tile、typed三worker completion domain、条件化五个逻辑NCC
 issue class、MMIO、
 Direct DTE/FSM和多completion domain，而不是“CModel必须用SystemC”的语言规则；functional kernel仍保持plain C++。
 
@@ -325,21 +335,26 @@ Direct DTE event仍按原ABI返回opaque `i64`，失败先锁存错误再返回�
 - model top/context：target profile/identity、当前profile的16个physical tile slots、capability/good-tile map、logical/physical
   rank/tile mapping和invocation-local状态；
 - tile memory：每tile SPM、reserved region、card DDR/resource slots和checked address translation；
-- 每tile单一保守logical issue domain，按typed call明确区分CT、NE、RDMA、WDMA、TDMA engine family；当前target-call
-  ABI不携带worker identity，因此不建模或声称三个worker window、`serial_mode=0`、`3×5`物理queue或engine复制关系；
+- 每tile维护三个typed NCC worker pending watermark，按typed call明确区分CT、NE、RDMA、WDMA、TDMA
+  engine family；current descriptor把ordinary operator call映射到worker0，participant join按mask完成worker，
+  但不建模或声称worker window容量、`serial_mode=0`带来并行、`3×5`物理queue occupancy或engine复制关系；
 - tile-level CT/NE/RDMA/WDMA/TDMA engine endpoints及保守共享resource arbitration；
 - Direct DTE fabric/FSM：rank-local endpoint/status、receiver-ready、source read/lifetime、send/recv/wait/release和destination
   visibility；
-- completion/result：issue、local drain、destination visible、all-rank terminal和typed no-progress diagnostic。
+- completion/result：typed worker issue/participant completion、DTE destination visible、all-rank terminal和
+  typed no-progress diagnostic。
 
-当前target-call ABI没有worker字段，静态证据也没有证明queue depth、同queue多发射、cross-worker arbitration或SPM bank
-函数。第一版只能建立untimed/delta-cycle functional-event模型，对未知共享resource保守串行；不能把任意`sc_fifo`
-容量、worker数或调度顺序升级成微架构事实。worker/packet行为只在以后Q22.K取得合法packet evidence后另行建模。
+current ordinary operator call signature没有worker scalar，非零worker issue尚未成为production ABI；typed
+descriptor/transaction与NCC join mask已经提供model completion identity。静态证据没有证明queue resident/full、
+同queue多发射、cross-worker arbitration或SPM bank函数。模型保持untimed/delta-cycle functional-event边界；
+不能把header queue shape、任意`sc_fifo`容量、worker数或调度顺序升级成pipeline window或微架构事实。
 
 typed transaction检查、地址检查和各engine的numeric/memory effect由不包含SystemC header、不链接SystemC的plain C++ kernels
-实现，并可独立做unit/property/differential test。初版采用model-only保守observable-commit policy：kernel在SystemC
-event确定的完成点一次提交可观察memory effect，不能在target-call issue时就让结果可见；这不宣称硬件没有partial
-write或相同visibility时刻。它们不与compiler-side consumer共享compute kernel、rounding policy或DTE scheduler。
+实现，并可独立做unit/property/differential test。模型内存允许same-worker issue链消费已经issue的NCC effect，
+但把该ordinal保留在对应worker pending set；Direct DTE、terminal/copyback等external observer在matching
+participant completion前不得读取或发布它。当前DTE gate在pending effect尚无exact range时按endpoint rank的全部
+worker保守阻塞；这不宣称硬件没有partial write或具有相同visibility时刻。模型不与compiler-side consumer共享
+compute kernel、rounding policy或DTE scheduler。
 
 SystemC调度粒度是一次target transaction/command，不是tensor element或单个MAC。GEMM transaction在plain kernel内一次
 调用admitted oneDNN primitive并返回待提交buffer effect；绝不能为M×N×K循环创建`sc_event`、process或TLM transaction。
@@ -371,7 +386,7 @@ hook直接合成高层command绕过packet证据。
 | `FormalNumericExecutionContext` | non-yielding formal kernel作用域内的profile、model status与MPFR state save/set/clear/capture/restore和显式target status映射；APFloat/APInt每次调用显式传rounding | rank identity、跨SystemC wait的全局/TLS状态、SoftFloat oracle状态或oneDNN worker状态 |
 | `BulkExecutionEnvironment` | oneDNN runtime/threads/ISA/implementation、当前SEQ caller-worker control readback、caller fenv恢复和admission provenance；未来非SEQ profile再要求逐worker initialization evidence | worker native flags到target status的映射、architectural memory或SystemC API |
 | prepared target-model invocation | 两个same-lowering bundle引用、all-rank ordered slot value、按slot layout编码的read-only physical bytes、checked non-overlap address plan和prepared target-call executable | host pointer伪装的device address、从文件名恢复rank/resource、别名source NPY storage |
-| `TargetTransaction` | exact-signature bridge返回前复制的typed call kind/ABI revision、engine、最终地址/descriptor、dtype/shape/optional fields、explicit rank context和invocation-local sequence identity；Q32.V transaction按versioned ABI增加orientation等扩展字段 | Instr local-offset字段、planner index relation、packet/worker字段、caller栈指针、整程序command vector、shadow schedule或DTE payload的无证据snapshot |
+| `TargetTransaction` | exact-signature bridge返回前复制的typed call kind/ABI revision、engine、typed NCC worker/completion behavior、最终地址/descriptor、dtype/shape/optional fields、explicit rank context和invocation-local sequence identity；Q32.V transaction按versioned ABI增加orientation等扩展字段 | Instr local-offset字段、planner index relation、raw packet/register worker字段、caller栈指针、整程序command vector、shadow schedule或DTE payload的无证据snapshot |
 | `TargetModelResult` | all-and-only rank terminal status、完整output、numeric flags、transaction/thread/delta计数、formal/bulk command计数、MatMul/reorder/formal-FMA evidence和record digest | partial successful rank集合、回写compiler/package的状态 |
 
 `NumericCommandKey`只包含typed target-call registry/transaction已经表达、并由typed target profile唯一解释的事实。
@@ -412,7 +427,8 @@ intrinsic、inline asm、未知address space或其它不能安全host materializ
 所有rank JIT/thunk/bridge materialize成功后才发布
 model executable。
 
-正式entry必须在SystemC可yield process中调用，使local fence、DTE wait和FSM receive可等待`sc_event`；所有rank process
+正式entry必须在SystemC可yield process中调用，使DTE wait和FSM receive可等待`sc_event`；typed participant
+join和legacy local fence在当前untimed模型中只更新对应worker completion state，不执行production busy-poll。所有rank process
 先创建再启动。invocation/rank context由per-rank exact-signature bridge显式绑定，不能只靠TLS或`sc_process_handle`推断。
 首个正式入口在每个driver进程的initial elaboration中建立一次invocation-local model，不调用`sc_stop`，由`sc_start`运行到
 process/queue/event quiescent后销毁私有memory和error latch；需要重复运行时重新启动driver进程。同进程长寿命
@@ -812,7 +828,9 @@ TLM-2.0不要求用于每条内部边界。推荐范围是：
 - NCC packet、worker queue、Direct DTE/FSM event使用保留字段身份的typed transaction/channel；
 - 不把硬件packet再包装成opaque payload，不让socket/port拓扑进入compiler IR或package；
 - 初版只发布untimed/delta-cycle functional-event profile；没有测量依据时不写任意`wait(N, SC_NS)`；
-- `TsmWaitfinish`、`direct_sync_wait`、DTE wait和FSM receive必须从可yield的SystemC process等待event，不能busy-poll；
+- model中的typed NCC join和legacy local fence必须是worker-scoped completion state transition；
+  `direct_sync_wait`、DTE wait和FSM receive从可yield的SystemC process等待event，不能把production
+  `TsmWaitfinish*`的busy-poll实现复制进模型；
   所有rank process先注册再启动，不能顺序运行到第一个peer wait才创建其它rank；
 - SystemC scheduling order不能充当message identity、resource binding或compiler completion语义；
 - LT、AT、temporal decoupling、DMI及任何`wait(N, SC_NS)`只属于deferred Q22.P；恢复时必须另行更新设计和实施计划。
@@ -871,16 +889,17 @@ typed invocation bindings、transport capability、共同submit/progress/status�
 模型至少区分：
 
 - target call已提交；
-- 当前tile conservative issue domain local drain；
+- 当前tile三个typed NCC worker pending set与participant join；
 - Direct DTE receiver ready、busy、done/error、source lifetime和destination visible；
 - multi-rank no-progress/deadlock；
 - provider terminal status和copyback eligibility。
 
-target-call bridge返回不表示model effect已经完成，local fence不能替代DTE wait或multi-tile
-arrival。每个issue domain使用显式、单调的invocation-local issue ordinal/watermark；wait捕获调用前watermark并等待相关
-command完成，不能用delta scheduling order充当identity。保守模型可以延后event完成，但不能合并没有证据的completion
-domain。所有rank/process均等待且SystemC event queue为空但仍非terminal时，形成确定性no-progress state snapshot并整体
-失败，不用wall-clock决定语义。
+target-call bridge返回不表示对应worker已完成；typed participant join或legacy local fence都不能替代DTE wait或
+multi-tile arrival。每个NCC issue携带worker与单调invocation-local ordinal，join只从mask覆盖的worker pending
+set取出ordinal并推进共同terminal prefix；Direct DTE ordinal只能由自己的event完成，不能因NCC join顺带完成。
+delta scheduling order不能充当identity。保守模型可以延后event完成，但不能合并没有证据的completion domain。
+所有rank/process均等待且SystemC event queue为空但仍非terminal时，形成确定性no-progress state snapshot并整体失败，
+不用wall-clock决定语义。
 
 所有入口在input import前完成all-rank structural capability、static profile、slot/resource/address-plan和endpoint preflight。
 unknown symbol/signature/static profile或exact-module环境不匹配必须在此时整体失败。动态command tuple、computed address、
@@ -918,7 +937,7 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 | formal GEMM / reduce | v1 normal/normal及v2 NN/NT/TN/TT f16、bf16、f32同dtype GEMM；stored shape和orientation进入exact key，F32 fused accumulator、+0 init、K递增、destination RNE；native F32 sum reduce按+0 accumulator、logical row-major input递增和逐step RNE执行 | oriented external bulk lane仍需独立exact admission，board执行另需独立board row；I8 accumulator政策、TF32 generic GEMM、其余15条native reduce selector拒绝；不从dtype猜窄/宽accumulator |
 | admitted bulk GEMM | 当前component资格覆盖v1 normal/normal f16/bf16/f32同dtype、rank 2/3、Cx/NCx；Q22 source发布的admitted完整case为Q20首个f32 GEMM和64³ f32 GEMM | orientation是exact identity；无exact command/payload/destination/environment/expected-output record即no admission；超过formal budget时绝不scalar fallback；不外推连续输入域bit-exact |
 | managed-reference bulk GEMM | Q28 scale gate逐command验证supported GEMM semantic、shape/layout、受管environment、finite inputs及byte budget，并强制完整PyTorch expected tolerance comparison | 不产生exact qualification record，不声明raw-exact target arithmetic、hardware correlation或未检查value-domain；provenance与exact admission分字段 |
-| functional transaction / event | checked compact/mapped RDMA/WDMA、gather/scatter、logical/physical memset、elementwise、convert、v1/v2 GEMM、local fence及当前single-destination Direct DTE control；all-rank private SPM/DDR和atomic output | Count当前只有opcode/raw-writeback线索且无typed semantic/model consumer，必须pre-effect拒绝；field-valid但无kernel的conv/pool/unpool等family、未知地址/layout/endpoint；无worker/queue容量、packet或timing claim |
+| functional transaction / event | checked compact/mapped RDMA/WDMA、gather/scatter、logical/physical memset、elementwise、convert、v1/v2 GEMM、typed NCC worker issue/participant join、legacy local fence及当前single-destination Direct DTE control；all-rank private SPM/DDR和atomic output | Count当前只有opcode/raw-writeback线索且无typed semantic/model consumer，必须pre-effect拒绝；field-valid但无kernel的conv/pool/unpool等family、未知地址/layout/endpoint；无worker queue容量/occupancy、packet或timing claim |
 | source vertical | Q20 formal/admitted、f16/bf16 formal、64³ f32 admitted、Q21 16-rank Direct DTE；全部直接比较固定source CPU expected | 未固定expected的shape stress不算numeric evidence |
 
 这张矩阵说明“支持多数据类型”由storage、engine legality、numeric selector、functional kernel和source evidence分层；不能把
@@ -970,7 +989,7 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 #### Q22.H repo-owned target-call frontend
 
 - Q22.L同一target LLVM经过owner-safe clone/native retarget和动态slot thunk；稳定Target层shared typed registry同时拥有
-  lowering和frontend需要的symbol/signature/call family/field decoder，111项descriptor逐项形成对应typed payload，
+  lowering和frontend需要的symbol/signature/call family/field decoder，112项descriptor逐项形成对应typed payload，
   不能在JIT/SystemC/test复制字符串表；
 - frontend在sink begin前交付完整ordered typed slot metadata/value bindings；per-rank exact-signature bridge显式绑定invocation/rank context并形成
   typed transaction。rank防yield重入，prepare-commit失败仍可abort，unknown symbol/signature、wrong ABI slot和
@@ -979,7 +998,8 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 
 #### Q22.S SystemC functional-event model
 
-- Q22.H实际transaction进入rank/tile memory、conservative issue event、local completion和Direct DTE/FSM；numeric effect只调用Q22.N，
+- Q22.H实际transaction进入rank/tile memory、typed NCC worker issue、participant completion和Direct DTE/FSM；
+  numeric effect只调用Q22.N，
   不能读取另一套accepted-IR numeric kernel或DTE scheduler；
 - 唯一`sc_main`至少运行两个`SC_THREAD`跨delta覆盖issue/visibility/completion、failure wakeup和invocation-owned numeric
   status聚合；immediate caller ambient环境恢复由Q22.N单独证明；
@@ -1481,7 +1501,7 @@ Q22.H现已从该bundle解锁并按repo-owned target-call frontend推进。
 - 只消费Q22.L `TargetLLVMModuleBundle`；host clone/JIT执行same fully legal target LLVM，不形成另一份instruction lowering或
   改写bundle；host retarget前拒绝target intrinsic、inline asm、未知address space和非registry external call；
 - 稳定Target层的shared typed target-call registry由lowering和frontend共同消费，拥有symbol、exact signature、call
-  family和field decoder；111项descriptor均需通过all-and-only signature/payload gate。完整symbol只允许exact ABI-key
+  family和field decoder；112项descriptor均需通过all-and-only signature/payload gate。完整symbol只允许exact ABI-key
   lookup，不能在JIT/SystemC/test复制字符串表，也不能从前后缀、参数数量或任意字符串启发式恢复语义；
 - 每rank生成`void(const uint64_t *slots)` fixed thunk和exact-signature bridge；bridge显式携带invocation/rank context，
   实际动态call形成typed transaction并同步投递transaction-local sink，Direct DTE返回invocation-local opaque identity；
@@ -1498,16 +1518,17 @@ failure无partial result。该gate不编译repo CRT、不构造Tsm packet，不�
 - 以受管SystemC 3.0.2和唯一`SystemC::systemc` target建立默认关闭的feature；feature启用时缺依赖必须configuration fail，
   compiler和plain C++ numeric kernels保持可独立构建；
 - 消费Q22.H实际typed transaction，建立rank-local virtual SPM/DDR、typed slots、checked address、invocation error latch、
-  单一保守logical issue domain、resource event、local drain、可yield wait及Direct DTE/FSM；不声明worker window、
-  `3×5`物理queue或engine复制；
-- shared decoder对111项descriptor逐ABI字段形成typed payload，所有payload family进入统一field-valid validator；
+  三个typed NCC worker pending watermark、participant join及独立Direct DTE/FSM event；不声明worker window容量、
+  `3×5`物理queue、仲裁或engine复制。join只完成mask覆盖的NCC worker，绝不能按rank ordinal前缀顺带完成DTE；
+- shared decoder对112项descriptor逐ABI字段形成typed payload，所有payload family进入统一field-valid validator；
   RDMA/WDMA、gather/scatter、memset、elementwise、convert、GEMM和Direct DTE control
   具有checked functional effect，其它field-valid family保持结构化unsupported。首个profile的DDR/SPM都在invocation-private
   registry内完成，不建立没有consumer的TLM socket；future ISS/interconnect只能通过另行设计的受限TLM边界接入，packet/MMIO
   correlation仍是Q22.K可选provenance gate；
 - numeric effect只调用Q22.N formal profile；Q22.B bulk在本stage不是完成前置。plain C++ kernel component tests不链接SystemC；
   五个SystemC integration executable各有唯一`sc_main`，16个rank `SC_THREAD`加control process跨delta执行numeric和DTE；
-- delta-cycle component gate证明issue后结果尚不可见、local fence检查已完成ordinal watermark、completion一次commit、failure
+- delta-cycle component gate证明ordinary NCC effect虽可供same-worker功能链消费但external publication仍pending，
+  typed join只检查participant worker watermark，DTE仍由exact event/wait完成、completion一次commit、failure
   唤醒且不copyback；unknown transaction、address exact-end/overflow/cross-resource/reserved-SPM和DTE no-progress均结构化失败。
 
 完成：同一Q22.H正式producer的16-rank elementwise和collective-permute实际进入SystemC；numeric测试观察sticky inexact，DTE在
@@ -1537,9 +1558,10 @@ bulk 14/14回归通过。该证据不要求完整source workload，
 完成：Q20 formal/admitted双路径、f16/bf16 formal、deterministic 64³ admitted large GEMM和Q21完整输出已经通过；bulk
 自动dispatch、错误record/no-scalar-fallback、output mismatch、DTE no-progress及all-rank atomic result已有覆盖。在Q29
 structured scheduling / SPM residency接入后的当前主线中，large case形成10个target transaction、一次MatMul和零bulk
-formal FMA；Q21形成12656个transaction、17个SystemC thread process。计数变化来自显式tile-region fence和以SPM gather
-替代部分DDR movement，数值输出仍按同一source/reference合同匹配；因此这里记录当前确定性target-call拓扑，不把历史调度
-的事务数当作长期协议。
+formal FMA；Q21形成12656个transaction、17个SystemC thread process。该历史计数来自当时accepted IR中的显式
+tile-region fence和以SPM gather替代部分DDR movement；当前conversion已删除结构性region/backedge wait，因此这些
+数字只作旧证据，不描述现行completion normal form。数值输出仍按同一source/reference合同匹配；历史调度的事务数
+不是长期协议。
 Q21同一source/driver链还在已发布package与reference comparison之后于logical rank 15 terminal注入失败；该test-only seam
 只存在于`wafer-compile-test`，验证稳定stage/rank诊断、无matched model result及manifest/rank module保留。
 Q22据此只发布`target-call/SystemC model-only functional-numeric`，仍不称repo CRT、packet、hardware numeric、exact

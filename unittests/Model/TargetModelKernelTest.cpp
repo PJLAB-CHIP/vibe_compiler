@@ -7,6 +7,8 @@
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
 
+#include "../../lib/Wafer/Model/TargetModelCompletion.h"
+
 #include "gtest/gtest.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -222,6 +224,7 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
       arguments[6] = 1;
       break;
     case TargetCallBuiltin::LocalFence:
+    case TargetCallBuiltin::NCCJoin:
     case TargetCallBuiltin::DirectDTERecvPrepare:
     case TargetCallBuiltin::DirectDTEWait:
     case TargetCallBuiltin::DirectDTEFinish:
@@ -309,7 +312,78 @@ TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
         << descriptor.symbol << ": " << llvm::toString(std::move(error));
     ++validated;
   }
-  EXPECT_EQ(validated, 111u);
+  EXPECT_EQ(validated, 112u);
+}
+
+TEST(TargetModelCompletionTest,
+     NCCJoinDoesNotCompleteAnEarlierDirectDTEOrdinal) {
+  wafer::model::detail::TargetModelRankCompletionState state;
+  ASSERT_TRUE(state.beginIssue(0)); // Direct-DTE send/event.
+  ASSERT_TRUE(state.beginIssue(1)); // Worker-0 NCC issue.
+  ASSERT_TRUE(state.addNCCPending(NCCWorker::Worker0, 1));
+  ASSERT_TRUE(state.beginIssue(2)); // Worker-0 participant join.
+
+  llvm::SmallVector<uint64_t, 8> joined = state.takeNCCParticipantPending(
+      uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0));
+  ASSERT_EQ(joined.size(), 1u);
+  EXPECT_EQ(joined.front(), 1u);
+  ASSERT_TRUE(state.markComplete(joined.front()));
+  ASSERT_TRUE(state.markComplete(2));
+  EXPECT_EQ(state.getNextCompletedOrdinal(), 0u);
+
+  ASSERT_TRUE(state.beginIssue(3)); // Direct-DTE wait.
+  ASSERT_TRUE(state.markComplete(0)); // Matching DTE event, not the NCC join.
+  EXPECT_EQ(state.getNextCompletedOrdinal(), 3u);
+  ASSERT_TRUE(state.markComplete(3));
+  EXPECT_EQ(state.getNextCompletedOrdinal(), 4u);
+}
+
+TEST(TargetModelCompletionTest, NCCJoinCompletesOnlyParticipantWorkers) {
+  wafer::model::detail::TargetModelRankCompletionState state;
+  ASSERT_TRUE(state.beginIssue(0));
+  ASSERT_TRUE(state.addNCCPending(NCCWorker::Worker0, 0));
+  ASSERT_TRUE(state.beginIssue(1));
+  ASSERT_TRUE(state.addNCCPending(NCCWorker::Worker1, 1));
+  ASSERT_TRUE(state.beginIssue(2));
+
+  llvm::SmallVector<uint64_t, 8> worker0 = state.takeNCCParticipantPending(
+      uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0));
+  ASSERT_EQ(worker0.size(), 1u);
+  EXPECT_EQ(worker0.front(), 0u);
+  ASSERT_TRUE(state.markComplete(worker0.front()));
+  ASSERT_TRUE(state.markComplete(2));
+  EXPECT_EQ(state.getNextCompletedOrdinal(), 1u);
+  EXPECT_EQ(state.getPendingNCCCount(NCCWorker::Worker0), 0u);
+  EXPECT_EQ(state.getPendingNCCCount(NCCWorker::Worker1), 1u);
+
+  ASSERT_TRUE(state.beginIssue(3));
+  llvm::SmallVector<uint64_t, 8> worker1 = state.takeNCCParticipantPending(
+      uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker1));
+  ASSERT_EQ(worker1.size(), 1u);
+  EXPECT_EQ(worker1.front(), 1u);
+  ASSERT_TRUE(state.markComplete(worker1.front()));
+  ASSERT_TRUE(state.markComplete(3));
+  EXPECT_EQ(state.getNextCompletedOrdinal(), 4u);
+}
+
+TEST(TargetModelCompletionTest,
+     SynchronousWritebackCompletesParticipantEpochWithoutParkingItself) {
+  wafer::model::detail::TargetModelRankCompletionState state;
+  ASSERT_TRUE(state.beginIssue(0));
+  ASSERT_TRUE(state.addNCCPending(NCCWorker::Worker0, 0));
+  ASSERT_TRUE(state.hasNCCPending());
+  ASSERT_TRUE(state.beginIssue(1)); // Synchronous worker-0 writeback.
+
+  llvm::SmallVector<uint64_t, 8> completed =
+      state.takeNCCParticipantPending(
+          uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0));
+  ASSERT_EQ(completed.size(), 1u);
+  ASSERT_TRUE(state.markComplete(completed.front()));
+  ASSERT_TRUE(state.markComplete(1));
+
+  EXPECT_FALSE(state.hasNCCPending());
+  EXPECT_EQ(state.getNextCompletedOrdinal(), 2u);
+  EXPECT_EQ(state.getNextIssuedOrdinal(), 2u);
 }
 
 TEST(TargetModelKernelTest, TargetRegisterBoundsFailClosedAtModelEntry) {

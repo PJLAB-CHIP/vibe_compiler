@@ -585,6 +585,15 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
                 "peripheral element_count must be positive");
           return requireEngineFormat(value.format, TargetFormatEngine::CT,
                                      "peripheral");
+        } else if constexpr (
+            std::is_same_v<T, compiler::TargetNCCJoinTransaction>) {
+          if (value.participantMask == 0 ||
+              (value.participantMask & ~kAllNCCWorkersMask) != 0)
+            return kernelError(
+                TargetModelKernelErrorCode::InvalidTransactionField,
+                "NCC join participant mask is empty or outside the target "
+                "worker domain");
+          return llvm::Error::success();
         } else if constexpr (std::is_same_v<
                                  T,
                                  compiler::TargetDirectDTEBeginTransaction>) {
@@ -664,6 +673,22 @@ llvm::Error validateTargetModelTransactionFields(
   if (transaction.logicalRank < 0)
     return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
                        "transaction logical rank must be non-negative");
+  if (transaction.nccIssueDomain) {
+    uint32_t worker =
+        static_cast<uint32_t>(transaction.nccIssueDomain->worker);
+    if (worker >= kNCCWorkerCount ||
+        transaction.nccIssueDomain->engine == TargetCallTSMEngine::DirectDTE)
+      return kernelError(
+          TargetModelKernelErrorCode::InvalidTransactionField,
+          "NCC issue domain is outside the target worker/engine domain");
+    if (transaction.nccIssueDomain->completionBehavior !=
+            LocalInstructionCompletion::OrderedPending &&
+        transaction.nccIssueDomain->completionBehavior !=
+            LocalInstructionCompletion::SynchronousWriteback)
+      return kernelError(
+          TargetModelKernelErrorCode::InvalidTransactionField,
+          "NCC issue domain has an invalid completion behavior");
+  }
   return validatePayload(transaction.payload);
 }
 

@@ -48,8 +48,9 @@ Pipeline position:
   semantic verification并序列化canonical JSON。在Q18 staging内复制、复核all-and-only package members后原子
   发布。runtime重新解析并验证同一typed model，再结合invocation bindings和`RuntimeEnvironment`形成
   side-effect-free `RuntimeSessionPlan`。启用`--profile`时，普通production package保持逐字节不变，只从其
-  final artifact原子派生versioned Count/Trace companion；board runtime在同一qualified session执行一次未插桩
-  Primary及各一次Count/Trace，并用TX same-stream event pair产生Primary device execution time。
+  final artifact原子派生versioned Count/Trace companion；companion还携带从accepted final Instr IR派生并与
+  manifest绑定的exact per-rank静态work及target policy峰值率。board runtime在同一qualified session执行一次
+  未插桩Primary及各一次Count/Trace，并用TX same-stream event pair产生Primary device execution time。
 - Output artifact / IR:
   move-only `PackageBundle(package root, ExecutionConfig, VerifiedPackageManifest)`、schema-v6 canonical package
   JSON/published directory和no-card `RuntimeSessionPlan`。`PackageBundle`只拥有已验证root/config/manifest的
@@ -565,6 +566,12 @@ schema-v6 manifest，不改变普通package成员集合，也不是让runtime从
 binding都不是public launch mode。capture binding必须同时精确绑定record bytes和record ABI；旧CRT即使仍使用相同
 1 MiB trace buffer，也必须在provider/device effect前因ABI不匹配被拒绝。
 
+`final-artifact` variant metadata还必须包含compiler从accepted final Instr IR fresh派生的per-rank静态work：
+CT/NE logical ops、DDR read/write、SPM movement、NoC transmit/receive及每项knowledge/reason，并携带
+`TargetScheduleCostPolicy`已建立的峰值率。uint64 work使用无损十进制文本表示，Unknown/Unsupported/Overflow保留
+`null`值而不是伪装成零。runtime只做strict parse、manifest binding和evidence原样传递，不重新分析package ELF、
+site symbol或resource name，也不把该静态模型写回compiler selection。
+
 用户仍以原`wafer-run`调用提供普通package以及既有ResourceId resource/expected/output binding。runner在发现
 exact-match companion后自动执行一个固定protocol，不增加profile mode、采样参数或新输入：
 
@@ -605,6 +612,11 @@ site-control、between-site-control和带reason的capture-boundary residual并�
 Trace PMU sample、event/site bookkeeping、status poll、DTE probe和entry setup/teardown另给exclusive cycle cost，
 并明确不计入Primary。`statistics_window`保持raw ticks，Kcore `rdcycle`保持CPU cycles，`tile_clock`只作metadata且
 不得用于换算。DTE PMU delta单独显示为raw activity而不是耗时。
+
+report可把上述静态work与PMU active ns并列形成只读硬件cost reference：CT/NE只给每tile peak-throughput
+理论下界；DDR只给whole-card traffic floor，并仅在rank workload对称时给per-tile fair-share启发式；缺少SPM
+bandwidth的TDMA时间必须为Unavailable；Direct-DTE只给payload serialization reference。该表不与Primary相加，
+不把Trace measurement改写成预测，也不进入runtime或compiler决策。
 
 ## 9. No-Card And Board Evidence
 

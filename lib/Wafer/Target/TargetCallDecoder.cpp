@@ -150,7 +150,16 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
         kernelStrides, *format}};
   }
   case TargetCallBuiltin::LocalFence:
-    return TargetTransactionPayload{TargetLocalFenceTransaction{}};
+    return TargetTransactionPayload{TargetNCCJoinTransaction{
+        uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0)}};
+  case TargetCallBuiltin::NCCJoin: {
+    uint32_t participants = argument32(arguments, 0);
+    if (participants == 0 || (participants & ~kAllNCCWorkersMask) != 0)
+      return llvm::createStringError(
+          "NCC join participant mask is empty or outside the target worker "
+          "domain");
+    return TargetTransactionPayload{TargetNCCJoinTransaction{participants}};
+  }
   case TargetCallBuiltin::DirectDTEBegin:
   case TargetCallBuiltin::DirectDTEBeginAfterPrepare:
     if (argument32(arguments, 1) != context.rankCount)

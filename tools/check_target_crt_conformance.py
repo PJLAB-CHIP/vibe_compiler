@@ -746,6 +746,23 @@ def check_local_completion_ordering(source_text: str) -> None:
         "local fence must not hard-code a worker-specific wait",
     )
 
+    ncc_join = function_body(source_text, "wafer_tx81_ncc_join")
+    require_in_order(
+        ncc_join,
+        [
+            "wafer_order_local_completion();",
+            "for (uint32_t worker = 0; worker < WAFER_TX81_NCC_WORKER_COUNT;",
+            "(participant_mask & (UINT32_C(1) << worker)) == 0U",
+            "(void)TsmWaitfinish_bywork(worker);",
+            "wafer_order_local_completion();",
+        ],
+        "typed NCC participant join ordering",
+    )
+    require_absent(
+        ncc_join,
+        "TsmWaitfinish();",
+        "typed NCC join must not widen to the default-worker wait",
+    )
 
 
 def check_expanded_profile_completion(expanded_source_text: str) -> None:
@@ -838,6 +855,33 @@ def check_expanded_profile_completion(expanded_source_text: str) -> None:
             f"expanded {function_name} must use the checked profile helper",
         )
 
+    worker_wait = function_body(
+        expanded_source_text, "wafer_profile_wait_ncc_worker_completion"
+    )
+    require_contains(
+        worker_wait,
+        "return TsmWaitfinish_bywork(worker);",
+        "expanded typed NCC join non-trace fallback",
+    )
+    require_pattern(
+        worker_wait,
+        r"for\s*\(\s*;\s*;\s*\)\s*\{.*"
+        r"wafer_profile_observe_ncc_activity\(\);.*"
+        r"done\s*=\s*TsmGetCsrTaskstatus_bywork\(worker\)\s*;.*"
+        r"if\s*\(\s*done\s*==\s*1U\s*\)\s*break\s*;",
+        "expanded typed NCC worker TASK_DONE polarity and drain sampling",
+    )
+    typed_join = function_body(expanded_source_text, "wafer_tx81_ncc_join")
+    require_contains(
+        typed_join,
+        "wafer_profile_wait_ncc_worker_completion(worker);",
+        "expanded typed NCC join profile completion route",
+    )
+    require_absent(
+        typed_join,
+        "TsmWaitfinish_bywork(worker);",
+        "expanded typed NCC join must use the checked profile helper",
+    )
 
     entry_begin = function_body(
         expanded_source_text, "wafer_tx81_profile_entry_begin"

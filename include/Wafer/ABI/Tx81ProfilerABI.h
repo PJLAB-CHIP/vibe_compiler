@@ -167,11 +167,12 @@ typedef struct WaferTx81ProfilerPMUSnapshot {
  * other, but they are overlays on semantic event/site/operation spans and must
  * not be added to those spans.  Status polling and completion-loop
  * bookkeeping belong to the Trace-only replacement for the production
- * TsmWaitfinish primitive; the production-common completion-wait semantic is
- * represented separately by its operation span.  All inside-entry categories
- * here are therefore instrumentation-only.  Entry setup is measured before
- * entry_begin_cycle; entry teardown begins at entry_end_cycle and ends before
- * the final record publication.  They therefore lie outside the entry axis.
+ * vendor blocking NCC completion primitive; the production-common
+ * completion-wait semantic is represented separately by its operation span.
+ * All inside-entry categories here are therefore instrumentation-only.  Entry
+ * setup is measured before entry_begin_cycle; entry teardown begins at
+ * entry_end_cycle and ends before the final record publication.  They
+ * therefore lie outside the entry axis.
  */
 typedef struct WaferTx81ProfilerCostSummary {
   uint64_t ncc_pmu_sample_cycles;
@@ -185,14 +186,14 @@ typedef struct WaferTx81ProfilerCostSummary {
 } WaferTx81ProfilerCostSummary;
 
 /*
- * An NCC command event separates the exact TsmExecute call span from the
- * conservative PMU observation window.  counter_delta is the vendor NCC
+ * An NCC command event separates the exact vendor NCC issue-call span from
+ * the conservative PMU observation window.  counter_delta is the vendor NCC
  * execution-time counter delta in nanoseconds, not Kcore cycles.
  * observation_count remains meaningful for a zero-delta observation.
  * NCC_COUNTER_VALID means every sample needed for this event's bounded
  * counter attribution was stable.  If one engine's split read is unstable,
  * only that engine event loses its counter/window evidence; its site and exact
- * TsmExecute operation span, the other engines, and the record remain usable.
+ * NCC issue-operation span, the other engines, and the record remain usable.
  *
  * Direct-DTE aggregate events separate their productive operation span from
  * split PMU reads.  DTE_COUNTER_VALID requires stable endpoint reads,

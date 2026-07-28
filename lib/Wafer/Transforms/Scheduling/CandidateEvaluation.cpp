@@ -111,7 +111,8 @@ finishCandidateEvaluation(CandidateEvaluation evaluation,
     return evaluation;
   }
 
-  evaluation.stats = estimateStats(*evaluation.module);
+  evaluation.stats =
+      estimateStats(*evaluation.module, config.scheduleCostPolicy);
   return evaluation;
 }
 
@@ -533,7 +534,9 @@ evaluateCandidateOnStandaloneTaskText(llvm::StringRef standaloneTaskModuleText,
 
 mlir::LogicalResult
 importAcceptedCandidateModule(CandidateCheckResult &result,
-                              mlir::MLIRContext &ownerContext) {
+                              mlir::MLIRContext &ownerContext,
+                              const analysis::TargetScheduleCostPolicy
+                                  &scheduleCostPolicy) {
   if (!result.failureReason.empty())
     return mlir::failure();
   if (result.acceptedModuleText.empty()) {
@@ -566,7 +569,7 @@ importAcceptedCandidateModule(CandidateCheckResult &result,
     return mlir::failure();
   }
 
-  result.stats = estimateStats(*imported);
+  result.stats = estimateStats(*imported, scheduleCostPolicy);
   result.module = std::move(imported);
   result.acceptedModuleText.clear();
   return mlir::success();

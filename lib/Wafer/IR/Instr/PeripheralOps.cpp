@@ -213,3 +213,5 @@ mlir::LogicalResult InstrPeripheralOp::verify() {
 InstrFamily InstrPeripheralOp::getInstructionFamily() {
   return InstrFamily::CT;
 }
+
+NCCWorker InstrPeripheralOp::getIssueWorker() { return getWorker(); }

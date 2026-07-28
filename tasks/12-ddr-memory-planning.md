@@ -1,7 +1,7 @@
 # Wafer DDR Memory Planning Design
 
-状态：2026-07-20同步MLIR-native physical-dataflow candidate边界；当前合同覆盖default-arena
-DDR demand/range validation、local issue completion和accepted offsets。
+状态：2026-07-28同步typed NCC worker completion；当前合同覆盖default-arena
+DDR demand/range validation、ordered local issue completion和accepted offsets。
 multi-arena、state/streaming weight和provider allocation model延后。实现状态以`tasks/progress.md`为准。
 它不能只是 DDR access validation；凡是会影响 candidate 是否成立的 DDR
 byte footprint、lifetime、capacity和largest-contiguous约束，都必须在DDR offset
@@ -69,7 +69,8 @@ Pipeline position:
   从完整variant clone逐rank重算DDR access demand、compiler-managed allocation demand和该rank完整entry内跨task lifetime；
   验证external DDR descriptor与view/root range；为compiler-managed/resident/explicit-spill allocation在当前rank
   default arena内规划symbolic offset；验证range overlap、capacity、largest-contiguous和alignment
-  和descriptor对planned allocation的覆盖；分别证明generic async task terminal wait和DDR local issue/fence completion。
+  和descriptor对planned allocation的覆盖；分别证明generic async task terminal wait和DDR typed NCC
+  ordered-pending/participant completion。
   whole-variant只做all-and-only rank计划汇总与原子接受，不构造cross-rank shared arena/lifetime；streaming/state/multi-arena、
   cross-rank shared demand及无法形成单一timeline的mixed planning scope当前fail closed。
 - Output artifact / IR:
@@ -101,7 +102,7 @@ Pipeline position:
   每个static rank entry的完整traversal中external input/output与imported immutable parameter views通过
   range/capacity/access验证，compiler-managed temporary/resident backing/explicit-spill demand都在当前rank
   default arena获得可验证planned offset；producer-to-last-consumer lifetime、
-  async task identity/completion、local issue/fence、descriptor/root range 和 shared physical
+  async task identity/completion、typed NCC worker issue/join、descriptor/root range 和 shared physical
   geometry/range/narrowing contract 全部通过。
   非法 dynamic view、payload/range、overlap/capacity/largest-contiguous/alignment failure 能结构化
   拒绝，任一失败时整个 clone 不提交。DDR facts 只为 whole-variant commit 决定最终 executable rank
@@ -111,7 +112,7 @@ Pipeline position:
 ### 2.1 Shared Recomputable Analysis Boundary
 
 DDR与SPM共用从当前structured IR重算的path condition、operation timeline、query-time provenance closure、generic
-async task identity/completion、live segment overlap、local issue/fence completion，以及默认MiniMalloc fixed-capacity
+async task identity/completion、live segment overlap、typed NCC ordered-pending/participant completion，以及默认MiniMalloc fixed-capacity
 canonical search。精确pairwise conflict graph通过已验证的deterministic edge-clique cover适配，nonzero base使用
 component-local fixed prefix；共享policy使用宽松确定的全局node budget且不设wall-clock timeout，只在
 `ResourceExhausted`时允许first-fit fallback。typed outcome和独立placement validator也由该共享边界拥有。
@@ -128,10 +129,12 @@ compiler-managed allocation使用指向packing demand的`RootRef`；caller-owned
 init/iter-arg/backedge/result递归闭包；loop fixed-point发布时去掉repeatable branch decision，防止一次前向映射遗漏
 后续iteration可能出现的root。该owner-private analysis不携带memory-space结论，不写入IR或跨pass side table。
 
-两侧都把loop body建模为may-zero-trip path；这不会放松普通DDR lifetime overlap，但能防止loop body中的fence错误
-覆盖zero-trip路径，并要求body中新产生的pending issue在backedge前收口。loop-local `scf.if`每次iteration可重新
-选择，故相反branch只对单次执行互斥，不能作为whole-execution packing exclusion；loop body allocation通过memref或
-async handle跨backedge携带时也不能把一个静态offset冒充多个动态instance。
+两侧都把loop body建模为may-zero-trip path；这不会放松普通DDR lifetime overlap，也不会允许loop body中的
+participant join覆盖zero-trip路径。same-worker exact RAW/WAR/WAW issue可把ordered-pending责任带过backedge；
+不同worker、DTE/Kcore observer、unknown alias或unsafe reuse仍必须在backedge/reuse前由覆盖participant的join
+闭合。loop-local `scf.if`每次iteration可重新选择，故相反branch只对单次执行互斥，不能作为whole-execution
+packing exclusion；loop body allocation通过memref或async handle跨backedge携带时也不能把一个静态offset冒充
+多个动态instance。
 
 generic `async.call`的token/value必须由path-covering `async.await`完成；direct `async.create_group` handle可以经
 `async.add_to_group`收集task并由`async.await_all`完成。mutable group alias、loop body动态task加入captured group、
@@ -140,9 +143,10 @@ terminal仍有pending task以`missing_async_completion`拒绝。`scf.if`只有ta
 result await才覆盖该task；分支前已发起的不同task不能靠选择其中一个handle完成另一个。
 
 DDR owner仍独占tile-region boundary/root解析、external root与descriptor range、default-arena capacity、
-largest-contiguous、high-water和exact movement-byte统计，以及`wafer.ddr.offset`提交。任何带DDR read/write effect的异步local
-issue都必须在共享path/root analysis上把compiler-managed root lifetime延长到path-covering `wafer.instr.local_fence`；
-即使root由runtime外部绑定，也必须证明所有可达路径terminal前完成。DDR不能依赖SPM pass已运行来间接获得这项证明。
+largest-contiguous、high-water和exact movement-byte统计，以及`wafer.ddr.offset`提交。任何带DDR read/write effect的异步
+local issue都必须在共享path/root analysis上把compiler-managed root lifetime延长到matching participant join，或
+延长到可证明接管该root的same-worker exact RAW/WAR/WAW后继；即使root由runtime外部绑定，也必须证明所有可达路径
+terminal前完成。DDR不能依赖SPM pass已运行来间接获得这项证明。
 共享root/task dataflow不拥有SPM DTE token/wait legality；DDR function scope可接受identity-preserving generic async
 handle flow，SPM owner仍以exact DTE wait证明通信completion并保守拒绝所有loop-carried async token。
 
@@ -341,11 +345,11 @@ DDR memory planning is an analysis + transformation pair:
    range/capacity/access/alias验证；这些runtime-owned roots不获得compiler offset。
 4. streaming/state demand在当前实现中fail closed；不得临时创建staging root或旁路resource record。
 5. Compute physical bytes and alignment from memref type, Wafer layout and target policy.
-6. Build lifetime intervals from SSA use-def, region/control-flow and explicit async token/fence/wait effects，
+6. Build lifetime intervals from SSA use-def, region/control-flow and explicit async token/typed NCC join/wait effects，
    covering every complete static rank entry and mandatory explicit-spill producer-to-last-consumer relations。
-   Task/tile-region boundaries do not truncate lifetime；every exit path must have no pending event after
-   terminal drain。generic async handle同时传播root和独立task identity；`async.await`/direct-group
-   `async.await_all`只完成其path实际覆盖的task，local fence仍只完成local engine issue。
+   Task/tile-region boundaries do not truncate lifetime；every function exit path must have no pending event after
+   typed terminal completion。generic async handle同时传播root和独立task identity；`async.await`/direct-group
+   `async.await_all`只完成其path实际覆盖的task，NCC join仍只完成其participant worker。
 7. Build conflict edges for intervals that may overlap in time and require distinct DDR bytes.
 8. 在当前rank的default arena内用共享static packing规划offset；只有lifetime analysis证明不重叠时才复用range。
    `Feasible`直接消费；只有完整搜索的`ProvenInfeasible`映射capacity；`ResourceExhausted`才允许first-fit fallback，
@@ -534,9 +538,10 @@ Expected coverage:
 - lit positive: non-overlapping lifetimes reuse DDR range; overlapping lifetimes do not；non-repeatable `scf.if`
   mutually exclusive branches reuse；loop-local repeatable branches不能证明全执行期packing互斥；`scf.for`
   loop-carried value extends lifetime。
-- lit positive: managed RDMA/WDMA roots remain live through a path-covering local fence and may reuse only after it；
-  subview access extends the owning root, a pre-loop issue can complete at a post-loop fence, and unrelated
-  identity-preserving loop-carried async handles remain legal。
+- lit positive: managed RDMA/WDMA roots remain live through a path-covering participant join and may reuse only
+  after it；subview access extends the owning root, a pre-loop issue can complete at a post-loop join, same-worker
+  exact RAW/WAR/WAW successor can carry ordered pending across a backedge, and unrelated identity-preserving
+  loop-carried async handles remain legal。
 - lit positive: ViewLike/SelectLike/if/for query-time origin closure保留managed和external roots；same external root按
   identity去重。generic async token/value活到`async.await`，direct create/add/await-all group活到`async.await_all`，
   branch-local task可由path-correct `scf.if` result await完成。
@@ -546,8 +551,9 @@ Expected coverage:
   caller-owned root lifetime；第二个重叠allocation不能复用其offset。
 - lit negative: unawaited generic task、SelectLike distinct tasks、pre-issued if tasks、non-identity-preserving loop、
   mutable group alias和loop dynamic task加入captured group分别稳定失败。
-- lit negative: managed/external DDR local issues without a fence, a fence on only one branch, a pre-loop issue with
-  only a may-zero loop-body fence, and a loop-body issue without a body-local fence all fail。
+- lit negative: managed/external DDR local issues without a covering join/safe same-worker successor, a join on only
+  one branch, a pre-loop issue with only a may-zero loop-body join, and cross-worker/unknown-alias backedge reuse
+  without a covering participant join all fail。
 - lit negative: unknown tracked producer、loop-body fresh allocation作为recurrence result，以及mixed function/module
   compiler-managed DDR scopes fail closed；memory-planned named pipeline同时保留safe recurrence正例和fresh
   recurrence反例。

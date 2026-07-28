@@ -43,9 +43,8 @@ func.func @transpose_and_row_broadcast() {
 // CHECK-SAME: inner_bytes = 12 : i64
 // CHECK-SAME: src_iterations = array<i64: 2, 1, 1>
 // CHECK-SAME: src_strides = array<i64: 0, 0, 0>
-// CHECK: wafer.instr.local_fence
 // CHECK: wafer.instr.elementwise <add> %[[TRANSPOSED]], %[[ROW]] into %{{.*}}
-// CHECK-NEXT: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK-NOT: indexing_maps
 
 func.func @column_broadcast() {
@@ -61,9 +60,8 @@ func.func @column_broadcast() {
 
 // CHECK-LABEL: func.func @column_broadcast
 // CHECK: wafer.instr.gather_scatter %{{.*}} to %[[COLUMN:[^ ]+]] {
-// CHECK: wafer.instr.local_fence
 // CHECK: wafer.instr.elementwise <mul> %[[COLUMN]], %{{.*}} into %{{.*}}
-// CHECK-NEXT: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK-NOT: indexing_maps
 
 func.func @select_row_broadcast() {
@@ -82,14 +80,12 @@ func.func @select_row_broadcast() {
 
 // CHECK-LABEL: func.func @select_row_broadcast
 // CHECK: wafer.instr.gather_scatter %{{.*}} to %[[TRUE:[^ ]+]] {
-// CHECK: wafer.instr.local_fence
 // CHECK: wafer.instr.gather_scatter %{{.*}} to %[[DEST:[^ ]+]] {
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK: wafer.instr.bit2fp %{{.*}} into %[[MASK:[^ ]+]] :
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK: wafer.instr.mask_move %[[TRUE]], %[[MASK]] into %[[DEST]]
-// CHECK-NEXT: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK-NOT: indexing_maps
+// CHECK-NOT: wafer.instr.local_fence
 
 func.func @constant_true_select_to_fresh_copy(
     %true_value: memref<2x3xf32, #wafer.memory<spm, tensor>>,

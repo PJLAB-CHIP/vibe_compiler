@@ -93,6 +93,22 @@ acceptWholeVariantResources(llvm::ArrayRef<mlir::ModuleOp> rankModules,
                                     cost.aggregateInstructionCount)) ||
       mlir::failed(requireAggregate("aggregate event count",
                                     cost.aggregateEventCount)) ||
+      mlir::failed(requireAggregate("aggregate NCC join count",
+                                    cost.aggregateNCCJoinCount)) ||
+      mlir::failed(requireAggregate("aggregate steady-state NCC join count",
+                                    cost.aggregateSteadyStateNCCJoinCount)) ||
+      mlir::failed(requireAggregate("aggregate non-terminal NCC join count",
+                                    cost.aggregateNonTerminalNCCJoinCount)) ||
+      mlir::failed(requireAggregate("aggregate NCC participant wait count",
+                                    cost.aggregateNCCParticipantWaitCount)) ||
+      mlir::failed(
+          requireAggregate("aggregate steady-state NCC participant wait count",
+                           cost.aggregateSteadyStateNCCParticipantWaitCount)) ||
+      mlir::failed(
+          requireAggregate("aggregate non-terminal NCC participant wait count",
+                           cost.aggregateNonTerminalNCCParticipantWaitCount)) ||
+      mlir::failed(requireAggregate("aggregate intrinsic NCC drain count",
+                                    cost.aggregateIntrinsicNCCDrainCount)) ||
       mlir::failed(requireAggregate("summed rank SPM high-water",
                                     cost.summedRankSPMHighWaterBytes)))
     return mlir::failure();

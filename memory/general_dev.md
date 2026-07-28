@@ -974,6 +974,14 @@
 - local cycle domain没有资格化mapping时，报告仍显示all-and-only 16个逐tile、六engine timeline，但不能声明cross-tile
   order、overlap或global critical path。external expected显式记录`exact`或`relaxed-f16` comparison policy；否则同session
   exact reference只证明repeatability，不能谎称bit-exact semantic correctness。
+- profiler timeline逐次展示真实动态调用，不按密度、engine或site折叠。每个实心块保留site instance和精确
+  operation rdcycle；NCC PMU active ns另列。site container、engine observation和DTE内部phase是关联证据，
+  不能算成额外调用；Program / Sites必须把实际dynamic instance数与activity event数分栏。
+- profiler硬件cost reference从accepted final Instr IR fresh发布exact per-rank logical ops/bytes及
+  knowledge/reason，并只消费target policy唯一事实源。CT/NE可给peak-throughput理论下界；共享DDR只能先给whole-card
+  traffic floor，rank workload对称时才给fair-share启发式；没有SPM bandwidth的TDMA时间必须Unavailable；NoC payload
+  serialization只能叫reference而不是collective latency。模型、PMU active ns和Primary wall time分栏，不相加、不回灌
+  compiler selection，Unknown/Unsupported/Overflow不能写成零。
 - evidence由single-final-artifact analyzer直接消费一个Primary样本，不构造ABBA/BAAB、baseline/winner、speedup或
   signed candidate delta。重复benchmark若以后需要，应作为显式独立workflow，不能重新混入默认profiler。report在
   临时目录中完整生成后原子替换`runs/current`，只公开`evidence.json`、`analysis.json`和
@@ -1029,3 +1037,23 @@
 - 大型确定性resource先做完整逐字节oracle，再在archive中保存request/record、生成参数和完整输入输出SHA-256；
   JSON使用同目录临时文件、`flush`/`fsync`和原子replace，成功后才删除经过exact-set与路径校验的raw文件。
   验证失败或原子发布失败时保留raw，既限制成功批次磁盘峰值，也不丢失失败归因证据。
+
+## 静态多buffer软件流水
+
+- fixed-slot流水必须从unplaced complete-rank IR派生：先用typed instruction、SSA、MemoryEffects、alias root和
+  completion domain建立DAG，再把loop-local static allocation变成loop-external普通allocation family，以
+  `scf.for iter_args/yield`表达slot rotation，最后交给SCF utility机械生成prologue/steady/epilogue。公共派生
+  API遇到已有SPM/DDR physical offset必须拒绝；否则clone会复制物理地址事实，使多个逻辑slot静默重叠。
+- slot数由每个root的`lastStage - firstStage + 1` lifetime span和capacity共同决定，不固定双缓冲，也不读取
+  header queue depth。队列的D/D+1只能证明有界总提交，不证明resident window；SPM high-water和fixed-capacity
+  placement必须在每个actual clone上重算，并检查每个slot获得不同的half-open physical range。
+- SCF流水会把原始index改写成`iv + stage displacement`等静态表达式。DDR planner、Target preflight和其它
+  downstream consumer应共享一个overflow-safe、fail-closed的静态index range evaluator，支持constant-bounded
+  induction variable及受限add/sub/mul/div；不能一个层接受而另一个层仍只认bare IV。
+- same-worker pending NCC stream可跨statically non-empty nested loop和tile-region边界传播。loop container、
+  loop-local allocation和纯pointer permutation是结构节点；后续same-worker issue可接管有序访问责任，最终由
+  一个unconditional participant join收口。conditional region、Direct DTE/Kcore observer、cross-worker冲突、
+  root/range Unknown仍必须fail closed，不能为了让planner通过而补逐iteration waitfinish。
+- `TargetProfileId`在scheduler入口只代表compiler-shipped、versioned target/ABI合同。候选生成必须离线确定，
+  不得读取实卡身份、Q9 profiler、PMU、runtime历史或本地校准缓存；板端结果只能离线验证实现，若要改变静态
+  capability，必须通过后续compiler revision评审发布，不能形成per-card schedule。

@@ -117,8 +117,11 @@ struct CandidateWorkItem {
 class CandidateEvaluationExecutor;
 
 struct SelectionConfig {
-  explicit SelectionConfig(const WaferTargetPolicy &policy)
-      : preferredTileSizes(policy.tileSearch.preferredTileSizes),
+  explicit SelectionConfig(const WaferTargetPolicy &policy,
+                           TargetProfileId targetProfile)
+      : scheduleCostPolicy(
+            analysis::getTargetScheduleCostPolicy(targetProfile)),
+        preferredTileSizes(policy.tileSearch.preferredTileSizes),
         maxCandidatesPerDim(policy.tileSearch.maxCandidatesPerDim),
         maxSearchCandidates(policy.tileSearch.maxSearchCandidates),
         searchBeamWidth(policy.tileSearch.searchBeamWidth),
@@ -130,6 +133,10 @@ struct SelectionConfig {
         ddrAlignmentBytes(policy.memory.ddrAlignmentBytes) {}
 
   int64_t logicalRank = -1;
+  /// Immutable compiler-shipped target-contract interpretation of every
+  /// candidate cost. Copies sent to evaluation workers preserve the exact
+  /// static production contract; no live-card/profile state is consulted.
+  analysis::TargetScheduleCostPolicy scheduleCostPolicy;
   llvm::SmallVector<int64_t, 8> preferredTileSizes;
   int64_t maxCandidatesPerDim = 0;
   int64_t maxSearchCandidates = 0;
@@ -225,7 +232,9 @@ int64_t saturatingMul(int64_t lhs, int64_t rhs);
 
 int64_t ceilDiv(int64_t numerator, int64_t denominator);
 
-CandidateStats estimateStats(mlir::ModuleOp module);
+CandidateStats
+estimateStats(mlir::ModuleOp module,
+              const analysis::TargetScheduleCostPolicy &scheduleCostPolicy);
 
 std::optional<std::string> getRankingCostFailure(const CandidateStats &stats);
 
@@ -315,9 +324,9 @@ evaluateCandidateOnStandaloneTaskText(llvm::StringRef standaloneTaskModuleText,
 /// Imports a fully accepted worker result into the owner context, then
 /// verifies the imported module and recomputes its ranking facts from that IR.
 /// A failure is recorded on `result` and no partial module is retained.
-mlir::LogicalResult
-importAcceptedCandidateModule(CandidateCheckResult &result,
-                              mlir::MLIRContext &ownerContext);
+mlir::LogicalResult importAcceptedCandidateModule(
+    CandidateCheckResult &result, mlir::MLIRContext &ownerContext,
+    const analysis::TargetScheduleCostPolicy &scheduleCostPolicy);
 
 mlir::FailureOr<SelectedCandidate> selectCandidateForScope(
     const structured_scheduler::StructuredSchedulingScope &scope,

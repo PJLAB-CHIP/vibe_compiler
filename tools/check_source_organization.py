@@ -53,11 +53,13 @@ CANDIDATE_SELECTION_SOURCES = (
 MEMORY_PLANNING_SOURCES = (
     "LifetimeAnalysis.cpp",
     "MiniMallocPacking.cpp",
+    "StaticIndexRange.cpp",
     "StaticMemoryPacking.cpp",
 )
 MEMORY_PLANNING_HEADERS = (
     "LifetimeAnalysis.h",
     "MiniMallocPacking.h",
+    "StaticIndexRange.h",
     "StaticMemoryPacking.h",
 )
 MEMORY_PLANNING_TEST_SOURCES = (

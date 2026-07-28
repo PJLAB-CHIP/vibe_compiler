@@ -342,6 +342,7 @@ module {
   wafer.instr.fill %tensor, %f16
       : memref<4x8xf16, #wafer.memory<spm, tensor>>, f16
   wafer.instr.mask_move %tensor, %tensor into %tensor
+      {worker = #wafer.ncc_worker<worker2>}
       : memref<4x8xf16, #wafer.memory<spm, tensor>>,
         memref<4x8xf16, #wafer.memory<spm, tensor>>
     into memref<4x8xf16, #wafer.memory<spm, tensor>>
@@ -412,7 +413,11 @@ module {
   ASSERT_TRUE(fillInstruction);
   EXPECT_EQ(fillInstruction.getInstructionFamily(), wafer::InstrFamily::TDMA);
   EXPECT_EQ(wafer::classifyLocalInstructionCompletion(fill),
-            wafer::LocalInstructionCompletion::PendingUntilFence);
+            wafer::LocalInstructionCompletion::OrderedPending);
+  auto fillIssue =
+      mlir::dyn_cast<wafer::WaferNCCIssueOpInterface>(fill.getOperation());
+  ASSERT_TRUE(fillIssue);
+  EXPECT_EQ(fillIssue.getIssueWorker(), wafer::NCCWorker::Worker0);
   effects.clear();
   mlir::cast<mlir::MemoryEffectOpInterface>(fill.getOperation())
       .getEffects(effects);
@@ -432,7 +437,11 @@ module {
   ASSERT_TRUE(maskMoveInstruction);
   EXPECT_EQ(maskMoveInstruction.getInstructionFamily(), wafer::InstrFamily::CT);
   EXPECT_EQ(wafer::classifyLocalInstructionCompletion(maskMove),
-            wafer::LocalInstructionCompletion::PendingUntilFence);
+            wafer::LocalInstructionCompletion::OrderedPending);
+  auto maskMoveIssue =
+      mlir::dyn_cast<wafer::WaferNCCIssueOpInterface>(maskMove.getOperation());
+  ASSERT_TRUE(maskMoveIssue);
+  EXPECT_EQ(maskMoveIssue.getIssueWorker(), wafer::NCCWorker::Worker2);
   effects.clear();
   mlir::cast<mlir::MemoryEffectOpInterface>(maskMove.getOperation())
       .getEffects(effects);
@@ -473,8 +482,7 @@ module {
   EXPECT_EQ(wdmaInstruction.getInstructionFamily(), wafer::InstrFamily::WDMA);
 }
 
-TEST(WaferInterfacesTest,
-     ArgPeripheralKindsOwnTheOnlyImplicitLocalCompletionBarrier) {
+TEST(WaferInterfacesTest, TypedNCCCompletionContractsSeparateIssueAndJoin) {
   mlir::DialectRegistry registry;
   wafer::registerAllDialects(registry);
   mlir::MLIRContext context(registry);
@@ -508,6 +516,7 @@ module {
        dest_shape = array<i64: 1, 1, 1, 4>}
       : memref<4xf16, #wafer.memory<spm, tensor>>
     into memref<4xf16, #wafer.memory<spm, tensor>>
+  wafer.instr.ncc_join [0, 2]
   wafer.instr.local_fence
 }
 )mlir",
@@ -534,19 +543,40 @@ module {
     }
   });
   auto fence = findSingleOp<wafer::SyncLocalFenceOp>(*module);
+  auto join = findSingleOp<wafer::SyncNCCJoinOp>(*module);
   ASSERT_TRUE(argmax);
   ASSERT_TRUE(argmin);
   ASSERT_TRUE(bilinear);
   ASSERT_TRUE(fence);
+  ASSERT_TRUE(join);
 
   EXPECT_EQ(wafer::classifyLocalInstructionCompletion(argmax),
-            wafer::LocalInstructionCompletion::BarrierAndComplete);
+            wafer::LocalInstructionCompletion::SynchronousWriteback);
   EXPECT_EQ(wafer::classifyLocalInstructionCompletion(argmin),
-            wafer::LocalInstructionCompletion::BarrierAndComplete);
+            wafer::LocalInstructionCompletion::SynchronousWriteback);
   EXPECT_EQ(wafer::classifyLocalInstructionCompletion(bilinear),
-            wafer::LocalInstructionCompletion::PendingUntilFence);
+            wafer::LocalInstructionCompletion::OrderedPending);
+  EXPECT_EQ(wafer::classifyLocalInstructionCompletion(join),
+            wafer::LocalInstructionCompletion::ParticipantJoin);
   EXPECT_EQ(wafer::classifyLocalInstructionCompletion(fence),
-            wafer::LocalInstructionCompletion::BarrierAndComplete);
+            wafer::LocalInstructionCompletion::ParticipantJoin);
+
+  wafer::NCCCompletionContract argmaxContract =
+      wafer::getNCCCompletionContract(argmax);
+  ASSERT_TRUE(argmaxContract.issueWorker);
+  EXPECT_EQ(*argmaxContract.issueWorker, wafer::NCCWorker::Worker0);
+  EXPECT_EQ(argmaxContract.participantMask, uint32_t{1});
+
+  wafer::NCCCompletionContract joinContract =
+      wafer::getNCCCompletionContract(join);
+  EXPECT_FALSE(joinContract.issueWorker);
+  EXPECT_EQ(joinContract.participantMask,
+            (uint32_t{1} << 0) | (uint32_t{1} << 2));
+
+  wafer::NCCCompletionContract legacyContract =
+      wafer::getNCCCompletionContract(fence);
+  EXPECT_FALSE(legacyContract.issueWorker);
+  EXPECT_EQ(legacyContract.participantMask, uint32_t{1});
 }
 
 TEST(WaferInterfacesTest, LinalgExtCollectivesExposeLinalgExtStyleContracts) {

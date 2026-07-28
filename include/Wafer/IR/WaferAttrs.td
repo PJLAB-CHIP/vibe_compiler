@@ -646,6 +646,24 @@ def Wafer_InstrPeripheralKindAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
+def Wafer_NCCWorker0 : I32EnumAttrCase<"Worker0", 0, "worker0">;
+def Wafer_NCCWorker1 : I32EnumAttrCase<"Worker1", 1, "worker1">;
+def Wafer_NCCWorker2 : I32EnumAttrCase<"Worker2", 2, "worker2">;
+def Wafer_NCCWorker : I32EnumAttr<"NCCWorker",
+                                  "Wafer NCC issue worker domain", [
+  Wafer_NCCWorker0,
+  Wafer_NCCWorker1,
+  Wafer_NCCWorker2
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_NCCWorkerAttr
+    : EnumAttr<Wafer_Dialect, Wafer_NCCWorker, "ncc_worker"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def Wafer_InstrFamilyCT : I32EnumAttrCase<"CT", 0, "ct">;
 def Wafer_InstrFamilyNE : I32EnumAttrCase<"NE", 1, "ne">;
 def Wafer_InstrFamilyRDMA : I32EnumAttrCase<"RDMA", 2, "rdma">;

@@ -21,9 +21,13 @@ struct FinalizedRankCandidate {
   FinalizedRankCandidate(mlir::OwningOpRef<mlir::ModuleOp> module,
                          int64_t stableOrdinal,
                          wafer::RankArtifactKind artifactKind,
-                         bool reservedBaseline)
+                         bool reservedBaseline,
+                         wafer::RankBufferingKind bufferingKind,
+                         uint32_t bufferingPlanOrdinal)
       : module(std::move(module)), stableOrdinal(stableOrdinal),
-        artifactKind(artifactKind), reservedBaseline(reservedBaseline) {}
+        artifactKind(artifactKind), reservedBaseline(reservedBaseline),
+        bufferingKind(bufferingKind),
+        bufferingPlanOrdinal(bufferingPlanOrdinal) {}
 
   FinalizedRankCandidate(FinalizedRankCandidate &&) = default;
   FinalizedRankCandidate &operator=(FinalizedRankCandidate &&) = default;
@@ -34,11 +38,14 @@ struct FinalizedRankCandidate {
   int64_t stableOrdinal;
   wafer::RankArtifactKind artifactKind;
   bool reservedBaseline;
+  wafer::RankBufferingKind bufferingKind;
+  uint32_t bufferingPlanOrdinal;
 };
 
 mlir::FailureOr<std::vector<FinalizedRankCandidate>>
 finalizeScheduledRankCandidateFrontier(
-    std::vector<wafer::ScheduledRankCandidate> frontier);
+    std::vector<wafer::ScheduledRankCandidate> frontier,
+    TargetProfileId targetProfile);
 
 } // namespace wafer::compiler::detail
 

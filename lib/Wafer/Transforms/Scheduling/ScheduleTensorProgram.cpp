@@ -1,8 +1,10 @@
 //===- ScheduleTensorProgram.cpp - Closed-loop task scheduling ------------===//
 
 #include "Scheduling/ScheduleTensorProgramInternal.h"
+#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
+#include "Wafer/Transforms/SoftwarePipelining.h"
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/SymbolTable.h"
@@ -476,6 +478,8 @@ struct RankArtifactAlternative {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   unsigned promotedHandoffs = 0;
   bool readyReordered = false;
+  RankBufferingKind bufferingKind = RankBufferingKind::Single;
+  uint32_t bufferingPlanOrdinal = 0;
 };
 
 static RankArtifactKind
@@ -528,6 +532,20 @@ static mlir::LogicalResult failRankVariant(RankVariantEvaluation &evaluation,
 /// DDR placement is a whole-variant gate owned by the all-rank coordinator.
 static std::optional<std::string>
 finalizeRankArtifact(mlir::ModuleOp module, const SelectionConfig &config) {
+  uint64_t terminalOperationCount = 0;
+  detail::StaticTerminalOperationBudgetStatus budgetStatus =
+      detail::checkStaticTerminalOperationBudget(module.getOperation(),
+                                                 terminalOperationCount);
+  if (budgetStatus !=
+      detail::StaticTerminalOperationBudgetStatus::WithinBudget) {
+    std::string failure;
+    llvm::raw_string_ostream os(failure);
+    os << "whole-rank-static-terminal-budget: requires "
+       << terminalOperationCount
+       << " terminal instruction issue/completion operations; limit is "
+       << wafer::detail::kStaticTerminalOperationBudget;
+    return failure;
+  }
   if (mlir::failed(mlir::verify(module)))
     return "whole-rank-pre-plan-verifier";
   if (mlir::failed(planSPMMemoryModule(module, config.spmBase, config.spmLimit,
@@ -536,7 +554,7 @@ finalizeRankArtifact(mlir::ModuleOp module, const SelectionConfig &config) {
   if (mlir::failed(mlir::verify(module)))
     return "whole-rank-verifier";
 
-  CandidateStats stats = estimateStats(module);
+  CandidateStats stats = estimateStats(module, config.scheduleCostPolicy);
   if (std::optional<std::string> failure = getRankingCostFailure(stats))
     return (llvm::Twine("whole-rank-cost: ") + *failure).str();
   return std::nullopt;
@@ -554,6 +572,50 @@ static void clearCandidateEvaluationFacts(mlir::ModuleOp module) {
     if (mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation))
       operation->removeAttr("binding");
   });
+}
+
+/// The plan ordinal is derived from the canonical walk over all structural
+/// loops, including unsupported loops. A rank that rejects one loop therefore
+/// cannot shift the identity of a later plan and accidentally correspond with
+/// a different rank's clone.
+static constexpr unsigned kFixedSlotNeighborLimit = 8;
+
+static void appendStaticFixedSlotNeighbors(
+    mlir::ModuleOp source, unsigned promotedHandoffs, bool readyReordered,
+    std::vector<RankArtifactAlternative> &alternatives) {
+  llvm::SmallVector<mlir::scf::ForOp, 8> loops;
+  source.walk([&](mlir::scf::ForOp loop) { loops.push_back(loop); });
+
+  unsigned appended = 0;
+  for (auto [structuralOrdinal, loop] : llvm::enumerate(loops)) {
+    if (appended == kFixedSlotNeighborLimit ||
+        structuralOrdinal >= std::numeric_limits<uint32_t>::max())
+      break;
+    std::string failureReason;
+    mlir::FailureOr<StaticFixedSlotPipelineCandidate> candidate =
+        deriveStaticFixedSlotPipelineCandidate(source, loop, &failureReason);
+    if (mlir::failed(candidate) || candidate->stageCount < 2 ||
+        candidate->slotAllocationCount < 2)
+      continue;
+
+    // A failed optional neighbor must not emit an error that makes the serial
+    // generation appear invalid. The owned clone is simply pruned.
+    bool normalized = false;
+    {
+      mlir::ScopedDiagnosticHandler handler(
+          candidate->module->getContext(),
+          [](mlir::Diagnostic &) { return mlir::success(); });
+      normalized =
+          mlir::succeeded(normalizeMinimumNCCJoins(*candidate->module));
+    }
+    if (!normalized)
+      continue;
+
+    alternatives.push_back({std::move(candidate->module), promotedHandoffs,
+                            readyReordered, RankBufferingKind::StaticFixedSlot,
+                            static_cast<uint32_t>(structuralOrdinal) + 1});
+    ++appended;
+  }
 }
 
 static mlir::FailureOr<std::string> getPartitionSignature(
@@ -754,40 +816,77 @@ static mlir::LogicalResult evaluateRankVariantImpl(
       mlir::cast<mlir::ModuleOp>((*evaluation.module)->clone());
   if (enableTransferElision)
     elideRedundantFullBufferTransfers(*spillModule);
+  bool spillNormalized =
+      mlir::succeeded(normalizeMinimumNCCJoins(*spillModule));
   mlir::OwningOpRef<mlir::ModuleOp> residentGeneration =
       mlir::cast<mlir::ModuleOp>((*evaluation.module)->clone());
   unsigned promotedHandoffs = promoteFullBufferHandoffs(*residentGeneration);
   if (enableTransferElision)
     elideRedundantFullBufferTransfers(*residentGeneration);
+  bool residentGenerationNormalized =
+      promotedHandoffs != 0 &&
+      mlir::succeeded(normalizeMinimumNCCJoins(*residentGeneration));
   mlir::OwningOpRef<mlir::ModuleOp> residentModule;
-  if (promotedHandoffs != 0)
+  if (residentGenerationNormalized)
     residentModule = mlir::cast<mlir::ModuleOp>((*residentGeneration)->clone());
 
   // Ready-order variants are actual independently owned instruction modules.
   // The rewrite changes operation order in SSA while preserving value hazards
-  // and fences; placement and cost are therefore recomputed from scratch.
+  // and completion domains; completion, placement and cost are therefore
+  // recomputed from scratch.
   mlir::OwningOpRef<mlir::ModuleOp> spillReadyModule;
-  {
+  if (spillNormalized) {
     mlir::OwningOpRef<mlir::ModuleOp> candidate =
         mlir::cast<mlir::ModuleOp>((*spillModule)->clone());
     if (scheduleIndependentInstructionsByReadyOrder(
-            candidate->getOperation()) != 0)
+            candidate->getOperation()) != 0 &&
+        mlir::succeeded(normalizeMinimumNCCJoins(*candidate)))
       spillReadyModule = std::move(candidate);
   }
   mlir::OwningOpRef<mlir::ModuleOp> residentReadyModule;
-  if (promotedHandoffs != 0) {
+  if (residentGenerationNormalized) {
     mlir::OwningOpRef<mlir::ModuleOp> candidate =
         mlir::cast<mlir::ModuleOp>((*residentGeneration)->clone());
     if (scheduleIndependentInstructionsByReadyOrder(
-            candidate->getOperation()) != 0)
+            candidate->getOperation()) != 0 &&
+        mlir::succeeded(normalizeMinimumNCCJoins(*candidate)))
       residentReadyModule = std::move(candidate);
   }
 
+  // Fixed-slot neighbors are derived from each final unplaced storage/order
+  // realization. They are independently owned and rerun completion
+  // normalization inside appendStaticFixedSlotNeighbors before any physical
+  // placement or cost observation.
+  std::vector<RankArtifactAlternative> pipelineAlternatives;
+  if (spillNormalized)
+    appendStaticFixedSlotNeighbors(*spillModule,
+                                   /*promotedHandoffs=*/0,
+                                   /*readyReordered=*/false,
+                                   pipelineAlternatives);
+  if (spillReadyModule)
+    appendStaticFixedSlotNeighbors(*spillReadyModule,
+                                   /*promotedHandoffs=*/0,
+                                   /*readyReordered=*/true,
+                                   pipelineAlternatives);
+  if (residentModule)
+    appendStaticFixedSlotNeighbors(*residentModule, promotedHandoffs,
+                                   /*readyReordered=*/false,
+                                   pipelineAlternatives);
+  if (residentReadyModule)
+    appendStaticFixedSlotNeighbors(*residentReadyModule, promotedHandoffs,
+                                   /*readyReordered=*/true,
+                                   pipelineAlternatives);
+
   std::optional<std::string> spillFailure =
-      finalizeRankArtifact(*spillModule, config);
+      spillNormalized
+          ? finalizeRankArtifact(*spillModule, config)
+          : std::optional<std::string>("whole-rank-completion-normalization");
   std::optional<std::string> residentFailure;
   if (promotedHandoffs != 0) {
-    residentFailure = finalizeRankArtifact(*residentModule, config);
+    residentFailure =
+        residentModule
+            ? finalizeRankArtifact(*residentModule, config)
+            : std::optional<std::string>("whole-rank-completion-normalization");
   }
   std::optional<std::string> spillReadyFailure;
   if (spillReadyModule)
@@ -821,6 +920,12 @@ static mlir::LogicalResult evaluateRankVariantImpl(
     evaluation.alternatives.push_back({std::move(residentReadyModule),
                                        promotedHandoffs,
                                        /*readyReordered=*/true});
+  for (RankArtifactAlternative &pipeline : pipelineAlternatives) {
+    if (std::optional<std::string> failure =
+            finalizeRankArtifact(*pipeline.module, config))
+      continue;
+    evaluation.alternatives.push_back(std::move(pipeline));
+  }
 
   evaluation.module = nullptr;
   evaluation.accepted = true;
@@ -1052,10 +1157,16 @@ buildScheduledRankCandidateFrontier(
                                 "candidate-parallelism must be positive";
     return mlir::failure();
   }
+  if (!frontierConfig.targetProfile) {
+    sourceModule.emitError()
+        << "invalid_tensor_program_scheduling_config: target-profile must be "
+           "explicitly provided";
+    return mlir::failure();
+  }
 
   WaferTargetPolicy targetPolicy =
       getDefaultWaferTargetPolicy(TileSearchEffort::Default);
-  SelectionConfig config(targetPolicy);
+  SelectionConfig config(targetPolicy, *frontierConfig.targetProfile);
   config.logicalRank = frontierConfig.logicalRank;
   config.candidateParallelism = frontierConfig.candidateParallelism;
   std::unique_ptr<CandidateEvaluationExecutor> evaluationExecutor;
@@ -1102,14 +1213,18 @@ buildScheduledRankCandidateFrontier(
     bool hasBaselineSpill = false;
     for (RankArtifactAlternative &alternative : evaluation.alternatives) {
       bool isBaselineSpill =
-          alternative.promotedHandoffs == 0 && !alternative.readyReordered;
+          alternative.promotedHandoffs == 0 && !alternative.readyReordered &&
+          alternative.bufferingKind == RankBufferingKind::Single &&
+          alternative.bufferingPlanOrdinal == 0;
       bool reserved = reservedPolicy && isBaselineSpill;
       hasBaselineSpill |= isBaselineSpill;
       reservedBaselineCount += reserved;
       if (optimizedFrontierCount >= optimizedRankFrontierLimit && !reserved)
         continue;
       frontier.emplace_back(std::move(alternative.module), stableOrdinal,
-                            getRankArtifactKind(alternative), reserved);
+                            getRankArtifactKind(alternative), reserved,
+                            alternative.bufferingKind,
+                            alternative.bufferingPlanOrdinal);
       optimizedFrontierCount += !reserved;
     }
     return !reservedPolicy || hasBaselineSpill ? mlir::success()

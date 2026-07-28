@@ -147,8 +147,137 @@ module {
   EXPECT_EQ(cost.spmMovementBytes.value, 96u);
   ASSERT_TRUE(cost.compute.vectorF16Bf16LogicalOps.isKnown());
   EXPECT_EQ(cost.compute.vectorF16Bf16LogicalOps.value, 24u);
+  ASSERT_TRUE(cost.nccJoinCount.isKnown());
+  EXPECT_EQ(cost.nccJoinCount.value, 6u);
+  ASSERT_TRUE(cost.steadyStateNCCJoinCount.isKnown());
+  EXPECT_EQ(cost.steadyStateNCCJoinCount.value, 6u);
+  ASSERT_TRUE(cost.nonTerminalNCCJoinCount.isKnown());
+  EXPECT_EQ(cost.nonTerminalNCCJoinCount.value, 6u);
+  ASSERT_TRUE(cost.nccParticipantWaitCount.isKnown());
+  EXPECT_EQ(cost.nccParticipantWaitCount.value, 6u);
+  ASSERT_TRUE(cost.steadyStateNCCParticipantWaitCount.isKnown());
+  EXPECT_EQ(cost.steadyStateNCCParticipantWaitCount.value, 6u);
+  ASSERT_TRUE(cost.nonTerminalNCCParticipantWaitCount.isKnown());
+  EXPECT_EQ(cost.nonTerminalNCCParticipantWaitCount.value, 6u);
+  ASSERT_TRUE(cost.intrinsicNCCDrainCount.isKnown());
+  EXPECT_EQ(cost.intrinsicNCCDrainCount.value, 0u);
   ASSERT_TRUE(cost.spmHighWaterBytes.isKnown());
   EXPECT_EQ(cost.spmHighWaterBytes.value, 264u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       EvaluatesStaticArithmeticBoundsIntroducedByLoopTransforms) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(
+      %input: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c8 = arith.constant 8 : index
+    %pipeline_distance = arith.muli %c2, %c1 : index
+    %steady_upper = arith.subi %c8, %pipeline_distance : index
+    scf.for %i = %c0 to %steady_upper step %c1 {
+      wafer.instr.rdma %input to %buffer
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>}
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+         to memref<4xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  std::string before;
+  llvm::raw_string_ostream beforeStream(before);
+  module->print(beforeStream);
+  beforeStream.flush();
+
+  InstructionProgramCost cost = analyze(*module);
+
+  ASSERT_TRUE(cost.instructionCount.isKnown());
+  EXPECT_EQ(cost.instructionCount.value, 6u);
+  ASSERT_TRUE(cost.ddrReadBytes.isKnown());
+  EXPECT_EQ(cost.ddrReadBytes.value, 48u);
+  std::string after;
+  llvm::raw_string_ostream afterStream(after);
+  module->print(afterStream);
+  afterStream.flush();
+  EXPECT_EQ(after, before);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       CountsEveryTypedParticipantWaitWithoutScopeDiscount) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    "wafer.instr.ncc_join"() {participants = array<i64: 0, 2>} : () -> ()
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %zero = arith.constant 0.0 : f16
+    wafer.instr.fill %buffer, %zero
+        : memref<4xf16, #wafer.memory<spm, tensor>>, f16
+    "wafer.instr.ncc_join"() {participants = array<i64: 1>} : () -> ()
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  ASSERT_TRUE(cost.nccJoinCount.isKnown());
+  EXPECT_EQ(cost.nccJoinCount.value, 2u);
+  ASSERT_TRUE(cost.steadyStateNCCJoinCount.isKnown());
+  EXPECT_EQ(cost.steadyStateNCCJoinCount.value, 0u);
+  ASSERT_TRUE(cost.nonTerminalNCCJoinCount.isKnown());
+  EXPECT_EQ(cost.nonTerminalNCCJoinCount.value, 1u);
+  ASSERT_TRUE(cost.nccParticipantWaitCount.isKnown());
+  EXPECT_EQ(cost.nccParticipantWaitCount.value, 3u);
+  ASSERT_TRUE(cost.steadyStateNCCParticipantWaitCount.isKnown());
+  EXPECT_EQ(cost.steadyStateNCCParticipantWaitCount.value, 0u);
+  ASSERT_TRUE(cost.nonTerminalNCCParticipantWaitCount.isKnown());
+  EXPECT_EQ(cost.nonTerminalNCCParticipantWaitCount.value, 2u);
+  ASSERT_TRUE(cost.intrinsicNCCDrainCount.isKnown());
+  EXPECT_EQ(cost.intrinsicNCCDrainCount.value, 0u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       CountsSynchronousPeripheralWritebackAsIntrinsicDrain) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %value = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<1xf16, #wafer.memory<spm, tensor>>
+    %index = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<1xi32, #wafer.memory<spm, tensor>>
+    wafer.instr.peripheral #wafer.instr_peripheral_kind<argmax>
+        %input into %value, %index {elem_count = 4 : i64}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+      into memref<1xf16, #wafer.memory<spm, tensor>>,
+           memref<1xi32, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  ASSERT_TRUE(cost.nccJoinCount.isKnown());
+  EXPECT_EQ(cost.nccJoinCount.value, 0u);
+  ASSERT_TRUE(cost.nccParticipantWaitCount.isKnown());
+  EXPECT_EQ(cost.nccParticipantWaitCount.value, 1u);
+  ASSERT_TRUE(cost.steadyStateNCCParticipantWaitCount.isKnown());
+  EXPECT_EQ(cost.steadyStateNCCParticipantWaitCount.value, 0u);
+  ASSERT_TRUE(cost.nonTerminalNCCParticipantWaitCount.isKnown());
+  EXPECT_EQ(cost.nonTerminalNCCParticipantWaitCount.value, 0u);
+  ASSERT_TRUE(cost.intrinsicNCCDrainCount.isKnown());
+  EXPECT_EQ(cost.intrinsicNCCDrainCount.value, 1u);
 }
 
 TEST_F(ScheduleCostAnalysisTest, CountsNPUAndVectorLogicalOperationsByType) {
@@ -212,6 +341,77 @@ module {
   ASSERT_TRUE(cost.spmHighWaterBytes.isKnown());
   EXPECT_EQ(cost.spmHighWaterBytes.value,
             static_cast<uint64_t>(physical->physicalBytes));
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       ResolvesRotatingSCFSlotsToEveryExternalAllocation) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %slot0 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %slot1 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    %zero = arith.constant 0.0 : f16
+    %result:2 = scf.for %index = %c0 to %c3 step %c1
+        iter_args(%current = %slot0, %next = %slot1)
+        -> (memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>) {
+      wafer.instr.fill %current, %zero
+          : memref<4xf16, #wafer.memory<spm, tensor>>, f16
+      scf.yield %next, %current
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  ASSERT_TRUE(cost.spmHighWaterBytes.isKnown());
+  EXPECT_EQ(cost.spmHighWaterBytes.value, 264u);
+}
+
+TEST_F(ScheduleCostAnalysisTest,
+       RejectsRotatingSCFSlotWithAnUnknownOrigin) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(
+      %unknown: memref<4xf16, #wafer.memory<spm, tensor>>) {
+    %known = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    %zero = arith.constant 0.0 : f16
+    %result:2 = scf.for %index = %c0 to %c3 step %c1
+        iter_args(%current = %known, %next = %unknown)
+        -> (memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>) {
+      wafer.instr.fill %current, %zero
+          : memref<4xf16, #wafer.memory<spm, tensor>>, f16
+      scf.yield %next, %current
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  EXPECT_EQ(cost.spmHighWaterBytes.knowledge, ScheduleCostKnowledge::Unknown);
+  EXPECT_EQ(cost.spmHighWaterBytes.reason,
+            ScheduleCostReason::UnsupportedSPMRoot);
 }
 
 TEST_F(ScheduleCostAnalysisTest,
@@ -483,6 +683,40 @@ module {
             balancedCost.instructionCount.value);
   EXPECT_EQ(chainCost.compute.vectorOtherLogicalOps.value,
             balancedCost.compute.vectorOtherLogicalOps.value);
+}
+
+TEST_F(ScheduleCostAnalysisTest, TypedJoinOnlyOrdersItsNCCWorkerParticipants) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main(%zero: f32) {
+    %worker0 = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+    %worker1_before = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+    %worker1_after = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+    wafer.instr.fill %worker0, %zero
+        {worker = #wafer.ncc_worker<worker0>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>, f32
+    wafer.instr.fill %worker1_before, %zero
+        {worker = #wafer.ncc_worker<worker1>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>, f32
+    wafer.instr.ncc_join [0]
+    wafer.instr.fill %worker1_after, %zero
+        {worker = #wafer.ncc_worker<worker1>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>, f32
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  InstructionProgramCost cost = analyze(*module);
+  ASSERT_TRUE(cost.dataDependencyDepth.isKnown());
+  EXPECT_EQ(cost.dataDependencyDepth.value, 2u);
 }
 
 TEST_F(ScheduleCostAnalysisTest,

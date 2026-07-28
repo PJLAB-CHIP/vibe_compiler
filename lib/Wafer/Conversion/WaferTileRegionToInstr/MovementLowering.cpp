@@ -113,11 +113,6 @@ public:
                                op.getDest(), *segments);
     }
 
-    // A tile store is the last local-engine use of the tile-local source in
-    // the current schedule.  Make that completion boundary explicit so SPM
-    // planning can end the source lifetime before the next traversal tile.
-    // The terminal fence remains a safety net for paths without a store.
-    rewriter.create<SyncLocalFenceOp>(op.getLoc());
     rewriter.eraseOp(op);
     return mlir::success();
   }

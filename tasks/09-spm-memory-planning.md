@@ -1,10 +1,10 @@
 # Wafer SPM Memory Planning Design
 
-状态：2026-07-20同步MLIR-native physical-dataflow candidate边界。本合同覆盖instruction IR上的SPM
+状态：2026-07-28同步typed NCC worker completion。本合同覆盖instruction IR上的SPM
 lifetime/range planning；async issue的全部read/write resource必须活到可信completion。当前实现对同一
-rank function中的non-nested sibling `wafer.tile.region`建立统一timeline/demand set并联合packing；每个region
-仍独立执行terminal completion proof。nested/async/parallel scope和缺少arena/resource summary的调用保持
-fail closed。实现状态以`tasks/progress.md`为准。accepted fact 为
+rank function中的non-nested sibling `wafer.tile.region`建立统一timeline/demand set并联合packing；tile-region
+不是completion boundary，pending NCC access可沿显式SSA/control flow跨region传播。nested/async/parallel scope和
+缺少arena/resource summary的调用保持fail closed。实现状态以`tasks/progress.md`为准。accepted fact 为
 offset-only `wafer.spm.offset`，size / bank span / alignment 由 memref type、layout 和 target policy 重算。
 当前coordinator仍产生spill baseline与deterministic maximal full-buffer-resident两类alternative；它是已实现迁移策略，
 不是allocator输入协议。allocator对candidate generator提交的每个完整clone使用同一exact gate。
@@ -65,11 +65,12 @@ Pipeline position:
   whole-variant evaluation clone 中所有 static rank entries 的完整 instruction-level
   `wafer.instr.*` structured program，已经完成 candidate DDR tile-view materialization 和 instruction
   legalization；对optimized sibling，08 的 relation-backed redundant-transfer normalization 已在该
-  unplaced actual clone 上删除可由 same-root/standard view 表达的完整 movement、dead destination
-  allocation，并把被合并 cross-encoding destination 的 alignment 要求提升到 compiler-owned source
-  root。全部selected task fragments已进入完整rank clone并完成candidate-local rewrite，相关
-  alias/effect/lifetime analysis已从改写后的当前IR失效重算；显式reserved spill baseline跳过可选
-  coalescing但仍从自身IR走同一completion/lifetime/SPM gate。SPM planner
+  unplaced actual clone 上
+  删除可由 same-root/standard view 表达的完整 movement、dead destination allocation，并把被合并
+  cross-encoding destination 的 alignment 要求提升到 compiler-owned source root。全部selected task
+  fragments已进入完整rank clone并完成candidate-local rewrite，相关 alias/effect/lifetime analysis已从
+  改写后的当前IR失效重算；显式reserved spill baseline跳过可选coalescing但仍从自身IR走同一
+  completion/lifetime/SPM gate。SPM planner
   每次只接收candidate generator已经显式物化的一份完整whole-rank clone；candidate可以来自当前spill/resident基线，也可以
   来自MLIR-native rewrite有界组合的implementation/encoding/physical-version/transfer/residency/buffering/order alternative。task/region/loop间的SPM value和event已由显式SSA/control-flow连接，包含actual DDR
   tile views、unplaced `memref<..., #wafer.memory<spm, layout>>` values，以及selected physical encodings、
@@ -77,8 +78,9 @@ Pipeline position:
 - Current stage responsibility:
   在每个complete rank entry上对`#wafer.memory<spm, layout>` memref做SPM memory planning，
   计算 offset/end/bank span、alignment、lifetime/reuse、must-alias/must-not-alias、reserved range
-  和 range-end verification；用显式generic async wait、DTE exact token/wait、local fence和terminal drain证明
-  该rank所有issue completion，并在variant-set gate汇总所有rank的通过结果。对完整candidate运行硬件arena
+  和 range-end verification；用显式generic async wait、DTE exact token/wait、typed NCC ordered-pending/
+  participant join和function terminal completion proof证明该rank所有issue completion，并在variant-set gate汇总所有rank的
+  通过结果。对完整candidate运行硬件arena
   fixed-capacity legality并返回validated placement和实际high-water。每个candidate clone独立规划、
   独立失败，任何候选的offset、alias或completion fact都不能成为其它候选的输入或fallback事实。
 - Output artifact / IR:
@@ -120,8 +122,10 @@ Pipeline position:
   对每个合法complete rank program给出 deterministic memory plan；planned storage的size、alignment、
   range/end、lifetime和alias relation能由rank-local IR/effect/verifier重算；generic `async.call`
   token/value由identity-preserving handle flow上的`async.await`或direct group的`async.await_all`收口，DTE由
-  exact token/`wafer.instr.dte_wait`收口，本地issue由local fence收口，且每条rank function exit没有pending event。
-  safe pre-existing loop recurrence可规划，loop-body allocation/task的动态实例或无法证明的async handle flow结构化拒绝。
+  exact token/`wafer.instr.dte_wait`收口；本地NCC issue按typed worker进入ordered-pending frontier，同worker
+  RAW/WAR/WAW后继可接管访问责任，首个Kcore、DTE、不同worker、unsafe reuse、publication或terminal cut前必须有
+  覆盖实际participant的join。每条rank function exit没有pending event。safe pre-existing loop recurrence可规划，
+  loop-body allocation/task的动态实例或无法证明的async handle flow结构化拒绝。
   fixed-capacity solver在alignment hole、disconnected component、empty/zero-byte和first-fit反例上保持三态结果与独立
   placement validator；resource exhaustion只按Q34既有安全fallback合同处理，不改写成capacity事实。
   任一task/rank失败都使该candidate所属的
@@ -132,8 +136,8 @@ Pipeline position:
 ### 1.2 Shared Recomputable Analysis Boundary
 
 SPM与DDR可以共享的不是arena或resource语义，而是从当前structured IR重算的analysis mechanics：path condition、
-operation timeline、query-time provenance closure、live segment overlap、generic async completion identity、local
-issue/fence completion，以及由精确pairwise conflict relation驱动的static packing。
+operation timeline、query-time provenance closure、live segment overlap、generic async completion identity、typed
+worker ordered-pending/participant completion，以及由精确pairwise conflict relation驱动的static packing。
 fixed-capacity solve和placement validator只消费owner-independent typed problem；两侧owner仍分别决定arena/resource语义和
 offset commit。compiler-managed allocation由
 `RootRef`指向packing demand；caller-owned/external memref由path-qualified `ValueOriginRef`表达，两者都与
@@ -152,9 +156,11 @@ captured group、选择不同task identity的`SelectLike`和非identity-preservi
 
 当前SPM实现以rank function为planning scope，对全部non-nested sibling `wafer.tile.region`统一收集demand、
 path-aware lifetime和physical arena placement；跨region value只能通过显式operand/result或受支持的
-view/select/SCF SSA edge传播。planner仍逐region验证local Compute/Movement issue及Direct DTE token到
-path-covering fence/exact wait的terminal drain，并保守拒绝所有loop-carried `!async.token`。共享generic async
-analysis不替代DTE origin/wait legality；也不能把DDR的whole-entry/external-root/resource-limit语义反向引入SPM。
+view/select/SCF SSA edge传播。planner在完整rank function上验证typed worker NCC frontier与Direct DTE token：
+same-worker exact RAW/WAR/WAW可跨tile-region和安全loop backedge保持ordered pending，只有跨completion-domain
+observer、unsafe reuse或function terminal要求matching participant join；DTE仍由path-covering exact wait完成并
+保守拒绝所有loop-carried `!async.token`。共享generic async analysis不替代DTE origin/wait legality；也不能把DDR的
+whole-entry/external-root/resource-limit语义反向引入SPM。
 
 这一实现的动态执行scope只接受由`func.func`、`scf.if`和`scf.for`顺序拥有的non-nested tile-region；
 async/parallel/unknown region owner均拒绝。SPM value不得成为`func.func`边界；tile-region外只允许显式
@@ -195,7 +201,7 @@ live segment，不靠symbol名字判断callee行为，也不形成跨过程summa
 - `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
   token/wait 和 staging storage。
 - target policy：SPM range、reserved range、alignment、coloring preference。
-- 每个 region 内的 structured control-flow、SSA/alias relation、op effect、token、fence/wait/barrier 和
+- 每个 region 内的 structured control-flow、SSA/alias relation、op effect、token、participant join/exact wait/barrier 和
   terminal completion boundary，以及 variant 中 all-and-only region/rank coverage。
 
 输出：
@@ -244,7 +250,8 @@ V0 `kind`：
 - temporary/workspace。
 - accumulator/psum。
 - layout materialization temp。
-- future explicit double-buffer slot；当前scheduler不生成该kind。
+- explicit multi-buffer slot；Q38 fixed-slot transform仍在开发，只有loop外真实allocation root和
+  loop-carried rotation已经物化进candidate IR时才进入本planner，不能由kind或queue depth推断。
 - communication staging buffer。
 - host-visible writeback staging。
 
@@ -264,8 +271,8 @@ SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op �
   range 和 queue 行为。
 - `wafer.tile.*` communication ops p2p op：需要 communication instruction lowering 报告 send source、recv destination、
   communication staging buffer、fixed byte count、token/wait lifetime 和 DTE/FSM resource class。
-- `wafer.instr.local_fence` 和后续 sync boundary：报告 local fence、comm wait、group barrier 对 instruction event、buffer lifetime 和
-  reuse 的收口。
+- typed `wafer.instr.ncc_join`和后续sync boundary：报告participant join、comm wait、group barrier对
+  instruction event、buffer lifetime和reuse的收口；legacy `local_fence`只按`join {worker0}`兼容解释。
 
 如果某个 target-abstract op 无法产出可验证 instruction-level IR，不能让 SPM memory planning 用名字或示例
 shape 猜测；应先扩 op interface / instruction IR，或保持在更高层 IR。
@@ -296,20 +303,21 @@ lifetime 从 IR 结构和 effect 推出：
 - region/control-flow。
 - loop-carried value。
 - op memory effects。
-- async issue + fence/wait。
+- async issue + typed completion/exact wait。
 - communication wait / group barrier。
 - host-visible output boundary。
 
 V0 规则：
 
 - synchronous op 的 input live 到该 op read 完；output live 到最后 use。
-- 本地 compute/movement 写入的 destination 在后续 `wafer.instr.local_fence` 前不能被复用；fence
-  event 将此前未 fenced 的本地写 lifetime 延伸到该 fence。
+- 本地 compute/movement issue按typed worker进入ordered-pending frontier；source/destination access至少活到
+  matching participant join，或活到可由same-worker exact RAW/WAR/WAW后继接管的有序访问。不同worker、DTE、
+  Kcore、host observer、unknown alias和不安全复用不能使用该接管证明。
 - DTE communication issue 的 source/destination 通过返回的 `!async.token` 绑定到
   `wafer.instr.dte_wait`；token 被 wait 消费前，send source 和 recv destination 都不能被复用。
-- 其它 async movement/compute/communication 的 source/destination live 到对应 fence/wait。
-- 每个 issue 要么返回可追踪的 `!async.token` 并由匹配 wait 消费，要么由显式 local fence 完成；
-  effect 只描述 issue/read/write 关系，不能暗示不存在的 completion。
+- 其它 async movement/compute/communication 的 source/destination live 到其typed completion或有序后继接管点。
+- 每个 issue 要么返回可追踪的 `!async.token`并由匹配wait消费，要么携带typed NCC worker并由ordered-pending/
+  participant合同闭合；effect只描述issue/read/write关系，不能暗示不存在的completion。
 - generic `async.call`返回的token/value同时携带所访问root和独立task identity；handle use可以延长root lifetime，
   但只有identity-preserving `async.await`或direct group的`async.await_all`能完成task。root union不能替代completion proof。
 - `wafer.instr.dte_send` 的 source buffer live 到 send completion 或 protocol 允许复用的 wait；`dte_recv`
@@ -324,8 +332,9 @@ V0 规则：
   operand/result是合法跨sibling-region data edge。planner必须沿yield、region result和consumer operand传播同一个
   allocation root；nested `wafer.tile.region`仍共享同一physical arena且当前结构化拒绝。不能从名字、task顺序或
   isolation trait恢复跨region SPM alias。
-- region exit 前必须有显式 terminal drain/fence/wait 收口所有 path 上的 pending local/DTE events；
-  不能用“后续 package/runtime 会等待”作为 lifetime 证明。
+- tile-region exit不自动收口pending NCC access；它们可沿显式SSA/control flow进入后续region。每条rank
+  function exit前必须用typed participant join/exact wait收口所有path上的pending NCC/DTE event，不能用
+  “后续package/runtime会等待”作为lifetime证明。
 
 reuse 分类：
 
@@ -345,10 +354,10 @@ selected instruction lowering下，对全部task/region的`#wafer.memory<spm, *>
 - tiled control-flow / event order。
 - selected implementation、physical version、transfer/layout materialization和compute/movement instruction form。
 - instruction-derived `BufferDemand`。
-- effect / async issue / fence / wait / barrier。
+- effect / async issue / typed participant join / exact wait / barrier。
 - target range、reserved range、alignment、range-end policy。
-- explicit communication staging policy；future double-buffer policy只有在IR已有两个slot和event时才可输入，
-  当前scheduler不生成。
+- explicit communication staging policy；multi-buffer policy只有在IR已有两个真实slot和typed completion时才可输入，
+  Q38 production frontier尚未接入前不推断或补建slot。
 
 输出：
 
@@ -369,26 +378,26 @@ empty demand返回`Feasible`、empty placement和high-water 0。
 
 V0 event model：
 
-- 每个 movement / materialization / compute / sync op 产生 issue/read/write/fence/wait event。
+- 每个 movement / materialization / compute / sync op 产生issue/read/write/typed completion event。
 - communication p2p op 产生 send/recv issue event，`wafer.instr.dte_wait` 或 lower-level DTE/FSM wait
   产生 completion event。
-- 本地 compute/movement issue 的全部 SPM read/write 都进入 pending local access；可信
-  `wafer.instr.local_fence` 前不得结束对应 lifetime 或复用buffer。
-- async DTE token 将 issue operand refs 延伸到对应 wait；本地 fence 只收口 compute/movement
-  issue/read/write，不替代 DTE wait；DTE wait也不收口本地engine issue。
+- 本地 compute/movement issue 的全部SPM read/write按typed worker进入pending local access；same-worker
+  exact RAW/WAR/WAW后继可保持issue order并接管访问责任，否则必须活到覆盖该worker的participant join。
+- async DTE token将issue operand refs延伸到对应wait；NCC participant join只收口其participant worker，
+  不替代DTE wait；DTE wait也不收口NCC issue。
 - generic async token/value/group将root lifetime和task identity分别传播；只有受支持的terminal await flow清除task。
 - loop backedge 让loop-carried value跨iteration live；body-local allocation/task被携带时拒绝静态单地址规划。
 - 非循环分支只有在control-flow可证明互斥时共享lifetime slot；loop-local repeatable branch不能证明全执行互斥。
-- dataflow/lifetime analysis在完整rank function的统一timeline和demand set上运行；nested control-flow不清空pending
-  events，每条region exit path仍必须独立证明pending set为空。nested tile-region scope在analysis前拒绝；non-nested
-  sibling region可通过显式operand/result共享SPM allocation root，并进入同一次packing，但不会隐式共享pending event。
-  variant gate仍要求all-and-only regions均已规划。
+- dataflow/lifetime analysis在完整rank function的统一timeline和demand set上运行；nested control-flow和
+  tile-region exit都不清空pending events。non-nested sibling region可通过显式operand/result共享SPM allocation
+  root和typed NCC frontier并进入同一次packing；nested tile-region scope仍在analysis前拒绝。variant gate要求
+  all-and-only regions均已规划，且每条function exit的pending set为空。
 
 这个 event model 只用于 analysis 和 verifier 可复核的 lowering；它不是新的 schedule attr。
 
-`busytable` 只作为 target capability/legality/cost input：它可以限制可并发 queue、in-flight issue
-数量或影响 overlap 成本，但不能替代 `!async.token`、wait/fence、memory effects 或 terminal drain，
-也不能作为“硬件会自动处理”而缩短 buffer lifetime。
+`busytable`只作为same-worker actual-range dependency legality input：它帮助落实IR中已有的RAW/WAR/WAW
+issue edge，但不能替代`!async.token`、participant join、exact wait、memory effects或terminal completion proof，也不能
+推出queue resident/full、pipeline window或任意缩短buffer lifetime。
 
 ## 7. Range and Alignment Policy
 
@@ -651,14 +660,15 @@ planner沿`wafer.tile.yield -> wafer.tile.region result -> sibling operand`保�
   `async.create_group`/`async.add_to_group`/`async.await_all`保留同一task identity。group alias、loop动态task加入
   captured group、SelectLike合并不同task或非identity-preserving loop recurrence均拒绝，未await task在terminal失败。
 - DTE send/recv产生的`!async.token`把对应SPM refs延伸到精确的`wafer.instr.dte_wait`；token经
-  `scf.if` result合并时保留各自origin和path condition。local fence不能消费该completion；SPM当前在DTE
+  `scf.if` result合并时保留各自origin和path condition。NCC participant join不能消费该completion；SPM当前在DTE
   owner proof之前保守拒绝所有loop-carried async token。
 - 通过`MemoryEffectOpInterface`在Compute/Movement custom resource上产生effect的本地issue进入pending
-  local issue集合，其全部SPM read/write effect进入pending local access集合；`wafer.instr.local_fence`只在自身path condition覆盖的
-  路径上延伸并清除这些状态。DTE wait不能消费本地状态。
-- 当前每条`wafer.tile.region` exit path执行terminal check；存在未await的generic task、未等待DTE token或未fence的
-  本地issue/read/write时规划失败。可能zero-trip的loop内单一completion不能覆盖loop外pending状态；合法loop本身
-  不因此失败，但SPM保守拒绝所有loop-carried async token。
+  local issue集合，其全部SPM read/write effect按typed worker进入pending local access集合；matching
+  participant join只清除覆盖的worker。same-worker exact RAW/WAR/WAW后继可接管同一root的有序访问，DTE wait
+  不能消费NCC状态。
+- `wafer.tile.region` exit不执行terminal completion；pending NCC状态沿显式control flow传播。每条function exit存在
+  未await generic task、未等待DTE token或未join NCC participant时规划失败。可能zero-trip的loop内completion
+  不能覆盖loop外pending状态；safe same-worker NCC frontier可跨backedge，但SPM仍拒绝loop-carried async token。
 - rejected/candidate offset、search trace、cost estimate 和 repair suggestion 仍是 analysis，不写入
   IR。
 
@@ -697,8 +707,8 @@ SPM / tile-region verifier 至少检查：
 - op operand/result 的 Wafer memory attr 满足对应 op verifier。
 - must-alias relation 的读写顺序合法。
 - may-reuse buffers 的 lifetime 不重叠，或由明确 wait/barrier 收口。
-- async buffer 在 fence/wait 前不能复用。
-- host-visible writeback 和 communication boundary 有明确 fence/wait/sync。
+- async buffer在matching completion前不能复用；仅same-worker exact RAW/WAR/WAW ordered successor可接管访问。
+- host-visible writeback和communication boundary有明确participant join/exact wait/sync。
 - 跨`wafer.tile.region`的SPM buffer/alias/event必须由显式SSA/control-flow表达并纳入whole-rank plan；
   所有rank function exit path的pending event set为空，variant coverage确保没有漏规划task/region。
 - tile-region只允许sequential func/scf.if/scf.for ownership；active/async/parallel scope中的unknown/external/
@@ -706,8 +716,9 @@ SPM / tile-region verifier 至少检查：
   穿过；可能执行tile-region的defined callee、external/unresolved或indirect call因缺少interprocedural
   arena/resource summary而fail closed。SPM memref即使先擦成tensor/generic memref也不能经`wafer.tile.yield`、
   raw metadata或无origin的tracked cast/adapter逃逸scope。
-- safe pre-existing loop recurrence在memory-planned named pipeline中通过并含backedge fence；loop body创建fresh
-  allocation再作为recurrence result携带时，以`unsupported_lifetime_alias`拒绝而不是给所有动态实例同一地址。
+- safe pre-existing loop recurrence在memory-planned named pipeline中可让same-worker ordered pending跨backedge，
+  不要求结构性join；loop body创建fresh allocation再作为recurrence result携带时，以
+  `unsupported_lifetime_alias`拒绝而不是给所有动态实例同一地址。
 - `busytable` 只参与 target capability/legality/cost 查询，不被当作 completion 或 alias proof。
 - physical footprint、begin/end、descriptor range、offset addition 和 ABI width narrowing 统一调用 shared
   physical geometry/range/narrowing verifier；禁止 silent truncation 或 consumer-local 重算分叉。
@@ -734,7 +745,8 @@ isolated complete-rank clone
 
 candidate owner可以根据current IR的capacity/lifetime/descriptor压力生成另一份clone，尝试不同implementation、tile、encoding、
 transfer、resident cut、buffering或order；allocator只评估已物化clone，不建议或修改这些选择，也不按名字或case恢复语义。
-local fence、communication wait和DTE completion是不同event，lifetime analysis只能按各自typed effect/token合同处理。
+NCC participant join、communication wait和DTE completion是不同event，lifetime analysis只能按各自typed
+worker/effect/token合同处理；legacy local fence仅等价于worker0 join。
 
 
 ## 15. 后续扩展
@@ -753,7 +765,7 @@ local fence、communication wait和DTE completion是不同event，lifetime analy
 - PMU 驱动 bank conflict model：当 board profiling 能稳定解释 blocking time 和 bank/color 关系后，
   替换 V0 的 color penalty。
 - worker-local / runtime-visible / communication-only pool：当对应 dialect 和 verifier 已能表达
-  ownership、visibility、fence/wait 边界后引入。
+  ownership、visibility和typed completion边界后引入。
 
 ## 16. 参考材料
 

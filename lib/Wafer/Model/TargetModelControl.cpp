@@ -12,8 +12,8 @@ namespace wafer::model::kernel_detail {
 
 TargetModelControlAction
 getControlAction(const compiler::TargetTransactionPayload &payload) {
-  if (std::holds_alternative<compiler::TargetLocalFenceTransaction>(payload))
-    return TargetModelControlAction::LocalFence;
+  if (std::holds_alternative<compiler::TargetNCCJoinTransaction>(payload))
+    return TargetModelControlAction::NCCJoin;
   if (std::holds_alternative<compiler::TargetDirectDTEBeginTransaction>(
           payload))
     return TargetModelControlAction::DirectDTEBegin;

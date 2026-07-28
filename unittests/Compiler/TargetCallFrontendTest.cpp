@@ -333,6 +333,7 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
       break;
     case wafer::TargetCallBuiltin::GatherScatter:
     case wafer::TargetCallBuiltin::LocalFence:
+    case wafer::TargetCallBuiltin::NCCJoin:
     case wafer::TargetCallBuiltin::DirectDTERecvPrepare:
     case wafer::TargetCallBuiltin::DirectDTEWait:
     case wafer::TargetCallBuiltin::DirectDTEFinish:
@@ -544,10 +545,18 @@ void expectPayloadFields(
       return;
     }
     case wafer::TargetCallBuiltin::LocalFence:
-      EXPECT_TRUE(
-          std::holds_alternative<wafer::compiler::TargetLocalFenceTransaction>(
+    case wafer::TargetCallBuiltin::NCCJoin: {
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::compiler::TargetNCCJoinTransaction>(
               payload));
+      const auto &join =
+          std::get<wafer::compiler::TargetNCCJoinTransaction>(payload);
+      EXPECT_EQ(join.participantMask,
+                *builtin == wafer::TargetCallBuiltin::LocalFence
+                    ? uint32_t{1}
+                    : u32(0));
       return;
+    }
     case wafer::TargetCallBuiltin::DirectDTEBegin:
     case wafer::TargetCallBuiltin::DirectDTEBeginAfterPrepare: {
       ASSERT_TRUE(std::holds_alternative<
@@ -816,17 +825,62 @@ void expectPayloadFields(
 TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   llvm::ArrayRef<wafer::TargetCallDescriptor> descriptors =
       wafer::getTargetCallDescriptors();
-  ASSERT_EQ(descriptors.size(), 111u);
+  ASSERT_EQ(descriptors.size(), 112u);
   llvm::DenseSet<llvm::StringRef> symbols;
+  size_t issueDomainCount = 0;
+  size_t nccIssueDomainCount = 0;
+  size_t synchronousWritebackCount = 0;
+  size_t directDTEIssueDomainCount = 0;
   for (const wafer::TargetCallDescriptor &descriptor : descriptors) {
     EXPECT_TRUE(llvm::StringRef(descriptor.symbol).starts_with("wafer_tx81_"));
     EXPECT_TRUE(symbols.insert(descriptor.symbol).second);
     EXPECT_EQ(wafer::findTargetCallDescriptor(descriptor.symbol), &descriptor);
     EXPECT_EQ(wafer::findTargetCallDescriptor(descriptor.semantic),
               &descriptor);
+    if (!descriptor.issueDomain) {
+      EXPECT_FALSE(wafer::getTargetCallTSMEngine(descriptor));
+      continue;
+    }
+    ++issueDomainCount;
+    EXPECT_EQ(wafer::getTargetCallTSMEngine(descriptor),
+              descriptor.issueDomain->engine);
+    if (descriptor.issueDomain->engine ==
+        wafer::TargetCallTSMEngine::DirectDTE) {
+      ++directDTEIssueDomainCount;
+      EXPECT_FALSE(descriptor.issueDomain->nccWorker);
+      EXPECT_EQ(descriptor.issueDomain->completionBehavior,
+                wafer::LocalInstructionCompletion::None);
+    } else {
+      ++nccIssueDomainCount;
+      ASSERT_TRUE(descriptor.issueDomain->nccWorker.has_value());
+      EXPECT_EQ(*descriptor.issueDomain->nccWorker,
+                wafer::NCCWorker::Worker0);
+      const auto *peripheral =
+          std::get_if<wafer::InstrPeripheralKind>(&descriptor.semantic);
+      const bool synchronous =
+          peripheral &&
+          (*peripheral == wafer::InstrPeripheralKind::ArgMax ||
+           *peripheral == wafer::InstrPeripheralKind::ArgMin);
+      EXPECT_EQ(
+          descriptor.issueDomain->completionBehavior,
+          synchronous
+              ? wafer::LocalInstructionCompletion::SynchronousWriteback
+              : wafer::LocalInstructionCompletion::OrderedPending);
+      synchronousWritebackCount += synchronous;
+    }
   }
+  EXPECT_EQ(issueDomainCount, 105u);
+  EXPECT_EQ(nccIssueDomainCount, 104u);
+  EXPECT_EQ(synchronousWritebackCount, 2u);
+  EXPECT_EQ(directDTEIssueDomainCount, 1u);
   EXPECT_EQ(wafer::findTargetCallDescriptor("wafer_tx81_unknown"), nullptr);
 
+  const auto &join =
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::NCCJoin);
+  EXPECT_EQ(join.result, wafer::TargetCallResultType::Void);
+  ASSERT_EQ(join.arguments.size(), 1u);
+  EXPECT_EQ(join.arguments.front(), wafer::TargetCallScalarType::I32);
+  EXPECT_FALSE(join.issueDomain);
   const auto &send = wafer::getTargetCallDescriptor(
       wafer::TargetCallBuiltin::DirectDTESendPrepare);
   EXPECT_EQ(send.result, wafer::TargetCallResultType::I64);
@@ -866,7 +920,25 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
     expectPayloadFields(descriptor, arguments, *payload);
     ++decoded;
   }
-  EXPECT_EQ(decoded, 111u);
+  EXPECT_EQ(decoded, 112u);
+}
+
+TEST(TargetCallRegistryTest, NCCJoinDecoderRejectsInvalidParticipantMasks) {
+  const wafer::TargetCallDescriptor &descriptor =
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::NCCJoin);
+  wafer::TargetCallDecodeContext context{
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1(), 1};
+  auto empty = wafer::decodeTargetCallPayload(descriptor, context, {0});
+  ASSERT_FALSE(static_cast<bool>(empty));
+  EXPECT_NE(llvm::toString(empty.takeError()).find("participant mask"),
+            std::string::npos);
+  const uint64_t outside =
+      uint64_t{1} << static_cast<uint32_t>(wafer::kNCCWorkerCount);
+  auto outOfRange =
+      wafer::decodeTargetCallPayload(descriptor, context, {outside});
+  ASSERT_FALSE(static_cast<bool>(outOfRange));
+  EXPECT_NE(llvm::toString(outOfRange.takeError()).find("worker domain"),
+            std::string::npos);
 }
 
 TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
@@ -916,10 +988,21 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
         sink.transactions[index];
     EXPECT_EQ(transaction.logicalRank, 0);
     EXPECT_EQ(transaction.issueOrdinal, index);
+    if (transaction.nccIssueDomain) {
+      EXPECT_NE(transaction.nccIssueDomain->engine,
+                wafer::TargetCallTSMEngine::DirectDTE);
+      EXPECT_EQ(transaction.nccIssueDomain->worker,
+                wafer::NCCWorker::Worker0);
+      EXPECT_EQ(transaction.nccIssueDomain->completionBehavior,
+                wafer::LocalInstructionCompletion::OrderedPending);
+    }
     if (const auto *elementwise =
             std::get_if<wafer::compiler::TargetElementwiseTransaction>(
                 &transaction.payload)) {
       sawAdd = true;
+      ASSERT_TRUE(transaction.nccIssueDomain.has_value());
+      EXPECT_EQ(transaction.nccIssueDomain->engine,
+                wafer::TargetCallTSMEngine::CT);
       EXPECT_EQ(elementwise->kind, wafer::InstrElementwiseKind::Add);
       EXPECT_TRUE(elementwise->rhs.has_value());
       EXPECT_EQ(elementwise->elementCount, 8u);
@@ -928,6 +1011,86 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
   }
   EXPECT_TRUE(sawAdd);
   EXPECT_EQ(bundle->getModules().front().getTargetTriple(), originalTriple);
+}
+
+TEST(TargetCallFrontendTest,
+     CarriesSynchronousWritebackBehaviorIntoDynamicTransaction) {
+  std::string diagnostics;
+  auto bundle = buildDirectDTETargetBundle(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(bundle))
+      << diagnostics << llvm::toString(bundle.takeError());
+  ASSERT_EQ(bundle->getModules().size(), 16u);
+
+  llvm::Module &module = const_cast<llvm::Module &>(
+      bundle->getModules().front().getModule());
+  llvm::Function *entry =
+      module.getFunction(bundle->getModules().front().getEntrySymbol());
+  ASSERT_NE(entry, nullptr);
+  llvm::IRBuilder<> builder(entry->getEntryBlock().getTerminator());
+  for (wafer::InstrPeripheralKind kind :
+       {wafer::InstrPeripheralKind::ArgMax,
+        wafer::InstrPeripheralKind::ArgMin}) {
+    const wafer::TargetCallDescriptor &descriptor =
+        wafer::getTargetCallDescriptor(kind);
+    llvm::SmallVector<llvm::Type *, 10> argumentTypes;
+    llvm::SmallVector<llvm::Value *, 10> callArguments;
+    std::vector<uint64_t> values = makeDecodableArguments(descriptor);
+    ASSERT_EQ(values.size(), descriptor.arguments.size());
+    for (auto [type, value] : llvm::zip_equal(descriptor.arguments, values)) {
+      if (type == wafer::TargetCallScalarType::I64) {
+        argumentTypes.push_back(builder.getInt64Ty());
+        callArguments.push_back(builder.getInt64(value));
+      } else {
+        argumentTypes.push_back(builder.getInt32Ty());
+        callArguments.push_back(
+            builder.getInt32(static_cast<uint32_t>(value)));
+      }
+    }
+    llvm::FunctionCallee callee = module.getOrInsertFunction(
+        descriptor.symbol,
+        llvm::FunctionType::get(builder.getVoidTy(), argumentTypes,
+                                /*isVarArg=*/false));
+    builder.CreateCall(callee, callArguments);
+  }
+
+  std::vector<wafer::compiler::TargetCallRankArguments> arguments;
+  for (const wafer::compiler::TargetLLVMModule &rankModule :
+       bundle->getModules())
+    arguments.push_back(
+        {rankModule.getLogicalRank(),
+         std::vector<uint64_t>(
+             rankModule.getKernelABISlots().size(),
+             UINT64_C(0x100000) +
+                 static_cast<uint64_t>(rankModule.getLogicalRank()) *
+                     UINT64_C(0x10000))});
+  RecordingSink sink;
+  auto result =
+      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+
+  bool sawArgMax = false;
+  bool sawArgMin = false;
+  size_t synchronousArgExtremaCount = 0;
+  for (const wafer::compiler::TargetTransaction &transaction :
+       sink.transactions) {
+    const auto *payload = std::get_if<
+        wafer::compiler::TargetPeripheralArgExtremaTransaction>(
+        &transaction.payload);
+    if (!payload)
+      continue;
+    sawArgMax |= payload->kind == wafer::InstrPeripheralKind::ArgMax;
+    sawArgMin |= payload->kind == wafer::InstrPeripheralKind::ArgMin;
+    ASSERT_TRUE(transaction.nccIssueDomain.has_value());
+    EXPECT_EQ(transaction.nccIssueDomain->engine,
+              wafer::TargetCallTSMEngine::CT);
+    EXPECT_EQ(transaction.nccIssueDomain->worker, wafer::NCCWorker::Worker0);
+    EXPECT_EQ(transaction.nccIssueDomain->completionBehavior,
+              wafer::LocalInstructionCompletion::SynchronousWriteback);
+    ++synchronousArgExtremaCount;
+  }
+  EXPECT_TRUE(sawArgMax);
+  EXPECT_TRUE(sawArgMin);
+  EXPECT_EQ(synchronousArgExtremaCount, 2u);
 }
 
 TEST(TargetCallFrontendTest, SinkFailureAbortsWithoutPartialResult) {
@@ -997,8 +1160,10 @@ TEST(TargetCallFrontendTest, ExecutesAllRanksWithExplicitDTEOpaqueEvents) {
             transaction.payload) ||
         std::holds_alternative<
             wafer::compiler::TargetDirectDTEReceiveTransaction>(
-            transaction.payload))
+            transaction.payload)) {
+      EXPECT_FALSE(transaction.nccIssueDomain);
       producedEvents.insert(0x2000 + index);
+    }
     if (std::holds_alternative<
             wafer::compiler::TargetDirectDTEBeginTransaction>(
             transaction.payload))
@@ -1011,6 +1176,7 @@ TEST(TargetCallFrontendTest, ExecutesAllRanksWithExplicitDTEOpaqueEvents) {
             std::get_if<wafer::compiler::TargetDirectDTEWaitTransaction>(
                 &transaction.payload)) {
       ++waitCount;
+      EXPECT_FALSE(transaction.nccIssueDomain);
       EXPECT_TRUE(producedEvents.contains(wait->event));
     }
   }

@@ -1,6 +1,7 @@
 //===- Target LLVM lowering implementation -------------------------------===//
 
 #include "Target/LowerInstrToTargetLLVMInternal.h"
+#include "MemoryPlanning/StaticIndexRange.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
@@ -64,7 +65,8 @@ bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
 }
 
 bool isWaferInstruction(mlir::Operation *op) {
-  return mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp>(op);
+  return mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp,
+                   SyncNCCJoinOp>(op);
 }
 
 mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
@@ -288,50 +290,62 @@ analyzeDynamicDDRSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
 }
 
 namespace {
-struct StaticForIVRange {
-  int64_t minimum = 0;
-  int64_t maximum = 0;
-  bool empty = false;
-};
+using StaticIndexRange = memory_planning::detail::StaticIndexRange;
 
-static mlir::FailureOr<StaticForIVRange>
-getStaticForIVRange(mlir::memref::SubViewOp subviewOp,
+static mlir::FailureOr<StaticIndexRange>
+getStaticIndexRange(mlir::memref::SubViewOp subviewOp,
                     mlir::Value dynamicOffset, unsigned dynamicIndex) {
-  auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(dynamicOffset);
-  auto forOp = blockArg && blockArg.getOwner()
-                   ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(
-                         blockArg.getOwner()->getParentOp())
-                   : mlir::scf::ForOp{};
-  if (!forOp || dynamicOffset != forOp.getInductionVar())
+  memory_planning::detail::StaticIndexRangeResult result =
+      memory_planning::detail::evaluateNonNegativeStaticIndexRange(
+          dynamicOffset);
+  using Failure =
+      memory_planning::detail::StaticIndexRangeFailureKind;
+  switch (result.failure) {
+  case Failure::None:
+    return result.range;
+  case Failure::DynamicLoopBounds:
     return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview offset #"
-           << dynamicIndex
-           << " must be the direct induction variable of scf.for";
-
-  std::optional<int64_t> lower =
-      mlir::getConstantIntValue(mlir::getAsOpFoldResult(forOp.getLowerBound()));
-  std::optional<int64_t> upper =
-      mlir::getConstantIntValue(mlir::getAsOpFoldResult(forOp.getUpperBound()));
-  std::optional<int64_t> step =
-      mlir::getConstantIntValue(mlir::getAsOpFoldResult(forOp.getStep()));
-  if (!lower || !upper || !step || *lower < 0 || *upper < 0 || *step <= 0)
-    return subviewOp.emitError()
-           << "unsupported_target_address: dynamic DDR tensor subview offset #"
+           << "unsupported_target_address: dynamic DDR tensor subview "
+              "offset #"
            << dynamicIndex
            << " requires constant non-negative scf.for bounds and a positive "
               "constant step";
-  if (*upper <= *lower)
-    return StaticForIVRange{*lower, *lower, /*empty=*/true};
-
-  int64_t distance = *upper - 1 - *lower;
-  int64_t lastStep = 0;
-  int64_t maximum = 0;
-  if (!checkedMul(distance / *step, *step, lastStep) ||
-      !checkedAdd(*lower, lastStep, maximum))
+  case Failure::InvalidLoopBounds:
     return subviewOp.emitError()
-           << "target_address_overflow: dynamic DDR tensor subview scf.for "
-              "range overflows int64";
-  return StaticForIVRange{*lower, maximum, /*empty=*/false};
+           << "unsupported_target_address: dynamic DDR tensor subview "
+              "offset #"
+           << dynamicIndex
+           << " requires non-negative scf.for bounds and a positive constant "
+              "step";
+  case Failure::NonSingletonMultiplication:
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview "
+              "offset #"
+           << dynamicIndex
+           << " multiplication requires one statically bounded singleton "
+              "operand";
+  case Failure::InvalidUnsignedDivision:
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview "
+              "offset #"
+           << dynamicIndex
+           << " unsigned division requires non-negative static operands and "
+              "a positive divisor";
+  case Failure::ArithmeticOverflow:
+    return subviewOp.emitError()
+           << "target_address_overflow: dynamic DDR tensor subview offset #"
+           << dynamicIndex << " expression overflows int64";
+  case Failure::NegativeRange:
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview offset #"
+           << dynamicIndex << " range must be non-negative";
+  case Failure::UnsupportedExpression:
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic DDR tensor subview offset #"
+           << dynamicIndex
+           << " must be a supported statically bounded index expression";
+  }
+  llvm_unreachable("unhandled static index range failure");
 }
 
 static mlir::LogicalResult
@@ -346,12 +360,12 @@ preflightDynamicDDRSubview(mlir::memref::SubViewOp subviewOp) {
   llvm::ArrayRef<int64_t> sizes = subviewOp.getStaticSizes();
   llvm::ArrayRef<int64_t> strides = subviewOp.getStaticStrides();
   mlir::ValueRange dynamicOffsets = subviewOp.getOffsets();
-  llvm::SmallVector<StaticForIVRange, 4> dynamicRanges;
+  llvm::SmallVector<StaticIndexRange, 4> dynamicRanges;
   dynamicRanges.reserve(dynamicOffsets.size());
   bool unreachable = false;
   for (auto [index, offset] : llvm::enumerate(dynamicOffsets)) {
-    mlir::FailureOr<StaticForIVRange> range =
-        getStaticForIVRange(subviewOp, offset, index);
+    mlir::FailureOr<StaticIndexRange> range =
+        getStaticIndexRange(subviewOp, offset, index);
     if (mlir::failed(range))
       return mlir::failure();
     unreachable |= range->empty;
@@ -366,8 +380,8 @@ preflightDynamicDDRSubview(mlir::memref::SubViewOp subviewOp) {
     int64_t minimum = offsets[dim];
     int64_t maximum = offsets[dim];
     if (mlir::ShapedType::isDynamic(offsets[dim])) {
-      minimum = dynamicRanges[dynamicIndex].minimum;
-      maximum = dynamicRanges[dynamicIndex].maximum;
+      minimum = dynamicRanges[dynamicIndex].min;
+      maximum = dynamicRanges[dynamicIndex].max;
       int64_t dynamicByteOffset = 0;
       if (!checkedMul(maximum, plan->dynamicByteStrides[dynamicIndex],
                       dynamicByteOffset) ||
@@ -850,7 +864,7 @@ verifyTargetInstructionFormat(mlir::Operation *op,
         return verify(typedOp.getSource(), "wdma source");
       })
       .Case<InstrGatherScatterOp, InstrDTESendOp, InstrDTERecvOp,
-            InstrDTEWaitOp, SyncLocalFenceOp>(
+            InstrDTEWaitOp, SyncLocalFenceOp, SyncNCCJoinOp>(
           [&](auto) { return mlir::success(); })
       .Case<InstrFillOp>(
           [&](auto typedOp) { return verify(typedOp.getDest(), "fill dest"); })
@@ -987,6 +1001,21 @@ mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp,
     return mlir::WalkResult::advance();
   });
   return failed ? mlir::failure() : mlir::success();
+}
+
+mlir::LogicalResult preflightTargetNCCWorkers(mlir::ModuleOp moduleOp) {
+  mlir::WalkResult result = moduleOp.walk([&](mlir::Operation *op) {
+    auto issue = mlir::dyn_cast<WaferNCCIssueOpInterface>(op);
+    if (!issue || issue.getIssueWorker() == NCCWorker::Worker0)
+      return mlir::WalkResult::advance();
+    op->emitError()
+        << "unsupported_target_worker: current target operator ABI does not "
+           "encode NCC issue worker '"
+        << stringifyEnum(issue.getIssueWorker())
+        << "'; only worker0 is lowerable";
+    return mlir::WalkResult::interrupt();
+  });
+  return result.wasInterrupted() ? mlir::failure() : mlir::success();
 }
 
 mlir::LogicalResult preflightTargetAddresses(mlir::ModuleOp moduleOp) {

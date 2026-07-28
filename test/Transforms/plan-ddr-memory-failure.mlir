@@ -81,3 +81,43 @@ func.func @dynamic_subview_is_not_accepted(
   }
   return
 }
+
+// -----
+
+func.func @loop_carried_backedge_view_exceeds_root() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c8 = arith.constant 8 : index
+  %ddr = memref.alloc()
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+  %init = memref.subview %ddr[%c0] [1] [1]
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+     to memref<1xf16, strided<[1], offset: ?>,
+               #wafer.memory<ddr, tensor>>
+  %next = memref.subview %ddr[%c8] [1] [1]
+      : memref<8xf16, #wafer.memory<ddr, tensor>>
+     to memref<1xf16, strided<[1], offset: ?>,
+               #wafer.memory<ddr, tensor>>
+  %spm = memref.alloc()
+      {wafer.spm.offset = #wafer.spm_offset<65536>}
+      : memref<1xf16, #wafer.memory<spm, tensor>>
+  %result = scf.for %iv = %c0 to %c2 step %c1
+      iter_args(%carried = %init)
+      -> (memref<1xf16, strided<[1], offset: ?>,
+                    #wafer.memory<ddr, tensor>>) {
+    // expected-error @below {{source access end 18 exceeds DDR root byte size 16}}
+    wafer.instr.rdma %carried to %spm
+        {byte_count = 2 : i64, inner_bytes = 2 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<1xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+       to memref<1xf16, #wafer.memory<spm, tensor>>
+    scf.yield %next
+        : memref<1xf16, strided<[1], offset: ?>,
+                 #wafer.memory<ddr, tensor>>
+  }
+  wafer.instr.ncc_join [0]
+  return
+}

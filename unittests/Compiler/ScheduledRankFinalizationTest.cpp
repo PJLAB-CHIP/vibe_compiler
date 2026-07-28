@@ -7,6 +7,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
@@ -16,6 +17,9 @@
 #include <vector>
 
 namespace {
+
+constexpr wafer::TargetProfileId kTargetProfile =
+    wafer::TargetProfileId::waferTx81SingleCardKernelV1();
 
 class ScheduledRankFinalizationTest : public ::testing::Test {
 protected:
@@ -86,16 +90,17 @@ TEST_F(ScheduledRankFinalizationTest,
       });
 
   std::vector<wafer::ScheduledRankCandidate> frontier;
-  frontier.emplace_back(std::move(overflow), /*stableOrdinal=*/3,
-                        wafer::RankArtifactKind::Spill,
-                        /*reservedBaseline=*/false);
+  frontier.emplace_back(
+      std::move(overflow), /*stableOrdinal=*/3, wafer::RankArtifactKind::Spill,
+      /*reservedBaseline=*/false, wafer::RankBufferingKind::StaticFixedSlot,
+      /*bufferingPlanOrdinal=*/2);
   frontier.emplace_back(std::move(valid), /*stableOrdinal=*/4,
                         wafer::RankArtifactKind::Spill,
                         /*reservedBaseline=*/true);
   mlir::FailureOr<std::vector<wafer::compiler::detail::FinalizedRankCandidate>>
       finalized =
           wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-              std::move(frontier));
+              std::move(frontier), kTargetProfile);
 
   ASSERT_TRUE(mlir::succeeded(finalized)) << diagnostics;
   ASSERT_EQ(finalized->size(), 1u);
@@ -104,6 +109,38 @@ TEST_F(ScheduledRankFinalizationTest,
   EXPECT_TRUE(finalized->front().reservedBaseline);
   EXPECT_NE(diagnostics.find("capacity_overflow"), std::string::npos)
       << diagnostics;
+}
+
+TEST_F(ScheduledRankFinalizationTest,
+       PreservesFixedSlotBufferingIdentityForSurvivingAlternative) {
+  mlir::OwningOpRef<mlir::ModuleOp> baseline =
+      candidateWithSPMElements(/*elements=*/128);
+  mlir::OwningOpRef<mlir::ModuleOp> fixed =
+      candidateWithSPMElements(/*elements=*/256);
+  ASSERT_TRUE(baseline);
+  ASSERT_TRUE(fixed);
+
+  std::vector<wafer::ScheduledRankCandidate> frontier;
+  frontier.emplace_back(std::move(baseline), /*stableOrdinal=*/4,
+                        wafer::RankArtifactKind::Spill,
+                        /*reservedBaseline=*/true);
+  frontier.emplace_back(
+      std::move(fixed), /*stableOrdinal=*/4, wafer::RankArtifactKind::Spill,
+      /*reservedBaseline=*/false, wafer::RankBufferingKind::StaticFixedSlot,
+      /*bufferingPlanOrdinal=*/6);
+
+  auto finalized =
+      wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
+          std::move(frontier), kTargetProfile);
+  ASSERT_TRUE(mlir::succeeded(finalized));
+  ASSERT_EQ(finalized->size(), 2u);
+  auto fixedCandidate = llvm::find_if(*finalized, [](const auto &candidate) {
+    return candidate.bufferingKind == wafer::RankBufferingKind::StaticFixedSlot;
+  });
+  ASSERT_NE(fixedCandidate, finalized->end());
+  EXPECT_EQ(fixedCandidate->stableOrdinal, 4);
+  EXPECT_EQ(fixedCandidate->bufferingPlanOrdinal, 6u);
+  EXPECT_FALSE(fixedCandidate->reservedBaseline);
 }
 
 TEST_F(ScheduledRankFinalizationTest, FailsOnlyWhenNoAlternativeSurvives) {
@@ -126,7 +163,7 @@ TEST_F(ScheduledRankFinalizationTest, FailsOnlyWhenNoAlternativeSurvives) {
 
   EXPECT_TRUE(mlir::failed(
       wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-          std::move(frontier))));
+          std::move(frontier), kTargetProfile)));
   EXPECT_NE(diagnostics.find("capacity_overflow"), std::string::npos)
       << diagnostics;
 }
@@ -151,7 +188,7 @@ TEST_F(ScheduledRankFinalizationTest,
 
   EXPECT_TRUE(mlir::failed(
       wafer::compiler::detail::finalizeScheduledRankCandidateFrontier(
-          std::move(frontier))));
+          std::move(frontier), kTargetProfile)));
   EXPECT_NE(diagnostics.find("rank_frontier_contains_whole_variant_facts"),
             std::string::npos)
       << diagnostics;

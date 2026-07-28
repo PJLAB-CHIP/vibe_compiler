@@ -154,7 +154,8 @@ mlir::LogicalResult accumulateStaticTerminalOperations(mlir::Operation *root,
   root->walk([&](mlir::Operation *operation) {
     if (overflow)
       return;
-    if (!mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp>(operation))
+    if (!mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp,
+                   SyncNCCJoinOp>(operation))
       return;
     if (count == std::numeric_limits<uint64_t>::max()) {
       overflow = true;

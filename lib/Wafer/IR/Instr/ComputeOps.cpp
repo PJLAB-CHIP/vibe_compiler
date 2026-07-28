@@ -1233,3 +1233,19 @@ mlir::LogicalResult InstrUnpoolOp::verify() {
 }
 
 InstrFamily InstrUnpoolOp::getInstructionFamily() { return InstrFamily::CT; }
+
+#define WAFER_DEFINE_NCC_ISSUE_WORKER(OP)                                  \
+  NCCWorker OP::getIssueWorker() { return getWorker(); }
+
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrFillOp)
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrElementwiseOp)
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrBit2FpOp)
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrMaskMoveOp)
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrReduceOp)
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrConvertOp)
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrGemmOp)
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrConvOp)
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrPoolOp)
+WAFER_DEFINE_NCC_ISSUE_WORKER(InstrUnpoolOp)
+
+#undef WAFER_DEFINE_NCC_ISSUE_WORKER

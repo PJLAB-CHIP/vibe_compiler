@@ -3,6 +3,8 @@
 #ifndef WAFER_IR_WAFERINTERFACES_H
 #define WAFER_IR_WAFERINTERFACES_H
 
+#include "Wafer/ABI/Tx81NCCABI.h"
+
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Types.h"
@@ -11,30 +13,51 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace wafer {
 
 enum class MemLayout : uint32_t;
 enum class MemorySpace : uint32_t;
 enum class InstrFamily : uint32_t;
+enum class NCCWorker : uint32_t;
 
-/// Completion behavior of one local Compute/Movement instruction.
+inline constexpr uint32_t kNCCWorkerCount = WAFER_TX81_NCC_WORKER_COUNT;
+inline constexpr uint32_t kAllNCCWorkersMask =
+    WAFER_TX81_NCC_ALL_WORKERS_MASK;
+
+/// Completion behavior of one local NCC instruction.
 ///
-/// Ordinary issues remain pending until an explicit local fence. A
-/// barrier-and-complete operation drains prior local issues and has completed
-/// its own value effects when the operation returns. `None` covers operations
-/// outside the local NCC completion domain, including Direct DTE.
+/// Ordinary issues are ordered within their worker domain but remain
+/// externally pending. A typed join completes exactly its participant worker
+/// set. Synchronous writeback operations both issue and drain internally.
+/// `None` covers operations outside NCC completion, including Direct DTE.
 enum class LocalInstructionCompletion : uint32_t {
   None,
-  PendingUntilFence,
-  BarrierAndComplete,
+  OrderedPending,
+  ParticipantJoin,
+  SynchronousWriteback,
 };
+
+struct NCCCompletionContract {
+  LocalInstructionCompletion behavior = LocalInstructionCompletion::None;
+  std::optional<NCCWorker> issueWorker;
+  uint32_t participantMask = 0;
+};
+
+/// Derive the complete typed NCC issue/completion contract from one operation.
+/// `participantMask` is nonzero only for a join or synchronous writeback.
+NCCCompletionContract getNCCCompletionContract(mlir::Operation *operation);
 
 /// Derive the local completion contract from the typed operation and its
 /// standard resource effects. This is the shared scheduling/lifetime boundary;
 /// callers must not infer completion from an operation or symbol name.
 LocalInstructionCompletion
 classifyLocalInstructionCompletion(mlir::Operation *operation);
+
+/// Return the typed issue worker for ordinary NCC issue and synchronous
+/// writeback operations.
+std::optional<NCCWorker> getNCCIssueWorker(mlir::Operation *operation);
 
 /// Closed target capabilities consumed while enumerating source
 /// implementations.  These values are compiler inputs, not source-IR attrs or

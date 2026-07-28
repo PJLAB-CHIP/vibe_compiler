@@ -154,7 +154,8 @@ public:
             .getResult();
     rewriter.create<InstrConvertOp>(
         op.getLoc(), InstrConvertKindAttr::get(rewriter.getContext(), *kind),
-        op.getSource(), dest, zeroPoint, roundingMode);
+        op.getSource(), dest, zeroPoint, roundingMode,
+        getDefaultNCCWorkerAttr(rewriter));
     rewriter.replaceOp(op, dest);
     return mlir::success();
   }
@@ -428,9 +429,6 @@ public:
       inputs.push_back(materialized);
       materializedMappedInput = true;
     }
-    if (materializedMappedInput)
-      rewriter.create<SyncLocalFenceOp>(op.getLoc());
-
     mlir::Value dest =
         rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
             .getResult();
@@ -438,21 +436,18 @@ public:
     if (op.getKind() == ComputeElementwiseKind::Select) {
       createGatherScatter(rewriter, op.getLoc(), inputs[2], dest,
                           *falseDescriptor, *selectDestDescriptor);
-      rewriter.create<SyncLocalFenceOp>(op.getLoc());
       mlir::Value mask =
           rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
               .getResult();
       rewriter.create<InstrBit2FpOp>(op.getLoc(), inputs[0], mask);
-      rewriter.create<SyncLocalFenceOp>(op.getLoc());
       rewriter.create<InstrMaskMoveOp>(op.getLoc(), inputs[1], mask, dest);
-      rewriter.create<SyncLocalFenceOp>(op.getLoc());
       rewriter.replaceOp(op, dest);
       return mlir::success();
     }
 
-    rewriter.create<InstrElementwiseOp>(op.getLoc(), instrKind, inputs, dest);
-    if (materializedMappedInput)
-      rewriter.create<SyncLocalFenceOp>(op.getLoc());
+    rewriter.create<InstrElementwiseOp>(
+        op.getLoc(), instrKind, inputs, dest,
+        getDefaultNCCWorkerAttr(rewriter));
     rewriter.replaceOp(op, dest);
     return mlir::success();
   }
@@ -652,8 +647,8 @@ public:
         auto kind = InstrReduceKindAttr::get(rewriter.getContext(),
                                              InstrReduceKind::Sum);
         rewriter.create<InstrReduceOp>(op.getLoc(), kind, op.getInput(), *dest,
-                                       getI64Attr(rewriter, *targetDim));
-        rewriter.create<SyncLocalFenceOp>(op.getLoc());
+                                       getI64Attr(rewriter, *targetDim),
+                                       getDefaultNCCWorkerAttr(rewriter));
         rewriter.replaceOp(op, *dest);
         return mlir::success();
       }
@@ -673,7 +668,7 @@ public:
     };
     llvm::SmallVector<SlicePlan, 8> slicePlans;
     slicePlans.reserve(static_cast<size_t>(*reductionTupleCount));
-    uint64_t terminalOperationCount = 2; // Initial fill and completion.
+    uint64_t terminalOperationCount = 1; // Initial fill.
 
     for (int64_t linearTuple = 0; linearTuple < *reductionTupleCount;
          ++linearTuple) {
@@ -715,12 +710,12 @@ public:
       if (mlir::failed(commandCount))
         return mlir::failure();
       if (*commandCount > budget - terminalOperationCount ||
-          3 > budget - terminalOperationCount - *commandCount)
+          1 > budget - terminalOperationCount - *commandCount)
         return failPattern(
             rewriter, op, failureReason,
             "static_terminal_budget_exceeded: ordered tile.reduce terminal "
             "operation count exceeds 4096");
-      terminalOperationCount += *commandCount + 3;
+      terminalOperationCount += *commandCount + 1;
       slicePlans.push_back({std::move(*segments)});
     }
 
@@ -736,8 +731,7 @@ public:
                                         "tile.reduce final logical movement");
     if (mlir::failed(finalCommandCount))
       return mlir::failure();
-    if (*finalCommandCount > budget - terminalOperationCount ||
-        1 > budget - terminalOperationCount - *finalCommandCount)
+    if (*finalCommandCount > budget - terminalOperationCount)
       return failPattern(
           rewriter, op, failureReason,
           "static_terminal_budget_exceeded: ordered tile.reduce terminal "
@@ -763,23 +757,21 @@ public:
       return mlir::failure();
 
     rewriter.create<InstrFillOp>(op.getLoc(), accumulatorA, init,
-                                 /*fill_domain=*/FillDomainAttr{});
-    rewriter.create<SyncLocalFenceOp>(op.getLoc());
+                                 /*fill_domain=*/FillDomainAttr{},
+                                 getDefaultNCCWorkerAttr(rewriter));
     mlir::Value currentAccumulator = accumulatorA;
     mlir::Value nextAccumulator = accumulatorB;
     for (const SlicePlan &plan : slicePlans) {
       createGatherScatterSegments(rewriter, op.getLoc(), op.getInput(), slice,
                                   plan.segments);
-      rewriter.create<SyncLocalFenceOp>(op.getLoc());
       llvm::SmallVector<mlir::Value, 2> inputs{currentAccumulator, slice};
       rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
-                                          inputs, nextAccumulator);
-      rewriter.create<SyncLocalFenceOp>(op.getLoc());
+                                          inputs, nextAccumulator,
+                                          getDefaultNCCWorkerAttr(rewriter));
       std::swap(currentAccumulator, nextAccumulator);
     }
     createGatherScatterSegments(rewriter, op.getLoc(), currentAccumulator,
                                 *dest, *finalSegments);
-    rewriter.create<SyncLocalFenceOp>(op.getLoc());
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -821,7 +813,8 @@ public:
         /*rhs_n_dim=*/mlir::IntegerAttr{},
         /*result_batch_dims=*/mlir::DenseI64ArrayAttr{},
         /*result_m_dim=*/mlir::IntegerAttr{},
-        /*result_n_dim=*/mlir::IntegerAttr{});
+        /*result_n_dim=*/mlir::IntegerAttr{},
+        getDefaultNCCWorkerAttr(rewriter));
     copyOptionalAttr(op, instr, "batch_count");
     copyOptionalAttr(op, instr, "lhs_batch_dims");
     copyOptionalAttr(op, instr, "lhs_m_dim");

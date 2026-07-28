@@ -943,7 +943,7 @@ module {
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
-     AcceptsExactOrderedReduceTerminalOperationBudget) {
+     AcceptsOrderedReduceAfterTerminalJoinCoalescing) {
   mlir::DialectRegistry registry;
   registerConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -975,18 +975,23 @@ module {
 
   uint64_t terminalOperationCount = 0;
   module->walk([&](mlir::Operation *operation) {
-    if (mlir::isa<wafer::WaferInstructionOpInterface, wafer::SyncLocalFenceOp>(
+    if (mlir::isa<wafer::WaferInstructionOpInterface, wafer::SyncNCCJoinOp>(
             operation))
       ++terminalOperationCount;
   });
-  EXPECT_EQ(terminalOperationCount,
+  // Ordered operations on one worker remain in one hardware dependency
+  // stream.  Only the function exit needs to materialize a completion join;
+  // accounting must not restore one blocking wait after every operation.
+  EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(*module), 1u);
+  EXPECT_EQ(terminalOperationCount, 2049u);
+  EXPECT_LT(terminalOperationCount,
             wafer::detail::kStaticTerminalOperationBudget);
   EXPECT_EQ(countOps<wafer::ComputeReduceOp>(*module), 0u);
   EXPECT_EQ(countOps<wafer::InstrReduceOp>(*module), 0u);
 }
 
 TEST(WaferTensorProgramToTileRegionTest,
-     ReusesSPMAcrossCompletedElementwiseTraversalTiles) {
+     ReusesSPMAcrossOrderedElementwiseTraversalWithoutPerTileJoin) {
   mlir::DialectRegistry registry;
   registerConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -1031,7 +1036,7 @@ module {
   ASSERT_TRUE(mlir::succeeded(
       wafer::convertTileRegionToInstrModule(*lowered, &failureReason)))
       << failureReason;
-  EXPECT_EQ(countOps<wafer::SyncLocalFenceOp>(*lowered), 3u);
+  EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(*lowered), 1u);
 
   mlir::LogicalResult planned = wafer::planSPMMemoryModule(
       *lowered, /*spmBase=*/65536, /*spmLimit=*/3080192,

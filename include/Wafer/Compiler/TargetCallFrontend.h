@@ -13,9 +13,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace wafer::compiler {
+
+struct TargetNCCIssueDomain {
+  TargetCallTSMEngine engine;
+  NCCWorker worker;
+  LocalInstructionCompletion completionBehavior;
+};
 
 /// One dynamic call effect. Rank is explicitly bound by the JIT bridge. The
 /// ordinal is assigned monotonically inside that rank context; neither field
@@ -24,6 +31,7 @@ struct TargetTransaction {
   int64_t logicalRank;
   uint64_t issueOrdinal;
   TargetTransactionPayload payload;
+  std::optional<TargetNCCIssueDomain> nccIssueDomain = std::nullopt;
 };
 
 struct TargetCallRankDescriptor {

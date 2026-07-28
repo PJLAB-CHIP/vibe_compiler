@@ -2,6 +2,7 @@
 #define WAFER_TX81_CRT_H
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
+#include "Wafer/ABI/Tx81NCCABI.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -55,6 +56,7 @@ void wafer_tx81_tdma_img2col(uint64_t src, uint64_t dst, uint32_t src_n,
                              uint32_t kernel_y, uint32_t stride_x,
                              uint32_t stride_y, uint32_t format);
 void wafer_tx81_local_fence(void);
+void wafer_tx81_ncc_join(uint32_t participant_mask);
 
 void wafer_tx81_direct_dte_begin(uint64_t status_addr, uint32_t rank_count);
 void wafer_tx81_direct_dte_begin_after_prepare(uint64_t status_addr,

@@ -13,7 +13,7 @@ exchange、跨卡 route和raw non-unicast DTE仍是独立扩展，不能反向�
   interfaces和enclosing execution mesh表达；MLIR Mesh op能精确承载的部分优先复用Mesh语义；
 - direct/ring/tree 只是一小组 compiler-private typed rewrite 参数；
 - 每个参数点直接改写一个 isolated complete-rank clone，生成真实 p2p、local movement/compute、staging、
-  token、wait 和 fence IR；
+  token、exact wait 和minimum participant join IR；
 - SPM/DDR/event analysis 从改写后的当前 IR fresh 重算；
 - all-rank coordinator 只读取 current memory-bound instruction IR，完成 message、range、completion 和 resource
   检查，然后原子写入 `DirectDTEBindingAttr`；
@@ -39,11 +39,13 @@ Pipeline position:
   Direct/Ring/Tree小集合，并由无状态topology helper从current rank-to-endpoint placement与规则邻接派生Ring/Tree
   的typed order/edge参数；对每个参数点使用
   PatternRewriter/DialectConversion在complete-rank clone内
-  直接展开全部p2p、local movement/compute、communication staging、SSA token、wait和local fence，并在
+  直接展开全部p2p、local movement/compute、communication staging、SSA token和exact wait；NCC issue只携带
+  typed worker，统一completion placement仅在真实NCC→DTE/Kcore/不同worker/host cut生成minimum participant join，并在
   rewrite结束后fresh验证IR。不得产生独立于clone的执行图或可序列化候选记录。
 - Output artifact / IR:
   verifier-legal、尚未分配物理transport resource的complete-rank instruction candidate。所有logical peer、
-  message identity、byte range、buffer slice、staging allocation、local compute、issue token、wait和fence均在
+  message identity、byte range、buffer slice、staging allocation、local compute、issue token、exact wait和
+  participant join均在
   op/SSA/effect中；该candidate边界不允许残留未展开collective或算法选择attr。
 - Downstream consumer:
   instruction legality、SPM/DDR lifetime与offset planning、event-liveness、exact static cost/resource analysis，
@@ -101,7 +103,7 @@ post-SPMD structured collective IR
   -> rank specialization / tiling / storage materialization
   -> clone complete rank candidate
   -> enumerate a few typed direct/ring/tree parameters
-  -> rewrite that clone to explicit p2p + local work + staging + token/wait/fence
+  -> rewrite that clone to explicit p2p + local work + staging + token/exact wait/minimum participant join
   -> local verifier and fresh analyses
   -> whole-entry SPM/DDR/event planning
   -> all-rank message/range/completion/resource acceptance
@@ -164,9 +166,11 @@ fusion、control-instance和transport验证。
 
 terminal collective作为complete traversal root时，每个rank必须执行相同的static/tail tile domain和词典序control flow。
 同一静态issue op可以在structured loop中产生多个dynamic communication instance，但每个instance必须在进入下一tile前
-完成匹配的issue/wait及local consumer fence；因此同一message identity只允许顺序复用，不能存在跨iteration的并发live
-instance。all-rank acceptance必须从current SCF、token、wait和message IR验证这一关系；不得把loop ordinal编码进旁路表，
-也不得仅因静态send/recv各出现一次就推定dynamic instance匹配。
+完成匹配的Direct DTE issue/wait；因此current single-live-resource profile下同一message identity只允许顺序复用，
+不能存在跨iteration的并发live DTE instance。wait后的same-worker local consumer只保持issue order，只有DTE/Kcore/
+不同worker/host等真实外部观察才需要participant join，loop backedge本身不产生join。all-rank acceptance必须从
+current SCF、token、wait和message IR验证这一关系；不得把loop ordinal编码进旁路表，也不得仅因静态send/recv
+各出现一次就推定dynamic instance匹配。
 
 ### 2.3 Buffer-level collective op
 
@@ -252,7 +256,8 @@ helper的边界：
 1. clone当前完整rank candidate，而不是clone单个collective op；
 2. 在clone中定位对应logical/tile collective；
 3. 用`PatternRewriter`或`DialectConversion`直接创建真实staging alloc/view、local movement/compute、
-   `wafer.instr.dte_send`、`wafer.instr.dte_recv`、`wafer.instr.dte_wait`和local fence；
+   `wafer.instr.dte_send`、`wafer.instr.dte_recv`、`wafer.instr.dte_wait`和真实domain cut上的typed
+   NCC participant join；
 4. 生成由collective语义和algorithm phase/round/slice派生的`DTEMessageAttr`；
 5. replace/erase原collective，验证conversion legality、SSA dominance、effects和op verifier；
 6. 丢弃旧analysis，针对改写后的clone fresh重算lifetime、resource和cost；
@@ -355,7 +360,8 @@ logical view
   -> logical result view
 ```
 
-由此产生的staging alloc、subview、movement和fence全部留在clone中，SPM planner能看到真实容量和lifetime。
+由此产生的staging alloc、subview、movement、exact wait和必要participant join全部留在clone中，SPM planner
+能看到真实容量和lifetime。
 DTE本身不承担gather/scatter、layout conversion或local visibility。
 
 ## 5. Collective Lowering
@@ -381,31 +387,32 @@ direct：
 
 ```text
 copy local shard to local result slot
-local_fence
+NCC join{producer worker} only if DTE first observes that slot
 for distance in 1 .. group_size - 1 using semantic group indices:
   send local slot to peer
   recv peer shard into contiguous staging
   wait send/recv
   insert staging into peer result slot
-final local_fence
+no structural final join; join only before an actual NCC-domain-external consumer
 ```
 
 ring：
 
 ```text
 copy local shard to local result slot
-local_fence
+NCC join{producer worker} only before the first DTE send of that slot
 for round in 0 .. group_size - 2:
   send current carried shard to successor
   recv predecessor shard into contiguous staging
   wait send/recv
   insert received shard into its result slot
   make that shard the next carried shard
-final local_fence
+no round/backedge/final structural join
 ```
 
 `RingParams.rank_order`决定predecessor、successor与payload slice。每个round在IR中都有独立message、
-buffer view、token和wait；最终local fence排序received-slot movement后，resident consumer才能读取完整result。
+buffer view、token和wait；DTE读取由其前面覆盖producer worker的join保证，收到后的same-worker insert/consumer
+依赖保持issue order，只有Kcore、不同worker、host publication或unsafe reuse等真实外部观察才需要新的join。
 
 ### 5.3 Reduce-Scatter
 
@@ -418,7 +425,8 @@ for each remote contributor in deterministic peer order:
   recv peer contribution for this rank's slot into staging
   wait send/recv
   local reduce staging into accumulator
-  local_fence before accumulator reuse/visibility
+  preserve same-worker issue order for the next reduction
+  join{accumulator worker} only before DTE/Kcore/different-worker visibility
 ```
 
 scatter axis、slot shape和combiner来自logical collective。sum/max/min等local reduction由明确compute op表达，
@@ -440,7 +448,7 @@ ring必须复用同一chunk语义组合两段真实body：
 整除静态payload时，全卡注入bytes为`2 * (group_size - 1) * B`，而不是
 `group_size * (group_size - 1) * B`。不能整分时必须用typed ragged chunk及非零byte message明确实现；在该能力
 闭合前只拒绝ring候选并保留tree，不能回退为每轮发送full buffer却仍称为Ring。每次local compute、pack/unpack和
-final result发布都由显式token/wait/fence排序。
+final result发布都由same-worker issue order、显式token/exact wait及真实cut上的minimum participant join排序。
 
 tree：`TreeParams`从current topology/placement和`rank_group`派生一棵有界、确定性的ordered binary tree。
 interval DP枚举每个连续group-index区间的合法root/左右子树，要求全树中序遍历严格等于`rank_group`；目标先
@@ -450,7 +458,8 @@ interval DP枚举每个连续group-index区间的合法root/左右子树，要�
 1. reduce phase由children向root发送partial；parent按left-subtree、local operand、right-subtree次序wait并显式local reduce；
 2. reverse broadcast phase由root沿同一tree发送最终accumulator；
 3. 非root rank wait final recv后发布result；
-4. 任何将被DTE读取或被resident consumer读取的local-compute结果之前都有正确local fence。
+4. 任何将被DTE/Kcore/不同worker读取的local-compute结果之前都有覆盖实际producer worker的participant join；
+   same-worker resident consumer保持issue order而不逐edge drain。
 
 Tree和Ring都接受支持的floating add/min/max，不要求额外numeric permission；二者区别完全体现在clone里的
 p2p/local-compute body中，不保留algorithm attr。rank group、topology、chunk和completion仍逐项验证。
@@ -491,7 +500,7 @@ communication通常是byte-preserving movement，不是semantic layout conversio
 - producer与consumer可共享同一合法physical layout时，DTE直接操作该连续representation；
 - 需要layout change时，明确的layout materialization op位于send前或recv后；
 - communication staging、double buffer、recv slot和count/control buffer都是普通typed allocation/value，
-  lifetime从SSA use-def、effect、token、wait和fence推导；
+  lifetime从SSA use-def、effect、typed worker、token、exact wait和participant join推导；
 - SPM analysis从当前clone收集demand并分配offset，不读取collective attr中的预估容量；
 - 使用DDR staging时，真实`#wafer.memory<ddr, ...>` value进入DDR planner，不在communication op上复制arena
   或range；
@@ -512,9 +521,9 @@ movement。physical transport acceptance必须发生在planning之后，因为re
 | DTE send | 读source SPM；Communication issue | token覆盖source不可复用区间 |
 | DTE recv | 写destination SPM；Communication issue | token覆盖destination不可读区间 |
 | DTE wait | Communication barrier；沿token派生send source read或recv destination completion write | 完成对应issue，不完成后续local movement/compute |
-| local movement/compute | 对实际SPM/DDR与Movement/Compute resource报告effect | 由对应local fence排序可见性 |
-| local fence | Sync及所排序local resource effect | 不完成Direct DTE |
-| group barrier | group control effect | 不替代local fence或DTE wait |
+| local movement/compute | 对实际SPM/DDR与Movement/Compute resource报告effect | same-worker后继保持issue order；外部观察需participant join |
+| NCC participant join | Sync及被覆盖worker的pending effect | 只完成participant NCC worker，不完成Direct DTE |
+| group barrier | group control effect | 不替代NCC participant join或DTE wait |
 
 resource access使用标准`MemoryEffectOpInterface`和必要的MLIR custom
 `SideEffects::Resource`；bytes/footprint从typed buffers、descriptor fields和current op重算，不复制成
@@ -526,7 +535,8 @@ unknown/external call保持conservative barrier。
 - issue token必须有明确wait consumer；当前Direct DTE acceptance要求唯一same-block wait；
 - recv result只有在wait支配后续read时才可见；
 - send source只有在wait后才可复用；
-- wait之后若还有local insert/reduce，resident consumer还必须被local fence支配；
+- wait之后若还有same-worker local insert/reduce，由issue order保持依赖；若后续是Kcore、DTE、不同worker、
+  host publication或unsafe reuse，必须先有覆盖producer worker的participant join；
 - local NCC drain、DTE/FSM completion和group barrier是三种不同事件；
 - `async.token`表示依赖完成，不等于target operation成功；success、transport error、timeout与peer failure由
   lower-level status/completion contract区分；
@@ -651,9 +661,9 @@ p2p instruction：
 
 ### 11.2 Cross-op 与 memory verifier
 
-- local fence支配DTE读取的local producer结果；
+- 覆盖actual producer worker的participant join支配DTE读取的local producer结果；
 - wait支配recv buffer read和send buffer reuse；
-- wait后local insert/reduce由后续local fence完成；
+- wait后same-worker local insert/reduce保持issue order；跨worker/Kcore/DTE/host观察前有matching join；
 - staging root/view/alias关系可解析；
 - SPM/DDR allocation覆盖完整live range且互不非法重叠；
 - final instruction program不含未loweredcollective或unsupported dynamic message instance。
@@ -707,7 +717,7 @@ p2p instruction：
 
 wafer.instr.dte_wait %send, %recv : !async.token, !async.token
 // explicit local insert %recv_staging into the result slot
-// explicit local fence before a resident consumer observes that slot
+// no join for a same-worker resident successor; join only before a domain-external observer
 ```
 
 真实op spelling以ODS为准。示例中的rank数、bytes、communication id和round都不是协议常量；重要的是message、
@@ -721,7 +731,7 @@ left-before-right children使全树中序遍历保持该rank group。非leaf par
 ```text
 recv child partial into staging -> wait
 explicit local reduce(accumulator, staging) -> accumulator'
-local_fence if accumulator' is sent or consumed
+NCC join{accumulator worker} if accumulator' is sent or observed outside that worker
 repeat for remaining children
 send reduced accumulator to parent -> wait
 ```

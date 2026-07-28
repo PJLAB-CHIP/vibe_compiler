@@ -825,7 +825,7 @@ Q22.H只消费Q22.L，不以Q22.N、Q22.B、SystemC或vendor授权为前置：
 - host clone执行Q22.L同一fully legal target LLVM control-flow/call graph，不接受重新lower或修改bundle；native retarget前
   拒绝target intrinsic、inline asm、未知address space和非registry external call；
 - lowering和frontend消费稳定Target层的同一typed target-call registry；all reachable `wafer_tx81_*` symbol、exact
-  signature、call family和field decoder获得111项all-and-only signature/payload coverage，不在JIT/SystemC/test复制
+  signature、call family和field decoder获得112项all-and-only signature/payload coverage，不在JIT/SystemC/test复制
   字符串表；完整symbol只允许exact ABI-key lookup，不允许前后缀或参数数量启发式恢复；
 - 动态slot entry通过`void(const uint64_t *slots)`fixed thunk调用；每rank exact-signature bridge显式绑定invocation/rank
   context并同步投递typed transaction，禁止variadic cast、TLS/thread/call-order rank recovery；
@@ -1382,7 +1382,7 @@ host/no-card gate至少覆盖：
 - 五类CRT helper每个真实`TsmExecute`调用各产生一条固定版本`ncc-command` record，同时保存typed site envelope、
   紧贴调用的submit span、严格sample bound、observation count和execution-counter delta。completion wait与Direct-DTE
   wait/phase使用独立typed event kind；one-to-many site使用`sub_index`，rank-local `site_id`和`sequence`连续；
-  site map只按typed semantic/registry ordinal解释NCC command、LocalFence completion及Direct-DTE control/wait，
+  site map只按typed semantic/registry ordinal解释NCC command、LocalFence/NCCJoin completion及Direct-DTE control/wait，
   不从名字恢复语义；
 - all-and-only 16个header与bounded DDR record buffer的magic/schema/logical-tile/count/capacity/overflow/
   guard/readback验证；evidence必须保留count preflight、trace `next_sequence`、`dropped_event_count`、raw flags和terminal

@@ -74,14 +74,37 @@ static llvm::StringRef convStem(InstrConvKind kind) {
   llvm_unreachable("unknown convolution kind");
 }
 
+static LocalInstructionCompletion
+getTargetCallCompletionBehavior(const TargetCallSemantic &semantic,
+                                TargetCallTSMEngine engine) {
+  if (engine == TargetCallTSMEngine::DirectDTE)
+    return LocalInstructionCompletion::None;
+  if (const auto *peripheral =
+          std::get_if<InstrPeripheralKind>(&semantic)) {
+    if (*peripheral == InstrPeripheralKind::ArgMax ||
+        *peripheral == InstrPeripheralKind::ArgMin)
+      return LocalInstructionCompletion::SynchronousWriteback;
+  }
+  return LocalInstructionCompletion::OrderedPending;
+}
+
 static std::vector<TargetCallDescriptor> buildDescriptors() {
   std::vector<TargetCallDescriptor> result;
-  result.reserve(111);
+  result.reserve(112);
 
   auto add = [&](llvm::StringRef stem, Result callResult,
                  std::vector<Scalar> arguments, TargetCallSemantic semantic) {
+    std::optional<TargetCallIssueDomain> issueDomain;
+    if (std::optional<TargetCallTSMEngine> engine =
+            getTargetCallTSMEngine(semantic)) {
+      std::optional<NCCWorker> worker;
+      if (*engine != TargetCallTSMEngine::DirectDTE)
+        worker = NCCWorker::Worker0;
+      issueDomain = TargetCallIssueDomain{
+          *engine, worker, getTargetCallCompletionBehavior(semantic, *engine)};
+    }
     result.push_back({("wafer_tx81_" + stem).str(), callResult,
-                      std::move(arguments), semantic});
+                      std::move(arguments), semantic, issueDomain});
   };
   auto addVoid = [&](llvm::StringRef stem, std::vector<Scalar> arguments,
                      TargetCallSemantic semantic) {
@@ -102,6 +125,7 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
   addVoid("tdma_pad", signature(2, 13), TargetCallBuiltin::TDMAPad);
   addVoid("tdma_img2col", signature(2, 17), TargetCallBuiltin::TDMAImg2Col);
   addVoid("local_fence", {}, TargetCallBuiltin::LocalFence);
+  addVoid("ncc_join", {Scalar::I32}, TargetCallBuiltin::NCCJoin);
 
   addVoid("direct_dte_begin", {Scalar::I64, Scalar::I32},
           TargetCallBuiltin::DirectDTEBegin);
@@ -176,7 +200,27 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
   addPeripheral(InstrPeripheralKind::RandGen, 5, 7);
   addPeripheral(InstrPeripheralKind::ElemMask, 2, 7);
 
-  assert(result.size() == 111 && "target-call registry must stay closed");
+  assert(result.size() == 112 && "target-call registry must stay closed");
+  assert(llvm::all_of(
+             result,
+             [&](const TargetCallDescriptor &descriptor) {
+               const std::optional<TargetCallTSMEngine> semanticEngine =
+                   getTargetCallTSMEngine(descriptor.semantic);
+               if (!semanticEngine)
+                 return !descriptor.issueDomain;
+               if (!descriptor.issueDomain ||
+                   descriptor.issueDomain->engine != *semanticEngine)
+                 return false;
+               if (*semanticEngine == TargetCallTSMEngine::DirectDTE)
+                 return !descriptor.issueDomain->nccWorker &&
+                        descriptor.issueDomain->completionBehavior ==
+                            LocalInstructionCompletion::None;
+               return descriptor.issueDomain->nccWorker.has_value() &&
+                      descriptor.issueDomain->completionBehavior ==
+                          getTargetCallCompletionBehavior(descriptor.semantic,
+                                                          *semanticEngine);
+             }) &&
+         "target-call issue/completion metadata must cover every engine command");
   assert(llvm::all_of(
              result,
              [&](const TargetCallDescriptor &descriptor) {
@@ -243,6 +287,7 @@ getTargetCallTSMEngine(const TargetCallSemantic &semantic) {
     case TargetCallBuiltin::DirectDTEWait:
       return TargetCallTSMEngine::DirectDTE;
     case TargetCallBuiltin::LocalFence:
+    case TargetCallBuiltin::NCCJoin:
     case TargetCallBuiltin::DirectDTEBegin:
     case TargetCallBuiltin::DirectDTEBeginAfterPrepare:
     case TargetCallBuiltin::DirectDTESendPrepare:
@@ -266,7 +311,9 @@ getTargetCallTSMEngine(const TargetCallSemantic &semantic) {
 
 std::optional<TargetCallTSMEngine>
 getTargetCallTSMEngine(const TargetCallDescriptor &descriptor) {
-  return getTargetCallTSMEngine(descriptor.semantic);
+  if (!descriptor.issueDomain)
+    return std::nullopt;
+  return descriptor.issueDomain->engine;
 }
 
 llvm::StringRef stringifyTargetCallTSMEngine(TargetCallTSMEngine engine) {

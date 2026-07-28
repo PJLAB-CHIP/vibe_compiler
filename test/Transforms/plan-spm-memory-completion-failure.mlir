@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-plan-spm-memory -split-input-file -verify-diagnostics %s
+// RUN: wafer-opt --allow-unregistered-dialect --wafer-plan-spm-memory -split-input-file -verify-diagnostics %s
 
 // -----
 
@@ -23,6 +23,27 @@ func.func @local_fence_does_not_complete_dte(
 
 // -----
 
+func.func @ncc_join_does_not_complete_dte(
+    %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  %region = wafer.tile.region(%boundary
+      : memref<128xf16, #wafer.memory<ddr, tensor>>)
+      -> (memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<128xf16, #wafer.memory<ddr, tensor>>):
+    %source = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    // expected-error @below {{missing_dte_completion: DTE token has a reachable path to wafer.tile.region exit without wafer.instr.dte_wait}}
+    %token = wafer.instr.dte_send %source
+        {peer = 1 : i64, bytes = 256 : i64,
+         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+        : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.ncc_join [0]
+    wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// -----
+
 func.func @dte_wait_does_not_complete_local_engine(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
   %region = wafer.tile.region(%boundary
@@ -35,7 +56,7 @@ func.func @dte_wait_does_not_complete_local_engine(
         {peer = 1 : i64, bytes = 256 : i64,
          message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
-    // expected-error @below {{missing_local_completion: local Compute/Movement issue has a reachable path to wafer.tile.region exit without wafer.instr.local_fence}}
+    // expected-error @below {{missing_local_completion: local Compute/Movement issue has a reachable path to wafer.tile.region exit without a matching participant in wafer.instr.ncc_join}}
     wafer.instr.wdma %source to %arg0
         {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
          dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
@@ -58,7 +79,7 @@ func.func @branch_only_one_local_fence(
     %zero = arith.constant 0.000000e+00 : f16
     %buffer = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
-    // expected-error @below {{missing_local_completion: local Compute/Movement issue has a reachable path to wafer.tile.region exit without wafer.instr.local_fence}}
+    // expected-error @below {{missing_local_completion: local Compute/Movement issue has a reachable path to wafer.tile.region exit without a matching participant in wafer.instr.ncc_join}}
     wafer.instr.fill %buffer, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
     scf.if %c {
@@ -107,7 +128,7 @@ func.func @loop_may_skip_only_local_fence(
     %zero = arith.constant 0.000000e+00 : f16
     %buffer = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
-    // expected-error @below {{missing_local_completion: local Compute/Movement issue has a reachable path to wafer.tile.region exit without wafer.instr.local_fence}}
+    // expected-error @below {{missing_local_completion: local Compute/Movement issue has a reachable path to wafer.tile.region exit without a matching participant in wafer.instr.ncc_join}}
     wafer.instr.fill %buffer, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
     scf.for %i = %l to %u step %s {
@@ -120,7 +141,7 @@ func.func @loop_may_skip_only_local_fence(
 
 // -----
 
-func.func @loop_body_issue_requires_body_local_fence(
+func.func @loop_body_same_worker_stream_reaches_outer_completion(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>,
     %lb: index, %ub: index, %step: index) {
   %region = wafer.tile.region(%boundary, %lb, %ub, %step
@@ -132,7 +153,8 @@ func.func @loop_body_issue_requires_body_local_fence(
     scf.for %i = %l to %u step %s {
       %buffer = memref.alloc()
           : memref<128xf16, #wafer.memory<spm, tensor>>
-      // expected-error @below {{missing_local_completion: local Compute/Movement issue has a reachable loop backedge without wafer.instr.local_fence}}
+      // Same-worker issue order covers consecutive loop iterations. The
+      // unconditional outer completion covers the remaining pending stream.
       wafer.instr.fill %buffer, %zero
           : memref<128xf16, #wafer.memory<spm, tensor>>, f16
     }
@@ -165,6 +187,51 @@ func.func @loop_carried_dte_token_is_fail_closed(
     }
     wafer.instr.dte_wait %looped : !async.token
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// -----
+
+func.func @dealloc_cannot_observe_pending_ncc_write(
+    %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  %region = wafer.tile.region(%boundary
+      : memref<128xf16, #wafer.memory<ddr, tensor>>)
+      -> (memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<128xf16, #wafer.memory<ddr, tensor>>):
+    %zero = arith.constant 0.000000e+00 : f16
+    %buffer = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    // expected-error @below {{missing_local_completion: local Compute/Movement issue has a reachable path to wafer.tile.region exit without a matching participant in wafer.instr.ncc_join}}
+    wafer.instr.fill %buffer, %zero
+        : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    memref.dealloc %buffer
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.ncc_join [0]
+    wafer.tile.yield %arg0
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// -----
+
+func.func @unknown_effect_cannot_cross_pending_ncc_write(
+    %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  %region = wafer.tile.region(%boundary
+      : memref<128xf16, #wafer.memory<ddr, tensor>>)
+      -> (memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<128xf16, #wafer.memory<ddr, tensor>>):
+    %zero = arith.constant 0.000000e+00 : f16
+    %buffer = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    // expected-error @below {{missing_local_completion: local Compute/Movement issue has a reachable path to wafer.tile.region exit without a matching participant in wafer.instr.ncc_join}}
+    wafer.instr.fill %buffer, %zero
+        : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    "test.unknown_observer"() : () -> ()
+    wafer.instr.ncc_join [0]
+    wafer.tile.yield %arg0
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
   }
   return
 }

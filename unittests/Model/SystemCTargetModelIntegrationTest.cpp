@@ -229,7 +229,7 @@ TEST(SystemCTargetModelIntegrationTest,
   EXPECT_GE(result->systemCThreadProcessCount, 17u);
   EXPECT_GT(result->finalDeltaCount, 0u);
   EXPECT_FALSE(result->systemCVersion.empty());
-  EXPECT_EQ(result->schedulerIdentity, "untimed-delta-single-issue-domain-v1");
+  EXPECT_EQ(result->schedulerIdentity, "untimed-delta-worker-aware-ncc-v2");
   EXPECT_TRUE(result->numericFlags.inexact);
   EXPECT_FALSE(result->numericFlags.invalid);
   EXPECT_FALSE(result->numericFlags.divByZero);

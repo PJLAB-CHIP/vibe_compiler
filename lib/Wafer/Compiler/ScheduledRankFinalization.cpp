@@ -47,6 +47,15 @@ getExactCostClosureFailure(const analysis::InstructionProgramCost &cost) {
       {"NoC receive bytes", &cost.noc.aggregateReceiveBytes},
       {"instruction count", &cost.instructionCount},
       {"event count", &cost.eventCount},
+      {"NCC join count", &cost.nccJoinCount},
+      {"steady-state NCC join count", &cost.steadyStateNCCJoinCount},
+      {"non-terminal NCC join count", &cost.nonTerminalNCCJoinCount},
+      {"NCC participant wait count", &cost.nccParticipantWaitCount},
+      {"steady-state NCC participant wait count",
+       &cost.steadyStateNCCParticipantWaitCount},
+      {"non-terminal NCC participant wait count",
+       &cost.nonTerminalNCCParticipantWaitCount},
+      {"intrinsic NCC drain count", &cost.intrinsicNCCDrainCount},
   };
   for (const NamedMetric &entry : required) {
     if (entry.metric->isKnown())
@@ -66,7 +75,8 @@ getExactCostClosureFailure(const analysis::InstructionProgramCost &cost) {
 
 mlir::FailureOr<std::vector<FinalizedRankCandidate>>
 finalizeScheduledRankCandidateFrontier(
-    std::vector<wafer::ScheduledRankCandidate> frontier) {
+    std::vector<wafer::ScheduledRankCandidate> frontier,
+    TargetProfileId targetProfile) {
   if (frontier.empty())
     return mlir::failure();
   unsigned baselineCount = llvm::count_if(
@@ -111,19 +121,19 @@ finalizeScheduledRankCandidateFrontier(
     analysis::InstructionProgramCost exactCost =
         analysis::analyzeInstructionProgramCost(
             candidate.module->getOperation(),
-            analysis::getTargetScheduleCostPolicy(
-                TargetProfileId::waferTx81SingleCardKernelV1()));
+            analysis::getTargetScheduleCostPolicy(targetProfile));
     if (std::optional<std::string> failure =
             getExactCostClosureFailure(exactCost)) {
-      candidate.module->emitError() << "rank_finalization_exact_cost: "
-                                    << *failure;
+      candidate.module->emitError()
+          << "rank_finalization_exact_cost: " << *failure;
       if (candidate.reservedBaseline)
         return mlir::failure();
       continue;
     }
     finalized.emplace_back(std::move(candidate.module), candidate.stableOrdinal,
-                           candidate.artifactKind,
-                           candidate.reservedBaseline);
+                           candidate.artifactKind, candidate.reservedBaseline,
+                           candidate.bufferingKind,
+                           candidate.bufferingPlanOrdinal);
   }
 
   if (finalized.empty())

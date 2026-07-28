@@ -4,6 +4,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/AsyncTypes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -16,8 +17,10 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
+#include <array>
 #include <optional>
 
 namespace wafer::analysis::detail {
@@ -299,6 +302,68 @@ static void collectNoCCost(mlir::Operation *op, InstructionProgramCost &cost,
   }
 }
 
+static uint64_t countParticipants(uint32_t participantMask) {
+  uint64_t count = 0;
+  while (participantMask != 0U) {
+    count += participantMask & 1U;
+    participantMask >>= 1U;
+  }
+  return count;
+}
+
+static bool isInstructionProgramOperation(mlir::Operation *op) {
+  return mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp,
+                   SyncNCCJoinOp>(op);
+}
+
+static bool hasFollowingExecutableWork(mlir::Operation *op) {
+  if (op->getParentOfType<mlir::scf::ForOp>())
+    return true;
+  for (mlir::Operation *current = op; current != nullptr;
+       current = current->getParentOp()) {
+    for (mlir::Operation *next = current->getNextNode(); next != nullptr;
+         next = next->getNextNode()) {
+      if (!next->hasTrait<mlir::OpTrait::IsTerminator>())
+        return true;
+    }
+    if (mlir::isa_and_nonnull<mlir::func::FuncOp>(current->getParentOp()))
+      return false;
+  }
+  return false;
+}
+
+static void collectNCCDrainCost(mlir::Operation *op,
+                                InstructionProgramCost &cost,
+                                Quantity multiplicity) {
+  NCCCompletionContract contract = getNCCCompletionContract(op);
+  bool isSteadyState =
+      static_cast<bool>(op->getParentOfType<mlir::scf::ForOp>());
+  bool isNonTerminal = hasFollowingExecutableWork(op);
+  Quantity participantWaits = multiply(
+      Quantity{countParticipants(contract.participantMask)}, multiplicity);
+  if (contract.behavior == LocalInstructionCompletion::ParticipantJoin) {
+    add(cost.nccJoinCount, multiplicity);
+    if (isSteadyState)
+      add(cost.steadyStateNCCJoinCount, multiplicity);
+    if (isNonTerminal)
+      add(cost.nonTerminalNCCJoinCount, multiplicity);
+    add(cost.nccParticipantWaitCount, participantWaits);
+    if (isSteadyState)
+      add(cost.steadyStateNCCParticipantWaitCount, participantWaits);
+    if (isNonTerminal)
+      add(cost.nonTerminalNCCParticipantWaitCount, participantWaits);
+    return;
+  }
+  if (contract.behavior != LocalInstructionCompletion::SynchronousWriteback)
+    return;
+  add(cost.intrinsicNCCDrainCount, multiplicity);
+  add(cost.nccParticipantWaitCount, participantWaits);
+  if (isSteadyState)
+    add(cost.steadyStateNCCParticipantWaitCount, participantWaits);
+  if (isNonTerminal)
+    add(cost.nonTerminalNCCParticipantWaitCount, participantWaits);
+}
+
 static void collectInstructionCost(mlir::Operation *op,
                                    InstructionProgramCost &cost,
                                    Quantity multiplicity) {
@@ -313,24 +378,93 @@ static void collectInstructionCost(mlir::Operation *op,
   collectResourceCost(op, cost, multiplicity);
   collectComputeCost(op, cost, multiplicity);
   collectNoCCost(op, cost, multiplicity);
+  collectNCCDrainCost(op, cost, multiplicity);
+}
+
+enum class ConstantIndexKnowledge { Known, Unknown, Overflow };
+
+struct ConstantIndex {
+  ConstantIndexKnowledge knowledge = ConstantIndexKnowledge::Unknown;
+  int64_t value = 0;
+};
+
+/// Evaluate the side-effect-free integer arithmetic that canonical IR
+/// transformations use to rebuild static loop bounds. In particular, SCF
+/// software pipelining rewrites a direct constant upper bound as
+/// `upper - maxStage * step`. Treating that expression as dynamic would make
+/// exact cost reject a semantically static candidate.
+static ConstantIndex
+evaluateConstantIndex(mlir::Value value,
+                      llvm::DenseSet<mlir::Value> &activeValues) {
+  if (std::optional<int64_t> constant = mlir::getConstantIntValue(value))
+    return {ConstantIndexKnowledge::Known, *constant};
+  if (!mlir::isa<mlir::IndexType, mlir::IntegerType>(value.getType()) ||
+      !activeValues.insert(value).second)
+    return {};
+
+  auto evaluateBinary =
+      [&](mlir::Value lhsValue, mlir::Value rhsValue,
+          auto checkedOperation) -> ConstantIndex {
+    ConstantIndex lhs = evaluateConstantIndex(lhsValue, activeValues);
+    ConstantIndex rhs = evaluateConstantIndex(rhsValue, activeValues);
+    if (lhs.knowledge == ConstantIndexKnowledge::Overflow ||
+        rhs.knowledge == ConstantIndexKnowledge::Overflow)
+      return {ConstantIndexKnowledge::Overflow};
+    if (lhs.knowledge != ConstantIndexKnowledge::Known ||
+        rhs.knowledge != ConstantIndexKnowledge::Known)
+      return {};
+    int64_t result = 0;
+    if (checkedOperation(lhs.value, rhs.value, result))
+      return {ConstantIndexKnowledge::Overflow};
+    return {ConstantIndexKnowledge::Known, result};
+  };
+
+  ConstantIndex result;
+  if (auto add = value.getDefiningOp<mlir::arith::AddIOp>()) {
+    result = evaluateBinary(
+        add.getLhs(), add.getRhs(),
+        [](int64_t lhs, int64_t rhs, int64_t &folded) {
+          return llvm::AddOverflow(lhs, rhs, folded);
+        });
+  } else if (auto sub = value.getDefiningOp<mlir::arith::SubIOp>()) {
+    result = evaluateBinary(
+        sub.getLhs(), sub.getRhs(),
+        [](int64_t lhs, int64_t rhs, int64_t &folded) {
+          return llvm::SubOverflow(lhs, rhs, folded);
+        });
+  } else if (auto mul = value.getDefiningOp<mlir::arith::MulIOp>()) {
+    result = evaluateBinary(
+        mul.getLhs(), mul.getRhs(),
+        [](int64_t lhs, int64_t rhs, int64_t &folded) {
+          return llvm::MulOverflow(lhs, rhs, folded);
+        });
+  }
+  activeValues.erase(value);
+  return result;
 }
 
 static Quantity getTripCount(mlir::scf::ForOp loop) {
-  std::optional<int64_t> lower =
-      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getLowerBound()));
-  std::optional<int64_t> upper =
-      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getUpperBound()));
-  std::optional<int64_t> step =
-      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getStep()));
-  if (!lower || !upper || !step)
+  llvm::DenseSet<mlir::Value> activeValues;
+  ConstantIndex lower =
+      evaluateConstantIndex(loop.getLowerBound(), activeValues);
+  ConstantIndex upper =
+      evaluateConstantIndex(loop.getUpperBound(), activeValues);
+  ConstantIndex step = evaluateConstantIndex(loop.getStep(), activeValues);
+  if (lower.knowledge == ConstantIndexKnowledge::Overflow ||
+      upper.knowledge == ConstantIndexKnowledge::Overflow ||
+      step.knowledge == ConstantIndexKnowledge::Overflow)
+    return Quantity::overflow();
+  if (lower.knowledge != ConstantIndexKnowledge::Known ||
+      upper.knowledge != ConstantIndexKnowledge::Known ||
+      step.knowledge != ConstantIndexKnowledge::Known)
     return Quantity::unknown(ScheduleCostReason::DynamicLoopTripCount);
-  if (*step <= 0)
+  if (step.value <= 0)
     return Quantity::unsupported(ScheduleCostReason::InvalidLoopStep);
-  if (*upper <= *lower)
+  if (upper.value <= lower.value)
     return Quantity{0};
   uint64_t distance =
-      static_cast<uint64_t>(*upper) - static_cast<uint64_t>(*lower);
-  uint64_t positiveStep = static_cast<uint64_t>(*step);
+      static_cast<uint64_t>(upper.value) - static_cast<uint64_t>(lower.value);
+  uint64_t positiveStep = static_cast<uint64_t>(step.value);
   return Quantity{distance / positiveStep +
                   static_cast<uint64_t>(distance % positiveStep != 0)};
 }
@@ -386,7 +520,7 @@ private:
       return;
     }
 
-    if (mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp>(op)) {
+    if (isInstructionProgramOperation(op)) {
       onInstruction(op, multiplicity);
       return;
     }
@@ -454,6 +588,13 @@ void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
       mark(metric);
     mark(cost.instructionCount);
     mark(cost.eventCount);
+    mark(cost.nccJoinCount);
+    mark(cost.steadyStateNCCJoinCount);
+    mark(cost.nonTerminalNCCJoinCount);
+    mark(cost.nccParticipantWaitCount);
+    mark(cost.steadyStateNCCParticipantWaitCount);
+    mark(cost.nonTerminalNCCParticipantWaitCount);
+    mark(cost.intrinsicNCCDrainCount);
   };
   walkInstructionProgram(root, collect, markAllUnsupported);
 }
@@ -468,6 +609,16 @@ struct BufferDependencyState {
 struct StructuralScheduleFacts {
   uint64_t maximumDependencyDepth = 0;
   uint64_t readyPriorityInversions = 0;
+};
+
+struct NCCWorkerScheduleState {
+  /// Maximum depth among ordered issues that have not crossed a completion
+  /// boundary. Independent engines on one worker are deliberately not chained
+  /// here; the participant join consumes their maximum frontier.
+  uint64_t pendingIssueDepth = 0;
+  /// A participant join is an issue-order floor only for the workers that it
+  /// names. Unrelated workers and Direct DTE remain independent.
+  uint64_t completionDepth = 0;
 };
 
 static unsigned getStaticReadyPriority(mlir::Operation *operation) {
@@ -506,16 +657,15 @@ analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
 
   llvm::DenseMap<mlir::Value, BufferDependencyState> buffers;
   llvm::DenseMap<mlir::Operation *, uint64_t> operationDepths;
+  std::array<NCCWorkerScheduleState, kNCCWorkerCount> nccWorkers;
   uint64_t maximumDepth = 0;
-  uint64_t latestFenceDepth = 0;
   uint64_t readyPriorityInversions = 0;
   uint64_t seenReadyPriorities[3] = {};
   mlir::Block *readyBlock = nullptr;
   bool overflow = false;
 
   function.walk([&](mlir::Operation *operation) {
-    if (overflow ||
-        !mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp>(operation))
+    if (overflow || !isInstructionProgramOperation(operation))
       return;
 
     auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
@@ -524,7 +674,7 @@ analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
       return;
     }
 
-    uint64_t predecessorDepth = latestFenceDepth;
+    uint64_t predecessorDepth = 0;
     for (mlir::Value operand : operation->getOperands()) {
       auto definition = operationDepths.find(operand.getDefiningOp());
       if (definition != operationDepths.end())
@@ -553,11 +703,29 @@ analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
                                      state.maximumReaderDepth});
     }
 
+    NCCCompletionContract completion = getNCCCompletionContract(operation);
     bool isCompletionBarrier =
-        classifyLocalInstructionCompletion(operation) ==
-        LocalInstructionCompletion::BarrierAndComplete;
-    if (isCompletionBarrier)
-      predecessorDepth = std::max(predecessorDepth, maximumDepth);
+        completion.behavior == LocalInstructionCompletion::ParticipantJoin ||
+        completion.behavior == LocalInstructionCompletion::SynchronousWriteback;
+    if (completion.behavior == LocalInstructionCompletion::OrderedPending &&
+        completion.issueWorker) {
+      const auto worker = static_cast<uint32_t>(*completion.issueWorker);
+      if (worker >= nccWorkers.size()) {
+        overflow = true;
+        return;
+      }
+      predecessorDepth =
+          std::max(predecessorDepth, nccWorkers[worker].completionDepth);
+    } else if (isCompletionBarrier) {
+      uint32_t participants = completion.participantMask;
+      for (uint32_t worker = 0; worker < nccWorkers.size(); ++worker) {
+        if ((participants & (uint32_t{1} << worker)) == 0)
+          continue;
+        predecessorDepth =
+            std::max({predecessorDepth, nccWorkers[worker].pendingIssueDepth,
+                      nccWorkers[worker].completionDepth});
+      }
+    }
     uint64_t depth = 0;
     if (!checkedAdd(predecessorDepth, 1, depth)) {
       overflow = true;
@@ -575,8 +743,20 @@ analyzeFunctionStructuralSchedule(mlir::func::FuncOp function) {
         state.maximumReaderDepth = std::max(state.maximumReaderDepth, depth);
       }
     }
-    if (isCompletionBarrier)
-      latestFenceDepth = depth;
+    if (completion.behavior == LocalInstructionCompletion::OrderedPending &&
+        completion.issueWorker) {
+      const auto worker = static_cast<uint32_t>(*completion.issueWorker);
+      nccWorkers[worker].pendingIssueDepth =
+          std::max(nccWorkers[worker].pendingIssueDepth, depth);
+    } else if (isCompletionBarrier) {
+      uint32_t participants = completion.participantMask;
+      for (uint32_t worker = 0; worker < nccWorkers.size(); ++worker) {
+        if ((participants & (uint32_t{1} << worker)) == 0)
+          continue;
+        nccWorkers[worker].pendingIssueDepth = 0;
+        nccWorkers[worker].completionDepth = depth;
+      }
+    }
 
     if (operation->getBlock() != readyBlock || isCompletionBarrier) {
       readyBlock = operation->getBlock();

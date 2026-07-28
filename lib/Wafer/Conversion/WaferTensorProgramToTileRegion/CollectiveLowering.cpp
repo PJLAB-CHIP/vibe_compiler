@@ -434,8 +434,6 @@ TileRegionBodyEmitter::convertAllToAll(LinalgExtCollectiveAllToAllOp op,
   }
 
   mlir::Type tokenType = builder.getType<mlir::async::TokenType>();
-  if (!sends.empty() || !recvs.empty())
-    builder.create<SyncLocalFenceOp>(op.getLoc());
   // Direct all-to-all uses one globally consistent cyclic permutation of
   // semantic group indices.  It is not a ring-forwarding algorithm and must
   // not inherit the bounded exact topology-ring search.
@@ -479,11 +477,6 @@ TileRegionBodyEmitter::convertAllToAll(LinalgExtCollectiveAllToAllOp op,
     resultBuffer = insert.getResult();
   }
 
-  // The receive waits only complete the DTE writes into the slot buffers.
-  // Inserting those slots (and the local slot for a singleton group) is a
-  // separate local movement issue.  Complete it before exposing the assembled
-  // result to the following tile operation.
-  builder.create<SyncLocalFenceOp>(op.getLoc());
   record(op.getResult(0), MemLayout::Tensor, resultBuffer);
   return mlir::success();
 }
@@ -535,11 +528,9 @@ mlir::LogicalResult TileRegionBodyEmitter::convertCollectivePermute(
   }
 
   mlir::Value resultBuffer;
-  bool hasLocalResultIssue = false;
   if (localCopy) {
     resultBuffer =
         builder.create<MoveCopyOp>(op.getLoc(), resultType, *input).getResult();
-    hasLocalResultIssue = true;
   } else {
     auto alloc = builder.create<mlir::memref::AllocOp>(op.getLoc(), resultType);
     resultBuffer = alloc.getResult();
@@ -554,7 +545,6 @@ mlir::LogicalResult TileRegionBodyEmitter::convertCollectivePermute(
             "collective_permute zero-fill requires numeric element type");
       builder.create<ComputeFillOp>(op.getLoc(), resultBuffer, zero,
                                     /*fill_domain=*/FillDomainAttr{});
-      hasLocalResultIssue = true;
     }
   }
 
@@ -573,12 +563,6 @@ mlir::LogicalResult TileRegionBodyEmitter::convertCollectivePermute(
 
   llvm::SmallVector<mlir::Value, 2> tokens;
   mlir::Type tokenType = builder.getType<mlir::async::TokenType>();
-  // A send may consume a buffer produced by a local compute or movement.
-  // The same fence also completes a local copy/zero-fill result before it is
-  // exposed to a consumer.  Receive-only results use their DTE wait below as
-  // the completion boundary.
-  if (sendPeer || hasLocalResultIssue)
-    builder.create<SyncLocalFenceOp>(op.getLoc());
   if (sendPeer) {
     auto message = DTEMessageAttr::get(builder.getContext(), *communicationId,
                                        DTEProtocolPhase::CollectivePermute,

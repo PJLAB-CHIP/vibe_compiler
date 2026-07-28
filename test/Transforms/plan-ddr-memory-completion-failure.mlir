@@ -7,7 +7,7 @@ func.func @external_root_missing_local_fence(
   %spm = memref.alloc()
       {wafer.spm.offset = #wafer.spm_offset<65536>}
       : memref<128xf16, #wafer.memory<spm, tensor>>
-  // expected-error @below {{missing_local_completion: DDR-touching local Movement issue has a reachable path to entry exit without wafer.instr.local_fence}}
+  // expected-error @below {{missing_local_completion: DDR-touching local Movement issue has a reachable path to entry exit without a matching participant in wafer.instr.ncc_join}}
   wafer.instr.rdma %input to %spm
       {byte_count = 256 : i64, inner_bytes = 256 : i64,
        src_iterations = array<i64: 1, 1, 1>,
@@ -24,7 +24,7 @@ func.func @only_one_branch_fences_prior_issue(
   %spm = memref.alloc()
       {wafer.spm.offset = #wafer.spm_offset<65536>}
       : memref<128xf16, #wafer.memory<spm, tensor>>
-  // expected-error @below {{missing_local_completion: DDR-touching local Movement issue has a reachable path to entry exit without wafer.instr.local_fence}}
+  // expected-error @below {{missing_local_completion: DDR-touching local Movement issue has a reachable path to entry exit without a matching participant in wafer.instr.ncc_join}}
   wafer.instr.wdma %spm to %output
       {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
        dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
@@ -45,7 +45,7 @@ func.func @pre_loop_issue_with_body_only_fence(
   %spm = memref.alloc()
       {wafer.spm.offset = #wafer.spm_offset<65536>}
       : memref<128xf16, #wafer.memory<spm, tensor>>
-  // expected-error @below {{missing_local_completion: DDR-touching local Movement issue has a reachable path to entry exit without wafer.instr.local_fence}}
+  // expected-error @below {{missing_local_completion: DDR-touching local Movement issue has a reachable path to entry exit without a matching participant in wafer.instr.ncc_join}}
   wafer.instr.rdma %input to %spm
       {byte_count = 256 : i64, inner_bytes = 256 : i64,
        src_iterations = array<i64: 1, 1, 1>,
@@ -67,7 +67,10 @@ func.func @loop_body_issue_without_body_fence(
       {wafer.spm.offset = #wafer.spm_offset<65536>}
       : memref<128xf16, #wafer.memory<spm, tensor>>
   scf.for %i = %lb to %ub step %step {
-    // expected-error @below {{missing_local_completion: DDR-touching local Movement issue reaches an scf.for backedge without a body-local wafer.instr.local_fence}}
+    // Same-worker WDMA issue order covers the loop backedge. The remaining
+    // failure is the real domain exit: no terminal completion covers the
+    // possibly executed stream before function return.
+    // expected-error @below {{missing_local_completion: DDR-touching local Movement issue has a reachable path to entry exit without a matching participant in wafer.instr.ncc_join}}
     wafer.instr.wdma %spm to %output
         {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,
          dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}

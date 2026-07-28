@@ -234,7 +234,7 @@ module {
 }
 
 TEST(LowerInstrToTargetLLVMTest,
-     LowersStaticallyBoundedLoopIVSubviewToDynamicByteAddress) {
+     LowersStaticallyBoundedDerivedSubviewToDynamicByteAddress) {
   mlir::DialectRegistry registry;
   registerTargetConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -244,13 +244,14 @@ TEST(LowerInstrToTargetLLVMTest,
       R"mlir(
 module {
   func.func @main(
-      %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>) {
+      %input: memref<5x8xf16, #wafer.memory<ddr, tensor>>) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c4 = arith.constant 4 : index
     scf.for %row = %c0 to %c4 step %c1 {
-      %view = memref.subview %input[%row, 2] [1, 3] [1, 1]
-          : memref<4x8xf16, #wafer.memory<ddr, tensor>>
+      %stage_shifted = arith.addi %row, %c1 : index
+      %view = memref.subview %input[%stage_shifted, 2] [1, 3] [1, 1]
+          : memref<5x8xf16, #wafer.memory<ddr, tensor>>
          to memref<1x3xf16, strided<[8, 1], offset: ?>, #wafer.memory<ddr, tensor>>
       %spm = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
           : memref<1x3xf16, #wafer.memory<spm, tensor>>
@@ -278,11 +279,11 @@ module {
   EXPECT_EQ(countOps<mlir::memref::SubViewOp>(*source), 0u);
   EXPECT_EQ(countOps<mlir::scf::ForOp>(*source), 0u);
   EXPECT_EQ(countOps<mlir::LLVM::MulOp>(*source), 1u);
-  EXPECT_GE(countOps<mlir::LLVM::AddOp>(*source), 2u);
+  EXPECT_GE(countOps<mlir::LLVM::AddOp>(*source), 3u);
 }
 
 TEST(LowerInstrToTargetLLVMTest,
-     RejectsDerivedDynamicSubviewOffsetWithoutMutatingSource) {
+     RejectsUnsupportedDynamicSubviewOffsetWithoutMutatingSource) {
   mlir::DialectRegistry registry;
   registerTargetConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -292,13 +293,14 @@ TEST(LowerInstrToTargetLLVMTest,
       R"mlir(
 module {
   func.func @main(
-      %input: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+      %input: memref<4xf16, #wafer.memory<ddr, tensor>>,
+      %condition: i1) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c4 = arith.constant 4 : index
     scf.for %i = %c0 to %c4 step %c1 {
-      %shifted = arith.addi %i, %c0 : index
-      %view = memref.subview %input[%shifted] [1] [1]
+      %selected = arith.select %condition, %i, %c0 : index
+      %view = memref.subview %input[%selected] [1] [1]
           : memref<4xf16, #wafer.memory<ddr, tensor>>
          to memref<1xf16, strided<[1], offset: ?>, #wafer.memory<ddr, tensor>>
     }
@@ -322,8 +324,8 @@ module {
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
 
   EXPECT_TRUE(mlir::failed(manager.run(*source)));
-  EXPECT_NE(diagnostics.find("dynamic DDR tensor subview offset #0 must be the "
-                             "direct induction variable of scf.for"),
+  EXPECT_NE(diagnostics.find("dynamic DDR tensor subview offset #0 must be a "
+                             "supported statically bounded index expression"),
             std::string::npos)
       << diagnostics;
   EXPECT_EQ(countOps<mlir::memref::SubViewOp>(*source), 1u);

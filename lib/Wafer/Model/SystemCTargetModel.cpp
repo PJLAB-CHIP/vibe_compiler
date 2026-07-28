@@ -6,6 +6,7 @@
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 
 #include "SystemCBridge.h"
+#include "TargetModelCompletion.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
@@ -152,14 +153,13 @@ public:
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                           "transaction rank is outside the invocation");
     RankState &rank = rankStates[static_cast<size_t>(transaction.logicalRank)];
-    if (transaction.issueOrdinal != rank.nextIssuedOrdinal) {
+    if (!rank.completion.beginIssue(transaction.issueOrdinal)) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
                    "issue-order", transaction.logicalRank,
                    transaction.issueOrdinal,
                    "rank issue ordinal is not contiguous");
       return currentFailureOrLifecycle("issue order failure");
     }
-    ++rank.nextIssuedOrdinal;
     ++issuedTransactionCount;
 
     // Every issue crosses at least one delta before field/address/numeric
@@ -223,11 +223,36 @@ public:
                 std::move(bulkEvidence.provenanceDigest));
         }
       }
-      markOrdinalComplete(transaction.logicalRank, transaction.issueOrdinal);
+      if (transaction.nccIssueDomain) {
+        const compiler::TargetNCCIssueDomain &domain =
+            *transaction.nccIssueDomain;
+        if (domain.completionBehavior ==
+            LocalInstructionCompletion::SynchronousWriteback) {
+          completeNCCParticipantPending(
+              transaction.logicalRank,
+              uint32_t{1} << static_cast<uint32_t>(domain.worker));
+          if (failure)
+            return currentFailureOrLifecycle(
+                "synchronous NCC writeback failed");
+          markOrdinalComplete(transaction.logicalRank,
+                              transaction.issueOrdinal);
+          tryMatchReadyEndpoints();
+        } else if (!rank.completion.addNCCPending(domain.worker,
+                                                  transaction.issueOrdinal)) {
+          latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
+                       "ncc-issue-domain", transaction.logicalRank,
+                       transaction.issueOrdinal,
+                       "NCC issue worker is invalid or already pending");
+          return currentFailureOrLifecycle("NCC issue-domain failure");
+        }
+      } else {
+        markOrdinalComplete(transaction.logicalRank,
+                            transaction.issueOrdinal);
+      }
       return UINT64_C(0);
     }
-    case TargetModelControlAction::LocalFence:
-      return processFence(transaction);
+    case TargetModelControlAction::NCCJoin:
+      return processNCCJoin(transaction);
     case TargetModelControlAction::DirectDTEBegin:
       return processDTEBegin(transaction);
     case TargetModelControlAction::DirectDTESend:
@@ -250,7 +275,9 @@ public:
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                           "terminal rank is outside the invocation");
     RankState &rank = rankStates[static_cast<size_t>(logicalRank)];
-    if (rank.terminal || rank.nextCompletedOrdinal != rank.nextIssuedOrdinal)
+    if (rank.terminal ||
+        rank.completion.getNextCompletedOrdinal() !=
+            rank.completion.getNextIssuedOrdinal())
       return systemCError(
           SystemCTargetModelErrorCode::InvocationFailure,
           "rank terminal is duplicate or precedes issued effects");
@@ -312,7 +339,7 @@ public:
                           std::move(managedReferenceTensorEnvironmentDigests),
                           std::move(managedReferenceTensorImplementations),
                           detail::getSystemCVersion(),
-                          "untimed-delta-single-issue-domain-v1",
+                          "untimed-delta-worker-aware-ncc-v2",
                           std::move(outputs)});
     return llvm::Error::success();
   }
@@ -332,9 +359,7 @@ public:
 
 private:
   struct RankState {
-    uint64_t nextIssuedOrdinal = 0;
-    uint64_t nextCompletedOrdinal = 0;
-    std::set<uint64_t> completedOutOfOrder;
+    detail::TargetModelRankCompletionState completion;
     bool terminal = false;
   };
 
@@ -375,17 +400,15 @@ private:
   }
 
   llvm::Expected<uint64_t>
-  processFence(const compiler::TargetTransaction &transaction) {
-    RankState &rank = rankStates[static_cast<size_t>(transaction.logicalRank)];
-    while (rank.nextCompletedOrdinal < transaction.issueOrdinal && !failure) {
-      detail::waitSystemCEvent(
-          rankCompletionEvents[static_cast<size_t>(transaction.logicalRank)]);
-      if (bridgeFailed(transaction, "fence-wait"))
-        break;
-    }
+  processNCCJoin(const compiler::TargetTransaction &transaction) {
+    const auto &join =
+        std::get<compiler::TargetNCCJoinTransaction>(transaction.payload);
+    completeNCCParticipantPending(transaction.logicalRank,
+                                  join.participantMask);
     if (failure)
-      return currentFailureOrLifecycle("local fence failed");
+      return currentFailureOrLifecycle("NCC join failed");
     markOrdinalComplete(transaction.logicalRank, transaction.issueOrdinal);
+    tryMatchReadyEndpoints();
     return UINT64_C(0);
   }
 
@@ -637,6 +660,17 @@ private:
                      "matched endpoints disagree on bytes or destination");
         return;
       }
+      // Target-call send/receive are endpoint preparation. The shared model
+      // memory contains issue-visible NCC writes so same-worker chains can
+      // execute functionally, but Direct DTE is an external observer and must
+      // not consume those bytes until both endpoint ranks have crossed their
+      // typed NCC completion boundary. This all-worker check is deliberately
+      // fail-closed until pending effects carry exact source/destination ranges.
+      if (rankStates[static_cast<size_t>(sendEndpoint.ownerRank)]
+              .completion.hasNCCPending() ||
+          rankStates[static_cast<size_t>(receiveEndpoint.ownerRank)]
+              .completion.hasNCCPending())
+        return;
       llvm::Expected<std::vector<uint8_t>> source = memory.readSnapshot(
           sendEndpoint.ownerRank, TargetModelAddressSpace::RankSPM, send.source,
           send.byteCount, 1);
@@ -665,6 +699,21 @@ private:
       detail::notifySystemCEvent(receiveEndpoint.completionEvent);
       return;
     }
+  }
+
+  void tryMatchReadyEndpoints() {
+    for (size_t endpointIndex = 0; endpointIndex < endpoints.size();
+         ++endpointIndex)
+      if (!endpoints[endpointIndex].matched)
+        tryMatchEndpoint(endpointIndex);
+  }
+
+  void completeNCCParticipantPending(int64_t logicalRank,
+                                     uint32_t participantMask) {
+    RankState &rank = rankStates[static_cast<size_t>(logicalRank)];
+    for (uint64_t ordinal :
+         rank.completion.takeNCCParticipantPending(participantMask))
+      markOrdinalComplete(logicalRank, ordinal);
   }
 
   std::string describeNoProgress() const {
@@ -701,15 +750,12 @@ private:
     if (failure)
       return;
     RankState &rank = rankStates[static_cast<size_t>(logicalRank)];
-    if (issueOrdinal < rank.nextCompletedOrdinal ||
-        !rank.completedOutOfOrder.insert(issueOrdinal).second) {
+    if (!rank.completion.markComplete(issueOrdinal)) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
                    "completion-order", logicalRank, issueOrdinal,
                    "transaction completion was published twice");
       return;
     }
-    while (rank.completedOutOfOrder.erase(rank.nextCompletedOrdinal))
-      ++rank.nextCompletedOrdinal;
     detail::notifySystemCEvent(
         rankCompletionEvents[static_cast<size_t>(logicalRank)]);
   }

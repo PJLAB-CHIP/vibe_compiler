@@ -43,8 +43,8 @@ func.func @load_compute_store(
 // CHECK: %[[SUM:.+]] = memref.alloc() : memref<4x8xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.elementwise <add> %[[LOAD_DST]], %[[LOAD_DST]] into %[[SUM]]
 // CHECK: wafer.instr.wdma %[[SUM]] to %{{.+}}
-// CHECK: wafer.instr.local_fence
-// CHECK-NEXT: wafer.tile.yield
+// CHECK: wafer.tile.yield
+// CHECK: wafer.instr.ncc_join [0]
 
 func.func @strided_ddr_tile_load_store(
     %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
@@ -159,16 +159,14 @@ func.func @gemm_reduce_and_reshape(
 // CHECK-SAME: n = 64 : i64
 // CHECK-NOT: wafer.instr.reduce
 // CHECK: wafer.instr.fill
-// CHECK: wafer.instr.local_fence
 // CHECK: wafer.instr.gather_scatter
-// CHECK: wafer.instr.local_fence
 // CHECK: wafer.instr.elementwise <add>
-// CHECK: wafer.instr.local_fence
 // CHECK: wafer.instr.gather_scatter
-// CHECK: wafer.instr.local_fence
 // CHECK-NOT: wafer.instr.reduce
 // CHECK-NOT: wafer.tile.reshape
 // CHECK: wafer.instr.wdma
+// CHECK: wafer.instr.ncc_join [0]
+// CHECK-NOT: wafer.instr.local_fence
 
 func.func @nested_control_flow(
     %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>,

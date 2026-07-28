@@ -37,6 +37,17 @@ checkStaticTerminalOperationBudget(mlir::Operation *root,
 
 } // namespace detail
 
+/// Recompute NCC pending/completion state from the module's current typed
+/// instruction, SSA and memory-effect IR. Orphan and overbroad typed joins are
+/// erased or narrowed; only cross-worker/external-observer conflicts and
+/// terminal publication materialize the minimum participant join.
+///
+/// Candidate rewrites that remove, clone or reorder instruction issues must
+/// rerun this normalizer before lifetime/resource planning. The operation is
+/// intentionally module-level because pending NCC state can cross
+/// tile-region and static-loop boundaries.
+mlir::LogicalResult normalizeMinimumNCCJoins(mlir::ModuleOp module);
+
 mlir::LogicalResult
 convertTileRegionToInstrModule(mlir::ModuleOp module,
                                std::string *failureReason = nullptr);

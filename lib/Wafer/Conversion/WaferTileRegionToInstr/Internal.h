@@ -61,6 +61,10 @@ mlir::LogicalResult failPattern(mlir::PatternRewriter &rewriter,
                                 mlir::Operation *op, std::string *failureReason,
                                 llvm::StringRef reason);
 
+inline NCCWorkerAttr getDefaultNCCWorkerAttr(mlir::OpBuilder &builder) {
+  return NCCWorkerAttr::get(builder.getContext(), NCCWorker::Worker0);
+}
+
 template <typename T>
 mlir::FailureOr<T>
 failFailureOr(mlir::PatternRewriter &rewriter, mlir::Operation *op,

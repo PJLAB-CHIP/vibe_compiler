@@ -67,6 +67,8 @@ mlir::LogicalResult FunctionLowering::lowerInstruction(mlir::Operation *op) {
           [&](auto typedOp) { return lowerPeripheral(typedOp); })
       .Case<SyncLocalFenceOp>(
           [&](auto typedOp) { return lowerLocalFence(typedOp); })
+      .Case<SyncNCCJoinOp>(
+          [&](auto typedOp) { return lowerNCCJoin(typedOp); })
       .Default([&](mlir::Operation *unknown) {
         return unknown->emitError()
                << "unsupported_target_instr: Wafer instruction op is not "

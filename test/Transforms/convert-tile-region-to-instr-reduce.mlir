@@ -18,24 +18,17 @@ func.func @ordered_sum(
 // CHECK: %[[SLICE:.*]] = memref.alloc() : memref<2xf32, #wafer.memory<spm, tensor>>
 // CHECK: %[[DEST:.*]] = memref.alloc() : memref<2xf32, #wafer.memory<spm, cx>>
 // CHECK: wafer.instr.fill %[[A]], %[[INIT]]
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK: wafer.instr.gather_scatter %arg0 to %[[SLICE]]
 // CHECK-NOT: src_offset
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK-NEXT: wafer.instr.elementwise <add> %[[A]], %[[SLICE]] into %[[B]]
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK: wafer.instr.gather_scatter %arg0 to %[[SLICE]]
 // CHECK-SAME: src_offset = 16
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK-NEXT: wafer.instr.elementwise <add> %[[B]], %[[SLICE]] into %[[A]]
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK: wafer.instr.gather_scatter %arg0 to %[[SLICE]]
 // CHECK-SAME: src_offset = 32
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK-NEXT: wafer.instr.elementwise <add> %[[A]], %[[SLICE]] into %[[B]]
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK: wafer.instr.gather_scatter %[[B]] to %[[DEST]]
-// CHECK-NEXT: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK-NOT: wafer.instr.reduce
 // CHECK: return %[[DEST]]
 
@@ -54,26 +47,18 @@ func.func @sorted_multidim_lexicographic(
 // CHECK: wafer.instr.fill
 // CHECK: wafer.instr.gather_scatter
 // CHECK-NOT: src_offset
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK-NEXT: wafer.instr.elementwise <add>
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK: wafer.instr.gather_scatter
 // CHECK-SAME: src_offset = 4
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK-NEXT: wafer.instr.elementwise <add>
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK: wafer.instr.gather_scatter
 // CHECK-SAME: src_offset = 256
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK-NEXT: wafer.instr.elementwise <add>
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK: wafer.instr.gather_scatter
 // CHECK-SAME: src_offset = 260
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK-NEXT: wafer.instr.elementwise <add>
-// CHECK-NEXT: wafer.instr.local_fence
 // CHECK: wafer.instr.gather_scatter
-// CHECK-NEXT: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK: return
 
 func.func @large_identity_sum_uses_native_reduce(
@@ -90,8 +75,9 @@ func.func @large_identity_sum_uses_native_reduce(
 // CHECK-NOT: wafer.instr.fill
 // CHECK: wafer.instr.reduce <sum>
 // CHECK-SAME: dim = 1 : i64
-// CHECK-NEXT: wafer.instr.local_fence
+// CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK: return
+// CHECK-NOT: wafer.instr.local_fence
 
 func.func @ordered_max(
     %input: memref<2x2xf16, #wafer.memory<spm, cx>>)

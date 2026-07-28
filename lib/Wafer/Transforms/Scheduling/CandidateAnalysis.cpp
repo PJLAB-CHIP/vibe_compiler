@@ -72,12 +72,12 @@ static int64_t getOptionalBatchCount(InstrGemmOp op) {
   return 1;
 }
 
-CandidateStats estimateStats(mlir::ModuleOp module) {
+CandidateStats estimateStats(
+    mlir::ModuleOp module,
+    const analysis::TargetScheduleCostPolicy &scheduleCostPolicy) {
   CandidateStats stats;
   stats.program = analysis::analyzeInstructionProgramCost(
-      module.getOperation(),
-      analysis::getTargetScheduleCostPolicy(
-          TargetProfileId::waferTx81SingleCardKernelV1()));
+      module.getOperation(), scheduleCostPolicy);
   return stats;
 }
 

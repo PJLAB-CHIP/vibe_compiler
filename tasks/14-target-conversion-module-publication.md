@@ -77,7 +77,7 @@ Pipeline position:
   family通过geometry/range/narrowing/full-conversion；任一失败source module byte-identical。
   TargetProfileId和两值RuntimeLaunchKind从CompilationRequest/ExecutionConfig进入ExecutableBundle；完整RuntimeLaunchContract
   从唯一compiler resolver贯穿TargetLLVMModuleBundle、TargetArtifactBundle和package readback且没有default；closed
-  compatibility table拒绝未资格化组合；111-symbol CRT conformance、rank-count=1/16
+  compatibility table拒绝未资格化组合；112-symbol CRT conformance（含typed NCC participant join）、rank-count=1/16
   owner lifetime、all-and-only module/ABI-slot/digest、late-rank atomic failure和真实production driver通过。
   Q32.V/Q3.6各自拥有独立completion gate，不反向改写current v1证据；Q32.V新增typed profile/ABI row由
   Q32.M/S通用candidate owner消费。
@@ -261,13 +261,19 @@ current v1 最低规则：
   destination，并在wrapper返回前对两个实际写入range覆盖的每条cache line执行mode-dependent
   `dcache.cipa/civa`及fence/sync。`TsmWaitfinish()`只建立指令到CPU store的完成边界，`volatile` store本身不建立
   后续NCC DMA可见性；该publication合同由两个extrema wrapper共享，不按kind特判。
+- NCC issue/join：ordinary instruction的typed worker必须与target operator ABI一致；current v1/v2只编码
+  worker0，worker1/2在call emission前以`unsupported_target_worker`拒绝。canonical非空participant集合
+  lower到`wafer_tx81_ncc_join(i32 mask)`；CRT按participant逐worker调用`TsmWaitfinish_bywork`，一次participant
+  就是一次高代价blocking drain。legacy `local_fence`只表示worker0，二者都不完成Direct DTE、cache publication
+  或multi-tile barrier。
 - DTE：bytes/range、peer/endpoint、remote offset、event/status/completion 都来自 typed accepted IR；
   lowering传递本地source offset、accepted remote receiver offset和本地receiver offset，TX81 CRT只在sender
   `dst_addr`边界结合target 4×4 topology形成peer SPM映射地址。不得把mapped peer address回写进IR，
   也不得把本地FSM offset改成Kcore CPU mapped pointer。device linker对通用target LLVM继续使用既有RV64 ISA，
   对包含cache publication实现的TX81 CRT单独以`-mcpu=c908`编译；最终CRT反汇编必须存在C908 cache操作，不能留下
   未解析的firmware cache helper符号。
-- completion op：只等待真实 issue token/engine，不能丢 token 或合并不相关 completion。
+- completion op：只等待typed participant worker或exact DTE token，不能丢token、扩大scope或合并不相关
+  completion；target preflight和cost必须在lowering前看到完整participant wait inventory。
 
 传入 CRT 的地址使用 checked uint64；普通 count/stride/iteration/enum 和 `mask_move` mask 使用 checked
 uint32；`Data_Shape` 维度还必须适配底层 uint16。`-1` sentinel 只能出现在明确 ABI 字段，不能依赖
@@ -320,6 +326,8 @@ current v1 已验证边界：
   `wafer_tx81_gemm_oriented_v2`只属于v2 ABI，plain `wafer_tx81_gemm`保持v1 normal/normal；
 - LLVM calls 使用 fixed function type，不使用 vararg；
 - `wafer_tx81_mask_move` 端到端使用显式 `uint32_t mask`；
+- `wafer_tx81_ncc_join`使用checked participant mask并按canonical worker顺序执行exact by-worker waits；
+  narrow scope不构成低成本假设，optimized steady state不得含任何`TsmWaitfinish*`；
 - repo-local CRT 可由 pinned TX8 GCC 编译并参与 device link；
 - required `wafer_tx81_*` symbol 缺失会被 post-link gate 拒绝；
 - 全部 undefined symbols 都经过 `tx8-kcore-loader-v1` exact allowlist，未知非Wafer symbol同样拒绝；
@@ -494,7 +502,7 @@ current v1测试层次：
 1. op/verifier negative：OOB、descriptor payload、shape relation、alignment和narrowing；
 2. conversion：branch/loop/call结构保持、typed calls、full legality、late failure source identity；
 3. profile/format：explicit v1 profile、unknown/missing拒绝、engine×format和convert whitelist；
-4. CRT：111-symbol header/source/signature/wrapper conformance，v1/v2 GEMM transflag分别固定/显式；
+4. CRT：112-symbol header/source/signature/wrapper conformance（含typed NCC participant join），v1/v2 GEMM transflag分别固定/显式；
    ArgMax/ArgMin共同writeback helper的wait、mapped store、cache-range publication顺序由source checker与
    C908 object反汇编同时锁定；
 5. device link：compiler-generated positive和required/allowed undefined negative；
@@ -644,13 +652,17 @@ execution admission或package schema反写成Q32 candidate生成输入。
 profiling不得给normal module插入分支、计数器、ABI slot或额外symbol。profile companion内部的count/trace
 module均从该最终artifact派生，是诊断clone，不属于normal package schema，也不是新的accepted IR。
 
-profile-only conversion/publication承担两项稳定责任：
+profile-only conversion/publication承担三项稳定责任：
 
 - 在final typed `TargetCall`和target LLVM之间分配确定性的rank-local `site_id`，并发布从
   `(logical rank, site_id)`到typed call kind、最终target位置和target-call symbol/ordinal的版本化只读映射。
   映射只覆盖final artifact，不承担跨candidate关联；它不从symbol spelling、buffer/resource名、文件名或ELF顺序恢复语义；
   production与trace clone的identity校验还必须比较动态SSA operand的稳定function/block/argument或instruction坐标，
   忽略profile-only调用本身，不能把所有非constant operand折叠成同一个`dynamic`占位；
+- 从同一个final `ExecutableBundle`的accepted Instr IR fresh重算exact per-rank instruction cost，并把每个metric的
+  knowledge/reason、logical ops、DDR/SPM movement和NoC payload连同当前`TargetScheduleCostPolicy`的已建立峰值率写入
+  final-artifact variant metadata。该投影只为profiler解释静态work，不保存candidate frontier或selection telemetry，
+  不在compiler内换算端到端时间，也不改变normal package、TargetLLVM或winner；
 - count clone只统计实际issue/wait次数而不插site branch；trace clone在typed site前后建立site scope，并从同一
   record header发布entry-local span和aggregate PMU，避免另建summary clone复制相同事实。
   CT、NE、RDMA、WDMA、TDMA通过自有profile CRT在真实fence轮询期间采样硬件execution counter；

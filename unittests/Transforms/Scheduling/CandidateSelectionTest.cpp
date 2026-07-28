@@ -99,7 +99,8 @@ module {
     }
 
     wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-    SelectionConfig config(policy);
+    SelectionConfig config(
+        policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     config.logicalRank = 0;
     config.preferredTileSizes = {16, 8, 4, 2, 1};
     config.maxCandidatesPerDim = 5;
@@ -161,6 +162,34 @@ TEST(CandidateSelectionTest, RejectsUnknownOrUnsupportedRankingDimensions) {
                                      "(unsupported-instruction-semantics)"),
             std::string::npos)
       << *unsupportedFailure;
+
+  CandidateStats unknownDrain;
+  unknownDrain.program.nccParticipantWaitCount.knowledge =
+      wafer::analysis::ScheduleCostKnowledge::Unknown;
+  unknownDrain.program.nccParticipantWaitCount.reason =
+      wafer::analysis::ScheduleCostReason::ConditionalControlFlow;
+  std::optional<std::string> unknownDrainFailure =
+      getRankingCostFailure(unknownDrain);
+  ASSERT_TRUE(unknownDrainFailure);
+  EXPECT_NE(unknownDrainFailure->find(
+                "ranking-cost: NCC participant wait count is unknown "
+                "(conditional-control-flow)"),
+            std::string::npos)
+      << *unknownDrainFailure;
+
+  CandidateStats unknownSteadyDrain;
+  unknownSteadyDrain.program.steadyStateNCCParticipantWaitCount.knowledge =
+      wafer::analysis::ScheduleCostKnowledge::Unknown;
+  unknownSteadyDrain.program.steadyStateNCCParticipantWaitCount.reason =
+      wafer::analysis::ScheduleCostReason::DynamicLoopTripCount;
+  std::optional<std::string> unknownSteadyDrainFailure =
+      getRankingCostFailure(unknownSteadyDrain);
+  ASSERT_TRUE(unknownSteadyDrainFailure);
+  EXPECT_NE(unknownSteadyDrainFailure->find(
+                "ranking-cost: steady-state NCC participant wait count is "
+                "unknown (dynamic-loop-trip-count)"),
+            std::string::npos)
+      << *unknownSteadyDrainFailure;
 }
 
 TEST(CandidateSelectionTest,
@@ -187,7 +216,8 @@ module {
 )mlir";
 
   wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  SelectionConfig config(policy);
+  SelectionConfig config(
+      policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   config.logicalRank = 0;
   CandidateSpec candidate{/*tileSizes=*/{8, 4},
                           /*reductionSplitSizes=*/{}};
@@ -221,7 +251,8 @@ module {
 )mlir";
 
   wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  SelectionConfig config(policy);
+  SelectionConfig config(
+      policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   config.logicalRank = 0;
 
   CandidateSpec baseline{/*tileSizes=*/{2},

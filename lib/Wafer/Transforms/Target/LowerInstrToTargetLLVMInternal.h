@@ -77,6 +77,7 @@ mlir::FailureOr<int64_t> getDataFormatCode(mlir::Operation *op,
 mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp,
                                            TargetProfileId targetProfile);
 mlir::LogicalResult preflightTargetAddresses(mlir::ModuleOp moduleOp);
+mlir::LogicalResult preflightTargetNCCWorkers(mlir::ModuleOp moduleOp);
 
 mlir::FailureOr<DirectDTEEndpointDomain>
 resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp, int64_t logicalRank);
@@ -145,6 +146,7 @@ struct FunctionLowering {
   mlir::LogicalResult lowerTDMADataMove(InstrTDMADataMoveOp op);
   mlir::LogicalResult lowerPeripheral(InstrPeripheralOp op);
   mlir::LogicalResult lowerLocalFence(SyncLocalFenceOp op);
+  mlir::LogicalResult lowerNCCJoin(SyncNCCJoinOp op);
   mlir::LogicalResult lowerInstruction(mlir::Operation *op);
 };
 

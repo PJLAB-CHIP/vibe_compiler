@@ -1,9 +1,9 @@
 //===- RankCandidateFrontierTest.cpp - Actual-clone frontier tests ------===//
 
+#include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
-#include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -16,6 +16,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 
@@ -27,6 +28,35 @@
 #include <set>
 
 namespace {
+
+constexpr wafer::TargetProfileId kTargetProfile =
+    wafer::TargetProfileId::waferTx81SingleCardKernelV1();
+
+TEST(RankCandidateFrontierTest,
+     RejectsMissingTargetProfileBeforeCandidateAnalysis) {
+  mlir::MLIRContext context;
+  mlir::OwningOpRef<mlir::ModuleOp> source =
+      mlir::parseSourceString<mlir::ModuleOp>("module {}", &context);
+  ASSERT_TRUE(source);
+
+  std::string diagnostics;
+  mlir::ScopedDiagnosticHandler handler(
+      &context, [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream os(diagnostics);
+        diagnostic.print(os);
+        os << "\n";
+        return mlir::success();
+      });
+
+  wafer::TensorProgramSchedulingConfig config;
+  config.logicalRank = 0;
+  config.candidateParallelism = 1;
+  EXPECT_TRUE(mlir::failed(
+      wafer::buildScheduledRankCandidateFrontier(*source, config)));
+  EXPECT_NE(diagnostics.find("target-profile must be explicitly provided"),
+            std::string::npos)
+      << diagnostics;
+}
 
 TEST(RankCandidateFrontierTest,
      PreservesReservedSpillAndResidentAsIndependentPlacedClones) {
@@ -83,6 +113,7 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
+  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   ASSERT_GE(frontier->size(), 2u);
@@ -108,6 +139,8 @@ module {
         [&](wafer::InstrGatherScatterOp) { ++gatherScatterCount; });
     if (candidate.reservedBaseline) {
       EXPECT_EQ(candidate.artifactKind, wafer::RankArtifactKind::Spill);
+      EXPECT_EQ(candidate.bufferingKind, wafer::RankBufferingKind::Single);
+      EXPECT_EQ(candidate.bufferingPlanOrdinal, 0u);
       baselineGatherScatterCount = gatherScatterCount;
     } else if (!optimizedMinimumGatherScatterCount ||
                gatherScatterCount < *optimizedMinimumGatherScatterCount) {
@@ -155,6 +188,8 @@ module {
        llvm::zip_equal(*frontier, *parallelFrontier)) {
     EXPECT_EQ(serial.stableOrdinal, parallel.stableOrdinal);
     EXPECT_EQ(serial.artifactKind, parallel.artifactKind);
+    EXPECT_EQ(serial.bufferingKind, parallel.bufferingKind);
+    EXPECT_EQ(serial.bufferingPlanOrdinal, parallel.bufferingPlanOrdinal);
     EXPECT_EQ(serial.reservedBaseline, parallel.reservedBaseline);
     std::string serialText;
     llvm::raw_string_ostream serialStream(serialText);
@@ -216,6 +251,7 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
+  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_EQ(llvm::count_if(*frontier,
@@ -226,8 +262,137 @@ module {
   EXPECT_TRUE(llvm::any_of(*frontier, [](const auto &candidate) {
     return candidate.stableOrdinal >= 48;
   }));
-
   // Both generation paths are isolated from the shared source.
+  bool sourceContainsTileRegion = false;
+  source->walk([&](wafer::TileRegionOp) { sourceContainsTileRegion = true; });
+  EXPECT_FALSE(sourceContainsTileRegion);
+}
+
+TEST(RankCandidateFrontierTest,
+     BuildsPlacedStaticFixedSlotsFromProductionTensorProgram) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                  wafer::WaferDialect>();
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  wafer::registerTargetImplementationExternalModels(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(%lhs: tensor<524288xf32>, %rhs: tensor<524288xf32>)
+      -> tensor<524288xf32> {
+    %out = tensor.empty() : tensor<524288xf32>
+    %sum = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]}
+      ins(%lhs, %rhs : tensor<524288xf32>, tensor<524288xf32>)
+      outs(%out : tensor<524288xf32>) {
+    ^bb0(%lhs_value: f32, %rhs_value: f32, %unused: f32):
+      %value = arith.addf %lhs_value, %rhs_value : f32
+      linalg.yield %value : f32
+    } -> tensor<524288xf32>
+    return %sum : tensor<524288xf32>
+  }
+}
+)mlir",
+                                                        &context);
+  ASSERT_TRUE(source);
+  std::string sourceBefore;
+  llvm::raw_string_ostream sourceBeforeStream(sourceBefore);
+  source->print(sourceBeforeStream);
+
+  wafer::TensorProgramSchedulingConfig config;
+  config.logicalRank = 0;
+  config.candidateParallelism = 1;
+  config.targetProfile = kTargetProfile;
+  auto serialFrontier =
+      wafer::buildScheduledRankCandidateFrontier(*source, config);
+  ASSERT_TRUE(mlir::succeeded(serialFrontier));
+
+  wafer::ScheduledRankCandidate *fixed = nullptr;
+  for (wafer::ScheduledRankCandidate &candidate : *serialFrontier) {
+    if (!candidate.reservedBaseline &&
+        candidate.bufferingKind == wafer::RankBufferingKind::StaticFixedSlot &&
+        candidate.bufferingPlanOrdinal > 0) {
+      fixed = &candidate;
+      break;
+    }
+  }
+  ASSERT_NE(fixed, nullptr);
+
+  llvm::SmallVector<mlir::scf::ForOp, 2> loops;
+  fixed->module->walk([&](mlir::scf::ForOp loop) { loops.push_back(loop); });
+  ASSERT_EQ(loops.size(), 1u);
+  mlir::scf::ForOp steady = loops.front();
+
+  unsigned rdmaCount = 0;
+  unsigned computeCount = 0;
+  unsigned wdmaCount = 0;
+  unsigned joinCount = 0;
+  steady.walk([&](wafer::InstrRDMAOp) { ++rdmaCount; });
+  steady.walk([&](wafer::InstrElementwiseOp) { ++computeCount; });
+  steady.walk([&](wafer::InstrWDMAOp) { ++wdmaCount; });
+  fixed->module->walk([&](wafer::SyncNCCJoinOp) { ++joinCount; });
+  EXPECT_EQ(rdmaCount, 2u);
+  EXPECT_EQ(computeCount, 1u);
+  EXPECT_EQ(wdmaCount, 1u);
+  EXPECT_EQ(joinCount, 1u);
+
+  unsigned nestedAllocations = 0;
+  unsigned externalSPMAllocations = 0;
+  std::set<int64_t> slotOffsets;
+  fixed->module->walk([&](mlir::memref::AllocOp allocation) {
+    if (!wafer::isWaferSPMMemRefType(allocation.getType()))
+      return;
+    if (allocation->getParentOfType<mlir::scf::ForOp>()) {
+      ++nestedAllocations;
+      return;
+    }
+    ++externalSPMAllocations;
+    auto offset = allocation->getAttrOfType<wafer::SPMOffsetAttr>(
+        wafer::kWaferSPMOffsetAttrName);
+    ASSERT_TRUE(offset);
+    EXPECT_GE(offset.getOffset(), 65536);
+    EXPECT_LT(offset.getOffset(), 3080192);
+    slotOffsets.insert(offset.getOffset());
+  });
+  EXPECT_EQ(nestedAllocations, 0u);
+  EXPECT_EQ(externalSPMAllocations, 6u);
+  EXPECT_EQ(slotOffsets.size(), 6u);
+
+  config.candidateParallelism = 4;
+  auto parallelFrontier =
+      wafer::buildScheduledRankCandidateFrontier(*source, config);
+  ASSERT_TRUE(mlir::succeeded(parallelFrontier));
+  ASSERT_EQ(parallelFrontier->size(), serialFrontier->size());
+  for (auto &&[serial, parallel] :
+       llvm::zip_equal(*serialFrontier, *parallelFrontier)) {
+    EXPECT_EQ(serial.stableOrdinal, parallel.stableOrdinal);
+    EXPECT_EQ(serial.artifactKind, parallel.artifactKind);
+    EXPECT_EQ(serial.bufferingKind, parallel.bufferingKind);
+    EXPECT_EQ(serial.bufferingPlanOrdinal, parallel.bufferingPlanOrdinal);
+    EXPECT_EQ(serial.reservedBaseline, parallel.reservedBaseline);
+    std::string serialText;
+    llvm::raw_string_ostream serialStream(serialText);
+    serial.module->print(serialStream);
+    std::string parallelText;
+    llvm::raw_string_ostream parallelStream(parallelText);
+    parallel.module->print(parallelStream);
+    EXPECT_EQ(serialStream.str(), parallelStream.str());
+  }
+
+  std::string sourceAfter;
+  llvm::raw_string_ostream sourceAfterStream(sourceAfter);
+  source->print(sourceAfterStream);
+  EXPECT_EQ(sourceAfterStream.str(), sourceBeforeStream.str());
   bool sourceContainsTileRegion = false;
   source->walk([&](wafer::TileRegionOp) { sourceContainsTileRegion = true; });
   EXPECT_FALSE(sourceContainsTileRegion);
@@ -275,6 +440,7 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
+  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), 257u);
@@ -395,6 +561,7 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
+  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), 257u);
@@ -472,6 +639,7 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
+  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), 257u);
@@ -546,6 +714,7 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
+  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
   EXPECT_LE(frontier->size(), 257u);
@@ -598,6 +767,7 @@ module {
   wafer::TensorProgramSchedulingConfig config;
   config.logicalRank = 0;
   config.candidateParallelism = 1;
+  config.targetProfile = kTargetProfile;
   auto frontier = wafer::buildScheduledRankCandidateFrontier(*source, config);
   ASSERT_TRUE(mlir::succeeded(frontier));
 

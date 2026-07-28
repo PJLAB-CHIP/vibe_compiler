@@ -68,4 +68,18 @@ def WaferInstructionOpInterface : OpInterface<"WaferInstructionOpInterface"> {
   ];
 }
 
+def WaferNCCIssueOpInterface : OpInterface<"WaferNCCIssueOpInterface"> {
+  let cppNamespace = "::wafer";
+  let description = [{
+    Interface for ordinary NCC issues with an explicit typed worker domain.
+    Completion joins and Direct DTE operations do not implement this
+    interface.
+  }];
+  let methods = [
+    InterfaceMethod<
+      "Return the worker domain that receives this NCC issue.",
+      "::wafer::NCCWorker", "getIssueWorker", (ins)>
+  ];
+}
+
 #endif // WAFER_IR_WAFERINTERFACES_TD

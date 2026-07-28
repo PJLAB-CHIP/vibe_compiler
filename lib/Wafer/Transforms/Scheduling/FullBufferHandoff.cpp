@@ -82,6 +82,21 @@ static bool isCompleteRDMA(InstrRDMAOp rdma, int64_t expectedBytes) {
          isUnitDescriptor(rdma.getSrcStrides(), rdma.getSrcIterations());
 }
 
+static bool completesNCCIssue(mlir::Operation *completion,
+                              mlir::Operation *issue) {
+  NCCCompletionContract issueContract = getNCCCompletionContract(issue);
+  NCCCompletionContract completionContract =
+      getNCCCompletionContract(completion);
+  if (issueContract.behavior != LocalInstructionCompletion::OrderedPending ||
+      !issueContract.issueWorker ||
+      completionContract.behavior !=
+          LocalInstructionCompletion::ParticipantJoin)
+    return false;
+  uint32_t worker = static_cast<uint32_t>(*issueContract.issueWorker);
+  return worker < kNCCWorkerCount &&
+         (completionContract.participantMask & (uint32_t{1} << worker)) != 0;
+}
+
 static bool isRegionOwnedAllocation(mlir::Value value, TileRegionOp owner) {
   while (auto view = mlir::dyn_cast_or_null<mlir::ViewLikeOpInterface>(
              value.getDefiningOp()))
@@ -486,7 +501,7 @@ static bool tryPromoteResult(TileRegionOp producer, unsigned resultIndex) {
   for (mlir::Operation *operation = producerWDMA->getNextNode(); operation;
        operation = operation->getNextNode())
     if (operation != yield.getOperation() &&
-        !mlir::isa<SyncLocalFenceOp>(operation))
+        !completesNCCIssue(operation, producerWDMA))
       return false;
 
   llvm::SmallVector<mlir::Operation *, 2> producerDestinationViews;
@@ -566,7 +581,8 @@ static bool tryPromoteResult(TileRegionOp producer, unsigned resultIndex) {
           rdma.getLoc(), localSource, rdma.getDest(), rdma.getByteCountAttr(),
           rdma.getInnerBytesAttr(), mlir::IntegerAttr{}, mlir::IntegerAttr{},
           rdma.getSrcStridesAttr(), rdma.getSrcIterationsAttr(),
-          rdma.getSrcStridesAttr(), rdma.getSrcIterationsAttr());
+          rdma.getSrcStridesAttr(), rdma.getSrcIterationsAttr(),
+          rdma.getWorkerAttr());
       rdma.erase();
     }
     localViews.append(rewrite.localViews.begin(), rewrite.localViews.end());

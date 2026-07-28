@@ -30,6 +30,12 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
+
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -193,6 +199,84 @@ buildDirectDTEInvocationData(const compiler::TargetLLVMModuleBundle &bundle) {
           "Direct-DTE source vertical must have one user input per rank");
     result.arguments.push_back(std::move(arguments));
   }
+  return result;
+}
+
+llvm::Expected<NCCJoinRewriteResult> rewriteNCCJoinsAfter(
+    compiler::TargetLLVMModuleBundle &bundle, TargetCallBuiltin anchor) {
+  const TargetCallDescriptor &anchorDescriptor =
+      getTargetCallDescriptor(anchor);
+  const TargetCallDescriptor &legacyFenceDescriptor =
+      getTargetCallDescriptor(TargetCallBuiltin::LocalFence);
+  const TargetCallDescriptor &joinDescriptor =
+      getTargetCallDescriptor(TargetCallBuiltin::NCCJoin);
+  NCCJoinRewriteResult result;
+
+  for (const compiler::TargetLLVMModule &targetModule : bundle.getModules()) {
+    llvm::Module &module =
+        const_cast<llvm::Module &>(targetModule.getModule());
+    llvm::SmallVector<llvm::CallInst *, 8> anchors;
+    llvm::SmallVector<llvm::CallInst *, 8> joins;
+    llvm::SmallVector<llvm::ReturnInst *, 4> returns;
+    for (llvm::Function &function : module)
+      for (llvm::BasicBlock &block : function)
+        for (llvm::Instruction &instruction : block) {
+          if (function.getName() == targetModule.getEntrySymbol())
+            if (auto *returnInstruction =
+                    llvm::dyn_cast<llvm::ReturnInst>(&instruction))
+              returns.push_back(returnInstruction);
+          auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
+          llvm::Function *callee = call ? call->getCalledFunction() : nullptr;
+          if (!callee)
+            continue;
+          if (callee->getName() == anchorDescriptor.symbol)
+            anchors.push_back(call);
+          if (callee->getName() == legacyFenceDescriptor.symbol ||
+              callee->getName() == joinDescriptor.symbol)
+            joins.push_back(call);
+        }
+
+    result.erasedJoinCount += joins.size();
+    for (llvm::CallInst *join : joins)
+      join->eraseFromParent();
+    if (anchors.empty())
+      continue;
+
+    llvm::Function *join = module.getFunction(joinDescriptor.symbol);
+    if (!join) {
+      llvm::FunctionType *joinType = llvm::FunctionType::get(
+          llvm::Type::getVoidTy(module.getContext()),
+          {llvm::Type::getInt32Ty(module.getContext())},
+          /*isVarArg=*/false);
+      join = llvm::Function::Create(joinType,
+                                    llvm::GlobalValue::ExternalLinkage,
+                                    joinDescriptor.symbol, module);
+      join->setCallingConv(llvm::CallingConv::C);
+    }
+    for (llvm::CallInst *anchorCall : anchors) {
+      llvm::Instruction *next = anchorCall->getNextNode();
+      if (!next)
+        return llvm::createStringError(
+            "Direct-DTE anchor call has no following insertion point");
+      llvm::IRBuilder<> builder(next);
+      builder.CreateCall(
+          join,
+          {builder.getInt32(uint32_t{1}
+                            << static_cast<uint32_t>(NCCWorker::Worker0))});
+      ++result.insertedJoinCount;
+    }
+    for (llvm::ReturnInst *returnInstruction : returns) {
+      llvm::IRBuilder<> builder(returnInstruction);
+      builder.CreateCall(
+          join,
+          {builder.getInt32(uint32_t{1}
+                            << static_cast<uint32_t>(NCCWorker::Worker0))});
+      ++result.insertedTerminalJoinCount;
+    }
+  }
+  if (result.insertedJoinCount == 0)
+    return llvm::createStringError(
+        "Direct-DTE bundle has no requested join anchor call");
   return result;
 }
 

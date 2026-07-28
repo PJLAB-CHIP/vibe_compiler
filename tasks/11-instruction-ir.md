@@ -1,6 +1,6 @@
 # Wafer Instruction IR Design
 
-状态：2026-07-23同步Unpool显式index-buffer dataflow；当前合同覆盖instruction-level hardware invocation IR、
+状态：2026-07-28同步typed NCC issue worker与participant join；当前合同覆盖instruction-level hardware invocation IR、
 memref buffer和shared physical geometry/ABI legality。shared verifier 已闭合当前支持子集的静态 DMA descriptor payload/range/
 element-width relation、fill/elementwise/reduce/convert/GEMM element/shape relation、ordinary conv、pool/
 unpool、TDMA pad/img2col和peripheral kind-specific capacity，并在target字段写入前检查ABI narrowing。
@@ -42,19 +42,20 @@ Q32.M/S才负责让这些能力进入共同candidate owner，planner不能复制
   programs 只能作为完整 variant set 原子提交。
 
 `wafer.instr` 的作用是把完整 rank traversal 中的 target-abstract tile-region scopes 变成可执行硬件动作或硬件通信调用，并让下游能从
-memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 fence 直接推导 endpoint/resource
-输入。它不是另一层 buffer IR。
+memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects、typed worker、participant join和exact
+event wait直接推导endpoint/resource/completion输入。它不是另一层buffer IR。
 
 实现边界：
 
-- 仓库代码当前已落地 `wafer.instr.local_fence`，以及
+- 仓库代码当前已落地typed `wafer.instr.ncc_join`；`wafer.instr.local_fence`只保留为
+  `join {worker0}`的legacy兼容输入。普通NCC issue包括
   `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gather_scatter`、`wafer.instr.fill`、
   `wafer.instr.elementwise`、`wafer.instr.bit2fp`、`wafer.instr.mask_move`、
   `wafer.instr.reduce`、`wafer.instr.convert`、`wafer.instr.gemm`、`wafer.instr.conv`、
   `wafer.instr.pool`、`wafer.instr.unpool`、`wafer.instr.tdma_data_move`、
-  `wafer.instr.peripheral`
-  和 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`
-  的 ODS、verifier、MemoryEffects、`WaferInstructionOpInterface` 和 lit/unit 覆盖。
+  `wafer.instr.peripheral`。Direct DTE的`wafer.instr.dte_send` / `dte_recv` / `dte_wait`属于独立
+  token/event completion domain，不是普通NCC issue；两类op都有ODS、verifier、MemoryEffects、
+  `WaferInstructionOpInterface`和lit/unit覆盖。
   `wafer.instr.elementwise` 当前承载有 CT elementwise wrapper 证据的 unary/binary arithmetic、
   relation、logic、activation 和 transcendental target kind；`select` 不存在于
   `#wafer.instr_elementwise_kind`。instruction lowering 会把 floating select 改写成 false-copy
@@ -63,8 +64,9 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 f
   convert opcode 139..174 的 dtype pair；INT8->FP kind 携带 `zero_point`，需要 rounding 的 kind
   携带 `rounding_mode`，plain wrapper kind 不允许带这两类 attr。它不是通过 `src_dtype` /
   `dst_dtype` 表达任意转换。
-- `wafer.instr.*` op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset、
-  worker id、raw packet field 或 compiler-facing ABI 字段。
+- `wafer.instr.*` op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset或raw
+  packet field。普通NCC issue显式携带typed worker placement；current production lowering只接受worker0，
+  非零worker在operator ABI真正编码该字段前由target preflight拒绝。
 - Direct DTE instruction ops 已替代旧 tile-level p2p prototype，并在 SPM memory planning 前暴露
   buffer lifetime、peer、byte count 和 async token。all-gather 的 strided gather slot 通过
   `wafer.instr.gather_scatter` 与连续 communication buffer 互相 materialize；DTE op 本身只收发
@@ -108,17 +110,17 @@ Pipeline position:
   `wafer.tile.materialize_layout`、`wafer.tile.fill/gemm/elementwise/reduce`、
   `wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast`、
   `wafer.tile.*` buffer-level collective、tile-region 内 `scf.if` / `scf.for`
-  structured control-flow 和 `wafer.instr.local_fence`。
+  structured control-flow、legacy `wafer.instr.local_fence`和typed `wafer.instr.ncc_join`。
 - Current stage responsibility:
   只做 Wafer instruction legalization / selection：递归覆盖所有 rank entries 的完整 traversal，验证candidate rewrite已
   物化到typed payload IR的implementation字段、operands、views和memory/layout types；boundary lowering从这些IR事实与
   显式target profile fresh导出唯一direct descriptor cover，不读取family对象或side plan；
   把每个可执行 target-abstract op 改写成
   `wafer.instr.*`，把 tile-level `Compute*Kind` 选择成 instr-level target kind，并保留 memref SSA
-  graph。对 `scf.if` / `scf.for` 递归转换其 region body并保留control-flow结构；每个`scf.for`
-  body在backedge前materialize显式local fence，使每次动态迭代的local issue独立完成。该producer fence不把
-  loop body创建并跨backedge携带的allocation/task变成单实例；后续memory planning仍须要求multi-instance表示或
-  fail closed。对 accepted
+  graph。对 `scf.if` / `scf.for` 递归转换其 region body并保留control-flow结构；loop backedge和
+  tile-region exit不是NCC completion boundary，不能仅因结构scope插入blocking join。same-worker
+  RAW/WAR/WAW由issue order和显式buffer lifetime证明；NCC到Kcore、Direct DTE、其它worker、host publication
+  或terminal的真实cut才生成覆盖实际pending worker的latest participant join。对 accepted
   `wafer.tile.*` collective，生成 explicit
   `wafer.instr.dte_send` / `dte_recv` / `dte_wait` p2p schedule。instruction op 通过
   interface 显式暴露current v1 instruction family、memref read/write、descriptor attrs、issue effect和completion relation；
@@ -128,14 +130,16 @@ Pipeline position:
 - Output artifact / IR:
   candidate clone 中每个 static rank 一份完整 instruction-level structured program：
   control flow + tile-local `wafer.tile.region` scopes + memref values with
-  `#wafer.memory<space, layout>` + `wafer.instr.*` + explicit token/wait/fence；或结构化
+  `#wafer.memory<space, layout>` + typed-worker `wafer.instr.*` + explicit token/wait/
+  participant join；或结构化
   legalization failure reason。单个 task/traversal fragment/tile 不是可提交 artifact。
 - Downstream consumer:
   08 relation-backed redundant physical transfer normalization先在complete-rank unplaced actual clone上
-  证明并删除可由same-root/standard view表达的完整movement，随后运行fresh whole-rank completion
-  normalization/verifier，再由whole-rank SPM planning、whole-variant DDR planning、
-  event/physical-transport/all-rank transport/target-entry verification 和closed-loop whole-variant
-  candidate driver消费；atomic commit 后才由 target LLVM、package 和 runtime 消费。
+  证明并删除可由same-root/standard view表达的完整movement，随后先运行fresh whole-rank completion
+  normalization/verifier，再由whole-rank SPM planning、
+  whole-variant DDR planning、event/physical-transport/all-rank transport/
+  target-entry verification 和
+  closed-loop whole-variant candidate driver；atomic commit 后才由 target LLVM、package 和 runtime 消费。
 - User-level driver / named pipeline:
   Q16以后由同一
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=<registered-id>`
@@ -166,9 +170,9 @@ Pipeline position:
   elementwise/relation、reduce、copy 和 metadata view 生成 verifier-legal instruction-level IR
   或标准 memref view，并覆盖 nested `scf.if` / `scf.for` body 递归转换。unsupported hardware
   instruction form，包括当前无法证明的 slice/broadcast/transpose descriptor，必须结构化失败，
-  不能让 SPM memory planning 从 target-abstract op 猜 demand。每个 issue 必须由 explicit async
-  token/wait 或 local fence 完成；generic async task identity、Direct DTE completion和local engine pending set
-  分别验证，每条 exit path terminal drain 后均为空；variant-set gate
+  不能让 SPM memory planning 从 target-abstract op 猜 demand。每个issue必须由explicit async
+  token/wait或typed worker ordered-pending/participant join合同闭合；generic async task identity、Direct DTE
+  completion和NCC worker pending set分别验证，每条function exit path在typed terminal completion后均为空；variant-set gate
   还要证明所有 transport 匹配和 shared physical geometry/range/narrowing contract。production elementwise必须
   不携带map且same-shape；reduce init必须在tile→instruction阶段显式分解或拒绝，terminal instruction op不携带init。
   target-profile×engine×format×selected-fields必须由tasks/14 typed conversion/ABI合同准入。Q32.V启用mapped DMA时，
@@ -293,7 +297,7 @@ wafer.tile.materialize_layout
 wafer.tile.fill/gemm/elementwise/reduce
 wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast
 scf.if / scf.for
-wafer.instr.local_fence
+legacy wafer.instr.local_fence or typed wafer.instr.ncc_join
 ```
 
 R3.2d 后：
@@ -309,12 +313,13 @@ wafer.instr.pool / wafer.instr.unpool
 wafer.instr.tdma_data_move
 wafer.instr.peripheral
 scf.if / scf.for
-wafer.instr.local_fence
+typed worker placement + wafer.instr.ncc_join
 ```
 
 R3.2d 不做 memref type conversion。它只把 executable target-abstract op 改写成 instruction op，
 并复用同一批 memref values。physical base address、SPM offset、end address、bank/color、
-worker register window、runtime pointer 和 packet word 都不属于 R3.2d。
+raw worker register window、runtime pointer 和 packet word 都不属于 R3.2d；typed worker identity属于
+instruction placement语义。
 R3.2d 后的 instruction IR 不允许 `#wafer.elementwise_kind` / `#wafer.reduce_kind`
 这类 tile-level semantic attr 出现在 `wafer.instr.*` op 上；这些语义必须在 lowering 时选择成
 instr-level target kind。
@@ -331,12 +336,12 @@ instr-level target kind。
 | --- | --- | --- | --- |
 | RDMA | `wafer.instr.rdma` | `wafer.tile.load` | DDR memref -> SPM memref |
 | WDMA | `wafer.instr.wdma` | `wafer.tile.store` | SPM memref -> DDR memref |
-| TDMA | `wafer.instr.gather_scatter` | `wafer.tile.materialize_layout`、tile movement ops | byte-counted SPM movement；contiguous copy 是 descriptor 特例 |
+| TDMA | `wafer.instr.gather_scatter` | `wafer.tile.materialize_layout`、tile movement ops | byte-counted SPM movement；contiguous copy 是 descriptor 特例，但complete-rank actual clone中只有无法安全coalesce storage的copy才保留 |
 | TDMA | `wafer.instr.fill` | `wafer.tile.fill` | `TsmPeripheral::Memset`使用`TsmDataMoveInstr`并最终发往TDMA queue的scalar/immediate fill |
 | CT | `wafer.instr.elementwise` | `wafer.tile.elementwise` | `#wafer.instr_elementwise_kind` target kind；不含 select |
 | CT | `wafer.instr.bit2fp` | tile semantic select lowering | i1 mask -> floating mask target peripheral op |
 | CT | `wafer.instr.mask_move` | tile semantic select lowering | `TsmMaskDataMove::MaskMove`使用CT packet并最终发往CT/CGRA queue的masked SPM data movement target op |
-| TDMA/CT composite | `wafer.instr.fill` + `gather_scatter` + `wafer.instr.elementwise` | `wafer.tile.reduce` | Q0.L init-first canonical-order correctness baseline；native `wafer.instr.reduce`只有compiler-owned full-domain等价证明后才可替换 |
+| TDMA/CT composite | `wafer.instr.fill` + conditional `gather_scatter` + `wafer.instr.elementwise` | `wafer.tile.reduce` | Q0.L init-first canonical-order correctness baseline；只有真实layout/materialization movement需要时保留GS，same-root/view由08通用规范化删除；native `wafer.instr.reduce`只有compiler-owned full-domain等价证明后才可替换 |
 | CT | `wafer.instr.convert` | future convert lowering | `#wafer.instr_convert_kind` opcode-aligned dtype pair + kind-specific wrapper attrs |
 | NE | `wafer.instr.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
 | NE | `wafer.instr.conv` | future conv lowering / imported target op | basic Conv / Depthwise / BackwardConv packet fields |
@@ -378,7 +383,7 @@ packet/register与板端证据另由`tasks/16` gate。
 | 硬件 / wrapper 能力 | 当前 `wafer.instr` 表示 | coverage tier | 处理规则 |
 | --- | --- | --- | --- |
 | RDMA / WDMA contiguous 和三层 stride descriptor | `wafer.instr.rdma` / `wafer.instr.wdma` | V0 production target op | target LLVM call emission 必须生成 target CRT call；descriptor 保持 byte-level `inner_bytes`、stride 和 iteration |
-| TDMA `TsmDataMove::GatherScatter` | `wafer.instr.gather_scatter` | V0 production target op | layout materialization、SPM copy 和可静态证明的 slice/transpose/broadcast movement 都展开为一条或多条 gather/scatter；无法压成 V0 descriptor 时结构化失败 |
+| TDMA `TsmDataMove::GatherScatter` | `wafer.instr.gather_scatter` | V0 production target op | 真实layout materialization、SPM copy和可静态证明的slice/transpose/broadcast movement展开为一条或多条gather/scatter；完整copy在actual clone由08用IndexRelation、physical map、effect/lifetime/completion重证，能安全coalesce时删除，不能证明或无法压成V0 descriptor时分别保留或结构化失败 |
 | `TsmPeripheral::Memset` / scalar fill | `wafer.instr.fill` | V0 production target op | attr缺省保持v1 Tensor logical-valid count；显式`physical_footprint`从Cx/NCx/BOOL physical encoding checked派生count并覆盖padding/tail/unused bits。current TX81只对BOOL full physical footprint开放I8 byte-fill canonicalization，native TDMA `Fmt_BOOL`和logical-valid BOOL均fail closed |
 | CT arithmetic / relation / logic / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | V0 production target op | 覆盖当前 enum 中的 target kind；tile-level map必须先materialize为movement/同形状operand并strip，terminal op不携带`indexing_maps`；scalar immediate、bitpacked bool loop/VuV和rounding mode需显式target variant后才能开放 |
 | semantic select | 无单条 select op | V0 composite lowering | 必须展开为 false-copy `gather_scatter` + `bit2fp` + `mask_move`；`wafer.instr.elementwise <select>` 非法 |
@@ -388,7 +393,7 @@ packet/register与板端证据另由`tasks/16` gate。
 | NE affine INT8 GEMM | `wafer.instr.quantized_gemm` | typed production extension；未完成capability/CRT/golden前target-illegal | exact M/K/N/batch/format、q0/q1、left/right zero point、typed scale operands/mode和matched capability；不复用plain GEMM flag |
 | MXFP/FP8 packed decode | `wafer.instr.mxfp_decode` | explicit-composite production extension；未完成scratch/completion/CRT gate前target-illegal | packed source + block scale + destination + scratch；decode到BF16/FP16，不能冒充CT convert或native FP8 GEMM |
 | Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | V0 production target op with committed Q16.T binding | IR表达entry-local logical peer、bytes和async token；post-memory all-rank acceptance提交physical endpoint、remote receiver offset、FSM/completion和status ABI后，target conversion生成opaque event/ready/send/wait/release CRT calls。缺binding或不一致仍以`unsupported_target_transport`拒绝；RuntimeSession不能补做endpoint/channel planning |
-| local NCC drain / visibility fence | `wafer.instr.local_fence` | V0 production target sync；LLVM call emitted | target LLVM call emission 映射到 local wait/drain Wafer CRT call；不是 multi-tile barrier |
+| typed NCC participant drain | `wafer.instr.ncc_join`；legacy `local_fence`=`join {worker0}` | V0 production target sync；LLVM call emitted | canonical非空participant集合lower到typed CRT join；每个participant都是高代价blocking worker drain，不是普通依赖、Direct DTE completion或multi-tile barrier；optimized steady state必须为零 |
 | SPM memcpy helper / copy | 无单独 copy op | V0 composite lowering | copy 是 `gather_scatter` 的 descriptor 特例；不引入 `wafer.instr.copy` |
 | ChannelNorm / DechannelNorm / Tensor-Normalization | 无单条 op | V0 composite lowering | 作为 layout materialization algorithm 展开为 gather/scatter 序列；native TensorNom opcode 133 不作为 V0 主路径 |
 | tile collectives `all_gather/all_reduce/reduce_scatter/all_to_all/collective_permute` | 无 collective instr op | V0 composite lowering | 先在 tile collective / schedule 层选 ring、tree 或 direct p2p，再 lower 成 DTE send/recv/wait + local movement/compute |
@@ -476,7 +481,7 @@ MemoryEffectOpInterface
 不再通过`verifyInstructionContract`重复调用同一verifier。SPM/DDR/Compute/Movement/Communication/Sync
 resource继续使用MLIR custom `SideEffects::Resource`，但不再复制成`WaferResourceEffect` record。
 buffer role从operand/result和typed op semantics取得，bytes/footprint从type、encoding和descriptor fields重算，
-issue/wait/fence completion从SSA token和显式op推导。
+issue/exact wait/participant completion从SSA token、typed worker和显式op推导。
 
 `InstrFamily` 是 Wafer enum/interface fact，V0 至少包含：
 
@@ -491,7 +496,7 @@ issue/wait/fence completion从SSA token和显式op推导。
 
 family marker只返回当前op可验证的instruction family，不返回planner side table，也不复制全局schedule。
 MemoryEffectOpInterface直接关联actual buffer value或custom SideEffects::Resource；它不携带第二份role/index/bytes
-record。真正completion由op semantics、SSA token、wait/fence及path-covering verifier共同证明。对
+record。真正completion由op semantics、SSA token、typed worker/participant join及path-covering verifier共同证明。对
 `rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert`、`gemm` 和
 `dte_*` 这类固定 family 的 V0 op，`getInstructionFamily()` 由 op class 静态派生，不要求 IR
 打印 `instruction_family` attr。后续若出现同一个 op contract 下可选择多个 family 的 instruction
@@ -508,7 +513,7 @@ resource effects 至少要表达：
 | NE | SPM memref read + SPM memref write | Compute/NE issue |
 | DTE | send reads SPM source, recv writes SPM destination, wait consumes async token | Communication/DTE issue or wait |
 
-所有issue、wait、fence、compute/movement/communication instruction和observable write均为non-speculatable。generic
+所有issue、wait、join、compute/movement/communication instruction和observable write均为non-speculatable。generic
 transformation只能对没有standard MemoryEffect/custom SideEffects::Resource effect且不会触发UB的structural op使用
 `Pure`；effect不替代下述completion proof。
 
@@ -523,18 +528,20 @@ instruction-level IR中的`func.call`不是隐式资源边界。memory planning�
 其它可能触及SPM/DDR的direct/indirect/external/async call必须有未来显式arena/resource summary，否则下游按动态
 execution scope fail closed。静态memory-space type、callee名字或“未解析到alias”不能替代该summary。
 
-DTE issue返回`!async.token`并由匹配`wafer.instr.dte_wait`消费；可能异步的local compute/movement issue要么
-返回具有已定义terminal的token，要么进入`wafer.instr.local_fence`明确收口的pending effect set。generic async
+DTE issue返回`!async.token`并由匹配`wafer.instr.dte_wait`消费；普通NCC compute/movement issue按typed
+worker进入ordered-pending frontier，matching `wafer.instr.ncc_join`只完成其canonical participant集合。
+legacy `local_fence`严格等价于participant `{worker0}`，不能完成Direct DTE或其它worker。generic async
 completion proof不替代SPM owner的DTE origin/exact-wait proof；SPM当前保守拒绝所有loop-carried async token。
-`busytable` 只能作为 target capability /
-legality / cost input，不能替代 token、wait/fence、effects 或 terminal drain。每条当前
-`wafer.tile.region` exit path 都必须证明没有未消费 DTE token、pending local compute/movement
-issue及其 SPM read/write、generic async task，也没有未完成 recv。跨tile-region的SPM buffer、alias和event
+`busytable`只能作为target capability/legality/cost input，不能替代token、typed join、effects或terminal
+drain。pending NCC issue可透明跨tile-region及已证明same-worker ordered reuse的loop backedge；每条function
+exit path仍必须证明participant completion闭合，并证明没有未消费DTE token、generic async task或未完成recv。
+跨tile-region的SPM buffer、alias和event
 必须由显式SSA/control-flow表达并纳入whole-rank plan；SPM planner仍拒绝nested tile-region scope，且不会为
 各region独立分配物理arena。
 
-R3.2d 不建模 worker id。`TsmExecute` 的 worker bits、register window 和 packet field 属于
-committed instruction 后的 target LLVM call emission。
+R3.2d建模closed `worker0/worker1/worker2` issue identity，但不暴露raw `inter_type`、register window或
+packet field；这些字段只在target lowering按closed profile编码。current operator ABI只支持worker0，
+因此非零worker accepted candidate必须在effect前失败，而不能静默降回默认worker。
 
 ## 7. ODS-Level Op Contracts
 
@@ -909,7 +916,7 @@ alignment。14唯一拥有`writeback_raw_u32`的target byte-order/store合同并
 later Q3.6的synchronous writeback必须由`wafer.instr.peripheral<count>`自身的typed effect/completion合同和exact
 TargetCall语义表达，不能按op名恢复，也不需要再造versioned completion-property registry。若wrapper在返回前等待local
 compute/movement并写入destination，Instr effect、path verifier和target conversion直接验证这一事实；consumer、alias和
-lifetime据此排序。普通terminal local fence可以保守收口其它issue，但不能替代Count op自身的同步合同。
+lifetime据此排序。terminal participant join只收口实际pending worker，不能替代Count op自身的同步合同。
 
 当前资料只证明opcode/wrapper和raw low-u32 writeback，不能证明Count predicate、特殊值或format语义。因此current
 source interface不得产生Count candidate，target/model/board全部pre-effect拒绝。Q3.6只有取得明确source semantics、
@@ -924,7 +931,8 @@ R3.2d 应实现为 MLIR DialectConversion：
 - illegal：`wafer.tile.load`、`wafer.tile.store`、`wafer.tile.materialize_layout`、
   `wafer.tile.fill/gemm/elementwise/reduce` 和 tile movement ops。
 - legal：`memref.alloc`、standard memref view ops、`wafer.instr.*`、
-  `wafer.instr.local_fence`、`wafer.tile.region` container、`scf.if` / `scf.for` container
+  typed `wafer.instr.ncc_join`、legacy `wafer.instr.local_fence`、`wafer.tile.region` container、
+  `scf.if` / `scf.for` container
   和必要 scalar/support op。
 - no type conversion for Wafer tagged memref values。
 - conversion failure 必须结构化返回给 planner；rejected instruction IR 不进入 committed 主线 IR。
@@ -941,7 +949,7 @@ peer edge、message、local work和completion。
 | target-abstract op | instruction-level lowering |
 | --- | --- |
 | `wafer.tile.load` | Q32.R后consume destination-style source/dest；current capability只处理compact Tensor。Q32.V mapped extension从两端typed views/encoding、TargetProfileId和08 exact transfer proof导出direct cover，并发射显式`src_offset`/`dst_offset`的RDMA；若consumer要求known padding，先fill完整destination再发valid segments；staged alternative必须已显式物化为Tensor+GS payload IR |
-| `wafer.tile.store` | consume destination-style source/dest；current capability从compact Tensor发射WDMA。Q32.V mapped extension从两端typed views/encoding、TargetProfileId和08 exact transfer proof导出direct cover，并发射显式`src_offset`/`dst_offset`的WDMA；staged alternative必须已显式物化在payload IR，随后用local fence闭合source lifetime |
+| `wafer.tile.store` | consume destination-style source/dest；current capability从compact Tensor发射WDMA。Q32.V mapped extension从两端typed views/encoding、TargetProfileId和08 exact transfer proof导出direct cover，并发射显式`src_offset`/`dst_offset`的WDMA；staged alternative必须已显式物化在payload IR，source lifetime由typed worker ordered-pending及其真实external/terminal cut闭合，不能因WDMA本身插join |
 | `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; compare source/result logical element to physical byte mapping through the unified physical layout calculator; coalesce adjacent byte segments, pack regular segments into up to three stride/iteration levels, and emit one or more `wafer.instr.gather_scatter`; do not require source/result physical byte counts to match; structured failure only when static logical movement cannot be represented by V0 descriptors |
 | `wafer.tile.fill` | current v1只对Tensor logical-valid domain生成无domain attr的`wafer.instr.fill`；padding/physical-footprint初始化已由Q32.V增加typed Instr/TargetCall字段并闭合count/raw-value纵向 |
 | `wafer.tile.gemm` | ensure/create selected aligned SPM physical versions；current v1只在normal/normal relation成立时生成无orientation字段的`wafer.instr.gemm`。若operand/result已是合法Cx/NCx，直接消费该encoding且不插入packing字段；本lowering不判断历史上是否删除过layout/GS，tasks/06 Q32.S/G集成证据从winner readback证明absorption。Q32.V把tile-level typed orientation无损写入versioned Instr op；不能从shape或op名恢复flag |
@@ -954,14 +962,15 @@ peer edge、message、local work和completion。
 | `wafer.tile.transpose` | create destination SPM memref; enumerate the static result domain, invert `permutation` to source logical indices, compute source/result physical byte offsets, coalesce adjacent segments, pack regular segments into up to three stride/iteration levels, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
 | `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits packed `wafer.instr.gather_scatter` descriptors only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
-| `wafer.tile.all_gather` | requires matching `tensor/ntensor` SPM layouts and infers the unique gather axis from compact local/gather buffer shapes. `ring` copies the local chunk into the local gather slot, fences, then forwards one slot per round around the topology-derived rank order. `direct` uses the deterministic cyclic order of semantic group indices to send the local slot to every other logical rank while receiving each peer chunk into its result slot；it does not invoke topology Ring search. |
-| `wafer.tile.all_reduce` | requires matching `tensor` SPM buffers and sum/max/min reduce kind. `ring` is standard chunked reduce-scatter plus all-gather: each round communicates only one nonzero typed chunk and reduces only that chunk; the final result is assembled from all reduced chunks. `tree` uses a topology-derived ordered binary tree whose inorder traversal equals `rank_group`: each node combines left-subtree partial, local operand and right-subtree partial in that order, then broadcasts the final accumulator down the reverse tree. Both integer and supported floating element types are accepted, and both forms materialize all local reduction and DTE-read/consumer fences explicitly. |
+| `wafer.tile.all_gather` | requires matching `tensor/ntensor` SPM layouts and infers the unique gather axis from compact local/gather buffer shapes. `ring` copies the local chunk into the local gather slot, inserts a participant join only before the first DTE observation of its NCC producer, then forwards one slot per round around the topology-derived rank order; it has no round/backedge/final structural join. `direct` uses the deterministic cyclic order of semantic group indices to send the local slot to every other logical rank while receiving each peer chunk into its result slot；it does not invoke topology Ring search. |
+| `wafer.tile.all_reduce` | requires matching `tensor` SPM buffers and sum/max/min reduce kind. `ring` is standard chunked reduce-scatter plus all-gather: each round communicates only one nonzero typed chunk and reduces only that chunk; the final result is assembled from all reduced chunks. `tree` uses a topology-derived ordered binary tree whose inorder traversal equals `rank_group`: each node combines left-subtree partial, local operand and right-subtree partial in that order, then broadcasts the final accumulator down the reverse tree. Both integer and supported floating element types are accepted；same-worker local chains retain issue order, exact DTE events retain token waits, and only actual NCC-domain-external cuts receive minimum participant joins. |
 | `wafer.tile.reduce_scatter` | requires a full `tensor` SPM input whose scatter `axis` size is `group_size * result_axis_size`, plus matching local-slot recv/result buffers. `direct` sends each destination-owned input slot to its owner and accumulates received contributions in `rank_group` order for the local slot. `ring` performs one typed chunk transfer/reduction per round along the selected rank order for integer or supported floating elements. Non-contiguous slots require explicit pack/unpack; an unrepresentable extra candidate fails without weakening the direct baseline. |
 
 旧all-reduce ring曾每轮发送full buffer；它只能作为Q36修复前的实现事实，不能继续满足本表的Ring合同或用于
 算法优劣证明。equal-split all-to-all和collective-permute虽然在更早的structured→tile-region rewrite直接产生
 Instr DTE op，也遵守相同completion要求：remote insert/recv、local copy/fill与后续consumer之间必须有显式
-wait/fence，不能依赖block order或terminal region偶然收口。
+exact wait或matching participant join；same-worker RAW/WAR/WAW只保持issue order，不能依赖block order，
+也不能因terminal region结构边界插join。
 
 R3.2d.4 已覆盖 static movement descriptor splitting / packing：
 
@@ -1142,8 +1151,9 @@ R3.2d verifier checks only instruction legality:
   `wafer.instr.dte_send` / `dte_recv` / `dte_wait`, not ad hoc tile p2p ops or side tables；在physical
   endpoint/slot binding和target CRT support闭合前，这三类op在production target conversion中必须整体拒绝；
   Q16.T已对当前single-card fixed-size unicast profile闭合该binding，超出profile的模式继续拒绝。
-- 每个 issue 都有可验证 completion relation；每个isolated `wafer.tile.region`的exit在显式terminal
-  drain/wait/fence后pending-event set为空，variant gate覆盖rank中的all-and-only regions。`busytable` state
+- 每个issue都有可验证completion relation；`wafer.tile.region` exit不是completion boundary，pending NCC
+  frontier可沿显式SSA/control flow传播；每条rank function exit在显式terminal participant join/exact wait后
+  pending-event set为空，variant gate覆盖rank中的all-and-only regions。`busytable` state
   不能作为completion proof。
 - async handle的root provenance与task identity分别验证；handle alias或path union不能冒充完成了未被terminal
   wait覆盖的task，unsupported flow和missing terminal分别稳定失败。
@@ -1247,7 +1257,7 @@ wafer.tile.region ... {
       : memref<128x128xf16, #wafer.memory<spm, tensor>>
      to memref<128x128xf16, #wafer.memory<ddr, tensor>>
 
-  wafer.instr.local_fence
+  wafer.instr.ncc_join [0]
 }
 ```
 
@@ -1310,13 +1320,11 @@ R3.2d.2 已完成：
    copy、metadata view lowered to standard memref view、`Cx/NCx` block-major reshape、
    tail-only metadata reshape、nested `scf.if`、tile communication structured failure，以及
    padding layout materialization structured failure。
-9. 每个 lowered WDMA 后立即生成 `wafer.instr.local_fence`，使当前 tile 的 SPM read lifetime
-   在 store completion 后结束；每个`scf.for` body terminator前补一个backedge local fence，使loop body
-   的RDMA/compute/movement不能跨动态迭代悬空；每个 single-block `wafer.tile.region` terminator 前还补一个
-   terminal local fence，覆盖无 store 的路径。SPM planner 不把 region exit 当隐式完成：它按控制流分别跟踪
-   local compute/movement 的全部 SPM read/write 和 Direct DTE token，只有 path-matching local fence
-   或 exact DTE wait 才能 drain。可能零次执行的loop并非整体非法：pre-loop pending state不能只由body fence
-   完成，body issue必须在backedge前完成；SPM则保守拒绝所有loop-carried async token。
+9. conversion不再在WDMA后、`scf.for` backedge或`wafer.tile.region` exit按结构插wait。普通NCC op
+   进入worker-aware ordered-pending frontier；统一completion placement只在value effect/root alias证明的
+   NCC→Direct DTE/Kcore/call/return cut插入覆盖实际pending worker的latest typed join，空join和相邻冗余
+   join不进入accepted IR。same-worker RAW/WAR/WAW与loop-carried slot reuse由issue order和lifetime证明，
+   不逐edge drain；SPM仍独立按exact DTE token/wait跟踪communication lifetime。
 
 R3.2d.3 当前边界：
 
@@ -1325,7 +1333,7 @@ R3.2d.3 当前边界：
     traversal / tile shape。
 11. pipeline tests覆盖多region、structured `scf.if` / `scf.for`、tile communication
     structured failure，以及转换后不能残留executable target-abstract op的pipeline-level gate；
-    focused memory-planning tests证明携带pre-existing root的安全loop在backedge fence后通过，而loop body创建
+    focused memory-planning tests证明携带pre-existing root的same-worker ordered loop无需backedge join即可通过，而loop body创建
     fresh allocation并作为recurrence result携带时以`unsupported_lifetime_alias`拒绝。
 
 R3.2d.4 已完成：

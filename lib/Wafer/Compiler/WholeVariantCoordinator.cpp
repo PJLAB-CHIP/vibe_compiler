@@ -115,6 +115,7 @@ rankMatchesCollectiveCharacterization(const RankExecutable &rank,
     break;
   case WholeVariantSelectionMode::Production:
   case WholeVariantSelectionMode::ReservedBaseline:
+  case WholeVariantSelectionMode::QualifyStaticFixedSlot:
     return false;
   }
   return observeCollectivePhases(rank) == expected;
@@ -309,7 +310,27 @@ struct PreTargetWholeVariant {
   std::vector<int64_t> selectedStableOrdinals;
   std::vector<wafer::RankArtifactKind> selectedArtifactKinds;
   std::vector<bool> selectedReservedBaselines;
+  std::vector<wafer::RankBufferingKind> selectedBufferingKinds;
+  std::vector<uint32_t> selectedBufferingPlanOrdinals;
 };
+
+static bool matchesStaticFixedSlotQualification(
+    const PreTargetWholeVariant &candidate) {
+  const size_t rankCount = candidate.ranks.size();
+  return rankCount != 0 &&
+         candidate.selectedReservedBaselines.size() == rankCount &&
+         candidate.selectedBufferingKinds.size() == rankCount &&
+         candidate.selectedBufferingPlanOrdinals.size() == rankCount &&
+         llvm::none_of(candidate.selectedReservedBaselines,
+                       [](bool reserved) { return reserved; }) &&
+         llvm::all_of(candidate.selectedBufferingKinds,
+                      [](wafer::RankBufferingKind kind) {
+                        return kind ==
+                               wafer::RankBufferingKind::StaticFixedSlot;
+                      }) &&
+         llvm::all_of(candidate.selectedBufferingPlanOrdinals,
+                      [](uint32_t ordinal) { return ordinal > 0; });
+}
 
 static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
     llvm::ArrayRef<size_t> candidateIndices,
@@ -322,6 +343,8 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
   }
   std::optional<int64_t> stableOrdinal;
   std::optional<wafer::RankArtifactKind> artifactKind;
+  std::optional<wafer::RankBufferingKind> bufferingKind;
+  std::optional<uint32_t> bufferingPlanOrdinal;
   for (auto [rank, candidateIndex] : llvm::enumerate(candidateIndices)) {
     if (candidateIndex >= frontiers[rank].size()) {
       failureGate = "rank-candidate-correspondence";
@@ -330,13 +353,22 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
     int64_t current = frontiers[rank][candidateIndex].stableOrdinal;
     wafer::RankArtifactKind currentArtifactKind =
         frontiers[rank][candidateIndex].artifactKind;
+    wafer::RankBufferingKind currentBufferingKind =
+        frontiers[rank][candidateIndex].bufferingKind;
+    uint32_t currentBufferingPlanOrdinal =
+        frontiers[rank][candidateIndex].bufferingPlanOrdinal;
     if ((stableOrdinal && current != *stableOrdinal) ||
-        (artifactKind && currentArtifactKind != *artifactKind)) {
+        (artifactKind && currentArtifactKind != *artifactKind) ||
+        (bufferingKind && currentBufferingKind != *bufferingKind) ||
+        (bufferingPlanOrdinal &&
+         currentBufferingPlanOrdinal != *bufferingPlanOrdinal)) {
       failureGate = "rank-candidate-correspondence";
       return mlir::failure();
     }
     stableOrdinal = current;
     artifactKind = currentArtifactKind;
+    bufferingKind = currentBufferingKind;
+    bufferingPlanOrdinal = currentBufferingPlanOrdinal;
   }
 
   std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modules;
@@ -429,6 +461,8 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
   candidate.selectedStableOrdinals.reserve(candidateIndices.size());
   candidate.selectedArtifactKinds.reserve(candidateIndices.size());
   candidate.selectedReservedBaselines.reserve(candidateIndices.size());
+  candidate.selectedBufferingKinds.reserve(candidateIndices.size());
+  candidate.selectedBufferingPlanOrdinals.reserve(candidateIndices.size());
   for (auto [rank, candidateIndex] : llvm::enumerate(candidateIndices)) {
     candidate.selectedStableOrdinals.push_back(
         frontiers[rank][candidateIndex].stableOrdinal);
@@ -436,6 +470,10 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
         frontiers[rank][candidateIndex].artifactKind);
     candidate.selectedReservedBaselines.push_back(
         frontiers[rank][candidateIndex].reservedBaseline);
+    candidate.selectedBufferingKinds.push_back(
+        frontiers[rank][candidateIndex].bufferingKind);
+    candidate.selectedBufferingPlanOrdinals.push_back(
+        frontiers[rank][candidateIndex].bufferingPlanOrdinal);
   }
   return candidate;
 }
@@ -477,6 +515,9 @@ static mlir::FailureOr<AcceptedWholeVariant> runTargetGate(
   accepted.selectedArtifactKinds = std::move(candidate.selectedArtifactKinds);
   accepted.selectedReservedBaselines =
       std::move(candidate.selectedReservedBaselines);
+  accepted.selectedBufferingKinds = std::move(candidate.selectedBufferingKinds);
+  accepted.selectedBufferingPlanOrdinals =
+      std::move(candidate.selectedBufferingPlanOrdinals);
   return accepted;
 }
 
@@ -511,9 +552,47 @@ static ParetoOrder compareKnownMetrics(llvm::ArrayRef<MetricPair> dimensions) {
   return ParetoOrder::Incomparable;
 }
 
+static ParetoOrder
+compareNCCDrainCost(const analysis::WholeCardInstructionProgramCost &left,
+                    const analysis::WholeCardInstructionProgramCost &right) {
+  // A narrower participant set is a correctness scope, not a cheap wait.
+  // Count every by-worker call on the highest-priority axes: one steady join
+  // covering three workers is more expensive than two steady joins covering
+  // one worker each. Join-operation counts remain diagnostics/tie-breakers and
+  // cannot hide a wider participant mask.
+  const MetricPair priority[] = {
+      {&left.aggregateSteadyStateNCCParticipantWaitCount,
+       &right.aggregateSteadyStateNCCParticipantWaitCount},
+      {&left.aggregateNonTerminalNCCParticipantWaitCount,
+       &right.aggregateNonTerminalNCCParticipantWaitCount},
+      {&left.aggregateNCCParticipantWaitCount,
+       &right.aggregateNCCParticipantWaitCount},
+      {&left.aggregateIntrinsicNCCDrainCount,
+       &right.aggregateIntrinsicNCCDrainCount},
+      {&left.aggregateSteadyStateNCCJoinCount,
+       &right.aggregateSteadyStateNCCJoinCount},
+      {&left.aggregateNonTerminalNCCJoinCount,
+       &right.aggregateNonTerminalNCCJoinCount},
+      {&left.aggregateNCCJoinCount, &right.aggregateNCCJoinCount},
+  };
+  for (const MetricPair &dimension : priority) {
+    if (!dimension.left->isKnown() || !dimension.right->isKnown())
+      return ParetoOrder::Unknown;
+    if (dimension.left->value < dimension.right->value)
+      return ParetoOrder::LeftDominates;
+    if (dimension.left->value > dimension.right->value)
+      return ParetoOrder::RightDominates;
+  }
+  return ParetoOrder::Equivalent;
+}
+
 static ParetoOrder compareExactWholeVariantCost(
     const analysis::WholeCardInstructionProgramCost &left,
     const analysis::WholeCardInstructionProgramCost &right) {
+  ParetoOrder drainOrder = compareNCCDrainCost(left, right);
+  if (drainOrder != ParetoOrder::Equivalent)
+    return drainOrder;
+
   const MetricPair dimensions[] = {
       {&left.aggregateCompute.npuF16Bf16LogicalOps,
        &right.aggregateCompute.npuF16Bf16LogicalOps},
@@ -674,20 +753,29 @@ struct ParetoCandidateView {
   const std::vector<int64_t> *selectedStableOrdinals = nullptr;
   const std::vector<wafer::RankArtifactKind> *selectedArtifactKinds = nullptr;
   const std::vector<bool> *selectedReservedBaselines = nullptr;
+  const std::vector<wafer::RankBufferingKind> *selectedBufferingKinds = nullptr;
+  const std::vector<uint32_t> *selectedBufferingPlanOrdinals = nullptr;
 };
 
 template <typename VariantT>
 static ParetoCandidateView getParetoCandidateView(const VariantT &candidate) {
-  return {&candidate.resourceCost, &candidate.selectedStableOrdinals,
+  return {&candidate.resourceCost,
+          &candidate.selectedStableOrdinals,
           &candidate.selectedArtifactKinds,
-          &candidate.selectedReservedBaselines};
+          &candidate.selectedReservedBaselines,
+          &candidate.selectedBufferingKinds,
+          &candidate.selectedBufferingPlanOrdinals};
 }
 
 static bool hasEarlierStaticPolicyOrder(ParetoCandidateView lhs,
                                         ParetoCandidateView rhs) {
   return std::tie(*lhs.selectedStableOrdinals, *lhs.selectedArtifactKinds,
+                  *lhs.selectedBufferingKinds,
+                  *lhs.selectedBufferingPlanOrdinals,
                   *lhs.selectedReservedBaselines) <
          std::tie(*rhs.selectedStableOrdinals, *rhs.selectedArtifactKinds,
+                  *rhs.selectedBufferingKinds,
+                  *rhs.selectedBufferingPlanOrdinals,
                   *rhs.selectedReservedBaselines);
 }
 
@@ -830,7 +918,8 @@ selectAcceptedWholeVariants(
     metadata.reserve(frontier.size());
     for (const RankVariantCandidate &candidate : frontier)
       metadata.push_back({candidate.stableOrdinal, candidate.artifactKind,
-                          candidate.reservedBaseline});
+                          candidate.reservedBaseline, candidate.bufferingKind,
+                          candidate.bufferingPlanOrdinal});
     frontierMetadata.push_back(std::move(metadata));
   }
   WholeVariantAttemptPlan attemptPlan = buildWholeVariantAttemptPlan(
@@ -960,6 +1049,8 @@ selectAcceptedWholeVariants(
                                          /*productionIsReservedBaseline=*/true};
   const bool characterize =
       isCollectiveCharacterizationSelection(selectionMode);
+  const bool qualifyStaticFixedSlot =
+      selectionMode == WholeVariantSelectionMode::QualifyStaticFixedSlot;
 
   llvm::SmallVector<AcceptedWholeVariant, kWholeVariantParetoLimit>
       paretoFrontier;
@@ -970,6 +1061,9 @@ selectAcceptedWholeVariants(
       return;
     if (characterize &&
         !matchesCollectiveCharacterization(preTarget->ranks, selectionMode))
+      return;
+    if (qualifyStaticFixedSlot &&
+        !matchesStaticFixedSlotQualification(*preTarget))
       return;
     if (!wouldRetainParetoCandidate(*preTarget, paretoFrontier))
       return;
@@ -1005,6 +1099,23 @@ selectAcceptedWholeVariants(
                      "test-only collective characterization alternative '"
                   << getCollectiveCharacterizationAlternative(selectionMode)
                   << "'\n";
+      return mlir::failure();
+    }
+    return AcceptedProductionAndBaseline{
+        std::move(*selected), std::nullopt,
+        /*productionIsReservedBaseline=*/false};
+  }
+  if (qualifyStaticFixedSlot) {
+    std::optional<AcceptedWholeVariant> selected;
+    for (AcceptedWholeVariant &candidate : paretoFrontier)
+      if (!selected || isPreferredOver(candidate, *selected, selectionPolicy))
+        selected.emplace(std::move(candidate));
+    if (!selected) {
+      diagnostics
+          << "wafer-compile: no fully accepted whole variant matches "
+             "test-only static fixed-slot qualification\n";
+      for (const std::string &failure : failures)
+        diagnostics << "  - " << failure << "\n";
       return mlir::failure();
     }
     return AcceptedProductionAndBaseline{

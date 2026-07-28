@@ -32,6 +32,15 @@ std::optional<std::string> getRankingCostFailure(const CandidateStats &stats) {
       {"NoC receive bytes", &cost.noc.aggregateReceiveBytes},
       {"instruction count", &cost.instructionCount},
       {"event count", &cost.eventCount},
+      {"NCC join count", &cost.nccJoinCount},
+      {"steady-state NCC join count", &cost.steadyStateNCCJoinCount},
+      {"non-terminal NCC join count", &cost.nonTerminalNCCJoinCount},
+      {"NCC participant wait count", &cost.nccParticipantWaitCount},
+      {"steady-state NCC participant wait count",
+       &cost.steadyStateNCCParticipantWaitCount},
+      {"non-terminal NCC participant wait count",
+       &cost.nonTerminalNCCParticipantWaitCount},
+      {"intrinsic NCC drain count", &cost.intrinsicNCCDrainCount},
   };
   for (const NamedMetric &entry : required) {
     if (entry.metric->isKnown())
@@ -472,7 +481,8 @@ static mlir::FailureOr<SelectedCandidate> selectCandidateForTask(
       return;
     }
     if (!check.module && mlir::failed(importAcceptedCandidateModule(
-                             check, *task.getContext()))) {
+                             check, *task.getContext(),
+                             config.scheduleCostPolicy))) {
       rejectCandidate(check.spec, check.failureReason);
       return;
     }

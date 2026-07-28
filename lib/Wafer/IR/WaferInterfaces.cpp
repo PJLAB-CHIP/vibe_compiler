@@ -6,12 +6,23 @@
 
 #include "Wafer/IR/WaferInterfaces.cpp.inc"
 
-wafer::LocalInstructionCompletion
-wafer::classifyLocalInstructionCompletion(mlir::Operation *operation) {
+wafer::NCCCompletionContract
+wafer::getNCCCompletionContract(mlir::Operation *operation) {
   if (!operation)
-    return LocalInstructionCompletion::None;
+    return {};
   if (mlir::isa<SyncLocalFenceOp>(operation))
-    return LocalInstructionCompletion::BarrierAndComplete;
+    return {LocalInstructionCompletion::ParticipantJoin, std::nullopt,
+            uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0)};
+  if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(operation)) {
+    uint32_t participants = 0;
+    for (int64_t worker : join.getParticipants()) {
+      if (worker < 0 || worker >= static_cast<int64_t>(kNCCWorkerCount))
+        return {LocalInstructionCompletion::ParticipantJoin, std::nullopt, 0};
+      participants |= uint32_t{1} << static_cast<uint32_t>(worker);
+    }
+    return {LocalInstructionCompletion::ParticipantJoin, std::nullopt,
+            participants};
+  }
 
   if (auto peripheral = mlir::dyn_cast<InstrPeripheralOp>(operation)) {
     switch (peripheral.getKindAttr().getValue()) {
@@ -19,24 +30,29 @@ wafer::classifyLocalInstructionCompletion(mlir::Operation *operation) {
     case InstrPeripheralKind::ArgMin:
       // The production target wrapper issues CT, drains the default worker's
       // local queues, then writes both scalar results to SPM.
-      return LocalInstructionCompletion::BarrierAndComplete;
+      return {LocalInstructionCompletion::SynchronousWriteback,
+              peripheral.getIssueWorker(),
+              uint32_t{1}
+                  << static_cast<uint32_t>(peripheral.getIssueWorker())};
     default:
       break;
     }
   }
 
-  auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
-  if (!effects)
-    return LocalInstructionCompletion::None;
-  llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> instances;
-  effects.getEffects(instances);
-  bool hasLocalIssue = llvm::any_of(instances, [](const auto &effect) {
-    return llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect()) &&
-           llvm::isa<WaferComputeResource, WaferMovementResource>(
-               effect.getResource());
-  });
-  return hasLocalIssue ? LocalInstructionCompletion::PendingUntilFence
-                       : LocalInstructionCompletion::None;
+  if (auto issue = mlir::dyn_cast<WaferNCCIssueOpInterface>(operation))
+    return {LocalInstructionCompletion::OrderedPending,
+            issue.getIssueWorker(), 0};
+  return {};
+}
+
+wafer::LocalInstructionCompletion
+wafer::classifyLocalInstructionCompletion(mlir::Operation *operation) {
+  return getNCCCompletionContract(operation).behavior;
+}
+
+std::optional<wafer::NCCWorker>
+wafer::getNCCIssueWorker(mlir::Operation *operation) {
+  return getNCCCompletionContract(operation).issueWorker;
 }
 
 llvm::StringRef

@@ -96,6 +96,10 @@ extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
   }
   TargetTransaction transaction{
       context->logicalRank, context->nextIssueOrdinal++, std::move(*payload)};
+  if (descriptor.issueDomain && descriptor.issueDomain->nccWorker)
+    transaction.nccIssueDomain = TargetNCCIssueDomain{
+        descriptor.issueDomain->engine, *descriptor.issueDomain->nccWorker,
+        descriptor.issueDomain->completionBehavior};
   llvm::Expected<uint64_t> issueResult =
       context->invocation->sink->issue(transaction);
   if (!issueResult) {

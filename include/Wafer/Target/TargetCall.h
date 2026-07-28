@@ -203,7 +203,9 @@ struct TargetPeripheralElementMaskTransaction {
   uint32_t roundingMode;
 };
 
-struct TargetLocalFenceTransaction {};
+struct TargetNCCJoinTransaction {
+  uint32_t participantMask;
+};
 struct TargetDirectDTEBeginTransaction {
   uint64_t statusAddress;
   uint32_t rankCount;
@@ -238,7 +240,7 @@ using TargetTransactionPayload = std::variant<
     TargetTDMATransformTransaction, TargetPeripheralArgExtremaTransaction,
     TargetPeripheralBilinearTransaction, TargetPeripheralLUTTransaction,
     TargetPeripheralRandomTransaction, TargetPeripheralElementMaskTransaction,
-    TargetLocalFenceTransaction, TargetDirectDTEBeginTransaction,
+    TargetNCCJoinTransaction, TargetDirectDTEBeginTransaction,
     TargetDirectDTESendTransaction, TargetDirectDTEReceiveTransaction,
     TargetDirectDTEWaitTransaction, TargetDirectDTEFinishTransaction>;
 
@@ -257,6 +259,7 @@ enum class TargetCallBuiltin : uint8_t {
   TDMAPad,
   TDMAImg2Col,
   LocalFence,
+  NCCJoin,
   DirectDTEBegin,
   DirectDTEBeginAfterPrepare,
   DirectDTESendPrepare,
@@ -281,6 +284,16 @@ enum class TargetCallTSMEngine : uint8_t {
   DirectDTE
 };
 
+/// Typed issue-domain metadata owned by the target-call registry. An NCC
+/// command carries its exact worker. Direct DTE carries no NCC worker because
+/// its completion is represented by its opaque event/wait transaction.
+struct TargetCallIssueDomain {
+  TargetCallTSMEngine engine;
+  std::optional<NCCWorker> nccWorker;
+  LocalInstructionCompletion completionBehavior =
+      LocalInstructionCompletion::None;
+};
+
 /// A semantic identity owned by typed compiler enums, never reconstructed
 /// from a symbol spelling by a consumer.
 using TargetCallSemantic =
@@ -295,6 +308,7 @@ struct TargetCallDescriptor {
   TargetCallResultType result;
   std::vector<TargetCallScalarType> arguments;
   TargetCallSemantic semantic;
+  std::optional<TargetCallIssueDomain> issueDomain;
 };
 
 struct TargetCallDecodeContext {
@@ -302,7 +316,7 @@ struct TargetCallDecodeContext {
   int64_t rankCount;
 };
 
-/// Returns the closed 111-call surface emitted by target LLVM lowering.
+/// Returns the closed 112-call surface emitted by target LLVM lowering.
 llvm::ArrayRef<TargetCallDescriptor> getTargetCallDescriptors();
 
 const TargetCallDescriptor *findTargetCallDescriptor(llvm::StringRef symbol);

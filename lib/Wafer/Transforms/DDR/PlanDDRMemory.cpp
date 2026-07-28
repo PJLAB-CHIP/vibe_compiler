@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "MemoryPlanning/LifetimeAnalysis.h"
+#include "MemoryPlanning/StaticIndexRange.h"
 #include "MemoryPlanning/StaticMemoryPacking.h"
 
 #include "Wafer/IR/WaferDialect.h"
@@ -35,6 +36,7 @@ namespace wafer {
 namespace {
 
 namespace memory_planning = wafer::memory_planning::detail;
+using StaticIndexRange = memory_planning::StaticIndexRange;
 
 struct MovementDescriptor {
   int64_t byteCount = 0;
@@ -329,22 +331,6 @@ getStaticMemrefViewInfo(mlir::Operation *op, mlir::MemRefType type,
   return mlir::success();
 }
 
-struct StaticIndexRange {
-  int64_t min = 0;
-  int64_t max = 0;
-};
-
-static mlir::FailureOr<int64_t> getConstantIndex(mlir::Operation *anchor,
-                                                 mlir::Value value,
-                                                 llvm::StringRef role) {
-  std::optional<int64_t> matched = mlir::getConstantIntValue(value);
-  if (!matched)
-    return anchor->emitError()
-           << "unsupported_ddr_view: " << role
-           << " dynamic offset requires constant scf.for bounds and step";
-  return *matched;
-}
-
 static mlir::FailureOr<StaticIndexRange>
 getStaticIndexRange(mlir::Operation *anchor, mlir::OpFoldResult offset,
                     llvm::StringRef role) {
@@ -360,120 +346,262 @@ getStaticIndexRange(mlir::Operation *anchor, mlir::OpFoldResult offset,
     return StaticIndexRange{value, value};
   }
 
-  mlir::Value value = mlir::cast<mlir::Value>(offset);
-  auto iv = mlir::dyn_cast<mlir::BlockArgument>(value);
-  auto forOp = iv && iv.getArgNumber() == 0
-                   ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(
-                         iv.getOwner()->getParentOp())
-                   : mlir::scf::ForOp{};
-  if (!forOp || iv != forOp.getInductionVar())
+  memory_planning::StaticIndexRangeResult result =
+      memory_planning::evaluateNonNegativeStaticIndexRange(
+          mlir::cast<mlir::Value>(offset));
+  using Failure = memory_planning::StaticIndexRangeFailureKind;
+  switch (result.failure) {
+  case Failure::None:
+    if (result.range.empty)
+      return anchor->emitError()
+             << "unsupported_ddr_view: " << role
+             << " scf.for offset range must be non-empty and non-negative";
+    return result.range;
+  case Failure::DynamicLoopBounds:
     return anchor->emitError()
            << "unsupported_ddr_view: " << role
-           << " dynamic offset must be a direct scf.for induction variable";
-
-  mlir::FailureOr<int64_t> lower =
-      getConstantIndex(anchor, forOp.getLowerBound(), role);
-  mlir::FailureOr<int64_t> upper =
-      getConstantIndex(anchor, forOp.getUpperBound(), role);
-  mlir::FailureOr<int64_t> step =
-      getConstantIndex(anchor, forOp.getStep(), role);
-  if (mlir::failed(lower) || mlir::failed(upper) || mlir::failed(step))
-    return mlir::failure();
-  if (*lower < 0 || *upper <= *lower || *step <= 0)
+           << " dynamic offset requires constant scf.for bounds and step";
+  case Failure::InvalidLoopBounds:
     return anchor->emitError()
            << "unsupported_ddr_view: " << role
            << " scf.for offset range must be non-empty and non-negative";
-
-  int64_t distance = *upper - *lower - 1;
-  int64_t iterationsFromLower = distance / *step;
-  int64_t max = 0;
-  int64_t delta = 0;
-  if (!checkedMul(iterationsFromLower, *step, delta) ||
-      !checkedAdd(*lower, delta, max))
+  case Failure::NonSingletonMultiplication:
     return anchor->emitError()
-           << "range_end_overflow: dynamic DDR view offset overflows int64";
-  return StaticIndexRange{*lower, max};
+           << "unsupported_ddr_view: " << role
+           << " dynamic offset multiplication must have a static operand";
+  case Failure::InvalidUnsignedDivision:
+    return anchor->emitError()
+           << "unsupported_ddr_view: " << role
+           << " unsigned-divide offset must be a non-negative static value";
+  case Failure::ArithmeticOverflow:
+    return anchor->emitError()
+           << "range_end_overflow: dynamic DDR view offset expression "
+              "overflows int64";
+  case Failure::NegativeRange:
+    return anchor->emitError() << "unsupported_ddr_view: " << role
+                               << " dynamic offset range must be non-negative";
+  case Failure::UnsupportedExpression:
+    return anchor->emitError()
+           << "unsupported_ddr_view: " << role
+           << " dynamic offset must be a supported statically bounded index "
+              "expression";
+  }
+  llvm_unreachable("unhandled static index range failure");
 }
 
-static mlir::Value resolveCarriedViewValue(mlir::Value value) {
-  llvm::DenseSet<mlir::Value> visited;
-  while (true) {
-    if (!visited.insert(value).second)
-      return value;
-    mlir::Value resolved = resolveTileRegionBoundaryValue(value);
-    if (resolved != value) {
-      value = resolved;
-      continue;
-    }
-    if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-      auto forOp = mlir::dyn_cast_or_null<mlir::scf::ForOp>(
-          blockArg.getOwner()->getParentOp());
-      if (forOp && blockArg.getArgNumber() > 0 &&
-          blockArg.getArgNumber() - 1 < forOp.getInitArgs().size()) {
-        value = forOp.getInitArgs()[blockArg.getArgNumber() - 1];
+class ViewElementOffsetRangeEvaluator {
+public:
+  ViewElementOffsetRangeEvaluator(mlir::Operation *anchor,
+                                  llvm::ArrayRef<mlir::Value> roots,
+                                  llvm::StringRef role)
+      : anchor(anchor), role(role) {
+    for (mlir::Value root : roots)
+      originRoots.insert(resolveTileRegionBoundaryValue(root));
+  }
+
+  mlir::FailureOr<StaticIndexRange> evaluate(mlir::Value view) {
+    view = resolveTileRegionBoundaryValue(view);
+    if (originRoots.contains(view))
+      return StaticIndexRange{};
+    if (auto it = cache.find(view); it != cache.end())
+      return it->second;
+    if (!active.insert(view).second)
+      return anchor->emitError()
+             << "unsupported_ddr_view: non-identity scf.for carried view "
+                "recurrence has no finite static offset proof";
+
+    mlir::FailureOr<StaticIndexRange> result = evaluateImpl(view);
+    active.erase(view);
+    if (mlir::succeeded(result))
+      cache.try_emplace(view, *result);
+    return result;
+  }
+
+private:
+  static StaticIndexRange unite(StaticIndexRange lhs, StaticIndexRange rhs) {
+    if (lhs.empty)
+      return rhs;
+    if (rhs.empty)
+      return lhs;
+    return StaticIndexRange{std::min(lhs.min, rhs.min),
+                            std::max(lhs.max, rhs.max), /*empty=*/false};
+  }
+
+  static std::optional<unsigned>
+  getAddressPreservingCarriedIndex(mlir::scf::ForOp forOp, mlir::Value value) {
+    llvm::DenseSet<mlir::Value> visited;
+    while (visited.insert(value).second) {
+      if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+        if (blockArg.getOwner() == forOp.getBody() &&
+            blockArg.getArgNumber() > 0) {
+          unsigned index = blockArg.getArgNumber() - 1;
+          if (index < forOp.getInitArgs().size())
+            return index;
+        }
+        return std::nullopt;
+      }
+      if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
+        value = cast.getSource();
         continue;
       }
-    }
-    if (auto result = mlir::dyn_cast<mlir::OpResult>(value)) {
-      if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(result.getOwner())) {
-        if (result.getResultNumber() < forOp.getInitArgs().size()) {
-          std::optional<int64_t> lower = mlir::getConstantIntValue(
-              mlir::getAsOpFoldResult(forOp.getLowerBound()));
-          std::optional<int64_t> upper = mlir::getConstantIntValue(
-              mlir::getAsOpFoldResult(forOp.getUpperBound()));
-          std::optional<int64_t> step = mlir::getConstantIntValue(
-              mlir::getAsOpFoldResult(forOp.getStep()));
+      if (auto collapse =
+              value.getDefiningOp<mlir::memref::CollapseShapeOp>()) {
+        value = collapse.getSrc();
+        continue;
+      }
+      if (auto expand = value.getDefiningOp<mlir::memref::ExpandShapeOp>()) {
+        value = expand.getSrc();
+        continue;
+      }
+      if (auto result = mlir::dyn_cast<mlir::OpResult>(value)) {
+        if (auto nestedFor =
+                mlir::dyn_cast<mlir::scf::ForOp>(result.getOwner())) {
+          unsigned index = result.getResultNumber();
           auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(
-              forOp.getBody()->getTerminator());
-          bool nonEmpty = lower && upper && step && *step > 0 &&
-                          *lower < *upper && yield &&
-                          result.getResultNumber() < yield.getNumOperands();
-          value = nonEmpty
-                      ? yield.getOperand(result.getResultNumber())
-                      : forOp.getInitArgs()[result.getResultNumber()];
+              nestedFor.getBody()->getTerminator());
+          if (!yield || index >= nestedFor.getInitArgs().size() ||
+              index >= yield.getNumOperands())
+            return std::nullopt;
+
+          mlir::Value yielded = yield.getOperand(index);
+          while (true) {
+            if (auto cast = yielded.getDefiningOp<mlir::memref::CastOp>()) {
+              yielded = cast.getSource();
+              continue;
+            }
+            if (auto collapse =
+                    yielded.getDefiningOp<mlir::memref::CollapseShapeOp>()) {
+              yielded = collapse.getSrc();
+              continue;
+            }
+            if (auto expand =
+                    yielded.getDefiningOp<mlir::memref::ExpandShapeOp>()) {
+              yielded = expand.getSrc();
+              continue;
+            }
+            break;
+          }
+          if (yielded != nestedFor.getRegionIterArgs()[index])
+            return std::nullopt;
+          value = nestedFor.getInitArgs()[index];
           continue;
         }
       }
+      return std::nullopt;
     }
-    return value;
+    return std::nullopt;
   }
-}
 
-static mlir::FailureOr<StaticIndexRange>
-getViewElementOffsetRange(mlir::Operation *anchor, mlir::Value view,
-                          mlir::Value expectedRoot, llvm::StringRef role) {
-  StaticIndexRange total;
-  llvm::DenseSet<mlir::Value> visited;
-  while (true) {
-    view = resolveCarriedViewValue(view);
-    expectedRoot = resolveCarriedViewValue(expectedRoot);
-    if (view == expectedRoot)
-      return total;
-    if (!visited.insert(view).second)
+  mlir::FailureOr<StaticIndexRange> evaluateCarriedValue(mlir::scf::ForOp forOp,
+                                                         unsigned index,
+                                                         bool includeInit,
+                                                         bool includeBackedge) {
+    auto yield =
+        mlir::dyn_cast<mlir::scf::YieldOp>(forOp.getBody()->getTerminator());
+    if (!yield || index >= forOp.getInitArgs().size() ||
+        index >= yield.getNumOperands())
       return anchor->emitError()
-             << "unsupported_ddr_view: cyclic DDR view provenance";
+             << "unsupported_ddr_view: malformed scf.for carried view";
 
-    if (auto collapse = view.getDefiningOp<mlir::memref::CollapseShapeOp>()) {
-      view = collapse.getSrc();
-      continue;
+    StaticIndexRange combined{/*min=*/0, /*max=*/0, /*empty=*/true};
+    auto includeInitAt = [&](unsigned carriedIndex) -> mlir::LogicalResult {
+      mlir::FailureOr<StaticIndexRange> init =
+          evaluate(forOp.getInitArgs()[carriedIndex]);
+      if (mlir::failed(init))
+        return mlir::failure();
+      combined = unite(combined, *init);
+      return mlir::success();
+    };
+
+    if (includeInit && mlir::failed(includeInitAt(index)))
+      return mlir::failure();
+    if (!includeBackedge)
+      return combined;
+
+    // Fixed-slot pipelines rotate a finite family of loop-external buffers
+    // through scf.for iter_args.  Follow that address-preserving permutation
+    // as a finite index graph and union its init ranges instead of treating
+    // the graph cycle as an unbounded address recurrence.  Any subview or
+    // other offset-producing edge deliberately falls through to evaluate(),
+    // where a true cyclic recurrence still fails closed.
+    llvm::SmallVector<unsigned, 4> pending{index};
+    llvm::DenseSet<unsigned> visited;
+    while (!pending.empty()) {
+      unsigned carriedIndex = pending.pop_back_val();
+      if (!visited.insert(carriedIndex).second)
+        continue;
+      mlir::Value backedge = yield.getOperand(carriedIndex);
+      if (std::optional<unsigned> target =
+              getAddressPreservingCarriedIndex(forOp, backedge)) {
+        if (mlir::failed(includeInitAt(*target)))
+          return mlir::failure();
+        pending.push_back(*target);
+        continue;
+      }
+      mlir::FailureOr<StaticIndexRange> yielded = evaluate(backedge);
+      if (mlir::failed(yielded))
+        return mlir::failure();
+      combined = unite(combined, *yielded);
     }
-    if (auto expand = view.getDefiningOp<mlir::memref::ExpandShapeOp>()) {
-      view = expand.getSrc();
-      continue;
+    return combined;
+  }
+
+  mlir::FailureOr<StaticIndexRange> evaluateImpl(mlir::Value view) {
+    if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(view)) {
+      auto forOp = mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+          blockArg.getOwner()->getParentOp());
+      if (forOp && blockArg.getArgNumber() > 0) {
+        unsigned index = blockArg.getArgNumber() - 1;
+        // A loop body iter-arg can observe the init value on the first
+        // iteration and the yielded value on every later iteration.
+        return evaluateCarriedValue(forOp, index, /*includeInit=*/true,
+                                    /*includeBackedge=*/true);
+      }
     }
-    if (auto cast = view.getDefiningOp<mlir::memref::CastOp>()) {
-      // memref.cast only weakens static type information.  It preserves the
-      // underlying address, so it contributes no element offset to the DDR
-      // range proof.
-      view = cast.getSource();
-      continue;
+
+    if (auto result = mlir::dyn_cast<mlir::OpResult>(view)) {
+      if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(result.getOwner())) {
+        if (result.getResultNumber() < forOp.getInitArgs().size()) {
+          std::optional<int64_t> lower =
+              mlir::getConstantIntValue(forOp.getLowerBound());
+          std::optional<int64_t> upper =
+              mlir::getConstantIntValue(forOp.getUpperBound());
+          std::optional<int64_t> step =
+              mlir::getConstantIntValue(forOp.getStep());
+          if (lower && upper && step && *step > 0) {
+            if (*lower < *upper)
+              return evaluateCarriedValue(forOp, result.getResultNumber(),
+                                          /*includeInit=*/false,
+                                          /*includeBackedge=*/true);
+            return evaluateCarriedValue(forOp, result.getResultNumber(),
+                                        /*includeInit=*/true,
+                                        /*includeBackedge=*/false);
+          }
+          // Without a static trip-count classification, the loop result may
+          // be either its init value or a value observed on the backedge.
+          return evaluateCarriedValue(forOp, result.getResultNumber(),
+                                      /*includeInit=*/true,
+                                      /*includeBackedge=*/true);
+        }
+      }
     }
+
+    if (auto collapse = view.getDefiningOp<mlir::memref::CollapseShapeOp>())
+      return evaluate(collapse.getSrc());
+    if (auto expand = view.getDefiningOp<mlir::memref::ExpandShapeOp>())
+      return evaluate(expand.getSrc());
+    if (auto cast = view.getDefiningOp<mlir::memref::CastOp>())
+      return evaluate(cast.getSource());
 
     auto subview = view.getDefiningOp<mlir::memref::SubViewOp>();
     if (!subview)
       return anchor->emitError()
              << "unsupported_ddr_view: cannot prove " << role
              << " dynamic view offset to its DDR root";
+
+    mlir::FailureOr<StaticIndexRange> total = evaluate(subview.getSource());
+    if (mlir::failed(total))
+      return mlir::failure();
     auto sourceType =
         mlir::dyn_cast<mlir::MemRefType>(subview.getSource().getType());
     llvm::SmallVector<int64_t, 4> sourceStrides;
@@ -497,13 +625,26 @@ getViewElementOffsetRange(mlir::Operation *anchor, mlir::Value view,
       int64_t maxContribution = 0;
       if (!checkedMul(range->min, stride, minContribution) ||
           !checkedMul(range->max, stride, maxContribution) ||
-          !checkedAdd(total.min, minContribution, total.min) ||
-          !checkedAdd(total.max, maxContribution, total.max))
+          !checkedAdd(total->min, minContribution, total->min) ||
+          !checkedAdd(total->max, maxContribution, total->max))
         return anchor->emitError()
                << "range_end_overflow: DDR view offset range overflows int64";
     }
-    view = subview.getSource();
+    return total;
   }
+
+  mlir::Operation *anchor;
+  llvm::StringRef role;
+  llvm::DenseSet<mlir::Value> originRoots;
+  llvm::DenseMap<mlir::Value, StaticIndexRange> cache;
+  llvm::DenseSet<mlir::Value> active;
+};
+
+static mlir::FailureOr<StaticIndexRange>
+getViewElementOffsetRange(mlir::Operation *anchor, mlir::Value view,
+                          llvm::ArrayRef<mlir::Value> roots,
+                          llvm::StringRef role) {
+  return ViewElementOffsetRangeEvaluator(anchor, roots, role).evaluate(view);
 }
 
 static mlir::FailureOr<int64_t>
@@ -620,6 +761,15 @@ resolveDDRViews(mlir::Operation *op, mlir::Value ddrValue,
     return op->emitError() << "unsupported_ddr_view: cannot resolve "
                            << descriptor.role << " DDR view origin";
 
+  StaticIndexRange staticOffsetRange{viewOffsetElements, viewOffsetElements};
+  mlir::FailureOr<StaticIndexRange> dynamicOffsetRange = staticOffsetRange;
+  if (hasDynamicViewOffset)
+    dynamicOffsetRange =
+        getViewElementOffsetRange(op, ddrValue, roots, descriptor.role);
+  if (mlir::failed(dynamicOffsetRange))
+    return mlir::failure();
+  const StaticIndexRange &viewOffsetElementsRange = *dynamicOffsetRange;
+
   llvm::SmallVector<DDRView, 2> views;
   for (mlir::Value root : roots) {
     auto rootType = mlir::dyn_cast<mlir::MemRefType>(root.getType());
@@ -633,15 +783,6 @@ resolveDDRViews(mlir::Operation *op, mlir::Value ddrValue,
         (!rootInfo->bitPackedElement && rootInfo->elementBytes <= 0))
       return op->emitError() << "unsupported_ddr_view: cannot compute "
                              << descriptor.role << " DDR root physical bytes";
-
-    StaticIndexRange staticOffsetRange{viewOffsetElements, viewOffsetElements};
-    mlir::FailureOr<StaticIndexRange> dynamicOffsetRange = staticOffsetRange;
-    if (hasDynamicViewOffset)
-      dynamicOffsetRange =
-          getViewElementOffsetRange(op, ddrValue, root, descriptor.role);
-    if (mlir::failed(dynamicOffsetRange))
-      return mlir::failure();
-    const StaticIndexRange &viewOffsetElementsRange = *dynamicOffsetRange;
 
     int64_t minViewOffsetBytes = 0;
     int64_t maxViewOffsetBytes = 0;
@@ -784,16 +925,16 @@ emitLifetimeFailure(mlir::Operation *scope,
     return origin->emitError()
            << "missing_local_completion: DDR-touching local Movement issue "
               "has a reachable path to entry exit without "
-              "wafer.instr.local_fence";
+              "a matching participant in wafer.instr.ncc_join";
   case memory_planning::LifetimeFailureKind::LoopBackedgeCompletion:
     return origin->emitError()
            << "missing_local_completion: DDR-touching local Movement issue "
-              "reaches an scf.for backedge without a body-local "
-              "wafer.instr.local_fence";
+              "reaches an scf.for backedge without a same-worker ordered "
+              "successor or matching participant join";
   case memory_planning::LifetimeFailureKind::InconsistentCompletionState:
     return origin->emitError()
            << "completion_proof_failure: DDR local issue lifetime state "
-              "remains after all local issues were fenced";
+              "remains after all local completion domains were discharged";
   }
   llvm_unreachable("unknown DDR lifetime failure");
 }

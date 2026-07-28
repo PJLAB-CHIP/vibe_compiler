@@ -11,6 +11,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <array>
 #include <limits>
 
 namespace wafer {
@@ -29,12 +30,42 @@ static mlir::Value getAccessBase(mlir::Value value) {
 }
 
 static bool isReadyOrderOperation(mlir::Operation *operation) {
-  return mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp>(operation);
+  return mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp,
+                   SyncNCCJoinOp>(operation);
 }
 
-static bool isLocalCompletionBarrier(mlir::Operation *operation) {
+static bool isFailClosedCompletionBoundary(mlir::Operation *operation) {
   return classifyLocalInstructionCompletion(operation) ==
-         LocalInstructionCompletion::BarrierAndComplete;
+         LocalInstructionCompletion::SynchronousWriteback;
+}
+
+static bool canReorderCompletionDomains(mlir::Operation *lhs,
+                                        mlir::Operation *rhs) {
+  NCCCompletionContract lhsContract = getNCCCompletionContract(lhs);
+  NCCCompletionContract rhsContract = getNCCCompletionContract(rhs);
+  if (lhsContract.behavior ==
+          LocalInstructionCompletion::SynchronousWriteback ||
+      rhsContract.behavior ==
+          LocalInstructionCompletion::SynchronousWriteback)
+    return false;
+
+  auto joinAllowsIssue = [](const NCCCompletionContract &join,
+                            const NCCCompletionContract &issue) {
+    if (join.behavior != LocalInstructionCompletion::ParticipantJoin)
+      return true;
+    if (join.participantMask == 0 ||
+        (join.participantMask & ~kAllNCCWorkersMask) != 0)
+      return false;
+    if (issue.behavior != LocalInstructionCompletion::OrderedPending)
+      return true;
+    if (!issue.issueWorker)
+      return false;
+    uint32_t worker = static_cast<uint32_t>(*issue.issueWorker);
+    return worker < kNCCWorkerCount &&
+           (join.participantMask & (uint32_t{1} << worker)) == 0;
+  };
+  return joinAllowsIssue(lhsContract, rhsContract) &&
+         joinAllowsIssue(rhsContract, lhsContract);
 }
 
 static void collectBufferAccesses(
@@ -119,7 +150,11 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
 
   llvm::DenseMap<mlir::Value, unsigned> lastWriters;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<unsigned, 4>> readers;
-  std::optional<unsigned> lastFence;
+  std::array<llvm::SmallVector<unsigned, 4>, kNCCWorkerCount>
+      pendingWorkerIssues;
+  std::array<std::optional<unsigned>, kNCCWorkerCount>
+      lastWorkerCompletions;
+  std::optional<unsigned> lastFailClosedCompletion;
   for (unsigned index = 0; index < count; ++index) {
     mlir::Operation *operation = operations[index];
     for (mlir::Value operand : operation->getOperands()) {
@@ -128,14 +163,42 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
       if (found != indices.end())
         addEdge(found->second, index);
     }
+    if (lastFailClosedCompletion)
+      addEdge(*lastFailClosedCompletion, index);
 
-    if (lastFence)
-      addEdge(*lastFence, index);
-    if (isLocalCompletionBarrier(operation)) {
+    NCCCompletionContract contract = getNCCCompletionContract(operation);
+    std::optional<unsigned> issueWorker;
+    if (contract.issueWorker) {
+      unsigned worker = static_cast<unsigned>(*contract.issueWorker);
+      if (worker >= kNCCWorkerCount)
+        return 0;
+      issueWorker = worker;
+      if (lastWorkerCompletions[worker])
+        addEdge(*lastWorkerCompletions[worker], index);
+    }
+
+    bool isCompletion =
+        contract.behavior == LocalInstructionCompletion::ParticipantJoin ||
+        contract.behavior ==
+            LocalInstructionCompletion::SynchronousWriteback;
+    if (isCompletion) {
+      if (contract.participantMask == 0 ||
+          (contract.participantMask & ~kAllNCCWorkersMask) != 0)
+        return 0;
+      for (unsigned worker = 0; worker < kNCCWorkerCount; ++worker) {
+        if ((contract.participantMask & (uint32_t{1} << worker)) == 0)
+          continue;
+        for (unsigned predecessor : pendingWorkerIssues[worker])
+          addEdge(predecessor, index);
+        pendingWorkerIssues[worker].clear();
+        lastWorkerCompletions[worker] = index;
+      }
+    }
+    if (contract.behavior ==
+        LocalInstructionCompletion::SynchronousWriteback) {
       for (unsigned predecessor = 0; predecessor < index; ++predecessor)
         addEdge(predecessor, index);
-      lastFence = index;
-      continue;
+      lastFailClosedCompletion = index;
     }
 
     llvm::SmallVector<BufferAccess, 4> accesses;
@@ -155,6 +218,12 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
         activeReaders->second.clear();
       }
       lastWriters[access.value] = index;
+    }
+
+    if (contract.behavior == LocalInstructionCompletion::OrderedPending) {
+      if (!issueWorker)
+        return 0;
+      pendingWorkerIssues[*issueWorker].push_back(index);
     }
   }
 
@@ -273,7 +342,7 @@ static bool canMoveAfter(mlir::Operation *operation,
        crossed = crossed->getNextNode()) {
     if (crossed->hasTrait<mlir::OpTrait::IsTerminator>() ||
         crossed->getNumRegions() != 0 ||
-        isLocalCompletionBarrier(crossed) ||
+        !canReorderCompletionDomains(operation, crossed) ||
         !canReorderEffects(operation, crossed))
       return false;
     if (llvm::any_of(crossed->getOperands(), [&](mlir::Value operand) {
@@ -313,11 +382,11 @@ static unsigned scheduleBlock(mlir::Block &block) {
   unsigned moved = 0;
   llvm::SmallVector<llvm::SmallVector<mlir::Operation *, 16>, 4> windows(1);
   for (mlir::Operation &operation : block) {
-    if (isLocalCompletionBarrier(&operation)) {
+    if (isFailClosedCompletionBoundary(&operation)) {
       windows.emplace_back();
       continue;
     }
-    if (mlir::isa<WaferInstructionOpInterface>(&operation))
+    if (isReadyOrderOperation(&operation))
       windows.back().push_back(&operation);
   }
   // A full fence-bounded window permits a lower-priority instruction to move

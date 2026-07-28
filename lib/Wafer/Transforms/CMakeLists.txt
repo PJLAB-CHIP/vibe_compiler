@@ -6,6 +6,7 @@ add_mlir_library(WaferTransforms
   Scheduling/CandidateCommit.cpp
   Scheduling/CandidateEvaluation.cpp
   Scheduling/CandidateSelection.cpp
+  Scheduling/FixedSlotPipeline.cpp
   Scheduling/FullBufferHandoff.cpp
   Scheduling/RedundantTransferElimination.cpp
   Scheduling/ScheduleTensorProgram.cpp
@@ -13,6 +14,7 @@ add_mlir_library(WaferTransforms
   DDR/PlanDDRMemory.cpp
   MemoryPlanning/LifetimeAnalysis.cpp
   MemoryPlanning/MiniMallocPacking.cpp
+  MemoryPlanning/StaticIndexRange.cpp
   MemoryPlanning/StaticMemoryPacking.cpp
   SPM/PlanSPMMemory.cpp
   SPMD/ApplyDefaultSpmdSharding.cpp
@@ -59,6 +61,7 @@ add_mlir_library(WaferTransforms
   MLIRMemRefDialect
   MLIRPass
   MLIRSCFDialect
+  MLIRSCFTransforms
   MLIRSCFToControlFlow
   MLIRSupport
   MLIRTensorDialect

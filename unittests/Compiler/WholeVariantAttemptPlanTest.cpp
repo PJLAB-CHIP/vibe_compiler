@@ -20,6 +20,7 @@
 namespace {
 
 using wafer::RankArtifactKind;
+using wafer::RankBufferingKind;
 using wafer::compiler::detail::RankVariantMetadataFrontier;
 using wafer::compiler::detail::RankVariantSlotMetadata;
 using wafer::compiler::detail::WholeVariantAttemptPlan;
@@ -29,7 +30,8 @@ constexpr size_t kLegacyProductLimit = 64;
 constexpr size_t kLegacyCoordinatedLimit = 64;
 
 using CandidateOrder = std::vector<std::vector<size_t>>;
-using CorrespondenceKey = std::pair<int64_t, RankArtifactKind>;
+using CorrespondenceKey =
+    std::tuple<int64_t, RankArtifactKind, RankBufferingKind, uint32_t>;
 
 struct Combination {
   std::vector<size_t> positions;
@@ -72,13 +74,15 @@ static LegacyAttemptReference enumerateLegacyAttempts(
       if (frontier[index].reservedBaseline)
         reference.reservedBaselineIndices.push_back(index);
     }
-    std::sort(order[rank].begin(), order[rank].end(),
-              [&](size_t lhs, size_t rhs) {
-                const RankVariantSlotMetadata &left = frontier[lhs];
-                const RankVariantSlotMetadata &right = frontier[rhs];
-                return std::tie(left.stableOrdinal, left.artifactKind, lhs) <
-                       std::tie(right.stableOrdinal, right.artifactKind, rhs);
-              });
+    std::sort(
+        order[rank].begin(), order[rank].end(), [&](size_t lhs, size_t rhs) {
+          const RankVariantSlotMetadata &left = frontier[lhs];
+          const RankVariantSlotMetadata &right = frontier[rhs];
+          return std::tie(left.stableOrdinal, left.artifactKind,
+                          left.bufferingKind, left.bufferingPlanOrdinal, lhs) <
+                 std::tie(right.stableOrdinal, right.artifactKind,
+                          right.bufferingKind, right.bufferingPlanOrdinal, rhs);
+        });
   }
 
   std::set<std::vector<size_t>> attempted;
@@ -111,7 +115,8 @@ static LegacyAttemptReference enumerateLegacyAttempts(
 
   std::set<CorrespondenceKey> keys;
   for (const RankVariantSlotMetadata &candidate : frontiers.front())
-    keys.insert({candidate.stableOrdinal, candidate.artifactKind});
+    keys.insert({candidate.stableOrdinal, candidate.artifactKind,
+                 candidate.bufferingKind, candidate.bufferingPlanOrdinal});
   for (CorrespondenceKey key : keys) {
     if (reference.coordinatedAttemptCount >= kLegacyCoordinatedLimit)
       break;
@@ -121,8 +126,10 @@ static LegacyAttemptReference enumerateLegacyAttempts(
       std::optional<size_t> match;
       for (size_t index = 0; index < frontier.size(); ++index) {
         const RankVariantSlotMetadata &candidate = frontier[index];
-        if (candidate.stableOrdinal != key.first ||
-            candidate.artifactKind != key.second)
+        if (candidate.stableOrdinal != std::get<0>(key) ||
+            candidate.artifactKind != std::get<1>(key) ||
+            candidate.bufferingKind != std::get<2>(key) ||
+            candidate.bufferingPlanOrdinal != std::get<3>(key))
           continue;
         if (!match || index < *match)
           match = index;
@@ -147,7 +154,9 @@ static bool hasCompleteCorrespondence(
   std::optional<CorrespondenceKey> key;
   for (size_t rank = 0; rank < indices.size(); ++rank) {
     const RankVariantSlotMetadata &candidate = frontiers[rank][indices[rank]];
-    CorrespondenceKey current{candidate.stableOrdinal, candidate.artifactKind};
+    CorrespondenceKey current{candidate.stableOrdinal, candidate.artifactKind,
+                              candidate.bufferingKind,
+                              candidate.bufferingPlanOrdinal};
     if (key && current != *key)
       return false;
     key = current;
@@ -180,8 +189,10 @@ static std::vector<std::vector<size_t>> requiredByLegacyAttempts(
 
 static RankVariantSlotMetadata
 slot(int64_t ordinal, RankArtifactKind kind = RankArtifactKind::Spill,
-     bool reservedBaseline = false) {
-  return {ordinal, kind, reservedBaseline};
+     bool reservedBaseline = false,
+     RankBufferingKind bufferingKind = RankBufferingKind::Single,
+     uint32_t bufferingPlanOrdinal = 0) {
+  return {ordinal, kind, reservedBaseline, bufferingKind, bufferingPlanOrdinal};
 }
 
 TEST(WholeVariantAttemptPlanTest,
@@ -287,17 +298,65 @@ TEST(WholeVariantAttemptPlanTest,
 }
 
 TEST(WholeVariantAttemptPlanTest,
+     FixedSlotBufferingIsAnIndependentCorrespondenceDimension) {
+  std::vector<RankVariantMetadataFrontier> frontiers(2);
+  frontiers[0] = {
+      slot(0, RankArtifactKind::Spill, true),
+      slot(5, RankArtifactKind::Spill, false,
+           RankBufferingKind::StaticFixedSlot, 7),
+  };
+  frontiers[1] = {
+      slot(0, RankArtifactKind::Spill, true),
+      slot(5, RankArtifactKind::Spill, false, RankBufferingKind::Single),
+      slot(5, RankArtifactKind::Spill, false,
+           RankBufferingKind::StaticFixedSlot, 7),
+  };
+
+  WholeVariantAttemptPlan plan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(frontiers, 2);
+  ASSERT_TRUE(plan.isValid());
+  EXPECT_EQ(plan.requiredModuleIndices[0], (std::vector<size_t>{0, 1}));
+  EXPECT_EQ(plan.requiredModuleIndices[1], (std::vector<size_t>{0, 2}));
+}
+
+TEST(WholeVariantAttemptPlanTest,
+     DistinctFixedSlotPlansCannotCorrespondByKindAlone) {
+  std::vector<RankVariantMetadataFrontier> frontiers(2);
+  frontiers[0] = {
+      slot(0, RankArtifactKind::Spill, true),
+      slot(5, RankArtifactKind::Spill, false,
+           RankBufferingKind::StaticFixedSlot, 3),
+  };
+  frontiers[1] = {
+      slot(0, RankArtifactKind::Spill, true),
+      slot(5, RankArtifactKind::Spill, false,
+           RankBufferingKind::StaticFixedSlot, 4),
+  };
+
+  WholeVariantAttemptPlan plan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(frontiers, 2);
+  ASSERT_TRUE(plan.isValid());
+  EXPECT_EQ(plan.requiredModuleIndices[0], (std::vector<size_t>{0}));
+  EXPECT_EQ(plan.requiredModuleIndices[1], (std::vector<size_t>{0}));
+}
+
+TEST(WholeVariantAttemptPlanTest,
      OwnerImportParsesOnlyAttemptPlanRequiredOriginalSlots) {
   using wafer::compiler::detail::SerializedRankVariantCandidate;
   using wafer::compiler::detail::SerializedRankVariantFrontier;
 
   auto serialized = [](llvm::StringRef moduleText, int64_t stableOrdinal,
-                       RankArtifactKind artifactKind, bool reservedBaseline) {
+                       RankArtifactKind artifactKind, bool reservedBaseline,
+                       RankBufferingKind bufferingKind =
+                           RankBufferingKind::Single,
+                       uint32_t bufferingPlanOrdinal = 0) {
     SerializedRankVariantCandidate candidate;
     candidate.moduleText = moduleText.str();
     candidate.stableOrdinal = stableOrdinal;
     candidate.artifactKind = artifactKind;
     candidate.reservedBaseline = reservedBaseline;
+    candidate.bufferingKind = bufferingKind;
+    candidate.bufferingPlanOrdinal = bufferingPlanOrdinal;
     return candidate;
   };
 
@@ -306,13 +365,15 @@ TEST(WholeVariantAttemptPlanTest,
       serialized("not valid MLIR and must remain unparsed", 10,
                  RankArtifactKind::Spill, false),
       serialized("module {}", 0, RankArtifactKind::Spill, true),
-      serialized("module {}", 1, RankArtifactKind::Resident, false),
+      serialized("module {}", 1, RankArtifactKind::Resident, false,
+                 RankBufferingKind::StaticFixedSlot, 7),
   };
   frontiers[1] = {
       serialized("also not valid MLIR and must remain unparsed", 20,
                  RankArtifactKind::Spill, false),
       serialized("module {}", 0, RankArtifactKind::Spill, true),
-      serialized("module {}", 1, RankArtifactKind::Resident, false),
+      serialized("module {}", 1, RankArtifactKind::Resident, false,
+                 RankBufferingKind::StaticFixedSlot, 7),
   };
 
   mlir::MLIRContext ownerContext;
@@ -347,6 +408,8 @@ TEST(WholeVariantAttemptPlanTest,
     EXPECT_EQ(frontier[2].stableOrdinal, 1);
     EXPECT_EQ(frontier[2].artifactKind, RankArtifactKind::Resident);
     EXPECT_FALSE(frontier[2].reservedBaseline);
+    EXPECT_EQ(frontier[2].bufferingKind, RankBufferingKind::StaticFixedSlot);
+    EXPECT_EQ(frontier[2].bufferingPlanOrdinal, 7u);
     materializedModuleCount += frontier[1].module ? 1 : 0;
     materializedModuleCount += frontier[2].module ? 1 : 0;
   }
@@ -378,6 +441,42 @@ TEST(WholeVariantAttemptPlanTest,
   EXPECT_EQ(invalidPlan.failure,
             WholeVariantAttemptPlanFailure::CandidateDomain);
   EXPECT_EQ(invalidPlan.getRequiredModuleCount(), 32u);
+
+  std::vector<RankVariantMetadataFrontier> pipelinedBaseline(1);
+  pipelinedBaseline[0] = {
+      slot(0, RankArtifactKind::Spill, true, RankBufferingKind::StaticFixedSlot,
+           /*bufferingPlanOrdinal=*/1),
+  };
+  WholeVariantAttemptPlan pipelinedBaselinePlan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(pipelinedBaseline,
+                                                            1);
+  EXPECT_EQ(pipelinedBaselinePlan.failure,
+            WholeVariantAttemptPlanFailure::ReservedBaseline);
+  EXPECT_EQ(pipelinedBaselinePlan.getRequiredModuleCount(), 1u);
+
+  std::vector<RankVariantMetadataFrontier> nonCanonicalSingle(1);
+  nonCanonicalSingle[0] = {
+      slot(0, RankArtifactKind::Spill, true, RankBufferingKind::Single,
+           /*bufferingPlanOrdinal=*/9),
+  };
+  WholeVariantAttemptPlan nonCanonicalSinglePlan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(nonCanonicalSingle,
+                                                            1);
+  EXPECT_EQ(nonCanonicalSinglePlan.failure,
+            WholeVariantAttemptPlanFailure::CandidateDomain);
+  EXPECT_EQ(nonCanonicalSinglePlan.getRequiredModuleCount(), 1u);
+
+  std::vector<RankVariantMetadataFrontier> nonCanonicalFixed(1);
+  nonCanonicalFixed[0] = {
+      slot(0, RankArtifactKind::Spill, true, RankBufferingKind::StaticFixedSlot,
+           /*bufferingPlanOrdinal=*/0),
+  };
+  WholeVariantAttemptPlan nonCanonicalFixedPlan =
+      wafer::compiler::detail::buildWholeVariantAttemptPlan(nonCanonicalFixed,
+                                                            1);
+  EXPECT_EQ(nonCanonicalFixedPlan.failure,
+            WholeVariantAttemptPlanFailure::CandidateDomain);
+  EXPECT_EQ(nonCanonicalFixedPlan.getRequiredModuleCount(), 1u);
 }
 
 TEST(WholeVariantAttemptPlanTest, IsDeterministicAcrossRepeatedPlanning) {

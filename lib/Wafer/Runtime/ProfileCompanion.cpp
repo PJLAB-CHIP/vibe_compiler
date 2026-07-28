@@ -40,8 +40,7 @@ constexpr llvm::StringLiteral kSiteIdentity =
     "final-rank-local-typed-target-site-id-and-correlation-key";
 constexpr llvm::StringLiteral kFinalArtifact = "final-artifact";
 constexpr uint64_t kCountRecordBytes = WAFER_TX81_PROFILER_MIN_BUFFER_BYTES;
-constexpr uint64_t kTraceRecordBytes =
-    WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES;
+constexpr uint64_t kTraceRecordBytes = WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES;
 
 llvm::Error invalid(llvm::Twine message) {
   return llvm::createStringError(llvm::errc::invalid_argument, "%s",
@@ -997,8 +996,8 @@ llvm::Expected<ProfileTSMEngine> parseEngine(llvm::StringRef value,
   return invalid(context + " is not a supported profile engine");
 }
 
-llvm::Expected<ProfileTargetSiteKind>
-parseSiteKind(llvm::StringRef value, llvm::StringRef context) {
+llvm::Expected<ProfileTargetSiteKind> parseSiteKind(llvm::StringRef value,
+                                                    llvm::StringRef context) {
   if (value == "ncc-command")
     return ProfileTargetSiteKind::NCCCommand;
   if (value == "ncc-completion")
@@ -1054,8 +1053,7 @@ parseOptionalEngine(const llvm::json::Object &object, llvm::StringRef context,
   if (!value)
     return value.takeError();
   std::string engineContext = (context + ".engine").str();
-  llvm::Expected<ProfileTSMEngine> engine =
-      parseEngine(*value, engineContext);
+  llvm::Expected<ProfileTSMEngine> engine = parseEngine(*value, engineContext);
   if (!engine)
     return engine.takeError();
   return std::optional<ProfileTSMEngine>(*engine);
@@ -1070,13 +1068,13 @@ parseSite(const llvm::json::Value &value, uint64_t index,
       requireObject(value, context);
   if (!object)
     return object.takeError();
-  if (llvm::Error error = requireFields(
-          **object,
-          {"site_id", "target_call_ordinal", "target_call_symbol", "site_kind",
-           "correlation_key"},
-          {"engine", "function_ordinal", "block_ordinal",
-           "instruction_ordinal"},
-          context))
+  if (llvm::Error error =
+          requireFields(**object,
+                        {"site_id", "target_call_ordinal", "target_call_symbol",
+                         "site_kind", "correlation_key"},
+                        {"engine", "function_ordinal", "block_ordinal",
+                         "instruction_ordinal"},
+                        context))
     return std::move(error);
 
   ProfileTargetCallSite site;
@@ -1250,8 +1248,7 @@ parseSiteMaps(const llvm::json::Object &root, const PackageParseLimits &limits,
   if (!variants)
     return variants.takeError();
   if ((*variants)->size() != 1)
-    return invalid(
-        "profile site map must contain exactly one final artifact");
+    return invalid("profile site map must contain exactly one final artifact");
   if (llvm::Error error =
           accountRecords((*variants)->size(), totalRecords, limits))
     return std::move(error);
@@ -1282,8 +1279,8 @@ parseSiteMaps(const llvm::json::Object &root, const PackageParseLimits &limits,
       return invalid(context + " must contain all and only 16 ranks");
     variant.ranks.reserve((*ranks)->size());
     for (auto [rankIndex, rankValue] : llvm::enumerate(**ranks)) {
-      llvm::Expected<ProfileRankSiteMap> rank = parseRankSiteMap(
-          rankValue, rankIndex, limits, totalRecords, context);
+      llvm::Expected<ProfileRankSiteMap> rank =
+          parseRankSiteMap(rankValue, rankIndex, limits, totalRecords, context);
       if (!rank)
         return rank.takeError();
       variant.ranks.push_back(std::move(*rank));
@@ -1421,12 +1418,10 @@ findRawSiteMap(llvm::ArrayRef<ProfileVariantSiteMap> maps, llvm::StringRef id) {
 llvm::Error verifyVariantGraph(llvm::ArrayRef<RawVariant> variants,
                                const RawPlan &plan,
                                llvm::ArrayRef<ProfileVariantSiteMap> siteMaps) {
-  const RawVariant *finalArtifact =
-      findRawVariant(variants, kFinalArtifact);
+  const RawVariant *finalArtifact = findRawVariant(variants, kFinalArtifact);
   if (!finalArtifact || variants.size() != 1 ||
       finalArtifact->role != kFinalArtifact)
-    return invalid(
-        "profile companion must define exactly one final artifact");
+    return invalid("profile companion must define exactly one final artifact");
 
   const RawExecutionPackage *execution =
       findExecutionPackage(plan.executionPackages, kFinalArtifact);
@@ -1453,8 +1448,7 @@ llvm::Error verifyVariantGraph(llvm::ArrayRef<RawVariant> variants,
   const ProfileVariantSiteMap *siteMap =
       findRawSiteMap(siteMaps, kFinalArtifact);
   if (!siteMap || siteMaps.size() != 1 ||
-      siteMap->ranks.size() !=
-          static_cast<size_t>(kProfileCompanionRankCount))
+      siteMap->ranks.size() != static_cast<size_t>(kProfileCompanionRankCount))
     return invalid("final artifact site map must contain all 16 ranks");
   return llvm::Error::success();
 }
@@ -1616,8 +1610,8 @@ loadVariantPackage(const RawVariant &variant, llvm::StringRef companionRoot,
     return invalid("profile variant is not the final artifact");
   if (!isLowercaseSHA256(variant.manifestDigest))
     return invalid("profile variant manifest_sha256 is malformed");
-  llvm::Expected<std::string> packageDirectory = resolvePackageReference(
-      companionRoot, variant.packageReference);
+  llvm::Expected<std::string> packageDirectory =
+      resolvePackageReference(companionRoot, variant.packageReference);
   if (!packageDirectory)
     return packageDirectory.takeError();
   if (*packageDirectory != productionPackageRoot)
@@ -1671,8 +1665,7 @@ loadCapturePackage(const RawCapturePackage &capture,
   return ProfileCapturePackage(capture.variantId, capture.capture,
                                capture.packageReference, capture.manifestDigest,
                                capture.recordABI, capture.recordBytes,
-                               *packageDirectory,
-                               std::move(*package));
+                               *packageDirectory, std::move(*package));
 }
 
 } // namespace
@@ -1691,6 +1684,7 @@ getProfileTargetSiteKind(const TargetCallDescriptor &descriptor) {
         "non-builtin target call without an NCC issue-domain engine");
   switch (*builtin) {
   case TargetCallBuiltin::LocalFence:
+  case TargetCallBuiltin::NCCJoin:
     return ProfileTargetSiteKind::NCCCompletion;
   case TargetCallBuiltin::DirectDTEBegin:
   case TargetCallBuiltin::DirectDTEBeginAfterPrepare:

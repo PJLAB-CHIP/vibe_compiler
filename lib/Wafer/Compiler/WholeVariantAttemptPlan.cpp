@@ -19,7 +19,8 @@ constexpr size_t kWholeVariantVisitLimit = 64;
 constexpr size_t kCoordinatedPolicyVisitLimit = 64;
 
 using CandidateOrder = std::vector<std::vector<size_t>>;
-using CorrespondenceKey = std::pair<int64_t, wafer::RankArtifactKind>;
+using CorrespondenceKey = std::tuple<int64_t, wafer::RankArtifactKind,
+                                     wafer::RankBufferingKind, uint32_t>;
 
 struct Combination {
   std::vector<size_t> positions;
@@ -62,7 +63,9 @@ static bool hasCompleteCorrespondence(
     if (candidateIndex >= frontiers[rank].size())
       return false;
     const RankVariantSlotMetadata &candidate = frontiers[rank][candidateIndex];
-    CorrespondenceKey current{candidate.stableOrdinal, candidate.artifactKind};
+    CorrespondenceKey current{candidate.stableOrdinal, candidate.artifactKind,
+                              candidate.bufferingKind,
+                              candidate.bufferingPlanOrdinal};
     if (key && current != *key)
       return false;
     key = current;
@@ -99,7 +102,10 @@ WholeVariantAttemptPlan buildWholeVariantAttemptPlan(
     }
     order[rank].resize(frontier.size());
     for (size_t index = 0; index < frontier.size(); ++index) {
-      if (frontier[index].stableOrdinal < 0) {
+      bool canonicalBufferingIdentity =
+          (frontier[index].bufferingKind == wafer::RankBufferingKind::Single) ==
+          (frontier[index].bufferingPlanOrdinal == 0);
+      if (frontier[index].stableOrdinal < 0 || !canonicalBufferingIdentity) {
         plan.failure = WholeVariantAttemptPlanFailure::CandidateDomain;
         requireEveryModule(frontiers, plan);
         return plan;
@@ -109,8 +115,10 @@ WholeVariantAttemptPlan buildWholeVariantAttemptPlan(
     llvm::sort(order[rank], [&](size_t lhs, size_t rhs) {
       const RankVariantSlotMetadata &left = frontier[lhs];
       const RankVariantSlotMetadata &right = frontier[rhs];
-      return std::tie(left.stableOrdinal, left.artifactKind, lhs) <
-             std::tie(right.stableOrdinal, right.artifactKind, rhs);
+      return std::tie(left.stableOrdinal, left.artifactKind, left.bufferingKind,
+                      left.bufferingPlanOrdinal, lhs) <
+             std::tie(right.stableOrdinal, right.artifactKind,
+                      right.bufferingKind, right.bufferingPlanOrdinal, rhs);
     });
   }
 
@@ -121,6 +129,11 @@ WholeVariantAttemptPlan buildWholeVariantAttemptPlan(
       if (!candidate.reservedBaseline)
         continue;
       if (baseline) {
+        plan.failure = WholeVariantAttemptPlanFailure::ReservedBaseline;
+        requireEveryModule(frontiers, plan);
+        return plan;
+      }
+      if (candidate.bufferingKind != wafer::RankBufferingKind::Single) {
         plan.failure = WholeVariantAttemptPlanFailure::ReservedBaseline;
         requireEveryModule(frontiers, plan);
         return plan;
@@ -168,8 +181,9 @@ WholeVariantAttemptPlan buildWholeVariantAttemptPlan(
 
   std::set<CorrespondenceKey> correspondenceKeys;
   for (const RankVariantSlotMetadata &candidate : frontiers.front())
-    correspondenceKeys.insert(
-        {candidate.stableOrdinal, candidate.artifactKind});
+    correspondenceKeys.insert({candidate.stableOrdinal, candidate.artifactKind,
+                               candidate.bufferingKind,
+                               candidate.bufferingPlanOrdinal});
   size_t coordinatedVisited = 0;
   for (CorrespondenceKey key : correspondenceKeys) {
     if (coordinatedVisited >= kCoordinatedPolicyVisitLimit)
@@ -180,8 +194,10 @@ WholeVariantAttemptPlan buildWholeVariantAttemptPlan(
     for (const RankVariantMetadataFrontier &frontier : frontiers) {
       std::optional<size_t> match;
       for (auto [index, candidate] : llvm::enumerate(frontier)) {
-        if (candidate.stableOrdinal != key.first ||
-            candidate.artifactKind != key.second)
+        if (candidate.stableOrdinal != std::get<0>(key) ||
+            candidate.artifactKind != std::get<1>(key) ||
+            candidate.bufferingKind != std::get<2>(key) ||
+            candidate.bufferingPlanOrdinal != std::get<3>(key))
           continue;
         if (!match || index < *match)
           match = index;

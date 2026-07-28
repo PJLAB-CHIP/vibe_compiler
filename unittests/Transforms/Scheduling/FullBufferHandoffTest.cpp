@@ -2,6 +2,7 @@
 
 #include "Scheduling/ScheduleTensorProgramInternal.h"
 
+#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/InitAll.h"
 
 #include "mlir/IR/MLIRContext.h"
@@ -225,10 +226,10 @@ module {
 )mlir");
   }
 
-  template <typename OpTy>
-  static llvm::SmallVector<OpTy, 4> collectOps(mlir::ModuleOp module) {
+  template <typename OpTy, typename RootTy>
+  static llvm::SmallVector<OpTy, 4> collectOps(RootTy root) {
     llvm::SmallVector<OpTy, 4> operations;
-    module.walk([&](OpTy operation) { operations.push_back(operation); });
+    root.walk([&](OpTy operation) { operations.push_back(operation); });
     return operations;
   }
 
@@ -325,6 +326,100 @@ TEST_F(FullBufferHandoffTest,
         consumerGathers.front().getDest().getType()));
     EXPECT_EQ(consumerGathers.front().getByteCountAttr().getInt(), 8);
   }
+}
+
+TEST_F(FullBufferHandoffTest, AcceptsProducerJoinThatCompletesTheWDMAWorker) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = parseHandoffModule();
+  ASSERT_TRUE(module);
+  llvm::SmallVector<wafer::TileRegionOp, 4> regions =
+      collectOps<wafer::TileRegionOp>(*module);
+  ASSERT_EQ(regions.size(), 3u);
+  auto fence = *regions.front()
+                    .getBody()
+                    .front()
+                    .getOps<wafer::SyncLocalFenceOp>()
+                    .begin();
+  mlir::OpBuilder builder(fence);
+  builder.create<wafer::SyncNCCJoinOp>(fence.getLoc(),
+                                       wafer::NCCWorker::Worker0);
+  fence.erase();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  EXPECT_EQ(
+      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 1u);
+  ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(*module)));
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  EXPECT_TRUE(collectOps<wafer::InstrWDMAOp>(*module).empty());
+  regions = collectOps<wafer::TileRegionOp>(*module);
+  ASSERT_EQ(regions.size(), 3u);
+  EXPECT_TRUE(collectOps<wafer::SyncNCCJoinOp>(regions.front()).empty());
+}
+
+TEST_F(FullBufferHandoffTest,
+       KeepsProducerJoinWhenEarlierSameWorkerIssueRemainsPending) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = parseHandoffModule();
+  ASSERT_TRUE(module);
+  llvm::SmallVector<wafer::TileRegionOp, 4> regions =
+      collectOps<wafer::TileRegionOp>(*module);
+  ASSERT_EQ(regions.size(), 3u);
+  wafer::InstrWDMAOp wdma =
+      collectOps<wafer::InstrWDMAOp>(regions.front()).front();
+  auto fence = *regions.front()
+                    .getBody()
+                    .front()
+                    .getOps<wafer::SyncLocalFenceOp>()
+                    .begin();
+
+  mlir::OpBuilder builder(wdma);
+  auto zero = builder.create<mlir::arith::ConstantOp>(
+      wdma.getLoc(), builder.getF16FloatAttr(0.0));
+  builder.create<wafer::InstrFillOp>(wdma.getLoc(), wdma.getSource(),
+                                     zero.getResult(), wafer::FillDomainAttr{},
+                                     wafer::NCCWorker::Worker0);
+  builder.setInsertionPoint(fence);
+  builder.create<wafer::SyncNCCJoinOp>(fence.getLoc(),
+                                       wafer::NCCWorker::Worker0);
+  fence.erase();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  EXPECT_EQ(
+      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 1u);
+  ASSERT_TRUE(mlir::succeeded(wafer::normalizeMinimumNCCJoins(*module)));
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  regions = collectOps<wafer::TileRegionOp>(*module);
+  ASSERT_EQ(regions.size(), 3u);
+  EXPECT_TRUE(collectOps<wafer::InstrWDMAOp>(*module).empty());
+  EXPECT_EQ(collectOps<wafer::InstrFillOp>(regions.front()).size(), 1u);
+  llvm::SmallVector<wafer::SyncNCCJoinOp, 2> producerJoins =
+      collectOps<wafer::SyncNCCJoinOp>(regions.front());
+  ASSERT_EQ(producerJoins.size(), 1u);
+  ASSERT_EQ(producerJoins.front().getParticipants().size(), 1u);
+  EXPECT_EQ(producerJoins.front().getParticipants().front(), 0);
+}
+
+TEST_F(FullBufferHandoffTest,
+       RejectsProducerJoinThatDoesNotCompleteTheWDMAWorker) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = parseHandoffModule();
+  ASSERT_TRUE(module);
+  llvm::SmallVector<wafer::TileRegionOp, 4> regions =
+      collectOps<wafer::TileRegionOp>(*module);
+  ASSERT_EQ(regions.size(), 3u);
+  auto fence = *regions.front()
+                    .getBody()
+                    .front()
+                    .getOps<wafer::SyncLocalFenceOp>()
+                    .begin();
+  mlir::OpBuilder builder(fence);
+  builder.create<wafer::SyncNCCJoinOp>(fence.getLoc(),
+                                       wafer::NCCWorker::Worker1);
+  fence.erase();
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  EXPECT_EQ(
+      wafer::tensor_program_scheduling::promoteFullBufferHandoffs(*module), 0u);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  EXPECT_EQ(collectOps<wafer::InstrWDMAOp>(*module).size(), 1u);
 }
 
 TEST_F(FullBufferHandoffTest,

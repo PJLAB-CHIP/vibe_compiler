@@ -122,6 +122,32 @@ struct InstructionProgramCost {
   /// instruction program, not the number of waits consuming those tokens.
   ScheduleCostMetric eventCount;
 
+  /// Explicit NCC participant-join operations after static execution
+  /// multiplicity. This is kept separate from instructionCount because every
+  /// join lowers to one or more blocking worker drains.
+  ScheduleCostMetric nccJoinCount;
+  /// Explicit NCC joins executed from a structured loop body. A legal
+  /// zero-steady-state-join candidate is always preferred over one that drains
+  /// an NCC worker in the steady kernel.
+  ScheduleCostMetric steadyStateNCCJoinCount;
+  /// Explicit NCC joins that are followed by more executable work on the same
+  /// path, including joins in a loop body. Terminal joins are excluded.
+  ScheduleCostMetric nonTerminalNCCJoinCount;
+  /// Number of blocking worker waits implied by explicit participant joins and
+  /// synchronous NCC writeback islands. A join of workers {0, 2} contributes
+  /// two; a narrower scope is not treated as a cheaper wait.
+  ScheduleCostMetric nccParticipantWaitCount;
+  /// Blocking worker waits executed from a structured loop body. This is the
+  /// primary steady-state drain metric: one join operation with three
+  /// participants is three heavy waits, not one.
+  ScheduleCostMetric steadyStateNCCParticipantWaitCount;
+  /// Blocking worker waits followed by more executable work on the same path,
+  /// including waits in a loop body. Terminal waits are excluded.
+  ScheduleCostMetric nonTerminalNCCParticipantWaitCount;
+  /// Blocking NCC drains hidden inside otherwise ordinary instructions, such
+  /// as the current synchronous ArgMax/ArgMin host writeback path.
+  ScheduleCostMetric intrinsicNCCDrainCount;
+
   /// Longest value/data-effect dependency chain in the accepted instruction
   /// IR. This is a structural count, not a cycle, latency, or overlap model.
   /// Unsupported control flow leaves it unknown without degrading the exact
@@ -160,6 +186,13 @@ struct WholeCardInstructionProgramCost {
   ScheduleCostMetric minimumHopLinkByteDemand;
   ScheduleCostMetric aggregateInstructionCount;
   ScheduleCostMetric aggregateEventCount;
+  ScheduleCostMetric aggregateNCCJoinCount;
+  ScheduleCostMetric aggregateSteadyStateNCCJoinCount;
+  ScheduleCostMetric aggregateNonTerminalNCCJoinCount;
+  ScheduleCostMetric aggregateNCCParticipantWaitCount;
+  ScheduleCostMetric aggregateSteadyStateNCCParticipantWaitCount;
+  ScheduleCostMetric aggregateNonTerminalNCCParticipantWaitCount;
+  ScheduleCostMetric aggregateIntrinsicNCCDrainCount;
 
   /// Maximum rank-local structural data-dependency depth. It is retained for
   /// exact-resource-equivalent static policy tie-breaking, not summed as

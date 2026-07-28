@@ -56,11 +56,11 @@ module {
 // CHECK: wafer.instr.gather_scatter %[[LOCAL_COMM]] to %[[LOCAL_SLOT]]
 // CHECK-SAME: dst_strides = array<i64: 256, 0, 0>
 // CHECK-SAME: inner_bytes = 16 : i64
-// CHECK: wafer.instr.local_fence
 // CHECK: %[[PEER_SLOT:.+]] = memref.subview %[[GATHER]][0, 60] [16, 4] [1, 1]
 // CHECK-SAME: memref<16x4xf32, strided<[64, 1], offset: 60>, #wafer.memory<spm, tensor>>
 // CHECK: %[[RECV_BUF:.+]] = memref.alloc
 // CHECK-SAME: memref<16x4xf32, #wafer.memory<spm, tensor>>
+// CHECK: wafer.instr.ncc_join [0]
 // CHECK: %[[SEND:.+]] = wafer.instr.dte_send %[[LOCAL_COMM]]
 // CHECK-SAME: bytes = 256 : i64
 // CHECK-SAME: message = #wafer.dte_message<communication = 14, phase = all_gather_ring, round = 0, slice = 14>
@@ -73,7 +73,8 @@ module {
 // CHECK: wafer.instr.gather_scatter %[[RECV_BUF]] to %[[PEER_SLOT]]
 // CHECK-SAME: dst_strides = array<i64: 256, 0, 0>
 // CHECK-SAME: inner_bytes = 16 : i64
-// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.ncc_join [0]
+// CHECK-NOT: wafer.instr.local_fence
 // CHECK-NOT: wafer.tile.all_gather
 
 // SPM-LABEL: func.func @all_gather_ring_inner_axis

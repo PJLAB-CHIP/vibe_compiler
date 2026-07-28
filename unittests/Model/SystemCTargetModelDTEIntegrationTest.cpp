@@ -19,12 +19,20 @@ using namespace wafer::compiler;
 using namespace wafer::model;
 
 TEST(SystemCTargetModelDTEIntegrationTest,
-     ExecutesSourceProducedSixteenRankPermutationWithEventWaits) {
+     ExecutesDTESendThenNCCJoinThenExactDTEWait) {
   std::string diagnostics;
   llvm::Expected<TargetLLVMModuleBundle> bundle =
       test::buildDirectDTETargetBundle(diagnostics);
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
+  llvm::Expected<test::NCCJoinRewriteResult> rewrite =
+      test::rewriteNCCJoinsAfter(*bundle,
+                                 TargetCallBuiltin::DirectDTESendPrepare);
+  ASSERT_TRUE(static_cast<bool>(rewrite))
+      << llvm::toString(rewrite.takeError());
+  EXPECT_GT(rewrite->erasedJoinCount, 0u);
+  EXPECT_GT(rewrite->insertedJoinCount, 0u);
+  EXPECT_GT(rewrite->insertedTerminalJoinCount, 0u);
   llvm::Expected<test::DirectDTEInvocationData> invocation =
       test::buildDirectDTEInvocationData(*bundle);
   ASSERT_TRUE(static_cast<bool>(invocation))
@@ -46,7 +54,7 @@ TEST(SystemCTargetModelDTEIntegrationTest,
   EXPECT_GE(result->issuedTransactionCount, 16u * 8u);
   EXPECT_GE(result->systemCThreadProcessCount, 17u);
   EXPECT_GT(result->finalDeltaCount, 0u);
-  EXPECT_EQ(result->schedulerIdentity, "untimed-delta-single-issue-domain-v1");
+  EXPECT_EQ(result->schedulerIdentity, "untimed-delta-worker-aware-ncc-v2");
   ASSERT_EQ(result->outputs.size(), 16u);
   for (const TargetModelOutput &output : result->outputs) {
     ASSERT_GE(output.logicalRank, 0);

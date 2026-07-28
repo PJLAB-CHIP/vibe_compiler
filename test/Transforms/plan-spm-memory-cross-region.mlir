@@ -2,7 +2,7 @@
 // RUN: wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66048' %t/shared.mlir | FileCheck --check-prefix=SHARED %s
 // RUN: not wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=65792' %t/shared.mlir 2>&1 | FileCheck --check-prefix=OVERLAP %s
 // RUN: not wafer-opt --wafer-plan-spm-memory %t/escape.mlir 2>&1 | FileCheck --check-prefix=ESCAPE %s
-// RUN: not wafer-opt --wafer-plan-spm-memory %t/missing-completion.mlir 2>&1 | FileCheck --check-prefix=MISSING %s
+// RUN: wafer-opt --wafer-plan-spm-memory %t/cross-region-completion.mlir | FileCheck --check-prefix=CROSS-REGION-COMPLETION %s
 // RUN: not wafer-opt --wafer-plan-spm-memory %t/live-across-direct-call.mlir 2>&1 | FileCheck --check-prefix=LIVE-DIRECT %s
 // RUN: not wafer-opt --wafer-plan-spm-memory %t/live-across-external-call.mlir 2>&1 | FileCheck --check-prefix=LIVE-EXTERNAL %s
 // RUN: not wafer-opt --wafer-plan-spm-memory %t/live-across-indirect-call.mlir 2>&1 | FileCheck --check-prefix=LIVE-INDIRECT %s
@@ -101,8 +101,8 @@ func.func @escape_spm_ssa(
 
 // ESCAPE: unsupported_spm_planning_scope: SPM values outside wafer.tile.region may only flow through explicit tile-region operands/results
 
-//--- missing-completion.mlir
-func.func @missing_cross_region_completion(
+//--- cross-region-completion.mlir
+func.func @cross_region_same_worker_completion(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
   %resident = wafer.tile.region(%boundary
       : memref<128xf16, #wafer.memory<ddr, tensor>>) ->
@@ -120,8 +120,8 @@ func.func @missing_cross_region_completion(
       : memref<128xf16, #wafer.memory<spm, tensor>>) ->
       (memref<128xf16, #wafer.memory<spm, tensor>>) {
   ^bb0(%input: memref<128xf16, #wafer.memory<spm, tensor>>):
-    // A later sibling fence must not become an implicit completion for the
-    // producer region.
+    // Pending NCC state is function-wide. This explicit later sibling
+    // completion legitimately covers the same-worker producer stream.
     wafer.instr.local_fence
     wafer.tile.yield %input
         : memref<128xf16, #wafer.memory<spm, tensor>>
@@ -129,7 +129,9 @@ func.func @missing_cross_region_completion(
   return
 }
 
-// MISSING: missing_local_completion: local Compute/Movement issue has a reachable path to wafer.tile.region exit without wafer.instr.local_fence
+// CROSS-REGION-COMPLETION-LABEL: func.func @cross_region_same_worker_completion
+// CROSS-REGION-COMPLETION: wafer.instr.fill
+// CROSS-REGION-COMPLETION: wafer.instr.local_fence
 
 //--- live-across-direct-call.mlir
 func.func @independently_planned_callee(

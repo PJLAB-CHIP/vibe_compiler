@@ -231,7 +231,8 @@ module {
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
 
   wafer::WaferTargetPolicy policy = wafer::getDefaultWaferTargetPolicy();
-  wafer::tensor_program_scheduling::SelectionConfig config(policy);
+  wafer::tensor_program_scheduling::SelectionConfig config(
+      policy, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   config.logicalRank = 0;
   wafer::tensor_program_scheduling::CandidateSpec candidate;
   candidate.tileSizes = {4};

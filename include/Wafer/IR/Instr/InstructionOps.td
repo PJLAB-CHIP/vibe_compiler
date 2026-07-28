@@ -8,8 +8,13 @@ class Wafer_InstrOp<string mnemonic, list<Trait> traits>
         DeclareOpInterfaceMethods<WaferInstructionOpInterface>
       ]>;
 
+class Wafer_NCCInstrOp<string mnemonic, list<Trait> traits>
+    : Wafer_InstrOp<mnemonic, traits # [
+        DeclareOpInterfaceMethods<WaferNCCIssueOpInterface>
+      ]>;
+
 class Wafer_InstrDMAOp<string mnemonic, list<Trait> traits>
-    : Wafer_InstrOp<mnemonic, traits> {
+    : Wafer_NCCInstrOp<mnemonic, traits> {
   let hasVerifier = 1;
 }
 
@@ -27,7 +32,9 @@ def Wafer_InstrRDMAOp : Wafer_InstrDMAOp<"instr.rdma", [
     OptionalAttr<I64Attr>:$src_offset,
     OptionalAttr<I64Attr>:$dst_offset,
     DenseI64ArrayAttr:$src_strides,
-    DenseI64ArrayAttr:$src_iterations
+    DenseI64ArrayAttr:$src_iterations,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let assemblyFormat =
       "$source `to` $dest attr-dict `:` type($source) `to` type($dest)";
@@ -47,7 +54,9 @@ def Wafer_InstrWDMAOp : Wafer_InstrDMAOp<"instr.wdma", [
     OptionalAttr<I64Attr>:$src_offset,
     OptionalAttr<I64Attr>:$dst_offset,
     DenseI64ArrayAttr:$dst_strides,
-    DenseI64ArrayAttr:$dst_iterations
+    DenseI64ArrayAttr:$dst_iterations,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let assemblyFormat =
       "$source `to` $dest attr-dict `:` type($source) `to` type($dest)";
@@ -74,13 +83,15 @@ def Wafer_InstrGatherScatterOp : Wafer_InstrDMAOp<"instr.gather_scatter", [
     DenseI64ArrayAttr:$src_strides,
     DenseI64ArrayAttr:$src_iterations,
     DenseI64ArrayAttr:$dst_strides,
-    DenseI64ArrayAttr:$dst_iterations
+    DenseI64ArrayAttr:$dst_iterations,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let assemblyFormat =
       "$source `to` $dest attr-dict `:` type($source) `to` type($dest)";
 }
 
-def Wafer_InstrFillOp : Wafer_InstrOp<"instr.fill", [
+def Wafer_InstrFillOp : Wafer_NCCInstrOp<"instr.fill", [
     MemoryEffects<[MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_MovementResource>]>
   ]> {
@@ -88,14 +99,16 @@ def Wafer_InstrFillOp : Wafer_InstrOp<"instr.fill", [
   let arguments = (ins
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
     AnyType:$value,
-    OptionalAttr<Wafer_FillDomainAttr>:$fill_domain
+    OptionalAttr<Wafer_FillDomainAttr>:$fill_domain,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let hasVerifier = 1;
   let assemblyFormat =
       "$dest `,` $value attr-dict `:` type($dest) `,` type($value)";
 }
 
-def Wafer_InstrElementwiseOp : Wafer_InstrOp<"instr.elementwise", [
+def Wafer_InstrElementwiseOp : Wafer_NCCInstrOp<"instr.elementwise", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -104,14 +117,16 @@ def Wafer_InstrElementwiseOp : Wafer_InstrOp<"instr.elementwise", [
   let arguments = (ins
     Wafer_InstrElementwiseKindAttr:$kind,
     Arg<Variadic<AnyMemRef>, "", [MemRead]>:$inputs,
-    Arg<AnyMemRef, "", [MemWrite]>:$dest
+    Arg<AnyMemRef, "", [MemWrite]>:$dest,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $inputs `into` $dest attr-dict `:` type($inputs) `into` type($dest)";
 }
 
-def Wafer_InstrBit2FpOp : Wafer_InstrOp<"instr.bit2fp", [
+def Wafer_InstrBit2FpOp : Wafer_NCCInstrOp<"instr.bit2fp", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -119,14 +134,16 @@ def Wafer_InstrBit2FpOp : Wafer_InstrOp<"instr.bit2fp", [
   let summary = "instruction-level CT bit-mask to floating mask conversion";
   let arguments = (ins
     Arg<AnyMemRef, "", [MemRead]>:$source,
-    Arg<AnyMemRef, "", [MemWrite]>:$dest
+    Arg<AnyMemRef, "", [MemWrite]>:$dest,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let hasVerifier = 1;
   let assemblyFormat =
       "$source `into` $dest attr-dict `:` type($source) `to` type($dest)";
 }
 
-def Wafer_InstrMaskMoveOp : Wafer_InstrOp<"instr.mask_move", [
+def Wafer_InstrMaskMoveOp : Wafer_NCCInstrOp<"instr.mask_move", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -141,14 +158,16 @@ def Wafer_InstrMaskMoveOp : Wafer_InstrOp<"instr.mask_move", [
   let arguments = (ins
     Arg<AnyMemRef, "", [MemRead]>:$source,
     Arg<AnyMemRef, "", [MemRead]>:$mask,
-    Arg<AnyMemRef, "", [MemWrite]>:$dest
+    Arg<AnyMemRef, "", [MemWrite]>:$dest,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let hasVerifier = 1;
   let assemblyFormat =
       "$source `,` $mask `into` $dest attr-dict `:` type($source) `,` type($mask) `into` type($dest)";
 }
 
-def Wafer_InstrReduceOp : Wafer_InstrOp<"instr.reduce", [
+def Wafer_InstrReduceOp : Wafer_NCCInstrOp<"instr.reduce", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -158,14 +177,16 @@ def Wafer_InstrReduceOp : Wafer_InstrOp<"instr.reduce", [
     Wafer_InstrReduceKindAttr:$kind,
     Arg<AnyMemRef, "", [MemRead]>:$input,
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
-    I64Attr:$dim
+    I64Attr:$dim,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $input `into` $dest attr-dict `:` type($input) `into` type($dest)";
 }
 
-def Wafer_InstrConvertOp : Wafer_InstrOp<"instr.convert", [
+def Wafer_InstrConvertOp : Wafer_NCCInstrOp<"instr.convert", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -176,14 +197,16 @@ def Wafer_InstrConvertOp : Wafer_InstrOp<"instr.convert", [
     Arg<AnyMemRef, "", [MemRead]>:$source,
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
     OptionalAttr<I64Attr>:$zero_point,
-    OptionalAttr<I64Attr>:$rounding_mode
+    OptionalAttr<I64Attr>:$rounding_mode,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $source `into` $dest attr-dict `:` type($source) `to` type($dest)";
 }
 
-def Wafer_InstrGemmOp : Wafer_InstrOp<"instr.gemm", [
+def Wafer_InstrGemmOp : Wafer_NCCInstrOp<"instr.gemm", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -207,14 +230,16 @@ def Wafer_InstrGemmOp : Wafer_InstrOp<"instr.gemm", [
     OptionalAttr<I64Attr>:$rhs_n_dim,
     OptionalAttr<DenseI64ArrayAttr>:$result_batch_dims,
     OptionalAttr<I64Attr>:$result_m_dim,
-    OptionalAttr<I64Attr>:$result_n_dim
+    OptionalAttr<I64Attr>:$result_n_dim,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let hasVerifier = 1;
   let assemblyFormat =
       "$lhs `,` $rhs `into` $dest attr-dict `:` type($lhs) `,` type($rhs) `into` type($dest)";
 }
 
-def Wafer_InstrConvOp : Wafer_InstrOp<"instr.conv", [
+def Wafer_InstrConvOp : Wafer_NCCInstrOp<"instr.conv", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -231,14 +256,16 @@ def Wafer_InstrConvOp : Wafer_InstrOp<"instr.conv", [
     DenseI64ArrayAttr:$pads,
     DenseI64ArrayAttr:$unpads,
     DenseI64ArrayAttr:$kernel_strides,
-    DenseI64ArrayAttr:$dilations
+    DenseI64ArrayAttr:$dilations,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $input `,` $weight `into` $dest attr-dict `:` type($input) `,` type($weight) `into` type($dest)";
 }
 
-def Wafer_InstrPoolOp : Wafer_InstrOp<"instr.pool", [
+def Wafer_InstrPoolOp : Wafer_NCCInstrOp<"instr.pool", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -251,14 +278,16 @@ def Wafer_InstrPoolOp : Wafer_InstrOp<"instr.pool", [
     DenseI64ArrayAttr:$source_shape,
     DenseI64ArrayAttr:$dest_shape,
     DenseI64ArrayAttr:$pads,
-    DenseI64ArrayAttr:$kernel_strides
+    DenseI64ArrayAttr:$kernel_strides,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $input `into` $dests attr-dict `:` type($input) `into` type($dests)";
 }
 
-def Wafer_InstrUnpoolOp : Wafer_InstrOp<"instr.unpool", [
+def Wafer_InstrUnpoolOp : Wafer_NCCInstrOp<"instr.unpool", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
@@ -271,7 +300,9 @@ def Wafer_InstrUnpoolOp : Wafer_InstrOp<"instr.unpool", [
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
     DenseI64ArrayAttr:$source_shape,
     DenseI64ArrayAttr:$dest_shape,
-    DenseI64ArrayAttr:$kernel_strides
+    DenseI64ArrayAttr:$kernel_strides,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let hasVerifier = 1;
   let assemblyFormat =
@@ -279,7 +310,7 @@ def Wafer_InstrUnpoolOp : Wafer_InstrOp<"instr.unpool", [
       "(`,` type($index)^)? `into` type($dest)";
 }
 
-def Wafer_InstrTDMADataMoveOp : Wafer_InstrOp<"instr.tdma_data_move", [
+def Wafer_InstrTDMADataMoveOp : Wafer_NCCInstrOp<"instr.tdma_data_move", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_MovementResource>]>
@@ -294,14 +325,16 @@ def Wafer_InstrTDMADataMoveOp : Wafer_InstrOp<"instr.tdma_data_move", [
     OptionalAttr<DenseI64ArrayAttr>:$permutation,
     OptionalAttr<DenseI64ArrayAttr>:$axes,
     OptionalAttr<DenseI64ArrayAttr>:$pads,
-    OptionalAttr<DenseI64ArrayAttr>:$kernel_strides
+    OptionalAttr<DenseI64ArrayAttr>:$kernel_strides,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $source `into` $dest attr-dict `:` type($source) `to` type($dest)";
 }
 
-def Wafer_InstrPeripheralOp : Wafer_InstrOp<"instr.peripheral", [
+def Wafer_InstrPeripheralOp : Wafer_NCCInstrOp<"instr.peripheral", [
     AttrSizedOperandSegments,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
@@ -318,7 +351,9 @@ def Wafer_InstrPeripheralOp : Wafer_InstrOp<"instr.peripheral", [
     OptionalAttr<I64Attr>:$lut_elem_count,
     OptionalAttr<I64Attr>:$scale,
     OptionalAttr<I64Attr>:$probability,
-    OptionalAttr<I64Attr>:$rounding_mode
+    OptionalAttr<I64Attr>:$rounding_mode,
+    DefaultValuedAttr<Wafer_NCCWorkerAttr,
+                      "::wafer::NCCWorker::Worker0">:$worker
   );
   let hasVerifier = 1;
   let assemblyFormat =

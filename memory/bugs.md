@@ -1848,6 +1848,43 @@
 - 多participant通信的板端profile gate不能只验证全卡`any(positive phase)`。应按manifest participant集合逐tile
   对齐raw source event、analysis aggregate与`Measured` phase，否则单tile活动会掩盖其它rank漏执行。
 
+## 2026-07-28 结构边界不能自动升级为NCC completion
+
+- 现象：loop body或前一个tile-region中的ordinary NCC issue即使与下一迭代同worker有序、且函数后已有一次
+  unconditional join，SPM/DDR lifetime仍要求body-local/region-local fence；结果是软件流水每轮都会lower到
+  `TsmWaitfinish*`，性能被blocking CSR poll完全序列化。
+- 根因：旧completion proof把`scf.for` backedge和`wafer.tile.region` exit当作device completion boundary，
+  并只扫描当前平坦block；它没有区分“pending访问由same-worker后继接管”和“值已对host/其它domain可见”，也会
+  被loop-local allocation或嵌套静态loop提前截断。相反方向的fail-open来自把`memref.dealloc`的Free effect
+  忽略、把缺少可解释effect summary的zero-region operation当成无访问；若直接读取region container的递归
+  effects，又会把nested program point重复当作container observer而误拒绝合法branch join。
+- 修复模式：completion frontier改为function-wide、worker-aware并按pending access component证明。静态非空
+  nested loop可递归穿过，loop/alloc视作结构节点；same-worker冲突后继保持真实issue order并继续寻找现有join。
+  disjoint worker stream互不要求join，冲突cross-worker、conditional observer、DTE/Kcore/host边界仍fail closed。
+  pending access之后的Free和zero-region Unknown memory observer都要求先有matching participant join；region
+  container本身透明，其nested operation、branch path和join分别在各自program point处理。
+  lit负例必须期待真正的terminal/domain-exit failure，不能继续锁定“body-local fence”这种旧实现条件。
+- 防复发：同时覆盖nested static loop正例、conditional loop负例、disjoint/conflicting multi-worker pair、
+  multi-access issue不能由单一successor错误完成、跨sibling tile-region由后续unconditional join统一收口，
+  以及pending issue后dealloc/Unknown observer负例和两branch各自join的region-container正例。
+
+## 2026-07-28 软件流水的地址表达和placement事实必须各有单一owner
+
+- 现象：fixed-slot rank候选能生成，但DDR planner或Target preflight拒绝SCF utility产生的stage-shift subview
+  offset；另一路公共transform若输入已经placement过的IR，会把同一个`wafer.spm.offset`复制到所有slot。
+- 根因：多个downstream各自只识别constant/bare loop IV，没有共享静态range语义；buffer derivation又没有声明
+  自己位于physical placement之前，导致逻辑slot identity和物理offset事实重复。DDR view range若把
+  `scf.for` iter_arg一律解析到init，还会漏掉backedge yield产生的更大offset并错误接受越界view。
+- 修复模式：抽取一个private、overflow-safe静态index range evaluator，DDR与Target共同消费并保留各自诊断；
+  Unknown expression、dynamic/invalid bounds、非singleton乘法、unsigned division非法或溢出全部fail closed。
+  loop-carried view按init与yield联合求range；identity pass-through保留已有证明，nonidentity recurrence无法
+  建立有限保守上界时保持Unknown并拒绝candidate。
+  fixed-slot API显式要求unplaced input，在clone前扫描并拒绝任何SPM/DDR offset，随后由每个candidate独立重跑
+  SPM/DDR packing、range verifier和Target late gate。
+- 防复发：正例覆盖`iv + stage displacement`一直到Target lowering及identity carried view，负例覆盖unknown
+  origin、overflow和backedge yield超出root的nonidentity recurrence；
+  placement测试必须检查所有外部slot offset唯一、arena合法且源module未被修改。
+
 ## 2026-07-28 resident handoff之后仍需通用storage-coalescing proof
 
 - 现象：DDR spill/reload已被resident handoff删除后，instruction lowering仍可能在compute、reduce、
@@ -1872,3 +1909,17 @@
   explicit deallocation、unsupported control flow和DTE in-flight interval。最终是否删除只能从本轮
   normalized final Instr IR及TargetCall/ELF inventory重证；site map只是绑定到同一final artifact的审计投影，
   不能从lowering意图、历史产物或相同byte count推断。
+
+## 2026-07-28 profiler不能从密集矩形或symbol猜硬件cost
+
+- 现象：通信case的同一site动态执行很多次时，逐event实心块、PMU bound和semantic ledger叠成一堵墙，看起来像
+  engine连续busy；另一方面report只有PMU active ns，没有最终artifact静态work和硬件峰值参考，用户无法判断数量级。
+- 根因：timeline没有区分“精确证据保存”和“默认视觉密度”，cost侧又缺少从accepted final Instr IR到companion的
+  typed work投影；site map本身只有identity，不能由target-call symbol、资源名或case shape恢复通用ops/bytes。
+- 修复模式：timeline逐次展示每个真实动态调用及精确operation rdcycle，不按密度、engine或site折叠；site container、
+  engine observation和DTE内部phase与调用次数分栏。compiler从final Instr IR fresh运行exact instruction-cost analysis，
+  companion/evidence携带per-rank metric knowledge/value/reason和target policy rate；report按维度标理论下界、
+  显式启发式或Unavailable，再与同engine measured active ns并列。
+- 防复发：activity event不能冒充额外调用，调用rdcycle不能冒充engine busy；任何bandwidth→time换算必须有当前target合同中的唯一速率和
+  正确scope，共享DDR不能当per-tile独占，未知SPM/issue/route参数不能用单case校准常数补齐，模型不得与Primary相加
+  或进入candidate ranking。

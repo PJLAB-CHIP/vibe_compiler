@@ -596,15 +596,19 @@ emitLifetimeFailure(mlir::func::FuncOp funcOp,
     return origin->emitError()
            << "missing_local_completion: local Compute/Movement issue has a "
               "reachable path to wafer.tile.region exit without "
-              "wafer.instr.local_fence";
+              "a matching participant in wafer.instr.ncc_join (operation "
+           << origin->getName() << ")";
   case mp::LifetimeFailureKind::LoopBackedgeCompletion:
     return origin->emitError()
            << "missing_local_completion: local Compute/Movement issue has a "
-              "reachable loop backedge without wafer.instr.local_fence";
+              "reachable loop backedge without a same-worker ordered "
+              "successor or matching participant join "
+              "(operation "
+           << origin->getName() << ")";
   case mp::LifetimeFailureKind::InconsistentCompletionState:
     return funcOp.emitError()
            << "completion_proof_failure: local issue lifetime state remains "
-              "after all local issues were fenced";
+              "after all local completion domains were discharged";
   }
   llvm_unreachable("unknown lifetime failure kind");
 }
