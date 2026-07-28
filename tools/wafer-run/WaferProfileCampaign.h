@@ -19,6 +19,8 @@
 
 namespace wafer::runtime::cli {
 
+inline constexpr uint32_t kBoardProfileEvidenceSchemaVersion = 8;
+
 enum class BoardProfileProtocolLaunch {
   Primary,
   Count,

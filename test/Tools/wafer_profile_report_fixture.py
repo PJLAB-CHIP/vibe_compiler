@@ -11,6 +11,76 @@ FINAL_DIGEST = "sha256:" + "f" * 64
 RECORD_ABI = "wafer-tx81-profiler-record-v3"
 
 
+def _cost_metric(
+    value: int | None,
+    *,
+    knowledge: str = "known",
+    reason: str = "none",
+) -> dict[str, str | None]:
+    return {
+        "knowledge": knowledge,
+        "value": str(value) if value is not None else None,
+        "reason": reason,
+    }
+
+
+def _static_cost_model() -> dict[str, Any]:
+    rank_rows = []
+    for logical_rank in range(16):
+        directional = {
+            direction: _cost_metric(
+                None,
+                knowledge="unknown",
+                reason="unresolved-noc-route",
+            )
+            for direction in ("north", "east", "south", "west")
+        }
+        collectives = {
+            collective: _cost_metric(0)
+            for collective in (
+                "collective_permute",
+                "all_to_all",
+                "all_gather",
+                "reduce_scatter",
+                "all_reduce",
+            )
+        }
+        rank_rows.append(
+            {
+                "logical_rank": logical_rank,
+                "work": {
+                    "npu_f16_bf16_logical_ops": _cost_metric(820_000),
+                    "npu_other_logical_ops": _cost_metric(0),
+                    "vector_f16_bf16_logical_ops": _cost_metric(5_856),
+                    "vector_f32_logical_ops": _cost_metric(0),
+                    "vector_other_logical_ops": _cost_metric(0),
+                    "ddr_read_bytes": _cost_metric(1_400),
+                    "ddr_write_bytes": _cost_metric(1_556),
+                    "spm_movement_bytes": _cost_metric(3_980),
+                    "noc_transmit_bytes": _cost_metric(1_280),
+                    "noc_receive_bytes": _cost_metric(1_280),
+                    "directional_noc_transmit_bytes": directional,
+                    "collective_noc_transmit_bytes": collectives,
+                },
+            }
+        )
+    return {
+        "model": "tx81-static-peak-lower-bound-v1",
+        "scope": "complete-final-instruction-program-per-rank",
+        "rates": {
+            "card_ddr_bytes_per_second": 200_000_000_000,
+            "directional_noc_bytes_per_second": 128_000_000_000,
+            "f16_bf16_npu_logical_ops_per_second_per_tile": (
+                8_000_000_000_000
+            ),
+            "f16_bf16_vector_logical_ops_per_second_per_tile": 64_000_000_000,
+            "f32_vector_logical_ops_per_second_per_tile": 32_000_000_000,
+            "spm_movement_bytes_per_second": None,
+        },
+        "ranks": rank_rows,
+    }
+
+
 def _kernel_launch() -> dict[str, Any]:
     return {
         "kind": "kernel",
@@ -353,11 +423,11 @@ def make_evidence() -> dict[str, Any]:
     }
     return {
         "schema": "wafer.profile.evidence",
-        "schema_version": 7,
+        "schema_version": 8,
         "run_id": "fixture-final-artifact",
         "identity": {
             "production_manifest_sha256": FINAL_DIGEST,
-            "profile_companion_schema_version": 4,
+            "profile_companion_schema_version": 5,
             "record_abi": RECORD_ABI,
             "target_profile": target_profile,
             "launch": _kernel_launch(),
@@ -405,5 +475,6 @@ def make_evidence() -> dict[str, Any]:
             "package_companion": True,
             "measurement_basis": True,
         },
+        "static_cost_model": _static_cost_model(),
         "experiment": experiment,
     }

@@ -15,18 +15,26 @@
 #include <string>
 #include <vector>
 
+namespace llvm::json {
+class OStream;
+} // namespace llvm::json
+
 namespace wafer {
 
 struct TargetCallDescriptor;
 
 namespace runtime {
 
-inline constexpr uint32_t kProfileCompanionSchemaVersion = 4;
+inline constexpr uint32_t kProfileCompanionSchemaVersion = 5;
 inline constexpr int64_t kProfileCompanionRankCount = 16;
 inline constexpr llvm::StringLiteral kProfileSiteCorrelationBasis =
     "typed-target-call-ordinal-ssa-identity-occurrence-v1";
 inline constexpr llvm::StringLiteral kProfileRecordABI =
     WAFER_TX81_PROFILER_RECORD_ABI_V3;
+inline constexpr llvm::StringLiteral kProfileStaticCostModelName =
+    "tx81-static-peak-lower-bound-v1";
+inline constexpr llvm::StringLiteral kProfileStaticCostModelScope =
+    "complete-final-instruction-program-per-rank";
 inline constexpr llvm::StringLiteral kProfileCompanionActivationFileName =
     "activation.json";
 inline constexpr llvm::StringLiteral kProfileCompanionPlanFileName =
@@ -62,6 +70,70 @@ enum class ProfileTargetSiteKind {
   DirectDTEWait,
 };
 
+/// One exact, final-IR-derived static work dimension. Known uint64 values use a
+/// decimal string on the JSON wire so the complete unsigned range survives
+/// round-trip through every consumer. Non-known dimensions carry null.
+struct ProfileStaticCostMetric {
+  std::string knowledge;
+  std::optional<uint64_t> value;
+  std::string reason;
+};
+
+struct ProfileStaticCostRates {
+  uint64_t cardDDRBytesPerSecond = 0;
+  uint64_t directionalNoCBytesPerSecond = 0;
+  uint64_t f16Bf16NPULogicalOpsPerSecondPerTile = 0;
+  uint64_t f16Bf16VectorLogicalOpsPerSecondPerTile = 0;
+  uint64_t f32VectorLogicalOpsPerSecondPerTile = 0;
+  /// The current target contract deliberately has no calibrated SPM rate.
+  std::optional<uint64_t> spmMovementBytesPerSecond;
+};
+
+struct ProfileStaticDirectionalNoCWork {
+  ProfileStaticCostMetric north;
+  ProfileStaticCostMetric east;
+  ProfileStaticCostMetric south;
+  ProfileStaticCostMetric west;
+};
+
+struct ProfileStaticCollectiveNoCWork {
+  ProfileStaticCostMetric collectivePermute;
+  ProfileStaticCostMetric allToAll;
+  ProfileStaticCostMetric allGather;
+  ProfileStaticCostMetric reduceScatter;
+  ProfileStaticCostMetric allReduce;
+};
+
+struct ProfileStaticRankWork {
+  ProfileStaticCostMetric npuF16Bf16LogicalOps;
+  ProfileStaticCostMetric npuOtherLogicalOps;
+  ProfileStaticCostMetric vectorF16Bf16LogicalOps;
+  ProfileStaticCostMetric vectorF32LogicalOps;
+  ProfileStaticCostMetric vectorOtherLogicalOps;
+  ProfileStaticCostMetric ddrReadBytes;
+  ProfileStaticCostMetric ddrWriteBytes;
+  ProfileStaticCostMetric spmMovementBytes;
+  ProfileStaticCostMetric nocTransmitBytes;
+  ProfileStaticCostMetric nocReceiveBytes;
+  ProfileStaticDirectionalNoCWork directionalNoCTransmitBytes;
+  ProfileStaticCollectiveNoCWork collectiveNoCTransmitBytes;
+};
+
+struct ProfileStaticRankCost {
+  int64_t logicalRank = -1;
+  ProfileStaticRankWork work;
+};
+
+/// Static target rates plus exact work derived from the accepted final
+/// instruction program. It is evidence for lower-bound comparison, not an
+/// issue-latency, overlap, contention, or wall-time prediction.
+struct ProfileStaticCostModel {
+  std::string model;
+  std::string scope;
+  ProfileStaticCostRates rates;
+  std::vector<ProfileStaticRankCost> ranks;
+};
+
 struct ProfileTargetCallSite {
   uint64_t siteId = 0;
   uint64_t targetCallOrdinal = 0;
@@ -91,6 +163,7 @@ public:
   ProfileVariantPackage(std::string id, ProfileVariantRole role,
                         std::string packageReference,
                         std::string manifestDigest,
+                        ProfileStaticCostModel staticCostModel,
                         std::string packageDirectory,
                         VerifiedPackageManifest package);
   ProfileVariantPackage(ProfileVariantPackage &&) = default;
@@ -102,6 +175,9 @@ public:
   ProfileVariantRole getRole() const { return role; }
   llvm::StringRef getPackageReference() const { return packageReference; }
   llvm::StringRef getManifestDigest() const { return manifestDigest; }
+  const ProfileStaticCostModel &getStaticCostModel() const {
+    return staticCostModel;
+  }
   llvm::StringRef getPackageDirectory() const { return packageDirectory; }
   const VerifiedPackageManifest &getPackage() const { return package; }
 
@@ -110,6 +186,7 @@ private:
   ProfileVariantRole role;
   std::string packageReference;
   std::string manifestDigest;
+  ProfileStaticCostModel staticCostModel;
   std::string packageDirectory;
   VerifiedPackageManifest package;
 };
@@ -119,8 +196,7 @@ public:
   ProfileCapturePackage(std::string variantId, ProfileCaptureKind capture,
                         std::string packageReference,
                         std::string manifestDigest, std::string recordABI,
-                        uint64_t recordBytes,
-                        std::string packageDirectory,
+                        uint64_t recordBytes, std::string packageDirectory,
                         VerifiedPackageManifest package);
   ProfileCapturePackage(ProfileCapturePackage &&) = default;
   ProfileCapturePackage &operator=(ProfileCapturePackage &&) = default;
@@ -199,6 +275,11 @@ llvm::StringRef stringifyProfileVariantRole(ProfileVariantRole role);
 llvm::StringRef stringifyProfileCaptureKind(ProfileCaptureKind capture);
 llvm::StringRef stringifyProfileTSMEngine(ProfileTSMEngine engine);
 llvm::StringRef stringifyProfileTargetSiteKind(ProfileTargetSiteKind kind);
+
+/// Emits the canonical strict JSON representation used in both
+/// variants.json and top-level profile evidence.
+void writeProfileStaticCostModel(llvm::json::OStream &json,
+                                 const ProfileStaticCostModel &model);
 
 /// Returns the profiler site semantic owned by one closed target-call
 /// descriptor. Every descriptor in the public target-call registry maps to

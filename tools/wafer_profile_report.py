@@ -16,11 +16,13 @@ from typing import Any
 
 
 SCHEMA_NAME = "wafer.profile.evidence"
-SCHEMA_VERSION = 7
-COMPANION_SCHEMA_VERSION = 4
+SCHEMA_VERSION = 8
+COMPANION_SCHEMA_VERSION = 5
 RECORD_ABI = "wafer-tx81-profiler-record-v3"
 ANALYSIS_SCHEMA_NAME = "wafer.profile.analysis"
-ANALYSIS_SCHEMA_VERSION = 6
+ANALYSIS_SCHEMA_VERSION = 7
+STATIC_COST_MODEL = "tx81-static-peak-lower-bound-v1"
+STATIC_COST_SCOPE = "complete-final-instruction-program-per-rank"
 TILES = tuple(range(16))
 NCC_ENGINES = ("CT", "NE", "RDMA", "WDMA", "TDMA")
 ENGINES = NCC_ENGINES + ("DIRECT_DTE",)
@@ -73,6 +75,51 @@ UINT32_MAX = (1 << 32) - 1
 TRACE_COMPLETE_FLAGS = 71
 TRACE_COMPLETE_STATE = 2
 MAX_COMPLETION_RESOLUTION_FRACTION = 0.0025
+STATIC_COST_KNOWLEDGE = ("known", "unknown", "unsupported", "overflow")
+STATIC_COST_REASONS = (
+    "none",
+    "dynamic-loop-trip-count",
+    "invalid-loop-step",
+    "conditional-control-flow",
+    "unsupported-control-flow",
+    "unknown-physical-geometry",
+    "unknown-resource-bytes",
+    "missing-accepted-spm-offset",
+    "invalid-accepted-spm-offset",
+    "unsupported-spm-root",
+    "unresolved-noc-route",
+    "invalid-execution-topology",
+    "unsupported-instruction-semantics",
+    "unsupported-compute-type",
+    "arithmetic-overflow",
+)
+STATIC_COST_RATE_FIELDS = (
+    "card_ddr_bytes_per_second",
+    "directional_noc_bytes_per_second",
+    "f16_bf16_npu_logical_ops_per_second_per_tile",
+    "f16_bf16_vector_logical_ops_per_second_per_tile",
+    "f32_vector_logical_ops_per_second_per_tile",
+)
+STATIC_COST_WORK_METRICS = (
+    "npu_f16_bf16_logical_ops",
+    "npu_other_logical_ops",
+    "vector_f16_bf16_logical_ops",
+    "vector_f32_logical_ops",
+    "vector_other_logical_ops",
+    "ddr_read_bytes",
+    "ddr_write_bytes",
+    "spm_movement_bytes",
+    "noc_transmit_bytes",
+    "noc_receive_bytes",
+)
+STATIC_COST_DIRECTIONS = ("north", "east", "south", "west")
+STATIC_COST_COLLECTIVES = (
+    "collective_permute",
+    "all_to_all",
+    "all_gather",
+    "reduce_scatter",
+    "all_reduce",
+)
 
 
 class EvidenceError(ValueError):
@@ -938,6 +985,152 @@ def _validate_experiment(
             _fail(f"{path}.workers", "must contain exactly workers 0, 1 and 2")
 
 
+def _decimal_u64(value: object, path: str) -> int:
+    if not isinstance(value, str) or not value:
+        _fail(path, "expected an unsigned decimal string")
+    if value != "0" and value.startswith("0"):
+        _fail(path, "must use canonical unsigned decimal spelling")
+    if any(character < "0" or character > "9" for character in value):
+        _fail(path, "expected an unsigned decimal string")
+    parsed = int(value)
+    if parsed > UINT64_MAX:
+        _fail(path, "must fit uint64")
+    return parsed
+
+
+def _validate_static_cost_metric(value: object, path: str) -> None:
+    metric = _mapping(value, path)
+    _exact_keys(metric, {"knowledge", "value", "reason"}, path)
+    knowledge = _string(metric["knowledge"], f"{path}.knowledge")
+    reason = _string(metric["reason"], f"{path}.reason")
+    if knowledge not in STATIC_COST_KNOWLEDGE:
+        _fail(
+            f"{path}.knowledge",
+            f"must be one of {list(STATIC_COST_KNOWLEDGE)}",
+        )
+    if reason not in STATIC_COST_REASONS:
+        _fail(f"{path}.reason", f"must be one of {list(STATIC_COST_REASONS)}")
+    if knowledge == "known":
+        _decimal_u64(metric["value"], f"{path}.value")
+        if reason != "none":
+            _fail(f"{path}.reason", "known metrics must use reason 'none'")
+        return
+    if metric["value"] is not None:
+        _fail(f"{path}.value", "non-known metrics must use null")
+    if reason == "none":
+        _fail(f"{path}.reason", "non-known metrics require a concrete reason")
+    if knowledge == "overflow" and reason != "arithmetic-overflow":
+        _fail(
+            f"{path}.reason",
+            "overflow metrics must use reason 'arithmetic-overflow'",
+        )
+
+
+def _validate_static_cost_model(evidence: Mapping[str, Any]) -> None:
+    path = "static_cost_model"
+    model = _mapping(evidence[path], path)
+    _exact_keys(model, {"model", "scope", "rates", "ranks"}, path)
+    if model["model"] != STATIC_COST_MODEL:
+        _fail(f"{path}.model", f"must be {STATIC_COST_MODEL!r}")
+    if model["scope"] != STATIC_COST_SCOPE:
+        _fail(f"{path}.scope", f"must be {STATIC_COST_SCOPE!r}")
+
+    rates = _mapping(model["rates"], f"{path}.rates")
+    _exact_keys(
+        rates,
+        set(STATIC_COST_RATE_FIELDS) | {"spm_movement_bytes_per_second"},
+        f"{path}.rates",
+    )
+    for name in STATIC_COST_RATE_FIELDS:
+        _integer(
+            rates[name],
+            f"{path}.rates.{name}",
+            minimum=1,
+            maximum=UINT64_MAX,
+        )
+    if rates["spm_movement_bytes_per_second"] is not None:
+        _fail(
+            f"{path}.rates.spm_movement_bytes_per_second",
+            "current model requires null because SPM bandwidth is uncalibrated",
+        )
+
+    rows = tuple(
+        _mapping(row, f"{path}.ranks[{index}]")
+        for index, row in enumerate(_sequence(model["ranks"], f"{path}.ranks"))
+    )
+    logical_ranks: list[int] = []
+    for index, row in enumerate(rows):
+        rank_path = f"{path}.ranks[{index}]"
+        _exact_keys(row, {"logical_rank", "work"}, rank_path)
+        logical_rank = _integer(
+            row["logical_rank"],
+            f"{rank_path}.logical_rank",
+            minimum=0,
+            maximum=15,
+        )
+        logical_ranks.append(logical_rank)
+        work = _mapping(row["work"], f"{rank_path}.work")
+        _exact_keys(
+            work,
+            set(STATIC_COST_WORK_METRICS)
+            | {
+                "directional_noc_transmit_bytes",
+                "collective_noc_transmit_bytes",
+            },
+            f"{rank_path}.work",
+        )
+        for name in STATIC_COST_WORK_METRICS:
+            _validate_static_cost_metric(
+                work[name], f"{rank_path}.work.{name}"
+            )
+        directional = _mapping(
+            work["directional_noc_transmit_bytes"],
+            f"{rank_path}.work.directional_noc_transmit_bytes",
+        )
+        _exact_keys(
+            directional,
+            set(STATIC_COST_DIRECTIONS),
+            f"{rank_path}.work.directional_noc_transmit_bytes",
+        )
+        for direction in STATIC_COST_DIRECTIONS:
+            _validate_static_cost_metric(
+                directional[direction],
+                (
+                    f"{rank_path}.work.directional_noc_transmit_bytes."
+                    f"{direction}"
+                ),
+            )
+        collectives = _mapping(
+            work["collective_noc_transmit_bytes"],
+            f"{rank_path}.work.collective_noc_transmit_bytes",
+        )
+        _exact_keys(
+            collectives,
+            set(STATIC_COST_COLLECTIVES),
+            f"{rank_path}.work.collective_noc_transmit_bytes",
+        )
+        for collective in STATIC_COST_COLLECTIVES:
+            _validate_static_cost_metric(
+                collectives[collective],
+                (
+                    f"{rank_path}.work.collective_noc_transmit_bytes."
+                    f"{collective}"
+                ),
+            )
+
+    duplicates = sorted(
+        rank for rank, count in Counter(logical_ranks).items() if count > 1
+    )
+    missing = sorted(set(TILES) - set(logical_ranks))
+    extra = sorted(set(logical_ranks) - set(TILES))
+    if len(rows) != len(TILES) or duplicates or missing or extra:
+        _fail(
+            f"{path}.ranks",
+            "must contain all-and-only logical ranks 0..15 exactly once "
+            f"(duplicates={duplicates}, missing={missing}, extra={extra})",
+        )
+
+
 def validate_evidence(value: object) -> Mapping[str, Any]:
     evidence = _mapping(value, "$")
     _exact_keys(
@@ -953,6 +1146,7 @@ def validate_evidence(value: object) -> Mapping[str, Any]:
             "sites",
             "validity",
             "experiment",
+            "static_cost_model",
         },
         "$",
     )
@@ -966,6 +1160,7 @@ def validate_evidence(value: object) -> Mapping[str, Any]:
     _validate_measurement(evidence)
     _validate_output(evidence)
     sites = _validate_sites(evidence)
+    _validate_static_cost_model(evidence)
     validity = _mapping(evidence["validity"], "validity")
     _exact_keys(
         validity,
@@ -1122,6 +1317,495 @@ def _engine_active_time_summary(
             "status": status(len(complete_tile_values)),
         },
         "by_engine": by_engine,
+    }
+
+
+def _known_static_metric(metric: Mapping[str, Any]) -> int | None:
+    if metric["knowledge"] != "known":
+        return None
+    return int(metric["value"])
+
+
+def _static_rank_metric_values(
+    rank_rows: Sequence[Mapping[str, Any]], name: str
+) -> tuple[list[int] | None, list[str]]:
+    values: list[int] = []
+    unavailable: list[str] = []
+    for rank in rank_rows:
+        metric = rank["work"][name]
+        value = _known_static_metric(metric)
+        if value is None:
+            unavailable.append(
+                f"rank {rank['logical_rank']}: "
+                f"{metric['knowledge']} ({metric['reason']})"
+            )
+        else:
+            values.append(value)
+    return (values if not unavailable else None), unavailable
+
+
+def _static_work_summary(
+    values: Sequence[int] | None,
+    unit: str,
+    *,
+    breakdown: Mapping[str, int | None] | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "unit": unit,
+        "known_rank_count": len(values) if values is not None else 0,
+        "aggregate": str(sum(values)) if values is not None else None,
+        "minimum_per_rank": str(min(values)) if values else None,
+        "average_per_rank": (
+            sum(values) / len(values) if values is not None and values else None
+        ),
+        "maximum_per_rank": str(max(values)) if values else None,
+    }
+    if breakdown is not None:
+        result["breakdown"] = {
+            key: str(value) if value is not None else None
+            for key, value in breakdown.items()
+        }
+    return result
+
+
+def _measured_engine_reference(
+    engine_active_time: Mapping[str, Any], engine: str
+) -> dict[str, Any]:
+    if engine == "DIRECT_DTE":
+        return {
+            "measurement_kind": None,
+            "status": "Unavailable",
+            "minimum_per_tile_ns": None,
+            "average_per_tile_ns": None,
+            "maximum_per_tile_ns": None,
+        }
+    row = next(
+        item
+        for item in engine_active_time["by_engine"]
+        if item["engine"] == engine
+    )
+    return {
+        "measurement_kind": row["measurement_kind"],
+        "status": row["status"],
+        "minimum_per_tile_ns": row["minimum_per_tile_ns"],
+        "average_per_tile_ns": row["average_per_tile_ns"],
+        "maximum_per_tile_ns": row["maximum_per_tile_ns"],
+    }
+
+
+def _hardware_cost_analysis(
+    static_model: Mapping[str, Any],
+    engine_active_time: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Compare exact static work with explicitly bounded hardware references."""
+
+    rates = static_model["rates"]
+    rank_rows = sorted(
+        static_model["ranks"], key=lambda row: int(row["logical_rank"])
+    )
+
+    def unavailable_row(
+        engine: str,
+        work: Mapping[str, Any],
+        basis: str,
+        limitations: Sequence[str],
+    ) -> dict[str, Any]:
+        return {
+            "engine": engine,
+            "work": dict(work),
+            "model_status": "unavailable",
+            "model_basis": basis,
+            "estimated_scope": None,
+            "estimated_ns": None,
+            "floor_ns": None,
+            "floor_range_per_tile_ns": None,
+            "measured_active_ns": _measured_engine_reference(
+                engine_active_time, engine
+            ),
+            "measured_to_model_ratio": None,
+            "limitations": list(limitations),
+        }
+
+    def compute_row(
+        *,
+        engine: str,
+        primary_name: str,
+        other_name: str,
+        rate: int,
+        rate_label: str,
+    ) -> dict[str, Any]:
+        primary, primary_unavailable = _static_rank_metric_values(
+            rank_rows, primary_name
+        )
+        other, other_unavailable = _static_rank_metric_values(
+            rank_rows, other_name
+        )
+        work_values = (
+            [left + right for left, right in zip(primary, other)]
+            if primary is not None and other is not None
+            else None
+        )
+        breakdown = {
+            primary_name: sum(primary) if primary is not None else None,
+            other_name: sum(other) if other is not None else None,
+        }
+        work = _static_work_summary(
+            work_values, "logical_ops", breakdown=breakdown
+        )
+        limitations = [
+            "Peak throughput is a theoretical arithmetic floor; instruction "
+            "startup, issue, pipeline fill/drain, layout and contention are "
+            "not modeled.",
+            "The model is per tile and is not additive to the Primary "
+            "launch-to-completion envelope.",
+        ]
+        unavailable = primary_unavailable + other_unavailable
+        if unavailable:
+            return unavailable_row(
+                engine,
+                work,
+                rate_label,
+                limitations
+                + ["Static work is not fully known: " + "; ".join(unavailable)],
+            )
+        assert primary is not None and other is not None
+        if any(value != 0 for value in other):
+            return unavailable_row(
+                engine,
+                work,
+                rate_label,
+                limitations
+                + [
+                    "The final program contains logical work without an "
+                    "established peak-rate class."
+                ],
+            )
+        floors = [value * 1_000_000_000 / rate for value in primary]
+        average_floor = sum(floors) / len(floors)
+        measured = _measured_engine_reference(engine_active_time, engine)
+        measured_average = measured["average_per_tile_ns"]
+        ratio = (
+            measured_average / average_floor
+            if measured_average is not None and average_floor > 0
+            else None
+        )
+        return {
+            "engine": engine,
+            "work": work,
+            "model_status": "theoretical-lower-bound",
+            "model_basis": rate_label,
+            "estimated_scope": "average-per-tile-peak-throughput-floor",
+            "estimated_ns": average_floor,
+            "floor_ns": average_floor,
+            "floor_range_per_tile_ns": {
+                "minimum_per_tile_ns": min(floors),
+                "average_per_tile_ns": average_floor,
+                "maximum_per_tile_ns": max(floors),
+            },
+            "measured_active_ns": measured,
+            "measured_to_model_ratio": ratio,
+            "limitations": limitations,
+        }
+
+    vector_f16, vector_f16_unavailable = _static_rank_metric_values(
+        rank_rows, "vector_f16_bf16_logical_ops"
+    )
+    vector_f32, vector_f32_unavailable = _static_rank_metric_values(
+        rank_rows, "vector_f32_logical_ops"
+    )
+    vector_other, vector_other_unavailable = _static_rank_metric_values(
+        rank_rows, "vector_other_logical_ops"
+    )
+    ct_work_values = (
+        [
+            f16 + f32 + other
+            for f16, f32, other in zip(
+                vector_f16, vector_f32, vector_other
+            )
+        ]
+        if vector_f16 is not None
+        and vector_f32 is not None
+        and vector_other is not None
+        else None
+    )
+    ct_work = _static_work_summary(
+        ct_work_values,
+        "logical_ops",
+        breakdown={
+            "vector_f16_bf16_logical_ops": (
+                sum(vector_f16) if vector_f16 is not None else None
+            ),
+            "vector_f32_logical_ops": (
+                sum(vector_f32) if vector_f32 is not None else None
+            ),
+            "vector_other_logical_ops": (
+                sum(vector_other) if vector_other is not None else None
+            ),
+        },
+    )
+    ct_limitations = [
+        "CT uses per-tile peak vector rates only; command startup, issue, "
+        "pipeline fill/drain and memory effects are not modeled.",
+        "The result is a theoretical arithmetic floor from the separate "
+        "static final-program workload, not a measured duration and not a "
+        "Primary component.",
+    ]
+    ct_unavailable = (
+        vector_f16_unavailable
+        + vector_f32_unavailable
+        + vector_other_unavailable
+    )
+    if ct_unavailable or (
+        vector_other is not None and any(value != 0 for value in vector_other)
+    ):
+        reason = (
+            "Static work is not fully known: " + "; ".join(ct_unavailable)
+            if ct_unavailable
+            else "CT contains work without an established peak-rate class."
+        )
+        ct = unavailable_row(
+            "CT",
+            ct_work,
+            "64 GOPS F16/BF16 and 32 GOPS F32 vector peak per tile",
+            ct_limitations + [reason],
+        )
+    else:
+        assert vector_f16 is not None and vector_f32 is not None
+        ct_floors = [
+            f16
+            * 1_000_000_000
+            / int(rates["f16_bf16_vector_logical_ops_per_second_per_tile"])
+            + f32
+            * 1_000_000_000
+            / int(rates["f32_vector_logical_ops_per_second_per_tile"])
+            for f16, f32 in zip(vector_f16, vector_f32)
+        ]
+        ct_average = sum(ct_floors) / len(ct_floors)
+        ct_measured = _measured_engine_reference(engine_active_time, "CT")
+        ct = {
+            "engine": "CT",
+            "work": ct_work,
+            "model_status": "theoretical-lower-bound",
+            "model_basis": (
+                "64 GOPS F16/BF16 and 32 GOPS F32 vector peak per tile"
+            ),
+            "estimated_scope": "average-per-tile-peak-throughput-floor",
+            "estimated_ns": ct_average,
+            "floor_ns": ct_average,
+            "floor_range_per_tile_ns": {
+                "minimum_per_tile_ns": min(ct_floors),
+                "average_per_tile_ns": ct_average,
+                "maximum_per_tile_ns": max(ct_floors),
+            },
+            "measured_active_ns": ct_measured,
+            "measured_to_model_ratio": (
+                ct_measured["average_per_tile_ns"] / ct_average
+                if ct_measured["average_per_tile_ns"] is not None
+                and ct_average > 0
+                else None
+            ),
+            "limitations": ct_limitations,
+        }
+
+    ne = compute_row(
+        engine="NE",
+        primary_name="npu_f16_bf16_logical_ops",
+        other_name="npu_other_logical_ops",
+        rate=int(rates["f16_bf16_npu_logical_ops_per_second_per_tile"]),
+        rate_label="8 TOPS F16/BF16 NPU peak per tile",
+    )
+
+    def ddr_row(engine: str, metric_name: str) -> dict[str, Any]:
+        values, unavailable = _static_rank_metric_values(rank_rows, metric_name)
+        work = _static_work_summary(values, "bytes")
+        limitations = [
+            "200 GB/s is a shared whole-card DDR peak, not a per-tile RDMA "
+            "or WDMA rate.",
+            "Read and write traffic share DDR resources; the RDMA and WDMA "
+            "references must not be added unless an independent overlap model "
+            "exists.",
+            "The comparison uses a separate Trace-run per-tile PMU average and "
+            "is never added to or subtracted from Primary.",
+        ]
+        if unavailable:
+            return unavailable_row(
+                engine,
+                work,
+                "200 GB/s whole-card DDR peak",
+                limitations
+                + ["Static work is not fully known: " + "; ".join(unavailable)],
+            )
+        assert values is not None
+        aggregate = sum(values)
+        floor = (
+            aggregate
+            * 1_000_000_000
+            / int(rates["card_ddr_bytes_per_second"])
+        )
+        symmetric = len(set(values)) <= 1
+        measured = _measured_engine_reference(engine_active_time, engine)
+        estimated = floor if symmetric else None
+        ratio = (
+            measured["average_per_tile_ns"] / estimated
+            if estimated is not None
+            and estimated > 0
+            and measured["average_per_tile_ns"] is not None
+            else None
+        )
+        if not symmetric:
+            limitations.append(
+                "Rank workloads differ, so no equal-share per-tile time "
+                "comparison is formed; only the whole-card traffic floor is "
+                "reported."
+            )
+        return {
+            "engine": engine,
+            "work": work,
+            "model_status": (
+                "heuristic" if symmetric else "theoretical-lower-bound"
+            ),
+            "model_basis": "200 GB/s whole-card DDR peak",
+            "estimated_scope": (
+                "symmetric-all-rank-whole-card-bandwidth-reference"
+                if symmetric
+                else None
+            ),
+            "estimated_ns": estimated,
+            "floor_ns": floor,
+            "floor_range_per_tile_ns": None,
+            "measured_active_ns": measured,
+            "measured_to_model_ratio": ratio,
+            "limitations": limitations,
+        }
+
+    rdma = ddr_row("RDMA", "ddr_read_bytes")
+    wdma = ddr_row("WDMA", "ddr_write_bytes")
+
+    spm_values, spm_unavailable = _static_rank_metric_values(
+        rank_rows, "spm_movement_bytes"
+    )
+    read_values, read_unavailable = _static_rank_metric_values(
+        rank_rows, "ddr_read_bytes"
+    )
+    write_values, write_unavailable = _static_rank_metric_values(
+        rank_rows, "ddr_write_bytes"
+    )
+    residual_values: list[int] | None = None
+    residual_problem: str | None = None
+    if (
+        spm_values is not None
+        and read_values is not None
+        and write_values is not None
+    ):
+        residual_values = []
+        for spm, read, write in zip(spm_values, read_values, write_values):
+            if spm < read + write:
+                residual_problem = (
+                    "aggregate SPM movement is smaller than DDR endpoint "
+                    "movement, so local movement residual cannot be formed"
+                )
+                residual_values = None
+                break
+            residual_values.append(spm - read - write)
+    tdma_limitations = [
+        "No supported SPM movement bandwidth, issue latency or clock is "
+        "available, so TDMA time is intentionally unavailable.",
+        "The shown work is residual local SPM movement after subtracting "
+        "RDMA/WDMA bytes. It can include GatherScatter or other local movement "
+        "and is not exact per-TDMA-command attribution.",
+    ]
+    residual_unavailable = (
+        spm_unavailable + read_unavailable + write_unavailable
+    )
+    if residual_problem is not None:
+        residual_unavailable.append(residual_problem)
+    tdma = unavailable_row(
+        "TDMA",
+        _static_work_summary(residual_values, "local_spm_movement_bytes"),
+        "SPM movement throughput unavailable",
+        tdma_limitations
+        + (
+            ["Residual work is unavailable: " + "; ".join(residual_unavailable)]
+            if residual_unavailable
+            else []
+        ),
+    )
+
+    transmit_values, transmit_unavailable = _static_rank_metric_values(
+        rank_rows, "noc_transmit_bytes"
+    )
+    receive_values, receive_unavailable = _static_rank_metric_values(
+        rank_rows, "noc_receive_bytes"
+    )
+    dte_work = _static_work_summary(
+        transmit_values,
+        "noc_transmit_payload_bytes",
+        breakdown={
+            "aggregate_transmit_bytes": (
+                sum(transmit_values) if transmit_values is not None else None
+            ),
+            "aggregate_receive_bytes": (
+                sum(receive_values) if receive_values is not None else None
+            ),
+        },
+    )
+    dte_limitations = [
+        "128 GB/s is a single directional NoC link peak. The reference only "
+        "serializes the average injected payload for one rank on one ideal "
+        "link.",
+        "It is not a collective lower bound or expected Direct-DTE latency: "
+        "route, hops, phase dependencies, peer-ready, FSM, setup, completion "
+        "wait, cleanup and contention are not modeled.",
+        "Direct-DTE PMU activity and Kcore rdcycle waits have no qualified "
+        "nanosecond mapping, so no measured/model ratio is produced.",
+    ]
+    dte_unavailable = transmit_unavailable
+    if receive_unavailable:
+        dte_limitations.append(
+            "Receive-byte breakdown is not fully known: "
+            + "; ".join(receive_unavailable)
+        )
+    if dte_unavailable:
+        dte = unavailable_row(
+            "DIRECT_DTE",
+            dte_work,
+            "128 GB/s single-direction NoC link peak",
+            dte_limitations
+            + ["Static work is not fully known: " + "; ".join(dte_unavailable)],
+        )
+    else:
+        assert transmit_values is not None
+        serialization_reference = (
+            (sum(transmit_values) / len(transmit_values))
+            * 1_000_000_000
+            / int(rates["directional_noc_bytes_per_second"])
+        )
+        dte = {
+            "engine": "DIRECT_DTE",
+            "work": dte_work,
+            "model_status": "reference-only",
+            "model_basis": "128 GB/s single-direction NoC link peak",
+            "estimated_scope": (
+                "average-per-rank-single-link-payload-reference"
+            ),
+            "estimated_ns": serialization_reference,
+            "floor_ns": None,
+            "floor_range_per_tile_ns": None,
+            "measured_active_ns": _measured_engine_reference(
+                engine_active_time, "DIRECT_DTE"
+            ),
+            "measured_to_model_ratio": None,
+            "limitations": dte_limitations,
+        }
+
+    return {
+        "model": static_model["model"],
+        "scope": static_model["scope"],
+        "source": "compiler-static-final-instruction-program",
+        "relation_to_primary": "non-additive-model-reference",
+        "additive_to_primary": False,
+        "rates": dict(rates),
+        "by_engine": [ct, ne, rdma, wdma, tdma, dte],
     }
 
 
@@ -2264,6 +2948,9 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         if row["kind"] == "direct-dte-wait"
     ]
     engine_active_time = _engine_active_time_summary(tile_rows)
+    hardware_cost_analysis = _hardware_cost_analysis(
+        evidence["static_cost_model"], engine_active_time
+    )
     validity = {
         "identity": True,
         "output_equivalence": output_equivalence,
@@ -2314,6 +3001,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                 "status": "Measured" if qualified else "Invalid",
             },
             "engine_active_time": engine_active_time,
+            "hardware_cost_analysis": hardware_cost_analysis,
             "output": {
                 "resource_count": len(resources),
                 "production_execution_validated": production_validated,
@@ -2352,6 +3040,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             "primary_inclusion_labels": "yes means the production semantic phase is inside the Primary device event; mixed means the trace interval combines production-common control with nested trace-only work that is measured only in the separate overhead overlay; unknown means current evidence cannot establish the production correspondence; no is trace-only",
             "trace_overhead_overlay": "eight mutually exclusive Trace-run rdcycle instrumentation components; status-poll and completion-loop bookkeeping belong to the sampled replacement for production TsmWaitfinish, while the production-common wait semantic is represented separately by its proxy operation row; all eight are trace-only, aggregate-positioned, and never added to the semantic partition",
             "engine_active_time": "separate Trace diagnostic-run vendor PMU execution time in nanoseconds for each tile and NCC engine; min/average/max are per-tile distributions and cross-tile sums are work volume only; asynchronous engines/tiles may overlap, so no card-wide engine elapsed is inferred or subtracted from the Primary envelope",
+            "hardware_cost_model": "non-additive static reference derived from exact final instruction-program work and target peak rates; CT/NE are per-tile arithmetic floors, symmetric DDR is an explicitly labeled whole-card bandwidth heuristic, TDMA time is unavailable, and Direct-DTE exposes only an ideal single-link payload serialization reference rather than collective latency",
             "statistics_window": "aggregate statistics_window is a raw PMU tick delta, not the rdcycle timeline axis and not converted to elapsed time",
             "ncc_activity_window": "positive per-event deltas carry only bounded observation windows; zero deltas remain markers and ambiguous deltas are not assigned as exact site work",
             "direct_dte_time": "measured operation windows in tile-local Kcore rdcycle, separate from raw PMU activity",
@@ -2445,7 +3134,9 @@ h1{font-size:23px;margin:3px 0 2px;line-height:1.2}.run-id{color:var(--muted);fo
 .event:hover,.event.selected{outline:2px solid #17212b;outline-offset:1px;z-index:2}
 .event.marker{width:3px!important;min-width:3px;border-radius:0;box-shadow:0 0 0 1px #fff,0 0 0 2px currentColor}
 .event.ambiguous{box-shadow:0 0 0 2px #a45b06}.event.zero{box-shadow:0 0 0 2px #667085}
-.timeline-key{display:flex;flex-wrap:wrap;gap:12px;margin:0 0 9px;color:var(--muted);font-size:11px}.timeline-key span{display:inline-flex;align-items:center;gap:6px}.key-swatch{display:inline-block;width:28px;height:10px;border-radius:3px}.key-submit{background:var(--ct);box-shadow:0 0 0 1px #1d4ed8}.key-bound{height:16px;background:#dbeafe;border:1px dashed var(--ct)}.key-pmu{width:auto;height:auto;font-weight:700;color:var(--ink)}
+.command-group{position:absolute;top:5px;height:14px;min-width:8px;border:0;border-top:2px solid var(--event-stroke);border-left:1px solid var(--event-stroke);border-right:1px solid var(--event-stroke);border-radius:3px 3px 0 0;background:transparent;cursor:pointer;z-index:2}
+.command-group:hover,.command-group:focus{outline:2px solid #17212b;outline-offset:1px;z-index:3}.command-group-count{position:absolute;right:-2px;top:-14px;padding:0 3px;border:1px solid var(--event-stroke);border-radius:3px;background:#fff;color:var(--event-stroke);font:700 9px/13px ui-monospace,SFMono-Regular,monospace;white-space:nowrap}
+.timeline-key{display:flex;flex-wrap:wrap;gap:12px;margin:0 0 9px;color:var(--muted);font-size:11px}.timeline-key span{display:inline-flex;align-items:center;gap:6px}.key-swatch{display:inline-block;width:28px;height:10px;border-radius:3px}.key-submit{background:var(--ct);box-shadow:0 0 0 1px #1d4ed8}.key-bound{height:16px;background:#dbeafe;border:1px dashed var(--ct)}.key-group{height:12px;border-top:2px solid var(--ct);border-left:1px solid var(--ct);border-right:1px solid var(--ct);border-radius:3px 3px 0 0}.key-pmu{width:auto;height:auto;font-weight:700;color:var(--ink)}
 .observation-notice[hidden]{display:none}
 .cost-segment{position:absolute;inset:2px auto 2px 0;border:0;border-radius:2px;cursor:pointer;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)}
 .cost-segment:hover,.cost-segment.selected{outline:2px solid #17212b;outline-offset:1px;z-index:3}
@@ -2511,6 +3202,7 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
         <div class="card"><div class="section-head"><div><h2>Measurement contract</h2></div></div><div id="methodList" class="method-list"></div></div>
       </div>
       <div class="card" style="margin-top:10px"><div class="section-head"><div><h2>NCC engine active time · Trace PMU</h2><p>五类NCC engine均为另一轮Trace diagnostic的per-tile PMU ns。最小/平均/最大用于看Tile分布；Σ仅是work volume，不是wall time。Direct-DTE没有calibrated engine ns，单独在Communication展示。</p></div></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Engine</th><th>Source / unit</th><th class="num">Min / Tile</th><th class="num">Avg / Tile</th><th class="num">Max / Tile</th><th class="num">Active Tiles</th><th class="num">Available Tiles</th><th class="num">Σ Tile Work</th><th>Status</th></tr></thead><tbody id="overviewEngineRows"></tbody></table></div></div>
+      <div class="card" style="margin-top:10px"><div class="section-head"><div><h2>Hardware cost reference · static model</h2><p>基于最终Instr workload与硬件峰值的非加和参考。它不是实测值，不是Primary分项，也不会回灌编译器winner选择。</p></div></div><div class="notice">CT/NE显示per-tile理论峰值下界；RDMA/WDMA只有16-rank workload对称时才显示整卡带宽共享启发式；TDMA因SPM带宽未知不估时；Direct-DTE只显示单链路payload序列化参考，不代表collective耗时。</div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Engine</th><th>Exact final-program work</th><th>Model / status</th><th class="num">Model reference</th><th class="num">Measured active</th><th class="num">Measured ÷ model</th><th>Boundary / caveat</th></tr></thead><tbody id="hardwareCostRows"></tbody></table></div></div>
     </section>
 
     <section id="view-timeline" class="view" data-view-panel="timeline">
@@ -2519,6 +3211,7 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
       <div class="timeline-key" aria-label="Timeline interval legend">
         <span><i class="key-swatch key-submit"></i><b>实心块</b>：精确 command submit / DTE operation 区间</span>
         <span><i class="key-swatch key-bound"></i><b>浅色虚线框</b>：PMU 活动保守观测范围，不是持续 busy</span>
+        <span><i class="key-swatch key-group"></i><b>×N 聚合括号</b>：同一 Engine + Site 的重复 submit 覆盖范围；包含空隙，不是连续 busy 或 duration</span>
         <span><i class="key-swatch key-pmu">ns</i><b>Engine work</b>：PMU 测得耗时，但没有精确起止位置</span>
       </div>
       <div id="timelineOverlapNotice" class="notice observation-notice" hidden></div>
@@ -2526,6 +3219,8 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
         <label>Tile <select id="timelineTile"></select></label>
         <span id="engineFilters"></span>
         <span class="spacer"></span>
+        <label class="engine-toggle"><input id="timelineFullTrace" type="checkbox">完整 Trace</label>
+        <span id="timelineDensityNote" class="metric-note"></span>
         <label>Zoom <input id="timelineZoom" type="range" min="1" max="8" value="1" step="0.25"></label>
         <button id="timelineFit" type="button">Fit</button>
       </div>
@@ -2759,11 +3454,17 @@ const TERM_GUIDANCE={
 };
 const DTE_PHASES=Object.fromEntries(["direct-dte-wait","direct-dte-peer-ready-wait","direct-dte-setup-issue","direct-dte-completion-wait","direct-dte-cleanup"].map(key=>[key,TERMS.event[key].label]));
 const STATES=["Measured","Sampled","Bounded","Zero delta","Zero-delta marker","Ambiguous","Attribution ambiguous","Unavailable","Incomplete","Invalid"];
-const state={view:"overview",tile:0,zoom:1,engines:new Set(ENGINES),selectedEvent:null,selectedCost:null,raw:"analysis"};
+const TIMELINE_AUTO_SUBMIT_LIMIT=12;
+const TIMELINE_AUTO_MIN_SAVINGS=4;
+const state={view:"overview",tile:0,zoom:1,engines:new Set(ENGINES),selectedEvent:null,selectedCost:null,fullTrace:false,raw:"analysis"};
 const q=(selector,root)=>(root||document).querySelector(selector);
 const qa=(selector,root)=>Array.prototype.slice.call((root||document).querySelectorAll(selector));
 const escapeHtml=value=>String(value==null?"—":value).replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
 const number=value=>value==null?"—":Number(value).toLocaleString();
+const exactInteger=value=>{
+  if(value==null)return "—";
+  try{return BigInt(String(value)).toLocaleString()}catch(_){return escapeHtml(value)}
+};
 const durationText=value=>{
   const ns=Number(value);
   if(ns<1000)return `${number(ns)} ns`;
@@ -2790,6 +3491,35 @@ const semanticReason=value=>{
 const siteRefText=site=>site==null?"—":`#${site.site_id} / instance ${site.instance_sequence} · ${term("site",site.site_kind).label} (${site.site_kind}) · ${site.target_call_symbol}`;
 const selectedTile=()=>finalArtifact.tiles.find(row=>row.tile===state.tile);
 const tileEvents=()=>finalArtifact.timeline_events.filter(row=>row.tile===state.tile);
+
+function commandSubmitGroups(events){
+  const groups=new Map();
+  events.filter(event=>event.engine_lane_visible&&event.display_interval_role==="command-submit").forEach(event=>{
+    const key=`${event.engine}:${event.site_id}`;
+    if(!groups.has(key))groups.set(key,{key,engine:event.engine,siteId:event.site_id,events:[]});
+    groups.get(key).events.push(event);
+  });
+  return Array.from(groups.values()).map(group=>{
+    group.events.sort((left,right)=>left.sequence-right.sequence);
+    group.plotBegin=Math.min(...group.events.map(event=>event.plot_begin_fraction));
+    group.plotEnd=Math.max(...group.events.map(event=>event.plot_end_fraction));
+    group.beginCycle=Math.min(...group.events.map(event=>event.trace_entry_offset_begin_cpu_cycles));
+    group.endCycle=Math.max(...group.events.map(event=>event.trace_entry_offset_end_cpu_cycles));
+    return group;
+  }).sort((left,right)=>left.plotBegin-right.plotBegin||left.events[0].sequence-right.events[0].sequence);
+}
+
+function timelineDensity(events){
+  const submits=events.filter(event=>event.engine_lane_visible&&event.display_interval_role==="command-submit");
+  const groups=commandSubmitGroups(events);
+  const savings=submits.length-groups.length;
+  return {
+    dense:submits.length>TIMELINE_AUTO_SUBMIT_LIMIT&&savings>=TIMELINE_AUTO_MIN_SAVINGS,
+    submitCount:submits.length,
+    groupCount:groups.length,
+    savings,
+  };
+}
 
 function navigate(view){
   state.view=view;
@@ -2821,8 +3551,10 @@ function focusEvent(tile,siteId,engine,sequence=null){
   state.tile=Number(tile);
   state.selectedEvent=event;
   state.selectedCost=null;
+  state.fullTrace=true;
   if(ENGINES.includes(engine))state.engines.add(engine);
   renderEngineFilters();
+  q("#timelineFullTrace").checked=true;
   q("#timelineTile").value=String(state.tile);
   q("#engineTile").value=String(state.tile);
   navigate("timeline");
@@ -2870,10 +3602,22 @@ function renderOverview(){
   q("#traceNote").textContent="tile-local complete trace spans";
   q("#overviewTiles").innerHTML=[...finalArtifact.tiles].sort((left,right)=>left.y-right.y||left.x-right.x).map(tile=>`<button class="tile-card" data-overview-tile="${tile.tile}" type="button"><b>${tileLabel(tile.tile)} ${statusBadge(tile.trace_status)}</b><small>${number(tile.trace_entry_cpu_cycles)} Kcore CPU cycles · (${tile.x},${tile.y})</small></button>`).join("");
   qa("[data-overview-tile]").forEach(node=>node.addEventListener("click",()=>selectTile(node.dataset.overviewTile)));
-  const methodLabels={kernel_launch_to_completion:"Kernel launch → completion",host_submit_time:"Host submit",host_envelope_time:"Host launch → trusted completion",host_envelope_ledger:"Host envelope ledger",queue_delay:"Queue delay",timeline_axis:"Timeline axis",timeline_scope:"Clock/order",semantic_partition:"Semantic partition",trace_overhead_overlay:"Trace-run cost overlay",engine_active_time:"NCC engine active time",statistics_window:"Statistics window",ncc_activity_window:"NCC window",direct_dte_time:"Direct-DTE wait",direct_dte_raw_pmu:"Direct-DTE raw"};
+  const methodLabels={kernel_launch_to_completion:"Kernel launch → completion",host_submit_time:"Host submit",host_envelope_time:"Host launch → trusted completion",host_envelope_ledger:"Host envelope ledger",queue_delay:"Queue delay",timeline_axis:"Timeline axis",timeline_scope:"Clock/order",semantic_partition:"Semantic partition",trace_overhead_overlay:"Trace-run cost overlay",engine_active_time:"NCC engine active time",hardware_cost_model:"Hardware cost reference",statistics_window:"Statistics window",ncc_activity_window:"NCC window",direct_dte_time:"Direct-DTE wait",direct_dte_raw_pmu:"Direct-DTE raw"};
   q("#methodList").innerHTML=Object.keys(analysis.method).map(key=>`<div class="method-row"><b>${escapeHtml(methodLabels[key]||key)}</b><span>${escapeHtml(analysis.method[key])}</span></div>`).join("");
   q("#overviewEngineRows").innerHTML=engineActive.by_engine.map(row=>{
     return `<tr><td>${termCell("engine",row.engine)}</td><td>Trace diagnostic PMU<br><span class="mono">ns · separate-run proxy</span></td><td class="num">${row.minimum_per_tile_ns==null?"—":durationText(row.minimum_per_tile_ns)}</td><td class="num">${row.average_per_tile_ns==null?"—":durationText(row.average_per_tile_ns)}</td><td class="num">${row.maximum_per_tile_ns==null?"—":durationText(row.maximum_per_tile_ns)}</td><td class="num">${number(row.active_tile_count)} / ${finalArtifact.tiles.length}</td><td class="num">${number(row.available_tile_count)} / ${finalArtifact.tiles.length}</td><td class="num">${row.sum_across_tiles_work_ns==null?"—":durationText(row.sum_across_tiles_work_ns)}<br><span class="metric-note">not wall time</span></td><td>${statusBadge(row.status)}</td></tr>`;
+  }).join("");
+  const modelStatus={["theoretical-lower-bound"]:"理论峰值下界",heuristic:"显式启发式",["reference-only"]:"序列化参考",unavailable:"不可估算"};
+  q("#hardwareCostRows").innerHTML=finalArtifact.hardware_cost_analysis.by_engine.map(row=>{
+    const work=row.work;
+    const perRank=work.minimum_per_rank===work.maximum_per_rank?`${exactInteger(work.minimum_per_rank)} / rank`:`${exactInteger(work.minimum_per_rank)}–${exactInteger(work.maximum_per_rank)} / rank`;
+    const workText=work.aggregate==null?"—":`${perRank} ${escapeHtml(work.unit)}<br><span class="metric-note">Σ ${exactInteger(work.aggregate)} ${escapeHtml(work.unit)}</span>`;
+    const floorNote=(row.engine==="RDMA"||row.engine==="WDMA")?"whole-card DDR traffic floor":"theoretical throughput floor";
+    const modelReference=row.estimated_ns!=null?`${durationText(row.estimated_ns)}<br><span class="metric-note">${escapeHtml(row.estimated_scope)}</span>`:row.floor_ns!=null?`${durationText(row.floor_ns)}<br><span class="metric-note">${floorNote}</span>`:"—";
+    const measured=row.measured_active_ns.average_per_tile_ns==null?`—<br><span class="metric-note">${escapeHtml(row.measured_active_ns.status)}</span>`:`${durationText(row.measured_active_ns.average_per_tile_ns)}<br><span class="metric-note">Trace PMU avg / tile</span>`;
+    const ratio=row.measured_to_model_ratio==null?"—":`${row.measured_to_model_ratio.toFixed(3)}×`;
+    const caveat=row.limitations.length<=1?escapeHtml(row.limitations[0]||"—"):`${escapeHtml(row.limitations[0])}<details><summary>另有 ${number(row.limitations.length-1)} 条边界</summary><div class="metric-note">${row.limitations.slice(1).map(item=>escapeHtml(item)).join("<br>")}</div></details>`;
+    return `<tr><td>${termCell("engine",row.engine)}</td><td class="mono">${workText}</td><td><b>${escapeHtml(modelStatus[row.model_status]||row.model_status)}</b><br><span class="metric-note">${escapeHtml(row.model_basis)}</span></td><td class="num">${modelReference}</td><td class="num">${measured}</td><td class="num">${ratio}</td><td>${caveat}</td></tr>`;
   }).join("");
 }
 
@@ -2919,36 +3663,62 @@ function renderTimeline(){
   q("#timelineCanvas").style.minWidth=`${Math.max(100,state.zoom*100)}%`;
   renderRuler(tile.trace_entry_cpu_cycles);
   const events=tileEvents();
+  const density=timelineDensity(events);
+  const showFull=state.fullTrace||!density.dense;
+  const visibleEventCount=events.filter(event=>event.engine_lane_visible).length;
+  const fullTraceToggle=q("#timelineFullTrace");
+  fullTraceToggle.checked=showFull;
+  fullTraceToggle.disabled=!density.dense;
+  q("#timelineDensityNote").textContent=!density.dense
+    ?`事件较少，已自动完整展示（${visibleEventCount} 条）`
+    :showFull
+    ?`完整 Trace：${visibleEventCount} 条原始 engine 事件`
+    :`已折叠重复 command submit：${density.submitCount} 条 → ${density.groupCount} 组；operation windows 保持精确。聚合范围包含空隙，不代表连续 busy 或 duration。`;
   const overlaps=crossEngineBoundOverlaps(events);
   const overlapNotice=q("#timelineOverlapNotice");
-  overlapNotice.hidden=overlaps.length===0;
-  if(overlaps.length){
+  overlapNotice.hidden=!showFull||overlaps.length===0;
+  if(showFull&&overlaps.length){
     const pairs=Array.from(new Set(overlaps.map(item=>`${item.first.engine}/${item.second.engine}`))).join("、");
     overlapNotice.innerHTML=`<b>${tileLabel(tile.tile)} 有 ${overlaps.length} 组跨 engine PMU 观测范围相交（${escapeHtml(pairs)}）。</b>浅色虚线框只是 conservative activity bound，常因多个 outstanding event 共用 completion 采样上界而重叠；这不证明 engine 同时执行。实心块才是精确 command submit / operation 区间。`;
   }
   const gridlines=[20,40,60,80].map(position=>`<i class="lane-gridline" style="left:${position}%"></i>`).join("");
-  const semanticMarks=tile.semantic_timeline_segments.map((segment,index)=>`<button class="cost-segment cost-${escapeHtml(segment.category)}${state.selectedCost&&state.selectedCost.scope==="semantic"&&state.selectedCost.index===index?" selected":""}" data-cost-index="${index}" style="left:${segment.plot_begin_fraction*100}%;width:${Math.max(.15,(segment.plot_end_fraction-segment.plot_begin_fraction)*100)}%" title="${escapeHtml(term("semantic",segment.category).label)} · ${escapeHtml(segment.reason)} · ${number(segment.cycles)} cycles" aria-label="${escapeHtml(term("semantic",segment.category).label)} · ${number(segment.cycles)} cycles" type="button"></button>`).join("");
+  const semanticMarks=showFull?tile.semantic_timeline_segments.map((segment,index)=>`<button class="cost-segment cost-${escapeHtml(segment.category)}${state.selectedCost&&state.selectedCost.scope==="semantic"&&state.selectedCost.index===index?" selected":""}" data-cost-index="${index}" style="left:${segment.plot_begin_fraction*100}%;width:${Math.max(.15,(segment.plot_end_fraction-segment.plot_begin_fraction)*100)}%" title="${escapeHtml(term("semantic",segment.category).label)} · ${escapeHtml(segment.reason)} · ${number(segment.cycles)} cycles" aria-label="${escapeHtml(term("semantic",segment.category).label)} · ${number(segment.cycles)} cycles" type="button"></button>`).join(""):"";
   const traceRows=tile.trace_overhead_overlay.rows;
   const traceMarks=(location)=>traceRows.map((row,index)=>({row,index})).filter(item=>location==="outside-entry"?item.row.location_granularity==="before-entry"||item.row.location_granularity==="after-entry":item.row.location_granularity===location).map(item=>`<button class="overlay-part${state.selectedCost&&state.selectedCost.scope==="trace"&&state.selectedCost.index===item.index?" selected":""}" data-trace-cost-index="${item.index}" style="flex:${Math.max(1,item.row.cycles)} 1 0" title="${escapeHtml(term("trace",item.row.reason).label)} · ${number(item.row.cycles)} cycles · aggregate-only / non-additive" aria-label="${escapeHtml(term("trace",item.row.reason).label)} · ${number(item.row.cycles)} cycles" type="button"></button>`).join("");
-  const semanticLane=`<div class="lane lane-production" data-lane-engine="Trace-run Kcore ledger"><div class="lane-label"><b>Trace-run Kcore ledger</b><span>${number(tile.semantic_partition.exclusive_cycles)} cyc</span></div><div class="lane-track">${gridlines}${semanticMarks}</div></div>`;
+  const semanticLane=showFull?`<div class="lane lane-production" data-lane-engine="Trace-run Kcore ledger"><div class="lane-label"><b>Trace-run Kcore ledger</b><span>${number(tile.semantic_partition.exclusive_cycles)} cyc</span></div><div class="lane-track">${gridlines}${semanticMarks}</div></div>`:"";
+  const exactEventMark=(event,index,showBound)=>{
+    const engine=event.engine;
+    const variant=`event-v${index%3}`;
+    const bound=showBound&&event.activity_window_status==="Bounded"&&event.activity_plot_begin_fraction!=null&&event.activity_plot_end_fraction!=null?`<span class="observation-bound observation-${engine} ${variant}${event.attribution_ambiguous?" ambiguous":""}${event.zero_delta_marker?" zero":""}" data-interval-role="observation-bound" style="left:${event.activity_plot_begin_fraction*100}%;width:${Math.max(.2,(event.activity_plot_end_fraction-event.activity_plot_begin_fraction)*100)}%" title="${escapeHtml(engine)} · PMU 正增量发生在此保守范围内的某处；不代表持续 busy 或精确执行起止"></span>`:"";
+    const selected=state.selectedEvent&&state.selectedEvent.tile===event.tile&&state.selectedEvent.sequence===event.sequence&&state.selectedEvent.site_id===event.site_id;
+    const role=event.display_interval_role;
+    const roleLabel=term("interval",role).label;
+    const pointRole=role==="marker";
+    const main=`<button class="event event-${engine} ${variant}${pointRole?" marker":""}${event.attribution_ambiguous?" ambiguous":""}${event.zero_delta_marker?" zero":""}${selected?" selected":""}" data-interval-role="${escapeHtml(role)}" data-event-sequence="${event.sequence}" data-event-site="${event.site_id}" style="left:${event.plot_begin_fraction*100}%;width:${pointRole?".2":Math.max(.2,(event.plot_end_fraction-event.plot_begin_fraction)*100)}%" title="${escapeHtml(engine)} · ${escapeHtml(roleLabel)} · ${number(event.operation_window_cpu_cycles)} Kcore CPU cycles" aria-label="${escapeHtml(engine)} · ${escapeHtml(roleLabel)} · site ${event.site_id}" type="button"></button>`;
+    return bound+main;
+  };
+  const groupedSubmitMark=(group,index)=>{
+    const variant=`event-v${index%3}`;
+    const first=group.events[0];
+    const count=group.events.length;
+    const width=Math.max(.3,(group.plotEnd-group.plotBegin)*100);
+    const title=`${group.engine} · site ${group.siteId} · ${count} 个 command submit · ${number(group.beginCycle)} → ${number(group.endCycle)} Kcore CPU cycles；聚合覆盖范围包含提交之间的空隙，不代表连续 busy 或 duration`;
+    return `<button class="command-group event-${group.engine} ${variant}" data-command-group-count="${count}" data-command-group-site="${group.siteId}" data-command-group-engine="${group.engine}" data-command-group-first-sequence="${first.sequence}" style="left:${group.plotBegin*100}%;width:${width}%" title="${escapeHtml(title)}" aria-label="${escapeHtml(group.engine)} · site ${group.siteId} · ${count} 个 command submit；点击展开完整 Trace" type="button"><span class="command-group-count">×${count}</span></button>`;
+  };
   const engineLanes=ENGINES.map(engine=>{
     const visible=state.engines.has(engine);
     const engineEvents=events.filter(event=>event.engine_lane_visible&&event.engine===engine);
     const engineSummary=tile.engines.find(row=>row.engine===engine);
     const metric=engine==="DIRECT_DTE"?`${number(engineSummary&&engineSummary.wait_window_cpu_cycles)} cyc`:`${number(engineSummary&&engineSummary.engine_execution_time_ns)} ns`;
-    const marks=visible?engineEvents.map((event,index)=>{
-      const variant=`event-v${index%3}`;
-      const bound=event.activity_window_status==="Bounded"&&event.activity_plot_begin_fraction!=null&&event.activity_plot_end_fraction!=null?`<span class="observation-bound observation-${engine} ${variant}${event.attribution_ambiguous?" ambiguous":""}${event.zero_delta_marker?" zero":""}" data-interval-role="observation-bound" style="left:${event.activity_plot_begin_fraction*100}%;width:${Math.max(.2,(event.activity_plot_end_fraction-event.activity_plot_begin_fraction)*100)}%" title="${escapeHtml(engine)} · PMU 正增量发生在此保守范围内的某处；不代表持续 busy 或精确执行起止"></span>`:"";
-      const selected=state.selectedEvent&&state.selectedEvent.tile===event.tile&&state.selectedEvent.sequence===event.sequence&&state.selectedEvent.site_id===event.site_id;
-      const role=event.display_interval_role;
-      const roleLabel=term("interval",role).label;
-      const pointRole=role==="marker";
-      const main=`<button class="event event-${engine} ${variant}${pointRole?" marker":""}${event.attribution_ambiguous?" ambiguous":""}${event.zero_delta_marker?" zero":""}${selected?" selected":""}" data-interval-role="${escapeHtml(role)}" data-event-sequence="${event.sequence}" data-event-site="${event.site_id}" style="left:${event.plot_begin_fraction*100}%;width:${pointRole?".2":Math.max(.2,(event.plot_end_fraction-event.plot_begin_fraction)*100)}%" title="${escapeHtml(engine)} · ${escapeHtml(roleLabel)} · ${number(event.operation_window_cpu_cycles)} Kcore CPU cycles" aria-label="${escapeHtml(engine)} · ${escapeHtml(roleLabel)} · site ${event.site_id}" type="button"></button>`;
-      return bound+main;
-    }).join(""):"";
-    return `<div class="lane" data-lane-engine="${engine}"><div class="lane-label"><b title="${escapeHtml(term("engine",engine).definition)}">${engine}</b><span>${metric} · ${engineEvents.length}</span></div><div class="lane-track">${gridlines}${marks}</div></div>`;
+    const submitGroups=commandSubmitGroups(engineEvents);
+    const operationEvents=engineEvents.filter(event=>event.display_interval_role!=="command-submit");
+    const compactMarks=operationEvents.map((event,index)=>exactEventMark(event,index,true)).join("")+submitGroups.map((group,index)=>group.events.length===1?exactEventMark(group.events[0],operationEvents.length+index,true):groupedSubmitMark(group,index)).join("");
+    const marks=visible?(showFull?engineEvents.map((event,index)=>exactEventMark(event,index,true)).join(""):compactMarks):"";
+    const displayCount=operationEvents.length+submitGroups.length;
+    const countLabel=showFull?`${engineEvents.length}`:`${engineEvents.length}→${displayCount}`;
+    return `<div class="lane" data-lane-engine="${engine}"><div class="lane-label"><b title="${escapeHtml(term("engine",engine).definition)}">${engine}</b><span>${metric} · ${countLabel}</span></div><div class="lane-track">${gridlines}${marks}</div></div>`;
   }).join("");
-  q("#timelineLanes").innerHTML=semanticLane+`<div class="lane-separator"></div>`+engineLanes;
+  q("#timelineLanes").innerHTML=semanticLane+(showFull?`<div class="lane-separator"></div>`:"")+engineLanes;
   q("#traceOverheadBar").innerHTML=traceMarks("inside-entry-unpositioned");
   q("#traceOutsideBar").innerHTML=traceMarks("outside-entry");
   qa("[data-cost-index]").forEach(node=>node.addEventListener("click",()=>{
@@ -2961,6 +3731,14 @@ function renderTimeline(){
     state.selectedCost={scope:"trace",index:Number(node.dataset.traceCostIndex)};
     renderTimeline();
   }));
+  qa("[data-command-group-count]").forEach(node=>node.addEventListener("click",()=>{
+    const event=events.find(row=>row.sequence===Number(node.dataset.commandGroupFirstSequence)&&row.site_id===Number(node.dataset.commandGroupSite)&&row.engine===node.dataset.commandGroupEngine);
+    state.fullTrace=true;
+    fullTraceToggle.checked=true;
+    state.selectedEvent=event||null;
+    state.selectedCost=null;
+    renderTimeline();
+  }));
   qa("[data-event-sequence]").forEach(node=>node.addEventListener("click",()=>{
     const event=events.find(row=>row.sequence===Number(node.dataset.eventSequence)&&row.site_id===Number(node.dataset.eventSite));
     state.selectedEvent=event||null;
@@ -2970,7 +3748,11 @@ function renderTimeline(){
   }));
   if(state.selectedCost)renderCostDetail();
   else{
-    if(!state.selectedEvent||state.selectedEvent.tile!==state.tile)state.selectedEvent=events.find(event=>event.engine_lane_visible)||events[0]||null;
+    const singletonKeys=new Set(commandSubmitGroups(events).filter(group=>group.events.length===1).map(group=>group.key));
+    const selectableEvents=showFull
+      ?events.filter(event=>event.engine_lane_visible)
+      :events.filter(event=>event.engine_lane_visible&&(event.display_interval_role!=="command-submit"||singletonKeys.has(`${event.engine}:${event.site_id}`)));
+    if(!state.selectedEvent||state.selectedEvent.tile!==state.tile||!selectableEvents.some(event=>event.sequence===state.selectedEvent.sequence&&event.site_id===state.selectedEvent.site_id))state.selectedEvent=selectableEvents[0]||null;
     renderEventDetail();
   }
   q("#semanticCostRows").innerHTML=tile.semantic_partition.rows.map(row=>{
@@ -3077,6 +3859,7 @@ function renderDiagnostics(){
 qa("[data-view]").forEach(node=>node.addEventListener("click",()=>navigate(node.dataset.view)));
 q("#timelineTile").addEventListener("change",event=>{state.tile=Number(event.target.value);state.selectedEvent=null;state.selectedCost=null;renderTimeline()});
 q("#engineTile").addEventListener("change",event=>{state.tile=Number(event.target.value);renderEngines()});
+q("#timelineFullTrace").addEventListener("change",event=>{state.fullTrace=event.target.checked;state.selectedEvent=null;state.selectedCost=null;renderTimeline()});
 q("#timelineZoom").addEventListener("input",event=>{state.zoom=Number(event.target.value);renderTimeline()});
 q("#timelineFit").addEventListener("click",()=>{state.zoom=1;q("#timelineZoom").value="1";renderTimeline()});
 q("#siteSearch").addEventListener("input",renderSites);
@@ -3093,7 +3876,7 @@ renderSites();
 renderCommunication();
 renderGlossary();
 renderDiagnostics();
-window.__waferProfileUI={analysis,evidence,state,navigate,selectTile,focusEvent,renderTimeline,renderGlossary,crossEngineBoundOverlaps};
+window.__waferProfileUI={analysis,evidence,state,navigate,selectTile,focusEvent,renderTimeline,renderGlossary,crossEngineBoundOverlaps,commandSubmitGroups,timelineDensity};
 </script>
 </body>
 </html>"""

@@ -1,11 +1,13 @@
 //===- TargetPackagePublication.cpp - Staged target/package build -------===//
 
+#include "AcceptedCallClosure.h"
 #include "CompilationInternal.h"
 #include "ExecutableBundleInternal.h"
 #include "PackageInternal.h"
 #include "TargetArtifactInternal.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
+#include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/Compiler/Package.h"
 #include "Wafer/Runtime/PackageManifest.h"
 #include "Wafer/Runtime/ProfileCompanion.h"
@@ -13,6 +15,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
@@ -125,15 +128,125 @@ static mlir::LogicalResult stageExecutablePackage(
   return mlir::success();
 }
 
-static void writeVariantMetadata(llvm::json::OStream &json, llvm::StringRef id,
-                                 llvm::StringRef role,
-                                 llvm::StringRef packageReference,
-                                 llvm::StringRef manifestDigest) {
+static runtime::ProfileStaticCostMetric
+makeProfileStaticCostMetric(const analysis::ScheduleCostMetric &metric) {
+  runtime::ProfileStaticCostMetric result;
+  result.knowledge =
+      analysis::stringifyScheduleCostKnowledge(metric.knowledge).str();
+  result.reason = analysis::stringifyScheduleCostReason(metric.reason).str();
+  if (metric.isKnown())
+    result.value = metric.value;
+  return result;
+}
+
+static llvm::Expected<runtime::ProfileStaticCostModel>
+collectProfileStaticCostModel(const ExecutableBundle &bundle) {
+  const auto &rankExecutables = bundle.getRankExecutables();
+  if (rankExecutables.size() !=
+      static_cast<size_t>(bundle.getExecutionConfig().getRankCount()))
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "profile static cost rank domain differs from execution config");
+
+  llvm::SmallVector<mlir::Operation *, 16> rankRoots;
+  rankRoots.reserve(rankExecutables.size());
+  for (auto [expectedRank, rank] : llvm::enumerate(rankExecutables)) {
+    if (rank.getLogicalRank() != static_cast<int64_t>(expectedRank))
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "profile static cost rank domain is not canonical");
+    llvm::Expected<AcceptedCallClosure> closure =
+        analyzeAcceptedCallClosure(rank.getModule(), rank.getEntrySymbol());
+    if (!closure)
+      return llvm::joinErrors(
+          llvm::createStringError(
+              llvm::errc::invalid_argument,
+              "profile static cost accepted call closure is invalid"),
+          closure.takeError());
+    rankRoots.push_back(closure->entry.getOperation());
+  }
+
+  const analysis::TargetScheduleCostPolicy policy =
+      analysis::getTargetScheduleCostPolicy(
+          bundle.getExecutionConfig().getTargetProfileId());
+  analysis::WholeCardInstructionProgramCost cost =
+      analysis::analyzeWholeCardInstructionProgramCost(rankRoots, policy);
+  if (cost.rankCosts.size() != rankExecutables.size())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "profile static cost analysis omitted an accepted rank");
+
+  runtime::ProfileStaticCostModel model;
+  model.model = runtime::kProfileStaticCostModelName.str();
+  model.scope = runtime::kProfileStaticCostModelScope.str();
+  model.rates.cardDDRBytesPerSecond = policy.cardDDRBytesPerSecond;
+  model.rates.directionalNoCBytesPerSecond =
+      policy.directionalNoCBytesPerSecond;
+  model.rates.f16Bf16NPULogicalOpsPerSecondPerTile =
+      policy.f16Bf16NPULogicalOpsPerSecondPerTile;
+  model.rates.f16Bf16VectorLogicalOpsPerSecondPerTile =
+      policy.f16Bf16VectorLogicalOpsPerSecondPerTile;
+  model.rates.f32VectorLogicalOpsPerSecondPerTile =
+      policy.f32VectorLogicalOpsPerSecondPerTile;
+  model.rates.spmMovementBytesPerSecond = std::nullopt;
+  model.ranks.reserve(cost.rankCosts.size());
+  for (auto [logicalRank, rankCost] : llvm::enumerate(cost.rankCosts)) {
+    runtime::ProfileStaticRankWork work;
+    work.npuF16Bf16LogicalOps =
+        makeProfileStaticCostMetric(rankCost.compute.npuF16Bf16LogicalOps);
+    work.npuOtherLogicalOps =
+        makeProfileStaticCostMetric(rankCost.compute.npuOtherLogicalOps);
+    work.vectorF16Bf16LogicalOps =
+        makeProfileStaticCostMetric(rankCost.compute.vectorF16Bf16LogicalOps);
+    work.vectorF32LogicalOps =
+        makeProfileStaticCostMetric(rankCost.compute.vectorF32LogicalOps);
+    work.vectorOtherLogicalOps =
+        makeProfileStaticCostMetric(rankCost.compute.vectorOtherLogicalOps);
+    work.ddrReadBytes = makeProfileStaticCostMetric(rankCost.ddrReadBytes);
+    work.ddrWriteBytes = makeProfileStaticCostMetric(rankCost.ddrWriteBytes);
+    work.spmMovementBytes =
+        makeProfileStaticCostMetric(rankCost.spmMovementBytes);
+    work.nocTransmitBytes =
+        makeProfileStaticCostMetric(rankCost.noc.aggregateTransmitBytes);
+    work.nocReceiveBytes =
+        makeProfileStaticCostMetric(rankCost.noc.aggregateReceiveBytes);
+    work.directionalNoCTransmitBytes.north = makeProfileStaticCostMetric(
+        rankCost.noc.directional(analysis::NoCDirection::North));
+    work.directionalNoCTransmitBytes.east = makeProfileStaticCostMetric(
+        rankCost.noc.directional(analysis::NoCDirection::East));
+    work.directionalNoCTransmitBytes.south = makeProfileStaticCostMetric(
+        rankCost.noc.directional(analysis::NoCDirection::South));
+    work.directionalNoCTransmitBytes.west = makeProfileStaticCostMetric(
+        rankCost.noc.directional(analysis::NoCDirection::West));
+    work.collectiveNoCTransmitBytes.collectivePermute =
+        makeProfileStaticCostMetric(rankCost.noc.collective(
+            analysis::NoCCollectiveKind::CollectivePermute));
+    work.collectiveNoCTransmitBytes.allToAll = makeProfileStaticCostMetric(
+        rankCost.noc.collective(analysis::NoCCollectiveKind::AllToAll));
+    work.collectiveNoCTransmitBytes.allGather = makeProfileStaticCostMetric(
+        rankCost.noc.collective(analysis::NoCCollectiveKind::AllGather));
+    work.collectiveNoCTransmitBytes.reduceScatter = makeProfileStaticCostMetric(
+        rankCost.noc.collective(analysis::NoCCollectiveKind::ReduceScatter));
+    work.collectiveNoCTransmitBytes.allReduce = makeProfileStaticCostMetric(
+        rankCost.noc.collective(analysis::NoCCollectiveKind::AllReduce));
+    model.ranks.push_back({static_cast<int64_t>(logicalRank), std::move(work)});
+  }
+  return model;
+}
+
+static void
+writeVariantMetadata(llvm::json::OStream &json, llvm::StringRef id,
+                     llvm::StringRef role, llvm::StringRef packageReference,
+                     llvm::StringRef manifestDigest,
+                     const runtime::ProfileStaticCostModel &staticCostModel) {
   json.object([&] {
     json.attribute("id", id);
     json.attribute("role", role);
     json.attribute("package_ref", packageReference);
     json.attribute("manifest_sha256", manifestDigest);
+    json.attributeBegin("static_cost_model");
+    runtime::writeProfileStaticCostModel(json, staticCostModel);
+    json.attributeEnd();
   });
 }
 
@@ -256,8 +369,7 @@ static mlir::LogicalResult stageVariantCapturePackages(
 
 static mlir::LogicalResult writeProfileCompanion(
     llvm::StringRef companionRoot, llvm::StringRef publishedPackageName,
-    llvm::StringRef productionPackage,
-    const ExecutableBundle &productionBundle,
+    llvm::StringRef productionPackage, const ExecutableBundle &productionBundle,
     const TargetLLVMModuleBundle &productionTargetLLVM,
     const TargetLLVMModuleBundle &productionTraceTargetLLVM,
     const ProfileVariantCapturePackages &productionCaptures,
@@ -281,7 +393,7 @@ static mlir::LogicalResult writeProfileCompanion(
   }
   for (auto [expectedRank, pair] :
        llvm::enumerate(llvm::zip(productionTargetLLVM.getModules(),
-                                productionTraceTargetLLVM.getModules()))) {
+                                 productionTraceTargetLLVM.getModules()))) {
     const TargetLLVMModule &finalRank = std::get<0>(pair);
     const TargetLLVMModule &traceRank = std::get<1>(pair);
     if (finalRank.getLogicalRank() != static_cast<int64_t>(expectedRank) ||
@@ -305,6 +417,12 @@ static mlir::LogicalResult writeProfileCompanion(
     reject(diagnostics, llvm::toString(productionSites.takeError()));
     return mlir::failure();
   }
+  llvm::Expected<runtime::ProfileStaticCostModel> productionStaticCost =
+      collectProfileStaticCostModel(productionBundle);
+  if (!productionStaticCost) {
+    reject(diagnostics, llvm::toString(productionStaticCost.takeError()));
+    return mlir::failure();
+  }
 
   llvm::SmallString<256> variantsPath(companionRoot);
   llvm::sys::path::append(variantsPath, "variants.json");
@@ -313,16 +431,15 @@ static mlir::LogicalResult writeProfileCompanion(
           [&](llvm::json::OStream &json) {
             json.object([&] {
               json.attribute("schema", "wafer-profile-variants");
-              json.attribute(
-                  "schema_version",
-                  int64_t(runtime::kProfileCompanionSchemaVersion));
+              json.attribute("schema_version",
+                             int64_t(runtime::kProfileCompanionSchemaVersion));
               json.attribute(
                   "rank_count",
                   productionBundle.getExecutionConfig().getRankCount());
               json.attributeArray("variants", [&] {
-                writeVariantMetadata(json, "final-artifact",
-                                     "final-artifact", productionReference,
-                                     *productionDigest);
+                writeVariantMetadata(json, "final-artifact", "final-artifact",
+                                     productionReference, *productionDigest,
+                                     *productionStaticCost);
               });
             });
           },
@@ -336,9 +453,8 @@ static mlir::LogicalResult writeProfileCompanion(
           [&](llvm::json::OStream &json) {
             json.object([&] {
               json.attribute("schema", "wafer-profile-target-call-site-map");
-              json.attribute(
-                  "schema_version",
-                  int64_t(runtime::kProfileCompanionSchemaVersion));
+              json.attribute("schema_version",
+                             int64_t(runtime::kProfileCompanionSchemaVersion));
               json.attribute("site_basis",
                              "verified-target-llvm-entry-reachable-profile-"
                              "target-call-preorder");
@@ -362,9 +478,8 @@ static mlir::LogicalResult writeProfileCompanion(
           [&](llvm::json::OStream &json) {
             json.object([&] {
               json.attribute("schema", "wafer-profile-plan");
-              json.attribute(
-                  "schema_version",
-                  int64_t(runtime::kProfileCompanionSchemaVersion));
+              json.attribute("schema_version",
+                             int64_t(runtime::kProfileCompanionSchemaVersion));
               json.attribute(
                   "rank_count",
                   productionBundle.getExecutionConfig().getRankCount());
@@ -384,19 +499,14 @@ static mlir::LogicalResult writeProfileCompanion(
                 for (const ProfileCapturePackageMetadata &capture :
                      productionCaptures.captures)
                   json.object([&] {
-                    json.attribute("variant_id",
-                                   productionCaptures.variantId);
-                    json.attribute(
-                        "capture",
-                        stringifyProfileCaptureKind(capture.capture));
-                    json.attribute("package_ref",
-                                   capture.packageReference);
-                    json.attribute("manifest_sha256",
-                                   capture.manifestDigest);
+                    json.attribute("variant_id", productionCaptures.variantId);
+                    json.attribute("capture", stringifyProfileCaptureKind(
+                                                  capture.capture));
+                    json.attribute("package_ref", capture.packageReference);
+                    json.attribute("manifest_sha256", capture.manifestDigest);
                     json.attribute("record_abi", runtime::kProfileRecordABI);
-                    json.attribute(
-                        "record_bytes",
-                        getProfileCaptureRecordBytes(capture.capture));
+                    json.attribute("record_bytes", getProfileCaptureRecordBytes(
+                                                       capture.capture));
                   });
               });
             });
@@ -543,9 +653,9 @@ mlir::LogicalResult stageProfileTargetPackages(
   llvm::sys::path::append(productionPackage, "package");
   std::optional<TargetLLVMModuleBundle> productionTargetLLVM;
   if (mlir::failed(stageExecutablePackage(
-          tensorProgramDirectory, *compiled,
-          productionTargetArtifacts, productionPackage, targetToolchain,
-          diagnostics, failAfterTargetLogicalRank, failAfterPackageLogicalRank,
+          tensorProgramDirectory, *compiled, productionTargetArtifacts,
+          productionPackage, targetToolchain, diagnostics,
+          failAfterTargetLogicalRank, failAfterPackageLogicalRank,
           productionTargetLLVM)))
     return mlir::failure();
 
@@ -556,15 +666,15 @@ mlir::LogicalResult stageProfileTargetPackages(
   std::optional<TargetLLVMModuleBundle> productionTraceTargetLLVM;
   if (mlir::failed(stageVariantCapturePackages(
           tensorProgramDirectory, transactionRoot, companionRoot,
-          "final-artifact", *compiled, targetToolchain,
-          diagnostics, productionCaptures, productionTraceTargetLLVM)))
+          "final-artifact", *compiled, targetToolchain, diagnostics,
+          productionCaptures, productionTraceTargetLLVM)))
     return mlir::failure();
 
   if (!productionTargetLLVM || !productionTraceTargetLLVM ||
       mlir::failed(writeProfileCompanion(
-          companionRoot, publishedPackageName, productionPackage,
-          *compiled, *productionTargetLLVM, *productionTraceTargetLLVM,
-          productionCaptures, diagnostics)))
+          companionRoot, publishedPackageName, productionPackage, *compiled,
+          *productionTargetLLVM, *productionTraceTargetLLVM, productionCaptures,
+          diagnostics)))
     return mlir::failure();
   if (mlir::failed(
           makeProfileCompanionWorldAccessible(companionRoot, diagnostics)))

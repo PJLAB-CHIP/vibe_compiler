@@ -87,7 +87,7 @@ def _test_final_artifact(module: object) -> None:
     first = module.analyze_evidence(evidence)
     second = module.analyze_evidence(copy.deepcopy(evidence))
     assert first == second
-    assert first["schema_version"] == 6
+    assert first["schema_version"] == 7
     assert first["record_abi"] == "wafer-tx81-profiler-record-v3"
 
     final = first["final_artifact"]
@@ -149,6 +149,54 @@ def _test_final_artifact(module: object) -> None:
         "sum_across_tiles_work_ns": 9_080,
         "status": "Measured",
     }
+    hardware = final["hardware_cost_analysis"]
+    assert hardware["model"] == "tx81-static-peak-lower-bound-v1"
+    assert hardware["scope"] == "complete-final-instruction-program-per-rank"
+    assert hardware["source"] == "compiler-static-final-instruction-program"
+    assert hardware["relation_to_primary"] == "non-additive-model-reference"
+    assert not hardware["additive_to_primary"]
+    assert [row["engine"] for row in hardware["by_engine"]] == [
+        "CT",
+        "NE",
+        "RDMA",
+        "WDMA",
+        "TDMA",
+        "DIRECT_DTE",
+    ]
+    hardware_by_engine = {
+        row["engine"]: row for row in hardware["by_engine"]
+    }
+    assert hardware_by_engine["CT"]["model_status"] == (
+        "theoretical-lower-bound"
+    )
+    assert hardware_by_engine["CT"]["work"]["aggregate"] == str(5_856 * 16)
+    assert hardware_by_engine["CT"]["estimated_ns"] == 91.5
+    assert hardware_by_engine["CT"]["measured_active_ns"][
+        "average_per_tile_ns"
+    ] == 91.5
+    assert hardware_by_engine["CT"]["measured_to_model_ratio"] == 1.0
+    assert hardware_by_engine["NE"]["estimated_ns"] == 102.5
+    assert hardware_by_engine["NE"]["measured_to_model_ratio"] == 1.0
+    assert hardware_by_engine["RDMA"]["model_status"] == "heuristic"
+    assert hardware_by_engine["RDMA"]["floor_ns"] == 112.0
+    assert hardware_by_engine["RDMA"]["estimated_ns"] == 112.0
+    assert hardware_by_engine["WDMA"]["model_status"] == "heuristic"
+    assert hardware_by_engine["WDMA"]["floor_ns"] == 124.48
+    assert hardware_by_engine["TDMA"]["model_status"] == "unavailable"
+    assert hardware_by_engine["TDMA"]["estimated_ns"] is None
+    assert hardware_by_engine["TDMA"]["work"]["aggregate"] == str(1_024 * 16)
+    assert hardware_by_engine["DIRECT_DTE"]["model_status"] == (
+        "reference-only"
+    )
+    assert hardware_by_engine["DIRECT_DTE"]["work"]["aggregate"] == str(
+        1_280 * 16
+    )
+    assert hardware_by_engine["DIRECT_DTE"]["estimated_scope"] == (
+        "average-per-rank-single-link-payload-reference"
+    )
+    assert hardware_by_engine["DIRECT_DTE"]["estimated_ns"] == 10.0
+    assert hardware_by_engine["DIRECT_DTE"]["floor_ns"] is None
+    assert hardware_by_engine["DIRECT_DTE"]["measured_to_model_ratio"] is None
     assert final["output"]["production_execution_validated"]
     assert final["output"]["diagnostic_captures_match_primary"]
     assert final["output"]["correctness_status"] == "expected-exact"
@@ -408,8 +456,17 @@ def _test_final_artifact(module: object) -> None:
         "Attribution ambiguous",
         "tile-local",
         "index.html · analysis.json · evidence.json",
+        "完整 Trace",
+        "同一 Engine + Site 的重复 submit 覆盖范围",
+        "事件较少，已自动完整展示",
+        "operation windows 保持精确",
+        "聚合范围包含空隙，不代表连续 busy 或 duration",
     ):
         assert text in report
+    assert "Hardware cost reference · static model" in report
+    assert "它不是实测值，不是Primary分项" in report
+    assert "single-link payload serialization reference" in report
+    assert "hardwareCostRows" in report
     assert "Device execution" not in report
     assert "Engine summary" not in report
     assert "Derived sum" not in report
@@ -587,8 +644,11 @@ def _test_dom_contract(report: str) -> None:
     assert {
         "resourceTree",
         "overviewEngineRows",
+        "hardwareCostRows",
         "timelineTile",
         "engineFilters",
+        "timelineFullTrace",
+        "timelineDensityNote",
         "timelineZoom",
         "timelineFit",
         "timelineRuler",
@@ -633,9 +693,24 @@ def _test_dom_contract(report: str) -> None:
         "renderCommunication",
         "renderGlossary",
         "crossEngineBoundOverlaps",
+        "commandSubmitGroups",
+        "timelineDensity",
+        "data-command-group-count",
+        "TIMELINE_AUTO_SUBMIT_LIMIT",
+        'q("#timelineFullTrace").addEventListener("change"',
         "termCell",
     ):
         assert interaction in script
+    assert (
+        'event.display_interval_role==="command-submit"'
+        in script
+    )
+    assert (
+        'event.display_interval_role!=="command-submit"'
+        in script
+    )
+    assert 'const key=`${event.engine}:${event.site_id}`' in script
+    assert "state.fullTrace=true" in script
     assert all(f'"{engine}"' in script for engine in (
         "CT",
         "NE",
@@ -1157,6 +1232,27 @@ def _test_rejections(module: object) -> None:
     old_companion["identity"]["profile_companion_schema_version"] = 2
     _must_reject(module, old_companion, "profile_companion_schema_version")
 
+    wrong_static_scope = make_evidence()
+    wrong_static_scope["static_cost_model"]["scope"] = "some-program"
+    _must_reject(
+        module,
+        wrong_static_scope,
+        "complete-final-instruction-program-per-rank",
+    )
+
+    invalid_overflow_reason = make_evidence()
+    overflow_metric = invalid_overflow_reason["static_cost_model"]["ranks"][0][
+        "work"
+    ]["ddr_read_bytes"]
+    overflow_metric.update(
+        {
+            "knowledge": "overflow",
+            "value": None,
+            "reason": "unknown-resource-bytes",
+        }
+    )
+    _must_reject(module, invalid_overflow_reason, "overflow metrics")
+
     duplicate = make_evidence()
     duplicate["measurement"]["samples"].append(
         copy.deepcopy(duplicate["measurement"]["samples"][0])
@@ -1354,7 +1450,7 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
         analysis = json.loads(
             analysis_path.read_text(encoding="utf-8")
         )
-        assert analysis["schema_version"] == 6
+        assert analysis["schema_version"] == 7
         assert analysis["final_artifact"]["duration"]["qualified"]
 
         command = [
@@ -1373,14 +1469,15 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
             encoding="utf-8"
         )
     )
-    assert schema["properties"]["schema_version"]["const"] == 7
+    assert schema["properties"]["schema_version"]["const"] == 8
     assert (
         schema["$defs"]["sharedIdentity"]["properties"][
             "profile_companion_schema_version"
         ]["const"]
-        == 4
+        == 5
     )
     assert "experiment" in schema["required"]
+    assert "static_cost_model" in schema["required"]
     assert "experiments" not in schema["required"]
     assert "candidate" not in schema["$defs"]["site"]["properties"]
     assert "entryTiming" not in schema["$defs"]
@@ -1406,6 +1503,17 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
     assert schema["$defs"]["event"]["allOf"]
     assert "cost_summary" in schema["$defs"]["traceTile"]["required"]
     assert "site_kind" in schema["$defs"]["site"]["required"]
+    static_model = schema["$defs"]["staticCostModel"]
+    assert (
+        static_model["properties"]["model"]["const"]
+        == "tx81-static-peak-lower-bound-v1"
+    )
+    assert static_model["properties"]["scope"]["const"] == (
+        "complete-final-instruction-program-per-rank"
+    )
+    assert static_model["properties"]["ranks"]["minItems"] == 16
+    static_metric = schema["$defs"]["staticCostMetric"]
+    assert set(static_metric["required"]) == {"knowledge", "value", "reason"}
     assert (
         schema["$defs"]["sharedIdentity"]["properties"]["record_abi"]["const"]
         == "wafer-tx81-profiler-record-v3"

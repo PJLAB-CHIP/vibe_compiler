@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v7.json",
+  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v8.json",
   "title": "Wafer 16-tile profile evidence",
-  "description": "Version 7 final-artifact evidence. Primary same-stream device elapsed, host submit, and host completion remain separate. Record ABI v3 separates Kcore site/operation spans from bounded NCC observations and publishes eight mutually-exclusive trace-only overhead counters. The analyzer forms an exclusive semantic rdcycle partition and a non-additive trace-overhead overlay; asynchronous NCC nanosecond work volume is never summed with either.",
+  "description": "Version 8 final-artifact evidence. Primary same-stream device elapsed, host submit, and host completion remain separate. The compiler publishes exact final-program static work independently from measured timing so the report can form explicitly bounded hardware peak references without guessing workload from names. Record ABI v3 separates Kcore site/operation spans from bounded NCC observations and publishes eight mutually-exclusive trace-only overhead counters.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -15,6 +15,7 @@
     "output_validation",
     "sites",
     "validity",
+    "static_cost_model",
     "experiment"
   ],
   "properties": {
@@ -22,7 +23,7 @@
       "const": "wafer.profile.evidence"
     },
     "schema_version": {
-      "const": 7
+      "const": 8
     },
     "run_id": {
       "$ref": "#/$defs/nonEmptyString"
@@ -97,6 +98,9 @@
         }
       }
     },
+    "static_cost_model": {
+      "$ref": "#/$defs/staticCostModel"
+    },
     "experiment": {
       "$ref": "#/$defs/experiment"
     }
@@ -130,6 +134,215 @@
     },
     "nccEngine": {
       "enum": ["CT", "NE", "RDMA", "WDMA", "TDMA"]
+    },
+    "staticCostMetric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["knowledge", "value", "reason"],
+      "properties": {
+        "knowledge": {
+          "enum": ["known", "unknown", "unsupported", "overflow"]
+        },
+        "value": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "enum": [
+            "none",
+            "dynamic-loop-trip-count",
+            "invalid-loop-step",
+            "conditional-control-flow",
+            "unsupported-control-flow",
+            "unknown-physical-geometry",
+            "unknown-resource-bytes",
+            "missing-accepted-spm-offset",
+            "invalid-accepted-spm-offset",
+            "unsupported-spm-root",
+            "unresolved-noc-route",
+            "invalid-execution-topology",
+            "unsupported-instruction-semantics",
+            "unsupported-compute-type",
+            "arithmetic-overflow"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"knowledge": {"const": "known"}},
+            "required": ["knowledge"]
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)$"
+              },
+              "reason": {"const": "none"}
+            }
+          },
+          "else": {
+            "properties": {
+              "value": {"type": "null"},
+              "reason": {
+                "not": {"const": "none"}
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"knowledge": {"const": "overflow"}},
+            "required": ["knowledge"]
+          },
+          "then": {
+            "properties": {
+              "reason": {"const": "arithmetic-overflow"}
+            }
+          }
+        }
+      ]
+    },
+    "staticCostWork": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "npu_f16_bf16_logical_ops",
+        "npu_other_logical_ops",
+        "vector_f16_bf16_logical_ops",
+        "vector_f32_logical_ops",
+        "vector_other_logical_ops",
+        "ddr_read_bytes",
+        "ddr_write_bytes",
+        "spm_movement_bytes",
+        "noc_transmit_bytes",
+        "noc_receive_bytes",
+        "directional_noc_transmit_bytes",
+        "collective_noc_transmit_bytes"
+      ],
+      "properties": {
+        "npu_f16_bf16_logical_ops": {"$ref": "#/$defs/staticCostMetric"},
+        "npu_other_logical_ops": {"$ref": "#/$defs/staticCostMetric"},
+        "vector_f16_bf16_logical_ops": {
+          "$ref": "#/$defs/staticCostMetric"
+        },
+        "vector_f32_logical_ops": {"$ref": "#/$defs/staticCostMetric"},
+        "vector_other_logical_ops": {"$ref": "#/$defs/staticCostMetric"},
+        "ddr_read_bytes": {"$ref": "#/$defs/staticCostMetric"},
+        "ddr_write_bytes": {"$ref": "#/$defs/staticCostMetric"},
+        "spm_movement_bytes": {"$ref": "#/$defs/staticCostMetric"},
+        "noc_transmit_bytes": {"$ref": "#/$defs/staticCostMetric"},
+        "noc_receive_bytes": {"$ref": "#/$defs/staticCostMetric"},
+        "directional_noc_transmit_bytes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["north", "east", "south", "west"],
+          "properties": {
+            "north": {"$ref": "#/$defs/staticCostMetric"},
+            "east": {"$ref": "#/$defs/staticCostMetric"},
+            "south": {"$ref": "#/$defs/staticCostMetric"},
+            "west": {"$ref": "#/$defs/staticCostMetric"}
+          }
+        },
+        "collective_noc_transmit_bytes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collective_permute",
+            "all_to_all",
+            "all_gather",
+            "reduce_scatter",
+            "all_reduce"
+          ],
+          "properties": {
+            "collective_permute": {"$ref": "#/$defs/staticCostMetric"},
+            "all_to_all": {"$ref": "#/$defs/staticCostMetric"},
+            "all_gather": {"$ref": "#/$defs/staticCostMetric"},
+            "reduce_scatter": {"$ref": "#/$defs/staticCostMetric"},
+            "all_reduce": {"$ref": "#/$defs/staticCostMetric"}
+          }
+        }
+      }
+    },
+    "staticCostRank": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logical_rank", "work"],
+      "properties": {
+        "logical_rank": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "work": {"$ref": "#/$defs/staticCostWork"}
+      }
+    },
+    "staticCostModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "scope", "rates", "ranks"],
+      "properties": {
+        "model": {"const": "tx81-static-peak-lower-bound-v1"},
+        "scope": {
+          "const": "complete-final-instruction-program-per-rank"
+        },
+        "rates": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "card_ddr_bytes_per_second",
+            "directional_noc_bytes_per_second",
+            "f16_bf16_npu_logical_ops_per_second_per_tile",
+            "f16_bf16_vector_logical_ops_per_second_per_tile",
+            "f32_vector_logical_ops_per_second_per_tile",
+            "spm_movement_bytes_per_second"
+          ],
+          "properties": {
+            "card_ddr_bytes_per_second": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615
+            },
+            "directional_noc_bytes_per_second": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615
+            },
+            "f16_bf16_npu_logical_ops_per_second_per_tile": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615
+            },
+            "f16_bf16_vector_logical_ops_per_second_per_tile": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615
+            },
+            "f32_vector_logical_ops_per_second_per_tile": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615
+            },
+            "spm_movement_bytes_per_second": {
+              "type": "null"
+            }
+          }
+        },
+        "ranks": {
+          "type": "array",
+          "minItems": 16,
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/staticCostRank"}
+        }
+      }
     },
     "runtimeLaunch": {
       "oneOf": [
@@ -195,7 +408,7 @@
           "$ref": "#/$defs/sha256"
         },
         "profile_companion_schema_version": {
-          "const": 4
+          "const": 5
         },
         "target_profile": {
           "$ref": "#/$defs/nonEmptyString"

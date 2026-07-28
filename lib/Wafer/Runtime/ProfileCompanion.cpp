@@ -185,6 +185,7 @@ struct RawVariant {
   std::string role;
   std::string packageReference;
   std::string manifestDigest;
+  ProfileStaticCostModel staticCostModel;
 };
 
 struct RawExecutionPackage {
@@ -219,7 +220,7 @@ llvm::Expected<ProfileCaptureKind> parseCaptureKind(llvm::StringRef value,
 uint64_t expectedRecordBytes(ProfileCaptureKind capture) {
   switch (capture) {
   case ProfileCaptureKind::Summary:
-    llvm_unreachable("summary is not a profile companion v4 capture");
+    llvm_unreachable("summary is not a profile companion v5 capture");
   case ProfileCaptureKind::Count:
     return kCountRecordBytes;
   case ProfileCaptureKind::Trace:
@@ -447,6 +448,466 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
   return plan;
 }
 
+bool isStaticCostKnowledge(llvm::StringRef value) {
+  static constexpr std::array<llvm::StringLiteral, 4> values = {
+      "known", "unknown", "unsupported", "overflow"};
+  return llvm::is_contained(values, value);
+}
+
+bool isStaticCostReason(llvm::StringRef value) {
+  static constexpr std::array<llvm::StringLiteral, 15> values = {
+      "none",
+      "dynamic-loop-trip-count",
+      "invalid-loop-step",
+      "conditional-control-flow",
+      "unsupported-control-flow",
+      "unknown-physical-geometry",
+      "unknown-resource-bytes",
+      "missing-accepted-spm-offset",
+      "invalid-accepted-spm-offset",
+      "unsupported-spm-root",
+      "unresolved-noc-route",
+      "invalid-execution-topology",
+      "unsupported-instruction-semantics",
+      "unsupported-compute-type",
+      "arithmetic-overflow"};
+  return llvm::is_contained(values, value);
+}
+
+llvm::Expected<uint64_t> requirePositiveUINT64(const llvm::json::Object &object,
+                                               llvm::StringRef field,
+                                               llvm::StringRef context) {
+  const llvm::json::Value *raw = object.get(field);
+  std::optional<uint64_t> value =
+      raw ? raw->getAsUINT64() : std::optional<uint64_t>();
+  if (!value || *value == 0)
+    return invalid(context + "." + field +
+                   " must be a positive unsigned integer");
+  return *value;
+}
+
+llvm::Expected<ProfileStaticCostMetric>
+parseStaticCostMetric(const llvm::json::Value &value,
+                      const PackageParseLimits &limits,
+                      llvm::StringRef context) {
+  llvm::Expected<const llvm::json::Object *> object =
+      requireObject(value, context);
+  if (!object)
+    return object.takeError();
+  if (llvm::Error error = requireFields(
+          **object, {"knowledge", "value", "reason"}, {}, context))
+    return std::move(error);
+
+  llvm::Expected<std::string> knowledge =
+      requireString(**object, "knowledge", context, limits);
+  if (!knowledge)
+    return knowledge.takeError();
+  llvm::Expected<std::string> reason =
+      requireString(**object, "reason", context, limits);
+  if (!reason)
+    return reason.takeError();
+  if (!isStaticCostKnowledge(*knowledge))
+    return invalid(context + ".knowledge is not supported");
+  if (!isStaticCostReason(*reason))
+    return invalid(context + ".reason is not supported");
+
+  const llvm::json::Value *rawValue = (*object)->get("value");
+  if (!rawValue)
+    return invalid(context + ".value is missing");
+  ProfileStaticCostMetric result;
+  result.knowledge = *knowledge;
+  result.reason = *reason;
+  if (*knowledge == "known") {
+    std::optional<llvm::StringRef> decimal = rawValue->getAsString();
+    if (!decimal || decimal->empty() ||
+        decimal->size() > limits.maxStringBytes ||
+        (decimal->size() > 1 && decimal->front() == '0'))
+      return invalid(context +
+                     ".value must be a canonical uint64 decimal string");
+    uint64_t parsed = 0;
+    if (decimal->getAsInteger(10, parsed))
+      return invalid(context +
+                     ".value must be a canonical uint64 decimal string");
+    if (*reason != "none")
+      return invalid(context + " known metric must use reason 'none'");
+    result.value = parsed;
+  } else {
+    if (!rawValue->getAsNull())
+      return invalid(context + " non-known metric must use a null value");
+    if (*reason == "none")
+      return invalid(context + " non-known metric must carry a reason");
+    if (*knowledge == "overflow" && *reason != "arithmetic-overflow")
+      return invalid(context +
+                     " overflow metric must use reason 'arithmetic-overflow'");
+  }
+  return result;
+}
+
+llvm::Expected<ProfileStaticDirectionalNoCWork>
+parseStaticDirectionalNoCWork(const llvm::json::Value &value,
+                              const PackageParseLimits &limits,
+                              llvm::StringRef context) {
+  llvm::Expected<const llvm::json::Object *> object =
+      requireObject(value, context);
+  if (!object)
+    return object.takeError();
+  if (llvm::Error error = requireFields(
+          **object, {"north", "east", "south", "west"}, {}, context))
+    return std::move(error);
+
+  ProfileStaticDirectionalNoCWork result;
+  auto parse =
+      [&](llvm::StringRef field) -> llvm::Expected<ProfileStaticCostMetric> {
+    const llvm::json::Value *metric = (*object)->get(field);
+    if (!metric)
+      return invalid(context + "." + field + " is missing");
+    return parseStaticCostMetric(*metric, limits,
+                                 (context + "." + field).str());
+  };
+  llvm::Expected<ProfileStaticCostMetric> north = parse("north");
+  if (!north)
+    return north.takeError();
+  llvm::Expected<ProfileStaticCostMetric> east = parse("east");
+  if (!east)
+    return east.takeError();
+  llvm::Expected<ProfileStaticCostMetric> south = parse("south");
+  if (!south)
+    return south.takeError();
+  llvm::Expected<ProfileStaticCostMetric> west = parse("west");
+  if (!west)
+    return west.takeError();
+  result.north = std::move(*north);
+  result.east = std::move(*east);
+  result.south = std::move(*south);
+  result.west = std::move(*west);
+  return result;
+}
+
+llvm::Expected<ProfileStaticCollectiveNoCWork>
+parseStaticCollectiveNoCWork(const llvm::json::Value &value,
+                             const PackageParseLimits &limits,
+                             llvm::StringRef context) {
+  llvm::Expected<const llvm::json::Object *> object =
+      requireObject(value, context);
+  if (!object)
+    return object.takeError();
+  if (llvm::Error error =
+          requireFields(**object,
+                        {"collective_permute", "all_to_all", "all_gather",
+                         "reduce_scatter", "all_reduce"},
+                        {}, context))
+    return std::move(error);
+
+  ProfileStaticCollectiveNoCWork result;
+  auto parse =
+      [&](llvm::StringRef field) -> llvm::Expected<ProfileStaticCostMetric> {
+    const llvm::json::Value *metric = (*object)->get(field);
+    if (!metric)
+      return invalid(context + "." + field + " is missing");
+    return parseStaticCostMetric(*metric, limits,
+                                 (context + "." + field).str());
+  };
+  llvm::Expected<ProfileStaticCostMetric> collectivePermute =
+      parse("collective_permute");
+  if (!collectivePermute)
+    return collectivePermute.takeError();
+  llvm::Expected<ProfileStaticCostMetric> allToAll = parse("all_to_all");
+  if (!allToAll)
+    return allToAll.takeError();
+  llvm::Expected<ProfileStaticCostMetric> allGather = parse("all_gather");
+  if (!allGather)
+    return allGather.takeError();
+  llvm::Expected<ProfileStaticCostMetric> reduceScatter =
+      parse("reduce_scatter");
+  if (!reduceScatter)
+    return reduceScatter.takeError();
+  llvm::Expected<ProfileStaticCostMetric> allReduce = parse("all_reduce");
+  if (!allReduce)
+    return allReduce.takeError();
+  result.collectivePermute = std::move(*collectivePermute);
+  result.allToAll = std::move(*allToAll);
+  result.allGather = std::move(*allGather);
+  result.reduceScatter = std::move(*reduceScatter);
+  result.allReduce = std::move(*allReduce);
+  return result;
+}
+
+llvm::Expected<ProfileStaticRankWork>
+parseStaticRankWork(const llvm::json::Value &value,
+                    const PackageParseLimits &limits, llvm::StringRef context) {
+  llvm::Expected<const llvm::json::Object *> object =
+      requireObject(value, context);
+  if (!object)
+    return object.takeError();
+  if (llvm::Error error = requireFields(
+          **object,
+          {"npu_f16_bf16_logical_ops", "npu_other_logical_ops",
+           "vector_f16_bf16_logical_ops", "vector_f32_logical_ops",
+           "vector_other_logical_ops", "ddr_read_bytes", "ddr_write_bytes",
+           "spm_movement_bytes", "noc_transmit_bytes", "noc_receive_bytes",
+           "directional_noc_transmit_bytes", "collective_noc_transmit_bytes"},
+          {}, context))
+    return std::move(error);
+
+  auto parseMetric =
+      [&](llvm::StringRef field) -> llvm::Expected<ProfileStaticCostMetric> {
+    const llvm::json::Value *metric = (*object)->get(field);
+    if (!metric)
+      return invalid(context + "." + field + " is missing");
+    return parseStaticCostMetric(*metric, limits,
+                                 (context + "." + field).str());
+  };
+
+  ProfileStaticRankWork result;
+#define PARSE_STATIC_METRIC(JSON_NAME, MEMBER)                                 \
+  do {                                                                         \
+    llvm::Expected<ProfileStaticCostMetric> metric = parseMetric(JSON_NAME);   \
+    if (!metric)                                                               \
+      return metric.takeError();                                               \
+    result.MEMBER = std::move(*metric);                                        \
+  } while (false)
+  PARSE_STATIC_METRIC("npu_f16_bf16_logical_ops", npuF16Bf16LogicalOps);
+  PARSE_STATIC_METRIC("npu_other_logical_ops", npuOtherLogicalOps);
+  PARSE_STATIC_METRIC("vector_f16_bf16_logical_ops", vectorF16Bf16LogicalOps);
+  PARSE_STATIC_METRIC("vector_f32_logical_ops", vectorF32LogicalOps);
+  PARSE_STATIC_METRIC("vector_other_logical_ops", vectorOtherLogicalOps);
+  PARSE_STATIC_METRIC("ddr_read_bytes", ddrReadBytes);
+  PARSE_STATIC_METRIC("ddr_write_bytes", ddrWriteBytes);
+  PARSE_STATIC_METRIC("spm_movement_bytes", spmMovementBytes);
+  PARSE_STATIC_METRIC("noc_transmit_bytes", nocTransmitBytes);
+  PARSE_STATIC_METRIC("noc_receive_bytes", nocReceiveBytes);
+#undef PARSE_STATIC_METRIC
+
+  const llvm::json::Value *directional =
+      (*object)->get("directional_noc_transmit_bytes");
+  llvm::Expected<ProfileStaticDirectionalNoCWork> directionalWork =
+      directional
+          ? parseStaticDirectionalNoCWork(
+                *directional, limits,
+                (context + ".directional_noc_transmit_bytes").str())
+          : llvm::Expected<ProfileStaticDirectionalNoCWork>(invalid(
+                context + ".directional_noc_transmit_bytes is missing"));
+  if (!directionalWork)
+    return directionalWork.takeError();
+  const llvm::json::Value *collective =
+      (*object)->get("collective_noc_transmit_bytes");
+  llvm::Expected<ProfileStaticCollectiveNoCWork> collectiveWork =
+      collective ? parseStaticCollectiveNoCWork(
+                       *collective, limits,
+                       (context + ".collective_noc_transmit_bytes").str())
+                 : llvm::Expected<ProfileStaticCollectiveNoCWork>(invalid(
+                       context + ".collective_noc_transmit_bytes is missing"));
+  if (!collectiveWork)
+    return collectiveWork.takeError();
+  result.directionalNoCTransmitBytes = std::move(*directionalWork);
+  result.collectiveNoCTransmitBytes = std::move(*collectiveWork);
+  return result;
+}
+
+llvm::Expected<ProfileStaticCostRates>
+parseStaticCostRates(const llvm::json::Value &value, llvm::StringRef context) {
+  llvm::Expected<const llvm::json::Object *> object =
+      requireObject(value, context);
+  if (!object)
+    return object.takeError();
+  if (llvm::Error error = requireFields(
+          **object,
+          {"card_ddr_bytes_per_second", "directional_noc_bytes_per_second",
+           "f16_bf16_npu_logical_ops_per_second_per_tile",
+           "f16_bf16_vector_logical_ops_per_second_per_tile",
+           "f32_vector_logical_ops_per_second_per_tile",
+           "spm_movement_bytes_per_second"},
+          {}, context))
+    return std::move(error);
+
+  ProfileStaticCostRates result;
+#define PARSE_STATIC_RATE(JSON_NAME, MEMBER)                                   \
+  do {                                                                         \
+    llvm::Expected<uint64_t> rate =                                            \
+        requirePositiveUINT64(**object, JSON_NAME, context);                   \
+    if (!rate)                                                                 \
+      return rate.takeError();                                                 \
+    result.MEMBER = *rate;                                                     \
+  } while (false)
+  PARSE_STATIC_RATE("card_ddr_bytes_per_second", cardDDRBytesPerSecond);
+  PARSE_STATIC_RATE("directional_noc_bytes_per_second",
+                    directionalNoCBytesPerSecond);
+  PARSE_STATIC_RATE("f16_bf16_npu_logical_ops_per_second_per_tile",
+                    f16Bf16NPULogicalOpsPerSecondPerTile);
+  PARSE_STATIC_RATE("f16_bf16_vector_logical_ops_per_second_per_tile",
+                    f16Bf16VectorLogicalOpsPerSecondPerTile);
+  PARSE_STATIC_RATE("f32_vector_logical_ops_per_second_per_tile",
+                    f32VectorLogicalOpsPerSecondPerTile);
+#undef PARSE_STATIC_RATE
+
+  const llvm::json::Value *spm =
+      (*object)->get("spm_movement_bytes_per_second");
+  if (!spm || !spm->getAsNull())
+    return invalid(context + ".spm_movement_bytes_per_second must be null");
+  result.spmMovementBytesPerSecond = std::nullopt;
+  return result;
+}
+
+llvm::Expected<ProfileStaticCostModel>
+parseStaticCostModel(const llvm::json::Value &value,
+                     const PackageParseLimits &limits, uint64_t &totalRecords,
+                     llvm::StringRef context) {
+  llvm::Expected<const llvm::json::Object *> object =
+      requireObject(value, context);
+  if (!object)
+    return object.takeError();
+  if (llvm::Error error = requireFields(
+          **object, {"model", "scope", "rates", "ranks"}, {}, context))
+    return std::move(error);
+  llvm::Expected<std::string> model =
+      requireString(**object, "model", context, limits);
+  if (!model)
+    return model.takeError();
+  llvm::Expected<std::string> scope =
+      requireString(**object, "scope", context, limits);
+  if (!scope)
+    return scope.takeError();
+  if (*model != kProfileStaticCostModelName)
+    return invalid(context + ".model is not supported");
+  if (*scope != kProfileStaticCostModelScope)
+    return invalid(context + ".scope is not supported");
+
+  const llvm::json::Value *ratesValue = (*object)->get("rates");
+  if (!ratesValue)
+    return invalid(context + ".rates is missing");
+  llvm::Expected<ProfileStaticCostRates> rates =
+      parseStaticCostRates(*ratesValue, (context + ".rates").str());
+  if (!rates)
+    return rates.takeError();
+  llvm::Expected<const llvm::json::Array *> ranks =
+      requireArray(**object, "ranks", context);
+  if (!ranks)
+    return ranks.takeError();
+  if ((*ranks)->size() != static_cast<size_t>(kProfileCompanionRankCount))
+    return invalid(context + ".ranks must contain all and only 16 ranks");
+  if (llvm::Error error =
+          accountRecords((*ranks)->size() * 20, totalRecords, limits))
+    return std::move(error);
+
+  ProfileStaticCostModel result;
+  result.model = std::move(*model);
+  result.scope = std::move(*scope);
+  result.rates = std::move(*rates);
+  result.ranks.reserve((*ranks)->size());
+  for (auto [index, rankValue] : llvm::enumerate(**ranks)) {
+    std::string rankContext =
+        (context + ".ranks[" + llvm::Twine(index) + "]").str();
+    llvm::Expected<const llvm::json::Object *> rankObject =
+        requireObject(rankValue, rankContext);
+    if (!rankObject)
+      return rankObject.takeError();
+    if (llvm::Error error = requireFields(
+            **rankObject, {"logical_rank", "work"}, {}, rankContext))
+      return std::move(error);
+    llvm::Expected<uint64_t> logicalRank =
+        requireUnsigned(**rankObject, "logical_rank", rankContext);
+    if (!logicalRank)
+      return logicalRank.takeError();
+    if (*logicalRank != index)
+      return invalid(context +
+                     ".ranks must be in canonical logical-rank order");
+    const llvm::json::Value *workValue = (*rankObject)->get("work");
+    if (!workValue)
+      return invalid(rankContext + ".work is missing");
+    llvm::Expected<ProfileStaticRankWork> work =
+        parseStaticRankWork(*workValue, limits, rankContext + ".work");
+    if (!work)
+      return work.takeError();
+    result.ranks.push_back(
+        {static_cast<int64_t>(*logicalRank), std::move(*work)});
+  }
+  return result;
+}
+
+void emitStaticCostMetric(llvm::json::OStream &json,
+                          const ProfileStaticCostMetric &metric) {
+  json.object([&] {
+    json.attribute("knowledge", metric.knowledge);
+    if (metric.value)
+      json.attribute("value", std::to_string(*metric.value));
+    else
+      json.attribute("value", llvm::json::Value(nullptr));
+    json.attribute("reason", metric.reason);
+  });
+}
+
+void emitStaticRankWork(llvm::json::OStream &json,
+                        const ProfileStaticRankWork &work) {
+  auto emitMetric = [&](llvm::StringRef name,
+                        const ProfileStaticCostMetric &metric) {
+    json.attributeBegin(name);
+    emitStaticCostMetric(json, metric);
+    json.attributeEnd();
+  };
+  json.object([&] {
+    emitMetric("npu_f16_bf16_logical_ops", work.npuF16Bf16LogicalOps);
+    emitMetric("npu_other_logical_ops", work.npuOtherLogicalOps);
+    emitMetric("vector_f16_bf16_logical_ops", work.vectorF16Bf16LogicalOps);
+    emitMetric("vector_f32_logical_ops", work.vectorF32LogicalOps);
+    emitMetric("vector_other_logical_ops", work.vectorOtherLogicalOps);
+    emitMetric("ddr_read_bytes", work.ddrReadBytes);
+    emitMetric("ddr_write_bytes", work.ddrWriteBytes);
+    emitMetric("spm_movement_bytes", work.spmMovementBytes);
+    emitMetric("noc_transmit_bytes", work.nocTransmitBytes);
+    emitMetric("noc_receive_bytes", work.nocReceiveBytes);
+    json.attributeObject("directional_noc_transmit_bytes", [&] {
+      emitMetric("north", work.directionalNoCTransmitBytes.north);
+      emitMetric("east", work.directionalNoCTransmitBytes.east);
+      emitMetric("south", work.directionalNoCTransmitBytes.south);
+      emitMetric("west", work.directionalNoCTransmitBytes.west);
+    });
+    json.attributeObject("collective_noc_transmit_bytes", [&] {
+      emitMetric("collective_permute",
+                 work.collectiveNoCTransmitBytes.collectivePermute);
+      emitMetric("all_to_all", work.collectiveNoCTransmitBytes.allToAll);
+      emitMetric("all_gather", work.collectiveNoCTransmitBytes.allGather);
+      emitMetric("reduce_scatter",
+                 work.collectiveNoCTransmitBytes.reduceScatter);
+      emitMetric("all_reduce", work.collectiveNoCTransmitBytes.allReduce);
+    });
+  });
+}
+
+void emitStaticCostModel(llvm::json::OStream &json,
+                         const ProfileStaticCostModel &model) {
+  json.object([&] {
+    json.attribute("model", model.model);
+    json.attribute("scope", model.scope);
+    json.attributeObject("rates", [&] {
+      json.attribute("card_ddr_bytes_per_second",
+                     model.rates.cardDDRBytesPerSecond);
+      json.attribute("directional_noc_bytes_per_second",
+                     model.rates.directionalNoCBytesPerSecond);
+      json.attribute("f16_bf16_npu_logical_ops_per_second_per_tile",
+                     model.rates.f16Bf16NPULogicalOpsPerSecondPerTile);
+      json.attribute("f16_bf16_vector_logical_ops_per_second_per_tile",
+                     model.rates.f16Bf16VectorLogicalOpsPerSecondPerTile);
+      json.attribute("f32_vector_logical_ops_per_second_per_tile",
+                     model.rates.f32VectorLogicalOpsPerSecondPerTile);
+      if (model.rates.spmMovementBytesPerSecond)
+        json.attribute("spm_movement_bytes_per_second",
+                       *model.rates.spmMovementBytesPerSecond);
+      else
+        json.attribute("spm_movement_bytes_per_second",
+                       llvm::json::Value(nullptr));
+    });
+    json.attributeArray("ranks", [&] {
+      for (const ProfileStaticRankCost &rank : model.ranks)
+        json.object([&] {
+          json.attribute("logical_rank", rank.logicalRank);
+          json.attributeBegin("work");
+          emitStaticRankWork(json, rank.work);
+          json.attributeEnd();
+        });
+    });
+  });
+}
+
 llvm::Expected<std::vector<RawVariant>>
 parseVariants(const llvm::json::Object &root, const PackageParseLimits &limits,
               uint64_t &totalRecords) {
@@ -476,9 +937,11 @@ parseVariants(const llvm::json::Object &root, const PackageParseLimits &limits,
         requireObject(value, context);
     if (!object)
       return object.takeError();
-    if (llvm::Error error = requireFields(
-            **object, {"id", "role", "package_ref", "manifest_sha256"}, {},
-            context))
+    if (llvm::Error error =
+            requireFields(**object,
+                          {"id", "role", "package_ref", "manifest_sha256",
+                           "static_cost_model"},
+                          {}, context))
       return std::move(error);
 
     RawVariant variant;
@@ -498,10 +961,20 @@ parseVariants(const llvm::json::Object &root, const PackageParseLimits &limits,
         requireString(**object, "manifest_sha256", context, limits);
     if (!digest)
       return digest.takeError();
+    const llvm::json::Value *staticCostValue =
+        (*object)->get("static_cost_model");
+    if (!staticCostValue)
+      return invalid(context + ".static_cost_model is missing");
+    llvm::Expected<ProfileStaticCostModel> staticCostModel =
+        parseStaticCostModel(*staticCostValue, limits, totalRecords,
+                             context + ".static_cost_model");
+    if (!staticCostModel)
+      return staticCostModel.takeError();
     variant.id = *id;
     variant.role = *role;
     variant.packageReference = *reference;
     variant.manifestDigest = *digest;
+    variant.staticCostModel = std::move(*staticCostModel);
     result.push_back(std::move(variant));
   }
   return result;
@@ -1162,9 +1635,9 @@ loadVariantPackage(const RawVariant &variant, llvm::StringRef companionRoot,
     return package.takeError();
 
   return ProfileVariantPackage(variant.id, ProfileVariantRole::FinalArtifact,
-                               variant.packageReference,
-                               variant.manifestDigest,
-                               *packageDirectory, std::move(*package));
+                               variant.packageReference, variant.manifestDigest,
+                               variant.staticCostModel, *packageDirectory,
+                               std::move(*package));
 }
 
 llvm::Expected<ProfileCapturePackage>
@@ -1243,22 +1716,20 @@ getProfileTargetSiteKind(const TargetCallDescriptor &descriptor) {
 
 ProfileVariantPackage::ProfileVariantPackage(
     std::string id, ProfileVariantRole role, std::string packageReference,
-    std::string manifestDigest, std::string packageDirectory,
-    VerifiedPackageManifest package)
+    std::string manifestDigest, ProfileStaticCostModel staticCostModel,
+    std::string packageDirectory, VerifiedPackageManifest package)
     : id(std::move(id)), role(role),
       packageReference(std::move(packageReference)),
       manifestDigest(std::move(manifestDigest)),
+      staticCostModel(std::move(staticCostModel)),
       packageDirectory(std::move(packageDirectory)),
       package(std::move(package)) {}
 
-ProfileCapturePackage::ProfileCapturePackage(std::string variantId,
-                                             ProfileCaptureKind capture,
-                                             std::string packageReference,
-                                             std::string manifestDigest,
-                                             std::string recordABI,
-                                             uint64_t recordBytes,
-                                             std::string packageDirectory,
-                                             VerifiedPackageManifest package)
+ProfileCapturePackage::ProfileCapturePackage(
+    std::string variantId, ProfileCaptureKind capture,
+    std::string packageReference, std::string manifestDigest,
+    std::string recordABI, uint64_t recordBytes, std::string packageDirectory,
+    VerifiedPackageManifest package)
     : variantId(std::move(variantId)), capture(capture),
       packageReference(std::move(packageReference)),
       manifestDigest(std::move(manifestDigest)),
@@ -1316,6 +1787,11 @@ llvm::StringRef stringifyProfileTargetSiteKind(ProfileTargetSiteKind kind) {
     return "direct-dte-wait";
   }
   llvm_unreachable("unknown profile target site kind");
+}
+
+void writeProfileStaticCostModel(llvm::json::OStream &json,
+                                 const ProfileStaticCostModel &model) {
+  emitStaticCostModel(json, model);
 }
 
 const ProfileVariantPackage *

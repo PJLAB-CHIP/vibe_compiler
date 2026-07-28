@@ -247,8 +247,9 @@ device elapsed time、Primary 输出或局部 counter 证据。
 5. **Completion replay**：完整 host build/unit/lit/no-card；实现和host门禁稳定后，用户明确要求板测时才以
    本轮新 build、新 package、新 launch 和新 output 串行完成板端 gate。
 
-旧 companion v2/v3、evidence v4/v6 的 Add 输出以及任何未携带当前 record ABI、Primary TX stream event pair
-和Kcore/Trace成本归因的旧输出只保留为历史审计记录，不能为本合同的 companion v4 / evidence v7 代签。
+旧 companion v2/v3/v4、evidence v4/v6/v7 的输出以及任何未携带当前 record ABI、Primary TX stream event pair、
+Kcore/Trace成本归因或final Instr静态work的旧输出只保留为历史审计记录，不能为本合同的 companion v5 /
+evidence v8 代签。
 Q9 在含真实 Direct-DTE wait 的
 新协议板端 gate 完成前保持 `doing`。
 
@@ -330,3 +331,52 @@ Pipeline position:
 - Completion gate:
   analyzer fixture覆盖完整、部分和零值PMU；HTML锁定三个时间域标签、engine最小/平均/最大及work-volume
   警告；focused report测试和资源发布验证通过。真实板端数值只有用户另行要求新运行时才更新。
+
+## Post-completion timeline density and static hardware-cost reference
+
+高密度Trace不能把同一engine的重复动态提交画成无法分辨的实心墙。报告默认只在重复事件足够多时，
+按`engine + site_id`聚合同一tile的`command-submit`展示；聚合区间明确标注“范围包含事件间空隙，
+不是连续busy或可相加duration”。精确`operation-window`不聚合，事件较少的case保持完整视图，且用户可
+随时切换Full Trace。默认折叠只改变离线HTML展示，不修改`analysis.json`、事件identity、计时边界或
+下钻证据。
+
+Profiler同时发布一份只读静态硬件成本参考。compiler从最终接受的每rank Instr IR重新运行typed
+instruction cost analysis，按knowledge/reason保存CT/NE logical ops、DDR读写、SPM movement和NoC
+收发work，以及`TargetScheduleCostPolicy`中已建立的峰值率。report只对有硬件事实的维度换算：
+
+- CT/NE按每tile peak throughput给理论峰值下界；
+- RDMA/WDMA先按整卡DDR总字节和`200 GB/s`给whole-card traffic floor；只有各rank workload完全对称时，
+  才把该值作为per-tile active-time对照启发式；
+- TDMA展示静态SPM movement work，但当前target contract没有SPM bandwidth或issue latency，因此预计
+  时间固定为Unavailable；
+- Direct-DTE只把静态NoC payload按`128 GB/s`显示为单方向链路序列化参考，不把它命名为collective
+  latency、route estimate或实测时间。
+
+每个engine行必须同时显示work、模型状态、假设速率、理论/启发式时间、对应PMU measured active ns及
+measured/model ratio；Unknown、Unsupported和Overflow不能写成零。所有估算都明确不含startup、排队、
+bank conflict、route、congestion、同步、wait、control和retirement，也不与Primary device elapsed或
+其它engine行相加，不进入compiler ranking或winner选择。
+
+Pipeline position:
+- Upstream artifact / IR:
+  compiler接受并通过late gate的最终per-rank Instr IR、typed instruction cost、TargetProfileId和
+  `TargetScheduleCostPolicy`；report另消费本次Trace的per-tile engine PMU active ns。
+- Current stage responsibility:
+  companion发布与final-artifact manifest绑定的精确静态work和硬件率；runtime只验证并原样传递所选
+  variant模型；analyzer生成不混入measurement ledger的理论下界、显式启发式或Unavailable对照，并对
+  高密度重复submit做可逆展示聚合。
+- Output artifact / IR:
+  版本化companion/evidence中的`static_cost_model`、analysis中的hardware cost reference，以及保留
+  Full Trace的离线HTML；不修改production package、accepted IR和raw event序列。
+- Downstream consumer:
+  用户按engine对照“最终IR静态work → 已建立硬件率 → 参考时间 → 实测active ns”，并在需要时展开精确
+  动态event。
+- User-level driver / named pipeline:
+  现有`wafer-compile --profile`与普通`wafer-run`入口不变。
+- Explicit non-goals:
+  不按symbol或case名字恢复work，不校准或猜测未知硬件参数，不预测端到端kernel latency，不把聚合范围
+  当连续busy，不把静态模型回灌调度选择，不新增板端launch。
+- Completion gate:
+  compiler publication/runtime strict parsing跨语言contract测试覆盖known和unknown metric；report fixture
+  覆盖CT/NE、对称/非对称DDR、TDMA unavailable和DTE reference；密集DTE默认可读、Full Trace可恢复全部
+  event、稀疏Add不折叠；focused host build/test及最终HTML视觉检查通过。

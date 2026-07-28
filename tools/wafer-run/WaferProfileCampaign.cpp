@@ -388,8 +388,7 @@ bool eventMatchesSite(const ProfileTargetCallSite &site,
   case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_COMPLETION_WAIT:
   case WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_CLEANUP:
     return site.siteKind == ProfileTargetSiteKind::DirectDTEWait &&
-           site.engine &&
-           engineMatches(*site.engine, event.engine);
+           site.engine && engineMatches(*site.engine, event.engine);
   case WAFER_TX81_PROFILER_EVENT_TARGET_SITE:
     return event.engine == WAFER_TX81_PROFILER_ENGINE_NONE;
   }
@@ -614,8 +613,7 @@ void emitCandidateEvidence(llvm::json::OStream &json,
                       json.attribute("observation_status",
                                      "engine-delta-bounded");
                     else
-                      json.attribute("observation_status",
-                                     "counter-no-change");
+                      json.attribute("observation_status", "counter-no-change");
                   } else {
                     json.attribute("ncc_counter_valid",
                                    llvm::json::Value(nullptr));
@@ -738,7 +736,8 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
   llvm::json::OStream json(output, 2);
   json.object([&] {
     json.attribute("schema", "wafer.profile.evidence");
-    json.attribute("schema_version", int64_t(7));
+    json.attribute("schema_version",
+                   int64_t(kBoardProfileEvidenceSchemaVersion));
     json.attribute("run_id", runId);
     json.attributeObject("identity", [&] {
       json.attribute("production_manifest_sha256",
@@ -754,6 +753,9 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
       json.attribute("site_correlation_basis", kProfileSiteCorrelationBasis);
       json.attribute("record_abi", kProfileRecordABI);
     });
+    json.attributeBegin("static_cost_model");
+    writeProfileStaticCostModel(json, candidate.variant->getStaticCostModel());
+    json.attributeEnd();
     json.attributeObject("output_validation", [&] {
       json.attribute("mode", stringifyBoardProfileOutputValidationMode(
                                  outputValidation.getMode()));
@@ -1476,8 +1478,7 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
     return primary.takeError();
   if (!primary->deviceExecutionNanoseconds)
     return invalid("primary board device execution timing is unavailable");
-  if (primary->hostSubmitNanoseconds >
-      primary->launchToCompletionNanoseconds)
+  if (primary->hostSubmitNanoseconds > primary->launchToCompletionNanoseconds)
     return invalid("primary board host submit observation exceeds the "
                    "launch-to-completion envelope");
 
@@ -1647,8 +1648,7 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
                 return std::move(error);
               observation.deviceExecutionNanoseconds =
                   result->deviceExecutionNanoseconds;
-              observation.hostSubmitNanoseconds =
-                  result->hostSubmitNanoseconds;
+              observation.hostSubmitNanoseconds = result->hostSubmitNanoseconds;
               observation.launchToCompletionNanoseconds =
                   result->launchToCompletionNanoseconds;
               observation.completionObservationResolutionNanoseconds =

@@ -99,7 +99,7 @@ class ProfileReportFixture:
         }
         evidence = {
             "schema": "wafer.profile.evidence",
-            "schema_version": 7,
+            "schema_version": 8,
             "run_id": self.run_id,
             "measurement": {"samples": [sample]},
             "experiment": {
@@ -108,7 +108,7 @@ class ProfileReportFixture:
         }
         analysis = {
             "schema": "wafer.profile.analysis",
-            "schema_version": 6,
+            "schema_version": 7,
             "run_id": self.run_id,
             "valid": True,
             "validity": {"trace": True, "cost_accounting": True},

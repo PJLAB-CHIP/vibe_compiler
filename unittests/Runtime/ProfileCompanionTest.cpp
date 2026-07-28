@@ -89,6 +89,50 @@ protected:
     return digestFile(path);
   }
 
+  static wafer::runtime::ProfileStaticCostMetric
+  knownStaticCost(uint64_t value) {
+    return {"known", value, "none"};
+  }
+
+  static wafer::runtime::ProfileStaticCostModel makeStaticCostModel() {
+    using namespace wafer::runtime;
+    ProfileStaticCostModel model;
+    model.model = kProfileStaticCostModelName.str();
+    model.scope = kProfileStaticCostModelScope.str();
+    model.rates.cardDDRBytesPerSecond = UINT64_C(200000000000);
+    model.rates.directionalNoCBytesPerSecond = UINT64_C(128000000000);
+    model.rates.f16Bf16NPULogicalOpsPerSecondPerTile = UINT64_C(8000000000000);
+    model.rates.f16Bf16VectorLogicalOpsPerSecondPerTile = UINT64_C(64000000000);
+    model.rates.f32VectorLogicalOpsPerSecondPerTile = UINT64_C(32000000000);
+    for (int64_t rank = 0; rank < 16; ++rank) {
+      ProfileStaticRankWork work;
+      work.npuF16Bf16LogicalOps = knownStaticCost(0);
+      work.npuOtherLogicalOps = {"unsupported", std::nullopt,
+                                 "unsupported-compute-type"};
+      work.vectorF16Bf16LogicalOps =
+          knownStaticCost(static_cast<uint64_t>(rank + 1));
+      work.vectorF32LogicalOps = knownStaticCost(0);
+      work.vectorOtherLogicalOps = knownStaticCost(0);
+      work.ddrReadBytes = knownStaticCost(64);
+      work.ddrWriteBytes = knownStaticCost(32);
+      work.spmMovementBytes = knownStaticCost(96);
+      work.nocTransmitBytes = knownStaticCost(0);
+      work.nocReceiveBytes = knownStaticCost(0);
+      work.directionalNoCTransmitBytes.north = knownStaticCost(0);
+      work.directionalNoCTransmitBytes.east = knownStaticCost(0);
+      work.directionalNoCTransmitBytes.south = knownStaticCost(0);
+      work.directionalNoCTransmitBytes.west = knownStaticCost(0);
+      work.collectiveNoCTransmitBytes.collectivePermute = knownStaticCost(0);
+      work.collectiveNoCTransmitBytes.allToAll = knownStaticCost(0);
+      work.collectiveNoCTransmitBytes.allGather = knownStaticCost(0);
+      work.collectiveNoCTransmitBytes.reduceScatter = knownStaticCost(0);
+      work.collectiveNoCTransmitBytes.allReduce =
+          knownStaticCost(rank == 15 ? UINT64_MAX : 0);
+      model.ranks.push_back({rank, std::move(work)});
+    }
+    return model;
+  }
+
   void writeActivation() {
     llvm::SmallString<256> activationPath(companion);
     llvm::sys::path::append(
@@ -267,6 +311,10 @@ protected:
             json.attribute("role", "final-artifact");
             json.attribute("package_ref", packageReference);
             json.attribute("manifest_sha256", digest);
+            json.attributeBegin("static_cost_model");
+            wafer::runtime::writeProfileStaticCostModel(json,
+                                                        makeStaticCostModel());
+            json.attributeEnd();
           });
         });
       });
@@ -287,9 +335,8 @@ protected:
         json.attribute("schema", "wafer-profile-target-call-site-map");
         json.attribute("schema_version",
                        int64_t(wafer::runtime::kProfileCompanionSchemaVersion));
-        json.attribute(
-            "site_basis",
-            "verified-target-llvm-entry-reachable-profile-target-call-preorder");
+        json.attribute("site_basis", "verified-target-llvm-entry-reachable-"
+                                     "profile-target-call-preorder");
         json.attribute("correlation_basis",
                        wafer::runtime::kProfileSiteCorrelationBasis);
         json.attribute("target_call_registry_size",
@@ -309,8 +356,8 @@ protected:
                     };
                     const std::array<SiteFixture, 4> sites = {{
                         {wafer::TargetCallBuiltin::RDMA, "ncc-command", "RDMA"},
-                        {wafer::TargetCallBuiltin::LocalFence,
-                         "ncc-completion", std::nullopt},
+                        {wafer::TargetCallBuiltin::LocalFence, "ncc-completion",
+                         std::nullopt},
                         {wafer::TargetCallBuiltin::DirectDTEBegin,
                          "direct-dte-control", std::nullopt},
                         {wafer::TargetCallBuiltin::DirectDTEWait,
@@ -323,26 +370,23 @@ protected:
                       const uint64_t ordinal =
                           static_cast<uint64_t>(&descriptor - begin);
                       json.object([&] {
-                        json.attribute("site_id",
-                                       static_cast<int64_t>(siteId));
+                        json.attribute("site_id", static_cast<int64_t>(siteId));
                         json.attribute("function_ordinal", int64_t(0));
                         json.attribute("block_ordinal", int64_t(0));
                         json.attribute("instruction_ordinal",
                                        static_cast<int64_t>(siteId));
                         json.attribute("target_call_ordinal",
                                        static_cast<int64_t>(ordinal));
-                        json.attribute(
-                            "target_call_symbol",
-                            badSiteSymbol && siteId == 0
-                                ? "wafer_invalid_target_call"
-                                : descriptor.symbol);
+                        json.attribute("target_call_symbol",
+                                       badSiteSymbol && siteId == 0
+                                           ? "wafer_invalid_target_call"
+                                           : descriptor.symbol);
                         json.attribute("site_kind", site.kind);
                         if (site.engine)
                           json.attribute("engine", *site.engine);
-                        json.attribute(
-                            "correlation_key",
-                            "registry:" + std::to_string(ordinal) +
-                                ":structural-occurrence:0");
+                        json.attribute("correlation_key",
+                                       "registry:" + std::to_string(ordinal) +
+                                           ":structural-occurrence:0");
                       });
                     }
                   });
@@ -419,6 +463,23 @@ TEST_F(ProfileCompanionTest, LoadsExactBoundCompanionAndSixteenRankSiteMap) {
       loaded->findVariant(wafer::runtime::ProfileVariantRole::FinalArtifact);
   ASSERT_NE(final, nullptr);
   EXPECT_EQ(final->getPackage().getManifest().rankCount, 16);
+  const auto &staticCost = final->getStaticCostModel();
+  EXPECT_EQ(staticCost.model, wafer::runtime::kProfileStaticCostModelName);
+  EXPECT_EQ(staticCost.scope, wafer::runtime::kProfileStaticCostModelScope);
+  ASSERT_EQ(staticCost.ranks.size(), 16u);
+  ASSERT_TRUE(
+      staticCost.ranks.front().work.vectorF16Bf16LogicalOps.value.has_value());
+  EXPECT_EQ(*staticCost.ranks.front().work.vectorF16Bf16LogicalOps.value, 1u);
+  EXPECT_EQ(staticCost.ranks.front().work.npuOtherLogicalOps.knowledge,
+            "unsupported");
+  EXPECT_FALSE(
+      staticCost.ranks.front().work.npuOtherLogicalOps.value.has_value());
+  ASSERT_TRUE(staticCost.ranks.back()
+                  .work.collectiveNoCTransmitBytes.allReduce.value.has_value());
+  EXPECT_EQ(
+      *staticCost.ranks.back().work.collectiveNoCTransmitBytes.allReduce.value,
+      UINT64_MAX);
+  EXPECT_FALSE(staticCost.rates.spmMovementBytesPerSecond.has_value());
   const auto *trace = loaded->findCapture(
       "final-artifact", wafer::runtime::ProfileCaptureKind::Trace);
   ASSERT_NE(trace, nullptr);
@@ -429,9 +490,8 @@ TEST_F(ProfileCompanionTest, LoadsExactBoundCompanionAndSixteenRankSiteMap) {
         wafer::runtime::ProfileCaptureKind::Trace}) {
     ASSERT_NE(loaded->findCapture("final-artifact", capture), nullptr);
   }
-  EXPECT_EQ(loaded->findCapture(
-                "final-artifact",
-                wafer::runtime::ProfileCaptureKind::Summary),
+  EXPECT_EQ(loaded->findCapture("final-artifact",
+                                wafer::runtime::ProfileCaptureKind::Summary),
             nullptr);
   const auto *siteMap = loaded->findSiteMap("final-artifact");
   ASSERT_NE(siteMap, nullptr);
@@ -528,18 +588,18 @@ TEST_F(ProfileCompanionTest, RejectsLegacyRecordABIWithCurrentRecordBytes) {
             std::string::npos);
 }
 
-TEST_F(ProfileCompanionTest, RejectsVersionThreeActivation) {
+TEST_F(ProfileCompanionTest, RejectsVersionFourActivation) {
   llvm::SmallString<256> activationPath(companion);
-  llvm::sys::path::append(
-      activationPath, wafer::runtime::kProfileCompanionActivationFileName);
+  llvm::sys::path::append(activationPath,
+                          wafer::runtime::kProfileCompanionActivationFileName);
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> existing =
       llvm::MemoryBuffer::getFile(activationPath);
   ASSERT_TRUE(static_cast<bool>(existing));
   std::string corrupted = (*existing)->getBuffer().str();
-  const std::string current = "\"schema_version\": 4";
+  const std::string current = "\"schema_version\": 5";
   size_t version = corrupted.find(current);
   ASSERT_NE(version, std::string::npos);
-  corrupted.replace(version, current.size(), "\"schema_version\": 3");
+  corrupted.replace(version, current.size(), "\"schema_version\": 4");
   ASSERT_NO_FATAL_FAILURE(writeText(activationPath, corrupted));
 
   auto loaded =
@@ -547,6 +607,29 @@ TEST_F(ProfileCompanionTest, RejectsVersionThreeActivation) {
   ASSERT_FALSE(static_cast<bool>(loaded));
   EXPECT_NE(llvm::toString(loaded.takeError())
                 .find("schema_version is not supported"),
+            std::string::npos);
+}
+
+TEST_F(ProfileCompanionTest, RejectsNonCanonicalStaticCostValue) {
+  llvm::SmallString<256> variantsPath(companion);
+  llvm::sys::path::append(variantsPath,
+                          wafer::runtime::kProfileCompanionVariantsFileName);
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> existing =
+      llvm::MemoryBuffer::getFile(variantsPath);
+  ASSERT_TRUE(static_cast<bool>(existing));
+  std::string corrupted = (*existing)->getBuffer().str();
+  const std::string value = "\"value\": \"0\"";
+  size_t position = corrupted.find(value);
+  ASSERT_NE(position, std::string::npos);
+  corrupted.replace(position, value.size(), "\"value\": \"00\"");
+  ASSERT_NO_FATAL_FAILURE(writeText(variantsPath, corrupted));
+  ASSERT_NO_FATAL_FAILURE(writeActivation());
+
+  auto loaded =
+      wafer::runtime::loadVerifiedProfileCompanion(companion, production);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(llvm::toString(loaded.takeError())
+                .find("canonical uint64 decimal string"),
             std::string::npos);
 }
 
@@ -591,11 +674,12 @@ TEST_F(ProfileCompanionTest, RejectsMissingEngineOnNCCCommandSite) {
   auto loaded =
       wafer::runtime::loadVerifiedProfileCompanion(companion, production);
   ASSERT_FALSE(static_cast<bool>(loaded));
-  EXPECT_NE(llvm::toString(loaded.takeError()).find("requires its typed engine"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(loaded.takeError()).find("requires its typed engine"),
+      std::string::npos);
 }
 
-TEST_F(ProfileCompanionTest, RejectsSummaryCaptureInVersionFour) {
+TEST_F(ProfileCompanionTest, RejectsSummaryCaptureInVersionFive) {
   llvm::SmallString<256> planPath(companion);
   llvm::sys::path::append(planPath,
                           wafer::runtime::kProfileCompanionPlanFileName);
@@ -613,9 +697,9 @@ TEST_F(ProfileCompanionTest, RejectsSummaryCaptureInVersionFour) {
   auto loaded =
       wafer::runtime::loadVerifiedProfileCompanion(companion, production);
   ASSERT_FALSE(static_cast<bool>(loaded));
-  EXPECT_NE(llvm::toString(loaded.takeError())
-                .find("not a supported capture kind"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(loaded.takeError()).find("not a supported capture kind"),
+      std::string::npos);
 }
 
 TEST_F(ProfileCompanionTest, RejectsMissingActivation) {

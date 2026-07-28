@@ -67,7 +67,7 @@ class ProfileReportFixture:
         (self.runs / "current").symlink_to(self.run_directory)
         evidence = {
             "schema": "wafer.profile.evidence",
-            "schema_version": 7,
+            "schema_version": 8,
             "run_id": self.run_id,
             "measurement": {
                 "samples": [
@@ -94,7 +94,7 @@ class ProfileReportFixture:
         }
         analysis = {
             "schema": "wafer.profile.analysis",
-            "schema_version": 6,
+            "schema_version": 7,
             "run_id": self.run_id,
             "validity": {"trace": True, "pmu": True},
             "final_artifact": {
