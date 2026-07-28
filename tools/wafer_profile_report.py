@@ -3103,7 +3103,7 @@ h1{font-size:23px;margin:3px 0 2px;line-height:1.2}.run-id{color:var(--muted);fo
 .tile-grid{display:flex;flex-wrap:wrap;display:grid;grid-template-columns:repeat(4,minmax(68px,1fr));gap:5px}
 .tile-card{flex:0 0 calc(25% - 6px);margin:3px;border:1px solid var(--line);border-radius:7px;padding:8px;background:var(--soft);cursor:pointer;text-align:left}
 .tile-card:hover{border-color:var(--accent)}.tile-card b{display:flex;justify-content:space-between}.tile-card small{display:block;color:var(--muted);margin-top:4px}
-.method-list{display:grid;gap:8px}.method-row{padding-bottom:7px;border-bottom:1px solid var(--line)}.method-row:last-child{border:0}
+.method-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.method-row{padding:8px 0;border-bottom:1px solid var(--line)}.method-row:last-child{border-bottom:1px solid var(--line)}
 .method-row b{display:block;font-size:11px}.method-row span{color:var(--muted);font-size:11px}
 .toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:9px 10px;background:var(--panel);border:1px solid var(--line);border-radius:9px;margin-bottom:9px}
 .toolbar label{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:11px}.toolbar select,.toolbar input[type=search]{border:1px solid var(--line-strong);border-radius:6px;background:#fff;padding:5px 7px;color:var(--ink)}
@@ -3134,9 +3134,7 @@ h1{font-size:23px;margin:3px 0 2px;line-height:1.2}.run-id{color:var(--muted);fo
 .event:hover,.event.selected{outline:2px solid #17212b;outline-offset:1px;z-index:2}
 .event.marker{width:3px!important;min-width:3px;border-radius:0;box-shadow:0 0 0 1px #fff,0 0 0 2px currentColor}
 .event.ambiguous{box-shadow:0 0 0 2px #a45b06}.event.zero{box-shadow:0 0 0 2px #667085}
-.command-group{position:absolute;top:5px;height:14px;min-width:8px;border:0;border-top:2px solid var(--event-stroke);border-left:1px solid var(--event-stroke);border-right:1px solid var(--event-stroke);border-radius:3px 3px 0 0;background:transparent;cursor:pointer;z-index:2}
-.command-group:hover,.command-group:focus{outline:2px solid #17212b;outline-offset:1px;z-index:3}.command-group-count{position:absolute;right:-2px;top:-14px;padding:0 3px;border:1px solid var(--event-stroke);border-radius:3px;background:#fff;color:var(--event-stroke);font:700 9px/13px ui-monospace,SFMono-Regular,monospace;white-space:nowrap}
-.timeline-key{display:flex;flex-wrap:wrap;gap:12px;margin:0 0 9px;color:var(--muted);font-size:11px}.timeline-key span{display:inline-flex;align-items:center;gap:6px}.key-swatch{display:inline-block;width:28px;height:10px;border-radius:3px}.key-submit{background:var(--ct);box-shadow:0 0 0 1px #1d4ed8}.key-bound{height:16px;background:#dbeafe;border:1px dashed var(--ct)}.key-group{height:12px;border-top:2px solid var(--ct);border-left:1px solid var(--ct);border-right:1px solid var(--ct);border-radius:3px 3px 0 0}.key-pmu{width:auto;height:auto;font-weight:700;color:var(--ink)}
+.timeline-key{display:flex;flex-wrap:wrap;gap:12px;margin:0 0 9px;color:var(--muted);font-size:11px}.timeline-key span{display:inline-flex;align-items:center;gap:6px}.key-swatch{display:inline-block;width:28px;height:10px;border-radius:3px}.key-submit{background:var(--ct);box-shadow:0 0 0 1px #1d4ed8}.key-bound{height:16px;background:#dbeafe;border:1px dashed var(--ct)}.key-pmu{width:auto;height:auto;font-weight:700;color:var(--ink)}
 .observation-notice[hidden]{display:none}
 .cost-segment{position:absolute;inset:2px auto 2px 0;border:0;border-radius:2px;cursor:pointer;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)}
 .cost-segment:hover,.cost-segment.selected{outline:2px solid #17212b;outline-offset:1px;z-index:3}
@@ -3157,7 +3155,7 @@ th,td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}td.
 pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;border-radius:8px;padding:12px;font:10px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
 .notice{border-left:3px solid var(--accent);background:var(--accent-soft);padding:8px 10px;color:#344054;font-size:11px;margin-bottom:9px}
 @supports(display:grid){.split>*:last-child{margin-left:0}.tile-card{margin:0}}
-@media(max-width:1050px){.sidebar{flex-basis:220px;width:220px}.kpis,.overview-kpis{grid-template-columns:repeat(2,1fr)}.split,.cost-tables{grid-template-columns:1fr;flex-direction:column}.split>*:last-child{width:100%;margin:10px 0 0}}
+@media(max-width:1050px){.sidebar{flex-basis:220px;width:220px}.kpis,.overview-kpis{grid-template-columns:repeat(2,1fr)}.split,.cost-tables{grid-template-columns:1fr;flex-direction:column}.split>*:last-child{width:100%;margin:10px 0 0}.method-list{grid-template-columns:1fr}}
 @media(max-width:720px){.shell{display:block}.sidebar{position:static;width:auto;height:auto}.tree{display:none}.main{padding:14px}.nav{grid-template-columns:repeat(2,1fr)}.kpis{grid-template-columns:1fr}.tile-grid{grid-template-columns:repeat(2,1fr)}.tile-card{flex-basis:calc(50% - 6px)}.topbar{display:block}.artifact-links{margin-top:10px}.diag{grid-template-columns:64px minmax(0,1fr);gap:3px 8px}.diag>:nth-child(3){grid-column:1}.diag>:nth-child(4){grid-column:2}}
 </style>
 </head>
@@ -3197,12 +3195,10 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
         <div class="card"><div class="metric-label">Trace coverage</div><div id="traceCoverage" class="metric-value"></div><div id="traceNote" class="metric-note"></div></div>
       </div>
       <div class="card" style="margin-bottom:10px"><div class="section-head"><div><h2>Timing domains · not additive</h2><p>TX stream包络、Host submit与Host completion使用不同边界；不通过相减虚构queue delay或engine-only时间。</p></div></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Scope</th><th>Clock / source</th><th class="num">Duration</th><th class="num">Nanoseconds</th><th>Status</th><th>Interpretation</th></tr></thead><tbody id="timingRows"></tbody></table></div></div>
-      <div class="split">
-        <div class="card"><div class="section-head"><div><h2>Card 0 · Tile map</h2><p>点击 tile 进入本地 engine timeline。</p></div></div><div id="overviewTiles" class="tile-grid"></div></div>
-        <div class="card"><div class="section-head"><div><h2>Measurement contract</h2></div></div><div id="methodList" class="method-list"></div></div>
-      </div>
+      <div class="card"><div class="section-head"><div><h2>Card 0 · Tile map</h2><p>点击 tile 进入本地 engine timeline。</p></div></div><div id="overviewTiles" class="tile-grid"></div></div>
       <div class="card" style="margin-top:10px"><div class="section-head"><div><h2>NCC engine active time · Trace PMU</h2><p>五类NCC engine均为另一轮Trace diagnostic的per-tile PMU ns。最小/平均/最大用于看Tile分布；Σ仅是work volume，不是wall time。Direct-DTE没有calibrated engine ns，单独在Communication展示。</p></div></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Engine</th><th>Source / unit</th><th class="num">Min / Tile</th><th class="num">Avg / Tile</th><th class="num">Max / Tile</th><th class="num">Active Tiles</th><th class="num">Available Tiles</th><th class="num">Σ Tile Work</th><th>Status</th></tr></thead><tbody id="overviewEngineRows"></tbody></table></div></div>
       <div class="card" style="margin-top:10px"><div class="section-head"><div><h2>Hardware cost reference · static model</h2><p>基于最终Instr workload与硬件峰值的非加和参考。它不是实测值，不是Primary分项，也不会回灌编译器winner选择。</p></div></div><div class="notice">CT/NE显示per-tile理论峰值下界；RDMA/WDMA只有16-rank workload对称时才显示整卡带宽共享启发式；TDMA因SPM带宽未知不估时；Direct-DTE只显示单链路payload序列化参考，不代表collective耗时。</div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Engine</th><th>Exact final-program work</th><th>Model / status</th><th class="num">Model reference</th><th class="num">Measured active</th><th class="num">Measured ÷ model</th><th>Boundary / caveat</th></tr></thead><tbody id="hardwareCostRows"></tbody></table></div></div>
+      <div class="card" style="margin-top:10px"><div class="section-head"><div><h2>Measurement contract</h2><p>计时边界、时钟域和证据解释集中放在页面末尾，供需要时查阅。</p></div></div><div id="methodList" class="method-list"></div></div>
     </section>
 
     <section id="view-timeline" class="view" data-view-panel="timeline">
@@ -3211,7 +3207,6 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
       <div class="timeline-key" aria-label="Timeline interval legend">
         <span><i class="key-swatch key-submit"></i><b>实心块</b>：精确 command submit / DTE operation 区间</span>
         <span><i class="key-swatch key-bound"></i><b>浅色虚线框</b>：PMU 活动保守观测范围，不是持续 busy</span>
-        <span><i class="key-swatch key-group"></i><b>×N 聚合括号</b>：同一 Engine + Site 的重复 submit 覆盖范围；包含空隙，不是连续 busy 或 duration</span>
         <span><i class="key-swatch key-pmu">ns</i><b>Engine work</b>：PMU 测得耗时，但没有精确起止位置</span>
       </div>
       <div id="timelineOverlapNotice" class="notice observation-notice" hidden></div>
@@ -3219,8 +3214,7 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
         <label>Tile <select id="timelineTile"></select></label>
         <span id="engineFilters"></span>
         <span class="spacer"></span>
-        <label class="engine-toggle"><input id="timelineFullTrace" type="checkbox">完整 Trace</label>
-        <span id="timelineDensityNote" class="metric-note"></span>
+        <span id="timelineEventNote" class="metric-note"></span>
         <label>Zoom <input id="timelineZoom" type="range" min="1" max="8" value="1" step="0.25"></label>
         <button id="timelineFit" type="button">Fit</button>
       </div>
@@ -3454,9 +3448,7 @@ const TERM_GUIDANCE={
 };
 const DTE_PHASES=Object.fromEntries(["direct-dte-wait","direct-dte-peer-ready-wait","direct-dte-setup-issue","direct-dte-completion-wait","direct-dte-cleanup"].map(key=>[key,TERMS.event[key].label]));
 const STATES=["Measured","Sampled","Bounded","Zero delta","Zero-delta marker","Ambiguous","Attribution ambiguous","Unavailable","Incomplete","Invalid"];
-const TIMELINE_AUTO_SUBMIT_LIMIT=12;
-const TIMELINE_AUTO_MIN_SAVINGS=4;
-const state={view:"overview",tile:0,zoom:1,engines:new Set(ENGINES),selectedEvent:null,selectedCost:null,fullTrace:false,raw:"analysis"};
+const state={view:"overview",tile:0,zoom:1,engines:new Set(ENGINES),selectedEvent:null,selectedCost:null,raw:"analysis"};
 const q=(selector,root)=>(root||document).querySelector(selector);
 const qa=(selector,root)=>Array.prototype.slice.call((root||document).querySelectorAll(selector));
 const escapeHtml=value=>String(value==null?"—":value).replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
@@ -3492,35 +3484,6 @@ const siteRefText=site=>site==null?"—":`#${site.site_id} / instance ${site.ins
 const selectedTile=()=>finalArtifact.tiles.find(row=>row.tile===state.tile);
 const tileEvents=()=>finalArtifact.timeline_events.filter(row=>row.tile===state.tile);
 
-function commandSubmitGroups(events){
-  const groups=new Map();
-  events.filter(event=>event.engine_lane_visible&&event.display_interval_role==="command-submit").forEach(event=>{
-    const key=`${event.engine}:${event.site_id}`;
-    if(!groups.has(key))groups.set(key,{key,engine:event.engine,siteId:event.site_id,events:[]});
-    groups.get(key).events.push(event);
-  });
-  return Array.from(groups.values()).map(group=>{
-    group.events.sort((left,right)=>left.sequence-right.sequence);
-    group.plotBegin=Math.min(...group.events.map(event=>event.plot_begin_fraction));
-    group.plotEnd=Math.max(...group.events.map(event=>event.plot_end_fraction));
-    group.beginCycle=Math.min(...group.events.map(event=>event.trace_entry_offset_begin_cpu_cycles));
-    group.endCycle=Math.max(...group.events.map(event=>event.trace_entry_offset_end_cpu_cycles));
-    return group;
-  }).sort((left,right)=>left.plotBegin-right.plotBegin||left.events[0].sequence-right.events[0].sequence);
-}
-
-function timelineDensity(events){
-  const submits=events.filter(event=>event.engine_lane_visible&&event.display_interval_role==="command-submit");
-  const groups=commandSubmitGroups(events);
-  const savings=submits.length-groups.length;
-  return {
-    dense:submits.length>TIMELINE_AUTO_SUBMIT_LIMIT&&savings>=TIMELINE_AUTO_MIN_SAVINGS,
-    submitCount:submits.length,
-    groupCount:groups.length,
-    savings,
-  };
-}
-
 function navigate(view){
   state.view=view;
   qa("[data-view-panel]").forEach(node=>node.classList.toggle("active",node.dataset.viewPanel===view));
@@ -3551,10 +3514,8 @@ function focusEvent(tile,siteId,engine,sequence=null){
   state.tile=Number(tile);
   state.selectedEvent=event;
   state.selectedCost=null;
-  state.fullTrace=true;
   if(ENGINES.includes(engine))state.engines.add(engine);
   renderEngineFilters();
-  q("#timelineFullTrace").checked=true;
   q("#timelineTile").value=String(state.tile);
   q("#engineTile").value=String(state.tile);
   navigate("timeline");
@@ -3663,29 +3624,22 @@ function renderTimeline(){
   q("#timelineCanvas").style.minWidth=`${Math.max(100,state.zoom*100)}%`;
   renderRuler(tile.trace_entry_cpu_cycles);
   const events=tileEvents();
-  const density=timelineDensity(events);
-  const showFull=state.fullTrace||!density.dense;
   const visibleEventCount=events.filter(event=>event.engine_lane_visible).length;
-  const fullTraceToggle=q("#timelineFullTrace");
-  fullTraceToggle.checked=showFull;
-  fullTraceToggle.disabled=!density.dense;
-  q("#timelineDensityNote").textContent=!density.dense
-    ?`事件较少，已自动完整展示（${visibleEventCount} 条）`
-    :showFull
-    ?`完整 Trace：${visibleEventCount} 条原始 engine 事件`
-    :`已折叠重复 command submit：${density.submitCount} 条 → ${density.groupCount} 组；operation windows 保持精确。聚合范围包含空隙，不代表连续 busy 或 duration。`;
+  const commandCallCount=events.filter(event=>event.engine_lane_visible&&event.display_interval_role==="command-submit").length;
+  const dteCallCount=events.filter(event=>event.engine_lane_visible&&event.kind==="direct-dte-wait").length;
+  q("#timelineEventNote").textContent=`逐次展示 ${visibleEventCount} 条 engine / DTE 事件；其中 ${commandCallCount} 次 NCC 指令调用、${dteCallCount} 次 Direct-DTE 调用，不折叠。`;
   const overlaps=crossEngineBoundOverlaps(events);
   const overlapNotice=q("#timelineOverlapNotice");
-  overlapNotice.hidden=!showFull||overlaps.length===0;
-  if(showFull&&overlaps.length){
+  overlapNotice.hidden=overlaps.length===0;
+  if(overlaps.length){
     const pairs=Array.from(new Set(overlaps.map(item=>`${item.first.engine}/${item.second.engine}`))).join("、");
     overlapNotice.innerHTML=`<b>${tileLabel(tile.tile)} 有 ${overlaps.length} 组跨 engine PMU 观测范围相交（${escapeHtml(pairs)}）。</b>浅色虚线框只是 conservative activity bound，常因多个 outstanding event 共用 completion 采样上界而重叠；这不证明 engine 同时执行。实心块才是精确 command submit / operation 区间。`;
   }
   const gridlines=[20,40,60,80].map(position=>`<i class="lane-gridline" style="left:${position}%"></i>`).join("");
-  const semanticMarks=showFull?tile.semantic_timeline_segments.map((segment,index)=>`<button class="cost-segment cost-${escapeHtml(segment.category)}${state.selectedCost&&state.selectedCost.scope==="semantic"&&state.selectedCost.index===index?" selected":""}" data-cost-index="${index}" style="left:${segment.plot_begin_fraction*100}%;width:${Math.max(.15,(segment.plot_end_fraction-segment.plot_begin_fraction)*100)}%" title="${escapeHtml(term("semantic",segment.category).label)} · ${escapeHtml(segment.reason)} · ${number(segment.cycles)} cycles" aria-label="${escapeHtml(term("semantic",segment.category).label)} · ${number(segment.cycles)} cycles" type="button"></button>`).join(""):"";
+  const semanticMarks=tile.semantic_timeline_segments.map((segment,index)=>`<button class="cost-segment cost-${escapeHtml(segment.category)}${state.selectedCost&&state.selectedCost.scope==="semantic"&&state.selectedCost.index===index?" selected":""}" data-cost-index="${index}" style="left:${segment.plot_begin_fraction*100}%;width:${Math.max(.15,(segment.plot_end_fraction-segment.plot_begin_fraction)*100)}%" title="${escapeHtml(term("semantic",segment.category).label)} · ${escapeHtml(segment.reason)} · ${number(segment.cycles)} cycles" aria-label="${escapeHtml(term("semantic",segment.category).label)} · ${number(segment.cycles)} cycles" type="button"></button>`).join("");
   const traceRows=tile.trace_overhead_overlay.rows;
   const traceMarks=(location)=>traceRows.map((row,index)=>({row,index})).filter(item=>location==="outside-entry"?item.row.location_granularity==="before-entry"||item.row.location_granularity==="after-entry":item.row.location_granularity===location).map(item=>`<button class="overlay-part${state.selectedCost&&state.selectedCost.scope==="trace"&&state.selectedCost.index===item.index?" selected":""}" data-trace-cost-index="${item.index}" style="flex:${Math.max(1,item.row.cycles)} 1 0" title="${escapeHtml(term("trace",item.row.reason).label)} · ${number(item.row.cycles)} cycles · aggregate-only / non-additive" aria-label="${escapeHtml(term("trace",item.row.reason).label)} · ${number(item.row.cycles)} cycles" type="button"></button>`).join("");
-  const semanticLane=showFull?`<div class="lane lane-production" data-lane-engine="Trace-run Kcore ledger"><div class="lane-label"><b>Trace-run Kcore ledger</b><span>${number(tile.semantic_partition.exclusive_cycles)} cyc</span></div><div class="lane-track">${gridlines}${semanticMarks}</div></div>`:"";
+  const semanticLane=`<div class="lane lane-production" data-lane-engine="Trace-run Kcore ledger"><div class="lane-label"><b>Trace-run Kcore ledger</b><span>${number(tile.semantic_partition.exclusive_cycles)} cyc</span></div><div class="lane-track">${gridlines}${semanticMarks}</div></div>`;
   const exactEventMark=(event,index,showBound)=>{
     const engine=event.engine;
     const variant=`event-v${index%3}`;
@@ -3694,31 +3648,23 @@ function renderTimeline(){
     const role=event.display_interval_role;
     const roleLabel=term("interval",role).label;
     const pointRole=role==="marker";
-    const main=`<button class="event event-${engine} ${variant}${pointRole?" marker":""}${event.attribution_ambiguous?" ambiguous":""}${event.zero_delta_marker?" zero":""}${selected?" selected":""}" data-interval-role="${escapeHtml(role)}" data-event-sequence="${event.sequence}" data-event-site="${event.site_id}" style="left:${event.plot_begin_fraction*100}%;width:${pointRole?".2":Math.max(.2,(event.plot_end_fraction-event.plot_begin_fraction)*100)}%" title="${escapeHtml(engine)} · ${escapeHtml(roleLabel)} · ${number(event.operation_window_cpu_cycles)} Kcore CPU cycles" aria-label="${escapeHtml(engine)} · ${escapeHtml(roleLabel)} · site ${event.site_id}" type="button"></button>`;
+    const main=`<button class="event event-${engine} ${variant}${pointRole?" marker":""}${event.attribution_ambiguous?" ambiguous":""}${event.zero_delta_marker?" zero":""}${selected?" selected":""}" data-interval-role="${escapeHtml(role)}" data-event-sequence="${event.sequence}" data-event-site="${event.site_id}" style="left:${event.plot_begin_fraction*100}%;width:${pointRole?".2":Math.max(.2,(event.plot_end_fraction-event.plot_begin_fraction)*100)}%" title="${escapeHtml(engine)} · site ${event.site_id} · instance ${number(event.site_instance_sequence)} · ${number(event.operation_trace_entry_offset_begin_cpu_cycles)} → ${number(event.operation_trace_entry_offset_end_cpu_cycles)} rdcycle · ${number(event.operation_window_cpu_cycles)} cycles" aria-label="${escapeHtml(engine)} · ${escapeHtml(roleLabel)} · site ${event.site_id} · instance ${number(event.site_instance_sequence)} · ${number(event.operation_window_cpu_cycles)} cycles" type="button"></button>`;
     return bound+main;
-  };
-  const groupedSubmitMark=(group,index)=>{
-    const variant=`event-v${index%3}`;
-    const first=group.events[0];
-    const count=group.events.length;
-    const width=Math.max(.3,(group.plotEnd-group.plotBegin)*100);
-    const title=`${group.engine} · site ${group.siteId} · ${count} 个 command submit · ${number(group.beginCycle)} → ${number(group.endCycle)} Kcore CPU cycles；聚合覆盖范围包含提交之间的空隙，不代表连续 busy 或 duration`;
-    return `<button class="command-group event-${group.engine} ${variant}" data-command-group-count="${count}" data-command-group-site="${group.siteId}" data-command-group-engine="${group.engine}" data-command-group-first-sequence="${first.sequence}" style="left:${group.plotBegin*100}%;width:${width}%" title="${escapeHtml(title)}" aria-label="${escapeHtml(group.engine)} · site ${group.siteId} · ${count} 个 command submit；点击展开完整 Trace" type="button"><span class="command-group-count">×${count}</span></button>`;
   };
   const engineLanes=ENGINES.map(engine=>{
     const visible=state.engines.has(engine);
     const engineEvents=events.filter(event=>event.engine_lane_visible&&event.engine===engine);
     const engineSummary=tile.engines.find(row=>row.engine===engine);
     const metric=engine==="DIRECT_DTE"?`${number(engineSummary&&engineSummary.wait_window_cpu_cycles)} cyc`:`${number(engineSummary&&engineSummary.engine_execution_time_ns)} ns`;
-    const submitGroups=commandSubmitGroups(engineEvents);
-    const operationEvents=engineEvents.filter(event=>event.display_interval_role!=="command-submit");
-    const compactMarks=operationEvents.map((event,index)=>exactEventMark(event,index,true)).join("")+submitGroups.map((group,index)=>group.events.length===1?exactEventMark(group.events[0],operationEvents.length+index,true):groupedSubmitMark(group,index)).join("");
-    const marks=visible?(showFull?engineEvents.map((event,index)=>exactEventMark(event,index,true)).join(""):compactMarks):"";
-    const displayCount=operationEvents.length+submitGroups.length;
-    const countLabel=showFull?`${engineEvents.length}`:`${engineEvents.length}→${displayCount}`;
+    const marks=visible?engineEvents.map((event,index)=>exactEventMark(event,index,true)).join(""):"";
+    const callCount=engine==="DIRECT_DTE"
+      ?engineEvents.filter(event=>event.kind==="direct-dte-wait").length
+      :engineEvents.filter(event=>event.display_interval_role==="command-submit").length;
+    const phaseCount=engine==="DIRECT_DTE"?engineEvents.length-callCount:0;
+    const countLabel=engine==="DIRECT_DTE"?`调用 ${callCount} · 内部阶段 ${phaseCount}`:`调用 ${callCount}`;
     return `<div class="lane" data-lane-engine="${engine}"><div class="lane-label"><b title="${escapeHtml(term("engine",engine).definition)}">${engine}</b><span>${metric} · ${countLabel}</span></div><div class="lane-track">${gridlines}${marks}</div></div>`;
   }).join("");
-  q("#timelineLanes").innerHTML=semanticLane+(showFull?`<div class="lane-separator"></div>`:"")+engineLanes;
+  q("#timelineLanes").innerHTML=semanticLane+`<div class="lane-separator"></div>`+engineLanes;
   q("#traceOverheadBar").innerHTML=traceMarks("inside-entry-unpositioned");
   q("#traceOutsideBar").innerHTML=traceMarks("outside-entry");
   qa("[data-cost-index]").forEach(node=>node.addEventListener("click",()=>{
@@ -3731,14 +3677,6 @@ function renderTimeline(){
     state.selectedCost={scope:"trace",index:Number(node.dataset.traceCostIndex)};
     renderTimeline();
   }));
-  qa("[data-command-group-count]").forEach(node=>node.addEventListener("click",()=>{
-    const event=events.find(row=>row.sequence===Number(node.dataset.commandGroupFirstSequence)&&row.site_id===Number(node.dataset.commandGroupSite)&&row.engine===node.dataset.commandGroupEngine);
-    state.fullTrace=true;
-    fullTraceToggle.checked=true;
-    state.selectedEvent=event||null;
-    state.selectedCost=null;
-    renderTimeline();
-  }));
   qa("[data-event-sequence]").forEach(node=>node.addEventListener("click",()=>{
     const event=events.find(row=>row.sequence===Number(node.dataset.eventSequence)&&row.site_id===Number(node.dataset.eventSite));
     state.selectedEvent=event||null;
@@ -3748,10 +3686,7 @@ function renderTimeline(){
   }));
   if(state.selectedCost)renderCostDetail();
   else{
-    const singletonKeys=new Set(commandSubmitGroups(events).filter(group=>group.events.length===1).map(group=>group.key));
-    const selectableEvents=showFull
-      ?events.filter(event=>event.engine_lane_visible)
-      :events.filter(event=>event.engine_lane_visible&&(event.display_interval_role!=="command-submit"||singletonKeys.has(`${event.engine}:${event.site_id}`)));
+    const selectableEvents=events.filter(event=>event.engine_lane_visible);
     if(!state.selectedEvent||state.selectedEvent.tile!==state.tile||!selectableEvents.some(event=>event.sequence===state.selectedEvent.sequence&&event.site_id===state.selectedEvent.site_id))state.selectedEvent=selectableEvents[0]||null;
     renderEventDetail();
   }
@@ -3859,7 +3794,6 @@ function renderDiagnostics(){
 qa("[data-view]").forEach(node=>node.addEventListener("click",()=>navigate(node.dataset.view)));
 q("#timelineTile").addEventListener("change",event=>{state.tile=Number(event.target.value);state.selectedEvent=null;state.selectedCost=null;renderTimeline()});
 q("#engineTile").addEventListener("change",event=>{state.tile=Number(event.target.value);renderEngines()});
-q("#timelineFullTrace").addEventListener("change",event=>{state.fullTrace=event.target.checked;state.selectedEvent=null;state.selectedCost=null;renderTimeline()});
 q("#timelineZoom").addEventListener("input",event=>{state.zoom=Number(event.target.value);renderTimeline()});
 q("#timelineFit").addEventListener("click",()=>{state.zoom=1;q("#timelineZoom").value="1";renderTimeline()});
 q("#siteSearch").addEventListener("input",renderSites);
@@ -3876,7 +3810,7 @@ renderSites();
 renderCommunication();
 renderGlossary();
 renderDiagnostics();
-window.__waferProfileUI={analysis,evidence,state,navigate,selectTile,focusEvent,renderTimeline,renderGlossary,crossEngineBoundOverlaps,commandSubmitGroups,timelineDensity};
+window.__waferProfileUI={analysis,evidence,state,navigate,selectTile,focusEvent,renderTimeline,renderGlossary,crossEngineBoundOverlaps};
 </script>
 </body>
 </html>"""

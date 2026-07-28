@@ -332,13 +332,13 @@ Pipeline position:
   analyzer fixture覆盖完整、部分和零值PMU；HTML锁定三个时间域标签、engine最小/平均/最大及work-volume
   警告；focused report测试和资源发布验证通过。真实板端数值只有用户另行要求新运行时才更新。
 
-## Post-completion timeline density and static hardware-cost reference
+## Post-completion exact-call timeline and static hardware-cost reference
 
-高密度Trace不能把同一engine的重复动态提交画成无法分辨的实心墙。报告默认只在重复事件足够多时，
-按`engine + site_id`聚合同一tile的`command-submit`展示；聚合区间明确标注“范围包含事件间空隙，
-不是连续busy或可相加duration”。精确`operation-window`不聚合，事件较少的case保持完整视图，且用户可
-随时切换Full Trace。默认折叠只改变离线HTML展示，不修改`analysis.json`、事件identity、计时边界或
-下钻证据。
+报告逐次展示同一tile上的每个真实动态调用，不按密度、engine或site折叠。每个实心块保留
+`site_id`、`site_instance_sequence`、精确operation begin/end和tile-local Kcore rdcycle数；NCC PMU
+active ns继续作为独立measurement显示，不与调用rdcycle混合。Program / Sites按静态site列出实际动态
+instance数，关联activity event数明确不是额外调用数。该展示不修改`analysis.json`、事件identity、
+计时边界或下钻证据。
 
 Profiler同时发布一份只读静态硬件成本参考。compiler从最终接受的每rank Instr IR重新运行typed
 instruction cost analysis，按knowledge/reason保存CT/NE logical ops、DDR读写、SPM movement和NoC
@@ -363,20 +363,20 @@ Pipeline position:
   `TargetScheduleCostPolicy`；report另消费本次Trace的per-tile engine PMU active ns。
 - Current stage responsibility:
   companion发布与final-artifact manifest绑定的精确静态work和硬件率；runtime只验证并原样传递所选
-  variant模型；analyzer生成不混入measurement ledger的理论下界、显式启发式或Unavailable对照，并对
-  高密度重复submit做可逆展示聚合。
+  variant模型；analyzer生成不混入measurement ledger的理论下界、显式启发式或Unavailable对照，并逐次
+  展示每个真实动态调用及其精确tile-local rdcycle区间。
 - Output artifact / IR:
   版本化companion/evidence中的`static_cost_model`、analysis中的hardware cost reference，以及保留
-  Full Trace的离线HTML；不修改production package、accepted IR和raw event序列。
+  全部动态调用的离线HTML；不修改production package、accepted IR和raw event序列。
 - Downstream consumer:
   用户按engine对照“最终IR静态work → 已建立硬件率 → 参考时间 → 实测active ns”，并在需要时展开精确
-  动态event。
+  动态event，按site instance读取实际调用次数和调用rdcycle。
 - User-level driver / named pipeline:
   现有`wafer-compile --profile`与普通`wafer-run`入口不变。
 - Explicit non-goals:
-  不按symbol或case名字恢复work，不校准或猜测未知硬件参数，不预测端到端kernel latency，不把聚合范围
-  当连续busy，不把静态模型回灌调度选择，不新增板端launch。
+  不按symbol或case名字恢复work，不校准或猜测未知硬件参数，不预测端到端kernel latency，不折叠或隐藏
+  动态调用，不把静态模型回灌调度选择，不新增板端launch。
 - Completion gate:
   compiler publication/runtime strict parsing跨语言contract测试覆盖known和unknown metric；report fixture
-  覆盖CT/NE、对称/非对称DDR、TDMA unavailable和DTE reference；密集DTE默认可读、Full Trace可恢复全部
-  event、稀疏Add不折叠；focused host build/test及最终HTML视觉检查通过。
+  覆盖CT/NE、对称/非对称DDR、TDMA unavailable和DTE reference；稀疏与密集case都逐次保留全部动态调用，
+  每个调用可查看site instance和精确rdcycle；focused host build/test及最终HTML视觉检查通过。

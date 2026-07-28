@@ -456,11 +456,10 @@ def _test_final_artifact(module: object) -> None:
         "Attribution ambiguous",
         "tile-local",
         "index.html · analysis.json · evidence.json",
-        "完整 Trace",
-        "同一 Engine + Site 的重复 submit 覆盖范围",
-        "事件较少，已自动完整展示",
-        "operation windows 保持精确",
-        "聚合范围包含空隙，不代表连续 busy 或 duration",
+        "逐次展示",
+        "NCC 指令调用",
+        "Direct-DTE 调用",
+        "不折叠",
     ):
         assert text in report
     assert "Hardware cost reference · static model" in report
@@ -647,8 +646,7 @@ def _test_dom_contract(report: str) -> None:
         "hardwareCostRows",
         "timelineTile",
         "engineFilters",
-        "timelineFullTrace",
-        "timelineDensityNote",
+        "timelineEventNote",
         "timelineZoom",
         "timelineFit",
         "timelineRuler",
@@ -693,11 +691,6 @@ def _test_dom_contract(report: str) -> None:
         "renderCommunication",
         "renderGlossary",
         "crossEngineBoundOverlaps",
-        "commandSubmitGroups",
-        "timelineDensity",
-        "data-command-group-count",
-        "TIMELINE_AUTO_SUBMIT_LIMIT",
-        'q("#timelineFullTrace").addEventListener("change"',
         "termCell",
     ):
         assert interaction in script
@@ -705,12 +698,18 @@ def _test_dom_contract(report: str) -> None:
         'event.display_interval_role==="command-submit"'
         in script
     )
-    assert (
-        'event.display_interval_role!=="command-submit"'
-        in script
-    )
-    assert 'const key=`${event.engine}:${event.site_id}`' in script
-    assert "state.fullTrace=true" in script
+    assert "site_instance_sequence" in script
+    assert "operation_trace_entry_offset_begin_cpu_cycles" in script
+    assert "operation_trace_entry_offset_end_cpu_cycles" in script
+    for removed in (
+        "commandSubmitGroups",
+        "timelineDensity",
+        "data-command-group-count",
+        "TIMELINE_AUTO_SUBMIT_LIMIT",
+        "timelineFullTrace",
+        "state.fullTrace",
+    ):
+        assert removed not in script
     assert all(f'"{engine}"' in script for engine in (
         "CT",
         "NE",
