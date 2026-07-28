@@ -1372,7 +1372,7 @@ host/no-card gate至少覆盖：
   并经过完整target publication；normal package原子发布且关闭profile时逐字节一致。`activation.json`必须最后写入，
   精确绑定production manifest SHA-256以及`plan.json`、`variants.json`、`site-map.json`各自SHA-256；
   missing/stale/partial、unknown/missing metadata key、digest mismatch和late-failure负例闭合；
-- companion恰有一个`final-artifact`未插桩execution binding和summary/count/trace三个物理capture binding；
+- companion恰有一个`final-artifact`未插桩execution binding和count/trace两个物理capture binding；
   schema拒绝`same_as`、第二个variant、重复capture或旧baseline/winner字段。它们不能成为user option、public package mode
   或新的input contract；
 - 五类CRT helper每个真实`TsmExecute`调用各产生一条固定版本record。one-to-many site使用`sub_index`，rank-local
@@ -1390,23 +1390,24 @@ host/no-card gate至少覆盖：
   必须验证其evidence `run_id`与目录身份，不能仅按名称删除。
 
 configured board gate复用原package的ResourceId resource/expected/output和board参数，不要求用户准备profile专用输入或选择mode。
-一次固定qualified session内先warm-up同一个未插桩final artifact，再串行完成10个primary sample；primary sample只计host
-steady-clock submit到all-rank trusted completion，并记录高分辨率observer的实际最大poll gap。随后才分别执行一次summary、
-count和trace diagnostic launch，总计固定14次launch。每次都必须通过all-rank status、D2H writable-output validation、
+一次固定qualified session内先执行一个未插桩final artifact Primary；它只计host steady-clock submit到all-rank trusted
+completion，并记录高分辨率observer的实际最大poll gap。随后依次执行一次Count和一次Trace diagnostic launch，总计固定
+三次launch。每次都必须通过all-rank status、D2H writable-output validation、
 trusted completion和cleanup；capture还必须通过record guards、capacity和terminal-state检查。
 timeout/device anomaly或首个正确性/协议异常立即停止，不retry/reset/power。
 
-external expected存在时给出semantic correctness；不存在时，同session warm-up exact output只能作为10次primary及
-instrumented capture的repeatability/equivalence oracle，absolute correctness必须标为unknown。最终报告只给10个
-submit-to-all-completion样本的median、range和逐次值，不形成跨candidate speed/优化结论。summary的entry-local cycles、
-aggregate PMU及count/trace都只用于per-tile/per-engine diagnostic analysis，profile/cache扰动不得进入总耗时统计。
+external expected存在时给出semantic correctness；不存在时，本次Primary exact output只作为Count/Trace的同session
+equivalence oracle，absolute correctness必须标为unknown。最终报告只给一个Primary submit-to-all-completion本次观测值，
+不称为稳态统计，也不形成跨candidate speed/优化结论。Trace header的entry-local cycles、aggregate PMU以及Count/Trace
+event evidence只用于per-tile/per-engine diagnostic analysis，profile/cache扰动不得进入总耗时。
 
 当前foundation允许16个local cycle domain的clock mapping显式为invalid/unavailable；报告此时必须为所选tile展示
 CT/NE/RDMA/WDMA/TDMA/Direct-DTE六条共享entry-local轴的lane，并声明不能比较不同tile的先后、overlap或global
 critical path。五类NCC lane只接受cumulative hardware execution counter实际增长的采样窗口；窗口保留观测gap，
 不能声明单指令零误差起止。Direct-DTE必须记录真实`direct_dte_wait`/completion窗口并读取DTE channel 0/1 PMU；
 即使raw delta为零也保留已验证的wait窗口，raw delta只作为未校准活动量，不能命名为busy duration。未来可增加带
-uncertainty的qualified affine mapping，但它是可选增强。finding必须区分`measured`、`correlated`和`unresolved`。
+uncertainty的qualified affine mapping，但它是可选增强。finding必须区分`Measured`、`Sampled`、`Bounded`、
+`Derived`、`Unavailable`、`Incomplete`和`Invalid`。
 profiler foundation只发布证据和人工分析；在环境、重复、held-out及适用的counter unit/clear/wrap/workload
 correlation全部闭合并冻结calibrated profile前，不得反馈candidate ranking。
 

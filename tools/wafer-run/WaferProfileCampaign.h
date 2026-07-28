@@ -20,16 +20,13 @@
 namespace wafer::runtime::cli {
 
 enum class BoardProfileProtocolLaunch {
-  Warmup,
-  Measurement,
-  Summary,
+  Primary,
   Count,
   Trace,
 };
 
 struct BoardProfileProtocolStep {
-  BoardProfileProtocolLaunch launch = BoardProfileProtocolLaunch::Warmup;
-  uint32_t sampleIndex = 0;
+  BoardProfileProtocolLaunch launch = BoardProfileProtocolLaunch::Primary;
 };
 
 struct BoardProfileTraceTileAudit {
@@ -57,7 +54,7 @@ struct BoardProfileMeasurementSample {
 
 struct BoardProfileProtocolResult {
   std::vector<BoardProfileMeasurementSample> samples;
-  std::string finalSampleId;
+  std::string primarySampleId;
 };
 
 enum class BoardProfileOutputValidationMode {
@@ -73,20 +70,20 @@ struct BoardProfileOutputValidationResource {
   uint64_t bytes = 0;
   std::string referenceSha256;
   std::optional<BoardOutputComparisonKind> externalExpectedComparison;
-  bool productionRepeatsExact = false;
-  bool diagnosticCapturesExact = false;
+  bool productionExecutionValidated = false;
+  bool diagnosticCapturesMatchPrimary = false;
 };
 
 llvm::StringRef stringifyBoardProfileOutputValidationMode(
     BoardProfileOutputValidationMode mode);
 
-/// Semantic-keyed output oracle for one board profile campaign. The first
-/// uninstrumented production-artifact warmup is validated against every
+/// Semantic-keyed output oracle for one board profile campaign. The single
+/// uninstrumented production-artifact execution is validated against every
 /// supplied external expected tensor with its exact or relaxed-f16 policy,
-/// then staged as the same-session byte reference. Every later result is first
-/// checked against its own external expected tensor, then compared with the
-/// staged reference by stable `(logical_rank, role, role_index)` and exact
-/// typed resource contract.
+/// then staged as the same-session byte reference. Count and trace results are
+/// first checked against their own external expected tensors, then compared
+/// with the staged primary reference by stable
+/// `(logical_rank, role, role_index)` and exact typed resource contract.
 ///
 /// Reference files are private to the already-created report staging
 /// directory. They are not keyed by ResourceId, resource name, or user path,
@@ -103,13 +100,10 @@ public:
   BoardProfileOutputValidationState &
   operator=(const BoardProfileOutputValidationState &) = delete;
 
-  llvm::Error establishProductionReference(
-      const PackageManifest &manifest, const BoardInvocationFilePlan &plan,
-      llvm::ArrayRef<BoardRuntimeOutput> outputs);
   llvm::Error
-  validateProductionRepeat(const PackageManifest &manifest,
-                           const BoardInvocationFilePlan &plan,
-                           llvm::ArrayRef<BoardRuntimeOutput> outputs);
+  establishProductionReference(const PackageManifest &manifest,
+                               const BoardInvocationFilePlan &plan,
+                               llvm::ArrayRef<BoardRuntimeOutput> outputs);
   llvm::Error
   validateDiagnosticCapture(const PackageManifest &manifest,
                             const BoardInvocationFilePlan &plan,
@@ -120,18 +114,19 @@ public:
   llvm::ArrayRef<BoardProfileOutputValidationResource> getResources() const;
 
 private:
-  llvm::Error validateAgainstReference(
-      const PackageManifest &manifest, const BoardInvocationFilePlan &plan,
-      llvm::ArrayRef<BoardRuntimeOutput> outputs, bool productionRepeat);
+  llvm::Error
+  validateAgainstReference(const PackageManifest &manifest,
+                           const BoardInvocationFilePlan &plan,
+                           llvm::ArrayRef<BoardRuntimeOutput> outputs);
 
   struct Impl;
   std::unique_ptr<Impl> impl;
 };
 
-/// Tool-internal deterministic protocol seam. It owns the fixed launch order,
-/// count-before-trace admission, per-trace audit checks, and finalization
-/// boundary; the callback owns one qualified session and exact output/site
-/// validation for each synchronous launch.
+/// Tool-internal deterministic protocol seam. It owns the fixed
+/// primary/count/trace launch order, count-before-trace admission, per-trace
+/// audit checks, and finalization boundary; the callback owns one qualified
+/// session and exact output/site validation for each synchronous launch.
 llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
     uint64_t traceCapacity,
     llvm::function_ref<llvm::Expected<BoardProfileProtocolObservation>(
@@ -153,11 +148,10 @@ struct ProfileReportPublicationResult {
 /// Unit-test seam for the filesystem publication transaction. The stage
 /// callback must create exactly evidence.json, analysis.json, and index.html;
 /// the removal callback permits deterministic old-run deletion failures.
-llvm::Expected<ProfileReportPublicationResult>
-publishProfileReportForTesting(
+llvm::Expected<ProfileReportPublicationResult> publishProfileReportForTesting(
     llvm::StringRef companionRoot,
     llvm::function_ref<llvm::Error(llvm::StringRef runId,
-                                  llvm::StringRef stagingDirectory)>
+                                   llvm::StringRef stagingDirectory)>
         stage,
     llvm::function_ref<std::error_code(llvm::StringRef)> removeManagedRun);
 

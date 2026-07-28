@@ -35,7 +35,6 @@
 namespace wafer::runtime::cli {
 namespace {
 
-constexpr uint32_t kMeasurementSampleCount = 10;
 constexpr llvm::StringLiteral kAggregateNames[] = {
     "statistics_window", "fu", "ct", "ne", "rdma", "wdma", "tdma", "scalar"};
 constexpr llvm::StringLiteral kEngineNames[] = {"CT",   "NE",   "RDMA",
@@ -54,13 +53,10 @@ llvm::Error invalid(llvm::Twine message) {
 struct CandidateState {
   const ProfileVariantPackage *variant = nullptr;
   BoardInvocationFilePlan executionPlan;
-  const ProfileCapturePackage *summaryPackage = nullptr;
   const ProfileCapturePackage *countPackage = nullptr;
   const ProfileCapturePackage *tracePackage = nullptr;
-  BoardInvocationFilePlan summaryPlan;
   BoardInvocationFilePlan countPlan;
   BoardInvocationFilePlan tracePlan;
-  std::vector<Tx81ProfilerRecord> summary;
   std::vector<Tx81ProfilerRecord> count;
   std::vector<Tx81ProfilerRecord> trace;
 };
@@ -125,17 +121,17 @@ indexValidatedOutputs(const PackageManifest &manifest,
     if (plan.expectedBytes.contains(resourceId)) {
       auto comparison = plan.expectedComparisons.find(resourceId);
       if (comparison == plan.expectedComparisons.end())
-        return invalid("profile output external expected comparison is missing");
+        return invalid(
+            "profile output external expected comparison is missing");
       expectedComparison = comparison->second;
     }
     if (!indexed
-             .try_emplace(
-                 semanticOutputKey(*resource),
-                 IndexedOutput{
-                     &*resource,
-                     &output,
-                     expectedComparison,
-                 })
+             .try_emplace(semanticOutputKey(*resource),
+                          IndexedOutput{
+                              &*resource,
+                              &output,
+                              expectedComparison,
+                          })
              .second)
       return invalid("profile output has a duplicate semantic resource key");
   }
@@ -503,16 +499,6 @@ void emitCandidateEvidence(llvm::json::OStream &json,
           json.attribute("monotonic", true);
         });
     });
-    json.attributeObject("summary", [&] {
-      json.attributeArray("tiles", [&] {
-        for (const Tx81ProfilerRecord &record : candidate.summary)
-          json.object([&] {
-            json.attribute("tile", int64_t(record.header.tile_id));
-            json.attribute("entry_begin", record.header.entry_begin_cycle);
-            json.attribute("entry_end", record.header.entry_end_cycle);
-          });
-      });
-    });
     json.attributeObject("trace", [&] {
       json.attribute("complete", true);
       json.attributeArray("tiles", [&] {
@@ -545,11 +531,9 @@ void emitCandidateEvidence(llvm::json::OStream &json,
                   json.attribute("counter_delta", event.raw_return);
                   json.attribute("activity_valid",
                                  isTx81ProfilerActivityValid(event));
-                  if (event.engine ==
-                      WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE)
-                    json.attribute(
-                        "dte_counter_valid",
-                        isTx81ProfilerDirectDTECounterValid(event));
+                  if (event.engine == WAFER_TX81_PROFILER_ENGINE_DIRECT_DTE)
+                    json.attribute("dte_counter_valid",
+                                   isTx81ProfilerDirectDTECounterValid(event));
                   else
                     json.attribute("dte_counter_valid",
                                    llvm::json::Value(nullptr));
@@ -566,7 +550,7 @@ void emitCandidateEvidence(llvm::json::OStream &json,
     });
     json.attributeObject("pmu", [&] {
       json.attributeArray("tiles", [&] {
-        for (const Tx81ProfilerRecord &record : candidate.summary) {
+        for (const Tx81ProfilerRecord &record : candidate.trace) {
           const WaferTx81ProfilerRecordHeader &header = record.header;
           const bool enabled = pmuEnabled(header);
           json.object([&] {
@@ -624,7 +608,7 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
                   llvm::ArrayRef<BoardProfileMeasurementSample> samples,
                   const CandidateState &candidate,
                   const BoardProfileOutputValidationState &outputValidation) {
-  if (samples.size() != kMeasurementSampleCount)
+  if (samples.size() != 1)
     return invalid("profile evidence inputs are incomplete");
   const PackageManifest &productionManifest =
       candidate.variant->getPackage().getManifest();
@@ -635,7 +619,7 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
   llvm::json::OStream json(output, 2);
   json.object([&] {
     json.attribute("schema", "wafer.profile.evidence");
-    json.attribute("schema_version", int64_t(4));
+    json.attribute("schema_version", int64_t(5));
     json.attribute("run_id", runId);
     json.attributeObject("identity", [&] {
       json.attribute("production_manifest_sha256",
@@ -643,9 +627,9 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
       json.attribute("profile_companion_schema_version",
                      int64_t(companion.getSchemaVersion()));
       json.attribute("target_profile", targetProfile);
-      json.attributeObject(
-          "launch",
-          [&] { emitRuntimeLaunch(json, productionManifest.launch); });
+      json.attributeObject("launch", [&] {
+        emitRuntimeLaunch(json, productionManifest.launch);
+      });
       json.attribute("execution_ranks",
                      int64_t(WAFER_TX81_PROFILER_TILE_COUNT));
       json.attribute("site_correlation_basis", kProfileSiteCorrelationBasis);
@@ -663,19 +647,18 @@ serializeEvidence(const VerifiedProfileCompanion &companion,
             json.attribute("bytes", int64_t(resource.bytes));
             json.attribute("reference_sha256", resource.referenceSha256);
             if (resource.externalExpectedComparison)
-              json.attribute(
-                  "external_expected_comparison",
-                  *resource.externalExpectedComparison ==
-                          BoardOutputComparisonKind::Exact
-                      ? "exact"
-                      : "relaxed-f16");
+              json.attribute("external_expected_comparison",
+                             *resource.externalExpectedComparison ==
+                                     BoardOutputComparisonKind::Exact
+                                 ? "exact"
+                                 : "relaxed-f16");
             else
               json.attribute("external_expected_comparison",
                              llvm::json::Value(nullptr));
-            json.attribute("production_repeats_exact",
-                           resource.productionRepeatsExact);
-            json.attribute("diagnostic_captures_exact",
-                           resource.diagnosticCapturesExact);
+            json.attribute("production_execution_validated",
+                           resource.productionExecutionValidated);
+            json.attribute("diagnostic_captures_match_primary",
+                           resource.diagnosticCapturesMatchPrimary);
           });
       });
     });
@@ -760,8 +743,7 @@ llvm::Error ensureRunsDirectory(llvm::StringRef companionRoot,
   if (canonical != expected)
     return invalid("profile runs directory escapes the verified companion");
   runs.assign(canonical.begin(), canonical.end());
-  if (error =
-          llvm::sys::fs::setPermissions(runs, llvm::sys::fs::all_all))
+  if (error = llvm::sys::fs::setPermissions(runs, llvm::sys::fs::all_all))
     return llvm::createStringError(
         error, "failed to set profile runs directory permissions");
   return llvm::Error::success();
@@ -777,8 +759,7 @@ llvm::Error validateProfileReportMembers(llvm::StringRef directory) {
     if (walkError)
       return llvm::createStringError(
           walkError, "failed to inspect profile report members");
-    const llvm::StringRef name =
-        llvm::sys::path::filename(iterator->path());
+    const llvm::StringRef name = llvm::sys::path::filename(iterator->path());
     if (iterator->type() != llvm::sys::fs::file_type::regular_file ||
         (name != "evidence.json" && name != "analysis.json" &&
          name != "index.html"))
@@ -786,22 +767,22 @@ llvm::Error validateProfileReportMembers(llvm::StringRef directory) {
     ++publicMemberCount;
   }
   if (walkError)
-    return llvm::createStringError(
-        walkError, "failed to inspect profile report members");
+    return llvm::createStringError(walkError,
+                                   "failed to inspect profile report members");
   if (publicMemberCount != 3)
     return invalid("profile report public artifact domain is incomplete");
   return llvm::Error::success();
 }
 
 llvm::Error validateProfileEvidenceRunId(llvm::StringRef directory,
-                                        llvm::StringRef expectedRunId) {
+                                         llvm::StringRef expectedRunId) {
   llvm::SmallString<256> evidencePath(directory);
   llvm::sys::path::append(evidencePath, "evidence.json");
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> evidence =
       llvm::MemoryBuffer::getFile(evidencePath, /*IsText=*/true);
   if (!evidence)
-    return llvm::createStringError(
-        evidence.getError(), "failed to read managed profile evidence");
+    return llvm::createStringError(evidence.getError(),
+                                   "failed to read managed profile evidence");
   llvm::Expected<llvm::json::Value> parsed =
       llvm::json::parse((*evidence)->getBuffer());
   if (!parsed)
@@ -944,10 +925,10 @@ prepareProfilePublication(llvm::StringRef companionRoot) {
   llvm::sys::path::append(finalPath, "runs", run->first);
   llvm::SmallString<256> current(runs);
   llvm::sys::path::append(current, "current");
-  return PreparedProfilePublication{run->first, run->second,
-                                    finalPath.str().str(), runs.str().str(),
-                                    current.str().str(), std::move(*previous),
-                                    *python, std::move(*report)};
+  return PreparedProfilePublication{
+      run->first,       run->second,         finalPath.str().str(),
+      runs.str().str(), current.str().str(), std::move(*previous),
+      *python,          std::move(*report)};
 }
 
 using RemoveManagedProfileRun =
@@ -984,8 +965,7 @@ activateProfilePublication(PreparedProfilePublication &publication,
   publication.stagingDirectory.clear();
   bool currentPublished = false;
   llvm::SmallString<256> temporaryCurrent(publication.runsDirectory);
-  llvm::sys::path::append(temporaryCurrent,
-                          ".current-" + publication.runId);
+  llvm::sys::path::append(temporaryCurrent, ".current-" + publication.runId);
   auto rollbackNewRun = llvm::make_scope_exit([&] {
     (void)llvm::sys::fs::remove(temporaryCurrent);
     if (!currentPublished)
@@ -1002,8 +982,8 @@ activateProfilePublication(PreparedProfilePublication &publication,
     return observedPrevious.takeError();
   if (*observedPrevious != publication.previousRunDirectory)
     return invalid("current profile report changed during this campaign");
-  if (std::error_code error = llvm::sys::fs::rename(
-          temporaryCurrent, publication.currentEntry))
+  if (std::error_code error =
+          llvm::sys::fs::rename(temporaryCurrent, publication.currentEntry))
     return llvm::createStringError(
         error, "failed to activate current profile report atomically");
   currentPublished = true;
@@ -1072,11 +1052,11 @@ publishReport(PreparedProfilePublication &publication,
              ? llvm::Twine(" with exit code ") + llvm::Twine(exitCode)
              : llvm::Twine(": ") + executionError));
 
-  return activateProfilePublication(
-      publication, [](llvm::StringRef runDirectory) {
-        return llvm::sys::fs::remove_directories(
-            runDirectory, /*IgnoreErrors=*/false);
-      });
+  return activateProfilePublication(publication,
+                                    [](llvm::StringRef runDirectory) {
+                                      return llvm::sys::fs::remove_directories(
+                                          runDirectory, /*IgnoreErrors=*/false);
+                                    });
 }
 
 } // namespace
@@ -1084,11 +1064,10 @@ publishReport(PreparedProfilePublication &publication,
 #if defined(WAFER_PROFILE_CAMPAIGN_TESTING)
 namespace testing {
 
-llvm::Expected<ProfileReportPublicationResult>
-publishProfileReportForTesting(
+llvm::Expected<ProfileReportPublicationResult> publishProfileReportForTesting(
     llvm::StringRef companionRoot,
     llvm::function_ref<llvm::Error(llvm::StringRef runId,
-                                  llvm::StringRef stagingDirectory)>
+                                   llvm::StringRef stagingDirectory)>
         stage,
     llvm::function_ref<std::error_code(llvm::StringRef)> removeManagedRun) {
   llvm::SmallString<256> runs;
@@ -1108,18 +1087,13 @@ publishProfileReportForTesting(
   llvm::SmallString<256> current(runs);
   llvm::sys::path::append(current, "current");
   PreparedProfilePublication publication{
-      run->first,
-      run->second,
-      finalPath.str().str(),
-      runs.str().str(),
-      current.str().str(),
-      std::move(*previous),
+      run->first,         run->second,         finalPath.str().str(),
+      runs.str().str(),   current.str().str(), std::move(*previous),
       /*python=*/"",
       /*reportScript=*/""};
   auto cleanupStaging = llvm::make_scope_exit([&] {
     if (!publication.stagingDirectory.empty())
-      (void)llvm::sys::fs::remove_directories(
-          publication.stagingDirectory);
+      (void)llvm::sys::fs::remove_directories(publication.stagingDirectory);
   });
   if (llvm::Error error =
           stage(publication.runId, publication.stagingDirectory))
@@ -1150,8 +1124,7 @@ struct BoardProfileOutputValidationState::Impl {
       BoardProfileOutputValidationMode::SameSessionProduction;
   bool established = false;
   bool referencesReleased = false;
-  bool sawProductionRepeat = false;
-  bool sawDiagnosticCapture = false;
+  uint32_t diagnosticCaptureCount = 0;
   std::vector<BoardProfileOutputValidationResource> resources;
   std::vector<Reference> references;
   std::map<SemanticOutputKey, size_t> referenceIndices;
@@ -1197,12 +1170,12 @@ BoardProfileOutputValidationState &BoardProfileOutputValidationState::operator=(
   return *this;
 }
 
-llvm::Error
-BoardProfileOutputValidationState::establishProductionReference(
+llvm::Error BoardProfileOutputValidationState::establishProductionReference(
     const PackageManifest &manifest, const BoardInvocationFilePlan &plan,
     llvm::ArrayRef<BoardRuntimeOutput> outputs) {
   if (impl->established)
-    return invalid("production-artifact output reference is already established");
+    return invalid(
+        "production-artifact output reference is already established");
   if (impl->stagingDirectory.empty() ||
       llvm::sys::fs::get_file_type(impl->stagingDirectory,
                                    /*Follow=*/false) !=
@@ -1253,12 +1226,10 @@ BoardProfileOutputValidationState::establishProductionReference(
     referenceIndices.emplace(key, index);
     references.push_back({key, exactOutputContract(*output.resource),
                           referencePath.str().str()});
-    resources.push_back(
-        {output.resource->logicalRank, output.resource->role,
-         output.resource->roleIndex, output.resource->bytes,
-         hashOutputBytes(output.output->bytes),
-         output.externalExpectedComparison,
-         false, false});
+    resources.push_back({output.resource->logicalRank, output.resource->role,
+                         output.resource->roleIndex, output.resource->bytes,
+                         hashOutputBytes(output.output->bytes),
+                         output.externalExpectedComparison, true, false});
     if (output.externalExpectedComparison)
       ++externalExpectedCount;
   }
@@ -1279,11 +1250,13 @@ BoardProfileOutputValidationState::establishProductionReference(
 
 llvm::Error BoardProfileOutputValidationState::validateAgainstReference(
     const PackageManifest &manifest, const BoardInvocationFilePlan &plan,
-    llvm::ArrayRef<BoardRuntimeOutput> outputs, bool productionRepeat) {
+    llvm::ArrayRef<BoardRuntimeOutput> outputs) {
   if (!impl->established)
     return invalid("production-artifact output reference is not established");
   if (impl->referencesReleased)
     return invalid("profile output references were already removed");
+  if (impl->diagnosticCaptureCount >= 2)
+    return invalid("count and trace output equivalence is already validated");
 
   // External expected tensors are authoritative and are always checked before
   // the same-session comparison.
@@ -1313,39 +1286,25 @@ llvm::Error BoardProfileOutputValidationState::validateAgainstReference(
       return error;
   }
 
-  if (productionRepeat) {
-    impl->sawProductionRepeat = true;
+  ++impl->diagnosticCaptureCount;
+  if (impl->diagnosticCaptureCount == 2)
     for (BoardProfileOutputValidationResource &resource : impl->resources)
-      resource.productionRepeatsExact = true;
-  } else {
-    impl->sawDiagnosticCapture = true;
-    for (BoardProfileOutputValidationResource &resource : impl->resources)
-      resource.diagnosticCapturesExact = true;
-  }
+      resource.diagnosticCapturesMatchPrimary = true;
   return llvm::Error::success();
-}
-
-llvm::Error BoardProfileOutputValidationState::validateProductionRepeat(
-    const PackageManifest &manifest, const BoardInvocationFilePlan &plan,
-    llvm::ArrayRef<BoardRuntimeOutput> outputs) {
-  return validateAgainstReference(manifest, plan, outputs,
-                                  /*productionRepeat=*/true);
 }
 
 llvm::Error BoardProfileOutputValidationState::validateDiagnosticCapture(
     const PackageManifest &manifest, const BoardInvocationFilePlan &plan,
     llvm::ArrayRef<BoardRuntimeOutput> outputs) {
-  return validateAgainstReference(manifest, plan, outputs,
-                                  /*productionRepeat=*/false);
+  return validateAgainstReference(manifest, plan, outputs);
 }
 
 llvm::Error BoardProfileOutputValidationState::finalizeAndRemoveReferences() {
   if (!impl->established)
     return invalid("production-artifact output reference is not established");
-  if (!impl->sawProductionRepeat)
-    return invalid("production-artifact output repeat was not validated");
-  if (!impl->sawDiagnosticCapture)
-    return invalid("diagnostic capture output equivalence was not validated");
+  if (impl->diagnosticCaptureCount != 2)
+    return invalid("count and trace output equivalence with the primary was "
+                   "not validated");
   if (impl->referencesReleased)
     return invalid("profile output references were already removed");
   for (Impl::Reference &reference : impl->references) {
@@ -1376,40 +1335,25 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
     llvm::function_ref<
         llvm::Error(llvm::ArrayRef<BoardProfileMeasurementSample>)>
         finalize) {
-  auto invoke = [&](BoardProfileProtocolLaunch launch,
-                    uint32_t sampleIndex = 0)
+  auto invoke = [&](BoardProfileProtocolLaunch launch)
       -> llvm::Expected<BoardProfileProtocolObservation> {
-    return execute({launch, sampleIndex});
+    return execute({launch});
   };
 
-  llvm::Expected<BoardProfileProtocolObservation> warmup =
-      invoke(BoardProfileProtocolLaunch::Warmup);
-  if (!warmup)
-    return warmup.takeError();
+  llvm::Expected<BoardProfileProtocolObservation> primary =
+      invoke(BoardProfileProtocolLaunch::Primary);
+  if (!primary)
+    return primary.takeError();
+  if (primary->launchToCompletionNanoseconds == 0)
+    return invalid("primary board launch-to-completion observation is zero");
+  if (primary->completionObservationResolutionNanoseconds == 0)
+    return invalid("primary board completion-observation resolution is zero");
 
   BoardProfileProtocolResult result;
-  result.samples.reserve(kMeasurementSampleCount);
-  for (uint32_t sampleIndex = 0; sampleIndex < kMeasurementSampleCount;
-       ++sampleIndex) {
-    llvm::Expected<BoardProfileProtocolObservation> observation =
-        invoke(BoardProfileProtocolLaunch::Measurement, sampleIndex);
-    if (!observation)
-      return observation.takeError();
-    if (observation->launchToCompletionNanoseconds == 0)
-      return invalid("board launch-to-completion sample is zero");
-    if (observation->completionObservationResolutionNanoseconds == 0)
-      return invalid("board completion-observation resolution is zero");
-    std::string id = ("final-s" + llvm::Twine(sampleIndex)).str();
-    result.samples.push_back(
-        {id, sampleIndex, observation->launchToCompletionNanoseconds,
-         observation->completionObservationResolutionNanoseconds});
-    result.finalSampleId = id;
-  }
-
-  llvm::Expected<BoardProfileProtocolObservation> summary =
-      invoke(BoardProfileProtocolLaunch::Summary);
-  if (!summary)
-    return summary.takeError();
+  result.samples.push_back(
+      {"primary", /*sampleIndex=*/0, primary->launchToCompletionNanoseconds,
+       primary->completionObservationResolutionNanoseconds});
+  result.primarySampleId = "primary";
 
   llvm::Expected<BoardProfileProtocolObservation> count =
       invoke(BoardProfileProtocolLaunch::Count);
@@ -1434,9 +1378,8 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
       return invalid("profile trace audit differs from count preflight");
   }
 
-  if (result.samples.size() != kMeasurementSampleCount ||
-      result.finalSampleId.empty())
-    return invalid("profile measurement schedule is incomplete");
+  if (result.samples.size() != 1 || result.primarySampleId.empty())
+    return invalid("primary profile measurement is incomplete");
   if (llvm::Error error = finalize(result.samples))
     return std::move(error);
   return result;
@@ -1451,8 +1394,7 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
     return invalid("profile campaign requires the complete 16-rank package");
 
   CandidateState candidate;
-  candidate.variant =
-      companion.findVariant(ProfileVariantRole::FinalArtifact);
+  candidate.variant = companion.findVariant(ProfileVariantRole::FinalArtifact);
   if (!candidate.variant)
     return invalid("profile companion has no production artifact");
 
@@ -1463,20 +1405,12 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
   if (!execution)
     return execution.takeError();
   candidate.executionPlan = std::move(*execution);
-  candidate.summaryPackage = companion.findCapture(
-      candidate.variant->getId(), ProfileCaptureKind::Summary);
-  candidate.countPackage = companion.findCapture(
-      candidate.variant->getId(), ProfileCaptureKind::Count);
-  candidate.tracePackage = companion.findCapture(
-      candidate.variant->getId(), ProfileCaptureKind::Trace);
-  if (!candidate.summaryPackage || !candidate.countPackage ||
-      !candidate.tracePackage)
+  candidate.countPackage = companion.findCapture(candidate.variant->getId(),
+                                                 ProfileCaptureKind::Count);
+  candidate.tracePackage = companion.findCapture(candidate.variant->getId(),
+                                                 ProfileCaptureKind::Trace);
+  if (!candidate.countPackage || !candidate.tracePackage)
     return invalid("profile companion has no complete capture package set");
-  llvm::Expected<BoardInvocationFilePlan> summary = makeCapturePlan(
-      productionPlan, productionManifest, *candidate.summaryPackage);
-  if (!summary)
-    return summary.takeError();
-  candidate.summaryPlan = std::move(*summary);
   llvm::Expected<BoardInvocationFilePlan> count = makeCapturePlan(
       productionPlan, productionManifest, *candidate.countPackage);
   if (!count)
@@ -1488,10 +1422,9 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
     return trace.takeError();
   candidate.tracePlan = std::move(*trace);
 
-  const uint64_t eventStorage =
-      candidate.tracePackage->getRecordBytes() -
-      WAFER_TX81_PROFILER_EVENTS_OFFSET -
-      WAFER_TX81_PROFILER_BUFFER_GUARD_BYTES;
+  const uint64_t eventStorage = candidate.tracePackage->getRecordBytes() -
+                                WAFER_TX81_PROFILER_EVENTS_OFFSET -
+                                WAFER_TX81_PROFILER_BUFFER_GUARD_BYTES;
   const uint64_t traceCapacity =
       eventStorage / WAFER_TX81_PROFILER_TSM_CALL_EVENT_BYTES;
 
@@ -1519,10 +1452,10 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
     request.completionObservationPolicy = observationPolicy;
     llvm::Expected<BoardRuntimeInvocationResult> result = [&]() {
       if (session)
-        return executeBoardInvocationInSession(
-            package, packageRoot, std::move(request), *session);
-      llvm::Expected<std::pair<BoardRuntimeInvocationResult,
-                               QualifiedBoardRuntimeSession>>
+        return executeBoardInvocationInSession(package, packageRoot,
+                                               std::move(request), *session);
+      llvm::Expected<
+          std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
           started = executeBoardInvocationAndStartSession(
               package, packageRoot, std::move(request), driver);
       if (!started)
@@ -1557,61 +1490,25 @@ runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
               -> llvm::Expected<BoardProfileProtocolObservation> {
             BoardProfileProtocolObservation observation;
             switch (step.launch) {
-            case BoardProfileProtocolLaunch::Warmup:
-            case BoardProfileProtocolLaunch::Measurement: {
+            case BoardProfileProtocolLaunch::Primary: {
               llvm::Expected<BoardRuntimeInvocationResult> result = execute(
                   candidate.variant->getPackage(),
                   candidate.variant->getPackageDirectory(),
                   candidate.executionPlan,
                   /*profilerExpected=*/false,
-                  step.launch == BoardProfileProtocolLaunch::Measurement
-                      ? BoardCompletionObservationPolicy::ProfileHighResolution
-                      : BoardCompletionObservationPolicy::Normal);
-              if (!result)
-                return result.takeError();
-              llvm::Error outputError = [&]() -> llvm::Error {
-                if (step.launch == BoardProfileProtocolLaunch::Warmup)
-                  return outputValidation.establishProductionReference(
-                      candidate.variant->getPackage().getManifest(),
-                      candidate.executionPlan, result->outputs);
-                if (step.launch == BoardProfileProtocolLaunch::Measurement)
-                  return outputValidation.validateProductionRepeat(
-                      candidate.variant->getPackage().getManifest(),
-                      candidate.executionPlan, result->outputs);
-                return outputValidation.validateDiagnosticCapture(
-                    candidate.variant->getPackage().getManifest(),
-                    candidate.executionPlan, result->outputs);
-              }();
-              if (outputError)
-                return std::move(outputError);
-              observation.launchToCompletionNanoseconds =
-                  result->launchToCompletionNanoseconds;
-              if (step.launch == BoardProfileProtocolLaunch::Measurement)
-                observation.completionObservationResolutionNanoseconds =
-                    result->completionObservationResolutionNanoseconds;
-              if (step.launch == BoardProfileProtocolLaunch::Measurement)
-                finalResult = std::move(*result);
-              return observation;
-            }
-            case BoardProfileProtocolLaunch::Summary: {
-              llvm::Expected<BoardRuntimeInvocationResult> result =
-                  execute(candidate.summaryPackage->getPackage(),
-                          candidate.summaryPackage->getPackageDirectory(),
-                          candidate.summaryPlan,
-                          /*profilerExpected=*/true,
-                          BoardCompletionObservationPolicy::Normal);
+                  BoardCompletionObservationPolicy::ProfileHighResolution);
               if (!result)
                 return result.takeError();
               if (llvm::Error error =
-                      outputValidation.validateDiagnosticCapture(
-                          candidate.summaryPackage->getPackage().getManifest(),
-                          candidate.summaryPlan, result->outputs))
+                      outputValidation.establishProductionReference(
+                          candidate.variant->getPackage().getManifest(),
+                          candidate.executionPlan, result->outputs))
                 return std::move(error);
-              llvm::Expected<std::vector<Tx81ProfilerRecord>> records =
-                  decodeProfilerOutputs(*candidate.summaryPackage, *result);
-              if (!records)
-                return records.takeError();
-              candidate.summary = std::move(*records);
+              observation.launchToCompletionNanoseconds =
+                  result->launchToCompletionNanoseconds;
+              observation.completionObservationResolutionNanoseconds =
+                  result->completionObservationResolutionNanoseconds;
+              finalResult = std::move(*result);
               return observation;
             }
             case BoardProfileProtocolLaunch::Count: {

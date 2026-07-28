@@ -1788,5 +1788,16 @@
   全部目录和regular file设为`0777`；任一失败直接丢弃transaction。profile no-card/live gate要在任何board effect前
   检查整个companion树，collision/race负例还要证明不会chmod已存在的竞争目标。
 - `completion_resolution`未达到high-resolution标签不等于整体耗时无效。只要environment、package/measurement
-  identity、trusted completion和逐次输出等价仍成立，submit→completion样本继续qualified，报告应保留实际poll-gap
-  warning和全部原始样本；不能恢复笼统的`Measurement invalid`，也不能为消除离群样本自动重跑板卡。
+  identity、trusted completion和Primary输出校验仍成立，单次submit→completion观测继续qualified，报告应保留实际
+  poll-gap warning；不能恢复笼统的`Measurement invalid`，也不能为消除离群自动重跑板卡。
+- 默认profiler曾把一次warm-up、十次production measurement和summary/count/trace硬编码进campaign与schema，导致用户
+  面对一组median/range而看不到“本次最终产物到底耗时多少”，同时多出重复package和launch。根因是把benchmark统计策略
+  混进profiler基础合同，并在Trace header已经携带entry/aggregate PMU时仍保留summary重复采集。修复为固定
+  Primary→Count→Trace：Primary是唯一未插桩最终产物及唯一用户级duration，Count只做动态容量预检，Trace承载entry、
+  aggregate PMU、site event和DTE证据。防复发要求每个默认capture必须拥有不可由其它capture安全替代的证据职责；
+  重复benchmark只能是显式独立workflow，不能再次改变profiler的默认耗时语义。
+- profiler UI不能把所有字段平铺成互不联动的表格。Overview只给Primary结论和关键质量状态；Timeline按
+  Card→Tile→Engine组织resource track，event选择必须联动详情与typed site；Tile/Engine、Program/Sites、
+  Communication/DTE和Diagnostics/Raw分别承载聚合、compiler correlation、通信和原始诊断。Measured、Sampled、
+  Bounded、Derived、Unavailable、Incomplete、Invalid必须同时用文字表达；空白不等于idle，跨tile无clock mapping
+  时不绘制伪全局时间轴，多engine activity不得求和冒充wall time。

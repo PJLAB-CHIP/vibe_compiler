@@ -641,7 +641,7 @@ execution admission或package schema反写成Q32 candidate生成输入。
 
 `wafer-compile --profile`在同一次compile transaction中只构造一次通过全部late gate的最终production artifact。
 普通`TargetLLVMModuleBundle`、CRT和`TargetArtifactBundle`按本文件现有合同发布且必须与未开启profile时逐字节一致；
-profiling不得给normal module插入分支、计数器、ABI slot或额外symbol。profile companion内部的summary/count/trace
+profiling不得给normal module插入分支、计数器、ABI slot或额外symbol。profile companion内部的count/trace
 module均从该最终artifact派生，是诊断clone，不属于normal package schema，也不是新的accepted IR。
 
 profile-only conversion/publication承担两项稳定责任：
@@ -651,8 +651,8 @@ profile-only conversion/publication承担两项稳定责任：
   映射只覆盖final artifact，不承担跨candidate关联；它不从symbol spelling、buffer/resource名、文件名或ELF顺序恢复语义；
   production与trace clone的identity校验还必须比较动态SSA operand的稳定function/block/argument或instruction坐标，
   忽略profile-only调用本身，不能把所有非constant operand折叠成同一个`dynamic`占位；
-- summary clone只链接entry级profile CRT；count/trace clone链接五类NCC helper和Direct-DTE wait可见的profile CRT，
-  其中count只统计实际issue/wait次数而不插site branch，trace才在typed site前后建立site scope。
+- count clone只统计实际issue/wait次数而不插site branch；trace clone在typed site前后建立site scope，并从同一
+  record header发布entry-local span和aggregate PMU，避免另建summary clone复制相同事实。
   CT、NE、RDMA、WDMA、TDMA通过自有profile CRT在真实fence轮询期间采样硬件execution counter；
   Direct-DTE在真实wait/completion路径记录调用窗口，并采样DTE channel 0/1 PMU。NCC event保存精确busy-cycle
   delta及检测到计数增长的有界观测窗口；Direct-DTE event保存真实wait/completion窗口和未校准raw PMU delta。
@@ -661,7 +661,7 @@ profile-only conversion/publication承担两项稳定责任：
 
 一个typed site可以因helper展开产生多个NCC issue，以同一`site_id`和递增`sub_index`关联；Direct-DTE wait本身是
 `DIRECT_DTE`活动site。local fence和token不形成site，planner ready-order也不进入event stream。每个
-final artifact只有summary/count/trace三个内部capture binding，不生成reserved baseline、第二个execution variant、
+final artifact只有count/trace两个内部capture binding，不生成reserved baseline、第二个execution variant、
 alias或比较产物。count preflight和trace readback共同保留
 `next_sequence`、dropped-event count、raw record flags及terminal state，供runtime做exact-match和fail-closed检查。
 normal CRT与profile CRT使用独立target publication输入，

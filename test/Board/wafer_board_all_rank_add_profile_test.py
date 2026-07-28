@@ -67,14 +67,11 @@ class ProfileReportFixture:
         (self.runs / "current").symlink_to(self.run_directory)
         evidence = {
             "schema": "wafer.profile.evidence",
-            "schema_version": 4,
+            "schema_version": 5,
             "run_id": self.run_id,
             "measurement": {
                 "samples": [
-                    {"sample_index": index}
-                    for index in range(
-                        HARNESS.PROFILE_MEASUREMENT_SAMPLE_COUNT
-                    )
+                    {"sample_id": "primary", "sample_index": 0}
                 ]
             },
             "experiment": {
@@ -88,23 +85,21 @@ class ProfileReportFixture:
             },
         }
         analysis = {
-            "validity": {"summary": True, "trace": True, "pmu": True},
+            "validity": {"trace": True, "pmu": True},
             "final_artifact": {
-                "latency": {
-                    "sample_count": HARNESS.PROFILE_MEASUREMENT_SAMPLE_COUNT,
+                "duration": {
+                    "sample_id": "primary",
+                    "sample_index": 0,
                     "qualified": True,
-                    "median_ns": 1024,
-                    "minimum_ns": 1000,
-                    "maximum_ns": 1100,
+                    "host_elapsed_ns": 1024,
                 },
                 "output": {
-                    "production_repeats_exact": True,
-                    "diagnostic_captures_exact": True,
+                    "production_execution_validated": True,
+                    "diagnostic_captures_match_primary": True,
                 },
                 "tiles": [
                     {
                         "tile": tile,
-                        "summary_entry_cycles": 10,
                         "trace_entry_cycles": 12,
                         "engines": engine_rows(),
                     }
@@ -163,8 +158,6 @@ class AllRankAddProfileGateTest(unittest.TestCase):
             result,
             (
                 1024,
-                1000,
-                1100,
                 fixture.runs / "current" / "index.html",
             ),
         )
@@ -273,8 +266,6 @@ class AllRankAddProfileGateTest(unittest.TestCase):
                     "verify_profile_report",
                     return_value=(
                         1024,
-                        1000,
-                        1100,
                         work_dir / "package.profile/runs/current/index.html",
                     ),
                 )
@@ -333,7 +324,7 @@ class AllRankAddProfileGateTest(unittest.TestCase):
         )
         self.assertEqual(verify_board.call_count, 2)
         self.assertIn(
-            "board_profile_campaign: pass launches=14 samples=10",
+            "board_profile_campaign: pass launches=3 primary=1",
             output.getvalue(),
         )
 

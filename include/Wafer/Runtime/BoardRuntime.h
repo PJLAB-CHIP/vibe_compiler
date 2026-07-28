@@ -383,10 +383,10 @@ executeBoardInvocationInSession(const VerifiedPackageManifest &package,
                                 BoardRuntimeInvocationRequest request,
                                 QualifiedBoardRuntimeSession &session);
 
-/// Executes the first invocation through the ordinary one-shot path with the
-/// normal completion observer, then returns a capability for later
-/// invocations on that already-qualified device. Qualification is performed
-/// exactly once. Failure returns no session capability.
+/// Executes the first invocation through the ordinary one-shot path using the
+/// request's completion-observation policy, then returns a capability for
+/// later invocations on that already-qualified device. Qualification is
+/// performed exactly once. Failure returns no session capability.
 llvm::Expected<
     std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
 executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,

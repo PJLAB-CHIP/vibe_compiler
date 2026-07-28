@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v4.json",
+  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v5.json",
   "title": "Wafer 16-tile profile evidence",
-  "description": "Version 4 final-artifact-only evidence consumed by wafer_profile_report.py. The production artifact's launch-to-completion host time is the top-level result; rank-local NCC and Direct-DTE hardware busy counters plus bounded activity observations explain each tile without inventing cross-tile order.",
+  "description": "Version 5 final-artifact-only evidence consumed by wafer_profile_report.py. One primary production execution supplies the launch-to-completion host duration. The same trace launch supplies rank-local NCC PMU counters, bounded activity observations, and Direct-DTE wait/raw observations without inventing cross-tile order.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -22,7 +22,7 @@
       "const": "wafer.profile.evidence"
     },
     "schema_version": {
-      "const": 4
+      "const": 5
     },
     "run_id": {
       "$ref": "#/$defs/nonEmptyString"
@@ -60,8 +60,8 @@
       "properties": {
         "samples": {
           "type": "array",
-          "minItems": 10,
-          "maxItems": 10,
+          "minItems": 1,
+          "maxItems": 1,
           "items": {
             "$ref": "#/$defs/measurementSample"
           }
@@ -194,7 +194,7 @@
           "$ref": "#/$defs/sha256"
         },
         "profile_companion_schema_version": {
-          "const": 2
+          "const": 3
         },
         "target_profile": {
           "$ref": "#/$defs/nonEmptyString"
@@ -241,8 +241,8 @@
         "bytes",
         "reference_sha256",
         "external_expected_comparison",
-        "production_repeats_exact",
-        "diagnostic_captures_exact"
+        "production_execution_validated",
+        "diagnostic_captures_match_primary"
       ],
       "properties": {
         "logical_rank": {
@@ -268,10 +268,10 @@
           "type": ["string", "null"],
           "enum": ["exact", "relaxed-f16", null]
         },
-        "production_repeats_exact": {
+        "production_execution_validated": {
           "type": "boolean"
         },
-        "diagnostic_captures_exact": {
+        "diagnostic_captures_match_primary": {
           "type": "boolean"
         }
       }
@@ -376,22 +376,6 @@
         }
       }
     },
-    "entryTiming": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["tile", "entry_begin", "entry_end"],
-      "properties": {
-        "tile": {
-          "$ref": "#/$defs/tile"
-        },
-        "entry_begin": {
-          "$ref": "#/$defs/u64"
-        },
-        "entry_end": {
-          "$ref": "#/$defs/u64"
-        }
-      }
-    },
     "measurementSample": {
       "type": "object",
       "additionalProperties": false,
@@ -403,12 +387,10 @@
       ],
       "properties": {
         "sample_id": {
-          "$ref": "#/$defs/nonEmptyString"
+          "const": "primary"
         },
         "sample_index": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9
+          "const": 0
         },
         "host_elapsed_ns": {
           "type": "integer",
@@ -738,7 +720,6 @@
       "required": [
         "artifact",
         "clock",
-        "summary",
         "trace",
         "pmu"
       ],
@@ -752,21 +733,6 @@
           "maxItems": 16,
           "items": {
             "$ref": "#/$defs/clockMapping"
-          }
-        },
-        "summary": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["tiles"],
-          "properties": {
-            "tiles": {
-              "type": "array",
-              "minItems": 16,
-              "maxItems": 16,
-              "items": {
-                "$ref": "#/$defs/entryTiming"
-              }
-            }
           }
         },
         "trace": {

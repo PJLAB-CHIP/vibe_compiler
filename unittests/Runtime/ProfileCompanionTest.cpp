@@ -233,9 +233,8 @@ protected:
     };
     std::vector<CaptureFixture> captures;
     for (auto [name, recordBytes] :
-         std::array<std::pair<llvm::StringRef, uint64_t>, 3>{
-             {{"summary", WAFER_TX81_PROFILER_MIN_BUFFER_BYTES},
-              {"count", WAFER_TX81_PROFILER_MIN_BUFFER_BYTES},
+         std::array<std::pair<llvm::StringRef, uint64_t>, 2>{
+             {{"count", WAFER_TX81_PROFILER_MIN_BUFFER_BYTES},
               {"trace", 1024 * 1024}}}) {
       std::string reference = ("captures/final-artifact/" + name).str();
       llvm::SmallString<256> capturePath(companion);
@@ -382,7 +381,7 @@ TEST_F(ProfileCompanionTest, LoadsExactBoundCompanionAndSixteenRankSiteMap) {
   EXPECT_EQ(loaded->getProductionManifestDigest(), manifestDigest(production));
   EXPECT_EQ(loaded->getRankCount(), 16);
   EXPECT_EQ(loaded->getVariants().size(), 1u);
-  EXPECT_EQ(loaded->getCaptures().size(), 3u);
+  EXPECT_EQ(loaded->getCaptures().size(), 2u);
   EXPECT_EQ(loaded->getSiteMaps().size(), 1u);
   EXPECT_EQ(loaded->getSiteCount(), 16u);
   const auto *final =
@@ -394,11 +393,14 @@ TEST_F(ProfileCompanionTest, LoadsExactBoundCompanionAndSixteenRankSiteMap) {
   ASSERT_NE(trace, nullptr);
   EXPECT_EQ(trace->getRecordBytes(), UINT64_C(1024) * 1024);
   for (wafer::runtime::ProfileCaptureKind capture :
-       {wafer::runtime::ProfileCaptureKind::Summary,
-        wafer::runtime::ProfileCaptureKind::Count,
+       {wafer::runtime::ProfileCaptureKind::Count,
         wafer::runtime::ProfileCaptureKind::Trace}) {
     ASSERT_NE(loaded->findCapture("final-artifact", capture), nullptr);
   }
+  EXPECT_EQ(loaded->findCapture(
+                "final-artifact",
+                wafer::runtime::ProfileCaptureKind::Summary),
+            nullptr);
   const auto *siteMap = loaded->findSiteMap("final-artifact");
   ASSERT_NE(siteMap, nullptr);
   ASSERT_EQ(siteMap->ranks.size(), 16u);
@@ -460,6 +462,29 @@ TEST_F(ProfileCompanionTest, RejectsUnknownPlanField) {
             std::string::npos);
 }
 
+TEST_F(ProfileCompanionTest, RejectsSummaryCaptureInVersionThree) {
+  llvm::SmallString<256> planPath(companion);
+  llvm::sys::path::append(planPath,
+                          wafer::runtime::kProfileCompanionPlanFileName);
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> existing =
+      llvm::MemoryBuffer::getFile(planPath);
+  ASSERT_TRUE(static_cast<bool>(existing));
+  std::string corrupted = (*existing)->getBuffer().str();
+  size_t capture = corrupted.find("\"capture\": \"count\"");
+  ASSERT_NE(capture, std::string::npos);
+  capture += std::string("\"capture\": \"").size();
+  corrupted.replace(capture, std::string("count").size(), "summary");
+  ASSERT_NO_FATAL_FAILURE(writeText(planPath, corrupted));
+  ASSERT_NO_FATAL_FAILURE(writeActivation());
+
+  auto loaded =
+      wafer::runtime::loadVerifiedProfileCompanion(companion, production);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(llvm::toString(loaded.takeError())
+                .find("not a supported capture kind"),
+            std::string::npos);
+}
+
 TEST_F(ProfileCompanionTest, RejectsMissingActivation) {
   llvm::SmallString<256> activationPath(companion);
   llvm::sys::path::append(activationPath,
@@ -506,7 +531,7 @@ TEST_F(ProfileCompanionTest, AcceptsRenamedTypedProfilerWorkspaceAndResources) {
   auto loaded =
       wafer::runtime::loadVerifiedProfileCompanion(companion, production);
   ASSERT_TRUE(static_cast<bool>(loaded)) << llvm::toString(loaded.takeError());
-  EXPECT_EQ(loaded->getCaptures().size(), 3u);
+  EXPECT_EQ(loaded->getCaptures().size(), 2u);
 }
 
 TEST_F(ProfileCompanionTest, RejectsProductionReferenceBoundToAnotherPackage) {

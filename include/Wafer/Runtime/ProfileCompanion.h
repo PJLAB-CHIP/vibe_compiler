@@ -16,7 +16,7 @@
 
 namespace wafer::runtime {
 
-inline constexpr uint32_t kProfileCompanionSchemaVersion = 2;
+inline constexpr uint32_t kProfileCompanionSchemaVersion = 3;
 inline constexpr int64_t kProfileCompanionRankCount = 16;
 inline constexpr llvm::StringLiteral kProfileSiteCorrelationBasis =
     "heuristic-target-call-signature-occurrence-v1";

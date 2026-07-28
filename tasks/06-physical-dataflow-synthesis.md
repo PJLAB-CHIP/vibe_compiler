@@ -610,7 +610,7 @@ legality/correctness风险，不表示hardware behavior或cost surface完备；�
 候选。
 
 Q9 production-artifact profiler不增加新的candidate selector或用户输入。`wafer-compile --profile`仍提交逐字节不变的
-普通最终production package；profile companion只绑定该最终artifact及其summary/count/trace三个诊断clone，不生成
+普通最终production package；profile companion只绑定该最终artifact及其count/trace两个诊断clone，不生成
 reserved baseline、第二个execution variant或候选比较。采集、时钟资格、统计和report均是downstream diagnostic
 artifact，不进入accepted IR，也不在foundation阶段反馈本节Pareto/static policy。若后续ranking calibration需要成对
 qualification，必须使用本节独立的compiler-private characterization合同，不能复用或扩写基础profiler的公开产物。
@@ -618,6 +618,8 @@ qualification，必须使用本节独立的compiler-private characterization合�
 final-artifact timeline只接受profile-only CRT直接观察的hardware execution evidence：CT/NE/RDMA/WDMA/TDMA来自
 cumulative PMU execution counter实际增长的采样窗口，Direct-DTE来自真实wait/completion调用窗口；DTE channel 0/1
 execution-PMU delta只保留为未校准raw activity，不能命名为执行耗时。
+默认只运行一次未插桩Primary并把其submit→trusted-completion作为用户级总耗时；Count只做动态容量预检，Trace
+header同时提供entry span、aggregate PMU和event stream。三个launch互不混算，单次Primary也不形成ranking统计。
 `TsmExecute` begin/return只说明issue API，不能画成engine execution；planner中的ready-order、token、fence或wait也不能
 替代实际counter observation。没有合格跨tile clock mapping时，每个tile独立展示六条entry-local engine lane，不做跨tile
 对齐。

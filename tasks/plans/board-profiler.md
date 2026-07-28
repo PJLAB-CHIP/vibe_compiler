@@ -1,6 +1,6 @@
 # 16-Tile Production Artifact Profiler 实施计划
 
-状态：Q9 profiler foundation 实施中。本文只拆解实施顺序和验证 checkpoint；稳定的
+状态：Q9 profiler foundation 实施中。本文只定义当前施工边界和验证 checkpoint；稳定的
 physical-dataflow、target publication、runtime/package 和 verification 合同分别仍由 `tasks/06`、
 `tasks/14`、`tasks/15` 和 `tasks/16` 拥有。
 
@@ -12,146 +12,138 @@ Pipeline position:
   同一 verified source snapshot、ExecutionConfig、TargetProfileId 和完整 runtime launch contract
   形成的最终 Instr / TargetCall、target LLVM bundle 和 verified production package。
 - Current stage responsibility:
-  wafer-compile 保持普通 production package 逐字节不变，并只从该最终 artifact 生成
-  summary/count/trace 三种 profile-only capture clone；wafer-run 复用普通 package 的 ResourceId
-  输入、expected 和 output binding，在同一 qualified board session 中串行执行、校验和回传。
+  wafer-compile 保持普通 production package 逐字节不变，并从该最终 artifact 只派生 count、trace
+  两种 profile-only diagnostic clone；wafer-run 在一个 qualified board session 中先执行一次未插桩
+  Primary，再串行执行 Count 和 Trace，三次均复用普通 package 的 ResourceId 输入、expected 和 output
+  binding。
 - Output artifact / IR:
-  普通 production package，以及与其 production manifest SHA-256 精确绑定的 final-artifact
-  profile companion；一次成功 run 只公开 evidence.json、analysis.json 和 index.html。
-  profile evidence 不进入 accepted IR。
+  普通 production package，以及与其 production manifest SHA-256 精确绑定的 final-artifact profile
+  companion；一次成功 run 只公开 evidence.json、analysis.json 和 index.html。profile evidence 不进入
+  accepted IR。
 - Downstream consumer:
-  用户读取最终 production artifact 的整卡耗时、per-tile entry span、per-engine activity 和
-  per-tile timeline；折叠诊断用于解释不可用 counter、poll resolution 和协议错误。
+  用户先读取 Primary 的单次 submit→all-rank trusted-completion 耗时和正确性，再按 tile、engine、
+  target site 和通信事件下钻诊断 capture。下游必须区分 Primary、Count、Trace 的证据角色。
 - User-level driver / named pipeline:
   wafer-compile <existing arguments> --profile；随后仍使用原 wafer-run board invocation。
 - Explicit non-goals:
-  不生成 baseline/winner 比较产物，不新增 wafer-profile executable，不让用户选择 capture，
-  不依赖 vendor profiler/library/export format，不修改 firmware，不把 TsmExecute 返回当完成，
-  不把未校准的 Direct-DTE raw counter 宣称为 wall-clock latency，不自动回写 compiler cost policy。
+  不生成 baseline/winner，不默认运行 benchmark 重复，不新增 wafer-profile executable，不让用户选择
+  capture，不依赖 vendor profiler/export format，不修改 firmware，不把 TsmExecute 返回或插桩 Trace
+  耗时冒充 Primary，不把未校准 Direct-DTE raw counter 宣称为 elapsed time，不自动回写 compiler cost。
 - Completion gate:
-  fresh host build/unit/lit/no-card 全部通过；同一新构建 source 的普通 package 与 --profile
-  production package 逐字节一致；configured live board 重启后先完成普通 production package
-  correctness/terminal gate，再由同一 source 的 profile package 完成 10 次总耗时、3 次 capture、
-  all-and-only 16 tile record/output/guard 校验和三文件报告。
+  fresh host build/unit/lit/no-card 全部通过；相同 source 的普通 package 与 --profile production package
+  逐字节一致；configured board 重启后由本轮新构建、新 package、新 launch、新 output 串行完成一次
+  Primary、一次 Count、一次 Trace，闭合正确性、容量、all-and-only 16 tile、六 engine 和 Direct-DTE
+  活动门禁。
 ```
 
 ## Artifact 和接口边界
 
 - `--profile` 是唯一 public option，要求 `execution-ranks=16`，与 `--target-model` 冲突。
-- `<package>.profile` 只包含一个 `final-artifact` execution binding，以及该 artifact 的
-  `summary`、`count`、`trace` 三个内部 capture package。不存在 reserved baseline、winner、
-  alias、候选比较或第二份 production execution package。
-- companion 在 transaction 临时目录完整形成，最后写 `activation.json`；activation 精确绑定
-  production manifest 和 `plan.json`、`variants.json`、`site-map.json` 的逐文件 SHA-256。
-  missing、partial、stale 或 digest mismatch 在任何 board effect 前拒绝。
-- `site_id` 只在一个 rank 内有效；site map 只解释 final artifact 的 typed target-call ordinal、
-  engine 和位置。名字只用于诊断，不恢复 IR 语义。
+- `<package>.profile` 只包含一个 `final-artifact` execution binding，以及该 artifact 的 `count`、`trace`
+  两个内部 diagnostic capture package。不存在 summary、reserved baseline、winner、alias、候选比较或
+  第二份 production execution package。
+- Trace record header 已同时携带该次 diagnostic launch 的 rank-local entry span、aggregate PMU
+  before/after/recovery 和 event stream；另建 summary clone 会复制相同事实并增加一次 launch，因此不进入
+  默认合同。
+- Count 只为动态 event 数量提供独立容量预检。当前 trace buffer 为固定容量，event 数不能从静态 site 数
+  安全推出；在建立可验证的动态上界前，不能把 Count 删成 trace-only。
+- companion 在 transaction 临时目录完整形成，最后写 `activation.json`；activation 精确绑定 production
+  manifest 和 `plan.json`、`variants.json`、`site-map.json` 的逐文件 SHA-256。missing、partial、stale
+  或 digest mismatch 在任何 board effect 前拒绝。
+- `site_id` 只在一个 rank 内有效；site map 只解释 final artifact 的 typed target-call ordinal、engine
+  和结构位置。名字只用于诊断，不恢复 IR 语义。
 
 ## Device measurement protocol
 
-- 一个 runner session 只做固定 14 次 launch：1 次普通 production warm-up，10 次相同 production
-  package 的高分辨率 submit→all-rank trusted-completion 测量，随后各 1 次 summary、count、trace。
-  所有 launch 单进程串行；首个 timeout、device anomaly、output mismatch、transport status、
-  record guard 或 terminal state 错误立即停批，不 retry/reset/power。
-- warm-up 必须先通过全部 writable output 校验，才能建立同 session reference。10 次测量和 3 次
-  capture 都必须再次逐资源精确一致；有 external expected 时还要逐次通过独立 expected。
-- 高分辨率 completion observer 忙轮询并记录真实最大 poll gap；不主动 sleep/yield。
-  poll resolution 单独展示，不再用笼统的 `Measurement invalid` 抹掉其它有效硬件证据。
-- summary 在完整 entry 前后读取 rank-local cycle 和 NCC aggregate PMU；每个 CT/NE/RDMA/WDMA/TDMA
-  engine 独立判断 counter stability，稳定的 end-start delta 是该 tile 的 hardware busy cycles。
-  engine 可并行，不能相加为 wall time。
-- trace 在 typed NCC issue 前后及 profile-only local-completion polling 中采样 cumulative PMU。
-  只有 counter 实际增长的相邻观测形成 bounded activity window；window 不是零误差指令起止。
-- Direct-DTE 不经过 TsmExecute。trace 在真实 `direct_dte_wait` begin/end 记录 send/receive role、
-  rank-local wait/completion window 和 DTE channel 0/1 PMU raw execution-counter delta。当前硬件校准只把
-  delta 作为活动证据，不把它命名为 wall-clock latency；即使raw delta为零也保留已捕获的真实wait窗口，
-  timeline 必须明确这个measurement basis。
-- count 必须先于 trace；trace 的 preflight count、next sequence、stored count、drop count、flags、
-  state 和 guard 必须全等且 complete，否则不发布报告。
-- 16 个 rank 的本地 cycle 不能直接互比。默认 timeline 是所选 tile 的六条 engine lane 和同一
-  entry-local 横轴；只有独立 clock mapping 合格后才允许增加 cross-tile order。
+一个 runner session 固定执行三次，单进程串行，首个 timeout、device anomaly、output mismatch、transport
+status、record guard 或 terminal state 错误立即停批，不 retry/reset/power：
 
-## Analysis 和展示
+1. **Primary**：执行一次未插桩 final production artifact，启用高分辨率 completion observer。唯一用户级
+   总耗时是 host steady-clock 从第一次 submit 到 all-rank trusted completion 的本次观测值；不再自动
+   warm-up，不计算 median/range，也不把单次值称为稳态统计。
+2. **Count**：执行 count diagnostic clone，只取得各 tile 动态 event 数并在 Trace 前验证固定 buffer
+   capacity。其耗时不进入 Primary。
+3. **Trace**：执行 trace diagnostic clone，取得 entry-local clock、aggregate PMU、typed site event、
+   Direct-DTE wait/completion 和 raw DTE activity。其耗时和插桩扰动不进入 Primary。
 
-- 首屏只有一个最终 artifact 结果：10 次样本的 median，总范围和输出正确性。每次 sample 是统计输入，
-  不是十个不同“最终耗时结论”。
-- Tile 总览展示 16 个 entry span；点选 tile 后显示 CT、NE、RDMA、WDMA、TDMA、Direct-DTE 六行。
-  NCC 行显示 PMU busy cycles；Direct-DTE 行显示 wait activity 和 raw PMU delta，并明确单位/资格。
-- timeline 只展示实际 counter activity window 或 Direct-DTE wait/completion window。所有坐标先做
-  exact unsigned validation；倒序 counter/window 变成不可用诊断，不产生负 cycle。
-- HTML 不显示候选、winner、baseline、speedup 或差值；颜色同时配直接 engine 标签，所有值带单位。
-- `<package>.profile`从compiler私有staging原子发布前，根目录及全部directory/regular-file成员统一设为
-  `0777`；权限设置失败则不发布production package或companion。`runs/current`稳定入口只公开
-  `index.html`、`analysis.json`、`evidence.json`，current目标目录和三项同样为`0777`。
+Primary 必须先通过所有 writable output 校验，并按稳定 semantic key 建立同 session reference；Count 和
+Trace 还要先通过各自 external expected，再与 Primary reference 精确比较。缺 external expected 时只能声明
+本次 Primary 与两个 diagnostic capture 等价，absolute semantic correctness 仍为 unknown。
+
+Count 的 `next_sequence` 必须不超过 Trace capacity；Trace 的 stored count、next sequence、drop count、
+flags、terminal state、guard 和 Count preflight 必须 exact match。任一不一致不得伪造完整 timeline。
+
+高分辨率 observer 记录真实最大 poll gap，不主动 sleep/yield。poll resolution 不满足高分辨率标签时只降级
+该标签，不能用全局 `Measurement invalid` 抹掉已经成立的 Primary、输出或局部 counter 证据。
+
+## Timing 和 correlation 语义
+
+- Primary duration、Trace event interval、aggregate counter 和 sampled/raw counter 是不同 measurement
+  family，必须分栏展示。
+- CT、NE、RDMA、WDMA、TDMA 的 aggregate PMU delta 是本 tile 该 engine 的 measured busy cycles；
+  多 engine 可重叠，不能相加为 Primary wall time。
+- NCC timeline event 是累计 execution counter 发生增长的 bounded observation window，不是零误差指令
+  起止。`TsmExecute` begin/return、compiler ready-order、token、fence 或静态 schedule 都不能替代它。
+- Direct-DTE timeline event 是真实 `direct_dte_wait`/completion window；channel 0/1 PMU delta只作为
+  uncalibrated raw activity，不能命名为 duration。raw counter不可用时仍可保留已经验证的 wait window。
+- 16 个 rank 的本地 cycle 不能直接互比。默认 timeline 是所选 tile 的六条 engine lane 和同一 Trace
+  entry-local 横轴；只有独立 clock mapping 合格后才允许跨 tile order、overlap 或 critical path。
+- 所有坐标先做 exact unsigned validation；倒序 counter/window 只使对应字段 `Invalid` 或
+  `Unavailable`，不得产生负 cycle，也不得连带抹掉 Primary。
+- event 到 compiler 的关联只接受 `(logical_rank, site_id, sub_index)` 和已验证 typed site map；不按
+  symbol spelling、时间重叠或名字推断。
+
+## Report information architecture
+
+一个离线 `index.html` 提供六个相互链接的视图，不增加公开文件：
+
+1. **Overview**：Primary duration、结果校验、capture 状态、4×4 tile 热图、六 engine 聚合和关键 warning。
+2. **Trace Timeline**：Card→Tile→Engine resource tree、tile-local ruler、六 lane interval、engine/filter、
+   zoom 和 event detail；默认不画跨 tile 绝对时间轴。
+3. **Tile / Engine**：所选 tile 的 measured busy、bounded window、Direct-DTE wait/raw activity、worker
+   counter 和明确单位。
+4. **Program / Sites**：target-call ordinal、symbol、position、correlation key 与 runtime event 的 typed
+   下钻。
+5. **Communication / DTE**：send/receive role、wait window、raw PMU 和已知/未知 correlation；没有 DTE
+   活动时显示 measured zero/empty，不伪造消息。
+6. **Diagnostics / Raw**：identity、clock domain、poll resolution、capacity/drop/guard、counter
+   before/after/recovery、capture 方法和原始 JSON 入口。
+
+状态词固定使用 `Measured`、`Sampled`、`Bounded`、`Derived`、`Unavailable`、`Incomplete`、`Invalid`；
+空白不等于 idle。近白背景、克制 engine 色、直接标签和状态文字共同编码，不只靠颜色。首屏不出现
+candidate、winner、baseline、speedup 或多样本统计。
+
+`<package>.profile` 从 compiler 私有 staging 原子发布前，根目录及全部 directory/regular-file 成员统一
+设为 `0777`；失败则不发布 production package 或 companion。`runs/current` 只公开 `index.html`、
+`analysis.json`、`evidence.json`，current 目标目录和三项同样为 `0777`。
 
 ## Correctness repair gates
 
-- profile CRT不能改变原有completion语义。`summary`、`count`以及缺失/无效record binding都继续调用真实
-  `TsmWaitfinish()`；只有`trace`在相同`TASK_DONE == 1`终止条件下用PMU observation包围poll。
-  带未知flag或不完整trace状态的binding同样属于非trace fallback，不得启用DTE PMU或绕过真实wait。
-  target预处理/反汇编或等价host gate必须覆盖宏展开后的fallback和predicate，不能只检查宏或符号存在。
-- 只有消费Direct-DTE counter的`trace` capture可以临时enable并恢复DTE PMU；split 64-bit读取必须把
-  high-low-high稳定性写进record validity。无法取得稳定读时保留wait窗口但拒绝raw PMU delta，不能静默拼接
-  torn value。
-- companion schema版本由runtime公共常量拥有；C++ evidence serializer、JSON schema、Python validator和fixture
-  必须通过一条跨语言contract test共同消费当前版本，禁止各自硬编码不同值。
-- final site map从未插桩production target LLVM生成。trace clone只作为capture executable；发布前要验证它与
-  production的rank/site typed identity、engine、correlation和目标调用顺序一致，不能把插桩后的instruction ordinal
-  标成final artifact事实。
-- summary entry span和trace entry span来自两次独立diagnostic launch，必须分别保存和展示。每个tile的engine
-  activity timeline只使用trace自身entry-local横轴；summary span不得作为trace坐标分母。
-- evidence v4由single-final-artifact analyzer直接验证和分析。不得构造ABBA/BAAB、baseline/winner、speedup、
-  signed candidate delta或字符串清洗后的旧诊断；任一counter/window倒序只使对应字段不可用，不得产生负耗时。
-  Direct-DTE event必须带真实完成的wait窗口；缺失`activity_valid`不能降级成“有效的零窗口”。
-- runner在任何submit前解析完整ordered phase export集合；prepare/main phase只负责按既定handle提交和等待，
-  provider stream/submission存活期间不再解析新function。campaign第一次普通warm-up必须与普通one-shot共享同一
-  implementation和`Normal` completion policy，首次失败不得形成可复用session。
-- external expected evidence显式记录`exact`或`relaxed-f16` comparison policy，不把“已通过typed comparator”
-  错写成bit-exact。普通`wafer-run` invocation自动消费已验证的sibling companion；不存在companion时仍执行普通
-  package，不新增第二个runtime profile mode。
-- 每个companion默认只有一个稳定`runs/current` report publication；临时目录失败原子清理，历史保留若以后需要必须
-  另设显式policy。compiler必须在最终rename前使整个companion staging树为`0777`；runner继续保证`runs`、current
-  指向的目录及其`evidence.json`、`analysis.json`、`index.html`均为`0777`。回收旧目标前必须用evidence中的
-  `run_id`验证目录身份，不能只凭`run-*`名字递归删。
-  同一companion的campaign/publication由runner单进程串行拥有；跨进程并发替换current是显式非目标，不额外发布
-  可能残留的锁文件或第四份marker。内部capture package不作为用户报告产物。
-- 统一hardware calibration的默认full-card Add槽位直接消费上述profile gate；旧kernel-grid Add只保留为显式
-  独立smoke，不在默认队列中先于profile重复执行，默认步骤总数保持不增。profile CTest成功后的session归档必须
-  解析受管`runs/current`，验证目标仍位于同一`runs`目录且`evidence.run_id`匹配目录身份，再把
-  `evidence.json`、`analysis.json`和`index.html`作为不可拆分的三文件组保留；任一缺失或多出成员都使归档失败。
+- profile CRT不能改变普通 completion 语义。Count 继续调用真实 `TsmWaitfinish()`；只有合法 Trace 在相同
+  `TASK_DONE == 1`终止条件下用 PMU observation 包围 polling，并临时 enable/恢复 Direct-DTE PMU。
+- split 64-bit读取必须把 high-low-high 稳定性写进 validity。无法稳定读取时保留可独立成立的 wait
+  window，但拒绝 raw PMU delta。
+- companion schema 版本由 runtime 公共常量拥有；C++ serializer、JSON schema、Python validator 和 fixture
+  必须通过跨语言 contract test 消费同一版本。
+- site map 从未插桩 production target LLVM 生成；Trace clone只作为 capture executable。发布前比较
+  rank/site typed identity、engine、correlation 和目标调用顺序。
+- runner 在任何 submit 前解析完整 ordered phase export 集合；provider stream/submission 存活期间不再
+  解析新 function。
+- 同一 companion 的 campaign/publication 由 runner 单进程串行拥有。报告先在临时目录完整生成，再原子
+  替换 `runs/current`；内部 capture package 不作为用户报告产物。
 
 ## 实施 checkpoints
 
-1. **Final-only companion**：普通 package byte-equivalence；一个 execution binding；三个 capture；
-   activation/digest/readback/failure atomicity。
-2. **Record 和 instrumentation**：五类 NCC PMU activity、Direct-DTE wait/PMU evidence、count/trace
-   terminal protocol、完整 decoder negative。
-3. **Runtime campaign**：固定 14 launch、普通 production 首门槛、每次 output exact、timeout stop、
-   三文件原子发布。
-4. **Analyzer/report**：只输出 final artifact；总耗时、16 tile、六 engine、per-tile timeline、
+1. **Count/Trace companion**：普通 package byte-equivalence；一个 execution binding；Count/Trace
+   两个 capture；activation/digest/readback/failure atomicity。
+2. **Record 和 instrumentation**：Trace 同时消费 entry、aggregate PMU、五类 NCC activity、Direct-DTE
+   wait/raw activity；Count/Trace terminal protocol和decoder negative闭合。
+3. **Runtime campaign**：固定三次 launch、Primary 首门槛、Count capacity、Trace exact audit、每次 output
+   校验、timeout stop、三文件原子发布。
+4. **Analyzer/report**：单次 Primary duration、16 tile、六 engine、per-tile timeline、site/DTE下钻、
    partial validity 和无负 cycle。
-5. **Completion replay**：完整 host build/unit/lit/no-card；用户重启一次后，以本轮新 build、
-   新 package、新 launch 和新 output 串行完成板端 gate。没有 fresh live-board 结果时 Q9 保持
-   `doing`。
+5. **Completion replay**：完整 host build/unit/lit/no-card；实现和host门禁稳定后，用户明确要求板测时才以
+   本轮新 build、新 package、新 launch 和新 output 串行完成板端 gate。
 
-## Fresh completion replay（2026-07-28）
-
-- host侧重新构建当前`wafer-compile`/`wafer-run`，profile companion no-card、普通Add no-card、
-  live gate的fake调用/timeout/report合同、hardware calibration inventory和三文件归档测试均通过；
-  profiler/runtime与campaign/publication相关单元测试也重新通过。
-- configured board在本轮重启会话中先通过一次普通single-op Add资格门禁；随后从同一fresh source分别
-  构建普通与`--profile` package并确认production package逐字节相同。额外普通16-rank grid Add的
-  16份输出均exact，随后固定14-launch profile campaign一次完成，10个最终production artifact样本的
-  median为638947 ns，范围597433–10058660 ns；其中一次10058660 ns的高值样本原样保留，
-  不删除、不重试，也不把10个样本误写成10个最终结论。
-- 本轮报告的environment、package companion、measurement basis、output equivalence、summary、trace和
-  PMU均有效；16个tile都取得非负entry span。timeline包含每tile一段CT、两段RDMA和一段WDMA活动，
-  CT busy均为46 cycles；NE、TDMA和Direct-DTE在该Add中没有实际活动。`runs`、current目标目录及
-  整个`package.profile`树均为`0777`，current目标只含`evidence.json`、`analysis.json`和`index.html`。
-- overall latency仍为qualified；一次样本的最大completion poll gap占比超过high-resolution标签阈值，
-  因此报告保留`completion_resolution_too_coarse` warning而不显示旧式`Measurement invalid`。
-  16个tile时钟尚未取得可用alignment，所以只展示各tile自己的entry-local timeline，不声明cross-tile
-  顺序。
-- Q9继续保持`doing`：Add已经证明最终产物总耗时、16-tile CT/RDMA/WDMA活动、报告和生命周期，但它不含
-  Direct-DTE call。下一块板端完成证据必须来自含真实Direct-DTE wait的final-only production artifact；
-  不能用当前Add中的零活动行代签，也不能回到baseline/winner成对campaign。
+旧 companion v2 / evidence v4 的 14-launch Add 输出只保留为历史审计记录，不能为本合同的
+companion v3 / evidence v5 代签。Q9 在含真实 Direct-DTE wait 的新协议板端 gate 完成前保持 `doing`。

@@ -934,27 +934,29 @@
   及`plan.json`、`variants.json`、`site-map.json`的逐项SHA-256作为唯一激活边界。读取侧在解析或board effect前先做
   exact key/digest验证，不能扫描目录、文件名或resource name猜身份。compiler在最终原子rename前把整个companion
   directory/regular-file树设为`0777`；no-card和live gate必须检查根及全部后代，不能只检查`runs`和报告叶子。
-- 一个companion只有一个`final-artifact`未插桩execution binding，以及summary/count/trace三个内部capture binding。
+- 一个companion只有一个`final-artifact`未插桩execution binding，以及count/trace两个内部capture binding。
   runner自动发现并复用普通`wafer-run`的resource、typed expected comparator、output和board参数，不向用户暴露capture选择
-  或采样参数。缺external expected的writable resource由首个普通warm-up按稳定semantic key建立同session exact reference；
-  它只证明repeatability。所有launch留在一个qualified、driver-bound session中单进程串行，首个timeout、device异常、
-  correctness或协议失败立即停止，不retry/reset/power。
-- fixed protocol是一次普通warm-up、十次相同最终production package的高分辨率submit→all-completion样本，再各执行一次
-  summary、count和trace。每个高分辨率样本记录实际最大poll gap；summary aggregate PMU、count preflight和trace独立执行。
-  trace evidence保留preflight count、`next_sequence`、drop count、raw flags、terminal state和record guard，任何
-  overflow/drop/gap/mismatch都fail closed。
+  或采样参数。缺external expected的writable resource由Primary按稳定semantic key建立同session exact reference；
+  它只证明本轮diagnostic capture与Primary等价。所有launch留在一个qualified、driver-bound session中单进程串行，
+  首个timeout、device异常、correctness或协议失败立即停止，不retry/reset/power。
+- fixed protocol是一次未插桩最终production package的高分辨率Primary，再各执行一次Count和Trace，共三次launch。
+  Primary的submit→all-completion是唯一用户级耗时，不自动warm-up、不默认重复benchmark，也不计算median/range。
+  Trace header已同时携带该次entry span和aggregate PMU，因此不另建重复事实的summary capture。Count只为固定trace
+  buffer提供动态容量预检；trace evidence保留preflight count、`next_sequence`、drop count、raw flags、terminal
+  state和record guard，任何overflow/drop/gap/mismatch都fail closed。
 - profile CRT必须保持普通completion语义：非trace路径继续调用真实`TsmWaitfinish()`，trace poll同样只在
   `TASK_DONE == 1`时结束并在等待期间采样。只有trace临时enable/restore Direct-DTE PMU；split counter不稳定时显式
   标记raw delta不可用。target测试要验证宏展开后的predicate和fallback，不能只看宏、源码else分支或符号存在。
 - `site_id`只在rank内有效，canonical site map来自未插桩final target LLVM。NCC event是累计PMU增长所在的有界
   observation window；同engine多条异步issue时，按最近event关联只是一种局部解释，不能声称逐命令零误差起止。
-  Direct-DTE event则是实际wait/completion wrapper窗口，raw DTE PMU只作未校准活动证据。summary entry span与trace
-  entry span来自不同launch，timeline只能使用trace自身entry-local横轴。
+  Direct-DTE event则是实际wait/completion wrapper窗口，raw DTE PMU只作未校准活动证据。timeline只能使用Trace
+  自身entry-local横轴，不能把Primary host时间或其它tile的local cycle混入同一绝对轴。
 - local cycle domain没有资格化mapping时，报告仍显示all-and-only 16个逐tile、六engine timeline，但不能声明cross-tile
   order、overlap或global critical path。external expected显式记录`exact`或`relaxed-f16` comparison policy；否则同session
   exact reference只证明repeatability，不能谎称bit-exact semantic correctness。
-- evidence由single-final-artifact analyzer直接消费十个样本，不构造ABBA/BAAB、baseline/winner、speedup或signed
-  candidate delta。report在临时目录中完整生成后原子替换`runs/current`，只公开`evidence.json`、`analysis.json`和
+- evidence由single-final-artifact analyzer直接消费一个Primary样本，不构造ABBA/BAAB、baseline/winner、speedup或
+  signed candidate delta。重复benchmark若以后需要，应作为显式独立workflow，不能重新混入默认profiler。report在
+  临时目录中完整生成后原子替换`runs/current`，只公开`evidence.json`、`analysis.json`和
   `index.html`三个`0777`文件；`runs`和current目标目录也必须可穿越。旧目标回收前校验三成员及evidence `run_id`，
   删除失败显式报错。no-card只能证明compiler/ABI/decoder/campaign/report协议；未执行且未确认non-skipped的configured
   live-board gate时，Q9保持进行中。

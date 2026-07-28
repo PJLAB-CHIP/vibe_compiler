@@ -35,10 +35,10 @@ LOCAL_ELEMENTS = GLOBAL_ELEMENTS // RANK_COUNT
 ELEMENT_DTYPE = np.dtype("<f2")
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
 PROFILE_COMPANION_READY = (
-    "profile_companion: ready schema=2 ranks=16 variants=1 captures=3"
+    "profile_companion: ready schema=3 ranks=16 variants=1 captures=2"
 )
-PROFILE_CAMPAIGN_LAUNCH_COUNT = 14
-PROFILE_MEASUREMENT_SAMPLE_COUNT = 10
+PROFILE_CAMPAIGN_LAUNCH_COUNT = 3
+PROFILE_PRIMARY_EXECUTION_COUNT = 1
 BOARD_PROCESS_TIMEOUT_MARGIN_SECONDS = 120.0
 LAUNCH_EVIDENCE = {
     runtime_launch.KERNEL_LAUNCH_KIND: (
@@ -658,7 +658,7 @@ def verify_no_card_evidence(stdout: str) -> None:
 
 def verify_profile_report(
     package: pathlib.Path, stdout: str
-) -> tuple[int | float, int, int, pathlib.Path]:
+) -> tuple[int, pathlib.Path]:
     companion = pathlib.Path(f"{package}.profile")
     require_profile_companion_permissions(package)
     runs = companion / "runs"
@@ -686,7 +686,7 @@ def verify_profile_report(
     html = members["index.html"].read_text()
     if (
         evidence.get("schema") != "wafer.profile.evidence"
-        or evidence.get("schema_version") != 4
+        or evidence.get("schema_version") != 5
         or evidence.get("run_id") != run_directory.name
     ):
         raise RuntimeError("profile evidence identity is invalid")
@@ -695,19 +695,21 @@ def verify_profile_report(
     trace_tiles = trace.get("tiles")
     if (
         not isinstance(samples, list)
-        or len(samples) != PROFILE_MEASUREMENT_SAMPLE_COUNT
+        or len(samples) != PROFILE_PRIMARY_EXECUTION_COUNT
+        or samples[0].get("sample_id") != "primary"
+        or samples[0].get("sample_index") != 0
         or trace.get("complete") is not True
         or not isinstance(trace_tiles, list)
         or len(trace_tiles) != RANK_COUNT
     ):
         raise RuntimeError(
-            "profile evidence does not contain 10 samples and 16 trace tiles"
+            "profile evidence does not contain one Primary and 16 trace tiles"
         )
 
     final = analysis.get("final_artifact")
     if not isinstance(final, dict):
         raise RuntimeError("profile analysis omitted the final artifact")
-    latency = final.get("latency")
+    duration = final.get("duration")
     output = final.get("output")
     tiles = final.get("tiles")
     validity = analysis.get("validity")
@@ -720,14 +722,16 @@ def verify_profile_report(
         "DIRECT_DTE",
     }
     if (
-        not isinstance(latency, dict)
-        or latency.get("sample_count") != PROFILE_MEASUREMENT_SAMPLE_COUNT
-        or not latency.get("qualified")
+        not isinstance(duration, dict)
+        or duration.get("sample_id") != "primary"
+        or duration.get("sample_index") != 0
+        or not isinstance(duration.get("host_elapsed_ns"), int)
+        or duration["host_elapsed_ns"] <= 0
+        or not duration.get("qualified")
         or not isinstance(output, dict)
-        or not output.get("production_repeats_exact")
-        or not output.get("diagnostic_captures_exact")
+        or not output.get("production_execution_validated")
+        or not output.get("diagnostic_captures_match_primary")
         or not isinstance(validity, dict)
-        or not validity.get("summary")
         or not validity.get("trace")
         or not validity.get("pmu")
         or not isinstance(tiles, list)
@@ -739,8 +743,6 @@ def verify_profile_report(
     for tile in tiles:
         if (
             not isinstance(tile, dict)
-            or tile.get("summary_entry_cycles") is None
-            or tile.get("summary_entry_cycles") < 0
             or tile.get("trace_entry_cycles") is None
             or tile.get("trace_entry_cycles") < 0
             or {
@@ -793,12 +795,7 @@ def verify_profile_report(
     expected_report = current / "index.html"
     if f"profile_report: {expected_report}" not in stdout:
         raise RuntimeError("wafer-run did not publish the stable profile report path")
-    return (
-        latency["median_ns"],
-        latency["minimum_ns"],
-        latency["maximum_ns"],
-        expected_report,
-    )
+    return duration["host_elapsed_ns"], expected_report
 
 
 def main() -> int:
@@ -951,15 +948,15 @@ def main() -> int:
             entry_evidence,
             completion_evidence,
         )
-        median, minimum, maximum, report = verify_profile_report(
+        duration, report = verify_profile_report(
             package, profile_result.stdout
         )
         print(
             "board_profile_campaign: pass "
             f"launches={PROFILE_CAMPAIGN_LAUNCH_COUNT} "
-            f"samples={PROFILE_MEASUREMENT_SAMPLE_COUNT}"
+            f"primary={PROFILE_PRIMARY_EXECUTION_COUNT}"
         )
-        print(f"board_profile_latency_ns: median={median} range={minimum}..{maximum}")
+        print(f"board_profile_duration_ns: {duration}")
         print(f"board_profile_report: {report}")
         print(profile_result.stdout, end="")
         return 0

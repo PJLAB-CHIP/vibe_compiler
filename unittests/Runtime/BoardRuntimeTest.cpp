@@ -1215,7 +1215,7 @@ TEST_F(BoardRuntimeTest,
 }
 
 TEST_F(BoardRuntimeTest,
-       StartSessionRejectsNonNormalFirstObservationBeforeProviderCalls) {
+       StartSessionAcceptsHighResolutionFirstObservation) {
   using namespace wafer::runtime;
   llvm::Expected<VerifiedPackageManifest> package =
       verifyRank16(TestLaunchContractCase::Grid);
@@ -1227,14 +1227,22 @@ TEST_F(BoardRuntimeTest,
       BoardCompletionObservationPolicy::ProfileHighResolution;
 
   FakeBoardDriver driver;
+  driver.waitDelay = std::chrono::milliseconds(2);
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
       started = executeBoardInvocationAndStartSession(
           *package, root, std::move(request), driver);
-  ASSERT_FALSE(static_cast<bool>(started));
-  EXPECT_NE(llvm::toString(started.takeError()).find("ordinary"),
-            std::string::npos);
-  EXPECT_TRUE(driver.calls.empty());
+  ASSERT_TRUE(static_cast<bool>(started))
+      << llvm::toString(started.takeError());
+  EXPECT_TRUE(started->second.isUsable());
+  EXPECT_EQ(driver.observedCompletionObservationPolicy,
+            BoardCompletionObservationPolicy::ProfileHighResolution);
+  EXPECT_GT(started->first.launchToCompletionNanoseconds, 0u);
+  EXPECT_GT(
+      started->first.completionObservationResolutionNanoseconds, 0u);
+  EXPECT_EQ(
+      std::count(driver.calls.begin(), driver.calls.end(), "get-device-count"),
+      1);
 }
 
 TEST_F(BoardRuntimeTest,

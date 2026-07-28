@@ -8,6 +8,7 @@
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Compiler/Package.h"
 #include "Wafer/Runtime/PackageManifest.h"
+#include "Wafer/Runtime/ProfileCompanion.h"
 #include "Wafer/Target/TargetCall.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -203,12 +204,11 @@ struct ProfileCapturePackageMetadata {
 
 struct ProfileVariantCapturePackages {
   std::string variantId;
-  std::array<ProfileCapturePackageMetadata, 3> captures;
+  std::array<ProfileCapturePackageMetadata, 2> captures;
 };
 
-static constexpr std::array<ProfileCaptureKind, 3> kProfileCaptures = {
-    ProfileCaptureKind::Summary, ProfileCaptureKind::Count,
-    ProfileCaptureKind::Trace};
+static constexpr std::array<ProfileCaptureKind, 2> kProfileCaptures = {
+    ProfileCaptureKind::Count, ProfileCaptureKind::Trace};
 
 static mlir::LogicalResult stageVariantCapturePackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -309,7 +309,9 @@ static mlir::LogicalResult writeProfileCompanion(
           [&](llvm::json::OStream &json) {
             json.object([&] {
               json.attribute("schema", "wafer-profile-variants");
-              json.attribute("schema_version", int64_t(2));
+              json.attribute(
+                  "schema_version",
+                  int64_t(runtime::kProfileCompanionSchemaVersion));
               json.attribute(
                   "rank_count",
                   productionBundle.getExecutionConfig().getRankCount());
@@ -330,7 +332,9 @@ static mlir::LogicalResult writeProfileCompanion(
           [&](llvm::json::OStream &json) {
             json.object([&] {
               json.attribute("schema", "wafer-profile-target-call-site-map");
-              json.attribute("schema_version", int64_t(2));
+              json.attribute(
+                  "schema_version",
+                  int64_t(runtime::kProfileCompanionSchemaVersion));
               json.attribute("site_basis",
                              "verified-target-llvm-entry-reachable-tsm-call-"
                              "preorder");
@@ -354,7 +358,9 @@ static mlir::LogicalResult writeProfileCompanion(
           [&](llvm::json::OStream &json) {
             json.object([&] {
               json.attribute("schema", "wafer-profile-plan");
-              json.attribute("schema_version", int64_t(2));
+              json.attribute(
+                  "schema_version",
+                  int64_t(runtime::kProfileCompanionSchemaVersion));
               json.attribute(
                   "rank_count",
                   productionBundle.getExecutionConfig().getRankCount());
@@ -415,7 +421,8 @@ static mlir::LogicalResult writeProfileCompanion(
       [&](llvm::json::OStream &json) {
         json.object([&] {
           json.attribute("schema", "wafer-profile-activation");
-          json.attribute("schema_version", int64_t(2));
+          json.attribute("schema_version",
+                         int64_t(runtime::kProfileCompanionSchemaVersion));
           json.attribute("production_manifest_sha256", *productionDigest);
           json.attributeObject("metadata_sha256", [&] {
             json.attribute("plan.json", *planDigest);

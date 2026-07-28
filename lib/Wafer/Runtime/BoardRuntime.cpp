@@ -966,12 +966,6 @@ executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,
                                       llvm::StringRef packageRoot,
                                       BoardRuntimeInvocationRequest request,
                                       BoardRuntimeDriver &driver) {
-  if (request.completionObservationPolicy !=
-      BoardCompletionObservationPolicy::Normal)
-    return boardError(
-        BoardRuntimeStage::Preflight, -1, EntryId(),
-        "the first qualified-session invocation must use the ordinary "
-        "completion observation policy");
   const uint32_t deviceId = request.deviceId;
   const uint32_t rankCount =
       static_cast<uint32_t>(package.getManifest().rankCount);

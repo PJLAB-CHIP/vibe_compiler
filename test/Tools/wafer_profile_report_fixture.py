@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic v4 final-artifact evidence for the offline analyzer."""
+"""Deterministic v5 final-artifact evidence for the offline analyzer."""
 
 from __future__ import annotations
 
@@ -65,8 +65,9 @@ def _pmu_tile(tile: int) -> dict[str, Any]:
 def _trace_tile(tile: int) -> dict[str, Any]:
     entry_begin = 4_900 + tile * 100
     events: list[dict[str, Any]] = []
-    for sequence, engine in enumerate(NCC_ENGINES):
+    for sequence, engine in enumerate((*NCC_ENGINES, "DIRECT_DTE")):
         begin = entry_begin + 100 + sequence * 41
+        direct_dte = engine == "DIRECT_DTE"
         events.append(
             {
                 "sequence": sequence,
@@ -75,14 +76,16 @@ def _trace_tile(tile: int) -> dict[str, Any]:
                 "engine": engine,
                 "observed_begin_cycle": begin,
                 "observed_end_cycle": begin + 7 + sequence,
-                "counter_delta": 1 + sequence,
+                "counter_delta": 0 if direct_dte else 1 + sequence,
                 "activity_valid": True,
-                "dte_counter_valid": None,
-                "dte_role": None,
+                "dte_counter_valid": False if direct_dte else None,
+                "dte_role": (
+                    ("send" if tile % 2 == 0 else "receive")
+                    if direct_dte
+                    else None
+                ),
             }
         )
-    # Deliberately differs from the summary capture span. The report must use
-    # this trace-local axis for every activity-window coordinate.
     entry_end = entry_begin + 500
     return {
         "tile": tile,
@@ -98,19 +101,6 @@ def _trace_tile(tile: int) -> dict[str, Any]:
         "overflow": False,
         "events": events,
     }
-
-
-def _summary_tiles() -> list[dict[str, int]]:
-    return [
-        {
-            "tile": tile,
-            "entry_begin": 2_000 + tile * 101,
-            "entry_end": 3_000 + tile * 102,
-        }
-        for tile in range(16)
-    ]
-
-
 def _sites() -> list[dict[str, Any]]:
     specifications = (
         ("CT", "compute.ct", "wafer_tx81_tsm_ct_execute"),
@@ -118,6 +108,11 @@ def _sites() -> list[dict[str, Any]]:
         ("RDMA", "input.read", "wafer_tx81_tsm_rdma_execute"),
         ("WDMA", "output.write", "wafer_tx81_tsm_wdma_execute"),
         ("TDMA", "workspace.move", "wafer_tx81_tsm_tdma_execute"),
+        (
+            "DIRECT_DTE",
+            "communication.direct-dte",
+            "wafer_tx81_direct_dte_wait",
+        ),
     )
     return [
         {
@@ -138,18 +133,6 @@ def make_evidence() -> dict[str, Any]:
     """Build one complete, final-artifact-only profile evidence object."""
 
     target_profile = "wafer-tx81-single-card-kernel-v1"
-    sample_durations = (
-        1_018_000,
-        1_006_000,
-        1_012_000,
-        1_001_000,
-        1_009_000,
-        1_004_000,
-        1_014_000,
-        1_007_000,
-        1_011_000,
-        1_003_000,
-    )
     experiment = {
         "artifact": {
             "digest": FINAL_DIGEST,
@@ -169,7 +152,6 @@ def make_evidence() -> dict[str, Any]:
             }
             for tile in range(16)
         ],
-        "summary": {"tiles": _summary_tiles()},
         "trace": {
             "complete": True,
             "tiles": [_trace_tile(tile) for tile in range(16)],
@@ -178,11 +160,11 @@ def make_evidence() -> dict[str, Any]:
     }
     return {
         "schema": "wafer.profile.evidence",
-        "schema_version": 4,
+        "schema_version": 5,
         "run_id": "fixture-final-artifact",
         "identity": {
             "production_manifest_sha256": FINAL_DIGEST,
-            "profile_companion_schema_version": 2,
+            "profile_companion_schema_version": 3,
             "target_profile": target_profile,
             "launch": _kernel_launch(),
             "execution_ranks": 16,
@@ -191,18 +173,17 @@ def make_evidence() -> dict[str, Any]:
             ),
         },
         "topology": [
-            {"tile": tile, "x": tile % 8, "y": tile // 8}
+            {"tile": tile, "x": tile % 4, "y": tile // 4}
             for tile in range(16)
         ],
         "measurement": {
             "samples": [
                 {
-                    "sample_id": f"final-s{index}",
-                    "sample_index": index,
-                    "host_elapsed_ns": elapsed,
+                    "sample_id": "primary",
+                    "sample_index": 0,
+                    "host_elapsed_ns": 1_018_000,
                     "completion_observation_resolution_ns": 100,
                 }
-                for index, elapsed in enumerate(sample_durations)
             ]
         },
         "output_validation": {
@@ -215,8 +196,8 @@ def make_evidence() -> dict[str, Any]:
                     "bytes": 4096,
                     "reference_sha256": "sha256:" + f"{tile + 1:064x}",
                     "external_expected_comparison": "exact",
-                    "production_repeats_exact": True,
-                    "diagnostic_captures_exact": True,
+                    "production_execution_validated": True,
+                    "diagnostic_captures_match_primary": True,
                 }
                 for tile in range(16)
             ],

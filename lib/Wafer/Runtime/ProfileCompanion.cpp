@@ -39,7 +39,6 @@ constexpr llvm::StringLiteral kSiteBasis =
 constexpr llvm::StringLiteral kSiteIdentity =
     "final-rank-local-engine-site-id-and-typed-correlation-key";
 constexpr llvm::StringLiteral kFinalArtifact = "final-artifact";
-constexpr uint64_t kSummaryRecordBytes = WAFER_TX81_PROFILER_MIN_BUFFER_BYTES;
 constexpr uint64_t kCountRecordBytes = WAFER_TX81_PROFILER_MIN_BUFFER_BYTES;
 constexpr uint64_t kTraceRecordBytes = 1024 * 1024;
 
@@ -195,7 +194,7 @@ struct RawExecutionPackage {
 
 struct RawCapturePackage {
   std::string variantId;
-  ProfileCaptureKind capture = ProfileCaptureKind::Summary;
+  ProfileCaptureKind capture = ProfileCaptureKind::Count;
   std::string packageReference;
   std::string manifestDigest;
   uint64_t recordBytes = 0;
@@ -208,8 +207,6 @@ struct RawPlan {
 
 llvm::Expected<ProfileCaptureKind> parseCaptureKind(llvm::StringRef value,
                                                     llvm::StringRef context) {
-  if (value == "summary")
-    return ProfileCaptureKind::Summary;
   if (value == "count")
     return ProfileCaptureKind::Count;
   if (value == "trace")
@@ -220,7 +217,7 @@ llvm::Expected<ProfileCaptureKind> parseCaptureKind(llvm::StringRef value,
 uint64_t expectedRecordBytes(ProfileCaptureKind capture) {
   switch (capture) {
   case ProfileCaptureKind::Summary:
-    return kSummaryRecordBytes;
+    llvm_unreachable("summary is not a profile companion v3 capture");
   case ProfileCaptureKind::Count:
     return kCountRecordBytes;
   case ProfileCaptureKind::Trace:
@@ -383,14 +380,13 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
       requireArray(root, "capture_packages", "profile plan");
   if (!captures)
     return captures.takeError();
-  if ((*captures)->size() != 3)
-    return invalid("profile plan must contain exactly three capture packages");
+  if ((*captures)->size() != 2)
+    return invalid("profile plan must contain exactly two capture packages");
   if (llvm::Error error =
           accountRecords((*captures)->size(), totalRecords, limits))
     return std::move(error);
-  const std::array<std::pair<llvm::StringRef, ProfileCaptureKind>, 3>
+  const std::array<std::pair<llvm::StringRef, ProfileCaptureKind>, 2>
       expectedOrder = {{
-          {kFinalArtifact, ProfileCaptureKind::Summary},
           {kFinalArtifact, ProfileCaptureKind::Count},
           {kFinalArtifact, ProfileCaptureKind::Trace},
       }};
@@ -841,8 +837,7 @@ resolveCapturePackageReference(llvm::StringRef companionRoot,
   reference.split(components, '/', /*MaxSplit=*/-1, /*KeepEmpty=*/true);
   if (components.size() != 3 || components[0] != "captures" ||
       components[1] != kFinalArtifact ||
-      (components[2] != "summary" && components[2] != "count" &&
-       components[2] != "trace"))
+      (components[2] != "count" && components[2] != "trace"))
     return invalid("profile capture package_ref is not canonical");
   llvm::SmallString<256> candidate(companionRoot);
   llvm::sys::path::append(candidate, reference);
@@ -909,8 +904,7 @@ llvm::Error verifyVariantGraph(llvm::ArrayRef<RawVariant> variants,
     return invalid("profile plan and final artifact identities disagree");
 
   for (ProfileCaptureKind capture :
-       {ProfileCaptureKind::Summary, ProfileCaptureKind::Count,
-        ProfileCaptureKind::Trace}) {
+       {ProfileCaptureKind::Count, ProfileCaptureKind::Trace}) {
     const RawCapturePackage *capturePackage =
         findCapturePackage(plan.capturePackages, kFinalArtifact, capture);
     if (!capturePackage)
