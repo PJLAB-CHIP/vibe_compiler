@@ -19,13 +19,13 @@ pipeline contract、实验结论、测试数字、失败修复过程和历史复
 
 ```text
 Q32 + Q6.B -> Q9 profiler foundation                         [doing]
-Q32 + Q6.B + Q9 -> Q38 multi-engine software pipelining     [next]
+Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [next]
 ```
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q9 | `production-artifact-profiler` | `doing` | Q32、Q6.B、configured board | 固定Primary→Count→Trace三次执行，只把未插桩最终普通产物的一次submit→trusted completion作为用户级耗时。fresh新协议Add已闭合单Primary耗时、exact output、Count/Trace、16-tile CT/RDMA/WDMA timeline、三文件报告和profile全树`0777`；NE/TDMA/Direct-DTE在该产物中无活动，尚需含真实Direct-DTE wait的fresh最终产物闭合对应门禁。Ranking feedback仍是后续独立门禁。 | 06、14-16；`tasks/plans/board-profiler.md` |
-| Q38 | `multi-engine-software-pipelining` | `next` | Q32、Q6.B、Q9 | 在complete-rank actual clone中实现真实multi-buffer、prologue/steady/epilogue、resource-aware issue order和latest-legal completion；每个候选重新通过SPM/DDR、Instr、Target、package、model和board correctness gate。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
+| Q38 | `multi-engine-software-pipelining` | `next` | Q32、Q6.B、Q37 | 从complete-rank unplaced actual clone生成legality-safe issue window、真实fixed-slot multi-buffer、prologue/steady/epilogue、zero-avoidable/zero-steady-state waitfinish normal form及typed worker alternatives；same-worker跨迭代RAW/WAR/WAW只保留issue edge，minimum-strength join仅用于真实domain exit。drain-elision与pair/group overlap独立qualification；每个候选重过host exact late gates，板端只执行fully gated同源qualification与最终normal production winner。Q9只观测最终产物，不是IR实现前置。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
 
 ## Later / External Gates
 
