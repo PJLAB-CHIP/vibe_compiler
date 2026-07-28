@@ -229,6 +229,23 @@ def require_byte_identical_packages(
         )
 
 
+def require_profile_companion_permissions(package: pathlib.Path) -> None:
+    companion = pathlib.Path(f"{package}.profile")
+    if not companion.is_dir() or companion.is_symlink():
+        raise RuntimeError("profile companion is not a real directory")
+    for path in (companion, *companion.rglob("*")):
+        if path.is_symlink():
+            continue
+        if not path.is_dir() and not path.is_file():
+            raise RuntimeError(
+                f"profile companion contains a non-regular member: {path}"
+            )
+        if stat.S_IMODE(path.stat().st_mode) != 0o777:
+            raise RuntimeError(
+                f"profile companion permission is not 0777: {path}"
+            )
+
+
 def require_rank_domain(records: object, name: str) -> list[dict[str, object]]:
     if not isinstance(records, list) or len(records) != RANK_COUNT:
         raise RuntimeError(f"package must contain exactly {RANK_COUNT} {name}")
@@ -643,6 +660,7 @@ def verify_profile_report(
     package: pathlib.Path, stdout: str
 ) -> tuple[int | float, int, int, pathlib.Path]:
     companion = pathlib.Path(f"{package}.profile")
+    require_profile_companion_permissions(package)
     runs = companion / "runs"
     current = runs / "current"
     if not current.is_symlink():
@@ -663,10 +681,6 @@ def verify_profile_report(
         raise RuntimeError(
             "profile report does not contain exactly the three public artifacts"
         )
-    for path in (runs, run_directory, *members.values()):
-        if stat.S_IMODE(path.stat().st_mode) != 0o777:
-            raise RuntimeError(f"profile report permission is not 0777: {path}")
-
     evidence = json.loads(members["evidence.json"].read_text())
     analysis = json.loads(members["analysis.json"].read_text())
     html = members["index.html"].read_text()
@@ -832,6 +846,7 @@ def main() -> int:
         )
         compile_package(args, source, package, profile=True)
         require_byte_identical_packages(ordinary_package, package)
+        require_profile_companion_permissions(package)
     else:
         compile_package(args, source, package, profile=False)
 

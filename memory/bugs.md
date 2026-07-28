@@ -1782,6 +1782,11 @@
   默认hardware calibration用profile gate替代旧Add槽位，不能把旧Add和profile内置普通gate叠加执行；成功归档要从
   受管`runs/current`验证三成员和`run_id`后完整保存HTML与两份JSON。host fake test至少锁定外层只执行一次普通
   invocation和一次campaign invocation，并覆盖权限、负cycle和报告成员负例。
+- 只把`runs`、run目录和三份报告chmod为`0777`仍不够：compiler transaction受umask影响时，
+  `<package>.profile`根和内部capture目录可能是`0750`，导致非root用户连companion都无法进入。修复必须在
+  `activation.json`完成后、最终原子rename前，对私有staging companion做不跟随symlink的递归类型检查并把根、
+  全部目录和regular file设为`0777`；任一失败直接丢弃transaction。profile no-card/live gate要在任何board effect前
+  检查整个companion树，collision/race负例还要证明不会chmod已存在的竞争目标。
 - `completion_resolution`未达到high-resolution标签不等于整体耗时无效。只要environment、package/measurement
   identity、trusted completion和逐次输出等价仍成立，submit→completion样本继续qualified，报告应保留实际poll-gap
   warning和全部原始样本；不能恢复笼统的`Measurement invalid`，也不能为消除离群样本自动重跑板卡。

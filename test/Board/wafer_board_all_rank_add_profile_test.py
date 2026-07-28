@@ -132,6 +132,7 @@ class ProfileReportFixture:
             "<!doctype html><title>Final artifact profile</title>"
         )
         for path in (
+            pathlib.Path(f"{self.package}.profile"),
             self.runs,
             self.run_directory,
             *self.run_directory.iterdir(),
@@ -172,7 +173,9 @@ class AllRankAddProfileGateTest(unittest.TestCase):
         fixture = ProfileReportFixture(self.root)
         html = fixture.run_directory / "index.html"
         html.chmod(0o755)
-        with self.assertRaisesRegex(RuntimeError, "permission is not 0777"):
+        with self.assertRaisesRegex(
+            RuntimeError, "permission is not 0777"
+        ):
             HARNESS.verify_profile_report(fixture.package, fixture.stdout)
 
         html.chmod(0o777)
@@ -232,6 +235,11 @@ class AllRankAddProfileGateTest(unittest.TestCase):
             stack.enter_context(
                 mock.patch.object(
                     HARNESS, "require_byte_identical_packages"
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    HARNESS, "require_profile_companion_permissions"
                 )
             )
             stack.enter_context(

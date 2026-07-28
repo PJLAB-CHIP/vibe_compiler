@@ -427,6 +427,49 @@ static mlir::LogicalResult writeProfileCompanion(
       diagnostics);
 }
 
+static mlir::LogicalResult
+makeProfileCompanionWorldAccessible(llvm::StringRef companionRoot,
+                                    llvm::raw_ostream &diagnostics) {
+  auto setPermissions = [&](llvm::StringRef path) -> mlir::LogicalResult {
+    if (std::error_code error =
+            llvm::sys::fs::setPermissions(path, llvm::sys::fs::all_all)) {
+      reject(diagnostics, "failed to set profile companion permissions for '" +
+                              path.str() + "': " + error.message());
+      return mlir::failure();
+    }
+    return mlir::success();
+  };
+
+  std::error_code walkError;
+  for (llvm::sys::fs::recursive_directory_iterator
+           iterator(companionRoot, walkError, /*follow_symlinks=*/false),
+       end;
+       iterator != end; iterator.increment(walkError)) {
+    if (walkError) {
+      reject(diagnostics,
+             "failed to walk profile companion while setting permissions: " +
+                 walkError.message());
+      return mlir::failure();
+    }
+    if (iterator->type() != llvm::sys::fs::file_type::directory_file &&
+        iterator->type() != llvm::sys::fs::file_type::regular_file) {
+      reject(diagnostics,
+             "profile companion contains a non-regular permission target: '" +
+                 iterator->path() + "'");
+      return mlir::failure();
+    }
+    if (mlir::failed(setPermissions(iterator->path())))
+      return mlir::failure();
+  }
+  if (walkError) {
+    reject(diagnostics,
+           "failed to walk profile companion while setting permissions: " +
+               walkError.message());
+    return mlir::failure();
+  }
+  return setPermissions(companionRoot);
+}
+
 } // namespace
 
 mlir::LogicalResult stageTargetPackage(
@@ -510,6 +553,9 @@ mlir::LogicalResult stageProfileTargetPackages(
           companionRoot, publishedPackageName, productionPackage,
           *compiled, *productionTargetLLVM, *productionTraceTargetLLVM,
           productionCaptures, diagnostics)))
+    return mlir::failure();
+  if (mlir::failed(
+          makeProfileCompanionWorldAccessible(companionRoot, diagnostics)))
     return mlir::failure();
 
   executableBundle.emplace(std::move(*compiled));

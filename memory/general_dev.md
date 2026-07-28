@@ -932,7 +932,8 @@
 - profiler是`wafer-compile --profile`的一项compiler功能，不是第二个可执行文件或runtime mode。普通package必须与
   profile关闭时逐字节一致；companion在临时目录完整形成后最后写`activation.json`，以production manifest SHA-256
   及`plan.json`、`variants.json`、`site-map.json`的逐项SHA-256作为唯一激活边界。读取侧在解析或board effect前先做
-  exact key/digest验证，不能扫描目录、文件名或resource name猜身份。
+  exact key/digest验证，不能扫描目录、文件名或resource name猜身份。compiler在最终原子rename前把整个companion
+  directory/regular-file树设为`0777`；no-card和live gate必须检查根及全部后代，不能只检查`runs`和报告叶子。
 - 一个companion只有一个`final-artifact`未插桩execution binding，以及summary/count/trace三个内部capture binding。
   runner自动发现并复用普通`wafer-run`的resource、typed expected comparator、output和board参数，不向用户暴露capture选择
   或采样参数。缺external expected的writable resource由首个普通warm-up按稳定semantic key建立同session exact reference；

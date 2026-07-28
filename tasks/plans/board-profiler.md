@@ -80,8 +80,9 @@ Pipeline position:
 - timeline 只展示实际 counter activity window 或 Direct-DTE wait/completion window。所有坐标先做
   exact unsigned validation；倒序 counter/window 变成不可用诊断，不产生负 cycle。
 - HTML 不显示候选、winner、baseline、speedup 或差值；颜色同时配直接 engine 标签，所有值带单位。
-- `runs/current`稳定入口只公开 `index.html`、`analysis.json`、`evidence.json`；`runs`、current目标目录和三项
-  均可由其它用户访问，三文件为 `0777`。
+- `<package>.profile`从compiler私有staging原子发布前，根目录及全部directory/regular-file成员统一设为
+  `0777`；权限设置失败则不发布production package或companion。`runs/current`稳定入口只公开
+  `index.html`、`analysis.json`、`evidence.json`，current目标目录和三项同样为`0777`。
 
 ## Correctness repair gates
 
@@ -109,8 +110,9 @@ Pipeline position:
   错写成bit-exact。普通`wafer-run` invocation自动消费已验证的sibling companion；不存在companion时仍执行普通
   package，不新增第二个runtime profile mode。
 - 每个companion默认只有一个稳定`runs/current` report publication；临时目录失败原子清理，历史保留若以后需要必须
-  另设显式policy。`runs`、current指向的目录及其`evidence.json`、`analysis.json`、`index.html`都必须可由其它用户
-  穿越/读取，三文件权限为`0777`；回收旧目标前必须用evidence中的`run_id`验证目录身份，不能只凭`run-*`名字递归删。
+  另设显式policy。compiler必须在最终rename前使整个companion staging树为`0777`；runner继续保证`runs`、current
+  指向的目录及其`evidence.json`、`analysis.json`、`index.html`均为`0777`。回收旧目标前必须用evidence中的
+  `run_id`验证目录身份，不能只凭`run-*`名字递归删。
   同一companion的campaign/publication由runner单进程串行拥有；跨进程并发替换current是显式非目标，不额外发布
   可能残留的锁文件或第四份marker。内部capture package不作为用户报告产物。
 - 统一hardware calibration的默认full-card Add槽位直接消费上述profile gate；旧kernel-grid Add只保留为显式
@@ -145,7 +147,7 @@ Pipeline position:
 - 本轮报告的environment、package companion、measurement basis、output equivalence、summary、trace和
   PMU均有效；16个tile都取得非负entry span。timeline包含每tile一段CT、两段RDMA和一段WDMA活动，
   CT busy均为46 cycles；NE、TDMA和Direct-DTE在该Add中没有实际活动。`runs`、current目标目录及
-  `evidence.json`、`analysis.json`、`index.html`均为`0777`，current目标只含这三个文件。
+  整个`package.profile`树均为`0777`，current目标只含`evidence.json`、`analysis.json`和`index.html`。
 - overall latency仍为qualified；一次样本的最大completion poll gap占比超过high-resolution标签阈值，
   因此报告保留`completion_resolution_too_coarse` warning而不显示旧式`Measurement invalid`。
   16个tile时钟尚未取得可用alignment，所以只展示各tile自己的entry-local timeline，不声明cross-tile
