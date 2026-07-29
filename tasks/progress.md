@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-28
+更新时间：2026-07-29
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -25,7 +25,7 @@ Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [doing]
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q9 | `production-artifact-profiler` | `done` | Q32、Q6.B、configured board | 未插桩Primary TX stream launch-to-completion设备包络、分离的host diagnostics、Trace来源的五类NCC per-tile engine active ns/work-volume摘要、独立Direct-DTE cycles/raw activity、Count/Trace、逐次保留真实动态调用与rdcycle的16-tile timeline、exclusive语义成本与非加和Trace-only成本、final Instr静态work与硬件峰值下界对照、exact output、三文件专业UI和profile全树`0777`均闭合；不构造card-wide纯engine elapsed，静态cost不回灌ranking。Ranking feedback保留为后续独立门禁。 | 06、14-16；`tasks/archive/board-profiler.md` |
-| Q38 | `multi-engine-software-pipelining` | `doing` | Q32、Q6.B、Q37 | 从complete-rank unplaced actual clone生成legality-safe issue window、真实fixed-slot multi-buffer、prologue/steady/epilogue、zero-avoidable/zero-steady-state waitfinish normal form及typed worker alternatives；same-worker跨迭代RAW/WAR/WAW只保留issue edge，minimum-strength join仅用于真实domain exit。typed worker0 issue/participant join、whole-rank completion/lifetime、participant-aware ready-order/handoff/model、drain-aware selection、通用relation-backed redundant-transfer normalization、generic fixed-slot rank/whole host late gates、FP16 rotating RDMA+CT+WDMA target capability、普通production winner、package/no-card及fresh板端正确性/profile已闭合；production与baseline最终ELF不同，16 MiB输出exact，本轮单次TX stream-event为1.654 ms对1.756 ms。当前继续闭合非零worker command ABI及真实Direct-DTE issue。scheduler只消费IR和compiler-shipped静态target合同，不读取实卡/Q9/runtime profile；不保留fixed-slot专用forced-winner模式。Q9只观测最终产物，不是IR实现前置。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
+| Q38 | `multi-engine-software-pipelining` | `doing` | Q32、Q6.B、Q37 | 从complete-rank unplaced actual clone生成legality-safe issue window、真实fixed-slot multi-buffer、prologue/steady/epilogue及zero-avoidable/zero-steady-state waitfinish normal form；same-worker跨迭代RAW/WAR/WAW只保留issue edge，minimum-strength join仅用于真实domain exit。typed worker0 issue/participant join、whole-rank completion/lifetime、participant-aware ready-order/handoff/model、drain-aware selection、通用relation-backed redundant-transfer normalization、generic fixed-slot rank/whole host late gates、FP16 rotating RDMA+CT+WDMA target capability、普通production winner、package/no-card及fresh板端正确性/profile已闭合；production与baseline最终ELF不同，16 MiB输出exact，本轮单次TX stream-event为1.654 ms对1.756 ms。当前继续闭合真实Direct-DTE issue。scheduler只消费IR和compiler-shipped静态target合同，不读取实卡/Q9/runtime profile；不保留fixed-slot专用forced-winner模式。Q9只观测最终产物，不是IR实现前置。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
 
 ## Later / External Gates
 
@@ -39,6 +39,7 @@ Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [doing]
 | Q22.K | `target-model-packet-provenance` | `later` | Q22、owner-approved vendor package或公开规范 | 建立可引用的CRT/packet/MMIO provenance；缺失不阻塞functional CModel。 | 14、16、17 |
 | Q22.P | `target-model-timing-calibration` | `later` | Q32、Q22.C、validated PMU/timing environment | 校准LT/AT；没有RTL/vendor cycle证据不声明cycle accuracy。 | 16、17 |
 | Q32.T | `compiler-transform-control` | `later` | Q32、明确的external control-plane consumer | 复用现有rewrite/conversion；Transform IR不保存frontier、不替代all-rank coordinator。 | 01、05-08、10、16、18 |
+| Q38.W | `multi-worker-command-scheduling` | `later` | 出现需要隔离等待域的独立命令链，并确认多worker相对worker0流水具有明确收益 | 打通非零worker command ABI、独立buffer和matching completion；不得为使用worker1/2而拆分已能在worker0并行的流水。 | 08、11、14-17 |
 | Q3.6 | `crt-writeback-scalar` | `later` | 明确Count predicate及wrapper/target/model evidence | 独立闭合typed instruction、effect/completion、ABI/CRT、model和必要package readback。 | 11、14-17 |
 
 不在当前DAG中的model/distributed/executable dialect、MPMD/rank class、跨卡coherent variant、
