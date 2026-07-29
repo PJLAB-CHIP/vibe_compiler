@@ -610,12 +610,14 @@ llvm::Error validatePayload(const compiler::TargetTransactionPayload &payload) {
                 TargetModelKernelErrorCode::InvalidTransactionField,
                 "Direct DTE byte_count must be positive");
           return llvm::Error::success();
-        } else if constexpr (std::is_same_v<
-                                 T, compiler::TargetDirectDTEWaitTransaction>) {
+        } else if constexpr (
+            std::is_same_v<T,
+                           compiler::TargetDirectDTESendIssueTransaction> ||
+            std::is_same_v<T, compiler::TargetDirectDTEWaitTransaction>) {
           if (value.event == 0)
             return kernelError(
                 TargetModelKernelErrorCode::InvalidTransactionField,
-                "Direct DTE wait event must be nonzero");
+                "Direct DTE issue/wait event must be nonzero");
           return llvm::Error::success();
         } else {
           return llvm::Error::success();

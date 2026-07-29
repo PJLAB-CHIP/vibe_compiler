@@ -92,6 +92,20 @@ llvm::Expected<NumericTensorKey> makeTensor(LogicalFormat format,
   return key;
 }
 
+TargetModelByteRead makeTensorRead(int64_t logicalRank, uint64_t address,
+                                   const NumericTensorKey &key) {
+  return TargetModelByteRead{
+      logicalRank, TargetModelAddressSpace::RankSPM, address,
+      llvm::cantFail(getPhysicalTensorStorageBytes(key)), std::nullopt};
+}
+
+TargetModelCommandEffect
+withReads(TargetModelCommandEffect effect,
+          std::vector<TargetModelByteRead> pendingReads) {
+  effect.pendingReads = std::move(pendingReads);
+  return effect;
+}
+
 llvm::Expected<std::vector<RawLogicalValue>>
 readTensor(const InvocationMemoryRegistry &memory, int64_t rank,
            uint64_t address, const NumericTensorKey &key) {
@@ -183,11 +197,15 @@ tryExecuteManagedReference(
 
   std::vector<TargetModelNumericTensor> inputs;
   inputs.reserve(inputDescriptors.size());
+  std::vector<TargetModelByteRead> pendingReads;
+  pendingReads.reserve(inputDescriptors.size());
   for (const ManagedReferenceInput &input : inputDescriptors) {
     llvm::Expected<std::vector<uint8_t>> storage = readTensorStorage(
         memory, transaction.logicalRank, input.address, *input.key);
     if (!storage)
       return storage.takeError();
+    pendingReads.push_back(
+        makeTensorRead(transaction.logicalRank, input.address, *input.key));
     inputs.push_back({*input.key, std::move(*storage)});
   }
   llvm::Expected<std::vector<uint8_t>> destinationStorage = readTensorStorage(
@@ -231,15 +249,17 @@ tryExecuteManagedReference(
     return kernelError(
         TargetModelKernelErrorCode::ManagedReferenceBackendFailure,
         "managed-reference backend returned incomplete or mismatched evidence");
-  return std::optional<TargetModelCommandEffect>(TargetModelCommandEffect{
-      {TargetModelByteWrite{
-          transaction.logicalRank, TargetModelAddressSpace::RankSPM,
-          destinationAddress, 1, std::move(result->destination.storage)}},
-      result->flags,
-      TargetModelControlAction::None,
-      TargetModelNumericBackend::ManagedReference,
-      {},
-      std::move(result->evidence)});
+  return std::optional<TargetModelCommandEffect>(withReads(
+      TargetModelCommandEffect{
+          {TargetModelByteWrite{
+              transaction.logicalRank, TargetModelAddressSpace::RankSPM,
+              destinationAddress, 1, std::move(result->destination.storage)}},
+          result->flags,
+          TargetModelControlAction::None,
+          TargetModelNumericBackend::ManagedReference,
+          {},
+          std::move(result->evidence)},
+      std::move(pendingReads)));
 }
 
 } // namespace
@@ -320,13 +340,20 @@ executeElementwise(const compiler::TargetTransaction &transaction,
                  *destinationKey, result->values);
   if (!packed)
     return packed.takeError();
-  return TargetModelCommandEffect{
-      {TargetModelByteWrite{transaction.logicalRank,
-                            TargetModelAddressSpace::RankSPM, value.destination,
-                            1, std::move(*packed)}},
-      result->flags,
-      TargetModelControlAction::None,
-      TargetModelNumericBackend::Formal};
+  std::vector<TargetModelByteRead> pendingReads{
+      makeTensorRead(transaction.logicalRank, value.lhs, *inputKey)};
+  if (value.rhs)
+    pendingReads.push_back(
+        makeTensorRead(transaction.logicalRank, *value.rhs, *inputKey));
+  return withReads(
+      TargetModelCommandEffect{
+          {TargetModelByteWrite{
+              transaction.logicalRank, TargetModelAddressSpace::RankSPM,
+              value.destination, 1, std::move(*packed)}},
+          result->flags,
+          TargetModelControlAction::None,
+          TargetModelNumericBackend::Formal},
+      std::move(pendingReads));
 }
 
 llvm::Expected<TargetModelCommandEffect>
@@ -396,13 +423,15 @@ executeConvert(const compiler::TargetTransaction &transaction,
                  *destinationKey, result->values);
   if (!packed)
     return packed.takeError();
-  return TargetModelCommandEffect{
-      {TargetModelByteWrite{transaction.logicalRank,
-                            TargetModelAddressSpace::RankSPM, value.destination,
-                            1, std::move(*packed)}},
-      result->flags,
-      TargetModelControlAction::None,
-      TargetModelNumericBackend::Formal};
+  return withReads(
+      TargetModelCommandEffect{
+          {TargetModelByteWrite{
+              transaction.logicalRank, TargetModelAddressSpace::RankSPM,
+              value.destination, 1, std::move(*packed)}},
+          result->flags,
+          TargetModelControlAction::None,
+          TargetModelNumericBackend::Formal},
+      {makeTensorRead(transaction.logicalRank, value.source, *sourceKey)});
 }
 
 llvm::Expected<TargetModelCommandEffect>
@@ -478,13 +507,15 @@ executeReduce(const compiler::TargetTransaction &transaction,
                  *destinationKey, result->values);
   if (!packed)
     return packed.takeError();
-  return TargetModelCommandEffect{
-      {TargetModelByteWrite{transaction.logicalRank,
-                            TargetModelAddressSpace::RankSPM, value.destination,
-                            1, std::move(*packed)}},
-      result->flags,
-      TargetModelControlAction::None,
-      TargetModelNumericBackend::Formal};
+  return withReads(
+      TargetModelCommandEffect{
+          {TargetModelByteWrite{
+              transaction.logicalRank, TargetModelAddressSpace::RankSPM,
+              value.destination, 1, std::move(*packed)}},
+          result->flags,
+          TargetModelControlAction::None,
+          TargetModelNumericBackend::Formal},
+      {makeTensorRead(transaction.logicalRank, value.source, *inputKey)});
 }
 
 llvm::Expected<TargetModelCommandEffect>
@@ -596,14 +627,18 @@ executeGemm(const compiler::TargetTransaction &transaction,
         return kernelError(
             TargetModelKernelErrorCode::BulkBackendFailure,
             "bulk backend returned incomplete dispatch evidence");
-      return TargetModelCommandEffect{
-          {TargetModelByteWrite{
-              transaction.logicalRank, TargetModelAddressSpace::RankSPM,
-              value.destination, 1, std::move(result.destination.storage)}},
-          result.flags,
-          TargetModelControlAction::None,
-          TargetModelNumericBackend::Bulk,
-          std::move(result.evidence)};
+      return withReads(
+          TargetModelCommandEffect{
+              {TargetModelByteWrite{
+                  transaction.logicalRank, TargetModelAddressSpace::RankSPM,
+                  value.destination, 1,
+                  std::move(result.destination.storage)}},
+              result.flags,
+              TargetModelControlAction::None,
+              TargetModelNumericBackend::Bulk,
+              std::move(result.evidence)},
+          {makeTensorRead(transaction.logicalRank, value.lhs, *lhsKey),
+           makeTensorRead(transaction.logicalRank, value.rhs, *rhsKey)});
     }
 
     uint64_t outputCount = 0;
@@ -643,13 +678,16 @@ executeGemm(const compiler::TargetTransaction &transaction,
                  *destinationKey, result->values);
   if (!packed)
     return packed.takeError();
-  return TargetModelCommandEffect{
-      {TargetModelByteWrite{transaction.logicalRank,
-                            TargetModelAddressSpace::RankSPM, value.destination,
-                            1, std::move(*packed)}},
-      result->flags,
-      TargetModelControlAction::None,
-      TargetModelNumericBackend::Formal};
+  return withReads(
+      TargetModelCommandEffect{
+          {TargetModelByteWrite{
+              transaction.logicalRank, TargetModelAddressSpace::RankSPM,
+              value.destination, 1, std::move(*packed)}},
+          result->flags,
+          TargetModelControlAction::None,
+          TargetModelNumericBackend::Formal},
+      {makeTensorRead(transaction.logicalRank, value.lhs, *lhsKey),
+       makeTensorRead(transaction.logicalRank, value.rhs, *rhsKey)});
 }
 
 llvm::Expected<TargetModelCommandEffect>

@@ -25,7 +25,9 @@ using namespace wafer::model;
 
 llvm::CallInst *findWaitCall(llvm::Module &module) {
   const llvm::StringRef symbol =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait).symbol;
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait,
+                              TargetProfileId::waferTx81SingleCardKernelV1())
+          .symbol;
   for (llvm::Function &function : module)
     for (llvm::BasicBlock &block : function)
       for (llvm::Instruction &instruction : block)
@@ -76,12 +78,14 @@ TEST(SystemCTargetModelEventFailureTest,
   ASSERT_FALSE(static_cast<bool>(result));
   const std::string error = llvm::toString(result.takeError());
   EXPECT_NE(error.find("stage=dte-wait"), std::string::npos) << error;
-  EXPECT_NE(error.find("unknown or foreign event"), std::string::npos) << error;
+  EXPECT_NE(error.find("unknown, foreign, or already released event"),
+            std::string::npos)
+      << error;
 }
 
 } // namespace
 
 extern "C" int sc_main(int argc, char **argv) {
-  testing::InitGoogleTest(&argc, argv);
+  ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

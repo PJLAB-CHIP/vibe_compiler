@@ -68,10 +68,10 @@ commitTargetModelCommandEffect(InvocationMemoryRegistry &memory,
                                FormalNumericExecutionContext &context,
                                TargetModelCommandEffect effect) {
   if (effect.controlAction != TargetModelControlAction::None &&
-      !effect.pendingWrites.empty())
+      (!effect.pendingWrites.empty() || !effect.pendingReads.empty()))
     return kernel_detail::kernelError(
         TargetModelKernelErrorCode::InvalidTransactionField,
-        "control effect cannot carry immediate byte writes");
+        "control effect cannot carry plain-command memory accesses");
   if (llvm::Error error = memory.applyAtomically(effect.pendingWrites))
     return error;
   context.recordCommittedFlags(effect.numericFlags);

@@ -1,11 +1,12 @@
 # Wafer Compiler Verification Contract
 
-状态：2026-07-28同步Q37 hardware characterization、轻量板端执行合同与production optimizer成对板测合同；optimizer 8+1
+状态：2026-07-29同步Q37 hardware characterization、轻量板端执行合同与production optimizer成对板测合同；optimizer 8+1
 及collective 9组pre-board/no-card资产已完成，真实板端执行均为`pending`，不计作board/performance evidence。
 Q6.B configured-board gate中的rank-one kernel、16-rank kernel、model和kernel内Direct DTE prepared phases已按本文
 完成真实板端execution evidence，Q22.C更广板端numeric correlation仍为独立later gate。保留Q32.V typed
 target-capability vertical、Q31标准7B单block多seed数值证据及已完成Q22.N/B/L/H/S/V和Q22 model-only汇总；
-Q32.N已进入当前实施队列；Q32.T与Q3.6 Count保持later独立合同。
+Q39 generic NoC-resident与NoC×fixed-slot×nonzero-worker同候选的repo-owned host gate已经闭合，fresh
+configured-board baseline/winner correctness保持`pending`；Q32.T与Q3.6 Count保持later独立合同。
 本文是跨stage稳定验证合同，不是`tasks/plans/`中的动态实施计划。它拥有完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
 
@@ -481,6 +482,51 @@ target-model配置还实际重放了已有source numeric vertical，transaction�
 tiny Llama TP16 12,656；这证明Q20/Q21 consumer没有因调度迁移回退，不是标准7B block的CModel或PyTorch差分。
 Q29据此完成；后续Q28已从同一source/config独立执行并完成7B managed-reference CModel/PyTorch gate。
 
+#### Q38 Static Fixed-Slot 与 Explicit Direct-DTE Host Gate
+
+Q38的fixed-slot和Direct-DTE细粒度issue必须在同一个source-backed、fully accepted artifact上验收，不能分别用
+手写双buffer IR和raw sender probe代签：
+
+- compiler testing seam只从普通rank frontier选择all-rank static-fixed-slot tuple，重放Instr、SPM/DDR、
+  target、package和readback gate；normal production selection及public CLI不读取该seam；
+- schema-v6 package与相邻qualification sibling作为一个no-replace transaction发布。activation精确绑定
+  manifest和attestation bytes；attestation从final accepted rank IR派生module digest、placed SPM roots、
+  static loop/root rotation、engine×worker issue、DTE send/recv token与exact wait、participant join和
+  completion behavior。host preparation gate独立重验closed fields、digest、arena/alignment/non-overlap及
+  all-and-only关系，不从module symbol或case名恢复；
+- V3 all-rank qualification必须在每rank同时出现非零DTE issue和all-and-only wait，package transport为
+  Direct DTE；同一retained TargetLLVMModuleBundle直接进入SystemC并与独立CPU expected比较，不能重新lower、
+  重编或用另一份package替代。普通package另经显式status-v2/watchdog capability完成no-card preflight；
+- V3 target module对每个accepted `dte_send`发射
+  `send_prepare -> direct_dte_send_issue_v3`，matching wait只负责completion/release；V1/V2不得引用V3-only
+  issue symbol，并保留wait内auto-issue兼容。strict compile-only probe必须让同一module中的普通RDMA/WDMA/
+  compute也使用V3 typed worker ABI，避免混用profile；
+- SystemC按exact pending memory footprint区分DTE与ordinary NCC：DTE source只与overlap pending write冲突，
+  DTE destination与overlap pending read/write冲突。matching participant join必须在DTE issue前清除hazard；
+  至少以elementwise和GEMM同时覆盖disjoint成功、overlap在issue处确定失败及pre-issue join成功，并以source
+  write、destination read和destination write分别覆盖`overlap -> issue -> late join -> wait`不可追认的负例；
+  issue-order诊断不能退化成no-progress，unknown/overflow footprint保持fail closed；
+- 本gate只包含host compile/model/no-card/static证据，不执行board。真实overlap、性能和timing仍需要独立、
+  明确armed的hardware gate；历史raw async probe不能升级为production overlap结论。
+
+#### Q39 NoC-Resident × Typed-Worker × Fixed-Slot Host Gate
+
+Q39的多机制组合必须来自同一个compiler-owned current-IR候选，不能把NoC、worker和fixed-slot三个分别通过的
+artifact或metadata摘要拼接成组合证据：
+
+- resident role materializer从typed global/local rank slice、standard tiling/reduction interface、SSA/effects和
+  complete-rank tuple物化owner load、peer movement、local compute/reduce及required publication；它不重新选择
+  compute implementation；
+- materialized canonical/unplaced current Instr先由all-rank atomic transaction按SSA、typed effects、exact或
+  conservative static ranges及stable issue order派生`DisjointComponents` sibling。实际worker必须写入issue
+  attrs，minimum participant joins必须从改写后的current IR fresh重建；source和已有nonzero assignment均不原地
+  修改；
+- fixed-slot只从保留各自worker assignment的siblings继续派生。每个结果fresh重跑completion、SPM/DDR、
+  Direct-DTE matching/binding、whole-variant resource、target ABI/LLVM、package、SystemC/CPU expected和no-card；
+- 当前独立NoC role、worker及fixed-slot host gates已经闭合，NoC×fixed-slot×nonzero-worker同候选也已通过
+  source/package/model/no-card组合验证。该结果仍不构成board correctness或hardware overlap evidence；
+  configured-board fresh baseline/winner correctness保持独立external gate。
+
 ### 6.2 Optional Rank-Local Transform Control-Plane Gate
 
 Q32.T保持later，不阻塞Q32。当前没有需要rank-local Transform control plane的production或用户级consumer，因此本阶段
@@ -531,6 +577,10 @@ Q32.T保持later，不阻塞Q32。当前没有需要rank-local Transform control
 - target lowering与repo-local CRT header/source/checker共享fixed signature，required/allowed symbol、status/error和
   attach/send/wait/release lifecycle闭合；sender source和receiver FSM保持本地raw SPM offset，sender remote destination
   由CRT按target topology形成peer SPM base加accepted receiver offset，overflow或缺firmware symbol在effect前失败；
+- V3 Kernel Runtime ABI为sender增加唯一显式issue call：prepare只建立event，issue完成peer-ready、
+  attach和async submission，matching wait完成wait-done/release。V3 lowering、TargetCall decoder、SystemC和profiler
+  必须逐项消费该symbol；V3 wait-before-issue失败。V1/V2 module不得引用V3-only issue，legacy wait auto-issue只作
+  ABI兼容，不能被计作独立overlap window；
 - Q18 manifest只投影launch/runtime可观察的transport capability、control/status resource和completion requirement，
   不复制DTE p2p body或per-op binding；no-card preflight验证requirements但不重新分配channel/FSM；
 - rank-15 binding、target lowering、link、manifest assembly或readback late failure均无partial executable/target/
@@ -889,10 +939,16 @@ Pipeline position:
 - SystemC是正式untimed functional-event容器；rank/tile SPM/DDR、typed slots、checked address、conservative issue、local completion和
   Direct DTE/FSM均为invocation-local对象。首个private-memory profile不建立无consumer的TLM socket；未来ISS/MMIO consumer只可
   通过另行验证的受限TLM边界接入，且不改变transaction、kernel或acceptance；
-- target-call ABI没有worker identity；近期只用单一保守logical issue domain区分CT/NE/RDMA/WDMA/TDMA五个engine family，
-  不声明worker window、`3×5`物理queue实例、容量或engine复制关系；
+- V1/V2 target-call ABI没有worker identity，只能把CT/NE/RDMA/WDMA/TDMA放在单一保守logical issue domain；
+  V3为ordinary NCC call携带typed `NCCWorker`并由participant mask精确完成对应worker。这个字段只表达compiler已选的
+  issue domain，不声明worker window、`3×5`物理queue实例、容量或engine复制关系，model也不得从profile名补猜这些事实；
 - target-call issue、local drain、Direct DTE completion、destination visible和multi-rank arrival保持不同event domain；
   SystemC process阻塞wait必须yield，rank identity不得仅由TLS或OS thread恢复；
+- 每个ordered-pending ordinary command同时保留typed read和write byte footprint直到matching participant join。
+  DTE issue的source不得与pending write重叠，destination不得与pending read/write重叠；matching join必须先于
+  issue，late join不能追认已经发出的传输。strided descriptor可用conservative bounding interval，无法形成
+  有界range时fail closed。仅因同rank还有任意pending NCC而阻塞全部DTE会制造假deadlock，也会掩盖V3多部件
+  并行，必须由disjoint、pre-issue join和post-issue late-join负例共同防止；
 - 16-rank Direct DTE component覆盖receiver-ready、source lifetime至send completion、send/recv/wait/release、receiver
   completion后的destination visibility、duplicate/missing/mismatch和deterministic no-progress诊断；source读取时刻只属于
   model profile，不能复制已退役reference scheduler的snapshot policy或logical message schedule；
@@ -1361,12 +1417,13 @@ selector从actual accepted Instr phase中逐rank精确选择AG Direct/Ring、RS 
 256B/4KiB/64KiB形成9组同源A/B；逐message direction/communication/phase/round/peer/slice/issue bytes/
 constant-loop multiplicity/executed bytes用于跨rankmatching及Direct/Ring/Tree graph oracle，不能用互相独立的
 摘要集合代签。4KiB AR复用原case。LICM因公开source链缺少SCF producer而留在host exact。
-canonicalization、verifier、alias、capacity reject和atomic failure同样留在host exact gate。尚未实现的software pipeline
-只登记future production gate，不能用手写双buffer packet代签。每个当前优化轴必须在catalog中恰有`paired board`、
-`existing board`、`host exact`或`future production`处置，避免“没上板”和“遗漏”混为一谈。
+canonicalization、verifier、alias、capacity reject和atomic failure同样留在host exact gate。software pipeline
+的compiler-owned fixed-slot producer、typed worker及package/model/no-card host gate已经闭合，catalog只保留
+configured-board qualification；手写双buffer packet仍不能代签。每个当前优化轴必须在catalog中恰有
+`paired board`、`existing board`、`host exact`或`pending configured board`处置，避免“没上板”和“遗漏”混为一谈。
 
-当前typed catalog锚定35个production owner axis：14个board-mapped、17个host-exact和4个future
-software-pipeline axis。8个双包no-card、manifest/ELF结构、CTest inventory及显式
+当前typed catalog锚定35个production owner axis：14个board-mapped、17个host-exact和4个pending
+configured-board software-pipeline axis。8个双包no-card、manifest/ELF结构、CTest inventory及显式
 `compiler-optimization-campaign`串行批次已完成pre-board gate；批次包含既有Direct vertical和8个paired case，
 并归档source snapshot、最终ELF、manifest、结构/观测JSON及实际工具digest。真实hardware case未执行或
 skipped/unsupported时，本gate保持`pending`。若后续要让成对观测影响candidate ranking，必须另由Q9验证PMU counter单位、
@@ -1414,9 +1471,11 @@ host/no-card gate至少覆盖：
   或新的input contract；
 - 五类CRT helper每个真实`TsmExecute`调用各产生一条固定版本`ncc-command` record，同时保存typed site envelope、
   紧贴调用的submit span、严格sample bound、observation count和execution-counter delta。completion wait与Direct-DTE
-  wait/phase使用独立typed event kind；one-to-many site使用`sub_index`，rank-local `site_id`和`sequence`连续；
-  site map只按typed semantic/registry ordinal解释NCC command、LocalFence/NCCJoin completion及Direct-DTE control/wait，
-  不从名字恢复语义；
+  issue/wait/phase使用独立typed event kind；V3 `send_issue_v3` site包围peer-ready与setup/async submission，
+  matching wait site只包围completion/cleanup。V1/V2没有V3-only issue site，legacy wait内auto-issue不得伪造一条
+  issue记录；one-to-many site使用`sub_index`，rank-local `site_id`和`sequence`连续；
+  site map只按typed semantic/registry ordinal解释NCC command、LocalFence/NCCJoin completion及Direct-DTE
+  control/issue/wait，不从名字恢复语义；
 - all-and-only 16个header与bounded DDR record buffer的magic/schema/logical-tile/count/capacity/overflow/
   guard/readback验证；evidence必须保留count preflight、trace `next_sequence`、`dropped_event_count`、raw flags和terminal
   state。unknown engine/site、sequence gap、count mismatch、drop、非complete state、overflow或guard corruption均invalid；
@@ -1452,15 +1511,17 @@ profile/cache扰动不得进入主耗时。
 当前foundation允许16个local cycle domain的clock mapping显式为invalid/unavailable；报告此时必须为所选tile展示
 Kcore production-common、Trace-only和CT/NE/RDMA/WDMA/TDMA/Direct-DTE lane共享entry-local `rdcycle`轴，并声明
 不能比较不同tile的先后、overlap或global critical path。Kcore phase必须至少分出NCC submit、completion wait proxy、
-Direct-DTE peer-ready/setup/completion/cleanup、site control和between-site control；Trace PMU read、event/site
+Direct-DTE issue中的peer-ready/setup、matching wait中的completion/cleanup、site control和between-site control；Trace PMU read、event/site
 bookkeeping、status poll、DTE probe、entry setup/teardown成本必须独立列出并标为不计入Primary。五类NCC aggregate
 execution delta按vendor producer/parser合同以nanoseconds验收；每条engine lane的begin/end仍是Kcore `rdcycle`
 CPU cycles，只接受cumulative hardware execution counter的严格bounded采样窗口。同tile不同engine窗口可展示overlap；
 zero-delta必须保留为counter-no-change，same-engine outstanding必须标attribution-ambiguous。interval补集必须形成
 带reason、cycles/share和优化入口的residual，不能再显示无来源空白、推断idle或声明单指令零误差起止。
 `statistics_window`只能作为raw ticks，`tile_clock`只能作为identity/environment metadata，二者均不得用于把
-`rdcycle`或其它raw counter换算成nanoseconds。Direct-DTE必须记录真实`direct_dte_wait`/completion窗口并读取DTE channel 0/1 PMU；
-即使raw delta为零也保留已验证的wait窗口，raw delta只作为未校准活动量，不能命名为busy duration。未来可增加带
+`rdcycle`或其它raw counter换算成nanoseconds。V3 Direct-DTE必须分别记录真实
+`direct_dte_send_issue_v3`及其peer-ready/setup窗口、matching `direct_dte_wait`及其completion/cleanup窗口，并读取
+DTE channel 0/1 PMU；V1/V2只保留legacy wait窗口。即使raw delta为零也保留已验证的issue/wait窗口，raw delta只作为
+未校准活动量，不能命名为busy duration。未来可增加带
 uncertainty的qualified affine mapping，但它是可选增强。finding必须区分`Measured`、`Sampled`、`Bounded`、
 `Derived`、`Unavailable`、`Incomplete`和`Invalid`。
 每项Kcore cost还必须分别发布`counts_in_primary_device_elapsed`和`magnitude_relation`；production-common phase在

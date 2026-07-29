@@ -55,8 +55,17 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
                       ComputeFillOp, ComputeConvertOp, ComputeGemmOp,
                       ComputeElementwiseOp, ComputeReduceOp, MoveCopyOp,
                       MoveExtractSliceOp, MoveInsertSliceOp, MoveTransposeOp,
-                      MoveBroadcastOp, ViewReshapeOp, CommAllGatherOp,
-                      CommReduceScatterOp, CommAllReduceOp>();
+                      MoveBroadcastOp, ViewReshapeOp, CommPeerSendOp,
+                      CommPeerRecvOp, CommAllGatherOp, CommReduceScatterOp,
+                      CommAllReduceOp>();
+  target.addDynamicallyLegalOp<mlir::async::AwaitOp>(
+      [](mlir::async::AwaitOp op) {
+        mlir::Value operand = op.getOperand();
+        return !operand.getDefiningOp<CommPeerSendOp>() &&
+               !operand.getDefiningOp<CommPeerRecvOp>() &&
+               !operand.getDefiningOp<InstrDTESendOp>() &&
+               !operand.getDefiningOp<InstrDTERecvOp>();
+      });
   target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });
 }
 
@@ -68,6 +77,7 @@ populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
   populateComputeLoweringPatterns(patterns, failureReason);
   populateViewReshapeLoweringPattern(patterns, failureReason);
   populateFillLoweringPattern(patterns);
+  populatePeerLoweringPatterns(patterns, failureReason);
   populateCollectiveLoweringPatterns(patterns, options, failureReason);
 }
 
@@ -169,17 +179,10 @@ static void collectAccessRoots(mlir::Value value,
                          roots, visited);
       return;
     }
-    if (auto forOp = mlir::dyn_cast_or_null<mlir::scf::ForOp>(parent);
-        forOp && owner == forOp.getBody() && blockArgument.getArgNumber() > 0) {
-      unsigned resultNumber = blockArgument.getArgNumber() - 1;
-      if (resultNumber < forOp.getInitArgs().size())
-        collectAccessRoots(forOp.getInitArgs()[resultNumber], roots, visited);
-      auto yield =
-          mlir::dyn_cast<mlir::scf::YieldOp>(forOp.getBody()->getTerminator());
-      if (yield && resultNumber < yield.getOperands().size())
-        collectAccessRoots(yield.getOperands()[resultNumber], roots, visited);
-      return;
-    }
+    // Keep same-iteration SCF state variables distinct here. Expanding each
+    // one independently through init/yield loses the relational fact that a
+    // fixed-slot recurrence is a permutation of disjoint allocations.
+    // `areKnownDistinctRoots` proves such pairs by induction below.
     roots.push_back(value);
     return;
   }
@@ -243,11 +246,65 @@ static llvm::SmallVector<mlir::Value, 4> getAccessRoots(mlir::Value value) {
   return roots;
 }
 
-static bool areKnownDistinctRoots(mlir::Value lhs, mlir::Value rhs) {
+static bool areKnownDistinctRootsImpl(
+    mlir::Value lhs, mlir::Value rhs,
+    llvm::SmallVectorImpl<std::pair<mlir::Value, mlir::Value>> &activePairs) {
   if (lhs == rhs)
     return false;
-  return lhs.getDefiningOp<mlir::memref::AllocOp>() &&
-         rhs.getDefiningOp<mlir::memref::AllocOp>();
+  if (lhs.getDefiningOp<mlir::memref::AllocOp>() &&
+      rhs.getDefiningOp<mlir::memref::AllocOp>())
+    return true;
+  auto lhsType = mlir::dyn_cast<mlir::MemRefType>(lhs.getType());
+  auto rhsType = mlir::dyn_cast<mlir::MemRefType>(rhs.getType());
+  MemoryAttr lhsMemory = lhsType ? getWaferMemoryAttr(lhsType) : MemoryAttr{};
+  MemoryAttr rhsMemory = rhsType ? getWaferMemoryAttr(rhsType) : MemoryAttr{};
+  if (lhsMemory && rhsMemory && lhsMemory.getSpace() != rhsMemory.getSpace())
+    return true;
+
+  auto lhsArgument = mlir::dyn_cast<mlir::BlockArgument>(lhs);
+  auto rhsArgument = mlir::dyn_cast<mlir::BlockArgument>(rhs);
+  if (!lhsArgument || !rhsArgument ||
+      lhsArgument.getOwner() != rhsArgument.getOwner() ||
+      lhsArgument.getArgNumber() == 0 || rhsArgument.getArgNumber() == 0)
+    return false;
+  auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+      lhsArgument.getOwner()->getParentOp());
+  if (!loop || lhsArgument.getOwner() != loop.getBody())
+    return false;
+
+  auto active = llvm::find_if(activePairs, [&](const auto &pair) {
+    return (pair.first == lhs && pair.second == rhs) ||
+           (pair.first == rhs && pair.second == lhs);
+  });
+  // Coinductive backedge: every pair on the active chain has already proved
+  // its distinct init state. Re-entering that pair therefore closes the
+  // induction over the loop recurrence.
+  if (active != activePairs.end())
+    return true;
+
+  unsigned lhsIndex = lhsArgument.getArgNumber() - 1;
+  unsigned rhsIndex = rhsArgument.getArgNumber() - 1;
+  auto yield =
+      mlir::dyn_cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+  if (lhsIndex >= loop.getInitArgs().size() ||
+      rhsIndex >= loop.getInitArgs().size() || !yield ||
+      lhsIndex >= yield.getOperands().size() ||
+      rhsIndex >= yield.getOperands().size())
+    return false;
+
+  activePairs.push_back({lhs, rhs});
+  bool distinct =
+      areKnownDistinctRootsImpl(loop.getInitArgs()[lhsIndex],
+                                loop.getInitArgs()[rhsIndex], activePairs) &&
+      areKnownDistinctRootsImpl(yield.getOperands()[lhsIndex],
+                                yield.getOperands()[rhsIndex], activePairs);
+  activePairs.pop_back();
+  return distinct;
+}
+
+static bool areKnownDistinctRoots(mlir::Value lhs, mlir::Value rhs) {
+  llvm::SmallVector<std::pair<mlir::Value, mlir::Value>, 4> activePairs;
+  return areKnownDistinctRootsImpl(lhs, rhs, activePairs);
 }
 
 static uint32_t
@@ -319,16 +376,23 @@ getExternalConflictMask(mlir::Operation *operation,
   uint32_t conflicts = 0;
   llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> instances;
   effects.getEffects(instances);
+  bool ignoreTypedResources =
+      ignoreTypedIssueResources ||
+      mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(operation);
   for (const auto &instance : instances) {
     mlir::Value value = instance.getValue();
     if (!value) {
       // An NCC issue's custom Wafer resource effects describe typed engine
       // and memory-space occupancy. Its value-associated effects below are
       // the address hazard contract, so the custom resource must not turn two
-      // proven-distinct roots into a blocking cross-worker join. For a
-      // non-NCC observer (including DTE/Kcore/unknown resource users), retain
-      // the conservative all-pending conflict.
-      if (ignoreTypedIssueResources &&
+      // proven-distinct roots into a blocking cross-worker join. A Direct DTE
+      // issue has the same property: its value-associated buffer
+      // effect is the NCC visibility boundary, while its rootless
+      // communication resource describes transport occupancy. The exact DTE
+      // wait carries no NCC buffer observation and must not become an implicit
+      // NCC completion. Unknown and other synchronous observers retain the
+      // conservative all-pending conflict.
+      if (ignoreTypedResources &&
           instance.getResource() != mlir::SideEffects::DefaultResource::get())
         continue;
       if (!mlir::isa<mlir::MemoryEffects::Allocate>(instance.getEffect()))

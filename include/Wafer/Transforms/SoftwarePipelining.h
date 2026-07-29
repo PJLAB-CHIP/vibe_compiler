@@ -7,6 +7,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
 
+#include "llvm/ADT/ArrayRef.h"
+
 #include <string>
 
 namespace wafer {
@@ -27,7 +29,16 @@ struct StaticFixedSlotPipelineCandidate {
 /// implementation accepts only a statically positive-trip, non-nested,
 /// single-block `scf.for` whose direct body has a dependency DAG provable from
 /// Wafer instruction interfaces, SSA, and value-associated MemoryEffects.
-/// Direct DTE, synchronous completion, unknown effects/aliases, dynamic
+/// Non-overlapping Direct-DTE issue windows with following exact token waits
+/// are supported; every wait remains independent of NCC completion and extends
+/// its endpoint buffers' lifetimes. An NCC-produced DTE buffer requires a
+/// preceding typed participant join whose workers exactly own pending source
+/// issues; the join remains an explicit handoff stage. A leading join may
+/// represent the exact loop-tail pending frontier only when every recurrence
+/// conflict is a loop-local allocation that slot rotation can separate; that
+/// transient backedge completion is rebuilt from the pipelined kernel rather
+/// than copied as a steady-state observer. Overlapping endpoint windows, extra
+/// join observers, synchronous NCC writeback, unknown effects/aliases, dynamic
 /// allocation and unsupported recurrence are rejected.
 ///
 /// A single-iteration loop returns an independently owned identity clone with
@@ -45,6 +56,19 @@ mlir::FailureOr<StaticFixedSlotPipelineCandidate>
 deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
                                        mlir::scf::ForOp sourceLoop,
                                        std::string *failureReason = nullptr);
+
+/// Specialize rotating Direct-DTE buffers in a complete fixed-slot rank tuple.
+///
+/// Every admitted loop has static positive bounds and a bounded, purely
+/// periodic loop-carried allocation relation for each Direct-DTE endpoint.
+/// All affected loops are modulo-unrolled by one common period so paired rank
+/// sites retain an isomorphic static execution shape; a residual tail is fully
+/// unrolled. Each surviving DTE site must then resolve through an exact
+/// identity recurrence to one planned SPM allocation. The modules are updated
+/// atomically only on success.
+mlir::LogicalResult
+specializePeriodicDirectDTESites(llvm::ArrayRef<mlir::ModuleOp> rankModules,
+                                 std::string *failureReason = nullptr);
 
 } // namespace wafer
 

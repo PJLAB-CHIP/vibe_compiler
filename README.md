@@ -61,9 +61,9 @@ analysis 和 rejected state 都是 compiler-private 的 invocation-local 状态�
 
 ## 当前演进
 
-- 当前任务是 production-artifact profiler：在不改变普通 package 的前提下，为 final winner 建立
+- production-artifact profiler在不改变普通 package 的前提下，为 final winner 建立
   submit→trusted completion、per-tile entry span 和真实 engine activity 的可验证证据。
-- 下一任务是 multi-engine software pipelining：从 current dependency/resource IR 物化真实 multi-buffer、
+- multi-engine software pipelining从 current dependency/resource IR 物化真实 multi-buffer、
   prologue/steady/epilogue 和 latest-legal completion，不把硬件实验或影子 schedule 当作实现。
 
 两项任务的动态状态、启动前置和完成门禁只看 [`tasks/progress.md`](tasks/progress.md)；README不复制实施日志。
@@ -164,8 +164,12 @@ production package。
 - SystemC 是 untimed functional-event model，不证明 vendor packet、RISC-V ELF exact execution、板端性能或 cycle accuracy。
 - 现有板端证据只证明已资格化 profile、shape、dtype、payload 和 runtime identity 下的能力；不能外推跨卡、任意 rank、
   任意指令组合或通用性能模型。
-- production multi-buffer software pipeline 尚未实现；当前合法 baseline 不依赖它，后续候选仍须重新通过全部
-  memory、instruction、target、package、model/no-card 和 board correctness gate。
+- production multi-buffer software pipeline已经由compiler-owned fixed-slot candidate、typed worker placement和
+  current-IR completion/lifetime合同物化，并通过memory、instruction、target、package、model/no-card host gate；
+  configured-board上的fresh qualification与winner correctness仍不能由untimed model或手写packet代签。
+- generic NoC-resident candidate owner已经从current IR覆盖input/parameter、intermediate、partial/reduction和
+  output tile，并在同一个actual candidate上闭合Direct-DTE、nonzero worker与worker-preserving fixed-slot的
+  package/model/no-card证据；configured-board同源baseline/winner correctness仍是独立外部门禁。
 - 完整 7B bounded frontier 属于长时间 scale gate，不应作为每次局部修改的日常测试入口。
 
 ## 文档与协作

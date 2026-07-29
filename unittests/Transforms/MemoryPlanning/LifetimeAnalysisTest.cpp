@@ -908,6 +908,50 @@ module {
 }
 
 TEST_F(LifetimeAnalysisTest,
+       PartialNCCJoinDoesNotObserveAnotherPendingWorker) {
+  auto module = parse(R"mlir(
+module {
+  func.func @main() {
+    %worker0 = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %worker1 = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    %zero = arith.constant 0.000000e+00 : f16
+    wafer.instr.fill %worker0, %zero
+        {worker = #wafer.ncc_worker<worker0>}
+        : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    wafer.instr.fill %worker1, %zero
+        {worker = #wafer.ncc_worker<worker1>}
+        : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    wafer.instr.ncc_join [0]
+    wafer.instr.ncc_join [1]
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = getOnlyFunction(*module);
+  llvm::SmallVector<mlir::memref::AllocOp, 2> allocations;
+  function.walk([&](mlir::memref::AllocOp allocation) {
+    allocations.push_back(allocation);
+  });
+  ASSERT_EQ(allocations.size(), 2u);
+
+  mlir::FailureOr<StructuredTimeline> timeline =
+      StructuredTimeline::build(function);
+  ASSERT_TRUE(mlir::succeeded(timeline));
+  llvm::SmallVector<LifetimeDemand, 2> demands{
+      LifetimeDemand{allocations[0], 256, 256, 0},
+      LifetimeDemand{allocations[1], 256, 256, 1}};
+  LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+    return wafer::isWaferSPMMemRefType(type);
+  });
+  LocalCompletionTracker completion;
+  LifetimeFailure failure;
+  EXPECT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)));
+}
+
+TEST_F(LifetimeAnalysisTest,
        ArgWritebackBarrierCompletesPriorLocalIssueAndItself) {
   auto module = parse(R"mlir(
 module {

@@ -250,8 +250,8 @@ V0 `kind`：
 - temporary/workspace。
 - accumulator/psum。
 - layout materialization temp。
-- explicit multi-buffer slot；Q38 fixed-slot transform仍在开发，只有loop外真实allocation root和
-  loop-carried rotation已经物化进candidate IR时才进入本planner，不能由kind或queue depth推断。
+- explicit multi-buffer slot；Q38 fixed-slot transform已经把loop外真实allocation root和loop-carried
+  rotation物化进candidate IR，本planner只消费这些current-IR事实，不能由kind或queue depth推断。
 - communication staging buffer。
 - host-visible writeback staging。
 
@@ -356,8 +356,8 @@ selected instruction lowering下，对全部task/region的`#wafer.memory<spm, *>
 - instruction-derived `BufferDemand`。
 - effect / async issue / typed participant join / exact wait / barrier。
 - target range、reserved range、alignment、range-end policy。
-- explicit communication staging policy；multi-buffer policy只有在IR已有两个真实slot和typed completion时才可输入，
-  Q38 production frontier尚未接入前不推断或补建slot。
+- explicit communication staging policy；multi-buffer policy只有在IR已有两个真实slot和typed completion时才可输入。
+  Q38 production frontier已经接入该artifact边界，planner仍不推断或补建slot。
 
 输出：
 

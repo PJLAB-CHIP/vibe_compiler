@@ -312,14 +312,21 @@ getStaticRootReductionRangesImpl(
 }
 
 mlir::FailureOr<llvm::SmallVector<int64_t, 2>>
-getStaticRootReductionRanges(mlir::func::FuncOp task) {
-  return getStaticRootReductionRangesImpl(getYieldedRootLinalgOps(task));
+getStaticRootReductionRanges(mlir::func::FuncOp task,
+                             CandidateTileTraversalKind traversalKind) {
+  return getStaticRootReductionRangesImpl(
+      traversalKind == CandidateTileTraversalKind::PartialReduction
+          ? getTraversalComputeRootLinalgOps(task)
+          : getYieldedRootLinalgOps(task));
 }
 
 std::optional<std::string>
-getReductionSplitLegalityFailure(mlir::func::FuncOp task) {
+getReductionSplitLegalityFailure(mlir::func::FuncOp task,
+                                 CandidateTileTraversalKind traversalKind) {
   std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
-      getYieldedRootLinalgOps(task);
+      traversalKind == CandidateTileTraversalKind::PartialReduction
+          ? getTraversalComputeRootLinalgOps(task)
+          : getYieldedRootLinalgOps(task);
   if (!roots)
     return std::nullopt;
 
@@ -719,14 +726,31 @@ static std::optional<std::string> getCheapTargetGeometryFailureImpl(
     if (!isGemm && !isReduction)
       continue;
 
-    if (exceedsTargetDimension(candidate.tileSizes))
-      return "target_abi_narrowing: candidate traversal dimension must fit "
-             "uint16_t";
-
     llvm::ArrayRef<int64_t> reductionSizes =
         candidate.reductionSplitSizes.empty()
             ? reductionRanges
             : llvm::ArrayRef<int64_t>(candidate.reductionSplitSizes);
+    // GEMM dimensions and a genuine local reduction are encoded through
+    // target uint16_t shape fields. A sharded high-level reduction can,
+    // however, leave a rank-local unit reduction whose physical program is
+    // only elementwise compute plus collective DTE. In that case no CT
+    // Reduce Data_Shape field exists, and applying its limit to the result
+    // traversal axis incorrectly forces an otherwise legal extra loop.
+    //
+    // This is only a cheap rejection gate. The complete candidate still
+    // materializes and passes the exact instruction/ABI preflight, including
+    // the uint32_t element-count check for elementwise compute.
+    const bool hasNonUnitLocalReduction =
+        isReduction &&
+        llvm::any_of(reductionSizes,
+                     [](int64_t dimension) { return dimension > 1; });
+    if (!isGemm && !hasNonUnitLocalReduction)
+      continue;
+
+    if (exceedsTargetDimension(candidate.tileSizes))
+      return "target_abi_narrowing: candidate traversal dimension must fit "
+             "uint16_t";
+
     if (exceedsTargetDimension(reductionSizes))
       return "target_abi_narrowing: candidate reduction dimension must fit "
              "uint16_t";

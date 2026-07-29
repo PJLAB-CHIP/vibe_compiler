@@ -3,6 +3,50 @@
 #ifndef WAFER_IR_OPS_COMMOPS_TD
 #define WAFER_IR_OPS_COMMOPS_TD
 
+include "mlir/Dialect/Async/IR/AsyncTypes.td"
+
+class Wafer_CommPeerOp<string mnemonic, list<Trait> resourceEffects,
+                       list<SideEffect> bufferEffects>
+    : Wafer_Op<mnemonic, resourceEffects> {
+  let description = [{
+    Target-abstract movement of one fixed-size SPM tile between two logical
+    execution ranks. `peer` is a logical rank in the current execution mesh
+    and `message` is the stable logical match identity. Physical endpoints,
+    routes, FSMs, algorithms, pipeline stages, slots, ownership roles and
+    costs are deliberately absent.
+
+    The returned token makes issue-to-completion lifetime explicit. A
+    matching `async.await` is converted to an exact
+    `wafer.instr.dte_wait`; it does not complete any NCC worker domain.
+  }];
+  let arguments = (ins
+    Arg<Wafer_AnySPMMemRef, "", bufferEffects>:$buffer,
+    I64Attr:$peer,
+    I64Attr:$bytes,
+    Wafer_DTEMessageAttr:$message
+  );
+  let results = (outs Async_TokenType:$token);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$buffer attr-dict `:` type($buffer) `->` type($token)";
+}
+
+def Wafer_CommPeerSendOp
+    : Wafer_CommPeerOp<"tile.peer_send",
+        [MemoryEffects<[MemRead<Wafer_SPMResource>,
+                        MemWrite<Wafer_CommunicationResource>]>],
+        [MemRead]> {
+  let summary = "target-abstract fixed-size peer tile send";
+}
+
+def Wafer_CommPeerRecvOp
+    : Wafer_CommPeerOp<"tile.peer_recv",
+        [MemoryEffects<[MemWrite<Wafer_SPMResource>,
+                        MemWrite<Wafer_CommunicationResource>]>],
+        [MemWrite]> {
+  let summary = "target-abstract fixed-size peer tile receive";
+}
+
 def Wafer_CommAllGatherOp : Wafer_Op<"tile.all_gather", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,

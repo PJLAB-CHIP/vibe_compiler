@@ -87,7 +87,8 @@ enum class TargetModelControlAction : uint8_t {
   None,
   NCCJoin,
   DirectDTEBegin,
-  DirectDTESend,
+  DirectDTESendPrepare,
+  DirectDTESendIssue,
   DirectDTEReceive,
   DirectDTEWait,
   DirectDTEFinish,
@@ -239,6 +240,7 @@ struct TargetModelCommandEffect {
   TargetModelNumericBackend numericBackend = TargetModelNumericBackend::None;
   TargetModelBulkDispatchEvidence bulkEvidence;
   TargetModelManagedReferenceEvidence managedReferenceEvidence;
+  std::vector<TargetModelByteRead> pendingReads;
 };
 
 /// Exhaustive field/optional-field validation for every typed target payload.

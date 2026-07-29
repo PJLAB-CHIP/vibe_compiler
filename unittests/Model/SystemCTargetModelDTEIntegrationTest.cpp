@@ -19,15 +19,16 @@ using namespace wafer::compiler;
 using namespace wafer::model;
 
 TEST(SystemCTargetModelDTEIntegrationTest,
-     ExecutesDTESendThenNCCJoinThenExactDTEWait) {
+     ExecutesDTEPrepareThenNCCJoinThenIssueAndExactDTEWait) {
   std::string diagnostics;
   llvm::Expected<TargetLLVMModuleBundle> bundle =
-      test::buildDirectDTETargetBundle(diagnostics);
+      test::buildDirectDTETargetBundle(
+          diagnostics, TargetProfileId::waferTx81SingleCardKernelV3());
   ASSERT_TRUE(static_cast<bool>(bundle))
       << diagnostics << llvm::toString(bundle.takeError());
   llvm::Expected<test::NCCJoinRewriteResult> rewrite =
       test::rewriteNCCJoinsAfter(*bundle,
-                                 TargetCallBuiltin::DirectDTESendIssue);
+                                 TargetCallBuiltin::DirectDTESendPrepare);
   ASSERT_TRUE(static_cast<bool>(rewrite))
       << llvm::toString(rewrite.takeError());
   EXPECT_GT(rewrite->erasedJoinCount, 0u);
@@ -68,6 +69,6 @@ TEST(SystemCTargetModelDTEIntegrationTest,
 } // namespace
 
 extern "C" int sc_main(int argc, char **argv) {
-  testing::InitGoogleTest(&argc, argv);
+  ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

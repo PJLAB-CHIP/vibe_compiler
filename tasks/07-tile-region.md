@@ -38,6 +38,9 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
 - 对production capability分类与`TilingInterface`共同证明可切的terminal logical collective，从result tile反向物化
   operand/out tile并融合producer；当前只启用单输入、单输出、shape-preserving `all_reduce`，其每个dynamic loop
   instance只处理当前tile，完整result由显式insert/writeback拼接。其它collective在各自gate闭合前仍是full traversal。
+- NoC-resident扩展同时允许从已resident或peer到达的operand tile通过`TilingInterface`正向物化consumer tile，并只通过
+  `PartialReductionOpInterface`物化partial/merge；input/parameter、intermediate、partial和output角色均由current
+  boundary与SSA relation派生，不进入固定枚举或operator matcher。
 - 通过`WaferTargetImplementationOpInterface::materializeSelectedImplementation`创建typed
   `wafer.tile.*` compute。
 - 物化 Wafer-tagged memref、standard/typed view、resident SSA edge、显式 movement、spill/reload、
@@ -64,7 +67,8 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
       WaferTargetImplementationOpInterface枚举并已经选中的TargetImplementationCandidate、
       tile domain、physical operand/result encoding、residency、movement、share/recompute、hoist、current numeric variant和
       execution order。所有选择都引用current op/value并可在mutation前重新验证；
-      它们不跨pass发布。
+      它们不跨pass发布。跨rank NoC-resident candidate还接收共同verified post-SPMD snapshot、typed
+      global/local rank slice和同一transaction中的完整rank clone tuple。
     - Current stage responsibility:
       clone完整rank module；用PatternRewriter应用selected structured rewrites、producer clone/共享、loop hoist和显式numeric DAG，
       并更新真实use-def；
@@ -77,8 +81,9 @@ Wafer-tagged memref、view、compute、movement、event 和 structured control f
       或在无任何published mutation的情况下返回failure。成功IR只含typed operation/region/type/
       attribute、memref/view、compute、movement、event和SSA；不依赖任何外部解释对象。
     - Downstream consumer:
-      target-abstract legality、complete-rank instruction lowering、whole-rank SPM planning、
-      whole-variant DDR planning、communication/transport/ABI gates以及all-rank atomic commit。
+      target-abstract legality和complete-rank instruction lowering；materialized canonical/unplaced Instr
+      随后先原子派生typed worker sibling，再在保留worker assignment的siblings上派生fixed-slot，最后进入
+      fresh whole-rank SPM、whole-variant DDR、communication/transport/ABI gates以及all-rank atomic commit。
     - User-level driver / named pipeline:
       wafer-compile source-to-bundle production pipeline。wafer-opt只可对同一op/interface/
       conversion做局部parser、verifier和rewrite测试，不形成第二条compile pipeline。
@@ -208,6 +213,7 @@ MemoryEffect和async token完整解释当前movement；typed conversion pattern�
 | physical-isomorphic view | standard/typed view，alias与logical relation可验证 |
 | compute-consumed relation | relation由selected compute op的typed operand contract表达，无隐藏movement |
 | boundary load/store | external DDR view与SPM view之间的destination-style identity-coordinate movement |
+| peer movement | `wafer.tile.peer_send`读取source SPM range，`wafer.tile.peer_recv`写入destination SPM range；logical peer、fixed bytes和communication identity显式，physical endpoint/route/FSM留给instruction acceptance |
 | local movement | `wafer.tile.materialize_layout`或其它typed movement产生新physical version |
 | staged movement | temp allocation、每段movement和completion全部显式 |
 | spill/reload | DDR allocation/view、store、completion和load全部显式 |
@@ -225,6 +231,11 @@ source/destination load；所有builder、conversion和tests均不再保留旧re
 已有destination发射RDMA并删除load，allocation identity继续由memref SSA拥有。
 slice、permutation、reshape或concat先成为可验证view，不能化为同shape identity pieces时使用显式local或
 staged movement。op不携带relation副本、descriptor list或lowering-time选择字段。
+
+peer movement不是logical collective wrapper，也不隐含allocation或completion。send/recv两端的SPM root/view必须显式；
+tile-to-instruction conversion创建matching Direct-DTE issue token和exact wait，whole-variant acceptance再验证反向peer、
+message、bytes、range与binding。第一版fanout使用多个explicit send或receive-then-forward，reduction使用explicit recv、
+local compute和forward；没有typed target capability时不假设router multicast或in-network reduction。
 
 ### 6.3 Event 与 Effects
 
@@ -303,6 +314,7 @@ relation时，dynamic ping-pong fail closed。
 complete traversal可以用compact structured loop表达，不要求静态展开每个tile，但必须证明：
 
 - iteration domain与source output domain exact对应；
+- result-driven pull或operand-driven push所覆盖的consumer iteration、boundary tile和peer segment all-and-only；
 - interior和tail不重叠且union完整；
 - branch/yield和multi-result的每条路径类型及effect闭合；
 - reduction order符合source numeric contract；
@@ -361,6 +373,12 @@ side attr。
 - immutable prepacked resource publication；
 - dynamic shape、复杂mask、advanced fusion和target-specific composite；
 - 需要新runtime/ABI/SystemC consumer的movement或completion形态。
+- NoC-resident属于独立pipeline扩展：result/operand/partial interface traversal、input/parameter owner
+  fanout、intermediate zero-DDR cut、tree/ring slice-precise partial、round-2 output publication、同clone
+  multi-role composition和call-expanded whole-program wait graph均已有实现与host legality gate。post-Instr
+  typed worker sibling从canonical/unplaced current IR原子派生，worker-preserving fixed-slot随后派生；
+  NoC×fixed-slot×typed-worker同候选的source/package/model/no-card纵向已经闭合，fresh configured-board
+  correctness仍不纳入Q32/Q39非板端证据。
 - Q32.N floating reassociation/tree、generic online reduction、non-GEMM FMA contraction及超出current integer-domain
   exact/modular子集的algebraic distribution/factorization；
 

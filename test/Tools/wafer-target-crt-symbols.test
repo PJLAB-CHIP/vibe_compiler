@@ -23,19 +23,19 @@
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
 # RUN:   -dr %t.crt.o | FileCheck --check-prefix=LIFECYCLE %s
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
-# RUN:   -dr -M no-aliases --disassemble=wafer_tx81_peripheral_argmax %t.crt.o | FileCheck --check-prefix=ARGMAX %s
+# RUN:   -dr -M no-aliases --disassemble=wafer_tx81_peripheral_argmax_v3 %t.crt.o | FileCheck --check-prefix=ARGMAX %s
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
-# RUN:   -dr -M no-aliases --disassemble=wafer_tx81_peripheral_argmin %t.crt.o | FileCheck --check-prefix=ARGMIN %s
+# RUN:   -dr -M no-aliases --disassemble=wafer_tx81_peripheral_argmin_v3 %t.crt.o | FileCheck --check-prefix=ARGMIN %s
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
 # RUN:   -dr -M no-aliases --disassemble=wafer_tx81_local_fence %t.crt.o | FileCheck --check-prefix=LOCAL-FENCE %s
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
 # RUN:   -dr -M no-aliases --disassemble=wafer_tx81_ncc_join %t.crt.o | FileCheck --check-prefix=NCC-JOIN %s
 
-# SURFACE: checked 113 production wafer_tx81_* CRT symbols from the shared typed target-call registry
+# SURFACE: checked 217 production wafer_tx81_* CRT symbols from the shared typed target-call registry
 # CONFORMANCE: checked Wafer target CRT conformance rules from compiler and CRT code: formats=13, encoding_rows=65, convert_routes=36, groups=4/23/9
 
-# ARGMAX-LABEL: <wafer_tx81_peripheral_argmax>:
-# ARGMAX: R_RISCV_CALL_PLT TsmWaitfinish
+# ARGMAX-LABEL: <wafer_tx81_peripheral_argmax_v3>:
+# ARGMAX: R_RISCV_CALL_PLT TsmWaitfinish_bywork
 # ARGMAX: R_RISCV_CALL_PLT get_spm_memory_mapping
 # ARGMAX: R_RISCV_CALL_PLT get_spm_memory_mapping
 # ARGMAX: sw {{[a-z0-9]+}},0({{[a-z0-9]+}})
@@ -43,8 +43,8 @@
 # ARGMAX-NEXT: sync
 # ARGMAX-NOT: dcache.
 # ARGMAX: R_RISCV_CALL_PLT TsmDeletePeripheral
-# ARGMIN-LABEL: <wafer_tx81_peripheral_argmin>:
-# ARGMIN: R_RISCV_CALL_PLT TsmWaitfinish
+# ARGMIN-LABEL: <wafer_tx81_peripheral_argmin_v3>:
+# ARGMIN: R_RISCV_CALL_PLT TsmWaitfinish_bywork
 # ARGMIN: R_RISCV_CALL_PLT get_spm_memory_mapping
 # ARGMIN: R_RISCV_CALL_PLT get_spm_memory_mapping
 # ARGMIN: sw {{[a-z0-9]+}},0({{[a-z0-9]+}})
@@ -84,11 +84,22 @@
 # LIFECYCLE-LABEL: <wafer_tx81_direct_dte_send_prepare>:
 # LIFECYCLE: R_RISCV_CALL_PLT get_tile_spm_addr_base
 # LIFECYCLE: add
+# LIFECYCLE-NOT: R_RISCV_CALL_PLT direct_dte_send_async
+# LIFECYCLE-LABEL: <wafer_tx81_direct_dte_send_issue_v3>:
+# LIFECYCLE: R_RISCV_CALL_PLT direct_sync_wait
+# LIFECYCLE: R_RISCV_CALL_PLT direct_dte_attach
+# LIFECYCLE: R_RISCV_CALL_PLT direct_dte_send_async
+# LIFECYCLE-NOT: R_RISCV_CALL_PLT direct_dte_wait_done
 # LIFECYCLE-LABEL: <wafer_tx81_direct_dte_recv_prepare>:
 # LIFECYCLE-NOT: get_spm_memory_mapping
 # LIFECYCLE-NOT: get_tile_spm_addr_base
 # LIFECYCLE: R_RISCV_CALL_PLT direct_fsm_monitor_init
 # LIFECYCLE-LABEL: <wafer_tx81_direct_dte_wait>:
+# LIFECYCLE: R_RISCV_CALL_PLT direct_sync_wait
+# LIFECYCLE: R_RISCV_CALL_PLT direct_dte_attach
+# LIFECYCLE: R_RISCV_CALL_PLT direct_dte_send_async
+# LIFECYCLE: R_RISCV_CALL_PLT direct_dte_wait_done
+# LIFECYCLE: R_RISCV_CALL_PLT direct_dte_release
 # LIFECYCLE: li {{[a-z0-9]+}},2
 # LIFECYCLE: sw {{[a-z0-9]+}},0({{[a-z0-9]+}})
 # LIFECYCLE: andi {{[a-z0-9]+}},{{[a-z0-9]+}},-64

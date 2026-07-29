@@ -165,7 +165,11 @@ if(WAFER_ENABLE_UNIT_TESTS)
   add_subdirectory(unittests)
 endif()
 
-set(_wafer_check_targets check-wafer-lit)
+set(_wafer_check_targets
+  check-wafer-lit
+  wafer-ncc-hazard-relation-test
+  wafer-ncc-probe-plan-test
+)
 foreach(_wafer_optional_check_target IN ITEMS
     check-wafer-unit
     check-wafer-numeric-model-unit

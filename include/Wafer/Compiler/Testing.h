@@ -20,6 +20,7 @@ enum class CollectiveCharacterizationAlgorithm {
   ReduceScatterDirect,
   ReduceScatterRing,
   AllReduceRing,
+  NoCResidentAllReduceRing,
   AllReduceTree,
 };
 
@@ -67,11 +68,94 @@ mlir::FailureOr<ExecutableBundle> compileProgramWithReservedBaseline(
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
 
+/// Target-model form of reserved-baseline publication. It retains the exact
+/// accepted executable and target LLVM modules consumed by package
+/// publication so the model gate executes the selected baseline without
+/// reconstructing either side of the target-call contract.
+mlir::FailureOr<TargetCompilationProduct>
+compileProgramWithReservedBaselineTargetCompilation(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
+/// Runs the production publication transaction while committing a fully
+/// accepted static fixed-slot realization from each rank frontier. The
+/// selected all-rank tuple passes the same lowering, resource,
+/// target-artifact and canonical package readback gates as production. This
+/// qualification seam is not a production command-line mode and does not
+/// change production selection.
+mlir::FailureOr<ExecutableBundle> compileProgramForStaticFixedSlotQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
+/// Target-model form of static fixed-slot qualification. It retains the exact
+/// accepted executable and target LLVM modules already consumed by package
+/// publication and qualification attestation.
+mlir::FailureOr<TargetCompilationProduct>
+compileProgramForStaticFixedSlotTargetQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
+/// Runs the production publication transaction while committing a fully
+/// accepted disjoint-component NCC worker realization from each rank
+/// frontier. The selected tuple passes the same lowering, resource,
+/// target-artifact and canonical package readback gates as production.
+mlir::FailureOr<ExecutableBundle> compileProgramForWorkerPlacementQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
+/// The target-model form of the worker-placement qualification transaction.
+/// It retains the exact accepted executable and target LLVM modules already
+/// consumed by package publication so the ordinary target-model gate does not
+/// reconstruct either side of the target-call contract.
+mlir::FailureOr<TargetCompilationProduct>
+compileProgramForWorkerPlacementTargetQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
+/// Runs the production publication transaction while committing one
+/// nonreserved all-rank tuple that simultaneously has boundary-only DDR
+/// movement, actual Direct DTE traffic on every rank and in both directions
+/// across the tuple, static fixed-slot scheduling, and disjoint multi-worker
+/// NCC placement in the accepted instruction IR. The predicates are never
+/// combined across sibling candidates.
+mlir::FailureOr<ExecutableBundle>
+compileProgramForNoCResidentFixedSlotWorkerQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
+/// Target-model form of the compound NoC-resident fixed-slot worker
+/// qualification. It retains the exact executable and target LLVM modules
+/// already consumed by canonical package and qualification-companion
+/// publication.
+mlir::FailureOr<TargetCompilationProduct>
+compileProgramForNoCResidentFixedSlotWorkerTargetQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
+
 /// Runs the production transaction while committing a fully accepted variant
 /// whose final instruction DTE phases identify the requested collective
 /// implementation. All normal lowering, resource, target and package gates
 /// still run; absence or ambiguity is a compilation failure.
 mlir::FailureOr<ExecutableBundle> compileProgramForCollectiveCharacterization(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain,
+    CollectiveCharacterizationAlgorithm algorithm, llvm::StringRef reportPath,
+    llvm::raw_ostream &diagnostics);
+
+/// Target-model form of collective characterization. It retains the exact
+/// accepted executable and target LLVM modules consumed by package
+/// publication, while preserving the same atomic characterization-report
+/// publication contract.
+mlir::FailureOr<TargetCompilationProduct>
+compileProgramForCollectiveCharacterizationTargetCompilation(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain,

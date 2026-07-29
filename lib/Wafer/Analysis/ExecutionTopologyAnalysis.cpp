@@ -212,6 +212,22 @@ ExecutionTopologyAnalysis::create(mlir::ModuleOp module) {
     available[*index] = 0;
   }
   result.endpointAvailability.assign(available.begin(), available.end());
+  llvm::SmallVector<size_t, 8> linkNeighbors;
+  for (size_t endpoint = 0; endpoint < endpointCount; ++endpoint) {
+    if (!available[endpoint])
+      continue;
+    linkNeighbors.clear();
+    appendAvailableNeighbors(linkNeighbors, available, result.cardGrid,
+                             result.tileGrid, result.getCardInterconnect(),
+                             endpoint);
+    llvm::sort(linkNeighbors);
+    linkNeighbors.erase(std::unique(linkNeighbors.begin(), linkNeighbors.end()),
+                        linkNeighbors.end());
+    if (linkNeighbors.size() >
+        std::numeric_limits<uint64_t>::max() - result.directedLinkCount)
+      return mlir::failure();
+    result.directedLinkCount += static_cast<uint64_t>(linkNeighbors.size());
+  }
 
   int64_t rankCount64 = 1;
   llvm::ArrayRef<int64_t> shape = mesh.getShapeAttr().asArrayRef();
@@ -334,6 +350,68 @@ std::optional<uint64_t> ExecutionTopologyAnalysis::getShortestHopDistance(
   return distance;
 }
 
+mlir::FailureOr<llvm::SmallVector<ExecutionDirectedLink, 8>>
+ExecutionTopologyAnalysis::getCanonicalShortestPath(
+    int64_t sourceRank, int64_t destinationRank) const {
+  if (sourceRank < 0 || destinationRank < 0 ||
+      static_cast<uint64_t>(sourceRank) >= rankEndpoints.size() ||
+      static_cast<uint64_t>(destinationRank) >= rankEndpoints.size())
+    return mlir::failure();
+
+  std::optional<size_t> sourceEndpoint = linearizeEndpoint(
+      cardGrid, tileGrid, rankEndpoints[static_cast<size_t>(sourceRank)]);
+  std::optional<size_t> destinationEndpoint = linearizeEndpoint(
+      cardGrid, tileGrid, rankEndpoints[static_cast<size_t>(destinationRank)]);
+  if (!sourceEndpoint || !destinationEndpoint ||
+      !endpointAvailability[*sourceEndpoint] ||
+      !endpointAvailability[*destinationEndpoint])
+    return mlir::failure();
+
+  llvm::SmallVector<ExecutionDirectedLink, 8> path;
+  if (*sourceEndpoint == *destinationEndpoint)
+    return path;
+
+  const size_t endpointCount = endpointAvailability.size();
+  const size_t unvisited = std::numeric_limits<size_t>::max();
+  std::vector<size_t> predecessor(endpointCount, unvisited);
+  llvm::SmallVector<size_t, 64> queue;
+  llvm::SmallVector<size_t, 8> neighbors;
+  predecessor[*sourceEndpoint] = *sourceEndpoint;
+  queue.push_back(*sourceEndpoint);
+  for (size_t cursor = 0;
+       cursor < queue.size() && predecessor[*destinationEndpoint] == unvisited;
+       ++cursor) {
+    const size_t current = queue[cursor];
+    neighbors.clear();
+    appendAvailableNeighbors(neighbors, endpointAvailability, cardGrid,
+                             tileGrid, getCardInterconnect(), current);
+    llvm::sort(neighbors);
+    neighbors.erase(std::unique(neighbors.begin(), neighbors.end()),
+                    neighbors.end());
+    for (size_t neighbor : neighbors) {
+      if (predecessor[neighbor] != unvisited)
+        continue;
+      predecessor[neighbor] = current;
+      queue.push_back(neighbor);
+    }
+  }
+  if (predecessor[*destinationEndpoint] == unvisited)
+    return mlir::failure();
+
+  llvm::SmallVector<size_t, 8> reverseEndpoints;
+  for (size_t current = *destinationEndpoint; current != *sourceEndpoint;
+       current = predecessor[current])
+    reverseEndpoints.push_back(current);
+  reverseEndpoints.push_back(*sourceEndpoint);
+  std::reverse(reverseEndpoints.begin(), reverseEndpoints.end());
+  path.reserve(reverseEndpoints.size() - 1);
+  for (size_t index = 1; index < reverseEndpoints.size(); ++index)
+    path.push_back(
+        {delinearizeEndpoint(reverseEndpoints[index - 1], cardGrid, tileGrid),
+         delinearizeEndpoint(reverseEndpoints[index], cardGrid, tileGrid)});
+  return path;
+}
+
 mlir::FailureOr<llvm::SmallVector<uint64_t, 16>>
 ExecutionTopologyAnalysis::getShortestHopMatrix(
     llvm::ArrayRef<int64_t> logicalRanks) const {
@@ -360,7 +438,8 @@ bool ExecutionTopologyAnalysis::isEquivalentTo(
          cardInterconnect == other.cardInterconnect &&
          endpointAvailability == other.endpointAvailability &&
          rankEndpoints == other.rankEndpoints &&
-         shortestHopDistances == other.shortestHopDistances;
+         shortestHopDistances == other.shortestHopDistances &&
+         directedLinkCount == other.directedLinkCount;
 }
 
 } // namespace wafer::analysis

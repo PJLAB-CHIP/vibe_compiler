@@ -148,6 +148,8 @@ static bool hasOnlyWitnessedRootlessStorageEffects(mlir::Operation *op) {
   if (!effectInterface)
     return false;
 
+  const bool hasTypedDTEBufferContract =
+      mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(op);
   llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
   effectInterface.getEffects(effects);
   for (const mlir::MemoryEffects::EffectInstance &effect : effects) {
@@ -156,7 +158,13 @@ static bool hasOnlyWitnessedRootlessStorageEffects(mlir::Operation *op) {
 
     mlir::SideEffects::Resource *resource = effect.getResource();
     if (resource == WaferComputeResource::get() ||
-        resource == WaferMovementResource::get() ||
+        resource == WaferMovementResource::get())
+      continue;
+    // Direct DTE transport occupancy is not an NCC buffer observation. The
+    // send/receive buffer's value-associated SPM effect below is the exact
+    // address-hazard contract, and dte_wait only completes its exact tokens.
+    // Keep unknown communication-resource users fail-closed.
+    if (hasTypedDTEBufferContract &&
         resource == WaferCommunicationResource::get())
       continue;
 
@@ -2211,8 +2219,17 @@ mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
     return mlir::success();
 
   NCCCompletionContract contract = getNCCCompletionContract(op);
-  if (contract.behavior == LocalInstructionCompletion::ParticipantJoin ||
-      contract.behavior == LocalInstructionCompletion::SynchronousWriteback) {
+  if (contract.behavior == LocalInstructionCompletion::ParticipantJoin) {
+    ProgramPoint completionPoint =
+        getGuaranteedCompletionPoint(op, dataflow.timeline, *point);
+    processFence(completionPoint, contract.participantMask, dataflow);
+    // A typed participant join only drains the named worker domains. It has no
+    // independent memory observation, so other workers may remain pending
+    // across it. Treating the join itself as an unknown observer would
+    // incorrectly require every partial join to serialize all NCC workers.
+    return mlir::success();
+  }
+  if (contract.behavior == LocalInstructionCompletion::SynchronousWriteback) {
     ProgramPoint completionPoint =
         getGuaranteedCompletionPoint(op, dataflow.timeline, *point);
     processFence(completionPoint, contract.participantMask, dataflow);

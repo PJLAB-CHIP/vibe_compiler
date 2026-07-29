@@ -79,7 +79,8 @@ mlir::LogicalResult FunctionLowering::lowerPeripheral(InstrPeripheralOp op) {
   appendI32(op.getLoc(), args,
             getOptionalIntegerAttrValue(op.getRoundingModeAttr(), -1));
 
-  emitCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args);
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind(), targetProfile),
+              args, op.getWorker());
   return mlir::success();
 }
 

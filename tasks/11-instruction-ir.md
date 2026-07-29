@@ -1,6 +1,6 @@
 # Wafer Instruction IR Design
 
-状态：2026-07-28同步typed NCC issue worker与participant join；当前合同覆盖instruction-level hardware invocation IR、
+状态：2026-07-28同步typed NCC issue worker、participant join及closed V3 worker-aware target ABI；当前合同覆盖instruction-level hardware invocation IR、
 memref buffer和shared physical geometry/ABI legality。shared verifier 已闭合当前支持子集的静态 DMA descriptor payload/range/
 element-width relation、fill/elementwise/reduce/convert/GEMM element/shape relation、ordinary conv、pool/
 unpool、TDMA pad/img2col和peripheral kind-specific capacity，并在target字段写入前检查ABI narrowing。
@@ -65,8 +65,13 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
   携带 `rounding_mode`，plain wrapper kind 不允许带这两类 attr。它不是通过 `src_dtype` /
   `dst_dtype` 表达任意转换。
 - `wafer.instr.*` op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset或raw
-  packet field。普通NCC issue显式携带typed worker placement；current production lowering只接受worker0，
-  非零worker在operator ABI真正编码该字段前由target preflight拒绝。
+  packet field。普通NCC issue显式携带typed worker identity；instruction lowering先形成canonical worker0/
+  unplaced current Instr，独立post-Instr candidate stage再从SSA、effects和ranges原子派生
+  `DisjointComponents` sibling、写actual worker attrs并fresh重建minimum joins。已有nonzero assignment不原地
+  重写。V1/V2 target profile冻结为worker0并lower到
+  保持原始arity的legacy ordinary symbols；V3才接受`worker0/worker1/worker2`，并lower到统一`_v3`
+  ordinary symbols，其exact ABI只在末尾追加`i32 worker`。非零worker candidate若没有显式选择V3，必须在
+  target effect前失败，不能静默降回worker0或改写成legacy symbol。
 - Direct DTE instruction ops 已替代旧 tile-level p2p prototype，并在 SPM memory planning 前暴露
   buffer lifetime、peer、byte count 和 async token。all-gather 的 strided gather slot 通过
   `wafer.instr.gather_scatter` 与连续 communication buffer 互相 materialize；DTE op 本身只收发
@@ -136,7 +141,8 @@ Pipeline position:
 - Downstream consumer:
   08 relation-backed redundant physical transfer normalization先在complete-rank unplaced actual clone上
   证明并删除可由same-root/standard view表达的完整movement，随后先运行fresh whole-rank completion
-  normalization/verifier，再由whole-rank SPM planning、
+  normalization/verifier；materialized canonical/unplaced current Instr先原子派生typed worker sibling，再从
+  保留worker assignment的siblings派生fixed-slot。每个sibling随后由whole-rank SPM planning、
   whole-variant DDR planning、event/physical-transport/all-rank transport/
   target-entry verification 和
   closed-loop whole-variant candidate driver；atomic commit 后才由 target LLVM、package 和 runtime 消费。
@@ -144,7 +150,8 @@ Pipeline position:
   Q16以后由同一
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=<registered-id>`
   内的closed-loop
-  candidate loop调用；当前baseline为closed v1。Q32.V oriented request必须显式选择其typed profile/ABI revision，且不与v1隐式转换。
+  candidate loop调用；V1/V2保持closed legacy worker0 ABI，worker-aware candidate必须显式选择closed V3
+  profile/ABI。Q32.V oriented request必须显式选择其typed profile/ABI revision，且不与v1隐式转换。
   当前Q15只产出verified structured tensor program directory，不执行instruction lowering；
   `wafer-opt`只处理显式IR，局部bring-up / candidate evaluation入口是
   `wafer-lower-tile-region-to-instr` named pipeline。
@@ -313,13 +320,15 @@ wafer.instr.pool / wafer.instr.unpool
 wafer.instr.tdma_data_move
 wafer.instr.peripheral
 scf.if / scf.for
-typed worker placement + wafer.instr.ncc_join
+canonical typed worker identity + wafer.instr.ncc_join
 ```
 
 R3.2d 不做 memref type conversion。它只把 executable target-abstract op 改写成 instruction op，
 并复用同一批 memref values。physical base address、SPM offset、end address、bank/color、
 raw worker register window、runtime pointer 和 packet word 都不属于 R3.2d；typed worker identity属于
-instruction placement语义。
+instruction placement语义。R3.2d本身不选择跨worker分解；后续独立candidate stage只从
+canonical/unplaced current Instr派生all-rank atomic typed worker sibling，并在clone中重写actual worker attrs和
+minimum joins。fixed-slot再从保留该assignment的siblings派生，不能用metadata或已有nonzero assignment原地改选。
 R3.2d 后的 instruction IR 不允许 `#wafer.elementwise_kind` / `#wafer.reduce_kind`
 这类 tile-level semantic attr 出现在 `wafer.instr.*` op 上；这些语义必须在 lowering 时选择成
 instr-level target kind。
@@ -540,8 +549,9 @@ exit path仍必须证明participant completion闭合，并证明没有未消费D
 各region独立分配物理arena。
 
 R3.2d建模closed `worker0/worker1/worker2` issue identity，但不暴露raw `inter_type`、register window或
-packet field；这些字段只在target lowering按closed profile编码。current operator ABI只支持worker0，
-因此非零worker accepted candidate必须在effect前失败，而不能静默降回默认worker。
+packet field；这些字段只在target lowering按closed profile编码。V1/V2 ordinary operator ABI不携带worker
+scalar且固定解释为worker0；V3 ordinary operator ABI使用独立`_v3` symbol并追加typed worker scalar。
+因此非零worker accepted candidate只有在V3下合法；其它profile必须在effect前失败，而不能静默降回默认worker。
 
 ## 7. ODS-Level Op Contracts
 

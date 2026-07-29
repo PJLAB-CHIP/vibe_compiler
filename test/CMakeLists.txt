@@ -474,6 +474,8 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
   set(_wafer_compiler_optimization_collective_cases
     tree-all-reduce
     direct-dte-gemm-window
+    noc-resident-large-gemm
+    noc-resident-m-sharded-gemm
   )
   set(_wafer_collective_characterization_cases
     all-gather-direct-vs-ring-256b

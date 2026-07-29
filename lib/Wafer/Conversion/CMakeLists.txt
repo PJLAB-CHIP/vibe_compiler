@@ -1,4 +1,5 @@
 add_mlir_conversion_library(WaferTensorProgramToTileRegion
+  WaferTensorProgramToTileRegion/BidirectionalTiling.cpp
   WaferTensorProgramToTileRegion/BodyEmitter.cpp
   WaferTensorProgramToTileRegion/CandidateMaterialization.cpp
   WaferTensorProgramToTileRegion/CandidateSupport.cpp

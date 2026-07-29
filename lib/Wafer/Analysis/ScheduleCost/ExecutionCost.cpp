@@ -108,7 +108,8 @@ static void addNPUCost(InstructionProgramCost &cost, mlir::Type type,
   }
 }
 
-static NoCCollectiveKind classifyCollective(DTEProtocolPhase phase) {
+static std::optional<NoCCollectiveKind>
+classifyCollective(DTEProtocolPhase phase) {
   switch (phase) {
   case DTEProtocolPhase::CollectivePermute:
     return NoCCollectiveKind::CollectivePermute;
@@ -124,6 +125,12 @@ static NoCCollectiveKind classifyCollective(DTEProtocolPhase phase) {
   case DTEProtocolPhase::AllReduceTreeReduce:
   case DTEProtocolPhase::AllReduceTreeBroadcast:
     return NoCCollectiveKind::AllReduce;
+  case DTEProtocolPhase::PeerDataflow:
+    // Peer-resident dataflow is an exact point-to-point transfer rather than
+    // an instance of one of the five collective families. Its payload still
+    // contributes to aggregate transmit/receive, event/instruction, and
+    // whole-card minimum-hop link-byte demand.
+    return std::nullopt;
   }
   llvm_unreachable("unhandled DTE protocol phase");
 }
@@ -280,6 +287,7 @@ static void collectComputeCost(mlir::Operation *op,
 static void collectNoCCost(mlir::Operation *op, InstructionProgramCost &cost,
                            Quantity multiplicity) {
   if (auto send = mlir::dyn_cast<InstrDTESendOp>(op)) {
+    add(cost.noc.staticIssueSiteCount, Quantity{1});
     Quantity bytes =
         send.getBytes() < 0
             ? Quantity::unsupported(
@@ -287,18 +295,29 @@ static void collectNoCCost(mlir::Operation *op, InstructionProgramCost &cost,
             : Quantity{static_cast<uint64_t>(send.getBytes())};
     Quantity total = multiply(bytes, multiplicity);
     add(cost.noc.aggregateTransmitBytes, total);
-    NoCCollectiveKind kind = classifyCollective(send.getMessage().getPhase());
-    add(cost.noc.collectiveTransmitBytes[static_cast<size_t>(kind)], total);
+    add(cost.noc.transmitMessageCount, multiplicity);
+    std::optional<NoCCollectiveKind> kind =
+        classifyCollective(send.getMessage().getPhase());
+    if (kind)
+      add(cost.noc.collectiveTransmitBytes[static_cast<size_t>(*kind)], total);
     markDirectionalNoCUnknown(cost);
     return;
   }
   if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(op)) {
+    add(cost.noc.staticIssueSiteCount, Quantity{1});
     Quantity bytes =
         recv.getBytes() < 0
             ? Quantity::unsupported(
                   ScheduleCostReason::UnsupportedInstructionSemantics)
             : Quantity{static_cast<uint64_t>(recv.getBytes())};
     add(cost.noc.aggregateReceiveBytes, multiply(bytes, multiplicity));
+    add(cost.noc.receiveMessageCount, multiplicity);
+    return;
+  }
+  if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(op)) {
+    add(cost.noc.waitOperationCount, multiplicity);
+    add(cost.noc.waitedEventCount,
+        multiply(Quantity{wait.getTokens().size()}, multiplicity));
   }
 }
 
@@ -576,8 +595,13 @@ void collectExecutionCost(mlir::Operation *root, InstructionProgramCost &cost) {
     mark(cost.ddrReadBytes);
     mark(cost.ddrWriteBytes);
     mark(cost.spmMovementBytes);
+    mark(cost.noc.staticIssueSiteCount);
     mark(cost.noc.aggregateTransmitBytes);
     mark(cost.noc.aggregateReceiveBytes);
+    mark(cost.noc.transmitMessageCount);
+    mark(cost.noc.receiveMessageCount);
+    mark(cost.noc.waitOperationCount);
+    mark(cost.noc.waitedEventCount);
     for (ScheduleCostMetric &metric : cost.noc.directionalTransmitBytes)
       mark(metric);
     for (ScheduleCostMetric &metric : cost.noc.collectiveTransmitBytes)

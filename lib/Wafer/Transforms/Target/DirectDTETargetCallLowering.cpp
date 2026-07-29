@@ -206,9 +206,17 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
   appendI32(op.getLoc(), args, domain.rankToTile[static_cast<size_t>(peer)]);
   args.push_back(remoteReceiverFsm);
   appendI32(op.getLoc(), args, /*isHighPerformance=*/0);
-  return emitI64Call(
-      op.getLoc(),
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue), args);
+  mlir::Value event =
+      emitI64Call(op.getLoc(),
+                  getTargetCallDescriptor(
+                      TargetCallBuiltin::DirectDTESendPrepare, targetProfile),
+                  args);
+  if (targetProfile == TargetProfileId::waferTx81SingleCardKernelV3())
+    emitCall(op.getLoc(),
+             getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue,
+                                     targetProfile),
+             mlir::ValueRange(event));
+  return event;
 }
 
 mlir::FailureOr<mlir::Value>
@@ -250,7 +258,9 @@ FunctionLowering::lowerDTERecv(InstrDTERecvOp op,
   appendI32(op.getLoc(), args, binding.getReceiverFsmId());
   return emitI64Call(
       op.getLoc(),
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTERecvPrepare), args);
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTERecvPrepare,
+                              targetProfile),
+      args);
 }
 
 mlir::LogicalResult
@@ -262,7 +272,8 @@ FunctionLowering::lowerDTEWait(InstrDTEWaitOp op,
               "does not match its token count";
   for (mlir::Value event : events)
     emitCall(op.getLoc(),
-             getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait),
+             getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait,
+                                     targetProfile),
              mlir::ValueRange(event));
   return mlir::success();
 }
@@ -285,12 +296,11 @@ static void registerTargetCallee(mlir::MLIRContext *context,
     llvm_unreachable("target transport lifecycle symbol type mismatch");
 }
 
-mlir::LogicalResult
-injectDirectDTEStatusLifecycle(mlir::ModuleOp moduleOp,
-                               llvm::StringRef entrySymbol,
-                               int64_t statusArgumentIndex, int64_t rankCount,
-                               TargetCallBuiltin beginBuiltin,
-                               llvm::StringMap<CalleeSignature> &usedCallees) {
+mlir::LogicalResult injectDirectDTEStatusLifecycle(
+    mlir::ModuleOp moduleOp, llvm::StringRef entrySymbol,
+    int64_t statusArgumentIndex, int64_t rankCount,
+    TargetCallBuiltin beginBuiltin, TargetProfileId targetProfile,
+    llvm::StringMap<CalleeSignature> &usedCallees) {
   auto entry = moduleOp.lookupSymbol<mlir::LLVM::LLVMFuncOp>(entrySymbol);
   if (!entry || entry.isDeclaration() || entry.getBody().empty() ||
       statusArgumentIndex < 0 ||
@@ -307,9 +317,10 @@ injectDirectDTEStatusLifecycle(mlir::ModuleOp moduleOp,
 
   mlir::OpBuilder builder(moduleOp.getContext());
   mlir::Type i32Type = mlir::IntegerType::get(moduleOp.getContext(), 32);
-  const TargetCallDescriptor &begin = getTargetCallDescriptor(beginBuiltin);
-  const TargetCallDescriptor &finish =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEFinish);
+  const TargetCallDescriptor &begin =
+      getTargetCallDescriptor(beginBuiltin, targetProfile);
+  const TargetCallDescriptor &finish = getTargetCallDescriptor(
+      TargetCallBuiltin::DirectDTEFinish, targetProfile);
   registerTargetCallee(moduleOp.getContext(), usedCallees, begin);
   registerTargetCallee(moduleOp.getContext(), usedCallees, finish);
 

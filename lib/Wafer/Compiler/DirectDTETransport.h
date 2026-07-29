@@ -9,6 +9,12 @@
 
 namespace wafer::compiler::detail {
 
+/// Recomputes logical message matching, structured dynamic occurrences and the
+/// whole-rank Direct-DTE wait graph from the supplied current instruction IR.
+/// This validation does not attach physical bindings or retain analysis state.
+mlir::LogicalResult
+verifyDirectDTETransportSchedule(llvm::ArrayRef<mlir::ModuleOp> rankModules);
+
 /// Matches and validates every logical Direct DTE issue across the complete
 /// rank domain, then writes typed physical bindings into the candidate modules.
 /// No binding is externally observable unless the caller subsequently commits

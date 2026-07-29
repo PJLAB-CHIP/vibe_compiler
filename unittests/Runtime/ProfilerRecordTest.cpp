@@ -123,7 +123,8 @@ makeDirectDTEEvent(uint8_t kind, uint32_t role, uint64_t operationBegin,
   event.metadata = WAFER_TX81_PROFILER_EVENT_SITE_VALID |
                    WAFER_TX81_PROFILER_EVENT_SITE_SPAN_VALID |
                    WAFER_TX81_PROFILER_EVENT_OPERATION_SPAN_VALID | role;
-  if (kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT) {
+  if (kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE ||
+      kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT) {
     event.observed_begin_cycle = 112;
     event.observed_end_cycle = 145;
     event.counter_delta = 7;
@@ -565,6 +566,38 @@ TEST(ProfilerRecordTest, RequiresDirectDTEPhaseInsideMatchingAggregate) {
   auto wrongRole = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_FALSE(static_cast<bool>(wrongRole));
   EXPECT_NE(llvm::toString(wrongRole.takeError()).find("matching aggregate"),
+            std::string::npos);
+}
+
+TEST(ProfilerRecordTest, SeparatesDirectDTEIssueFromCompletionPhases) {
+  std::vector<uint8_t> bytes = makeRecord(3);
+  auto container = makeTargetSiteEvent();
+  auto aggregate = makeDirectDTEEvent(
+      WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE,
+      WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SEND, 115, 145, 1);
+  auto phase = makeDirectDTEEvent(
+      WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE,
+      WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SEND, 125, 135, 2);
+  setEvents(bytes, {container, aggregate, phase});
+  auto valid = wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  ASSERT_TRUE(static_cast<bool>(valid)) << llvm::toString(valid.takeError());
+
+  aggregate.kind = WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT;
+  setEvents(bytes, {container, aggregate, phase});
+  auto issuePhaseUnderWait =
+      wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  ASSERT_FALSE(static_cast<bool>(issuePhaseUnderWait));
+  EXPECT_NE(llvm::toString(issuePhaseUnderWait.takeError())
+                .find("matching aggregate"),
+            std::string::npos);
+
+  aggregate.kind = WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE;
+  aggregate.metadata &= ~WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SEND;
+  aggregate.metadata |= WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_RECV;
+  setEvents(bytes, {container, aggregate, phase});
+  auto receiverIssue = wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  ASSERT_FALSE(static_cast<bool>(receiverIssue));
+  EXPECT_NE(llvm::toString(receiverIssue.takeError()).find("aggregate"),
             std::string::npos);
 }
 

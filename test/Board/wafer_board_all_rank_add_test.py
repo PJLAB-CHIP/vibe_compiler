@@ -35,7 +35,7 @@ GLOBAL_ELEMENTS = RANK_COUNT * LOCAL_ELEMENTS
 ELEMENT_DTYPE = np.dtype("<f2")
 TARGET_PROFILE = "wafer-tx81-single-card-kernel-v1"
 PROFILE_COMPANION_READY = (
-    "profile_companion: ready schema=5 ranks=16 variants=1 captures=2"
+    "profile_companion: ready schema=6 ranks=16 variants=1 captures=2"
 )
 PROFILE_CAMPAIGN_LAUNCH_COUNT = 3
 PROFILE_PRIMARY_EXECUTION_COUNT = 1

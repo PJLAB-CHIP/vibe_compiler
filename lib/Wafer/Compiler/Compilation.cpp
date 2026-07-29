@@ -44,6 +44,8 @@ getSelectionMode(testing::CollectiveCharacterizationAlgorithm algorithm) {
     return Mode::CharacterizeReduceScatterRing;
   case Algorithm::AllReduceRing:
     return Mode::CharacterizeAllReduceRing;
+  case Algorithm::NoCResidentAllReduceRing:
+    return Mode::QualifyNoCResidentAllReduceRing;
   case Algorithm::AllReduceTree:
     return Mode::CharacterizeAllReduceTree;
   }
@@ -455,6 +457,179 @@ mlir::FailureOr<ExecutableBundle> testing::compileProgramWithReservedBaseline(
   return std::move(*retainedExecutableBundle);
 }
 
+mlir::FailureOr<TargetCompilationProduct>
+testing::compileProgramWithReservedBaselineTargetCompilation(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  std::optional<ExecutableBundle> retainedExecutableBundle;
+  std::optional<TargetLLVMModuleBundle> retainedTargetLLVMModuleBundle;
+  if (mlir::failed(detail::runCompilationTransaction(
+          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          targetToolchain, diagnostics,
+          detail::WholeVariantSelectionMode::ReservedBaseline,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle,
+          &retainedTargetLLVMModuleBundle)))
+    return mlir::failure();
+  if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle) {
+    detail::reject(
+        diagnostics,
+        "successful reserved-baseline target compilation did not retain its "
+        "complete target compilation product");
+    return mlir::failure();
+  }
+  return TargetCompilationProduct(std::move(*retainedExecutableBundle),
+                                  std::move(*retainedTargetLLVMModuleBundle));
+}
+
+mlir::FailureOr<ExecutableBundle>
+testing::compileProgramForStaticFixedSlotQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  std::optional<ExecutableBundle> retainedExecutableBundle;
+  if (mlir::failed(detail::runCompilationTransaction(
+          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          targetToolchain, diagnostics,
+          detail::WholeVariantSelectionMode::QualifyStaticFixedSlot,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle, nullptr)))
+    return mlir::failure();
+  if (!retainedExecutableBundle) {
+    detail::reject(diagnostics,
+                   "successful static fixed-slot qualification did not retain "
+                   "its executable bundle");
+    return mlir::failure();
+  }
+  return std::move(*retainedExecutableBundle);
+}
+
+mlir::FailureOr<TargetCompilationProduct>
+testing::compileProgramForStaticFixedSlotTargetQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  std::optional<ExecutableBundle> retainedExecutableBundle;
+  std::optional<TargetLLVMModuleBundle> retainedTargetLLVMModuleBundle;
+  if (mlir::failed(detail::runCompilationTransaction(
+          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          targetToolchain, diagnostics,
+          detail::WholeVariantSelectionMode::QualifyStaticFixedSlot,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle,
+          &retainedTargetLLVMModuleBundle)))
+    return mlir::failure();
+  if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle) {
+    detail::reject(
+        diagnostics,
+        "successful static fixed-slot target qualification did not retain "
+        "its complete target compilation product");
+    return mlir::failure();
+  }
+  return TargetCompilationProduct(std::move(*retainedExecutableBundle),
+                                  std::move(*retainedTargetLLVMModuleBundle));
+}
+
+mlir::FailureOr<ExecutableBundle>
+testing::compileProgramForWorkerPlacementQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  std::optional<ExecutableBundle> retainedExecutableBundle;
+  if (mlir::failed(detail::runCompilationTransaction(
+          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          targetToolchain, diagnostics,
+          detail::WholeVariantSelectionMode::QualifyWorkerPlacement,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle, nullptr)))
+    return mlir::failure();
+  if (!retainedExecutableBundle) {
+    detail::reject(diagnostics,
+                   "successful worker-placement qualification did not retain "
+                   "its executable bundle");
+    return mlir::failure();
+  }
+  return std::move(*retainedExecutableBundle);
+}
+
+mlir::FailureOr<TargetCompilationProduct>
+testing::compileProgramForWorkerPlacementTargetQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  std::optional<ExecutableBundle> retainedExecutableBundle;
+  std::optional<TargetLLVMModuleBundle> retainedTargetLLVMModuleBundle;
+  if (mlir::failed(detail::runCompilationTransaction(
+          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          targetToolchain, diagnostics,
+          detail::WholeVariantSelectionMode::QualifyWorkerPlacement,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle,
+          &retainedTargetLLVMModuleBundle)))
+    return mlir::failure();
+  if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle) {
+    detail::reject(
+        diagnostics,
+        "successful worker-placement target qualification did not retain "
+        "its complete target compilation product");
+    return mlir::failure();
+  }
+  return TargetCompilationProduct(std::move(*retainedExecutableBundle),
+                                  std::move(*retainedTargetLLVMModuleBundle));
+}
+
+mlir::FailureOr<ExecutableBundle>
+testing::compileProgramForNoCResidentFixedSlotWorkerQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  std::optional<ExecutableBundle> retainedExecutableBundle;
+  if (mlir::failed(detail::runCompilationTransaction(
+          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          targetToolchain, diagnostics,
+          detail::WholeVariantSelectionMode::
+              QualifyNoCResidentFixedSlotWorker,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle, nullptr)))
+    return mlir::failure();
+  if (!retainedExecutableBundle) {
+    detail::reject(
+        diagnostics,
+        "successful NoC-resident fixed-slot worker qualification did not "
+        "retain its executable bundle");
+    return mlir::failure();
+  }
+  return std::move(*retainedExecutableBundle);
+}
+
+mlir::FailureOr<TargetCompilationProduct>
+testing::compileProgramForNoCResidentFixedSlotWorkerTargetQualification(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  std::optional<ExecutableBundle> retainedExecutableBundle;
+  std::optional<TargetLLVMModuleBundle> retainedTargetLLVMModuleBundle;
+  if (mlir::failed(detail::runCompilationTransaction(
+          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          targetToolchain, diagnostics,
+          detail::WholeVariantSelectionMode::
+              QualifyNoCResidentFixedSlotWorker,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle,
+          &retainedTargetLLVMModuleBundle)))
+    return mlir::failure();
+  if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle) {
+    detail::reject(
+        diagnostics,
+        "successful NoC-resident fixed-slot worker target qualification did "
+        "not retain its complete target compilation product");
+    return mlir::failure();
+  }
+  return TargetCompilationProduct(std::move(*retainedExecutableBundle),
+                                  std::move(*retainedTargetLLVMModuleBundle));
+}
+
 mlir::FailureOr<ExecutableBundle>
 testing::compileProgramForCollectiveCharacterization(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
@@ -491,6 +666,47 @@ testing::compileProgramForCollectiveCharacterization(
           *retainedExecutableBundle, selectionMode, reportPath, diagnostics)))
     return mlir::failure();
   return std::move(*retainedExecutableBundle);
+}
+
+mlir::FailureOr<TargetCompilationProduct>
+testing::compileProgramForCollectiveCharacterizationTargetCompilation(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain,
+    CollectiveCharacterizationAlgorithm algorithm, llvm::StringRef reportPath,
+    llvm::raw_ostream &diagnostics) {
+  if (reportPath.empty()) {
+    detail::reject(diagnostics,
+                   "collective characterization report path must not be empty");
+    return mlir::failure();
+  }
+  if (detail::pathEntryExists(reportPath)) {
+    detail::reject(diagnostics, "refusing to replace existing collective "
+                                "characterization report");
+    return mlir::failure();
+  }
+  std::optional<ExecutableBundle> retainedExecutableBundle;
+  std::optional<TargetLLVMModuleBundle> retainedTargetLLVMModuleBundle;
+  detail::WholeVariantSelectionMode selectionMode = getSelectionMode(algorithm);
+  if (mlir::failed(detail::runCompilationTransaction(
+          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          targetToolchain, diagnostics, selectionMode,
+          CompilationOptions::standard(), std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle,
+          &retainedTargetLLVMModuleBundle)))
+    return mlir::failure();
+  if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle) {
+    detail::reject(
+        diagnostics,
+        "successful collective characterization target compilation did not "
+        "retain its complete target compilation product");
+    return mlir::failure();
+  }
+  if (mlir::failed(writeCollectiveCharacterizationReport(
+          *retainedExecutableBundle, selectionMode, reportPath, diagnostics)))
+    return mlir::failure();
+  return TargetCompilationProduct(std::move(*retainedExecutableBundle),
+                                  std::move(*retainedTargetLLVMModuleBundle));
 }
 
 } // namespace wafer::compiler

@@ -23,7 +23,9 @@ struct DirectDTEInvocationData {
 };
 
 llvm::Expected<compiler::TargetLLVMModuleBundle>
-buildDirectDTETargetBundle(std::string &diagnosticText);
+buildDirectDTETargetBundle(std::string &diagnosticText,
+                           TargetProfileId targetProfile =
+                               TargetProfileId::waferTx81SingleCardKernelV1());
 
 llvm::Expected<DirectDTEInvocationData>
 buildDirectDTEInvocationData(const compiler::TargetLLVMModuleBundle &bundle);
@@ -37,8 +39,52 @@ struct NCCJoinRewriteResult {
 /// Removes every pre-existing local-fence/NCC-join call and inserts one typed
 /// worker-0 join immediately after every selected Direct-DTE call plus one
 /// terminal join before each entry return.
-llvm::Expected<NCCJoinRewriteResult> rewriteNCCJoinsAfter(
-    compiler::TargetLLVMModuleBundle &bundle, TargetCallBuiltin anchor);
+llvm::Expected<NCCJoinRewriteResult>
+rewriteNCCJoinsAfter(compiler::TargetLLVMModuleBundle &bundle,
+                     TargetCallBuiltin anchor);
+
+enum class PendingComputeDTEAccessMode : uint8_t {
+  Disjoint,
+  OverlapWithoutJoin,
+  OverlapWithPreIssueJoin,
+};
+
+struct PendingComputeDTERewriteResult {
+  size_t elementwiseCount = 0;
+  size_t gemmCount = 0;
+  size_t insertedSetupJoinCount = 0;
+  size_t removedInterveningJoinCount = 0;
+  size_t insertedJoinCount = 0;
+  size_t overlappingReadCount = 0;
+};
+
+/// Inserts worker-0 V3 elementwise and GEMM calls immediately before Direct
+/// DTE receive preparation. Even ranks use elementwise and odd ranks use GEMM,
+/// so one all-rank invocation exercises both typed read footprints.
+llvm::Expected<PendingComputeDTERewriteResult>
+insertPendingComputeBeforeDTEReceive(compiler::TargetLLVMModuleBundle &bundle,
+                                     PendingComputeDTEAccessMode accessMode);
+
+enum class LateJoinDTEAccessMode : uint8_t {
+  SourceWrite,
+  DestinationRead,
+  DestinationWrite,
+};
+
+struct LateJoinDTERewriteResult {
+  size_t insertedComputeCount = 0;
+  size_t insertedSetupJoinCount = 0;
+  size_t removedPreIssueJoinCount = 0;
+  size_t insertedLateJoinCount = 0;
+};
+
+/// Leaves one overlapping worker-0 elementwise command pending when the V3
+/// Direct-DTE send is issued, then places the matching participant join
+/// immediately after that issue. This intentionally-invalid ordering covers
+/// source-write and destination-read/write hazards independently.
+llvm::Expected<LateJoinDTERewriteResult>
+insertPendingComputeWithLateJoin(compiler::TargetLLVMModuleBundle &bundle,
+                                 LateJoinDTEAccessMode accessMode);
 
 } // namespace wafer::model::test
 

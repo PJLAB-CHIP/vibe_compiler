@@ -116,7 +116,12 @@ Pipeline position:
   movement 首次定义的 compiler-owned storage，source同样来自compiler-owned allocation且到transfer
   operand的view provenance不改变base address；外部/未知source、非零或动态view offset、任一侧显式
   deallocation均fail closed。root/view alias、effect、lifetime、alignment、
-  valid/padding、snapshot 语义和Direct DTE exact-wait区间允许 storage coalescing。证明成功时直接把
+  valid/padding、snapshot 语义和Direct DTE exact-wait区间允许 storage coalescing。root path之外，
+  当前还可处理direct、无条件、static-positive `scf.for` body，但必须额外证明source/destination均为
+  loop-invariant compiler-owned roots、全部alias access/forwarding位于同一loop path、destination只在copy后
+  只读、source snapshot跨iteration不被破坏、replacement支配全部被替换use，且任一Direct-DTE issue在同一
+  path由exact wait完成。dynamic/zero/nested/conditional、iter-arg/yield、loop-local root、跨backedge
+  outstanding event或loop后destination use均fail closed。证明成功时直接把
   destination consumers 改写到 source root 或标准 metadata view，删除 movement 与 dead allocation；
   标准 view 保留 source storage 的 memory-space/encoding 类型，只有 replacement consumer 的完整 IR
   verifier 仍合法时才提交；若被合并 destination 要求更强 alignment，则提升 compiler-owned source
@@ -129,8 +134,10 @@ Pipeline position:
   verifier-legal 标准 view 表达，仍有语义作用的 movement 保持显式；不新增 relation attr、proof
   sidecar、route id 或 shadow allocation plan。
 - Downstream consumer:
-  fresh whole-rank completion normalization/verifier、dependency DAG、ready-order 与 fixed-slot candidate
-  derivation、whole-rank lifetime/SPM fixed-capacity planning、fresh final-IR cost 和 target lowering。
+  fresh whole-rank completion normalization/verifier；canonical/unplaced current Instr先从SSA/effects/ranges
+  原子派生typed worker sibling并fresh重建minimum joins，再在保留worker assignment的siblings上派生
+  fixed-slot；随后进入whole-rank lifetime/SPM fixed-capacity planning、whole-variant DDR/Direct-DTE/resource、
+  fresh final-IR cost和target lowering。
 - User-level driver / named pipeline:
   现有 wafer-compile source-to-bundle production pipeline；局部测试调用同一 transformation library，
   不增加用户开关、operator-specific mode 或手工 pass 协议。
@@ -209,6 +216,11 @@ stable ID、digest、byte serialization或独立verifier。
 
 relation 本身只描述 logical indexes，不包含 physical offset、route、descriptor、engine 或 cost。physical
 offset 必须通过两端 encoding interface 另行计算。
+
+跨rank NoC-resident candidate还需要把rank-local `IndexRelation`与frontend verifier给出的typed global/local
+rank slice组合，证明两个rank的boundary或intermediate view覆盖同一global logical region。组合结果仍是当前
+all-rank transformation epoch内的analysis value，不写入rank-local op；rewrite成功后只保留actual subview、
+peer movement和required boundary movement，whole-variant acceptance从这些IR与原program boundary重证coverage。
 
 ### 4.3 失效规则
 
@@ -332,8 +344,9 @@ metadata view 必须证明没有 real data movement。给定 source view `S`、d
 - read-only sharing 下 source 不会在 destination 的观察期内被改写；
 - writable donation 下 source 在 copy 后没有独立观察或未完成异步访问，destination 的写不会破坏
   snapshot 语义；
-- Direct DTE buffer access 延长到 exact wait，NCC access/completion 由 rewrite 后的 typed worker DAG
-  重新建立；unknown escape、unsupported control flow 或不能闭合的 completion 一律保留 copy。
+- Direct DTE buffer access 延长到 exact wait；storage rewrite后先从fresh current IR重建canonical completion，
+  独立post-Instr worker sibling再以actual worker attrs和fresh minimum joins建立typed worker DAG。已有nonzero
+  assignment不原地重写；unknown escape、unsupported control flow或不能闭合的completion一律保留copy。
 - 只可沿保持base address的`memref.cast`、static collapse/expand、zero-offset subview/reinterpret/view
   provenance回溯compiler-owned root；dynamic或非零offset以及其它无法恢复exact transfer source的view
   不能借此变成full-value storage alias。
@@ -399,6 +412,7 @@ planner 尝试一种 route 的方式是：clone 当前 IR，运行对应 proof �
 | metadata alias/view | standard memref view 或 typed Wafer view；无 movement |
 | mapped DDR→SPM | typed destination-style `wafer.tile.load` |
 | mapped SPM→DDR | typed destination-style `wafer.tile.store` |
+| peer SPM→SPM | target-abstract `wafer.tile.peer_send` / `wafer.tile.peer_recv`及显式两端view；physical binding后置 |
 | local encoding change | `wafer.tile.materialize_layout` 或 route-specific typed movement op |
 | staged movement | explicit temporary、DMA、GS、fill/mask 和 event/completion graph |
 | spill/reload | explicit storage root、store/load 和 completion |
@@ -457,7 +471,34 @@ Verifier 至少检查：
 该 op 不保存 cost、失败原因、替代路线或 descriptor list。若同一 generic op 不能唯一决定真实 engine/effect，
 应拆成语义明确的 typed movement op 或增加必要 typed field。
 
-### 8.3 Immutable Storage
+### 8.3 Peer Transfer
+
+普通boundary、intermediate或output tile的cross-rank movement使用target-abstract peer pair：
+
+```text
+wafer.tile.peer_send %source_spm to logical_peer
+wafer.tile.peer_recv from logical_peer into %destination_spm
+```
+
+op只携带lowering与all-rank matching必须区分的logical peer、fixed bytes和typed communication identity；source/
+destination allocation、view、encoding、valid domain与effect由operands和current IR解释。它不携带owner kind、
+collective algorithm、physical endpoint、route、FSM、pipeline stage、slot或cost。tile-to-instruction conversion
+必须生成真实Direct-DTE issue/token/wait，memory planning后由all-rank acceptance提交physical binding。
+
+peer transfer只有在global logical region、两端physical segment cover、sender completion、receiver visibility与
+lifetime均可证明时合法。相同bytes不证明相同tile；broadcast fanout也不能只保留一个带隐式receiver集合的op。
+未经typed target capability闭合，fanout物化为多个send或receive-then-forward，reduction物化为recv、local
+compute和forward。
+
+当前production materializer已用该pair闭合typed input/parameter owner fanout、可证明的intermediate
+producer-store/consumer-reload zero-DDR cut和replicated output round-2 publication。partial路径保留typed
+tree/ring的原Instr message/local reduce语义，不把collective伪装成peer pair：tree按contribution、
+combiner、publisher和final writer验证，ring按slice-precise reduce-scatter/all-gather provenance验证。
+同一structured block中的新receive preparation必须先于所有既有/新增transport issue，matching wait保留在
+真实consumer/reuse cut；跨block或seed已有DTE的组合由call-expanded whole-program message wait graph重证，
+cycle、message/call occurrence错位和无法证明的control整代fail closed。
+
+### 8.4 Immutable Storage
 
 immutable prepack 只有在 IR/package 已能 typed 表达以下事实时才合法：
 

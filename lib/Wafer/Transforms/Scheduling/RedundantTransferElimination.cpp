@@ -7,8 +7,10 @@
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
@@ -29,16 +31,22 @@ struct AccessRecord {
   mlir::Operation *operation = nullptr;
   int64_t beginEvent = 0;
   int64_t endEvent = 0;
+  mp::PathCondition path = mp::PathCondition::root();
   bool reads = false;
   bool writes = false;
   bool directDTE = false;
+};
+
+struct ForwardingRecord {
+  mlir::Operation *operation = nullptr;
+  mp::ProgramPoint point;
 };
 
 struct AliasSummary {
   llvm::DenseSet<mlir::Value> values;
   llvm::SmallVector<AccessRecord, 8> accesses;
   llvm::SmallVector<mlir::memref::DeallocOp, 2> deallocations;
-  llvm::SmallVector<int64_t, 8> forwardingEvents;
+  llvm::SmallVector<ForwardingRecord, 8> forwardings;
   bool escaped = false;
 };
 
@@ -161,13 +169,13 @@ static mlir::Value resolveStorageRoot(mlir::Value value) {
 static bool
 appendAliasSuccessors(mlir::Value value, mlir::OpOperand &use,
                       llvm::SmallVectorImpl<mlir::Value> &worklist,
-                      llvm::SmallVectorImpl<int64_t> &forwardingEvents,
+                      llvm::SmallVectorImpl<ForwardingRecord> &forwardings,
                       const mp::StructuredTimeline &timeline) {
   mlir::Operation *owner = use.getOwner();
   auto recordForwarding = [&]() {
     std::optional<mp::ProgramPoint> point = timeline.lookup(owner);
     if (point)
-      forwardingEvents.push_back(point->event);
+      forwardings.push_back({owner, *point});
     return static_cast<bool>(point);
   };
 
@@ -210,8 +218,9 @@ appendAliasSuccessors(mlir::Value value, mlir::OpOperand &use,
   return false;
 }
 
-static std::optional<int64_t>
-getDirectDTECompletionEvent(mlir::Operation *operation,
+static std::optional<mp::ProgramPoint>
+getDirectDTECompletionPoint(mlir::Operation *operation,
+                            mp::ProgramPoint issuePoint,
                             const mp::StructuredTimeline &timeline) {
   if (!mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation))
     return std::nullopt;
@@ -224,7 +233,9 @@ getDirectDTECompletionEvent(mlir::Operation *operation,
       !operation->isBeforeInBlock(wait))
     return std::nullopt;
   std::optional<mp::ProgramPoint> point = timeline.lookup(wait);
-  return point ? std::optional<int64_t>(point->event) : std::nullopt;
+  if (!point || point->path != issuePoint.path)
+    return std::nullopt;
+  return point;
 }
 
 static AliasSummary collectAliases(mlir::Value root,
@@ -240,12 +251,12 @@ static AliasSummary collectAliases(mlir::Value root,
 
     for (mlir::OpOperand &use : value.getUses()) {
       mlir::Operation *owner = use.getOwner();
-      if (appendAliasSuccessors(value, use, worklist, summary.forwardingEvents,
+      if (appendAliasSuccessors(value, use, worklist, summary.forwardings,
                                 timeline))
         continue;
 
       std::optional<mp::ProgramPoint> point = timeline.lookup(owner);
-      if (!point || point->path != mp::PathCondition::root()) {
+      if (!point) {
         summary.escaped = true;
         continue;
       }
@@ -256,6 +267,7 @@ static AliasSummary collectAliases(mlir::Value root,
             accessIndices.try_emplace(owner, summary.accesses.size());
         if (inserted)
           summary.accesses.push_back({owner, point->event, point->event,
+                                      point->path,
                                       /*reads=*/false, /*writes=*/false,
                                       /*directDTE=*/false});
         continue;
@@ -286,20 +298,20 @@ static AliasSummary collectAliases(mlir::Value root,
       bool directDTE = mlir::isa<InstrDTESendOp, InstrDTERecvOp>(owner);
       int64_t endEvent = point->event;
       if (directDTE) {
-        std::optional<int64_t> completion =
-            getDirectDTECompletionEvent(owner, timeline);
+        std::optional<mp::ProgramPoint> completion =
+            getDirectDTECompletionPoint(owner, *point, timeline);
         if (!completion) {
           summary.escaped = true;
           continue;
         }
-        endEvent = *completion;
+        endEvent = completion->event;
       }
 
       auto [it, inserted] =
           accessIndices.try_emplace(owner, summary.accesses.size());
       if (inserted) {
-        summary.accesses.push_back(
-            {owner, point->event, endEvent, reads, writes, directDTE});
+        summary.accesses.push_back({owner, point->event, endEvent, point->path,
+                                    reads, writes, directDTE});
       } else {
         AccessRecord &access = summary.accesses[it->second];
         access.reads |= reads;
@@ -328,6 +340,99 @@ static bool preservesDirectDTEIsolation(const AliasSummary &source,
           access->beginEvent < interval->endEvent)
         return false;
     }
+  }
+  return true;
+}
+
+static bool hasOnlyPath(const AliasSummary &summary,
+                        mp::PathCondition requiredPath) {
+  return llvm::all_of(summary.accesses,
+                      [&](const AccessRecord &access) {
+                        return access.path == requiredPath;
+                      }) &&
+         llvm::all_of(summary.forwardings,
+                      [&](const ForwardingRecord &forwarding) {
+                        return forwarding.point.path == requiredPath;
+                      });
+}
+
+static bool hasStaticPositiveTripCount(mlir::scf::ForOp loop) {
+  std::optional<int64_t> lower =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getLowerBound()));
+  std::optional<int64_t> upper =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getUpperBound()));
+  std::optional<int64_t> step =
+      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getStep()));
+  if (!lower || !upper || !step || *step <= 0 || *lower >= *upper)
+    return false;
+  __int128 distance =
+      static_cast<__int128>(*upper) - static_cast<__int128>(*lower);
+  __int128 tripCount = (distance + static_cast<__int128>(*step) - 1) /
+                       static_cast<__int128>(*step);
+  return tripCount > 0;
+}
+
+static bool hasUnsupportedEnclosingControlFlow(mlir::scf::ForOp loop) {
+  for (mlir::Operation *parent = loop->getParentOp(); parent;
+       parent = parent->getParentOp())
+    if (mlir::isa<mlir::scf::IfOp, mlir::scf::ForOp>(parent))
+      return true;
+  return false;
+}
+
+static bool isInSelectedLoop(mlir::Operation *operation,
+                             mlir::scf::ForOp loop) {
+  return operation && operation->getParentOfType<mlir::scf::ForOp>() == loop;
+}
+
+static bool isSupportedLoopPoint(mlir::Operation *operation,
+                                 mp::PathCondition path, mlir::scf::ForOp loop,
+                                 mp::PathCondition loopPath) {
+  return path == loopPath && isInSelectedLoop(operation, loop);
+}
+
+static bool hasSupportedLoopSourceSnapshot(const AliasSummary &source,
+                                           InstrGatherScatterOp gather,
+                                           mlir::scf::ForOp loop,
+                                           mp::PathCondition loopPath,
+                                           int64_t copyEvent) {
+  for (const ForwardingRecord &forwarding : source.forwardings) {
+    if (forwarding.point.path == mp::PathCondition::root())
+      continue;
+    if (!isSupportedLoopPoint(forwarding.operation, forwarding.point.path, loop,
+                              loopPath))
+      return false;
+  }
+  for (const AccessRecord &access : source.accesses) {
+    if (access.operation == gather.getOperation())
+      continue;
+    if (access.path != mp::PathCondition::root() &&
+        !isSupportedLoopPoint(access.operation, access.path, loop, loopPath))
+      return false;
+    if (access.writes &&
+        (access.beginEvent > copyEvent || access.endEvent > copyEvent))
+      return false;
+  }
+  return true;
+}
+
+static bool hasSupportedReadOnlyLoopDestination(const AliasSummary &dest,
+                                                InstrGatherScatterOp gather,
+                                                mlir::scf::ForOp loop,
+                                                mp::PathCondition loopPath,
+                                                int64_t copyEvent) {
+  for (const ForwardingRecord &forwarding : dest.forwardings)
+    if (!isSupportedLoopPoint(forwarding.operation, forwarding.point.path, loop,
+                              loopPath) ||
+        forwarding.point.event <= copyEvent)
+      return false;
+
+  for (const AccessRecord &access : dest.accesses) {
+    if (access.operation == gather.getOperation())
+      continue;
+    if (!isSupportedLoopPoint(access.operation, access.path, loop, loopPath) ||
+        access.beginEvent <= copyEvent || access.writes)
+      return false;
   }
   return true;
 }
@@ -438,10 +543,6 @@ static bool tryElide(InstrGatherScatterOp gather,
   mlir::Value destRoot = resolveStorageRoot(gather.getDest());
   if (!sourceRoot || !destRoot)
     return false;
-  if (transferSource == gather.getDest()) {
-    gather.erase();
-    return true;
-  }
 
   auto destAllocation = destRoot.getDefiningOp<mlir::memref::AllocOp>();
   if (!destAllocation || gather.getDest() != destRoot ||
@@ -457,42 +558,75 @@ static bool tryElide(InstrGatherScatterOp gather,
 
   std::optional<mp::ProgramPoint> copyPoint =
       timeline.lookup(gather.getOperation());
-  if (!copyPoint || copyPoint->path != mp::PathCondition::root())
+  if (!copyPoint)
     return false;
   int64_t copyEvent = copyPoint->event;
 
+  mlir::scf::ForOp loop = gather->getParentOfType<mlir::scf::ForOp>();
+  bool loopBodyCandidate = static_cast<bool>(loop);
+  if (loopBodyCandidate) {
+    if (gather->getParentOp() != loop.getOperation() ||
+        !hasStaticPositiveTripCount(loop) ||
+        hasUnsupportedEnclosingControlFlow(loop) ||
+        !loop.isDefinedOutsideOfLoop(sourceRoot) ||
+        !loop.isDefinedOutsideOfLoop(destRoot))
+      return false;
+    mlir::func::FuncOp function = gather->getParentOfType<mlir::func::FuncOp>();
+    if (!function)
+      return false;
+    mlir::DominanceInfo dominance(function);
+    if (!dominance.dominates(sourceRoot, gather.getOperation()) ||
+        !dominance.dominates(destRoot, gather.getOperation()) ||
+        !dominance.dominates(transferSource, gather.getOperation()))
+      return false;
+  } else if (copyPoint->path != mp::PathCondition::root()) {
+    return false;
+  }
+
+  bool exactSelfCopy = transferSource == gather.getDest();
   AliasSummary sourceAliases = collectAliases(sourceRoot, timeline);
   AliasSummary destAliases = collectAliases(destRoot, timeline);
   if (sourceAliases.escaped || destAliases.escaped ||
-      sourceAliases.values.contains(destRoot) ||
-      destAliases.values.contains(sourceRoot) ||
+      (!exactSelfCopy && (sourceAliases.values.contains(destRoot) ||
+                          destAliases.values.contains(sourceRoot))) ||
       !sourceAliases.deallocations.empty() ||
       !destAliases.deallocations.empty() ||
       !preservesDirectDTEIsolation(sourceAliases, destAliases))
     return false;
 
-  for (int64_t event : destAliases.forwardingEvents)
-    if (event < copyEvent)
-      return false;
-
   bool destinationMayWrite = false;
-  for (const AccessRecord &access : destAliases.accesses) {
-    if (access.operation == gather.getOperation())
-      continue;
-    if (access.beginEvent < copyEvent)
+  if (loopBodyCandidate) {
+    if (!hasSupportedLoopSourceSnapshot(sourceAliases, gather, loop,
+                                        copyPoint->path, copyEvent) ||
+        !hasSupportedReadOnlyLoopDestination(destAliases, gather, loop,
+                                             copyPoint->path, copyEvent))
       return false;
-    destinationMayWrite |= access.writes;
-  }
+  } else {
+    if (!hasOnlyPath(sourceAliases, mp::PathCondition::root()) ||
+        !hasOnlyPath(destAliases, mp::PathCondition::root()))
+      return false;
+    for (const ForwardingRecord &forwarding : destAliases.forwardings)
+      if (forwarding.point.event < copyEvent)
+        return false;
 
-  for (const AccessRecord &access : sourceAliases.accesses) {
-    if (access.operation == gather.getOperation())
-      continue;
-    if (access.writes &&
-        (access.beginEvent > copyEvent || access.endEvent > copyEvent))
-      return false;
-    if (destinationMayWrite &&
-        (access.beginEvent > copyEvent || access.endEvent > copyEvent))
-      return false;
+    for (const AccessRecord &access : destAliases.accesses) {
+      if (access.operation == gather.getOperation())
+        continue;
+      if (access.beginEvent < copyEvent)
+        return false;
+      destinationMayWrite |= access.writes;
+    }
+
+    for (const AccessRecord &access : sourceAliases.accesses) {
+      if (access.operation == gather.getOperation())
+        continue;
+      if (access.writes &&
+          (access.beginEvent > copyEvent || access.endEvent > copyEvent))
+        return false;
+      if (destinationMayWrite &&
+          (access.beginEvent > copyEvent || access.endEvent > copyEvent))
+        return false;
+    }
   }
 
   analysis::IndexRelationResult relation =
@@ -546,6 +680,18 @@ static bool tryElide(InstrGatherScatterOp gather,
         mlir::isa<mlir::memref::DeallocOp>(use.getOwner()))
       continue;
     uses.push_back(&use);
+  }
+  mlir::func::FuncOp function = gather->getParentOfType<mlir::func::FuncOp>();
+  if (!function) {
+    eraseCreatedReplacement(*replacement, transferSource);
+    return false;
+  }
+  mlir::DominanceInfo dominance(function);
+  if (llvm::any_of(uses, [&](mlir::OpOperand *use) {
+        return !dominance.dominates(*replacement, use->getOwner());
+      })) {
+    eraseCreatedReplacement(*replacement, transferSource);
+    return false;
   }
   for (mlir::OpOperand *use : uses)
     use->set(*replacement);

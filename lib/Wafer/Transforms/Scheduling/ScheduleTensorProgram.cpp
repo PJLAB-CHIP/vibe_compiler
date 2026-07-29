@@ -5,6 +5,7 @@
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/Scheduling/RankCandidateFrontier.h"
 #include "Wafer/Transforms/SoftwarePipelining.h"
+#include "Wafer/Transforms/WorkerPlacement.h"
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/SymbolTable.h"
@@ -480,6 +481,9 @@ struct RankArtifactAlternative {
   bool readyReordered = false;
   RankBufferingKind bufferingKind = RankBufferingKind::Single;
   uint32_t bufferingPlanOrdinal = 0;
+  RankWorkerPlacementKind workerPlacementKind =
+      RankWorkerPlacementKind::Unplaced;
+  uint32_t workerPlacementPlanOrdinal = 0;
 };
 
 static RankArtifactKind
@@ -560,20 +564,6 @@ finalizeRankArtifact(mlir::ModuleOp module, const SelectionConfig &config) {
   return std::nullopt;
 }
 
-/// Task candidate evaluation is allowed to place its standalone proof module,
-/// but those offsets are not semantic choices. Remove them after task commit
-/// so every physical alternative starts from an unplaced generation parent.
-static void clearCandidateEvaluationFacts(mlir::ModuleOp module) {
-  module.walk([](mlir::memref::AllocOp allocation) {
-    allocation->removeAttr(kWaferSPMOffsetAttrName);
-    allocation->removeAttr(kWaferDDROffsetAttrName);
-  });
-  module.walk([](mlir::Operation *operation) {
-    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation))
-      operation->removeAttr("binding");
-  });
-}
-
 /// The plan ordinal is derived from the canonical walk over all structural
 /// loops, including unsupported loops. A rank that rejects one loop therefore
 /// cannot shift the identity of a later plan and accidentally correspond with
@@ -582,7 +572,14 @@ static constexpr unsigned kFixedSlotNeighborLimit = 8;
 
 static void appendStaticFixedSlotNeighbors(
     mlir::ModuleOp source, unsigned promotedHandoffs, bool readyReordered,
+    TargetProfileId targetProfile,
     std::vector<RankArtifactAlternative> &alternatives) {
+  llvm::Expected<TargetSchedulingCapabilityRegistry> registry =
+      getTargetSchedulingCapabilityRegistry(targetProfile);
+  if (!registry) {
+    llvm::consumeError(registry.takeError());
+    return;
+  }
   llvm::SmallVector<mlir::scf::ForOp, 8> loops;
   source.walk([&](mlir::scf::ForOp loop) { loops.push_back(loop); });
 
@@ -611,11 +608,84 @@ static void appendStaticFixedSlotNeighbors(
     if (!normalized)
       continue;
 
+    llvm::Expected<TargetSchedulingWindowQuery> query =
+        analyzeTargetSchedulingWindow(
+            *candidate->module, targetProfile,
+            TargetSchedulingMechanism::StaticFixedSlot);
+    if (!query) {
+      llvm::consumeError(query.takeError());
+      continue;
+    }
+    llvm::Expected<TargetSchedulingWindowDecision> decision =
+        registry->query(*query);
+    if (!decision) {
+      llvm::consumeError(decision.takeError());
+      continue;
+    }
+    // Unknown profitability retains this fully legal actual clone for the
+    // bounded qualification frontier. Only legality Supported admits the
+    // transformation; normal-production promotion is decided independently
+    // after complete all-rank late gates.
+    if (decision->legality != TargetSchedulingCapabilityState::Supported)
+      continue;
+
     alternatives.push_back({std::move(candidate->module), promotedHandoffs,
                             readyReordered, RankBufferingKind::StaticFixedSlot,
                             static_cast<uint32_t>(structuralOrdinal) + 1});
     ++appended;
   }
+}
+
+static void appendWorkerPlacementNeighbor(
+    mlir::ModuleOp source, unsigned promotedHandoffs, bool readyReordered,
+    RankBufferingKind bufferingKind, uint32_t bufferingPlanOrdinal,
+    TargetProfileId targetProfile,
+    std::vector<RankArtifactAlternative> &alternatives) {
+  llvm::Expected<TargetSchedulingCapabilityRegistry> registry =
+      getTargetSchedulingCapabilityRegistry(targetProfile);
+  if (!registry) {
+    llvm::consumeError(registry.takeError());
+    return;
+  }
+  std::string failureReason;
+  mlir::FailureOr<NCCWorkerPlacementCandidate> candidate =
+      deriveDisjointNCCWorkerPlacementCandidate(source, &failureReason);
+  if (mlir::failed(candidate) ||
+      llvm::popcount(candidate->participantMask) < 2)
+    return;
+
+  bool hasDirectDTE = false;
+  candidate->module->walk([&](mlir::Operation *operation) {
+    auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(operation);
+    hasDirectDTE |= instruction &&
+                    instruction.getInstructionFamily() == InstrFamily::DTE;
+  });
+  TargetSchedulingMechanism mechanism =
+      bufferingKind == RankBufferingKind::StaticFixedSlot
+          ? TargetSchedulingMechanism::StaticFixedSlot
+          : hasDirectDTE ? TargetSchedulingMechanism::DirectDTEOverlap
+                         : TargetSchedulingMechanism::WorkerPlacement;
+  llvm::Expected<TargetSchedulingWindowQuery> query =
+      analyzeTargetSchedulingWindow(*candidate->module, targetProfile,
+                                    mechanism);
+  if (!query) {
+    llvm::consumeError(query.takeError());
+    return;
+  }
+  llvm::Expected<TargetSchedulingWindowDecision> decision =
+      registry->query(*query);
+  if (!decision) {
+    llvm::consumeError(decision.takeError());
+    return;
+  }
+  if (decision->legality != TargetSchedulingCapabilityState::Supported)
+    return;
+
+  alternatives.push_back(
+      {std::move(candidate->module), promotedHandoffs, readyReordered,
+       bufferingKind, bufferingPlanOrdinal,
+       RankWorkerPlacementKind::DisjointComponents,
+       /*workerPlacementPlanOrdinal=*/1});
 }
 
 static mlir::FailureOr<std::string> getPartitionSignature(
@@ -804,7 +874,7 @@ static mlir::LogicalResult evaluateRankVariantImpl(
     return failRankVariant(evaluation, "static-terminal-budget", os.str());
   }
 
-  clearCandidateEvaluationFacts(*evaluation.module);
+  clearRankCandidatePhysicalFacts(*evaluation.module);
 
   // The committed, unplaced module is the generation parent. Spill and
   // resident alternatives are evaluated on separate clones, so placement and
@@ -862,20 +932,51 @@ static mlir::LogicalResult evaluateRankVariantImpl(
     appendStaticFixedSlotNeighbors(*spillModule,
                                    /*promotedHandoffs=*/0,
                                    /*readyReordered=*/false,
-                                   pipelineAlternatives);
+                                   config.targetProfile, pipelineAlternatives);
   if (spillReadyModule)
     appendStaticFixedSlotNeighbors(*spillReadyModule,
                                    /*promotedHandoffs=*/0,
                                    /*readyReordered=*/true,
-                                   pipelineAlternatives);
+                                   config.targetProfile, pipelineAlternatives);
   if (residentModule)
     appendStaticFixedSlotNeighbors(*residentModule, promotedHandoffs,
                                    /*readyReordered=*/false,
-                                   pipelineAlternatives);
+                                   config.targetProfile, pipelineAlternatives);
   if (residentReadyModule)
     appendStaticFixedSlotNeighbors(*residentReadyModule, promotedHandoffs,
                                    /*readyReordered=*/true,
-                                   pipelineAlternatives);
+                                   config.targetProfile, pipelineAlternatives);
+
+  // Worker placement is an independent derivation dimension. Generate one
+  // canonical dependency-component assignment from every unplaced
+  // storage/order parent and from each fixed-slot actual clone. No partial
+  // mutation can flow back into the parent or another sibling.
+  std::vector<RankArtifactAlternative> workerAlternatives;
+  if (spillNormalized)
+    appendWorkerPlacementNeighbor(
+        *spillModule, /*promotedHandoffs=*/0, /*readyReordered=*/false,
+        RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
+        config.targetProfile, workerAlternatives);
+  if (spillReadyModule)
+    appendWorkerPlacementNeighbor(
+        *spillReadyModule, /*promotedHandoffs=*/0, /*readyReordered=*/true,
+        RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
+        config.targetProfile, workerAlternatives);
+  if (residentModule)
+    appendWorkerPlacementNeighbor(
+        *residentModule, promotedHandoffs, /*readyReordered=*/false,
+        RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
+        config.targetProfile, workerAlternatives);
+  if (residentReadyModule)
+    appendWorkerPlacementNeighbor(
+        *residentReadyModule, promotedHandoffs, /*readyReordered=*/true,
+        RankBufferingKind::Single, /*bufferingPlanOrdinal=*/0,
+        config.targetProfile, workerAlternatives);
+  for (const RankArtifactAlternative &pipeline : pipelineAlternatives)
+    appendWorkerPlacementNeighbor(
+        *pipeline.module, pipeline.promotedHandoffs, pipeline.readyReordered,
+        pipeline.bufferingKind, pipeline.bufferingPlanOrdinal,
+        config.targetProfile, workerAlternatives);
 
   std::optional<std::string> spillFailure =
       spillNormalized
@@ -926,6 +1027,12 @@ static mlir::LogicalResult evaluateRankVariantImpl(
       continue;
     evaluation.alternatives.push_back(std::move(pipeline));
   }
+  for (RankArtifactAlternative &worker : workerAlternatives) {
+    if (std::optional<std::string> failure =
+            finalizeRankArtifact(*worker.module, config))
+      continue;
+    evaluation.alternatives.push_back(std::move(worker));
+  }
 
   evaluation.module = nullptr;
   evaluation.accepted = true;
@@ -970,6 +1077,8 @@ namespace {
 
 using SourceProducer = unsigned (*)(mlir::func::FuncOp);
 
+constexpr unsigned boundedSourceVariantLimit = 16;
+
 static unsigned applySourceProducer(mlir::ModuleOp module,
                                     SourceProducer producer) {
   unsigned changed = 0;
@@ -982,7 +1091,6 @@ static void buildBoundedSourceVariants(
     mlir::ModuleOp source,
     llvm::SmallVectorImpl<mlir::OwningOpRef<mlir::ModuleOp>> &owners,
     llvm::SmallVectorImpl<mlir::ModuleOp> &variants) {
-  constexpr unsigned sourceVariantLimit = 16;
   const SourceProducer producers[] = {
       materializeConsumerLocalTensorRecomputation,
       hoistStaticLoopInvariantOperations,
@@ -995,7 +1103,7 @@ static void buildBoundedSourceVariants(
   variants.push_back(source);
   auto tryAdd = [&](llvm::ArrayRef<unsigned> producerIndices,
                     unsigned minimumAppliedProducers) {
-    if (variants.size() >= sourceVariantLimit)
+    if (variants.size() >= boundedSourceVariantLimit)
       return;
     mlir::OwningOpRef<mlir::ModuleOp> candidate =
         mlir::cast<mlir::ModuleOp>(source->clone());
@@ -1016,10 +1124,12 @@ static void buildBoundedSourceVariants(
   for (unsigned index = 0; index < std::size(producers); ++index)
     tryAdd({index}, /*minimumAppliedProducers=*/1);
   for (unsigned lhs = 0;
-       lhs < std::size(producers) && variants.size() + 1 < sourceVariantLimit;
+       lhs < std::size(producers) &&
+       variants.size() + 1 < boundedSourceVariantLimit;
        ++lhs)
     for (unsigned rhs = lhs + 1;
-         rhs < std::size(producers) && variants.size() + 1 < sourceVariantLimit;
+         rhs < std::size(producers) &&
+         variants.size() + 1 < boundedSourceVariantLimit;
          ++rhs)
       tryAdd({lhs, rhs}, /*minimumAppliedProducers=*/2);
 
@@ -1034,7 +1144,12 @@ static constexpr unsigned kRankSPMMultiplicityLimit = 3;
 static constexpr unsigned kRankSearchRecipeStride =
     kRankSemanticRecipeLimit * kRankSPMMultiplicityLimit;
 
-static llvm::SmallVector<SelectionConfig, kRankSearchRecipeStride>
+struct RankSearchRecipes {
+  llvm::SmallVector<SelectionConfig, kRankSearchRecipeStride> resultDriven;
+  llvm::SmallVector<SelectionConfig, 4> interfaceDriven;
+};
+
+static RankSearchRecipes
 buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
   bool hasAllGather = false;
   bool hasReduceScatter = false;
@@ -1062,6 +1177,7 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
 
   llvm::SmallVector<SelectionConfig, kRankSemanticRecipeLimit>
       semanticRecipes;
+  RankSearchRecipes recipes;
   auto addRecipe = [&](CommunicationAlternative communication,
                        std::optional<TargetImplementationKind> implementation,
                        unsigned taskOrdinal,
@@ -1074,6 +1190,7 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
     recipe.forcedImplementationAlternative = implementation;
     recipe.taskAlternativeOrdinal = taskOrdinal;
     recipe.useDirectMappedBoundaryTransfer = useDirectMappedBoundaryTransfer;
+    recipe.traversalKind = CandidateTileTraversalKind::ResultDriven;
     semanticRecipes.push_back(std::move(recipe));
   };
 
@@ -1132,16 +1249,40 @@ buildRankSearchRecipes(mlir::ModuleOp source, const SelectionConfig &base) {
   // every point with bounded concurrent-residency profiles. A profile only
   // directs tile selection; transformed IR plus the exact SPM planner remain
   // the authority on actual slot lifetimes and placement.
-  llvm::SmallVector<SelectionConfig, kRankSearchRecipeStride> recipes;
   for (const SelectionConfig &recipe : semanticRecipes)
-    recipes.push_back(recipe);
+    recipes.resultDriven.push_back(recipe);
   for (unsigned multiplicity = 2;
        multiplicity <= kRankSPMMultiplicityLimit; ++multiplicity) {
     for (const SelectionConfig &semantic : semanticRecipes) {
       SelectionConfig recipe = semantic;
       recipe.spmWorkingSetMultiplicity = multiplicity;
-      recipes.push_back(std::move(recipe));
+      recipes.resultDriven.push_back(std::move(recipe));
     }
+  }
+
+  // Interface-seeded traversal is a separate bounded rank-recipe dimension.
+  // It is evaluated only after the unchanged result-driven request phase, so
+  // unsupported interface paths cannot spend any result tile-search or rank
+  // evaluation allowance.
+  // Keep one full-shape and one refined actual candidate for each standard
+  // interface direction. Partial reduction's bounded refinement skips the
+  // earlier single-axis siblings so a fitting full candidate can still expose
+  // a multi-iteration work quantum to downstream fixed-slot composition.
+  const std::pair<CandidateTileTraversalKind, unsigned> interfaceSeeds[] = {
+      {CandidateTileTraversalKind::OperandDriven, 0},
+      {CandidateTileTraversalKind::PartialReduction, 0},
+      {CandidateTileTraversalKind::OperandDriven, 1},
+      {CandidateTileTraversalKind::PartialReduction, 3},
+  };
+  for (auto [traversalKind, taskOrdinal] : interfaceSeeds) {
+    SelectionConfig recipe = base;
+    recipe.communicationAlternative = CommunicationAlternative::Ring;
+    recipe.allowAutomaticImplementationAlternatives = false;
+    recipe.forcedImplementationAlternative.reset();
+    recipe.taskAlternativeOrdinal = taskOrdinal;
+    recipe.useDirectMappedBoundaryTransfer = false;
+    recipe.traversalKind = traversalKind;
+    recipes.interfaceDriven.push_back(std::move(recipe));
   }
   return recipes;
 }
@@ -1216,18 +1357,24 @@ buildScheduledRankCandidateFrontier(
   constexpr unsigned conservativePolicyIndex = 3;
   constexpr unsigned optimizedRankEvaluationLimit = 96;
   constexpr unsigned optimizedRankFrontierLimit = 256;
+  constexpr unsigned interfaceRankEvaluationLimit = 4;
+  constexpr unsigned stableInterfaceRecipeBase =
+      boundedSourceVariantLimit * kRankSearchRecipeStride;
 
   llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> sourceOwners;
   llvm::SmallVector<mlir::ModuleOp, 16> generationSources;
   buildBoundedSourceVariants(sourceModule, sourceOwners, generationSources);
-  llvm::SmallVector<SelectionConfig, kRankSearchRecipeStride> recipes =
+  RankSearchRecipes searchRecipes =
       buildRankSearchRecipes(sourceModule, config);
+  llvm::ArrayRef<SelectionConfig> recipes = searchRecipes.resultDriven;
+  llvm::ArrayRef<SelectionConfig> interfaceRecipes =
+      searchRecipes.interfaceDriven;
 
   llvm::SmallVector<std::string, 16> failures;
   std::vector<ScheduledRankCandidate> frontier;
-  frontier.reserve(optimizedRankFrontierLimit + 1);
+  frontier.reserve(kMaximumScheduledRankFrontierSize);
   unsigned reservedBaselineCount = 0;
-  unsigned optimizedFrontierCount = 0;
+  RankFrontierAdmissionState admission;
   auto appendAccepted = [&](RankVariantEvaluation &evaluation,
                             int64_t stableOrdinal,
                             bool reservedPolicy) -> mlir::LogicalResult {
@@ -1236,17 +1383,23 @@ buildScheduledRankCandidateFrontier(
       bool isBaselineSpill =
           alternative.promotedHandoffs == 0 && !alternative.readyReordered &&
           alternative.bufferingKind == RankBufferingKind::Single &&
-          alternative.bufferingPlanOrdinal == 0;
+          alternative.bufferingPlanOrdinal == 0 &&
+          alternative.workerPlacementKind ==
+              RankWorkerPlacementKind::Unplaced &&
+          alternative.workerPlacementPlanOrdinal == 0;
       bool reserved = reservedPolicy && isBaselineSpill;
       hasBaselineSpill |= isBaselineSpill;
       reservedBaselineCount += reserved;
-      if (optimizedFrontierCount >= optimizedRankFrontierLimit && !reserved)
+      if (!reserved &&
+          !admission.tryAdmit(alternative.bufferingKind,
+                              alternative.workerPlacementKind))
         continue;
       frontier.emplace_back(std::move(alternative.module), stableOrdinal,
                             getRankArtifactKind(alternative), reserved,
                             alternative.bufferingKind,
-                            alternative.bufferingPlanOrdinal);
-      optimizedFrontierCount += !reserved;
+                            alternative.bufferingPlanOrdinal,
+                            alternative.workerPlacementKind,
+                            alternative.workerPlacementPlanOrdinal);
     }
     return !reservedPolicy || hasBaselineSpill ? mlir::success()
                                                : mlir::failure();
@@ -1260,7 +1413,7 @@ buildScheduledRankCandidateFrontier(
       policies[conservativePolicyIndex], reservedSeenPartitions,
       /*enableTransferElision=*/false);
   if (reserved.noScopes) {
-    clearCandidateEvaluationFacts(*reserved.module);
+    clearRankCandidatePhysicalFacts(*reserved.module);
     frontier.emplace_back(std::move(reserved.module),
                           /*stableOrdinal=*/conservativePolicyIndex,
                           RankArtifactKind::Spill,
@@ -1345,7 +1498,7 @@ buildScheduledRankCandidateFrontier(
   std::vector<llvm::StringSet<>> seenPartitions(generationSources.size() *
                                                 recipes.size());
   for (const RankEvaluationRequest &request : requests) {
-    if (optimizedFrontierCount >= optimizedRankFrontierLimit)
+    if (admission.allBandsFull())
       break;
     llvm::StringSet<> &seen =
         seenPartitions[request.sourceIndex * recipes.size() +
@@ -1357,6 +1510,59 @@ buildScheduledRankCandidateFrontier(
       continue;
     int64_t stableOrdinal = static_cast<int64_t>(
         (request.sourceIndex * kRankSearchRecipeStride +
+         request.recipeIndex) *
+            std::size(policies) +
+        request.policyIndex);
+    if (evaluation.accepted) {
+      (void)appendAccepted(evaluation, stableOrdinal,
+                           /*reservedPolicy=*/false);
+      continue;
+    }
+    if (failures.size() < 16) {
+      std::string failure;
+      llvm::raw_string_ostream os(failure);
+      os << evaluation.label << ": "
+         << (evaluation.failureReason.empty() ? "failed"
+                                              : evaluation.failureReason);
+      failures.push_back(std::move(failure));
+    }
+  }
+
+  // Interface traversal receives its own small request phase after every
+  // result-driven request admitted by the original 64-entry budget. Each
+  // direction retains one full-shape and one refined actual candidate on the
+  // baseline source without changing the result phase's canonical order.
+  llvm::SmallVector<RankEvaluationRequest, interfaceRankEvaluationLimit>
+      interfaceRequests;
+  auto addInterfaceRequest = [&](unsigned sourceIndex, unsigned recipeIndex,
+                                 unsigned policyIndex) {
+    RankEvaluationRequest request{sourceIndex, recipeIndex, policyIndex};
+    if (interfaceRequests.size() >= interfaceRankEvaluationLimit ||
+        llvm::is_contained(interfaceRequests, request))
+      return;
+    interfaceRequests.push_back(request);
+  };
+  for (unsigned recipeIndex = 0; recipeIndex < interfaceRecipes.size();
+       ++recipeIndex)
+    addInterfaceRequest(/*sourceIndex=*/0, recipeIndex, /*policyIndex=*/0);
+
+  std::vector<llvm::StringSet<>> interfaceSeenPartitions(
+      generationSources.size() * interfaceRecipes.size());
+  for (const RankEvaluationRequest &request : interfaceRequests) {
+    if (admission.allBandsFull())
+      break;
+    llvm::StringSet<> &seen =
+        interfaceSeenPartitions[request.sourceIndex * interfaceRecipes.size() +
+                                request.recipeIndex];
+    RankVariantEvaluation evaluation = evaluateRankVariant(
+        generationSources[request.sourceIndex],
+        interfaceRecipes[request.recipeIndex], policies[request.policyIndex],
+        seen);
+    if (evaluation.noScopes || evaluation.duplicate)
+      continue;
+    int64_t stableOrdinal = static_cast<int64_t>(
+        (stableInterfaceRecipeBase +
+         request.sourceIndex * interfaceRecipes.size() +
          request.recipeIndex) *
             std::size(policies) +
         request.policyIndex);

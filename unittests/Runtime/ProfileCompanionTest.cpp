@@ -5,6 +5,7 @@
 #include "Wafer/Target/TargetProfile.h"
 
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
@@ -170,14 +171,16 @@ protected:
       llvm::StringRef package, uint64_t outputBytes, uint64_t recordBytes,
       llvm::StringRef profilerName = "tx81_profiler_record",
       llvm::StringRef resourceNamePrefix = "",
-      wafer::KernelLaunchForm launchForm = wafer::KernelLaunchForm::PerRank) {
+      wafer::KernelLaunchForm launchForm = wafer::KernelLaunchForm::PerRank,
+      wafer::TargetProfileId targetProfile =
+          wafer::TargetProfileId::waferTx81SingleCardKernelV3()) {
     using namespace wafer::runtime;
     llvm::SmallString<256> modules(package);
     llvm::sys::path::append(modules, "modules");
     ASSERT_FALSE(llvm::sys::fs::create_directories(modules));
 
-    const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
-        wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+    const wafer::TargetProfileRecord &target =
+        wafer::getTargetProfileRecord(targetProfile);
     PackageManifest manifest(
         target.id, target.targetIdentity, target.kernelRuntimeABI,
         launchForm == wafer::KernelLaunchForm::Grid ? makeGridLaunch()
@@ -265,7 +268,11 @@ protected:
   void writeCompanion(bool badSiteSymbol = false,
                       llvm::StringRef finalDigestOverride = {},
                       llvm::StringRef profilerName = "tx81_profiler_record",
-                      llvm::StringRef resourceNamePrefix = "") {
+                      llvm::StringRef resourceNamePrefix = "",
+                      wafer::TargetProfileId targetProfile =
+                          wafer::TargetProfileId::
+                              waferTx81SingleCardKernelV3(),
+                      bool includeExplicitDTEIssue = true) {
     std::string digest = finalDigestOverride.empty()
                              ? manifestDigest(production)
                              : finalDigestOverride.str();
@@ -287,7 +294,9 @@ protected:
       ASSERT_FALSE(llvm::sys::fs::create_directories(capturePath));
       ASSERT_NO_FATAL_FAILURE(writePackage(capturePath, /*outputBytes=*/4,
                                            recordBytes, profilerName,
-                                           resourceNamePrefix));
+                                           resourceNamePrefix,
+                                           wafer::KernelLaunchForm::PerRank,
+                                           targetProfile));
       captures.push_back(
           {name, recordBytes, reference, manifestDigest(capturePath)});
     }
@@ -354,18 +363,30 @@ protected:
                       llvm::StringRef kind;
                       std::optional<llvm::StringRef> engine;
                     };
-                    const std::array<SiteFixture, 4> sites = {{
+                    std::vector<SiteFixture> sites = {
                         {wafer::TargetCallBuiltin::RDMA, "ncc-command", "RDMA"},
                         {wafer::TargetCallBuiltin::LocalFence, "ncc-completion",
                          std::nullopt},
                         {wafer::TargetCallBuiltin::DirectDTEBegin,
                          "direct-dte-control", std::nullopt},
+                    };
+                    if (includeExplicitDTEIssue)
+                      sites.push_back(
+                          {wafer::TargetCallBuiltin::DirectDTESendIssue,
+                           "direct-dte-issue", "DIRECT_DTE"});
+                    sites.push_back(
                         {wafer::TargetCallBuiltin::DirectDTEWait,
-                         "direct-dte-wait", "DIRECT_DTE"},
-                    }};
+                         "direct-dte-wait", "DIRECT_DTE"});
                     for (auto [siteId, site] : llvm::enumerate(sites)) {
+                      const wafer::TargetProfileId descriptorProfile =
+                          site.builtin ==
+                                  wafer::TargetCallBuiltin::DirectDTESendIssue
+                              ? wafer::TargetProfileId::
+                                    waferTx81SingleCardKernelV3()
+                              : targetProfile;
                       const wafer::TargetCallDescriptor &descriptor =
-                          wafer::getTargetCallDescriptor(site.builtin);
+                          wafer::getTargetCallDescriptor(site.builtin,
+                                                         descriptorProfile);
                       const auto *begin = descriptors.data();
                       const uint64_t ordinal =
                           static_cast<uint64_t>(&descriptor - begin);
@@ -442,6 +463,24 @@ protected:
     ASSERT_NO_FATAL_FAILURE(writeActivation());
   }
 
+  void rewriteForTargetProfile(wafer::TargetProfileId targetProfile,
+                               bool includeExplicitDTEIssue) {
+    ASSERT_FALSE(llvm::sys::fs::remove_directories(production));
+    ASSERT_FALSE(llvm::sys::fs::remove_directories(companion));
+    ASSERT_FALSE(llvm::sys::fs::create_directories(production));
+    ASSERT_FALSE(llvm::sys::fs::create_directories(companion));
+    ASSERT_NO_FATAL_FAILURE(writePackage(production, /*outputBytes=*/4,
+                                         /*recordBytes=*/0,
+                                         /*profilerName=*/"tx81_profiler_record",
+                                         /*resourceNamePrefix=*/"",
+                                         wafer::KernelLaunchForm::PerRank,
+                                         targetProfile));
+    ASSERT_NO_FATAL_FAILURE(writeCompanion(
+        /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
+        /*profilerName=*/"tx81_profiler_record",
+        /*resourceNamePrefix=*/"", targetProfile, includeExplicitDTEIssue));
+  }
+
   llvm::SmallString<256> root;
   llvm::SmallString<256> production;
   llvm::SmallString<256> companion;
@@ -458,7 +497,7 @@ TEST_F(ProfileCompanionTest, LoadsExactBoundCompanionAndSixteenRankSiteMap) {
   EXPECT_EQ(loaded->getVariants().size(), 1u);
   EXPECT_EQ(loaded->getCaptures().size(), 2u);
   EXPECT_EQ(loaded->getSiteMaps().size(), 1u);
-  EXPECT_EQ(loaded->getSiteCount(), 64u);
+  EXPECT_EQ(loaded->getSiteCount(), 80u);
   const auto *final =
       loaded->findVariant(wafer::runtime::ProfileVariantRole::FinalArtifact);
   ASSERT_NE(final, nullptr);
@@ -496,7 +535,7 @@ TEST_F(ProfileCompanionTest, LoadsExactBoundCompanionAndSixteenRankSiteMap) {
   const auto *siteMap = loaded->findSiteMap("final-artifact");
   ASSERT_NE(siteMap, nullptr);
   ASSERT_EQ(siteMap->ranks.size(), 16u);
-  ASSERT_EQ(siteMap->ranks.front().sites.size(), 4u);
+  ASSERT_EQ(siteMap->ranks.front().sites.size(), 5u);
   EXPECT_EQ(siteMap->ranks.front().sites[0].siteKind,
             wafer::runtime::ProfileTargetSiteKind::NCCCommand);
   EXPECT_EQ(siteMap->ranks.front().sites[0].engine,
@@ -508,10 +547,60 @@ TEST_F(ProfileCompanionTest, LoadsExactBoundCompanionAndSixteenRankSiteMap) {
             wafer::runtime::ProfileTargetSiteKind::DirectDTEControl);
   EXPECT_FALSE(siteMap->ranks.front().sites[2].engine);
   EXPECT_EQ(siteMap->ranks.front().sites[3].siteKind,
-            wafer::runtime::ProfileTargetSiteKind::DirectDTEWait);
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEIssue);
   EXPECT_EQ(siteMap->ranks.front().sites[3].engine,
             wafer::runtime::ProfileTSMEngine::DirectDTE);
+  EXPECT_EQ(siteMap->ranks.front().sites[4].siteKind,
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEWait);
+  EXPECT_EQ(siteMap->ranks.front().sites[4].engine,
+            wafer::runtime::ProfileTSMEngine::DirectDTE);
   EXPECT_FALSE(siteMap->ranks.front().sites.front().correlationKey.empty());
+}
+
+TEST_F(ProfileCompanionTest, LoadsV1WaitOnlyDirectDTESiteMap) {
+  ASSERT_NO_FATAL_FAILURE(rewriteForTargetProfile(
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      /*includeExplicitDTEIssue=*/false));
+  llvm::Expected<wafer::runtime::VerifiedProfileCompanion> loaded =
+      wafer::runtime::loadVerifiedProfileCompanion(companion, production);
+  ASSERT_TRUE(static_cast<bool>(loaded)) << llvm::toString(loaded.takeError());
+  const auto *siteMap = loaded->findSiteMap("final-artifact");
+  ASSERT_NE(siteMap, nullptr);
+  ASSERT_EQ(siteMap->ranks.front().sites.size(), 4u);
+  EXPECT_TRUE(llvm::none_of(
+      siteMap->ranks.front().sites,
+      [](const wafer::runtime::ProfileTargetCallSite &site) {
+        return site.siteKind ==
+               wafer::runtime::ProfileTargetSiteKind::DirectDTEIssue;
+      }));
+  EXPECT_EQ(siteMap->ranks.front().sites.back().siteKind,
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEWait);
+}
+
+TEST_F(ProfileCompanionTest, LoadsV2WaitOnlyDirectDTESiteMap) {
+  ASSERT_NO_FATAL_FAILURE(rewriteForTargetProfile(
+      wafer::TargetProfileId::waferTx81SingleCardKernelV2(),
+      /*includeExplicitDTEIssue=*/false));
+  llvm::Expected<wafer::runtime::VerifiedProfileCompanion> loaded =
+      wafer::runtime::loadVerifiedProfileCompanion(companion, production);
+  ASSERT_TRUE(static_cast<bool>(loaded)) << llvm::toString(loaded.takeError());
+  const auto *siteMap = loaded->findSiteMap("final-artifact");
+  ASSERT_NE(siteMap, nullptr);
+  ASSERT_EQ(siteMap->ranks.front().sites.size(), 4u);
+  EXPECT_EQ(siteMap->ranks.front().sites.back().siteKind,
+            wafer::runtime::ProfileTargetSiteKind::DirectDTEWait);
+}
+
+TEST_F(ProfileCompanionTest, RejectsV1SiteMapReferencingV3SendIssue) {
+  ASSERT_NO_FATAL_FAILURE(rewriteForTargetProfile(
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      /*includeExplicitDTEIssue=*/true));
+  llvm::Expected<wafer::runtime::VerifiedProfileCompanion> loaded =
+      wafer::runtime::loadVerifiedProfileCompanion(companion, production);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(llvm::toString(loaded.takeError())
+                .find("unavailable for the package target profile"),
+            std::string::npos);
 }
 
 TEST_F(ProfileCompanionTest, MissingSiblingIsNotAnError) {
@@ -588,7 +677,7 @@ TEST_F(ProfileCompanionTest, RejectsLegacyRecordABIWithCurrentRecordBytes) {
             std::string::npos);
 }
 
-TEST_F(ProfileCompanionTest, RejectsVersionFourActivation) {
+TEST_F(ProfileCompanionTest, RejectsVersionFiveActivation) {
   llvm::SmallString<256> activationPath(companion);
   llvm::sys::path::append(activationPath,
                           wafer::runtime::kProfileCompanionActivationFileName);
@@ -596,10 +685,10 @@ TEST_F(ProfileCompanionTest, RejectsVersionFourActivation) {
       llvm::MemoryBuffer::getFile(activationPath);
   ASSERT_TRUE(static_cast<bool>(existing));
   std::string corrupted = (*existing)->getBuffer().str();
-  const std::string current = "\"schema_version\": 5";
+  const std::string current = "\"schema_version\": 6";
   size_t version = corrupted.find(current);
   ASSERT_NE(version, std::string::npos);
-  corrupted.replace(version, current.size(), "\"schema_version\": 4");
+  corrupted.replace(version, current.size(), "\"schema_version\": 5");
   ASSERT_NO_FATAL_FAILURE(writeText(activationPath, corrupted));
 
   auto loaded =

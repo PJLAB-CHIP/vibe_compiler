@@ -87,8 +87,8 @@ def _test_final_artifact(module: object) -> None:
     first = module.analyze_evidence(evidence)
     second = module.analyze_evidence(copy.deepcopy(evidence))
     assert first == second
-    assert first["schema_version"] == 7
-    assert first["record_abi"] == "wafer-tx81-profiler-record-v3"
+    assert first["schema_version"] == 8
+    assert first["record_abi"] == "wafer-tx81-profiler-record-v4"
 
     final = first["final_artifact"]
     duration = final["duration"]
@@ -202,8 +202,10 @@ def _test_final_artifact(module: object) -> None:
     assert final["output"]["correctness_status"] == "expected-exact"
     assert len(final["tiles"]) == 16
     assert len(final["timeline_events"]) > 0
-    assert len(final["sites"]) == 16 * 9
-    assert final["communication"]["direct_dte_event_count"] == 16
+    assert len(final["sites"]) == 16 * 10
+    assert final["communication"]["direct_dte_event_count"] == 24
+    assert final["communication"]["issue_event_count"] == 8
+    assert final["communication"]["wait_event_count"] == 16
     assert not final["communication"]["cross_tile_order_available"]
     assert {
         (tile["x"], tile["y"]) for tile in final["tiles"]
@@ -324,6 +326,7 @@ def _test_final_artifact(module: object) -> None:
         if event["tile"] == 0 and event["kind"].startswith("direct-dte-")
     ]
     assert {event["kind"] for event in dte_phase_events} == {
+        "direct-dte-issue",
         "direct-dte-wait",
         "direct-dte-peer-ready-wait",
         "direct-dte-setup-issue",
@@ -339,7 +342,7 @@ def _test_final_artifact(module: object) -> None:
         event["direct_dte_raw_pmu_activity"] is None
         and event["counter_status"] == "Unavailable"
         for event in dte_phase_events
-        if event["kind"] != "direct-dte-wait"
+        if event["kind"] not in ("direct-dte-issue", "direct-dte-wait")
     )
     assert all(
         site["observation_status"]
@@ -437,7 +440,7 @@ def _test_final_artifact(module: object) -> None:
         "等待 DTE 传输完成",
         "收尾",
         "Operation CPU cycles",
-        "仅“整次通信等待”行提供",
+        "仅 issue / wait 总计行提供",
         "Diagnostics / Raw",
         "Resource tree",
         "NCC engine active time · Trace PMU",
@@ -722,6 +725,11 @@ def _test_dom_contract(report: str) -> None:
 
 def _test_direct_dte(module: object) -> None:
     evidence = make_evidence()
+    issue_event = next(
+        row
+        for row in evidence["experiment"]["trace"]["tiles"][0]["events"]
+        if row["kind"] == "direct-dte-issue"
+    )
     event = next(
         row
         for row in evidence["experiment"]["trace"]["tiles"][0]["events"]
@@ -736,14 +744,18 @@ def _test_direct_dte(module: object) -> None:
     assert direct["wait_window_cpu_cycles"] == (
         event["operation_end_cycle"] - event["operation_begin_cycle"]
     )
+    assert direct["issue_window_cpu_cycles"] == (
+        issue_event["operation_end_cycle"] - issue_event["operation_begin_cycle"]
+    )
     assert direct["measurement_kind"] == (
-        "direct-dte-wait-completion-windows"
+        "direct-dte-issue-and-wait-windows"
     )
     assert direct["raw_pmu_activity"] is None
     assert not direct["raw_pmu_activity_valid"]
     assert direct["wait_window_status"] == "Measured"
     assert direct["raw_pmu_activity_status"] == "Unavailable"
-    assert direct["activity_window_count"] == 1
+    assert direct["activity_window_count"] == 2
+    assert direct["issue_window_count"] == 1
     assert direct["wait_window_count"] == 1
     timeline = analysis["final_artifact"]["timeline_events"]
     assert any(
@@ -760,6 +772,14 @@ def _test_direct_dte(module: object) -> None:
     raw_event["counter_delta"] = 17
     raw_event["dte_counter_valid"] = True
     raw_event["positive_delta"] = True
+    raw_issue_event = next(
+        row
+        for row in raw_available["experiment"]["trace"]["tiles"][0]["events"]
+        if row["kind"] == "direct-dte-issue"
+    )
+    raw_issue_event["counter_delta"] = 5
+    raw_issue_event["dte_counter_valid"] = True
+    raw_issue_event["positive_delta"] = True
     raw_analysis = module.analyze_evidence(raw_available)
     raw_direct = next(
         row
@@ -771,7 +791,7 @@ def _test_direct_dte(module: object) -> None:
         raw_event["operation_end_cycle"]
         - raw_event["operation_begin_cycle"]
     )
-    assert raw_direct["raw_pmu_activity"] == 17
+    assert raw_direct["raw_pmu_activity"] == 22
     assert raw_direct["raw_pmu_activity_valid"]
     assert raw_direct["raw_pmu_activity_status"] == "Sampled"
     raw_timeline = raw_analysis["final_artifact"]["timeline_events"]
@@ -1422,7 +1442,8 @@ def _test_rejections(module: object) -> None:
     assert not dte_row["wait_windows_valid"]
     assert dte_row["wait_window_cpu_cycles"] is None
     assert dte_row["wait_window_count"] == 1
-    assert dte_row["activity_window_count"] == 0
+    assert dte_row["issue_windows_valid"]
+    assert dte_row["activity_window_count"] == 1
 
 
 def _test_publication(repo: pathlib.Path, module: object) -> None:
@@ -1449,7 +1470,7 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
         analysis = json.loads(
             analysis_path.read_text(encoding="utf-8")
         )
-        assert analysis["schema_version"] == 7
+        assert analysis["schema_version"] == 8
         assert analysis["final_artifact"]["duration"]["qualified"]
 
         command = [
@@ -1468,12 +1489,12 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
             encoding="utf-8"
         )
     )
-    assert schema["properties"]["schema_version"]["const"] == 8
+    assert schema["properties"]["schema_version"]["const"] == 9
     assert (
         schema["$defs"]["sharedIdentity"]["properties"][
             "profile_companion_schema_version"
         ]["const"]
-        == 5
+        == 6
     )
     assert "experiment" in schema["required"]
     assert "static_cost_model" in schema["required"]
@@ -1515,7 +1536,7 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
     assert set(static_metric["required"]) == {"knowledge", "value", "reason"}
     assert (
         schema["$defs"]["sharedIdentity"]["properties"]["record_abi"]["const"]
-        == "wafer-tx81-profiler-record-v3"
+        == "wafer-tx81-profiler-record-v4"
     )
     assert (
         schema["$defs"]["sharedIdentity"]["properties"][

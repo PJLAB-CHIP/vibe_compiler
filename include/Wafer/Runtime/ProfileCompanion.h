@@ -25,12 +25,12 @@ struct TargetCallDescriptor;
 
 namespace runtime {
 
-inline constexpr uint32_t kProfileCompanionSchemaVersion = 5;
+inline constexpr uint32_t kProfileCompanionSchemaVersion = 6;
 inline constexpr int64_t kProfileCompanionRankCount = 16;
 inline constexpr llvm::StringLiteral kProfileSiteCorrelationBasis =
     "typed-target-call-ordinal-ssa-identity-occurrence-v1";
 inline constexpr llvm::StringLiteral kProfileRecordABI =
-    WAFER_TX81_PROFILER_RECORD_ABI_V3;
+    WAFER_TX81_PROFILER_RECORD_ABI_V4;
 inline constexpr llvm::StringLiteral kProfileStaticCostModelName =
     "tx81-static-peak-lower-bound-v1";
 inline constexpr llvm::StringLiteral kProfileStaticCostModelScope =
@@ -67,6 +67,7 @@ enum class ProfileTargetSiteKind {
   NCCCommand,
   NCCCompletion,
   DirectDTEControl,
+  DirectDTEIssue,
   DirectDTEWait,
 };
 
@@ -139,8 +140,9 @@ struct ProfileTargetCallSite {
   uint64_t targetCallOrdinal = 0;
   std::string targetCallSymbol;
   ProfileTargetSiteKind siteKind = ProfileTargetSiteKind::NCCCommand;
-  /// Present only for NCCCommand (one of the five NCC engines) and
-  /// DirectDTEWait (DirectDTE). Completion/control sites have no engine.
+  /// Present only for NCCCommand (one of the five NCC engines) and Direct DTE
+  /// issue/wait observation sites (DirectDTE). Completion/control sites have
+  /// no engine.
   std::optional<ProfileTSMEngine> engine;
   std::string correlationKey;
   std::optional<uint64_t> functionOrdinal;

@@ -2,9 +2,12 @@
 
 #include "Wafer/Transforms/PhysicalDataflow.h"
 
+#include "Wafer/IR/WaferDialect.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -50,8 +53,8 @@ static bool isModularIntegerBinary(mlir::Operation *operation) {
   if (!operation || hasNoOverflowPromise(operation) ||
       operation->getNumOperands() != 2 || operation->getNumResults() != 1)
     return false;
-  auto integer = mlir::dyn_cast<mlir::IntegerType>(
-      operation->getResult(0).getType());
+  auto integer =
+      mlir::dyn_cast<mlir::IntegerType>(operation->getResult(0).getType());
   return integer && integer.getWidth() > 1 &&
          operation->getOperand(0).getType() == integer &&
          operation->getOperand(1).getType() == integer;
@@ -78,8 +81,8 @@ struct NumericBinary {
   bool hasOneUse() const { return operation->hasOneUse(); }
 };
 
-static std::optional<NumericBinary>
-matchNumericBinary(mlir::Value value, NumericBinaryKind kind) {
+static std::optional<NumericBinary> matchNumericBinary(mlir::Value value,
+                                                       NumericBinaryKind kind) {
   auto matchInteger = [&](auto operation) -> std::optional<NumericBinary> {
     if (!operation || !isModularIntegerBinary(operation))
       return std::nullopt;
@@ -100,26 +103,22 @@ matchNumericBinary(mlir::Value value, NumericBinaryKind kind) {
 
   switch (kind) {
   case NumericBinaryKind::Add:
-    if (auto integer = matchInteger(
-            value.getDefiningOp<mlir::arith::AddIOp>()))
+    if (auto integer = matchInteger(value.getDefiningOp<mlir::arith::AddIOp>()))
       return integer;
     return matchFloating(value.getDefiningOp<mlir::arith::AddFOp>());
   case NumericBinaryKind::Subtract:
-    if (auto integer = matchInteger(
-            value.getDefiningOp<mlir::arith::SubIOp>()))
+    if (auto integer = matchInteger(value.getDefiningOp<mlir::arith::SubIOp>()))
       return integer;
     return matchFloating(value.getDefiningOp<mlir::arith::SubFOp>());
   case NumericBinaryKind::Multiply:
-    if (auto integer = matchInteger(
-            value.getDefiningOp<mlir::arith::MulIOp>()))
+    if (auto integer = matchInteger(value.getDefiningOp<mlir::arith::MulIOp>()))
       return integer;
     return matchFloating(value.getDefiningOp<mlir::arith::MulFOp>());
   }
   llvm_unreachable("unknown numeric binary kind");
 }
 
-static bool hasUniformNumericDomain(
-    llvm::ArrayRef<NumericBinary> operations) {
+static bool hasUniformNumericDomain(llvm::ArrayRef<NumericBinary> operations) {
   if (operations.empty())
     return false;
   NumericDomain domain = operations.front().domain;
@@ -128,10 +127,11 @@ static bool hasUniformNumericDomain(
   });
 }
 
-static mlir::Value
-createNumericBinary(mlir::OpBuilder &builder, mlir::Location loc,
-                    NumericBinaryKind kind, NumericDomain domain,
-                    mlir::Value lhs, mlir::Value rhs) {
+static mlir::Value createNumericBinary(mlir::OpBuilder &builder,
+                                       mlir::Location loc,
+                                       NumericBinaryKind kind,
+                                       NumericDomain domain, mlir::Value lhs,
+                                       mlir::Value rhs) {
   if (domain == NumericDomain::ModularInteger) {
     switch (kind) {
     case NumericBinaryKind::Add:
@@ -196,8 +196,18 @@ static void eraseIfDead(mlir::Operation *operation) {
 
 } // namespace
 
-unsigned
-materializeConsumerLocalTensorRecomputation(mlir::func::FuncOp task) {
+void clearRankCandidatePhysicalFacts(mlir::ModuleOp module) {
+  module.walk([](mlir::memref::AllocOp allocation) {
+    allocation->removeAttr(kWaferSPMOffsetAttrName);
+    allocation->removeAttr(kWaferDDROffsetAttrName);
+  });
+  module.walk([](mlir::Operation *operation) {
+    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation))
+      operation->removeAttr("binding");
+  });
+}
+
+unsigned materializeConsumerLocalTensorRecomputation(mlir::func::FuncOp task) {
   llvm::SmallVector<mlir::linalg::LinalgOp, 8> producers;
   task.walk([&](mlir::linalg::LinalgOp producer) {
     if (isPureTensorProducer(producer))
@@ -218,10 +228,10 @@ materializeConsumerLocalTensorRecomputation(mlir::func::FuncOp task) {
     if (hasIncompatibleUse || compatibleUses.size() < 2)
       continue;
 
-    llvm::stable_sort(compatibleUses,
-                      [](mlir::OpOperand *lhs, mlir::OpOperand *rhs) {
-                        return lhs->getOwner()->isBeforeInBlock(rhs->getOwner());
-                      });
+    llvm::stable_sort(
+        compatibleUses, [](mlir::OpOperand *lhs, mlir::OpOperand *rhs) {
+          return lhs->getOwner()->isBeforeInBlock(rhs->getOwner());
+        });
     // The original producer supplies the first consumer. Every later
     // consumer receives a real producer clone placed at that use site.
     for (mlir::OpOperand *use : llvm::drop_begin(compatibleUses)) {
@@ -303,81 +313,76 @@ unsigned balanceElementwiseReductionTrees(mlir::func::FuncOp task) {
 }
 
 unsigned contractDistributiveExpressions(mlir::func::FuncOp task) {
-  return rewriteNumericYields(
-      task, [](mlir::linalg::YieldOp yield, mlir::Value yielded) {
-        std::optional<NumericBinary> difference =
-            matchNumericBinary(yielded, NumericBinaryKind::Subtract);
-        std::optional<NumericBinary> lhs =
-            difference
-                ? matchNumericBinary(difference->lhs,
-                                     NumericBinaryKind::Multiply)
-                : std::nullopt;
-        std::optional<NumericBinary> rhs =
-            difference
-                ? matchNumericBinary(difference->rhs,
-                                     NumericBinaryKind::Multiply)
-                : std::nullopt;
-        if (!difference || !lhs || !rhs || !difference->hasOneUse() ||
-            !lhs->hasOneUse() || !rhs->hasOneUse() ||
-            !hasUniformNumericDomain({*difference, *lhs, *rhs}))
-          return false;
+  return rewriteNumericYields(task, [](mlir::linalg::YieldOp yield,
+                                       mlir::Value yielded) {
+    std::optional<NumericBinary> difference =
+        matchNumericBinary(yielded, NumericBinaryKind::Subtract);
+    std::optional<NumericBinary> lhs =
+        difference
+            ? matchNumericBinary(difference->lhs, NumericBinaryKind::Multiply)
+            : std::nullopt;
+    std::optional<NumericBinary> rhs =
+        difference
+            ? matchNumericBinary(difference->rhs, NumericBinaryKind::Multiply)
+            : std::nullopt;
+    if (!difference || !lhs || !rhs || !difference->hasOneUse() ||
+        !lhs->hasOneUse() || !rhs->hasOneUse() ||
+        !hasUniformNumericDomain({*difference, *lhs, *rhs}))
+      return false;
 
-        std::optional<CommonMultiplicand> common =
-            findCommonMultiplicand(*lhs, *rhs);
-        if (!common)
-          return false;
+    std::optional<CommonMultiplicand> common =
+        findCommonMultiplicand(*lhs, *rhs);
+    if (!common)
+      return false;
 
-        mlir::OpBuilder builder(difference->operation);
-        mlir::Value terms = createNumericBinary(
-            builder, difference->operation->getLoc(),
-            NumericBinaryKind::Subtract, difference->domain, common->lhsOther,
-            common->rhsOther);
-        mlir::Value contracted = createNumericBinary(
-            builder, difference->operation->getLoc(),
-            NumericBinaryKind::Multiply, difference->domain, common->factor,
-            terms);
-        yield->setOperand(0, contracted);
-        eraseIfDead(difference->operation);
-        eraseIfDead(lhs->operation);
-        eraseIfDead(rhs->operation);
-        return true;
-      });
+    mlir::OpBuilder builder(difference->operation);
+    mlir::Value terms = createNumericBinary(
+        builder, difference->operation->getLoc(), NumericBinaryKind::Subtract,
+        difference->domain, common->lhsOther, common->rhsOther);
+    mlir::Value contracted = createNumericBinary(
+        builder, difference->operation->getLoc(), NumericBinaryKind::Multiply,
+        difference->domain, common->factor, terms);
+    yield->setOperand(0, contracted);
+    eraseIfDead(difference->operation);
+    eraseIfDead(lhs->operation);
+    eraseIfDead(rhs->operation);
+    return true;
+  });
 }
 
 unsigned factorElementwiseExpressions(mlir::func::FuncOp task) {
-  return rewriteNumericYields(
-      task, [](mlir::linalg::YieldOp yield, mlir::Value yielded) {
-        std::optional<NumericBinary> sum =
-            matchNumericBinary(yielded, NumericBinaryKind::Add);
-        std::optional<NumericBinary> lhs =
-            sum ? matchNumericBinary(sum->lhs, NumericBinaryKind::Multiply)
-                : std::nullopt;
-        std::optional<NumericBinary> rhs =
-            sum ? matchNumericBinary(sum->rhs, NumericBinaryKind::Multiply)
-                : std::nullopt;
-        if (!sum || !lhs || !rhs || !sum->hasOneUse() ||
-            !lhs->hasOneUse() || !rhs->hasOneUse() ||
-            !hasUniformNumericDomain({*sum, *lhs, *rhs}))
-          return false;
+  return rewriteNumericYields(task, [](mlir::linalg::YieldOp yield,
+                                       mlir::Value yielded) {
+    std::optional<NumericBinary> sum =
+        matchNumericBinary(yielded, NumericBinaryKind::Add);
+    std::optional<NumericBinary> lhs =
+        sum ? matchNumericBinary(sum->lhs, NumericBinaryKind::Multiply)
+            : std::nullopt;
+    std::optional<NumericBinary> rhs =
+        sum ? matchNumericBinary(sum->rhs, NumericBinaryKind::Multiply)
+            : std::nullopt;
+    if (!sum || !lhs || !rhs || !sum->hasOneUse() || !lhs->hasOneUse() ||
+        !rhs->hasOneUse() || !hasUniformNumericDomain({*sum, *lhs, *rhs}))
+      return false;
 
-        std::optional<CommonMultiplicand> common =
-            findCommonMultiplicand(*lhs, *rhs);
-        if (!common)
-          return false;
+    std::optional<CommonMultiplicand> common =
+        findCommonMultiplicand(*lhs, *rhs);
+    if (!common)
+      return false;
 
-        mlir::OpBuilder builder(sum->operation);
-        mlir::Value terms = createNumericBinary(
-            builder, sum->operation->getLoc(), NumericBinaryKind::Add,
-            sum->domain, common->lhsOther, common->rhsOther);
-        mlir::Value factored = createNumericBinary(
-            builder, sum->operation->getLoc(), NumericBinaryKind::Multiply,
-            sum->domain, common->factor, terms);
-        yield->setOperand(0, factored);
-        eraseIfDead(sum->operation);
-        eraseIfDead(lhs->operation);
-        eraseIfDead(rhs->operation);
-        return true;
-      });
+    mlir::OpBuilder builder(sum->operation);
+    mlir::Value terms = createNumericBinary(builder, sum->operation->getLoc(),
+                                            NumericBinaryKind::Add, sum->domain,
+                                            common->lhsOther, common->rhsOther);
+    mlir::Value factored = createNumericBinary(
+        builder, sum->operation->getLoc(), NumericBinaryKind::Multiply,
+        sum->domain, common->factor, terms);
+    yield->setOperand(0, factored);
+    eraseIfDead(sum->operation);
+    eraseIfDead(lhs->operation);
+    eraseIfDead(rhs->operation);
+    return true;
+  });
 }
 
 } // namespace wafer

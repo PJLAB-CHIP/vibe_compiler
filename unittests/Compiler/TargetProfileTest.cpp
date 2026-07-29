@@ -19,11 +19,13 @@ TEST(TargetProfileTest, RegistryIsClosedCanonicalAndRoundTrips) {
 
   llvm::ArrayRef<wafer::TargetProfileRecord> profiles =
       wafer::getRegisteredTargetProfiles();
-  ASSERT_EQ(profiles.size(), 2u);
+  ASSERT_EQ(profiles.size(), 3u);
   EXPECT_EQ(profiles[0].canonicalSpelling, "wafer-tx81-single-card-kernel-v1");
   EXPECT_EQ(profiles[0].kernelRuntimeABISpelling, "wafer-tx81-kernel-v1");
   EXPECT_EQ(profiles[1].canonicalSpelling, "wafer-tx81-single-card-kernel-v2");
   EXPECT_EQ(profiles[1].kernelRuntimeABISpelling, "wafer-tx81-kernel-v2");
+  EXPECT_EQ(profiles[2].canonicalSpelling, "wafer-tx81-single-card-kernel-v3");
+  EXPECT_EQ(profiles[2].kernelRuntimeABISpelling, "wafer-tx81-kernel-v3");
   for (const wafer::TargetProfileRecord &profile : profiles) {
     EXPECT_EQ(profile.targetIdentitySpelling, "wafer-tx81-single-card");
     EXPECT_EQ(profile.moduleFormat, "elf-riscv64");
@@ -224,6 +226,12 @@ TEST(RuntimeLaunchContractTest, FactoriesAdmitOnlySupportedCrossProducts) {
       *cluster, wafer::TargetProfileId::waferTx81SingleCardKernelV2()));
   EXPECT_FALSE(wafer::isRuntimeLaunchContractCompatible(
       *model, wafer::TargetProfileId::waferTx81SingleCardKernelV2()));
+  EXPECT_TRUE(wafer::isRuntimeLaunchContractCompatible(
+      *grid, wafer::TargetProfileId::waferTx81SingleCardKernelV3()));
+  EXPECT_TRUE(wafer::isRuntimeLaunchContractCompatible(
+      *cluster, wafer::TargetProfileId::waferTx81SingleCardKernelV3()));
+  EXPECT_TRUE(wafer::isRuntimeLaunchContractCompatible(
+      *model, wafer::TargetProfileId::waferTx81SingleCardKernelV3()));
 }
 
 } // namespace

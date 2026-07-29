@@ -3,9 +3,11 @@ add_mlir_library(WaferAnalysis
   ExecutionTopologyAnalysis.cpp
   PhysicalDataflow/IndexRelation.cpp
   PhysicalDataflow/TransferRealizability.cpp
+  NoCProfitabilityAnalysis.cpp
   ScheduleCost/ExecutionCost.cpp
   ScheduleCost/SPMHighWater.cpp
   ScheduleCostAnalysis.cpp
+  StaticBufferRange.cpp
 
   LINK_LIBS PUBLIC
   WaferIR

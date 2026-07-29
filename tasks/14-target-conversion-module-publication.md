@@ -1,8 +1,9 @@
 # Wafer Target Conversion、CRT 与 Module Publication
 
 状态：当前 production 合同包含保持不变的 TX81 Kernel Runtime ABI v1、Q32.V新增的closed v2 oriented-GEMM
-profile/ABI、owner-backed `TargetLLVMModuleBundle`、Q17 staged device link和atomic `TargetArtifactBundle` publication。
-Mapped DMA与physical-footprint fill复用既有address/count ABI但增加typed Instr legality；oriented GEMM使用独立v2 call。
+profile/ABI、closed v3 worker-aware ABI、owner-backed `TargetLLVMModuleBundle`、Q17 staged device link和atomic
+`TargetArtifactBundle` publication。Mapped DMA与physical-footprint fill复用既有address/count ABI但增加typed
+Instr legality；oriented GEMM在v2使用独立exact call，v3 ordinary call surface统一使用`_v3`并追加worker字段。
 
 `RequiredCapabilitySet`和package/schema升级只在这些扩展的真实consumer需要逐row preflight时从winner派生。
 Count writeback属于独立Q3.6。任何能力都不能由planner是否能构造某个候选而自动启用。实现状态只看
@@ -30,6 +31,8 @@ Count writeback属于独立Q3.6。任何能力都不能由planner是否能构造
 - 不把 CRT symbol 存在等同于 packet、numeric、model admission 或 board correctness；
 - 不为 host model 另造一条 target lowering；
 - 不改变已经发布的 v1 symbol signature、target profile 或 package identity；
+- 不改变已经发布的 v2 symbol signature、target profile 或 package identity；v1/v2 ordinary call均冻结为
+  legacy arity和worker0语义，不能原地追加worker；
 - current v1仍只接受compact/implicit-normal合同；mapped DMA和physical fill由typed Instr字段选择，oriented GEMM只在
   `wafer-tx81-single-card-kernel-v2`下进入独立exact call；capability-set/schema仍未引入，Count仍由Q3.6拥有；
 - Direct DTE 只有 accepted remote receiver offset、endpoint/slot/completion 合同闭合后才能进入
@@ -77,7 +80,8 @@ Pipeline position:
   family通过geometry/range/narrowing/full-conversion；任一失败source module byte-identical。
   TargetProfileId和两值RuntimeLaunchKind从CompilationRequest/ExecutionConfig进入ExecutableBundle；完整RuntimeLaunchContract
   从唯一compiler resolver贯穿TargetLLVMModuleBundle、TargetArtifactBundle和package readback且没有default；closed
-  compatibility table拒绝未资格化组合；112-symbol CRT conformance（含typed NCC participant join）、rank-count=1/16
+  compatibility table拒绝未资格化组合；217-symbol CRT conformance（含冻结的112-symbol legacy prefix、
+  104个V3 ordinary counterparts、V3-only Direct DTE issue及typed NCC participant join）、rank-count=1/16
   owner lifetime、all-and-only module/ABI-slot/digest、late-rank atomic failure和真实production driver通过。
   Q32.V/Q3.6各自拥有独立completion gate，不反向改写current v1证据；Q32.V新增typed profile/ABI row由
   Q32.M/S通用candidate owner消费。
@@ -96,10 +100,12 @@ commit之后从accepted instruction IR生成。
 
 ### 3.1 closed profile identity
 
-registry包含`wafer-tx81-single-card-kernel-v1`和`wafer-tx81-single-card-kernel-v2`两个closed typed
-`TargetProfileId`。二者都映射到target identity `wafer-tx81-single-card`和module format `elf-riscv64`；v1映射
-`wafer-tx81-kernel-v1`，v2映射`wafer-tx81-kernel-v2`。v2只扩展oriented GEMM exact call，并显式引用v1
-format/numeric compatibility profile；这不合并两个Kernel ABI identity，也不改变v1含义。
+registry包含`wafer-tx81-single-card-kernel-v1`、`wafer-tx81-single-card-kernel-v2`和
+`wafer-tx81-single-card-kernel-v3`三个closed typed `TargetProfileId`。三者都映射到target identity
+`wafer-tx81-single-card`和module format `elf-riscv64`；分别映射`wafer-tx81-kernel-v1`、
+`wafer-tx81-kernel-v2`和`wafer-tx81-kernel-v3`。v2只扩展oriented GEMM exact call；v3新增coexistable
+worker-aware ordinary call surface和显式Direct DTE issue，并显式引用既有format/numeric compatibility。
+这些row不合并Kernel ABI identity，也不改变v1/v2含义。
 
 GEMM orientation在Instr、TargetCall和public CRT signature中始终是semantic normal/transpose。TX81 raw
 `SetTransflag`只有RHS bit采用相反编码，因此CRT packet wrapper在唯一硬件边界执行映射：v1 semantic
@@ -261,8 +267,10 @@ current v1 最低规则：
   destination，并在wrapper返回前对两个实际写入range覆盖的每条cache line执行mode-dependent
   `dcache.cipa/civa`及fence/sync。`TsmWaitfinish()`只建立指令到CPU store的完成边界，`volatile` store本身不建立
   后续NCC DMA可见性；该publication合同由两个extrema wrapper共享，不按kind特判。
-- NCC issue/join：ordinary instruction的typed worker必须与target operator ABI一致；current v1/v2只编码
-  worker0，worker1/2在call emission前以`unsupported_target_worker`拒绝。canonical非空participant集合
+- NCC issue/join：ordinary instruction的typed worker必须与target operator ABI一致；v1/v2 descriptors固定
+  worker0且legacy public signature没有worker参数，worker1/2在call emission前以`unsupported_target_abi`拒绝。
+  v3 descriptors使用独立`_v3` symbol并在exact signature末尾追加`uint32_t worker`，允许closed
+  `worker0/worker1/worker2`。canonical非空participant集合
   lower到`wafer_tx81_ncc_join(i32 mask)`；CRT按participant逐worker调用`TsmWaitfinish_bywork`，一次participant
   就是一次高代价blocking drain。legacy `local_fence`只表示worker0，二者都不完成Direct DTE、cache publication
   或multi-tile barrier。
@@ -320,10 +328,14 @@ trampoline存在只证明loader调用形状闭合，不证明算子数值、comp
 Wafer-owned production symbols 使用 `wafer_tx81_*` 前缀；header、lowering、CRT source、symbol checker 和
 device linker共享同一 exact signature事实。CRT wrapper只传递已经验证的字段，不重新解释 shape/layout/candidate。
 
-current v1 已验证边界：
+current closed ABI 已验证边界：
 
-- 110 个 production symbols 在 header/source/symbol checker/device link 闭合；其中新增
-  `wafer_tx81_gemm_oriented_v2`只属于v2 ABI，plain `wafer_tx81_gemm`保持v1 normal/normal；
+- 217 个 production symbols 在 header/source/symbol checker/device link 闭合：原始112项保持顺序、
+  symbol和exact signature，其中`wafer_tx81_gemm_oriented_v2`只属于v2 ABI；V3新增104个ordinary
+  counterparts和一个`wafer_tx81_direct_dte_send_issue_v3`。除oriented GEMM从`_v2`映射到`_v3`外，
+  V3 ordinary symbol统一在legacy symbol后追加`_v3`，exact signature只追加末尾`uint32_t worker`；
+- legacy 104个ordinary CRT definitions都是到对应V3 implementation的worker0 compatibility wrapper，
+  因而旧module可与新CRT继续链接；shared local fence、NCC join和其余DTE lifecycle symbols不复制版本；
 - LLVM calls 使用 fixed function type，不使用 vararg；
 - `wafer_tx81_mask_move` 端到端使用显式 `uint32_t mask`；
 - `wafer_tx81_ncc_join`使用checked participant mask并按canonical worker顺序执行exact by-worker waits；
@@ -345,6 +357,10 @@ current v1不包含oriented GEMM或Count。`wafer_tx81_gemm`永远只代表v1 no
 `wafer_tx81_gemm_oriented_v2`逐字段携带两个orientation且只在v2 runtime ABI解码。symbol存在也不证明
 packet、shape、numeric、completion或board support。heap loader closure同样只证明当前loader surface与module
 静态闭包，运行时heap初始化仍由tasks/16真实board gate证明。
+
+V3不复用legacy ordinary symbol表达worker。`wafer_tx81_gemm_v3`保持implicit normal/normal并追加worker；
+`wafer_tx81_gemm_oriented_v3`逐字段携带orientation再追加worker。V3 module引用legacy ordinary symbol、
+或v1/v2 module引用任意V3-only symbol，均在reachable target-call profile preflight失败。
 
 ## 9. Owner-Backed Target LLVM Bundle
 
@@ -502,7 +518,9 @@ current v1测试层次：
 1. op/verifier negative：OOB、descriptor payload、shape relation、alignment和narrowing；
 2. conversion：branch/loop/call结构保持、typed calls、full legality、late failure source identity；
 3. profile/format：explicit v1 profile、unknown/missing拒绝、engine×format和convert whitelist；
-4. CRT：112-symbol header/source/signature/wrapper conformance（含typed NCC participant join），v1/v2 GEMM transflag分别固定/显式；
+4. CRT：217-symbol header/source/signature/wrapper conformance，冻结原始112项、验证104组
+   legacy-worker0/V3-trailing-worker配对、V3-only Direct DTE issue及typed NCC participant join；v1/v2/v3
+   GEMM transflag和exact signature分别固定；
    ArgMax/ArgMin共同writeback helper的wait、mapped store、cache-range publication顺序由source checker与
    C908 object反汇编同时锁定；
 5. device link：compiler-generated positive和required/allowed undefined negative；
@@ -573,6 +591,10 @@ profile绑定、证据等级和held-out状态统一见`docs/tx81-compiler-hardwa
 v1 profile和`wafer_tx81_gemm`保持normal/normal原义。Q32.V已建立structured source/typed Tile/Instr/TargetCall和
 repo-owned SystemC/formal consumer，并冻结`wafer-tx81-single-card-kernel-v2`、`wafer-tx81-kernel-v2`及
 `wafer_tx81_gemm_oriented_v2(lhs,rhs,dst,m,k,n,batch,format,lhs_orientation,rhs_orientation)` exact signature。
+
+V3在不改写上述v2合同的前提下提供
+`wafer_tx81_gemm_oriented_v3(lhs,rhs,dst,m,k,n,batch,format,lhs_orientation,rhs_orientation,worker)`；
+其普通GEMM和其它ordinary target calls同样遵守“独立`_v3` symbol、只追加末尾worker”的统一规则。
 
 orientation必须是Instr、TargetCall transaction、LLVM call和decoder中逐字段验证的closed enum；CRT只做checked enum到
 wrapper transflag的映射，不从shape、layout、symbol后缀或payload猜测。新revision不能让v1 module或symbol静默获得

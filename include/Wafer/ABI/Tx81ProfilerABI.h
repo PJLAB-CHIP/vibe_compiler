@@ -11,8 +11,8 @@
  * - Upstream artifact / IR: a profiling-only target module, its accepted
  *   instruction sites, and one owned per-tile DDR output allocation.
  * - Current stage responsibility: preserve raw Kcore cycle samples, NCC PMU
- *   snapshots, five NCC engine activity observations, and Direct-DTE
- *   completion observations.
+ *   snapshots, five NCC engine activity observations, and distinct Direct-DTE
+ *   issue and completion observations.
  * - Output artifact / IR: a versioned per-tile byte record.  It is evidence,
  *   not compiler IR, a scheduler hint, or a target package side channel.
  * - Downstream consumer: the host decoder and profile-scoped calibration.
@@ -25,13 +25,13 @@
  *   separately qualified counter semantics must all succeed before analysis.
  */
 
-#define WAFER_TX81_PROFILER_RECORD_ABI_V3 "wafer-tx81-profiler-record-v3"
+#define WAFER_TX81_PROFILER_RECORD_ABI_V4 "wafer-tx81-profiler-record-v4"
 
 #define WAFER_TX81_PROFILER_RECORD_MAGIC UINT64_C(0x3152464f52505757)
 #define WAFER_TX81_PROFILER_HEADER_GUARD UINT64_C(0xa3d95f672cb184e0)
 #define WAFER_TX81_PROFILER_BUFFER_GUARD UINT64_C(0x6e2ac4d13975bf08)
 
-#define WAFER_TX81_PROFILER_SCHEMA_VERSION 3U
+#define WAFER_TX81_PROFILER_SCHEMA_VERSION 4U
 #define WAFER_TX81_PROFILER_LAUNCH_CONFIG_MAGIC UINT64_C(0x3147464352505757)
 #define WAFER_TX81_PROFILER_LAUNCH_CONFIG_GUARD UINT64_C(0xd28c4f6173a950be)
 #define WAFER_TX81_PROFILER_LAUNCH_CONFIG_BYTES 64U
@@ -73,6 +73,7 @@ enum WaferTx81ProfilerEventKind {
   WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_COMPLETION_WAIT = 5,
   WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_CLEANUP = 6,
   WAFER_TX81_PROFILER_EVENT_TARGET_SITE = 7,
+  WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE = 8,
 };
 
 enum WaferTx81ProfilerTraceState {

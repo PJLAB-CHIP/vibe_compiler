@@ -20,14 +20,18 @@ pipeline contract、实验结论、测试数字、失败修复过程和历史复
 ```text
 Q32 + Q6.B -> Q9 profiler foundation                         [done]
 Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [done]
-Q32 + Q6.B + Q37 -> Q39 composed search and DTE overlap     [next]
+Q38 -> Q39 NoC-resident tile dataflow                        [done]
+Q39 -> Q40 composed search and DTE overlap                   [next: wait closure]
+Q32.C -> Q41 compiler search scalability                     [next]
 ```
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q9 | `production-artifact-profiler` | `done` | Q32、Q6.B、configured board | 未插桩Primary TX stream launch-to-completion设备包络、分离的host diagnostics、Trace来源的五类NCC per-tile engine active ns/work-volume摘要、独立Direct-DTE cycles/raw activity、Count/Trace、逐次保留真实动态调用与rdcycle的16-tile timeline、exclusive语义成本与非加和Trace-only成本、final Instr静态work与硬件峰值下界对照、exact output、三文件专业UI和profile全树`0777`均闭合；不构造card-wide纯engine elapsed，静态cost不回灌ranking。Ranking feedback保留为后续独立门禁。 | 06、14-16；`tasks/archive/board-profiler.md` |
-| Q38 | `multi-engine-software-pipelining` | `done` | Q32、Q6.B、Q37 | complete-rank actual clone到legality-safe issue window、fixed-slot multi-buffer、prologue/steady/epilogue、waitfinish normal form及RDMA+CT+WDMA普通production纵向闭合；same-worker跨迭代依赖和真实domain exit join已闭合。全局candidate search整改及Direct-DTE与compute并行不属于Q38，统一由Q39承担。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
-| Q39 | `composed-choice-search-and-dte-overlap` | `next` | Q32、Q6.B、Q37 | 重构whole-variant bounded search：tile、storage、buffer、order、communication和issue/wait均作为独立choice逐步组合，实际fixed-slot realization与exact SPM resource gate进入搜索；单个choice或精确tuple失败只剪该点并保留其它优化sibling，全部优化组合均失败时才回到reserved baseline。在该通用搜索上完成Direct-DTE issue与独立compute重叠及matching wait，不绑定GEMM、shape或case。完成门禁包括局部失败隔离与work-preservation回归、FP16/BF16差异化no-card，以及普通production生成结构不同的scheduler后再做板端exact-output和matched A/B；不增加forced-winner模式，不读取实卡/Q9/runtime profile参与编译选择。 | 06、08-13、16 |
+| Q38 | `multi-engine-software-pipelining` | `done` | Q32、Q6.B、Q37 | complete-rank actual clone、真实fixed-slot multi-buffer、prologue/steady/epilogue、waitfinish normal form、V3 typed worker与Direct-DTE prepare/issue/exact wait-release、issue-time exact range hazard、package/no-card、TargetCall/SystemC、profiler和digest-bound qualification companion均闭合；worker0 rotating SPM FP16/BF16 RDMA+CT+WDMA普通production winner已经fresh板端exact correctness与matched资格。NoC-resident dataflow归Q39；全局choice组合与更广Direct-DTE/compute overlap归Q40。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
+| Q39 | `noc-resident-tile-dataflow` | `done` | Q38非板端Direct-DTE/fixed-slot合同闭合；Q38板端资格作为独立external gate | complete-rank NoC-resident candidate、静态profitability、package/no-card闭合；K-sharded `4096³`同源baseline/winner板端6/6 exact，winner profile保持16-rank exact并生成有效报告。高wait与未闭合overlap转交Q40，编译搜索耗时转交Q41。 | 02-13、16-17；`tasks/plans/noc-resident-tile-dataflow.md` |
+| Q40 | `composed-choice-search-and-dte-overlap` | `next` | Q39完成 | 重构tile、storage、buffer、order、communication和issue/wait的bounded semantic choice；吸收Q39 profile暴露的3840 send、3840 recv、7680 DTE wait与`issue_event_count=0`，闭合Direct-DTE issue/compute并行、latest-unavoidable matching wait和release。完成门禁包括局部失败隔离、work preservation、FP16/BF16 no-card、wait/issue结构回归及板端exact-output和matched A/B；不读取live profile参与编译选择。 | 06、08-13、16 |
+| Q41 | `compiler-search-scalability` | `next` | Q32.C bounded executor；M-sharded K=1024复现 | 专注whole-variant search编译时间：补齐阶段时间、RSS和candidate/attempt/late-gate/clone/lowering/capture计数，删除不改变winner/artifact的重复工作并建立显式工作量/CTest上界；不修改Q39语义或Q40 wait合同。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
 
 ## Later / External Gates
 
@@ -41,7 +45,7 @@ Q32 + Q6.B + Q37 -> Q39 composed search and DTE overlap     [next]
 | Q22.K | `target-model-packet-provenance` | `later` | Q22、owner-approved vendor package或公开规范 | 建立可引用的CRT/packet/MMIO provenance；缺失不阻塞functional CModel。 | 14、16、17 |
 | Q22.P | `target-model-timing-calibration` | `later` | Q32、Q22.C、validated PMU/timing environment | 校准LT/AT；没有RTL/vendor cycle证据不声明cycle accuracy。 | 16、17 |
 | Q32.T | `compiler-transform-control` | `later` | Q32、明确的external control-plane consumer | 复用现有rewrite/conversion；Transform IR不保存frontier、不替代all-rank coordinator。 | 01、05-08、10、16、18 |
-| Q38.W | `multi-worker-command-scheduling` | `later` | 出现需要隔离等待域的独立命令链，并确认多worker相对worker0流水具有明确收益 | 打通非零worker command ABI、独立buffer和matching completion；不得为使用worker1/2而拆分已能在worker0并行的流水。 | 08、11、14-17 |
+| Q38.W | `multi-worker-production-promotion` | `later` | V3 typed ABI、actual clone和host/model资格已闭合，且出现需要隔离等待域并可能受益的独立命令链 | 以configured-board matched correctness/performance证明非零worker相对worker0流水的明确收益后才允许normal production promotion；不得为使用worker1/2而拆分已能在worker0并行的流水。 | 08、11、14-17 |
 | Q3.6 | `crt-writeback-scalar` | `later` | 明确Count predicate及wrapper/target/model evidence | 独立闭合typed instruction、effect/completion、ABI/CRT、model和必要package readback。 | 11、14-17 |
 
 不在当前DAG中的model/distributed/executable dialect、MPMD/rank class、跨卡coherent variant、
@@ -106,7 +110,8 @@ WCRE/global registry、capability lease、跨model state migration、共享weigh
 
 ## 导航
 
-- 当前计划：`tasks/plans/multi-engine-software-pipelining.md`。
+- 当前计划：`tasks/plans/noc-resident-tile-dataflow.md`与
+  `tasks/plans/multi-engine-software-pipelining.md`分别记录Q39、Q38的configured-board external gate。
 - Q9完成证据：`tasks/archive/board-profiler.md`。
 - 编号设计与归档导航：`tasks/README.md`。
 - 硬件校准结论：`docs/tx81-compiler-hardware-calibration.md`。

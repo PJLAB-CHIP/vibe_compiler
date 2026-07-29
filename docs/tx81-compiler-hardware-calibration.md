@@ -57,6 +57,42 @@ compiler/CRT identity、worker/tile和PMU scope。PCI BDF、build目录和安装
 曾出现失败的实验在对应表格行中保留“初始症状 → fixture/oracle/ABI根因 → 修正后fresh结果”链路；
 只写最终通过会掩盖测试本身曾经测错了什么，只写旧失败又会把host错误误当成硬件行为。
 
+### Q39 bandwidth evidence levels
+
+NoC-resident profitability把final-IR work knowledge、静态point estimate和保守bound分成三层，不能因
+physical timing未校准就把可精确计数的工作量降成Unknown：
+
+- final Instr与typed topology能完整计数的DDR/SPM bytes、compute ops、Direct-DTE bytes/messages、
+  source/destination endpoints和minimum-hop work是exact `Known`。这里的`Known`只说明current IR work
+  完整且算术可表示，不说明物理route、arbiter或duration已知；
+- 硬件静态资料中的整卡DDR `200 GB/s`只作为total-card DDR traffic duration的乐观下界；
+- 当前部署中16 tile共享DDR的约`150 GB/s`是用户确认的nominal operating point。它只除整卡bytes一次，
+  不是每tile一份的带宽，也没有重复样本支持为guaranteed lower bound；
+- 单方向NoC `128 GB/s`是link payload serialization reference。nominal point model另以`128 GB/s`作为
+  DTE endpoint service policy prior；这两个相同数值有不同resource语义，均不是fabric aggregate、
+  collective latency或sustained lower bound；
+- physical route和arbiter仍未知。point model从typed 2D mesh构造modeled deterministic shortest path，
+  以`EstimatedRoute` assumption计peak directed-link pressure；它不是actual route或hot-link observation；
+- Direct-DTE每message `α = 10 us`、maximum modeled route每hop的route-fill prior `1 ns`、每tile SPM
+  `128 GB/s`以及instruction/event/wait control `1 ns`均为versioned compiler policy prior，不是板端测量或
+  保守bound。SPM prior只把文档中的
+  1024-bit interface和1 GHz model quantum转成point estimate。当前`α`有意惩罚小message；未来由同profile、
+  同participant、重复matched board measurement替换，而不是由论文或单次counter移植绝对常数。
+
+nominal makespan只消费上述exact work和versioned point parameters。没有current-IR+target capability共同
+qualified的multi-buffer时，DDR、NoC和compute按sequential phases计费；只有fixed-slot/multi-buffer recurrence、
+exact wait/reuse cut和capability均闭合时，steady state才取并行resource maximum。candidate nominal乘`1.20`
+仍小于baseline nominal时签发`EstimatedBenefit`并可进入normal selection；只有candidate conservative upper
+乘`1.20`小于baseline lower时才是`ProvenBenefit`。缺少sustained lower rate、route dilation、startup upper
+或hop-fill upper，只让对应upper保持Unknown，不再让point estimate或exact work变成Unknown；必要work仍为
+dynamic/unsupported或算术溢出时才`Indeterminate`。
+
+论文只提供模型结构：Stream-K支持work-centric decomposition并要求把seam/fixup计入总work；TileLink说明
+tile、resource binding和dependency signal共同决定compute/communication overlap；collective-capable NoC
+给出`α + nβ`、congestion/dilation及double-buffer steady-state resource maximum。论文平台的绝对cycle、
+bandwidth和startup数字均不进入TX81 profile。Q39仍需configured-board matched calibration/promotion与
+promotion winner的fresh correctness；静态`EstimatedBenefit`不代签这两个外部门禁。
+
 ## 硬件实验、行为结论与compiler价值
 
 | 硬件问题 | 具体实验、参数与oracle | 实际板端观察 | 硬件行为总结 | 对compiler的价值 | 不能外推什么 |
@@ -146,7 +182,7 @@ compiler/CRT identity、worker/tile和PMU scope。PCI BDF、build目录和安装
 | NCC PMU basis | 单engine校验instruction count、engine execution、global FU union、worker scope和high-low-high稳定读取；pair同时保存serial/window、repeat ordinal、issue order和profile identity。 | Count能确认实际发射；只有部分expanded cell的FU union形成稳定正excess。Single execution与blocking不稳定。 | Counter各自回答有限问题：count是发射数，FU union可区分功能单元窗口；它们不是统一cycle模型。 | PMU先用于资格和归因，只有matched、重复、correctness通过的样本进入Q9。 | 不用单次execution、blocking=0或host elapsed写固定latency。 |
 | SPM PMU与TMNOC | SPM sustained读取owner-backed port0/6 T2/T3并检查enable/scope、counter稳定和matched WDMA readback。TMNOC仅有base address，无decoded只读offset。 | SPM counter可读且随已测workload活动；没有physical bank/port attribution。TMNOC未上板读取。 | 可读取counter不等于理解physical resource identity；未知offset不能靠猜测。 | SPM PMU只作actual-address measurement basis；TMNOC保持static-negative。 | 不命名bank/port，不读未解码寄存器，不把aggregate counter直接写cost。 |
 | SCALAR/CSR ordinary issue | 审计current ABI是否存在可由`TsmExecute`承载的SCALAR/CSR普通queue type；没有typed constructor、packet field或owner-backed执行合同。 | Current ABI没有安全正向入口，未发送猜测packet。 | Header/寄存器名字不足以构造普通issue能力；缺typed surface时应静态拒绝。 | SCALAR/CSR ordinary issue保持`excluded`，不进入scheduler或board inventory。 | 不从邻近engine编码、反汇编片段或未知packet试探能力。 |
-| Production three-stage producer | Catalog列出109个RDMA→CT/NE→WDMA three-stage cell及capacity fallback，但审计current compiler能否产出带accepted-Instr provenance的真实multi-buffer program；手写16KiB双slot只作对照。 | Current production producer尚未实现，109 cell为0 board CTest并typed fail closed；已有双slot只证明局部lifetime observation。 | Raw adapter或手写packet不能代签software-pipeline IR、prologue/steady/epilogue和actual-clone资源合同。 | Q38必须先实现production multi-buffer IR vertical，再为其新输出建立board gate。 | 不把catalog存在、手写双slot或Q37 overlap白名单当作Q38完成。 |
+| Production three-stage producer | Catalog列出90个RDMA→CT/NE→WDMA正向three-stage cell和19个capacity/alias/provenance负例；compiler-owned qualification sibling从final accepted Instr绑定真实fixed-slot rotation、typed worker、completion和package manifest，手写16KiB双slot只作负对照。 | Production fixed-slot multi-buffer producer、typed worker、host exact、package、target model和no-card gate已经闭合；90个正向cell等待configured-board fresh qualification，19个结构负例由host exact gate拥有，当前没有board correctness结论。 | Raw adapter、手写packet或untimed model不能代签software-pipeline IR、prologue/steady/epilogue、actual-clone资源合同或真实板端winner correctness。 | 保留compiler-owned candidate和manifest-bound qualification；下一门禁只在configured board上对同源baseline/winner做fresh、bounded correctness。 | 不把catalog存在、手写双slot、host/model结果或既有overlap白名单当作board通过。 |
 | Production optimizer paired qualification | 同一source/profile发布reserved baseline与production winner，要求最终ELF结构不同、两包完整CPU expected、guard、terminal和A/B平衡顺序；覆盖common-factor、reciprocal、resident share/recompute、ready-order、GEMM和tree AllReduce等8 pair，另复用Direct-DTE vertical。 | 8/8 paired和Direct-DTE vertical通过统一FP16合同与完整package/board lifecycle。 | Microcase结论只有进入真实source→IR→package→board链路，才能证明compiler选择没有破坏语义；qualification不反向改变legality。 | Q38每个actual clone都重过SPM/DDR、Instr、Target、package和fresh board correctness gate。 | 不外推全部optimization、shape、dtype或cost，未产生production IR的能力不靠raw case代签。 |
 | Timeout与execution context | Native TDMA BOOL、错误native Concat `dims=HW`、合同外VuVLoop和无owned range的64KiB WDMA诊断分别出现不可靠completion；timeout后观察管理面并尝试known-good路径，独立clean session再测合法packet。 | 管理面可能显示idle、0%和无进程，但同session后续Add仍可能timeout/数值错误；clean session合法unit64和Add正常。 | Inventory/accounting健康不等于execution context健康；错误packet可污染会话，不能当普通case失败重试。 | 首个timeout立即停批，不自动retry/reset/power；新session只用一次ordinary Add资格。危险packet从测试和production删除。 | 不用结尾heartbeat恢复旧证据，不把timeout case保留为“隔离测试”，不从邻近enum猜能力。 |
 

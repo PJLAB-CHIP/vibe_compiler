@@ -334,7 +334,7 @@ def main() -> int:
     crt_source = (
         repo / "runtime" / "wafer_crt" / "src" / "wafer_tx81_crt.c"
     ).read_text()
-    assert "wafer_direct_dte_sender.active || remote_fsm_id >= 4" in crt_source
+    assert "wafer_direct_dte_sender.active || byte_count == 0" in crt_source
     assert "local_fsm_id >= WAFER_DIRECT_DTE_MAX_RECEIVERS" in crt_source
     assert "if (receiver->active)" in crt_source
     wait_body = crt_source.split(
@@ -348,9 +348,31 @@ def main() -> int:
     )[1].split(
         "if (event >= WAFER_DIRECT_DTE_RECV_EVENT_BASE", maxsplit=1
     )[0]
-    assert send_wait.index("direct_sync_wait(") < send_wait.index(
+    assert "direct_sync_wait(" not in send_wait
+    assert "direct_dte_attach(" not in send_wait
+    assert "direct_dte_send_async(" not in send_wait
+    assert "wafer_direct_dte_issue_sender(event, false)" in send_wait
+    assert send_wait.index("direct_dte_wait_done(") < send_wait.index(
+        "direct_dte_release("
+    )
+    issue_helper = crt_source.split(
+        "static bool wafer_direct_dte_issue_sender(", maxsplit=1
+    )[1].split(
+        "void wafer_tx81_direct_dte_send_issue_v3(uint64_t event)", maxsplit=1
+    )[0]
+    assert issue_helper.index("direct_sync_wait(") < issue_helper.index(
+        "direct_dte_attach("
+    )
+    assert issue_helper.index("direct_dte_attach(") < issue_helper.index(
         "direct_dte_send_async("
     )
+    assert "direct_dte_wait_done(" not in issue_helper
+    send_issue_v3 = crt_source.split(
+        "void wafer_tx81_direct_dte_send_issue_v3(uint64_t event)", maxsplit=1
+    )[1].split(
+        "uint64_t wafer_tx81_direct_dte_recv_prepare", maxsplit=1
+    )[0]
+    assert "wafer_direct_dte_issue_sender(event, true)" in send_issue_v3
 
     probe_source = (
         repo
@@ -365,7 +387,20 @@ def main() -> int:
         / "Board"
         / "wafer_board_dte_ncc_execution_probe_test.py"
     ).read_text()
+    for legacy_ordinary_call in (
+        "wafer_tx81_rdma(",
+        "wafer_tx81_wdma(",
+        "wafer_tx81_elementwise_add(",
+    ):
+        assert legacy_ordinary_call not in probe_source
+    assert "wafer_tx81_rdma_v3(" in probe_source
+    assert "wafer_tx81_wdma_v3(" in probe_source
+    assert "wafer_tx81_elementwise_add_v3(" in probe_source
     assert 'parser.add_argument("--host-contract-only"' in host_driver_source
+    assert 'TARGET_PROFILE = "wafer-tx81-single-card-kernel-v3"' in (
+        host_driver_source
+    )
+    assert "f\"--target-profile={TARGET_PROFILE}\"" in host_driver_source
     assert "mode not in (*ISOLATED_DTE_MODES, *PENDING_DTE_MODES)" in (
         host_driver_source
     )
@@ -472,8 +507,8 @@ def main() -> int:
     assert raw_async.index("direct_dte_attach(") < raw_async.index(
         "direct_dte_send_async("
     )
-    first_ct = raw_async.index("wafer_tx81_elementwise_add(")
-    assert raw_async.count("wafer_tx81_elementwise_add(") == 2
+    first_ct = raw_async.index("wafer_tx81_elementwise_add_v3(")
+    assert raw_async.count("wafer_tx81_elementwise_add_v3(") == 2
     assert raw_async.index("direct_dte_send_async(") < first_ct
     assert first_ct < raw_async.index("direct_dte_wait_done(")
     assert raw_async.index("direct_dte_wait_done(") < raw_async.index(
@@ -487,7 +522,7 @@ def main() -> int:
     ) < raw_async.rindex("wafer_tx81_local_fence()")
     assert raw_async.index(
         "wafer_tx81_direct_dte_wait(receive)"
-    ) < raw_async.rindex("wafer_tx81_elementwise_add(")
+    ) < raw_async.rindex("wafer_tx81_elementwise_add_v3(")
     assert "result.send_result = direct_dte_send_async(&info)" in raw_async
     assert "result.wait_result = direct_dte_wait_done(&info)" in raw_async
     assert "result.release_result = direct_dte_release(info.dte_node)" in (

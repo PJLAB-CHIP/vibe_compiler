@@ -33,37 +33,6 @@ classifyCandidateTraversalRoot(mlir::Operation *operation) {
 
 namespace wafer::tensor_program_to_tile_region {
 
-static mlir::LogicalResult
-verifyGenericReductionSplitNumericLegality(mlir::linalg::GenericOp generic,
-                                           std::string *failureReason) {
-  if (generic.getRegionInputArgs().size() != 1 ||
-      generic.getRegionOutputArgs().size() != 1) {
-    setFailureReason(
-        failureReason,
-        "candidate reduction split requires one input and one accumulator");
-    return mlir::failure();
-  }
-
-  llvm::SmallVector<mlir::Operation *, 1> combinerOps;
-  mlir::Value reducedValue = mlir::matchReduction(generic.getRegionOutputArgs(),
-                                                  /*redPos=*/0, combinerOps);
-  std::optional<ComputeReduceKind> kind =
-      matchExactReductionKind(generic.getRegionOutputArgs(), /*redPos=*/0,
-                              generic.getRegionInputArgs().front(),
-                              "candidate reduction split", failureReason);
-  if (!kind)
-    return mlir::failure();
-  if (!reducedValue || reducedValue != generic.getRegionInputArgs().front() ||
-      combinerOps.size() != 1) {
-    setFailureReason(failureReason,
-                     "candidate reduction split cannot recover its exact "
-                     "combiner for numeric legality");
-    return mlir::failure();
-  }
-
-  return mlir::success();
-}
-
 static mlir::OwningOpRef<mlir::ModuleOp>
 cloneTensorProgramToStandaloneModuleImpl(mlir::func::FuncOp function) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
@@ -396,44 +365,79 @@ mlir::LogicalResult wafer::verifyCandidateReductionSplitNumericLegality(
   if (failureReason)
     failureReason->clear();
 
-  if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
-                mlir::linalg::MatmulTransposeBOp, mlir::linalg::BatchMatmulOp,
-                mlir::linalg::BatchMatmulTransposeAOp,
-                mlir::linalg::BatchMatmulTransposeBOp>(root.getOperation())) {
-    if (root->getNumResults() != 1) {
-      tensor_program_to_tile_region::setFailureReason(
-          failureReason,
-          "candidate matmul reduction split requires one result");
-      return mlir::failure();
-    }
-    auto resultType =
-        mlir::dyn_cast<mlir::ShapedType>(root->getResult(0).getType());
-    if (!resultType) {
-      tensor_program_to_tile_region::setFailureReason(
-          failureReason,
-          "candidate matmul reduction split requires a shaped result");
-      return mlir::failure();
-    }
-    if (!mlir::isa<mlir::IntegerType, mlir::FloatType>(
-            resultType.getElementType())) {
-      tensor_program_to_tile_region::setFailureReason(
-          failureReason,
-          "candidate matmul reduction split requires integer or floating-"
-          "point elements");
-      return mlir::failure();
-    }
-    return mlir::success();
+  if (!root || root->getNumResults() != 1 || root.getNumDpsInits() != 1) {
+    tensor_program_to_tile_region::setFailureReason(
+        failureReason,
+        "candidate reduction split requires one result and one accumulator");
+    return mlir::failure();
+  }
+  auto resultType =
+      mlir::dyn_cast<mlir::ShapedType>(root->getResult(0).getType());
+  if (!resultType || !mlir::isa<mlir::IntegerType, mlir::FloatType>(
+                         resultType.getElementType())) {
+    tensor_program_to_tile_region::setFailureReason(
+        failureReason,
+        "candidate reduction split requires shaped integer or floating-point "
+        "results");
+    return mlir::failure();
+  }
+  if (tensor_program_to_tile_region::getReductionLoopDims(root).empty()) {
+    tensor_program_to_tile_region::setFailureReason(
+        failureReason,
+        "candidate reduction split requires a reduction iteration dimension");
+    return mlir::failure();
+  }
+  if (root.getRegionOutputArgs().size() != 1) {
+    tensor_program_to_tile_region::setFailureReason(
+        failureReason,
+        "candidate reduction split requires one reduction accumulator");
+    return mlir::failure();
   }
 
-  if (auto generic =
-          mlir::dyn_cast<mlir::linalg::GenericOp>(root.getOperation()))
-    return tensor_program_to_tile_region::
-        verifyGenericReductionSplitNumericLegality(generic, failureReason);
+  llvm::SmallVector<mlir::Operation *, 1> combinerOps;
+  mlir::Value reducedValue = mlir::matchReduction(root.getRegionOutputArgs(),
+                                                  /*redPos=*/0, combinerOps);
+  if (!reducedValue || combinerOps.size() != 1) {
+    tensor_program_to_tile_region::setFailureReason(
+        failureReason,
+        "candidate reduction split requires one exact combiner wired to the "
+        "reduced value and accumulator");
+    return mlir::failure();
+  }
+
+  mlir::Operation *combiner = combinerOps.front();
+  if (mlir::isa<mlir::arith::AddFOp>(combiner))
+    return mlir::success();
+  if (auto addi = mlir::dyn_cast<mlir::arith::AddIOp>(combiner)) {
+    if (addi.getOverflowFlags() == mlir::arith::IntegerOverflowFlags::none)
+      return mlir::success();
+    tensor_program_to_tile_region::setFailureReason(
+        failureReason,
+        "candidate reduction split cannot preserve integer overflow flags");
+    return mlir::failure();
+  }
+  if (mlir::isa<mlir::arith::MaximumFOp, mlir::arith::MinimumFOp,
+                mlir::arith::MaxSIOp, mlir::arith::MinSIOp>(combiner))
+    return mlir::success();
+  if (mlir::isa<mlir::arith::MaxNumFOp, mlir::arith::MinNumFOp>(combiner)) {
+    tensor_program_to_tile_region::setFailureReason(
+        failureReason,
+        "candidate reduction split cannot preserve maxnum/minnum NaN "
+        "semantics with the current reduce kind");
+    return mlir::failure();
+  }
+  if (mlir::isa<mlir::arith::MaxUIOp, mlir::arith::MinUIOp>(combiner)) {
+    tensor_program_to_tile_region::setFailureReason(
+        failureReason,
+        "candidate reduction split cannot preserve unsigned min/max semantics "
+        "with the current reduce kind");
+    return mlir::failure();
+  }
 
   tensor_program_to_tile_region::setFailureReason(
       failureReason,
-      "candidate reduction split requires matmul, batch_matmul, or generic "
-      "reduction root");
+      "candidate reduction split requires an exact sum, signed min/max, or "
+      "IEEE minimum/maximum combiner");
   return mlir::failure();
 }
 

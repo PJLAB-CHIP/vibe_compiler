@@ -233,6 +233,9 @@ schema-v6 `target` object显式包含必填`profile`和tagged `launch`。parser�
 `runtime_abi`、launch contract和`module_format`逐项满足closed registry及兼容表，不能只证明各字符串分别属于
 supported set。`RuntimeEnvironment`携带相同五项typed事实，并在任何runtime provider effect前exact-match。
 schema-v2至schema-v5和其它version直接拒绝，不静默补profile、不选择宽泛struct，也不接受`unknown`占位。
+V3 kernel profile是同一registry中的普通closed row：它选择V3 Kernel Runtime ABI并允许module中的显式
+Direct-DTE sender issue和nonzero NCC worker target calls，但不增加manifest字段或runtime launch kind。
+Direct DTE仍由entry transport union独立声明；profile、launch和transport三者必须分别验证，不能互相恢复。
 
 当前manifest没有per-row capability集合。Q32 candidate改变instruction body时，package只观察最终Q16/Q17已经拥有的
 resources、typed ABI slots、module digest、entry、completion和transport requirement；只要target profile、Kernel
@@ -335,6 +338,48 @@ delivery transaction拥有：
 
 任一失败abort并清理Q18 staging；已有Q18 final root和Q17 artifact bundle均不变。不得在Q18 package root中
 先暴露module再补manifest，也不得late failure后留下partial package。
+
+### 7.1 Static Fixed-Slot / Typed-Worker Qualification Sibling
+
+static fixed-slot及其typed-worker组合的source-to-package资格需要验证final accepted instruction结构，但这些
+结构不是runtime需要消费的package语义。因此testing-only producer在普通schema-v6 package之外发布一个闭合、
+manifest-bound的qualification sibling；production `wafer-compile`不读取该选择，也不生成该sibling。compiler
+producer必须先从canonical/unplaced current Instr原子派生actual typed-worker sibling，再在保留worker
+assignment的siblings上派生fixed-slot；已有nonzero assignment不原地重写。
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  test-only whole-variant selection已经通过与production相同的Instr/SPM/DDR/transport/target/package late gates；
+  retained ExecutableBundle拥有final accepted rank Instr IR，TargetLLVMModuleBundle和staged schema-v6 package来自
+  同一次transaction。
+- Current stage responsibility:
+  从final accepted rank IR fresh派生accepted-module digest、placed SPM root/range、static loop及iter-arg root
+  rotation、engine×worker issue、DTE send/recv token与exact wait、participant join和completion behavior；
+  读取staged manifest原始bytes形成digest，先写回并解析attestation，最后写activation绑定manifest与attestation
+  digest。package与sibling以no-replace双目录transaction发布，第二次rename失败时回滚package。
+- Output artifact / IR:
+  canonical schema-v6 package保持不变；相邻qualification目录只含`attestation.json`和最后写入的
+  `activation.json`。它是测试资格artifact，不进入PackageBundle、RuntimeSessionPlan或board invocation。
+- Downstream consumer:
+  host production-preparation gate独立重验closed fields、digest、rank domain、SPM arena/alignment/non-overlap、
+  nonidentity root rotation、typed load/compute/store、DTE token/wait及completion；同一次retained target LLVM
+  另进入SystemC functional-numeric gate，普通package进入标准no-card preflight。
+- User-level driver / named pipeline:
+  只由compiler testing API和`wafer-compile-test`私有selection seam触发；正常`wafer-compile`及package/runtime
+  CLI没有qualification mode。
+- Explicit non-goals:
+  不升级manifest schema，不把accepted Instr schedule交给runtime，不建立planner sidecar，不授权板端执行，
+  不从attestation恢复或修改package/module，也不把单个fixed-slot case写成production选择规则。
+- Completion gate:
+  rank-one legacy profile和16-rank V3 source均发布manifest/attestation digest一致的完整双目录；V3 case还必须
+  具有Direct-DTE package transport、每rank非零send/recv token及all-and-only exact waits，并由同一retained
+  target LLVM通过SystemC完整CPU expected。Q39组合资格已经从final accepted IR同时证明actual nonzero
+  worker attrs、fresh minimum joins、worker-preserving fixed-slot rotation和Direct-DTE，并通过同源
+  SystemC、package及no-card纵向；不由独立passing artifacts或metadata拼接代签。tamper、unknown field、
+  stale digest、非法SPM range/rotation、
+  token/wait缺口、已有目标或companion late failure都不留下partial package/sibling。
+```
 
 ## 8. Runtime Layering
 
@@ -591,8 +636,9 @@ exact-match companion后自动执行一个固定protocol，不增加profile mode
 4. count/trace是correlated diagnostic launch，其耗时、PMU/cache扰动和entry span不进入Primary device-event
    elapsed time。trace clone在真实issue边界和profile-only local-completion轮询中采样hardware execution
    counter；CT/NE/RDMA/WDMA/TDMA execution delta按vendor producer/parser合同直接解释为nanoseconds，
-   其Kcore `rdcycle` begin/end只发布counter观测的tile-local CPU-cycle bounded window；Direct-DTE发布真实
-   `direct_dte_wait`/completion窗口，并将DTE PMU delta标为未校准raw activity。当前runtime可把
+   其Kcore `rdcycle` begin/end只发布counter观测的tile-local CPU-cycle bounded window；V3 Direct-DTE分别发布真实
+   `direct_dte_send_issue_v3`的peer-ready/setup窗口和matching `direct_dte_wait`的completion/cleanup窗口，
+   V1/V2只保留legacy wait窗口。DTE PMU delta标为未校准raw activity。当前runtime可把
    affine clock mapping显式发布为invalid/unavailable；此时仍保留全部16个tile-local timeline，但禁止cross-tile order、
    global overlap或cluster critical-path claim。带uncertainty的qualified mapping只作为未来可选增强；
 5. correctness、environment、identity、measurement basis、clock、counter和trace分别保留validity。raw evidence、
@@ -602,9 +648,10 @@ exact-match companion后自动执行一个固定protocol，不增加profile mode
    generator，失败时不得留下valid run或改变普通package。
 
 companion内部两个capture都只解释同一个final artifact，它们不是public package、用户选项或新的runtime launch kind。
-site id按rank解释，typed site kind覆盖NCC command、LocalFence/NCCJoin completion和Direct-DTE control/wait。
+site id按rank解释，typed site kind覆盖NCC command、LocalFence/NCCJoin completion和Direct-DTE control/issue/wait。
 report把同一tile的Kcore phase、Trace-only overhead和engine activity分层：`TsmExecute` submit、completion wait、
-Direct-DTE peer-ready/setup/completion/cleanup都可作为Kcore span显示，但不得冒充engine activity。
+V3 Direct-DTE issue中的peer-ready/setup以及matching wait中的completion/cleanup都可作为Kcore span显示，但不得
+冒充engine activity；V1/V2 wait内auto-issue不得伪造V3 issue site。
 CT/NE/RDMA/WDMA/TDMA lane的高度/标签来自NCC PMU execution nanoseconds，位置来自严格包围counter read的
 Trace entry-local Kcore `rdcycle` bounded window；不同engine可重叠。zero delta保留为counter-no-change marker，
 same-engine outstanding标为attribution-ambiguous，不能继续静默绑定latest site。Kcore interval union的补集必须分成

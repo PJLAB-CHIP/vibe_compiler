@@ -21,6 +21,12 @@ constexpr TargetProfileRecord kTargetProfiles[] = {
      KernelRuntimeABIId::waferTx81KernelV2(), "wafer-tx81-kernel-v2",
      "elf-riscv64", TargetProfileId::waferTx81SingleCardKernelV1(),
      TargetProfileId::waferTx81SingleCardKernelV1()},
+    {TargetProfileId::waferTx81SingleCardKernelV3(),
+     "wafer-tx81-single-card-kernel-v3",
+     TargetIdentityId::waferTx81SingleCard(), "wafer-tx81-single-card",
+     KernelRuntimeABIId::waferTx81KernelV3(), "wafer-tx81-kernel-v3",
+     "elf-riscv64", TargetProfileId::waferTx81SingleCardKernelV1(),
+     TargetProfileId::waferTx81SingleCardKernelV1()},
 };
 
 template <typename Id, typename GetId, typename GetSpelling>

@@ -21,22 +21,28 @@
 namespace wafer::compiler::detail {
 
 /// One compiler-private member of a rank-local scheduling frontier. Stable
-/// ordinal, artifact kind, buffering kind, and buffering plan ordinal form the
-/// cross-rank correspondence key; the module remains the sole semantic
-/// artifact. During invocation-local context transfer, a slot that cannot
-/// occur in the already-fixed bounded attempt sequence may keep a null module
-/// so its original index and metadata still reproduce that sequence. Such a
-/// slot can only be observed by the correspondence precheck and never crosses
-/// the accepted-bundle boundary.
+/// ordinal, artifact kind, buffering identity, and worker-placement identity
+/// form the cross-rank correspondence key; the module remains the sole
+/// semantic artifact. During invocation-local context transfer, a slot that
+/// cannot occur in the already-fixed bounded attempt sequence may keep a null
+/// module so its original index and metadata still reproduce that sequence.
+/// Such a slot can only be observed through the import audit; it is removed
+/// before semantic transformations append candidates or the coordinator
+/// recomputes a plan. Frontier indices beyond that boundary intentionally
+/// carry no original-slot identity.
 struct RankVariantCandidate {
-  /// Nullable only for an invocation-local, non-attemptable context-transfer
-  /// slot. Every correspondence-valid attempted tuple requires a real module.
+  /// Nullable only before the import audit boundary completes. Every
+  /// transformation/selection frontier member and every attempted tuple
+  /// requires a real module.
   mlir::OwningOpRef<mlir::ModuleOp> module;
   int64_t stableOrdinal = 0;
   wafer::RankArtifactKind artifactKind = wafer::RankArtifactKind::Spill;
   bool reservedBaseline = false;
   wafer::RankBufferingKind bufferingKind = wafer::RankBufferingKind::Single;
   uint32_t bufferingPlanOrdinal = 0;
+  wafer::RankWorkerPlacementKind workerPlacementKind =
+      wafer::RankWorkerPlacementKind::Unplaced;
+  uint32_t workerPlacementPlanOrdinal = 0;
 };
 
 using RankVariantFrontier = std::vector<RankVariantCandidate>;
@@ -57,6 +63,8 @@ struct AcceptedWholeVariant {
   std::vector<bool> selectedReservedBaselines;
   std::vector<wafer::RankBufferingKind> selectedBufferingKinds;
   std::vector<uint32_t> selectedBufferingPlanOrdinals;
+  std::vector<wafer::RankWorkerPlacementKind> selectedWorkerPlacementKinds;
+  std::vector<uint32_t> selectedWorkerPlacementPlanOrdinals;
 };
 
 /// Same-frontier result used by the profiling product. When production selects
@@ -73,7 +81,18 @@ struct AcceptedProductionAndBaseline {
 struct WholeVariantSelectionStatistics {
   uint64_t targetGateInvocations = 0;
   uint64_t targetRankGateInvocations = 0;
+  uint64_t noCProfitabilityEvaluations = 0;
+  uint64_t noCProfitabilityRejected = 0;
+  uint64_t noCProfitabilityIndeterminate = 0;
+  uint64_t noCProfitabilityEstimated = 0;
+  uint64_t noCProfitabilityProven = 0;
 };
+
+/// Prove from one accepted rank's current IR that every DDR movement is
+/// attached to a function input or returned output root. Exact same-index SCF
+/// recurrences and same-root recurrence cycles through transparent aliases
+/// preserve a root; alternating roots and unknown producers fail closed.
+bool hasBoundaryOnlyDDRMovementEvidence(const RankExecutable &rank);
 
 /// Selects a complete rank-domain combination from independently planned
 /// frontiers. Every attempted combination must carry one same-generation

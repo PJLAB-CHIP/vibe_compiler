@@ -113,6 +113,294 @@ static std::string makeControlledRank(bool isSend, int64_t peer,
   return source;
 }
 
+struct LinearTransportSite {
+  bool isSend = false;
+  int64_t peer = -1;
+  int64_t spmOffset = -1;
+  int64_t communication = -1;
+};
+
+static std::string
+makeLinearTransportRank(llvm::ArrayRef<LinearTransportSite> sites,
+                        bool waitImmediately) {
+  std::string source;
+  llvm::raw_string_ostream os(source);
+  os << "module {\n"
+        "  func.func @main() {\n";
+  for (auto [index, site] : llvm::enumerate(sites))
+    os << "    %buffer" << index
+       << " = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<"
+       << site.spmOffset << ">} : memref<4xf32, #wafer.memory<spm, tensor>>\n";
+  for (auto [index, site] : llvm::enumerate(sites)) {
+    os << "    %token" << index << " = wafer.instr.dte_"
+       << (site.isSend ? "send" : "recv") << " %buffer" << index
+       << " {peer = " << site.peer
+       << " : i64, bytes = 16 : i64, message = "
+          "#wafer.dte_message<communication = "
+       << site.communication
+       << ", phase = collective_permute, round = 0, slice = 0>} : "
+          "memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token\n";
+    if (waitImmediately)
+      os << "    wafer.instr.dte_wait %token" << index << " : !async.token\n";
+  }
+  if (!waitImmediately) {
+    os << "    wafer.instr.dte_wait ";
+    for (size_t index = 0; index < sites.size(); ++index) {
+      if (index != 0)
+        os << ", ";
+      os << "%token" << index;
+    }
+    os << " : ";
+    for (size_t index = 0; index < sites.size(); ++index) {
+      if (index != 0)
+        os << ", ";
+      os << "!async.token";
+    }
+    os << "\n";
+  }
+  os << "    return\n"
+        "  }\n"
+        "}\n";
+  return source;
+}
+
+static std::string makeTwoHelperRank(bool isSend, int64_t peer,
+                                     int64_t baseOffset,
+                                     bool reverseDefinitions, bool reverseCalls,
+                                     bool reuseMessageIdentity = false) {
+  auto emitHelper = [&](llvm::raw_ostream &os, llvm::StringRef name,
+                        int64_t offset, int64_t communication) {
+    os << "  func.func private @" << name
+       << "() {\n"
+          "    %buffer = memref.alloc() {wafer.spm.offset = "
+          "#wafer.spm_offset<"
+       << offset
+       << ">} : memref<4xf32, #wafer.memory<spm, tensor>>\n"
+          "    %token = wafer.instr.dte_"
+       << (isSend ? "send" : "recv") << " %buffer {peer = " << peer
+       << " : i64, bytes = 16 : i64, message = "
+          "#wafer.dte_message<communication = "
+       << communication
+       << ", phase = collective_permute, round = 0, slice = 0>} : "
+          "memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token\n"
+          "    wafer.instr.dte_wait %token : !async.token\n"
+          "    return\n"
+          "  }\n";
+  };
+
+  std::string source;
+  llvm::raw_string_ostream os(source);
+  os << "module {\n"
+        "  func.func @main() {\n";
+  os << "    func.call @" << (reverseCalls ? "second" : "first")
+     << "() : () -> ()\n";
+  os << "    func.call @" << (reverseCalls ? "first" : "second")
+     << "() : () -> ()\n";
+  os << "    return\n"
+        "  }\n";
+  if (reverseDefinitions) {
+    emitHelper(os, "second", baseOffset + 256, reuseMessageIdentity ? 50 : 51);
+    emitHelper(os, "first", baseOffset, 50);
+  } else {
+    emitHelper(os, "first", baseOffset, 50);
+    emitHelper(os, "second", baseOffset + 256, reuseMessageIdentity ? 50 : 51);
+  }
+  os << "}\n";
+  return source;
+}
+
+static std::string makeStructuredPhaseRank(bool prologueIsSend,
+                                           bool steadyIsSend,
+                                           bool epilogueIsSend, int64_t peer,
+                                           int64_t baseOffset) {
+  auto emitIssue = [&](llvm::raw_ostream &os, llvm::StringRef indent,
+                       llvm::StringRef token, llvm::StringRef buffer,
+                       bool isSend, int64_t communication) {
+    os << indent << token << " = wafer.instr.dte_" << (isSend ? "send" : "recv")
+       << " " << buffer << " {peer = " << peer
+       << " : i64, bytes = 16 : i64, message = "
+          "#wafer.dte_message<communication = "
+       << communication
+       << ", phase = collective_permute, round = 0, slice = 0>} : "
+          "memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token\n";
+    os << indent << "wafer.instr.dte_wait " << token << " : !async.token\n";
+  };
+
+  std::string source;
+  llvm::raw_string_ostream os(source);
+  os << "module {\n"
+        "  func.func @main() {\n"
+        "    %c0 = arith.constant 0 : index\n"
+        "    %c1 = arith.constant 1 : index\n"
+        "    %c2 = arith.constant 2 : index\n"
+        "    %c4 = arith.constant 4 : index\n";
+  for (int64_t index = 0; index < 3; ++index)
+    os << "    %buffer" << index
+       << " = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<"
+       << baseOffset + index * 256
+       << ">} : memref<4xf32, #wafer.memory<spm, tensor>>\n";
+  emitIssue(os, "    ", "%prologue", "%buffer0", prologueIsSend, 40);
+  os << "    scf.for %outer = %c0 to %c4 step %c1 {\n"
+        "      scf.for %inner = %c0 to %c2 step %c1 {\n";
+  emitIssue(os, "        ", "%steady", "%buffer1", steadyIsSend, 41);
+  os << "      }\n"
+        "    }\n";
+  emitIssue(os, "    ", "%epilogue", "%buffer2", epilogueIsSend, 42);
+  os << "    return\n"
+        "  }\n"
+        "}\n";
+  return source;
+}
+
+static std::string makeSiblingLoopRank(bool firstIsSend, bool secondIsSend,
+                                       int64_t peer, int64_t baseOffset) {
+  auto emitLoop = [&](llvm::raw_ostream &os, llvm::StringRef induction,
+                      llvm::StringRef token, llvm::StringRef buffer,
+                      bool isSend, int64_t communication) {
+    os << "    scf.for " << induction << " = %c0 to %c4 step %c1 {\n"
+       << "      " << token << " = wafer.instr.dte_"
+       << (isSend ? "send" : "recv") << " " << buffer << " {peer = " << peer
+       << " : i64, bytes = 16 : i64, message = "
+          "#wafer.dte_message<communication = "
+       << communication
+       << ", phase = collective_permute, round = 0, slice = 0>} : "
+          "memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token\n"
+       << "      wafer.instr.dte_wait " << token << " : !async.token\n"
+       << "    }\n";
+  };
+
+  std::string source;
+  llvm::raw_string_ostream os(source);
+  os << "module {\n"
+        "  func.func @main() {\n"
+        "    %c0 = arith.constant 0 : index\n"
+        "    %c1 = arith.constant 1 : index\n"
+        "    %c4 = arith.constant 4 : index\n"
+        "    %buffer0 = memref.alloc() {wafer.spm.offset = "
+        "#wafer.spm_offset<"
+     << baseOffset
+     << ">} : memref<4xf32, #wafer.memory<spm, tensor>>\n"
+        "    %buffer1 = memref.alloc() {wafer.spm.offset = "
+        "#wafer.spm_offset<"
+     << baseOffset + 256 << ">} : memref<4xf32, #wafer.memory<spm, tensor>>\n";
+  emitLoop(os, "%first_index", "%first", "%buffer0", firstIsSend, 80);
+  emitLoop(os, "%second_index", "%second", "%buffer1", secondIsSend, 81);
+  os << "    return\n"
+        "  }\n"
+        "}\n";
+  return source;
+}
+
+static std::string makeTileRegionSiblingRank(unsigned rank) {
+  auto emitRegion = [&](llvm::raw_ostream &os, unsigned region,
+                        llvm::StringRef input, bool hasTransport, bool isSend,
+                        int64_t peer, int64_t offset, int64_t communication) {
+    os << "    %tile" << region << " = wafer.tile.region(\n"
+       << "        " << input
+       << " : memref<4xf32, #wafer.memory<ddr, tensor>>)\n"
+          "        -> (memref<4xf32, #wafer.memory<ddr, tensor>>) {\n"
+          "    ^bb0(%source: memref<4xf32, #wafer.memory<ddr, tensor>>):\n";
+    if (hasTransport) {
+      os << "      %buffer = memref.alloc() {wafer.spm.offset = "
+            "#wafer.spm_offset<"
+         << offset
+         << ">} : memref<4xf32, #wafer.memory<spm, tensor>>\n"
+            "      %token = wafer.instr.dte_"
+         << (isSend ? "send" : "recv") << " %buffer {peer = " << peer
+         << " : i64, bytes = 16 : i64, message = "
+            "#wafer.dte_message<communication = "
+         << communication
+         << ", phase = collective_permute, round = 0, slice = 0>} : "
+            "memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token\n"
+            "      wafer.instr.dte_wait %token : !async.token\n";
+    }
+    os << "      wafer.tile.yield %source "
+          ": memref<4xf32, #wafer.memory<ddr, tensor>>\n"
+          "    }\n";
+  };
+
+  std::string source;
+  llvm::raw_string_ostream os(source);
+  os << "module {\n"
+        "  func.func @main("
+        "%input: memref<4xf32, #wafer.memory<ddr, tensor>>) {\n";
+  if (rank == 0)
+    emitRegion(os, 0, "%input", /*hasTransport=*/true, /*isSend=*/true,
+               /*peer=*/1, /*offset=*/65536, /*communication=*/90);
+  else if (rank == 1)
+    emitRegion(os, 0, "%input", /*hasTransport=*/true, /*isSend=*/false,
+               /*peer=*/0, /*offset=*/66048, /*communication=*/90);
+  else
+    emitRegion(os, 0, "%input", /*hasTransport=*/false, /*isSend=*/false,
+               /*peer=*/-1, /*offset=*/-1, /*communication=*/-1);
+
+  if (rank == 0)
+    emitRegion(os, 1, "%tile0", /*hasTransport=*/true, /*isSend=*/true,
+               /*peer=*/2, /*offset=*/65792, /*communication=*/91);
+  else if (rank == 2)
+    emitRegion(os, 1, "%tile0", /*hasTransport=*/true, /*isSend=*/false,
+               /*peer=*/0, /*offset=*/66304, /*communication=*/91);
+  else
+    emitRegion(os, 1, "%tile0", /*hasTransport=*/false, /*isSend=*/false,
+               /*peer=*/-1, /*offset=*/-1, /*communication=*/-1);
+  os << "    return\n"
+        "  }\n"
+        "}\n";
+  return source;
+}
+
+static std::string makeCrossBlockCycleRank(bool firstRank, int64_t baseOffset) {
+  std::string source;
+  llvm::raw_string_ostream os(source);
+  os << "module {\n"
+        "  func.func @main() {\n"
+        "    %c0 = arith.constant 0 : index\n"
+        "    %c1 = arith.constant 1 : index\n"
+        "    %c4 = arith.constant 4 : index\n"
+        "    %buffer0 = memref.alloc() {wafer.spm.offset = "
+        "#wafer.spm_offset<"
+     << baseOffset
+     << ">} : memref<4xf32, #wafer.memory<spm, tensor>>\n"
+        "    %buffer1 = memref.alloc() {wafer.spm.offset = "
+        "#wafer.spm_offset<"
+     << baseOffset + 256 << ">} : memref<4xf32, #wafer.memory<spm, tensor>>\n";
+  if (firstRank) {
+    os << "    %first = wafer.instr.dte_send %buffer0 {peer = 1 : i64, "
+          "bytes = 16 : i64, message = "
+          "#wafer.dte_message<communication = 60, phase = collective_permute, "
+          "round = 0, slice = 0>} : "
+          "memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token\n"
+          "    wafer.instr.dte_wait %first : !async.token\n"
+          "    scf.for %index = %c0 to %c4 step %c1 {\n"
+          "      %second = wafer.instr.dte_recv %buffer1 {peer = 1 : i64, "
+          "bytes = 16 : i64, message = "
+          "#wafer.dte_message<communication = 61, phase = collective_permute, "
+          "round = 0, slice = 0>} : "
+          "memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token\n"
+          "      wafer.instr.dte_wait %second : !async.token\n"
+          "    }\n";
+  } else {
+    os << "    scf.for %index = %c0 to %c4 step %c1 {\n"
+          "      %first = wafer.instr.dte_send %buffer0 {peer = 0 : i64, "
+          "bytes = 16 : i64, message = "
+          "#wafer.dte_message<communication = 61, phase = collective_permute, "
+          "round = 0, slice = 0>} : "
+          "memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token\n"
+          "      wafer.instr.dte_wait %first : !async.token\n"
+          "    }\n"
+          "    %second = wafer.instr.dte_recv %buffer1 {peer = 0 : i64, "
+          "bytes = 16 : i64, message = "
+          "#wafer.dte_message<communication = 60, phase = collective_permute, "
+          "round = 0, slice = 0>} : "
+          "memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token\n"
+          "    wafer.instr.dte_wait %second : !async.token\n";
+  }
+  os << "    return\n"
+        "  }\n"
+        "}\n";
+  return source;
+}
+
 constexpr llvm::StringLiteral kOverlappingSendRank = R"mlir(
 module {
   func.func @main() {
@@ -253,6 +541,304 @@ TEST_F(DirectDTETransportTest,
   });
   EXPECT_EQ(sendCount, 2u);
   EXPECT_EQ(recvCount, 2u);
+}
+
+TEST_F(DirectDTETransportTest, ReceivePreparationBreaksCrossRankSendWaitCycle) {
+  std::string rank0 =
+      makeLinearTransportRank({{false, 1, 65536, 31}, {true, 1, 65792, 30}},
+                              /*waitImmediately=*/false);
+  std::string rank1 =
+      makeLinearTransportRank({{false, 0, 66048, 30}, {true, 0, 66304, 31}},
+                              /*waitImmediately=*/false);
+  auto rank0Module = parse(rank0);
+  auto rank1Module = parse(rank1);
+  ASSERT_TRUE(rank0Module);
+  ASSERT_TRUE(rank1Module);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*rank0Module, *rank1Module};
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  ASSERT_TRUE(mlir::succeeded(contract));
+  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+}
+
+TEST_F(DirectDTETransportTest, MutualSendBeforeReceiveWaitCycleFailsClosed) {
+  std::string rank0 =
+      makeLinearTransportRank({{true, 1, 65536, 30}, {false, 1, 65792, 31}},
+                              /*waitImmediately=*/true);
+  std::string rank1 =
+      makeLinearTransportRank({{true, 0, 66048, 31}, {false, 0, 66304, 30}},
+                              /*waitImmediately=*/true);
+  auto rank0Module = parse(rank0);
+  auto rank1Module = parse(rank1);
+  ASSERT_TRUE(rank0Module);
+  ASSERT_TRUE(rank1Module);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*rank0Module, *rank1Module};
+  std::string diagnosticText;
+  mlir::ScopedDiagnosticHandler handler(
+      context.get(), [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream stream(diagnosticText);
+        diagnostic.print(stream);
+        return mlir::success();
+      });
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  EXPECT_TRUE(mlir::failed(contract));
+  EXPECT_NE(diagnosticText.find("wait graph contains a cyclic dependency"),
+            std::string::npos);
+  for (mlir::ModuleOp module : modules) {
+    module.walk([](wafer::InstrDTESendOp operation) {
+      EXPECT_FALSE(operation.getBinding());
+    });
+    module.walk([](wafer::InstrDTERecvOp operation) {
+      EXPECT_FALSE(operation.getBinding());
+    });
+  }
+}
+
+TEST_F(DirectDTETransportTest,
+       AcceptsNestedSteadyStateWithPrologueAndEpilogueBlocks) {
+  auto rank0Module =
+      parse(makeStructuredPhaseRank(/*prologueIsSend=*/false,
+                                    /*steadyIsSend=*/false,
+                                    /*epilogueIsSend=*/true, /*peer=*/1,
+                                    /*baseOffset=*/65536));
+  auto rank1Module =
+      parse(makeStructuredPhaseRank(/*prologueIsSend=*/true,
+                                    /*steadyIsSend=*/true,
+                                    /*epilogueIsSend=*/false, /*peer=*/0,
+                                    /*baseOffset=*/66560));
+  ASSERT_TRUE(rank0Module);
+  ASSERT_TRUE(rank1Module);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*rank0Module, *rank1Module};
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  ASSERT_TRUE(mlir::succeeded(contract));
+  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+}
+
+TEST_F(DirectDTETransportTest, AcceptsOrderedSiblingLoopOccurrences) {
+  auto rank0Module =
+      parse(makeSiblingLoopRank(/*firstIsSend=*/false,
+                                /*secondIsSend=*/true, /*peer=*/1,
+                                /*baseOffset=*/65536));
+  auto rank1Module =
+      parse(makeSiblingLoopRank(/*firstIsSend=*/true,
+                                /*secondIsSend=*/false, /*peer=*/0,
+                                /*baseOffset=*/66560));
+  ASSERT_TRUE(rank0Module);
+  ASSERT_TRUE(rank1Module);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*rank0Module, *rank1Module};
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  ASSERT_TRUE(mlir::succeeded(contract));
+  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+}
+
+TEST_F(DirectDTETransportTest,
+       CountsTileRegionSiblingsIndependentOfTransportContent) {
+  auto rank0Module = parse(makeTileRegionSiblingRank(/*rank=*/0));
+  auto rank1Module = parse(makeTileRegionSiblingRank(/*rank=*/1));
+  auto rank2Module = parse(makeTileRegionSiblingRank(/*rank=*/2));
+  ASSERT_TRUE(rank0Module);
+  ASSERT_TRUE(rank1Module);
+  ASSERT_TRUE(rank2Module);
+  llvm::SmallVector<mlir::ModuleOp, 3> modules{*rank0Module, *rank1Module,
+                                               *rank2Module};
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  ASSERT_TRUE(mlir::succeeded(contract));
+  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+}
+
+TEST_F(DirectDTETransportTest, CrossBlockWaitCycleFailsClosed) {
+  auto rank0Module =
+      parse(makeCrossBlockCycleRank(/*firstRank=*/true, /*baseOffset=*/65536));
+  auto rank1Module =
+      parse(makeCrossBlockCycleRank(/*firstRank=*/false, /*baseOffset=*/66560));
+  ASSERT_TRUE(rank0Module);
+  ASSERT_TRUE(rank1Module);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*rank0Module, *rank1Module};
+  std::string diagnosticText;
+  mlir::ScopedDiagnosticHandler handler(
+      context.get(), [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream stream(diagnosticText);
+        diagnostic.print(stream);
+        return mlir::success();
+      });
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  EXPECT_TRUE(mlir::failed(contract));
+  EXPECT_NE(diagnosticText.find("wait graph contains a cyclic dependency"),
+            std::string::npos);
+}
+
+TEST_F(DirectDTETransportTest,
+       HelperDefinitionOrderDoesNotDefineMessageOccurrence) {
+  auto sendModule = parse(makeTwoHelperRank(/*isSend=*/true, /*peer=*/1,
+                                            /*baseOffset=*/65536,
+                                            /*reverseDefinitions=*/false,
+                                            /*reverseCalls=*/false,
+                                            /*reuseMessageIdentity=*/true));
+  auto recvModule = parse(makeTwoHelperRank(/*isSend=*/false, /*peer=*/0,
+                                            /*baseOffset=*/66560,
+                                            /*reverseDefinitions=*/true,
+                                            /*reverseCalls=*/false,
+                                            /*reuseMessageIdentity=*/true));
+  ASSERT_TRUE(sendModule);
+  ASSERT_TRUE(recvModule);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*sendModule, *recvModule};
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  ASSERT_TRUE(mlir::succeeded(contract));
+  EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
+}
+
+TEST_F(DirectDTETransportTest, MismatchedHelperCallOccurrenceFailsClosed) {
+  auto sendModule = parse(makeTwoHelperRank(/*isSend=*/true, /*peer=*/1,
+                                            /*baseOffset=*/65536,
+                                            /*reverseDefinitions=*/false,
+                                            /*reverseCalls=*/false));
+  auto recvModule = parse(makeTwoHelperRank(/*isSend=*/false, /*peer=*/0,
+                                            /*baseOffset=*/66560,
+                                            /*reverseDefinitions=*/true,
+                                            /*reverseCalls=*/true));
+  ASSERT_TRUE(sendModule);
+  ASSERT_TRUE(recvModule);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*sendModule, *recvModule};
+  std::string diagnosticText;
+  mlir::ScopedDiagnosticHandler handler(
+      context.get(), [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream stream(diagnosticText);
+        diagnostic.print(stream);
+        return mlir::success();
+      });
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  EXPECT_TRUE(mlir::failed(contract));
+  EXPECT_NE(diagnosticText.find("occurrence paths are not structurally "
+                                "identical across ranks"),
+            std::string::npos);
+}
+
+TEST_F(DirectDTETransportTest,
+       StaticSiteReusedAcrossDifferentCallBindingsFailsClosed) {
+  constexpr llvm::StringLiteral kRepeatedSendSite = R"mlir(
+module {
+  func.func @main() {
+    func.call @transport() : () -> ()
+    func.call @transport() : () -> ()
+    return
+  }
+  func.func private @transport() {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+    %token = wafer.instr.dte_send %buffer
+        {peer = 1 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 52, phase = collective_permute, round = 0, slice = 0>}
+        : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %token : !async.token
+    return
+  }
+})mlir";
+  constexpr llvm::StringLiteral kDistinctReceiveSites = R"mlir(
+module {
+  func.func @main() {
+    func.call @first() : () -> ()
+    func.call @second() : () -> ()
+    return
+  }
+  func.func private @first() {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66560>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+    %token = wafer.instr.dte_recv %buffer
+        {peer = 0 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 52, phase = collective_permute, round = 0, slice = 0>}
+        : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %token : !async.token
+    return
+  }
+  func.func private @second() {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66816>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+    %token = wafer.instr.dte_recv %buffer
+        {peer = 0 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 52, phase = collective_permute, round = 0, slice = 0>}
+        : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %token : !async.token
+    return
+  }
+})mlir";
+  auto sendModule = parse(kRepeatedSendSite);
+  auto recvModule = parse(kDistinctReceiveSites);
+  ASSERT_TRUE(sendModule);
+  ASSERT_TRUE(recvModule);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*sendModule, *recvModule};
+  std::string diagnosticText;
+  mlir::ScopedDiagnosticHandler handler(
+      context.get(), [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream stream(diagnosticText);
+        diagnostic.print(stream);
+        return mlir::success();
+      });
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  EXPECT_TRUE(mlir::failed(contract));
+  EXPECT_NE(diagnosticText.find("different physical bindings across call "
+                                "occurrences"),
+            std::string::npos);
+}
+
+TEST_F(DirectDTETransportTest, UnusedDTEHelperFailsCallOccurrenceProof) {
+  constexpr llvm::StringLiteral kUnusedSend = R"mlir(
+module {
+  func.func @main() {
+    return
+  }
+  func.func private @unused_transport() {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+    %token = wafer.instr.dte_send %buffer
+        {peer = 1 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 70, phase = collective_permute, round = 0, slice = 0>}
+        : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %token : !async.token
+    return
+  }
+})mlir";
+  constexpr llvm::StringLiteral kUsedRecv = R"mlir(
+module {
+  func.func @main() {
+    func.call @transport() : () -> ()
+    return
+  }
+  func.func private @transport() {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66560>}
+        : memref<4xf32, #wafer.memory<spm, tensor>>
+    %token = wafer.instr.dte_recv %buffer
+        {peer = 0 : i64, bytes = 16 : i64,
+         message = #wafer.dte_message<communication = 70, phase = collective_permute, round = 0, slice = 0>}
+        : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %token : !async.token
+    return
+  }
+})mlir";
+  auto sendModule = parse(kUnusedSend);
+  auto recvModule = parse(kUsedRecv);
+  ASSERT_TRUE(sendModule);
+  ASSERT_TRUE(recvModule);
+  llvm::SmallVector<mlir::ModuleOp, 2> modules{*sendModule, *recvModule};
+  std::string diagnosticText;
+  mlir::ScopedDiagnosticHandler handler(
+      context.get(), [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream stream(diagnosticText);
+        diagnostic.print(stream);
+        return mlir::success();
+      });
+
+  auto contract = wafer::compiler::testing::acceptDirectDTETransport(modules);
+  EXPECT_TRUE(mlir::failed(contract));
+  EXPECT_NE(diagnosticText.find("outside the entry call closure"),
+            std::string::npos);
 }
 
 TEST_F(DirectDTETransportTest,

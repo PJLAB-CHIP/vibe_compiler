@@ -142,7 +142,7 @@ module {
   program.distributedInputs = {replicatedBoundary(0), replicatedBoundary(1)};
   program.distributedOutputs = {replicatedBoundary(0)};
   llvm::Expected<ExecutionConfig> config = ExecutionConfig::createForSingleCard(
-      1, TargetProfileId::waferTx81SingleCardKernelV1(),
+      1, TargetProfileId::waferTx81SingleCardKernelV3(),
       RuntimeLaunchKind::Kernel);
   if (!config)
     return config.takeError();
@@ -225,10 +225,26 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
       << diagnosticText << llvm::toString(executable.takeError());
   ASSERT_EQ(executable->getRankExecutables().size(), 1u);
   EXPECT_EQ(executable->getExecutionConfig().getTargetProfileId(),
-            TargetProfileId::waferTx81SingleCardKernelV1());
+            TargetProfileId::waferTx81SingleCardKernelV3());
 
   mlir::ModuleOp selected =
       executable->getRankExecutables().front().getModule();
+  selected.walk([&](InstrRDMAOp operation) {
+    operation.setWorkerAttr(
+        NCCWorkerAttr::get(selected.getContext(), NCCWorker::Worker1));
+  });
+  selected.walk([&](InstrElementwiseOp operation) {
+    operation.setWorkerAttr(
+        NCCWorkerAttr::get(selected.getContext(), NCCWorker::Worker2));
+  });
+  selected.walk([&](InstrWDMAOp operation) {
+    operation.setWorkerAttr(
+        NCCWorkerAttr::get(selected.getContext(), NCCWorker::Worker1));
+  });
+  selected.walk([&](SyncNCCJoinOp operation) {
+    operation.setParticipantsAttr(
+        mlir::DenseI64ArrayAttr::get(selected.getContext(), {1, 2}));
+  });
   llvm::SmallVector<mlir::scf::ForOp, 2> loops;
   llvm::SmallVector<SyncNCCJoinOp, 2> joins;
   unsigned localFenceCount = 0;
@@ -274,8 +290,9 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   EXPECT_EQ(localFenceCount, 0u);
   ASSERT_EQ(joins.size(), 1u);
   EXPECT_FALSE(joins.front()->getParentOfType<mlir::scf::ForOp>());
-  ASSERT_EQ(joins.front().getParticipants().size(), 1u);
-  EXPECT_EQ(joins.front().getParticipants().front(), 0);
+  ASSERT_EQ(joins.front().getParticipants().size(), 2u);
+  EXPECT_EQ(joins.front().getParticipants()[0], 1);
+  EXPECT_EQ(joins.front().getParticipants()[1], 2);
   EXPECT_EQ(nestedSPMAllocationCount, 0u);
   EXPECT_EQ(externalSPMAllocationCount, 6u);
   EXPECT_FALSE(missingSPMOffset);
@@ -293,24 +310,30 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
 
   const llvm::Module &llvmModule = targetModule.getModule();
   const size_t targetAddCallCount = countCallsTo(
-      llvmModule, getTargetCallDescriptor(InstrElementwiseKind::Add).symbol);
+      llvmModule, getTargetCallDescriptor(InstrElementwiseKind::Add,
+                                          targetModule.getTargetProfileId())
+                      .symbol);
   EXPECT_EQ(targetAddCallCount, 3u);
-  EXPECT_EQ(
-      countCallsTo(llvmModule,
-                   getTargetCallDescriptor(TargetCallBuiltin::RDMA).symbol),
-      targetAddCallCount * 2);
-  EXPECT_EQ(
-      countCallsTo(llvmModule,
-                   getTargetCallDescriptor(TargetCallBuiltin::WDMA).symbol),
-      targetAddCallCount);
-  EXPECT_EQ(countCallsTo(
-                llvmModule,
-                getTargetCallDescriptor(TargetCallBuiltin::LocalFence).symbol),
+  EXPECT_EQ(countCallsTo(llvmModule, getTargetCallDescriptor(
+                                         TargetCallBuiltin::RDMA,
+                                         targetModule.getTargetProfileId())
+                                         .symbol),
+            targetAddCallCount * 2);
+  EXPECT_EQ(countCallsTo(llvmModule, getTargetCallDescriptor(
+                                         TargetCallBuiltin::WDMA,
+                                         targetModule.getTargetProfileId())
+                                         .symbol),
+            targetAddCallCount);
+  EXPECT_EQ(countCallsTo(llvmModule, getTargetCallDescriptor(
+                                         TargetCallBuiltin::LocalFence,
+                                         targetModule.getTargetProfileId())
+                                         .symbol),
             0u);
-  EXPECT_EQ(
-      countCallsTo(llvmModule,
-                   getTargetCallDescriptor(TargetCallBuiltin::NCCJoin).symbol),
-      1u);
+  EXPECT_EQ(countCallsTo(llvmModule, getTargetCallDescriptor(
+                                         TargetCallBuiltin::NCCJoin,
+                                         targetModule.getTargetProfileId())
+                                         .symbol),
+            1u);
 
   TargetCallRankArguments rankArguments{0, {}};
   std::vector<ABIRange> abiRanges;
@@ -352,7 +375,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   EXPECT_TRUE(recording.aborted.empty());
   ASSERT_TRUE(recording.invocation.has_value());
   EXPECT_EQ(recording.invocation->targetProfile,
-            TargetProfileId::waferTx81SingleCardKernelV1());
+            TargetProfileId::waferTx81SingleCardKernelV3());
   EXPECT_EQ(recording.terminalRanks, std::vector<int64_t>({0}));
   EXPECT_EQ(decoded->issuedTransactionCount, recording.transactions.size());
 
@@ -371,7 +394,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
     if (const auto *dma =
             std::get_if<TargetStridedDMATransaction>(&transaction.payload)) {
       ASSERT_TRUE(transaction.nccIssueDomain.has_value());
-      EXPECT_EQ(transaction.nccIssueDomain->worker, NCCWorker::Worker0);
+      EXPECT_EQ(transaction.nccIssueDomain->worker, NCCWorker::Worker1);
       EXPECT_EQ(transaction.nccIssueDomain->completionBehavior,
                 LocalInstructionCompletion::OrderedPending);
       if (dma->direction == TargetDMADirection::Read) {
@@ -403,7 +426,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
             std::get_if<TargetElementwiseTransaction>(&transaction.payload)) {
       ASSERT_TRUE(transaction.nccIssueDomain.has_value());
       EXPECT_EQ(transaction.nccIssueDomain->engine, TargetCallTSMEngine::CT);
-      EXPECT_EQ(transaction.nccIssueDomain->worker, NCCWorker::Worker0);
+      EXPECT_EQ(transaction.nccIssueDomain->worker, NCCWorker::Worker2);
       EXPECT_EQ(transaction.nccIssueDomain->completionBehavior,
                 LocalInstructionCompletion::OrderedPending);
       EXPECT_EQ(add->kind, InstrElementwiseKind::Add);
@@ -417,7 +440,8 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
       ++joinCount;
       EXPECT_FALSE(transaction.nccIssueDomain.has_value());
       EXPECT_EQ(join->participantMask,
-                uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker0));
+                (uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker1)) |
+                    (uint32_t{1} << static_cast<uint32_t>(NCCWorker::Worker2)));
       EXPECT_EQ(index + 1, recording.transactions.size());
       issueKinds.push_back('J');
       continue;
@@ -485,6 +509,6 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
 } // namespace
 
 extern "C" int sc_main(int argc, char **argv) {
-  testing::InitGoogleTest(&argc, argv);
+  ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

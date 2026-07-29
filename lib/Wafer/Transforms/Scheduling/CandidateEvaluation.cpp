@@ -144,7 +144,9 @@ getCommunicationOptions(CommunicationAlternative alternative) {
 static bool
 canUseFullTraversalFallback(const CandidateSpec &candidate,
                             llvm::ArrayRef<int64_t> traversalShape) {
-  return candidate.reductionSplitSizes.empty() &&
+  return candidate.traversalKind ==
+             CandidateTileTraversalKind::ResultDriven &&
+         candidate.reductionSplitSizes.empty() &&
          candidate.tileSizes.size() == traversalShape.size() &&
          std::equal(candidate.tileSizes.begin(), candidate.tileSizes.end(),
                     traversalShape.begin(), traversalShape.end());
@@ -184,7 +186,8 @@ CandidateEvaluation evaluateCompleteCandidate(
               task, candidate.tileSizes, candidate.reductionSplitSizes,
               evaluation.module, &failureReason, config.logicalRank,
               candidate.selectedImplementationAlternative,
-              config.useDirectMappedBoundaryTransfer);
+              config.useDirectMappedBoundaryTransfer,
+              candidate.traversalKind);
         },
         result);
     evaluation.artifactSource = CandidateArtifactSource::CompleteTraversalAPI;
@@ -212,7 +215,8 @@ CandidateEvaluation evaluateCompleteCandidate(
               task, candidate.tileSizes, candidate.reductionSplitSizes,
               evaluation.module, &failureReason, config.logicalRank,
               candidate.selectedImplementationAlternative,
-              config.useDirectMappedBoundaryTransfer);
+              config.useDirectMappedBoundaryTransfer,
+              candidate.traversalKind);
         },
         result);
     if (mlir::succeeded(result))

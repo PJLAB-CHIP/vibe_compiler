@@ -7,6 +7,7 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/Internal.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/TargetSchedulingCapability.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -61,6 +62,11 @@ struct CandidateSpec {
   llvm::SmallVector<int64_t, 4> tileSizes;
   llvm::SmallVector<int64_t, 2> reductionSplitSizes;
   std::optional<TargetImplementationKind> selectedImplementationAlternative;
+  /// Invocation-local seed for one discardable complete actual clone. The
+  /// selected traversal is consumed during materialization and is not retained
+  /// in accepted IR or rank-frontier metadata.
+  CandidateTileTraversalKind traversalKind =
+      CandidateTileTraversalKind::ResultDriven;
 };
 
 struct TileInstance {
@@ -119,7 +125,8 @@ class CandidateEvaluationExecutor;
 struct SelectionConfig {
   explicit SelectionConfig(const WaferTargetPolicy &policy,
                            TargetProfileId targetProfile)
-      : scheduleCostPolicy(
+      : targetProfile(targetProfile),
+        scheduleCostPolicy(
             analysis::getTargetScheduleCostPolicy(targetProfile)),
         preferredTileSizes(policy.tileSearch.preferredTileSizes),
         maxCandidatesPerDim(policy.tileSearch.maxCandidatesPerDim),
@@ -133,6 +140,15 @@ struct SelectionConfig {
         ddrAlignmentBytes(policy.memory.ddrAlignmentBytes) {}
 
   int64_t logicalRank = -1;
+  /// Selects the tile seed for this complete-clone recipe. Keeping this on the
+  /// enclosing recipe, rather than adding siblings to one tile-search queue,
+  /// preserves the result-driven queue order and retry budget exactly.
+  CandidateTileTraversalKind traversalKind =
+      CandidateTileTraversalKind::ResultDriven;
+  /// Exact compiler-shipped scheduling capability identity. This is retained
+  /// separately from the cost policy because legality and profitability
+  /// knowledge are independent target-contract axes.
+  TargetProfileId targetProfile;
   /// Immutable compiler-shipped target-contract interpretation of every
   /// candidate cost. Copies sent to evaluation workers preserve the exact
   /// static production contract; no live-card/profile state is consulted.
@@ -254,9 +270,9 @@ getYieldedRootLinalgOps(mlir::func::FuncOp task);
 /// Returns the Linalg compute roots used only to direct traversal-pressure and
 /// target-capacity analysis. In addition to direct yielded Linalg roots, this
 /// may look through a verified single-input/single-result shape-preserving
-/// all-reduce to its unique direct Linalg producer. Reduction-range and
-/// reduction-split legality must continue to use getYieldedRootLinalgOps so an
-/// upstream SPMD contracting shard is not reinterpreted as a local K split.
+/// all-reduce to its unique direct Linalg producer. Only an explicitly
+/// PartialReduction interface recipe may use that producer for local split
+/// ranges; other recipes must not reinterpret a pre-collective local shard.
 std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>>
 getTraversalComputeRootLinalgOps(mlir::func::FuncOp task);
 
@@ -268,10 +284,16 @@ std::string getStandaloneTaskModuleText(mlir::func::FuncOp task);
 mlir::func::FuncOp findSingleSelectionTask(mlir::ModuleOp module);
 
 mlir::FailureOr<llvm::SmallVector<int64_t, 2>>
-getStaticRootReductionRanges(mlir::func::FuncOp task);
+getStaticRootReductionRanges(
+    mlir::func::FuncOp task,
+    CandidateTileTraversalKind traversalKind =
+        CandidateTileTraversalKind::ResultDriven);
 
 std::optional<std::string>
-getReductionSplitLegalityFailure(mlir::func::FuncOp task);
+getReductionSplitLegalityFailure(
+    mlir::func::FuncOp task,
+    CandidateTileTraversalKind traversalKind =
+        CandidateTileTraversalKind::ResultDriven);
 
 bool failsCheapSPMBound(mlir::func::FuncOp task, const CandidateSpec &candidate,
                         int64_t spmBase, int64_t spmLimit);

@@ -16,11 +16,11 @@ from typing import Any
 
 
 SCHEMA_NAME = "wafer.profile.evidence"
-SCHEMA_VERSION = 8
-COMPANION_SCHEMA_VERSION = 5
-RECORD_ABI = "wafer-tx81-profiler-record-v3"
+SCHEMA_VERSION = 9
+COMPANION_SCHEMA_VERSION = 6
+RECORD_ABI = "wafer-tx81-profiler-record-v4"
 ANALYSIS_SCHEMA_NAME = "wafer.profile.analysis"
-ANALYSIS_SCHEMA_VERSION = 7
+ANALYSIS_SCHEMA_VERSION = 8
 STATIC_COST_MODEL = "tx81-static-peak-lower-bound-v1"
 STATIC_COST_SCOPE = "complete-final-instruction-program-per-rank"
 TILES = tuple(range(16))
@@ -31,11 +31,13 @@ SITE_KINDS = (
     "ncc-command",
     "ncc-completion",
     "direct-dte-control",
+    "direct-dte-issue",
     "direct-dte-wait",
 )
 EVENT_KINDS = (
     "ncc-command",
     "ncc-completion-wait",
+    "direct-dte-issue",
     "direct-dte-wait",
     "direct-dte-peer-ready-wait",
     "direct-dte-setup-issue",
@@ -521,10 +523,10 @@ def _validate_sites(
             _fail(f"{path}.engine", "an NCC command must name its NCC engine")
         if site_kind == "ncc-completion" and engine is not None:
             _fail(f"{path}.engine", "an NCC completion site must use null engine")
-        if site_kind == "direct-dte-wait" and engine != "DIRECT_DTE":
+        if site_kind in ("direct-dte-issue", "direct-dte-wait") and engine != "DIRECT_DTE":
             _fail(
                 f"{path}.engine",
-                "a Direct-DTE wait site must name the DIRECT_DTE engine",
+                "a Direct-DTE issue/wait site must name the DIRECT_DTE engine",
             )
         if site_kind == "direct-dte-control" and engine is not None:
             _fail(
@@ -700,11 +702,15 @@ def _validate_experiment(
                 },
                 "ncc-completion": {"target-site", "ncc-completion-wait"},
                 "direct-dte-control": {"target-site"},
+                "direct-dte-issue": {
+                    "target-site",
+                    "direct-dte-issue",
+                    "direct-dte-peer-ready-wait",
+                    "direct-dte-setup-issue",
+                },
                 "direct-dte-wait": {
                     "target-site",
                     "direct-dte-wait",
-                    "direct-dte-peer-ready-wait",
-                    "direct-dte-setup-issue",
                     "direct-dte-completion-wait",
                     "direct-dte-cleanup",
                 },
@@ -848,7 +854,7 @@ def _validate_experiment(
                     "receive",
                 ):
                     _fail(f"{event_path}.dte_role", "must be send or receive")
-                if kind == "direct-dte-wait":
+                if kind in ("direct-dte-issue", "direct-dte-wait"):
                     valid = _boolean(
                         event["dte_counter_valid"],
                         f"{event_path}.dte_counter_valid",
@@ -861,12 +867,12 @@ def _validate_experiment(
                 elif event["dte_counter_valid"] is not None:
                     _fail(
                         f"{event_path}.dte_counter_valid",
-                        "must be null outside a Direct-DTE wait",
+                        "must be null outside a Direct-DTE issue/wait aggregate",
                     )
             elif event["dte_role"] is not None or event["dte_counter_valid"] is not None:
                 _fail(
                     event_path,
-                    "a non-DTE-wait event must carry null DTE role and counter validity",
+                    "a non-DTE event must carry null DTE role and counter validity",
                 )
             if kind == "target-site":
                 if (
@@ -1841,6 +1847,7 @@ def _operation_cost_contract(kind: str) -> tuple[str, str, str, str]:
         "direct-dte-setup-issue": "dte-setup-issue",
         "direct-dte-completion-wait": "dte-completion-wait",
         "direct-dte-cleanup": "dte-cleanup",
+        "direct-dte-issue": "dte-issue-aggregate-fallback",
         "direct-dte-wait": "dte-wait-aggregate-fallback",
     }
     return (
@@ -2269,8 +2276,10 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             ]
         ] = []
         tile_events: list[dict[str, Any]] = []
-        dte_source_count = 0
-        dte_windows_valid = protocol_ok
+        dte_issue_source_count = 0
+        dte_wait_source_count = 0
+        dte_issue_windows_valid = protocol_ok
+        dte_wait_windows_valid = protocol_ok
         current_site_ref: Mapping[str, Any] | None = None
 
         for event in trace_row["events"]:
@@ -2383,17 +2392,23 @@ def analyze_evidence(value: object) -> dict[str, Any]:
 
             ncc = kind == "ncc-command"
             dte_event = kind.startswith("direct-dte-")
+            dte_issue = kind == "direct-dte-issue"
             dte_wait = kind == "direct-dte-wait"
+            dte_aggregate = dte_issue or dte_wait
             target_site = kind == "target-site"
             positive = bool(event["positive_delta"])
             ambiguous = bool(event["attribution_ambiguous"])
             ncc_counter_valid = (
                 bool(event["ncc_counter_valid"]) if ncc else None
             )
-            if dte_wait:
-                dte_source_count += 1
+            if dte_issue:
+                dte_issue_source_count += 1
                 if operation_span is None:
-                    dte_windows_valid = False
+                    dte_issue_windows_valid = False
+            if dte_wait:
+                dte_wait_source_count += 1
+                if operation_span is None:
+                    dte_wait_windows_valid = False
             if ncc and not ncc_counter_valid:
                 duration_status = counter_status = "Unavailable"
             elif ambiguous:
@@ -2402,7 +2417,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                 duration_status, counter_status = "Bounded", "Measured"
             elif ncc:
                 duration_status, counter_status = "Zero-delta marker", "Zero delta"
-            elif dte_wait and operation_span:
+            elif dte_aggregate and operation_span:
                 duration_status = "Measured"
                 counter_status = (
                     "Sampled" if event["dte_counter_valid"] else "Unavailable"
@@ -2464,7 +2479,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             )
             direct_raw = (
                 int(event["counter_delta"])
-                if dte_wait and event["dte_counter_valid"]
+                if dte_aggregate and event["dte_counter_valid"]
                 else None
             )
             row = {
@@ -2595,17 +2610,22 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                     if dte_wait and operation_span
                     else None
                 ),
+                "direct_dte_issue_cpu_cycles": (
+                    operation_span[1] - operation_span[0]
+                    if dte_issue and operation_span
+                    else None
+                ),
                 "direct_dte_raw_pmu_activity": direct_raw,
                 "direct_dte_raw_pmu_valid": (
-                    bool(event["dte_counter_valid"]) if dte_wait else None
+                    bool(event["dte_counter_valid"]) if dte_aggregate else None
                 ),
                 "worker": event["worker"],
                 "wait_scope": event["wait_scope"],
-                "engine_lane_visible": ncc or dte_wait,
+                "engine_lane_visible": ncc or dte_aggregate,
             }
             timeline_events.append(row)
             tile_events.append(row)
-            if dte_wait and not event["dte_counter_valid"]:
+            if dte_aggregate and not event["dte_counter_valid"]:
                 diagnose(
                     "warning",
                     "direct_dte_raw_pmu_unusable",
@@ -2618,13 +2638,14 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         dte_leaf_intervals = [
             (begin, end)
             for begin, end, kind, _, _, _, _ in operation_candidates
-            if kind.startswith("direct-dte-") and kind != "direct-dte-wait"
+            if kind.startswith("direct-dte-")
+            and kind not in ("direct-dte-issue", "direct-dte-wait")
         ]
         operation_spans: list[
             tuple[int, int, str, int, Mapping[str, Any]]
         ] = []
         for begin, end, kind, sequence, _, _, site_ref in operation_candidates:
-            if kind == "direct-dte-wait" and any(
+            if kind in ("direct-dte-issue", "direct-dte-wait") and any(
                 leaf_begin < end and leaf_end > begin
                 for leaf_begin, leaf_end in dte_leaf_intervals
             ):
@@ -2775,52 +2796,86 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                 }
             )
 
-        dte_events = [
+        dte_issue_events = [
+            row
+            for row in tile_events
+            if row["kind"] == "direct-dte-issue"
+        ]
+        dte_wait_events = [
             row
             for row in tile_events
             if row["kind"] == "direct-dte-wait"
         ]
+        dte_events = [*dte_issue_events, *dte_wait_events]
         raw_values = [row["direct_dte_raw_pmu_activity"] for row in dte_events]
         raw_valid = bool(
-            dte_windows_valid
+            dte_issue_windows_valid
+            and dte_wait_windows_valid
             and dte_events
             and all(item is not None for item in raw_values)
         )
-        dte_intervals = sorted(
+        dte_issue_intervals = sorted(
             (
                 int(row["trace_entry_offset_begin_cpu_cycles"]),
                 int(row["trace_entry_offset_end_cpu_cycles"]),
             )
-            for row in dte_events
+            for row in dte_issue_events
+            if row["direct_dte_issue_cpu_cycles"] is not None
+        )
+        dte_wait_intervals = sorted(
+            (
+                int(row["trace_entry_offset_begin_cpu_cycles"]),
+                int(row["trace_entry_offset_end_cpu_cycles"]),
+            )
+            for row in dte_wait_events
             if row["direct_dte_wait_cpu_cycles"] is not None
         )
-        dte_union = 0
-        union_end = -1
-        for begin, end in dte_intervals:
-            if end > max(begin, union_end):
-                dte_union += end - max(begin, union_end)
-            union_end = max(union_end, end)
+        def interval_union(intervals: Sequence[tuple[int, int]]) -> int:
+            total = 0
+            union_end = -1
+            for begin, end in intervals:
+                if end > max(begin, union_end):
+                    total += end - max(begin, union_end)
+                union_end = max(union_end, end)
+            return total
+
+        dte_issue_union = interval_union(dte_issue_intervals)
+        dte_wait_union = interval_union(dte_wait_intervals)
         engine_rows.append(
             {
                 "engine": "DIRECT_DTE",
-                "measurement_kind": "direct-dte-wait-completion-windows",
-                "wait_window_cpu_cycles": dte_union if dte_windows_valid else None,
-                "wait_windows_valid": dte_windows_valid,
-                "wait_window_status": (
+                "measurement_kind": "direct-dte-issue-and-wait-windows",
+                "issue_window_cpu_cycles": (
+                    dte_issue_union if dte_issue_windows_valid else None
+                ),
+                "issue_windows_valid": dte_issue_windows_valid,
+                "issue_window_status": (
                     "Measured"
-                    if dte_windows_valid
+                    if dte_issue_windows_valid
                     else "Invalid"
                     if trace_axis is None
                     else "Incomplete"
                 ),
-                "wait_window_count": dte_source_count,
+                "issue_window_count": dte_issue_source_count,
+                "wait_window_cpu_cycles": (
+                    dte_wait_union if dte_wait_windows_valid else None
+                ),
+                "wait_windows_valid": dte_wait_windows_valid,
+                "wait_window_status": (
+                    "Measured"
+                    if dte_wait_windows_valid
+                    else "Invalid"
+                    if trace_axis is None
+                    else "Incomplete"
+                ),
+                "wait_window_count": dte_wait_source_count,
                 "raw_pmu_activity": (
                     sum(int(item) for item in raw_values) if raw_valid else None
                 ),
                 "raw_pmu_activity_valid": raw_valid,
                 "raw_pmu_activity_status": "Sampled" if raw_valid else "Unavailable",
                 "activity_window_count": sum(
-                    row["direct_dte_wait_cpu_cycles"] is not None
+                    row["operation_window_cpu_cycles"] is not None
                     for row in dte_events
                 ),
             }
@@ -2945,7 +3000,13 @@ def analyze_evidence(value: object) -> dict[str, Any]:
     dte_events = [
         row
         for row in timeline_events
-        if row["kind"] == "direct-dte-wait"
+        if row["kind"] in ("direct-dte-issue", "direct-dte-wait")
+    ]
+    dte_issue_events = [
+        row for row in dte_events if row["kind"] == "direct-dte-issue"
+    ]
+    dte_wait_events = [
+        row for row in dte_events if row["kind"] == "direct-dte-wait"
     ]
     engine_active_time = _engine_active_time_summary(tile_rows)
     hardware_cost_analysis = _hardware_cost_analysis(
@@ -3016,9 +3077,13 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             "timeline_events": timeline_events,
             "communication": {
                 "direct_dte_event_count": len(dte_events),
-                "send_count": sum(row["dte_role"] == "send" for row in dte_events),
+                "issue_event_count": len(dte_issue_events),
+                "wait_event_count": len(dte_wait_events),
+                "send_count": sum(
+                    row["dte_role"] == "send" for row in dte_wait_events
+                ),
                 "receive_count": sum(
-                    row["dte_role"] == "receive" for row in dte_events
+                    row["dte_role"] == "receive" for row in dte_wait_events
                 ),
                 "tiles_with_activity": sorted(
                     {int(row["tile"]) for row in dte_events}
@@ -3138,7 +3203,7 @@ h1{font-size:23px;margin:3px 0 2px;line-height:1.2}.run-id{color:var(--muted);fo
 .observation-notice[hidden]{display:none}
 .cost-segment{position:absolute;inset:2px auto 2px 0;border:0;border-radius:2px;cursor:pointer;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)}
 .cost-segment:hover,.cost-segment.selected{outline:2px solid #17212b;outline-offset:1px;z-index:3}
-.cost-ncc-submit{background:#8fb7f7}.cost-completion-wait-proxy{background:#d8b4fe}.cost-dte-peer-ready-wait{background:#b9ddd8}.cost-dte-setup-issue{background:#94cec6}.cost-dte-completion-wait{background:#69b8ad}.cost-dte-cleanup{background:#a7d7d0}.cost-dte-wait-aggregate-fallback{background:#4c9c92}.cost-site-control{background:#d7dee7}.cost-between-site-gap{background:#eef1f4}.cost-entry-prologue,.cost-entry-epilogue{background:#f3f5f7}
+.cost-ncc-submit{background:#8fb7f7}.cost-completion-wait-proxy{background:#d8b4fe}.cost-dte-peer-ready-wait{background:#b9ddd8}.cost-dte-setup-issue{background:#94cec6}.cost-dte-completion-wait{background:#69b8ad}.cost-dte-cleanup{background:#a7d7d0}.cost-dte-issue-aggregate-fallback{background:#6ab7ad}.cost-dte-wait-aggregate-fallback{background:#4c9c92}.cost-site-control{background:#d7dee7}.cost-between-site-gap{background:#eef1f4}.cost-entry-prologue,.cost-entry-epilogue{background:#f3f5f7}
 .cost-capture-boundary-residual{background-color:#fff2d6;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M-2 8L8-2M2 10L10 2' stroke='%23b26a00' stroke-width='1'/%3E%3C/svg%3E")}
 .trace-cost{background:#f4b7ad}.lane-production{background:#fbfcfd}.lane-separator{border-top:2px solid var(--line-strong)}
 .overlay-stack{display:flex;min-height:28px;margin:2px 0 10px;border:1px solid var(--line);border-radius:5px;overflow:hidden;background:var(--soft)}.overlay-part{min-width:3px;border:0;border-right:1px solid rgba(255,255,255,.8);background:#f4b7ad;cursor:pointer}.overlay-part:nth-child(even){background:#e99387}.overlay-part:hover,.overlay-part.selected{outline:2px solid #17212b;outline-offset:-2px;z-index:2}
@@ -3284,6 +3349,7 @@ const TERMS={
     "dte-setup-issue":{label:"DTE 配置与发起",definition:"准备 Direct-DTE 描述符并发起传输的 tile-local operation 区间。",not:"不是完整传输耗时。"},
     "dte-completion-wait":{label:"等待 DTE 完成",definition:"等待 Direct-DTE completion 的 tile-local operation 区间。",not:"不是 calibrated DTE engine busy time。"},
     "dte-cleanup":{label:"DTE 收尾",definition:"Direct-DTE 完成后的状态清理与资源释放区间。",not:"不是传输 payload 时间。"},
+    "dte-issue-aggregate-fallback":{label:"整次 DTE 发起（缺少分步数据时使用）",definition:"没有可用内部步骤时，用整次 Direct-DTE issue operation 表示等待对端、配置与发起。",not:"一旦已有内部步骤，就不能再把这行与它们重复相加。"},
     "dte-wait-aggregate-fallback":{label:"整次 DTE 通信等待（缺少分步数据时使用）",definition:"没有可用内部步骤时，用整次 Direct-DTE wait operation 表示这次通信等待。",not:"一旦已有内部步骤，就不能再把这行与它们重复相加。"},
     "site-control":{label:"调用点内控制与准备",definition:"一个动态 target-call site 包络内，扣除已识别 operation 后的剩余区间；可能包含 wrapper、descriptor、同步和 Trace 记录。",not:"不是纯硬件控制、纯软件开销或 engine idle。"},
     "between-site-gap":{label:"调用点之间的控制/等待",definition:"相邻动态 target-call site 之间的 Trace 区间，详情保留前后 site。",not:"不能直接称为硬件空闲；可能混有依赖、等待、控制和插桩。"},
@@ -3344,6 +3410,7 @@ const TERMS={
   event:{
     "ncc-command":{label:"NCC engine 指令提交事件",definition:"一次已关联 target-call 的 TsmExecute 提交，以及独立的 PMU 观测证据。",not:"事件条的提交区间不是 engine busy 起止；PMU bound 重叠也不证明并行。"},
     "ncc-completion-wait":{label:"NCC 完成等待事件",definition:"Trace clone 中等待 NCC completion 的 operation 事件。",not:"不是某一个 engine 的执行时长，也不是 Host 等待。"},
+    "direct-dte-issue":{label:"整次 Direct-DTE 发起",definition:"从等待对端就绪开始，到描述符配置并异步发起完成的总计行，可携带未校准 raw PMU。",not:"不包含传输完成等待，且不能与同一次发起的内部步骤重复相加。"},
     "direct-dte-wait":{label:"整次 Direct-DTE 通信等待",definition:"从这次 Direct-DTE 等待开始到结束的总计行，可携带未校准 raw PMU。",not:"不能再与同一次通信的内部步骤重复相加。"},
     "direct-dte-peer-ready-wait":{label:"等待 DTE 对端就绪",definition:"通信内部先等待接收端 ready 的一步。",not:"不是全卡 barrier，也不能跨 tile 排序。"},
     "direct-dte-setup-issue":{label:"配置并发起 DTE",definition:"通信内部配置描述符并发起传输的一步。",not:"不是完整通信耗时。"},
@@ -3354,7 +3421,8 @@ const TERMS={
   site:{
     "ncc-command":{label:"NCC 指令调用点",definition:"会向 CT/NE/RDMA/WDMA/TDMA 之一提交 TsmExecute 的静态 target-call site。",not:"site 包络不是对应 engine 的持续执行时间。"},
     "ncc-completion":{label:"NCC 完成调用点",definition:"观察或等待 NCC completion 的静态 target-call site。",not:"不是多 tile barrier，也不专属于某一个 engine。"},
-    "direct-dte-control":{label:"Direct-DTE 控制调用点",definition:"Direct-DTE ready、配置、发起或清理类控制 operation 的静态 site。",not:"不是整次通信等待。"},
+    "direct-dte-control":{label:"Direct-DTE 控制调用点",definition:"Direct-DTE 生命周期准备或结束类控制 operation 的静态 site。",not:"不是发起或完成等待。"},
+    "direct-dte-issue":{label:"Direct-DTE 发起调用点",definition:"承载等待对端、配置和异步发起及其内部步骤的静态 site。",not:"不包含传输完成等待，总计与内部步骤不能重复求和。"},
     "direct-dte-wait":{label:"Direct-DTE 通信等待调用点",definition:"承载一次整次 Direct-DTE 通信等待及其内部步骤的静态 site。",not:"总计与内部步骤不能重复求和。"}
   },
   engine:{
@@ -3446,7 +3514,7 @@ const TERM_GUIDANCE={
   structure:"用语义分项优化 production，用 Trace-only 附加层控制 profiler 自身开销；两层不相加。",
   validity:"未通过项要看具体门禁定义；尚未独立判定应补 oracle，而不是当成失败。"
 };
-const DTE_PHASES=Object.fromEntries(["direct-dte-wait","direct-dte-peer-ready-wait","direct-dte-setup-issue","direct-dte-completion-wait","direct-dte-cleanup"].map(key=>[key,TERMS.event[key].label]));
+const DTE_PHASES=Object.fromEntries(["direct-dte-issue","direct-dte-wait","direct-dte-peer-ready-wait","direct-dte-setup-issue","direct-dte-completion-wait","direct-dte-cleanup"].map(key=>[key,TERMS.event[key].label]));
 const STATES=["Measured","Sampled","Bounded","Zero delta","Zero-delta marker","Ambiguous","Attribution ambiguous","Unavailable","Incomplete","Invalid"];
 const state={view:"overview",tile:0,zoom:1,engines:new Set(ENGINES),selectedEvent:null,selectedCost:null,raw:"analysis"};
 const q=(selector,root)=>(root||document).querySelector(selector);
@@ -3626,7 +3694,7 @@ function renderTimeline(){
   const events=tileEvents();
   const visibleEventCount=events.filter(event=>event.engine_lane_visible).length;
   const commandCallCount=events.filter(event=>event.engine_lane_visible&&event.display_interval_role==="command-submit").length;
-  const dteCallCount=events.filter(event=>event.engine_lane_visible&&event.kind==="direct-dte-wait").length;
+  const dteCallCount=events.filter(event=>event.engine_lane_visible&&["direct-dte-issue","direct-dte-wait"].includes(event.kind)).length;
   q("#timelineEventNote").textContent=`逐次展示 ${visibleEventCount} 条 engine / DTE 事件；其中 ${commandCallCount} 次 NCC 指令调用、${dteCallCount} 次 Direct-DTE 调用，不折叠。`;
   const overlaps=crossEngineBoundOverlaps(events);
   const overlapNotice=q("#timelineOverlapNotice");
@@ -3658,7 +3726,7 @@ function renderTimeline(){
     const metric=engine==="DIRECT_DTE"?`${number(engineSummary&&engineSummary.wait_window_cpu_cycles)} cyc`:`${number(engineSummary&&engineSummary.engine_execution_time_ns)} ns`;
     const marks=visible?engineEvents.map((event,index)=>exactEventMark(event,index,true)).join(""):"";
     const callCount=engine==="DIRECT_DTE"
-      ?engineEvents.filter(event=>event.kind==="direct-dte-wait").length
+      ?engineEvents.filter(event=>["direct-dte-issue","direct-dte-wait"].includes(event.kind)).length
       :engineEvents.filter(event=>event.display_interval_role==="command-submit").length;
     const phaseCount=engine==="DIRECT_DTE"?engineEvents.length-callCount:0;
     const countLabel=engine==="DIRECT_DTE"?`调用 ${callCount} · 内部阶段 ${phaseCount}`:`调用 ${callCount}`;
@@ -3761,14 +3829,14 @@ function renderCommunication(){
   const events=finalArtifact.timeline_events
     .filter(event=>Object.prototype.hasOwnProperty.call(DTE_PHASES,event.kind))
     .sort((left,right)=>left.tile-right.tile||left.site_id-right.site_id||phaseOrder.indexOf(left.kind)-phaseOrder.indexOf(right.kind)||left.sequence-right.sequence);
-  const leafEvents=events.filter(event=>event.kind!=="direct-dte-wait");
+  const leafEvents=events.filter(event=>!["direct-dte-issue","direct-dte-wait"].includes(event.kind));
   const communication=finalArtifact.communication;
-  q("#communicationSummary").innerHTML=`<div class="card"><div class="metric-label">整次通信等待</div><div class="metric-value">${communication.direct_dte_event_count}</div><div class="metric-note">总计行 · ${leafEvents.length} 个通信内部步骤；两者不重复相加</div></div><div class="card"><div class="metric-label">发送侧 / 接收侧</div><div class="metric-value">${communication.send_count} / ${communication.receive_count}</div></div><div class="card"><div class="metric-label">有活动的 tile</div><div class="metric-value">${communication.tiles_with_activity.length}</div></div><div class="card"><div class="metric-label">跨 tile 顺序</div><div class="metric-value">${statusBadge("Unavailable")}</div><div class="metric-note">不推断全局 timeline</div></div>`;
+  q("#communicationSummary").innerHTML=`<div class="card"><div class="metric-label">发起 / 完成等待</div><div class="metric-value">${communication.issue_event_count} / ${communication.wait_event_count}</div><div class="metric-note">${leafEvents.length} 个通信内部步骤；总计与分步不重复相加</div></div><div class="card"><div class="metric-label">完成等待：发送侧 / 接收侧</div><div class="metric-value">${communication.send_count} / ${communication.receive_count}</div></div><div class="card"><div class="metric-label">有活动的 tile</div><div class="metric-value">${communication.tiles_with_activity.length}</div></div><div class="card"><div class="metric-label">跨 tile 顺序</div><div class="metric-value">${statusBadge("Unavailable")}</div><div class="metric-note">不推断全局 timeline</div></div>`;
   q("#communicationRows").innerHTML=events.length?events.map(event=>{
-    const aggregate=event.kind==="direct-dte-wait";
+    const aggregate=["direct-dte-issue","direct-dte-wait"].includes(event.kind);
     const evidenceRole=aggregate?"aggregate":"leaf";
     const rawValue=aggregate?number(event.direct_dte_raw_pmu_activity):"—";
-    const rawStatus=aggregate?statusBadge(event.counter_status):`<span class="evidence-role">仅“整次通信等待”行提供</span>`;
+    const rawStatus=aggregate?statusBadge(event.counter_status):`<span class="evidence-role">仅 issue / wait 总计行提供</span>`;
     return `<tr class="interactive-row" tabindex="0" title="Open exact correlated phase" data-event-tile="${event.tile}" data-event-site="${event.site_id}" data-event-engine="${event.engine}" data-event-sequence="${event.sequence}" data-event-kind="${escapeHtml(event.kind)}"><td>${tileLabel(event.tile)}</td><td>${termCell("role",event.dte_role)}</td><td><b>${escapeHtml(DTE_PHASES[event.kind])}</b><br><span class="mono">${escapeHtml(event.kind)}</span></td><td><span class="evidence-role">${termCell("evidence",evidenceRole)}</span></td><td><span class="mono">${event.site_id}</span> · ${escapeHtml(event.target_call_symbol)}</td><td class="num">${number(event.operation_window_cpu_cycles)}</td><td>${statusBadge(event.duration_status)}</td><td class="num">${rawValue}</td><td>${rawStatus}</td></tr>`;
   }).join(""):`<tr><td colspan="9" class="empty">No Direct-DTE operation was observed.</td></tr>`;
   bindEventLinks("#communicationRows [data-event-site]");

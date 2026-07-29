@@ -10,12 +10,14 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -25,6 +27,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <utility>
@@ -41,7 +44,8 @@ struct DependencyEdge {
 struct BufferAccess {
   mlir::Value root;
   bool write = false;
-  unsigned operation = 0;
+  unsigned issueOperation = 0;
+  unsigned completionOperation = 0;
 };
 
 struct AllocationPlan {
@@ -56,6 +60,13 @@ struct FixedSlotPipelinePlan {
   llvm::DenseMap<mlir::Operation *, unsigned> operationIndices;
   llvm::DenseMap<mlir::Operation *, InstrFamily> instructionFamilies;
   llvm::DenseMap<mlir::Operation *, NCCWorker> instructionWorkers;
+  llvm::DenseMap<mlir::Operation *, mlir::Operation *> nccIssueCompletions;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<mlir::Operation *, 4>>
+      explicitJoinProducers;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<mlir::Operation *, 4>>
+      backedgeJoinProducers;
+  llvm::DenseSet<mlir::Operation *> removableBackedgeJoins;
+  llvm::DenseMap<mlir::Operation *, mlir::Operation *> directDTEWaits;
   llvm::SmallVector<llvm::SmallVector<DependencyEdge, 4>, 16> predecessors;
   llvm::DenseMap<mlir::Operation *, unsigned> stages;
   llvm::SmallVector<AllocationPlan, 4> allocations;
@@ -66,6 +77,7 @@ struct FixedSlotPipelinePlan {
 
 static constexpr llvm::StringLiteral kPointerPermutationMarker =
     "wafer.fixed_slot_pointer_permutation";
+static constexpr uint64_t kMaxPeriodicDTEUnrollFactor = 16;
 
 static mlir::FailureOr<FixedSlotPipelinePlan>
 failPlan(std::string *failureReason, llvm::Twine message) {
@@ -76,6 +88,13 @@ failPlan(std::string *failureReason, llvm::Twine message) {
 
 static mlir::FailureOr<StaticFixedSlotPipelineCandidate>
 failCandidate(std::string *failureReason, llvm::Twine message) {
+  if (failureReason)
+    *failureReason = message.str();
+  return mlir::failure();
+}
+
+static mlir::LogicalResult failSpecialization(std::string *failureReason,
+                                              llvm::Twine message) {
   if (failureReason)
     *failureReason = message.str();
   return mlir::failure();
@@ -252,9 +271,120 @@ static bool isCrossEngineDependency(const FixedSlotPipelinePlan &plan,
          predecessorFamily->second != successorFamily->second;
 }
 
-static mlir::LogicalResult collectInstructionAccesses(
-    mlir::Operation *operation, unsigned operationIndex, mlir::scf::ForOp loop,
-    llvm::SmallVectorImpl<BufferAccess> &accesses, std::string *failureReason) {
+static bool isDirectDTEIssue(mlir::Operation *operation) {
+  return mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation);
+}
+
+static bool dependencyAdvancesStage(const FixedSlotPipelinePlan &plan,
+                                    unsigned predecessor, unsigned successor) {
+  mlir::Operation *predecessorOperation = plan.operations[predecessor];
+  mlir::Operation *successorOperation = plan.operations[successor];
+  auto wait = plan.directDTEWaits.find(predecessorOperation);
+  if (wait != plan.directDTEWaits.end() && wait->second == successorOperation)
+    return false;
+  if (mlir::isa<SyncNCCJoinOp>(predecessorOperation) &&
+      isDirectDTEIssue(successorOperation))
+    return true;
+  // Keep issue and exact wait in one stage so the post-memory Direct DTE
+  // acceptance contract continues to see one direct same-block SSA use.
+  // An explicit NCC participant join is the distinct producer-to-DTE
+  // visibility boundary. A following NCC consumer/reuser still advances
+  // through the ordinary cross-engine rule and runs as the preceding tile in
+  // the steady kernel.
+  return isCrossEngineDependency(plan, predecessor, successor);
+}
+
+static mlir::LogicalResult
+collectDirectDTECompletions(FixedSlotPipelinePlan &plan,
+                            std::string *failureReason) {
+  for (mlir::Operation *operation : plan.operations) {
+    auto wait = mlir::dyn_cast<InstrDTEWaitOp>(operation);
+    if (!wait)
+      continue;
+    unsigned senderIssues = 0;
+    for (mlir::Value token : wait.getTokens()) {
+      mlir::Operation *issue = token.getDefiningOp();
+      if (!isDirectDTEIssue(issue) || !plan.operationIndices.contains(issue) ||
+          issue->getBlock() != operation->getBlock()) {
+        if (failureReason)
+          *failureReason =
+              "fixed-slot Direct DTE wait requires same-loop issue tokens";
+        return mlir::failure();
+      }
+      senderIssues += mlir::isa<InstrDTESendOp>(issue) ? 1U : 0U;
+    }
+    if (senderIssues > 1) {
+      if (failureReason)
+        *failureReason =
+            "fixed-slot Direct DTE completion window cannot contain multiple "
+            "sender issues";
+      return mlir::failure();
+    }
+  }
+
+  for (mlir::Operation *operation : plan.operations) {
+    if (!isDirectDTEIssue(operation))
+      continue;
+    mlir::Value token = operation->getResult(0);
+    if (!token.hasOneUse()) {
+      if (failureReason)
+        *failureReason =
+            "fixed-slot Direct DTE issue requires exactly one wait use";
+      return mlir::failure();
+    }
+    mlir::Operation *wait = token.use_begin()->getOwner();
+    auto issueIndex = plan.operationIndices.find(operation);
+    auto waitIndex = plan.operationIndices.find(wait);
+    if (!mlir::isa<InstrDTEWaitOp>(wait) ||
+        wait->getBlock() != operation->getBlock() ||
+        waitIndex == plan.operationIndices.end() ||
+        issueIndex->second >= waitIndex->second) {
+      if (failureReason)
+        *failureReason =
+            "fixed-slot Direct DTE issue requires one following same-loop "
+            "exact wait";
+      return mlir::failure();
+    }
+    plan.directDTEWaits.try_emplace(operation, wait);
+  }
+
+  struct DirectDTEWindow {
+    mlir::Operation *wait = nullptr;
+    unsigned firstIssue = 0;
+    unsigned waitIndex = 0;
+  };
+  llvm::DenseMap<mlir::Operation *, unsigned> firstIssues;
+  for (const auto &[issue, wait] : plan.directDTEWaits) {
+    unsigned issueIndex = plan.operationIndices.lookup(issue);
+    auto [found, inserted] = firstIssues.try_emplace(wait, issueIndex);
+    if (!inserted)
+      found->second = std::min(found->second, issueIndex);
+  }
+  llvm::SmallVector<DirectDTEWindow, 4> windows;
+  for (const auto &[wait, firstIssue] : firstIssues)
+    windows.push_back({wait, firstIssue, plan.operationIndices.lookup(wait)});
+  llvm::sort(windows,
+             [](const DirectDTEWindow &lhs, const DirectDTEWindow &rhs) {
+               return lhs.firstIssue < rhs.firstIssue;
+             });
+  for (auto pair : llvm::zip(windows, llvm::drop_begin(windows))) {
+    const DirectDTEWindow &prior = std::get<0>(pair);
+    const DirectDTEWindow &next = std::get<1>(pair);
+    if (prior.waitIndex >= next.firstIssue) {
+      if (failureReason)
+        *failureReason =
+            "fixed-slot Direct DTE completion windows must not overlap";
+      return mlir::failure();
+    }
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+collectInstructionAccesses(mlir::Operation *operation, unsigned operationIndex,
+                           unsigned completionIndex, mlir::scf::ForOp loop,
+                           llvm::SmallVectorImpl<BufferAccess> &accesses,
+                           std::string *failureReason) {
   auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
   if (!effects) {
     if (failureReason)
@@ -277,6 +407,9 @@ static mlir::LogicalResult collectInstructionAccesses(
     if (resource == WaferComputeResource::get() ||
         resource == WaferMovementResource::get())
       continue;
+    // Direct DTE transport identity and completion are carried by the async
+    // token and its exact wait. Its rootless communication resource is not a
+    // second buffer alias domain.
     if (resource == WaferCommunicationResource::get() &&
         mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(operation))
       continue;
@@ -349,12 +482,79 @@ static mlir::LogicalResult collectInstructionAccesses(
       return mlir::failure();
     }
     auto found = llvm::find_if(accesses, [&](const BufferAccess &access) {
-      return access.operation == operationIndex && access.root == *root;
+      return access.issueOperation == operationIndex && access.root == *root;
     });
     if (found == accesses.end())
-      accesses.push_back({*root, write, operationIndex});
+      accesses.push_back({*root, write, operationIndex, completionIndex});
     else
       found->write |= write;
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult validateLeadingBackedgeJoins(
+    FixedSlotPipelinePlan &plan, llvm::ArrayRef<BufferAccess> accesses,
+    mlir::scf::ForOp loop, std::string *failureReason) {
+  auto fail = [&](llvm::Twine message) {
+    if (failureReason)
+      *failureReason = message.str();
+    return mlir::failure();
+  };
+  for (const auto &[join, producers] : plan.backedgeJoinProducers) {
+    unsigned joinIndex = plan.operationIndices.lookup(join);
+    llvm::DenseMap<uint32_t, unsigned> firstFollowingWorkerIssue;
+    for (unsigned index = joinIndex + 1; index < plan.operations.size();
+         ++index) {
+      auto worker = plan.instructionWorkers.find(plan.operations[index]);
+      if (worker == plan.instructionWorkers.end())
+        continue;
+      firstFollowingWorkerIssue.try_emplace(
+          static_cast<uint32_t>(worker->second), index);
+    }
+
+    uint32_t conflictParticipants = 0;
+    for (mlir::Operation *producer : producers) {
+      auto worker = plan.instructionWorkers.find(producer);
+      if (worker == plan.instructionWorkers.end())
+        return mlir::failure();
+      uint32_t workerOrdinal = static_cast<uint32_t>(worker->second);
+      auto firstIssue = firstFollowingWorkerIssue.find(workerOrdinal);
+      if (firstIssue == firstFollowingWorkerIssue.end())
+        return mlir::failure();
+      unsigned producerIndex = plan.operationIndices.lookup(producer);
+      for (const BufferAccess &tailAccess : accesses) {
+        if (tailAccess.issueOperation != producerIndex)
+          continue;
+        for (const BufferAccess &prefixAccess : accesses) {
+          if (prefixAccess.issueOperation <= joinIndex ||
+              prefixAccess.issueOperation >= firstIssue->second ||
+              (!prefixAccess.write && !tailAccess.write))
+            continue;
+          bool provenDistinct =
+              areProvenDistinct(prefixAccess.root, tailAccess.root, loop);
+          if (provenDistinct)
+            continue;
+          if (prefixAccess.root != tailAccess.root)
+            return fail(
+                "fixed-slot leading NCC join has an unproven backedge alias");
+          auto allocation =
+              prefixAccess.root.getDefiningOp<mlir::memref::AllocOp>();
+          if (!allocation || allocation->getParentOp() != loop.getOperation())
+            return fail(
+                "fixed-slot leading NCC join backedge conflict is not a "
+                "slotizable loop-local allocation");
+          conflictParticipants |= uint32_t{1} << workerOrdinal;
+        }
+      }
+    }
+
+    uint32_t participants =
+        getNCCCompletionContract(join).participantMask & kAllNCCWorkersMask;
+    if (conflictParticipants != participants)
+      return fail(
+          "fixed-slot leading NCC join has a participant without an exact "
+          "slotizable backedge conflict");
+    plan.removableBackedgeJoins.insert(join);
   }
   return mlir::success();
 }
@@ -379,6 +579,11 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
   FixedSlotPipelinePlan plan;
   plan.tripCount = *tripCount;
   llvm::SmallVector<mlir::memref::AllocOp, 4> allocations;
+  llvm::SmallVector<llvm::SmallVector<mlir::Operation *, 4>, kNCCWorkerCount>
+      pendingNCCIssues(kNCCWorkerCount);
+  SyncNCCJoinOp deferredLeadingJoin;
+  uint32_t deferredLeadingParticipants = 0;
+  bool sawTypedInstructionOrCompletion = false;
   for (mlir::Operation &operation : loop.getBody()->without_terminator()) {
     if (operation.getNumRegions() != 0)
       return failPlan(
@@ -397,6 +602,49 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
     plan.operationIndices.try_emplace(&operation, index);
     plan.operations.push_back(&operation);
 
+    NCCCompletionContract contract = getNCCCompletionContract(&operation);
+    if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(operation)) {
+      llvm::SmallVector<mlir::Operation *, 4> producers;
+      bool missingParticipantProducer = false;
+      for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
+        if ((contract.participantMask & (uint32_t{1} << worker)) == 0)
+          continue;
+        if (pendingNCCIssues[worker].empty()) {
+          missingParticipantProducer = true;
+          continue;
+        }
+        producers.append(pendingNCCIssues[worker]);
+      }
+      if (missingParticipantProducer) {
+        if (!producers.empty() || sawTypedInstructionOrCompletion ||
+            deferredLeadingJoin)
+          return failPlan(
+              failureReason,
+              "fixed-slot NCC join participant has no preceding pending "
+              "producer");
+        deferredLeadingJoin = join;
+        deferredLeadingParticipants = contract.participantMask;
+        sawTypedInstructionOrCompletion = true;
+        continue;
+      }
+      for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
+        if ((contract.participantMask & (uint32_t{1} << worker)) == 0)
+          continue;
+        for (mlir::Operation *producer : pendingNCCIssues[worker]) {
+          plan.nccIssueCompletions.try_emplace(producer, join.getOperation());
+        }
+        pendingNCCIssues[worker].clear();
+      }
+      if (producers.empty())
+        return failPlan(failureReason,
+                        "fixed-slot NCC join requires exact pending producer "
+                        "participants");
+      plan.explicitJoinProducers.try_emplace(join.getOperation(),
+                                             std::move(producers));
+      sawTypedInstructionOrCompletion = true;
+      continue;
+    }
+
     auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(&operation);
     if (!instruction) {
       if (mlir::isa<SyncLocalFenceOp, SyncNCCJoinOp>(operation))
@@ -407,30 +655,58 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
             "fixed-slot candidate encountered an unknown effectful operation");
       continue;
     }
-    if (instruction.getInstructionFamily() == InstrFamily::DTE) {
-      if (!mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(
-              operation))
+    InstrFamily family = instruction.getInstructionFamily();
+    if (family == InstrFamily::DTE) {
+      if (!mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(operation))
         return failPlan(
             failureReason,
-            "fixed-slot candidate encountered an unknown Direct DTE operation");
-      plan.instructionFamilies.try_emplace(&operation, InstrFamily::DTE);
+            "fixed-slot candidate encountered an unsupported Direct DTE "
+            "instruction");
+      plan.instructionFamilies.try_emplace(&operation, family);
+      sawTypedInstructionOrCompletion = true;
       continue;
     }
-    NCCCompletionContract contract = getNCCCompletionContract(&operation);
     if (contract.behavior != LocalInstructionCompletion::OrderedPending ||
         !contract.issueWorker)
       return failPlan(
           failureReason,
           "fixed-slot candidate rejects completion and synchronous islands");
-    plan.instructionFamilies.try_emplace(&operation,
-                                         instruction.getInstructionFamily());
+    plan.instructionFamilies.try_emplace(&operation, family);
     plan.instructionWorkers.try_emplace(&operation, *contract.issueWorker);
+    pendingNCCIssues[static_cast<uint32_t>(*contract.issueWorker)].push_back(
+        &operation);
+    sawTypedInstructionOrCompletion = true;
+  }
+  if (deferredLeadingJoin) {
+    uint32_t tailParticipants = 0;
+    llvm::SmallVector<mlir::Operation *, 4> tailProducers;
+    for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
+      if (pendingNCCIssues[worker].empty())
+        continue;
+      tailParticipants |= uint32_t{1} << worker;
+      tailProducers.append(pendingNCCIssues[worker]);
+    }
+    if (tailParticipants != deferredLeadingParticipants)
+      return failPlan(
+          failureReason,
+          "fixed-slot leading NCC join participants do not exactly match the "
+          "loop-tail pending frontier");
+    plan.backedgeJoinProducers.try_emplace(deferredLeadingJoin.getOperation(),
+                                           std::move(tailProducers));
   }
   if (plan.operations.empty() || plan.instructionFamilies.size() < 2)
     return failPlan(
         failureReason,
         "fixed-slot candidate requires at least two typed instructions");
+  if (mlir::failed(collectDirectDTECompletions(plan, failureReason)))
+    return mlir::failure();
   plan.predecessors.resize(plan.operations.size());
+  for (const auto &[join, producers] : plan.explicitJoinProducers) {
+    unsigned joinIndex = plan.operationIndices.lookup(join);
+    for (mlir::Operation *producer : producers)
+      addDependency(plan, plan.operationIndices.lookup(producer), joinIndex,
+                    /*advancesStage=*/false);
+  }
 
   // Preserve all direct SSA definitions. Memory dependencies below add the
   // value-associated RAW/WAR/WAW edges that instruction ops express through
@@ -442,7 +718,7 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
       if (found == plan.operationIndices.end())
         continue;
       addDependency(plan, found->second, static_cast<unsigned>(successor),
-                    isCrossEngineDependency(plan, found->second,
+                    dependencyAdvancesStage(plan, found->second,
                                             static_cast<unsigned>(successor)));
     }
   }
@@ -571,35 +847,74 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
   for (auto [index, operation] : llvm::enumerate(plan.operations)) {
     if (!plan.instructionFamilies.contains(operation))
       continue;
+    unsigned completionIndex = static_cast<unsigned>(index);
+    auto completion = plan.directDTEWaits.find(operation);
+    if (completion != plan.directDTEWaits.end())
+      completionIndex = plan.operationIndices.lookup(completion->second);
+    auto nccCompletion = plan.nccIssueCompletions.find(operation);
+    if (nccCompletion != plan.nccIssueCompletions.end())
+      completionIndex = plan.operationIndices.lookup(nccCompletion->second);
     llvm::SmallVector<BufferAccess, 8> current;
-    if (mlir::failed(collectInstructionAccesses(operation,
-                                                static_cast<unsigned>(index),
-                                                loop, current, failureReason)))
+    if (mlir::failed(collectInstructionAccesses(
+            operation, static_cast<unsigned>(index), completionIndex, loop,
+            current, failureReason)))
       return mlir::failure();
     for (const BufferAccess &access : current) {
       for (const BufferAccess &prior : accesses) {
+        bool provenDistinct = areProvenDistinct(access.root, prior.root, loop);
         if (!access.write && !prior.write)
           continue;
-        if (access.root != prior.root &&
-            !areProvenDistinct(access.root, prior.root, loop))
+        mlir::Operation *priorIssue = plan.operations[prior.issueOperation];
+        bool priorDirectDTE = isDirectDTEIssue(priorIssue);
+        bool currentDirectDTE = isDirectDTEIssue(operation);
+
+        if (access.root != prior.root && !provenDistinct)
           return failPlan(
               failureReason,
               "fixed-slot candidate cannot prove two accessed roots distinct");
-        if (areProvenDistinct(access.root, prior.root, loop))
+        if (provenDistinct)
           continue;
 
-        mlir::Operation *priorOperation = plan.operations[prior.operation];
-        auto priorWorker = plan.instructionWorkers.find(priorOperation);
-        auto currentWorker = plan.instructionWorkers.find(operation);
-        if (priorWorker != plan.instructionWorkers.end() &&
-            currentWorker != plan.instructionWorkers.end() &&
-            priorWorker->second != currentWorker->second)
+        // A DTE issue owns every write hazard on its buffer until the exact
+        // token wait. An overwrite or receive before that wait would force a
+        // backwards dependency; read/read pairs were intentionally skipped
+        // above.
+        if (priorDirectDTE && prior.completionOperation >
+                                  static_cast<unsigned>(access.issueOperation))
           return failPlan(
               failureReason,
-              "fixed-slot candidate rejects a cross-worker memory hazard");
-        addDependency(plan, prior.operation, static_cast<unsigned>(index),
-                      isCrossEngineDependency(plan, prior.operation,
-                                              static_cast<unsigned>(index)));
+              "fixed-slot Direct DTE buffer access precedes its exact wait");
+
+        auto priorWorker = plan.instructionWorkers.find(priorIssue);
+        auto currentWorker = plan.instructionWorkers.find(operation);
+        if (!priorDirectDTE && currentDirectDTE &&
+            (priorWorker == plan.instructionWorkers.end() ||
+             prior.completionOperation == prior.issueOperation ||
+             prior.completionOperation >= access.issueOperation))
+          return failPlan(
+              failureReason,
+              "fixed-slot NCC-to-Direct-DTE buffer handoff requires an "
+              "explicit preceding participant join");
+        if (!priorDirectDTE && !currentDirectDTE &&
+            (priorWorker == plan.instructionWorkers.end() ||
+             currentWorker == plan.instructionWorkers.end()))
+          return failPlan(failureReason,
+                          "fixed-slot candidate lost an NCC issue worker");
+        if (!priorDirectDTE && !currentDirectDTE &&
+            priorWorker->second != currentWorker->second &&
+            (prior.completionOperation == prior.issueOperation ||
+             prior.completionOperation >= access.issueOperation))
+          return failPlan(
+              failureReason,
+              "fixed-slot cross-worker memory hazard requires an explicit "
+              "preceding participant join");
+        unsigned predecessor = prior.issueOperation;
+        if (prior.completionOperation != prior.issueOperation &&
+            prior.completionOperation < access.issueOperation)
+          predecessor = prior.completionOperation;
+        addDependency(
+            plan, predecessor, access.issueOperation,
+            dependencyAdvancesStage(plan, predecessor, access.issueOperation));
       }
     }
     // Operand effects on one typed instruction describe one atomic issue.
@@ -607,6 +922,9 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
     // own verifier/interface owns source/destination alias legality.
     accesses.append(current);
   }
+  if (mlir::failed(
+          validateLeadingBackedgeJoins(plan, accesses, loop, failureReason)))
+    return mlir::failure();
 
   // Original block order is already a topological order for direct SSA and
   // effect dependencies. A cross-engine dependency advances one iteration
@@ -624,6 +942,16 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
     }
     plan.stages.try_emplace(operation, stage);
     plan.maxStage = std::max(plan.maxStage, stage);
+  }
+  llvm::DenseMap<mlir::Operation *, unsigned> directDTEIssueStages;
+  for (const auto &[issue, wait] : plan.directDTEWaits) {
+    unsigned stage = plan.stages.lookup(issue);
+    auto [found, inserted] = directDTEIssueStages.try_emplace(wait, stage);
+    if (!inserted && found->second != stage)
+      return failPlan(
+          failureReason,
+          "fixed-slot Direct DTE issues sharing one exact wait must occupy "
+          "one issue stage");
   }
   if (plan.maxStage == 0)
     return failPlan(
@@ -652,13 +980,17 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
     auto allocation = access.root.getDefiningOp<mlir::memref::AllocOp>();
     if (allocation && allocation->getParentOp() == loop.getOperation())
       continue;
-    unsigned stage = plan.stages.lookup(plan.operations[access.operation]);
+    unsigned issueStage =
+        plan.stages.lookup(plan.operations[access.issueOperation]);
+    unsigned completionStage =
+        plan.stages.lookup(plan.operations[access.completionOperation]);
     ExternalRootStageSummary &summary = externalRoots[access.root];
     summary.hasWrite |= access.write;
     if (!summary.firstStage)
-      summary.firstStage = stage;
+      summary.firstStage = issueStage;
     else
-      summary.crossesStage |= *summary.firstStage != stage;
+      summary.crossesStage |= *summary.firstStage != issueStage;
+    summary.crossesStage |= issueStage != completionStage;
   }
   for (const auto &[root, summary] : externalRoots) {
     (void)root;
@@ -675,12 +1007,17 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
     auto allocation = access.root.getDefiningOp<mlir::memref::AllocOp>();
     if (!allocation || allocation->getParentOp() != loop.getOperation())
       continue;
-    unsigned stage = plan.stages.lookup(plan.operations[access.operation]);
+    unsigned issueStage =
+        plan.stages.lookup(plan.operations[access.issueOperation]);
+    unsigned completionStage =
+        plan.stages.lookup(plan.operations[access.completionOperation]);
+    unsigned firstStage = std::min(issueStage, completionStage);
+    unsigned lastStage = std::max(issueStage, completionStage);
     auto [found, inserted] = allocationStageSpans.try_emplace(
-        allocation.getOperation(), std::make_pair(stage, stage));
+        allocation.getOperation(), std::make_pair(firstStage, lastStage));
     if (!inserted) {
-      found->second.first = std::min(found->second.first, stage);
-      found->second.second = std::max(found->second.second, stage);
+      found->second.first = std::min(found->second.first, firstStage);
+      found->second.second = std::max(found->second.second, lastStage);
     }
   }
 
@@ -781,9 +1118,56 @@ materializeSlotsAndRotation(mlir::scf::ForOp loop,
 
   std::vector<std::pair<mlir::Operation *, unsigned>> schedule;
   schedule.reserve(plan.operations.size() + plan.slotAllocationCount);
+  llvm::DenseMap<mlir::Operation *, mlir::Operation *> operationClones;
   for (mlir::Operation *operation : plan.operations) {
+    if (plan.removableBackedgeJoins.contains(operation))
+      continue;
     mlir::Operation *clone = rewriter.clone(*operation, mapping);
-    schedule.emplace_back(clone, plan.stages.lookup(operation));
+    operationClones.try_emplace(operation, clone);
+  }
+
+  auto appendScheduledOperation = [&](mlir::Operation *operation) {
+    if (plan.removableBackedgeJoins.contains(operation))
+      return;
+    schedule.emplace_back(operationClones.lookup(operation),
+                          plan.stages.lookup(operation));
+  };
+  if (plan.directDTEWaits.empty()) {
+    for (mlir::Operation *operation : plan.operations)
+      appendScheduledOperation(operation);
+  } else {
+    unsigned firstIssueIndex = std::numeric_limits<unsigned>::max();
+    unsigned lastWaitIndex = 0;
+    unsigned firstWindowStage = std::numeric_limits<unsigned>::max();
+    for (const auto &[issue, wait] : plan.directDTEWaits) {
+      firstIssueIndex =
+          std::min(firstIssueIndex, plan.operationIndices.lookup(issue));
+      lastWaitIndex =
+          std::max(lastWaitIndex, plan.operationIndices.lookup(wait));
+      firstWindowStage = std::min(firstWindowStage, plan.stages.lookup(issue));
+    }
+    if (firstIssueIndex == std::numeric_limits<unsigned>::max() ||
+        lastWaitIndex >= plan.operations.size()) {
+      if (failureReason)
+        *failureReason = "fixed-slot Direct DTE window lost its issue owner";
+      return mlir::failure();
+    }
+    // Every exact wait remains in the same stage and direct SSA block as its
+    // issue group. Rotate stage-later work after the final window ahead of the
+    // complete DTE sequence, so the preceding tile's NCC work is pending while
+    // the current tile executes one or more endpoint-safe issue/wait segments.
+    llvm::DenseSet<mlir::Operation *> rotated;
+    for (unsigned index = lastWaitIndex + 1; index < plan.operations.size();
+         ++index) {
+      mlir::Operation *operation = plan.operations[index];
+      if (plan.stages.lookup(operation) <= firstWindowStage)
+        continue;
+      appendScheduledOperation(operation);
+      rotated.insert(operation);
+    }
+    for (mlir::Operation *operation : plan.operations)
+      if (!rotated.contains(operation))
+        appendScheduledOperation(operation);
   }
 
   std::vector<std::pair<mlir::Operation *, unsigned>> pointerPermutations;
@@ -841,8 +1225,10 @@ materializeSlotsAndRotation(mlir::scf::ForOp loop,
   // iteration's region arguments. SCF's cyclic schedule verifier therefore
   // needs them before every current-iteration consumer in operation order.
   // They are pure pointer permutations at stage zero; buffer memory lifetime
-  // is represented separately by the number of rotated slots. The remaining
-  // operations retain the already topological source order.
+  // is represented separately by the number of rotated slots. For a Direct
+  // DTE window, stage-later work is ordered first so its nonblocking NCC issue
+  // overlaps the following tile's direct issue+exact wait without carrying a
+  // DTE token across the loop backedge.
   schedule.insert(schedule.begin(), pointerPermutations.begin(),
                   pointerPermutations.end());
   mlir::scf::PipeliningOption options;
@@ -867,6 +1253,7 @@ materializeSlotsAndRotation(mlir::scf::ForOp loop,
                            : "SCF pipelining rejected the verified schedule";
     return mlir::failure();
   }
+
   return *pipelined;
 }
 
@@ -904,9 +1291,10 @@ static void splitDirectDTECompletionGroups(mlir::scf::ForOp loop) {
 /// `upper - maxStage * step`. Canonicalize exactly that mechanical expression;
 /// a whole-module canonicalizer here would be too broad because this transform
 /// must preserve unrelated source operations and pre-existing casts.
-static mlir::LogicalResult canonicalizePipelinedKernelUpperBound(
-    mlir::scf::ForOp loop, int64_t originalUpper, int64_t originalStep,
-    unsigned maxStage) {
+static mlir::LogicalResult
+canonicalizePipelinedKernelUpperBound(mlir::scf::ForOp loop,
+                                      int64_t originalUpper,
+                                      int64_t originalStep, unsigned maxStage) {
   __int128 upper = static_cast<__int128>(originalUpper) -
                    static_cast<__int128>(originalStep) * maxStage;
   if (upper < std::numeric_limits<int64_t>::min() ||
@@ -931,6 +1319,398 @@ static mlir::LogicalResult canonicalizePipelinedKernelUpperBound(
       continue;
     worklist.append(operation->operand_begin(), operation->operand_end());
     operation->erase();
+  }
+  return mlir::success();
+}
+
+static mlir::Value getDirectDTEBuffer(mlir::Operation *operation) {
+  if (auto send = mlir::dyn_cast<InstrDTESendOp>(operation))
+    return send.getBuffer();
+  if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(operation))
+    return recv.getBuffer();
+  return {};
+}
+
+static mlir::FailureOr<mlir::Value>
+getEndpointSeedAllocationImpl(mlir::Value value,
+                              llvm::DenseSet<mlir::Value> &visited) {
+  if (!value || !visited.insert(value).second)
+    return mlir::failure();
+  if (value.getDefiningOp<mlir::memref::AllocOp>())
+    return value;
+
+  if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
+    mlir::Value source = cast.getSource();
+    if (source.getType() != value.getType())
+      return mlir::failure();
+    return getEndpointSeedAllocationImpl(source, visited);
+  }
+
+  if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+    mlir::Block *owner = argument.getOwner();
+    mlir::Operation *parent = owner ? owner->getParentOp() : nullptr;
+    if (auto tileRegion = mlir::dyn_cast_or_null<TileRegionOp>(parent)) {
+      unsigned index = argument.getArgNumber();
+      if (owner != &tileRegion.getBody().front() ||
+          index >= tileRegion.getInputs().size())
+        return mlir::failure();
+      return getEndpointSeedAllocationImpl(tileRegion.getInputs()[index],
+                                           visited);
+    }
+    if (auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(parent)) {
+      if (owner != loop.getBody() || argument.getArgNumber() == 0)
+        return mlir::failure();
+      unsigned index = argument.getArgNumber() - 1;
+      if (index >= loop.getInitArgs().size())
+        return mlir::failure();
+      return getEndpointSeedAllocationImpl(loop.getInitArgs()[index], visited);
+    }
+    return mlir::failure();
+  }
+
+  auto result = mlir::dyn_cast<mlir::OpResult>(value);
+  auto loop = result ? mlir::dyn_cast<mlir::scf::ForOp>(result.getOwner())
+                     : mlir::scf::ForOp();
+  if (!loop || result.getResultNumber() >= loop.getInitArgs().size())
+    return mlir::failure();
+  return getEndpointSeedAllocationImpl(
+      loop.getInitArgs()[result.getResultNumber()], visited);
+}
+
+static mlir::FailureOr<mlir::Value>
+getEndpointSeedAllocation(mlir::Value value) {
+  llvm::DenseSet<mlir::Value> visited;
+  return getEndpointSeedAllocationImpl(value, visited);
+}
+
+static bool hasPlannedSPMAllocation(mlir::Value value) {
+  auto allocation = value.getDefiningOp<mlir::memref::AllocOp>();
+  return allocation && isWaferSPMMemRefType(allocation.getType()) &&
+         allocation->hasAttr(kWaferSPMOffsetAttrName);
+}
+
+static bool verifyEndpointRootImpl(mlir::Value value, mlir::Value expected,
+                                   llvm::DenseSet<mlir::Value> &visited) {
+  if (value == expected)
+    return true;
+  if (!value || value.getType() != expected.getType())
+    return false;
+
+  if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
+    mlir::Value source = cast.getSource();
+    return source.getType() == value.getType() &&
+           verifyEndpointRootImpl(source, expected, visited);
+  }
+
+  if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+    if (!visited.insert(value).second)
+      return true;
+    mlir::Block *owner = argument.getOwner();
+    mlir::Operation *parent = owner ? owner->getParentOp() : nullptr;
+    if (auto tileRegion = mlir::dyn_cast_or_null<TileRegionOp>(parent)) {
+      unsigned index = argument.getArgNumber();
+      return owner == &tileRegion.getBody().front() &&
+             index < tileRegion.getInputs().size() &&
+             verifyEndpointRootImpl(tileRegion.getInputs()[index], expected,
+                                    visited);
+    }
+    auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(parent);
+    if (!loop || owner != loop.getBody() || argument.getArgNumber() == 0)
+      return false;
+    unsigned index = argument.getArgNumber() - 1;
+    auto yield =
+        mlir::dyn_cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+    return index < loop.getInitArgs().size() && yield &&
+           index < yield.getOperands().size() &&
+           verifyEndpointRootImpl(loop.getInitArgs()[index], expected,
+                                  visited) &&
+           verifyEndpointRootImpl(yield.getOperands()[index], expected,
+                                  visited);
+  }
+
+  auto result = mlir::dyn_cast<mlir::OpResult>(value);
+  auto loop = result ? mlir::dyn_cast<mlir::scf::ForOp>(result.getOwner())
+                     : mlir::scf::ForOp();
+  if (!loop || result.getResultNumber() >= loop.getInitArgs().size())
+    return false;
+  return verifyEndpointRootImpl(loop.getRegionIterArg(result.getResultNumber()),
+                                expected, visited);
+}
+
+static mlir::FailureOr<mlir::Value>
+resolveUniqueEndpointAllocation(mlir::Value value) {
+  mlir::FailureOr<mlir::Value> expected = getEndpointSeedAllocation(value);
+  if (mlir::failed(expected) || !hasPlannedSPMAllocation(*expected) ||
+      value.getType() != expected->getType())
+    return mlir::failure();
+  llvm::DenseSet<mlir::Value> visited;
+  if (!verifyEndpointRootImpl(value, *expected, visited))
+    return mlir::failure();
+  return *expected;
+}
+
+static std::optional<unsigned>
+getDirectLoopArgumentIndex(mlir::Value value, mlir::scf::ForOp loop) {
+  llvm::DenseSet<mlir::Value> visited;
+  while (value && visited.insert(value).second) {
+    if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
+      mlir::Value source = cast.getSource();
+      if (source.getType() != value.getType())
+        return std::nullopt;
+      value = source;
+      continue;
+    }
+    auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
+    if (!argument || argument.getOwner() != loop.getBody() ||
+        argument.getArgNumber() == 0)
+      return std::nullopt;
+    return argument.getArgNumber() - 1;
+  }
+  return std::nullopt;
+}
+
+struct EndpointRecurrenceState {
+  std::optional<unsigned> argumentIndex;
+  mlir::Value fixedAllocation;
+};
+
+static mlir::FailureOr<EndpointRecurrenceState>
+advanceEndpointRecurrence(mlir::scf::ForOp loop,
+                          EndpointRecurrenceState state) {
+  if (!state.argumentIndex)
+    return state;
+  auto yield =
+      mlir::dyn_cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+  if (!yield || *state.argumentIndex >= yield.getOperands().size())
+    return mlir::failure();
+  mlir::Value next = yield.getOperands()[*state.argumentIndex];
+  if (std::optional<unsigned> index = getDirectLoopArgumentIndex(next, loop))
+    return EndpointRecurrenceState{index, {}};
+  mlir::FailureOr<mlir::Value> allocation = getEndpointSeedAllocation(next);
+  if (mlir::failed(allocation) || !hasPlannedSPMAllocation(*allocation))
+    return mlir::failure();
+  return EndpointRecurrenceState{std::nullopt, *allocation};
+}
+
+static mlir::FailureOr<mlir::Value>
+getEndpointRecurrenceAllocation(mlir::scf::ForOp loop,
+                                EndpointRecurrenceState state) {
+  if (state.fixedAllocation)
+    return state.fixedAllocation;
+  if (!state.argumentIndex || *state.argumentIndex >= loop.getInitArgs().size())
+    return mlir::failure();
+  mlir::FailureOr<mlir::Value> allocation =
+      getEndpointSeedAllocation(loop.getInitArgs()[*state.argumentIndex]);
+  if (mlir::failed(allocation) || !hasPlannedSPMAllocation(*allocation))
+    return mlir::failure();
+  return *allocation;
+}
+
+static mlir::FailureOr<uint64_t>
+deriveEndpointRootPeriod(mlir::Operation *issue, mlir::scf::ForOp loop) {
+  mlir::Value buffer = getDirectDTEBuffer(issue);
+  std::optional<unsigned> start = getDirectLoopArgumentIndex(buffer, loop);
+  if (!start) {
+    if (mlir::failed(resolveUniqueEndpointAllocation(buffer)))
+      return mlir::failure();
+    return uint64_t{1};
+  }
+
+  const uint64_t sampleCount =
+      static_cast<uint64_t>(loop.getNumRegionIterArgs()) * 2 +
+      kMaxPeriodicDTEUnrollFactor * 2 + 1;
+  llvm::SmallVector<mlir::Value, 32> roots;
+  roots.reserve(sampleCount);
+  EndpointRecurrenceState state{start, {}};
+  for (uint64_t sample = 0; sample < sampleCount; ++sample) {
+    mlir::FailureOr<mlir::Value> allocation =
+        getEndpointRecurrenceAllocation(loop, state);
+    if (mlir::failed(allocation))
+      return mlir::failure();
+    roots.push_back(*allocation);
+    mlir::FailureOr<EndpointRecurrenceState> next =
+        advanceEndpointRecurrence(loop, state);
+    if (mlir::failed(next))
+      return mlir::failure();
+    state = *next;
+  }
+
+  for (uint64_t period = 1; period <= kMaxPeriodicDTEUnrollFactor; ++period) {
+    bool periodic = true;
+    for (uint64_t sample = 0; sample + period < roots.size(); ++sample)
+      periodic &= roots[sample] == roots[sample + period];
+    if (periodic)
+      return period;
+  }
+  return mlir::failure();
+}
+
+static bool
+getDirectBodyDTEIssues(mlir::scf::ForOp loop,
+                       llvm::SmallVectorImpl<mlir::Operation *> &issues) {
+  for (mlir::Operation &operation : loop.getBody()->without_terminator()) {
+    if (getDirectDTEBuffer(&operation))
+      issues.push_back(&operation);
+    if (operation.getNumRegions() != 0) {
+      bool nestedDTE = false;
+      operation.walk([&](mlir::Operation *nested) {
+        nestedDTE |= static_cast<bool>(getDirectDTEBuffer(nested));
+      });
+      if (nestedDTE)
+        return false;
+    }
+  }
+  return true;
+}
+
+static bool checkedLCM(uint64_t lhs, uint64_t rhs, uint64_t &result) {
+  uint64_t divisor = std::gcd(lhs, rhs);
+  uint64_t quotient = lhs / divisor;
+  if (rhs != 0 && quotient > kMaxPeriodicDTEUnrollFactor / rhs)
+    return false;
+  result = quotient * rhs;
+  return result <= kMaxPeriodicDTEUnrollFactor;
+}
+
+static mlir::LogicalResult
+canonicalizeSCFIdentityRecurrences(llvm::ArrayRef<mlir::ModuleOp> modules) {
+  for (mlir::ModuleOp module : modules) {
+    mlir::RewritePatternSet patterns(module.getContext());
+    mlir::scf::ForOp::getCanonicalizationPatterns(patterns,
+                                                  module.getContext());
+    if (mlir::failed(
+            mlir::applyPatternsAndFoldGreedily(module, std::move(patterns))))
+      return mlir::failure();
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+specializePeriodicDTEClones(llvm::ArrayRef<mlir::ModuleOp> modules,
+                            std::string *failureReason) {
+  uint64_t commonPeriod = 1;
+  llvm::SmallVector<mlir::scf::ForOp, 16> affectedLoops;
+  for (mlir::ModuleOp module : modules) {
+    llvm::SmallVector<mlir::scf::ForOp, 8> loops;
+    module.walk([&](mlir::scf::ForOp loop) { loops.push_back(loop); });
+    for (mlir::scf::ForOp loop : loops) {
+      llvm::SmallVector<mlir::Operation *, 4> issues;
+      if (!getDirectBodyDTEIssues(loop, issues))
+        return failSpecialization(
+            failureReason,
+            "periodic Direct-DTE specialization rejects nested DTE control");
+      if (issues.empty())
+        continue;
+      std::optional<uint64_t> tripCount = getPositiveStaticTripCount(loop);
+      std::optional<int64_t> lower =
+          mlir::getConstantIntValue(loop.getLowerBound());
+      std::optional<int64_t> upper =
+          mlir::getConstantIntValue(loop.getUpperBound());
+      if (!tripCount || !lower || !upper || *lower < 0 || *upper < 0)
+        return failSpecialization(
+            failureReason,
+            "periodic Direct-DTE specialization requires static non-negative "
+            "loop bounds and a positive static step");
+      uint64_t loopPeriod = 1;
+      for (mlir::Operation *issue : issues) {
+        mlir::FailureOr<uint64_t> period =
+            deriveEndpointRootPeriod(issue, loop);
+        uint64_t merged = 0;
+        if (mlir::failed(period) || !checkedLCM(loopPeriod, *period, merged))
+          return failSpecialization(
+              failureReason,
+              "periodic Direct-DTE endpoint rotation is not a bounded "
+              "planned-allocation recurrence");
+        loopPeriod = merged;
+      }
+      uint64_t merged = 0;
+      if (!checkedLCM(commonPeriod, loopPeriod, merged))
+        return failSpecialization(
+            failureReason,
+            "periodic Direct-DTE all-rank slot period exceeds the bounded "
+            "specialization cap");
+      commonPeriod = merged;
+      affectedLoops.push_back(loop);
+    }
+  }
+
+  for (mlir::scf::ForOp loop : affectedLoops) {
+    std::optional<uint64_t> tripCount = getPositiveStaticTripCount(loop);
+    if (!tripCount)
+      return failSpecialization(
+          failureReason, "periodic Direct-DTE loop lost its static trip count");
+    uint64_t factor = std::min(*tripCount, commonPeriod);
+    if (factor > 1 && mlir::failed(mlir::loopUnrollByFactor(loop, factor)))
+      return failSpecialization(
+          failureReason, "periodic Direct-DTE main-loop modulo unroll failed");
+  }
+  if (mlir::failed(canonicalizeSCFIdentityRecurrences(modules)))
+    return failSpecialization(
+        failureReason,
+        "periodic Direct-DTE identity recurrence canonicalization failed");
+
+  // The SCF utility emits a residual loop when the static trip count is not an
+  // exact multiple of the common period. Such a tail is smaller than the
+  // period and must be fully promoted; leaving it rotating would reintroduce a
+  // multi-root physical DTE site.
+  llvm::SmallVector<mlir::scf::ForOp, 16> residualLoops;
+  for (mlir::ModuleOp module : modules)
+    module.walk([&](mlir::scf::ForOp loop) {
+      llvm::SmallVector<mlir::Operation *, 4> issues;
+      if (!getDirectBodyDTEIssues(loop, issues) || issues.empty())
+        return;
+      bool unresolved = llvm::any_of(issues, [&](mlir::Operation *issue) {
+        return mlir::failed(
+            resolveUniqueEndpointAllocation(getDirectDTEBuffer(issue)));
+      });
+      if (unresolved)
+        residualLoops.push_back(loop);
+    });
+  for (mlir::scf::ForOp loop : residualLoops) {
+    std::optional<uint64_t> tripCount = getPositiveStaticTripCount(loop);
+    if (!tripCount || *tripCount >= commonPeriod ||
+        mlir::failed(mlir::loopUnrollByFactor(loop, *tripCount)))
+      return failSpecialization(
+          failureReason,
+          "periodic Direct-DTE residual tail is not exactly promotable");
+  }
+  if (mlir::failed(canonicalizeSCFIdentityRecurrences(modules)))
+    return failSpecialization(
+        failureReason, "periodic Direct-DTE tail canonicalization failed");
+
+  for (mlir::ModuleOp module : modules) {
+    mlir::LogicalResult rewritten = mlir::success();
+    module.walk([&](mlir::Operation *operation) {
+      mlir::Value buffer = getDirectDTEBuffer(operation);
+      if (!buffer)
+        return mlir::WalkResult::advance();
+      mlir::FailureOr<mlir::Value> allocation =
+          resolveUniqueEndpointAllocation(buffer);
+      if (mlir::failed(allocation) ||
+          allocation->getType() != buffer.getType()) {
+        rewritten = mlir::failure();
+        return mlir::WalkResult::interrupt();
+      }
+      operation->setOperand(0, *allocation);
+      return mlir::WalkResult::advance();
+    });
+    if (mlir::failed(rewritten))
+      return failSpecialization(
+          failureReason,
+          "periodic Direct-DTE site does not have one exact planned SPM "
+          "allocation root");
+    uint64_t terminalOperations = 0;
+    if (detail::checkStaticTerminalOperationBudget(module,
+                                                   terminalOperations) !=
+        detail::StaticTerminalOperationBudgetStatus::WithinBudget)
+      return failSpecialization(
+          failureReason,
+          "periodic Direct-DTE specialization exceeds the static terminal "
+          "operation budget");
+    if (mlir::failed(mlir::verify(module)))
+      return failSpecialization(
+          failureReason,
+          "periodic Direct-DTE specialization produced invalid IR");
   }
   return mlir::success();
 }
@@ -1000,8 +1780,7 @@ deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
       mlir::getConstantIntValue(clonedLoop.getStep());
   if (!clonedUpper || !clonedStep)
     return failCandidate(
-        failureReason,
-        "fixed-slot clone lost its admitted static loop bounds");
+        failureReason, "fixed-slot clone lost its admitted static loop bounds");
   mlir::FailureOr<mlir::scf::ForOp> pipelined =
       materializeSlotsAndRotation(clonedLoop, *clonedPlan, failureReason);
   if (mlir::failed(pipelined))
@@ -1033,6 +1812,41 @@ deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
   result.stageCount = clonedPlan->maxStage + 1;
   result.slotAllocationCount = clonedPlan->slotAllocationCount;
   return result;
+}
+
+mlir::LogicalResult
+specializePeriodicDirectDTESites(llvm::ArrayRef<mlir::ModuleOp> rankModules,
+                                 std::string *failureReason) {
+  if (failureReason)
+    failureReason->clear();
+  if (rankModules.empty())
+    return failSpecialization(
+        failureReason,
+        "periodic Direct-DTE specialization requires a complete rank tuple");
+
+  llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> ownedClones;
+  llvm::SmallVector<mlir::ModuleOp, 16> cloneViews;
+  ownedClones.reserve(rankModules.size());
+  cloneViews.reserve(rankModules.size());
+  for (mlir::ModuleOp module : rankModules) {
+    if (!module)
+      return failSpecialization(
+          failureReason,
+          "periodic Direct-DTE specialization received a null rank module");
+    ownedClones.emplace_back(mlir::cast<mlir::ModuleOp>(module->clone()));
+    cloneViews.push_back(*ownedClones.back());
+  }
+
+  if (mlir::failed(specializePeriodicDTEClones(cloneViews, failureReason)))
+    return mlir::failure();
+
+  for (size_t index = 0; index < rankModules.size(); ++index) {
+    mlir::ModuleOp destination = rankModules[index];
+    mlir::ModuleOp source = cloneViews[index];
+    destination->setAttrs(source->getAttrs());
+    destination.getBodyRegion().takeBody(source.getBodyRegion());
+  }
+  return mlir::success();
 }
 
 } // namespace wafer

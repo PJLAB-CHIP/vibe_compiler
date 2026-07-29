@@ -1,0 +1,63 @@
+# REQUIRES: stablehlo, shardy, xla-spmd-helper, numeric-model, systemc-model
+
+# RUN: rm -rf %t.source %t.outputs %t.mock-spmd-helper %t.lhs.npy %t.rhs.npy %t.expected.npy
+# RUN: mkdir -p %t.source/functions %t.outputs
+# RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<524288xf32>, %%rhs: tensor<524288xf32>) -> tensor<524288xf32> {\n    %%sum = stablehlo.add %%lhs, %%rhs : tensor<524288xf32>\n    return %%sum : tensor<524288xf32>\n  }\n}\n' > %t.source/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[524288],"dtype":"float32","dynamic_dims":[]},{"shape":[524288],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[524288],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.source/functions/forward.meta
+# RUN: %python -c 'import numpy as np; lhs=np.ones(524288,dtype=np.float32); rhs=np.full(524288,2,dtype=np.float32); np.save("%t.lhs.npy",lhs); np.save("%t.rhs.npy",rhs); np.save("%t.expected.npy",lhs+rhs)'
+# RUN: printf '%b' '#!/usr/bin/env bash\nset -euo pipefail\ninput=""\noutput=""\nrank_count=""\nwhile [[ $# -gt 0 ]]; do\n  case "$1" in\n    --input-program-dir) input="$2"; shift 2 ;;\n    --output-program-dir) output="$2"; shift 2 ;;\n    --logical-rank-count) rank_count="$2"; shift 2 ;;\n    --entry-function) shift 2 ;;\n    *) shift ;;\n  esac\ndone\ntest "$rank_count" = 16\nrm -rf "$output"\nmkdir -p "$output"\ncp -R "$input/." "$output/"\nmodule="$output/functions/forward.mlir"\nsed -i "0,/^module {/s//module attributes {\\\"mhlo.spmd_parameters_shardings\\\" = \\\"\\\"} {/" "$module"\necho "{\\\"parameter_shards_version\\\":3,\\\"function\\\":\\\"forward\\\",\\\"logical_rank_count\\\":$rank_count,\\\"parameters\\\":[]}" > "$output/functions/forward.parameter_shards.json"\npython3 - "$output/functions/forward.meta" "$rank_count" <<PY\nimport json\nimport sys\npath = sys.argv[1]\nrank_count = int(sys.argv[2])\nwith open(path) as stream:\n    meta = json.load(stream)\nshape = [524288]\ndef binding(index_field, index):\n    ranks = [{\"rank\": rank, \"replica_id\": rank, \"offsets\": [0], \"sizes\": shape, \"strides\": [1]} for rank in range(rank_count)]\n    return {index_field: index, \"distribution\": \"replicated\", \"global_shape\": shape, \"local_shape\": shape, \"dtype\": \"float32\", \"ranks\": ranks}\nmeta[\"distributed_boundary\"] = {\"version\": 1, \"logical_rank_count\": rank_count, \"inputs\": [binding(\"argument_index\", 0), binding(\"argument_index\", 1)], \"outputs\": [binding(\"result_index\", 0)]}\nwith open(path, \"w\") as stream:\n    json.dump(meta, stream)\nPY\n' > %t.mock-spmd-helper
+# RUN: chmod +x %t.mock-spmd-helper
+
+# The test-only producer enters through the same source transaction and
+# publishes the ordinary canonical package schema after selecting a fully
+# accepted fixed-slot realization.
+# RUN: env WAFER_TEST_SELECT_STATIC_FIXED_SLOT=1 %wafer_compile_test --input-program-dir %t.source --output-program-dir %t.outputs/qualified --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
+# RUN: %python -c 'import json,pathlib; p=pathlib.Path("%t.outputs/qualified"); m=json.loads((p/"manifest.json").read_text()); assert m["schema_version"]==6 and m["rank_count"]==1 and m["target"]["profile"]=="wafer-tx81-single-card-kernel-v1"; assert len(m["modules"])==len(m["entries"])==len(m["completions"])==1; assert (p/m["modules"][0]["path"]).read_bytes().startswith(b"\x7fELF")'
+# RUN: %python -c 'import json,pathlib; q=pathlib.Path("%t.outputs/qualified.qualification"); a=json.loads((q/"attestation.json").read_text()); act=json.loads((q/"activation.json").read_text()); assert set(p.name for p in q.iterdir())=={"attestation.json","activation.json"}; assert a["schema"]=="wafer-static-fixed-slot-qualification" and a["schema_version"]==1 and a["selection_kind"]=="static-fixed-slot"; assert a["target"]=={"profile":"wafer-tx81-single-card-kernel-v1","rank_count":1,"logical_ranks":[0]}; r=a["ranks"][0]; rotations=[edge for loop in r["static_loops"] for edge in loop["spm_iter_arg_rotations"]]; assert len(r["spm_alloc_roots"])==6 and len(rotations)==6; assert {edge["initial_root"]:edge["next_root"] for edge in rotations}=={0:1,1:0,2:3,3:2,4:5,5:4}; assert {issue["engine"] for issue in r["engine_worker_issues"]}>={"rdma","ct","wdma"}; assert set(r["dte"])=={"token_count","issues","waits"} and set(r["completion"])=={"participant_joins","behaviors"}; assert act["manifest_sha256"]==a["manifest_sha256"]'
+# RUN: %python %wafer_src_root/test/Board/wafer_board_engine_pipeline_characterization_test.py --mode production-gate --production-package %t.outputs/qualified --require-production-ready | FileCheck %s --check-prefix=PRODUCTION-GATE
+# The ELF inventory is package-structure evidence only. Exact TargetCall
+# transactions and functional numeric behavior remain independently covered
+# by the SystemC fixed-slot integration test.
+# RUN: %python -c 'import pathlib,re,subprocess; p=pathlib.Path("%t.outputs/qualified/modules/module_00000.so"); d=subprocess.run(["%wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump","-dr",str(p)],check=True,text=True,capture_output=True).stdout; count=lambda name:len(re.findall(r"\b(?:jal|j)\s+[^\n]*<"+re.escape(name)+r">",d)); assert {name:count(name) for name in ("wafer_tx81_rdma","wafer_tx81_wdma","wafer_tx81_elementwise_add","wafer_tx81_ncc_join")}=={"wafer_tx81_rdma":6,"wafer_tx81_wdma":3,"wafer_tx81_elementwise_add":3,"wafer_tx81_ncc_join":1},d; assert "wafer_tx81_local_fence" not in d,d'
+# RUN: wafer-run --package-dir %t.outputs/qualified --all-ranks --no-card | FileCheck %s --check-prefix=NO-CARD
+
+# The same qualification contract must close over a V3 all-rank NoC-resident
+# fixed-slot realization. This is not a hand-authored DTE fixture: the private
+# SPMD helper supplies only the replicated boundary, while the ordinary
+# candidate path derives, accepts, lowers, models, and attests the DTE graph.
+# RUN: env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-spmd-helper WAFER_TEST_SELECT_STATIC_FIXED_SLOT=1 %wafer_compile_test --input-program-dir %t.source --output-program-dir %t.outputs/qualified-v3 --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v3 --launch-kind=kernel --model-input 0=%t.lhs.npy --model-input 1=%t.rhs.npy --model-expected 0=%t.expected.npy --model-atol=0 --model-rtol=0 --target-model --target-model-max-scalar-evaluations=20000000 --target-model-max-fused-multiply-adds=20000000 --target-model-max-movement-bytes=200000000 --target-model-max-movement-segments=2000000 | FileCheck %s --check-prefix=V3-QUALIFIED
+# RUN: %python -c 'import hashlib,json,pathlib; p=pathlib.Path("%t.outputs/qualified-v3"); m=json.loads((p/"manifest.json").read_text()); q=pathlib.Path(str(p)+".qualification"); ab=(q/"attestation.json").read_bytes(); a=json.loads(ab); act=json.loads((q/"activation.json").read_text()); manifest_digest="sha256:"+hashlib.sha256((p/"manifest.json").read_bytes()).hexdigest(); attestation_digest="sha256:"+hashlib.sha256(ab).hexdigest(); assert m["schema_version"]==6 and m["rank_count"]==16 and m["target"]["profile"]=="wafer-tx81-single-card-kernel-v3"; assert [entry["transport"]["kind"] for entry in m["entries"]]==["direct_dte"]*16; assert a["target"]=={"profile":"wafer-tx81-single-card-kernel-v3","rank_count":16,"logical_ranks":list(range(16))}; assert a["manifest_sha256"]==act["manifest_sha256"]==manifest_digest; assert act["attestation_sha256"]==attestation_digest; assert {issue["kind"] for r in a["ranks"] for issue in r["dte"]["issues"]}=={"send","recv"}; assert all(r["accepted_instr_sha256"].startswith("sha256:") and len(r["accepted_instr_sha256"])==71 and r["dte"]["token_count"]==len(r["dte"]["issues"])>0 and sorted(token for wait in r["dte"]["waits"] for token in wait["tokens"])==list(range(r["dte"]["token_count"])) and all(issue["kind"] in {"send","recv"} and 0<=issue["peer"]<16 and issue["peer"]!=r["logical_rank"] and issue["bytes"]>0 for issue in r["dte"]["issues"]) for r in a["ranks"])'
+# RUN: %python %wafer_src_root/test/Board/wafer_board_engine_pipeline_characterization_test.py --mode production-gate --production-package %t.outputs/qualified-v3 --require-production-ready | FileCheck %s --check-prefix=PRODUCTION-GATE
+# RUN: wafer-run --package-dir %t.outputs/qualified-v3 --all-ranks --no-card --direct-dte-status-abi wafer-direct-dte-status-v2 --supports-host-watchdog | FileCheck %s --check-prefix=V3-NO-CARD
+
+# The production executable does not consume the private selection seam.
+# RUN: env WAFER_TEST_SELECT_STATIC_FIXED_SLOT=1 wafer-compile --input-program-dir %t.source --output-program-dir %t.outputs/production --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
+# RUN: wafer-run --package-dir %t.outputs/production --all-ranks --no-card | FileCheck %s --check-prefix=NO-CARD
+# RUN: test ! -e %t.outputs/production.qualification
+# An unrelated testing sibling must not become an input or collision for an
+# ordinary production transaction.
+# RUN: mkdir %t.outputs/unrelated.qualification
+# RUN: printf 'caller-owned\n' > %t.outputs/unrelated.qualification/marker
+# RUN: wafer-compile --input-program-dir %t.source --output-program-dir %t.outputs/unrelated --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel | FileCheck %s --check-prefix=PUBLISHED
+# RUN: grep -qx 'caller-owned' %t.outputs/unrelated.qualification/marker
+
+# Selection controls are mutually exclusive and cannot weaken transaction
+# atomicity by combining with a late failure injection.
+# RUN: not env WAFER_TEST_SELECT_STATIC_FIXED_SLOT=1 WAFER_TEST_FAIL_AFTER_LOGICAL_RANK=0 %wafer_compile_test --input-program-dir %t.source --output-program-dir %t.outputs/conflicting --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=CONFLICT
+# RUN: test ! -e %t.outputs/conflicting
+# RUN: test ! -e %t.outputs/conflicting.qualification
+# RUN: mkdir %t.outputs/existing.qualification
+# RUN: not env WAFER_TEST_SELECT_STATIC_FIXED_SLOT=1 %wafer_compile_test --input-program-dir %t.source --output-program-dir %t.outputs/existing --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=EXISTING
+# RUN: test ! -e %t.outputs/existing
+# RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
+
+# PUBLISHED: wafer-compile: published verified package with execution-ranks=1:
+# V3-QUALIFIED: wafer-compile: published verified package with execution-ranks=16:
+# V3-QUALIFIED: target model outputs matched; ranks=16 transactions=
+# PRODUCTION-GATE: production_pipeline_preparation: {{.*}}"ready": true
+# NO-CARD: package: id=0 schema=6 ranks=1
+# NO-CARD: board_execution: false
+# V3-NO-CARD: package: id=0 schema=6 ranks=16
+# V3-NO-CARD: board_execution: false
+# CONFLICT: wafer-compile: test-only static fixed-slot qualification cannot be combined with failure injection
+# EXISTING: wafer-compile: refusing to replace existing fixed-slot qualification companion directory

@@ -13,6 +13,35 @@
 using namespace wafer;
 using namespace wafer::detail;
 
+namespace {
+
+static mlir::LogicalResult verifyPeerTile(mlir::Operation *op,
+                                          mlir::Value buffer,
+                                          mlir::IntegerAttr peer,
+                                          mlir::IntegerAttr bytes,
+                                          DTEMessageAttr message,
+                                          mlir::Type tokenType) {
+  if (mlir::failed(verifyDTEP2P(op, buffer, peer, bytes, tokenType)))
+    return mlir::failure();
+  if (message.getPhase() != DTEProtocolPhase::PeerDataflow)
+    return op->emitOpError(
+        "peer tile message phase must be peer_dataflow");
+  return verifyLogicalRankWithinExecutionMesh(op, peer.getInt(),
+                                              "peer tile logical rank");
+}
+
+} // namespace
+
+mlir::LogicalResult CommPeerSendOp::verify() {
+  return verifyPeerTile(getOperation(), getBuffer(), getPeerAttr(),
+                        getBytesAttr(), getMessage(), getToken().getType());
+}
+
+mlir::LogicalResult CommPeerRecvOp::verify() {
+  return verifyPeerTile(getOperation(), getBuffer(), getPeerAttr(),
+                        getBytesAttr(), getMessage(), getToken().getType());
+}
+
 static mlir::LogicalResult verifyCommunicationId(mlir::Operation *op,
                                                  mlir::IntegerAttr id) {
   if (id.getInt() < 0)

@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 
 namespace mlir {
 class Operation;
@@ -44,6 +45,7 @@ enum class ScheduleCostReason {
   InvalidExecutionTopology,
   UnsupportedInstructionSemantics,
   UnsupportedComputeType,
+  MissingPerformanceCalibration,
   ArithmeticOverflow,
 };
 
@@ -65,9 +67,9 @@ enum class NoCCollectiveKind : uint8_t {
   AllReduce,
 };
 
-/// Hardware facts used to interpret the logical cost dimensions. This policy
-/// deliberately has no SPM bandwidth, issue latency, clock, or cycle estimate:
-/// those facts are not established by the current target contract.
+/// Hardware facts used to interpret the logical cost dimensions. Peak,
+/// nominal, and conservative-bound fields are deliberately distinct:
+/// reporting references must not silently become production bounds.
 struct TargetScheduleCostPolicy {
   explicit constexpr TargetScheduleCostPolicy(TargetProfileId targetProfile)
       : targetProfile(targetProfile) {}
@@ -82,11 +84,72 @@ struct TargetScheduleCostPolicy {
   /// Direct-DTE plus compute families known to use independent target
   /// resources when typed issue and wait delimit an overlap window.
   uint32_t qualifiedDirectDTEOverlapFamilyMask = 0;
+  /// Whole-card peak/reference bandwidth. This remains the profiler's
+  /// theoretical traffic-floor rate.
   uint64_t cardDDRBytesPerSecond = 200'000'000'000ULL;
+  /// Whole-card observed operating point shared by all 16 tiles. It is a
+  /// nominal estimate, not 16 independent per-tile rates and not a guaranteed
+  /// throughput lower bound.
+  uint64_t cardDDRNominalBytesPerSecond = 150'000'000'000ULL;
+  /// Single-direction payload serialization reference. It is not a fabric
+  /// aggregate, endpoint sustained rate, route estimate, or latency.
   uint64_t directionalNoCBytesPerSecond = 128'000'000'000ULL;
+  /// Point estimates used by the versioned analytical selector. These are
+  /// compiler policy priors, not measured lower/upper bounds. Keeping them
+  /// separate from the conservative fields below lets normal production make
+  /// an Estimated decision without misreporting it as a proof.
+  ///
+  /// The endpoint prior starts from one documented directional link. The
+  /// startup prior is deliberately conservative for the current uncalibrated
+  /// Direct-DTE software/handshake path; later matched board calibration may
+  /// replace the value without changing the analytical formula.
+  uint64_t dteEndpointBytesPerSecondEstimate = 128'000'000'000ULL;
+  uint64_t dteMessageStartupPicosecondsEstimate = 10'000'000ULL;
+  /// One model quantum per hop on the maximum modeled route. It is charged
+  /// once as the route-fill/dilation term after link-congestion and endpoint
+  /// service, not once per physical packet traversal.
+  uint64_t noCHopPicosecondsEstimate = 1'000ULL;
+  /// SPM has a documented 1024-bit internal interface but no qualified
+  /// sustained bandwidth. One 128-byte beat per 1 GHz model quantum is an
+  /// explicit point prior, not a hardware bound.
+  uint64_t spmBytesPerSecondPerTileEstimate = 128'000'000'000ULL;
+  /// Fixed issue/release priors. Blocking resource service is accounted by the
+  /// DDR/NoC/compute terms and is not charged again here.
+  uint64_t instructionFixedPicosecondsEstimate = 1'000ULL;
+  uint64_t dteWaitedEventPicosecondsEstimate = 1'000ULL;
+  uint64_t nccParticipantWaitPicosecondsEstimate = 1'000ULL;
   uint64_t f16Bf16NPULogicalOpsPerSecondPerTile = 8'000'000'000'000ULL;
   uint64_t f16Bf16VectorLogicalOpsPerSecondPerTile = 64'000'000'000ULL;
   uint64_t f32VectorLogicalOpsPerSecondPerTile = 32'000'000'000ULL;
+
+  /// Optional conservative bounds used only by production profitability.
+  /// The current profile intentionally leaves these absent: existing board
+  /// evidence establishes the references above but not sustained lower rates,
+  /// Direct-DTE startup/hop upper bounds, or route dilation.
+  std::optional<uint64_t> cardDDRSustainedBytesPerSecondLowerBound;
+  std::optional<uint64_t> directionalNoCSustainedBytesPerSecondLowerBound;
+  std::optional<uint64_t> dteEndpointBytesPerSecondLowerBound;
+  std::optional<uint64_t> dteMessageStartupPicosecondsUpperBound;
+  /// Conservative per-hop route-fill time used with the dilated aggregate
+  /// minimum-hop message demand.
+  std::optional<uint64_t> noCHopPicosecondsUpperBound;
+  std::optional<uint32_t> noCRouteDilationUpperBound;
+  std::optional<uint64_t> f16Bf16NPULogicalOpsPerSecondPerTileLowerBound;
+  std::optional<uint64_t> f16Bf16VectorLogicalOpsPerSecondPerTileLowerBound;
+  std::optional<uint64_t> f32VectorLogicalOpsPerSecondPerTileLowerBound;
+  std::optional<uint64_t> spmBytesPerSecondPerTileLowerBound;
+  /// Maximum fixed non-service time per statically executed instruction.
+  /// Resource service time is modeled separately; this bound covers issue,
+  /// control and nonblocking completion bookkeeping.
+  std::optional<uint64_t> instructionFixedPicosecondsUpperBound;
+  /// Additional blocking-poll/release overhead after the corresponding
+  /// resource service has completed.
+  std::optional<uint64_t> dteWaitedEventPicosecondsUpperBound;
+  std::optional<uint64_t> nccParticipantWaitPicosecondsUpperBound;
+
+  /// Compiler safety margin, not a measured hardware rate. Estimated winners
+  /// must retain at least a 20% advantage under the central point model.
+  uint32_t productionBenefitMarginPermille = 200;
   uint64_t spmAddressBase = static_cast<uint64_t>(TargetMemoryPolicy{}.spmBase);
   uint64_t spmAddressLimit =
       static_cast<uint64_t>(TargetMemoryPolicy{}.spmLimit);
@@ -104,11 +167,23 @@ struct ScheduleComputeCost {
 };
 
 struct ScheduleNoCCost {
+  /// Exact executable send/receive operation sites, independent of dynamic
+  /// loop multiplicity. This distinguishes a NoC-free program from one whose
+  /// traffic multiplicity is Unknown.
+  ScheduleCostMetric staticIssueSiteCount;
   /// Bytes injected by send instructions, counted once per logical payload.
   ScheduleCostMetric aggregateTransmitBytes;
   /// Bytes consumed by receive instructions. Kept separate to avoid treating a
   /// send/receive pair as two traversals of the fabric.
   ScheduleCostMetric aggregateReceiveBytes;
+  /// Static execution multiplicity of actual Direct-DTE send/receive sites.
+  /// Message startup must use these facts rather than guessing from event or
+  /// instruction counts.
+  ScheduleCostMetric transmitMessageCount;
+  ScheduleCostMetric receiveMessageCount;
+  /// Static wait operations and exact event operands consumed by them.
+  ScheduleCostMetric waitOperationCount;
+  ScheduleCostMetric waitedEventCount;
   std::array<ScheduleCostMetric, 4> directionalTransmitBytes;
   std::array<ScheduleCostMetric, 5> collectiveTransmitBytes;
 
@@ -180,6 +255,21 @@ struct InstructionProgramCost {
   ScheduleCostMetric spmHighWaterBytes;
 };
 
+enum class ModeledNoCRouteKind : uint8_t {
+  CanonicalShortestPath,
+};
+
+/// A deterministic route-model result derived from final instruction traffic
+/// and the typed topology. A Known metric means that every model input was
+/// available and arithmetic completed; it does not assert that target hardware
+/// uses this physical route.
+struct ModeledNoCRouteCost {
+  ModeledNoCRouteKind kind = ModeledNoCRouteKind::CanonicalShortestPath;
+  /// Maximum accumulated payload bytes on any directed link when every final
+  /// send follows the canonical shortest path selected by topology analysis.
+  ScheduleCostMetric peakDirectedLinkByteDemand;
+};
+
 /// Exact all-rank aggregation of independently lowered instruction programs.
 /// Work and traffic dimensions are summed over the complete variant. SPM
 /// remains private to a tile, so both the maximum per-rank high-water and the
@@ -194,11 +284,39 @@ struct WholeCardInstructionProgramCost {
   ScheduleCostMetric aggregateDDRWriteBytes;
   ScheduleCostMetric aggregateSPMMovementBytes;
   ScheduleNoCCost aggregateNoC;
+  /// Endpoint pressure derived from the actual per-rank instruction programs.
+  /// These are maxima, not sums, because endpoints are tile-local resources.
+  ScheduleCostMetric maximumRankNoCTransmitBytes;
+  ScheduleCostMetric maximumRankNoCReceiveBytes;
+  ScheduleCostMetric maximumRankNoCTransmitMessageCount;
+  ScheduleCostMetric maximumRankNoCReceiveMessageCount;
   /// Sum over final send instructions of
   /// payload bytes * static execution multiplicity * minimum topology hops.
   /// This is a whole-domain link-byte demand lower bound, not an actual route,
   /// directional link load, congestion estimate, or execution time.
   ScheduleCostMetric minimumHopLinkByteDemand;
+  /// Sum over final send instructions of static execution multiplicity *
+  /// minimum topology hops. Unlike the byte demand above, this preserves the
+  /// number of routed message-hop stages needed by a conservative latency
+  /// upper bound.
+  ScheduleCostMetric minimumHopMessageDemand;
+  /// Directed adjacency links in the complete typed topology graph. This is
+  /// counted once for each transmission direction and is never interpreted as
+  /// an aggregate-bandwidth guarantee.
+  ScheduleCostMetric directedNoCLinkCount;
+  /// Route-independent lower bound on the most loaded directed link under an
+  /// ideal balancing of the minimum-hop link-byte demand:
+  /// ceil(minimumHopLinkByteDemand / directedNoCLinkCount). Real routing,
+  /// cuts, endpoint pressure and congestion can only make the peak larger.
+  ScheduleCostMetric idealizedMinimumPeakLinkByteDemand;
+  /// Explicitly modeled link pressure. This is kept separate from exact
+  /// final-IR work and route-independent lower bounds because the current
+  /// target contract does not expose the hardware's selected physical routes.
+  ModeledNoCRouteCost modeledNoCRoute;
+  /// Maximum minimum-hop distance among final send sites that may execute.
+  /// This remains a typed-topology lower bound; dynamic execution multiplicity
+  /// does not change a site's source/destination distance.
+  ScheduleCostMetric maximumNoCHopCount;
   ScheduleCostMetric aggregateInstructionCount;
   ScheduleCostMetric aggregateEventCount;
   ScheduleCostMetric aggregateNCCJoinCount;

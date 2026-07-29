@@ -3,6 +3,7 @@
 #include "ExecutableBundleInternal.h"
 
 #include "CompilationInternal.h"
+#include "NoCResidentDataflow.h"
 #include "ScheduledRankFinalization.h"
 #include "WholeVariantAttemptPlan.h"
 #include "WholeVariantCoordinator.h"
@@ -39,7 +40,9 @@ detail::importRankVariantFrontiersIntoOwnerContext(
     for (const SerializedRankVariantCandidate &candidate : frontier)
       metadata.push_back({candidate.stableOrdinal, candidate.artifactKind,
                           candidate.reservedBaseline, candidate.bufferingKind,
-                          candidate.bufferingPlanOrdinal});
+                          candidate.bufferingPlanOrdinal,
+                          candidate.workerPlacementKind,
+                          candidate.workerPlacementPlanOrdinal});
     frontierMetadata.push_back(std::move(metadata));
   }
 
@@ -76,14 +79,24 @@ detail::importRankVariantFrontiersIntoOwnerContext(
               "rank %zu",
               static_cast<size_t>(rankIndex));
       }
-      imported.push_back({std::move(module), candidate.stableOrdinal,
-                          candidate.artifactKind, candidate.reservedBaseline,
-                          candidate.bufferingKind,
-                          candidate.bufferingPlanOrdinal});
+      imported.push_back(
+          {std::move(module), candidate.stableOrdinal, candidate.artifactKind,
+           candidate.reservedBaseline, candidate.bufferingKind,
+           candidate.bufferingPlanOrdinal, candidate.workerPlacementKind,
+           candidate.workerPlacementPlanOrdinal});
     }
     frontiers.push_back(std::move(imported));
   }
   return frontiers;
+}
+
+void detail::compactImportedRankVariantFrontiers(
+    std::vector<RankVariantFrontier> &frontiers) {
+  for (RankVariantFrontier &frontier : frontiers)
+    llvm::erase_if(frontier,
+                   [](const RankVariantCandidate &candidate) {
+                     return !candidate.module;
+                   });
 }
 
 static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
@@ -165,6 +178,9 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
       serialized.reservedBaseline = candidate.reservedBaseline;
       serialized.bufferingKind = candidate.bufferingKind;
       serialized.bufferingPlanOrdinal = candidate.bufferingPlanOrdinal;
+      serialized.workerPlacementKind = candidate.workerPlacementKind;
+      serialized.workerPlacementPlanOrdinal =
+          candidate.workerPlacementPlanOrdinal;
       llvm::raw_string_ostream moduleStream(serialized.moduleText);
       candidate.module->print(moduleStream);
       moduleStream.flush();
@@ -187,18 +203,31 @@ static llvm::Expected<ExecutableBundle> buildExecutableBundleImpl(
                   std::to_string(logicalRank));
     serializedFrontiers.push_back(std::move(result.candidates));
   }
-
   // Reproduce the coordinator's original bounded attempt sequence from cheap
   // metadata before parsing any finalized module into the bundle-owner
-  // context. The original frontier slots remain intact: only slots referenced
-  // by a correspondence-valid attempted tuple (plus every reserved baseline)
-  // materialize their module.
+  // context. Original slot positions remain intact only for this import audit:
+  // slots referenced by a correspondence-valid attempted tuple (plus every
+  // reserved baseline) materialize their module.
   llvm::Expected<std::vector<detail::RankVariantFrontier>> imported =
       detail::importRankVariantFrontiersIntoOwnerContext(
           *context, serializedFrontiers, executionConfig.getRankCount());
   if (!imported)
     return fail(llvm::toString(imported.takeError()));
   std::vector<detail::RankVariantFrontier> frontiers = std::move(*imported);
+
+  // The import boundary preserves metadata-only slots long enough to audit
+  // the exact bounded context-transfer plan and diagnose a required parse
+  // failure. They are not artifacts, however, and must not enter a later
+  // attempt-plan recomputation after semantic transformations append fresh
+  // materialized candidates. Keep only actual owner-context IR before the
+  // transformation/selection frontier starts evolving.
+  detail::compactImportedRankVariantFrontiers(frontiers);
+
+  std::string dataflowFailure;
+  if (mlir::failed(detail::appendNoCResidentDataflowCandidates(
+          frontiers, program, executionConfig, &dataflowFailure)))
+    return fail("all-rank NoC-resident candidate construction failed: " +
+                dataflowFailure);
 
   mlir::FailureOr<detail::AcceptedWholeVariant> accepted =
       detail::selectAcceptedWholeVariant(frontiers, program, executionConfig,

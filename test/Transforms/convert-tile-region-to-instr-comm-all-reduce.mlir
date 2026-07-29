@@ -51,79 +51,79 @@ module {
 // CHECK: %[[ACC1:.+]] = memref.subview %[[ACC]][1] [1] [1]
 // CHECK: %[[RECV0BUF:.+]] = memref.subview %[[RECV]][0] [1] [1]
 // CHECK: %[[ACC0:.+]] = memref.subview %[[ACC]][0] [1] [1]
+// CHECK: %[[RECV0:.+]] = wafer.instr.dte_recv %[[RECV0BUF]]
+// CHECK-SAME: bytes = 4 : i64
+// CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 0, slice = 0>
+// CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.ncc_join [0]
 // CHECK: %[[SEND0:.+]] = wafer.instr.dte_send %[[ACC1]]
 // CHECK-SAME: bytes = 4 : i64
 // CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 0, slice = 1>
 // CHECK-SAME: peer = 2 : i64
-// CHECK: %[[RECV0:.+]] = wafer.instr.dte_recv %[[RECV0BUF]]
-// CHECK-SAME: bytes = 4 : i64
-// CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 0, slice = 0>
-// CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND0]], %[[RECV0]]
 // CHECK-NEXT: wafer.instr.elementwise <add> %[[ACC0]], %[[RECV0BUF]] into %[[ACC0]]
 // CHECK: %[[RECV3BUF:.+]] = memref.subview %[[RECV]][3] [1] [1]
 // CHECK: %[[ACC3:.+]] = memref.subview %[[ACC]][3] [1] [1]
 // CHECK: wafer.instr.ncc_join [0]
-// CHECK: %[[SEND1:.+]] = wafer.instr.dte_send %[[ACC0]]
-// CHECK-SAME: bytes = 4 : i64
-// CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 1, slice = 0>
-// CHECK-SAME: peer = 2 : i64
 // CHECK: %[[RECV1:.+]] = wafer.instr.dte_recv %[[RECV3BUF]]
 // CHECK-SAME: bytes = 4 : i64
 // CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 1, slice = 3>
 // CHECK-SAME: peer = 0 : i64
+// CHECK: %[[SEND1:.+]] = wafer.instr.dte_send %[[ACC0]]
+// CHECK-SAME: bytes = 4 : i64
+// CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 1, slice = 0>
+// CHECK-SAME: peer = 2 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND1]], %[[RECV1]]
 // CHECK-NEXT: wafer.instr.elementwise <add> %[[ACC3]], %[[RECV3BUF]] into %[[ACC3]]
 // CHECK: %[[RECV2BUF:.+]] = memref.subview %[[RECV]][2] [1] [1]
 // CHECK: %[[ACC2:.+]] = memref.subview %[[ACC]][2] [1] [1]
 // CHECK: wafer.instr.ncc_join [0]
-// CHECK: %[[SEND2:.+]] = wafer.instr.dte_send %[[ACC3]]
-// CHECK-SAME: bytes = 4 : i64
-// CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 2, slice = 3>
-// CHECK-SAME: peer = 2 : i64
 // CHECK: %[[RECV2:.+]] = wafer.instr.dte_recv %[[RECV2BUF]]
 // CHECK-SAME: bytes = 4 : i64
 // CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 2, slice = 2>
 // CHECK-SAME: peer = 0 : i64
+// CHECK: %[[SEND2:.+]] = wafer.instr.dte_send %[[ACC3]]
+// CHECK-SAME: bytes = 4 : i64
+// CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 2, slice = 3>
+// CHECK-SAME: peer = 2 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND2]], %[[RECV2]]
 // CHECK-NEXT: wafer.instr.elementwise <add> %[[ACC2]], %[[RECV2BUF]] into %[[ACC2]]
 // CHECK: %[[RECV1BUF:.+]] = memref.subview %[[RECV]][1] [1] [1]
 // CHECK: wafer.instr.ncc_join [0]
-// CHECK: %[[SEND3:.+]] = wafer.instr.dte_send %[[ACC2]]
-// CHECK-SAME: bytes = 4 : i64
-// CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 3, slice = 2>
-// CHECK-SAME: peer = 2 : i64
 // CHECK: %[[RECV3:.+]] = wafer.instr.dte_recv %[[RECV1BUF]]
 // CHECK-SAME: bytes = 4 : i64
 // CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 3, slice = 1>
 // CHECK-SAME: peer = 0 : i64
+// CHECK: %[[SEND3:.+]] = wafer.instr.dte_send %[[ACC2]]
+// CHECK-SAME: bytes = 4 : i64
+// CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 3, slice = 2>
+// CHECK-SAME: peer = 2 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND3]], %[[RECV3]]
 // CHECK-NEXT: wafer.instr.gather_scatter %[[RECV1BUF]] to %[[ACC1]]
 // CHECK-SAME: byte_count = 4 : i64
 // CHECK-SAME: inner_bytes = 4 : i64
 // CHECK: wafer.instr.ncc_join [0]
-// CHECK: %[[SEND4:.+]] = wafer.instr.dte_send %[[ACC1]]
-// CHECK-SAME: bytes = 4 : i64
-// CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 4, slice = 1>
-// CHECK-SAME: peer = 2 : i64
 // CHECK: %[[RECV4:.+]] = wafer.instr.dte_recv %[[RECV0BUF]]
 // CHECK-SAME: bytes = 4 : i64
 // CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 4, slice = 0>
 // CHECK-SAME: peer = 0 : i64
+// CHECK: %[[SEND4:.+]] = wafer.instr.dte_send %[[ACC1]]
+// CHECK-SAME: bytes = 4 : i64
+// CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 4, slice = 1>
+// CHECK-SAME: peer = 2 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND4]], %[[RECV4]]
 // CHECK-NEXT: wafer.instr.gather_scatter %[[RECV0BUF]] to %[[ACC0]]
 // CHECK-SAME: byte_count = 4 : i64
 // CHECK-SAME: inner_bytes = 4 : i64
 // CHECK: wafer.instr.ncc_join [0]
-// CHECK: %[[SEND5:.+]] = wafer.instr.dte_send %[[ACC0]]
-// CHECK-SAME: bytes = 4 : i64
-// CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 5, slice = 0>
-// CHECK-SAME: peer = 2 : i64
 // CHECK: %[[RECV5:.+]] = wafer.instr.dte_recv %[[RECV3BUF]]
 // CHECK-SAME: bytes = 4 : i64
 // CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 5, slice = 3>
 // CHECK-SAME: peer = 0 : i64
+// CHECK: %[[SEND5:.+]] = wafer.instr.dte_send %[[ACC0]]
+// CHECK-SAME: bytes = 4 : i64
+// CHECK-SAME: message = #wafer.dte_message<communication = 16, phase = all_reduce_ring, round = 5, slice = 0>
+// CHECK-SAME: peer = 2 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND5]], %[[RECV5]]
 // CHECK-NEXT: wafer.instr.gather_scatter %[[RECV3BUF]] to %[[ACC3]]
 // CHECK-SAME: byte_count = 4 : i64

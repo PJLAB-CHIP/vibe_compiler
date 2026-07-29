@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v8.json",
+  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v9.json",
   "title": "Wafer 16-tile profile evidence",
-  "description": "Version 8 final-artifact evidence. Primary same-stream device elapsed, host submit, and host completion remain separate. The compiler publishes exact final-program static work independently from measured timing so the report can form explicitly bounded hardware peak references without guessing workload from names. Record ABI v3 separates Kcore site/operation spans from bounded NCC observations and publishes eight mutually-exclusive trace-only overhead counters.",
+  "description": "Version 9 final-artifact evidence. Primary same-stream device elapsed, host submit, and host completion remain separate. The compiler publishes exact final-program static work independently from measured timing so the report can form explicitly bounded hardware peak references without guessing workload from names. Record ABI v4 separates Direct-DTE issue from completion-wait aggregates, Kcore site/operation spans from bounded NCC observations, and publishes eight mutually-exclusive trace-only overhead counters.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -23,7 +23,7 @@
       "const": "wafer.profile.evidence"
     },
     "schema_version": {
-      "const": 8
+      "const": 9
     },
     "run_id": {
       "$ref": "#/$defs/nonEmptyString"
@@ -408,7 +408,7 @@
           "$ref": "#/$defs/sha256"
         },
         "profile_companion_schema_version": {
-          "const": 5
+          "const": 6
         },
         "target_profile": {
           "$ref": "#/$defs/nonEmptyString"
@@ -423,7 +423,7 @@
           "const": "typed-target-call-ordinal-ssa-identity-occurrence-v1"
         },
         "record_abi": {
-          "const": "wafer-tx81-profiler-record-v3"
+          "const": "wafer-tx81-profiler-record-v4"
         }
       }
     },
@@ -542,6 +542,7 @@
             "ncc-command",
             "ncc-completion",
             "direct-dte-control",
+            "direct-dte-issue",
             "direct-dte-wait"
           ]
         },
@@ -586,7 +587,11 @@
         },
         {
           "if": {
-            "properties": {"site_kind": {"const": "direct-dte-wait"}},
+            "properties": {
+              "site_kind": {
+                "enum": ["direct-dte-issue", "direct-dte-wait"]
+              }
+            },
             "required": ["site_kind"]
           },
           "then": {"properties": {"engine": {"const": "DIRECT_DTE"}}}
@@ -728,6 +733,7 @@
           "enum": [
             "ncc-command",
             "ncc-completion-wait",
+            "direct-dte-issue",
             "direct-dte-wait",
             "direct-dte-peer-ready-wait",
             "direct-dte-setup-issue",
@@ -956,7 +962,7 @@
           "if": {
             "properties": {
               "kind": {
-                "const": "direct-dte-wait"
+                "enum": ["direct-dte-issue", "direct-dte-wait"]
               }
             },
             "required": ["kind"]

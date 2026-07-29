@@ -122,6 +122,19 @@ def main() -> None:
     assert sum(
         cells for _, cells in resolved_pending_counts.values()
     ) == 1231
+    pipeline_family = inventory.FAMILIES_BY_KEY[
+        "production-software-pipeline-configured-board-qualification"
+    ]
+    assert pipeline_family.disposition == inventory.BLOCKED_EXTERNAL
+    assert pipeline_family.runner_batch is None
+    assert len(inventory.ENGINE_PIPELINE_PENDING_PRODUCTION_CELL_KEYS) == 90
+    assert not inventory.ENGINE_PIPELINE_BLOCKED_CELL_KEYS
+    assert "only fresh configured-board" in pipeline_family.blocker
+    assert all(
+        cell.disposition
+        == inventory.engine_pipeline.Disposition.PENDING_CONFIGURED_BOARD
+        for cell in inventory.engine_pipeline.THREE_STAGE_PENDING_BOARD_CELLS
+    )
 
     memory = _load_module(
         repo,

@@ -265,3 +265,29 @@ func.func @unknown_effect_cannot_cross_pending_ncc_write(
   }
   return
 }
+
+// -----
+
+func.func @dte_buffer_write_cannot_cross_pending_ncc_write(
+    %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  %region = wafer.tile.region(%boundary
+      : memref<128xf16, #wafer.memory<ddr, tensor>>)
+      -> (memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<128xf16, #wafer.memory<ddr, tensor>>):
+    %zero = arith.constant 0.000000e+00 : f16
+    %buffer = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, tensor>>
+    // expected-error @below {{missing_local_completion: local Compute/Movement issue has a reachable path to wafer.tile.region exit without a matching participant in wafer.instr.ncc_join}}
+    wafer.instr.fill %buffer, %zero
+        : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    %token = wafer.instr.dte_recv %buffer
+        {peer = 1 : i64, bytes = 256 : i64,
+         message = #wafer.dte_message<communication = 1, phase = peer_dataflow, round = 0, slice = 0>}
+        : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %token : !async.token
+    wafer.instr.ncc_join [0]
+    wafer.tile.yield %arg0
+        : memref<128xf16, #wafer.memory<ddr, tensor>>
+  }
+  return
+}

@@ -611,7 +611,8 @@ static uint8_t wafer_wp_pattern(const WaferWPRequest *request,
 }
 
 static void wafer_wp_set_worker(uint32_t *inter_type, uint32_t worker) {
-  *inter_type = (*inter_type & ~UINT32_C(0x300)) | (worker << 8);
+  *inter_type = (*inter_type & ~WAFER_TX81_NCC_WORKER_INTER_TYPE_MASK) |
+                (worker << WAFER_TX81_NCC_WORKER_INTER_TYPE_SHIFT);
 }
 
 static uint32_t wafer_wp_packet_inter_type(
@@ -875,11 +876,11 @@ static void wafer_wp_archive_outputs(WaferWPContext *context,
           remaining > WAFER_WP_OUTPUT_SLOT_DATA_BYTES
               ? WAFER_WP_OUTPUT_SLOT_DATA_BYTES
               : remaining;
-      wafer_tx81_wdma(
+      wafer_tx81_wdma_v3(
           wafer_wp_write(instruction->spm_slot) -
               WAFER_WP_GUARD_BYTES + cursor,
           wafer_wp_archive(context, ordinal) + cursor, chunk, chunk, 0, 0,
-          0, 1, 1, 1, Fmt_UINT8);
+          0, 1, 1, 1, Fmt_UINT8, 0U);
       wafer_tx81_local_fence();
       cursor += chunk;
     }

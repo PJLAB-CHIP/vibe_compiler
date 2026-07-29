@@ -125,23 +125,39 @@ def production_symbols_from_registry(
         fail("target lowering retains the old symbol-construction path")
 
     static_bases = set(STATIC_REGISTRY_STEM_RE.findall(registry_text))
-    if len(static_bases) != 19:
+    if len(static_bases) != 29:
         fail(
-            "target-call registry must contain 19 fixed call stems, found "
+            "target-call registry must contain 29 fixed call stems, found "
             f"{len(static_bases)}"
         )
     symbols = {f"wafer_tx81_{base}" for base in static_bases}
-    for base, enum_name in DYNAMIC_SYMBOL_ENUMS.items():
-        require = re.search(
-            rf'"{re.escape(base)}_"\s*\+\s*stringifyEnum\(\*kind\)',
+    suffixes = set(
+        re.findall(
+            r'\baddEnumSelectedCalls\(\s*"([^"]*)"\s*,',
             registry_text,
         )
-        if not require:
-            fail(f"target-call registry has no typed {base} family construction")
-        symbols.update(
-            f"wafer_tx81_{base}_{spelling}"
-            for spelling in parse_enum_spellings(attrs_text, enum_name)
+    )
+    if suffixes != {"", "_v3"}:
+        fail(
+            "target-call registry must instantiate exactly legacy and V3 "
+            f"dynamic families, found {sorted(suffixes)}"
         )
+    for suffix in suffixes:
+        for base, enum_name in DYNAMIC_SYMBOL_ENUMS.items():
+            require = re.search(
+                rf'"{re.escape(base)}_"\s*\+\s*stringifyEnum\(\*kind\)'
+                r"\s*\+\s*suffix",
+                registry_text,
+            )
+            if not require:
+                fail(
+                    f"target-call registry has no typed {base} family "
+                    "construction"
+                )
+            symbols.update(
+                f"wafer_tx81_{base}_{spelling}{suffix}"
+                for spelling in parse_enum_spellings(attrs_text, enum_name)
+            )
 
     conv_match = re.search(
         r"static\s+llvm::StringRef\s+convStem\s*\(.*?\n\}",
@@ -153,7 +169,11 @@ def production_symbols_from_registry(
     conv_stems = set(re.findall(r'return\s+"([a-z0-9_]+)"', conv_match.group(0)))
     if len(conv_stems) != 3:
         fail(f"expected 3 convolution stems, found {sorted(conv_stems)}")
-    symbols.update(f"wafer_tx81_{stem}" for stem in conv_stems)
+    symbols.update(
+        f"wafer_tx81_{stem}{suffix}"
+        for suffix in suffixes
+        for stem in conv_stems
+    )
 
     enum_spellings = enum_value_spellings(attrs_text)
     peripheral_kinds = set(
@@ -174,11 +194,56 @@ def production_symbols_from_registry(
             + ", ".join(missing_peripheral_spellings)
         )
     symbols.update(
-        f"wafer_tx81_peripheral_{enum_spellings[kind]}"
+        f"wafer_tx81_peripheral_{enum_spellings[kind]}{suffix}"
+        for suffix in suffixes
         for kind in peripheral_kinds
     )
-    if len(symbols) != 113:
-        fail(f"target-call registry must close 113 symbols, found {len(symbols)}")
+    if len(symbols) != 217:
+        fail(f"target-call registry must close 217 symbols, found {len(symbols)}")
+
+    shared_symbols = {
+        "wafer_tx81_local_fence",
+        "wafer_tx81_ncc_join",
+        "wafer_tx81_direct_dte_begin",
+        "wafer_tx81_direct_dte_begin_after_prepare",
+        "wafer_tx81_direct_dte_send_prepare",
+        "wafer_tx81_direct_dte_recv_prepare",
+        "wafer_tx81_direct_dte_wait",
+        "wafer_tx81_direct_dte_finish",
+    }
+    legacy_symbols = {
+        symbol
+        for symbol in symbols
+        if not symbol.endswith("_v3") and symbol not in shared_symbols
+    }
+    v3_ordinary_symbols = {
+        symbol
+        for symbol in symbols
+        if symbol.endswith("_v3")
+        and symbol != "wafer_tx81_direct_dte_send_issue_v3"
+    }
+    if len(legacy_symbols) != 104 or len(v3_ordinary_symbols) != 104:
+        fail(
+            "target-call registry must close 104 legacy and 104 V3 ordinary "
+            f"symbols, found {len(legacy_symbols)}/{len(v3_ordinary_symbols)}"
+        )
+    expected_v3_symbols = {
+        (
+            "wafer_tx81_gemm_oriented_v3"
+            if symbol == "wafer_tx81_gemm_oriented_v2"
+            else f"{symbol}_v3"
+        )
+        for symbol in legacy_symbols
+    }
+    if v3_ordinary_symbols != expected_v3_symbols:
+        fail(
+            "target-call registry V3 ordinary symbol closure does not mirror "
+            "the legacy ABI"
+        )
+    if "wafer_tx81_direct_dte_send_issue" in symbols:
+        fail("legacy profiles must not expose an explicit Direct DTE issue call")
+    if "wafer_tx81_direct_dte_send_issue_v3" not in symbols:
+        fail("V3 profile must expose the explicit Direct DTE issue call")
     return symbols
 
 

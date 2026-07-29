@@ -827,4 +827,583 @@ module {
   EXPECT_EQ(countOps<mlir::memref::AllocOp>(*module), 1u);
 }
 
+TEST_F(RedundantTransferEliminationTest,
+       ElidesReadOnlyFullCopyInStaticPositiveLoop) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c4 step %c1 {
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+      %unused = memref.load %dest[%c0, %c0]
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  EXPECT_EQ(wafer::tensor_program_scheduling::elideRedundantFullBufferTransfers(
+                *module),
+            1u);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module), 0u);
+  EXPECT_EQ(countOps<mlir::memref::AllocOp>(*module), 1u);
+}
+
+TEST_F(RedundantTransferEliminationTest,
+       ElidesExactCrossEncodingReshapeInStaticPositiveLoop) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %source = memref.alloc()
+        : memref<1x128xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<128xf16, #wafer.memory<spm, cx>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 256 : i64, inner_bytes = 256 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<1x128xf16, #wafer.memory<spm, tensor>>
+         to memref<128xf16, #wafer.memory<spm, cx>>
+      wafer.instr.local_fence
+      %unused = memref.load %dest[%c0]
+          : memref<128xf16, #wafer.memory<spm, cx>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  EXPECT_EQ(wafer::tensor_program_scheduling::elideRedundantFullBufferTransfers(
+                *module),
+            1u);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module), 0u);
+  EXPECT_EQ(countOps<mlir::memref::AllocOp>(*module), 1u);
+  EXPECT_EQ(countOps<mlir::memref::ReinterpretCastOp>(*module), 1u);
+  module->walk([&](mlir::memref::ReinterpretCastOp view) {
+    auto resultType = mlir::cast<mlir::MemRefType>(view.getType());
+    EXPECT_EQ(wafer::getWaferMemoryAttr(resultType).getLayout(),
+              wafer::MemLayout::Tensor);
+  });
+}
+
+TEST_F(RedundantTransferEliminationTest,
+       ElidesLoopCopyWithReadOnlyConsumerAfterExactDTEWait) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+      %token = wafer.instr.dte_send %dest
+          {peer = 1 : i64, bytes = 12 : i64,
+           message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.dte_wait %token : !async.token
+      %unused = memref.load %dest[%c0, %c0]
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  EXPECT_EQ(wafer::tensor_program_scheduling::elideRedundantFullBufferTransfers(
+                *module),
+            1u);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module), 0u);
+  EXPECT_EQ(countOps<mlir::memref::AllocOp>(*module), 1u);
+}
+
+TEST_F(RedundantTransferEliminationTest, PreservesCopyInDynamicTripLoop) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main(%upper: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %upper step %c1 {
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+      %unused = memref.load %dest[%c0, %c0]
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest, PreservesCopyInZeroTripLoop) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c0 step %c1 {
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+      %unused = memref.load %dest[%c0, %c0]
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest, PreservesCopyInNestedLoop) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %outer = %c0 to %c2 step %c1 {
+      scf.for %inner = %c0 to %c2 step %c1 {
+        wafer.instr.gather_scatter %source to %dest
+            {byte_count = 12 : i64, inner_bytes = 12 : i64,
+             src_strides = array<i64: 0, 0, 0>,
+             src_iterations = array<i64: 1, 1, 1>,
+             dst_strides = array<i64: 0, 0, 0>,
+             dst_iterations = array<i64: 1, 1, 1>}
+            : memref<2x3xf16, #wafer.memory<spm, tensor>>
+           to memref<2x3xf16, #wafer.memory<spm, tensor>>
+        wafer.instr.local_fence
+        %unused = memref.load %dest[%c0, %c0]
+            : memref<2x3xf16, #wafer.memory<spm, tensor>>
+      }
+    }
+    return
+  }
+}
+)mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest, PreservesConditionalCopyInLoop) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main(%condition: i1) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      scf.if %condition {
+        wafer.instr.gather_scatter %source to %dest
+            {byte_count = 12 : i64, inner_bytes = 12 : i64,
+             src_strides = array<i64: 0, 0, 0>,
+             src_iterations = array<i64: 1, 1, 1>,
+             dst_strides = array<i64: 0, 0, 0>,
+             dst_iterations = array<i64: 1, 1, 1>}
+            : memref<2x3xf16, #wafer.memory<spm, tensor>>
+           to memref<2x3xf16, #wafer.memory<spm, tensor>>
+        wafer.instr.local_fence
+        %unused = memref.load %dest[%c0, %c0]
+            : memref<2x3xf16, #wafer.memory<spm, tensor>>
+      }
+    }
+    return
+  }
+}
+)mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest,
+       PreservesCopyWithLoopLocalDestinationRoot) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      %dest = memref.alloc()
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+      %unused = memref.load %dest[%c0, %c0]
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest, PreservesLoopCarriedDestinationRoot) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %looped = scf.for %index = %c0 to %c2 step %c1
+        iter_args(%iter = %dest)
+        -> (memref<2x3xf16, #wafer.memory<spm, tensor>>) {
+      wafer.instr.gather_scatter %source to %iter
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+      %unused = memref.load %iter[%c0, %c0]
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+      scf.yield %iter
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest, PreservesMutableDestinationInLoop) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+      memref.store %zero, %dest[%c0, %c0]
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest,
+       PreservesSourceOverwriteAfterLoopCopy) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %zero = arith.constant 0.000000e+00 : f16
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+      memref.store %zero, %source[%c0, %c0]
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+      %unused = memref.load %dest[%c0, %c0]
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest,
+       PreservesDestinationAccessBeforeLoopCopy) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      %before = memref.load %dest[%c0, %c0]
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+      %after = memref.load %dest[%c0, %c0]
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest, PreservesDestinationUseAfterLoop) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main() -> f16 {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+    }
+    %value = memref.load %dest[%c0, %c0]
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    return %value : f16
+  }
+}
+)mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest,
+       PreservesLoopCopyWithDTECompletionAcrossBackedge) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %initial = wafer.instr.dte_send %source
+        {peer = 1 : i64, bytes = 12 : i64,
+         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
+    %pending = scf.for %index = %c0 to %c2 step %c1
+        iter_args(%previous = %initial) -> (!async.token) {
+      wafer.instr.dte_wait %previous : !async.token
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+      %next = wafer.instr.dte_send %dest
+          {peer = 1 : i64, bytes = 12 : i64,
+           message = #wafer.dte_message<communication = 1, phase = collective_permute, round = 0, slice = 0>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
+      scf.yield %next : !async.token
+    }
+    wafer.instr.dte_wait %pending : !async.token
+    return
+  }
+}
+)mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest,
+       PreservesLoopCopyAcrossOutstandingDTEReadUntilExactWait) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %source = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      %token = wafer.instr.dte_send %source
+          {peer = 1 : i64, bytes = 12 : i64,
+           message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+      wafer.instr.dte_wait %token : !async.token
+      %unused = memref.load %dest[%c0, %c0]
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest,
+       PreservesSelfCopyWhenLoopTripCountIsDynamic) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main(%upper: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %buffer = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %upper step %c1 {
+      wafer.instr.gather_scatter %buffer to %buffer
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+    }
+    return
+  }
+}
+)mlir");
+}
+
+TEST_F(RedundantTransferEliminationTest, PreservesCopyWithLoopLocalSourceRoot) {
+  expectTransferPreserved(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %dest = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    scf.for %index = %c0 to %c2 step %c1 {
+      %source = memref.alloc()
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.gather_scatter %source to %dest
+          {byte_count = 12 : i64, inner_bytes = 12 : i64,
+           src_strides = array<i64: 0, 0, 0>,
+           src_iterations = array<i64: 1, 1, 1>,
+           dst_strides = array<i64: 0, 0, 0>,
+           dst_iterations = array<i64: 1, 1, 1>}
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<2x3xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+      %unused = memref.load %dest[%c0, %c0]
+          : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    }
+    return
+  }
+}
+)mlir");
+}
+
 } // namespace

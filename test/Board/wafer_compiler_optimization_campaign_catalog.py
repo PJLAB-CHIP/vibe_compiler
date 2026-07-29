@@ -17,7 +17,7 @@ class AxisDisposition(str, enum.Enum):
     NEW_PAIRED_PACKAGE_BOARD_FAMILY = "new-paired-package-board-family"
     EXISTING_BOARD_FAMILY = "existing-board-family"
     HOST_ONLY_EXACT_NEGATIVE = "host-only-exact-negative"
-    FUTURE_SOFTWARE_PIPELINE = "future-software-pipeline"
+    PENDING_CONFIGURED_BOARD = "pending-configured-board"
 
 
 class SourceKind(str, enum.Enum):
@@ -985,8 +985,8 @@ PRODUCTION_OWNER_BY_AXIS = {
         "createLowerInstrToTargetLLVMPass",
     ),
     "software-pipeline-queue-occupancy": _anchor(
-        "include/Wafer/Runtime/BoardRuntime.h",
-        "callers cannot observe or assemble those",
+        "lib/Wafer/Transforms/Scheduling/FixedSlotPipeline.cpp",
+        "deriveStaticFixedSlotPipelineCandidate",
     ),
     "software-pipeline-spm-bank-cost": _anchor(
         "lib/Wafer/Transforms/SPM/PlanSPMMemory.cpp",
@@ -997,8 +997,8 @@ PRODUCTION_OWNER_BY_AXIS = {
         "planDDRMemoryModule",
     ),
     "software-pipeline-cross-worker-completion": _anchor(
-        "include/Wafer/Runtime/BoardRuntime.h",
-        "callers cannot observe or assemble those",
+        "lib/Wafer/Transforms/Scheduling/WorkerPlacement.cpp",
+        "deriveDisjointNCCWorkerPlacementCandidate",
     ),
 }
 
@@ -1333,39 +1333,42 @@ OPTIMIZATION_AXES = (
     ),
     _axis(
         "software-pipeline-queue-occupancy",
-        "future-software-pipeline",
-        AxisDisposition.FUTURE_SOFTWARE_PIPELINE,
+        "software-pipeline-qualification",
+        AxisDisposition.PENDING_CONFIGURED_BOARD,
         "queue-saturation-response",
         (
-            "The pass is not implemented and safe outstanding capacity remains "
-            "unqualified."
+            "The compiler-owned fixed-slot producer and exact "
+            "package/model/no-card host gates are closed; safe outstanding "
+            "capacity and winner correctness await fresh configured-board "
+            "qualification."
         ),
         host_assets=SOFTWARE_PIPELINE_PLAN,
     ),
     _axis(
         "software-pipeline-spm-bank-cost",
-        "future-software-pipeline",
-        AxisDisposition.FUTURE_SOFTWARE_PIPELINE,
+        "spm-cost-calibration",
+        AxisDisposition.PENDING_CONFIGURED_BOARD,
         "spm-conflict-equivalence",
         "No calibrated SPM bank identity or directional cost may guide scheduling yet.",
         host_assets=SOFTWARE_PIPELINE_PLAN,
     ),
     _axis(
         "software-pipeline-ddr-bank-cost",
-        "future-software-pipeline",
-        AxisDisposition.FUTURE_SOFTWARE_PIPELINE,
+        "ddr-cost-calibration",
+        AxisDisposition.PENDING_CONFIGURED_BOARD,
         "ddr-conflict-equivalence",
         "No calibrated DDR bank identity or directional cost may guide scheduling yet.",
         host_assets=SOFTWARE_PIPELINE_PLAN,
     ),
     _axis(
         "software-pipeline-cross-worker-completion",
-        "future-software-pipeline",
-        AxisDisposition.FUTURE_SOFTWARE_PIPELINE,
+        "worker-placement-qualification",
+        AxisDisposition.PENDING_CONFIGURED_BOARD,
         "worker-wait-and-subset-join-exclusion",
         (
-            "Wait scope and proper-subset join evidence must close before "
-            "overlap is enabled."
+            "Typed disjoint-worker placement and exact host completion gates "
+            "are closed; same-candidate winner correctness awaits fresh "
+            "configured-board qualification."
         ),
         host_assets=SOFTWARE_PIPELINE_PLAN,
     ),
@@ -1388,8 +1391,8 @@ HOST_ONLY_AXES = tuple(
     for axis in OPTIMIZATION_AXES
     if axis.disposition == AxisDisposition.HOST_ONLY_EXACT_NEGATIVE
 )
-FUTURE_SOFTWARE_PIPELINE_AXES = tuple(
+PENDING_CONFIGURED_BOARD_AXES = tuple(
     axis
     for axis in OPTIMIZATION_AXES
-    if axis.disposition == AxisDisposition.FUTURE_SOFTWARE_PIPELINE
+    if axis.disposition == AxisDisposition.PENDING_CONFIGURED_BOARD
 )

@@ -8,7 +8,7 @@ from typing import Any
 
 NCC_ENGINES = ("CT", "NE", "RDMA", "WDMA", "TDMA")
 FINAL_DIGEST = "sha256:" + "f" * 64
-RECORD_ABI = "wafer-tx81-profiler-record-v3"
+RECORD_ABI = "wafer-tx81-profiler-record-v4"
 
 
 def _cost_metric(
@@ -236,13 +236,83 @@ def _trace_tile(tile: int) -> dict[str, Any]:
 
     append_site(6, entry_begin + 316, entry_begin + 322)
 
-    dte_site_begin = entry_begin + 326
-    dte_site_end = entry_begin + 446
     dte_role = "send" if tile % 2 == 0 else "receive"
-    append_site(7, dte_site_begin, dte_site_end)
+    if dte_role == "send":
+        issue_site_begin = entry_begin + 326
+        issue_site_end = entry_begin + 371
+        append_site(7, issue_site_begin, issue_site_end)
+        append_event(
+            {
+                "site_id": 7,
+                "sub_index": 1,
+                "engine": "DIRECT_DTE",
+                "kind": "direct-dte-issue",
+                "observed_begin_cycle": issue_site_begin,
+                "observed_end_cycle": issue_site_end,
+                "counter_delta": 0,
+                "site_begin_cycle": issue_site_begin,
+                "site_end_cycle": issue_site_end,
+                "operation_begin_cycle": entry_begin + 331,
+                "operation_end_cycle": entry_begin + 366,
+                "observation_count": 2,
+                "observed_span_valid": True,
+                "site_span_valid": True,
+                "operation_span_valid": True,
+                "positive_delta": False,
+                "attribution_ambiguous": False,
+                "ncc_counter_valid": None,
+                "observation_status": None,
+                "worker": None,
+                "wait_scope": None,
+                "dte_counter_valid": False,
+                "dte_role": dte_role,
+            }
+        )
+        issue_phase_specs = (
+            (
+                "direct-dte-peer-ready-wait",
+                entry_begin + 331,
+                entry_begin + 345,
+            ),
+            ("direct-dte-setup-issue", entry_begin + 350, entry_begin + 365),
+        )
+        for sub_index, (kind, operation_begin, operation_end) in enumerate(
+            issue_phase_specs, start=2
+        ):
+            append_event(
+                {
+                    "site_id": 7,
+                    "sub_index": sub_index,
+                    "engine": "DIRECT_DTE",
+                    "kind": kind,
+                    "observed_begin_cycle": 0,
+                    "observed_end_cycle": 0,
+                    "counter_delta": 0,
+                    "site_begin_cycle": issue_site_begin,
+                    "site_end_cycle": issue_site_end,
+                    "operation_begin_cycle": operation_begin,
+                    "operation_end_cycle": operation_end,
+                    "observation_count": 0,
+                    "observed_span_valid": False,
+                    "site_span_valid": True,
+                    "operation_span_valid": True,
+                    "positive_delta": False,
+                    "attribution_ambiguous": False,
+                    "ncc_counter_valid": None,
+                    "observation_status": None,
+                    "worker": None,
+                    "wait_scope": None,
+                    "dte_counter_valid": None,
+                    "dte_role": dte_role,
+                }
+            )
+
+    dte_site_begin = entry_begin + 375
+    dte_site_end = entry_begin + 446
+    append_site(8, dte_site_begin, dte_site_end)
     append_event(
         {
-            "site_id": 7,
+            "site_id": 8,
             "sub_index": 1,
             "engine": "DIRECT_DTE",
             "kind": "direct-dte-wait",
@@ -251,7 +321,7 @@ def _trace_tile(tile: int) -> dict[str, Any]:
             "counter_delta": 0,
             "site_begin_cycle": dte_site_begin,
             "site_end_cycle": dte_site_end,
-            "operation_begin_cycle": entry_begin + 331,
+            "operation_begin_cycle": entry_begin + 380,
             "operation_end_cycle": entry_begin + 441,
             "observation_count": 2,
             "observed_span_valid": True,
@@ -269,26 +339,18 @@ def _trace_tile(tile: int) -> dict[str, Any]:
     )
     phase_specs = (
         (
-            "direct-dte-peer-ready-wait",
-            entry_begin + 331,
-            entry_begin + 345,
-        ),
-        ("direct-dte-setup-issue", entry_begin + 350, entry_begin + 365),
-        (
             "direct-dte-completion-wait",
-            entry_begin + 370,
+            entry_begin + 385,
             entry_begin + 420,
         ),
         ("direct-dte-cleanup", entry_begin + 425, entry_begin + 440),
     )
-    if dte_role == "receive":
-        phase_specs = phase_specs[2:]
     for sub_index, (kind, operation_begin, operation_end) in enumerate(
         phase_specs, start=2
     ):
         append_event(
             {
-                "site_id": 7,
+                "site_id": 8,
                 "sub_index": sub_index,
                 "engine": "DIRECT_DTE",
                 "kind": kind,
@@ -314,7 +376,7 @@ def _trace_tile(tile: int) -> dict[str, Any]:
             }
         )
 
-    append_site(8, entry_begin + 450, entry_begin + 460)
+    append_site(9, entry_begin + 450, entry_begin + 460)
     entry_end = entry_begin + 500
     return {
         "tile": tile,
@@ -360,6 +422,12 @@ def _sites() -> list[dict[str, Any]]:
             None,
             "communication.direct-dte.setup",
             "wafer_tx81_direct_dte_setup",
+        ),
+        (
+            "direct-dte-issue",
+            "DIRECT_DTE",
+            "communication.direct-dte.issue",
+            "wafer_tx81_direct_dte_send_issue_v3",
         ),
         (
             "direct-dte-wait",
@@ -423,11 +491,11 @@ def make_evidence() -> dict[str, Any]:
     }
     return {
         "schema": "wafer.profile.evidence",
-        "schema_version": 8,
+        "schema_version": 9,
         "run_id": "fixture-final-artifact",
         "identity": {
             "production_manifest_sha256": FINAL_DIGEST,
-            "profile_companion_schema_version": 5,
+            "profile_companion_schema_version": 6,
             "record_abi": RECORD_ABI,
             "target_profile": target_profile,
             "launch": _kernel_launch(),

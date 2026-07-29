@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import pathlib
 import tempfile
@@ -99,7 +100,8 @@ class CatalogShapeTest(unittest.TestCase):
             {
                 catalog.Disposition.BOARD_EXECUTABLE: 380,
                 catalog.Disposition.BOARD_EXECUTABLE_EXTERNAL: 1,
-                catalog.Disposition.FAIL_CLOSED_MISSING_PRODUCER: 109,
+                catalog.Disposition.PENDING_CONFIGURED_BOARD: 90,
+                catalog.Disposition.HOST_EXACT_CLOSED: 19,
             },
         )
 
@@ -496,7 +498,158 @@ class ActivationTest(unittest.TestCase):
 
 
 class ProductionGateTest(unittest.TestCase):
-    def test_three_stage_matrix_is_full_but_never_raw_executable(self) -> None:
+    @staticmethod
+    def _write_json(path: pathlib.Path, value: object) -> None:
+        path.write_text(
+            json.dumps(value, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def _refresh_attestation_digest(
+        cls, attestation: pathlib.Path, activation: pathlib.Path
+    ) -> None:
+        activation_value = json.loads(
+            activation.read_text(encoding="utf-8")
+        )
+        activation_value["attestation_sha256"] = (
+            "sha256:" + hashlib.sha256(attestation.read_bytes()).hexdigest()
+        )
+        cls._write_json(activation, activation_value)
+
+    @classmethod
+    def _make_valid_package(
+        cls, root: pathlib.Path
+    ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path, pathlib.Path]:
+        package = root / "package"
+        package.mkdir()
+        manifest_path = package / "manifest.json"
+        cls._write_json(
+            manifest_path,
+            {
+                "schema_version": 6,
+                "rank_count": 1,
+                "target": {
+                    "profile": "wafer-tx81-single-card-kernel-v1"
+                },
+            },
+        )
+        manifest_digest = (
+            "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        )
+
+        companion = pathlib.Path(str(package) + ".qualification")
+        companion.mkdir()
+        attestation_path = companion / "attestation.json"
+        cls._write_json(
+            attestation_path,
+            {
+                "schema": "wafer-static-fixed-slot-qualification",
+                "schema_version": 1,
+                "selection_kind": "static-fixed-slot",
+                "manifest_sha256": manifest_digest,
+                "accepted_instr_digest_basis": (
+                    "final-accepted-instr-module-text-v1"
+                ),
+                "target": {
+                    "profile": "wafer-tx81-single-card-kernel-v1",
+                    "rank_count": 1,
+                    "logical_ranks": [0],
+                },
+                "ranks": [
+                    {
+                        "logical_rank": 0,
+                        "accepted_instr_sha256": "sha256:" + "1" * 64,
+                        "spm_alloc_roots": [
+                            {
+                                "ordinal": 0,
+                                "offset": 65536,
+                                "bytes": 256,
+                                "range_begin": 65536,
+                                "range_end": 65792,
+                            },
+                            {
+                                "ordinal": 1,
+                                "offset": 65792,
+                                "bytes": 256,
+                                "range_begin": 65792,
+                                "range_end": 66048,
+                            },
+                        ],
+                        "static_loops": [
+                            {
+                                "ordinal": 0,
+                                "lower": 0,
+                                "upper": 3,
+                                "step": 1,
+                                "trip_count": 3,
+                                "iter_arg_count": 2,
+                                "spm_iter_arg_rotations": [
+                                    {
+                                        "iter_arg": 0,
+                                        "initial_root": 0,
+                                        "next_iter_arg": 1,
+                                        "next_root": 1,
+                                    },
+                                    {
+                                        "iter_arg": 1,
+                                        "initial_root": 1,
+                                        "next_iter_arg": 0,
+                                        "next_root": 0,
+                                    },
+                                ],
+                            }
+                        ],
+                        "engine_worker_issues": [
+                            {"engine": "ct", "worker": 0, "count": 1},
+                            {"engine": "rdma", "worker": 0, "count": 2},
+                            {"engine": "wdma", "worker": 0, "count": 1},
+                        ],
+                        "dte": {
+                            "token_count": 0,
+                            "issues": [],
+                            "waits": [],
+                        },
+                        "completion": {
+                            "participant_joins": [
+                                {
+                                    "ordinal": 0,
+                                    "participants": [0],
+                                    "inside_static_loop": False,
+                                }
+                            ],
+                            "behaviors": [
+                                {"kind": "ordered-pending", "count": 4},
+                                {"kind": "participant-join", "count": 1},
+                                {
+                                    "kind": "synchronous-writeback",
+                                    "count": 0,
+                                },
+                            ],
+                        },
+                    }
+                ],
+            },
+        )
+        attestation_digest = (
+            "sha256:"
+            + hashlib.sha256(attestation_path.read_bytes()).hexdigest()
+        )
+        activation_path = companion / "activation.json"
+        cls._write_json(
+            activation_path,
+            {
+                "schema": (
+                    "wafer-static-fixed-slot-qualification-activation"
+                ),
+                "schema_version": 1,
+                "manifest_sha256": manifest_digest,
+                "attestation_sha256": attestation_digest,
+            },
+        )
+        return package, manifest_path, attestation_path, activation_path
+
+    def test_three_stage_matrix_separates_board_and_host_gates(self) -> None:
         dimensions = {
             (
                 cell.dimension("compute"),
@@ -510,10 +663,26 @@ class ProductionGateTest(unittest.TestCase):
         self.assertTrue(
             all(
                 cell.disposition
-                == catalog.Disposition.FAIL_CLOSED_MISSING_PRODUCER
+                == catalog.Disposition.PENDING_CONFIGURED_BOARD
                 and not cell.probes
-                for cell in catalog.THREE_STAGE_CELLS
+                for cell in catalog.THREE_STAGE_CORE_CELLS
             )
+        )
+        self.assertTrue(
+            all(
+                cell.disposition
+                == catalog.Disposition.HOST_EXACT_CLOSED
+                and not cell.probes
+                for cell in catalog.THREE_STAGE_NEGATIVE_CELLS
+            )
+        )
+        self.assertEqual(
+            catalog.THREE_STAGE_PENDING_BOARD_CELLS,
+            catalog.THREE_STAGE_CORE_CELLS,
+        )
+        self.assertEqual(
+            catalog.THREE_STAGE_HOST_EXACT_CELLS,
+            catalog.THREE_STAGE_NEGATIVE_CELLS,
         )
         negative_kinds = {
             cell.dimension("negative_kind")
@@ -528,7 +697,7 @@ class ProductionGateTest(unittest.TestCase):
             },
         )
 
-    def test_gate_rejects_missing_and_current_schema_package(self) -> None:
+    def test_gate_rejects_missing_package_and_companion(self) -> None:
         missing = catalog.production_pipeline_preparation_gate(None)
         self.assertFalse(missing.ready)
         self.assertIn(
@@ -536,15 +705,148 @@ class ProductionGateTest(unittest.TestCase):
             missing.rejected_delegated_asset,
         )
         with tempfile.TemporaryDirectory() as temporary:
-            package = pathlib.Path(temporary)
+            package = pathlib.Path(temporary) / "package"
+            package.mkdir()
             (package / "manifest.json").write_text(
-                json.dumps({"schema_version": 6}) + "\n"
+                json.dumps(
+                    {
+                        "schema_version": 6,
+                        "rank_count": 1,
+                        "target": {
+                            "profile": (
+                                "wafer-tx81-single-card-kernel-v1"
+                            )
+                        },
+                    }
+                )
+                + "\n"
             )
-            current = catalog.production_pipeline_preparation_gate(package)
-        self.assertFalse(current.ready)
+            no_companion = (
+                catalog.production_pipeline_preparation_gate(package)
+            )
+        self.assertFalse(no_companion.ready)
         self.assertTrue(
-            any("schema-v6" in reason for reason in current.reasons)
+            any("qualification sibling" in reason for reason in no_companion.reasons)
         )
+
+    def test_gate_rejects_package_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            package, _, _, _ = self._make_valid_package(root)
+            package_link = root / "package-link"
+            package_link.symlink_to(package, target_is_directory=True)
+            decision = catalog.production_pipeline_preparation_gate(package_link)
+        self.assertFalse(decision.ready)
+        self.assertTrue(
+            any("not a regular directory" in reason for reason in decision.reasons)
+        )
+
+    def test_gate_rejects_stale_manifest_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package, manifest, _, _ = self._make_valid_package(
+                pathlib.Path(temporary)
+            )
+            value = json.loads(manifest.read_text(encoding="utf-8"))
+            value["program"] = 0
+            self._write_json(manifest, value)
+            decision = catalog.production_pipeline_preparation_gate(package)
+        self.assertFalse(decision.ready)
+        self.assertTrue(
+            any("stale manifest binding" in reason for reason in decision.reasons)
+        )
+
+    def test_gate_rejects_tampered_attestation_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package, _, attestation, _ = self._make_valid_package(
+                pathlib.Path(temporary)
+            )
+            attestation.write_text(
+                attestation.read_text(encoding="utf-8") + " ",
+                encoding="utf-8",
+            )
+            decision = catalog.production_pipeline_preparation_gate(package)
+        self.assertFalse(decision.ready)
+        self.assertTrue(
+            any("tampered" in reason for reason in decision.reasons)
+        )
+
+    def test_gate_rejects_unknown_attestation_field(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package, _, attestation, activation = self._make_valid_package(
+                pathlib.Path(temporary)
+            )
+            value = json.loads(attestation.read_text(encoding="utf-8"))
+            value["unknown"] = True
+            self._write_json(attestation, value)
+            self._refresh_attestation_digest(attestation, activation)
+            decision = catalog.production_pipeline_preparation_gate(package)
+        self.assertFalse(decision.ready)
+        self.assertTrue(
+            any("unknown=['unknown']" in reason for reason in decision.reasons)
+        )
+
+    def test_gate_rejects_spm_root_outside_target_arena(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package, _, attestation, activation = self._make_valid_package(
+                pathlib.Path(temporary)
+            )
+            value = json.loads(attestation.read_text(encoding="utf-8"))
+            root = value["ranks"][0]["spm_alloc_roots"][0]
+            root["offset"] = root["range_begin"] = 0
+            root["range_end"] = root["bytes"]
+            self._write_json(attestation, value)
+            self._refresh_attestation_digest(attestation, activation)
+            decision = catalog.production_pipeline_preparation_gate(package)
+        self.assertFalse(decision.ready)
+        self.assertTrue(
+            any("outside the allocatable target arena" in reason
+                for reason in decision.reasons)
+        )
+
+    def test_gate_rejects_misaligned_spm_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package, _, attestation, activation = self._make_valid_package(
+                pathlib.Path(temporary)
+            )
+            value = json.loads(attestation.read_text(encoding="utf-8"))
+            root = value["ranks"][0]["spm_alloc_roots"][0]
+            root["offset"] += 1
+            root["range_begin"] += 1
+            root["range_end"] += 1
+            self._write_json(attestation, value)
+            self._refresh_attestation_digest(attestation, activation)
+            decision = catalog.production_pipeline_preparation_gate(package)
+        self.assertFalse(decision.ready)
+        self.assertTrue(
+            any("not placement-aligned" in reason
+                for reason in decision.reasons)
+        )
+
+    def test_gate_rejects_overlapping_spm_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package, _, attestation, activation = self._make_valid_package(
+                pathlib.Path(temporary)
+            )
+            value = json.loads(attestation.read_text(encoding="utf-8"))
+            roots = value["ranks"][0]["spm_alloc_roots"]
+            roots[1]["offset"] = roots[1]["range_begin"] = roots[0]["offset"]
+            roots[1]["range_end"] = roots[1]["offset"] + roots[1]["bytes"]
+            self._write_json(attestation, value)
+            self._refresh_attestation_digest(attestation, activation)
+            decision = catalog.production_pipeline_preparation_gate(package)
+        self.assertFalse(decision.ready)
+        self.assertTrue(
+            any("intervals overlap" in reason for reason in decision.reasons)
+        )
+
+    def test_gate_accepts_valid_manifest_bound_companion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package, _, _, _ = self._make_valid_package(
+                pathlib.Path(temporary)
+            )
+            decision = catalog.production_pipeline_preparation_gate(package)
+        self.assertTrue(decision.ready, decision.reasons)
+        self.assertEqual(decision.reasons, ())
 
     def test_driver_group_parser_preserves_execution_boundaries(self) -> None:
         self.assertEqual(

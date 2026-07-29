@@ -55,9 +55,7 @@ struct LowerInstrToTargetLLVMPass
       }
       resolvedProfile = *parsed;
     }
-    if (mlir::failed(
-            target_llvm_detail::preflightTargetNCCWorkers(moduleOp)) ||
-        mlir::failed(target_llvm_detail::preflightTargetAddresses(moduleOp)) ||
+    if (mlir::failed(target_llvm_detail::preflightTargetAddresses(moduleOp)) ||
         mlir::failed(target_llvm_detail::preflightTargetFormats(
             moduleOp, *resolvedProfile))) {
       signalPassFailure();

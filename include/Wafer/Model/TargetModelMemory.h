@@ -147,6 +147,17 @@ struct TargetModelStridedByteLayout {
   std::array<uint32_t, 3> iterations{};
 };
 
+/// Exact bytes observed by one plain target command before its asynchronous
+/// NCC completion is published. A strided layout describes the addressed
+/// segments; byteCount is the compact payload size.
+struct TargetModelByteRead {
+  int64_t logicalRank = -1;
+  TargetModelAddressSpace addressSpace = TargetModelAddressSpace::RankSPM;
+  uint64_t address = 0;
+  uint64_t byteCount = 0;
+  std::optional<TargetModelStridedByteLayout> stridedLayout;
+};
+
 struct TargetModelByteWrite {
   int64_t logicalRank = -1;
   TargetModelAddressSpace addressSpace = TargetModelAddressSpace::RankSPM;

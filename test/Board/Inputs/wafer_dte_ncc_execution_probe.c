@@ -367,14 +367,14 @@ static WaferProbeTransportPmu wafer_probe_read_transport_pmu(void) {
 
 static void wafer_probe_dma_read(uint64_t source_ddr, uint64_t dest_spm,
                                  uint32_t bytes) {
-  wafer_tx81_rdma(source_ddr, dest_spm, bytes, bytes, 0, 0, 0, 1, 1, 1,
-                  Fmt_FP16);
+  wafer_tx81_rdma_v3(source_ddr, dest_spm, bytes, bytes, 0, 0, 0, 1, 1, 1,
+                     Fmt_FP16, 0U);
 }
 
 static void wafer_probe_dma_write(uint64_t source_spm, uint64_t dest_ddr,
                                   uint32_t bytes) {
-  wafer_tx81_wdma(source_spm, dest_ddr, bytes, bytes, 0, 0, 0, 1, 1, 1,
-                  Fmt_FP16);
+  wafer_tx81_wdma_v3(source_spm, dest_ddr, bytes, bytes, 0, 0, 0, 1, 1, 1,
+                     Fmt_FP16, 0U);
 }
 
 static uint64_t wafer_probe_host_slot(uint64_t base, uint32_t slot) {
@@ -568,10 +568,11 @@ static void wafer_probe_dte_ring(uint32_t rank, uint64_t source_spm,
   uint64_t send = wafer_tx81_direct_dte_send_prepare(
       source_spm, WAFER_PROBE_SPM_DTE_RECV, bytes, rank, successor, 0, 0);
   /*
-   * Every rank has posted its receive before entering the sender wait.  The
+   * Every rank has posted its receive before entering the sender issue.  The
    * reverse order would make all ranks wait for an arrival that nobody has
    * started, so it is intentionally outside this positive-only probe.
    */
+  wafer_tx81_direct_dte_send_issue_v3(send);
   wafer_tx81_direct_dte_wait(send);
   wafer_tx81_direct_dte_wait(receive);
 }
@@ -582,15 +583,16 @@ static void wafer_probe_dte_receiver_unprepared(uint32_t rank,
   uint32_t successor = (rank + 1U) % WAFER_PROBE_RANK_COUNT;
   uint64_t send = wafer_tx81_direct_dte_send_prepare(
       source_spm, WAFER_PROBE_SPM_DTE_RECV, bytes, rank, successor, 0, 0);
+  wafer_tx81_direct_dte_send_issue_v3(send);
   wafer_tx81_direct_dte_wait(send);
 }
 
 /*
  * Test-only raw sender seam.  Production continues to use the CRT event API,
- * whose sender wait intentionally owns attach, async issue, wait, and release
- * as one synchronous operation.  This seam keeps receiver-first ordering and
- * the same bounded lifecycle, but exposes one disjoint CT issue between
- * send_async and wait_done for comparison with the serial control.
+ * whose explicit sender issue owns attach and async submission while the exact
+ * sender wait owns completion and release. This raw seam keeps receiver-first
+ * ordering and the same bounded lifecycle while exposing one disjoint CT issue
+ * between send_async and wait_done for comparison with the serial control.
  */
 static WaferProbeRawAsyncResult
 wafer_probe_dte_sender_raw_async(uint32_t rank, uint32_t issue_window) {
@@ -629,11 +631,11 @@ wafer_probe_dte_sender_raw_async(uint32_t rank, uint32_t issue_window) {
   }
 
   if (result.send_result == 0 && issue_window != 0U)
-    wafer_tx81_elementwise_add(
+    wafer_tx81_elementwise_add_v3(
         WAFER_PROBE_SPM_ASYNC_COMPUTE_INPUT,
         WAFER_PROBE_SPM_ASYNC_COMPUTE_INPUT,
         WAFER_PROBE_SPM_ASYNC_COMPUTE_OUTPUT,
-        WAFER_PROBE_ASYNC_TRANSPORT_ELEMENTS, Fmt_FP16);
+        WAFER_PROBE_ASYNC_TRANSPORT_ELEMENTS, Fmt_FP16, 0U);
 
   if (result.send_result == 0)
     result.wait_result = direct_dte_wait_done(&info);
@@ -642,11 +644,11 @@ wafer_probe_dte_sender_raw_async(uint32_t rank, uint32_t issue_window) {
   wafer_tx81_direct_dte_wait(receive);
 
   if (result.send_result == 0 && issue_window == 0U)
-    wafer_tx81_elementwise_add(
+    wafer_tx81_elementwise_add_v3(
         WAFER_PROBE_SPM_ASYNC_COMPUTE_INPUT,
         WAFER_PROBE_SPM_ASYNC_COMPUTE_INPUT,
         WAFER_PROBE_SPM_ASYNC_COMPUTE_OUTPUT,
-        WAFER_PROBE_ASYNC_TRANSPORT_ELEMENTS, Fmt_FP16);
+        WAFER_PROBE_ASYNC_TRANSPORT_ELEMENTS, Fmt_FP16, 0U);
   wafer_tx81_local_fence();
 
   if (result.send_result == 0 && result.wait_result == 0 &&
@@ -852,10 +854,12 @@ static void wafer_probe_dte_two_destination_broadcast(
    */
   uint64_t send1 = wafer_tx81_direct_dte_send_prepare(
       source_spm, WAFER_PROBE_SPM_DTE_RECV, bytes, rank, successor1, 0, 0);
+  wafer_tx81_direct_dte_send_issue_v3(send1);
   wafer_tx81_direct_dte_wait(send1);
   uint64_t send2 = wafer_tx81_direct_dte_send_prepare(
       source_spm, WAFER_PROBE_SPM_DTE_RECV_SECOND, bytes, rank, successor2, 1,
       0);
+  wafer_tx81_direct_dte_send_issue_v3(send2);
   wafer_tx81_direct_dte_wait(send2);
   wafer_tx81_direct_dte_wait(receive1);
   wafer_tx81_direct_dte_wait(receive2);
@@ -920,6 +924,7 @@ static uint32_t wafer_probe_dte_four_source_fanin(uint32_t rank,
         WAFER_PROBE_FANIN_TARGET_RANK, fsm_id, 0);
     if (send == UINT64_C(0x100))
       evidence |= WAFER_PROBE_CONTRACT_VALID_SEND_EVENT;
+    wafer_tx81_direct_dte_send_issue_v3(send);
     wafer_tx81_direct_dte_wait(send);
     if (send == UINT64_C(0x100))
       evidence |= WAFER_PROBE_CONTRACT_FANIN_COMPLETION_REACHED;
@@ -951,6 +956,7 @@ static uint32_t wafer_probe_dte_reuse_before_send_event(
    * original valid send/receive pair still owns live state, so complete both
    * events before ending the shadow-status lifecycle.
    */
+  wafer_tx81_direct_dte_send_issue_v3(send);
   wafer_tx81_direct_dte_wait(send);
   wafer_tx81_direct_dte_wait(receive);
   return evidence;
@@ -980,6 +986,7 @@ static uint32_t wafer_probe_dte_reuse_before_recv_event(
    * posts a second readiness token.  Complete the original matching pair so
    * the shadow-status lifecycle remains bounded and owns normal cleanup.
    */
+  wafer_tx81_direct_dte_send_issue_v3(send);
   wafer_tx81_direct_dte_wait(send);
   wafer_tx81_direct_dte_wait(receive);
   return evidence;
@@ -1179,10 +1186,10 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t rank, uint64_t input_ddr,
     switch ((enum WaferDteNccProbeMode)mode) {
     case WAFER_PROBE_NCC_PRODUCER_DTE:
       wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT, payload_bytes);
-      wafer_tx81_elementwise_add(WAFER_PROBE_SPM_INPUT, WAFER_PROBE_SPM_INPUT,
-                                 WAFER_PROBE_SPM_PRODUCED,
-                                 payload_bytes / (uint32_t)sizeof(uint16_t),
-                                 Fmt_FP16);
+      wafer_tx81_elementwise_add_v3(
+          WAFER_PROBE_SPM_INPUT, WAFER_PROBE_SPM_INPUT,
+          WAFER_PROBE_SPM_PRODUCED,
+          payload_bytes / (uint32_t)sizeof(uint16_t), Fmt_FP16, 0U);
       wafer_tx81_local_fence();
       wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_PRODUCED, payload_bytes);
       break;
@@ -1191,10 +1198,10 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t rank, uint64_t input_ddr,
       wafer_probe_dma_read(input_payload, WAFER_PROBE_SPM_INPUT, payload_bytes);
       wafer_tx81_local_fence();
       wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_INPUT, payload_bytes);
-      wafer_tx81_elementwise_add(
+      wafer_tx81_elementwise_add_v3(
           WAFER_PROBE_SPM_DTE_RECV, WAFER_PROBE_SPM_DTE_RECV,
           WAFER_PROBE_SPM_PRODUCED, payload_bytes / (uint32_t)sizeof(uint16_t),
-          Fmt_FP16);
+          Fmt_FP16, 0U);
       wafer_tx81_local_fence();
       break;
 
@@ -1205,10 +1212,10 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t rank, uint64_t input_ddr,
                            WAFER_PROBE_SPM_DISJOINT_INPUT,
                            WAFER_PROBE_DISJOINT_BYTES);
       wafer_tx81_local_fence();
-      wafer_tx81_elementwise_add(WAFER_PROBE_SPM_DISJOINT_INPUT,
-                                 WAFER_PROBE_SPM_DISJOINT_INPUT,
-                                 WAFER_PROBE_SPM_DISJOINT_OUTPUT,
-                                 WAFER_PROBE_DISJOINT_ELEMENTS, Fmt_FP16);
+      wafer_tx81_elementwise_add_v3(
+          WAFER_PROBE_SPM_DISJOINT_INPUT, WAFER_PROBE_SPM_DISJOINT_INPUT,
+          WAFER_PROBE_SPM_DISJOINT_OUTPUT, WAFER_PROBE_DISJOINT_ELEMENTS,
+          Fmt_FP16, 0U);
       if (mode == WAFER_PROBE_DISJOINT_LOCAL_WAIT_FIRST) {
         wafer_tx81_local_fence();
         wafer_probe_dte_ring(rank, WAFER_PROBE_SPM_INPUT, payload_bytes);

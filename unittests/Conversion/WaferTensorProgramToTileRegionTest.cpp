@@ -1471,4 +1471,334 @@ module {
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
 }
 
+TEST(WaferTensorProgramToTileRegionTest,
+     OperandDrivenCompleteCloneReachesInstructionAndSPMPlanning) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @pointwise(%lhs: tensor<4x6xf32>, %rhs: tensor<4x6xf32>,
+                       %out: tensor<4x6xf32>) -> tensor<4x6xf32> {
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>
+        ],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%lhs, %rhs : tensor<4x6xf32>, tensor<4x6xf32>)
+        outs(%out : tensor<4x6xf32>) {
+    ^bb0(%left: f32, %right: f32, %old: f32):
+      %sum = arith.addf %left, %right : f32
+      linalg.yield %sum : f32
+    } -> tensor<4x6xf32>
+    return %result : tensor<4x6xf32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  ASSERT_TRUE(function);
+
+  mlir::OwningOpRef<mlir::ModuleOp> lowered;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+          function, /*candidateTileSizes=*/{2, 3},
+          /*candidateReductionTileSizes=*/{}, lowered, &failureReason,
+          /*currentLogicalRank=*/0, /*selectedAlternative=*/std::nullopt,
+          /*useDirectMappedBoundaryTransfer=*/false,
+          wafer::CandidateTileTraversalKind::OperandDriven)))
+      << failureReason;
+  ASSERT_TRUE(lowered);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(*lowered), 1u);
+  EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(*lowered), 1u);
+  EXPECT_EQ(countOps<wafer::StorageLoadOp>(*lowered), 2u);
+  EXPECT_EQ(countOps<wafer::StorageStoreOp>(*lowered), 1u);
+
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*lowered, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
+      *lowered, /*spmBase=*/65536, /*spmLimit=*/3080192,
+      /*spmAlignment=*/256)));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     PartialReductionCompleteCloneReachesInstructionAndSPMPlanning) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @sum(%input: tensor<4x8xf32>, %out: tensor<4xf32>)
+      -> tensor<4xf32> {
+    %zero = arith.constant 0.0 : f32
+    %init = linalg.fill ins(%zero : f32)
+        outs(%out : tensor<4xf32>) -> tensor<4xf32>
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0)>
+        ],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%input : tensor<4x8xf32>)
+        outs(%init : tensor<4xf32>) {
+    ^bb0(%value: f32, %acc: f32):
+      %sum = arith.addf %value, %acc : f32
+      linalg.yield %sum : f32
+    } -> tensor<4xf32>
+    return %result : tensor<4xf32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  ASSERT_TRUE(function);
+
+  mlir::OwningOpRef<mlir::ModuleOp> lowered;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+          function, /*candidateTileSizes=*/{2},
+          /*candidateReductionTileSizes=*/{4}, lowered, &failureReason,
+          /*currentLogicalRank=*/0, /*selectedAlternative=*/std::nullopt,
+          /*useDirectMappedBoundaryTransfer=*/false,
+          wafer::CandidateTileTraversalKind::PartialReduction)))
+      << failureReason;
+  ASSERT_TRUE(lowered);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+  EXPECT_GT(countOps<wafer::ComputeElementwiseOp>(*lowered), 0u);
+  EXPECT_GT(countOps<wafer::ComputeReduceOp>(*lowered), 0u);
+  EXPECT_EQ(countOps<wafer::StorageStoreOp>(*lowered), 1u);
+
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*lowered, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
+      *lowered, /*spmBase=*/65536, /*spmLimit=*/3080192,
+      /*spmAlignment=*/256)));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     PartialReductionCompleteCloneFailsNumericLegalityAtomically) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @unsigned_max(%input: tensor<4x8xi32>, %out: tensor<4xi32>)
+      -> tensor<4xi32> {
+    %zero = arith.constant 0 : i32
+    %init = linalg.fill ins(%zero : i32)
+        outs(%out : tensor<4xi32>) -> tensor<4xi32>
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0)>
+        ],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%input : tensor<4x8xi32>)
+        outs(%init : tensor<4xi32>) {
+    ^bb0(%value: i32, %acc: i32):
+      %maximum = arith.maxui %value, %acc : i32
+      linalg.yield %maximum : i32
+    } -> tensor<4xi32>
+    return %result : tensor<4xi32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  ASSERT_TRUE(function);
+
+  auto sentinel = mlir::parseSourceString<mlir::ModuleOp>(
+      "module { func.func private @sentinel() }", mlir::ParserConfig(&context));
+  ASSERT_TRUE(sentinel);
+  mlir::OwningOpRef<mlir::ModuleOp> lowered = std::move(sentinel);
+  std::string failureReason;
+  EXPECT_TRUE(mlir::failed(
+      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+          function, /*candidateTileSizes=*/{2},
+          /*candidateReductionTileSizes=*/{4}, lowered, &failureReason,
+          /*currentLogicalRank=*/0, /*selectedAlternative=*/std::nullopt,
+          /*useDirectMappedBoundaryTransfer=*/false,
+          wafer::CandidateTileTraversalKind::PartialReduction)));
+  EXPECT_EQ(failureReason,
+            "candidate reduction split cannot preserve unsigned min/max "
+            "semantics with the current reduce kind");
+  ASSERT_TRUE(lowered);
+  EXPECT_TRUE(lowered->lookupSymbol<mlir::func::FuncOp>("sentinel"));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     PartialReductionFeedsExistingTypedAllReduceThroughOneSSAChain) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {topology = @default, axes = ["rank"], shape = array<i64: 2>,
+       policy = "all_available", endpoints = array<i64>}
+  func.func @local_sum_all_reduce(%input: tensor<4x8xf32>,
+                                  %out: tensor<4xf32>)
+      -> tensor<4xf32> {
+    %zero = arith.constant 0.0 : f32
+    %empty = tensor.empty() : tensor<4xf32>
+    %init = linalg.fill ins(%zero : f32)
+        outs(%empty : tensor<4xf32>) -> tensor<4xf32>
+    %local = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0)>
+        ],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%input : tensor<4x8xf32>)
+        outs(%init : tensor<4xf32>) {
+    ^bb0(%value: f32, %acc: f32):
+      %sum = arith.addf %value, %acc : f32
+      linalg.yield %sum : f32
+    } -> tensor<4xf32>
+    %reduced = wafer.linalg_ext.collective.all_reduce
+        ins(%local : tensor<4xf32>)
+        outs(%out : tensor<4xf32>) {
+    ^bb0(%left: f32, %right: f32):
+      %sum = arith.addf %left, %right : f32
+      wafer.linalg_ext.collective.yield %sum : f32
+    } {channel_id = 73 : i64, rank_group = array<i64: 0, 1>}
+        -> tensor<4xf32>
+    return %reduced : tensor<4xf32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  ASSERT_TRUE(function);
+
+  mlir::OwningOpRef<mlir::ModuleOp> lowered;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+          function, /*candidateTileSizes=*/{2},
+          /*candidateReductionTileSizes=*/{4}, lowered, &failureReason,
+          /*currentLogicalRank=*/0, /*selectedAlternative=*/std::nullopt,
+          /*useDirectMappedBoundaryTransfer=*/false,
+          wafer::CandidateTileTraversalKind::PartialReduction)))
+      << failureReason;
+  ASSERT_TRUE(lowered);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+  EXPECT_GT(countOps<wafer::ComputeReduceOp>(*lowered), 0u);
+  EXPECT_GT(countOps<wafer::ComputeElementwiseOp>(*lowered), 0u);
+  EXPECT_EQ(countOps<wafer::CommAllReduceOp>(*lowered), 1u);
+
+  wafer::CommAllReduceOp allReduce;
+  lowered->walk([&](wafer::CommAllReduceOp op) { allReduce = op; });
+  ASSERT_TRUE(allReduce);
+  ASSERT_TRUE(allReduce.getInput().getDefiningOp());
+  EXPECT_TRUE((mlir::isa<wafer::ComputeElementwiseOp,
+                         wafer::ComputeReduceOp>(
+      allReduce.getInput().getDefiningOp())));
+
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*lowered, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
+      *lowered, /*spmBase=*/65536, /*spmLimit=*/3080192,
+      /*spmAlignment=*/256)));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
+  EXPECT_GT(countOps<wafer::InstrDTEWaitOp>(*lowered), 0u);
+  EXPECT_GT(countOps<wafer::InstrElementwiseOp>(*lowered), 0u);
+}
+
+TEST(WaferTensorProgramToTileRegionTest,
+     TypedAllReduceDoesNotBypassLocalPartialNumericLegality) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @local_unsigned_max_all_reduce(%input: tensor<4x8xi32>,
+                                           %out: tensor<4xi32>)
+      -> tensor<4xi32> {
+    %zero = arith.constant 0 : i32
+    %empty = tensor.empty() : tensor<4xi32>
+    %init = linalg.fill ins(%zero : i32)
+        outs(%empty : tensor<4xi32>) -> tensor<4xi32>
+    %local = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0)>
+        ],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%input : tensor<4x8xi32>)
+        outs(%init : tensor<4xi32>) {
+    ^bb0(%value: i32, %acc: i32):
+      %maximum = arith.maxui %value, %acc : i32
+      linalg.yield %maximum : i32
+    } -> tensor<4xi32>
+    %reduced = wafer.linalg_ext.collective.all_reduce
+        ins(%local : tensor<4xi32>)
+        outs(%out : tensor<4xi32>) {
+    ^bb0(%left: i32, %right: i32):
+      %maximum = arith.maxui %left, %right : i32
+      wafer.linalg_ext.collective.yield %maximum : i32
+    } {channel_id = 74 : i64, rank_group = array<i64: 0, 1>}
+        -> tensor<4xi32>
+    return %reduced : tensor<4xi32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+  mlir::func::FuncOp function = findSingleTensorProgram(*source);
+  ASSERT_TRUE(function);
+
+  auto sentinel = mlir::parseSourceString<mlir::ModuleOp>(
+      "module { func.func private @sentinel() }", mlir::ParserConfig(&context));
+  ASSERT_TRUE(sentinel);
+  mlir::OwningOpRef<mlir::ModuleOp> lowered = std::move(sentinel);
+  std::string failureReason;
+  EXPECT_TRUE(mlir::failed(
+      wafer::lowerCompleteCandidateTensorProgramToTileRegionModule(
+          function, /*candidateTileSizes=*/{2},
+          /*candidateReductionTileSizes=*/{4}, lowered, &failureReason,
+          /*currentLogicalRank=*/0, /*selectedAlternative=*/std::nullopt,
+          /*useDirectMappedBoundaryTransfer=*/false,
+          wafer::CandidateTileTraversalKind::PartialReduction)));
+  EXPECT_EQ(failureReason,
+            "candidate reduction split cannot preserve unsigned min/max "
+            "semantics with the current reduce kind");
+  ASSERT_TRUE(lowered);
+  EXPECT_TRUE(lowered->lookupSymbol<mlir::func::FuncOp>("sentinel"));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
+}
+
 } // namespace

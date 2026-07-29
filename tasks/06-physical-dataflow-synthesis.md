@@ -62,6 +62,7 @@ verified structured MLIR
 | transfer route与storage realization | 跨两端buffer的analysis/helper；zero-copy/direct/current GS/staged alternative立即变成view/movement/temp/event IR | route不是sidecar；final descriptor、range、valid-lane和completion从当前IR重证 |
 | residency与physical-version reuse | SSA root/view、alias/effect/lifetime分析和typed rewrite | chain、fanout及partial-compatible use能有界复用；spill/reload cut在winner中真实消失 |
 | buffering和resource-aware DAG-legal issue order | 实际buffer SSA、loop-carried value、async token/wait/fence和resource effect；从current SSA/effect DAG生成少量ready-order alternative | current Q29能力不回退；至少一个非source-order alternative改变真实buffer/token/order IR、通过lifetime/resource gate并成为winner |
+| post-Instr typed worker placement | 从materialized canonical/unplaced complete-rank Instr的SSA、typed effects、static ranges和stable issue order派生all-rank atomic `DisjointComponents` sibling；actual worker attrs与fresh minimum joins是唯一语义结果 | existing nonzero assignment不原地重写；worker sibling先闭合，再在保留assignment的siblings上派生fixed-slot；每个结果fresh通过SPM/DDR、Direct-DTE、resource和target gate |
 | communication algorithm选择 | collective OpInterface、topology helper，以及Direct、Ring和保持`rank_group`中序的ordered-Tree complete-clone rewrite | alternative进入同一rank frontier；all-rank coordinator只从最终p2p/message/completion IR重证，floating collective的ordered Tree与会置换归约leaf的Ring分别做数值合法性判断 |
 | resource-aware candidate generation | 从当前clone重算liveness、capacity lower bound、descriptor/resource pressure；邻居仍必须物化完整IR | resource事实能产生有界tile/residency/buffering/order邻居，09/12/Q34继续作唯一exact placement gate |
 | bounded joint search和selection | baseline slot、actual IR clones、有界worklist/frontier、exact cost和existing all-rank transaction | 全部producer受生成/materialization/whole-variant hard cap；预算耗尽保留合法baseline |
@@ -143,7 +144,8 @@ Pipeline position:
   功能目标保留矩阵中的current-target选择轴全部进入同一bounded candidate owner：真实source至少选择一个非baseline
   implementation、一个改变encoding/view/materialization或route的alternative、tiling/resident与multi-use reuse/movement
   elimination机制、share-vs-recompute、static loop-invariant hoist、fixed Cx/NCx encoding absorption、各自integer-domain
-  exact/modular-proof-gated algebraic variant、resource-aware static buffering/ready-order及direct/ring/tree communication
+  exact/modular-proof-gated algebraic variant、post-Instr typed worker placement、resource-aware static
+  buffering/ready-order及direct/ring/tree communication
   alternative；Q32.V
   mapped/physical-fill/oriented纵向独立闭合后由同一owner消费。每次rewrite后derived analyses均fresh重建；baseline和optimized
   clone经过相同exact gates；每个choice producer完成§1.2的discover→materialize→accept→select→commit链，required closure的
@@ -194,12 +196,19 @@ Q32.M已完成后续native-interface reuse closure：layout requirement由typed 
 `WaferResourceEffectInterface`及其重复record已删除。证据见
 `tasks/archive/physical-mechanism-choice-closure.md`。
 
-structured traversal root的切块能力同样必须消费current op的`TilingInterface`，不能把全部logical collective长期
-归为whole-tensor-only。shape-preserving `all_reduce`和`collective_permute`允许沿任意result tensor维切块；
-`all_gather`、`reduce_scatter`和`all_to_all`只允许接口证明不跨越其gather/scatter/split/concat受限轴的tile。
-候选物化必须从terminal collective result tile反向融合同尺寸producer slice，并把每个tile的compute、communication和
-writeback保留在同一complete compact traversal中；接口拒绝的tile只拒绝该候选，不能靠op名放宽，也不能把可切root
-降级成一次full-buffer尝试。
+structured traversal的切块能力同样必须消费current op的标准interface，不能把全部logical collective长期
+归为whole-tensor-only，也不能把traversal永久限制成从output root反推。通用机制包含三条可组合路径：
+
+- result-driven pull通过`TilingInterface`从result tile反推iteration domain和producer dependent region；
+- operand-driven push通过`TilingInterface`从已经resident或到达的operand tile映射到实际consumer iteration/result tile；
+- reduction只有在`PartialReductionOpInterface`和numeric contract允许时才物化partial accumulator与merge。
+
+input/parameter、intermediate、partial/reduction和output不是固定op分类；这些角色由当前boundary、SSA
+use-def和tile relation派生。
+shape-preserving `all_reduce`和`collective_permute`允许沿任意result tensor维切块；`all_gather`、
+`reduce_scatter`和`all_to_all`只允许接口证明不跨越其gather/scatter/split/concat受限轴的tile。候选物化必须把
+每个tile的实际load/receive、compute/reduce、send和required writeback保留在同一complete compact traversal中；
+接口拒绝的tile只拒绝该候选，不能靠op名放宽，也不能把可切root降级成一次full-buffer尝试。
 
 Q35 production enablement只开放verifier已证明shape-preserving、单输入单输出的`all_reduce`作为terminal tiled root；
 其它collective虽然已有接口级tile mapping，仍保持`FullTraversalOnly`，直到各自的producer fusion、受限轴、control-instance
@@ -286,6 +295,43 @@ baseline不运行该可选rewrite，保证任何后续rank/whole-variant/target 
 logical collective语义只由当前 collective op/interface表达。topology/target helper可以枚举少量 typed algorithm parameters，
 例如 direct/ring/tree 及必要 chunk 参数；每个 alternative必须直接在 complete-rank clones 中展开为真实 p2p、local compute、
 staging、token和wait IR。
+
+physical-dataflow peer movement与logical collective是两个不同来源。当前compiler owner已在rank frontier
+import之后，从correspondence一致的actual complete tuples恢复有界resident seeds。role materializer只从
+current IR创造resident dataflow，不重新选择compute implementation。materialized canonical
+`Single + Unplaced` Instr tuple先从SSA、typed effects、static ranges和stable issue order派生all-rank atomic
+`DisjointComponents` sibling；worker attrs与fresh minimum joins直接写入clone。已有nonzero assignment不原地
+重写。随后才从保留各自worker assignment的siblings派生StaticFixedSlot；common层不保存固定tile-role enum，
+而是独立调用IR-derived materializer：
+
+- input/parameter从verified global/local rank slice、structured view occurrence和exact compact actual RDMA
+  重建global tile；只有至少两个actual loads覆盖同一tile时，才保留一个有exact coverage的owner load并物化
+  Direct或ReceiveForward peer traffic。partitioned unique shard保持每shard一次DDR load，不虚构总DDR下降；
+- intermediate从actual producer store、consumer reload、same-version SSA/view、effect和lifetime证明spill
+  cut；owner直接复用producer root，peer接收进consumer root，完整参与组删除matching WDMA/RDMA和reload；
+- 上游complete traversal通过`PartialReductionOpInterface`产生真实local partial/merge并接入typed
+  tree/ring collective；post-import partial materializer只从current Instr message、provenance、
+  combiner和publisher证明冗余DDR cut可删除，不重新发明collective或改变source要求的merge order。
+  tree按rank contribution multiplicity、combiner、compact publisher和output final writer验证；ring从
+  final message tuple验证每个slice的
+  reduce-scatter merge/forward、all-gather传播、origin multiplicity和final exact cover；
+- output从frontend required boundary、produced-value SSA/effect equivalence、exact all-rank WDMA和
+  final-writer关系恢复replicated publication，保留全部required store，用PeerDataflow round 2把一个
+  producer值送入其它publisher。
+
+四个materializer按partial、output、intermediate、input/parameter顺序在同一discardable complete-rank
+clone累计，任一rank失败都不修改frontier。typed worker sibling先以all-rank atomic transaction闭合，
+fixed-slot sibling再保留其worker assignment；actual fixed-slot/nonzero seed保持自身realization。每个结果
+fresh重过completion、SPM/DDR、Direct-DTE、whole-variant resource和target capability gates。required output
+store保持原样，只有producer closure可在
+证明后删除。同候选qualification从current IR同时检查boundary-only DDR、实际Direct-DTE、fixed-slot和多个
+含非零值的typed worker。新peer receive preparation在同一structured block内先于所有既有/新增transport
+issue；跨block与seed已有DTE的组合由call-expanded whole-program message wait graph判定，cycle、
+occurrence/binding错位或无法证明的control整代fail closed。
+
+peer rewrite不会凭空创建logical collective，也不能复用collective op掩盖owner、buffer、range或completion。
+此类跨rank ownership rewrite必须原子物化完整rank tuple；rank-local candidate不得独立删除自己的load/store
+后等待coordinator猜测对应peer。
 
 all-rank correctness继续由现有 coordinator从当前 instruction IR收集 message、buffer range、completion和binding并重算。允许用
 一个从 typed collective/message IR 派生的轻量 grouping key减少不可能组合，但它不承担 correctness，也不复制完整 message
@@ -485,6 +531,11 @@ candidate增长要求frontier/beam，则在相同actual-clone语义上增加。�
 tile domain由op interface、static shape、target geometry和现有policy提供的少量候选构成。第一版不枚举全部因子，也不把每维
 tile笛卡尔积交给通用solver。consumer tile通过exact IndexRelation求producer dependent region；无法精确反推时保留原边界。
 
+tile seed可以来自result，也可以来自已经resident或刚由boundary/peer到达的operand。compute tile、沿SSA edge的数据tile、
+一次transport覆盖的physical segment和software-pipeline work quantum是四个独立粒度；candidate可以在exact relation、
+descriptor、capacity和hard cap允许时聚合或拆分transport，但不能为了通信方便静默改变compute coverage或把work quantum
+写回tensor语义。
+
 resident dataflow是selected IR的数据流结果，不是预先枚举的fusion partition：
 
 - producer result由consumer通过同一SPM root/view和SSA use-def直接消费时，形成resident edge；
@@ -492,9 +543,22 @@ resident dataflow是selected IR的数据流结果，不是预先枚举的fusion 
 - fanout按exact relation、encoding、effect和lifetime形成stable maximal-compatible subsets；在hard cap内物化少量partial-reuse
   clones，而不是一个不兼容use使全部use回退，也不枚举所有subset；
 - collective是completion/transport boundary，不自动成为DDR boundary；
+- replicated或partitioned boundary input只有在typed global/local rank slice证明相同global region及合法owner后，才可把
+  多rank重复DDR load改写为owner-only load和显式peer fanout/forward；intermediate、partial和output tile适用相同
+  relation/effect/lifetime规则；
 - buffering slot、ready order和overlap必须由实际buffer SSA、loop-carried value、issue token、wait/fence与resource effect表达；
   unknown completion保守串行。dynamic multi-instance ping-pong仍是later，但current static buffering/order必须进入Q32非回退和
   candidate gate。
+
+NoC-resident扩展只负责创造上述actual dataflow；跨DTE、NCC/Kcore和movement engine的prologue/steady/epilogue由下游
+generic multi-engine software pipeline从current instruction SSA/effect/token重建。在进入fixed-slot前，独立
+post-Instr worker-placement维度从canonical/unplaced current IR原子派生actual worker attrs和minimum joins；
+fixed-slot只在保留该assignment的siblings上继续派生。V3已经具有真实Direct-DTE
+prepare/explicit-issue/exact-wait-release，V1/V2只保留wait-auto-issue兼容；fixed-slot和typed worker+DTE
+各自已有host legality closure，同候选source/package/model/no-card纵向也已由独立qualification闭合；
+configured-board correctness保持external gate。
+这些mechanism只对通过current IR dependency、range、completion和target capability gate的actual candidate
+成立，不能把形状上交错或三个独立passing candidate称为production overlap winner。
 
 physical encoding或route选择不能作为事后layout修补。rewrite在clone中建立所需typed encoding/view/movement，08与11从IR重新
 证明physical footprint、valid lanes、descriptor cover和instruction geometry。
@@ -543,6 +607,10 @@ legality先于cost。candidate只有完成lowering、placement和所有当前sco
 `InstructionProgramCost` typed C++结构，从final IR至少收集：validated SPM/DDR high-water、DDR read/write、SPM movement、
 transport bytes/messages、compute logical work、descriptor/command/issue、temporary、event/fence/wait、padding work和immutable
 payload。Known zero与Unknown分开；overflow或无法扫描为Unknown，不能伪造为0。
+
+NoC-resident tile dataflow进入candidate owner前，还必须让同一final-IR collector精确区分DDR transactions、
+full-shape/intermediate materialization、reduction/recompute work和terminal drain；否则owner-load、peer-forward与
+baseline的关键tradeoff保持Unknown，该producer不得进入production selection。
 
 communication的whole-variant metric还必须消费current `wafer.target.topology`、`wafer.execution.mesh`和final
 `dte_send.peer`。payload injected bytes保持独立维度；另以graph shortest-path distance计算
@@ -639,6 +707,9 @@ header同时提供entry span、aggregate PMU和event stream。三个launch互不
 all-rank coordination保留现有 compiler-level owner，不放入function pass，也不建立跨rank shadow program。每个rank candidate
 是同一MLIRContext中的完整module clone；coordinator负责：
 
+- 对需要改变boundary ownership、peer fanout/forward或cross-rank reduction placement的当前candidate，消费frontend
+  verifier给出的typed global/local rank slice与共同post-SPMD source snapshot，在一次transaction中物化correspondence一致的
+  complete-rank tuple；任一rank的relation、coverage或rewrite失败都丢弃整个tuple，不能先提交rank-local load/store消除；
 - rank并行lowering使用独立MLIRContext时，worker只在本次compiler transaction内返回actual finalized module的文本所有权转移
   载体及既有`(semantic generation ordinal, physical artifact kind, reserved baseline)`元数据；收齐完整rank domain后先仅用
   元数据精确重放既有reserved allowance、bounded Cartesian positions和coordinated correspondence顺序，始终保留原frontier

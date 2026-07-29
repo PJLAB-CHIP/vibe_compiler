@@ -329,6 +329,275 @@ static mlir::FailureOr<mlir::Value> materializeCandidateLinalgRootTileValue(
   return accumulator;
 }
 
+mlir::FailureOr<mlir::Value> materializeCandidateOperandConsumerTileValue(
+    mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
+    unsigned operandNumber,
+    llvm::ArrayRef<mlir::OpFoldResult> operandTileOffsets,
+    llvm::ArrayRef<mlir::OpFoldResult> operandTileSizes,
+    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    std::string *failureReason) {
+  if (!root || root->getNumResults() != 1 ||
+      !mlir::isa<mlir::TilingInterface>(root)) {
+    setFailureReason(
+        failureReason,
+        "operand-driven candidate requires one tiled consumer result");
+    return mlir::failure();
+  }
+
+  mlir::FailureOr<OperandTileMaterialization> materialized =
+      materializeConsumerFromOperandTile(root, builder, operandNumber,
+                                         operandTileOffsets, operandTileSizes,
+                                         failureReason);
+  if (mlir::failed(materialized))
+    return mlir::failure();
+  if (materialized->tiledOperations.size() != 1 ||
+      materialized->tiledValues.size() != 1 ||
+      materialized->tiledOperations.front()->getNumResults() != 1 ||
+      materialized->tiledOperations.front()->getResult(0) !=
+          materialized->tiledValues.front()) {
+    setFailureReason(
+        failureReason,
+        "operand-driven candidate must materialize one consumer result");
+    return mlir::failure();
+  }
+
+  auto tiling = mlir::cast<mlir::TilingInterface>(root);
+  llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
+  llvm::SmallVector<mlir::OpFoldResult> resultSizes;
+  if (mlir::failed(tiling.getResultTilePosition(
+          builder, /*resultNumber=*/0,
+          materialized->iterationDomain.offsets,
+          materialized->iterationDomain.sizes, resultOffsets, resultSizes))) {
+    setFailureReason(
+        failureReason,
+        "operand-driven candidate cannot map its consumer result tile");
+    return mlir::failure();
+  }
+
+  // A boundary-seeded complete traversal may carry a single output only when
+  // every seed tile maps one-to-one onto the same result tile. More general
+  // broadcast/permutation cover needs an independent exact-cover proof; it is
+  // deliberately rejected here instead of assuming non-overlap.
+  if (!llvm::equal(resultOffsets, operandTileOffsets) ||
+      !llvm::equal(resultSizes, operandTileSizes)) {
+    setFailureReason(
+        failureReason,
+        "operand-driven candidate requires an exact one-to-one result tile "
+        "relation");
+    return mlir::failure();
+  }
+
+  mlir::Operation *tiledConsumer = materialized->tiledOperations.front();
+  if (mlir::failed(
+          fuseCandidateProducerSlices(tiledConsumer, scope, loops,
+                                      failureReason)))
+    return mlir::failure();
+  builder.setInsertionPointAfter(tiledConsumer);
+  return materialized->tiledValues.front();
+}
+
+mlir::FailureOr<mlir::linalg::LinalgOp>
+getCandidatePartialReductionComputeRoot(mlir::Operation *root,
+                                        std::string *failureReason) {
+  if (auto linalg = mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(root))
+    return linalg;
+
+  auto allReduce =
+      mlir::dyn_cast_or_null<LinalgExtCollectiveAllReduceOp>(root);
+  if (!allReduce || allReduce.getInputs().size() != 1 ||
+      allReduce.getOuts().size() != 1 || root->getNumResults() != 1) {
+    setFailureReason(
+        failureReason,
+        "partial-reduction traversal requires a direct reduction or one "
+        "typed all-reduce wrapper");
+    return mlir::failure();
+  }
+
+  mlir::Value input = allReduce.getInputs().front();
+  auto producer =
+      mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(input.getDefiningOp());
+  if (!producer || producer->getBlock() != root->getBlock() ||
+      producer->getNumResults() != 1 || producer->getResult(0) != input ||
+      !input.hasOneUse()) {
+    setFailureReason(
+        failureReason,
+        "partial-reduction typed all-reduce requires one exact single-use "
+        "same-block Linalg producer");
+    return mlir::failure();
+  }
+  return producer;
+}
+
+mlir::FailureOr<mlir::Value>
+materializeCandidatePartialReductionRootTileValue(
+    mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
+    llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    std::string *failureReason) {
+  mlir::FailureOr<mlir::linalg::LinalgOp> computeRoot =
+      getCandidatePartialReductionComputeRoot(root, failureReason);
+  if (mlir::failed(computeRoot))
+    return mlir::failure();
+  mlir::linalg::LinalgOp linalg = *computeRoot;
+  auto tiling =
+      mlir::dyn_cast<mlir::TilingInterface>(linalg.getOperation());
+  auto partial =
+      mlir::dyn_cast<mlir::PartialReductionOpInterface>(linalg.getOperation());
+  if (!linalg || !tiling || !partial || linalg.getNumDpsInits() != 1 ||
+      linalg->getNumResults() != 1) {
+    setFailureReason(
+        failureReason,
+        "partial-reduction candidate requires one interface-backed result");
+    return mlir::failure();
+  }
+  if (mlir::failed(
+          verifyCandidateReductionSplitNumericLegality(linalg, failureReason)))
+    return mlir::failure();
+
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(linalg->getResult(0).getType());
+  if (!resultType ||
+      candidateTileOffsets.size() != candidateTileSizes.size() ||
+      candidateTileSizes.size() != static_cast<size_t>(resultType.getRank()) ||
+      llvm::any_of(candidateTileSizes,
+                   [](int64_t size) { return size <= 0; })) {
+    setFailureReason(failureReason,
+                     "partial-reduction candidate tile rank or size mismatch");
+    return mlir::failure();
+  }
+
+  llvm::SmallVector<unsigned, 2> reductionLoopDims =
+      getReductionLoopDims(linalg);
+  llvm::SmallVector<int64_t, 2> effectiveReductionTileSizes(
+      candidateReductionTileSizes.begin(),
+      candidateReductionTileSizes.end());
+  if (effectiveReductionTileSizes.empty()) {
+    llvm::SmallVector<int64_t, 4> loopRanges = linalg.getStaticLoopRanges();
+    for (unsigned dim : reductionLoopDims) {
+      if (dim >= loopRanges.size() ||
+          mlir::ShapedType::isDynamic(loopRanges[dim])) {
+        setFailureReason(
+            failureReason,
+            "partial-reduction candidate requires static reduction ranges");
+        return mlir::failure();
+      }
+      effectiveReductionTileSizes.push_back(loopRanges[dim]);
+    }
+  }
+
+  llvm::SmallVector<mlir::AffineMap, 4> indexingMaps =
+      linalg.getIndexingMapsArray();
+  unsigned outputMapIndex = static_cast<unsigned>(linalg.getNumDpsInputs());
+  if (outputMapIndex >= indexingMaps.size()) {
+    setFailureReason(failureReason,
+                     "partial-reduction candidate is missing its output map");
+    return mlir::failure();
+  }
+  mlir::FailureOr<llvm::SmallVector<ReductionChunk, 8>> reductionChunks =
+      buildReductionChunks(linalg, effectiveReductionTileSizes, failureReason);
+  if (mlir::failed(reductionChunks))
+    return mlir::failure();
+
+  mlir::Value accumulator;
+  for (const ReductionChunk &chunk : *reductionChunks) {
+    CandidateLoopTile loopTile;
+    if (mlir::failed(buildCandidateLoopTile(
+            builder, linalg->getLoc(), linalg, indexingMaps[outputMapIndex],
+            candidateTileOffsets, candidateTileSizes, chunk.offsets,
+            chunk.sizes, loopTile, failureReason)))
+      return mlir::failure();
+
+    mlir::FailureOr<PartialReductionTileMaterialization> materialized =
+        accumulator
+            ? materializePartialReductionTile(
+                  linalg.getOperation(), builder, loopTile.loopOffsets,
+                  loopTile.tileSizes,
+                  mlir::ValueRange(accumulator), failureReason)
+            : materializePartialReductionTile(
+                  linalg.getOperation(), builder, loopTile.loopOffsets,
+                  loopTile.tileSizes, failureReason);
+    if (mlir::failed(materialized))
+      return mlir::failure();
+    if (materialized->partialOperations.size() != 1 ||
+        materialized->mergedValues.size() != 1 ||
+        materialized->mergeOperations.size() != 1) {
+      setFailureReason(
+          failureReason,
+          "partial-reduction candidate requires one partial and merge result");
+      return mlir::failure();
+    }
+
+    for (mlir::Operation *operation : materialized->partialOperations)
+      if (mlir::failed(
+              fuseCandidateProducerSlices(operation, scope, loops,
+                                          failureReason)))
+        return mlir::failure();
+    for (mlir::Operation *operation : materialized->mergeOperations)
+      if (mlir::failed(
+              fuseCandidateProducerSlices(operation, scope, loops,
+                                          failureReason)))
+        return mlir::failure();
+
+    builder.setInsertionPointAfter(materialized->mergeOperations.back());
+    accumulator = materialized->mergedValues.front();
+  }
+
+  if (!accumulator) {
+    setFailureReason(
+        failureReason,
+        "partial-reduction candidate produced no merged result tile");
+    return mlir::failure();
+  }
+
+  // A local reduction alone remains local. Cross-rank protocol is retained
+  // only when the source already yielded a typed all-reduce. Tile that exact
+  // collective and replace its generated input slice with the local
+  // PartialReductionOpInterface result so the accepted IR has one real SSA
+  // chain: local partial/merge -> typed collective -> output tile.
+  auto allReduce =
+      mlir::dyn_cast<LinalgExtCollectiveAllReduceOp>(root);
+  if (!allReduce)
+    return accumulator;
+
+  llvm::SmallVector<mlir::OpFoldResult, 4> mixedSizes;
+  mixedSizes.reserve(candidateTileSizes.size());
+  for (int64_t size : candidateTileSizes)
+    mixedSizes.push_back(builder.getIndexAttr(size));
+  auto collectiveTiling = mlir::cast<mlir::TilingInterface>(root);
+  mlir::FailureOr<mlir::TilingResult> tiled =
+      collectiveTiling.getTiledImplementation(
+          builder, candidateTileOffsets, mixedSizes);
+  if (mlir::failed(tiled) || tiled->tiledOps.size() != 1 ||
+      tiled->tiledValues.size() != 1) {
+    setFailureReason(
+        failureReason,
+        "typed all-reduce rejected the partial-reduction result tile");
+    return mlir::failure();
+  }
+  auto tiledAllReduce = mlir::dyn_cast<LinalgExtCollectiveAllReduceOp>(
+      tiled->tiledOps.front());
+  if (!tiledAllReduce || tiledAllReduce.getInputs().size() != 1 ||
+      tiledAllReduce.getOuts().size() != 1 ||
+      tiledAllReduce->getNumResults() != 1 ||
+      tiledAllReduce.getInputs().front().getType() != accumulator.getType()) {
+    setFailureReason(
+        failureReason,
+        "typed all-reduce tile does not match the local partial result");
+    return mlir::failure();
+  }
+
+  mlir::Value unusedInputSlice = tiledAllReduce.getInputs().front();
+  tiledAllReduce->setOperand(/*input=*/0, accumulator);
+  if (mlir::Operation *slice = unusedInputSlice.getDefiningOp();
+      slice && slice->use_empty() &&
+      mlir::isa<mlir::tensor::ExtractSliceOp>(slice))
+    slice->erase();
+  builder.setInsertionPointAfter(tiledAllReduce);
+  return tiledAllReduce.getResult(0);
+}
+
 static mlir::FailureOr<mlir::Value> materializeCandidateInterfaceRootTileValue(
     mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
     unsigned outputIndex,

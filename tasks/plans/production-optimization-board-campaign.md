@@ -38,14 +38,16 @@ Pipeline position:
 - Explicit non-goals:
   不新增公开强制tile/layout/algorithm/ordinal选项，不序列化candidate frontier，不为每个
   canonicalization/verifier/pass单独上板，不用修改source或编译两版compiler伪造A/B，不把
-  host wall time、单次样本或untimed model称为hardware speedup；尚未实现的software
-  pipeline、worker placement和三slot选择不以手写packet代替production vertical。
+  host wall time、单次样本或untimed model称为hardware speedup；compiler-owned software
+  pipeline、worker placement和fixed-slot host vertical不能由手写packet代签configured-board
+  qualification或winner correctness。
 - Completion gate:
-  当前production优化轴全部映射到new paired-board、existing-board、host-exact或future
-  production gate之一；需要A/B的case实际生成结构不同但boundary等价的baseline/winner
-  package，no-card双包均通过；board CTest和默认外的显式批次顺序注册完成，初始/终止
-  heartbeat、单进程串行、timeout、无retry/reset/power合同保持。真实上板前状态为pending，
-  不把资产ready写成board evidence。
+  当前production优化轴全部映射到new paired-board、existing-board、host-exact或pending
+  configured-board gate之一；需要A/B的case实际生成结构不同但boundary等价的baseline/winner
+  package，no-card双包均通过；已有board-mapped case的CTest和默认外显式批次顺序已经注册。
+  software pipeline configured-board gate在仓内尚无消费同源compiler package的board campaign
+  asset时保留external blocker；初始/终止heartbeat、单进程串行、timeout、无retry/reset/power
+  合同保持。真实上板前状态为pending，不把资产ready写成board evidence。
 ```
 
 ## 1. 覆盖原则
@@ -104,17 +106,19 @@ Pipeline position:
   all-and-only completion/status验证正确性。ordered rank graph由既有host exact gate负责，不能由静态callsite
   反推。Ring all-gather当前公开SPMD boundary只提交reserved baseline，不能拿两个相同package上板冒充A/B。
 
-### C. Q37 software pipeline
+### C. Software pipeline configured-board qualification
 
-software pipeline在Checkpoint B实现前只保留catalog中的future production gate。实现后必须复用
-同一个paired-package、结构、numeric和批次合同，覆盖trip `0/1/2/3/4/5`、双slot rotation、
-prologue/steady/epilogue、capacity/alias/loop-carried hazard及DTE/fence负例；手写双slot probe
-不能代签。
+compiler-owned fixed-slot producer、typed worker、trip `0/1/2/3/4/5`、双slot rotation、
+prologue/steady/epilogue、capacity/alias/loop-carried hazard、DTE/fence负例以及
+package/target-model/no-card gate已经由host vertical闭合。catalog不再把这些能力标成future或missing
+producer；唯一剩余门禁是在configured board上复用同一个paired-package、结构、numeric和批次合同，
+对同源baseline/winner做fresh、bounded correctness。手写双slot probe和历史输出都不能代签。
 
 ## 3. 验证与批次
 
-1. catalog unit test检查所有current优化轴恰有处置、board项有结构和numeric oracle、future项有
-   typed producer前置；
+1. catalog unit test检查所有current优化轴恰有处置、board项有结构和numeric oracle、pending
+   configured-board项保留manifest-bound accepted-Instr、typed worker/current-IR completion和
+   fresh-board oracle；
 2. 每个paired case先运行双包compile、ELF签名和双包no-card preflight；
 3. CTest inventory必须把board case标成`board;hardware;compiler-optimization;paired`并持有同一
    device resource lock；

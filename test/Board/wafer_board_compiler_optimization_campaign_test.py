@@ -149,6 +149,67 @@ F16_DTE_GEMM_OUTPUT = TensorSpec(
     "f16",
     "float16",
 )
+NOC_RESIDENT_GEMM_RANKS = 16
+NOC_RESIDENT_GEMM_EXTENT = 4096
+NOC_RESIDENT_GEMM_LOCAL_K = (
+    NOC_RESIDENT_GEMM_EXTENT // NOC_RESIDENT_GEMM_RANKS
+)
+F16_NOC_RESIDENT_GEMM_LHS_LOCAL = TensorSpec(
+    (NOC_RESIDENT_GEMM_EXTENT, NOC_RESIDENT_GEMM_LOCAL_K),
+    "f16",
+    "float16",
+    source_shape=(NOC_RESIDENT_GEMM_EXTENT, NOC_RESIDENT_GEMM_EXTENT),
+)
+F16_NOC_RESIDENT_GEMM_RHS_LOCAL = TensorSpec(
+    (NOC_RESIDENT_GEMM_LOCAL_K, NOC_RESIDENT_GEMM_EXTENT),
+    "f16",
+    "float16",
+    source_shape=(NOC_RESIDENT_GEMM_EXTENT, NOC_RESIDENT_GEMM_EXTENT),
+)
+F16_NOC_RESIDENT_GEMM_OUTPUT = TensorSpec(
+    (NOC_RESIDENT_GEMM_EXTENT, NOC_RESIDENT_GEMM_EXTENT),
+    "f16",
+    "float16",
+)
+NOC_RESIDENT_M_SHARDED_GEMM_RANKS = 16
+NOC_RESIDENT_M_SHARDED_GEMM_M = 4096
+NOC_RESIDENT_M_SHARDED_GEMM_K = 1024
+NOC_RESIDENT_M_SHARDED_GEMM_N = 4096
+NOC_RESIDENT_M_SHARDED_GEMM_LOCAL_M = (
+    NOC_RESIDENT_M_SHARDED_GEMM_M // NOC_RESIDENT_M_SHARDED_GEMM_RANKS
+)
+F16_NOC_RESIDENT_M_SHARDED_GEMM_LHS_LOCAL = TensorSpec(
+    (
+        NOC_RESIDENT_M_SHARDED_GEMM_LOCAL_M,
+        NOC_RESIDENT_M_SHARDED_GEMM_K,
+    ),
+    "f16",
+    "float16",
+    source_shape=(
+        NOC_RESIDENT_M_SHARDED_GEMM_M,
+        NOC_RESIDENT_M_SHARDED_GEMM_K,
+    ),
+)
+F16_NOC_RESIDENT_M_SHARDED_GEMM_RHS_LOCAL = TensorSpec(
+    (
+        NOC_RESIDENT_M_SHARDED_GEMM_K,
+        NOC_RESIDENT_M_SHARDED_GEMM_N,
+    ),
+    "f16",
+    "float16",
+)
+F16_NOC_RESIDENT_M_SHARDED_GEMM_OUTPUT_LOCAL = TensorSpec(
+    (
+        NOC_RESIDENT_M_SHARDED_GEMM_LOCAL_M,
+        NOC_RESIDENT_M_SHARDED_GEMM_N,
+    ),
+    "f16",
+    "float16",
+    source_shape=(
+        NOC_RESIDENT_M_SHARDED_GEMM_M,
+        NOC_RESIDENT_M_SHARDED_GEMM_N,
+    ),
+)
 
 
 def elementwise_module(
@@ -314,6 +375,69 @@ module {{
         -> tensor<{DIRECT_DTE_GEMM_M}x{DIRECT_DTE_GEMM_N}xf16>
     return %result
         : tensor<{DIRECT_DTE_GEMM_M}x{DIRECT_DTE_GEMM_N}xf16>
+  }}
+}}
+"""
+
+
+def noc_resident_large_gemm_module() -> str:
+    devices = ",".join(str(rank) for rank in range(NOC_RESIDENT_GEMM_RANKS))
+    lhs_sharding = (
+        f"{{devices=[1,{NOC_RESIDENT_GEMM_RANKS}]{devices}}}"
+    )
+    rhs_sharding = (
+        f"{{devices=[{NOC_RESIDENT_GEMM_RANKS},1]{devices}}}"
+    )
+    extent = NOC_RESIDENT_GEMM_EXTENT
+    return f"""\
+module {{
+  func.func @main(
+      %lhs: tensor<{extent}x{extent}xf16>
+          {{mhlo.sharding = "{lhs_sharding}"}},
+      %rhs: tensor<{extent}x{extent}xf16>
+          {{mhlo.sharding = "{rhs_sharding}"}})
+      -> (tensor<{extent}x{extent}xf16>
+          {{mhlo.sharding = "{{replicated}}"}}) {{
+    %result = "stablehlo.dot_general"(%lhs, %rhs) {{
+      dot_dimension_numbers = #stablehlo.dot<
+        lhs_contracting_dimensions = [1],
+        rhs_contracting_dimensions = [0]>,
+      precision_config = [#stablehlo<precision DEFAULT>,
+                          #stablehlo<precision DEFAULT>]
+    }} : (tensor<{extent}x{extent}xf16>,
+          tensor<{extent}x{extent}xf16>)
+        -> tensor<{extent}x{extent}xf16>
+    return %result : tensor<{extent}x{extent}xf16>
+  }}
+}}
+"""
+
+
+def noc_resident_m_sharded_gemm_module() -> str:
+    ranks = NOC_RESIDENT_M_SHARDED_GEMM_RANKS
+    devices = ",".join(str(rank) for rank in range(ranks))
+    m_sharding = f"{{devices=[{ranks},1]{devices}}}"
+    m = NOC_RESIDENT_M_SHARDED_GEMM_M
+    k = NOC_RESIDENT_M_SHARDED_GEMM_K
+    n = NOC_RESIDENT_M_SHARDED_GEMM_N
+    return f"""\
+module {{
+  func.func @main(
+      %lhs: tensor<{m}x{k}xf16>
+          {{mhlo.sharding = "{m_sharding}"}},
+      %rhs: tensor<{k}x{n}xf16>
+          {{mhlo.sharding = "{{replicated}}"}})
+      -> (tensor<{m}x{n}xf16>
+          {{mhlo.sharding = "{m_sharding}"}}) {{
+    %result = "stablehlo.dot_general"(%lhs, %rhs) {{
+      dot_dimension_numbers = #stablehlo.dot<
+        lhs_contracting_dimensions = [1],
+        rhs_contracting_dimensions = [0]>,
+      precision_config = [#stablehlo<precision DEFAULT>,
+                          #stablehlo<precision DEFAULT>]
+    }} : (tensor<{m}x{k}xf16>, tensor<{k}x{n}xf16>)
+        -> tensor<{m}x{n}xf16>
+    return %result : tensor<{m}x{n}xf16>
   }}
 }}
 """
@@ -501,6 +625,58 @@ def direct_dte_gemm_payloads() -> PairedPayloads:
         inputs,
         [[expected.copy()] for _ in range(DIRECT_DTE_GEMM_RANKS)],
     )
+
+
+def noc_resident_large_gemm_payloads() -> PairedPayloads:
+    extent = NOC_RESIDENT_GEMM_EXTENT
+    local_k_extent = NOC_RESIDENT_GEMM_LOCAL_K
+    columns = np.arange(extent, dtype=np.int32)
+    expected = np.empty((extent, extent), dtype="<f2")
+    inputs: list[list[np.ndarray]] = []
+    for rank in range(NOC_RESIDENT_GEMM_RANKS):
+        lhs = np.zeros((extent, local_k_extent), dtype="<f2")
+        rhs = np.empty((local_k_extent, extent), dtype="<f2")
+        for local_k in range(local_k_extent):
+            global_k = rank * local_k_extent + local_k
+            lhs[global_k, local_k] = np.float16(1.0)
+            row = 1 + ((global_k * 5 + columns * 3) % 8)
+            row = np.where((global_k + columns) % 2, -row, row)
+            rhs[local_k] = row.astype("<f2")
+            expected[global_k] = rhs[local_k]
+        inputs.append([lhs, rhs])
+
+    if not np.array_equal(expected, expected.astype(np.int32).astype("<f2")):
+        raise RuntimeError(
+            "NoC-resident GEMM expected values are not exact integers in f16"
+        )
+    outputs = [[expected] for _ in range(NOC_RESIDENT_GEMM_RANKS)]
+    return PairedPayloads(inputs, outputs, list(outputs))
+
+
+def noc_resident_m_sharded_gemm_payloads() -> PairedPayloads:
+    ranks = NOC_RESIDENT_M_SHARDED_GEMM_RANKS
+    local_m = NOC_RESIDENT_M_SHARDED_GEMM_LOCAL_M
+    k = NOC_RESIDENT_M_SHARDED_GEMM_K
+    n = NOC_RESIDENT_M_SHARDED_GEMM_N
+    k_indices = np.arange(k, dtype=np.int32)[:, None]
+    columns = np.arange(n, dtype=np.int32)[None, :]
+    rhs_i32 = 1 + ((k_indices * 5 + columns * 3) % 8)
+    rhs_i32 = np.where((k_indices + columns) % 2, -rhs_i32, rhs_i32)
+    rhs = rhs_i32.astype("<f2")
+
+    inputs: list[list[np.ndarray]] = []
+    outputs: list[list[np.ndarray]] = []
+    local_rows = np.arange(local_m, dtype=np.int32)
+    for rank in range(ranks):
+        global_rows = rank * local_m + local_rows
+        contributing_k = global_rows % k
+        lhs = np.zeros((local_m, k), dtype="<f2")
+        lhs[local_rows, contributing_k] = np.float16(1.0)
+        expected = rhs[contributing_k].copy()
+        inputs.append([lhs, rhs])
+        outputs.append([expected])
+
+    return unchanged_numeric_payloads(inputs, outputs)
 
 
 def require_call(
@@ -726,6 +902,76 @@ def direct_dte_gemm_oracle(
         )
 
 
+def noc_resident_large_gemm_oracle(
+    baseline: TargetStructure, winner: TargetStructure
+) -> None:
+    for structure in (baseline, winner):
+        for fragment in (
+            "_gemm",
+            "direct_dte_send_prepare",
+            "direct_dte_recv_prepare",
+            "direct_dte_begin_after_prepare",
+            "direct_dte_wait",
+        ):
+            require_call(structure.counts, fragment, present=True)
+    if baseline.scheduler_body_sha256 == winner.scheduler_body_sha256:
+        raise RuntimeError(
+            "NoC-resident GEMM production scheduler is identical to its baseline"
+        )
+
+    baseline_ddr_calls = count_fragment(
+        baseline, "_rdma"
+    ) + count_fragment(baseline, "_wdma")
+    winner_ddr_calls = count_fragment(
+        winner, "_rdma"
+    ) + count_fragment(winner, "_wdma")
+    if not (
+        winner_ddr_calls < baseline_ddr_calls
+        or winner.workspace_bytes < baseline.workspace_bytes
+    ):
+        raise RuntimeError(
+            "NoC-resident GEMM winner did not reduce DDR callsites or "
+            "workspace: "
+            f"DDR calls {baseline_ddr_calls}->{winner_ddr_calls}, "
+            f"workspace {baseline.workspace_bytes}->{winner.workspace_bytes}"
+        )
+
+
+def noc_resident_m_sharded_gemm_oracle(
+    baseline: TargetStructure, winner: TargetStructure
+) -> None:
+    require_call(baseline.counts, "_gemm", present=True)
+    require_call(winner.counts, "_gemm", present=True)
+    for fragment in (
+        "direct_dte_send_prepare",
+        "direct_dte_recv_prepare",
+        "direct_dte_begin_after_prepare",
+        "direct_dte_wait",
+    ):
+        require_call(winner.counts, fragment, present=True)
+    if baseline.scheduler_body_sha256 == winner.scheduler_body_sha256:
+        raise RuntimeError(
+            "M-sharded NoC-resident GEMM scheduler is identical to its baseline"
+        )
+
+    baseline_ddr_calls = count_fragment(
+        baseline, "_rdma"
+    ) + count_fragment(baseline, "_wdma")
+    winner_ddr_calls = count_fragment(
+        winner, "_rdma"
+    ) + count_fragment(winner, "_wdma")
+    if not (
+        winner_ddr_calls < baseline_ddr_calls
+        or winner.workspace_bytes < baseline.workspace_bytes
+    ):
+        raise RuntimeError(
+            "M-sharded NoC-resident GEMM winner did not reduce DDR callsites "
+            "or workspace: "
+            f"DDR calls {baseline_ddr_calls}->{winner_ddr_calls}, "
+            f"workspace {baseline.workspace_bytes}->{winner.workspace_bytes}"
+        )
+
+
 CASES = {
     case.key: case
     for case in (
@@ -839,6 +1085,34 @@ CASES = {
             direct_dte_gemm_module,
             direct_dte_gemm_payloads,
             direct_dte_gemm_oracle,
+        ),
+        CampaignCase(
+            "noc-resident-large-gemm",
+            "noc-resident-dataflow",
+            NOC_RESIDENT_GEMM_RANKS,
+            CLUSTER_LAUNCH_KIND,
+            (
+                F16_NOC_RESIDENT_GEMM_LHS_LOCAL,
+                F16_NOC_RESIDENT_GEMM_RHS_LOCAL,
+            ),
+            (F16_NOC_RESIDENT_GEMM_OUTPUT,),
+            noc_resident_large_gemm_module,
+            noc_resident_large_gemm_payloads,
+            noc_resident_large_gemm_oracle,
+        ),
+        CampaignCase(
+            "noc-resident-m-sharded-gemm",
+            "noc-resident-dataflow",
+            NOC_RESIDENT_M_SHARDED_GEMM_RANKS,
+            CLUSTER_LAUNCH_KIND,
+            (
+                F16_NOC_RESIDENT_M_SHARDED_GEMM_LHS_LOCAL,
+                F16_NOC_RESIDENT_M_SHARDED_GEMM_RHS_LOCAL,
+            ),
+            (F16_NOC_RESIDENT_M_SHARDED_GEMM_OUTPUT_LOCAL,),
+            noc_resident_m_sharded_gemm_module,
+            noc_resident_m_sharded_gemm_payloads,
+            noc_resident_m_sharded_gemm_oracle,
         ),
     )
 }

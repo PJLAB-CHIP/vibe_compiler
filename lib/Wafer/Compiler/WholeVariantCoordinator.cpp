@@ -5,23 +5,30 @@
 #include "AcceptedCallClosure.h"
 #include "DirectDTETransport.h"
 #include "ExecutableBundleInternal.h"
+#include "StaticFixedSlotQualification.h"
 #include "TargetArtifactInternal.h"
 #include "WholeVariantAttemptPlan.h"
 #include "WholeVariantResourceAcceptance.h"
 
+#include "Wafer/Analysis/NoCProfitabilityAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/TargetSchedulingCapability.h"
 #include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/SoftwarePipelining.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -107,6 +114,7 @@ rankMatchesCollectiveCharacterization(const RankExecutable &rank,
     expected = {DTEProtocolPhase::ReduceScatterRing};
     break;
   case WholeVariantSelectionMode::CharacterizeAllReduceRing:
+  case WholeVariantSelectionMode::QualifyNoCResidentAllReduceRing:
     expected = {DTEProtocolPhase::AllReduceRing};
     break;
   case WholeVariantSelectionMode::CharacterizeAllReduceTree:
@@ -115,6 +123,9 @@ rankMatchesCollectiveCharacterization(const RankExecutable &rank,
     break;
   case WholeVariantSelectionMode::Production:
   case WholeVariantSelectionMode::ReservedBaseline:
+  case WholeVariantSelectionMode::QualifyStaticFixedSlot:
+  case WholeVariantSelectionMode::QualifyWorkerPlacement:
+  case WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker:
     return false;
   }
   return observeCollectivePhases(rank) == expected;
@@ -129,6 +140,266 @@ matchesCollectiveCharacterization(llvm::ArrayRef<RankExecutable> ranks,
     if (!rankMatchesCollectiveCharacterization(rank, mode))
       return false;
   return true;
+}
+
+/// Resolve the storage root named by one DDR movement operand. Qualification
+/// consumes only current IR: tile-region boundaries, exact SCF loop-carried
+/// recurrences, transparent memref casts, and ViewLike aliases are explicit
+/// storage-preserving edges. Any other producer or block boundary is
+/// intentionally unknown and fails closed.
+static std::optional<unsigned>
+resolveTransparentLoopIterArgIndex(mlir::Value value, mlir::scf::ForOp loop) {
+  llvm::DenseSet<mlir::Value> seen;
+  while (value && seen.insert(value).second) {
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+      if (argument.getOwner() != loop.getBody() || argument.getArgNumber() == 0)
+        return std::nullopt;
+      return argument.getArgNumber() - 1;
+    }
+    auto result = mlir::dyn_cast<mlir::OpResult>(value);
+    mlir::Operation *definition = result ? result.getOwner() : nullptr;
+    if (auto cast = mlir::dyn_cast_or_null<mlir::memref::CastOp>(definition)) {
+      auto sourceType =
+          mlir::dyn_cast<mlir::MemRefType>(cast.getSource().getType());
+      auto resultType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+      if (!sourceType || !resultType ||
+          sourceType.getShape() != resultType.getShape() ||
+          sourceType.getElementType() != resultType.getElementType() ||
+          sourceType.getMemorySpace() != resultType.getMemorySpace())
+        return std::nullopt;
+      value = cast.getSource();
+      continue;
+    }
+    if (auto view =
+            mlir::dyn_cast_or_null<mlir::ViewLikeOpInterface>(definition)) {
+      mlir::Value source = view.getViewSource();
+      auto sourceType = source
+                            ? mlir::dyn_cast<mlir::MemRefType>(source.getType())
+                            : mlir::MemRefType();
+      auto resultType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+      if (!sourceType || !resultType ||
+          sourceType.getElementType() != resultType.getElementType() ||
+          sourceType.getMemorySpace() != resultType.getMemorySpace())
+        return std::nullopt;
+      value = source;
+      continue;
+    }
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+static mlir::Value
+resolveDDRMovementRootImpl(mlir::Value value,
+                           llvm::DenseSet<mlir::Value> seen) {
+  if (!value || !seen.insert(value).second)
+    return {};
+  auto valueType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+  if (!valueType || !isWaferDDRMemRefType(valueType))
+    return {};
+
+  auto resolveLoopCarried = [&](mlir::scf::ForOp loop, unsigned index) {
+    if (!loop || index >= loop.getInitArgs().size())
+      return mlir::Value{};
+    auto yield =
+        mlir::dyn_cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+    if (!yield || yield.getNumOperands() != loop.getInitArgs().size())
+      return mlir::Value{};
+
+    // Prove the complete recurrence component reached by this operand. A
+    // fixed-slot loop may rotate multiple subviews of the same returned DDR
+    // allocation across iter-arg indices. That remains boundary-only when
+    // every reached init and every external yield resolve to one exact root.
+    // Alternating distinct roots and unknown yield producers fail closed.
+    llvm::SmallVector<unsigned, 4> pending{index};
+    llvm::DenseSet<unsigned> visited;
+    mlir::Value componentRoot;
+    while (!pending.empty()) {
+      const unsigned current = pending.pop_back_val();
+      if (!visited.insert(current).second)
+        continue;
+      if (current >= loop.getInitArgs().size())
+        return mlir::Value{};
+      mlir::Value initRoot =
+          resolveDDRMovementRootImpl(loop.getInitArgs()[current], seen);
+      if (!initRoot || (componentRoot && componentRoot != initRoot))
+        return mlir::Value{};
+      componentRoot = initRoot;
+
+      mlir::Value next = yield.getOperand(current);
+      if (std::optional<unsigned> yieldedIterArg =
+              resolveTransparentLoopIterArgIndex(next, loop)) {
+        if (*yieldedIterArg >= loop.getInitArgs().size())
+          return mlir::Value{};
+        pending.push_back(*yieldedIterArg);
+        continue;
+      }
+      mlir::Value yieldedRoot = resolveDDRMovementRootImpl(next, seen);
+      if (!yieldedRoot || yieldedRoot != componentRoot)
+        return mlir::Value{};
+    }
+    return componentRoot;
+  };
+
+  if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+    mlir::Block *owner = argument.getOwner();
+    mlir::Operation *parent = owner ? owner->getParentOp() : nullptr;
+    if (auto tileRegion = mlir::dyn_cast_or_null<TileRegionOp>(parent)) {
+      if (tileRegion.getBody().empty() ||
+          owner != &tileRegion.getBody().front() ||
+          argument.getArgNumber() >= tileRegion.getInputs().size())
+        return {};
+      return resolveDDRMovementRootImpl(
+          tileRegion.getInputs()[argument.getArgNumber()], std::move(seen));
+    }
+    if (auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(parent)) {
+      if (owner != loop.getBody() || argument.getArgNumber() == 0)
+        return {};
+      return resolveLoopCarried(loop, argument.getArgNumber() - 1);
+    }
+    auto function = mlir::dyn_cast_or_null<mlir::func::FuncOp>(parent);
+    return function && !function.empty() && owner == &function.front()
+               ? value
+               : mlir::Value{};
+  }
+
+  auto result = mlir::dyn_cast<mlir::OpResult>(value);
+  mlir::Operation *definition = result ? result.getOwner() : nullptr;
+  if (auto tileRegion = mlir::dyn_cast_or_null<TileRegionOp>(definition)) {
+    if (tileRegion.getBody().empty() ||
+        result.getResultNumber() >=
+            tileRegion.getBody().front().getTerminator()->getNumOperands())
+      return {};
+    return resolveDDRMovementRootImpl(
+        tileRegion.getBody().front().getTerminator()->getOperand(
+            result.getResultNumber()),
+        std::move(seen));
+  }
+  if (auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(definition))
+    return resolveLoopCarried(loop, result.getResultNumber());
+  if (auto cast = mlir::dyn_cast_or_null<mlir::memref::CastOp>(definition)) {
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(cast.getSource().getType());
+    if (!sourceType || sourceType.getShape() != valueType.getShape() ||
+        sourceType.getElementType() != valueType.getElementType() ||
+        sourceType.getMemorySpace() != valueType.getMemorySpace())
+      return {};
+    return resolveDDRMovementRootImpl(cast.getSource(), std::move(seen));
+  }
+  if (auto view =
+          mlir::dyn_cast_or_null<mlir::ViewLikeOpInterface>(definition)) {
+    mlir::Value source = view.getViewSource();
+    auto sourceType = source
+                          ? mlir::dyn_cast<mlir::MemRefType>(source.getType())
+                          : mlir::MemRefType();
+    if (!sourceType ||
+        sourceType.getElementType() != valueType.getElementType() ||
+        sourceType.getMemorySpace() != valueType.getMemorySpace())
+      return {};
+    return resolveDDRMovementRootImpl(source, std::move(seen));
+  }
+  return definition && mlir::isa<mlir::memref::AllocOp, mlir::memref::AllocaOp,
+                                 mlir::memref::GetGlobalOp>(definition)
+             ? value
+             : mlir::Value{};
+}
+
+static mlir::Value resolveDDRMovementRoot(mlir::Value value) {
+  return resolveDDRMovementRootImpl(value, {});
+}
+
+/// A NoC-resident collective may still perform boundary loads and required
+/// output publication. It must not use a private DDR allocation as an
+/// intermediate spill. Artifact-kind metadata records how a candidate was
+/// generated and is deliberately not used as this semantic proof.
+} // namespace
+
+bool hasBoundaryOnlyDDRMovementEvidence(const RankExecutable &rank) {
+  mlir::ModuleOp module = rank.getModule();
+  mlir::func::FuncOp entry =
+      module.lookupSymbol<mlir::func::FuncOp>(rank.getEntrySymbol());
+  if (!entry || entry.empty())
+    return false;
+
+  llvm::DenseSet<mlir::Value> readableRoots;
+  for (mlir::BlockArgument argument : entry.getArguments()) {
+    auto type = mlir::dyn_cast<mlir::MemRefType>(argument.getType());
+    if (type && isWaferDDRMemRefType(type))
+      readableRoots.insert(argument);
+  }
+
+  llvm::SmallVector<mlir::func::ReturnOp, 2> returns;
+  entry.walk([&](mlir::func::ReturnOp operation) {
+    if (operation->getParentOfType<mlir::func::FuncOp>() == entry)
+      returns.push_back(operation);
+  });
+  if (returns.size() != 1)
+    return false;
+
+  llvm::DenseSet<mlir::Value> writableRoots;
+  for (mlir::Value output : returns.front().getOperands()) {
+    if (!mlir::isa<mlir::MemRefType>(output.getType()))
+      continue;
+    mlir::Value root = resolveDDRMovementRoot(output);
+    if (!root)
+      return false;
+    writableRoots.insert(root);
+  }
+
+  bool valid = true;
+  module.walk([&](mlir::Operation *operation) {
+    if (!valid)
+      return mlir::WalkResult::interrupt();
+    if (auto rdma = mlir::dyn_cast<InstrRDMAOp>(operation)) {
+      mlir::Value root = resolveDDRMovementRoot(rdma.getSource());
+      valid = root && readableRoots.contains(root);
+    } else if (auto wdma = mlir::dyn_cast<InstrWDMAOp>(operation)) {
+      mlir::Value root = resolveDDRMovementRoot(wdma.getDest());
+      valid = root && writableRoots.contains(root);
+    }
+    return valid ? mlir::WalkResult::advance() : mlir::WalkResult::interrupt();
+  });
+  return valid;
+}
+
+namespace {
+
+static bool hasBoundaryOnlyDDRMovement(llvm::ArrayRef<RankExecutable> ranks) {
+  return !ranks.empty() && llvm::all_of(ranks, [](const RankExecutable &rank) {
+    return hasBoundaryOnlyDDRMovementEvidence(rank);
+  });
+}
+
+static bool
+hasAllRankDirectDTEAndBidirectionalTuple(llvm::ArrayRef<RankExecutable> ranks) {
+  if (ranks.empty())
+    return false;
+  bool tupleHasSend = false;
+  bool tupleHasRecv = false;
+  for (const RankExecutable &rank : ranks) {
+    bool rankHasSend = false;
+    bool rankHasRecv = false;
+    rank.getModule().walk([&](mlir::Operation *operation) {
+      rankHasSend |= mlir::isa<InstrDTESendOp>(operation);
+      rankHasRecv |= mlir::isa<InstrDTERecvOp>(operation);
+    });
+    if (!rankHasSend && !rankHasRecv)
+      return false;
+    tupleHasSend |= rankHasSend;
+    tupleHasRecv |= rankHasRecv;
+  }
+  return tupleHasSend && tupleHasRecv;
+}
+
+static bool hasMultipleActualNCCWorkers(const RankExecutable &rank) {
+  std::set<NCCWorker> workers;
+  rank.getModule().walk([&](mlir::Operation *operation) {
+    if (std::optional<NCCWorker> worker = getNCCIssueWorker(operation))
+      workers.insert(*worker);
+  });
+  return workers.size() >= 2 && llvm::any_of(workers, [](NCCWorker worker) {
+           return worker != NCCWorker::Worker0;
+         });
 }
 
 static mlir::LogicalResult
@@ -311,7 +582,146 @@ struct PreTargetWholeVariant {
   std::vector<bool> selectedReservedBaselines;
   std::vector<wafer::RankBufferingKind> selectedBufferingKinds;
   std::vector<uint32_t> selectedBufferingPlanOrdinals;
+  std::vector<wafer::RankWorkerPlacementKind> selectedWorkerPlacementKinds;
+  std::vector<uint32_t> selectedWorkerPlacementPlanOrdinals;
+  /// Recomputable target-contract result for scheduling mechanisms introduced
+  /// after the reserved serial/storage frontier. It is invocation-local
+  /// analysis, never persisted beside the accepted IR.
+  bool hasSchedulingCapabilityQuery = false;
+  TargetSchedulingProfitabilityEvidence schedulingProfitability;
 };
+
+static bool hasMultipleNCCWorkers(mlir::ModuleOp module) {
+  llvm::SmallDenseSet<uint32_t, 4> workers;
+  module.walk([&](mlir::Operation *operation) {
+    if (std::optional<NCCWorker> worker = getNCCIssueWorker(operation))
+      workers.insert(static_cast<uint32_t>(*worker));
+  });
+  return workers.size() > 1;
+}
+
+static mlir::LogicalResult classifySchedulingCapability(
+    llvm::ArrayRef<mlir::ModuleOp> modules,
+    wafer::RankBufferingKind bufferingKind,
+    wafer::RankWorkerPlacementKind workerPlacementKind,
+    TargetProfileId targetProfile, bool &hasQuery,
+    TargetSchedulingProfitabilityEvidence &profitability) {
+  hasQuery = false;
+  profitability = {};
+  if (modules.empty())
+    return mlir::failure();
+
+  TargetSchedulingMechanism mechanism =
+      TargetSchedulingMechanism::StaticFixedSlot;
+  bool anyCrossWorker = false;
+  bool anyDTE = false;
+  for (mlir::ModuleOp module : modules) {
+    anyCrossWorker |= hasMultipleNCCWorkers(module);
+    module.walk([&](mlir::Operation *operation) {
+      anyDTE |= mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation);
+    });
+  }
+  const bool explicitlyWorkerPlaced =
+      workerPlacementKind != wafer::RankWorkerPlacementKind::Unplaced;
+  if (anyCrossWorker != explicitlyWorkerPlaced)
+    return mlir::failure();
+
+  if (bufferingKind == wafer::RankBufferingKind::StaticFixedSlot) {
+    hasQuery = true;
+  } else {
+    if (workerPlacementKind == wafer::RankWorkerPlacementKind::Unplaced) {
+      return mlir::success();
+    }
+    hasQuery = true;
+    mechanism = anyDTE ? TargetSchedulingMechanism::DirectDTEOverlap
+                       : TargetSchedulingMechanism::WorkerPlacement;
+  }
+
+  llvm::Expected<TargetSchedulingCapabilityRegistry> registry =
+      getTargetSchedulingCapabilityRegistry(targetProfile);
+  if (!registry) {
+    llvm::consumeError(registry.takeError());
+    return mlir::failure();
+  }
+
+  bool allOverlapQualified = true;
+  bool allDrainQualified = true;
+  for (mlir::ModuleOp module : modules) {
+    llvm::Expected<TargetSchedulingWindowQuery> query =
+        analyzeTargetSchedulingWindow(module, targetProfile, mechanism);
+    if (!query) {
+      llvm::consumeError(query.takeError());
+      return mlir::failure();
+    }
+    if (workerPlacementKind != wafer::RankWorkerPlacementKind::Unplaced &&
+        query->workerRelation !=
+            TargetSchedulingWorkerRelation::CrossNCCWorkers &&
+        query->workerRelation != TargetSchedulingWorkerRelation::MixedNCCAndDTE)
+      return mlir::failure();
+    llvm::Expected<TargetSchedulingWindowDecision> decision =
+        registry->query(*query);
+    if (!decision) {
+      llvm::consumeError(decision.takeError());
+      return mlir::failure();
+    }
+    if (decision->legality != TargetSchedulingCapabilityState::Supported)
+      return mlir::failure();
+    allOverlapQualified &= decision->profitability.overlap ==
+                           TargetSchedulingOverlapEvidence::QualifiedOverlap;
+    allDrainQualified &= decision->profitability.drain ==
+                         TargetSchedulingDrainEvidence::QualifiedDrainElision;
+  }
+  profitability.overlap =
+      allOverlapQualified ? TargetSchedulingOverlapEvidence::QualifiedOverlap
+                          : TargetSchedulingOverlapEvidence::Unknown;
+  profitability.drain =
+      allDrainQualified ? TargetSchedulingDrainEvidence::QualifiedDrainElision
+                        : TargetSchedulingDrainEvidence::Unknown;
+  return mlir::success();
+}
+
+static bool
+matchesStaticFixedSlotQualification(const PreTargetWholeVariant &candidate) {
+  const size_t rankCount = candidate.ranks.size();
+  return rankCount != 0 &&
+         candidate.selectedReservedBaselines.size() == rankCount &&
+         candidate.selectedBufferingKinds.size() == rankCount &&
+         candidate.selectedBufferingPlanOrdinals.size() == rankCount &&
+         llvm::none_of(candidate.selectedReservedBaselines,
+                       [](bool reserved) { return reserved; }) &&
+         llvm::all_of(candidate.selectedBufferingKinds,
+                      [](wafer::RankBufferingKind kind) {
+                        return kind ==
+                               wafer::RankBufferingKind::StaticFixedSlot;
+                      }) &&
+         llvm::all_of(candidate.selectedBufferingPlanOrdinals,
+                      [](uint32_t ordinal) { return ordinal > 0; }) &&
+         llvm::all_of(candidate.ranks, [](const RankExecutable &rank) {
+           return hasStaticFixedSlotQualificationEvidence(rank);
+         });
+}
+
+static bool
+matchesWorkerPlacementQualification(const PreTargetWholeVariant &candidate) {
+  const size_t rankCount = candidate.ranks.size();
+  return rankCount != 0 &&
+         candidate.selectedReservedBaselines.size() == rankCount &&
+         candidate.selectedWorkerPlacementKinds.size() == rankCount &&
+         candidate.selectedWorkerPlacementPlanOrdinals.size() == rankCount &&
+         llvm::none_of(candidate.selectedReservedBaselines,
+                       [](bool reserved) { return reserved; }) &&
+         llvm::all_of(
+             candidate.selectedWorkerPlacementKinds,
+             [](wafer::RankWorkerPlacementKind kind) {
+               return kind ==
+                      wafer::RankWorkerPlacementKind::DisjointComponents;
+             }) &&
+         llvm::all_of(candidate.selectedWorkerPlacementPlanOrdinals,
+                      [](uint32_t ordinal) { return ordinal > 0; }) &&
+         llvm::all_of(candidate.ranks, [](const RankExecutable &rank) {
+           return hasMultipleActualNCCWorkers(rank);
+         });
+}
 
 static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
     llvm::ArrayRef<size_t> candidateIndices,
@@ -326,6 +736,8 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
   std::optional<wafer::RankArtifactKind> artifactKind;
   std::optional<wafer::RankBufferingKind> bufferingKind;
   std::optional<uint32_t> bufferingPlanOrdinal;
+  std::optional<wafer::RankWorkerPlacementKind> workerPlacementKind;
+  std::optional<uint32_t> workerPlacementPlanOrdinal;
   for (auto [rank, candidateIndex] : llvm::enumerate(candidateIndices)) {
     if (candidateIndex >= frontiers[rank].size()) {
       failureGate = "rank-candidate-correspondence";
@@ -338,11 +750,19 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
         frontiers[rank][candidateIndex].bufferingKind;
     uint32_t currentBufferingPlanOrdinal =
         frontiers[rank][candidateIndex].bufferingPlanOrdinal;
+    wafer::RankWorkerPlacementKind currentWorkerPlacementKind =
+        frontiers[rank][candidateIndex].workerPlacementKind;
+    uint32_t currentWorkerPlacementPlanOrdinal =
+        frontiers[rank][candidateIndex].workerPlacementPlanOrdinal;
     if ((stableOrdinal && current != *stableOrdinal) ||
         (artifactKind && currentArtifactKind != *artifactKind) ||
         (bufferingKind && currentBufferingKind != *bufferingKind) ||
         (bufferingPlanOrdinal &&
-         currentBufferingPlanOrdinal != *bufferingPlanOrdinal)) {
+         currentBufferingPlanOrdinal != *bufferingPlanOrdinal) ||
+        (workerPlacementKind &&
+         currentWorkerPlacementKind != *workerPlacementKind) ||
+        (workerPlacementPlanOrdinal &&
+         currentWorkerPlacementPlanOrdinal != *workerPlacementPlanOrdinal)) {
       failureGate = "rank-candidate-correspondence";
       return mlir::failure();
     }
@@ -350,6 +770,8 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
     artifactKind = currentArtifactKind;
     bufferingKind = currentBufferingKind;
     bufferingPlanOrdinal = currentBufferingPlanOrdinal;
+    workerPlacementKind = currentWorkerPlacementKind;
+    workerPlacementPlanOrdinal = currentWorkerPlacementPlanOrdinal;
   }
 
   std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modules;
@@ -373,6 +795,16 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
     moduleViews.push_back(module);
   }
 
+  bool hasSchedulingCapabilityQuery = false;
+  TargetSchedulingProfitabilityEvidence schedulingProfitability;
+  if (mlir::failed(classifySchedulingCapability(
+          moduleViews, *bufferingKind, *workerPlacementKind,
+          executionConfig.getTargetProfileId(), hasSchedulingCapabilityQuery,
+          schedulingProfitability))) {
+    failureGate = "target-scheduling-capability";
+    return mlir::failure();
+  }
+
   // DDR placement is intentionally absent from rank-frontier entries. Apply
   // it only to this disposable complete tuple so a failed late gate cannot
   // leak offsets into another combination or back into candidate generation.
@@ -384,6 +816,17 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
             memory.ddrLargestContiguousBytes, memory.ddrBandwidthLimitBytes)) ||
         mlir::failed(mlir::verify(module))) {
       failureGate = "whole-variant-ddr";
+      return mlir::failure();
+    }
+  }
+
+  if (*bufferingKind == wafer::RankBufferingKind::StaticFixedSlot) {
+    std::string specializationFailure;
+    if (mlir::failed(wafer::specializePeriodicDirectDTESites(
+            moduleViews, &specializationFailure))) {
+      if (!specializationFailure.empty())
+        moduleViews.front().emitError(specializationFailure);
+      failureGate = "direct-dte-site-specialization";
       return mlir::failure();
     }
   }
@@ -444,6 +887,9 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
   candidate.selectedReservedBaselines.reserve(candidateIndices.size());
   candidate.selectedBufferingKinds.reserve(candidateIndices.size());
   candidate.selectedBufferingPlanOrdinals.reserve(candidateIndices.size());
+  candidate.selectedWorkerPlacementKinds.reserve(candidateIndices.size());
+  candidate.selectedWorkerPlacementPlanOrdinals.reserve(
+      candidateIndices.size());
   for (auto [rank, candidateIndex] : llvm::enumerate(candidateIndices)) {
     candidate.selectedStableOrdinals.push_back(
         frontiers[rank][candidateIndex].stableOrdinal);
@@ -455,7 +901,13 @@ static mlir::FailureOr<PreTargetWholeVariant> tryPreTargetCombination(
         frontiers[rank][candidateIndex].bufferingKind);
     candidate.selectedBufferingPlanOrdinals.push_back(
         frontiers[rank][candidateIndex].bufferingPlanOrdinal);
+    candidate.selectedWorkerPlacementKinds.push_back(
+        frontiers[rank][candidateIndex].workerPlacementKind);
+    candidate.selectedWorkerPlacementPlanOrdinals.push_back(
+        frontiers[rank][candidateIndex].workerPlacementPlanOrdinal);
   }
+  candidate.hasSchedulingCapabilityQuery = hasSchedulingCapabilityQuery;
+  candidate.schedulingProfitability = schedulingProfitability;
   return candidate;
 }
 
@@ -499,6 +951,10 @@ static mlir::FailureOr<AcceptedWholeVariant> runTargetGate(
   accepted.selectedBufferingKinds = std::move(candidate.selectedBufferingKinds);
   accepted.selectedBufferingPlanOrdinals =
       std::move(candidate.selectedBufferingPlanOrdinals);
+  accepted.selectedWorkerPlacementKinds =
+      std::move(candidate.selectedWorkerPlacementKinds);
+  accepted.selectedWorkerPlacementPlanOrdinals =
+      std::move(candidate.selectedWorkerPlacementPlanOrdinals);
   return accepted;
 }
 
@@ -599,20 +1055,50 @@ static ParetoOrder compareQualifiedOverlapWindows(
   return ParetoOrder::Equivalent;
 }
 
+static ParetoOrder compareExternalDDRMovement(
+    const analysis::WholeCardInstructionProgramCost &left,
+    const analysis::WholeCardInstructionProgramCost &right) {
+  const MetricPair dimensions[] = {
+      {&left.aggregateDDRReadBytes, &right.aggregateDDRReadBytes},
+      {&left.aggregateDDRWriteBytes, &right.aggregateDDRWriteBytes},
+  };
+  return compareKnownMetrics(dimensions);
+}
+
 static ParetoOrder compareExactWholeVariantCost(
     const analysis::WholeCardInstructionProgramCost &left,
     const analysis::WholeCardInstructionProgramCost &right) {
-  ParetoOrder drainOrder = compareNCCDrainCost(left, right);
-  if (drainOrder != ParetoOrder::Equivalent)
-    return drainOrder;
-  ParetoOrder overlapOrder = compareQualifiedOverlapWindows(left, right);
-  if (overlapOrder != ParetoOrder::Equivalent)
-    return overlapOrder;
-  ParetoOrder drainPlacementOrder = compareNCCDrainPlacement(left, right);
-  if (drainPlacementOrder != ParetoOrder::Equivalent)
-    return drainPlacementOrder;
+  // When external movement is equal, blocking NCC drains remain the primary
+  // exact discriminator. When DDR differs, however, a real drain-vs-DDR
+  // tradeoff must remain on the Pareto frontier for the target's static
+  // policy; include drain facts as ordinary exact dimensions instead of
+  // letting either side erase the other before policy selection.
+  if (compareExternalDDRMovement(left, right) == ParetoOrder::Equivalent) {
+    ParetoOrder drainOrder = compareNCCDrainCost(left, right);
+    if (drainOrder != ParetoOrder::Equivalent)
+      return drainOrder;
+    ParetoOrder overlapOrder = compareQualifiedOverlapWindows(left, right);
+    if (overlapOrder != ParetoOrder::Equivalent)
+      return overlapOrder;
+    ParetoOrder drainPlacementOrder = compareNCCDrainPlacement(left, right);
+    if (drainPlacementOrder != ParetoOrder::Equivalent)
+      return drainPlacementOrder;
+  }
 
   const MetricPair dimensions[] = {
+      {&left.aggregateSteadyStateNCCParticipantWaitCount,
+       &right.aggregateSteadyStateNCCParticipantWaitCount},
+      {&left.aggregateNonTerminalNCCParticipantWaitCount,
+       &right.aggregateNonTerminalNCCParticipantWaitCount},
+      {&left.aggregateNCCParticipantWaitCount,
+       &right.aggregateNCCParticipantWaitCount},
+      {&left.aggregateIntrinsicNCCDrainCount,
+       &right.aggregateIntrinsicNCCDrainCount},
+      {&left.aggregateSteadyStateNCCJoinCount,
+       &right.aggregateSteadyStateNCCJoinCount},
+      {&left.aggregateNonTerminalNCCJoinCount,
+       &right.aggregateNonTerminalNCCJoinCount},
+      {&left.aggregateNCCJoinCount, &right.aggregateNCCJoinCount},
       {&left.aggregateCompute.npuF16Bf16LogicalOps,
        &right.aggregateCompute.npuF16Bf16LogicalOps},
       {&left.aggregateCompute.npuOtherLogicalOps,
@@ -741,16 +1227,29 @@ static ParetoOrder compareTargetStaticTradeoff(
   return ParetoOrder::Equivalent;
 }
 
-static bool isPreferredOver(const AcceptedWholeVariant &candidate,
-                            const AcceptedWholeVariant &baseline,
-                            const TargetStaticSelectionPolicy &policy) {
-  ParetoOrder order = compareExactWholeVariantCost(candidate.resourceCost,
-                                                   baseline.resourceCost);
+static bool isResourceCostPreferredOver(
+    const analysis::WholeCardInstructionProgramCost &candidate,
+    const analysis::WholeCardInstructionProgramCost &baseline,
+    const TargetStaticSelectionPolicy &policy) {
+  // `ExternalMovementFirst` is the target's explicit policy for a strict DDR
+  // reduction. A NoC-resident owner-load candidate can require an exact
+  // NCC-to-DTE handoff completion while still eliminating the other ranks'
+  // DDR transactions; that real cross-resource tradeoff must not be erased by
+  // the drain tie-breaker used when external movement is equal.
+  if (policy.tradeoff == TargetStaticTradeoffPolicy::ExternalMovementFirst) {
+    ParetoOrder ddrOrder = compareExternalDDRMovement(candidate, baseline);
+    if (ddrOrder == ParetoOrder::LeftDominates)
+      return true;
+    if (ddrOrder == ParetoOrder::RightDominates ||
+        ddrOrder == ParetoOrder::Unknown)
+      return false;
+  }
+
+  ParetoOrder order = compareExactWholeVariantCost(candidate, baseline);
   if (order == ParetoOrder::LeftDominates)
     return true;
   if (order == ParetoOrder::Equivalent)
-    return compareStaticDataflowPolicy(candidate.resourceCost,
-                                       baseline.resourceCost) ==
+    return compareStaticDataflowPolicy(candidate, baseline) ==
            ParetoOrder::LeftDominates;
   if (order != ParetoOrder::Incomparable)
     return false;
@@ -758,13 +1257,55 @@ static bool isPreferredOver(const AcceptedWholeVariant &candidate,
   // quantity. When all exact execution-resource dimensions are no worse and
   // at least one is lower, the static target policy accepts the known
   // high-water tradeoff instead of requiring an unavailable timing model.
-  if (compareExactExecutionResources(candidate.resourceCost,
-                                     baseline.resourceCost) ==
+  if (compareExactExecutionResources(candidate, baseline) ==
       ParetoOrder::LeftDominates)
     return true;
-  return compareTargetStaticTradeoff(candidate.resourceCost,
-                                     baseline.resourceCost,
-                                     policy) == ParetoOrder::LeftDominates;
+  return compareTargetStaticTradeoff(candidate, baseline, policy) ==
+         ParetoOrder::LeftDominates;
+}
+
+static bool isPreferredOver(const AcceptedWholeVariant &candidate,
+                            const AcceptedWholeVariant &baseline,
+                            const TargetStaticSelectionPolicy &policy) {
+  return isResourceCostPreferredOver(candidate.resourceCost,
+                                     baseline.resourceCost, policy);
+}
+
+static bool hasStrictQualifiedDrainReduction(
+    const analysis::WholeCardInstructionProgramCost &candidate,
+    const analysis::WholeCardInstructionProgramCost &baseline) {
+  const MetricPair participantDrainDimensions[] = {
+      {&candidate.aggregateSteadyStateNCCParticipantWaitCount,
+       &baseline.aggregateSteadyStateNCCParticipantWaitCount},
+      {&candidate.aggregateNonTerminalNCCParticipantWaitCount,
+       &baseline.aggregateNonTerminalNCCParticipantWaitCount},
+      {&candidate.aggregateNCCParticipantWaitCount,
+       &baseline.aggregateNCCParticipantWaitCount},
+      {&candidate.aggregateIntrinsicNCCDrainCount,
+       &baseline.aggregateIntrinsicNCCDrainCount},
+  };
+  bool strictlyLower = false;
+  for (const MetricPair &dimension : participantDrainDimensions) {
+    if (!dimension.left->isKnown() || !dimension.right->isKnown() ||
+        dimension.left->value > dimension.right->value)
+      return false;
+    strictlyLower |= dimension.left->value < dimension.right->value;
+  }
+  return strictlyLower;
+}
+
+static bool hasNormalProductionSchedulingEvidence(
+    const PreTargetWholeVariant &candidate,
+    const AcceptedWholeVariant &reservedBaseline) {
+  if (!candidate.hasSchedulingCapabilityQuery)
+    return true;
+  if (candidate.schedulingProfitability.overlap ==
+      TargetSchedulingOverlapEvidence::QualifiedOverlap)
+    return true;
+  return candidate.schedulingProfitability.drain ==
+             TargetSchedulingDrainEvidence::QualifiedDrainElision &&
+         hasStrictQualifiedDrainReduction(candidate.resourceCost,
+                                          reservedBaseline.resourceCost);
 }
 
 struct ParetoCandidateView {
@@ -774,6 +1315,9 @@ struct ParetoCandidateView {
   const std::vector<bool> *selectedReservedBaselines = nullptr;
   const std::vector<wafer::RankBufferingKind> *selectedBufferingKinds = nullptr;
   const std::vector<uint32_t> *selectedBufferingPlanOrdinals = nullptr;
+  const std::vector<wafer::RankWorkerPlacementKind>
+      *selectedWorkerPlacementKinds = nullptr;
+  const std::vector<uint32_t> *selectedWorkerPlacementPlanOrdinals = nullptr;
 };
 
 template <typename VariantT>
@@ -783,7 +1327,9 @@ static ParetoCandidateView getParetoCandidateView(const VariantT &candidate) {
           &candidate.selectedArtifactKinds,
           &candidate.selectedReservedBaselines,
           &candidate.selectedBufferingKinds,
-          &candidate.selectedBufferingPlanOrdinals};
+          &candidate.selectedBufferingPlanOrdinals,
+          &candidate.selectedWorkerPlacementKinds,
+          &candidate.selectedWorkerPlacementPlanOrdinals};
 }
 
 static bool hasEarlierStaticPolicyOrder(ParetoCandidateView lhs,
@@ -791,10 +1337,14 @@ static bool hasEarlierStaticPolicyOrder(ParetoCandidateView lhs,
   return std::tie(*lhs.selectedStableOrdinals, *lhs.selectedArtifactKinds,
                   *lhs.selectedBufferingKinds,
                   *lhs.selectedBufferingPlanOrdinals,
+                  *lhs.selectedWorkerPlacementKinds,
+                  *lhs.selectedWorkerPlacementPlanOrdinals,
                   *lhs.selectedReservedBaselines) <
          std::tie(*rhs.selectedStableOrdinals, *rhs.selectedArtifactKinds,
                   *rhs.selectedBufferingKinds,
                   *rhs.selectedBufferingPlanOrdinals,
+                  *rhs.selectedWorkerPlacementKinds,
+                  *rhs.selectedWorkerPlacementPlanOrdinals,
                   *rhs.selectedReservedBaselines);
 }
 
@@ -805,7 +1355,8 @@ struct ParetoInsertionPlan {
 
 static ParetoInsertionPlan
 planParetoInsertion(ParetoCandidateView candidate,
-                    llvm::ArrayRef<AcceptedWholeVariant> frontier) {
+                    llvm::ArrayRef<AcceptedWholeVariant> frontier,
+                    const TargetStaticSelectionPolicy &selectionPolicy) {
   ParetoInsertionPlan plan;
   for (auto [index, existing] : llvm::enumerate(frontier)) {
     ParetoCandidateView existingView = getParetoCandidateView(existing);
@@ -858,8 +1409,22 @@ planParetoInsertion(ParetoCandidateView candidate,
              [](const SimulatedEntry &lhs, const SimulatedEntry &rhs) {
                return hasEarlierStaticPolicyOrder(lhs.view, rhs.view);
              });
-  if (simulated.size() > kWholeVariantParetoLimit)
-    simulated.pop_back();
+  if (simulated.size() > kWholeVariantParetoLimit) {
+    // The pre-target resource facts already carry every input to the target's
+    // static selection policy. Preserve the policy-best member when bounding
+    // an otherwise incomparable frontier, then use stable metadata order for
+    // the remaining slots.
+    unsigned policyBestIndex = 0;
+    for (unsigned index = 1; index < simulated.size(); ++index)
+      if (isResourceCostPreferredOver(
+              *simulated[index].view.resourceCost,
+              *simulated[policyBestIndex].view.resourceCost, selectionPolicy))
+        policyBestIndex = index;
+    unsigned removalIndex = simulated.size() - 1;
+    if (removalIndex == policyBestIndex)
+      --removalIndex;
+    simulated.erase(simulated.begin() + removalIndex);
+  }
   plan.retained = llvm::any_of(
       simulated, [](const SimulatedEntry &entry) { return entry.isCandidate; });
   if (!plan.retained)
@@ -869,16 +1434,19 @@ planParetoInsertion(ParetoCandidateView candidate,
 
 static bool
 wouldRetainParetoCandidate(const PreTargetWholeVariant &candidate,
-                           llvm::ArrayRef<AcceptedWholeVariant> frontier) {
-  return planParetoInsertion(getParetoCandidateView(candidate), frontier)
+                           llvm::ArrayRef<AcceptedWholeVariant> frontier,
+                           const TargetStaticSelectionPolicy &selectionPolicy) {
+  return planParetoInsertion(getParetoCandidateView(candidate), frontier,
+                             selectionPolicy)
       .retained;
 }
 
 static bool
 insertParetoCandidate(AcceptedWholeVariant candidate,
-                      llvm::SmallVectorImpl<AcceptedWholeVariant> &frontier) {
-  ParetoInsertionPlan plan =
-      planParetoInsertion(getParetoCandidateView(candidate), frontier);
+                      llvm::SmallVectorImpl<AcceptedWholeVariant> &frontier,
+                      const TargetStaticSelectionPolicy &selectionPolicy) {
+  ParetoInsertionPlan plan = planParetoInsertion(
+      getParetoCandidateView(candidate), frontier, selectionPolicy);
   if (!plan.retained)
     return false;
   for (unsigned index : llvm::reverse(plan.dominatedIndices))
@@ -889,8 +1457,18 @@ insertParetoCandidate(AcceptedWholeVariant candidate,
     return hasEarlierStaticPolicyOrder(getParetoCandidateView(lhs),
                                        getParetoCandidateView(rhs));
   });
-  if (frontier.size() > kWholeVariantParetoLimit)
-    frontier.pop_back();
+  if (frontier.size() > kWholeVariantParetoLimit) {
+    unsigned policyBestIndex = 0;
+    for (unsigned index = 1; index < frontier.size(); ++index)
+      if (isResourceCostPreferredOver(frontier[index].resourceCost,
+                                      frontier[policyBestIndex].resourceCost,
+                                      selectionPolicy))
+        policyBestIndex = index;
+    unsigned removalIndex = frontier.size() - 1;
+    if (removalIndex == policyBestIndex)
+      --removalIndex;
+    frontier.erase(frontier.begin() + removalIndex);
+  }
   return true;
 }
 
@@ -938,7 +1516,9 @@ selectAcceptedWholeVariants(
     for (const RankVariantCandidate &candidate : frontier)
       metadata.push_back({candidate.stableOrdinal, candidate.artifactKind,
                           candidate.reservedBaseline, candidate.bufferingKind,
-                          candidate.bufferingPlanOrdinal});
+                          candidate.bufferingPlanOrdinal,
+                          candidate.workerPlacementKind,
+                          candidate.workerPlacementPlanOrdinal});
     frontierMetadata.push_back(std::move(metadata));
   }
   WholeVariantAttemptPlan attemptPlan = buildWholeVariantAttemptPlan(
@@ -1068,9 +1648,34 @@ selectAcceptedWholeVariants(
                                          /*productionIsReservedBaseline=*/true};
   const bool characterize =
       isCollectiveCharacterizationSelection(selectionMode);
+  const bool qualifyNoCResidentAllReduceRing =
+      selectionMode ==
+      WholeVariantSelectionMode::QualifyNoCResidentAllReduceRing;
+  const bool qualifyStaticFixedSlot =
+      selectionMode == WholeVariantSelectionMode::QualifyStaticFixedSlot;
+  const bool qualifyWorkerPlacement =
+      selectionMode == WholeVariantSelectionMode::QualifyWorkerPlacement;
+  const bool qualifyNoCResidentFixedSlotWorker =
+      selectionMode ==
+      WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker;
+  const TargetStaticSelectionPolicy selectionPolicy =
+      getDefaultWaferTargetPolicy(TileSearchEffort::Default).staticSelection;
+  const analysis::TargetScheduleCostPolicy scheduleCostPolicy =
+      analysis::getTargetScheduleCostPolicy(
+          executionConfig.getTargetProfileId());
 
   llvm::SmallVector<AcceptedWholeVariant, kWholeVariantParetoLimit>
       paretoFrontier;
+  auto explainStaticFixedSlotQualification =
+      [](const PreTargetWholeVariant &candidate) {
+        for (auto [rank, executable] : llvm::enumerate(candidate.ranks))
+          if (llvm::Error error =
+                  verifyStaticFixedSlotQualificationEvidence(executable))
+            return ("rank " + llvm::Twine(rank) + ": " +
+                    llvm::toString(std::move(error)))
+                .str();
+        return std::string("typed fixed-slot candidate identity is incomplete");
+      };
   auto retainPreTarget = [&](const std::vector<size_t> &candidateIndices) {
     mlir::FailureOr<PreTargetWholeVariant> preTarget =
         attemptPreTarget(candidateIndices);
@@ -1079,14 +1684,91 @@ selectAcceptedWholeVariants(
     if (characterize &&
         !matchesCollectiveCharacterization(preTarget->ranks, selectionMode))
       return;
-    if (!wouldRetainParetoCandidate(*preTarget, paretoFrontier))
+    if (qualifyNoCResidentAllReduceRing &&
+        (llvm::any_of(preTarget->selectedReservedBaselines,
+                      [](bool reserved) { return reserved; }) ||
+         !hasBoundaryOnlyDDRMovement(preTarget->ranks)))
+      return;
+    if (qualifyStaticFixedSlot &&
+        !matchesStaticFixedSlotQualification(*preTarget)) {
+      recordFailure(candidateIndices, "static-fixed-slot-qualification",
+                    explainStaticFixedSlotQualification(*preTarget));
+      return;
+    }
+    if (qualifyWorkerPlacement &&
+        !matchesWorkerPlacementQualification(*preTarget)) {
+      recordFailure(candidateIndices, "worker-placement-qualification", "");
+      return;
+    }
+    if (qualifyNoCResidentFixedSlotWorker) {
+      if (!matchesStaticFixedSlotQualification(*preTarget)) {
+        recordFailure(candidateIndices, "static-fixed-slot-qualification",
+                      explainStaticFixedSlotQualification(*preTarget));
+        return;
+      }
+      if (!matchesWorkerPlacementQualification(*preTarget)) {
+        recordFailure(candidateIndices, "worker-placement-qualification", "");
+        return;
+      }
+      if (!hasBoundaryOnlyDDRMovement(preTarget->ranks)) {
+        recordFailure(candidateIndices, "noc-resident-ddr-qualification", "");
+        return;
+      }
+      if (!hasAllRankDirectDTEAndBidirectionalTuple(preTarget->ranks)) {
+        recordFailure(candidateIndices, "all-rank-direct-dte-qualification",
+                      "");
+        return;
+      }
+    }
+    if (selectionMode == WholeVariantSelectionMode::Production &&
+        !hasNormalProductionSchedulingEvidence(*preTarget, baselineAccepted))
+      return;
+    if (selectionMode == WholeVariantSelectionMode::Production) {
+      analysis::NoCTradeoffScheduleContext profitabilitySchedule;
+      if (preTarget->hasSchedulingCapabilityQuery &&
+          preTarget->schedulingProfitability.overlap ==
+              TargetSchedulingOverlapEvidence::QualifiedOverlap)
+        profitabilitySchedule.candidate =
+            analysis::StaticCrossResourceSchedule::PipelinedSteadyState;
+      analysis::NoCTradeoffProfitability profitability =
+          analysis::analyzeNoCTradeoffProfitability(
+              preTarget->resourceCost, baselineAccepted.resourceCost,
+              scheduleCostPolicy, profitabilitySchedule);
+      if (profitability.decision !=
+          analysis::NoCTradeoffDecision::NotApplicable) {
+        if (statistics)
+          ++statistics->noCProfitabilityEvaluations;
+        switch (profitability.decision) {
+        case analysis::NoCTradeoffDecision::NotApplicable:
+          llvm_unreachable("handled above");
+        case analysis::NoCTradeoffDecision::Reject:
+          if (statistics)
+            ++statistics->noCProfitabilityRejected;
+          return;
+        case analysis::NoCTradeoffDecision::Indeterminate:
+          if (statistics)
+            ++statistics->noCProfitabilityIndeterminate;
+          return;
+        case analysis::NoCTradeoffDecision::EstimatedBenefit:
+          if (statistics)
+            ++statistics->noCProfitabilityEstimated;
+          break;
+        case analysis::NoCTradeoffDecision::ProvenBenefit:
+          if (statistics)
+            ++statistics->noCProfitabilityProven;
+          break;
+        }
+      }
+    }
+    if (!wouldRetainParetoCandidate(*preTarget, paretoFrontier,
+                                    selectionPolicy))
       return;
     mlir::FailureOr<AcceptedWholeVariant> accepted =
         targetGate(candidateIndices, std::move(*preTarget));
     if (mlir::failed(accepted))
       return;
-    const bool retained =
-        insertParetoCandidate(std::move(*accepted), paretoFrontier);
+    const bool retained = insertParetoCandidate(
+        std::move(*accepted), paretoFrontier, selectionPolicy);
     assert(retained &&
            "target gate cannot change Pareto facts or frontier membership");
   };
@@ -1098,11 +1780,10 @@ selectAcceptedWholeVariants(
        attemptPlan.optimizedCandidateIndices)
     retainPreTarget(candidateIndices);
 
-  const TargetStaticSelectionPolicy selectionPolicy =
-      getDefaultWaferTargetPolicy(TileSearchEffort::Default).staticSelection;
   if (characterize) {
     std::optional<AcceptedWholeVariant> selected;
-    if (matchesCollectiveCharacterization(baselineAccepted.ranks,
+    if (!qualifyNoCResidentAllReduceRing &&
+        matchesCollectiveCharacterization(baselineAccepted.ranks,
                                           selectionMode))
       selected.emplace(std::move(baselineAccepted));
     for (AcceptedWholeVariant &candidate : paretoFrontier)
@@ -1118,6 +1799,28 @@ selectAcceptedWholeVariants(
     return AcceptedProductionAndBaseline{
         std::move(*selected), std::nullopt,
         /*productionIsReservedBaseline=*/false};
+  }
+  if (qualifyStaticFixedSlot || qualifyWorkerPlacement ||
+      qualifyNoCResidentFixedSlotWorker) {
+    std::optional<AcceptedWholeVariant> selected;
+    for (AcceptedWholeVariant &candidate : paretoFrontier)
+      if (!selected || isPreferredOver(candidate, *selected, selectionPolicy))
+        selected.emplace(std::move(candidate));
+    if (!selected) {
+      diagnostics << "wafer-compile: no fully accepted whole variant matches "
+                     "test-only "
+                  << (qualifyNoCResidentFixedSlotWorker
+                          ? "NoC-resident static fixed-slot worker-placement"
+                      : qualifyStaticFixedSlot ? "static fixed-slot"
+                                               : "worker-placement")
+                  << " qualification\n";
+      for (const std::string &failure : failures)
+        diagnostics << "  - " << failure << "\n";
+      return mlir::failure();
+    }
+    return AcceptedProductionAndBaseline{
+        std::move(*selected), std::nullopt,
+         /*productionIsReservedBaseline=*/false};
   }
   AcceptedWholeVariant *selected = &baselineAccepted;
   for (AcceptedWholeVariant &candidate : paretoFrontier)
