@@ -22,8 +22,9 @@ pipeline contract、实验结论、测试数字、失败修复过程和历史复
 Q32 + Q6.B -> Q9 profiler foundation                         [done]
 Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [done]
 Q38 -> Q39 NoC-resident tile dataflow                        [done]
-Q39 -> Q40 composed search and DTE overlap                   [next: wait closure]
-Q32.C -> Q41 compiler search scalability                     [next]
+Q42 test gate scope reduction                                [next]
+Q42 + Q39 -> Q40 composed search and DTE overlap             [later: after Q42]
+Q42 + Q32.C -> Q41 compiler search scalability               [later: after Q42]
 ```
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
@@ -31,8 +32,9 @@ Q32.C -> Q41 compiler search scalability                     [next]
 | Q9 | `production-artifact-profiler` | `done` | Q32、Q6.B、configured board | 未插桩Primary TX stream launch-to-completion设备包络、分离的host diagnostics、Trace来源的五类NCC per-tile engine active ns/work-volume摘要、独立Direct-DTE cycles/raw activity、Count/Trace、逐次保留真实动态调用与rdcycle的16-tile timeline、exclusive语义成本与非加和Trace-only成本、final Instr静态work与硬件峰值下界对照、exact output、三文件专业UI和profile全树`0777`均闭合；不构造card-wide纯engine elapsed，静态cost不回灌ranking。Ranking feedback保留为后续独立门禁。 | 06、14-16；`tasks/archive/board-profiler.md` |
 | Q38 | `multi-engine-software-pipelining` | `done` | Q32、Q6.B、Q37 | complete-rank actual clone、真实fixed-slot multi-buffer、prologue/steady/epilogue、waitfinish normal form、V3 typed worker与Direct-DTE prepare/issue/exact wait-release、issue-time exact range hazard、package/no-card、TargetCall/SystemC、profiler和digest-bound qualification companion均闭合；worker0 rotating SPM FP16/BF16 RDMA+CT+WDMA普通production winner已经fresh板端exact correctness与matched资格。NoC-resident dataflow归Q39；全局choice组合与更广Direct-DTE/compute overlap归Q40。 | 06、08-17；`tasks/plans/multi-engine-software-pipelining.md` |
 | Q39 | `noc-resident-tile-dataflow` | `done` | Q38非板端Direct-DTE/fixed-slot合同闭合；Q38板端资格作为独立external gate | complete-rank NoC-resident candidate、静态profitability、package/no-card闭合；K-sharded `4096³`同源baseline/winner板端6/6 exact，winner profile保持16-rank exact并生成有效报告。高wait与未闭合overlap转交Q40，编译搜索耗时转交Q41。 | 02-13、16-17；`tasks/plans/noc-resident-tile-dataflow.md` |
-| Q40 | `composed-choice-search-and-dte-overlap` | `next` | Q39完成 | 重构tile、storage、buffer、order、communication和issue/wait的bounded semantic choice；吸收Q39 profile暴露的3840 send、3840 recv、7680 DTE wait与`issue_event_count=0`，闭合Direct-DTE issue/compute并行、latest-unavoidable matching wait和release。完成门禁包括局部失败隔离、work preservation、FP16/BF16 no-card、wait/issue结构回归及板端exact-output和matched A/B；不读取live profile参与编译选择。 | 06、08-13、16 |
-| Q41 | `compiler-search-scalability` | `next` | Q32.C bounded executor；M-sharded K=1024复现 | 专注whole-variant search编译时间：补齐阶段时间、RSS和candidate/attempt/late-gate/clone/lowering/capture计数，删除不改变winner/artifact的重复工作并建立显式工作量/CTest上界；不修改Q39语义或Q40 wait合同。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
+| Q42 | `test-gate-scope-reduction` | `next` | 无 | 分离局部测试、集成gate和共享资格；默认及任务gate只运行直接影响面，并以测试注册检查阻止后续任务重新引入全量审计或无关判定。不全仓重写既有case。 | 16；`tasks/plans/test-gate-scope-reduction.md` |
+| Q40 | `composed-choice-search-and-dte-overlap` | `later` | Q39、Q42完成 | 重构tile、storage、buffer、order、communication和issue/wait的bounded semantic choice；吸收Q39 profile暴露的3840 send、3840 recv、7680 DTE wait与`issue_event_count=0`，闭合Direct-DTE issue/compute并行、latest-unavoidable matching wait和release。测试只判定wait/issue直接合同和指定matched case，不绑定共享资格或全量suite。 | 06、08-13、16 |
+| Q41 | `compiler-search-scalability` | `later` | Q32.C bounded executor、Q42；M-sharded K=1024复现 | 专注whole-variant search编译时间：补齐阶段时间、RSS和candidate/attempt/late-gate/clone/lowering/capture计数，删除不改变winner/artifact的重复工作并建立显式上界。测试只判定搜索工作量、编译时间和winner不变，不跑板端、target model或全量suite。 | 06、14-16、18；`tasks/plans/compiler-search-scalability.md` |
 
 ## Later / External Gates
 
