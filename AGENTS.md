@@ -47,6 +47,10 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
 
 - 同一重启会话且软硬件身份未变化时，环境资格只确认一次；不为每个 case 重复版本、反汇编、状态、
   heartbeat 或其它无关 gate。
+- 编译器/runtime功能纵向和qualification板测的默认数据类型使用FP16或BF16；只有测试目标本身是
+  F32格式、ABI、转换或数值边界，或者真实上游workload明确要求F32时才使用F32，并在对应测试合同中
+  写明理由。不得把host unit、no-card或model fixture中的F32机械复制成板测workload；上板前必须单独
+  核对source、metadata、payload和expected的dtype一致且符合本条默认规则。
 - 普通 case 走最小路径：增量构建、单进程串行 launch、bounded timeout、结果 / guard 校验和正常生命周期。
 - 禁止读取、重新判定或回放历史板端输出；禁止重新执行已有结论的 case 来“确认”旧证据。代码或测试
   校验逻辑修改后，只能由本轮新构建、新启动和新输出产生硬件结论。

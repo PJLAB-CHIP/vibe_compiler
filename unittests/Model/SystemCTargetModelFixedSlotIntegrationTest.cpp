@@ -55,7 +55,7 @@ using namespace wafer::model;
 
 constexpr int64_t kElementCount = 524288;
 constexpr uint64_t kTensorBytes =
-    static_cast<uint64_t>(kElementCount) * sizeof(float);
+    static_cast<uint64_t>(kElementCount) * sizeof(uint16_t);
 constexpr uint64_t kABISlotBase = UINT64_C(0x10000000);
 constexpr uint64_t kABISlotStride = UINT64_C(0x01000000);
 
@@ -66,7 +66,7 @@ frontend::ProgramBoundaryBinding replicatedBoundary(int64_t index) {
   binding.distribution = frontend::ProgramDistributionKind::Replicated;
   binding.globalShape = {kElementCount};
   binding.localShape = {kElementCount};
-  binding.dtype = "f32";
+  binding.dtype = "f16";
   frontend::ProgramRankSlice slice;
   slice.logicalRank = 0;
   slice.replicaId = 0;
@@ -113,21 +113,21 @@ module {
     axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>,
     policy = "explicit", shape = array<i64: 1>, topology = @default
   }
-  func.func @main(%lhs: tensor<524288xf32>, %rhs: tensor<524288xf32>)
-      -> tensor<524288xf32> {
-    %out = tensor.empty() : tensor<524288xf32>
+  func.func @main(%lhs: tensor<524288xf16>, %rhs: tensor<524288xf16>)
+      -> tensor<524288xf16> {
+    %out = tensor.empty() : tensor<524288xf16>
     %sum = linalg.generic {
         indexing_maps = [affine_map<(d0) -> (d0)>,
                          affine_map<(d0) -> (d0)>,
                          affine_map<(d0) -> (d0)>],
         iterator_types = ["parallel"]}
-      ins(%lhs, %rhs : tensor<524288xf32>, tensor<524288xf32>)
-      outs(%out : tensor<524288xf32>) {
-    ^bb0(%lhs_value: f32, %rhs_value: f32, %unused: f32):
-      %value = arith.addf %lhs_value, %rhs_value : f32
-      linalg.yield %value : f32
-    } -> tensor<524288xf32>
-    return %sum : tensor<524288xf32>
+      ins(%lhs, %rhs : tensor<524288xf16>, tensor<524288xf16>)
+      outs(%out : tensor<524288xf16>) {
+    ^bb0(%lhs_value: f16, %rhs_value: f16, %unused: f16):
+      %value = arith.addf %lhs_value, %rhs_value : f16
+      linalg.yield %value : f16
+    } -> tensor<524288xf16>
+    return %sum : tensor<524288xf16>
   }
 }
 )mlir",
@@ -322,8 +322,8 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   TargetCallRankArguments rankArguments{0, {}};
   std::vector<ABIRange> abiRanges;
   std::vector<TargetModelInputBinding> inputBindings;
-  const std::array<uint64_t, 2> inputBits{UINT64_C(0x3f800000),
-                                          UINT64_C(0x40000000)};
+  const std::array<uint64_t, 2> inputBits{UINT64_C(0x3c00),
+                                          UINT64_C(0x4000)};
   for (const KernelABISlot &slot : targetModule.getKernelABISlots()) {
     ASSERT_GE(slot.ordinal, 0);
     ASSERT_EQ(slot.byteSize, static_cast<int64_t>(kTensorBytes));
@@ -338,10 +338,10 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
     ASSERT_LT(static_cast<size_t>(slot.resourceIndex), inputBits.size());
     std::vector<RawLogicalValue> values(
         static_cast<size_t>(kElementCount),
-        RawLogicalValue{LogicalFormat::F32,
+        RawLogicalValue{LogicalFormat::F16,
                         inputBits[static_cast<size_t>(slot.resourceIndex)]});
     NumericTensorKey key = llvm::cantFail(NumericTensorKey::create(
-        LogicalFormat::F32, NumericTensorLayout::Tensor, {kElementCount}));
+        LogicalFormat::F16, NumericTensorLayout::Tensor, {kElementCount}));
     llvm::Expected<std::vector<uint8_t>> bytes =
         packPhysicalTensorLogicalValues(key, values, UINT8_C(0));
     ASSERT_TRUE(static_cast<bool>(bytes)) << llvm::toString(bytes.takeError());
@@ -478,15 +478,15 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   ASSERT_EQ(result->outputs.size(), 1u);
 
   NumericTensorKey outputKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F32, NumericTensorLayout::Tensor, {kElementCount}));
+      LogicalFormat::F16, NumericTensorLayout::Tensor, {kElementCount}));
   llvm::Expected<std::vector<RawLogicalValue>> output =
       unpackPhysicalTensorLogicalValues(outputKey,
                                         result->outputs.front().bytes);
   ASSERT_TRUE(static_cast<bool>(output)) << llvm::toString(output.takeError());
   ASSERT_EQ(output->size(), static_cast<size_t>(kElementCount));
   for (const RawLogicalValue &value : *output) {
-    EXPECT_EQ(value.format, LogicalFormat::F32);
-    EXPECT_EQ(value.bits, UINT64_C(0x40400000));
+    EXPECT_EQ(value.format, LogicalFormat::F16);
+    EXPECT_EQ(value.bits, UINT64_C(0x4200));
   }
 }
 
